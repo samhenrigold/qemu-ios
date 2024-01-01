@@ -57,6 +57,25 @@
 #define S5L8900_GPIO_G3_IRQ 0x03
 #define S5L8900_GPIO_G4_IRQ 0x02
 
+// key codes
+#define KEY_UP        (1 << 7)
+
+#define KEY_P         25
+#define KEY_P_DOWN    KEY_P
+#define KEY_P_UP      (KEY_P_DOWN | KEY_UP)
+
+#define KEY_H         35
+#define KEY_H_DOWN    KEY_H
+#define KEY_H_UP      (KEY_H_DOWN | KEY_UP)
+
+#define KEY_MIN       12
+#define KEY_MIN_DOWN  KEY_MIN
+#define KEY_MIN_UP    (KEY_MIN_DOWN | KEY_UP)
+
+#define KEY_PLUS      13
+#define KEY_PLUS_DOWN KEY_PLUS
+#define KEY_PLUS_UP   (KEY_PLUS_DOWN | KEY_UP)
+
 const int S5L8900_GPIO_IRQS[5] = { S5L8900_GPIO_G0_IRQ, S5L8900_GPIO_G1_IRQ, S5L8900_GPIO_G2_IRQ, S5L8900_GPIO_G3_IRQ, S5L8900_GPIO_G4_IRQ };
 
 #define IT2G_CPREG_VAR_NAME(name) cpreg_##name
