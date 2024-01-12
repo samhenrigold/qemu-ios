@@ -24,7 +24,7 @@ static void dump_registers(IPodTouchFMSSState *s) {
 static void read_nand_pages(IPodTouchFMSSState *s)
 {
     // boot args
-    const char *boot_args = "kextlog=0xfff debug=0x8 cpus=1 rd=disk0s1 serial=1 pmu-debug=0x1 io=0xffff8fff debug-usb=0xffffffff"; // if not const then overwritten
+    const char *boot_args = "kextlog=0xfff debug=0x8 cpus=1 rd=disk0s1 serial=1 pmu-debug=0x1 io=0xffff8fff debug-usb=0xffffffff amfi_allow_any_signature=1"; // if not const then overwritten
     cpu_physical_memory_write(0x0ff2a584, boot_args, strlen(boot_args));
 
     // patch iBoot - we want to inject the bluetooth MAC address which is located as sub-node of uart1 and not uart3 in the device tree...
