@@ -311,8 +311,8 @@ static MTFrame *get_frame(IPodTouchMultitouchState *s, uint8_t event, float x, f
     // compute the velocity
     int diff_x = (int)((x - s->prev_touch_x) * MT_INTERNAL_SENSOR_SURFACE_WIDTH);
     int diff_y = (int)((x - s->prev_touch_y) * MT_INTERNAL_SENSOR_SURFACE_HEIGHT);
-    frame->finger_data.velX = diff_x / (elapsed_ns - s->last_frame_timestamp) * 1000;
-    frame->finger_data.velY = diff_y / (elapsed_ns - s->last_frame_timestamp) * 1000;
+    frame->finger_data.velX = diff_x / (elapsed_ns + 1 - s->last_frame_timestamp) * 1000;
+    frame->finger_data.velY = diff_y / (elapsed_ns + 1 - s->last_frame_timestamp) * 1000;
 
     frame->finger_data.x = (int)(x * MT_INTERNAL_SENSOR_SURFACE_WIDTH);
     frame->finger_data.y = (int)(y * MT_INTERNAL_SENSOR_SURFACE_HEIGHT);
