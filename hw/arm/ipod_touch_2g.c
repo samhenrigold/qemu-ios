@@ -191,14 +191,13 @@ static void ipod_touch_key_event(void *opaque, int keycode)
         // power button
         gpio_group = GPIO_BUTTON_POWER_IRQ / NUM_GPIO_PINS;
         gpio_selector = GPIO_BUTTON_POWER_IRQ % NUM_GPIO_PINS;
-        
-        if(keycode == KEY_P_DOWN && (s->gpio_state->gpio_state & (1 << (GPIO_BUTTON_POWER & 0xf))) == 0) {
-            s->gpio_state->gpio_state |= (1 << (GPIO_BUTTON_POWER & 0xf));
-            do_irq = true;
+
+        if(keycode == KEY_P_DOWN && gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_POWER)) {
+            gpio_set_on(s->gpio_state->gpio_state, GPIO_BUTTON_POWER);
+            
         }
         else if(keycode == KEY_P_UP) {
-            s->gpio_state->gpio_state &= ~(1 << (GPIO_BUTTON_POWER & 0xf));
-            do_irq = true;
+            gpio_set_off(s->gpio_state->gpio_state, GPIO_BUTTON_POWER);
         }
     }
     else if(keycode == KEY_H_DOWN || keycode == KEY_H_UP) {
@@ -206,13 +205,11 @@ static void ipod_touch_key_event(void *opaque, int keycode)
         gpio_group = GPIO_BUTTON_HOME_IRQ / NUM_GPIO_PINS;
         gpio_selector = GPIO_BUTTON_HOME_IRQ % NUM_GPIO_PINS;
 
-        if(keycode == KEY_H_DOWN && (s->gpio_state->gpio_state & (1 << (GPIO_BUTTON_HOME & 0xf))) == 0) {
-            s->gpio_state->gpio_state |= (1 << (GPIO_BUTTON_HOME & 0xf));
-            do_irq = true;
+        if(keycode == KEY_H_DOWN && gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_HOME)) {
+            gpio_set_on(s->gpio_state->gpio_state, GPIO_BUTTON_HOME);
         }
         else if(keycode == KEY_H_UP) {
-            s->gpio_state->gpio_state &= ~(1 << (GPIO_BUTTON_HOME & 0xf));
-            do_irq = true;
+            gpio_set_off(s->gpio_state->gpio_state, GPIO_BUTTON_HOME);
         }
     }
     else if(keycode == KEY_MIN_DOWN || keycode == KEY_MIN_UP) {
@@ -220,13 +217,11 @@ static void ipod_touch_key_event(void *opaque, int keycode)
         gpio_group = GPIO_BUTTON_VOLDOWN_IRQ / NUM_GPIO_PINS;
         gpio_selector = GPIO_BUTTON_VOLDOWN_IRQ % NUM_GPIO_PINS;
 
-        if(keycode == KEY_MIN_DOWN && (s->gpio_state->gpio_state & (1 << (GPIO_BUTTON_VOLDOWN & 0xf))) == 0) {
-            s->gpio_state->gpio_state |= (1 << (GPIO_BUTTON_VOLDOWN & 0xf));
-            do_irq = true;
+        if(keycode == KEY_MIN_DOWN && gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLDOWN)) {
+            gpio_set_on(s->gpio_state->gpio_state, GPIO_BUTTON_VOLDOWN);
         }
         else if(keycode == KEY_MIN_UP) {
-            s->gpio_state->gpio_state &= ~(1 << (GPIO_BUTTON_VOLDOWN & 0xf));
-            do_irq = true;
+            gpio_set_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLDOWN);
         }
     }
     else if(keycode == KEY_PLUS_DOWN || keycode == KEY_PLUS_UP) {
@@ -234,20 +229,16 @@ static void ipod_touch_key_event(void *opaque, int keycode)
         gpio_group = GPIO_BUTTON_VOLUP_IRQ / NUM_GPIO_PINS;
         gpio_selector = GPIO_BUTTON_VOLUP_IRQ % NUM_GPIO_PINS;
 
-        if(keycode == KEY_PLUS_DOWN && (s->gpio_state->gpio_state & (1 << (GPIO_BUTTON_VOLUP & 0xf))) == 0) {
-            s->gpio_state->gpio_state |= (1 << (GPIO_BUTTON_VOLUP & 0xf));
-            do_irq = true;
+        if(keycode == KEY_PLUS_DOWN && gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLUP)) {
+            gpio_set_on(s->gpio_state->gpio_state, GPIO_BUTTON_VOLUP);
         }
         else if(keycode == KEY_PLUS_UP) {
-            s->gpio_state->gpio_state &= ~(1 << (GPIO_BUTTON_VOLUP & 0xf));
-            do_irq = true;
+            gpio_set_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLUP);
         }
     }
     
-    if(do_irq) {
-        s->sysic->gpio_int_status[gpio_group] |= (1 << gpio_selector);
-        qemu_irq_raise(s->sysic->gpio_irqs[gpio_group]);
-    }
+    s->sysic->gpio_int_status[gpio_group] |= (1 << gpio_selector);
+    qemu_irq_raise(s->sysic->gpio_irqs[gpio_group]);
 }
 
 static void ipod_touch_machine_init(MachineState *machine)

@@ -17,13 +17,35 @@ static uint64_t s5l8900_gpio_read(void *opaque, hwaddr addr, unsigned size)
     IPodTouchGPIOState *s = (struct IPodTouchGPIOState *) opaque;
 
     switch(addr) {
-        case 0x184:  // TODO: This offset only makes sure that the GPIO triggers associated with the home/power button work correctly!!
-            return s->gpio_state;
+        case 0x4:
+            return 0;
+        case 0x24 ... 0x184:
+            return s->gpio_state[GPIOADDR2PAD(addr)];
         default:
             break;
     }
 
     return 0;
+}
+
+bool gpio_is_on(uint32_t *state, uint32_t gpio)
+{
+    return (state[GPIO2PAD(gpio)] & (1 << GPIO2PIN(gpio)));
+}
+
+bool gpio_is_off(uint32_t *state, uint32_t gpio)
+{
+    return !gpio_is_on(state, gpio);
+}
+
+void gpio_set_on(uint32_t *state, uint32_t gpio)
+{
+    state[GPIO2PAD(gpio)] |= (1 << GPIO2PIN(gpio));
+}
+
+void gpio_set_off(uint32_t *state, uint32_t gpio)
+{
+    state[GPIO2PAD(gpio)] &= ~(1 << GPIO2PIN(gpio));
 }
 
 static const MemoryRegionOps gpio_ops = {
