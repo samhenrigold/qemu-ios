@@ -14,11 +14,11 @@ static uint8_t lis302dl_recv(I2CSlave *i2c)
         case ACCEL_WHOAMI:
             return ACCEL_WHOAMI_VALUE;
 	case ACCEL_OUT_X:
-	    return s->out_x;
+	    return s->ctrl_reg1 == 1 ? s->out_x : 0;
 	case ACCEL_OUT_Y:
-	    return s->out_y;
+	    return s->ctrl_reg1 << 1 == 1 ? s->out_y : 0;
 	case ACCEL_OUT_Z:
-	    return s->out_z;
+	    return s->ctrl_reg1 << 2 == 1 ? s->out_z : 0;
 	case ACCEL_CTRL_REG1:
 	    return s->ctrl_reg1;
         case ACCEL_CTRL_REG2:
