@@ -12,6 +12,8 @@ typedef struct IPodTouchMBXState {
     SysBusDevice busdev;
     MemoryRegion iomem1;
     MemoryRegion iomem2;
+    uint64_t addr;
+    bool alreadypatched;
 } IPodTouchMBXState;
 
 #endif

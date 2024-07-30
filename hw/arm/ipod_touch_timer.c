@@ -93,7 +93,7 @@ static uint64_t s5l8900_timer1_read(void *opaque, hwaddr addr, unsigned size)
         case TIMER_TICKSLOW:
             return s->ticks_low;
         case TIMER_IRQSTAT:
-            return ~0; // s->irqstat;
+            return s->irqstat; // ~0; // s->irqstat;
         case TIMER_IRQLATCH:
             return 0xffffffff;
 

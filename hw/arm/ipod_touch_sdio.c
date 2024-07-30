@@ -12,14 +12,14 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
     uint32_t cmd_type = s->cmd & 0x3f;
     uint32_t addr = (s->arg >> 9) & 0x1ffff;
     uint32_t func = (s->arg >> 28) & 0x7;
-    //printf("SDIO CMD: %d, ADDR: %d, FUNC: %d\n", cmd_type, addr, func);
+    printf("SDIO CMD: %d, ADDR: %d, FUNC: %d\n", cmd_type, addr, func);
     if(cmd_type == 0x3) {
         // RCA request - ignore
     }
     else if(cmd_type == 0x5) {
         if(addr == 0) {
             // reading slot 0 - make sure there is a device here
-            //s->resp0 = (1 << 31) /* indicate ready */ | (BCM4325_FUNCTIONS << CMD5_FUNC_OFFSET) /* number of functions */;
+            s->resp0 = (1 << 31) /* indicate ready */ | (BCM4325_FUNCTIONS << CMD5_FUNC_OFFSET) /* number of functions */;
         }
     }
     else if(cmd_type == 0x7) {
@@ -101,7 +101,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
 
 static void ipod_touch_sdio_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 {
-    //printf("%s: writing 0x%08x to 0x%08x\n", __func__, value, addr);
+    printf("%s: writing 0x%08x to 0x%08x\n", __func__, value, addr);
     
     IPodTouchSDIOState *s = (struct IPodTouchSDIOState *) opaque;
 

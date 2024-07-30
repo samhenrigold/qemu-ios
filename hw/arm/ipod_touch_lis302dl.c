@@ -12,8 +12,21 @@ static uint8_t lis302dl_recv(I2CSlave *i2c)
 
     switch(s->cmd) {
         case ACCEL_WHOAMI:
-            return ACCEL_WHOAMI_VALUE; // whoami value
+            return ACCEL_WHOAMI_VALUE;
+	case ACCEL_OUT_X:
+	    return s->ctrl_reg1 == 1 ? s->out_x : 0;
+	case ACCEL_OUT_Y:
+	    return s->ctrl_reg1 << 1 == 1 ? s->out_y : 0;
+	case ACCEL_OUT_Z:
+	    return s->ctrl_reg1 << 2 == 1 ? s->out_z : 0;
+	case ACCEL_CTRL_REG1:
+	    return s->ctrl_reg1;
+        case ACCEL_CTRL_REG2:
+    	    return s->ctrl_reg2;
+	case ACCEL_CTRL_REG3:
+	    return s->ctrl_reg3;	    
         default:
+	    printf("%s Unknown register %d\n", __func__, s->cmd);
             return 0;
     }
 }

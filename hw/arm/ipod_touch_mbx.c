@@ -9,7 +9,9 @@ static uint32_t reverse_byte_order(uint32_t value) {
 
 static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
 {
-    printf("%s: read from location 0x%08x\n", __func__, addr);
+    IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
+    if (addr != 0x1020)
+    	printf("%s: read from location 0x%08x\n", __func__, addr);
     switch(addr)
     {
         case 0x12c:
@@ -17,7 +19,7 @@ static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
         case 0xf00:
             return (2 << 0x10) | (1 << 0x18); // seems to be some kind of identifier
         case 0x1020:
-            return 0x10000;
+            return s->addr != 0x0 ? s->addr : 0x10000;
         default:
             break;
     }
@@ -28,10 +30,19 @@ static void ipod_touch_mbx1_write(void *opaque, hwaddr addr, uint64_t val, unsig
 {
     IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
     fprintf(stderr, "%s: writing 0x%08x to 0x%08x\n", __func__, val, addr);
+
+    switch(addr)
+    {
+	case 0x1020:
+	    s->addr = val;
+	    break;
+    }
 }
 
-static void patch_kernel()
+static void patch_kernel(bool alreadypatched)
 {
+    if (alreadypatched) return;
+    	alreadypatched = 1;
     // patch the loading of the AppleBCM4325 driver
     char *bcm4325_vars = "test";
 
@@ -91,11 +102,16 @@ static void patch_kernel()
 
 static uint64_t ipod_touch_mbx2_read(void *opaque, hwaddr addr, unsigned size)
 {
+    IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
     printf("%s: read from location 0x%08x\n", __func__, addr);
     switch(addr)
     {
         case 0xC:
-            patch_kernel();
+            patch_kernel(s->alreadypatched);
+	    break;
+	case 0x4:
+	    return 0xFF;
+	    break;
         default:
             break;
     }

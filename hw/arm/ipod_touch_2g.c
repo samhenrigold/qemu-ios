@@ -236,6 +236,7 @@ static void ipod_touch_key_event(void *opaque, int keycode)
             gpio_set_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLUP);
         }
     }
+    else return;
     
     s->sysic->gpio_int_status[gpio_group] |= (1 << gpio_selector);
     qemu_irq_raise(s->sysic->gpio_irqs[gpio_group]);
@@ -442,6 +443,9 @@ static void ipod_touch_machine_init(MachineState *machine)
     // init the accelerometer
     I2CSlave *accelerometer = i2c_slave_create_simple(i2c_state->bus, "lis302dl", 0x1D);
 
+    // init the audio codec (disabled because unused)
+    // I2CSlave *audio_codec = i2c_slave_create_simple(i2c_state->bus, "cs42l58", 0x4A);
+
     // Init I2C1
     dev = qdev_new("ipodtouch.i2c");
     i2c_state = IPOD_TOUCH_I2C(dev);
@@ -451,6 +455,9 @@ static void ipod_touch_machine_init(MachineState *machine)
     memory_region_add_subregion(sysmem, I2C1_MEM_BASE, &i2c_state->iomem);
     sysbus_realize(busdev, &error_fatal);
     sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, S5L8720_I2C1_IRQ));
+    
+    // Init the light sensor
+    I2CSlave *isl29003dl = i2c_slave_create_simple(i2c_state->bus, "isl29003dl", 0x44);
 
     // init the Mikey
     I2CSlave *cd327mikey = i2c_slave_create_simple(i2c_state->bus, "cd3272mikey", 0x39);

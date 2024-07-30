@@ -5,7 +5,7 @@
 
 static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
 {
-    //printf("%s: read from location 0x%08x\n", __func__, addr);
+    // printf("%s: read from location 0x%08x\n", __func__, addr);
 
     IPodTouchLCDState *s = (IPodTouchLCDState *)opaque;
     switch(addr)
@@ -26,8 +26,10 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
             return s->w1_display_resolution_info;
         case 0x1b10:
             return 2;
+	case 0x1b14:
+	    return 0x3;
         default:
-            // hw_error("%s: read invalid location 0x%08x.\n", __func__, addr);
+            printf("%s: read invalid location 0x%08x.\n", __func__, addr);
             break;
     }
     return 0;
@@ -36,7 +38,7 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
 static void ipod_touch_lcd_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     IPodTouchLCDState *s = (IPodTouchLCDState *)opaque;
-    //printf("%s: writing 0x%08x to 0x%08x\n", __func__, val, addr);
+    // printf("%s: writing 0x%08x to 0x%08x\n", __func__, val, addr);
 
     switch(addr) {
         case 0x4:
@@ -45,6 +47,7 @@ static void ipod_touch_lcd_write(void *opaque, hwaddr addr, uint64_t val, unsign
         case 0xC:
             s->unknown1 = val;
             qemu_irq_lower(s->irq);
+	    // qemu_irq_raise(s->irq);
             break;
         case 0x20:
             s->w1_display_depth_info = val;
@@ -86,7 +89,7 @@ static void draw_line32_32(void *opaque, uint8_t *d, const uint8_t *s, int width
 
 static void lcd_refresh(void *opaque)
 {
-    //fprintf(stderr, "%s: refreshing LCD screen\n", __func__);
+    // printf("%s: refreshing LCD screen\n", __func__);
 
     IPodTouchLCDState *lcd = (IPodTouchLCDState *) opaque;
     DisplaySurface *surface = qemu_console_surface(lcd->con);
@@ -141,7 +144,7 @@ static const GraphicHwOps gfx_ops = {
 
 static void ipod_touch_lcd_mouse_event(void *opaque, int x, int y, int z, int buttons_state)
 {
-    //printf("CLICKY %d %d %d %d\n", x, y, z, buttons_state);
+    // printf("x %d y %d z %d state %d\n", x, y, z, buttons_state);
 
     // convert x and y to fractional numbers
     float fx = x / pow(2, 15);
@@ -165,9 +168,12 @@ static void refresh_timer_tick(void *opaque)
 {
     IPodTouchLCDState *s = (IPodTouchLCDState *)opaque;
 
-    qemu_irq_raise(s->irq);
+    if (s->unknown1 == 0x1)
+	qemu_irq_raise(s->irq);
+    else if (s->unknown1 == 0xFF)
+	qemu_irq_lower(s->irq);
 
-    timer_mod(s->refresh_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + NANOSECONDS_PER_SECOND / LCD_REFRESH_RATE_FREQUENCY);
+    timer_mod(s->refresh_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + NANOSECONDS_PER_SECOND / 85);//LCD_REFRESH_RATE_FREQUENCY);
 }
 
 static void ipod_touch_lcd_realize(DeviceState *dev, Error **errp)
