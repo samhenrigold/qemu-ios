@@ -67,8 +67,8 @@ static uint32_t ipod_touch_nor_spi_transfer(SSIPeripheral *dev, uint32_t value)
             s->out_buf[2] = 0x02;
         }
         else {
-            printf("Unknown command %d!\n", value);
-            hw_error("Unknown command 0x%02x!", value);
+            printf("%s Unknown command 0x%02x!\n", __func__, value);
+            // hw_error("Unknown command 0x%02x!", value);
         }
 
         return 0x0;

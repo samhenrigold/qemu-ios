@@ -1,5 +1,7 @@
 #include "hw/arm/ipod_touch_fmss.h"
 
+uint64_t temp_storage[512];
+
 static uint8_t find_bit_index(uint8_t num) {
     int index = 0;
     while (num > 1) {
@@ -24,7 +26,7 @@ static void dump_registers(IPodTouchFMSSState *s) {
 static void read_nand_pages(IPodTouchFMSSState *s)
 {
     // boot args
-    const char *boot_args = "kextlog=0xfff debug=0x8 cpus=1 rd=disk0s1 serial=1 pmu-debug=0x1 io=0xffff8fff debug-usb=0xffffffff amfi_allow_any_signature=1"; // if not const then overwritten
+    const char *boot_args = "kextlog=0xfff debug=0x8 cpus=1 rd=disk0s1 serial=1 pmu-debug=0x1 io=0xffff8fff debug-usb=0xffffffff amfi_allow_any_signature=1 -v zalloc_debug"; // if not const then overwritten
     cpu_physical_memory_write(0x0ff2a584, boot_args, strlen(boot_args));
 
     // patch iBoot - we want to inject the bluetooth MAC address which is located as sub-node of uart1 and not uart3 in the device tree...
@@ -32,8 +34,8 @@ static void read_nand_pages(IPodTouchFMSSState *s)
     cpu_physical_memory_write(0x0ff2206c, chr, strlen(chr));
 
     int page_out_buf_ind = 0;
-    //dump_registers(s);
-    //printf("Start CMD...\n");
+    dump_registers(s);
+    printf("Start CMD...\n");
     for(int page_ind = 0; page_ind < s->reg_num_pages; page_ind++) {
         uint32_t page_nr = 0;
         uint32_t page_out_addr = 0;
@@ -74,7 +76,7 @@ static void read_nand_pages(IPodTouchFMSSState *s)
         for(int i = 0; i < 2; i++) {
             cpu_physical_memory_read(s->reg_pages_out_addr + (page_out_buf_ind * sizeof(uint32_t)), &page_out_addr, sizeof(uint32_t));
             cpu_physical_memory_write(page_out_addr, s->page_buffer + i * write_buf_size, write_buf_size);
-            //printf("Will read page %d @ cs %d into address 0x%08x and spare into address 0x%08x\n", page_nr, cs, page_out_addr, s->reg_page_spare_out_addr);
+            printf("Will read page %d @ cs %d into address 0x%08x and spare into address 0x%08x\n", page_nr, cs, page_out_addr, s->reg_page_spare_out_addr);
             page_out_buf_ind++;
 
         }
@@ -101,8 +103,10 @@ static uint64_t ipod_touch_fmss_read(void *opaque, hwaddr addr, unsigned size)
             return (0x1 << 30);
         case 0xD00:
             return 42;
+	case 0x00000C30:
+	    return 0x1;
         default:
-            // hw_error("%s: read invalid location 0x%08x.\n", __func__, addr);
+            printf("%s: read invalid location 0x%08x.\n", __func__, addr);
             break;
     }
     return 0;
@@ -146,7 +150,7 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
             break;
         case 0xD38:
             if(s->reg_csgenrc == 0xa01) { read_nand_pages(s); }
-            else { printf("NAND write not suported yet!\n"); }
+            else { printf("NAND write %ld addr %ld\n", val, addr); temp_storage[addr] = val;/*cpu_physical_memory_write(addr, val, sizeof(val)); */}
             
     }
 }

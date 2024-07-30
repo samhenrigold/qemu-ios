@@ -2,7 +2,8 @@
 
 static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned size)
 {
-    fprintf(stderr, "%s: read from location 0x%08x\n", __func__, addr);
+    if (addr != 0x00000)
+	fprintf(stderr, "%s: read from location 0x%08x\n", __func__, addr);
 
     IPodTouchMIPIDSIState *s = (IPodTouchMIPIDSIState *)opaque;
     switch(addr)
@@ -24,7 +25,7 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
         case REG_FIFOCTRL:
             return rDSIM_FIFOCTRL_EmptyHSfr;
         default:
-            // hw_error("%s: read invalid location 0x%08x.\n", __func__, addr);
+            printf("%s: read invalid location 0x%08x.\n", __func__, addr);
             break;
     }
     return 0;
@@ -40,6 +41,9 @@ static void ipod_touch_mipi_dsi_write(void *opaque, hwaddr addr, uint64_t val, u
         case REG_PKTHDR:
             s->pkthdr_reg = val;
             break;
+	case 0x00000008:
+	    if (val == 0)
+		printf("turning off screen\n"); 
         default:
             break;
     }

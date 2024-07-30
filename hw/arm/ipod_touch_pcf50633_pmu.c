@@ -27,10 +27,10 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
 
     switch(s->cmd) {
         case PMU_MBCS1:
-            res = 0; // battery power source
+            res = 1; // battery power source
             break;
         case PMU_ADCC1:
-            res = 0; // battery charge voltage
+            res = 3; // battery charge voltage
             break;
         case PMU_RTCSC:  // seconds
             res = int_to_bcd(tm.tm_sec);
