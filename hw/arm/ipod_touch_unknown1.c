@@ -2,7 +2,7 @@
 
 static uint64_t ipod_touch_unknown1_read(void *opaque, hwaddr addr, unsigned size)
 {
-    //fprintf(stderr, "%s: offset = 0x%08x\n", __func__, addr);
+    fprintf(stderr, "%s: offset = 0x%08x\n", __func__, addr);
 
     switch (addr) {
         case 0x140:
