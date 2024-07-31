@@ -45,7 +45,7 @@ static void ipod_touch_lcd_write(void *opaque, hwaddr addr, uint64_t val, unsign
             s->lcd_con = val;
             break;
         case 0xC:
-            s->unknown1 = val;
+            s->render = val;
             qemu_irq_lower(s->irq);
 	    // qemu_irq_raise(s->irq);
             break;
@@ -168,9 +168,9 @@ static void refresh_timer_tick(void *opaque)
 {
     IPodTouchLCDState *s = (IPodTouchLCDState *)opaque;
 
-    if (s->unknown1 == 0x1)
+    if (s->render == 0x1)
 	qemu_irq_raise(s->irq);
-    else if (s->unknown1 == 0xFF)
+    else if (s->render == 0xFF)
 	qemu_irq_lower(s->irq);
 
     timer_mod(s->refresh_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + NANOSECONDS_PER_SECOND / 85);//LCD_REFRESH_RATE_FREQUENCY);

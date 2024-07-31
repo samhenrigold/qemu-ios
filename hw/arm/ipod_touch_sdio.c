@@ -146,7 +146,7 @@ static void ipod_touch_sdio_write(void *opaque, hwaddr addr, uint64_t value, uns
 
 static uint64_t ipod_touch_sdio_read(void *opaque, hwaddr addr, unsigned size)
 {
-    //printf("%s: offset = 0x%08x\n", __func__, addr);
+    printf("%s: offset = 0x%08x\n", __func__, addr);
 
     IPodTouchSDIOState *s = (struct IPodTouchSDIOState *) opaque;
 
