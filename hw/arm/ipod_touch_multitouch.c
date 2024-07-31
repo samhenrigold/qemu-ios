@@ -199,7 +199,7 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
             s->out_buffer = (uint8_t *) s->next_frame;
         }
         else {
-            printf("%s Unknown command 0x%02x!", __func__, value);
+            printf("%s Unknown command 0x%02x!\n", __func__, value);
         }
     }
 
