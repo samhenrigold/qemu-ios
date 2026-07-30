@@ -127,6 +127,198 @@ static void synopsys_usb_update_out_ep(synopsys_usb_state *_state, uint8_t _ep)
 		;//printf("USB: OUT transfer queued on %d.\n", _ep);
 }
 
+/*
+ * Host transport callback. Recovered from the dfu_s5l8720 branch.
+ *
+ * Every hw_error() in the original has been removed: all of them were reachable
+ * from host-supplied data (a length off the network, a FIFO index the guest
+ * chose), so a malformed or hostile packet could abort QEMU. They are clamps
+ * and logged rejections now.
+ *
+ * This path is DMA-only, which is correct for iOS: AppleSynopsysOTG2 programs
+ * GAHBCFG with DMAEN set and never touches GRXSTSP.
+ */
+static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
+                                     tcp_usb_header_t *_hdr, char *_buffer)
+{
+	synopsys_usb_state *state = _arg;
+
+	/* Tell the host what address we answer to - this is how it learns that a
+	 * SET_ADDRESS actually took effect. */
+	_hdr->addr = (state->dcfg & DCFG_DEVICEADDRMSK) >> DCFG_DEVICEADDR_SHIFT;
+
+	if (_hdr->flags & tcp_usb_reset) {
+		state->gintsts |= GINTMSK_RESET;
+		synopsys_usb_update_irq(state);
+		return 0;
+	}
+
+	if (_hdr->flags & tcp_usb_enumdone) {
+		state->gintsts |= GINTMSK_ENUMDONE;
+	}
+
+	/* length arrives as an int16_t; negative means "no payload", never a size. */
+	size_t hdr_len = _hdr->length > 0 ? (size_t)_hdr->length : 0;
+	uint8_t ep = _hdr->ep & 0x7f;
+	int ret;
+
+	if (ep >= USB_NUM_ENDPOINTS) {
+		qemu_log_mask(LOG_GUEST_ERROR,
+		              "usb_synopsys: host addressed out-of-range EP %d\n", ep);
+		synopsys_usb_update_irq(state);
+		return USB_RET_STALL;
+	}
+
+	if (_hdr->ep & USB_DIR_IN) {
+		synopsys_usb_ep_state *eps = &state->in_eps[ep];
+
+		if (eps->control & USB_EPCON_STALL) {
+			eps->control &= ~USB_EPCON_STALL;
+			ret = USB_RET_STALL;
+		} else if (eps->control & USB_EPCON_ENABLE) {
+			eps->control &= ~USB_EPCON_ENABLE;
+
+			size_t sz = eps->tx_size & DEPTSIZ_XFERSIZ_MASK;
+			size_t amtDone = MIN(sz, hdr_len);
+
+			if (eps->fifo >= USB_NUM_FIFOS) {
+				qemu_log_mask(LOG_GUEST_ERROR,
+				              "usb_synopsys: IN transfer on nonexistent FIFO %d\n",
+				              eps->fifo);
+				synopsys_usb_update_irq(state);
+				return USB_RET_STALL;
+			}
+
+			size_t txfs = synopsys_usb_tx_fifo_start(state, eps->fifo);
+			size_t txfz = synopsys_usb_tx_fifo_size(state, eps->fifo);
+
+			/* Clamp into the FIFO backing store rather than aborting. */
+			if (txfs >= sizeof(state->fifos)) {
+				qemu_log_mask(LOG_GUEST_ERROR,
+				              "usb_synopsys: FIFO %d starts past the buffer\n",
+				              eps->fifo);
+				synopsys_usb_update_irq(state);
+				return USB_RET_STALL;
+			}
+			txfz = MIN(txfz, sizeof(state->fifos) - txfs);
+			amtDone = MIN(amtDone, txfz);
+
+			if (amtDone > 0) {
+				if (eps->dma_address) {
+					cpu_physical_memory_read(eps->dma_address,
+					                         &state->fifos[txfs], amtDone);
+					eps->dma_address += amtDone;
+				}
+				memcpy(_buffer, &state->fifos[txfs], amtDone);
+			}
+
+			eps->tx_size = (eps->tx_size & ~DEPTSIZ_XFERSIZ_MASK)
+			             | ((sz - amtDone) & DEPTSIZ_XFERSIZ_MASK);
+			eps->interrupt_status |= USB_EPINT_XferCompl;
+
+			printf("[USBTCP] IN  ep%d %zu bytes\n", ep, amtDone);
+			ret = amtDone;
+		} else {
+			ret = USB_RET_NAK;
+		}
+	} else {
+		synopsys_usb_ep_state *eps = &state->out_eps[ep];
+
+		if (eps->control & USB_EPCON_STALL) {
+			eps->control &= ~USB_EPCON_STALL;
+			ret = USB_RET_STALL;
+		} else if (eps->control & USB_EPCON_ENABLE) {
+			eps->control &= ~USB_EPCON_ENABLE;
+
+			size_t sz = eps->tx_size & DEPTSIZ_XFERSIZ_MASK;
+			size_t amtDone = MIN(sz, hdr_len);
+
+			/* grxfsiz is guest-programmed; clamp instead of trusting it. */
+			amtDone = MIN(amtDone, MIN((size_t)state->grxfsiz, sizeof(state->fifos)));
+
+			if (amtDone > 0 && _buffer) {
+				memcpy(state->fifos, _buffer, amtDone);
+
+				if (eps->dma_address) {
+					cpu_physical_memory_write(eps->dma_address,
+					                          state->fifos, amtDone);
+					eps->dma_address += amtDone;
+				}
+			}
+
+			if (_hdr->flags & tcp_usb_setup) {
+				eps->interrupt_status |= USB_EPINT_SetUp;
+			} else {
+				eps->interrupt_status |= USB_EPINT_XferCompl;
+			}
+
+			eps->tx_size = (eps->tx_size & ~DEPTSIZ_XFERSIZ_MASK)
+			             | ((sz - amtDone) & DEPTSIZ_XFERSIZ_MASK);
+
+			printf("[USBTCP] OUT ep%d %zu bytes%s\n", ep, amtDone,
+			       (_hdr->flags & tcp_usb_setup) ? " (SETUP)" : "");
+			ret = amtDone;
+		} else {
+			ret = USB_RET_NAK;
+		}
+	}
+
+	synopsys_usb_update_irq(state);
+	return ret;
+}
+
+/*
+ * Bring up the host link if it is configured and not already up. Safe to call
+ * repeatedly - a missing host bridge is not fatal, it just means no cable.
+ *
+ * Configured with IT_USB_TCP=host:port (default port 1235). QEMU is the client
+ * and dials out, matching the original protocol direction.
+ */
+static void synopsys_usb_tcp_start(synopsys_usb_state *_state)
+{
+	if (_state->tcp_connected && !tcp_usb_closed(&_state->tcp_state)) {
+		return;
+	}
+
+	if (!_state->server_host) {
+		const char *spec = getenv("IT_USB_TCP");
+		if (!spec || !*spec) {
+			return;
+		}
+
+		char *dup = g_strdup(spec);
+		char *colon = strrchr(dup, ':');
+		if (colon) {
+			*colon = '\0';
+			_state->server_port = atoi(colon + 1);
+		}
+		if (!_state->server_port) {
+			_state->server_port = 1235;
+		}
+		_state->server_host = g_strdup(*dup ? dup : "127.0.0.1");
+		g_free(dup);
+	}
+
+	if (_state->tcp_connected) {
+		tcp_usb_cleanup(&_state->tcp_state);
+		_state->tcp_connected = false;
+	}
+
+	tcp_usb_init(&_state->tcp_state, synopsys_usb_tcp_callback, NULL, _state);
+
+	int ret = tcp_usb_connect(&_state->tcp_state, _state->server_host,
+	                          _state->server_port);
+	if (ret < 0) {
+		printf("[USBTCP] no host bridge at %s:%u (%d) - will retry on core reset\n",
+		       _state->server_host, _state->server_port, ret);
+		return;
+	}
+
+	_state->tcp_connected = true;
+	printf("[USBTCP] connected to host bridge at %s:%u\n",
+	       _state->server_host, _state->server_port);
+}
+
 static uint32_t synopsys_usb_in_ep_read(synopsys_usb_state *_state, uint8_t _ep, hwaddr _addr)
 {
 	if(_ep >= USB_NUM_ENDPOINTS)
@@ -406,21 +598,14 @@ static void synopsys_usb_write(void *opaque, hwaddr _addr, uint64_t _val, unsign
 		{
 			state->grstctl = GRSTCTL_CORESOFTRESET;
 
-			// Do reset stuff
-			// if(state->server_host)
-			// {
-			// 	tcp_usb_cleanup(&state->tcp_state);
-			// 	tcp_usb_init(&state->tcp_state, synopsys_usb_tcp_callback, NULL, state);
-
-			// 	printf("Connecting to USB server at %s:%d...\n",
-			// 			state->server_host, state->server_port);
-
-			// 	int ret = tcp_usb_connect(&state->tcp_state, state->server_host, state->server_port);
-			// 	if(ret < 0)
-			// 		hw_error("Failed to connect to USB server (%d).\n", ret);
-
-			// 	printf("Connected to USB server.\n");
-			// }
+			/*
+			 * The original connected to the host here and hw_error()'d if that
+			 * failed, so a missing host bridge killed the VM mid-boot. The
+			 * connection is established at realize now (see
+			 * synopsys_usb_tcp_start); a core soft reset just retries if we are
+			 * not connected yet.
+			 */
+			synopsys_usb_tcp_start(state);
 
 			state->grstctl &= ~GRSTCTL_CORESOFTRESET;
 			state->grstctl |= GRSTCTL_AHBIDLE;
@@ -638,10 +823,18 @@ DeviceState *ipod_touch_init_usb_otg(qemu_irq _irq, uint32_t _hwcfg[4])
     return dev;
 }
 
+static void s5l8900_usb_otg_realize(DeviceState *dev, Error **errp)
+{
+    /* Dial the host bridge once, if one is configured. A core soft reset
+     * retries, so the bridge may also be started after the guest is up. */
+    synopsys_usb_tcp_start(S5L8900USBOTG(dev));
+}
+
 static void s5l8900_usb_otg_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->reset = s5l8900_usb_otg_reset;
+    dc->realize = s5l8900_usb_otg_realize;
 }
 
 static const TypeInfo s5l8900_usb_otg_info = {

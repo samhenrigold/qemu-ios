@@ -1,6 +1,8 @@
 #ifndef HW_ARM_IPOD_TOUCH_USB_OTG_H
 #define HW_ARM_IPOD_TOUCH_USB_OTG_H
 
+#include "hw/arm/ipod_touch_tcp_usb.h"
+
 #include "hw/irq.h"
 #include "hw/usb.h"
 
@@ -223,7 +225,8 @@ typedef struct synopsys_usb_state
 
 	char *server_host;
 	uint32_t server_port;
-	//tcp_usb_state_t tcp_state;
+	tcp_usb_state_t tcp_state;
+	bool tcp_connected;
 
 	uint32_t pcgcctl;
 
