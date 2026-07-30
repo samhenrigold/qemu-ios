@@ -216,10 +216,11 @@ static void ipod_touch_key_event(void *opaque, int keycode)
 
         if(keycode == KEY_P_DOWN && gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_POWER)) {
             gpio_set_on(s->gpio_state->gpio_state, GPIO_BUTTON_POWER);
-            
+            do_irq = true;
         }
-        else if(keycode == KEY_P_UP) {
+        else if(keycode == KEY_P_UP && !gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_POWER)) {
             gpio_set_off(s->gpio_state->gpio_state, GPIO_BUTTON_POWER);
+            do_irq = true;
         }
     }
     else if(keycode == KEY_H_DOWN || keycode == KEY_H_UP) {
@@ -229,9 +230,11 @@ static void ipod_touch_key_event(void *opaque, int keycode)
 
         if(keycode == KEY_H_DOWN && gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_HOME)) {
             gpio_set_on(s->gpio_state->gpio_state, GPIO_BUTTON_HOME);
+            do_irq = true;
         }
-        else if(keycode == KEY_H_UP) {
+        else if(keycode == KEY_H_UP && !gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_HOME)) {
             gpio_set_off(s->gpio_state->gpio_state, GPIO_BUTTON_HOME);
+            do_irq = true;
         }
     }
     else if(keycode == KEY_MIN_DOWN || keycode == KEY_MIN_UP) {
@@ -241,27 +244,37 @@ static void ipod_touch_key_event(void *opaque, int keycode)
 
         if(keycode == KEY_MIN_DOWN && gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLDOWN)) {
             gpio_set_on(s->gpio_state->gpio_state, GPIO_BUTTON_VOLDOWN);
+            do_irq = true;
         }
-        else if(keycode == KEY_MIN_UP) {
+        else if(keycode == KEY_MIN_UP && !gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLDOWN)) {
             gpio_set_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLDOWN);
+            do_irq = true;
         }
     }
     else if(keycode == KEY_PLUS_DOWN || keycode == KEY_PLUS_UP) {
-        // volume down button
+        // volume up button
         gpio_group = GPIO_BUTTON_VOLUP_IRQ / NUM_GPIO_PINS;
         gpio_selector = GPIO_BUTTON_VOLUP_IRQ % NUM_GPIO_PINS;
 
         if(keycode == KEY_PLUS_DOWN && gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLUP)) {
             gpio_set_on(s->gpio_state->gpio_state, GPIO_BUTTON_VOLUP);
+            do_irq = true;
         }
-        else if(keycode == KEY_PLUS_UP) {
+        else if(keycode == KEY_PLUS_UP && !gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLUP)) {
             gpio_set_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLUP);
+            do_irq = true;
         }
     }
     else return;
-    
-    s->sysic->gpio_int_status[gpio_group] |= (1 << gpio_selector);
-    qemu_irq_raise(s->sysic->gpio_irqs[gpio_group]);
+
+    // Only raise a GPIO interrupt on a genuine press/release edge. Without this
+    // guard, SDL key auto-repeat (which resends KEY_*_DOWN while a key is held)
+    // would fire a fresh interrupt each time even though the button state did
+    // not change, spamming the interrupt controller with phantom presses.
+    if(do_irq) {
+        s->sysic->gpio_int_status[gpio_group] |= (1 << gpio_selector);
+        qemu_irq_raise(s->sysic->gpio_irqs[gpio_group]);
+    }
 }
 
 static void ipod_touch_machine_init(MachineState *machine)
