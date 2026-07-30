@@ -30,6 +30,8 @@ typedef struct Pcf50633State {
 	uint32_t cmd;
 	uint32_t ready;
 	uint32_t curreg;
+	bool addressing;      // next written byte selects the register address
+	uint8_t regs[256];    // backing register file so writes read back consistently
 } Pcf50633State;
 
 #endif
