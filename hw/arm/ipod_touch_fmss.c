@@ -52,8 +52,8 @@ static void read_nand_pages(IPodTouchFMSSState *s)
         }
 
         // prepare the page
-        char filename[200];
-        sprintf(filename, "%s/cs%d/%d.page", s->nand_path, cs, page_nr);
+        char filename[1088];
+        snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_path, cs, page_nr);
         struct stat st = {0};
         if (stat(filename, &st) == -1) {
             // page storage does not exist - initialize an empty buffer
@@ -179,8 +179,16 @@ static void ipod_touch_fmss_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
 
-    s->page_buffer = (uint8_t *)malloc(NAND_BYTES_PER_PAGE);
-    s->page_spare_buffer = (uint8_t *)malloc(NAND_BYTES_PER_SPARE);
+    s->page_buffer = (uint8_t *)g_malloc(NAND_BYTES_PER_PAGE);
+    s->page_spare_buffer = (uint8_t *)g_malloc(NAND_BYTES_PER_SPARE);
+}
+
+static void ipod_touch_fmss_finalize(Object *obj)
+{
+    IPodTouchFMSSState *s = IPOD_TOUCH_FMSS(obj);
+
+    g_free(s->page_buffer);
+    g_free(s->page_spare_buffer);
 }
 
 static void ipod_touch_fmss_class_init(ObjectClass *klass, void *data)
@@ -195,6 +203,7 @@ static const TypeInfo ipod_touch_fmss_info = {
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(IPodTouchFMSSState),
     .instance_init = ipod_touch_fmss_init,
+    .instance_finalize = ipod_touch_fmss_finalize,
     .class_init    = ipod_touch_fmss_class_init,
 };
 
