@@ -8,7 +8,8 @@ static int pcf50633_event(I2CSlave *i2c, enum i2c_event event)
 
     if (event == I2C_START_SEND)
     {
-        // printf("%s start send %d\n", __func__, s->cmd);
+        // A write transaction always begins with the register-address byte.
+        s->addressing = true;
     }
     else if (event == I2C_FINISH)
     {
@@ -32,14 +33,15 @@ static int int_to_bcd(int value) {
 static uint8_t pcf50633_recv(I2CSlave *i2c)
 {
     Pcf50633State *s = PCF50633(i2c);
-    printf("Reading PMU register %d\n", s->cmd);
+    uint8_t reg = s->curreg & 0xff;
+    printf("Reading PMU register %d\n", reg);
 
     time_t t = time(NULL);
     struct tm tm = *localtime(&t);
 
     int res = 0;
 
-    switch(s->cmd) {
+    switch(reg) {
         case PMU_MBCS1:
             res = 1; // battery power source
             break;
@@ -74,32 +76,45 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
             res = 0; // unknown register
             break;
         default:
-            res = 0;
+            // Return whatever the guest last wrote to this register. A stateless
+            // stub that always returned 0 here caused iOS's sleep sequence to
+            // never observe the power-state transition it had just requested,
+            // making it fall through into a reset instead of suspending.
+            res = s->regs[reg];
     }
 
-    s->cmd += 1;
+    // Auto-increment for sequential multi-byte reads.
+    s->curreg = (s->curreg + 1) & 0xff;
     return res;
 }
 
 static int pcf50633_send(I2CSlave *i2c, uint8_t data)
 {
     Pcf50633State *s = PCF50633(i2c);
-    if (s->ready)
+
+    if (s->addressing)
     {
+        // First byte of a write transaction selects the register.
         s->curreg = data;
-	s->ready = 0;
-    }
-    else
-    {
+        s->addressing = false;
         s->cmd = data;
+        return 0;
     }
 
-    printf("Writing PMU register cmd %d reg %d\n", s->cmd, s->curreg);
-    switch(s->curreg) {
+    // Subsequent bytes are data written to the selected register, which
+    // auto-increments for multi-byte writes.
+    uint8_t reg = s->curreg & 0xff;
+    s->regs[reg] = data;
+    s->cmd = data;
+    printf("Writing PMU register cmd %d reg %d\n", data, reg);
+
+    switch(reg) {
         case PMU_DSBL1:
-            lcd_changebrightness(s->cmd);
+            lcd_changebrightness(data);
 	    break;
     }
+
+    s->curreg = (s->curreg + 1) & 0xff;
     return 0;
 }
 
