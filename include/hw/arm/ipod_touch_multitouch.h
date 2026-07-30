@@ -147,6 +147,7 @@ typedef struct IPodTouchMultitouchState {
     QEMUTimer *touch_end_timer;
     IPodTouchSYSICState *sysic;
     IPodTouchGPIOState *gpio_state;
+    void *pmu;   // Pcf50633State* — D1759 PMU, raises the wake-button interrupt
     float touch_x;
     float touch_y;
     float prev_touch_x;

@@ -11,8 +11,13 @@
 #include "hw/qdev-clock.h"
 #include "hw/arm/exynos4210.h"
 #include "hw/arm/ipod_touch_2g.h"
+#include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "target/arm/cpregs.h"
 #include "qemu/error-report.h"
+
+// The D1759 PMU raises this GPIO IRQ when a wake button (hold/menu) is pressed.
+// It lands in the same GPIO interrupt group the button code already drives.
+#define PMU_WAKE_IRQ 0x61
 
 #define VMSTATE_IT2G_CPREG(name) \
         VMSTATE_UINT64(IT2G_CPREG_VAR_NAME(name), IPodTouchMachineState)
@@ -289,6 +294,32 @@ static void ipod_touch_key_event(void *opaque, int keycode)
         }
         s->sysic->gpio_int_status[gpio_group] |= (1 << gpio_selector);
         qemu_irq_raise(s->sysic->gpio_irqs[gpio_group]);
+
+        // The hold (power) and menu (home) buttons are also wake sources routed
+        // through the PMU, which is a nested interrupt controller on the SoC.
+        // The awake-state path above goes through the GPIO controller; the wake
+        // path goes through the PMU. On a press the PMU latches the button's
+        // EVENT_C interrupt bit (reg 0x03) and raises its own interrupt (GPIO
+        // IRQ 0x61); iOS reads the EVENT block, decodes the bit, and reads the
+        // live STAT reg 0x19 to confirm the button and re-enable the display.
+        // hold and menu occupy the same bit positions in EVENT_C and STAT.
+        if (button_gpio == GPIO_BUTTON_POWER || button_gpio == GPIO_BUTTON_HOME) {
+            uint8_t bit = (button_gpio == GPIO_BUTTON_POWER)
+                              ? PMU_STAT_HOLD : PMU_STAT_MENU;
+            bool pressed = gpio_is_on(s->gpio_state->gpio_state, button_gpio);
+
+            // reg 0x19 tracks the live button level (set while held, cleared on
+            // release); the EVENT_C interrupt is edge-latched on the press only.
+            pcf50633_set_stat(PCF50633(s->pmu), bit, pressed);
+            if (pressed) {
+                pcf50633_latch_wake_event(PCF50633(s->pmu), bit);
+
+                int pmu_group = PMU_WAKE_IRQ / NUM_GPIO_PINS;
+                int pmu_selector = PMU_WAKE_IRQ % NUM_GPIO_PINS;
+                s->sysic->gpio_int_status[pmu_group] |= (1 << pmu_selector);
+                qemu_irq_raise(s->sysic->gpio_irqs[pmu_group]);
+            }
+        }
     }
 }
 
@@ -483,6 +514,7 @@ static void ipod_touch_machine_init(MachineState *machine)
 
     // init the PMU
     I2CSlave * pmu = i2c_slave_create_simple(i2c_state->bus, "pcf50633", 0x73);
+    spi4_state->mt->pmu = PCF50633(pmu);
 
     // init the accelerometer
     I2CSlave *accelerometer = i2c_slave_create_simple(i2c_state->bus, "lis302dl", 0x1D);
