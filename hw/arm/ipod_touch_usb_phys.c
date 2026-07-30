@@ -17,9 +17,7 @@ static uint64_t ipod_touch_usb_phys_read(void *opaque, hwaddr addr, unsigned siz
     case REG_OPHYTUNE:
         return s->usb_ophytune;
     default:
-        //return 0x0;
-        printf("%s: read invalid location 0x%08x\n", __func__, addr);
-	return 0x0;
+        return s->regs[(addr & 0xfff) >> 2];
     }
 }
 
@@ -46,7 +44,7 @@ static void ipod_touch_usb_phys_write(void *opaque, hwaddr addr, uint64_t val, u
         return;
 
     default:
-        printf("%s: write invalid location 0x%08x.\n", __func__, addr);
+        s->regs[(addr & 0xfff) >> 2] = val;
         return;
     }
 }
