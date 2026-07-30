@@ -28,6 +28,7 @@
 #include "hw/arm/ipod_touch_scaler_csc.h"
 #include "hw/arm/ipod_touch_sdio.h"
 #include "hw/arm/ipod_touch_tvout.h"
+#include "hw/arm/guest-services/general.h"
 
 #define TYPE_IPOD_TOUCH "iPod-Touch"
 
@@ -76,7 +77,7 @@
 #define KEY_PLUS_DOWN KEY_PLUS
 #define KEY_PLUS_UP   (KEY_PLUS_DOWN | KEY_UP)
 
-const int S5L8900_GPIO_IRQS[5] = { S5L8900_GPIO_G0_IRQ, S5L8900_GPIO_G1_IRQ, S5L8900_GPIO_G2_IRQ, S5L8900_GPIO_G3_IRQ, S5L8900_GPIO_G4_IRQ };
+extern const int S5L8900_GPIO_IRQS[5];
 
 #define IT2G_CPREG_VAR_NAME(name) cpreg_##name
 #define IT2G_CPREG_VAR_DEF(name) uint64_t IT2G_CPREG_VAR_NAME(name)
@@ -174,6 +175,7 @@ typedef struct {
 	char nand_path[1024];
 	IT2G_CPREG_VAR_DEF(REG0);
 	IT2G_CPREG_VAR_DEF(REG1);
+	IT2G_CPREG_VAR_DEF(QEMU_CALL);
 } IPodTouchMachineState;
 
 #endif
