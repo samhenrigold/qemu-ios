@@ -39,10 +39,58 @@ static void ipod_touch_mbx1_write(void *opaque, hwaddr addr, uint64_t val, unsig
     }
 }
 
+/*
+ * Let the USB device stack go on bus even though the PTP interface function
+ * never gets a driver.
+ *
+ * IOUSBDeviceController::handleUSBCableConnect refuses to bring the controller
+ * up until every interface function declared by SetDeviceDescription has
+ * registered. On this image four of the five register (USBAudioControl,
+ * USBAudioStreaming, IapOverUsbHid, AppleUSBMux); PTP is served from userland
+ * and never does, so the set never empties, "all functions registered" never
+ * prints, and gated_registerFunction never re-drives handleUSBCableConnect.
+ * The controller is therefore never touched at all.
+ *
+ * gated_registerFunction removes the caller from the set, then:
+ *     0xc05d45cc  subs sl, r0, #0     ; r0 = set->getCount()
+ *     0xc05d45d0  bne  0xc05d46cc     ; still waiting -> return
+ * Rewriting the compare as "- #1" makes it proceed when exactly one function
+ * (PTP) is left, on the last real registration. sl stays 0 on that path, which
+ * matters: it is then stored back to +0xFC as the "set is empty" marker and
+ * reused as the configuration loop index.
+ *
+ * Firmware-build-specific, exactly like the addresses below. Verified against
+ * iPhone OS 2.1.1 build 5F138 (xnu-1228.7.27~12, RELEASE_ARM_S5L8720X).
+ */
+static void patch_usb_function_gate(void)
+{
+    const char *e = getenv("IT_USB_GATE2");
+    if (!e || !*e || *e == '0') {
+        return;
+    }
+
+    /* Kernel virtual 0xC0000000 maps to physical 0x08000000. */
+    const uint32_t vaddr = 0xc05d45cc;
+    const uint32_t paddr = vaddr - 0xb8000000;
+    uint32_t cur = 0;
+
+    cpu_physical_memory_read(paddr, (uint8_t *)&cur, sizeof(cur));
+    if (cur == 0xe250a000) {           /* subs sl, r0, #0 */
+        uint32_t patched = 0xe250a001; /* subs sl, r0, #1 */
+        cpu_physical_memory_write(paddr, (uint8_t *)&patched, sizeof(patched));
+        printf("[USBGATE] patched gated_registerFunction count check at 0x%08x\n", vaddr);
+    } else if (cur != 0xe250a001) {
+        printf("[USBGATE] NOT patching: unexpected instruction 0x%08x at 0x%08x\n", cur, vaddr);
+    }
+}
+
 static void patch_kernel(bool alreadypatched)
 {
     if (alreadypatched) return;
     	alreadypatched = 1;
+
+    patch_usb_function_gate();
+
     // patch the loading of the AppleBCM4325 driver
     char *bcm4325_vars = "test";
 

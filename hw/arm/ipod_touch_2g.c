@@ -451,6 +451,13 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = ipod_touch_init_usb_otg(s5l8900_get_irq(nms, S5L8720_USB_OTG_IRQ), s5l8720_usb_hwcfg);
     synopsys_usb_state *usb_otg = S5L8900USBOTG(dev);
     nms->usb_otg = usb_otg;
+    /*
+     * Unlike every other sysbus device here, this one was never realized, so
+     * its reset handler never ran and none of the register defaults applied -
+     * FIFO sizes and GRSTCTL all read back as zero. AHBIDLE reading clear is
+     * what made AppleSynopsysOTG2::_coreInit panic with "AHB not idle".
+     */
+    sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
     memory_region_add_subregion(sysmem, USBOTG_MEM_BASE, &nms->usb_otg->iomem);
 
     // init two pl080 DMAC0 devices
