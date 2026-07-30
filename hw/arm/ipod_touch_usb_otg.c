@@ -19,8 +19,28 @@
 #include "qemu/osdep.h"
 #include "hw/platform-bus.h"
 #include "qapi/error.h"
+#include "qemu/log.h"
 #include "hw/hw.h"
 #include "hw/arm/ipod_touch_usb_otg.h"
+
+/*
+ * Phase 0 diagnostics. This model was written against openiBoot, so the iOS
+ * AppleSynopsysOTGDevice driver is expected to touch registers it does not
+ * implement. Every such access used to hw_error() and abort QEMU, which made
+ * it impossible to observe what the driver actually wants; they now log via
+ * LOG_UNIMP (visible with -d unimp) and return 0.
+ *
+ * Set IT_USB_TRACE=1 in the environment for a full read/write trace.
+ */
+static bool synopsys_usb_trace_enabled(void)
+{
+	static int cached = -1;
+	if (cached < 0) {
+		const char *e = getenv("IT_USB_TRACE");
+		cached = (e && *e && *e != '0') ? 1 : 0;
+	}
+	return cached == 1;
+}
 
 static inline size_t synopsys_usb_tx_fifo_start(synopsys_usb_state *_state, uint32_t _fifo)
 {
@@ -111,7 +131,7 @@ static uint32_t synopsys_usb_in_ep_read(synopsys_usb_state *_state, uint8_t _ep,
 {
 	if(_ep >= USB_NUM_ENDPOINTS)
 	{
-		hw_error("usb_synopsys: Tried to read from disabled EP %d.\n", _ep);
+		qemu_log_mask(LOG_UNIMP, "usb_synopsys: read from out-of-range IN EP %d\n", _ep);
 		return 0;
 	}
 
@@ -133,7 +153,8 @@ static uint32_t synopsys_usb_in_ep_read(synopsys_usb_state *_state, uint8_t _ep,
         return _state->in_eps[_ep].dma_buffer;
 
     default:
-        hw_error("usb_synopsys: bad ep read offset 0x" HWADDR_FMT_plx "\n", _addr);
+        qemu_log_mask(LOG_UNIMP, "usb_synopsys: unimplemented IN EP%d read offset 0x"
+                      HWADDR_FMT_plx "\n", _ep, _addr);
 		break;
     }
 
@@ -144,7 +165,7 @@ static uint32_t synopsys_usb_out_ep_read(synopsys_usb_state *_state, int _ep, hw
 {
 	if(_ep >= USB_NUM_ENDPOINTS)
 	{
-		hw_error("usb_synopsys: Tried to read from disabled EP %d.\n", _ep);
+		qemu_log_mask(LOG_UNIMP, "usb_synopsys: read from out-of-range OUT EP %d\n", _ep);
 		return 0;
 	}
 
@@ -166,7 +187,8 @@ static uint32_t synopsys_usb_out_ep_read(synopsys_usb_state *_state, int _ep, hw
         return _state->out_eps[_ep].dma_buffer;
 
     default:
-        hw_error("usb_synopsys: bad ep read offset 0x" HWADDR_FMT_plx "\n", _addr);
+        qemu_log_mask(LOG_UNIMP, "usb_synopsys: unimplemented OUT EP%d read offset 0x"
+                      HWADDR_FMT_plx "\n", _ep, _addr);
 		break;
     }
 
@@ -176,8 +198,9 @@ static uint32_t synopsys_usb_out_ep_read(synopsys_usb_state *_state, int _ep, hw
 static uint64_t synopsys_usb_read(void *opaque, hwaddr _addr, unsigned size)
 {
 	synopsys_usb_state *state = (synopsys_usb_state *)opaque;
-	
-	//printf("USB: Read 0x%08x.\n", _addr);
+
+	if (synopsys_usb_trace_enabled())
+		fprintf(stderr, "[USBTRACE] R 0x%04x (size %u)\n", (unsigned)_addr, size);
 
 	switch(_addr)
 	{
@@ -269,7 +292,8 @@ static uint64_t synopsys_usb_read(void *opaque, hwaddr _addr, unsigned size)
 		return *((uint32_t*)(&state->fifos[_addr]));
 
 	default:
-		hw_error("USB: Unhandled read address 0x%08x!\n", _addr);
+		qemu_log_mask(LOG_UNIMP, "usb_synopsys: unimplemented read  0x%04x (size %u)\n",
+		              (unsigned)_addr, size);
 	}
 
 	return 0;
@@ -279,7 +303,7 @@ static void synopsys_usb_in_ep_write(synopsys_usb_state *_state, int _ep, hwaddr
 {
 	if(_ep >= USB_NUM_ENDPOINTS)
 	{
-		hw_error("usb_synopsys: Wrote to disabled EP %d.\n", _ep);
+		qemu_log_mask(LOG_UNIMP, "usb_synopsys: write to out-of-range IN EP %d\n", _ep);
 		return;
 	}
 
@@ -308,7 +332,8 @@ static void synopsys_usb_in_ep_write(synopsys_usb_state *_state, int _ep, hwaddr
 		return;
 
     default:
-        hw_error("usb_synopsys: bad ep write offset 0x" HWADDR_FMT_plx "\n", _addr);
+        qemu_log_mask(LOG_UNIMP, "usb_synopsys: unimplemented IN EP%d write offset 0x"
+                      HWADDR_FMT_plx " val 0x%08x\n", _ep, _addr, _val);
 		break;
     }
 }
@@ -317,7 +342,7 @@ static void synopsys_usb_out_ep_write(synopsys_usb_state *_state, int _ep, hwadd
 {
 	if(_ep >= USB_NUM_ENDPOINTS)
 	{
-		hw_error("usb_synopsys: Wrote to disabled EP %d.\n", _ep);
+		qemu_log_mask(LOG_UNIMP, "usb_synopsys: write to out-of-range OUT EP %d\n", _ep);
 		return;
 	}
 
@@ -346,7 +371,8 @@ static void synopsys_usb_out_ep_write(synopsys_usb_state *_state, int _ep, hwadd
 		return;
 
     default:
-        hw_error("usb_synopsys: bad ep write offset 0x" HWADDR_FMT_plx "\n", _addr);
+        qemu_log_mask(LOG_UNIMP, "usb_synopsys: unimplemented OUT EP%d write offset 0x"
+                      HWADDR_FMT_plx " val 0x%08x\n", _ep, _addr, _val);
 		break;
     }
 }
@@ -354,8 +380,10 @@ static void synopsys_usb_out_ep_write(synopsys_usb_state *_state, int _ep, hwadd
 static void synopsys_usb_write(void *opaque, hwaddr _addr, uint64_t _val, unsigned size)
 {
 	synopsys_usb_state *state = (synopsys_usb_state *)opaque;
-	
-	//printf("USB: Write 0x%08x to 0x%08x.\n", _val, _addr);
+
+	if (synopsys_usb_trace_enabled())
+		fprintf(stderr, "[USBTRACE] W 0x%04x = 0x%08x (size %u)\n",
+		        (unsigned)_addr, (unsigned)_val, size);
 
 	switch(_addr)
 	{
@@ -496,7 +524,8 @@ static void synopsys_usb_write(void *opaque, hwaddr _addr, uint64_t _val, unsign
 		return;
 
 	default:
-		hw_error("USB: Unhandled write address 0x%08x!\n", _addr);
+		qemu_log_mask(LOG_UNIMP, "usb_synopsys: unimplemented write 0x%04x = 0x%08x (size %u)\n",
+		              (unsigned)_addr, (unsigned)_val, size);
 	}
 }
 
@@ -572,7 +601,14 @@ static void s5l8900_usb_otg_init1(Object *obj)
     synopsys_usb_state *s = S5L8900USBOTG(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
-    memory_region_init_io(&s->iomem, OBJECT(s), &usb_otg_ops, s, "usb_otg", 0x1000);
+    /*
+     * The region must cover the FIFO window at USB_FIFO_START (0x1000) as well
+     * as the register block; it was previously sized 0x1000, so every FIFO
+     * access fell outside the device entirely and the FIFO cases in
+     * synopsys_usb_read/write were unreachable. That also hides slave-mode
+     * (non-DMA) traffic, which Phase 0 needs to see.
+     */
+    memory_region_init_io(&s->iomem, OBJECT(s), &usb_otg_ops, s, "usb_otg", USB_FIFO_END);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
 }
