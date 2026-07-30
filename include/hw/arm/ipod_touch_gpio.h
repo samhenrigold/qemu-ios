@@ -21,7 +21,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchGPIOState, IPOD_TOUCH_GPIO)
 #define GPIO_BUTTON_VOLUP_IRQ   0x78
 #define GPIO_BUTTON_VOLDOWN_IRQ 0x62
 
-#define NUM_GPIO_PADS 0xC
+// The GPIO pad index is (gpio >> 8) & 0xFF, and reads cover addresses up to
+// 0x184 which maps to pad 0xC. The buttons HOLD/HOME/VOLDOWN all live on pad
+// 0xC, so the backing array must have at least 0xD entries; the previous value
+// of 0xC left those three buttons and the 0x184 read one slot out of bounds.
+#define NUM_GPIO_PADS 0x10
 #define NUM_GPIO_PINS 0x20
 
 #define GPIO2PIN(gpio)       ((gpio) & 7)
