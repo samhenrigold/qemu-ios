@@ -21,7 +21,7 @@ Make sure you have the required libraries installed to compile QEMU:
 
 ```
 # On MacOS
-brew install glib ninja pixman pkg-config sdl2
+brew install glib ninja meson pixman pkg-config sdl2 openssl@3
 
 # On Linux (Ubuntu)
 sudo apt install make ninja-build pkg-config libssl-dev libsdl2-dev libpixman-1-dev libpixman-1-0 libglib2.0-dev
@@ -43,7 +43,7 @@ cd build
 ../configure --target-list=arm-softmmu --extra-cflags=-I/usr/local/opt/openssl@3/include --extra-ldflags='-L/usr/local/opt/openssl@3/lib -lcrypto'
 
 # On Apple Silicon Macs
-../configure --enable-sdl --target-list=arm-softmmu --disable-capstone --disable-pie --disable-slirp --extra-cflags=-I/opt/homebrew/opt/openssl@3/include --extra-ldflags='-L/opt/homebrew/opt/openssl@3/lib -lcrypto'
+../configure --enable-sdl --target-list=arm-softmmu --disable-capstone --disable-pie --disable-slirp --disable-fuse --extra-cflags=-I/opt/homebrew/opt/openssl@3/include --extra-ldflags='-L/opt/homebrew/opt/openssl@3/lib -lcrypto'
 
 # On Linux
 ../configure --enable-sdl --disable-cocoa --target-list=arm-softmmu --disable-capstone --disable-slirp --extra-cflags=-I/usr/include/openssl --extra-ldflags='-lcrypto' --disable-werror --enable-pie
@@ -60,6 +60,19 @@ Remember to update the include and library paths to the OpenSSL library in case 
 You can speed up the `make` command by passing the number of available CPU cores with the `-j` flag, e.g., use `make -j6` to compile using six CPU cores.
 The compilation process should produce the `qemu-system-arm` binary in the `build/arm-softmmu` directory.
 
+#### Troubleshooting the macOS build
+
+On recent macOS (Sequoia/Tahoe) with an up-to-date Homebrew, a few things can trip up the build:
+
+- **`configure` fails with `Ouch! ... found no usable distlib`.** QEMU builds a Python venv and needs `distlib` (or pip's vendored copy). Homebrew's newest Python may not ship it. Install a known-good Python and give it `distlib`:
+  ```
+  brew install python@3.12
+  /opt/homebrew/opt/python@3.12/libexec/bin/python3 -m pip install --user --break-system-packages distlib
+  ```
+  Then re-run `../configure` with `--python=/opt/homebrew/opt/python@3.12/libexec/bin/python3` added to the flags above.
+- **Build fails compiling `block/export/fuse.c`** (`incompatible function pointer types ... fuse_setattr`). Homebrew's `fuse-t`/`fuse3` headers don't match the current macOS SDK. FUSE isn't needed here — the Apple Silicon `configure` line above already passes `--disable-fuse`. If you configured without it, add it and reconfigure.
+- Make sure `ninja` and `meson` are installed (they're in the `brew install` line above); older instructions omitted `meson`.
+
 ### Downloading the Required Files
 
 We need a few files to successfully boot the iPod Touch emulator to the home screen, which I published [here](https://github.com/devos50/qemu-ios/releases/tag/n72ap_v1) for convenience. You can download all these files from here, and they include the following:
@@ -74,7 +87,20 @@ Download all the required files and save them to a convenient location. You shou
 We are now ready to run the emulator from the build directory with the following command:
 
 ```
-./arm-softmmu/qemu-system-arm -M iPod-Touch,bootrom=<path to bootrom>,nand=<path to NAND directory>,nor=<path to NOR directory> -serial mon:stdio -cpu max -m 2G -d unimp
+./arm-softmmu/qemu-system-arm -M iPod-Touch,bootrom=<path to bootrom>,nand=<path to NAND directory>,nor=<path to NOR directory> -serial mon:stdio -cpu max -m 2G -d unimp -display sdl
 ```
+
+The `nand` path is the directory that contains the `cs0`–`cs3` subdirectories (i.e. the `nand` folder produced by unzipping `nand_n72ap.zip`), and `nor` is the `nor_n72ap.bin` file. `-display sdl` opens the device screen; `-d unimp` logs accesses to unimplemented device registers and is safe to drop once things are working.
+
+Interacting with the device (SDL window focused):
+
+| Key | Button      |
+| --- | ----------- |
+| `H` | Home        |
+| `P` | Power       |
+| `=` | Volume up   |
+| `-` | Volume down |
+
+(These mappings are defined in `ipod_touch_key_event` in `hw/arm/ipod_touch_2g.c`.) Click and drag with the mouse to emulate touch input.
 
 If there are any issues running the above commands, please let me know by [opening an issue](https://github.com/devos50/qemu-ios/issues/new).
