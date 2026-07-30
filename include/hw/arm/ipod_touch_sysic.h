@@ -25,6 +25,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSYSICState, IPOD_TOUCH_SYSIC)
 #define GPIO_INTTYPE  0xE0
 
 #define GPIO_NUMINTGROUPS 7
+#define GPIO_NUMINTGROUPS_2 5
 
 typedef struct IPodTouchSYSICState {
     SysBusDevice parent_obj;
