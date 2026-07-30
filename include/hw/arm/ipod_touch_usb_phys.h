@@ -23,6 +23,13 @@ typedef struct IPodTouchUSBPhysState {
     uint32_t usb_orstcon;
     uint32_t usb_unknown1;
     uint32_t usb_ophytune;
+
+    /*
+     * Catch-all backing store. The model only ever covered the registers
+     * openiBoot touches; iOS's AppleS5L8720XUSBPhy read-modify-writes offset
+     * 0x48, and discarding those writes meant its RMW never stuck.
+     */
+    uint32_t regs[0x400];
 } IPodTouchUSBPhysState;
 
 #endif
