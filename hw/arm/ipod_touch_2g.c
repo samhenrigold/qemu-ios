@@ -302,18 +302,12 @@ static void ipod_touch_machine_init(MachineState *machine)
     // init sysic
     dev = qdev_new("ipodtouch.sysic");
     IPodTouchSYSICState *sysic_state = IPOD_TOUCH_SYSIC(dev);
-    nms->sysic = (IPodTouchSYSICState *) g_malloc0(sizeof(struct IPodTouchSYSICState));
+    nms->sysic = sysic_state;
     memory_region_add_subregion(sysmem, SYSIC_MEM_BASE, &sysic_state->iomem);
     busdev = SYS_BUS_DEVICE(dev);
-    for(int grp = 0; grp < GPIO_NUMINTGROUPS; grp++) {
+    for(int grp = 0; grp < GPIO_NUMINTGROUPS_2; grp++) {
         sysbus_connect_irq(busdev, grp, s5l8900_get_irq(nms, S5L8900_GPIO_IRQS[grp]));
     }
-
-    sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, S5L8900_GPIO_G0_IRQ));
-    sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, S5L8900_GPIO_G1_IRQ));
-    sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, S5L8900_GPIO_G2_IRQ));
-    sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, S5L8900_GPIO_G3_IRQ));
-    sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, S5L8900_GPIO_G4_IRQ));
 
     // init GPIO
     dev = qdev_new("ipodtouch.gpio");
