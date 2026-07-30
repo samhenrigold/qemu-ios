@@ -75,6 +75,12 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
         case 0x76:
             res = 0; // unknown register
             break;
+        case 0x04:
+            // Power-source live-level status. Bit 3 = USB cable present (found
+            // empirically); report a connected cable so iOS's PowerSource sees
+            // it. Only OR in bit 3 -- forcing the whole status block hangs boot.
+            res = s->regs[0x04] | (1 << 3);
+            break;
         case PMU_EVENT_A_REG:     // 0x01
         case PMU_EVENT_A_REG + 1: // 0x02
         case PMU_EVENT_C_REG:     // 0x03
