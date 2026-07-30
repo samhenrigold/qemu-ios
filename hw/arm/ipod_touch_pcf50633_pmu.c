@@ -75,6 +75,16 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
         case 0x76:
             res = 0; // unknown register
             break;
+        case PMU_EVENT_A_REG:     // 0x01
+        case PMU_EVENT_A_REG + 1: // 0x02
+        case PMU_EVENT_C_REG:     // 0x03
+            // EVENT_A/B/C interrupt status. iOS reads the three as one block
+            // starting at subaddress 0x01; each is read-to-clear, matching real
+            // interrupt-event registers, so a latched wake event is consumed
+            // exactly once.
+            res = s->regs[reg];
+            s->regs[reg] = 0;
+            break;
         default:
             // Return whatever the guest last wrote to this register. A stateless
             // stub that always returned 0 here caused iOS's sleep sequence to
@@ -86,6 +96,23 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
     // Auto-increment for sequential multi-byte reads.
     s->curreg = (s->curreg + 1) & 0xff;
     return res;
+}
+
+void pcf50633_latch_wake_event(Pcf50633State *s, uint8_t bits)
+{
+    // Latch the wake-button interrupt in EVENT_C (reg 0x03). It stays set until
+    // iOS reads the event block (read-to-clear above), so it survives a quick
+    // press/release until the guest's PMU interrupt handler consumes it.
+    s->regs[PMU_EVENT_C_REG] |= bits;
+}
+
+void pcf50633_set_stat(Pcf50633State *s, uint8_t bits, bool on)
+{
+    if (on) {
+        s->regs[PMU_STAT_REG] |= bits;
+    } else {
+        s->regs[PMU_STAT_REG] &= ~bits;
+    }
 }
 
 static int pcf50633_send(I2CSlave *i2c, uint8_t data)
