@@ -557,6 +557,14 @@ static void s5l8900_usb_otg_reset(DeviceState *d)
 	state->gotgctl = 0;
 	state->gotgint = 0;
 
+	/*
+	 * The AHB master is always idle here - there is no bus to be busy on.
+	 * grstctl was never initialised, so AHBIDLE read as clear forever and
+	 * AppleSynopsysOTG2::_coreInit panicked with "AHB not idle"
+	 * (AppleSynopsysOTG2.cpp:394) while polling this register.
+	 */
+	state->grstctl = GRSTCTL_AHBIDLE;
+
 	state->gintmsk = 0;
 	state->gintsts = 0;
 
