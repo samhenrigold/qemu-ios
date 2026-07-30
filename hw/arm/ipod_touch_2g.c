@@ -207,12 +207,14 @@ static void ipod_touch_key_event(void *opaque, int keycode)
 {
     bool do_irq = false;
     int gpio_group = 0, gpio_selector = 0;
+    uint32_t button_gpio = 0;
 
     IPodTouchMultitouchState *s = (IPodTouchMultitouchState *)opaque;
     if(keycode == KEY_P_DOWN || keycode == KEY_P_UP) {
         // power button
         gpio_group = GPIO_BUTTON_POWER_IRQ / NUM_GPIO_PINS;
         gpio_selector = GPIO_BUTTON_POWER_IRQ % NUM_GPIO_PINS;
+        button_gpio = GPIO_BUTTON_POWER;
 
         if(keycode == KEY_P_DOWN && gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_POWER)) {
             gpio_set_on(s->gpio_state->gpio_state, GPIO_BUTTON_POWER);
@@ -227,6 +229,7 @@ static void ipod_touch_key_event(void *opaque, int keycode)
         // home button
         gpio_group = GPIO_BUTTON_HOME_IRQ / NUM_GPIO_PINS;
         gpio_selector = GPIO_BUTTON_HOME_IRQ % NUM_GPIO_PINS;
+        button_gpio = GPIO_BUTTON_HOME;
 
         if(keycode == KEY_H_DOWN && gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_HOME)) {
             gpio_set_on(s->gpio_state->gpio_state, GPIO_BUTTON_HOME);
@@ -241,6 +244,7 @@ static void ipod_touch_key_event(void *opaque, int keycode)
         // volume down button
         gpio_group = GPIO_BUTTON_VOLDOWN_IRQ / NUM_GPIO_PINS;
         gpio_selector = GPIO_BUTTON_VOLDOWN_IRQ % NUM_GPIO_PINS;
+        button_gpio = GPIO_BUTTON_VOLDOWN;
 
         if(keycode == KEY_MIN_DOWN && gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLDOWN)) {
             gpio_set_on(s->gpio_state->gpio_state, GPIO_BUTTON_VOLDOWN);
@@ -255,6 +259,7 @@ static void ipod_touch_key_event(void *opaque, int keycode)
         // volume up button
         gpio_group = GPIO_BUTTON_VOLUP_IRQ / NUM_GPIO_PINS;
         gpio_selector = GPIO_BUTTON_VOLUP_IRQ % NUM_GPIO_PINS;
+        button_gpio = GPIO_BUTTON_VOLUP;
 
         if(keycode == KEY_PLUS_DOWN && gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLUP)) {
             gpio_set_on(s->gpio_state->gpio_state, GPIO_BUTTON_VOLUP);
@@ -272,6 +277,16 @@ static void ipod_touch_key_event(void *opaque, int keycode)
     // would fire a fresh interrupt each time even though the button state did
     // not change, spamming the interrupt controller with phantom presses.
     if(do_irq) {
+        // Mirror the physical pin level into the sysic. GPIO_INTLEVEL was read
+        // by the guest (sysic read handler) but never written anywhere, so it
+        // always returned 0 regardless of the real pin state. Reflect the
+        // current button level here so it is at least consistent with the pad
+        // registers and the latched interrupt status.
+        if(gpio_is_on(s->gpio_state->gpio_state, button_gpio)) {
+            s->sysic->gpio_int_level[gpio_group] |= (1 << gpio_selector);
+        } else {
+            s->sysic->gpio_int_level[gpio_group] &= ~(1 << gpio_selector);
+        }
         s->sysic->gpio_int_status[gpio_group] |= (1 << gpio_selector);
         qemu_irq_raise(s->sysic->gpio_irqs[gpio_group]);
     }
