@@ -16,6 +16,21 @@
  * The QEMU half (key capture, Command-modifier button remap, the ring, and the
  * QC_POLL_INPUT op) is in hw/arm/ipod_touch_2g.c and hw/arm/guest-services.c.
  *
+ * Two things are essential to not wedge SpringBoard's launch (learned the hard
+ * way via a full bisect):
+ *   1. Do NOTHING in the C constructor except install an ObjC swizzle. Loading
+ *      the dylib and doing objc_getClass / method_setImplementation is safe, but
+ *      calling into CoreFoundation (e.g. CFRunLoopTimerCreate) from the
+ *      constructor is not. So we defer all setup to -[SpringBoard
+ *      applicationDidFinishLaunching:], which runs on the main thread after the
+ *      run loop exists.
+ *   2. The poll timer must not FIRE during the launch window. A repeating timer
+ *      whose first fire lands mid-launch stalls SpringBoard at the spinner
+ *      regardless of what the tick does (even an empty tick). We set the first
+ *      fire date to now + STARTUP_DELAY so ticking only begins once the home
+ *      screen is up. (cp15 QC_POLL_INPUT itself is fine post-boot; it was the
+ *      timer-during-boot that looked like a cp15 fault in early debugging.)
+ *
  * Build: see build.sh (REMOTE=tiger cross-builds armv6 on the Snow Leopard box).
  */
 #include <CoreFoundation/CoreFoundation.h>
@@ -50,46 +65,90 @@ static Class s_UIKeyboardImpl;
 static void kbd_tick(CFRunLoopTimerRef timer, void *info)
 {
     (void)timer; (void)info;
-    if (!s_UIKeyboardImpl) {
-        return;
-    }
-    /* The active keyboard instance (nil if nothing has focus -> input is a no-op). */
-    id impl = ((id (*)(id, SEL))objc_msgSend)((id)s_UIKeyboardImpl, s_activeInstance);
-    if (!impl) {
-        /* Drain and drop so the ring doesn't back up while nothing is focused. */
-        while (qc_poll_input() > 0) { }
+
+    /*
+     * Poll first and touch UIKit only once a key is actually queued. This starts
+     * ticking only after STARTUP_DELAY (see the timer setup), so the run loop and
+     * keyboard system are fully up by the time we ever call activeInstance.
+     */
+    int64_t ch = qc_poll_input();
+    if (ch <= 0) {
         return;
     }
 
-    for (int i = 0; i < 64; i++) {
-        int64_t ch = qc_poll_input();
-        if (ch <= 0) {
-            break;
+    /* Something was typed. Resolve the focused keyboard now (nil if no field
+     * has focus, in which case we just drain and drop). */
+    id impl = s_UIKeyboardImpl
+        ? ((id (*)(id, SEL))objc_msgSend)((id)s_UIKeyboardImpl, s_activeInstance)
+        : (id)0;
+
+    do {
+        if (impl) {
+            if (ch == 0x08) {             /* backspace */
+                ((void (*)(id, SEL))objc_msgSend)(impl, s_deleteFromInput);
+            } else {
+                UniChar u = (UniChar)ch;  /* newline/space/printables insert */
+                CFStringRef s = CFStringCreateWithCharacters(NULL, &u, 1);
+                if (s) {
+                    ((void (*)(id, SEL, id))objc_msgSend)(impl, s_acceptInputString, (id)s);
+                    CFRelease(s);
+                }
+            }
         }
-        if (ch == 0x08) {                 /* backspace */
-            ((void (*)(id, SEL))objc_msgSend)(impl, s_deleteFromInput);
-            continue;
-        }
-        UniChar u = (UniChar)ch;          /* newline/space/printables all insert */
-        CFStringRef s = CFStringCreateWithCharacters(NULL, &u, 1);
-        if (s) {
-            /* CFStringRef is toll-free bridged to NSString. */
-            ((void (*)(id, SEL, id))objc_msgSend)(impl, s_acceptInputString, (id)s);
-            CFRelease(s);
-        }
-    }
+        ch = qc_poll_input();
+    } while (ch > 0);
 }
 
-__attribute__((constructor))
-static void it_kbd_agent_init(void)
+/*
+ * Seconds to wait after applicationDidFinishLaunching: before the poll timer
+ * first fires. Must clear the launch window (spinner) so ticking never runs
+ * mid-launch. ~12s is comfortably past a cold boot to the home screen.
+ */
+#define STARTUP_DELAY 12.0
+
+/* Runs on the main thread, after the run loop and keyboard system exist. */
+static void it_kbd_agent_setup(void)
 {
     s_UIKeyboardImpl    = objc_getClass("UIKeyboardImpl");
     s_activeInstance    = sel_registerName("activeInstance");
     s_acceptInputString = sel_registerName("acceptInputString:");
     s_deleteFromInput   = sel_registerName("deleteFromInput");
 
-    /* Poll on the main run loop so all UIKit work stays on the main thread. */
-    CFRunLoopTimerRef t = CFRunLoopTimerCreate(NULL, CFAbsoluteTimeGetCurrent(),
-                                               1.0 / 60.0, 0, 0, kbd_tick, NULL);
+    /* Poll on the main run loop so all UIKit work stays on the main thread.
+     * First fire is delayed so the timer never ticks during SpringBoard launch. */
+    CFRunLoopTimerRef t = CFRunLoopTimerCreate(
+        NULL, CFAbsoluteTimeGetCurrent() + STARTUP_DELAY,
+        1.0 / 60.0, 0, 0, kbd_tick, NULL);
     CFRunLoopAddTimer(CFRunLoopGetMain(), t, kCFRunLoopCommonModes);
+}
+
+/* Our swizzled -[SpringBoard applicationDidFinishLaunching:]: run the original,
+ * then install the poll timer from this safe, post-run-loop context. */
+static IMP s_orig_adfl;
+static void it_kbd_adfl(id self, SEL _cmd, id application)
+{
+    ((void (*)(id, SEL, id))s_orig_adfl)(self, _cmd, application);
+    it_kbd_agent_setup();
+}
+
+__attribute__((constructor))
+static void it_kbd_agent_init(void)
+{
+    /*
+     * Constructor does the minimum: swizzle SpringBoard's launch-finished hook.
+     * objc_getClass / method_setImplementation are safe here; CoreFoundation
+     * calls are not (see file header). If we're injected into a non-SpringBoard
+     * process, the class won't exist and we simply do nothing.
+     */
+    Class sb = objc_getClass("SpringBoard");
+    if (!sb) {
+        return;
+    }
+    SEL sel = sel_registerName("applicationDidFinishLaunching:");
+    Method m = class_getInstanceMethod(sb, sel);
+    if (!m) {
+        return;
+    }
+    s_orig_adfl = method_getImplementation(m);
+    method_setImplementation(m, (IMP)it_kbd_adfl);
 }
