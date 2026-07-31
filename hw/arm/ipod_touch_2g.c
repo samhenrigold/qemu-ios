@@ -601,6 +601,11 @@ static void ipod_touch_machine_init(MachineState *machine)
     IPodTouchUnknown1State *unknown1_state = IPOD_TOUCH_UNKNOWN1(dev);
     memory_region_add_subregion(sysmem, UNKNOWN1_MEM_BASE, &unknown1_state->iomem);
 
+    // init the watchdog timer (models reset so the guest can reboot itself)
+    dev = qdev_new("ipodtouch.wdt");
+    IPodTouchWDTState *wdt_state = IPOD_TOUCH_WDT(dev);
+    memory_region_add_subregion(sysmem, WDT_MEM_BASE, &wdt_state->iomem);
+
     // init USB OTG
     dev = ipod_touch_init_usb_otg(s5l8900_get_irq(nms, S5L8720_USB_OTG_IRQ), s5l8720_usb_hwcfg);
     synopsys_usb_state *usb_otg = S5L8900USBOTG(dev);
