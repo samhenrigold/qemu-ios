@@ -143,6 +143,21 @@ Command 84 is `WLC_SET_COUNTRY`, which is exactly what `initDongle` issues
 first. The upper half of the flags word is the transaction id and increments on
 each retry, confirming the CDC header layout.
 
+**The reply is not collected.** The model queues a CDC response, sets
+`I_HMB_FRAME_IND` in the core's `intstatus` and raises the card interrupt, and
+the driver reports `Failure to set country code: I/O timeout` without ever
+reading function 2. So the open question is how this driver learns that a reply
+is waiting. What is known:
+
+- `AppleS5L8900XSDIO`'s handler (`0xc061ba88`) reads its status register, masks
+  it against the enabled set, writes the value straight back to clear, then
+  dispatches bit 0 as transfer complete and **bit 1 as the card's own
+  interrupt**. Both bits are enabled - the driver writes `0x3` to the mask.
+- Transfer-complete interrupts demonstrably work; the clear path was verified.
+- The card interrupt is raised inside the same CMD53 that carries the host's
+  request, which is earlier than real hardware would manage it. Deferring it
+  through the existing timer is the first thing to try.
+
 ### The MAC address is a CIS tuple
 
 `AppleBCM4325::processConfigData` asks its interface layer for "OTP" data and
