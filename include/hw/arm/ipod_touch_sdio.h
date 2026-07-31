@@ -81,6 +81,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define SBSDIO_SBADDRLOW    0x1000a
 #define SBSDIO_SBADDRHIGH   0x1000c
 
+/* Long enough for the guest to reach its sleep, short enough to be free. */
+#define IRQ_DELAY_NS        20000
+
 #define BACKPLANE_PAGE_BITS 12
 #define BACKPLANE_PAGE_SIZE (1u << BACKPLANE_PAGE_BITS)
 
@@ -165,6 +168,7 @@ typedef struct IPodTouchSDIOState
     uint32_t resp2;
     uint32_t resp3;
     uint32_t irq_reg;
+    uint32_t irq_pending;  /* bits waiting for the deferred raise */
     uint32_t irq_mask;
     uint32_t baddr;
     uint32_t blklen;
