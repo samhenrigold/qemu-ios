@@ -142,9 +142,8 @@ AppleBCM4325::initHardware(): BCM4325 revision D0
 ```
 
 after which it programs the backplane window and writes roughly 200 KB of
-firmware over function 1 - about twenty minutes of emulated time, so be patient
-before calling a run wedged. With the mailbox and SDPCM framing in place it
-then reaches the control channel:
+firmware over function 1. With the mailbox and SDPCM framing in place it then
+reaches the control channel:
 
 ```
 [SDIO] 192 KiB written to the backplane (now at 0x0002f000)
@@ -212,7 +211,42 @@ AppleBCM4325::setPowerStateGated() : Powering On
 ```
 
 **An `IO80211Interface` is attached to the network stack with the right MAC.**
-That is the first network interface this emulator has ever had.
+That is the first network interface this emulator has ever had, and iOS agrees:
+Settings' Wi-Fi row goes from a greyed-out "No Wi-Fi" to "Not Connected", and
+the Wi-Fi Networks pane opens with the toggle ON and "Choose a Network..."
+above an empty list.
+
+### The control commands the driver actually issues
+
+Logged with their iovar names, which is the only way to tell two `WLC_SET_VAR`s
+apart. In order, from `initDongle` to the first scan:
+
+```
+84  WLC_SET_COUNTRY          263 set_var  sup_wpa
+2   WLC_UP                   263 set_var  allmulti
+262 get_var  ver             263 set_var  mcast_list
+83  WLC_GET_COUNTRY          262 get_var  qtxpower
+38  set (4 bytes)            263 set_var  deepsleep   (repeatedly)
+263 set_var  event_msgs      263 set_var  iscan       <- tapping into Wi-Fi
+262 get_var  event_msgs
+263 set_var  scan_passive_time
+86  get (4 bytes)
+```
+
+Two things fall out of this:
+
+- `get_var ver` is answered with a zeroed payload, so the driver logs an empty
+  `BCM4325 Firmware Version:`. Harmless now, worth filling in later.
+- **Scanning goes through the `iscan` iovar**, the older incremental-scan
+  interface, not `escan`. Tapping into the Wi-Fi pane sends a 206-byte
+  `set_var iscan`. The list stays empty because nothing answers it.
+
+So stage 4 is now concrete: accept `set_var iscan`, push a scan-complete event
+on channel 1, and answer `get_var iscanresults` with one synthetic BSS. The
+event encoding is the part that still has to be got right - an 802.3 frame with
+ethertype 0x886c carrying a `bcmeth_hdr` and a big-endian `wl_event_msg_t`;
+the driver checks the OUI and subtype and logs "Got a BRCM packet but an
+OUI/SUBTYPE mismatch" when they are wrong.
 
 It does not survive. Seconds later the guest panics:
 
@@ -226,12 +260,29 @@ then calls `0xc03438f0`, a four instruction "are we associated" accessor that
 loads from `+0x38` of the object at `self+0x2bc`. That object is null, so the
 fault address is 0x38 exactly.
 
-This is the expected consequence of stopping halfway rather than a wrong turn:
-nothing has told the driver it associated, so the state the timer expects was
-never built. Stage 4 - events and a faked association - is what removes it, and
-until then a run with `wifi=on` will panic shortly after the interface appears.
-The boot is also much slower with `wifi=on`, since the firmware download alone
-is about twenty minutes of emulated time.
+**That crash is an artifact of `boot-args=io=0x37`, not a protocol gap.** With
+IOKit matching logs on, the firmware download runs at about 256 seconds per
+64 KiB; without them the whole download finishes in under a second. Measured
+with the same binary, changing only the boot argument:
+
+```
+io=0x37     64 KiB: 8435 register accesses      128 KiB: 256.0s, 664 accesses
+no args     64 KiB: 8435 register accesses      128 KiB:   0.0s, 664 accesses
+```
+
+The emulated device does the same work either way - 664 register accesses for
+64 KiB - so the cost is entirely inside the guest. Stretched over twenty
+minutes, `AppleBCM4325::start()` loses a race with one of its own timers: the
+deep sleep handler fires while `start()` is still running and dereferences
+state `start()` has not assigned yet. Run without `io=0x37` and the whole
+bring-up takes a couple of minutes and that crash does not happen.
+
+The only panic left on a `wifi=on` boot is the pre-existing
+`AppleMPVDDriver::setPowerStateGated` idle-sleep one (`fault_addr=0xec3fd01c`),
+which is unrelated to WiFi and fixed on another branch.
+
+**So: use `wifi=on` on its own. Add `io=0x37` only when you need matching logs,
+and expect it to cost roughly 250x on this path.**
 
 ### The MAC address is a CIS tuple
 
