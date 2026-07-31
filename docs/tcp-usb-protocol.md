@@ -108,17 +108,29 @@ data without any error being reported.
 **A transaction cannot exceed `INT16_MAX` (32767) bytes**, because `length` is
 an `int16_t`.
 
-**The host must never split one logical packet across transactions.** This
-transport is *transfer-oriented*, not packet-oriented: there are no ZLPs, so a
-transaction that happens to be a multiple of the endpoint's max packet size has
-no way to signal that it is the end. One transaction therefore means one
-complete transfer, and the device retires the endpoint after each one. A
-continuation lands in a transfer the guest already considers finished.
+**The host must never split one logical OUT packet across transactions.** In the
+host->device direction this transport is *transfer-oriented*, not
+packet-oriented: there are no ZLPs, so an OUT transaction that happens to be a
+multiple of the endpoint's max packet size has no way to signal that it is the
+end. One OUT transaction therefore means one complete transfer, and the device
+retires the endpoint after each one. A continuation lands in a transfer the guest
+already considers finished.
 
-**The device accepts at most the guest's currently armed transfer size.** If a
-transaction exceeds it the excess is truncated; the device logs this via
+**The device accepts at most the guest's currently armed transfer size.** If an
+OUT transaction exceeds it the excess is truncated; the device logs this via
 `LOG_GUEST_ERROR` (visible with `-d guest_errors`), but the host will see a
 short accept and, if it resends the remainder, corrupt the stream.
+
+**The IN direction is the other way round: the device may answer one request
+with less than the transfer contains, and the transfer continues.** The guest
+routinely arms an IN transfer larger than the host's request — a mux packet of
+32764 bytes against a 16384-byte poll is ordinary — so an IN request returns
+`min(armed, requested)` and the endpoint stays armed with the rest. The host gets
+the remainder from its next poll. This is what real USB does: a bulk IN transfer
+ends on a short packet, not at an arbitrary host buffer boundary, and it is what
+makes usbmuxd's reassembly (accumulate while chunks are exactly `USB_MRU`, stop
+on a short one) work unmodified. The device must therefore *not* raise
+`XferCompl` or clear `EPENA` until `DIEPTSIZ.XferSize` drains.
 
 Concretely: usbmuxd's default `USB_MTU` of 49152 is larger than both limits.
 Left unchanged it split every large AFC write, and the guest's mux driver
@@ -165,90 +177,53 @@ Because the device never speaks unprompted, no file descriptor ever becomes
 readable to announce incoming data; IN transfers only happen when the host
 polls.
 
-## Known limitation: large device→host reads truncate (deferred)
+## Device→host bulk reads
 
-As of 2026-07-31 the data path is verified robust in the **host→device**
-direction: `afcclient put` of 64 KB, 1 MB and 8 MB files all land with the exact
-on-device size, because the guest's mux *receive* side reassembles multi-transaction
-writes itself.
+Both directions are verified content-correct: `afcclient put` and `afcclient get`
+of 64 KB and 1 MB round-trip byte-identically by SHA-256, and reads of files
+placed into the NAND image offline come back exactly.
 
-The **device→host** direction is worse than "truncates" — for AFC **file data**
-it is corrupt at any size. Investigation 2026-07-31 (small-file round-trips, full
-`IT_USB_TRACE` on both endpoints, FMSS ruled out by running without `nandrw`):
+This was broken until 2026-07-31, and the failure is worth recording because the
+symptom pointed away from the cause. Large `afcclient get`s returned the right
+size but unrelated guest memory, `ideviceinstaller` could not extract a staged
+`.ipa`, and the host logged `Incoming split packet is too large … dropping!`.
+Two earlier investigations concluded the USB model was correct and blamed the
+guest's mux for arming a buffer whose payload had not been filled yet. It had
+been filled; the model was throwing it away.
 
-- **Writes are byte-perfect.** Every OUT payload verified in full against what the
-  host sent (`full_first_diff = -1`), so the file's bytes reach the guest's mux
-  receive buffer intact.
-- **Small/inline reads are correct.** lockdownd plists (`<?xml…`) and the TLS
-  session records come back exactly — same IN code path, same DMA read.
-- **AFC file-data reads are stale.** An `afcclient get` returns the right *size*
-  but the content is a fixed region of guest memory (ARM code + vtable pointers),
-  **identical every run regardless of the source file**. Tracing all 70 IN
-  transfers of one GET: the random source bytes appear in **none** of them. The
-  file data never leaves the device. The guest's send buffer has a correct
-  mux+TCP header at `DIEPDMA`, but the payload section (offset 28+) is memory the
-  guest never populated there.
+`AppleSynopsysOTG2` arms one IN transfer per physically contiguous segment of the
+mux buffer, which is regularly larger than the host's 16384-byte poll — 32764
+bytes was typical. The model answered with the requested 16384 and then disabled
+the endpoint and raised `XferCompl` anyway, so the guest was told the whole
+transfer had gone out while the residue was dropped on the floor. The host then
+had a mux header promising 32764 bytes followed by 16384, and consumed the next
+packet as the continuation; from there the stream was misframed and everything
+after it was garbage. Small reads (lockdownd plists, TLS records) were unaffected
+because they fit in one poll, which is why the corruption looked content-specific.
 
-Conclusion (CORRECTED after two kernelcache-RE passes of AppleSynopsysOTG2 +
-AppleUSBDeviceMux — supersedes the earlier "zero-copy/scatter DMA" guess):
+The fix is the IN rule in *Transaction size rules* above: deliver
+`min(armed, requested)`, keep the endpoint armed, and complete only when
+`DIEPTSIZ.XferSize` reaches zero. No host-side change was needed — usbmuxd's
+stock reassembly works once the device frames transfers the way hardware does.
 
-- **The USB device model is CORRECT.** The TX path is plain buffer DMA over a
-  SINGLE contiguous IOMemoryDescriptor. No descriptor DMA (DCFG bit23 clear, only
-  GAHBCFG.DMAEN=0x2b), no scatter-gather (`withRanges` is RX-only), no bounce
-  buffer, no IODMACommand, no DMA/copy engine, no IOP. `writeToUSBPipe`
-  (`0xc066a9cc`) passes one contiguous descriptor + explicit total length to the
-  pipe; the single 4028-byte arm at one DIEPDMA is exactly right. Reading
-  `DIEPTSIZ.XferSize` bytes contiguously from `DIEPDMA` is the correct model.
-- **The real bug is guest-side, in the mux fill.** `sendMuxSegment` (`0xc066aca4`)
-  writes the 28-byte mux+TCP header at `base`, then fills the payload at `base+28`
-  with a **plain CPU copy** — `sock_receive`→`soreceive`→`uiomove` from the TCP
-  socket's receive mbufs (file-data path), or `memcpy` (rewrite path) — *before*
-  arming. In the emulated run that fill's bytes are never at `base+28`: the buffer
-  is armed with a stale/recycled payload region while the real file bytes stay
-  parked in the socket's receive mbufs (measured: header correct at DIEPDMA, the
-  payload marker only ever found in a socket mbuf, never in any of the ~70 IN
-  transfers). Prime suspect (RE): `soreceive` returned `EAGAIN` (AFC bytes not yet
-  delivered into the mux's loopback-socket receive buffer) and a recycled
-  BulkUSBBuffer got armed anyway — a socket→buffer **delivery/scheduling timing**
-  interaction exposed by emulation, NOT anything the USB model reads wrong.
-- Instrumentation caveat: a NAK-and-recheck timing probe (hold the transfer, let
-  the guest run, re-read `base+28`) showed it staying stale for 400 polls — but
-  that test is flawed: NAK-ing blocks the transfer's completion, which freezes the
-  guest waiting on that transfer, so it can't advance. So it does NOT cleanly rule
-  out a late fill; the true open question is why the emulated `sendMuxSegment`'s
-  `soreceive` doesn't see the AFC bytes.
+Note for anyone testing this: a `put` followed by a `get` is **not** a test of the
+USB path alone, and it still fails. That failure is in the NAND model, not here.
+Measured on 2026-07-31 with a 4 KB file:
 
-Fixing it needs tracing the guest's loopback-socket delivery (AFC service ->
-socket -> mux `soreceive`) and why the mux arms before the data lands — a deeper,
-uncertain effort, possibly a fundamental emulation timing race. The
-`Incoming split packet is too large … dropping!` host error is a downstream
-symptom. Key procedures for follow-up: `sendMuxSegment 0xc066aca4`,
-`writeToUSBPipe 0xc066a9cc`, `startEndpointIN 0xc05df9c0`; RE artifacts under
-`scratchpad/usbdma_re/` and `scratchpad/re/`.
+- the bytes arrive over USB intact (every OUT DMA self-check matches),
+- the file the guest writes is correct on disk — merging the `nandrw` overlay
+  over the base image and mounting it offline gives a byte-identical file,
+- reading it back **in the same session** returns unrelated data, at every size
+  tried from 1 KB to 256 KB,
+- reading the same file back **after a reboot** returns it byte-identically.
 
-This blocks `ideviceinstaller`-over-USB (staged `.ipa` unzips to garbage →
-`PackageExtractionFailed`) and `scp` over an `iproxy`-forwarded port (same mux
-bulk path). It does NOT block the working alternative — offline `/Applications`
-injection installs and runs decrypted apps. Deferred pending a new angle.
+So `hw/arm/ipod_touch_fmss.c` serves stale pages for anything written since boot.
+That is what still breaks `ideviceinstaller install`: the staged `.ipa` is written
+and then immediately read back to be extracted, and the extraction sees garbage
+(`PackageExtractionFailed`). It is unrelated to this transport.
 
-The cause is **host-side, in the fork's mux reassembly** (`usbmuxd/src/device.c`,
-`device_data_input`), not in this device model. That code decides a mux packet is
-still being fragmented from a fragile heuristic: a USB chunk of exactly `USB_MRU`
-(16384) is assumed to be a non-final fragment and accumulated. But a full mux TCP
-segment on this transport is *exactly* 16384 bytes on the wire
-(`max_payload = USB_MTU − 8 − 20 = 16356`, plus the 28-byte mux+TCP headers), so
-the heuristic misfires on large reads and over-accumulates past `DEV_MRU`
-(65536), then drops the packet. Reassembling by the mux header's declared
-`length` instead of by `== USB_MRU` chunk boundaries is the fix.
-
-A device-side change (deliver the whole armed IN transfer, completing only when
-`DEPTSIZ` xfersiz drains, rather than retiring after the first transaction) was
-tried and did **not** fix it end to end — this is a device↔host co-design issue,
-and the authoritative fix is host-side. The decision was to defer it: uploads and
-installs (the direction that matters for pushing data and apps to the device)
-work, so reads off the device were left for later. Validate any fix with a
-`put`/`get` round-trip of 64 KB/1 MB/8 MB comparing SHA-256.
-
+To test the USB read path on its own, inject files into the image offline with
+`imgtools/editimg.py` and read those, and validate with SHA-256 rather than size.
 ## Testing without an emulator
 
 `fake_device.py` in the host repository replays this protocol, which lets the

@@ -42,6 +42,22 @@ static bool synopsys_usb_trace_enabled(void)
 	return cached == 1;
 }
 
+/*
+ * Separate, finer-grained switch for the device->host (IN) path: every endpoint
+ * arm the guest performs and every transaction the host pulls, with the first
+ * bytes of the data actually read out of guest memory. IT_USB_TRACE is too
+ * coarse (and too noisy) to answer where a bulk IN transfer's bytes come from.
+ */
+static bool synopsys_usb_in_debug(void)
+{
+	static int cached = -1;
+	if (cached < 0) {
+		const char *e = getenv("IT_USB_IN_DEBUG");
+		cached = (e && *e && *e != '0') ? 1 : 0;
+	}
+	return cached == 1;
+}
+
 static void synopsys_usb_update_irq(synopsys_usb_state *_state)
 {
 	_state->daintsts = 0;
@@ -186,10 +202,10 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 			eps->control &= ~USB_EPCON_STALL;
 			ret = USB_RET_STALL;
 		} else if (eps->control & USB_EPCON_ENABLE) {
-			eps->control &= ~USB_EPCON_ENABLE;
-
 			size_t sz = eps->tx_size & DEPTSIZ_XFERSIZ_MASK;
 			size_t amtDone = MIN(sz, hdr_len);
+			uint32_t dma_before = eps->dma_address;
+			bool no_dma = false;
 
 			/*
 			 * DMA mode: the data path is guest memory, not the FIFO RAM, so read
@@ -205,11 +221,61 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 			} else if (amtDone > 0) {
 				/* No DMA address programmed - nothing meaningful to send. */
 				amtDone = 0;
+				no_dma = true;
 			}
 
+			/*
+			 * An armed IN transfer is frequently larger than one host
+			 * transaction: the guest hands the pipe a whole mux packet, and
+			 * AppleSynopsysOTG2 arms it as one contiguous physical segment - 32764
+			 * bytes has been observed, against a host that asks for 16384 at a
+			 * time. This used to disable the endpoint and raise XferCompl on the
+			 * first transaction regardless, so the guest was told the whole
+			 * transfer had gone out while the residue was thrown away. That is
+			 * what corrupted every large device->host read: the host received a
+			 * mux header declaring 32764 bytes followed by only 16384, then took
+			 * the *next* packet's bytes as the continuation.
+			 *
+			 * Real hardware retires an IN transfer when XferSize drains, not when
+			 * one host transaction ends, so keep the endpoint armed and stay
+			 * silent until it does. The host then sees exactly-MRU chunks
+			 * followed by a short final one, which is ordinary USB framing and
+			 * what its reassembly already expects.
+			 */
+			size_t remaining = sz - amtDone;
+
 			eps->tx_size = (eps->tx_size & ~DEPTSIZ_XFERSIZ_MASK)
-			             | ((sz - amtDone) & DEPTSIZ_XFERSIZ_MASK);
-			eps->interrupt_status |= USB_EPINT_XferCompl;
+			             | (remaining & DEPTSIZ_XFERSIZ_MASK);
+
+			/*
+			 * PktCnt counts down alongside XferSize on real hardware. Nothing in
+			 * the guest driver has been observed to read it back mid-transfer,
+			 * but leaving it stale would be a trap for whatever does.
+			 *
+			 * Only for the bulk endpoints: on EP0 the MPS field is a two-bit
+			 * enum (0 = 64 bytes ... 3 = 8) rather than a byte count, and EP0
+			 * transfers are single-transaction anyway.
+			 */
+			uint32_t mps = eps->control & USB_EPCON_MPS_MASK;
+			if (ep && mps && amtDone) {
+				uint32_t pktcnt = (eps->tx_size >> DEPTSIZ_PKTCNT_SHIFT)
+				                & DEPTSIZ_PKTCNT_MASK;
+				uint32_t sent = (amtDone + mps - 1) / mps;
+
+				pktcnt = sent < pktcnt ? pktcnt - sent : 0;
+				eps->tx_size = (eps->tx_size
+				                & ~(DEPTSIZ_PKTCNT_MASK << DEPTSIZ_PKTCNT_SHIFT))
+				             | (pktcnt << DEPTSIZ_PKTCNT_SHIFT);
+			}
+
+			/*
+			 * A transfer the guest armed with no DMA address can never drain, so
+			 * retire it rather than wedging the endpoint armed forever.
+			 */
+			if (remaining == 0 || no_dma) {
+				eps->control &= ~USB_EPCON_ENABLE;
+				eps->interrupt_status |= USB_EPINT_XferCompl;
+			}
 
 			/*
 			 * Gated: this fires once per transaction, so under a multi-megabyte
@@ -219,6 +285,18 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 			 */
 			if (synopsys_usb_trace_enabled())
 				fprintf(stderr, "[USBTCP] IN  ep%d %zu bytes\n", ep, amtDone);
+			if (synopsys_usb_in_debug()) {
+				static unsigned long in_seq;
+				uint8_t head[16] = {0};
+				const uint8_t *b = head;
+				memcpy(head, _buffer, MIN(amtDone, sizeof(head)));
+				fprintf(stderr,
+				        "[USBIN] #%lu ep%d dma=0x%08x armed=%zu req=%zu got=%zu left=%zu "
+				        "head=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
+				        ++in_seq, ep, dma_before, sz, hdr_len, amtDone, remaining,
+				        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+				        b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+			}
 			ret = amtDone;
 		} else {
 			ret = USB_RET_NAK;
@@ -566,6 +644,15 @@ static void synopsys_usb_in_ep_write(synopsys_usb_state *_state, int _ep, hwaddr
 	{
     case 0x00:
 		_state->in_eps[_ep].control = _val;
+		if (_ep && synopsys_usb_in_debug() && (_val & USB_EPCON_ENABLE)) {
+			fprintf(stderr, "[USBIN] arm ep%d DIEPCTL=0x%08x dma=0x%08x tsiz=0x%08x "
+			        "(xfer=%u pktcnt=%u)\n", _ep, (uint32_t)_val,
+			        (uint32_t)_state->in_eps[_ep].dma_address,
+			        _state->in_eps[_ep].tx_size,
+			        (unsigned)(_state->in_eps[_ep].tx_size & DEPTSIZ_XFERSIZ_MASK),
+			        (unsigned)((_state->in_eps[_ep].tx_size >> DEPTSIZ_PKTCNT_SHIFT)
+			                   & DEPTSIZ_PKTCNT_MASK));
+		}
 		synopsys_usb_update_in_ep(_state, _ep);
 		return;
 
