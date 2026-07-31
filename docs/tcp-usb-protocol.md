@@ -189,14 +189,42 @@ it is corrupt at any size. Investigation 2026-07-31 (small-file round-trips, ful
   mux+TCP header at `DIEPDMA`, but the payload section (offset 28+) is memory the
   guest never populated there.
 
-Conclusion: lockdownd copies its response *inline* into the send buffer; the AFC
-service does **not** — it references the file data via a zero-copy / scattered
-mechanism (separate physical pages, not contiguous after the header) that this
-model's single-contiguous-buffer DMA read does not follow. Fixing it requires
-reverse-engineering how AppleUSBDeviceMux / the AFC service place file data for
-the OTG DMA (descriptor mode? a second buffer? physical-page list?) and teaching
-the model to gather it. The earlier `Incoming split packet is too large … dropping!`
-host error is a *downstream* symptom of the same missing data, not the root.
+Conclusion (CORRECTED after two kernelcache-RE passes of AppleSynopsysOTG2 +
+AppleUSBDeviceMux — supersedes the earlier "zero-copy/scatter DMA" guess):
+
+- **The USB device model is CORRECT.** The TX path is plain buffer DMA over a
+  SINGLE contiguous IOMemoryDescriptor. No descriptor DMA (DCFG bit23 clear, only
+  GAHBCFG.DMAEN=0x2b), no scatter-gather (`withRanges` is RX-only), no bounce
+  buffer, no IODMACommand, no DMA/copy engine, no IOP. `writeToUSBPipe`
+  (`0xc066a9cc`) passes one contiguous descriptor + explicit total length to the
+  pipe; the single 4028-byte arm at one DIEPDMA is exactly right. Reading
+  `DIEPTSIZ.XferSize` bytes contiguously from `DIEPDMA` is the correct model.
+- **The real bug is guest-side, in the mux fill.** `sendMuxSegment` (`0xc066aca4`)
+  writes the 28-byte mux+TCP header at `base`, then fills the payload at `base+28`
+  with a **plain CPU copy** — `sock_receive`→`soreceive`→`uiomove` from the TCP
+  socket's receive mbufs (file-data path), or `memcpy` (rewrite path) — *before*
+  arming. In the emulated run that fill's bytes are never at `base+28`: the buffer
+  is armed with a stale/recycled payload region while the real file bytes stay
+  parked in the socket's receive mbufs (measured: header correct at DIEPDMA, the
+  payload marker only ever found in a socket mbuf, never in any of the ~70 IN
+  transfers). Prime suspect (RE): `soreceive` returned `EAGAIN` (AFC bytes not yet
+  delivered into the mux's loopback-socket receive buffer) and a recycled
+  BulkUSBBuffer got armed anyway — a socket→buffer **delivery/scheduling timing**
+  interaction exposed by emulation, NOT anything the USB model reads wrong.
+- Instrumentation caveat: a NAK-and-recheck timing probe (hold the transfer, let
+  the guest run, re-read `base+28`) showed it staying stale for 400 polls — but
+  that test is flawed: NAK-ing blocks the transfer's completion, which freezes the
+  guest waiting on that transfer, so it can't advance. So it does NOT cleanly rule
+  out a late fill; the true open question is why the emulated `sendMuxSegment`'s
+  `soreceive` doesn't see the AFC bytes.
+
+Fixing it needs tracing the guest's loopback-socket delivery (AFC service ->
+socket -> mux `soreceive`) and why the mux arms before the data lands — a deeper,
+uncertain effort, possibly a fundamental emulation timing race. The
+`Incoming split packet is too large … dropping!` host error is a downstream
+symptom. Key procedures for follow-up: `sendMuxSegment 0xc066aca4`,
+`writeToUSBPipe 0xc066a9cc`, `startEndpointIN 0xc05df9c0`; RE artifacts under
+`scratchpad/usbdma_re/` and `scratchpad/re/`.
 
 This blocks `ideviceinstaller`-over-USB (staged `.ipa` unzips to garbage →
 `PackageExtractionFailed`) and `scp` over an `iproxy`-forwarded port (same mux
