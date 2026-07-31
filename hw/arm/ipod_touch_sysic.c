@@ -108,9 +108,42 @@ static void ipod_touch_sysic_init(Object *obj)
     }
 }
 
+/*
+ * The GPIO interrupt fabric has to go back to power-on state on a warm reset.
+ *
+ * gpio_int_status is the pending latch and gpio_int_enabled the mask; devices
+ * signal through them (the digitizer raises its attention line by setting
+ * gpio_int_status[3] bit 13 and pulsing gpio_irqs[3]). Carrying either across a
+ * reset means the next boot's driver either sees a stale pending interrupt it
+ * never armed, or arms a line that already reads asserted -- and the edge it is
+ * actually waiting for never arrives.
+ *
+ * The output lines are dropped too, so nothing is left asserted into the VIC
+ * across the reset.
+ */
+static void ipod_touch_sysic_reset(DeviceState *dev)
+{
+    IPodTouchSYSICState *s = IPOD_TOUCH_SYSIC(dev);
+
+    s->power_id = 0;
+    s->power_state = 0;
+
+    for (int grp = 0; grp < GPIO_NUMINTGROUPS; grp++) {
+        s->gpio_int_level[grp] = 0;
+        s->gpio_int_status[grp] = 0;
+        s->gpio_int_enabled[grp] = 0;
+        s->gpio_int_type[grp] = 0;
+        if (s->gpio_irqs[grp]) {
+            qemu_irq_lower(s->gpio_irqs[grp]);
+        }
+    }
+}
+
 static void ipod_touch_sysic_class_init(ObjectClass *klass, void *data)
 {
-    
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->reset = ipod_touch_sysic_reset;
 }
 
 static const TypeInfo ipod_touch_sysic_type_info = {

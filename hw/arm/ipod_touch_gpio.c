@@ -63,9 +63,20 @@ static void s5l8900_gpio_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &gpio_ops, s, "gpio", 0x1000);
 }
 
+/* Pad state is all driven by the guest; clear it so the second boot does not
+ * read back the first boot's pin levels while it is probing. */
+static void s5l8900_gpio_reset(DeviceState *dev)
+{
+    IPodTouchGPIOState *s = IPOD_TOUCH_GPIO(dev);
+
+    memset(s->gpio_state, 0, sizeof(s->gpio_state));
+}
+
 static void s5l8900_gpio_class_init(ObjectClass *klass, void *data)
 {
+    DeviceClass *dc = DEVICE_CLASS(klass);
 
+    dc->reset = s5l8900_gpio_reset;
 }
 
 static const TypeInfo ipod_touch_gpio_info = {
