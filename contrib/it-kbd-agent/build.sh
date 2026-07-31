@@ -22,7 +22,7 @@ if [ -n "${REMOTE:-}" ]; then
   SDK="${REMOTE_SDK:-$P/SDKs/iPhoneOS5.0.sdk}"
   cat "$HERE/it_kbd_agent.c" | ssh "$REMOTE" 'cat > /tmp/it_kbd_agent.c'
   ssh "$REMOTE" "$P/usr/bin/clang -arch armv6 -isysroot $SDK \
-      -miphoneos-version-min=2.0 -dynamiclib -framework CoreFoundation \
+      -miphoneos-version-min=2.0 -dynamiclib -framework CoreFoundation -lobjc \
       -o /tmp/it_kbd_agent.dylib /tmp/it_kbd_agent.c && \
       codesign -f -s - /tmp/it_kbd_agent.dylib"
   scp "$REMOTE:/tmp/it_kbd_agent.dylib" "$OUT"
