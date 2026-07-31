@@ -185,13 +185,15 @@ def main():
     ap.add_argument("--qmp", type=int, default=4510)
     ap.add_argument("--out", required=True, help="output directory")
     ap.add_argument("--boot-wait", type=float, default=45)
+    ap.add_argument("--machine-opts", default="",
+                    help="extra -M options, e.g. ',usb-attached=on,...'")
     ap.add_argument("--nandrw", default=None,
                     help="writable copy-on-write overlay dir; lets guest writes "
                          "(crash logs, preferences) be read back on the host")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     serial = os.path.join(a.out, "serial.log")
-    opts = ",nandrw=%s" % a.nandrw if a.nandrw else ""
+    opts = a.machine_opts + (",nandrw=%s" % a.nandrw if a.nandrw else "")
     p = launch(a.nand, a.qmp, serial, machine_opts=opts)
     print("qemu pid", p.pid)
     q = QMP("127.0.0.1", a.qmp)
