@@ -61,12 +61,33 @@ static void allocate_ram(MemoryRegion *top, const char *name, uint32_t addr, uin
     memory_region_add_subregion(top, addr, sec);
 }
 
+/*
+ * Host wall-clock source for the boot-time clock patch. The 2G has no RTC iOS
+ * reads at boot (getGMTTimeOfDay returns 0 -> the calendar starts at 1900), so we
+ * patch _PEGetGMTTimeOfDay to read this cp15 register, which returns host UTC
+ * seconds. XNU seeds its calendar from it once and its tick advances from there;
+ * hand it UTC, not localtime -- iOS applies its own timezone. This is a sibling
+ * of the QEMU_CALL reg (opc2=0); opc2=1 keeps it separate from the socket tunnel.
+ */
+static uint64_t host_gmt_seconds(CPUARMState *env, const ARMCPRegInfo *ri)
+{
+    return (uint64_t)(uint32_t)time(NULL);
+}
+static void host_gmt_write(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t v)
+{
+    /* read-only clock source; ignore writes */
+}
+
 static const ARMCPRegInfo it2g_cp_reginfo_tcg[] = {
     IT2G_CPREG_DEF(REG0, 0, 0, 7, 6, 0, PL1_RW, 0),
     IT2G_CPREG_DEF(REG1, 0, 0, 15, 2, 4, PL1_RW, 0),
     IT2G_CPREG_DEF(REG1, 0, 0, 7, 14, 0, PL1_RW, 0),
     IT2G_CPREG_DEF(REG1, 0, 0, 7, 10, 0, PL1_RW, 0),
     IT2G_CPREG_DEF_QEMU_CALL,
+    { .cp = 15, .name = "HOST_GMT_SECONDS",
+      .opc0 = 0, .opc1 = 3, .crn = 15, .crm = 15, .opc2 = 1,
+      .access = PL0_RW, .state = ARM_CP_STATE_AA32, .type = ARM_CP_IO,
+      .readfn = host_gmt_seconds, .writefn = host_gmt_write },
 };
 
 static void ipod_touch_cpu_setup(MachineState *machine, MemoryRegion **sysmem, ARMCPU **cpu, AddressSpace **nsas)
