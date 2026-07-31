@@ -157,6 +157,48 @@ before driving a USB reset.
 
 If there are any issues running the above commands, please let me know by [opening an issue](https://github.com/devos50/qemu-ios/issues/new).
 
+## Shutting the guest down cleanly (and making writes survive)
+
+Start the emulator with a QMP monitor and shut it down with:
+
+```
+build/qemu-system-arm -M iPod-Touch,... -qmp unix:/tmp/it.sock,server,nowait
+contrib/it-poweroff.sh /tmp/it.sock
+```
+
+**Do this before stopping the emulator if you care about anything the guest
+wrote.** File *data* reaches flash promptly, but HFS+ keeps catalog (directory)
+updates in memory and nothing forces them out on an idle device — measured, not
+one page reaches flash in the three minutes after an `afcclient put`. Killing
+QEMU therefore leaves every data block safely in the overlay with no directory
+entry, and the file does not exist on the next boot. Unmounting the root volume
+is what flushes the catalog, and only a real shutdown unmounts it.
+
+`system_powerdown` means here what it means on a PC: the machine hands the guest
+a power-button event and lets the OS shut itself down. iPhone OS 2.1.1 has no
+remote shutdown at all — lockdownd has neither a reboot request nor a
+diagnostics relay, and SpringBoard runs as `mobile`, so nothing in the guest can
+call `reboot(2)` — so the "power-button event" is the real user gesture: the
+machine holds the hold button until SpringBoard raises its power-off sheet and
+then drags the slider across (`ipod_touch_powerdown_tick` in
+`hw/arm/ipod_touch_2g.c`, timed on the virtual clock so it is not affected by
+host load).
+
+The guest ends its shutdown by clearing bit 6 of PMU register `0x10`, the power
+latch that iBoot set on the way up. That is the model's cue to call
+`qemu_system_shutdown_request()`, so QEMU exits by itself once the overlay is
+complete. Pass `-no-shutdown` if you would rather it stop and stay stopped.
+
+Guest-initiated *restart* is a different register: `AppleARMWatchDogTimer`'s
+`PEHaltRestart` handler sets bit `0x100000` in the watchdog control register at
+`0x3C800000`, and `hw/arm/ipod_touch_wdt.c` turns that into
+`qemu_system_reset_request()`. The bootrom is re-staged on every reset, so the
+machine reboots in place.
+
+`IT_PWROFF_TRACE=1` logs the gesture; `IT_PMU_TRACE=1` logs every PMU register
+access with the guest PC/LR that made it (noisy — the battery gauge is polled
+continuously).
+
 ## Editing the guest filesystem offline
 
 The emulator serves NAND pages straight out of `cs<N>/<page>.page` with no ECC or

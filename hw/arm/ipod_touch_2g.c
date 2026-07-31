@@ -5,6 +5,7 @@
 #include "hw/misc/unimp.h"
 #include "hw/irq.h"
 #include "sysemu/sysemu.h"
+#include "sysemu/runstate.h"
 #include "sysemu/reset.h"
 #include "hw/platform-bus.h"
 #include "hw/block/flash.h"
@@ -644,6 +645,149 @@ static const QemuInputHandler ipod_touch_kbd_handler = {
 	.event = ipod_touch_kbd_event,
 };
 
+/*
+ * Scripted "slide to power off".
+ *
+ * iPhone OS 2.1.1 has no remote shutdown: lockdownd has neither a reboot
+ * request nor a diagnostics relay, and nothing in the guest runs as root that
+ * we can drive. The one path to a *clean* shutdown -- the one that unmounts the
+ * root volume and so flushes HFS+'s in-memory catalog to flash -- is the user
+ * gesture: hold the hold button until SpringBoard raises its power-off sheet,
+ * then drag the slider. So the machine performs that gesture itself.
+ *
+ * QEMU's own system_powerdown is the trigger, which is exactly what it means
+ * elsewhere: ACPI machines send the guest a power-button event and let the OS
+ * shut itself down. Here the "power button event" is a synthesised press plus
+ * the slide the guest insists on.
+ *
+ * Everything is timed on QEMU_CLOCK_VIRTUAL so the sequence is deterministic
+ * under host load: SpringBoard's hold-to-power-off threshold is measured in
+ * guest time, so the hold must be too.
+ *
+ * The slider geometry is in display pixels on the 320x480 panel, measured from
+ * a screendump of the sheet: the knob sits at the left of a track running the
+ * width of the screen, vertically centred at y=68.
+ */
+#define PWROFF_HOLD_MS      3500   /* > SpringBoard's hold threshold           */
+#define PWROFF_SETTLE_MS    1500   /* sheet slides in and settles              */
+#define PWROFF_DRAG_STEPS   24
+#define PWROFF_DRAG_STEP_MS 80
+#define PWROFF_KNOB_X       65
+#define PWROFF_KNOB_Y       68
+#define PWROFF_TRACK_END_X  295
+
+enum {
+	PWROFF_IDLE = 0,
+	PWROFF_PRESSED,
+	PWROFF_SETTLING,
+	PWROFF_DRAGGING,
+	PWROFF_DONE,
+};
+
+/* Same effect as a mouse event on the display, but in panel pixels. */
+static void ipod_touch_synth_touch(IPodTouchMachineState *nms,
+                                   int px, int py, int state)
+{
+	IPodTouchLCDState *lcd = nms->lcd_state;
+	IPodTouchMultitouchState *mt;
+
+	if (!lcd || !lcd->mt) {
+		return;
+	}
+	mt = lcd->mt;
+
+	mt->prev_touch_x = mt->touch_x;
+	mt->prev_touch_y = mt->touch_y;
+	mt->touch_x = (float)px / 320.0f;
+	mt->touch_y = 1.0f - (float)py / 480.0f;
+
+	if (state && !mt->touch_down) {
+		ipod_touch_multitouch_on_touch(mt);
+	} else if (!state && mt->touch_down) {
+		ipod_touch_multitouch_on_release(mt);
+	}
+	/* While the finger is down the digitizer's own 10Hz timer keeps emitting
+	 * TOUCH_MOVED frames from touch_x/touch_y, so updating them is the move. */
+}
+
+static void ipod_touch_powerdown_arm(IPodTouchMachineState *nms, int ms)
+{
+	timer_mod(nms->pwroff_timer,
+	          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+	              (int64_t)ms * SCALE_MS);
+}
+
+static void ipod_touch_powerdown_tick(void *opaque)
+{
+	IPodTouchMachineState *nms = opaque;
+	bool trace = getenv("IT_PWROFF_TRACE") != NULL;
+
+	switch (nms->pwroff_phase) {
+	case PWROFF_PRESSED:
+		/* Hold expired: release the button. The sheet is already up. */
+		if (s_kbd_mt) {
+			ipod_touch_key_event(s_kbd_mt, KEY_P_UP);
+		}
+		nms->pwroff_phase = PWROFF_SETTLING;
+		ipod_touch_powerdown_arm(nms, PWROFF_SETTLE_MS);
+		break;
+
+	case PWROFF_SETTLING:
+		ipod_touch_synth_touch(nms, PWROFF_KNOB_X, PWROFF_KNOB_Y, 1);
+		nms->pwroff_phase = PWROFF_DRAGGING;
+		nms->pwroff_step = 0;
+		ipod_touch_powerdown_arm(nms, PWROFF_DRAG_STEP_MS);
+		break;
+
+	case PWROFF_DRAGGING: {
+		int i = ++nms->pwroff_step;
+		int x = PWROFF_KNOB_X +
+		        (PWROFF_TRACK_END_X - PWROFF_KNOB_X) * i / PWROFF_DRAG_STEPS;
+
+		if (i < PWROFF_DRAG_STEPS) {
+			ipod_touch_synth_touch(nms, x, PWROFF_KNOB_Y, 1);
+			ipod_touch_powerdown_arm(nms, PWROFF_DRAG_STEP_MS);
+		} else {
+			ipod_touch_synth_touch(nms, PWROFF_TRACK_END_X,
+			                       PWROFF_KNOB_Y, 0);
+			nms->pwroff_phase = PWROFF_DONE;
+			if (trace) {
+				fprintf(stderr, "[PWROFF] slider released; "
+				                "waiting for the guest to halt\n");
+			}
+		}
+		break;
+	}
+
+	default:
+		break;
+	}
+}
+
+static void ipod_touch_powerdown_req(Notifier *n, void *opaque)
+{
+	IPodTouchMachineState *nms = s_kbd_nms;
+
+	if (!nms || !nms->pwroff_timer) {
+		return;
+	}
+	if (nms->pwroff_phase != PWROFF_IDLE) {
+		return;   /* a sequence is already running */
+	}
+	if (getenv("IT_PWROFF_TRACE")) {
+		fprintf(stderr, "[PWROFF] holding the hold button\n");
+	}
+	if (s_kbd_mt) {
+		ipod_touch_key_event(s_kbd_mt, KEY_P_DOWN);
+	}
+	nms->pwroff_phase = PWROFF_PRESSED;
+	ipod_touch_powerdown_arm(nms, PWROFF_HOLD_MS);
+}
+
+static Notifier ipod_touch_powerdown_notifier = {
+	.notify = ipod_touch_powerdown_req,
+};
+
 static void ipod_touch_machine_init(MachineState *machine)
 {
 	IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(machine);
@@ -989,6 +1133,16 @@ static void ipod_touch_machine_init(MachineState *machine)
     s_kbd_nms = nms;
     s_kbd_mt = spi4_state->mt;
     qemu_input_handler_register(DEVICE(nms->cpu), &ipod_touch_kbd_handler);
+
+    /*
+     * system_powerdown -> the slide-to-power-off gesture (see
+     * ipod_touch_powerdown_tick). This is what gives the guest a chance to
+     * unmount its filesystems before the machine stops.
+     */
+    nms->pwroff_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                     ipod_touch_powerdown_tick, nms);
+    nms->pwroff_phase = PWROFF_IDLE;
+    qemu_register_powerdown_notifier(&ipod_touch_powerdown_notifier);
 }
 
 static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)

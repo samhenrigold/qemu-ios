@@ -6,7 +6,13 @@ screenshots without needing a human at the SDL window.
   ipod-touch-qmp.py <port> shot <out.ppm>
   ipod-touch-qmp.py <port> tap <x> <y>          # 0..319 x, 0..479 y
   ipod-touch-qmp.py <port> swipe <x1> <y1> <x2> <y2>
-  ipod-touch-qmp.py <port> key <qcode>
+  ipod-touch-qmp.py <port> button <home|power|voldown|volup>
+  ipod-touch-qmp.py <port> key <qcode>          # raw key, reaches the guest as text
+
+The hardware buttons sit behind the host Command modifier so that plain keys stay
+free for text entry, which is why `key h` types an 'h' rather than going home.
+Use `button home`. They are also GPIO levels the guest samples rather than edges,
+so a brief press is missed - hence the hold time.
 """
 import json
 import socket
@@ -71,9 +77,21 @@ class QMP:
                            "data": {"down": False, "button": "left"}}])
 
 
+"""Hardware buttons, as the machine maps them (hw/arm/ipod_touch_2g.c)."""
+BUTTONS = {
+    "home":    ["meta_l", "shift", "h"],
+    "power":   ["meta_l", "l"],
+    "voldown": ["meta_l", "minus"],
+    "volup":   ["meta_l", "equal"],
+}
+
+
 def main():
     port = int(sys.argv[1])
     action = sys.argv[2]
+    if action == "button" and sys.argv[3] not in BUTTONS:
+        sys.exit("unknown button %r; try one of: %s"
+                 % (sys.argv[3], ", ".join(sorted(BUTTONS))))
     q = QMP(port)
     if action == "shot":
         print(q.cmd("screendump", filename=sys.argv[3]))
@@ -83,6 +101,12 @@ def main():
     elif action == "swipe":
         q.swipe(*(int(a) for a in sys.argv[3:7]))
         print("swiped")
+    elif action == "button":
+        name = sys.argv[3]
+        q.cmd("send-key",
+              keys=[{"type": "qcode", "data": k} for k in BUTTONS[name]],
+              **{"hold-time": 250})
+        print("%s pressed" % name)
     elif action == "key":
         q.send_events([{"type": "key",
                         "data": {"down": True,

@@ -203,6 +203,16 @@ typedef struct {
 	unsigned kbd_head, kbd_tail;
 	bool kbd_cmd;             /* host Command/Meta held */
 	bool kbd_shift;           /* host Shift held */
+
+	/*
+	 * Scripted "slide to power off" (see ipod_touch_powerdown_tick). QEMU's
+	 * system_powerdown arms this; it holds the hold button, waits for
+	 * SpringBoard's power-off sheet and drags its slider, which is the only
+	 * path iPhone OS 2.1.1 offers to a clean shutdown.
+	 */
+	QEMUTimer *pwroff_timer;
+	int pwroff_phase;
+	int pwroff_step;
 } IPodTouchMachineState;
 
 #endif
