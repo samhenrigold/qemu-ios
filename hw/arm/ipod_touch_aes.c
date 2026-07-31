@@ -462,12 +462,6 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
 
                 memset(buf, 0, aesop->insize);
                 memcpy(buf, blob->plain, MIN(aesop->insize, (uint32_t)IT_AES_GID_BLOB_SIZE));
-
-                if (strstr(blob->name, "applelogo") != NULL) {
-                    /* very ugly - we patch out here the LZSS check */
-                    uint32_t nop = 0x0;
-                    cpu_physical_memory_write(0x0ff119f0, (uint8_t *)&nop, 4);
-                }
             }
             else {
                 /*
