@@ -59,6 +59,41 @@ static uint32_t mbx_guest_pc(void)
  * This cannot make anything render. The intent is only that the guest stops
  * waiting forever, so the UI survives an app that touches the GPU.
  */
+/*
+ * What the driver actually does with these registers, read out of
+ * com.apple.driver.AppleMBX (__text at 0xc04e4000).
+ *
+ *   0x130  interrupt MASK/enable. The driver writes 0x867c and caches the same
+ *          value at this->0x140 (c04e8988-c04e89a4). It is not a doorbell, so
+ *          arming a completion off a write here fires off the driver's power-on
+ *          sequence, not off a frame.
+ *   0x12c  interrupt STATUS. Bit 0x40 also doubles as "idle": c04e8624 spins on
+ *          it before programming the engine.
+ *   0x134  write-1-to-clear for 0x12c. c04e8998 writes 0x7ff to clear all.
+ *
+ * The ISR is at c04ea478:
+ *
+ *   if (this->0x214 != 2) return;                  <-- bails with no MMIO at all
+ *   pending = [0x12c] & this->0x140;
+ *   [0x134] = pending;
+ *   ... 0x400 -> TA overflow, 0x10/0x20/0x200 -> state machine ...
+ *   0x4 -> this->0x13c,  0x8 -> this->0x13d,  0x40 -> this->0x13e
+ *   if (0x13c && 0x13d && 0x13e) -> frame done
+ *   if (anything handled) bl c04e9b00               <-- queue processor
+ *
+ * and c04e9b00 eventually reaches c04e9898, which does
+ *
+ *   this->0x208 = completedCommand->0x48;
+ *   commandGate->commandWakeup(&this->0x208);
+ *
+ * waking waitForTimeStamp (c04e8058), which commandSleeps on &this->0x208 until
+ * it reaches the requested timestamp. So a faithful completion has to raise the
+ * interrupt with 0x4|0x8|0x40 set in 0x12c *while* 0x130 is armed and the device
+ * state this->0x214 is 2. The current shim raises it 1ms later, by which time
+ * the driver's idle path (c04e5cc0) has written 0x130 <- 0 and this->0x214 <- 0,
+ * so the ISR returns immediately -- which is exactly the observed "interrupt
+ * fires, guest ignores it, zero MBX accesses".
+ */
 #define MBX_MMU_CTRL_REG 0x1020
 #define MBX_MMU_ENABLE   0x00000001   /* driver's request */
 #define MBX_MMU_ACK      0x00010000   /* hardware's acknowledgement */
