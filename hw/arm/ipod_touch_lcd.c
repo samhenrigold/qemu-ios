@@ -42,6 +42,10 @@ static void ipod_touch_lcd_write(void *opaque, hwaddr addr, uint64_t val, unsign
     IPodTouchLCDState *s = (IPodTouchLCDState *)opaque;
     // printf("%s: writing 0x%08x to 0x%08x\n", __func__, val, addr);
 
+    if (getenv("LCD_TRACE")) {
+        fprintf(stderr, "[LCD] wr [0x%04x] <- 0x%08x\n", (unsigned)addr, (unsigned)val);
+    }
+
     switch(addr) {
         case 0x4:
             s->lcd_con = val;
@@ -205,6 +209,9 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
     s->w1_display_depth_info = 0;
     s->invalidate = 1;
     memset(&s->fbsection, 0, sizeof(s->fbsection));
+    if (getenv("LCD_TRACE")) {
+        fprintf(stderr, "[LCD] ==== reset ====\n");
+    }
 }
 
 static void ipod_touch_lcd_realize(DeviceState *dev, Error **errp)

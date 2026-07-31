@@ -466,9 +466,41 @@ static void ipod_touch_mbx_init(Object *obj)
 
 }
 
+/*
+ * Warm resets have to clear the MMU handshake and the completion shim.
+ *
+ * addr backs register 0x1020, whose bit 0 is the driver's MMU enable request.
+ * The guest clears it on the way down, so without a reset the next boot starts
+ * with the MMU marked disabled and AppleMBXDevice initialises against the
+ * previous boot's state. That matters beyond the GPU: CoreSurface uses the MBX
+ * as its swap device ("AppleMBX: Using AppleM2CLCD as legacy swap device"), so
+ * a half-initialised MBX stops SpringBoard ever programming its framebuffer
+ * into the display controller -- the panel stays on the boot logo even though
+ * SpringBoard is running and has attached to IOMobileFramebuffer.
+ *
+ * alreadypatched must be cleared too: the USB gate patch is applied to kernel
+ * memory that a reset reloads, so it has to be re-applied on the next boot.
+ */
+static void ipod_touch_mbx_reset(DeviceState *dev)
+{
+    IPodTouchMBXState *s = IPOD_TOUCH_MBX(dev);
+
+    s->addr = 0;
+    s->status = 0;
+    s->alreadypatched = false;
+    if (s->done_timer) {
+        timer_del(s->done_timer);
+    }
+    if (s->irq) {
+        qemu_irq_lower(s->irq);
+    }
+}
+
 static void ipod_touch_mbx_class_init(ObjectClass *klass, void *data)
 {
-    
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->reset = ipod_touch_mbx_reset;
 }
 
 static const TypeInfo ipod_touch_mbx_type_info = {
