@@ -139,6 +139,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define CDC_DCMD_ERROR      0x01
 #define CDC_DCMD_SET        0x02
 
+#define WLC_GET_VAR         262
+#define WLC_SET_VAR         263
+
 typedef struct BCM4325FrameHeaderPacket
 {
     uint16_t frame_length;

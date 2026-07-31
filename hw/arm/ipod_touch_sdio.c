@@ -261,8 +261,19 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
     uint32_t payload_len = ldl_le_p(cdc + 4);
     uint32_t flags = ldl_le_p(cdc + 8);
 
-    printf("[SDIO] CDC command %u (%s), %u bytes, flags 0x%08x\n", cmd,
-           (flags & CDC_DCMD_SET) ? "set" : "get", payload_len, flags);
+    /* WLC_GET_VAR and WLC_SET_VAR carry a NUL-terminated iovar name at the
+     * start of the payload, which is the only way to tell one from another. */
+    const char *iovar = "";
+    if ((cmd == WLC_GET_VAR || cmd == WLC_SET_VAR) && len > CDC_HDRLEN) {
+        const char *p = (const char *)cdc + CDC_HDRLEN;
+        size_t max = len - CDC_HDRLEN;
+        if (memchr(p, 0, max)) {
+            iovar = p;
+        }
+    }
+    printf("[SDIO] CDC command %u (%s), %u bytes, flags 0x%08x%s%s\n", cmd,
+           (flags & CDC_DCMD_SET) ? "set" : "get", payload_len, flags,
+           *iovar ? " iovar " : "", iovar);
 
     if (payload_len > len - CDC_HDRLEN) {
         payload_len = len > CDC_HDRLEN ? len - CDC_HDRLEN : 0;

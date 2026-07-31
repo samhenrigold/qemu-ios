@@ -211,7 +211,42 @@ AppleBCM4325::setPowerStateGated() : Powering On
 ```
 
 **An `IO80211Interface` is attached to the network stack with the right MAC.**
-That is the first network interface this emulator has ever had.
+That is the first network interface this emulator has ever had, and iOS agrees:
+Settings' Wi-Fi row goes from a greyed-out "No Wi-Fi" to "Not Connected", and
+the Wi-Fi Networks pane opens with the toggle ON and "Choose a Network..."
+above an empty list.
+
+### The control commands the driver actually issues
+
+Logged with their iovar names, which is the only way to tell two `WLC_SET_VAR`s
+apart. In order, from `initDongle` to the first scan:
+
+```
+84  WLC_SET_COUNTRY          263 set_var  sup_wpa
+2   WLC_UP                   263 set_var  allmulti
+262 get_var  ver             263 set_var  mcast_list
+83  WLC_GET_COUNTRY          262 get_var  qtxpower
+38  set (4 bytes)            263 set_var  deepsleep   (repeatedly)
+263 set_var  event_msgs      263 set_var  iscan       <- tapping into Wi-Fi
+262 get_var  event_msgs
+263 set_var  scan_passive_time
+86  get (4 bytes)
+```
+
+Two things fall out of this:
+
+- `get_var ver` is answered with a zeroed payload, so the driver logs an empty
+  `BCM4325 Firmware Version:`. Harmless now, worth filling in later.
+- **Scanning goes through the `iscan` iovar**, the older incremental-scan
+  interface, not `escan`. Tapping into the Wi-Fi pane sends a 206-byte
+  `set_var iscan`. The list stays empty because nothing answers it.
+
+So stage 4 is now concrete: accept `set_var iscan`, push a scan-complete event
+on channel 1, and answer `get_var iscanresults` with one synthetic BSS. The
+event encoding is the part that still has to be got right - an 802.3 frame with
+ethertype 0x886c carrying a `bcmeth_hdr` and a big-endian `wl_event_msg_t`;
+the driver checks the OUI and subtype and logs "Got a BRCM packet but an
+OUI/SUBTYPE mismatch" when they are wrong.
 
 It does not survive. Seconds later the guest panics:
 
