@@ -290,8 +290,12 @@ All under `$F`. The golden `nand` is never written.
   the power-down transition.
 - **No self-reboot.** The watchdog device is modelled, but the guest never
   reaches the handler that would write it, for the reason above.
-- **OpenGL ES apps do not render.** The MBX GPU is not emulated; the MMU
-  handshake is acknowledged so they no longer peg the CPU, but they still hang.
+- **OpenGL ES apps do not render.** The MBX GPU is not emulated. With
+  `mbx-irq=on` the MMU handshake is acknowledged so they no longer peg the CPU
+  (the verified 0x1020 fix) - but that option is **off by default**, so in the
+  stock configuration a GLES app still spins ~21M reads on the MMU register, and
+  either way it still hangs without rendering. Making `mbx-irq` default on is a
+  pending decision (it needs a boot test that the 2D path is unaffected).
 - **Debugger attach fails** (see above).
 - **WiFi passes no traffic** (see above).
 - **`ideviceinstaller` installs cannot produce a launchable app.** The install
