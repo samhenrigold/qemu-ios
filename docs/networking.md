@@ -15,7 +15,17 @@ only one of them is real:
 | USB ethernet function (CDC ECM/NCM, RNDIS, tethering) | **Ruled out.** The firmware ships no such function and no driver that could back one. Evidence below. |
 | cp15 guest-services socket shim (`hw/arm/guest-services.c`) | Dormant. Needs guest code to issue the hypercall, and is layer 4 only - no interface, so nothing in iOS routes through it. |
 | PPP over the serial multiplexer | Real mechanism, wrong device. See below. |
-| BCM4325 SDIO WiFi (`hw/arm/ipod_touch_sdio.c`) | **Works.** Behind `wifi=on`, iOS takes a DHCP lease, ARPs, and serves TCP over the emulated dongle. See "The device is on the network" below. |
+| BCM4325 SDIO WiFi (`hw/arm/ipod_touch_sdio.c`) | **Works.** Behind `wifi=on`, iOS takes a DHCP lease, ARPs, runs mDNSResponder, resolves a hostname, and renders a page in Safari over the emulated dongle. Real-internet names are gated one step short - see "The device is on the network" below. |
+
+Two guest-filesystem changes are needed in addition to the emulator work, both
+applied offline with `imgtools/editimg.py` and both properties of this specific
+image rather than the hardware:
+
+1. a minimal SystemConfiguration `preferences.plist` defining an en0/AirPort
+   service set to DHCP (the image ships none, so no service was ever elected);
+2. an mDNSResponder LaunchDaemon, installed by rewriting an existing root-owned
+   plist *in place* so it stays root-owned (launchd ignores non-root daemon
+   plists, and a newly created file is owned by the host user).
 
 ### PPP is a second interface-capable path, and it needs a baseband
 
@@ -570,25 +580,118 @@ load works from the same Safari session.
 Darwin goes through it, so `SCNetworkReachabilityCreateWithName` and `CFHost`
 would fail before a packet is sent, which is exactly the observed shape.
 
-**Writing a LaunchDaemon for it did not help**, so that is not the whole story.
-A 10.5-style plist - `ProgramArguments` of `/usr/sbin/mDNSResponder -launchd`,
-a `com.apple.mDNSResponder` MachService, a `Sockets` `Listeners` dict for the
-`mdns` multicast group, `RunAtLoad` and `KeepAlive` - was installed and the
-behaviour was unchanged: still no DNS query on the wire, still the same dialog,
-and mDNSResponder still logs nothing and launchd does not complain. So either
-launchd is rejecting the job quietly, or `-launchd` fails to acquire its
-sockets and it exits immediately, or resolution on this build does not go
-through it at all.
+The resolver on this build is confirmed to be mDNSResponder-178.2:
+`libSystem` carries `com.apple.system.DirectoryService.libinfo_v1` and
+`@(#) libdns_sd mDNSResponder-178.2`, and every `gethostbyname` goes to the
+daemon over the mach service `com.apple.mDNSResponder` and the Unix socket
+`/var/run/mDNSResponder`.
 
-Worth trying next, roughly in order of cost:
+**Ground truth, read out of the guest filesystem after a boot** (mount the
+`nandrw` overlay's changed pages on top of a copy of the base NAND, reassemble
+with `imgtools/dumpvol.py`, mount read-only): `/var/run/mDNSResponder` **does
+not exist** and there is no crash log. The daemon is simply not running.
 
-- drop `-launchd` so it opens its own sockets, and drop the `Sockets` dict
-- check whether launchd on 2.x even scans `/System/Library/LaunchDaemons` for
-  jobs added after the image was built, or works from a cached job list
-- confirm the resolver path by looking at what `CFNetwork`/`libinfo` in this
-  build actually calls - if it is `res_query` reading `/etc/resolv.conf`
-  directly then mDNSResponder is a red herring and the failure is in
-  `SCNetworkReachabilityCreateWithName` instead
+The first two LaunchDaemons I wrote for it were each wrong in one half:
+
+- `-launchd` with the `Listeners` socket declared as a **multicast UDP 5353**
+  socket. That is not what the daemon wants from launchd - it opens its own
+  5353 sockets. `Listeners` is meant to be the client-facing **Unix domain
+  socket** `/var/run/mDNSResponder` (`SockPathName`). Given the wrong fd, the
+  daemon cannot serve clients.
+- standalone with **no `MachServices`**. Without launchd holding the receive
+  right for `com.apple.mDNSResponder` and handing it over on check-in, the
+  daemon cannot register its mach service and exits - no crash, no log.
+
+The canonical 10.5 layout is `-launchd`, `MachServices` containing
+`com.apple.mDNSResponder`, and `Sockets` -> `Listeners` with
+`SockPathName = /var/run/mDNSResponder` and `SockPathMode = 438`.
+
+### Why none of the three plists started it: ownership
+
+Even the canonical plist left `/var/run/mDNSResponder` absent and the log empty.
+A probe daemon added the same way - `ProgramArguments` of `/bin/launchctl list`
+into a log - produced nothing either, while the earlier *edit* to
+`com.apple.configd.plist` (adding `-v`) had taken effect. The difference is
+ownership, read straight off the reassembled volume:
+
+```
+com.apple.configd.plist              uid 0   gid 0     (edited in place)
+com.apple.mDNSResponder.plist        uid 501 gid 20    (newly created)
+com.probe.launchctl.plist            uid 501 gid 20    (newly created)
+```
+
+**launchd ignores a LaunchDaemon plist that is not owned by root**, silently -
+no spawn, no log, no crash. `imgtools/editimg.py` runs as the host user, so any
+file it *creates* is owned by uid 501; a file it *rewrites in place* keeps the
+inode's original root ownership, which is why the configd edit worked and the
+new plists did not.
+
+The way in is therefore to rewrite an existing root-owned daemon plist in place.
+Overwriting the dispensable `com.apple.ReportCrash.SafetyNet.plist` with the
+mDNSResponder job keeps it `uid 0 gid 0`, and launchd starts it. Confirmed on
+the wire the moment the link comes up:
+
+```
+IP 10.0.2.15 > 224.0.0.251: igmp v2 report 224.0.0.251
+IP 10.0.2.15.5353 > 224.0.0.251.5353: ANY (QM)? iPod-touch.local.
+IP 10.0.2.15.5353 > 224.0.0.251.5353: (Cache flush) A 10.0.2.15
+IP 10.0.2.15.51565 > 10.0.2.3.53: PTR? 15.2.0.10.in-addr.arpa.
+IP 10.0.2.3.53 > 10.0.2.15.51565: NXDomain
+```
+
+mDNSResponder joins the multicast group, announces `iPod-touch.local`, and -
+the key line - sends a **unicast DNS query to 10.0.2.3**, slirp's resolver, and
+gets an answer. The resolver works and it can reach the DNS server.
+
+### The remaining wall: SCNetworkReachability for names
+
+Safari by hostname still fails, but the resolver is not the reason. Tapping the
+Google bookmark produces **no forward query for `www.google.com` on the wire at
+all** - the only unicast DNS is mDNSResponder's own reverse-PTR housekeeping.
+So `CFNetwork`/Safari is gated *before* it resolves, by `SCNetworkReachability`,
+which reports the host unreachable and returns `kCFURLErrorNotConnectedToInternet`
+("Safari cannot open the page because it is not connected to the Internet").
+
+An IP-addressed load still works, because that path checks reachability of a
+concrete address and finds the route.
+
+### A page by hostname does render
+
+The reachability gate is not a hard wall for names - it passes as soon as a
+name resolves to a reachable address. Point a name at the served address in
+`/etc/hosts` (mDNSResponder reads `/etc/hosts`, so this resolves with no wire
+query) and Safari loads it:
+
+```
+ARP who-has 10.0.2.100 tell 10.0.2.15  ->  Reply 52:55:0a:00:02:64
+10.0.2.15.49152 > 10.0.2.100.80: [S]                       <- guest first
+10.0.2.15.49152 > 10.0.2.100.80: length 382: GET / HTTP/1.1
+10.0.2.100.80 > 10.0.2.15.49152: length 186: HTTP/1.0 200 OK
+10.0.2.15.49152 > 10.0.2.100.80: [F.]
+```
+
+The URL bar reads `http://qemuhost/`, the page's title and body render, and the
+host server logs the request. **iPhone OS 2.1.1 resolves a hostname and browses
+to it over emulated WiFi.**
+
+### What still does not work: remote names
+
+A name that needs a *unicast* DNS round-trip - a real internet host, or any name
+not in `/etc/hosts` or the mDNS cache - still fails, and still puts no forward
+query on the wire. `SCNetworkReachabilityCreateWithName` returns unreachable for
+it and Safari bails before resolving, exactly as for `www.google.com` and
+`example.com`. So reachability is satisfied by a name that resolves
+*synchronously and locally*, but not by one that would require the resolver to
+go out to `10.0.2.3` - even though mDNSResponder does exactly that successfully
+for its own reverse lookups.
+
+The most likely cause, and the reason to finish the real-association work rather
+than the `IPOD_WIFI_FAKE_LINK` shim: the synthetic link event asserts the
+carrier but does not set every interface flag a real 802.11 association would,
+and reachability is conservative about a name when the interface is not fully
+"running". Dropping the fake link in favour of a real association (now unblocked
+by the `WLC_GET_BSS_INFO` fix, which means genuine `iscanresults` can finally be
+answered) is the path to the last mile.
 
 ### Where the SSID and channel actually come from
 
