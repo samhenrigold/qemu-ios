@@ -99,11 +99,119 @@ succeed.
 None of that needs 802.11 to be simulated - association can simply be asserted -
 but it does need the dongle side of the SDIO and SDPCM protocols to be real.
 
-## Open question: the WiFi stack never starts
+## Where the WiFi route stands
 
-On a stock boot the SDIO controller registers are **never touched**: not one
-CMD52 or CMD53, no register read, nothing. `AppleS5L8900XSDIO` maps its
-registers at `start()` but only talks to the bus in `powerOnSequence()`, so the
-chip is presumably left unpowered until something asks for WiFi. Confirming what
-triggers that - and whether it happens at all in this image - is the first step
-before any dongle emulation is worth writing.
+The stack starts on its own at boot - no user action, no Settings toggle. With
+`boot-args=io=0x37` the matching is visible on the serial console.
+
+On a stock build the conversation ends immediately:
+
+```
+AppleS5L8900XSDIO::start(sdio): SDIO Revision 8720X
+IOSDIOController::enumerateSlot: Searching for SDIO device in slot: 0
+SDIO CMD: 5 ... (x101)
+IOSDIOController::enumerateSlot: Timed out waiting for card to become ready
+AppleS5L8900XSDIO::enumerateCards: Unable to communicate with SDIO device
+```
+
+101 CMD5s and no answer, because the R4 response is commented out in the model.
+Settings shows "No Wi-Fi" and the row is disabled, which is downstream of this
+and not a separate problem.
+
+With `wifi=on` the model answers CMD5 and presents a real CIA, and the chain
+runs all the way to the driver:
+
+```
+IOSDIOIoCardDevice::parseCIS: Device manufacturer Id(4d50), Product Id(4d48)
+AppleBCM4325::start(IOSDIOIoCardDevice)
+AppleBCM4325::initHardware(): BCM4325 revision D0
+```
+
+after which it programs the backplane window and starts writing firmware over
+function 1.
+
+### The MAC address is a CIS tuple
+
+`AppleBCM4325::processConfigData` asks its interface layer for "OTP" data and
+parses it as a tuple chain. For the SDIO interface that data is the card's CIS,
+so the MAC has to be a tuple:
+
+```
+0x22 0x08 0x04 0x06 <six address bytes>      CISTPL_FUNCE, extension type 4
+```
+
+The parser (`0xc032f8e0` in the 5F138 kernelcache) walks the chain, stops at
+`0xFF`, and for a `0x22` tuple requires the first body byte to be 4 and the
+second to be 6 before copying six bytes. It also recognises a `0x80` vendor
+tuple with subtype `0x81`, which is where Apple's config blob - BT address,
+WiFi calibration - would live.
+
+If nothing matches, the address stays zero, `processConfigData` compares it
+against an all-zero constant at `0xc034cbe0` and gives up with "unable to obtain
+MAC address, can't proceed any further".
+
+### What is still missing, and what it costs
+
+The prior estimate for this route was "multi-month, high-risk". Having the
+driver attach and start downloading firmware within an evening argues for
+something smaller. The remaining work, in the order it has to be done, each
+stage verifiable by the driver's own log:
+
+1. **Dongle bring-up handshake.** See the exact sequence below. The SDIOD core
+   sits at backplane `0x18002000` and the driver enables host mailbox
+   interrupts there; the model has to answer with a firmware-ready message and
+   an interrupt. Done when `initDongle` stops retrying.
+2. **SDPCM framing on function 2.** Four-byte hardware tag (length and its
+   complement), eight-byte software header (sequence, channel, next length,
+   header length, flow control, credit). Channels 0 control, 1 event, 2 data.
+   The driver paces on the credit field, so the bookkeeping has to be real.
+3. **The CDC control channel.** A `cmd/len/flags/status` header and then the
+   `WLC_*` surface the driver uses at init - `WLC_GET_MAGIC`,
+   `WLC_GET_VERSION`, `WLC_GET_VAR`, `WLC_SET_VAR`, `WLC_UP`, `WLC_SET_INFRA`,
+   `WLC_SET_PM`, `WLC_GET_REVINFO`. Iterative: anything unhandled shows up as
+   "command %d failure".
+4. **Events and a fake association.** Push `WLC_E_*` on channel 1 and answer
+   `WLC_SCAN` with a beacon list, so an SSID appears in Settings and the driver
+   believes it joined. No 802.11 needs simulating.
+5. **The data path.** BDC header plus 802.3 frames on channel 2, bridged to a
+   `NetClientState` so the usual QEMU backends apply. `CONFIG_VMNET` is
+   compiled in and slirp is explicitly disabled, so vmnet is the one to target;
+   DHCP and NAT then come from the host.
+
+### The bring-up sequence, from the driver
+
+Addresses are from the 5F138 kernelcache; the emulator boots that exact build,
+so they can be used directly.
+
+`downloadFirmwareGated` (`0xc0335918`), after the image is in RAM:
+
+- writes four bytes to backplane `0x18000634` (chipcommon), waits 10 ms,
+  then calls an interface method that starts the core
+- calls `initHardware` (`0xc0334b48`)
+- calls `initDongle` (`0xc03335ac`)
+
+`initHardware` finishes by:
+
+- writing `0xe0` to backplane **`0x18002024`** - the SDIOD core is at
+  `0x18002000` and this is its `hostintmask`. `0xe0` is the host mailbox set:
+  flow-control state, flow-control change, frame indication. Failure is logged
+  as "Failure to write interrupt mask register".
+- writing four bytes to function 1 register **`0x1000d`**, the frame control
+  register
+- one more interface call that must return non-zero, or "Call to hardware init
+  failed, exiting"
+
+`initDongle` then immediately issues **`WLC_SET_COUNTRY` (ioctl 0x54)** with the
+four bytes `"XX"` through `wlc_ioctl` (`0xc033b0a0`), retrying once on failure
+with "Failure to set country code, trying again". So the very first thing the
+dongle is asked after reset is a CDC control transaction - there is no simpler
+intermediate milestone, and stages 2 and 3 have to land together.
+
+`initFirmware` (`0xc0333eb4`) wraps the whole thing in five attempts with a
+power cycle and a 100 ms delay between them, so a wedged bring-up looks like a
+slow retry loop rather than a hard failure.
+
+Revised estimate: one and a half to two and a half weeks of focused work. The
+main risk left is that Apple's 2008 dongle protocol differs in detail from the
+one `brcmfmac` documents - the driver itself warns about a protocol version
+mismatch, so at least the version is negotiable and visible.
