@@ -1,28 +1,27 @@
 #!/bin/bash
 # Compose base NAND + overlay into a flat HFS+ volume and fsck it.
 #   fsck-overlay.sh <tag>
-# Uses the allocation-block -> (cs, page) mapping of the generated image:
-#   r, cs = divmod(block + 3, 4); eb = 2*(r//256) + 2 + (r%2)
-#   page  = eb*128 + (r%256)//2
-# The pristine composition fscks clean, so a dirty result means the persisted
-# writes are landing on the wrong physical pages.
+# Uses the allocation-block -> (cs, page) mapping of the generated image. The
+# formula is the single source of truth in imgtools/ftlmap.py:predict(); this
+# script imports it rather than re-deriving it. The pristine composition fscks
+# clean, so a dirty result means the persisted writes are landing on the wrong
+# physical pages.
 set -u
 TAG="$1"
 D="/private/tmp/claude-501/-Users-shg-Developer-qemu-ios/ebb367f9-df80-473b-a8c5-d32a64cc0728/scratchpad"
 IMG="$D/vol_$TAG.img"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-python3 - "$IMG" <<'EOF'
+python3 - "$IMG" "$SCRIPT_DIR/imgtools" <<'EOF'
 import os, sys
+sys.path.insert(0, sys.argv[2])
+from ftlmap import predict
 os.chdir(os.path.expanduser('~/Developer/qemu-ios-files'))
 out_path = sys.argv[1]
-def loc(b):
-    r, cs = divmod(b + 3, 4)
-    eb = 2*(r//256) + 2 + (r % 2)
-    return cs, eb*128 + (r % 256)//2
 used = 0
 with open(out_path, 'wb') as out:
     for b in range(128000):
-        cs, p = loc(b)
+        cs, p = predict(b)
         f = 'ovl-nand/cs%d/%d.page' % (cs, p)
         if os.path.exists(f):
             used += 1
