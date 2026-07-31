@@ -284,6 +284,13 @@ which is unrelated to WiFi and fixed on another branch.
 **So: use `wifi=on` on its own. Add `io=0x37` only when you need matching logs,
 and expect it to cost roughly 250x on this path.**
 
+Confirmed on a clean run: `wifi=on` with no boot arguments reaches
+`initFirmware(): successful initialization` and publishes the interface about
+thirty seconds into the boot, with zero occurrences of `fault_addr=0x38`.
+`start()` completes. The next thing to build is stage 4 - accept `set_var
+iscan`, push a scan-complete event on channel 1, and answer `get_var
+iscanresults` with a synthetic BSS.
+
 ### The MAC address is a CIS tuple
 
 `AppleBCM4325::processConfigData` asks its interface layer for "OTP" data and
