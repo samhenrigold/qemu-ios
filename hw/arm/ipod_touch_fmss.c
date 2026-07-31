@@ -155,6 +155,50 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
     }
 }
 
+/*
+ * Where the *generated* NAND image puts a filesystem block.
+ *
+ * `nand=` is not a dump of real flash. It is a synthetic image built by laying
+ * a single HFSX volume (SugarBowl5F138.N72OS, 4096-byte allocation blocks,
+ * 128000 of them) out across the four chip-selects with a fixed formula, and
+ * every page carries the same placeholder spare, so the guest FTL believes the
+ * whole device is free. Reads work because the FTL's mapping for the pristine
+ * image is exactly this formula.
+ *
+ * Writes do not, because the FTL is log-structured: it programs each page to a
+ * freshly allocated physical page, which here is still holding another file's
+ * data. Persisting at that physical address corrupts the image -- measurably
+ * so: it rewrites system frameworks (CoreAudio, AudioCodecs, aosnotifyd, ...)
+ * and never touches /private/var, which is the opposite of what a first boot
+ * should do.
+ *
+ * The destination the FTL actually intends is in the spare: its first word is
+ * the logical page number, and `logical = block + 3` -- the same +3 that
+ * appears in the layout formula. That was pinned down by content-anchoring 22
+ * written pages against the pristine volume, and confirmed end to end: placing
+ * the pages at their logical blocks yields a volume whose only changes are
+ * /private/var/run/{configd.pid,lockdown,SCHelper,utmpx}, SpringBoard's and
+ * mobile installation's plists, and Library/Keychains/TrustStore.sqlite3.
+ *
+ * So translate back into the generated layout on the way out. Returns false
+ * for logical numbers outside the volume, which are FTL bookkeeping rather
+ * than filesystem blocks and are meaningless once the indirection is undone.
+ */
+#define NAND_GENERATED_TOTAL_BLOCKS 128000
+
+static bool fmss_generated_layout(uint32_t logical, uint32_t *cs, uint32_t *page)
+{
+    if (logical < 3 || (logical - 3) >= NAND_GENERATED_TOTAL_BLOCKS) {
+        return false;
+    }
+    /* logical == block + 3, so these are just its quotient and remainder */
+    uint32_t r = logical / 4;
+    uint32_t eb = 2 * (r / 256) + 2 + (r % 2);
+    *cs = logical % 4;
+    *page = eb * 128 + (r % 256) / 2;
+    return true;
+}
+
 /* Store one physical page (data + spare) into the overlay, atomically. */
 static void fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
                             const uint8_t *data, const uint8_t *spare)
@@ -327,6 +371,34 @@ static void write_nand_pages(IPodTouchFMSSState *s)
                        i, cmd, cs, page_nr, src0, src1, d0, d1, sp[0], sp[1], sp[2]);
                 fflush(stdout);
             }
+        }
+
+        /*
+         * Undo the FTL's relocation -- see fmss_generated_layout(). The
+         * physical page the driver picked is freshly allocated as far as it is
+         * concerned, but in the generated image it is still holding somebody
+         * else's file data. Store the page where its logical block actually
+         * lives, and leave the synthetic clean spare in place so the image
+         * stays uniformly "generated".
+         */
+        if (!getenv("FMSS_PHYSICAL")) {
+            uint32_t logical = ldl_le_p(s->page_spare_buffer);
+            uint32_t rcs, rpage;
+            if (!fmss_generated_layout(logical, &rcs, &rpage)) {
+                if (getenv("FMSS_RTRACE")) {
+                    printf("SKIP logical=%u (cs=%u page=%u)\n", logical, cs, page_nr);
+                    fflush(stdout);
+                }
+                continue; /* FTL bookkeeping, not a filesystem block */
+            }
+            if (getenv("FMSS_RTRACE")) {
+                printf("KEEP logical=%u -> cs=%u page=%u\n", logical, rcs, rpage);
+                fflush(stdout);
+            }
+            cs = rcs;
+            page_nr = rpage;
+            memset(s->page_spare_buffer, 0, NAND_BYTES_PER_SPARE);
+            ((uint32_t *)s->page_spare_buffer)[2] = 0x00FF00FF;
         }
 
         fmss_store_page(s, cs, page_nr, s->page_buffer, s->page_spare_buffer);
