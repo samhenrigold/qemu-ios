@@ -322,10 +322,10 @@ static void patch_usb_function_gate(void)
     g_free(image);
 }
 
-static void patch_kernel(bool alreadypatched)
+static void patch_kernel(bool *alreadypatched)
 {
-    if (alreadypatched) return;
-    	alreadypatched = 1;
+    if (*alreadypatched) return;
+    *alreadypatched = true;
 
     /*
      * Give the guest a real clock. The 2G has no RTC iOS reads at boot, so
@@ -408,7 +408,7 @@ static uint64_t ipod_touch_mbx2_read(void *opaque, hwaddr addr, unsigned size)
     switch(addr)
     {
         case 0xC:
-            patch_kernel(s->alreadypatched);
+            patch_kernel(&s->alreadypatched);
 	    break;
 	case 0x4:
 	    val = 0xFF;
