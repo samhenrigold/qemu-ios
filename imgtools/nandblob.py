@@ -4,7 +4,8 @@
 The image is a directory of `cs{0..3}/<pagenr>.page` files, each 4160 bytes
 (4096 data + 64 spare).  Concatenating the data areas in a fixed order gives a
 single file we can mmap and search quickly, plus an index that maps any blob
-offset back to (cs, pagenr, offset-in-page).
+offset back to (cs, pagenr, offset-in-page). Searching one flat file also beats
+opening 128,060 small ones for every query.
 
 Order is cs-major, page-minor: all of cs0 sorted by page number, then cs1, ...
 """
