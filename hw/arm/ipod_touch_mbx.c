@@ -59,6 +59,9 @@ static uint32_t mbx_guest_pc(void)
  * This cannot make anything render. The intent is only that the guest stops
  * waiting forever, so the UI survives an app that touches the GPU.
  */
+#define MBX_MMU_CTRL_REG 0x1020
+#define MBX_MMU_ENABLE   0x00000001   /* driver's request */
+#define MBX_MMU_ACK      0x00010000   /* hardware's acknowledgement */
 #define MBX_SUBMIT_REG   0x130
 #define MBX_STATUS_REG   0x12c
 #define MBX_COMPLETE_NS  (1 * 1000 * 1000)  /* 1ms; the real thing is async */
@@ -110,8 +113,31 @@ static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
         case 0xf00:
             val = (2 << 0x10) | (1 << 0x18); // seems to be some kind of identifier
             break;
-        case 0x1020:
-            val = s->addr != 0x0 ? s->addr : 0x10000;
+        case MBX_MMU_CTRL_REG:
+            /*
+             * Bit 0 is the driver's enable *request*; bit 16 is the hardware's
+             * *acknowledgement*. AppleMBXMMU drives them as a handshake:
+             *
+             *   enable  (0xc04ee224): set bit 0,   spin until bit 16 sets
+             *   disable (0xc04ee770): clear bit 0, spin until bit 16 clears
+             *
+             * Echoing writes back unchanged satisfies the enable loop by
+             * accident -- writing 1 to bit 0 leaves the stale bit 16 set -- but
+             * makes the disable loop spin forever, because nothing ever clears
+             * bit 16. That is the real hang behind "OpenGL ES apps freeze":
+             * AwesomeBall tears the MMU down on startup and never comes back,
+             * burning ~21M reads of this one register. It is not the completion
+             * interrupt at all.
+             *
+             * So acknowledge the request: mirror bit 0 into bit 16.
+             */
+            val = s->addr;
+            if (s->irq_enabled) {
+                val = (val & ~MBX_MMU_ACK) | ((val & MBX_MMU_ENABLE) ? MBX_MMU_ACK : 0);
+            }
+            if (val == 0) {
+                val = MBX_MMU_ACK; /* never written: as before, report ready */
+            }
             break;
         default:
             val = 0;
@@ -128,7 +154,7 @@ static void ipod_touch_mbx1_write(void *opaque, hwaddr addr, uint64_t val, unsig
 
     switch(addr)
     {
-	case 0x1020:
+	case MBX_MMU_CTRL_REG:
 	    s->addr = val;
 	    break;
 	case MBX_SUBMIT_REG:
