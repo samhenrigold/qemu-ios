@@ -9,6 +9,17 @@
 #include "hw/irq.h"
 #include "time.h"
 
+/*
+ * Power-source status block. AppleD1759PMUPowerSource reads regs 0x04-0x06 as a
+ * three-byte auto-increment block and prints it as "status"; bit 3 of the first
+ * byte is USB cable presence. Bisected empirically: setting it flips
+ * AppleUSBCableDetect to 1 and _usbConnectType to 4, which is what releases the
+ * whole USB device stack. Do NOT force the entire block - that hangs boot on the
+ * Apple logo.
+ */
+#define PMU_PWRSRC_STATUS 0x04
+#define PMU_PWRSRC_USB    (1 << 3)
+
 #define TYPE_PCF50633                 "pcf50633"
 OBJECT_DECLARE_SIMPLE_TYPE(Pcf50633State, PCF50633)
 
@@ -32,6 +43,7 @@ typedef struct Pcf50633State {
 	uint32_t curreg;
 	bool addressing;      // next written byte selects the register address
 	uint8_t regs[256];    // backing register file so writes read back consistently
+	bool usb_cable;       // report a USB cable as present (reg 0x04 bit 3)
 } Pcf50633State;
 
 #endif

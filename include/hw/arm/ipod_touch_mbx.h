@@ -16,4 +16,6 @@ typedef struct IPodTouchMBXState {
     bool alreadypatched;
 } IPodTouchMBXState;
 
+void ipod_touch_mbx_set_patch_usb_gate(bool enabled);
+
 #endif

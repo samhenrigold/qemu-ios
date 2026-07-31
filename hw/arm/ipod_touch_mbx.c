@@ -62,10 +62,16 @@ static void ipod_touch_mbx1_write(void *opaque, hwaddr addr, uint64_t val, unsig
  * Firmware-build-specific, exactly like the addresses below. Verified against
  * iPhone OS 2.1.1 build 5F138 (xnu-1228.7.27~12, RELEASE_ARM_S5L8720X).
  */
+static bool patch_usb_gate_enabled;
+
+void ipod_touch_mbx_set_patch_usb_gate(bool enabled)
+{
+    patch_usb_gate_enabled = enabled;
+}
+
 static void patch_usb_function_gate(void)
 {
-    const char *e = getenv("IT_USB_GATE2");
-    if (!e || !*e || *e == '0') {
+    if (!patch_usb_gate_enabled) {
         return;
     }
 

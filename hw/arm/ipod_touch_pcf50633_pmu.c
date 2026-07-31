@@ -20,59 +20,6 @@ static int pcf50633_event(I2CSlave *i2c, enum i2c_event event)
     return 0;
 }
 
-/*
- * Phase 1 experiment harness (temporary, inert unless IT_PMU_FORCE is set).
- *
- * iOS parks the whole USB stack on AppleD1759PMUPowerSource reporting
- * "AppleUSBCableDetect 0"; we do not know which register/bit carries it, and
- * the register the stub special-cases (MBCS1, 0x4B) is never read. This lets
- * one binary drive many parallel boots that each force a different candidate
- * register range to a value, so the bit can be bisected empirically.
- *
- * Spec: IT_PMU_FORCE="lo-hi=val,reg=val"  (all values hex), e.g. "4-16=ff".
- * Only applies to registers that fall through to the default read path, so
- * RTC/boot-count/wake-status behaviour is untouched.
- */
-static uint8_t pmu_force_val[256];
-static bool pmu_force_set[256];
-
-static void pmu_force_init(void)
-{
-    static bool done;
-    if (done) {
-        return;
-    }
-    done = true;
-
-    const char *spec = getenv("IT_PMU_FORCE");
-    if (!spec || !*spec) {
-        return;
-    }
-
-    char *dup = g_strdup(spec);
-    for (char *tok = strtok(dup, ","); tok; tok = strtok(NULL, ",")) {
-        unsigned lo, hi, val;
-        if (sscanf(tok, "%x-%x=%x", &lo, &hi, &val) == 3) {
-            /* range form */
-        } else if (sscanf(tok, "%x=%x", &lo, &val) == 2) {
-            hi = lo;
-        } else {
-            fprintf(stderr, "[PMUFORCE] bad spec '%s'\n", tok);
-            continue;
-        }
-        if (lo > 0xff || hi > 0xff || lo > hi) {
-            fprintf(stderr, "[PMUFORCE] out-of-range spec '%s'\n", tok);
-            continue;
-        }
-        for (unsigned r = lo; r <= hi; r++) {
-            pmu_force_val[r] = val & 0xff;
-            pmu_force_set[r] = true;
-        }
-        fprintf(stderr, "[PMUFORCE] regs 0x%02x-0x%02x -> 0x%02x\n", lo, hi, val & 0xff);
-    }
-    g_free(dup);
-}
-
 static int int_to_bcd(int value) {
     int shift = 0;
     int res = 0;
@@ -133,47 +80,9 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
             // stub that always returned 0 here caused iOS's sleep sequence to
             // never observe the power-state transition it had just requested,
             // making it fall through into a reset instead of suspending.
-            pmu_force_init();
-            /*
-             * IT_PMU_CABLE=<seconds>: assert USB cable presence (reg 0x04 bit 3)
-             * only after the guest has been running this long. Asserting it from
-             * the first read races the driver, which reports "cable connected,
-             * but don't have device configuration yet" and then never retries.
-             */
-            if (reg == 0x04) {
-                /* IT_PMU_CABLE_AFTER=<n>: assert from the nth read of reg 4 on. */
-                const char *n = getenv("IT_PMU_CABLE_AFTER");
-                if (n && *n) {
-                    static int seen;
-                    seen++;
-                    printf("[PMUCABLE] reg4 read #%d\n", seen);
-                    if (seen >= atoi(n)) {
-                        s->curreg = (s->curreg + 1) & 0xff;
-                        return s->regs[0x04] | 0x08;
-                    }
-                }
-                const char *d = getenv("IT_PMU_CABLE");
-                if (d && *d) {
-                    static time_t t0;
-                    if (!t0) {
-                        t0 = time(NULL);
-                    }
-                    if (time(NULL) - t0 >= atoi(d)) {
-                        static bool announced;
-                        if (!announced) {
-                            announced = true;
-                            printf("[PMUCABLE] asserting USB cable present\n");
-                        }
-                        s->curreg = (s->curreg + 1) & 0xff;
-                        return s->regs[0x04] | 0x08;
-                    }
-                }
-            }
-            if (pmu_force_set[reg]) {
-                res = pmu_force_val[reg];
-                printf("[PMUFORCE] reg 0x%02x -> 0x%02x\n", reg, res);
-            } else {
-                res = s->regs[reg];
+            res = s->regs[reg];
+            if (reg == PMU_PWRSRC_STATUS && s->usb_cable) {
+                res |= PMU_PWRSRC_USB;
             }
     }
 
