@@ -298,10 +298,8 @@ typedef struct IPodTouchSDIOState
      * backend, so slirp/vmnet/etc supply DHCP, DNS and NAT. */
     NICState *nic;
     NICConf conf;
-    bool link_faked;         /* the association events have been pushed */
     bool iscan_reported;     /* this scan run has already reported its BSS */
     QEMUTimer *scan_timer;   /* delays the scan-complete event */
-    QEMUTimer *link_timer;
     unsigned tx_log;
     unsigned host_rx_log;
 
