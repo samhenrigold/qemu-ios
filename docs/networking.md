@@ -142,9 +142,8 @@ AppleBCM4325::initHardware(): BCM4325 revision D0
 ```
 
 after which it programs the backplane window and writes roughly 200 KB of
-firmware over function 1 - about twenty minutes of emulated time, so be patient
-before calling a run wedged. With the mailbox and SDPCM framing in place it
-then reaches the control channel:
+firmware over function 1. With the mailbox and SDPCM framing in place it then
+reaches the control channel:
 
 ```
 [SDIO] 192 KiB written to the backplane (now at 0x0002f000)
@@ -226,12 +225,29 @@ then calls `0xc03438f0`, a four instruction "are we associated" accessor that
 loads from `+0x38` of the object at `self+0x2bc`. That object is null, so the
 fault address is 0x38 exactly.
 
-This is the expected consequence of stopping halfway rather than a wrong turn:
-nothing has told the driver it associated, so the state the timer expects was
-never built. Stage 4 - events and a faked association - is what removes it, and
-until then a run with `wifi=on` will panic shortly after the interface appears.
-The boot is also much slower with `wifi=on`, since the firmware download alone
-is about twenty minutes of emulated time.
+**That crash is an artifact of `boot-args=io=0x37`, not a protocol gap.** With
+IOKit matching logs on, the firmware download runs at about 256 seconds per
+64 KiB; without them the whole download finishes in under a second. Measured
+with the same binary, changing only the boot argument:
+
+```
+io=0x37     64 KiB: 8435 register accesses      128 KiB: 256.0s, 664 accesses
+no args     64 KiB: 8435 register accesses      128 KiB:   0.0s, 664 accesses
+```
+
+The emulated device does the same work either way - 664 register accesses for
+64 KiB - so the cost is entirely inside the guest. Stretched over twenty
+minutes, `AppleBCM4325::start()` loses a race with one of its own timers: the
+deep sleep handler fires while `start()` is still running and dereferences
+state `start()` has not assigned yet. Run without `io=0x37` and the whole
+bring-up takes a couple of minutes and that crash does not happen.
+
+The only panic left on a `wifi=on` boot is the pre-existing
+`AppleMPVDDriver::setPowerStateGated` idle-sleep one (`fault_addr=0xec3fd01c`),
+which is unrelated to WiFi and fixed on another branch.
+
+**So: use `wifi=on` on its own. Add `io=0x37` only when you need matching logs,
+and expect it to cost roughly 250x on this path.**
 
 ### The MAC address is a CIS tuple
 
