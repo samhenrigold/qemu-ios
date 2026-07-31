@@ -68,6 +68,24 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 
 #define SDIO_RCA            0x0001
 
+/*
+ * Function 1's address space. Below 0x10000 is a window onto the chip
+ * backplane; from 0x10000 up are the SDIO device core's own registers,
+ * including the three bytes that position that window.
+ */
+#define SDIOD_CORE_BASE     0x10000
+#define SDIOD_CORE_SIZE     0x10000
+#define SB_OFFSET_MASK      0x7fff   /* bit 15 selects 32-bit access, not address */
+#define SBSDIO_SBADDRLOW    0x1000a
+#define SBSDIO_SBADDRHIGH   0x1000c
+
+#define BACKPLANE_PAGE_BITS 12
+#define BACKPLANE_PAGE_SIZE (1u << BACKPLANE_PAGE_BITS)
+
+/* Where the window points out of reset: the chipcommon core. */
+#define CHIPCOMMON_BASE     0x18000000
+#define CHIPCOMMON_CHIPID   0x00050000  /* the driver reads this as revision D0 */
+
 typedef struct BCM4325FrameHeaderPacket
 {
     uint16_t frame_length;
@@ -98,6 +116,9 @@ typedef struct IPodTouchSDIOState
     qemu_irq irq2;
     GQueue *rx_fifo;
     bool card_present;   /* answer CMD5 so the BCM4325 driver can attach */
+    uint32_t sb_window;  /* backplane address bits 8 and up */
+    GHashTable *backplane;
+    uint8_t sdiod_regs[SDIOD_CORE_SIZE];
     uint8_t registers[0x10000];
 } IPodTouchSDIOState;
 

@@ -99,11 +99,60 @@ succeed.
 None of that needs 802.11 to be simulated - association can simply be asserted -
 but it does need the dongle side of the SDIO and SDPCM protocols to be real.
 
-## Open question: the WiFi stack never starts
+## Where the WiFi route stands
 
-On a stock boot the SDIO controller registers are **never touched**: not one
-CMD52 or CMD53, no register read, nothing. `AppleS5L8900XSDIO` maps its
-registers at `start()` but only talks to the bus in `powerOnSequence()`, so the
-chip is presumably left unpowered until something asks for WiFi. Confirming what
-triggers that - and whether it happens at all in this image - is the first step
-before any dongle emulation is worth writing.
+The stack starts on its own at boot - no user action, no Settings toggle. With
+`boot-args=io=0x37` the matching is visible on the serial console.
+
+On a stock build the conversation ends immediately:
+
+```
+AppleS5L8900XSDIO::start(sdio): SDIO Revision 8720X
+IOSDIOController::enumerateSlot: Searching for SDIO device in slot: 0
+SDIO CMD: 5 ... (x101)
+IOSDIOController::enumerateSlot: Timed out waiting for card to become ready
+AppleS5L8900XSDIO::enumerateCards: Unable to communicate with SDIO device
+```
+
+101 CMD5s and no answer, because the R4 response is commented out in the model.
+Settings shows "No Wi-Fi" and the row is disabled, which is downstream of this
+and not a separate problem.
+
+With `wifi=on` the model answers CMD5 and presents a real CIA, and the chain
+runs all the way to the driver:
+
+```
+IOSDIOIoCardDevice::parseCIS: Device manufacturer Id(4d50), Product Id(4d48)
+AppleBCM4325::start(IOSDIOIoCardDevice)
+AppleBCM4325::initHardware(): BCM4325 revision D0
+```
+
+after which it programs the backplane window and starts writing firmware over
+function 1.
+
+### The MAC address is a CIS tuple
+
+`AppleBCM4325::processConfigData` asks its interface layer for "OTP" data and
+parses it as a tuple chain. For the SDIO interface that data is the card's CIS,
+so the MAC has to be a tuple:
+
+```
+0x22 0x08 0x04 0x06 <six address bytes>      CISTPL_FUNCE, extension type 4
+```
+
+The parser (`0xc032f8e0` in the 5F138 kernelcache) walks the chain, stops at
+`0xFF`, and for a `0x22` tuple requires the first body byte to be 4 and the
+second to be 6 before copying six bytes. It also recognises a `0x80` vendor
+tuple with subtype `0x81`, which is where Apple's config blob - BT address,
+WiFi calibration - would live.
+
+If nothing matches, the address stays zero, `processConfigData` compares it
+against an all-zero constant at `0xc034cbe0` and gives up with "unable to obtain
+MAC address, can't proceed any further".
+
+### What is still missing
+
+Everything past firmware download: the dongle-side SDPCM/CDC/BDC protocol on
+function 2, the `WLC_*` ioctl surface, asynchronous events, and a bridge to a
+host network backend. `CONFIG_VMNET` is compiled in and slirp is explicitly
+disabled, so vmnet is the intended backend.
