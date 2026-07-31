@@ -191,8 +191,9 @@ the CDC control channel - and publishes an `IO80211Interface` with the right MAC
 address. iOS agrees: Settings' Wi-Fi row reads "Not Connected" instead of a
 greyed-out "No Wi-Fi", and the Wi-Fi Networks pane opens and scans.
 
-**No traffic passes.** The network list stays empty because nothing answers the
-scan yet. See `docs/networking.md` for what remains.
+**No traffic passes.** The network list stays empty: the driver asks for a scan
+every fifteen seconds and waits for a completion event that the model does not
+send yet. See `docs/networking.md` for exactly what remains.
 
 Do not combine `wifi=on` with `boot-args=io=0x37`: IOKit matching logs make the
 firmware download about 250x slower, and stretched that far the driver's own

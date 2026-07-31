@@ -241,12 +241,51 @@ Two things fall out of this:
   interface, not `escan`. Tapping into the Wi-Fi pane sends a 206-byte
   `set_var iscan`. The list stays empty because nothing answers it.
 
-So stage 4 is now concrete: accept `set_var iscan`, push a scan-complete event
-on channel 1, and answer `get_var iscanresults` with one synthetic BSS. The
-event encoding is the part that still has to be got right - an 802.3 frame with
-ethertype 0x886c carrying a `bcmeth_hdr` and a big-endian `wl_event_msg_t`;
-the driver checks the OUI and subtype and logs "Got a BRCM packet but an
-OUI/SUBTYPE mismatch" when they are wrong.
+### What the driver is blocked on
+
+Characterised directly. With `set_var iscan` acknowledged as a success, the
+driver **never asks for results**. Over ninety seconds in the Wi-Fi pane it
+issued `set_var iscan` six times - roughly every fifteen seconds - and zero
+requests for `iscanresults`, `WLC_SCAN_RESULTS` or anything else that would
+carry a BSS list:
+
+```
+263 set_var iscan     (206 bytes)
+263 set_var deepsleep
+263 set_var deepsleep
+263 set_var iscan     (206 bytes)      <- 15s later, same thing again
+...
+```
+
+So it is **waiting for an asynchronous event, not polling**. Acknowledging the
+scan request is not enough and there is no iovar-only shortcut: the event
+channel has to exist first. Concretely, the next piece of work is:
+
+1. Deliver a scan-complete event on SDPCM channel 1 - an 802.3 frame with
+   ethertype 0x886c carrying a `bcmeth_hdr` and a big-endian `wl_event_msg_t`.
+   The driver checks the OUI and subtype and logs "Got a BRCM packet but an
+   OUI/SUBTYPE mismatch" when they are wrong, which makes it self-diagnosing.
+2. Only then answer the `get_var iscanresults` that should follow, with one
+   synthetic BSS.
+
+### A second, independent gap: deep sleep
+
+Once the display dims, `configd` logs "WiFi: Display off. Adjusting scan
+intervals for dim screen" and the driver tries to put the dongle to sleep. That
+path fails and retries forever:
+
+```
+AppleBCM4325DeviceInterfaceSdio::txPacket(): Error sending packet to SDIO layer : I/O timeout
+AppleBCM4325CmdManager::processPendingList(): Failure to send command to device: I/O timeout
+AppleBCM4325::enterDeepSleep(): Unable to enter deep sleep: I/O timeout
+```
+
+Note this is a **send** failure, not a missing reply - the `set_var deepsleep`
+before it is received and acknowledged normally. Something about the model's
+state after a deepsleep request stops the next frame being accepted. Worth
+looking at whichever of `CHIPCLKCSR` or the frame control register the driver
+touches on the way into sleep, since the model answers `CHIPCLKCSR` with a
+constant "ALP and HT available" regardless of what was requested.
 
 It does not survive. Seconds later the guest panics:
 
