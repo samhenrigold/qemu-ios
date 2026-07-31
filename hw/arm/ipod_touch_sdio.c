@@ -421,6 +421,14 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                 backplane_read(s, backplane_addr(s, addr), &byte, 1);
                 s->resp0 = byte;
             }
+            else if(func == 0x0 && addr == CCCR_INT_PENDING) {
+                /* How the driver finds out which function raised the card
+                 * interrupt. Derive it rather than latch it, so acknowledging
+                 * the dongle's mailbox clears this too. */
+                uint32_t pending = sdpcm_reg_read(s, SDPCM_INTSTATUS) &
+                                   sdpcm_reg_read(s, SDPCM_HOSTINTMASK);
+                s->resp0 = pending ? (CCCR_INT_PENDING_FN1 | CCCR_INT_PENDING_FN2) : 0;
+            }
             else {
                 trace_sdio("SDIO: Executing cmd52 by reading from 0x%02x (value: 0x%02x)\n", addr, s->registers[addr]);
                 s->resp0 = s->registers[addr];
@@ -487,6 +495,16 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                         g_queue_pop_head(s->rx_fifo);
                         g_free(f->data);
                         g_free(f);
+                    }
+                    if (g_queue_is_empty(s->rx_fifo)) {
+                        /* Nothing left to collect. Leaving the frame
+                         * indication set makes the driver read again, get a
+                         * zero-length frame and hand it to its command
+                         * manager, which then complains that no command is
+                         * pending - forever. */
+                        sdpcm_reg_write(s, SDPCM_INTSTATUS,
+                                        sdpcm_reg_read(s, SDPCM_INTSTATUS) &
+                                        ~I_HMB_FRAME_IND);
                     }
                 } else if (xfer_len >= SDPCM_HWHDR_LEN) {
                     stw_le_p(buf, 0);
