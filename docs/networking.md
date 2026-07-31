@@ -14,7 +14,7 @@ only one of them is real:
 | --- | --- |
 | USB ethernet function (CDC ECM/NCM, RNDIS, tethering) | **Ruled out.** The firmware ships no such function and no driver that could back one. Evidence below. |
 | cp15 guest-services socket shim (`hw/arm/guest-services.c`) | Dormant. Needs guest code to issue the hypercall, and is layer 4 only - no interface, so nothing in iOS routes through it. |
-| BCM4325 SDIO WiFi (`hw/arm/ipod_touch_sdio.c`) | The only path to a real network interface. Currently a probe stub. |
+| BCM4325 SDIO WiFi (`hw/arm/ipod_touch_sdio.c`) | The only path to a real network interface, and the one being built. Behind `wifi=on`, the driver initialises and publishes an `IO80211Interface`; no traffic passes yet. |
 
 ## Why USB ethernet is ruled out
 
@@ -71,13 +71,12 @@ qemu-system-arm -M iPod-Touch,...,usb-attached=on,usb-patch-mux-gate=on,\
     usb-tcp-addr=127.0.0.1:1330 ...
 ```
 
-## What the WiFi route would require
+## What the WiFi route requires
 
-`hw/arm/ipod_touch_sdio.c` is a probe stub: it fakes a CIS, reports clocks
-ready, and answers a data read with a 4-byte length/checksum header and no
-payload. Notably `sdio_exec_cmd` has the CMD5 response commented out, so the
-card never announces itself and `AppleS5L8900XSDIO::enumerateCards` cannot
-succeed.
+`hw/arm/ipod_touch_sdio.c` began as a probe stub: a faked CIS, faked
+clocks-ready, and a data read that returned a 4-byte header and no payload.
+`sdio_exec_cmd` had the CMD5 response commented out, so the card never
+announced itself and `AppleS5L8900XSDIO::enumerateCards` could not succeed.
 
 `AppleBCM4325` is a Broadcom dongle driver of the same shape as Linux's
 `brcmfmac`. Its strings show the full bring-up it expects:
