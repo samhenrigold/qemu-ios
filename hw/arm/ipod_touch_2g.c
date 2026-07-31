@@ -91,6 +91,36 @@ static void ipod_touch_cpu_setup(MachineState *machine, MemoryRegion **sysmem, A
     object_unref(cpuobj);
 }
 
+/*
+ * Put the bootrom back at the reset vector.
+ *
+ * "vrom" is plain RAM at address 0, filled from the bootrom file once during
+ * ipod_touch_memory_setup(). Address 0 is also the ARM exception vector page,
+ * which the running guest happily writes over. So by the time anything asks for
+ * a reset, the bytes at VROM_MEM_BASE are whatever iOS left there, and the CPU
+ * restarts into that instead of the bootrom -- the machine never boots again.
+ *
+ * That is why the guest's post-fsck reboot went nowhere: the watchdog really
+ * did call qemu_system_reset_request(), and the CPU really was reset, but it
+ * resumed executing junk. A bare "system_reset" from the monitor against a
+ * healthy machine failed exactly the same way, which is what showed this is a
+ * machine-model problem rather than anything the guest did.
+ *
+ * Re-staging it on every reset costs one file read per boot and makes the reset
+ * vector mean what it says.
+ */
+static void ipod_touch_load_bootrom(IPodTouchMachineState *nms)
+{
+    uint8_t *file_data = NULL;
+    gsize fsize;
+
+    if (g_file_get_contents(nms->bootrom_path, (char **)&file_data, &fsize, NULL)) {
+        address_space_rw(nms->nsas, VROM_MEM_BASE, MEMTXATTRS_UNSPECIFIED,
+                         file_data, fsize, 1);
+        g_free(file_data);
+    }
+}
+
 static void ipod_touch_cpu_reset(void *opaque)
 {
     IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE((MachineState *)opaque);
@@ -98,6 +128,7 @@ static void ipod_touch_cpu_reset(void *opaque)
     CPUState *cs = CPU(cpu);
 
     cpu_reset(cs);
+    ipod_touch_load_bootrom(nms);
 
     //env->regs[0] = nms->kbootargs_pa;
     //cpu_set_pc(CPU(cpu), 0xc00607ec);
@@ -121,13 +152,10 @@ static void ipod_touch_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     allocate_ram(sysmem, "swi", SWI_MEM_BASE, 0x1000);
     allocate_ram(sysmem, "h264", H264_MEM_BASE, 0x4000);
 
-    // load the bootrom (vrom)
-    uint8_t *file_data = NULL;
-    gsize fsize;
-    if (g_file_get_contents(nms->bootrom_path, (char **)&file_data, &fsize, NULL)) {
-        allocate_ram(sysmem, "vrom", 0x0, 0x20000);
-        address_space_rw(nsas, VROM_MEM_BASE, MEMTXATTRS_UNSPECIFIED, (uint8_t *)file_data, fsize, 1);
-    }
+    /* The bootrom itself is (re)staged by ipod_touch_load_bootrom(), which also
+     * runs on every reset -- see the note there. */
+    allocate_ram(sysmem, "vrom", 0x0, 0x20000);
+    ipod_touch_load_bootrom(nms);
 }
 
 static char *ipod_touch_get_bootrom_path(Object *obj, Error **errp)
