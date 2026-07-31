@@ -1,5 +1,6 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "hw/arm/boot.h"
 #include "exec/address-spaces.h"
 #include "hw/misc/unimp.h"
@@ -320,6 +321,62 @@ static void ipod_touch_set_mbx_irq(Object *obj, bool value, Error **errp)
     IPOD_TOUCH_MACHINE(obj)->mbx_irq = value;
 }
 
+/*
+ * Accelerometer controls, forwarded to the LIS302DL. These live on the machine
+ * (a stable /machine QOM path) so a host can drive rotation/shake over QMP:
+ *   qom-set path=/machine property=accel-orientation value=3   (0-6, UIDeviceOrientation)
+ *   qom-set path=/machine property=accel-shake value=true
+ *   qom-set path=/machine property=accel-x value=64
+ * The i2c device itself cannot be given a fixed path (it is parented to the bus).
+ */
+static void ipod_touch_get_accel_orientation(Object *obj, Visitor *v, const char *name,
+                                             void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    int64_t val = nms->lis302dl_state ? nms->lis302dl_state->orientation : 0;
+    visit_type_int(v, name, &val, errp);
+}
+
+static void ipod_touch_set_accel_orientation(Object *obj, Visitor *v, const char *name,
+                                             void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    int64_t val;
+    if (!visit_type_int(v, name, &val, errp)) {
+        return;
+    }
+    if (nms->lis302dl_state) {
+        lis302dl_apply_orientation(nms->lis302dl_state, (uint32_t)val);
+    }
+}
+
+static void ipod_touch_set_accel_axis(Object *obj, Visitor *v, const char *name,
+                                      void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    int64_t val;
+    if (!visit_type_int(v, name, &val, errp)) {
+        return;
+    }
+    /* name is "accel-x" / "accel-y" / "accel-z" */
+    if (nms->lis302dl_state) {
+        lis302dl_set_axis_value(nms->lis302dl_state, name[strlen(name) - 1], (int)val);
+    }
+}
+
+static void ipod_touch_set_accel_shake(Object *obj, Visitor *v, const char *name,
+                                       void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    bool val;
+    if (!visit_type_bool(v, name, &val, errp)) {
+        return;
+    }
+    if (val && nms->lis302dl_state) {
+        lis302dl_shake(nms->lis302dl_state);
+    }
+}
+
 static void ipod_touch_instance_init(Object *obj)
 {
     object_property_add_str(obj, "bootrom", ipod_touch_get_bootrom_path, ipod_touch_set_bootrom_path);
@@ -351,6 +408,11 @@ static void ipod_touch_instance_init(Object *obj)
 
     /* On by default: the emulated device is effectively tethered to the host. */
     IPOD_TOUCH_MACHINE(obj)->usb_attached = true;
+    /* On by default: this gates the verified MBX MMU request/ack mirror
+     * (ipod_touch_mbx.c), which stops the ~21M-read disable-loop spin that
+     * froze OpenGL ES apps. The 2D boot path does not touch the MMU handshake,
+     * so defaulting it on is safe there. */
+    IPOD_TOUCH_MACHINE(obj)->mbx_irq = true;
     object_property_add_bool(obj, "mbx-irq", ipod_touch_get_mbx_irq, ipod_touch_set_mbx_irq);
     object_property_set_description(obj, "mbx-irq",
         "Raise a completion interrupt for the unemulated MBX GPU so an app that "
@@ -366,6 +428,18 @@ static void ipod_touch_instance_init(Object *obj)
     object_property_set_description(obj, "usb-patch-mux-gate",
         "Patch the kernel so the USB stack goes on bus even though the PTP interface "
         "function never registers a driver. Firmware-build-specific (2.1.1 / 5F138)");
+
+    /* Accelerometer (LIS302DL) host controls; see the getters/setters above. */
+    object_property_add(obj, "accel-orientation", "int",
+                        ipod_touch_get_accel_orientation,
+                        ipod_touch_set_accel_orientation, NULL, NULL);
+    object_property_set_description(obj, "accel-orientation",
+        "Set the reported device orientation: 1=portrait, 2=portrait-upside-down, "
+        "3=landscape-home-right, 4=landscape-home-left, 5=face-up, 6=face-down");
+    object_property_add(obj, "accel-x", "int", NULL, ipod_touch_set_accel_axis, NULL, NULL);
+    object_property_add(obj, "accel-y", "int", NULL, ipod_touch_set_accel_axis, NULL, NULL);
+    object_property_add(obj, "accel-z", "int", NULL, ipod_touch_set_accel_axis, NULL, NULL);
+    object_property_add(obj, "accel-shake", "bool", NULL, ipod_touch_set_accel_shake, NULL, NULL);
 }
 
 static inline qemu_irq s5l8900_get_irq(IPodTouchMachineState *s, int n)
@@ -1023,8 +1097,11 @@ static void ipod_touch_machine_init(MachineState *machine)
     PCF50633(pmu)->usb_cable = nms->usb_attached;
     ipod_touch_mbx_set_patch_usb_gate(nms->usb_patch_mux_gate);
 
-    // init the accelerometer
+    // init the accelerometer. Keep the handle so the machine's QMP properties
+    // (accel-orientation / accel-x/y/z / accel-shake, added in instance_init)
+    // can drive it, e.g.  qom-set path=/machine property=accel-orientation value=3
     I2CSlave *accelerometer = i2c_slave_create_simple(i2c_state->bus, "lis302dl", 0x1D);
+    nms->lis302dl_state = LIS302DL(accelerometer);
 
     // init the audio codec (disabled because unused)
     // I2CSlave *audio_codec = i2c_slave_create_simple(i2c_state->bus, "cs42l58", 0x4A);

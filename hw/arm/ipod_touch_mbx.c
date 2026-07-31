@@ -99,27 +99,6 @@ static uint32_t mbx_guest_pc(void)
 #define MBX_MMU_ACK      0x00010000   /* hardware's acknowledgement */
 #define MBX_SUBMIT_REG   0x130
 #define MBX_STATUS_REG   0x12c
-#define MBX_COMPLETE_NS  (1 * 1000 * 1000)  /* 1ms; the real thing is async */
-
-static void mbx_complete(void *opaque)
-{
-    IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
-
-    s->status |= 0x40;
-    if (s->irq) {
-        qemu_irq_raise(s->irq);
-    }
-    MBX_TRACE("completion fired, status=0x%08x", s->status);
-}
-
-static void mbx_submit(IPodTouchMBXState *s)
-{
-    if (!s->irq_enabled || !s->done_timer) {
-        return;
-    }
-    timer_mod(s->done_timer,
-              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MBX_COMPLETE_NS);
-}
 
 static uint32_t reverse_byte_order(uint32_t value) {
     return ((value & 0x000000FF) << 24) |
@@ -191,13 +170,6 @@ static void ipod_touch_mbx1_write(void *opaque, hwaddr addr, uint64_t val, unsig
     {
 	case MBX_MMU_CTRL_REG:
 	    s->addr = val;
-	    break;
-	case MBX_SUBMIT_REG:
-	    /* A non-zero write here is a submission; zero is the teardown that
-	     * follows it. Only the submission arms the completion. */
-	    if (val) {
-	        mbx_submit(s);
-	    }
 	    break;
     }
 }
@@ -350,10 +322,10 @@ static void patch_usb_function_gate(void)
     g_free(image);
 }
 
-static void patch_kernel(bool alreadypatched)
+static void patch_kernel(bool *alreadypatched)
 {
-    if (alreadypatched) return;
-    	alreadypatched = 1;
+    if (*alreadypatched) return;
+    *alreadypatched = true;
 
     /*
      * Give the guest a real clock. The 2G has no RTC iOS reads at boot, so
@@ -436,7 +408,7 @@ static uint64_t ipod_touch_mbx2_read(void *opaque, hwaddr addr, unsigned size)
     switch(addr)
     {
         case 0xC:
-            patch_kernel(s->alreadypatched);
+            patch_kernel(&s->alreadypatched);
 	    break;
 	case 0x4:
 	    val = 0xFF;
@@ -476,12 +448,10 @@ static void ipod_touch_mbx_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem2);
 
     sysbus_init_irq(sbd, &s->irq);
-    s->done_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, mbx_complete, s);
-
 }
 
 /*
- * Warm resets have to clear the MMU handshake and the completion shim.
+ * Warm resets have to clear the MMU handshake.
  *
  * addr backs register 0x1020, whose bit 0 is the driver's MMU enable request.
  * The guest clears it on the way down, so without a reset the next boot starts
@@ -502,9 +472,6 @@ static void ipod_touch_mbx_reset(DeviceState *dev)
     s->addr = 0;
     s->status = 0;
     s->alreadypatched = false;
-    if (s->done_timer) {
-        timer_del(s->done_timer);
-    }
     if (s->irq) {
         qemu_irq_lower(s->irq);
     }
