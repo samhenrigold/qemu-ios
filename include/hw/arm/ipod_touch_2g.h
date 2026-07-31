@@ -21,6 +21,7 @@
 #include "hw/arm/ipod_touch_aes.h"
 #include "hw/arm/ipod_touch_pke.h"
 #include "hw/arm/ipod_touch_unknown1.h"
+#include "hw/arm/ipod_touch_wdt.h"
 #include "hw/arm/ipod_touch_lcd.h"
 #include "hw/arm/ipod_touch_mipi_dsi.h"
 #include "hw/arm/ipod_touch_fmss.h"
@@ -120,6 +121,7 @@ extern const int S5L8900_GPIO_IRQS[5];
 #define CLOCK0_MEM_BASE       0x3C500000
 #define I2C0_MEM_BASE         0x3C600000
 #define TIMER1_MEM_BASE       0x3C700000
+#define WDT_MEM_BASE          0x3C800000
 #define I2C1_MEM_BASE         0x3C900000
 #define UART0_MEM_BASE        0x3CC00000
 #define SPI1_MEM_BASE         0x3CE00000
