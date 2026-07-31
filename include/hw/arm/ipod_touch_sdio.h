@@ -139,6 +139,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define CDC_DCMD_ERROR      0x01
 #define CDC_DCMD_SET        0x02
 
+#define WLC_GET_VAR         262
+#define WLC_SET_VAR         263
+
 typedef struct BCM4325FrameHeaderPacket
 {
     uint16_t frame_length;
@@ -181,6 +184,9 @@ typedef struct IPodTouchSDIOState
     uint32_t sb_window;  /* backplane address bits 8 and up */
     uint32_t fw_bytes;   /* bytes pushed over function 1, for progress logging */
     uint32_t fw_bytes_logged;
+    int64_t fw_last_us;
+    uint32_t mmio_ops;
+    uint32_t irq_polls;
     bool func2_seen;
     unsigned func2_reads;
     unsigned ready_log;
