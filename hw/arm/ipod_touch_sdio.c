@@ -444,17 +444,22 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                 /* Hand up one queued frame, zero-padded to whatever the host
                  * asked for. With nothing queued, a length of zero and its
                  * complement is the "no frame" answer. */
+                /* A frame can be collected in more than one read - typically a
+                 * first block to learn the length, then the remainder - so keep
+                 * the head of the queue until it has all been handed over. */
                 g_autofree uint8_t *buf = g_malloc0(xfer_len);
-                SDPCMFrame *f = g_queue_pop_head(s->rx_fifo);
+                SDPCMFrame *f = g_queue_peek_head(s->rx_fifo);
 
                 if (f) {
-                    memcpy(buf, f->data, MIN(f->len, xfer_len));
-                    if (f->len > xfer_len) {
-                        printf("[SDIO] SDPCM frame truncated: %u bytes into a %u byte read\n",
-                               f->len, xfer_len);
+                    uint32_t left = f->len - f->read_off;
+                    uint32_t n = MIN(left, xfer_len);
+                    memcpy(buf, f->data + f->read_off, n);
+                    f->read_off += n;
+                    if (f->read_off >= f->len) {
+                        g_queue_pop_head(s->rx_fifo);
+                        g_free(f->data);
+                        g_free(f);
                     }
-                    g_free(f->data);
-                    g_free(f);
                 } else if (xfer_len >= SDPCM_HWHDR_LEN) {
                     stw_le_p(buf, 0);
                     stw_le_p(buf + 2, 0xffff);
