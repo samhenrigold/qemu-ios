@@ -8,8 +8,16 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
     IPodTouchMIPIDSIState *s = (IPodTouchMIPIDSIState *)opaque;
     switch(addr)
     {
-        case 0x0:
-            return 0x103 | rDSIM_STATUS_TxReadyHsClk;
+        case REG_STATUS:
+            // TxReadyHsClk has to follow the clock request in CLKCTRL rather
+            // than being wired on. Panel bring-up sets CLKCTRL bit 31 and spins
+            // until this bit reads set; panel shutdown clears bit 31 and spins
+            // until it reads clear. Reporting it permanently set satisfied
+            // bring-up but made shutdown spin forever, wedging the kernel
+            // mid-power-down -- which is why the display never came back from
+            // idle sleep, and why the reboot path never reached the watchdog.
+            return 0x103 | ((s->clkctrl & rDSIM_CLKCTRL_TxRequestHsClk)
+                                ? rDSIM_STATUS_TxReadyHsClk : 0);
         case REG_INTSRC:
             return rDSIM_INTSRC_RxDatDone;
         case REG_RXFIFO:
@@ -41,9 +49,10 @@ static void ipod_touch_mipi_dsi_write(void *opaque, hwaddr addr, uint64_t val, u
         case REG_PKTHDR:
             s->pkthdr_reg = val;
             break;
-	case 0x00000008:
-	    if (val == 0)
-		printf("turning off screen\n");
+        case REG_CLKCTRL:
+            // Remember the HS clock request; STATUS.TxReadyHsClk mirrors it.
+            s->clkctrl = val;
+            break;
         default:
             break;
     }
