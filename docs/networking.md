@@ -535,8 +535,59 @@ The first two LaunchDaemons I wrote for it were each wrong in one half:
 
 The canonical 10.5 layout is `-launchd`, `MachServices` containing
 `com.apple.mDNSResponder`, and `Sockets` -> `Listeners` with
-`SockPathName = /var/run/mDNSResponder` and `SockPathMode = 438`. That is what
-is being tried now.
+`SockPathName = /var/run/mDNSResponder` and `SockPathMode = 438`.
+
+### Why none of the three plists started it: ownership
+
+Even the canonical plist left `/var/run/mDNSResponder` absent and the log empty.
+A probe daemon added the same way - `ProgramArguments` of `/bin/launchctl list`
+into a log - produced nothing either, while the earlier *edit* to
+`com.apple.configd.plist` (adding `-v`) had taken effect. The difference is
+ownership, read straight off the reassembled volume:
+
+```
+com.apple.configd.plist              uid 0   gid 0     (edited in place)
+com.apple.mDNSResponder.plist        uid 501 gid 20    (newly created)
+com.probe.launchctl.plist            uid 501 gid 20    (newly created)
+```
+
+**launchd ignores a LaunchDaemon plist that is not owned by root**, silently -
+no spawn, no log, no crash. `imgtools/editimg.py` runs as the host user, so any
+file it *creates* is owned by uid 501; a file it *rewrites in place* keeps the
+inode's original root ownership, which is why the configd edit worked and the
+new plists did not.
+
+The way in is therefore to rewrite an existing root-owned daemon plist in place.
+Overwriting the dispensable `com.apple.ReportCrash.SafetyNet.plist` with the
+mDNSResponder job keeps it `uid 0 gid 0`, and launchd starts it. Confirmed on
+the wire the moment the link comes up:
+
+```
+IP 10.0.2.15 > 224.0.0.251: igmp v2 report 224.0.0.251
+IP 10.0.2.15.5353 > 224.0.0.251.5353: ANY (QM)? iPod-touch.local.
+IP 10.0.2.15.5353 > 224.0.0.251.5353: (Cache flush) A 10.0.2.15
+IP 10.0.2.15.51565 > 10.0.2.3.53: PTR? 15.2.0.10.in-addr.arpa.
+IP 10.0.2.3.53 > 10.0.2.15.51565: NXDomain
+```
+
+mDNSResponder joins the multicast group, announces `iPod-touch.local`, and -
+the key line - sends a **unicast DNS query to 10.0.2.3**, slirp's resolver, and
+gets an answer. The resolver works and it can reach the DNS server.
+
+### The remaining wall: SCNetworkReachability for names
+
+Safari by hostname still fails, but the resolver is not the reason. Tapping the
+Google bookmark produces **no forward query for `www.google.com` on the wire at
+all** - the only unicast DNS is mDNSResponder's own reverse-PTR housekeeping.
+So `CFNetwork`/Safari is gated *before* it resolves, by `SCNetworkReachability`,
+which reports the host unreachable and returns `kCFURLErrorNotConnectedToInternet`
+("Safari cannot open the page because it is not connected to the Internet").
+
+An IP-addressed load still works, because that path checks reachability of a
+concrete address and finds the route. A *name* needs the reachability layer to
+either resolve it or report the network usable, and it does neither. So the
+last gap is entirely inside SystemConfiguration's reachability logic, above a
+resolver and a transport that both now work.
 
 ### Where the SSID and channel actually come from
 
