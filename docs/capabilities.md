@@ -102,12 +102,13 @@ SSH over USB would work on this transport; what is missing is a listener on port
 
 ## Run real App Store apps
 
-Third-party apps from 2008 run, fully interactive. `ideviceinstaller install`
-works over USB (verified with a 509 KB `.ipa`: `Install: Complete`, then listed
-by `ideviceinstaller list`). Apps can also be injected into `/Applications` in
-the NAND image offline, which is how the ones below were tested and remains the
-route for bundles you do not have as an `.ipa`. installd rebuilds its cache
-every boot by scanning, so a bundle only has to be present.
+Third-party apps from 2008 run, fully interactive - but only when injected into
+`/Applications` in the NAND image offline. `ideviceinstaller install` now
+completes over USB, and the icon appears on SpringBoard, yet the app still will
+not launch by any route available from the host; see the known-limits entry for
+the two mutually exclusive gates that cause this. Offline injection is the only
+way to get a running app. installd rebuilds its cache every boot by scanning, so
+a bundle only has to be present.
 
 ```sh
 python3 imgtools/editimg.py --nand $F/nand-mine --script inject.sh
@@ -215,8 +216,16 @@ $Q -M iPod-Touch,... -qmp tcp:127.0.0.1:4530,server=on,wait=off
 python3 contrib/ipod-touch-qmp.py 4530 shot out.ppm
 python3 contrib/ipod-touch-qmp.py 4530 tap 275 243
 python3 contrib/ipod-touch-qmp.py 4530 swipe 160 400 160 100
-python3 contrib/ipod-touch-qmp.py 4530 key h
+python3 contrib/ipod-touch-qmp.py 4530 button home
 ```
+
+The hardware buttons live behind the host **Command** modifier, so that plain
+keys stay free for text entry: home is Command+Shift+H, power Command+L, volume
+Command+- / Command+=. Use `button home` rather than `key h` - `key h` now types
+an `h` into whatever has focus and silently does nothing else, which is an easy
+way to lose an hour wondering why taps are landing in the wrong place. They are
+GPIO levels the guest samples rather than edges, so the press needs a hold time;
+`button` supplies one.
 
 Screendumps usually come out with a maximum sample value of 1, so a straight
 PPM-to-PNG conversion looks solid black. Normalise to 0..255 before viewing.
@@ -277,15 +286,31 @@ All under `$F`. The golden `nand` is never written.
   handshake is acknowledged so they no longer peg the CPU, but they still hang.
 - **Debugger attach fails** (see above).
 - **WiFi passes no traffic** (see above).
-- **`ideviceinstaller` installs probably still do not launch.** The install
-  itself now succeeds - it used to die at `PackageExtractionFailed` because
-  device->host reads were corrupt, and since that was fixed a 509 KB `.ipa`
-  reaches `Install: Complete` and shows up in `ideviceinstaller list`. But it
-  lands in `/var/mobile/Applications`, and bundles there are known not to open
-  (proven by an A/B against the identical bundle in `/Applications`). Launching
-  an installed app has not been retested since the fix, so treat this as
-  unverified rather than resolved. Inject into `/Applications` if you need the
-  app to actually run.
+- **`ideviceinstaller` installs cannot produce a launchable app.** The install
+  itself works - it used to die at `PackageExtractionFailed` because device->host
+  reads were corrupt, and now a genuine signed `.ipa` reaches `Install:
+  Complete`, is listed by `ideviceinstaller list`, and its icon appears on
+  SpringBoard without a reboot. It still will not run, and there is no way around
+  it from the host, because the two gates are mutually exclusive:
+  - A **signed** App Store `.ipa` is FairPlay-encrypted (`cryptid 1`). It
+    installs, then dies at its first `__TEXT` page: `AMFI: Invalid signature but
+    permitting execution` followed by `CODESIGNING: vm_fault_enter(...)
+    *** INVALID PAGE ***`, and the icon bounces.
+  - A **decrypted** bundle (`cryptid 0`) never gets that far: installd rejects it
+    at `VerifyingApplication (40%)` with `ApplicationVerificationFailed`.
+    `amfi_allow_any_signature=1` disables signature enforcement at *exec*, not
+    the verification installd runs at *install*, and decryption breaks the
+    CodeDirectory hashes.
+
+  Separately, `/var/mobile/Applications` still does not work, re-verified after
+  the USB bulk-IN fix by a same-boot A/B with two decrypted, known-good apps:
+  Obama '08 in `/Applications` launches, while the identical-vintage Guangzhou
+  under `/var/mobile/Applications/<UUID>` gives "The application ... cannot be
+  opened". That boot logs no codesigning event at all for it - the binary is
+  never exec'd - so this is launch bookkeeping in userspace, a different
+  mechanism from the two gates above.
+
+  **Inject into `/Applications` offline. That is the only route that runs.**
 - **You cannot build new 2.x binaries.** `ld` refuses armv6 and armv7 output
   uses load commands 2.1's dyld cannot parse. Decrypted period apps are the
   only practical source of software.
