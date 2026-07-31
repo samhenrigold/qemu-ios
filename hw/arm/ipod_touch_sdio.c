@@ -1,5 +1,80 @@
 #include "hw/arm/ipod_touch_sdio.h"
 
+/* Little-endian 24-bit CIS pointer, as the CCCR and FBRs store them. */
+static void put_cis_ptr(uint8_t *dst, uint32_t offset)
+{
+    dst[0] = offset & 0xff;
+    dst[1] = (offset >> 8) & 0xff;
+    dst[2] = (offset >> 16) & 0xff;
+}
+
+/*
+ * Lay out function 0's address space: the CCCR, one FBR per I/O function and
+ * a tuple chain for each. IOSDIOFamily reads the MANFID tuple to build the
+ * SDIOManufacturerId/SDIOProductId properties that AppleBCM4325's personality
+ * matches on.
+ */
+static void ipod_touch_sdio_build_cia(IPodTouchSDIOState *s)
+{
+    /* Matches wifiaddr in the stock n72ap NOR's nvram. */
+    static const uint8_t wlan_mac[6] = { 0x00, 0x23, 0x32, 0x6e, 0xaa, 0x10 };
+    uint8_t *r = s->registers;
+
+    r[CCCR_REVISION] = 0x11;     /* CCCR 1.10, SDIO 1.10 */
+    r[CCCR_SD_REVISION] = 0x01;
+    r[CCCR_CARD_CAPS] = 0x17;    /* direct commands, read wait, 4-bit interrupts */
+    r[CCCR_HIGH_SPEED] = 0x01;
+    put_cis_ptr(&r[CCCR_CIS_PTR], CIS_COMMON_OFFSET);
+
+    /* Common tuple chain: who we are, then the function 0 extension. */
+    uint8_t *cis = &r[CIS_COMMON_OFFSET];
+    *cis++ = CIS_MANUFACTURER_ID;
+    *cis++ = 0x04;
+    *cis++ = BCM4325_MANUFACTURER & 0xff;
+    *cis++ = (BCM4325_MANUFACTURER >> 8) & 0xff;
+    *cis++ = BCM4325_PRODUCT_ID & 0xff;
+    *cis++ = (BCM4325_PRODUCT_ID >> 8) & 0xff;
+    *cis++ = CIS_FUNCTION_EXTENSION;
+    *cis++ = 0x04;
+    *cis++ = 0x00;               /* extension type 0: common */
+    *cis++ = 0x00;               /* max block size 512 */
+    *cis++ = 0x02;
+    *cis++ = 0x32;               /* max transfer rate 25 MHz */
+
+    /*
+     * AppleBCM4325 gets its MAC address from here. Its parser walks this chain
+     * looking for a CISTPL_FUNCE whose extension type is 4 and whose next byte
+     * is 6, and copies the six bytes that follow; if it finds nothing it ends
+     * up comparing an all-zero address against its reject constant and gives
+     * up with "unable to obtain MAC address, can't proceed any further".
+     */
+    *cis++ = CIS_FUNCTION_EXTENSION;
+    *cis++ = 0x08;
+    *cis++ = 0x04;               /* extension type 4: MAC address */
+    *cis++ = 0x06;               /* address length */
+    for (unsigned i = 0; i < 6; i++) {
+        *cis++ = wlan_mac[i];
+    }
+
+    *cis++ = CIS_END;
+
+    for (unsigned fn = 1; fn <= BCM4325_FUNCTIONS; fn++) {
+        uint8_t *fbr = &r[FBR_BASE(fn)];
+        fbr[FBR_IFACE_CODE] = 0x00;  /* no standard SDIO interface */
+        put_cis_ptr(&fbr[FBR_CIS_PTR], CIS_FUNC_OFFSET(fn));
+
+        uint8_t *fcis = &r[CIS_FUNC_OFFSET(fn)];
+        *fcis++ = CIS_FUNCTION_EXTENSION;
+        *fcis++ = 0x2a;              /* the type 1 extension is a fixed 42 bytes */
+        *fcis++ = 0x01;              /* extension type 1: per function */
+        memset(fcis, 0, 0x29);
+        fcis[0x0b] = 0x00;           /* max block size 512 */
+        fcis[0x0c] = 0x02;
+        fcis += 0x29;
+        *fcis++ = CIS_END;
+    }
+}
+
 static void trigger_irq(void *opaque)
 {
     IPodTouchSDIOState *s = (IPodTouchSDIOState *)opaque;
@@ -14,12 +89,17 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
     uint32_t func = (s->arg >> 28) & 0x7;
     printf("SDIO CMD: %d, ADDR: %d, FUNC: %d\n", cmd_type, addr, func);
     if(cmd_type == 0x3) {
-        // RCA request - ignore
+        // CMD3 - SEND_RELATIVE_ADDR. R6 carries the address in the top half.
+        s->resp0 = (SDIO_RCA << 16);
     }
     else if(cmd_type == 0x5) {
-        if(addr == 0) {
-            // reading slot 0 - make sure there is a device here
-            //s->resp0 = (1 << 31) /* indicate ready */ | (BCM4325_FUNCTIONS << CMD5_FUNC_OFFSET) /* number of functions */;
+        // CMD5 - IO_SEND_OP_COND. The R4 response is how the controller learns
+        // a card is there at all; without it enumerateSlot times out.
+        if(s->card_present) {
+            s->resp0 = R4_CARD_READY | (BCM4325_FUNCTIONS << R4_NUM_FUNCS_SHIFT)
+                       | R4_IO_OCR;
+        } else {
+            s->resp0 = 0;
         }
     }
     else if(cmd_type == 0x7) {
@@ -203,27 +283,7 @@ static void ipod_touch_sdio_init(Object *obj)
     IPodTouchSDIOState *s = IPOD_TOUCH_SDIO(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
-    s->registers[0x9] = CIS_OFFSET; // registers 0x9 - 0xB contain the relative address offset, which we set to 0xC8 (200)
-    s->registers[19] = 0x1; // enable support for high speed mode
-
-    // set the vendor information
-    s->registers[CIS_OFFSET] = CIS_MANUFACTURER_ID;
-    s->registers[CIS_OFFSET + 1] = 0x4;
-    s->registers[CIS_OFFSET + 2] = BCM4325_MANUFACTURER & 0xFF;
-    s->registers[CIS_OFFSET + 3] = (BCM4325_MANUFACTURER >> 8) & 0xFF;
-    s->registers[CIS_OFFSET + 4] = BCM4325_PRODUCT_ID & 0xFF;
-    s->registers[CIS_OFFSET + 5] = (BCM4325_PRODUCT_ID >> 8) & 0xFF;
-
-    // set the MAC address (00:23:32:6E:AA:10)
-    s->registers[CIS_OFFSET + 6] = CIS_FUNCTION_EXTENSION;
-    s->registers[CIS_OFFSET + 8] = 0x4; // unknown
-    s->registers[CIS_OFFSET + 9] = 0x6; // the length of the MAC address
-    s->registers[CIS_OFFSET + 10] = 0x0;
-    s->registers[CIS_OFFSET + 11] = 0x23;
-    s->registers[CIS_OFFSET + 12] = 0x32;
-    s->registers[CIS_OFFSET + 13] = 0x6E;
-    s->registers[CIS_OFFSET + 14] = 0xAA;
-    s->registers[CIS_OFFSET + 15] = 0x10;
+    ipod_touch_sdio_build_cia(s);
 
     memory_region_init_io(&s->iomem, obj, &ipod_touch_sdio_ops, s, TYPE_IPOD_TOUCH_SDIO, 4096);
     sysbus_init_mmio(sbd, &s->iomem);
