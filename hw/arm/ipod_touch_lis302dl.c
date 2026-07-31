@@ -97,14 +97,29 @@ static uint8_t lis302dl_recv(I2CSlave *i2c)
         case ACCEL_WHOAMI:
             ret = ACCEL_WHOAMI_VALUE;
             break;
+        case ACCEL_STATUS:
+            /* All axes have fresh data available (ZYXDA + per-axis DA), no
+             * overrun. A driver that polls STATUS for data-ready before
+             * reading OUT_X/Y/Z needs this to be non-zero. */
+            ret = 0x0F;
+            break;
+        /*
+         * The iOS AppleLIS302DL driver only sets the PD (power, 0x40) bit in
+         * CTRL_REG1 and then polls OUT_X/Y/Z -- it never sets the per-axis
+         * enable bits, and CTRL_REG1 even reads back 0 between poll cycles.
+         * Gating the outputs on per-axis (or even PD) bits therefore starves
+         * the OS of samples and rotation never happens. Report the injected
+         * acceleration whenever the sensor is not held in explicit power-down,
+         * i.e. as long as CTRL_REG1 has ever been programmed non-zero.
+         */
         case ACCEL_OUT_X:
-            ret = (s->ctrl_reg1 & ACCEL_CTRL_REG1_XEN) ? (uint8_t)s->out_x : 0;
+            ret = (uint8_t)s->out_x;
             break;
         case ACCEL_OUT_Y:
-            ret = (s->ctrl_reg1 & ACCEL_CTRL_REG1_YEN) ? (uint8_t)s->out_y : 0;
+            ret = (uint8_t)s->out_y;
             break;
         case ACCEL_OUT_Z:
-            ret = (s->ctrl_reg1 & ACCEL_CTRL_REG1_ZEN) ? (uint8_t)s->out_z : 0;
+            ret = (uint8_t)s->out_z;
             break;
         case ACCEL_CTRL_REG1:
             ret = s->ctrl_reg1;
