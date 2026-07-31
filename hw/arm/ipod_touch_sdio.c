@@ -1,5 +1,28 @@
 #include "hw/arm/ipod_touch_sdio.h"
 
+/*
+ * Every register access and every command is worth seeing while the dongle
+ * emulation is being built, and is pure noise once it works - and the volume
+ * is high enough to slow the guest down measurably. Set IPOD_SDIO_TRACE=1.
+ */
+static int sdio_trace_enabled = -1;
+
+static void G_GNUC_PRINTF(1, 2) trace_sdio(const char *fmt, ...)
+{
+    if (sdio_trace_enabled < 0) {
+        const char *v = getenv("IPOD_SDIO_TRACE");
+        sdio_trace_enabled = (v && *v && *v != '0');
+    }
+    if (!sdio_trace_enabled) {
+        return;
+    }
+
+    va_list ap;
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+}
+
 /* Little-endian 24-bit CIS pointer, as the CCCR and FBRs store them. */
 static void put_cis_ptr(uint8_t *dst, uint32_t offset)
 {
@@ -140,7 +163,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
     uint32_t cmd_type = s->cmd & 0x3f;
     uint32_t addr = (s->arg >> 9) & 0x1ffff;
     uint32_t func = (s->arg >> 28) & 0x7;
-    printf("SDIO CMD: %d, ADDR: %d, FUNC: %d\n", cmd_type, addr, func);
+    trace_sdio("SDIO CMD: %d, ADDR: %d, FUNC: %d\n", cmd_type, addr, func);
     if(cmd_type == 0x3) {
         // CMD3 - SEND_RELATIVE_ADDR. R6 carries the address in the top half.
         s->resp0 = (SDIO_RCA << 16);
@@ -167,8 +190,14 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                 s->sdiod_regs[addr - SDIOD_CORE_BASE] = data;
                 if(addr >= SBSDIO_SBADDRLOW && addr <= SBSDIO_SBADDRHIGH) {
                     unsigned shift = 8 + 8 * (addr - SBSDIO_SBADDRLOW);
+                    uint32_t before = s->sb_window;
                     s->sb_window &= ~(0xffu << shift);
                     s->sb_window |= (uint32_t)data << shift;
+                    /* Cheap progress marker: the window moves once per 32 KB of
+                     * firmware, so this is a handful of lines per download. */
+                    if(addr == SBSDIO_SBADDRHIGH && s->sb_window != before) {
+                        printf("[SDIO] backplane window -> 0x%08x\n", s->sb_window);
+                    }
                 }
             }
             else if(func == 0x1) {
@@ -179,7 +208,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                 s->registers[addr] = data;
                 if(addr == 0x2) { s->registers[0x3] = data; } // if we write to register 2, we also write the same result to register 3 (this is the enabled functions register)
             }
-            printf("SDIO: Executing cmd52 by writing 0x%02x to register 0x%05x (func %d)\n", data, addr, func);
+            trace_sdio("SDIO: Executing cmd52 by writing 0x%02x to register 0x%05x (func %d)\n", data, addr, func);
         } else {
             if(addr == 0x1000e) {
                 // misc register
@@ -198,7 +227,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                 s->resp0 = byte;
             }
             else {
-                printf("SDIO: Executing cmd52 by reading from 0x%02x (value: 0x%02x)\n", addr, s->registers[addr]);
+                trace_sdio("SDIO: Executing cmd52 by reading from 0x%02x (value: 0x%02x)\n", addr, s->registers[addr]);
                 s->resp0 = s->registers[addr];
             }
         }
@@ -208,7 +237,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
         bool is_write = (s->arg >> 31) != 0;
         uint32_t xfer_len = s->blklen * s->numblk;
         uint32_t sb_addr = backplane_addr(s, addr);
-        printf("SDIO: Executing cmd53 func %x with block size %d and %d blocks (reg address: 0x%08x, backplane address: 0x%08x, destination address: 0x%08x, write? %d)\n", func, s->blklen, s->numblk, addr, sb_addr, s->baddr, is_write);
+        trace_sdio("SDIO: Executing cmd53 func %x with block size %d and %d blocks (reg address: 0x%08x, backplane address: 0x%08x, destination address: 0x%08x, write? %d)\n", func, s->blklen, s->numblk, addr, sb_addr, s->baddr, is_write);
 
         if(is_write) {
             if(func == 0x1) {
@@ -260,7 +289,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
 
 static void ipod_touch_sdio_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 {
-    printf("%s: writing 0x%08x to 0x%08x\n", __func__, value, addr);
+    trace_sdio("%s: writing 0x%08x to 0x%08x\n", __func__, (uint32_t)value, (uint32_t)addr);
     
     IPodTouchSDIOState *s = (struct IPodTouchSDIOState *) opaque;
 
@@ -305,7 +334,7 @@ static void ipod_touch_sdio_write(void *opaque, hwaddr addr, uint64_t value, uns
 
 static uint64_t ipod_touch_sdio_read(void *opaque, hwaddr addr, unsigned size)
 {
-    printf("%s: offset = 0x%08x\n", __func__, addr);
+    trace_sdio("%s: offset = 0x%08x\n", __func__, (uint32_t)addr);
 
     IPodTouchSDIOState *s = (struct IPodTouchSDIOState *) opaque;
 
