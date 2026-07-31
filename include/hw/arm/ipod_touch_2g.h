@@ -48,6 +48,8 @@
 #define S5L8720_I2C1_IRQ 0x16
 #define S5L8720_TVOUT_SDO_IRQ 0x1E
 #define S5L8720_SDIO_IRQ 0x2A
+/* From the real device's ioreg: the mbx node's interrupts property is 0x35. */
+#define S5L8720_MBX_IRQ 0x35
 #define S5L8720_FMSS_IRQ 0x36
 #define S5L8720_SPI4_IRQ 0x37
 
@@ -178,6 +180,7 @@ typedef struct {
 	/* USB device-mode options; see ipod_touch_instance_init(). */
 	char usb_tcp_addr[256];   /* host:port of the host bridge, empty = disabled */
 	bool usb_attached;        /* assert PMU USB cable presence */
+	bool mbx_irq;             /* wire the MBX completion interrupt */
 	bool usb_patch_mux_gate;  /* patch past the unregistered PTP interface function */
 	IT2G_CPREG_VAR_DEF(REG0);
 	IT2G_CPREG_VAR_DEF(REG1);

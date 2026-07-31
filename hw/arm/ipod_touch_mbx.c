@@ -39,6 +39,50 @@ static uint32_t mbx_guest_pc(void)
         }                                                                      \
     } while (0)
 
+/*
+ * Completion shim for the unemulated MBX.
+ *
+ * The GPU itself is not emulated and is out of scope -- the MBX Lite command
+ * format is proprietary and essentially un-reverse-engineered. But the hang it
+ * causes is not a rendering problem: completion is interrupt-driven, and the
+ * machine wired no interrupt to the MBX at all. An app that submits work then
+ * sleeps waiting for the completion interrupt never wakes.
+ *
+ * Evidence: tracing every MBX access while launching a real OpenGL ES app
+ * (AwesomeBall) shows 34 accesses ending in a submission write to 0x130, and
+ * then silence -- the guest is blocked, not polling.
+ *
+ * So raise the interrupt shortly after a submission and let the driver's
+ * handler run. The interrupt number is 0x35, taken from the mbx node's
+ * "interrupts" property in a real device's ioreg dump.
+ *
+ * This cannot make anything render. The intent is only that the guest stops
+ * waiting forever, so the UI survives an app that touches the GPU.
+ */
+#define MBX_SUBMIT_REG   0x130
+#define MBX_STATUS_REG   0x12c
+#define MBX_COMPLETE_NS  (1 * 1000 * 1000)  /* 1ms; the real thing is async */
+
+static void mbx_complete(void *opaque)
+{
+    IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
+
+    s->status |= 0x40;
+    if (s->irq) {
+        qemu_irq_raise(s->irq);
+    }
+    MBX_TRACE("completion fired, status=0x%08x", s->status);
+}
+
+static void mbx_submit(IPodTouchMBXState *s)
+{
+    if (!s->irq_enabled || !s->done_timer) {
+        return;
+    }
+    timer_mod(s->done_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MBX_COMPLETE_NS);
+}
+
 static uint32_t reverse_byte_order(uint32_t value) {
     return ((value & 0x000000FF) << 24) |
            ((value & 0x0000FF00) << 8) |
@@ -53,8 +97,15 @@ static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
 
     switch(addr)
     {
-        case 0x12c:
-            val = 0x40;
+        case MBX_STATUS_REG:
+            /* 0x40 was pinned here unconditionally; keep that as the base so
+             * behaviour is unchanged when the shim is off. */
+            val = 0x40 | s->status;
+            if (s->irq_enabled && s->irq) {
+                /* Reading the status acknowledges the completion. */
+                s->status = 0;
+                qemu_irq_lower(s->irq);
+            }
             break;
         case 0xf00:
             val = (2 << 0x10) | (1 << 0x18); // seems to be some kind of identifier
@@ -79,6 +130,13 @@ static void ipod_touch_mbx1_write(void *opaque, hwaddr addr, uint64_t val, unsig
     {
 	case 0x1020:
 	    s->addr = val;
+	    break;
+	case MBX_SUBMIT_REG:
+	    /* A non-zero write here is a submission; zero is the teardown that
+	     * follows it. Only the submission arms the completion. */
+	    if (val) {
+	        mbx_submit(s);
+	    }
 	    break;
     }
 }
@@ -341,6 +399,10 @@ static void ipod_touch_mbx_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem1);
     memory_region_init_io(&s->iomem2, obj, &ipod_touch_mbx2_ops, s, TYPE_IPOD_TOUCH_MBX, 0x1000);
     sysbus_init_mmio(sbd, &s->iomem2);
+
+    sysbus_init_irq(sbd, &s->irq);
+    s->done_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, mbx_complete, s);
+
 }
 
 static void ipod_touch_mbx_class_init(ObjectClass *klass, void *data)
