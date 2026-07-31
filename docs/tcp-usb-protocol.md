@@ -206,24 +206,19 @@ The fix is the IN rule in *Transaction size rules* above: deliver
 `DIEPTSIZ.XferSize` reaches zero. No host-side change was needed — usbmuxd's
 stock reassembly works once the device frames transfers the way hardware does.
 
-Note for anyone testing this: a `put` followed by a `get` is **not** a test of the
-USB path alone, and it still fails. That failure is in the NAND model, not here.
-Measured on 2026-07-31 with a 4 KB file:
+Fixing this exposed a second bug that had been hidden behind it, in the NAND
+model rather than here: `hw/arm/ipod_touch_fmss.c` stores a written page at the
+logical home derived from its spare, but read it back at the physical address the
+guest addressed, so anything written was unreadable until the next boot. A
+put/get round trip failed for that reason even once this transport was correct.
+Fixed the same day; both directions now round-trip byte-identically at every size
+from 1 KB to 8 MB, and `ideviceinstaller install` completes.
 
-- the bytes arrive over USB intact (every OUT DMA self-check matches),
-- the file the guest writes is correct on disk — merging the `nandrw` overlay
-  over the base image and mounting it offline gives a byte-identical file,
-- reading it back **in the same session** returns unrelated data, at every size
-  tried from 1 KB to 256 KB,
-- reading the same file back **after a reboot** returns it byte-identically.
-
-So `hw/arm/ipod_touch_fmss.c` serves stale pages for anything written since boot.
-That is what still breaks `ideviceinstaller install`: the staged `.ipa` is written
-and then immediately read back to be extracted, and the extraction sees garbage
-(`PackageExtractionFailed`). It is unrelated to this transport.
-
-To test the USB read path on its own, inject files into the image offline with
-`imgtools/editimg.py` and read those, and validate with SHA-256 rather than size.
+Note for anyone testing this: a `put` followed by a `get` therefore exercises the
+NAND model as well as this transport, and a failure is as likely to be there. To
+test the USB read path on its own, inject files into the image offline with
+`imgtools/editimg.py` and read those. Validate with SHA-256 rather than size —
+every bug in this area so far has produced the right size with the wrong bytes.
 ## Testing without an emulator
 
 `fake_device.py` in the host repository replays this protocol, which lets the
