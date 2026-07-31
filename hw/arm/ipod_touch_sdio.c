@@ -154,7 +154,23 @@ static void backplane_read(IPodTouchSDIOState *s, uint32_t sb_addr,
 static void trigger_irq(void *opaque)
 {
     IPodTouchSDIOState *s = (IPodTouchSDIOState *)opaque;
-    s->irq_reg |= 0x2;
+    s->irq_reg |= s->irq_pending;
+    s->irq_pending = 0;
+    qemu_irq_raise(s->irq);
+}
+
+/*
+ * Interrupts are raised during the register write that causes them. Deferring
+ * them through the timer was tried, on the theory that the guest was losing
+ * the wakeup and waiting out a timeout - the firmware download runs at about
+ * twenty seconds per 4 KB block, which looks exactly like that. It is not:
+ * with a 20 us delay the driver instead fails its GPIO writes with an I/O
+ * timeout and the download gets slower still. Whatever is slow, this is not
+ * it.
+ */
+static void raise_irq_soon(IPodTouchSDIOState *s, uint32_t bits)
+{
+    s->irq_reg |= bits;
     qemu_irq_raise(s->irq);
 }
 
@@ -178,8 +194,7 @@ static void sdpcm_raise(IPodTouchSDIOState *s, uint32_t intbits)
 {
     sdpcm_reg_write(s, SDPCM_INTSTATUS, sdpcm_reg_read(s, SDPCM_INTSTATUS) | intbits);
     if (sdpcm_reg_read(s, SDPCM_HOSTINTMASK) & intbits) {
-        s->irq_reg |= 0x2;
-        qemu_irq_raise(s->irq);
+        raise_irq_soon(s, 0x2);
     }
 }
 
@@ -358,7 +373,7 @@ static void trace_post_ready(IPodTouchSDIOState *s, const char *what,
                              uint32_t func, uint32_t addr, uint32_t len,
                              bool is_write)
 {
-    if (!s->dongle_started || s->ready_log >= 400) {
+    if (!s->dongle_started || s->ready_log >= 6000) {
         return;
     }
     s->ready_log++;
@@ -531,8 +546,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
          * They must accumulate: a control frame queued during this very
          * transfer sets bit 1, and overwriting it here loses the only
          * indication the driver has that a reply is waiting. */
-        s->irq_reg |= 0x1;
-        qemu_irq_raise(s->irq);
+        raise_irq_soon(s, 0x1);
         //printf("Raised IRQ\n");
     }
     else {
