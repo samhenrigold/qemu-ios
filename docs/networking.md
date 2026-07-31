@@ -257,16 +257,56 @@ carry a BSS list:
 ...
 ```
 
-So it is **waiting for an asynchronous event, not polling**. Acknowledging the
-scan request is not enough and there is no iovar-only shortcut: the event
-channel has to exist first. Concretely, the next piece of work is:
+So it is **waiting for an asynchronous event, not polling**. That event is now
+delivered, and the driver responds to it - see below.
 
-1. Deliver a scan-complete event on SDPCM channel 1 - an 802.3 frame with
-   ethertype 0x886c carrying a `bcmeth_hdr` and a big-endian `wl_event_msg_t`.
-   The driver checks the OUI and subtype and logs "Got a BRCM packet but an
-   OUI/SUBTYPE mismatch" when they are wrong, which makes it self-diagnosing.
-2. Only then answer the `get_var iscanresults` that should follow, with one
-   synthetic BSS.
+### Delivering events
+
+Two details here contradict what `brcmfmac` would lead you to write, and both
+fail silently:
+
+- **Events do not go on the event channel.** The receive dispatch answers
+  channel 1 with "WTF?? Got an event packet!!!" and drops it. Events arrive on
+  the **data channel** as an ordinary 802.3 frame that `handleDataPacket`
+  recognises by its ethertype.
+- **The BDC header is six bytes, not four.** `handleDataPacket` logs byte 0 as
+  `bdc->flags` and byte 1 as `bdc->priority`, then advances the packet by six
+  before treating the rest as ethernet - the two extra bytes are padding that
+  lands the IP header on a four-byte boundary. Get this wrong and the entire
+  frame is shifted by two: the driver reads it, the OUI check fails, and it
+  discards it **without logging anything at all**.
+
+The rest is pinned by `handleEventPacket`, which memcmps three bytes at packet
+offset 0x13 against `00:10:18` and requires a big-endian `usr_subtype` of 1 at
+0x16, with the `wl_event_msg_t` at 0x18, all big-endian. Event numbers come
+from the driver's own dispatch table at `0xc0330e18` - 49 entries, of which 0,
+3, 6, 7, 9, 12, 16, 17, 19, 26, 45 and 48 have real handlers. That confirms the
+standard numbering, and `WLC_E_SCAN_COMPLETE = 26`.
+
+With `WLC_E_SCAN_COMPLETE` sent after the scan request is acknowledged, the
+driver stops waiting and asks for results:
+
+```
+CDC 263 set_var iscan (206 bytes)
+[SDIO] sending event 26, status 0 (76 byte frame)
+CDC 262 get_var iscanresults (2024 bytes)      <- never happened before
+```
+
+The handler for event 26 is a single call on the object at `self+0x2b4`, the
+scan manager - it takes no parameters from the event at all.
+
+### Where it stops
+
+**The network list still shows a spinner.** `get_var iscanresults` is answered
+with 2024 zero bytes, and the scan manager does not accept that as a final
+answer: it re-arms the scan every fifteen seconds and logs
+`IO80211ScanManager::startScan: Timing out scan requested: 110, and now: 120!`.
+
+A zeroed reply decodes as `wl_iscan_results_t` with `status` 0
+(`WL_SCAN_RESULTS_SUCCESS`) but also `version` 0, `buflen` 0 and `count` 0.
+The next step is to fill that structure in properly - the version constant this
+build expects, a consistent `buflen`, and at least one `wl_bss_info_t` - which
+is where the real 802.11 data structures start and where this stopped.
 
 ### A second, independent gap: deep sleep
 
