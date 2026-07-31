@@ -338,12 +338,35 @@ static void sdpcm_receive(IPodTouchSDIOState *s, const uint8_t *buf, uint32_t le
     }
 }
 
+/*
+ * Everything the host does once the dongle has announced itself, bounded so it
+ * cannot run away. This is the window that matters while the control channel
+ * is being brought up, and the firmware download that precedes it would drown
+ * it out.
+ */
+static void trace_post_ready(IPodTouchSDIOState *s, const char *what,
+                             uint32_t func, uint32_t addr, uint32_t len,
+                             bool is_write)
+{
+    if (!s->dongle_started || s->ready_log >= 400) {
+        return;
+    }
+    s->ready_log++;
+    printf("[SDIO] %s func %u %s addr 0x%05x len %u\n", what,
+           func, is_write ? "write" : "read", addr, len);
+}
+
 void sdio_exec_cmd(IPodTouchSDIOState *s)
 {
     uint32_t cmd_type = s->cmd & 0x3f;
     uint32_t addr = (s->arg >> 9) & 0x1ffff;
     uint32_t func = (s->arg >> 28) & 0x7;
     trace_sdio("SDIO CMD: %d, ADDR: %d, FUNC: %d\n", cmd_type, addr, func);
+    if (cmd_type == 0x34 || cmd_type == 0x35) {
+        trace_post_ready(s, cmd_type == 0x34 ? "cmd52" : "cmd53", func, addr,
+                         cmd_type == 0x34 ? 1 : s->blklen * s->numblk,
+                         (s->arg >> 31) != 0);
+    }
     if(cmd_type == 0x3) {
         // CMD3 - SEND_RELATIVE_ADDR. R6 carries the address in the top half.
         s->resp0 = (SDIO_RCA << 16);
@@ -518,11 +541,6 @@ static void ipod_touch_sdio_write(void *opaque, hwaddr addr, uint64_t value, uns
             s->irq_reg &= ~(uint32_t)value;
             if (!s->irq_reg) {
                 qemu_irq_lower(s->irq);
-            }
-            if (s->irq_log < 24) {
-                s->irq_log++;
-                printf("[SDIO] interrupt register cleared with 0x%02x, 0x%02x left\n",
-                       (uint32_t)value, s->irq_reg);
             }
             break;
         case SDIO_IRQMASK:

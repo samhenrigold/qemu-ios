@@ -172,8 +172,7 @@ typedef struct IPodTouchSDIOState
     uint32_t fw_bytes_logged;
     bool func2_seen;
     unsigned func2_reads;
-    unsigned irq_log;
-    unsigned core_log;
+    unsigned ready_log;
     bool dongle_started;   /* the driver has taken the core out of reset */
     uint8_t tx_seq;        /* sequence number of the next frame we hand up */
     uint8_t rx_seq;        /* last sequence number the host sent us */
