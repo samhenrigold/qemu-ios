@@ -50,7 +50,7 @@ static bool fmss_block_is_erased(IPodTouchFMSSState *s, uint32_t cs, uint32_t bl
 {
     char marker[1152];
 
-    if (!s->nand_overlay) {
+    if (!s->nand_overlay || !getenv("FMSS_ERASE")) {
         return false;
     }
     if (!s->erased_blocks) {
@@ -126,6 +126,17 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
     if (fread(spare, 1, NAND_BYTES_PER_SPARE, f) != NAND_BYTES_PER_SPARE) { /* ditto */ }
     fclose(f);
 
+    /* Diagnostic: every page of the reference image carries the emulator's own
+     * "clean" marker in its spare, so the guest FTL believes the whole device
+     * is free and happily allocates new writes on top of pages that are still
+     * live. Claim occupied pages are programmed instead, and see whether the
+     * allocator then steers around them. */
+    if (!from_overlay && getenv("FMSS_USEDSPARE")) {
+        if (((uint32_t *)spare)[2] == 0x00FF00FF) {
+            ((uint32_t *)spare)[2] = 0xFFFF40FF;
+        }
+    }
+
     /* Diagnostic: serve the base image's spare metadata even for overlay
      * pages, to test whether the persisted FTL metadata is what breaks the
      * next boot. */
@@ -159,9 +170,9 @@ static void fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
     /* A page cannot be programmed unless its block was erased first: either
      * this is the first program into the block, or the page already holds
      * overlay data and is being reprogrammed. Either way, model the erase. */
-    if (getenv("FMSS_ERASE") &&
-        (!fmss_block_is_erased(s, cs, block) ||
-         g_file_test(filename, G_FILE_TEST_EXISTS))) {
+    if (!fmss_block_is_erased(s, cs, block) && getenv("FMSS_ERASE")) {
+        fmss_erase_block(s, cs, block);
+    } else if (getenv("FMSS_ERASE") && g_file_test(filename, G_FILE_TEST_EXISTS)) {
         fmss_erase_block(s, cs, block);
     }
 
