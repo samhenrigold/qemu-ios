@@ -150,7 +150,53 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
             break;
         case 0xD38:
             if(s->reg_csgenrc == 0xa01) { read_nand_pages(s); }
-            else { /*printf("NAND write %ld addr %ld\n", val, addr); temp_storage[addr] = val;*//*cpu_physical_memory_write(addr, val, sizeof(val)); */}
+            else {
+                /*
+                 * Every non-read flash command is discarded, so nothing the
+                 * guest writes to NAND is ever stored. That is why AFC uploads
+                 * come back as unrelated guest pages and why installation_proxy
+                 * fails to extract them -- the archive was never written.
+                 *
+                 * Only the read opcode (csgenrc 0xa01) is known. Log the others
+                 * with the registers that would identify the source buffers, so
+                 * the write opcode can be identified before implementing it.
+                 */
+                static int logged;
+                if (logged < 8) {
+                    logged++;
+                    printf("[FMSS] unimplemented flash command csgenrc=0x%x "
+                           "(val=0x%lx num_pages=0x%x pages_in=0x%x cs_buf=0x%x "
+                           "pages_out=0x%x spare_out=0x%x)\n",
+                           s->reg_csgenrc, (unsigned long)val, s->reg_num_pages,
+                           s->reg_pages_in_addr, s->reg_cs_buf_addr,
+                           s->reg_pages_out_addr, s->reg_page_spare_out_addr);
+
+                    /* Dump the descriptor arrays and the first bytes of each
+                     * candidate source buffer, so the write command's operand
+                     * layout can be established rather than assumed. */
+                    for (uint32_t i = 0; i < s->reg_num_pages && i < 4; i++) {
+                        uint32_t page_nr = 0, cs = 0, buf0 = 0, buf1 = 0;
+                        cpu_physical_memory_read(s->reg_pages_in_addr + i * 4, &page_nr, 4);
+                        cpu_physical_memory_read(s->reg_cs_buf_addr + i * 4, &cs, 4);
+                        cpu_physical_memory_read(s->reg_pages_out_addr + (i * 2) * 4, &buf0, 4);
+                        cpu_physical_memory_read(s->reg_pages_out_addr + (i * 2 + 1) * 4, &buf1, 4);
+                        printf("[FMSS]   [%u] page_nr=0x%x cs=0x%x bufs=0x%08x,0x%08x\n",
+                               i, page_nr, cs, buf0, buf1);
+                        if (buf0) {
+                            uint8_t head[16] = {0};
+                            cpu_physical_memory_read(buf0, head, sizeof(head));
+                            printf("[FMSS]       buf0[0..15] =");
+                            for (int k = 0; k < 16; k++) printf(" %02x", head[k]);
+                            printf("\n");
+                        }
+                    }
+                    uint8_t spare[12] = {0};
+                    cpu_physical_memory_read(s->reg_page_spare_out_addr, spare, sizeof(spare));
+                    printf("[FMSS]   spare[0..11] =");
+                    for (int k = 0; k < 12; k++) printf(" %02x", spare[k]);
+                    printf("\n");
+                }
+            }
             break;
         default:
 	        //printf("%s unknown write %lx to %lx\n", __func__, val, addr);
