@@ -215,16 +215,19 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 			 * transfer size and the host's payload, already applied above.
 			 */
 
-			if (synopsys_usb_trace_enabled()) {
-				fprintf(stderr,
-				        "[USBOUT] ep%d hdr_len=%zu armed_sz=%zu grxfsiz=%u(words) "
-				        "-> amtDone=%zu\n",
-				        ep, hdr_len, sz, state->grxfsiz, amtDone);
-			}
+			uint32_t dma_before = eps->dma_address;
 
 			if (amtDone > 0 && _buffer && eps->dma_address) {
 				cpu_physical_memory_write(eps->dma_address, _buffer, amtDone);
 				eps->dma_address += amtDone;
+			}
+
+			if (synopsys_usb_trace_enabled()) {
+				fprintf(stderr,
+				        "[USBDMA] OUT ep%d hdr_len=%zu armed=%zu got=%zu "
+				        "dma 0x%08x -> 0x%08x ctl=0x%08x tsiz=0x%08x\n",
+				        ep, hdr_len, sz, amtDone, dma_before, eps->dma_address,
+				        eps->control, eps->tx_size);
 			}
 
 			/*
@@ -548,6 +551,11 @@ static void synopsys_usb_out_ep_write(synopsys_usb_state *_state, int _ep, hwadd
 	{
 	case 0x00:
         _state->out_eps[_ep].control = _val;
+		if (synopsys_usb_trace_enabled()) {
+			fprintf(stderr, "[USBDMA] guest DOEPCTL[%d] = 0x%08x (dma 0x%08x tsiz 0x%08x)\n",
+			        _ep, (uint32_t)_val, _state->out_eps[_ep].dma_address,
+			        _state->out_eps[_ep].tx_size);
+		}
 		synopsys_usb_update_out_ep(_state, _ep);
 		return;
 
@@ -561,6 +569,10 @@ static void synopsys_usb_out_ep_write(synopsys_usb_state *_state, int _ep, hwadd
 		return;
 
     case 0x14:
+		if (synopsys_usb_trace_enabled()) {
+			fprintf(stderr, "[USBDMA] guest DOEPDMA[%d] = 0x%08x (was 0x%08x)\n",
+			        _ep, (uint32_t)_val, _state->out_eps[_ep].dma_address);
+		}
         _state->out_eps[_ep].dma_address = _val;
 		return;
 
