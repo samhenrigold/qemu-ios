@@ -652,6 +652,36 @@ static void ipod_touch_kbd_enqueue(IPodTouchMachineState *nms, uint16_t ch)
 }
 
 /* Command+combo -> the button scancode the legacy handler already understands. */
+/*
+ * Command+Left / Command+Right turn the device a quarter turn, the way you would
+ * physically rotate it.
+ *
+ * UIDeviceOrientation's numbering is not rotational, so this steps through the
+ * physical order rather than incrementing. Holding the device face-on and turning
+ * it clockwise moves the home button bottom -> left -> top -> right, that is
+ * Portrait(1) -> LandscapeRight(4) -> PortraitUpsideDown(2) -> LandscapeLeft(3),
+ * and counter-clockwise is the same cycle reversed.
+ */
+static void ipod_touch_kbd_rotate(bool clockwise)
+{
+	/* indexed by the current orientation; [0] is the unset/face-up case */
+	static const uint32_t cw[5]  = { 1, 4, 3, 1, 2 };
+	static const uint32_t ccw[5] = { 1, 3, 4, 2, 1 };
+	IPodTouchMachineState *nms = s_kbd_nms;
+	uint32_t cur;
+
+	if (!nms || !nms->lis302dl_state) {
+		return;
+	}
+
+	cur = nms->lis302dl_state->orientation;
+	if (cur > 4) {
+		cur = 0; /* never set, or face up/down: start from portrait */
+	}
+	lis302dl_apply_orientation(nms->lis302dl_state,
+	                           clockwise ? cw[cur] : ccw[cur]);
+}
+
 static void ipod_touch_kbd_button(int qcode, bool shift, bool down)
 {
 	int base = -1;
@@ -660,6 +690,12 @@ static void ipod_touch_kbd_button(int qcode, bool shift, bool down)
 	case Q_KEY_CODE_H: if (shift) base = KEY_H; break;/* Command+Shift+H-> home  */
 	case Q_KEY_CODE_MINUS: base = KEY_MIN; break;    /* Command+-      -> vol dn */
 	case Q_KEY_CODE_EQUAL: base = KEY_PLUS; break;   /* Command+=      -> vol up */
+	case Q_KEY_CODE_LEFT:                            /* Command+Left   -> rotate ccw */
+	case Q_KEY_CODE_RIGHT:                           /* Command+Right  -> rotate cw  */
+		if (down) {
+			ipod_touch_kbd_rotate(qcode == Q_KEY_CODE_RIGHT);
+		}
+		return;
 	default: break;
 	}
 	if (base < 0 || !s_kbd_mt) {
