@@ -402,7 +402,6 @@ static void sdio_scan_complete(void *opaque)
  */
 static void sdio_send_assoc_events(IPodTouchSDIOState *s)
 {
-    s->link_faked = true;
     sdpcm_send_event(s, WLC_E_AUTH, 0, 0);
     sdpcm_send_event(s, WLC_E_ASSOC, 0, 0);
     sdpcm_send_event(s, WLC_E_SET_SSID, 0, 0);
@@ -430,48 +429,12 @@ static void sdio_handle_set_ssid(IPodTouchSDIOState *s, const uint8_t *payload,
     /* A zero-length SSID is a disassociate request, not a join. */
     if (n == 0) {
         printf("[SDIO] WLC_SET_SSID with no SSID: leaving the network\n");
-        s->link_faked = false;
         sdpcm_send_event(s, WLC_E_LINK, 0, 0);
         return;
     }
 
     printf("[SDIO] WLC_SET_SSID '%s': associating\n", ssid);
     sdio_send_assoc_events(s);
-}
-
-/*
- * Assert an association without the driver having asked for one, so the rest of
- * iOS can be exercised without going through the scan. Superseded by the real
- * path above and kept only as a fallback; gated behind IPOD_WIFI_FAKE_LINK
- * because it is a claim about state the model has not actually reached.
- */
-static void sdio_fake_link_up(void *opaque)
-{
-    IPodTouchSDIOState *s = (IPodTouchSDIOState *)opaque;
-
-    if (s->link_faked) {
-        return;
-    }
-    printf("[SDIO] asserting association (IPOD_WIFI_FAKE_LINK)\n");
-    sdio_send_assoc_events(s);
-}
-
-static void sdio_arm_fake_link(IPodTouchSDIOState *s)
-{
-    const char *v = getenv("IPOD_WIFI_FAKE_LINK");
-
-    if (!v || !*v || *v == '0' || s->link_faked || !s->link_timer) {
-        return;
-    }
-    /* After the driver has finished initialising; a value other than 1 is
-     * taken as the delay in seconds, so the timing can be swept. */
-    int delay = atoi(v);
-    if (delay <= 1) {
-        delay = 10;
-    }
-    timer_mod(s->link_timer,
-              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-              (int64_t)delay * NANOSECONDS_PER_SECOND);
 }
 
 /*
@@ -570,11 +533,6 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
                              len > CDC_HDRLEN ? len - CDC_HDRLEN : 0);
     }
 
-    /* WLC_UP is the last thing initDongle does before the driver is usable,
-     * so it is the earliest sensible moment to start the association clock. */
-    if (cmd == 2) {
-        sdio_arm_fake_link(s);
-    }
 }
 
 /*
@@ -1114,7 +1072,6 @@ static void ipod_touch_sdio_init(Object *obj)
     sysbus_init_irq(sbd, &s->irq);
 
     s->irq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, trigger_irq, s);
-    s->link_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sdio_fake_link_up, s);
     s->scan_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sdio_scan_complete, s);
 
     s->rx_fifo = g_queue_new();
