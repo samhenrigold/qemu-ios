@@ -154,7 +154,7 @@ static void backplane_read(IPodTouchSDIOState *s, uint32_t sb_addr,
 static void trigger_irq(void *opaque)
 {
     IPodTouchSDIOState *s = (IPodTouchSDIOState *)opaque;
-    s->irq_reg = 0x2;
+    s->irq_reg |= 0x2;
     qemu_irq_raise(s->irq);
 }
 
@@ -178,7 +178,7 @@ static void sdpcm_raise(IPodTouchSDIOState *s, uint32_t intbits)
 {
     sdpcm_reg_write(s, SDPCM_INTSTATUS, sdpcm_reg_read(s, SDPCM_INTSTATUS) | intbits);
     if (sdpcm_reg_read(s, SDPCM_HOSTINTMASK) & intbits) {
-        s->irq_reg = 0x2;
+        s->irq_reg |= 0x2;
         qemu_irq_raise(s->irq);
     }
 }
@@ -449,6 +449,11 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                  * the head of the queue until it has all been handed over. */
                 g_autofree uint8_t *buf = g_malloc0(xfer_len);
                 SDPCMFrame *f = g_queue_peek_head(s->rx_fifo);
+                if (s->func2_reads < 8) {
+                    s->func2_reads++;
+                    printf("[SDIO] function 2 read of %u bytes, %s\n", xfer_len,
+                           f ? "handing up a queued frame" : "nothing queued");
+                }
 
                 if (f) {
                     uint32_t left = f->len - f->read_off;
@@ -469,8 +474,11 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
             
         }
 
-        // toggle IRQ register
-        s->irq_reg = 0x1;
+        /* Bit 0 is transfer complete and bit 1 is the card's own interrupt.
+         * They must accumulate: a control frame queued during this very
+         * transfer sets bit 1, and overwriting it here loses the only
+         * indication the driver has that a reply is waiting. */
+        s->irq_reg |= 0x1;
         qemu_irq_raise(s->irq);
         //printf("Raised IRQ\n");
     }
