@@ -206,8 +206,16 @@ idevicedebugserverproxy 1234
 debugserver answers GDB-remote over that port: `qC` returns `$QC0#c4`.
 **Attaching does not work yet** - the likely blocker is that `task_for_pid`
 needs a `get-task-allow` entitlement that no stock or App-Store-signed binary
-carries. Also: debugserver ends its session after a failed attach, and many
-short-lived connections wedge the USB link until you reboot.
+carries, and debugserver ends its session after a failed attach (`vAttach;<pid>`
+returns `E05`).
+
+The USB link no longer wedges under repeated short-lived connections. It used to,
+which was a symptom of the bulk-IN residue bug; with that fixed, ~1000 sessions -
+including 200 failed attaches torn down with an abrupt RST, over 3198 distinct
+mux channels - ran clean, and `idevice_id`/`ideviceinfo`/a SHA-256-verified AFC
+read all passed afterwards. (This old debugserver does not implement
+`vAttachName`, `qHostInfo`, `qProcessInfo` or `qSupported` - they return the empty
+packet - so `vAttach;<pidhex>` is the attach form.)
 
 ## Drive it headlessly
 
