@@ -300,6 +300,15 @@ static void backplane_store(IPodTouchSDIOState *s, uint32_t sb_addr,
 /* One frame written by the host on function 2. */
 static void sdpcm_receive(IPodTouchSDIOState *s, const uint8_t *buf, uint32_t len)
 {
+    if (s->rx_log < 16) {
+        s->rx_log++;
+        printf("[SDIO] host frame (%u bytes):", len);
+        for (unsigned i = 0; i < MIN(len, 24u); i++) {
+            printf(" %02x", buf[i]);
+        }
+        printf("\n");
+    }
+
     if (len < SDPCM_HDRLEN) {
         return;
     }

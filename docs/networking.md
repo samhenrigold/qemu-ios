@@ -162,10 +162,23 @@ things that are worth writing down, because each looked like a hang:
   and logs "there is no pending command" - forever, at tens of megabytes of
   serial output per minute.
 
+- **"No more frames" is an all-zero tag.** A well-formed tag claiming a length
+  of zero is a frame as far as this driver is concerned; it reads the body,
+  finds nothing, and complains.
+
 The collection sequence itself is: read `tohostmailboxdata` (function 1,
 `0x0a04c`, which is `0x18002_04c` with the 32-bit access flag), clear
 `intstatus` (`0x0a020`), then read function 2 twice - twelve bytes for the
 header, then the body. A frame therefore has to survive being read in pieces.
+
+With the country code accepted the driver moves on to `WLC_UP`, which is where
+things stand. Two known issues:
+
+- `AppleBCM4325CmdManager.cpp:445` asserts that the `len` field of the CDC
+  response equals the length the *command* expects, which is not necessarily
+  the length of the request. Echoing the request's length is wrong for a set.
+- The second request frame is not being parsed by the model, so `WLC_UP` gets
+  no answer and times out.
 
 ### The MAC address is a CIS tuple
 
