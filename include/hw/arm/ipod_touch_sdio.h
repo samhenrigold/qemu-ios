@@ -85,12 +85,62 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 /* Where the window points out of reset: the chipcommon core. */
 #define CHIPCOMMON_BASE     0x18000000
 #define CHIPCOMMON_CHIPID   0x00050000  /* the driver reads this as revision D0 */
+#define CHIPCOMMON_CORECTL  0x18000634  /* poked just before the core is started */
+
+/*
+ * The SDIO device core. AppleBCM4325::initHardware writes 0xe0 to 0x18002024,
+ * which pins the core at 0x18002000 and confirms the register layout is the
+ * same one brcmfmac documents.
+ */
+#define SDPCM_CORE_BASE          0x18002000
+#define SDPCM_CORE_SIZE          0x100
+#define SDPCM_INTSTATUS          0x20
+#define SDPCM_HOSTINTMASK        0x24
+#define SDPCM_TOSBMAILBOX        0x40
+#define SDPCM_TOHOSTMAILBOX      0x44
+#define SDPCM_TOSBMAILBOXDATA    0x48
+#define SDPCM_TOHOSTMAILBOXDATA  0x4c
+
+/* intstatus bits the host mailbox uses; 0xe0 is the set the driver enables. */
+#define I_HMB_FC_CHANGE     (1 << 5)
+#define I_HMB_FRAME_IND     (1 << 6)
+#define I_HMB_HOST_INT      (1 << 7)
+
+/* tosbmailbox: what the host says back. */
+#define SMB_INT_ACK         (1 << 1)
+
+/* tohostmailboxdata: how the dongle announces itself. */
+#define HMB_DATA_DEVREADY   0x2
+#define HMB_DATA_FWREADY    0x8
+#define HMB_DATA_VERSION_SHIFT 16
+#define SDPCM_PROT_VERSION  4
+
+/* SDPCM framing on function 2. */
+#define SDPCM_HWHDR_LEN     4
+#define SDPCM_SWHDR_LEN     8
+#define SDPCM_HDRLEN        (SDPCM_HWHDR_LEN + SDPCM_SWHDR_LEN)
+#define SDPCM_CONTROL_CHANNEL 0
+#define SDPCM_EVENT_CHANNEL   1
+#define SDPCM_DATA_CHANNEL    2
+#define SDPCM_CHANNEL_MASK    0x0f
+
+/* The CDC control header that rides on channel 0. */
+#define CDC_HDRLEN          16
+#define CDC_DCMD_ERROR      0x01
+#define CDC_DCMD_SET        0x02
 
 typedef struct BCM4325FrameHeaderPacket
 {
     uint16_t frame_length;
     uint16_t checksum;
 } __attribute__((__packed__)) BCM4325FrameHeaderPacket;
+
+/* One complete SDPCM frame waiting to be read out on function 2. */
+typedef struct SDPCMFrame
+{
+    uint8_t *data;
+    uint32_t len;
+} SDPCMFrame;
 
 typedef struct IPodTouchSDIOState
 {
@@ -120,6 +170,9 @@ typedef struct IPodTouchSDIOState
     uint32_t fw_bytes;   /* bytes pushed over function 1, for progress logging */
     uint32_t fw_bytes_logged;
     bool func2_seen;
+    bool dongle_started;   /* the driver has taken the core out of reset */
+    uint8_t tx_seq;        /* sequence number of the next frame we hand up */
+    uint8_t rx_seq;        /* last sequence number the host sent us */
     GHashTable *backplane;
     uint8_t sdiod_regs[SDIOD_CORE_SIZE];
     uint8_t registers[0x10000];

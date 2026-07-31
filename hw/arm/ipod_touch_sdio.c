@@ -158,6 +158,186 @@ static void trigger_irq(void *opaque)
     qemu_irq_raise(s->irq);
 }
 
+/* --- the SDIO device core's mailbox ------------------------------------- */
+
+static uint32_t sdpcm_reg_read(IPodTouchSDIOState *s, uint32_t off)
+{
+    uint8_t buf[4];
+    backplane_read(s, SDPCM_CORE_BASE + off, buf, sizeof(buf));
+    return ldl_le_p(buf);
+}
+
+static void sdpcm_reg_write(IPodTouchSDIOState *s, uint32_t off, uint32_t val)
+{
+    uint8_t buf[4];
+    stl_le_p(buf, val);
+    backplane_write(s, SDPCM_CORE_BASE + off, buf, sizeof(buf));
+}
+
+static void sdpcm_raise(IPodTouchSDIOState *s, uint32_t intbits)
+{
+    sdpcm_reg_write(s, SDPCM_INTSTATUS, sdpcm_reg_read(s, SDPCM_INTSTATUS) | intbits);
+    if (sdpcm_reg_read(s, SDPCM_HOSTINTMASK) & intbits) {
+        s->irq_reg = 0x2;
+        qemu_irq_raise(s->irq);
+    }
+}
+
+/*
+ * Announce the dongle. The driver takes the core out of reset and then expects
+ * a host mailbox interrupt whose data word says the firmware is up, with the
+ * SDPCM protocol version in bits 16-23. A mismatch there is only a warning on
+ * its side, so this is a safe place to be approximately right.
+ */
+static void sdpcm_announce_ready(IPodTouchSDIOState *s)
+{
+    if (s->dongle_started) {
+        return;
+    }
+    s->dongle_started = true;
+    sdpcm_reg_write(s, SDPCM_TOHOSTMAILBOXDATA,
+                    HMB_DATA_DEVREADY | HMB_DATA_FWREADY |
+                    (SDPCM_PROT_VERSION << HMB_DATA_VERSION_SHIFT));
+    printf("[SDIO] dongle announced ready\n");
+    sdpcm_raise(s, I_HMB_HOST_INT);
+}
+
+static void sdpcm_queue_frame(IPodTouchSDIOState *s, uint8_t *data, uint32_t len)
+{
+    SDPCMFrame *f = g_new0(SDPCMFrame, 1);
+    f->data = data;
+    f->len = len;
+    g_queue_push_tail(s->rx_fifo, f);
+    sdpcm_raise(s, I_HMB_FRAME_IND);
+}
+
+/*
+ * Build a frame for the host: hardware tag, software header, then the payload
+ * the caller has already laid out.
+ */
+static void sdpcm_send(IPodTouchSDIOState *s, uint8_t channel,
+                       const uint8_t *payload, uint32_t payload_len)
+{
+    uint32_t len = SDPCM_HDRLEN + payload_len;
+    uint8_t *buf = g_malloc0(len);
+
+    stw_le_p(buf, len);
+    stw_le_p(buf + 2, ~len & 0xffff);
+    buf[4] = s->tx_seq++;
+    buf[5] = channel & SDPCM_CHANNEL_MASK;
+    buf[6] = 0;                      /* no hint about the next frame */
+    buf[7] = SDPCM_HDRLEN;           /* payload starts right after the header */
+    buf[8] = 0;                      /* no flow control */
+    buf[9] = s->rx_seq + 8;          /* credit: how far ahead the host may run */
+    memcpy(buf + SDPCM_HDRLEN, payload, payload_len);
+
+    sdpcm_queue_frame(s, buf, len);
+}
+
+/*
+ * Answer one CDC control request. Everything is acknowledged with a zeroed
+ * payload for now; the point is to get the driver past initDongle and to see
+ * in the log which commands it actually depends on.
+ */
+static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
+                             uint32_t len)
+{
+    uint32_t cmd = ldl_le_p(cdc);
+    uint32_t payload_len = ldl_le_p(cdc + 4);
+    uint32_t flags = ldl_le_p(cdc + 8);
+
+    printf("[SDIO] CDC command %u (%s), %u bytes, flags 0x%08x\n", cmd,
+           (flags & CDC_DCMD_SET) ? "set" : "get", payload_len, flags);
+
+    if (payload_len > len - CDC_HDRLEN) {
+        payload_len = len > CDC_HDRLEN ? len - CDC_HDRLEN : 0;
+    }
+
+    g_autofree uint8_t *reply = g_malloc0(CDC_HDRLEN + payload_len);
+    stl_le_p(reply, cmd);
+    stl_le_p(reply + 4, payload_len);
+    stl_le_p(reply + 8, flags & ~CDC_DCMD_ERROR);  /* same id, no error */
+    stl_le_p(reply + 12, 0);                       /* status: success */
+
+    sdpcm_send(s, SDPCM_CONTROL_CHANNEL, reply, CDC_HDRLEN + payload_len);
+}
+
+/*
+ * Store into the backplane, giving the few registers that are not plain memory
+ * their behaviour. Everything else is backed by the page store so the driver's
+ * read-back verification passes.
+ */
+static void backplane_store(IPodTouchSDIOState *s, uint32_t sb_addr,
+                            const uint8_t *buf, uint32_t len)
+{
+    bool in_core = sb_addr >= SDPCM_CORE_BASE &&
+                   sb_addr < SDPCM_CORE_BASE + SDPCM_CORE_SIZE;
+    uint32_t off = sb_addr - SDPCM_CORE_BASE;
+
+    if (in_core && off == SDPCM_INTSTATUS && len >= 4) {
+        /* Write one to clear. */
+        uint32_t clear = ldl_le_p(buf);
+        sdpcm_reg_write(s, SDPCM_INTSTATUS,
+                        sdpcm_reg_read(s, SDPCM_INTSTATUS) & ~clear);
+        return;
+    }
+
+    backplane_write(s, sb_addr, buf, len);
+
+    if (sb_addr == CHIPCOMMON_CORECTL) {
+        sdpcm_announce_ready(s);
+    } else if (in_core && off == SDPCM_HOSTINTMASK) {
+        /* The mask arrives after the core is started, so re-evaluate. */
+        sdpcm_announce_ready(s);
+        sdpcm_raise(s, sdpcm_reg_read(s, SDPCM_INTSTATUS) & ldl_le_p(buf));
+    } else if (in_core && off == SDPCM_TOSBMAILBOX && len >= 4 &&
+               (ldl_le_p(buf) & SMB_INT_ACK)) {
+        sdpcm_reg_write(s, SDPCM_INTSTATUS,
+                        sdpcm_reg_read(s, SDPCM_INTSTATUS) & ~I_HMB_HOST_INT);
+    }
+}
+
+/* One frame written by the host on function 2. */
+static void sdpcm_receive(IPodTouchSDIOState *s, const uint8_t *buf, uint32_t len)
+{
+    if (len < SDPCM_HDRLEN) {
+        return;
+    }
+
+    uint16_t framelen = lduw_le_p(buf);
+    uint16_t check = lduw_le_p(buf + 2);
+    if ((framelen ^ check) != 0xffff) {
+        printf("[SDIO] SDPCM frame with a bad tag: len %u check %04x\n",
+               framelen, check);
+        return;
+    }
+
+    uint8_t channel = buf[5] & SDPCM_CHANNEL_MASK;
+    uint8_t doff = buf[7];
+    s->rx_seq = buf[4];
+
+    if (doff < SDPCM_HDRLEN || doff > framelen || framelen > len) {
+        printf("[SDIO] SDPCM frame with an unusable offset: doff %u len %u\n",
+               doff, framelen);
+        return;
+    }
+
+    switch (channel) {
+    case SDPCM_CONTROL_CHANNEL:
+        if (framelen - doff >= CDC_HDRLEN) {
+            sdpcm_handle_cdc(s, buf + doff, framelen - doff);
+        }
+        break;
+    case SDPCM_DATA_CHANNEL:
+        printf("[SDIO] SDPCM data frame, %u bytes (dropped: no backend yet)\n",
+               framelen - doff);
+        break;
+    default:
+        printf("[SDIO] SDPCM frame on unhandled channel %u\n", channel);
+        break;
+    }
+}
+
 void sdio_exec_cmd(IPodTouchSDIOState *s)
 {
     uint32_t cmd_type = s->cmd & 0x3f;
@@ -198,7 +378,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
             }
             else if(func == 0x1) {
                 uint8_t byte = data;
-                backplane_write(s, backplane_addr(s, addr), &byte, 1);
+                backplane_store(s, backplane_addr(s, addr), &byte, 1);
             }
             else {
                 s->registers[addr] = data;
@@ -209,10 +389,6 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
             if(addr == 0x1000e) {
                 // misc register
                 s->resp0 = (1 << 6) /* enable ALP clock */ | (1 << 7); /* enable HT clock */
-            }
-            else if(addr == 0x2020) {
-                // some indication that packets are ready??
-                s->resp0 = (1 << 6);
             }
             else if(func == 0x1 && addr >= SDIOD_CORE_BASE) {
                 s->resp0 = s->sdiod_regs[addr - SDIOD_CORE_BASE];
@@ -239,7 +415,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
             if(func == 0x1) {
                 g_autofree uint8_t *buf = g_malloc(xfer_len);
                 cpu_physical_memory_read(s->baddr, buf, xfer_len);
-                backplane_write(s, sb_addr, buf, xfer_len);
+                backplane_store(s, sb_addr, buf, xfer_len);
                 /* Enough of a heartbeat to tell a running firmware download
                  * apart from a wedged one, without tracing every access. */
                 s->fw_bytes += xfer_len;
@@ -254,14 +430,9 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                     s->func2_seen = true;
                     printf("[SDIO] first SDPCM frame on function 2 (%u bytes)\n", xfer_len);
                 }
-                // this is a BCM4325 command - add a frame to the queue and schedule the IRQ request to indicate that the command has been completed
-                BCM4325FrameHeaderPacket *frame_header = calloc(sizeof(BCM4325FrameHeaderPacket), sizeof(uint8_t *));
-                uint16_t length = s->blklen * s->numblk;
-                frame_header->frame_length = length;
-                frame_header->checksum = length ^ 0xffff;
-                g_queue_push_tail(s->rx_fifo, frame_header);
-
-                timer_mod(s->irq_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + NANOSECONDS_PER_SECOND / 100);
+                g_autofree uint8_t *buf = g_malloc0(xfer_len);
+                cpu_physical_memory_read(s->baddr, buf, xfer_len);
+                sdpcm_receive(s, buf, xfer_len);
             }
         } else {
             if(func == 0x1) {
@@ -270,17 +441,25 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                 cpu_physical_memory_write(s->baddr, buf, xfer_len);
             }
             else if(func == 0x2) {
-                // we're reading a frame
-                BCM4325FrameHeaderPacket *frame_header = (BCM4325FrameHeaderPacket *) g_queue_pop_head(s->rx_fifo);
+                /* Hand up one queued frame, zero-padded to whatever the host
+                 * asked for. With nothing queued, a length of zero and its
+                 * complement is the "no frame" answer. */
+                g_autofree uint8_t *buf = g_malloc0(xfer_len);
+                SDPCMFrame *f = g_queue_pop_head(s->rx_fifo);
 
-                if(!frame_header) {
-                    // create an empty frame
-                    frame_header = calloc(sizeof(BCM4325FrameHeaderPacket), sizeof(uint8_t *));
-
-		    frame_header->frame_length = s->blklen  * s->numblk;
-		    frame_header->checksum = (s->blklen * s->numblk) ^ 0xffff;
+                if (f) {
+                    memcpy(buf, f->data, MIN(f->len, xfer_len));
+                    if (f->len > xfer_len) {
+                        printf("[SDIO] SDPCM frame truncated: %u bytes into a %u byte read\n",
+                               f->len, xfer_len);
+                    }
+                    g_free(f->data);
+                    g_free(f);
+                } else if (xfer_len >= SDPCM_HWHDR_LEN) {
+                    stw_le_p(buf, 0);
+                    stw_le_p(buf + 2, 0xffff);
                 }
-                cpu_physical_memory_write(s->baddr, frame_header, sizeof(BCM4325FrameHeaderPacket));
+                cpu_physical_memory_write(s->baddr, buf, xfer_len);
             }
             
         }
