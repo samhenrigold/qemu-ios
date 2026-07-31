@@ -267,13 +267,34 @@ static void write_nand_pages(IPodTouchFMSSState *s)
 
     uint32_t desc = s->reg_cs_buf_addr;
 
+    /* FMSS_LEGACY: the pre-2026-07-31 reading, kept so the two decodes can be
+     * compared back to back -- treat pages_in as a flat array from word 3 with
+     * reg_num_pages entries, striping chip-selects from the header bitmap. */
+    bool legacy = getenv("FMSS_LEGACY") != NULL;
+    int legacy_np = s->reg_num_pages;
+    uint32_t legacy_hdr = 0;
+    if (legacy) {
+        cpu_physical_memory_read(s->reg_pages_in_addr, &legacy_hdr, 4);
+        legacy_hdr = find_bit_index(legacy_hdr & 0xff);
+        desc = s->reg_pages_in_addr;
+    }
+
     for (int i = 0; i < FMSS_MAX_WRITE_ENTRIES; i++) {
         uint32_t cmd = 0, page_nr = 0;
-        cpu_physical_memory_read(desc + (2 * i) * 4, &cmd, 4);
-        if (cmd == 0) {
-            break; /* end-of-script terminator */
+
+        if (legacy) {
+            if (i >= legacy_np) {
+                break;
+            }
+            cpu_physical_memory_read(desc + (3 + i) * 4, &page_nr, 4);
+            cmd = 1u << ((legacy_hdr + i) & 3);
+        } else {
+            cpu_physical_memory_read(desc + (2 * i) * 4, &cmd, 4);
+            if (cmd == 0) {
+                break; /* end-of-script terminator */
+            }
+            cpu_physical_memory_read(desc + (2 * i + 1) * 4, &page_nr, 4);
         }
-        cpu_physical_memory_read(desc + (2 * i + 1) * 4, &page_nr, 4);
 
         uint32_t cs = find_bit_index(cmd & 0xff);
         if (cs > 3) {
