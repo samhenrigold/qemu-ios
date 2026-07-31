@@ -50,6 +50,12 @@ typedef enum {
     QC_WRITE_FILE,
     QC_READ_FILE,
     QC_SIZE_FILE,
+
+    // Host keyboard -> guest text input. QC_POLL_INPUT dequeues one unichar
+    // from the machine's host-keyboard ring (see ipod_touch_kbd_event) into
+    // retval, or returns 0 when the ring is empty. A small injected guest
+    // agent polls this and feeds each char to _GSPostSyntheticKeyEvent.
+    QC_POLL_INPUT = 0x130,
 } qemu_call_number_t;
 
 typedef struct __attribute__((packed)) {
