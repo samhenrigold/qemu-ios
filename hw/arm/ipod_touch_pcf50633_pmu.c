@@ -1,5 +1,37 @@
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "hw/arm/ipod_touch_lcd.h"
+#include "hw/core/cpu.h"
+#include "target/arm/cpu.h"
+#include "sysemu/runstate.h"
+
+/*
+ * IT_PMU_TRACE=1 logs every PMU register access in hex together with the guest
+ * PC/LR that made it. That caller pair is what identifies which driver routine
+ * a register belongs to -- the D1759 kext is unsymbolised, so the register map
+ * is only recoverable by correlating writes with the kernel's own serial
+ * output. Off by default: the PMU is polled continuously for the battery gauge.
+ */
+static bool pmu_trace(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_PMU_TRACE") != NULL;
+    }
+    return on;
+}
+
+static void pmu_trace_access(const char *what, uint8_t reg, uint8_t val)
+{
+    uint32_t pc = 0, lr = 0;
+
+    if (current_cpu && object_dynamic_cast(OBJECT(current_cpu), TYPE_ARM_CPU)) {
+        CPUARMState *env = &ARM_CPU(current_cpu)->env;
+        pc = env->regs[15];
+        lr = env->regs[14];
+    }
+    fprintf(stderr, "[PMU] %s reg 0x%02x val 0x%02x  pc=0x%08x lr=0x%08x\n",
+            what, reg, val, pc, lr);
+}
 
 static int pcf50633_event(I2CSlave *i2c, enum i2c_event event)
 {
@@ -104,6 +136,10 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
             res = s->regs[reg];
     }
 
+    if (pmu_trace()) {
+        pmu_trace_access("read ", reg, res & 0xff);
+    }
+
     // Auto-increment for sequential multi-byte reads.
     s->curreg = (s->curreg + 1) & 0xff;
     return res;
@@ -142,14 +178,29 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
     // Subsequent bytes are data written to the selected register, which
     // auto-increments for multi-byte writes.
     uint8_t reg = s->curreg & 0xff;
+    uint8_t prev = s->regs[reg];
     s->regs[reg] = data;
     s->cmd = data;
     printf("Writing PMU register cmd %d reg %d\n", data, reg);
+    if (pmu_trace()) {
+        pmu_trace_access("write", reg, data);
+    }
 
     switch(reg) {
         case PMU_DSBL1:
             lcd_changebrightness(data);
 	    break;
+
+        case PMU_PWRLATCH_REG:
+            // Guest-requested power off (see the note in the header). On real
+            // hardware the PMU drops the rails here and the SoC simply stops;
+            // with no model for it the guest sat forever in its "pmu waiting
+            // for stdby" spin and the machine had to be killed, which is what
+            // made a clean shutdown impossible to use.
+            if ((prev & PMU_PWRLATCH_ON) && !(data & PMU_PWRLATCH_ON)) {
+                qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+            }
+            break;
     }
 
     s->curreg = (s->curreg + 1) & 0xff;

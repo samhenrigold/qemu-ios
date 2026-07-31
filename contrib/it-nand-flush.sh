@@ -1,5 +1,12 @@
 #!/bin/bash
 #
+# SUPERSEDED by contrib/it-poweroff.sh -- prefer that. The machine now has a
+# working shutdown path (QMP system_powerdown -> the slide-to-power-off gesture
+# -> the guest unmounts and clears the PMU power latch -> QEMU exits), so the
+# filesystem can be flushed by shutting the device down properly instead of by
+# the recovery-mode trick below, and the device stays usable up to the moment it
+# powers off. This script is kept for setups with no QMP monitor.
+#
 # Flush the guest's filesystem to the NAND overlay before stopping the emulator.
 #
 #     contrib/it-nand-flush.sh <overlay-dir> [udid]

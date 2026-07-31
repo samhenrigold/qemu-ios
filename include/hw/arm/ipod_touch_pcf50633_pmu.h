@@ -60,6 +60,21 @@ typedef struct Pcf50633State {
 // press the PMU latches the EVENT_C bit and raises IRQ 0x61; iOS reads EVENT_A-C
 // (clearing them), decodes the bit to a specifier (regIdx*8+bit: hold=0x11,
 // menu=0x10), and the handler reads STAT reg 0x19 to confirm the button.
+// Power latch. Register 0x10 bit 6 is the "system power is on" latch: iBoot
+// sets it while still running from SRAM (the very first 0x10 write of any boot,
+// value 0x7f, from pc 0x2200227a), and it stays set for the whole life of the
+// machine. iOS clears it -- and only it, 0x7f -> 0x3f, a read-modify-write of
+// exactly this bit -- as the last register access of a clean shutdown, right
+// before the kernel prints "pmu waiting for stdby" and spins waiting for the
+// power rail to collapse. Nothing else in a whole boot-to-shutdown run touches
+// bit 6; the other traffic to 0x10 toggles bit 5 (0x7f <-> 0x5f).
+//
+// So this write is the guest's power-off request, and it is the point at which
+// the root volume has already been unmounted -- which is what makes a clean
+// shutdown flush HFS+'s in-memory catalog to flash.
+#define PMU_PWRLATCH_REG 0x10
+#define PMU_PWRLATCH_ON  (1 << 6)
+
 #define PMU_EVENT_A_REG 0x01   // read-to-clear interrupt status (block 0x01..0x03)
 #define PMU_EVENT_C_REG 0x03   // EVENT_C: holds the wake-button interrupt bits
 #define PMU_STAT_REG    0x19   // live button STATE
