@@ -133,6 +133,24 @@ ProductVersion: 2.1.1      BuildVersion: 5F138
 ...
 ```
 
+#### The host bridge, and keeping the two halves in step
+
+The host side is a fork of usbmuxd whose USB backend speaks this transport
+instead of libusb: **[samhenrigold/usbmuxd](https://github.com/samhenrigold/usbmuxd), branch `qemu-backend`**.
+Only the transport is replaced; the mux protocol itself is untouched upstream code.
+
+The wire protocol between them is specified in **[docs/tcp-usb-protocol.md](docs/tcp-usb-protocol.md)**,
+which is canonical for both repositories. The two sides exchange a version
+handshake on connect and refuse to attach on a mismatch, so an out-of-step pair
+fails at startup with a clear message rather than corrupting transfers.
+
+Known-good pairs are recorded as matching tags in both repositories, so they
+stay resolvable regardless of later rebases:
+
+| qemu-ios tag | usbmuxd `qemu-backend` tag | Verified |
+| --- | --- | --- |
+| `usb-verified-2026-07-30` | `usb-verified-2026-07-30` | `idevice_id -l`, `ideviceinfo`, `idevicepair pair` |
+
 `idevicepair pair` also succeeds. Note the guest needs roughly 100 seconds of
 boot before it has programmed the USB core, so the host bridge should wait
 before driving a USB reset.

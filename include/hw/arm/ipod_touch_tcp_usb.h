@@ -42,7 +42,45 @@ enum
 	tcp_usb_setup = 1 << 0,
 	tcp_usb_reset = 1 << 1,
 	tcp_usb_enumdone = 1 << 2,
+	tcp_usb_hello = 1 << 3,
 };
+
+/*
+ * Version handshake. See docs/tcp-usb-protocol.md for the full specification.
+ *
+ * The host opens with an IN request on TCP_USB_EP_CONTROL carrying the hello
+ * flag; the device answers with a tcp_usb_hello_t. This exists because the two
+ * halves live in separate repositories and previously agreed on the transport's
+ * constraints only by convention -- a disagreement about the maximum
+ * transaction size silently corrupted every bulk transfer larger than the
+ * guest's armed size instead of failing. The device now states its limit and the
+ * host is required to honour it.
+ *
+ * A device that predates the handshake sees an endpoint outside its range and
+ * stalls, so an old device fails loudly against a new host rather than
+ * mysteriously; a new device is unaffected by a host that never asks.
+ */
+#define TCP_USB_EP_CONTROL         0x7f
+#define TCP_USB_HELLO_MAGIC        0x42535554u  /* "TUSB" */
+#define TCP_USB_PROTOCOL_VERSION   1
+
+/*
+ * The header's length is an int16_t, so a single transaction can never carry
+ * more than INT16_MAX bytes. The host must also never split one logical packet
+ * across transactions: this transport is transfer-oriented, and the device
+ * retires the endpoint after each transaction, so a continuation would land in
+ * a transfer the guest already considers finished.
+ */
+#define TCP_USB_MAX_TRANSACTION    32767
+
+typedef struct _tcp_usb_hello
+{
+	uint32_t magic;            /* TCP_USB_HELLO_MAGIC */
+	uint16_t version;          /* TCP_USB_PROTOCOL_VERSION */
+	uint16_t reserved;
+	uint32_t max_transaction;  /* largest payload the device will accept whole */
+
+} __attribute__((packed)) tcp_usb_hello_t;
 
 typedef enum _tcp_usb_state_enum
 {
