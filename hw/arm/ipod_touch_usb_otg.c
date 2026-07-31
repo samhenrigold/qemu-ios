@@ -146,6 +146,32 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 	uint8_t ep = _hdr->ep & 0x7f;
 	int ret;
 
+	/*
+	 * Version handshake, answered before the endpoint range check so that a
+	 * device predating it still stalls (which is how a new host detects an old
+	 * one) rather than being mistaken for a working peer.
+	 */
+	if ((_hdr->flags & tcp_usb_hello) && ep == TCP_USB_EP_CONTROL) {
+		tcp_usb_hello_t hello = {
+			.magic = TCP_USB_HELLO_MAGIC,
+			.version = TCP_USB_PROTOCOL_VERSION,
+			.reserved = 0,
+			.max_transaction = TCP_USB_MAX_TRANSACTION,
+		};
+
+		if (!(_hdr->ep & USB_DIR_IN) || hdr_len < sizeof(hello)) {
+			qemu_log_mask(LOG_GUEST_ERROR,
+			              "usb_synopsys: malformed hello (ep 0x%02x, %zu bytes)\n",
+			              _hdr->ep, hdr_len);
+			return USB_RET_STALL;
+		}
+
+		memcpy(_buffer, &hello, sizeof(hello));
+		printf("[USBTCP] handshake: protocol v%u, max transaction %u bytes\n",
+		       TCP_USB_PROTOCOL_VERSION, TCP_USB_MAX_TRANSACTION);
+		return sizeof(hello);
+	}
+
 	if (ep >= USB_NUM_ENDPOINTS) {
 		qemu_log_mask(LOG_GUEST_ERROR,
 		              "usb_synopsys: host addressed out-of-range EP %d\n", ep);
