@@ -70,12 +70,44 @@ idevicepair pair
 
 Poll `idevice_id -l` rather than sleeping a fixed time.
 
+## Forward TCP to the device
+
+`iproxy` works, so any device-side TCP listener is reachable from the host:
+
+```sh
+iproxy 2222:62078          # host port 2222 -> lockdownd on the device
+```
+
+Measured 2026-07-31 with a raw client on a plain socket (deliberately not
+`libimobiledevice`, so the forwarded path is what is being measured): a full
+lockdown session including the TLS handshake, `StartService`, then 8 MiB pulled
+back over AFC with a matching SHA-256 at six different chunk sizes. Peak
+~8.6 MB/s, ~5 ms round-trip, and eight concurrent forwarded connections with no
+stalls or cross-talk. Chunk sizes that are *not* multiples of the 512-byte max
+packet (65535, 1000) were included on purpose - that is the residue case the
+bulk-IN bug used to mishandle - and came back byte-identical.
+
+Small chunks are round-trip-bound, not bandwidth-bound: 8 MiB at 1000 bytes per
+operation is 8390 round trips and takes 47 s, against 0.93 s at 65535.
+
+One trap if you write your own client instead of using `libimobiledevice`:
+**lockdownd here predates RFC 5746**, so OpenSSL 3 refuses the handshake with
+`UNSAFE_LEGACY_RENEGOTIATION_DISABLED` (or a bare `UNEXPECTED_EOF_WHILE_READING`
+if you let it offer TLS 1.2/1.3). It needs TLSv1 pinned as both minimum and
+maximum, `SECLEVEL=0` ciphers, and `OP_LEGACY_SERVER_CONNECT`. That is a
+host-toolchain problem, not an emulator one.
+
+SSH over USB would work on this transport; what is missing is a listener on port
+22, and the work there is cross-building dropbear for armv6.
+
 ## Run real App Store apps
 
-Third-party apps from 2008 run, fully interactive. They are injected into
-`/Applications` in the NAND image offline - not through `ideviceinstaller`.
-installd rebuilds its cache every boot by scanning, so a bundle only has to be
-present.
+Third-party apps from 2008 run, fully interactive. `ideviceinstaller install`
+works over USB (verified with a 509 KB `.ipa`: `Install: Complete`, then listed
+by `ideviceinstaller list`). Apps can also be injected into `/Applications` in
+the NAND image offline, which is how the ones below were tested and remains the
+route for bundles you do not have as an `.ipa`. installd rebuilds its cache
+every boot by scanning, so a bundle only has to be present.
 
 ```sh
 python3 imgtools/editimg.py --nand $F/nand-mine --script inject.sh
@@ -245,8 +277,15 @@ All under `$F`. The golden `nand` is never written.
   handshake is acknowledged so they no longer peg the CPU, but they still hang.
 - **Debugger attach fails** (see above).
 - **WiFi passes no traffic** (see above).
-- **`ideviceinstaller` installs do not launch** - they land in
-  `/var/mobile/Applications`, which does not work. Inject into `/Applications`.
+- **`ideviceinstaller` installs probably still do not launch.** The install
+  itself now succeeds - it used to die at `PackageExtractionFailed` because
+  device->host reads were corrupt, and since that was fixed a 509 KB `.ipa`
+  reaches `Install: Complete` and shows up in `ideviceinstaller list`. But it
+  lands in `/var/mobile/Applications`, and bundles there are known not to open
+  (proven by an A/B against the identical bundle in `/Applications`). Launching
+  an installed app has not been retested since the fix, so treat this as
+  unverified rather than resolved. Inject into `/Applications` if you need the
+  app to actually run.
 - **You cannot build new 2.x binaries.** `ld` refuses armv6 and armv7 output
   uses load commands 2.1's dyld cannot parse. Decrypted period apps are the
   only practical source of software.
