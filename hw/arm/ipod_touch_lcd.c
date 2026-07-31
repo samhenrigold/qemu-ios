@@ -184,6 +184,29 @@ static void refresh_timer_tick(void *opaque)
     timer_mod(s->refresh_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + NANOSECONDS_PER_SECOND / 60);//LCD_REFRESH_RATE_FREQUENCY);
 }
 
+/*
+ * Clear the display controller's registers on a warm reset.
+ *
+ * These are all programmed fresh by iBoot and the kernel on every boot, but
+ * until they are the model would otherwise answer reads with the previous
+ * boot's values and keep scanning out of the old framebuffer base. invalidate
+ * is set so the first frame after the reset is drawn in full rather than
+ * diffed against whatever was on screen before.
+ */
+static void ipod_touch_lcd_reset(DeviceState *dev)
+{
+    IPodTouchLCDState *s = IPOD_TOUCH_LCD(dev);
+
+    s->lcd_con = 0;
+    s->render = 0;
+    s->w1_display_resolution_info = 0;
+    s->w1_framebuffer_base = 0;
+    s->w1_hspan = 0;
+    s->w1_display_depth_info = 0;
+    s->invalidate = 1;
+    memset(&s->fbsection, 0, sizeof(s->fbsection));
+}
+
 static void ipod_touch_lcd_realize(DeviceState *dev, Error **errp)
 {
     IPodTouchLCDState *s = IPOD_TOUCH_LCD(dev);
@@ -214,6 +237,7 @@ static void ipod_touch_lcd_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = ipod_touch_lcd_realize;
+    dc->reset = ipod_touch_lcd_reset;
 }
 
 static const TypeInfo ipod_touch_lcd_info = {
