@@ -30,14 +30,26 @@ will actually use it. Both are applied here, offline, deterministically.
      jobs by the Label inside the plist, not the filename, so the daemon comes up
      as com.apple.mDNSResponder.
 
-After this, with the WiFi model associated (real scan, or IPOD_WIFI_FAKE_LINK as
-a fallback) and slirp behind -netdev user, iOS resolves hostnames and Safari
-loads pages by name. The DNS server itself comes from DHCP, so nothing here is
-tied to a particular slirp/vmnet address.
+  3. A known-network entry for the model's own SSID (qemu-ios), so configd
+     AUTO-JOINS at boot with no UI. This matters because tapping the network in
+     Settings drives a UI join whose confirmation the current association model
+     does not satisfy - it loops "Unable to join" and wedges the Settings modal -
+     whereas a *known* network is joined silently by configd. The driver still
+     associates for real (its own WLC_SET_SSID); this only removes the need to
+     tap. Pass --ssid "" to skip it.
+
+After this the device auto-associates at boot, takes a DHCP lease, runs the
+resolver, and Safari loads pages by name. Names that resolve locally (/etc/hosts,
+mDNS) load; a remote name that needs a unicast DNS round-trip is still gated by
+SCNetworkReachabilityCreateWithName (a SystemConfiguration-internal limitation,
+documented in docs/networking.md), not by anything this tool controls. The DNS
+server itself comes from DHCP, so nothing here is tied to a particular
+slirp/vmnet address.
 
 Files written in the guest volume:
   /var/preferences/SystemConfiguration/preferences.plist        (new)
   /Library/Preferences/SystemConfiguration/preferences.plist    (new)
+  /var/preferences/SystemConfiguration/com.apple.wifi.plist     (new, unless --ssid "")
   /System/Library/LaunchDaemons/<hijack-target>.plist           (rewritten in place)
 
 Usage:
@@ -183,9 +195,10 @@ MDNS_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 # Python run inside the editimg mount with $MNT set. Kept as a here-doc so the
 # tool stays a single file.
 INNER = r'''
-import os, subprocess, sys
+import os, subprocess, sys, plistlib, datetime
 mnt = os.environ["MNT"]
 hijack = os.environ["HIJACK"]
+ssid = os.environ.get("KNOWN_SSID", "")
 
 prefs = r"""{prefs}"""
 mdns  = r"""{mdns}"""
@@ -217,6 +230,28 @@ with open(target, "wb") as f:            # truncate in place: inode + owner kept
 subprocess.run(["plutil", "-lint", target], check=True)
 print("rewrote %s in place -> com.apple.mDNSResponder (kept root ownership)"
       % (hijack + ".plist"))
+
+# 3. Known-network entry so configd auto-joins the model's SSID at boot.
+if ssid:
+    d = os.path.join(mnt, "var/preferences/SystemConfiguration")
+    os.makedirs(d, exist_ok=True)
+    wp = os.path.join(d, "com.apple.wifi.plist")
+    doc = {{
+        "AllowEnable": True,
+        "WiFiEnabled": True,
+        "allow join": True,
+        "List of known networks": [{{
+            "SSID_STR": ssid,
+            "SSID": ssid.encode(),
+            "AP_MODE": 2,
+            "CHANNEL": 6,
+            "lastJoined": datetime.datetime(2024, 1, 1, 0, 0, 0),
+        }}],
+    }}
+    with open(wp, "wb") as f:
+        plistlib.dump(doc, f)
+    subprocess.run(["plutil", "-lint", wp], check=True)
+    print("wrote known network %r (auto-join at boot, no UI)" % ssid)
 '''
 
 
@@ -227,6 +262,9 @@ def main():
     ap.add_argument("--hijack", default="com.apple.ReportCrash.SafetyNet",
                     help="root-owned LaunchDaemon whose plist is repurposed to "
                          "run mDNSResponder (default: ReportCrash.SafetyNet)")
+    ap.add_argument("--ssid", default="qemu-ios",
+                    help="SSID to seed as a known network for silent auto-join "
+                         "(default: qemu-ios, the model's own SSID; pass '' to skip)")
     ap.add_argument("--workdir", default=None)
     ap.add_argument("--blocks", type=int, default=128000)
     a = ap.parse_args()
@@ -242,7 +280,7 @@ def main():
         script = f.name
     os.chmod(script, 0o755)
 
-    env = dict(os.environ, HIJACK=a.hijack)
+    env = dict(os.environ, HIJACK=a.hijack, KNOWN_SSID=a.ssid)
     try:
         cmd = [sys.executable, os.path.join(HERE, "editimg.py"),
                "--nand", a.nand, "--script", script, "--blocks", str(a.blocks)]
