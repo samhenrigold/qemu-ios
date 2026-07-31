@@ -355,6 +355,20 @@ static void patch_kernel(bool alreadypatched)
     if (alreadypatched) return;
     	alreadypatched = 1;
 
+    /*
+     * Give the guest a real clock. The 2G has no RTC iOS reads at boot, so
+     * _PEGetGMTTimeOfDay (VA 0xc016b460 -> PA 0x0816b460) is `movs r0,#0; bx lr`
+     * via the vtable and the calendar starts at 1900. Rewrite its head to read
+     * host UTC seconds from the HOST_GMT_SECONDS cp15 reg and return:
+     *     mrc p15, 3, r0, c15, c15, #1   ; 7f ee 3f 0f
+     *     bx  lr                         ; 70 47
+     * XNU seeds clock_initialize_calendar from r0 once; its tick advances after.
+     * (If the date is still wrong, this MBX-triggered patch point ran after the
+     * calendar was already seeded and the patch needs an earlier trigger.)
+     */
+    static const uint8_t gmt_patch[6] = {0x7f, 0xee, 0x3f, 0x0f, 0x70, 0x47};
+    cpu_physical_memory_write(0x0816b460, gmt_patch, sizeof(gmt_patch));
+
     patch_usb_function_gate();
 
     // patch the loading of the AppleBCM4325 driver
