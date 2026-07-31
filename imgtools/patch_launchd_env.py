@@ -93,7 +93,12 @@ def main():
     ap.add_argument("--nand", required=True)
     ap.add_argument("--blob", default=None)
     ap.add_argument("--plist", required=True, help="file name, e.g. com.apple.SpringBoard.plist")
-    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="entry to add to EnvironmentVariables")
+    ap.add_argument("--set-key", action="append", default=[], metavar="KEY=VALUE",
+                    help="top-level plist key to set (e.g. StandardErrorPath), so "
+                         "launchd redirects the job's stdio somewhere we can read "
+                         "back out of the NAND overlay")
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args()
 
@@ -127,6 +132,9 @@ def main():
         k, _, v = kv.partition("=")
         env[k] = v
     plist["EnvironmentVariables"] = env
+    for kv in a.set_key:
+        k, _, v = kv.partition("=")
+        plist[k] = v
     new = plistlib.dumps(plist, fmt=plistlib.FMT_BINARY)
     assert plistlib.loads(new) == plist, "round-trip failed"
 
