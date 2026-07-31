@@ -45,28 +45,73 @@ static void ipod_touch_mbx1_write(void *opaque, hwaddr addr, uint64_t val, unsig
  *
  * IOUSBDeviceController::handleUSBCableConnect refuses to bring the controller
  * up until every interface function declared by SetDeviceDescription has
- * registered. On this image four of the five register (USBAudioControl,
- * USBAudioStreaming, IapOverUsbHid, AppleUSBMux); PTP is served from userland
- * and never does, so the set never empties, "all functions registered" never
- * prints, and gated_registerFunction never re-drives handleUSBCableConnect.
- * The controller is therefore never touched at all.
+ * registered. The descriptors come from
+ * /System/Library/AppleUSBDevice/USBDeviceConfiguration.plist, pushed by the
+ * configd plug-in com.apple.configd.usbdeviceconfig, and for iPod2,1 they name
+ * five functions. Four are served by in-kernel drivers (USBAudioControl,
+ * USBAudioStreaming, IapOverUsbHid, AppleUSBMux). PTP is served by the userland
+ * daemon /usr/libexec/ptpd, which does not come up here -- so PTP acquires no
+ * alternate setting, emits no interface descriptor despite being counted in
+ * bNumInterfaces, and its name never leaves the pending set. The count floors at
+ * exactly one and handleUSBCableConnect is never re-driven, so the controller is
+ * never touched at all.
  *
  * gated_registerFunction removes the caller from the set, then:
- *     0xc05d45cc  subs sl, r0, #0     ; r0 = set->getCount()
- *     0xc05d45d0  bne  0xc05d46cc     ; still waiting -> return
+ *     subs sl, r0, #0     ; r0 = set->getCount()
+ *     bne  <return>       ; still waiting
  * Rewriting the compare as "- #1" makes it proceed when exactly one function
  * (PTP) is left, on the last real registration. sl stays 0 on that path, which
- * matters: it is then stored back to +0xFC as the "set is empty" marker and
- * reused as the configuration loop index.
+ * matters: it is stored back as the "set is empty" marker and reused as the
+ * configuration loop index.
  *
- * Firmware-build-specific, exactly like the addresses below. Verified against
- * iPhone OS 2.1.1 build 5F138 (xnu-1228.7.27~12, RELEASE_ARM_S5L8720X).
+ * The site is located at run time rather than hardcoded, anchored on a log
+ * string, so this does not depend on one firmware build's addresses:
+ *
+ *     cstring "all functions registered"
+ *       -> the literal-pool word holding its address
+ *       -> the ldr rX, [pc, #imm] that loads that word
+ *       -> backwards to the subs rN, r0, #0 / bne pair guarding it
+ *
+ * Verified to derive 0xc05d45cc on 2.1.1 / build 5F138. Only that one build was
+ * available to check, so the approach is portable in principle but unproven on a
+ * second image.
  */
+#define KERNEL_VA_TO_PA(va)   ((va) - 0xb8000000u)
+#define KERNEL_SCAN_PA_START  0x08000000u
+#define KERNEL_SCAN_LEN       0x01000000u   /* 16 MiB covers the whole kernelcache */
+
 static bool patch_usb_gate_enabled;
 
 void ipod_touch_mbx_set_patch_usb_gate(bool enabled)
 {
     patch_usb_gate_enabled = enabled;
+}
+
+static uint32_t kernel_read_word(uint32_t va)
+{
+    uint32_t w = 0;
+    cpu_physical_memory_read(KERNEL_VA_TO_PA(va), (uint8_t *)&w, sizeof(w));
+    return w;
+}
+
+/* VA of the NUL-terminated string containing needle, or 0. */
+static uint32_t kernel_find_cstring(const uint8_t *image, size_t len, const char *needle)
+{
+    size_t nlen = strlen(needle);
+
+    for (size_t i = 0; i + nlen <= len; i++) {
+        if (memcmp(image + i, needle, nlen) != 0) {
+            continue;
+        }
+        /* Back up to just past the preceding NUL - the literal pool points at
+         * the start of the string, not at our substring. */
+        size_t start = i;
+        while (start > 0 && image[start - 1] != 0) {
+            start--;
+        }
+        return KERNEL_SCAN_PA_START + start + 0xb8000000u;
+    }
+    return 0;
 }
 
 static void patch_usb_function_gate(void)
@@ -75,19 +120,71 @@ static void patch_usb_function_gate(void)
         return;
     }
 
-    /* Kernel virtual 0xC0000000 maps to physical 0x08000000. */
-    const uint32_t vaddr = 0xc05d45cc;
-    const uint32_t paddr = vaddr - 0xb8000000;
-    uint32_t cur = 0;
-
-    cpu_physical_memory_read(paddr, (uint8_t *)&cur, sizeof(cur));
-    if (cur == 0xe250a000) {           /* subs sl, r0, #0 */
-        uint32_t patched = 0xe250a001; /* subs sl, r0, #1 */
-        cpu_physical_memory_write(paddr, (uint8_t *)&patched, sizeof(patched));
-        printf("[USBGATE] patched gated_registerFunction count check at 0x%08x\n", vaddr);
-    } else if (cur != 0xe250a001) {
-        printf("[USBGATE] NOT patching: unexpected instruction 0x%08x at 0x%08x\n", cur, vaddr);
+    uint8_t *image = g_try_malloc(KERNEL_SCAN_LEN);
+    if (!image) {
+        printf("[USBGATE] could not allocate scan buffer\n");
+        return;
     }
+    cpu_physical_memory_read(KERNEL_SCAN_PA_START, image, KERNEL_SCAN_LEN);
+
+    uint32_t str_va = kernel_find_cstring(image, KERNEL_SCAN_LEN,
+                                          "all functions registered");
+    if (!str_va) {
+        printf("[USBGATE] anchor string not found; not patching\n");
+        g_free(image);
+        return;
+    }
+
+    /* Literal-pool slots holding that address. */
+    uint32_t patched_at = 0;
+    for (size_t i = 0; i + 4 <= KERNEL_SCAN_LEN && !patched_at; i += 4) {
+        uint32_t word = ldl_le_p(image + i);
+        if (word != str_va) {
+            continue;
+        }
+        uint32_t pool_va = KERNEL_SCAN_PA_START + i + 0xb8000000u;
+
+        /* The ldr rX, [pc, #imm] that loads it. ARM literal loads resolve
+         * against pc+8, and bit 23 is the add/subtract flag so it stays in the
+         * mask. */
+        uint32_t ldr_va = 0;
+        for (uint32_t back = 8; back < 4096 && !ldr_va; back += 4) {
+            uint32_t va = pool_va - 8 - back;
+            uint32_t w = kernel_read_word(va);
+            if ((w & 0x0fff0000u) == 0x059f0000u && va + 8 + (w & 0xfff) == pool_va) {
+                ldr_va = va;
+            }
+        }
+        if (!ldr_va) {
+            continue;
+        }
+
+        /* Backwards to the guarding "subs rN, r0, #0" followed by a bne. */
+        for (uint32_t back = 4; back < 80; back += 4) {
+            uint32_t va = ldr_va - back;
+            uint32_t w = kernel_read_word(va);
+            if ((w & 0xfff00fffu) != 0xe2500000u) {
+                continue;
+            }
+            uint32_t next = kernel_read_word(va + 4);
+            bool is_bne = (next & 0x0f000000u) == 0x0a000000u && (next >> 28) == 0x1;
+            if (!is_bne) {
+                continue;
+            }
+            uint32_t patched = w | 1;
+            cpu_physical_memory_write(KERNEL_VA_TO_PA(va), (uint8_t *)&patched,
+                                      sizeof(patched));
+            printf("[USBGATE] patched gated_registerFunction count check at "
+                   "0x%08x (0x%08x -> 0x%08x)\n", va, w, patched);
+            patched_at = va;
+            break;
+        }
+    }
+
+    if (!patched_at) {
+        printf("[USBGATE] could not locate the count check; not patching\n");
+    }
+    g_free(image);
 }
 
 static void patch_kernel(bool alreadypatched)
