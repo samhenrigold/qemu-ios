@@ -166,6 +166,16 @@ static void ipod_touch_set_nor_path(Object *obj, const char *value, Error **errp
     g_strlcpy(nms->nor_path, value, sizeof(nms->nor_path));
 }
 
+static bool ipod_touch_get_wifi(Object *obj, Error **errp)
+{
+    return IPOD_TOUCH_MACHINE(obj)->wifi;
+}
+
+static void ipod_touch_set_wifi(Object *obj, bool value, Error **errp)
+{
+    IPOD_TOUCH_MACHINE(obj)->wifi = value;
+}
+
 static char *ipod_touch_get_boot_args(Object *obj, Error **errp)
 {
     IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
@@ -262,6 +272,11 @@ static void ipod_touch_instance_init(Object *obj)
 
     object_property_add_str(obj, "nandrw", ipod_touch_get_nand_overlay, ipod_touch_set_nand_overlay);
     object_property_set_description(obj, "nandrw", "Path to a writable NAND overlay directory (copy-on-write); NAND writes are stored here and read back on top of the read-only 'nand' image");
+
+    object_property_add_bool(obj, "wifi", ipod_touch_get_wifi, ipod_touch_set_wifi);
+    object_property_set_description(obj, "wifi",
+        "Present a BCM4325 on the SDIO bus. Off by default: the dongle "
+        "emulation is incomplete, so the driver attaches and then gets stuck");
 
     object_property_add_str(obj, "boot-args", ipod_touch_get_boot_args, ipod_touch_set_boot_args);
     object_property_set_description(obj, "boot-args",
@@ -491,6 +506,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = qdev_new("ipodtouch.sdio");
     IPodTouchSDIOState *sdio_state = IPOD_TOUCH_SDIO(dev);
     nms->sdio_state = sdio_state;
+    sdio_state->card_present = nms->wifi;
     memory_region_add_subregion(sysmem, SDIO_MEM_BASE, &sdio_state->iomem);
     busdev = SYS_BUS_DEVICE(dev);
     sysbus_realize(busdev, &error_fatal);
