@@ -102,16 +102,20 @@ SSH over USB would work on this transport; what is missing is a listener on port
 
 ## Run real App Store apps
 
-Third-party apps from 2008 run, fully interactive - but only when injected into
-`/Applications` in the NAND image offline. `ideviceinstaller install` now
-completes over USB, and the icon appears on SpringBoard, yet the app still will
-not launch by any route available from the host; see the known-limits entry for
-the two mutually exclusive gates that cause this. Offline injection is the only
-way to get a running app. installd rebuilds its cache every boot by scanning, so
-a bundle only has to be present.
+Third-party apps from 2008 run, fully interactive. Two routes:
+
+- **Offline injection into `/Applications`** (the original path): drop the
+  bundle into the NAND image; installd rebuilds its cache every boot by scanning,
+  so it only has to be present.
+- **`ideviceinstaller install` over USB** of a decrypted `.ipa`, after applying
+  the codesign-gate patch once (`imgtools/patch_codesign_gate.py` - see
+  `imgtools/README-appsync.md`). Without it, a decrypted bundle is rejected at
+  install and a signed one installs but will not launch; with it, a decrypted
+  app installs over USB *and* launches (verified: Obama '08). Encrypted App Store
+  apps still cannot run - FairPlay, unfixable from the host.
 
 ```sh
-python3 imgtools/editimg.py --nand $F/nand-mine --script inject.sh
+python3 imgtools/editimg.py --nand $F/nand-mine --script inject.sh   # offline route
 ```
 
 Two things decide whether a given app works:
@@ -140,29 +144,29 @@ Off by default, in which case writes are discarded as before. With an overlay,
 state written on one boot - SpringBoard prefs, the installation cache,
 TrustStore, `/var/run` - is still there several boots later.
 
-**Flush before you stop the emulator, or new files will not survive:**
+**Shut the guest down cleanly, or new files will not survive:**
 
 ```sh
-contrib/it-nand-flush.sh /path/to/overlay
+contrib/it-poweroff.sh <qmp-port>      # QMP system_powerdown -> the guest flushes, QEMU exits
 ```
 
 The guest writes file *data* to flash promptly, but HFS+ keeps catalog updates
 in memory and nothing forces them out on an idle device - measured, not one page
-reaches flash in the three minutes after an `afcclient put`. Kill QEMU at that
-point and every data block is on disk while the directory entry is not, so the
-file simply does not exist on the next boot. That is what made guest writes look
-like they were being discarded.
+reaches flash in the three minutes after an `afcclient put`. **Kill QEMU any
+other way and every data block is on disk while the directory entry is not, so
+the file simply does not exist on the next boot** - which is what made guest
+writes look like they were being discarded. Run the emulator with
+`-qmp tcp:127.0.0.1:<port>,server=on,wait=off` and stop it with the script above.
 
-The script asks lockdownd to enter recovery, which tears the filesystem down on
-the way out; the flush is the point, and the "Failed to enter recovery mode" it
-prints is expected (no working reset path). Call it last - the device is
-unusable afterwards. Verified end to end: `afcclient put` a 64 KB file, flush,
-restart on the same overlay, and `afcclient get` returns it with a matching
-SHA-256.
+`it-poweroff.sh` drives the real power-off gesture (QMP `system_powerdown` ->
+hold + slide-to-power-off -> the guest unmounts and clears the PMU power latch ->
+QEMU exits), so the filesystem is torn down properly and the device stays usable
+until it powers off. Verified end to end: `afcclient put` a 64 KB file, power off,
+restart on the same overlay, `afcclient get` returns it byte-identical (SHA-256).
 
-One wrinkle: a boot following an unclean shutdown runs `fsck_hfs`, repairs,
-prints `MACH Reboot` and stops, because the machine has no working reset path.
-The next boot comes up normally, so boots alternate repair/normal.
+(`contrib/it-nand-flush.sh` is the older fallback for setups with no QMP monitor;
+it abuses `ideviceenterrecovery` to force the flush and leaves the device
+unusable. Prefer the clean shutdown.)
 
 ## Edit the guest filesystem from the host
 
