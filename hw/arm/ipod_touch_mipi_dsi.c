@@ -64,6 +64,27 @@ static const MemoryRegionOps mipi_dsi_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
+/*
+ * Warm resets have to put the panel link back to its power-on state, or the
+ * second boot brings the display up against leftovers from the first.
+ *
+ * return_panel_id is the worst of them: the panel ID is delivered as a
+ * two-part response and this flag says which half comes next. If a reset lands
+ * mid-sequence the next boot's first read gets the second half, the ID does not
+ * match, and the panel is never brought up -- a headless boot.
+ *
+ * clkctrl matters too: the guest clears the HS clock request on its way down,
+ * so without a reset the link starts the next boot already marked disabled.
+ */
+static void ipod_touch_mipi_dsi_reset(DeviceState *dev)
+{
+    IPodTouchMIPIDSIState *s = IPOD_TOUCH_MIPI_DSI(dev);
+
+    s->pkthdr_reg = 0;
+    s->clkctrl = 0;
+    s->return_panel_id = false;
+}
+
 static void ipod_touch_mipi_dsi_realize(DeviceState *dev, Error **errp)
 {
     
@@ -87,6 +108,7 @@ static void ipod_touch_mipi_dsi_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = ipod_touch_mipi_dsi_realize;
+    dc->reset = ipod_touch_mipi_dsi_reset;
 }
 
 static const TypeInfo ipod_touch_mipi_dsi_info = {
