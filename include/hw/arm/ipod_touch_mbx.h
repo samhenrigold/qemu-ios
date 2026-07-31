@@ -15,9 +15,9 @@ typedef struct IPodTouchMBXState {
     uint64_t addr;
     bool alreadypatched;
 
-    /* Completion shim: see ipod_touch_mbx.c. Inert unless mbx-irq=on. */
+    /* irq_enabled (the mbx-irq machine option, default on) gates the verified
+     * MMU request/ack mirror in ipod_touch_mbx1_read. */
     qemu_irq irq;
-    QEMUTimer *done_timer;
     bool irq_enabled;
     uint32_t status;
 } IPodTouchMBXState;

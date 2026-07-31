@@ -30,6 +30,7 @@
 #include "hw/arm/ipod_touch_scaler_csc.h"
 #include "hw/arm/ipod_touch_sdio.h"
 #include "hw/arm/ipod_touch_tvout.h"
+#include "hw/arm/ipod_touch_lis302dl.h"
 #include "hw/arm/guest-services/general.h"
 
 #define TYPE_IPOD_TOUCH "iPod-Touch"
@@ -175,6 +176,7 @@ typedef struct {
 	IPodTouchScalerCSCState *scaler_csc_state;
 	IPodTouchSDIOState *sdio_state;
 	IPodTouchTVOutState *tvout_state;
+	LIS302DLState *lis302dl_state;
 	Clock *sysclk;
 	char bootrom_path[1024];
 	char nor_path[1024];
