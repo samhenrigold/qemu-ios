@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_multitouch.h"
+#include "qemu/log.h"
 
 static void prepare_interface_version_response(IPodTouchMultitouchState *s) {
     memset(s->out_buffer + 1, 0, 15);
@@ -62,7 +63,19 @@ static void prepare_report_info_response(IPodTouchMultitouchState *s, uint8_t re
         report_length = MT_REPORT_SENSOR_DIMENSIONS_SIZE;
     }
     else {
-        hw_error("Unknown report ID 0x%02x\n", report_id);
+        /*
+         * Anything outside the six modelled report IDs used to hw_error(),
+         * which aborts the whole process -- a guest asking an innocuous
+         * question killed the emulator. A third-party app (Wordsmith) does
+         * exactly this with report ID 0xbf and took QEMU down with it.
+         *
+         * Report a zero-length report instead: the guest gets a well-formed,
+         * empty answer for a feature we do not model, and carries on.
+         */
+        qemu_log_mask(LOG_UNIMP,
+                      "ipod_touch_multitouch: unimplemented report ID 0x%02x\n",
+                      report_id);
+        report_length = 0;
     }
 
     s->out_buffer[3] = (report_length & 0xFF);
