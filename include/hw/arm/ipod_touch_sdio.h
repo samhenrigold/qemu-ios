@@ -7,6 +7,7 @@
 #include "hw/sysbus.h"
 #include "hw/hw.h"
 #include "hw/irq.h"
+#include "net/net.h"
 
 #define TYPE_IPOD_TOUCH_SDIO                "ipodtouch.sdio"
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
@@ -167,8 +168,22 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 
 /* Event numbers, read out of the driver's own dispatch table. */
 #define WLC_E_SET_SSID      0
+#define WLC_E_JOIN          1
+#define WLC_E_AUTH          3
+#define WLC_E_ASSOC         7
 #define WLC_E_LINK          16
 #define WLC_E_SCAN_COMPLETE 26
+
+/* wl_event_msg_t flags. The driver reads the link bit out of a LINK event to
+ * tell "link came up" from "link went down". */
+#define WLC_EVENT_MSG_LINK  0x01
+
+/* ioctls the model answers with something other than zeros. */
+#define WLC_GET_RATE        12
+#define WLC_GET_BSSID       23
+#define WLC_GET_SSID        25
+#define WLC_SET_SSID        26
+#define WLC_GET_RSSI        127
 
 #define WL_EVENT_MSG_LEN    46
 
@@ -225,8 +240,20 @@ typedef struct IPodTouchSDIOState
     uint8_t tx_seq;        /* sequence number of the next frame we hand up */
     uint8_t rx_seq;        /* last sequence number the host sent us */
     GHashTable *backplane;
+
+    /* The 802.3 side: channel 2 frames are bridged to a QEMU network
+     * backend, so slirp/vmnet/etc supply DHCP, DNS and NAT. */
+    NICState *nic;
+    NICConf conf;
+    bool link_faked;         /* the association events have been pushed */
+    QEMUTimer *link_timer;
+    unsigned tx_log;
+    unsigned host_rx_log;
+
     uint8_t sdiod_regs[SDIOD_CORE_SIZE];
     uint8_t registers[0x10000];
 } IPodTouchSDIOState;
+
+void ipod_touch_sdio_setup_net(IPodTouchSDIOState *s);
 
 #endif

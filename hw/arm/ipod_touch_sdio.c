@@ -259,7 +259,7 @@ static void sdpcm_send(IPodTouchSDIOState *s, uint8_t channel,
  * itself at 0x18.
  */
 static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t event_type,
-                             uint32_t status)
+                             uint32_t status, uint16_t msg_flags)
 {
     static const uint8_t our_mac[6] = { 0x00, 0x23, 0x32, 0x6e, 0xaa, 0x10 };
     uint8_t frame[BDC_HDRLEN + 14 + 10 + WL_EVENT_MSG_LEN];
@@ -294,7 +294,7 @@ static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t event_type,
 
     /* wl_event_msg, all big endian. */
     stw_be_p(p + 0x00, 1);          /* version */
-    stw_be_p(p + 0x02, 0);          /* flags */
+    stw_be_p(p + 0x02, msg_flags);
     stl_be_p(p + 0x04, event_type);
     stl_be_p(p + 0x08, status);
     stl_be_p(p + 0x0c, 0);          /* reason */
@@ -306,10 +306,56 @@ static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t event_type,
     /* The driver sees the frame from the ethernet header onwards, so its
      * offsets 0x13 and 0x16 are relative to eth, not to the BDC header. */
     assert(eth[0x13] == BCMETH_OUI_0 && eth[0x16] == 0 && eth[0x17] == 1);
-    printf("[SDIO] sending event %u, status %u (%zu byte frame)\n",
-           event_type, status, sizeof(frame));
+    printf("[SDIO] sending event %u, status %u, flags 0x%04x (%zu byte frame)\n",
+           event_type, status, msg_flags, sizeof(frame));
 
     sdpcm_send(s, SDPCM_DATA_CHANNEL, frame, sizeof(frame));
+}
+
+/* The BSSID and SSID the model pretends to be associated with. */
+static const uint8_t fake_bssid[6] = { 0x02, 0x00, 0x5e, 0x10, 0x00, 0x01 };
+#define FAKE_SSID "qemu-ios"
+
+/*
+ * Assert an association without simulating any of 802.11. The driver's own
+ * dispatch table decides what it believes: WLC_E_SET_SSID with status 0 is a
+ * successful join, WLC_E_LINK with the link flag set is the carrier coming up.
+ *
+ * Gated behind IPOD_WIFI_FAKE_LINK because it is a claim about state the model
+ * has not actually reached, and because the point of it is to find out what
+ * the rest of iOS does when a WiFi link goes active.
+ */
+static void sdio_fake_link_up(void *opaque)
+{
+    IPodTouchSDIOState *s = (IPodTouchSDIOState *)opaque;
+
+    if (s->link_faked) {
+        return;
+    }
+    s->link_faked = true;
+    printf("[SDIO] asserting association (IPOD_WIFI_FAKE_LINK)\n");
+    sdpcm_send_event(s, WLC_E_AUTH, 0, 0);
+    sdpcm_send_event(s, WLC_E_ASSOC, 0, 0);
+    sdpcm_send_event(s, WLC_E_SET_SSID, 0, 0);
+    sdpcm_send_event(s, WLC_E_LINK, 0, WLC_EVENT_MSG_LINK);
+}
+
+static void sdio_arm_fake_link(IPodTouchSDIOState *s)
+{
+    const char *v = getenv("IPOD_WIFI_FAKE_LINK");
+
+    if (!v || !*v || *v == '0' || s->link_faked || !s->link_timer) {
+        return;
+    }
+    /* After the driver has finished initialising; a value other than 1 is
+     * taken as the delay in seconds, so the timing can be swept. */
+    int delay = atoi(v);
+    if (delay <= 1) {
+        delay = 10;
+    }
+    timer_mod(s->link_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              (int64_t)delay * NANOSECONDS_PER_SECOND);
 }
 
 /*
@@ -349,13 +395,38 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
     stl_le_p(reply + 4, payload_len);
     stl_le_p(reply + 8, flags & ~CDC_DCMD_ERROR);  /* same id, no error */
 
+    /* A few gets have to carry something believable once the model claims to
+     * be associated - an all-zero BSSID reads as "not associated". */
+    if (!(flags & CDC_DCMD_SET)) {
+        if (cmd == WLC_GET_BSSID && payload_len >= sizeof(fake_bssid)) {
+            memcpy(reply + CDC_HDRLEN, fake_bssid, sizeof(fake_bssid));
+        } else if (cmd == WLC_GET_RSSI && payload_len >= 4) {
+            /* Polled to drive the status bar's signal bars; zero reads as no
+             * signal, which is why the icon showed empty. */
+            stl_le_p(reply + CDC_HDRLEN, (uint32_t)(int32_t)-45);
+        } else if (cmd == WLC_GET_RATE && payload_len >= 4) {
+            stl_le_p(reply + CDC_HDRLEN, 108);   /* 54 Mbit, in 500 kbit units */
+        } else if (cmd == WLC_GET_SSID && payload_len >= 4) {
+            /* wlc_ssid_t: a length word then up to 32 bytes. */
+            uint32_t n = MIN(strlen(FAKE_SSID), payload_len - 4);
+            stl_le_p(reply + CDC_HDRLEN, n);
+            memcpy(reply + CDC_HDRLEN + 4, FAKE_SSID, n);
+        }
+    }
+
     sdpcm_send(s, SDPCM_CONTROL_CHANNEL, reply, CDC_HDRLEN + payload_len);
 
     /* The driver arms a scan and then waits: it re-sends this every fifteen
      * seconds and never asks for results on its own. Tell it the scan is over
      * so it comes back for them. */
     if (cmd == WLC_SET_VAR && g_str_equal(iovar, "iscan")) {
-        sdpcm_send_event(s, WLC_E_SCAN_COMPLETE, 0);
+        sdpcm_send_event(s, WLC_E_SCAN_COMPLETE, 0, 0);
+    }
+
+    /* WLC_UP is the last thing initDongle does before the driver is usable,
+     * so it is the earliest sensible moment to start the association clock. */
+    if (cmd == 2) {
+        sdio_arm_fake_link(s);
     }
 }
 
@@ -392,6 +463,129 @@ static void backplane_store(IPodTouchSDIOState *s, uint32_t sb_addr,
         sdpcm_reg_write(s, SDPCM_INTSTATUS,
                         sdpcm_reg_read(s, SDPCM_INTSTATUS) & ~I_HMB_HOST_INT);
     }
+}
+
+/* --- the 802.3 data path ------------------------------------------------ */
+
+static void hexdump_frame(const char *what, const uint8_t *p, uint32_t len)
+{
+    printf("[SDIO] %s (%u bytes):", what, len);
+    for (unsigned i = 0; i < MIN(len, 42u); i++) {
+        printf(" %02x", p[i]);
+    }
+    printf("\n");
+}
+
+/*
+ * A data frame the driver handed down. The BDC header is four bytes plus
+ * dataOffset four-byte words of padding; the driver's own receive path skips
+ * six, so a dataOffset of zero would be four here and does not have to match.
+ * Both are accepted, and the ethertype is used to tell which was meant.
+ */
+static void sdio_tx_data(IPodTouchSDIOState *s, const uint8_t *payload,
+                         uint32_t len)
+{
+    if (len < BDC_HDRLEN + 14) {
+        printf("[SDIO] data frame too short to be 802.3: %u bytes\n", len);
+        return;
+    }
+
+    uint32_t hdrlen = 4 + 4 * payload[3];
+    /* Pick whichever offset leaves a plausible ethernet header. A frame from
+     * the guest is either ARP, IPv4 or IPv6 in practice. */
+    static const uint32_t candidates[] = { 4, 6, 8 };
+    uint32_t chosen = 0;
+    for (unsigned i = 0; i < ARRAY_SIZE(candidates); i++) {
+        uint32_t off = candidates[i];
+        if (off + 14 > len) {
+            continue;
+        }
+        uint16_t et = lduw_be_p(payload + off + 12);
+        if (et == 0x0806 || et == 0x0800 || et == 0x86dd || et == 0x888e) {
+            chosen = off;
+            break;
+        }
+    }
+    if (!chosen) {
+        chosen = MIN(hdrlen, len - 14);
+    }
+
+    if (s->tx_log < 24) {
+        s->tx_log++;
+        printf("[SDIO] guest -> host, bdc %u bytes (dataOffset byte %u), "
+               "ethertype 0x%04x\n", chosen, payload[3],
+               lduw_be_p(payload + chosen + 12));
+        hexdump_frame("guest frame", payload + chosen, len - chosen);
+    }
+
+    if (!s->nic) {
+        return;
+    }
+    qemu_send_packet(qemu_get_queue(s->nic), payload + chosen, len - chosen);
+}
+
+/* A frame from the network backend, wrapped for the driver's receive path. */
+static ssize_t sdio_net_receive(NetClientState *nc, const uint8_t *buf,
+                                size_t size)
+{
+    IPodTouchSDIOState *s = qemu_get_nic_opaque(nc);
+
+    if (!s->dongle_started || size < 14 || size > 1600) {
+        return size;
+    }
+
+    g_autofree uint8_t *frame = g_malloc0(BDC_HDRLEN + size);
+    frame[0] = BDC_PROTO_VER << 4;
+    frame[1] = 0;                    /* priority */
+    frame[2] = 0;                    /* flags2 */
+    frame[3] = 0;                    /* dataOffset */
+    memcpy(frame + BDC_HDRLEN, buf, size);
+
+    if (s->host_rx_log < 24) {
+        s->host_rx_log++;
+        hexdump_frame("host -> guest", buf, size);
+    }
+
+    sdpcm_send(s, SDPCM_DATA_CHANNEL, frame, BDC_HDRLEN + size);
+    return size;
+}
+
+static bool sdio_net_can_receive(NetClientState *nc)
+{
+    IPodTouchSDIOState *s = qemu_get_nic_opaque(nc);
+
+    /* Before the dongle is up there is nothing to hand a frame to, and an
+     * unbounded queue of them would be handed over all at once later. */
+    return s->dongle_started && g_queue_get_length(s->rx_fifo) < 16;
+}
+
+static NetClientInfo sdio_net_info = {
+    .type = NET_CLIENT_DRIVER_NIC,
+    .size = sizeof(NICState),
+    .can_receive = sdio_net_can_receive,
+    .receive = sdio_net_receive,
+};
+
+/*
+ * Bind to a -netdev by id. The device is created by the board rather than by
+ * the user, so there is no "netdev" property to set on the command line; the
+ * id is fixed and the absence of a backend is not an error.
+ */
+void ipod_touch_sdio_setup_net(IPodTouchSDIOState *s)
+{
+    static const uint8_t wlan_mac[6] = { 0x00, 0x23, 0x32, 0x6e, 0xaa, 0x10 };
+    NetClientState *peer = qemu_find_netdev("wifi0");
+
+    if (!peer) {
+        return;
+    }
+    memcpy(s->conf.macaddr.a, wlan_mac, sizeof(wlan_mac));
+    s->conf.peers.ncs[0] = peer;
+    s->conf.peers.queues = 1;
+    s->nic = qemu_new_nic(&sdio_net_info, &s->conf, TYPE_IPOD_TOUCH_SDIO,
+                          "wifi", &DEVICE(s)->mem_reentrancy_guard, s);
+    qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
+    printf("[SDIO] network backend 'wifi0' attached\n");
 }
 
 /* One frame written by the host on function 2. */
@@ -435,8 +629,7 @@ static void sdpcm_receive(IPodTouchSDIOState *s, const uint8_t *buf, uint32_t le
         }
         break;
     case SDPCM_DATA_CHANNEL:
-        printf("[SDIO] SDPCM data frame, %u bytes (dropped: no backend yet)\n",
-               framelen - doff);
+        sdio_tx_data(s, buf + doff, framelen - doff);
         break;
     default:
         printf("[SDIO] SDPCM frame on unhandled channel %u\n", channel);
@@ -774,6 +967,7 @@ static void ipod_touch_sdio_init(Object *obj)
     sysbus_init_irq(sbd, &s->irq);
 
     s->irq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, trigger_irq, s);
+    s->link_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sdio_fake_link_up, s);
 
     s->rx_fifo = g_queue_new();
 }
