@@ -107,6 +107,26 @@ Off by default, in which case writes are discarded as before. With an overlay,
 state written on one boot - SpringBoard prefs, the installation cache,
 TrustStore, `/var/run` - is still there several boots later.
 
+**Flush before you stop the emulator, or new files will not survive:**
+
+```sh
+contrib/it-nand-flush.sh /path/to/overlay
+```
+
+The guest writes file *data* to flash promptly, but HFS+ keeps catalog updates
+in memory and nothing forces them out on an idle device - measured, not one page
+reaches flash in the three minutes after an `afcclient put`. Kill QEMU at that
+point and every data block is on disk while the directory entry is not, so the
+file simply does not exist on the next boot. That is what made guest writes look
+like they were being discarded.
+
+The script asks lockdownd to enter recovery, which tears the filesystem down on
+the way out; the flush is the point, and the "Failed to enter recovery mode" it
+prints is expected (no working reset path). Call it last - the device is
+unusable afterwards. Verified end to end: `afcclient put` a 64 KB file, flush,
+restart on the same overlay, and `afcclient get` returns it with a matching
+SHA-256.
+
 One wrinkle: a boot following an unclean shutdown runs `fsck_hfs`, repairs,
 prints `MACH Reboot` and stops, because the machine has no working reset path.
 The next boot comes up normally, so boots alternate repair/normal.
