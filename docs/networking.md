@@ -509,9 +509,27 @@ load works from the same Safari session.
 `/System/Library/LaunchDaemons` contains only eleven plists and none of them is
 `com.apple.mDNSResponder.plist`. It never logs a line. Every name lookup on
 Darwin goes through it, so `SCNetworkReachabilityCreateWithName` and `CFHost`
-fail before a packet is sent, which is exactly the observed shape.
+would fail before a packet is sent, which is exactly the observed shape.
 
-Adding a LaunchDaemon for it is the next thing to try.
+**Writing a LaunchDaemon for it did not help**, so that is not the whole story.
+A 10.5-style plist - `ProgramArguments` of `/usr/sbin/mDNSResponder -launchd`,
+a `com.apple.mDNSResponder` MachService, a `Sockets` `Listeners` dict for the
+`mdns` multicast group, `RunAtLoad` and `KeepAlive` - was installed and the
+behaviour was unchanged: still no DNS query on the wire, still the same dialog,
+and mDNSResponder still logs nothing and launchd does not complain. So either
+launchd is rejecting the job quietly, or `-launchd` fails to acquire its
+sockets and it exits immediately, or resolution on this build does not go
+through it at all.
+
+Worth trying next, roughly in order of cost:
+
+- drop `-launchd` so it opens its own sockets, and drop the `Sockets` dict
+- check whether launchd on 2.x even scans `/System/Library/LaunchDaemons` for
+  jobs added after the image was built, or works from a cached job list
+- confirm the resolver path by looking at what `CFNetwork`/`libinfo` in this
+  build actually calls - if it is `res_query` reading `/etc/resolv.conf`
+  directly then mDNSResponder is a red herring and the failure is in
+  `SCNetworkReachabilityCreateWithName` instead
 
 ### Where the SSID and channel actually come from
 
