@@ -513,7 +513,17 @@ static void ipod_touch_sdio_write(void *opaque, hwaddr addr, uint64_t value, uns
             s->csr = value;
             break;
         case SDIO_IRQ:
-            qemu_irq_lower(s->irq);
+            /* The driver writes back the status word it just read, so this is
+             * write-one-to-clear. Only drop the line once nothing is left. */
+            s->irq_reg &= ~(uint32_t)value;
+            if (!s->irq_reg) {
+                qemu_irq_lower(s->irq);
+            }
+            if (s->irq_log < 24) {
+                s->irq_log++;
+                printf("[SDIO] interrupt register cleared with 0x%02x, 0x%02x left\n",
+                       (uint32_t)value, s->irq_reg);
+            }
             break;
         case SDIO_IRQMASK:
             s->irq_mask = value;

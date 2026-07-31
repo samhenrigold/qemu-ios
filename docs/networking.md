@@ -127,8 +127,21 @@ AppleBCM4325::start(IOSDIOIoCardDevice)
 AppleBCM4325::initHardware(): BCM4325 revision D0
 ```
 
-after which it programs the backplane window and starts writing firmware over
-function 1.
+after which it programs the backplane window and writes roughly 200 KB of
+firmware over function 1 - about twenty minutes of emulated time, so be patient
+before calling a run wedged. With the mailbox and SDPCM framing in place it
+then reaches the control channel:
+
+```
+[SDIO] 192 KiB written to the backplane (now at 0x0002f000)
+[SDIO] dongle announced ready
+[SDIO] first SDPCM frame on function 2 (512 bytes)
+[SDIO] CDC command 84 (get), 4 bytes, flags 0x00000000
+```
+
+Command 84 is `WLC_SET_COUNTRY`, which is exactly what `initDongle` issues
+first. The upper half of the flags word is the transaction id and increments on
+each retry, confirming the CDC header layout.
 
 ### The MAC address is a CIS tuple
 
