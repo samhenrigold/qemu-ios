@@ -172,9 +172,36 @@ direction: `afcclient put` of 64 KB, 1 MB and 8 MB files all land with the exact
 on-device size, because the guest's mux *receive* side reassembles multi-transaction
 writes itself.
 
-The **device→host** direction (e.g. `afcclient get`, pulling a file off the
-device) truncates any transfer over ~16 KB. The host aborts the read with
-`Incoming split packet is too large (N so far), dropping!`.
+The **device→host** direction is worse than "truncates" — for AFC **file data**
+it is corrupt at any size. Investigation 2026-07-31 (small-file round-trips, full
+`IT_USB_TRACE` on both endpoints, FMSS ruled out by running without `nandrw`):
+
+- **Writes are byte-perfect.** Every OUT payload verified in full against what the
+  host sent (`full_first_diff = -1`), so the file's bytes reach the guest's mux
+  receive buffer intact.
+- **Small/inline reads are correct.** lockdownd plists (`<?xml…`) and the TLS
+  session records come back exactly — same IN code path, same DMA read.
+- **AFC file-data reads are stale.** An `afcclient get` returns the right *size*
+  but the content is a fixed region of guest memory (ARM code + vtable pointers),
+  **identical every run regardless of the source file**. Tracing all 70 IN
+  transfers of one GET: the random source bytes appear in **none** of them. The
+  file data never leaves the device. The guest's send buffer has a correct
+  mux+TCP header at `DIEPDMA`, but the payload section (offset 28+) is memory the
+  guest never populated there.
+
+Conclusion: lockdownd copies its response *inline* into the send buffer; the AFC
+service does **not** — it references the file data via a zero-copy / scattered
+mechanism (separate physical pages, not contiguous after the header) that this
+model's single-contiguous-buffer DMA read does not follow. Fixing it requires
+reverse-engineering how AppleUSBDeviceMux / the AFC service place file data for
+the OTG DMA (descriptor mode? a second buffer? physical-page list?) and teaching
+the model to gather it. The earlier `Incoming split packet is too large … dropping!`
+host error is a *downstream* symptom of the same missing data, not the root.
+
+This blocks `ideviceinstaller`-over-USB (staged `.ipa` unzips to garbage →
+`PackageExtractionFailed`) and `scp` over an `iproxy`-forwarded port (same mux
+bulk path). It does NOT block the working alternative — offline `/Applications`
+injection installs and runs decrypted apps. Deferred pending a new angle.
 
 The cause is **host-side, in the fork's mux reassembly** (`usbmuxd/src/device.c`,
 `device_data_input`), not in this device model. That code decides a mux packet is
