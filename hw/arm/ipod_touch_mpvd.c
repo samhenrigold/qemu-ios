@@ -3,8 +3,8 @@
 /*
  * MPVD (video decode) register window, backing only.
  *
- * The device tree has mpvd@1600000 (arm-io base + 0x01600000 = 0x39600000,
- * 0x1000 bytes) but nothing was mapped there, so AppleMPVDDriver's power-state
+ * The device tree has mpvd@1600000 with seven 0x1000 reg windows spanning
+ * 0x39600000..0x39660fff, but nothing was mapped there, so AppleMPVDDriver's power-state
  * path took a synchronous external abort the first time it touched the block --
  * the "Memory access exception" panic with fsr=0x808, far=0xec3fd01c (the
  * driver's iomap of this window, offset 0x1c). That happens right after
