@@ -45,6 +45,7 @@ typedef struct IPodTouchFMSSState
     uint32_t reg_pages_out_addr;
     uint32_t reg_csgenrc;
     char *nand_path;
+    char *nand_overlay;   /* writable COW overlay dir, or NULL to discard writes */
 } IPodTouchFMSSState;
 
 #endif
