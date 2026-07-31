@@ -356,13 +356,94 @@ static void fill_bss_info(uint8_t *bi)
 }
 
 /*
- * Assert an association without simulating any of 802.11. The driver's own
+ * Answer get_var iscanresults with one real BSS - the same network
+ * fill_bss_info describes, so a scan result and a later WLC_GET_BSS_INFO agree.
+ *
+ * status has to be SUCCESS rather than PARTIAL or the scan manager keeps
+ * polling, and version/buflen/count all have to be consistent: a zeroed reply
+ * decodes as a successful scan that found nothing, which is what left the
+ * network list spinning.
+ */
+static void fill_iscan_results(IPodTouchSDIOState *s, uint8_t *p)
+{
+    /*
+     * One BSS, reported as a completed scan. Answering PARTIAL instead - which
+     * is what an incremental scan would really do, and which handleIScanResult
+     * has a branch for - wedges Preferences the moment the Wi-Fi pane opens:
+     * the driver never comes back for the second batch, so the pane hangs
+     * mid-push. SUCCESS in one shot is the sequence this build tolerates.
+     */
+    s->iscan_reported = true;
+    stl_le_p(p + ISCAN_OFF_STATUS, WL_SCAN_RESULTS_SUCCESS);
+    stl_le_p(p + ISCAN_OFF_BUFLEN, ISCAN_RESULTS_FIXED + BSS_INFO_TOTAL);
+    stl_le_p(p + ISCAN_OFF_VERSION, BSS_INFO_VERSION);
+    stl_le_p(p + ISCAN_OFF_COUNT, 1);
+    fill_bss_info(p + ISCAN_OFF_BSS);
+    printf("[SDIO] iscanresults: 1 BSS, scan complete\n");
+}
+
+/*
+ * A real scan takes seconds of radio time. Reporting it complete in the same
+ * breath as the request arrives means the event can overtake the driver's own
+ * bookkeeping for the scan it just started, so the completion is armed on a
+ * timer instead.
+ */
+static void sdio_scan_complete(void *opaque)
+{
+    IPodTouchSDIOState *s = (IPodTouchSDIOState *)opaque;
+
+    sdpcm_send_event(s, WLC_E_SCAN_COMPLETE, 0, 0);
+}
+
+/*
+ * The event chain a dongle reports on its way into a BSS. The driver's own
  * dispatch table decides what it believes: WLC_E_SET_SSID with status 0 is a
  * successful join, WLC_E_LINK with the link flag set is the carrier coming up.
- *
- * Gated behind IPOD_WIFI_FAKE_LINK because it is a claim about state the model
- * has not actually reached, and because the point of it is to find out what
- * the rest of iOS does when a WiFi link goes active.
+ */
+static void sdio_send_assoc_events(IPodTouchSDIOState *s)
+{
+    s->link_faked = true;
+    sdpcm_send_event(s, WLC_E_AUTH, 0, 0);
+    sdpcm_send_event(s, WLC_E_ASSOC, 0, 0);
+    sdpcm_send_event(s, WLC_E_SET_SSID, 0, 0);
+    sdpcm_send_event(s, WLC_E_LINK, 0, WLC_EVENT_MSG_LINK);
+}
+
+/*
+ * A real join. The driver picked this network out of the scan results and is
+ * asking the dongle to associate with it; reporting the association back as
+ * events is what actual hardware does, so the driver drives its own state
+ * machine and nothing has to be asserted on a timer.
+ */
+static void sdio_handle_set_ssid(IPodTouchSDIOState *s, const uint8_t *payload,
+                                 uint32_t len)
+{
+    char ssid[WLC_SSID_MAX + 1] = { 0 };
+    uint32_t n = 0;
+
+    if (len >= 4) {
+        n = ldl_le_p(payload);
+        n = MIN(n, MIN(len - 4, WLC_SSID_MAX));
+        memcpy(ssid, payload + 4, n);
+    }
+
+    /* A zero-length SSID is a disassociate request, not a join. */
+    if (n == 0) {
+        printf("[SDIO] WLC_SET_SSID with no SSID: leaving the network\n");
+        s->link_faked = false;
+        sdpcm_send_event(s, WLC_E_LINK, 0, 0);
+        return;
+    }
+
+    printf("[SDIO] WLC_SET_SSID '%s': associating\n", ssid);
+    sdio_send_assoc_events(s);
+}
+
+/*
+ * Assert an association without the driver having asked for one, so the rest of
+ * iOS can be exercised without going through the scan. Superseded by the real
+ * path above and kept only as a fallback; gated behind IPOD_WIFI_FAKE_LINK
+ * because it is a claim about state the model has not actually reached.
  */
 static void sdio_fake_link_up(void *opaque)
 {
@@ -371,12 +452,8 @@ static void sdio_fake_link_up(void *opaque)
     if (s->link_faked) {
         return;
     }
-    s->link_faked = true;
     printf("[SDIO] asserting association (IPOD_WIFI_FAKE_LINK)\n");
-    sdpcm_send_event(s, WLC_E_AUTH, 0, 0);
-    sdpcm_send_event(s, WLC_E_ASSOC, 0, 0);
-    sdpcm_send_event(s, WLC_E_SET_SSID, 0, 0);
-    sdpcm_send_event(s, WLC_E_LINK, 0, WLC_EVENT_MSG_LINK);
+    sdio_send_assoc_events(s);
 }
 
 static void sdio_arm_fake_link(IPodTouchSDIOState *s)
@@ -462,6 +539,9 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
             stl_le_p(reply + CDC_HDRLEN, (uint32_t)(int32_t)-45);
         } else if (cmd == WLC_GET_RATE && payload_len >= 4) {
             stl_le_p(reply + CDC_HDRLEN, 108);   /* 54 Mbit, in 500 kbit units */
+        } else if (cmd == WLC_GET_VAR && g_str_equal(iovar, "iscanresults") &&
+                   payload_len >= ISCAN_TOTAL) {
+            fill_iscan_results(s, reply + CDC_HDRLEN);
         } else if (cmd == WLC_GET_SSID && payload_len >= 4) {
             /* wlc_ssid_t: a length word then up to 32 bytes. */
             uint32_t n = MIN(strlen(FAKE_SSID), payload_len - 4);
@@ -476,7 +556,18 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
      * seconds and never asks for results on its own. Tell it the scan is over
      * so it comes back for them. */
     if (cmd == WLC_SET_VAR && g_str_equal(iovar, "iscan")) {
-        sdpcm_send_event(s, WLC_E_SCAN_COMPLETE, 0, 0);
+        s->iscan_reported = false;
+        if (s->scan_timer) {
+            timer_mod(s->scan_timer,
+                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      SCAN_COMPLETE_DELAY_NS);
+        }
+    }
+
+    /* The driver joining a network it found in the scan results. */
+    if ((flags & CDC_DCMD_SET) && cmd == WLC_SET_SSID) {
+        sdio_handle_set_ssid(s, cdc + CDC_HDRLEN,
+                             len > CDC_HDRLEN ? len - CDC_HDRLEN : 0);
     }
 
     /* WLC_UP is the last thing initDongle does before the driver is usable,
@@ -1024,6 +1115,7 @@ static void ipod_touch_sdio_init(Object *obj)
 
     s->irq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, trigger_irq, s);
     s->link_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sdio_fake_link_up, s);
+    s->scan_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sdio_scan_complete, s);
 
     s->rx_fifo = g_queue_new();
 }
