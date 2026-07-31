@@ -370,6 +370,65 @@ thirty seconds into the boot, with zero occurrences of `fault_addr=0x38`.
 iscan`, push a scan-complete event on channel 1, and answer `get_var
 iscanresults` with a synthetic BSS.
 
+## A real scan, and an association the driver drives itself
+
+`IPOD_WIFI_FAKE_LINK` is no longer the way in. The clamp fix made
+`get_var iscanresults` answerable for the first time, and with it filled in
+properly the driver scans, lists the network, and joins it on its own.
+
+`wl_iscan_results_t` is a status word followed by `wl_scan_results_t` -
+`buflen`, `version`, `count` - and then the BSS list. The layout is pinned by
+`handleIScanResult` (`0xc033d484`), which reads status at +0 and hands
+`buffer+0x10` and the count to its walker (`0xc033cc04`); the walker steps
+through the list by each entry's own `length` field at +4, so the same
+`wl_bss_info_t` that answers `WLC_GET_BSS_INFO` can be reused unchanged.
+
+Two things beyond the structure decide whether it works, and both fail
+silently:
+
+- **The scan-complete event cannot be immediate.** Sent in the same breath as
+  the `set_var iscan` that asks for it, the results are fetched and never
+  reach the network list - `IO80211ScanManager::startScan: Timing out scan
+  requested` every fifteen seconds, exactly as when nothing was answered at
+  all. Delayed by 1.5 s, which is what radio time would really cost,
+  `qemu-ios` appears in Settings.
+- **`status` has to be `SUCCESS` with the BSS in the same reply.** `PARTIAL`
+  is what an incremental scan would report, and `handleIScanResult` has a
+  branch for it that schedules the next fetch on a 200 ms timer - but the
+  driver never comes back for the second batch, and Preferences hangs
+  mid-push into the Wi-Fi pane.
+
+With the network in the list, nothing has to be asserted. Tapping it makes
+the driver issue `WLC_SET_SSID` itself; answering that with the
+`WLC_E_AUTH` / `WLC_E_ASSOC` / `WLC_E_SET_SSID` / `WLC_E_LINK` chain is what
+real hardware does, and the driver walks its own state machine:
+
+```
+[SDIO] CDC command 26 (set), 36 bytes
+[SDIO] WLC_SET_SSID 'qemu-ios': associating
+AppleBCM4325 Joined BSS: BSSID = 02:00:5e:10:00:01, rssi = -45, rate = 54,
+                         channel = 6, ssid = "qemu-ios"
+AirPort: Link Up on en0
+```
+
+then takes a lease over the bridged data channel:
+
+```
+IP 0.0.0.0.68 > 255.255.255.255.67: BOOTP/DHCP, Request from 00:23:32:6e:aa:10
+IP 10.0.2.2.67 > 255.255.255.255.68: BOOTP/DHCP, Reply, length 548
+ARP, Probe 10.0.2.15 / Announcement 10.0.2.15
+ARP, Request who-has 10.0.2.2 tell 10.0.2.15
+ARP, Reply 10.0.2.2 is-at 52:55:0a:00:02:02
+```
+
+A zero-length SSID is a disassociate request and drops the carrier again.
+
+Settings still puts up "Unable to join the network" over the top of all this,
+with the checkmark already next to `qemu-ios` and the Wi-Fi icon in the status
+bar. That is the same missing-`preferences.plist` gate described below, not an
+association problem - the link is up and addressed by the time the alert
+appears.
+
 ## The device is on the network
 
 Scan results and a real association turned out not to be on the critical path.
