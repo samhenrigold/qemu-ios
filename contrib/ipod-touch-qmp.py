@@ -8,6 +8,7 @@ screenshots without needing a human at the SDL window.
   ipod-touch-qmp.py <port> swipe <x1> <y1> <x2> <y2>
   ipod-touch-qmp.py <port> button <home|power|voldown|volup>
   ipod-touch-qmp.py <port> key <qcode>          # raw key, reaches the guest as text
+  ipod-touch-qmp.py <port> cmd <qmp-command> [k=v ...]   # e.g. cmd system_reset
 
 The hardware buttons sit behind the host Command modifier so that plain keys stay
 free for text entry, which is why `key h` types an 'h' rather than going home.
@@ -118,8 +119,20 @@ def main():
                                  "key": {"type": "qcode",
                                          "data": sys.argv[3]}}}])
         print("key sent")
+    elif action == "cmd":
+        # Pass an arbitrary QMP command through, e.g. `cmd system_reset` or
+        # `cmd system_powerdown`. Extra `key=value` args become arguments.
+        args = {}
+        for kv in sys.argv[4:]:
+            k, _, v = kv.partition("=")
+            args[k] = v
+        print(q.cmd(sys.argv[3], **args))
     else:
-        print(__doc__)
+        # Unknown action must fail loudly: a script that typo'd an action (or
+        # relied on a `cmd` that didn't exist) otherwise silently exits 0 while
+        # doing nothing - which has cost a full boot cycle to debug.
+        sys.stderr.write(__doc__)
+        sys.exit("unknown action %r" % action)
 
 
 if __name__ == "__main__":
