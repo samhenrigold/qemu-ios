@@ -15,7 +15,17 @@ only one of them is real:
 | USB ethernet function (CDC ECM/NCM, RNDIS, tethering) | **Ruled out.** The firmware ships no such function and no driver that could back one. Evidence below. |
 | cp15 guest-services socket shim (`hw/arm/guest-services.c`) | Dormant. Needs guest code to issue the hypercall, and is layer 4 only - no interface, so nothing in iOS routes through it. |
 | PPP over the serial multiplexer | Real mechanism, wrong device. See below. |
-| BCM4325 SDIO WiFi (`hw/arm/ipod_touch_sdio.c`) | **Works.** Behind `wifi=on`, iOS takes a DHCP lease, ARPs, and serves TCP over the emulated dongle. See "The device is on the network" below. |
+| BCM4325 SDIO WiFi (`hw/arm/ipod_touch_sdio.c`) | **Works.** Behind `wifi=on`, iOS takes a DHCP lease, ARPs, runs mDNSResponder, resolves a hostname, and renders a page in Safari over the emulated dongle. Real-internet names are gated one step short - see "The device is on the network" below. |
+
+Two guest-filesystem changes are needed in addition to the emulator work, both
+applied offline with `imgtools/editimg.py` and both properties of this specific
+image rather than the hardware:
+
+1. a minimal SystemConfiguration `preferences.plist` defining an en0/AirPort
+   service set to DHCP (the image ships none, so no service was ever elected);
+2. an mDNSResponder LaunchDaemon, installed by rewriting an existing root-owned
+   plist *in place* so it stays root-owned (launchd ignores non-root daemon
+   plists, and a newly created file is owned by the host user).
 
 ### PPP is a second interface-capable path, and it needs a baseband
 
@@ -584,10 +594,45 @@ which reports the host unreachable and returns `kCFURLErrorNotConnectedToInterne
 ("Safari cannot open the page because it is not connected to the Internet").
 
 An IP-addressed load still works, because that path checks reachability of a
-concrete address and finds the route. A *name* needs the reachability layer to
-either resolve it or report the network usable, and it does neither. So the
-last gap is entirely inside SystemConfiguration's reachability logic, above a
-resolver and a transport that both now work.
+concrete address and finds the route.
+
+### A page by hostname does render
+
+The reachability gate is not a hard wall for names - it passes as soon as a
+name resolves to a reachable address. Point a name at the served address in
+`/etc/hosts` (mDNSResponder reads `/etc/hosts`, so this resolves with no wire
+query) and Safari loads it:
+
+```
+ARP who-has 10.0.2.100 tell 10.0.2.15  ->  Reply 52:55:0a:00:02:64
+10.0.2.15.49152 > 10.0.2.100.80: [S]                       <- guest first
+10.0.2.15.49152 > 10.0.2.100.80: length 382: GET / HTTP/1.1
+10.0.2.100.80 > 10.0.2.15.49152: length 186: HTTP/1.0 200 OK
+10.0.2.15.49152 > 10.0.2.100.80: [F.]
+```
+
+The URL bar reads `http://qemuhost/`, the page's title and body render, and the
+host server logs the request. **iPhone OS 2.1.1 resolves a hostname and browses
+to it over emulated WiFi.**
+
+### What still does not work: remote names
+
+A name that needs a *unicast* DNS round-trip - a real internet host, or any name
+not in `/etc/hosts` or the mDNS cache - still fails, and still puts no forward
+query on the wire. `SCNetworkReachabilityCreateWithName` returns unreachable for
+it and Safari bails before resolving, exactly as for `www.google.com` and
+`example.com`. So reachability is satisfied by a name that resolves
+*synchronously and locally*, but not by one that would require the resolver to
+go out to `10.0.2.3` - even though mDNSResponder does exactly that successfully
+for its own reverse lookups.
+
+The most likely cause, and the reason to finish the real-association work rather
+than the `IPOD_WIFI_FAKE_LINK` shim: the synthetic link event asserts the
+carrier but does not set every interface flag a real 802.11 association would,
+and reachability is conservative about a name when the interface is not fully
+"running". Dropping the fake link in favour of a real association (now unblocked
+by the `WLC_GET_BSS_INFO` fix, which means genuine `iscanresults` can finally be
+answered) is the path to the last mile.
 
 ### Where the SSID and channel actually come from
 
