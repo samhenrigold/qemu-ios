@@ -237,6 +237,16 @@ static void ipod_touch_set_usb_patch_mux_gate(Object *obj, bool value, Error **e
     IPOD_TOUCH_MACHINE(obj)->usb_patch_mux_gate = value;
 }
 
+static bool ipod_touch_get_mbx_irq(Object *obj, Error **errp)
+{
+    return IPOD_TOUCH_MACHINE(obj)->mbx_irq;
+}
+
+static void ipod_touch_set_mbx_irq(Object *obj, bool value, Error **errp)
+{
+    IPOD_TOUCH_MACHINE(obj)->mbx_irq = value;
+}
+
 static void ipod_touch_instance_init(Object *obj)
 {
     object_property_add_str(obj, "bootrom", ipod_touch_get_bootrom_path, ipod_touch_set_bootrom_path);
@@ -258,6 +268,11 @@ static void ipod_touch_instance_init(Object *obj)
 
     /* On by default: the emulated device is effectively tethered to the host. */
     IPOD_TOUCH_MACHINE(obj)->usb_attached = true;
+    object_property_add_bool(obj, "mbx-irq", ipod_touch_get_mbx_irq, ipod_touch_set_mbx_irq);
+    object_property_set_description(obj, "mbx-irq",
+        "Raise a completion interrupt for the unemulated MBX GPU so an app that "
+        "submits work does not wait for it forever. Cannot make anything render");
+
     object_property_add_bool(obj, "usb-attached", ipod_touch_get_usb_attached, ipod_touch_set_usb_attached);
     object_property_set_description(obj, "usb-attached",
         "Report a USB cable as present to the PMU. iOS leaves the whole USB device "
@@ -700,6 +715,9 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = qdev_new("ipodtouch.mbx");
     IPodTouchMBXState *mbx_state = IPOD_TOUCH_MBX(dev);
     nms->mbx_state = mbx_state;
+    mbx_state->irq_enabled = nms->mbx_irq;
+    sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, s5l8900_get_irq(nms, S5L8720_MBX_IRQ));
     memory_region_add_subregion(sysmem, MBX1_MEM_BASE, &mbx_state->iomem1);
     memory_region_add_subregion(sysmem, MBX2_MEM_BASE, &mbx_state->iomem2);
 
