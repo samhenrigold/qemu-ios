@@ -157,11 +157,10 @@ driver attach and start downloading firmware within an evening argues for
 something smaller. The remaining work, in the order it has to be done, each
 stage verifiable by the driver's own log:
 
-1. **Dongle bring-up handshake.** The SDIOD core's mailbox registers reached
-   through the backplane: `intstatus`, `hostintmask`, `tosbmailbox(data)`,
-   `tohostmailbox(data)`. When the driver takes the ARM core out of reset the
-   model has to answer with a firmware-ready mailbox message and an interrupt.
-   Done when `initDongle` stops retrying.
+1. **Dongle bring-up handshake.** See the exact sequence below. The SDIOD core
+   sits at backplane `0x18002000` and the driver enables host mailbox
+   interrupts there; the model has to answer with a firmware-ready message and
+   an interrupt. Done when `initDongle` stops retrying.
 2. **SDPCM framing on function 2.** Four-byte hardware tag (length and its
    complement), eight-byte software header (sequence, channel, next length,
    header length, flow control, credit). Channels 0 control, 1 event, 2 data.
@@ -178,6 +177,39 @@ stage verifiable by the driver's own log:
    `NetClientState` so the usual QEMU backends apply. `CONFIG_VMNET` is
    compiled in and slirp is explicitly disabled, so vmnet is the one to target;
    DHCP and NAT then come from the host.
+
+### The bring-up sequence, from the driver
+
+Addresses are from the 5F138 kernelcache; the emulator boots that exact build,
+so they can be used directly.
+
+`downloadFirmwareGated` (`0xc0335918`), after the image is in RAM:
+
+- writes four bytes to backplane `0x18000634` (chipcommon), waits 10 ms,
+  then calls an interface method that starts the core
+- calls `initHardware` (`0xc0334b48`)
+- calls `initDongle` (`0xc03335ac`)
+
+`initHardware` finishes by:
+
+- writing `0xe0` to backplane **`0x18002024`** - the SDIOD core is at
+  `0x18002000` and this is its `hostintmask`. `0xe0` is the host mailbox set:
+  flow-control state, flow-control change, frame indication. Failure is logged
+  as "Failure to write interrupt mask register".
+- writing four bytes to function 1 register **`0x1000d`**, the frame control
+  register
+- one more interface call that must return non-zero, or "Call to hardware init
+  failed, exiting"
+
+`initDongle` then immediately issues **`WLC_SET_COUNTRY` (ioctl 0x54)** with the
+four bytes `"XX"` through `wlc_ioctl` (`0xc033b0a0`), retrying once on failure
+with "Failure to set country code, trying again". So the very first thing the
+dongle is asked after reset is a CDC control transaction - there is no simpler
+intermediate milestone, and stages 2 and 3 have to land together.
+
+`initFirmware` (`0xc0333eb4`) wraps the whole thing in five attempts with a
+power cycle and a 100 ms delay between them, so a wedged bring-up looks like a
+slow retry loop rather than a hard failure.
 
 Revised estimate: one and a half to two and a half weeks of focused work. The
 main risk left is that Apple's 2008 dongle protocol differs in detail from the
