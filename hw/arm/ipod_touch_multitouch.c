@@ -405,11 +405,59 @@ static void ipod_touch_multitouch_realize(SSIPeripheral *d, Error **errp)
     s->last_frame_timestamp = 0;
 }
 
+/*
+ * Put the digitizer back to power-on state on a warm reset.
+ *
+ * This device is a command/buffer state machine: cur_cmd plus the in/out buffer
+ * cursors track where it is in an SPI exchange, and hbpp_atn_ack_response is a
+ * two-byte latch handed back on the next transfer. A reset landing anywhere
+ * mid-sequence leaves the next boot's very first exchange answering with the
+ * previous boot's leftovers, and AppleMultitouchZ2SPI's bootloader never gets
+ * off the ground -- on the second boot there is no "enabled power, scheduled
+ * bootloading" and no firmware or calibration download at all.
+ *
+ * That is enough to stop SpringBoard: no digitizer means no HID event service,
+ * and the graphics handoff never completes even though the display stack itself
+ * came up.
+ *
+ * The frame state goes too, so the next boot does not inherit a half-reported
+ * touch or a stale frame counter.
+ */
+static void ipod_touch_multitouch_reset(DeviceState *dev)
+{
+    IPodTouchMultitouchState *s = IPOD_TOUCH_MULTITOUCH(dev);
+
+    s->cur_cmd = 0;
+    s->buf_size = 0;
+    s->buf_ind = 0;
+    s->in_buffer_ind = 0;
+    memset(s->hbpp_atn_ack_response, 0, sizeof(s->hbpp_atn_ack_response));
+
+    s->next_frame = NULL;
+    s->frame_counter = 0;
+    s->touch_down = false;
+    s->touch_x = 0;
+    s->touch_y = 0;
+    s->prev_touch_x = 0;
+    s->prev_touch_y = 0;
+    s->last_frame_timestamp = 0;
+
+    if (s->touch_timer) {
+        timer_del(s->touch_timer);
+    }
+    if (s->touch_end_timer) {
+        timer_del(s->touch_end_timer);
+    }
+}
+
 static void ipod_touch_multitouch_class_init(ObjectClass *klass, void *data)
 {
     SSIPeripheralClass *k = SSI_PERIPHERAL_CLASS(klass);
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
     k->realize = ipod_touch_multitouch_realize;
     k->transfer = ipod_touch_multitouch_transfer;
+    dc->reset = ipod_touch_multitouch_reset;
 }
 
 static const TypeInfo ipod_touch_multitouch_type_info = {
