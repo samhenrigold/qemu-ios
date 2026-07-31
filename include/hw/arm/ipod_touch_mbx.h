@@ -14,6 +14,12 @@ typedef struct IPodTouchMBXState {
     MemoryRegion iomem2;
     uint64_t addr;
     bool alreadypatched;
+
+    /* Completion shim: see ipod_touch_mbx.c. Inert unless mbx-irq=on. */
+    qemu_irq irq;
+    QEMUTimer *done_timer;
+    bool irq_enabled;
+    uint32_t status;
 } IPodTouchMBXState;
 
 void ipod_touch_mbx_set_patch_usb_gate(bool enabled);
