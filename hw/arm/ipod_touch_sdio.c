@@ -476,9 +476,16 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                  * apart from a wedged one, without tracing every access. */
                 s->fw_bytes += xfer_len;
                 if(s->fw_bytes - s->fw_bytes_logged >= 65536) {
+                    int64_t now = g_get_monotonic_time();
+                    double secs = s->fw_last_us ? (now - s->fw_last_us) / 1e6 : 0;
+                    s->fw_last_us = now;
                     s->fw_bytes_logged = s->fw_bytes;
-                    printf("[SDIO] %u KiB written to the backplane (now at 0x%08x)\n",
-                           s->fw_bytes >> 10, sb_addr);
+                    printf("[SDIO] %u KiB written to the backplane (now at 0x%08x); "
+                           "%.1fs for the last 64 KiB, %u register accesses "
+                           "(%u of them polls of the interrupt status)\n",
+                           s->fw_bytes >> 10, sb_addr, secs, s->mmio_ops, s->irq_polls);
+                    s->mmio_ops = 0;
+                    s->irq_polls = 0;
                 }
             }
             else if(func == 0x2) {
@@ -557,6 +564,8 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
 static void ipod_touch_sdio_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 {
     trace_sdio("%s: writing 0x%08x to 0x%08x\n", __func__, (uint32_t)value, (uint32_t)addr);
+
+    ((IPodTouchSDIOState *)opaque)->mmio_ops++;
     
     IPodTouchSDIOState *s = (struct IPodTouchSDIOState *) opaque;
 
@@ -607,6 +616,11 @@ static void ipod_touch_sdio_write(void *opaque, hwaddr addr, uint64_t value, uns
 static uint64_t ipod_touch_sdio_read(void *opaque, hwaddr addr, unsigned size)
 {
     trace_sdio("%s: offset = 0x%08x\n", __func__, (uint32_t)addr);
+
+    ((IPodTouchSDIOState *)opaque)->mmio_ops++;
+    if (addr == SDIO_IRQ) {
+        ((IPodTouchSDIOState *)opaque)->irq_polls++;
+    }
 
     IPodTouchSDIOState *s = (struct IPodTouchSDIOState *) opaque;
 

@@ -181,6 +181,9 @@ typedef struct IPodTouchSDIOState
     uint32_t sb_window;  /* backplane address bits 8 and up */
     uint32_t fw_bytes;   /* bytes pushed over function 1, for progress logging */
     uint32_t fw_bytes_logged;
+    int64_t fw_last_us;
+    uint32_t mmio_ops;
+    uint32_t irq_polls;
     bool func2_seen;
     unsigned func2_reads;
     unsigned ready_log;
