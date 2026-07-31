@@ -108,59 +108,60 @@ static void read_nand_pages(IPodTouchFMSSState *s)
 /*
  * Handle a flash WRITE command (csgenrc 0xa02), storing pages into the overlay.
  *
- * The pages_in buffer the guest hands us is the FTL's *logical* request:
- *   [0] = 0x00801000 | cs_bitmap   (first command word)
- *   [1] = op selector              (0x300/0x400/0x480/0x500/0x600/0x700 ...)
- *   [2] = 0
- *   [3..] = physical page-number array
- * Source page data lives at pages_out (two 2048-byte DMA source addresses per
- * page); the per-page 12-byte spare record lives at spare_out (stride 0xc).
+ * Unlike a read, a write descriptor is NOT a flat page array. The driver
+ * (_fmssPrepareWriteSequential / _fmssPrepareWriteScatteredPages in
+ * com.apple.driver.AppleS5L8720xFMSS) builds a small script of two-word
+ * entries and points FMSS_CS_BUF_ADDR (0xD10) at it:
  *
- * INCOMPLETE / EXPERIMENTAL: the mapping from data-buffer index to physical
- * (chip-select, page) is only fully solved for single-page writes. Multi-page
- * writes stripe across the four chip-selects with a plane/geometry interleave
- * that the driver computes from request-struct tables not visible at this
- * register interface (the resulting (cmd,page) script is DMA'd from a driver
- * buffer we cannot locate, and the FMSS microcode is not executed here). The
- * best empirical decode (cs = i % 4, page = desc[3+i]) still mis-places a
- * handful of multi-page pages, and because the FTL requires all-or-nothing
- * consistency even that corrupts the image on the next boot. Persistence is
- * therefore gated behind the (off-by-default) `nandrw` option and should be
- * treated as experimental until the multi-page geometry is reverse-engineered
- * from AppleS5L8720xFMSS (_fmssPrepareWriteScatteredPages / -Sequential).
+ *   [2i]   command word: 0x00801000 | (1 << csShift) | plane bits,
+ *                        plus 0x70000000 when this chip-select already
+ *                        appeared earlier in the same script
+ *   [2i+1] physical page number on that chip-select
+ *   ...
+ *   [2n]   0x00000000 terminator
+ *
+ * A real 8-entry script observed at runtime (4 chip-selects x 2 planes):
+ *   00801101 00000602  70811001 00000682   <- cs0, pages 0x602 / 0x682
+ *   00801102 00000602  70811002 00000682   <- cs1
+ *   00801104 00000602  70811004 00000682   <- cs2
+ *   00801108 00000602  70811008 00000682   <- cs3
+ *   00000000                                <- terminator
+ *
+ * Two consequences, both different from a read:
+ *  - The write path never writes FMSS_PAGES_IN_ADDR (0xD0C) or FMSS_NUM_PAGES
+ *    (0xD18); those still hold the previous *read*'s values, so reg_num_pages
+ *    is meaningless here. The entry count comes from the terminator.
+ *  - Everything past the terminator is stale data from earlier commands that
+ *    shared the same DMA buffer, and must be ignored.
+ *
+ * Entry i's page data is the two 2048-byte DMA source addresses at
+ * pages_out[2i] and pages_out[2i+1]; its 12-byte spare record is at
+ * spare_out + i*0xc (stride 0xc == the driver's 3 spare words per page).
  */
+#define FMSS_MAX_WRITE_ENTRIES 512
+
 static void write_nand_pages(IPodTouchFMSSState *s)
 {
     if (!s->nand_overlay) {
         return; /* no writable overlay -> writes are discarded (original behaviour) */
     }
 
-    int np = s->reg_num_pages;
-    uint32_t hdr0 = 0;
-    cpu_physical_memory_read(s->reg_pages_in_addr, &hdr0, 4);
-    uint32_t base_cs = find_bit_index(hdr0 & 0xff);
+    uint32_t desc = s->reg_cs_buf_addr;
 
+    for (int i = 0; i < FMSS_MAX_WRITE_ENTRIES; i++) {
+        uint32_t cmd = 0, page_nr = 0;
+        cpu_physical_memory_read(desc + (2 * i) * 4, &cmd, 4);
+        if (cmd == 0) {
+            break; /* end-of-script terminator */
+        }
+        cpu_physical_memory_read(desc + (2 * i + 1) * 4, &page_nr, 4);
 
-    for (int i = 0; i < np; i++) {
-        uint32_t page_nr = 0;
-        cpu_physical_memory_read(s->reg_pages_in_addr + (3 + i) * 4, &page_nr, 4);
-
-        /*
-         * np==1 is exact: cs from the header bitmap, page from desc[3].
-         *
-         * Multi-page is NOT solved. cs = i%4 is empirical -- an earlier session
-         * tested using the header's cs for every page and found it made the
-         * reboot corruption strictly worse, and read-backs show cs cycling. The
-         * header bitmap does only ever have one bit set, so it most likely names
-         * the starting chip rather than the whole set; that is consistent with
-         * cycling and is not evidence against it.
-         *
-         * The real geometry is page = desc[3 + g(i, np)] where g is a plane/CS
-         * interleave that depends on np (np=5 looks linear, np=17 groups four
-         * chip-selects per descriptor entry). Until g is recovered from the
-         * driver, this is best-effort and still corrupts across a reboot.
-         */
-        uint32_t cs = (np == 1) ? base_cs : (uint32_t)(i & 3);
+        uint32_t cs = find_bit_index(cmd & 0xff);
+        if (cs > 3) {
+            printf("%s: bad chip-select in command word 0x%08x (entry %d)\n",
+                   __func__, cmd, i);
+            break;
+        }
 
         /* gather the 4096-byte page from the two 2048-byte DMA source halves */
         int half = NAND_BYTES_PER_PAGE / 2;
@@ -175,11 +176,7 @@ static void write_nand_pages(IPodTouchFMSSState *s)
         memset(s->page_spare_buffer, 0, NAND_BYTES_PER_SPARE);
         cpu_physical_memory_read(s->reg_page_spare_out_addr + i * 0xc, s->page_spare_buffer, 0xc);
 
-        /* Trailing entries of large descriptors are stale padding reading as
-         * page 0; writing them would clobber a real low page. */
-        if (page_nr != 0) {
-            fmss_store_page(s, cs, page_nr, s->page_buffer, s->page_spare_buffer);
-        }
+        fmss_store_page(s, cs, page_nr, s->page_buffer, s->page_spare_buffer);
     }
 }
 
