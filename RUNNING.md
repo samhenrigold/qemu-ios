@@ -156,3 +156,76 @@ boot before it has programmed the USB core, so the host bridge should wait
 before driving a USB reset.
 
 If there are any issues running the above commands, please let me know by [opening an issue](https://github.com/devos50/qemu-ios/issues/new).
+
+## Editing the guest filesystem offline
+
+The emulator serves NAND pages straight out of `cs<N>/<page>.page` with no ECC or
+spare-area validation, and the guest volume is a single unjournaled HFSX. So the
+filesystem can be edited from the host without going through the emulator's
+flash write path at all. `imgtools/editimg.py` does the whole round trip:
+
+```
+python3 imgtools/editimg.py --nand <page dir> --script <shell script>
+```
+
+It reassembles the volume into a flat image, attaches and mounts it read-write,
+runs your script with `$MNT` pointing at the mount, unmounts, checks the result
+with `fsck_hfs`, and writes only the changed blocks back. Nothing is written back
+unless fsck passes, and it refuses to touch the golden image — always work on a
+copy.
+
+This is what makes offline app injection work. A bundle dropped into
+`/Applications` is discovered and launches; the installation cache does not need
+forging, because there is no separate data partition and `installd` rebuilds the
+cache from a directory scan on every boot. Bundles under
+`/var/mobile/Applications/<UUID>/` appear on the home screen but do not launch,
+so use `/Applications`.
+
+App Store binaries must be **decrypted** (`cryptid 0`) and, more importantly,
+built against a 2.x SDK — check `DTSDKName`, not `MinimumOSVersion`. Several
+period IPAs declare `MinimumOSVersion 2.0` but were built with the iOS 4 SDK and
+silently fail to launch.
+
+## Injecting code into SpringBoard, and getting output back
+
+`imgtools/patch_launchd_env.py` edits a launchd job's plist inside the image:
+`--set` adds `EnvironmentVariables` entries, `--set-key` sets top-level keys.
+
+Setting `DYLD_INSERT_LIBRARIES` on SpringBoard works — dyld loads the library
+immediately after the main executable and runs its initializers, which is the
+mechanism a MobileSubstrate-style tweak relies on. (Injecting a library that
+does something *useful* still needs an armv6 dylib, which current toolchains
+cannot produce: `ld` refuses armv6, and armv7 output carries load commands that
+2.1's dyld cannot parse.)
+
+Because the device has no shell, the way to see a job's output is to redirect it
+to a file and read that file back off the host:
+
+```
+python3 imgtools/patch_launchd_env.py --nand <copy> \
+    --plist com.apple.SpringBoard.plist \
+    --set DYLD_INSERT_LIBRARIES=/usr/lib/libstdc++.6.dylib \
+    --set DYLD_PRINT_LIBRARIES=1 --set DYLD_PRINT_INITIALIZERS=1 \
+    --set-key StandardErrorPath=/tmp/sbdyld.log \
+    --set-key StandardOutPath=/tmp/sbdyld.log --apply
+
+python3 imgtools/itdrive.py --nand <copy> --qmp 4510 --out <dir> \
+    --boot-wait 105 --nandrw <overlay dir>
+# then wait, and search the overlay:
+grep -rl 'calling initializer' <overlay dir>
+```
+
+Three things make the difference between this working and returning nothing:
+
+- **Use a path the job's user can write.** SpringBoard runs as `mobile`, so
+  `/var/log` (root-owned, 0755) silently produces no file. `/tmp` works.
+- **Wait at least three minutes** before searching. The guest buffers the write
+  and only flushes it to flash on a periodic sync. Measured by polling a live
+  overlay every 30 s: nothing at 150 s, present at 180 s. Searching at 60 s or
+  140 s finds an overlay with only FTL and system pages in it, which looks
+  exactly like the injection having failed.
+- **Search the whole overlay, not a fixed page.** Which physical page the log
+  lands on varies between runs.
+
+The overlay is a normal copy-on-write directory, so the captured output survives
+killing the emulator afterwards.
