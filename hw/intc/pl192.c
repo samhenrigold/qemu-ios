@@ -299,9 +299,19 @@ static void pl192_write(void *opaque, hwaddr offset, uint64_t value, unsigned si
             break;
         case PL192_INTENABLE:
             s->intenable |= value;
+            if (getenv("VIC_TRACE")) {
+                fprintf(stderr, "[VIC] %s enable  += 0x%08x  now 0x%08x\n",
+                        memory_region_name(&s->iomem), (uint32_t)value,
+                        s->intenable);
+            }
             break;
         case PL192_INTENCLEAR:
             s->intenable &= ~value;
+            if (getenv("VIC_TRACE")) {
+                fprintf(stderr, "[VIC] %s disable -= 0x%08x  now 0x%08x\n",
+                        memory_region_name(&s->iomem), (uint32_t)value,
+                        s->intenable);
+            }
             break;
         case PL192_SOFTINT:
             s->softint |= value;
