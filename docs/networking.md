@@ -14,7 +14,22 @@ only one of them is real:
 | --- | --- |
 | USB ethernet function (CDC ECM/NCM, RNDIS, tethering) | **Ruled out.** The firmware ships no such function and no driver that could back one. Evidence below. |
 | cp15 guest-services socket shim (`hw/arm/guest-services.c`) | Dormant. Needs guest code to issue the hypercall, and is layer 4 only - no interface, so nothing in iOS routes through it. |
+| PPP over the serial multiplexer | Real mechanism, wrong device. See below. |
 | BCM4325 SDIO WiFi (`hw/arm/ipod_touch_sdio.c`) | The only path to a real network interface, and the one being built. Behind `wifi=on`, the driver initialises and publishes an `IO80211Interface`; no traffic passes yet. |
+
+### PPP is a second interface-capable path, and it needs a baseband
+
+"Only the WiFi driver can produce an interface" is too strong, and a search for
+`IONetworkingFamily` clients structurally cannot see why: PPP creates
+interfaces through the BSD network stack, not through IOKit driver matching.
+The image ships `com.apple.nke.ppp` and `com.apple.driver.AppleSerialMultiplexer`,
+whose source paths include `MuxNetworkInterface.cpp` and `MuxNetworkPolicy.cpp`
+with RS232, SPI and H5 adapters. iOS 2.x can bring a network interface up over
+a serial link.
+
+It is the cellular data stack - PPP and PDP to the baseband over the serial mux -
+and iPod2,1 has no baseband. The reason this route is unusable here is "no
+baseband on this device", not "no such mechanism exists".
 
 ## Why USB ethernet is ruled out
 
