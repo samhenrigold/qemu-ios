@@ -22,6 +22,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchNORSPIState, IPOD_TOUCH_NOR_SPI)
 typedef struct IPodTouchNORSPIState {
     SSIPeripheral ssidev;
     char *nor_path;
+    const char *boot_args;
     uint32_t cur_cmd;
     uint8_t *in_buf;
     uint8_t *out_buf;
