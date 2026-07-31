@@ -150,9 +150,36 @@ If nothing matches, the address stays zero, `processConfigData` compares it
 against an all-zero constant at `0xc034cbe0` and gives up with "unable to obtain
 MAC address, can't proceed any further".
 
-### What is still missing
+### What is still missing, and what it costs
 
-Everything past firmware download: the dongle-side SDPCM/CDC/BDC protocol on
-function 2, the `WLC_*` ioctl surface, asynchronous events, and a bridge to a
-host network backend. `CONFIG_VMNET` is compiled in and slirp is explicitly
-disabled, so vmnet is the intended backend.
+The prior estimate for this route was "multi-month, high-risk". Having the
+driver attach and start downloading firmware within an evening argues for
+something smaller. The remaining work, in the order it has to be done, each
+stage verifiable by the driver's own log:
+
+1. **Dongle bring-up handshake.** The SDIOD core's mailbox registers reached
+   through the backplane: `intstatus`, `hostintmask`, `tosbmailbox(data)`,
+   `tohostmailbox(data)`. When the driver takes the ARM core out of reset the
+   model has to answer with a firmware-ready mailbox message and an interrupt.
+   Done when `initDongle` stops retrying.
+2. **SDPCM framing on function 2.** Four-byte hardware tag (length and its
+   complement), eight-byte software header (sequence, channel, next length,
+   header length, flow control, credit). Channels 0 control, 1 event, 2 data.
+   The driver paces on the credit field, so the bookkeeping has to be real.
+3. **The CDC control channel.** A `cmd/len/flags/status` header and then the
+   `WLC_*` surface the driver uses at init - `WLC_GET_MAGIC`,
+   `WLC_GET_VERSION`, `WLC_GET_VAR`, `WLC_SET_VAR`, `WLC_UP`, `WLC_SET_INFRA`,
+   `WLC_SET_PM`, `WLC_GET_REVINFO`. Iterative: anything unhandled shows up as
+   "command %d failure".
+4. **Events and a fake association.** Push `WLC_E_*` on channel 1 and answer
+   `WLC_SCAN` with a beacon list, so an SSID appears in Settings and the driver
+   believes it joined. No 802.11 needs simulating.
+5. **The data path.** BDC header plus 802.3 frames on channel 2, bridged to a
+   `NetClientState` so the usual QEMU backends apply. `CONFIG_VMNET` is
+   compiled in and slirp is explicitly disabled, so vmnet is the one to target;
+   DHCP and NAT then come from the host.
+
+Revised estimate: one and a half to two and a half weeks of focused work. The
+main risk left is that Apple's 2008 dongle protocol differs in detail from the
+one `brcmfmac` documents - the driver itself warns about a protocol version
+mismatch, so at least the version is negotiable and visible.

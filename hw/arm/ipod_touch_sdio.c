@@ -193,11 +193,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                     uint32_t before = s->sb_window;
                     s->sb_window &= ~(0xffu << shift);
                     s->sb_window |= (uint32_t)data << shift;
-                    /* Cheap progress marker: the window moves once per 32 KB of
-                     * firmware, so this is a handful of lines per download. */
-                    if(addr == SBSDIO_SBADDRHIGH && s->sb_window != before) {
-                        printf("[SDIO] backplane window -> 0x%08x\n", s->sb_window);
-                    }
+                    (void)before;
                 }
             }
             else if(func == 0x1) {
@@ -244,8 +240,20 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                 g_autofree uint8_t *buf = g_malloc(xfer_len);
                 cpu_physical_memory_read(s->baddr, buf, xfer_len);
                 backplane_write(s, sb_addr, buf, xfer_len);
+                /* Enough of a heartbeat to tell a running firmware download
+                 * apart from a wedged one, without tracing every access. */
+                s->fw_bytes += xfer_len;
+                if(s->fw_bytes - s->fw_bytes_logged >= 65536) {
+                    s->fw_bytes_logged = s->fw_bytes;
+                    printf("[SDIO] %u KiB written to the backplane (now at 0x%08x)\n",
+                           s->fw_bytes >> 10, sb_addr);
+                }
             }
             else if(func == 0x2) {
+                if(!s->func2_seen) {
+                    s->func2_seen = true;
+                    printf("[SDIO] first SDPCM frame on function 2 (%u bytes)\n", xfer_len);
+                }
                 // this is a BCM4325 command - add a frame to the queue and schedule the IRQ request to indicate that the command has been completed
                 BCM4325FrameHeaderPacket *frame_header = calloc(sizeof(BCM4325FrameHeaderPacket), sizeof(uint8_t *));
                 uint16_t length = s->blklen * s->numblk;
