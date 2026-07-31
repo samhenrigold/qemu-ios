@@ -745,6 +745,12 @@ static void ipod_touch_machine_init(MachineState *machine)
     IPodTouchMIPIDSIState *mipi_dsi_state = IPOD_TOUCH_MIPI_DSI(dev);
     nms->mipi_dsi_state = mipi_dsi_state;
     memory_region_add_subregion(sysmem, MIPI_DSI_MEM_BASE, &mipi_dsi_state->iomem);
+    /* Has to be realized, not just created: an unrealized device is never
+     * parented into the QOM tree, so qemu_devices_reset() never reaches it and
+     * its DeviceClass reset handler is dead code. Without this the DSI link
+     * kept the previous boot's panel-ID latch across a warm reset and the panel
+     * was never brought up on the second boot. */
+    sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
 
     // init LCD
     dev = qdev_new("ipodtouch.lcd");
