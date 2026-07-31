@@ -117,6 +117,9 @@ typedef struct IPodTouchSDIOState
     GQueue *rx_fifo;
     bool card_present;   /* answer CMD5 so the BCM4325 driver can attach */
     uint32_t sb_window;  /* backplane address bits 8 and up */
+    uint32_t fw_bytes;   /* bytes pushed over function 1, for progress logging */
+    uint32_t fw_bytes_logged;
+    bool func2_seen;
     GHashTable *backplane;
     uint8_t sdiod_regs[SDIOD_CORE_SIZE];
     uint8_t registers[0x10000];
