@@ -1,4 +1,43 @@
 #include "hw/arm/ipod_touch_mbx.h"
+#include "hw/irq.h"
+#include "qemu/timer.h"
+#include "hw/core/cpu.h"
+#include "cpu.h"
+
+/*
+ * MMIO trace, off unless MBX_TRACE=1 is in the emulator's environment.
+ *
+ * The guest PC is logged with every access: AppleMBX.kext is carved out at
+ * /Users/shg/Developer/ipod2g-re/kexts/com.apple.driver.AppleMBX.macho with
+ * __text at 0xc04e4000, so a PC in that range maps straight onto a disassembly
+ * line and tells you which driver routine touched the register.
+ */
+static int mbx_trace = -1;
+
+static bool mbx_tracing(void)
+{
+    if (mbx_trace < 0) {
+        const char *v = getenv("MBX_TRACE");
+        mbx_trace = (v && *v && *v != '0') ? 1 : 0;
+    }
+    return mbx_trace == 1;
+}
+
+static uint32_t mbx_guest_pc(void)
+{
+    if (!current_cpu) {
+        return 0;
+    }
+    return (uint32_t)ARM_CPU(current_cpu)->env.regs[15];
+}
+
+#define MBX_TRACE(fmt, ...)                                                    \
+    do {                                                                       \
+        if (mbx_tracing()) {                                                    \
+            fprintf(stderr, "[MBX] pc=0x%08x " fmt "\n", mbx_guest_pc(),        \
+                    ##__VA_ARGS__);                                             \
+        }                                                                      \
+    } while (0)
 
 static uint32_t reverse_byte_order(uint32_t value) {
     return ((value & 0x000000FF) << 24) |
@@ -10,26 +49,31 @@ static uint32_t reverse_byte_order(uint32_t value) {
 static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
 {
     IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
-    if (addr != 0x1020)
-    	printf("%s: read from location 0x%08x\n", __func__, addr);
+    uint32_t val;
+
     switch(addr)
     {
         case 0x12c:
-            return 0x40;
+            val = 0x40;
+            break;
         case 0xf00:
-            return (2 << 0x10) | (1 << 0x18); // seems to be some kind of identifier
+            val = (2 << 0x10) | (1 << 0x18); // seems to be some kind of identifier
+            break;
         case 0x1020:
-            return s->addr != 0x0 ? s->addr : 0x10000;
+            val = s->addr != 0x0 ? s->addr : 0x10000;
+            break;
         default:
+            val = 0;
             break;
     }
-    return 0;
+    MBX_TRACE("mbx1 rd  [0x%06x] -> 0x%08x", (uint32_t)addr, val);
+    return val;
 }
 
 static void ipod_touch_mbx1_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
-    fprintf(stderr, "%s: writing 0x%08x to 0x%08x\n", __func__, val, addr);
+    MBX_TRACE("mbx1 wr  [0x%06x] <- 0x%08x", (uint32_t)addr, (uint32_t)val);
 
     switch(addr)
     {
@@ -254,25 +298,26 @@ static void patch_kernel(bool alreadypatched)
 static uint64_t ipod_touch_mbx2_read(void *opaque, hwaddr addr, unsigned size)
 {
     IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
-    printf("%s: read from location 0x%08x\n", __func__, addr);
+    uint32_t val = 0;
+
     switch(addr)
     {
         case 0xC:
             patch_kernel(s->alreadypatched);
 	    break;
 	case 0x4:
-	    return 0xFF;
+	    val = 0xFF;
 	    break;
         default:
             break;
     }
-    return 0;
+    MBX_TRACE("mbx2 rd  [0x%03x] -> 0x%08x", (uint32_t)addr, val);
+    return val;
 }
 
 static void ipod_touch_mbx2_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
-    IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
-    fprintf(stderr, "%s: writing 0x%08x to 0x%08x\n", __func__, val, addr);
+    MBX_TRACE("mbx2 wr  [0x%03x] <- 0x%08x", (uint32_t)addr, (uint32_t)val);
 }
 
 static const MemoryRegionOps ipod_touch_mbx1_ops = {
