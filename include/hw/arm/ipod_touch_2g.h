@@ -191,6 +191,18 @@ typedef struct {
 	IT2G_CPREG_VAR_DEF(REG0);
 	IT2G_CPREG_VAR_DEF(REG1);
 	IT2G_CPREG_VAR_DEF(QEMU_CALL);
+
+	/*
+	 * Host keyboard -> guest text input (see ipod_touch_kbd_event). Bare
+	 * printable keys pressed in the display window are converted to unichars
+	 * and queued here; the buttons move behind the host Command modifier so
+	 * the plain keys are free for typing. The queue is drained by injecting a
+	 * call to GraphicsServices' _GSPostSyntheticKeyEvent in the guest.
+	 */
+	uint16_t kbd_ring[256];   /* queued unichars */
+	unsigned kbd_head, kbd_tail;
+	bool kbd_cmd;             /* host Command/Meta held */
+	bool kbd_shift;           /* host Shift held */
 } IPodTouchMachineState;
 
 #endif

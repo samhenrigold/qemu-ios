@@ -14,6 +14,7 @@
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "target/arm/cpregs.h"
 #include "qemu/error-report.h"
+#include "ui/input.h"
 
 // The D1759 PMU raises this GPIO IRQ when a wake button (hold/menu) is pressed.
 // It lands in the same GPIO interrupt group the button code already drives.
@@ -472,6 +473,156 @@ static void ipod_touch_key_event(void *opaque, int keycode)
     }
 }
 
+/*
+ * Host keyboard -> guest text input.
+ *
+ * The legacy ipod_touch_key_event above drives the four hardware buttons from
+ * bare letter keys (P/H/-/+), which collides with typing. This modern handler
+ * replaces it: it moves the buttons behind the host Command modifier so every
+ * plain key is free for text, and queues bare printable keys as unichars for
+ * injection into the guest's text-input system. The button/PMU-wake logic is
+ * reused unchanged - a Command combo just calls ipod_touch_key_event with the
+ * scancode that combo used to be.
+ */
+static IPodTouchMachineState *s_kbd_nms;
+static IPodTouchMultitouchState *s_kbd_mt;
+
+static uint16_t qcode_to_unichar(int q, bool shift)
+{
+	switch (q) {
+	case Q_KEY_CODE_A: return shift ? 'A' : 'a';
+	case Q_KEY_CODE_B: return shift ? 'B' : 'b';
+	case Q_KEY_CODE_C: return shift ? 'C' : 'c';
+	case Q_KEY_CODE_D: return shift ? 'D' : 'd';
+	case Q_KEY_CODE_E: return shift ? 'E' : 'e';
+	case Q_KEY_CODE_F: return shift ? 'F' : 'f';
+	case Q_KEY_CODE_G: return shift ? 'G' : 'g';
+	case Q_KEY_CODE_H: return shift ? 'H' : 'h';
+	case Q_KEY_CODE_I: return shift ? 'I' : 'i';
+	case Q_KEY_CODE_J: return shift ? 'J' : 'j';
+	case Q_KEY_CODE_K: return shift ? 'K' : 'k';
+	case Q_KEY_CODE_L: return shift ? 'L' : 'l';
+	case Q_KEY_CODE_M: return shift ? 'M' : 'm';
+	case Q_KEY_CODE_N: return shift ? 'N' : 'n';
+	case Q_KEY_CODE_O: return shift ? 'O' : 'o';
+	case Q_KEY_CODE_P: return shift ? 'P' : 'p';
+	case Q_KEY_CODE_Q: return shift ? 'Q' : 'q';
+	case Q_KEY_CODE_R: return shift ? 'R' : 'r';
+	case Q_KEY_CODE_S: return shift ? 'S' : 's';
+	case Q_KEY_CODE_T: return shift ? 'T' : 't';
+	case Q_KEY_CODE_U: return shift ? 'U' : 'u';
+	case Q_KEY_CODE_V: return shift ? 'V' : 'v';
+	case Q_KEY_CODE_W: return shift ? 'W' : 'w';
+	case Q_KEY_CODE_X: return shift ? 'X' : 'x';
+	case Q_KEY_CODE_Y: return shift ? 'Y' : 'y';
+	case Q_KEY_CODE_Z: return shift ? 'Z' : 'z';
+	case Q_KEY_CODE_1: return shift ? '!' : '1';
+	case Q_KEY_CODE_2: return shift ? '@' : '2';
+	case Q_KEY_CODE_3: return shift ? '#' : '3';
+	case Q_KEY_CODE_4: return shift ? '$' : '4';
+	case Q_KEY_CODE_5: return shift ? '%' : '5';
+	case Q_KEY_CODE_6: return shift ? '^' : '6';
+	case Q_KEY_CODE_7: return shift ? '&' : '7';
+	case Q_KEY_CODE_8: return shift ? '*' : '8';
+	case Q_KEY_CODE_9: return shift ? '(' : '9';
+	case Q_KEY_CODE_0: return shift ? ')' : '0';
+	case Q_KEY_CODE_MINUS: return shift ? '_' : '-';
+	case Q_KEY_CODE_EQUAL: return shift ? '+' : '=';
+	case Q_KEY_CODE_BRACKET_LEFT:  return shift ? '{' : '[';
+	case Q_KEY_CODE_BRACKET_RIGHT: return shift ? '}' : ']';
+	case Q_KEY_CODE_BACKSLASH: return shift ? '|' : '\\';
+	case Q_KEY_CODE_SEMICOLON: return shift ? ':' : ';';
+	case Q_KEY_CODE_APOSTROPHE: return shift ? '"' : '\'';
+	case Q_KEY_CODE_GRAVE_ACCENT: return shift ? '~' : '`';
+	case Q_KEY_CODE_COMMA: return shift ? '<' : ',';
+	case Q_KEY_CODE_DOT: return shift ? '>' : '.';
+	case Q_KEY_CODE_SLASH: return shift ? '?' : '/';
+	case Q_KEY_CODE_SPC: return ' ';
+	case Q_KEY_CODE_RET: return '\n';
+	case Q_KEY_CODE_BACKSPACE: return 0x08;
+	case Q_KEY_CODE_TAB: return '\t';
+	default: return 0;
+	}
+}
+
+static void ipod_touch_kbd_enqueue(IPodTouchMachineState *nms, uint16_t ch)
+{
+	unsigned next = (nms->kbd_tail + 1) % ARRAY_SIZE(nms->kbd_ring);
+	if (next == nms->kbd_head) {
+		return; /* ring full - drop, rather than overwrite unread input */
+	}
+	nms->kbd_ring[nms->kbd_tail] = ch;
+	nms->kbd_tail = next;
+}
+
+/* Command+combo -> the button scancode the legacy handler already understands. */
+static void ipod_touch_kbd_button(int qcode, bool shift, bool down)
+{
+	int base = -1;
+	switch (qcode) {
+	case Q_KEY_CODE_L: base = KEY_P; break;          /* Command+L      -> power */
+	case Q_KEY_CODE_H: if (shift) base = KEY_H; break;/* Command+Shift+H-> home  */
+	case Q_KEY_CODE_MINUS: base = KEY_MIN; break;    /* Command+-      -> vol dn */
+	case Q_KEY_CODE_EQUAL: base = KEY_PLUS; break;   /* Command+=      -> vol up */
+	default: break;
+	}
+	if (base < 0 || !s_kbd_mt) {
+		return;
+	}
+	ipod_touch_key_event(s_kbd_mt, down ? base : (base | KEY_UP));
+}
+
+static void ipod_touch_kbd_event(DeviceState *dev, QemuConsole *src,
+                                 InputEvent *evt)
+{
+	IPodTouchMachineState *nms = s_kbd_nms;
+	InputKeyEvent *k = evt->u.key.data;
+	int q = qemu_input_key_value_to_qcode(k->key);
+	bool down = k->down;
+
+	if (!nms) {
+		return;
+	}
+
+	switch (q) {
+	case Q_KEY_CODE_META_L:
+	case Q_KEY_CODE_META_R:
+		nms->kbd_cmd = down;
+		return;
+	case Q_KEY_CODE_SHIFT:
+	case Q_KEY_CODE_SHIFT_R:
+		nms->kbd_shift = down;
+		return;
+	default:
+		break;
+	}
+
+	if (nms->kbd_cmd) {
+		/* buttons live behind Command now */
+		ipod_touch_kbd_button(q, nms->kbd_shift, down);
+		return;
+	}
+
+	if (down) {
+		uint16_t ch = qcode_to_unichar(q, nms->kbd_shift);
+		if (ch) {
+			ipod_touch_kbd_enqueue(nms, ch);
+			/* Injection into _GSPostSyntheticKeyEvent is wired up separately;
+			 * for now the queue is the interface the drain will consume. */
+			if (getenv("IT_KBD_TRACE")) {
+				fprintf(stderr, "[KBD] queued 0x%04x '%c'\n", ch,
+				        (ch >= 0x20 && ch < 0x7f) ? ch : '.');
+			}
+		}
+	}
+}
+
+static const QemuInputHandler ipod_touch_kbd_handler = {
+	.name  = "iPod Touch Keyboard",
+	.mask  = INPUT_EVENT_MASK_KEY,
+	.event = ipod_touch_kbd_event,
+};
+
 static void ipod_touch_machine_init(MachineState *machine)
 {
 	IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(machine);
@@ -805,7 +956,14 @@ static void ipod_touch_machine_init(MachineState *machine)
 
     qemu_register_reset(ipod_touch_cpu_reset, nms);
 
-    qemu_add_kbd_event_handler(ipod_touch_key_event, spi4_state->mt);
+    /*
+     * Route the host keyboard through the modern input handler so we can see
+     * the Command modifier (a 0xE0-prefixed extended scancode the legacy path
+     * mangles) and tell button combos apart from text. See ipod_touch_kbd_event.
+     */
+    s_kbd_nms = nms;
+    s_kbd_mt = spi4_state->mt;
+    qemu_input_handler_register(DEVICE(nms->cpu), &ipod_touch_kbd_handler);
 }
 
 static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)

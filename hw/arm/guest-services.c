@@ -165,6 +165,17 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
         case QC_SIZE_FILE:
             qcall.retval = qc_handle_size_file(qcall.args.size_file.index);
             break;
+        case QC_POLL_INPUT: {
+            // Dequeue one host-keyboard unichar for the guest text-input agent.
+            IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
+            if (nms->kbd_head != nms->kbd_tail) {
+                qcall.retval = nms->kbd_ring[nms->kbd_head];
+                nms->kbd_head = (nms->kbd_head + 1) % ARRAY_SIZE(nms->kbd_ring);
+            } else {
+                qcall.retval = 0;
+            }
+            break;
+        }
         default:
             // TODO: handle unknown call numbers
             break;
