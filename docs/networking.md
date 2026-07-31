@@ -685,13 +685,50 @@ it and Safari bails before resolving, exactly as for `www.google.com` and
 go out to `10.0.2.3` - even though mDNSResponder does exactly that successfully
 for its own reverse lookups.
 
-The most likely cause, and the reason to finish the real-association work rather
-than the `IPOD_WIFI_FAKE_LINK` shim: the synthetic link event asserts the
-carrier but does not set every interface flag a real 802.11 association would,
-and reachability is conservative about a name when the interface is not fully
-"running". Dropping the fake link in favour of a real association (now unblocked
-by the `WLC_GET_BSS_INFO` fix, which means genuine `iscanresults` can finally be
-answered) is the path to the last mile.
+### A real association does NOT clear it - tested
+
+The natural hypothesis was that `IPOD_WIFI_FAKE_LINK` asserts the carrier
+without setting every interface flag a real 802.11 association would, and that a
+real association would satisfy reachability. With the driver-driven association
+merged, this was tested directly and the hypothesis is **wrong**.
+
+Seeding `qemu-ios` as a known network (`com.apple.wifi.plist`) makes configd
+auto-join it at boot with no UI: the driver sends its own `WLC_SET_SSID`, the
+model reports the association, `AirPort: Link Up on en0`, DHCP takes the lease,
+configd logs `Already connected to qemu-ios`, the WiFi indicator lights, and
+mDNSResponder runs. A genuine association by every measure.
+
+On that VM, side by side:
+
+- `http://qemuhost/` (a name in `/etc/hosts` -> 10.0.2.100) **renders** - the
+  capture shows the guest's SYN, `GET / HTTP/1.1`, `HTTP/1.0 200 OK`.
+- `http://www.google.com/` (a name needing a unicast query) **fails** with "not
+  connected to the Internet" and puts **no forward DNS query on the wire** -
+  byte-for-byte the same behaviour as under the fake link.
+
+So the reachability wall is not about how the link came up. It is inside
+`SCNetworkReachabilityCreateWithName`: a name that resolves *synchronously and
+locally* (from `/etc/hosts` or the mDNS cache) is judged reachable and loads; a
+name that would require the resolver to go out to the configured DNS server is
+judged unreachable *before any query is issued*, and Safari returns
+`kCFURLErrorNotConnectedToInternet`. mDNSResponder itself can reach 10.0.2.3
+(its own reverse-PTR lookups go out and are answered), so the block is
+specifically in reachability's name path, not in the resolver or the transport.
+
+That is the real last mile, and it is a SystemConfiguration-internal question -
+what `SCNetworkReachability` consults to decide a *name* is reachable, and why a
+DHCP-published DNS server does not make it say yes. Everything underneath it -
+link, DHCP, routing, the resolver, mDNS, and by-name loading of any resolvable
+host - works.
+
+### A caveat on the UI-initiated join
+
+Joining `qemu-ios` by tapping it in Settings (rather than auto-joining a known
+network) loops "Unable to join the network" even though the driver associates
+and configd connects underneath. The UI's join-confirmation path wants something
+the current association model does not return, and the modal then wedges the
+Settings UI. Auto-joining a known network sidesteps it entirely and is the
+reliable way to bring the link up without interaction.
 
 ### Where the SSID and channel actually come from
 
