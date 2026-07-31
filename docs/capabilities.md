@@ -256,13 +256,18 @@ $Q -M iPod-Touch,...,wifi=on ...
 
 Off by default. With it on, the BCM4325 driver initialises completely against
 the emulated dongle - firmware download, mailbox handshake, SDPCM framing and
-the CDC control channel - and publishes an `IO80211Interface` with the right MAC
-address. iOS agrees: Settings' Wi-Fi row reads "Not Connected" instead of a
-greyed-out "No Wi-Fi", and the Wi-Fi Networks pane opens and scans.
+the CDC control channel - publishes an `IO80211Interface` with the right MAC,
+runs a real scan (the network `qemu-ios` appears in Settings with signal bars),
+and **joins it through its own association state machine** - `Link Up on en0`,
+DHCP lease, ARP and TCP on the wire. `IPOD_WIFI_FAKE_LINK` is no longer needed.
 
-**No traffic passes.** The network list stays empty: the driver asks for a scan
-every fifteen seconds and waits for a completion event that the model does not
-send yet. See `docs/networking.md` for exactly what remains.
+**Traffic passes, and Safari renders a page.** With the network stack enabled
+offline (`imgtools/setup_networking.py`: SC preferences + mDNSResponder +
+known-network seed), the device auto-joins at boot and loads a page - by IP, and
+by hostname for locally-resolvable names, with the DNS query on the wire. The one
+remaining gap is remote/internet names: `SCNetworkReachabilityCreateWithName`
+judges a name that needs a unicast DNS round-trip unreachable *before* issuing
+the query, so those fail with no packet sent. See `docs/networking.md`.
 
 Do not combine `wifi=on` with `boot-args=io=0x37`: IOKit matching logs make the
 firmware download about 250x slower, and stretched that far the driver's own
@@ -297,7 +302,7 @@ All under `$F`. The golden `nand` is never written.
   either way it still hangs without rendering. Making `mbx-irq` default on is a
   pending decision (it needs a boot test that the 2D path is unaffected).
 - **Debugger attach fails** (see above).
-- **WiFi passes no traffic** (see above).
+- **WiFi remote-name DNS is the last gap** - scan, association, DHCP and IP/local-name browsing all work; only names needing a unicast DNS query fail (an SCNetworkReachability gate). See the WiFi section.
 - **`ideviceinstaller` installs cannot produce a launchable app.** The install
   itself works - it used to die at `PackageExtractionFailed` because device->host
   reads were corrupt, and now a genuine signed `.ipa` reaches `Install:
