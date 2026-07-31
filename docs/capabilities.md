@@ -42,7 +42,7 @@ press nothing and screenshot before it sleeps, or expect black.
 | `usb-tcp-addr=` | - | `host:port` of a USB-over-TCP bridge. Empty disables the link. |
 | `usb-patch-mux-gate=` | off | Patch the kernel so the USB stack goes on bus. Build-specific (5F138). |
 | `wifi=` | off | Present a BCM4325 on the SDIO bus. |
-| `mbx-irq=` | off | Raise a completion interrupt for the unemulated MBX GPU so an app that submits work does not wait forever. Cannot make anything render. |
+| `mbx-irq=` | **on** | Acknowledge the MBX MMU handshake (and raise a completion interrupt) so a GLES app does not spin ~21M reads on the MMU register. Cannot make anything render. |
 
 ## Talk to it as a real iOS device
 
@@ -221,6 +221,26 @@ read all passed afterwards. (This old debugserver does not implement
 `vAttachName`, `qHostInfo`, `qProcessInfo` or `qSupported` - they return the empty
 packet - so `vAttach;<pidhex>` is the attach form.)
 
+## Rotate the device (accelerometer)
+
+The LIS302DL accelerometer is real and host-drivable, so the UI rotates:
+
+```sh
+# 1..6 = UIDeviceOrientation; value must be a JSON integer
+python3 contrib/ipod-touch-qmp.py 4530 cmd qom-set path=/machine property=accel-orientation value=3
+```
+
+Also on `/machine`: `accel-x`, `accel-y`, `accel-z` (raw axes) and `accel-shake`.
+Verified live and bidirectional - orientation 3 and 4 give opposite landscapes in
+Safari. The device could not rotate at all before this.
+
+One behaviour worth knowing if you touch this model: the iOS driver only sets the
+power bit in `CTRL_REG1` and then polls `OUT_X/Y/Z` - it never sets the per-axis
+enable bits, and `CTRL_REG1` even reads back 0 between polls. So gating the OUT
+registers on per-axis enables (which the datasheet implies) starves the OS and
+nothing rotates; the model returns the injected value unconditionally and reports
+data-ready in `STATUS` (0x27).
+
 ## Drive it headlessly
 
 ```sh
@@ -299,12 +319,12 @@ All under `$F`. The golden `nand` is never written.
   the power-down transition.
 - **No self-reboot.** The watchdog device is modelled, but the guest never
   reaches the handler that would write it, for the reason above.
-- **OpenGL ES apps do not render.** The MBX GPU is not emulated. With
-  `mbx-irq=on` the MMU handshake is acknowledged so they no longer peg the CPU
-  (the verified 0x1020 fix) - but that option is **off by default**, so in the
-  stock configuration a GLES app still spins ~21M reads on the MMU register, and
-  either way it still hangs without rendering. Making `mbx-irq` default on is a
-  pending decision (it needs a boot test that the 2D path is unaffected).
+- **OpenGL ES apps do not render.** The MBX GPU is not emulated. The MMU
+  handshake is acknowledged (`mbx-irq`, now on by default, boot-verified not to
+  affect the 2D path) so a GLES app no longer spins ~21M reads on the MMU
+  register - but it still hangs without rendering. Real rendering would mean
+  reverse-engineering the proprietary PowerVR MBX command-buffer format; see the
+  roadmap's GPU section for why that is deferred.
 - **Debugger attach fails** (see above).
 - **WiFi remote-name DNS is the last gap** - scan, association, DHCP and IP/local-name browsing all work; only names needing a unicast DNS query fail (an SCNetworkReachability gate). See the WiFi section.
 - **`ideviceinstaller` installs cannot produce a launchable app.** The install
