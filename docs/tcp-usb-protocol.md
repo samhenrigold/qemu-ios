@@ -165,6 +165,35 @@ Because the device never speaks unprompted, no file descriptor ever becomes
 readable to announce incoming data; IN transfers only happen when the host
 polls.
 
+## Known limitation: large device→host reads truncate (deferred)
+
+As of 2026-07-31 the data path is verified robust in the **host→device**
+direction: `afcclient put` of 64 KB, 1 MB and 8 MB files all land with the exact
+on-device size, because the guest's mux *receive* side reassembles multi-transaction
+writes itself.
+
+The **device→host** direction (e.g. `afcclient get`, pulling a file off the
+device) truncates any transfer over ~16 KB. The host aborts the read with
+`Incoming split packet is too large (N so far), dropping!`.
+
+The cause is **host-side, in the fork's mux reassembly** (`usbmuxd/src/device.c`,
+`device_data_input`), not in this device model. That code decides a mux packet is
+still being fragmented from a fragile heuristic: a USB chunk of exactly `USB_MRU`
+(16384) is assumed to be a non-final fragment and accumulated. But a full mux TCP
+segment on this transport is *exactly* 16384 bytes on the wire
+(`max_payload = USB_MTU − 8 − 20 = 16356`, plus the 28-byte mux+TCP headers), so
+the heuristic misfires on large reads and over-accumulates past `DEV_MRU`
+(65536), then drops the packet. Reassembling by the mux header's declared
+`length` instead of by `== USB_MRU` chunk boundaries is the fix.
+
+A device-side change (deliver the whole armed IN transfer, completing only when
+`DEPTSIZ` xfersiz drains, rather than retiring after the first transaction) was
+tried and did **not** fix it end to end — this is a device↔host co-design issue,
+and the authoritative fix is host-side. The decision was to defer it: uploads and
+installs (the direction that matters for pushing data and apps to the device)
+work, so reads off the device were left for later. Validate any fix with a
+`put`/`get` round-trip of 64 KB/1 MB/8 MB comparing SHA-256.
+
 ## Testing without an emulator
 
 `fake_device.py` in the host repository replays this protocol, which lets the
