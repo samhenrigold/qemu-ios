@@ -140,6 +140,7 @@ typedef struct SDPCMFrame
 {
     uint8_t *data;
     uint32_t len;
+    uint32_t read_off;   /* how much of it the host has collected */
 } SDPCMFrame;
 
 typedef struct IPodTouchSDIOState
