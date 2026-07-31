@@ -166,6 +166,18 @@ static void ipod_touch_set_nor_path(Object *obj, const char *value, Error **errp
     g_strlcpy(nms->nor_path, value, sizeof(nms->nor_path));
 }
 
+static char *ipod_touch_get_boot_args(Object *obj, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    return g_strdup(nms->boot_args);
+}
+
+static void ipod_touch_set_boot_args(Object *obj, const char *value, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    g_strlcpy(nms->boot_args, value, sizeof(nms->boot_args));
+}
+
 static char *ipod_touch_get_nand_path(Object *obj, Error **errp)
 {
     IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
@@ -250,6 +262,11 @@ static void ipod_touch_instance_init(Object *obj)
 
     object_property_add_str(obj, "nandrw", ipod_touch_get_nand_overlay, ipod_touch_set_nand_overlay);
     object_property_set_description(obj, "nandrw", "Path to a writable NAND overlay directory (copy-on-write); NAND writes are stored here and read back on top of the read-only 'nand' image");
+
+    object_property_add_str(obj, "boot-args", ipod_touch_get_boot_args, ipod_touch_set_boot_args);
+    object_property_set_description(obj, "boot-args",
+        "Replace the boot-args variable in the NOR's nvram, in memory only. "
+        "Useful for kernel debug flags such as \"io=0xffff\"");
 
     object_property_add_str(obj, "usb-tcp-addr", ipod_touch_get_usb_tcp_addr, ipod_touch_set_usb_tcp_addr);
     object_property_set_description(obj, "usb-tcp-addr",
@@ -510,6 +527,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = sysbus_create_simple("ipodtouch.spi", SPI0_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI0_IRQ));
     IPodTouchSPIState *spi0_state = IPOD_TOUCH_SPI(dev);
     spi0_state->nor->nor_path = nms->nor_path;
+    spi0_state->nor->boot_args = nms->boot_args;
     nms->spi0_state = spi0_state;
 
     set_spi_base(1);
