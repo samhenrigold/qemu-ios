@@ -228,6 +228,56 @@ built against a 2.x SDK — check `DTSDKName`, not `MinimumOSVersion`. Several
 period IPAs declare `MinimumOSVersion 2.0` but were built with the iOS 4 SDK and
 silently fail to launch.
 
+## Building a NAND image from an IPSW root filesystem
+
+`nand=` is not a dump of real flash. It is a synthetic image: one HFSX volume
+laid across the four chip-selects by the closed-form formula in
+`imgtools/ftlmap.py`, plus the GPT and a handful of FTL/VFL bookkeeping pages
+that the formula does not cover. `imgtools/build_nand.py` is the generator.
+
+```
+python3 imgtools/build_nand.py \
+    --rootfs "<IPSW>/018-6481-015.dmg" --key <RootFS key> \
+    --kernelcache "<IPSW>/kernelcache.release.s5l8720x" \
+    --out $F/nand-7e18
+```
+
+Apple ships the root filesystem DMG as a *bare* HFSX volume — no partition map,
+4096-byte allocation blocks — which is exactly the shape `dumpvol.py` and
+`packvol.py` expect, so the build never formats a volume of its own. It grows
+that volume to the block count the formula addresses, mounts it read-write,
+applies the build edits, checks it with `fsck_hfs -n`, and writes the pages.
+It refuses to overwrite an existing page directory: always build to a new name.
+
+Volume parameters, and why:
+
+| Parameter | Value | Why |
+| --- | --- | --- |
+| allocation block size | 4096 | Apple's own; also what the layout formula and every imgtool assume. |
+| allocation blocks | 128000 | `NAND_GENERATED_TOTAL_BLOCKS` in `ipod_touch_fmss.c`. The formula is a bijection onto pages 256–32256, so this is not a free choice. |
+| volume name | whatever the IPSW shipped (`SUNorthstarTwo7E18.N72OS` for 7E18) | Nothing reads it — the kernel is told `rd=disk0s1`. Leaving it alone keeps the image traceable to its IPSW. |
+| partitions | one | Follows the existing 2.1.1 image. See below. |
+| signature | HFSX (case-sensitive), unjournaled | Inherited from the IPSW; iOS requires case sensitivity. |
+
+Two deliberate deviations from a real device:
+
+- **One partition, read-write root.** Stock 3.x `/etc/fstab` is
+  `/dev/disk0s1 / hfs ro` plus `/dev/disk0s2 /private/var hfs rw`. The synthetic
+  image has no `disk0s2`, so the build rewrites fstab to
+  `/dev/disk0s1 / hfs rw 0 1` (`--no-fstab` keeps the stock one). Modelling two
+  partitions would invalidate the closed-form layout and every tool built on it.
+  The rootfs already ships an empty `/private/var` skeleton, which is what the
+  restore process would have copied onto the data partition anyway.
+- **The kernelcache is a build artefact.** The shipped rootfs leaves
+  `/System/Library/Caches/com.apple.kernelcaches/` empty; restore writes it. The
+  build copies the IPSW's `kernelcache.release.s5l8720x` there **unmodified and
+  still encrypted** — the emulated AES engine decrypts it in-guest, so no key
+  and no re-signing are involved.
+
+macOS will not let a non-root user `chown` inside the mounted image, so files
+the build creates land as uid/gid 99; their catalog records are patched to
+uid/gid 0 offline afterwards.
+
 ## Injecting code into SpringBoard, and getting output back
 
 `imgtools/patch_launchd_env.py` edits a launchd job's plist inside the image:
