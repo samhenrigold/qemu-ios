@@ -223,7 +223,14 @@ packet - so `vAttach;<pidhex>` is the attach form.)
 
 ## Rotate the device (accelerometer)
 
-The LIS302DL accelerometer is real and host-drivable, so the UI rotates:
+The LIS302DL accelerometer is real and host-drivable, so the UI rotates.
+
+**In the SDL window: Command+Left / Command+Right** turn the device a quarter
+turn counter-clockwise / clockwise, the way you would physically rotate it. Like
+the other hardware controls these sit behind Command so plain keys stay free for
+typing.
+
+Or over QMP:
 
 ```sh
 # 1..6 = UIDeviceOrientation; value must be a JSON integer
