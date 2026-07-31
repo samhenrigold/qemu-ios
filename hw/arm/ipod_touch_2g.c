@@ -538,12 +538,16 @@ static void ipod_touch_machine_init(MachineState *machine)
     for(int grp = 0; grp < GPIO_NUMINTGROUPS_2; grp++) {
         sysbus_connect_irq(busdev, grp, s5l8900_get_irq(nms, S5L8900_GPIO_IRQS[grp]));
     }
+    /* Unrealized devices are never parented into the QOM tree, so their reset
+     * handlers never run -- see the MIPI DSI note. */
+    sysbus_realize(busdev, &error_fatal);
 
     // init GPIO
     dev = qdev_new("ipodtouch.gpio");
     IPodTouchGPIOState *gpio_state = IPOD_TOUCH_GPIO(dev);
     nms->gpio_state = gpio_state;
     memory_region_add_subregion(sysmem, GPIO_MEM_BASE, &gpio_state->iomem);
+    sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
 
     // init SDIO
     dev = qdev_new("ipodtouch.sdio");
