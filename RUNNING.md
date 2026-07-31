@@ -103,4 +103,38 @@ Interacting with the device (SDL window focused):
 
 (These mappings are defined in `ipod_touch_key_event` in `hw/arm/ipod_touch_2g.c`.) Click and drag with the mouse to emulate touch input.
 
+### USB device mode (appearing to the host as a real iPod)
+
+Three machine options turn on USB device mode. All are off by default, so the
+normal boot above is unaffected.
+
+| Option | Meaning |
+| --- | --- |
+| `usb-attached=on` | Report a USB cable as present to the PMU. iOS leaves the entire USB device stack parked until it sees this. |
+| `usb-tcp-addr=host:port` | Connect to a USB-over-TCP host bridge. Empty (the default) disables the link. |
+| `usb-patch-mux-gate=on` | Patch the kernel so the USB stack goes on bus even though the PTP interface function never registers a driver. **Firmware-build-specific — verified only against 2.1.1 / build 5F138.** |
+
+With a host bridge running (see `usbmuxd-qemu`, a fork of usbmuxd whose USB
+backend speaks this transport), the emulated device appears to the standard
+`libimobiledevice` tools:
+
+```
+./arm-softmmu/qemu-system-arm -M iPod-Touch,bootrom=<bootrom>,nand=<nand dir>,nor=<nor image>,\
+    usb-attached=on,usb-patch-mux-gate=on,usb-tcp-addr=127.0.0.1:1235 \
+    -serial mon:stdio -cpu max -m 2G -display sdl
+```
+
+```
+$ USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015 idevice_id -l
+0f7085718094b779d89f56b4d62fd23f949897f9
+$ USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015 ideviceinfo
+DeviceClass: iPod          ProductType: iPod2,1
+ProductVersion: 2.1.1      BuildVersion: 5F138
+...
+```
+
+`idevicepair pair` also succeeds. Note the guest needs roughly 100 seconds of
+boot before it has programmed the USB core, so the host bridge should wait
+before driving a USB reset.
+
 If there are any issues running the above commands, please let me know by [opening an issue](https://github.com/devos50/qemu-ios/issues/new).

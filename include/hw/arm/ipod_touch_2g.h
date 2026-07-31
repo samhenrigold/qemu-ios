@@ -173,6 +173,11 @@ typedef struct {
 	char bootrom_path[1024];
 	char nor_path[1024];
 	char nand_path[1024];
+
+	/* USB device-mode options; see ipod_touch_instance_init(). */
+	char usb_tcp_addr[256];   /* host:port of the host bridge, empty = disabled */
+	bool usb_attached;        /* assert PMU USB cable presence */
+	bool usb_patch_mux_gate;  /* patch past the unregistered PTP interface function */
 	IT2G_CPREG_VAR_DEF(REG0);
 	IT2G_CPREG_VAR_DEF(REG1);
 	IT2G_CPREG_VAR_DEF(QEMU_CALL);

@@ -11,6 +11,7 @@
 #include "hw/qdev-clock.h"
 #include "hw/arm/exynos4210.h"
 #include "hw/arm/ipod_touch_2g.h"
+#include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "target/arm/cpregs.h"
 #include "qemu/error-report.h"
 
@@ -179,6 +180,38 @@ static void ipod_touch_set_nand_path(Object *obj, const char *value, Error **err
     g_strlcpy(nms->nand_path, value, sizeof(nms->nand_path));
 }
 
+static char *ipod_touch_get_usb_tcp_addr(Object *obj, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    return g_strdup(nms->usb_tcp_addr);
+}
+
+static void ipod_touch_set_usb_tcp_addr(Object *obj, const char *value, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    g_strlcpy(nms->usb_tcp_addr, value, sizeof(nms->usb_tcp_addr));
+}
+
+static bool ipod_touch_get_usb_attached(Object *obj, Error **errp)
+{
+    return IPOD_TOUCH_MACHINE(obj)->usb_attached;
+}
+
+static void ipod_touch_set_usb_attached(Object *obj, bool value, Error **errp)
+{
+    IPOD_TOUCH_MACHINE(obj)->usb_attached = value;
+}
+
+static bool ipod_touch_get_usb_patch_mux_gate(Object *obj, Error **errp)
+{
+    return IPOD_TOUCH_MACHINE(obj)->usb_patch_mux_gate;
+}
+
+static void ipod_touch_set_usb_patch_mux_gate(Object *obj, bool value, Error **errp)
+{
+    IPOD_TOUCH_MACHINE(obj)->usb_patch_mux_gate = value;
+}
+
 static void ipod_touch_instance_init(Object *obj)
 {
     object_property_add_str(obj, "bootrom", ipod_touch_get_bootrom_path, ipod_touch_set_bootrom_path);
@@ -189,6 +222,22 @@ static void ipod_touch_instance_init(Object *obj)
 
     object_property_add_str(obj, "nand", ipod_touch_get_nand_path, ipod_touch_set_nand_path);
     object_property_set_description(obj, "nand", "Path to the NAND files");
+
+    object_property_add_str(obj, "usb-tcp-addr", ipod_touch_get_usb_tcp_addr, ipod_touch_set_usb_tcp_addr);
+    object_property_set_description(obj, "usb-tcp-addr",
+        "host:port of a USB-over-TCP host bridge (e.g. usbmuxd's QEMU backend). "
+        "Empty disables the link");
+
+    object_property_add_bool(obj, "usb-attached", ipod_touch_get_usb_attached, ipod_touch_set_usb_attached);
+    object_property_set_description(obj, "usb-attached",
+        "Report a USB cable as present to the PMU. iOS leaves the whole USB device "
+        "stack parked until it sees this");
+
+    object_property_add_bool(obj, "usb-patch-mux-gate", ipod_touch_get_usb_patch_mux_gate,
+                             ipod_touch_set_usb_patch_mux_gate);
+    object_property_set_description(obj, "usb-patch-mux-gate",
+        "Patch the kernel so the USB stack goes on bus even though the PTP interface "
+        "function never registers a driver. Firmware-build-specific (2.1.1 / 5F138)");
 }
 
 static inline qemu_irq s5l8900_get_irq(IPodTouchMachineState *s, int n)
@@ -451,6 +500,19 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = ipod_touch_init_usb_otg(s5l8900_get_irq(nms, S5L8720_USB_OTG_IRQ), s5l8720_usb_hwcfg);
     synopsys_usb_state *usb_otg = S5L8900USBOTG(dev);
     nms->usb_otg = usb_otg;
+    if (nms->usb_tcp_addr[0]) {
+        char *dup = g_strdup(nms->usb_tcp_addr);
+        char *colon = strrchr(dup, ':');
+        if (colon) {
+            *colon = '\0';
+            usb_otg->server_port = atoi(colon + 1);
+        }
+        if (!usb_otg->server_port) {
+            usb_otg->server_port = 1235;
+        }
+        usb_otg->server_host = g_strdup(dup[0] ? dup : "127.0.0.1");
+        g_free(dup);
+    }
     /*
      * Unlike every other sysbus device here, this one was never realized, so
      * its reset handler never ran and none of the register defaults applied -
@@ -490,6 +552,8 @@ static void ipod_touch_machine_init(MachineState *machine)
 
     // init the PMU
     I2CSlave * pmu = i2c_slave_create_simple(i2c_state->bus, "pcf50633", 0x73);
+    PCF50633(pmu)->usb_cable = nms->usb_attached;
+    ipod_touch_mbx_set_patch_usb_gate(nms->usb_patch_mux_gate);
 
     // init the accelerometer
     I2CSlave *accelerometer = i2c_slave_create_simple(i2c_state->bus, "lis302dl", 0x1D);
