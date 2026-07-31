@@ -496,6 +496,16 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                         g_free(f->data);
                         g_free(f);
                     }
+                    if (g_queue_is_empty(s->rx_fifo)) {
+                        /* Nothing left to collect. Leaving the frame
+                         * indication set makes the driver read again, get a
+                         * zero-length frame and hand it to its command
+                         * manager, which then complains that no command is
+                         * pending - forever. */
+                        sdpcm_reg_write(s, SDPCM_INTSTATUS,
+                                        sdpcm_reg_read(s, SDPCM_INTSTATUS) &
+                                        ~I_HMB_FRAME_IND);
+                    }
                 } else if (xfer_len >= SDPCM_HWHDR_LEN) {
                     stw_le_p(buf, 0);
                     stw_le_p(buf + 2, 0xffff);
