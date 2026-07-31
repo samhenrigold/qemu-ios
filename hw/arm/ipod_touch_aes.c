@@ -470,7 +470,21 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
                 }
             }
             else {
-                AES_cbc_encrypt(inbuf, buf, aesop->insize, &aesop->decryptKey, (uint8_t *)aesop->ivec, AES_DECRYPT);
+                /*
+                 * The engine is a block cipher: real hardware processes whole
+                 * 16-byte blocks and passes any trailing partial block through
+                 * untouched.  Several img3 payloads are not block multiples --
+                 * the 5F138 device tree is 33,724 bytes (12 past a boundary),
+                 * the Apple logo 7,226 (10 past), and 7E18's device tree is
+                 * 35,148 (also 12 past) -- and handing that odd tail to
+                 * AES_cbc_encrypt() garbles it.
+                 */
+                uint32_t whole = aesop->insize & ~15u;
+
+                AES_cbc_encrypt(inbuf, buf, whole, &aesop->decryptKey, (uint8_t *)aesop->ivec, AES_DECRYPT);
+                if (whole < aesop->insize) {
+                    memcpy(buf + whole, inbuf + whole, aesop->insize - whole);
+                }
             }
 
             if(aesop->outaddr != 0x220100ac && aesop->outaddr != 0x0bf08468 && aesop->outaddr != 0x0fb9bcdc) { // TODO very ugly hack - for the RSA key decryption, it seems that doing nothing results in the correct decryption key??
