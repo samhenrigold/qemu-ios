@@ -253,11 +253,12 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
         payload_len = len > CDC_HDRLEN ? len - CDC_HDRLEN : 0;
     }
 
+    /* The length field is checked against what the command expects, not
+     * against the request - AppleBCM4325CmdManager.cpp:445 asserts on it. */
     g_autofree uint8_t *reply = g_malloc0(CDC_HDRLEN + payload_len);
     stl_le_p(reply, cmd);
     stl_le_p(reply + 4, payload_len);
     stl_le_p(reply + 8, flags & ~CDC_DCMD_ERROR);  /* same id, no error */
-    stl_le_p(reply + 12, 0);                       /* status: success */
 
     sdpcm_send(s, SDPCM_CONTROL_CHANNEL, reply, CDC_HDRLEN + payload_len);
 }

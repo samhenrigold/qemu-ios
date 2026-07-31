@@ -14,7 +14,22 @@ only one of them is real:
 | --- | --- |
 | USB ethernet function (CDC ECM/NCM, RNDIS, tethering) | **Ruled out.** The firmware ships no such function and no driver that could back one. Evidence below. |
 | cp15 guest-services socket shim (`hw/arm/guest-services.c`) | Dormant. Needs guest code to issue the hypercall, and is layer 4 only - no interface, so nothing in iOS routes through it. |
-| BCM4325 SDIO WiFi (`hw/arm/ipod_touch_sdio.c`) | The only path to a real network interface. Currently a probe stub. |
+| PPP over the serial multiplexer | Real mechanism, wrong device. See below. |
+| BCM4325 SDIO WiFi (`hw/arm/ipod_touch_sdio.c`) | The only path to a real network interface, and the one being built. Behind `wifi=on`, the driver initialises and publishes an `IO80211Interface`; no traffic passes yet. |
+
+### PPP is a second interface-capable path, and it needs a baseband
+
+"Only the WiFi driver can produce an interface" is too strong, and a search for
+`IONetworkingFamily` clients structurally cannot see why: PPP creates
+interfaces through the BSD network stack, not through IOKit driver matching.
+The image ships `com.apple.nke.ppp` and `com.apple.driver.AppleSerialMultiplexer`,
+whose source paths include `MuxNetworkInterface.cpp` and `MuxNetworkPolicy.cpp`
+with RS232, SPI and H5 adapters. iOS 2.x can bring a network interface up over
+a serial link.
+
+It is the cellular data stack - PPP and PDP to the baseband over the serial mux -
+and iPod2,1 has no baseband. The reason this route is unusable here is "no
+baseband on this device", not "no such mechanism exists".
 
 ## Why USB ethernet is ruled out
 
@@ -71,13 +86,12 @@ qemu-system-arm -M iPod-Touch,...,usb-attached=on,usb-patch-mux-gate=on,\
     usb-tcp-addr=127.0.0.1:1330 ...
 ```
 
-## What the WiFi route would require
+## What the WiFi route requires
 
-`hw/arm/ipod_touch_sdio.c` is a probe stub: it fakes a CIS, reports clocks
-ready, and answers a data read with a 4-byte length/checksum header and no
-payload. Notably `sdio_exec_cmd` has the CMD5 response commented out, so the
-card never announces itself and `AppleS5L8900XSDIO::enumerateCards` cannot
-succeed.
+`hw/arm/ipod_touch_sdio.c` began as a probe stub: a faked CIS, faked
+clocks-ready, and a data read that returned a 4-byte header and no payload.
+`sdio_exec_cmd` had the CMD5 response commented out, so the card never
+announced itself and `AppleS5L8900XSDIO::enumerateCards` could not succeed.
 
 `AppleBCM4325` is a Broadcom dongle driver of the same shape as Linux's
 `brcmfmac`. Its strings show the full bring-up it expects:
@@ -171,14 +185,53 @@ The collection sequence itself is: read `tohostmailboxdata` (function 1,
 `intstatus` (`0x0a020`), then read function 2 twice - twelve bytes for the
 header, then the body. A frame therefore has to survive being read in pieces.
 
-With the country code accepted the driver moves on to `WLC_UP`, which is where
-things stand. Two known issues:
+- **The CDC header here is twelve bytes, not sixteen** - command, length,
+  flags, and no status word. A `WLC_UP` request is a 24 byte frame: twelve of
+  SDPCM and twelve of CDC with no payload. Assuming sixteen makes every
+  payload-free request shorter than the header, so it is dropped without a
+  reply. It also throws off the reply's length field, which
+  `AppleBCM4325CmdManager.cpp:445` asserts must equal the length the command
+  expects.
 
-- `AppleBCM4325CmdManager.cpp:445` asserts that the `len` field of the CDC
-  response equals the length the *command* expects, which is not necessarily
-  the length of the request. Echoing the request's length is wrong for a set.
-- The second request frame is not being parsed by the model, so `WLC_UP` gets
-  no answer and times out.
+### Where it gets to
+
+The driver now runs its whole initialisation against the model. Answering every
+control command with success and a zeroed payload is enough:
+
+```
+CDC 84  WLC_SET_COUNTRY   CDC 262 get_var (27)   CDC 86  (4)
+CDC 2   WLC_UP            CDC 263 set_var (22)   CDC 263 set_var (12)
+CDC 262 get_var (260)     CDC 83  (4)
+CDC 38  set (4)           CDC 263 set_var (27)
+
+AppleBCM4325::initFirmware(): successful initialization
+IO80211Interface::attach(AppleBCM4325)
+IONetworkStack::attach(IO80211Interface)
+AppleBCM4325: Ethernet address 00:23:32:6e:aa:10
+AppleBCM4325::setPowerStateGated() : Powering On
+```
+
+**An `IO80211Interface` is attached to the network stack with the right MAC.**
+That is the first network interface this emulator has ever had.
+
+It does not survive. Seconds later the guest panics:
+
+```
+kernel abort type 4: fault_type=0x1, fault_addr=0x38
+pc: 0xc03438f0  lr: 0xc0332508
+```
+
+`0xc0332498` is the deep sleep timer handler; it logs "deep sleep timer" and
+then calls `0xc03438f0`, a four instruction "are we associated" accessor that
+loads from `+0x38` of the object at `self+0x2bc`. That object is null, so the
+fault address is 0x38 exactly.
+
+This is the expected consequence of stopping halfway rather than a wrong turn:
+nothing has told the driver it associated, so the state the timer expects was
+never built. Stage 4 - events and a faked association - is what removes it, and
+until then a run with `wifi=on` will panic shortly after the interface appears.
+The boot is also much slower with `wifi=on`, since the firmware download alone
+is about twenty minutes of emulated time.
 
 ### The MAC address is a CIS tuple
 
@@ -207,20 +260,17 @@ driver attach and start downloading firmware within an evening argues for
 something smaller. The remaining work, in the order it has to be done, each
 stage verifiable by the driver's own log:
 
-1. **Dongle bring-up handshake.** See the exact sequence below. The SDIOD core
-   sits at backplane `0x18002000` and the driver enables host mailbox
-   interrupts there; the model has to answer with a firmware-ready message and
-   an interrupt. Done when `initDongle` stops retrying.
-2. **SDPCM framing on function 2.** Four-byte hardware tag (length and its
-   complement), eight-byte software header (sequence, channel, next length,
+1. ~~**Dongle bring-up handshake.**~~ Done. The SDIOD core sits at backplane
+   `0x18002000`; the model answers with a firmware-ready mailbox message and an
+   interrupt when the driver starts the core.
+2. ~~**SDPCM framing on function 2.**~~ Done. Four-byte hardware tag (length and
+   its complement), eight-byte software header (sequence, channel, next length,
    header length, flow control, credit). Channels 0 control, 1 event, 2 data.
-   The driver paces on the credit field, so the bookkeeping has to be real.
-3. **The CDC control channel.** A `cmd/len/flags/status` header and then the
-   `WLC_*` surface the driver uses at init - `WLC_GET_MAGIC`,
-   `WLC_GET_VERSION`, `WLC_GET_VAR`, `WLC_SET_VAR`, `WLC_UP`, `WLC_SET_INFRA`,
-   `WLC_SET_PM`, `WLC_GET_REVINFO`. Iterative: anything unhandled shows up as
-   "command %d failure".
-4. **Events and a fake association.** Push `WLC_E_*` on channel 1 and answer
+3. ~~**The CDC control channel.**~~ Done well enough for initialisation:
+   everything is acknowledged with success and a zeroed payload, which the
+   driver accepts. Returning real values will matter once association is real.
+4. **Events and a fake association.** The next thing to build, and the thing
+   that stops the deep sleep panic. Push `WLC_E_*` on channel 1 and answer
    `WLC_SCAN` with a beacon list, so an SSID appears in Settings and the driver
    believes it joined. No 802.11 needs simulating.
 5. **The data path.** BDC header plus 802.3 frames on channel 2, bridged to a

@@ -126,8 +126,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define SDPCM_DATA_CHANNEL    2
 #define SDPCM_CHANNEL_MASK    0x0f
 
-/* The CDC control header that rides on channel 0. */
-#define CDC_HDRLEN          16
+/*
+ * The CDC control header that rides on channel 0. This build uses the three
+ * word form - command, length, flags - with no status word; a WLC_UP request
+ * arrives as a 24 byte frame, which is twelve bytes of SDPCM and twelve of
+ * CDC with no payload at all.
+ */
+#define CDC_HDRLEN          12
 #define CDC_DCMD_ERROR      0x01
 #define CDC_DCMD_SET        0x02
 
