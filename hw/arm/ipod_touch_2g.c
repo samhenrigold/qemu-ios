@@ -730,6 +730,10 @@ static void ipod_touch_machine_init(MachineState *machine)
     busdev = SYS_BUS_DEVICE(dev);
     sysbus_realize(busdev, &error_fatal);
     sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, S5L8720_SDIO_IRQ));
+    if (nms->wifi) {
+        /* Bridge the dongle's 802.3 channel to "-netdev ...,id=wifi0". */
+        ipod_touch_sdio_setup_net(sdio_state);
+    }
 
     dev = exynos4210_uart_create(UART0_MEM_BASE, 256, 0, serial_hd(0), nms->irq[0][24]);
     if (!dev) {
