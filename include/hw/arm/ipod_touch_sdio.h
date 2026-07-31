@@ -142,6 +142,36 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define WLC_GET_VAR         262
 #define WLC_SET_VAR         263
 
+/*
+ * Events do not arrive on the event channel. This driver dispatches receive by
+ * channel and answers channel 1 with "WTF?? Got an event packet!!!" before
+ * dropping it - events come up the data channel, BDC encapsulated, as an 802.3
+ * frame that handleDataPacket recognises by its ethertype.
+ */
+/*
+ * handleDataPacket logs byte 0 as bdc->flags and byte 1 as bdc->priority, then
+ * advances the packet by six - not the four a bdc_header occupies - before
+ * treating the rest as 802.3. The two extra bytes are padding that lands the
+ * IP header on a four-byte boundary.
+ */
+#define BDC_HDRLEN          6
+#define BDC_PROTO_VER       2
+
+#define ETHER_TYPE_BRCM     0x886c
+#define BCMETH_SUBTYPE      0x8001
+#define BCMETH_USR_SUBTYPE  0x0001
+/* handleEventPacket memcmps three bytes at packet offset 0x13 against this. */
+#define BCMETH_OUI_0        0x00
+#define BCMETH_OUI_1        0x10
+#define BCMETH_OUI_2        0x18
+
+/* Event numbers, read out of the driver's own dispatch table. */
+#define WLC_E_SET_SSID      0
+#define WLC_E_LINK          16
+#define WLC_E_SCAN_COMPLETE 26
+
+#define WL_EVENT_MSG_LEN    46
+
 typedef struct BCM4325FrameHeaderPacket
 {
     uint16_t frame_length;

@@ -250,6 +250,69 @@ static void sdpcm_send(IPodTouchSDIOState *s, uint8_t channel,
 }
 
 /*
+ * Deliver a firmware event. The frame is an ordinary 802.3 packet on the data
+ * channel whose ethertype the driver recognises; everything from the bcmeth
+ * header inwards is big endian.
+ *
+ * The layout is pinned by what handleEventPacket checks: three OUI bytes at
+ * packet offset 0x13 and a usr_subtype of 1 at 0x16, with the event message
+ * itself at 0x18.
+ */
+static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t event_type,
+                             uint32_t status)
+{
+    static const uint8_t our_mac[6] = { 0x00, 0x23, 0x32, 0x6e, 0xaa, 0x10 };
+    uint8_t frame[BDC_HDRLEN + 14 + 10 + WL_EVENT_MSG_LEN];
+    uint8_t *p = frame;
+
+    memset(frame, 0, sizeof(frame));
+
+    /* BDC header. */
+    *p++ = BDC_PROTO_VER << 4;
+    *p++ = 0;                       /* priority */
+    *p++ = 0;                       /* flags2 */
+    *p++ = 0;                       /* data offset, in 4-byte words */
+    *p++ = 0;                       /* padding: the driver skips six, not four */
+    *p++ = 0;
+
+    uint8_t *eth = p;
+    memcpy(p, our_mac, 6); p += 6;  /* destination: us */
+    memset(p, 0, 6); p += 6;        /* source: the dongle itself */
+    stw_be_p(p, ETHER_TYPE_BRCM); p += 2;
+
+    /* bcmeth header. */
+    stw_be_p(p, BCMETH_SUBTYPE); p += 2;
+    uint8_t *lenp = p; p += 2;      /* filled in below */
+    *p++ = 0;                       /* version */
+    *p++ = BCMETH_OUI_0;
+    *p++ = BCMETH_OUI_1;
+    *p++ = BCMETH_OUI_2;
+    stw_be_p(p, BCMETH_USR_SUBTYPE); p += 2;
+
+    /* The length field counts everything from the version byte onwards. */
+    stw_be_p(lenp, (frame + sizeof(frame)) - (lenp + 2));
+
+    /* wl_event_msg, all big endian. */
+    stw_be_p(p + 0x00, 1);          /* version */
+    stw_be_p(p + 0x02, 0);          /* flags */
+    stl_be_p(p + 0x04, event_type);
+    stl_be_p(p + 0x08, status);
+    stl_be_p(p + 0x0c, 0);          /* reason */
+    stl_be_p(p + 0x10, 0);          /* auth type */
+    stl_be_p(p + 0x14, 0);          /* datalen: no payload follows */
+    memcpy(p + 0x18, our_mac, 6);
+    g_strlcpy((char *)p + 0x1e, "en0", 16);
+
+    /* The driver sees the frame from the ethernet header onwards, so its
+     * offsets 0x13 and 0x16 are relative to eth, not to the BDC header. */
+    assert(eth[0x13] == BCMETH_OUI_0 && eth[0x16] == 0 && eth[0x17] == 1);
+    printf("[SDIO] sending event %u, status %u (%zu byte frame)\n",
+           event_type, status, sizeof(frame));
+
+    sdpcm_send(s, SDPCM_DATA_CHANNEL, frame, sizeof(frame));
+}
+
+/*
  * Answer one CDC control request. Everything is acknowledged with a zeroed
  * payload for now; the point is to get the driver past initDongle and to see
  * in the log which commands it actually depends on.
@@ -287,6 +350,13 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
     stl_le_p(reply + 8, flags & ~CDC_DCMD_ERROR);  /* same id, no error */
 
     sdpcm_send(s, SDPCM_CONTROL_CHANNEL, reply, CDC_HDRLEN + payload_len);
+
+    /* The driver arms a scan and then waits: it re-sends this every fifteen
+     * seconds and never asks for results on its own. Tell it the scan is over
+     * so it comes back for them. */
+    if (cmd == WLC_SET_VAR && g_str_equal(iovar, "iscan")) {
+        sdpcm_send_event(s, WLC_E_SCAN_COMPLETE, 0);
+    }
 }
 
 /*
@@ -523,10 +593,16 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                  * the head of the queue until it has all been handed over. */
                 g_autofree uint8_t *buf = g_malloc0(xfer_len);
                 SDPCMFrame *f = g_queue_peek_head(s->rx_fifo);
-                if (s->func2_reads < 8) {
+                if (s->func2_reads < 400) {
                     s->func2_reads++;
-                    printf("[SDIO] function 2 read of %u bytes, %s\n", xfer_len,
-                           f ? "handing up a queued frame" : "nothing queued");
+                    printf("[SDIO] function 2 read of %u bytes, %s", xfer_len,
+                           f ? "handing up" : "nothing queued");
+                    if (f) {
+                        printf(" frame len %u chan %u, %u already taken",
+                               f->len, f->data[5] & SDPCM_CHANNEL_MASK,
+                               f->read_off);
+                    }
+                    printf("\n");
                 }
 
                 if (f) {
