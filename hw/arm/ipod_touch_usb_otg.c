@@ -42,22 +42,6 @@ static bool synopsys_usb_trace_enabled(void)
 	return cached == 1;
 }
 
-static inline size_t synopsys_usb_tx_fifo_start(synopsys_usb_state *_state, uint32_t _fifo)
-{
-	if(_fifo == 0)
-		return _state->gnptxfsiz >> 16;
-	else
-		return _state->dptxfsiz[_fifo-1] >> 16;
-}
-
-static inline size_t synopsys_usb_tx_fifo_size(synopsys_usb_state *_state, uint32_t _fifo)
-{
-	if(_fifo == 0)
-		return _state->gnptxfsiz & 0xFFFF;
-	else
-		return _state->dptxfsiz[_fifo-1] & 0xFFFF;
-}
-
 static void synopsys_usb_update_irq(synopsys_usb_state *_state)
 {
 	_state->daintsts = 0;
@@ -181,35 +165,20 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 			size_t sz = eps->tx_size & DEPTSIZ_XFERSIZ_MASK;
 			size_t amtDone = MIN(sz, hdr_len);
 
-			if (eps->fifo >= USB_NUM_FIFOS) {
-				qemu_log_mask(LOG_GUEST_ERROR,
-				              "usb_synopsys: IN transfer on nonexistent FIFO %d\n",
-				              eps->fifo);
-				synopsys_usb_update_irq(state);
-				return USB_RET_STALL;
-			}
-
-			size_t txfs = synopsys_usb_tx_fifo_start(state, eps->fifo);
-			size_t txfz = synopsys_usb_tx_fifo_size(state, eps->fifo);
-
-			/* Clamp into the FIFO backing store rather than aborting. */
-			if (txfs >= sizeof(state->fifos)) {
-				qemu_log_mask(LOG_GUEST_ERROR,
-				              "usb_synopsys: FIFO %d starts past the buffer\n",
-				              eps->fifo);
-				synopsys_usb_update_irq(state);
-				return USB_RET_STALL;
-			}
-			txfz = MIN(txfz, sizeof(state->fifos) - txfs);
-			amtDone = MIN(amtDone, txfz);
-
-			if (amtDone > 0) {
-				if (eps->dma_address) {
-					cpu_physical_memory_read(eps->dma_address,
-					                         &state->fifos[txfs], amtDone);
-					eps->dma_address += amtDone;
-				}
-				memcpy(_buffer, &state->fifos[txfs], amtDone);
+			/*
+			 * DMA mode: the data path is guest memory, not the FIFO RAM, so read
+			 * straight into the caller's buffer. Staging through state->fifos and
+			 * clamping to the TX FIFO depth (a WORD count, misused as a byte
+			 * limit) is what truncated large transfers. The genuine bounds are
+			 * the guest's armed transfer size and the host's buffer, both already
+			 * applied via MIN(sz, hdr_len).
+			 */
+			if (amtDone > 0 && eps->dma_address) {
+				cpu_physical_memory_read(eps->dma_address, _buffer, amtDone);
+				eps->dma_address += amtDone;
+			} else if (amtDone > 0) {
+				/* No DMA address programmed - nothing meaningful to send. */
+				amtDone = 0;
 			}
 
 			eps->tx_size = (eps->tx_size & ~DEPTSIZ_XFERSIZ_MASK)
@@ -233,17 +202,29 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 			size_t sz = eps->tx_size & DEPTSIZ_XFERSIZ_MASK;
 			size_t amtDone = MIN(sz, hdr_len);
 
-			/* grxfsiz is guest-programmed; clamp instead of trusting it. */
-			amtDone = MIN(amtDone, MIN((size_t)state->grxfsiz, sizeof(state->fifos)));
+			/*
+			 * DMA mode: write straight to guest memory.
+			 *
+			 * The original clamped this byte count against GRXFSIZ, which is the
+			 * receive FIFO depth in 32-bit WORDS and is not even the data path in
+			 * DMA mode. With the value iOS programs (0x11b = 283) every bulk OUT
+			 * over 283 bytes was truncated - a 316-byte mux packet became 283 + 33
+			 * - and since the endpoint is disabled after each transaction the
+			 * guest saw two malformed packets instead of one. That is what made
+			 * lockdownd time out and RST. The real bounds are the guest's armed
+			 * transfer size and the host's payload, already applied above.
+			 */
 
-			if (amtDone > 0 && _buffer) {
-				memcpy(state->fifos, _buffer, amtDone);
+			if (synopsys_usb_trace_enabled()) {
+				fprintf(stderr,
+				        "[USBOUT] ep%d hdr_len=%zu armed_sz=%zu grxfsiz=%u(words) "
+				        "-> amtDone=%zu\n",
+				        ep, hdr_len, sz, state->grxfsiz, amtDone);
+			}
 
-				if (eps->dma_address) {
-					cpu_physical_memory_write(eps->dma_address,
-					                          state->fifos, amtDone);
-					eps->dma_address += amtDone;
-				}
+			if (amtDone > 0 && _buffer && eps->dma_address) {
+				cpu_physical_memory_write(eps->dma_address, _buffer, amtDone);
+				eps->dma_address += amtDone;
 			}
 
 			if (_hdr->flags & tcp_usb_setup) {
