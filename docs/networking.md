@@ -15,7 +15,7 @@ only one of them is real:
 | USB ethernet function (CDC ECM/NCM, RNDIS, tethering) | **Ruled out.** The firmware ships no such function and no driver that could back one. Evidence below. |
 | cp15 guest-services socket shim (`hw/arm/guest-services.c`) | Dormant. Needs guest code to issue the hypercall, and is layer 4 only - no interface, so nothing in iOS routes through it. |
 | PPP over the serial multiplexer | Real mechanism, wrong device. See below. |
-| BCM4325 SDIO WiFi (`hw/arm/ipod_touch_sdio.c`) | The only path to a real network interface, and the one being built. Behind `wifi=on`, the driver initialises and publishes an `IO80211Interface`; no traffic passes yet. |
+| BCM4325 SDIO WiFi (`hw/arm/ipod_touch_sdio.c`) | **Works.** Behind `wifi=on`, iOS takes a DHCP lease, ARPs, and serves TCP over the emulated dongle. See "The device is on the network" below. |
 
 ### PPP is a second interface-capable path, and it needs a baseband
 
@@ -369,6 +369,179 @@ thirty seconds into the boot, with zero occurrences of `fault_addr=0x38`.
 `start()` completes. The next thing to build is stage 4 - accept `set_var
 iscan`, push a scan-complete event on channel 1, and answer `get_var
 iscanresults` with a synthetic BSS.
+
+## The device is on the network
+
+Scan results and a real association turned out not to be on the critical path.
+The driver believes whatever its own event dispatch table is told, so pushing
+`WLC_E_AUTH`, `WLC_E_ASSOC`, `WLC_E_SET_SSID` and a `WLC_E_LINK` carrying the
+link flag brings the carrier up directly:
+
+```
+AppleBCM4325 Joined BSS: BSSID = 02:00:5e:10:00:01, rssi = -45, ...
+AirPort: Link Up on en0
+```
+
+iOS then does the rest with no help at all. `SDPCM` channel 2 is bridged to a
+`NetClientState`, slirp is re-enabled in the build, and the capture on the
+backend shows a complete bring-up:
+
+```
+IP 0.0.0.0.68 > 255.255.255.255.67: BOOTP/DHCP, Request from 00:23:32:6e:aa:10
+IP 10.0.2.2.67 > 255.255.255.255.68: BOOTP/DHCP, Reply, length 548
+ARP, Probe 10.0.2.15          <- duplicate address detection
+ARP, Announcement 10.0.2.15
+ARP, Request who-has 10.0.2.2 tell 10.0.2.15
+ARP, Reply 10.0.2.2 is-at 52:55:0a:00:02:02
+```
+
+and the guest's TCP stack answers on the address it was given. Forwarding a
+host port to lockdownd, which listens on 62078 on every interface:
+
+```
+IP 10.0.2.2.64319  > 10.0.2.15.62078: Flags [S],  seq 1984001
+IP 10.0.2.15.62078 > 10.0.2.2.64319:  Flags [S.], seq 954588535, ack 1984002
+IP 10.0.2.2.64319  > 10.0.2.15.62078: Flags [P.], seq 1:241, length 240
+IP 10.0.2.15.62078 > 10.0.2.2.64319:  Flags [.],  ack 241
+IP 10.0.2.15.62078 > 10.0.2.2.64319:  Flags [F.]
+```
+
+Three way handshake, 240 bytes of request delivered and acknowledged by the
+guest, clean shutdown. lockdownd hangs up because it will not serve an
+unpaired peer over WiFi, which is policy, not transport.
+
+Run it with:
+
+```
+qemu-system-arm -M iPod-Touch,...,wifi=on \
+    -netdev user,id=wifi0,net=10.0.2.0/24,host=10.0.2.2,dhcpstart=10.0.2.15 \
+    -object filter-dump,id=cap0,netdev=wifi0,file=wifi.pcap
+IPOD_WIFI_FAKE_LINK=40 ...
+```
+
+`IPOD_WIFI_FAKE_LINK` is the number of seconds after `WLC_UP` to assert the
+association. It is behind an environment variable because it is a claim about
+state the model has not really reached.
+
+> **slirp is now required, so the configure flags changed.** This tree used to
+> be configured with `--disable-slirp`; the network backend needs it, so it is
+> `--enable-slirp` now (libslirp comes from Homebrew). Meson does **not** pick
+> this up on its own - an existing `build/` directory will keep building
+> happily with slirp off and `-netdev user` will simply not exist, which looks
+> like the WiFi model failing rather than a stale build. Re-run `configure` in
+> the build directory after pulling this.
+
+### Two things that had to be fixed first
+
+- **A get's reply has to be as long as the buffer the driver offered**, not as
+  long as the request. The model clamped both, so a 1148 byte
+  `WLC_GET_BSS_INFO` came back with nothing, tripped
+  `AppleBCM4325CmdManager.cpp:213`, and left the driver reading its own
+  uninitialised buffer - which is where the garbage BSSID in the join line came
+  from. The same clamp was cutting `get_var iscanresults` from 2024 bytes down
+  to 13, so the scan results path was never being answered either.
+- **`WLC_GET_RSSI` (127) and `WLC_GET_RATE` (12) are polled** to drive the
+  status bar. Answering zero is why the WiFi icon showed no bars.
+
+### Safari renders a page
+
+Two things in the **filesystem**, not the emulator, stood between the working
+transport and a browser that would use it. Both are properties of this image.
+
+### The image has no SystemConfiguration preferences
+
+`/var/preferences` is an empty directory, `/Library/Preferences/SystemConfiguration`
+is empty, and there is no `preferences.plist` anywhere on the volume - this
+device was never taken through joining a network, which is what would have
+written one. So `PreferencesMonitor` published no service, `IPMonitor` never
+elected a primary, and `State:/Network/Global/IPv4` was never set. DHCP still
+ran, because IPConfiguration is driven by the link event rather than by a
+service, so the device had an address and no idea it was on a network.
+
+Writing a minimal service - one set, one service, `ConfigMethod = DHCP`,
+`Hardware = AirPort`, `DeviceName = en0`, and a `__LINK__` from the set to the
+service - is enough. The classic SCPreferences layout is what 2.x parses; the
+schema only drifted later. With it in place, and configd made verbose
+(`-v -V com.apple.SystemConfiguration.IPMonitor` in its LaunchDaemon):
+
+```
+IPMonitor: service_order <array> { 0 : 0 }
+IPMonitor: serviceID 0 changed IPv4 dictionary
+IPMonitor: IPv4 service election
+IPMonitor: 0 is the new primary IPv4
+IPMonitor: IPv4 route add default 10.0.2.2 interface en0 direct 0
+IPMonitor: 0 is the new primary DNS
+  State:/Network/Global/IPv4 : { Router : 10.0.2.2, PrimaryInterface : en0,
+                                 PrimaryService : 0 }
+  State:/Network/Global/DNS  : { ServerAddresses : { 0 : 10.0.2.3 } }
+```
+
+and Aeropuerto agrees: `WiFi: Already connected to qemu-ios.`
+
+### A page, in Safari
+
+With a host page behind `guestfwd=tcp:10.0.2.100:80-tcp:127.0.0.1:27303`,
+typing `10.0.2.100` into Safari renders it. The whole exchange, guest first:
+
+```
+ARP, Request who-has 10.0.2.100 tell 10.0.2.15
+ARP, Reply 10.0.2.100 is-at 52:55:0a:00:02:64
+IP 10.0.2.15.49152 > 10.0.2.100.80: Flags [S], seq 2113151649
+IP 10.0.2.100.80 > 10.0.2.15.49152: Flags [S.], ack 2113151650
+IP 10.0.2.15.49152 > 10.0.2.100.80: length 384: HTTP: GET / HTTP/1.1
+IP 10.0.2.100.80 > 10.0.2.15.49152: length 186: HTTP: HTTP/1.0 200 OK
+IP 10.0.2.100.80 > 10.0.2.15.49152: length 204: HTTP
+IP 10.0.2.15.49152 > 10.0.2.100.80: Flags [F.]
+```
+
+with `"GET / HTTP/1.1" 200` in the host server's log at the same second, and the
+page's title and body text on the screen. **iPhone OS 2.1.1 is browsing over
+emulated WiFi.**
+
+### Names do not resolve yet: nothing runs mDNSResponder
+
+Numeric URLs work end to end; hostname URLs still fail with "not connected to
+the Internet" and put **nothing** on the wire, not even a DNS query. The reason
+is not reachability - the global state above is published and an address-based
+load works from the same Safari session.
+
+`/usr/sbin/mDNSResponder` is on the image, but
+`/System/Library/LaunchDaemons` contains only eleven plists and none of them is
+`com.apple.mDNSResponder.plist`. It never logs a line. Every name lookup on
+Darwin goes through it, so `SCNetworkReachabilityCreateWithName` and `CFHost`
+would fail before a packet is sent, which is exactly the observed shape.
+
+**Writing a LaunchDaemon for it did not help**, so that is not the whole story.
+A 10.5-style plist - `ProgramArguments` of `/usr/sbin/mDNSResponder -launchd`,
+a `com.apple.mDNSResponder` MachService, a `Sockets` `Listeners` dict for the
+`mdns` multicast group, `RunAtLoad` and `KeepAlive` - was installed and the
+behaviour was unchanged: still no DNS query on the wire, still the same dialog,
+and mDNSResponder still logs nothing and launchd does not complain. So either
+launchd is rejecting the job quietly, or `-launchd` fails to acquire its
+sockets and it exits immediately, or resolution on this build does not go
+through it at all.
+
+Worth trying next, roughly in order of cost:
+
+- drop `-launchd` so it opens its own sockets, and drop the `Sockets` dict
+- check whether launchd on 2.x even scans `/System/Library/LaunchDaemons` for
+  jobs added after the image was built, or works from a cached job list
+- confirm the resolver path by looking at what `CFNetwork`/`libinfo` in this
+  build actually calls - if it is `res_query` reading `/etc/resolv.conf`
+  directly then mDNSResponder is a red herring and the failure is in
+  `SCNetworkReachabilityCreateWithName` instead
+
+### Where the SSID and channel actually come from
+
+They come from the **information elements** appended after `wl_bss_info_t`, not
+from its fixed `SSID`/`channel` fields. Filling only the fixed fields left
+`ssid = ""` and `channel = 0` while BSSID and RSSI - read from the same
+structure - were correct. Appending an SSID IE, a supported-rates IE and a DS
+parameter set fixed both.
+
+Also worth knowing: the stock image's `/etc/resolv.conf` is the **original
+owner's**, listing an IPv6 nameserver first. Weather failed with no packets on
+the wire because of it. It is now overwritten offline in the working NAND.
 
 ### The MAC address is a CIS tuple
 
