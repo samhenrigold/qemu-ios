@@ -227,6 +227,31 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 				eps->dma_address += amtDone;
 			}
 
+			/*
+			 * One host transaction is one complete transfer, so it always
+			 * retires the endpoint. That is right for this transport - it is
+			 * transfer-oriented, not packet-oriented, and there are no ZLPs to
+			 * terminate a transfer that happens to be a multiple of the max
+			 * packet size.
+			 *
+			 * The corollary is a real constraint on the host: it must never
+			 * split one logical packet across transactions, because the second
+			 * half would land in a transfer the guest already considers
+			 * finished. The wire header's length is an int16_t, so a host
+			 * transaction cannot exceed 32767 bytes and the host must keep its
+			 * MTU at or under that. usbmuxd's default USB_MTU of 49152 does not
+			 * fit and silently corrupted AFC writes until it was capped.
+			 *
+			 * Warn when a transaction is truncated, since that is exactly the
+			 * situation that produces the corruption and it is otherwise silent.
+			 */
+			if (amtDone < hdr_len) {
+				qemu_log_mask(LOG_GUEST_ERROR,
+				              "usb_synopsys: OUT ep%d truncated %zu -> %zu bytes; "
+				              "the host must not split a logical packet\n",
+				              ep, hdr_len, amtDone);
+			}
+
 			if (_hdr->flags & tcp_usb_setup) {
 				eps->interrupt_status |= USB_EPINT_SetUp;
 			} else {
