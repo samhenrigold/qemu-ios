@@ -163,10 +163,11 @@ def normalize(ppm, png):
     return png, hi, nz
 
 
-def launch(nand, qmp_port, serial, extra=(), display="none"):
+def launch(nand, qmp_port, serial, extra=(), display="none", machine_opts=""):
     cmd = [
         QEMU, "-M",
-        "iPod-Touch,bootrom=%s/bootrom_240_4,nand=%s,nor=%s/nor_n72ap.bin" % (FILES, nand, FILES),
+        "iPod-Touch,bootrom=%s/bootrom_240_4,nand=%s,nor=%s/nor_n72ap.bin%s"
+        % (FILES, nand, FILES, machine_opts),
         "-cpu", "max", "-m", "2G",
         "-serial", "file:" + serial,
         "-display", display,
@@ -184,10 +185,14 @@ def main():
     ap.add_argument("--qmp", type=int, default=4510)
     ap.add_argument("--out", required=True, help="output directory")
     ap.add_argument("--boot-wait", type=float, default=45)
+    ap.add_argument("--nandrw", default=None,
+                    help="writable copy-on-write overlay dir; lets guest writes "
+                         "(crash logs, preferences) be read back on the host")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     serial = os.path.join(a.out, "serial.log")
-    p = launch(a.nand, a.qmp, serial)
+    opts = ",nandrw=%s" % a.nandrw if a.nandrw else ""
+    p = launch(a.nand, a.qmp, serial, machine_opts=opts)
     print("qemu pid", p.pid)
     q = QMP("127.0.0.1", a.qmp)
     print("qmp connected; waiting %.0fs for boot" % a.boot_wait)
