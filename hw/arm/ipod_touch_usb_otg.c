@@ -216,18 +216,37 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 			 */
 
 			uint32_t dma_before = eps->dma_address;
+			bool wrote = amtDone > 0 && _buffer && eps->dma_address;
 
-			if (amtDone > 0 && _buffer && eps->dma_address) {
+			if (wrote) {
 				cpu_physical_memory_write(eps->dma_address, _buffer, amtDone);
 				eps->dma_address += amtDone;
 			}
 
 			if (synopsys_usb_trace_enabled()) {
+				/*
+				 * Read the bytes straight back from the address we just wrote.
+				 * If they do not match what we sent, the write is not landing in
+				 * the memory the guest is reading -- which is the open question
+				 * behind the AFC content corruption.
+				 */
+				uint8_t sent[8] = {0}, back[8] = {0};
+				size_t n = MIN(amtDone, sizeof(sent));
+				if (wrote) {
+					memcpy(sent, _buffer, n);
+					cpu_physical_memory_read(dma_before, back, n);
+				}
 				fprintf(stderr,
-				        "[USBDMA] OUT ep%d hdr_len=%zu armed=%zu got=%zu "
-				        "dma 0x%08x -> 0x%08x ctl=0x%08x tsiz=0x%08x\n",
-				        ep, hdr_len, sz, amtDone, dma_before, eps->dma_address,
-				        eps->control, eps->tx_size);
+				        "[USBDMA] OUT ep%d hdr_len=%zu armed=%zu got=%zu dma 0x%08x"
+				        "%s sent=%02x%02x%02x%02x%02x%02x%02x%02x "
+				        "back=%02x%02x%02x%02x%02x%02x%02x%02x %s\n",
+				        ep, hdr_len, sz, amtDone, dma_before,
+				        wrote ? "" : " [NO WRITE - dma is 0]",
+				        sent[0], sent[1], sent[2], sent[3],
+				        sent[4], sent[5], sent[6], sent[7],
+				        back[0], back[1], back[2], back[3],
+				        back[4], back[5], back[6], back[7],
+				        (wrote && memcmp(sent, back, n) == 0) ? "MATCH" : "MISMATCH");
 			}
 
 			/*
