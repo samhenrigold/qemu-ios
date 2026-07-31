@@ -511,25 +511,32 @@ load works from the same Safari session.
 Darwin goes through it, so `SCNetworkReachabilityCreateWithName` and `CFHost`
 would fail before a packet is sent, which is exactly the observed shape.
 
-**Writing a LaunchDaemon for it did not help**, so that is not the whole story.
-A 10.5-style plist - `ProgramArguments` of `/usr/sbin/mDNSResponder -launchd`,
-a `com.apple.mDNSResponder` MachService, a `Sockets` `Listeners` dict for the
-`mdns` multicast group, `RunAtLoad` and `KeepAlive` - was installed and the
-behaviour was unchanged: still no DNS query on the wire, still the same dialog,
-and mDNSResponder still logs nothing and launchd does not complain. So either
-launchd is rejecting the job quietly, or `-launchd` fails to acquire its
-sockets and it exits immediately, or resolution on this build does not go
-through it at all.
+The resolver on this build is confirmed to be mDNSResponder-178.2:
+`libSystem` carries `com.apple.system.DirectoryService.libinfo_v1` and
+`@(#) libdns_sd mDNSResponder-178.2`, and every `gethostbyname` goes to the
+daemon over the mach service `com.apple.mDNSResponder` and the Unix socket
+`/var/run/mDNSResponder`.
 
-Worth trying next, roughly in order of cost:
+**Ground truth, read out of the guest filesystem after a boot** (mount the
+`nandrw` overlay's changed pages on top of a copy of the base NAND, reassemble
+with `imgtools/dumpvol.py`, mount read-only): `/var/run/mDNSResponder` **does
+not exist** and there is no crash log. The daemon is simply not running.
 
-- drop `-launchd` so it opens its own sockets, and drop the `Sockets` dict
-- check whether launchd on 2.x even scans `/System/Library/LaunchDaemons` for
-  jobs added after the image was built, or works from a cached job list
-- confirm the resolver path by looking at what `CFNetwork`/`libinfo` in this
-  build actually calls - if it is `res_query` reading `/etc/resolv.conf`
-  directly then mDNSResponder is a red herring and the failure is in
-  `SCNetworkReachabilityCreateWithName` instead
+The first two LaunchDaemons I wrote for it were each wrong in one half:
+
+- `-launchd` with the `Listeners` socket declared as a **multicast UDP 5353**
+  socket. That is not what the daemon wants from launchd - it opens its own
+  5353 sockets. `Listeners` is meant to be the client-facing **Unix domain
+  socket** `/var/run/mDNSResponder` (`SockPathName`). Given the wrong fd, the
+  daemon cannot serve clients.
+- standalone with **no `MachServices`**. Without launchd holding the receive
+  right for `com.apple.mDNSResponder` and handing it over on check-in, the
+  daemon cannot register its mach service and exits - no crash, no log.
+
+The canonical 10.5 layout is `-launchd`, `MachServices` containing
+`com.apple.mDNSResponder`, and `Sockets` -> `Listeners` with
+`SockPathName = /var/run/mDNSResponder` and `SockPathMode = 438`. That is what
+is being tried now.
 
 ### Where the SSID and channel actually come from
 
