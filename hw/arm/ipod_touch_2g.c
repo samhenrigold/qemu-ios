@@ -408,6 +408,11 @@ static void ipod_touch_instance_init(Object *obj)
 
     /* On by default: the emulated device is effectively tethered to the host. */
     IPOD_TOUCH_MACHINE(obj)->usb_attached = true;
+    /* On by default: this gates the verified MBX MMU request/ack mirror
+     * (ipod_touch_mbx.c), which stops the ~21M-read disable-loop spin that
+     * froze OpenGL ES apps. The 2D boot path does not touch the MMU handshake,
+     * so defaulting it on is safe there. */
+    IPOD_TOUCH_MACHINE(obj)->mbx_irq = true;
     object_property_add_bool(obj, "mbx-irq", ipod_touch_get_mbx_irq, ipod_touch_set_mbx_irq);
     object_property_set_description(obj, "mbx-irq",
         "Raise a completion interrupt for the unemulated MBX GPU so an app that "
