@@ -506,10 +506,12 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                                         sdpcm_reg_read(s, SDPCM_INTSTATUS) &
                                         ~I_HMB_FRAME_IND);
                     }
-                } else if (xfer_len >= SDPCM_HWHDR_LEN) {
-                    stw_le_p(buf, 0);
-                    stw_le_p(buf + 2, 0xffff);
                 }
+                /* With nothing queued the buffer stays all zeros, which is how
+                 * the dongle says "no more frames". A well-formed tag claiming
+                 * a length of zero is a different thing entirely: the driver
+                 * accepts it as a frame and hands the empty result to its
+                 * command manager. */
                 cpu_physical_memory_write(s->baddr, buf, xfer_len);
             }
             

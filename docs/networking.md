@@ -143,20 +143,29 @@ Command 84 is `WLC_SET_COUNTRY`, which is exactly what `initDongle` issues
 first. The upper half of the flags word is the transaction id and increments on
 each retry, confirming the CDC header layout.
 
-**The reply is not collected.** The model queues a CDC response, sets
-`I_HMB_FRAME_IND` in the core's `intstatus` and raises the card interrupt, and
-the driver reports `Failure to set country code: I/O timeout` without ever
-reading function 2. So the open question is how this driver learns that a reply
-is waiting. What is known:
+The reply is collected and accepted - `WLC_SET_COUNTRY` succeeds, with no
+"Failure to set country code" anywhere in the run. Getting there needed three
+things that are worth writing down, because each looked like a hang:
 
-- `AppleS5L8900XSDIO`'s handler (`0xc061ba88`) reads its status register, masks
-  it against the enabled set, writes the value straight back to clear, then
-  dispatches bit 0 as transfer complete and **bit 1 as the card's own
-  interrupt**. Both bits are enabled - the driver writes `0x3` to the mask.
-- Transfer-complete interrupts demonstrably work; the clear path was verified.
-- The card interrupt is raised inside the same CMD53 that carries the host's
-  request, which is earlier than real hardware would manage it. Deferring it
-  through the existing timer is the first thing to try.
+- **`AppleS5L8900XSDIO`'s interrupt register accumulates two bits.** Its handler
+  (`0xc061ba88`) reads the status, masks it against the enabled set, writes the
+  value straight back to clear, then dispatches bit 0 as transfer complete and
+  bit 1 as the card's own interrupt. Assigning bit 0 at the end of a transfer
+  wiped out a bit 1 raised earlier in the same transaction.
+- **CCCR `INT_PENDING` (0x05) has to be answered.** The driver reads it to find
+  which function raised the card interrupt. Answering zero means it concludes
+  nothing is interrupting and waits out its timeout without ever looking at
+  function 2. Deriving it from the dongle's masked `intstatus` also makes it
+  clear itself when the mailbox is acknowledged.
+- **`I_HMB_FRAME_IND` has to be cleared when the queue drains.** Left set, the
+  driver reads again, gets a zero-length frame, hands it to its command manager
+  and logs "there is no pending command" - forever, at tens of megabytes of
+  serial output per minute.
+
+The collection sequence itself is: read `tohostmailboxdata` (function 1,
+`0x0a04c`, which is `0x18002_04c` with the 32-bit access flag), clear
+`intstatus` (`0x0a020`), then read function 2 twice - twelve bytes for the
+header, then the body. A frame therefore has to survive being read in pieces.
 
 ### The MAC address is a CIS tuple
 
