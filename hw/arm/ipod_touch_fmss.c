@@ -96,12 +96,59 @@ static void fmss_erase_block(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
  * image (copy-on-write); a page present in neither reads back as a blank/erased
  * page, exactly as the original read-only model did.
  */
+/* Record a page programmed at its physical address, so it reads back there. */
+static void fmss_remember_physical(IPodTouchFMSSState *s, uint32_t cs,
+                                   uint32_t page_nr, const uint8_t *data,
+                                   const uint8_t *spare)
+{
+    if (!s->phys_pages) {
+        s->phys_pages = g_hash_table_new_full(g_direct_hash, g_direct_equal,
+                                              NULL, g_free);
+    }
+
+    uint8_t *slot = g_malloc(NAND_BYTES_PER_PAGE + NAND_BYTES_PER_SPARE);
+    memcpy(slot, data, NAND_BYTES_PER_PAGE);
+    memcpy(slot + NAND_BYTES_PER_PAGE, spare, NAND_BYTES_PER_SPARE);
+    g_hash_table_insert(s->phys_pages, fmss_block_key(cs, page_nr), slot);
+}
+
+static bool fmss_recall_physical(IPodTouchFMSSState *s, uint32_t cs,
+                                 uint32_t page_nr, uint8_t *data, uint8_t *spare)
+{
+    if (!s->phys_pages) {
+        return false;
+    }
+
+    const uint8_t *slot = g_hash_table_lookup(s->phys_pages,
+                                              fmss_block_key(cs, page_nr));
+    if (!slot) {
+        return false;
+    }
+    memcpy(data, slot, NAND_BYTES_PER_PAGE);
+    memcpy(spare, slot + NAND_BYTES_PER_PAGE, NAND_BYTES_PER_SPARE);
+    return true;
+}
+
 static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
                            uint8_t *data, uint8_t *spare)
 {
     char filename[1088];
     FILE *f = NULL;
     bool from_overlay = false;
+
+    /*
+     * A page programmed in this session reads back as programmed, whatever the
+     * base image holds at that physical address. Without this the FTL reads its
+     * own freshly written page and gets an unrelated file, so anything written
+     * and then read before the next boot -- an .ipa staged by installd, most
+     * visibly -- comes back as garbage.
+     */
+    if (fmss_recall_physical(s, cs, page_nr, data, spare)) {
+        if (getenv("FMSS_RTRACE")) {
+            printf("RP cs=%u page=%u\n", cs, page_nr); fflush(stdout);
+        }
+        return;
+    }
 
     if (s->nand_overlay) {
         snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_overlay, cs, page_nr);
@@ -374,12 +421,24 @@ static void write_nand_pages(IPodTouchFMSSState *s)
         }
 
         /*
+         * The page reads back at the address it was programmed to for the rest
+         * of this session, with the spare the guest wrote -- the FTL validates
+         * the logical number it finds there, so it has to be the guest's own
+         * bytes and not the synthetic "clean" spare substituted below.
+         */
+        fmss_remember_physical(s, cs, page_nr, s->page_buffer,
+                               s->page_spare_buffer);
+
+        /*
          * Undo the FTL's relocation -- see fmss_generated_layout(). The
          * physical page the driver picked is freshly allocated as far as it is
          * concerned, but in the generated image it is still holding somebody
          * else's file data. Store the page where its logical block actually
          * lives, and leave the synthetic clean spare in place so the image
          * stays uniformly "generated".
+         *
+         * This is what makes the *persisted* image correct across a reboot;
+         * fmss_remember_physical above is what makes it correct before one.
          */
         if (!getenv("FMSS_PHYSICAL")) {
             uint32_t logical = ldl_le_p(s->page_spare_buffer);
@@ -523,6 +582,12 @@ static void ipod_touch_fmss_finalize(Object *obj)
 
     g_free(s->page_buffer);
     g_free(s->page_spare_buffer);
+    if (s->phys_pages) {
+        g_hash_table_destroy(s->phys_pages);
+    }
+    if (s->erased_blocks) {
+        g_hash_table_destroy(s->erased_blocks);
+    }
 }
 
 static void ipod_touch_fmss_class_init(ObjectClass *klass, void *data)

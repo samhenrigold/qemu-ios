@@ -50,6 +50,22 @@ typedef struct IPodTouchFMSSState
     char *nand_path;
     char *nand_overlay;   /* writable COW overlay dir, or NULL to discard writes */
     GHashTable *erased_blocks; /* (cs << 32) | block for blocks erased in the overlay */
+
+    /*
+     * Pages programmed since power-on, keyed by the *physical* (cs, page) the
+     * guest addressed, holding page data followed by the guest's own spare.
+     * The overlay on disk is written at the page's logical home instead (see
+     * fmss_generated_layout), which is right for the persisted image but leaves
+     * the physical page the FTL just programmed reading back as whatever the
+     * base image had there. Flash does not work that way: a program makes that
+     * page read back. This is that memory, and it is deliberately not persisted
+     * -- the mapping only holds until the FTL is rebuilt at the next boot.
+     *
+     * It is keyed by physical page, so it is bounded by the size of the flash
+     * (~520 MB if every page were rewritten) rather than by how much the guest
+     * writes over the life of the session.
+     */
+    GHashTable *phys_pages;
 } IPodTouchFMSSState;
 
 #endif
