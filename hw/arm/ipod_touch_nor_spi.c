@@ -1,10 +1,89 @@
 #include "hw/arm/ipod_touch_nor_spi.h"
+#include "qapi/error.h"
+#include "qemu/error-report.h"
+
+/*
+ * The NOR carries an nvram partition made of 16-byte atoms:
+ *
+ *     uint8_t  tag;
+ *     uint8_t  checksum;   sum of the payload bytes, plus one
+ *     uint16_t size;       payload size in 16-byte units
+ *     char     name[12];
+ *
+ * The atom named "common" holds iBoot's environment as NUL-terminated
+ * "key=value" strings, terminated by an empty string. boot-args lives there,
+ * and is how the kernel gets io=0xffff and friends.
+ */
+#define NVRAM_ATOM_HDR   16
+#define NVRAM_ATOM_UNIT  16
+
+static uint8_t nvram_checksum(const uint8_t *payload, size_t len)
+{
+    uint8_t sum = 0;
+    for (size_t i = 0; i < len; i++) {
+        sum += payload[i];
+    }
+    return sum + 1;
+}
+
+/* Rewrite the boot-args variable in the in-memory copy of the NOR. The image
+ * on disk is never touched. */
+static void nor_set_boot_args(IPodTouchNORSPIState *s, gsize norlen)
+{
+    static const char key[] = "boot-args=";
+
+    for (gsize off = 0; off + NVRAM_ATOM_HDR <= norlen; off += NVRAM_ATOM_UNIT) {
+        uint8_t *hdr = s->nor_data + off;
+        if (memcmp(hdr + 4, "common\0", 7) != 0) {
+            continue;
+        }
+
+        size_t len = (size_t)lduw_le_p(hdr + 2) * NVRAM_ATOM_UNIT;
+        if (len == 0 || off + NVRAM_ATOM_HDR + len > norlen) {
+            break;
+        }
+        uint8_t *payload = hdr + NVRAM_ATOM_HDR;
+
+        /* Copy out every variable except the one we are replacing. */
+        g_autoptr(GByteArray) vars = g_byte_array_new();
+        for (size_t i = 0; i < len && payload[i]; ) {
+            size_t vlen = strnlen((char *)payload + i, len - i);
+            if (strncmp((char *)payload + i, key, strlen(key)) != 0) {
+                g_byte_array_append(vars, payload + i, vlen + 1);
+            }
+            i += vlen + 1;
+        }
+
+        g_autofree char *entry = g_strconcat(key, s->boot_args, NULL);
+        g_byte_array_append(vars, (const guint8 *)entry, strlen(entry) + 1);
+        g_byte_array_append(vars, (const guint8 *)"", 1); /* list terminator */
+
+        if (vars->len > len) {
+            error_report("boot-args does not fit in the nvram common atom "
+                         "(%u bytes needed, %zu available)", vars->len, len);
+            return;
+        }
+
+        memset(payload, 0, len);
+        memcpy(payload, vars->data, vars->len);
+        hdr[1] = nvram_checksum(payload, len);
+
+        printf("[NVRAM] boot-args=%s\n", s->boot_args);
+        return;
+    }
+
+    error_report("could not find the nvram \"common\" atom in the NOR image; "
+                 "boot-args not applied");
+}
 
 static void initialize_nor(IPodTouchNORSPIState *s)
 {
     gsize fsize;
     if (g_file_get_contents(s->nor_path, (char **)&s->nor_data, &fsize, NULL)) {
         s->nor_initialized = true;
+        if (s->boot_args && s->boot_args[0]) {
+            nor_set_boot_args(s, fsize);
+        }
     }
 }
 
