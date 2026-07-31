@@ -211,7 +211,14 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 			             | ((sz - amtDone) & DEPTSIZ_XFERSIZ_MASK);
 			eps->interrupt_status |= USB_EPINT_XferCompl;
 
-			printf("[USBTCP] IN  ep%d %zu bytes\n", ep, amtDone);
+			/*
+			 * Gated: this fires once per transaction, so under a multi-megabyte
+			 * AFC transfer it would be tens of thousands of synchronous stdio
+			 * writes on the data path. Everything else here is behind the same
+			 * flag; keep this consistent so a bulk transfer runs quietly.
+			 */
+			if (synopsys_usb_trace_enabled())
+				fprintf(stderr, "[USBTCP] IN  ep%d %zu bytes\n", ep, amtDone);
 			ret = amtDone;
 		} else {
 			ret = USB_RET_NAK;
@@ -309,8 +316,10 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 			eps->tx_size = (eps->tx_size & ~DEPTSIZ_XFERSIZ_MASK)
 			             | ((sz - amtDone) & DEPTSIZ_XFERSIZ_MASK);
 
-			printf("[USBTCP] OUT ep%d %zu bytes%s\n", ep, amtDone,
-			       (_hdr->flags & tcp_usb_setup) ? " (SETUP)" : "");
+			/* Gated for the same reason as the IN path above. */
+			if (synopsys_usb_trace_enabled())
+				fprintf(stderr, "[USBTCP] OUT ep%d %zu bytes%s\n", ep, amtDone,
+				        (_hdr->flags & tcp_usb_setup) ? " (SETUP)" : "");
 			ret = amtDone;
 		} else {
 			ret = USB_RET_NAK;
