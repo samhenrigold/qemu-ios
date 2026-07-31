@@ -22,6 +22,7 @@
 #include "hw/arm/ipod_touch_pke.h"
 #include "hw/arm/ipod_touch_unknown1.h"
 #include "hw/arm/ipod_touch_wdt.h"
+#include "hw/arm/ipod_touch_mpvd.h"
 #include "hw/arm/ipod_touch_lcd.h"
 #include "hw/arm/ipod_touch_mipi_dsi.h"
 #include "hw/arm/ipod_touch_fmss.h"
@@ -109,6 +110,7 @@ extern const int S5L8900_GPIO_IRQS[5];
 #define EDGEIC_MEM_BASE       0x38E02000
 #define H264_MEM_BASE         0x38F00000
 #define SCALER_CSC_MEM_BASE   0x39000000
+#define MPVD_MEM_BASE         0x39600000
 #define TVOUT_MIXER2_MEM_BASE 0x39100000
 #define TVOUT_MIXER1_MEM_BASE 0x39200000
 #define TVOUT_SDO_MEM_BASE    0x39300000

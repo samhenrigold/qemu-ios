@@ -606,6 +606,11 @@ static void ipod_touch_machine_init(MachineState *machine)
     IPodTouchWDTState *wdt_state = IPOD_TOUCH_WDT(dev);
     memory_region_add_subregion(sysmem, WDT_MEM_BASE, &wdt_state->iomem);
 
+    // back the MPVD register window so the power-state path does not fault
+    dev = qdev_new("ipodtouch.mpvd");
+    IPodTouchMPVDState *mpvd_state = IPOD_TOUCH_MPVD(dev);
+    memory_region_add_subregion(sysmem, MPVD_MEM_BASE, &mpvd_state->iomem);
+
     // init USB OTG
     dev = ipod_touch_init_usb_otg(s5l8900_get_irq(nms, S5L8720_USB_OTG_IRQ), s5l8720_usb_hwcfg);
     synopsys_usb_state *usb_otg = S5L8900USBOTG(dev);
