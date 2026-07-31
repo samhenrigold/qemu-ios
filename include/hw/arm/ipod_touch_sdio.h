@@ -215,6 +215,29 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define BSS_INFO_IE_LEN     (2 + 8 + 2 + 4 + 2 + 1)
 #define BSS_INFO_TOTAL      (BSS_INFO_LEN + BSS_INFO_IE_LEN)
 
+/*
+ * wl_iscan_results_t, the reply to get_var iscanresults: a status word followed
+ * by a wl_scan_results_t (buflen, version, count) and the BSS list. buflen
+ * counts from the version field to the end of the last entry.
+ */
+#define ISCAN_OFF_STATUS          0x00
+#define ISCAN_OFF_BUFLEN          0x04
+#define ISCAN_OFF_VERSION         0x08
+#define ISCAN_OFF_COUNT           0x0c
+#define ISCAN_OFF_BSS             0x10
+#define ISCAN_RESULTS_FIXED       0x0c   /* wl_scan_results_t, from buflen on */
+#define ISCAN_TOTAL               (ISCAN_OFF_BSS + BSS_INFO_TOTAL)
+
+/* How long a scan is made to appear to take before it reports complete. */
+#define SCAN_COMPLETE_DELAY_NS  (1500 * 1000 * 1000LL)
+
+/* wl_iscan_results_t status. The driver keeps polling on PARTIAL. */
+#define WL_SCAN_RESULTS_SUCCESS   0
+#define WL_SCAN_RESULTS_PARTIAL   1
+
+/* wlc_ssid_t, the payload of WLC_SET_SSID: a length word then up to 32 bytes. */
+#define WLC_SSID_MAX        32
+
 #define WL_EVENT_MSG_LEN    46
 
 typedef struct BCM4325FrameHeaderPacket
@@ -276,6 +299,8 @@ typedef struct IPodTouchSDIOState
     NICState *nic;
     NICConf conf;
     bool link_faked;         /* the association events have been pushed */
+    bool iscan_reported;     /* this scan run has already reported its BSS */
+    QEMUTimer *scan_timer;   /* delays the scan-complete event */
     QEMUTimer *link_timer;
     unsigned tx_log;
     unsigned host_rx_log;
