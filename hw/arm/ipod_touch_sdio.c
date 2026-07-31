@@ -75,6 +75,59 @@ static void ipod_touch_sdio_build_cia(IPodTouchSDIOState *s)
     }
 }
 
+/*
+ * Function 1 reaches the whole chip through a sliding window: SBADDRLOW/MID/HIGH
+ * supply address bits 8 and up, and the low 15 bits of the CMD52/CMD53 address
+ * are the offset within it. Bit 15 asks for 32-bit accesses and is not part of
+ * the address.
+ *
+ * Backing it lazily, one page at a time, keeps the sparse core register space
+ * and the firmware image in the same store, which matters because the driver
+ * reads back everything it writes.
+ */
+static uint8_t *backplane_page(IPodTouchSDIOState *s, uint32_t sb_addr)
+{
+    gpointer key = GUINT_TO_POINTER(sb_addr >> BACKPLANE_PAGE_BITS);
+    uint8_t *page = g_hash_table_lookup(s->backplane, key);
+
+    if (!page) {
+        page = g_malloc0(BACKPLANE_PAGE_SIZE);
+        g_hash_table_insert(s->backplane, key, page);
+    }
+    return page;
+}
+
+static uint32_t backplane_addr(IPodTouchSDIOState *s, uint32_t addr)
+{
+    return s->sb_window | (addr & SB_OFFSET_MASK);
+}
+
+static void backplane_write(IPodTouchSDIOState *s, uint32_t sb_addr,
+                            const uint8_t *buf, uint32_t len)
+{
+    while (len) {
+        uint32_t off = sb_addr & (BACKPLANE_PAGE_SIZE - 1);
+        uint32_t n = MIN(len, BACKPLANE_PAGE_SIZE - off);
+        memcpy(backplane_page(s, sb_addr) + off, buf, n);
+        sb_addr += n;
+        buf += n;
+        len -= n;
+    }
+}
+
+static void backplane_read(IPodTouchSDIOState *s, uint32_t sb_addr,
+                           uint8_t *buf, uint32_t len)
+{
+    while (len) {
+        uint32_t off = sb_addr & (BACKPLANE_PAGE_SIZE - 1);
+        uint32_t n = MIN(len, BACKPLANE_PAGE_SIZE - off);
+        memcpy(buf, backplane_page(s, sb_addr) + off, n);
+        sb_addr += n;
+        buf += n;
+        len -= n;
+    }
+}
+
 static void trigger_irq(void *opaque)
 {
     IPodTouchSDIOState *s = (IPodTouchSDIOState *)opaque;
@@ -110,9 +163,23 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
         bool is_write = (s->arg >> 31) != 0;
         if(is_write) {
             uint8_t data = s->arg & 0xFF;
-            s->registers[addr] = data;
-            if(addr == 0x2) { s->registers[0x3] = data; } // if we write to register 2, we also write the same result to register 3 (this is the enabled functions register)
-            printf("SDIO: Executing cmd52 by writing 0x%02x to register 0x%02x\n", data, addr);
+            if(func == 0x1 && addr >= SDIOD_CORE_BASE) {
+                s->sdiod_regs[addr - SDIOD_CORE_BASE] = data;
+                if(addr >= SBSDIO_SBADDRLOW && addr <= SBSDIO_SBADDRHIGH) {
+                    unsigned shift = 8 + 8 * (addr - SBSDIO_SBADDRLOW);
+                    s->sb_window &= ~(0xffu << shift);
+                    s->sb_window |= (uint32_t)data << shift;
+                }
+            }
+            else if(func == 0x1) {
+                uint8_t byte = data;
+                backplane_write(s, backplane_addr(s, addr), &byte, 1);
+            }
+            else {
+                s->registers[addr] = data;
+                if(addr == 0x2) { s->registers[0x3] = data; } // if we write to register 2, we also write the same result to register 3 (this is the enabled functions register)
+            }
+            printf("SDIO: Executing cmd52 by writing 0x%02x to register 0x%05x (func %d)\n", data, addr, func);
         } else {
             if(addr == 0x1000e) {
                 // misc register
@@ -122,6 +189,14 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                 // some indication that packets are ready??
                 s->resp0 = (1 << 6);
             }
+            else if(func == 0x1 && addr >= SDIOD_CORE_BASE) {
+                s->resp0 = s->sdiod_regs[addr - SDIOD_CORE_BASE];
+            }
+            else if(func == 0x1) {
+                uint8_t byte = 0;
+                backplane_read(s, backplane_addr(s, addr), &byte, 1);
+                s->resp0 = byte;
+            }
             else {
                 printf("SDIO: Executing cmd52 by reading from 0x%02x (value: 0x%02x)\n", addr, s->registers[addr]);
                 s->resp0 = s->registers[addr];
@@ -130,13 +205,16 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
     }
     else if(cmd_type == 0x35) {
         // CMD53 - block transfer
-        addr = addr & 0x7fff;
         bool is_write = (s->arg >> 31) != 0;
-        printf("SDIO: Executing cmd53 func %x with block size %d and %d blocks (reg address: 0x%08x, destination address: 0x%08x, write? %d)\n", func, s->blklen, s->numblk, addr, s->baddr, is_write);
-        
+        uint32_t xfer_len = s->blklen * s->numblk;
+        uint32_t sb_addr = backplane_addr(s, addr);
+        printf("SDIO: Executing cmd53 func %x with block size %d and %d blocks (reg address: 0x%08x, backplane address: 0x%08x, destination address: 0x%08x, write? %d)\n", func, s->blklen, s->numblk, addr, sb_addr, s->baddr, is_write);
+
         if(is_write) {
             if(func == 0x1) {
-                cpu_physical_memory_read(s->baddr, &s->registers[addr], s->blklen * s->numblk);
+                g_autofree uint8_t *buf = g_malloc(xfer_len);
+                cpu_physical_memory_read(s->baddr, buf, xfer_len);
+                backplane_write(s, sb_addr, buf, xfer_len);
             }
             else if(func == 0x2) {
                 // this is a BCM4325 command - add a frame to the queue and schedule the IRQ request to indicate that the command has been completed
@@ -150,11 +228,9 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
             }
         } else {
             if(func == 0x1) {
-                if(addr == 0x0) {
-                    // chip ID register
-                    uint32_t chipid[] = { 0x5 << 0x10 };
-                    cpu_physical_memory_write(s->baddr, &chipid, 0x4);
-                }
+                g_autofree uint8_t *buf = g_malloc(xfer_len);
+                backplane_read(s, sb_addr, buf, xfer_len);
+                cpu_physical_memory_write(s->baddr, buf, xfer_len);
             }
             else if(func == 0x2) {
                 // we're reading a frame
@@ -282,6 +358,12 @@ static void ipod_touch_sdio_init(Object *obj)
     DeviceState *dev = DEVICE(obj);
     IPodTouchSDIOState *s = IPOD_TOUCH_SDIO(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+
+    s->backplane = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+    s->sb_window = CHIPCOMMON_BASE;
+    uint8_t chipid[4];
+    stl_le_p(chipid, CHIPCOMMON_CHIPID);
+    backplane_write(s, CHIPCOMMON_BASE, chipid, sizeof(chipid));
 
     ipod_touch_sdio_build_cia(s);
 
