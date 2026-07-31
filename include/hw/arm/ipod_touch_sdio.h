@@ -46,6 +46,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define CCCR_IO_READY       0x03
 #define CCCR_INT_ENABLE     0x04
 #define CCCR_INT_PENDING    0x05
+#define CCCR_INT_PENDING_FN1 (1 << 1)
+#define CCCR_INT_PENDING_FN2 (1 << 2)
 #define CCCR_BUS_CONTROL    0x07
 #define CCCR_CARD_CAPS      0x08
 #define CCCR_CIS_PTR        0x09  /* three bytes, little endian */
