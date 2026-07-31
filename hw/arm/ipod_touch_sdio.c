@@ -316,6 +316,45 @@ static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t event_type,
 static const uint8_t fake_bssid[6] = { 0x02, 0x00, 0x5e, 0x10, 0x00, 0x01 };
 #define FAKE_SSID "qemu-ios"
 
+/* Describe the network the model claims to be on, open and on channel 6. */
+static void fill_bss_info(uint8_t *bi)
+{
+    static const uint8_t rates[] = { 0x82, 0x84, 0x8b, 0x96 };
+
+    stl_le_p(bi + BSS_INFO_OFF_VERSION, BSS_INFO_VERSION);
+    stl_le_p(bi + BSS_INFO_OFF_LENGTH, BSS_INFO_TOTAL);
+    memcpy(bi + BSS_INFO_OFF_BSSID, fake_bssid, sizeof(fake_bssid));
+    stw_le_p(bi + BSS_INFO_OFF_BEACON, 100);
+    stw_le_p(bi + BSS_INFO_OFF_CAPABILITY, BSS_CAP_ESS);   /* open: no privacy */
+    bi[BSS_INFO_OFF_SSID_LEN] = strlen(FAKE_SSID);
+    memcpy(bi + BSS_INFO_OFF_SSID, FAKE_SSID, strlen(FAKE_SSID));
+    stl_le_p(bi + BSS_INFO_OFF_RATE_COUNT, sizeof(rates));
+    memcpy(bi + BSS_INFO_OFF_RATES, rates, sizeof(rates));
+    bi[BSS_INFO_OFF_CHANNEL] = 6;
+    stw_le_p(bi + BSS_INFO_OFF_RSSI, (uint16_t)(int16_t)-45);
+    bi[BSS_INFO_OFF_PHY_NOISE] = (uint8_t)(int8_t)-92;
+
+    /*
+     * The fixed SSID and channel fields on their own leave the driver logging
+     * an empty SSID and channel 0, so the beacon object is reading the
+     * information elements that follow the structure instead. Append the three
+     * a real beacon would start with.
+     */
+    stw_le_p(bi + BSS_INFO_OFF_IE_OFFSET, BSS_INFO_LEN);
+    stl_le_p(bi + BSS_INFO_OFF_IE_LENGTH, BSS_INFO_IE_LEN);
+
+    uint8_t *ie = bi + BSS_INFO_LEN;
+    *ie++ = 0x00;                                  /* SSID */
+    *ie++ = strlen(FAKE_SSID);
+    memcpy(ie, FAKE_SSID, strlen(FAKE_SSID)); ie += strlen(FAKE_SSID);
+    *ie++ = 0x01;                                  /* supported rates */
+    *ie++ = sizeof(rates);
+    memcpy(ie, rates, sizeof(rates)); ie += sizeof(rates);
+    *ie++ = 0x03;                                  /* DS parameter set */
+    *ie++ = 0x01;
+    *ie++ = 6;                                     /* channel */
+}
+
 /*
  * Assert an association without simulating any of 802.11. The driver's own
  * dispatch table decides what it believes: WLC_E_SET_SSID with status 0 is a
@@ -384,8 +423,21 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
            (flags & CDC_DCMD_SET) ? "set" : "get", payload_len, flags,
            *iovar ? " iovar " : "", iovar);
 
-    if (payload_len > len - CDC_HDRLEN) {
-        payload_len = len > CDC_HDRLEN ? len - CDC_HDRLEN : 0;
+    /*
+     * On a set, the payload is what arrived and cannot be longer than the
+     * frame. On a get it is the size of the buffer the driver is waiting to
+     * have filled, and the reply has to be exactly that long: the command
+     * manager asserts on it (AppleBCM4325CmdManager.cpp:213) and then reads
+     * its own uninitialised buffer. Clamping both ways answered every get
+     * with a few bytes - a 1148 byte WLC_GET_BSS_INFO came back as zero - and
+     * that is why the joined BSS had a garbage BSSID and an empty SSID.
+     */
+    if (flags & CDC_DCMD_SET) {
+        if (payload_len > len - CDC_HDRLEN) {
+            payload_len = len > CDC_HDRLEN ? len - CDC_HDRLEN : 0;
+        }
+    } else if (payload_len > CDC_MAX_PAYLOAD) {
+        payload_len = CDC_MAX_PAYLOAD;
     }
 
     /* The length field is checked against what the command expects, not
@@ -398,7 +450,11 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
     /* A few gets have to carry something believable once the model claims to
      * be associated - an all-zero BSSID reads as "not associated". */
     if (!(flags & CDC_DCMD_SET)) {
-        if (cmd == WLC_GET_BSSID && payload_len >= sizeof(fake_bssid)) {
+        if (cmd == WLC_GET_BSS_INFO && payload_len >= 4 + BSS_INFO_TOTAL) {
+            /* Four byte buffer length, then the structure itself. */
+            stl_le_p(reply + CDC_HDRLEN, BSS_INFO_TOTAL);
+            fill_bss_info(reply + CDC_HDRLEN + 4);
+        } else if (cmd == WLC_GET_BSSID && payload_len >= sizeof(fake_bssid)) {
             memcpy(reply + CDC_HDRLEN, fake_bssid, sizeof(fake_bssid));
         } else if (cmd == WLC_GET_RSSI && payload_len >= 4) {
             /* Polled to drive the status bar's signal bars; zero reads as no

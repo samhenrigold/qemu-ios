@@ -184,6 +184,36 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define WLC_GET_SSID        25
 #define WLC_SET_SSID        26
 #define WLC_GET_RSSI        127
+#define WLC_GET_BSS_INFO    136
+
+/* The largest reply the model will build for a get. */
+#define CDC_MAX_PAYLOAD     8192
+
+/*
+ * wl_bss_info_t, as the driver's beacon factory reads it. The reply to
+ * WLC_GET_BSS_INFO is a four byte buffer length followed by the structure -
+ * the driver passes buffer+4 to the factory.
+ */
+#define BSS_INFO_VERSION    108
+#define BSS_INFO_OFF_VERSION      0x00
+#define BSS_INFO_OFF_LENGTH       0x04
+#define BSS_INFO_OFF_BSSID        0x08
+#define BSS_INFO_OFF_BEACON       0x0e
+#define BSS_INFO_OFF_CAPABILITY   0x10
+#define BSS_INFO_OFF_SSID_LEN     0x12
+#define BSS_INFO_OFF_SSID         0x13
+#define BSS_INFO_OFF_RATE_COUNT   0x34
+#define BSS_INFO_OFF_RATES        0x38
+#define BSS_INFO_OFF_CHANNEL      0x48
+#define BSS_INFO_OFF_RSSI         0x4e
+#define BSS_INFO_OFF_PHY_NOISE    0x50
+#define BSS_INFO_OFF_IE_OFFSET    0x74
+#define BSS_INFO_OFF_IE_LENGTH    0x78
+#define BSS_INFO_LEN              0x7c
+#define BSS_CAP_ESS         0x0001
+/* SSID, supported rates and DS parameter set, appended as beacon IEs. */
+#define BSS_INFO_IE_LEN     (2 + 8 + 2 + 4 + 2 + 1)
+#define BSS_INFO_TOTAL      (BSS_INFO_LEN + BSS_INFO_IE_LEN)
 
 #define WL_EVENT_MSG_LEN    46
 

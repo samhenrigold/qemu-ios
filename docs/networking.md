@@ -15,7 +15,7 @@ only one of them is real:
 | USB ethernet function (CDC ECM/NCM, RNDIS, tethering) | **Ruled out.** The firmware ships no such function and no driver that could back one. Evidence below. |
 | cp15 guest-services socket shim (`hw/arm/guest-services.c`) | Dormant. Needs guest code to issue the hypercall, and is layer 4 only - no interface, so nothing in iOS routes through it. |
 | PPP over the serial multiplexer | Real mechanism, wrong device. See below. |
-| BCM4325 SDIO WiFi (`hw/arm/ipod_touch_sdio.c`) | The only path to a real network interface, and the one being built. Behind `wifi=on`, the driver initialises and publishes an `IO80211Interface`; no traffic passes yet. |
+| BCM4325 SDIO WiFi (`hw/arm/ipod_touch_sdio.c`) | **Works.** Behind `wifi=on`, iOS takes a DHCP lease, ARPs, and serves TCP over the emulated dongle. See "The device is on the network" below. |
 
 ### PPP is a second interface-capable path, and it needs a baseband
 
@@ -369,6 +369,104 @@ thirty seconds into the boot, with zero occurrences of `fault_addr=0x38`.
 `start()` completes. The next thing to build is stage 4 - accept `set_var
 iscan`, push a scan-complete event on channel 1, and answer `get_var
 iscanresults` with a synthetic BSS.
+
+## The device is on the network
+
+Scan results and a real association turned out not to be on the critical path.
+The driver believes whatever its own event dispatch table is told, so pushing
+`WLC_E_AUTH`, `WLC_E_ASSOC`, `WLC_E_SET_SSID` and a `WLC_E_LINK` carrying the
+link flag brings the carrier up directly:
+
+```
+AppleBCM4325 Joined BSS: BSSID = 02:00:5e:10:00:01, rssi = -45, ...
+AirPort: Link Up on en0
+```
+
+iOS then does the rest with no help at all. `SDPCM` channel 2 is bridged to a
+`NetClientState`, slirp is re-enabled in the build, and the capture on the
+backend shows a complete bring-up:
+
+```
+IP 0.0.0.0.68 > 255.255.255.255.67: BOOTP/DHCP, Request from 00:23:32:6e:aa:10
+IP 10.0.2.2.67 > 255.255.255.255.68: BOOTP/DHCP, Reply, length 548
+ARP, Probe 10.0.2.15          <- duplicate address detection
+ARP, Announcement 10.0.2.15
+ARP, Request who-has 10.0.2.2 tell 10.0.2.15
+ARP, Reply 10.0.2.2 is-at 52:55:0a:00:02:02
+```
+
+and the guest's TCP stack answers on the address it was given. Forwarding a
+host port to lockdownd, which listens on 62078 on every interface:
+
+```
+IP 10.0.2.2.64319  > 10.0.2.15.62078: Flags [S],  seq 1984001
+IP 10.0.2.15.62078 > 10.0.2.2.64319:  Flags [S.], seq 954588535, ack 1984002
+IP 10.0.2.2.64319  > 10.0.2.15.62078: Flags [P.], seq 1:241, length 240
+IP 10.0.2.15.62078 > 10.0.2.2.64319:  Flags [.],  ack 241
+IP 10.0.2.15.62078 > 10.0.2.2.64319:  Flags [F.]
+```
+
+Three way handshake, 240 bytes of request delivered and acknowledged by the
+guest, clean shutdown. lockdownd hangs up because it will not serve an
+unpaired peer over WiFi, which is policy, not transport.
+
+Run it with:
+
+```
+qemu-system-arm -M iPod-Touch,...,wifi=on \
+    -netdev user,id=wifi0,net=10.0.2.0/24,host=10.0.2.2,dhcpstart=10.0.2.15 \
+    -object filter-dump,id=cap0,netdev=wifi0,file=wifi.pcap
+IPOD_WIFI_FAKE_LINK=40 ...
+```
+
+`IPOD_WIFI_FAKE_LINK` is the number of seconds after `WLC_UP` to assert the
+association. It is behind an environment variable because it is a claim about
+state the model has not really reached.
+
+### Two things that had to be fixed first
+
+- **A get's reply has to be as long as the buffer the driver offered**, not as
+  long as the request. The model clamped both, so a 1148 byte
+  `WLC_GET_BSS_INFO` came back with nothing, tripped
+  `AppleBCM4325CmdManager.cpp:213`, and left the driver reading its own
+  uninitialised buffer - which is where the garbage BSSID in the join line came
+  from. The same clamp was cutting `get_var iscanresults` from 2024 bytes down
+  to 13, so the scan results path was never being answered either.
+- **`WLC_GET_RSSI` (127) and `WLC_GET_RATE` (12) are polled** to drive the
+  status bar. Answering zero is why the WiFi icon showed no bars.
+
+### What is still missing
+
+Safari refuses with "not connected to the Internet" and sends nothing at all,
+so `SCNetworkReachability` is the remaining gate - the transport underneath it
+works.
+
+**The cause is that this image has no SystemConfiguration preferences.**
+`/var/preferences` is an empty directory and
+`/Library/Preferences/SystemConfiguration` is empty too; there is no
+`preferences.plist` and no `NetworkInterfaces.plist` anywhere on the volume. So
+`PreferencesMonitor` has no service to publish under `Setup:/Network/Service/`,
+`IPMonitor` never elects a primary service, and `State:/Network/Global/IPv4` is
+never set - which is exactly the state `SCNetworkReachability` reports as "no
+network", regardless of what the kernel's routing table says.
+
+That explains the whole shape of the result: DHCP runs (IPConfiguration is
+driven by the link event, not by a service), the address is assigned, ARP and
+TCP work, and userspace still says there is no network.
+
+The next experiment is to write a minimal `preferences.plist` defining an en0
+AirPort service set to DHCP, offline via `imgtools/editimg.py`, and see whether
+IPMonitor then elects it.
+
+Note the SSID and channel in the join line come from the **information
+elements** appended after `wl_bss_info_t`, not from its fixed `SSID`/`channel`
+fields. Filling only the fixed fields left `ssid = ""` and `channel = 0` while
+BSSID and RSSI - read from the same structure - were correct. Appending an SSID
+IE, a supported-rates IE and a DS parameter set fixed both.
+
+Also worth knowing: the stock image's `/etc/resolv.conf` is the **original
+owner's**, listing an IPv6 nameserver first. Weather failed with no packets on
+the wire because of it. It is now overwritten offline in the working NAND.
 
 ### The MAC address is a CIS tuple
 
