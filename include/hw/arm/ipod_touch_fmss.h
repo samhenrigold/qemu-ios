@@ -14,6 +14,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchFMSSState, IPOD_TOUCH_FMSS)
 
 #define NAND_BYTES_PER_PAGE 4096
 #define NAND_BYTES_PER_SPARE 64
+/* Block geometry. The plane stride the driver uses is 0x80 pages, and every
+ * populated run in the reference NAND image starts on a 0x80 boundary. */
+#define NAND_PAGES_PER_BLOCK 128
 
 #define FMSS__FMCTRL1             0x4
 #define FMSS__CS_IRQ              0xC0C
@@ -46,6 +49,7 @@ typedef struct IPodTouchFMSSState
     uint32_t reg_csgenrc;
     char *nand_path;
     char *nand_overlay;   /* writable COW overlay dir, or NULL to discard writes */
+    GHashTable *erased_blocks; /* (cs << 32) | block for blocks erased in the overlay */
 } IPodTouchFMSSState;
 
 #endif

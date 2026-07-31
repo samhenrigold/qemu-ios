@@ -16,6 +16,81 @@ static void write_chip_info(IPodTouchFMSSState *s)
 }
 
 /*
+ * Erased-block bookkeeping.
+ *
+ * The FMSS driver only ever issues read (csgenrc 0xa01) and write (0xa02)
+ * through the trigger register, so a block erase is never visible to us -- but
+ * it certainly happens, because the FTL rewrites blocks that are fully
+ * populated in the base image while only programming a handful of their pages.
+ * Without modelling the erase, the pages the FTL did not rewrite still read
+ * back as the base image's *old* contents instead of as erased flash, so on
+ * the next boot the FTL's scan finds stale valid-looking data where it expects
+ * clean pages.
+ *
+ * NAND cannot program a page without erasing its block first, so we can infer
+ * the erase from the write: the first time a block is programmed in the
+ * overlay (and again whenever a page already present in the overlay is
+ * reprogrammed) the whole block must have been erased just beforehand. We
+ * record that as a marker file next to the pages so it survives a reboot, and
+ * reads of unwritten pages in a marked block return erased flash rather than
+ * falling through to the base image.
+ */
+static gpointer fmss_block_key(uint32_t cs, uint32_t block)
+{
+    return GUINT_TO_POINTER((cs << 24) | block);
+}
+
+static void fmss_block_marker_path(IPodTouchFMSSState *s, uint32_t cs,
+                                   uint32_t block, char *buf, size_t len)
+{
+    snprintf(buf, len, "%s/cs%d/blk%u.erased", s->nand_overlay, cs, block);
+}
+
+static bool fmss_block_is_erased(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
+{
+    char marker[1152];
+
+    if (!s->nand_overlay || !getenv("FMSS_ERASE")) {
+        return false;
+    }
+    if (!s->erased_blocks) {
+        s->erased_blocks = g_hash_table_new(g_direct_hash, g_direct_equal);
+    }
+    if (g_hash_table_contains(s->erased_blocks, fmss_block_key(cs, block))) {
+        return true;
+    }
+    fmss_block_marker_path(s, cs, block, marker, sizeof(marker));
+    if (g_file_test(marker, G_FILE_TEST_EXISTS)) {
+        g_hash_table_add(s->erased_blocks, fmss_block_key(cs, block));
+        return true;
+    }
+    return false;
+}
+
+/* Drop every overlay page of a block and mark it erased. */
+static void fmss_erase_block(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
+{
+    char path[1152];
+    uint32_t first = block * NAND_PAGES_PER_BLOCK;
+
+    for (uint32_t p = first; p < first + NAND_PAGES_PER_BLOCK; p++) {
+        snprintf(path, sizeof(path), "%s/cs%d/%u.page", s->nand_overlay, cs, p);
+        remove(path);
+    }
+
+    snprintf(path, sizeof(path), "%s/cs%d", s->nand_overlay, cs);
+    g_mkdir_with_parents(path, 0755);
+    fmss_block_marker_path(s, cs, block, path, sizeof(path));
+    FILE *f = fopen(path, "wb");
+    if (f) { fclose(f); }
+
+    if (!s->erased_blocks) {
+        s->erased_blocks = g_hash_table_new(g_direct_hash, g_direct_equal);
+    }
+    g_hash_table_add(s->erased_blocks, fmss_block_key(cs, block));
+}
+
+/*
  * Load one physical page (data + spare) into the caller buffers. When a
  * writable overlay is configured it takes precedence over the read-only base
  * image (copy-on-write); a page present in neither reads back as a blank/erased
@@ -26,12 +101,17 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
 {
     char filename[1088];
     FILE *f = NULL;
+    bool from_overlay = false;
 
     if (s->nand_overlay) {
         snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_overlay, cs, page_nr);
         f = fopen(filename, "rb");
+        from_overlay = (f != NULL);
+        if (f && getenv("FMSS_RTRACE")) {
+            printf("RH cs=%u page=%u\n", cs, page_nr); fflush(stdout);
+        }
     }
-    if (!f) {
+    if (!f && !fmss_block_is_erased(s, cs, page_nr / NAND_PAGES_PER_BLOCK)) {
         snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_path, cs, page_nr);
         f = fopen(filename, "rb");
     }
@@ -45,6 +125,34 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
     if (fread(data, 1, NAND_BYTES_PER_PAGE, f) != NAND_BYTES_PER_PAGE) { /* short read tolerated */ }
     if (fread(spare, 1, NAND_BYTES_PER_SPARE, f) != NAND_BYTES_PER_SPARE) { /* ditto */ }
     fclose(f);
+
+    /* Diagnostic: every page of the reference image carries the emulator's own
+     * "clean" marker in its spare, so the guest FTL believes the whole device
+     * is free and happily allocates new writes on top of pages that are still
+     * live. Claim occupied pages are programmed instead, and see whether the
+     * allocator then steers around them. */
+    if (!from_overlay && getenv("FMSS_USEDSPARE")) {
+        if (((uint32_t *)spare)[2] == 0x00FF00FF) {
+            ((uint32_t *)spare)[2] = 0xFFFF40FF;
+        }
+    }
+
+    /* Diagnostic: serve the base image's spare metadata even for overlay
+     * pages, to test whether the persisted FTL metadata is what breaks the
+     * next boot. */
+    if (from_overlay && getenv("FMSS_BASESPARE")) {
+        snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_path, cs, page_nr);
+        FILE *bf = fopen(filename, "rb");
+        memset(spare, 0, NAND_BYTES_PER_SPARE);
+        if (bf) {
+            if (fseek(bf, NAND_BYTES_PER_PAGE, SEEK_SET) == 0) {
+                if (fread(spare, 1, NAND_BYTES_PER_SPARE, bf) != NAND_BYTES_PER_SPARE) { }
+            }
+            fclose(bf);
+        } else {
+            ((uint32_t *)spare)[2] = 0x00FF00FF;
+        }
+    }
 }
 
 /* Store one physical page (data + spare) into the overlay, atomically. */
@@ -52,10 +160,21 @@ static void fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
                             const uint8_t *data, const uint8_t *spare)
 {
     char dir[1088], filename[1152], tmp[1200];
+    uint32_t block = page_nr / NAND_PAGES_PER_BLOCK;
+
     snprintf(dir, sizeof(dir), "%s/cs%d", s->nand_overlay, cs);
     g_mkdir_with_parents(dir, 0755);
     snprintf(filename, sizeof(filename), "%s/%d.page", dir, page_nr);
     snprintf(tmp, sizeof(tmp), "%s/.%d.page.tmp", dir, page_nr);
+
+    /* A page cannot be programmed unless its block was erased first: either
+     * this is the first program into the block, or the page already holds
+     * overlay data and is being reprogrammed. Either way, model the erase. */
+    if (!fmss_block_is_erased(s, cs, block) && getenv("FMSS_ERASE")) {
+        fmss_erase_block(s, cs, block);
+    } else if (getenv("FMSS_ERASE") && g_file_test(filename, G_FILE_TEST_EXISTS)) {
+        fmss_erase_block(s, cs, block);
+    }
 
     FILE *f = fopen(tmp, "wb");
     if (!f) { return; }
@@ -108,59 +227,60 @@ static void read_nand_pages(IPodTouchFMSSState *s)
 /*
  * Handle a flash WRITE command (csgenrc 0xa02), storing pages into the overlay.
  *
- * The pages_in buffer the guest hands us is the FTL's *logical* request:
- *   [0] = 0x00801000 | cs_bitmap   (first command word)
- *   [1] = op selector              (0x300/0x400/0x480/0x500/0x600/0x700 ...)
- *   [2] = 0
- *   [3..] = physical page-number array
- * Source page data lives at pages_out (two 2048-byte DMA source addresses per
- * page); the per-page 12-byte spare record lives at spare_out (stride 0xc).
+ * Unlike a read, a write descriptor is NOT a flat page array. The driver
+ * (_fmssPrepareWriteSequential / _fmssPrepareWriteScatteredPages in
+ * com.apple.driver.AppleS5L8720xFMSS) builds a small script of two-word
+ * entries and points FMSS_CS_BUF_ADDR (0xD10) at it:
  *
- * INCOMPLETE / EXPERIMENTAL: the mapping from data-buffer index to physical
- * (chip-select, page) is only fully solved for single-page writes. Multi-page
- * writes stripe across the four chip-selects with a plane/geometry interleave
- * that the driver computes from request-struct tables not visible at this
- * register interface (the resulting (cmd,page) script is DMA'd from a driver
- * buffer we cannot locate, and the FMSS microcode is not executed here). The
- * best empirical decode (cs = i % 4, page = desc[3+i]) still mis-places a
- * handful of multi-page pages, and because the FTL requires all-or-nothing
- * consistency even that corrupts the image on the next boot. Persistence is
- * therefore gated behind the (off-by-default) `nandrw` option and should be
- * treated as experimental until the multi-page geometry is reverse-engineered
- * from AppleS5L8720xFMSS (_fmssPrepareWriteScatteredPages / -Sequential).
+ *   [2i]   command word: 0x00801000 | (1 << csShift) | plane bits,
+ *                        plus 0x70000000 when this chip-select already
+ *                        appeared earlier in the same script
+ *   [2i+1] physical page number on that chip-select
+ *   ...
+ *   [2n]   0x00000000 terminator
+ *
+ * A real 8-entry script observed at runtime (4 chip-selects x 2 planes):
+ *   00801101 00000602  70811001 00000682   <- cs0, pages 0x602 / 0x682
+ *   00801102 00000602  70811002 00000682   <- cs1
+ *   00801104 00000602  70811004 00000682   <- cs2
+ *   00801108 00000602  70811008 00000682   <- cs3
+ *   00000000                                <- terminator
+ *
+ * Two consequences, both different from a read:
+ *  - The write path never writes FMSS_PAGES_IN_ADDR (0xD0C) or FMSS_NUM_PAGES
+ *    (0xD18); those still hold the previous *read*'s values, so reg_num_pages
+ *    is meaningless here. The entry count comes from the terminator.
+ *  - Everything past the terminator is stale data from earlier commands that
+ *    shared the same DMA buffer, and must be ignored.
+ *
+ * Entry i's page data is the two 2048-byte DMA source addresses at
+ * pages_out[2i] and pages_out[2i+1]; its 12-byte spare record is at
+ * spare_out + i*0xc (stride 0xc == the driver's 3 spare words per page).
  */
+#define FMSS_MAX_WRITE_ENTRIES 512
+
 static void write_nand_pages(IPodTouchFMSSState *s)
 {
     if (!s->nand_overlay) {
         return; /* no writable overlay -> writes are discarded (original behaviour) */
     }
 
-    int np = s->reg_num_pages;
-    uint32_t hdr0 = 0;
-    cpu_physical_memory_read(s->reg_pages_in_addr, &hdr0, 4);
-    uint32_t base_cs = find_bit_index(hdr0 & 0xff);
+    uint32_t desc = s->reg_cs_buf_addr;
 
+    for (int i = 0; i < FMSS_MAX_WRITE_ENTRIES; i++) {
+        uint32_t cmd = 0, page_nr = 0;
+        cpu_physical_memory_read(desc + (2 * i) * 4, &cmd, 4);
+        if (cmd == 0) {
+            break; /* end-of-script terminator */
+        }
+        cpu_physical_memory_read(desc + (2 * i + 1) * 4, &page_nr, 4);
 
-    for (int i = 0; i < np; i++) {
-        uint32_t page_nr = 0;
-        cpu_physical_memory_read(s->reg_pages_in_addr + (3 + i) * 4, &page_nr, 4);
-
-        /*
-         * np==1 is exact: cs from the header bitmap, page from desc[3].
-         *
-         * Multi-page is NOT solved. cs = i%4 is empirical -- an earlier session
-         * tested using the header's cs for every page and found it made the
-         * reboot corruption strictly worse, and read-backs show cs cycling. The
-         * header bitmap does only ever have one bit set, so it most likely names
-         * the starting chip rather than the whole set; that is consistent with
-         * cycling and is not evidence against it.
-         *
-         * The real geometry is page = desc[3 + g(i, np)] where g is a plane/CS
-         * interleave that depends on np (np=5 looks linear, np=17 groups four
-         * chip-selects per descriptor entry). Until g is recovered from the
-         * driver, this is best-effort and still corrupts across a reboot.
-         */
-        uint32_t cs = (np == 1) ? base_cs : (uint32_t)(i & 3);
+        uint32_t cs = find_bit_index(cmd & 0xff);
+        if (cs > 3) {
+            printf("%s: bad chip-select in command word 0x%08x (entry %d)\n",
+                   __func__, cmd, i);
+            break;
+        }
 
         /* gather the 4096-byte page from the two 2048-byte DMA source halves */
         int half = NAND_BYTES_PER_PAGE / 2;
@@ -175,11 +295,20 @@ static void write_nand_pages(IPodTouchFMSSState *s)
         memset(s->page_spare_buffer, 0, NAND_BYTES_PER_SPARE);
         cpu_physical_memory_read(s->reg_page_spare_out_addr + i * 0xc, s->page_spare_buffer, 0xc);
 
-        /* Trailing entries of large descriptors are stale padding reading as
-         * page 0; writing them would clobber a real low page. */
-        if (page_nr != 0) {
-            fmss_store_page(s, cs, page_nr, s->page_buffer, s->page_spare_buffer);
+        if (getenv("FMSS_DUMP")) {
+            static int nd = 0;
+            if (nd++ < 400) {
+                uint32_t *sp = (uint32_t *)s->page_spare_buffer;
+                uint32_t d0 = 0, d1 = 0;
+                memcpy(&d0, s->page_buffer, 4);
+                memcpy(&d1, s->page_buffer + half, 4);
+                printf("WE i=%2d cmd=%08x cs=%u page=%6u src=%08x/%08x data=%08x/%08x spare=%08x %08x %08x\n",
+                       i, cmd, cs, page_nr, src0, src1, d0, d1, sp[0], sp[1], sp[2]);
+                fflush(stdout);
+            }
         }
+
+        fmss_store_page(s, cs, page_nr, s->page_buffer, s->page_spare_buffer);
     }
 }
 
@@ -243,6 +372,12 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
             s->reg_csgenrc = val;
             break;
         case 0xD38:
+            if (getenv("FMSS_TRACE") && s->reg_csgenrc != 0xa01 && s->reg_csgenrc != 0xa02) {
+                printf("FMSS_OP csgenrc=%08x d0c=%08x d10=%08x d18=%08x\n",
+                       s->reg_csgenrc, s->reg_pages_in_addr,
+                       s->reg_cs_buf_addr, s->reg_num_pages);
+                fflush(stdout);
+            }
             if(s->reg_csgenrc == 0xa01) { read_nand_pages(s); }
             else if(s->reg_csgenrc == 0xa02) { write_nand_pages(s); }
             else {
@@ -252,6 +387,14 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
             }
             break;
         default:
+            if (getenv("FMSS_TRACE")) {
+                static uint8_t seen[0x1000];
+                if (addr < 0x1000 && !seen[addr]) {
+                    seen[addr] = 1;
+                    printf("FMSS_W %04x = %08x (first)\n", (unsigned)addr, (unsigned)val);
+                    fflush(stdout);
+                }
+            }
             break;
     }
 }
