@@ -6,6 +6,20 @@ static uint64_t ipod_touch_chipid_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (addr) {
         case CHIPID_UNKNOWN1:
+            /*
+             * Bit 5 is the production-mode fuse: the bootrom reads it at
+             * 0x3d100004 and shifts it out (bootrom_240_4 +0x3d44). With it
+             * set, every img3 must carry a signature that verifies against the
+             * chain in its CERT tag. Clearing it demotes the part to a
+             * development unit, which is the documented way to run images
+             * whose SHSH the device cannot validate.
+             *
+             * IT_DEV_MODE=1 clears it. Off by default so the stock NOR keeps
+             * booting through the real verification path.
+             */
+            if (getenv("IT_DEV_MODE")) {
+                return 0;
+            }
             return (1 << 5); // ind5 = production mode
         case CHIPID_INFO:
             return (0x8720 << 16) | (1 << 2); // ind16 = chipid, ind2 = security domain, 

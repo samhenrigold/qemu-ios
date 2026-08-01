@@ -275,15 +275,59 @@ static void fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
     if (rename(tmp, filename) != 0) { remove(tmp); }
 }
 
+/*
+ * iBoot injects the bluetooth MAC address into the device tree node named by a
+ * literal string it carries. On this board the node hangs off uart1, not
+ * uart3, so the string has to be rewritten before iBoot walks the tree.
+ *
+ * The string's address is build-specific (5F138 has it at PA 0x0FF2206C, 7E18
+ * at 0x0FF21324), so rather than hardcode it, search the window iBoot's img3
+ * DATA payload is mapped into. The img3 payload is mapped at IBOOT_MEM_BASE
+ * with file offset == PA - IBOOT_MEM_BASE, and the string occurs exactly once
+ * in both builds' decrypted iBoot.
+ *
+ * Note there is deliberately no boot-args poke here. iBoot reads boot-args out
+ * of the NOR nvram "common" atom, which nor_set_boot_args() rewrites properly;
+ * the old poke targeted a 5F138-only runtime buffer address.
+ */
+#define IBOOT_SCAN_PA_START  0x0ff00000u
+#define IBOOT_SCAN_LEN       0x00040000u   /* covers both builds' iBoot images */
+
+static void patch_iboot_bluetooth_node(void)
+{
+    static const char needle[] = "arm-io/uart3/bluetooth";
+    static const char replace[] = "arm-io/uart1/bluetooth";
+    static bool done;
+
+    if (done) {
+        return;
+    }
+    done = true;
+
+    g_autofree uint8_t *image = g_try_malloc(IBOOT_SCAN_LEN);
+    if (!image) {
+        return;
+    }
+    cpu_physical_memory_read(IBOOT_SCAN_PA_START, image, IBOOT_SCAN_LEN);
+
+    for (size_t i = 0; i + sizeof(needle) <= IBOOT_SCAN_LEN; i++) {
+        if (memcmp(image + i, needle, sizeof(needle)) != 0) {
+            continue;
+        }
+        uint32_t pa = IBOOT_SCAN_PA_START + i;
+        cpu_physical_memory_write(pa, replace, strlen(replace));
+        if (getenv("IT_PATCH_DEBUG")) {
+            printf("[IBOOT] bluetooth node string patched at PA 0x%08x\n", pa);
+        }
+        return;
+    }
+
+    printf("[IBOOT] bluetooth node string not found in iBoot; not patching\n");
+}
+
 static void read_nand_pages(IPodTouchFMSSState *s)
 {
-    // boot args
-    const char *boot_args = "kextlog=0xfff debug=0x8 cpus=1 rd=disk0s1 serial=1 pmu-debug=0x1 io=0xffff8fff debug-usb=0xffffffff amfi_allow_any_signature=1 -v zalloc_debug"; // if not const then overwritten
-    cpu_physical_memory_write(0x0ff2a584, boot_args, strlen(boot_args));
-
-    // patch iBoot - we want to inject the bluetooth MAC address which is located as sub-node of uart1 and not uart3 in the device tree...
-    const char *chr = "arm-io/uart1/bluetooth";
-    cpu_physical_memory_write(0x0ff2206c, chr, strlen(chr));
+    patch_iboot_bluetooth_node();
 
     int page_out_buf_ind = 0;
     for(int page_ind = 0; page_ind < s->reg_num_pages; page_ind++) {

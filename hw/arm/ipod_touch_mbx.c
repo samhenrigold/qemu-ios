@@ -249,6 +249,59 @@ static uint32_t kernel_find_cstring(const uint8_t *image, size_t len, const char
     return 0;
 }
 
+/*
+ * Per-build constants.
+ *
+ * Almost nothing in this machine is firmware-specific: the AES engine keys its
+ * fake GID blobs on the img3 KBAG ciphertext, the USB mux gate locates itself
+ * from an anchor string, and the iBoot bluetooth-node poke searches for its
+ * string. What is left is a single kernel address that cannot be derived
+ * without a symbol lookup, so it is tabulated per build and selected by the
+ * kernel's own version banner.
+ */
+typedef struct {
+    const char *build;
+    const char *version_needle;   /* substring of the Darwin version banner */
+    uint32_t pegetgmttimeofday_pa;
+} ITFirmwareDesc;
+
+static const ITFirmwareDesc it_firmware_descs[] = {
+    /* iPhone OS 2.1.1, xnu-1228.  VA 0xc016b460 */
+    { "5F138", "Darwin Kernel Version 9.",  0x0816b460u },
+    /* iOS 3.1.3, xnu-1357.  VA 0xc01953e0 */
+    { "7E18",  "Darwin Kernel Version 10.", 0x081953e0u },
+};
+
+/* Identify the loaded kernelcache. Returns NULL if it is not one we know. */
+static const ITFirmwareDesc *it_firmware_desc(void)
+{
+    static const ITFirmwareDesc *cached;
+    static bool searched;
+
+    if (searched) {
+        return cached;
+    }
+    searched = true;
+
+    g_autofree uint8_t *image = g_try_malloc(KERNEL_SCAN_LEN);
+    if (!image) {
+        return NULL;
+    }
+    cpu_physical_memory_read(KERNEL_SCAN_PA_START, image, KERNEL_SCAN_LEN);
+
+    for (size_t d = 0; d < ARRAY_SIZE(it_firmware_descs); d++) {
+        const ITFirmwareDesc *desc = &it_firmware_descs[d];
+        if (kernel_find_cstring(image, KERNEL_SCAN_LEN, desc->version_needle)) {
+            printf("[FIRMWARE] detected build %s\n", desc->build);
+            cached = desc;
+            return cached;
+        }
+    }
+
+    printf("[FIRMWARE] unrecognised kernelcache; build-specific patches skipped\n");
+    return NULL;
+}
+
 static void patch_usb_function_gate(void)
 {
     if (!patch_usb_gate_enabled) {
@@ -328,18 +381,24 @@ static void patch_kernel(bool *alreadypatched)
     *alreadypatched = true;
 
     /*
-     * Give the guest a real clock. The 2G has no RTC iOS reads at boot, so
-     * _PEGetGMTTimeOfDay (VA 0xc016b460 -> PA 0x0816b460) is `movs r0,#0; bx lr`
-     * via the vtable and the calendar starts at 1900. Rewrite its head to read
-     * host UTC seconds from the HOST_GMT_SECONDS cp15 reg and return:
+     * Give the guest a real clock. The 2G has no RTC iOS reads at boot, so the
+     * calendar starts at 1900. Rewrite _PEGetGMTTimeOfDay's head to read host
+     * UTC seconds from the HOST_GMT_SECONDS cp15 reg and return:
      *     mrc p15, 3, r0, c15, c15, #1   ; 7f ee 3f 0f
      *     bx  lr                         ; 70 47
      * XNU seeds clock_initialize_calendar from r0 once; its tick advances after.
      * (If the date is still wrong, this MBX-triggered patch point ran after the
      * calendar was already seeded and the patch needs an earlier trigger.)
+     *
+     * The function's address is the one genuinely build-specific constant left
+     * in this file, so it comes from the firmware descriptor picked below.
      */
-    static const uint8_t gmt_patch[6] = {0x7f, 0xee, 0x3f, 0x0f, 0x70, 0x47};
-    cpu_physical_memory_write(0x0816b460, gmt_patch, sizeof(gmt_patch));
+    const ITFirmwareDesc *fw = it_firmware_desc();
+    if (fw) {
+        static const uint8_t gmt_patch[6] = {0x7f, 0xee, 0x3f, 0x0f, 0x70, 0x47};
+        cpu_physical_memory_write(fw->pegetgmttimeofday_pa, gmt_patch,
+                                  sizeof(gmt_patch));
+    }
 
     patch_usb_function_gate();
 
