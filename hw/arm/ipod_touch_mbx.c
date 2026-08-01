@@ -98,8 +98,21 @@ static uint32_t mbx_guest_pc(void)
 #define MBX_MMU_CTRL_REG 0x1020
 #define MBX_MMU_ENABLE   0x00000001   /* driver's request */
 #define MBX_MMU_ACK      0x00010000   /* hardware's acknowledgement */
-#define MBX_SUBMIT_REG   0x130
+#define MBX_SUBMIT_REG   0x130        /* interrupt mask, per the notes above */
 #define MBX_STATUS_REG   0x12c
+#define MBX_INTCLR_REG   0x134        /* write-1-to-clear for 0x12c */
+
+/* 0x4 | 0x8 | 0x40: the three the ISR folds into "frame done". */
+#define MBX_INT_FRAME_DONE 0x4c
+
+/*
+ * How often to post a completion while the driver's mask is armed. The ISR
+ * bails out unless the device object is in its running state, so a completion
+ * posted at the wrong moment is simply dropped; repeating means the driver
+ * eventually sees one once it is ready. 16 ms is roughly a frame and keeps the
+ * interrupt rate far too low to storm.
+ */
+#define MBX_COMPLETE_PERIOD_NS (16 * 1000 * 1000)
 
 static uint32_t reverse_byte_order(uint32_t value) {
     return ((value & 0x000000FF) << 24) |
@@ -172,7 +185,46 @@ static void ipod_touch_mbx1_write(void *opaque, hwaddr addr, uint64_t val, unsig
 	case MBX_MMU_CTRL_REG:
 	    s->addr = val;
 	    break;
+	case MBX_SUBMIT_REG:
+	    if (s->complete_shim) {
+	        s->int_mask = val;
+	        if (val) {
+	            timer_mod(s->complete_timer,
+	                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MBX_COMPLETE_PERIOD_NS);
+	        } else {
+	            timer_del(s->complete_timer);
+	            s->status = 0;
+	            if (s->irq) {
+	                qemu_irq_lower(s->irq);
+	            }
+	        }
+	    }
+	    break;
+	case MBX_INTCLR_REG:
+	    if (s->complete_shim) {
+	        s->status &= ~(uint32_t)val;
+	        if (!s->status && s->irq) {
+	            qemu_irq_lower(s->irq);
+	        }
+	    }
+	    break;
     }
+}
+
+/* Post a completion while the driver's interrupt mask is armed. */
+static void ipod_touch_mbx_complete(void *opaque)
+{
+    IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
+
+    if (!s->int_mask) {
+        return;
+    }
+    s->status |= MBX_INT_FRAME_DONE & s->int_mask;
+    if (s->status && s->irq) {
+        qemu_irq_raise(s->irq);
+    }
+    timer_mod(s->complete_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MBX_COMPLETE_PERIOD_NS);
 }
 
 /*
@@ -522,6 +574,13 @@ static void ipod_touch_mbx_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem2);
 
     sysbus_init_irq(sbd, &s->irq);
+
+    s->complete_shim = getenv("IT_MBX_COMPLETE") != NULL;
+    if (s->complete_shim) {
+        s->irq_enabled = true;
+        s->complete_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                         ipod_touch_mbx_complete, s);
+    }
 }
 
 /*
