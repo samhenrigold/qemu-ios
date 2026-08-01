@@ -397,16 +397,14 @@ static void ipod_touch_instance_init(Object *obj)
         "emulation is incomplete, so the driver attaches and then gets stuck");
 
     /*
-     * These used to be poked straight into a fixed address inside iBoot's BSS,
-     * which only ever had the right value for one build. They now go through
-     * the NOR's nvram "common" atom, which is where iBoot reads boot-args from
-     * anyway, so keep the same defaults here rather than silently booting with
-     * an empty command line.
+     * Left empty on purpose. The FMSS poke that used to inject a default set
+     * of boot-args wrote them into a fixed address inside 5F138 iBoot's BSS
+     * and has been removed, so 2.1.1 now boots with an empty
+     * gBootArgs.commandLine unless boot-args= is passed. Seeding this property
+     * with the old default instead looked like it stopped the stock NOR from
+     * reaching its serial banner, so nor_set_boot_args() wants verifying
+     * before it takes over as the default path.
      */
-    ipod_touch_set_boot_args(obj,
-        "kextlog=0xfff debug=0x8 cpus=1 rd=disk0s1 serial=1 pmu-debug=0x1 "
-        "io=0xffff8fff debug-usb=0xffffffff amfi_allow_any_signature=1 -v "
-        "zalloc_debug", NULL);
     object_property_add_str(obj, "boot-args", ipod_touch_get_boot_args, ipod_touch_set_boot_args);
     object_property_set_description(obj, "boot-args",
         "Replace the boot-args variable in the NOR's nvram, in memory only. "
