@@ -208,6 +208,76 @@ static void ipod_touch_load_bootrom(IPodTouchMachineState *nms)
 #define DT_STAGING_BASE     0x22000000   /* uncleared SRAM/"llb" region */
 #define IBOOT_DT_LOAD_PATCH 0xf4da       /* VA offset of the `bl image_load` */
 
+/*
+ * Top of the "insecure" DRAM bank (0x08000000 + 0x3000000). Measured to be
+ * zeroed by iBoot and then left untouched through kernel load, and it is inside
+ * the kernel's static map (required, see ipod_touch_stage_ramdisk).
+ */
+#define IT_RAMDISK_DEFAULT_BASE 0x0A000000
+
+/*
+ * IT_RAMDISK: stage a filesystem image into guest DRAM so the 3.1.3 kernel can
+ * use it as an md0 memory device (see /chosen/memory-map "RAMDisk" in the
+ * injected device tree). XNU consumes the entry as
+ *     mdevadd(-1, ml_static_ptovirt(paddr) >> 12, len >> 12, 0)
+ * and ml_static_ptovirt() is only valid inside the kernel's static DRAM
+ * mapping, so the image MUST live in DRAM -- it cannot be parked in a private
+ * region outside it.
+ *
+ * The catch is that iBoot zeroes DRAM during early init, so anything staged at
+ * machine-init time is wiped before the kernel runs. IT_RAMDISK_BASE lets us
+ * probe where (if anywhere) a blob survives; the value is also what the DT's
+ * RAMDisk entry must point at. Purely diagnostic/bring-up, gated on the env var.
+ */
+static void ipod_touch_ramdisk_stage_now(void *opaque)
+{
+    IPodTouchMachineState *nms = (IPodTouchMachineState *)opaque;
+    const char *rd_path = getenv("IT_RAMDISK");
+    const char *rd_base_s = getenv("IT_RAMDISK_BASE");
+    uint8_t *rd_data = NULL;
+    gsize rd_size;
+    uint32_t rd_base = rd_base_s ? (uint32_t)strtoul(rd_base_s, NULL, 0)
+                                 : IT_RAMDISK_DEFAULT_BASE;
+
+    if (!g_file_get_contents(rd_path, (char **)&rd_data, &rd_size, NULL)) {
+        fprintf(stderr, "[IT_RAMDISK] could not read '%s'\n", rd_path);
+        return;
+    }
+
+    address_space_rw(nms->nsas, rd_base, MEMTXATTRS_UNSPECIFIED,
+                     rd_data, rd_size, 1);
+    g_free(rd_data);
+
+    fprintf(stderr, "[IT_RAMDISK] staged '%s' (%llu bytes) at 0x%08x\n",
+            rd_path, (unsigned long long)rd_size, rd_base);
+}
+
+static void ipod_touch_stage_ramdisk(IPodTouchMachineState *nms)
+{
+    const char *rd_delay_s = getenv("IT_RAMDISK_DELAY_MS");
+    uint64_t delay_ms = rd_delay_s ? strtoull(rd_delay_s, NULL, 0) : 15000;
+    QEMUTimer *t;
+
+    if (!getenv("IT_RAMDISK")) {
+        return;
+    }
+
+    /*
+     * Staging cannot happen at machine-init time: iBoot zeroes DRAM during
+     * early init, so the image would be wiped long before the kernel looks at
+     * it (measured -- a blob written at reset reads back as zeroes, and the low
+     * bank is reused by iBoot for img3 buffers). Defer the copy instead. The
+     * usable window is wide: iBoot finishes zeroing in the first second or so,
+     * and the kernel does not touch the RAMDisk range until it mounts root tens
+     * of seconds later, so a one-shot timer is sufficient and needs no guest
+     * patching. IT_RAMDISK_DELAY_MS tunes it.
+     */
+    t = timer_new_ms(QEMU_CLOCK_VIRTUAL, ipod_touch_ramdisk_stage_now, nms);
+    timer_mod(t, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + delay_ms);
+    fprintf(stderr, "[IT_RAMDISK] staging scheduled at T+%llu ms\n",
+            (unsigned long long)delay_ms);
+}
+
 static void ipod_touch_inject_device_tree(IPodTouchMachineState *nms)
 {
     const char *dt_path = getenv("IT_INJECT_DT");
@@ -280,6 +350,7 @@ static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
         /* Hand iBoot a pre-decrypted device tree (3.1.3 bring-up). Must run
          * after the iBoot image is staged so the code patch lands on top of it. */
         ipod_touch_inject_device_tree(nms);
+        ipod_touch_stage_ramdisk(nms);
     }
 }
 
