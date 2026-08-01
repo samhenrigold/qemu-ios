@@ -7,6 +7,22 @@ static uint64_t swapLong(uint64_t x) {
     return x;
 }
 
+/*
+ * The last digest this engine produced. The PKE device reads it when asked to
+ * forge an img3 signature check; see ipod_touch_pke.c.
+ */
+static uint8_t sha1_last_hash[20];
+static bool sha1_last_hash_valid;
+
+bool ipod_touch_sha1_last_hash(uint8_t out[20])
+{
+    if (!sha1_last_hash_valid) {
+        return false;
+    }
+    memcpy(out, sha1_last_hash, sizeof(sha1_last_hash));
+    return true;
+}
+
 static void flush_hw_buffer(IPodTouchSHA1State *s) {
     // Flush the hardware buffer to the state buffer and clear the buffer.
     memcpy(s->buffer + s->buffer_ind, (uint8_t *)s->hw_buffer, 0x40);
@@ -58,6 +74,8 @@ static uint64_t ipod_touch_sha1_read(void *opaque, hwaddr offset, unsigned size)
                 SHA1_Update(&ctx, s->buffer, data_length);
                 SHA1_Final(s->hashout, &ctx);
                 s->hash_computed = true;
+                memcpy(sha1_last_hash, s->hashout, sizeof(sha1_last_hash));
+                sha1_last_hash_valid = true;
 
                 if (getenv("IT_SHA1_DEBUG")) {
                     printf("[SHA1] buffered=%d bytes, trailer says len=%llu -> ",

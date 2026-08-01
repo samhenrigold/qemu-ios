@@ -1,6 +1,57 @@
 #include "hw/arm/ipod_touch_pke.h"
+#include "hw/arm/ipod_touch_sha1.h"
 #include <openssl/bn.h>
 #include <openssl/bio.h>
+
+/*
+ * Forging an img3 signature check.
+ *
+ * Every image the boot chain loads carries an RSA signature over its own
+ * SHA1, and the bootrom and iBoot really do verify it: the modexp below
+ * recovers a PKCS#1 v1.5 block whose tail is the digest the SHA1 engine just
+ * produced, and the caller compares the two.
+ *
+ * That works for the stock 2.1.1 NOR, whose images were signed for this
+ * device. It does not work for images taken straight out of an IPSW's
+ * all_flash directory: from iOS 3.0 on, Apple personalised boot images per
+ * device through its TSS signing server, and the copies shipped in the IPSW
+ * carry a signature no device accepts. The golden NOR's iBoot signature, for
+ * instance, appears nowhere in either IPSW -- it was issued at restore time.
+ *
+ * So retargeting the machine to a different firmware needs the same treatment
+ * the GID key already gets: the emulated part vouches for the image instead of
+ * checking it. When the recovered block is not well formed, synthesise the one
+ * the caller is about to compare against, built from the last digest the SHA1
+ * engine computed. Enabled with IT_FORGE_SIGCHECK=1; off by default, so the
+ * stock NOR keeps booting through the genuine verification path.
+ */
+static bool forge_sigcheck_enabled(void)
+{
+    return getenv("IT_FORGE_SIGCHECK") != NULL;
+}
+
+/* ASN.1 DigestInfo prefix for SHA1, as it appears in a PKCS#1 v1.5 block. */
+static const uint8_t sha1_digestinfo[] = {
+    0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e,
+    0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14,
+};
+
+/* Build 00 01 FF..FF 00 || DigestInfo || hash, big endian, len bytes. */
+static bool build_pkcs1_block(uint8_t *out, size_t len, const uint8_t hash[20])
+{
+    size_t tail = sizeof(sha1_digestinfo) + 20;
+
+    if (len < tail + 11) {
+        return false;
+    }
+    out[0] = 0x00;
+    out[1] = 0x01;
+    memset(out + 2, 0xff, len - tail - 3);
+    out[len - tail - 1] = 0x00;
+    memcpy(out + len - tail, sha1_digestinfo, sizeof(sha1_digestinfo));
+    memcpy(out + len - 20, hash, 20);
+    return true;
+}
 
 static uint8_t *datahex(char* string) {
 
@@ -133,6 +184,33 @@ static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, un
                         printf("%02x", (uint8_t)res_hex[i]);
                     }
                     printf("\n");
+                }
+
+                /*
+                 * A well formed recovery is one byte shorter than the modulus
+                 * (the leading 0x00 of the PKCS#1 block) and starts 0x01 0xFF.
+                 * Anything else means the signature did not verify.
+                 */
+                size_t res_len = strlen(bn_hex) / 2;
+                bool well_formed = (res_len == (size_t)s->segment_size - 1) &&
+                                   res_hex[0] == 0x01 && res_hex[1] == 0xff;
+
+                if (!well_formed && forge_sigcheck_enabled()) {
+                    uint8_t hash[20];
+                    g_autofree uint8_t *block = g_malloc0(s->segment_size);
+
+                    if (ipod_touch_sha1_last_hash(hash) &&
+                        build_pkcs1_block(block, s->segment_size, hash)) {
+                        /* SEG1 holds the value little endian. */
+                        for (int i = 0; i < s->segment_size; i++) {
+                            s->segments[s->segment_size + i] =
+                                block[s->segment_size - 1 - i];
+                        }
+                        if (getenv("IT_PKE_DEBUG")) {
+                            printf("[PKE]   forged a valid signature block\n");
+                        }
+                        break;
+                    }
                 }
 
                 // copy this into SEG1 - note that the hex conversion removes the first 0x00 bytes so we add it back and shift everything to the right one place.
