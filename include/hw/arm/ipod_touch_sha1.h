@@ -35,4 +35,7 @@ typedef struct IPodTouchSHA1State {
     SHA_CTX ctx;
 } IPodTouchSHA1State;
 
+/* Most recent digest produced by the SHA1 engine; false if it has not run. */
+bool ipod_touch_sha1_last_hash(uint8_t out[20]);
+
 #endif
