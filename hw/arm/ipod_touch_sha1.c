@@ -67,7 +67,21 @@ static uint64_t ipod_touch_sha1_read(void *opaque, hwaddr offset, unsigned size)
 			//fprintf(stderr, "Hash out %08x\n",  *(uint32_t *)&s->hashout[offset - 0x20]);
             if(!s->hash_computed) {
                 // lazy compute the final hash by inspecting the last eight bytes of the buffer, which contains the length of the input data.
-                uint64_t data_length = swapLong(((uint64_t *)s->buffer)[s->buffer_ind / 8 - 1]) / 8;
+                uint64_t data_length = 0;
+                if (s->buffer_ind >= 8) {
+                    data_length = swapLong(((uint64_t *)s->buffer)[s->buffer_ind / 8 - 1]) / 8;
+                }
+                /*
+                 * The trailer-encoded length must never exceed what we actually
+                 * buffered. The 3.1.3 kernel drives the SHA engine so the last
+                 * block is not a valid SHA length trailer, which made this read
+                 * a garbage (multi-GB) length -> SHA1_Update walked off
+                 * s->buffer -> SIGSEGV in sha1_block. Clamp to the buffered
+                 * size; when the trailer is valid this is a no-op.
+                 */
+                if (data_length > (uint64_t)s->buffer_ind) {
+                    data_length = s->buffer_ind;
+                }
 
                 SHA_CTX ctx;
                 SHA1_Init(&ctx);
@@ -109,6 +123,11 @@ static void ipod_touch_sha1_write(void *opaque, hwaddr offset, uint64_t value, u
 				{
 					// we are in memory mode - gradually add the memory to the buffer
 					for(int i = 0; i < s->insize / 0x40; i++) {
+						if (s->buffer_ind + 0x40 > SHA1_BUFFER_SIZE) {
+							/* Don't overflow s->buffer if the guest queues more
+							 * than fits (seen with 3.1.3's larger SHA jobs). */
+							break;
+						}
 						cpu_physical_memory_read(s->memory_start + i * 0x40, s->buffer + s->buffer_ind, 0x40);
 						s->buffer_ind += 0x40;
 					}
