@@ -127,6 +127,17 @@ static const Exynos4210UartReg exynos4210_uart_regs[] = {
 #define UTRSTAT_Tx_BUFFER_EMPTY         0x2
 #define UTRSTAT_Rx_BUFFER_DATA_READY    0x1
 
+/*
+ * S5L8720 (iPod touch 2G) reflects the Tx/Rx interrupt-pending state in the
+ * top bits of UTRSTAT and expects the handler to acknowledge by writing UTRSTAT
+ * back -- unlike the exynos4210 UINTP register. 3.1.3's iBoot drives its serial
+ * console with an interrupt-driven Tx path that reads these bits; without them
+ * its ISR sees no Tx interrupt, never drains its output ring, and (because the
+ * exynos UINTP line stays asserted) storms. Only meaningful under IT_DIRECT_IBOOT
+ * (direct 7E18 boot); a normal 2.1.1 boot never reads them. */
+#define UTRSTAT_S5L_Tx_INT              0x10
+#define UTRSTAT_S5L_Rx_INT              0x40
+
 /* UART Error Status */
 #define UERSTAT_OVERRUN  0x1
 #define UERSTAT_PARITY   0x2
@@ -314,6 +325,21 @@ static void exynos4210_uart_update_irq(Exynos4210UartState *s)
 
     s->reg[I_(UINTP)] = s->reg[I_(UINTSP)] & ~s->reg[I_(UINTM)];
 
+    /* S5L8720: surface the pending Tx/Rx interrupt in UTRSTAT so 3.1.3 iBoot's
+     * UTRSTAT-based ISR can see and drain it. See UTRSTAT_S5L_* above. */
+    if (getenv("IT_DIRECT_IBOOT")) {
+        if (s->reg[I_(UINTP)] & UINTSP_TXD) {
+            s->reg[I_(UTRSTAT)] |= UTRSTAT_S5L_Tx_INT;
+        } else {
+            s->reg[I_(UTRSTAT)] &= ~UTRSTAT_S5L_Tx_INT;
+        }
+        if (s->reg[I_(UINTP)] & UINTSP_RXD) {
+            s->reg[I_(UTRSTAT)] |= UTRSTAT_S5L_Rx_INT;
+        } else {
+            s->reg[I_(UTRSTAT)] &= ~UTRSTAT_S5L_Rx_INT;
+        }
+    }
+
     if (s->reg[I_(UINTP)]) {
         qemu_irq_raise(s->irq);
         trace_exynos_uart_irq_raised(s->channel, s->reg[I_(UINTP)]);
@@ -452,6 +478,20 @@ static void exynos4210_uart_write(void *opaque, hwaddr offset,
     case UTRSTAT:
         if (val & UTRSTAT_Rx_TIMEOUT) {
             s->reg[I_(UTRSTAT)] &= ~UTRSTAT_Rx_TIMEOUT;
+        }
+        /* S5L8720: writing UTRSTAT acknowledges the Tx/Rx interrupt. Clear the
+         * corresponding pending source so the (exynos) UINTP line de-asserts,
+         * ending the storm; the Tx source re-arms on the next UTXH write. */
+        if (getenv("IT_DIRECT_IBOOT")) {
+            if (val & UTRSTAT_S5L_Tx_INT) {
+                s->reg[I_(UINTSP)] &= ~UINTSP_TXD;
+                s->reg[I_(UINTP)]  &= ~UINTSP_TXD;
+            }
+            if (val & UTRSTAT_S5L_Rx_INT) {
+                s->reg[I_(UINTSP)] &= ~UINTSP_RXD;
+                s->reg[I_(UINTP)]  &= ~UINTSP_RXD;
+            }
+            exynos4210_uart_update_irq(s);
         }
         break;
     case UERSTAT:
