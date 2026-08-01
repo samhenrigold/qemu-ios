@@ -17,6 +17,10 @@
  * instead hands whole pages to the engine and then runs its own SHA1Final
  * over the padding block in software (libkern SHA1UpdateUsePhysicalAddress),
  * which only works if the engine returns the intermediate state.
+ *
+ * Jobs complete inside the config write, but the driver can ask to be told
+ * about it: 3.1.3 arms SHA_INTENABLE and then sleeps on its command gate
+ * until the completion interrupt fires.
  */
 
 static const uint32_t sha1_iv[5] = {
@@ -97,6 +101,17 @@ static void sha1_publish(IPodTouchSHA1State *s)
     sha1_last_hash_valid = true;
 }
 
+/* Drop the completion interrupt; every acknowledge path funnels through here. */
+static void sha1_clear_irq(IPodTouchSHA1State *s)
+{
+    if (s->int_status) {
+        s->int_status = 0;
+        if (s->irq) {
+            qemu_irq_lower(s->irq);
+        }
+    }
+}
+
 static void sha1_reset(IPodTouchSHA1State *s)
 {
 	s->config = 0;
@@ -106,6 +121,7 @@ static void sha1_reset(IPodTouchSHA1State *s)
     memcpy(s->state, sha1_iv, sizeof(s->state));
 	memset(&s->hw_buffer, 0, sizeof(s->hw_buffer));
 	s->hw_buffer_dirty = false;
+    sha1_clear_irq(s);
 }
 
 /* Run the blocks the guest has queued through the compression function. */
@@ -135,17 +151,33 @@ static void sha1_run(IPodTouchSHA1State *s)
         printf("\n");
         fflush(stdout);
     }
+
+    if (s->int_enable) {
+        s->int_status = 1;
+        if (s->irq) {
+            qemu_irq_raise(s->irq);
+        }
+    }
 }
 
 static uint64_t ipod_touch_sha1_read(void *opaque, hwaddr offset, unsigned size)
 {
 	IPodTouchSHA1State *s = (IPodTouchSHA1State *)opaque;
 
+    if (sha1_trace() && (offset < SHA_HASHOUT || offset > SHA_HASHOUT_END)) {
+        printf("[SHA1] RD %#04x\n", (unsigned)offset);
+        fflush(stdout);
+    }
+
 	switch(offset) {
 		case SHA_CONFIG:
 			return s->config;
 		case SHA_RESET:
 			return 0;
+		case SHA_INTSTATUS:
+			return s->int_status;
+		case SHA_INTENABLE:
+			return s->int_enable;
 		case SHA_MEMORY_START:
 			return s->memory_start;
 		case SHA_MEMORY_MODE:
@@ -172,15 +204,22 @@ static void ipod_touch_sha1_write(void *opaque, hwaddr offset, uint64_t value, u
 
 	switch(offset) {
 		case SHA_CONFIG:
-			if(value == 0x2 || value == 0xa)
+			/*
+			 * Bit 1 is the start bit. 2.1.1 uses 0x2/0xa; 3.1.3 adds bit 2
+			 * once it goes interrupt-driven (0xe), so match on the bit rather
+			 * than on whole values.
+			 */
+			if (value & 0x2)
 			{
                 if (sha1_trace()) {
                     printf("[SHA1] GO config=%#llx memory_mode=%u start=%#x "
-                           "insize=%#x hw_dirty=%d\n", (unsigned long long)value,
+                           "insize=%#x hw_dirty=%d int_en=%u\n",
+                           (unsigned long long)value,
                            s->memory_mode, s->memory_start, s->insize,
-                           (int)s->hw_buffer_dirty);
+                           (int)s->hw_buffer_dirty, s->int_enable);
                     fflush(stdout);
                 }
+                sha1_clear_irq(s);
                 sha1_run(s);
 			} else {
 				s->config = value;
@@ -188,6 +227,16 @@ static void ipod_touch_sha1_write(void *opaque, hwaddr offset, uint64_t value, u
 			break;
 		case SHA_RESET:
 			sha1_reset(s);
+			break;
+		case SHA_INTSTATUS:
+			/* Any write acknowledges the completion interrupt. */
+			sha1_clear_irq(s);
+			break;
+		case SHA_INTENABLE:
+			s->int_enable = value;
+			if (!value) {
+				sha1_clear_irq(s);
+			}
 			break;
 		case SHA_MEMORY_START:
 			s->memory_start = value;
@@ -223,6 +272,7 @@ static void ipod_touch_sha1_init(Object *obj)
 
     memory_region_init_io(&s->iomem, obj, &sha1_ops, s, "sha1", 0x100);
     sysbus_init_mmio(sbd, &s->iomem);
+    sysbus_init_irq(sbd, &s->irq);
 
     sha1_reset(s);
 }
