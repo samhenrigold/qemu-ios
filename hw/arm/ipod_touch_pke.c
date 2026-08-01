@@ -68,6 +68,7 @@ static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, un
 
     switch(offset) {
         case 0x0:
+            if (getenv("IT_PKE_DEBUG")) { printf("[PKE] reset via reg 0x0\n"); }
             s->num_started = 0;
             break;
         case 0x10:
@@ -82,8 +83,13 @@ static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, un
         {
             s->num_started++;
 
+            if (getenv("IT_PKE_DEBUG")) {
+                printf("[PKE] START #%d (segment_size=%d)\n",
+                       s->num_started, s->segment_size);
+            }
+
             if(s->num_started == 5) { // TODO this is arbitrary!
-                
+
 
                 BIGNUM *mod_bn = BN_lebin2bn(s->segments, s->segment_size, NULL);
                 BIGNUM *base_bn = BN_lebin2bn(s->segments + s->segment_size, s->segment_size, NULL);
@@ -98,7 +104,36 @@ static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, un
                 // BN_print(BIO_new_fp(stdout, BIO_NOCLOSE), res);
                 // printf("\n\n");
 
-                char *res_hex = datahex(BN_bn2hex(res));
+                char *bn_hex = BN_bn2hex(res);
+                char *res_hex = datahex(bn_hex);
+
+                if (getenv("IT_PKE_DEBUG")) {
+                    printf("[PKE] modexp: result is %zu bytes (segment_size=%d)\n",
+                           strlen(bn_hex) / 2, s->segment_size);
+                    printf("[PKE]   mod : ");
+                    for (int i = 0; i < 8; i++) { printf("%02x", s->segments[i]); }
+                    printf("..");
+                    for (int i = s->segment_size - 8; i < s->segment_size; i++) {
+                        printf("%02x", s->segments[i]);
+                    }
+                    printf("\n[PKE]   base: ");
+                    for (int i = 0; i < 8; i++) {
+                        printf("%02x", s->segments[s->segment_size + i]);
+                    }
+                    printf("..");
+                    for (int i = s->segment_size - 8; i < s->segment_size; i++) {
+                        printf("%02x", s->segments[s->segment_size + i]);
+                    }
+                    printf("\n");
+                    printf("[PKE]   head: ");
+                    for (int i = 0; i < 8; i++) { printf("%02x", (uint8_t)res_hex[i]); }
+                    printf("  tail: ");
+                    for (int i = (int)(strlen(bn_hex) / 2) - 24;
+                         i < (int)(strlen(bn_hex) / 2); i++) {
+                        printf("%02x", (uint8_t)res_hex[i]);
+                    }
+                    printf("\n");
+                }
 
                 // copy this into SEG1 - note that the hex conversion removes the first 0x00 bytes so we add it back and shift everything to the right one place.
                 for(int i = 0; i < (s->segment_size - 1); i++) { s->segments[s->segment_size + s->segment_size - 2 - i] = res_hex[i]; }
@@ -114,6 +149,7 @@ static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, un
             else { }
             break;
         case REG_PKE_SWRESET:
+            if (getenv("IT_PKE_DEBUG")) { printf("[PKE] SWRESET\n"); }
             s->num_started = 0;
             break;
         default:

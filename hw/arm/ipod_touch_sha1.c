@@ -58,6 +58,13 @@ static uint64_t ipod_touch_sha1_read(void *opaque, hwaddr offset, unsigned size)
                 SHA1_Update(&ctx, s->buffer, data_length);
                 SHA1_Final(s->hashout, &ctx);
                 s->hash_computed = true;
+
+                if (getenv("IT_SHA1_DEBUG")) {
+                    printf("[SHA1] buffered=%d bytes, trailer says len=%llu -> ",
+                           s->buffer_ind, (unsigned long long)data_length);
+                    for (int i = 0; i < 20; i++) { printf("%02x", s->hashout[i]); }
+                    printf("\n");
+                }
             }
 
 			return *(uint32_t *)&s->hashout[offset - 0x20];
