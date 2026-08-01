@@ -1,6 +1,15 @@
 #include "hw/arm/ipod_touch_tvout.h"
 #include "qapi/error.h"
 
+static bool tvout_trace(void)
+{
+    static int on = -1;
+    if (on < 0) { on = getenv("IT_TVOUT_DEBUG") != NULL; }
+    return on;
+}
+#define TVT(fmt, ...) do { if (tvout_trace()) { \
+    printf("[TVOUT] " fmt "\n", ##__VA_ARGS__); fflush(stdout); } } while (0)
+
 static uint64_t ipod_touch_tvout_sdo_read(void *opaque, hwaddr offset, unsigned size)
 {
     IPodTouchTVOutState *s = (IPodTouchTVOutState *)opaque;
@@ -46,6 +55,8 @@ static void ipod_touch_tvout_sdo_write(void *opaque, hwaddr offset, uint64_t val
     IPodTouchTVOutState *s = (IPodTouchTVOutState *)opaque;
 
     //printf("%s: writing 0x%08x to 0x%08x\n", __func__, value, offset);
+
+    TVT("sdo   wr %#06x <- %#010x", (unsigned)offset, (unsigned)value);
 
     switch(offset) {
         case SDO_CLKCON:
@@ -94,12 +105,28 @@ static void ipod_touch_tvout_mixer1_write(void *opaque, hwaddr offset, uint64_t 
 
     //printf("%s: writing 0x%08x to 0x%08x\n", __func__, value, offset);
 
+    TVT("mix1  wr %#06x <- %#010x (irqmask=%#x pending=%#x)", (unsigned)offset,
+        (unsigned)value, s->sdo_irq_mask, s->sdo_irq);
+
     switch(offset) {
         case MXR_STATUS:
-            if((value & 0x1) && (s->sdo_irq_mask & 1) == 0 && s->irq_count < 2) {
+            /*
+             * Starting the mixer completes a swap, which the driver learns
+             * about through the SDO interrupt.
+             *
+             * This used to be capped at two interrupts ever ("ugly hack for
+             * now"). 3.1.3 swaps continuously, and AppleM2TVOut sleeps on the
+             * swap-complete event on SpringBoard's own thread, so once the cap
+             * was reached SpringBoard blocked forever and the watchdog killed
+             * it. The cap is unnecessary: raising only while no interrupt is
+             * already pending is enough to keep the line from sticking high,
+             * because the driver acknowledges by writing SDO_IRQ, which lowers
+             * it and re-arms us.
+             */
+            if((value & 0x1) && (s->sdo_irq_mask & 1) == 0 && !s->sdo_irq) {
                 s->sdo_irq = 0x1;
-                s->irq_count += 1; // ugly hack for now
                 qemu_irq_raise(s->irq);
+                TVT("mix1  -> RAISE sdo irq");
             }
             break;
         case MXR_CFG:
