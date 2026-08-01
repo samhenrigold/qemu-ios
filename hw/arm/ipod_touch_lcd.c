@@ -31,6 +31,24 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
 	case 0x1b14:
 	    return 0x3;
         default:
+            /*
+             * IT_LCD_READY: report "ready" for every register this model does
+             * not implement. 3.1.3's AppleM2TVOut close path sleeps waiting on
+             * three independent ready handshakes (SDO_CLKCON & 0x2,
+             * enable.reg.clkgating_rdy, mix_ctrl.reg.reg_mixer_ready_clk_down)
+             * and logs "TVOUT SHUT DOWN PROBLEM: ..." when they never assert.
+             * That wait happens on the SpringBoard thread, so the UI never
+             * comes up. Reads seen spinning here: 0x410 (status beside the
+             * 0x408/0x40c indirect address/data port, polled thousands of
+             * times) and the 0x1b80..0x1bb0 mixer/SDO status block.
+             *
+             * Returning all-ones satisfies any `status & mask` readiness test.
+             * It is a bring-up probe, not a model: once the specific bits are
+             * known they should be implemented properly per register.
+             */
+            if (getenv("IT_LCD_READY")) {
+                return 0xffffffff;
+            }
             printf("%s: read invalid location 0x%08x.\n", __func__, addr);
             break;
     }

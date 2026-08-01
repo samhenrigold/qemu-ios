@@ -9,7 +9,16 @@ static uint64_t ipod_touch_tvout_sdo_read(void *opaque, hwaddr offset, unsigned 
 
     switch(offset) {
         case SDO_CLKCON:
-            return s->sdo_clkcon;
+            /*
+             * Bit 1 is a hardware status bit ("SDO clock stable/ready"), not
+             * part of what the driver writes. 3.1.3's AppleM2TVOut shutdown
+             * path spins on `readSDOReg(SDO_CLKCON) & 0x2` and logs
+             * "TVOUT SHUT DOWN PROBLEM: !(readSDOReg(SDO_CLKCON) & 0x2)" when
+             * it never asserts. That wait runs on the SpringBoard thread, so
+             * the UI never comes up. Echoing only the written value can never
+             * satisfy it -- report the clock as ready.
+             */
+            return s->sdo_clkcon | (getenv("IT_TVOUT_READY") ? 0x2 : 0);
         case SDO_CONFIG:
             return s->sdo_config;
         case SDO_IRQ:
@@ -17,6 +26,15 @@ static uint64_t ipod_touch_tvout_sdo_read(void *opaque, hwaddr offset, unsigned 
         case SDO_IRQMASK:
             return s->sdo_irq_mask;
         default:
+            /*
+             * The other two shutdown gates (enable.reg.clkgating_rdy and
+             * mix_ctrl.reg.reg_mixer_ready_clk_down) live at offsets this model
+             * does not implement yet. Report ready so the close path completes;
+             * bring-up probe, to be replaced once the bits are pinned down.
+             */
+            if (getenv("IT_TVOUT_READY")) {
+                return 0xffffffff;
+            }
             break;
     }
 
@@ -54,10 +72,16 @@ static uint64_t ipod_touch_tvout_mixer1_read(void *opaque, hwaddr offset, unsign
 
     switch(offset) {
         case MXR_STATUS:
-            return 0x4;
+            /* reg_mixer_ready_clk_down lives in the mixer status/ctrl block;
+             * report every ready bit while probing the shutdown gates. */
+            return getenv("IT_TVOUT_READY") ? 0xffffffff : 0x4;
         case MXR_CFG:
-            return s->mixer1_cfg;
+            return getenv("IT_TVOUT_READY") ? (s->mixer1_cfg | 0xffff0000)
+                                            : s->mixer1_cfg;
         default:
+            if (getenv("IT_TVOUT_READY")) {
+                return 0xffffffff;   /* unknown ready gates -- bring-up probe */
+            }
             break;
     }
 
@@ -92,10 +116,14 @@ static uint64_t ipod_touch_tvout_mixer2_read(void *opaque, hwaddr offset, unsign
 
     switch(offset) {
         case MXR_STATUS:
-            return s->mixer2_status;
+            return getenv("IT_TVOUT_READY") ? 0xffffffff : s->mixer2_status;
         case MXR_CFG:
-            return s->mixer2_cfg;
+            return getenv("IT_TVOUT_READY") ? (s->mixer2_cfg | 0xffff0000)
+                                            : s->mixer2_cfg;
         default:
+            if (getenv("IT_TVOUT_READY")) {
+                return 0xffffffff;   /* unknown ready gates -- bring-up probe */
+            }
             break;
     }
 
