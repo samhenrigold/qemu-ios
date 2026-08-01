@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_mbx.h"
+#include "qapi/error.h"
 #include "hw/irq.h"
 #include "qemu/timer.h"
 #include "hw/core/cpu.h"
@@ -501,7 +502,21 @@ static void ipod_touch_mbx_init(Object *obj)
     IPodTouchMBXState *s = IPOD_TOUCH_MBX(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
-    memory_region_init_io(&s->iomem1, obj, &ipod_touch_mbx1_ops, s, TYPE_IPOD_TOUCH_MBX, 0x1000000);
+    /*
+     * IT_MBX_RAM: back the 16 MB MBX aperture with real RAM instead of pure
+     * MMIO. 3.1.3's AppleMBX builds an IOMemoryDescriptor for its surfaces and
+     * calls prepare() (which wires physical page frames); over an init_io
+     * region there are no page frames, and the driver logs
+     *   "MBX: Failed to add a surface mapping because prepare() failed ..."
+     * so no surface is ever mapped and nothing composites to the framebuffer.
+     * Bring-up probe: RAM makes the aperture wireable, at the cost of the
+     * register request/ack mirror on this bank.
+     */
+    if (getenv("IT_MBX_RAM")) {
+        memory_region_init_ram(&s->iomem1, obj, "mbx1_ram", 0x1000000, &error_fatal);
+    } else {
+        memory_region_init_io(&s->iomem1, obj, &ipod_touch_mbx1_ops, s, TYPE_IPOD_TOUCH_MBX, 0x1000000);
+    }
     sysbus_init_mmio(sbd, &s->iomem1);
     memory_region_init_io(&s->iomem2, obj, &ipod_touch_mbx2_ops, s, TYPE_IPOD_TOUCH_MBX, 0x1000);
     sysbus_init_mmio(sbd, &s->iomem2);
