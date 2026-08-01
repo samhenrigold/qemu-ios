@@ -1261,7 +1261,16 @@ static void ipod_touch_machine_init(MachineState *machine)
     memory_region_add_subregion(sysmem, DMAC0_MEM_BASE, &pl080_1->iomem1);
     busdev = SYS_BUS_DEVICE(dev);
     sysbus_realize(busdev, &error_fatal);
-    sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, S5L8720_DMAC0_IRQ));
+    /*
+     * DMAC0 completion IRQ. The 3.1.3 (7E18) kernel's AppleARMPL080DMAC enables
+     * VIC line 17 for DMAC0 and blocks the NAND storage stack on it (root would
+     * never mount otherwise -- verified: with line 16 the kernel waits forever
+     * on "IOMedia Partition 1"; with 17 it mounts disk0s1 and jettisons the boot
+     * kexts). 2.1.1 uses DMAC0 in PIO and never enables either line, so keep its
+     * historical wiring (16) and only shift under IT_DIRECT_IBOOT.
+     */
+    sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms,
+                       getenv("IT_DIRECT_IBOOT") ? 0x11 : S5L8720_DMAC0_IRQ));
 
     dev = qdev_new("pl080");
     PL080State *pl080_2 = PL080(dev);

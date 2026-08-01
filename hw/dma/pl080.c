@@ -103,7 +103,18 @@ static void pl080_run(PL080State *s)
     uint8_t buff[4];
     uint32_t req;
 
-    s->tc_mask = 0;
+    /*
+     * Latch already-pending terminal-count interrupts. This model completes a
+     * DMA synchronously inside pl080_run (called from the channel Config
+     * write), but a driver that programs the channel with interrupts masked and
+     * only then goes idle to await completion (e.g. iOS 3.1.3's
+     * AppleARMPL080DMAC) expects the interrupt to still be asserted when it
+     * re-enables interrupts. Resetting tc_mask to 0 here dropped the completed
+     * channel's masked status before the idle CPU could take the IRQ, so the
+     * kernel waited forever. Keep pending (tc_int) bits latched until the
+     * driver acks them via IntTCClear; this matches real PL080 latching.
+     */
+    s->tc_mask = s->tc_int;
     for (c = 0; c < s->nchannels; c++) {
         if (s->chan[c].conf & PL080_CCONF_ITC)
             s->tc_mask |= 1 << c;
