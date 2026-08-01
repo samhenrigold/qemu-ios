@@ -135,8 +135,21 @@ static const Exynos4210UartReg exynos4210_uart_regs[] = {
  * its ISR sees no Tx interrupt, never drains its output ring, and (because the
  * exynos UINTP line stays asserted) storms. Only meaningful under IT_DIRECT_IBOOT
  * (direct 7E18 boot); a normal 2.1.1 boot never reads them. */
-#define UTRSTAT_S5L_Tx_INT              0x10
-#define UTRSTAT_S5L_Rx_INT              0x40
+/*
+ * NOTE (2026-08-01): the 3.1.3 kernel's S5L UART ISR (VA 0xc059aecc) reads
+ * UTRSTAT, masks with 0x158 and dispatches: bit 8 (0x100)=Rx, bit 6 (0x40)=
+ * error (reads UERSTAT), bit 3 (0x8)=Tx (drains its ring via vtable[0x38c]),
+ * bit 4 (0x10)=a notify. So the real S5L bit map differs from the iBoot-tuned
+ * 0x10/0x40 below, AND the storm is deeper than bit positions: TXD is level-
+ * asserted (Tx-FIFO-empty is always true) and the driver masks Tx via a
+ * control reg the model doesn't honor, so it never quiesces -> IRQ storm ->
+ * WDT reset. Proper fix is a UART interrupt-model rework (map RXD/TXD/error/
+ * timeout to the real S5L UTRSTAT bits and honor the driver's enable/disable);
+ * left at the iBoot-validated values for now so iBoot serial keeps working.
+ */
+#define UTRSTAT_S5L_Tx_INT              0x08
+#define UTRSTAT_S5L_Rx_INT              0x100
+#define UTRSTAT_S5L_Err_INT             0x40
 
 /* UART Error Status */
 #define UERSTAT_OVERRUN  0x1
@@ -303,7 +316,16 @@ static void exynos4210_uart_update_irq(Exynos4210UartState *s)
         uint32_t count = (s->reg[I_(UFSTAT)] & UFSTAT_Tx_FIFO_COUNT) >>
                 UFSTAT_Tx_FIFO_COUNT_SHIFT;
 
-        if (count <= exynos4210_uart_Tx_FIFO_trigger_level(s)) {
+        if (count <= exynos4210_uart_Tx_FIFO_trigger_level(s) &&
+            !getenv("IT_DIRECT_IBOOT")) {
+            /*
+             * S5L8720 Tx interrupt is edge-triggered on transmit, not level on
+             * empty-FIFO. The 3.1.3 kernel's ISR drains its Tx ring and stops
+             * writing UTXH when empty; a level Tx-empty source (always true when
+             * idle) that the driver never masks storms the CPU -> WDT reset.
+             * Under IT_DIRECT_IBOOT let only the UTXH-write path raise UINTSP_TXD
+             * (edge), so an idle UART raises no Tx interrupt.
+             */
             s->reg[I_(UINTSP)] |= UINTSP_TXD;
         }
 
@@ -337,6 +359,11 @@ static void exynos4210_uart_update_irq(Exynos4210UartState *s)
             s->reg[I_(UTRSTAT)] |= UTRSTAT_S5L_Rx_INT;
         } else {
             s->reg[I_(UTRSTAT)] &= ~UTRSTAT_S5L_Rx_INT;
+        }
+        if (s->reg[I_(UINTP)] & UINTSP_ERROR) {
+            s->reg[I_(UTRSTAT)] |= UTRSTAT_S5L_Err_INT;
+        } else {
+            s->reg[I_(UTRSTAT)] &= ~UTRSTAT_S5L_Err_INT;
         }
     }
 
@@ -490,6 +517,10 @@ static void exynos4210_uart_write(void *opaque, hwaddr offset,
             if (val & UTRSTAT_S5L_Rx_INT) {
                 s->reg[I_(UINTSP)] &= ~UINTSP_RXD;
                 s->reg[I_(UINTP)]  &= ~UINTSP_RXD;
+            }
+            if (val & UTRSTAT_S5L_Err_INT) {
+                s->reg[I_(UINTSP)] &= ~UINTSP_ERROR;
+                s->reg[I_(UINTP)]  &= ~UINTSP_ERROR;
             }
             exynos4210_uart_update_irq(s);
         }
