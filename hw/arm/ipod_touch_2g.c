@@ -168,6 +168,82 @@ static void ipod_touch_load_bootrom(IPodTouchMachineState *nms)
  */
 #define LLB_LOAD_BASE 0x22000000
 
+/*
+ * IT_INJECT_DT: 3.1.3 device-tree bring-up (Option B3).
+ *
+ * The 7E18 iBoot loads and decrypts the kernelcache from HFS, but then fails to
+ * load the device tree: its load_and_set_device_tree() (VA 0x0ff0f498) calls
+ * image_load() (VA 0x0ff1998c) on the NOR 'dtre' image, which is rejected at
+ * signature validation before any GID decrypt is attempted -- and a global
+ * security-state change (forge/demote) to permit it breaks the kernelcache.
+ *
+ * Instead we hand iBoot an already-decrypted device tree. load_and_set_device_tree
+ * (VA 0x0ff0f498) sets its DT-address global (g_dt_addr @ 0x0ff27560) to
+ * 0x0BF00000 and its DT-size global (g_dt_size @ 0x0ff27564) to the enumerated
+ * image size *before* the image_load() call; on image_load() success it returns
+ * those to the caller, which then dt_deserialize()s the blob at g_dt_addr into
+ * iBoot's node list (the list UpdateDeviceTree/AllocateMemoryRange walk).
+ *
+ * iBoot zeroes DRAM (both the insecure 0x08000000 and secure 0x0B000000 banks)
+ * during early init, so a device tree dropped at 0x0BF00000 at reset is gone long
+ * before the DT load. But the "llb"/SRAM region at 0x22000000 is NOT cleared (it
+ * is where the SecureROM/LLB run on real hardware) and iBoot keeps it mapped. So
+ * we stage the decrypted serialized device tree at 0x22000000 and rewrite the
+ * failing image_load() call site (VA 0x0ff0f4da) into a 16-byte thunk that copies
+ * the blob into place right when the DT is loaded (after the kernelcache
+ * decompress that would otherwise clobber it):
+ *
+ *     movs r0,#0xbf ; lsls r0,r0,#20      ; r0 = 0x0BF00000 (dst = g_dt_addr)
+ *     movs r1,#0x22 ; lsls r1,r1,#24      ; r1 = 0x22000000 (src = staging)
+ *     ldr  r2,[r5]                        ; r2 = g_dt_size  (len, already set)
+ *     blx  0x0ff1b474                     ; iBoot memcpy(dst, src, len)
+ *     b    0x0ff0f4ea                     ; fall into the success/out-param path
+ *
+ * memcpy preserves r4/r5/r6/r8, so the function's success tail returns g_dt_addr
+ * and g_dt_size to the caller exactly as a real image_load would. This touches
+ * ONLY the dtre path; the kernelcache still validates and decrypts normally, and
+ * a global security-state change (forge/demote) -- which breaks the kernelcache --
+ * is avoided. Gated entirely behind IT_INJECT_DT; 2.1.1 is untouched.
+ */
+#define DT_STAGING_BASE     0x22000000   /* uncleared SRAM/"llb" region */
+#define IBOOT_DT_LOAD_PATCH 0xf4da       /* VA offset of the `bl image_load` */
+
+static void ipod_touch_inject_device_tree(IPodTouchMachineState *nms)
+{
+    const char *dt_path = getenv("IT_INJECT_DT");
+    uint8_t *dt_data = NULL;
+    gsize dt_size;
+    /* 16-byte thunk (see comment above): memcpy(0x0BF00000, 0x22000000, g_dt_size)
+     * then branch to the success path. */
+    static const uint8_t patch[16] = {
+        0xbf, 0x20, 0x00, 0x05,   /* movs r0,#0xbf ; lsls r0,r0,#20  */
+        0x22, 0x21, 0x09, 0x06,   /* movs r1,#0x22 ; lsls r1,r1,#24  */
+        0x2a, 0x68,               /* ldr  r2,[r5]                    */
+        0x0b, 0xf0, 0xc6, 0xef,   /* blx  0x0ff1b474 (memcpy)        */
+        0xff, 0xe7,               /* b    0x0ff0f4ea                 */
+    };
+
+    if (!dt_path) {
+        return;
+    }
+
+    if (!g_file_get_contents(dt_path, (char **)&dt_data, &dt_size, NULL)) {
+        fprintf(stderr, "[IT_INJECT_DT] could not read '%s'\n", dt_path);
+        return;
+    }
+
+    address_space_rw(nms->nsas, DT_STAGING_BASE, MEMTXATTRS_UNSPECIFIED,
+                     dt_data, dt_size, 1);
+    g_free(dt_data);
+
+    address_space_rw(nms->nsas, IBOOT_MEM_BASE + IBOOT_DT_LOAD_PATCH,
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)patch, sizeof(patch), 1);
+
+    fprintf(stderr, "[IT_INJECT_DT] staged device tree '%s' (%llu bytes) at "
+            "0x%08x and patched iBoot dtre image_load\n",
+            dt_path, (unsigned long long)dt_size, DT_STAGING_BASE);
+}
+
 static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
 {
     const char *iboot_path = getenv("IT_DIRECT_IBOOT");
@@ -200,6 +276,10 @@ static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
          * IT_DIRECT_IBOOT is set -- see ipod_touch_sysic_read(). Nothing to do
          * here.
          */
+
+        /* Hand iBoot a pre-decrypted device tree (3.1.3 bring-up). Must run
+         * after the iBoot image is staged so the code patch lands on top of it. */
+        ipod_touch_inject_device_tree(nms);
     }
 }
 
