@@ -61,27 +61,46 @@ static void nor_set_boot_args(IPodTouchNORSPIState *s, gsize norlen)
         }
         uint8_t *payload = hdr + NVRAM_ATOM_HDR;
 
-        /* Copy out every variable except the one we are replacing. */
+        /* Copy out every variable except the one we are replacing, and note
+         * where the original NUL-terminated list ends. */
         g_autoptr(GByteArray) vars = g_byte_array_new();
+        size_t list_end = 0;
         for (size_t i = 0; i < len && payload[i]; ) {
             size_t vlen = strnlen((char *)payload + i, len - i);
             if (strncmp((char *)payload + i, key, strlen(key)) != 0) {
                 g_byte_array_append(vars, payload + i, vlen + 1);
             }
             i += vlen + 1;
+            list_end = i;
         }
 
         g_autofree char *entry = g_strconcat(key, s->boot_args, NULL);
         g_byte_array_append(vars, (const guint8 *)entry, strlen(entry) + 1);
         g_byte_array_append(vars, (const guint8 *)"", 1); /* list terminator */
 
-        if (vars->len > len) {
-            error_report("boot-args does not fit in the nvram common atom "
-                         "(%u bytes needed, %zu available)", vars->len, len);
+        /*
+         * The "common" atom declares 2048 bytes, but the following
+         * "APL,OSXPanic" atom physically sits INSIDE that declared span (e.g.
+         * at payload offset ~2040 on n72ap). Clearing the whole declared span
+         * corrupts OSXPanic and makes iBoot heap-panic on boot. So only rewrite
+         * the region the variable list actually uses -- the original entries
+         * plus the free (zero) padding that follows -- and never touch bytes
+         * from the next atom onward. Find that boundary by walking past the
+         * trailing zero padding to the first non-zero byte (the next atom).
+         */
+        size_t write_limit = list_end;
+        while (write_limit < len && payload[write_limit] == 0) {
+            write_limit++;
+        }
+
+        if (vars->len > write_limit) {
+            error_report("boot-args does not fit before the next nvram atom "
+                         "(%u bytes needed, %zu available)", vars->len,
+                         write_limit);
             return;
         }
 
-        memset(payload, 0, len);
+        memset(payload, 0, write_limit);
         memcpy(payload, vars->data, vars->len);
         hdr[1] = nvram_checksum(payload, len);
 
