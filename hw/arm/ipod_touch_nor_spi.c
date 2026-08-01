@@ -26,8 +26,25 @@ static uint8_t nvram_checksum(const uint8_t *payload, size_t len)
     return sum + 1;
 }
 
-/* Rewrite the boot-args variable in the in-memory copy of the NOR. The image
- * on disk is never touched. */
+/*
+ * Rewrite the boot-args variable in the in-memory copy of the NOR. The image
+ * on disk is never touched.
+ *
+ * BROKEN, do not rely on this yet. On the stock n72ap NOR the atom chain is
+ *
+ *   0x0fc000  "nvram"          size 2 units    (32 bytes)
+ *   0x0fc020  "common"         size 128 units  (2048 bytes)
+ *   0x0fc820  "APL,OSXPanic"                   <- inside common's declared span
+ *
+ * so the memset below, which clears all 2048 bytes the "common" header claims,
+ * destroys the "APL,OSXPanic" atom that follows it. A machine started with
+ * boot-args= then never reaches its serial banner: it sits in LLB with no
+ * output, where the same NOR untouched gets to "Loading kernel cache".
+ *
+ * Fix by clamping the rewrite to the bytes actually used by the variable list
+ * rather than the declared atom size, or by working out why "common" declares
+ * a span that swallows its successor.
+ */
 static void nor_set_boot_args(IPodTouchNORSPIState *s, gsize norlen)
 {
     static const char key[] = "boot-args=";
