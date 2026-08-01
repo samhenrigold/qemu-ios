@@ -35,6 +35,8 @@ typedef struct IPodTouchMIPIDSIState
     qemu_irq irq;
     uint32_t pkthdr_reg;
     uint32_t clkctrl;
+    uint32_t cmd_pending;   /* S5L: command/escape status bits, set on a trigger
+                             * write and self-clearing on the next STATUS read */
     bool return_panel_id;
 } IPodTouchMIPIDSIState;
 

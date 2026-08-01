@@ -8,7 +8,7 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
     IPodTouchMIPIDSIState *s = (IPodTouchMIPIDSIState *)opaque;
     switch(addr)
     {
-        case REG_STATUS:
+        case REG_STATUS: {
             // TxReadyHsClk has to follow the clock request in CLKCTRL rather
             // than being wired on. Panel bring-up sets CLKCTRL bit 31 and spins
             // until this bit reads set; panel shutdown clears bit 31 and spins
@@ -16,8 +16,24 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
             // bring-up but made shutdown spin forever, wedging the kernel
             // mid-power-down -- which is why the display never came back from
             // idle sleep, and why the reboot path never reached the watchdog.
-            return 0x103 | ((s->clkctrl & rDSIM_CLKCTRL_TxRequestHsClk)
+            uint32_t status = 0x103 | ((s->clkctrl & rDSIM_CLKCTRL_TxRequestHsClk)
                                 ? rDSIM_STATUS_TxReadyHsClk : 0);
+            /*
+             * 3.1.3's iBoot mipi_dsim_init() walks a sequence of "write a DSIM
+             * command register, then spin until STATUS shows the command
+             * accepted, then spin until it shows the command drained". bit 20
+             * (SwRstRelease, after the DSIM_SWRST at 0x04) is a permanent done
+             * bit; the escape/FIFO command bits (0x230 = bits 4,5,9) are a
+             * request/ack handshake -- they must read set right after the
+             * trigger write and then clear, so they are driven by cmd_pending
+             * (set on a command write, self-clearing on read) rather than
+             * pinned. Gated to the direct 7E18 boot. */
+            if (getenv("IT_DIRECT_IBOOT")) {
+                status |= 0x00100000 | s->cmd_pending;
+                s->cmd_pending = 0;
+            }
+            return status;
+        }
         case REG_INTSRC:
             return rDSIM_INTSRC_RxDatDone;
         case REG_RXFIFO:
@@ -48,6 +64,15 @@ static void ipod_touch_mipi_dsi_write(void *opaque, hwaddr addr, uint64_t val, u
     {
         case REG_PKTHDR:
             s->pkthdr_reg = val;
+            /* Sending a packet re-arms the command handshake bits. */
+            if (getenv("IT_DIRECT_IBOOT")) {
+                s->cmd_pending = 0x230;
+            }
+            break;
+        case 0x14: /* DSIM_ESCMODE: escape-mode command trigger */
+            if (getenv("IT_DIRECT_IBOOT")) {
+                s->cmd_pending = 0x230;
+            }
             break;
         case REG_CLKCTRL:
             // Remember the HS clock request; STATUS.TxReadyHsClk mirrors it.
@@ -82,6 +107,7 @@ static void ipod_touch_mipi_dsi_reset(DeviceState *dev)
 
     s->pkthdr_reg = 0;
     s->clkctrl = 0;
+    s->cmd_pending = 0;
     s->return_panel_id = false;
 }
 

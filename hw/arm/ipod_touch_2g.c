@@ -145,6 +145,64 @@ static void ipod_touch_load_bootrom(IPodTouchMachineState *nms)
     }
 }
 
+/*
+ * IT_DIRECT_IBOOT / IT_DIRECT_LLB: boot-chain substitution (explicitly
+ * authorised for the 3.1.3 bring-up).
+ *
+ * iOS 3.0+ personalises the signed boot chain per-device, and the S5L8720
+ * bootrom rejects the 7E18 LLB no matter how we forge the PKE check -- it
+ * recomputes the image hash itself and drops to the DFU wait loop. So instead
+ * of satisfying the bootrom we skip it, exactly as devos50 (iPod touch 1G, no
+ * bootrom dump) and DJHartley's iEmu (-option-rom unencrypted iBoot) did: load
+ * a *decrypted* iBoot straight into its own RAM region and enter it.
+ *
+ * The decrypted images are raw (they begin with the ARM vector table). Their
+ * intended load address is the absolute value baked into the vector table at
+ * offset 0x20: 7E18 iBoot -> 0x0ff00000 (== IBOOT_MEM_BASE), 7E18 LLB ->
+ * 0x22000000 (== LLB region). We honour those.
+ *
+ * IT_DIRECT_LLB, if set, is staged first (it is what normally initialises DRAM
+ * on real hardware); on QEMU DRAM is always-present RAM so iBoot alone is
+ * usually enough, but this lets us reproduce the full LLB->iBoot handoff if
+ * iBoot turns out to depend on state LLB leaves behind.
+ */
+#define LLB_LOAD_BASE 0x22000000
+
+static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
+{
+    const char *iboot_path = getenv("IT_DIRECT_IBOOT");
+    const char *llb_path = getenv("IT_DIRECT_LLB");
+    uint8_t *file_data = NULL;
+    gsize fsize;
+
+    if (llb_path && g_file_get_contents(llb_path, (char **)&file_data, &fsize, NULL)) {
+        address_space_rw(nms->nsas, LLB_LOAD_BASE, MEMTXATTRS_UNSPECIFIED,
+                         file_data, fsize, 1);
+        g_free(file_data);
+        file_data = NULL;
+        fprintf(stderr, "[IT_DIRECT] staged LLB '%s' (%llu bytes) at 0x%08x\n",
+                llb_path, (unsigned long long)fsize, LLB_LOAD_BASE);
+    }
+
+    if (iboot_path && g_file_get_contents(iboot_path, (char **)&file_data, &fsize, NULL)) {
+        address_space_rw(nms->nsas, IBOOT_MEM_BASE, MEMTXATTRS_UNSPECIFIED,
+                         file_data, fsize, 1);
+        g_free(file_data);
+        fprintf(stderr, "[IT_DIRECT] staged iBoot '%s' (%llu bytes) at 0x%08x\n",
+                iboot_path, (unsigned long long)fsize, IBOOT_MEM_BASE);
+        /*
+         * iBoot's miu_init reads SYSIC[0x44] bits[31:24] as the boot security
+         * epoch and panics ("Epoch Mismatch") unless it equals the epoch baked
+         * into the image (4 for the S5L8720 / iPod touch 2G). On real hardware
+         * that top byte is a read-only fused value the SecureROM never writes;
+         * the low bits are the POWER_ID power-control scratch. We skip the ROM,
+         * so the SYSIC model synthesises the epoch top byte on read whenever
+         * IT_DIRECT_IBOOT is set -- see ipod_touch_sysic_read(). Nothing to do
+         * here.
+         */
+    }
+}
+
 static void ipod_touch_cpu_reset(void *opaque)
 {
     IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE((MachineState *)opaque);
@@ -153,6 +211,14 @@ static void ipod_touch_cpu_reset(void *opaque)
 
     cpu_reset(cs);
     ipod_touch_load_bootrom(nms);
+
+    if (getenv("IT_DIRECT_IBOOT")) {
+        /* Boot-chain substitution: enter the decrypted iBoot directly, skipping
+         * the bootrom + LLB signature/personalisation checks. */
+        ipod_touch_load_direct_boot(nms);
+        cpu_set_pc(CPU(cpu), getenv("IT_DIRECT_LLB") ? LLB_LOAD_BASE : IBOOT_MEM_BASE);
+        return;
+    }
 
     //env->regs[0] = nms->kbootargs_pa;
     //cpu_set_pc(CPU(cpu), 0xc00607ec);

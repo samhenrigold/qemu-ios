@@ -1,5 +1,7 @@
 #include "hw/arm/ipod_touch_wdt.h"
 #include "sysemu/runstate.h"
+#include "hw/core/cpu.h"
+#include "target/arm/cpu.h"
 
 /*
  * S5L8720 watchdog timer at 0x3C800000.
@@ -34,8 +36,18 @@ static void ipod_touch_wdt_write(void *opaque, hwaddr addr, uint64_t val, unsign
         case WDT_CTRL:
             s->ctrl = (uint32_t)val;
             if (val & WDT_RESET_BIT) {
-                fprintf(stderr, "%s: reset bit set (val=0x%08x) -> requesting guest reset\n",
-                        __func__, (uint32_t)val);
+                if (current_cpu) {
+                    ARMCPU *ac = ARM_CPU(current_cpu);
+                    fprintf(stderr, "%s: reset bit set (val=0x%08x) from PC=0x%08x LR=0x%08x\n",
+                            __func__, (uint32_t)val, ac->env.regs[15], ac->env.regs[14]);
+                } else {
+                    fprintf(stderr, "%s: reset bit set (val=0x%08x)\n", __func__, (uint32_t)val);
+                }
+                if (getenv("IT_WDT_NORESET")) {
+                    /* Diagnostic: don't actually reset, so the machine wedges at
+                     * the reset site and QMP can inspect it. */
+                    break;
+                }
                 qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
             }
             break;
