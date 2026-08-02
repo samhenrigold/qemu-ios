@@ -84,6 +84,28 @@ static bool i2c_addr_is_claimed(IPodTouchI2CState *s, uint8_t addr)
     return false;
 }
 
+/*
+ * The address this START is really for.
+ *
+ * A register read is START / addr+W / reg-index / repeated-START / addr+R, and
+ * this controller does not re-present the address on the repeated START - IICDS
+ * still holds the register index. Deriving the address from IICDS every time
+ * therefore looks up a register number as if it were a bus address: reading PMU
+ * register 0x5c produced a lookup of 0x5c >> 1 = 0x2e, which no device claims,
+ * so the PMU got NAKed on every read while writes (which issue no repeated
+ * START) were fine. That is exactly the 108-failures-all-at-addr-5c signature.
+ *
+ * s->active is still set from the previous START when a repeated START arrives,
+ * and is cleared at STOP, so it distinguishes the two cases.
+ */
+static uint8_t s5l8900_i2c_start_addr(IPodTouchI2CState *s)
+{
+    if (!s->active) {
+        s->cur_addr = s->data >> 1;   /* fresh transaction: IICDS holds the address */
+    }
+    return s->cur_addr;
+}
+
 static void s5l8900_i2c_set_ack(IPodTouchI2CState *s, uint8_t addr)
 {
     if (!i2c_nak_enabled()) {
@@ -224,9 +246,10 @@ static void ipod_touch_i2c_write(void *opaque, hwaddr offset, uint64_t value, un
                     s->status &= ~S5L8900_IICSTAT_LASTBIT;
 
                     s->iicreg20 |= 0x100;
+                    uint8_t addr = s5l8900_i2c_start_addr(s);
                     s->active = 1;
-                    i2c_start_transfer(s->bus, s->data >> 1, 1);
-                    s5l8900_i2c_set_ack(s, s->data >> 1);
+                    i2c_start_transfer(s->bus, addr, 1);
+                    s5l8900_i2c_set_ack(s, addr);
                 } else {
                     i2c_end_transfer(s->bus);
                     s->active = 0;
@@ -239,9 +262,10 @@ static void ipod_touch_i2c_write(void *opaque, hwaddr offset, uint64_t value, un
                     s->status &= ~S5L8900_IICSTAT_LASTBIT;
                         
                     s->iicreg20 |= 0x100;
+                    uint8_t addr = s5l8900_i2c_start_addr(s);
                     s->active = 1;
-                    i2c_start_transfer(s->bus, s->data >> 1, 0);
-                    s5l8900_i2c_set_ack(s, s->data >> 1);
+                    i2c_start_transfer(s->bus, addr, 0);
+                    s5l8900_i2c_set_ack(s, addr);
                 } else {
                     i2c_end_transfer(s->bus);
                     s->active = 0;

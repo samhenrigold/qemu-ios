@@ -60,6 +60,13 @@ typedef struct IPodTouchI2CState {
 
     uint8_t ibmr;
     uint8_t data;
+    /*
+     * The address that opened the current transaction. A repeated START does
+     * not re-present the address on this controller, so IICDS holds whatever
+     * byte was last written - typically a register index. Latch it at the
+     * first START and reuse it until STOP. See s5l8900_i2c_start_addr().
+     */
+    uint8_t cur_addr;
 } IPodTouchI2CState;
 
 #endif
