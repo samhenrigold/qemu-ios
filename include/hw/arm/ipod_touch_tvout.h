@@ -11,6 +11,7 @@
 
 #define SDO_CLKCON 0x0
 #define SDO_CONFIG 0x8
+#define SDO_FIELDCTL 0x40  /* bit1 picks the interlaced-field path */
 #define SDO_IRQ 0x280
 #define SDO_IRQMASK 0x284
 
