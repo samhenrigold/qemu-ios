@@ -231,11 +231,54 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
  * for logical numbers outside the volume, which are FTL bookkeeping rather
  * than filesystem blocks and are meaningless once the indirection is undone.
  */
-#define NAND_GENERATED_TOTAL_BLOCKS 128000
+/*
+ * How much of the flash the volume actually covers.
+ *
+ * The layout formula below is periodic and addresses erase blocks 2..4094 of
+ * every chip-select -- the whole 8 GiB the part table gives chip id
+ * 0xb614d5ad -- but a given image only *contains* a volume of a particular
+ * size, and a write past its end is FTL bookkeeping rather than a filesystem
+ * block. That boundary is a property of the image, so read it out of the
+ * image: logical block 2 is the GPT's one-entry partition array, and the
+ * entry's ending LBA is the last block of disk0s1.
+ *
+ * Falls back to the original image's 128000 if the GPT cannot be read, which
+ * is what this was hardcoded to before.
+ */
+#define NAND_DEFAULT_TOTAL_BLOCKS 128000
+#define NAND_MAX_TOTAL_BLOCKS     2090000  /* keeps eb clear of block 4095 */
 
-static bool fmss_generated_layout(uint32_t logical, uint32_t *cs, uint32_t *page)
+static uint32_t fmss_total_blocks(IPodTouchFMSSState *s)
 {
-    if (logical < 3 || (logical - 3) >= NAND_GENERATED_TOTAL_BLOCKS) {
+    char path[1088];
+    uint8_t ent[0x30];
+    FILE *f;
+
+    if (s->total_blocks) {
+        return s->total_blocks;
+    }
+    s->total_blocks = NAND_DEFAULT_TOTAL_BLOCKS;
+
+    /* logical 2 is cs2 page 256 under the formula below */
+    snprintf(path, sizeof(path), "%s/cs2/256.page", s->nand_path);
+    f = fopen(path, "rb");
+    if (f) {
+        if (fread(ent, 1, sizeof(ent), f) == sizeof(ent)) {
+            uint64_t start = ldq_le_p(ent + 0x20);
+            uint64_t end = ldq_le_p(ent + 0x28);
+            if (start == 3 && end > start && end - start < NAND_MAX_TOTAL_BLOCKS) {
+                s->total_blocks = end - start + 1;
+            }
+        }
+        fclose(f);
+    }
+    return s->total_blocks;
+}
+
+static bool fmss_generated_layout(IPodTouchFMSSState *s, uint32_t logical,
+                                  uint32_t *cs, uint32_t *page)
+{
+    if (logical < 3 || (logical - 3) >= fmss_total_blocks(s)) {
         return false;
     }
     /* logical == block + 3, so these are just its quotient and remainder */
@@ -518,7 +561,7 @@ static void write_nand_pages(IPodTouchFMSSState *s)
         if (!getenv("FMSS_PHYSICAL")) {
             uint32_t logical = ldl_le_p(s->page_spare_buffer);
             uint32_t rcs, rpage;
-            if (!fmss_generated_layout(logical, &rcs, &rpage)) {
+            if (!fmss_generated_layout(s, logical, &rcs, &rpage)) {
                 if (getenv("FMSS_RTRACE")) {
                     printf("SKIP logical=%u (cs=%u page=%u)\n", logical, cs, page_nr);
                     fflush(stdout);
