@@ -1,6 +1,8 @@
 #include "hw/arm/ipod_touch_multitouch.h"
 #include "qemu/log.h"
 
+static MTFrame *get_empty_frame(IPodTouchMultitouchState *s);
+
 static bool mt_trace(void)
 {
     static int on = -1;
@@ -207,6 +209,26 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
         else if(value == MT_CMD_HBPP_DATA_PACKET) {
             s->buf_size = 20; // should be enough initially, until we get the packet length
             memset(s->out_buffer + 1, 0, 20 - 1); // just return zeros
+            /*
+             * The ATN ACK (0x1A) reports the status of the LAST operation, and
+             * the two statuses are not interchangeable: the firmware-download
+             * loop in AppleMultitouch*SPI compares the ack against 0x4BC1 and
+             * retries the same chunk five times before giving up, while the
+             * register-write path compares against 0x4AD1.
+             *
+             * hbpp_atn_ack_response used to be a one-way latch: the first 0x1E
+             * set it to 0x4AD1 and nothing ever put it back. That is invisible
+             * on the first boot (the whole download happens before any 0x1E),
+             * but every LATER download -- and the driver re-downloads the ~48 KB
+             * of panel firmware every time it powers the digitizer back up after
+             * sleep -- got 0x4AD1 for every chunk, burned its five retries and
+             * bailed, leaving touch dead until reboot.
+             *
+             * Starting a HBPP data packet means we are in the bootloader again,
+             * so put the ack back to the download status.
+             */
+            s->hbpp_atn_ack_response[0] = 0x4B;
+            s->hbpp_atn_ack_response[1] = 0xC1;
         }
         else if(value == 0x47) { // unknown command, probably used to clear the interrupt
             s->buf_size = 2;
@@ -249,7 +271,17 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
                 s->out_buffer = (uint8_t *) s->next_frame;
                 s->next_frame = NULL;
             } else {
-                s->out_buffer = calloc(sizeof(MTFrame), sizeof(uint8_t *));
+                /*
+                 * No new frame. Handing the guest a block of ZEROS here is not
+                 * "no data" - it is a malformed frame: zero cmd byte, zero
+                 * lengths, zero checksums. 3.1.3's driver polls about twice as
+                 * fast as the 10Hz touch timer produces frames, so ~40% of its
+                 * reads landed on one of these, and the finger's frame sequence
+                 * never survived contact. Give it a well-formed report with no
+                 * fingers instead, which is what the real controller returns
+                 * when it is polled and has nothing new.
+                 */
+                s->out_buffer = (uint8_t *) get_empty_frame(s);
             }
         }
         else if(value == 0x00) {
@@ -413,6 +445,53 @@ static MTFrame *get_frame(IPodTouchMultitouchState *s, uint8_t event, float x, f
     s->last_frame_timestamp = elapsed_ns;
     s->frame_counter += 1;
 
+    return frame;
+}
+
+/*
+ * A valid frame that reports no fingers, for polls that arrive between real
+ * frames. Mirrors get_frame's framing exactly; only the finger data is absent.
+ */
+static MTFrame *get_empty_frame(IPodTouchMultitouchState *s)
+{
+    MTFrame *frame = calloc(sizeof(MTFrame), sizeof(uint8_t *));
+    uint16_t data_len = sizeof(MTFrameHeader) + 2;
+    uint16_t checksum = 0;
+
+    frame->frame_length.cmd = MT_CMD_FRAME_READ;
+    frame->frame_length.length1 = (data_len & 0xFF);
+    frame->frame_length.length2 = (data_len >> 8) & 0xFF;
+    for (int i = 0; i < 14; i++) {
+        checksum += ((uint8_t *) &frame->frame_length)[i];
+    }
+    frame->frame_length.checksum1 = (checksum & 0xFF);
+    frame->frame_length.checksum2 = (checksum >> 8) & 0xFF;
+
+    frame->frame_packet.cmd = MT_CMD_FRAME_READ;
+    frame->frame_packet.length1 = (data_len & 0xFF);
+    frame->frame_packet.length2 = (data_len >> 8) & 0xFF;
+    checksum = 0;
+    for (int i = 0; i < 4; i++) {
+        checksum += ((uint8_t *) &frame->frame_length)[i];
+    }
+    frame->frame_packet.checksum_pad = 0xFF - (checksum & 0xFF) + 1;
+
+    frame->frame_packet.header.type = MT_FRAME_TYPE_PATH;
+    frame->frame_packet.header.frameNum = s->frame_counter;
+    frame->frame_packet.header.headerLen = sizeof(MTFrameHeader);
+    frame->frame_packet.header.timestamp =
+        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000000;
+    frame->frame_packet.header.numFingers = 0;
+    frame->frame_packet.header.fingerDataLen = sizeof(FingerData);
+
+    checksum = 0;
+    for (int i = 0; i < data_len - 2; i++) {
+        checksum += ((uint8_t *) &frame->frame_packet.header)[i];
+    }
+    frame->checksum1 = (checksum & 0xFF);
+    frame->checksum2 = (checksum >> 8) & 0xFF;
+
+    s->frame_counter += 1;
     return frame;
 }
 
