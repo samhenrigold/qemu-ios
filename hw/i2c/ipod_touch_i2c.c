@@ -22,6 +22,49 @@
 
 #include "hw/i2c/ipod_touch_i2c.h"
 
+/*
+ * Address-phase acknowledge.
+ *
+ * S5L8900_IICSTAT_LASTBIT is the "last bit received was 1", i.e. the slave did
+ * NOT pull SDA low: a NAK. i2c_start_transfer() returns non-zero when no slave
+ * on the bus matched the address, which is exactly that case.
+ *
+ * Until this existed the model threw the return value away and cleared the bit
+ * unconditionally on every START, so an address nobody answers looked like a
+ * successful transfer and the following reads returned QEMU's unmatched-bus
+ * default of 0xff. Every absent device therefore presented as a present device
+ * reporting all-ones -- which is how the missing CS42L58 codec was mistaken for
+ * a misbehaving one, and it is latent for every other unmodelled I2C address.
+ *
+ * A NAK is still a completed address phase: the interrupt must still be raised
+ * so the driver runs, inspects the status bit and returns an error, rather than
+ * waiting for a transfer that will not come. Gated behind IT_I2C_NAK because it
+ * changes what every existing guest sees -- iOS probes at least one address we
+ * do not model (0x29, /device-tree/arm-io/i2c0/tethered), and that probe
+ * currently "succeeds".
+ */
+static bool i2c_nak_enabled(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_I2C_NAK") != NULL;
+    }
+    return on;
+}
+
+static void s5l8900_i2c_set_ack(IPodTouchI2CState *s, int start_rc)
+{
+    if (!i2c_nak_enabled()) {
+        return;   /* legacy behaviour: every address appears to ACK */
+    }
+    if (start_rc) {
+        s->status |= S5L8900_IICSTAT_LASTBIT;   /* NAK */
+        s->active = 0;                          /* the bus never opened */
+    } else {
+        s->status &= ~S5L8900_IICSTAT_LASTBIT;  /* ACK */
+    }
+}
+
 static void s5l8900_i2c_update(IPodTouchI2CState *s)
 {
     uint16_t level;
@@ -116,12 +159,15 @@ static void ipod_touch_i2c_write(void *opaque, hwaddr offset, uint64_t value, un
     case I2CSTAT:
         /* We have to make sure we don't miss an end transfer */
         if((!s->active) && ((s->status >> 6) != ((value >> 6)))) {
-            s->status = value & 0xff;
+            /* LASTBIT reflects the bus, not the guest: it is status-only. */
+            s->status = (value & 0xff & ~S5L8900_IICSTAT_LASTBIT) |
+                        (s->status & S5L8900_IICSTAT_LASTBIT);
         /* If they toggle the tx bit then we have to force an end transfer before mode update */
         } else if((s->active) && ((s->status >> 6) != ((value >> 6)))) {
                     i2c_end_transfer(s->bus);
                     s->active=0;
-                    s->status = value & 0xff;
+                    s->status = (value & 0xff & ~S5L8900_IICSTAT_LASTBIT) |
+                                (s->status & S5L8900_IICSTAT_LASTBIT);
                     s->status |= S5L8900_IICSTAT_TXRXEN;
                     break;
         }
@@ -142,7 +188,8 @@ static void ipod_touch_i2c_write(void *opaque, hwaddr offset, uint64_t value, un
 
                     s->iicreg20 |= 0x100;
                     s->active = 1;
-                    i2c_start_transfer(s->bus, s->data >> 1, 1);
+                    s5l8900_i2c_set_ack(s,
+                        i2c_start_transfer(s->bus, s->data >> 1, 1));
                 } else {
                     i2c_end_transfer(s->bus);
                     s->active = 0;
@@ -156,7 +203,8 @@ static void ipod_touch_i2c_write(void *opaque, hwaddr offset, uint64_t value, un
                         
                     s->iicreg20 |= 0x100;
                     s->active = 1;
-                    i2c_start_transfer(s->bus, s->data >> 1, 0);
+                    s5l8900_i2c_set_ack(s,
+                        i2c_start_transfer(s->bus, s->data >> 1, 0));
                 } else {
                     i2c_end_transfer(s->bus);
                     s->active = 0;
