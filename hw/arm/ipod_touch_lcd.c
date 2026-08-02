@@ -2,8 +2,24 @@
 #include "ui/pixel_ops.h"
 #include "ui/console.h"
 #include "hw/display/framebuffer.h"
+#include "exec/cpu-common.h"
 
 int lcd_brightness = 255;
+
+#define LCD_FB_WIDTH  320
+#define LCD_FB_HEIGHT 480
+
+/*
+ * Rotation the host window should be presenting, in degrees clockwise. Written
+ * by it_display_set_orientation() (accelerometer / Command+Left / Command+Right
+ * / the accel-orientation QMP property) and picked up by the next refresh,
+ * which owns the console resize.
+ *
+ * iOS keeps its framebuffer in portrait and rotates the UI *inside* it, so to
+ * show an upright landscape image the model has to turn the picture back the
+ * same way the user "turned" the device.
+ */
+static int it_display_rotation_req;
 
 static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -113,6 +129,25 @@ static int lcd_bright_effective(void)
     return ovr >= 0 ? ovr : lcd_brightness;
 }
 
+void it_display_set_orientation(uint32_t orientation)
+{
+    int rot;
+
+    switch (orientation) {
+    case 2:  rot = 180; break;   /* portrait upside down */
+    case 3:  rot = 270; break;   /* landscape left  - device turned ccw */
+    case 4:  rot = 90;  break;   /* landscape right - device turned cw  */
+    default: rot = 0;   break;   /* portrait, face up/down, unset */
+    }
+    if (rot != it_display_rotation_req) {
+        it_display_rotation_req = rot;
+        if (getenv("LCD_TRACE")) {
+            fprintf(stderr, "[LCD] orientation %u -> window rotation %d\n",
+                    orientation, rot);
+        }
+    }
+}
+
 static void lcd_invalidate(void *opaque)
 {
     IPodTouchLCDState *s = opaque;
@@ -138,6 +173,53 @@ static void draw_line32_32(void *opaque, uint8_t *d, const uint8_t *s, int width
     } while (-- width != 0);
 }
 
+/*
+ * Blit the guest's portrait framebuffer into a rotated host surface.
+ *
+ * framebuffer_update_display() can only walk source and destination with fixed
+ * strides, which cannot express a transpose, so the rotated case gets its own
+ * blit. The whole frame is redrawn every time (the portrait path already forces
+ * invalidate on every refresh, so this costs no more than the status quo).
+ */
+static void lcd_refresh_rotated(IPodTouchLCDState *lcd, DisplaySurface *surface,
+                                int rot)
+{
+    const int sw = LCD_FB_WIDTH, sh = LCD_FB_HEIGHT;
+    int dw = (rot == 180) ? sw : sh;
+    int dh = (rot == 180) ? sh : sw;
+    uint8_t *dst = surface_data(surface);
+    int dstride = surface_stride(surface);
+    int bri = lcd_bright_effective();
+    int sx, sy;
+
+    if (surface_width(surface) != dw || surface_height(surface) != dh) {
+        return; /* resize has not landed yet; skip this frame */
+    }
+    if (!lcd->rotbuf) {
+        lcd->rotbuf = g_malloc(sw * sh * 4);
+    }
+    cpu_physical_memory_read(lcd->w1_framebuffer_base, lcd->rotbuf, sw * sh * 4);
+
+    for (sy = 0; sy < sh; sy++) {
+        const uint8_t *s = lcd->rotbuf + (size_t)sy * sw * 4;
+        for (sx = 0; sx < sw; sx++, s += 4) {
+            int dx, dy;
+            uint8_t b = s[0], g = s[1], r = s[2];
+
+            switch (rot) {
+            case 90:  dx = sh - 1 - sy; dy = sx;          break;
+            case 270: dx = sy;          dy = sw - 1 - sx; break;
+            default:  dx = sw - 1 - sx; dy = sh - 1 - sy; break;
+            }
+            ((uint32_t *)(dst + (size_t)dy * dstride))[dx] =
+                rgb_to_pixel32((r * bri + 127) / 255,
+                               (g * bri + 127) / 255,
+                               (b * bri + 127) / 255);
+        }
+    }
+    dpy_gfx_update(lcd->con, 0, 0, dw, dh);
+}
+
 static void lcd_refresh(void *opaque)
 {
     // printf("%s: refreshing LCD screen\n", __func__);
@@ -151,6 +233,32 @@ static void lcd_refresh(void *opaque)
 
     if (!lcd || !lcd->con || !surface_bits_per_pixel(surface))
         return;
+
+    /*
+     * Pick up a pending orientation change. The console resize has to happen
+     * from the graphics update, not from the I2C/QMP thread that moved the
+     * accelerometer.
+     */
+    if (lcd->rotation != it_display_rotation_req) {
+        int rot = it_display_rotation_req;
+        bool land = (rot == 90 || rot == 270);
+
+        lcd->rotation = rot;
+        qemu_console_resize(lcd->con,
+                            land ? LCD_FB_HEIGHT : LCD_FB_WIDTH,
+                            land ? LCD_FB_WIDTH  : LCD_FB_HEIGHT);
+        surface = qemu_console_surface(lcd->con);
+        lcd->invalidate = 1;
+        if (!surface_bits_per_pixel(surface)) {
+            return;
+        }
+    }
+
+    if (lcd->rotation != 0) {
+        lcd_refresh_rotated(lcd, surface, lcd->rotation);
+        lcd->invalidate = 0;
+        return;
+    }
 
     dest_width = 4;
     draw_line = draw_line32_32;
@@ -197,11 +305,26 @@ static void ipod_touch_lcd_mouse_event(void *opaque, int x, int y, int z, int bu
 {
     // printf("x %d y %d z %d state %d\n", x, y, z, buttons_state);
 
-    // convert x and y to fractional numbers
-    float fx = x / pow(2, 15);
-    float fy = 1 - y / pow(2, 15);
-
     IPodTouchLCDState *lcd = (IPodTouchLCDState *) opaque;
+
+    /* pointer position as a fraction of the *window*, y measured downwards */
+    float cx = x / (float)pow(2, 15);
+    float cy = y / (float)pow(2, 15);
+    float fx, fy;
+
+    /*
+     * Undo the rotation lcd_refresh_rotated() applied, so the multitouch model
+     * always sees coordinates in the guest's portrait framebuffer space (x left
+     * to right, y measured from the bottom). Without this, touch lands in the
+     * wrong place -- or a transposed place -- as soon as the window is turned.
+     */
+    switch (lcd->rotation) {
+    case 90:  fx = cy;        fy = cx;        break;
+    case 270: fx = 1.0f - cy; fy = 1.0f - cx; break;
+    case 180: fx = 1.0f - cx; fy = cy;        break;
+    default:  fx = cx;        fy = 1.0f - cy; break;
+    }
+
     lcd->mt->prev_touch_x = lcd->mt->touch_x;
     lcd->mt->prev_touch_y = lcd->mt->touch_y;
     lcd->mt->touch_x = fx;
