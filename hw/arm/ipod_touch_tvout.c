@@ -10,6 +10,39 @@ static bool tvout_trace(void)
 #define TVT(fmt, ...) do { if (tvout_trace()) { \
     printf("[TVOUT] " fmt "\n", ##__VA_ARGS__); fflush(stdout); } } while (0)
 
+/* Any register touch retires the vblank pulse, so the line cannot stick. */
+static void tvout_ack_vblank(IPodTouchTVOutState *s)
+{
+    if (s->irq2_pending) {
+        s->irq2_pending = false;
+        if (s->irq2) {
+            qemu_irq_lower(s->irq2);
+        }
+    }
+}
+
+static void tvout_vblank(void *opaque)
+{
+    IPodTouchTVOutState *s = (IPodTouchTVOutState *)opaque;
+
+    /*
+     * Post a frame interrupt on the SDO line. AppleM2TVOut's SDO filter
+     * requires SDO_IRQ bit 0, and its handler is what retires queued swaps;
+     * without a periodic one, IOMobileFramebuffer's close path sleeps forever
+     * waiting for the swap queue to drain. Only raise while nothing is pending
+     * - the driver acknowledges by writing SDO_IRQ, which lowers the line.
+     */
+    if (!s->sdo_irq && (s->sdo_irq_mask & 1) == 0) {
+        s->sdo_irq = 0x1;
+        if (s->irq) {
+            qemu_irq_raise(s->irq);
+        }
+        TVT("vblank -> raise SDO irq");
+    }
+    timer_mod(s->vblank_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 16 * 1000 * 1000);
+}
+
 static uint64_t ipod_touch_tvout_sdo_read(void *opaque, hwaddr offset, unsigned size)
 {
     IPodTouchTVOutState *s = (IPodTouchTVOutState *)opaque;
@@ -68,6 +101,7 @@ static void ipod_touch_tvout_sdo_write(void *opaque, hwaddr offset, uint64_t val
         case SDO_IRQ:
             s->sdo_irq = 0x0;
             qemu_irq_lower(s->irq);
+            tvout_ack_vblank(s);
             return;
         case SDO_IRQMASK:
             s->sdo_irq_mask = value;
@@ -82,6 +116,15 @@ static uint64_t ipod_touch_tvout_mixer1_read(void *opaque, hwaddr offset, unsign
     //printf("%s: offset = 0x%08x\n", __func__, offset);
 
     switch(offset) {
+        case MXR_INTSTAT:
+            /*
+             * Mixer interrupt status. Bit 0 is "mixer underrun": AppleM2TVOut's
+             * second interrupt filter reads it, and if it is set logs
+             * "mixer UF: %08x" and reports a MixerUnderrun to the framebuffer.
+             * The IT_TVOUT_READY blanket used to return all-ones here, so the
+             * driver saw a permanent underrun and did nothing else.
+             */
+            return s->mixer1_intstat;
         case MXR_STATUS:
             /* reg_mixer_ready_clk_down lives in the mixer status/ctrl block;
              * report every ready bit while probing the shutdown gates. */
@@ -109,6 +152,9 @@ static void ipod_touch_tvout_mixer1_write(void *opaque, hwaddr offset, uint64_t 
         (unsigned)value, s->sdo_irq_mask, s->sdo_irq);
 
     switch(offset) {
+        case MXR_INTSTAT:
+            s->mixer1_intstat &= ~(uint32_t)value;   /* write-1-to-clear */
+            break;
         case MXR_STATUS:
             /*
              * Starting the mixer completes a swap, which the driver learns
@@ -210,6 +256,14 @@ static void ipod_touch_tvout_init(Object *obj)
     sysbus_init_mmio(sbd, &s->sdo_iomem);
 
     sysbus_init_irq(sbd, &s->irq);
+    sysbus_init_irq(sbd, &s->irq2);
+
+    s->vblank_shim = getenv("IT_TVOUT_VBLANK") != NULL;
+    if (s->vblank_shim) {
+        s->vblank_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, tvout_vblank, s);
+        timer_mod(s->vblank_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 16 * 1000 * 1000);
+    }
 }
 
 static void ipod_touch_tvout_class_init(ObjectClass *klass, void *data)

@@ -1283,6 +1283,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     busdev = SYS_BUS_DEVICE(dev);
     sysbus_realize(busdev, &error_fatal);
     sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, S5L8720_TVOUT_SDO_IRQ));
+    sysbus_connect_irq(busdev, 1, s5l8900_get_irq(nms, S5L8720_TVOUT_VSYNC_IRQ));
 
     // init the unknown1 module
     dev = qdev_new("ipodtouch.unknown1");
