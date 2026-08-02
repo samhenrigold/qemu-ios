@@ -208,8 +208,19 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
         }
         else if(value == MT_CMD_FRAME_READ) {
             s->buf_size = sizeof(MTFrame);
-            free(s->out_buffer);
-            s->out_buffer = (uint8_t *) s->next_frame;
+            /*
+             * out_buffer takes ownership of the pending frame. next_frame must
+             * be cleared, or the next frame read frees the same allocation a
+             * second time: the guest polls faster than touch_timer_tick
+             * produces frames, so during a drag the same pointer was handed
+             * over repeatedly and then double-freed, killing QEMU. A tap
+             * survived because it is only a couple of reads.
+             */
+            if (s->next_frame) {
+                free(s->out_buffer);
+                s->out_buffer = (uint8_t *) s->next_frame;
+                s->next_frame = NULL;
+            }
         }
         else {
             printf("%s Unknown command 0x%02x!\n", __func__, value);
@@ -278,6 +289,13 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
 }
 
 static MTFrame *get_frame(IPodTouchMultitouchState *s, uint8_t event, float x, float y, uint16_t radius1, uint16_t radius2, uint16_t radius3, uint16_t contactDensity) {
+    /*
+     * Deliberately generous: the SPI read path walks out_buffer by buf_size and
+     * the guest can clock out more than sizeof(MTFrame). Allocating exactly the
+     * struct size corrupts the heap (observed as a SIGSEGV inside TCG's
+     * translation-block tree). Keep the padding until the real transfer length
+     * is pinned down.
+     */
     MTFrame *frame = calloc(sizeof(MTFrame), sizeof(uint8_t *));
 
     uint16_t data_len = sizeof(MTFrameHeader) + sizeof(FingerData) + 2;
