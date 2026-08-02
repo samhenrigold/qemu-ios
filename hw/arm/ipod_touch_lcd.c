@@ -91,6 +91,26 @@ static void ipod_touch_lcd_write(void *opaque, hwaddr addr, uint64_t val, unsign
 void lcd_changebrightness(int brightness)
 {
     lcd_brightness = brightness & 0xFF;
+    if (getenv("LCD_TRACE")) {
+        fprintf(stderr, "[LCD] brightness <- %d\n", lcd_brightness);
+    }
+}
+
+/*
+ * IT_LCD_BRIGHT overrides the panel backlight level the guest programmed.
+ * draw_line32_32 scales every channel by lcd_brightness/255, so a guest that
+ * leaves the backlight at 0 produces a solid-black screendump even when the
+ * framebuffer is full of pixels. Useful both as a probe and for guests whose
+ * backlight register we do not model.
+ */
+static int lcd_bright_effective(void)
+{
+    static int ovr = -2;
+    if (ovr == -2) {
+        const char *v = getenv("IT_LCD_BRIGHT");
+        ovr = v ? atoi(v) : -1;
+    }
+    return ovr >= 0 ? ovr : lcd_brightness;
 }
 
 static void lcd_invalidate(void *opaque)
@@ -111,7 +131,8 @@ static void draw_line32_32(void *opaque, uint8_t *d, const uint8_t *s, int width
         g = s[1];
         r = s[2];
         // printf("R: %d, G: %d, B: %d, A: %d\n", r, g, b, lcd_brightness);
-        ((uint32_t *) d)[0] = rgb_to_pixel32(round((float)r * ((float)lcd_brightness / 255.0f)), round((float)g * ((float)lcd_brightness / 255.0f)), round((float)b * ((float)lcd_brightness / 255.0f)));
+        int bri = lcd_bright_effective();
+        ((uint32_t *) d)[0] = rgb_to_pixel32(round((float)r * ((float)bri / 255.0f)), round((float)g * ((float)bri / 255.0f)), round((float)b * ((float)bri / 255.0f)));
         s += 4;
         d += 4;
     } while (-- width != 0);
