@@ -160,9 +160,12 @@ typedef struct {
 typedef struct {
 	MachineState parent;
 	AddressSpace *nsas;
-	/* IT_BOOT_ARGS: repeated early writes of the kernel command line. */
+	/* IT_BOOT_ARGS: repeated early writes of the kernel command line.
+	 * IT_AMFI_ALLOW_TASKPORT: one-shot patch of the AMFI task-port MAC hooks,
+	 * ridden on the same timer. */
 	QEMUTimer *boot_args_timer;
 	unsigned boot_args_writes;
+	bool amfi_patched;
 	qemu_irq **irq;
 	ARMCPU *cpu;
 	PL192State *vic0;

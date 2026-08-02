@@ -403,6 +403,81 @@ static void ipod_touch_stage_ramdisk(IPodTouchMachineState *nms)
 #define BOOT_ARGS_CMDLINE_OFF   0x38
 #define BOOT_ARGS_CMDLINE_LEN   256
 
+/*
+ * IT_AMFI_ALLOW_TASKPORT: let SpringBoard launch ad-hoc/invalidly-signed apps.
+ *
+ * amfi_allow_any_signature forgives code-page validation at exec, so a decrypted
+ * (Clutch) app *runs* -- but it does not confer platform-binary status. When
+ * SpringBoard spawns an app it then reaches for the child's task port to wire up
+ * the app before resuming it (task_name_for_pid -> mac_proc_check_get_task_name);
+ * AMFI's policy hook grants that only for a validly-signed binary, so for a
+ * decrypted app SpringBoard logs "Failed to spawn ...: Unable to obtain a task
+ * name port right ... (os/kern) failure" and kills it (exit 1). No AMFI
+ * enforcement-disable boot-arg relaxes this path (amfi_allow_any_signature /
+ * cs_enforcement_disable / amfi_get_out_of_my_way / amfi_unrestrict_task_for_pid
+ * were all tried; the failure is identical), and get-task-allow on the target
+ * does not help either.
+ *
+ * The single kernel choke points are the MAC framework's
+ *   mac_proc_check_get_task_name (VA 0xc01ab2a0) and
+ *   mac_proc_check_get_task      (VA 0xc01ab200)
+ * which task_name_for_pid / task_for_pid consult; a zero return means "allowed".
+ * We patch each prologue to `movs r0,#0 ; bx lr` so every task-port request is
+ * granted, exactly as it is for a platform binary. This is the userspace-signing
+ * analog of amfi_allow_any_signature and, like IT_BOOT_ARGS, it lives entirely in
+ * the emulator -- no image edits, and it applies to any app however it arrived
+ * (offline injection or over-the-wire install). The kernelcache is decrypted in
+ * DRAM (VA->phys slide 0xB8000000: VA 0xC0000000 == phys 0x08000000), so the
+ * code bytes are patchable from the host once the kernel image is present; we
+ * ride the same early repeated timer as the boot-args write and only patch once
+ * the expected prologue (push {r4-r7,lr}) is in place. Addresses/slide are env-
+ * overridable for other builds. Gated on IT_AMFI_ALLOW_TASKPORT; 2.1.1 untouched.
+ */
+#define AMFI_HOOK_SLIDE          0xB8000000u
+#define AMFI_GET_TASK_NAME_VA    0xC01AB2A0u
+#define AMFI_GET_TASK_VA         0xC01AB200u
+
+static bool it_amfi_patch_one(IPodTouchMachineState *nms, uint32_t va, uint32_t slide)
+{
+    static const uint8_t stub[4] = { 0x00, 0x20, 0x70, 0x47 }; /* movs r0,#0; bx lr */
+    uint32_t pa = va - slide;
+    uint8_t cur[4];
+
+    address_space_rw(nms->nsas, pa, MEMTXATTRS_UNSPECIFIED, cur, sizeof(cur), 0);
+    if (cur[0] == stub[0] && cur[1] == stub[1] &&
+        cur[2] == stub[2] && cur[3] == stub[3]) {
+        return true; /* already patched */
+    }
+    /* Expected Thumb prologue "push {r4,r5,r6,r7,lr}" == 0xB5F0. Only patch the
+     * real function, never mid-decrypt garbage. */
+    if (!(cur[0] == 0xF0 && cur[1] == 0xB5)) {
+        return false;
+    }
+    address_space_rw(nms->nsas, pa, MEMTXATTRS_UNSPECIFIED, (void *)stub,
+                     sizeof(stub), 1);
+    return true;
+}
+
+static void ipod_touch_amfi_patch_now(IPodTouchMachineState *nms)
+{
+    const char *slide_s = getenv("IT_AMFI_HOOK_SLIDE");
+    const char *gtn_s = getenv("IT_AMFI_GET_TASK_NAME_VA");
+    const char *gt_s = getenv("IT_AMFI_GET_TASK_VA");
+    uint32_t slide = slide_s ? (uint32_t)strtoul(slide_s, NULL, 0) : AMFI_HOOK_SLIDE;
+    uint32_t gtn = gtn_s ? (uint32_t)strtoul(gtn_s, NULL, 0) : AMFI_GET_TASK_NAME_VA;
+    uint32_t gt = gt_s ? (uint32_t)strtoul(gt_s, NULL, 0) : AMFI_GET_TASK_VA;
+
+    if (!getenv("IT_AMFI_ALLOW_TASKPORT") || nms->amfi_patched) {
+        return;
+    }
+    if (it_amfi_patch_one(nms, gtn, slide) &&
+        it_amfi_patch_one(nms, gt, slide)) {
+        nms->amfi_patched = true;
+        fprintf(stderr, "[IT_AMFI_ALLOW_TASKPORT] patched mac_proc_check_get_task"
+                "{,_name} (0x%08x, 0x%08x) to allow\n", gt, gtn);
+    }
+}
+
 static void ipod_touch_set_boot_args_now(void *opaque)
 {
     IPodTouchMachineState *nms = (IPodTouchMachineState *)opaque;
@@ -412,8 +487,11 @@ static void ipod_touch_set_boot_args_now(void *opaque)
     uint8_t buf[BOOT_ARGS_CMDLINE_LEN];
     size_t n;
 
+    /* AMFI task-port patch rides this same early repeated timer. */
+    ipod_touch_amfi_patch_now(nms);
+
     if (!args) {
-        return;
+        goto rearm;
     }
 
     if (addr_s) {
@@ -466,12 +544,18 @@ static void ipod_touch_set_boot_args_now(void *opaque)
                 ba, args);
     }
     nms->boot_args_writes++;
+
+rearm:
     {
         const char *rep_s = getenv("IT_BOOT_ARGS_REPEAT");
         const char *iv_s = getenv("IT_BOOT_ARGS_INTERVAL_MS");
         unsigned rep = rep_s ? (unsigned)strtoul(rep_s, NULL, 0) : 24;
         uint64_t iv = iv_s ? strtoull(iv_s, NULL, 0) : 500;
-        if (nms->boot_args_writes < rep) {
+        /* Keep re-arming while there is still work: the boot-args string needs
+         * to be re-asserted a few times, and the AMFI patch waits for the
+         * kernelcache to appear in DRAM. */
+        bool amfi_pending = getenv("IT_AMFI_ALLOW_TASKPORT") && !nms->amfi_patched;
+        if (nms->boot_args_writes < rep || amfi_pending) {
             timer_mod(nms->boot_args_timer,
                       qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + iv);
         }
@@ -483,11 +567,12 @@ static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
     const char *delay_s = getenv("IT_BOOT_ARGS_DELAY_MS");
     uint64_t delay_ms = delay_s ? strtoull(delay_s, NULL, 0) : 2000;
 
-    if (!getenv("IT_BOOT_ARGS")) {
+    if (!getenv("IT_BOOT_ARGS") && !getenv("IT_AMFI_ALLOW_TASKPORT")) {
         return;
     }
 
     nms->boot_args_writes = 0;
+    nms->amfi_patched = false;
     nms->boot_args_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                         ipod_touch_set_boot_args_now, nms);
     timer_mod(nms->boot_args_timer,
@@ -976,6 +1061,37 @@ static uint32_t s5l8720_usb_hwcfg[] = {
     0x01f08024
 };
 
+/*
+ * The volume buttons are ACTIVE LOW; hold and menu are not.
+ *
+ * The device tree says so directly: function-button_hold <gpio 0x0c02 0x100>
+ * and function-button_menu <gpio 0x0c01 0x100> carry 0x100, while
+ * function-button_volup <gpio 0x0902 0x000> and function-button_voldown
+ * <gpio 0x0c00 0x000> carry 0. We zeroed every pad at reset and treated
+ * pad-set as pressed for all four, so from boot - with no input at all - iOS
+ * saw BOTH volume buttons held down. It emitted volume changes continuously,
+ * SpringBoard re-showed the HUD on each one so it never dismissed, and because
+ * up and down were both held the level wandered instead of sitting still.
+ * That is exactly the "volume HUD flickering between 3-4 bars from boot"
+ * symptom, and visiting Settings > Sounds only masked it for that session.
+ *
+ * So park these two high and pull them down to press. Hold and menu are
+ * untouched, which is why they always worked.
+ */
+static bool volbtn_is_pressed(IPodTouchMultitouchState *s, uint32_t gpio)
+{
+    return gpio_is_off(s->gpio_state->gpio_state, gpio);
+}
+
+static void volbtn_press(IPodTouchMultitouchState *s, uint32_t gpio, bool pressed)
+{
+    if (pressed) {
+        gpio_set_off(s->gpio_state->gpio_state, gpio);
+    } else {
+        gpio_set_on(s->gpio_state->gpio_state, gpio);
+    }
+}
+
 static void ipod_touch_key_event(void *opaque, int keycode)
 {
     bool do_irq = false;
@@ -1019,12 +1135,13 @@ static void ipod_touch_key_event(void *opaque, int keycode)
         gpio_selector = GPIO_BUTTON_VOLDOWN_IRQ % NUM_GPIO_PINS;
         button_gpio = GPIO_BUTTON_VOLDOWN;
 
-        if(keycode == KEY_MIN_DOWN && gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLDOWN)) {
-            gpio_set_on(s->gpio_state->gpio_state, GPIO_BUTTON_VOLDOWN);
+        /* Active low: pressed pulls the pad down. See volbtn_press() above. */
+        if(keycode == KEY_MIN_DOWN && !volbtn_is_pressed(s, GPIO_BUTTON_VOLDOWN)) {
+            volbtn_press(s, GPIO_BUTTON_VOLDOWN, true);
             do_irq = true;
         }
-        else if(keycode == KEY_MIN_UP && !gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLDOWN)) {
-            gpio_set_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLDOWN);
+        else if(keycode == KEY_MIN_UP && volbtn_is_pressed(s, GPIO_BUTTON_VOLDOWN)) {
+            volbtn_press(s, GPIO_BUTTON_VOLDOWN, false);
             do_irq = true;
         }
     }
@@ -1034,12 +1151,13 @@ static void ipod_touch_key_event(void *opaque, int keycode)
         gpio_selector = GPIO_BUTTON_VOLUP_IRQ % NUM_GPIO_PINS;
         button_gpio = GPIO_BUTTON_VOLUP;
 
-        if(keycode == KEY_PLUS_DOWN && gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLUP)) {
-            gpio_set_on(s->gpio_state->gpio_state, GPIO_BUTTON_VOLUP);
+        /* Active low: pressed pulls the pad down. See volbtn_press() above. */
+        if(keycode == KEY_PLUS_DOWN && !volbtn_is_pressed(s, GPIO_BUTTON_VOLUP)) {
+            volbtn_press(s, GPIO_BUTTON_VOLUP, true);
             do_irq = true;
         }
-        else if(keycode == KEY_PLUS_UP && !gpio_is_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLUP)) {
-            gpio_set_off(s->gpio_state->gpio_state, GPIO_BUTTON_VOLUP);
+        else if(keycode == KEY_PLUS_UP && volbtn_is_pressed(s, GPIO_BUTTON_VOLUP)) {
+            volbtn_press(s, GPIO_BUTTON_VOLUP, false);
             do_irq = true;
         }
     }
