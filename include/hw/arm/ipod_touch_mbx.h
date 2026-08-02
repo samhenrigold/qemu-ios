@@ -14,6 +14,7 @@ typedef struct IPodTouchMBXState {
     MemoryRegion iomem1;
     MemoryRegion iomem2;
     uint64_t addr;
+    bool mmu_written;   /* has the guest ever driven MBX_MMU_CTRL_REG? */
     bool alreadypatched;
 
     /* irq_enabled (the mbx-irq machine option, default on) gates the verified
