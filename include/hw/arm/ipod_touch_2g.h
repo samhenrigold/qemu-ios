@@ -50,6 +50,7 @@
 #define S5L8720_SPI3_IRQ 0x1C
 #define S5L8720_I2C1_IRQ 0x16
 #define S5L8720_TVOUT_SDO_IRQ 0x1E
+#define S5L8720_TVOUT_VSYNC_IRQ 0x26
 #define S5L8720_SHA1_IRQ 0x28
 #define S5L8720_SDIO_IRQ 0x2A
 /* From the real device's ioreg: the mbx node's interrupts property is 0x35. */
