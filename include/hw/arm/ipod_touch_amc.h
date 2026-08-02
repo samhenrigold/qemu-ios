@@ -32,6 +32,25 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchAMCState, IPOD_TOUCH_AMC)
 #define AMC_CMD_START       0x04
 #define AMC_STATE_DONE      0x7
 
+/*
+ * A stream job: the driver fills the 0x938-0x97c descriptor block, writes the
+ * command at 0x99c and then kicks it at 0x984/0x988. Those are the only writes
+ * that mean "start work", i.e. the only ones that should raise the completion
+ * interrupt.
+ */
+#define AMC_JOB_CMD         0x99c
+#define AMC_JOB_GO          0x984
+#define AMC_JOB_GO2         0x988
+
+/*
+ * Per-channel stream position, read through the accessor at VA 0xc0611864 as
+ * 0xa44 + n * 0x14. Not modelled: it reads back 0, which is why the driver
+ * concludes the engine produced nothing. Making it advance on its own was
+ * tried and changed the driver's behaviour not at all.
+ */
+#define AMC_POS_BASE        0xa44
+#define AMC_POS_STRIDE      0x14
+
 #define AMC_INT_ACK_MASK    0x7fff
 
 #define AMC_INT_ACK         0xc48   /* W: acknowledge (value & 0x7fff) */

@@ -77,6 +77,7 @@ typedef struct IPodTouchI2SState {
     bool active;          /* SWVoiceOut is active */
     bool running;         /* TX command == run */
 
+    FILE *dump;           /* IT_I2S_DUMP: raw s16le stereo tap of the FIFO */
     uint64_t total_bytes; /* lifetime PCM bytes seen at the FIFO (debug) */
     uint64_t dropped;     /* bytes dropped on ring overflow (debug) */
 } IPodTouchI2SState;

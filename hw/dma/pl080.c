@@ -329,6 +329,17 @@ static void pl080_write(void *opaque, hwaddr offset,
         case 4: /* Configuration */
             //printf("%s: setting configuration of channel %d to 0x%08x\n", __func__, i, value);
             s->chan[i].conf = value;
+            /* IT_DMA_TRACE=1: one line per channel start, which is how you see
+             * whether anything is ever pointed at a peripheral FIFO. */
+            static int trace = -1;
+            if (trace < 0) {
+                trace = getenv("IT_DMA_TRACE") != NULL;
+            }
+            if (trace) {
+                fprintf(stderr, "[dma] ch%d src=%08x dst=%08x ctrl=%08x "
+                        "conf=%08x\n", i, s->chan[i].src, s->chan[i].dest,
+                        s->chan[i].ctrl, (uint32_t)value);
+            }
             pl080_run(s);
             break;
         }
