@@ -1329,17 +1329,19 @@ enum { OSK_IDLE = 0, OSK_DOWN, OSK_GAP };
  * Key centres in panel pixels for the portrait QWERTY keyboard, 320x480.
  * The keyboard occupies the bottom 216 px (y 264..480); rows are 44 px apart.
  *
- * THESE ARE NOMINAL AND MUST BE CALIBRATED against a screenshot of the real
- * guest keyboard before use - see the calibration step in the plan.
+ * MEASURED from a real 2.1.1 keyboard (Notes, portrait) by locating the light
+ * key faces in a screendump: row 1 has ten 32px-pitch keys centred on 32i+15,
+ * row 2 nine on 32i+31, row 3 seven on 32i+63, rows 54px apart. Verified by
+ * typing: 'qwerty 42' came out exactly right, 9/9 characters.
  */
-#define OSK_ROW1_Y 290        /* q w e r t y u i o p */
-#define OSK_ROW2_Y 334        /* a s d f g h j k l   */
-#define OSK_ROW3_Y 378        /* shift z x c v b n m delete */
-#define OSK_ROW4_Y 430        /* .?123  space  return */
+#define OSK_ROW1_Y 296        /* q w e r t y u i o p */
+#define OSK_ROW2_Y 350        /* a s d f g h j k l   */
+#define OSK_ROW3_Y 404        /* shift z x c v b n m delete */
+#define OSK_ROW4_Y 458        /* .?123  space  return */
 
-#define OSK_SHIFT_X   22
+#define OSK_SHIFT_X   24
 #define OSK_DELETE_X 298
-#define OSK_PAGE_X    22      /* "123" on the letters page, "ABC" on the other */
+#define OSK_PAGE_X    30      /* ".?123" on the letters page, "ABC" on the other */
 #define OSK_SPACE_X  160
 #define OSK_RETURN_X 285
 
@@ -1351,11 +1353,16 @@ static const char osk_num_row1[]   = "1234567890";
 static const char osk_num_row2[]   = "-/:;()$&@\"";
 static const char osk_num_row3[]   = ".,?!'";
 
-/* Evenly spaced keys: n keys centred across the screen with `pitch` spacing. */
-static int osk_row_x(int index, int count, int pitch)
+/*
+ * Measured key centres. The three letter rows are each evenly spaced at a 32px
+ * pitch but start at a different left offset, so index them by row rather than
+ * deriving the offset from the key count.
+ */
+static const int osk_row_x0[4] = { 0, 15, 31, 63 };
+
+static int osk_row_x(int index, int row)
 {
-	int span = pitch * count;
-	return (320 - span) / 2 + pitch * index + pitch / 2;
+	return osk_row_x0[row] + 32 * index;
 }
 
 /*
@@ -1388,27 +1395,35 @@ static bool osk_locate(uint16_t ch, int *x, int *y, bool *numeric, bool *shift)
 	}
 
 	if ((p = strchr(osk_alpha_row1, lower)) && lower) {
-		*x = osk_row_x(p - osk_alpha_row1, 10, 32); *y = OSK_ROW1_Y; return true;
+		*x = osk_row_x(p - osk_alpha_row1, 1); *y = OSK_ROW1_Y; return true;
 	}
 	if ((p = strchr(osk_alpha_row2, lower)) && lower) {
-		*x = osk_row_x(p - osk_alpha_row2, 9, 32); *y = OSK_ROW2_Y; return true;
+		*x = osk_row_x(p - osk_alpha_row2, 2); *y = OSK_ROW2_Y; return true;
 	}
 	if ((p = strchr(osk_alpha_row3, lower)) && lower) {
-		*x = osk_row_x(p - osk_alpha_row3, 7, 32); *y = OSK_ROW3_Y; return true;
+		*x = osk_row_x(p - osk_alpha_row3, 3); *y = OSK_ROW3_Y; return true;
 	}
 
 	*numeric = true;
 	if ((p = strchr(osk_num_row1, (char)ch)) && ch) {
-		*x = osk_row_x(p - osk_num_row1, 10, 32); *y = OSK_ROW1_Y; return true;
+		*x = osk_row_x(p - osk_num_row1, 1); *y = OSK_ROW1_Y; return true;
 	}
 	if ((p = strchr(osk_num_row2, (char)ch)) && ch) {
-		*x = osk_row_x(p - osk_num_row2, 10, 32); *y = OSK_ROW2_Y; return true;
+		*x = osk_row_x(p - osk_num_row2, 2); *y = OSK_ROW2_Y; return true;
 	}
-	if ((p = strchr(osk_num_row3, (char)ch)) && ch) {
-		/* row 3 of the numeric page is inset by the shift/delete keys */
-		*x = osk_row_x(p - osk_num_row3, 5, 32) ; *y = OSK_ROW3_Y; return true;
-	}
-	return false;   /* not reachable without the #+= third page */
+	/*
+	 * Row 3 of the NUMERIC page is deliberately not mapped. It is not the
+	 * letters-page geometry - its leftmost key is "#+=", which switches to a
+	 * THIRD page this state machine does not model. Reusing the letters-page
+	 * coordinates here put a tap on "#+=", stranding the keyboard on the
+	 * symbols page, after which every subsequent coordinate was wrong and
+	 * characters landed silently in the wrong places (observed: typing "Zz"
+	 * produced ".."). Failing loudly is much better than desynchronising.
+	 *
+	 * To support . , ? ! ' properly, measure that row on the numeric page and
+	 * add it with its own offsets, exactly as the letter rows are handled.
+	 */
+	return false;   /* not typeable without modelling the #+= third page */
 }
 
 static void osk_push_tap(IPodTouchMachineState *nms, int x, int y)
