@@ -285,10 +285,6 @@ static void fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
  * DATA payload is mapped into. The img3 payload is mapped at IBOOT_MEM_BASE
  * with file offset == PA - IBOOT_MEM_BASE, and the string occurs exactly once
  * in both builds' decrypted iBoot.
- *
- * Note there is deliberately no boot-args poke here. iBoot reads boot-args out
- * of the NOR nvram "common" atom, which nor_set_boot_args() rewrites properly;
- * the old poke targeted a 5F138-only runtime buffer address.
  */
 #define IBOOT_SCAN_PA_START  0x0ff00000u
 #define IBOOT_SCAN_LEN       0x00040000u   /* covers both builds' iBoot images */
@@ -325,8 +321,43 @@ static void patch_iboot_bluetooth_node(void)
     printf("[IBOOT] bluetooth node string not found in iBoot; not patching\n");
 }
 
+/*
+ * 2.1.1's kernel command line.
+ *
+ * 5F138 iBoot builds its boot_args from a runtime buffer at PA 0x0FF2A584 and
+ * hands the result to XNU. The NOR nvram path is not a substitute: 7E18 iBoot
+ * heap-panics on any NOR boot-args (see nor_set_boot_args()), so the nvram
+ * atom is deliberately left alone, and with no poke the kernel comes up with
+ * an empty command line -- no rd=disk0s1, so it cannot find its root device,
+ * resets, and iBoot restarts. That is a silent boot loop: the Apple logo stays
+ * up, "Boot Failure Count" climbs, and no kernel serial output ever appears.
+ *
+ * iBoot overwrites the buffer as it runs, hence the rewrite on every NAND read
+ * rather than a once-only patch.
+ *
+ * The address is 5F138-specific, so this is skipped on the direct-iBoot
+ * (3.1.3 / 7E18) path, which sets its command line via IT_BOOT_ARGS instead.
+ */
+#define IBOOT_5F138_BOOT_ARGS_PA  0x0ff2a584u
+
+static void patch_iboot_boot_args(void)
+{
+    static const char boot_args[] =
+        "kextlog=0xfff debug=0x8 cpus=1 rd=disk0s1 serial=1 pmu-debug=0x1 "
+        "io=0xffff8fff debug-usb=0xffffffff amfi_allow_any_signature=1 -v "
+        "zalloc_debug";
+
+    if (getenv("IT_DIRECT_IBOOT")) {
+        return;
+    }
+
+    cpu_physical_memory_write(IBOOT_5F138_BOOT_ARGS_PA, boot_args,
+                              strlen(boot_args));
+}
+
 static void read_nand_pages(IPodTouchFMSSState *s)
 {
+    patch_iboot_boot_args();
     patch_iboot_bluetooth_node();
 
     int page_out_buf_ind = 0;
