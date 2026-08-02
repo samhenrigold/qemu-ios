@@ -1,3 +1,21 @@
+"""Edit the SysCfg block in a NOR image (Mod#, Regn, SrNm, Batt, ...).
+
+SAFE ALONGSIDE SHSH WRAPPING. SysCfg lives at 0x4000 and the first signed img3
+starts at 0x8000, so writing here cannot disturb an image's signature. Verified
+by offset, not assumed.
+
+BUT: the NOR is load-bearing since the SHSH wrap landed. 3.x iBoot unwraps each
+flash img3's SHSH under the device UID before verifying it, so a NOR whose
+images carry plaintext SHSH fails validation SILENTLY - no error, just a black
+screen where the boot logo should be and a device tree that will not load. If
+you ever REGENERATE this file, go through imgtools/build_nor.py, which wraps by
+default. Do not pass --no-wrap-shsh for a 3.x image. See memory
+qemu-ios-shsh-wrap.
+
+Note also the wrap is keyed on the emulated UID, so a wrapped NOR only validates
+on a device with that UID - which is faithful, since a real restored NOR is
+device-bound the same way.
+"""
 #!/usr/bin/env python3
 """Read and edit the SysCfg block in an iPod touch NOR image.
 
