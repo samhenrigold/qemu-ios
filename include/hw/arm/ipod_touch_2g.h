@@ -19,6 +19,8 @@
 #include "hw/arm/ipod_touch_spi.h"
 #include "hw/arm/ipod_touch_sha1.h"
 #include "hw/arm/ipod_touch_amc.h"
+#include "hw/arm/ipod_touch_i2s.h"
+#include "hw/arm/ipod_touch_lm48821.h"
 #include "hw/arm/ipod_touch_aes.h"
 #include "hw/arm/ipod_touch_pke.h"
 #include "hw/arm/ipod_touch_unknown1.h"
@@ -54,6 +56,9 @@
 #define S5L8720_TVOUT_VSYNC_IRQ 0x26
 #define S5L8720_SHA1_IRQ 0x28
 #define S5L8720_AMC_IRQ 0x12
+/* i2s0 interrupts=0x2c but interrupt-parent is the GPIO IC, so this is a
+ * GPIO interrupt number: group 0x2c/32 = 1, bit 0x2c%32 = 12. */
+#define S5L8720_I2S0_GPIO_INT 0x2C
 #define S5L8720_SDIO_IRQ 0x2A
 /* From the real device's ioreg: the mbx node's interrupts property is 0x35. */
 #define S5L8720_MBX_IRQ 0x35
@@ -131,6 +136,7 @@ extern const int S5L8900_GPIO_IRQS[5];
 #define TIMER1_MEM_BASE       0x3C700000
 #define WDT_MEM_BASE          0x3C800000
 #define I2C1_MEM_BASE         0x3C900000
+#define I2S0_MEM_BASE         0x3CA00000
 #define UART0_MEM_BASE        0x3CC00000
 #define SPI1_MEM_BASE         0x3CE00000
 #define GPIO_MEM_BASE         0x3CF00000
@@ -154,6 +160,9 @@ typedef struct {
 typedef struct {
 	MachineState parent;
 	AddressSpace *nsas;
+	/* IT_BOOT_ARGS: repeated early writes of the kernel command line. */
+	QEMUTimer *boot_args_timer;
+	unsigned boot_args_writes;
 	qemu_irq **irq;
 	ARMCPU *cpu;
 	PL192State *vic0;

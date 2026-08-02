@@ -376,23 +376,46 @@ static void ipod_touch_set_boot_args_now(void *opaque)
     address_space_rw(nms->nsas, ba + BOOT_ARGS_CMDLINE_OFF,
                      MEMTXATTRS_UNSPECIFIED, buf, sizeof(buf), 1);
 
-    fprintf(stderr, "[IT_BOOT_ARGS] boot_args @ 0x%08x; CommandLine = [ %s ]\n",
-            ba, args);
+    /*
+     * The kernel latches boot-args early: consumers like AMFI read
+     * amfi_allow_any_signature once in their init, which runs a few seconds
+     * into boot -- and under -cpu max the virtual clock advances fast, so a
+     * single late write can miss it. Re-arm across an early window (guided by
+     * IT_BOOT_ARGS_REPEAT / IT_BOOT_ARGS_INTERVAL_MS) so the string is present
+     * before any consumer reads it and stays present afterwards.
+     */
+    if (nms->boot_args_writes == 0) {
+        fprintf(stderr, "[IT_BOOT_ARGS] boot_args @ 0x%08x; CommandLine = [ %s ]\n",
+                ba, args);
+    }
+    nms->boot_args_writes++;
+    {
+        const char *rep_s = getenv("IT_BOOT_ARGS_REPEAT");
+        const char *iv_s = getenv("IT_BOOT_ARGS_INTERVAL_MS");
+        unsigned rep = rep_s ? (unsigned)strtoul(rep_s, NULL, 0) : 24;
+        uint64_t iv = iv_s ? strtoull(iv_s, NULL, 0) : 500;
+        if (nms->boot_args_writes < rep) {
+            timer_mod(nms->boot_args_timer,
+                      qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + iv);
+        }
+    }
 }
 
 static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
 {
     const char *delay_s = getenv("IT_BOOT_ARGS_DELAY_MS");
-    uint64_t delay_ms = delay_s ? strtoull(delay_s, NULL, 0) : 8000;
-    QEMUTimer *t;
+    uint64_t delay_ms = delay_s ? strtoull(delay_s, NULL, 0) : 2000;
 
     if (!getenv("IT_BOOT_ARGS")) {
         return;
     }
 
-    t = timer_new_ms(QEMU_CLOCK_VIRTUAL, ipod_touch_set_boot_args_now, nms);
-    timer_mod(t, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + delay_ms);
-    fprintf(stderr, "[IT_BOOT_ARGS] scheduled at T+%llu ms\n",
+    nms->boot_args_writes = 0;
+    nms->boot_args_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                        ipod_touch_set_boot_args_now, nms);
+    timer_mod(nms->boot_args_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + delay_ms);
+    fprintf(stderr, "[IT_BOOT_ARGS] first write scheduled at T+%llu ms\n",
             (unsigned long long)delay_ms);
 }
 
@@ -1746,9 +1769,30 @@ static void ipod_touch_machine_init(MachineState *machine)
     I2CSlave *accelerometer = i2c_slave_create_simple(i2c_state->bus, "lis302dl", 0x1D);
     nms->lis302dl_state = LIS302DL(accelerometer);
 
-    // init the audio codec (CS42L58, device tree /arm-io/i2c0/audio0)
+    // init the audio codec (CS42L58, device tree /arm-io/i2c0/audio0) and the
+    // LM48821 speaker amp (/arm-io/i2c0/spkr-amp)
     if (ipod_touch_audio_hw_enabled()) {
         i2c_slave_create_simple(i2c_state->bus, "cs42l58", 0x4A);
+        i2c_slave_create_simple(i2c_state->bus, "lm48821", 0x76);
+
+        /*
+         * I2S0. The TX FIFO at +0x10 is a PL080 DMA target (dma-parent is
+         * dmac0), so PCM arrives as ordinary MMIO writes from the DMA engine.
+         *
+         * The interrupt is deliberately left unconnected. The device tree says
+         * i2s0 has interrupts=<0x2c> but its interrupt-parent is the *GPIO*
+         * controller, not the VIC -- the same numbering the multi-touch
+         * (0x6d -> group 3, bit 13) and the buttons use -- so 0x2c means GPIO
+         * group 1, bit 12, and wiring it as VIC line 0x2c would target an
+         * unrelated device. Nothing needs it yet: the driver never polls and
+         * no PCM reaches the FIFO until the AMC completes a transfer. Raise it
+         * through sysic->gpio_int_status[1] bit 12 when that changes.
+         */
+        dev = qdev_new(TYPE_IPOD_TOUCH_I2S);
+        busdev = SYS_BUS_DEVICE(dev);
+        sysbus_realize(busdev, &error_fatal);
+        memory_region_add_subregion(sysmem, I2S0_MEM_BASE,
+                                    &IPOD_TOUCH_I2S(dev)->iomem);
     }
 
     // Init I2C1
