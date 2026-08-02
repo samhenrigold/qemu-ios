@@ -70,6 +70,28 @@ static void s5l8900_gpio_reset(DeviceState *dev)
     IPodTouchGPIOState *s = IPOD_TOUCH_GPIO(dev);
 
     memset(s->gpio_state, 0, sizeof(s->gpio_state));
+
+    /*
+     * IT_VOLBTN_HIGH: park the two volume pads high at reset.
+     *
+     * The real device tree flags these two differently from the buttons that
+     * work: function-button_hold <gpio 0x0c02 0x100> and button_menu
+     * <gpio 0x0c01 0x100> carry 0x100, while button_volup <gpio 0x0902 0x000>
+     * and button_voldown <gpio 0x0c00 0x000> carry 0. If 0 means active-low,
+     * then a pad we leave at 0 reads to iOS as a button HELD DOWN - from boot,
+     * with no input - which would make it emit volume changes continuously and
+     * re-show the HUD forever. Both held at once would also make the level
+     * wander rather than sit still, which is what the user sees.
+     *
+     * This is a probe, not a fix: it changes only the RESTING level and leaves
+     * the press/release path alone, so it isolates "do we assert these pins at
+     * rest" from "does a press still work". An earlier experiment changed both
+     * at once and could not tell the two apart.
+     */
+    if (getenv("IT_VOLBTN_HIGH")) {
+        gpio_set_on(s->gpio_state, GPIO_BUTTON_VOLUP);
+        gpio_set_on(s->gpio_state, GPIO_BUTTON_VOLDOWN);
+    }
 }
 
 static void s5l8900_gpio_class_init(ObjectClass *klass, void *data)
