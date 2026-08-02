@@ -185,6 +185,20 @@ def build(base_path, all_flash, out_path, order, verbose=True,
         wrapped = False
         if uid_key is not None:
             data, wrapped = wrap_shsh(data, uid_key)
+            if not wrapped:
+                # FATAL, deliberately. A NOR whose images carry plaintext SHSH
+                # fails 3.x iBoot's in-place unwrap SILENTLY -- no error, just a
+                # black screen where the boot logo should be and a device tree
+                # that will not load. That exact failure cost days to find, and
+                # the only trace of it here was the absence of two words in one
+                # line of build output. If you genuinely want an unwrapped image
+                # (2.x, whose iBoot has no unwrap step), pass --no-wrap-shsh and
+                # say so explicitly.
+                raise SystemExit(
+                    "%s: no SHSH tag to wrap, or its length is not a multiple "
+                    "of 16 -- refusing to write a NOR that will fail "
+                    "validation silently. Pass --no-wrap-shsh if that is "
+                    "really what you want." % ident)
         blob = pack_img3(data, gran)
         end = off + len(blob)
         if end > NVRAM_OFF:
