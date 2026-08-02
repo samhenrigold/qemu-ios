@@ -159,7 +159,20 @@ static int lis302dl_send(I2CSlave *i2c, uint8_t data)
     /* a data byte written to the current register */
     switch (s->cmd) {
         case ACCEL_CTRL_REG1: s->ctrl_reg1 = data; break;
-        case ACCEL_CTRL_REG2: s->ctrl_reg2 = data; break;
+        case ACCEL_CTRL_REG2:
+            /*
+             * BOOT (bit 6) reloads the part's trimming registers and the
+             * hardware clears it when that finishes. AppleLIS302DL sets it in
+             * enableAccelerometer and polls for it to return to zero, and
+             * panics the kernel outright if it has not cleared within 500 ms:
+             *   "AppleLIS302DL::enableAccelerometer - Boot bit did not return
+             *    to zero in 500 msecs. That is wrong."
+             * Echoing the write back kept the bit set forever, so 3.1.3 panicked
+             * as soon as SpringBoard brought the accelerometer up. Complete the
+             * reboot immediately and clear the bit.
+             */
+            s->ctrl_reg2 = data & ~ACCEL_CTRL_REG2_BOOT;
+            break;
         case ACCEL_CTRL_REG3: s->ctrl_reg3 = data; break;
         default:
             if (lis302dl_debug()) {
