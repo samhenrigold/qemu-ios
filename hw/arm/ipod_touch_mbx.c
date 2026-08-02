@@ -163,8 +163,16 @@ static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
             if (s->irq_enabled) {
                 val = (val & ~MBX_MMU_ACK) | ((val & MBX_MMU_ENABLE) ? MBX_MMU_ACK : 0);
             }
-            if (val == 0) {
-                val = MBX_MMU_ACK; /* never written: as before, report ready */
+            if (!s->mmu_written) {
+                /*
+                 * Only before the guest has ever driven this register does
+                 * "ready" make sense. Testing val == 0 instead meant the
+                 * fallback also fired on a legitimate *disable* request
+                 * (bit 0 clear -> mirror gives 0), so bit 16 never cleared and
+                 * AppleMBX's MMU teardown loop spun forever - 100% of guest CPU
+                 * in the register accessor at AppleMBX+0xfb0.
+                 */
+                val = MBX_MMU_ACK;
             }
             break;
         default:
@@ -184,6 +192,7 @@ static void ipod_touch_mbx1_write(void *opaque, hwaddr addr, uint64_t val, unsig
     {
 	case MBX_MMU_CTRL_REG:
 	    s->addr = val;
+	    s->mmu_written = true;
 	    break;
 	case MBX_SUBMIT_REG:
 	    if (s->complete_shim) {
@@ -603,6 +612,7 @@ static void ipod_touch_mbx_reset(DeviceState *dev)
     IPodTouchMBXState *s = IPOD_TOUCH_MBX(dev);
 
     s->addr = 0;
+    s->mmu_written = false;
     s->status = 0;
     s->alreadypatched = false;
     if (s->irq) {
