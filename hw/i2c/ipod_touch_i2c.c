@@ -52,16 +52,53 @@ static bool i2c_nak_enabled(void)
     return on;
 }
 
-static void s5l8900_i2c_set_ack(IPodTouchI2CState *s, int start_rc)
+/*
+ * Whether any slave on this bus claims an address.
+ *
+ * The first version of this NAKed on i2c_start_transfer()'s return value, which
+ * looked right and was not: both call sites re-derive the address from IICDS at
+ * every START, including a REPEATED start. A register read is
+ * START / addr+W / reg-index / repeated-START / addr+R, so at the repeated start
+ * IICDS need not hold the address at all, the lookup misses, and a device that
+ * is genuinely present gets NAKed. That is not theoretical - with the flag on,
+ * the D1759 PMU could no longer read or write its own registers (19 read and 35
+ * write failures in one boot) and USB cable detection stopped entirely, which is
+ * strictly worse than the bug this was meant to fix.
+ *
+ * Asking the bus which addresses are claimed cannot misfire that way: it is a
+ * property of the machine's topology, not of what happens to be in a register
+ * mid-transaction. An address no device claims is genuinely absent no matter
+ * which phase of a transfer we are in.
+ */
+static bool i2c_addr_is_claimed(IPodTouchI2CState *s, uint8_t addr)
+{
+    BusChild *kid;
+
+    QTAILQ_FOREACH(kid, &BUS(s->bus)->children, sibling) {
+        I2CSlave *slave = I2C_SLAVE(kid->child);
+
+        if (slave->address == addr) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void s5l8900_i2c_set_ack(IPodTouchI2CState *s, uint8_t addr)
 {
     if (!i2c_nak_enabled()) {
         return;   /* legacy behaviour: every address appears to ACK */
     }
-    if (start_rc) {
-        s->status |= S5L8900_IICSTAT_LASTBIT;   /* NAK */
-        s->active = 0;                          /* the bus never opened */
+    if (!i2c_addr_is_claimed(s, addr)) {
+        /*
+         * NAK, but leave s->active alone. A NAK is a completed address phase:
+         * the driver still needs its interrupt so it can read the status bit and
+         * return an error. Tearing the transfer down here as well turned a
+         * reported error into a wedged bus.
+         */
+        s->status |= S5L8900_IICSTAT_LASTBIT;
     } else {
-        s->status &= ~S5L8900_IICSTAT_LASTBIT;  /* ACK */
+        s->status &= ~S5L8900_IICSTAT_LASTBIT;
     }
 }
 
@@ -188,8 +225,8 @@ static void ipod_touch_i2c_write(void *opaque, hwaddr offset, uint64_t value, un
 
                     s->iicreg20 |= 0x100;
                     s->active = 1;
-                    s5l8900_i2c_set_ack(s,
-                        i2c_start_transfer(s->bus, s->data >> 1, 1));
+                    i2c_start_transfer(s->bus, s->data >> 1, 1);
+                    s5l8900_i2c_set_ack(s, s->data >> 1);
                 } else {
                     i2c_end_transfer(s->bus);
                     s->active = 0;
@@ -203,8 +240,8 @@ static void ipod_touch_i2c_write(void *opaque, hwaddr offset, uint64_t value, un
                         
                     s->iicreg20 |= 0x100;
                     s->active = 1;
-                    s5l8900_i2c_set_ack(s,
-                        i2c_start_transfer(s->bus, s->data >> 1, 0));
+                    i2c_start_transfer(s->bus, s->data >> 1, 0);
+                    s5l8900_i2c_set_ack(s, s->data >> 1);
                 } else {
                     i2c_end_transfer(s->bus);
                     s->active = 0;
