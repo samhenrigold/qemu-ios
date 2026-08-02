@@ -380,10 +380,19 @@ static MTFrame *get_frame(IPodTouchMultitouchState *s, uint8_t event, float x, f
     frame->finger_data.unk_3 = 1;
 
     // compute the velocity
+    /*
+     * velY used to be derived from x, so vertical flicks reported no vertical
+     * speed at all. The scaling was also integer-divided before the *1000, so
+     * any delta smaller than the elapsed time truncated to zero - which is
+     * every ordinary drag. Both together left velX/velY pinned at 0, and the
+     * gesture recognisers that need speed (slide-to-unlock especially) never
+     * fired. Multiply first, then divide.
+     */
     int diff_x = (int)((x - s->prev_touch_x) * MT_INTERNAL_SENSOR_SURFACE_WIDTH);
-    int diff_y = (int)((x - s->prev_touch_y) * MT_INTERNAL_SENSOR_SURFACE_HEIGHT);
-    frame->finger_data.velX = diff_x / (elapsed_ns + 1 - s->last_frame_timestamp) * 1000;
-    frame->finger_data.velY = diff_y / (elapsed_ns + 1 - s->last_frame_timestamp) * 1000;
+    int diff_y = (int)((y - s->prev_touch_y) * MT_INTERNAL_SENSOR_SURFACE_HEIGHT);
+    int64_t dt = elapsed_ns + 1 - s->last_frame_timestamp;
+    frame->finger_data.velX = (int)(diff_x * 1000 / dt);
+    frame->finger_data.velY = (int)(diff_y * 1000 / dt);
 
     frame->finger_data.x = (int)(x * MT_INTERNAL_SENSOR_SURFACE_WIDTH);
     frame->finger_data.y = (int)(y * MT_INTERNAL_SENSOR_SURFACE_HEIGHT);

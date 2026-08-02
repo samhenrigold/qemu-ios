@@ -77,7 +77,7 @@ static uint32_t mbx_guest_pc(void)
  *   if (this->0x214 != 2) return;                  <-- bails with no MMIO at all
  *   pending = [0x12c] & this->0x140;
  *   [0x134] = pending;
- *   ... 0x400 -> TA overflow, 0x10/0x20/0x200 -> state machine ...
+ *   ... 0x400 -> 2D sync, 0x10/0x20/0x200 -> state machine ...
  *   0x4 -> this->0x13c,  0x8 -> this->0x13d,  0x40 -> this->0x13e
  *   if (0x13c && 0x13d && 0x13e) -> frame done
  *   if (anything handled) bl c04e9b00               <-- queue processor
@@ -104,6 +104,19 @@ static uint32_t mbx_guest_pc(void)
 
 /* 0x4 | 0x8 | 0x40: the three the ISR folds into "frame done". */
 #define MBX_INT_FRAME_DONE 0x4c
+
+/*
+ * Bit 10: the 2D completion. Distinct from the 0x4c 3D trio above - the ISR
+ * tests it first, before any of them, and it is the only source of the
+ * driver's "2D idle" flag. Nothing in this model set it, so any guest waiting
+ * on 2D completion waited forever; that is why MBX 2D work cannot currently
+ * make progress even with LK_ENABLE_MBX2D=1.
+ *
+ * Verified against the real ISR: 2.1.1 AppleMBX c04ea478 and 3.1.3 (7E18)
+ * kernelcache c075c4e0 are structurally identical, and it is bit 0x20 - not
+ * 0x400 - that grows the TA parameter buffer, which is the actual TA overflow.
+ */
+#define MBX_INT_2D_SYNC    0x400
 
 /*
  * How often to post a completion while the driver's mask is armed. The ISR
@@ -228,7 +241,11 @@ static void ipod_touch_mbx_complete(void *opaque)
     if (!s->int_mask) {
         return;
     }
-    s->status |= MBX_INT_FRAME_DONE & s->int_mask;
+    /*
+     * Gated on the mask the driver itself armed at 0x130, so a guest that
+     * never enables 2D never sees the 2D bit.
+     */
+    s->status |= (MBX_INT_FRAME_DONE | MBX_INT_2D_SYNC) & s->int_mask;
     if (s->status && s->irq) {
         qemu_irq_raise(s->irq);
     }
