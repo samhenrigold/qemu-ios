@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_lis302dl.h"
+#include "hw/arm/ipod_touch_lcd.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 
@@ -24,8 +25,16 @@ void lis302dl_apply_orientation(LIS302DLState *s, uint32_t o)
     switch (o) {
         case 1: /* portrait, home button at bottom */          x = 0;         y = -ACCEL_1G; z = 0;        break;
         case 2: /* portrait upside down, home button at top */  x = 0;         y = ACCEL_1G;  z = 0;        break;
-        case 3: /* landscape, home button on the right */       x = ACCEL_1G;  y = 0;         z = 0;        break;
-        case 4: /* landscape, home button on the left */        x = -ACCEL_1G; y = 0;         z = 0;        break;
+        /*
+         * The part is mounted with its X axis opposite UIKit's, so the raw
+         * counts for the two landscape cases are the negatives of the UIKit
+         * gravity vector. Measured, not guessed: with x = +1g for orientation 3
+         * iOS rendered the landscape UI turned the *other* way (the window came
+         * out upside down), i.e. it read a LandscapeLeft request as
+         * LandscapeRight. Y is not inverted -- portrait comes out upright.
+         */
+        case 3: /* landscape left,  home button on the right */ x = -ACCEL_1G; y = 0;         z = 0;        break;
+        case 4: /* landscape right, home button on the left */  x = ACCEL_1G;  y = 0;         z = 0;        break;
         case 5: /* face up */                                   x = 0;         y = 0;         z = -ACCEL_1G; break;
         case 6: /* face down */                                 x = 0;         y = 0;         z = ACCEL_1G;  break;
         default: /* 0 / unknown: leave flat-portrait default */ x = 0;         y = -ACCEL_1G; z = 0;        break;
@@ -33,6 +42,8 @@ void lis302dl_apply_orientation(LIS302DLState *s, uint32_t o)
     s->orientation = o;
     s->base_x = x; s->base_y = y; s->base_z = z;
     s->out_x = x; s->out_y = y; s->out_z = z;
+    /* turn the host window to match, so landscape gets a landscape window */
+    it_display_set_orientation(o);
     if (lis302dl_debug()) {
         printf("lis302dl: orientation=%u -> x=%d y=%d z=%d\n", o, x, y, z);
     }
