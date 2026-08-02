@@ -18,6 +18,7 @@
 #include "hw/arm/ipod_touch_usb_phys.h"
 #include "hw/arm/ipod_touch_spi.h"
 #include "hw/arm/ipod_touch_sha1.h"
+#include "hw/arm/ipod_touch_amc.h"
 #include "hw/arm/ipod_touch_aes.h"
 #include "hw/arm/ipod_touch_pke.h"
 #include "hw/arm/ipod_touch_unknown1.h"
@@ -52,6 +53,7 @@
 #define S5L8720_TVOUT_SDO_IRQ 0x1E
 #define S5L8720_TVOUT_VSYNC_IRQ 0x26
 #define S5L8720_SHA1_IRQ 0x28
+#define S5L8720_AMC_IRQ 0x12
 #define S5L8720_SDIO_IRQ 0x2A
 /* From the real device's ioreg: the mbx node's interrupts property is 0x35. */
 #define S5L8720_MBX_IRQ 0x35
@@ -103,6 +105,7 @@ extern const int S5L8900_GPIO_IRQS[5];
 #define SHA1_MEM_BASE         0x38000000
 #define DMAC0_MEM_BASE        0x38200000
 #define USBOTG_MEM_BASE       0x38400000
+#define AMC_MEM_BASE          0x38500000
 #define DMAC1_0_MEM_BASE      0x38700000
 #define DISPLAY_MEM_BASE      0x38900000
 #define FMSS_MEM_BASE         0x38A00000
@@ -217,6 +220,24 @@ typedef struct {
 	QEMUTimer *pwroff_timer;
 	int pwroff_phase;
 	int pwroff_step;
+
+	/*
+	 * On-screen-keyboard typist (see ipod_touch_osk_tick). Enabled with
+	 * IT_OSK=1. Instead of queueing unichars for a guest agent to insert,
+	 * each typed character is turned into taps on iOS's own on-screen
+	 * keyboard, so the text lands in whatever process is frontmost with no
+	 * guest code at all.
+	 */
+	bool osk_enabled;
+	QEMUTimer *osk_timer;
+	uint16_t osk_pending[64];   /* unichars waiting to be turned into taps */
+	unsigned osk_p_head, osk_p_tail;
+	uint16_t osk_tapx[64], osk_tapy[64];  /* taps waiting to be delivered */
+	unsigned osk_t_head, osk_t_tail;
+	int osk_phase;              /* 0 idle, 1 finger down, 2 inter-tap gap */
+	int osk_last_x, osk_last_y; /* where the finger currently is */
+	bool osk_shifted;           /* shift key currently latched on the OSK */
+	bool osk_numeric;           /* the ".?123" page is showing */
 } IPodTouchMachineState;
 
 #endif

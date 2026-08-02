@@ -64,6 +64,26 @@ static void allocate_ram(MemoryRegion *top, const char *name, uint32_t addr, uin
 }
 
 /*
+ * Audio hardware that the machine did not model until now (the CS42L58 codec
+ * and the AMC). Both are real parts on this board, but neither was mapped
+ * before, so switching them on changes what every guest sees. 2.1.1 works
+ * today and must keep working, so they default to on only for the 3.1.3
+ * configuration (which is the one that has the audio bugs, and which is
+ * already identified everywhere else in this file by IT_DIRECT_IBOOT).
+ * "IT_AUDIO_HW=1" forces them on -- use that to try them under 2.1.1 -- and
+ * "IT_AUDIO_HW=0" forces them off.
+ */
+static bool ipod_touch_audio_hw_enabled(void)
+{
+    const char *env = getenv("IT_AUDIO_HW");
+
+    if (env) {
+        return env[0] != '0';
+    }
+    return getenv("IT_DIRECT_IBOOT") != NULL;
+}
+
+/*
  * Host wall-clock source for the boot-time clock patch. The 2G has no RTC iOS
  * reads at boot (getGMTTimeOfDay returns 0 -> the calendar starts at 1900), so we
  * patch _PEGetGMTTimeOfDay to read this cp15 register, which returns host UTC
@@ -278,6 +298,104 @@ static void ipod_touch_stage_ramdisk(IPodTouchMachineState *nms)
             (unsigned long long)delay_ms);
 }
 
+/*
+ * IT_BOOT_ARGS: set the XNU kernel command line late in boot.
+ *
+ * 3.1.3 boots with an empty command line (7E18 iBoot heap-panics on any NOR
+ * boot-args, so that path is unusable). Without it the kernel's code-signing
+ * enforcement is on and AMFI rejects the ad-hoc/invalidly-signed decrypted
+ * (Clutch) App-Store binaries at exec, so injected apps are discovered on the
+ * home screen but never launch -- whereas stock, Apple-signed apps launch
+ * normally. 2.1.1 does not need this: its own boot chain already carries
+ * amfi_allow_any_signature=1, which is exactly what makes the same binaries run
+ * there. This hook reproduces that on 3.1.3 without touching the 2.1.1 path.
+ *
+ * XNU reads the string live from boot_args->CommandLine (PE_boot_args returns
+ * PE_state.bootArgs + 0x38 on every PE_parse_boot_argn call), and the AMFI kext
+ * latches amfi_allow_any_signature once in its start(), tens of seconds into
+ * boot. So writing the string into the boot_args CommandLine buffer on a short
+ * timer -- after iBoot has built boot_args and handed off, before AMFI start --
+ * lands in a wide window and needs no guest code patching.
+ *
+ * boot_args is built by iBoot at a fixed DRAM location for a given image; we
+ * find it by signature (rev==1, virtBase==0xC0000000, physBase==0x08000000)
+ * rather than hardcode the address, and overwrite CommandLine at +0x38.
+ * IT_BOOT_ARGS_ADDR overrides the struct address; IT_BOOT_ARGS_DELAY_MS the
+ * timer. Gated entirely on IT_BOOT_ARGS; 2.1.1 is untouched.
+ */
+#define BOOT_ARGS_CMDLINE_OFF   0x38
+#define BOOT_ARGS_CMDLINE_LEN   256
+
+static void ipod_touch_set_boot_args_now(void *opaque)
+{
+    IPodTouchMachineState *nms = (IPodTouchMachineState *)opaque;
+    const char *args = getenv("IT_BOOT_ARGS");
+    const char *addr_s = getenv("IT_BOOT_ARGS_ADDR");
+    uint32_t ba = 0;
+    uint8_t buf[BOOT_ARGS_CMDLINE_LEN];
+    size_t n;
+
+    if (!args) {
+        return;
+    }
+
+    if (addr_s) {
+        ba = (uint32_t)strtoul(addr_s, NULL, 0);
+    } else {
+        /* Scan DRAM for the boot_args signature. */
+        uint32_t probe;
+        for (probe = 0x08000000; probe < 0x08000000 + 0x00800000; probe += 4) {
+            uint32_t rev_ver, virt, phys;
+            address_space_rw(nms->nsas, probe, MEMTXATTRS_UNSPECIFIED,
+                             (uint8_t *)&rev_ver, 4, 0);
+            if ((rev_ver & 0xFFFF) != 1) {
+                continue;
+            }
+            address_space_rw(nms->nsas, probe + 4, MEMTXATTRS_UNSPECIFIED,
+                             (uint8_t *)&virt, 4, 0);
+            address_space_rw(nms->nsas, probe + 8, MEMTXATTRS_UNSPECIFIED,
+                             (uint8_t *)&phys, 4, 0);
+            if (virt == 0xC0000000 && phys == 0x08000000) {
+                ba = probe;
+                break;
+            }
+        }
+        if (!ba) {
+            fprintf(stderr, "[IT_BOOT_ARGS] boot_args not found by signature; "
+                    "set IT_BOOT_ARGS_ADDR\n");
+            return;
+        }
+    }
+
+    memset(buf, 0, sizeof(buf));
+    n = strlen(args);
+    if (n >= sizeof(buf)) {
+        n = sizeof(buf) - 1;
+    }
+    memcpy(buf, args, n);
+    address_space_rw(nms->nsas, ba + BOOT_ARGS_CMDLINE_OFF,
+                     MEMTXATTRS_UNSPECIFIED, buf, sizeof(buf), 1);
+
+    fprintf(stderr, "[IT_BOOT_ARGS] boot_args @ 0x%08x; CommandLine = [ %s ]\n",
+            ba, args);
+}
+
+static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
+{
+    const char *delay_s = getenv("IT_BOOT_ARGS_DELAY_MS");
+    uint64_t delay_ms = delay_s ? strtoull(delay_s, NULL, 0) : 8000;
+    QEMUTimer *t;
+
+    if (!getenv("IT_BOOT_ARGS")) {
+        return;
+    }
+
+    t = timer_new_ms(QEMU_CLOCK_VIRTUAL, ipod_touch_set_boot_args_now, nms);
+    timer_mod(t, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + delay_ms);
+    fprintf(stderr, "[IT_BOOT_ARGS] scheduled at T+%llu ms\n",
+            (unsigned long long)delay_ms);
+}
+
 static void ipod_touch_inject_device_tree(IPodTouchMachineState *nms)
 {
     const char *dt_path = getenv("IT_INJECT_DT");
@@ -351,6 +469,7 @@ static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
          * after the iBoot image is staged so the code patch lands on top of it. */
         ipod_touch_inject_device_tree(nms);
         ipod_touch_stage_ramdisk(nms);
+        ipod_touch_stage_boot_args(nms);
     }
 }
 
@@ -942,6 +1061,8 @@ static void ipod_touch_kbd_button(int qcode, bool shift, bool down)
 	ipod_touch_key_event(s_kbd_mt, down ? base : (base | KEY_UP));
 }
 
+static void ipod_touch_osk_enqueue(IPodTouchMachineState *nms, uint16_t ch);
+
 static void ipod_touch_kbd_event(DeviceState *dev, QemuConsole *src,
                                  InputEvent *evt)
 {
@@ -988,6 +1109,15 @@ static void ipod_touch_kbd_event(DeviceState *dev, QemuConsole *src,
 
 	if (down) {
 		uint16_t ch = qcode_to_unichar(q, nms->kbd_shift);
+		if (ch && nms->osk_enabled) {
+			/* Type by tapping iOS's own on-screen keyboard. */
+			ipod_touch_osk_enqueue(nms, ch);
+			if (getenv("IT_KBD_TRACE")) {
+				fprintf(stderr, "[KBD] osk 0x%04x '%c'\n", ch,
+				        (ch >= 0x20 && ch < 0x7f) ? ch : '.');
+			}
+			return;
+		}
 		if (ch) {
 			ipod_touch_kbd_enqueue(nms, ch);
 			/* Injection into _GSPostSyntheticKeyEvent is wired up separately;
@@ -1148,6 +1278,222 @@ static void ipod_touch_powerdown_req(Notifier *n, void *opaque)
 static Notifier ipod_touch_powerdown_notifier = {
 	.notify = ipod_touch_powerdown_req,
 };
+
+/*
+ * Host keyboard -> taps on the on-screen keyboard (IT_OSK=1).
+ *
+ * The guest-agent route (contrib/it-kbd-agent, QC_POLL_INPUT) cannot work in
+ * general: on iPhone OS the focused text field and its UIKeyboardImpl live in
+ * the frontmost APPLICATION's process, so an agent injected into SpringBoard
+ * has nothing to insert into, and -[UIKeyboardImpl acceptInputString:] is a
+ * stub on the 2.1.1 device UIKit anyway. Tapping iOS's own on-screen keyboard
+ * sidesteps both: the taps go to whoever is frontmost, through the same path a
+ * finger takes, so it needs no injected code and no armv6 toolchain.
+ *
+ * The cost is that the OSK must be visible, and that we have to track its page
+ * and shift state. We only ever change those states ourselves, so tracking is
+ * exact as long as the guest does not auto-capitalise behind our back - turn
+ * "Auto-Capitalization" off in Settings > General > Keyboard (or bake
+ * KeyboardAutocapitalization=false into the image) before relying on case.
+ */
+#define OSK_TAP_DOWN_MS 60    /* finger-down duration; long enough to register,
+                                 short enough not to read as a long press      */
+#define OSK_TAP_GAP_MS  140   /* between taps, so UIKit finishes each keystroke */
+
+enum { OSK_IDLE = 0, OSK_DOWN, OSK_GAP };
+
+/*
+ * Key centres in panel pixels for the portrait QWERTY keyboard, 320x480.
+ * The keyboard occupies the bottom 216 px (y 264..480); rows are 44 px apart.
+ *
+ * THESE ARE NOMINAL AND MUST BE CALIBRATED against a screenshot of the real
+ * guest keyboard before use - see the calibration step in the plan.
+ */
+#define OSK_ROW1_Y 290        /* q w e r t y u i o p */
+#define OSK_ROW2_Y 334        /* a s d f g h j k l   */
+#define OSK_ROW3_Y 378        /* shift z x c v b n m delete */
+#define OSK_ROW4_Y 430        /* .?123  space  return */
+
+#define OSK_SHIFT_X   22
+#define OSK_DELETE_X 298
+#define OSK_PAGE_X    22      /* "123" on the letters page, "ABC" on the other */
+#define OSK_SPACE_X  160
+#define OSK_RETURN_X 285
+
+/* Row contents, in the order they appear on screen. */
+static const char osk_alpha_row1[] = "qwertyuiop";
+static const char osk_alpha_row2[] = "asdfghjkl";
+static const char osk_alpha_row3[] = "zxcvbnm";
+static const char osk_num_row1[]   = "1234567890";
+static const char osk_num_row2[]   = "-/:;()$&@\"";
+static const char osk_num_row3[]   = ".,?!'";
+
+/* Evenly spaced keys: n keys centred across the screen with `pitch` spacing. */
+static int osk_row_x(int index, int count, int pitch)
+{
+	int span = pitch * count;
+	return (320 - span) / 2 + pitch * index + pitch / 2;
+}
+
+/*
+ * Where is `ch` on the keyboard? Returns true and fills in the tap position,
+ * the page it lives on and whether shift must be latched.
+ */
+static bool osk_locate(uint16_t ch, int *x, int *y, bool *numeric, bool *shift)
+{
+	const char *p;
+	char lower;
+
+	*numeric = false;
+	*shift = false;
+
+	if (ch == ' ') {
+		*x = OSK_SPACE_X; *y = OSK_ROW4_Y; return true;
+	}
+	if (ch == '\n') {
+		*x = OSK_RETURN_X; *y = OSK_ROW4_Y; return true;
+	}
+	if (ch == 0x08) {
+		*x = OSK_DELETE_X; *y = OSK_ROW3_Y; return true;
+	}
+
+	if (ch >= 'A' && ch <= 'Z') {
+		*shift = true;
+		lower = ch - 'A' + 'a';
+	} else {
+		lower = (char)ch;
+	}
+
+	if ((p = strchr(osk_alpha_row1, lower)) && lower) {
+		*x = osk_row_x(p - osk_alpha_row1, 10, 32); *y = OSK_ROW1_Y; return true;
+	}
+	if ((p = strchr(osk_alpha_row2, lower)) && lower) {
+		*x = osk_row_x(p - osk_alpha_row2, 9, 32); *y = OSK_ROW2_Y; return true;
+	}
+	if ((p = strchr(osk_alpha_row3, lower)) && lower) {
+		*x = osk_row_x(p - osk_alpha_row3, 7, 32); *y = OSK_ROW3_Y; return true;
+	}
+
+	*numeric = true;
+	if ((p = strchr(osk_num_row1, (char)ch)) && ch) {
+		*x = osk_row_x(p - osk_num_row1, 10, 32); *y = OSK_ROW1_Y; return true;
+	}
+	if ((p = strchr(osk_num_row2, (char)ch)) && ch) {
+		*x = osk_row_x(p - osk_num_row2, 10, 32); *y = OSK_ROW2_Y; return true;
+	}
+	if ((p = strchr(osk_num_row3, (char)ch)) && ch) {
+		/* row 3 of the numeric page is inset by the shift/delete keys */
+		*x = osk_row_x(p - osk_num_row3, 5, 32) ; *y = OSK_ROW3_Y; return true;
+	}
+	return false;   /* not reachable without the #+= third page */
+}
+
+static void osk_push_tap(IPodTouchMachineState *nms, int x, int y)
+{
+	unsigned next = (nms->osk_t_tail + 1) % ARRAY_SIZE(nms->osk_tapx);
+
+	if (next == nms->osk_t_head) {
+		return;
+	}
+	nms->osk_tapx[nms->osk_t_tail] = x;
+	nms->osk_tapy[nms->osk_t_tail] = y;
+	nms->osk_t_tail = next;
+}
+
+/*
+ * Turn the next queued character into taps, including whatever page and shift
+ * changes it needs first. Returns false when nothing is queued.
+ */
+static bool osk_expand_next_char(IPodTouchMachineState *nms)
+{
+	int x, y;
+	bool numeric, shift;
+	uint16_t ch;
+
+	while (nms->osk_p_head != nms->osk_p_tail) {
+		ch = nms->osk_pending[nms->osk_p_head];
+		nms->osk_p_head = (nms->osk_p_head + 1) % ARRAY_SIZE(nms->osk_pending);
+
+		if (!osk_locate(ch, &x, &y, &numeric, &shift)) {
+			continue;   /* character this keyboard cannot produce */
+		}
+
+		if (numeric != nms->osk_numeric) {
+			osk_push_tap(nms, OSK_PAGE_X, OSK_ROW4_Y);
+			nms->osk_numeric = numeric;
+			/* switching page drops any latched shift */
+			nms->osk_shifted = false;
+		}
+		if (!numeric && shift != nms->osk_shifted) {
+			osk_push_tap(nms, OSK_SHIFT_X, OSK_ROW3_Y);
+			nms->osk_shifted = shift;
+		}
+
+		osk_push_tap(nms, x, y);
+
+		/* iOS's shift is one-shot: it releases itself after one character. */
+		if (nms->osk_shifted) {
+			nms->osk_shifted = false;
+		}
+		return true;
+	}
+	return false;
+}
+
+static void ipod_touch_osk_tick(void *opaque)
+{
+	IPodTouchMachineState *nms = opaque;
+	int x, y;
+
+	switch (nms->osk_phase) {
+	case OSK_DOWN:
+		/* lift the finger where we put it down */
+		ipod_touch_synth_touch(nms, nms->osk_last_x, nms->osk_last_y, 0);
+		nms->osk_phase = OSK_GAP;
+		timer_mod(nms->osk_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+		                              (int64_t)OSK_TAP_GAP_MS * SCALE_MS);
+		return;
+
+	case OSK_GAP:
+	case OSK_IDLE:
+	default:
+		break;
+	}
+
+	if (nms->osk_t_head == nms->osk_t_tail && !osk_expand_next_char(nms)) {
+		nms->osk_phase = OSK_IDLE;
+		return;
+	}
+
+	x = nms->osk_tapx[nms->osk_t_head];
+	y = nms->osk_tapy[nms->osk_t_head];
+	nms->osk_t_head = (nms->osk_t_head + 1) % ARRAY_SIZE(nms->osk_tapx);
+
+	if (getenv("IT_OSK_TRACE")) {
+		fprintf(stderr, "[OSK] tap (%d,%d)\n", x, y);
+	}
+	nms->osk_last_x = x;
+	nms->osk_last_y = y;
+	ipod_touch_synth_touch(nms, x, y, 1);
+	nms->osk_phase = OSK_DOWN;
+	timer_mod(nms->osk_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+	                              (int64_t)OSK_TAP_DOWN_MS * SCALE_MS);
+}
+
+static void ipod_touch_osk_enqueue(IPodTouchMachineState *nms, uint16_t ch)
+{
+	unsigned next = (nms->osk_p_tail + 1) % ARRAY_SIZE(nms->osk_pending);
+
+	if (next == nms->osk_p_head) {
+		return;   /* typing faster than the OSK can be tapped - drop */
+	}
+	nms->osk_pending[nms->osk_p_tail] = ch;
+	nms->osk_p_tail = next;
+
+	if (nms->osk_phase == OSK_IDLE) {
+		timer_mod(nms->osk_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1);
+	}
+}
 
 static void ipod_touch_machine_init(MachineState *machine)
 {
@@ -1400,8 +1746,10 @@ static void ipod_touch_machine_init(MachineState *machine)
     I2CSlave *accelerometer = i2c_slave_create_simple(i2c_state->bus, "lis302dl", 0x1D);
     nms->lis302dl_state = LIS302DL(accelerometer);
 
-    // init the audio codec (disabled because unused)
-    // I2CSlave *audio_codec = i2c_slave_create_simple(i2c_state->bus, "cs42l58", 0x4A);
+    // init the audio codec (CS42L58, device tree /arm-io/i2c0/audio0)
+    if (ipod_touch_audio_hw_enabled()) {
+        i2c_slave_create_simple(i2c_state->bus, "cs42l58", 0x4A);
+    }
 
     // Init I2C1
     dev = qdev_new("ipodtouch.i2c");
@@ -1418,6 +1766,16 @@ static void ipod_touch_machine_init(MachineState *machine)
 
     // init the Mikey
     I2CSlave *cd327mikey = i2c_slave_create_simple(i2c_state->bus, "cd3272mikey", 0x39);
+
+    /* AMC (audio media codec) -- see ipod_touch_audio_hw_enabled(). */
+    if (ipod_touch_audio_hw_enabled()) {
+        dev = qdev_new(TYPE_IPOD_TOUCH_AMC);
+        busdev = SYS_BUS_DEVICE(dev);
+        sysbus_realize(busdev, &error_fatal);
+        memory_region_add_subregion(sysmem, AMC_MEM_BASE,
+                                    &IPOD_TOUCH_AMC(dev)->iomem);
+        sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, S5L8720_AMC_IRQ));
+    }
 
     // init the FMSS flash controller
     dev = qdev_new("ipodtouch.fmss");
@@ -1516,6 +1874,11 @@ static void ipod_touch_machine_init(MachineState *machine)
      * ipod_touch_powerdown_tick). This is what gives the guest a chance to
      * unmount its filesystems before the machine stops.
      */
+    nms->osk_enabled = getenv("IT_OSK") != NULL;
+    nms->osk_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                  ipod_touch_osk_tick, nms);
+    nms->osk_phase = OSK_IDLE;
+
     nms->pwroff_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                      ipod_touch_powerdown_tick, nms);
     nms->pwroff_phase = PWROFF_IDLE;

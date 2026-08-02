@@ -14,6 +14,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(CS42L58State, CS42L58)
 typedef struct CS42L58State {
 	I2CSlave i2c;
 	uint32_t cmd;
+	bool have_cmd;
+	bool autoinc;
+	uint8_t regs[128];
 } CS42L58State;
 
 #endif
