@@ -84,9 +84,17 @@ static bool ipod_touch_audio_hw_enabled(void)
 }
 
 /*
- * Host wall-clock source for the boot-time clock patch. The 2G has no RTC iOS
- * reads at boot (getGMTTimeOfDay returns 0 -> the calendar starts at 1900), so we
- * patch _PEGetGMTTimeOfDay to read this cp15 register, which returns host UTC
+ * Host wall-clock source for the boot-time clock patch, used by 2.1.1 only.
+ *
+ * The claim this comment used to make - that the 2G has no RTC iOS reads at
+ * boot - is wrong. iOS reads one on both versions: AppleD1759PMURTC takes a
+ * 32-bit seconds counter from PMU registers 0x5C-0x5F and adds the offset at
+ * 0x64-0x67. What is true is that this patch is applied to 2.1.1's kernelcache
+ * image and 3.1.3's is a different binary that was never patched, so 3.1.3
+ * falls through to the real RTC path (now modelled properly in
+ * ipod_touch_pcf50633_pmu.c). Both versions read the same registers.
+ *
+ * We patch _PEGetGMTTimeOfDay to read this cp15 register, which returns host UTC
  * seconds. XNU seeds its calendar from it once and its tick advances from there;
  * hand it UTC, not localtime -- iOS applies its own timezone. This is a sibling
  * of the QEMU_CALL reg (opc2=0); opc2=1 keeps it separate from the socket tunnel.
