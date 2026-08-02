@@ -63,6 +63,17 @@ static uint64_t ipod_touch_tvout_sdo_read(void *opaque, hwaddr offset, unsigned 
             return s->sdo_clkcon | (getenv("IT_TVOUT_READY") ? 0x2 : 0);
         case SDO_CONFIG:
             return s->sdo_config;
+        case SDO_FIELDCTL:
+            /*
+             * Bit 1 selects the interlaced-field path in both AppleM2TVOut SDO
+             * handlers: with it set they additionally require MXR_CFG bit 2 to
+             * match the current field, and a mismatch makes them return without
+             * retiring the swap. The IT_TVOUT_READY blanket returned all-ones
+             * here, so that check could never pass and the framebuffer's
+             * in-flight swap was never completed - which is what left
+             * SpringBoard asleep in IOServiceClose. Report progressive.
+             */
+            return 0;
         case SDO_IRQ:
             return s->sdo_irq;
         case SDO_IRQMASK:
