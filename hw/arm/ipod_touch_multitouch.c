@@ -1,6 +1,15 @@
 #include "hw/arm/ipod_touch_multitouch.h"
 #include "qemu/log.h"
 
+static bool mt_trace(void)
+{
+    static int on = -1;
+    if (on < 0) { on = getenv("MT_TRACE") != NULL; }
+    return on;
+}
+#define MTT(fmt, ...) do { if (mt_trace()) { \
+    fprintf(stderr, "[MT] " fmt "\n", ##__VA_ARGS__); } } while (0)
+
 static void prepare_interface_version_response(IPodTouchMultitouchState *s) {
     memset(s->out_buffer + 1, 0, 15);
 
@@ -138,11 +147,24 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
     if(s->cur_cmd == 0) {
         //printf("Starting command 0x%02x\n", value);
         // we're currently not in a command - start a new command
+        if (s->prev_cmd_log) {
+            MTT("cmd 0x%02x clocked %d bytes (buf_size %d)",
+                s->prev_cmd_log, s->buf_ind, s->buf_size);
+        }
+        s->prev_cmd_log = value;
         s->cur_cmd = value;
-        s->out_buffer = malloc(0x100);
+        /*
+         * These were leaked once per SPI command (0x200 bytes a time, and the
+         * guest polls the panel continuously). next_frame is never aliased to
+         * out_buffer - MT_CMD_FRAME_READ clears it on handover - so freeing
+         * here is safe.
+         */
+        free(s->out_buffer);
+        free(s->in_buffer);
+        s->out_buffer = calloc(1, MT_BUFFER_SIZE);
         s->out_buffer[0] = value; // the response header
         s->buf_ind = 0;
-        s->in_buffer = malloc(0x100);
+        s->in_buffer = calloc(1, MT_BUFFER_SIZE);
         s->in_buffer_ind = 0;
         
         if(value == 0x18) { // filler packet??
@@ -206,21 +228,34 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
         else if(value == MT_CMD_SHORT_CONTROL_READ) {
             s->buf_size = 16;
         }
-        else if(value == MT_CMD_FRAME_READ) {
+        else if(value == MT_CMD_FRAME_READ || value == MT_CMD_FRAME_READ_V2) {
             s->buf_size = sizeof(MTFrame);
             /*
-             * out_buffer takes ownership of the pending frame. next_frame must
-             * be cleared, or the next frame read frees the same allocation a
-             * second time: the guest polls faster than touch_timer_tick
-             * produces frames, so during a drag the same pointer was handed
-             * over repeatedly and then double-freed, killing QEMU. A tap
-             * survived because it is only a couple of reads.
+             * out_buffer takes ownership of the pending frame, and next_frame
+             * must be cleared or the next read frees the same allocation again
+             * (the guest polls faster than touch_timer_tick produces frames, so
+             * during a drag the same pointer was handed over repeatedly and
+             * double-freed).
+             *
+             * When there is no pending frame we must STILL install a
+             * frame-sized buffer: buf_size is sizeof(MTFrame) and the read loop
+             * below walks that many bytes, so leaving the 0x100 scratch buffer
+             * in place overruns the heap. That corruption showed up far away,
+             * as a SIGSEGV inside QEMU's own TCG structures.
              */
+            MTT("FRAME_READ pending=%s", s->next_frame ? "yes" : "NO");
+            free(s->out_buffer);
             if (s->next_frame) {
-                free(s->out_buffer);
                 s->out_buffer = (uint8_t *) s->next_frame;
                 s->next_frame = NULL;
+            } else {
+                s->out_buffer = calloc(sizeof(MTFrame), sizeof(uint8_t *));
             }
+        }
+        else if(value == 0x00) {
+            /* SPI idle byte, not a command. */
+            s->cur_cmd = 0;
+            s->buf_size = 0;
         }
         else {
             printf("%s Unknown command 0x%02x!\n", __func__, value);
@@ -264,12 +299,17 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
 
     // TODO process register writes!
 
-    uint8_t ret_val = s->out_buffer[s->buf_ind];
+    /* The guest can clock out more bytes than the response holds; never read
+     * past the buffer. */
+    uint8_t ret_val = 0;
+    if (s->out_buffer && s->buf_ind < s->buf_size) {
+        ret_val = s->out_buffer[s->buf_ind];
+    }
     s->buf_ind++;
 
     //printf("<MULTITOUCH> Got value: 0x%02x, returning 0x%02x (index: %d, buffer length: %d)\n", value, ret_val, s->buf_ind, s->buf_size);
 
-    if(s->buf_ind == s->buf_size) {
+    if(s->buf_ind >= s->buf_size) {
         //printf("Finished command 0x%02x\n", s->cur_cmd);
 
         if(s->cur_cmd == 0x1E) {
@@ -368,11 +408,13 @@ static MTFrame *get_frame(IPodTouchMultitouchState *s, uint8_t event, float x, f
 }
 
 static void ipod_touch_multitouch_inform_frame_ready(IPodTouchMultitouchState *s) {
+    MTT("frame ready -> raise gpio3 bit13");
     s->sysic->gpio_int_status[3] |= (1 << 13); // the multitouch interrupt bit is in group 3 (32 interrupts per group), and the 13th of the 3th group
     qemu_irq_raise(s->sysic->gpio_irqs[3]);
 }
 
 void ipod_touch_multitouch_on_touch(IPodTouchMultitouchState *s) {
+    MTT("TOUCH START at (%.3f, %.3f)", s->touch_x, s->touch_y);
     s->touch_down = true;
 
     s->next_frame = get_frame(s, MT_EVENT_TOUCH_START, s->touch_x, s->touch_y, 100, 660, 580, 150);
@@ -382,6 +424,7 @@ void ipod_touch_multitouch_on_touch(IPodTouchMultitouchState *s) {
 }
 
 void ipod_touch_multitouch_on_release(IPodTouchMultitouchState *s) {
+    MTT("TOUCH END at (%.3f, %.3f)", s->touch_x, s->touch_y);
     s->next_frame = get_frame(s, MT_EVENT_TOUCH_ENDED, s->touch_x, s->touch_y, 0, 0, 0, 0);
     s->touch_down = false;
     ipod_touch_multitouch_inform_frame_ready(s);
