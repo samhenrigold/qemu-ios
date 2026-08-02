@@ -7,7 +7,12 @@
  * FIFO at 0x3CA00010. QEMU's PL080 (hw/dma/pl080.c) transfers straight into the
  * system address space, so every DMA element to the FIFO arrives here as an
  * ordinary MMIO write. We accumulate those bytes and feed them to a SWVoiceOut,
- * which the selected -audiodev backend (e.g. wav) then renders/records.
+ * which the selected audio backend (e.g. wav) then renders/records.
+ *
+ * Use `-audio driver=wav,path=...`, NOT `-audiodev`. A sound card created in C
+ * resolves its backend through the DEFAULT audiodev list, and only `-audio`
+ * populates that; `-audiodev` alone leaves this device with nowhere to send
+ * samples and looks exactly like a broken audio path. run-ios3.sh --sound.
  *
  * Sample format: the real rate/width live in the codec + the opaque clock
  * divider we don't decode, so we assume the CoreAudio-canonical 44100 Hz,
@@ -19,6 +24,8 @@
 #include "qapi/error.h"
 #include "qemu/log.h"
 #include "qemu/error-report.h"
+
+#include <math.h>
 
 #define IT_I2S_DEBUG_ENV "IT_I2S_DEBUG"
 
@@ -61,6 +68,9 @@ static void it_i2s_drain(IPodTouchI2SState *s, int free_bytes)
 static void it_i2s_out_cb(void *opaque, int free_bytes)
 {
     IPodTouchI2SState *s = (IPodTouchI2SState *)opaque;
+    if (s->ring_level) {
+        IT_I2S_DPRINTF("out_cb free=%d level=%u\n", free_bytes, s->ring_level);
+    }
     it_i2s_drain(s, free_bytes);
 
     /* When the guest has halted TX and we've flushed everything, park the
@@ -84,6 +94,15 @@ static void it_i2s_push(IPodTouchI2SState *s, const uint8_t *buf, unsigned len)
     unsigned i;
 
     s->total_bytes += len;
+
+    /* Raw tap: everything that reaches the FIFO, regardless of the backend.
+     * Play it back with e.g.
+     *   ffplay -f s16le -ar 44100 -ch_layout stereo <path>
+     * This is the ground truth for "did PCM arrive", separate from "was it
+     * audible" - the backend can be missing and this file still fills. */
+    if (s->dump) {
+        fwrite(buf, 1, len, s->dump);
+    }
 
     for (i = 0; i < len; i++) {
         if (s->ring_level >= IT_I2S_RING_SIZE) {
@@ -148,6 +167,9 @@ static void ipod_touch_i2s_write(void *opaque, hwaddr offset, uint64_t value,
                            s->total_bytes, s->dropped);
         } else if (value == IT_I2S_CMD_HALT) {
             s->running = false;
+            if (s->dump) {
+                fflush(s->dump);
+            }
             IT_I2S_DPRINTF("TX halt (total=%" PRIu64 " dropped=%" PRIu64 ")\n",
                            s->total_bytes, s->dropped);
         }
@@ -177,6 +199,40 @@ static const MemoryRegionOps ipod_touch_i2s_ops = {
     .valid.max_access_size = 4,
 };
 
+/*
+ * IT_I2S_TONE=<seconds> feeds a synthetic sine straight into the TX FIFO at
+ * reset, as if the DMA had delivered it. It exercises exactly the same path
+ * the guest's PCM will take (push -> ring -> AUD_write -> backend), so it tells
+ * you whether the host side works without waiting on the AMC handshake.
+ * IT_I2S_TONE_HZ overrides the pitch (default 440).
+ */
+static void it_i2s_test_tone(IPodTouchI2SState *s)
+{
+    const char *secs_env = getenv("IT_I2S_TONE");
+    const char *hz_env = getenv("IT_I2S_TONE_HZ");
+    double hz = hz_env ? atof(hz_env) : 440.0;
+    double secs = secs_env ? atof(secs_env) : 0.0;
+    uint32_t frames, i;
+
+    if (secs <= 0.0) {
+        return;
+    }
+    /* The ring is the whole budget; a longer request is simply truncated. */
+    frames = (uint32_t)(secs * s->as.freq);
+    if (frames > IT_I2S_RING_SIZE / 4) {
+        frames = IT_I2S_RING_SIZE / 4;
+    }
+
+    for (i = 0; i < frames; i++) {
+        int16_t v = (int16_t)(12000.0 * sin(2.0 * M_PI * hz * i / s->as.freq));
+        uint8_t frame[4] = { v & 0xff, (v >> 8) & 0xff, v & 0xff, (v >> 8) & 0xff };
+        it_i2s_push(s, frame, sizeof(frame));
+    }
+    s->running = true;
+    it_i2s_activate(s);
+    IT_I2S_DPRINTF("test tone: %u frames @ %.1f Hz queued\n", frames, hz);
+}
+
 static void ipod_touch_i2s_reset(DeviceState *dev)
 {
     IPodTouchI2SState *s = IPOD_TOUCH_I2S(dev);
@@ -191,11 +247,23 @@ static void ipod_touch_i2s_reset(DeviceState *dev)
         AUD_set_active_out(s->voice, 0);
     }
     s->active = false;
+
+    /* After the state wipe, not before: reset runs once after realize and would
+     * otherwise throw the queued tone away. */
+    it_i2s_test_tone(s);
 }
 
 static void ipod_touch_i2s_realize(DeviceState *dev, Error **errp)
 {
     IPodTouchI2SState *s = IPOD_TOUCH_I2S(dev);
+    const char *dump_path = getenv("IT_I2S_DUMP");
+
+    if (dump_path) {
+        s->dump = fopen(dump_path, "wb");
+        if (!s->dump) {
+            warn_report("ipod i2s: cannot open IT_I2S_DUMP=%s", dump_path);
+        }
+    }
 
     s->as.freq = 44100;
     const char *rate = getenv("IT_I2S_RATE");

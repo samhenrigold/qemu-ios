@@ -29,11 +29,116 @@
  * driver unwind normally. No audio is produced; the AMC is a hardware AAC/MP3
  * decode/encode engine with its own DE program, MMU and linked-list DMA, and
  * emulating that is a much larger job. Not hanging is the point here.
+ *
+ * IT_AMC_STATE=1 goes further and answers the handshake. The whole AMC stack
+ * starts lazily on the first sound -- a boot with no sound played produces zero
+ * AMC accesses -- and what it then runs is the driver's SELF TEST, not a stream.
+ * (The kick at 0x984 has lr = 0xc060c6d4, inside the self-test routine, and the
+ * 0x938-0x97c descriptor is byte-identical on every cycle and holds no buffer
+ * addresses.) Measured against a real sound, Clock > Timer > When Timer Ends >
+ * tap a sound, the driver:
+ *
+ *   - starts engines in banks 0x000 and 0x180 (command 4 -> state 7, 0x10, 0x60)
+ *   - fills the descriptor, writes the command at 0x99c, kicks 0x984 then 0x988
+ *   - takes the completion interrupt, reads 0xa98/0xb18, acknowledges bit 2 at
+ *     0xc48, and tears the job down again
+ *   - does that four times, then settles into an IOAudio2 workloop tick writing
+ *     the 4-bit selector at 0x1000 (a symptom, not the blocker: ~14.5k writes on
+ *     the real arm1176, versus ~870k under -cpu max, which NOPs WFI)
+ *
+ * and brings the I2S controller up (`enable <- 1`) for the first time, then
+ * halts TX. Nothing plays, and the guest's own kernel log says why -- read it
+ * with imgtools/klog.py, since -serial only ever carries iBoot:
+ *
+ *     Assertion failed in ".../AppleAMCDriver_r2.cpp" at line 934   (x4)
+ *                                                        line 1095  (x4)
+ *                                                        line 1751  (x4)
+ *                                                        line 2678  (x4)
+ *     AppleEmbeddedAudioDevice: could not start DMA: device is not ready
+ *
+ * Line 934 is `produced_bytes == frames * 2` -- `cmp r1, r3, lsl #1` against
+ * halfword [[r5+0x48c]+4] -- and its failure path returns 0xe00002bc
+ * (kIOReturnError). So the self test fails because this model produces no
+ * bytes, the embedded-audio layer then refuses to start DMA, and that is
+ * precisely why no PL080 channel is ever pointed at the I2S TX FIFO at
+ * 0x3ca00010 and no PCM is ever produced.
+ *
+ * The way forward, and it is narrower than it looks: those assertions compare
+ * COUNTS ONLY, never audio content. Passing the self test therefore does not
+ * require emulating the AAC/MP3 decoder -- it requires the per-channel position
+ * registers at 0xa44 + n*0x14 (accessor VA 0xc0611864, consumer 0xc060e36c) to
+ * report the *exact* expected count. An earlier probe that advanced them by an
+ * arbitrary 64 or 1024 changed nothing, which is unsurprising against an
+ * equality test, and says nothing about whether the right value would work.
  */
 
 #include "hw/arm/ipod_touch_amc.h"
+#include "hw/core/cpu.h"
+#include "cpu.h"
 
 #define AMC_REG(off) (s->regs[(off) / 4])
+
+/*
+ * IT_AMC_PC=<hex offset> logs the guest PC and LR for accesses to that register,
+ * which is how you find out *which* driver loop is hammering it. Capped so a
+ * spin does not fill the disk.
+ */
+static void amc_log_caller(hwaddr addr, uint32_t val)
+{
+    static int64_t want = -2;
+    static int budget = 64;
+    CPUARMState *env;
+
+    if (want == -2) {
+        const char *v = getenv("IT_AMC_PC");
+        want = v ? strtoll(v, NULL, 16) : -1;
+    }
+    if (want < 0 || (hwaddr)want != addr || budget <= 0 || !current_cpu) {
+        return;
+    }
+    budget--;
+    env = &ARM_CPU(current_cpu)->env;
+    /* Walk the r7 frame chain: each frame is { saved r7, saved lr }. */
+    fprintf(stderr, "[AMC] %04x <- %08x  pc=%08x lr=%08x  stack:",
+            (unsigned)addr, val, env->regs[15], env->regs[14]);
+    uint32_t fp = env->regs[7];
+    for (int i = 0; i < 8 && fp; i++) {
+        uint32_t frame[2] = { 0, 0 };
+        if (cpu_memory_rw_debug(current_cpu, fp, (uint8_t *)frame,
+                                sizeof(frame), false) != 0) {
+            break;
+        }
+        fprintf(stderr, " %08x", frame[1]);
+        if (frame[0] <= fp) {
+            break;              /* not a plausible frame chain any more */
+        }
+        fp = frame[0];
+    }
+    fprintf(stderr, "\n");
+
+    /*
+     * IT_AMC_DEREF=<hex>: at the probed access, treat r5 as the AppleAMC_r2
+     * instance and dump the object at [r5 + <hex>]. The self test's final
+     * assertions (AppleAMCDriver_r2.cpp lines 934/935) compare the bytes the
+     * engine produced against halfword [[r5+0x48c]+4] << 1, so that is where
+     * the expected count lives.
+     */
+    const char *deref = getenv("IT_AMC_DEREF");
+    if (deref) {
+        uint32_t off = strtoul(deref, NULL, 16), ptr = 0;
+        uint8_t buf[32];
+        if (cpu_memory_rw_debug(current_cpu, env->regs[5] + off,
+                                (uint8_t *)&ptr, 4, false) == 0 && ptr &&
+            cpu_memory_rw_debug(current_cpu, ptr, buf, sizeof(buf), false) == 0) {
+            fprintf(stderr, "[AMC] r5=%08x [r5+%x]=%08x ->", env->regs[5],
+                    off, ptr);
+            for (unsigned i = 0; i < sizeof(buf); i++) {
+                fprintf(stderr, " %02x", buf[i]);
+            }
+            fprintf(stderr, "\n");
+        }
+    }
+}
 
 static bool amc_trace(void)
 {
@@ -54,8 +159,17 @@ static bool amc_trace(void)
  */
 static void amc_update_irq(IPodTouchAMCState *s)
 {
+    /*
+     * IT_AMC_STATE: the driver never writes the enable register (0xa8c) -- it
+     * only ever *disables* everything at init -- so int_mask stays 0 and the
+     * line could never rise. That leaves the completion interrupt permanently
+     * unserviced, which is what strands the stream: the engine's workloop tick
+     * keeps running but nothing ever advances it. Under the handshake, an armed
+     * job raises the line regardless of the mask and the acknowledge drops it.
+     */
     bool level = s->irq_armed &&
-                 (s->int_mask[0] != 0 || s->int_mask[1] != 0);
+                 (s->state_handshake ||
+                  s->int_mask[0] != 0 || s->int_mask[1] != 0);
 
     qemu_set_irq(s->irq, level);
 }
@@ -108,11 +222,28 @@ static uint64_t ipod_touch_amc_read(void *opaque, hwaddr addr, unsigned size)
          * genuinely justify (nothing) is what hangs them.
          */
         res = s->int_mask[c];
+        /*
+         * IT_AMC_STATE: the driver's final wait before a stream can move is
+         *
+         *     do { IOSleep(0); } while ((read(0xa98) & pending_mask) == 0);
+         *
+         * and it reaches it having only ever written the *disable* register
+         * (0xa90 <- 0x07ffffff, 0xb10 <- 0xffffffff) -- it never enables a
+         * source, so int_mask is 0 and the mask-mirroring above answers 0 and
+         * the loop never ends. We do not know which bit it is waiting on, so
+         * report every source pending; whatever the mask is, it is satisfied.
+         */
+        if (s->state_handshake && res == 0 && c == 0) {
+            /* Controller 0 only: reporting controller 1 pending as well made
+             * the driver service a source that does not exist. */
+            res = s->irq_armed ? 0xffffffff : 0;
+        }
     } else {
         res = AMC_REG(addr);
     }
 
     AMCT("R %04x -> %08x", (unsigned)addr, res);
+    amc_log_caller(addr, res);
     return res;
 }
 
@@ -123,6 +254,7 @@ static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val,
     int c;
 
     AMCT("W %04x <- %08x", (unsigned)addr, (uint32_t)val);
+    amc_log_caller(addr, (uint32_t)val);
     AMC_REG(addr) = (uint32_t)val;
 
     if ((c = amc_ctrl_of(addr, AMC_INT_ENABLE)) >= 0) {
@@ -149,8 +281,19 @@ static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val,
          */
         AMC_REG(amc_bank_cmd(addr) + AMC_BANK_STATE) =
             (val == AMC_CMD_START) ? AMC_STATE_DONE : 0;
-    } else {
+    } else if (!s->state_handshake) {
         s->irq_armed = true;       /* some work was started */
+    } else if (addr == AMC_JOB_GO || addr == AMC_JOB_GO2 || addr == AMC_JOB_CMD) {
+        /*
+         * Only a job start arms the line. Arming on *any* write (which is all
+         * the freeze fix needed) turns the completion interrupt into a storm
+         * once the line can actually rise: the handler's own register writes
+         * (0x804, 0x858) re-arm it the instant it acknowledges at 0xc48.
+         *
+         * The job is the 0x938-0x97c descriptor block followed by 0x99c and
+         * then 0x984/0x988; those three are the only writes that mean "go".
+         */
+        s->irq_armed = true;
     }
 
     amc_update_irq(s);
