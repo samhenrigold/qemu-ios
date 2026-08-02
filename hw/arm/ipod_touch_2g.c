@@ -908,6 +908,15 @@ static void ipod_touch_kbd_rotate(bool clockwise)
 	                           clockwise ? cw[cur] : ccw[cur]);
 }
 
+/*
+ * Which host keys are currently holding a guest button down, so the release can
+ * always be delivered. The button path is gated on Command being held, but
+ * releasing Command before the key is natural, and then the key-up fell through
+ * to the text path and the button GPIO stayed asserted forever - iOS saw the
+ * volume button held and ramped the volume continuously.
+ */
+static int s_kbd_btn_held[Q_KEY_CODE__MAX];
+
 static void ipod_touch_kbd_button(int qcode, bool shift, bool down)
 {
 	int base = -1;
@@ -926,6 +935,9 @@ static void ipod_touch_kbd_button(int qcode, bool shift, bool down)
 	}
 	if (base < 0 || !s_kbd_mt) {
 		return;
+	}
+	if (qcode >= 0 && qcode < Q_KEY_CODE__MAX) {
+		s_kbd_btn_held[qcode] = down ? base : 0;
 	}
 	ipod_touch_key_event(s_kbd_mt, down ? base : (base | KEY_UP));
 }
@@ -953,6 +965,19 @@ static void ipod_touch_kbd_event(DeviceState *dev, QemuConsole *src,
 		return;
 	default:
 		break;
+	}
+
+	/*
+	 * A key that is currently holding a button down must always release it,
+	 * even if Command was let go first.
+	 */
+	if (!down && q >= 0 && q < Q_KEY_CODE__MAX && s_kbd_btn_held[q]) {
+		int base = s_kbd_btn_held[q];
+		s_kbd_btn_held[q] = 0;
+		if (s_kbd_mt) {
+			ipod_touch_key_event(s_kbd_mt, base | KEY_UP);
+		}
+		return;
 	}
 
 	if (nms->kbd_cmd) {
