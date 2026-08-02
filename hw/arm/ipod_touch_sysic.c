@@ -33,22 +33,22 @@ static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
         case 0x7a:
         case 0x7c:
             return 1;
-        case GPIO_INTLEVEL ... (GPIO_INTLEVEL + GPIO_NUMINTGROUPS * 4):
+        case GPIO_INTLEVEL ... (GPIO_INTLEVEL + (GPIO_NUMINTGROUPS - 1) * 4):
         {
             uint8_t group = (addr - GPIO_INTLEVEL) / 4;
             return s->gpio_int_level[group];
         }
-        case GPIO_INTSTAT ... (GPIO_INTSTAT + GPIO_NUMINTGROUPS * 4):
+        case GPIO_INTSTAT ... (GPIO_INTSTAT + (GPIO_NUMINTGROUPS - 1) * 4):
         {
             uint8_t group = (addr - GPIO_INTSTAT) / 4;
             return s->gpio_int_status[group];
         }
-        case GPIO_INTEN ... (GPIO_INTEN + GPIO_NUMINTGROUPS * 4):
+        case GPIO_INTEN ... (GPIO_INTEN + (GPIO_NUMINTGROUPS - 1) * 4):
         {
             uint8_t group = (addr - GPIO_INTEN) / 4;
             return s->gpio_int_enabled[group];
         }
-        case GPIO_INTTYPE ... (GPIO_INTTYPE + GPIO_NUMINTGROUPS * 4):
+        case GPIO_INTTYPE ... (GPIO_INTTYPE + (GPIO_NUMINTGROUPS - 1) * 4):
         {
             uint8_t group = (addr - GPIO_INTTYPE) / 4;
             return s->gpio_int_type[group];
@@ -76,11 +76,11 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
         case POWER_OFFCTRL:
             s->power_state = val;
             break;
-        case GPIO_INTLEVEL ... (GPIO_INTLEVEL + GPIO_NUMINTGROUPS * 4):
+        case GPIO_INTLEVEL ... (GPIO_INTLEVEL + (GPIO_NUMINTGROUPS - 1) * 4):
         {
             break;
         }
-        case GPIO_INTSTAT ... (GPIO_INTSTAT + GPIO_NUMINTGROUPS * 4):
+        case GPIO_INTSTAT ... (GPIO_INTSTAT + (GPIO_NUMINTGROUPS - 1) * 4):
         {
             uint8_t group = (addr - GPIO_INTSTAT) / 4;
 
@@ -91,13 +91,13 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
 
             break;
         }
-        case GPIO_INTEN ... (GPIO_INTEN + GPIO_NUMINTGROUPS * 4):
+        case GPIO_INTEN ... (GPIO_INTEN + (GPIO_NUMINTGROUPS - 1) * 4):
         {
             uint8_t group = (addr - GPIO_INTEN) / 4;
             s->gpio_int_enabled[group] = val;
             break;
         }
-        case GPIO_INTTYPE ... (GPIO_INTTYPE + GPIO_NUMINTGROUPS * 4):
+        case GPIO_INTTYPE ... (GPIO_INTTYPE + (GPIO_NUMINTGROUPS - 1) * 4):
         {
             uint8_t group = (addr - GPIO_INTTYPE) / 4;
             s->gpio_int_type[group] = val;
