@@ -72,7 +72,7 @@ static void s5l8900_gpio_reset(DeviceState *dev)
     memset(s->gpio_state, 0, sizeof(s->gpio_state));
 
     /*
-     * IT_VOLBTN_HIGH: park the two volume pads high at reset.
+     * The volume pads rest HIGH, because they are active low.
      *
      * The real device tree flags these two differently from the buttons that
      * work: function-button_hold <gpio 0x0c02 0x100> and button_menu
@@ -83,12 +83,13 @@ static void s5l8900_gpio_reset(DeviceState *dev)
      * re-show the HUD forever. Both held at once would also make the level
      * wander rather than sit still, which is what the user sees.
      *
-     * This is a probe, not a fix: it changes only the RESTING level and leaves
-     * the press/release path alone, so it isolates "do we assert these pins at
-     * rest" from "does a press still work". An earlier experiment changed both
-     * at once and could not tell the two apart.
+     * Confirmed by the user: with these pads parked high the HUD no longer
+     * appears or flickers on its own. The matching half of the fix is in
+     * ipod_touch_2g.c, where a press now pulls the pad DOWN rather than up.
+     * IT_VOLBTN_LEGACY restores the old resting level if it is ever needed for
+     * a bisect.
      */
-    if (getenv("IT_VOLBTN_HIGH")) {
+    if (!getenv("IT_VOLBTN_LEGACY")) {
         gpio_set_on(s->gpio_state, GPIO_BUTTON_VOLUP);
         gpio_set_on(s->gpio_state, GPIO_BUTTON_VOLDOWN);
     }
