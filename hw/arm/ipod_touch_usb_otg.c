@@ -299,6 +299,11 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 			}
 			ret = amtDone;
 		} else {
+			if (synopsys_usb_trace_enabled())
+				fprintf(stderr, "[USBTCP] NAK IN  ep%d ctl=0x%08x tsiz=0x%08x "
+				        "gintsts=0x%08x gintmsk=0x%08x dcfg=0x%08x\n",
+				        ep, eps->control, eps->tx_size,
+				        state->gintsts, state->gintmsk, state->dcfg);
 			ret = USB_RET_NAK;
 		}
 	} else {
@@ -400,6 +405,12 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 				        (_hdr->flags & tcp_usb_setup) ? " (SETUP)" : "");
 			ret = amtDone;
 		} else {
+			if (synopsys_usb_trace_enabled())
+				fprintf(stderr, "[USBTCP] NAK OUT ep%d%s ctl=0x%08x tsiz=0x%08x "
+				        "gintsts=0x%08x gintmsk=0x%08x dcfg=0x%08x pcgcctl=0x%08x\n",
+				        ep, (_hdr->flags & tcp_usb_setup) ? " (SETUP)" : "",
+				        eps->control, eps->tx_size,
+				        state->gintsts, state->gintmsk, state->dcfg, state->pcgcctl);
 			ret = USB_RET_NAK;
 		}
 	}

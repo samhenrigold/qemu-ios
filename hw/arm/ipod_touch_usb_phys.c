@@ -1,8 +1,22 @@
 #include "hw/arm/ipod_touch_usb_phys.h"
 
+/* Temporary diagnostic for the 3.1.3 USB bring-up; gated by IT_USB_TRACE. */
+static bool usb_phys_trace(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_USB_TRACE") != NULL;
+    }
+    return on;
+}
+
 static uint64_t ipod_touch_usb_phys_read(void *opaque, hwaddr addr, unsigned size)
 {
     IPodTouchUSBPhysState *s = (IPodTouchUSBPhysState *) opaque;
+
+    if (usb_phys_trace()) {
+        fprintf(stderr, "[USBPHY] R 0x%03x\n", (unsigned)addr);
+    }
 
     switch(addr)
     {
@@ -24,6 +38,10 @@ static uint64_t ipod_touch_usb_phys_read(void *opaque, hwaddr addr, unsigned siz
 static void ipod_touch_usb_phys_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     IPodTouchUSBPhysState *s = (IPodTouchUSBPhysState *) opaque;
+
+    if (usb_phys_trace()) {
+        fprintf(stderr, "[USBPHY] W 0x%03x = 0x%08x\n", (unsigned)addr, (unsigned)val);
+    }
 
     switch(addr)
     {
