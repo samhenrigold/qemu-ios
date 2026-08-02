@@ -20,9 +20,19 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchAMCState, IPOD_TOUCH_AMC)
 #define AMC_INT_STATUS      0xa98   /* R: pending sources */
 #define AMC_INT_RAWSTATUS   0xa9c   /* R: raw pending     */
 
-#define AMC_CMD             0x110   /* W: command  (0x04, 0x10, 0x60 seen) */
-#define AMC_STATE           0x114   /* R: bits [2:0] are the engine state  */
+/*
+ * Per-engine register banks. AppleAMC_r2's bank selector (VA 0xc0612010) is a
+ * jump table: engines 0-3 are base + (n << 5), then 0x100, 0x180, 0x200, and
+ * 0x230 (0x240 on AMC 2.1, which also adds 0x280 and 0x2c0 -- we are 2.0).
+ * Within a bank, +0x10 is the command register and +0x14 the state register,
+ * whose low three bits the driver polls.
+ */
+#define AMC_BANK_CMD        0x10
+#define AMC_BANK_STATE      0x14
+#define AMC_CMD_START       0x04
 #define AMC_STATE_DONE      0x7
+
+#define AMC_INT_ACK_MASK    0x7fff
 
 #define AMC_INT_ACK         0xc48   /* W: acknowledge (value & 0x7fff) */
 #define AMC_INT_ACK_READ    0xc4c   /* R: reads the acknowledge latch  */

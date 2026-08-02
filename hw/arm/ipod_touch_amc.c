@@ -72,6 +72,25 @@ static int amc_ctrl_of(hwaddr addr, hwaddr base)
     return -1;
 }
 
+/*
+ * If addr is an engine's command register, return that engine's bank base;
+ * otherwise -1. See the bank list in the header.
+ */
+static const uint32_t amc_banks[] = { 0x00, 0x20, 0x40, 0x60,
+                                      0x100, 0x180, 0x200, 0x230 };
+
+static int amc_bank_cmd(hwaddr addr)
+{
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(amc_banks); i++) {
+        if (addr == amc_banks[i] + AMC_BANK_CMD) {
+            return amc_banks[i];
+        }
+    }
+    return -1;
+}
+
 static uint64_t ipod_touch_amc_read(void *opaque, hwaddr addr, unsigned size)
 {
     IPodTouchAMCState *s = IPOD_TOUCH_AMC(opaque);
@@ -112,18 +131,24 @@ static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val,
         s->int_mask[c] &= ~(uint32_t)val;
     } else if (addr == AMC_INT_ACK) {
         s->irq_armed = false;      /* acknowledged -- drop the line */
-    } else if (addr == AMC_CMD && s->state_handshake) {
+    } else if (s->state_handshake && amc_bank_cmd(addr) >= 0) {
         /*
          * IT_AMC_STATE=1, experimental -- NOT part of the proven freeze fix.
          *
-         * At VA 0xc0612854 the driver writes command 4 here and then polls
-         * AMC + 0x114 up to ten times for (state & 7) == 7 before giving up;
-         * at VA 0xc06129f0 it requires (state & 7) == 0 before issuing command
-         * 0x10. Both conditions cannot be met by a register that only ever
-         * reads back what was written, so answer them: a command completes
-         * immediately, and the completion is consumed by the next command.
+         * At VA 0xc0612854 the driver writes command 4 to an engine's command
+         * register and then polls that engine's state register up to ten times
+         * for (state & 7) == 7 before giving up; at VA 0xc06129f0 it requires
+         * (state & 7) == 0 before issuing command 0x10. Neither can be met by a
+         * register that only reads back what was written, so answer them: a
+         * start command completes immediately and any later command clears it.
+         *
+         * Measured: with only engine 4 (bank 0x100) answered, the driver got
+         * its 7 first try and advanced to commands 0x10 and 0x60, then stalled
+         * polling engine 5 (bank 0x180, state at 0x194) 24 times. Hence the
+         * full bank table rather than a single hard-coded pair.
          */
-        AMC_REG(AMC_STATE) = (val == 0x04) ? AMC_STATE_DONE : 0;
+        AMC_REG(amc_bank_cmd(addr) + AMC_BANK_STATE) =
+            (val == AMC_CMD_START) ? AMC_STATE_DONE : 0;
     } else {
         s->irq_armed = true;       /* some work was started */
     }
