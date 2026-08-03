@@ -297,6 +297,127 @@ COREAUDIO_WRAPPER_FUNC(write, size_t, (HWVoiceOut *hw, void *buf, size_t size),
  * callback to feed audiooutput buffer. called without BQL.
  * allowed to lock "buf_mutex", but disallowed to have any other locks.
  */
+/*
+ * IT_CA_TAP=<path> -- capture what CoreAudio's own IO thread actually plays,
+ * and MUTE the device so nothing reaches the speakers.
+ *
+ * This exists because `-audio driver=wav` cannot see any timing defect: it has
+ * no clock, so a starved sink, a burst delivery and a stopped voice all produce
+ * a byte-perfect file. CoreAudio is the sink the user actually hears, and its
+ * IOProc has a hard, all-or-nothing requirement -- if fewer than one full device
+ * buffer of frames is queued it returns having written NOTHING, and the hardware
+ * plays whatever was left in that buffer. Counting those is the measurement that
+ * matters, and it can only be taken with the real device clock driving the real
+ * callback.
+ *
+ * The tap therefore records, per callback, what was played (or the silence a
+ * starved callback amounts to) into a preallocated heap buffer -- no file I/O on
+ * the realtime thread -- and then zeroes the hardware buffer. Enabling it makes
+ * the emulator silent by construction, which is what lets this run on a machine
+ * somebody is working at.
+ */
+typedef struct CATap {
+    uint8_t *pcm;
+    size_t cap, len;
+    uint64_t calls, starved, frames_played, frames_silent;
+    /* Margin: how many frames were queued when the IOProc ran, bucketed in
+     * units of the device buffer. Bucket 0 is a dropout; bucket 1 means we
+     * cleared the bar with nothing to spare, which is a dropout waiting for the
+     * first main-loop hiccup. This is the number the whole diagnosis turns on. */
+    uint64_t pend_hist[9];
+    uint64_t pend_min, pend_sum;
+    /* One byte per callback: 0 starved, 1 played silence, 2 played signal. A
+     * starved callback between two that carried signal is an audible dropout;
+     * one during an idle stretch is not, and the two are indistinguishable in
+     * the recording because both come out as zeroes. */
+    uint8_t *cls;
+    size_t cls_n, cls_cap;
+    char *path;
+} CATap;
+
+static CATap ca_tap;
+
+static void ca_tap_dump(void)
+{
+    FILE *f;
+
+    if (!ca_tap.path || !ca_tap.pcm) {
+        return;
+    }
+    f = fopen(ca_tap.path, "wb");
+    if (f) {
+        fwrite(ca_tap.pcm, 1, ca_tap.len, f);
+        fclose(f);
+    }
+    f = fopen(g_strdup_printf("%s.log", ca_tap.path), "w");
+    if (f) {
+        fprintf(f, "callbacks      %" PRIu64 "\n", ca_tap.calls);
+        fprintf(f, "starved        %" PRIu64 "  (%.2f%%)\n", ca_tap.starved,
+                ca_tap.calls ? ca_tap.starved * 100.0 / ca_tap.calls : 0.0);
+        fprintf(f, "frames played  %" PRIu64 "\n", ca_tap.frames_played);
+        fprintf(f, "frames silent  %" PRIu64 "\n", ca_tap.frames_silent);
+        fprintf(f, "queued at callback: min %" PRIu64 " mean %.1f device buffers\n",
+                ca_tap.pend_min,
+                ca_tap.calls ? ca_tap.pend_sum * 1.0 / ca_tap.calls : 0.0);
+        for (int i = 0; i < 9; i++) {
+            fprintf(f, "  %s%d buf %8" PRIu64 "%s\n", i == 8 ? ">=" : " ", i,
+                    ca_tap.pend_hist[i], i == 0 ? "   <-- DROPOUT" : "");
+        }
+        /*
+         * A starved callback is only audible if it interrupts signal. Count the
+         * ones with signal within one second either side; the rest are the
+         * device sitting idle with the voice still open.
+         */
+        uint64_t audible = 0;
+        const size_t win = 86;          /* ~1 s of 11.6 ms callbacks */
+        for (size_t i = 0; i < ca_tap.cls_n; i++) {
+            if (ca_tap.cls[i] != 0) {
+                continue;
+            }
+            bool before = false, after = false;
+            for (size_t j = i > win ? i - win : 0; j < i; j++) {
+                before |= ca_tap.cls[j] == 2;
+            }
+            for (size_t j = i + 1; j < MIN(i + win, ca_tap.cls_n); j++) {
+                after |= ca_tap.cls[j] == 2;
+            }
+            audible += before && after;
+        }
+        fprintf(f, "starved DURING CONTENT %" PRIu64 "   <-- the audible ones\n",
+                audible);
+        fclose(f);
+    }
+    if (ca_tap.cls) {
+        char *cp = g_strdup_printf("%s.cls", ca_tap.path);
+        FILE *c = fopen(cp, "wb");
+        if (c) {
+            fwrite(ca_tap.cls, 1, ca_tap.cls_n, c);
+            fclose(c);
+        }
+        g_free(cp);
+    }
+}
+
+static void ca_tap_init(HWVoiceOut *hw)
+{
+    const char *p = getenv("IT_CA_TAP");
+
+    if (!p || ca_tap.pcm) {
+        return;
+    }
+    /* 180 s at the voice's own rate; a run that overruns it simply stops
+     * recording rather than growing on the realtime thread. */
+    ca_tap.cap = (size_t)hw->info.bytes_per_second * 180;
+    ca_tap.pcm = g_malloc0(ca_tap.cap);
+    ca_tap.cls_cap = 1 << 20;
+    ca_tap.cls = g_malloc0(ca_tap.cls_cap);
+    ca_tap.path = g_strdup(p);
+    atexit(ca_tap_dump);
+    dolog("IT_CA_TAP: muting output, recording %zu MiB to %s "
+          "(f32le %d ch @ %d Hz)\n", ca_tap.cap >> 20, p,
+          hw->info.nchannels, hw->info.freq);
+}
+
 static OSStatus audioDeviceIOProc(
     AudioDeviceID inDevice,
     const AudioTimeStamp *inNow,
@@ -325,14 +446,51 @@ static OSStatus audioDeviceIOProc(
     frameCount = core->audioDevicePropertyBufferFrameSize;
     pending_frames = hw->pending_emul / hw->info.bytes_per_frame;
 
-    /* if there are not enough samples, set signal and return */
+    if (ca_tap.pcm && frameCount) {
+        unsigned b = pending_frames / frameCount;
+        ca_tap.pend_hist[MIN(b, 8u)]++;
+        ca_tap.pend_sum += b;
+        if (pending_frames < ca_tap.pend_min * frameCount || !ca_tap.calls) {
+            ca_tap.pend_min = b;
+        }
+    }
+
+    /*
+     * If there are not enough samples, set signal and return.
+     *
+     * Clear the hardware buffer first. Upstream returns leaving it untouched,
+     * so the device re-plays whatever it held -- the previous 11.6 ms, over and
+     * over for as long as the starvation lasts. That turns a dropout into a
+     * repeated fragment, which is far more audible than the silence it stands
+     * in for: measured on the iPod touch shutter, a single starved period in
+     * the middle of a 500 ms clip is what "recognisable but garbled" was.
+     * Silence is the honest thing to play when there is nothing to play.
+     */
     if (pending_frames < frameCount) {
+        memset(out, 0, frameCount * hw->info.bytes_per_frame);
+        if (ca_tap.pcm) {
+            size_t n = frameCount * hw->info.bytes_per_frame;
+            ca_tap.calls++;
+            ca_tap.starved++;
+            ca_tap.frames_silent += frameCount;
+            if (ca_tap.cls_n < ca_tap.cls_cap) {
+                ca_tap.cls[ca_tap.cls_n++] = 0;
+            }
+            if (ca_tap.len + n <= ca_tap.cap) {
+                memset(ca_tap.pcm + ca_tap.len, 0, n);   /* what a dropout is */
+                ca_tap.len += n;
+            }
+        }
         inInputTime = 0;
         coreaudio_buf_unlock (core, "audioDeviceIOProc(empty)");
         return 0;
     }
 
     len = frameCount * hw->info.bytes_per_frame;
+    if (ca_tap.pcm) {
+        ca_tap.calls++;
+        ca_tap.frames_played += frameCount;
+    }
     while (len) {
         size_t write_len, start;
 
@@ -346,6 +504,26 @@ static OSStatus audioDeviceIOProc(
         hw->pending_emul -= write_len;
         len -= write_len;
         out += write_len;
+    }
+
+    if (ca_tap.pcm) {
+        size_t n = frameCount * hw->info.bytes_per_frame;
+        const float *f = outOutputData->mBuffers[0].mData;
+        bool signal = false;
+        for (size_t i = 0; i < n / sizeof(float); i++) {
+            if (f[i] != 0.0f) {
+                signal = true;
+                break;
+            }
+        }
+        if (ca_tap.cls_n < ca_tap.cls_cap) {
+            ca_tap.cls[ca_tap.cls_n++] = signal ? 2 : 1;
+        }
+        if (ca_tap.len + n <= ca_tap.cap) {
+            memcpy(ca_tap.pcm + ca_tap.len, outOutputData->mBuffers[0].mData, n);
+            ca_tap.len += n;
+        }
+        memset(outOutputData->mBuffers[0].mData, 0, n);   /* mute the speakers */
     }
 
     coreaudio_buf_unlock (core, "audioDeviceIOProc");
@@ -582,6 +760,8 @@ static int coreaudio_init_out(HWVoiceOut *hw, struct audsettings *as,
         qapi_AudiodevCoreaudioPerDirectionOptions_base(cpdo), as, 11610);
 
     core->bufferCount = cpdo->has_buffer_count ? cpdo->buffer_count : 4;
+
+    ca_tap_init(&core->hw);
 
     status = AudioObjectAddPropertyListener(kAudioObjectSystemObject,
                                             &voice_addr, handle_voice_change,
