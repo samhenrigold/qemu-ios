@@ -24,6 +24,8 @@
 #include "qapi/error.h"
 #include "qemu/log.h"
 #include "qemu/error-report.h"
+#include "hw/core/cpu.h"
+#include "cpu.h"
 
 #include <math.h>
 
@@ -117,9 +119,94 @@ static void it_i2s_push(IPodTouchI2SState *s, const uint8_t *buf, unsigned len)
     it_i2s_activate(s);
 }
 
+/*
+ * IT_I2S_PC=<hex offset> -- log the guest PC, LR and an r7 frame walk for
+ * accesses to that register. Deliberately the same shape as amc_log_caller()
+ * in ipod_touch_amc.c, and kept separate rather than shared because two copies
+ * of a 40-line debug walker is cheaper than a header both devices must agree
+ * on; if a third device ever wants it, extract it then.
+ *
+ * Why this device: the remaining audio blocker is in AppleARMIISAudio, which
+ * decides there is nothing to DMA and reports that as success (0xc05054f8 has
+ * two early-outs that return 0 having programmed no channel -- a byte test on
+ * [this+0x6d], and a virtual [vtable+0x3a0] returning 0). Working out which one
+ * fires needs that driver's `this`, and I2S registers are the only hardware it
+ * touches that we model. Each frame prints as lr/r5 because these drivers are
+ * ARM, not Thumb, and open with `push {r4-r7, lr}; add r7, sp, #0xc` -- so the
+ * caller's r5, which is where an IOService method keeps `this`, is recoverable
+ * from the frame even when it has long since been clobbered in the register.
+ *
+ * IT_I2S_DEREF=<hex>[,...] additionally dumps [r5 + <hex>], following it one
+ * level when it looks like a pointer. Print the raw word too: a deref that
+ * merely reads zeroes is otherwise indistinguishable from a wrong r5.
+ */
+static void it_i2s_log_caller(hwaddr offset, uint32_t val)
+{
+    static int64_t want = -2;
+    static int budget = 64;
+    CPUARMState *env;
+    uint32_t fp;
+
+    if (want == -2) {
+        const char *v = getenv("IT_I2S_PC");
+        want = v ? strtoll(v, NULL, 16) : -1;
+    }
+    if (want < 0 || (hwaddr)want != offset || budget <= 0 || !current_cpu) {
+        return;
+    }
+    budget--;
+    env = &ARM_CPU(current_cpu)->env;
+    fprintf(stderr, "[I2S] %04x <- %08x  pc=%08x lr=%08x  stack:",
+            (unsigned)offset, val, env->regs[15], env->regs[14]);
+    fp = env->regs[7];
+    for (int i = 0; i < 8 && fp; i++) {
+        uint32_t frame[5] = { 0 };      /* r4, r5, r6, r7, lr */
+        if (cpu_memory_rw_debug(current_cpu, fp - 12, (uint8_t *)frame,
+                                sizeof(frame), false) != 0) {
+            break;
+        }
+        fprintf(stderr, " %08x/r5=%08x", frame[4], frame[1]);
+        if (frame[3] <= fp) {
+            break;
+        }
+        fp = frame[3];
+    }
+    fprintf(stderr, "\n");
+
+    const char *deref = getenv("IT_I2S_DEREF");
+    if (deref) {
+        fprintf(stderr, "[I2S] r4=%08x r5=%08x r6=%08x",
+                env->regs[4], env->regs[5], env->regs[6]);
+        for (const char *p = deref; p && *p; ) {
+            uint32_t off = strtoul(p, NULL, 16), word = 0;
+            uint8_t buf[16];
+            if (cpu_memory_rw_debug(current_cpu, env->regs[5] + off,
+                                    (uint8_t *)&word, 4, false) != 0) {
+                fprintf(stderr, "  [r5+%x]=<unreadable>", off);
+            } else if (word >= 0xc0000000 &&
+                       cpu_memory_rw_debug(current_cpu, word, buf,
+                                           sizeof(buf), false) == 0) {
+                fprintf(stderr, "  [r5+%x]=%08x ->", off, word);
+                for (unsigned i = 0; i < sizeof(buf); i++) {
+                    fprintf(stderr, "%02x", buf[i]);
+                }
+            } else {
+                fprintf(stderr, "  [r5+%x]=%08x", off, word);
+            }
+            p = strchr(p, ',');
+            if (p) {
+                p++;
+            }
+        }
+        fprintf(stderr, "\n");
+    }
+}
+
 static uint64_t ipod_touch_i2s_read(void *opaque, hwaddr offset, unsigned size)
 {
     IPodTouchI2SState *s = (IPodTouchI2SState *)opaque;
+
+    it_i2s_log_caller(offset, 0);
 
     switch (offset) {
     case IT_I2S_ENABLE: return s->enable;
@@ -138,6 +225,8 @@ static void ipod_touch_i2s_write(void *opaque, hwaddr offset, uint64_t value,
                                  unsigned size)
 {
     IPodTouchI2SState *s = (IPodTouchI2SState *)opaque;
+
+    it_i2s_log_caller(offset, (uint32_t)value);
 
     if (offset == IT_I2S_TXFIFO) {
         /* PCM element, native (little) endian; store raw bytes in order. */
