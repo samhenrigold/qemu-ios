@@ -1,6 +1,9 @@
 #ifndef IPOD_TOUCH_MULTITOUCH_H
 #define IPOD_TOUCH_MULTITOUCH_H
 
+/* scratch response buffer for short commands */
+#define MT_BUFFER_SIZE 0x100
+
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
@@ -52,6 +55,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchMultitouchState, IPOD_TOUCH_MULTITOUCH)
 #define MT_CMD_SHORT_CONTROL_WRITE   0xE4
 #define MT_CMD_SHORT_CONTROL_READ    0xE6
 #define MT_CMD_FRAME_READ            0xEA
+/*
+ * 3.1.3's AppleMultitouchZ2SPI never issues 0xEA. It polls the panel with 0xEB
+ * instead (observed: 0xEB, then 0xEC and 0x01, repeating). Treat 0xEB as a
+ * frame read; without it buf_size stays 0, the transaction is shredded into
+ * one-byte "unknown command" fragments, and no touch frame ever reaches iOS.
+ */
+#define MT_CMD_FRAME_READ_V2         0xEB
 
 // frame types
 #define MT_FRAME_TYPE_PATH 0x44
@@ -137,6 +147,7 @@ typedef struct IPodTouchMultitouchState {
     uint8_t *out_buffer;
     uint8_t *in_buffer;
     uint32_t buf_size;
+    uint8_t prev_cmd_log;
     uint32_t buf_ind;
     uint32_t in_buffer_ind;
     uint8_t hbpp_atn_ack_response[2];
@@ -153,9 +164,17 @@ typedef struct IPodTouchMultitouchState {
     float prev_touch_x;
     float prev_touch_y;
     uint64_t last_frame_timestamp;
+
+    /*
+     * Virtual-clock time of the last touch frame emitted while the finger is
+     * down, used to coalesce host motion to the report rate. See
+     * mt_frame_period_ns() in ipod_touch_multitouch.c.
+     */
+    int64_t last_motion_ns;
 } IPodTouchMultitouchState;
 
 void ipod_touch_multitouch_on_touch(IPodTouchMultitouchState *s);
 void ipod_touch_multitouch_on_release(IPodTouchMultitouchState *s);
+void ipod_touch_multitouch_on_motion(IPodTouchMultitouchState *s);
 
 #endif

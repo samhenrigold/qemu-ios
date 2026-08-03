@@ -1,5 +1,25 @@
 #include "hw/arm/ipod_touch_multitouch.h"
+#include "migration/vmstate.h"
 #include "qemu/log.h"
+
+static MTFrame *get_empty_frame(IPodTouchMultitouchState *s);
+
+static bool mt_trace(void)
+{
+    static int on = -1;
+    if (on < 0) { on = getenv("MT_TRACE") != NULL; }
+    return on;
+}
+#define MTT(fmt, ...) do { if (mt_trace()) { \
+    fprintf(stderr, "[MT] " fmt "\n", ##__VA_ARGS__); } } while (0)
+
+/* Saturate a computed finger velocity into the int16_t the frame carries. */
+static int16_t mt_clamp_vel(int64_t v)
+{
+    if (v > INT16_MAX) { return INT16_MAX; }
+    if (v < INT16_MIN) { return INT16_MIN; }
+    return (int16_t)v;
+}
 
 static void prepare_interface_version_response(IPodTouchMultitouchState *s) {
     memset(s->out_buffer + 1, 0, 15);
@@ -116,7 +136,18 @@ static void prepare_short_control_response(IPodTouchMultitouchState *s, uint8_t 
         ob_int32[1] = MT_SENSOR_SURFACE_HEIGHT;
     }
     else {
-        hw_error("Unknown report ID 0x%02x\n", report_id);
+        /*
+         * The report ID comes straight from the guest. Aborting QEMU here made
+         * a driver probing for a report we do not implement kill the whole
+         * machine -- the documented "Unknown report ID 0xbf" death. The
+         * GET_REPORT_INFO path above was converted for exactly this reason and
+         * this one was missed. Answer with a zeroed report: the checksum below
+         * still runs, so the driver sees a well-formed reply it can reject on
+         * its own terms.
+         */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "[MT] unimplemented short-control report ID 0x%02x; "
+                      "returning an empty report\n", report_id);
     }
 
     // compute and set the checksum
@@ -138,11 +169,24 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
     if(s->cur_cmd == 0) {
         //printf("Starting command 0x%02x\n", value);
         // we're currently not in a command - start a new command
+        if (s->prev_cmd_log) {
+            MTT("cmd 0x%02x clocked %d bytes (buf_size %d)",
+                s->prev_cmd_log, s->buf_ind, s->buf_size);
+        }
+        s->prev_cmd_log = value;
         s->cur_cmd = value;
-        s->out_buffer = malloc(0x100);
+        /*
+         * These were leaked once per SPI command (0x200 bytes a time, and the
+         * guest polls the panel continuously). next_frame is never aliased to
+         * out_buffer - MT_CMD_FRAME_READ clears it on handover - so freeing
+         * here is safe.
+         */
+        free(s->out_buffer);
+        free(s->in_buffer);
+        s->out_buffer = calloc(1, MT_BUFFER_SIZE);
         s->out_buffer[0] = value; // the response header
         s->buf_ind = 0;
-        s->in_buffer = malloc(0x100);
+        s->in_buffer = calloc(1, MT_BUFFER_SIZE);
         s->in_buffer_ind = 0;
         
         if(value == 0x18) { // filler packet??
@@ -185,6 +229,26 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
         else if(value == MT_CMD_HBPP_DATA_PACKET) {
             s->buf_size = 20; // should be enough initially, until we get the packet length
             memset(s->out_buffer + 1, 0, 20 - 1); // just return zeros
+            /*
+             * The ATN ACK (0x1A) reports the status of the LAST operation, and
+             * the two statuses are not interchangeable: the firmware-download
+             * loop in AppleMultitouch*SPI compares the ack against 0x4BC1 and
+             * retries the same chunk five times before giving up, while the
+             * register-write path compares against 0x4AD1.
+             *
+             * hbpp_atn_ack_response used to be a one-way latch: the first 0x1E
+             * set it to 0x4AD1 and nothing ever put it back. That is invisible
+             * on the first boot (the whole download happens before any 0x1E),
+             * but every LATER download -- and the driver re-downloads the ~48 KB
+             * of panel firmware every time it powers the digitizer back up after
+             * sleep -- got 0x4AD1 for every chunk, burned its five retries and
+             * bailed, leaving touch dead until reboot.
+             *
+             * Starting a HBPP data packet means we are in the bootloader again,
+             * so put the ack back to the download status.
+             */
+            s->hbpp_atn_ack_response[0] = 0x4B;
+            s->hbpp_atn_ack_response[1] = 0xC1;
         }
         else if(value == 0x47) { // unknown command, probably used to clear the interrupt
             s->buf_size = 2;
@@ -206,10 +270,44 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
         else if(value == MT_CMD_SHORT_CONTROL_READ) {
             s->buf_size = 16;
         }
-        else if(value == MT_CMD_FRAME_READ) {
+        else if(value == MT_CMD_FRAME_READ || value == MT_CMD_FRAME_READ_V2) {
             s->buf_size = sizeof(MTFrame);
+            /*
+             * out_buffer takes ownership of the pending frame, and next_frame
+             * must be cleared or the next read frees the same allocation again
+             * (the guest polls faster than touch_timer_tick produces frames, so
+             * during a drag the same pointer was handed over repeatedly and
+             * double-freed).
+             *
+             * When there is no pending frame we must STILL install a
+             * frame-sized buffer: buf_size is sizeof(MTFrame) and the read loop
+             * below walks that many bytes, so leaving the 0x100 scratch buffer
+             * in place overruns the heap. That corruption showed up far away,
+             * as a SIGSEGV inside QEMU's own TCG structures.
+             */
+            MTT("FRAME_READ pending=%s", s->next_frame ? "yes" : "NO");
             free(s->out_buffer);
-            s->out_buffer = (uint8_t *) s->next_frame;
+            if (s->next_frame) {
+                s->out_buffer = (uint8_t *) s->next_frame;
+                s->next_frame = NULL;
+            } else {
+                /*
+                 * No new frame. Handing the guest a block of ZEROS here is not
+                 * "no data" - it is a malformed frame: zero cmd byte, zero
+                 * lengths, zero checksums. 3.1.3's driver polls about twice as
+                 * fast as the 10Hz touch timer produces frames, so ~40% of its
+                 * reads landed on one of these, and the finger's frame sequence
+                 * never survived contact. Give it a well-formed report with no
+                 * fingers instead, which is what the real controller returns
+                 * when it is polled and has nothing new.
+                 */
+                s->out_buffer = (uint8_t *) get_empty_frame(s);
+            }
+        }
+        else if(value == 0x00) {
+            /* SPI idle byte, not a command. */
+            s->cur_cmd = 0;
+            s->buf_size = 0;
         }
         else {
             printf("%s Unknown command 0x%02x!\n", __func__, value);
@@ -227,10 +325,21 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
         }
 
         if(checksum != (s->in_buffer[8] << 8 | s->in_buffer[9])) {
-            hw_error("HBPP data header checksum doesn't match!");
+            /* Guest-supplied bytes. A bad checksum is a NAK on real hardware,
+             * not a dead machine. */
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "[MT] HBPP data header checksum mismatch "
+                          "(computed 0x%04x, header 0x%04x); ignoring\n",
+                          checksum, s->in_buffer[8] << 8 | s->in_buffer[9]);
+            return 0;
         }
 
-        uint32_t data_len = (s->in_buffer[2] << 10) | (s->in_buffer[3] << 2) + 5;
+        /* Parenthesised: '+' binds tighter than '|', so this used to compute
+         * (b2<<10) | ((b3<<2)+5) -- with b3 == 255 the carry was OR-merged
+         * instead of added and data_len disagreed with the byte count the
+         * guest then clocked out, terminating the command early and
+         * re-parsing the tail as fresh commands. */
+        uint32_t data_len = ((s->in_buffer[2] << 10) | (s->in_buffer[3] << 2)) + 5;
         // extend the lengths of the in/out buffers
         free(s->in_buffer);
         s->in_buffer = malloc(data_len + 0x10);
@@ -253,12 +362,17 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
 
     // TODO process register writes!
 
-    uint8_t ret_val = s->out_buffer[s->buf_ind];
+    /* The guest can clock out more bytes than the response holds; never read
+     * past the buffer. */
+    uint8_t ret_val = 0;
+    if (s->out_buffer && s->buf_ind < s->buf_size) {
+        ret_val = s->out_buffer[s->buf_ind];
+    }
     s->buf_ind++;
 
     //printf("<MULTITOUCH> Got value: 0x%02x, returning 0x%02x (index: %d, buffer length: %d)\n", value, ret_val, s->buf_ind, s->buf_size);
 
-    if(s->buf_ind == s->buf_size) {
+    if(s->buf_ind >= s->buf_size) {
         //printf("Finished command 0x%02x\n", s->cur_cmd);
 
         if(s->cur_cmd == 0x1E) {
@@ -278,6 +392,13 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
 }
 
 static MTFrame *get_frame(IPodTouchMultitouchState *s, uint8_t event, float x, float y, uint16_t radius1, uint16_t radius2, uint16_t radius3, uint16_t contactDensity) {
+    /*
+     * Deliberately generous: the SPI read path walks out_buffer by buf_size and
+     * the guest can clock out more than sizeof(MTFrame). Allocating exactly the
+     * struct size corrupts the heap (observed as a SIGSEGV inside TCG's
+     * translation-block tree). Keep the padding until the real transfer length
+     * is pinned down.
+     */
     MTFrame *frame = calloc(sizeof(MTFrame), sizeof(uint8_t *));
 
     uint16_t data_len = sizeof(MTFrameHeader) + sizeof(FingerData) + 2;
@@ -322,10 +443,38 @@ static MTFrame *get_frame(IPodTouchMultitouchState *s, uint8_t event, float x, f
     frame->finger_data.unk_3 = 1;
 
     // compute the velocity
+    /*
+     * velY used to be derived from x, so vertical flicks reported no vertical
+     * speed at all. The scaling was also integer-divided before the *1000, so
+     * any delta smaller than the elapsed time truncated to zero - which is
+     * every ordinary drag. Both together left velX/velY pinned at 0, and the
+     * gesture recognisers that need speed (slide-to-unlock especially) never
+     * fired. Multiply first, then divide.
+     */
     int diff_x = (int)((x - s->prev_touch_x) * MT_INTERNAL_SENSOR_SURFACE_WIDTH);
-    int diff_y = (int)((x - s->prev_touch_y) * MT_INTERNAL_SENSOR_SURFACE_HEIGHT);
-    frame->finger_data.velX = diff_x / (elapsed_ns + 1 - s->last_frame_timestamp) * 1000;
-    frame->finger_data.velY = diff_y / (elapsed_ns + 1 - s->last_frame_timestamp) * 1000;
+    int diff_y = (int)((y - s->prev_touch_y) * MT_INTERNAL_SENSOR_SURFACE_HEIGHT);
+    int64_t dt = elapsed_ns + 1 - s->last_frame_timestamp;
+    /*
+     * velX/velY are int16_t. The quotient is not bounded by anything: a
+     * full-width flick covered in a single frame computes into the hundreds of
+     * thousands, which truncates on assignment and wraps to a small value of
+     * arbitrary SIGN - a fast leftward drag reported as a slow rightward one.
+     * Unreachable while the report rate was 10 Hz, reachable as soon as it went
+     * to 60, so clamp rather than truncate.
+     */
+    frame->finger_data.velX = mt_clamp_vel(diff_x * 1000 / dt);
+    frame->finger_data.velY = mt_clamp_vel(diff_y * 1000 / dt);
+
+    /*
+     * The reference point for the next delta is where the finger was in THIS
+     * frame, because dt above is measured from this frame's timestamp. It used
+     * to be moved by the host pointer handler instead, which was consistent
+     * only while frames and host motion events arrived at the same rate. They
+     * no longer do: a keep-alive frame for a finger that has stopped moving
+     * must report zero speed, and it only does if prev is what we last sent.
+     */
+    s->prev_touch_x = x;
+    s->prev_touch_y = y;
 
     frame->finger_data.x = (int)(x * MT_INTERNAL_SENSOR_SURFACE_WIDTH);
     frame->finger_data.y = (int)(y * MT_INTERNAL_SENSOR_SURFACE_HEIGHT);
@@ -349,21 +498,142 @@ static MTFrame *get_frame(IPodTouchMultitouchState *s, uint8_t event, float x, f
     return frame;
 }
 
+/*
+ * A valid frame that reports no fingers, for polls that arrive between real
+ * frames. Mirrors get_frame's framing exactly; only the finger data is absent.
+ */
+static MTFrame *get_empty_frame(IPodTouchMultitouchState *s)
+{
+    MTFrame *frame = calloc(sizeof(MTFrame), sizeof(uint8_t *));
+    uint16_t data_len = sizeof(MTFrameHeader) + 2;
+    uint16_t checksum = 0;
+
+    frame->frame_length.cmd = MT_CMD_FRAME_READ;
+    frame->frame_length.length1 = (data_len & 0xFF);
+    frame->frame_length.length2 = (data_len >> 8) & 0xFF;
+    for (int i = 0; i < 14; i++) {
+        checksum += ((uint8_t *) &frame->frame_length)[i];
+    }
+    frame->frame_length.checksum1 = (checksum & 0xFF);
+    frame->frame_length.checksum2 = (checksum >> 8) & 0xFF;
+
+    frame->frame_packet.cmd = MT_CMD_FRAME_READ;
+    frame->frame_packet.length1 = (data_len & 0xFF);
+    frame->frame_packet.length2 = (data_len >> 8) & 0xFF;
+    checksum = 0;
+    for (int i = 0; i < 4; i++) {
+        checksum += ((uint8_t *) &frame->frame_length)[i];
+    }
+    frame->frame_packet.checksum_pad = 0xFF - (checksum & 0xFF) + 1;
+
+    frame->frame_packet.header.type = MT_FRAME_TYPE_PATH;
+    frame->frame_packet.header.frameNum = s->frame_counter;
+    frame->frame_packet.header.headerLen = sizeof(MTFrameHeader);
+    frame->frame_packet.header.timestamp =
+        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000000;
+    frame->frame_packet.header.numFingers = 0;
+    frame->frame_packet.header.fingerDataLen = sizeof(FingerData);
+
+    checksum = 0;
+    for (int i = 0; i < data_len - 2; i++) {
+        checksum += ((uint8_t *) &frame->frame_packet.header)[i];
+    }
+    frame->checksum1 = (checksum & 0xFF);
+    frame->checksum2 = (checksum >> 8) & 0xFF;
+
+    s->frame_counter += 1;
+    return frame;
+}
+
 static void ipod_touch_multitouch_inform_frame_ready(IPodTouchMultitouchState *s) {
+    MTT("frame ready -> raise gpio3 bit13");
     s->sysic->gpio_int_status[3] |= (1 << 13); // the multitouch interrupt bit is in group 3 (32 interrupts per group), and the 13th of the 3th group
     qemu_irq_raise(s->sysic->gpio_irqs[3]);
 }
 
+/*
+ * Touch report rate.
+ *
+ * A real Zephyr2 digitizer reports at roughly 60 Hz. This model reported at 10,
+ * so during a drag the guest learned the finger position ten times a second
+ * while the panel presents at 53-57 fps. A finger-tracked animation cannot be
+ * smoother than its input, which is what made slide-to-unlock feel sluggish and
+ * drop frames even though the compositor was measurably fine.
+ *
+ * The rate also sets the reported speed, because get_frame() derives velocity
+ * as (distance since the last host sample) / (time since the last frame). At
+ * 10 Hz that divided a single mouse step by 100 ms and under-reported finger
+ * speed by about 6x, which is its own reason the slide-to-unlock recogniser
+ * struggled. Raising the rate fixes the magnitude as well as the smoothness.
+ *
+ * IT_MT_HZ overrides it, for bisecting against the old behaviour (IT_MT_HZ=10).
+ */
+static int64_t mt_frame_period_ns(void)
+{
+    static int64_t ns = -1;
+
+    if (ns < 0) {
+        const char *e = getenv("IT_MT_HZ");
+        int hz = e ? atoi(e) : 0;
+
+        if (hz <= 0 || hz > 250) {
+            hz = 60;
+        }
+        ns = NANOSECONDS_PER_SECOND / hz;
+    }
+    return ns;
+}
+
 void ipod_touch_multitouch_on_touch(IPodTouchMultitouchState *s) {
+    MTT("TOUCH START at (%.3f, %.3f)", s->touch_x, s->touch_y);
     s->touch_down = true;
+
+    /*
+     * A new touch has no speed. Without this, prev_touch_* still holds where
+     * the finger was when the PREVIOUS gesture last reported, so the first
+     * frame measures the distance between two unrelated touches - two quick
+     * taps in different places report a large spurious velocity on touch-down.
+     */
+    s->prev_touch_x = s->touch_x;
+    s->prev_touch_y = s->touch_y;
 
     s->next_frame = get_frame(s, MT_EVENT_TOUCH_START, s->touch_x, s->touch_y, 100, 660, 580, 150);
     ipod_touch_multitouch_inform_frame_ready(s);
 
-    timer_mod(s->touch_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + NANOSECONDS_PER_SECOND / 10);
+    s->last_motion_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    timer_mod(s->touch_timer, s->last_motion_ns + mt_frame_period_ns());
+}
+
+/*
+ * Host pointer motion while the finger is down.
+ *
+ * The timer alone only resamples s->touch_x/y on its own cadence, so it turns
+ * continuous host motion into a staircase. Emitting here as well makes the
+ * guest see motion when it actually happens, with the timer left as a
+ * keep-alive floor for a finger that is held still. Coalesced to the report
+ * period so a host that delivers motion faster than the panel cannot storm the
+ * guest with GPIO interrupts - next_frame is a single slot, so frames produced
+ * faster than the guest reads them would be overwritten anyway.
+ */
+void ipod_touch_multitouch_on_motion(IPodTouchMultitouchState *s) {
+    int64_t now;
+
+    if (!s->touch_down) {
+        return;
+    }
+    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (now - s->last_motion_ns < mt_frame_period_ns()) {
+        return;
+    }
+    s->last_motion_ns = now;
+
+    s->next_frame = get_frame(s, MT_EVENT_TOUCH_MOVED, s->touch_x, s->touch_y, 100, 660, 580, 150);
+    ipod_touch_multitouch_inform_frame_ready(s);
+    timer_mod(s->touch_timer, now + mt_frame_period_ns());
 }
 
 void ipod_touch_multitouch_on_release(IPodTouchMultitouchState *s) {
+    MTT("TOUCH END at (%.3f, %.3f)", s->touch_x, s->touch_y);
     s->next_frame = get_frame(s, MT_EVENT_TOUCH_ENDED, s->touch_x, s->touch_y, 0, 0, 0, 0);
     s->touch_down = false;
     ipod_touch_multitouch_inform_frame_ready(s);
@@ -381,7 +651,8 @@ static void touch_timer_tick(void *opaque)
 
     if(s->touch_down) {
         // reschedule the timer
-        timer_mod(s->touch_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + NANOSECONDS_PER_SECOND / 10);
+        s->last_motion_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        timer_mod(s->touch_timer, s->last_motion_ns + mt_frame_period_ns());
     }
 }
 
@@ -450,6 +721,50 @@ static void ipod_touch_multitouch_reset(DeviceState *dev)
     }
 }
 
+/*
+ * KNOWN GAP, deliberate: out_buffer/in_buffer and next_frame are heap pointers
+ * holding an SPI transaction and a touch report in flight. They are not
+ * migrated, so a snapshot taken with a finger down restores as a finger that
+ * was never pressed. post_load therefore forces the released state rather than
+ * leaving touch_down set with no frame to deliver -- otherwise the guest would
+ * wait for a TOUCH_ENDED that can no longer arrive. Snapshots are taken at
+ * rest in practice; this only bounds the damage if one is not.
+ */
+static int ipod_touch_multitouch_post_load(void *opaque, int version_id)
+{
+    IPodTouchMultitouchState *s = opaque;
+
+    s->next_frame = NULL;
+    s->buf_ind = 0;
+    s->in_buffer_ind = 0;
+    s->touch_down = false;
+    if (s->touch_timer) {
+        timer_del(s->touch_timer);
+    }
+    if (s->touch_end_timer) {
+        timer_del(s->touch_end_timer);
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_ipod_touch_multitouch = {
+    .name = "ipod_touch_multitouch",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = ipod_touch_multitouch_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SSI_PERIPHERAL(ssidev, IPodTouchMultitouchState),
+        VMSTATE_UINT8(cur_cmd, IPodTouchMultitouchState),
+        VMSTATE_UINT8(prev_cmd_log, IPodTouchMultitouchState),
+        VMSTATE_UINT32(buf_size, IPodTouchMultitouchState),
+        VMSTATE_UINT8_ARRAY(hbpp_atn_ack_response, IPodTouchMultitouchState, 2),
+        VMSTATE_UINT32(frame_counter, IPodTouchMultitouchState),
+        VMSTATE_UINT64(last_frame_timestamp, IPodTouchMultitouchState),
+        VMSTATE_INT64(last_motion_ns, IPodTouchMultitouchState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_multitouch_class_init(ObjectClass *klass, void *data)
 {
     SSIPeripheralClass *k = SSI_PERIPHERAL_CLASS(klass);
@@ -458,6 +773,7 @@ static void ipod_touch_multitouch_class_init(ObjectClass *klass, void *data)
     k->realize = ipod_touch_multitouch_realize;
     k->transfer = ipod_touch_multitouch_transfer;
     dc->reset = ipod_touch_multitouch_reset;
+    dc->vmsd = &vmstate_ipod_touch_multitouch;
 }
 
 static const TypeInfo ipod_touch_multitouch_type_info = {

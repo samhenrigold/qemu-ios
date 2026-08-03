@@ -1,9 +1,26 @@
 #include "hw/arm/ipod_touch_lcd.h"
+#include "migration/vmstate.h"
 #include "ui/pixel_ops.h"
 #include "ui/console.h"
 #include "hw/display/framebuffer.h"
+#include "exec/cpu-common.h"
 
 int lcd_brightness = 255;
+
+#define LCD_FB_WIDTH  320
+#define LCD_FB_HEIGHT 480
+
+/*
+ * Rotation the host window should be presenting, in degrees clockwise. Written
+ * by it_display_set_orientation() (accelerometer / Command+Left / Command+Right
+ * / the accel-orientation QMP property) and picked up by the next refresh,
+ * which owns the console resize.
+ *
+ * iOS keeps its framebuffer in portrait and rotates the UI *inside* it, so to
+ * show an upright landscape image the model has to turn the picture back the
+ * same way the user "turned" the device.
+ */
+static int it_display_rotation_req;
 
 static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -31,6 +48,24 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
 	case 0x1b14:
 	    return 0x3;
         default:
+            /*
+             * IT_LCD_READY: report "ready" for every register this model does
+             * not implement. 3.1.3's AppleM2TVOut close path sleeps waiting on
+             * three independent ready handshakes (SDO_CLKCON & 0x2,
+             * enable.reg.clkgating_rdy, mix_ctrl.reg.reg_mixer_ready_clk_down)
+             * and logs "TVOUT SHUT DOWN PROBLEM: ..." when they never assert.
+             * That wait happens on the SpringBoard thread, so the UI never
+             * comes up. Reads seen spinning here: 0x410 (status beside the
+             * 0x408/0x40c indirect address/data port, polled thousands of
+             * times) and the 0x1b80..0x1bb0 mixer/SDO status block.
+             *
+             * Returning all-ones satisfies any `status & mask` readiness test.
+             * It is a bring-up probe, not a model: once the specific bits are
+             * known they should be implemented properly per register.
+             */
+            if (getenv("IT_LCD_READY")) {
+                return 0xffffffff;
+            }
             printf("%s: read invalid location 0x%08x.\n", __func__, addr);
             break;
     }
@@ -73,6 +108,45 @@ static void ipod_touch_lcd_write(void *opaque, hwaddr addr, uint64_t val, unsign
 void lcd_changebrightness(int brightness)
 {
     lcd_brightness = brightness & 0xFF;
+    if (getenv("LCD_TRACE")) {
+        fprintf(stderr, "[LCD] brightness <- %d\n", lcd_brightness);
+    }
+}
+
+/*
+ * IT_LCD_BRIGHT overrides the panel backlight level the guest programmed.
+ * draw_line32_32 scales every channel by lcd_brightness/255, so a guest that
+ * leaves the backlight at 0 produces a solid-black screendump even when the
+ * framebuffer is full of pixels. Useful both as a probe and for guests whose
+ * backlight register we do not model.
+ */
+static int lcd_bright_effective(void)
+{
+    static int ovr = -2;
+    if (ovr == -2) {
+        const char *v = getenv("IT_LCD_BRIGHT");
+        ovr = v ? atoi(v) : -1;
+    }
+    return ovr >= 0 ? ovr : lcd_brightness;
+}
+
+void it_display_set_orientation(uint32_t orientation)
+{
+    int rot;
+
+    switch (orientation) {
+    case 2:  rot = 180; break;   /* portrait upside down */
+    case 3:  rot = 270; break;   /* landscape left  - device turned ccw */
+    case 4:  rot = 90;  break;   /* landscape right - device turned cw  */
+    default: rot = 0;   break;   /* portrait, face up/down, unset */
+    }
+    if (rot != it_display_rotation_req) {
+        it_display_rotation_req = rot;
+        if (getenv("LCD_TRACE")) {
+            fprintf(stderr, "[LCD] orientation %u -> window rotation %d\n",
+                    orientation, rot);
+        }
+    }
 }
 
 static void lcd_invalidate(void *opaque)
@@ -93,10 +167,58 @@ static void draw_line32_32(void *opaque, uint8_t *d, const uint8_t *s, int width
         g = s[1];
         r = s[2];
         // printf("R: %d, G: %d, B: %d, A: %d\n", r, g, b, lcd_brightness);
-        ((uint32_t *) d)[0] = rgb_to_pixel32(round((float)r * ((float)lcd_brightness / 255.0f)), round((float)g * ((float)lcd_brightness / 255.0f)), round((float)b * ((float)lcd_brightness / 255.0f)));
+        int bri = lcd_bright_effective();
+        ((uint32_t *) d)[0] = rgb_to_pixel32(round((float)r * ((float)bri / 255.0f)), round((float)g * ((float)bri / 255.0f)), round((float)b * ((float)bri / 255.0f)));
         s += 4;
         d += 4;
     } while (-- width != 0);
+}
+
+/*
+ * Blit the guest's portrait framebuffer into a rotated host surface.
+ *
+ * framebuffer_update_display() can only walk source and destination with fixed
+ * strides, which cannot express a transpose, so the rotated case gets its own
+ * blit. The whole frame is redrawn every time (the portrait path already forces
+ * invalidate on every refresh, so this costs no more than the status quo).
+ */
+static void lcd_refresh_rotated(IPodTouchLCDState *lcd, DisplaySurface *surface,
+                                int rot)
+{
+    const int sw = LCD_FB_WIDTH, sh = LCD_FB_HEIGHT;
+    int dw = (rot == 180) ? sw : sh;
+    int dh = (rot == 180) ? sh : sw;
+    uint8_t *dst = surface_data(surface);
+    int dstride = surface_stride(surface);
+    int bri = lcd_bright_effective();
+    int sx, sy;
+
+    if (surface_width(surface) != dw || surface_height(surface) != dh) {
+        return; /* resize has not landed yet; skip this frame */
+    }
+    if (!lcd->rotbuf) {
+        lcd->rotbuf = g_malloc(sw * sh * 4);
+    }
+    cpu_physical_memory_read(lcd->w1_framebuffer_base, lcd->rotbuf, sw * sh * 4);
+
+    for (sy = 0; sy < sh; sy++) {
+        const uint8_t *s = lcd->rotbuf + (size_t)sy * sw * 4;
+        for (sx = 0; sx < sw; sx++, s += 4) {
+            int dx, dy;
+            uint8_t b = s[0], g = s[1], r = s[2];
+
+            switch (rot) {
+            case 90:  dx = sh - 1 - sy; dy = sx;          break;
+            case 270: dx = sy;          dy = sw - 1 - sx; break;
+            default:  dx = sw - 1 - sx; dy = sh - 1 - sy; break;
+            }
+            ((uint32_t *)(dst + (size_t)dy * dstride))[dx] =
+                rgb_to_pixel32((r * bri + 127) / 255,
+                               (g * bri + 127) / 255,
+                               (b * bri + 127) / 255);
+        }
+    }
+    dpy_gfx_update(lcd->con, 0, 0, dw, dh);
 }
 
 static void lcd_refresh(void *opaque)
@@ -112,6 +234,32 @@ static void lcd_refresh(void *opaque)
 
     if (!lcd || !lcd->con || !surface_bits_per_pixel(surface))
         return;
+
+    /*
+     * Pick up a pending orientation change. The console resize has to happen
+     * from the graphics update, not from the I2C/QMP thread that moved the
+     * accelerometer.
+     */
+    if (lcd->rotation != it_display_rotation_req) {
+        int rot = it_display_rotation_req;
+        bool land = (rot == 90 || rot == 270);
+
+        lcd->rotation = rot;
+        qemu_console_resize(lcd->con,
+                            land ? LCD_FB_HEIGHT : LCD_FB_WIDTH,
+                            land ? LCD_FB_WIDTH  : LCD_FB_HEIGHT);
+        surface = qemu_console_surface(lcd->con);
+        lcd->invalidate = 1;
+        if (!surface_bits_per_pixel(surface)) {
+            return;
+        }
+    }
+
+    if (lcd->rotation != 0) {
+        lcd_refresh_rotated(lcd, surface, lcd->rotation);
+        lcd->invalidate = 0;
+        return;
+    }
 
     dest_width = 4;
     draw_line = draw_line32_32;
@@ -158,13 +306,34 @@ static void ipod_touch_lcd_mouse_event(void *opaque, int x, int y, int z, int bu
 {
     // printf("x %d y %d z %d state %d\n", x, y, z, buttons_state);
 
-    // convert x and y to fractional numbers
-    float fx = x / pow(2, 15);
-    float fy = 1 - y / pow(2, 15);
-
     IPodTouchLCDState *lcd = (IPodTouchLCDState *) opaque;
-    lcd->mt->prev_touch_x = lcd->mt->touch_x;
-    lcd->mt->prev_touch_y = lcd->mt->touch_y;
+
+    /* pointer position as a fraction of the *window*, y measured downwards */
+    float cx = x / (float)pow(2, 15);
+    float cy = y / (float)pow(2, 15);
+    float fx, fy;
+
+    /*
+     * Undo the rotation lcd_refresh_rotated() applied, so the multitouch model
+     * always sees coordinates in the guest's portrait framebuffer space (x left
+     * to right, y measured from the bottom). Without this, touch lands in the
+     * wrong place -- or a transposed place -- as soon as the window is turned.
+     */
+    switch (lcd->rotation) {
+    case 90:  fx = cy;        fy = cx;        break;
+    case 270: fx = 1.0f - cy; fy = 1.0f - cx; break;
+    case 180: fx = 1.0f - cx; fy = cy;        break;
+    default:  fx = cx;        fy = 1.0f - cy; break;
+    }
+
+    /*
+     * Only the position moves here. prev_touch_* is the reference the reported
+     * velocity is measured from, and get_frame() advances it when a frame is
+     * actually emitted -- moving it on every host event instead silently
+     * dropped the distance covered by any motion the report-rate coalescer
+     * skipped, and left a finger held still reporting the speed of its last
+     * step forever.
+     */
     lcd->mt->touch_x = fx;
     lcd->mt->touch_y = fy;
 
@@ -173,6 +342,10 @@ static void ipod_touch_lcd_mouse_event(void *opaque, int x, int y, int z, int bu
     }
     else if(!buttons_state && lcd->mt->touch_down) {
         ipod_touch_multitouch_on_release(lcd->mt);
+    }
+    else if(buttons_state) {
+        /* Drag: report the motion now rather than waiting for the next tick. */
+        ipod_touch_multitouch_on_motion(lcd->mt);
     }
 }
 
@@ -209,6 +382,16 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
     s->w1_display_depth_info = 0;
     s->invalidate = 1;
     memset(&s->fbsection, 0, sizeof(s->fbsection));
+    /*
+     * The device comes up portrait. it_display_rotation_req is file-scope and
+     * survived reset, so a reboot taken in landscape inherited the previous
+     * boot's rotation. s->rotation is deliberately NOT cleared here: the
+     * refresh path resizes the console only when rotation != request, so
+     * leaving the applied value is what makes it rotate back. rotbuf is a
+     * fixed-size scratch buffer refilled from guest memory every frame, not
+     * state.
+     */
+    it_display_rotation_req = 0;
     if (getenv("LCD_TRACE")) {
         fprintf(stderr, "[LCD] ==== reset ====\n");
     }
@@ -239,12 +422,49 @@ static void ipod_touch_lcd_init(Object *obj)
     sysbus_init_irq(sbd, &s->irq);
 }
 
+/*
+ * con, sysmem, mt, irq and refresh_timer are all machine wiring, rebuilt by
+ * realize on the destination before the snapshot is read. rotbuf is a scratch
+ * buffer refilled from guest memory every frame. fbsection is a cached
+ * MemoryRegionSection - a host pointer - and must never be migrated; it is
+ * rebuilt from w1_framebuffer_base. post_load forces a full repaint, otherwise
+ * the destination's blank surface is diffed against a framebuffer it never
+ * drew and most of the screen stays black.
+ */
+static int ipod_touch_lcd_post_load(void *opaque, int version_id)
+{
+    IPodTouchLCDState *s = opaque;
+
+    memset(&s->fbsection, 0, sizeof(s->fbsection));
+    s->invalidate = 1;
+    return 0;
+}
+
+static const VMStateDescription vmstate_ipod_touch_lcd = {
+    .name = "ipod_touch_lcd",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = ipod_touch_lcd_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(brightness, IPodTouchLCDState),
+        VMSTATE_UINT32(lcd_con, IPodTouchLCDState),
+        VMSTATE_UINT32(w1_display_resolution_info, IPodTouchLCDState),
+        VMSTATE_UINT32(w1_framebuffer_base, IPodTouchLCDState),
+        VMSTATE_UINT32(w1_hspan, IPodTouchLCDState),
+        VMSTATE_UINT32(w1_display_depth_info, IPodTouchLCDState),
+        VMSTATE_UINT32(render, IPodTouchLCDState),
+        VMSTATE_INT32(rotation, IPodTouchLCDState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_lcd_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = ipod_touch_lcd_realize;
     dc->reset = ipod_touch_lcd_reset;
+    dc->vmsd = &vmstate_ipod_touch_lcd;
 }
 
 static const TypeInfo ipod_touch_lcd_info = {

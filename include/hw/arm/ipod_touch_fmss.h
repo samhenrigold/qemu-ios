@@ -50,6 +50,9 @@ typedef struct IPodTouchFMSSState
     char *nand_path;
     char *nand_overlay;   /* writable COW overlay dir, or NULL to discard writes */
     GHashTable *erased_blocks; /* (cs << 32) | block for blocks erased in the overlay */
+    /* Allocation blocks the volume in the base image covers; 0 until read out
+     * of the image's GPT on first use. See fmss_total_blocks(). */
+    uint32_t total_blocks;
 
     /*
      * Pages programmed since power-on, keyed by the *physical* (cs, page) the

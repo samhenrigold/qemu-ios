@@ -1,4 +1,6 @@
 #include "hw/arm/ipod_touch_mbx.h"
+#include "migration/vmstate.h"
+#include "qapi/error.h"
 #include "hw/irq.h"
 #include "qemu/timer.h"
 #include "hw/core/cpu.h"
@@ -76,7 +78,7 @@ static uint32_t mbx_guest_pc(void)
  *   if (this->0x214 != 2) return;                  <-- bails with no MMIO at all
  *   pending = [0x12c] & this->0x140;
  *   [0x134] = pending;
- *   ... 0x400 -> TA overflow, 0x10/0x20/0x200 -> state machine ...
+ *   ... 0x400 -> 2D sync, 0x10/0x20/0x200 -> state machine ...
  *   0x4 -> this->0x13c,  0x8 -> this->0x13d,  0x40 -> this->0x13e
  *   if (0x13c && 0x13d && 0x13e) -> frame done
  *   if (anything handled) bl c04e9b00               <-- queue processor
@@ -97,8 +99,34 @@ static uint32_t mbx_guest_pc(void)
 #define MBX_MMU_CTRL_REG 0x1020
 #define MBX_MMU_ENABLE   0x00000001   /* driver's request */
 #define MBX_MMU_ACK      0x00010000   /* hardware's acknowledgement */
-#define MBX_SUBMIT_REG   0x130
+#define MBX_SUBMIT_REG   0x130        /* interrupt mask, per the notes above */
 #define MBX_STATUS_REG   0x12c
+#define MBX_INTCLR_REG   0x134        /* write-1-to-clear for 0x12c */
+
+/* 0x4 | 0x8 | 0x40: the three the ISR folds into "frame done". */
+#define MBX_INT_FRAME_DONE 0x4c
+
+/*
+ * Bit 10: the 2D completion. Distinct from the 0x4c 3D trio above - the ISR
+ * tests it first, before any of them, and it is the only source of the
+ * driver's "2D idle" flag. Nothing in this model set it, so any guest waiting
+ * on 2D completion waited forever; that is why MBX 2D work cannot currently
+ * make progress even with LK_ENABLE_MBX2D=1.
+ *
+ * Verified against the real ISR: 2.1.1 AppleMBX c04ea478 and 3.1.3 (7E18)
+ * kernelcache c075c4e0 are structurally identical, and it is bit 0x20 - not
+ * 0x400 - that grows the TA parameter buffer, which is the actual TA overflow.
+ */
+#define MBX_INT_2D_SYNC    0x400
+
+/*
+ * How often to post a completion while the driver's mask is armed. The ISR
+ * bails out unless the device object is in its running state, so a completion
+ * posted at the wrong moment is simply dropped; repeating means the driver
+ * eventually sees one once it is ready. 16 ms is roughly a frame and keeps the
+ * interrupt rate far too low to storm.
+ */
+#define MBX_COMPLETE_PERIOD_NS (16 * 1000 * 1000)
 
 static uint32_t reverse_byte_order(uint32_t value) {
     return ((value & 0x000000FF) << 24) |
@@ -149,8 +177,16 @@ static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
             if (s->irq_enabled) {
                 val = (val & ~MBX_MMU_ACK) | ((val & MBX_MMU_ENABLE) ? MBX_MMU_ACK : 0);
             }
-            if (val == 0) {
-                val = MBX_MMU_ACK; /* never written: as before, report ready */
+            if (!s->mmu_written) {
+                /*
+                 * Only before the guest has ever driven this register does
+                 * "ready" make sense. Testing val == 0 instead meant the
+                 * fallback also fired on a legitimate *disable* request
+                 * (bit 0 clear -> mirror gives 0), so bit 16 never cleared and
+                 * AppleMBX's MMU teardown loop spun forever - 100% of guest CPU
+                 * in the register accessor at AppleMBX+0xfb0.
+                 */
+                val = MBX_MMU_ACK;
             }
             break;
         default:
@@ -170,8 +206,52 @@ static void ipod_touch_mbx1_write(void *opaque, hwaddr addr, uint64_t val, unsig
     {
 	case MBX_MMU_CTRL_REG:
 	    s->addr = val;
+	    s->mmu_written = true;
+	    break;
+	case MBX_SUBMIT_REG:
+	    if (s->complete_shim) {
+	        s->int_mask = val;
+	        if (val) {
+	            timer_mod(s->complete_timer,
+	                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MBX_COMPLETE_PERIOD_NS);
+	        } else {
+	            timer_del(s->complete_timer);
+	            s->status = 0;
+	            if (s->irq) {
+	                qemu_irq_lower(s->irq);
+	            }
+	        }
+	    }
+	    break;
+	case MBX_INTCLR_REG:
+	    if (s->complete_shim) {
+	        s->status &= ~(uint32_t)val;
+	        if (!s->status && s->irq) {
+	            qemu_irq_lower(s->irq);
+	        }
+	    }
 	    break;
     }
+}
+
+/* Post a completion while the driver's interrupt mask is armed. */
+static void ipod_touch_mbx_complete(void *opaque)
+{
+    IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
+
+    if (!s->int_mask) {
+        return;
+    }
+    /*
+     * Gated on the mask the driver itself armed at 0x130, so a guest that
+     * never enables 2D never sees the 2D bit.
+     */
+    s->status |= (MBX_INT_FRAME_DONE | MBX_INT_2D_SYNC) & s->int_mask;
+    if (s->status && s->irq) {
+        qemu_irq_raise(s->irq);
+    }
+    timer_mod(s->complete_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MBX_COMPLETE_PERIOD_NS);
 }
 
 /*
@@ -247,6 +327,59 @@ static uint32_t kernel_find_cstring(const uint8_t *image, size_t len, const char
         return KERNEL_SCAN_PA_START + start + 0xb8000000u;
     }
     return 0;
+}
+
+/*
+ * Per-build constants.
+ *
+ * Almost nothing in this machine is firmware-specific: the AES engine keys its
+ * fake GID blobs on the img3 KBAG ciphertext, the USB mux gate locates itself
+ * from an anchor string, and the iBoot bluetooth-node poke searches for its
+ * string. What is left is a single kernel address that cannot be derived
+ * without a symbol lookup, so it is tabulated per build and selected by the
+ * kernel's own version banner.
+ */
+typedef struct {
+    const char *build;
+    const char *version_needle;   /* substring of the Darwin version banner */
+    uint32_t pegetgmttimeofday_pa;
+} ITFirmwareDesc;
+
+static const ITFirmwareDesc it_firmware_descs[] = {
+    /* iPhone OS 2.1.1, xnu-1228.  VA 0xc016b460 */
+    { "5F138", "Darwin Kernel Version 9.",  0x0816b460u },
+    /* iOS 3.1.3, xnu-1357.  VA 0xc01953e0 */
+    { "7E18",  "Darwin Kernel Version 10.", 0x081953e0u },
+};
+
+/* Identify the loaded kernelcache. Returns NULL if it is not one we know. */
+static const ITFirmwareDesc *it_firmware_desc(void)
+{
+    static const ITFirmwareDesc *cached;
+    static bool searched;
+
+    if (searched) {
+        return cached;
+    }
+    searched = true;
+
+    g_autofree uint8_t *image = g_try_malloc(KERNEL_SCAN_LEN);
+    if (!image) {
+        return NULL;
+    }
+    cpu_physical_memory_read(KERNEL_SCAN_PA_START, image, KERNEL_SCAN_LEN);
+
+    for (size_t d = 0; d < ARRAY_SIZE(it_firmware_descs); d++) {
+        const ITFirmwareDesc *desc = &it_firmware_descs[d];
+        if (kernel_find_cstring(image, KERNEL_SCAN_LEN, desc->version_needle)) {
+            printf("[FIRMWARE] detected build %s\n", desc->build);
+            cached = desc;
+            return cached;
+        }
+    }
+
+    printf("[FIRMWARE] unrecognised kernelcache; build-specific patches skipped\n");
+    return NULL;
 }
 
 static void patch_usb_function_gate(void)
@@ -328,18 +461,24 @@ static void patch_kernel(bool *alreadypatched)
     *alreadypatched = true;
 
     /*
-     * Give the guest a real clock. The 2G has no RTC iOS reads at boot, so
-     * _PEGetGMTTimeOfDay (VA 0xc016b460 -> PA 0x0816b460) is `movs r0,#0; bx lr`
-     * via the vtable and the calendar starts at 1900. Rewrite its head to read
-     * host UTC seconds from the HOST_GMT_SECONDS cp15 reg and return:
+     * Give the guest a real clock. The 2G has no RTC iOS reads at boot, so the
+     * calendar starts at 1900. Rewrite _PEGetGMTTimeOfDay's head to read host
+     * UTC seconds from the HOST_GMT_SECONDS cp15 reg and return:
      *     mrc p15, 3, r0, c15, c15, #1   ; 7f ee 3f 0f
      *     bx  lr                         ; 70 47
      * XNU seeds clock_initialize_calendar from r0 once; its tick advances after.
      * (If the date is still wrong, this MBX-triggered patch point ran after the
      * calendar was already seeded and the patch needs an earlier trigger.)
+     *
+     * The function's address is the one genuinely build-specific constant left
+     * in this file, so it comes from the firmware descriptor picked below.
      */
-    static const uint8_t gmt_patch[6] = {0x7f, 0xee, 0x3f, 0x0f, 0x70, 0x47};
-    cpu_physical_memory_write(0x0816b460, gmt_patch, sizeof(gmt_patch));
+    const ITFirmwareDesc *fw = it_firmware_desc();
+    if (fw) {
+        static const uint8_t gmt_patch[6] = {0x7f, 0xee, 0x3f, 0x0f, 0x70, 0x47};
+        cpu_physical_memory_write(fw->pegetgmttimeofday_pa, gmt_patch,
+                                  sizeof(gmt_patch));
+    }
 
     patch_usb_function_gate();
 
@@ -442,12 +581,33 @@ static void ipod_touch_mbx_init(Object *obj)
     IPodTouchMBXState *s = IPOD_TOUCH_MBX(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
-    memory_region_init_io(&s->iomem1, obj, &ipod_touch_mbx1_ops, s, TYPE_IPOD_TOUCH_MBX, 0x1000000);
+    /*
+     * IT_MBX_RAM: back the 16 MB MBX aperture with real RAM instead of pure
+     * MMIO. 3.1.3's AppleMBX builds an IOMemoryDescriptor for its surfaces and
+     * calls prepare() (which wires physical page frames); over an init_io
+     * region there are no page frames, and the driver logs
+     *   "MBX: Failed to add a surface mapping because prepare() failed ..."
+     * so no surface is ever mapped and nothing composites to the framebuffer.
+     * Bring-up probe: RAM makes the aperture wireable, at the cost of the
+     * register request/ack mirror on this bank.
+     */
+    if (getenv("IT_MBX_RAM")) {
+        memory_region_init_ram(&s->iomem1, obj, "mbx1_ram", 0x1000000, &error_fatal);
+    } else {
+        memory_region_init_io(&s->iomem1, obj, &ipod_touch_mbx1_ops, s, TYPE_IPOD_TOUCH_MBX, 0x1000000);
+    }
     sysbus_init_mmio(sbd, &s->iomem1);
     memory_region_init_io(&s->iomem2, obj, &ipod_touch_mbx2_ops, s, TYPE_IPOD_TOUCH_MBX, 0x1000);
     sysbus_init_mmio(sbd, &s->iomem2);
 
     sysbus_init_irq(sbd, &s->irq);
+
+    s->complete_shim = getenv("IT_MBX_COMPLETE") != NULL;
+    if (s->complete_shim) {
+        s->irq_enabled = true;
+        s->complete_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                         ipod_touch_mbx_complete, s);
+    }
 }
 
 /*
@@ -470,18 +630,48 @@ static void ipod_touch_mbx_reset(DeviceState *dev)
     IPodTouchMBXState *s = IPOD_TOUCH_MBX(dev);
 
     s->addr = 0;
+    s->mmu_written = false;
     s->status = 0;
     s->alreadypatched = false;
+    /* The completion shim's mask and its timer are part of the interrupt
+     * state. Zeroing the mask without disarming the timer left a completion
+     * scheduled against a mask the new boot never wrote; disarming without
+     * zeroing the mask would let the shim re-arm from stale state. */
+    s->int_mask = 0;
+    if (s->complete_timer) {
+        timer_del(s->complete_timer);
+    }
     if (s->irq) {
         qemu_irq_lower(s->irq);
     }
 }
+
+/* irq_enabled and complete_shim come from machine options and the environment,
+ * not from the guest, so they are configuration rather than state. The
+ * completion timer is re-armed by the next masked write from the guest -- and
+ * it does not exist at all unless the shim is on, so migrating the pointer
+ * would trip vmstate's "array with a NULL base" assertion and kill the source
+ * QEMU mid-save. Measured: that is exactly what it did. */
+static const VMStateDescription vmstate_ipod_touch_mbx = {
+    .name = "ipod_touch_mbx",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64(addr, IPodTouchMBXState),
+        VMSTATE_BOOL(mmu_written, IPodTouchMBXState),
+        VMSTATE_BOOL(alreadypatched, IPodTouchMBXState),
+        VMSTATE_UINT32(status, IPodTouchMBXState),
+        VMSTATE_UINT32(int_mask, IPodTouchMBXState),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 static void ipod_touch_mbx_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->reset = ipod_touch_mbx_reset;
+    dc->vmsd = &vmstate_ipod_touch_mbx;
 }
 
 static const TypeInfo ipod_touch_mbx_type_info = {

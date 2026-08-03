@@ -131,12 +131,25 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define SDPCM_CHANNEL_MASK    0x0f
 
 /*
- * The CDC control header that rides on channel 0. This build uses the three
- * word form - command, length, flags - with no status word; a WLC_UP request
- * arrives as a 24 byte frame, which is twelve bytes of SDPCM and twelve of
- * CDC with no payload at all.
+ * The CDC control header that rides on channel 0, in two sizes.
+ *
+ * 2.1.1's AppleBCM4325 uses the three word form - command, length, flags -
+ * with no status word: a WLC_UP request arrives as a 24 byte frame, twelve
+ * bytes of SDPCM and twelve of CDC with no payload at all.
+ *
+ * 3.1.3's AppleBCMWLAN uses the four word cdc_ioctl_t that brcmfmac
+ * documents, with a trailing status word, so the same WLC_UP request is a 28
+ * byte frame. A reply built with the short header makes the driver log
+ * "AppleBCMWLANCmdManager::processResponse(): No space for cdc_ioctl_t header
+ * in response. Dropping." and every command then times out.
+ *
+ * Which one is in use is read off the wire rather than configured: the SDPCM
+ * software header says where the CDC starts and the CDC header says how long
+ * its payload is, so the difference is the header size. See cdc_hdrlen().
  */
 #define CDC_HDRLEN          12
+#define CDC_HDRLEN_STATUS   16
+#define CDC_OFF_STATUS      12
 #define CDC_DCMD_ERROR      0x01
 #define CDC_DCMD_SET        0x02
 
@@ -156,6 +169,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
  * IP header on a four-byte boundary.
  */
 #define BDC_HDRLEN          6
+/*
+ * 3.1.3's AppleBCMWLAN skips the four a bdc_header really occupies. Its
+ * handleDataPacket does "movs r3, #4; add r3, fp" (VA 0xc0707f32) and its
+ * handleEventPacket (VA 0xc070773c) memcmps the OUI at packet offset 0x17 and
+ * reads usr_subtype at 0x1a - which are 0x13 and 0x16 from the ethernet header
+ * once four bytes of BDC are subtracted, i.e. exactly 2.1.1's offsets. So only
+ * the header length changed; deliver a six byte one to this driver and every
+ * frame is shifted by two, the OUI check fails, and it is dropped in silence.
+ */
+#define BDC_HDRLEN_STD      4
+#define BDC_MAX_HDRLEN      6
 #define BDC_PROTO_VER       2
 
 #define ETHER_TYPE_BRCM     0x886c
@@ -292,6 +316,8 @@ typedef struct IPodTouchSDIOState
     bool dongle_started;   /* the driver has taken the core out of reset */
     uint8_t tx_seq;        /* sequence number of the next frame we hand up */
     uint8_t rx_seq;        /* last sequence number the host sent us */
+    unsigned cdc_hdrlen;   /* 12 or 16, latched from the first control frame */
+    unsigned bdc_hdrlen;   /* 6 or 4, decided by the same build generation */
     GHashTable *backplane;
 
     /* The 802.3 side: channel 2 frames are bridged to a QEMU network
@@ -304,7 +330,17 @@ typedef struct IPodTouchSDIOState
     unsigned host_rx_log;
 
     uint8_t sdiod_regs[SDIOD_CORE_SIZE];
-    uint8_t registers[0x10000];
+    /*
+     * CMD52/CMD53 carry a 17-bit register address ((arg >> 9) & 0x1ffff), and
+     * the guest really does use the top half -- 0x1000e is the misc register
+     * read on the clock-enable path. This array was 0x10000 and is the LAST
+     * member of the struct, so any func != 1 access above 0xffff ran off the
+     * end of the QOM allocation: up to 64 KiB of heap write from a single
+     * guest CMD52. The func 1 paths were already bounded, which is what gave
+     * the omission away. Size it to the full address the hardware decodes
+     * rather than clamping, so no legal access silently lands somewhere else.
+     */
+    uint8_t registers[0x20000];
 } IPodTouchSDIOState;
 
 void ipod_touch_sdio_setup_net(IPodTouchSDIOState *s);

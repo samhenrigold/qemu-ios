@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_aes.h"
+#include "migration/vmstate.h"
 #include "qemu/error-report.h"
 
 /*
@@ -549,9 +550,60 @@ static void ipod_touch_aes_init(Object *obj)
 
 }
 
+/* Key material, IV and the DMA descriptor are all loaded per operation. The
+ * expanded decryptKey is derived state and is rebuilt on the next key load. */
+static void ipod_touch_aes_reset(DeviceState *dev)
+{
+    IPodTouchAESState *s = IPOD_TOUCH_AES(dev);
+
+    memset(&s->decryptKey, 0, sizeof(s->decryptKey));
+    memset(s->ivec, 0, sizeof(s->ivec));
+    memset(s->custkey, 0, sizeof(s->custkey));
+    s->insize = 0;
+    s->inaddr = 0;
+    s->outsize = 0;
+    s->outaddr = 0;
+    s->auxaddr = 0;
+    s->keytype = 0;
+    s->status = 0;
+    s->ctrl = 0;
+    s->unkreg0 = 0;
+    s->unkreg1 = 0;
+    s->operation = 0;
+    s->keylen = 0;
+}
+
+/* decryptKey is an expanded key schedule derived from custkey/keytype and is
+ * rebuilt on the next key load, so only the guest-visible registers travel. */
+static const VMStateDescription vmstate_ipod_touch_aes = {
+    .name = "ipod_touch_aes",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(ivec, IPodTouchAESState, 4),
+        VMSTATE_UINT32(insize, IPodTouchAESState),
+        VMSTATE_UINT32(inaddr, IPodTouchAESState),
+        VMSTATE_UINT32(outsize, IPodTouchAESState),
+        VMSTATE_UINT32(outaddr, IPodTouchAESState),
+        VMSTATE_UINT32(auxaddr, IPodTouchAESState),
+        VMSTATE_UINT32(keytype, IPodTouchAESState),
+        VMSTATE_UINT32(status, IPodTouchAESState),
+        VMSTATE_UINT32(ctrl, IPodTouchAESState),
+        VMSTATE_UINT32(unkreg0, IPodTouchAESState),
+        VMSTATE_UINT32(unkreg1, IPodTouchAESState),
+        VMSTATE_UINT32(operation, IPodTouchAESState),
+        VMSTATE_UINT32(keylen, IPodTouchAESState),
+        VMSTATE_UINT32_ARRAY(custkey, IPodTouchAESState, 8),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_aes_class_init(ObjectClass *klass, void *data)
 {
+    DeviceClass *dc = DEVICE_CLASS(klass);
 
+    dc->reset = ipod_touch_aes_reset;
+    dc->vmsd = &vmstate_ipod_touch_aes;
 }
 
 static const TypeInfo ipod_touch_aes_info = {

@@ -21,6 +21,109 @@
  */
 
 #include "hw/i2c/ipod_touch_i2c.h"
+#include "migration/vmstate.h"
+
+/*
+ * Address-phase acknowledge.
+ *
+ * S5L8900_IICSTAT_LASTBIT is the "last bit received was 1", i.e. the slave did
+ * NOT pull SDA low: a NAK. i2c_start_transfer() returns non-zero when no slave
+ * on the bus matched the address, which is exactly that case.
+ *
+ * Until this existed the model threw the return value away and cleared the bit
+ * unconditionally on every START, so an address nobody answers looked like a
+ * successful transfer and the following reads returned QEMU's unmatched-bus
+ * default of 0xff. Every absent device therefore presented as a present device
+ * reporting all-ones -- which is how the missing CS42L58 codec was mistaken for
+ * a misbehaving one, and it is latent for every other unmodelled I2C address.
+ *
+ * A NAK is still a completed address phase: the interrupt must still be raised
+ * so the driver runs, inspects the status bit and returns an error, rather than
+ * waiting for a transfer that will not come. Gated behind IT_I2C_NAK because it
+ * changes what every existing guest sees -- iOS probes at least one address we
+ * do not model (0x29, /device-tree/arm-io/i2c0/tethered), and that probe
+ * currently "succeeds".
+ */
+static bool i2c_nak_enabled(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_I2C_NAK") != NULL;
+    }
+    return on;
+}
+
+/*
+ * Whether any slave on this bus claims an address.
+ *
+ * The first version of this NAKed on i2c_start_transfer()'s return value, which
+ * looked right and was not: both call sites re-derive the address from IICDS at
+ * every START, including a REPEATED start. A register read is
+ * START / addr+W / reg-index / repeated-START / addr+R, so at the repeated start
+ * IICDS need not hold the address at all, the lookup misses, and a device that
+ * is genuinely present gets NAKed. That is not theoretical - with the flag on,
+ * the D1759 PMU could no longer read or write its own registers (19 read and 35
+ * write failures in one boot) and USB cable detection stopped entirely, which is
+ * strictly worse than the bug this was meant to fix.
+ *
+ * Asking the bus which addresses are claimed cannot misfire that way: it is a
+ * property of the machine's topology, not of what happens to be in a register
+ * mid-transaction. An address no device claims is genuinely absent no matter
+ * which phase of a transfer we are in.
+ */
+static bool i2c_addr_is_claimed(IPodTouchI2CState *s, uint8_t addr)
+{
+    BusChild *kid;
+
+    QTAILQ_FOREACH(kid, &BUS(s->bus)->children, sibling) {
+        I2CSlave *slave = I2C_SLAVE(kid->child);
+
+        if (slave->address == addr) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * The address this START is really for.
+ *
+ * A register read is START / addr+W / reg-index / repeated-START / addr+R, and
+ * this controller does not re-present the address on the repeated START - IICDS
+ * still holds the register index. Deriving the address from IICDS every time
+ * therefore looks up a register number as if it were a bus address: reading PMU
+ * register 0x5c produced a lookup of 0x5c >> 1 = 0x2e, which no device claims,
+ * so the PMU got NAKed on every read while writes (which issue no repeated
+ * START) were fine. That is exactly the 108-failures-all-at-addr-5c signature.
+ *
+ * s->active is still set from the previous START when a repeated START arrives,
+ * and is cleared at STOP, so it distinguishes the two cases.
+ */
+static uint8_t s5l8900_i2c_start_addr(IPodTouchI2CState *s)
+{
+    if (!s->active) {
+        s->cur_addr = s->data >> 1;   /* fresh transaction: IICDS holds the address */
+    }
+    return s->cur_addr;
+}
+
+static void s5l8900_i2c_set_ack(IPodTouchI2CState *s, uint8_t addr)
+{
+    if (!i2c_nak_enabled()) {
+        return;   /* legacy behaviour: every address appears to ACK */
+    }
+    if (!i2c_addr_is_claimed(s, addr)) {
+        /*
+         * NAK, but leave s->active alone. A NAK is a completed address phase:
+         * the driver still needs its interrupt so it can read the status bit and
+         * return an error. Tearing the transfer down here as well turned a
+         * reported error into a wedged bus.
+         */
+        s->status |= S5L8900_IICSTAT_LASTBIT;
+    } else {
+        s->status &= ~S5L8900_IICSTAT_LASTBIT;
+    }
+}
 
 static void s5l8900_i2c_update(IPodTouchI2CState *s)
 {
@@ -116,12 +219,15 @@ static void ipod_touch_i2c_write(void *opaque, hwaddr offset, uint64_t value, un
     case I2CSTAT:
         /* We have to make sure we don't miss an end transfer */
         if((!s->active) && ((s->status >> 6) != ((value >> 6)))) {
-            s->status = value & 0xff;
+            /* LASTBIT reflects the bus, not the guest: it is status-only. */
+            s->status = (value & 0xff & ~S5L8900_IICSTAT_LASTBIT) |
+                        (s->status & S5L8900_IICSTAT_LASTBIT);
         /* If they toggle the tx bit then we have to force an end transfer before mode update */
         } else if((s->active) && ((s->status >> 6) != ((value >> 6)))) {
                     i2c_end_transfer(s->bus);
                     s->active=0;
-                    s->status = value & 0xff;
+                    s->status = (value & 0xff & ~S5L8900_IICSTAT_LASTBIT) |
+                                (s->status & S5L8900_IICSTAT_LASTBIT);
                     s->status |= S5L8900_IICSTAT_TXRXEN;
                     break;
         }
@@ -141,8 +247,10 @@ static void ipod_touch_i2c_write(void *opaque, hwaddr offset, uint64_t value, un
                     s->status &= ~S5L8900_IICSTAT_LASTBIT;
 
                     s->iicreg20 |= 0x100;
+                    uint8_t addr = s5l8900_i2c_start_addr(s);
                     s->active = 1;
-                    i2c_start_transfer(s->bus, s->data >> 1, 1);
+                    i2c_start_transfer(s->bus, addr, 1);
+                    s5l8900_i2c_set_ack(s, addr);
                 } else {
                     i2c_end_transfer(s->bus);
                     s->active = 0;
@@ -155,8 +263,10 @@ static void ipod_touch_i2c_write(void *opaque, hwaddr offset, uint64_t value, un
                     s->status &= ~S5L8900_IICSTAT_LASTBIT;
                         
                     s->iicreg20 |= 0x100;
+                    uint8_t addr = s5l8900_i2c_start_addr(s);
                     s->active = 1;
-                    i2c_start_transfer(s->bus, s->data >> 1, 0);
+                    i2c_start_transfer(s->bus, addr, 0);
+                    s5l8900_i2c_set_ack(s, addr);
                 } else {
                     i2c_end_transfer(s->bus);
                     s->active = 0;
@@ -222,10 +332,32 @@ static void ipod_touch_i2c_reset(DeviceState *d)
     
 }
 
+/* The I2CBus itself is machine wiring; its slaves migrate their own state
+ * through their own VMStateDescriptions. */
+static const VMStateDescription vmstate_ipod_touch_i2c = {
+    .name = "ipod_touch_i2c",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(control, IPodTouchI2CState),
+        VMSTATE_UINT8(status, IPodTouchI2CState),
+        VMSTATE_UINT8(address, IPodTouchI2CState),
+        VMSTATE_UINT8(datashift, IPodTouchI2CState),
+        VMSTATE_UINT8(line_ctrl, IPodTouchI2CState),
+        VMSTATE_UINT32(iicreg20, IPodTouchI2CState),
+        VMSTATE_UINT8(active, IPodTouchI2CState),
+        VMSTATE_UINT8(ibmr, IPodTouchI2CState),
+        VMSTATE_UINT8(data, IPodTouchI2CState),
+        VMSTATE_UINT8(cur_addr, IPodTouchI2CState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_i2c_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->reset = ipod_touch_i2c_reset;
+    dc->vmsd = &vmstate_ipod_touch_i2c;
 }
 
 static const TypeInfo ipod_touch_i2c_type_info = {

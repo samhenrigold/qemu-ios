@@ -11,6 +11,7 @@
 #include "hw/hw.h"
 #include "qapi/error.h"
 #include "hw/intc/pl192.h"
+#include "migration/vmstate.h"
 
 extern CPUState *getMainCpuEnv(void);
 
@@ -374,7 +375,79 @@ static void pl192_reset(DeviceState *d)
     s->priority_stack[0] = 0x10;
     s->irq_stack[0] = PL192_NO_IRQ;
     s->priority = 0x10;
+
+    /*
+     * Programmable registers, all documented reset-to-zero. Without these a
+     * second boot started with the previous kernel's enable mask and vector
+     * table still loaded.
+     *
+     * rawintr is deliberately NOT cleared: it mirrors the level of the
+     * incoming device lines, and device reset order is unspecified. A device
+     * whose own reset does not re-drive its line would have a genuinely
+     * asserted interrupt erased here. irq_status/fiq_status are derived, so
+     * pl192_update recomputes them from rawintr below.
+     */
+    s->intenable = 0;
+    s->intselect = 0;
+    s->softint = 0;
+    s->protection = 0;
+    s->address = 0;
+    for (i = 0; i < PL192_INT_SOURCES; i++) {
+        s->vect_addr[i] = 0;
+    }
+
+    /*
+     * Step A of the pl080 lesson applied to the VIC: reset recomputed none of
+     * the outputs, so whatever level irq/fiq were last driven to survived into
+     * the next boot. Clearing state is not the same as re-deriving the line.
+     * Register clears are deliberately NOT part of this change -- one variable.
+     */
+    pl192_update(s);
 }
+
+/*
+ * The daisy pointers, the memory region and the parent irq/fiq lines are all
+ * wired by the machine before any snapshot is loaded, so only the registers
+ * travel. post_load re-runs pl192_update: restoring irq_status is not the same
+ * as re-driving the CPU's IRQ line, which on the destination is still at
+ * whatever reset left it. That is the same trap that made a reset leave a
+ * phantom interrupt behind, seen from the other side.
+ */
+static int pl192_post_load(void *opaque, int version_id)
+{
+    pl192_update(PL192(opaque));
+    return 0;
+}
+
+static const VMStateDescription vmstate_pl192 = {
+    .name = "pl192",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = pl192_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(irq_status, PL192State),
+        VMSTATE_UINT32(fiq_status, PL192State),
+        VMSTATE_UINT32(rawintr, PL192State),
+        VMSTATE_UINT32(intselect, PL192State),
+        VMSTATE_UINT32(intenable, PL192State),
+        VMSTATE_UINT32(softint, PL192State),
+        VMSTATE_UINT32(protection, PL192State),
+        VMSTATE_UINT32(sw_priority_mask, PL192State),
+        VMSTATE_UINT32_ARRAY(vect_addr, PL192State, PL192_INT_SOURCES),
+        VMSTATE_UINT32_ARRAY(vect_priority, PL192State, PL192_INT_SOURCES),
+        VMSTATE_UINT32(address, PL192State),
+        VMSTATE_UINT32(current, PL192State),
+        VMSTATE_UINT32(current_highest, PL192State),
+        VMSTATE_INT32(stack_i, PL192State),
+        VMSTATE_UINT32_ARRAY(priority_stack, PL192State, PL192_PRIO_LEVELS + 1),
+        VMSTATE_UINT8_ARRAY(irq_stack, PL192State, PL192_PRIO_LEVELS + 1),
+        VMSTATE_UINT32(priority, PL192State),
+        VMSTATE_UINT32(daisy_vectaddr, PL192State),
+        VMSTATE_UINT32(daisy_priority, PL192State),
+        VMSTATE_UINT8(daisy_input, PL192State),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 static const MemoryRegionOps pl192_ops = {
     .read = pl192_read,
@@ -429,8 +502,7 @@ static void pl192_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->reset = pl192_reset;
-    //dc->vmsd = &vmstate_pl192;
-    // TODO save VM
+    dc->vmsd = &vmstate_pl192;
 }
 
 static const TypeInfo pl192_info = {

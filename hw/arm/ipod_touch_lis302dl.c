@@ -1,4 +1,6 @@
 #include "hw/arm/ipod_touch_lis302dl.h"
+#include "migration/vmstate.h"
+#include "hw/arm/ipod_touch_lcd.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 
@@ -24,8 +26,16 @@ void lis302dl_apply_orientation(LIS302DLState *s, uint32_t o)
     switch (o) {
         case 1: /* portrait, home button at bottom */          x = 0;         y = -ACCEL_1G; z = 0;        break;
         case 2: /* portrait upside down, home button at top */  x = 0;         y = ACCEL_1G;  z = 0;        break;
-        case 3: /* landscape, home button on the right */       x = ACCEL_1G;  y = 0;         z = 0;        break;
-        case 4: /* landscape, home button on the left */        x = -ACCEL_1G; y = 0;         z = 0;        break;
+        /*
+         * The part is mounted with its X axis opposite UIKit's, so the raw
+         * counts for the two landscape cases are the negatives of the UIKit
+         * gravity vector. Measured, not guessed: with x = +1g for orientation 3
+         * iOS rendered the landscape UI turned the *other* way (the window came
+         * out upside down), i.e. it read a LandscapeLeft request as
+         * LandscapeRight. Y is not inverted -- portrait comes out upright.
+         */
+        case 3: /* landscape left,  home button on the right */ x = -ACCEL_1G; y = 0;         z = 0;        break;
+        case 4: /* landscape right, home button on the left */  x = ACCEL_1G;  y = 0;         z = 0;        break;
         case 5: /* face up */                                   x = 0;         y = 0;         z = -ACCEL_1G; break;
         case 6: /* face down */                                 x = 0;         y = 0;         z = ACCEL_1G;  break;
         default: /* 0 / unknown: leave flat-portrait default */ x = 0;         y = -ACCEL_1G; z = 0;        break;
@@ -33,6 +43,8 @@ void lis302dl_apply_orientation(LIS302DLState *s, uint32_t o)
     s->orientation = o;
     s->base_x = x; s->base_y = y; s->base_z = z;
     s->out_x = x; s->out_y = y; s->out_z = z;
+    /* turn the host window to match, so landscape gets a landscape window */
+    it_display_set_orientation(o);
     if (lis302dl_debug()) {
         printf("lis302dl: orientation=%u -> x=%d y=%d z=%d\n", o, x, y, z);
     }
@@ -159,7 +171,20 @@ static int lis302dl_send(I2CSlave *i2c, uint8_t data)
     /* a data byte written to the current register */
     switch (s->cmd) {
         case ACCEL_CTRL_REG1: s->ctrl_reg1 = data; break;
-        case ACCEL_CTRL_REG2: s->ctrl_reg2 = data; break;
+        case ACCEL_CTRL_REG2:
+            /*
+             * BOOT (bit 6) reloads the part's trimming registers and the
+             * hardware clears it when that finishes. AppleLIS302DL sets it in
+             * enableAccelerometer and polls for it to return to zero, and
+             * panics the kernel outright if it has not cleared within 500 ms:
+             *   "AppleLIS302DL::enableAccelerometer - Boot bit did not return
+             *    to zero in 500 msecs. That is wrong."
+             * Echoing the write back kept the bit set forever, so 3.1.3 panicked
+             * as soon as SpringBoard brought the accelerometer up. Complete the
+             * reboot immediately and clear the bit.
+             */
+            s->ctrl_reg2 = data & ~ACCEL_CTRL_REG2_BOOT;
+            break;
         case ACCEL_CTRL_REG3: s->ctrl_reg3 = data; break;
         default:
             if (lis302dl_debug()) {
@@ -242,8 +267,35 @@ static void lis302dl_init(Object *obj)
     object_property_add(obj, "shake", "bool", NULL, lis302dl_set_shake, NULL, NULL);
 }
 
+/* shake_timer is transient host animation, not guest-visible state: a restore
+ * lands with the accelerometer at rest at its steady-state vector. */
+static const VMStateDescription vmstate_lis302dl = {
+    .name = "lis302dl",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(i2c, LIS302DLState),
+        VMSTATE_UINT32(cmd, LIS302DLState),
+        VMSTATE_BOOL(pointer_set, LIS302DLState),
+        VMSTATE_INT8(out_x, LIS302DLState),
+        VMSTATE_INT8(out_y, LIS302DLState),
+        VMSTATE_INT8(out_z, LIS302DLState),
+        VMSTATE_INT8(base_x, LIS302DLState),
+        VMSTATE_INT8(base_y, LIS302DLState),
+        VMSTATE_INT8(base_z, LIS302DLState),
+        VMSTATE_UINT32(orientation, LIS302DLState),
+        VMSTATE_UINT16(ctrl_reg1, LIS302DLState),
+        VMSTATE_UINT16(ctrl_reg2, LIS302DLState),
+        VMSTATE_UINT16(ctrl_reg3, LIS302DLState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void lis302dl_class_init(ObjectClass *klass, void *data)
 {
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->vmsd = &vmstate_lis302dl;
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
 
     k->event = lis302dl_event;

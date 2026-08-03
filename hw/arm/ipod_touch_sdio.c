@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_sdio.h"
+#include "qemu/log.h"
 
 /*
  * Every register access and every command is worth seeing while the dongle
@@ -250,6 +251,17 @@ static void sdpcm_send(IPodTouchSDIOState *s, uint8_t channel,
 }
 
 /*
+ * How much BDC header this driver expects in front of an 802.3 frame. Nothing
+ * is known until the first control command has been seen, and the only frames
+ * that can arrive before that are ones the model itself sends after the driver
+ * has talked to it, so the 2.1.1 default is never actually used blind.
+ */
+static unsigned sdio_bdc_hdrlen(IPodTouchSDIOState *s)
+{
+    return s->bdc_hdrlen ? s->bdc_hdrlen : BDC_HDRLEN;
+}
+
+/*
  * Deliver a firmware event. The frame is an ordinary 802.3 packet on the data
  * channel whose ethertype the driver recognises; everything from the bcmeth
  * header inwards is big endian.
@@ -262,18 +274,21 @@ static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t event_type,
                              uint32_t status, uint16_t msg_flags)
 {
     static const uint8_t our_mac[6] = { 0x00, 0x23, 0x32, 0x6e, 0xaa, 0x10 };
-    uint8_t frame[BDC_HDRLEN + 14 + 10 + WL_EVENT_MSG_LEN];
+    unsigned bdclen = sdio_bdc_hdrlen(s);
+    uint8_t frame[BDC_MAX_HDRLEN + 14 + 10 + WL_EVENT_MSG_LEN];
+    uint32_t framelen = bdclen + 14 + 10 + WL_EVENT_MSG_LEN;
     uint8_t *p = frame;
 
     memset(frame, 0, sizeof(frame));
 
-    /* BDC header. */
+    /* BDC header: four bytes, plus the two of padding 2.1.1's driver skips. */
     *p++ = BDC_PROTO_VER << 4;
     *p++ = 0;                       /* priority */
     *p++ = 0;                       /* flags2 */
     *p++ = 0;                       /* data offset, in 4-byte words */
-    *p++ = 0;                       /* padding: the driver skips six, not four */
-    *p++ = 0;
+    for (unsigned i = BDC_HDRLEN_STD; i < bdclen; i++) {
+        *p++ = 0;
+    }
 
     uint8_t *eth = p;
     memcpy(p, our_mac, 6); p += 6;  /* destination: us */
@@ -290,7 +305,7 @@ static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t event_type,
     stw_be_p(p, BCMETH_USR_SUBTYPE); p += 2;
 
     /* The length field counts everything from the version byte onwards. */
-    stw_be_p(lenp, (frame + sizeof(frame)) - (lenp + 2));
+    stw_be_p(lenp, (frame + framelen) - (lenp + 2));
 
     /* wl_event_msg, all big endian. */
     stw_be_p(p + 0x00, 1);          /* version */
@@ -306,10 +321,21 @@ static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t event_type,
     /* The driver sees the frame from the ethernet header onwards, so its
      * offsets 0x13 and 0x16 are relative to eth, not to the BDC header. */
     assert(eth[0x13] == BCMETH_OUI_0 && eth[0x16] == 0 && eth[0x17] == 1);
-    printf("[SDIO] sending event %u, status %u, flags 0x%04x (%zu byte frame)\n",
-           event_type, status, msg_flags, sizeof(frame));
+    printf("[SDIO] sending event %u, status %u, flags 0x%04x (%u byte frame)\n",
+           event_type, status, msg_flags, framelen);
 
-    sdpcm_send(s, SDPCM_DATA_CHANNEL, frame, sizeof(frame));
+    /*
+     * 2.1.1's driver dispatches receive by channel and answers channel 1 with
+     * "WTF?? Got an event packet!!!" before dropping it, so its events have to
+     * arrive on the data channel and be recognised by their ethertype.
+     * 3.1.3's rxPacket has a real sixteen entry jump table on the channel
+     * (VA 0xc07191d6): 0 control, 1 event, 2 data, 3 superframe, 15, and
+     * "ignore" for the rest - and its handleDataPacket has no ethertype test
+     * for BRCM frames at all, so an event on channel 2 is dropped in silence.
+     */
+    sdpcm_send(s, bdclen == BDC_HDRLEN_STD ? SDPCM_EVENT_CHANNEL
+                                           : SDPCM_DATA_CHANNEL,
+               frame, framelen);
 }
 
 /* The BSSID and SSID the model pretends to be associated with. */
@@ -442,19 +468,50 @@ static void sdio_handle_set_ssid(IPodTouchSDIOState *s, const uint8_t *payload,
  * payload for now; the point is to get the driver past initDongle and to see
  * in the log which commands it actually depends on.
  */
+/*
+ * How long this build's CDC header is, latched from the request.
+ *
+ * The driver always sends the whole buffer it is asking about - a get_var
+ * carries the iovar name in a payload_len sized buffer - so the bytes between
+ * the start of the CDC header and that payload are the header itself.
+ * AppleBCM4325 (2.1.1) gives twelve, AppleBCMWLAN (3.1.3) sixteen. Anything
+ * else is a request that did not carry its whole buffer, so it is ignored and
+ * whatever was latched before stands; a running dongle does not change form.
+ */
+static unsigned cdc_hdrlen(IPodTouchSDIOState *s, uint32_t len,
+                           uint32_t payload_len)
+{
+    if (len >= payload_len) {
+        uint32_t hdr = len - payload_len;
+        if (hdr == CDC_HDRLEN || hdr == CDC_HDRLEN_STATUS) {
+            if (s->cdc_hdrlen != hdr) {
+                s->cdc_hdrlen = hdr;
+                /* The two headers moved together: the driver that wants the
+                 * status word is the one that skips four bytes of BDC. */
+                s->bdc_hdrlen = hdr == CDC_HDRLEN_STATUS ? BDC_HDRLEN_STD
+                                                         : BDC_HDRLEN;
+                printf("[SDIO] CDC header is %u bytes, BDC header is %u\n",
+                       s->cdc_hdrlen, s->bdc_hdrlen);
+            }
+        }
+    }
+    return s->cdc_hdrlen ? s->cdc_hdrlen : CDC_HDRLEN;
+}
+
 static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
                              uint32_t len)
 {
     uint32_t cmd = ldl_le_p(cdc);
     uint32_t payload_len = ldl_le_p(cdc + 4);
     uint32_t flags = ldl_le_p(cdc + 8);
+    unsigned hdrlen = cdc_hdrlen(s, len, payload_len);
 
     /* WLC_GET_VAR and WLC_SET_VAR carry a NUL-terminated iovar name at the
      * start of the payload, which is the only way to tell one from another. */
     const char *iovar = "";
-    if ((cmd == WLC_GET_VAR || cmd == WLC_SET_VAR) && len > CDC_HDRLEN) {
-        const char *p = (const char *)cdc + CDC_HDRLEN;
-        size_t max = len - CDC_HDRLEN;
+    if ((cmd == WLC_GET_VAR || cmd == WLC_SET_VAR) && len > hdrlen) {
+        const char *p = (const char *)cdc + hdrlen;
+        size_t max = len - hdrlen;
         if (memchr(p, 0, max)) {
             iovar = p;
         }
@@ -473,8 +530,8 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
      * that is why the joined BSS had a garbage BSSID and an empty SSID.
      */
     if (flags & CDC_DCMD_SET) {
-        if (payload_len > len - CDC_HDRLEN) {
-            payload_len = len > CDC_HDRLEN ? len - CDC_HDRLEN : 0;
+        if (payload_len > len - hdrlen) {
+            payload_len = len > hdrlen ? len - hdrlen : 0;
         }
     } else if (payload_len > CDC_MAX_PAYLOAD) {
         payload_len = CDC_MAX_PAYLOAD;
@@ -482,38 +539,41 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
 
     /* The length field is checked against what the command expects, not
      * against the request - AppleBCM4325CmdManager.cpp:445 asserts on it. */
-    g_autofree uint8_t *reply = g_malloc0(CDC_HDRLEN + payload_len);
+    g_autofree uint8_t *reply = g_malloc0(hdrlen + payload_len);
     stl_le_p(reply, cmd);
     stl_le_p(reply + 4, payload_len);
     stl_le_p(reply + 8, flags & ~CDC_DCMD_ERROR);  /* same id, no error */
+    if (hdrlen >= CDC_HDRLEN_STATUS) {
+        stl_le_p(reply + CDC_OFF_STATUS, 0);       /* the command succeeded */
+    }
 
     /* A few gets have to carry something believable once the model claims to
      * be associated - an all-zero BSSID reads as "not associated". */
     if (!(flags & CDC_DCMD_SET)) {
         if (cmd == WLC_GET_BSS_INFO && payload_len >= 4 + BSS_INFO_TOTAL) {
             /* Four byte buffer length, then the structure itself. */
-            stl_le_p(reply + CDC_HDRLEN, BSS_INFO_TOTAL);
-            fill_bss_info(reply + CDC_HDRLEN + 4);
+            stl_le_p(reply + hdrlen, BSS_INFO_TOTAL);
+            fill_bss_info(reply + hdrlen + 4);
         } else if (cmd == WLC_GET_BSSID && payload_len >= sizeof(fake_bssid)) {
-            memcpy(reply + CDC_HDRLEN, fake_bssid, sizeof(fake_bssid));
+            memcpy(reply + hdrlen, fake_bssid, sizeof(fake_bssid));
         } else if (cmd == WLC_GET_RSSI && payload_len >= 4) {
             /* Polled to drive the status bar's signal bars; zero reads as no
              * signal, which is why the icon showed empty. */
-            stl_le_p(reply + CDC_HDRLEN, (uint32_t)(int32_t)-45);
+            stl_le_p(reply + hdrlen, (uint32_t)(int32_t)-45);
         } else if (cmd == WLC_GET_RATE && payload_len >= 4) {
-            stl_le_p(reply + CDC_HDRLEN, 108);   /* 54 Mbit, in 500 kbit units */
+            stl_le_p(reply + hdrlen, 108);   /* 54 Mbit, in 500 kbit units */
         } else if (cmd == WLC_GET_VAR && g_str_equal(iovar, "iscanresults") &&
                    payload_len >= ISCAN_TOTAL) {
-            fill_iscan_results(s, reply + CDC_HDRLEN);
+            fill_iscan_results(s, reply + hdrlen);
         } else if (cmd == WLC_GET_SSID && payload_len >= 4) {
             /* wlc_ssid_t: a length word then up to 32 bytes. */
             uint32_t n = MIN(strlen(FAKE_SSID), payload_len - 4);
-            stl_le_p(reply + CDC_HDRLEN, n);
-            memcpy(reply + CDC_HDRLEN + 4, FAKE_SSID, n);
+            stl_le_p(reply + hdrlen, n);
+            memcpy(reply + hdrlen + 4, FAKE_SSID, n);
         }
     }
 
-    sdpcm_send(s, SDPCM_CONTROL_CHANNEL, reply, CDC_HDRLEN + payload_len);
+    sdpcm_send(s, SDPCM_CONTROL_CHANNEL, reply, hdrlen + payload_len);
 
     /* The driver arms a scan and then waits: it re-sends this every fifteen
      * seconds and never asks for results on its own. Tell it the scan is over
@@ -529,8 +589,8 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
 
     /* The driver joining a network it found in the scan results. */
     if ((flags & CDC_DCMD_SET) && cmd == WLC_SET_SSID) {
-        sdio_handle_set_ssid(s, cdc + CDC_HDRLEN,
-                             len > CDC_HDRLEN ? len - CDC_HDRLEN : 0);
+        sdio_handle_set_ssid(s, cdc + hdrlen,
+                             len > hdrlen ? len - hdrlen : 0);
     }
 
 }
@@ -590,7 +650,7 @@ static void hexdump_frame(const char *what, const uint8_t *p, uint32_t len)
 static void sdio_tx_data(IPodTouchSDIOState *s, const uint8_t *payload,
                          uint32_t len)
 {
-    if (len < BDC_HDRLEN + 14) {
+    if (len < BDC_HDRLEN_STD + 14) {
         printf("[SDIO] data frame too short to be 802.3: %u bytes\n", len);
         return;
     }
@@ -639,19 +699,20 @@ static ssize_t sdio_net_receive(NetClientState *nc, const uint8_t *buf,
         return size;
     }
 
-    g_autofree uint8_t *frame = g_malloc0(BDC_HDRLEN + size);
+    unsigned bdclen = sdio_bdc_hdrlen(s);
+    g_autofree uint8_t *frame = g_malloc0(bdclen + size);
     frame[0] = BDC_PROTO_VER << 4;
     frame[1] = 0;                    /* priority */
     frame[2] = 0;                    /* flags2 */
     frame[3] = 0;                    /* dataOffset */
-    memcpy(frame + BDC_HDRLEN, buf, size);
+    memcpy(frame + bdclen, buf, size);
 
     if (s->host_rx_log < 24) {
         s->host_rx_log++;
         hexdump_frame("host -> guest", buf, size);
     }
 
-    sdpcm_send(s, SDPCM_DATA_CHANNEL, frame, BDC_HDRLEN + size);
+    sdpcm_send(s, SDPCM_DATA_CHANNEL, frame, bdclen + size);
     return size;
 }
 
@@ -844,6 +905,20 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
         bool is_write = (s->arg >> 31) != 0;
         uint32_t xfer_len = s->blklen * s->numblk;
         uint32_t sb_addr = backplane_addr(s, addr);
+
+        /*
+         * blklen and numblk are both unvalidated 32-bit MMIO writes and their
+         * product feeds g_malloc below, so a guest could ask for a 4 GiB
+         * allocation (or overflow the multiply outright). The real controller
+         * caps a block at 2048 bytes and 511 blocks; be generous but finite.
+         */
+        if (s->blklen > 2048 || s->numblk > 511 ||
+            (s->blklen && xfer_len / s->blklen != s->numblk)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "[SDIO] rejecting CMD53 with blklen %u numblk %u\n",
+                          s->blklen, s->numblk);
+            return;
+        }
         trace_sdio("SDIO: Executing cmd53 func %x with block size %d and %d blocks (reg address: 0x%08x, backplane address: 0x%08x, destination address: 0x%08x, write? %d)\n", func, s->blklen, s->numblk, addr, sb_addr, s->baddr, is_write);
 
         if(is_write) {
@@ -942,7 +1017,10 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
         //printf("Raised IRQ\n");
     }
     else {
-        hw_error("Unknown SDIO command %d", cmd_type);
+        /* An unimplemented command is a timeout on real hardware, not a dead
+         * machine. Leave resp0 alone and let the driver time out. */
+        qemu_log_mask(LOG_UNIMP, "[SDIO] unimplemented command %d (arg 0x%08x)\n",
+                      cmd_type, s->arg);
     }
 }
 

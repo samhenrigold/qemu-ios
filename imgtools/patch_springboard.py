@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Defeat SpringBoard's launch-time signer-identity TRUST gate (blocker 3).
+"""Defeat SpringBoard's launch-time signer-identity TRUST gate.
 
-Independent of the install gate (blocker 2). On tapping an icon,
+Independent of the install gate in installd. On tapping an icon,
 -[SBIconController launchIcon:] launches the app ONLY if
 -[SBApplication applicationSignatureState] returns 2 (trusted); otherwise it
 raises SBAppProfileNotTrustedAlertItem (state 1) or SBAppCannotBeOpenedAlertItem
@@ -15,14 +15,28 @@ failed to load, so it returns 0 -> "cannot be opened". This is why an identical
 decrypted binary launches from /Applications (system, state 2) but not from
 /var/mobile/Applications.
 
-Minimal fix: make applicationSignatureState (entry va 0x00027b44, ARM) return 2
-unconditionally, so every app is treated as trusted and launches:
+Minimal fix: make applicationSignatureState return 2 unconditionally.
 
-    ldr r3,[pc,#0x68] (0xE59F3068) ; push {...} (0xE92D40B0)
-      ->  mov r0, #2 (0xE3A00002)  ; bx lr (0xE12FFF1E)
+**The address differs per OS version and so does the instruction set.** 2.1.1's
+SpringBoard is ARM; 3.1.3's is THUMB, at an entirely different offset. Hardcoding
+one of them is why this script silently had no target on 3.1.3 for a long time --
+it raised "unexpected bytes" and looked like a corrupt image rather than a wrong
+address. Both are listed below and the right one is chosen by matching the actual
+prologue bytes, so an unrecognised build fails loudly instead of patching a
+random offset.
 
-Re-sign with ldid -S afterward (SpringBoard is Apple-signed; the patched page's
-CodeDirectory hash must match or the kernel faults it in as INVALID PAGE).
+On 3.1.3 this gate is reached only for apps that installd registered; it is the
+LAUNCH half of AppSync and the installd patches are the INSTALL half. You need
+both, plus the MISValidateSignature patch inside dyld_shared_cache_armv6 (there
+is no on-disk libmis.dylib on 3.1.3).
+
+Re-sign with `ldid -S` afterward -- SpringBoard is Apple-signed and the patched
+page's CodeDirectory hash must match or the kernel faults it in as INVALID PAGE.
+
+To re-derive the offset for a build not listed here, find
+applicationSignatureState in __objc_classlist with imgtools/objc.py; the method
+list stores a THUMB entry point with the low bit set, so mask it off before
+subtracting __TEXT vmaddr.
 
 Usage:
     python3 patch_springboard.py --file <SpringBoard> [--dry-run]
@@ -32,30 +46,55 @@ import argparse, os, struct
 
 REL_PATH = "System/Library/CoreServices/SpringBoard.app/SpringBoard"
 TEXT_VMADDR = 0x1000
-ENTRY_VADDR = 0x00027B44
-OFF = ENTRY_VADDR - TEXT_VMADDR              # 0x26b44
-ORIG = (0xE59F3068, 0xE92D40B0)              # ldr r3,[pc,#0x68] ; push {r4,r5,r7,lr}
-NEW = (0xE3A00002, 0xE12FFF1E)               # mov r0,#2 ; bx lr
+
+# name, file offset, original bytes, replacement bytes
+VARIANTS = [
+    # 2.1.1, ARM: ldr r3,[pc,#0x68] ; push {r4,r5,r7,lr}
+    #         ->  mov r0,#2         ; bx lr
+    ("2.1.1 (ARM)", 0x26B44,
+     bytes.fromhex("68309fe5b0402de9"),
+     bytes.fromhex("0200a0e31eff2fe1")),
+    # 3.1.3, THUMB: push {r4-r7,lr} ; add r7,sp,#12
+    #           ->  movs r0,#2      ; bx lr
+    ("3.1.3 (THUMB)", 0x17D1C,
+     bytes.fromhex("f0b503af"),
+     bytes.fromhex("02207047")),
+]
 
 
 def patch(path, dry_run=False):
     with open(path, "rb") as f:
         data = bytearray(f.read())
-    cur = (struct.unpack_from("<I", data, OFF)[0], struct.unpack_from("<I", data, OFF + 4)[0])
-    if cur == NEW:
-        print("already patched at off 0x%x (%s)" % (OFF, path)); return False
-    if cur != ORIG:
-        raise SystemExit("unexpected bytes 0x%08X,0x%08X at off 0x%x (expected 0x%08X,0x%08X)"
-                         % (cur[0], cur[1], OFF, ORIG[0], ORIG[1]))
-    print("applicationSignatureState found at va 0x%x / off 0x%x" % (ENTRY_VADDR, OFF))
-    if dry_run:
-        print("--dry-run: not writing"); return False
-    struct.pack_into("<I", data, OFF, NEW[0])
-    struct.pack_into("<I", data, OFF + 4, NEW[1])
-    with open(path, "wb") as f:
-        f.write(data)
-    print("patched -> mov r0,#2; bx lr : applicationSignatureState now always trusted")
-    return True
+
+    for name, off, orig, new in VARIANTS:
+        cur = bytes(data[off:off + len(orig)])
+        if cur == new:
+            print("already patched: %s at off 0x%x (%s)" % (name, off, path))
+            return False
+        if cur != orig:
+            continue
+
+        print("applicationSignatureState: %s at off 0x%x" % (name, off))
+        if dry_run:
+            print("--dry-run: not writing")
+            return False
+        data[off:off + len(new)] = new
+        with open(path, "wb") as f:
+            f.write(data)
+        print("patched -> always trusted. Now re-sign:  ldid -S %s" % path)
+        return True
+
+    # Say what was actually there for each candidate -- "no variant matched" on
+    # its own sends people looking for a corrupt image when the real answer is
+    # usually an OS version this table does not know about yet.
+    detail = "  ".join(
+        "%s: off 0x%x has %s (want %s)"
+        % (name, off, bytes(data[off:off + len(orig)]).hex(), orig.hex())
+        for name, off, orig, _ in VARIANTS)
+    raise SystemExit(
+        "no known applicationSignatureState prologue in %s\n  %s\n"
+        "If this is a different build, re-derive the offset with "
+        "imgtools/objc.py and add a variant above." % (path, detail))
 
 
 def main():
