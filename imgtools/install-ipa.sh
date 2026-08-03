@@ -25,16 +25,78 @@
 #               its Info.plist will cheerfully claim MinimumOSVersion 2.0.
 #   cryptid 1   still FairPlay-encrypted. Installs, then fails its code
 #               directory hash at the first __TEXT page. Needs a decrypted copy.
-#   OpenGLES    launches and then wedges the device -- the MBX GPU is not
-#               emulated.
+#   mode 0644   the app's binary as stored in the .ipa. installd extracts it
+#               faithfully, posix_spawn then fails with EACCES, and the icon
+#               bounces once with NO crash report written -- so it reads as a
+#               crash that left no evidence. Repacked 0755 here.
+#   OpenGLES    the stock MBXGLEngine drives the MBX GPU, which is not
+#               emulated, and the app wedges the whole device. Our replacement
+#               (contrib/it-gles) forwards GL to the host instead, and is
+#               installed automatically when the app links OpenGLES.
 #
 # Each of these has already cost somebody a debugging session, so they are
-# reported before the install rather than discovered after it.
+# handled or reported before the install rather than discovered after it.
 set -u
 
 die() {
     echo "install-ipa.sh: $*" >&2
     exit 1
+}
+
+# Copy an .ipa, setting one member's archived unix mode to 0755. Only the mode
+# word changes; every byte of every member is carried across unaltered, which
+# matters because the code directory hashes the file contents.
+repack_mode() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import shutil, sys, zipfile
+
+src, dst, want = sys.argv[1:4]
+with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
+    for info in zin.infolist():
+        data = zin.read(info)
+        if info.filename == want:
+            # external_attr's high 16 bits are st_mode. Keep the file type
+            # bits (0o100000) and give it 0755.
+            info.external_attr = (0o100755 << 16) | (info.external_attr & 0xFFFF)
+        zout.writestr(info, data)
+PY
+}
+
+# Put our MBXGLEngine.bundle replacement on the device, keeping the stock one
+# next to it as MBXGLEngine.stock. Over ssh, because AFC is confined to the
+# media partition and this file lives in /System.
+install_shim() {
+    command -v iproxy >/dev/null || {
+        echo "install-ipa.sh: iproxy is not on PATH (libimobiledevice)" >&2
+        return 1
+    }
+    local port="${SSH_PORT:-2239}" pid rc=0
+    iproxy "$port" 22 >/dev/null 2>&1 &
+    pid=$!
+    sleep 2
+
+    # The device's root password. `ssh -o PreferredAuthentications=password`
+    # will not read a password from a pipe, so it goes through SSH_ASKPASS.
+    local ask="$TMP/askpass"
+    printf '#!/bin/sh\necho %s\n' "${DEVICE_PASSWORD:-alpine}" >"$ask"
+    chmod 755 "$ask"
+    export SSH_ASKPASS="$ask" SSH_ASKPASS_REQUIRE=force DISPLAY="${DISPLAY:-:0}"
+
+    local o=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+        -o LogLevel=ERROR -o PreferredAuthentications=password)
+    local B=/System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle
+
+    scp -O "${o[@]}" -P "$port" "$SHIM" root@127.0.0.1:/tmp/MBXGLEngine.new >/dev/null 2>&1 &&
+        ssh "${o[@]}" -p "$port" root@127.0.0.1 \
+            "cp -n $B/MBXGLEngine $B/MBXGLEngine.stock; cp /tmp/MBXGLEngine.new $B/MBXGLEngine && chmod 755 $B/MBXGLEngine" >/dev/null 2>&1 ||
+        rc=1
+
+    # Job control announces the kill on the terminal ("Terminated: 15") unless
+    # the job is disowned first, which reads as an error in the middle of a
+    # successful install.
+    disown "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null
+    return "$rc"
 }
 
 CHECK_ONLY=0
@@ -59,6 +121,11 @@ NAME="$(basename "$IPA")"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 WARN=0
+LINKS_GLES=0
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# Our MBXGLEngine.bundle replacement, built by contrib/it-gles/build.sh. It is
+# not committed -- it is an armv6 Mach-O bundle produced from committed source.
+SHIM="${SHIM:-$REPO/contrib/it-gles/MBXGLEngine}"
 
 if ! unzip -qq -o "$IPA" 'Payload/*' -d "$TMP" 2>/dev/null; then
     die "$NAME is not a readable .ipa (no Payload/)"
@@ -109,11 +176,32 @@ if [ -f "$BIN" ] && command -v otool >/dev/null; then
         WARN=1
     fi
     if otool -L "$BIN" 2>/dev/null | grep -q OpenGLES; then
-        echo "WARNING: links OpenGLES." >&2
-        echo "  It will install and launch, then wedge the device -- the MBX GPU" >&2
-        echo "  is not emulated." >&2
-        WARN=1
+        LINKS_GLES=1
+        if [ -f "$SHIM" ]; then
+            echo "    links OpenGLES -- the GL engine replacement will be installed"
+        else
+            echo "WARNING: links OpenGLES, and $SHIM does not exist." >&2
+            echo "  The stock MBXGLEngine drives the PowerVR MBX, which is not" >&2
+            echo "  emulated: the app launches, draws its UIKit chrome once, and" >&2
+            echo "  then WEDGES THE WHOLE DEVICE spinning on an MBX register that" >&2
+            echo "  never acknowledges. Build the replacement first:" >&2
+            echo "      contrib/it-gles/build.sh" >&2
+            WARN=1
+        fi
     fi
+fi
+
+# An .ipa is a zip and installd extracts it preserving the archived mode, so an
+# app whose binary is stored 0644 arrives on the device not executable. That is
+# not a crash and it produces no crash report: posix_spawn fails with EACCES,
+# SpringBoard says only "exited abnormally with exit status 1", and the icon
+# bounces once. It is a common shape in 2009-era .ipas -- Cube Runner is one --
+# and it looks exactly like an emulator bug, which is why it is repaired here
+# rather than left to a chmod over ssh afterwards.
+NEEDS_MODE=0
+if [ -f "$BIN" ] && [ ! -x "$BIN" ]; then
+    echo "    NOTE: $EXE is stored 0644 in the archive; repacking it 0755"
+    NEEDS_MODE=1
 fi
 
 [ "$WARN" = 0 ] && echo "    pre-flight clean"
@@ -172,7 +260,21 @@ if ! ideviceinfo -k ProductVersion >/dev/null 2>&1; then
 fi
 echo "--- device is up: iOS $(ideviceinfo -k ProductVersion)"
 
+# The GL engine has to be in place BEFORE the app is launched, and it is worth
+# doing before the install too: a wedged device cannot finish an scp, so the
+# first launch is the last chance to get anything onto it.
+if [ "$LINKS_GLES" = 1 ] && [ -f "$SHIM" ]; then
+    echo "--- installing the GL engine replacement"
+    install_shim || echo "install-ipa.sh: could not install the GL engine; the app will wedge the device" >&2
+fi
+
 echo "--- installing $NAME"
-ideviceinstaller install "$IPA"
+if [ "$NEEDS_MODE" = 1 ]; then
+    FIXED="$TMP/$NAME"
+    repack_mode "$IPA" "$FIXED" "Payload/$(basename "$APP")/$EXE"
+    ideviceinstaller install "$FIXED"
+else
+    ideviceinstaller install "$IPA"
+fi
 echo "--- installed"
 ideviceinstaller list --user
