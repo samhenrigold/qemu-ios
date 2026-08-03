@@ -1917,6 +1917,16 @@ static void ipod_touch_osk_enqueue(IPodTouchMachineState *nms, uint16_t ch)
 	}
 }
 
+/* Ten devices here were only ever `qdev_new`ed and mapped, never realized.
+ * An unrealized device is not parented into the QOM tree, so it is invisible
+ * to BOTH machine reset and migration: a dc->reset on it would be dead code,
+ * and its VMStateDescription would never be written to a snapshot. None of
+ * them has a dc->realize hook, so this is purely tree membership. */
+static void it_realize_into_qom_tree(DeviceState *dev)
+{
+    sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
+}
+
 static void ipod_touch_machine_init(MachineState *machine)
 {
 	IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(machine);
@@ -1957,12 +1967,14 @@ static void ipod_touch_machine_init(MachineState *machine)
     IPodTouchClockState *clock0_state = IPOD_TOUCH_CLOCK(dev);
     nms->clock0 = clock0_state;
     memory_region_add_subregion(sysmem, CLOCK0_MEM_BASE, &clock0_state->iomem);
+    it_realize_into_qom_tree(dev);
 
     // init clock 1
     dev = qdev_new("ipodtouch.clock");
     IPodTouchClockState *clock1_state = IPOD_TOUCH_CLOCK(dev);
     nms->clock1 = clock1_state;
     memory_region_add_subregion(sysmem, CLOCK1_MEM_BASE, &clock1_state->iomem);
+    it_realize_into_qom_tree(dev);
 
     // init the timer
     dev = qdev_new("ipodtouch.timer");
@@ -1973,6 +1985,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, S5L8720_TIMER1_IRQ));
     //sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, S5L8720_TIMER1_IRQ - 1));
     timer_state->sysclk = nms->sysclk;
+    it_realize_into_qom_tree(dev);
 
     // init sysic
     dev = qdev_new("ipodtouch.sysic");
@@ -2065,6 +2078,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     IPodTouchChipIDState *chipid_state = IPOD_TOUCH_CHIPID(dev);
     nms->chipid_state = chipid_state;
     memory_region_add_subregion(sysmem, CHIPID_MEM_BASE, &chipid_state->iomem);
+    it_realize_into_qom_tree(dev);
 
     // init the TVOut instance
     dev = qdev_new("ipodtouch.tvout");
@@ -2082,16 +2096,19 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = qdev_new("ipodtouch.unknown1");
     IPodTouchUnknown1State *unknown1_state = IPOD_TOUCH_UNKNOWN1(dev);
     memory_region_add_subregion(sysmem, UNKNOWN1_MEM_BASE, &unknown1_state->iomem);
+    it_realize_into_qom_tree(dev);
 
     // init the watchdog timer (models reset so the guest can reboot itself)
     dev = qdev_new("ipodtouch.wdt");
     IPodTouchWDTState *wdt_state = IPOD_TOUCH_WDT(dev);
     memory_region_add_subregion(sysmem, WDT_MEM_BASE, &wdt_state->iomem);
+    it_realize_into_qom_tree(dev);
 
     // back the MPVD register window so the power-state path does not fault
     dev = qdev_new("ipodtouch.mpvd");
     IPodTouchMPVDState *mpvd_state = IPOD_TOUCH_MPVD(dev);
     memory_region_add_subregion(sysmem, MPVD_MEM_BASE, &mpvd_state->iomem);
+    it_realize_into_qom_tree(dev);
 
     // init USB OTG
     dev = ipod_touch_init_usb_otg(s5l8900_get_irq(nms, S5L8720_USB_OTG_IRQ), s5l8720_usb_hwcfg);
@@ -2236,6 +2253,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     IPodTouchUSBPhysState *usb_phys_state = IPOD_TOUCH_USB_PHYS(dev);
     nms->usb_phys_state = usb_phys_state;
     memory_region_add_subregion(sysmem, USBPHYS_MEM_BASE, &usb_phys_state->iomem);
+    it_realize_into_qom_tree(dev);
 
     ipod_touch_memory_setup(machine, sysmem, nsas);
 
@@ -2284,12 +2302,14 @@ static void ipod_touch_machine_init(MachineState *machine)
     IPodTouchAESState *aes_state = IPOD_TOUCH_AES(dev);
     nms->aes_state = aes_state;
     memory_region_add_subregion(sysmem, AES_MEM_BASE, &aes_state->iomem);
+    it_realize_into_qom_tree(dev);
 
     // init PKE engine
     dev = qdev_new("ipodtouch.pke");
     IPodTouchPKEState *pke_state = IPOD_TOUCH_PKE(dev);
     nms->pke_state = pke_state;
     memory_region_add_subregion(sysmem, PKE_MEM_BASE, &pke_state->iomem);
+    it_realize_into_qom_tree(dev);
 
     // init the MBX
     dev = qdev_new("ipodtouch.mbx");
