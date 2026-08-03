@@ -165,7 +165,10 @@ static void it_i2s_log_caller(hwaddr offset, uint32_t val)
                                 sizeof(frame), false) != 0) {
             break;
         }
-        fprintf(stderr, " %08x/r5=%08x", frame[4], frame[1]);
+        /* r4 as well as r5: these IOService methods keep `this` in r4 as
+         * often as in r5 (0xc0505340 and 0xc05053ec both do `mov r4, r0`), so
+         * printing only one of them loses the object half the time. */
+        fprintf(stderr, " %08x/r4=%08x/r5=%08x", frame[4], frame[0], frame[1]);
         if (frame[3] <= fp) {
             break;
         }
@@ -206,19 +209,30 @@ static uint64_t ipod_touch_i2s_read(void *opaque, hwaddr offset, unsigned size)
 {
     IPodTouchI2SState *s = (IPodTouchI2SState *)opaque;
 
+    uint32_t val;
+
     it_i2s_log_caller(offset, 0);
 
     switch (offset) {
-    case IT_I2S_ENABLE: return s->enable;
-    case IT_I2S_TXCON:  return s->txcon;
-    case IT_I2S_TXCOM:  return s->txcom;
-    case IT_I2S_RXCON:  return s->rxcon;
-    case IT_I2S_RXCOM:  return s->rxcom;
-    case IT_I2S_TXFCTL: return s->txfctl;
-    case IT_I2S_CLKDIV: return s->clkdiv;
-    case IT_I2S_RXFIFO: return 0;
-    default:            return 0;
+    case IT_I2S_ENABLE: val = s->enable; break;
+    case IT_I2S_TXCON:  val = s->txcon;  break;
+    case IT_I2S_TXCOM:  val = s->txcom;  break;
+    case IT_I2S_RXCON:  val = s->rxcon;  break;
+    case IT_I2S_RXCOM:  val = s->rxcom;  break;
+    case IT_I2S_TXFCTL: val = s->txfctl; break;
+    case IT_I2S_CLKDIV: val = s->clkdiv; break;
+    case IT_I2S_RXFIFO: val = 0;         break;
+    default:            val = 0;         break;
     }
+
+    /*
+     * Log every register touch, not just the FIFO. A register we do not model
+     * answers 0, and 0 is a perfectly plausible value -- so a driver that polls
+     * one and gives up is indistinguishable from one that never asked. Seeing
+     * the whole conversation is the only way to tell those apart.
+     */
+    IT_I2S_DPRINTF("R %02x -> %08x\n", (unsigned)offset, val);
+    return val;
 }
 
 static void ipod_touch_i2s_write(void *opaque, hwaddr offset, uint64_t value,
@@ -227,6 +241,9 @@ static void ipod_touch_i2s_write(void *opaque, hwaddr offset, uint64_t value,
     IPodTouchI2SState *s = (IPodTouchI2SState *)opaque;
 
     it_i2s_log_caller(offset, (uint32_t)value);
+    if (offset != IT_I2S_TXFIFO) {
+        IT_I2S_DPRINTF("W %02x <- %08x\n", (unsigned)offset, (uint32_t)value);
+    }
 
     if (offset == IT_I2S_TXFIFO) {
         /* PCM element, native (little) endian; store raw bytes in order. */
