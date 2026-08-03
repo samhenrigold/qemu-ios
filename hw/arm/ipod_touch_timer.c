@@ -100,6 +100,26 @@ static void s5l8900_timer1_write(void *opaque, hwaddr addr, uint64_t value, unsi
             s->bcount2 = value;
             break;
       default:
+        /*
+         * Only timer 4 is decoded (block base TIMER_4 = 0xA0, stride 0x20, so
+         * 0x20/0x40/0x60/0x80 are timers 0-3). A guest arming one of those got
+         * no interrupt AND no diagnostic, which is the combination that makes
+         * a missing timer indistinguishable from a guest bug: the deadline
+         * simply never arrives and nothing anywhere says why. Say it once per
+         * timer -- once, because this is an MMIO write handler.
+         */
+        if (addr >= 0x20 && addr < TIMER_4) {
+            static uint32_t said;
+            unsigned n = (unsigned)((addr - 0x20) / 0x20);
+
+            if (!(said & (1u << n))) {
+                said |= 1u << n;
+                fprintf(stderr, "[TIMER] guest touched UNMODELLED timer %u "
+                        "(reg 0x%03x <- 0x%08x); no interrupt can ever be "
+                        "delivered from it\n",
+                        n, (unsigned)addr, (unsigned)value);
+            }
+        }
         break;
     }
 }
