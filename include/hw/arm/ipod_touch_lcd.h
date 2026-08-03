@@ -37,6 +37,13 @@ typedef struct IPodTouchLCDState
 
     uint32_t w1_display_resolution_info;
     uint32_t w1_framebuffer_base;
+    /*
+     * The base actually being scanned out. The panel latches the register at
+     * vblank, so a blit driven from anywhere other than the frame interrupt
+     * (QEMU's 30 ms display poll, a screendump) still sees a coherent frame
+     * rather than whichever buffer the guest had installed at that instant.
+     */
+    uint32_t scanout_base;
     uint32_t w1_hspan;
     uint32_t w1_display_depth_info;
 
