@@ -325,10 +325,17 @@ static void lcd_refresh(void *opaque)
     }
 
     if (lcd->rotation != 0) {
+        int64_t t = lcd_frametrace() ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
         lcd_refresh_rotated(lcd, surface, lcd->rotation);
+        if (t) {
+            lcd_ft("blitrot",
+                   (uint32_t)((qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t)/1000));
+        }
         lcd->invalidate = 0;
         return;
     }
+
+    int64_t t_blit = lcd_frametrace() ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
 
     dest_width = 4;
     draw_line = draw_line32_32;
@@ -356,6 +363,10 @@ static void lcd_refresh(void *opaque)
                                &first, &last);
     if (first >= 0) {
         dpy_gfx_update(lcd->con, 0, first, width, last - first + 1);
+    }
+    if (lcd_frametrace()) {
+        lcd_ft("blit", (uint32_t)((qemu_clock_get_ns(QEMU_CLOCK_REALTIME)
+                                   - t_blit)/1000));
     }
     lcd->invalidate = 0;
 }
