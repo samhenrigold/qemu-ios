@@ -133,13 +133,81 @@ typedef struct FingerData
     uint16_t unk_1A;
 } __attribute__((__packed__)) FingerData;
 
+/*
+ * How many simultaneous contacts the model reports. The panel itself handles
+ * more, but every gesture iPhone OS 3.1.3 recognises (pinch, rotate, two-finger
+ * scroll, three- and four-finger swipes in later builds) fits inside five, and
+ * the frame has to stay under the negotiated MT_MAX_PACKET_SIZE.
+ */
+#define MT_MAX_FINGERS 5
+
+/*
+ * A touch frame is VARIABLE LENGTH and the layout below is only the fixed
+ * prefix. The full wire frame is
+ *
+ *   [0 .. 15]                       length packet   (16 bytes)
+ *   [16 .. 20]                      frame packet prologue (5 bytes)
+ *   [21 .. 21+24)                   frame header    (sizeof(MTFrameHeader))
+ *   [45 .. 45+n*28)                 n x FingerData
+ *   [45+n*28 .. 45+n*28+2)          16-bit checksum
+ *
+ * with dataLength = sizeof(MTFrameHeader) + n * sizeof(FingerData) + 2 stored
+ * in the length packet, and the total frame length 21 + dataLength.
+ *
+ * The trailing checksum's POSITION therefore moves with the finger count: the
+ * driver reads dataLength out of the length packet and sums dataLength - 2
+ * bytes starting at the header, then expects the checksum immediately after.
+ * The struct used to end in `FingerData finger_data; uint8_t checksum1,
+ * checksum2;` with the comment "TODO we assume one finger for now", which
+ * nailed the checksum to offset 73 -- correct for exactly one finger and wrong
+ * for every other count. Getting it wrong is not benign: the driver counts
+ * checksum failures, and past a threshold it kills the panel and re-probes,
+ * which desynchronises the SPI state machine permanently.
+ *
+ * So the frame is built into a plain byte buffer by mt_build_frame(), which
+ * returns the length alongside it. Nothing may reach for a fixed offset.
+ */
 typedef struct MTFrame {
     MTFrameLengthPacket frame_length;
     MTFramePacket frame_packet;
-    FingerData finger_data; // TODO we assume one finger for now
-    uint8_t checksum1;
-    uint8_t checksum2;
+    uint8_t finger_data[];
 } __attribute__((__packed__)) MTFrame;
+
+/* Byte offset of the frame header within the frame; the checksum is measured
+ * from here, and so is the total length. */
+#define MT_FRAME_PREFIX_LEN (sizeof(MTFrameLengthPacket) + \
+                             sizeof(MTFramePacket) - sizeof(MTFrameHeader))
+
+/*
+ * Deliberately generous. The SPI read path walks out_buffer by buf_size and the
+ * guest can clock out more than the frame holds; allocating exactly the frame
+ * size corrupted the heap, which showed up far away as a SIGSEGV inside TCG's
+ * translation-block tree.
+ */
+#define MT_FRAME_ALLOC 0x400
+
+/*
+ * Per-finger tracking.
+ *
+ * A finger is not simply down or up: the driver wants to see TOUCH_START once,
+ * then TOUCH_MOVED for as long as the contact lasts, then TOUCH_ENDED, and --
+ * when the last contact goes -- a TOUCH_FULL_END frame a moment later. The
+ * phase is what the NEXT emitted frame will report for this slot, and
+ * mt_emit_frame() advances it.
+ */
+typedef enum MTFingerPhase {
+    MT_FINGER_FREE = 0,   /* not reported at all                              */
+    MT_FINGER_DOWN,       /* reports TOUCH_START once, then TOUCH_MOVED       */
+    MT_FINGER_LIFTED,     /* reports TOUCH_ENDED on the next frame            */
+    MT_FINGER_ENDING,     /* reports TOUCH_FULL_END on the end-timer frame    */
+} MTFingerPhase;
+
+typedef struct MTFingerState {
+    MTFingerPhase phase;
+    bool started;        /* TOUCH_START already reported                      */
+    float x, y;          /* position, 0..1 in the guest's portrait FB space   */
+    float prev_x, prev_y;/* where this finger was in the last frame WE SENT   */
+} MTFingerState;
 
 typedef struct IPodTouchMultitouchState {
     SSIPeripheral ssidev;
@@ -152,6 +220,12 @@ typedef struct IPodTouchMultitouchState {
     uint32_t in_buffer_ind;
     uint8_t hbpp_atn_ack_response[2];
     MTFrame *next_frame;
+    /*
+     * Length of next_frame on the wire. buf_size is set from this when the
+     * frame is handed to the guest, because a frame is no longer a fixed
+     * sizeof(MTFrame) once it can carry more than one finger.
+     */
+    uint32_t next_frame_len;
     uint32_t frame_counter;
     bool touch_down;
     QEMUTimer *touch_timer;
@@ -159,6 +233,16 @@ typedef struct IPodTouchMultitouchState {
     IPodTouchSYSICState *sysic;
     IPodTouchGPIOState *gpio_state;
     void *pmu;   // Pcf50633State* — D1759 PMU, raises the wake-button interrupt
+
+    MTFingerState fingers[MT_MAX_FINGERS];
+
+    /*
+     * Slot 0's position, kept as a separate field because the legacy pointer
+     * path writes it directly before calling on_touch/on_motion/on_release:
+     * ipod_touch_lcd_mouse_event() and the scripted slide-to-power-off in
+     * ipod_touch_2g.c both do this. Mirrored into fingers[0] on every emit.
+     * touch_down means "slot 0 is down", which is what those two edge-detect on.
+     */
     float touch_x;
     float touch_y;
     float prev_touch_x;
@@ -173,8 +257,22 @@ typedef struct IPodTouchMultitouchState {
     int64_t last_motion_ns;
 } IPodTouchMultitouchState;
 
+/*
+ * Single-finger entry points, kept as-is for the pointer paths that set
+ * touch_x/touch_y and then call one of these. They all operate on slot 0.
+ */
 void ipod_touch_multitouch_on_touch(IPodTouchMultitouchState *s);
 void ipod_touch_multitouch_on_release(IPodTouchMultitouchState *s);
 void ipod_touch_multitouch_on_motion(IPodTouchMultitouchState *s);
+
+/*
+ * Multi-finger entry point. slot is 0..MT_MAX_FINGERS-1, x/y are 0..1 in the
+ * guest's portrait framebuffer space (y measured from the bottom, matching
+ * touch_x/touch_y). Raising and lowering a finger is a state change, so it is
+ * reported immediately; a position change on a finger already down is coalesced
+ * to the report rate.
+ */
+void ipod_touch_multitouch_set_finger(IPodTouchMultitouchState *s, int slot,
+                                      float x, float y, bool down);
 
 #endif

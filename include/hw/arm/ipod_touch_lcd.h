@@ -44,6 +44,18 @@ typedef struct IPodTouchLCDState
     int rotation;
     uint8_t *rotbuf;
 
+    /*
+     * Latched multi-touch contact positions, in console coordinates (0..2^15).
+     * QEMU's mtt protocol delivers a slot's X and Y as separate DATA events and
+     * only commits them with a following BEGIN/UPDATE/END, so each slot's last
+     * reported position has to be held here until the commit arrives.
+     * mtt_seen distinguishes "no position yet" from "position (0,0)", which
+     * would otherwise be reported to the guest as a tap in the corner.
+     */
+    int mtt_x[MT_MAX_FINGERS];
+    int mtt_y[MT_MAX_FINGERS];
+    bool mtt_seen[MT_MAX_FINGERS];
+
     QEMUTimer *refresh_timer;
 } IPodTouchLCDState;
 
