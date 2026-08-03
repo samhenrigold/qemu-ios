@@ -32,6 +32,42 @@ FMSS_ENV_FLAG(fmss_legacy_on, "FMSS_LEGACY")
 FMSS_ENV_FLAG(fmss_dump_on,   "FMSS_DUMP")
 FMSS_ENV_FLAG(fmss_physical,  "FMSS_PHYSICAL")
 FMSS_ENV_FLAG(fmss_trace_on,  "FMSS_TRACE")
+FMSS_ENV_FLAG(fmss_stats_on,  "FMSS_STATS")
+
+/*
+ * FMSS_STATS: how many pages the guest reads, and how long the host spends
+ * serving them.
+ *
+ * The page-in cost of a large app is the leading hypothesis for why big apps
+ * open with no zoom animation while small ones animate, so it has to be
+ * measured rather than assumed. Every read runs synchronously on the vCPU
+ * thread inside the MMIO handler, so time spent here is guest stall.
+ *
+ * Reported every 256 reads to keep the volume low enough to correlate against
+ * a launch window without perturbing what is being measured.
+ */
+static struct {
+    uint64_t reads, base, overlay, recall, blank, ns;
+} fmss_stats;
+
+static void fmss_stats_report(void)
+{
+    if (!fmss_stats_on()) {
+        return;
+    }
+    if ((fmss_stats.reads & 0xff) != 0) {
+        return;
+    }
+    fprintf(stderr,
+            "[FMSS] reads=%llu base=%llu ovl=%llu recall=%llu blank=%llu "
+            "read_ms=%.1f\n",
+            (unsigned long long)fmss_stats.reads,
+            (unsigned long long)fmss_stats.base,
+            (unsigned long long)fmss_stats.overlay,
+            (unsigned long long)fmss_stats.recall,
+            (unsigned long long)fmss_stats.blank,
+            fmss_stats.ns / 1.0e6);
+}
 
 static uint8_t find_bit_index(uint8_t num) {
     int index = 0;
@@ -162,8 +198,34 @@ static bool fmss_recall_physical(IPodTouchFMSSState *s, uint32_t cs,
     return true;
 }
 
+static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
+                                 uint32_t page_nr, uint8_t *data,
+                                 uint8_t *spare);
+
+/*
+ * Time every page read. Split from the body so the accounting cannot miss one
+ * of the several early returns -- the blank-page and recall paths both return
+ * before the file is ever opened.
+ */
 static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
                            uint8_t *data, uint8_t *spare)
+{
+    int64_t t0;
+
+    if (!fmss_stats_on()) {
+        fmss_load_page_inner(s, cs, page_nr, data, spare);
+        return;
+    }
+    t0 = qemu_clock_get_ns(QEMU_CLOCK_HOST);
+    fmss_load_page_inner(s, cs, page_nr, data, spare);
+    fmss_stats.ns += qemu_clock_get_ns(QEMU_CLOCK_HOST) - t0;
+    fmss_stats.reads++;
+    fmss_stats_report();
+}
+
+static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
+                                 uint32_t page_nr, uint8_t *data,
+                                 uint8_t *spare)
 {
     char filename[1088];
     FILE *f = NULL;
@@ -177,6 +239,7 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
      * visibly -- comes back as garbage.
      */
     if (fmss_recall_physical(s, cs, page_nr, data, spare)) {
+        fmss_stats.recall++;
         if (fmss_rtrace()) {
             printf("RP cs=%u page=%u\n", cs, page_nr); fflush(stdout);
         }
@@ -187,6 +250,7 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
         snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_overlay, cs, page_nr);
         f = fopen(filename, "rb");
         from_overlay = (f != NULL);
+        if (from_overlay) { fmss_stats.overlay++; }
         if (f && fmss_rtrace()) {
             printf("RH cs=%u page=%u\n", cs, page_nr); fflush(stdout);
         }
@@ -194,9 +258,11 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
     if (!f && !fmss_block_is_erased(s, cs, page_nr / NAND_PAGES_PER_BLOCK)) {
         snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_path, cs, page_nr);
         f = fopen(filename, "rb");
+        if (f) { fmss_stats.base++; }
     }
 
     if (!f) {
+        fmss_stats.blank++;
         memset(data, 0, NAND_BYTES_PER_PAGE);
         memset(spare, 0, NAND_BYTES_PER_SPARE);
         ((uint32_t *)spare)[2] = 0x00FF00FF; /* clean/erased marker */
