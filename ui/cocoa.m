@@ -343,6 +343,7 @@ static void handleAnyDeviceErrors(Error * err)
 - (bool) handleEvent:(NSEvent *)event;
 - (bool) handleEventLocked:(NSEvent *)event;
 - (void) notifyMouseModeChange;
+- (void) copyScreenToPasteboard;
 - (void) updatePinch:(NSUInteger)modifiers;
 - (void) modifiersChanged:(NSUInteger)modifiers;
 - (BOOL) isMouseGrabbed;
@@ -749,6 +750,71 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
     }
 
     pixman_image = image;
+}
+
+/*
+ * Copy Screen -- the iPhone Simulator's Cmd+Ctrl+C, which put the screen on the
+ * pasteboard. Until now the only way to get a picture out of here was a QMP
+ * screendump to a file, followed by brightening it by hand before it was
+ * legible enough to look at.
+ *
+ * The brightening is dealt with at the source rather than afterwards: the panel
+ * scales every channel by the backlight the guest programmed, and once a pixel
+ * has been written at a tenth of its value the information is gone -- scaling
+ * the result back up recovers banding, not detail. So the frame is re-rendered
+ * with the backlight held at full for the grab, and re-rendered again as it
+ * really looks before returning. Both happen inside one main-thread event, so
+ * no draw can run between them and the window never flashes.
+ */
+- (void) copyScreenToPasteboard
+{
+    __block CGImageRef imageRef = NULL;
+
+    with_bql(^{
+        qemu_display_set_capture_exposure(true);
+        graphic_hw_update(dcl.con);
+        qemu_display_set_capture_exposure(false);
+
+        if (pixman_image) {
+            int w = pixman_image_get_width(pixman_image);
+            int h = pixman_image_get_height(pixman_image);
+            int bpp = PIXMAN_FORMAT_BPP(pixman_image_get_format(pixman_image));
+            int stride = pixman_image_get_stride(pixman_image);
+            CGDataProviderRef provider = CGDataProviderCreateWithData(
+                NULL, pixman_image_get_data(pixman_image), stride * h, NULL);
+
+            imageRef = CGImageCreate(w, h, DIV_ROUND_UP(bpp, 8) * 2, bpp,
+                                     stride, colorspace,
+                                     kCGBitmapByteOrder32Little |
+                                     kCGImageAlphaNoneSkipFirst,
+                                     provider, NULL, 0,
+                                     kCGRenderingIntentDefault);
+            CGDataProviderRelease(provider);
+        }
+    });
+
+    if (imageRef) {
+        /*
+         * The provider hands out the live surface, so the bytes are copied out
+         * here -- while the exposure render is still what is in it -- rather
+         * than being read later from whatever the guest has drawn since.
+         */
+        NSBitmapImageRep *rep =
+            [[[NSBitmapImageRep alloc] initWithCGImage:imageRef] autorelease];
+        NSData *png = [rep representationUsingType:NSBitmapImageFileTypePNG
+                                        properties:@{}];
+        NSImage *img = [[[NSImage alloc] initWithData:png] autorelease];
+        NSPasteboard *pb = [NSPasteboard generalPasteboard];
+
+        [pb clearContents];
+        [pb writeObjects:@[img]];
+        CGImageRelease(imageRef);
+    }
+
+    /* Put back what the panel actually looks like. */
+    with_bql(^{
+        graphic_hw_update(dcl.con);
+    });
 }
 
 - (void) setFullGrab:(id)sender
@@ -1411,6 +1477,7 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
 - (void)openDocumentation:(NSString *)filename;
 - (IBAction) do_about_menu_item: (id) sender;
 - (void)adjustSpeed:(id)sender;
+- (void)copyScreen:(id)sender;
 @end
 
 @implementation QemuCocoaAppController
@@ -1806,6 +1873,12 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
     [pool release];
 }
 
+/* Edit ▸ Copy Screen. Apple's key equivalent, kept exactly. */
+- (void)copyScreen:(id)sender
+{
+    [cocoaView copyScreenToPasteboard];
+}
+
 /* Used by the Speed menu items */
 - (void)adjustSpeed:(id)sender
 {
@@ -1889,6 +1962,15 @@ static void create_initial_menus(void)
     [menu addItem: [[[NSMenuItem alloc] initWithTitle: @"Reset" action: @selector(restartQEMU:) keyEquivalent: @""] autorelease]];
     [menu addItem: [[[NSMenuItem alloc] initWithTitle: @"Power Down" action: @selector(powerDownQEMU:) keyEquivalent: @""] autorelease]];
     menuItem = [[[NSMenuItem alloc] initWithTitle: @"Machine" action:nil keyEquivalent:@""] autorelease];
+    [menuItem setSubmenu:menu];
+    [[NSApp mainMenu] addItem:menuItem];
+
+    // Edit menu
+    menu = [[NSMenu alloc] initWithTitle:@"Edit"];
+    menuItem = [[[NSMenuItem alloc] initWithTitle:@"Copy Screen" action:@selector(copyScreen:) keyEquivalent:@"c"] autorelease];
+    [menuItem setKeyEquivalentModifierMask:(NSEventModifierFlagCommand|NSEventModifierFlagControl)];
+    [menu addItem: menuItem];
+    menuItem = [[[NSMenuItem alloc] initWithTitle:@"Edit" action:nil keyEquivalent:@""] autorelease];
     [menuItem setSubmenu:menu];
     [[NSApp mainMenu] addItem:menuItem];
 
