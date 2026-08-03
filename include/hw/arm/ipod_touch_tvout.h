@@ -41,7 +41,6 @@ typedef struct IPodTouchTVOutState {
     uint32_t mixer1_intstat;
     QEMUTimer *vblank_timer;
 
-    uint32_t mixer1_status;
     uint32_t mixer1_cfg;
 
     uint32_t mixer2_status;
@@ -51,8 +50,6 @@ typedef struct IPodTouchTVOutState {
     uint32_t sdo_config;
     uint32_t sdo_irq;
     uint32_t sdo_irq_mask;
-
-    uint32_t irq_count;
 } IPodTouchTVOutState;
 
 #endif

@@ -1,6 +1,17 @@
 #include "hw/arm/ipod_touch_multitouch.h"
+#include "hw/arm/ipod_touch_guard.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
+
+/*
+ * The declared frame length, the buffer size and the checksum position all have
+ * to come out of one expression. MT_MAX_FINGERS and MT_BUFFER_SIZE are declared
+ * a hundred lines apart and nothing tied them together; this is the tie.
+ */
+QEMU_BUILD_BUG_ON(MT_FRAME_PREFIX_LEN + sizeof(MTFrameHeader) +
+                  MT_MAX_FINGERS * sizeof(FingerData) + 2 > MT_BUFFER_SIZE);
+QEMU_BUILD_BUG_ON(MT_FRAME_PREFIX_LEN + sizeof(MTFrameHeader) +
+                  MT_MAX_FINGERS * sizeof(FingerData) + 2 > MT_FRAME_ALLOC);
 
 static MTFrame *mt_build_frame(IPodTouchMultitouchState *s,
                                MTFingerState *fingers, uint32_t *out_len);
@@ -188,6 +199,7 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
         s->out_buffer[0] = value; // the response header
         s->buf_ind = 0;
         s->in_buffer = calloc(1, MT_BUFFER_SIZE);
+        s->in_buffer_size = MT_BUFFER_SIZE;
         s->in_buffer_ind = 0;
         
         if(value == 0x18) { // filler packet??
@@ -377,7 +389,19 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
         }
     }
 
-    s->in_buffer[s->in_buffer_ind] = value;
+    /*
+     * This store used to happen before the HBPP header checksum test below,
+     * and that test `return`s on a mismatch without resetting cur_cmd,
+     * buf_size, buf_ind or in_buffer_ind. So one bad header turned the rest of
+     * the transfer -- the driver downloads ~48 KB of panel firmware in HBPP
+     * packets -- into a linear write off the end of a 256-byte heap buffer.
+     * Bound the store unconditionally against the buffer's real size, which is
+     * not MT_BUFFER_SIZE once the HBPP path has reallocated it.
+     */
+    if (s->in_buffer) {
+        s->in_buffer[IT_IDX("multitouch", s->in_buffer_ind,
+                            s->in_buffer_size)] = value;
+    }
     s->in_buffer_ind++;
 
     if(s->cur_cmd == MT_CMD_HBPP_DATA_PACKET && s->in_buffer_ind == 10) {
@@ -392,8 +416,18 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
              * not a dead machine. */
             qemu_log_mask(LOG_GUEST_ERROR,
                           "[MT] HBPP data header checksum mismatch "
-                          "(computed 0x%04x, header 0x%04x); ignoring\n",
+                          "(computed 0x%04x, header 0x%04x); packet abandoned\n",
                           checksum, s->in_buffer[8] << 8 | s->in_buffer[9]);
+            /*
+             * Abandon the packet rather than staying in it. Returning with
+             * cur_cmd still set left the command permanently incomplete, so
+             * every subsequent byte of the transfer kept walking in_buffer_ind
+             * forward with nothing to terminate it.
+             */
+            s->cur_cmd = 0;
+            s->buf_size = 0;
+            s->buf_ind = 0;
+            s->in_buffer_ind = 0;
             return 0;
         }
 
@@ -406,6 +440,7 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
         // extend the lengths of the in/out buffers
         free(s->in_buffer);
         s->in_buffer = malloc(data_len + 0x10);
+        s->in_buffer_size = data_len + 0x10;
 
         free(s->out_buffer);
         s->out_buffer = malloc(data_len);
@@ -1025,6 +1060,7 @@ static void ipod_touch_multitouch_reset(DeviceState *dev)
     s->buf_size = 0;
     s->buf_ind = 0;
     s->in_buffer_ind = 0;
+    s->in_buffer_size = 0;
     memset(s->hbpp_atn_ack_response, 0, sizeof(s->hbpp_atn_ack_response));
 
     free(s->next_frame);

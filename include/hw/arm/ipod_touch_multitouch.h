@@ -1,8 +1,21 @@
 #ifndef IPOD_TOUCH_MULTITOUCH_H
 #define IPOD_TOUCH_MULTITOUCH_H
 
-/* scratch response buffer for short commands */
-#define MT_BUFFER_SIZE 0x100
+/*
+ * Scratch in/out buffer for short commands, and the bound on how many bytes of
+ * one transfer the model will hold.
+ *
+ * This was 0x100 and sized independently of the frame it has to be able to
+ * hold. A 5-finger frame is 21 + 24 + 5*28 + 2 = 187 bytes and the guest clocks
+ * every one of them through in_buffer, so it already reached 187 of 256;
+ * raising MT_MAX_FINGERS (or IT_MT_PAD_FINGERS, which the code accepts up to
+ * MT_MAX_FINGERS) to 8 puts it at 271 and overruns. Two constants that must
+ * agree, declared a hundred lines apart. Matched to MT_FRAME_ALLOC and
+ * asserted against the frame arithmetic in a QEMU_BUILD_BUG_ON in the .c, so
+ * the next person to raise the finger count gets a compile error instead of a
+ * heap overrun.
+ */
+#define MT_BUFFER_SIZE 0x400
 
 #include "qemu/osdep.h"
 #include "qemu/module.h"
@@ -218,6 +231,9 @@ typedef struct IPodTouchMultitouchState {
     uint8_t prev_cmd_log;
     uint32_t buf_ind;
     uint32_t in_buffer_ind;
+    /* Allocated size of in_buffer. It is reallocated to data_len + 0x10 on an
+     * HBPP data header, so MT_BUFFER_SIZE is not a usable bound after that. */
+    uint32_t in_buffer_size;
     uint8_t hbpp_atn_ack_response[2];
     MTFrame *next_frame;
     /*

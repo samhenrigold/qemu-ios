@@ -284,12 +284,11 @@ static void ipod_touch_tvout_init(Object *obj)
  * itself at realize, so there is nothing to carry across. */
 static const VMStateDescription vmstate_ipod_touch_tvout = {
     .name = "ipod_touch_tvout",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_BOOL(irq2_pending, IPodTouchTVOutState),
         VMSTATE_UINT32(mixer1_intstat, IPodTouchTVOutState),
-        VMSTATE_UINT32(mixer1_status, IPodTouchTVOutState),
         VMSTATE_UINT32(mixer1_cfg, IPodTouchTVOutState),
         VMSTATE_UINT32(mixer2_status, IPodTouchTVOutState),
         VMSTATE_UINT32(mixer2_cfg, IPodTouchTVOutState),
@@ -297,7 +296,6 @@ static const VMStateDescription vmstate_ipod_touch_tvout = {
         VMSTATE_UINT32(sdo_config, IPodTouchTVOutState),
         VMSTATE_UINT32(sdo_irq, IPodTouchTVOutState),
         VMSTATE_UINT32(sdo_irq_mask, IPodTouchTVOutState),
-        VMSTATE_UINT32(irq_count, IPodTouchTVOutState),
         VMSTATE_END_OF_LIST()
     }
 };

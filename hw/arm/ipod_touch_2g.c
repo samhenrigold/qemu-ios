@@ -1890,8 +1890,15 @@ static void ipod_touch_synth_touch(IPodTouchMachineState *nms,
 	} else if (!state && mt->touch_down) {
 		ipod_touch_multitouch_on_release(mt);
 	}
-	/* While the finger is down the digitizer's own 10Hz timer keeps emitting
-	 * TOUCH_MOVED frames from touch_x/touch_y, so updating them is the move. */
+	/*
+	 * While the finger is down the digitizer's own report timer (60 Hz since
+	 * the touch-rate work, and it also emits on motion) keeps producing
+	 * TOUCH_MOVED frames from touch_x/touch_y, so updating them is the move.
+	 *
+	 * This is the one caller that writes touch_x/touch_y directly instead of
+	 * going through ipod_touch_multitouch_set_finger(). It works because slot
+	 * 0 is mirrored into those fields, but it cannot express a second finger.
+	 */
 }
 
 static void ipod_touch_powerdown_arm(IPodTouchMachineState *nms, int ms)
