@@ -527,8 +527,23 @@ static void read_nand_pages(IPodTouchFMSSState *s)
             page_out_buf_ind++;
         }
 
-        // finally, write the spare
-        cpu_physical_memory_write(s->reg_page_spare_out_addr + page_ind * 0xc, s->page_spare_buffer, NAND_BYTES_PER_SPARE);
+        /*
+         * Finally, the spare -- 0xc bytes, NOT NAND_BYTES_PER_SPARE.
+         *
+         * The driver's array is 3 words per page (stride 0xc; the write path at
+         * the bottom of this file reads exactly 0xc back). Writing the full
+         * 64-byte spare at a 12-byte stride meant every entry scribbled 52
+         * bytes over the following four entries, which happened to work because
+         * the next iteration rewrote them -- but the LAST entry had nothing
+         * after it, so it ran 52 bytes past the end of the driver's array into
+         * guest kernel heap. On every NAND read, for the life of the run.
+         *
+         * Writing 0xc is behaviour-identical for every entry except that
+         * overspill: bytes 0xc..0x3f were always overwritten by the next
+         * iteration anyway.
+         */
+        cpu_physical_memory_write(s->reg_page_spare_out_addr + page_ind * 0xc,
+                                  s->page_spare_buffer, 0xc);
     }
 }
 
