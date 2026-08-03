@@ -16,19 +16,29 @@
  * reconfigures itself for on-stage/demo operation (no idle sleep, no auto-lock,
  * dithering off, PCForceDemoMaxHBI, etc.).
  *
- * One of the kext's user-client methods reads a single byte from the I2C device
- * and requires it to equal 0x82; this model answers 0x82 so that path can
- * succeed.
+ * The user client has exactly two external methods.  Selector 0 is the presence
+ * test SpringBoard's -isTethered calls, and ITS BODY DIFFERS BY OS VERSION:
  *
- * MEASURED, and recorded here so nobody re-derives it wrongly: the guest reaches
- * demo mode WITHOUT this device.  The kext matches on the DeviceTree node alone
- * (its start() does no I2C), so -isTethered is already true on a stock run, and
- * the 0x82 byte is never actually read -- our slave only ever sees writes
- * (register selects 0x01/0x04).  A single-variable A/B with IT_TETHERED set vs
- * unset, on one warm overlay, was identical: both regenerated the tether
- * preferences after deletion and both logged "Tether dithering: 0".  So this is
- * a faithful model of the absent hardware, but it is NOT what puts the device
- * into demo mode, and the 0x82 path is not yet shown to be reachable on 3.1.3.
+ *   2.1.1: I2C READ of one byte, which must equal 0x82, then drive /charger's
+ *          function-control_0/1/2 and log "... set 1A".
+ *   3.1.3: I2C WRITE of two bytes (0x01, 0x04), and nothing else gates it --
+ *          Apple REMOVED the 0x82 identity check.  `cmp rN,#0x82` appears
+ *          nowhere in the 3.1.3 kext (verified two ways -- resilient
+ *          disassembly and a raw ARM-encoding search -- with the 2.1.1 kext as
+ *          a positive control).
+ *
+ * We answer 0x82 on reads so the 2.1.1 path also works.  On 3.1.3 the byte is
+ * never read, and the two writes this model logs are exactly that (1, 4) pair.
+ *
+ * CONSEQUENCE, measured: on 3.1.3 the entire presence test is "did the write to
+ * 0x29 succeed", and our I2C controller never NAKs (IT_I2C_NAK is off by
+ * default), so an ABSENT slave still reports success.  -isTethered is therefore
+ * true on a stock run and the guest sits in demo mode permanently, with or
+ * without this device -- a single-variable A/B (IT_TETHERED set vs unset, one
+ * warm overlay) was identical in both arms.  This device only becomes
+ * load-bearing under IT_I2C_NAK=1, which should make an uncarded run report
+ * false.  Note that flipping IT_I2C_NAK on by default therefore turns demo mode
+ * OFF, and the device will begin auto-locking, dimming and idle-sleeping.
  *
  * Only instantiated when IT_TETHERED=1.  IT_TETHERED_TRACE=1 logs every access.
  */
