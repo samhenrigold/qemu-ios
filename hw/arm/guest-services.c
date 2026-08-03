@@ -165,6 +165,16 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
         case QC_SIZE_FILE:
             qcall.retval = qc_handle_size_file(qcall.args.size_file.index);
             break;
+        case QC_GLES:
+            qcall.retval = qc_handle_gles(cpu, &qcall.args.gles);
+            break;
+        case QC_GLES_PING:
+            // Proves the guest reached the host from whatever privilege level
+            // it issued the mcr at. Nothing else here can answer that question:
+            // an unhandled cp15 write on this machine is silently discarded, so
+            // "no effect" and "no trap" look identical from the guest.
+            qcall.retval = QC_GLES_PING_MAGIC;
+            break;
         case QC_POLL_INPUT: {
             // Dequeue one host-keyboard unichar for the guest text-input agent.
             IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
