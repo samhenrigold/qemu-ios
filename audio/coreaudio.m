@@ -332,6 +332,13 @@ typedef struct CATap {
      * the recording because both come out as zeroes. */
     uint8_t *cls;
     size_t cls_n, cls_cap;
+    /* Cost of the tap itself, on the realtime thread. The tap MUTES the device,
+     * and the fair objection to that is "a muted device may not be timed like a
+     * live one". The HAL's callback cadence comes from the device clock and is
+     * independent of the sample values written, so the only way this tap can
+     * perturb what it measures is by stealing time inside the IOProc. Measure
+     * that directly rather than argue it. */
+    uint64_t tap_ns_max, tap_ns_sum;
     char *path;
 } CATap;
 
@@ -383,6 +390,11 @@ static void ca_tap_dump(void)
             }
             audible += before && after;
         }
+        fprintf(f, "tap cost on the RT thread: mean %.1f us, max %.1f us, "
+                "against an %.2f ms callback period\n",
+                ca_tap.calls ? ca_tap.tap_ns_sum / 1000.0 / ca_tap.calls : 0.0,
+                ca_tap.tap_ns_max / 1000.0,
+                ca_tap.calls ? 512 * 1000.0 / 44.1 / 1000.0 : 0.0);
         fprintf(f, "starved DURING CONTENT %" PRIu64 "   <-- the audible ones\n",
                 audible);
         fclose(f);
@@ -507,6 +519,7 @@ static OSStatus audioDeviceIOProc(
     }
 
     if (ca_tap.pcm) {
+        int64_t t_in = qemu_clock_get_ns(QEMU_CLOCK_HOST);
         size_t n = frameCount * hw->info.bytes_per_frame;
         const float *f = outOutputData->mBuffers[0].mData;
         bool signal = false;
@@ -524,6 +537,13 @@ static OSStatus audioDeviceIOProc(
             ca_tap.len += n;
         }
         memset(outOutputData->mBuffers[0].mData, 0, n);   /* mute the speakers */
+        int64_t dt = qemu_clock_get_ns(QEMU_CLOCK_HOST) - t_in;
+        if (dt > 0) {
+            ca_tap.tap_ns_sum += dt;
+            if ((uint64_t)dt > ca_tap.tap_ns_max) {
+                ca_tap.tap_ns_max = dt;
+            }
+        }
     }
 
     coreaudio_buf_unlock (core, "audioDeviceIOProc");
