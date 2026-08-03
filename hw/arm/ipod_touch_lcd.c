@@ -11,6 +11,51 @@ int lcd_brightness = 255;
 #define LCD_FB_HEIGHT 480
 
 /*
+ * IT_LCD_FRAMETRACE: one line per frame-pipeline event, with both clocks.
+ *
+ * Frame timing on this machine has three stages and they are paced by three
+ * different things, so a trace that only records one of them cannot tell a
+ * dropped guest frame from a host sampling artefact:
+ *
+ *   vsync  the model's 60 Hz frame interrupt to the guest
+ *   flip   the guest writing a new scanout base to reg 0x24 (a present)
+ *   scan   this model reading the framebuffer out to the host window
+ *
+ * Timestamps are taken here rather than on the host's stderr reader because
+ * pipe buffering adds tens of milliseconds of jitter to a 16 ms signal.
+ */
+static int lcd_frametrace(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_LCD_FRAMETRACE") ? 1 : 0;
+    }
+    return on;
+}
+
+/* True while refresh_timer_tick is driving a frame out; see lcd_refresh(). */
+static bool lcd_in_vsync_present;
+
+static int lcd_vsync_legacy(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_LCD_VSYNC_LEGACY") ? 1 : 0;
+    }
+    return on;
+}
+
+static void lcd_ft(const char *ev, uint32_t arg)
+{
+    if (!lcd_frametrace()) {
+        return;
+    }
+    fprintf(stderr, "[FT] %s %" PRId64 " %" PRId64 " 0x%08x\n", ev,
+            qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), arg);
+}
+
+/*
  * Rotation the host window should be presenting, in degrees clockwise. Written
  * by it_display_set_orientation() (accelerometer / Command+Left / Command+Right
  * / the accel-orientation QMP property) and picked up by the next refresh,
@@ -94,6 +139,9 @@ static void ipod_touch_lcd_write(void *opaque, hwaddr addr, uint64_t val, unsign
             s->w1_display_depth_info = val;
             break;
         case 0x24:
+            if (val != s->w1_framebuffer_base) {
+                lcd_ft("flip", (uint32_t)val);
+            }
             s->w1_framebuffer_base = val;
             break;
         case 0x28:
@@ -215,7 +263,7 @@ static void lcd_refresh_rotated(IPodTouchLCDState *lcd, DisplaySurface *surface,
     if (!lcd->rotbuf) {
         lcd->rotbuf = g_malloc(sw * sh * 4);
     }
-    cpu_physical_memory_read(lcd->w1_framebuffer_base, lcd->rotbuf, sw * sh * 4);
+    cpu_physical_memory_read(lcd->scanout_base, lcd->rotbuf, sw * sh * 4);
 
     for (sy = 0; sy < sh; sy++) {
         const uint8_t *s = lcd->rotbuf + (size_t)sy * sw * 4;
@@ -250,6 +298,11 @@ static void lcd_refresh(void *opaque)
 
     if (!lcd || !lcd->con || !surface_bits_per_pixel(surface))
         return;
+
+    /* "vscan" = pushed by the panel's frame interrupt, "scan" = QEMU's own
+     * free-running 30 ms display poll. The distinction is the whole point of
+     * the change; a trace that cannot tell them apart cannot show it worked. */
+    lcd_ft(lcd_in_vsync_present ? "vscan" : "scan", lcd->scanout_base);
 
     /*
      * Pick up a pending orientation change. The console resize has to happen
@@ -290,7 +343,7 @@ static void lcd_refresh(void *opaque)
     linesize = surface_stride(surface);
 
     if(lcd->invalidate) {
-        framebuffer_update_memory_section(&lcd->fbsection, lcd->sysmem, lcd->w1_framebuffer_base, height, 4 * width);
+        framebuffer_update_memory_section(&lcd->fbsection, lcd->sysmem, lcd->scanout_base, height, 4 * width);
     }
 
     framebuffer_update_display(surface, &lcd->fbsection,
@@ -446,16 +499,81 @@ static const QemuInputHandler ipod_touch_lcd_mtt_handler = {
     .event = ipod_touch_lcd_mtt_event,
 };
 
+/*
+ * The panel's frame interrupt, and with it the whole visible frame pipeline.
+ *
+ * Two things happen here that used not to.
+ *
+ * 1. The next tick is scheduled from the PREVIOUS DEADLINE, not from "now".
+ *    Re-arming at `now + period` folds the callback's own dispatch latency
+ *    into the period, permanently: every tick starts its interval from
+ *    wherever it happened to run. Measured on an idle 3.1.3 lock screen that
+ *    latency is ~1.0-1.4 ms, so a nominally 60 Hz frame interrupt was
+ *    delivered at 55.5 Hz -- the guest's animation clock ran 7.5% slow and
+ *    random-walked in phase, because the error never got corrected. With an
+ *    absolute deadline a tick that runs late is followed by one that runs on
+ *    its own schedule, so lateness stays bounded instead of accumulating.
+ *
+ * 2. When something is actually looking at the console, the frame is pushed to
+ *    the host here rather than waiting to be sampled. QEMU's own display
+ *    refresh is a free-running 30 ms timer (GUI_REFRESH_INTERVAL_DEFAULT), so
+ *    a guest presenting at ~57 fps was being resampled at 33.3 Hz: the host
+ *    window advanced by one guest frame on some updates and two on others,
+ *    which is judder of exactly the kind the device is reported to show, and
+ *    it is entirely an artefact of the sampling rate. Driving the update from
+ *    the frame interrupt puts the host window on the guest's own cadence and
+ *    phase. Skipped when nothing is listening (-display none), where the blit
+ *    would be pure cost.
+ */
 static void refresh_timer_tick(void *opaque)
 {
     IPodTouchLCDState *s = (IPodTouchLCDState *)opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    if (lcd_frametrace()) {
+        lcd_ft("vsync", (uint32_t)(now - s->next_vsync));
+    }
 
     if (s->render == 0x1)
 	qemu_irq_raise(s->irq);
     else if (s->render == 0xFF)
 	qemu_irq_lower(s->irq);
 
-    timer_mod(s->refresh_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + NANOSECONDS_PER_SECOND / 60);//LCD_REFRESH_RATE_FREQUENCY);
+    /*
+     * Latch the scanout base, as the panel does at vblank. Without this the
+     * blit reads whatever base the guest has installed at the instant the blit
+     * happens, so a caller that is not on the frame cadence -- QEMU's own 30 ms
+     * display poll, or a screendump -- can show a frame the panel would not
+     * have reached yet. The driver already assumes the register takes effect at
+     * the next vblank; that is what its triple buffering is for.
+     */
+    s->scanout_base = s->w1_framebuffer_base;
+
+    if (s->con && qemu_console_is_visible(s->con) && !lcd_vsync_legacy()) {
+        lcd_in_vsync_present = true;
+        graphic_hw_update(s->con);
+        lcd_in_vsync_present = false;
+    }
+
+    /* IT_LCD_VSYNC_LEGACY restores the old re-arm-from-now behaviour, so the
+     * two can be A/B'd from one binary. Bisecting only. */
+    if (lcd_vsync_legacy()) {
+        s->next_vsync = now + LCD_VSYNC_PERIOD_NS;
+        timer_mod(s->refresh_timer, s->next_vsync);
+        return;
+    }
+
+    s->next_vsync += LCD_VSYNC_PERIOD_NS;
+    if (s->next_vsync <= now) {
+        /*
+         * More than a whole frame behind -- the host was descheduled, or the
+         * machine was stopped. Catching up by firing back-to-back ticks would
+         * hand the guest a burst of frame interrupts it cannot use, so
+         * resynchronise to the current time and carry on.
+         */
+        s->next_vsync = now + LCD_VSYNC_PERIOD_NS;
+    }
+    timer_mod(s->refresh_timer, s->next_vsync);
 }
 
 /*
@@ -475,6 +593,7 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
     s->render = 0;
     s->w1_display_resolution_info = 0;
     s->w1_framebuffer_base = 0;
+    s->scanout_base = 0;
     s->w1_hspan = 0;
     s->w1_display_depth_info = 0;
     s->invalidate = 1;
@@ -489,6 +608,7 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
      * state.
      */
     it_display_rotation_req = 0;
+    s->next_vsync = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + LCD_VSYNC_PERIOD_NS;
     if (getenv("LCD_TRACE")) {
         fprintf(stderr, "[LCD] ==== reset ====\n");
     }
@@ -512,7 +632,8 @@ static void ipod_touch_lcd_realize(DeviceState *dev, Error **errp)
 
     // initialize the refresh timer
     s->refresh_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, refresh_timer_tick, s);
-    timer_mod(s->refresh_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + NANOSECONDS_PER_SECOND / LCD_REFRESH_RATE_FREQUENCY);
+    s->next_vsync = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + LCD_VSYNC_PERIOD_NS;
+    timer_mod(s->refresh_timer, s->next_vsync);
 }
 
 static void ipod_touch_lcd_init(Object *obj)
@@ -541,6 +662,9 @@ static int ipod_touch_lcd_post_load(void *opaque, int version_id)
 
     memset(&s->fbsection, 0, sizeof(s->fbsection));
     s->invalidate = 1;
+    /* scanout_base is re-latched by the next frame interrupt anyway, but a
+     * repaint can be asked for before that and would otherwise draw black. */
+    s->scanout_base = s->w1_framebuffer_base;
     return 0;
 }
 
