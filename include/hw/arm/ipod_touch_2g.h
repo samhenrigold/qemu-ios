@@ -166,6 +166,7 @@ typedef struct {
 	QEMUTimer *boot_args_timer;
 	unsigned boot_args_writes;
 	bool amfi_patched;
+	bool boot_args_scan_failed;	/* complain once, not every retry */
 	qemu_irq **irq;
 	ARMCPU *cpu;
 	PL192State *vic0;
