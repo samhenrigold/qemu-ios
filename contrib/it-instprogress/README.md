@@ -190,14 +190,55 @@ launchd restarts `itunesstored` and the UI is unharmed.
    right. Cleaner process boundary, but it takes the notification path away
    from the real daemon.
 
-Route 1 is the one to build. The `ISDownload` objects should be constructed by
-linking `iTunesStore.framework` rather than by hand-rolling the keyed archives —
-the archive format then never has to be reverse-engineered.
+Route 1 is the one to build, and **the question it turns on is now answered
+rather than assumed**: `DYLD_INSERT_LIBRARIES` from that plist still works on
+3.1.3. `probe_insert.c` is a dylib whose only content is a constructor that
+writes its pid to a file. Put it at `/usr/lib/it-probe-insert.dylib`, add
 
-Progress source: `ideviceinstaller` prints real percentages on stdout, and
-`ISDownloadStatus`'s progress is a current/max integer pair, so the host figure
-maps onto it directly with no interpolation. `[progress operationType] == 1`
-is what flips the label to "Installing…".
+    EnvironmentVariables = { DYLD_INSERT_LIBRARIES =
+                             "/usr/lib/it-probe-insert.dylib" }
+
+to `/System/Library/LaunchDaemons/com.apple.itunesstored.plist`, then
+`launchctl unload`/`load`/`start com.apple.itunesstored`, and
+`/tmp/it-insert-probe` says `loaded in pid 417`. Measured on a live guest. Note
+it needed no signature at all — `amfi_allow_any_signature=1
+cs_enforcement_disable=1` are in the boot args, which `run-ios3.sh` sets by
+default.
+
+What is left is mechanical, and none of it needs the archive format
+reverse-engineered, because the dylib builds real objects in the process that
+already has the classes and lets `NSKeyedArchiver` do the encoding:
+
+* `-[ISDownload uniqueID]` is `[NSString stringWithFormat:@"%llu",
+  [metadata itemIdentifier]]`, and `+[SBDownloadingIcon
+  displayIdentifierForDownload:]` prefixes that with `com.apple.downloadingicon-`
+  — so the dylib and `sbdlicon` can be made to name the same icon.
+* `ISDownloadMetadata` is `initWithDictionary:` over an ordinary NSDictionary of
+  iTunes manifest keys: `songId` (the item identifier), `itemName` (title),
+  `bundle-id`, `kind`, `downloadKey`.
+* `ISOperationProgress` has `init`, `setCurrentValue:`, `setMaxValue:`,
+  `setNormalizedCurrentValue:`, `setNormalizedMaxValue:` and
+  `setOperationType:`; `ISDownloadStatus` has `setProgress:`, `setPaused:`,
+  `setFailed:`. All exported, all `NSCoding`.
+* The dylib can be written in the same plain-C, `dlopen` + `objc_msgSend` style
+  as `contrib/it-pasteboard/pbset.c`, so no ObjC toolchain work is needed.
+
+Progress source: `ideviceinstaller` prints real percentages on stdout, and the
+progress is a current/max integer pair, so the host figure maps onto it directly
+with no interpolation. `[progress operationType] == 1` is what flips the label
+to "Installing…".
+
+The one thing that stays unproven until it is built: whether SpringBoard's
+already-checked-in `ISDownloadQueue` reacts to a notification posted this way.
+The design says it should — clients re-check-in on
+`CPDistributedNotificationCenterDidRestartNotification-<name>`, so ordering is
+not a hazard — but that is reasoning, not a measurement, and it should be the
+first thing the next attempt puts on screen.
+
+**Shipping it needs the plist edit baked into a NAND image**, which is a
+distribution decision rather than a code one: the placeholder works on the
+user's existing images as-is, and the progress bar would only appear on a
+rebuilt one.
 
 ## Building
 
