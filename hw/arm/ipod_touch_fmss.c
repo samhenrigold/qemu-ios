@@ -1,5 +1,38 @@
 #include "hw/arm/ipod_touch_fmss.h"
 
+/*
+ * Cached env lookups.
+ *
+ * fmss_load_page called getenv() four to five times PER 4 KB PAGE (FMSS_RTRACE
+ * twice, FMSS_ERASE via fmss_block_is_erased, FMSS_USEDSPARE, FMSS_BASESPARE),
+ * and fmss_store_page two more per written page. Each call is a linear scan of
+ * environ, and all of it runs synchronously on the vCPU thread inside the MMIO
+ * handler - so it is guest stall, not background work. A 20 MB app launch is
+ * roughly 5,000 pages, i.e. 20,000+ environ scans.
+ *
+ * Same static-cached pattern already used by mbx_tracing(), amc_trace() and
+ * mt_trace(). Purely mechanical: no semantic change, since none of these are
+ * meant to be togglable mid-run.
+ */
+#define FMSS_ENV_FLAG(fn, name)                                               \
+    static bool fn(void)                                                      \
+    {                                                                         \
+        static int on = -1;                                                   \
+        if (on < 0) {                                                         \
+            on = getenv(name) != NULL;                                        \
+        }                                                                     \
+        return on;                                                            \
+    }
+
+FMSS_ENV_FLAG(fmss_rtrace,    "FMSS_RTRACE")
+FMSS_ENV_FLAG(fmss_erase_on,  "FMSS_ERASE")
+FMSS_ENV_FLAG(fmss_usedspare, "FMSS_USEDSPARE")
+FMSS_ENV_FLAG(fmss_basespare, "FMSS_BASESPARE")
+FMSS_ENV_FLAG(fmss_legacy_on, "FMSS_LEGACY")
+FMSS_ENV_FLAG(fmss_dump_on,   "FMSS_DUMP")
+FMSS_ENV_FLAG(fmss_physical,  "FMSS_PHYSICAL")
+FMSS_ENV_FLAG(fmss_trace_on,  "FMSS_TRACE")
+
 static uint8_t find_bit_index(uint8_t num) {
     int index = 0;
     while (num > 1) {
@@ -50,7 +83,7 @@ static bool fmss_block_is_erased(IPodTouchFMSSState *s, uint32_t cs, uint32_t bl
 {
     char marker[1152];
 
-    if (!s->nand_overlay || !getenv("FMSS_ERASE")) {
+    if (!s->nand_overlay || !fmss_erase_on()) {
         return false;
     }
     if (!s->erased_blocks) {
@@ -144,7 +177,7 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
      * visibly -- comes back as garbage.
      */
     if (fmss_recall_physical(s, cs, page_nr, data, spare)) {
-        if (getenv("FMSS_RTRACE")) {
+        if (fmss_rtrace()) {
             printf("RP cs=%u page=%u\n", cs, page_nr); fflush(stdout);
         }
         return;
@@ -154,7 +187,7 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
         snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_overlay, cs, page_nr);
         f = fopen(filename, "rb");
         from_overlay = (f != NULL);
-        if (f && getenv("FMSS_RTRACE")) {
+        if (f && fmss_rtrace()) {
             printf("RH cs=%u page=%u\n", cs, page_nr); fflush(stdout);
         }
     }
@@ -178,7 +211,7 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
      * is free and happily allocates new writes on top of pages that are still
      * live. Claim occupied pages are programmed instead, and see whether the
      * allocator then steers around them. */
-    if (!from_overlay && getenv("FMSS_USEDSPARE")) {
+    if (!from_overlay && fmss_usedspare()) {
         if (((uint32_t *)spare)[2] == 0x00FF00FF) {
             ((uint32_t *)spare)[2] = 0xFFFF40FF;
         }
@@ -187,7 +220,7 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
     /* Diagnostic: serve the base image's spare metadata even for overlay
      * pages, to test whether the persisted FTL metadata is what breaks the
      * next boot. */
-    if (from_overlay && getenv("FMSS_BASESPARE")) {
+    if (from_overlay && fmss_basespare()) {
         snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_path, cs, page_nr);
         FILE *bf = fopen(filename, "rb");
         memset(spare, 0, NAND_BYTES_PER_SPARE);
@@ -304,9 +337,9 @@ static void fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
     /* A page cannot be programmed unless its block was erased first: either
      * this is the first program into the block, or the page already holds
      * overlay data and is being reprogrammed. Either way, model the erase. */
-    if (!fmss_block_is_erased(s, cs, block) && getenv("FMSS_ERASE")) {
+    if (!fmss_block_is_erased(s, cs, block) && fmss_erase_on()) {
         fmss_erase_block(s, cs, block);
-    } else if (getenv("FMSS_ERASE") && g_file_test(filename, G_FILE_TEST_EXISTS)) {
+    } else if (fmss_erase_on() && g_file_test(filename, G_FILE_TEST_EXISTS)) {
         fmss_erase_block(s, cs, block);
     }
 
@@ -479,7 +512,7 @@ static void write_nand_pages(IPodTouchFMSSState *s)
     /* FMSS_LEGACY: the pre-2026-07-31 reading, kept so the two decodes can be
      * compared back to back -- treat pages_in as a flat array from word 3 with
      * reg_num_pages entries, striping chip-selects from the header bitmap. */
-    bool legacy = getenv("FMSS_LEGACY") != NULL;
+    bool legacy = fmss_legacy_on();
     int legacy_np = s->reg_num_pages;
     uint32_t legacy_hdr = 0;
     if (legacy) {
@@ -525,7 +558,7 @@ static void write_nand_pages(IPodTouchFMSSState *s)
         memset(s->page_spare_buffer, 0, NAND_BYTES_PER_SPARE);
         cpu_physical_memory_read(s->reg_page_spare_out_addr + i * 0xc, s->page_spare_buffer, 0xc);
 
-        if (getenv("FMSS_DUMP")) {
+        if (fmss_dump_on()) {
             static int nd = 0;
             if (nd++ < 400) {
                 uint32_t *sp = (uint32_t *)s->page_spare_buffer;
@@ -558,17 +591,17 @@ static void write_nand_pages(IPodTouchFMSSState *s)
          * This is what makes the *persisted* image correct across a reboot;
          * fmss_remember_physical above is what makes it correct before one.
          */
-        if (!getenv("FMSS_PHYSICAL")) {
+        if (!fmss_physical()) {
             uint32_t logical = ldl_le_p(s->page_spare_buffer);
             uint32_t rcs, rpage;
             if (!fmss_generated_layout(s, logical, &rcs, &rpage)) {
-                if (getenv("FMSS_RTRACE")) {
+                if (fmss_rtrace()) {
                     printf("SKIP logical=%u (cs=%u page=%u)\n", logical, cs, page_nr);
                     fflush(stdout);
                 }
                 continue; /* FTL bookkeeping, not a filesystem block */
             }
-            if (getenv("FMSS_RTRACE")) {
+            if (fmss_rtrace()) {
                 printf("KEEP logical=%u -> cs=%u page=%u\n", logical, rcs, rpage);
                 fflush(stdout);
             }
@@ -642,7 +675,7 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
             s->reg_csgenrc = val;
             break;
         case 0xD38:
-            if (getenv("FMSS_TRACE") && s->reg_csgenrc != 0xa01 && s->reg_csgenrc != 0xa02) {
+            if (fmss_trace_on() && s->reg_csgenrc != 0xa01 && s->reg_csgenrc != 0xa02) {
                 printf("FMSS_OP csgenrc=%08x d0c=%08x d10=%08x d18=%08x\n",
                        s->reg_csgenrc, s->reg_pages_in_addr,
                        s->reg_cs_buf_addr, s->reg_num_pages);
@@ -657,7 +690,7 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
             }
             break;
         default:
-            if (getenv("FMSS_TRACE")) {
+            if (fmss_trace_on()) {
                 static uint8_t seen[0x1000];
                 if (addr < 0x1000 && !seen[addr]) {
                     seen[addr] = 1;
