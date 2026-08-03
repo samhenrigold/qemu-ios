@@ -262,6 +262,16 @@ static void ipod_touch_spi_reset(DeviceState *d)
 	memset(s->regs, 0, sizeof(s->regs));
     fifo8_reset(&s->tx_fifo);
     fifo8_reset(&s->rx_fifo);
+    /*
+     * last_irq is the level we last drove, and apple_spi_update_irq only
+     * touches the line when the level CHANGES. Leaving it set across a reset
+     * meant the line stayed asserted with no status bits to justify it -- a
+     * phantom SPI interrupt inherited from the previous boot, arriving exactly
+     * as iBoot runs spi_init(). Drive it low here rather than only clearing
+     * the shadow, so the line and our idea of it agree.
+     */
+    s->last_irq = 0;
+    qemu_set_irq(s->irq, 0);
 }
 
 static uint32_t base_addr = 0;

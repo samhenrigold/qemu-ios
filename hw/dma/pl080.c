@@ -406,6 +406,19 @@ static void pl080_reset(DeviceState *dev)
         s->chan[i].ctrl = 0;
         s->chan[i].conf = 0;
     }
+
+    /*
+     * Clearing tc_int/err_int is not enough: the outgoing IRQ lines keep
+     * whatever level they were last driven to, so a reset taken with a
+     * terminal-count interrupt pending left the line asserted with no state
+     * to justify it. The interrupt controller then sees a raw-high line that
+     * nothing can clear, and firmware which enables that IRQ after reset
+     * spins in its handler forever.
+     *
+     * Found on the iPod touch 2G, where system_reset re-entered iBoot and
+     * wedged at 100% CPU in IRQ mode with VIC0 line 17 (DMAC1) raw-asserted.
+     */
+    pl080_update(s);
 }
 
 static void pl080_init(Object *obj)
