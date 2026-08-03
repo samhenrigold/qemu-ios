@@ -194,6 +194,9 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
          */
         case QC_PB_POLL: {
             IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
+            /* The only proof the host ever gets that a guest agent exists. */
+            nms->pb_polls++;
+            nms->pb_last_poll_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
             qcall.retval = nms->pb_out ? (int64_t)nms->pb_out_len : 0;
             break;
         }

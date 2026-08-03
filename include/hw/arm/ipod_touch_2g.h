@@ -275,6 +275,20 @@ typedef struct {
 	char *pb_guest;           /* last text the guest published, or NULL */
 	size_t pb_guest_len;
 	bool pb_peer_registered;
+
+	/*
+	 * Liveness. Without this, setting the pasteboard on an image that has no
+	 * guest agent in it looks exactly like success: the property takes the
+	 * text, nothing complains, and the text simply sits here forever. That is
+	 * not hypothetical -- it is how the whole feature was reported working
+	 * while being dead on every image the runner actually boots. So record
+	 * when the guest last polled, warn if a queued item is never collected,
+	 * and expose the answer through the "pasteboard-agent" property.
+	 */
+	int64_t pb_last_poll_ns;  /* 0 = the guest has never polled */
+	uint64_t pb_polls;
+	uint64_t pb_polls_at_set; /* pb_polls when the pending item was queued */
+	QEMUTimer *pb_warn_timer;
 } IPodTouchMachineState;
 
 /*
