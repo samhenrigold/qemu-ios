@@ -44,12 +44,47 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchAMCState, IPOD_TOUCH_AMC)
 
 /*
  * Per-channel stream position, read through the accessor at VA 0xc0611864 as
- * 0xa44 + n * 0x14. Not modelled: it reads back 0, which is why the driver
- * concludes the engine produced nothing. Making it advance on its own was
- * tried and changed the driver's behaviour not at all.
+ * 0xa44 + n * 0x14. Reads back 0. Making it advance was tried twice and is a
+ * dead end: it is not an input to the self test's byte-count assertion at all
+ * (see the result block below). What it does feed is the ring-buffer copy at
+ * VA 0xc060e36c, which turns it into a source address inside the buffer
+ * aperture -- so it matters for moving PCM, not for passing the self test.
  */
 #define AMC_POS_BASE        0xa44
 #define AMC_POS_STRIDE      0x14
+
+/*
+ * The buffer aperture. Device tree reg range 2 of /arm-io/amc translates to
+ * physical 0x22000000 size 0x30000; the machine already backs it, as part of
+ * the 1 MB "llb" RAM allocated at the same address. The engine's own memory.
+ */
+#define AMC_BUF_BASE        0x22000000
+#define AMC_BUF_SIZE        0x30000
+
+/*
+ * The result block, at a FIXED OFFSET in that aperture -- no register carries
+ * its address, because the engine already owns the memory. Measured on the
+ * running guest: AppleAMC_r2's [this+0x48c] is 0xea744000, and
+ * cpu_get_phys_page_debug resolves that to physical 0x22028000.
+ *
+ * Layout, from the driver's use of it. [this+0x490] is exactly base + 0x100
+ * and is the payload cursor, so the header is 0x100 bytes and the payload
+ * follows it:
+ *
+ *     +0x02  halfword  channel count -- the self test fails it if > 2
+ *                                       (VA 0xc060c748)
+ *     +0x04  halfword  frame count
+ *
+ * Assertions 934 and 935 (AppleAMCDriver_r2.cpp) are
+ * `table[[this+0x7c]] == frame_count << 1`. The left-hand side is a CONSTANT
+ * out of the driver's own __DATA -- table at VA 0xc0626ebc holds
+ * { 0x1200, 0x1000, 0x2000, 0x4000, 0x140, 0x140 } and [this+0x7c] is 1 here,
+ * so it is 0x1000 -- which means the frame count in this header is the only
+ * value hardware contributes to either assertion.
+ */
+#define AMC_RESULT_OFFSET   0x28000
+#define AMC_RESULT_CHANNELS 0x02        /* halfword, must be <= 2 */
+#define AMC_RESULT_FRAMES   0x04        /* halfword */
 
 #define AMC_INT_ACK_MASK    0x7fff
 

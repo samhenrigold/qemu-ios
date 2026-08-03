@@ -73,14 +73,22 @@
  *      [this+0x40c] = 4, the bit-2 mask the driver acks), [this+0x48c] =
  *      0xea744000, and all 16 bytes there read zero on every one of the four
  *      cycles. Advancing a position register moves AWAY from the expected value.
- *   3. The compared slots hold stale kernel pointers, not counts:
- *      sp[0x54] = 0xc0aca200, sp[0x58] = 0xea75c000, identical across all four
- *      cycles -- leftovers the results call never overwrote.
+ *   3. Neither compared slot comes from hardware. 0xc060c788 resolves to
+ *      0xc06089d8, which is small enough to read exhaustively, and in BOTH of
+ *      its branches it stores the same thing into both slots:
+ *      sp[0x54] = sp[0x58] = table[[this+0x7c]], a constant out of the driver's
+ *      own __DATA (table at 0xc0626ebc, index 1 here, so 0x1000). The engine
+ *      contributes nothing to the left-hand side of either assertion.
+ *      (An earlier note here claimed these slots held stale kernel pointers the
+ *      results call never wrote. That was wrong -- the values read off the stack
+ *      were a later cycle's overwrite, not the value at the assert.)
  *
  * The real contract is MEMORY-SIDE. The engine is expected to write its results
- * into guest memory, into the block at [this+0x48c]; this model writes nothing
- * anywhere, and that block staying all-zero is the first failure. Line 934 is
- * only where the driver notices.
+ * into memory it already owns -- see AMC_RESULT_OFFSET in the header: the block
+ * at [this+0x48c] is a mapping of physical 0x22028000, a fixed offset inside the
+ * buffer aperture, which is why no register ever carries its address. This model
+ * wrote nothing anywhere, and that block staying all-zero is the first failure.
+ * Line 934 is only where the driver notices.
  *
  * Build from this: the guest does stage real data. The 0x22000000 aperture holds
  * 37672 non-zero bytes -- four 8 KB blocks at +0x10000/+0x14000/+0x18000/
@@ -106,9 +114,84 @@
 
 #include "hw/arm/ipod_touch_amc.h"
 #include "hw/core/cpu.h"
+#include "exec/address-spaces.h"
+#include "qemu/error-report.h"
 #include "cpu.h"
 
 #define AMC_REG(off) (s->regs[(off) / 4])
+
+static bool amc_trace(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_AMC_TRACE") != NULL;
+    }
+    return on;
+}
+
+#define AMCT(fmt, ...) do { if (amc_trace()) { \
+    fprintf(stderr, "[AMC] " fmt "\n", ##__VA_ARGS__); } } while (0)
+
+/*
+ * INTERIM, AND NOT A REAL FRAME COUNT -- read this before building on it.
+ *
+ * 0x800 is simply the number that makes the self test's *fixed* expectation
+ * come out even: the driver compares table[[this+0x7c]] == frames << 1, and
+ * that table entry is the constant 0x1000, so frames has to be 0x800. It is
+ * not derived from anything the engine was asked to do. The job descriptor at
+ * 0x938-0x97c does not carry it (its only non-zero words are 0x84006e00,
+ * 0xc600b800, 0x848cba5d and 0xc013f7fb), and no register write anywhere in a
+ * full self-test cycle has the value 0x800 or 0x1000 -- checked over a complete
+ * IT_AMC_TRACE capture, not assumed.
+ *
+ * So this is a self-test-shaped constant. It will be wrong the moment a real
+ * stream asks for a different length, and it must not be treated as "the frame
+ * count" by anything downstream. The honest version of this code moves actual
+ * bytes and reports how many it moved. IT_AMC_FRAMES=<decimal> overrides it
+ * without a rebuild, for probing what the driver does with other values.
+ */
+#define AMC_SELFTEST_FRAMES 0x800
+
+/*
+ * On real hardware the engine DMAs its output into the result block. We have no
+ * engine, so on a job kick write just the two header fields the self test reads.
+ *
+ * The address is computed from the aperture the machine actually maps rather
+ * than written as a literal, and the write is read back: if the aperture ever
+ * stops being RAM at that address, this reports it instead of silently
+ * scribbling on whatever moved in.
+ */
+static void amc_write_result_block(IPodTouchAMCState *s)
+{
+    hwaddr base = AMC_BUF_BASE + AMC_RESULT_OFFSET;
+    uint16_t frames = AMC_SELFTEST_FRAMES;
+    uint16_t channels = AMC_RESULT_CHANNELS;
+    uint16_t back = 0;
+    const char *env = getenv("IT_AMC_FRAMES");
+
+    if (env) {
+        frames = (uint16_t)strtoul(env, NULL, 0);
+    }
+
+    /* Belt and braces: the block must sit inside the aperture we documented. */
+    QEMU_BUILD_BUG_ON(AMC_RESULT_OFFSET + 0x100 > AMC_BUF_SIZE);
+
+    address_space_write(&address_space_memory, base + AMC_RESULT_CHANNELS,
+                        MEMTXATTRS_UNSPECIFIED, &channels, sizeof(channels));
+    address_space_write(&address_space_memory, base + AMC_RESULT_FRAMES,
+                        MEMTXATTRS_UNSPECIFIED, &frames, sizeof(frames));
+
+    address_space_read(&address_space_memory, base + AMC_RESULT_FRAMES,
+                       MEMTXATTRS_UNSPECIFIED, &back, sizeof(back));
+    if (back != frames) {
+        warn_report_once("ipod amc: result block at 0x%" HWADDR_PRIx
+                         " did not take the write (read back 0x%04x, wanted "
+                         "0x%04x) -- is the buffer aperture still RAM?",
+                         base, back, frames);
+    }
+    AMCT("result block %" HWADDR_PRIx ": channels %u frames %u",
+         base, channels, frames);
+}
 
 /*
  * IT_AMC_PC=<hex offset> logs the guest PC and LR for accesses to that register,
@@ -209,6 +292,50 @@ static void amc_log_caller(hwaddr addr, uint32_t val)
         }
     }
 
+    /*
+     * IT_AMC_V2P=<hex va>[,...]: print the physical page behind a guest kernel
+     * VA. The driver's result buffer lives in the kernel map (0xea74....), well
+     * outside the 1:1 window, so a pmemsave dump cannot reach it and neither
+     * can any offline analysis -- but the only question that matters about it
+     * is whether its physical address is one the engine was ever told.
+     */
+    /* IT_AMC_MEM=<hex va>[,...]: 64 bytes of guest memory at each VA. */
+    const char *mem = getenv("IT_AMC_MEM");
+    for (const char *p = mem; p && *p; ) {
+        uint64_t va = strtoull(p, NULL, 16);
+        uint8_t buf[64];
+        if (cpu_memory_rw_debug(current_cpu, va, buf, sizeof(buf), false) == 0) {
+            fprintf(stderr, "[AMC] mem %08x:", (uint32_t)va);
+            for (unsigned i = 0; i < sizeof(buf); i++) {
+                fprintf(stderr, "%02x", buf[i]);
+            }
+            fprintf(stderr, "\n");
+        } else {
+            fprintf(stderr, "[AMC] mem %08x: <unreadable>\n", (uint32_t)va);
+        }
+        p = strchr(p, ',');
+        if (p) {
+            p++;
+        }
+    }
+
+    const char *v2p = getenv("IT_AMC_V2P");
+    if (v2p) {
+        fprintf(stderr, "[AMC] v2p:");
+        for (const char *p = v2p; p && *p; ) {
+            uint64_t va = strtoull(p, NULL, 16);
+            hwaddr pa = cpu_get_phys_page_debug(current_cpu, va & ~0xfffULL);
+            fprintf(stderr, " %08x->%08x", (uint32_t)va,
+                    pa == -1 ? 0xffffffffu
+                             : (uint32_t)(pa | (va & 0xfff)));
+            p = strchr(p, ',');
+            if (p) {
+                p++;
+            }
+        }
+        fprintf(stderr, "\n");
+    }
+
     const char *deref = getenv("IT_AMC_DEREF");
     if (deref) {
         fprintf(stderr, "[AMC] r4=%08x r5=%08x r6=%08x sl=%08x",
@@ -238,17 +365,6 @@ static void amc_log_caller(hwaddr addr, uint32_t val)
     }
 }
 
-static bool amc_trace(void)
-{
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_AMC_TRACE") != NULL;
-    }
-    return on;
-}
-
-#define AMCT(fmt, ...) do { if (amc_trace()) { \
-    fprintf(stderr, "[AMC] " fmt "\n", ##__VA_ARGS__); } } while (0)
 
 /*
  * Level-triggered, with a real acknowledge path so it cannot storm: the line
@@ -392,6 +508,15 @@ static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val,
          * then 0x984/0x988; those three are the only writes that mean "go".
          */
         s->irq_armed = true;
+        if (addr == AMC_JOB_GO) {
+            /*
+             * We report completion immediately, so the results the engine would
+             * have DMAed have to be in place by the time the driver looks --
+             * i.e. now, not at the acknowledge. Only on the first of the two
+             * kick registers, so a job writes its block once.
+             */
+            amc_write_result_block(s);
+        }
     }
 
     amc_update_irq(s);
