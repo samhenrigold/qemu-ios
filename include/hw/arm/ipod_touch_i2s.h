@@ -92,6 +92,28 @@
  * The floor is the pace timer: one tick must be refillable, i.e. the depth must
  * comfortably exceed IT_I2S_PACE_PERIOD_NS worth of audio (2 ms = 352 bytes).
  */
+/*
+ * Host-side prebuffer, in bytes of s16 stereo. See it_i2s_prefill_ready().
+ *
+ * This is NOT the TX FIFO and must not be confused with it: the FIFO depth is
+ * the guest's clock and 2048 is the only value that keeps the DMA read head
+ * behind the guest's producer. This is the lead handed to the HOST sink, on the
+ * far side of the ring, and it exists because CoreAudio's IOProc plays nothing
+ * at all in any period where less than one device buffer is queued.
+ *
+ * 8192 bytes is 46.4 ms, which is what QEMU's own pipeline holds for this
+ * backend: the mixer buffer and the CoreAudio ring are both hw->samples =
+ * buffer_count(4) x 512 frames. Handing over exactly that fills both in one go
+ * and leaves the sink four device buffers deep instead of the measured 0.5. It
+ * is also the added output latency, once at the start of each sound.
+ * IT_I2S_PREBUFFER_BYTES overrides it; 0 restores the old just-in-time
+ * behaviour for A/B.
+ */
+#define IT_I2S_PREBUFFER_BYTES_DEFAULT 8192
+
+/* Never let the prebuffer be the reason a sound does not play. */
+#define IT_I2S_PREFILL_DEADLINE_NS (250 * 1000 * 1000)
+
 #define IT_I2S_FIFO_BYTES_DEFAULT 2048
 #define IT_I2S_PACE_PERIOD_NS     (2 * 1000 * 1000)
 
@@ -139,6 +161,9 @@ typedef struct IPodTouchI2SState {
     QEMUTimer *pace_timer;
     uint32_t fifo_bytes;      /* modelled TX FIFO occupancy */
     uint32_t fifo_depth;      /* IT_I2S_FIFO_BYTES */
+    uint32_t prebuffer;       /* IT_I2S_PREBUFFER_BYTES: host-side lead */
+    bool prefilled;           /* the current sound has passed the prebuffer */
+    int64_t prefill_start_ns; /* when this sound's prebuffer began filling */
     int64_t pace_last_ns;     /* when we last drained the modelled FIFO */
 
     FILE *dump;           /* IT_I2S_DUMP: raw s16le stereo tap of the FIFO */
