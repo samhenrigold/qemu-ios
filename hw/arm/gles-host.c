@@ -633,8 +633,9 @@ static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
  */
 static void gles_trace_draw(const char *what, uint32_t mode, uint32_t count)
 {
-    GLfloat mv[16];
+    GLfloat mv[16], cur_col[4], mat_dif[4], line_width = 0;
     GLboolean depth_mask = 0;
+    GLint src = 0, dst = 0;
 
     if (gh.trace_draws <= 0) {
         return;
@@ -642,10 +643,33 @@ static void gles_trace_draw(const char *what, uint32_t mode, uint32_t count)
     gh.trace_draws--;
     glGetBooleanv(GL_DEPTH_WRITEMASK, &depth_mask);
     glGetFloatv(GL_MODELVIEW_MATRIX, mv);
+    /*
+     * The state that decides whether a LINE is visible is not the set that
+     * decides it for a triangle, and this app splits cleanly along that line:
+     * its title flythrough is 100% GL_TRIANGLES and renders, its gameplay
+     * obstacles are 100% GL_LINE_STRIP and do not. A zero line width, a zero
+     * alpha under an enabled blend, or a colour array that is off for these
+     * draws would each produce exactly nothing, and none of the three is
+     * visible in the geometry -- which is why the geometry looked innocent for
+     * so long.
+     */
+    glGetFloatv(GL_LINE_WIDTH, &line_width);
+    glGetFloatv(GL_CURRENT_COLOR, cur_col);
+    glGetMaterialfv(GL_FRONT, GL_DIFFUSE, mat_dif);
+    glGetIntegerv(GL_BLEND_SRC, &src);
+    glGetIntegerv(GL_BLEND_DST, &dst);
     fprintf(stderr, "[gles]   draw %-14s mode=0x%x count=%-4u depthmask=%d "
-            "depthtest=%d xyz=(%.2f %.2f %.2f)\n",
+            "depthtest=%d xyz=(%.2f %.2f %.2f)\n"
+            "[gles]     linewidth=%.2f blend=%d(src=0x%x dst=0x%x) "
+            "colour=(%.2f %.2f %.2f %.2f) matdiffuse=(%.2f %.2f %.2f %.2f) "
+            "arrays vtx=%u col=%u nrm=%u tex=%u lighting=%d\n",
             what, mode, count, depth_mask, glIsEnabled(GL_DEPTH_TEST),
-            mv[12], mv[13], mv[14]);
+            mv[12], mv[13], mv[14],
+            line_width, glIsEnabled(GL_BLEND), (unsigned)src, (unsigned)dst,
+            cur_col[0], cur_col[1], cur_col[2], cur_col[3],
+            mat_dif[0], mat_dif[1], mat_dif[2], mat_dif[3],
+            gh.vertex.enabled, gh.color.enabled, gh.normal.enabled,
+            gh.texcoord.enabled, glIsEnabled(GL_LIGHTING));
 }
 
 static void gles_unbind_arrays(uint32_t bound)
