@@ -344,6 +344,7 @@ static void handleAnyDeviceErrors(Error * err)
 - (bool) handleEventLocked:(NSEvent *)event;
 - (void) notifyMouseModeChange;
 - (void) copyScreenToPasteboard;
+- (void) installIPA:(NSString *)path;
 - (void) updatePinch:(NSUInteger)modifiers;
 - (void) modifiersChanged:(NSUInteger)modifiers;
 - (BOOL) isMouseGrabbed;
@@ -387,6 +388,8 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
 
         [self addTrackingArea:trackingArea];
         [trackingArea release];
+        /* Drop an .ipa on the window to install it. */
+        [self registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
         screen.width = frameRect.size.width;
         screen.height = frameRect.size.height;
         colorspace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
@@ -815,6 +818,115 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
     with_bql(^{
         graphic_hw_update(dcl.con);
     });
+}
+
+/*
+ * Drag and drop an .ipa on the window to install it.
+ *
+ * The iPhone Simulator never had this, and could not have: it had no installd
+ * and no AFC, so "installing" there was only a path in a launch config. We have
+ * both, and the whole install already works over USB from a terminal -- so all
+ * that is missing is the gesture.
+ *
+ * The work is handed to imgtools/install-ipa.sh rather than done here, because
+ * every part of it (finding the right usbmuxd, the DTSDKName / cryptid /
+ * OpenGLES pre-flight, ideviceinstaller) is testable from a terminal and a drop
+ * handler is not.
+ *
+ * The failure that matters is usbmuxd not being up: QEMU dials OUT to it when
+ * the guest's USB core comes up, and if nothing was listening it gives up for
+ * the rest of that boot. That has to be reported loudly and by name -- silently
+ * doing nothing here would look exactly like a drop that missed.
+ */
+- (NSString *) installerPath
+{
+    const char *env = getenv("IT_INSTALL_IPA");
+
+    if (env) {
+        return [NSString stringWithUTF8String:env];
+    }
+    /*
+     * For a plain executable -bundlePath is the directory holding it, which is
+     * build/, so the tree's own script is one level up.
+     */
+    return [[[NSBundle mainBundle] bundlePath]
+            stringByAppendingPathComponent:@"../imgtools/install-ipa.sh"];
+}
+
+- (void) installIPA:(NSString *)path
+{
+    NSString *tool = [self installerPath];
+
+    if (![[NSFileManager defaultManager] isExecutableFileAtPath:tool]) {
+        NSAlert *a = [[[NSAlert alloc] init] autorelease];
+        [a setMessageText:@"Cannot install: the installer script is missing"];
+        [a setInformativeText:[NSString stringWithFormat:
+            @"Looked for %@.\n\nSet IT_INSTALL_IPA to its path if the tree is "
+            @"somewhere else.", tool]];
+        [a runModal];
+        return;
+    }
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSTask *task = [[NSTask alloc] init];
+        NSPipe *pipe = [NSPipe pipe];
+
+        [task setLaunchPath:tool];
+        [task setArguments:@[path]];
+        [task setStandardOutput:pipe];
+        [task setStandardError:pipe];
+
+        NSData *out = nil;
+        int status = -1;
+        @try {
+            [task launch];
+            out = [[pipe fileHandleForReading] readDataToEndOfFile];
+            [task waitUntilExit];
+            status = [task terminationStatus];
+        } @catch (NSException *e) {
+            out = [[e reason] dataUsingEncoding:NSUTF8StringEncoding];
+        }
+        NSString *text = [[[NSString alloc] initWithData:out
+                            encoding:NSUTF8StringEncoding] autorelease];
+        [task release];
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSAlert *a = [[[NSAlert alloc] init] autorelease];
+            [a setMessageText:status == 0
+                ? [NSString stringWithFormat:@"Installed %@",
+                   [path lastPathComponent]]
+                : [NSString stringWithFormat:@"Could not install %@",
+                   [path lastPathComponent]]];
+            /* The script's own diagnosis, verbatim -- it is the useful part. */
+            [a setInformativeText:text ?: @"(no output)"];
+            [a runModal];
+        });
+    });
+}
+
+- (NSDragOperation) draggingEntered:(id <NSDraggingInfo>)sender
+{
+    for (NSURL *u in [[sender draggingPasteboard]
+                      readObjectsForClasses:@[[NSURL class]]
+                      options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}]) {
+        if ([[[u pathExtension] lowercaseString] isEqualToString:@"ipa"]) {
+            return NSDragOperationCopy;
+        }
+    }
+    return NSDragOperationNone;
+}
+
+- (BOOL) performDragOperation:(id <NSDraggingInfo>)sender
+{
+    for (NSURL *u in [[sender draggingPasteboard]
+                      readObjectsForClasses:@[[NSURL class]]
+                      options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}]) {
+        if ([[[u pathExtension] lowercaseString] isEqualToString:@"ipa"]) {
+            [self installIPA:[u path]];
+            return YES;
+        }
+    }
+    return NO;
 }
 
 - (void) setFullGrab:(id)sender
