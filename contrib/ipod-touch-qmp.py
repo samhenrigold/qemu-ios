@@ -78,6 +78,28 @@ class QMP:
                            "data": {"down": False, "button": "left"}}])
 
 
+    def button(self, keys, hold_ms=300):
+        """Press a hardware button as ordered key down/ups, not as a chord.
+
+        `send-key` presses the whole combination at once, and on an unlocked
+        device the guest's keyboard sees the letter before the modifier has
+        established that this is a button: `button home` typed "Mm" into
+        Spotlight, and frequently did not register as Home at all. Pressing
+        the modifiers first, holding, then releasing in reverse order is what
+        the machine's GPIO sampling actually expects -- these are levels the
+        guest polls, not edges, so the hold has to be long enough to be seen.
+        """
+        down = [{"type": "key",
+                 "data": {"down": True, "key": {"type": "qcode", "data": k}}}
+                for k in keys]
+        up = [{"type": "key",
+               "data": {"down": False, "key": {"type": "qcode", "data": k}}}
+              for k in reversed(keys)]
+        self.send_events(down)
+        time.sleep(hold_ms / 1000.0)
+        self.send_events(up)
+
+
 """Hardware buttons, as the machine maps them (hw/arm/ipod_touch_2g.c)."""
 BUTTONS = {
     "home":    ["meta_l", "shift", "h"],
@@ -104,9 +126,7 @@ def main():
         print("swiped")
     elif action == "button":
         name = sys.argv[3]
-        q.cmd("send-key",
-              keys=[{"type": "qcode", "data": k} for k in BUTTONS[name]],
-              **{"hold-time": 250})
+        q.button(BUTTONS[name])
         print("%s pressed" % name)
     elif action == "key":
         q.send_events([{"type": "key",
