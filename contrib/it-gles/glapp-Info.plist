@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  GLTest.app's Info.plist.
+
+  DTSDKName says iphoneos3.1.3 because that is the filter SpringBoard and
+  installd actually apply on this OS; MinimumOSVersion is not it (see
+  qemu-ios-running-apps). The binary is built against the 3.1.3 SDK, so the
+  claim is true rather than cosmetic.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>English</string>
+	<key>CFBundleDisplayName</key>
+	<string>GLTest</string>
+	<key>CFBundleExecutable</key>
+	<string>GLTest</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.qemuios.gltest</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>GLTest</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>iPhoneOS</string>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>1.0</string>
+	<key>DTPlatformName</key>
+	<string>iphoneos</string>
+	<key>DTSDKName</key>
+	<string>iphoneos3.1.3</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>MinimumOSVersion</key>
+	<string>3.0</string>
+	<key>UIStatusBarHidden</key>
+	<false/>
+</dict>
+</plist>

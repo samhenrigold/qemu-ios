@@ -286,6 +286,44 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
              * as a SIGSEGV inside QEMU's own TCG structures.
              */
             MTT("FRAME_READ pending=%s", s->next_frame ? "yes" : "NO");
+            /*
+             * IT_MT_EMPTY_TEST=N drops every Nth pending frame, forcing the
+             * no-pending-frame path below.
+             *
+             * This exists because that path is unreachable on demand. The
+             * driver only reads a frame after we raise the ATN interrupt, and
+             * we only raise it when a frame is queued, so a healthy 3.1.3
+             * session takes it approximately never: measured 0 out of 7505
+             * frame reads across a ten-minute soak of taps, keyboard input and
+             * button presses. A latent bug there is invisible to any amount of
+             * driving the UI -- the corrupt-empty-frame bug below survived
+             * exactly that way -- but shows up in under three minutes with
+             * IT_MT_EMPTY_TEST=7.
+             *
+             * Regression check for it: run with IT_MT_EMPTY_TEST=41 and count
+             * "Unknown command" lines in QEMU's output. Zero is the pass.
+             * Measured on this tree, same binary but for get_empty_frame's
+             * data_len: 8 forced empty frames produced 614 of them, and the
+             * fix produced 0 from 15.
+             *
+             * Do NOT assert on the UI under this flag. A no-fingers report is a
+             * finger LIFT, so dropping frames mid-gesture legitimately cancels
+             * drags -- slide-to-unlock fails in both arms of that A/B and tells
+             * you nothing. Assert on the byte stream, which is what broke.
+             */
+            {
+                static int every = -1;
+                if (every < 0) {
+                    const char *e = getenv("IT_MT_EMPTY_TEST");
+                    every = e ? atoi(e) : 0;
+                }
+                if (every > 0 && s->next_frame &&
+                    (s->frame_counter % every) == 0) {
+                    MTT("EMPTY_TEST: dropping pending frame %d", s->frame_counter);
+                    free(s->next_frame);
+                    s->next_frame = NULL;
+                }
+            }
             free(s->out_buffer);
             if (s->next_frame) {
                 s->out_buffer = (uint8_t *) s->next_frame;
@@ -314,6 +352,27 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
             s->buf_size = 0;
         }
         else {
+            /*
+             * Treat this as the desync alarm, not as curiosity about an
+             * unmodelled command.
+             *
+             * This device frames commands by counting bytes and nothing else --
+             * there is no chip select to fall back on (see apple_spi_update_cs
+             * in ipod_touch_spi.c). So if a response length ever disagrees with
+             * what the guest clocks, the model starts reading payload bytes as
+             * command bytes and never recovers. What that looks like from here
+             * is a burst of "unknown commands" that the driver never actually
+             * sent: 0xec, 0xb6, 0x01 and friends, seventeen of each, while the
+             * guest logs "Could not detect HBPP" and kills the digitizer.
+             *
+             * A healthy session emits NONE of these -- measured 0 across 7505
+             * frame reads. Any occurrence means touch is already dead or about
+             * to be, so it is the assertion to check after touching this file.
+             */
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "[MT] unknown command 0x%02x - the SPI byte stream has "
+                          "most likely desynchronised; touch will not recover\n",
+                          value);
             printf("%s Unknown command 0x%02x!\n", __func__, value);
         }
     }
@@ -443,6 +502,39 @@ static bool mt_const_fingerid(void)
  * Build a wire frame reporting every non-FREE finger in `fingers`, or a frame
  * reporting no fingers at all when `fingers` is NULL. Returns a heap buffer the
  * caller owns and its length on the wire in *out_len.
+ *
+ * WHY THE CHECKSUM OFFSET IS COMPUTED AND NOT A STRUCT FIELD
+ *
+ * AppleMultitouchZ2SPI reads the 16-byte length packet, takes dataLength from
+ * it, and then verifies a checksum stored at header + dataLength - 2. The
+ * header starts at offset 21, so a one-finger dataLength of 54 puts that
+ * checksum at offset 73 -- exactly where the old MTFrame::checksum1 field sat,
+ * which is why a fixed offset worked for as long as one finger was all we
+ * could report.
+ *
+ * The no-fingers report used to declare dataLength 26, omitting the finger
+ * slot, while still writing its checksum at offset 73. The driver looked at
+ * offset 45 instead, read the two zero bytes at the head of the absent finger
+ * data, and compared them against a non-zero computed value -- so EVERY
+ * no-fingers report was a guaranteed checksum failure:
+ * "ERROR: corrupt frame packet checksum == 0x0000. calculated == 0x....".
+ * The driver tolerates a few, counts them, then gives up with "Too many errors
+ * reading a frame of data" and "*** Killing device (#N) ***". The re-probe that
+ * follows leaves the SPI byte stream misaligned -- the model starts parsing
+ * payload bytes as commands (a burst of "Unknown command 0xec/0xb6/0x01") --
+ * and touch is dead for the rest of the session. Forcing that path deliberately
+ * (IT_MT_EMPTY_TEST, every 7th read) reproduced it in under three minutes,
+ * including the guest's "Could not detect HBPP" line. This device cannot
+ * resynchronise once the two sides disagree: there is no usable chip-select
+ * signal (see the note on apple_spi_update_cs in ipod_touch_spi.c).
+ *
+ * The fix at the time was to give the no-fingers report the same dataLength as
+ * a one-finger one. That is now the n == 0 case of the general rule: the
+ * checksum offset is derived from dataLength here exactly as the driver derives
+ * it, and buf_size is set from the frame's real length. The guest does size its
+ * read from dataLength -- measured, see mt_frame_slots() -- so a longer frame is
+ * safe; the no-fingers report nonetheless keeps its one zeroed slot so the most
+ * common frame on the wire stays the length it has always been.
  */
 static MTFrame *mt_build_frame(IPodTouchMultitouchState *s,
                                MTFingerState *fingers, uint32_t *out_len)

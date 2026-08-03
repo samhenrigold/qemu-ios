@@ -82,6 +82,15 @@ static void wd(unsigned v)
     w(p);
 }
 
+static void wx(unsigned long v)
+{
+    char b[11], *p = b + 10;
+    *p = 0;
+    if (!v) *--p = '0';
+    while (v) { *--p = "0123456789abcdef"[v & 15]; v >>= 4; }
+    w("0x"); w(p);
+}
+
 static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args)
 {
     volatile qemu_call_t q;
@@ -320,10 +329,19 @@ static unsigned (*p_IOSurfaceGetHeight)(void *);
 static unsigned (*p_IOSurfaceGetPixelFormat)(void *);
 static int (*p_IOSurfaceLock)(void *, unsigned, unsigned *);
 static int (*p_IOSurfaceUnlock)(void *, unsigned, unsigned *);
+static unsigned long (*p_IOSurfaceGetTypeID)(void);
+static unsigned long (*p_CFGetTypeID)(const void *);
 
 extern void *dlopen(const char *, int);
 extern void *dlsym(void *, const char *);
 #define RTLD_NOW 2
+
+/* Heap bounds checks, so the search below can never dereference a word that
+ * merely looks like a pointer. malloc_zone_from_ptr answers "is this address
+ * owned by a malloc zone" from the zone's own address ranges, without reading
+ * anything at the address itself. */
+extern void *malloc_zone_from_ptr(const void *);
+extern unsigned long malloc_size(const void *);
 
 static void iosurface_init(void)
 {
@@ -338,6 +356,12 @@ static void iosurface_init(void)
     p_IOSurfaceGetPixelFormat = dlsym(iosurf, "IOSurfaceGetPixelFormat");
     p_IOSurfaceLock           = dlsym(iosurf, "IOSurfaceLock");
     p_IOSurfaceUnlock         = dlsym(iosurf, "IOSurfaceUnlock");
+    p_IOSurfaceGetTypeID      = dlsym(iosurf, "IOSurfaceGetTypeID");
+    {
+        void *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/"
+                          "CoreFoundation", RTLD_NOW);
+        if (cf) p_CFGetTypeID = dlsym(cf, "CFGetTypeID");
+    }
 }
 
 /*
@@ -394,51 +418,223 @@ static int surface_capture(void *s)
     return 1;
 }
 
+/* ------------------------------------------ the CoreAnimation drawable ----
+ *
+ * THE DRAWABLE IS A CALLBACK TABLE, NOT A BUFFER.
+ *
+ * This was read out of the stock engine (device copy, md5 92ddd55f, so the
+ * addresses below are literal file addresses in it) and it settles what two
+ * rounds of guessing could not. GLESBindView never dereferences its drawable as
+ * data; it tail-calls through it:
+ *
+ *   0xd7ec  str  r5, [r4, #0x20c]     ; remember the drawable in the engine ctx
+ *   0xd7f4  str  r3, [r4, #0x214]     ; r3 = &_GLESCreateBuffer   (0xda88)
+ *   0xd804  str  r4, [r4, #0x210]     ; the engine's own context
+ *   0xd808  str  r3, [r4, #0x218]     ; r3 = &_GLESDestroyBuffer  (0xd8dc)
+ *   0xd80c  str  r8, [r4, #0x224]     ; the GC
+ *   0xd814  mov  r1, r10              ; a pixel-format FourCC
+ *   0xd818  add  r2, r4, #528         ; = ctx+0x210, i.e. the block just built
+ *   0xd81c  ldr  pc, [r5, #0x4]       ; drawable->bind(drawable, fourcc, block)
+ *
+ * So the engine hands CoreAnimation a {context, functions} closure and CA calls
+ * back into it. `_GLESCreateBuffer(ctx, surface)` at 0xda88 takes the
+ * IOSurfaceRef as its SECOND ARGUMENT -- its first instructions are
+ * IOSurfaceLock(r1) and _ValidateCoreSurface(r1). That is where the surface
+ * comes from. It was never anywhere inside the drawable, which is why looking
+ * for it there found nothing.
+ *
+ * THE FORMAT IS 'BGRA', and now for a reason rather than by assumption. r10
+ * above is a FourCC selected from the internalformat argument:
+ *
+ *   GL_RGB565_OES (0x8d62)                        -> 'L565' (0x4c353635)
+ *   GL_RGB8/RGBA4/RGB5_A1/RGBA8 (0x8051..0x8058)  -> 'BGRA' (0x42475241)
+ *   0 (unspecified)                               -> 'BGRA'
+ *   anything else                                 -> GL_INVALID_ENUM, no bind
+ *
+ * It is the format the engine ASKS CA for, so for an RGBA8 renderbuffer -- what
+ * every CAEAGLLayer client gets by default -- the surface really is BGRA.
+ *
+ * THE REST OF THE TABLE, and the one that actually delivers a frame:
+ *
+ *   +0x08 unbind(drawable)          -- ONLY on the failure path. GLESBindView
+ *                                      reaches it at 0xd864 exclusively when
+ *                                      _ViewTextureBeginIfNeeded returned 0,
+ *                                      and falls straight into SetError after.
+ *                                      Calling it on success releases the
+ *                                      drawable CA just handed over.
+ *   +0x0c nextBuffer(drawable)      -- returns the IOSurfaceRef to render into
+ *                                      for THIS frame.
+ *   +0x10 present(drawable, 1)      -- the frame in that surface is finished.
+ *
+ * nextBuffer is the whole answer to "where does the address come from".
+ * _ViewTextureBeginIfNeeded (0xd5ec) is the only caller:
+ *
+ *   0xd5f4  ldr  r3, [r1, #0x21c]   ; nothing to do unless a buffer is wanted
+ *   0xd618  ldr  pc, [r3, #0xc]     ; surface = drawable->nextBuffer(drawable)
+ *   0xd628  ldr  r2, [r4, #0x230]   ; then look it up in the buffer list that
+ *   0xd634  ldr  r3, [r2, #0x18]    ;   _GLESCreateBuffer built
+ *   0xd678  str  r0, [r4, #0x220]   ; and arm the present
+ *
+ * and GLESPresentView re-arms ctx+0x21c on the way out (0xd70c), so it is
+ * exactly ONE nextBuffer per frame. That is also the answer to whether CA can
+ * move the surface between frames: it does not merely have the right to, the
+ * design hands you a different one each frame -- this is double buffering, and
+ * caching the address from bind time would render into the buffer being
+ * scanned out.
+ *
+ * bind, present and nextBuffer all report failure as zero (0xd820
+ * `subs r5,r0,#0` then `beq` to SetError; 0xd624 likewise), and so does
+ * _GLESCreateBuffer (0xdc50 `mov r0,#1` on the success path only).
+ */
+
+#define CA_FOURCC_BGRA 0x42475241
+#define CA_FOURCC_565L 0x4c353635
+
+#define GL_RGB565_OES  0x8d62
+
+typedef int (*ca_bind_fn)(void *drawable, unsigned fourcc, void **block);
+typedef int (*ca_unbind_fn)(void *drawable);
+typedef void *(*ca_next_fn)(void *drawable);
+typedef int (*ca_present_fn)(void *drawable, unsigned n);
+
+static void *ca_drawable;
+/* These fire every frame; one log line per process is enough to know the path
+ * is live, and a line per frame would change the timing it is reporting on. */
+static unsigned char present_logged;
+static unsigned char surface_logged;
+/* Mirrors the engine's ctx+0x21c: "a buffer is wanted for the next frame". */
+static int ca_need_buffer;
+
+static int ca_next_buffer(void);
+
 /*
- * GLESBindView is the one that carries the render target. Measured by handing
- * EAGL a real CAEAGLLayer: GLESBindCoreSurface is never called, and
- * GLESBindView arrives with arg2 = 0x8058 (GL_RGBA8_OES), the renderbuffer's
- * internal format. GLESBindCoreSurface reaches _DetachTexture in the stock
- * engine, which is the texture-from-surface path, not the drawable.
- *
- * THE DRAWABLE IS NOT AN IOSurfaceRef, AND NOT A BUFFER AT ALL.
- *
- * Two independent pieces of evidence:
- *
- *   - Calling IOSurfaceGetBaseAddress on it does not fail and does not return
- *     null. It reads whatever lives at that offset of some other object and
- *     hands back garbage -- observed base=3468311840, stride=3885969411,
- *     3852415272x3851223040. Indistinguishable from a real surface at the call
- *     site, which is why surface_capture validates instead of trusting.
- *
- *   - The stock GLESBindView tail-calls through it: `mov r5,r1` at 0xd74c and
- *     `ldr pc,[r5,#4]` at 0xd81c. arg1 is a callback object with a function
- *     pointer at +4, not a pixel buffer. It also stores the engine's own
- *     pointers into a struct at +0x20c..+0x224 on the way, so the CA handoff is
- *     a bidirectional callback protocol, not "here is your memory".
- *
- * GLES_OP_PRESENT_SURFACE is still the right shape for the host -- it wants an
- * address, a stride and a format -- but where those come from is open. Mapping
- * that callback protocol is the prerequisite for a real app; guessing an offset
- * would write pixels to an arbitrary guest address, which fails far worse than
- * not rendering at all.
+ * The block CA is given. Its shape is the engine's ctx+0x210 verbatim, because
+ * CA indexes it and we do not get to choose the layout: [0] is the context
+ * passed back to us as arg0, [1] create, [2] destroy, [5] the GC.
+ */
+static void *ca_block[8];
+
+static int ca_create_buffer(void *ctx, void *surface)
+{
+    (void)ctx;
+    w("[mbxshim] CA createBuffer surface="); wx((unsigned long)surface); w("\n");
+    /* Still validated: this is the frame's destination address, and a wrong one
+     * is a write to an arbitrary guest page. */
+    return surface_capture(surface) ? 1 : 0;
+}
+
+/*
+ * Ask CA for this frame's surface. Mirrors _ViewTextureBeginIfNeeded: at most
+ * one call per frame, gated on the same flag the engine keeps at ctx+0x21c.
+ */
+static int ca_next_buffer(void)
+{
+    void **vt = ca_drawable;
+    void *s;
+
+    if (!ca_drawable) return 0;
+    if (!ca_need_buffer) return surf_state.ref != 0;
+
+    s = ((ca_next_fn)vt[3])(ca_drawable);
+    if (!s) {
+        w("[mbxshim] drawable->nextBuffer returned nothing\n");
+        return 0;
+    }
+    ca_need_buffer = 0;
+    if (s == surf_state.ref) {
+        return surf_state.base != 0;
+    }
+    /* A different surface from last frame is the normal case, not an error:
+     * CA rotates buffers. Re-read its geometry rather than assuming it matches
+     * the one before. */
+    if (!surface_logged) {
+        surface_logged = 1;
+        w("[mbxshim] drawable->nextBuffer -> "); wx((unsigned long)s); w("\n");
+    }
+    return surface_capture(s);
+}
+
+static int ca_destroy_buffer(void *ctx, void *surface)
+{
+    (void)ctx;
+    w("[mbxshim] CA destroyBuffer surface="); wx((unsigned long)surface); w("\n");
+    if (surf_state.ref == surface) {
+        /* Whatever replaces it will arrive through createBuffer. Presenting into
+         * a destroyed surface writes into freed memory. */
+        surf_state.ref = 0;
+        surf_state.base = 0;
+    }
+    return 1;
+}
+
+/*
+ * GLESBindCoreSurface is the texture-from-surface path, not the drawable one --
+ * which is what its reach into _DetachTexture always suggested, and a real
+ * CAEAGLLayer client confirmed by never calling it at all. Its first argument
+ * IS an IOSurfaceRef (the stock one compares it against known formats and
+ * texture-images it), so it is captured directly, with no callback dance.
  */
 static int GLESBindCoreSurface(void *gc, void *surf, void *a, void *b)
 {
     (void)gc; (void)a; (void)b;
-    w("[mbxshim] GLESBindCoreSurface arg1="); wd((unsigned)(unsigned long)surf);
-    w("\n");
+    w("[mbxshim] GLESBindCoreSurface arg1="); wx((unsigned long)surf); w("\n");
     surface_capture(surf);
     return 1;
 }
 
-static int GLESBindView(void *gc, void *view, void *a, void *b)
+/*
+ * GLESBindView is the drawable path -- the one a CAEAGLLayer actually takes.
+ * See the contract above: we do not read a surface out of the drawable, we hand
+ * CA a closure and CA calls us back with one.
+ */
+static int GLESBindView(void *gc, void *drawable, void *ifmt, void *flags)
 {
-    (void)gc; (void)a; (void)b;
-    w("[mbxshim] GLESBindView arg1="); wd((unsigned)(unsigned long)view);
-    w(" arg2="); wd((unsigned)(unsigned long)a);
-    w(" arg3="); wd((unsigned)(unsigned long)b); w("\n");
-    surface_capture(view);
+    void **vt = drawable;
+    unsigned f = (unsigned)(unsigned long)ifmt;
+    unsigned fourcc = (f == GL_RGB565_OES) ? CA_FOURCC_565L : CA_FOURCC_BGRA;
+    int r;
+
+    (void)flags;
+    w("[mbxshim] GLESBindView drawable="); wx((unsigned long)drawable);
+    w(" internalformat="); wx(f); w("\n");
+
+    iosurface_init();
+    if (!drawable) {
+        return 0;
+    }
+
+    ca_drawable = drawable;
+    ca_block[0] = ca_block;          /* handed back to us as createBuffer's arg0 */
+    ca_block[1] = (void *)ca_create_buffer;
+    ca_block[2] = (void *)ca_destroy_buffer;
+    ca_block[3] = 0;
+    ca_block[4] = 0;
+    ca_block[5] = gc;                /* +0x14 in the engine's block */
+    ca_block[6] = 0;
+    ca_block[7] = 0;
+
+    r = ((ca_bind_fn)vt[1])(drawable, fourcc, ca_block);
+    w("[mbxshim]   drawable->bind(fourcc="); wx(fourcc); w(") -> "); wd((unsigned)r);
+    w("\n");
+    if (!r) {
+        ca_drawable = 0;
+        return 0;
+    }
+
+    /* The engine asks for the first buffer here, inside the bind, through
+     * _ViewTextureBeginIfNeeded. Do the same: it is what makes CA announce its
+     * surfaces, and until it happens there is nowhere to render. */
+    ca_need_buffer = 1;
+    if (!ca_next_buffer()) {
+        /* The one case where the unbind callback is correct -- see the
+         * contract above; the stock engine takes exactly this path. */
+        if (vt[2]) {
+            ((ca_unbind_fn)vt[2])(drawable);
+        }
+        ca_drawable = 0;
+        w("[mbxshim]   bind failed: no buffer from the drawable\n");
+        return 0;
+    }
     return 1;
 }
 
@@ -458,7 +654,12 @@ static int GLESPresentView(void *gc, void *view)
 {
     (void)view;
 
+    /* This frame's target. CA hands out a different surface each frame, so the
+     * one to render into is asked for now, not remembered from bind time. */
+    ca_next_buffer();
+
     if (surf_state.ref && surf_state.base) {
+        int rr;
         unsigned lockseed = 0;
         long long r;
 
@@ -474,7 +675,32 @@ static int GLESPresentView(void *gc, void *view)
                A(surf_state.base, surf_state.stride, surf_state.width,
                  surf_state.height, surf_state.format));
         if (p_IOSurfaceUnlock) p_IOSurfaceUnlock(surf_state.ref, 0, &lockseed);
-        return r == 0;
+        if (r != 0) {
+            return 0;
+        }
+
+        /*
+         * Tell CoreAnimation the surface now holds a finished frame. Until this
+         * call CA has no reason to composite: the pixels are in its buffer but
+         * nothing has said so. The stock engine does exactly this, and only
+         * after its own flush -- GLESPresentView at 0xd6fc is
+         * `ldr pc,[r3,#0x10]` with the drawable in r0 and 1 in r1, reached only
+         * after _FlushHW has returned.
+         */
+        if (ca_drawable) {
+            void **vt = ca_drawable;
+            rr = ((ca_present_fn)vt[4])(ca_drawable, 1);
+            /* The engine re-arms its "wants a buffer" flag on the way out of
+             * present (0xd70c), which is what makes it one nextBuffer per
+             * frame rather than one for the whole context. */
+            ca_need_buffer = 1;
+            if (!present_logged) {
+                present_logged = 1;
+                w("[mbxshim] drawable->present -> "); wd((unsigned)rr); w("\n");
+            }
+            return rr != 0;
+        }
+        return 1;
     }
 
     qc(GLES_OP_PRESENT, gc, 0, A(0));

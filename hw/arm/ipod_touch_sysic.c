@@ -42,7 +42,11 @@ static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
         case GPIO_INTSTAT ... (GPIO_INTSTAT + GPIO_NUMINTGROUPS * 4):
         {
             uint8_t group = (addr - GPIO_INTSTAT) / 4;
-            return group < GPIO_NUMINTGROUPS ? s->gpio_int_status[group] : 0;
+            uint32_t v = group < GPIO_NUMINTGROUPS ? s->gpio_int_status[group] : 0;
+            if (v && getenv("IT_GPIO_TRACE")) {
+                fprintf(stderr, "[gpio] STAT  group %u -> %08x\n", group, v);
+            }
+            return v;
         }
         case GPIO_INTEN ... (GPIO_INTEN + GPIO_NUMINTGROUPS * 4):
         {
@@ -97,6 +101,12 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
              * silently read as 0) but ignore an out-of-range group.
              */
             if (group < GPIO_NUMINTGROUPS) {
+                if (getenv("IT_GPIO_TRACE")) {
+                    fprintf(stderr, "[gpio] ACK   group %u <- %08x "
+                            "(stat %08x -> %08x)\n", group, (uint32_t)val,
+                            s->gpio_int_status[group],
+                            s->gpio_int_status[group] & ~(uint32_t)val);
+                }
                 // acknowledge the interrupts and clear the corresponding bits
                 s->gpio_int_status[group] = s->gpio_int_status[group] & ~val;
                 if (s->gpio_irqs[group]) {
@@ -109,6 +119,19 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
         {
             uint8_t group = (addr - GPIO_INTEN) / 4;
             if (group < GPIO_NUMINTGROUPS) {
+                /*
+                 * IT_GPIO_TRACE=1: which GPIO interrupt sources the guest arms,
+                 * and when. Answering "does the driver actually enable the
+                 * source it then sleeps on" needs this; a source that is never
+                 * armed and one that is armed but never asserted look identical
+                 * from the driver's side.
+                 */
+                if (getenv("IT_GPIO_TRACE")) {
+                    fprintf(stderr, "[gpio] INTEN group %u <- %08x "
+                            "(was %08x, stat %08x)\n", group, (uint32_t)val,
+                            s->gpio_int_enabled[group],
+                            s->gpio_int_status[group]);
+                }
                 s->gpio_int_enabled[group] = val;
             }
             break;
