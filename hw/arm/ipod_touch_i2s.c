@@ -18,6 +18,67 @@
  * divider we don't decode, so we assume the CoreAudio-canonical 44100 Hz,
  * 16-bit, stereo, little-endian. Guessing the rate wrong only changes playback
  * pitch/duration, not whether sound is captured. Set IT_I2S_RATE to override.
+ *
+ * ---------------------------------------------------------------------------
+ * STATE OF THE GUEST-SIDE AUDIO PATH (measured, 2026-08-03)
+ *
+ * There is still no sound. Everything below was probed, not inferred -- and it
+ * moves the blocker a long way from where this file's comments used to put it.
+ *
+ * What is PROVEN WORKING:
+ *   - The host path. IT_I2S_TONE puts a sine in the TX FIFO and it comes out:
+ *     440.0 Hz at amplitude 11999 through -audio driver=wav.
+ *   - The sounds need no decoding. All 63 files in /System/Library/Audio/
+ *     UISounds are `lpcm`; alarm.caf is mono 16-bit 44100, i.e. 2 bytes per
+ *     frame -- which is exactly the `frames << 1` AppleAMC_r2's self test
+ *     asserts. No AAC/MP3 decoder is needed for system sounds, ever.
+ *   - AppleARMIISAudio's start path runs in full: 0xc0505a00 -> 0xc05054f8 ->
+ *     0xc05053ec -> 0xc0505340 -> [dmac vtable+0x358] = 0xc0318b90 (Thumb).
+ *     Neither of 0xc05054f8's two silent-success early-outs fires; confirmed
+ *     twice over, by frame walk and by reading [this+0x6d] == 0.
+ *   - This controller is fully configured. The whole conversation is seven
+ *     writes and ZERO reads (enable, clkdiv, txcon, 0x30, txcom, 0x34, txfctl),
+ *     so no value this model supplies can be gating anything -- including the
+ *     two registers at 0x30/0x34 we do not model.
+ *
+ * What is NOT the problem, though it long looked like it:
+ *   - The AMC's buffer aperture. The driver reads a 16-byte header out of it
+ *     and never one byte of the ~32 KB it stages there. Everything in that
+ *     window is guest-written self-test material (the Numerical Recipes LCG
+ *     constants sit in it), not audio.
+ *   - "Nothing upstream produced bytes." That was my inference and it is WRONG.
+ *
+ * THE MEASUREMENT THAT SETTLED IT. The DMA request 0xc0318b90 builds and
+ * submits is fully formed and describes a REAL transfer. Read live, and
+ * validated by [req+0x54] matching the DMA controller object it must point to:
+ *
+ *     [req+0x54] c0bfdb00   the DMA controller
+ *     [req+0x58] c0c58900   an IOKit memory object (length 0x10000 at +0x1c)
+ *     [req+0x5c] 00000002   direction
+ *     [req+0x60] 00001000   4096 -- the same value written to I2S reg 0x30
+ *     [req+0x64] 0000f000   61440 bytes, i.e. 15 periods of 4096
+ *     [req+0x68] 0000000a
+ *     [req+0x7c] c0c6a800   the AppleARMIISAudio instance
+ *     [req+0x80] c050601c   completion callback, in that kext's text
+ *
+ * So the driver believes it has 61440 bytes to send, names the memory holding
+ * them, and hands the request to the DMA controller kext with a completion
+ * routine attached. The request is then simply never executed: across a whole
+ * sound the PL080 sees 139 channel starts and not one targets the TX FIFO at
+ * 0x3ca00010 (IT_DMA_TRACE fires on every channel-configuration write, so it
+ * would see them).
+ *
+ * The gap is therefore inside the DMA controller kext (Thumb, ~0xc0318xxx),
+ * between accepting a well-formed request and programming a channel. That is a
+ * much better place to be than the AMC: it drives hardware we DO model, so if
+ * it is waiting on a PL080 state we answer wrongly, that is a gate we could
+ * satisfy honestly rather than fake.
+ *
+ * Instruments: IT_I2S_PC / IT_I2S_DEREF here, IT_AMC_PC / IT_AMC_V2P /
+ * IT_AMC_WATCH for the AMC side. Guest VAs must be read out of RAM via QMP
+ * pmemsave (VA - 0xB8000000 = PA); the kernelcache in ~/Developer/ipod2g-re is
+ * NOT the image that boots.
+ * ---------------------------------------------------------------------------
  */
 
 #include "hw/arm/ipod_touch_i2s.h"
@@ -165,10 +226,15 @@ static void it_i2s_log_caller(hwaddr offset, uint32_t val)
                                 sizeof(frame), false) != 0) {
             break;
         }
-        /* r4 as well as r5: these IOService methods keep `this` in r4 as
-         * often as in r5 (0xc0505340 and 0xc05053ec both do `mov r4, r0`), so
-         * printing only one of them loses the object half the time. */
-        fprintf(stderr, " %08x/r4=%08x/r5=%08x", frame[4], frame[0], frame[1]);
+        /* r4, r5 and r6: these IOService methods keep `this` in r4 as often as
+         * in r5 (0xc0505340 and 0xc05053ec both do `mov r4, r0`), and the DMA
+         * builder at 0xc0318b90 keeps the REQUEST it is filling in r6 -- which
+         * is the only handle on that object, since it is freshly allocated and
+         * has no static address. Thumb frames here use the same convention
+         * (`push {r4-r7,lr}` ... `add r7, sp, #0x18`), so the walk is valid for
+         * both instruction sets. */
+        fprintf(stderr, " %08x/r4=%08x/r5=%08x/r6=%08x",
+                frame[4], frame[0], frame[1], frame[2]);
         if (frame[3] <= fp) {
             break;
         }
