@@ -135,7 +135,18 @@ static void prepare_short_control_response(IPodTouchMultitouchState *s, uint8_t 
         ob_int32[1] = MT_SENSOR_SURFACE_HEIGHT;
     }
     else {
-        hw_error("Unknown report ID 0x%02x\n", report_id);
+        /*
+         * The report ID comes straight from the guest. Aborting QEMU here made
+         * a driver probing for a report we do not implement kill the whole
+         * machine -- the documented "Unknown report ID 0xbf" death. The
+         * GET_REPORT_INFO path above was converted for exactly this reason and
+         * this one was missed. Answer with a zeroed report: the checksum below
+         * still runs, so the driver sees a well-formed reply it can reject on
+         * its own terms.
+         */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "[MT] unimplemented short-control report ID 0x%02x; "
+                      "returning an empty report\n", report_id);
     }
 
     // compute and set the checksum
@@ -313,10 +324,21 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
         }
 
         if(checksum != (s->in_buffer[8] << 8 | s->in_buffer[9])) {
-            hw_error("HBPP data header checksum doesn't match!");
+            /* Guest-supplied bytes. A bad checksum is a NAK on real hardware,
+             * not a dead machine. */
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "[MT] HBPP data header checksum mismatch "
+                          "(computed 0x%04x, header 0x%04x); ignoring\n",
+                          checksum, s->in_buffer[8] << 8 | s->in_buffer[9]);
+            return 0;
         }
 
-        uint32_t data_len = (s->in_buffer[2] << 10) | (s->in_buffer[3] << 2) + 5;
+        /* Parenthesised: '+' binds tighter than '|', so this used to compute
+         * (b2<<10) | ((b3<<2)+5) -- with b3 == 255 the carry was OR-merged
+         * instead of added and data_len disagreed with the byte count the
+         * guest then clocked out, terminating the command early and
+         * re-parsing the tail as fresh commands. */
+        uint32_t data_len = ((s->in_buffer[2] << 10) | (s->in_buffer[3] << 2)) + 5;
         // extend the lengths of the in/out buffers
         free(s->in_buffer);
         s->in_buffer = malloc(data_len + 0x10);

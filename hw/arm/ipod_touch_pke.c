@@ -99,7 +99,10 @@ static uint64_t ipod_touch_pke_read(void *opaque, hwaddr offset, unsigned size)
     switch(offset) {
         case REG_PKE_SEG_SIZE:
             return s->seg_size_reg;
-        case REG_PKE_SEG_START ... (REG_PKE_SEG_START + 1024):
+        /* +1023, not +1024: segments[] is 1024 bytes = 256 words, so an offset
+         * of exactly +1024 indexes word 256 -- four bytes past the array, into
+         * seg_size_reg. Inclusive range, so the last legal offset is +1023. */
+        case REG_PKE_SEG_START ... (REG_PKE_SEG_START + 1023):
         {
             uint32_t *res = (uint32_t *)s->segments;
             return res[(offset - REG_PKE_SEG_START) / 4];
@@ -124,7 +127,10 @@ static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, un
             break;
         case 0x10:
             break;
-        case REG_PKE_SEG_START ... (REG_PKE_SEG_START + 1024):
+        /* +1023, not +1024: segments[] is 1024 bytes = 256 words, so an offset
+         * of exactly +1024 indexes word 256 -- four bytes past the array, into
+         * seg_size_reg. Inclusive range, so the last legal offset is +1023. */
+        case REG_PKE_SEG_START ... (REG_PKE_SEG_START + 1023):
         {
             uint32_t *segments_cast = (uint32_t *)s->segments;
             segments_cast[(offset - REG_PKE_SEG_START) / 4] = value;
@@ -192,6 +198,21 @@ static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, un
                  * Anything else means the signature did not verify.
                  */
                 size_t res_len = strlen(bn_hex) / 2;
+                /*
+                 * KNOWN BUG, DELIBERATELY NOT FIXED HERE -- needs a boot test.
+                 * res_hex is char*, signed on this target, so `res_hex[1] ==
+                 * 0xff` is a comparison of a value in [-128,127] against 255
+                 * and clang proves it always false. well_formed can therefore
+                 * NEVER be true, and this signature well-formedness check has
+                 * never once run. The fix is (uint8_t)res_hex[1] == 0xff.
+                 *
+                 * It is left alone because turning a check on that has never
+                 * executed is a behaviour change on the signature path, and
+                 * the "modexp only runs on the 5th START" hack in this file may
+                 * well be a compensation built on top of this being broken.
+                 * Change ONE variable: fix the cast, boot, see whether the
+                 * 5th-START behaviour changes, and only then touch the counter.
+                 */
                 bool well_formed = (res_len == (size_t)s->segment_size - 1) &&
                                    res_hex[0] == 0x01 && res_hex[1] == 0xff;
 

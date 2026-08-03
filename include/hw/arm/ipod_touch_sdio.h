@@ -330,7 +330,17 @@ typedef struct IPodTouchSDIOState
     unsigned host_rx_log;
 
     uint8_t sdiod_regs[SDIOD_CORE_SIZE];
-    uint8_t registers[0x10000];
+    /*
+     * CMD52/CMD53 carry a 17-bit register address ((arg >> 9) & 0x1ffff), and
+     * the guest really does use the top half -- 0x1000e is the misc register
+     * read on the clock-enable path. This array was 0x10000 and is the LAST
+     * member of the struct, so any func != 1 access above 0xffff ran off the
+     * end of the QOM allocation: up to 64 KiB of heap write from a single
+     * guest CMD52. The func 1 paths were already bounded, which is what gave
+     * the omission away. Size it to the full address the hardware decodes
+     * rather than clamping, so no legal access silently lands somewhere else.
+     */
+    uint8_t registers[0x20000];
 } IPodTouchSDIOState;
 
 void ipod_touch_sdio_setup_net(IPodTouchSDIOState *s);

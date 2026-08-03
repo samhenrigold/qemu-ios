@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_sdio.h"
+#include "qemu/log.h"
 
 /*
  * Every register access and every command is worth seeing while the dongle
@@ -1002,7 +1003,10 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
         //printf("Raised IRQ\n");
     }
     else {
-        hw_error("Unknown SDIO command %d", cmd_type);
+        /* An unimplemented command is a timeout on real hardware, not a dead
+         * machine. Leave resp0 alone and let the driver time out. */
+        qemu_log_mask(LOG_UNIMP, "[SDIO] unimplemented command %d (arg 0x%08x)\n",
+                      cmd_type, s->arg);
     }
 }
 
