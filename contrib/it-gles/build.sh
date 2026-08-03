@@ -4,7 +4,7 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../armv6-toolchain/armv6.sh"
 
-for t in gles_tri gles_tex; do
+for t in gles_tri gles_tex gles_surf; do
     cc6 "$HERE/$t.c" "$HERE/$t.o"
     link6 -execute "$HERE/$t" "$HERE/$t.o"
     rm -f "$HERE/$t.o"

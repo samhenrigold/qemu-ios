@@ -271,6 +271,87 @@ static void gles_present_to_panel(void)
     gh.presents++;
 }
 
+/*
+ * Present into a caller-supplied CPU-addressable buffer -- the shipping path.
+ *
+ * CoreAnimation allocates an IOSurface, hands it to the engine, and composites
+ * it; the engine only ever reads its geometry and writes pixels into it. So all
+ * the host needs is the address, the stride and the format. No IOSurface
+ * knowledge crosses into QEMU, and nothing here has to stay in step with how CA
+ * chose to allocate.
+ *
+ * Returns 0 on success, -1 if the surface is unusable. Unlike most of this
+ * file, that error is real and propagates: a bad surface means the frame went
+ * nowhere, and silently returning 0 would make a black screen look like a
+ * successful present.
+ */
+static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride,
+                                   uint32_t width, uint32_t height,
+                                   uint32_t format)
+{
+    uint32_t y;
+    g_autofree uint8_t *row = NULL;
+    bool bgra;
+
+    if (!base || !width || !height) {
+        fprintf(stderr, "[gles] present-surface: bad surface "
+                "base=0x%08x %ux%u stride=%u\n", base, width, height, stride);
+        return -1;
+    }
+    if (width > GLES_FB_WIDTH * 4 || height > GLES_FB_HEIGHT * 4) {
+        fprintf(stderr, "[gles] present-surface: implausible size %ux%u\n",
+                width, height);
+        return -1;
+    }
+    if (stride < width * 4) {
+        fprintf(stderr, "[gles] present-surface: stride %u too small for "
+                "width %u\n", stride, width);
+        return -1;
+    }
+
+    /* 'BGRA' is what CA uses on this device; accept RGBA too rather than
+     * silently producing colour-swapped output for it. */
+    bgra = (format != GLES_SURFACE_RGBA32);
+
+    glFinish();
+    /* The FBO is GLES_FB_WIDTH x GLES_FB_HEIGHT; read back only what fits. */
+    {
+        uint32_t rw = width < GLES_FB_WIDTH ? width : GLES_FB_WIDTH;
+        uint32_t rh = height < GLES_FB_HEIGHT ? height : GLES_FB_HEIGHT;
+
+        glReadPixels(0, 0, rw, rh, GL_RGBA, GL_UNSIGNED_BYTE, gh.readback);
+
+        row = g_malloc(stride);
+        for (y = 0; y < rh; y++) {
+            /* GL's origin is bottom-left, the surface's is top-left. */
+            const uint8_t *src = gh.readback + (size_t)(rh - 1 - y) * rw * 4;
+            uint32_t x;
+
+            memset(row, 0, stride);
+            for (x = 0; x < rw; x++) {
+                if (bgra) {
+                    row[x * 4 + 0] = src[x * 4 + 2];
+                    row[x * 4 + 1] = src[x * 4 + 1];
+                    row[x * 4 + 2] = src[x * 4 + 0];
+                } else {
+                    row[x * 4 + 0] = src[x * 4 + 0];
+                    row[x * 4 + 1] = src[x * 4 + 1];
+                    row[x * 4 + 2] = src[x * 4 + 2];
+                }
+                row[x * 4 + 3] = src[x * 4 + 3];
+            }
+            if (cpu_memory_rw_debug(cpu, base + (hwaddr)y * stride,
+                                    row, rw * 4, 1) != 0) {
+                fprintf(stderr, "[gles] present-surface: write failed at row %u "
+                        "(guest 0x%08x)\n", y, base + y * stride);
+                return -1;
+            }
+        }
+    }
+    gh.presents++;
+    return 0;
+}
+
 /* ----------------------------------------------------------------- dispatch */
 
 static float gles_f(uint32_t bits)
@@ -293,6 +374,9 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
     case GLES_OP_PRESENT:
         gles_present_to_panel();
         return 0;
+
+    case GLES_OP_PRESENT_SURFACE:   /* base, stride, w, h, format */
+        return gles_present_to_surface(cpu, a[0], a[1], a[2], a[3], a[4]);
 
     /* ---- framework dispatch slots, numbering from GATE1_slotmap.txt ---- */
     case GLES_SLOT_CLEAR_COLOR:                 /* glClearColor(r,g,b,a) */
