@@ -271,6 +271,28 @@ static void it_i2s_log_caller(hwaddr offset, uint32_t val)
     }
 }
 
+/*
+ * Emit I2S accesses into the same stderr stream as IT_DMAC_TRACE, so a single
+ * ordered log shows where in the DMAC conversation the audio driver brings this
+ * controller up. Correlating two separately-buffered logs was the previous
+ * approach and it could not answer "what did the DMAC do NEXT".
+ */
+bool it_dmac_trace_on(void);
+
+static void it_i2s_dmac_mark(hwaddr offset, uint32_t val, bool write)
+{
+    uint32_t pc = 0;
+
+    if (!it_dmac_trace_on() || offset == IT_I2S_TXFIFO) {
+        return;
+    }
+    if (current_cpu) {
+        pc = ARM_CPU(current_cpu)->env.regs[15];
+    }
+    fprintf(stderr, "[i2s  ] %c %03x                %08x  pc=%08x\n",
+            write ? 'W' : 'R', (unsigned)offset, val, pc);
+}
+
 static uint64_t ipod_touch_i2s_read(void *opaque, hwaddr offset, unsigned size)
 {
     IPodTouchI2SState *s = (IPodTouchI2SState *)opaque;
@@ -298,6 +320,7 @@ static uint64_t ipod_touch_i2s_read(void *opaque, hwaddr offset, unsigned size)
      * the whole conversation is the only way to tell those apart.
      */
     IT_I2S_DPRINTF("R %02x -> %08x\n", (unsigned)offset, val);
+    it_i2s_dmac_mark(offset, val, false);
     return val;
 }
 
@@ -307,6 +330,7 @@ static void ipod_touch_i2s_write(void *opaque, hwaddr offset, uint64_t value,
     IPodTouchI2SState *s = (IPodTouchI2SState *)opaque;
 
     it_i2s_log_caller(offset, (uint32_t)value);
+    it_i2s_dmac_mark(offset, (uint32_t)value, true);
     if (offset != IT_I2S_TXFIFO) {
         IT_I2S_DPRINTF("W %02x <- %08x\n", (unsigned)offset, (uint32_t)value);
     }

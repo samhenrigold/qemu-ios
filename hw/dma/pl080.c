@@ -17,6 +17,7 @@
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
 #include "qapi/error.h"
+#include "hw/core/cpu.h"
 
 #define PL080_CONF_E    0x1
 #define PL080_CONF_M1   0x2
@@ -77,6 +78,74 @@ static const unsigned char pl080_id[] =
 
 static const unsigned char pl081_id[] =
 { 0x81, 0x10, 0x04, 0x0a, 0x0d, 0xf0, 0x05, 0xb1 };
+
+/*
+ * IT_DMAC_TRACE=1 -- log every PL080 register access with the guest PC.
+ *
+ * Why this exists: on the iPod touch 2G, AppleARMIISAudio builds and submits a
+ * well-formed 61440-byte DMA request to AppleARMPL080DMAC and no channel is
+ * ever pointed at the I2S TX FIFO (0x3ca00010). IT_DMA_TRACE only shows channel
+ * STARTS, so it cannot distinguish "the DMAC kext never looked at the hardware"
+ * from "it looked, did not like an answer, and gave up". This shows the whole
+ * conversation, with the PC that made each access, which is the only way to
+ * tell those apart.
+ *
+ * IT_DMAC_TRACE_FROM=<hex> suppresses output until the first access at or after
+ * that offset (use 0 for everything). Boot alone produces tens of thousands of
+ * NAND transfers on DMAC0, so the interesting window has to be findable.
+ */
+static const char *pl080_regname(hwaddr offset)
+{
+    if (offset >= 0x100 && offset < 0x200) {
+        static const char *cn[8] = { "SrcAddr", "DestAddr", "LLI", "Control",
+                                     "Config", "?5", "?6", "?7" };
+        return cn[(offset >> 2) & 7];
+    }
+    switch (offset >> 2) {
+    case 0:  return "IntStatus";
+    case 1:  return "IntTCStatus";
+    case 2:  return "IntTCClear";
+    case 3:  return "IntErrStatus";
+    case 4:  return "IntErrClear";
+    case 5:  return "RawIntTCStatus";
+    case 6:  return "RawIntErrStatus";
+    case 7:  return "EnbldChns";
+    case 8:  return "SoftBReq";
+    case 9:  return "SoftSReq";
+    case 10: return "SoftLBReq";
+    case 11: return "SoftLSReq";
+    case 12: return "Config";
+    case 13: return "Sync";
+    default: return "?";
+    }
+}
+
+bool it_dmac_trace_on(void);
+bool it_dmac_trace_on(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        cached = getenv("IT_DMAC_TRACE") != NULL;
+    }
+    return cached;
+}
+
+static void pl080_trace(PL080State *s, hwaddr offset, uint32_t val, bool write)
+{
+    uint64_t pc = 0;
+
+    if (!it_dmac_trace_on()) {
+        return;
+    }
+    /* This file is target-independent (libcommon), so the ARM register file is
+     * not reachable here; CPUClass::get_pc is the generic way to ask. */
+    if (current_cpu && CPU_GET_CLASS(current_cpu)->get_pc) {
+        pc = CPU_GET_CLASS(current_cpu)->get_pc(current_cpu);
+    }
+    fprintf(stderr, "[dmac%d] %c %03x %-14s %08x  pc=%08x\n",
+            s->trace_id, write ? 'W' : 'R', (unsigned)offset,
+            pl080_regname(offset), val, (uint32_t)pc);
+}
 
 static void pl080_update(PL080State *s)
 {
@@ -229,8 +298,8 @@ again:
     pl080_update(s);
 }
 
-static uint64_t pl080_read(void *opaque, hwaddr offset,
-                           unsigned size)
+static uint64_t pl080_do_read(void *opaque, hwaddr offset,
+                              unsigned size)
 {
     PL080State *s = (PL080State *)opaque;
     uint32_t i;
@@ -298,11 +367,20 @@ static uint64_t pl080_read(void *opaque, hwaddr offset,
     }
 }
 
+static uint64_t pl080_read(void *opaque, hwaddr offset, unsigned size)
+{
+    uint64_t val = pl080_do_read(opaque, offset, size);
+    pl080_trace((PL080State *)opaque, offset, (uint32_t)val, false);
+    return val;
+}
+
 static void pl080_write(void *opaque, hwaddr offset,
                         uint64_t value, unsigned size)
 {
     PL080State *s = (PL080State *)opaque;
     int i;
+
+    pl080_trace(s, offset, (uint32_t)value, true);
 
     //fprintf(stderr, "%s: writing 0x%08x to 0x%08x\n", __func__, value, offset);
 
@@ -434,6 +512,10 @@ static void pl080_init(Object *obj)
     sysbus_init_irq(sbd, &s->interr);
     sysbus_init_irq(sbd, &s->inttc);
     s->nchannels = 8;
+
+    /* Instantiation order only; the iPod touch machine makes DMAC0 first. */
+    static int next_id;
+    s->trace_id = next_id++;
 }
 
 static void pl080_realize(DeviceState *dev, Error **errp)
