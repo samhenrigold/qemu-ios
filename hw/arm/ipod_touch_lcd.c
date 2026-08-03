@@ -120,9 +120,25 @@ void lcd_changebrightness(int brightness)
  * framebuffer is full of pixels. Useful both as a probe and for guests whose
  * backlight register we do not model.
  */
+/*
+ * Set only for the duration of a screen COPY. The backlight scaling is lossy --
+ * at a low level most of the framebuffer's bits are gone by the time the pixel
+ * is written -- so a legible copy has to be RENDERED at full exposure, not
+ * brightened afterwards. See qemu_display_register_capture_exposure().
+ */
+static bool lcd_capture_exposure;
+
+static void lcd_set_capture_exposure(bool on)
+{
+    lcd_capture_exposure = on;
+}
+
 static int lcd_bright_effective(void)
 {
     static int ovr = -2;
+    if (lcd_capture_exposure) {
+        return 255;
+    }
     if (ovr == -2) {
         const char *v = getenv("IT_LCD_BRIGHT");
         ovr = v ? atoi(v) : -1;
@@ -490,6 +506,9 @@ static void ipod_touch_lcd_realize(DeviceState *dev, Error **errp)
     /* ... and the multi-touch one, which routes by event mask and so coexists
      * with the mouse rather than replacing it. */
     qemu_input_handler_register(dev, &ipod_touch_lcd_mtt_handler);
+
+    /* Let a frontend copying the screen ask for an undimmed render. */
+    qemu_display_register_capture_exposure(lcd_set_capture_exposure);
 
     // initialize the refresh timer
     s->refresh_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, refresh_timer_tick, s);
