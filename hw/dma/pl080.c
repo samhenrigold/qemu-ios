@@ -53,9 +53,15 @@ static const VMStateDescription vmstate_pl080_channel = {
 
 static const VMStateDescription vmstate_pl080 = {
     .name = "pl080",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
+        /*
+         * Upstream repeated tc_int/tc_mask/err_int/err_mask here; this tree had
+         * corrupted the repeat into three more copies of tc_int, so the second
+         * block was never a faithful copy of anything. Dropped rather than
+         * repaired -- the first four entries already carry the state.
+         */
         VMSTATE_UINT8(tc_int, PL080State),
         VMSTATE_UINT8(tc_mask, PL080State),
         VMSTATE_UINT8(err_int, PL080State),
@@ -64,9 +70,6 @@ static const VMStateDescription vmstate_pl080 = {
         VMSTATE_UINT32(sync, PL080State),
         VMSTATE_UINT32(req_single, PL080State),
         VMSTATE_UINT32(req_burst, PL080State),
-        VMSTATE_UINT8(tc_int, PL080State),
-        VMSTATE_UINT8(tc_int, PL080State),
-        VMSTATE_UINT8(tc_int, PL080State),
         VMSTATE_STRUCT_ARRAY(chan, PL080State, PL080_MAX_CHANNELS,
                              1, vmstate_pl080_channel, pl080_channel),
         VMSTATE_INT32(running, PL080State),

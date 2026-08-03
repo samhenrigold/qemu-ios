@@ -308,8 +308,13 @@ static void ipod_touch_spi_realize(DeviceState *dev, struct Error **errp)
     IPodTouchSPIState *s = IPOD_TOUCH_SPI(dev);
     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
 
+    /*
+     * Every SPI controller is created with sysbus_create_simple(), which leaves
+     * dev->id NULL, so this produced five buses all named "(null).bus". The
+     * controller index is the only thing that distinguishes them.
+     */
     char bus_name[32] = { 0 };
-    snprintf(bus_name, sizeof(bus_name), "%s.bus", dev->id);
+    snprintf(bus_name, sizeof(bus_name), "spi%u.bus", (unsigned)base_addr);
     s->spi = ssi_create_bus(dev, (const char *)bus_name);
 
     sysbus_init_irq(sbd, &s->irq);
@@ -317,7 +322,8 @@ static void ipod_touch_spi_realize(DeviceState *dev, struct Error **errp)
     qdev_init_gpio_in_named(dev, apple_spi_cs_set, SSI_GPIO_CS, 1);
     char name[5];
     snprintf(name, 5, "spi%d", base_addr);
-    memory_region_init_io(&s->iomem, OBJECT(s), &spi_ops, s, name, 0x100);
+    memory_region_init_io(&s->iomem, OBJECT(s), &spi_ops, s, name,
+                          SPI_MMIO_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
     s->base = base_addr;
 
@@ -367,7 +373,7 @@ static const VMStateDescription vmstate_ipod_touch_spi = {
     .post_load = ipod_touch_spi_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(last_irq, IPodTouchSPIState),
-        VMSTATE_UINT32_ARRAY(regs, IPodTouchSPIState, MMIO_SIZE >> 2),
+        VMSTATE_UINT32_ARRAY(regs, IPodTouchSPIState, SPI_MMIO_SIZE >> 2),
         VMSTATE_UINT8(base, IPodTouchSPIState),
         VMSTATE_FIFO8(rx_fifo, IPodTouchSPIState),
         VMSTATE_FIFO8(tx_fifo, IPodTouchSPIState),
