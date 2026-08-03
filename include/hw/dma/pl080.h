@@ -59,6 +59,15 @@ struct PL080State {
     uint32_t sync;
     uint32_t req_single;
     uint32_t req_burst;
+    /*
+     * Peripheral request lines that a device model actually drives (see
+     * pl080_attach_paced_peripheral). Only those are allowed to gate a
+     * memory<->peripheral transfer; every other peripheral keeps the historical
+     * "transfer the whole descriptor the instant the channel is enabled"
+     * behaviour, because nothing drives its request line and gating it would
+     * stall the channel forever.
+     */
+    uint32_t paced_req;
     pl080_channel chan[PL080_MAX_CHANNELS];
     int nchannels;
     /* Flag to avoid recursive DMA invocations.  */
@@ -73,6 +82,26 @@ struct PL080State {
     /* IT_DMAC_TRACE: which controller this is, in instantiation order, purely
      * so a trace of two identical devices can be told apart. */
     int trace_id;
+    /* IT_DMAC_TRACE: last logged level of the combined interrupt line. */
+    int last_level;
 };
+
+/*
+ * Opt a peripheral request line into real flow control.
+ *
+ * Call once at machine-init time, before any transfer. Until a peripheral says
+ * "I drive my request line", pl080_run treats memory<->peripheral descriptors
+ * as free-running and moves every byte inside the Config write that enables the
+ * channel -- which is what made the iPod touch's I2S DMA copy an entire 72 KB
+ * audio ring in zero guest time, long before anything had written PCM into it.
+ */
+void pl080_attach_paced_peripheral(PL080State *s, int id);
+
+/*
+ * Drive that request line. Raising it lets the channel run again; the model
+ * re-reads the line between elements, so the peripheral can stop the burst as
+ * soon as its FIFO is full.
+ */
+void pl080_set_dma_request(PL080State *s, int id, bool level);
 
 #endif
