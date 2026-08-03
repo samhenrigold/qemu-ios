@@ -20,6 +20,44 @@
  * pitch/duration, not whether sound is captured. Set IT_I2S_RATE to override.
  *
  * ---------------------------------------------------------------------------
+ * SOLVED, END TO END: THE GUEST NOW PLAYS AUDIBLE SOUND. (2026-08-03, later)
+ *
+ * A screenshot shutter produces 693378 bytes at this FIFO with peak amplitude
+ * 5615 and two transient bursts with a decay -- the shape of a camera shutter,
+ * not silence. Captured through `-audio driver=wav`.
+ *
+ * The last blocker was DMAC0's completion interrupt, and it was two of our own
+ * defects stacked, both in the "nothing in this tree can fail" family:
+ *
+ *   1. The UART receive DMA fabricated completions. The kernel's serial driver
+ *      leaves a 2048-byte peripheral-to-memory channel armed on the console
+ *      UART's URXH with the terminal-count interrupt enabled. hw/dma/pl080.c
+ *      ignored the peripheral request lines, so all 2048 bytes were "received"
+ *      from an empty FIFO inside the Config write and terminal count fired for
+ *      a read that never happened. The request lines are now declared paced in
+ *      ipod_touch_2g.c, so an idle console produces nothing, as on real
+ *      hardware.
+ *   2. The interrupt masks were sticky. pl080_run() seeded tc_mask from tc_int,
+ *      so once a terminal count was pending it could never be masked out again
+ *      and the line stayed high forever. The masks are now derived live from
+ *      the channels' own Configuration words (pl080_refresh_masks()).
+ *
+ * With those two fixed, DMAC0 goes on VIC line 0x10 -- which is what our own
+ * DeviceTree says (/arm-io/dmac0 interrupts = <0x10>, dmac1 = <0x11>); they
+ * were never a shared line and no OR gate is involved. Single-variable A/B on
+ * the same binary and the same warm overlay, shutter fired on both:
+ *
+ *      IT_DMAC0_IRQ=0x11   36864 samples, peak 0,     0 DMAC0 IntStatus reads
+ *      IT_DMAC0_IRQ=0x10  346689 samples, peak 5615, 19 reads, 27 IntTCClear
+ *
+ * Boot and reboot are unaffected (lit 0.5449 / 0.5450, against 0.5461 before).
+ *
+ * Everything below this line predates that fix. Sections 4 and 5 of the next
+ * block, and the "not yet fixable" note in section 4, are SUPERSEDED: the
+ * producer did not have a second problem, and the wedge on 0x10 was the
+ * fabricated UART completion, not anything in the guest.
+ *
+ * ---------------------------------------------------------------------------
  * SOLVED: THE DMA PATH IS OPEN. PCM NOW REACHES THIS FIFO. (2026-08-03)
  *
  * The blocker described in the rest of this comment -- "the DMA request is
