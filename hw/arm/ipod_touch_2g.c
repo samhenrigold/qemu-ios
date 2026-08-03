@@ -2195,17 +2195,22 @@ static void ipod_touch_machine_init(MachineState *machine)
          * I2S0. The TX FIFO at +0x10 is a PL080 DMA target (dma-parent is
          * dmac0), so PCM arrives as ordinary MMIO writes from the DMA engine.
          *
-         * The interrupt is deliberately left unconnected. The device tree says
-         * i2s0 has interrupts=<0x2c> but its interrupt-parent is the *GPIO*
-         * controller, not the VIC -- the same numbering the multi-touch
-         * (0x6d -> group 3, bit 13) and the buttons use -- so 0x2c means GPIO
-         * group 1, bit 12, and wiring it as VIC line 0x2c would target an
-         * unrelated device. Nothing needs it yet: the driver never polls and
-         * no PCM reaches the FIFO until the AMC completes a transfer. Raise it
-         * through sysic->gpio_int_status[1] bit 12 when that changes.
+         * The interrupt goes through the *GPIO* controller, not the VIC. The
+         * device tree says i2s0 has interrupts=<0x2c> but its interrupt-parent
+         * is the GPIO IC -- the same numbering the multi-touch (0x6d -> group
+         * 3, bit 13) and the buttons use -- so 0x2c means GPIO group 1, bit 12,
+         * and wiring it as VIC line 0x2c would target an unrelated device.
+         *
+         * It is NOT optional, contrary to what this comment used to say. The
+         * driver enables that source and sleeps on it for 10 s before it will
+         * program a PL080 channel; measured with a gdbstub breakpoint, that
+         * sleep always timed out and the channel start returned
+         * kIOReturnNotReady. The I2S model raises it itself (see
+         * it_i2s_arm_ready), which is why it needs the sysic handle.
          */
         dev = qdev_new(TYPE_IPOD_TOUCH_I2S);
         busdev = SYS_BUS_DEVICE(dev);
+        IPOD_TOUCH_I2S(dev)->sysic = sysic_state;
         sysbus_realize(busdev, &error_fatal);
         memory_region_add_subregion(sysmem, I2S0_MEM_BASE,
                                     &IPOD_TOUCH_I2S(dev)->iomem);
