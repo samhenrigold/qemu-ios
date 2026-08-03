@@ -24,7 +24,7 @@
 #include "hw/intc/arm_gicv3_its_common.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "sysemu/kvm.h"
+#include "system/kvm.h"
 
 static int gicv3_its_pre_save(void *opaque)
 {
@@ -54,7 +54,7 @@ static const VMStateDescription vmstate_its = {
     .pre_save = gicv3_its_pre_save,
     .post_load = gicv3_its_post_load,
     .priority = MIG_PRI_GICV3_ITS,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(ctlr, GICv3ITSState),
         VMSTATE_UINT32(iidr, GICv3ITSState),
         VMSTATE_UINT64(cbaser, GICv3ITSState),
@@ -123,7 +123,7 @@ void gicv3_its_init_mmio(GICv3ITSState *s, const MemoryRegionOps *ops,
     msi_nonbroken = true;
 }
 
-static void gicv3_its_common_reset_hold(Object *obj)
+static void gicv3_its_common_reset_hold(Object *obj, ResetType type)
 {
     GICv3ITSState *s = ARM_GICV3_ITS_COMMON(obj);
 

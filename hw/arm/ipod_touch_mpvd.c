@@ -74,7 +74,7 @@ static void ipod_touch_mpvd_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_ipod_touch_mpvd;
-    dc->reset = ipod_touch_mpvd_reset;
+    device_class_set_legacy_reset(dc, ipod_touch_mpvd_reset);
 }
 
 static const TypeInfo ipod_touch_mpvd_type_info = {

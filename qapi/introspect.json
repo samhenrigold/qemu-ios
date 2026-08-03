@@ -41,9 +41,9 @@
 #     names are guaranteed to be unique (no name will be duplicated
 #     with different meta-types).
 #
-# Note: the QAPI schema is also used to help define *internal*
-#     interfaces, by defining QAPI types.  These are not part of the
-#     QMP wire ABI, and therefore not returned by this command.
+# .. note:: The QAPI schema is also used to help define *internal*
+#    interfaces, by defining QAPI types.  These are not part of the
+#    QMP wire ABI, and therefore not returned by this command.
 #
 # Since: 2.5
 ##
@@ -93,8 +93,6 @@
 #     particular order.  (since 4.1 for object types, 4.2 for
 #     commands, 5.0 for the rest)
 #
-# Additional members depend on the value of @meta-type.
-#
 # Since: 2.5
 ##
 { 'union': 'SchemaInfo',
@@ -128,6 +126,22 @@
 # The four primitive and two structured types according to RFC 8259
 # section 1, plus 'int' (split off 'number'), plus the obvious top
 # type 'value'.
+#
+# @string: JSON string
+#
+# @number: JSON number
+#
+# @int: JSON number that is an integer
+#
+# @boolean: literal ``false`` or ``true``
+#
+# @null: literal ``null``
+#
+# @object: JSON object
+#
+# @array: JSON array
+#
+# @value: any JSON value
 #
 # Since: 2.5
 ##
@@ -261,7 +275,7 @@
 #
 # @members: the alternate type's members, in no particular order.  The
 #     members' wire encoding is distinct, see
-#     docs/devel/qapi-code-gen.txt section Alternate types.
+#     :doc:`/devel/qapi-code-gen` section Alternate types.
 #
 # On the wire, this can be any of the members.
 #

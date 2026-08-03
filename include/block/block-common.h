@@ -70,9 +70,6 @@
  * automatically takes the graph rdlock when calling the wrapped function. In
  * the same way, no_co_wrapper_bdrv_wrlock functions automatically take the
  * graph wrlock.
- *
- * If the first parameter of the function is a BlockDriverState, BdrvChild or
- * BlockBackend pointer, the AioContext lock for it is taken in the wrapper.
  */
 #define no_co_wrapper
 #define no_co_wrapper_bdrv_rdlock
@@ -246,6 +243,8 @@ typedef enum {
                                       read-write fails */
 #define BDRV_O_IO_URING    0x40000 /* use io_uring instead of the thread pool */
 
+#define BDRV_O_CBW_DISCARD_SOURCE 0x80000 /* for copy-before-write filter */
+
 #define BDRV_O_CACHE_MASK  (BDRV_O_NOCACHE | BDRV_O_NO_FLUSH)
 
 
@@ -258,6 +257,7 @@ typedef enum {
 #define BDRV_OPT_AUTO_READ_ONLY "auto-read-only"
 #define BDRV_OPT_DISCARD        "discard"
 #define BDRV_OPT_FORCE_SHARE    "force-share"
+#define BDRV_OPT_ACTIVE         "active"
 
 
 #define BDRV_SECTOR_BITS   9
@@ -356,7 +356,6 @@ typedef enum BlockOpType {
     BLOCK_OP_TYPE_CHANGE,
     BLOCK_OP_TYPE_COMMIT_SOURCE,
     BLOCK_OP_TYPE_COMMIT_TARGET,
-    BLOCK_OP_TYPE_DATAPLANE,
     BLOCK_OP_TYPE_DRIVE_DEL,
     BLOCK_OP_TYPE_EJECT,
     BLOCK_OP_TYPE_EXTERNAL_SNAPSHOT,

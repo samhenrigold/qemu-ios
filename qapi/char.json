@@ -21,8 +21,8 @@
 #     backend (e.g. with the chardev=... option) is in open or closed
 #     state (since 2.1)
 #
-# Notes: @filename is encoded using the QEMU command line character
-#     device encoding.  See the QEMU man page for details.
+# .. note:: @filename is encoded using the QEMU command line character
+#    device encoding.  See the QEMU man page for details.
 #
 # Since: 0.14
 ##
@@ -40,28 +40,28 @@
 #
 # Since: 0.14
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "query-chardev" }
-# <- {
-#       "return": [
-#          {
-#             "label": "charchannel0",
-#             "filename": "unix:/var/lib/libvirt/qemu/seabios.rhel6.agent,server=on",
-#             "frontend-open": false
-#          },
-#          {
-#             "label": "charmonitor",
-#             "filename": "unix:/var/lib/libvirt/qemu/seabios.rhel6.monitor,server=on",
-#             "frontend-open": true
-#          },
-#          {
-#             "label": "charserial0",
-#             "filename": "pty:/dev/pts/2",
-#             "frontend-open": true
-#          }
-#       ]
-#    }
+#     -> { "execute": "query-chardev" }
+#     <- {
+#           "return": [
+#              {
+#                 "label": "charchannel0",
+#                 "filename": "unix:/var/lib/libvirt/qemu/seabios.rhel6.agent,server=on",
+#                 "frontend-open": false
+#              },
+#              {
+#                 "label": "charmonitor",
+#                 "filename": "unix:/var/lib/libvirt/qemu/seabios.rhel6.monitor,server=on",
+#                 "frontend-open": true
+#              },
+#              {
+#                 "label": "charserial0",
+#                 "filename": "pty:/dev/pts/2",
+#                 "frontend-open": true
+#              }
+#           ]
+#        }
 ##
 { 'command': 'query-chardev', 'returns': ['ChardevInfo'],
   'allow-preconfig': true }
@@ -86,25 +86,25 @@
 #
 # Since: 2.0
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "query-chardev-backends" }
-# <- {
-#       "return":[
-#          {
-#             "name":"udp"
-#          },
-#          {
-#             "name":"tcp"
-#          },
-#          {
-#             "name":"unix"
-#          },
-#          {
-#             "name":"spiceport"
-#          }
-#       ]
-#    }
+#     -> { "execute": "query-chardev-backends" }
+#     <- {
+#           "return":[
+#              {
+#                 "name":"udp"
+#              },
+#              {
+#                 "name":"tcp"
+#              },
+#              {
+#                 "name":"unix"
+#              },
+#              {
+#                 "name":"spiceport"
+#              }
+#           ]
+#        }
 ##
 { 'command': 'query-chardev-backends', 'returns': ['ChardevBackendInfo'] }
 
@@ -139,17 +139,15 @@
 #     - data itself is always Unicode regardless of format, like any
 #       other string.
 #
-# Returns: Nothing on success
-#
 # Since: 1.4
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "ringbuf-write",
-#      "arguments": { "device": "foo",
-#                     "data": "abcdefgh",
-#                     "format": "utf8" } }
-# <- { "return": {} }
+#     -> { "execute": "ringbuf-write",
+#          "arguments": { "device": "foo",
+#                         "data": "abcdefgh",
+#                         "format": "utf8" } }
+#     <- { "return": {} }
 ##
 { 'command': 'ringbuf-write',
   'data': { 'device': 'str',
@@ -179,13 +177,13 @@
 #
 # Since: 1.4
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "ringbuf-read",
-#      "arguments": { "device": "foo",
-#                     "size": 1000,
-#                     "format": "utf8" } }
-# <- { "return": "abcdefgh" }
+#     -> { "execute": "ringbuf-read",
+#          "arguments": { "device": "foo",
+#                         "size": 1000,
+#                         "format": "utf8" } }
+#     <- { "return": "abcdefgh" }
 ##
 { 'command': 'ringbuf-read',
   'data': {'device': 'str', 'size': 'int', '*format': 'DataFormat'},
@@ -260,7 +258,7 @@
 # @server: create server socket (default: true)
 #
 # @wait: wait for incoming connection on server sockets (default:
-#     false). Silently ignored with server: false.  This use is
+#     false).  Silently ignored with server: false.  This use is
 #     deprecated.
 #
 # @nodelay: set TCP_NODELAY socket option (default: false)
@@ -275,7 +273,19 @@
 #
 # @reconnect: For a client socket, if a socket is disconnected, then
 #     attempt a reconnect after the given number of seconds.  Setting
-#     this to zero disables this function.  (default: 0) (Since: 2.2)
+#     this to zero disables this function.  The use of this member is
+#     deprecated, use @reconnect-ms instead. (default: 0) (Since: 2.2)
+#
+# @reconnect-ms: For a client socket, if a socket is disconnected,
+#     then attempt a reconnect after the given number of milliseconds.
+#     Setting this to zero disables this function.  This member is
+#     mutually exclusive with @reconnect.
+#     (default: 0) (Since: 9.2)
+#
+# Features:
+#
+# @deprecated: Member @reconnect is deprecated.  Use @reconnect-ms
+#     instead.
 #
 # Since: 1.4
 ##
@@ -289,7 +299,8 @@
             '*telnet': 'bool',
             '*tn3270': 'bool',
             '*websocket': 'bool',
-            '*reconnect': 'int' },
+            '*reconnect': { 'type': 'int', 'features': [ 'deprecated' ] },
+            '*reconnect-ms': 'int' },
   'base': 'ChardevCommon' }
 
 ##
@@ -319,6 +330,19 @@
 ##
 { 'struct': 'ChardevMux',
   'data': { 'chardev': 'str' },
+  'base': 'ChardevCommon' }
+
+##
+# @ChardevHub:
+#
+# Configuration info for hub chardevs.
+#
+# @chardevs: IDs to be added to this hub (maximum 4 devices).
+#
+# Since: 10.0
+##
+{ 'struct': 'ChardevHub',
+  'data': { 'chardevs': ['str'] },
   'base': 'ChardevCommon' }
 
 ##
@@ -390,9 +414,9 @@
 #
 # @rows: console height, in chars
 #
-# Note: the options are only effective when the VNC or SDL graphical
-# display backend is active. They are ignored with the GTK, Spice, VNC
-# and D-Bus display backends.
+# .. note:: The options are only effective when the VNC or SDL
+#    graphical display backend is active.  They are ignored with the
+#    GTK, Spice, VNC and D-Bus display backends.
 #
 # Since: 1.5
 ##
@@ -434,69 +458,103 @@
   'if': 'CONFIG_SPICE_PROTOCOL' }
 
 ##
+# @ChardevPty:
+#
+# Configuration info for pty implementation.
+#
+# @path: optional path to create a symbolic link that points to the
+#     allocated PTY
+#
+# Since: 9.2
+##
+{ 'struct': 'ChardevPty',
+  'data': { '*path': 'str' },
+  'base': 'ChardevCommon' }
+
+##
 # @ChardevBackendKind:
 #
-# @pipe: Since 1.5
+# @file: regular files
 #
-# @udp: Since 1.5
+# @serial: serial host device
 #
-# @mux: Since 1.5
+# @parallel: parallel host device
 #
-# @msmouse: Since 1.5
+# @pipe: pipes (since 1.5)
 #
-# @wctablet: Since 2.9
+# @socket: stream socket
 #
-# @braille: Since 1.5
+# @udp: datagram socket (since 1.5)
 #
-# @testdev: Since 2.2
+# @pty: pseudo-terminal
 #
-# @stdio: Since 1.5
+# @null: provides no input, throws away output
 #
-# @console: Since 1.5
+# @mux: (since 1.5)
 #
-# @spicevmc: Since 1.5
+# @hub: (since 10.0)
 #
-# @spiceport: Since 1.5
+# @msmouse: emulated Microsoft serial mouse (since 1.5)
 #
-# @qemu-vdagent: Since 6.1
+# @wctablet: emulated Wacom Penpartner serial tablet (since 2.9)
 #
-# @dbus: Since 7.0
+# @braille: Baum Braille device (since 1.5)
 #
-# @vc: v1.5
+# @testdev: device for test-suite control (since 2.2)
 #
-# @ringbuf: Since 1.6
+# @stdio: standard I/O (since 1.5)
 #
-# @memory: Since 1.5
+# @console: Windows console (since 1.5)
+#
+# @spicevmc: spice vm channel (since 1.5)
+#
+# @spiceport: Spice port channel (since 1.5)
+#
+# @qemu-vdagent: Spice vdagent (since 6.1)
+#
+# @dbus: D-Bus channel (since 7.0)
+#
+# @vc: virtual console (since 1.5)
+#
+# @ringbuf: memory ring buffer (since 1.6)
+#
+# @memory: synonym for @ringbuf (since 1.5)
+#
+# Features:
+#
+# @deprecated: Member @memory is deprecated.  Use @ringbuf instead.
 #
 # Since: 1.4
 ##
 { 'enum': 'ChardevBackendKind',
   'data': [ 'file',
-            'serial',
-            'parallel',
+            { 'name': 'serial', 'if': 'HAVE_CHARDEV_SERIAL' },
+            { 'name': 'parallel', 'if': 'HAVE_CHARDEV_PARALLEL' },
             'pipe',
             'socket',
             'udp',
             'pty',
             'null',
             'mux',
+            'hub',
             'msmouse',
             'wctablet',
-            'braille',
+            { 'name': 'braille', 'if': 'CONFIG_BRLAPI' },
             'testdev',
             'stdio',
-            'console',
+            { 'name': 'console', 'if': 'CONFIG_WIN32' },
             { 'name': 'spicevmc', 'if': 'CONFIG_SPICE' },
             { 'name': 'spiceport', 'if': 'CONFIG_SPICE' },
             { 'name': 'qemu-vdagent', 'if': 'CONFIG_SPICE_PROTOCOL' },
             { 'name': 'dbus', 'if': 'CONFIG_DBUS_DISPLAY' },
             'vc',
             'ringbuf',
-            # next one is just for compatibility
-            'memory' ] }
+            { 'name': 'memory', 'features': [ 'deprecated' ] } ] }
 
 ##
 # @ChardevFileWrapper:
+#
+# @data: Configuration info for file chardevs
 #
 # Since: 1.4
 ##
@@ -506,6 +564,8 @@
 ##
 # @ChardevHostdevWrapper:
 #
+# @data: Configuration info for device and pipe chardevs
+#
 # Since: 1.4
 ##
 { 'struct': 'ChardevHostdevWrapper',
@@ -513,6 +573,8 @@
 
 ##
 # @ChardevSocketWrapper:
+#
+# @data: Configuration info for (stream) socket chardevs
 #
 # Since: 1.4
 ##
@@ -522,6 +584,8 @@
 ##
 # @ChardevUdpWrapper:
 #
+# @data: Configuration info for datagram socket chardevs
+#
 # Since: 1.5
 ##
 { 'struct': 'ChardevUdpWrapper',
@@ -529,6 +593,8 @@
 
 ##
 # @ChardevCommonWrapper:
+#
+# @data: Configuration shared across all chardev backends
 #
 # Since: 2.6
 ##
@@ -538,13 +604,27 @@
 ##
 # @ChardevMuxWrapper:
 #
+# @data: Configuration info for mux chardevs
+#
 # Since: 1.5
 ##
 { 'struct': 'ChardevMuxWrapper',
   'data': { 'data': 'ChardevMux' } }
 
 ##
+# @ChardevHubWrapper:
+#
+# @data: Configuration info for hub chardevs
+#
+# Since: 10.0
+##
+{ 'struct': 'ChardevHubWrapper',
+  'data': { 'data': 'ChardevHub' } }
+
+##
 # @ChardevStdioWrapper:
+#
+# @data: Configuration info for stdio chardevs
 #
 # Since: 1.5
 ##
@@ -553,6 +633,8 @@
 
 ##
 # @ChardevSpiceChannelWrapper:
+#
+# @data: Configuration info for spice vm channel chardevs
 #
 # Since: 1.5
 ##
@@ -563,6 +645,8 @@
 ##
 # @ChardevSpicePortWrapper:
 #
+# @data: Configuration info for spice port chardevs
+#
 # Since: 1.5
 ##
 { 'struct': 'ChardevSpicePortWrapper',
@@ -571,6 +655,8 @@
 
 ##
 # @ChardevQemuVDAgentWrapper:
+#
+# @data: Configuration info for qemu vdagent implementation
 #
 # Since: 6.1
 ##
@@ -581,6 +667,8 @@
 ##
 # @ChardevDBusWrapper:
 #
+# @data: Configuration info for DBus chardevs
+#
 # Since: 7.0
 ##
 { 'struct': 'ChardevDBusWrapper',
@@ -590,6 +678,8 @@
 ##
 # @ChardevVCWrapper:
 #
+# @data: Configuration info for virtual console chardevs
+#
 # Since: 1.5
 ##
 { 'struct': 'ChardevVCWrapper',
@@ -598,15 +688,30 @@
 ##
 # @ChardevRingbufWrapper:
 #
+# @data: Configuration info for ring buffer chardevs
+#
 # Since: 1.5
 ##
 { 'struct': 'ChardevRingbufWrapper',
   'data': { 'data': 'ChardevRingbuf' } }
 
+
+##
+# @ChardevPtyWrapper:
+#
+# @data: Configuration info for pty chardevs
+#
+# Since: 9.2
+##
+{ 'struct': 'ChardevPtyWrapper',
+  'data': { 'data': 'ChardevPty' } }
+
 ##
 # @ChardevBackend:
 #
 # Configuration info for the new chardev backend.
+#
+# @type: backend type
 #
 # Since: 1.4
 ##
@@ -614,20 +719,25 @@
   'base': { 'type': 'ChardevBackendKind' },
   'discriminator': 'type',
   'data': { 'file': 'ChardevFileWrapper',
-            'serial': 'ChardevHostdevWrapper',
-            'parallel': 'ChardevHostdevWrapper',
+            'serial': { 'type': 'ChardevHostdevWrapper',
+                        'if': 'HAVE_CHARDEV_SERIAL' },
+            'parallel': { 'type': 'ChardevHostdevWrapper',
+                          'if': 'HAVE_CHARDEV_PARALLEL' },
             'pipe': 'ChardevHostdevWrapper',
             'socket': 'ChardevSocketWrapper',
             'udp': 'ChardevUdpWrapper',
-            'pty': 'ChardevCommonWrapper',
+            'pty': 'ChardevPtyWrapper',
             'null': 'ChardevCommonWrapper',
             'mux': 'ChardevMuxWrapper',
+            'hub': 'ChardevHubWrapper',
             'msmouse': 'ChardevCommonWrapper',
             'wctablet': 'ChardevCommonWrapper',
-            'braille': 'ChardevCommonWrapper',
+            'braille': { 'type': 'ChardevCommonWrapper',
+                         'if': 'CONFIG_BRLAPI' },
             'testdev': 'ChardevCommonWrapper',
             'stdio': 'ChardevStdioWrapper',
-            'console': 'ChardevCommonWrapper',
+            'console': { 'type': 'ChardevCommonWrapper',
+                         'if': 'CONFIG_WIN32' },
             'spicevmc': { 'type': 'ChardevSpiceChannelWrapper',
                           'if': 'CONFIG_SPICE' },
             'spiceport': { 'type': 'ChardevSpicePortWrapper',
@@ -638,7 +748,6 @@
                       'if': 'CONFIG_DBUS_DISPLAY' },
             'vc': 'ChardevVCWrapper',
             'ringbuf': 'ChardevRingbufWrapper',
-            # next one is just for compatibility
             'memory': 'ChardevRingbufWrapper' } }
 
 ##
@@ -667,23 +776,27 @@
 #
 # Since: 1.4
 #
-# Examples:
+# .. qmp-example::
 #
-# -> { "execute" : "chardev-add",
-#      "arguments" : { "id" : "foo",
-#                      "backend" : { "type" : "null", "data" : {} } } }
-# <- { "return": {} }
+#     -> { "execute" : "chardev-add",
+#          "arguments" : { "id" : "foo",
+#                          "backend" : { "type" : "null", "data" : {} } } }
+#     <- { "return": {} }
 #
-# -> { "execute" : "chardev-add",
-#      "arguments" : { "id" : "bar",
-#                      "backend" : { "type" : "file",
-#                                    "data" : { "out" : "/tmp/bar.log" } } } }
-# <- { "return": {} }
+# .. qmp-example::
 #
-# -> { "execute" : "chardev-add",
-#      "arguments" : { "id" : "baz",
-#                      "backend" : { "type" : "pty", "data" : {} } } }
-# <- { "return": { "pty" : "/dev/pty/42" } }
+#     -> { "execute" : "chardev-add",
+#          "arguments" : { "id" : "bar",
+#                          "backend" : { "type" : "file",
+#                                        "data" : { "out" : "/tmp/bar.log" } } } }
+#     <- { "return": {} }
+#
+# .. qmp-example::
+#
+#     -> { "execute" : "chardev-add",
+#          "arguments" : { "id" : "baz",
+#                          "backend" : { "type" : "pty", "data" : {} } } }
+#     <- { "return": { "pty" : "/dev/pty/42" } }
 ##
 { 'command': 'chardev-add',
   'data': { 'id': 'str',
@@ -703,28 +816,30 @@
 #
 # Since: 2.10
 #
-# Examples:
+# .. qmp-example::
 #
-# -> { "execute" : "chardev-change",
-#      "arguments" : { "id" : "baz",
-#                      "backend" : { "type" : "pty", "data" : {} } } }
-# <- { "return": { "pty" : "/dev/pty/42" } }
+#     -> { "execute" : "chardev-change",
+#          "arguments" : { "id" : "baz",
+#                          "backend" : { "type" : "pty", "data" : {} } } }
+#     <- { "return": { "pty" : "/dev/pty/42" } }
 #
-# -> {"execute" : "chardev-change",
-#     "arguments" : {
-#         "id" : "charchannel2",
-#         "backend" : {
-#             "type" : "socket",
-#             "data" : {
-#                 "addr" : {
-#                     "type" : "unix" ,
-#                     "data" : {
-#                         "path" : "/tmp/charchannel2.socket"
-#                     }
-#                  },
-#                  "server" : true,
-#                  "wait" : false }}}}
-# <- {"return": {}}
+# .. qmp-example::
+#
+#     -> {"execute" : "chardev-change",
+#         "arguments" : {
+#             "id" : "charchannel2",
+#             "backend" : {
+#                 "type" : "socket",
+#                 "data" : {
+#                     "addr" : {
+#                         "type" : "unix" ,
+#                         "data" : {
+#                             "path" : "/tmp/charchannel2.socket"
+#                         }
+#                      },
+#                      "server" : true,
+#                      "wait" : false }}}}
+#     <- {"return": {}}
 ##
 { 'command': 'chardev-change',
   'data': { 'id': 'str',
@@ -738,14 +853,12 @@
 #
 # @id: the chardev's ID, must exist and not be in use
 #
-# Returns: Nothing on success
-#
 # Since: 1.4
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "chardev-remove", "arguments": { "id" : "foo" } }
-# <- { "return": {} }
+#     -> { "execute": "chardev-remove", "arguments": { "id" : "foo" } }
+#     <- { "return": {} }
 ##
 { 'command': 'chardev-remove',
   'data': { 'id': 'str' } }
@@ -757,14 +870,12 @@
 #
 # @id: the chardev's ID, must exist
 #
-# Returns: Nothing on success
-#
 # Since: 2.10
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "chardev-send-break", "arguments": { "id" : "foo" } }
-# <- { "return": {} }
+#     -> { "execute": "chardev-send-break", "arguments": { "id" : "foo" } }
+#     <- { "return": {} }
 ##
 { 'command': 'chardev-send-break',
   'data': { 'id': 'str' } }
@@ -778,15 +889,15 @@
 #
 # @open: true if the guest has opened the virtio-serial port
 #
-# Note: This event is rate-limited.
+# .. note:: This event is rate-limited.
 #
 # Since: 2.1
 #
-# Example:
+# .. qmp-example::
 #
-# <- { "event": "VSERPORT_CHANGE",
-#      "data": { "id": "channel0", "open": true },
-#      "timestamp": { "seconds": 1401385907, "microseconds": 422329 } }
+#     <- { "event": "VSERPORT_CHANGE",
+#          "data": { "id": "channel0", "open": true },
+#          "timestamp": { "seconds": 1401385907, "microseconds": 422329 } }
 ##
 { 'event': 'VSERPORT_CHANGE',
   'data': { 'id': 'str',

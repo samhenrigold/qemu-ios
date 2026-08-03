@@ -16,10 +16,10 @@
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
-#include "sysemu/kvm.h"
-#include "sysemu/cpus.h"
+#include "system/kvm.h"
+#include "system/cpus.h"
 #include "qom/object_interfaces.h"
-#include "exec/confidential-guest-support.h"
+#include "system/confidential-guest-support.h"
 #include "hw/s390x/ipl.h"
 #include "hw/s390x/sclp.h"
 #include "target/s390x/kvm/kvm_s390x.h"
@@ -29,7 +29,8 @@ static bool info_valid;
 static struct kvm_s390_pv_info_vm info_vm;
 static struct kvm_s390_pv_info_dump info_dump;
 
-static int __s390_pv_cmd(uint32_t cmd, const char *cmdname, void *data)
+static int __s390_pv_cmd(uint32_t cmd, const char *cmdname, void *data,
+                         int *pvrc)
 {
     struct kvm_pv_cmd pv_cmd = {
         .cmd = cmd,
@@ -46,6 +47,9 @@ static int __s390_pv_cmd(uint32_t cmd, const char *cmdname, void *data)
                      "IOCTL rc: %d", cmd, cmdname, pv_cmd.rc, pv_cmd.rrc,
                      rc);
     }
+    if (pvrc) {
+        *pvrc = pv_cmd.rc;
+    }
     return rc;
 }
 
@@ -53,12 +57,13 @@ static int __s390_pv_cmd(uint32_t cmd, const char *cmdname, void *data)
  * This macro lets us pass the command as a string to the function so
  * we can print it on an error.
  */
-#define s390_pv_cmd(cmd, data) __s390_pv_cmd(cmd, #cmd, data)
+#define s390_pv_cmd(cmd, data) __s390_pv_cmd(cmd, #cmd, data, NULL)
+#define s390_pv_cmd_pvrc(cmd, data, pvrc) __s390_pv_cmd(cmd, #cmd, data, pvrc)
 #define s390_pv_cmd_exit(cmd, data)    \
 {                                      \
     int rc;                            \
                                        \
-    rc = __s390_pv_cmd(cmd, #cmd, data);\
+    rc = __s390_pv_cmd(cmd, #cmd, data, NULL); \
     if (rc) {                          \
         exit(1);                       \
     }                                  \
@@ -128,7 +133,7 @@ bool s390_pv_vm_try_disable_async(S390CcwMachineState *ms)
      * If the feature is not present or if the VM is not larger than 2 GiB,
      * KVM_PV_ASYNC_CLEANUP_PREPARE fill fail; no point in attempting it.
      */
-    if ((MACHINE(ms)->maxram_size <= 2 * GiB) ||
+    if (s390_get_memory_limit(ms) <= 2 * GiB ||
         !kvm_check_extension(kvm_state, KVM_CAP_S390_PROTECTED_ASYNC_DISABLE)) {
         return false;
     }
@@ -142,14 +147,24 @@ bool s390_pv_vm_try_disable_async(S390CcwMachineState *ms)
     return true;
 }
 
-int s390_pv_set_sec_parms(uint64_t origin, uint64_t length)
+int s390_pv_set_sec_parms(uint64_t origin, uint64_t length, Error **errp)
 {
+    int ret, pvrc;
     struct kvm_s390_pv_sec_parm args = {
         .origin = origin,
         .length = length,
     };
 
-    return s390_pv_cmd(KVM_PV_SET_SEC_PARMS, &args);
+    ret = s390_pv_cmd_pvrc(KVM_PV_SET_SEC_PARMS, &args, &pvrc);
+    if (ret) {
+        error_setg(errp, "Failed to set secure execution parameters");
+        if (pvrc == 0x108) {
+            error_append_hint(errp, "Please check whether the image is "
+                                    "correctly encrypted for this host\n");
+        }
+    }
+
+    return ret;
 }
 
 /*
@@ -319,10 +334,15 @@ static bool s390_pv_guest_check(ConfidentialGuestSupport *cgs, Error **errp)
     return s390_pv_check_cpus(errp);
 }
 
-int s390_pv_kvm_init(ConfidentialGuestSupport *cgs, Error **errp)
+static int s390_pv_kvm_init(ConfidentialGuestSupport *cgs, Error **errp)
 {
     if (!object_dynamic_cast(OBJECT(cgs), TYPE_S390_PV_GUEST)) {
         return 0;
+    }
+
+    if (!kvm_enabled()) {
+        error_setg(errp, "Protected Virtualization requires KVM");
+        return -1;
     }
 
     if (!s390_has_feat(S390_FEAT_UNPACK)) {
@@ -349,6 +369,9 @@ OBJECT_DEFINE_TYPE_WITH_INTERFACES(S390PVGuest,
 
 static void s390_pv_guest_class_init(ObjectClass *oc, void *data)
 {
+    ConfidentialGuestSupportClass *klass = CONFIDENTIAL_GUEST_SUPPORT_CLASS(oc);
+
+    klass->kvm_init = s390_pv_kvm_init;
 }
 
 static void s390_pv_guest_init(Object *obj)

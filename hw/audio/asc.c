@@ -555,7 +555,7 @@ static const VMStateDescription vmstate_asc_fifo = {
     .name = "apple-sound-chip.fifo",
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8_ARRAY(fifo, ASCFIFOState, ASC_FIFO_SIZE),
         VMSTATE_UINT8(int_status, ASCFIFOState),
         VMSTATE_INT32(cnt, ASCFIFOState),
@@ -575,7 +575,7 @@ static const VMStateDescription vmstate_asc = {
     .version_id = 0,
     .minimum_version_id = 0,
     .post_load = asc_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(fifos, ASCState, 2, 0, vmstate_asc_fifo,
                              ASCFIFOState),
         VMSTATE_UINT8_ARRAY(regs, ASCState, ASC_REG_SIZE),
@@ -610,7 +610,7 @@ static void asc_fifo_init(ASCFIFOState *fs, int index)
     g_free(name);
 }
 
-static void asc_reset_hold(Object *obj)
+static void asc_reset_hold(Object *obj, ResetType type)
 {
     ASCState *s = ASC(obj);
 
@@ -695,10 +695,9 @@ static void asc_init(Object *obj)
     sysbus_init_mmio(sbd, &s->asc);
 }
 
-static Property asc_properties[] = {
+static const Property asc_properties[] = {
     DEFINE_AUDIO_PROPERTIES(ASCState, card),
     DEFINE_PROP_UINT8("asctype", ASCState, type, ASC_TYPE_ASC),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void asc_class_init(ObjectClass *oc, void *data)

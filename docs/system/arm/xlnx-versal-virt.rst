@@ -178,6 +178,9 @@ Run the following at the U-Boot prompt:
   fdt set /chosen/dom0 reg <0x00000000 0x40000000 0x0 0x03100000>
   booti 30000000 - 20000000
 
+It's possible to change the OSPI flash model emulated by using the machine model
+option ``ospi-flash``.
+
 BBRAM File Backend
 """"""""""""""""""
 BBRAM can have an optional file backend, which must be a seekable
@@ -194,7 +197,7 @@ To use a different index value, N, from default of 0, add:
 
 .. code-block:: bash
 
-  -global xlnx,bbram-ctrl.drive-index=N
+  -global driver=xlnx.bbram-ctrl,property=drive-index,value=N
 
 eFUSE File Backend
 """"""""""""""""""
@@ -212,7 +215,7 @@ To use a different index value, N, from default of 1, add:
 
 .. code-block:: bash
 
-  -global xlnx,efuse.drive-index=N
+  -global xlnx-efuse.drive-index=N
 
 .. warning::
   In actual physical Versal, BBRAM and eFUSE contain sensitive data.

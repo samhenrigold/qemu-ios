@@ -835,10 +835,9 @@ static int virtio_serial_load_device(VirtIODevice *vdev, QEMUFile *f,
 
 static void virtser_bus_dev_print(Monitor *mon, DeviceState *qdev, int indent);
 
-static Property virtser_props[] = {
+static const Property virtser_props[] = {
     DEFINE_PROP_UINT32("nr", VirtIOSerialPort, id, VIRTIO_CONSOLE_BAD_ID),
     DEFINE_PROP_STRING("name", VirtIOSerialPort, name),
-    DEFINE_PROP_END_OF_LIST()
 };
 
 static void virtser_bus_class_init(ObjectClass *klass, void *data)
@@ -985,8 +984,7 @@ static void virtser_port_device_realize(DeviceState *dev, Error **errp)
         return;
     }
 
-    port->bh = qemu_bh_new_guarded(flush_queued_data_bh, port,
-                                   &dev->mem_reentrancy_guard);
+    port->bh = virtio_bh_new_guarded(dev, flush_queued_data_bh, port);
     port->elem = NULL;
 }
 
@@ -1148,18 +1146,17 @@ static const VMStateDescription vmstate_virtio_console = {
     .name = "virtio-console",
     .minimum_version_id = 3,
     .version_id = 3,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_VIRTIO_DEVICE,
         VMSTATE_END_OF_LIST()
     },
 };
 
-static Property virtio_serial_properties[] = {
+static const Property virtio_serial_properties[] = {
     DEFINE_PROP_UINT32("max_ports", VirtIOSerial, serial.max_virtserial_ports,
                                                   31),
     DEFINE_PROP_BIT64("emergency-write", VirtIOSerial, host_features,
                       VIRTIO_CONSOLE_F_EMERG_WRITE, true),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void virtio_serial_class_init(ObjectClass *klass, void *data)

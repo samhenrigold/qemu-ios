@@ -33,7 +33,7 @@
 #include "hw/ssi/xilinx_spips.h"
 #include "qapi/error.h"
 #include "hw/register.h"
-#include "sysemu/dma.h"
+#include "system/dma.h"
 #include "migration/blocker.h"
 #include "migration/vmstate.h"
 
@@ -620,7 +620,9 @@ static void xilinx_spips_flush_txfifo(XilinxSPIPS *s)
         } else if (s->snoop_state == SNOOP_STRIPING ||
                    s->snoop_state == SNOOP_NONE) {
             for (i = 0; i < num_effective_busses(s); ++i) {
-                tx_rx[i] = fifo8_pop(&s->tx_fifo);
+                if (!fifo8_is_empty(&s->tx_fifo)) {
+                    tx_rx[i] = fifo8_pop(&s->tx_fifo);
+                }
             }
             stripe8(tx_rx, num_effective_busses(s), false);
         } else if (s->snoop_state >= SNOOP_ADDR) {
@@ -1369,7 +1371,7 @@ static const VMStateDescription vmstate_xilinx_spips = {
     .version_id = 2,
     .minimum_version_id = 2,
     .post_load = xilinx_spips_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_FIFO8(tx_fifo, XilinxSPIPS),
         VMSTATE_FIFO8(rx_fifo, XilinxSPIPS),
         VMSTATE_UINT32_ARRAY(regs, XilinxSPIPS, XLNX_SPIPS_R_MAX),
@@ -1395,7 +1397,7 @@ static const VMStateDescription vmstate_xilinx_qspips = {
     .name = "xilinx_qspips",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(parent_obj, XilinxQSPIPS, 0,
                        vmstate_xilinx_spips, XilinxSPIPS),
         VMSTATE_END_OF_LIST()
@@ -1407,7 +1409,7 @@ static const VMStateDescription vmstate_xlnx_zynqmp_qspips = {
     .version_id = 1,
     .minimum_version_id = 1,
     .post_load = xlnx_zynqmp_qspips_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(parent_obj, XlnxZynqMPQSPIPS, 0,
                        vmstate_xilinx_qspips, XilinxQSPIPS),
         VMSTATE_FIFO8(tx_fifo_g, XlnxZynqMPQSPIPS),
@@ -1418,16 +1420,14 @@ static const VMStateDescription vmstate_xlnx_zynqmp_qspips = {
     }
 };
 
-static Property xilinx_zynqmp_qspips_properties[] = {
+static const Property xilinx_zynqmp_qspips_properties[] = {
     DEFINE_PROP_UINT32("dma-burst-size", XlnxZynqMPQSPIPS, dma_burst_size, 64),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static Property xilinx_spips_properties[] = {
+static const Property xilinx_spips_properties[] = {
     DEFINE_PROP_UINT8("num-busses", XilinxSPIPS, num_busses, 1),
     DEFINE_PROP_UINT8("num-ss-bits", XilinxSPIPS, num_cs, 4),
     DEFINE_PROP_UINT8("num-txrx-bytes", XilinxSPIPS, num_txrx_bytes, 1),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void xilinx_qspips_class_init(ObjectClass *klass, void * data)
@@ -1448,7 +1448,7 @@ static void xilinx_spips_class_init(ObjectClass *klass, void *data)
     XilinxSPIPSClass *xsc = XILINX_SPIPS_CLASS(klass);
 
     dc->realize = xilinx_spips_realize;
-    dc->reset = xilinx_spips_reset;
+    device_class_set_legacy_reset(dc, xilinx_spips_reset);
     device_class_set_props(dc, xilinx_spips_properties);
     dc->vmsd = &vmstate_xilinx_spips;
 
@@ -1464,7 +1464,7 @@ static void xlnx_zynqmp_qspips_class_init(ObjectClass *klass, void * data)
     XilinxSPIPSClass *xsc = XILINX_SPIPS_CLASS(klass);
 
     dc->realize = xlnx_zynqmp_qspips_realize;
-    dc->reset = xlnx_zynqmp_qspips_reset;
+    device_class_set_legacy_reset(dc, xlnx_zynqmp_qspips_reset);
     dc->vmsd = &vmstate_xlnx_zynqmp_qspips;
     device_class_set_props(dc, xilinx_zynqmp_qspips_properties);
     xsc->reg_ops = &xlnx_zynqmp_qspips_ops;

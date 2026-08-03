@@ -129,7 +129,7 @@ static void allwinner_r40_ccu_write(void *opaque, hwaddr offset,
 static const MemoryRegionOps allwinner_r40_ccu_ops = {
     .read = allwinner_r40_ccu_read,
     .write = allwinner_r40_ccu_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -179,7 +179,7 @@ static const VMStateDescription allwinner_r40_ccu_vmstate = {
     .name = "allwinner-r40-ccu",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, AwR40ClockCtlState, AW_R40_CCU_REGS_NUM),
         VMSTATE_END_OF_LIST()
     }
@@ -189,7 +189,7 @@ static void allwinner_r40_ccu_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = allwinner_r40_ccu_reset;
+    device_class_set_legacy_reset(dc, allwinner_r40_ccu_reset);
     dc->vmsd = &allwinner_r40_ccu_vmstate;
 }
 

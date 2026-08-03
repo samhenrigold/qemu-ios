@@ -31,11 +31,10 @@
 /*
  * Global state (GS) API. These functions run under the BQL.
  *
- * If a function modifies the graph, it also uses drain and/or
- * aio_context_acquire/release to be sure it has unique access.
- * aio_context locking is needed together with BQL because of
- * the thread-safe I/O API that concurrently runs and accesses
- * the graph without the BQL.
+ * If a function modifies the graph, it also uses the graph lock to be sure it
+ * has unique access. The graph lock is needed together with BQL because of the
+ * thread-safe I/O API that concurrently runs and accesses the graph without
+ * the BQL.
  *
  * It is important to note that not all of these functions are
  * necessarily limited to running under the BQL, but they would
@@ -145,7 +144,8 @@ int GRAPH_RDLOCK bdrv_make_empty(BdrvChild *c, Error **errp);
 
 void bdrv_register(BlockDriver *bdrv);
 int bdrv_drop_intermediate(BlockDriverState *top, BlockDriverState *base,
-                           const char *backing_file_str);
+                           const char *backing_file_str,
+                           bool backing_mask_protocol);
 
 BlockDriverState * GRAPH_RDLOCK
 bdrv_find_overlay(BlockDriverState *active, BlockDriverState *bs);
@@ -175,11 +175,17 @@ BlockDriverState * GRAPH_RDLOCK
 check_to_replace_node(BlockDriverState *parent_bs, const char *node_name,
                       Error **errp);
 
+
+bool GRAPH_RDLOCK bdrv_is_inactive(BlockDriverState *bs);
+
 int no_coroutine_fn GRAPH_RDLOCK
 bdrv_activate(BlockDriverState *bs, Error **errp);
 
 int coroutine_fn no_co_wrapper_bdrv_rdlock
 bdrv_co_activate(BlockDriverState *bs, Error **errp);
+
+int no_coroutine_fn
+bdrv_inactivate(BlockDriverState *bs, Error **errp);
 
 void bdrv_activate_all(Error **errp);
 int bdrv_inactivate_all(void);
@@ -267,20 +273,6 @@ int bdrv_debug_breakpoint(BlockDriverState *bs, const char *event,
 int bdrv_debug_remove_breakpoint(BlockDriverState *bs, const char *tag);
 int bdrv_debug_resume(BlockDriverState *bs, const char *tag);
 bool bdrv_debug_is_suspended(BlockDriverState *bs, const char *tag);
-
-/**
- * Locks the AioContext of @bs if it's not the current AioContext. This avoids
- * double locking which could lead to deadlocks: This is a coroutine_fn, so we
- * know we already own the lock of the current AioContext.
- *
- * May only be called in the main thread.
- */
-void coroutine_fn bdrv_co_lock(BlockDriverState *bs);
-
-/**
- * Unlocks the AioContext of @bs if it's not the current AioContext.
- */
-void coroutine_fn bdrv_co_unlock(BlockDriverState *bs);
 
 bool bdrv_child_change_aio_context(BdrvChild *c, AioContext *ctx,
                                    GHashTable *visited, Transaction *tran,

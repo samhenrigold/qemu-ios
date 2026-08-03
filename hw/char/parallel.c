@@ -33,8 +33,8 @@
 #include "migration/vmstate.h"
 #include "hw/char/parallel-isa.h"
 #include "hw/char/parallel.h"
-#include "sysemu/reset.h"
-#include "sysemu/sysemu.h"
+#include "system/reset.h"
+#include "system/system.h"
 #include "trace.h"
 #include "qom/object.h"
 
@@ -478,7 +478,7 @@ static const VMStateDescription vmstate_parallel_isa = {
     .name = "parallel_isa",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields      = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(state.dataw, ISAParallelState),
         VMSTATE_UINT8(state.datar, ISAParallelState),
         VMSTATE_UINT8(state.status, ISAParallelState),
@@ -532,7 +532,7 @@ static void parallel_isa_realizefn(DeviceState *dev, Error **errp)
         s->status = dummy;
     }
 
-    isa_register_portio_list(isadev, &s->portio_list, base,
+    isa_register_portio_list(isadev, &isa->portio_list, base,
                              (s->hw_driver
                               ? &isa_parallel_portio_hw_list[0]
                               : &isa_parallel_portio_sw_list[0]),
@@ -603,12 +603,11 @@ bool parallel_mm_init(MemoryRegion *address_space,
     return true;
 }
 
-static Property parallel_isa_properties[] = {
+static const Property parallel_isa_properties[] = {
     DEFINE_PROP_UINT32("index", ISAParallelState, index,   -1),
     DEFINE_PROP_UINT32("iobase", ISAParallelState, iobase,  -1),
     DEFINE_PROP_UINT32("irq",   ISAParallelState, isairq,  7),
     DEFINE_PROP_CHR("chardev",  ISAParallelState, state.chr),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void parallel_isa_class_initfn(ObjectClass *klass, void *data)

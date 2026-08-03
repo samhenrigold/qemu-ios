@@ -277,7 +277,7 @@ static const VMStateDescription vmstate_vmmouse = {
     .version_id = 0,
     .minimum_version_id = 0,
     .post_load = vmmouse_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT32_EQUAL(queue_size, VMMouseState, NULL),
         VMSTATE_UINT32_ARRAY(queue, VMMouseState, VMMOUSE_QUEUE_SIZE),
         VMSTATE_UINT16(nb_queue, VMMouseState),
@@ -317,9 +317,8 @@ static void vmmouse_realizefn(DeviceState *dev, Error **errp)
     vmport_register(VMPORT_CMD_VMMOUSE_DATA, vmmouse_ioport_read, s);
 }
 
-static Property vmmouse_properties[] = {
+static const Property vmmouse_properties[] = {
     DEFINE_PROP_LINK("i8042", VMMouseState, i8042, TYPE_I8042, ISAKBDState *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void vmmouse_class_initfn(ObjectClass *klass, void *data)
@@ -327,7 +326,7 @@ static void vmmouse_class_initfn(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = vmmouse_realizefn;
-    dc->reset = vmmouse_reset;
+    device_class_set_legacy_reset(dc, vmmouse_reset);
     dc->vmsd = &vmstate_vmmouse;
     device_class_set_props(dc, vmmouse_properties);
     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);

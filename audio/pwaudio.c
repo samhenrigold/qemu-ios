@@ -11,7 +11,6 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "audio.h"
-#include <errno.h>
 #include "qemu/error-report.h"
 #include "qapi/error.h"
 #include <spa/param/audio/format-utils.h>
@@ -770,13 +769,15 @@ qpw_audio_init(Audiodev *dev, Error **errp)
     pw->core = pw_context_connect(pw->context, NULL, 0);
     if (pw->core == NULL) {
         pw_thread_loop_unlock(pw->thread_loop);
-        goto fail_error;
+        error_setg_errno(errp, errno, "Failed to connect to PipeWire instance");
+        goto fail;
     }
 
     if (pw_core_add_listener(pw->core, &pw->core_listener,
                              &core_events, pw) < 0) {
         pw_thread_loop_unlock(pw->thread_loop);
-        goto fail_error;
+        error_setg(errp, "Failed to add PipeWire listener");
+        goto fail;
     }
     if (wait_resync(pw) < 0) {
         pw_thread_loop_unlock(pw->thread_loop);
@@ -786,8 +787,6 @@ qpw_audio_init(Audiodev *dev, Error **errp)
 
     return g_steal_pointer(&pw);
 
-fail_error:
-    error_setg(errp, "Failed to initialize PW context");
 fail:
     if (pw->thread_loop) {
         pw_thread_loop_stop(pw->thread_loop);

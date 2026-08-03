@@ -7,6 +7,7 @@ system_ss.add(files(
   'clipboard.c',
   'console.c',
   'cursor.c',
+  'dmabuf.c',
   'input-keymap.c',
   'input-legacy.c',
   'input-barrier.c',
@@ -25,10 +26,9 @@ endif
 system_ss.add([spice_headers, files('spice-module.c')])
 system_ss.add(when: spice_protocol, if_true: files('vdagent.c'))
 
-system_ss.add(when: 'CONFIG_LINUX', if_true: files(
-  'input-linux.c',
-  'udmabuf.c',
-))
+if host_os == 'linux'
+  system_ss.add(files('input-linux.c', 'udmabuf.c'))
+endif
 system_ss.add(when: cocoa, if_true: files('cocoa.m'))
 
 vnc_ss = ss.source_set()
@@ -44,7 +44,7 @@ vnc_ss.add(files(
   'vnc-jobs.c',
   'vnc-clipboard.c',
 ))
-vnc_ss.add(zlib, jpeg, gnutls)
+vnc_ss.add(zlib, jpeg)
 vnc_ss.add(when: sasl, if_true: files('vnc-auth-sasl.c'))
 system_ss.add_all(when: [vnc, pixman], if_true: vnc_ss)
 system_ss.add(when: vnc, if_false: files('vnc-stubs.c'))
@@ -76,7 +76,7 @@ endif
 if dbus_display
   dbus_ss = ss.source_set()
   env = environment()
-  env.set('TARGETOS', targetos)
+  env.set('HOST_OS', host_os)
   xml = custom_target('dbus-display preprocess',
                       input: 'dbus-display1.xml',
                       output: 'dbus-display1.xml',
@@ -91,9 +91,7 @@ if dbus_display
                                           '--interface-prefix', 'org.qemu.',
                                           '--c-namespace', 'QemuDBus',
                                           '--generate-c-code', '@BASENAME@'])
-  dbus_display1_lib = static_library('dbus-display1', dbus_display1, dependencies: gio)
-  dbus_display1_dep = declare_dependency(link_with: dbus_display1_lib, include_directories: include_directories('.'))
-  dbus_ss.add(when: [gio, dbus_display1_dep],
+  dbus_ss.add(when: gio,
               if_true: [files(
                 'dbus-chardev.c',
                 'dbus-clipboard.c',
@@ -101,12 +99,14 @@ if dbus_display
                 'dbus-error.c',
                 'dbus-listener.c',
                 'dbus.c',
-              ), opengl, gbm, pixman])
+              ), opengl, gbm, pixman, dbus_display1])
   ui_modules += {'dbus' : dbus_ss}
 endif
 
 if gtk.found()
-  system_ss.add(when: 'CONFIG_WIN32', if_true: files('win32-kbd-hook.c'))
+  if host_os == 'windows'
+    system_ss.add(files('win32-kbd-hook.c'))
+  endif
 
   gtk_ss = ss.source_set()
   gtk_ss.add(gtk, vte, pixman, files('gtk.c'))
@@ -120,8 +120,6 @@ if gtk.found()
 endif
 
 if sdl.found()
-  system_ss.add(when: 'CONFIG_WIN32', if_true: files('win32-kbd-hook.c'))
-
   sdl_ss = ss.source_set()
   sdl_ss.add(sdl, sdl_image, pixman, glib, files(
     'sdl2-2d.c',

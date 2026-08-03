@@ -39,9 +39,9 @@
 #include "hw/qdev-properties-system.h"
 #include "migration/vmstate.h"
 #include "hw/block/block.h"
-#include "sysemu/block-backend.h"
-#include "sysemu/blockdev.h"
-#include "sysemu/sysemu.h"
+#include "system/block-backend.h"
+#include "system/blockdev.h"
+#include "system/system.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
@@ -454,13 +454,12 @@ struct FloppyDrive {
     FloppyDriveType type;
 };
 
-static Property floppy_drive_properties[] = {
+static const Property floppy_drive_properties[] = {
     DEFINE_PROP_UINT32("unit", FloppyDrive, unit, -1),
     DEFINE_BLOCK_PROPERTIES(FloppyDrive, conf),
     DEFINE_PROP_SIGNED("drive-type", FloppyDrive, type,
                         FLOPPY_DRIVE_TYPE_AUTO, qdev_prop_fdc_drive_type,
                         FloppyDriveType),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void floppy_drive_realize(DeviceState *qdev, Error **errp)
@@ -854,7 +853,7 @@ static const VMStateDescription vmstate_fdrive_media_changed = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = fdrive_media_changed_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(media_changed, FDrive),
         VMSTATE_END_OF_LIST()
     }
@@ -864,7 +863,7 @@ static const VMStateDescription vmstate_fdrive_media_rate = {
     .name = "fdrive/media_rate",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(media_rate, FDrive),
         VMSTATE_END_OF_LIST()
     }
@@ -882,7 +881,7 @@ static const VMStateDescription vmstate_fdrive_perpendicular = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = fdrive_perpendicular_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(perpendicular, FDrive),
         VMSTATE_END_OF_LIST()
     }
@@ -899,13 +898,13 @@ static const VMStateDescription vmstate_fdrive = {
     .version_id = 1,
     .minimum_version_id = 1,
     .post_load = fdrive_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(head, FDrive),
         VMSTATE_UINT8(track, FDrive),
         VMSTATE_UINT8(sect, FDrive),
         VMSTATE_END_OF_LIST()
     },
-    .subsections = (const VMStateDescription*[]) {
+    .subsections = (const VMStateDescription * const []) {
         &vmstate_fdrive_media_changed,
         &vmstate_fdrive_media_rate,
         &vmstate_fdrive_perpendicular,
@@ -977,7 +976,7 @@ static const VMStateDescription vmstate_fdc_reset_sensei = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = fdc_reset_sensei_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT32(reset_sensei, FDCtrl),
         VMSTATE_END_OF_LIST()
     }
@@ -995,7 +994,7 @@ static const VMStateDescription vmstate_fdc_result_timer = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = fdc_result_timer_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_TIMER_PTR(result_timer, FDCtrl),
         VMSTATE_END_OF_LIST()
     }
@@ -1013,7 +1012,7 @@ static const VMStateDescription vmstate_fdc_phase = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = fdc_phase_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(phase, FDCtrl),
         VMSTATE_END_OF_LIST()
     }
@@ -1026,7 +1025,7 @@ const VMStateDescription vmstate_fdc = {
     .pre_save = fdc_pre_save,
     .pre_load = fdc_pre_load,
     .post_load = fdc_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         /* Controller State */
         VMSTATE_UINT8(sra, FDCtrl),
         VMSTATE_UINT8(srb, FDCtrl),
@@ -1057,7 +1056,7 @@ const VMStateDescription vmstate_fdc = {
                              vmstate_fdrive, FDrive),
         VMSTATE_END_OF_LIST()
     },
-    .subsections = (const VMStateDescription*[]) {
+    .subsections = (const VMStateDescription * const []) {
         &vmstate_fdc_reset_sensei,
         &vmstate_fdc_result_timer,
         &vmstate_fdc_phase,

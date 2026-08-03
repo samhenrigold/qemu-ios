@@ -108,9 +108,8 @@ static void ssi_peripheral_realize(DeviceState *dev, Error **errp)
     ssc->realize(s, errp);
 }
 
-static Property ssi_peripheral_properties[] = {
+static const Property ssi_peripheral_properties[] = {
     DEFINE_PROP_UINT8("cs", SSIPeripheral, cs_index, 0),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void ssi_peripheral_class_init(ObjectClass *klass, void *data)
@@ -172,7 +171,7 @@ const VMStateDescription vmstate_ssi_peripheral = {
     .name = "SSISlave",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_BOOL(cs, SSIPeripheral),
         VMSTATE_END_OF_LIST()
     }

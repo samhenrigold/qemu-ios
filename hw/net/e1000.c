@@ -33,8 +33,8 @@
 #include "net/eth.h"
 #include "net/net.h"
 #include "net/checksum.h"
-#include "sysemu/sysemu.h"
-#include "sysemu/dma.h"
+#include "system/system.h"
+#include "system/dma.h"
 #include "qemu/iov.h"
 #include "qemu/module.h"
 #include "qemu/range.h"
@@ -373,7 +373,7 @@ static bool e1000_vet_init_need(void *opaque)
     return chkflag(VET);
 }
 
-static void e1000_reset_hold(Object *obj)
+static void e1000_reset_hold(Object *obj, ResetType type)
 {
     E1000State *d = E1000(obj);
     E1000BaseClass *edc = E1000_GET_CLASS(d);
@@ -1437,7 +1437,7 @@ static const VMStateDescription vmstate_e1000_mit_state = {
     .name = "e1000/mit_state",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(mac_reg[RDTR], E1000State),
         VMSTATE_UINT32(mac_reg[RADV], E1000State),
         VMSTATE_UINT32(mac_reg[TADV], E1000State),
@@ -1452,7 +1452,7 @@ static const VMStateDescription vmstate_e1000_full_mac_state = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = e1000_full_mac_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(mac_reg, E1000State, 0x8000),
         VMSTATE_END_OF_LIST()
     }
@@ -1464,7 +1464,7 @@ static const VMStateDescription vmstate_e1000_tx_tso_state = {
     .minimum_version_id = 1,
     .needed = e1000_tso_state_needed,
     .post_load = e1000_tx_tso_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(tx.tso_props.ipcss, E1000State),
         VMSTATE_UINT8(tx.tso_props.ipcso, E1000State),
         VMSTATE_UINT16(tx.tso_props.ipcse, E1000State),
@@ -1486,7 +1486,7 @@ static const VMStateDescription vmstate_e1000 = {
     .minimum_version_id = 1,
     .pre_save = e1000_pre_save,
     .post_load = e1000_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, E1000State),
         VMSTATE_UNUSED_TEST(is_version_1, 4), /* was instance id */
         VMSTATE_UNUSED(4), /* Was mmio_base.  */
@@ -1558,7 +1558,7 @@ static const VMStateDescription vmstate_e1000 = {
                                  E1000_VLAN_FILTER_TBL_SIZE),
         VMSTATE_END_OF_LIST()
     },
-    .subsections = (const VMStateDescription*[]) {
+    .subsections = (const VMStateDescription * const []) {
         &vmstate_e1000_mit_state,
         &vmstate_e1000_full_mac_state,
         &vmstate_e1000_tx_tso_state,
@@ -1677,7 +1677,7 @@ static void pci_e1000_realize(PCIDevice *pci_dev, Error **errp)
                                         e1000_flush_queue_timer, d);
 }
 
-static Property e1000_properties[] = {
+static const Property e1000_properties[] = {
     DEFINE_NIC_PROPERTIES(E1000State, conf),
     DEFINE_PROP_BIT("extra_mac_registers", E1000State,
                     compat_flags, E1000_FLAG_MAC_BIT, true),
@@ -1685,7 +1685,6 @@ static Property e1000_properties[] = {
                     compat_flags, E1000_FLAG_TSO_BIT, true),
     DEFINE_PROP_BIT("init-vet", E1000State,
                     compat_flags, E1000_FLAG_VET_BIT, true),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 typedef struct E1000Info {
@@ -1774,7 +1773,7 @@ static void e1000_register_types(void)
         type_info.class_data = (void *)info;
         type_info.class_init = e1000_class_init;
 
-        type_register(&type_info);
+        type_register_static(&type_info);
     }
 }
 

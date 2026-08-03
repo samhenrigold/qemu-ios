@@ -27,7 +27,7 @@
 #include "qapi/error.h"
 #include "qemu/notify.h"
 #include "qemu/rcu.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "qemu/error-report.h"
 #include "trace.h"
 #include "hw/boards.h"
@@ -44,7 +44,7 @@
  */
 #define MAX_DISCARDS_PER_COMMAND 12
 
-struct PostcopyDiscardState {
+typedef struct PostcopyDiscardState {
     const char *ramblock_name;
     uint16_t cur_entry;
     /*
@@ -54,7 +54,7 @@ struct PostcopyDiscardState {
     uint64_t length_list[MAX_DISCARDS_PER_COMMAND];
     unsigned int nsentwords;
     unsigned int nsentcmds;
-};
+} PostcopyDiscardState;
 
 static NotifierWithReturnList postcopy_notifier_list;
 
@@ -77,10 +77,9 @@ int postcopy_notify(enum PostcopyNotifyReason reason, Error **errp)
 {
     struct PostcopyNotifyData pnd;
     pnd.reason = reason;
-    pnd.errp = errp;
 
     return notifier_with_return_list_notify(&postcopy_notifier_list,
-                                            &pnd);
+                                            &pnd, errp);
 }
 
 /*
@@ -102,11 +101,9 @@ void postcopy_thread_create(MigrationIncomingState *mis,
  * are target OS specific.
  */
 #if defined(__linux__)
-
 #include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
-#include <asm/types.h> /* for __u64 */
 #endif
 
 #if defined(__linux__) && defined(__NR_userfaultfd) && defined(CONFIG_EVENTFD)
@@ -272,8 +269,8 @@ static bool request_ufd_features(int ufd, uint64_t features)
         return false;
     }
 
-    ioctl_mask = (__u64)1 << _UFFDIO_REGISTER |
-                 (__u64)1 << _UFFDIO_UNREGISTER;
+    ioctl_mask = 1ULL << _UFFDIO_REGISTER |
+                 1ULL << _UFFDIO_UNREGISTER;
     if ((api_struct.ioctls & ioctl_mask) != ioctl_mask) {
         error_report("Missing userfault features: %" PRIx64,
                      (uint64_t)(~api_struct.ioctls & ioctl_mask));
@@ -286,10 +283,10 @@ static bool request_ufd_features(int ufd, uint64_t features)
 static bool ufd_check_and_apply(int ufd, MigrationIncomingState *mis,
                                 Error **errp)
 {
+    ERRP_GUARD();
     uint64_t asked_features = 0;
     static uint64_t supported_features;
 
-    ERRP_GUARD();
     /*
      * it's not possible to
      * request UFFD_API twice per one fd
@@ -374,6 +371,7 @@ static int test_ramblock_postcopiable(RAMBlock *rb, Error **errp)
  */
 bool postcopy_ram_supported_by_host(MigrationIncomingState *mis, Error **errp)
 {
+    ERRP_GUARD();
     long pagesize = qemu_real_host_page_size();
     int ufd = -1;
     bool ret = false; /* Error unless we change it */
@@ -383,7 +381,6 @@ bool postcopy_ram_supported_by_host(MigrationIncomingState *mis, Error **errp)
     uint64_t feature_mask;
     RAMBlock *block;
 
-    ERRP_GUARD();
     if (qemu_target_page_size() > pagesize) {
         error_setg(errp, "Target page size bigger than host page size");
         goto out;
@@ -462,9 +459,9 @@ bool postcopy_ram_supported_by_host(MigrationIncomingState *mis, Error **errp)
         goto out;
     }
 
-    feature_mask = (__u64)1 << _UFFDIO_WAKE |
-                   (__u64)1 << _UFFDIO_COPY |
-                   (__u64)1 << _UFFDIO_ZEROPAGE;
+    feature_mask = 1ULL << _UFFDIO_WAKE |
+                   1ULL << _UFFDIO_COPY |
+                   1ULL << _UFFDIO_ZEROPAGE;
     if ((reg_struct.ioctls & feature_mask) != feature_mask) {
         error_setg(errp, "Missing userfault map features: %" PRIx64,
                    (uint64_t)(~reg_struct.ioctls & feature_mask));
@@ -654,8 +651,8 @@ int postcopy_ram_incoming_cleanup(MigrationIncomingState *mis)
         mis->have_fault_thread = false;
     }
 
-    if (enable_mlock) {
-        if (os_mlock() < 0) {
+    if (should_mlock(mlock_state)) {
+        if (os_mlock(is_mlock_on_fault(mlock_state)) < 0) {
             error_report("mlock: %s", strerror(errno));
             /*
              * It doesn't feel right to fail at this point, we have a valid
@@ -733,11 +730,11 @@ static int ram_block_enable_notify(RAMBlock *rb, void *opaque)
         error_report("%s userfault register: %s", __func__, strerror(errno));
         return -1;
     }
-    if (!(reg_struct.ioctls & ((__u64)1 << _UFFDIO_COPY))) {
+    if (!(reg_struct.ioctls & (1ULL << _UFFDIO_COPY))) {
         error_report("%s userfault: Region doesn't support COPY", __func__);
         return -1;
     }
-    if (reg_struct.ioctls & ((__u64)1 << _UFFDIO_ZEROPAGE)) {
+    if (reg_struct.ioctls & (1ULL << _UFFDIO_ZEROPAGE)) {
         qemu_ram_set_uf_zeroable(rb);
     }
 
@@ -749,18 +746,10 @@ int postcopy_wake_shared(struct PostCopyFD *pcfd,
                          RAMBlock *rb)
 {
     size_t pagesize = qemu_ram_pagesize(rb);
-    struct uffdio_range range;
-    int ret;
     trace_postcopy_wake_shared(client_addr, qemu_ram_get_idstr(rb));
-    range.start = ROUND_DOWN(client_addr, pagesize);
-    range.len = pagesize;
-    ret = ioctl(pcfd->fd, UFFDIO_WAKE, &range);
-    if (ret) {
-        error_report("%s: Failed to wake: %zx in %s (%s)",
-                     __func__, (size_t)client_addr, qemu_ram_get_idstr(rb),
-                     strerror(errno));
-    }
-    return ret;
+    return uffd_wakeup(pcfd->fd,
+                       (void *)(uintptr_t)ROUND_DOWN(client_addr, pagesize),
+                       pagesize);
 }
 
 static int postcopy_request_page(MigrationIncomingState *mis, RAMBlock *rb,
@@ -1241,7 +1230,8 @@ int postcopy_ram_incoming_setup(MigrationIncomingState *mis)
         return -1;
     }
 
-    postcopy_thread_create(mis, &mis->fault_thread, "fault-default",
+    postcopy_thread_create(mis, &mis->fault_thread,
+                           MIGRATION_THREAD_DST_FAULT,
                            postcopy_ram_fault_thread, QEMU_THREAD_JOINABLE);
     mis->have_fault_thread = true;
 
@@ -1261,7 +1251,8 @@ int postcopy_ram_incoming_setup(MigrationIncomingState *mis)
          * This thread needs to be created after the temp pages because
          * it'll fetch RAM_CHANNEL_POSTCOPY PostcopyTmpPage immediately.
          */
-        postcopy_thread_create(mis, &mis->postcopy_prio_thread, "fault-fast",
+        postcopy_thread_create(mis, &mis->postcopy_prio_thread,
+                               MIGRATION_THREAD_DST_PREEMPT,
                                postcopy_preempt_thread, QEMU_THREAD_JOINABLE);
         mis->preempt_thread_status = PREEMPT_THREAD_CREATED;
     }
@@ -1278,18 +1269,10 @@ static int qemu_ufd_copy_ioctl(MigrationIncomingState *mis, void *host_addr,
     int ret;
 
     if (from_addr) {
-        struct uffdio_copy copy_struct;
-        copy_struct.dst = (uint64_t)(uintptr_t)host_addr;
-        copy_struct.src = (uint64_t)(uintptr_t)from_addr;
-        copy_struct.len = pagesize;
-        copy_struct.mode = 0;
-        ret = ioctl(userfault_fd, UFFDIO_COPY, &copy_struct);
+        ret = uffd_copy_page(userfault_fd, host_addr, from_addr, pagesize,
+                             false);
     } else {
-        struct uffdio_zeropage zero_struct;
-        zero_struct.range.start = (uint64_t)(uintptr_t)host_addr;
-        zero_struct.range.len = pagesize;
-        zero_struct.mode = 0;
-        ret = ioctl(userfault_fd, UFFDIO_ZEROPAGE, &zero_struct);
+        ret = uffd_zero_page(userfault_fd, host_addr, pagesize, false);
     }
     if (!ret) {
         qemu_mutex_lock(&mis->page_request_mutex);
@@ -1346,18 +1329,16 @@ int postcopy_place_page(MigrationIncomingState *mis, void *host, void *from,
                         RAMBlock *rb)
 {
     size_t pagesize = qemu_ram_pagesize(rb);
+    int e;
 
     /* copy also acks to the kernel waking the stalled thread up
      * TODO: We can inhibit that ack and only do it if it was requested
      * which would be slightly cheaper, but we'd have to be careful
      * of the order of updating our page state.
      */
-    if (qemu_ufd_copy_ioctl(mis, host, from, pagesize, rb)) {
-        int e = errno;
-        error_report("%s: %s copy host: %p from: %p (size: %zd)",
-                     __func__, strerror(e), host, from, pagesize);
-
-        return -e;
+    e = qemu_ufd_copy_ioctl(mis, host, from, pagesize, rb);
+    if (e) {
+        return e;
     }
 
     trace_postcopy_place_page(host);
@@ -1379,12 +1360,10 @@ int postcopy_place_page_zero(MigrationIncomingState *mis, void *host,
      * but it's not available for everything (e.g. hugetlbpages)
      */
     if (qemu_ram_is_uf_zeroable(rb)) {
-        if (qemu_ufd_copy_ioctl(mis, host, NULL, pagesize, rb)) {
-            int e = errno;
-            error_report("%s: %s zero host: %p",
-                         __func__, strerror(e), host);
-
-            return -e;
+        int e;
+        e = qemu_ufd_copy_ioctl(mis, host, NULL, pagesize, rb);
+        if (e) {
+            return e;
         }
         return postcopy_notify_shared_wake(rb,
                                            qemu_ram_block_host_offset(rb,
@@ -1414,49 +1393,42 @@ int postcopy_ram_incoming_init(MigrationIncomingState *mis)
 
 int postcopy_ram_incoming_cleanup(MigrationIncomingState *mis)
 {
-    assert(0);
-    return -1;
+    g_assert_not_reached();
 }
 
 int postcopy_ram_prepare_discard(MigrationIncomingState *mis)
 {
-    assert(0);
-    return -1;
+    g_assert_not_reached();
 }
 
 int postcopy_request_shared_page(struct PostCopyFD *pcfd, RAMBlock *rb,
                                  uint64_t client_addr, uint64_t rb_offset)
 {
-    assert(0);
-    return -1;
+    g_assert_not_reached();
 }
 
 int postcopy_ram_incoming_setup(MigrationIncomingState *mis)
 {
-    assert(0);
-    return -1;
+    g_assert_not_reached();
 }
 
 int postcopy_place_page(MigrationIncomingState *mis, void *host, void *from,
                         RAMBlock *rb)
 {
-    assert(0);
-    return -1;
+    g_assert_not_reached();
 }
 
 int postcopy_place_page_zero(MigrationIncomingState *mis, void *host,
                         RAMBlock *rb)
 {
-    assert(0);
-    return -1;
+    g_assert_not_reached();
 }
 
 int postcopy_wake_shared(struct PostCopyFD *pcfd,
                          uint64_t client_addr,
                          RAMBlock *rb)
 {
-    assert(0);
-    return -1;
+    g_assert_not_reached();
 }
 #endif
 
@@ -1772,4 +1744,10 @@ void *postcopy_preempt_thread(void *opaque)
     trace_postcopy_preempt_thread_exit();
 
     return NULL;
+}
+
+bool postcopy_is_paused(MigrationStatus status)
+{
+    return status == MIGRATION_STATUS_POSTCOPY_PAUSED ||
+        status == MIGRATION_STATUS_POSTCOPY_RECOVER_SETUP;
 }

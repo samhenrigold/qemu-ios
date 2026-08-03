@@ -44,7 +44,8 @@
 #endif
 
 #include "exec/cputlb.h"
-#include "exec/translate-all.h"
+#include "exec/page-protection.h"
+#include "tb-internal.h"
 #include "exec/translator.h"
 #include "exec/tb-flush.h"
 #include "qemu/bitmap.h"
@@ -53,17 +54,17 @@
 #include "qemu/cacheinfo.h"
 #include "qemu/timer.h"
 #include "exec/log.h"
-#include "sysemu/cpus.h"
-#include "sysemu/cpu-timers.h"
-#include "sysemu/tcg.h"
+#include "system/cpu-timers.h"
+#include "system/tcg.h"
 #include "qapi/error.h"
-#include "hw/core/tcg-cpu-ops.h"
+#include "accel/tcg/cpu-ops.h"
 #include "tb-jmp-cache.h"
 #include "tb-hash.h"
 #include "tb-context.h"
+#include "tb-internal.h"
 #include "internal-common.h"
 #include "internal-target.h"
-#include "perf.h"
+#include "tcg/perf.h"
 #include "tcg/insn-start-words.h"
 
 TBContext tb_ctx;
@@ -105,7 +106,7 @@ static int64_t decode_sleb128(const uint8_t **pp)
         val |= (int64_t)(byte & 0x7f) << shift;
         shift += 7;
     } while (byte & 0x80);
-    if (shift < TARGET_LONG_BITS && (byte & 0x40)) {
+    if (shift < 64 && (byte & 0x40)) {
         val |= -(int64_t)1 << shift;
     }
 
@@ -256,7 +257,6 @@ bool cpu_unwind_state_data(CPUState *cpu, uintptr_t host_pc, uint64_t *data)
 
 void page_init(void)
 {
-    page_size_init();
     page_table_config_init();
 }
 
@@ -275,8 +275,10 @@ static int setjmp_gen_code(CPUArchState *env, TranslationBlock *tb,
 
     tcg_func_start(tcg_ctx);
 
-    tcg_ctx->cpu = env_cpu(env);
-    gen_intermediate_code(env_cpu(env), tb, max_insns, pc, host_pc);
+    CPUState *cs = env_cpu(env);
+    tcg_ctx->cpu = cs;
+    cs->cc->tcg_ops->translate_code(cs, tb, max_insns, pc, host_pc);
+
     assert(tb->size != 0);
     tcg_ctx->cpu = NULL;
     *max_insns = tb->icount;
@@ -363,7 +365,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
             /*
              * Overflow of code_gen_buffer, or the current slice of it.
              *
-             * TODO: We don't need to re-do gen_intermediate_code, nor
+             * TODO: We don't need to re-do tcg_ops->translate_code, nor
              * should we re-do the tcg optimization currently hidden
              * inside tcg_gen_code.  All that should be required is to
              * flush the TBs, allocate a new TB, re-initialize it per
@@ -529,21 +531,30 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     }
 
     /*
-     * If the TB is not associated with a physical RAM page then it must be
-     * a temporary one-insn TB, and we have nothing left to do. Return early
-     * before attempting to link to other TBs or add to the lookup table.
-     */
-    if (tb_page_addr0(tb) == -1) {
-        assert_no_pages_locked();
-        return tb;
-    }
-
-    /*
      * Insert TB into the corresponding region tree before publishing it
      * through QHT. Otherwise rewinding happened in the TB might fail to
      * lookup itself using host PC.
      */
     tcg_tb_insert(tb);
+
+    /*
+     * If the TB is not associated with a physical RAM page then it must be
+     * a temporary one-insn TB.
+     *
+     * Such TBs must be added to region trees in order to make sure that
+     * restore_state_to_opc() - which on some architectures is not limited to
+     * rewinding, but also affects exception handling! - is called when such a
+     * TB causes an exception.
+     *
+     * At the same time, temporary one-insn TBs must be executed at most once,
+     * because subsequent reads from, e.g., I/O memory may return different
+     * values. So return early before attempting to link to other TBs or add
+     * to the QHT.
+     */
+    if (tb_page_addr0(tb) == -1) {
+        assert_no_pages_locked();
+        return tb;
+    }
 
     /*
      * No explicit memory barrier is required -- tb_link_page() makes the
@@ -619,7 +630,7 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
      * to account for the re-execution of the branch.
      */
     n = 1;
-    cc = CPU_GET_CLASS(cpu);
+    cc = cpu->cc;
     if (cc->tcg_ops->io_recompile_replay_branch &&
         cc->tcg_ops->io_recompile_replay_branch(cpu, tb)) {
         cpu->neg.icount_decr.u16.low++;
@@ -630,12 +641,13 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
      * Exit the loop and potentially generate a new TB executing the
      * just the I/O insns. We also limit instrumentation to memory
      * operations only (which execute after completion) so we don't
-     * double instrument the instruction.
+     * double instrument the instruction. Also don't let an IRQ sneak
+     * in before we execute it.
      */
-    cpu->cflags_next_tb = curr_cflags(cpu) | CF_MEMI_ONLY | n;
+    cpu->cflags_next_tb = curr_cflags(cpu) | CF_MEMI_ONLY | CF_NOIRQ | n;
 
     if (qemu_loglevel_mask(CPU_LOG_EXEC)) {
-        vaddr pc = log_pc(cpu, tb);
+        vaddr pc = cpu->cc->get_pc(cpu);
         if (qemu_log_in_addr_range(pc)) {
             qemu_log("cpu_io_recompile: rewound execution of TB to %016"
                      VADDR_PRIx "\n", pc);
@@ -643,15 +655,6 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
     }
 
     cpu_loop_exit_noexc(cpu);
-}
-
-#else /* CONFIG_USER_ONLY */
-
-void cpu_interrupt(CPUState *cpu, int mask)
-{
-    g_assert(qemu_mutex_iothread_locked());
-    cpu->interrupt_request |= mask;
-    qatomic_set(&cpu->neg.icount_decr.u16.high, -1);
 }
 
 #endif /* CONFIG_USER_ONLY */

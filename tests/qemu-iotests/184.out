@@ -26,6 +26,7 @@ Testing:
         {
             "iops_rd": 0,
             "detect_zeroes": "off",
+            "active": true,
             "image": {
                 "backing-image": {
                     "virtual-size": 1073741824,
@@ -59,6 +60,7 @@ Testing:
         {
             "iops_rd": 0,
             "detect_zeroes": "off",
+            "active": true,
             "image": {
                 "virtual-size": 1073741824,
                 "filename": "null-co://",
@@ -90,10 +92,6 @@ Testing:
     ]
 }
 {
-    "return": {
-    }
-}
-{
     "timestamp": {
         "seconds":  TIMESTAMP,
         "microseconds":  TIMESTAMP
@@ -102,6 +100,10 @@ Testing:
     "data": {
         "guest": false,
         "reason": "host-qmp-quit"
+    }
+}
+{
+    "return": {
     }
 }
 
@@ -170,10 +172,6 @@ Testing:
     }
 }
 {
-    "return": {
-    }
-}
-{
     "timestamp": {
         "seconds":  TIMESTAMP,
         "microseconds":  TIMESTAMP
@@ -182,6 +180,10 @@ Testing:
     "data": {
         "guest": false,
         "reason": "host-qmp-quit"
+    }
+}
+{
+    "return": {
     }
 }
 
@@ -212,10 +214,6 @@ Testing:
     }
 }
 {
-    "return": {
-    }
-}
-{
     "timestamp": {
         "seconds":  TIMESTAMP,
         "microseconds":  TIMESTAMP
@@ -224,6 +222,10 @@ Testing:
     "data": {
         "guest": false,
         "reason": "host-qmp-quit"
+    }
+}
+{
+    "return": {
     }
 }
 
@@ -248,10 +250,6 @@ Testing:
     }
 }
 {
-    "return": {
-    }
-}
-{
     "timestamp": {
         "seconds":  TIMESTAMP,
         "microseconds":  TIMESTAMP
@@ -260,6 +258,10 @@ Testing:
     "data": {
         "guest": false,
         "reason": "host-qmp-quit"
+    }
+}
+{
+    "return": {
     }
 }
 

@@ -25,10 +25,9 @@
 #include "chardev/char-fe.h"
 #include "qemu/sockets.h"
 #include "colo.h"
-#include "sysemu/iothread.h"
+#include "system/iothread.h"
 #include "net/colo-compare.h"
 #include "migration/colo.h"
-#include "migration/migration.h"
 #include "util.h"
 
 #include "block/aio-wait.h"
@@ -189,7 +188,7 @@ static void colo_compare_inconsistency_notify(CompareState *s)
         notify_remote_frame(s);
     } else {
         notifier_list_notify(&colo_compare_notifiers,
-                             migrate_get_current());
+                             NULL);
     }
 }
 
@@ -413,8 +412,7 @@ static void colo_compare_tcp(CompareState *s, Connection *conn)
      * can ensure that the packet's payload is acknowledged by
      * primary and secondary.
     */
-    uint32_t min_ack = conn->pack - conn->sack > 0 ?
-                       conn->sack : conn->pack;
+    uint32_t min_ack = MIN(conn->pack, conn->sack);
 
 pri:
     if (g_queue_is_empty(&conn->primary_list)) {
@@ -1439,12 +1437,10 @@ static void colo_compare_finalize(Object *obj)
     qemu_bh_delete(s->event_bh);
 
     AioContext *ctx = iothread_get_aio_context(s->iothread);
-    aio_context_acquire(ctx);
     AIO_WAIT_WHILE(ctx, !s->out_sendco.done);
     if (s->notify_dev) {
         AIO_WAIT_WHILE(ctx, !s->notify_sendco.done);
     }
-    aio_context_release(ctx);
 
     /* Release all unhandled packets after compare thead exited */
     g_queue_foreach(&s->conn_list, colo_flush_packets, s);

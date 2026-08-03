@@ -55,7 +55,16 @@
 #define DESIGNWARE_PCIE_ATU_DEVFN(x)               (((x) >> 16) & 0xff)
 #define DESIGNWARE_PCIE_ATU_UPPER_TARGET           0x91C
 
-#define DESIGNWARE_PCIE_IRQ_MSI                    3
+static void designware_pcie_root_bus_class_init(ObjectClass *klass, void *data)
+{
+    BusClass *k = BUS_CLASS(klass);
+
+    /*
+     * Designware has only a single root complex. Enforce the limit on the
+     * parent bus
+     */
+    k->max_dev = 1;
+}
 
 static DesignwarePCIEHost *
 designware_pcie_root_to_host(DesignwarePCIERoot *root)
@@ -90,7 +99,7 @@ static void designware_pcie_root_msi_write(void *opaque, hwaddr addr,
     root->msi.intr[0].status |= BIT(val) & root->msi.intr[0].enable;
 
     if (root->msi.intr[0].status & ~root->msi.intr[0].mask) {
-        qemu_set_irq(host->pci.irqs[DESIGNWARE_PCIE_IRQ_MSI], 1);
+        qemu_set_irq(host->pci.msi, 1);
     }
 }
 
@@ -335,11 +344,13 @@ static void designware_pcie_root_config_write(PCIDevice *d, uint32_t address,
     case DESIGNWARE_PCIE_MSI_INTR0_STATUS:
         root->msi.intr[0].status ^= val;
         if (!root->msi.intr[0].status) {
-            qemu_set_irq(host->pci.irqs[DESIGNWARE_PCIE_IRQ_MSI], 0);
+            qemu_set_irq(host->pci.msi, 0);
         }
         break;
 
     case DESIGNWARE_PCIE_ATU_VIEWPORT:
+        val &= DESIGNWARE_PCIE_ATU_REGION_INBOUND |
+                (DESIGNWARE_PCIE_NUM_VIEWPORTS - 1);
         root->atu_viewport = val;
         break;
 
@@ -360,7 +371,7 @@ static void designware_pcie_root_config_write(PCIDevice *d, uint32_t address,
 
     case DESIGNWARE_PCIE_ATU_UPPER_TARGET:
         viewport->target &= 0x00000000FFFFFFFFULL;
-        viewport->target |= val;
+        viewport->target |= (uint64_t)val << 32;
         break;
 
     case DESIGNWARE_PCIE_ATU_LIMIT:
@@ -393,6 +404,7 @@ static void designware_pcie_root_realize(PCIDevice *dev, Error **errp)
 {
     DesignwarePCIERoot *root = DESIGNWARE_PCIE_ROOT(dev);
     DesignwarePCIEHost *host = designware_pcie_root_to_host(root);
+    MemoryRegion *host_mem = get_system_memory();
     MemoryRegion *address_space = &host->pci.memory;
     PCIBridge *br = PCI_BRIDGE(dev);
     DesignwarePCIEViewport *viewport;
@@ -433,7 +445,7 @@ static void designware_pcie_root_realize(PCIDevice *dev, Error **errp)
         viewport->cr[0]   = DESIGNWARE_PCIE_ATU_TYPE_MEM;
 
         source      = &host->pci.address_space_root;
-        destination = get_system_memory();
+        destination = host_mem;
         direction   = "Inbound";
 
         /*
@@ -458,7 +470,7 @@ static void designware_pcie_root_realize(PCIDevice *dev, Error **errp)
 
         destination = &host->pci.memory;
         direction   = "Outbound";
-        source      = get_system_memory();
+        source      = host_mem;
 
         /*
          * Configure MemoryRegion implementing CPU -> PCI memory
@@ -529,7 +541,7 @@ static const VMStateDescription vmstate_designware_pcie_msi_bank = {
     .name = "designware-pcie-msi-bank",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(enable, DesignwarePCIEMSIBank),
         VMSTATE_UINT32(mask, DesignwarePCIEMSIBank),
         VMSTATE_UINT32(status, DesignwarePCIEMSIBank),
@@ -541,7 +553,7 @@ static const VMStateDescription vmstate_designware_pcie_msi = {
     .name = "designware-pcie-msi",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT64(base, DesignwarePCIEMSI),
         VMSTATE_STRUCT_ARRAY(intr,
                              DesignwarePCIEMSI,
@@ -557,7 +569,7 @@ static const VMStateDescription vmstate_designware_pcie_viewport = {
     .name = "designware-pcie-viewport",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT64(base, DesignwarePCIEViewport),
         VMSTATE_UINT64(target, DesignwarePCIEViewport),
         VMSTATE_UINT32(limit, DesignwarePCIEViewport),
@@ -570,7 +582,7 @@ static const VMStateDescription vmstate_designware_pcie_root = {
     .name = "designware-pcie-root",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, PCIBridge),
         VMSTATE_UINT32(atu_viewport, DesignwarePCIERoot),
         VMSTATE_STRUCT_2DARRAY(viewports,
@@ -605,7 +617,7 @@ static void designware_pcie_root_class_init(ObjectClass *klass, void *data)
     k->config_read = designware_pcie_root_config_read;
     k->config_write = designware_pcie_root_config_write;
 
-    dc->reset = pci_bridge_reset;
+    device_class_set_legacy_reset(dc, pci_bridge_reset);
     /*
      * PCI-facing part of the host bridge, not usable without the
      * host-facing part, which can't be device_add'ed, yet.
@@ -677,6 +689,7 @@ static void designware_pcie_host_realize(DeviceState *dev, Error **errp)
     for (i = 0; i < ARRAY_SIZE(s->pci.irqs); i++) {
         sysbus_init_irq(sbd, &s->pci.irqs[i]);
     }
+    sysbus_init_irq(sbd, &s->pci.msi);
 
     memory_region_init_io(&s->mmio,
                           OBJECT(s),
@@ -697,7 +710,7 @@ static void designware_pcie_host_realize(DeviceState *dev, Error **errp)
                                      &s->pci.memory,
                                      &s->pci.io,
                                      0, 4,
-                                     TYPE_PCIE_BUS);
+                                     TYPE_DESIGNWARE_PCIE_ROOT_BUS);
     pci->bus->flags |= PCI_BUS_EXTENDED_CONFIG_SPACE;
 
     memory_region_init(&s->pci.address_space_root,
@@ -718,7 +731,7 @@ static const VMStateDescription vmstate_designware_pcie_host = {
     .name = "designware-pcie-host",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(root,
                        DesignwarePCIEHost,
                        1,
@@ -750,28 +763,28 @@ static void designware_pcie_host_init(Object *obj)
     qdev_prop_set_bit(DEVICE(root), "multifunction", false);
 }
 
-static const TypeInfo designware_pcie_root_info = {
-    .name = TYPE_DESIGNWARE_PCIE_ROOT,
-    .parent = TYPE_PCI_BRIDGE,
-    .instance_size = sizeof(DesignwarePCIERoot),
-    .class_init = designware_pcie_root_class_init,
-    .interfaces = (InterfaceInfo[]) {
-        { INTERFACE_PCIE_DEVICE },
-        { }
+static const TypeInfo designware_pcie_types[] = {
+    {
+        .name           = TYPE_DESIGNWARE_PCIE_ROOT_BUS,
+        .parent         = TYPE_PCIE_BUS,
+        .instance_size  = sizeof(DesignwarePCIERootBus),
+        .class_init     = designware_pcie_root_bus_class_init,
+    }, {
+        .name           = TYPE_DESIGNWARE_PCIE_HOST,
+        .parent         = TYPE_PCI_HOST_BRIDGE,
+        .instance_size  = sizeof(DesignwarePCIEHost),
+        .instance_init  = designware_pcie_host_init,
+        .class_init     = designware_pcie_host_class_init,
+    }, {
+        .name           = TYPE_DESIGNWARE_PCIE_ROOT,
+        .parent         = TYPE_PCI_BRIDGE,
+        .instance_size  = sizeof(DesignwarePCIERoot),
+        .class_init     = designware_pcie_root_class_init,
+        .interfaces     = (InterfaceInfo[]) {
+            { INTERFACE_PCIE_DEVICE },
+            { }
+        },
     },
 };
 
-static const TypeInfo designware_pcie_host_info = {
-    .name       = TYPE_DESIGNWARE_PCIE_HOST,
-    .parent     = TYPE_PCI_HOST_BRIDGE,
-    .instance_size = sizeof(DesignwarePCIEHost),
-    .instance_init = designware_pcie_host_init,
-    .class_init = designware_pcie_host_class_init,
-};
-
-static void designware_pcie_register(void)
-{
-    type_register_static(&designware_pcie_root_info);
-    type_register_static(&designware_pcie_host_info);
-}
-type_init(designware_pcie_register)
+DEFINE_TYPES(designware_pcie_types)

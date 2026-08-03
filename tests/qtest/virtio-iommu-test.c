@@ -34,7 +34,7 @@ static void pci_config(void *obj, void *data, QGuestAllocator *t_alloc)
     uint8_t bypass = qvirtio_config_readb(dev, 36);
 
     g_assert_cmpint(input_range_start, ==, 0);
-    g_assert_cmphex(input_range_end, ==, UINT64_MAX);
+    g_assert_cmphex(input_range_end, >=, UINT32_MAX);
     g_assert_cmpint(domain_range_start, ==, 0);
     g_assert_cmpint(domain_range_end, ==, UINT32_MAX);
     g_assert_cmpint(bypass, ==, 1);
@@ -105,7 +105,7 @@ static int send_map(QTestState *qts, QVirtioIOMMU *v_iommu,
     QVirtQueue *vq = v_iommu->vq;
     uint64_t ro_addr, wr_addr;
     uint32_t free_head;
-    struct virtio_iommu_req_map req;
+    struct virtio_iommu_req_map req = {};
     size_t ro_size = sizeof(req) - sizeof(struct virtio_iommu_req_tail);
     size_t wr_size = sizeof(struct virtio_iommu_req_tail);
     struct virtio_iommu_req_tail buffer;
@@ -147,7 +147,7 @@ static int send_unmap(QTestState *qts, QVirtioIOMMU *v_iommu,
     QVirtQueue *vq = v_iommu->vq;
     uint64_t ro_addr, wr_addr;
     uint32_t free_head;
-    struct virtio_iommu_req_unmap req;
+    struct virtio_iommu_req_unmap req = {};
     size_t ro_size = sizeof(req) - sizeof(struct virtio_iommu_req_tail);
     size_t wr_size = sizeof(struct virtio_iommu_req_tail);
     struct virtio_iommu_req_tail buffer;

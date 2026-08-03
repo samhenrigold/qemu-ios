@@ -49,7 +49,7 @@ static const VMStateDescription vmstate_l2x0 = {
     .name = "l2x0",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(ctrl, L2x0State),
         VMSTATE_UINT32(aux_ctrl, L2x0State),
         VMSTATE_UINT32(data_ctrl, L2x0State),
@@ -173,9 +173,8 @@ static void l2x0_priv_init(Object *obj)
     sysbus_init_mmio(dev, &s->iomem);
 }
 
-static Property l2x0_properties[] = {
+static const Property l2x0_properties[] = {
     DEFINE_PROP_UINT32("cache-type", L2x0State, cache_type, 0x1c100100),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void l2x0_class_init(ObjectClass *klass, void *data)
@@ -184,7 +183,7 @@ static void l2x0_class_init(ObjectClass *klass, void *data)
 
     dc->vmsd = &vmstate_l2x0;
     device_class_set_props(dc, l2x0_properties);
-    dc->reset = l2x0_priv_reset;
+    device_class_set_legacy_reset(dc, l2x0_priv_reset);
 }
 
 static const TypeInfo l2x0_info = {

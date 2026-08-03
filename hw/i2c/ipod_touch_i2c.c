@@ -356,7 +356,7 @@ static const VMStateDescription vmstate_ipod_touch_i2c = {
 static void ipod_touch_i2c_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
-    dc->reset = ipod_touch_i2c_reset;
+    device_class_set_legacy_reset(dc, ipod_touch_i2c_reset);
     dc->vmsd = &vmstate_ipod_touch_i2c;
 }
 

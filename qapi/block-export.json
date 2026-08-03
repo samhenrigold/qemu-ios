@@ -9,13 +9,11 @@
 { 'include': 'block-core.json' }
 
 ##
-# @NbdServerOptions:
+# @NbdServerOptionsBase:
 #
-# Keep this type consistent with the nbd-server-start arguments.  The
-# only intended difference is using SocketAddress instead of
-# SocketAddressLegacy.
-#
-# @addr: Address on which to listen.
+# @handshake-max-seconds: Time limit, in seconds, at which a client
+#     that has not completed the negotiation handshake will be
+#     disconnected, or 0 for no limit (since 10.0; default: 10).
 #
 # @tls-creds: ID of the TLS credentials object (since 2.6).
 #
@@ -28,15 +26,39 @@
 # @max-connections: The maximum number of connections to allow at the
 #     same time, 0 for unlimited.  Setting this to 1 also stops the
 #     server from advertising multiple client support (since 5.2;
-#     default: 0)
-#
-# Since: 4.2
+#     default: 100).
 ##
-{ 'struct': 'NbdServerOptions',
-  'data': { 'addr': 'SocketAddress',
+{ 'struct': 'NbdServerOptionsBase',
+  'data': { '*handshake-max-seconds': 'uint32',
             '*tls-creds': 'str',
             '*tls-authz': 'str',
             '*max-connections': 'uint32' } }
+
+##
+# @NbdServerOptions:
+#
+# Keep this type consistent with the NbdServerOptionsLegacy type.  The
+# only intended difference is using SocketAddress instead of
+# SocketAddressLegacy.
+#
+# @addr: Address on which to listen (since 4.2).
+##
+{ 'struct': 'NbdServerOptions',
+  'base': 'NbdServerOptionsBase',
+  'data': { 'addr': 'SocketAddress' } }
+
+##
+# @NbdServerOptionsLegacy:
+#
+# Keep this type consistent with the NbdServerOptions type.  The only
+# intended difference is using SocketAddressLegacy instead of
+# SocketAddress.
+#
+# @addr: Address on which to listen (since 1.3).
+##
+{ 'struct': 'NbdServerOptionsLegacy',
+  'base': 'NbdServerOptionsBase',
+  'data': { 'addr': 'SocketAddressLegacy' } }
 
 ##
 # @nbd-server-start:
@@ -46,34 +68,13 @@
 # will present them as named exports; for example, another QEMU
 # instance could refer to them as "nbd:HOST:PORT:exportname=NAME".
 #
-# Keep this type consistent with the NbdServerOptions type.  The only
-# intended difference is using SocketAddressLegacy instead of
-# SocketAddress.
-#
-# @addr: Address on which to listen.
-#
-# @tls-creds: ID of the TLS credentials object (since 2.6).
-#
-# @tls-authz: ID of the QAuthZ authorization object used to validate
-#     the client's x509 distinguished name.  This object is is only
-#     resolved at time of use, so can be deleted and recreated on the
-#     fly while the NBD server is active.  If missing, it will default
-#     to denying access (since 4.0).
-#
-# @max-connections: The maximum number of connections to allow at the
-#     same time, 0 for unlimited.  Setting this to 1 also stops the
-#     server from advertising multiple client support (since 5.2;
-#     default: 0).
-#
-# Returns: error if the server is already running.
+# Errors:
+#     - if the server is already running
 #
 # Since: 1.3
 ##
 { 'command': 'nbd-server-start',
-  'data': { 'addr': 'SocketAddressLegacy',
-            '*tls-creds': 'str',
-            '*tls-authz': 'str',
-            '*max-connections': 'uint32' },
+  'data': 'NbdServerOptionsLegacy',
   'allow-preconfig': true }
 
 ##
@@ -162,8 +163,8 @@
 # Options for exporting a block graph node on some (file) mountpoint
 # as a raw image.
 #
-# @mountpoint: Path on which to export the block device via FUSE. This
-#     must point to an existing regular file.
+# @mountpoint: Path on which to export the block device via FUSE.
+#     This must point to an existing regular file.
 #
 # @growable: Whether writes beyond the EOF should grow the block node
 #     accordingly.  (default: false)
@@ -171,7 +172,7 @@
 # @allow-other: If this is off, only qemu's user is allowed access to
 #     this export.  That cannot be changed even with chmod or chown.
 #     Enabling this option will allow other users access to the export
-#     with the FUSE mount option "allow_other". Note that using
+#     with the FUSE mount option "allow_other".  Note that using
 #     allow_other as a non-root user requires user_allow_other to be
 #     enabled in the global fuse.conf configuration file.  In auto
 #     mode (the default), the FUSE export driver will first attempt to
@@ -198,7 +199,7 @@
 # @queue-size: the size of virtqueue.  Defaults to 256.
 #
 # @logical-block-size: Logical block size in bytes.  Range [512,
-#     PAGE_SIZE] and must be power of 2. Defaults to 512 bytes.
+#     PAGE_SIZE] and must be power of 2.  Defaults to 512 bytes.
 #
 # @serial: the serial number of virtio block device.  Defaults to
 #     empty string.
@@ -247,8 +248,9 @@
 # @deprecated: This command is deprecated.  Use @block-export-add
 #     instead.
 #
-# Returns: error if the server is not running, or export with the same
-#     name already exists.
+# Errors:
+#     - if the server is not running
+#     - if an export with the same name already exists
 #
 # Since: 1.3
 ##
@@ -266,13 +268,14 @@
 #
 # @hard: Drop all connections immediately and remove export.
 #
-# Potential additional modes to be added in the future:
+# TODO: Potential additional modes to be added in the future:
 #
-# hide: Just hide export from new clients, leave existing connections
-# as is.  Remove export after all clients are disconnected.
+#     - hide: Just hide export from new clients, leave existing
+#       connections as is.  Remove export after all clients are
+#       disconnected.
 #
-# soft: Hide export from new clients, answer with ESHUTDOWN for all
-# further requests from existing clients.
+#     - soft: Hide export from new clients, answer with ESHUTDOWN for
+#       all further requests from existing clients.
 #
 # Since: 2.12
 ##
@@ -293,11 +296,10 @@
 # @deprecated: This command is deprecated.  Use @block-export-del
 #     instead.
 #
-# Returns: error if
-#
-#     - the server is not running
-#     - export is not found
-#     - mode is 'safe' and there are existing connections
+# Errors:
+#     - if the server is not running
+#     - if export is not found
+#     - if mode is 'safe' and there are existing connections
 #
 # Since: 2.12
 ##
@@ -345,6 +347,8 @@
 # Describes a block export, i.e. how single node should be exported on
 # an external interface.
 #
+# @type: Block export type
+#
 # @id: A unique identifier for the block export (across all export
 #     types)
 #
@@ -368,6 +372,13 @@
 #     cannot be moved to the iothread.  The default is false.
 #     (since: 5.2)
 #
+# @allow-inactive: If true, the export allows the exported node to be inactive.
+#     If it is created for an inactive block node, the node remains inactive. If
+#     the export type doesn't support running on an inactive node, an error is
+#     returned. If false, inactive block nodes are automatically activated before
+#     creating the export and trying to inactivate them later fails.
+#     (since: 10.0; default: false)
+#
 # Since: 4.2
 ##
 { 'union': 'BlockExportOptions',
@@ -377,7 +388,8 @@
             '*iothread': 'str',
             'node-name': 'str',
             '*writable': 'bool',
-            '*writethrough': 'bool' },
+            '*writethrough': 'bool',
+            '*allow-inactive': 'bool' },
   'discriminator': 'type',
   'data': {
       'nbd': 'BlockExportOptionsNbd',
@@ -412,8 +424,10 @@
 # @mode: Mode of command operation.  See @BlockExportRemoveMode
 #     description.  Default is 'safe'.
 #
-# Returns: Error if the export is not found or @mode is 'safe' and the
-#     export is still in use (e.g. by existing client connections)
+# Errors:
+#     - if the export is not found
+#     - if @mode is 'safe' and the export is still in use (e.g. by
+#       existing client connections)
 #
 # Since: 5.2
 ##

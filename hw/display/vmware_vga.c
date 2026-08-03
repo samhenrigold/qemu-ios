@@ -904,10 +904,8 @@ static uint32_t vmsvga_value_read(void *opaque, uint32_t address)
         caps |= SVGA_CAP_RECT_FILL;
 #endif
 #ifdef HW_MOUSE_ACCEL
-        if (dpy_cursor_define_supported(s->vga.con)) {
-            caps |= SVGA_CAP_CURSOR | SVGA_CAP_CURSOR_BYPASS_2 |
-                    SVGA_CAP_CURSOR_BYPASS;
-        }
+        caps |= SVGA_CAP_CURSOR | SVGA_CAP_CURSOR_BYPASS_2 |
+                SVGA_CAP_CURSOR_BYPASS;
 #endif
         ret = caps;
         break;
@@ -1167,7 +1165,7 @@ static void vmsvga_reset(DeviceState *dev)
     s->enable = 0;
     s->config = 0;
     s->svgaid = SVGA_ID;
-    s->cursor.on = 0;
+    s->cursor.on = false;
     s->redraw_fifo_last = 0;
     s->syncing = 0;
 
@@ -1210,7 +1208,7 @@ static const VMStateDescription vmstate_vmware_vga_internal = {
     .version_id = 0,
     .minimum_version_id = 0,
     .post_load = vmsvga_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT32_EQUAL(new_depth, struct vmsvga_state_s, NULL),
         VMSTATE_INT32(enable, struct vmsvga_state_s),
         VMSTATE_INT32(config, struct vmsvga_state_s),
@@ -1235,7 +1233,7 @@ static const VMStateDescription vmstate_vmware_vga = {
     .name = "vmware_vga",
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, struct pci_vmsvga_state_s),
         VMSTATE_STRUCT(chip, struct pci_vmsvga_state_s, 0,
                        vmstate_vmware_vga_internal, struct vmsvga_state_s),
@@ -1334,12 +1332,11 @@ static void pci_vmsvga_realize(PCIDevice *dev, Error **errp)
                      &s->chip.fifo_ram);
 }
 
-static Property vga_vmware_properties[] = {
+static const Property vga_vmware_properties[] = {
     DEFINE_PROP_UINT32("vgamem_mb", struct pci_vmsvga_state_s,
                        chip.vga.vram_size_mb, 16),
     DEFINE_PROP_BOOL("global-vmstate", struct pci_vmsvga_state_s,
                      chip.vga.global_vmstate, false),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void vmsvga_class_init(ObjectClass *klass, void *data)
@@ -1354,7 +1351,7 @@ static void vmsvga_class_init(ObjectClass *klass, void *data)
     k->class_id = PCI_CLASS_DISPLAY_VGA;
     k->subsystem_vendor_id = PCI_VENDOR_ID_VMWARE;
     k->subsystem_id = SVGA_PCI_DEVICE_ID;
-    dc->reset = vmsvga_reset;
+    device_class_set_legacy_reset(dc, vmsvga_reset);
     dc->vmsd = &vmstate_vmware_vga;
     device_class_set_props(dc, vga_vmware_properties);
     dc->hotpluggable = false;

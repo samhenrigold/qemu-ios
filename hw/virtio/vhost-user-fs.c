@@ -23,7 +23,7 @@
 #include "hw/virtio/vhost.h"
 #include "hw/virtio/vhost-user-fs.h"
 #include "monitor/monitor.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 
 static const int user_feature_bits[] = {
     VIRTIO_F_VERSION_1,
@@ -33,7 +33,8 @@ static const int user_feature_bits[] = {
     VIRTIO_F_RING_PACKED,
     VIRTIO_F_IOMMU_PLATFORM,
     VIRTIO_F_RING_RESET,
-
+    VIRTIO_F_IN_ORDER,
+    VIRTIO_F_NOTIFICATION_DATA,
     VHOST_INVALID_FEATURE_BIT
 };
 
@@ -373,11 +374,11 @@ static const VMStateDescription vuf_backend_vmstate;
 static const VMStateDescription vuf_vmstate = {
     .name = "vhost-user-fs",
     .version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_VIRTIO_DEVICE,
         VMSTATE_END_OF_LIST()
     },
-    .subsections = (const VMStateDescription * []) {
+    .subsections = (const VMStateDescription * const []) {
         &vuf_backend_vmstate,
         NULL,
     }
@@ -389,7 +390,7 @@ static const VMStateDescription vuf_backend_vmstate = {
     .needed = vuf_is_internal_migration,
     .pre_load = vuf_check_migration_support,
     .pre_save = vuf_check_migration_support,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         {
             .name = "back-end",
             .info = &(const VMStateInfo) {
@@ -402,13 +403,12 @@ static const VMStateDescription vuf_backend_vmstate = {
     },
 };
 
-static Property vuf_properties[] = {
+static const Property vuf_properties[] = {
     DEFINE_PROP_CHR("chardev", VHostUserFS, conf.chardev),
     DEFINE_PROP_STRING("tag", VHostUserFS, conf.tag),
     DEFINE_PROP_UINT16("num-request-queues", VHostUserFS,
                        conf.num_request_queues, 1),
     DEFINE_PROP_UINT16("queue-size", VHostUserFS, conf.queue_size, 128),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void vuf_instance_init(Object *obj)
