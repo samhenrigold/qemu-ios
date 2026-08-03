@@ -13,7 +13,6 @@
 #include "hw/qdev-clock.h"
 #include "hw/arm/exynos4210.h"
 #include "hw/arm/ipod_touch_2g.h"
-#include "hw/core/split-irq.h"
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "target/arm/cpregs.h"
 #include "qemu/error-report.h"
@@ -2337,50 +2336,65 @@ static void ipod_touch_machine_init(MachineState *machine)
     busdev = SYS_BUS_DEVICE(dev);
     sysbus_realize(busdev, &error_fatal);
     /*
-     * DMAC0 completion IRQ. The 3.1.3 (7E18) kernel's AppleARMPL080DMAC enables
-     * VIC line 17 for DMAC0 and blocks the NAND storage stack on it (root would
-     * never mount otherwise -- verified: with line 16 the kernel waits forever
-     * on "IOMedia Partition 1"; with 17 it mounts disk0s1 and jettisons the boot
-     * kexts). 2.1.1 uses DMAC0 in PIO and never enables either line, so keep its
-     * historical wiring (16) and only shift under IT_DIRECT_IBOOT.
-     */
-    /*
-     * IT_DMAC0_IRQ=<decimal> overrides the line, for the experiment this
-     * comment used to make impossible.
+     * The UART RECEIVE request lines. Without these the model invents data that
+     * was never received, and the invented completion is what made DMAC0's
+     * interrupt undeliverable.
      *
-     * Measured with the IRQ-transition trace in pl080_update: on 0x11, DMAC0
-     * raises the line once during boot (channel 3's terminal count) and it is
-     * NEVER acknowledged -- no IntStatus read, no IntTCClear, for the rest of
-     * the run -- while DMAC1 on the same number is serviced cleanly every time.
-     * s5l8900_get_irq() hands both devices the SAME qemu_irq, so DMAC1's
-     * deassertions silently drop DMAC0's pending interrupt. Audio's DMA channel
-     * is on DMAC0, so its per-period terminal counts go the same way.
+     * The kernel's serial driver arms a 2048-byte peripheral-to-memory channel
+     * on the console UART's URXH with the terminal-count interrupt enabled and
+     * leaves it armed. On real hardware that channel moves a byte only when the
+     * UART asserts its DMA request, so an idle console never completes it and
+     * never raises a terminal count. This model ignored the request lines, so
+     * the whole 2048 bytes were "read" out of an empty FIFO inside the single
+     * Config write, terminal count fired immediately, and -- because the driver
+     * polls for this transfer rather than acknowledging it -- the pending bit
+     * sat in IntTCStatus for the rest of the boot with the interrupt line held
+     * high. Deliver that line to the kernel (which is what audio needs, since
+     * its channel is on this same controller) and the serial driver services a
+     * completion for a read that never happened, spins ~32000 register polls
+     * waiting for data, times out, rearms and repeats forever: measured as a
+     * boot that stops at the Apple logo, which is the wedge every previous
+     * attempt to route this interrupt correctly ran into.
+     *
+     * Declaring the lines paced is the honest model: nothing drives them, so an
+     * idle serial port produces no bytes and no interrupt, exactly as on real
+     * hardware. (If a chardev with real input is ever wired up, the UART model
+     * should drive these through pl080_set_dma_request().)
      */
-    int dmac0_irq = getenv("IT_DIRECT_IBOOT") ? 0x11 : S5L8720_DMAC0_IRQ;
+    pl080_attach_paced_peripheral(pl080_1, UART0_RX_DMA_REQ_ID);
+    pl080_attach_paced_peripheral(pl080_1, UART1_RX_DMA_REQ_ID);
+    /*
+     * DMAC0's completion IRQ is VIC line 0x10, and DMAC1's is 0x11. They are
+     * NOT a shared line: our own 3.1.3 DeviceTree says so directly --
+     * /arm-io/dmac0 has interrupts = <0x10> and /arm-io/dmac1 has <0x11>, both
+     * with compatible = "dmac,pl080".
+     *
+     * This used to put DMAC0 on 0x11 under IT_DIRECT_IBOOT, on the theory that
+     * the 3.1.3 NAND stack blocked on it and root would not mount on 0x10. That
+     * was a misattribution. What actually happened on 0x10 was the wedge
+     * described at the paced UART receive lines above: DMAC0's line was held
+     * high by a terminal count invented for a serial read that never happened,
+     * so the kernel never got out of the handler and the boot stopped at the
+     * Apple logo -- which looks exactly like "root did not mount". With the
+     * receive lines paced and the interrupt masks no longer sticky (see
+     * pl080_refresh_masks in hw/dma/pl080.c), 0x10 boots and reboots normally
+     * and the kernel services DMAC0 for the first time: measured over one boot,
+     * 16 IntStatus reads and 32 IntTCClear writes on DMAC0, against zero on
+     * 0x11, with DMAC1's own servicing unchanged.
+     *
+     * Putting DMAC0 back on 0x11 also silently broke DMAC1, because
+     * s5l8900_get_irq() hands both devices the SAME qemu_irq and qemu_set_irq
+     * is last-writer-wins, so either controller's deassertion dropped the
+     * other's pending interrupt. Audio's DMA channel is channel 5 on DMAC0, so
+     * its per-period terminal counts went the same way.
+     *
+     * IT_DMAC0_IRQ=<decimal> still overrides the line, for bisecting.
+     */
+    int dmac0_irq = S5L8720_DMAC0_IRQ;
     if (getenv("IT_DMAC0_IRQ")) {
         dmac0_irq = atoi(getenv("IT_DMAC0_IRQ"));
     }
-    /*
-     * IT_DMAC0_SPLIT=1 drives BOTH 0x10 and 0x11.
-     *
-     * A/B, one variable, same overlay state: on 0x11 the kernel makes zero
-     * IntStatus reads and zero IntTCClear writes to DMAC0 for a whole boot; on
-     * 0x10 it makes 1838 of each. So the driver's DMAC0 instance is listening
-     * on 0x10 and our production wiring delivers nowhere -- but 0x10 alone does
-     * not boot (stops at the logo, lit 0.0214), which is what put the line on
-     * 0x11 in the first place.
-     */
-    if (getenv("IT_DMAC0_SPLIT")) {
-        DeviceState *split = qdev_new(TYPE_SPLIT_IRQ);
-        qdev_prop_set_uint16(split, "num-lines", 2);
-        qdev_realize_and_unref(split, NULL, &error_fatal);
-        qdev_connect_gpio_out(split, 0, s5l8900_get_irq(nms,
-                                                        S5L8720_DMAC0_IRQ));
-        qdev_connect_gpio_out(split, 1, s5l8900_get_irq(nms, 0x11));
-        sysbus_connect_irq(busdev, 0, qdev_get_gpio_in(split, 0));
-    } else {
-        sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, dmac0_irq));
-    }
+    sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, dmac0_irq));
 
     dev = qdev_new("pl080");
     PL080State *pl080_2 = PL080(dev);

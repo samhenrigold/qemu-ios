@@ -140,6 +140,18 @@ extern const int S5L8900_GPIO_IRQS[5];
 /* I2S0 TX's peripheral request line on dmac0, read out of the Config word the
  * driver programs (0x00008a81: flow 1, destination peripheral id 10). */
 #define I2S0_DMA_REQ_ID       10
+/*
+ * The UART receive request lines on dmac0, read the same way out of the Config
+ * words the kernel's serial driver programs: 0x0000900f (flow 2,
+ * peripheral-to-memory, source id 7, src 0x3cc00024 = UART0's URXH) and
+ * 0x00009013 (source id 9, src 0x3db00024 = UART1's URXH). The matching
+ * transmit lines are 6 and 8.
+ *
+ * These are declared paced because a receive DMA from an idle serial port must
+ * NOT complete: see the comment at their pl080_attach_paced_peripheral() calls.
+ */
+#define UART0_RX_DMA_REQ_ID   7
+#define UART1_RX_DMA_REQ_ID   9
 #define UART0_MEM_BASE        0x3CC00000
 #define SPI1_MEM_BASE         0x3CE00000
 #define GPIO_MEM_BASE         0x3CF00000
