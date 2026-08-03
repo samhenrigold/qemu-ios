@@ -5,11 +5,31 @@ download shows — a placeholder icon on the home screen straight away, with a
 progress bar that fills as the install runs, replaced by the real icon at the
 end.
 
-**Result: the placeholder is reachable from an ordinary guest process with no
-injection and no entitlement (`sbdlicon`, measured — see the screenshot).
-The progress bar is not: it is fed only by an `ISDownload` object that arrives
-from `itunesstored` over a launchd-owned Mach service, and the only ways in are
-in-process.** The rest of this file is the evidence and the two remaining routes.
+**Shipped: the placeholder, end to end.** Drop an `.ipa` on the QEMU window and
+a placeholder appears on the home screen while the install runs, then the real
+icon takes its place — `DELIVERABLE-2-placeholder-during-install.png` and
+`DELIVERABLE-3-real-icon-after-install.png` are two frames of one Epicurious
+install, the same slot before and after. No injection and no entitlement.
+
+**Not shipped: the filling progress bar.** It is fed only by an `ISDownload`
+object that arrives from `itunesstored` over a launchd-owned Mach service, and
+the only ways in are in-process. The bar is drawn but stays empty and the label
+is SpringBoard's own "Waiting…", which is what iOS 3 really shows — so nothing
+here is faked. The rest of this file is the evidence and the routes left.
+
+## Using it
+
+Nothing new to invoke: `imgtools/install-ipa.sh` does it. That script is what
+the Cocoa window runs when an `.ipa` is dropped on it *and* what you run from a
+terminal, so a headless install behaves exactly like a drop and the two cannot
+drift. The placeholder goes up before `ideviceinstaller` starts and comes down
+when it finishes **whether or not it succeeded**; Ctrl-C takes it down too.
+Both directions were tested against a live guest, by page-indicator dot.
+
+By hand, on the device:
+
+    sbdlicon add    <unique-id> [<bundle-id>]
+    sbdlicon cancel <unique-id>
 
 ## The classes, and where each one lives
 
@@ -120,17 +140,37 @@ SpringBoardServices exports MIG stubs onto SpringBoard's own server port, which
 sets its bundle ID, and then:
 
 * if `bundleID` is **already installed** -> `addNewIconToDesignatedLocation:`,
-  and the placeholder appears immediately. Measured: `sbdlicon add dl-demo-2
-  com.apple.mobilenotes` replaced the Notes icon with a dark placeholder
-  labelled "Waiting…" (`DELIVERABLE-downloading-icon.png`).
+  and the placeholder appears immediately, in that app's slot. Measured:
+  `sbdlicon add dl-demo-2 com.apple.mobilenotes` replaced the Notes icon with a
+  dark placeholder labelled "Waiting…"
+  (`DELIVERABLE-1-placeholder-over-an-installed-app.png`).
 * if it is **not installed** -> only `[SBIconController setIconToInstall:]`,
-  which just stashes the icon in an ivar. Measured: nothing appears. This is
-  the case that matters for dropping a new `.ipa`, and it is why this RPC on
-  its own is not the feature.
+  which just stashes the icon in an ivar. Measured: nothing appears.
+
+The second case is the one that matters when a new `.ipa` is dropped, so for a
+while it looked as though this RPC was not the feature after all. **The way
+round is the ordering inside the handler**: the icon is created and registered
+in `SBIconModel`'s dictionary under `com.apple.downloadingicon-<uid>` *before*
+`iconForDisplayIdentifier:` runs. Pass that same string as the bundle id and the
+lookup finds the icon that was just made, so the "already installed" branch is
+taken and the icon is placed after the last one on the home screen. Measured: it
+appears, and `cancel` removes it and collapses the page again.
+
+That is what `add` does when no bundle id is given — it is what a caller
+installing a new app always wants, and putting the trick in `sbdlicon` rather
+than in a shell quoting expression keeps it explained in one place. Pass a
+bundle id explicitly only for the update case.
+
+Two properties worth knowing, both of which make the failure path cheap:
+placement uses `saveIconState:NO`, so a placeholder is never written to disk and
+cannot outlive the running SpringBoard; and `addDownloadingIconForDisplayIdentifier:`
+is idempotent per display identifier, so keying the id on the bundle id means
+dropping the same `.ipa` twice reuses one icon instead of stacking them.
 
 `sbunlock` is here because headless verification needs a way past the lock
 screen that is not synthesised touch: it calls
-`SBApplicationRequestedDeviceUnlock`.
+`SBApplicationRequestedDeviceUnlock`. Note it raises the passcode keypad even
+with no passcode set — tap Cancel, then slide.
 
 ## The two routes left for real progress, and which to take
 
@@ -150,14 +190,55 @@ launchd restarts `itunesstored` and the UI is unharmed.
    right. Cleaner process boundary, but it takes the notification path away
    from the real daemon.
 
-Route 1 is the one to build. The `ISDownload` objects should be constructed by
-linking `iTunesStore.framework` rather than by hand-rolling the keyed archives —
-the archive format then never has to be reverse-engineered.
+Route 1 is the one to build, and **the question it turns on is now answered
+rather than assumed**: `DYLD_INSERT_LIBRARIES` from that plist still works on
+3.1.3. `probe_insert.c` is a dylib whose only content is a constructor that
+writes its pid to a file. Put it at `/usr/lib/it-probe-insert.dylib`, add
 
-Progress source: `ideviceinstaller` prints real percentages on stdout, and
-`ISDownloadStatus`'s progress is a current/max integer pair, so the host figure
-maps onto it directly with no interpolation. `[progress operationType] == 1`
-is what flips the label to "Installing…".
+    EnvironmentVariables = { DYLD_INSERT_LIBRARIES =
+                             "/usr/lib/it-probe-insert.dylib" }
+
+to `/System/Library/LaunchDaemons/com.apple.itunesstored.plist`, then
+`launchctl unload`/`load`/`start com.apple.itunesstored`, and
+`/tmp/it-insert-probe` says `loaded in pid 417`. Measured on a live guest. Note
+it needed no signature at all — `amfi_allow_any_signature=1
+cs_enforcement_disable=1` are in the boot args, which `run-ios3.sh` sets by
+default.
+
+What is left is mechanical, and none of it needs the archive format
+reverse-engineered, because the dylib builds real objects in the process that
+already has the classes and lets `NSKeyedArchiver` do the encoding:
+
+* `-[ISDownload uniqueID]` is `[NSString stringWithFormat:@"%llu",
+  [metadata itemIdentifier]]`, and `+[SBDownloadingIcon
+  displayIdentifierForDownload:]` prefixes that with `com.apple.downloadingicon-`
+  — so the dylib and `sbdlicon` can be made to name the same icon.
+* `ISDownloadMetadata` is `initWithDictionary:` over an ordinary NSDictionary of
+  iTunes manifest keys: `songId` (the item identifier), `itemName` (title),
+  `bundle-id`, `kind`, `downloadKey`.
+* `ISOperationProgress` has `init`, `setCurrentValue:`, `setMaxValue:`,
+  `setNormalizedCurrentValue:`, `setNormalizedMaxValue:` and
+  `setOperationType:`; `ISDownloadStatus` has `setProgress:`, `setPaused:`,
+  `setFailed:`. All exported, all `NSCoding`.
+* The dylib can be written in the same plain-C, `dlopen` + `objc_msgSend` style
+  as `contrib/it-pasteboard/pbset.c`, so no ObjC toolchain work is needed.
+
+Progress source: `ideviceinstaller` prints real percentages on stdout, and the
+progress is a current/max integer pair, so the host figure maps onto it directly
+with no interpolation. `[progress operationType] == 1` is what flips the label
+to "Installing…".
+
+The one thing that stays unproven until it is built: whether SpringBoard's
+already-checked-in `ISDownloadQueue` reacts to a notification posted this way.
+The design says it should — clients re-check-in on
+`CPDistributedNotificationCenterDidRestartNotification-<name>`, so ordering is
+not a hazard — but that is reasoning, not a measurement, and it should be the
+first thing the next attempt puts on screen.
+
+**Shipping it needs the plist edit baked into a NAND image**, which is a
+distribution decision rather than a code one: the placeholder works on the
+user's existing images as-is, and the progress bar would only appear on a
+rebuilt one.
 
 ## Building
 
