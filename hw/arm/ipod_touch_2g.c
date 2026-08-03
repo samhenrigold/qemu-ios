@@ -516,9 +516,24 @@ static void ipod_touch_set_boot_args_now(void *opaque)
             }
         }
         if (!ba) {
-            fprintf(stderr, "[IT_BOOT_ARGS] boot_args not found by signature; "
-                    "set IT_BOOT_ARGS_ADDR\n");
-            return;
+            /*
+             * Not found YET. This timer can easily fire before the kernel has
+             * built boot_args, so a bare return here gives up permanently and
+             * the command line is never set -- which is exactly the failure it
+             * looks least like: the guest boots, AMFI reads a default-empty
+             * amfi_allow_any_signature, and the device wedges later with
+             * "verify_code_directory server is dead" from a re-signed binary.
+             * Re-arm and look again; the scan is the whole point of the repeat
+             * window. Complain once so a genuinely wrong image is still
+             * diagnosable.
+             */
+            if (!nms->boot_args_scan_failed) {
+                nms->boot_args_scan_failed = true;
+                fprintf(stderr, "[IT_BOOT_ARGS] boot_args not found by "
+                        "signature yet; retrying (set IT_BOOT_ARGS_ADDR to "
+                        "skip the scan)\n");
+            }
+            goto rearm;
         }
     }
 
@@ -573,6 +588,7 @@ static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
 
     nms->boot_args_writes = 0;
     nms->amfi_patched = false;
+    nms->boot_args_scan_failed = false;
     nms->boot_args_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                         ipod_touch_set_boot_args_now, nms);
     timer_mod(nms->boot_args_timer,
