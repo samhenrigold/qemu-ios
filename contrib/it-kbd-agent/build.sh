@@ -13,6 +13,14 @@
 #
 # 2. LOCAL: only works if your host toolchain has an armv6-capable linker
 #    (cctools-port built with armv6, or an old Xcode). Uses IPHONEOS2_SDK.
+#
+# 3. Neither is required any more for new guest binaries. contrib/armv6-toolchain
+#    builds armv6 Mach-O with the stock modern toolchain -- link as armv7 against
+#    the 3.1.3 SDK's own fat libSystem stub, then patch the subtype back and
+#    strip the load commands that postdate 2010. Bundles, dylibs and executables
+#    built that way have all been loaded and executed on a booted 3.1.3 guest.
+#    This script is left alone because the checked-in dylib was built by path 1
+#    and is known good on 2.1.1 as well; there is no reason to re-cut it.
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-$HERE/it_kbd_agent.dylib}"
