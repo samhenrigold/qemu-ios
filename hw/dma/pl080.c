@@ -13,6 +13,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/dma/pl080.h"
+#include "hw/arm/ipod_touch_guard.h"
 #include "hw/hw.h"
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
@@ -53,9 +54,15 @@ static const VMStateDescription vmstate_pl080_channel = {
 
 static const VMStateDescription vmstate_pl080 = {
     .name = "pl080",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
+        /*
+         * Upstream repeated tc_int/tc_mask/err_int/err_mask here; this tree had
+         * corrupted the repeat into three more copies of tc_int, so the second
+         * block was never a faithful copy of anything. Dropped rather than
+         * repaired -- the first four entries already carry the state.
+         */
         VMSTATE_UINT8(tc_int, PL080State),
         VMSTATE_UINT8(tc_mask, PL080State),
         VMSTATE_UINT8(err_int, PL080State),
@@ -64,9 +71,6 @@ static const VMStateDescription vmstate_pl080 = {
         VMSTATE_UINT32(sync, PL080State),
         VMSTATE_UINT32(req_single, PL080State),
         VMSTATE_UINT32(req_burst, PL080State),
-        VMSTATE_UINT8(tc_int, PL080State),
-        VMSTATE_UINT8(tc_int, PL080State),
-        VMSTATE_UINT8(tc_int, PL080State),
         VMSTATE_STRUCT_ARRAY(chan, PL080State, PL080_MAX_CHANNELS,
                              1, vmstate_pl080_channel, pl080_channel),
         VMSTATE_INT32(running, PL080State),
@@ -305,8 +309,19 @@ again:
             /* ??? Should transfer multiple elements for a burst request.  */
             /* ??? Unclear what the proper behavior is when source and
                destination widths are different.  */
-            swidth = 1 << ((ch->ctrl >> 18) & 7);
-            dwidth = 1 << ((ch->ctrl >> 21) & 7);
+            /*
+             * SWidth and DWidth are 3-bit fields, so 1 << field is up to 128 --
+             * but buff[] above is four bytes, and both loops below index it by
+             * the decoded width. A guest that programs any encoding above 2
+             * therefore smashes the vCPU thread's stack, and the write loop
+             * reads the overrun straight back out. The PL080 TRM only defines
+             * 0/1/2 (8/16/32 bit); 3-7 are reserved. Clamp to 32-bit and say so.
+             * No transfer this machine drives programs anything but 0/1/2, so
+             * this is a latent path -- but it is the whole width of buff[].
+             */
+            swidth = 1 << IT_SIZE("pl080", (ch->ctrl >> 18) & 7, 2);
+            dwidth = 1 << IT_SIZE("pl080", (ch->ctrl >> 21) & 7, 2);
+            assert(swidth <= sizeof(buff) && dwidth <= sizeof(buff));
             s->paced_src = ch->src;   /* diagnostic; see PL080State.paced_src */
 
             for (n = 0; n < dwidth; n+= swidth) {

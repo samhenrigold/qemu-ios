@@ -1,6 +1,7 @@
 #include "hw/arm/ipod_touch_pke.h"
 #include "migration/vmstate.h"
 #include "hw/arm/ipod_touch_sha1.h"
+#include "qemu/log.h"
 #include <openssl/bn.h>
 #include <openssl/bio.h>
 
@@ -148,6 +149,14 @@ static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, un
 
             if(s->num_started == 5) { // TODO this is arbitrary!
 
+                if (s->segment_size == 0 ||
+                    s->segment_size > sizeof(s->segments) / 2) {
+                    qemu_log_mask(LOG_GUEST_ERROR,
+                                  "[PKE] START with an unusable segment size "
+                                  "(%u); ignored\n", s->segment_size);
+                    break;
+                }
+
 
                 BIGNUM *mod_bn = BN_lebin2bn(s->segments, s->segment_size, NULL);
                 BIGNUM *base_bn = BN_lebin2bn(s->segments + s->segment_size, s->segment_size, NULL);
@@ -163,7 +172,16 @@ static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, un
                 // printf("\n\n");
 
                 char *bn_hex = BN_bn2hex(res);
-                char *res_hex = datahex(bn_hex);
+                char *res_hex = (char *)datahex(bn_hex);
+                /*
+                 * res_hex is exactly strlen(bn_hex)/2 bytes and BN_bn2hex is
+                 * minimal-length, so on a FAILED verification it is shorter
+                 * than segment_size - 1 -- which is the length everything below
+                 * used to assume. datahex() also returns NULL outright for an
+                 * odd-length hex string. res_len is the only length that is
+                 * actually backed by an allocation.
+                 */
+                size_t res_len = res_hex ? strlen(bn_hex) / 2 : 0;
 
                 if (getenv("IT_PKE_DEBUG")) {
                     printf("[PKE] modexp: result is %zu bytes (segment_size=%d)\n",
@@ -184,10 +202,12 @@ static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, un
                     }
                     printf("\n");
                     printf("[PKE]   head: ");
-                    for (int i = 0; i < 8; i++) { printf("%02x", (uint8_t)res_hex[i]); }
+                    for (size_t i = 0; i < MIN((size_t)8, res_len); i++) {
+                        printf("%02x", (uint8_t)res_hex[i]);
+                    }
                     printf("  tail: ");
-                    for (int i = (int)(strlen(bn_hex) / 2) - 24;
-                         i < (int)(strlen(bn_hex) / 2); i++) {
+                    for (size_t i = (res_len > 24) ? res_len - 24 : 0;
+                         i < res_len; i++) {
                         printf("%02x", (uint8_t)res_hex[i]);
                     }
                     printf("\n");
@@ -198,7 +218,6 @@ static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, un
                  * (the leading 0x00 of the PKCS#1 block) and starts 0x01 0xFF.
                  * Anything else means the signature did not verify.
                  */
-                size_t res_len = strlen(bn_hex) / 2;
                 /*
                  * KNOWN BUG, DELIBERATELY NOT FIXED HERE -- needs a boot test.
                  * res_hex is char*, signed on this target, so `res_hex[1] ==
@@ -214,7 +233,8 @@ static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, un
                  * Change ONE variable: fix the cast, boot, see whether the
                  * 5th-START behaviour changes, and only then touch the counter.
                  */
-                bool well_formed = (res_len == (size_t)s->segment_size - 1) &&
+                bool well_formed = res_len >= 2 &&
+                                   (res_len == (size_t)s->segment_size - 1) &&
                                    res_hex[0] == 0x01 && res_hex[1] == 0xff;
 
                 if (!well_formed && forge_sigcheck_enabled()) {
@@ -235,8 +255,22 @@ static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, un
                     }
                 }
 
-                // copy this into SEG1 - note that the hex conversion removes the first 0x00 bytes so we add it back and shift everything to the right one place.
-                for(int i = 0; i < (s->segment_size - 1); i++) { s->segments[s->segment_size + s->segment_size - 2 - i] = res_hex[i]; }
+                /*
+                 * Copy this into SEG1 - the hex conversion drops the leading
+                 * 0x00 bytes, so add one back and shift everything right one
+                 * place. The loop always ran segment_size - 1 (255 or 127)
+                 * iterations: on a SUCCESSFUL verification res_len is exactly
+                 * that and it closed, but on a failed one -- the normal case for
+                 * the 7E18 images, and the entire reason IT_FORGE_SIGCHECK
+                 * exists -- it read up to 255 bytes past a shorter heap
+                 * allocation and copied them into guest-visible segment memory.
+                 * Copy what exists and zero-fill the rest.
+                 */
+                size_t copy_n = MIN(res_len, (size_t)s->segment_size - 1);
+                for (size_t i = 0; i < (size_t)s->segment_size - 1; i++) {
+                    s->segments[2 * s->segment_size - 2 - i] =
+                        (i < copy_n) ? (uint8_t)res_hex[i] : 0x00;
+                }
                 s->segments[s->segment_size + s->segment_size - 1] = 0x0;
             }
             break;
@@ -246,7 +280,31 @@ static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, un
             uint32_t size_bit = (s->seg_size_reg >> 6);
             if(size_bit == 0) { s->segment_size = 256; }
             else if(size_bit == 1) { s->segment_size = 128; }
-            else { }
+            else {
+                /*
+                 * Only 0 and 1 are decoded, so any other encoding leaves
+                 * segment_size at whatever it was -- and that is ZERO after
+                 * reset. The copy-out loop at the end of START is
+                 * `for (i = 0; i < segment_size - 1; i++)`, unsigned, so a zero
+                 * there makes the bound 0xFFFFFFFF and the destination index
+                 * `segments[-2 - i]`: a backwards walk off the front of the
+                 * array, through the heap, for as long as it takes to crash.
+                 *
+                 * segment_size is deliberately NOT changed here. Measured: the
+                 * 3.1.3 boot chain writes SEG_SIZE = 0x81 (encoding 2) exactly
+                 * once per boot, so this is a live path, not a latent one, and
+                 * zeroing on it would have changed a value the boot signature
+                 * path already runs against. The bound is enforced where it is
+                 * actually unsafe -- at START, below -- which leaves every
+                 * reachable sequence bit-identical to before (verified by
+                 * diffing a full IT_PKE_DEBUG boot trace, 522 lines, against
+                 * the previous binary).
+                 */
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "[PKE] reserved segment size encoding %u "
+                              "(SEG_SIZE=0x%08x); size left at %u\n",
+                              size_bit, s->seg_size_reg, s->segment_size);
+            }
             break;
         case REG_PKE_SWRESET:
             if (getenv("IT_PKE_DEBUG")) { printf("[PKE] SWRESET\n"); }

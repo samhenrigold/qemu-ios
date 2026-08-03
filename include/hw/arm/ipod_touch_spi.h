@@ -54,7 +54,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSPIState, IPOD_TOUCH_SPI)
 #define R_FIFO_RX_DEPTH         16
 
 #define REG(_s,_v)             ((_s)->regs[(_v)>>2])
-#define MMIO_SIZE              (0x4000)
+/*
+ * The MMIO region this device claims (see memory_region_init_io in realize).
+ * regs[] was sized from 0x4000 -- 16 KB per controller, 80 KB across the five,
+ * all of it migrated -- while no access above 0x100 can ever reach the handler
+ * and the highest defined register is R_TXCNT at 0x04c. Also renamed off the
+ * bare MMIO_SIZE, which hw/usb/hcd-ehci.h already defines to a different value.
+ */
+#define SPI_MMIO_SIZE          (0x100)
 
 
 typedef struct IPodTouchSPIState {
@@ -69,7 +76,7 @@ typedef struct IPodTouchSPIState {
     uint32_t last_irq;
     qemu_irq cs_line;
 
-    uint32_t regs[MMIO_SIZE >> 2];
+    uint32_t regs[SPI_MMIO_SIZE >> 2];
     uint8_t base;
     Fifo8 rx_fifo;
     Fifo8 tx_fifo;

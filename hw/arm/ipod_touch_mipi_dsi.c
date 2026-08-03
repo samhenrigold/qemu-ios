@@ -1,10 +1,37 @@
 #include "hw/arm/ipod_touch_mipi_dsi.h"
 #include "migration/vmstate.h"
+#include "qemu/log.h"
+
+/*
+ * Both of these were called on every register access. The trace was
+ * unconditional -- one line per read and per write, synchronously inside the
+ * MMIO handler with the BQL held -- and IT_DIRECT_IBOOT was a fresh getenv()
+ * (a linear scan of environ) up to three times per access. Cached statics, the
+ * same pattern as the FMSS/MBX/AMC gates; neither is meant to change mid-run.
+ */
+static bool dsi_trace(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_DSI_TRACE") != NULL;
+    }
+    return on;
+}
+
+static bool dsi_direct_iboot(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_DIRECT_IBOOT") != NULL;
+    }
+    return on;
+}
 
 static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned size)
 {
-    if (addr != 0x00000)
-	fprintf(stderr, "%s: read from location 0x%08lx\n", __func__, addr);
+    if (addr != 0x00000 && dsi_trace()) {
+        fprintf(stderr, "%s: read from location 0x%08lx\n", __func__, addr);
+    }
 
     IPodTouchMIPIDSIState *s = (IPodTouchMIPIDSIState *)opaque;
     switch(addr)
@@ -29,7 +56,7 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
              * trigger write and then clear, so they are driven by cmd_pending
              * (set on a command write, self-clearing on read) rather than
              * pinned. Gated to the direct 7E18 boot. */
-            if (getenv("IT_DIRECT_IBOOT")) {
+            if (dsi_direct_iboot()) {
                 status |= 0x00100000 | s->cmd_pending;
                 s->cmd_pending = 0;
             }
@@ -50,7 +77,8 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
         case REG_FIFOCTRL:
             return rDSIM_FIFOCTRL_EmptyHSfr;
         default:
-            printf("%s: read invalid location 0x%08lx.\n", __func__, addr);
+            qemu_log_mask(LOG_UNIMP, "%s: read invalid location 0x%08lx.\n",
+                          __func__, addr);
             break;
     }
     return 0;
@@ -59,19 +87,21 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
 static void ipod_touch_mipi_dsi_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     IPodTouchMIPIDSIState *s = (IPodTouchMIPIDSIState *)opaque;
-    fprintf(stderr, "%s: writing 0x%08lx to 0x%08lx\n", __func__, val, addr);
+    if (dsi_trace()) {
+        fprintf(stderr, "%s: writing 0x%08lx to 0x%08lx\n", __func__, val, addr);
+    }
 
     switch(addr)
     {
         case REG_PKTHDR:
             s->pkthdr_reg = val;
             /* Sending a packet re-arms the command handshake bits. */
-            if (getenv("IT_DIRECT_IBOOT")) {
+            if (dsi_direct_iboot()) {
                 s->cmd_pending = 0x230;
             }
             break;
         case 0x14: /* DSIM_ESCMODE: escape-mode command trigger */
-            if (getenv("IT_DIRECT_IBOOT")) {
+            if (dsi_direct_iboot()) {
                 s->cmd_pending = 0x230;
             }
             break;
