@@ -186,6 +186,74 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
             }
             break;
         }
+        /*
+         * Pasteboard. The text never travels in the args union -- that is
+         * frozen at 32 bytes and widening it would silently move retval out
+         * from under the already-deployed keyboard agent -- so it is windowed
+         * through a guest buffer instead.
+         */
+        case QC_PB_POLL: {
+            IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
+            qcall.retval = nms->pb_out ? (int64_t)nms->pb_out_len : 0;
+            break;
+        }
+        case QC_PB_READ: {
+            IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
+            uint32_t off = qcall.args.pb.offset;
+            uint32_t len = qcall.args.pb.length;
+            if (!nms->pb_out || off >= nms->pb_out_len) {
+                qcall.retval = 0;
+                break;
+            }
+            if (len > nms->pb_out_len - off) {
+                len = nms->pb_out_len - off;
+            }
+            cpu_memory_rw_debug(cpu, qcall.args.pb.buffer_guest_ptr,
+                                (uint8_t *)nms->pb_out + off, len, 1);
+            qcall.retval = len;
+            break;
+        }
+        case QC_PB_ACK: {
+            IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
+            g_free(nms->pb_out);
+            nms->pb_out = NULL;
+            nms->pb_out_len = 0;
+            qcall.retval = 0;
+            break;
+        }
+        case QC_PB_WRITE: {
+            IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
+            uint32_t off = qcall.args.pb.offset;
+            uint32_t len = qcall.args.pb.length;
+            /*
+             * offset 0 starts a fresh item. Anything else has to continue the
+             * one already being staged; a gap would leave uninitialised bytes
+             * in the middle of the text.
+             */
+            if (off == 0) {
+                g_free(nms->pb_in);
+                nms->pb_in = NULL;
+                nms->pb_in_len = 0;
+            }
+            if (off != nms->pb_in_len || len > QC_PB_MAX_LEN ||
+                off + (size_t)len > QC_PB_MAX_LEN) {
+                qcall.retval = -1;
+                break;
+            }
+            nms->pb_in = g_realloc(nms->pb_in, off + len + 1);
+            cpu_memory_rw_debug(cpu, qcall.args.pb.buffer_guest_ptr,
+                                (uint8_t *)nms->pb_in + off, len, 0);
+            nms->pb_in_len = off + len;
+            nms->pb_in[nms->pb_in_len] = '\0';
+            qcall.retval = len;
+            break;
+        }
+        case QC_PB_COMMIT: {
+            IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
+            ipod_touch_pb_guest_commit(nms);
+            qcall.retval = 0;
+            break;
+        }
         default:
             // TODO: handle unknown call numbers
             break;

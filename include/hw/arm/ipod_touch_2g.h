@@ -251,6 +251,37 @@ typedef struct {
 	int osk_last_x, osk_last_y; /* where the finger currently is */
 	bool osk_shifted;           /* shift key currently latched on the OSK */
 	bool osk_numeric;           /* the ".?123" page is showing */
+
+	/*
+	 * Host <-> guest pasteboard (see the QC_PB_* ops in guest-services.c and
+	 * contrib/it-pasteboard/it_pbd.c). This is the lossless counterpart to the
+	 * OSK typist above: instead of turning text into taps on iOS's own
+	 * keyboard, the text is handed to the guest's UIPasteboard and the user
+	 * taps Paste. Punctuation and symbols survive, because nothing about the
+	 * keyboard's page state is involved.
+	 *
+	 * pb_out is what the host has queued for the guest; the guest agent polls
+	 * for it, reads it out in chunks and acknowledges. pb_in is the staging
+	 * buffer the guest fills going the other way, published to the host
+	 * clipboard on commit and kept in pb_guest so it can be read back.
+	 */
+	char *pb_out;             /* text waiting for the guest, or NULL */
+	size_t pb_out_len;
+	char *pb_in;              /* partial text arriving from the guest */
+	size_t pb_in_len;
+	char *pb_guest;           /* last text the guest published, or NULL */
+	size_t pb_guest_len;
+	bool pb_peer_registered;
 } IPodTouchMachineState;
+
+/*
+ * Queue text for the guest's UIPasteboard. Replaces anything not yet collected
+ * -- a clipboard has one item, and a stale one is worse than none. Safe to call
+ * with the guest agent absent; the text simply sits there.
+ */
+void ipod_touch_pb_set(IPodTouchMachineState *nms, const char *text);
+
+/* The guest finished sending an item: publish it to the host clipboard. */
+void ipod_touch_pb_guest_commit(IPodTouchMachineState *nms);
 
 #endif
