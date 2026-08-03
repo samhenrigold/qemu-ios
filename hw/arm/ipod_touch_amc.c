@@ -56,20 +56,52 @@
  *                                                        line 2678  (x4)
  *     AppleEmbeddedAudioDevice: could not start DMA: device is not ready
  *
- * Line 934 is `produced_bytes == frames * 2` -- `cmp r1, r3, lsl #1` against
- * halfword [[r5+0x48c]+4] -- and its failure path returns 0xe00002bc
- * (kIOReturnError). So the self test fails because this model produces no
- * bytes, the embedded-audio layer then refuses to start DMA, and that is
- * precisely why no PL080 channel is ever pointed at the I2S TX FIFO at
- * 0x3ca00010 and no PCM is ever produced.
+ * Line 934 is `sp[0x54] == halfword[[this+0x48c]+4] << 1` (935 repeats it for
+ * sp[0x58]), and its failure path returns 0xe00002bc (kIOReturnError). The
+ * embedded-audio layer then refuses to start DMA, which is precisely why no
+ * PL080 channel is ever pointed at the I2S TX FIFO at 0x3ca00010 and no PCM is
+ * ever produced.
  *
- * The way forward, and it is narrower than it looks: those assertions compare
- * COUNTS ONLY, never audio content. Passing the self test therefore does not
- * require emulating the AAC/MP3 decoder -- it requires the per-channel position
- * registers at 0xa44 + n*0x14 (accessor VA 0xc0611864, consumer 0xc060e36c) to
- * report the *exact* expected count. An earlier probe that advanced them by an
- * arbitrary 64 or 1024 changed nothing, which is unsurprising against an
- * equality test, and says nothing about whether the right value would work.
+ * DO NOT try to satisfy that by making a register report a count. That plan was
+ * pursued and disproven three ways:
+ *
+ *   1. The virtual call at [vtable+0x41c] (0xc060c788) that fills the compared
+ *      counts reads no AMC register at all -- a full trace of a cycle shows the
+ *      last reads before the assert are one R 0a98 and one R 0b18. The position
+ *      registers at 0xa44 + n*0x14 are not the input to this assertion.
+ *   2. The expected count is ZERO. this = 0xc0ac6800 (cross-checked:
+ *      [this+0x40c] = 4, the bit-2 mask the driver acks), [this+0x48c] =
+ *      0xea744000, and all 16 bytes there read zero on every one of the four
+ *      cycles. Advancing a position register moves AWAY from the expected value.
+ *   3. The compared slots hold stale kernel pointers, not counts:
+ *      sp[0x54] = 0xc0aca200, sp[0x58] = 0xea75c000, identical across all four
+ *      cycles -- leftovers the results call never overwrote.
+ *
+ * The real contract is MEMORY-SIDE. The engine is expected to write its results
+ * into guest memory, into the block at [this+0x48c]; this model writes nothing
+ * anywhere, and that block staying all-zero is the first failure. Line 934 is
+ * only where the driver notices.
+ *
+ * Build from this: the guest does stage real data. The 0x22000000 aperture holds
+ * 37672 non-zero bytes -- four 8 KB blocks at +0x10000/+0x14000/+0x18000/
+ * +0x1c000 plus ~18 KB over +0x25400..+0x2d500 -- the engine's program and
+ * working buffers. (Those +0x10000 offsets match the position accessor's other
+ * two out-fields, which resolve to [table+4]+0x10000 and [table+8]+0x10000 on
+ * AMC 2.0.) And the consumer at 0xc060e36c is a ring-buffer PCM copy: it takes
+ * the 0xa44 position, computes a source address into the aperture, and copies
+ * word pairs with an 8/0x10 stride (stereo deinterleave). So a model that
+ * genuinely moves bytes and writes a real result block can be honest, where
+ * satisfying a comparison would only buy silence.
+ *
+ * One more correction: the 106 reads of 0xa44 before the kick are NOT a spin.
+ * They are a bounded loop (0xc0613344-0xc0613378) over 106 items, the count
+ * coming from a call to 0xc0612df4, one read per item, building a scatter list.
+ *
+ * Two traps that cost real time here: AppleAMC_r2 is ARM (A32), not Thumb --
+ * Thumb-decoding these VAs yields plausible nonsense. And the kernelcache in
+ * ~/Developer/ipod2g-re is NOT the one that boots (4.5% byte match over this
+ * address range; its AppleAMC_r2 is at 0xc02ac000, not 0xc060c000), so every
+ * runtime VA must be read out of guest RAM via QMP pmemsave, VA - 0xB8000000.
  */
 
 #include "hw/arm/ipod_touch_amc.h"
@@ -98,45 +130,111 @@ static void amc_log_caller(hwaddr addr, uint32_t val)
     }
     budget--;
     env = &ARM_CPU(current_cpu)->env;
-    /* Walk the r7 frame chain: each frame is { saved r7, saved lr }. */
+    /*
+     * Walk the r7 frame chain. This driver is ARM, not Thumb, and every
+     * non-leaf function opens with `push {r4-r7, lr}; add r7, sp, #0xc`, so a
+     * frame is { r4, r5, r6, saved r7, saved lr } with r7 pointing at the
+     * saved r7. That means the caller's callee-saved registers are readable
+     * too, which is the only way to get at the AppleAMC_r2 instance: the self
+     * test holds it in r5, and r5 is long gone by the time the register access
+     * happens several frames deeper. Each entry prints as lr/r5.
+     */
     fprintf(stderr, "[AMC] %04x <- %08x  pc=%08x lr=%08x  stack:",
             (unsigned)addr, val, env->regs[15], env->regs[14]);
     uint32_t fp = env->regs[7];
     for (int i = 0; i < 8 && fp; i++) {
-        uint32_t frame[2] = { 0, 0 };
-        if (cpu_memory_rw_debug(current_cpu, fp, (uint8_t *)frame,
+        uint32_t frame[5] = { 0 };      /* r4, r5, r6, r7, lr */
+        if (cpu_memory_rw_debug(current_cpu, fp - 12, (uint8_t *)frame,
                                 sizeof(frame), false) != 0) {
             break;
         }
-        fprintf(stderr, " %08x", frame[1]);
-        if (frame[0] <= fp) {
+        fprintf(stderr, " %08x/r5=%08x", frame[4], frame[1]);
+        if (frame[3] <= fp) {
             break;              /* not a plausible frame chain any more */
         }
-        fp = frame[0];
+        fp = frame[3];
     }
     fprintf(stderr, "\n");
 
     /*
-     * IT_AMC_DEREF=<hex>: at the probed access, treat r5 as the AppleAMC_r2
-     * instance and dump the object at [r5 + <hex>]. The self test's final
-     * assertions (AppleAMCDriver_r2.cpp lines 934/935) compare the bytes the
-     * engine produced against halfword [[r5+0x48c]+4] << 1, so that is where
-     * the expected count lives.
+     * IT_AMC_DEREF=<hex>[,<hex>...]: at the probed access, treat r5 as the
+     * AppleAMC_r2 instance and dump each [r5 + <hex>], following it one level
+     * if it looks like a pointer. The self test's final assertions
+     * (AppleAMCDriver_r2.cpp lines 934/935) compare the bytes the engine
+     * produced against halfword [[r5+0x48c]+4] << 1, so that is where the
+     * expected count lives -- but print the raw word too, because a deref that
+     * merely reads zeroes is indistinguishable from a wrong r5 otherwise.
      */
+    /*
+     * IT_AMC_FRAME=<hex lr> walks out to the frame whose saved lr is that
+     * value and dumps the 32 words below its r7. The self test
+     * (0xc060c4d0: push {r4-r7,lr}; add r7,sp,#0xc; push {r8,sl,fp};
+     * sub sp,sp,#0x68) therefore has its locals at r7-0x80 + n, so its sp[0x54]
+     * and sp[0x58] -- the two counts assertion 934/935 tests -- land at r7-0x2c
+     * and r7-0x28. Nothing writes those until after the last AMC access of a
+     * cycle, so read them at the FIRST access of the next cycle: the self test
+     * is re-entered from the same call site, so the frame is at the same
+     * address and the slot still holds the previous cycle's value.
+     */
+    const char *want_frame = getenv("IT_AMC_FRAME");
+    if (want_frame) {
+        /* Walk to the frame whose saved lr is <hex> -- that frame is the
+         * caller we care about -- and dump the 32 words below its r7. */
+        uint32_t target = strtoul(want_frame, NULL, 16);
+        uint32_t fp = env->regs[7];
+        for (int i = 0; i < 8 && fp; i++) {
+            uint32_t frame[5] = { 0 };
+            if (cpu_memory_rw_debug(current_cpu, fp - 12, (uint8_t *)frame,
+                                    sizeof(frame), false) != 0) {
+                break;
+            }
+            if (frame[4] == target) {
+                uint32_t words[32];
+                if (cpu_memory_rw_debug(current_cpu, fp - sizeof(words),
+                                        (uint8_t *)words, sizeof(words),
+                                        false) == 0) {
+                    fprintf(stderr, "[AMC] frame r7=%08x:", fp);
+                    for (unsigned j = 0; j < ARRAY_SIZE(words); j++) {
+                        fprintf(stderr, " %d:%08x",
+                                (int)(j * 4) - (int)sizeof(words), words[j]);
+                    }
+                    fprintf(stderr, "\n");
+                }
+                break;
+            }
+            if (frame[3] <= fp) {
+                break;
+            }
+            fp = frame[3];
+        }
+    }
+
     const char *deref = getenv("IT_AMC_DEREF");
     if (deref) {
-        uint32_t off = strtoul(deref, NULL, 16), ptr = 0;
-        uint8_t buf[32];
-        if (cpu_memory_rw_debug(current_cpu, env->regs[5] + off,
-                                (uint8_t *)&ptr, 4, false) == 0 && ptr &&
-            cpu_memory_rw_debug(current_cpu, ptr, buf, sizeof(buf), false) == 0) {
-            fprintf(stderr, "[AMC] r5=%08x [r5+%x]=%08x ->", env->regs[5],
-                    off, ptr);
-            for (unsigned i = 0; i < sizeof(buf); i++) {
-                fprintf(stderr, " %02x", buf[i]);
+        fprintf(stderr, "[AMC] r4=%08x r5=%08x r6=%08x sl=%08x",
+                env->regs[4], env->regs[5], env->regs[6], env->regs[10]);
+        for (const char *p = deref; p && *p; ) {
+            uint32_t off = strtoul(p, NULL, 16), word = 0;
+            uint8_t buf[16];
+            if (cpu_memory_rw_debug(current_cpu, env->regs[5] + off,
+                                    (uint8_t *)&word, 4, false) != 0) {
+                fprintf(stderr, "  [r5+%x]=<unreadable>", off);
+            } else if (word >= 0xc0000000 &&
+                       cpu_memory_rw_debug(current_cpu, word, buf,
+                                           sizeof(buf), false) == 0) {
+                fprintf(stderr, "  [r5+%x]=%08x ->", off, word);
+                for (unsigned i = 0; i < sizeof(buf); i++) {
+                    fprintf(stderr, "%02x", buf[i]);
+                }
+            } else {
+                fprintf(stderr, "  [r5+%x]=%08x", off, word);
             }
-            fprintf(stderr, "\n");
+            p = strchr(p, ',');
+            if (p) {
+                p++;
+            }
         }
+        fprintf(stderr, "\n");
     }
 }
 
