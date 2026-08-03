@@ -1006,7 +1006,7 @@ static void xlnx_zynqmp_can_reset_init(Object *obj, ResetType type)
     ptimer_transaction_commit(s->can_timer);
 }
 
-static void xlnx_zynqmp_can_reset_hold(Object *obj)
+static void xlnx_zynqmp_can_reset_hold(Object *obj, ResetType type)
 {
     XlnxZynqMPCANState *s = XLNX_ZYNQMP_CAN(obj);
     unsigned int i;
@@ -1159,7 +1159,7 @@ static const VMStateDescription vmstate_can = {
     .name = TYPE_XLNX_ZYNQMP_CAN,
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_FIFO32(rx_fifo, XlnxZynqMPCANState),
         VMSTATE_FIFO32(tx_fifo, XlnxZynqMPCANState),
         VMSTATE_FIFO32(txhpb_fifo, XlnxZynqMPCANState),
@@ -1169,12 +1169,11 @@ static const VMStateDescription vmstate_can = {
     }
 };
 
-static Property xlnx_zynqmp_can_properties[] = {
+static const Property xlnx_zynqmp_can_properties[] = {
     DEFINE_PROP_UINT32("ext_clk_freq", XlnxZynqMPCANState, cfg.ext_clk_freq,
                        CAN_DEFAULT_CLOCK),
     DEFINE_PROP_LINK("canbus", XlnxZynqMPCANState, canbus, TYPE_CAN_BUS,
                      CanBusState *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void xlnx_zynqmp_can_class_init(ObjectClass *klass, void *data)

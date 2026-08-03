@@ -137,7 +137,7 @@ static void xram_ctrl_reset_enter(Object *obj, ResetType type)
     ARRAY_FIELD_DP32(s->regs, XRAM_IMP, SIZE, s->cfg.encoded_size);
 }
 
-static void xram_ctrl_reset_hold(Object *obj)
+static void xram_ctrl_reset_hold(Object *obj, ResetType type)
 {
     XlnxXramCtrl *s = XLNX_XRAM_CTRL(obj);
 
@@ -212,15 +212,14 @@ static const VMStateDescription vmstate_xram_ctrl = {
     .name = TYPE_XLNX_XRAM_CTRL,
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, XlnxXramCtrl, XRAM_CTRL_R_MAX),
         VMSTATE_END_OF_LIST(),
     }
 };
 
-static Property xram_ctrl_properties[] = {
+static const Property xram_ctrl_properties[] = {
     DEFINE_PROP_UINT64("size", XlnxXramCtrl, cfg.size, 1 * MiB),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void xram_ctrl_class_init(ObjectClass *klass, void *data)

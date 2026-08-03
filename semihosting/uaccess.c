@@ -8,6 +8,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "exec/cpu-all.h"
 #include "exec/exec-all.h"
 #include "semihosting/uaccess.h"
 
@@ -26,7 +27,7 @@ void *uaccess_lock_user(CPUArchState *env, target_ulong addr,
 
 ssize_t uaccess_strlen_user(CPUArchState *env, target_ulong addr)
 {
-    int mmu_idx = cpu_mmu_index(env, false);
+    int mmu_idx = cpu_mmu_index(env_cpu(env), false);
     size_t len = 0;
 
     while (1) {

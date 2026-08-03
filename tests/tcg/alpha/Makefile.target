@@ -12,7 +12,7 @@ test-cmov: EXTRA_CFLAGS=-DTEST_CMOV
 test-cmov: test-cond.c
 	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $< -o $@ $(LDFLAGS)
 
-run-test-cmov: test-cmov
+# Force generation of byte read/write
+test-plugin-mem-access: CFLAGS+=-mbwx
 
-# On Alpha Linux only supports 8k pages
-EXTRA_RUNS+=run-test-mmap-8192
+run-test-cmov: test-cmov

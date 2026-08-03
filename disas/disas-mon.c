@@ -11,6 +11,19 @@
 #include "hw/core/cpu.h"
 #include "monitor/monitor.h"
 
+/*
+ * Get LENGTH bytes from info's buffer, at target address memaddr.
+ * Transfer them to myaddr.
+ */
+static int
+virtual_read_memory(bfd_vma memaddr, bfd_byte *myaddr, int length,
+                    struct disassemble_info *info)
+{
+    CPUDebug *s = container_of(info, CPUDebug, info);
+    int r = cpu_memory_rw_debug(s->cpu, memaddr, myaddr, length, 0);
+    return r ? EIO : 0;
+}
+
 static int
 physical_read_memory(bfd_vma memaddr, bfd_byte *myaddr, int length,
                      struct disassemble_info *info)
@@ -34,9 +47,12 @@ void monitor_disas(Monitor *mon, CPUState *cpu, uint64_t pc,
     disas_initialize_debug_target(&s, cpu);
     s.info.fprintf_func = disas_gstring_printf;
     s.info.stream = (FILE *)ds;  /* abuse this slot */
+    s.info.show_opcodes = true;
 
     if (is_physical) {
         s.info.read_memory_func = physical_read_memory;
+    } else {
+        s.info.read_memory_func = virtual_read_memory;
     }
     s.info.buffer_vma = pc;
 

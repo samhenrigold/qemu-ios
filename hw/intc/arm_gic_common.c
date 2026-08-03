@@ -26,7 +26,7 @@
 #include "hw/arm/linux-boot-if.h"
 #include "hw/qdev-properties.h"
 #include "migration/vmstate.h"
-#include "sysemu/kvm.h"
+#include "system/kvm.h"
 
 static int gic_pre_save(void *opaque)
 {
@@ -62,7 +62,7 @@ static const VMStateDescription vmstate_gic_irq_state = {
     .name = "arm_gic_irq_state",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(enabled, gic_irq_state),
         VMSTATE_UINT8(pending, gic_irq_state),
         VMSTATE_UINT8(active, gic_irq_state),
@@ -79,7 +79,7 @@ static const VMStateDescription vmstate_gic_virt_state = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = gic_virt_state_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         /* Virtual interface */
         VMSTATE_UINT32_ARRAY(h_hcr, GICState, GIC_NCPU),
         VMSTATE_UINT32_ARRAY(h_misr, GICState, GIC_NCPU),
@@ -104,7 +104,7 @@ static const VMStateDescription vmstate_gic = {
     .minimum_version_id = 12,
     .pre_save = gic_pre_save,
     .post_load = gic_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(ctlr, GICState),
         VMSTATE_UINT32_SUB_ARRAY(cpu_ctlr, GICState, 0, GIC_NCPU),
         VMSTATE_STRUCT_ARRAY(irq_state, GICState, GIC_MAXIRQ, 1,
@@ -122,7 +122,7 @@ static const VMStateDescription vmstate_gic = {
         VMSTATE_UINT32_2DARRAY(nsapr, GICState, GIC_NR_APRS, GIC_NCPU),
         VMSTATE_END_OF_LIST()
     },
-    .subsections = (const VMStateDescription * []) {
+    .subsections = (const VMStateDescription * const []) {
         &vmstate_gic_virt_state,
         NULL
     }
@@ -263,7 +263,7 @@ static inline void arm_gic_common_reset_irq_state(GICState *s, int cidx,
     }
 }
 
-static void arm_gic_common_reset_hold(Object *obj)
+static void arm_gic_common_reset_hold(Object *obj, ResetType type)
 {
     GICState *s = ARM_GIC_COMMON(obj);
     int i, j;
@@ -348,7 +348,7 @@ static void arm_gic_common_linux_init(ARMLinuxBootIf *obj,
     }
 }
 
-static Property arm_gic_common_properties[] = {
+static const Property arm_gic_common_properties[] = {
     DEFINE_PROP_UINT32("num-cpu", GICState, num_cpu, 1),
     DEFINE_PROP_UINT32("num-irq", GICState, num_irq, 32),
     /* Revision can be 1 or 2 for GIC architecture specification
@@ -360,7 +360,6 @@ static Property arm_gic_common_properties[] = {
     /* True if the GIC should implement the virtualization extensions */
     DEFINE_PROP_BOOL("has-virtualization-extensions", GICState, virt_extn, 0),
     DEFINE_PROP_UINT32("num-priority-bits", GICState, n_prio_bits, 8),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void arm_gic_common_class_init(ObjectClass *klass, void *data)

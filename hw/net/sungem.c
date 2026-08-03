@@ -17,7 +17,7 @@
 #include "net/eth.h"
 #include "net/checksum.h"
 #include "hw/net/mii.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "trace.h"
 #include "qom/object.h"
 
@@ -1420,21 +1420,20 @@ static void sungem_instance_init(Object *obj)
                                   DEVICE(obj));
 }
 
-static Property sungem_properties[] = {
+static const Property sungem_properties[] = {
     DEFINE_NIC_PROPERTIES(SunGEMState, conf),
     /* Phy address should be 0 for most Apple machines except
      * for K2 in which case it's 1. Will be set by a machine
      * override.
      */
     DEFINE_PROP_UINT32("phy_addr", SunGEMState, phy_addr, 0),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static const VMStateDescription vmstate_sungem = {
     .name = "sungem",
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(pdev, SunGEMState),
         VMSTATE_MACADDR(conf.macaddr, SunGEMState),
         VMSTATE_UINT32(phy_addr, SunGEMState),
@@ -1467,7 +1466,7 @@ static void sungem_class_init(ObjectClass *klass, void *data)
     k->revision = 0x01;
     k->class_id = PCI_CLASS_NETWORK_ETHERNET;
     dc->vmsd = &vmstate_sungem;
-    dc->reset = sungem_reset;
+    device_class_set_legacy_reset(dc, sungem_reset);
     device_class_set_props(dc, sungem_properties);
     set_bit(DEVICE_CATEGORY_NETWORK, dc->categories);
 }

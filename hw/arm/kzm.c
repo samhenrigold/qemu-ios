@@ -22,9 +22,9 @@
 #include "exec/address-spaces.h"
 #include "net/net.h"
 #include "hw/net/lan9118.h"
-#include "hw/char/serial.h"
-#include "sysemu/qtest.h"
-#include "sysemu/sysemu.h"
+#include "hw/char/serial-mm.h"
+#include "system/qtest.h"
+#include "system/system.h"
 #include "qemu/cutils.h"
 
 /* Memory map for Kzm Emulation Baseboard:
@@ -113,8 +113,8 @@ static void kzm_init(MachineState *machine)
         alias_offset += ram[i].size;
     }
 
-    if (nd_table[0].used) {
-        lan9118_init(&nd_table[0], KZM_LAN9118_ADDR,
+    if (qemu_find_nic_info("lan9118", true, NULL)) {
+        lan9118_init(KZM_LAN9118_ADDR,
                      qdev_get_gpio_in(DEVICE(&s->soc.avic), 52));
     }
 

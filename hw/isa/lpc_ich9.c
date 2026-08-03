@@ -41,13 +41,13 @@
 #include "hw/isa/apm.h"
 #include "hw/pci/pci.h"
 #include "hw/southbridge/ich9.h"
-#include "hw/i386/pc.h"
 #include "hw/acpi/acpi.h"
 #include "hw/acpi/ich9.h"
+#include "hw/acpi/ich9_timer.h"
 #include "hw/pci/pci_bus.h"
 #include "hw/qdev-properties.h"
-#include "sysemu/runstate.h"
-#include "sysemu/sysemu.h"
+#include "system/runstate.h"
+#include "system/system.h"
 #include "hw/core/cpu.h"
 #include "hw/nvram/fw_cfg.h"
 #include "qemu/cutils.h"
@@ -532,6 +532,15 @@ ich9_lpc_pmcon_update(ICH9LPCState *lpc)
     uint16_t gen_pmcon_1 = pci_get_word(lpc->d.config + ICH9_LPC_GEN_PMCON_1);
     uint16_t wmask;
 
+    if (lpc->pm.swsmi_timer_enabled) {
+        ich9_pm_update_swsmi_timer(
+            &lpc->pm, lpc->pm.smi_en & ICH9_PMIO_SMI_EN_SWSMI_EN);
+    }
+    if (lpc->pm.periodic_timer_enabled) {
+        ich9_pm_update_periodic_timer(
+            &lpc->pm, lpc->pm.smi_en & ICH9_PMIO_SMI_EN_PERIODIC_EN);
+    }
+
     if (gen_pmcon_1 & ICH9_LPC_GEN_PMCON_1_SMI_LOCK) {
         wmask = pci_get_word(lpc->d.wmask + ICH9_LPC_GEN_PMCON_1);
         wmask &= ~ICH9_LPC_GEN_PMCON_1_SMI_LOCK;
@@ -739,7 +748,7 @@ static void ich9_lpc_realize(PCIDevice *d, Error **errp)
 
     isa_bus_register_input_irqs(isa_bus, lpc->gsi);
 
-    i8257_dma_init(isa_bus, 0);
+    i8257_dma_init(OBJECT(d), isa_bus, 0);
 
     /* RTC */
     qdev_prop_set_int32(DEVICE(&lpc->rtc), "base_year", 2000);
@@ -768,7 +777,7 @@ static const VMStateDescription vmstate_ich9_rst_cnt = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = ich9_rst_cnt_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(rst_cnt, ICH9LPCState),
         VMSTATE_END_OF_LIST()
     }
@@ -788,7 +797,7 @@ static const VMStateDescription vmstate_ich9_smi_feat = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = ich9_smi_feat_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8_ARRAY(smi_guest_features_le, ICH9LPCState,
                             sizeof(uint64_t)),
         VMSTATE_UINT8(smi_features_ok, ICH9LPCState),
@@ -802,7 +811,7 @@ static const VMStateDescription vmstate_ich9_lpc = {
     .version_id = 1,
     .minimum_version_id = 1,
     .post_load = ich9_lpc_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(d, ICH9LPCState),
         VMSTATE_STRUCT(apm, ICH9LPCState, 0, vmstate_apm, APMState),
         VMSTATE_STRUCT(pm, ICH9LPCState, 0, vmstate_ich9_pm, ICH9LPCPMRegs),
@@ -810,14 +819,14 @@ static const VMStateDescription vmstate_ich9_lpc = {
         VMSTATE_UINT32(sci_level, ICH9LPCState),
         VMSTATE_END_OF_LIST()
     },
-    .subsections = (const VMStateDescription*[]) {
+    .subsections = (const VMStateDescription * const []) {
         &vmstate_ich9_rst_cnt,
         &vmstate_ich9_smi_feat,
         NULL
     }
 };
 
-static Property ich9_lpc_properties[] = {
+static const Property ich9_lpc_properties[] = {
     DEFINE_PROP_BOOL("noreboot", ICH9LPCState, pin_strap.spkr_hi, false),
     DEFINE_PROP_BOOL("smm-compat", ICH9LPCState, pm.smm_compat, false),
     DEFINE_PROP_BOOL("smm-enabled", ICH9LPCState, pm.smm_enabled, false),
@@ -827,7 +836,10 @@ static Property ich9_lpc_properties[] = {
                       ICH9_LPC_SMI_F_CPU_HOTPLUG_BIT, true),
     DEFINE_PROP_BIT64("x-smi-cpu-hotunplug", ICH9LPCState, smi_host_features,
                       ICH9_LPC_SMI_F_CPU_HOT_UNPLUG_BIT, true),
-    DEFINE_PROP_END_OF_LIST(),
+    DEFINE_PROP_BOOL("x-smi-swsmi-timer", ICH9LPCState,
+                     pm.swsmi_timer_enabled, true),
+    DEFINE_PROP_BOOL("x-smi-periodic-timer", ICH9LPCState,
+                     pm.periodic_timer_enabled, true),
 };
 
 static void ich9_send_gpe(AcpiDeviceIf *adev, AcpiEventStatusBits ev)
@@ -872,7 +884,7 @@ static void ich9_lpc_class_init(ObjectClass *klass, void *data)
     AcpiDevAmlIfClass *amldevc = ACPI_DEV_AML_IF_CLASS(klass);
 
     set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
-    dc->reset = ich9_lpc_reset;
+    device_class_set_legacy_reset(dc, ich9_lpc_reset);
     k->realize = ich9_lpc_realize;
     dc->vmsd = &vmstate_ich9_lpc;
     device_class_set_props(dc, ich9_lpc_properties);

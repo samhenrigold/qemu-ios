@@ -24,6 +24,8 @@ class QAPISchemaPragma:
         self.command_name_exceptions: List[str] = []
         # Commands allowed to return a non-dictionary
         self.command_returns_exceptions: List[str] = []
+        # Types, commands, and events with undocumented members
+        self.documentation_exceptions: List[str] = []
         # Types whose member names may violate case conventions
         self.member_name_exceptions: List[str] = []
 
@@ -45,9 +47,9 @@ class QAPISourceInfo:
         self.defn_meta = meta
         self.defn_name = name
 
-    def next_line(self: T) -> T:
+    def next_line(self: T, n: int = 1) -> T:
         info = copy.copy(self)
-        info.line += 1
+        info.line += n
         return info
 
     def loc(self) -> str:

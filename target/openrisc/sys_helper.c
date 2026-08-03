@@ -21,6 +21,7 @@
 #include "qemu/osdep.h"
 #include "cpu.h"
 #include "exec/exec-all.h"
+#include "exec/cputlb.h"
 #include "exec/helper-proto.h"
 #include "exception.h"
 #ifndef CONFIG_USER_ONLY
@@ -160,20 +161,20 @@ void HELPER(mtspr)(CPUOpenRISCState *env, target_ulong spr, target_ulong rb)
         break;
     case TO_SPR(9, 0):  /* PICMR */
         env->picmr = rb;
-        qemu_mutex_lock_iothread();
+        bql_lock();
         if (env->picsr & env->picmr) {
             cpu_interrupt(cs, CPU_INTERRUPT_HARD);
         } else {
             cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
         }
-        qemu_mutex_unlock_iothread();
+        bql_unlock();
         break;
     case TO_SPR(9, 2):  /* PICSR */
         env->picsr &= ~rb;
         break;
     case TO_SPR(10, 0): /* TTMR */
         {
-            qemu_mutex_lock_iothread();
+            bql_lock();
             if ((env->ttmr & TTMR_M) ^ (rb & TTMR_M)) {
                 switch (rb & TTMR_M) {
                 case TIMER_NONE:
@@ -198,15 +199,15 @@ void HELPER(mtspr)(CPUOpenRISCState *env, target_ulong spr, target_ulong rb)
                 cs->interrupt_request &= ~CPU_INTERRUPT_TIMER;
             }
             cpu_openrisc_timer_update(cpu);
-            qemu_mutex_unlock_iothread();
+            bql_unlock();
         }
         break;
 
     case TO_SPR(10, 1): /* TTCR */
-        qemu_mutex_lock_iothread();
+        bql_lock();
         cpu_openrisc_count_set(cpu, rb);
         cpu_openrisc_timer_update(cpu);
-        qemu_mutex_unlock_iothread();
+        bql_unlock();
         break;
     }
 #endif
@@ -347,9 +348,9 @@ target_ulong HELPER(mfspr)(CPUOpenRISCState *env, target_ulong rd,
         return env->ttmr;
 
     case TO_SPR(10, 1): /* TTCR */
-        qemu_mutex_lock_iothread();
+        bql_lock();
         cpu_openrisc_count_update(cpu);
-        qemu_mutex_unlock_iothread();
+        bql_unlock();
         return cpu_openrisc_count_get(cpu);
     }
 #endif

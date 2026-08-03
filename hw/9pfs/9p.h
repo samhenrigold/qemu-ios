@@ -280,7 +280,6 @@ struct V9fsFidState {
     uid_t uid;
     int ref;
     bool clunked;
-    QSIMPLEQ_ENTRY(V9fsFidState) next;
     QSLIST_ENTRY(V9fsFidState) reclaim_next;
 };
 
@@ -363,6 +362,7 @@ struct V9fsState {
     uint64_t qp_ndevices; /* Amount of entries in qpd_table. */
     uint16_t qp_affix_next;
     uint64_t qp_fullpath_next;
+    bool reclaiming;
 };
 
 /* 9p2000.L open flags */

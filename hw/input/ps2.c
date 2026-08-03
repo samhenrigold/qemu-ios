@@ -30,8 +30,8 @@
 #include "migration/vmstate.h"
 #include "ui/console.h"
 #include "ui/input.h"
-#include "sysemu/reset.h"
-#include "sysemu/runstate.h"
+#include "system/reset.h"
+#include "system/runstate.h"
 #include "qapi/error.h"
 
 #include "trace.h"
@@ -1007,7 +1007,7 @@ void ps2_write_mouse(PS2MouseState *s, int val)
     }
 }
 
-static void ps2_reset_hold(Object *obj)
+static void ps2_reset_hold(Object *obj, ResetType type)
 {
     PS2State *s = PS2_DEVICE(obj);
 
@@ -1015,7 +1015,7 @@ static void ps2_reset_hold(Object *obj)
     ps2_reset_queue(s);
 }
 
-static void ps2_reset_exit(Object *obj)
+static void ps2_reset_exit(Object *obj, ResetType type)
 {
     PS2State *s = PS2_DEVICE(obj);
 
@@ -1048,7 +1048,7 @@ static void ps2_common_post_load(PS2State *s)
     q->cwptr = ccount ? (q->rptr + ccount) & (PS2_BUFFER_SIZE - 1) : -1;
 }
 
-static void ps2_kbd_reset_hold(Object *obj)
+static void ps2_kbd_reset_hold(Object *obj, ResetType type)
 {
     PS2DeviceClass *ps2dc = PS2_DEVICE_GET_CLASS(obj);
     PS2KbdState *s = PS2_KBD_DEVICE(obj);
@@ -1056,7 +1056,7 @@ static void ps2_kbd_reset_hold(Object *obj)
     trace_ps2_kbd_reset(s);
 
     if (ps2dc->parent_phases.hold) {
-        ps2dc->parent_phases.hold(obj);
+        ps2dc->parent_phases.hold(obj, type);
     }
 
     s->scan_enabled = 1;
@@ -1065,7 +1065,7 @@ static void ps2_kbd_reset_hold(Object *obj)
     s->modifiers = 0;
 }
 
-static void ps2_mouse_reset_hold(Object *obj)
+static void ps2_mouse_reset_hold(Object *obj, ResetType type)
 {
     PS2DeviceClass *ps2dc = PS2_DEVICE_GET_CLASS(obj);
     PS2MouseState *s = PS2_MOUSE_DEVICE(obj);
@@ -1073,7 +1073,7 @@ static void ps2_mouse_reset_hold(Object *obj)
     trace_ps2_mouse_reset(s);
 
     if (ps2dc->parent_phases.hold) {
-        ps2dc->parent_phases.hold(obj);
+        ps2dc->parent_phases.hold(obj, type);
     }
 
     s->mouse_status = 0;
@@ -1093,7 +1093,7 @@ static const VMStateDescription vmstate_ps2_common = {
     .name = "PS2 Common State",
     .version_id = 3,
     .minimum_version_id = 2,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT32(write_cmd, PS2State),
         VMSTATE_INT32(queue.rptr, PS2State),
         VMSTATE_INT32(queue.wptr, PS2State),
@@ -1124,7 +1124,7 @@ static const VMStateDescription vmstate_ps2_keyboard_ledstate = {
     .minimum_version_id = 2,
     .post_load = ps2_kbd_ledstate_post_load,
     .needed = ps2_keyboard_ledstate_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT32(ledstate, PS2KbdState),
         VMSTATE_END_OF_LIST()
     }
@@ -1141,7 +1141,7 @@ static const VMStateDescription vmstate_ps2_keyboard_need_high_bit = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = ps2_keyboard_need_high_bit_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_BOOL(need_high_bit, PS2KbdState),
         VMSTATE_END_OF_LIST()
     }
@@ -1158,7 +1158,7 @@ static bool ps2_keyboard_cqueue_needed(void *opaque)
 static const VMStateDescription vmstate_ps2_keyboard_cqueue = {
     .name = "ps2kbd/command_reply_queue",
     .needed = ps2_keyboard_cqueue_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT32(parent_obj.queue.cwptr, PS2KbdState),
         VMSTATE_END_OF_LIST()
     }
@@ -1183,7 +1183,7 @@ static const VMStateDescription vmstate_ps2_keyboard = {
     .version_id = 3,
     .minimum_version_id = 2,
     .post_load = ps2_kbd_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(parent_obj, PS2KbdState, 0, vmstate_ps2_common,
                        PS2State),
         VMSTATE_INT32(scan_enabled, PS2KbdState),
@@ -1191,7 +1191,7 @@ static const VMStateDescription vmstate_ps2_keyboard = {
         VMSTATE_INT32_V(scancode_set, PS2KbdState, 3),
         VMSTATE_END_OF_LIST()
     },
-    .subsections = (const VMStateDescription * []) {
+    .subsections = (const VMStateDescription * const []) {
         &vmstate_ps2_keyboard_ledstate,
         &vmstate_ps2_keyboard_need_high_bit,
         &vmstate_ps2_keyboard_cqueue,
@@ -1214,7 +1214,7 @@ static const VMStateDescription vmstate_ps2_mouse = {
     .version_id = 2,
     .minimum_version_id = 2,
     .post_load = ps2_mouse_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(parent_obj, PS2MouseState, 0, vmstate_ps2_common,
                        PS2State),
         VMSTATE_UINT8(mouse_status, PS2MouseState),

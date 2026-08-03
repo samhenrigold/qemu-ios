@@ -21,6 +21,9 @@
 #ifndef TARGET_ARM_CPREGS_H
 #define TARGET_ARM_CPREGS_H
 
+#include "hw/registerfields.h"
+#include "target/arm/kvm-consts.h"
+
 /*
  * ARMCPRegInfo type field bits:
  */
@@ -118,6 +121,19 @@ enum {
      * ARM pseudocode function CheckSMEAccess().
      */
     ARM_CP_SME                   = 1 << 19,
+    /*
+     * Flag: one of the four EL2 registers which redirect to the
+     * equivalent EL1 register when FEAT_NV2 is enabled.
+     */
+    ARM_CP_NV2_REDIRECT          = 1 << 20,
+    /*
+     * Flag: this is a TLBI insn which (when FEAT_XS is present) also has
+     * an NXS variant at the same encoding except that crn is 1 greater,
+     * so when registering this cpreg automatically also register one
+     * for the TLBI NXS variant. (For QEMU the NXS variant behaves
+     * identically to the normal one, other than FGT trapping handling.)
+     */
+    ARM_CP_ADD_TLBI_NXS          = 1 << 21,
 };
 
 /*
@@ -312,20 +328,23 @@ typedef enum CPAccessResult {
      * Access fails due to a configurable trap or enable which would
      * result in a categorized exception syndrome giving information about
      * the failing instruction (ie syndrome category 0x3, 0x4, 0x5, 0x6,
-     * 0xc or 0x18).
+     * 0xc or 0x18). These traps are always to a specified target EL,
+     * never to the usual target EL.
      */
-    CP_ACCESS_TRAP = (1 << 2),
-    CP_ACCESS_TRAP_EL2 = CP_ACCESS_TRAP | 2,
-    CP_ACCESS_TRAP_EL3 = CP_ACCESS_TRAP | 3,
+    CP_ACCESS_TRAP_BIT = (1 << 2),
+    CP_ACCESS_TRAP_EL1 = CP_ACCESS_TRAP_BIT | 1,
+    CP_ACCESS_TRAP_EL2 = CP_ACCESS_TRAP_BIT | 2,
+    CP_ACCESS_TRAP_EL3 = CP_ACCESS_TRAP_BIT | 3,
 
     /*
-     * Access fails and results in an exception syndrome 0x0 ("uncategorized").
+     * Access fails with UNDEFINED, i.e. an exception syndrome 0x0
+     * ("uncategorized"), which is what an undefined insn produces.
      * Note that this is not a catch-all case -- the set of cases which may
      * result in this failure is specifically defined by the architecture.
      * This trap is always to the usual target EL, never directly to a
      * specified target EL.
      */
-    CP_ACCESS_TRAP_UNCATEGORIZED = (2 << 2),
+    CP_ACCESS_UNDEFINED = (2 << 2),
 } CPAccessResult;
 
 /* Indexes into fgt_read[] */
@@ -613,6 +632,7 @@ FIELD(HDFGWTR_EL2, NBRBCTL, 60, 1)
 FIELD(HDFGWTR_EL2, NBRBDATA, 61, 1)
 FIELD(HDFGWTR_EL2, NPMSNEVFR_EL1, 62, 1)
 
+FIELD(FGT, NXS, 13, 1) /* Honour HCR_EL2.FGTnXS to suppress FGT */
 /* Which fine-grained trap bit register to check, if any */
 FIELD(FGT, TYPE, 10, 3)
 FIELD(FGT, REV, 9, 1) /* Is bit sense reversed? */
@@ -630,6 +650,17 @@ FIELD(FGT, BITPOS, 0, 6) /* Bit position within the uint64_t */
 /* Some bits have reversed sense, so 0 means trap and 1 means not */
 #define DO_REV_BIT(REG, BITNAME)                                        \
     FGT_##BITNAME = FGT_##REG | FGT_REV | R_##REG##_EL2_##BITNAME##_SHIFT
+
+/*
+ * The FGT bits for TLBI maintenance instructions accessible at EL1 always
+ * affect the "normal" TLBI insns; they affect the corresponding TLBI insns
+ * with the nXS qualifier only if HCRX_EL2.FGTnXS is 0. We define e.g.
+ * FGT_TLBIVAE1 to use for the normal insn, and FGT_TLBIVAE1NXS to use
+ * for the nXS qualified insn.
+ */
+#define DO_TLBINXS_BIT(REG, BITNAME)                             \
+    FGT_##BITNAME = FGT_##REG | R_##REG##_EL2_##BITNAME##_SHIFT, \
+    FGT_##BITNAME##NXS = FGT_##BITNAME | R_FGT_NXS_MASK
 
 typedef enum FGTBit {
     /*
@@ -764,36 +795,36 @@ typedef enum FGTBit {
     DO_BIT(HFGITR, ATS1E0W),
     DO_BIT(HFGITR, ATS1E1RP),
     DO_BIT(HFGITR, ATS1E1WP),
-    DO_BIT(HFGITR, TLBIVMALLE1OS),
-    DO_BIT(HFGITR, TLBIVAE1OS),
-    DO_BIT(HFGITR, TLBIASIDE1OS),
-    DO_BIT(HFGITR, TLBIVAAE1OS),
-    DO_BIT(HFGITR, TLBIVALE1OS),
-    DO_BIT(HFGITR, TLBIVAALE1OS),
-    DO_BIT(HFGITR, TLBIRVAE1OS),
-    DO_BIT(HFGITR, TLBIRVAAE1OS),
-    DO_BIT(HFGITR, TLBIRVALE1OS),
-    DO_BIT(HFGITR, TLBIRVAALE1OS),
-    DO_BIT(HFGITR, TLBIVMALLE1IS),
-    DO_BIT(HFGITR, TLBIVAE1IS),
-    DO_BIT(HFGITR, TLBIASIDE1IS),
-    DO_BIT(HFGITR, TLBIVAAE1IS),
-    DO_BIT(HFGITR, TLBIVALE1IS),
-    DO_BIT(HFGITR, TLBIVAALE1IS),
-    DO_BIT(HFGITR, TLBIRVAE1IS),
-    DO_BIT(HFGITR, TLBIRVAAE1IS),
-    DO_BIT(HFGITR, TLBIRVALE1IS),
-    DO_BIT(HFGITR, TLBIRVAALE1IS),
-    DO_BIT(HFGITR, TLBIRVAE1),
-    DO_BIT(HFGITR, TLBIRVAAE1),
-    DO_BIT(HFGITR, TLBIRVALE1),
-    DO_BIT(HFGITR, TLBIRVAALE1),
-    DO_BIT(HFGITR, TLBIVMALLE1),
-    DO_BIT(HFGITR, TLBIVAE1),
-    DO_BIT(HFGITR, TLBIASIDE1),
-    DO_BIT(HFGITR, TLBIVAAE1),
-    DO_BIT(HFGITR, TLBIVALE1),
-    DO_BIT(HFGITR, TLBIVAALE1),
+    DO_TLBINXS_BIT(HFGITR, TLBIVMALLE1OS),
+    DO_TLBINXS_BIT(HFGITR, TLBIVAE1OS),
+    DO_TLBINXS_BIT(HFGITR, TLBIASIDE1OS),
+    DO_TLBINXS_BIT(HFGITR, TLBIVAAE1OS),
+    DO_TLBINXS_BIT(HFGITR, TLBIVALE1OS),
+    DO_TLBINXS_BIT(HFGITR, TLBIVAALE1OS),
+    DO_TLBINXS_BIT(HFGITR, TLBIRVAE1OS),
+    DO_TLBINXS_BIT(HFGITR, TLBIRVAAE1OS),
+    DO_TLBINXS_BIT(HFGITR, TLBIRVALE1OS),
+    DO_TLBINXS_BIT(HFGITR, TLBIRVAALE1OS),
+    DO_TLBINXS_BIT(HFGITR, TLBIVMALLE1IS),
+    DO_TLBINXS_BIT(HFGITR, TLBIVAE1IS),
+    DO_TLBINXS_BIT(HFGITR, TLBIASIDE1IS),
+    DO_TLBINXS_BIT(HFGITR, TLBIVAAE1IS),
+    DO_TLBINXS_BIT(HFGITR, TLBIVALE1IS),
+    DO_TLBINXS_BIT(HFGITR, TLBIVAALE1IS),
+    DO_TLBINXS_BIT(HFGITR, TLBIRVAE1IS),
+    DO_TLBINXS_BIT(HFGITR, TLBIRVAAE1IS),
+    DO_TLBINXS_BIT(HFGITR, TLBIRVALE1IS),
+    DO_TLBINXS_BIT(HFGITR, TLBIRVAALE1IS),
+    DO_TLBINXS_BIT(HFGITR, TLBIRVAE1),
+    DO_TLBINXS_BIT(HFGITR, TLBIRVAAE1),
+    DO_TLBINXS_BIT(HFGITR, TLBIRVALE1),
+    DO_TLBINXS_BIT(HFGITR, TLBIRVAALE1),
+    DO_TLBINXS_BIT(HFGITR, TLBIVMALLE1),
+    DO_TLBINXS_BIT(HFGITR, TLBIVAE1),
+    DO_TLBINXS_BIT(HFGITR, TLBIASIDE1),
+    DO_TLBINXS_BIT(HFGITR, TLBIVAAE1),
+    DO_TLBINXS_BIT(HFGITR, TLBIVALE1),
+    DO_TLBINXS_BIT(HFGITR, TLBIVAALE1),
     DO_BIT(HFGITR, CFPRCTX),
     DO_BIT(HFGITR, DVPRCTX),
     DO_BIT(HFGITR, CPPRCTX),
@@ -820,6 +851,11 @@ typedef CPAccessResult CPAccessFn(CPUARMState *env,
 typedef void CPResetFn(CPUARMState *env, const ARMCPRegInfo *opaque);
 
 #define CP_ANY 0xff
+
+/* Flags in the high bits of nv2_redirect_offset */
+#define NV2_REDIR_NV1 0x4000 /* Only redirect when HCR_EL2.NV1 == 1 */
+#define NV2_REDIR_NO_NV1 0x8000 /* Only redirect when HCR_EL2.NV1 == 0 */
+#define NV2_REDIR_FLAG_MASK 0xc000
 
 /* Definition of an ARM coprocessor register */
 struct ARMCPRegInfo {
@@ -862,6 +898,13 @@ struct ARMCPRegInfo {
      * value encodes both the trap register and bit within it.
      */
     FGTBit fgt;
+
+    /*
+     * Offset from VNCR_EL2 when FEAT_NV2 redirects access to memory;
+     * may include an NV2_REDIR_* flag.
+     */
+    uint32_t nv2_redirect_offset;
+
     /*
      * The opaque pointer passed to define_arm_cp_regs_with_opaque() when
      * this register was defined: can be used to hand data through to the
@@ -937,7 +980,7 @@ struct ARMCPRegInfo {
     CPResetFn *resetfn;
 
     /*
-     * "Original" writefn and readfn.
+     * "Original" readfn, writefn, accessfn.
      * For ARMv8.1-VHE register aliases, we overwrite the read/write
      * accessor functions of various EL1/EL0 to perform the runtime
      * check for which sysreg should actually be modified, and then
@@ -948,6 +991,7 @@ struct ARMCPRegInfo {
      */
     CPReadFn *orig_readfn;
     CPWriteFn *orig_writefn;
+    CPAccessFn *orig_accessfn;
 };
 
 /*
@@ -1078,5 +1122,67 @@ void define_cortex_a72_a57_a53_cp_reginfo(ARMCPU *cpu);
 #endif
 
 CPAccessResult access_tvm_trvm(CPUARMState *, const ARMCPRegInfo *, bool);
+
+/**
+ * arm_cpreg_trap_in_nv: Return true if cpreg traps in nested virtualization
+ *
+ * Return true if this cpreg is one which should be trapped to EL2 if
+ * it is executed at EL1 when nested virtualization is enabled via HCR_EL2.NV.
+ */
+static inline bool arm_cpreg_traps_in_nv(const ARMCPRegInfo *ri)
+{
+    /*
+     * The Arm ARM defines the registers to be trapped in terms of
+     * their names (I_TZTZL). However the underlying principle is "if
+     * it would UNDEF at EL1 but work at EL2 then it should trap", and
+     * the way the encoding of sysregs and system instructions is done
+     * means that the right set of registers is exactly those where
+     * the opc1 field is 4 or 5. (You can see this also in the assert
+     * we do that the opc1 field and the permissions mask line up in
+     * define_one_arm_cp_reg_with_opaque().)
+     * Checking the opc1 field is easier for us and avoids the problem
+     * that we do not consistently use the right architectural names
+     * for all sysregs, since we treat the name field as largely for debug.
+     *
+     * However we do this check, it is going to be at least potentially
+     * fragile to future new sysregs, but this seems the least likely
+     * to break.
+     *
+     * In particular, note that the released sysreg XML defines that
+     * the FEAT_MEC sysregs and instructions do not follow this FEAT_NV
+     * trapping rule, so we will need to add an ARM_CP_* flag to indicate
+     * "register does not trap on NV" to handle those if/when we implement
+     * FEAT_MEC.
+     */
+    return ri->opc1 == 4 || ri->opc1 == 5;
+}
+
+/* Macros for accessing a specified CP register bank */
+#define A32_BANKED_REG_GET(_env, _regname, _secure)                     \
+    ((_secure) ? (_env)->cp15._regname##_s : (_env)->cp15._regname##_ns)
+
+#define A32_BANKED_REG_SET(_env, _regname, _secure, _val)       \
+    do {                                                        \
+        if (_secure) {                                          \
+            (_env)->cp15._regname##_s = (_val);                 \
+        } else {                                                \
+            (_env)->cp15._regname##_ns = (_val);                \
+        }                                                       \
+    } while (0)
+
+/*
+ * Macros for automatically accessing a specific CP register bank depending on
+ * the current secure state of the system.  These macros are not intended for
+ * supporting instruction translation reads/writes as these are dependent
+ * solely on the SCR.NS bit and not the mode.
+ */
+#define A32_BANKED_CURRENT_REG_GET(_env, _regname)                          \
+    A32_BANKED_REG_GET((_env), _regname,                                    \
+                       (arm_is_secure(_env) && !arm_el_is_aa64((_env), 3)))
+
+#define A32_BANKED_CURRENT_REG_SET(_env, _regname, _val)                    \
+    A32_BANKED_REG_SET((_env), _regname,                                    \
+                       (arm_is_secure(_env) && !arm_el_is_aa64((_env), 3)), \
+                       (_val))
 
 #endif /* TARGET_ARM_CPREGS_H */

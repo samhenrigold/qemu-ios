@@ -281,7 +281,7 @@ static const VMStateDescription vmstate_timerblock = {
     .name = "arm_mptimer_timerblock",
     .version_id = 3,
     .minimum_version_id = 3,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(control, TimerBlock),
         VMSTATE_UINT32(status, TimerBlock),
         VMSTATE_PTIMER(timer, TimerBlock),
@@ -293,16 +293,15 @@ static const VMStateDescription vmstate_arm_mptimer = {
     .name = "arm_mptimer",
     .version_id = 3,
     .minimum_version_id = 3,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_VARRAY_UINT32(timerblock, ARMMPTimerState, num_cpu,
                                      3, vmstate_timerblock, TimerBlock),
         VMSTATE_END_OF_LIST()
     }
 };
 
-static Property arm_mptimer_properties[] = {
+static const Property arm_mptimer_properties[] = {
     DEFINE_PROP_UINT32("num-cpu", ARMMPTimerState, num_cpu, 0),
-    DEFINE_PROP_END_OF_LIST()
 };
 
 static void arm_mptimer_class_init(ObjectClass *klass, void *data)
@@ -311,7 +310,7 @@ static void arm_mptimer_class_init(ObjectClass *klass, void *data)
 
     dc->realize = arm_mptimer_realize;
     dc->vmsd = &vmstate_arm_mptimer;
-    dc->reset = arm_mptimer_reset;
+    device_class_set_legacy_reset(dc, arm_mptimer_reset);
     device_class_set_props(dc, arm_mptimer_properties);
 }
 

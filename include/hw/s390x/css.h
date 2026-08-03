@@ -15,7 +15,7 @@
 #include "hw/s390x/adapter.h"
 #include "hw/s390x/s390_flic.h"
 #include "hw/s390x/ioinst.h"
-#include "sysemu/kvm.h"
+#include "system/kvm.h"
 #include "target/s390x/cpu-qom.h"
 
 /* Channel subsystem constants. */
@@ -332,5 +332,11 @@ static inline int ccw_dstream_read_buf(CcwDataStream *cds, void *buff, int len)
 
 #define ccw_dstream_read(cds, v) ccw_dstream_read_buf((cds), &(v), sizeof(v))
 #define ccw_dstream_write(cds, v) ccw_dstream_write_buf((cds), &(v), sizeof(v))
+
+/**
+ * true if (vmstate based) migration of the channel subsystem
+ * is enabled, false if it is disabled.
+ */
+extern bool css_migration_enabled;
 
 #endif

@@ -23,10 +23,10 @@
 #include "block/qdict.h"
 #include "qapi/error.h"
 #include "qapi/qapi-events-block.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qdict.h"
 #include "qapi/qmp/qerror.h"
-#include "qapi/qmp/qlist.h"
-#include "qapi/qmp/qstring.h"
+#include "qobject/qlist.h"
+#include "qobject/qstring.h"
 #include "crypto/hash.h"
 
 #define HASH_LENGTH 32
@@ -393,7 +393,7 @@ static int quorum_compute_hash(QuorumAIOCB *acb, int i, QuorumVoteValue *hash)
     /* XXX - would be nice if we could pass in the Error **
      * and propagate that back, but this quorum code is
      * restricted to just errno values currently */
-    if (qcrypto_hash_bytesv(QCRYPTO_HASH_ALG_SHA256,
+    if (qcrypto_hash_bytesv(QCRYPTO_HASH_ALGO_SHA256,
                             qiov->iov, qiov->niov,
                             &data, &len,
                             NULL) < 0) {
@@ -1037,14 +1037,14 @@ static int quorum_open(BlockDriverState *bs, QDict *options, int flags,
 
 close_exit:
     /* cleanup on error */
-    bdrv_graph_wrlock(NULL);
+    bdrv_graph_wrlock();
     for (i = 0; i < s->num_children; i++) {
         if (!opened[i]) {
             continue;
         }
         bdrv_unref_child(bs, s->children[i]);
     }
-    bdrv_graph_wrunlock(NULL);
+    bdrv_graph_wrunlock();
     g_free(s->children);
     g_free(opened);
 exit:
@@ -1057,11 +1057,11 @@ static void quorum_close(BlockDriverState *bs)
     BDRVQuorumState *s = bs->opaque;
     int i;
 
-    bdrv_graph_wrlock(NULL);
+    bdrv_graph_wrlock();
     for (i = 0; i < s->num_children; i++) {
         bdrv_unref_child(bs, s->children[i]);
     }
-    bdrv_graph_wrunlock(NULL);
+    bdrv_graph_wrunlock();
 
     g_free(s->children);
 }
@@ -1308,7 +1308,7 @@ static BlockDriver bdrv_quorum = {
 
 static void bdrv_quorum_init(void)
 {
-    if (!qcrypto_hash_supports(QCRYPTO_HASH_ALG_SHA256)) {
+    if (!qcrypto_hash_supports(QCRYPTO_HASH_ALGO_SHA256)) {
         /* SHA256 hash support is required for quorum device */
         return;
     }

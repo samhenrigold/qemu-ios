@@ -637,7 +637,7 @@ static const VMStateDescription vmstate_cs4231a = {
     .minimum_version_id = 1,
     .pre_load = cs4231a_pre_load,
     .post_load = cs4231a_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY (regs, CSState, CS_REGS),
         VMSTATE_BUFFER (dregs, CSState),
         VMSTATE_INT32 (dma_running, CSState),
@@ -689,12 +689,11 @@ static void cs4231a_realizefn (DeviceState *dev, Error **errp)
     isa_register_ioport (d, &s->ioports, s->port);
 }
 
-static Property cs4231a_properties[] = {
+static const Property cs4231a_properties[] = {
     DEFINE_AUDIO_PROPERTIES(CSState, card),
     DEFINE_PROP_UINT32 ("iobase",  CSState, port, 0x534),
     DEFINE_PROP_UINT32 ("irq",     CSState, irq,  9),
     DEFINE_PROP_UINT32 ("dma",     CSState, dma,  3),
-    DEFINE_PROP_END_OF_LIST (),
 };
 
 static void cs4231a_class_initfn (ObjectClass *klass, void *data)
@@ -702,7 +701,7 @@ static void cs4231a_class_initfn (ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS (klass);
 
     dc->realize = cs4231a_realizefn;
-    dc->reset = cs4231a_reset;
+    device_class_set_legacy_reset(dc, cs4231a_reset);
     set_bit(DEVICE_CATEGORY_SOUND, dc->categories);
     dc->desc = "Crystal Semiconductor CS4231A";
     dc->vmsd = &vmstate_cs4231a;

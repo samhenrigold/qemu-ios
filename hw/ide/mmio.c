@@ -27,11 +27,11 @@
 #include "hw/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
-#include "sysemu/dma.h"
+#include "system/dma.h"
 
 #include "hw/ide/mmio.h"
-#include "hw/ide/internal.h"
 #include "hw/qdev-properties.h"
+#include "ide-internal.h"
 
 /***********************************************************/
 /* MMIO based ide port
@@ -110,7 +110,7 @@ static const VMStateDescription vmstate_ide_mmio = {
     .name = "mmio-ide",
     .version_id = 3,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_IDE_BUS(bus, MMIOIDEState),
         VMSTATE_IDE_DRIVES(bus.ifs, MMIOIDEState),
         VMSTATE_END_OF_LIST()
@@ -141,9 +141,8 @@ static void mmio_ide_initfn(Object *obj)
     sysbus_init_irq(d, &s->irq);
 }
 
-static Property mmio_ide_properties[] = {
+static const Property mmio_ide_properties[] = {
     DEFINE_PROP_UINT32("shift", MMIOIDEState, shift, 0),
-    DEFINE_PROP_END_OF_LIST()
 };
 
 static void mmio_ide_class_init(ObjectClass *oc, void *data)
@@ -151,7 +150,7 @@ static void mmio_ide_class_init(ObjectClass *oc, void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->realize = mmio_ide_realizefn;
-    dc->reset = mmio_ide_reset;
+    device_class_set_legacy_reset(dc, mmio_ide_reset);
     device_class_set_props(dc, mmio_ide_properties);
     dc->vmsd = &vmstate_ide_mmio;
 }

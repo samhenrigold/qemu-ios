@@ -42,35 +42,6 @@ void socket_send_channel_create(QIOTaskFunc f, void *data)
                                      f, data, NULL, NULL);
 }
 
-QIOChannel *socket_send_channel_create_sync(Error **errp)
-{
-    QIOChannelSocket *sioc = qio_channel_socket_new();
-
-    if (!outgoing_args.saddr) {
-        object_unref(OBJECT(sioc));
-        error_setg(errp, "Initial sock address not set!");
-        return NULL;
-    }
-
-    if (qio_channel_socket_connect_sync(sioc, outgoing_args.saddr, errp) < 0) {
-        object_unref(OBJECT(sioc));
-        return NULL;
-    }
-
-    return QIO_CHANNEL(sioc);
-}
-
-int socket_send_channel_destroy(QIOChannel *send)
-{
-    /* Remove channel */
-    object_unref(OBJECT(send));
-    if (outgoing_args.saddr) {
-        qapi_free_SocketAddress(outgoing_args.saddr);
-        outgoing_args.saddr = NULL;
-    }
-    return 0;
-}
-
 struct SocketConnectData {
     MigrationState *s;
     char *hostname;
@@ -135,6 +106,14 @@ void socket_start_outgoing_migration(MigrationState *s,
                                      data,
                                      socket_connect_data_free,
                                      NULL);
+}
+
+void socket_cleanup_outgoing_migration(void)
+{
+    if (outgoing_args.saddr) {
+        qapi_free_SocketAddress(outgoing_args.saddr);
+        outgoing_args.saddr = NULL;
+    }
 }
 
 static void socket_accept_incoming_migration(QIONetListener *listener,

@@ -22,7 +22,10 @@ The Banana Pi M2U machine supports the following devices:
  * EMAC ethernet
  * GMAC ethernet
  * Clock Control Unit
+ * SATA
  * TWI (I2C)
+ * USB 2.0
+ * Hardware Watchdog
 
 Limitations
 """""""""""
@@ -31,9 +34,7 @@ Currently, Banana Pi M2U does *not* support the following features:
 
 - Graphical output via HDMI, GPU and/or the Display Engine
 - Audio output
-- Hardware Watchdog
 - Real Time Clock
-- USB 2.0 interfaces
 
 Also see the 'unimplemented' array in the Allwinner R40 SoC module
 for a complete list of unimplemented I/O devices: ``./hw/arm/allwinner-r40.c``
@@ -124,16 +125,15 @@ And then boot it.
 
   $ qemu-system-arm -M bpim2u -nographic -sd sd.img
 
-Banana Pi M2U integration tests
-"""""""""""""""""""""""""""""""
+Banana Pi M2U functional tests
+""""""""""""""""""""""""""""""
 
-The Banana Pi M2U machine has several integration tests included.
+The Banana Pi M2U machine has several functional tests included.
 To run the whole set of tests, build QEMU from source and simply
 provide the following command:
 
 .. code-block:: bash
 
   $ cd qemu-build-dir
-  $ AVOCADO_ALLOW_LARGE_STORAGE=yes tests/venv/bin/avocado \
-    --verbose --show=app,console run -t machine:bpim2u \
-    ../tests/avocado/boot_linux_console.py
+  $ QEMU_TEST_ALLOW_LARGE_STORAGE=1 \
+    pyvenv/bin/meson test --suite thorough func-arm-arm_bpim2u

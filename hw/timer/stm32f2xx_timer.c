@@ -274,7 +274,7 @@ static const VMStateDescription vmstate_stm32f2xx_timer = {
     .name = TYPE_STM32F2XX_TIMER,
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT64(tick_offset, STM32F2XXTimerState),
         VMSTATE_UINT32(tim_cr1, STM32F2XXTimerState),
         VMSTATE_UINT32(tim_cr2, STM32F2XXTimerState),
@@ -298,10 +298,9 @@ static const VMStateDescription vmstate_stm32f2xx_timer = {
     }
 };
 
-static Property stm32f2xx_timer_properties[] = {
+static const Property stm32f2xx_timer_properties[] = {
     DEFINE_PROP_UINT64("clock-frequency", struct STM32F2XXTimerState,
                        freq_hz, 1000000000),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void stm32f2xx_timer_init(Object *obj)
@@ -325,7 +324,7 @@ static void stm32f2xx_timer_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = stm32f2xx_timer_reset;
+    device_class_set_legacy_reset(dc, stm32f2xx_timer_reset);
     device_class_set_props(dc, stm32f2xx_timer_properties);
     dc->vmsd = &vmstate_stm32f2xx_timer;
     dc->realize = stm32f2xx_timer_realize;

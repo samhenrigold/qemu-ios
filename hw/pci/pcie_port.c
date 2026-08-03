@@ -92,16 +92,6 @@ static PCIESlot *pcie_chassis_find_slot_with_chassis(struct PCIEChassis *c,
     return s;
 }
 
-PCIESlot *pcie_chassis_find_slot(uint8_t chassis_number, uint16_t slot)
-{
-    struct PCIEChassis *c;
-    c = pcie_chassis_find(chassis_number);
-    if (!c) {
-        return NULL;
-    }
-    return pcie_chassis_find_slot_with_chassis(c, slot);
-}
-
 int pcie_chassis_add_slot(struct PCIESlot *slot)
 {
     struct PCIEChassis *c;
@@ -121,12 +111,11 @@ void pcie_chassis_del_slot(PCIESlot *s)
     QLIST_REMOVE(s, next);
 }
 
-static Property pcie_port_props[] = {
+static const Property pcie_port_props[] = {
     DEFINE_PROP_UINT8("port", PCIEPort, port, 0),
     DEFINE_PROP_UINT16("aer_log_max", PCIEPort,
                        parent_obj.parent_obj.exp.aer_log.log_max,
                        PCIE_AER_LOG_MAX_DEFAULT),
-    DEFINE_PROP_END_OF_LIST()
 };
 
 static void pcie_port_class_init(ObjectClass *oc, void *data)
@@ -214,13 +203,12 @@ static const TypeInfo pcie_port_type_info = {
     .class_init = pcie_port_class_init,
 };
 
-static Property pcie_slot_props[] = {
+static const Property pcie_slot_props[] = {
     DEFINE_PROP_UINT8("chassis", PCIESlot, chassis, 0),
     DEFINE_PROP_UINT16("slot", PCIESlot, slot, 0),
     DEFINE_PROP_BOOL("hotplug", PCIESlot, hotplug, true),
     DEFINE_PROP_BOOL("x-do-not-expose-native-hotplug-cap", PCIESlot,
                      hide_native_hotplug_cap, false),
-    DEFINE_PROP_END_OF_LIST()
 };
 
 static void pcie_slot_class_init(ObjectClass *oc, void *data)

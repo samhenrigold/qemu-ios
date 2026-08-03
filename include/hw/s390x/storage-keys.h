@@ -21,8 +21,6 @@ OBJECT_DECLARE_TYPE(S390SKeysState, S390SKeysClass, S390_SKEYS)
 
 struct S390SKeysState {
     DeviceState parent_obj;
-    bool migration_enabled;
-
 };
 
 
@@ -111,6 +109,16 @@ struct QEMUS390SKeysState {
 };
 
 void s390_skeys_init(void);
+/**
+ * @s390_skeys_get: See S390SKeysClass::get_skeys()
+ */
+int s390_skeys_get(S390SKeysState *ks, uint64_t start_gfn,
+                   uint64_t count, uint8_t *keys);
+/**
+ * @s390_skeys_set: See S390SKeysClass::set_skeys()
+ */
+int s390_skeys_set(S390SKeysState *ks, uint64_t start_gfn,
+                   uint64_t count, uint8_t *keys);
 
 S390SKeysState *s390_get_skeys_device(void);
 

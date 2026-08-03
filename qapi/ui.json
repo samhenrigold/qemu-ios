@@ -48,8 +48,8 @@
 # @password: the new password
 #
 # @connected: How to handle existing clients when changing the
-#     password.  If nothing is specified, defaults to 'keep'. For VNC,
-#     only 'keep' is currently implemented.
+#     password.  If nothing is specified, defaults to 'keep'.  For
+#     VNC, only 'keep' is currently implemented.
 #
 # Since: 7.0
 ##
@@ -63,7 +63,7 @@
 ##
 # @SetPasswordOptionsVnc:
 #
-# Options for set_password specific to the VNC procotol.
+# Options for set_password specific to the VNC protocol.
 #
 # @display: The id of the display where the password should be
 #     changed.  Defaults to the first.
@@ -78,17 +78,16 @@
 #
 # Set the password of a remote display server.
 #
-# Returns:
-#     - Nothing on success
+# Errors:
 #     - If Spice is not enabled, DeviceNotFound
 #
 # Since: 0.14
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "set_password", "arguments": { "protocol": "vnc",
-#                                                "password": "secret" } }
-# <- { "return": {} }
+#     -> { "execute": "set_password", "arguments": { "protocol": "vnc",
+#                                                    "password": "secret" } }
+#     <- { "return": {} }
 ##
 { 'command': 'set_password', 'boxed': true, 'data': 'SetPasswordOptions' }
 
@@ -108,11 +107,11 @@
 #     - '+INT' where INT is the number of seconds from now (integer)
 #     - 'INT' where INT is the absolute time in seconds
 #
-# Notes: Time is relative to the server and currently there is no way
-#     to coordinate server time with client time.  It is not
-#     recommended to use the absolute time version of the @time
-#     parameter unless you're sure you are on the same machine as the
-#     QEMU instance.
+# .. note:: Time is relative to the server and currently there is no
+#    way to coordinate server time with client time.  It is not
+#    recommended to use the absolute time version of the @time
+#    parameter unless you're sure you are on the same machine as the
+#    QEMU instance.
 #
 # Since: 7.0
 ##
@@ -125,7 +124,7 @@
 ##
 # @ExpirePasswordOptionsVnc:
 #
-# Options for expire_password specific to the VNC procotol.
+# Options for expire_password specific to the VNC protocol.
 #
 # @display: The id of the display where the expiration should be
 #     changed.  Defaults to the first.
@@ -140,18 +139,17 @@
 #
 # Expire the password of a remote display server.
 #
-# Returns:
-#     - Nothing on success
+# Errors:
 #     - If @protocol is 'spice' and Spice is not active,
 #       DeviceNotFound
 #
 # Since: 0.14
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "expire_password", "arguments": { "protocol": "vnc",
-#                                                   "time": "+60" } }
-# <- { "return": {} }
+#     -> { "execute": "expire_password", "arguments": { "protocol": "vnc",
+#                                                       "time": "+60" } }
+#     <- { "return": {} }
 ##
 { 'command': 'expire_password', 'boxed': true, 'data': 'ExpirePasswordOptions' }
 
@@ -183,19 +181,17 @@
 # @head: head to use in case the device supports multiple heads.  If
 #     this parameter is missing, head #0 will be used.  Also note that
 #     the head can only be specified in conjunction with the device
-#     ID. (Since 2.12)
+#     ID.  (Since 2.12)
 #
 # @format: image format for screendump.  (default: ppm) (Since 7.1)
 #
-# Returns: Nothing on success
-#
 # Since: 0.14
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "screendump",
-#      "arguments": { "filename": "/tmp/image" } }
-# <- { "return": {} }
+#     -> { "execute": "screendump",
+#          "arguments": { "filename": "/tmp/image" } }
+#     <- { "return": {} }
 ##
 { 'command': 'screendump',
   'data': {'filename': 'str', '*device': 'str', '*head': 'int',
@@ -278,8 +274,6 @@
 # @unknown: No information is available about mouse mode used by the
 #     spice server.
 #
-# Note: spice/enums.h has a SpiceMouseMode already, hence the name.
-#
 # Since: 1.1
 ##
 { 'enum': 'SpiceQueryMouseMode',
@@ -294,7 +288,7 @@
 # @enabled: true if the SPICE server is enabled, false otherwise
 #
 # @migrated: true if the last guest migration completed and spice
-#     migration had completed as well.  false otherwise.  (since 1.4)
+#     migration had completed as well, false otherwise (since 1.4)
 #
 # @host: The hostname the SPICE server is bound to.  This depends on
 #     the name resolution on the host and may be an IP address.
@@ -307,7 +301,7 @@
 #
 # @auth: the current authentication type used by the server
 #
-#     - 'none'  if no authentication is being used
+#     - 'none' if no authentication is being used
 #     - 'spice' uses SASL or direct TLS authentication, depending on
 #       command line options
 #
@@ -335,40 +329,40 @@
 #
 # Since: 0.14
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "query-spice" }
-# <- { "return": {
-#          "enabled": true,
-#          "auth": "spice",
-#          "port": 5920,
-#          "migrated":false,
-#          "tls-port": 5921,
-#          "host": "0.0.0.0",
-#          "mouse-mode":"client",
-#          "channels": [
-#             {
-#                "port": "54924",
-#                "family": "ipv4",
-#                "channel-type": 1,
-#                "connection-id": 1804289383,
-#                "host": "127.0.0.1",
-#                "channel-id": 0,
-#                "tls": true
-#             },
-#             {
-#                "port": "36710",
-#                "family": "ipv4",
-#                "channel-type": 4,
-#                "connection-id": 1804289383,
-#                "host": "127.0.0.1",
-#                "channel-id": 0,
-#                "tls": false
-#             },
-#             [ ... more channels follow ... ]
-#          ]
-#       }
-#    }
+#     -> { "execute": "query-spice" }
+#     <- { "return": {
+#              "enabled": true,
+#              "auth": "spice",
+#              "port": 5920,
+#              "migrated":false,
+#              "tls-port": 5921,
+#              "host": "0.0.0.0",
+#              "mouse-mode":"client",
+#              "channels": [
+#                 {
+#                    "port": "54924",
+#                    "family": "ipv4",
+#                    "channel-type": 1,
+#                    "connection-id": 1804289383,
+#                    "host": "127.0.0.1",
+#                    "channel-id": 0,
+#                    "tls": true
+#                 },
+#                 {
+#                    "port": "36710",
+#                    "family": "ipv4",
+#                    "channel-type": 4,
+#                    "connection-id": 1804289383,
+#                    "host": "127.0.0.1",
+#                    "channel-id": 0,
+#                    "tls": false
+#                 },
+#                 ...
+#              ]
+#           }
+#        }
 ##
 { 'command': 'query-spice', 'returns': 'SpiceInfo',
   'if': 'CONFIG_SPICE' }
@@ -384,14 +378,14 @@
 #
 # Since: 0.14
 #
-# Example:
+# .. qmp-example::
 #
-# <- { "timestamp": {"seconds": 1290688046, "microseconds": 388707},
-#      "event": "SPICE_CONNECTED",
-#      "data": {
-#        "server": { "port": "5920", "family": "ipv4", "host": "127.0.0.1"},
-#        "client": {"port": "52873", "family": "ipv4", "host": "127.0.0.1"}
-#    }}
+#     <- { "timestamp": {"seconds": 1290688046, "microseconds": 388707},
+#          "event": "SPICE_CONNECTED",
+#          "data": {
+#            "server": { "port": "5920", "family": "ipv4", "host": "127.0.0.1"},
+#            "client": {"port": "52873", "family": "ipv4", "host": "127.0.0.1"}
+#        }}
 ##
 { 'event': 'SPICE_CONNECTED',
   'data': { 'server': 'SpiceBasicInfo',
@@ -410,16 +404,16 @@
 #
 # Since: 0.14
 #
-# Example:
+# .. qmp-example::
 #
-# <- { "timestamp": {"seconds": 1290688046, "microseconds": 417172},
-#      "event": "SPICE_INITIALIZED",
-#      "data": {"server": {"auth": "spice", "port": "5921",
-#                          "family": "ipv4", "host": "127.0.0.1"},
-#               "client": {"port": "49004", "family": "ipv4", "channel-type": 3,
-#                          "connection-id": 1804289383, "host": "127.0.0.1",
-#                          "channel-id": 0, "tls": true}
-#    }}
+#     <- { "timestamp": {"seconds": 1290688046, "microseconds": 417172},
+#          "event": "SPICE_INITIALIZED",
+#          "data": {"server": {"auth": "spice", "port": "5921",
+#                              "family": "ipv4", "host": "127.0.0.1"},
+#                   "client": {"port": "49004", "family": "ipv4", "channel-type": 3,
+#                              "connection-id": 1804289383, "host": "127.0.0.1",
+#                              "channel-id": 0, "tls": true}
+#        }}
 ##
 { 'event': 'SPICE_INITIALIZED',
   'data': { 'server': 'SpiceServerInfo',
@@ -437,14 +431,14 @@
 #
 # Since: 0.14
 #
-# Example:
+# .. qmp-example::
 #
-# <- { "timestamp": {"seconds": 1290688046, "microseconds": 388707},
-#      "event": "SPICE_DISCONNECTED",
-#      "data": {
-#        "server": { "port": "5920", "family": "ipv4", "host": "127.0.0.1"},
-#        "client": {"port": "52873", "family": "ipv4", "host": "127.0.0.1"}
-#    }}
+#     <- { "timestamp": {"seconds": 1290688046, "microseconds": 388707},
+#          "event": "SPICE_DISCONNECTED",
+#          "data": {
+#            "server": { "port": "5920", "family": "ipv4", "host": "127.0.0.1"},
+#            "client": {"port": "52873", "family": "ipv4", "host": "127.0.0.1"}
+#        }}
 ##
 { 'event': 'SPICE_DISCONNECTED',
   'data': { 'server': 'SpiceBasicInfo',
@@ -458,10 +452,10 @@
 #
 # Since: 1.3
 #
-# Example:
+# .. qmp-example::
 #
-# <- { "timestamp": {"seconds": 1290688046, "microseconds": 417172},
-#      "event": "SPICE_MIGRATE_COMPLETED" }
+#     <- { "timestamp": {"seconds": 1290688046, "microseconds": 417172},
+#          "event": "SPICE_MIGRATE_COMPLETED" }
 ##
 { 'event': 'SPICE_MIGRATE_COMPLETED',
   'if': 'CONFIG_SPICE' }
@@ -631,7 +625,7 @@
 # @id: vnc server name.
 #
 # @server: A list of @VncBasincInfo describing all listening sockets.
-#     The list can be empty (in case the vnc server is disabled). It
+#     The list can be empty (in case the vnc server is disabled).  It
 #     also may have multiple entries: normal + websocket, possibly
 #     also ipv4 + ipv6 in the future.
 #
@@ -666,25 +660,25 @@
 #
 # Since: 0.14
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "query-vnc" }
-# <- { "return": {
-#          "enabled":true,
-#          "host":"0.0.0.0",
-#          "service":"50402",
-#          "auth":"vnc",
-#          "family":"ipv4",
-#          "clients":[
-#             {
-#                "host":"127.0.0.1",
-#                "service":"50401",
-#                "family":"ipv4",
-#                "websocket":false
-#             }
-#          ]
-#       }
-#    }
+#     -> { "execute": "query-vnc" }
+#     <- { "return": {
+#              "enabled":true,
+#              "host":"0.0.0.0",
+#              "service":"50402",
+#              "auth":"vnc",
+#              "family":"ipv4",
+#              "clients":[
+#                 {
+#                    "host":"127.0.0.1",
+#                    "service":"50401",
+#                    "family":"ipv4",
+#                    "websocket":false
+#                 }
+#              ]
+#           }
+#        }
 ##
 { 'command': 'query-vnc', 'returns': 'VncInfo',
   'if': 'CONFIG_VNC' }
@@ -709,9 +703,9 @@
 #
 # Since: 1.1
 #
-# Notes: An empty password in this command will set the password to
-#     the empty string.  Existing clients are unaffected by executing
-#     this command.
+# .. note:: An empty password in this command will set the password to
+#    the empty string.  Existing clients are unaffected by executing
+#    this command.
 ##
 { 'command': 'change-vnc-password',
   'data': { 'password': 'str' },
@@ -726,20 +720,20 @@
 #
 # @client: client information
 #
-# Note: This event is emitted before any authentication takes place,
-#     thus the authentication ID is not provided
+# .. note:: This event is emitted before any authentication takes
+#    place, thus the authentication ID is not provided.
 #
 # Since: 0.13
 #
-# Example:
+# .. qmp-example::
 #
-# <- { "event": "VNC_CONNECTED",
-#      "data": {
-#            "server": { "auth": "sasl", "family": "ipv4", "websocket": false,
-#                        "service": "5901", "host": "0.0.0.0" },
-#            "client": { "family": "ipv4", "service": "58425",
-#                        "host": "127.0.0.1", "websocket": false } },
-#      "timestamp": { "seconds": 1262976601, "microseconds": 975795 } }
+#     <- { "event": "VNC_CONNECTED",
+#          "data": {
+#                "server": { "auth": "sasl", "family": "ipv4", "websocket": false,
+#                            "service": "5901", "host": "0.0.0.0" },
+#                "client": { "family": "ipv4", "service": "58425",
+#                            "host": "127.0.0.1", "websocket": false } },
+#          "timestamp": { "seconds": 1262976601, "microseconds": 975795 } }
 ##
 { 'event': 'VNC_CONNECTED',
   'data': { 'server': 'VncServerInfo',
@@ -758,15 +752,15 @@
 #
 # Since: 0.13
 #
-# Example:
+# .. qmp-example::
 #
-# <-  { "event": "VNC_INITIALIZED",
-#       "data": {
-#            "server": { "auth": "sasl", "family": "ipv4", "websocket": false,
-#                        "service": "5901", "host": "0.0.0.0"},
-#            "client": { "family": "ipv4", "service": "46089", "websocket": false,
-#                        "host": "127.0.0.1", "sasl_username": "luiz" } },
-#       "timestamp": { "seconds": 1263475302, "microseconds": 150772 } }
+#     <-  { "event": "VNC_INITIALIZED",
+#           "data": {
+#                "server": { "auth": "sasl", "family": "ipv4", "websocket": false,
+#                            "service": "5901", "host": "0.0.0.0"},
+#                "client": { "family": "ipv4", "service": "46089", "websocket": false,
+#                            "host": "127.0.0.1", "sasl_username": "luiz" } },
+#           "timestamp": { "seconds": 1263475302, "microseconds": 150772 } }
 ##
 { 'event': 'VNC_INITIALIZED',
   'data': { 'server': 'VncServerInfo',
@@ -784,15 +778,15 @@
 #
 # Since: 0.13
 #
-# Example:
+# .. qmp-example::
 #
-# <- { "event": "VNC_DISCONNECTED",
-#      "data": {
-#            "server": { "auth": "sasl", "family": "ipv4", "websocket": false,
-#                        "service": "5901", "host": "0.0.0.0" },
-#            "client": { "family": "ipv4", "service": "58425", "websocket": false,
-#                        "host": "127.0.0.1", "sasl_username": "luiz" } },
-#      "timestamp": { "seconds": 1262976601, "microseconds": 975795 } }
+#     <- { "event": "VNC_DISCONNECTED",
+#          "data": {
+#                "server": { "auth": "sasl", "family": "ipv4", "websocket": false,
+#                            "service": "5901", "host": "0.0.0.0" },
+#                "client": { "family": "ipv4", "service": "58425", "websocket": false,
+#                            "host": "127.0.0.1", "sasl_username": "luiz" } },
+#          "timestamp": { "seconds": 1262976601, "microseconds": 975795 } }
 ##
 { 'event': 'VNC_DISCONNECTED',
   'data': { 'server': 'VncServerInfo',
@@ -832,24 +826,24 @@
 #
 # Since: 0.14
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "query-mice" }
-# <- { "return": [
-#          {
-#             "name":"QEMU Microsoft Mouse",
-#             "index":0,
-#             "current":false,
-#             "absolute":false
-#          },
-#          {
-#             "name":"QEMU PS/2 Mouse",
-#             "index":1,
-#             "current":true,
-#             "absolute":true
-#          }
-#       ]
-#    }
+#     -> { "execute": "query-mice" }
+#     <- { "return": [
+#              {
+#                 "name":"QEMU Microsoft Mouse",
+#                 "index":0,
+#                 "current":false,
+#                 "absolute":false
+#              },
+#              {
+#                 "name":"QEMU PS/2 Mouse",
+#                 "index":1,
+#                 "current":true,
+#                 "absolute":true
+#              }
+#           ]
+#        }
 ##
 { 'command': 'query-mice', 'returns': ['MouseInfo'] }
 
@@ -955,6 +949,7 @@
 # Since: 1.3
 ##
 { 'enum': 'QKeyCode',
+  'prefix': 'Q_KEY_CODE',
   'data': [ 'unmapped',
             'shift', 'shift_r', 'alt', 'alt_r', 'ctrl',
             'ctrl_r', 'menu', 'esc', '1', '2', '3', '4', '5', '6', '7', '8',
@@ -990,6 +985,8 @@
 ##
 # @IntWrapper:
 #
+# @data: a numeric key code
+#
 # Since: 1.3
 ##
 { 'struct': 'IntWrapper',
@@ -997,6 +994,8 @@
 
 ##
 # @QKeyCodeWrapper:
+#
+# @data: An enumeration of key name
 #
 # Since: 1.3
 ##
@@ -1007,6 +1006,8 @@
 # @KeyValue:
 #
 # Represents a keyboard key.
+#
+# @type: key encoding
 #
 # Since: 1.3
 ##
@@ -1030,19 +1031,18 @@
 # @hold-time: time to delay key up events, milliseconds.  Defaults to
 #     100
 #
-# Returns:
-#     - Nothing on success
+# Errors:
 #     - If key is unknown or redundant, GenericError
 #
 # Since: 1.3
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "send-key",
-#      "arguments": { "keys": [ { "type": "qcode", "data": "ctrl" },
-#                               { "type": "qcode", "data": "alt" },
-#                               { "type": "qcode", "data": "delete" } ] } }
-# <- { "return": {} }
+#     -> { "execute": "send-key",
+#          "arguments": { "keys": [ { "type": "qcode", "data": "ctrl" },
+#                                   { "type": "qcode", "data": "alt" },
+#                                   { "type": "qcode", "data": "delete" } ] } }
+#     <- { "return": {} }
 ##
 { 'command': 'send-key',
   'data': { 'keys': ['KeyValue'], '*hold-time': 'int' } }
@@ -1078,6 +1078,16 @@
 # @InputMultiTouchType:
 #
 # Type of a multi-touch event.
+#
+# @begin: A new touch event sequence has just started.
+#
+# @update: A touch event sequence has been updated.
+#
+# @end: A touch event sequence has finished.
+#
+# @cancel: A touch event sequence has been canceled.
+#
+# @data: Absolute position data.
 #
 # Since: 8.1
 ##
@@ -1123,7 +1133,7 @@
 # @axis: Which axis is referenced by @value.
 #
 # @value: Pointer position.  For absolute coordinates the valid range
-#     is 0 -> 0x7ffff
+#     is 0 to 0x7fff.
 #
 # Since: 2.0
 ##
@@ -1135,6 +1145,8 @@
 # @InputMultiTouchEvent:
 #
 # MultiTouch input event.
+#
+# @type: The type of multi-touch event.
 #
 # @slot: Which slot has generated the event.
 #
@@ -1175,6 +1187,8 @@
 ##
 # @InputKeyEventWrapper:
 #
+# @data: Keyboard input event
+#
 # Since: 2.0
 ##
 { 'struct': 'InputKeyEventWrapper',
@@ -1182,6 +1196,8 @@
 
 ##
 # @InputBtnEventWrapper:
+#
+# @data: Pointer button input event
 #
 # Since: 2.0
 ##
@@ -1191,6 +1207,8 @@
 ##
 # @InputMoveEventWrapper:
 #
+# @data: Pointer motion input event
+#
 # Since: 2.0
 ##
 { 'struct': 'InputMoveEventWrapper',
@@ -1198,6 +1216,8 @@
 
 ##
 # @InputMultiTouchEventWrapper:
+#
+# @data: MultiTouch input event
 #
 # Since: 8.1
 ##
@@ -1245,50 +1265,49 @@
 #
 # @events: List of InputEvent union.
 #
-# Returns: Nothing on success.
-#
 # Since: 2.6
 #
-# Note: The consoles are visible in the qom tree, under
-#     /backend/console[$index]. They have a device link and head
-#     property, so it is possible to map which console belongs to
-#     which device and display.
+# .. note:: The consoles are visible in the qom tree, under
+#    ``/backend/console[$index]``.  They have a device link and head
+#    property, so it is possible to map which console belongs to which
+#    device and display.
 #
-# Examples:
+# .. qmp-example::
+#    :title: Press left mouse button
 #
-# 1. Press left mouse button.
+#     -> { "execute": "input-send-event",
+#         "arguments": { "device": "video0",
+#                        "events": [ { "type": "btn",
+#                        "data" : { "down": true, "button": "left" } } ] } }
+#     <- { "return": {} }
 #
-# -> { "execute": "input-send-event",
-#     "arguments": { "device": "video0",
-#                    "events": [ { "type": "btn",
-#                    "data" : { "down": true, "button": "left" } } ] } }
-# <- { "return": {} }
+#     -> { "execute": "input-send-event",
+#         "arguments": { "device": "video0",
+#                        "events": [ { "type": "btn",
+#                        "data" : { "down": false, "button": "left" } } ] } }
+#     <- { "return": {} }
 #
-# -> { "execute": "input-send-event",
-#     "arguments": { "device": "video0",
-#                    "events": [ { "type": "btn",
-#                    "data" : { "down": false, "button": "left" } } ] } }
-# <- { "return": {} }
+# .. qmp-example::
+#    :title: Press ctrl-alt-del
 #
-# 2. Press ctrl-alt-del.
+#     -> { "execute": "input-send-event",
+#          "arguments": { "events": [
+#             { "type": "key", "data" : { "down": true,
+#               "key": {"type": "qcode", "data": "ctrl" } } },
+#             { "type": "key", "data" : { "down": true,
+#               "key": {"type": "qcode", "data": "alt" } } },
+#             { "type": "key", "data" : { "down": true,
+#               "key": {"type": "qcode", "data": "delete" } } } ] } }
+#     <- { "return": {} }
 #
-# -> { "execute": "input-send-event",
-#      "arguments": { "events": [
-#         { "type": "key", "data" : { "down": true,
-#           "key": {"type": "qcode", "data": "ctrl" } } },
-#         { "type": "key", "data" : { "down": true,
-#           "key": {"type": "qcode", "data": "alt" } } },
-#         { "type": "key", "data" : { "down": true,
-#           "key": {"type": "qcode", "data": "delete" } } } ] } }
-# <- { "return": {} }
+# .. qmp-example::
+#    :title: Move mouse pointer to absolute coordinates
 #
-# 3. Move mouse pointer to absolute coordinates (20000, 400).
-#
-# -> { "execute": "input-send-event" ,
-#   "arguments": { "events": [
-#                { "type": "abs", "data" : { "axis": "x", "value" : 20000 } },
-#                { "type": "abs", "data" : { "axis": "y", "value" : 400 } } ] } }
-# <- { "return": {} }
+#     -> { "execute": "input-send-event" ,
+#       "arguments": { "events": [
+#                    { "type": "abs", "data" : { "axis": "x", "value" : 20000 } },
+#                    { "type": "abs", "data" : { "axis": "y", "value" : 400 } } ] } }
+#     <- { "return": {} }
 ##
 { 'command': 'input-send-event',
   'data': { '*device': 'str',
@@ -1307,7 +1326,7 @@
 #     display device can notify the guest on window resizes
 #     (virtio-gpu) this will default to "on", assuming the guest will
 #     resize the display to match the window size then.  Otherwise it
-#     defaults to "off". (Since 3.1)
+#     defaults to "off".  (Since 3.1)
 #
 # @show-tabs: Display the tab bar for switching between the various
 #     graphical interfaces (e.g. VGA and virtual console character
@@ -1399,20 +1418,23 @@
 #
 # @left-command-key: Enable/disable forwarding of left command key to
 #     guest.  Allows command-tab window switching on the host without
-#     sending this key to the guest when "off". Defaults to "on"
+#     sending this key to the guest when "off".  Defaults to "on"
 #
 # @full-grab: Capture all key presses, including system combos.  This
 #     requires accessibility permissions, since it performs a global
-#     grab on key events.  (default: off) See
+#     grab on key events.  (default: off)  See
 #     https://support.apple.com/en-in/guide/mac-help/mh32356/mac
 #
 # @swap-opt-cmd: Swap the Option and Command keys so that their key
 #     codes match their position on non-Mac keyboards and you can use
 #     Meta/Super and Alt where you expect them.  (default: off)
 #
-# @zoom-to-fit: Zoom guest display to fit into the host window. When
-#     turned off the host window will be resized instead. Defaults to
-#     "off". (Since 8.2)
+# @zoom-to-fit: Zoom guest display to fit into the host window.  When
+#     turned off the host window will be resized instead.  Defaults to
+#     "off".  (Since 8.2)
+#
+# @zoom-interpolation: Apply interpolation to smooth output when
+#     zoom-to-fit is enabled.  Defaults to "off".  (Since 9.0)
 #
 # Since: 7.0
 ##
@@ -1421,7 +1443,8 @@
       '*left-command-key': 'bool',
       '*full-grab': 'bool',
       '*swap-opt-cmd': 'bool',
-      '*zoom-to-fit': 'bool'
+      '*zoom-to-fit': 'bool',
+      '*zoom-interpolation': 'bool'
   } }
 
 ##
@@ -1591,15 +1614,13 @@
 #
 # Reload display configuration.
 #
-# Returns: Nothing on success.
-#
 # Since: 6.0
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "display-reload",
-#      "arguments": { "type": "vnc", "tls-certs": true  } }
-# <- { "return": {} }
+#     -> { "execute": "display-reload",
+#          "arguments": { "type": "vnc", "tls-certs": true  } }
+#     <- { "return": {} }
 ##
 { 'command': 'display-reload',
   'data': 'DisplayReloadOptions',
@@ -1650,17 +1671,15 @@
 #
 # Update display configuration.
 #
-# Returns: Nothing on success.
-#
 # Since: 7.1
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "display-update",
-#      "arguments": { "type": "vnc", "addresses":
-#                     [ { "type": "inet", "host": "0.0.0.0",
-#                         "port": "5901" } ] } }
-# <- { "return": {} }
+#     -> { "execute": "display-update",
+#          "arguments": { "type": "vnc", "addresses":
+#                         [ { "type": "inet", "host": "0.0.0.0",
+#                             "port": "5901" } ] } }
+#     <- { "return": {} }
 ##
 { 'command': 'display-update',
   'data': 'DisplayUpdateOptions',
@@ -1685,13 +1704,13 @@
 #
 # Since: 0.14
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "client_migrate_info",
-#      "arguments": { "protocol": "spice",
-#                     "hostname": "virt42.lab.kraxel.org",
-#                     "port": 1234 } }
-# <- { "return": {} }
+#     -> { "execute": "client_migrate_info",
+#          "arguments": { "protocol": "spice",
+#                         "hostname": "virt42.lab.kraxel.org",
+#                         "port": 1234 } }
+#     <- { "return": {} }
 ##
 { 'command': 'client_migrate_info',
   'data': { 'protocol': 'str', 'hostname': 'str', '*port': 'int',

@@ -43,7 +43,7 @@
 #include "hw/net/lance.h"
 #include "hw/qdev-properties.h"
 #include "trace.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 
 
 static void parent_lance_reset(void *opaque, int irq, int level)
@@ -94,7 +94,7 @@ static const VMStateDescription vmstate_lance = {
     .name = "pcnet",
     .version_id = 3,
     .minimum_version_id = 2,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(state, SysBusPCNetState, 0, vmstate_pcnet, PCNetState),
         VMSTATE_END_OF_LIST()
     }
@@ -137,11 +137,10 @@ static void lance_instance_init(Object *obj)
                                   DEVICE(obj));
 }
 
-static Property lance_properties[] = {
+static const Property lance_properties[] = {
     DEFINE_PROP_LINK("dma", SysBusPCNetState, state.dma_opaque,
                      TYPE_DEVICE, DeviceState *),
     DEFINE_NIC_PROPERTIES(SysBusPCNetState, state.conf),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void lance_class_init(ObjectClass *klass, void *data)
@@ -151,7 +150,7 @@ static void lance_class_init(ObjectClass *klass, void *data)
     dc->realize = lance_realize;
     set_bit(DEVICE_CATEGORY_NETWORK, dc->categories);
     dc->fw_name = "ethernet";
-    dc->reset = lance_reset;
+    device_class_set_legacy_reset(dc, lance_reset);
     dc->vmsd = &vmstate_lance;
     device_class_set_props(dc, lance_properties);
 }

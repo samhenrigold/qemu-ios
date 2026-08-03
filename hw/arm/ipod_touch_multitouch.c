@@ -1100,7 +1100,7 @@ static void ipod_touch_multitouch_class_init(ObjectClass *klass, void *data)
 
     k->realize = ipod_touch_multitouch_realize;
     k->transfer = ipod_touch_multitouch_transfer;
-    dc->reset = ipod_touch_multitouch_reset;
+    device_class_set_legacy_reset(dc, ipod_touch_multitouch_reset);
     dc->vmsd = &vmstate_ipod_touch_multitouch;
 }
 

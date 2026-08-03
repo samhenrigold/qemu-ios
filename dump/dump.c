@@ -17,9 +17,9 @@
 #include "qemu/bswap.h"
 #include "exec/target_page.h"
 #include "monitor/monitor.h"
-#include "sysemu/dump.h"
-#include "sysemu/runstate.h"
-#include "sysemu/cpus.h"
+#include "system/dump.h"
+#include "system/runstate.h"
+#include "system/cpus.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-dump.h"
 #include "qapi/qapi-events-dump.h"
@@ -30,6 +30,7 @@
 #include "migration/blocker.h"
 #include "hw/core/cpu.h"
 #include "win_dump.h"
+#include "qemu/range.h"
 
 #include <zlib.h>
 #ifdef CONFIG_LZO
@@ -108,11 +109,11 @@ static int dump_cleanup(DumpState *s)
     s->guest_note = NULL;
     if (s->resume) {
         if (s->detached) {
-            qemu_mutex_lock_iothread();
+            bql_lock();
         }
         vm_start();
         if (s->detached) {
-            qemu_mutex_unlock_iothread();
+            bql_unlock();
         }
     }
     migrate_del_blocker(&dump_migration_blocker);
@@ -574,8 +575,10 @@ static void get_offset_range(hwaddr phys_addr,
 
     QTAILQ_FOREACH(block, &s->guest_phys_blocks.head, next) {
         if (dump_has_filter(s)) {
-            if (block->target_start >= s->filter_area_begin + s->filter_area_length ||
-                block->target_end <= s->filter_area_begin) {
+            if (!ranges_overlap(block->target_start,
+                                block->target_end - block->target_start,
+                                s->filter_area_begin,
+                                s->filter_area_length)) {
                 /* This block is out of the range */
                 continue;
             }
@@ -734,8 +737,9 @@ int64_t dump_filtered_memblock_start(GuestPhysBlock *block,
 {
     if (filter_area_length) {
         /* return -1 if the block is not within filter area */
-        if (block->target_start >= filter_area_start + filter_area_length ||
-            block->target_end <= filter_area_start) {
+        if (!ranges_overlap(block->target_start,
+                            block->target_end - block->target_start,
+                            filter_area_start, filter_area_length)) {
             return -1;
         }
 

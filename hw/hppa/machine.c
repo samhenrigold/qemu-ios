@@ -11,12 +11,13 @@
 #include "elf.h"
 #include "hw/loader.h"
 #include "qemu/error-report.h"
-#include "sysemu/reset.h"
-#include "sysemu/sysemu.h"
-#include "sysemu/runstate.h"
+#include "system/reset.h"
+#include "system/system.h"
+#include "system/qtest.h"
+#include "system/runstate.h"
 #include "hw/rtc/mc146818rtc.h"
 #include "hw/timer/i8254.h"
-#include "hw/char/serial.h"
+#include "hw/char/serial-mm.h"
 #include "hw/char/parallel.h"
 #include "hw/intc/i8259.h"
 #include "hw/input/lasips2.h"
@@ -36,8 +37,8 @@
 
 #define MIN_SEABIOS_HPPA_VERSION 12 /* require at least this fw version */
 
-/* Power button address at &PAGE0->pad[4] */
-#define HPA_POWER_BUTTON (0x40 + 4 * sizeof(uint32_t))
+#define HPA_POWER_BUTTON        (FIRMWARE_END - 0x10)
+static hwaddr soft_power_reg;
 
 #define enable_lasi_lan()       0
 
@@ -45,7 +46,6 @@ static DeviceState *lasi_dev;
 
 static void hppa_powerdown_req(Notifier *n, void *opaque)
 {
-    hwaddr soft_power_reg = HPA_POWER_BUTTON;
     uint32_t val;
 
     val = ldl_be_phys(&address_space_memory, soft_power_reg);
@@ -207,40 +207,40 @@ static FWCfgState *create_fw_cfg(MachineState *ms, PCIBus *pci_bus,
 
     val = cpu_to_le64(MIN_SEABIOS_HPPA_VERSION);
     fw_cfg_add_file(fw_cfg, "/etc/firmware-min-version",
-                    g_memdup(&val, sizeof(val)), sizeof(val));
+                    g_memdup2(&val, sizeof(val)), sizeof(val));
 
     val = cpu_to_le64(HPPA_TLB_ENTRIES - btlb_entries);
     fw_cfg_add_file(fw_cfg, "/etc/cpu/tlb_entries",
-                    g_memdup(&val, sizeof(val)), sizeof(val));
+                    g_memdup2(&val, sizeof(val)), sizeof(val));
 
     val = cpu_to_le64(btlb_entries);
     fw_cfg_add_file(fw_cfg, "/etc/cpu/btlb_entries",
-                    g_memdup(&val, sizeof(val)), sizeof(val));
+                    g_memdup2(&val, sizeof(val)), sizeof(val));
 
     len = strlen(mc->name) + 1;
     fw_cfg_add_file(fw_cfg, "/etc/hppa/machine",
-                    g_memdup(mc->name, len), len);
+                    g_memdup2(mc->name, len), len);
 
-    val = cpu_to_le64(HPA_POWER_BUTTON);
+    val = cpu_to_le64(soft_power_reg);
     fw_cfg_add_file(fw_cfg, "/etc/hppa/power-button-addr",
-                    g_memdup(&val, sizeof(val)), sizeof(val));
+                    g_memdup2(&val, sizeof(val)), sizeof(val));
 
     val = cpu_to_le64(CPU_HPA + 16);
     fw_cfg_add_file(fw_cfg, "/etc/hppa/rtc-addr",
-                    g_memdup(&val, sizeof(val)), sizeof(val));
+                    g_memdup2(&val, sizeof(val)), sizeof(val));
 
     val = cpu_to_le64(CPU_HPA + 24);
     fw_cfg_add_file(fw_cfg, "/etc/hppa/DebugOutputPort",
-                    g_memdup(&val, sizeof(val)), sizeof(val));
+                    g_memdup2(&val, sizeof(val)), sizeof(val));
 
     fw_cfg_add_i16(fw_cfg, FW_CFG_BOOT_DEVICE, ms->boot_config.order[0]);
     qemu_register_boot_set(fw_cfg_boot_set, fw_cfg);
 
     fw_cfg_add_file(fw_cfg, "/etc/qemu-version",
-                    g_memdup(qemu_version, sizeof(qemu_version)),
+                    g_memdup2(qemu_version, sizeof(qemu_version)),
                     sizeof(qemu_version));
 
-    fw_cfg_add_extra_pci_roots(pci_bus, fw_cfg);
+    pci_bus_add_fw_cfg_extra_pci_roots(fw_cfg, pci_bus, &error_abort);
 
     return fw_cfg;
 }
@@ -276,21 +276,23 @@ static TranslateFn *machine_HP_common_init_cpus(MachineState *machine)
     unsigned int smp_cpus = machine->smp.cpus;
     TranslateFn *translate;
     MemoryRegion *cpu_region;
+    uint64_t ram_max;
 
     /* Create CPUs.  */
     for (unsigned int i = 0; i < smp_cpus; i++) {
         cpu[i] = HPPA_CPU(cpu_create(machine->cpu_type));
     }
 
-    /*
-     * For now, treat address layout as if PSW_W is clear.
-     * TODO: create a proper hppa64 board model and load elf64 firmware.
-     */
+    /* Initialize memory */
     if (hppa_is_pa20(&cpu[0]->env)) {
         translate = translate_pa20;
+        ram_max = 256 * GiB;       /* like HP rp8440 */
     } else {
         translate = translate_pa10;
+        ram_max = FIRMWARE_START;  /* 3.75 GB (32-bit CPU) */
     }
+
+    soft_power_reg = translate(NULL, HPA_POWER_BUTTON);
 
     for (unsigned int i = 0; i < smp_cpus; i++) {
         g_autofree char *name = g_strdup_printf("cpu%u-io-eir", i);
@@ -311,11 +313,26 @@ static TranslateFn *machine_HP_common_init_cpus(MachineState *machine)
                                 cpu_region);
 
     /* Main memory region. */
-    if (machine->ram_size > 3 * GiB) {
-        error_report("RAM size is currently restricted to 3GB");
-        exit(EXIT_FAILURE);
+    if (machine->ram_size > ram_max) {
+        info_report("Max RAM size limited to %" PRIu64 " MB", ram_max / MiB);
+        machine->ram_size = ram_max;
     }
-    memory_region_add_subregion_overlap(addr_space, 0, machine->ram, -1);
+    if (machine->ram_size <= FIRMWARE_START) {
+        /* contiguous memory up to 3.75 GB RAM */
+        memory_region_add_subregion_overlap(addr_space, 0, machine->ram, -1);
+    } else {
+        /* non-contiguous: Memory above 3.75 GB is mapped at RAM_MAP_HIGH */
+        MemoryRegion *mem_region;
+        mem_region = g_new(MemoryRegion, 2);
+        memory_region_init_alias(&mem_region[0], &addr_space->parent_obj,
+                              "LowMem", machine->ram, 0, FIRMWARE_START);
+        memory_region_init_alias(&mem_region[1], &addr_space->parent_obj,
+                              "HighMem", machine->ram, FIRMWARE_START,
+                              machine->ram_size - FIRMWARE_START);
+        memory_region_add_subregion_overlap(addr_space, 0, &mem_region[0], -1);
+        memory_region_add_subregion_overlap(addr_space, RAM_MAP_HIGH,
+                                            &mem_region[1], -1);
+    }
 
     return translate;
 }
@@ -329,6 +346,7 @@ static void machine_HP_common_init_tail(MachineState *machine, PCIBus *pci_bus,
     const char *kernel_filename = machine->kernel_filename;
     const char *kernel_cmdline = machine->kernel_cmdline;
     const char *initrd_filename = machine->initrd_filename;
+    const char *firmware = machine->firmware;
     MachineClass *mc = MACHINE_GET_CLASS(machine);
     DeviceState *dev;
     PCIDevice *pci_dev;
@@ -338,64 +356,59 @@ static void machine_HP_common_init_tail(MachineState *machine, PCIBus *pci_bus,
     uint64_t kernel_entry = 0, kernel_low, kernel_high;
     MemoryRegion *addr_space = get_system_memory();
     MemoryRegion *rom_region;
-    long i;
-    unsigned int smp_cpus = machine->smp.cpus;
     SysBusDevice *s;
 
     /* SCSI disk setup. */
-    dev = DEVICE(pci_create_simple(pci_bus, -1, "lsi53c895a"));
-    lsi53c8xx_handle_legacy_cmdline(dev);
+    if (drive_get_max_bus(IF_SCSI) >= 0) {
+        dev = DEVICE(pci_create_simple(pci_bus, -1, "lsi53c895a"));
+        lsi53c8xx_handle_legacy_cmdline(dev);
+    }
 
     /* Graphics setup. */
     if (machine->enable_graphics && vga_interface_type != VGA_NONE) {
-        vga_interface_created = true;
         dev = qdev_new("artist");
         s = SYS_BUS_DEVICE(dev);
-        sysbus_realize_and_unref(s, &error_fatal);
-        sysbus_mmio_map(s, 0, translate(NULL, LASI_GFX_HPA));
-        sysbus_mmio_map(s, 1, translate(NULL, ARTIST_FB_ADDR));
-    }
-
-    /* Network setup. */
-    if (enable_lasi_lan()) {
-        lasi_82596_init(addr_space, translate(NULL, LASI_LAN_HPA),
-                        qdev_get_gpio_in(lasi_dev, LASI_IRQ_LAN_HPA));
-    }
-
-    for (i = 0; i < nb_nics; i++) {
-        if (!enable_lasi_lan()) {
-            pci_nic_init_nofail(&nd_table[i], pci_bus, mc->default_nic, NULL);
+        bool disabled = object_property_get_bool(OBJECT(dev), "disable", NULL);
+        if (!disabled) {
+            sysbus_realize_and_unref(s, &error_fatal);
+            vga_interface_created = true;
+            sysbus_mmio_map(s, 0, translate(NULL, LASI_GFX_HPA));
+            sysbus_mmio_map(s, 1, translate(NULL, ARTIST_FB_ADDR));
         }
     }
 
-    /* BMC board: HP Powerbar SP2 Diva (with console only) */
-    pci_dev = pci_new(-1, "pci-serial");
-    if (!lasi_dev) {
-        /* bind default keyboard/serial to Diva card */
-        qdev_prop_set_chr(DEVICE(pci_dev), "chardev", serial_hd(0));
+    /* Network setup. */
+    if (lasi_dev) {
+        lasi_82596_init(addr_space, translate(NULL, LASI_LAN_HPA),
+                        qdev_get_gpio_in(lasi_dev, LASI_IRQ_LAN_HPA),
+                        enable_lasi_lan());
     }
-    qdev_prop_set_uint8(DEVICE(pci_dev), "prog_if", 0);
-    pci_realize_and_unref(pci_dev, pci_bus, &error_fatal);
-    pci_config_set_vendor_id(pci_dev->config, PCI_VENDOR_ID_HP);
-    pci_config_set_device_id(pci_dev->config, 0x1048);
-    pci_set_word(&pci_dev->config[PCI_SUBSYSTEM_VENDOR_ID], PCI_VENDOR_ID_HP);
-    pci_set_word(&pci_dev->config[PCI_SUBSYSTEM_ID], 0x1227); /* Powerbar */
 
-    /* create a second serial PCI card when running Astro */
-    if (!lasi_dev) {
-        pci_dev = pci_new(-1, "pci-serial-4x");
-        qdev_prop_set_chr(DEVICE(pci_dev), "chardev1", serial_hd(1));
-        qdev_prop_set_chr(DEVICE(pci_dev), "chardev2", serial_hd(2));
-        qdev_prop_set_chr(DEVICE(pci_dev), "chardev3", serial_hd(3));
-        qdev_prop_set_chr(DEVICE(pci_dev), "chardev4", serial_hd(4));
+    pci_init_nic_devices(pci_bus, mc->default_nic);
+
+    /* BMC board: HP Diva GSP */
+    dev = qdev_new("diva-gsp");
+    if (!object_property_get_bool(OBJECT(dev), "disable", NULL)) {
+        pci_dev = pci_new_multifunction(PCI_DEVFN(2, 0), "diva-gsp");
+        if (!lasi_dev) {
+            /* bind default keyboard/serial to Diva card */
+            qdev_prop_set_chr(DEVICE(pci_dev), "chardev1", serial_hd(0));
+            qdev_prop_set_chr(DEVICE(pci_dev), "chardev2", serial_hd(1));
+            qdev_prop_set_chr(DEVICE(pci_dev), "chardev3", serial_hd(2));
+            qdev_prop_set_chr(DEVICE(pci_dev), "chardev4", serial_hd(3));
+        }
         pci_realize_and_unref(pci_dev, pci_bus, &error_fatal);
     }
 
     /* create USB OHCI controller for USB keyboard & mouse on Astro machines */
-    if (!lasi_dev && machine->enable_graphics) {
+    if (!lasi_dev && machine->enable_graphics && defaults_enabled()) {
+        USBBus *usb_bus;
+
         pci_create_simple(pci_bus, -1, "pci-ohci");
-        usb_create_simple(usb_bus_find(-1), "usb-kbd");
-        usb_create_simple(usb_bus_find(-1), "usb-mouse");
+        usb_bus = USB_BUS(object_resolve_type_unambiguous(TYPE_USB_BUS,
+                                                          &error_abort));
+        usb_create_simple(usb_bus, "usb-kbd");
+        usb_create_simple(usb_bus, "usb-mouse");
     }
 
     /* register power switch emulation */
@@ -406,31 +419,37 @@ static void machine_HP_common_init_tail(MachineState *machine, PCIBus *pci_bus,
 
     /* Load firmware.  Given that this is not "real" firmware,
        but one explicitly written for the emulation, we might as
-       well load it directly from an ELF image.  */
-    firmware_filename = qemu_find_file(QEMU_FILE_TYPE_BIOS,
-                                       machine->firmware ?: "hppa-firmware.img");
-    if (firmware_filename == NULL) {
-        error_report("no firmware provided");
-        exit(1);
-    }
+       well load it directly from an ELF image. Load the 64-bit
+       firmware on 64-bit machines by default if not specified
+       on command line. */
+    if (!qtest_enabled()) {
+        if (!firmware) {
+            firmware = lasi_dev ? "hppa-firmware.img" : "hppa-firmware64.img";
+        }
+        firmware_filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, firmware);
+        if (firmware_filename == NULL) {
+            error_report("no firmware provided");
+            exit(1);
+        }
 
-    size = load_elf(firmware_filename, NULL, translate, NULL,
-                    &firmware_entry, &firmware_low, &firmware_high, NULL,
-                    true, EM_PARISC, 0, 0);
+        size = load_elf(firmware_filename, NULL, translate, NULL,
+                        &firmware_entry, &firmware_low, &firmware_high, NULL,
+                        ELFDATA2MSB, EM_PARISC, 0, 0);
 
-    if (size < 0) {
-        error_report("could not load firmware '%s'", firmware_filename);
-        exit(1);
+        if (size < 0) {
+            error_report("could not load firmware '%s'", firmware_filename);
+            exit(1);
+        }
+        qemu_log_mask(CPU_LOG_PAGE, "Firmware loaded at 0x%08" PRIx64
+                      "-0x%08" PRIx64 ", entry at 0x%08" PRIx64 ".\n",
+                      firmware_low, firmware_high, firmware_entry);
+        if (firmware_low < translate(NULL, FIRMWARE_START) ||
+            firmware_high >= translate(NULL, FIRMWARE_END)) {
+            error_report("Firmware overlaps with memory or IO space");
+            exit(1);
+        }
+        g_free(firmware_filename);
     }
-    qemu_log_mask(CPU_LOG_PAGE, "Firmware loaded at 0x%08" PRIx64
-                  "-0x%08" PRIx64 ", entry at 0x%08" PRIx64 ".\n",
-                  firmware_low, firmware_high, firmware_entry);
-    if (firmware_low < translate(NULL, FIRMWARE_START) ||
-        firmware_high >= translate(NULL, FIRMWARE_END)) {
-        error_report("Firmware overlaps with memory or IO space");
-        exit(1);
-    }
-    g_free(firmware_filename);
 
     rom_region = g_new(MemoryRegion, 1);
     memory_region_init_ram(rom_region, NULL, "firmware",
@@ -442,7 +461,7 @@ static void machine_HP_common_init_tail(MachineState *machine, PCIBus *pci_bus,
     if (kernel_filename) {
         size = load_elf(kernel_filename, NULL, linux_kernel_virt_to_phys,
                         NULL, &kernel_entry, &kernel_low, &kernel_high, NULL,
-                        true, EM_PARISC, 0, 0);
+                        ELFDATA2MSB, EM_PARISC, 0, 0);
 
         kernel_entry = linux_kernel_virt_to_phys(NULL, kernel_entry);
 
@@ -456,8 +475,8 @@ static void machine_HP_common_init_tail(MachineState *machine, PCIBus *pci_bus,
                       kernel_low, kernel_high, kernel_entry, size / KiB);
 
         if (kernel_cmdline) {
-            cpu[0]->env.gr[24] = 0x4000;
-            pstrcpy_targphys("cmdline", cpu[0]->env.gr[24],
+            cpu[0]->env.cmdline_or_bootorder = 0x4000;
+            pstrcpy_targphys("cmdline", cpu[0]->env.cmdline_or_bootorder,
                              TARGET_PAGE_SIZE, kernel_cmdline);
         }
 
@@ -487,32 +506,22 @@ static void machine_HP_common_init_tail(MachineState *machine, PCIBus *pci_bus,
             }
 
             load_image_targphys(initrd_filename, initrd_base, initrd_size);
-            cpu[0]->env.gr[23] = initrd_base;
-            cpu[0]->env.gr[22] = initrd_base + initrd_size;
+            cpu[0]->env.initrd_base = initrd_base;
+            cpu[0]->env.initrd_end  = initrd_base + initrd_size;
         }
     }
 
     if (!kernel_entry) {
         /* When booting via firmware, tell firmware if we want interactive
-         * mode (kernel_entry=1), and to boot from CD (gr[24]='d')
-         * or hard disc * (gr[24]='c').
+         * mode (kernel_entry=1), and to boot from CD (cmdline_or_bootorder='d')
+         * or hard disc (cmdline_or_bootorder='c').
          */
         kernel_entry = machine->boot_config.has_menu ? machine->boot_config.menu : 0;
-        cpu[0]->env.gr[24] = machine->boot_config.order[0];
+        cpu[0]->env.cmdline_or_bootorder = machine->boot_config.order[0];
     }
 
-    /* We jump to the firmware entry routine and pass the
-     * various parameters in registers. After firmware initialization,
-     * firmware will start the Linux kernel with ramdisk and cmdline.
-     */
-    cpu[0]->env.gr[26] = machine->ram_size;
-    cpu[0]->env.gr[25] = kernel_entry;
-
-    /* tell firmware how many SMP CPUs to present in inventory table */
-    cpu[0]->env.gr[21] = smp_cpus;
-
-    /* tell firmware fw_cfg port */
-    cpu[0]->env.gr[19] = FW_CFG_IO_BASE;
+    /* Keep initial kernel_entry for first boot */
+    cpu[0]->env.kernel_entry = kernel_entry;
 }
 
 /*
@@ -628,12 +637,12 @@ static void machine_HP_C3700_init(MachineState *machine)
     machine_HP_common_init_tail(machine, pci_bus, translate);
 }
 
-static void hppa_machine_reset(MachineState *ms, ShutdownCause reason)
+static void hppa_machine_reset(MachineState *ms, ResetType type)
 {
     unsigned int smp_cpus = ms->smp.cpus;
     int i;
 
-    qemu_devices_reset(reason);
+    qemu_devices_reset(type);
 
     /* Start all CPUs at the firmware entry point.
      *  Monarch CPU will initialize firmware, secondary CPUs
@@ -641,26 +650,27 @@ static void hppa_machine_reset(MachineState *ms, ShutdownCause reason)
     for (i = 0; i < smp_cpus; i++) {
         CPUState *cs = CPU(cpu[i]);
 
+        /* reset CPU */
+        resettable_reset(OBJECT(cs), RESET_TYPE_COLD);
+
         cpu_set_pc(cs, firmware_entry);
         cpu[i]->env.psw = PSW_Q;
         cpu[i]->env.gr[5] = CPU_HPA + i * 0x1000;
-
-        cs->exception_index = -1;
-        cs->halted = 0;
-    }
-
-    /* already initialized by machine_hppa_init()? */
-    if (cpu[0]->env.gr[26] == ms->ram_size) {
-        return;
     }
 
     cpu[0]->env.gr[26] = ms->ram_size;
-    cpu[0]->env.gr[25] = 0; /* no firmware boot menu */
-    cpu[0]->env.gr[24] = 'c';
-    /* gr22/gr23 unused, no initrd while reboot. */
+    cpu[0]->env.gr[25] = cpu[0]->env.kernel_entry;
+    cpu[0]->env.gr[24] = cpu[0]->env.cmdline_or_bootorder;
+    cpu[0]->env.gr[23] = cpu[0]->env.initrd_base;
+    cpu[0]->env.gr[22] = cpu[0]->env.initrd_end;
     cpu[0]->env.gr[21] = smp_cpus;
-    /* tell firmware fw_cfg port */
     cpu[0]->env.gr[19] = FW_CFG_IO_BASE;
+
+    /* reset static fields to avoid starting Linux kernel & initrd on reboot */
+    cpu[0]->env.kernel_entry = 0;
+    cpu[0]->env.initrd_base = 0;
+    cpu[0]->env.initrd_end = 0;
+    cpu[0]->env.cmdline_or_bootorder = 'c';
 }
 
 static void hppa_nmi(NMIState *n, int cpu_index, Error **errp)

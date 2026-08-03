@@ -1,6 +1,4 @@
-system_ss.add(files('trace-hmp-cmds.c'))
-
-specific_ss.add(files('control-target.c'))
+system_ss.add(files('control-target.c', 'trace-hmp-cmds.c'))
 
 trace_events_files = []
 foreach item : [ '.' ] + trace_events_subdirs + qapi_trace_events
@@ -64,7 +62,7 @@ trace_events_all = custom_target('trace-events-all',
                                  input: trace_events_files,
                                  command: [ 'cat', '@INPUT@' ],
                                  capture: true,
-                                 install: true,
+                                 install: get_option('trace_backends') != [ 'nop' ],
                                  install_dir: qemu_datadir)
 
 if 'ust' in get_option('trace_backends')

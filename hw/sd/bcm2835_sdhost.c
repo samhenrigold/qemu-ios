@@ -14,7 +14,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "sysemu/blockdev.h"
+#include "system/blockdev.h"
 #include "hw/irq.h"
 #include "hw/sd/bcm2835_sdhost.h"
 #include "migration/vmstate.h"
@@ -381,7 +381,7 @@ static const VMStateDescription vmstate_bcm2835_sdhost = {
     .name = TYPE_BCM2835_SDHOST,
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(cmd, BCM2835SDHostState),
         VMSTATE_UINT32(cmdarg, BCM2835SDHostState),
         VMSTATE_UINT32(status, BCM2835SDHostState),
@@ -432,7 +432,7 @@ static void bcm2835_sdhost_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = bcm2835_sdhost_reset;
+    device_class_set_legacy_reset(dc, bcm2835_sdhost_reset);
     dc->vmsd = &vmstate_bcm2835_sdhost;
 }
 

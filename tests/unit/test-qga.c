@@ -5,8 +5,8 @@
 #include <sys/un.h>
 
 #include "../qtest/libqtest.h"
-#include "qapi/qmp/qdict.h"
-#include "qapi/qmp/qlist.h"
+#include "qobject/qdict.h"
+#include "qobject/qlist.h"
 
 typedef struct {
     char *test_dir;
@@ -822,7 +822,7 @@ static void test_qga_guest_exec(gconstpointer fix)
 
     /* exec 'echo foo bar' */
     ret = qmp_fd(fixture->fd, "{'execute': 'guest-exec', 'arguments': {"
-                 " 'path': '/bin/echo', 'arg': [ '-n', '\" test_str \"' ],"
+                 " 'path': 'echo', 'arg': [ '-n', '\" test_str \"' ],"
                  " 'capture-output': true } }");
     g_assert_nonnull(ret);
     qmp_assert_no_error(ret);
@@ -883,7 +883,7 @@ static void test_qga_guest_exec_separated(gconstpointer fix)
 
     /* exec 'echo foo bar' */
     ret = qmp_fd(fixture->fd, "{'execute': 'guest-exec', 'arguments': {"
-                 " 'path': '/bin/bash',"
+                 " 'path': 'bash',"
                  " 'arg': [ '-c', 'for i in $(seq 4); do if (( $i %% 2 )); then echo stdout; else echo stderr 1>&2; fi; done;' ],"
                  " 'capture-output': 'separated' } }");
     g_assert_nonnull(ret);
@@ -924,7 +924,7 @@ static void test_qga_guest_exec_merged(gconstpointer fix)
 
     /* exec 'echo foo bar' */
     ret = qmp_fd(fixture->fd, "{'execute': 'guest-exec', 'arguments': {"
-                 " 'path': '/bin/bash',"
+                 " 'path': 'bash',"
                  " 'arg': [ '-c', 'for i in $(seq 4); do if (( $i %% 2 )); then echo stdout; else echo stderr 1>&2; fi; done;' ],"
                  " 'capture-output': 'merged' } }");
     g_assert_nonnull(ret);

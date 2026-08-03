@@ -77,7 +77,7 @@ static const VMStateDescription vmstate_led = {
     .name = TYPE_LED,
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(intensity_percent, LEDState),
         VMSTATE_END_OF_LIST()
     }
@@ -101,11 +101,10 @@ static void led_realize(DeviceState *dev, Error **errp)
     qdev_init_gpio_in(DEVICE(s), led_set_state_gpio_handler, 1);
 }
 
-static Property led_properties[] = {
+static const Property led_properties[] = {
     DEFINE_PROP_STRING("color", LEDState, color),
     DEFINE_PROP_STRING("description", LEDState, description),
     DEFINE_PROP_BOOL("gpio-active-high", LEDState, gpio_active_high, true),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void led_class_init(ObjectClass *klass, void *data)
@@ -114,7 +113,7 @@ static void led_class_init(ObjectClass *klass, void *data)
 
     dc->desc = "LED";
     dc->vmsd = &vmstate_led;
-    dc->reset = led_reset;
+    device_class_set_legacy_reset(dc, led_reset);
     dc->realize = led_realize;
     set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
     device_class_set_props(dc, led_properties);

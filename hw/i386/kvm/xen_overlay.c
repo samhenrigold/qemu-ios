@@ -23,8 +23,8 @@
 #include "hw/xen/xen.h"
 #include "xen_overlay.h"
 
-#include "sysemu/kvm.h"
-#include "sysemu/kvm_xen.h"
+#include "system/kvm.h"
+#include "system/kvm_xen.h"
 #include <linux/kvm.h>
 
 #include "hw/xen/interface/memory.h"
@@ -139,7 +139,7 @@ static const VMStateDescription xen_overlay_vmstate = {
     .needed = xen_overlay_is_needed,
     .pre_save = xen_overlay_pre_save,
     .post_load = xen_overlay_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT64(shinfo_gpa, XenOverlayState),
         VMSTATE_BOOL(long_mode, XenOverlayState),
         VMSTATE_END_OF_LIST()
@@ -155,7 +155,7 @@ static void xen_overlay_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = xen_overlay_reset;
+    device_class_set_legacy_reset(dc, xen_overlay_reset);
     dc->realize = xen_overlay_realize;
     dc->vmsd = &xen_overlay_vmstate;
 }
@@ -194,7 +194,7 @@ int xen_overlay_map_shinfo_page(uint64_t gpa)
         return -ENOENT;
     }
 
-    assert(qemu_mutex_iothread_locked());
+    assert(bql_locked());
 
     if (s->shinfo_gpa) {
         /* If removing shinfo page, turn the kernel magic off first */

@@ -727,7 +727,7 @@ static void ipod_touch_i2s_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->realize = ipod_touch_i2s_realize;
-    dc->reset = ipod_touch_i2s_reset;
+    device_class_set_legacy_reset(dc, ipod_touch_i2s_reset);
 }
 
 static const TypeInfo ipod_touch_i2s_type_info = {

@@ -21,9 +21,9 @@
 #define PPC_PNV_XSCOM_H
 
 #include "exec/memory.h"
-#include "hw/ppc/pnv.h"
 
 typedef struct PnvXScomInterface PnvXScomInterface;
+typedef struct PnvChip PnvChip;
 
 #define TYPE_PNV_XSCOM_INTERFACE "pnv-xscom-interface"
 #define PNV_XSCOM_INTERFACE(obj) \
@@ -64,6 +64,9 @@ struct PnvXScomInterfaceClass {
 #define PNV_XSCOM_PSIHB_BASE      0x2010900
 #define PNV_XSCOM_PSIHB_SIZE      0x20
 
+#define PNV_XSCOM_CHIPTOD_BASE    0x0040000
+#define PNV_XSCOM_CHIPTOD_SIZE    0x31
+
 #define PNV_XSCOM_OCC_BASE        0x0066000
 #define PNV_XSCOM_OCC_SIZE        0x6000
 
@@ -79,6 +82,9 @@ struct PnvXScomInterfaceClass {
 #define PNV_XSCOM_PBCQ_SPCI_BASE  0x9013c00
 #define PNV_XSCOM_PBCQ_SPCI_SIZE  0x5
 
+#define PNV9_XSCOM_ADU_BASE       0x0090000
+#define PNV9_XSCOM_ADU_SIZE       0x55
+
 /*
  * Layout of the XSCOM PCB addresses (POWER 9)
  */
@@ -92,6 +98,9 @@ struct PnvXScomInterfaceClass {
 
 #define PNV9_XSCOM_I2CM_BASE      0xa0000
 #define PNV9_XSCOM_I2CM_SIZE      0x1000
+
+#define PNV9_XSCOM_CHIPTOD_BASE   PNV_XSCOM_CHIPTOD_BASE
+#define PNV9_XSCOM_CHIPTOD_SIZE   PNV_XSCOM_CHIPTOD_SIZE
 
 #define PNV9_XSCOM_OCC_BASE       PNV_XSCOM_OCC_BASE
 #define PNV9_XSCOM_OCC_SIZE       0x8000
@@ -117,10 +126,15 @@ struct PnvXScomInterfaceClass {
 #define PNV9_XSCOM_PEC_PCI_BASE   0xd010800
 #define PNV9_XSCOM_PEC_PCI_SIZE   0x200
 
+#define PNV9_XSCOM_PEC_NEST_CPLT_BASE  0x0d000000
+
 /* XSCOM PCI "pass-through" window to PHB SCOM */
 #define PNV9_XSCOM_PEC_PCI_STK0   0x100
 #define PNV9_XSCOM_PEC_PCI_STK1   0x140
 #define PNV9_XSCOM_PEC_PCI_STK2   0x180
+
+#define PNV10_XSCOM_ADU_BASE      0x0090000
+#define PNV10_XSCOM_ADU_SIZE      0x55
 
 /*
  * Layout of the XSCOM PCB addresses (POWER 10)
@@ -155,6 +169,9 @@ struct PnvXScomInterfaceClass {
 #define PNV10_XSCOM_I2CM_BASE      PNV9_XSCOM_I2CM_BASE
 #define PNV10_XSCOM_I2CM_SIZE      PNV9_XSCOM_I2CM_SIZE
 
+#define PNV10_XSCOM_CHIPTOD_BASE   PNV9_XSCOM_CHIPTOD_BASE
+#define PNV10_XSCOM_CHIPTOD_SIZE   PNV9_XSCOM_CHIPTOD_SIZE
+
 #define PNV10_XSCOM_OCC_BASE       PNV9_XSCOM_OCC_BASE
 #define PNV10_XSCOM_OCC_SIZE       PNV9_XSCOM_OCC_SIZE
 
@@ -170,11 +187,25 @@ struct PnvXScomInterfaceClass {
 #define PNV10_XSCOM_XIVE2_BASE     0x2010800
 #define PNV10_XSCOM_XIVE2_SIZE     0x400
 
+#define PNV10_XSCOM_N1_CHIPLET_CTRL_REGS_BASE      0x3000000
+#define PNV10_XSCOM_CHIPLET_CTRL_REGS_SIZE         0x400
+
+#define PNV10_XSCOM_N1_PB_SCOM_EQ_BASE      0x3011000
+#define PNV10_XSCOM_N1_PB_SCOM_EQ_SIZE      0x200
+
+#define PNV10_XSCOM_N1_PB_SCOM_ES_BASE      0x3011300
+#define PNV10_XSCOM_N1_PB_SCOM_ES_SIZE      0x100
+
 #define PNV10_XSCOM_PEC_NEST_BASE  0x3011800 /* index goes downwards ... */
 #define PNV10_XSCOM_PEC_NEST_SIZE  0x100
 
+#define PNV10_XSCOM_PEC_NEST_CPLT_BASE 0x08000000
+
 #define PNV10_XSCOM_PEC_PCI_BASE   0x8010800 /* index goes upwards ... */
 #define PNV10_XSCOM_PEC_PCI_SIZE   0x200
+
+#define PNV10_XSCOM_PIB_SPIC_BASE 0xc0000
+#define PNV10_XSCOM_PIB_SPIC_SIZE 0x20
 
 void pnv_xscom_init(PnvChip *chip, uint64_t size, hwaddr addr);
 int pnv_dt_xscom(PnvChip *chip, void *fdt, int root_offset,

@@ -11,18 +11,19 @@
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
-#include "hw/boards.h"
+#include "hw/s390x/s390-virtio-ccw.h"
 #include "hw/qdev-properties.h"
 #include "hw/s390x/storage-keys.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-misc-target.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qdict.h"
 #include "qemu/error-report.h"
-#include "sysemu/memory_mapping.h"
+#include "system/memory_mapping.h"
 #include "exec/address-spaces.h"
-#include "sysemu/kvm.h"
+#include "system/kvm.h"
 #include "migration/qemu-file-types.h"
 #include "migration/register.h"
+#include "trace.h"
 
 #define S390_SKEYS_BUFFER_SIZE (128 * KiB)  /* Room for 128k storage keys */
 #define S390_SKEYS_SAVE_FLAG_EOS 0x01
@@ -52,6 +53,32 @@ void s390_skeys_init(void)
     object_unref(obj);
 
     qdev_realize(DEVICE(obj), NULL, &error_fatal);
+}
+
+int s390_skeys_get(S390SKeysState *ks, uint64_t start_gfn,
+                   uint64_t count, uint8_t *keys)
+{
+    S390SKeysClass *kc = S390_SKEYS_GET_CLASS(ks);
+    int rc;
+
+    rc = kc->get_skeys(ks, start_gfn, count, keys);
+    if (rc) {
+        trace_s390_skeys_get_nonzero(rc);
+    }
+    return rc;
+}
+
+int s390_skeys_set(S390SKeysState *ks, uint64_t start_gfn,
+                   uint64_t count, uint8_t *keys)
+{
+    S390SKeysClass *kc = S390_SKEYS_GET_CLASS(ks);
+    int rc;
+
+    rc = kc->set_skeys(ks, start_gfn, count, keys);
+    if (rc) {
+        trace_s390_skeys_set_nonzero(rc);
+    }
+    return rc;
 }
 
 static void write_keys(FILE *f, uint8_t *keys, uint64_t startgfn,
@@ -153,7 +180,7 @@ void qmp_dump_skeys(const char *filename, Error **errp)
         goto out;
     }
 
-    assert(qemu_mutex_iothread_locked());
+    assert(bql_locked());
     guest_phys_blocks_init(&guest_phys_blocks);
     guest_phys_blocks_append(&guest_phys_blocks);
 
@@ -224,9 +251,9 @@ static bool qemu_s390_enable_skeys(S390SKeysState *ss)
      *    g_once_init_enter() is good enough.
      */
     if (g_once_init_enter(&initialized)) {
-        MachineState *machine = MACHINE(qdev_get_machine());
+        S390CcwMachineState *s390ms = S390_CCW_MACHINE(qdev_get_machine());
 
-        skeys->key_count = machine->ram_size / TARGET_PAGE_SIZE;
+        skeys->key_count = s390_get_memory_limit(s390ms) / TARGET_PAGE_SIZE;
         skeys->keydata = g_malloc0(skeys->key_count);
         g_once_init_leave(&initialized, 1);
     }
@@ -442,16 +469,8 @@ static void s390_skeys_realize(DeviceState *dev, Error **errp)
 {
     S390SKeysState *ss = S390_SKEYS(dev);
 
-    if (ss->migration_enabled) {
-        register_savevm_live(TYPE_S390_SKEYS, 0, 1,
-                             &savevm_s390_storage_keys, ss);
-    }
+    register_savevm_live(TYPE_S390_SKEYS, 0, 1, &savevm_s390_storage_keys, ss);
 }
-
-static Property s390_skeys_props[] = {
-    DEFINE_PROP_BOOL("migration-enabled", S390SKeysState, migration_enabled, true),
-    DEFINE_PROP_END_OF_LIST(),
-};
 
 static void s390_skeys_class_init(ObjectClass *oc, void *data)
 {
@@ -459,7 +478,6 @@ static void s390_skeys_class_init(ObjectClass *oc, void *data)
 
     dc->hotpluggable = false;
     dc->realize = s390_skeys_realize;
-    device_class_set_props(dc, s390_skeys_props);
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 }
 

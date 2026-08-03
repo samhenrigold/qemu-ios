@@ -231,10 +231,9 @@ static void ppc4xx_mal_finalize(Object *obj)
     g_free(mal->txctpr);
 }
 
-static Property ppc4xx_mal_properties[] = {
+static const Property ppc4xx_mal_properties[] = {
     DEFINE_PROP_UINT8("txc-num", Ppc4xxMalState, txcnum, 0),
     DEFINE_PROP_UINT8("rxc-num", Ppc4xxMalState, rxcnum, 0),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void ppc4xx_mal_class_init(ObjectClass *oc, void *data)
@@ -242,7 +241,7 @@ static void ppc4xx_mal_class_init(ObjectClass *oc, void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->realize = ppc4xx_mal_realize;
-    dc->reset = ppc4xx_mal_reset;
+    device_class_set_legacy_reset(dc, ppc4xx_mal_reset);
     /* Reason: only works as function of a ppc4xx SoC */
     dc->user_creatable = false;
     device_class_set_props(dc, ppc4xx_mal_properties);
@@ -332,7 +331,7 @@ static void ppc405_plb_class_init(ObjectClass *oc, void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->realize = ppc405_plb_realize;
-    dc->reset = ppc405_plb_reset;
+    device_class_set_legacy_reset(dc, ppc405_plb_reset);
     /* Reason: only works as function of a ppc4xx SoC */
     dc->user_creatable = false;
 }
@@ -518,7 +517,7 @@ static void ppc405_ebc_class_init(ObjectClass *oc, void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->realize = ppc405_ebc_realize;
-    dc->reset = ppc405_ebc_reset;
+    device_class_set_legacy_reset(dc, ppc405_ebc_reset);
     /* Reason: only works as function of a ppc4xx SoC */
     dc->user_creatable = false;
 }
@@ -539,10 +538,9 @@ bool ppc4xx_dcr_realize(Ppc4xxDcrDeviceState *dev, PowerPCCPU *cpu,
     return sysbus_realize(SYS_BUS_DEVICE(dev), errp);
 }
 
-static Property ppc4xx_dcr_properties[] = {
+static const Property ppc4xx_dcr_properties[] = {
     DEFINE_PROP_LINK("cpu", Ppc4xxDcrDeviceState, cpu, TYPE_POWERPC_CPU,
                      PowerPCCPU *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void ppc4xx_dcr_class_init(ObjectClass *oc, void *data)

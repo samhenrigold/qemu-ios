@@ -56,9 +56,9 @@ static int vu_scmi_start(VirtIODevice *vdev)
         goto err_host_notifiers;
     }
 
-    vhost_ack_features(&scmi->vhost_dev, feature_bits, vdev->guest_features);
+    vhost_ack_features(vhost_dev, feature_bits, vdev->guest_features);
 
-    ret = vhost_dev_start(&scmi->vhost_dev, vdev, true);
+    ret = vhost_dev_start(vhost_dev, vdev, true);
     if (ret < 0) {
         error_report("Error starting vhost-user-scmi: %d", ret);
         goto err_guest_notifiers;
@@ -71,7 +71,7 @@ static int vu_scmi_start(VirtIODevice *vdev)
      * enabling/disabling irqfd.
      */
     for (i = 0; i < scmi->vhost_dev.nvqs; i++) {
-        vhost_virtqueue_mask(&scmi->vhost_dev, vdev, i, false);
+        vhost_virtqueue_mask(vhost_dev, vdev, i, false);
     }
     return 0;
 
@@ -277,9 +277,8 @@ static const VMStateDescription vu_scmi_vmstate = {
     .unmigratable = 1,
 };
 
-static Property vu_scmi_properties[] = {
+static const Property vu_scmi_properties[] = {
     DEFINE_PROP_CHR("chardev", VHostUserSCMI, chardev),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void vu_scmi_class_init(ObjectClass *klass, void *data)

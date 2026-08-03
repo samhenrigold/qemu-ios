@@ -1,8 +1,8 @@
-HXCOMM Use DEFHEADING() to define headings in both help text and rST.
-HXCOMM Text between SRST and ERST is copied to the rST version and
-HXCOMM discarded from C version.
-HXCOMM DEF(command, args, callback, arg_string, help) is used to construct
-HXCOMM monitor commands
+HXCOMM See docs/devel/docs.rst for the format of this file.
+HXCOMM
+HXCOMM This file defines the contents of an array of HMPCommand structs
+HXCOMM which specify the name, behaviour and help text for HMP commands.
+HXCOMM Text between SRST and ERST is rST format documentation.
 HXCOMM HXCOMM can be used for comments, discarded from both rST and C.
 
 
@@ -396,19 +396,6 @@ SRST
   This only has an effect when using TCG, not with KVM or other accelerators.
 
   If called with option off, the emulation returns to normal mode.
-ERST
-
-    {
-        .name       = "singlestep",
-        .args_type  = "option:s?",
-        .params     = "[on|off]",
-        .help       = "deprecated synonym for one-insn-per-tb",
-        .cmd        = hmp_one_insn_per_tb,
-    },
-
-SRST
-``singlestep [off]``
-  This is a deprecated synonym for the one-insn-per-tb command.
 ERST
 
     {
@@ -922,26 +909,23 @@ ERST
 
     {
         .name       = "migrate",
-        .args_type  = "detach:-d,blk:-b,inc:-i,resume:-r,uri:s",
-        .params     = "[-d] [-b] [-i] [-r] uri",
+        .args_type  = "detach:-d,resume:-r,uri:s",
+        .params     = "[-d] [-r] uri",
         .help       = "migrate to URI (using -d to not wait for completion)"
-		      "\n\t\t\t -b for migration without shared storage with"
-		      " full copy of disk\n\t\t\t -i for migration without "
-		      "shared storage with incremental copy of disk "
-		      "(base image shared between src and destination)"
-                      "\n\t\t\t -r to resume a paused migration",
+		      "\n\t\t\t -r to resume a paused postcopy migration",
         .cmd        = hmp_migrate,
     },
 
 
 SRST
-``migrate [-d] [-b] [-i]`` *uri*
-  Migrate to *uri* (using -d to not wait for completion).
+``migrate [-d] [-r]`` *uri*
+  Migrate the VM to *uri*.
 
-  ``-b``
-    for migration with full copy of disk
-  ``-i``
-    for migration with incremental copy of disk (base image is shared)
+  ``-d``
+    Start the migration process, but do not wait for its completion.  To
+    query an ongoing migration process, use "info migrate".
+  ``-r``
+    Resume a paused postcopy migration.
 ERST
 
     {
@@ -1425,7 +1409,7 @@ ERST
     {
         .name       = "watchdog_action",
         .args_type  = "action:s",
-        .params     = "[reset|shutdown|poweroff|pause|debug|none]",
+        .params     = "[reset|shutdown|poweroff|pause|debug|none|inject-nmi]",
         .help       = "change watchdog action",
         .cmd        = hmp_watchdog_action,
         .command_completion = watchdog_action_completion,

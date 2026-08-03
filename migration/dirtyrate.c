@@ -12,7 +12,6 @@
 
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
-#include <zlib.h>
 #include "hw/core/cpu.h"
 #include "qapi/error.h"
 #include "exec/ramblock.h"
@@ -25,11 +24,12 @@
 #include "dirtyrate.h"
 #include "monitor/hmp.h"
 #include "monitor/monitor.h"
-#include "qapi/qmp/qdict.h"
-#include "sysemu/kvm.h"
-#include "sysemu/runstate.h"
+#include "qobject/qdict.h"
+#include "system/kvm.h"
+#include "system/runstate.h"
 #include "exec/memory.h"
 #include "qemu/xxhash.h"
+#include "migration.h"
 
 /*
  * total_dirty_pages is procted by BQL and is used
@@ -90,13 +90,19 @@ static int64_t do_calculate_dirtyrate(DirtyPageRecord dirty_pages,
 
 void global_dirty_log_change(unsigned int flag, bool start)
 {
-    qemu_mutex_lock_iothread();
+    Error *local_err = NULL;
+    bool ret;
+
+    bql_lock();
     if (start) {
-        memory_global_dirty_log_start(flag);
+        ret = memory_global_dirty_log_start(flag, &local_err);
+        if (!ret) {
+            error_report_err(local_err);
+        }
     } else {
         memory_global_dirty_log_stop(flag);
     }
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
 }
 
 /*
@@ -106,12 +112,12 @@ void global_dirty_log_change(unsigned int flag, bool start)
  */
 static void global_dirty_log_sync(unsigned int flag, bool one_shot)
 {
-    qemu_mutex_lock_iothread();
+    bql_lock();
     memory_global_dirty_log_sync(false);
     if (one_shot) {
         memory_global_dirty_log_stop(flag);
     }
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
 }
 
 static DirtyPageRecord *vcpu_dirty_stat_alloc(VcpuStat *stat)
@@ -129,8 +135,7 @@ static DirtyPageRecord *vcpu_dirty_stat_alloc(VcpuStat *stat)
     return g_new0(DirtyPageRecord, nvcpu);
 }
 
-static void vcpu_dirty_stat_collect(VcpuStat *stat,
-                                    DirtyPageRecord *records,
+static void vcpu_dirty_stat_collect(DirtyPageRecord *records,
                                     bool start)
 {
     CPUState *cpu;
@@ -145,12 +150,12 @@ int64_t vcpu_calculate_dirtyrate(int64_t calc_time_ms,
                                  unsigned int flag,
                                  bool one_shot)
 {
-    DirtyPageRecord *records;
+    DirtyPageRecord *records = NULL;
     int64_t init_time_ms;
     int64_t duration;
     int64_t dirtyrate;
     int i = 0;
-    unsigned int gen_id;
+    unsigned int gen_id = 0;
 
 retry:
     init_time_ms = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
@@ -158,7 +163,7 @@ retry:
     WITH_QEMU_LOCK_GUARD(&qemu_cpu_list_lock) {
         gen_id = cpu_list_generation_id_get();
         records = vcpu_dirty_stat_alloc(stat);
-        vcpu_dirty_stat_collect(stat, records, true);
+        vcpu_dirty_stat_collect(records, true);
     }
 
     duration = dirty_stat_wait(calc_time_ms, init_time_ms);
@@ -172,7 +177,7 @@ retry:
             cpu_list_unlock();
             goto retry;
         }
-        vcpu_dirty_stat_collect(stat, records, false);
+        vcpu_dirty_stat_collect(records, false);
     }
 
     for (i = 0; i < stat->nvcpu; i++) {
@@ -224,8 +229,7 @@ static int time_unit_to_power(TimeUnit time_unit)
     case TIME_UNIT_MILLISECOND:
         return -3;
     default:
-        assert(false); /* unreachable */
-        return 0;
+        g_assert_not_reached();
     }
 }
 
@@ -433,6 +437,7 @@ static void get_ramblock_dirty_info(RAMBlock *block,
                                     struct DirtyRateConfig *config)
 {
     uint64_t sample_pages_per_gigabytes = config->sample_pages_per_gigabytes;
+    gsize len;
 
     /* Right shift 30 bits to calc ramblock size in GB */
     info->sample_pages_count = (qemu_ram_get_used_length(block) *
@@ -441,7 +446,9 @@ static void get_ramblock_dirty_info(RAMBlock *block,
     info->ramblock_pages = qemu_ram_get_used_length(block) >>
                            qemu_target_page_bits();
     info->ramblock_addr = qemu_ram_get_host_addr(block);
-    strcpy(info->idstr, qemu_ram_get_idstr(block));
+    len = g_strlcpy(info->idstr, qemu_ram_get_idstr(block),
+                    sizeof(info->idstr));
+    g_assert(len < sizeof(info->idstr));
 }
 
 static void free_ramblock_dirty_info(struct RamblockDirtyInfo *infos, int count)
@@ -609,9 +616,12 @@ static void calculate_dirtyrate_dirty_bitmap(struct DirtyRateConfig config)
 {
     int64_t start_time;
     DirtyPageRecord dirty_pages;
+    Error *local_err = NULL;
 
-    qemu_mutex_lock_iothread();
-    memory_global_dirty_log_start(GLOBAL_DIRTY_DIRTY_RATE);
+    bql_lock();
+    if (!memory_global_dirty_log_start(GLOBAL_DIRTY_DIRTY_RATE, &local_err)) {
+        error_report_err(local_err);
+    }
 
     /*
      * 1'round of log sync may return all 1 bits with
@@ -627,7 +637,7 @@ static void calculate_dirtyrate_dirty_bitmap(struct DirtyRateConfig config)
      * KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE cap is enabled.
      */
     dirtyrate_manual_reset_protect();
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
 
     record_dirtypages_bitmap(&dirty_pages, true);
 
@@ -833,8 +843,9 @@ void qmp_calc_dirty_rate(int64_t calc_time,
 
     init_dirtyrate_stat(config);
 
-    qemu_thread_create(&thread, "get_dirtyrate", get_dirtyrate_thread,
-                       (void *)&config, QEMU_THREAD_DETACHED);
+    qemu_thread_create(&thread, MIGRATION_THREAD_DIRTY_RATE,
+                       get_dirtyrate_thread, (void *)&config,
+                       QEMU_THREAD_DETACHED);
 }
 
 

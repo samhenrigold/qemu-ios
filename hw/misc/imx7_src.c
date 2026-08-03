@@ -75,7 +75,7 @@ static const char *imx7_src_reg_name(uint32_t reg)
     case SRC_GPR10:
         return "SRC_GPR10";
     default:
-        sprintf(unknown, "%u ?", reg);
+        snprintf(unknown, sizeof(unknown), "%u ?", reg);
         return unknown;
     }
 }
@@ -84,7 +84,7 @@ static const VMStateDescription vmstate_imx7_src = {
     .name = TYPE_IMX7_SRC,
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, IMX7SRCState, SRC_MAX),
         VMSTATE_END_OF_LIST()
     },
@@ -136,7 +136,7 @@ static void imx7_clear_reset_bit(CPUState *cpu, run_on_cpu_data data)
     struct SRCSCRResetInfo *ri = data.host_ptr;
     IMX7SRCState *s = ri->s;
 
-    assert(qemu_mutex_iothread_locked());
+    assert(bql_locked());
 
     s->regs[SRC_A7RCR0] = deposit32(s->regs[SRC_A7RCR0], ri->reset_bit, 1, 0);
 
@@ -256,7 +256,7 @@ static void imx7_src_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = imx7_src_realize;
-    dc->reset = imx7_src_reset;
+    device_class_set_legacy_reset(dc, imx7_src_reset);
     dc->vmsd = &vmstate_imx7_src;
     dc->desc = "i.MX6 System Reset Controller";
 }

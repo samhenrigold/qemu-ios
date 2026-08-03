@@ -27,7 +27,7 @@
 #include "hw/arm/boot.h"
 #include "exec/address-spaces.h"
 #include "hw/misc/unimp.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "qemu/error-report.h"
 #include "hw/platform-bus.h"
 #include "hw/arm/ipod_touch_2g.h"

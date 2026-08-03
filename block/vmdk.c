@@ -26,9 +26,8 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "block/block_int.h"
-#include "sysemu/block-backend.h"
-#include "qapi/qmp/qdict.h"
-#include "qapi/qmp/qerror.h"
+#include "system/block-backend.h"
+#include "qobject/qdict.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "qemu/option.h"
@@ -272,7 +271,7 @@ static void vmdk_free_extents(BlockDriverState *bs)
     BDRVVmdkState *s = bs->opaque;
     VmdkExtent *e;
 
-    bdrv_graph_wrlock(NULL);
+    bdrv_graph_wrlock();
     for (i = 0; i < s->num_extents; i++) {
         e = &s->extents[i];
         g_free(e->l1_table);
@@ -283,7 +282,7 @@ static void vmdk_free_extents(BlockDriverState *bs)
             bdrv_unref_child(bs, e->file);
         }
     }
-    bdrv_graph_wrunlock(NULL);
+    bdrv_graph_wrunlock();
 
     g_free(s->extents);
 }
@@ -1147,6 +1146,7 @@ static int GRAPH_RDLOCK
 vmdk_parse_extents(const char *desc, BlockDriverState *bs, QDict *options,
                    Error **errp)
 {
+    ERRP_GUARD();
     int ret;
     int matches;
     char access[11];
@@ -1247,9 +1247,9 @@ vmdk_parse_extents(const char *desc, BlockDriverState *bs, QDict *options,
                             0, 0, 0, 0, 0, &extent, errp);
             if (ret < 0) {
                 bdrv_graph_rdunlock_main_loop();
-                bdrv_graph_wrlock(NULL);
+                bdrv_graph_wrlock();
                 bdrv_unref_child(bs, extent_file);
-                bdrv_graph_wrunlock(NULL);
+                bdrv_graph_wrunlock();
                 bdrv_graph_rdlock_main_loop();
                 goto out;
             }
@@ -1266,9 +1266,9 @@ vmdk_parse_extents(const char *desc, BlockDriverState *bs, QDict *options,
             g_free(buf);
             if (ret) {
                 bdrv_graph_rdunlock_main_loop();
-                bdrv_graph_wrlock(NULL);
+                bdrv_graph_wrlock();
                 bdrv_unref_child(bs, extent_file);
-                bdrv_graph_wrunlock(NULL);
+                bdrv_graph_wrunlock();
                 bdrv_graph_rdlock_main_loop();
                 goto out;
             }
@@ -1277,9 +1277,9 @@ vmdk_parse_extents(const char *desc, BlockDriverState *bs, QDict *options,
             ret = vmdk_open_se_sparse(bs, extent_file, bs->open_flags, errp);
             if (ret) {
                 bdrv_graph_rdunlock_main_loop();
-                bdrv_graph_wrlock(NULL);
+                bdrv_graph_wrlock();
                 bdrv_unref_child(bs, extent_file);
-                bdrv_graph_wrunlock(NULL);
+                bdrv_graph_wrunlock();
                 bdrv_graph_rdlock_main_loop();
                 goto out;
             }
@@ -1287,9 +1287,9 @@ vmdk_parse_extents(const char *desc, BlockDriverState *bs, QDict *options,
         } else {
             error_setg(errp, "Unsupported extent type '%s'", type);
             bdrv_graph_rdunlock_main_loop();
-            bdrv_graph_wrlock(NULL);
+            bdrv_graph_wrlock();
             bdrv_unref_child(bs, extent_file);
-            bdrv_graph_wrunlock(NULL);
+            bdrv_graph_wrunlock();
             bdrv_graph_rdlock_main_loop();
             ret = -ENOTSUP;
             goto out;
@@ -2277,12 +2277,12 @@ vmdk_init_extent(BlockBackend *blk, int64_t filesize, bool flat, bool compress,
     /* write all the data */
     ret = blk_co_pwrite(blk, 0, sizeof(magic), &magic, 0);
     if (ret < 0) {
-        error_setg(errp, QERR_IO_ERROR);
+        error_setg_errno(errp, -ret, "failed to write VMDK magic");
         goto exit;
     }
     ret = blk_co_pwrite(blk, sizeof(magic), sizeof(header), &header, 0);
     if (ret < 0) {
-        error_setg(errp, QERR_IO_ERROR);
+        error_setg_errno(errp, -ret, "failed to write VMDK header");
         goto exit;
     }
 
@@ -2302,7 +2302,7 @@ vmdk_init_extent(BlockBackend *blk, int64_t filesize, bool flat, bool compress,
     ret = blk_co_pwrite(blk, le64_to_cpu(header.rgd_offset) * BDRV_SECTOR_SIZE,
                         gd_buf_size, gd_buf, 0);
     if (ret < 0) {
-        error_setg(errp, QERR_IO_ERROR);
+        error_setg_errno(errp, -ret, "failed to write VMDK grain directory");
         goto exit;
     }
 
@@ -2314,7 +2314,8 @@ vmdk_init_extent(BlockBackend *blk, int64_t filesize, bool flat, bool compress,
     ret = blk_co_pwrite(blk, le64_to_cpu(header.gd_offset) * BDRV_SECTOR_SIZE,
                         gd_buf_size, gd_buf, 0);
     if (ret < 0) {
-        error_setg(errp, QERR_IO_ERROR);
+        error_setg_errno(errp, -ret,
+                         "failed to write VMDK backup grain directory");
     }
 
     ret = 0;

@@ -526,7 +526,7 @@ static const VMStateDescription vmstate_gpadl = {
     .name = "vmbus/gpadl",
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(id, VMBusGpadl),
         VMSTATE_UINT32(child_relid, VMBusGpadl),
         VMSTATE_UINT32(num_gfns, VMBusGpadl),
@@ -1489,7 +1489,7 @@ static const VMStateDescription vmstate_channel = {
     .version_id = 0,
     .minimum_version_id = 0,
     .post_load = channel_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(id, VMBusChannel),
         VMSTATE_UINT16(subchan_idx, VMBusChannel),
         VMSTATE_UINT32(open_id, VMBusChannel),
@@ -1874,7 +1874,7 @@ static void send_create_gpadl(VMBus *vmbus)
         }
     }
 
-    assert(false);
+    g_assert_not_reached();
 }
 
 static bool complete_create_gpadl(VMBus *vmbus)
@@ -1889,8 +1889,7 @@ static bool complete_create_gpadl(VMBus *vmbus)
         }
     }
 
-    assert(false);
-    return false;
+    g_assert_not_reached();
 }
 
 static void handle_gpadl_teardown(VMBus *vmbus,
@@ -1931,7 +1930,7 @@ static void send_teardown_gpadl(VMBus *vmbus)
         }
     }
 
-    assert(false);
+    g_assert_not_reached();
 }
 
 static bool complete_teardown_gpadl(VMBus *vmbus)
@@ -1946,8 +1945,7 @@ static bool complete_teardown_gpadl(VMBus *vmbus)
         }
     }
 
-    assert(false);
-    return false;
+    g_assert_not_reached();
 }
 
 static void handle_open_channel(VMBus *vmbus, vmbus_message_open_channel *msg,
@@ -1996,7 +1994,7 @@ static void send_open_channel(VMBus *vmbus)
         }
     }
 
-    assert(false);
+    g_assert_not_reached();
 }
 
 static bool complete_open_channel(VMBus *vmbus)
@@ -2020,8 +2018,7 @@ static bool complete_open_channel(VMBus *vmbus)
         }
     }
 
-    assert(false);
-    return false;
+    g_assert_not_reached();
 }
 
 static void vdev_reset_on_close(VMBusDevice *vdev)
@@ -2349,9 +2346,8 @@ static void vmbus_dev_unrealize(DeviceState *dev)
     free_channels(vdev);
 }
 
-static Property vmbus_dev_props[] = {
+static const Property vmbus_dev_props[] = {
     DEFINE_PROP_UUID("instanceid", VMBusDevice, instanceid),
-    DEFINE_PROP_END_OF_LIST()
 };
 
 
@@ -2362,7 +2358,7 @@ static void vmbus_dev_class_init(ObjectClass *klass, void *data)
     kdev->bus_type = TYPE_VMBUS;
     kdev->realize = vmbus_dev_realize;
     kdev->unrealize = vmbus_dev_unrealize;
-    kdev->reset = vmbus_dev_reset;
+    device_class_set_legacy_reset(kdev, vmbus_dev_reset);
 }
 
 static void vmbus_dev_instance_init(Object *obj)
@@ -2380,7 +2376,7 @@ const VMStateDescription vmstate_vmbus_dev = {
     .name = TYPE_VMBUS_DEVICE,
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8_ARRAY(instanceid.data, VMBusDevice, 16),
         VMSTATE_UINT16(num_channels, VMBusDevice),
         VMSTATE_STRUCT_VARRAY_POINTER_UINT16(channels, VMBusDevice,
@@ -2453,9 +2449,9 @@ static void vmbus_unrealize(BusState *bus)
     qemu_mutex_destroy(&vmbus->rx_queue_lock);
 }
 
-static void vmbus_reset(BusState *bus)
+static void vmbus_reset_hold(Object *obj, ResetType type)
 {
-    vmbus_deinit(VMBUS(bus));
+    vmbus_deinit(VMBUS(obj));
 }
 
 static char *vmbus_get_dev_path(DeviceState *dev)
@@ -2476,12 +2472,13 @@ static char *vmbus_get_fw_dev_path(DeviceState *dev)
 static void vmbus_class_init(ObjectClass *klass, void *data)
 {
     BusClass *k = BUS_CLASS(klass);
+    ResettableClass *rc = RESETTABLE_CLASS(klass);
 
     k->get_dev_path = vmbus_get_dev_path;
     k->get_fw_dev_path = vmbus_get_fw_dev_path;
     k->realize = vmbus_realize;
     k->unrealize = vmbus_unrealize;
-    k->reset = vmbus_reset;
+    rc->phases.hold = vmbus_reset_hold;
 }
 
 static int vmbus_pre_load(void *opaque)
@@ -2549,7 +2546,7 @@ static const VMStateDescription vmstate_post_message_input = {
     .name = "vmbus/hyperv_post_message_input",
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         /*
          * skip connection_id and message_type as they are validated before
          * queueing and ignored on dequeueing
@@ -2572,7 +2569,7 @@ static const VMStateDescription vmstate_rx_queue = {
     .version_id = 0,
     .minimum_version_id = 0,
     .needed = vmbus_rx_queue_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(rx_queue_head, VMBus),
         VMSTATE_UINT8(rx_queue_size, VMBus),
         VMSTATE_STRUCT_ARRAY(rx_queue, VMBus,
@@ -2589,7 +2586,7 @@ static const VMStateDescription vmstate_vmbus = {
     .minimum_version_id = 0,
     .pre_load = vmbus_pre_load,
     .post_load = vmbus_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(state, VMBus),
         VMSTATE_UINT32(version, VMBus),
         VMSTATE_UINT32(target_vp, VMBus),
@@ -2598,7 +2595,7 @@ static const VMStateDescription vmstate_vmbus = {
                          vmstate_gpadl, VMBusGpadl, link),
         VMSTATE_END_OF_LIST()
     },
-    .subsections = (const VMStateDescription * []) {
+    .subsections = (const VMStateDescription * const []) {
         &vmstate_rx_queue,
         NULL
     }
@@ -2630,6 +2627,12 @@ static void vmbus_bridge_realize(DeviceState *dev, Error **errp)
         return;
     }
 
+    if (!hyperv_are_vmbus_recommended_features_enabled()) {
+        warn_report("VMBus enabled without the recommended set of Hyper-V features: "
+                    "hv-stimer, hv-vapic and hv-runtime. "
+                    "Some Windows versions might not boot or enable the VMBus device");
+    }
+
     bridge->bus = VMBUS(qbus_new(TYPE_VMBUS, dev, "vmbus"));
 }
 
@@ -2643,15 +2646,14 @@ static const VMStateDescription vmstate_vmbus_bridge = {
     .name = TYPE_VMBUS_BRIDGE,
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_POINTER(bus, VMBusBridge, vmstate_vmbus, VMBus),
         VMSTATE_END_OF_LIST()
     },
 };
 
-static Property vmbus_bridge_props[] = {
+static const Property vmbus_bridge_props[] = {
     DEFINE_PROP_UINT8("irq", VMBusBridge, irq, 7),
-    DEFINE_PROP_END_OF_LIST()
 };
 
 static void vmbus_bridge_class_init(ObjectClass *klass, void *data)

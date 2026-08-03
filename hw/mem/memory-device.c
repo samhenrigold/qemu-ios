@@ -16,7 +16,7 @@
 #include "hw/boards.h"
 #include "qemu/range.h"
 #include "hw/virtio/vhost.h"
-#include "sysemu/kvm.h"
+#include "system/kvm.h"
 #include "exec/address-spaces.h"
 #include "trace.h"
 
@@ -345,7 +345,7 @@ uint64_t get_plugged_memory_size(void)
 }
 
 void memory_device_pre_plug(MemoryDeviceState *md, MachineState *ms,
-                            const uint64_t *legacy_align, Error **errp)
+                            Error **errp)
 {
     const MemoryDeviceClass *mdc = MEMORY_DEVICE_GET_CLASS(md);
     Error *local_err = NULL;
@@ -374,14 +374,24 @@ void memory_device_pre_plug(MemoryDeviceState *md, MachineState *ms,
         goto out;
     }
 
-    if (legacy_align) {
-        align = *legacy_align;
-    } else {
-        if (mdc->get_min_alignment) {
-            align = mdc->get_min_alignment(md);
-        }
-        align = MAX(align, memory_region_get_alignment(mr));
+    /*
+     * We always want the memory region size to be multiples of the memory
+     * region alignment: for example, DIMMs with 1G+1byte size don't make
+     * any sense. Note that we don't check that the size is multiples
+     * of any additional alignment requirements the memory device might
+     * have when it comes to the address in physical address space.
+     */
+    if (!QEMU_IS_ALIGNED(memory_region_size(mr),
+                         memory_region_get_alignment(mr))) {
+        error_setg(errp, "backend memory size must be multiple of 0x%"
+                   PRIx64, memory_region_get_alignment(mr));
+        return;
     }
+
+    if (mdc->get_min_alignment) {
+        align = mdc->get_min_alignment(md);
+    }
+    align = MAX(align, memory_region_get_alignment(mr));
     addr = mdc->get_addr(md);
     addr = memory_device_get_free_addr(ms, !addr ? NULL : &addr, align,
                                        memory_region_size(mr), &local_err);

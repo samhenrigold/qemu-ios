@@ -12,7 +12,7 @@
 #include "hw/irq.h"
 #include "hw/net/mv88w8618_eth.h"
 #include "migration/vmstate.h"
-#include "sysemu/dma.h"
+#include "system/dma.h"
 #include "net/net.h"
 
 #define MP_ETH_SIZE             0x00001000
@@ -358,7 +358,7 @@ static const VMStateDescription mv88w8618_eth_vmsd = {
     .name = "mv88w8618_eth",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(smir, mv88w8618_eth_state),
         VMSTATE_UINT32(icr, mv88w8618_eth_state),
         VMSTATE_UINT32(imr, mv88w8618_eth_state),
@@ -371,11 +371,10 @@ static const VMStateDescription mv88w8618_eth_vmsd = {
     }
 };
 
-static Property mv88w8618_eth_properties[] = {
+static const Property mv88w8618_eth_properties[] = {
     DEFINE_NIC_PROPERTIES(mv88w8618_eth_state, conf),
     DEFINE_PROP_LINK("dma-memory", mv88w8618_eth_state, dma_mr,
                      TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void mv88w8618_eth_class_init(ObjectClass *klass, void *data)

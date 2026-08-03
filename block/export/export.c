@@ -14,8 +14,8 @@
 #include "qemu/osdep.h"
 
 #include "block/block.h"
-#include "sysemu/block-backend.h"
-#include "sysemu/iothread.h"
+#include "system/block-backend.h"
+#include "system/iothread.h"
 #include "block/export.h"
 #include "block/fuse.h"
 #include "block/nbd.h"
@@ -75,6 +75,7 @@ static const BlockExportDriver *blk_exp_find_driver(BlockExportType type)
 BlockExport *blk_exp_add(BlockExportOptions *export, Error **errp)
 {
     bool fixed_iothread = export->has_fixed_iothread && export->fixed_iothread;
+    bool allow_inactive = export->has_allow_inactive && export->allow_inactive;
     const BlockExportDriver *drv;
     BlockExport *exp = NULL;
     BlockDriverState *bs;
@@ -114,7 +115,6 @@ BlockExport *blk_exp_add(BlockExportOptions *export, Error **errp)
     }
 
     ctx = bdrv_get_aio_context(bs);
-    aio_context_acquire(ctx);
 
     if (export->iothread) {
         IOThread *iothread;
@@ -133,22 +133,31 @@ BlockExport *blk_exp_add(BlockExportOptions *export, Error **errp)
         set_context_errp = fixed_iothread ? errp : NULL;
         ret = bdrv_try_change_aio_context(bs, new_ctx, NULL, set_context_errp);
         if (ret == 0) {
-            aio_context_release(ctx);
-            aio_context_acquire(new_ctx);
             ctx = new_ctx;
         } else if (fixed_iothread) {
             goto fail;
         }
     }
 
-    /*
-     * Block exports are used for non-shared storage migration. Make sure
-     * that BDRV_O_INACTIVE is cleared and the image is ready for write
-     * access since the export could be available before migration handover.
-     * ctx was acquired in the caller.
-     */
     bdrv_graph_rdlock_main_loop();
-    bdrv_activate(bs, NULL);
+    if (allow_inactive) {
+        if (!drv->supports_inactive) {
+            error_setg(errp, "Export type does not support inactive exports");
+            bdrv_graph_rdunlock_main_loop();
+            goto fail;
+        }
+    } else {
+        /*
+         * Block exports are used for non-shared storage migration. Make sure
+         * that BDRV_O_INACTIVE is cleared and the image is ready for write
+         * access since the export could be available before migration handover.
+         */
+        ret = bdrv_activate(bs, errp);
+        if (ret < 0) {
+            bdrv_graph_rdunlock_main_loop();
+            goto fail;
+        }
+    }
     bdrv_graph_rdunlock_main_loop();
 
     perm = BLK_PERM_CONSISTENT_READ;
@@ -160,6 +169,9 @@ BlockExport *blk_exp_add(BlockExportOptions *export, Error **errp)
 
     if (!fixed_iothread) {
         blk_set_allow_aio_context_change(blk, true);
+    }
+    if (allow_inactive) {
+        blk_set_force_allow_inactivate(blk);
     }
 
     ret = blk_insert_bs(blk, bs, errp);
@@ -191,8 +203,6 @@ BlockExport *blk_exp_add(BlockExportOptions *export, Error **errp)
     assert(exp->blk != NULL);
 
     QLIST_INSERT_HEAD(&block_exports, exp, next);
-
-    aio_context_release(ctx);
     return exp;
 
 fail:
@@ -200,7 +210,6 @@ fail:
         blk_set_dev_ops(blk, NULL, NULL);
         blk_unref(blk);
     }
-    aio_context_release(ctx);
     if (exp) {
         g_free(exp->id);
         g_free(exp);
@@ -218,9 +227,6 @@ void blk_exp_ref(BlockExport *exp)
 static void blk_exp_delete_bh(void *opaque)
 {
     BlockExport *exp = opaque;
-    AioContext *aio_context = exp->ctx;
-
-    aio_context_acquire(aio_context);
 
     assert(exp->refcount == 0);
     QLIST_REMOVE(exp, next);
@@ -230,8 +236,6 @@ static void blk_exp_delete_bh(void *opaque)
     qapi_event_send_block_export_deleted(exp->id);
     g_free(exp->id);
     g_free(exp);
-
-    aio_context_release(aio_context);
 }
 
 void blk_exp_unref(BlockExport *exp)
@@ -249,22 +253,16 @@ void blk_exp_unref(BlockExport *exp)
  * connections and other internally held references start to shut down. When
  * the function returns, there may still be active references while the export
  * is in the process of shutting down.
- *
- * Acquires exp->ctx internally. Callers must *not* hold the lock.
  */
 void blk_exp_request_shutdown(BlockExport *exp)
 {
-    AioContext *aio_context = exp->ctx;
-
-    aio_context_acquire(aio_context);
-
     /*
      * If the user doesn't own the export any more, it is already shutting
      * down. We must not call .request_shutdown and decrease the refcount a
      * second time.
      */
     if (!exp->user_owned) {
-        goto out;
+        return;
     }
 
     exp->drv->request_shutdown(exp);
@@ -272,9 +270,6 @@ void blk_exp_request_shutdown(BlockExport *exp)
     assert(exp->user_owned);
     exp->user_owned = false;
     blk_exp_unref(exp);
-
-out:
-    aio_context_release(aio_context);
 }
 
 /*

@@ -1080,7 +1080,7 @@ static const VMStateDescription vmstate_synopsys_usb = {
 static void s5l8900_usb_otg_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
-    dc->reset = s5l8900_usb_otg_reset;
+    device_class_set_legacy_reset(dc, s5l8900_usb_otg_reset);
     dc->vmsd = &vmstate_synopsys_usb;
     dc->realize = s5l8900_usb_otg_realize;
 }

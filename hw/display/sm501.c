@@ -29,7 +29,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/usb/hcd-ohci.h"
-#include "hw/char/serial.h"
+#include "hw/char/serial-mm.h"
 #include "ui/console.h"
 #include "hw/sysbus.h"
 #include "migration/vmstate.h"
@@ -1940,7 +1940,7 @@ static const VMStateDescription vmstate_sm501_state = {
     .name = "sm501-state",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(local_mem_size_index, SM501State),
         VMSTATE_UINT32(system_control, SM501State),
         VMSTATE_UINT32(misc_control, SM501State),
@@ -2054,11 +2054,10 @@ static void sm501_realize_sysbus(DeviceState *dev, Error **errp)
     /* TODO : chain irq to IRL */
 }
 
-static Property sm501_sysbus_properties[] = {
+static const Property sm501_sysbus_properties[] = {
     DEFINE_PROP_UINT32("vram-size", SM501SysBusState, vram_size, 0),
     /* this a debug option, prefer PROP_UINT over PROP_BIT for simplicity */
     DEFINE_PROP_UINT8("x-pixman", SM501SysBusState, state.use_pixman, DEFAULT_X_PIXMAN),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void sm501_reset_sysbus(DeviceState *dev)
@@ -2071,7 +2070,7 @@ static const VMStateDescription vmstate_sm501_sysbus = {
     .name = TYPE_SYSBUS_SM501,
     .version_id = 2,
     .minimum_version_id = 2,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(state, SM501SysBusState, 1,
                        vmstate_sm501_state, SM501State),
         VMSTATE_END_OF_LIST()
@@ -2086,7 +2085,7 @@ static void sm501_sysbus_class_init(ObjectClass *klass, void *data)
     set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
     dc->desc = "SM501 Multimedia Companion";
     device_class_set_props(dc, sm501_sysbus_properties);
-    dc->reset = sm501_reset_sysbus;
+    device_class_set_legacy_reset(dc, sm501_reset_sysbus);
     dc->vmsd = &vmstate_sm501_sysbus;
 }
 
@@ -2143,10 +2142,9 @@ static void sm501_realize_pci(PCIDevice *dev, Error **errp)
                      &s->state.mmio_region);
 }
 
-static Property sm501_pci_properties[] = {
+static const Property sm501_pci_properties[] = {
     DEFINE_PROP_UINT32("vram-size", SM501PCIState, vram_size, 64 * MiB),
     DEFINE_PROP_UINT8("x-pixman", SM501PCIState, state.use_pixman, DEFAULT_X_PIXMAN),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void sm501_reset_pci(DeviceState *dev)
@@ -2161,7 +2159,7 @@ static const VMStateDescription vmstate_sm501_pci = {
     .name = TYPE_PCI_SM501,
     .version_id = 2,
     .minimum_version_id = 2,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SM501PCIState),
         VMSTATE_STRUCT(state, SM501PCIState, 1,
                        vmstate_sm501_state, SM501State),
@@ -2181,7 +2179,7 @@ static void sm501_pci_class_init(ObjectClass *klass, void *data)
     set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
     dc->desc = "SM501 Display Controller";
     device_class_set_props(dc, sm501_pci_properties);
-    dc->reset = sm501_reset_pci;
+    device_class_set_legacy_reset(dc, sm501_reset_pci);
     dc->hotpluggable = false;
     dc->vmsd = &vmstate_sm501_pci;
 }

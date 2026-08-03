@@ -77,7 +77,7 @@ static const VMStateDescription vmstate_ISAIPMIBTDevice = {
      * because it used VMSTATE_VBUFFER_UINT32, but it did not transfer
      * the buffer length, so random things would happen.
      */
-    .fields      = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(bt, ISAIPMIBTDevice, 1, vmstate_IPMIBT, IPMIBT),
         VMSTATE_END_OF_LIST()
     }
@@ -135,10 +135,9 @@ static void *isa_ipmi_bt_get_backend_data(IPMIInterface *ii)
     return &iib->bt;
 }
 
-static Property ipmi_isa_properties[] = {
+static const Property ipmi_isa_properties[] = {
     DEFINE_PROP_UINT32("ioport", ISAIPMIBTDevice, bt.io_base,  0xe4),
     DEFINE_PROP_INT32("irq",   ISAIPMIBTDevice, isairq,  5),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void isa_ipmi_bt_class_init(ObjectClass *oc, void *data)
