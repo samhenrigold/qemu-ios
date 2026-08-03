@@ -46,6 +46,15 @@ static int lcd_vsync_legacy(void)
     return on;
 }
 
+static int lcd_vsync_trace(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_LCD_VSYNC_TRACE") ? 1 : 0;
+    }
+    return on;
+}
+
 static void lcd_ft(const char *ev, uint32_t arg)
 {
     if (!lcd_frametrace()) {
@@ -545,6 +554,46 @@ static void refresh_timer_tick(void *opaque)
 
     if (lcd_frametrace()) {
         lcd_ft("vsync", (uint32_t)(now - s->next_vsync));
+    }
+
+    /*
+     * IT_LCD_VSYNC_TRACE: is the frame interrupt actually being delivered?
+     *
+     * The raise below is gated on render being EXACTLY 1. If the guest ever
+     * leaves any other value in that register the frame interrupt stops for as
+     * long as it stays there, and nothing says so -- the guest's display link
+     * simply never fires again and its redraw only happens when something else
+     * wakes the run loop, which is what a touch does. That is a very specific
+     * symptom, so count it rather than reason about it: how many ticks raised,
+     * how many were suppressed, and which values were in the register.
+     */
+    if (lcd_vsync_trace()) {
+        static uint64_t raised, suppressed;
+        static uint32_t seen[8];
+        static unsigned n_seen;
+        unsigned i;
+
+        if (s->render == 0x1) {
+            raised++;
+        } else {
+            suppressed++;
+        }
+        for (i = 0; i < n_seen; i++) {
+            if (seen[i] == s->render) {
+                break;
+            }
+        }
+        if (i == n_seen && n_seen < ARRAY_SIZE(seen)) {
+            seen[n_seen++] = s->render;
+            fprintf(stderr, "[LCDV] render register now 0x%08x -- frame "
+                    "interrupt %s\n", (unsigned)s->render,
+                    s->render == 0x1 ? "RAISED each vsync" : "SUPPRESSED");
+        }
+        if (((raised + suppressed) % 300) == 0) {
+            fprintf(stderr, "[LCDV] vsync ticks: %" PRIu64 " raised, %" PRIu64
+                    " suppressed (render=0x%08x)\n",
+                    raised, suppressed, (unsigned)s->render);
+        }
     }
 
     if (s->render == 0x1)
