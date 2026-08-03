@@ -1,12 +1,40 @@
 #include "hw/arm/ipod_touch_timer.h"
 #include "migration/vmstate.h"
 
+/*
+ * freq_out is 10 MHz here while the tick counter at TIMER_TICKSHIGH/LOW runs at
+ * SYSCLK/2 = 6 MHz, and they are one hardware block -- so a count the guest
+ * derives from that counter and loads into timer 4 expires after only 60% of
+ * the time it asked for. The mismatch is real, and the guest's own counts say
+ * so: its commonest non-trivial loads are 5945/5939/5933 and 119550, which are
+ * 0.99 ms and 19.9 ms at 6 MHz (a 1 ms and a 20 ms deadline, less the time
+ * already elapsed) and nothing in particular at 10 MHz. With 6 MHz the guest
+ * also re-arms 19% less often, which is what you would expect if the early
+ * expiries were being retried.
+ *
+ * IT DOES NOT FIX ANYTHING VISIBLE, AND IT MADE FRAME DELIVERY WORSE. Measured
+ * (2026-08-03, six app-launch/close transitions per arm, paired and
+ * interleaved, identical warm overlay, host load 9-11): frames landing within
+ * +/-2 ms of the 16.67 ms cadence fell from 93.4%/92.1% to 85.5%/84.1%, and
+ * frame interrupts more than 1 ms late rose from 10.0%/13.4% to 18.1%/17.1%.
+ * The guest's surplus early wakeups appear to keep QEMU's main loop responsive;
+ * take them away and the vsync timer is dispatched later and more raggedly.
+ * So the correct clock is left uncorrected on purpose, with the evidence
+ * written down, rather than traded for measurably worse animation. Anyone
+ * fixing it properly needs to deal with the dispatch latency first.
+ */
 static void s5l8900_st_update(IPodTouchTimerState *s)
 {
-    s->freq_out = 1000000000 / 100; 
+    s->freq_out = 1000000000 / 100;
     s->tick_interval = /* bcount1 * get_ticks / freq  + ((bcount2 * get_ticks / freq)*/
     muldiv64((s->bcount1 < 1000) ? 1000 : s->bcount1, NANOSECONDS_PER_SECOND, s->freq_out);
     s->next_planned_tick = 0;
+    if (getenv("IT_TIMER_TRACE")) {
+        fprintf(stderr, "[TIMER] update: bcount1=%u bcount2=%u freq_out=%u "
+                "-> tick_interval=%" PRIu64 " ns (%.3f Hz)\n",
+                s->bcount1, s->bcount2, s->freq_out, s->tick_interval,
+                s->tick_interval ? 1e9 / (double)s->tick_interval : 0.0);
+    }
 }
 
 static void s5l8900_st_set_timer(IPodTouchTimerState *s)
@@ -76,16 +104,60 @@ static void s5l8900_timer1_write(void *opaque, hwaddr addr, uint64_t value, unsi
     }
 }
 
+/*
+ * IT_TIMER_TRACE: is the guest's 64-bit counter read ever torn?
+ *
+ * TIMER_TICKSHIGH latches BOTH halves as a side effect of reading high, so a
+ * guest that reads LOW first and HIGH second recombines two words sampled at
+ * different instants -- and one that reads only LOW gets a word from whenever
+ * HIGH was last read, which on a free-running counter is arbitrarily stale.
+ * Either would make every deadline the guest computes off mach_absolute_time
+ * unreliable. Rather than assume, count it: `torn` is every read of LOW that
+ * was not immediately preceded by a read of HIGH.
+ *
+ * ANSWER: never. 8.24 million counter reads across a boot, an unlock and a run
+ * of home-screen transitions on 3.1.3 gave torn=0, in a steady 2:1 ratio of
+ * high to low -- the guest reads high, low, high, the classic rollover-safe
+ * idiom, and since reading high latches both halves the pair it gets is always
+ * coherent. The latch is ugly but it is not a source of bad guest timekeeping.
+ */
+static void timer_count_order(bool high)
+{
+    static bool prev_high;
+    static uint64_t nhigh, nlow, torn;
+
+    if (high) {
+        nhigh++;
+    } else {
+        nlow++;
+        if (!prev_high) {
+            torn++;
+        }
+    }
+    prev_high = high;
+    if (((nhigh + nlow) % 20000) == 0) {
+        fprintf(stderr, "[TIMER] tickshigh=%" PRIu64 " tickslow=%" PRIu64
+                " torn=%" PRIu64 "\n", nhigh, nlow, torn);
+    }
+}
+
 static uint64_t s5l8900_timer1_read(void *opaque, hwaddr addr, unsigned size)
 {
     //fprintf(stderr, "%s: read from location 0x%08x\n", __func__, addr);
     IPodTouchTimerState *s = (struct IPodTouchTimerState *) opaque;
     uint64_t elapsed_ns, ticks;
 
+    if (getenv("IT_TIMER_TRACE") &&
+        (addr == TIMER_TICKSHIGH || addr == TIMER_TICKSLOW)) {
+        timer_count_order(addr == TIMER_TICKSHIGH);
+    }
+
     switch (addr) {
         case TIMER_TICKSHIGH:    // needs to be fixed so that read from low first works as well
 
-            elapsed_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 2; // the timer ticks twice as slow as the CPU frequency in the kernel
+            /* SYSCLK / 2 = 6 MHz. NOT the rate freq_out counts the timer-4
+             * deadline down at; see the note above s5l8900_st_update(). */
+            elapsed_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 2;
             ticks = clock_ns_to_ticks(s->sysclk, elapsed_ns);
             //printf("TICKS: %lld\n", ticks);
             s->ticks_high = (ticks >> 32);
