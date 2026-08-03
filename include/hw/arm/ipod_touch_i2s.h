@@ -101,15 +101,35 @@
  * far side of the ring, and it exists because CoreAudio's IOProc plays nothing
  * at all in any period where less than one device buffer is queued.
  *
- * 8192 bytes is 46.4 ms, which is what QEMU's own pipeline holds for this
- * backend: the mixer buffer and the CoreAudio ring are both hw->samples =
- * buffer_count(4) x 512 frames. Handing over exactly that fills both in one go
- * and leaves the sink four device buffers deep instead of the measured 0.5. It
- * is also the added output latency, once at the start of each sound.
+ * 32768 bytes is 185.8 ms. It was 8192 (46.4 ms, exactly what QEMU's own
+ * pipeline holds for this backend at the default buffer-count of 4) and that
+ * was measured to be not enough on the machine this runs on: on nand-appsync3
+ * with the user's own warm overlay, under load, the sink still starved inside
+ * the clip in 3 of 3 runs and the host added 209 ms of holes.
+ *
+ * THE PREBUFFER ALONE CANNOT FIX IT, and this is the part that took a second
+ * round to see. The reservoir lives in OUR ring, and while the QEMU main loop is
+ * stalled nothing moves out of that ring either -- so what a main-loop stall
+ * actually eats is the buffering DOWNSTREAM of us, and that is capped at
+ * hw->samples = out.buffer-count x 512 frames = 46 ms at the default count of 4.
+ * The prebuffer's job is to FILL that capacity; the capacity itself has to come
+ * from the audiodev. Both are needed and the measurement says so -- three
+ * matched pairs, live CoreAudio device, one variable at a time:
+ *
+ *     defaults (8192 / count 4)          3 of 3 clips damaged by the host,
+ *                                        209 ms inserted, 18 starvations
+ *     out.buffer-count=16 alone          0 and 8 starvations across two runs
+ *     prebuffer 32768 alone              1 hole, 1 starvation
+ *     32768 + out.buffer-count=16        0 of 3 damaged, 0 starvations
+ *
+ * So run-ios3.sh --sound must pass `-audio driver=coreaudio,out.buffer-count=16`,
+ * and it now does. The cost of this constant is that much added output latency,
+ * once at the start of each sound.
+ *
  * IT_I2S_PREBUFFER_BYTES overrides it; 0 restores the old just-in-time
  * behaviour for A/B.
  */
-#define IT_I2S_PREBUFFER_BYTES_DEFAULT 8192
+#define IT_I2S_PREBUFFER_BYTES_DEFAULT 32768
 
 /* Never let the prebuffer be the reason a sound does not play. */
 #define IT_I2S_PREFILL_DEADLINE_NS (250 * 1000 * 1000)
