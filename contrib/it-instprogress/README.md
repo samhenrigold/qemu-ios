@@ -205,39 +205,124 @@ it needed no signature at all — `amfi_allow_any_signature=1
 cs_enforcement_disable=1` are in the boot args, which `run-ios3.sh` sets by
 default.
 
-What is left is mechanical, and none of it needs the archive format
-reverse-engineered, because the dylib builds real objects in the process that
-already has the classes and lets `NSKeyedArchiver` do the encoding:
+## The recipe for the filling bar
 
-* `-[ISDownload uniqueID]` is `[NSString stringWithFormat:@"%llu",
-  [metadata itemIdentifier]]`, and `+[SBDownloadingIcon
-  displayIdentifierForDownload:]` prefixes that with `com.apple.downloadingicon-`
-  — so the dylib and `sbdlicon` can be made to name the same icon.
-* `ISDownloadMetadata` is `initWithDictionary:` over an ordinary NSDictionary of
-  iTunes manifest keys: `songId` (the item identifier), `itemName` (title),
-  `bundle-id`, `kind`, `downloadKey`.
-* `ISOperationProgress` has `init`, `setCurrentValue:`, `setMaxValue:`,
-  `setNormalizedCurrentValue:`, `setNormalizedMaxValue:` and
-  `setOperationType:`; `ISDownloadStatus` has `setProgress:`, `setPaused:`,
-  `setFailed:`. All exported, all `NSCoding`.
-* The dylib can be written in the same plain-C, `dlopen` + `objc_msgSend` style
-  as `contrib/it-pasteboard/pbset.c`, so no ObjC toolchain work is needed.
+All of this is static analysis of the 3.1.3 `iTunesStore.framework` and
+`AppSupport.framework` armv6 slices from the SDK. Nothing below has been run.
+None of it needs the keyed-archive format reverse engineered: the dylib is
+inside the process that already has the classes, so it builds real objects and
+lets `NSKeyedArchiver` encode them.
 
-Progress source: `ideviceinstaller` prints real percentages on stdout, and the
-progress is a current/max integer pair, so the host figure maps onto it directly
-with no interpolation. `[progress operationType] == 1` is what flips the label
-to "Installing…".
+### The chain, end to end
 
-The one thing that stays unproven until it is built: whether SpringBoard's
-already-checked-in `ISDownloadQueue` reacts to a notification posted this way.
-The design says it should — clients re-check-in on
-`CPDistributedNotificationCenterDidRestartNotification-<name>`, so ordering is
-not a hazard — but that is reasoning, not a measurement, and it should be the
-first thing the next attempt puts on screen.
+    itunesstored              -[CPDistributedNotificationCenter postNotificationName:userInfo:]
+      -> mach msg to each checked-in client
+    SpringBoard               -[CPDistributedNotificationCenter deliverNotification:userInfo:]
+                              = [[NSNotificationCenter defaultCenter]
+                                   postNotificationName:name object:self userInfo:userInfo]
+      -> -[ISDownloadQueue _downloadsAdded:] / _downloadStatusChanged: / ...
+      -> -[SBDownloadController downloadQueue:changedWithRemovals:disappearances:]
+      -> -[SBDownloadingIcon downloadStatusChanged:]  ->  setProgress:
+
+The middle step is the one worth knowing: the queue does **not** observe the
+distributed center directly. `-[ISDownloadQueue initWithAssetTypes:]` calls
+`ISStartDistributedNotificationCenter()` — which is just `[[centerNamed:
+@"com.apple.iTunesStore.daemon-notifications"]
+startDeliveringNotificationsToMainThread]` — and then registers ordinary
+`NSNotificationCenter defaultCenter` observers. AppSupport re-posts each
+distributed notification locally under the same name and userInfo. So the
+distributed post is the only thing to get right; everything after it is a local
+notification.
+
+### Sequencing, which is not optional
+
+`_downloadStatusChanged:` reads the item id, finds the download by
+`_indexOfDownloadWithIdentifier:` and calls `setStatus:` on **the download
+already in the queue**. So `ISNotificationDownloadsAdded` has to come first and
+the item identifiers have to match; a status for an unknown item has nothing to
+land on.
+
+| Post | userInfo |
+| --- | --- |
+| `ISNotificationDownloadsAdded` | `param` = archived `NSArray<ISDownload>`, `indexSet` = archived `NSIndexSet`. **Both required** — the handler unarchives each and calls `insertObjects:atIndexes:`, which throws on a nil index set. |
+| `ISNotificationDownloadStatusChanged` | `item-id` = plain `NSNumber` (read with `unsignedLongLongValue`, *not* archived), `param` = archived `ISDownloadStatus` |
+| `ISNotificationDownloadsRemoved` | `param`, read with a plain `objectForKey:` |
+
+### Who actually moves the bar
+
+`SBDownloadController` does **not** implement
+`downloadQueue:downloadStatesChangedAtIndexes:`, so that delegate call is
+skipped. The bar moves through the other branch: `_downloadStatusChanged:` ends
+with `[[download delegate] downloadStatusChanged:download]`, and the download's
+delegate is the `SBDownloadingIcon` itself, set by `-[SBDownloadingIcon
+setDownload:]`. Good news for us — it means only the download object and its
+status matter, not the queue delegate.
+
+### The objects
+
+`ISDownloadMetadata` is `initWithDictionary:` over a plain `NSDictionary` of
+iTunes manifest keys. Getters that take several keys try them in this order and
+use the first present:
+
+| property | dictionary key(s) |
+| --- | --- |
+| `itemIdentifier` (`unsigned long long`) | `songId`, then `item-id` |
+| `title` | `itemName`, then `title` |
+| `bundleID` | `bundle-id`, then `softwareVersionBundleId` |
+| `subtitle` | `artistName` |
+| `artistName` | `artistName` |
+| `transactionID` | `download-id` |
+| `preOrderIdentifier` | `preorder-id` |
+| `kind` / `genre` / `sinfs` / `playlistName` / `isRental` / `downloadKey` | same name as the property |
+| `durationInMS` | `duration` |
+| `artworkIsPrerendered` | `softwareIconNeedsShine` |
+| `displayableArtworkURL` | `artwork-urls` dict, then `softwareIcon57x57URL`, then `icon-url` |
+
+`itemIdentifier` is the one that matters: `-[ISDownload uniqueID]` is
+`[NSString stringWithFormat:@"%llu", [metadata itemIdentifier]]`, and
+`+[SBDownloadingIcon displayIdentifierForDownload:]` prefixes it with
+`com.apple.downloadingicon-` — the same identifier space `sbdlicon` already
+uses, so the dylib and the placeholder can be made to name one icon.
+
+`ISOperationProgress` — ivars and setters, all public, all `NSCoding`:
+
+    long long  currentValue            setCurrentValue:
+    long long  maxValue                setMaxValue:
+    long long  normalizedCurrentValue  setNormalizedCurrentValue:
+    long long  normalizedMaxValue      setNormalizedMaxValue:
+    int        operationType           setOperationType:
+    int        units                   setUnits:
+    double     changeRate, estimatedTimeRemaining
+    BOOL       canPause
+
+**The trap is in the normalized pair.** `-init` sets both to **-1**, and the
+getters return the raw `currentValue`/`maxValue` when the normalized value is
+negative. So set `currentValue`/`maxValue` and leave the normalized pair alone.
+And `maxValue` must be non-zero in the very first status: `-[SBDownloadingIcon
+downloadStatusChanged:]` computes `normalizedCurrentValue / normalizedMaxValue`
+as a float with no guard, so 0/0 is a NaN straight into `setProgress:`.
+
+`operationType == 1` is what sets `_installing` and flips the label from
+"Downloading…" to "Installing…". `ISDownloadStatus` has `setProgress:`,
+`setPaused:`, `setFailed:`, `setError:`.
+
+### Shape of the work
+
+The dylib can be plain C in the `contrib/it-pasteboard/pbset.c` style —
+`dlopen` + `objc_msgSend` — so there is no ObjC toolchain work. Progress source:
+`ideviceinstaller` prints real percentages on stdout and the progress is a
+current/max integer pair, so the host figure maps straight on with no
+interpolation.
+
+**What is still unproven**, and should be the first thing on screen: that
+SpringBoard's already-checked-in `ISDownloadQueue` reacts to a post made this
+way. The design says it should — clients re-check-in on
+`CPDistributedNotificationCenterDidRestartNotification-<name>`, so a server that
+appears late is not a hazard — but that is reasoning, not a measurement.
 
 **Shipping it needs the plist edit baked into a NAND image**, which is a
 distribution decision rather than a code one: the placeholder works on the
-user's existing images as-is, and the progress bar would only appear on a
+user's existing images as they are, and the progress bar would only appear on a
 rebuilt one.
 
 ## Building
