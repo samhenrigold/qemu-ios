@@ -864,6 +864,25 @@ void ipod_touch_multitouch_set_finger(IPodTouchMultitouchState *s, int slot,
     }
     f = &s->fingers[slot];
 
+    /*
+     * A contact that leaves the panel ends, it does not slide along the bezel.
+     * The pointer paths cannot produce this -- QEMU clamps absolute axes to the
+     * window -- but synthesised multi-touch can: a pinch driven from a single
+     * host pointer pushes its mirrored second finger off the edge long before
+     * the real one gets there. The original iPhone Simulator made this an
+     * explicit transition (_dragWentOffScreen) rather than leaving a stuck
+     * contact, and a stuck contact here is worse than a lost one: the guest
+     * would keep a finger down that nothing can ever lift.
+     */
+    if (down && (x < 0.0f || x > 1.0f || y < 0.0f || y > 1.0f)) {
+        if (f->phase != MT_FINGER_DOWN) {
+            return;
+        }
+        down = false;
+        x = f->x;
+        y = f->y;
+    }
+
     if (slot == 0) {
         s->touch_x = x;
         s->touch_y = y;
