@@ -62,7 +62,7 @@
 #if (defined(TARGET_I386) && defined(TARGET_ABI32))                     \
     || (defined(TARGET_ARM) && defined(TARGET_ABI32))                   \
     || (defined(TARGET_SPARC) && defined(TARGET_ABI32))                 \
-    || defined(TARGET_M68K) || defined(TARGET_SH4) || defined(TARGET_CRIS)
+    || defined(TARGET_M68K) || defined(TARGET_SH4)
 /* 16 bit uid wrappers emulation */
 #define USE_UID16
 #define target_id uint16_t
@@ -71,9 +71,9 @@
 #endif
 
 #if defined(TARGET_I386) || defined(TARGET_ARM) || defined(TARGET_SH4)  \
-    || defined(TARGET_M68K) || defined(TARGET_CRIS)                     \
+    || defined(TARGET_M68K)                                             \
     || defined(TARGET_S390X) || defined(TARGET_OPENRISC)                \
-    || defined(TARGET_NIOS2) || defined(TARGET_RISCV)                   \
+    || defined(TARGET_RISCV)                                            \
     || defined(TARGET_XTENSA) || defined(TARGET_LOONGARCH64)
 
 #define TARGET_IOC_SIZEBITS     14
@@ -462,7 +462,7 @@ typedef struct {
     abi_ulong sig[TARGET_NSIG_WORDS];
 } target_sigset_t;
 
-#ifdef BSWAP_NEEDED
+#if HOST_BIG_ENDIAN != TARGET_BIG_ENDIAN
 static inline void tswap_sigset(target_sigset_t *d, const target_sigset_t *s)
 {
     int i;
@@ -943,6 +943,10 @@ struct target_rtc_pll_info {
 #define TARGET_FICLONE    TARGET_IOW(0x94, 9, abi_int)
 #define TARGET_FICLONERANGE TARGET_IOW(0x94, 13, struct file_clone_range)
 
+#define TARGET_FIFREEZE    TARGET_IOWR('X', 119, abi_int)
+#define TARGET_FITHAW    TARGET_IOWR('X', 120, abi_int)
+#define TARGET_FITRIM    TARGET_IOWR('X', 121, struct fstrim_range)
+
 /*
  * Note that the ioctl numbers for FS_IOC_<GET|SET><FLAGS|VERSION>
  * claim type "long" but the actual type used by the kernel is "int".
@@ -1230,8 +1234,7 @@ struct target_winsize {
 #include "target_mman.h"
 
 #if (defined(TARGET_I386) && defined(TARGET_ABI32))     \
-    || (defined(TARGET_ARM) && defined(TARGET_ABI32))   \
-    || defined(TARGET_CRIS)
+    || (defined(TARGET_ARM) && defined(TARGET_ABI32))
 #define TARGET_STAT_HAVE_NSEC
 struct target_stat {
     abi_ushort st_dev;
@@ -1971,8 +1974,8 @@ struct target_stat64  {
     abi_ulong __unused5;
 };
 
-#elif defined(TARGET_OPENRISC) || defined(TARGET_NIOS2) \
-    || defined(TARGET_RISCV) || defined(TARGET_HEXAGON)
+#elif defined(TARGET_OPENRISC) \
+    || defined(TARGET_RISCV) || defined(TARGET_HEXAGON) || defined(TARGET_LOONGARCH)
 
 /* These are the asm-generic versions of the stat and stat64 structures */
 
@@ -2082,11 +2085,6 @@ struct target_stat64 {
     abi_uint   target_st_ctime_nsec;
     abi_ullong st_ino;
 };
-
-#elif defined(TARGET_LOONGARCH64)
-
-/* LoongArch no newfstatat/fstat syscall. */
-
 #else
 #error unsupported CPU
 #endif
@@ -2624,6 +2622,12 @@ struct target_ucred {
     abi_uint gid;
 };
 
+struct target_in_pktinfo {
+    abi_int               ipi_ifindex;
+    struct target_in_addr ipi_spec_dst;
+    struct target_in_addr ipi_addr;
+};
+
 typedef abi_int target_timer_t;
 
 #define TARGET_SIGEV_MAX_SIZE 64
@@ -2749,5 +2753,30 @@ struct target_sched_attr {
 struct target_sched_param {
     abi_int sched_priority;
 };
+
+/* from kernel's include/uapi/linux/openat2.h */
+struct open_how_ver0 {
+    uint64_t flags;
+    uint64_t mode;
+    uint64_t resolve;
+};
+struct target_open_how_ver0 {
+    abi_ullong flags;
+    abi_ullong mode;
+    abi_ullong resolve;
+};
+#ifndef RESOLVE_NO_MAGICLINKS
+#define RESOLVE_NO_MAGICLINKS   0x02
+#endif
+#ifndef RESOLVE_NO_SYMLINKS
+#define RESOLVE_NO_SYMLINKS     0x04
+#endif
+
+#if (defined(TARGET_I386) && defined(TARGET_ABI32)) || \
+    (defined(TARGET_ARM) && defined(TARGET_ABI32)) || \
+    defined(TARGET_M68K) || defined(TARGET_MICROBLAZE) || \
+    defined(TARGET_S390X)
+#define TARGET_ARCH_WANT_SYS_OLD_MMAP
+#endif
 
 #endif

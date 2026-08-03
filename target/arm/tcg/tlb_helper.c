@@ -50,7 +50,15 @@ static inline uint32_t merge_syn_data_abort(uint32_t template_syn,
      * ST64BV, or ST64BV0 insns report syndrome info even for stage-1
      * faults and regardless of the target EL.
      */
-    if (!(template_syn & ARM_EL_ISV) || target_el != 2
+    if (template_syn & ARM_EL_VNCR) {
+        /*
+         * FEAT_NV2 faults on accesses via VNCR_EL2 are a special case:
+         * they are always reported as "same EL", even though we are going
+         * from EL1 to EL2.
+         */
+        assert(!fi->stage2);
+        syn = syn_data_abort_vncr(fi->ea, is_write, fsc);
+    } else if (!(template_syn & ARM_EL_ISV) || target_el != 2
         || fi->s1ptw || !fi->stage2) {
         syn = syn_data_abort_no_iss(same_el, 0,
                                     fi->ea, 0, fi->s1ptw, is_write, fsc);
@@ -169,6 +177,20 @@ void arm_deliver_fault(ARMCPU *cpu, vaddr addr,
     int current_el = arm_current_el(env);
     bool same_el;
     uint32_t syn, exc, fsr, fsc;
+    /*
+     * We know this must be a data or insn abort, and that
+     * env->exception.syndrome contains the template syndrome set
+     * up at translate time. So we can check only the VNCR bit
+     * (and indeed syndrome does not have the EC field in it,
+     * because we masked that out in disas_set_insn_syndrome())
+     */
+    bool is_vncr = (access_type != MMU_INST_FETCH) &&
+        (env->exception.syndrome & ARM_EL_VNCR);
+
+    if (is_vncr) {
+        /* FEAT_NV2 faults on accesses via VNCR_EL2 go to EL2 */
+        target_el = 2;
+    }
 
     if (report_as_gpc_exception(cpu, current_el, fi)) {
         target_el = 3;
@@ -177,7 +199,8 @@ void arm_deliver_fault(ARMCPU *cpu, vaddr addr,
 
         syn = syn_gpc(fi->stage2 && fi->type == ARMFault_GPCFOnWalk,
                       access_type == MMU_INST_FETCH,
-                      encode_gpcsc(fi), 0, fi->s1ptw,
+                      encode_gpcsc(fi), is_vncr,
+                      0, fi->s1ptw,
                       access_type == MMU_DATA_STORE, fsc);
 
         env->cp15.mfar_el3 = fi->paddr;
@@ -258,7 +281,7 @@ void helper_exception_pc_alignment(CPUARMState *env, target_ulong pc)
 {
     ARMMMUFaultInfo fi = { .type = ARMFault_Alignment };
     int target_el = exception_target_el(env);
-    int mmu_idx = cpu_mmu_index(env, true);
+    int mmu_idx = arm_env_mmu_index(env);
     uint32_t fsc;
 
     env->exception.vaddress = pc;
@@ -295,14 +318,13 @@ void arm_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
     arm_deliver_fault(cpu, addr, access_type, mmu_idx, &fi);
 }
 
-bool arm_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
-                      MMUAccessType access_type, int mmu_idx,
-                      bool probe, uintptr_t retaddr)
+bool arm_cpu_tlb_fill_align(CPUState *cs, CPUTLBEntryFull *out, vaddr address,
+                            MMUAccessType access_type, int mmu_idx,
+                            MemOp memop, int size, bool probe, uintptr_t ra)
 {
     ARMCPU *cpu = ARM_CPU(cs);
     GetPhysAddrResult res = {};
     ARMMMUFaultInfo local_fi, *fi;
-    int ret;
 
     /*
      * Allow S1_ptw_translate to see any fault generated here.
@@ -316,37 +338,27 @@ bool arm_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
     }
 
     /*
-     * Walk the page table and (if the mapping exists) add the page
-     * to the TLB.  On success, return true.  Otherwise, if probing,
-     * return false.  Otherwise populate fsr with ARM DFSR/IFSR fault
-     * register format, and signal the fault.
+     * Per R_XCHFJ, alignment fault not due to memory type has
+     * highest precedence.  Otherwise, walk the page table and
+     * and collect the page description.
      */
-    ret = get_phys_addr(&cpu->env, address, access_type,
-                        core_to_arm_mmu_idx(&cpu->env, mmu_idx),
-                        &res, fi);
-    if (likely(!ret)) {
-        /*
-         * Map a single [sub]page. Regions smaller than our declared
-         * target page size are handled specially, so for those we
-         * pass in the exact addresses.
-         */
-        if (res.f.lg_page_size >= TARGET_PAGE_BITS) {
-            res.f.phys_addr &= TARGET_PAGE_MASK;
-            address &= TARGET_PAGE_MASK;
-        }
-
+    if (address & ((1 << memop_alignment_bits(memop)) - 1)) {
+        fi->type = ARMFault_Alignment;
+    } else if (!get_phys_addr(&cpu->env, address, access_type, memop,
+                              core_to_arm_mmu_idx(&cpu->env, mmu_idx),
+                              &res, fi)) {
         res.f.extra.arm.pte_attrs = res.cacheattrs.attrs;
         res.f.extra.arm.shareability = res.cacheattrs.shareability;
-
-        tlb_set_page_full(cs, mmu_idx, address, &res.f);
+        *out = res.f;
         return true;
-    } else if (probe) {
-        return false;
-    } else {
-        /* now we have a real cpu fault */
-        cpu_restore_state(cs, retaddr);
-        arm_deliver_fault(cpu, address, access_type, mmu_idx, fi);
     }
+    if (probe) {
+        return false;
+    }
+
+    /* Now we have a real cpu fault. */
+    cpu_restore_state(cs, ra);
+    arm_deliver_fault(cpu, address, access_type, mmu_idx, fi);
 }
 #else
 void arm_cpu_record_sigsegv(CPUState *cs, vaddr addr,

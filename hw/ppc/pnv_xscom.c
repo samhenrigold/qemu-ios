@@ -20,7 +20,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "sysemu/hw_accel.h"
+#include "system/hw_accel.h"
 #include "target/ppc/cpu.h"
 #include "hw/sysbus.h"
 
@@ -44,15 +44,12 @@ static void xscom_complete(CPUState *cs, uint64_t hmer_bits)
      * passed for the cpu, and no CPU completion is generated.
      */
     if (cs) {
-        PowerPCCPU *cpu = POWERPC_CPU(cs);
-        CPUPPCState *env = &cpu->env;
-
         /*
          * TODO: Need a CPU helper to set HMER, also handle generation
          * of HMIs
          */
         cpu_synchronize_state(cs);
-        env->spr[SPR_HMER] |= hmer_bits;
+        cpu_env(cs)->spr[SPR_HMER] |= hmer_bits;
     }
 }
 
@@ -77,11 +74,6 @@ static uint64_t xscom_read_default(PnvChip *chip, uint32_t pcba)
     case PRD_P8_IPOLL_REG_STATUS:
     case PRD_P9_IPOLL_REG_MASK:
     case PRD_P9_IPOLL_REG_STATUS:
-
-        /* P9 xscom reset */
-    case 0x0090018:     /* Receive status reg */
-    case 0x0090012:     /* log register */
-    case 0x0090013:     /* error register */
 
         /* P8 xscom reset */
     case 0x2020007:     /* ADU stuff, log register */
@@ -122,10 +114,6 @@ static bool xscom_write_default(PnvChip *chip, uint32_t pcba, uint64_t val)
     case 0x1010c03:     /* PIBAM FIR MASK */
     case 0x1010c04:     /* PIBAM FIR MASK */
     case 0x1010c05:     /* PIBAM FIR MASK */
-        /* P9 xscom reset */
-    case 0x0090018:     /* Receive status reg */
-    case 0x0090012:     /* log register */
-    case 0x0090013:     /* error register */
 
         /* P8 xscom reset */
     case 0x2020007:     /* ADU stuff, log register */

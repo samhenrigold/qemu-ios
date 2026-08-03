@@ -25,7 +25,7 @@
 
 #include "exec/memory.h"
 #include "qemu/iov.h"
-#include "sysemu/dma.h"
+#include "system/dma.h"
 #include "hw/sysbus.h"
 #include "qom/object.h"
 
@@ -44,10 +44,6 @@ struct DBDMA_io {
     DBDMA_end dma_end;
     /* DMA is in progress, don't start another one */
     bool processing;
-    /* DMA request */
-    void *dma_mem;
-    dma_addr_t dma_len;
-    DMADirection dir;
 };
 
 /*

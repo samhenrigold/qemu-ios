@@ -24,7 +24,7 @@
 
 #include "qemu/osdep.h"
 #include "trace.h"
-#include "sysemu/block-backend.h"
+#include "system/block-backend.h"
 #include "block/aio-wait.h"
 #include "block/blockjob.h"
 #include "block/blockjob_int.h"
@@ -37,7 +37,7 @@
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
-#include "sysemu/replay.h"
+#include "system/replay.h"
 
 /* Maximum bounce buffer for copy-on-read and write zeroes, in bytes */
 #define MAX_BOUNCE_BUFFER (32768 << BDRV_SECTOR_BITS)
@@ -294,8 +294,6 @@ static void bdrv_co_drain_bh_cb(void *opaque)
     BlockDriverState *bs = data->bs;
 
     if (bs) {
-        AioContext *ctx = bdrv_get_aio_context(bs);
-        aio_context_acquire(ctx);
         bdrv_dec_in_flight(bs);
         if (data->begin) {
             bdrv_do_drained_begin(bs, data->parent, data->poll);
@@ -303,7 +301,6 @@ static void bdrv_co_drain_bh_cb(void *opaque)
             assert(!data->poll);
             bdrv_do_drained_end(bs, data->parent);
         }
-        aio_context_release(ctx);
     } else {
         assert(data->begin);
         bdrv_drain_all_begin();
@@ -320,8 +317,6 @@ static void coroutine_fn bdrv_co_yield_to_drain(BlockDriverState *bs,
 {
     BdrvCoDrainData data;
     Coroutine *self = qemu_coroutine_self();
-    AioContext *ctx = bdrv_get_aio_context(bs);
-    AioContext *co_ctx = qemu_coroutine_get_aio_context(self);
 
     /* Calling bdrv_drain() from a BH ensures the current coroutine yields and
      * other coroutines run if they were queued by aio_co_enter(). */
@@ -340,17 +335,6 @@ static void coroutine_fn bdrv_co_yield_to_drain(BlockDriverState *bs,
         bdrv_inc_in_flight(bs);
     }
 
-    /*
-     * Temporarily drop the lock across yield or we would get deadlocks.
-     * bdrv_co_drain_bh_cb() reaquires the lock as needed.
-     *
-     * When we yield below, the lock for the current context will be
-     * released, so if this is actually the lock that protects bs, don't drop
-     * it a second time.
-     */
-    if (ctx != co_ctx) {
-        aio_context_release(ctx);
-    }
     replay_bh_schedule_oneshot_event(qemu_get_aio_context(),
                                      bdrv_co_drain_bh_cb, &data);
 
@@ -358,11 +342,6 @@ static void coroutine_fn bdrv_co_yield_to_drain(BlockDriverState *bs,
     /* If we are resumed from some other event (such as an aio completion or a
      * timer callback), it is a bug in the caller that should be fixed. */
     assert(data.done);
-
-    /* Reacquire the AioContext of bs if we dropped it */
-    if (ctx != co_ctx) {
-        aio_context_acquire(ctx);
-    }
 }
 
 static void bdrv_do_drained_begin(BlockDriverState *bs, BdrvChild *parent,
@@ -478,13 +457,12 @@ static bool bdrv_drain_all_poll(void)
     GLOBAL_STATE_CODE();
     GRAPH_RDLOCK_GUARD_MAINLOOP();
 
-    /* bdrv_drain_poll() can't make changes to the graph and we are holding the
-     * main AioContext lock, so iterating bdrv_next_all_states() is safe. */
+    /*
+     * bdrv_drain_poll() can't make changes to the graph and we hold the BQL,
+     * so iterating bdrv_next_all_states() is safe.
+     */
     while ((bs = bdrv_next_all_states(bs))) {
-        AioContext *aio_context = bdrv_get_aio_context(bs);
-        aio_context_acquire(aio_context);
         result |= bdrv_drain_poll(bs, NULL, true);
-        aio_context_release(aio_context);
     }
 
     return result;
@@ -525,11 +503,7 @@ void bdrv_drain_all_begin_nopoll(void)
     /* Quiesce all nodes, without polling in-flight requests yet. The graph
      * cannot change during this loop. */
     while ((bs = bdrv_next_all_states(bs))) {
-        AioContext *aio_context = bdrv_get_aio_context(bs);
-
-        aio_context_acquire(aio_context);
         bdrv_do_drained_begin(bs, NULL, false);
-        aio_context_release(aio_context);
     }
 }
 
@@ -588,11 +562,7 @@ void bdrv_drain_all_end(void)
     }
 
     while ((bs = bdrv_next_all_states(bs))) {
-        AioContext *aio_context = bdrv_get_aio_context(bs);
-
-        aio_context_acquire(aio_context);
         bdrv_do_drained_end(bs, NULL);
-        aio_context_release(aio_context);
     }
 
     assert(qemu_get_current_aio_context() == qemu_get_aio_context());
@@ -1086,6 +1056,10 @@ bdrv_driver_pwritev(BlockDriverState *bs, int64_t offset, int64_t bytes,
 
     if (!drv) {
         return -ENOMEDIUM;
+    }
+
+    if (bs->open_flags & BDRV_O_NO_FLUSH) {
+        flags &= ~BDRV_REQ_FUA;
     }
 
     if ((flags & BDRV_REQ_FUA) &&
@@ -1756,22 +1730,29 @@ static int bdrv_pad_request(BlockDriverState *bs,
         return 0;
     }
 
-    sliced_iov = qemu_iovec_slice(*qiov, *qiov_offset, *bytes,
-                                  &sliced_head, &sliced_tail,
-                                  &sliced_niov);
+    /*
+     * For prefetching in stream_populate(), no qiov is passed along, because
+     * only copy-on-read matters.
+     */
+    if (*qiov) {
+        sliced_iov = qemu_iovec_slice(*qiov, *qiov_offset, *bytes,
+                                      &sliced_head, &sliced_tail,
+                                      &sliced_niov);
 
-    /* Guaranteed by bdrv_check_request32() */
-    assert(*bytes <= SIZE_MAX);
-    ret = bdrv_create_padded_qiov(bs, pad, sliced_iov, sliced_niov,
-                                  sliced_head, *bytes);
-    if (ret < 0) {
-        bdrv_padding_finalize(pad);
-        return ret;
+        /* Guaranteed by bdrv_check_request32() */
+        assert(*bytes <= SIZE_MAX);
+        ret = bdrv_create_padded_qiov(bs, pad, sliced_iov, sliced_niov,
+                                      sliced_head, *bytes);
+        if (ret < 0) {
+            bdrv_padding_finalize(pad);
+            return ret;
+        }
+        *qiov = &pad->local_qiov;
+        *qiov_offset = 0;
     }
+
     *bytes += pad->head + pad->tail;
     *offset -= pad->head;
-    *qiov = &pad->local_qiov;
-    *qiov_offset = 0;
     if (padded) {
         *padded = true;
     }
@@ -1883,6 +1864,11 @@ bdrv_co_do_pwrite_zeroes(BlockDriverState *bs, int64_t offset, int64_t bytes,
     /* By definition there is no user buffer so this flag doesn't make sense */
     if (flags & BDRV_REQ_REGISTERED_BUF) {
         return -EINVAL;
+    }
+
+    /* If opened with discard=off we should never unmap. */
+    if (!(bs->open_flags & BDRV_O_UNMAP)) {
+        flags &= ~BDRV_REQ_MAY_UNMAP;
     }
 
     /* Invalidate the cached block-status data range if this write overlaps */
@@ -2338,10 +2324,6 @@ int coroutine_fn bdrv_co_pwrite_zeroes(BdrvChild *child, int64_t offset,
     trace_bdrv_co_pwrite_zeroes(child->bs, offset, bytes, flags);
     assert_bdrv_graph_readable();
 
-    if (!(child->bs->open_flags & BDRV_O_UNMAP)) {
-        flags &= ~BDRV_REQ_MAY_UNMAP;
-    }
-
     return bdrv_co_pwritev(child, offset, bytes, NULL,
                            BDRV_REQ_ZERO_WRITE | flags);
 }
@@ -2368,15 +2350,10 @@ int bdrv_flush_all(void)
     }
 
     for (bs = bdrv_first(&it); bs; bs = bdrv_next(&it)) {
-        AioContext *aio_context = bdrv_get_aio_context(bs);
-        int ret;
-
-        aio_context_acquire(aio_context);
-        ret = bdrv_flush(bs);
+        int ret = bdrv_flush(bs);
         if (ret < 0 && !result) {
             result = ret;
         }
-        aio_context_release(aio_context);
     }
 
     return result;
@@ -2619,6 +2596,16 @@ bdrv_co_do_block_status(BlockDriverState *bs, bool want_zero,
                 ret |= (ret2 & BDRV_BLOCK_ZERO);
             }
         }
+
+        /*
+         * Now that the recursive search was done, clear the flag. Otherwise,
+         * with more complicated block graphs like snapshot-access ->
+         * copy-before-write -> qcow2, where the return value will be propagated
+         * further up to a parent bdrv_co_do_block_status() call, both the
+         * BDRV_BLOCK_RECURSE and BDRV_BLOCK_ZERO flags would be set, which is
+         * not allowed.
+         */
+        ret &= ~BDRV_BLOCK_RECURSE;
     }
 
 out:

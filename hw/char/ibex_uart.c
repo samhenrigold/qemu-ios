@@ -488,7 +488,7 @@ static const VMStateDescription vmstate_ibex_uart = {
     .version_id = 1,
     .minimum_version_id = 1,
     .post_load = ibex_uart_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8_ARRAY(tx_fifo, IbexUartState,
                             IBEX_UART_TX_FIFO_SIZE),
         VMSTATE_UINT32(tx_level, IbexUartState),
@@ -508,9 +508,8 @@ static const VMStateDescription vmstate_ibex_uart = {
     }
 };
 
-static Property ibex_uart_properties[] = {
+static const Property ibex_uart_properties[] = {
     DEFINE_PROP_CHR("chardev", IbexUartState, chr),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void ibex_uart_init(Object *obj)
@@ -547,7 +546,7 @@ static void ibex_uart_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = ibex_uart_reset;
+    device_class_set_legacy_reset(dc, ibex_uart_reset);
     dc->realize = ibex_uart_realize;
     dc->vmsd = &vmstate_ibex_uart;
     device_class_set_props(dc, ibex_uart_properties);

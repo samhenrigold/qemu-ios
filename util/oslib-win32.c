@@ -264,8 +264,8 @@ int getpagesize(void)
     return system_info.dwPageSize;
 }
 
-void qemu_prealloc_mem(int fd, char *area, size_t sz, int max_threads,
-                       ThreadContext *tc, Error **errp)
+bool qemu_prealloc_mem(int fd, char *area, size_t sz, int max_threads,
+                       ThreadContext *tc, bool async, Error **errp)
 {
     int i;
     size_t pagesize = qemu_real_host_page_size();
@@ -274,6 +274,14 @@ void qemu_prealloc_mem(int fd, char *area, size_t sz, int max_threads,
     for (i = 0; i < sz / pagesize; i++) {
         memset(area + pagesize * i, 0, 1);
     }
+
+    return true;
+}
+
+bool qemu_finish_async_prealloc_mem(Error **errp)
+{
+    /* async prealloc not supported, there is nothing to finish */
+    return true;
 }
 
 char *qemu_get_pid_name(pid_t pid)
@@ -868,4 +876,10 @@ void qemu_win32_map_free(void *ptr, HANDLE h, Error **errp)
         error_setg_win32(errp, GetLastError(), "Failed to UnmapViewOfFile");
     }
     CloseHandle(h);
+}
+
+int qemu_shm_alloc(size_t size, Error **errp)
+{
+    error_setg(errp, "Shared memory is not supported.");
+    return -1;
 }

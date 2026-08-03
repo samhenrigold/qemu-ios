@@ -11,13 +11,13 @@
 #include "qemu/osdep.h"
 
 #include "qapi/error.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qdict.h"
 #include "qemu/option.h"
 #include "qemu/main-loop.h"
 #include "block/replication.h"
 #include "block/block_int.h"
 #include "block/qdict.h"
-#include "sysemu/block-backend.h"
+#include "system/block-backend.h"
 
 #define IMG_SIZE (64 * 1024 * 1024)
 
@@ -199,17 +199,13 @@ static BlockBackend *start_primary(void)
 static void teardown_primary(void)
 {
     BlockBackend *blk;
-    AioContext *ctx;
 
     /* remove P_ID */
     blk = blk_by_name(P_ID);
     assert(blk);
 
-    ctx = blk_get_aio_context(blk);
-    aio_context_acquire(ctx);
     monitor_remove_blk(blk);
     blk_unref(blk);
-    aio_context_release(ctx);
 }
 
 static void test_primary_read(void)
@@ -345,27 +341,20 @@ static void teardown_secondary(void)
 {
     /* only need to destroy two BBs */
     BlockBackend *blk;
-    AioContext *ctx;
 
     /* remove S_LOCAL_DISK_ID */
     blk = blk_by_name(S_LOCAL_DISK_ID);
     assert(blk);
 
-    ctx = blk_get_aio_context(blk);
-    aio_context_acquire(ctx);
     monitor_remove_blk(blk);
     blk_unref(blk);
-    aio_context_release(ctx);
 
     /* remove S_ID */
     blk = blk_by_name(S_ID);
     assert(blk);
 
-    ctx = blk_get_aio_context(blk);
-    aio_context_acquire(ctx);
     monitor_remove_blk(blk);
     blk_unref(blk);
-    aio_context_release(ctx);
 }
 
 static void test_secondary_read(void)

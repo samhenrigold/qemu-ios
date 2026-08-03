@@ -455,7 +455,7 @@ static const VMStateDescription vmstate_g364fb = {
     .version_id = 2,
     .minimum_version_id = 2,
     .post_load = g364fb_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_BUFFER_UNSAFE(color_palette, G364State, 0, 256 * 3),
         VMSTATE_BUFFER_UNSAFE(cursor_palette, G364State, 0, 9),
         VMSTATE_UINT16_ARRAY(cursor, G364State, 512),
@@ -512,16 +512,15 @@ static void g364fb_sysbus_reset(DeviceState *d)
     g364fb_reset(&s->g364);
 }
 
-static Property g364fb_sysbus_properties[] = {
+static const Property g364fb_sysbus_properties[] = {
     DEFINE_PROP_UINT32("vram_size", G364SysBusState, g364.vram_size, 8 * MiB),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static const VMStateDescription vmstate_g364fb_sysbus = {
     .name = "g364fb-sysbus",
     .version_id = 2,
     .minimum_version_id = 2,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(g364, G364SysBusState, 2, vmstate_g364fb, G364State),
         VMSTATE_END_OF_LIST()
     }
@@ -534,7 +533,7 @@ static void g364fb_sysbus_class_init(ObjectClass *klass, void *data)
     dc->realize = g364fb_sysbus_realize;
     set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
     dc->desc = "G364 framebuffer";
-    dc->reset = g364fb_sysbus_reset;
+    device_class_set_legacy_reset(dc, g364fb_sysbus_reset);
     dc->vmsd = &vmstate_g364fb_sysbus;
     device_class_set_props(dc, g364fb_sysbus_properties);
 }

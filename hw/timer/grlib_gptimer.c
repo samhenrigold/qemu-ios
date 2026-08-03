@@ -1,7 +1,9 @@
 /*
  * QEMU GRLIB GPTimer Emulator
  *
- * Copyright (c) 2010-2019 AdaCore
+ * SPDX-License-Identifier: MIT
+ *
+ * Copyright (c) 2010-2024 AdaCore
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,7 +25,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sparc/grlib.h"
+#include "hw/timer/grlib_gptimer.h"
 #include "hw/sysbus.h"
 #include "qemu/timer.h"
 #include "hw/irq.h"
@@ -401,11 +403,10 @@ static void grlib_gptimer_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(sbd, &unit->iomem);
 }
 
-static Property grlib_gptimer_properties[] = {
+static const Property grlib_gptimer_properties[] = {
     DEFINE_PROP_UINT32("frequency", GPTimerUnit, freq_hz,   40000000),
     DEFINE_PROP_UINT32("irq-line",  GPTimerUnit, irq_line,  8),
     DEFINE_PROP_UINT32("nr-timers", GPTimerUnit, nr_timers, 2),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void grlib_gptimer_class_init(ObjectClass *klass, void *data)
@@ -413,7 +414,7 @@ static void grlib_gptimer_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = grlib_gptimer_realize;
-    dc->reset = grlib_gptimer_reset;
+    device_class_set_legacy_reset(dc, grlib_gptimer_reset);
     device_class_set_props(dc, grlib_gptimer_properties);
 }
 

@@ -94,7 +94,7 @@ static const VMStateDescription vmstate_or_irq_extras = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = vmstate_extras_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_VARRAY_UINT16_UNSAFE(levels, OrIRQState, num_lines, 0,
                                      vmstate_info_bool, bool),
         VMSTATE_END_OF_LIST(),
@@ -105,26 +105,25 @@ static const VMStateDescription vmstate_or_irq = {
     .name = TYPE_OR_IRQ,
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_BOOL_SUB_ARRAY(levels, OrIRQState, 0, OLD_MAX_OR_LINES),
         VMSTATE_END_OF_LIST(),
     },
-    .subsections = (const VMStateDescription*[]) {
+    .subsections = (const VMStateDescription * const []) {
         &vmstate_or_irq_extras,
         NULL
     },
 };
 
-static Property or_irq_properties[] = {
+static const Property or_irq_properties[] = {
     DEFINE_PROP_UINT16("num-lines", OrIRQState, num_lines, 1),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void or_irq_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = or_irq_reset;
+    device_class_set_legacy_reset(dc, or_irq_reset);
     device_class_set_props(dc, or_irq_properties);
     dc->realize = or_irq_realize;
     dc->vmsd = &vmstate_or_irq;

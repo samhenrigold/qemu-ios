@@ -15,7 +15,7 @@
 #define TARGET_I386_HYPERV_H
 
 #include "cpu.h"
-#include "sysemu/kvm.h"
+#include "system/kvm.h"
 #include "hw/hyperv/hyperv.h"
 
 #ifdef CONFIG_KVM
@@ -25,5 +25,7 @@ int kvm_hv_handle_exit(X86CPU *cpu, struct kvm_hyperv_exit *exit);
 int hyperv_x86_synic_add(X86CPU *cpu);
 void hyperv_x86_synic_reset(X86CPU *cpu);
 void hyperv_x86_synic_update(X86CPU *cpu);
+
+void hyperv_x86_set_vmbus_recommended_features_enabled(void);
 
 #endif

@@ -24,21 +24,24 @@
  */
 
 #include "qemu/osdep.h"
-#include "sysemu/tcg.h"
+#include "system/tcg.h"
 #include "exec/replay-core.h"
-#include "sysemu/cpu-timers.h"
+#include "system/cpu-timers.h"
 #include "tcg/startup.h"
-#include "tcg/oversized-guest.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/accel.h"
 #include "qemu/atomic.h"
 #include "qapi/qapi-builtin-visit.h"
 #include "qemu/units.h"
-#if !defined(CONFIG_USER_ONLY)
+#if defined(CONFIG_USER_ONLY)
+#include "hw/qdev-core.h"
+#else
 #include "hw/boards.h"
 #endif
-#include "internal-target.h"
+#include "internal-common.h"
+#include "cpu-param.h"
+
 
 struct TCGState {
     AccelState parent_obj;
@@ -70,7 +73,7 @@ DECLARE_INSTANCE_CHECKER(TCGState, TCG_STATE,
 
 static bool default_mttcg_enabled(void)
 {
-    if (icount_enabled() || TCG_OVERSIZED_GUEST) {
+    if (icount_enabled()) {
         return false;
     }
 #ifdef TARGET_SUPPORTS_MTTCG
@@ -124,6 +127,10 @@ static int tcg_init_machine(MachineState *ms)
     tcg_prologue_init();
 #endif
 
+#ifdef CONFIG_USER_ONLY
+    qdev_create_fake_machine();
+#endif
+
     return 0;
 }
 
@@ -139,9 +146,7 @@ static void tcg_set_thread(Object *obj, const char *value, Error **errp)
     TCGState *s = TCG_STATE(obj);
 
     if (strcmp(value, "multi") == 0) {
-        if (TCG_OVERSIZED_GUEST) {
-            error_setg(errp, "No MTTCG when guest word size > hosts");
-        } else if (icount_enabled()) {
+        if (icount_enabled()) {
             error_setg(errp, "No MTTCG when icount is enabled");
         } else {
 #ifndef TARGET_SUPPORTS_MTTCG

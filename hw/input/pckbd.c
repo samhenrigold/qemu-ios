@@ -34,8 +34,8 @@
 #include "hw/irq.h"
 #include "hw/input/i8042.h"
 #include "hw/qdev-properties.h"
-#include "sysemu/reset.h"
-#include "sysemu/runstate.h"
+#include "system/reset.h"
+#include "system/runstate.h"
 
 #include "trace.h"
 
@@ -510,7 +510,7 @@ static const VMStateDescription vmstate_kbd_outport = {
     .minimum_version_id = 1,
     .post_load = kbd_outport_post_load,
     .needed = kbd_outport_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(outport, KBDState),
         VMSTATE_END_OF_LIST()
     }
@@ -552,7 +552,7 @@ static const VMStateDescription vmstate_kbd_extended_state = {
     .post_load = kbd_extended_state_post_load,
     .pre_save = kbd_extended_state_pre_save,
     .needed = kbd_extended_state_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(migration_flags, KBDState),
         VMSTATE_UINT32(obsrc, KBDState),
         VMSTATE_UINT8(obdata, KBDState),
@@ -619,14 +619,14 @@ static const VMStateDescription vmstate_kbd = {
     .pre_load = kbd_pre_load,
     .post_load = kbd_post_load,
     .pre_save = kbd_pre_save,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(write_cmd, KBDState),
         VMSTATE_UINT8(status, KBDState),
         VMSTATE_UINT8(mode, KBDState),
         VMSTATE_UINT8(pending_tmp, KBDState),
         VMSTATE_END_OF_LIST()
     },
-    .subsections = (const VMStateDescription * []) {
+    .subsections = (const VMStateDescription * const []) {
         &vmstate_kbd_outport,
         &vmstate_kbd_extended_state,
         NULL
@@ -735,17 +735,16 @@ static void i8042_mmio_init(Object *obj)
                             "ps2-mouse-input-irq", 1);
 }
 
-static Property i8042_mmio_properties[] = {
+static const Property i8042_mmio_properties[] = {
     DEFINE_PROP_UINT64("mask", MMIOKBDState, kbd.mask, UINT64_MAX),
     DEFINE_PROP_UINT32("size", MMIOKBDState, size, -1),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static const VMStateDescription vmstate_kbd_mmio = {
     .name = "pckbd-mmio",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(kbd, MMIOKBDState, 0, vmstate_kbd, KBDState),
         VMSTATE_END_OF_LIST()
     }
@@ -756,7 +755,7 @@ static void i8042_mmio_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = i8042_mmio_realize;
-    dc->reset = i8042_mmio_reset;
+    device_class_set_legacy_reset(dc, i8042_mmio_reset);
     dc->vmsd = &vmstate_kbd_mmio;
     device_class_set_props(dc, i8042_mmio_properties);
     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
@@ -777,16 +776,11 @@ void i8042_isa_mouse_fake_event(ISAKBDState *isa)
     ps2_mouse_fake_event(&s->ps2mouse);
 }
 
-void i8042_setup_a20_line(ISADevice *dev, qemu_irq a20_out)
-{
-    qdev_connect_gpio_out_named(DEVICE(dev), I8042_A20_LINE, 0, a20_out);
-}
-
 static const VMStateDescription vmstate_kbd_isa = {
     .name = "pckbd",
     .version_id = 3,
     .minimum_version_id = 3,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(kbd, ISAKBDState, 0, vmstate_kbd, KBDState),
         VMSTATE_END_OF_LIST()
     }
@@ -938,12 +932,11 @@ static void i8042_build_aml(AcpiDevAmlIf *adev, Aml *scope)
     aml_append(scope, mou);
 }
 
-static Property i8042_properties[] = {
+static const Property i8042_properties[] = {
     DEFINE_PROP_BOOL("extended-state", ISAKBDState, kbd.extended_state, true),
     DEFINE_PROP_BOOL("kbd-throttle", ISAKBDState, kbd_throttle, false),
     DEFINE_PROP_UINT8("kbd-irq", ISAKBDState, kbd_irq, 1),
     DEFINE_PROP_UINT8("mouse-irq", ISAKBDState, mouse_irq, 12),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void i8042_class_initfn(ObjectClass *klass, void *data)
@@ -952,7 +945,7 @@ static void i8042_class_initfn(ObjectClass *klass, void *data)
     AcpiDevAmlIfClass *adevc = ACPI_DEV_AML_IF_CLASS(klass);
 
     device_class_set_props(dc, i8042_properties);
-    dc->reset = i8042_reset;
+    device_class_set_legacy_reset(dc, i8042_reset);
     dc->realize = i8042_realizefn;
     dc->vmsd = &vmstate_kbd_isa;
     adevc->build_dev_aml = i8042_build_aml;

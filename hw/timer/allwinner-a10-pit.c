@@ -185,22 +185,21 @@ static void a10_pit_write(void *opaque, hwaddr offset, uint64_t value,
 static const MemoryRegionOps a10_pit_ops = {
     .read = a10_pit_read,
     .write = a10_pit_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
-static Property a10_pit_properties[] = {
+static const Property a10_pit_properties[] = {
     DEFINE_PROP_UINT32("clk0-freq", AwA10PITState, clk_freq[0], 0),
     DEFINE_PROP_UINT32("clk1-freq", AwA10PITState, clk_freq[1], 0),
     DEFINE_PROP_UINT32("clk2-freq", AwA10PITState, clk_freq[2], 0),
     DEFINE_PROP_UINT32("clk3-freq", AwA10PITState, clk_freq[3], 0),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static const VMStateDescription vmstate_a10_pit = {
     .name = "a10.pit",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(irq_enable, AwA10PITState),
         VMSTATE_UINT32(irq_status, AwA10PITState),
         VMSTATE_UINT32_ARRAY(control, AwA10PITState, AW_A10_PIT_TIMER_NR),
@@ -293,7 +292,7 @@ static void a10_pit_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = a10_pit_reset;
+    device_class_set_legacy_reset(dc, a10_pit_reset);
     device_class_set_props(dc, a10_pit_properties);
     dc->desc = "allwinner a10 timer";
     dc->vmsd = &vmstate_a10_pit;

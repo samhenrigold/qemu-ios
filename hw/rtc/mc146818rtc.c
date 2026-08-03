@@ -32,11 +32,11 @@
 #include "hw/qdev-properties.h"
 #include "hw/qdev-properties-system.h"
 #include "qemu/timer.h"
-#include "sysemu/sysemu.h"
-#include "sysemu/replay.h"
-#include "sysemu/reset.h"
-#include "sysemu/runstate.h"
-#include "sysemu/rtc.h"
+#include "system/system.h"
+#include "system/replay.h"
+#include "system/reset.h"
+#include "system/runstate.h"
+#include "system/rtc.h"
 #include "hw/rtc/mc146818rtc.h"
 #include "hw/rtc/mc146818rtc_regs.h"
 #include "migration/vmstate.h"
@@ -104,16 +104,9 @@ static void rtc_coalesced_timer_update(MC146818RtcState *s)
     }
 }
 
-static QLIST_HEAD(, MC146818RtcState) rtc_devices =
-    QLIST_HEAD_INITIALIZER(rtc_devices);
-
-void qmp_rtc_reset_reinjection(Error **errp)
+void rtc_reset_reinjection(MC146818RtcState *rtc)
 {
-    MC146818RtcState *s;
-
-    QLIST_FOREACH(s, &rtc_devices, link) {
-        s->irq_coalesced = 0;
-    }
+    rtc->irq_coalesced = 0;
 }
 
 static bool rtc_policy_slew_deliver_irq(MC146818RtcState *s)
@@ -817,7 +810,7 @@ static const VMStateDescription vmstate_rtc_irq_reinject_on_ack_count = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = rtc_irq_reinject_on_ack_count_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT16(irq_reinject_on_ack_count, MC146818RtcState),
         VMSTATE_END_OF_LIST()
     }
@@ -829,7 +822,7 @@ static const VMStateDescription vmstate_rtc = {
     .minimum_version_id = 1,
     .pre_save = rtc_pre_save,
     .post_load = rtc_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_BUFFER(cmos_data, MC146818RtcState),
         VMSTATE_UINT8(cmos_index, MC146818RtcState),
         VMSTATE_UNUSED(7*4),
@@ -845,7 +838,7 @@ static const VMStateDescription vmstate_rtc = {
         VMSTATE_UINT64_V(next_alarm_time, MC146818RtcState, 3),
         VMSTATE_END_OF_LIST()
     },
-    .subsections = (const VMStateDescription*[]) {
+    .subsections = (const VMStateDescription * const []) {
         &vmstate_rtc_irq_reinject_on_ack_count,
         NULL
     }
@@ -941,7 +934,6 @@ static void rtc_realizefn(DeviceState *dev, Error **errp)
     object_property_add_tm(OBJECT(s), "date", rtc_get_date);
 
     qdev_init_gpio_out(dev, &s->irq, 1);
-    QLIST_INSERT_HEAD(&rtc_devices, s, link);
 }
 
 MC146818RtcState *mc146818_rtc_init(ISABus *bus, int base_year,
@@ -968,13 +960,12 @@ MC146818RtcState *mc146818_rtc_init(ISABus *bus, int base_year,
     return s;
 }
 
-static Property mc146818rtc_properties[] = {
+static const Property mc146818rtc_properties[] = {
     DEFINE_PROP_INT32("base_year", MC146818RtcState, base_year, 1980),
     DEFINE_PROP_UINT16("iobase", MC146818RtcState, io_base, RTC_ISA_BASE),
     DEFINE_PROP_UINT8("irq", MC146818RtcState, isairq, RTC_ISA_IRQ),
     DEFINE_PROP_LOSTTICKPOLICY("lost_tick_policy", MC146818RtcState,
                                lost_tick_policy, LOST_TICK_POLICY_DISCARD),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void rtc_reset_enter(Object *obj, ResetType type)
@@ -998,7 +989,7 @@ static void rtc_reset_enter(Object *obj, ResetType type)
     }
 }
 
-static void rtc_reset_hold(Object *obj)
+static void rtc_reset_hold(Object *obj, ResetType type)
 {
     MC146818RtcState *s = MC146818_RTC(obj);
 

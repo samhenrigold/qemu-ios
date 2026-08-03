@@ -11,7 +11,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "sysemu/kvm.h"
+#include "system/kvm.h"
 #include "hw/pci/msi.h"
 
 KVMState *kvm_state;
@@ -123,4 +123,14 @@ bool kvm_dirty_ring_enabled(void)
 uint32_t kvm_dirty_ring_size(void)
 {
     return 0;
+}
+
+bool kvm_hwpoisoned_mem(void)
+{
+    return false;
+}
+
+int kvm_create_guest_memfd(uint64_t size, uint64_t flags, Error **errp)
+{
+    return -ENOSYS;
 }

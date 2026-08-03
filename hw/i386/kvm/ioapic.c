@@ -15,7 +15,7 @@
 #include "hw/qdev-properties.h"
 #include "hw/intc/ioapic_internal.h"
 #include "hw/intc/kvm_irqcount.h"
-#include "sysemu/kvm.h"
+#include "system/kvm.h"
 #include "kvm/kvm_i386.h"
 
 /* PC Utility function */
@@ -35,7 +35,7 @@ void kvm_pc_setup_irq_routing(bool pci_enabled)
         kvm_irqchip_add_irq_route(s, i, KVM_IRQCHIP_PIC_SLAVE, i - 8);
     }
     if (pci_enabled) {
-        for (i = 0; i < 24; ++i) {
+        for (i = 0; i < KVM_IOAPIC_NUM_PINS; ++i) {
             if (i == 0) {
                 kvm_irqchip_add_irq_route(s, i, KVM_IRQCHIP_IOAPIC, 2);
             } else if (i != 2) {
@@ -133,9 +133,8 @@ static void kvm_ioapic_realize(DeviceState *dev, Error **errp)
     qdev_init_gpio_in(dev, kvm_ioapic_set_irq, IOAPIC_NUM_PINS);
 }
 
-static Property kvm_ioapic_properties[] = {
+static const Property kvm_ioapic_properties[] = {
     DEFINE_PROP_UINT32("gsi_base", KVMIOAPICState, kvm_gsi_base, 0),
-    DEFINE_PROP_END_OF_LIST()
 };
 
 static void kvm_ioapic_class_init(ObjectClass *klass, void *data)
@@ -146,7 +145,7 @@ static void kvm_ioapic_class_init(ObjectClass *klass, void *data)
     k->realize   = kvm_ioapic_realize;
     k->pre_save  = kvm_ioapic_get;
     k->post_load = kvm_ioapic_put;
-    dc->reset    = kvm_ioapic_reset;
+    device_class_set_legacy_reset(dc, kvm_ioapic_reset);
     device_class_set_props(dc, kvm_ioapic_properties);
 }
 

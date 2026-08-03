@@ -27,8 +27,8 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "sysemu/device_tree.h"
-#include "sysemu/runstate.h"
+#include "system/device_tree.h"
+#include "system/runstate.h"
 
 #include "hw/ppc/fdt.h"
 #include "hw/ppc/spapr.h"
@@ -645,8 +645,7 @@ static void spapr_hotplug_req_event(uint8_t hp_id, uint8_t hp_action,
         /* we shouldn't be signaling hotplug events for resources
          * that don't support them
          */
-        g_assert(false);
-        return;
+        g_assert_not_reached();
     }
 
     if (hp_id == RTAS_LOG_V6_HP_ID_DRC_COUNT) {
@@ -899,7 +898,7 @@ void spapr_mce_req_event(PowerPCCPU *cpu, bool recovered)
             }
             return;
         }
-        qemu_cond_wait_iothread(&spapr->fwnmi_machine_check_interlock_cond);
+        qemu_cond_wait_bql(&spapr->fwnmi_machine_check_interlock_cond);
         if (spapr->fwnmi_machine_check_addr == -1) {
             /*
              * If the machine was reset while waiting for the interlock,

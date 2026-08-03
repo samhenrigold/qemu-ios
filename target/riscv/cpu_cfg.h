@@ -65,18 +65,38 @@ struct RISCVCPUConfig {
     bool ext_zicntr;
     bool ext_zicsr;
     bool ext_zicbom;
+    bool ext_zicbop;
     bool ext_zicboz;
+    bool ext_zicfilp;
+    bool ext_zicfiss;
     bool ext_zicond;
     bool ext_zihintntl;
     bool ext_zihintpause;
     bool ext_zihpm;
+    bool ext_zimop;
+    bool ext_zcmop;
+    bool ext_ztso;
     bool ext_smstateen;
     bool ext_sstc;
+    bool ext_smcdeleg;
+    bool ext_ssccfg;
+    bool ext_smcntrpmf;
+    bool ext_smcsrind;
+    bool ext_sscsrind;
+    bool ext_ssdbltrp;
+    bool ext_smdbltrp;
     bool ext_svadu;
     bool ext_svinval;
     bool ext_svnapot;
     bool ext_svpbmt;
+    bool ext_svvptc;
+    bool ext_svukte;
     bool ext_zdinx;
+    bool ext_zaamo;
+    bool ext_zacas;
+    bool ext_zama16b;
+    bool ext_zabha;
+    bool ext_zalrsc;
     bool ext_zawrs;
     bool ext_zfa;
     bool ext_zfbfmin;
@@ -86,8 +106,10 @@ struct RISCVCPUConfig {
     bool ext_zhinx;
     bool ext_zhinxmin;
     bool ext_zve32f;
+    bool ext_zve32x;
     bool ext_zve64f;
     bool ext_zve64d;
+    bool ext_zve64x;
     bool ext_zvbb;
     bool ext_zvbc;
     bool ext_zvkb;
@@ -111,14 +133,41 @@ struct RISCVCPUConfig {
     bool ext_zvfhmin;
     bool ext_smaia;
     bool ext_ssaia;
+    bool ext_smctr;
+    bool ext_ssctr;
     bool ext_sscofpmf;
     bool ext_smepmp;
+    bool ext_smrnmi;
+    bool ext_ssnpm;
+    bool ext_smnpm;
+    bool ext_smmpm;
+    bool ext_sspm;
+    bool ext_supm;
     bool rvv_ta_all_1s;
     bool rvv_ma_all_1s;
+    bool rvv_vl_half_avl;
 
     uint32_t mvendorid;
     uint64_t marchid;
     uint64_t mimpid;
+
+    /* Named features  */
+    bool ext_svade;
+    bool ext_zic64b;
+    bool ext_ssstateen;
+    bool ext_sha;
+
+    /*
+     * Always 'true' booleans for named features
+     * TCG always implement/can't be user disabled,
+     * based on spec version.
+     */
+    bool has_priv_1_13;
+    bool has_priv_1_12;
+    bool has_priv_1_11;
+
+    /* Always enabled for TCG if has_priv_1_11 */
+    bool ext_ziccrse;
 
     /* Vendor-specific custom extensions */
     bool ext_xtheadba;
@@ -135,13 +184,10 @@ struct RISCVCPUConfig {
     bool ext_XVentanaCondOps;
 
     uint32_t pmu_mask;
-    char *priv_spec;
-    char *user_spec;
-    char *bext_spec;
-    char *vext_spec;
-    uint16_t vlen;
+    uint16_t vlenb;
     uint16_t elen;
     uint16_t cbom_blocksize;
+    uint16_t cbop_blocksize;
     uint16_t cboz_blocksize;
     bool mmu;
     bool pmp;

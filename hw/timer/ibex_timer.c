@@ -252,7 +252,7 @@ static const VMStateDescription vmstate_ibex_timer = {
     .version_id = 2,
     .minimum_version_id = 2,
     .post_load = ibex_timer_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(timer_ctrl, IbexTimerState),
         VMSTATE_UINT32(timer_cfg0, IbexTimerState),
         VMSTATE_UINT32(timer_compare_lower0, IbexTimerState),
@@ -263,9 +263,8 @@ static const VMStateDescription vmstate_ibex_timer = {
     }
 };
 
-static Property ibex_timer_properties[] = {
+static const Property ibex_timer_properties[] = {
     DEFINE_PROP_UINT32("timebase-freq", IbexTimerState, timebase_freq, 10000),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void ibex_timer_init(Object *obj)
@@ -291,7 +290,7 @@ static void ibex_timer_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = ibex_timer_reset;
+    device_class_set_legacy_reset(dc, ibex_timer_reset);
     dc->vmsd = &vmstate_ibex_timer;
     dc->realize = ibex_timer_realize;
     device_class_set_props(dc, ibex_timer_properties);

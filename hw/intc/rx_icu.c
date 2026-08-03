@@ -345,7 +345,7 @@ static const VMStateDescription vmstate_rxicu = {
     .name = "rx-icu",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8_ARRAY(ir, RXICUState, NR_IRQS),
         VMSTATE_UINT8_ARRAY(dtcer, RXICUState, NR_IRQS),
         VMSTATE_UINT8_ARRAY(ier, RXICUState, NR_IRQS / 8),
@@ -361,12 +361,11 @@ static const VMStateDescription vmstate_rxicu = {
     }
 };
 
-static Property rxicu_properties[] = {
+static const Property rxicu_properties[] = {
     DEFINE_PROP_ARRAY("ipr-map", RXICUState, nr_irqs, map,
                       qdev_prop_uint8, uint8_t),
     DEFINE_PROP_ARRAY("trigger-level", RXICUState, nr_sense, init_sense,
                       qdev_prop_uint8, uint8_t),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void rxicu_class_init(ObjectClass *klass, void *data)
