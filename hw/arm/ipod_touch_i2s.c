@@ -558,6 +558,40 @@ static void it_i2s_pace_start(IPodTouchI2SState *s)
     timer_mod(s->pace_timer, s->pace_last_ns + IT_I2S_PACE_PERIOD_NS);
 }
 
+/*
+ * IT_I2S_VOICELOG=<path> -- every SWVoiceOut state change and every backend
+ * callback, timestamped. The one thing a wav capture cannot show is WHEN the
+ * bytes were handed over relative to real time, and whether the voice was even
+ * running when they were.
+ */
+static void it_i2s_vlog(IPodTouchI2SState *s, const char *what,
+                        int a, int b)
+{
+    static FILE *f;
+    static int state;
+    static int64_t t0;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    if (state == 0) {
+        const char *p = getenv("IT_I2S_VOICELOG");
+        state = -1;
+        if (p) {
+            f = fopen(p, "w");
+            state = f ? 1 : -1;
+        }
+    }
+    if (state < 0) {
+        return;
+    }
+    if (t0 == 0) {
+        t0 = now;
+    }
+    fprintf(f, "%10.6f %-10s %8d %8d  ring=%u fifo=%u run=%d act=%d\n",
+            (now - t0) / 1e9, what, a, b, s->ring_level, s->fifo_bytes,
+            s->running, s->active);
+    fflush(f);
+}
+
 /* Drain the PCM ring into the audio backend, up to `free_bytes` of headroom. */
 static void it_i2s_drain(IPodTouchI2SState *s, int free_bytes)
 {
@@ -587,22 +621,94 @@ static void it_i2s_out_cb(void *opaque, int free_bytes)
     if (s->ring_level) {
         IT_I2S_DPRINTF("out_cb free=%d level=%u\n", free_bytes, s->ring_level);
     }
+    it_i2s_vlog(s, "out_cb", free_bytes, s->ring_level);
     it_i2s_drain(s, free_bytes);
 
     /* When the guest has halted TX and we've flushed everything, park the
      * voice so the backend stops pulling silence. */
     if (!s->running && s->ring_level == 0 && s->active) {
+        it_i2s_vlog(s, "DEACT", 0, 0);
         AUD_set_active_out(s->voice, 0);
         s->active = 0;
+        /* Next sound prebuffers again from scratch. */
+        s->prefilled = false;
+        s->prefill_start_ns = 0;
     }
+}
+
+/*
+ * HOST-SIDE PREBUFFER, and why the sound was still garbled after it had been
+ * proved sample-exact.
+ *
+ * Everything upstream of here delivers correctly: the clip arrives at the TX
+ * FIFO bit-identical to photoShutter.caf, and it arrives paced at 44100 Hz.
+ * That was verified with `-audio driver=wav`, and it is true. But a wav backend
+ * has no clock -- it concatenates whatever it is given, whenever it is given it
+ * -- so it certifies the CONTENT and says nothing about the SCHEDULE, and on a
+ * real-time sink the schedule is the whole problem.
+ *
+ * The sink is CoreAudio, and its IOProc is all-or-nothing: if fewer than one
+ * full device buffer (512 frames, 11.6 ms by default) is queued when the
+ * hardware calls, audio/coreaudio.m plays NOTHING that period. Our data path
+ * had no lead to give it. The modelled TX FIFO drains at exactly the sample
+ * rate and is only 2048 bytes deep -- deliberately, because that depth is how
+ * far the DMA read head runs ahead of the guest's own producer and raising it
+ * breaks fidelity (see the header) -- so PCM reached the backend just in time
+ * and never ahead of time. Measured on nand-grow7g: a mean of 0.5 device
+ * buffers queued at each callback, and one starved callback landing inside the
+ * clip, which puts an 11.6 ms hole in the middle of a 500 ms sound and shifts
+ * everything after it. Upstream's starvation path does not even clear the
+ * hardware buffer, so what is actually heard is the previous 11.6 ms replayed.
+ * That is the garbling: recognisable, because every sample is present and in
+ * order, and wrong, because a fragment is repeated in the middle of it.
+ *
+ * The fix cannot be a deeper FIFO -- that is the guest's clock and it is
+ * correct. It is a prebuffer on the far side: hold the first
+ * IT_I2S_PREBUFFER_BYTES back, then start the voice, which hands the whole lead
+ * to the mixer in one go. From then on production and consumption are both real
+ * time, so the lead persists and the host pipeline stays full. The cost is that
+ * much output latency, once per sound.
+ *
+ * The deadline exists so this can never be the reason a sound does not play: a
+ * stream shorter than the prebuffer, or one whose delivery stalls, starts
+ * anyway. Nothing in this tree may have a wait with no way out.
+ */
+static bool it_i2s_prefill_ready(IPodTouchI2SState *s)
+{
+    int64_t now;
+
+    if (s->prefilled || s->ring_level >= s->prebuffer) {
+        return true;
+    }
+    /*
+     * There is deliberately no "TX is not running, so start anyway" escape here.
+     * That was the first version and it never let the prebuffer run once:
+     * it_i2s_align_frame() pushes up to two pad bytes on the TXFCTL write, which
+     * is part of SETUP and happens with running still false, so the voice came
+     * up on those two bytes and the stream that followed found it already
+     * active. Measured -- every ACT in a run read `ring=2 fifo=2 run=0`. The
+     * short-clip case is handled where it belongs, on the TXCOM halt.
+     */
+    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (s->prefill_start_ns == 0) {
+        s->prefill_start_ns = now;
+        return false;
+    }
+    return now - s->prefill_start_ns >= IT_I2S_PREFILL_DEADLINE_NS;
 }
 
 static void it_i2s_activate(IPodTouchI2SState *s)
 {
-    if (s->card_ok && s->voice && !s->active) {
-        AUD_set_active_out(s->voice, 1);
-        s->active = 1;
+    if (!s->card_ok || !s->voice || s->active) {
+        return;
     }
+    if (!it_i2s_prefill_ready(s)) {
+        return;
+    }
+    s->prefilled = true;
+    it_i2s_vlog(s, "ACT", s->ring_level, 0);
+    AUD_set_active_out(s->voice, 1);
+    s->active = 1;
 }
 
 /*
@@ -888,11 +994,28 @@ static void ipod_touch_i2s_write(void *opaque, hwaddr offset, uint64_t value,
         s->txcom = value;
         if ((value & 0x7) == IT_I2S_CMD_RUN) {
             s->running = true;
+            /* Restart the prebuffer deadline with the stream it belongs to;
+             * otherwise it runs from whatever setup byte happened to land in the
+             * ring, and can expire before there is anything to play. */
+            if (!s->prefilled) {
+                s->prefill_start_ns = 0;
+            }
             it_i2s_activate(s);
             IT_I2S_DPRINTF("TX run (total=%" PRIu64 " dropped=%" PRIu64 ")\n",
                            s->total_bytes, s->dropped);
         } else if (value == IT_I2S_CMD_HALT) {
             s->running = false;
+            /* A clip shorter than the prebuffer has nothing left to push, so
+             * this is its only chance to start the voice -- but ONLY if there is
+             * something to play. The driver writes TXCOM = 0 during SETUP as
+             * well (it lands between txcon and txfctl, before TX has ever run),
+             * and activating there brought the voice up with an empty ring, so
+             * the stream that followed started already active and got no
+             * prebuffer at all. Measured: mean queue 0.5 device buffers with
+             * that call unguarded against 1.5 without it. */
+            if (s->ring_level) {
+                it_i2s_activate(s);
+            }
             if (s->dump) {
                 fflush(s->dump);
             }
@@ -984,6 +1107,8 @@ static void ipod_touch_i2s_reset(DeviceState *dev)
         timer_del(s->ready_timer);
     }
     s->fifo_bytes = 0;
+    s->prefilled = false;
+    s->prefill_start_ns = 0;
     s->pace_last_ns = 0;
     if (s->pace_timer) {
         timer_del(s->pace_timer);
@@ -1021,6 +1146,15 @@ static void ipod_touch_i2s_realize(DeviceState *dev, Error **errp)
     s->as.nchannels = 2;
     s->as.fmt = AUDIO_FORMAT_S16;
     s->as.endianness = 0; /* little endian */
+
+    s->prebuffer = IT_I2S_PREBUFFER_BYTES_DEFAULT;
+    const char *pre = getenv("IT_I2S_PREBUFFER_BYTES");
+    if (pre) {
+        int b = atoi(pre);
+        if (b >= 0) {
+            s->prebuffer = b;
+        }
+    }
 
     s->fifo_depth = IT_I2S_FIFO_BYTES_DEFAULT;
     const char *depth = getenv("IT_I2S_FIFO_BYTES");
