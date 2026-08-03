@@ -48,36 +48,109 @@
  *     constants sit in it), not audio.
  *   - "Nothing upstream produced bytes." That was my inference and it is WRONG.
  *
- * THE MEASUREMENT THAT SETTLED IT. The DMA request 0xc0318b90 builds and
- * submits is fully formed and describes a REAL transfer. Read live, and
- * validated by [req+0x54] matching the DMA controller object it must point to:
+ * THE MEASUREMENT THAT SETTLED IT. The DMA request the audio stack builds and
+ * submits is fully formed and describes a REAL transfer (61440 bytes, 15
+ * periods of 4096, with a completion routine attached). It is then never
+ * executed.
  *
- *     [req+0x54] c0bfdb00   the DMA controller
- *     [req+0x58] c0c58900   an IOKit memory object (length 0x10000 at +0x1c)
- *     [req+0x5c] 00000002   direction
- *     [req+0x60] 00001000   4096 -- the same value written to I2S reg 0x30
- *     [req+0x64] 0000f000   61440 bytes, i.e. 15 periods of 4096
- *     [req+0x68] 0000000a
- *     [req+0x7c] c0c6a800   the AppleARMIISAudio instance
- *     [req+0x80] c050601c   completion callback, in that kext's text
+ * ---------------------------------------------------------------------------
+ * WHERE THE FAILURE ACTUALLY IS (measured 2026-08-03, IT_DMAC_TRACE +
+ * IT_I2S_PC + a live RAM dump; every address below is from the running guest,
+ * not from the kernelcache in ~/Developer/ipod2g-re, which is a different
+ * image and whose addresses do not apply)
  *
- * So the driver believes it has 61440 bytes to send, names the memory holding
- * them, and hands the request to the DMA controller kext with a completion
- * routine attached. The request is then simply never executed: across a whole
- * sound the PL080 sees 139 channel starts and not one targets the TX FIFO at
- * 0x3ca00010 (IT_DMA_TRACE fires on every channel-configuration write, so it
- * would see them).
+ * 1. THE DMA CONTROLLER IS NEVER ASKED ANYTHING. IT_DMAC_TRACE=1 logs every
+ *    PL080 read and write on both controllers with the guest PC, interleaved
+ *    with this device's accesses in one stream. Across the whole I2S bring-up
+ *    -- before it, during it, after it -- there are ZERO PL080 accesses. Every
+ *    PL080 access in an entire boot comes from one accessor pair (read
+ *    c0750cd4 / write c0750d08) and belongs to UART1 (0x3db00024) on DMAC0 and
+ *    SPI4 (0x3e100010) on DMAC1.
  *
- * The gap is therefore inside the DMA controller kext (Thumb, ~0xc0318xxx),
- * between accepting a well-formed request and programming a channel. That is a
- * much better place to be than the AMC: it drives hardware we DO model, so if
- * it is waiting on a PL080 state we answer wrongly, that is a gate we could
- * satisfy honestly rather than fake.
+ *    So the standing hypothesis -- that this tree's "nothing can fail" default
+ *    was feeding the DMAC kext a register value that made it give up -- is
+ *    DISPROVEN. It reads no register. No change to hw/dma/pl080.c can fix this
+ *    bug, and the PL080 model is exonerated.
  *
- * Instruments: IT_I2S_PC / IT_I2S_DEREF here, IT_AMC_PC / IT_AMC_V2P /
- * IT_AMC_WATCH for the AMC side. Guest VAs must be read out of RAM via QMP
- * pmemsave (VA - 0xB8000000 = PA); the kernelcache in ~/Developer/ipod2g-re is
- * NOT the image that boots.
+ * 2. THE ERROR HAS A NAME. `AppleARMIISAudioDevice: could not start DMA:
+ *    device is not ready` is `%s: could not start DMA: %s` (format string at
+ *    c0506be4, referenced from the literal pool at c0505acc) with the second
+ *    %s coming from the KERNEL's own IOReturn->string table: the entry at
+ *    c01fa000 pairs "device is not ready" with 0xE00002D8, i.e.
+ *    kIOReturnNotReady. Not a guess -- the table is right there, between
+ *    0xE00002D7 "device is offline" and 0xE00002D9 "device/channel is not
+ *    attached".
+ *
+ * 3. THE FULL CALL CHAIN, recovered live from the r7 frame walk on the I2S
+ *    enable write (IT_I2S_PC=0). Innermost last:
+ *
+ *      c0505a6c   AppleARMIISAudio start; logs the message. r4 = this = c0c6a800
+ *      c050554c   after `bl c05054f8`; [this+0x74] = 2, so output only
+ *      c0505480   c05053ec, per-direction
+ *      c05053a8   c0505340: takes [this+0x98] lock, calls the DMA controller's
+ *                 [vtable+0x358] and returns whatever it returns
+ *      c0318c49   c0318b90 (THUMB) on controller c0bfdb00, vtable c032267c:
+ *                 allocates the request, fills +0x54..+0x7c, and hands it to a
+ *                 command gate
+ *      c018a659   IOCommandGate::runAction
+ *      c0318581   the gated action c0318536, on channel object c0b7f500:
+ *                 calls [vt+0x380] (which is what brings I2S up), bumps
+ *                 [this+0x54], then calls [vt+0x358]
+ *      c0318533 / c0565c94   the I2S register writes themselves
+ *
+ *    c0b7f500's vtable is c056f4c8 -- in the I2S kext -- and its [vt+0x358] is
+ *    c0565928. That routine dispatches on [req+0x5c] (2 = output) to
+ *    [[this+0x7c] vtable+0x84] = c018b358 = IODMAEventSource::startDMACommand,
+ *    whose object c0b99d80 carries [+0x28] = the AppleARMPL080DMAC instance
+ *    c0a67c00 and [+0x2c] = DMA channel 5. That in turn calls the controller's
+ *    [vtable+0x354] = c07500e0.
+ *
+ * 4. TWO CANDIDATE PRODUCERS OF kIOReturnNotReady, and one of them is RULED
+ *    OUT by measurement:
+ *
+ *    (a) c075013c in AppleARMPL080DMAC (ARM, not Thumb -- disassembling this
+ *        kext as Thumb yields plausible garbage). The only site in that kext
+ *        that materialises 0xE00002D8. Its test is
+ *            r2 = [controller + 0x64*channel + 0x98]; if (r2 <= 1) return NotReady
+ *        i.e. a purely software per-channel state, checked before any register
+ *        is touched -- which is why the hardware never sees anything.
+ *        RULED OUT: sampled 0.6 s and 2.1 s either side of a failure, the
+ *        channel states are [0,0,3,3,2,2,3,0] and do not move; channel 5 reads
+ *        2, so the branch is not taken. (State meanings, from the setters:
+ *        1 at c07508b8 = allocated, 2 at c0750a34/c0751128 = configured, 3 at
+ *        c07503c4 = has a live request.)
+ *
+ *    (b) c0565974 in the I2S kext, which preloads r6 = 0xE00002D8 as the
+ *        DEFAULT result of a prime-and-wait block: it sets [this+0x8c] = 1,
+ *        pokes [[this+0x70] vt+0x220], arms a timeout via [[this+0x84] vt+0x94]
+ *        and sleeps on [this+0x8c] until it reads 3 or 4. A timeout overwrites
+ *        r6 with 0xE00002EB, so 0xE00002D8 survives only if the block ends in
+ *        state 4 WITHOUT our timeout firing. Note the entry guard at c0565954
+ *        skips the whole block when [req+0x6c] > 999999999, and c0318c20 sets
+ *        [req+0x6c] = -1 when the caller passes no deadline.
+ *
+ *    So the remaining question is narrow and concrete: which of (a)'s deeper
+ *    paths or (b) produces the code, and what does [this+0x8c] have to be told.
+ *    The cheapest next instrument is a hit probe on c0565974 and c075013c --
+ *    neither is reachable from a device model, so it wants gdbstub or a TCG
+ *    hook rather than another MMIO trace.
+ *
+ * 5. DEVICE TREE, for reference (DeviceTree.nowdt.bin, parsed offline):
+ *    i2s0's dma-parent is dmac0's phandle, and dma-channels encodes PL080
+ *    peripheral request lines, not channel numbers: TX word 0x00000a80 =
+ *    flow 1 (mem->periph), dest peripheral 10, FIFO 0x3ca00010; RX word
+ *    0x00001056 = flow 2 (periph->mem), src peripheral 11, FIFO 0x3ca00038.
+ *    The channel the audio stack actually asks for at runtime is 5.
+ *
+ * HOW TO MAKE THE GUEST PLAY A SOUND AT ALL, which blocked this for hours:
+ * the guest plays NOTHING until something asks it to, and typing on the
+ * on-screen keyboard produced no audio (keyboard clicks appear to be off on
+ * these images). What works, and needs no touch: the screenshot shutter, i.e.
+ * Home and Power held together. `send-key` presses and releases as a unit, so
+ * they have to be driven as individual key events -- meta_l+shift down, h
+ * down, l down, hold ~0.35 s, release. Touch itself only works on
+ * nand-7e18-final with a FRESH overlay; nand-grow7g with a reused baseline
+ * overlay delivers frames the digitizer reads and the UI ignores entirely.
  * ---------------------------------------------------------------------------
  */
 
@@ -271,6 +344,28 @@ static void it_i2s_log_caller(hwaddr offset, uint32_t val)
     }
 }
 
+/*
+ * Emit I2S accesses into the same stderr stream as IT_DMAC_TRACE, so a single
+ * ordered log shows where in the DMAC conversation the audio driver brings this
+ * controller up. Correlating two separately-buffered logs was the previous
+ * approach and it could not answer "what did the DMAC do NEXT".
+ */
+bool it_dmac_trace_on(void);
+
+static void it_i2s_dmac_mark(hwaddr offset, uint32_t val, bool write)
+{
+    uint32_t pc = 0;
+
+    if (!it_dmac_trace_on() || offset == IT_I2S_TXFIFO) {
+        return;
+    }
+    if (current_cpu) {
+        pc = ARM_CPU(current_cpu)->env.regs[15];
+    }
+    fprintf(stderr, "[i2s  ] %c %03x                %08x  pc=%08x\n",
+            write ? 'W' : 'R', (unsigned)offset, val, pc);
+}
+
 static uint64_t ipod_touch_i2s_read(void *opaque, hwaddr offset, unsigned size)
 {
     IPodTouchI2SState *s = (IPodTouchI2SState *)opaque;
@@ -298,6 +393,7 @@ static uint64_t ipod_touch_i2s_read(void *opaque, hwaddr offset, unsigned size)
      * the whole conversation is the only way to tell those apart.
      */
     IT_I2S_DPRINTF("R %02x -> %08x\n", (unsigned)offset, val);
+    it_i2s_dmac_mark(offset, val, false);
     return val;
 }
 
@@ -307,6 +403,7 @@ static void ipod_touch_i2s_write(void *opaque, hwaddr offset, uint64_t value,
     IPodTouchI2SState *s = (IPodTouchI2SState *)opaque;
 
     it_i2s_log_caller(offset, (uint32_t)value);
+    it_i2s_dmac_mark(offset, (uint32_t)value, true);
     if (offset != IT_I2S_TXFIFO) {
         IT_I2S_DPRINTF("W %02x <- %08x\n", (unsigned)offset, (uint32_t)value);
     }
