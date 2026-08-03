@@ -163,6 +163,70 @@ int main(void)
     }
     w("FW: context is current; all gl* below are Apple's\n");
 
+    /*
+     * Hand EAGL a real CAEAGLLayer.
+     *
+     * -renderbufferStorage:fromDrawable: is the call that makes CoreAnimation
+     * allocate a drawable and hand it to the engine, which is the ONLY way to
+     * find out three things that have so far only been assumed: which of
+     * GLESBindCoreSurface / GLESBindView actually carries the render target,
+     * what pixel format CA really picks, and whether the surface address moves
+     * between frames.
+     *
+     * The layer is not in a window, so nothing composites it -- this process is
+     * not a UIApplication. That limits what this can prove: it exercises the
+     * handoff and the format, but a triangle drawn here does not reach the
+     * panel through CA. A real .app is still required for that.
+     */
+    {
+        void *qc_h = dlopen("/System/Library/Frameworks/QuartzCore.framework/QuartzCore",
+                            RTLD_NOW);
+        void *lcls, *layer;
+        long long ok;
+
+        if (!qc_h) { w("FW: QuartzCore dlopen failed\n"); }
+        lcls = p_objc_getClass("CAEAGLLayer");
+        w("FW: CAEAGLLayer class = "); wx((unsigned long)lcls); w("\n");
+        if (!lcls) { w("FW: RESULT=NO_CAEAGLLAYER_CLASS\n"); _exit(1); }
+
+        layer = p_objc_msgSend(lcls, p_sel_registerName("alloc"));
+        layer = p_objc_msgSend(layer, p_sel_registerName("init"));
+        w("FW: layer = "); wx((unsigned long)layer); w("\n");
+        p_objc_msgSend(layer, p_sel_registerName("setOpaque:"), 1);
+
+        /* -setBounds: takes a CGRect by value (four floats). Under the armv6
+         * soft-float ABI that is four core-register words, which spills past
+         * r0-r3, so it is passed the same way a normal call would. */
+        {
+            struct { float x, y, w, h; } b = { 0.0f, 0.0f, 320.0f, 480.0f };
+            p_objc_msgSend(layer, p_sel_registerName("setBounds:"), b);
+        }
+
+        /* EAGL needs a bound renderbuffer before it will attach a drawable. */
+        {
+            unsigned rb = 0;
+            void (*p_glGenRenderbuffersOES)(int, unsigned *) =
+                dlsym(h, "glGenRenderbuffersOES");
+            void (*p_glBindRenderbufferOES)(unsigned, unsigned) =
+                dlsym(h, "glBindRenderbufferOES");
+            if (!p_glGenRenderbuffersOES || !p_glBindRenderbufferOES) {
+                w("FW: RESULT=NO_OES_RENDERBUFFER_SYMBOLS\n");
+                _exit(1);
+            }
+            p_glGenRenderbuffersOES(1, &rb);
+            w("FW: renderbuffer = "); wx(rb); w("\n");
+            p_glBindRenderbufferOES(0x8D41 /* GL_RENDERBUFFER_OES */, rb);
+        }
+
+        ok = (long long)(long)p_objc_msgSend(
+                 ctx, p_sel_registerName("renderbufferStorage:fromDrawable:"),
+                 0x8D41, layer);
+        w("FW: renderbufferStorage:fromDrawable: -> "); wx((unsigned long)ok);
+        w("\n");
+        w("FW: (see [mbxshim] lines above for which bind fired, and the "
+          "surface geometry/format)\n");
+    }
+
     for (frame = 0; frame < 400; frame++) {
         p_glViewport(0, 0, 320, 480);
         p_glClearColor(0.0f, 0.35f, 0.0f, 1.0f);
