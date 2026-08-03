@@ -375,6 +375,34 @@ static void pl192_reset(DeviceState *d)
     s->priority_stack[0] = 0x10;
     s->irq_stack[0] = PL192_NO_IRQ;
     s->priority = 0x10;
+
+    /*
+     * Programmable registers, all documented reset-to-zero. Without these a
+     * second boot started with the previous kernel's enable mask and vector
+     * table still loaded.
+     *
+     * rawintr is deliberately NOT cleared: it mirrors the level of the
+     * incoming device lines, and device reset order is unspecified. A device
+     * whose own reset does not re-drive its line would have a genuinely
+     * asserted interrupt erased here. irq_status/fiq_status are derived, so
+     * pl192_update recomputes them from rawintr below.
+     */
+    s->intenable = 0;
+    s->intselect = 0;
+    s->softint = 0;
+    s->protection = 0;
+    s->address = 0;
+    for (i = 0; i < PL192_INT_SOURCES; i++) {
+        s->vect_addr[i] = 0;
+    }
+
+    /*
+     * Step A of the pl080 lesson applied to the VIC: reset recomputed none of
+     * the outputs, so whatever level irq/fiq were last driven to survived into
+     * the next boot. Clearing state is not the same as re-deriving the line.
+     * Register clears are deliberately NOT part of this change -- one variable.
+     */
+    pl192_update(s);
 }
 
 /*
