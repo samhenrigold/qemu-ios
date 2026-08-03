@@ -1156,6 +1156,7 @@ static void ipod_touch_set_pasteboard(Object *obj, const char *value,
                                       Error **errp);
 static char *ipod_touch_get_guest_pasteboard(Object *obj, Error **errp);
 static char *ipod_touch_get_pb_agent(Object *obj, Error **errp);
+static char *ipod_touch_get_pb_status(Object *obj, Error **errp);
 
 static void ipod_touch_instance_init(Object *obj)
 {
@@ -1236,7 +1237,15 @@ static void ipod_touch_instance_init(Object *obj)
      * there is no display and so no clipboard peer at all:
      *
      *   qom-set  path=/machine property=pasteboard value="Hello. World #1"
-     *   qom-get  path=/machine property=guest-pasteboard
+     *   qom-get  path=/machine property=pasteboard-status
+     *
+     * pasteboard-status, NOT guest-pasteboard, is how you check that the text
+     * arrived. guest-pasteboard is the other direction -- the last text copied
+     * INSIDE the guest -- and the agent suppresses the echo of anything the
+     * host sent, so host text can never show up there no matter how well this
+     * works. Polling it for the string you just set is a guaranteed false
+     * negative, and has already been read once as "host->guest is broken" on a
+     * channel that was delivering correctly.
      */
     object_property_add_str(obj, "pasteboard", ipod_touch_get_pasteboard,
                             ipod_touch_set_pasteboard);
@@ -1244,15 +1253,18 @@ static void ipod_touch_instance_init(Object *obj)
         "Text to hand to the guest's UIPasteboard. Collected by the guest "
         "pasteboard agent (contrib/it-pasteboard/it_pbd.c), after which the "
         "user pastes it wherever they like -- unlike the on-screen-keyboard "
-        "typist, punctuation and symbols survive. Reads back what is still "
-        "waiting to be collected");
+        "typist, punctuation and symbols survive. Reads back only what is "
+        "still WAITING to be collected, so it empties as soon as the guest "
+        "takes it -- read pasteboard-status to see whether it arrived");
 
     object_property_add_str(obj, "guest-pasteboard",
                             ipod_touch_get_guest_pasteboard, NULL);
     object_property_set_description(obj, "guest-pasteboard",
-        "The last text copied inside the guest, as reported by the pasteboard "
-        "agent. Also pushed to the host clipboard when a UI with a clipboard "
-        "peer is attached");
+        "GUEST -> HOST only: the last text copied inside the guest, as "
+        "reported by the pasteboard agent. NOT a readback of what the host "
+        "sent -- the agent suppresses that echo deliberately, so text set "
+        "through the 'pasteboard' property never appears here. Also pushed to "
+        "the host clipboard when a UI with a clipboard peer is attached");
 
     object_property_add_str(obj, "pasteboard-agent",
                             ipod_touch_get_pb_agent, NULL);
@@ -1260,6 +1272,14 @@ static void ipod_touch_instance_init(Object *obj)
         "Whether a guest pasteboard agent is actually running: 'alive', "
         "'stale' or 'absent'. Setting the pasteboard succeeds whether or not "
         "anything is listening, so ask this before believing it");
+
+    object_property_add_str(obj, "pasteboard-status",
+                            ipod_touch_get_pb_status, NULL);
+    object_property_set_description(obj, "pasteboard-status",
+        "Whether host -> guest text actually reached the guest agent: "
+        "'queued' (still waiting), 'delivered' (with the text, its size and "
+        "how long ago) or 'idle'. This is the readback the other three "
+        "properties cannot give you");
 }
 
 static inline qemu_irq s5l8900_get_irq(IPodTouchMachineState *s, int n)
@@ -1677,6 +1697,43 @@ static char *ipod_touch_get_pb_agent(Object *obj, Error **errp)
                                NANOSECONDS_PER_SECOND);
     }
     return g_strdup_printf("alive: %" PRIu64 " polls", nms->pb_polls);
+}
+
+/*
+ * "Did the text I sent get there?" -- which is NOT what any of the properties
+ * above answer, and the gap cost a whole investigation.
+ *
+ * "pasteboard" reads back the item still WAITING, so it empties the instant the
+ * guest takes it: collected and never-sent are both "". And "guest-pasteboard"
+ * is not a readback at all -- it is the last text COPIED INSIDE the guest, and
+ * the agent deliberately marks host text as already-seen so it is never echoed
+ * back, so host text can never appear there however well the channel works.
+ * Watching it for the string you just set is therefore guaranteed to look like
+ * a failure. This property is the one that answers the question.
+ */
+static char *ipod_touch_get_pb_status(Object *obj, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    g_autofree char *agent = ipod_touch_get_pb_agent(obj, NULL);
+
+    if (nms->pb_out) {
+        return g_strdup_printf("queued: %zu bytes still waiting for the guest "
+                               "(agent: %s)", nms->pb_out_len, agent);
+    }
+    if (nms->pb_delivered) {
+        /* Truncated: this is a status line, not a transcript. */
+        g_autofree char *shown = g_strndup(nms->pb_delivered, 64);
+        return g_strdup_printf("delivered: %zu bytes, %" PRId64 " s ago, "
+                               "%" PRIu64 " total: \"%s\"%s (agent: %s)",
+                               nms->pb_delivered_len,
+                               (now - nms->pb_delivered_ns) /
+                               NANOSECONDS_PER_SECOND,
+                               nms->pb_deliveries, shown,
+                               nms->pb_delivered_len > 64 ? "..." : "", agent);
+    }
+    return g_strdup_printf("idle: nothing has been sent to the guest "
+                           "(agent: %s)", agent);
 }
 
 static void ipod_touch_kbd_enqueue(IPodTouchMachineState *nms, uint16_t ch)

@@ -218,7 +218,19 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
         }
         case QC_PB_ACK: {
             IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
-            g_free(nms->pb_out);
+            /*
+             * Keep what was taken rather than dropping it. This is the only
+             * moment the host ever learns that a queued item reached the
+             * guest, and it used to be thrown away -- after which "delivered"
+             * and "never sent" were the same empty string. See pb_delivered.
+             */
+            if (nms->pb_out) {
+                g_free(nms->pb_delivered);
+                nms->pb_delivered = nms->pb_out;
+                nms->pb_delivered_len = nms->pb_out_len;
+                nms->pb_delivered_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+                nms->pb_deliveries++;
+            }
             nms->pb_out = NULL;
             nms->pb_out_len = 0;
             qcall.retval = 0;

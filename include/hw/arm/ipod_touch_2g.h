@@ -301,6 +301,22 @@ typedef struct {
 	uint64_t pb_polls;
 	uint64_t pb_polls_at_set; /* pb_polls when the pending item was queued */
 	QEMUTimer *pb_warn_timer;
+
+	/*
+	 * Delivery. Liveness above answers "is an agent there"; this answers "did
+	 * my text reach it", which is a different question and the one people
+	 * actually ask. There was NO way to ask it: pb_out is cleared on ACK, so a
+	 * delivered item and an item never queued read identically ("" from the
+	 * "pasteboard" property), and "guest-pasteboard" cannot stand in for a
+	 * readback -- the agent deliberately records host text as already-seen so
+	 * it is never echoed back, so that property NEVER reflects what the host
+	 * sent. A whole investigation was spent on a working channel for want of
+	 * this. Kept here and reported through "pasteboard-status".
+	 */
+	char *pb_delivered;       /* last text the guest agent collected, or NULL */
+	size_t pb_delivered_len;
+	int64_t pb_delivered_ns;
+	uint64_t pb_deliveries;
 } IPodTouchMachineState;
 
 /*
