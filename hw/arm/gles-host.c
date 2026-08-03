@@ -137,6 +137,24 @@ typedef struct {
     uint64_t frame_gap_max;
     uint32_t frames_over_33ms;
     uint32_t frames_over_100ms;
+
+    /*
+     * What this frame actually drew, by primitive, reset at every present.
+     *
+     * This exists because a run of draws got attributed to the wrong screen
+     * twice: once by reading the tail of a back-to-front sorted list and
+     * describing the whole frame from it, and once by using the fog COLOUR as
+     * a proxy for which scene was on screen. Both were guesses about scene
+     * identity dressed as measurements, and both survived review because the
+     * numbers they produced looked plausible.
+     *
+     * A frame's primitive mix is not a proxy for the scene -- it IS the frame.
+     * Printing it whenever the mix CHANGES marks every transition
+     * structurally, at one line per transition rather than one per frame, and
+     * leaves nothing for the next reader to infer.
+     */
+    uint32_t f_tris, f_linestrips, f_tristrips, f_other;
+    uint32_t last_sig;
 } GLESHost;
 
 /*
@@ -658,13 +676,13 @@ static void gles_trace_draw(const char *what, uint32_t mode, uint32_t count)
     glGetMaterialfv(GL_FRONT, GL_DIFFUSE, mat_dif);
     glGetIntegerv(GL_BLEND_SRC, &src);
     glGetIntegerv(GL_BLEND_DST, &dst);
-    fprintf(stderr, "[gles]   draw %-14s mode=0x%x count=%-4u depthmask=%d "
+    fprintf(stderr, "[gles]   f%" PRIu64 " draw %-14s mode=0x%x count=%-4u depthmask=%d "
             "depthtest=%d xyz=(%.2f %.2f %.2f)\n"
             "[gles]     linewidth=%.2f blend=%d(src=0x%x dst=0x%x) "
             "colour=(%.2f %.2f %.2f %.2f) matdiffuse=(%.2f %.2f %.2f %.2f) "
             "arrays vtx=%u col=%u nrm=%u tex=%u lighting=%d\n",
-            what, mode, count, depth_mask, glIsEnabled(GL_DEPTH_TEST),
-            mv[12], mv[13], mv[14],
+            gh.presents, what, mode, count, depth_mask,
+            glIsEnabled(GL_DEPTH_TEST), mv[12], mv[13], mv[14],
             line_width, glIsEnabled(GL_BLEND), (unsigned)src, (unsigned)dst,
             cur_col[0], cur_col[1], cur_col[2], cur_col[3],
             mat_dif[0], mat_dif[1], mat_dif[2], mat_dif[3],
@@ -791,6 +809,37 @@ static void gles_present_to_panel(void)
                                   row, sizeof(row));
     }
     gh.presents++;
+}
+
+/* Count a draw into this frame's primitive mix. */
+static void gles_note_primitive(uint32_t mode)
+{
+    switch (mode) {
+    case GL_TRIANGLES:      gh.f_tris++;       break;
+    case GL_LINE_STRIP:     gh.f_linestrips++; break;
+    case GL_TRIANGLE_STRIP: gh.f_tristrips++;  break;
+    default:                gh.f_other++;      break;
+    }
+}
+
+/*
+ * Report the frame's primitive mix when the SHAPE of it changes -- which
+ * primitives appear, not how many -- and reset the counters for the next
+ * frame. This is the scene marker; see the fields it reads.
+ */
+static void gles_note_scene(void)
+{
+    uint32_t sig = (gh.f_tris       ? 1u : 0) | (gh.f_linestrips ? 2u : 0) |
+                   (gh.f_tristrips  ? 4u : 0) | (gh.f_other      ? 8u : 0);
+
+    if (sig != gh.last_sig) {
+        fprintf(stderr, "[gles] SCENE CHANGE at frame %" PRIu64
+                ": triangles=%u line_strips=%u triangle_strips=%u other=%u\n",
+                gh.presents, gh.f_tris, gh.f_linestrips, gh.f_tristrips,
+                gh.f_other);
+        gh.last_sig = sig;
+    }
+    gh.f_tris = gh.f_linestrips = gh.f_tristrips = gh.f_other = 0;
 }
 
 /* Fold this frame's interval into the tail statistics. See the fields. */
@@ -1048,6 +1097,7 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
         }
     }
     gh.presents++;
+    gles_note_scene();
     gles_note_frame_gap();
     gles_report_progress();
     return 0;
@@ -1170,6 +1220,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         gles_unbind_arrays(bound);
         gh.draws++;
         gh.draw_arrays++;
+        gles_note_primitive(mode);
         return 0;
     }
 
@@ -1226,6 +1277,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         gles_unbind_arrays(bound);
         gh.draws++;
         gh.draw_elements++;
+        gles_note_primitive(mode);
         return 0;
     }
 
