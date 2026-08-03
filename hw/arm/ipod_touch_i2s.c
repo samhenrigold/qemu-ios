@@ -69,6 +69,57 @@
  * next piece of work, and it is a different question from the one this comment
  * used to pose -- "why is no channel ever programmed" is answered.
  *
+ * ---------------------------------------------------------------------------
+ * WHO WAS SUPPOSED TO FILL 0x08c99000, and what is known about why they did
+ * not (measured 2026-08-03, all of it on this tree, one variable at a time)
+ *
+ * 1. NOTHING EVER WRITES PCM THERE. IT_RAM_WATCH (hw/arm/ipod_touch_2g.c)
+ *    shadows the 64 KB at 0x08c99000 and logs every write with the guest PC.
+ *    Over a whole run: 28672 writes, every one of them ZERO, from four PCs
+ *    that are two unrolled bzero loops -- 0ff1b3bc/0ff1b3c4 (iBoot, at boot;
+ *    IBOOT_MEM_BASE is 0x0ff00000) and c006a498/c006a4a0 (the kernel, 24 KB of
+ *    it at sound time). After the I2S bring-up there is not one non-bzero
+ *    write. The ring is allocated, zeroed, DMA'd and abandoned. Cross-checked
+ *    with QMP pmemsave: all-zero before the sound and for 9 s after it.
+ *
+ * 2. THE AUDIO ITSELF IS IN RAM AT THE TIME. photoShutter.caf is lpcm 44100/
+ *    mono/16-bit; searching all of DRAM for 64-byte runs from its middle finds
+ *    them during the sound at 0x0a92d000 and 0x0ab11000 (page cache) and at
+ *    0x0dc45044/0x0dce1044/0x0ddff044 in a process's pages -- the +0x044 is the
+ *    CAF data chunk's payload offset, so those are file pages 8/4/2. The `caff`
+ *    header is at 0x0a95d000. Positive control in the same scan: the strings
+ *    "photoShutter" and "UISounds" are found. So the file is read and mapped
+ *    and only the copy INTO the ring never happens.
+ *
+ * 3. IT IS NOT THE AMC. The same scan finds none of that PCM anywhere in the
+ *    AMC's 192 KB aperture, with the same positive control. Nothing on this
+ *    path touches the AMC at all: IT_AMC_TRACE emits zero lines for a sound.
+ *
+ * 4. THE DMA'S COMPLETION INTERRUPT IS NEVER DELIVERED, and that is ours.
+ *    pl080_update now logs every transition of the combined line under
+ *    IT_DMAC_TRACE. DMAC0 raises it once during boot and it is NEVER
+ *    acknowledged -- across an entire run the kernel makes ZERO IntStatus
+ *    reads and ZERO IntTCClear writes to DMAC0 -- while DMAC1, on the same VIC
+ *    number, is serviced cleanly every time (6 reads, 6 acks). Both devices get
+ *    the SAME qemu_irq from s5l8900_get_irq(), so DMAC1's deassertions drop
+ *    DMAC0's pending interrupt. Proved from the other side with IT_DMAC0_IRQ:
+ *    move DMAC0 to 0x10, the number its own header defines, and the kernel
+ *    services it 1838 times in one boot. The audio channel is channel 5 on
+ *    DMAC0, so every per-period terminal count it raises goes nowhere, and the
+ *    audio engine is never told a period finished.
+ *
+ *    Not yet fixable as it stands: on 0x10 the boot stops at the logo (lit
+ *    0.0214), and so does driving both lines through a split-irq
+ *    (IT_DMAC0_SPLIT=1) -- with 2196 DMAC0 acks and DMAC1 never reached at all.
+ *    Something earlier in the boot depends on DMAC0's interrupt NOT arriving,
+ *    which is the same shape as the reverted TYPE_OR_IRQ experiment and is now
+ *    at least explained by it: DMAC0's channel-3 terminal count from boot is
+ *    latched and never cleared, so a correctly-shared line is held high
+ *    forever.
+ *
+ * 5. The guest kernel log says nothing at all during a sound -- no AMC
+ *    assertion, no "could not start DMA". Every layer reports success.
+ *
  * Everything below was probed, not inferred, and is kept because it is what
  * ruled out the layers that are NOT at fault.
  *
@@ -316,6 +367,112 @@ static void it_i2s_arm_ready(IPodTouchI2SState *s)
               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + IT_I2S_READY_DELAY_NS);
 }
 
+/*
+ * TX FIFO pacing.
+ *
+ * THIS IS THE ANSWER TO "WHY IS THE PCM ALL ZEROES", and it is not an AMC or a
+ * codec or a routing problem -- it is a clock problem, in this emulator.
+ *
+ * The guest's audio stack programs an LLI-chained PL080 descriptor over an
+ * 18-period, 72 KB ring and starts the channel. It has written nothing into
+ * that ring yet: an IOAudio2 output engine fills the ring AHEAD of the play
+ * position, in real time, driven by the per-period terminal-count interrupts
+ * the DMA raises as it goes. Our PL080 ignored the peripheral request line, so
+ * the channel start copied all 72 KB into this FIFO inside a single MMIO write
+ * -- 0.84 s of audio in zero guest time -- and then raised every period
+ * interrupt at once. Everything we delivered was the silence the ring had been
+ * allocated with, and the engine never got a chance to write a sample. Measured
+ * both ways: the modelled FIFO saw 73728 bytes with peak 0, and pmemsave of the
+ * ring's physical pages (0x08c99000, 64 KB) read all-zero before the sound and
+ * for nine seconds after it.
+ *
+ * So we give the transfer a clock. The block drains its TX FIFO at the sample
+ * rate and asserts its DMA request line whenever the FIFO has room; the PL080
+ * re-reads that line between elements, so it refills and stops on its own. The
+ * gating only applies to peripherals that opt in (see
+ * pl080_attach_paced_peripheral), so nothing else on either DMAC changes.
+ *
+ * The drain is computed from the virtual clock rather than counted in ticks, so
+ * a late or coalesced timer callback cannot inflate the rate.
+ *
+ * IT_I2S_PACE=0 restores the old free-running behaviour for A/B.
+ */
+static bool it_i2s_pace_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("IT_I2S_PACE");
+        cached = (v == NULL) ? 1 : (atoi(v) != 0);
+    }
+    return cached != 0;
+}
+
+static void it_i2s_update_dma_req(IPodTouchI2SState *s)
+{
+    bool want;
+
+    if (!s->dmac || !it_i2s_pace_enabled()) {
+        return;
+    }
+    want = s->enable && s->fifo_bytes < s->fifo_depth;
+    if (want == s->dma_req) {
+        return;
+    }
+    s->dma_req = want;
+    /* Raising re-enters the DMA controller, which will write PCM back into this
+     * device; lowering never does. it_i2s_push() only ever raises fifo_bytes,
+     * so it can only lower the line, and the recursion terminates. */
+    pl080_set_dma_request(s->dmac, s->dma_req_id, want);
+}
+
+/* Advance the modelled FIFO by however much real time has passed. */
+static void it_i2s_pace_drain(IPodTouchI2SState *s)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t elapsed;
+    uint64_t bytes;
+    unsigned frame = 2 * s->as.nchannels;   /* 16-bit samples */
+
+    if (s->pace_last_ns == 0) {
+        s->pace_last_ns = now;
+        return;
+    }
+    elapsed = now - s->pace_last_ns;
+    if (elapsed <= 0) {
+        return;
+    }
+    s->pace_last_ns = now;
+    bytes = ((uint64_t)s->as.freq * frame * (uint64_t)elapsed) / 1000000000ULL;
+    s->fifo_bytes = (bytes >= s->fifo_bytes) ? 0 : s->fifo_bytes - bytes;
+}
+
+static void it_i2s_pace_cb(void *opaque)
+{
+    IPodTouchI2SState *s = (IPodTouchI2SState *)opaque;
+
+    if (!s->enable) {
+        s->dma_req = false;
+        if (s->dmac && it_i2s_pace_enabled()) {
+            pl080_set_dma_request(s->dmac, s->dma_req_id, false);
+        }
+        return;         /* block powered down: stop the timer */
+    }
+    it_i2s_pace_drain(s);
+    it_i2s_update_dma_req(s);
+    timer_mod(s->pace_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + IT_I2S_PACE_PERIOD_NS);
+}
+
+static void it_i2s_pace_start(IPodTouchI2SState *s)
+{
+    if (!s->pace_timer || !it_i2s_pace_enabled()) {
+        return;
+    }
+    s->pace_last_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    it_i2s_update_dma_req(s);
+    timer_mod(s->pace_timer, s->pace_last_ns + IT_I2S_PACE_PERIOD_NS);
+}
+
 /* Drain the PCM ring into the audio backend, up to `free_bytes` of headroom. */
 static void it_i2s_drain(IPodTouchI2SState *s, int free_bytes)
 {
@@ -368,6 +525,10 @@ static void it_i2s_push(IPodTouchI2SState *s, const uint8_t *buf, unsigned len)
     unsigned i;
 
     s->total_bytes += len;
+    /* The bytes just clocked into the TX FIFO. Charge them before anything
+     * else: this runs inside the DMA controller's own transfer loop, and the
+     * request line we lower here is what ends the burst. */
+    s->fifo_bytes += len;
 
     /* Raw tap: everything that reaches the FIFO, regardless of the backend.
      * Play it back with e.g.
@@ -389,6 +550,7 @@ static void it_i2s_push(IPodTouchI2SState *s, const uint8_t *buf, unsigned len)
     }
 
     it_i2s_activate(s);
+    it_i2s_update_dma_req(s);
 }
 
 /*
@@ -561,6 +723,14 @@ static void ipod_touch_i2s_write(void *opaque, hwaddr offset, uint64_t value,
     case IT_I2S_ENABLE:
         s->enable = value;
         IT_I2S_DPRINTF("enable <- 0x%" PRIx64 "\n", value);
+        /* The block's clock. While it is running the TX FIFO empties at the
+         * sample rate, which is the only thing that paces the DMA. */
+        if (s->enable) {
+            s->fifo_bytes = 0;
+            it_i2s_pace_start(s);
+        } else {
+            it_i2s_update_dma_req(s);
+        }
         break;
     case IT_I2S_TXCON:
         s->txcon = value;
@@ -663,6 +833,15 @@ static void ipod_touch_i2s_reset(DeviceState *dev)
     if (s->ready_timer) {
         timer_del(s->ready_timer);
     }
+    s->fifo_bytes = 0;
+    s->pace_last_ns = 0;
+    if (s->pace_timer) {
+        timer_del(s->pace_timer);
+    }
+    if (s->dma_req && s->dmac) {
+        pl080_set_dma_request(s->dmac, s->dma_req_id, false);
+    }
+    s->dma_req = false;
 
     /* After the state wipe, not before: reset runs once after realize and would
      * otherwise throw the queued tone away. */
@@ -693,6 +872,15 @@ static void ipod_touch_i2s_realize(DeviceState *dev, Error **errp)
     s->as.fmt = AUDIO_FORMAT_S16;
     s->as.endianness = 0; /* little endian */
 
+    s->fifo_depth = IT_I2S_FIFO_BYTES_DEFAULT;
+    const char *depth = getenv("IT_I2S_FIFO_BYTES");
+    if (depth) {
+        int d = atoi(depth);
+        if (d > 0) {
+            s->fifo_depth = d;
+        }
+    }
+
     s->card_ok = AUD_register_card("ipod-i2s", &s->card, errp);
     if (!s->card_ok) {
         /* No audio backend registered: run silent but keep the machine alive. */
@@ -721,6 +909,7 @@ static void ipod_touch_i2s_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
     s->ready_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, it_i2s_ready_cb, s);
+    s->pace_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, it_i2s_pace_cb, s);
 }
 
 static void ipod_touch_i2s_class_init(ObjectClass *klass, void *data)
