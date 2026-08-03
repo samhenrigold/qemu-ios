@@ -334,6 +334,14 @@ static void handleAnyDeviceErrors(Error * err)
     NSPoint prevMousePoint;
     NSPoint pinchPoint;
     NSUInteger previousModifierFlags;
+    /*
+     * Show taps. Drawn over the scanout in -drawRect:, never into the guest's
+     * framebuffer -- so screendumps and the regression harness, which assert on
+     * pixel values, cannot see any of it.
+     */
+    BOOL showTaps;
+    NSRect tapRects[2];
+    int tapCount;
 }
 - (void) switchSurface:(pixman_image_t *)image;
 - (void) grabMouse;
@@ -345,6 +353,10 @@ static void handleAnyDeviceErrors(Error * err)
 - (void) notifyMouseModeChange;
 - (void) copyScreenToPasteboard;
 - (void) installIPA:(NSString *)path;
+- (void) refreshTapMarkers;
+- (void) drawTapMarkers:(CGContextRef)ctx;
+- (void) toggleShowTaps:(id)sender;
+- (BOOL) showTaps;
 - (void) updatePinch:(NSUInteger)modifiers;
 - (void) modifiersChanged:(NSUInteger)modifiers;
 - (BOOL) isMouseGrabbed;
@@ -390,6 +402,11 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
         [trackingArea release];
         /* Drop an .ipa on the window to install it. */
         [self registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
+        /*
+         * On by default: it cannot reach a screendump, and an Option-drag whose
+         * second finger is invisible is a gesture you perform blind.
+         */
+        showTaps = YES;
         screen.width = frameRect.size.width;
         screen.height = frameRect.size.height;
         colorspace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
@@ -592,6 +609,101 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
         }
         CGImageRelease (imageRef);
         CGDataProviderRelease(dataProviderRef);
+    }
+
+    [self drawTapMarkers:viewContextRef];
+}
+
+/*
+ * Show taps -- grey dots where the contacts are.
+ *
+ * The iPhone Simulator did this in a separate borderless window with
+ * ignoresMouseEvents set, purely so the dots could never be a hit-test
+ * participant. We have no compositing layer above the guest framebuffer, so
+ * that does not transfer; drawing here instead, AFTER the scanout has been
+ * blitted and into the view's own context, gets the same property for free.
+ * The guest's framebuffer is never touched, which matters: screendumps and the
+ * regression harness assert on those pixel values and must not see a dot.
+ *
+ * The second finger of an Option-drag is the reason this exists at all. It is
+ * invisible otherwise, which makes a pinch something you do blind.
+ */
+- (void) drawTapMarkers:(CGContextRef)ctx
+{
+    int i;
+
+    if (!showTaps) {
+        return;
+    }
+    CGContextSetShouldAntialias(ctx, YES);
+    for (i = 0; i < tapCount; i++) {
+        CGRect r = NSRectToCGRect(tapRects[i]);
+
+        CGContextSetRGBFillColor(ctx, 0.75, 0.75, 0.75, 0.45);
+        CGContextFillEllipseInRect(ctx, r);
+        CGContextSetRGBStrokeColor(ctx, 0.95, 0.95, 0.95, 0.8);
+        CGContextSetLineWidth(ctx, 1.5);
+        CGContextStrokeEllipseInRect(ctx, CGRectInset(r, 0.75, 0.75));
+    }
+    CGContextSetShouldAntialias(ctx, NO);
+}
+
+#define TAP_MARKER_RADIUS 13.0
+
+/*
+ * Recompute where the dots are and dirty both the old and the new positions.
+ * Only the new ones is not enough: a static guest redraws nothing on its own,
+ * so the previous dot would stay on screen and the markers would smear into a
+ * trail behind the finger.
+ */
+- (void) refreshTapMarkers
+{
+    NSRect old[2];
+    int oldCount = tapCount, i;
+    NSPoint pts[2];
+    int n = 0;
+
+    if (!showTaps) {
+        return;
+    }
+    memcpy(old, tapRects, sizeof(old));
+
+    if (leftButtonDown && haveMousePoint) {
+        pts[n++] = mousePoint;
+    }
+    if (pinchDown) {
+        pts[n++] = pinchPoint;
+    }
+    for (i = 0; i < n; i++) {
+        /* Guest coordinates have y downwards; the view's origin is bottom left. */
+        tapRects[i] = NSMakeRect(pts[i].x - TAP_MARKER_RADIUS,
+                                 (screen.height - pts[i].y) - TAP_MARKER_RADIUS,
+                                 TAP_MARKER_RADIUS * 2, TAP_MARKER_RADIUS * 2);
+    }
+    tapCount = n;
+
+    for (i = 0; i < oldCount; i++) {
+        [self setNeedsDisplayInRect:old[i]];
+    }
+    for (i = 0; i < n; i++) {
+        [self setNeedsDisplayInRect:tapRects[i]];
+    }
+}
+
+- (BOOL) showTaps { return showTaps; }
+
+- (void) toggleShowTaps:(id)sender
+{
+    showTaps = !showTaps;
+    [sender setState:showTaps ? NSControlStateValueOn : NSControlStateValueOff];
+    if (!showTaps) {
+        int i;
+        for (i = 0; i < tapCount; i++) {
+            [self setNeedsDisplayInRect:tapRects[i]];
+        }
+        tapCount = 0;
+    } else {
+        [self refreshTapMarkers];
     }
 }
 
@@ -1312,6 +1424,7 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
             qemu_input_event_sync();
             pinchDown = FALSE;
         }
+        [self refreshTapMarkers];
         return;
     }
 
@@ -1337,6 +1450,7 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
             qemu_input_event_sync();
             pinchDown = FALSE;
         }
+        [self refreshTapMarkers];
         return;
     }
 
@@ -1349,6 +1463,7 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
 
     pinchPoint = p;
     pinchDown = TRUE;
+    [self refreshTapMarkers];
 }
 
 /* Re-emit on a modifier change alone, with the pointer exactly where it was. */
@@ -1415,6 +1530,9 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
         previousModifierFlags = [event modifierFlags];
         [self updatePinch:previousModifierFlags];
     });
+
+    /* -updatePinch: only redraws when finger 1 moves; finger 0 moved too. */
+    [self refreshTapMarkers];
 }
 
 - (void) mouseExited:(NSEvent *)event
@@ -2094,6 +2212,10 @@ static void create_initial_menus(void)
     [menu addItem: menuItem];
     menuItem = [[[NSMenuItem alloc] initWithTitle:@"Zoom Interpolation" action:@selector(toggleZoomInterpolation:) keyEquivalent:@""] autorelease];
     [menuItem setState: zoom_interpolation == kCGInterpolationLow ? NSControlStateValueOn : NSControlStateValueOff];
+    [menu addItem: menuItem];
+    menuItem = [[[NSMenuItem alloc] initWithTitle:@"Show Taps" action:@selector(toggleShowTaps:) keyEquivalent:@""] autorelease];
+    [menuItem setTarget: cocoaView];
+    [menuItem setState: [cocoaView showTaps] ? NSControlStateValueOn : NSControlStateValueOff];
     [menu addItem: menuItem];
     menuItem = [[[NSMenuItem alloc] initWithTitle:@"View" action:nil keyEquivalent:@""] autorelease];
     [menuItem setSubmenu:menu];
