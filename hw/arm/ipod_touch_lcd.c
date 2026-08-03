@@ -4,6 +4,7 @@
 #include "ui/console.h"
 #include "hw/display/framebuffer.h"
 #include "exec/cpu-common.h"
+#include "qemu/log.h"
 
 int lcd_brightness = 255;
 
@@ -111,7 +112,8 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
             if (getenv("IT_LCD_READY")) {
                 return 0xffffffff;
             }
-            printf("%s: read invalid location 0x%08x.\n", __func__, addr);
+            qemu_log_mask(LOG_UNIMP, "%s: read invalid location 0x%08x.\n",
+                          __func__, (unsigned)addr);
             break;
     }
     return 0;

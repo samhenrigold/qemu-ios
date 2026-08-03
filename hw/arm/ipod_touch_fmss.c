@@ -722,7 +722,8 @@ static uint64_t ipod_touch_fmss_read(void *opaque, hwaddr addr, unsigned size)
         case 0x00000C30:
             return 0x1;
         default:
-            printf("%s: read invalid location 0x%08x.\n", __func__, addr);
+            qemu_log_mask(LOG_UNIMP, "%s: read invalid location 0x%08x.\n",
+                          __func__, (unsigned)addr);
             break;
     }
     return 0;

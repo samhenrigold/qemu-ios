@@ -200,8 +200,17 @@ static uint32_t ipod_touch_nor_spi_transfer(SSIPeripheral *dev, uint32_t value)
             s->out_buf[2] = 0x02;
         }
         else {
+            /*
+             * Nothing set in_buf_size/out_buf_size here, so the command ran on
+             * the *previous* command's lengths -- in bounds only because both
+             * buffers are 0x1000 and the largest size is 0x1000. Give it a
+             * defined one-byte answer so the transaction terminates and the
+             * buffers are freed on the completion path below.
+             */
             printf("%s Unknown command 0x%02x!\n", __func__, value);
-            // hw_error("Unknown command 0x%02x!", value);
+            s->in_buf_size = 1;
+            s->out_buf_size = 1;
+            s->out_buf[0] = 0;
         }
 
         return 0x0;

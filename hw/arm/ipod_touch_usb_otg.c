@@ -619,7 +619,14 @@ static uint64_t synopsys_usb_read(void *opaque, hwaddr _addr, unsigned size)
 	case GNPTXFSIZ:
 		return state->gnptxfsiz;
 
-	case DIEPTXF(1) ... DIEPTXF(USB_NUM_FIFOS+1):
+	/*
+	 * Inclusive case range, so ...DIEPTXF(USB_NUM_FIFOS+1) covered one register
+	 * too many: (_addr - DIEPTXF(1)) >> 2 then yielded 0..16 into
+	 * dptxfsiz[USB_NUM_FIFOS], which is 16 entries. Index 16 aliased the next
+	 * struct member (dctl), so a write to a 17th FIFO register silently
+	 * rewrote the device control register. No driver programs one today.
+	 */
+	case DIEPTXF(1) ... DIEPTXF(USB_NUM_FIFOS):
 		_addr -= DIEPTXF(1);
 		_addr >>= 2;
 		return state->dptxfsiz[_addr];
@@ -858,7 +865,14 @@ static void synopsys_usb_write(void *opaque, hwaddr _addr, uint64_t _val, unsign
 		state->gnptxfsiz = _val;
 		return;
 
-	case DIEPTXF(1) ... DIEPTXF(USB_NUM_FIFOS+1):
+	/*
+	 * Inclusive case range, so ...DIEPTXF(USB_NUM_FIFOS+1) covered one register
+	 * too many: (_addr - DIEPTXF(1)) >> 2 then yielded 0..16 into
+	 * dptxfsiz[USB_NUM_FIFOS], which is 16 entries. Index 16 aliased the next
+	 * struct member (dctl), so a write to a 17th FIFO register silently
+	 * rewrote the device control register. No driver programs one today.
+	 */
+	case DIEPTXF(1) ... DIEPTXF(USB_NUM_FIFOS):
 		_addr -= DIEPTXF(1);
 		_addr >>= 2;
 		state->dptxfsiz[_addr] = _val;

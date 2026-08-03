@@ -57,7 +57,9 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
 {
     Pcf50633State *s = PCF50633(i2c);
     uint8_t reg = s->curreg & 0xff;
-    printf("Reading PMU register %d\n", reg);
+    if (pmu_trace()) {
+        fprintf(stderr, "Reading PMU register %d\n", reg);
+    }
 
     int res = 0;
 
@@ -173,7 +175,9 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
     uint8_t prev = s->regs[reg];
     s->regs[reg] = data;
     s->cmd = data;
-    printf("Writing PMU register cmd %d reg %d\n", data, reg);
+    if (pmu_trace()) {
+        fprintf(stderr, "Writing PMU register cmd %d reg %d\n", data, reg);
+    }
     if (pmu_trace()) {
         pmu_trace_access("write", reg, data);
     }

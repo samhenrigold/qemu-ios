@@ -1,6 +1,22 @@
 #include "hw/arm/ipod_touch_gpio.h"
 #include "migration/vmstate.h"
 
+/*
+ * IT_GPIO_READ_TRACE=1 logs every GPIO pad read. It was unconditional, one line
+ * per read, on the vCPU thread with the BQL held -- guest stall, and enough
+ * volume to bury anything else on the console. Named apart from sysic.c's
+ * IT_GPIO_TRACE, which traces the GPIO *interrupt* block. Cached the same way
+ * as the FMSS, MBX and PMU gates; these are not meant to be togglable mid-run.
+ */
+static bool gpio_trace(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_GPIO_READ_TRACE") != NULL;
+    }
+    return on;
+}
+
 static void s5l8900_gpio_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 {
     //fprintf(stderr, "%s: writing 0x%08x to 0x%08x\n", __func__, value, addr);
@@ -14,7 +30,9 @@ static void s5l8900_gpio_write(void *opaque, hwaddr addr, uint64_t value, unsign
 
 static uint64_t s5l8900_gpio_read(void *opaque, hwaddr addr, unsigned size)
 {
-    printf("%s: read from location 0x%08x\n", __func__, addr);
+    if (gpio_trace()) {
+        fprintf(stderr, "%s: read from location 0x%08x\n", __func__, (unsigned)addr);
+    }
     IPodTouchGPIOState *s = (struct IPodTouchGPIOState *) opaque;
 
     switch(addr) {
