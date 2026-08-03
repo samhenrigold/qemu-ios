@@ -155,6 +155,16 @@ typedef struct {
      */
     uint32_t f_tris, f_linestrips, f_tristrips, f_other;
     uint32_t last_sig;
+
+    /*
+     * Set when a per-draw trace burst is armed, cleared when the frame it
+     * covers has been presented and written out. Without this the draw list
+     * and the picture come from different instants, which is exactly the gap
+     * that let "the obstacles are submitted but never drawn" go unverified
+     * through three sessions: a handful of stills from one moment were
+     * compared against a draw list from another.
+     */
+    bool dump_pending;
 } GLESHost;
 
 /*
@@ -649,6 +659,73 @@ static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
  * state. The gameplay screen is two flat colour bands, which is what two
  * full-screen quads drawn last would look like.
  */
+
+/*
+ * The first few POSITIONS this draw will actually use, decoded out of the
+ * buffer we fetched from guest memory.
+ *
+ * Every previous trace printed the modelview translation, which is where the
+ * cube was PUT -- not what it is made of. A cube whose fetched vertices are
+ * degenerate collapses to nothing while its translation still reads as a
+ * perfectly sensible position, so the placement always looked innocent.
+ * Fetching these arrays correctly is our job, and a wrong stride, offset, type
+ * or pointer on one code path is exactly the defect this layer can produce and
+ * then report success for.
+ */
+static void gles_trace_vertices(void)
+{
+    const GLESArray *a = &gh.vertex;
+    unsigned i, c, n = 3;
+    float lo[4], hi[4];
+
+    if (!a->enabled || !a->buf || !a->size) {
+        fprintf(stderr, "[gles]     positions: NO VERTEX ARRAY BOUND\n");
+        return;
+    }
+    for (c = 0; c < a->size && c < 4; c++) {
+        lo[c] = 1e30f;
+        hi[c] = -1e30f;
+    }
+    fprintf(stderr, "[gles]     positions type=0x%x size=%u stride=%u ptr=0x%08x:",
+            a->type, a->size, a->stride, a->ptr);
+    for (i = 0; i < n; i++) {
+        uint32_t stride = a->stride ? a->stride
+                                    : gles_type_size(a->type) * a->size;
+        const uint8_t *row = a->buf + (size_t)stride * i;
+
+        if ((size_t)stride * i + stride > a->buf_size) {
+            break;
+        }
+        fprintf(stderr, " (");
+        for (c = 0; c < a->size && c < 4; c++) {
+            float v;
+
+            switch (a->type) {
+            case GL_FLOAT:  v = ((const float *)row)[c];               break;
+            case GL_BYTE:   v = ((const int8_t *)row)[c];              break;
+            case GL_SHORT:  v = ((const int16_t *)row)[c];             break;
+            case GLES_FIXED: v = ((const int32_t *)row)[c] / 65536.0f; break;
+            default:        v = 0;                                     break;
+            }
+            fprintf(stderr, "%s%.3f", c ? " " : "", v);
+            if (v < lo[c]) {
+                lo[c] = v;
+            }
+            if (v > hi[c]) {
+                hi[c] = v;
+            }
+        }
+        fprintf(stderr, ")");
+    }
+    /* A cube that fetched correctly spans a real extent on every axis; one
+     * that fetched zeros spans nothing and draws nothing. */
+    fprintf(stderr, "  extent=(");
+    for (c = 0; c < a->size && c < 4; c++) {
+        fprintf(stderr, "%s%.3f", c ? " " : "", hi[c] - lo[c]);
+    }
+    fprintf(stderr, ")\n");
+}
+
 static void gles_trace_draw(const char *what, uint32_t mode, uint32_t count)
 {
     GLfloat mv[16], cur_col[4], mat_dif[4], line_width = 0;
@@ -688,6 +765,7 @@ static void gles_trace_draw(const char *what, uint32_t mode, uint32_t count)
             mat_dif[0], mat_dif[1], mat_dif[2], mat_dif[3],
             gh.vertex.enabled, gh.color.enabled, gh.normal.enabled,
             gh.texcoord.enabled, glIsEnabled(GL_LIGHTING));
+    gles_trace_vertices();
 }
 
 static void gles_unbind_arrays(uint32_t bound)
@@ -809,6 +887,55 @@ static void gles_present_to_panel(void)
                                   row, sizeof(row));
     }
     gh.presents++;
+}
+
+
+/*
+ * Write the frame we just read back as a PPM, when its draws were traced.
+ *
+ * The picture and the draw list then come from the same instant, which is the
+ * only way to answer "was this geometry actually invisible" rather than
+ * inferring it from a screenshot taken at some other moment.
+ */
+static void gles_dump_frame(uint32_t rw, uint32_t rh, bool bgra)
+{
+    const char *dir = getenv("IT_GLES_DUMP_DIR");
+    char path[1024];
+    FILE *f;
+    uint32_t x, y;
+
+    if (!dir || !gh.dump_pending) {
+        return;
+    }
+    gh.dump_pending = false;
+    snprintf(path, sizeof(path), "%s/frame-%06" PRIu64 ".ppm", dir, gh.presents);
+    f = fopen(path, "wb");
+    if (!f) {
+        return;
+    }
+    fprintf(f, "P6\n%u %u\n255\n", rw, rh);
+    for (y = 0; y < rh; y++) {
+        /* GL's origin is bottom-left; PPM's is top-left. */
+        const uint8_t *src = gh.readback + (size_t)(rh - 1 - y) * rw * 4;
+
+        for (x = 0; x < rw; x++) {
+            uint8_t rgb[3];
+
+            if (bgra) {
+                rgb[0] = src[x * 4 + 2];
+                rgb[1] = src[x * 4 + 1];
+                rgb[2] = src[x * 4 + 0];
+            } else {
+                rgb[0] = src[x * 4 + 0];
+                rgb[1] = src[x * 4 + 1];
+                rgb[2] = src[x * 4 + 2];
+            }
+            fwrite(rgb, 1, 3, f);
+        }
+    }
+    fclose(f);
+    fprintf(stderr, "[gles] wrote traced frame %" PRIu64 " to %s\n",
+            gh.presents, path);
 }
 
 /* Count a draw into this frame's primitive mix. */
@@ -992,8 +1119,26 @@ static void gles_report_progress(void)
      */
     if (verbose >= 1) {
         gles_dump_state();
-        if (verbose >= 2 && gh.presents % 300 == 0) {
-            gh.trace_draws = 80;
+        /*
+         * IT_GLES_TRACE_EVERY: frames between per-draw trace bursts. The
+         * default of 300 (5 s) is fine for a scene that persists; a round of
+         * Cube Runner can be over inside that, which is how a capture came
+         * back with no gameplay in it at all.
+         */
+        if (verbose >= 2) {
+            static int every = -1;
+
+            if (every < 0) {
+                const char *e = getenv("IT_GLES_TRACE_EVERY");
+                every = e ? atoi(e) : 300;
+                if (every < 1) {
+                    every = 1;
+                }
+            }
+            if (gh.presents % every == 0) {
+                gh.trace_draws = 80;
+                gh.dump_pending = true;
+            }
         }
     }
     gh.last_report_present = now_ms;
@@ -1096,6 +1241,8 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
             }
         }
     }
+    gles_dump_frame(width < GLES_FB_WIDTH ? width : GLES_FB_WIDTH,
+                    height < GLES_FB_HEIGHT ? height : GLES_FB_HEIGHT, bgra);
     gh.presents++;
     gles_note_scene();
     gles_note_frame_gap();
