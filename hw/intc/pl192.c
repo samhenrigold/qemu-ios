@@ -11,6 +11,7 @@
 #include "hw/hw.h"
 #include "qapi/error.h"
 #include "hw/intc/pl192.h"
+#include "hw/arm/ipod_touch_guard.h"
 #include "migration/vmstate.h"
 
 extern CPUState *getMainCpuEnv(void);
@@ -144,10 +145,18 @@ static void pl192_update(PL192State *s)
    lately. */
 static inline void pl192_mask_priority(PL192State *s)
 {
-    if (s->stack_i >= PL192_INT_SOURCES) {
-        hw_error("pl192: internal error (trying to mask when there are no more sources)\n");
-    }
+    /*
+     * The guard here checked stack_i against PL192_INT_SOURCES (32), but
+     * priority_stack[] and irq_stack[] are both [PL192_PRIO_LEVELS + 1] = 17.
+     * Every read of VECTADDR acknowledges and pushes; a write pops. Eighteen
+     * acknowledgements without a matching write therefore wrote past both
+     * arrays into the adjacent fields of PL192State. 17 is the architectural
+     * maximum nesting depth, so the arrays are the right size and the bound was
+     * simply wrong -- saturate the depth instead of enlarging them, and do not
+     * abort: an over-deep nest is a guest/driver error, not an emulator one.
+     */
     s->stack_i++;
+    s->stack_i = IT_IDX("pl192", s->stack_i, PL192_PRIO_LEVELS + 1);
     if (s->current == PL192_DAISY_IRQ) {
         s->priority = s->daisy_priority;
     } else {
