@@ -10,6 +10,7 @@ out as PNG - otherwise every screenshot looks solid black.
 
 import argparse
 import json
+import math
 import os
 import socket
 import subprocess
@@ -107,6 +108,73 @@ def swipe(q, x0, y0, x1, y1, steps=12, dt=0.03):
         time.sleep(dt)
     q.cmd("input-send-event", events=[
         {"type": "btn", "data": {"button": "left", "down": False}}])
+
+
+# ---------------------------------------------------------------------------
+# Multi-touch.
+#
+# The legacy mouse handler can only describe one contact, so pinch and rotate
+# are unreachable through tap()/swipe(). The LCD now also registers a handler
+# for QEMU's own multi-touch event kind ("mtt"), which carries a slot and a
+# tracking id per contact, so several fingers can be driven over QMP.
+#
+# The protocol is two-phase: DATA events carry a slot's X and Y, and a following
+# begin/update/end commits them. All five fields are mandatory in the QAPI
+# schema even where they are ignored, hence the axis/value on the commit.
+# ---------------------------------------------------------------------------
+
+
+def _mtt(kind, slot, x=0, y=0):
+    tid = slot + 1
+    if kind == "data":
+        return [
+            {"type": "mtt", "data": {"type": "data", "slot": slot,
+                                     "tracking-id": tid,
+                                     "axis": "x", "value": x}},
+            {"type": "mtt", "data": {"type": "data", "slot": slot,
+                                     "tracking-id": tid,
+                                     "axis": "y", "value": y}},
+        ]
+    return [{"type": "mtt", "data": {"type": kind, "slot": slot,
+                                     "tracking-id": tid,
+                                     "axis": "x", "value": x}}]
+
+
+def finger(q, slot, x, y, phase):
+    """Put contact `slot` at screen pixel (x, y). phase: begin/update/end."""
+    ax, ay = abs_xy(x, y)
+    q.cmd("input-send-event",
+          events=_mtt("data", slot, ax, ay) + _mtt(phase, slot, ax, ay))
+
+
+def pinch(q, cx, cy, r0, r1, steps=24, dt=0.03, angle=0.0, settle=0.3):
+    """Two-finger pinch about (cx, cy), from separation 2*r0 to 2*r1 pixels.
+
+    r1 > r0 zooms in, r1 < r0 zooms out. `angle` is the axis the fingers travel
+    along, in radians, 0 being horizontal.
+
+    Both contacts are placed and committed before any motion: iPhone OS decides
+    a gesture is a pinch from two contacts existing at once, and a first frame
+    carrying only one finger reads as a drag that a second finger joined later,
+    which is a different recogniser.
+    """
+    def pos(r):
+        dx, dy = math.cos(angle) * r, math.sin(angle) * r
+        return (cx - dx, cy - dy), (cx + dx, cy + dy)
+
+    (ax, ay), (bx, by) = pos(r0)
+    finger(q, 0, ax, ay, "begin")
+    finger(q, 1, bx, by, "begin")
+    time.sleep(settle)
+    for i in range(1, steps + 1):
+        r = r0 + (r1 - r0) * i / steps
+        (ax, ay), (bx, by) = pos(r)
+        finger(q, 0, ax, ay, "update")
+        finger(q, 1, bx, by, "update")
+        time.sleep(dt)
+    time.sleep(settle)
+    finger(q, 0, ax, ay, "end")
+    finger(q, 1, bx, by, "end")
 
 
 def key(q, name, hold_ms=250):

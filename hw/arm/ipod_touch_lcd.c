@@ -302,29 +302,37 @@ static const GraphicHwOps gfx_ops = {
     .gfx_update  = lcd_refresh,
 };
 
+/*
+ * Undo the rotation lcd_refresh_rotated() applied, so the multitouch model
+ * always sees coordinates in the guest's portrait framebuffer space (x left to
+ * right, y measured from the bottom). Without this, touch lands in the wrong
+ * place -- or a transposed place -- as soon as the window is turned.
+ *
+ * x/y come in as 0..2^15 fractions of the *window*, y measured downwards, which
+ * is what both the legacy mouse handler and the multi-touch handler below get.
+ */
+static void ipod_touch_lcd_map_touch(IPodTouchLCDState *lcd, int x, int y,
+                                     float *fx, float *fy)
+{
+    float cx = x / (float)pow(2, 15);
+    float cy = y / (float)pow(2, 15);
+
+    switch (lcd->rotation) {
+    case 90:  *fx = cy;        *fy = cx;        break;
+    case 270: *fx = 1.0f - cy; *fy = 1.0f - cx; break;
+    case 180: *fx = 1.0f - cx; *fy = cy;        break;
+    default:  *fx = cx;        *fy = 1.0f - cy; break;
+    }
+}
+
 static void ipod_touch_lcd_mouse_event(void *opaque, int x, int y, int z, int buttons_state)
 {
     // printf("x %d y %d z %d state %d\n", x, y, z, buttons_state);
 
     IPodTouchLCDState *lcd = (IPodTouchLCDState *) opaque;
-
-    /* pointer position as a fraction of the *window*, y measured downwards */
-    float cx = x / (float)pow(2, 15);
-    float cy = y / (float)pow(2, 15);
     float fx, fy;
 
-    /*
-     * Undo the rotation lcd_refresh_rotated() applied, so the multitouch model
-     * always sees coordinates in the guest's portrait framebuffer space (x left
-     * to right, y measured from the bottom). Without this, touch lands in the
-     * wrong place -- or a transposed place -- as soon as the window is turned.
-     */
-    switch (lcd->rotation) {
-    case 90:  fx = cy;        fy = cx;        break;
-    case 270: fx = 1.0f - cy; fy = 1.0f - cx; break;
-    case 180: fx = 1.0f - cx; fy = cy;        break;
-    default:  fx = cx;        fy = 1.0f - cy; break;
-    }
+    ipod_touch_lcd_map_touch(lcd, x, y, &fx, &fy);
 
     /*
      * Only the position moves here. prev_touch_* is the reference the reported
@@ -348,6 +356,79 @@ static void ipod_touch_lcd_mouse_event(void *opaque, int x, int y, int z, int bu
         ipod_touch_multitouch_on_motion(lcd->mt);
     }
 }
+
+/*
+ * Multi-touch input.
+ *
+ * The legacy mouse handler above can only ever describe one contact, so pinch
+ * and rotate were simply unreachable however good the digitizer model got.
+ * QEMU's own multi-touch event kind (INPUT_EVENT_KIND_MTT, "mtt") carries a
+ * slot and a tracking id per contact and is what a touchscreen frontend or QMP
+ * `input-send-event` sends, so the panel accepts that directly and hands each
+ * slot to the digitizer.
+ *
+ * The wire protocol is the usual two-phase one: DATA events carry the X and Y
+ * for a slot, then BEGIN/UPDATE/END commits them. Positions are therefore
+ * latched per slot until a commit arrives -- an END for a slot we never saw is
+ * ignored rather than reported at (0,0), which would be a phantom tap in the
+ * corner.
+ *
+ * Slots beyond MT_MAX_FINGERS are dropped by the digitizer, not here, so the
+ * limit lives in one place.
+ */
+static void ipod_touch_lcd_mtt_event(DeviceState *dev, QemuConsole *src,
+                                     InputEvent *evt)
+{
+    IPodTouchLCDState *lcd = IPOD_TOUCH_LCD(dev);
+    InputMultiTouchEvent *mtt = evt->u.mtt.data;
+    int slot = mtt->slot;
+    float fx, fy;
+
+    if (!lcd->mt || slot < 0 || slot >= MT_MAX_FINGERS) {
+        return;
+    }
+
+    switch (mtt->type) {
+    case INPUT_MULTI_TOUCH_TYPE_DATA:
+        if (mtt->axis == INPUT_AXIS_X) {
+            lcd->mtt_x[slot] = mtt->value;
+        } else {
+            lcd->mtt_y[slot] = mtt->value;
+        }
+        lcd->mtt_seen[slot] = true;
+        return;
+
+    case INPUT_MULTI_TOUCH_TYPE_BEGIN:
+    case INPUT_MULTI_TOUCH_TYPE_UPDATE:
+        if (!lcd->mtt_seen[slot]) {
+            return;
+        }
+        ipod_touch_lcd_map_touch(lcd, lcd->mtt_x[slot], lcd->mtt_y[slot],
+                                 &fx, &fy);
+        ipod_touch_multitouch_set_finger(lcd->mt, slot, fx, fy, true);
+        return;
+
+    case INPUT_MULTI_TOUCH_TYPE_END:
+    case INPUT_MULTI_TOUCH_TYPE_CANCEL:
+        if (!lcd->mtt_seen[slot]) {
+            return;
+        }
+        ipod_touch_lcd_map_touch(lcd, lcd->mtt_x[slot], lcd->mtt_y[slot],
+                                 &fx, &fy);
+        ipod_touch_multitouch_set_finger(lcd->mt, slot, fx, fy, false);
+        lcd->mtt_seen[slot] = false;
+        return;
+
+    default:
+        return;
+    }
+}
+
+static const QemuInputHandler ipod_touch_lcd_mtt_handler = {
+    .name  = "iPod Touch Multitouch",
+    .mask  = INPUT_EVENT_MASK_MTT,
+    .event = ipod_touch_lcd_mtt_event,
+};
 
 static void refresh_timer_tick(void *opaque)
 {
@@ -405,6 +486,10 @@ static void ipod_touch_lcd_realize(DeviceState *dev, Error **errp)
 
     // add mouse handler
     qemu_add_mouse_event_handler(ipod_touch_lcd_mouse_event, s, 1, "iPod Touch Touchscreen");
+
+    /* ... and the multi-touch one, which routes by event mask and so coexists
+     * with the mouse rather than replacing it. */
+    qemu_input_handler_register(dev, &ipod_touch_lcd_mtt_handler);
 
     // initialize the refresh timer
     s->refresh_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, refresh_timer_tick, s);
