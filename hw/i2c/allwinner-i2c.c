@@ -170,7 +170,7 @@ static inline bool allwinner_i2c_interrupt_is_enabled(AWI2CState *s)
     return s->cntr & TWI_CNTR_INT_EN;
 }
 
-static void allwinner_i2c_reset_hold(Object *obj)
+static void allwinner_i2c_reset_hold(Object *obj, ResetType type)
 {
     AWI2CState *s = AW_I2C(obj);
 
@@ -385,8 +385,7 @@ static void allwinner_i2c_write(void *opaque, hwaddr offset,
         break;
     case TWI_SRST_REG:
         if (((value & TWI_SRST_MASK) == 0) && (s->srst & TWI_SRST_MASK)) {
-            /* Perform reset */
-            allwinner_i2c_reset_hold(OBJECT(s));
+            device_cold_reset(DEVICE(s));
         }
         s->srst = value & TWI_SRST_MASK;
         break;
@@ -408,14 +407,14 @@ static const MemoryRegionOps allwinner_i2c_ops = {
     .write = allwinner_i2c_write,
     .valid.min_access_size = 1,
     .valid.max_access_size = 4,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
 static const VMStateDescription allwinner_i2c_vmstate = {
     .name = TYPE_AW_I2C,
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(addr, AWI2CState),
         VMSTATE_UINT8(xaddr, AWI2CState),
         VMSTATE_UINT8(data, AWI2CState),

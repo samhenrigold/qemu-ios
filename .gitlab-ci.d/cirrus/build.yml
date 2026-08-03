@@ -8,7 +8,7 @@ env:
   CI_REPOSITORY_URL: "@CI_REPOSITORY_URL@"
   CI_COMMIT_REF_NAME: "@CI_COMMIT_REF_NAME@"
   CI_COMMIT_SHA: "@CI_COMMIT_SHA@"
-  PATH: "@PATH@"
+  PATH: "@PATH_EXTRA@:$PATH"
   PKG_CONFIG_PATH: "@PKG_CONFIG_PATH@"
   PYTHON: "@PYTHON@"
   MAKE: "@MAKE@"
@@ -21,12 +21,12 @@ build_task:
   install_script:
     - @UPDATE_COMMAND@
     - @INSTALL_COMMAND@ @PKGS@
-    - if test -n "@PYPI_PKGS@" ; then @PIP3@ install @PYPI_PKGS@ ; fi
+    - if test -n "@PYPI_PKGS@" ; then PYLIB=$(@PYTHON@ -c 'import sysconfig; print(sysconfig.get_path("stdlib"))'); rm -f $PYLIB/EXTERNALLY-MANAGED; @PIP3@ install @PYPI_PKGS@ ; fi
   clone_script:
     - git clone --depth 100 "$CI_REPOSITORY_URL" .
     - git fetch origin "$CI_COMMIT_REF_NAME"
     - git reset --hard "$CI_COMMIT_SHA"
-  build_script:
+  step_script:
     - mkdir build
     - cd build
     - ../configure --enable-werror $CONFIGURE_ARGS

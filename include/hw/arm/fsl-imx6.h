@@ -32,6 +32,8 @@
 #include "hw/net/imx_fec.h"
 #include "hw/usb/chipidea.h"
 #include "hw/usb/imx-usb-phy.h"
+#include "hw/pci-host/designware.h"
+#include "hw/or-irq.h"
 #include "exec/memory.h"
 #include "cpu.h"
 #include "qom/object.h"
@@ -55,27 +57,29 @@ struct FslIMX6State {
     DeviceState parent_obj;
 
     /*< public >*/
-    ARMCPU         cpu[FSL_IMX6_NUM_CPUS];
-    A9MPPrivState  a9mpcore;
-    IMX6CCMState   ccm;
-    IMX6SRCState   src;
-    IMX7SNVSState  snvs;
-    IMXSerialState uart[FSL_IMX6_NUM_UARTS];
-    IMXGPTState    gpt;
-    IMXEPITState   epit[FSL_IMX6_NUM_EPITS];
-    IMXI2CState    i2c[FSL_IMX6_NUM_I2CS];
-    IMXGPIOState   gpio[FSL_IMX6_NUM_GPIOS];
-    SDHCIState     esdhc[FSL_IMX6_NUM_ESDHCS];
-    IMXSPIState    spi[FSL_IMX6_NUM_ECSPIS];
-    IMX2WdtState   wdt[FSL_IMX6_NUM_WDTS];
-    IMXUSBPHYState usbphy[FSL_IMX6_NUM_USB_PHYS];
-    ChipideaState  usb[FSL_IMX6_NUM_USBS];
-    IMXFECState    eth;
-    MemoryRegion   rom;
-    MemoryRegion   caam;
-    MemoryRegion   ocram;
-    MemoryRegion   ocram_alias;
-    uint32_t       phy_num;
+    ARMCPU             cpu[FSL_IMX6_NUM_CPUS];
+    A9MPPrivState      a9mpcore;
+    IMX6CCMState       ccm;
+    IMX6SRCState       src;
+    IMX7SNVSState      snvs;
+    IMXSerialState     uart[FSL_IMX6_NUM_UARTS];
+    IMXGPTState        gpt;
+    IMXEPITState       epit[FSL_IMX6_NUM_EPITS];
+    IMXI2CState        i2c[FSL_IMX6_NUM_I2CS];
+    IMXGPIOState       gpio[FSL_IMX6_NUM_GPIOS];
+    SDHCIState         esdhc[FSL_IMX6_NUM_ESDHCS];
+    IMXSPIState        spi[FSL_IMX6_NUM_ECSPIS];
+    IMX2WdtState       wdt[FSL_IMX6_NUM_WDTS];
+    IMXUSBPHYState     usbphy[FSL_IMX6_NUM_USB_PHYS];
+    ChipideaState      usb[FSL_IMX6_NUM_USBS];
+    IMXFECState        eth;
+    DesignwarePCIEHost pcie;
+    OrIRQState         pcie4_msi_irq;
+    MemoryRegion       rom;
+    MemoryRegion       caam;
+    MemoryRegion       ocram;
+    MemoryRegion       ocram_alias;
+    uint32_t           phy_num;
 };
 
 
@@ -455,7 +459,7 @@ struct FslIMX6State {
 #define FSL_IMX6_PCIE1_IRQ 120
 #define FSL_IMX6_PCIE2_IRQ 121
 #define FSL_IMX6_PCIE3_IRQ 122
-#define FSL_IMX6_PCIE4_IRQ 123
+#define FSL_IMX6_PCIE4_MSI_IRQ 123
 #define FSL_IMX6_DCIC1_IRQ 124
 #define FSL_IMX6_DCIC2_IRQ 125
 #define FSL_IMX6_MLB150_HIGH_IRQ 126

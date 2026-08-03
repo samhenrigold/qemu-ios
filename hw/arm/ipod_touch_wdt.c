@@ -1,6 +1,6 @@
 #include "hw/arm/ipod_touch_wdt.h"
 #include "migration/vmstate.h"
-#include "sysemu/runstate.h"
+#include "system/runstate.h"
 #include "hw/core/cpu.h"
 #include "target/arm/cpu.h"
 
@@ -101,7 +101,7 @@ static void ipod_touch_wdt_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_ipod_touch_wdt;
-    dc->reset = ipod_touch_wdt_reset;
+    device_class_set_legacy_reset(dc, ipod_touch_wdt_reset);
 }
 
 static const TypeInfo ipod_touch_wdt_type_info = {

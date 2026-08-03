@@ -6,7 +6,7 @@
 #include "qapi/type-helpers.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "migration/vmstate.h"
 #include "monitor/monitor.h"
 #include "trace.h"
@@ -18,13 +18,12 @@ static char *usb_get_dev_path(DeviceState *dev);
 static char *usb_get_fw_dev_path(DeviceState *qdev);
 static void usb_qdev_unrealize(DeviceState *qdev);
 
-static Property usb_props[] = {
+static const Property usb_props[] = {
     DEFINE_PROP_STRING("port", USBDevice, port_path),
     DEFINE_PROP_STRING("serial", USBDevice, serial),
     DEFINE_PROP_BIT("msos-desc", USBDevice, flags,
                     USB_DEV_FLAG_MSOS_DESC_ENABLE, true),
     DEFINE_PROP_STRING("pcap", USBDevice, pcap_filename),
-    DEFINE_PROP_END_OF_LIST()
 };
 
 static void usb_bus_class_init(ObjectClass *klass, void *data)
@@ -69,7 +68,7 @@ const VMStateDescription vmstate_usb_device = {
     .version_id = 1,
     .minimum_version_id = 1,
     .post_load = usb_device_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(addr, USBDevice),
         VMSTATE_INT32(state, USBDevice),
         VMSTATE_INT32(remote_wakeup, USBDevice),
@@ -98,19 +97,6 @@ void usb_bus_release(USBBus *bus)
     assert(next_usb_bus > 0);
 
     QTAILQ_REMOVE(&busses, bus, next);
-}
-
-USBBus *usb_bus_find(int busnr)
-{
-    USBBus *bus;
-
-    if (-1 == busnr)
-        return QTAILQ_FIRST(&busses);
-    QTAILQ_FOREACH(bus, &busses, next) {
-        if (bus->busnr == busnr)
-            return bus;
-    }
-    return NULL;
 }
 
 static void usb_device_realize(USBDevice *dev, Error **errp)
@@ -273,13 +259,14 @@ static void usb_qdev_realize(DeviceState *qdev, Error **errp)
     }
 
     if (dev->pcap_filename) {
-        int fd = qemu_open_old(dev->pcap_filename, O_CREAT | O_WRONLY | O_TRUNC, 0666);
+        int fd = qemu_open_old(dev->pcap_filename,
+                               O_CREAT | O_WRONLY | O_TRUNC | O_BINARY, 0666);
         if (fd < 0) {
             error_setg(errp, "open %s failed", dev->pcap_filename);
             usb_qdev_unrealize(qdev);
             return;
         }
-        dev->pcap = fdopen(fd, "w");
+        dev->pcap = fdopen(fd, "wb");
         usb_pcap_init(dev->pcap);
     }
 }
@@ -327,29 +314,6 @@ void usb_legacy_register(const char *typename, const char *usbdevice_name,
         f->usbdevice_init = usbdevice_init;
         legacy_usb_factory = g_slist_append(legacy_usb_factory, f);
     }
-}
-
-USBDevice *usb_new(const char *name)
-{
-    return USB_DEVICE(qdev_new(name));
-}
-
-static USBDevice *usb_try_new(const char *name)
-{
-    return USB_DEVICE(qdev_try_new(name));
-}
-
-bool usb_realize_and_unref(USBDevice *dev, USBBus *bus, Error **errp)
-{
-    return qdev_realize_and_unref(&dev->qdev, &bus->qbus, errp);
-}
-
-USBDevice *usb_create_simple(USBBus *bus, const char *name)
-{
-    USBDevice *dev = usb_new(name);
-
-    usb_realize_and_unref(dev, bus, &error_abort);
-    return dev;
 }
 
 static void usb_fill_port(USBPort *port, void *opaque, int index,
@@ -447,7 +411,7 @@ void usb_claim_port(USBDevice *dev, Error **errp)
     } else {
         if (bus->nfree == 1 && strcmp(object_get_typename(OBJECT(dev)), "usb-hub") != 0) {
             /* Create a new hub and chain it on */
-            hub = usb_try_new("usb-hub");
+            hub = USB_DEVICE(qdev_try_new("usb-hub"));
             if (hub) {
                 usb_realize_and_unref(hub, bus, NULL);
             }
@@ -666,7 +630,7 @@ HumanReadableText *qmp_x_query_usb(Error **errp)
 /* handle legacy -usbdevice cmd line option */
 USBDevice *usbdevice_create(const char *driver)
 {
-    USBBus *bus = usb_bus_find(-1 /* any */);
+    USBBus *bus = QTAILQ_FIRST(&busses);
     LegacyUSBFactory *f = NULL;
     Error *err = NULL;
     GSList *i;
@@ -698,7 +662,8 @@ USBDevice *usbdevice_create(const char *driver)
         return NULL;
     }
 
-    dev = f->usbdevice_init ? f->usbdevice_init() : usb_new(f->name);
+    dev = f->usbdevice_init ? f->usbdevice_init()
+                            : USB_DEVICE(qdev_new(f->name));
     if (!dev) {
         error_report("Failed to create USB device '%s'", f->name);
         return NULL;

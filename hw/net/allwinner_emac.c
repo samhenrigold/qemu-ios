@@ -349,7 +349,7 @@ static void aw_emac_write(void *opaque, hwaddr offset, uint64_t value,
                               "allwinner_emac: TX length > fifo data length\n");
             }
             if (len > 0) {
-                data = fifo8_pop_buf(fifo, len, &ret);
+                data = fifo8_pop_bufptr(fifo, len, &ret);
                 qemu_send_packet(nc, data, ret);
                 aw_emac_tx_reset(s, chan);
                 /* Raise TX interrupt */
@@ -421,7 +421,7 @@ static void aw_emac_set_link(NetClientState *nc)
 static const MemoryRegionOps aw_emac_mem_ops = {
     .read = aw_emac_read,
     .write = aw_emac_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -462,17 +462,16 @@ static void aw_emac_realize(DeviceState *dev, Error **errp)
     fifo8_create(&s->tx_fifo[1], TX_FIFO_SIZE);
 }
 
-static Property aw_emac_properties[] = {
+static const Property aw_emac_properties[] = {
     DEFINE_NIC_PROPERTIES(AwEmacState, conf),
     DEFINE_PROP_UINT8("phy-addr", AwEmacState, phy_addr, 0),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static const VMStateDescription vmstate_mii = {
     .name = "rtl8201cp",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT16(bmcr, RTL8201CPState),
         VMSTATE_UINT16(bmsr, RTL8201CPState),
         VMSTATE_UINT16(anar, RTL8201CPState),
@@ -495,7 +494,7 @@ static const VMStateDescription vmstate_aw_emac = {
     .version_id = 1,
     .minimum_version_id = 1,
     .post_load = aw_emac_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(mii, AwEmacState, 1, vmstate_mii, RTL8201CPState),
         VMSTATE_UINT32(ctl, AwEmacState),
         VMSTATE_UINT32(tx_mode, AwEmacState),
@@ -521,7 +520,7 @@ static void aw_emac_class_init(ObjectClass *klass, void *data)
 
     dc->realize = aw_emac_realize;
     device_class_set_props(dc, aw_emac_properties);
-    dc->reset = aw_emac_reset;
+    device_class_set_legacy_reset(dc, aw_emac_reset);
     dc->vmsd = &vmstate_aw_emac;
 }
 

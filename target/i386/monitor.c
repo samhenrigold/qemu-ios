@@ -27,13 +27,10 @@
 #include "monitor/monitor.h"
 #include "monitor/hmp-target.h"
 #include "monitor/hmp.h"
-#include "qapi/qmp/qdict.h"
-#include "sysemu/hw_accel.h"
-#include "sysemu/kvm.h"
+#include "qobject/qdict.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-misc-target.h"
 #include "qapi/qapi-commands-misc.h"
-#include "hw/i386/pc.h"
 
 /* Perform linear address sign extension */
 static hwaddr addr_canonical(CPUArchState *env, hwaddr addr)
@@ -647,27 +644,4 @@ const MonitorDef monitor_defs[] = {
 const MonitorDef *target_monitor_defs(void)
 {
     return monitor_defs;
-}
-
-void hmp_info_local_apic(Monitor *mon, const QDict *qdict)
-{
-    CPUState *cs;
-
-    if (qdict_haskey(qdict, "apic-id")) {
-        int id = qdict_get_try_int(qdict, "apic-id", 0);
-
-        cs = cpu_by_arch_id(id);
-        if (cs) {
-            cpu_synchronize_state(cs);
-        }
-    } else {
-        cs = mon_get_cpu(mon);
-    }
-
-
-    if (!cs) {
-        monitor_printf(mon, "No CPU available\n");
-        return;
-    }
-    x86_cpu_dump_local_apic_state(cs, CPU_DUMP_FPU);
 }

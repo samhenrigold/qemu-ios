@@ -22,8 +22,8 @@
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
-#include "sysemu/device_tree.h"
-#include "sysemu/rng.h"
+#include "system/device_tree.h"
+#include "system/rng.h"
 #include "hw/ppc/spapr.h"
 #include "hw/qdev-properties.h"
 #include "kvm_ppc.h"
@@ -82,9 +82,9 @@ static target_ulong h_random(PowerPCCPU *cpu, SpaprMachineState *spapr,
     while (hrdata.received < 8) {
         rng_backend_request_entropy(rngstate->backend, 8 - hrdata.received,
                                     random_recv, &hrdata);
-        qemu_mutex_unlock_iothread();
+        bql_unlock();
         qemu_sem_wait(&hrdata.sem);
-        qemu_mutex_lock_iothread();
+        bql_lock();
     }
 
     qemu_sem_destroy(&hrdata.sem);
@@ -130,11 +130,10 @@ static void spapr_rng_realize(DeviceState *dev, Error **errp)
     }
 }
 
-static Property spapr_rng_properties[] = {
+static const Property spapr_rng_properties[] = {
     DEFINE_PROP_BOOL("use-kvm", SpaprRngState, use_kvm, false),
     DEFINE_PROP_LINK("rng", SpaprRngState, backend, TYPE_RNG_BACKEND,
                      RngBackend *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void spapr_rng_class_init(ObjectClass *oc, void *data)
