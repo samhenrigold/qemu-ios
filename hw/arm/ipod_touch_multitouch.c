@@ -279,11 +279,11 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
              * during a drag the same pointer was handed over repeatedly and
              * double-freed).
              *
-             * When there is no pending frame we must STILL install a
-             * frame-sized buffer: buf_size is sizeof(MTFrame) and the read loop
-             * below walks that many bytes, so leaving the 0x100 scratch buffer
-             * in place overruns the heap. That corruption showed up far away,
-             * as a SIGSEGV inside QEMU's own TCG structures.
+             * When there is no pending frame we must STILL install a real frame
+             * buffer: buf_size is the frame's length and the read loop below
+             * walks that many bytes, so leaving the 0x100 scratch buffer in
+             * place overruns the heap. That corruption showed up far away, as a
+             * SIGSEGV inside QEMU's own TCG structures.
              */
             MTT("FRAME_READ pending=%s", s->next_frame ? "yes" : "NO");
             /*
