@@ -1154,6 +1154,7 @@ static char *ipod_touch_get_pasteboard(Object *obj, Error **errp);
 static void ipod_touch_set_pasteboard(Object *obj, const char *value,
                                       Error **errp);
 static char *ipod_touch_get_guest_pasteboard(Object *obj, Error **errp);
+static char *ipod_touch_get_pb_agent(Object *obj, Error **errp);
 
 static void ipod_touch_instance_init(Object *obj)
 {
@@ -1251,6 +1252,13 @@ static void ipod_touch_instance_init(Object *obj)
         "The last text copied inside the guest, as reported by the pasteboard "
         "agent. Also pushed to the host clipboard when a UI with a clipboard "
         "peer is attached");
+
+    object_property_add_str(obj, "pasteboard-agent",
+                            ipod_touch_get_pb_agent, NULL);
+    object_property_set_description(obj, "pasteboard-agent",
+        "Whether a guest pasteboard agent is actually running: 'alive', "
+        "'stale' or 'absent'. Setting the pasteboard succeeds whether or not "
+        "anything is listening, so ask this before believing it");
 }
 
 static inline qemu_irq s5l8900_get_irq(IPodTouchMachineState *s, int n)
@@ -1520,6 +1528,51 @@ static QemuClipboardPeer ipod_touch_pb_peer = {
     .request = ipod_touch_pb_request,
 };
 
+/*
+ * How long to give the guest before saying nobody took the text. The agent
+ * polls four times a second, so anything it is going to collect it collects
+ * almost immediately; this only has to be longer than one poll interval plus
+ * the slack of a heavily loaded emulator.
+ */
+#define PB_WARN_MS 10000
+
+static void ipod_touch_pb_warn(void *opaque)
+{
+    IPodTouchMachineState *nms = opaque;
+
+    if (!nms->pb_out) {
+        return;                 /* collected after all */
+    }
+    if (nms->pb_polls != nms->pb_polls_at_set) {
+        /* Something polled but did not take it. Not the missing-daemon case,
+         * so say what it actually is rather than sending anyone to the
+         * install instructions. */
+        warn_report("pasteboard: the guest agent polled but has not collected "
+                    "the text after %d ms", PB_WARN_MS);
+        return;
+    }
+
+    warn_report("pasteboard: %zu bytes queued for the guest and nothing has "
+                "polled for them", nms->pb_out_len);
+    if (nms->pb_last_poll_ns == 0) {
+        error_printf("         No pasteboard agent has EVER polled this "
+                     "machine. it_pbd is almost certainly not installed in "
+                     "this NAND image -- setting the property succeeds either "
+                     "way, which is why this warning exists.\n"
+                     "         Install it: contrib/it-pasteboard/README.md "
+                     "(and remember the plist must be owned by root, or "
+                     "launchd ignores it without a word).\n"
+                     "         Check at any time with:  qom-get "
+                     "path=/machine property=pasteboard-agent\n");
+    } else {
+        error_printf("         The agent last polled %" PRId64 " s ago, so it "
+                     "has stopped or died. /var/log/it_pbd.log on the guest "
+                     "says which.\n",
+                     (qemu_clock_get_ns(QEMU_CLOCK_REALTIME) -
+                      nms->pb_last_poll_ns) / NANOSECONDS_PER_SECOND);
+    }
+}
+
 void ipod_touch_pb_set(IPodTouchMachineState *nms, const char *text)
 {
     g_free(nms->pb_out);
@@ -1527,12 +1580,28 @@ void ipod_touch_pb_set(IPodTouchMachineState *nms, const char *text)
     nms->pb_out_len = 0;
 
     if (!text || !*text) {
+        if (nms->pb_warn_timer) {
+            timer_del(nms->pb_warn_timer);
+        }
         return;
     }
     /* A clipboard holds one item. Replacing rather than queueing means a
      * second copy on the host wins, which is what the user just asked for. */
     nms->pb_out = g_strndup(text, QC_PB_MAX_LEN);
     nms->pb_out_len = strlen(nms->pb_out);
+
+    /*
+     * Arm the "nobody is listening" check. Handing text to a machine with no
+     * guest agent used to be indistinguishable from success from the host
+     * side -- no error, no log line, the text just sat in pb_out forever.
+     */
+    nms->pb_polls_at_set = nms->pb_polls;
+    if (!nms->pb_warn_timer) {
+        nms->pb_warn_timer = timer_new_ms(QEMU_CLOCK_REALTIME,
+                                          ipod_touch_pb_warn, nms);
+    }
+    timer_mod(nms->pb_warn_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + PB_WARN_MS);
 }
 
 void ipod_touch_pb_guest_commit(IPodTouchMachineState *nms)
@@ -1583,6 +1652,30 @@ static char *ipod_touch_get_guest_pasteboard(Object *obj, Error **errp)
 {
     IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
     return g_strdup(nms->pb_guest ? nms->pb_guest : "");
+}
+
+/*
+ * "Is anything on the other end?" -- answerable before you rely on it, rather
+ * than after wondering why nothing pasted. The agent polls every 250 ms, so a
+ * poll inside the last few seconds means it is running right now.
+ */
+#define PB_ALIVE_NS (5 * NANOSECONDS_PER_SECOND)
+
+static char *ipod_touch_get_pb_agent(Object *obj, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+
+    if (nms->pb_last_poll_ns == 0) {
+        return g_strdup("absent: nothing has ever polled -- it_pbd is not "
+                        "installed or not running (contrib/it-pasteboard)");
+    }
+    if (now - nms->pb_last_poll_ns > PB_ALIVE_NS) {
+        return g_strdup_printf("stale: last polled %" PRId64 " s ago",
+                               (now - nms->pb_last_poll_ns) /
+                               NANOSECONDS_PER_SECOND);
+    }
+    return g_strdup_printf("alive: %" PRIu64 " polls", nms->pb_polls);
 }
 
 static void ipod_touch_kbd_enqueue(IPodTouchMachineState *nms, uint16_t ch)
