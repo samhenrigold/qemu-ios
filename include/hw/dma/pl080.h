@@ -84,6 +84,15 @@ struct PL080State {
     int trace_id;
     /* IT_DMAC_TRACE: last logged level of the combined interrupt line. */
     int last_level;
+    /*
+     * Source address of the element currently in flight, on whichever channel
+     * is transferring. A destination peripheral sees only an MMIO write, so
+     * without this it cannot tell which part of the guest's buffer a byte came
+     * from -- which is exactly the question when that buffer is a circular
+     * audio ring and the transfer laps it. Diagnostic only (IT_I2S_TRACE);
+     * nothing depends on it and it is deliberately not migrated.
+     */
+    uint32_t paced_src;
 };
 
 /*
