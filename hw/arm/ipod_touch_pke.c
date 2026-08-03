@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_pke.h"
+#include "migration/vmstate.h"
 #include "hw/arm/ipod_touch_sha1.h"
 #include <openssl/bn.h>
 #include <openssl/bio.h>
@@ -272,9 +273,39 @@ static void ipod_touch_pke_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
 }
 
+/* Stateless modexp engine: every field is loaded by the guest before a run,
+ * so the reset values are simply zero. num_started in particular is the
+ * counter behind the "modexp only runs on the 5th START" hack -- carried into
+ * a second boot it would put the engine out of phase with the new iBoot. */
+static void ipod_touch_pke_reset(DeviceState *dev)
+{
+    IPodTouchPKEState *s = IPOD_TOUCH_PKE(dev);
+
+    memset(s->segments, 0, sizeof(s->segments));
+    s->seg_size_reg = 0;
+    s->segment_size = 0;
+    s->num_started = 0;
+}
+
+static const VMStateDescription vmstate_ipod_touch_pke = {
+    .name = "ipod_touch_pke",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_ARRAY(segments, IPodTouchPKEState, 1024),
+        VMSTATE_UINT32(seg_size_reg, IPodTouchPKEState),
+        VMSTATE_UINT32(segment_size, IPodTouchPKEState),
+        VMSTATE_UINT8(num_started, IPodTouchPKEState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_pke_class_init(ObjectClass *klass, void *data)
 {
+    DeviceClass *dc = DEVICE_CLASS(klass);
 
+    dc->reset = ipod_touch_pke_reset;
+    dc->vmsd = &vmstate_ipod_touch_pke;
 }
 
 static const TypeInfo ipod_touch_pke_info = {

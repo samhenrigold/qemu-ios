@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_tvout.h"
+#include "migration/vmstate.h"
 #include "qapi/error.h"
 
 static bool tvout_trace(void)
@@ -277,8 +278,35 @@ static void ipod_touch_tvout_init(Object *obj)
     }
 }
 
+/* vblank_shim is an environment switch, not guest state, and vblank_timer only
+ * exists when it is on -- a NULL timer pointer in a VMStateField aborts the
+ * save. It is a free-running periodic timer that the destination arms for
+ * itself at realize, so there is nothing to carry across. */
+static const VMStateDescription vmstate_ipod_touch_tvout = {
+    .name = "ipod_touch_tvout",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(irq2_pending, IPodTouchTVOutState),
+        VMSTATE_UINT32(mixer1_intstat, IPodTouchTVOutState),
+        VMSTATE_UINT32(mixer1_status, IPodTouchTVOutState),
+        VMSTATE_UINT32(mixer1_cfg, IPodTouchTVOutState),
+        VMSTATE_UINT32(mixer2_status, IPodTouchTVOutState),
+        VMSTATE_UINT32(mixer2_cfg, IPodTouchTVOutState),
+        VMSTATE_UINT32(sdo_clkcon, IPodTouchTVOutState),
+        VMSTATE_UINT32(sdo_config, IPodTouchTVOutState),
+        VMSTATE_UINT32(sdo_irq, IPodTouchTVOutState),
+        VMSTATE_UINT32(sdo_irq_mask, IPodTouchTVOutState),
+        VMSTATE_UINT32(irq_count, IPodTouchTVOutState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_tvout_class_init(ObjectClass *klass, void *data)
 {
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->vmsd = &vmstate_ipod_touch_tvout;
 
 }
 

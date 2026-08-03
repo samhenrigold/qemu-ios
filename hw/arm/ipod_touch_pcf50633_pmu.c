@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
+#include "migration/vmstate.h"
 #include "hw/arm/ipod_touch_lcd.h"
 #include "hw/core/cpu.h"
 #include "target/arm/cpu.h"
@@ -203,8 +204,31 @@ static void pcf50633_init(Object *obj)
 
 }
 
+/* regs[] holds the whole register file, including the power latch at 0x10 and
+ * the pending EVENT_A-C interrupt bits, so a snapshot taken with a button
+ * press outstanding restores with it still outstanding. */
+static const VMStateDescription vmstate_pcf50633 = {
+    .name = "pcf50633",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(i2c, Pcf50633State),
+        VMSTATE_UINT32(cmd, Pcf50633State),
+        VMSTATE_UINT32(ready, Pcf50633State),
+        VMSTATE_UINT32(curreg, Pcf50633State),
+        VMSTATE_BOOL(addressing, Pcf50633State),
+        VMSTATE_UINT8_ARRAY(regs, Pcf50633State, 256),
+        VMSTATE_UINT32(rtc_latch, Pcf50633State),
+        VMSTATE_BOOL(usb_cable, Pcf50633State),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void pcf50633_class_init(ObjectClass *klass, void *data)
 {
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->vmsd = &vmstate_pcf50633;
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
 
     k->event = pcf50633_event;

@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_mbx.h"
+#include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "hw/irq.h"
 #include "qemu/timer.h"
@@ -632,16 +633,45 @@ static void ipod_touch_mbx_reset(DeviceState *dev)
     s->mmu_written = false;
     s->status = 0;
     s->alreadypatched = false;
+    /* The completion shim's mask and its timer are part of the interrupt
+     * state. Zeroing the mask without disarming the timer left a completion
+     * scheduled against a mask the new boot never wrote; disarming without
+     * zeroing the mask would let the shim re-arm from stale state. */
+    s->int_mask = 0;
+    if (s->complete_timer) {
+        timer_del(s->complete_timer);
+    }
     if (s->irq) {
         qemu_irq_lower(s->irq);
     }
 }
+
+/* irq_enabled and complete_shim come from machine options and the environment,
+ * not from the guest, so they are configuration rather than state. The
+ * completion timer is re-armed by the next masked write from the guest -- and
+ * it does not exist at all unless the shim is on, so migrating the pointer
+ * would trip vmstate's "array with a NULL base" assertion and kill the source
+ * QEMU mid-save. Measured: that is exactly what it did. */
+static const VMStateDescription vmstate_ipod_touch_mbx = {
+    .name = "ipod_touch_mbx",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64(addr, IPodTouchMBXState),
+        VMSTATE_BOOL(mmu_written, IPodTouchMBXState),
+        VMSTATE_BOOL(alreadypatched, IPodTouchMBXState),
+        VMSTATE_UINT32(status, IPodTouchMBXState),
+        VMSTATE_UINT32(int_mask, IPodTouchMBXState),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 static void ipod_touch_mbx_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->reset = ipod_touch_mbx_reset;
+    dc->vmsd = &vmstate_ipod_touch_mbx;
 }
 
 static const TypeInfo ipod_touch_mbx_type_info = {

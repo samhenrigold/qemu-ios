@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_gpio.h"
+#include "migration/vmstate.h"
 
 static void s5l8900_gpio_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 {
@@ -95,11 +96,22 @@ static void s5l8900_gpio_reset(DeviceState *dev)
     }
 }
 
+static const VMStateDescription vmstate_ipod_touch_gpio = {
+    .name = "ipod_touch_gpio",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(gpio_state, IPodTouchGPIOState, NUM_GPIO_PADS),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void s5l8900_gpio_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->reset = s5l8900_gpio_reset;
+    dc->vmsd = &vmstate_ipod_touch_gpio;
 }
 
 static const TypeInfo ipod_touch_gpio_info = {

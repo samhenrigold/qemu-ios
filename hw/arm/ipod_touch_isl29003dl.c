@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_isl29003dl.h"
+#include "migration/vmstate.h"
 
 static int isl29003dl_event(I2CSlave *i2c, enum i2c_event event)
 {
@@ -76,8 +77,32 @@ static void isl29003dl_init(Object *obj)
 {
 }
 
+static const VMStateDescription vmstate_isl29003dl = {
+    .name = "isl29003dl",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(i2c, ISL29003DLState),
+        VMSTATE_UINT32(cmd, ISL29003DLState),
+        VMSTATE_UINT32(command, ISL29003DLState),
+        VMSTATE_UINT32(ctrl, ISL29003DLState),
+        VMSTATE_UINT32(curreg, ISL29003DLState),
+        VMSTATE_UINT32(ready, ISL29003DLState),
+        VMSTATE_UINT32(it_hi, ISL29003DLState),
+        VMSTATE_UINT32(it_lo, ISL29003DLState),
+        VMSTATE_UINT32(lsb_sensor, ISL29003DLState),
+        VMSTATE_UINT32(msb_sensor, ISL29003DLState),
+        VMSTATE_UINT32(lsb_timer, ISL29003DLState),
+        VMSTATE_UINT32(msb_timer, ISL29003DLState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void isl29003dl_class_init(ObjectClass *klass, void *data)
 {
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->vmsd = &vmstate_isl29003dl;
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
 
     k->event = isl29003dl_event;

@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_timer.h"
+#include "migration/vmstate.h"
 
 static void s5l8900_st_update(IPodTouchTimerState *s)
 {
@@ -122,8 +123,71 @@ static void s5l8900_timer_init(Object *obj)
     s->st_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, s5l8900_st_tick, s);
 }
 
+/*
+ * A second boot used to inherit the first boot's counter base, so the guest's
+ * very first read of the tick counter returned a value from before its own
+ * reset vector ran. base_time is re-taken here; the periodic tick is disarmed
+ * because the guest re-programs bcount/prescaler before re-enabling it.
+ */
+static void ipod_touch_timer_reset(DeviceState *dev)
+{
+    IPodTouchTimerState *s = IPOD_TOUCH_TIMER(dev);
+
+    s->ticks_high = 0;
+    s->ticks_low = 0;
+    s->status = 0;
+    s->config = 0;
+    s->bcount1 = 0;
+    s->bcount2 = 0;
+    s->prescaler = 0;
+    s->irqstat = 0;
+    s->bcreload = 0;
+    s->tick_interval = 0;
+    s->last_tick = 0;
+    s->next_planned_tick = 0;
+    s->base_time = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (s->st_timer) {
+        timer_del(s->st_timer);
+    }
+    if (s->irq) {
+        qemu_irq_lower(s->irq);
+    }
+}
+
+/* st_timer carries its own expiry through VMSTATE_TIMER_PTR; the tick
+ * bookkeeping below is all in QEMU_CLOCK_VIRTUAL nanoseconds, which migration
+ * carries too, so the guest's notion of elapsed time survives the restore.
+ * sysclk is a Clock wired by the machine and is not per-snapshot state. */
+static const VMStateDescription vmstate_ipod_touch_timer = {
+    .name = "ipod_touch_timer",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(ticks_high, IPodTouchTimerState),
+        VMSTATE_UINT32(ticks_low, IPodTouchTimerState),
+        VMSTATE_UINT32(status, IPodTouchTimerState),
+        VMSTATE_UINT32(config, IPodTouchTimerState),
+        VMSTATE_UINT32(bcount1, IPodTouchTimerState),
+        VMSTATE_UINT32(bcount2, IPodTouchTimerState),
+        VMSTATE_UINT32(prescaler, IPodTouchTimerState),
+        VMSTATE_UINT32(irqstat, IPodTouchTimerState),
+        VMSTATE_UINT32(bcreload, IPodTouchTimerState),
+        VMSTATE_UINT32(freq_out, IPodTouchTimerState),
+        VMSTATE_UINT64(tick_interval, IPodTouchTimerState),
+        VMSTATE_UINT64(last_tick, IPodTouchTimerState),
+        VMSTATE_UINT64(next_planned_tick, IPodTouchTimerState),
+        VMSTATE_UINT64(base_time, IPodTouchTimerState),
+        VMSTATE_TIMER_PTR(st_timer, IPodTouchTimerState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void s5l8900_timer_class_init(ObjectClass *klass, void *data)
 {
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->vmsd = &vmstate_ipod_touch_timer;
+    dc->reset = ipod_touch_timer_reset;
 
 }
 
