@@ -56,11 +56,106 @@
 
 const int S5L8900_GPIO_IRQS[5] = { S5L8900_GPIO_G0_IRQ, S5L8900_GPIO_G1_IRQ, S5L8900_GPIO_G2_IRQ, S5L8900_GPIO_G3_IRQ, S5L8900_GPIO_G4_IRQ };
 
-static void allocate_ram(MemoryRegion *top, const char *name, uint32_t addr, uint32_t size)
+static MemoryRegion *allocate_ram(MemoryRegion *top, const char *name,
+                                  uint32_t addr, uint32_t size)
 {
     MemoryRegion *sec = g_new(MemoryRegion, 1);
     memory_region_init_ram(sec, NULL, name, size, &error_fatal);
     memory_region_add_subregion(top, addr, sec);
+    return sec;
+}
+
+/*
+ * IT_AMC_WATCH -- a probe, not a device. Off unless the variable is set, and
+ * when it is set the guest sees identical memory: every access is forwarded to
+ * the RAM that would have served it.
+ *
+ * It exists to answer one question that no amount of dumping can: the AMC's
+ * buffer aperture is ordinary RAM, so the guest reading and writing it is
+ * invisible. In particular we cannot otherwise see WHICH addresses the driver
+ * reads back after a job, and that set of addresses is, by definition, where
+ * the engine's output is expected to be.
+ *
+ * Set it to "r", "w" or "rw" to choose which direction is logged; "1" means
+ * reads, which is the interesting one. Every line carries the guest PC, so the
+ * reads can be attributed the same way amc_log_caller() attributes registers.
+ */
+typedef struct {
+    MemoryRegion io;
+    uint8_t *ram;          /* the shadowed RAM, which still holds the data */
+    bool log_reads;
+    bool log_writes;
+    int budget;
+} ApertureWatch;
+
+static void aperture_watch_log(ApertureWatch *w, const char *dir, hwaddr off,
+                               unsigned size, uint64_t val)
+{
+    uint32_t pc = 0;
+
+    if (w->budget <= 0) {
+        return;
+    }
+    w->budget--;
+    if (current_cpu) {
+        pc = ARM_CPU(current_cpu)->env.regs[15];
+    }
+    fprintf(stderr, "[APW] %s +%05x size=%u val=%08x pc=%08x\n",
+            dir, (unsigned)off, size, (uint32_t)val, pc);
+}
+
+static uint64_t aperture_watch_read(void *opaque, hwaddr off, unsigned size)
+{
+    ApertureWatch *w = opaque;
+    uint64_t val = 0;
+
+    memcpy(&val, w->ram + off, size);
+    if (w->log_reads) {
+        aperture_watch_log(w, "R", off, size, val);
+    }
+    return val;
+}
+
+static void aperture_watch_write(void *opaque, hwaddr off, uint64_t val,
+                                 unsigned size)
+{
+    ApertureWatch *w = opaque;
+
+    memcpy(w->ram + off, &val, size);
+    if (w->log_writes) {
+        aperture_watch_log(w, "W", off, size, val);
+    }
+}
+
+static const MemoryRegionOps aperture_watch_ops = {
+    .read = aperture_watch_read,
+    .write = aperture_watch_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+};
+
+static void install_aperture_watch(MemoryRegion *top, MemoryRegion *backing,
+                                   hwaddr base, uint64_t size)
+{
+    const char *spec = getenv("IT_AMC_WATCH");
+    ApertureWatch *w;
+
+    if (!spec) {
+        return;
+    }
+    w = g_new0(ApertureWatch, 1);
+    w->ram = memory_region_get_ram_ptr(backing);
+    w->log_reads = !strchr(spec, 'w') || strchr(spec, 'r');
+    w->log_writes = strchr(spec, 'w') != NULL;
+    w->budget = 400000;
+    memory_region_init_io(&w->io, NULL, &aperture_watch_ops, w,
+                          "amc-aperture-watch", size);
+    /* Higher priority than the RAM, so it intercepts; we then forward. */
+    memory_region_add_subregion_overlap(top, base, &w->io, 1);
+    warn_report("ipod: AMC aperture watch active (reads=%d writes=%d) -- "
+                "this is a probe and slows the guest",
+                w->log_reads, w->log_writes);
 }
 
 /*
@@ -783,7 +878,8 @@ static void ipod_touch_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     allocate_ram(sysmem, "insecure_ram", INSECURE_RAM_MEM_BASE, 0x3000000);
     allocate_ram(sysmem, "secure_ram", SECURE_RAM_MEM_BASE, 0x4B04000);
     allocate_ram(sysmem, "iboot", IBOOT_MEM_BASE, 0x100000);
-    allocate_ram(sysmem, "llb", 0x22000000, 0x100000);
+    MemoryRegion *llb = allocate_ram(sysmem, "llb", 0x22000000, 0x100000);
+    install_aperture_watch(sysmem, llb, 0x22000000, AMC_BUF_SIZE);
     allocate_ram(sysmem, "sram1", SRAM1_MEM_BASE, 0x100000);
     allocate_ram(sysmem, "framebuffer", FRAMEBUFFER_MEM_BASE, 0x400000);
     allocate_ram(sysmem, "edgeic", EDGEIC_MEM_BASE, 0x1000);
