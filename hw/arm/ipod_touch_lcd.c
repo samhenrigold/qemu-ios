@@ -247,7 +247,7 @@ static void lcd_refresh_rotated(IPodTouchLCDState *lcd, DisplaySurface *surface,
     if (!lcd->rotbuf) {
         lcd->rotbuf = g_malloc(sw * sh * 4);
     }
-    cpu_physical_memory_read(lcd->w1_framebuffer_base, lcd->rotbuf, sw * sh * 4);
+    cpu_physical_memory_read(lcd->scanout_base, lcd->rotbuf, sw * sh * 4);
 
     for (sy = 0; sy < sh; sy++) {
         const uint8_t *s = lcd->rotbuf + (size_t)sy * sw * 4;
@@ -286,7 +286,7 @@ static void lcd_refresh(void *opaque)
     /* "vscan" = pushed by the panel's frame interrupt, "scan" = QEMU's own
      * free-running 30 ms display poll. The distinction is the whole point of
      * the change; a trace that cannot tell them apart cannot show it worked. */
-    lcd_ft(lcd_in_vsync_present ? "vscan" : "scan", lcd->w1_framebuffer_base);
+    lcd_ft(lcd_in_vsync_present ? "vscan" : "scan", lcd->scanout_base);
 
     /*
      * Pick up a pending orientation change. The console resize has to happen
@@ -327,7 +327,7 @@ static void lcd_refresh(void *opaque)
     linesize = surface_stride(surface);
 
     if(lcd->invalidate) {
-        framebuffer_update_memory_section(&lcd->fbsection, lcd->sysmem, lcd->w1_framebuffer_base, height, 4 * width);
+        framebuffer_update_memory_section(&lcd->fbsection, lcd->sysmem, lcd->scanout_base, height, 4 * width);
     }
 
     framebuffer_update_display(surface, &lcd->fbsection,
@@ -523,6 +523,16 @@ static void refresh_timer_tick(void *opaque)
     else if (s->render == 0xFF)
 	qemu_irq_lower(s->irq);
 
+    /*
+     * Latch the scanout base, as the panel does at vblank. Without this the
+     * blit reads whatever base the guest has installed at the instant the blit
+     * happens, so a caller that is not on the frame cadence -- QEMU's own 30 ms
+     * display poll, or a screendump -- can show a frame the panel would not
+     * have reached yet. The driver already assumes the register takes effect at
+     * the next vblank; that is what its triple buffering is for.
+     */
+    s->scanout_base = s->w1_framebuffer_base;
+
     if (s->con && qemu_console_is_visible(s->con) && !lcd_vsync_legacy()) {
         lcd_in_vsync_present = true;
         graphic_hw_update(s->con);
@@ -567,6 +577,7 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
     s->render = 0;
     s->w1_display_resolution_info = 0;
     s->w1_framebuffer_base = 0;
+    s->scanout_base = 0;
     s->w1_hspan = 0;
     s->w1_display_depth_info = 0;
     s->invalidate = 1;
@@ -632,6 +643,9 @@ static int ipod_touch_lcd_post_load(void *opaque, int version_id)
 
     memset(&s->fbsection, 0, sizeof(s->fbsection));
     s->invalidate = 1;
+    /* scanout_base is re-latched by the next frame interrupt anyway, but a
+     * repaint can be asked for before that and would otherwise draw black. */
+    s->scanout_base = s->w1_framebuffer_base;
     return 0;
 }
 
