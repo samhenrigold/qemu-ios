@@ -936,6 +936,54 @@ static void gles_dump_frame(uint32_t rw, uint32_t rh, bool bgra)
     fclose(f);
     fprintf(stderr, "[gles] wrote traced frame %" PRIu64 " to %s\n",
             gh.presents, path);
+
+    /*
+     * And the PANEL, at the same instant.
+     *
+     * Everything above is what this layer PRODUCED. What the user sees is what
+     * CoreAnimation composited into the scanout buffer, and the two have never
+     * been compared at the same moment -- the closest anyone got was a GL frame
+     * and a screendump seconds apart, which is how "the obstacles are never
+     * drawn" survived three sessions. Reading the panel here makes the pair
+     * simultaneous by construction.
+     */
+    {
+        IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
+        hwaddr fb;
+        g_autofree uint8_t *panel = NULL;
+
+        if (!nms || !nms->lcd_state) {
+            return;
+        }
+        fb = nms->lcd_state->scanout_base ? nms->lcd_state->scanout_base
+                                          : nms->lcd_state->w1_framebuffer_base;
+        if (!fb) {
+            return;
+        }
+        panel = g_malloc((size_t)GLES_FB_WIDTH * GLES_FB_HEIGHT * 4);
+        cpu_physical_memory_read(fb, panel,
+                                 (size_t)GLES_FB_WIDTH * GLES_FB_HEIGHT * 4);
+        snprintf(path, sizeof(path), "%s/panel-%06" PRIu64 ".ppm",
+                 dir, gh.presents);
+        f = fopen(path, "wb");
+        if (!f) {
+            return;
+        }
+        fprintf(f, "P6\n%u %u\n255\n", GLES_FB_WIDTH, GLES_FB_HEIGHT);
+        for (y = 0; y < GLES_FB_HEIGHT; y++) {
+            const uint8_t *src = panel + (size_t)y * GLES_FB_WIDTH * 4;
+
+            for (x = 0; x < GLES_FB_WIDTH; x++) {
+                /* The panel is BGRA (see lcd_refresh_rotated). */
+                uint8_t rgb[3] = { src[x * 4 + 2], src[x * 4 + 1],
+                                   src[x * 4 + 0] };
+                fwrite(rgb, 1, 3, f);
+            }
+        }
+        fclose(f);
+        fprintf(stderr, "[gles]   panel scanout 0x%08x written alongside\n",
+                (unsigned)fb);
+    }
 }
 
 /* Count a draw into this frame's primitive mix. */
@@ -1187,6 +1235,40 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
     /* 'BGRA' is what CA uses on this device; accept RGBA too rather than
      * silently producing colour-swapped output for it. */
     bgra = (format != GLES_SURFACE_RGBA32);
+
+    /*
+     * Which surface CA gave us for THIS frame.
+     *
+     * nextBuffer hands out a different surface every frame -- the measured pair
+     * alternates forever -- so a renderer that writes one buffer while the
+     * compositor scans another produces a picture that is correct but stale,
+     * which is indistinguishable from a frozen renderer unless you are
+     * watching the addresses. Report the rotation and every new base once.
+     */
+    if (getenv("IT_GLES_SURFACE_TRACE")) {
+        static uint32_t seen[8];
+        static unsigned n_seen;
+        static uint32_t last_base;
+        unsigned i;
+
+        for (i = 0; i < n_seen; i++) {
+            if (seen[i] == base) {
+                break;
+            }
+        }
+        if (i == n_seen && n_seen < ARRAY_SIZE(seen)) {
+            seen[n_seen++] = base;
+            fprintf(stderr, "[gles] CA surface #%u: base=0x%08x stride=%u "
+                    "%ux%u fmt=0x%08x\n", n_seen, base, stride, width, height,
+                    format);
+        }
+        if (base != last_base) {
+            last_base = base;
+        } else if ((gh.presents % 120) == 0) {
+            fprintf(stderr, "[gles] CA handed the SAME surface 0x%08x twice "
+                    "in a row at frame %" PRIu64 "\n", base, gh.presents);
+        }
+    }
 
     glFinish();
     /* The FBO is GLES_FB_WIDTH x GLES_FB_HEIGHT; read back only what fits. */
