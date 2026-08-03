@@ -395,12 +395,33 @@ static int surface_capture(void *s)
 }
 
 /*
- * Both bind entry points log their arguments. Which of the two actually carries
- * the render target on 3.1.3 is not settled: in the stock engine
- * GLESBindCoreSurface reaches _DetachTexture, which reads more like the
- * texture-from-surface path than the drawable. Rather than guess from ARM, both
- * record whatever they are given and the log says which one fired with what --
- * the first real CAEAGLLayer client answers it as data.
+ * GLESBindView is the one that carries the render target. Measured by handing
+ * EAGL a real CAEAGLLayer: GLESBindCoreSurface is never called, and
+ * GLESBindView arrives with arg2 = 0x8058 (GL_RGBA8_OES), the renderbuffer's
+ * internal format. GLESBindCoreSurface reaches _DetachTexture in the stock
+ * engine, which is the texture-from-surface path, not the drawable.
+ *
+ * THE DRAWABLE IS NOT AN IOSurfaceRef, AND NOT A BUFFER AT ALL.
+ *
+ * Two independent pieces of evidence:
+ *
+ *   - Calling IOSurfaceGetBaseAddress on it does not fail and does not return
+ *     null. It reads whatever lives at that offset of some other object and
+ *     hands back garbage -- observed base=3468311840, stride=3885969411,
+ *     3852415272x3851223040. Indistinguishable from a real surface at the call
+ *     site, which is why surface_capture validates instead of trusting.
+ *
+ *   - The stock GLESBindView tail-calls through it: `mov r5,r1` at 0xd74c and
+ *     `ldr pc,[r5,#4]` at 0xd81c. arg1 is a callback object with a function
+ *     pointer at +4, not a pixel buffer. It also stores the engine's own
+ *     pointers into a struct at +0x20c..+0x224 on the way, so the CA handoff is
+ *     a bidirectional callback protocol, not "here is your memory".
+ *
+ * GLES_OP_PRESENT_SURFACE is still the right shape for the host -- it wants an
+ * address, a stride and a format -- but where those come from is open. Mapping
+ * that callback protocol is the prerequisite for a real app; guessing an offset
+ * would write pixels to an arbitrary guest address, which fails far worse than
+ * not rendering at all.
  */
 static int GLESBindCoreSurface(void *gc, void *surf, void *a, void *b)
 {
