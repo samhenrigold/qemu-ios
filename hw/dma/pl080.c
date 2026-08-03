@@ -103,7 +103,18 @@ static void pl080_run(PL080State *s)
     uint8_t buff[4];
     uint32_t req;
 
-    s->tc_mask = 0;
+    /*
+     * Latch already-pending terminal-count interrupts. This model completes a
+     * DMA synchronously inside pl080_run (called from the channel Config
+     * write), but a driver that programs the channel with interrupts masked and
+     * only then goes idle to await completion (e.g. iOS 3.1.3's
+     * AppleARMPL080DMAC) expects the interrupt to still be asserted when it
+     * re-enables interrupts. Resetting tc_mask to 0 here dropped the completed
+     * channel's masked status before the idle CPU could take the IRQ, so the
+     * kernel waited forever. Keep pending (tc_int) bits latched until the
+     * driver acks them via IntTCClear; this matches real PL080 latching.
+     */
+    s->tc_mask = s->tc_int;
     for (c = 0; c < s->nchannels; c++) {
         if (s->chan[c].conf & PL080_CCONF_ITC)
             s->tc_mask |= 1 << c;
@@ -318,6 +329,17 @@ static void pl080_write(void *opaque, hwaddr offset,
         case 4: /* Configuration */
             //printf("%s: setting configuration of channel %d to 0x%08x\n", __func__, i, value);
             s->chan[i].conf = value;
+            /* IT_DMA_TRACE=1: one line per channel start, which is how you see
+             * whether anything is ever pointed at a peripheral FIFO. */
+            static int trace = -1;
+            if (trace < 0) {
+                trace = getenv("IT_DMA_TRACE") != NULL;
+            }
+            if (trace) {
+                fprintf(stderr, "[dma] ch%d src=%08x dst=%08x ctrl=%08x "
+                        "conf=%08x\n", i, s->chan[i].src, s->chan[i].dest,
+                        s->chan[i].ctrl, (uint32_t)value);
+            }
             pl080_run(s);
             break;
         }
@@ -384,6 +406,19 @@ static void pl080_reset(DeviceState *dev)
         s->chan[i].ctrl = 0;
         s->chan[i].conf = 0;
     }
+
+    /*
+     * Clearing tc_int/err_int is not enough: the outgoing IRQ lines keep
+     * whatever level they were last driven to, so a reset taken with a
+     * terminal-count interrupt pending left the line asserted with no state
+     * to justify it. The interrupt controller then sees a raw-high line that
+     * nothing can clear, and firmware which enables that IRQ after reset
+     * spins in its handler forever.
+     *
+     * Found on the iPod touch 2G, where system_reset re-entered iBoot and
+     * wedged at 100% CPU in IRQ mode with VIC0 line 17 (DMAC1) raw-asserted.
+     */
+    pl080_update(s);
 }
 
 static void pl080_init(Object *obj)

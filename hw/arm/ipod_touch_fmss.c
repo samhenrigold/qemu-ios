@@ -1,4 +1,75 @@
 #include "hw/arm/ipod_touch_fmss.h"
+#include "migration/vmstate.h"
+#include "qemu/log.h"
+
+/*
+ * Cached env lookups.
+ *
+ * fmss_load_page called getenv() four to five times PER 4 KB PAGE (FMSS_RTRACE
+ * twice, FMSS_ERASE via fmss_block_is_erased, FMSS_USEDSPARE, FMSS_BASESPARE),
+ * and fmss_store_page two more per written page. Each call is a linear scan of
+ * environ, and all of it runs synchronously on the vCPU thread inside the MMIO
+ * handler - so it is guest stall, not background work. A 20 MB app launch is
+ * roughly 5,000 pages, i.e. 20,000+ environ scans.
+ *
+ * Same static-cached pattern already used by mbx_tracing(), amc_trace() and
+ * mt_trace(). Purely mechanical: no semantic change, since none of these are
+ * meant to be togglable mid-run.
+ */
+#define FMSS_ENV_FLAG(fn, name)                                               \
+    static bool fn(void)                                                      \
+    {                                                                         \
+        static int on = -1;                                                   \
+        if (on < 0) {                                                         \
+            on = getenv(name) != NULL;                                        \
+        }                                                                     \
+        return on;                                                            \
+    }
+
+FMSS_ENV_FLAG(fmss_rtrace,    "FMSS_RTRACE")
+FMSS_ENV_FLAG(fmss_erase_on,  "FMSS_ERASE")
+FMSS_ENV_FLAG(fmss_usedspare, "FMSS_USEDSPARE")
+FMSS_ENV_FLAG(fmss_basespare, "FMSS_BASESPARE")
+FMSS_ENV_FLAG(fmss_legacy_on, "FMSS_LEGACY")
+FMSS_ENV_FLAG(fmss_dump_on,   "FMSS_DUMP")
+FMSS_ENV_FLAG(fmss_physical,  "FMSS_PHYSICAL")
+FMSS_ENV_FLAG(fmss_trace_on,  "FMSS_TRACE")
+FMSS_ENV_FLAG(fmss_stats_on,  "FMSS_STATS")
+
+/*
+ * FMSS_STATS: how many pages the guest reads, and how long the host spends
+ * serving them.
+ *
+ * The page-in cost of a large app is the leading hypothesis for why big apps
+ * open with no zoom animation while small ones animate, so it has to be
+ * measured rather than assumed. Every read runs synchronously on the vCPU
+ * thread inside the MMIO handler, so time spent here is guest stall.
+ *
+ * Reported every 256 reads to keep the volume low enough to correlate against
+ * a launch window without perturbing what is being measured.
+ */
+static struct {
+    uint64_t reads, base, overlay, recall, blank, ns;
+} fmss_stats;
+
+static void fmss_stats_report(void)
+{
+    if (!fmss_stats_on()) {
+        return;
+    }
+    if ((fmss_stats.reads & 0xff) != 0) {
+        return;
+    }
+    fprintf(stderr,
+            "[FMSS] reads=%llu base=%llu ovl=%llu recall=%llu blank=%llu "
+            "read_ms=%.1f\n",
+            (unsigned long long)fmss_stats.reads,
+            (unsigned long long)fmss_stats.base,
+            (unsigned long long)fmss_stats.overlay,
+            (unsigned long long)fmss_stats.recall,
+            (unsigned long long)fmss_stats.blank,
+            fmss_stats.ns / 1.0e6);
+}
 
 static uint8_t find_bit_index(uint8_t num) {
     int index = 0;
@@ -50,7 +121,7 @@ static bool fmss_block_is_erased(IPodTouchFMSSState *s, uint32_t cs, uint32_t bl
 {
     char marker[1152];
 
-    if (!s->nand_overlay || !getenv("FMSS_ERASE")) {
+    if (!s->nand_overlay || !fmss_erase_on()) {
         return false;
     }
     if (!s->erased_blocks) {
@@ -129,8 +200,34 @@ static bool fmss_recall_physical(IPodTouchFMSSState *s, uint32_t cs,
     return true;
 }
 
+static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
+                                 uint32_t page_nr, uint8_t *data,
+                                 uint8_t *spare);
+
+/*
+ * Time every page read. Split from the body so the accounting cannot miss one
+ * of the several early returns -- the blank-page and recall paths both return
+ * before the file is ever opened.
+ */
 static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
                            uint8_t *data, uint8_t *spare)
+{
+    int64_t t0;
+
+    if (!fmss_stats_on()) {
+        fmss_load_page_inner(s, cs, page_nr, data, spare);
+        return;
+    }
+    t0 = qemu_clock_get_ns(QEMU_CLOCK_HOST);
+    fmss_load_page_inner(s, cs, page_nr, data, spare);
+    fmss_stats.ns += qemu_clock_get_ns(QEMU_CLOCK_HOST) - t0;
+    fmss_stats.reads++;
+    fmss_stats_report();
+}
+
+static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
+                                 uint32_t page_nr, uint8_t *data,
+                                 uint8_t *spare)
 {
     char filename[1088];
     FILE *f = NULL;
@@ -144,7 +241,8 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
      * visibly -- comes back as garbage.
      */
     if (fmss_recall_physical(s, cs, page_nr, data, spare)) {
-        if (getenv("FMSS_RTRACE")) {
+        fmss_stats.recall++;
+        if (fmss_rtrace()) {
             printf("RP cs=%u page=%u\n", cs, page_nr); fflush(stdout);
         }
         return;
@@ -154,16 +252,19 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
         snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_overlay, cs, page_nr);
         f = fopen(filename, "rb");
         from_overlay = (f != NULL);
-        if (f && getenv("FMSS_RTRACE")) {
+        if (from_overlay) { fmss_stats.overlay++; }
+        if (f && fmss_rtrace()) {
             printf("RH cs=%u page=%u\n", cs, page_nr); fflush(stdout);
         }
     }
     if (!f && !fmss_block_is_erased(s, cs, page_nr / NAND_PAGES_PER_BLOCK)) {
         snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_path, cs, page_nr);
         f = fopen(filename, "rb");
+        if (f) { fmss_stats.base++; }
     }
 
     if (!f) {
+        fmss_stats.blank++;
         memset(data, 0, NAND_BYTES_PER_PAGE);
         memset(spare, 0, NAND_BYTES_PER_SPARE);
         ((uint32_t *)spare)[2] = 0x00FF00FF; /* clean/erased marker */
@@ -178,7 +279,7 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
      * is free and happily allocates new writes on top of pages that are still
      * live. Claim occupied pages are programmed instead, and see whether the
      * allocator then steers around them. */
-    if (!from_overlay && getenv("FMSS_USEDSPARE")) {
+    if (!from_overlay && fmss_usedspare()) {
         if (((uint32_t *)spare)[2] == 0x00FF00FF) {
             ((uint32_t *)spare)[2] = 0xFFFF40FF;
         }
@@ -187,7 +288,7 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
     /* Diagnostic: serve the base image's spare metadata even for overlay
      * pages, to test whether the persisted FTL metadata is what breaks the
      * next boot. */
-    if (from_overlay && getenv("FMSS_BASESPARE")) {
+    if (from_overlay && fmss_basespare()) {
         snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_path, cs, page_nr);
         FILE *bf = fopen(filename, "rb");
         memset(spare, 0, NAND_BYTES_PER_SPARE);
@@ -231,11 +332,54 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
  * for logical numbers outside the volume, which are FTL bookkeeping rather
  * than filesystem blocks and are meaningless once the indirection is undone.
  */
-#define NAND_GENERATED_TOTAL_BLOCKS 128000
+/*
+ * How much of the flash the volume actually covers.
+ *
+ * The layout formula below is periodic and addresses erase blocks 2..4094 of
+ * every chip-select -- the whole 8 GiB the part table gives chip id
+ * 0xb614d5ad -- but a given image only *contains* a volume of a particular
+ * size, and a write past its end is FTL bookkeeping rather than a filesystem
+ * block. That boundary is a property of the image, so read it out of the
+ * image: logical block 2 is the GPT's one-entry partition array, and the
+ * entry's ending LBA is the last block of disk0s1.
+ *
+ * Falls back to the original image's 128000 if the GPT cannot be read, which
+ * is what this was hardcoded to before.
+ */
+#define NAND_DEFAULT_TOTAL_BLOCKS 128000
+#define NAND_MAX_TOTAL_BLOCKS     2090000  /* keeps eb clear of block 4095 */
 
-static bool fmss_generated_layout(uint32_t logical, uint32_t *cs, uint32_t *page)
+static uint32_t fmss_total_blocks(IPodTouchFMSSState *s)
 {
-    if (logical < 3 || (logical - 3) >= NAND_GENERATED_TOTAL_BLOCKS) {
+    char path[1088];
+    uint8_t ent[0x30];
+    FILE *f;
+
+    if (s->total_blocks) {
+        return s->total_blocks;
+    }
+    s->total_blocks = NAND_DEFAULT_TOTAL_BLOCKS;
+
+    /* logical 2 is cs2 page 256 under the formula below */
+    snprintf(path, sizeof(path), "%s/cs2/256.page", s->nand_path);
+    f = fopen(path, "rb");
+    if (f) {
+        if (fread(ent, 1, sizeof(ent), f) == sizeof(ent)) {
+            uint64_t start = ldq_le_p(ent + 0x20);
+            uint64_t end = ldq_le_p(ent + 0x28);
+            if (start == 3 && end > start && end - start < NAND_MAX_TOTAL_BLOCKS) {
+                s->total_blocks = end - start + 1;
+            }
+        }
+        fclose(f);
+    }
+    return s->total_blocks;
+}
+
+static bool fmss_generated_layout(IPodTouchFMSSState *s, uint32_t logical,
+                                  uint32_t *cs, uint32_t *page)
+{
+    if (logical < 3 || (logical - 3) >= fmss_total_blocks(s)) {
         return false;
     }
     /* logical == block + 3, so these are just its quotient and remainder */
@@ -261,9 +405,9 @@ static void fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
     /* A page cannot be programmed unless its block was erased first: either
      * this is the first program into the block, or the page already holds
      * overlay data and is being reprogrammed. Either way, model the erase. */
-    if (!fmss_block_is_erased(s, cs, block) && getenv("FMSS_ERASE")) {
+    if (!fmss_block_is_erased(s, cs, block) && fmss_erase_on()) {
         fmss_erase_block(s, cs, block);
-    } else if (getenv("FMSS_ERASE") && g_file_test(filename, G_FILE_TEST_EXISTS)) {
+    } else if (fmss_erase_on() && g_file_test(filename, G_FILE_TEST_EXISTS)) {
         fmss_erase_block(s, cs, block);
     }
 
@@ -275,15 +419,97 @@ static void fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
     if (rename(tmp, filename) != 0) { remove(tmp); }
 }
 
+/*
+ * iBoot injects the bluetooth MAC address into the device tree node named by a
+ * literal string it carries. On this board the node hangs off uart1, not
+ * uart3, so the string has to be rewritten before iBoot walks the tree.
+ *
+ * The string's address is build-specific (5F138 has it at PA 0x0FF2206C, 7E18
+ * at 0x0FF21324), so rather than hardcode it, search the window iBoot's img3
+ * DATA payload is mapped into. The img3 payload is mapped at IBOOT_MEM_BASE
+ * with file offset == PA - IBOOT_MEM_BASE, and the string occurs exactly once
+ * in both builds' decrypted iBoot.
+ */
+#define IBOOT_SCAN_PA_START  0x0ff00000u
+#define IBOOT_SCAN_LEN       0x00040000u   /* covers both builds' iBoot images */
+
+/* One-shot: the DeviceTree node is patched in the iBoot image in RAM the first
+ * time the guest reads a page. A reset reloads that RAM, so the latch has to be
+ * re-armed from ipod_touch_fmss_reset() or the second boot runs unpatched. */
+static bool iboot_bt_patched;
+
+static void patch_iboot_bluetooth_node(void)
+{
+    static const char needle[] = "arm-io/uart3/bluetooth";
+    static const char replace[] = "arm-io/uart1/bluetooth";
+
+    if (iboot_bt_patched) {
+        return;
+    }
+    iboot_bt_patched = true;
+
+    g_autofree uint8_t *image = g_try_malloc(IBOOT_SCAN_LEN);
+    if (!image) {
+        return;
+    }
+    cpu_physical_memory_read(IBOOT_SCAN_PA_START, image, IBOOT_SCAN_LEN);
+
+    for (size_t i = 0; i + sizeof(needle) <= IBOOT_SCAN_LEN; i++) {
+        if (memcmp(image + i, needle, sizeof(needle)) != 0) {
+            continue;
+        }
+        uint32_t pa = IBOOT_SCAN_PA_START + i;
+        cpu_physical_memory_write(pa, replace, strlen(replace));
+        if (getenv("IT_PATCH_DEBUG")) {
+            printf("[IBOOT] bluetooth node string patched at PA 0x%08x\n", pa);
+        }
+        return;
+    }
+
+    printf("[IBOOT] bluetooth node string not found in iBoot; not patching\n");
+}
+
+/*
+ * 2.1.1's kernel command line.
+ *
+ * 5F138 iBoot builds its boot_args from a runtime buffer at PA 0x0FF2A584 and
+ * hands the result to XNU. The NOR nvram path is not a substitute: 7E18 iBoot
+ * heap-panics on any NOR boot-args (see nor_set_boot_args()), so the nvram
+ * atom is deliberately left alone, and with no poke the kernel comes up with
+ * an empty command line -- no rd=disk0s1, so it cannot find its root device,
+ * resets, and iBoot restarts. That is a silent boot loop: the Apple logo stays
+ * up, "Boot Failure Count" climbs, and no kernel serial output ever appears.
+ *
+ * iBoot overwrites the buffer as it runs, hence the rewrite on every NAND read
+ * rather than a once-only patch.
+ *
+ * The address is 5F138-specific, so this is skipped on the direct-iBoot
+ * (3.1.3 / 7E18) path, which sets its command line via IT_BOOT_ARGS instead.
+ */
+#define IBOOT_5F138_BOOT_ARGS_PA  0x0ff2a584u
+
+static void patch_iboot_boot_args(void)
+{
+    static const char boot_args[] =
+        "kextlog=0xfff debug=0x8 cpus=1 rd=disk0s1 serial=1 pmu-debug=0x1 "
+        "io=0xffff8fff debug-usb=0xffffffff amfi_allow_any_signature=1 -v "
+        "zalloc_debug";
+
+    if (getenv("IT_DIRECT_IBOOT")) {
+        return;
+    }
+
+    cpu_physical_memory_write(IBOOT_5F138_BOOT_ARGS_PA, boot_args,
+                              strlen(boot_args));
+}
+
+/* Cap on entries in one FMSS transfer, shared by the read and write paths. */
+#define FMSS_MAX_WRITE_ENTRIES 512
+
 static void read_nand_pages(IPodTouchFMSSState *s)
 {
-    // boot args
-    const char *boot_args = "kextlog=0xfff debug=0x8 cpus=1 rd=disk0s1 serial=1 pmu-debug=0x1 io=0xffff8fff debug-usb=0xffffffff amfi_allow_any_signature=1 -v zalloc_debug"; // if not const then overwritten
-    cpu_physical_memory_write(0x0ff2a584, boot_args, strlen(boot_args));
-
-    // patch iBoot - we want to inject the bluetooth MAC address which is located as sub-node of uart1 and not uart3 in the device tree...
-    const char *chr = "arm-io/uart1/bluetooth";
-    cpu_physical_memory_write(0x0ff2206c, chr, strlen(chr));
+    patch_iboot_boot_args();
+    patch_iboot_bluetooth_node();
 
     int page_out_buf_ind = 0;
     for(int page_ind = 0; page_ind < s->reg_num_pages; page_ind++) {
@@ -310,8 +536,23 @@ static void read_nand_pages(IPodTouchFMSSState *s)
             page_out_buf_ind++;
         }
 
-        // finally, write the spare
-        cpu_physical_memory_write(s->reg_page_spare_out_addr + page_ind * 0xc, s->page_spare_buffer, NAND_BYTES_PER_SPARE);
+        /*
+         * Finally, the spare -- 0xc bytes, NOT NAND_BYTES_PER_SPARE.
+         *
+         * The driver's array is 3 words per page (stride 0xc; the write path at
+         * the bottom of this file reads exactly 0xc back). Writing the full
+         * 64-byte spare at a 12-byte stride meant every entry scribbled 52
+         * bytes over the following four entries, which happened to work because
+         * the next iteration rewrote them -- but the LAST entry had nothing
+         * after it, so it ran 52 bytes past the end of the driver's array into
+         * guest kernel heap. On every NAND read, for the life of the run.
+         *
+         * Writing 0xc is behaviour-identical for every entry except that
+         * overspill: bytes 0xc..0x3f were always overwritten by the next
+         * iteration anyway.
+         */
+        cpu_physical_memory_write(s->reg_page_spare_out_addr + page_ind * 0xc,
+                                  s->page_spare_buffer, 0xc);
     }
 }
 
@@ -348,7 +589,6 @@ static void read_nand_pages(IPodTouchFMSSState *s)
  * pages_out[2i] and pages_out[2i+1]; its 12-byte spare record is at
  * spare_out + i*0xc (stride 0xc == the driver's 3 spare words per page).
  */
-#define FMSS_MAX_WRITE_ENTRIES 512
 
 static void write_nand_pages(IPodTouchFMSSState *s)
 {
@@ -361,7 +601,7 @@ static void write_nand_pages(IPodTouchFMSSState *s)
     /* FMSS_LEGACY: the pre-2026-07-31 reading, kept so the two decodes can be
      * compared back to back -- treat pages_in as a flat array from word 3 with
      * reg_num_pages entries, striping chip-selects from the header bitmap. */
-    bool legacy = getenv("FMSS_LEGACY") != NULL;
+    bool legacy = fmss_legacy_on();
     int legacy_np = s->reg_num_pages;
     uint32_t legacy_hdr = 0;
     if (legacy) {
@@ -407,7 +647,7 @@ static void write_nand_pages(IPodTouchFMSSState *s)
         memset(s->page_spare_buffer, 0, NAND_BYTES_PER_SPARE);
         cpu_physical_memory_read(s->reg_page_spare_out_addr + i * 0xc, s->page_spare_buffer, 0xc);
 
-        if (getenv("FMSS_DUMP")) {
+        if (fmss_dump_on()) {
             static int nd = 0;
             if (nd++ < 400) {
                 uint32_t *sp = (uint32_t *)s->page_spare_buffer;
@@ -440,17 +680,17 @@ static void write_nand_pages(IPodTouchFMSSState *s)
          * This is what makes the *persisted* image correct across a reboot;
          * fmss_remember_physical above is what makes it correct before one.
          */
-        if (!getenv("FMSS_PHYSICAL")) {
+        if (!fmss_physical()) {
             uint32_t logical = ldl_le_p(s->page_spare_buffer);
             uint32_t rcs, rpage;
-            if (!fmss_generated_layout(logical, &rcs, &rpage)) {
-                if (getenv("FMSS_RTRACE")) {
+            if (!fmss_generated_layout(s, logical, &rcs, &rpage)) {
+                if (fmss_rtrace()) {
                     printf("SKIP logical=%u (cs=%u page=%u)\n", logical, cs, page_nr);
                     fflush(stdout);
                 }
                 continue; /* FTL bookkeeping, not a filesystem block */
             }
-            if (getenv("FMSS_RTRACE")) {
+            if (fmss_rtrace()) {
                 printf("KEEP logical=%u -> cs=%u page=%u\n", logical, rcs, rpage);
                 fflush(stdout);
             }
@@ -524,7 +764,7 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
             s->reg_csgenrc = val;
             break;
         case 0xD38:
-            if (getenv("FMSS_TRACE") && s->reg_csgenrc != 0xa01 && s->reg_csgenrc != 0xa02) {
+            if (fmss_trace_on() && s->reg_csgenrc != 0xa01 && s->reg_csgenrc != 0xa02) {
                 printf("FMSS_OP csgenrc=%08x d0c=%08x d10=%08x d18=%08x\n",
                        s->reg_csgenrc, s->reg_pages_in_addr,
                        s->reg_cs_buf_addr, s->reg_num_pages);
@@ -539,7 +779,7 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
             }
             break;
         default:
-            if (getenv("FMSS_TRACE")) {
+            if (fmss_trace_on()) {
                 static uint8_t seen[0x1000];
                 if (addr < 0x1000 && !seen[addr]) {
                     seen[addr] = 1;
@@ -590,11 +830,71 @@ static void ipod_touch_fmss_finalize(Object *obj)
     }
 }
 
+/*
+ * Only the controller registers are reset. phys_pages and erased_blocks are
+ * FLASH CONTENT, not controller state -- a warm reset does not un-program a
+ * NAND page -- so clearing them here would silently discard everything the
+ * guest wrote this session. total_blocks is read out of the image's GPT and
+ * cannot change either.
+ */
+static void ipod_touch_fmss_reset(DeviceState *dev)
+{
+    IPodTouchFMSSState *s = IPOD_TOUCH_FMSS(dev);
+
+    s->reg_cs_irq_bit = 0;
+    s->reg_cinfo_target_addr = 0;
+    s->reg_pages_in_addr = 0;
+    s->reg_cs_buf_addr = 0;
+    s->reg_num_pages = 0;
+    s->reg_page_spare_out_addr = 0;
+    s->reg_pages_out_addr = 0;
+    s->reg_csgenrc = 0;
+    memset(s->page_buffer, 0, NAND_BYTES_PER_PAGE);
+    memset(s->page_spare_buffer, 0, NAND_BYTES_PER_SPARE);
+    iboot_bt_patched = false;
+    if (s->irq) {
+        qemu_irq_lower(s->irq);
+    }
+}
+
+/*
+ * KNOWN GAP, deliberate: phys_pages and erased_blocks are GHashTables holding
+ * this session's programmed pages, and they are not migrated. The persisted
+ * side of a write is in the NAND overlay directory, which the destination
+ * opens for itself, so file content survives; what does not survive is the
+ * physical-page memory that makes a page the FTL just relocated read back at
+ * the address it was programmed to. In practice that mapping only has to hold
+ * until the FTL is rebuilt, which a restore does not disturb.
+ *
+ * page_buffer/page_spare_buffer are the DMA staging area for one transfer;
+ * they are only meaningful between the register write that starts a transfer
+ * and its completion, which cannot straddle a snapshot.
+ */
+static const VMStateDescription vmstate_ipod_touch_fmss = {
+    .name = "ipod_touch_fmss",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(reg_cs_irq_bit, IPodTouchFMSSState),
+        VMSTATE_UINT32(reg_cinfo_target_addr, IPodTouchFMSSState),
+        VMSTATE_UINT32(reg_pages_in_addr, IPodTouchFMSSState),
+        VMSTATE_UINT32(reg_cs_buf_addr, IPodTouchFMSSState),
+        VMSTATE_UINT32(reg_num_pages, IPodTouchFMSSState),
+        VMSTATE_UINT32(reg_page_spare_out_addr, IPodTouchFMSSState),
+        VMSTATE_UINT32(reg_pages_out_addr, IPodTouchFMSSState),
+        VMSTATE_UINT32(reg_csgenrc, IPodTouchFMSSState),
+        VMSTATE_UINT32(total_blocks, IPodTouchFMSSState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_fmss_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = ipod_touch_fmss_realize;
+    dc->reset = ipod_touch_fmss_reset;
+    dc->vmsd = &vmstate_ipod_touch_fmss;
 }
 
 static const TypeInfo ipod_touch_fmss_info = {

@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_sysic.h"
+#include "migration/vmstate.h"
 
 static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -8,6 +9,24 @@ static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (addr) {
         case POWER_ID:
+            /*
+             * 0x39700044: low bits are the POWER_ID power-control scratch, but
+             * bits[31:24] are the read-only fused boot security epoch. iBoot's
+             * miu_init reads this word and panics ("Epoch Mismatch", which trips
+             * the watchdog) unless the top byte equals the image epoch (4 on the
+             * S5L8720 / iPod touch 2G). A normal boot gets that top byte latched
+             * by the SecureROM before iBoot runs; when we substitute the boot
+             * chain (IT_DIRECT_IBOOT) the ROM never runs and iBoot's own
+             * power-control writes here would clobber it, so synthesise the epoch
+             * top byte on read. Env-gated: a normal 2.1.1 boot is untouched.
+             */
+            if (getenv("IT_DIRECT_IBOOT")) {
+                uint32_t epoch = 4;
+                if (getenv("IT_DIRECT_EPOCH")) {
+                    epoch = (uint32_t)strtoul(getenv("IT_DIRECT_EPOCH"), NULL, 0);
+                }
+                return (s->power_id & 0x00FFFFFFu) | (epoch << 24);
+            }
             return s->power_id;
         case POWER_SETSTATE:
         case POWER_STATE:
@@ -18,22 +37,22 @@ static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
         case GPIO_INTLEVEL ... (GPIO_INTLEVEL + GPIO_NUMINTGROUPS * 4):
         {
             uint8_t group = (addr - GPIO_INTLEVEL) / 4;
-            return s->gpio_int_level[group];
+            return group < GPIO_NUMINTGROUPS ? s->gpio_int_level[group] : 0;
         }
         case GPIO_INTSTAT ... (GPIO_INTSTAT + GPIO_NUMINTGROUPS * 4):
         {
             uint8_t group = (addr - GPIO_INTSTAT) / 4;
-            return s->gpio_int_status[group];
+            return group < GPIO_NUMINTGROUPS ? s->gpio_int_status[group] : 0;
         }
         case GPIO_INTEN ... (GPIO_INTEN + GPIO_NUMINTGROUPS * 4):
         {
             uint8_t group = (addr - GPIO_INTEN) / 4;
-            return s->gpio_int_enabled[group];
+            return group < GPIO_NUMINTGROUPS ? s->gpio_int_enabled[group] : 0;
         }
         case GPIO_INTTYPE ... (GPIO_INTTYPE + GPIO_NUMINTGROUPS * 4):
         {
             uint8_t group = (addr - GPIO_INTTYPE) / 4;
-            return s->gpio_int_type[group];
+            return group < GPIO_NUMINTGROUPS ? s->gpio_int_type[group] : 0;
         }
       default:
         break;
@@ -66,23 +85,40 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
         {
             uint8_t group = (addr - GPIO_INTSTAT) / 4;
 
-            // acknowledge the interrupts and clear the corresponding bits
-            s->gpio_int_status[group] = s->gpio_int_status[group] & ~val;
-
-            qemu_irq_lower(s->gpio_irqs[group]);
-
+            /*
+             * The register block has EIGHT slots per range (they are 0x20
+             * apart) but only GPIO_NUMINTGROUPS arrays behind them, and fewer
+             * qemu_irqs than that are actually connected. Indexing group 7 read
+             * past gpio_int_level into gpio_int_status, and lowered an irq off
+             * the end of gpio_irqs[] - calling through whatever followed it,
+             * interpreted as an IRQState*.
+             *
+             * Claim the address (so it does not fall through to default and
+             * silently read as 0) but ignore an out-of-range group.
+             */
+            if (group < GPIO_NUMINTGROUPS) {
+                // acknowledge the interrupts and clear the corresponding bits
+                s->gpio_int_status[group] = s->gpio_int_status[group] & ~val;
+                if (s->gpio_irqs[group]) {
+                    qemu_irq_lower(s->gpio_irqs[group]);
+                }
+            }
             break;
         }
         case GPIO_INTEN ... (GPIO_INTEN + GPIO_NUMINTGROUPS * 4):
         {
             uint8_t group = (addr - GPIO_INTEN) / 4;
-            s->gpio_int_enabled[group] = val;
+            if (group < GPIO_NUMINTGROUPS) {
+                s->gpio_int_enabled[group] = val;
+            }
             break;
         }
         case GPIO_INTTYPE ... (GPIO_INTTYPE + GPIO_NUMINTGROUPS * 4):
         {
             uint8_t group = (addr - GPIO_INTTYPE) / 4;
-            s->gpio_int_type[group] = val;
+            if (group < GPIO_NUMINTGROUPS) {
+                s->gpio_int_type[group] = val;
+            }
             break;
         }
         default:
@@ -139,9 +175,26 @@ static void ipod_touch_sysic_reset(DeviceState *dev)
     }
 }
 
+static const VMStateDescription vmstate_ipod_touch_sysic = {
+    .name = "ipod_touch_sysic",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(power_id, IPodTouchSYSICState),
+        VMSTATE_UINT32(power_state, IPodTouchSYSICState),
+        VMSTATE_UINT32_ARRAY(gpio_int_level, IPodTouchSYSICState, GPIO_NUMINTGROUPS),
+        VMSTATE_UINT32_ARRAY(gpio_int_status, IPodTouchSYSICState, GPIO_NUMINTGROUPS),
+        VMSTATE_UINT32_ARRAY(gpio_int_enabled, IPodTouchSYSICState, GPIO_NUMINTGROUPS),
+        VMSTATE_UINT32_ARRAY(gpio_int_type, IPodTouchSYSICState, GPIO_NUMINTGROUPS),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_sysic_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->vmsd = &vmstate_ipod_touch_sysic;
 
     dc->reset = ipod_touch_sysic_reset;
 }

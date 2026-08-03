@@ -23,6 +23,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(LIS302DLState, LIS302DL)
 #define ACCEL_WHOAMI_VALUE	0x3B
 
 /* CTRL_REG1 per-axis enable bits (public ST LIS302DL datasheet). */
+/* CTRL_REG2 bit 6: reboot the part's memory content. Self-clearing. */
+#define ACCEL_CTRL_REG2_BOOT 0x40
+
 #define ACCEL_CTRL_REG1_XEN 0x01
 #define ACCEL_CTRL_REG1_YEN 0x02
 #define ACCEL_CTRL_REG1_ZEN 0x04

@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_gpio.h"
+#include "migration/vmstate.h"
 
 static void s5l8900_gpio_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 {
@@ -70,13 +71,47 @@ static void s5l8900_gpio_reset(DeviceState *dev)
     IPodTouchGPIOState *s = IPOD_TOUCH_GPIO(dev);
 
     memset(s->gpio_state, 0, sizeof(s->gpio_state));
+
+    /*
+     * The volume pads rest HIGH, because they are active low.
+     *
+     * The real device tree flags these two differently from the buttons that
+     * work: function-button_hold <gpio 0x0c02 0x100> and button_menu
+     * <gpio 0x0c01 0x100> carry 0x100, while button_volup <gpio 0x0902 0x000>
+     * and button_voldown <gpio 0x0c00 0x000> carry 0. If 0 means active-low,
+     * then a pad we leave at 0 reads to iOS as a button HELD DOWN - from boot,
+     * with no input - which would make it emit volume changes continuously and
+     * re-show the HUD forever. Both held at once would also make the level
+     * wander rather than sit still, which is what the user sees.
+     *
+     * Confirmed by the user: with these pads parked high the HUD no longer
+     * appears or flickers on its own. The matching half of the fix is in
+     * ipod_touch_2g.c, where a press now pulls the pad DOWN rather than up.
+     * IT_VOLBTN_LEGACY restores the old resting level if it is ever needed for
+     * a bisect.
+     */
+    if (!getenv("IT_VOLBTN_LEGACY")) {
+        gpio_set_on(s->gpio_state, GPIO_BUTTON_VOLUP);
+        gpio_set_on(s->gpio_state, GPIO_BUTTON_VOLDOWN);
+    }
 }
+
+static const VMStateDescription vmstate_ipod_touch_gpio = {
+    .name = "ipod_touch_gpio",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(gpio_state, IPodTouchGPIOState, NUM_GPIO_PADS),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 static void s5l8900_gpio_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->reset = s5l8900_gpio_reset;
+    dc->vmsd = &vmstate_ipod_touch_gpio;
 }
 
 static const TypeInfo ipod_touch_gpio_info = {
