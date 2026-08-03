@@ -56,9 +56,54 @@ typedef struct __attribute__((packed)) {
     uint32_t args[QC_GLES_INLINE_ARGS];
 } qc_gles_args_t;
 
+/*
+ * Dispatch slots.
+ *
+ * These are NOT ours to choose. Each is the byte offset of an entry point in
+ * OpenGLES.framework's own dispatch table, divided by four -- the framework's
+ * trampolines index that table with constants baked into their code, so the
+ * numbering is fixed by Apple and the guest shim must fill the same indices.
+ * The block offset a trampoline uses is 0x10 + slot*4, because the table starts
+ * at X+0x10 within the 6592-byte context block that GLESCreateGC populates.
+ *
+ * Recovered from MBXGLEngine and cross-checked against eight framework call
+ * sites; the full 171-slot map is in GATE1_slotmap.txt. Only the slots this
+ * implementation actually handles are named here -- see SCOPE in gles-host.c.
+ */
+#define GLES_SLOT_BIND_TEXTURE          5    /* 0x0024 */
+#define GLES_SLOT_CLEAR                 10   /* 0x0038 */
+#define GLES_SLOT_CLEAR_COLOR           12   /* 0x0040 */
+#define GLES_SLOT_COLOR4F               37   /* 0x00a4 */
+#define GLES_SLOT_DISABLE               63   /* 0x010c */
+#define GLES_SLOT_DISABLE_CLIENT_STATE  64   /* 0x0110 */
+#define GLES_SLOT_DRAW_ARRAYS           65   /* 0x0114 */
+#define GLES_SLOT_ENABLE                72   /* 0x0130 */
+#define GLES_SLOT_ENABLE_CLIENT_STATE   73   /* 0x0134 */
+#define GLES_SLOT_FINISH                89   /* 0x0174 */
+#define GLES_SLOT_FLUSH                 90   /* 0x0178 */
+#define GLES_SLOT_GEN_TEXTURES          98   /* 0x0198 */
+#define GLES_SLOT_GET_ERROR             102  /* 0x01a8 */
+#define GLES_SLOT_LOAD_IDENTITY         157  /* 0x0284 */
+#define GLES_SLOT_MATRIX_MODE           174  /* 0x02c8 */
+#define GLES_SLOT_TEXCOORD_POINTER      289  /* 0x0494 */
+#define GLES_SLOT_TEX_IMAGE_2D          301  /* 0x04c4 */
+#define GLES_SLOT_TEX_PARAMETERI        304  /* 0x04d0 */
+#define GLES_SLOT_VERTEX_POINTER        334  /* 0x0548 */
+#define GLES_SLOT_VIEWPORT              335  /* 0x054c */
+#define GLES_SLOT_ORTHOF                791  /* 0x0c6c */
+
+/* The framework's table tops out at slot 820. Engine-level operations that are
+ * not dispatch entries at all live above it, well clear of anything Apple could
+ * be indexing. */
+#define GLES_OP_BASE                    0x1000
+#define GLES_OP_PRESENT                 (GLES_OP_BASE + 0)
+
 #ifndef OUT_OF_TREE_BUILD
 int64_t qc_handle_gles(CPUState *cpu, qc_gles_args_t *a);
 void qc_gles_dump_stats(void);
+int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
+                       uint32_t argc, const uint32_t *args);
+void gles_host_stats(uint64_t *draws, uint64_t *presents);
 #endif
 
 #endif /* HW_ARM_GUEST_SERVICES_GLES_H */

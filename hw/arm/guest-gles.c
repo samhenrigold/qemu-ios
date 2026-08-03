@@ -19,18 +19,15 @@
 #include "cpu.h"
 #include "hw/arm/guest-services/general.h"
 
-/* Slot numbers we care about first; see GATE1_slotmap.txt for the full map.
- * These four are the Step 3 target: clear the buffer, point at some vertices,
- * draw, and see it. */
-#define GLES_SLOT_CLEAR         10   /* 0x0038 glClear        */
-#define GLES_SLOT_CLEAR_COLOR   12   /* 0x0040 glClearColor   */
-#define GLES_SLOT_DRAW_ARRAYS   65   /* 0x0114 glDrawArrays   */
-#define GLES_SLOT_VERTEX_PTR    334  /* 0x0548 glVertexPointer */
+/* One counter per slot. The framework's table tops out at slot 820 and our
+ * engine-level ops start at GLES_OP_BASE (0x1000), so this covers both. A slot
+ * the guest invents must never index outside it -- the guest is not trusted to
+ * stay in range. */
+#define GLES_MAX_SLOTS (GLES_OP_BASE + 16)
 
-/* One counter per slot. The framework's table is 0xCE4 bytes, so slots run to
- * 0x320; round up and never index out of it -- a bad slot from the guest must
- * not be able to scribble on the host. */
-#define GLES_MAX_SLOTS 1024
+/* Widest ES 1.1 entry point is nine scalars (glTexImage2D,
+ * glCompressedTexSubImage2D). */
+#define GLES_MAX_ARGS 12
 
 static uint64_t gles_slot_calls[GLES_MAX_SLOTS];
 static uint64_t gles_total_calls;
@@ -56,18 +53,36 @@ int64_t qc_handle_gles(CPUState *cpu, qc_gles_args_t *a)
                 a->args[0], a->args[1], a->args[2], a->args[3]);
     }
 
-    switch (a->slot) {
-    case GLES_SLOT_CLEAR:
-    case GLES_SLOT_CLEAR_COLOR:
-    case GLES_SLOT_DRAW_ARRAYS:
-    case GLES_SLOT_VERTEX_PTR:
-        /* Recognised, but there is no host GL context yet. Returning 0 keeps
-         * the guest running so the call stream can be observed end to end;
-         * this is deliberately not an error path. */
-        return 0;
-    default:
-        return 0;
+    /* Gather the arguments. Four ride inline; anything longer was spilled to a
+     * guest buffer, because qc_gles_args_t is capped at 32 bytes to keep
+     * qemu_call_t's layout frozen (see general.h). */
+    uint32_t args[GLES_MAX_ARGS];
+    uint32_t argc = a->argc;
+
+    if (argc > GLES_MAX_ARGS) {
+        fprintf(stderr, "[gles] slot %u: argc %u out of range\n",
+                a->slot, argc);
+        gles_bad_slots++;
+        return -1;
     }
+    memset(args, 0, sizeof(args));
+    if (argc <= QC_GLES_INLINE_ARGS) {
+        memcpy(args, a->args, argc * sizeof(uint32_t));
+    } else {
+        if (!a->spill) {
+            fprintf(stderr, "[gles] slot %u: argc %u but no spill pointer\n",
+                    a->slot, argc);
+            return -1;
+        }
+        if (cpu_memory_rw_debug(cpu, a->spill, (uint8_t *)args,
+                                argc * sizeof(uint32_t), 0) != 0) {
+            fprintf(stderr, "[gles] slot %u: cannot read %u spilled args at "
+                    "guest 0x%08x\n", a->slot, argc, a->spill);
+            return -1;
+        }
+    }
+
+    return gles_host_call(cpu, a->slot, a->ctx, argc, args);
 }
 
 void qc_gles_dump_stats(void)
