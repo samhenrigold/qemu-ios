@@ -14,6 +14,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchLCDState, IPOD_TOUCH_LCD)
 
 #define LCD_REFRESH_RATE_FREQUENCY 10
 
+/*
+ * Panel frame interrupt period. 60 Hz is what the guest's display driver is
+ * programmed for; the constant used to be spelled inline as
+ * NANOSECONDS_PER_SECOND / 60 next to a dead reference to
+ * LCD_REFRESH_RATE_FREQUENCY (10 Hz), which is not the rate anything runs at.
+ */
+#define LCD_VSYNC_PERIOD_NS (NANOSECONDS_PER_SECOND / 60)
+
 typedef struct IPodTouchLCDState
 {
     SysBusDevice parent_obj;
@@ -57,6 +65,14 @@ typedef struct IPodTouchLCDState
     bool mtt_seen[MT_MAX_FINGERS];
 
     QEMUTimer *refresh_timer;
+
+    /*
+     * Absolute deadline of the next frame interrupt, in QEMU_CLOCK_VIRTUAL ns.
+     * The tick advances this by exactly one period instead of re-arming from
+     * "now", so the callback's own dispatch latency is not folded into the
+     * frame rate. See refresh_timer_tick().
+     */
+    int64_t next_vsync;
 } IPodTouchLCDState;
 
 void lcd_changebrightness(int brightness);
