@@ -43,6 +43,7 @@
 #include "qapi/qapi-commands-machine.h"
 #include "qapi/qapi-commands-misc.h"
 #include "system/blockdev.h"
+#include "hw/qdev-core.h"
 #include "qemu-version.h"
 #include "qemu/cutils.h"
 #include "qemu/main-loop.h"
@@ -1701,6 +1702,7 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
 - (void)removePause;
 - (void)restartQEMU:(id)sender;
 - (void)powerDownQEMU:(id)sender;
+- (void)pasteTextToGuest:(id)sender;
 - (void)ejectDeviceMedia:(id)sender;
 - (void)changeDeviceMedia:(id)sender;
 - (BOOL)verifyQuit;
@@ -1996,6 +1998,43 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
     });
 }
 
+/*
+ * Hand the host clipboard's text to the guest.
+ *
+ * This is deliberately an explicit gesture rather than a background sync, the
+ * way the iPhone Simulator's Edit > Paste Text was: the guest pasteboard is a
+ * single slot the user is about to paste from, and silently replacing it every
+ * time something is copied on the Mac would be a surprise.
+ *
+ * It goes through the machine's "pasteboard" property rather than a direct
+ * call, so this and the QMP path (qom-set) are the same code -- and headless
+ * runs, which have no clipboard peer at all, are not a second implementation.
+ */
+- (void)pasteTextToGuest:(id)sender
+{
+    NSString *text = [[NSPasteboard generalPasteboard]
+                      stringForType:NSPasteboardTypeString];
+    if (text == nil) {
+        NSBeep();
+        return;
+    }
+
+    const char *utf8 = [text UTF8String];
+    __block Error *err = NULL;
+    with_bql(^{
+        Object *machine = qdev_get_machine();
+        if (machine && object_property_find(machine, "pasteboard")) {
+            object_property_set_str(machine, "pasteboard", utf8, &err);
+        } else {
+            error_setg(&err, "this machine has no guest pasteboard");
+        }
+    });
+    if (err) {
+        QEMU_Alert([NSString stringWithUTF8String: error_get_pretty(err)]);
+        error_free(err);
+    }
+}
+
 /* Ejects the media.
  * Uses sender's tag to figure out the device to eject.
  */
@@ -2195,10 +2234,18 @@ static void create_initial_menus(void)
     [menuItem setSubmenu:menu];
     [[NSApp mainMenu] addItem:menuItem];
 
-    // Edit menu
+    /*
+     * Edit menu. Cmd+Ctrl+C and Cmd+Ctrl+V rather than the plain Cmd forms, on
+     * purpose: those are the iPhone Simulator's shortcuts for the same two
+     * operations, and leaving plain Cmd+C/Cmd+V alone means they still reach
+     * the guest as key events.
+     */
     menu = [[NSMenu alloc] initWithTitle:@"Edit"];
     menuItem = [[[NSMenuItem alloc] initWithTitle:@"Copy Screen" action:@selector(copyScreen:) keyEquivalent:@"c"] autorelease];
     [menuItem setKeyEquivalentModifierMask:(NSEventModifierFlagCommand|NSEventModifierFlagControl)];
+    [menu addItem: menuItem];
+    menuItem = [[[NSMenuItem alloc] initWithTitle:@"Paste Text to Guest" action:@selector(pasteTextToGuest:) keyEquivalent:@"v"] autorelease];
+    [menuItem setKeyEquivalentModifierMask:(NSEventModifierFlagControl|NSEventModifierFlagCommand)];
     [menu addItem: menuItem];
     menuItem = [[[NSMenuItem alloc] initWithTitle:@"Edit" action:nil keyEquivalent:@""] autorelease];
     [menuItem setSubmenu:menu];
