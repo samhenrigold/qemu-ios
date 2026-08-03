@@ -321,6 +321,27 @@ static void handleAnyDeviceErrors(Error * err)
     int mouseX;
     int mouseY;
     bool mouseOn;
+    /*
+     * Option-drag pinch. A single host pointer cannot describe two contacts, so
+     * Option synthesises a second one; see -updatePinch: for the arithmetic.
+     * Points are kept in guest framebuffer coordinates, not window ones, so the
+     * mirror is about the middle of the *screen* whatever the window's size.
+     */
+    BOOL pinchDown;
+    BOOL leftButtonDown;
+    BOOL haveMousePoint;
+    NSPoint mousePoint;
+    NSPoint prevMousePoint;
+    NSPoint pinchPoint;
+    NSUInteger previousModifierFlags;
+    /*
+     * Show taps. Drawn over the scanout in -drawRect:, never into the guest's
+     * framebuffer -- so screendumps and the regression harness, which assert on
+     * pixel values, cannot see any of it.
+     */
+    BOOL showTaps;
+    NSRect tapRects[2];
+    int tapCount;
 }
 - (void) switchSurface:(pixman_image_t *)image;
 - (void) grabMouse;
@@ -330,6 +351,14 @@ static void handleAnyDeviceErrors(Error * err)
 - (bool) handleEvent:(NSEvent *)event;
 - (bool) handleEventLocked:(NSEvent *)event;
 - (void) notifyMouseModeChange;
+- (void) copyScreenToPasteboard;
+- (void) installIPA:(NSString *)path;
+- (void) refreshTapMarkers;
+- (void) drawTapMarkers:(CGContextRef)ctx;
+- (void) toggleShowTaps:(id)sender;
+- (BOOL) showTaps;
+- (void) updatePinch:(NSUInteger)modifiers;
+- (void) modifiersChanged:(NSUInteger)modifiers;
 - (BOOL) isMouseGrabbed;
 - (QEMUScreen) gscreen;
 - (void) raiseAllKeys;
@@ -371,6 +400,13 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
 
         [self addTrackingArea:trackingArea];
         [trackingArea release];
+        /* Drop an .ipa on the window to install it. */
+        [self registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
+        /*
+         * On by default: it cannot reach a screendump, and an Option-drag whose
+         * second finger is invisible is a gesture you perform blind.
+         */
+        showTaps = YES;
         screen.width = frameRect.size.width;
         screen.height = frameRect.size.height;
         colorspace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
@@ -574,6 +610,101 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
         CGImageRelease (imageRef);
         CGDataProviderRelease(dataProviderRef);
     }
+
+    [self drawTapMarkers:viewContextRef];
+}
+
+/*
+ * Show taps -- grey dots where the contacts are.
+ *
+ * The iPhone Simulator did this in a separate borderless window with
+ * ignoresMouseEvents set, purely so the dots could never be a hit-test
+ * participant. We have no compositing layer above the guest framebuffer, so
+ * that does not transfer; drawing here instead, AFTER the scanout has been
+ * blitted and into the view's own context, gets the same property for free.
+ * The guest's framebuffer is never touched, which matters: screendumps and the
+ * regression harness assert on those pixel values and must not see a dot.
+ *
+ * The second finger of an Option-drag is the reason this exists at all. It is
+ * invisible otherwise, which makes a pinch something you do blind.
+ */
+- (void) drawTapMarkers:(CGContextRef)ctx
+{
+    int i;
+
+    if (!showTaps) {
+        return;
+    }
+    CGContextSetShouldAntialias(ctx, YES);
+    for (i = 0; i < tapCount; i++) {
+        CGRect r = NSRectToCGRect(tapRects[i]);
+
+        CGContextSetRGBFillColor(ctx, 0.75, 0.75, 0.75, 0.45);
+        CGContextFillEllipseInRect(ctx, r);
+        CGContextSetRGBStrokeColor(ctx, 0.95, 0.95, 0.95, 0.8);
+        CGContextSetLineWidth(ctx, 1.5);
+        CGContextStrokeEllipseInRect(ctx, CGRectInset(r, 0.75, 0.75));
+    }
+    CGContextSetShouldAntialias(ctx, NO);
+}
+
+#define TAP_MARKER_RADIUS 13.0
+
+/*
+ * Recompute where the dots are and dirty both the old and the new positions.
+ * Only the new ones is not enough: a static guest redraws nothing on its own,
+ * so the previous dot would stay on screen and the markers would smear into a
+ * trail behind the finger.
+ */
+- (void) refreshTapMarkers
+{
+    NSRect old[2];
+    int oldCount = tapCount, i;
+    NSPoint pts[2];
+    int n = 0;
+
+    if (!showTaps) {
+        return;
+    }
+    memcpy(old, tapRects, sizeof(old));
+
+    if (leftButtonDown && haveMousePoint) {
+        pts[n++] = mousePoint;
+    }
+    if (pinchDown) {
+        pts[n++] = pinchPoint;
+    }
+    for (i = 0; i < n; i++) {
+        /* Guest coordinates have y downwards; the view's origin is bottom left. */
+        tapRects[i] = NSMakeRect(pts[i].x - TAP_MARKER_RADIUS,
+                                 (screen.height - pts[i].y) - TAP_MARKER_RADIUS,
+                                 TAP_MARKER_RADIUS * 2, TAP_MARKER_RADIUS * 2);
+    }
+    tapCount = n;
+
+    for (i = 0; i < oldCount; i++) {
+        [self setNeedsDisplayInRect:old[i]];
+    }
+    for (i = 0; i < n; i++) {
+        [self setNeedsDisplayInRect:tapRects[i]];
+    }
+}
+
+- (BOOL) showTaps { return showTaps; }
+
+- (void) toggleShowTaps:(id)sender
+{
+    showTaps = !showTaps;
+    [sender setState:showTaps ? NSControlStateValueOn : NSControlStateValueOff];
+    if (!showTaps) {
+        int i;
+        for (i = 0; i < tapCount; i++) {
+            [self setNeedsDisplayInRect:tapRects[i]];
+        }
+        tapCount = 0;
+    } else {
+        [self refreshTapMarkers];
+    }
 }
 
 - (NSSize)fixAspectRatio:(NSSize)max
@@ -734,6 +865,180 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
     }
 
     pixman_image = image;
+}
+
+/*
+ * Copy Screen -- the iPhone Simulator's Cmd+Ctrl+C, which put the screen on the
+ * pasteboard. Until now the only way to get a picture out of here was a QMP
+ * screendump to a file, followed by brightening it by hand before it was
+ * legible enough to look at.
+ *
+ * The brightening is dealt with at the source rather than afterwards: the panel
+ * scales every channel by the backlight the guest programmed, and once a pixel
+ * has been written at a tenth of its value the information is gone -- scaling
+ * the result back up recovers banding, not detail. So the frame is re-rendered
+ * with the backlight held at full for the grab, and re-rendered again as it
+ * really looks before returning. Both happen inside one main-thread event, so
+ * no draw can run between them and the window never flashes.
+ */
+- (void) copyScreenToPasteboard
+{
+    __block CGImageRef imageRef = NULL;
+
+    with_bql(^{
+        qemu_display_set_capture_exposure(true);
+        graphic_hw_update(dcl.con);
+        qemu_display_set_capture_exposure(false);
+
+        if (pixman_image) {
+            int w = pixman_image_get_width(pixman_image);
+            int h = pixman_image_get_height(pixman_image);
+            int bpp = PIXMAN_FORMAT_BPP(pixman_image_get_format(pixman_image));
+            int stride = pixman_image_get_stride(pixman_image);
+            CGDataProviderRef provider = CGDataProviderCreateWithData(
+                NULL, pixman_image_get_data(pixman_image), stride * h, NULL);
+
+            imageRef = CGImageCreate(w, h, DIV_ROUND_UP(bpp, 8) * 2, bpp,
+                                     stride, colorspace,
+                                     kCGBitmapByteOrder32Little |
+                                     kCGImageAlphaNoneSkipFirst,
+                                     provider, NULL, 0,
+                                     kCGRenderingIntentDefault);
+            CGDataProviderRelease(provider);
+        }
+    });
+
+    if (imageRef) {
+        /*
+         * The provider hands out the live surface, so the bytes are copied out
+         * here -- while the exposure render is still what is in it -- rather
+         * than being read later from whatever the guest has drawn since.
+         */
+        NSBitmapImageRep *rep =
+            [[[NSBitmapImageRep alloc] initWithCGImage:imageRef] autorelease];
+        NSData *png = [rep representationUsingType:NSBitmapImageFileTypePNG
+                                        properties:@{}];
+        NSImage *img = [[[NSImage alloc] initWithData:png] autorelease];
+        NSPasteboard *pb = [NSPasteboard generalPasteboard];
+
+        [pb clearContents];
+        [pb writeObjects:@[img]];
+        CGImageRelease(imageRef);
+    }
+
+    /* Put back what the panel actually looks like. */
+    with_bql(^{
+        graphic_hw_update(dcl.con);
+    });
+}
+
+/*
+ * Drag and drop an .ipa on the window to install it.
+ *
+ * The iPhone Simulator never had this, and could not have: it had no installd
+ * and no AFC, so "installing" there was only a path in a launch config. We have
+ * both, and the whole install already works over USB from a terminal -- so all
+ * that is missing is the gesture.
+ *
+ * The work is handed to imgtools/install-ipa.sh rather than done here, because
+ * every part of it (finding the right usbmuxd, the DTSDKName / cryptid /
+ * OpenGLES pre-flight, ideviceinstaller) is testable from a terminal and a drop
+ * handler is not.
+ *
+ * The failure that matters is usbmuxd not being up: QEMU dials OUT to it when
+ * the guest's USB core comes up, and if nothing was listening it gives up for
+ * the rest of that boot. That has to be reported loudly and by name -- silently
+ * doing nothing here would look exactly like a drop that missed.
+ */
+- (NSString *) installerPath
+{
+    const char *env = getenv("IT_INSTALL_IPA");
+
+    if (env) {
+        return [NSString stringWithUTF8String:env];
+    }
+    /*
+     * For a plain executable -bundlePath is the directory holding it, which is
+     * build/, so the tree's own script is one level up.
+     */
+    return [[[NSBundle mainBundle] bundlePath]
+            stringByAppendingPathComponent:@"../imgtools/install-ipa.sh"];
+}
+
+- (void) installIPA:(NSString *)path
+{
+    NSString *tool = [self installerPath];
+
+    if (![[NSFileManager defaultManager] isExecutableFileAtPath:tool]) {
+        NSAlert *a = [[[NSAlert alloc] init] autorelease];
+        [a setMessageText:@"Cannot install: the installer script is missing"];
+        [a setInformativeText:[NSString stringWithFormat:
+            @"Looked for %@.\n\nSet IT_INSTALL_IPA to its path if the tree is "
+            @"somewhere else.", tool]];
+        [a runModal];
+        return;
+    }
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSTask *task = [[NSTask alloc] init];
+        NSPipe *pipe = [NSPipe pipe];
+
+        [task setLaunchPath:tool];
+        [task setArguments:@[path]];
+        [task setStandardOutput:pipe];
+        [task setStandardError:pipe];
+
+        NSData *out = nil;
+        int status = -1;
+        @try {
+            [task launch];
+            out = [[pipe fileHandleForReading] readDataToEndOfFile];
+            [task waitUntilExit];
+            status = [task terminationStatus];
+        } @catch (NSException *e) {
+            out = [[e reason] dataUsingEncoding:NSUTF8StringEncoding];
+        }
+        NSString *text = [[[NSString alloc] initWithData:out
+                            encoding:NSUTF8StringEncoding] autorelease];
+        [task release];
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSAlert *a = [[[NSAlert alloc] init] autorelease];
+            [a setMessageText:status == 0
+                ? [NSString stringWithFormat:@"Installed %@",
+                   [path lastPathComponent]]
+                : [NSString stringWithFormat:@"Could not install %@",
+                   [path lastPathComponent]]];
+            /* The script's own diagnosis, verbatim -- it is the useful part. */
+            [a setInformativeText:text ?: @"(no output)"];
+            [a runModal];
+        });
+    });
+}
+
+- (NSDragOperation) draggingEntered:(id <NSDraggingInfo>)sender
+{
+    for (NSURL *u in [[sender draggingPasteboard]
+                      readObjectsForClasses:@[[NSURL class]]
+                      options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}]) {
+        if ([[[u pathExtension] lowercaseString] isEqualToString:@"ipa"]) {
+            return NSDragOperationCopy;
+        }
+    }
+    return NSDragOperationNone;
+}
+
+- (BOOL) performDragOperation:(id <NSDraggingInfo>)sender
+{
+    for (NSURL *u in [[sender draggingPasteboard]
+                      readObjectsForClasses:@[[NSURL class]]
+                      options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}]) {
+        if ([[[u pathExtension] lowercaseString] isEqualToString:@"ipa"]) {
+            [self installIPA:[u path]];
+            return YES;
+        }
+    }
+    return NO;
 }
 
 - (void) setFullGrab:(id)sender
@@ -920,6 +1225,13 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
         }
     }
 
+    /*
+     * Option/Shift going down or up must move the synthesised second finger by
+     * itself -- letting go of Option is how you lift it, and that comes with no
+     * pointer motion at all.
+     */
+    [self modifiersChanged:modifiers];
+
     switch ([event type]) {
         case NSEventTypeFlagsChanged:
             switch ([event keyCode]) {
@@ -1073,10 +1385,108 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
     }
 }
 
+/*
+ * The second finger of an Option-drag, driven from one host pointer.
+ *
+ * This is the iPhone Simulator's idiom, kept deliberately identical because it
+ * is the one people already have in their fingers:
+ *
+ *   Option        the second contact is the pointer reflected through the
+ *                 CENTRE of the screen -- (2cx - x, 2cy - y). A symmetric
+ *                 pinch: dragging towards the middle closes it, away opens it.
+ *   Option+Shift  the pair translates rigidly. The offset between the two
+ *                 contacts is frozen and carried onto each new pointer
+ *                 position, so the spread you set with Option alone slides
+ *                 across the screen without changing.
+ *
+ * A modifier change on its own must re-emit -- that is why previousModifierFlags
+ * exists, and why this is called from the flags-changed path with no motion at
+ * all. Releasing Option has to LIFT the second finger; if it only stopped
+ * updating it, the guest would be left holding a contact that no pointer
+ * movement can ever end.
+ *
+ * Contacts are pushed as QEMU multi-touch events on slot 1. Slot 0 stays on the
+ * ordinary pointer path, which the digitizer already maps to finger 0, so
+ * one-finger behaviour is untouched by everything here.
+ *
+ * mousePoint/pinchPoint are guest framebuffer coordinates. Callers update
+ * mousePoint (and prevMousePoint) first; this only decides what finger 1 does.
+ */
+- (void) updatePinch:(NSUInteger)modifiers
+{
+    BOOL wantsPinch = (modifiers & NSEventModifierFlagOption) != 0 &&
+                      leftButtonDown && haveMousePoint && isAbsoluteEnabled;
+    NSPoint p;
+
+    if (!wantsPinch) {
+        if (pinchDown) {
+            qemu_input_queue_mtt(dcl.con, INPUT_MULTI_TOUCH_TYPE_END, 1, 1);
+            qemu_input_event_sync();
+            pinchDown = FALSE;
+        }
+        [self refreshTapMarkers];
+        return;
+    }
+
+    if (pinchDown && (modifiers & NSEventModifierFlagShift)) {
+        /* Rigid translation: carry the existing separation to the new point. */
+        p.x = mousePoint.x + (pinchPoint.x - prevMousePoint.x);
+        p.y = mousePoint.y + (pinchPoint.y - prevMousePoint.y);
+    } else {
+        p.x = screen.width - mousePoint.x;
+        p.y = screen.height - mousePoint.y;
+    }
+
+    /*
+     * Leaving the panel is a transition, not a stuck touch. The mirrored finger
+     * runs off the edge long before the real one does, and the digitizer would
+     * end the contact anyway -- doing it here as well keeps the host's idea of
+     * what is down in step with the guest's, so the contact can be started
+     * again cleanly if the pointer brings it back on screen.
+     */
+    if (p.x < 0 || p.y < 0 || p.x >= screen.width || p.y >= screen.height) {
+        if (pinchDown) {
+            qemu_input_queue_mtt(dcl.con, INPUT_MULTI_TOUCH_TYPE_END, 1, 1);
+            qemu_input_event_sync();
+            pinchDown = FALSE;
+        }
+        [self refreshTapMarkers];
+        return;
+    }
+
+    qemu_input_queue_mtt_abs(dcl.con, INPUT_AXIS_X, p.x, 0, screen.width, 1, 1);
+    qemu_input_queue_mtt_abs(dcl.con, INPUT_AXIS_Y, p.y, 0, screen.height, 1, 1);
+    qemu_input_queue_mtt(dcl.con,
+                         pinchDown ? INPUT_MULTI_TOUCH_TYPE_UPDATE
+                                   : INPUT_MULTI_TOUCH_TYPE_BEGIN, 1, 1);
+    qemu_input_event_sync();
+
+    pinchPoint = p;
+    pinchDown = TRUE;
+    [self refreshTapMarkers];
+}
+
+/* Re-emit on a modifier change alone, with the pointer exactly where it was. */
+- (void) modifiersChanged:(NSUInteger)modifiers
+{
+    NSUInteger interesting = NSEventModifierFlagOption | NSEventModifierFlagShift;
+
+    if ((modifiers & interesting) == (previousModifierFlags & interesting)) {
+        return;
+    }
+    previousModifierFlags = modifiers;
+    prevMousePoint = mousePoint;
+    [self updatePinch:modifiers];
+}
+
 - (void) handleMouseEvent:(NSEvent *)event button:(InputButton)button down:(bool)down
 {
     if (!isMouseGrabbed) {
         return;
+    }
+
+    if (button == INPUT_BUTTON_LEFT) {
+        leftButtonDown = down;
     }
 
     with_bql(^{
@@ -1100,13 +1510,29 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
             /* Note that the origin for Cocoa mouse coords is bottom left, not top left. */
             qemu_input_queue_abs(dcl.con, INPUT_AXIS_X, p.x * d, 0, screen.width);
             qemu_input_queue_abs(dcl.con, INPUT_AXIS_Y, screen.height - p.y * d, 0, screen.height);
+
+            prevMousePoint = haveMousePoint ? mousePoint
+                                            : NSMakePoint(p.x * d, screen.height - p.y * d);
+            mousePoint = NSMakePoint(p.x * d, screen.height - p.y * d);
+            haveMousePoint = TRUE;
         } else {
             qemu_input_queue_rel(dcl.con, INPUT_AXIS_X, [event deltaX]);
             qemu_input_queue_rel(dcl.con, INPUT_AXIS_Y, [event deltaY]);
         }
 
         qemu_input_event_sync();
+
+        /*
+         * After the pointer, so finger 0's new position is already in the frame
+         * finger 1's update produces. The other order makes finger 0 lag by one
+         * event whenever the digitizer coalesces to its report rate.
+         */
+        previousModifierFlags = [event modifierFlags];
+        [self updatePinch:previousModifierFlags];
     });
+
+    /* -updatePinch: only redraws when finger 1 moves; finger 0 moved too. */
+    [self refreshTapMarkers];
 }
 
 - (void) mouseExited:(NSEvent *)event
@@ -1244,6 +1670,12 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
         qemu_input_queue_btn(dcl.con, INPUT_BUTTON_LEFT, false);
         qemu_input_queue_btn(dcl.con, INPUT_BUTTON_RIGHT, false);
         qemu_input_queue_btn(dcl.con, INPUT_BUTTON_MIDDLE, false);
+        /*
+         * Losing the grab is the other way an Option-drag can end. The pointer
+         * is gone, so nothing else will ever lift finger 1.
+         */
+        leftButtonDown = FALSE;
+        [self updatePinch:0];
     });
 }
 @end
@@ -1275,6 +1707,7 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
 - (void)openDocumentation:(NSString *)filename;
 - (IBAction) do_about_menu_item: (id) sender;
 - (void)adjustSpeed:(id)sender;
+- (void)copyScreen:(id)sender;
 @end
 
 @implementation QemuCocoaAppController
@@ -1670,6 +2103,12 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
     [pool release];
 }
 
+/* Edit ▸ Copy Screen. Apple's key equivalent, kept exactly. */
+- (void)copyScreen:(id)sender
+{
+    [cocoaView copyScreenToPasteboard];
+}
+
 /* Used by the Speed menu items */
 - (void)adjustSpeed:(id)sender
 {
@@ -1756,6 +2195,15 @@ static void create_initial_menus(void)
     [menuItem setSubmenu:menu];
     [[NSApp mainMenu] addItem:menuItem];
 
+    // Edit menu
+    menu = [[NSMenu alloc] initWithTitle:@"Edit"];
+    menuItem = [[[NSMenuItem alloc] initWithTitle:@"Copy Screen" action:@selector(copyScreen:) keyEquivalent:@"c"] autorelease];
+    [menuItem setKeyEquivalentModifierMask:(NSEventModifierFlagCommand|NSEventModifierFlagControl)];
+    [menu addItem: menuItem];
+    menuItem = [[[NSMenuItem alloc] initWithTitle:@"Edit" action:nil keyEquivalent:@""] autorelease];
+    [menuItem setSubmenu:menu];
+    [[NSApp mainMenu] addItem:menuItem];
+
     // View menu
     menu = [[NSMenu alloc] initWithTitle:@"View"];
     [menu addItem: [[[NSMenuItem alloc] initWithTitle:@"Enter Fullscreen" action:@selector(doToggleFullScreen:) keyEquivalent:@"f"] autorelease]]; // Fullscreen
@@ -1764,6 +2212,10 @@ static void create_initial_menus(void)
     [menu addItem: menuItem];
     menuItem = [[[NSMenuItem alloc] initWithTitle:@"Zoom Interpolation" action:@selector(toggleZoomInterpolation:) keyEquivalent:@""] autorelease];
     [menuItem setState: zoom_interpolation == kCGInterpolationLow ? NSControlStateValueOn : NSControlStateValueOff];
+    [menu addItem: menuItem];
+    menuItem = [[[NSMenuItem alloc] initWithTitle:@"Show Taps" action:@selector(toggleShowTaps:) keyEquivalent:@""] autorelease];
+    [menuItem setTarget: cocoaView];
+    [menuItem setState: [cocoaView showTaps] ? NSControlStateValueOn : NSControlStateValueOff];
     [menu addItem: menuItem];
     menuItem = [[[NSMenuItem alloc] initWithTitle:@"View" action:nil keyEquivalent:@""] autorelease];
     [menuItem setSubmenu:menu];

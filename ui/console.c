@@ -197,6 +197,26 @@ void graphic_hw_gl_block(QemuConsole *con, bool block)
     }
 }
 
+/*
+ * See the comment on qemu_display_register_capture_exposure() in console.h.
+ * A single hook, not a per-console one: the panel that dims is a property of
+ * the machine, and the only caller wants "expose the screen properly for a
+ * copy" without knowing which device is responsible for the dimming.
+ */
+static void (*capture_exposure_fn)(bool on);
+
+void qemu_display_register_capture_exposure(void (*fn)(bool on))
+{
+    capture_exposure_fn = fn;
+}
+
+void qemu_display_set_capture_exposure(bool on)
+{
+    if (capture_exposure_fn) {
+        capture_exposure_fn(on);
+    }
+}
+
 int qemu_console_get_window_id(QemuConsole *con)
 {
     return con->window_id;
