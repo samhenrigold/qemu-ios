@@ -164,9 +164,17 @@ typedef struct IPodTouchMultitouchState {
     float prev_touch_x;
     float prev_touch_y;
     uint64_t last_frame_timestamp;
+
+    /*
+     * Virtual-clock time of the last touch frame emitted while the finger is
+     * down, used to coalesce host motion to the report rate. See
+     * mt_frame_period_ns() in ipod_touch_multitouch.c.
+     */
+    int64_t last_motion_ns;
 } IPodTouchMultitouchState;
 
 void ipod_touch_multitouch_on_touch(IPodTouchMultitouchState *s);
 void ipod_touch_multitouch_on_release(IPodTouchMultitouchState *s);
+void ipod_touch_multitouch_on_motion(IPodTouchMultitouchState *s);
 
 #endif
