@@ -75,6 +75,27 @@ static void apple_spi_update_cs(IPodTouchSPIState *s)
         // TODO GPIO not properly setup yet
         //qemu_set_irq(qdev_get_gpio_in_named(kid->child, SSI_GPIO_CS, 0), (REG(s, R_PIN) & R_PIN_CS) != 0);
     }
+    /*
+     * MEASURED, so that nobody spends another day on this TODO: R_PIN is not a
+     * per-transaction chip select on this controller, and wiring it through
+     * would not give the peripherals a transaction boundary.
+     *
+     * Tracing every R_PIN write against the digitizer's command stream over a
+     * whole 3.1.3 boot: R_PIN is written once every 16 bytes -- the RX FIFO
+     * depth -- always driving the SAME level, in the middle of commands
+     * (cur_cmd 0xeb, buf_ind 16, then 32, then 48, then 64 of a 75-byte frame
+     * read). It is a FIFO-refill artifact. The R_CTRL FIFO reset fires on the
+     * same 16-byte cadence and is no better.
+     *
+     * The generic SSI_GPIO_CS path is also unavailable: both peripherals here
+     * leave cs_polarity at SSI_CS_NONE, so ssi_peripheral_realize never
+     * registers the input GPIO and qdev_get_gpio_in_named would abort.
+     *
+     * Consequence, which the digitizer model has to live with: the peripherals
+     * frame commands purely by counting bytes, so a response whose length
+     * disagrees with what the guest clocks desynchronises them permanently.
+     * See get_empty_frame() in ipod_touch_multitouch.c.
+     */
 }
 
 static void apple_spi_cs_set(void *opaque, int pin, int level)
