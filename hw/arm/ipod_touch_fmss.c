@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_fmss.h"
+#include "qemu/log.h"
 
 /*
  * Cached env lookups.
@@ -497,6 +498,9 @@ static void patch_iboot_boot_args(void)
                               strlen(boot_args));
 }
 
+/* Cap on entries in one FMSS transfer, shared by the read and write paths. */
+#define FMSS_MAX_WRITE_ENTRIES 512
+
 static void read_nand_pages(IPodTouchFMSSState *s)
 {
     patch_iboot_boot_args();
@@ -580,7 +584,6 @@ static void read_nand_pages(IPodTouchFMSSState *s)
  * pages_out[2i] and pages_out[2i+1]; its 12-byte spare record is at
  * spare_out + i*0xc (stride 0xc == the driver's 3 spare words per page).
  */
-#define FMSS_MAX_WRITE_ENTRIES 512
 
 static void write_nand_pages(IPodTouchFMSSState *s)
 {

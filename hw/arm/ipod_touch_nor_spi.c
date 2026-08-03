@@ -1,6 +1,7 @@
 #include "hw/arm/ipod_touch_nor_spi.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
+#include "qemu/log.h"
 
 /*
  * The NOR carries an nvram partition made of 16-byte atoms:
@@ -114,13 +115,29 @@ static void nor_set_boot_args(IPodTouchNORSPIState *s, gsize norlen)
 
 static void initialize_nor(IPodTouchNORSPIState *s)
 {
-    gsize fsize;
-    if (g_file_get_contents(s->nor_path, (char **)&s->nor_data, &fsize, NULL)) {
+    gsize fsize = 0;
+    GError *err = NULL;
+
+    if (g_file_get_contents(s->nor_path, (char **)&s->nor_data, &fsize, &err)) {
+        s->nor_size = fsize;
         s->nor_initialized = true;
         if (s->boot_args && s->boot_args[0]) {
             nor_set_boot_args(s, fsize);
         }
+        return;
     }
+
+    /*
+     * This used to fail silently, leaving nor_data NULL for a read path that
+     * dereferences it unconditionally. Say so instead -- an unreadable NOR is
+     * a setup mistake, and the alternative is a segfault with no explanation.
+     */
+    error_report("NOR image \"%s\" could not be read: %s. NOR reads will "
+                 "return 0xff.", s->nor_path, err ? err->message : "unknown");
+    g_clear_error(&err);
+    s->nor_data = NULL;
+    s->nor_size = 0;
+    s->nor_initialized = true;      /* do not retry on every transfer */
 }
 
 static uint32_t ipod_touch_nor_spi_transfer(SSIPeripheral *dev, uint32_t value)
@@ -206,7 +223,23 @@ static uint32_t ipod_touch_nor_spi_transfer(SSIPeripheral *dev, uint32_t value)
         uint8_t ret_val;
         // otherwise, we're outputting the response
         if(s->cur_cmd == NOR_READ_DATA_CMD) {
-            uint8_t ret_val = s->nor_data[s->nor_read_ind];
+            /*
+             * nor_read_ind is a guest-supplied 24-bit address and the read is
+             * a streaming one with no terminator, so it walks forward for as
+             * long as the guest keeps clocking. Without a length it indexed a
+             * heap buffer unbounded, and nor_data could be NULL outright if
+             * the image failed to load. 0xff is what an absent or erased NOR
+             * reads as, so it is the honest answer past the end.
+             */
+            uint8_t ret_val = 0xff;
+            if (s->nor_data && s->nor_read_ind < s->nor_size) {
+                ret_val = s->nor_data[s->nor_read_ind];
+            } else {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "[NOR] read past end of image (offset 0x%x, "
+                              "size 0x%zx)\n", s->nor_read_ind,
+                              (size_t)s->nor_size);
+            }
             s->nor_read_ind++;
             return ret_val;
         }

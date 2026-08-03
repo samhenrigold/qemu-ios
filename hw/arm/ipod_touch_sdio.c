@@ -905,6 +905,20 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
         bool is_write = (s->arg >> 31) != 0;
         uint32_t xfer_len = s->blklen * s->numblk;
         uint32_t sb_addr = backplane_addr(s, addr);
+
+        /*
+         * blklen and numblk are both unvalidated 32-bit MMIO writes and their
+         * product feeds g_malloc below, so a guest could ask for a 4 GiB
+         * allocation (or overflow the multiply outright). The real controller
+         * caps a block at 2048 bytes and 511 blocks; be generous but finite.
+         */
+        if (s->blklen > 2048 || s->numblk > 511 ||
+            (s->blklen && xfer_len / s->blklen != s->numblk)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "[SDIO] rejecting CMD53 with blklen %u numblk %u\n",
+                          s->blklen, s->numblk);
+            return;
+        }
         trace_sdio("SDIO: Executing cmd53 func %x with block size %d and %d blocks (reg address: 0x%08x, backplane address: 0x%08x, destination address: 0x%08x, write? %d)\n", func, s->blklen, s->numblk, addr, sb_addr, s->baddr, is_write);
 
         if(is_write) {

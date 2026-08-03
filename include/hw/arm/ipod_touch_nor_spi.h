@@ -31,6 +31,7 @@ typedef struct IPodTouchNORSPIState {
     uint32_t in_buf_cur_ind;
     uint32_t out_buf_cur_ind;
     uint8_t *nor_data;
+    gsize nor_size;             /* fsize was discarded, so reads were unbounded */
     uint8_t write_enabled;
     uint32_t nor_read_ind;
     bool nor_initialized;
