@@ -147,10 +147,47 @@ static void pl080_trace(PL080State *s, hwaddr offset, uint32_t val, bool write)
             pl080_regname(offset), val, (uint32_t)pc);
 }
 
+/*
+ * The interrupt masks are not registers: on a PL080 each channel's own
+ * Configuration word carries them (ITC for terminal count, IE for errors), so
+ * the masked status registers have to be derived from the live channel state
+ * every time they are looked at.
+ *
+ * This model used to keep tc_mask as a sticky cache, seeded with
+ * "s->tc_mask = s->tc_int" so that a pending bit could never be masked out
+ * again. That made a terminal count permanent: a driver that finishes with a
+ * channel by writing Configuration = 0 -- which on real hardware clears ITC and
+ * therefore drops the masked status and the interrupt line -- left this model
+ * asserting the line with nothing able to lower it but an IntTCClear the
+ * driver had no reason to write. On the iPod touch 2G that stuck bit is why
+ * DMAC0's interrupt could not be delivered to the kernel at all: whichever
+ * correctly-routed line it was put on was held high forever and the CPU never
+ * left the handler.
+ */
+static void pl080_refresh_masks(PL080State *s)
+{
+    int c;
+
+    s->tc_mask = 0;
+    s->err_mask = 0;
+    for (c = 0; c < s->nchannels; c++) {
+        if (s->chan[c].conf & PL080_CCONF_ITC) {
+            s->tc_mask |= 1 << c;
+        }
+        if (s->chan[c].conf & PL080_CCONF_IE) {
+            s->err_mask |= 1 << c;
+        }
+    }
+}
+
 static void pl080_update(PL080State *s)
 {
-    bool tclevel = (s->tc_int & s->tc_mask);
-    bool errlevel = (s->err_int & s->err_mask);
+    bool tclevel;
+    bool errlevel;
+
+    pl080_refresh_masks(s);
+    tclevel = (s->tc_int & s->tc_mask);
+    errlevel = (s->err_int & s->err_mask);
 
     /*
      * IT_DMAC_TRACE also shows every transition of the combined interrupt line,
@@ -187,24 +224,13 @@ static void pl080_run(PL080State *s)
     uint32_t req;
 
     /*
-     * Latch already-pending terminal-count interrupts. This model completes a
-     * DMA synchronously inside pl080_run (called from the channel Config
-     * write), but a driver that programs the channel with interrupts masked and
-     * only then goes idle to await completion (e.g. iOS 3.1.3's
-     * AppleARMPL080DMAC) expects the interrupt to still be asserted when it
-     * re-enables interrupts. Resetting tc_mask to 0 here dropped the completed
-     * channel's masked status before the idle CPU could take the IRQ, so the
-     * kernel waited forever. Keep pending (tc_int) bits latched until the
-     * driver acks them via IntTCClear; this matches real PL080 latching.
+     * Pending (tc_int) bits stay set until the driver acks them via
+     * IntTCClear -- that is the real latch, and it is in tc_int. What is NOT
+     * latched is the masking: see pl080_refresh_masks(). A driver that
+     * programs a channel with ITC clear, goes idle, and only then sets ITC
+     * still sees the completed transfer's interrupt, because the Config write
+     * that sets ITC runs pl080_update().
      */
-    s->tc_mask = s->tc_int;
-    for (c = 0; c < s->nchannels; c++) {
-        if (s->chan[c].conf & PL080_CCONF_ITC)
-            s->tc_mask |= 1 << c;
-        if (s->chan[c].conf & PL080_CCONF_IE)
-            s->err_mask |= 1 << c;
-    }
-
     if ((s->conf & PL080_CONF_E) == 0)
         return;
 
@@ -365,6 +391,10 @@ static uint64_t pl080_do_read(void *opaque, hwaddr offset,
     uint32_t i;
     uint32_t mask;
 
+    /* IntStatus/IntTCStatus/IntErrorStatus are masked by the channels' own
+     * Configuration words, so the masks have to be current here too. */
+    pl080_refresh_masks(s);
+
     if (offset >= 0xfe0 && offset < 0x1000) {
         if (s->nchannels == 8) {
             return pl080_id[(offset - 0xfe0) >> 2];
@@ -481,6 +511,13 @@ static void pl080_write(void *opaque, hwaddr offset,
             pl080_run(s);
             break;
         }
+        /*
+         * A Configuration write changes the per-channel interrupt masks, so the
+         * line has to be re-evaluated even when pl080_run() returned early
+         * (controller globally disabled, or re-entered). This branch used to
+         * return without touching the line at all.
+         */
+        pl080_update(s);
         return;
     }
     switch (offset >> 2) {
