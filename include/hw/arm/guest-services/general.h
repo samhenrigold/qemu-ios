@@ -28,6 +28,7 @@
 #include "hw/arm/guest-services/socket.h"
 #include "hw/arm/guest-services/fds.h"
 #include "hw/arm/guest-services/file.h"
+#include "hw/arm/guest-services/gles.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wredundant-decls"
@@ -56,7 +57,25 @@ typedef enum {
     // retval, or returns 0 when the ring is empty. A small injected guest
     // agent polls this and feeds each char to _GSPostSyntheticKeyEvent.
     QC_POLL_INPUT = 0x130,
+
+    // OpenGL ES 1.1 high-level emulation. One request per GL entry point, from
+    // the guest-side MBXGLEngine replacement. See guest-services/gles.h.
+    //
+    // Unlike every other call here, this one is issued from PL0: the QEMU_CALL
+    // cp15 register is declared PL0_RW and cp_access_ok honours that, so an
+    // unprivileged `mcr p15,3,r0,c15,c15,0` traps straight to the host with no
+    // kernel patch in the way. That is what makes a pure userspace shim
+    // possible -- measured, not assumed; see the QC_GLES_PING probe.
+    QC_GLES = 0x140,
+
+    // Liveness probe for the PL0 trap path. Returns QC_GLES_PING_MAGIC so a
+    // guest test can tell "the host answered" apart from "the mcr was a nop",
+    // which is otherwise indistinguishable: an unhandled cp15 write on this
+    // machine silently does nothing rather than faulting.
+    QC_GLES_PING = 0x141,
 } qemu_call_number_t;
+
+#define QC_GLES_PING_MAGIC 0x6a17c0deLL
 
 typedef struct __attribute__((packed)) {
     // Request
@@ -76,12 +95,31 @@ typedef struct __attribute__((packed)) {
         qc_write_file_args_t write_file;
         qc_read_file_args_t read_file;
         qc_size_file_args_t size_file;
+        // OpenGL ES HLE
+        qc_gles_args_t gles;
     } args;
 
     // Response
     int64_t retval;
     int64_t error;
 } qemu_call_t;
+
+// The guest agents that use this protocol are compiled separately and shipped
+// *inside NAND images* (contrib/it-kbd-agent is already injected into images we
+// cannot rebuild). They hardcode this layout as
+// call_number(4) + args(32) + retval(8) + error(8) = 52.
+//
+// So the args union's size is frozen. Adding a request whose args struct is
+// wider than 32 bytes would move retval out from under every already-deployed
+// agent, and nothing at build time would say so -- the guest would just start
+// reading garbage where its return value used to be. Keep new args structs at
+// or under 32 bytes; if the protocol ever genuinely has to grow, every injected
+// agent has to be rebuilt and every image re-injected in the same change.
+#ifndef OUT_OF_TREE_BUILD
+QEMU_BUILD_BUG_MSG(sizeof(qemu_call_t) != 52,
+                   "qemu_call_t layout changed: guest agents already compiled "
+                   "into existing NAND images expect exactly 52 bytes");
+#endif
 
 #ifndef OUT_OF_TREE_BUILD
 struct ARMCPRegInfo;
