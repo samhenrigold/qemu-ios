@@ -4,13 +4,35 @@ This fork emulates an iPod touch 2G (S5L8720) well enough to boot iOS 3.1.3
 (build 7E18) to a usable home screen, install and launch decrypted apps over
 USB, reach the network, and take a debugger.
 
-**No Apple firmware is distributed here, and none will be.** The bootrom, the
-NOR contents and the iOS root filesystem are Apple's copyrighted code. What this
-repository ships is the emulator plus the tooling to build the images yourself
-from files you obtain independently. This document is the honest account of what
-you need and where the walls are.
+## Getting the images
 
-## What you must supply
+The images are attached to the
+[release](https://github.com/samhenrigold/qemu-ios/releases/tag/ipod-touch-2g-2026.08),
+as upstream does for 2.1.1. Verify against `SHA256SUMS`:
+
+| Asset | What it is |
+|---|---|
+| `bootrom_240_4` | S5L8720 bootrom, unchanged from upstream |
+| `nor_7E18.bin` | 3.1.3 NOR, SHSH wrapped for the emulated device's UID |
+| `nand-canonical.tar.gz` | Clean 3.1.3 image. The regression harness's baseline. |
+| `nand-appsync3.tar.gz` | Same, plus the patches that let decrypted apps install **and launch** |
+
+Both NAND images are **derived**, not dumps: built from
+`iPod2,1_3.1.3_7E18_Restore.ipsw` by `build_nand.py`, with the volume grown so
+the guest has space to write and `/private/etc/fstab` rewritten to a single
+read-write root. `build_nand.py` reproduces them from an IPSW you supply.
+
+`nand-appsync3` is **deliberately weakened**: four patch sites (installd x2,
+`MISValidateSignature` inside `dyld_shared_cache_armv6`, and SpringBoard's
+`applicationSignatureState`), and it boots with the code-signing gates open.
+That is what lets decrypted apps launch, `lldb` attach, and unsigned bundles
+`dlopen`. Only the first three patches are proven necessary on 3.1.3; the
+SpringBoard one was verified on 2.1.1. Do not treat it as a faithful device.
+
+## Building the images yourself
+
+Everything below is what `build_nand.py` and `build_nor.py` do, and what you
+need if you want to rebuild rather than download.
 
 | Piece | Where it comes from | Can it be synthesised? |
 |---|---|---|
@@ -18,12 +40,10 @@ you need and where the walls are.
 | **NOR image** | Dumped from a real device | Partly — `build_nor.py` repacks one, but needs an existing NOR as `--base` for its SysCfg and nvram. |
 | **iOS 3.1.3 root filesystem** | `iPod2,1_3.1.3_7E18_Restore.ipsw` | Yes, via `build_nand.py`. |
 | **Kernelcache** | Same IPSW | Yes — copied in still encrypted; the emulated AES engine decrypts it in-guest, so you need no key for it. |
-| **NAND template** | An existing page directory | **No** — see the honest caveat below. |
+| **NAND template** | An existing page directory | **No** — see the caveat below. |
 
 The IPSW is the easy part; it is a public Apple file and its SHA-1 is widely
-published. The bootrom and a NOR dump are the hard parts, and if you do not have
-access to the hardware, this emulator is not currently something you can stand up
-from scratch. Saying otherwise would waste your time.
+published.
 
 ## The NAND template caveat
 
