@@ -321,6 +321,19 @@ static void handleAnyDeviceErrors(Error * err)
     int mouseX;
     int mouseY;
     bool mouseOn;
+    /*
+     * Option-drag pinch. A single host pointer cannot describe two contacts, so
+     * Option synthesises a second one; see -updatePinch: for the arithmetic.
+     * Points are kept in guest framebuffer coordinates, not window ones, so the
+     * mirror is about the middle of the *screen* whatever the window's size.
+     */
+    BOOL pinchDown;
+    BOOL leftButtonDown;
+    BOOL haveMousePoint;
+    NSPoint mousePoint;
+    NSPoint prevMousePoint;
+    NSPoint pinchPoint;
+    NSUInteger previousModifierFlags;
 }
 - (void) switchSurface:(pixman_image_t *)image;
 - (void) grabMouse;
@@ -330,6 +343,8 @@ static void handleAnyDeviceErrors(Error * err)
 - (bool) handleEvent:(NSEvent *)event;
 - (bool) handleEventLocked:(NSEvent *)event;
 - (void) notifyMouseModeChange;
+- (void) updatePinch:(NSUInteger)modifiers;
+- (void) modifiersChanged:(NSUInteger)modifiers;
 - (BOOL) isMouseGrabbed;
 - (QEMUScreen) gscreen;
 - (void) raiseAllKeys;
@@ -920,6 +935,13 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
         }
     }
 
+    /*
+     * Option/Shift going down or up must move the synthesised second finger by
+     * itself -- letting go of Option is how you lift it, and that comes with no
+     * pointer motion at all.
+     */
+    [self modifiersChanged:modifiers];
+
     switch ([event type]) {
         case NSEventTypeFlagsChanged:
             switch ([event keyCode]) {
@@ -1073,10 +1095,105 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
     }
 }
 
+/*
+ * The second finger of an Option-drag, driven from one host pointer.
+ *
+ * This is the iPhone Simulator's idiom, kept deliberately identical because it
+ * is the one people already have in their fingers:
+ *
+ *   Option        the second contact is the pointer reflected through the
+ *                 CENTRE of the screen -- (2cx - x, 2cy - y). A symmetric
+ *                 pinch: dragging towards the middle closes it, away opens it.
+ *   Option+Shift  the pair translates rigidly. The offset between the two
+ *                 contacts is frozen and carried onto each new pointer
+ *                 position, so the spread you set with Option alone slides
+ *                 across the screen without changing.
+ *
+ * A modifier change on its own must re-emit -- that is why previousModifierFlags
+ * exists, and why this is called from the flags-changed path with no motion at
+ * all. Releasing Option has to LIFT the second finger; if it only stopped
+ * updating it, the guest would be left holding a contact that no pointer
+ * movement can ever end.
+ *
+ * Contacts are pushed as QEMU multi-touch events on slot 1. Slot 0 stays on the
+ * ordinary pointer path, which the digitizer already maps to finger 0, so
+ * one-finger behaviour is untouched by everything here.
+ *
+ * mousePoint/pinchPoint are guest framebuffer coordinates. Callers update
+ * mousePoint (and prevMousePoint) first; this only decides what finger 1 does.
+ */
+- (void) updatePinch:(NSUInteger)modifiers
+{
+    BOOL wantsPinch = (modifiers & NSEventModifierFlagOption) != 0 &&
+                      leftButtonDown && haveMousePoint && isAbsoluteEnabled;
+    NSPoint p;
+
+    if (!wantsPinch) {
+        if (pinchDown) {
+            qemu_input_queue_mtt(dcl.con, INPUT_MULTI_TOUCH_TYPE_END, 1, 1);
+            qemu_input_event_sync();
+            pinchDown = FALSE;
+        }
+        return;
+    }
+
+    if (pinchDown && (modifiers & NSEventModifierFlagShift)) {
+        /* Rigid translation: carry the existing separation to the new point. */
+        p.x = mousePoint.x + (pinchPoint.x - prevMousePoint.x);
+        p.y = mousePoint.y + (pinchPoint.y - prevMousePoint.y);
+    } else {
+        p.x = screen.width - mousePoint.x;
+        p.y = screen.height - mousePoint.y;
+    }
+
+    /*
+     * Leaving the panel is a transition, not a stuck touch. The mirrored finger
+     * runs off the edge long before the real one does, and the digitizer would
+     * end the contact anyway -- doing it here as well keeps the host's idea of
+     * what is down in step with the guest's, so the contact can be started
+     * again cleanly if the pointer brings it back on screen.
+     */
+    if (p.x < 0 || p.y < 0 || p.x >= screen.width || p.y >= screen.height) {
+        if (pinchDown) {
+            qemu_input_queue_mtt(dcl.con, INPUT_MULTI_TOUCH_TYPE_END, 1, 1);
+            qemu_input_event_sync();
+            pinchDown = FALSE;
+        }
+        return;
+    }
+
+    qemu_input_queue_mtt_abs(dcl.con, INPUT_AXIS_X, p.x, 0, screen.width, 1, 1);
+    qemu_input_queue_mtt_abs(dcl.con, INPUT_AXIS_Y, p.y, 0, screen.height, 1, 1);
+    qemu_input_queue_mtt(dcl.con,
+                         pinchDown ? INPUT_MULTI_TOUCH_TYPE_UPDATE
+                                   : INPUT_MULTI_TOUCH_TYPE_BEGIN, 1, 1);
+    qemu_input_event_sync();
+
+    pinchPoint = p;
+    pinchDown = TRUE;
+}
+
+/* Re-emit on a modifier change alone, with the pointer exactly where it was. */
+- (void) modifiersChanged:(NSUInteger)modifiers
+{
+    NSUInteger interesting = NSEventModifierFlagOption | NSEventModifierFlagShift;
+
+    if ((modifiers & interesting) == (previousModifierFlags & interesting)) {
+        return;
+    }
+    previousModifierFlags = modifiers;
+    prevMousePoint = mousePoint;
+    [self updatePinch:modifiers];
+}
+
 - (void) handleMouseEvent:(NSEvent *)event button:(InputButton)button down:(bool)down
 {
     if (!isMouseGrabbed) {
         return;
+    }
+
+    if (button == INPUT_BUTTON_LEFT) {
+        leftButtonDown = down;
     }
 
     with_bql(^{
@@ -1100,12 +1217,25 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
             /* Note that the origin for Cocoa mouse coords is bottom left, not top left. */
             qemu_input_queue_abs(dcl.con, INPUT_AXIS_X, p.x * d, 0, screen.width);
             qemu_input_queue_abs(dcl.con, INPUT_AXIS_Y, screen.height - p.y * d, 0, screen.height);
+
+            prevMousePoint = haveMousePoint ? mousePoint
+                                            : NSMakePoint(p.x * d, screen.height - p.y * d);
+            mousePoint = NSMakePoint(p.x * d, screen.height - p.y * d);
+            haveMousePoint = TRUE;
         } else {
             qemu_input_queue_rel(dcl.con, INPUT_AXIS_X, [event deltaX]);
             qemu_input_queue_rel(dcl.con, INPUT_AXIS_Y, [event deltaY]);
         }
 
         qemu_input_event_sync();
+
+        /*
+         * After the pointer, so finger 0's new position is already in the frame
+         * finger 1's update produces. The other order makes finger 0 lag by one
+         * event whenever the digitizer coalesces to its report rate.
+         */
+        previousModifierFlags = [event modifierFlags];
+        [self updatePinch:previousModifierFlags];
     });
 }
 
@@ -1244,6 +1374,12 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
         qemu_input_queue_btn(dcl.con, INPUT_BUTTON_LEFT, false);
         qemu_input_queue_btn(dcl.con, INPUT_BUTTON_RIGHT, false);
         qemu_input_queue_btn(dcl.con, INPUT_BUTTON_MIDDLE, false);
+        /*
+         * Losing the grab is the other way an Option-drag can end. The pointer
+         * is gone, so nothing else will ever lift finger 1.
+         */
+        leftButtonDown = FALSE;
+        [self updatePinch:0];
     });
 }
 @end
