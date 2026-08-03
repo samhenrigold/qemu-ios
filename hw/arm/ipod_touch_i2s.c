@@ -14,10 +14,57 @@
  * populates that; `-audiodev` alone leaves this device with nowhere to send
  * samples and looks exactly like a broken audio path. run-ios3.sh --sound.
  *
- * Sample format: the real rate/width live in the codec + the opaque clock
- * divider we don't decode, so we assume the CoreAudio-canonical 44100 Hz,
- * 16-bit, stereo, little-endian. Guessing the rate wrong only changes playback
- * pitch/duration, not whether sound is captured. Set IT_I2S_RATE to override.
+ * Sample format: 44100 Hz, 16-bit, stereo, little-endian. IT_I2S_RATE overrides.
+ * This is no longer an assumption -- it is confirmed from the guest's own
+ * behaviour, two ways. photoShutter.caf is lpcm 44100/mono/16, and what arrives
+ * at this FIFO is that file's samples BIT FOR BIT with each one duplicated into
+ * both channels: iOS resamples every clip to the hardware rate, so a hardware
+ * rate other than 44100 would have left resampled samples here, not the file's.
+ * And the guest's own ring producer refills its 16-page ring every 371.6 ms,
+ * which is 16 x 1024 frames at 44.1 kHz.
+ *
+ * ---------------------------------------------------------------------------
+ * FIDELITY, SETTLED: THE SHUTTER IS NOW SAMPLE-EXACT. (2026-08-03, later still)
+ *
+ * The sound was audible but wrong -- "recognisable but garbled". Measured
+ * against the source PCM rather than listened to, the transformation was:
+ *
+ *     out = src[0..22122]                      the whole clip, sample-exact
+ *         + a replay of the ring's last 15 periods (15360 frames, 0.348 s)
+ *         + single torn samples, ~4000 in 1.5 M frames
+ *         + whole streams with left and right swapped and skewed one sample
+ *
+ * Nothing was wrong with the rate, the width, the signedness, the endianness or
+ * the channel layout: the clip itself came through byte-identical to the file
+ * on the guest's own disk from the very first run. Three defects produced the
+ * rest, and all three are ours:
+ *
+ * 1. hw/dma/pl080.c raised each terminal-count interrupt from the I bit of the
+ *    NEXT descriptor rather than the one that had just finished, so every
+ *    LLI-chained interrupt fired one descriptor early. The audio engine reads
+ *    "terminal count with LLIx == 0" as "the DMA has run out of work" and hands
+ *    over the head of its next batch; a descriptor early, the batch it hands
+ *    over is the one still in flight, and the channel walks it again. That is
+ *    the 61440-byte replay, exactly. (An upstream QEMU bug, not one of ours.)
+ *
+ * 2. This FIFO was modelled 8192 bytes deep -- 46 ms, two of the guest's 4096-
+ *    byte periods -- and the depth is precisely how far the DMA's read head
+ *    runs ahead of the sound leaving the device. The engine refills the ring
+ *    just behind that head, so at 8192 the head sat ON the producer: samples
+ *    read out of a page mid-write, and after a clip the engine's silence-fill
+ *    lost the race and pages of the clip played twice. 2048 restores the
+ *    margin. See the header.
+ *
+ * 3. A stream stops wherever Config = 0 lands, so it can end having delivered
+ *    an odd number of 16-bit samples; with no LRCLK in our byte stream that
+ *    swapped the channels for every stream after it. it_i2s_align_frame() pads
+ *    the partial frame when the driver resets the TX FIFO.
+ *
+ * With all three: eight consecutive shutters, all 22121 frames, all identical
+ * to photoShutter.caf's PCM, L == R on every frame, peak 5615 = the file's own
+ * peak, delivered in 0.5018-0.5032 s of guest time against an ideal 0.50161 s
+ * (within 0.3%) with no inter-element gap over 3.5 ms. The wav capture is
+ * byte-identical to this FIFO tap, so the host path adds nothing.
  *
  * ---------------------------------------------------------------------------
  * SOLVED, END TO END: THE GUEST NOW PLAYS AUDIBLE SOUND. (2026-08-03, later)
@@ -558,10 +605,47 @@ static void it_i2s_activate(IPodTouchI2SState *s)
     }
 }
 
+/*
+ * IT_I2S_TRACE=<path> -- a 16-byte binary record per FIFO element:
+ *
+ *     int64 virtual_ns, int64 host_ns (low 32) | dma src (high 32)... see below
+ *
+ * Concretely: {int64 virt_ns, uint32 host_ms, uint32 dma_src}. Three questions
+ * need answering together and none of them can be answered from the PCM alone:
+ * when did a sample leave (virtual time), when did it leave in the world the
+ * host sound card lives in (host time), and WHICH ring address did it come
+ * from. The last is what tells a circular buffer that has been read once from
+ * one that has been lapped, and the first two are what tell a rate error from
+ * an emulator that simply cannot keep up.
+ */
+static void it_i2s_trace(IPodTouchI2SState *s)
+{
+    static FILE *f;
+    static int state;           /* 0 unknown, 1 open, -1 off */
+    struct { int64_t virt_ns; uint32_t host_ms; uint32_t src; } rec;
+
+    if (state == 0) {
+        const char *p = getenv("IT_I2S_TRACE");
+        state = -1;
+        if (p) {
+            f = fopen(p, "wb");
+            state = f ? 1 : -1;
+        }
+    }
+    if (state < 0) {
+        return;
+    }
+    rec.virt_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    rec.host_ms = (uint32_t)(qemu_clock_get_ns(QEMU_CLOCK_HOST) / 1000000);
+    rec.src = s->dmac ? s->dmac->paced_src : 0;
+    fwrite(&rec, sizeof(rec), 1, f);
+}
+
 static void it_i2s_push(IPodTouchI2SState *s, const uint8_t *buf, unsigned len)
 {
     unsigned i;
 
+    it_i2s_trace(s);
     s->total_bytes += len;
     /* The bytes just clocked into the TX FIFO. Charge them before anything
      * else: this runs inside the DMA controller's own transfer loop, and the
@@ -589,6 +673,33 @@ static void it_i2s_push(IPodTouchI2SState *s, const uint8_t *buf, unsigned len)
 
     it_i2s_activate(s);
     it_i2s_update_dma_req(s);
+}
+
+/*
+ * Put the stream back on a left-channel boundary.
+ *
+ * A DMA channel is stopped wherever the guest's Config = 0 lands, which is an
+ * arbitrary element -- so a stream can end having delivered an ODD number of
+ * 16-bit samples. On the real block that does not matter: the serialiser takes
+ * its channel from LRCLK and the driver resets the TX FIFO (this register)
+ * before every stream, so the next stream starts on the left channel whatever
+ * the last one left behind. Our FIFO is a byte stream with no LRCLK, so a
+ * stray half-frame permanently swaps left and right for every stream that
+ * follows it -- measured: with the shutter's mono-duplicated PCM, whole sounds
+ * came out with L != R for every frame, the whole stream skewed by one sample.
+ *
+ * Completing the frame with silence rather than discarding the odd sample keeps
+ * the sample count and costs at most one 22 us sample of one channel.
+ */
+static void it_i2s_align_frame(IPodTouchI2SState *s)
+{
+    unsigned frame = 2 * s->as.nchannels;
+    unsigned rem = (unsigned)(s->total_bytes % frame);
+    uint8_t pad[8] = { 0 };
+
+    if (rem) {
+        it_i2s_push(s, pad, frame - rem);
+    }
 }
 
 /*
@@ -797,6 +908,7 @@ static void ipod_touch_i2s_write(void *opaque, hwaddr offset, uint64_t value,
         break;
     case IT_I2S_TXFCTL:
         s->txfctl = value;
+        it_i2s_align_frame(s);
         /* Last register of the driver's setup sequence (enable, clkdiv, txcon,
          * rxcon, txcom, rxcom, txfctl), so the block is fully configured here.
          * Tell the driver the controller is ready. */
