@@ -12,6 +12,14 @@ static bool mt_trace(void)
 #define MTT(fmt, ...) do { if (mt_trace()) { \
     fprintf(stderr, "[MT] " fmt "\n", ##__VA_ARGS__); } } while (0)
 
+/* Saturate a computed finger velocity into the int16_t the frame carries. */
+static int16_t mt_clamp_vel(int64_t v)
+{
+    if (v > INT16_MAX) { return INT16_MAX; }
+    if (v < INT16_MIN) { return INT16_MIN; }
+    return (int16_t)v;
+}
+
 static void prepare_interface_version_response(IPodTouchMultitouchState *s) {
     memset(s->out_buffer + 1, 0, 15);
 
@@ -423,8 +431,27 @@ static MTFrame *get_frame(IPodTouchMultitouchState *s, uint8_t event, float x, f
     int diff_x = (int)((x - s->prev_touch_x) * MT_INTERNAL_SENSOR_SURFACE_WIDTH);
     int diff_y = (int)((y - s->prev_touch_y) * MT_INTERNAL_SENSOR_SURFACE_HEIGHT);
     int64_t dt = elapsed_ns + 1 - s->last_frame_timestamp;
-    frame->finger_data.velX = (int)(diff_x * 1000 / dt);
-    frame->finger_data.velY = (int)(diff_y * 1000 / dt);
+    /*
+     * velX/velY are int16_t. The quotient is not bounded by anything: a
+     * full-width flick covered in a single frame computes into the hundreds of
+     * thousands, which truncates on assignment and wraps to a small value of
+     * arbitrary SIGN - a fast leftward drag reported as a slow rightward one.
+     * Unreachable while the report rate was 10 Hz, reachable as soon as it went
+     * to 60, so clamp rather than truncate.
+     */
+    frame->finger_data.velX = mt_clamp_vel(diff_x * 1000 / dt);
+    frame->finger_data.velY = mt_clamp_vel(diff_y * 1000 / dt);
+
+    /*
+     * The reference point for the next delta is where the finger was in THIS
+     * frame, because dt above is measured from this frame's timestamp. It used
+     * to be moved by the host pointer handler instead, which was consistent
+     * only while frames and host motion events arrived at the same rate. They
+     * no longer do: a keep-alive frame for a finger that has stopped moving
+     * must report zero speed, and it only does if prev is what we last sent.
+     */
+    s->prev_touch_x = x;
+    s->prev_touch_y = y;
 
     frame->finger_data.x = (int)(x * MT_INTERNAL_SENSOR_SURFACE_WIDTH);
     frame->finger_data.y = (int)(y * MT_INTERNAL_SENSOR_SURFACE_HEIGHT);
@@ -501,14 +528,85 @@ static void ipod_touch_multitouch_inform_frame_ready(IPodTouchMultitouchState *s
     qemu_irq_raise(s->sysic->gpio_irqs[3]);
 }
 
+/*
+ * Touch report rate.
+ *
+ * A real Zephyr2 digitizer reports at roughly 60 Hz. This model reported at 10,
+ * so during a drag the guest learned the finger position ten times a second
+ * while the panel presents at 53-57 fps. A finger-tracked animation cannot be
+ * smoother than its input, which is what made slide-to-unlock feel sluggish and
+ * drop frames even though the compositor was measurably fine.
+ *
+ * The rate also sets the reported speed, because get_frame() derives velocity
+ * as (distance since the last host sample) / (time since the last frame). At
+ * 10 Hz that divided a single mouse step by 100 ms and under-reported finger
+ * speed by about 6x, which is its own reason the slide-to-unlock recogniser
+ * struggled. Raising the rate fixes the magnitude as well as the smoothness.
+ *
+ * IT_MT_HZ overrides it, for bisecting against the old behaviour (IT_MT_HZ=10).
+ */
+static int64_t mt_frame_period_ns(void)
+{
+    static int64_t ns = -1;
+
+    if (ns < 0) {
+        const char *e = getenv("IT_MT_HZ");
+        int hz = e ? atoi(e) : 0;
+
+        if (hz <= 0 || hz > 250) {
+            hz = 60;
+        }
+        ns = NANOSECONDS_PER_SECOND / hz;
+    }
+    return ns;
+}
+
 void ipod_touch_multitouch_on_touch(IPodTouchMultitouchState *s) {
     MTT("TOUCH START at (%.3f, %.3f)", s->touch_x, s->touch_y);
     s->touch_down = true;
 
+    /*
+     * A new touch has no speed. Without this, prev_touch_* still holds where
+     * the finger was when the PREVIOUS gesture last reported, so the first
+     * frame measures the distance between two unrelated touches - two quick
+     * taps in different places report a large spurious velocity on touch-down.
+     */
+    s->prev_touch_x = s->touch_x;
+    s->prev_touch_y = s->touch_y;
+
     s->next_frame = get_frame(s, MT_EVENT_TOUCH_START, s->touch_x, s->touch_y, 100, 660, 580, 150);
     ipod_touch_multitouch_inform_frame_ready(s);
 
-    timer_mod(s->touch_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + NANOSECONDS_PER_SECOND / 10);
+    s->last_motion_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    timer_mod(s->touch_timer, s->last_motion_ns + mt_frame_period_ns());
+}
+
+/*
+ * Host pointer motion while the finger is down.
+ *
+ * The timer alone only resamples s->touch_x/y on its own cadence, so it turns
+ * continuous host motion into a staircase. Emitting here as well makes the
+ * guest see motion when it actually happens, with the timer left as a
+ * keep-alive floor for a finger that is held still. Coalesced to the report
+ * period so a host that delivers motion faster than the panel cannot storm the
+ * guest with GPIO interrupts - next_frame is a single slot, so frames produced
+ * faster than the guest reads them would be overwritten anyway.
+ */
+void ipod_touch_multitouch_on_motion(IPodTouchMultitouchState *s) {
+    int64_t now;
+
+    if (!s->touch_down) {
+        return;
+    }
+    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (now - s->last_motion_ns < mt_frame_period_ns()) {
+        return;
+    }
+    s->last_motion_ns = now;
+
+    s->next_frame = get_frame(s, MT_EVENT_TOUCH_MOVED, s->touch_x, s->touch_y, 100, 660, 580, 150);
+    ipod_touch_multitouch_inform_frame_ready(s);
+    timer_mod(s->touch_timer, now + mt_frame_period_ns());
 }
 
 void ipod_touch_multitouch_on_release(IPodTouchMultitouchState *s) {
@@ -530,7 +628,8 @@ static void touch_timer_tick(void *opaque)
 
     if(s->touch_down) {
         // reschedule the timer
-        timer_mod(s->touch_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + NANOSECONDS_PER_SECOND / 10);
+        s->last_motion_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        timer_mod(s->touch_timer, s->last_motion_ns + mt_frame_period_ns());
     }
 }
 

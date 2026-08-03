@@ -325,8 +325,14 @@ static void ipod_touch_lcd_mouse_event(void *opaque, int x, int y, int z, int bu
     default:  fx = cx;        fy = 1.0f - cy; break;
     }
 
-    lcd->mt->prev_touch_x = lcd->mt->touch_x;
-    lcd->mt->prev_touch_y = lcd->mt->touch_y;
+    /*
+     * Only the position moves here. prev_touch_* is the reference the reported
+     * velocity is measured from, and get_frame() advances it when a frame is
+     * actually emitted -- moving it on every host event instead silently
+     * dropped the distance covered by any motion the report-rate coalescer
+     * skipped, and left a finger held still reporting the speed of its last
+     * step forever.
+     */
     lcd->mt->touch_x = fx;
     lcd->mt->touch_y = fy;
 
@@ -335,6 +341,10 @@ static void ipod_touch_lcd_mouse_event(void *opaque, int x, int y, int z, int bu
     }
     else if(!buttons_state && lcd->mt->touch_down) {
         ipod_touch_multitouch_on_release(lcd->mt);
+    }
+    else if(buttons_state) {
+        /* Drag: report the motion now rather than waiting for the next tick. */
+        ipod_touch_multitouch_on_motion(lcd->mt);
     }
 }
 
