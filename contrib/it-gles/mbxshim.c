@@ -185,6 +185,40 @@ static int s_orthof(void *gc, unsigned l, unsigned r, unsigned b,
 static int s_bindTexture(void *gc, unsigned target, unsigned tex)
     { return (int)qc(5, gc, 2, A(target, tex)); }
 
+/* OES framebuffer objects. EAGL calls these itself inside
+ * -renderbufferStorage:fromDrawable:, so a CAEAGLLayer client needs them
+ * before it can draw anything at all. */
+static int s_genRenderbuffers(void *gc, unsigned n, unsigned ids)
+    { return (int)qc(668, gc, 2, A(n, ids)); }
+static int s_bindRenderbuffer(void *gc, unsigned target, unsigned rb)
+    { return (int)qc(666, gc, 2, A(target, rb)); }
+static int s_deleteRenderbuffers(void *gc, unsigned n, unsigned ids)
+    { return (int)qc(667, gc, 2, A(n, ids)); }
+static int s_renderbufferStorage(void *gc, unsigned t, unsigned f,
+                                 unsigned wv, unsigned h)
+    { return (int)qc(669, gc, 4, A(t, f, wv, h)); }
+static int s_getRenderbufferParameteriv(void *gc, unsigned t, unsigned p,
+                                        unsigned out)
+    { return (int)qc(670, gc, 3, A(t, p, out)); }
+static int s_genFramebuffers(void *gc, unsigned n, unsigned ids)
+    { return (int)qc(674, gc, 2, A(n, ids)); }
+static int s_bindFramebuffer(void *gc, unsigned target, unsigned fb)
+    { return (int)qc(672, gc, 2, A(target, fb)); }
+static int s_deleteFramebuffers(void *gc, unsigned n, unsigned ids)
+    { return (int)qc(673, gc, 2, A(n, ids)); }
+static int s_checkFramebufferStatus(void *gc, unsigned target)
+    { return (int)qc(675, gc, 1, A(target)); }
+static int s_framebufferRenderbuffer(void *gc, unsigned t, unsigned at,
+                                     unsigned rbt, unsigned rb)
+    { return (int)qc(679, gc, 4, A(t, at, rbt, rb)); }
+static int s_framebufferTexture2D(void *gc, unsigned t, unsigned at,
+                                  unsigned tt, unsigned tex, unsigned lvl)
+    { return (int)qc(677, gc, 5, A(t, at, tt, tex, lvl)); }
+static int s_getFramebufferAttachmentParameteriv(void *gc, unsigned t,
+                                                 unsigned at, unsigned p,
+                                                 unsigned out)
+    { return (int)qc(680, gc, 4, A(t, at, p, out)); }
+
 /* ------------------------------------------------------------ EGL interface */
 
 /* One GC per context. The framework only ever hands this back to us as arg0,
@@ -241,6 +275,18 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
         table[334] = (void *)s_vertexPointer;
         table[335] = (void *)s_viewport;
         table[791] = (void *)s_orthof;
+        table[666] = (void *)s_bindRenderbuffer;
+        table[667] = (void *)s_deleteRenderbuffers;
+        table[668] = (void *)s_genRenderbuffers;
+        table[669] = (void *)s_renderbufferStorage;
+        table[670] = (void *)s_getRenderbufferParameteriv;
+        table[672] = (void *)s_bindFramebuffer;
+        table[673] = (void *)s_deleteFramebuffers;
+        table[674] = (void *)s_genFramebuffers;
+        table[675] = (void *)s_checkFramebufferStatus;
+        table[677] = (void *)s_framebufferTexture2D;
+        table[679] = (void *)s_framebufferRenderbuffer;
+        table[680] = (void *)s_getFramebufferAttachmentParameteriv;
     }
 
     if (gc_out) {
@@ -294,24 +340,58 @@ static void iosurface_init(void)
     p_IOSurfaceUnlock         = dlsym(iosurf, "IOSurfaceUnlock");
 }
 
-/* Read a surface's geometry. Returns 1 if it looks usable. */
+/*
+ * Try to read a surface's geometry, and REJECT it unless the numbers are
+ * self-consistent.
+ *
+ * The validation is not defensive padding, it is load-bearing. Measured on
+ * 3.1.3: the object GLESBindView is handed is NOT an IOSurfaceRef. Calling
+ * IOSurfaceGetBaseAddress on it does not fail -- it happily reads whatever is
+ * at that offset of some other object and returns garbage (observed:
+ * base=3468311840, stride=3885969411, 3852415272x3851223040). Nothing about
+ * that is distinguishable from a real surface at the call site.
+ *
+ * Accepting it would point the host's present at an arbitrary guest address
+ * with a nonsense stride. So anything that fails a plausibility check is
+ * dropped, surf_state stays empty, and GLESPresentView falls back to the panel
+ * blit rather than scribbling somewhere random.
+ */
 static int surface_capture(void *s)
 {
+    unsigned base, stride, width, height, format;
+
     iosurface_init();
     if (!s || !p_IOSurfaceGetBaseAddress) return 0;
 
-    surf_state.ref    = s;
-    surf_state.base   = (unsigned)(unsigned long)p_IOSurfaceGetBaseAddress(s);
-    surf_state.stride = p_IOSurfaceGetBytesPerRow ? p_IOSurfaceGetBytesPerRow(s) : 0;
-    surf_state.width  = p_IOSurfaceGetWidth ? p_IOSurfaceGetWidth(s) : 0;
-    surf_state.height = p_IOSurfaceGetHeight ? p_IOSurfaceGetHeight(s) : 0;
-    surf_state.format = p_IOSurfaceGetPixelFormat ? p_IOSurfaceGetPixelFormat(s) : 0;
+    base   = (unsigned)(unsigned long)p_IOSurfaceGetBaseAddress(s);
+    stride = p_IOSurfaceGetBytesPerRow ? p_IOSurfaceGetBytesPerRow(s) : 0;
+    width  = p_IOSurfaceGetWidth  ? p_IOSurfaceGetWidth(s)  : 0;
+    height = p_IOSurfaceGetHeight ? p_IOSurfaceGetHeight(s) : 0;
+    format = p_IOSurfaceGetPixelFormat ? p_IOSurfaceGetPixelFormat(s) : 0;
 
-    w("[mbxshim]   surface base="); wd(surf_state.base);
-    w(" stride="); wd(surf_state.stride);
-    w(" "); wd(surf_state.width); w("x"); wd(surf_state.height);
-    w(" fmt="); wd(surf_state.format); w("\n");
-    return surf_state.base && surf_state.width && surf_state.height;
+    w("[mbxshim]   candidate surface base="); wd(base);
+    w(" stride="); wd(stride);
+    w(" "); wd(width); w("x"); wd(height);
+    w(" fmt="); wd(format); w("\n");
+
+    /* A real drawable on this device is at most a screenful and its stride has
+     * to cover its width. */
+    if (!base || width == 0 || height == 0 ||
+        width > 2048 || height > 2048 || stride < width * 4 ||
+        stride > width * 4 + 4096) {
+        w("[mbxshim]   -> REJECTED (not a plausible IOSurface); "
+          "keeping panel fallback\n");
+        return 0;
+    }
+
+    surf_state.ref    = s;
+    surf_state.base   = base;
+    surf_state.stride = stride;
+    surf_state.width  = width;
+    surf_state.height = height;
+    surf_state.format = format;
+    w("[mbxshim]   -> accepted\n");
+    return 1;
 }
 
 /*
