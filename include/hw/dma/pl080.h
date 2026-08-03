@@ -69,6 +69,10 @@ struct PL080State {
 
     MemoryRegion *downstream;
     AddressSpace downstream_as;
+
+    /* IT_DMAC_TRACE: which controller this is, in instantiation order, purely
+     * so a trace of two identical devices can be told apart. */
+    int trace_id;
 };
 
 #endif
