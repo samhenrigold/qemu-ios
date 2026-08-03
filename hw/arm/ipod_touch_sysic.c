@@ -33,25 +33,25 @@ static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
         case 0x7a:
         case 0x7c:
             return 1;
-        case GPIO_INTLEVEL ... (GPIO_INTLEVEL + (GPIO_NUMINTGROUPS - 1) * 4):
+        case GPIO_INTLEVEL ... (GPIO_INTLEVEL + GPIO_NUMINTGROUPS * 4):
         {
             uint8_t group = (addr - GPIO_INTLEVEL) / 4;
-            return s->gpio_int_level[group];
+            return group < GPIO_NUMINTGROUPS ? s->gpio_int_level[group] : 0;
         }
-        case GPIO_INTSTAT ... (GPIO_INTSTAT + (GPIO_NUMINTGROUPS - 1) * 4):
+        case GPIO_INTSTAT ... (GPIO_INTSTAT + GPIO_NUMINTGROUPS * 4):
         {
             uint8_t group = (addr - GPIO_INTSTAT) / 4;
-            return s->gpio_int_status[group];
+            return group < GPIO_NUMINTGROUPS ? s->gpio_int_status[group] : 0;
         }
-        case GPIO_INTEN ... (GPIO_INTEN + (GPIO_NUMINTGROUPS - 1) * 4):
+        case GPIO_INTEN ... (GPIO_INTEN + GPIO_NUMINTGROUPS * 4):
         {
             uint8_t group = (addr - GPIO_INTEN) / 4;
-            return s->gpio_int_enabled[group];
+            return group < GPIO_NUMINTGROUPS ? s->gpio_int_enabled[group] : 0;
         }
-        case GPIO_INTTYPE ... (GPIO_INTTYPE + (GPIO_NUMINTGROUPS - 1) * 4):
+        case GPIO_INTTYPE ... (GPIO_INTTYPE + GPIO_NUMINTGROUPS * 4):
         {
             uint8_t group = (addr - GPIO_INTTYPE) / 4;
-            return s->gpio_int_type[group];
+            return group < GPIO_NUMINTGROUPS ? s->gpio_int_type[group] : 0;
         }
       default:
         break;
@@ -76,31 +76,48 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
         case POWER_OFFCTRL:
             s->power_state = val;
             break;
-        case GPIO_INTLEVEL ... (GPIO_INTLEVEL + (GPIO_NUMINTGROUPS - 1) * 4):
+        case GPIO_INTLEVEL ... (GPIO_INTLEVEL + GPIO_NUMINTGROUPS * 4):
         {
             break;
         }
-        case GPIO_INTSTAT ... (GPIO_INTSTAT + (GPIO_NUMINTGROUPS - 1) * 4):
+        case GPIO_INTSTAT ... (GPIO_INTSTAT + GPIO_NUMINTGROUPS * 4):
         {
             uint8_t group = (addr - GPIO_INTSTAT) / 4;
 
-            // acknowledge the interrupts and clear the corresponding bits
-            s->gpio_int_status[group] = s->gpio_int_status[group] & ~val;
-
-            qemu_irq_lower(s->gpio_irqs[group]);
-
+            /*
+             * The register block has EIGHT slots per range (they are 0x20
+             * apart) but only GPIO_NUMINTGROUPS arrays behind them, and fewer
+             * qemu_irqs than that are actually connected. Indexing group 7 read
+             * past gpio_int_level into gpio_int_status, and lowered an irq off
+             * the end of gpio_irqs[] - calling through whatever followed it,
+             * interpreted as an IRQState*.
+             *
+             * Claim the address (so it does not fall through to default and
+             * silently read as 0) but ignore an out-of-range group.
+             */
+            if (group < GPIO_NUMINTGROUPS) {
+                // acknowledge the interrupts and clear the corresponding bits
+                s->gpio_int_status[group] = s->gpio_int_status[group] & ~val;
+                if (s->gpio_irqs[group]) {
+                    qemu_irq_lower(s->gpio_irqs[group]);
+                }
+            }
             break;
         }
-        case GPIO_INTEN ... (GPIO_INTEN + (GPIO_NUMINTGROUPS - 1) * 4):
+        case GPIO_INTEN ... (GPIO_INTEN + GPIO_NUMINTGROUPS * 4):
         {
             uint8_t group = (addr - GPIO_INTEN) / 4;
-            s->gpio_int_enabled[group] = val;
+            if (group < GPIO_NUMINTGROUPS) {
+                s->gpio_int_enabled[group] = val;
+            }
             break;
         }
-        case GPIO_INTTYPE ... (GPIO_INTTYPE + (GPIO_NUMINTGROUPS - 1) * 4):
+        case GPIO_INTTYPE ... (GPIO_INTTYPE + GPIO_NUMINTGROUPS * 4):
         {
             uint8_t group = (addr - GPIO_INTTYPE) / 4;
-            s->gpio_int_type[group] = val;
+            if (group < GPIO_NUMINTGROUPS) {
+                s->gpio_int_type[group] = val;
+            }
             break;
         }
         default:
