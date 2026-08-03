@@ -1,1 +1,13 @@
 gles_stubs.h
+# Build products. They are armv6 Mach-O for the guest, rebuilt by build.sh in
+# seconds, and a stale checked-in copy is worse than none: several agents share
+# this tree, and "a successful build does not mean the binary you ran is the one
+# you built" applies to guest binaries too.
+gles_tri
+gles_tex
+gles_surf
+gles_fw
+sblaunch
+GLTest
+MBXGLEngine
+GLTest.app/
