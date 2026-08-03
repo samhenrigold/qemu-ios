@@ -18,7 +18,14 @@ static int apple_spi_word_size(IPodTouchSPIState *s)
     default:
         break;
     }
-    g_assert_not_reached();
+    /*
+     * Word size 3 is reserved, but the field is guest-writable, so a stray
+     * write used to abort QEMU. Fall back to a byte -- any choice is wrong,
+     * but a wrong transfer width beats killing the machine.
+     */
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "[SPI] reserved word size in CFG; assuming 8 bits\n");
+    return 1;
 }
 
 static void apple_spi_update_xfer_tx(IPodTouchSPIState *s)

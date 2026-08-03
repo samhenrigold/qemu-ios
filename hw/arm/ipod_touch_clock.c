@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_clock.h"
+#include "qemu/log.h"
 
 static void s5l8900_clock_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
@@ -49,7 +50,11 @@ static void s5l8900_clock_write(void *opaque, hwaddr addr, uint64_t val, unsigne
             s->pll3lcnt = val;
             break;
         case CLOCK_PLLLOCK:
-            hw_error("%s: Forbidden write to PLLLOCK register 0x%08x\n", __func__, addr);
+            /* Read-only status register. A guest write is a driver bug, not a
+             * reason to kill the machine. */
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: write to read-only PLLLOCK register 0x%08x\n",
+                          __func__, (uint32_t)addr);
             break;
         case CLOCK_PLLMODE:
             s->pllmode = val;
@@ -70,7 +75,9 @@ static void s5l8900_clock_write(void *opaque, hwaddr addr, uint64_t val, unsigne
             s->pwrcon4 = val;
             break;
       default:
-            hw_error("%s: writing value 0x%08x to unknown clock register 0x%08x\n", __func__, val, addr);
+            qemu_log_mask(LOG_UNIMP,
+                          "%s: write 0x%08x to unknown clock register 0x%08x\n",
+                          __func__, (uint32_t)val, (uint32_t)addr);
     }
 }
 
@@ -115,7 +122,9 @@ static uint64_t s5l8900_clock_read(void *opaque, hwaddr addr, unsigned size)
         case CLOCK_PWRCON4:
             return s->pwrcon4;
       default:
-            hw_error("%s: reading from unknown clock register 0x%08x\n", __func__, addr);
+            qemu_log_mask(LOG_UNIMP,
+                          "%s: read from unknown clock register 0x%08x\n",
+                          __func__, (uint32_t)addr);
     }
     return 0;
 }
