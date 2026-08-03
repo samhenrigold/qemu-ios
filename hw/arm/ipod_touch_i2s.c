@@ -20,10 +20,57 @@
  * pitch/duration, not whether sound is captured. Set IT_I2S_RATE to override.
  *
  * ---------------------------------------------------------------------------
- * STATE OF THE GUEST-SIDE AUDIO PATH (measured, 2026-08-03)
+ * SOLVED: THE DMA PATH IS OPEN. PCM NOW REACHES THIS FIFO. (2026-08-03)
  *
- * There is still no sound. Everything below was probed, not inferred -- and it
- * moves the blocker a long way from where this file's comments used to put it.
+ * The blocker described in the rest of this comment -- "the DMA request is
+ * built and submitted and never executed" -- is FIXED, and the fix is the
+ * ready interrupt above. A screenshot shutter now programs PL080 channel 5
+ * (src 0x08c99000 -> dst 0x3ca00010, 2048 halfwords per period, LLI-chained)
+ * and 73728 bytes per sound arrive here and are handed to the backend.
+ * `AppleARMIISAudio`'s channel start returns kIOReturnSuccess instead of
+ * kIOReturnNotReady.
+ *
+ * HOW IT WAS FOUND, since the previous rounds of this investigation kept
+ * blaming the wrong layer. A gdbstub breakpoint on the gated channel-start
+ * action c0565928, hit live while firing the shutter:
+ *
+ *   - [this+0x8a] = 1, so the prime-and-wait block runs; [this+0x8c] = 0.
+ *   - The "prime" at [[this+0x70] vt+0x220] is IOService::enableInterrupt(0)
+ *     (the kernel stub at c017a95a: lookupInterrupt via vt+0x294, then the
+ *     controller's vt+0x358). [this+0x70] = the i2s0 nub, whose single
+ *     interrupt source carries vector 0x2c -- GPIO group 1, bit 12. vt+0x224
+ *     is the matching disableInterrupt.
+ *   - [this+0x5c] is an IOCommandGate (commandSleep/commandWakeup at vt+0x90 /
+ *     vt+0x94) and [this+0x84] an IOTimerEventSource.
+ *   - The wait ALWAYS ended 10.00 s later -- exactly [req+0x68] -- in the timer
+ *     handler c0565cc0, which CAS's the state to 4. commandSleep returned 0,
+ *     not THREAD_TIMED_OUT, so r6 kept the 0xE00002D8 preloaded at c0565974.
+ *
+ * So kIOReturnNotReady WAS the timeout, and state 4 is the abort state, not a
+ * "done but empty" state. Confirmed independently from the other side:
+ * IT_GPIO_TRACE shows the guest write INTEN group 1 <- 0x1060 (bit 12 newly
+ * set) immediately after the last I2S setup write, i.e. it really does arm the
+ * source it then sleeps on. We never asserted it.
+ *
+ * THE ONE SUBTLETY, and a single shot does not work without it: the handler at
+ * c0565c2c reads the wait state FIRST, and if it is 1 -- which is what
+ * c0565968 sets just before enabling the source -- it records 2 and returns
+ * without waking anyone. The wait loop at c05659c8 only leaves on 3 or 4, so
+ * that interrupt is swallowed. Measured: with a one-shot the trace reads
+ * COMPLETION(state=1) then ABORT(state=2) 10 s later; with a repeating
+ * interrupt it reads COMPLETION(state=1), COMPLETION(state=2), then POSTWAIT
+ * with state=3 and RETURN with r6=0.
+ *
+ * WHAT IS STILL MISSING: the PCM is all zeroes. 36864 samples, peak 0, not one
+ * non-zero. So the transport is fixed and the PRODUCER is not: something
+ * upstream never writes the buffer at 0x08c99000 that the DMA faithfully
+ * copies here. IT_AMC_STATE=1 changes nothing about that (same 73728 bytes,
+ * still all zero), so it is not the AMC command/status handshake. That is the
+ * next piece of work, and it is a different question from the one this comment
+ * used to pose -- "why is no channel ever programmed" is answered.
+ *
+ * Everything below was probed, not inferred, and is kept because it is what
+ * ruled out the layers that are NOT at fault.
  *
  * What is PROVEN WORKING:
  *   - The host path. IT_I2S_TONE puts a sine in the TX FIFO and it comes out:
@@ -120,7 +167,9 @@
  *        1 at c07508b8 = allocated, 2 at c0750a34/c0751128 = configured, 3 at
  *        c07503c4 = has a live request.)
  *
- *    (b) c0565974 in the I2S kext, which preloads r6 = 0xE00002D8 as the
+ *    (b) THIS ONE. CONFIRMED, and fixed by the ready interrupt -- see the top
+ *        of this comment. c0565974 in the I2S kext, which preloads r6 =
+ *        0xE00002D8 as the
  *        DEFAULT result of a prime-and-wait block: it sets [this+0x8c] = 1,
  *        pokes [[this+0x70] vt+0x220], arms a timeout via [[this+0x84] vt+0x94]
  *        and sleeps on [this+0x8c] until it reads 3 or 4. A timeout overwrites
@@ -177,6 +226,95 @@ static bool it_i2s_debug(void)
 #define IT_I2S_DPRINTF(fmt, ...) \
     do { if (it_i2s_debug()) { \
         printf("[i2s] " fmt, ## __VA_ARGS__); fflush(stdout); } } while (0)
+
+/*
+ * The controller-ready interrupt (GPIO group 1, bit 12 -- see the header).
+ *
+ * AppleS5L8720X will not program a PL080 channel for this controller until it
+ * has seen this interrupt: its gated channel-start routine calls
+ * IOService::enableInterrupt(0) on the i2s0 nub, arms a 10 s IOTimerEventSource
+ * and sleeps. Before this existed the timer always won and the start returned
+ * kIOReturnNotReady, which is exactly what "AppleARMIISAudioDevice: could not
+ * start DMA: device is not ready" was reporting.
+ *
+ * It is raised a short while AFTER the setup writes rather than during them,
+ * because the driver enables the interrupt source only once it has finished
+ * writing registers -- the enable happens further down the same call chain that
+ * did the writes. A pending latch set before the source is enabled is not
+ * guaranteed to be redelivered by the GPIO controller model, so the timer
+ * removes the ordering question entirely.
+ *
+ * IT IS PERIODIC, AND THAT IS NOT A DETAIL. A single shot is not enough, which
+ * is measurable rather than arguable: the handler at c0565c2c reads the wait
+ * state first, and if it is 1 -- which is exactly what the start routine sets
+ * just before it enables the source -- it records 2 and returns WITHOUT waking
+ * the sleeper. The wait loop only leaves on 3 or 4, so one interrupt that lands
+ * in that window is swallowed and the 10 s timer still wins. Only the next
+ * interrupt, arriving with the state at 2, takes the branch that sets 3,
+ * disables the source and wakes the sleeper. A real I2S service interrupt
+ * free-runs while the block is clocking, so repeating is also the physically
+ * honest model -- and it self-limits, because we only raise while the guest
+ * still has the source unmasked in the GPIO controller.
+ *
+ * IT_I2S_IRQ=0 disables it, for bisecting against the old silent behaviour.
+ */
+#define IT_I2S_READY_DELAY_NS  (2 * 1000 * 1000)
+#define IT_I2S_READY_PERIOD_NS (2 * 1000 * 1000)
+/* 64 x 2 ms = 128 ms of interrupts per start: two orders of magnitude more than
+ * the handshake needs, three orders inside the driver's 10 s deadline, and it
+ * leaves nothing ticking once a sound is over. */
+#define IT_I2S_READY_TICKS     64
+
+static bool it_i2s_irq_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("IT_I2S_IRQ");
+        cached = (v == NULL) ? 1 : (atoi(v) != 0);
+    }
+    return cached != 0;
+}
+
+static void it_i2s_ready_cb(void *opaque)
+{
+    IPodTouchI2SState *s = (IPodTouchI2SState *)opaque;
+    uint32_t bit = 1u << IT_I2S_GPIO_INT_BIT;
+
+    if (!s->sysic || !s->enable || s->ready_ticks == 0) {
+        return;         /* block powered down, or the burst is spent */
+    }
+    s->ready_ticks--;
+    /*
+     * Only while the guest actually wants it. The driver masks the source in
+     * the GPIO controller the moment its handshake completes, so we never
+     * assert a line it has told us it does not want. The tick budget rather
+     * than the mask is what ends the burst, because the mask is set a few
+     * instructions AFTER the register writes that arm us -- stopping on "masked
+     * right now" would race that window and fire nothing at all.
+     */
+    if (s->sysic->gpio_int_enabled[IT_I2S_GPIO_INT_GROUP] & bit) {
+        s->sysic->gpio_int_status[IT_I2S_GPIO_INT_GROUP] |= bit;
+        qemu_irq_raise(s->sysic->gpio_irqs[IT_I2S_GPIO_INT_GROUP]);
+        s->ready_irqs++;
+        if (s->ready_irqs <= 8) {
+            IT_I2S_DPRINTF("ready irq #%" PRIu64 ": gpio group %d bit %d\n",
+                           s->ready_irqs, IT_I2S_GPIO_INT_GROUP,
+                           IT_I2S_GPIO_INT_BIT);
+        }
+    }
+    timer_mod(s->ready_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + IT_I2S_READY_PERIOD_NS);
+}
+
+static void it_i2s_arm_ready(IPodTouchI2SState *s)
+{
+    if (!it_i2s_irq_enabled() || !s->ready_timer || !s->sysic) {
+        return;
+    }
+    s->ready_ticks = IT_I2S_READY_TICKS;
+    timer_mod(s->ready_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + IT_I2S_READY_DELAY_NS);
+}
 
 /* Drain the PCM ring into the audio backend, up to `free_bytes` of headroom. */
 static void it_i2s_drain(IPodTouchI2SState *s, int free_bytes)
@@ -451,6 +589,10 @@ static void ipod_touch_i2s_write(void *opaque, hwaddr offset, uint64_t value,
         break;
     case IT_I2S_TXFCTL:
         s->txfctl = value;
+        /* Last register of the driver's setup sequence (enable, clkdiv, txcon,
+         * rxcon, txcom, rxcom, txfctl), so the block is fully configured here.
+         * Tell the driver the controller is ready. */
+        it_i2s_arm_ready(s);
         break;
     case IT_I2S_CLKDIV:
         s->clkdiv = value;
@@ -516,6 +658,11 @@ static void ipod_touch_i2s_reset(DeviceState *dev)
         AUD_set_active_out(s->voice, 0);
     }
     s->active = false;
+    s->ready_ticks = 0;
+    s->ready_irqs = 0;
+    if (s->ready_timer) {
+        timer_del(s->ready_timer);
+    }
 
     /* After the state wipe, not before: reset runs once after realize and would
      * otherwise throw the queued tone away. */
@@ -573,6 +720,7 @@ static void ipod_touch_i2s_init(Object *obj)
                           "ipod_touch_i2s", 0x1000);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+    s->ready_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, it_i2s_ready_cb, s);
 }
 
 static void ipod_touch_i2s_class_init(ObjectClass *klass, void *data)
