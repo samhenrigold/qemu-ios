@@ -389,10 +389,61 @@ static int GLESDestroyGC(void *gc) { (void)gc; return 0; }
  * owns the allocation and the engine only renders into it. So all we keep is
  * what the host needs to write pixels.
  */
-static struct {
+/*
+ * ONE OF THESE PER GC, not one for the whole process.
+ *
+ * Every field below used to be a single global, and an app with more than one
+ * CAEAGLLayer therefore had all of its views sharing one drawable, one CA
+ * block and one surface. Cube Runner has three GCs and binds two views, so its
+ * game layer and its menu layer wrote into the same surface and whichever
+ * presented last won -- which is why the panel showed a correct camera with no
+ * obstacles.
+ *
+ * The block in particular CANNOT be shared: CA indexes it, keys its own
+ * bookkeeping off it, and hands it back as createBuffer's arg0, so it is how we
+ * tell one view's surfaces from another's. Sharing it is also the likeliest
+ * reason CA refused the second bind outright -- the real engine allocates this
+ * per GC at ctx+0x210.
+ */
+typedef struct {
+    void *gc;                 /* identity; 0 means the slot is free */
+    void *drawable;
+    void *block[8];           /* CA indexes this -- must be per view */
     void *ref;
     unsigned base, stride, width, height, format;
-} surf_state;
+    unsigned char need_buffer;
+} ca_view_t;
+
+#define CA_MAX_VIEWS 4
+static ca_view_t ca_views[CA_MAX_VIEWS];
+
+/* Look a view up by the GC that owns it, optionally allocating a slot. */
+static ca_view_t *ca_view_for_gc(void *gc, int create)
+{
+    int i, free_slot = -1;
+
+    for (i = 0; i < CA_MAX_VIEWS; i++) {
+        if (ca_views[i].gc == gc) return &ca_views[i];
+        if (!ca_views[i].gc && free_slot < 0) free_slot = i;
+    }
+    if (!create || free_slot < 0) return 0;
+    ca_views[free_slot].gc = gc;
+    return &ca_views[free_slot];
+}
+
+/* CA hands the block back as createBuffer's arg0; that is the view's identity
+ * on the callback side. */
+static ca_view_t *ca_view_for_block(void *blk)
+{
+    int i;
+
+    for (i = 0; i < CA_MAX_VIEWS; i++) {
+        if (ca_views[i].gc && (void *)ca_views[i].block == blk) {
+            return &ca_views[i];
+        }
+    }
+    return 0;
+}
 
 static void *iosurf;    /* IOSurface.framework handle */
 static void *(*p_IOSurfaceGetBaseAddress)(void *);
@@ -450,15 +501,15 @@ static void iosurface_init(void)
  *
  * Accepting it would point the host's present at an arbitrary guest address
  * with a nonsense stride. So anything that fails a plausibility check is
- * dropped, surf_state stays empty, and GLESPresentView falls back to the panel
+ * dropped, the view's surface stays empty, and GLESPresentView falls back to the panel
  * blit rather than scribbling somewhere random.
  */
-static int surface_capture(void *s)
+static int surface_capture(ca_view_t *v, void *s)
 {
     unsigned base, stride, width, height, format;
 
     iosurface_init();
-    if (!s || !p_IOSurfaceGetBaseAddress) return 0;
+    if (!v || !s || !p_IOSurfaceGetBaseAddress) return 0;
 
     base   = (unsigned)(unsigned long)p_IOSurfaceGetBaseAddress(s);
     stride = p_IOSurfaceGetBytesPerRow ? p_IOSurfaceGetBytesPerRow(s) : 0;
@@ -481,12 +532,12 @@ static int surface_capture(void *s)
         return 0;
     }
 
-    surf_state.ref    = s;
-    surf_state.base   = base;
-    surf_state.stride = stride;
-    surf_state.width  = width;
-    surf_state.height = height;
-    surf_state.format = format;
+    v->ref    = s;
+    v->base   = base;
+    v->stride = stride;
+    v->width  = width;
+    v->height = height;
+    v->format = format;
     w("[mbxshim]   -> accepted\n");
     return 1;
 }
@@ -570,52 +621,55 @@ typedef int (*ca_unbind_fn)(void *drawable);
 typedef void *(*ca_next_fn)(void *drawable);
 typedef int (*ca_present_fn)(void *drawable, unsigned n);
 
-static void *ca_drawable;
+
 /* These fire every frame; one log line per process is enough to know the path
  * is live, and a line per frame would change the timing it is reporting on. */
 static unsigned char present_logged;
 static unsigned char surface_logged;
 /* Mirrors the engine's ctx+0x21c: "a buffer is wanted for the next frame". */
-static int ca_need_buffer;
 
-static int ca_next_buffer(void);
+
+static int ca_next_buffer(ca_view_t *v);
 
 /*
  * The block CA is given. Its shape is the engine's ctx+0x210 verbatim, because
  * CA indexes it and we do not get to choose the layout: [0] is the context
  * passed back to us as arg0, [1] create, [2] destroy, [5] the GC.
  */
-static void *ca_block[8];
+
 
 static int ca_create_buffer(void *ctx, void *surface)
 {
-    (void)ctx;
+    /* ctx is the block we handed CA at bind time, which names the view. */
+    ca_view_t *v = ca_view_for_block(ctx);
+
     w("[mbxshim] CA createBuffer surface="); wx((unsigned long)surface); w("\n");
     /* Still validated: this is the frame's destination address, and a wrong one
      * is a write to an arbitrary guest page. */
-    return surface_capture(surface) ? 1 : 0;
+    return surface_capture(v, surface) ? 1 : 0;
 }
 
 /*
  * Ask CA for this frame's surface. Mirrors _ViewTextureBeginIfNeeded: at most
  * one call per frame, gated on the same flag the engine keeps at ctx+0x21c.
  */
-static int ca_next_buffer(void)
+static int ca_next_buffer(ca_view_t *v)
 {
-    void **vt = ca_drawable;
+    void **vt;
     void *s;
 
-    if (!ca_drawable) return 0;
-    if (!ca_need_buffer) return surf_state.ref != 0;
+    if (!v || !v->drawable) return 0;
+    vt = v->drawable;
+    if (!v->need_buffer) return v->ref != 0;
 
-    s = ((ca_next_fn)vt[3])(ca_drawable);
+    s = ((ca_next_fn)vt[3])(v->drawable);
     if (!s) {
         w("[mbxshim] drawable->nextBuffer returned nothing\n");
         return 0;
     }
-    ca_need_buffer = 0;
-    if (s == surf_state.ref) {
-        return surf_state.base != 0;
+    v->need_buffer = 0;
+    if (s == v->ref) {
+        return v->base != 0;
     }
     /* A different surface from last frame is the normal case, not an error:
      * CA rotates buffers. Re-read its geometry rather than assuming it matches
@@ -624,18 +678,21 @@ static int ca_next_buffer(void)
         surface_logged = 1;
         w("[mbxshim] drawable->nextBuffer -> "); wx((unsigned long)s); w("\n");
     }
-    return surface_capture(s);
+    return surface_capture(v, s);
 }
 
 static int ca_destroy_buffer(void *ctx, void *surface)
 {
-    (void)ctx;
+    ca_view_t *v = ca_view_for_block(ctx);
+
     w("[mbxshim] CA destroyBuffer surface="); wx((unsigned long)surface); w("\n");
-    if (surf_state.ref == surface) {
+    /* Only the view that owns it, so one layer's teardown cannot blind
+     * another -- the same rule as the bind failure path. */
+    if (v && v->ref == surface) {
         /* Whatever replaces it will arrive through createBuffer. Presenting into
          * a destroyed surface writes into freed memory. */
-        surf_state.ref = 0;
-        surf_state.base = 0;
+        v->ref = 0;
+        v->base = 0;
     }
     return 1;
 }
@@ -649,9 +706,14 @@ static int ca_destroy_buffer(void *ctx, void *surface)
  */
 static int GLESBindCoreSurface(void *gc, void *surf, void *a, void *b)
 {
-    (void)gc; (void)a; (void)b;
+    /* Texture-from-surface, so it belongs to the calling GC like everything
+     * else now -- never called by a CAEAGLLayer client, but if one ever does
+     * it must not land in another view's slot. */
+    ca_view_t *v = ca_view_for_gc(gc, 1);
+
+    (void)a; (void)b;
     w("[mbxshim] GLESBindCoreSurface arg1="); wx((unsigned long)surf); w("\n");
-    surface_capture(surf);
+    surface_capture(v, surf);
     return 1;
 }
 
@@ -663,6 +725,7 @@ static int GLESBindCoreSurface(void *gc, void *surf, void *a, void *b)
 static int GLESBindView(void *gc, void *drawable, void *ifmt, void *flags)
 {
     void **vt = drawable;
+    ca_view_t *v;
     unsigned f = (unsigned)(unsigned long)ifmt;
     unsigned fourcc = (f == GL_RGB565_OES) ? CA_FOURCC_565L : CA_FOURCC_BGRA;
     int r;
@@ -680,11 +743,11 @@ static int GLESBindView(void *gc, void *drawable, void *ifmt, void *flags)
      * DO NOT install this drawable as the active one until CA has accepted it.
      *
      * This assignment used to happen here, before the bind, and the failure
-     * path below set ca_drawable to 0 -- so a bind that CA REFUSED destroyed
+     * path below zeroed that single global -- so a bind CA REFUSED destroyed
      * the pointer to the drawable that was working. Measured on Cube Runner:
      * the first view binds, presents and composites happily for 24 seconds;
      * the moment a game starts the app binds a SECOND view, CA returns 0 for
-     * it, and from that instant ca_drawable is null, so GLESPresentView stops
+     * it, and from that instant there was no drawable at all, so GLESPresentView stopped
      * calling CA's present callback entirely. The app carries on rendering at
      * a full 60 fps and the pixels keep landing in CA's surfaces -- nothing
      * anywhere reports an error -- but CA is never told a frame is ready, so
@@ -694,35 +757,43 @@ static int GLESBindView(void *gc, void *drawable, void *ifmt, void *flags)
      *
      * A refused bind now costs the caller its own view and nothing else.
      */
-    ca_block[0] = ca_block;          /* handed back to us as createBuffer's arg0 */
-    ca_block[1] = (void *)ca_create_buffer;
-    ca_block[2] = (void *)ca_destroy_buffer;
-    ca_block[3] = 0;
-    ca_block[4] = 0;
-    ca_block[5] = gc;                /* +0x14 in the engine's block */
-    ca_block[6] = 0;
-    ca_block[7] = 0;
+    v = ca_view_for_gc(gc, 1);
+    if (!v) {
+        w("[mbxshim] GLESBindView: no free view slot\n");
+        return 0;
+    }
+    v->block[0] = v->block;      /* handed back to us as createBuffer's arg0 */
+    v->block[1] = (void *)ca_create_buffer;
+    v->block[2] = (void *)ca_destroy_buffer;
+    v->block[3] = 0;
+    v->block[4] = 0;
+    v->block[5] = gc;            /* +0x14 in the engine's block */
+    v->block[6] = 0;
+    v->block[7] = 0;
 
-    r = ((ca_bind_fn)vt[1])(drawable, fourcc, ca_block);
+    r = ((ca_bind_fn)vt[1])(drawable, fourcc, v->block);
     w("[mbxshim]   drawable->bind(fourcc="); wx(fourcc); w(") -> "); wd((unsigned)r);
     w("\n");
     if (!r) {
-        /* Leave any previously bound drawable alone -- see above. */
+        /* Leave every other view alone -- see above. Free this slot again so a
+         * later retry is not blocked by a GC that never bound. */
+        v->gc = 0;
         return 0;
     }
-    ca_drawable = drawable;
+    v->drawable = drawable;
 
     /* The engine asks for the first buffer here, inside the bind, through
      * _ViewTextureBeginIfNeeded. Do the same: it is what makes CA announce its
      * surfaces, and until it happens there is nowhere to render. */
-    ca_need_buffer = 1;
-    if (!ca_next_buffer()) {
+    v->need_buffer = 1;
+    if (!ca_next_buffer(v)) {
         /* The one case where the unbind callback is correct -- see the
          * contract above; the stock engine takes exactly this path. */
         if (vt[2]) {
             ((ca_unbind_fn)vt[2])(drawable);
         }
-        ca_drawable = 0;
+        v->drawable = 0;
+        v->gc = 0;
         w("[mbxshim]   bind failed: no buffer from the drawable\n");
         return 0;
     }
@@ -743,29 +814,33 @@ static int GLESFinishTexture(void *gc, void *a) { (void)gc; (void)a; return 0; }
  */
 static int GLESPresentView(void *gc, void *view)
 {
+    /* Whose frame this is. A GC that never bound a view has no slot, and falls
+     * through to the panel blit below exactly as before. */
+    ca_view_t *v = ca_view_for_gc(gc, 0);
+
     (void)view;
 
     /* This frame's target. CA hands out a different surface each frame, so the
      * one to render into is asked for now, not remembered from bind time. */
-    ca_next_buffer();
+    ca_next_buffer(v);
 
-    if (surf_state.ref && surf_state.base) {
+    if (v && v->ref && v->base) {
         int rr;
         unsigned lockseed = 0;
         long long r;
 
-        if (p_IOSurfaceLock) p_IOSurfaceLock(surf_state.ref, 0, &lockseed);
+        if (p_IOSurfaceLock) p_IOSurfaceLock(v->ref, 0, &lockseed);
         /* Re-read the base each frame: CA is entitled to move or reallocate a
          * surface between frames, and caching it would write into whatever now
          * owns the old address. */
         if (p_IOSurfaceGetBaseAddress) {
-            surf_state.base =
-                (unsigned)(unsigned long)p_IOSurfaceGetBaseAddress(surf_state.ref);
+            v->base =
+                (unsigned)(unsigned long)p_IOSurfaceGetBaseAddress(v->ref);
         }
         r = qc(GLES_OP_PRESENT_SURFACE, gc, 5,
-               A(surf_state.base, surf_state.stride, surf_state.width,
-                 surf_state.height, surf_state.format));
-        if (p_IOSurfaceUnlock) p_IOSurfaceUnlock(surf_state.ref, 0, &lockseed);
+               A(v->base, v->stride, v->width,
+                 v->height, v->format));
+        if (p_IOSurfaceUnlock) p_IOSurfaceUnlock(v->ref, 0, &lockseed);
         if (r != 0) {
             return 0;
         }
@@ -778,13 +853,13 @@ static int GLESPresentView(void *gc, void *view)
          * `ldr pc,[r3,#0x10]` with the drawable in r0 and 1 in r1, reached only
          * after _FlushHW has returned.
          */
-        if (ca_drawable) {
-            void **vt = ca_drawable;
-            rr = ((ca_present_fn)vt[4])(ca_drawable, 1);
+        if (v->drawable) {
+            void **vt = v->drawable;
+            rr = ((ca_present_fn)vt[4])(v->drawable, 1);
             /* The engine re-arms its "wants a buffer" flag on the way out of
              * present (0xd70c), which is what makes it one nextBuffer per
              * frame rather than one for the whole context. */
-            ca_need_buffer = 1;
+            v->need_buffer = 1;
             if (!present_logged) {
                 present_logged = 1;
                 w("[mbxshim] drawable->present -> "); wd((unsigned)rr); w("\n");
