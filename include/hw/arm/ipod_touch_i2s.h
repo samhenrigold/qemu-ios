@@ -7,6 +7,8 @@
 #include "hw/sysbus.h"
 #include "hw/irq.h"
 #include "audio/audio.h"
+#include "qemu/timer.h"
+#include "hw/arm/ipod_touch_sysic.h"
 
 /*
  * S5L8720 I2S controller (AppleS5L8900XI2SController).
@@ -42,6 +44,23 @@
 #define IT_I2S_CMD_RUN  6
 #define IT_I2S_CMD_HALT 0
 
+/*
+ * i2s0's `interrupts` property is <0x2c> and its interrupt-parent is the GPIO
+ * interrupt controller, not the VIC -- the same numbering the multi-touch
+ * (0x6d -> group 3, bit 13) uses. 0x2c is therefore GPIO group 1, bit 12.
+ *
+ * It is not optional. AppleS5L8720X's DMA-channel start (c0565928 in the
+ * running 3.1.3 kernel) enables this very interrupt source and then sleeps on
+ * it for the [req+0x68] deadline -- 10 s -- before it will program a PL080
+ * channel. Measured with a gdbstub breakpoint: the sleep always ends 10.00 s
+ * later in the IOTimerEventSource handler, which sets the wait state to 4, and
+ * the start routine then returns its preloaded default of kIOReturnNotReady
+ * (0xE00002D8). That is the whole reason no channel is ever pointed at the TX
+ * FIFO and the whole reason the device is silent.
+ */
+#define IT_I2S_GPIO_INT_GROUP 1
+#define IT_I2S_GPIO_INT_BIT   12
+
 /* PCM ring in bytes. ~6 s at 44.1 kHz/16-bit/stereo; the DMA free-runs into it
  * in per-buffer bursts and the audio backend drains it, so this only needs to
  * absorb scheduling jitter, not a whole clip. */
@@ -55,6 +74,13 @@ typedef struct IPodTouchI2SState {
 
     MemoryRegion iomem;
     qemu_irq irq;
+
+    /* The GPIO interrupt controller this device's interrupt is routed through;
+     * see IT_I2S_GPIO_INT_GROUP. Set by the machine at init. */
+    IPodTouchSYSICState *sysic;
+    QEMUTimer *ready_timer;
+    uint64_t ready_irqs;  /* how many ready interrupts we have asserted */
+    uint32_t ready_ticks; /* ticks left in the current ready-interrupt burst */
 
     uint32_t enable;
     uint32_t txcon;
