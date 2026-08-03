@@ -18,6 +18,7 @@
 #include "hw/qdev-properties.h"
 #include "qapi/error.h"
 #include "hw/core/cpu.h"
+#include "qemu/timer.h"
 
 #define PL080_CONF_E    0x1
 #define PL080_CONF_M1   0x2
@@ -142,9 +143,10 @@ static void pl080_trace(PL080State *s, hwaddr offset, uint32_t val, bool write)
     if (current_cpu && CPU_GET_CLASS(current_cpu)->get_pc) {
         pc = CPU_GET_CLASS(current_cpu)->get_pc(current_cpu);
     }
-    fprintf(stderr, "[dmac%d] %c %03x %-14s %08x  pc=%08x\n",
+    fprintf(stderr, "[dmac%d] %c %03x %-14s %08x  pc=%08x t=%" PRId64 "\n",
             s->trace_id, write ? 'W' : 'R', (unsigned)offset,
-            pl080_regname(offset), val, (uint32_t)pc);
+            pl080_regname(offset), val, (uint32_t)pc,
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
 }
 
 /*
@@ -199,9 +201,9 @@ static void pl080_update(PL080State *s)
      */
     if (it_dmac_trace_on() && s->last_level != (int)(errlevel || tclevel)) {
         s->last_level = errlevel || tclevel;
-        fprintf(stderr, "[dmac%d] IRQ %s  tc_int=%02x tc_mask=%02x\n",
-                s->trace_id, s->last_level ? "HIGH" : "low ",
-                s->tc_int, s->tc_mask);
+        fprintf(stderr, "[dmac%d] IRQ %s  tc_int=%02x tc_mask=%02x t=%" PRId64
+                "\n", s->trace_id, s->last_level ? "HIGH" : "low ",
+                s->tc_int, s->tc_mask, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     }
     qemu_set_irq(s->interr, errlevel);
     qemu_set_irq(s->inttc, tclevel);
@@ -305,6 +307,8 @@ again:
                destination widths are different.  */
             swidth = 1 << ((ch->ctrl >> 18) & 7);
             dwidth = 1 << ((ch->ctrl >> 21) & 7);
+            s->paced_src = ch->src;   /* diagnostic; see PL080State.paced_src */
+
             for (n = 0; n < dwidth; n+= swidth) {
                 address_space_read(&s->downstream_as, ch->src,
                                    MEMTXATTRS_UNSPECIFIED, buff + n, swidth);
@@ -324,7 +328,13 @@ again:
             size--;
             ch->ctrl = (ch->ctrl & 0xfffff000) | size;
             if (size == 0) {
-                /* Transfer complete.  */
+                /*
+                 * Transfer complete. Latch the COMPLETED descriptor's terminal
+                 * count bit before the LLI reload overwrites ch->ctrl -- see
+                 * the note below the reload.
+                 */
+                uint32_t done_ctrl = ch->ctrl;
+
                 if (ch->lli) {
                     ch->src = address_space_ldl_le(&s->downstream_as,
                                                    ch->lli,
@@ -342,11 +352,35 @@ again:
                                                    ch->lli + 8,
                                                    MEMTXATTRS_UNSPECIFIED,
                                                    NULL);
+                    if (it_dmac_trace_on()) {
+                        fprintf(stderr, "[dmac%d] LLI ch%d -> src=%08x "
+                                "ctrl=%08x next=%08x t=%" PRId64 "\n",
+                                s->trace_id, c, ch->src, ch->ctrl, ch->lli,
+                                qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+                    }
                 } else {
                     ch->conf &= ~PL080_CCONF_E;
                 }
-                if (ch->ctrl & PL080_CCTRL_I) {
-                    //printf("Setting interrupt status of channel %d\n", c);
+                /*
+                 * The terminal count belongs to the transfer that just ENDED,
+                 * so it is that descriptor's Control word (bit 31) that decides
+                 * whether an interrupt is raised. This used to test ch->ctrl
+                 * after the reload above had already replaced it with the NEXT
+                 * descriptor's Control word, which raises every LLI-chained
+                 * interrupt exactly one descriptor early -- and, on the last
+                 * descriptor of a chain, raises it while the channel is still
+                 * running with LLI already read as 0.
+                 *
+                 * That is not a cosmetic ordering detail. The iPod touch's
+                 * audio engine treats "terminal count with LLIx == 0" as "the
+                 * DMA has run out of work" and responds by writing the head of
+                 * the next batch of descriptors into LLIx. Fired a descriptor
+                 * early, the batch it hands over is the one still in flight, so
+                 * the channel walks it a second time: every UI sound came out
+                 * followed by a replay of its own last 61440 bytes (15 periods,
+                 * 15360 frames, ~0.35 s) of the guest's ring.
+                 */
+                if (done_ctrl & PL080_CCTRL_I) {
                     s->tc_int |= 1 << c;
                 }
             }
