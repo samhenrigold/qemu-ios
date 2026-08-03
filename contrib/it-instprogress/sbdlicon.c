@@ -1,7 +1,7 @@
 /* sbdlicon: put an App Store "downloading" placeholder icon on the home
  * screen, or take it away again, from an ordinary process.
  *
- *     sbdlicon add    <unique-id> <bundle-id>
+ *     sbdlicon add    <unique-id> [<bundle-id>]
  *     sbdlicon cancel <unique-id>
  *
  * SpringBoardServices exports SBAddDownloadingIconForDisplayIdentifier and
@@ -10,12 +10,33 @@
  * asks. No injection and no entitlement.
  *
  * SpringBoard's handler (sub_42e6c in the 3.1.3 binary) does:
- *     +[SBDownloadingIcon displayIdentifierForDownloadUniqueID:uniqueID]
- *     -[SBIconModel addDownloadingIconForDisplayIdentifier:]
- *     -[SBDownloadingIcon setBundleID:bundleID]
- *     -> -[SBIconModel addNewIconToDesignatedLocation:...]  if bundleID is
- *        already installed, otherwise -[SBIconController setIconToInstall:]
- * so uniqueID names the download and bundleID names the app it becomes.
+ *     displayID = +[SBDownloadingIcon displayIdentifierForDownloadUniqueID:uid]
+ *     icon      = -[SBIconModel addDownloadingIconForDisplayIdentifier:displayID]
+ *                 -[SBDownloadingIcon setBundleID:bundleID]
+ *     if ([iconModel iconForDisplayIdentifier:bundleID])
+ *             -[SBIconModel addNewIconToDesignatedLocation:icon ...]
+ *     [SBIconController setIconToInstall:icon]
+ *
+ * WHY THE BUNDLE ID DEFAULTS TO THE PLACEHOLDER'S OWN DISPLAY IDENTIFIER
+ * ---------------------------------------------------------------------
+ * That lookup is the whole difficulty. SpringBoard only PLACES the icon when
+ * the bundle id it is handed already has an icon -- the App Store's update
+ * case, where the placeholder takes over the existing app's slot. Hand it the
+ * bundle id of an app that is not installed yet, which is the case that
+ * matters when an .ipa is dropped on the window, and the icon is created but
+ * never placed: it goes into SBIconController's iconToInstall ivar and nothing
+ * appears on the home screen. That was measured both ways.
+ *
+ * The way round is in the ordering above: the icon is created and registered
+ * under "com.apple.downloadingicon-<uid>" BEFORE the lookup runs, so passing
+ * that same string as the bundle id makes the lookup find the icon we just
+ * made, and it is placed after the last icon on the home screen. That is what
+ * `add` does when no bundle id is given, because it is what a caller
+ * installing a new app always wants; pass one explicitly only to get the
+ * update behaviour, where the placeholder sits in the existing app's slot.
+ *
+ * The placement is NOT saved to disk (SpringBoard passes saveIconState:NO), so
+ * a placeholder that is somehow left behind does not survive a respring.
  *
  * No headers on purpose: the 3.1.3 SDK's are not usable with -nostdinc, and
  * the rest of the guest-side tooling here is written the same way.
@@ -51,10 +72,12 @@ static int eq(const char *a, const char *b)
     return *a == *b;
 }
 
+#define DL_PREFIX "com.apple.downloadingicon-"
+
 int main(int argc, char **argv)
 {
     if (argc < 3) {
-        w("usage: sbdlicon add <unique-id> <bundle-id>\n"
+        w("usage: sbdlicon add <unique-id> [<bundle-id>]\n"
           "       sbdlicon cancel <unique-id>\n");
         _exit(2);
     }
@@ -77,8 +100,22 @@ int main(int argc, char **argv)
 
     int rc;
     if (eq(argv[1], "add")) {
-        if (argc < 4) { w("sbdlicon: add needs a bundle id\n"); _exit(2); }
-        rc = add(sb, argv[2], argv[3]);
+        const char *bundle;
+        static char self_id[512];
+
+        if (argc > 3) {
+            bundle = argv[3];
+        } else {
+            /* "com.apple.downloadingicon-" + uid: the identifier SpringBoard
+             * will have just registered the icon under. See the header. */
+            unsigned i = 0, j = 0;
+            const char *p = DL_PREFIX;
+            while (p[i] && i < sizeof(self_id) - 1) { self_id[i] = p[i]; i++; }
+            while (argv[2][j] && i < sizeof(self_id) - 1) self_id[i++] = argv[2][j++];
+            self_id[i] = 0;
+            bundle = self_id;
+        }
+        rc = add(sb, argv[2], bundle);
     } else if (eq(argv[1], "cancel")) {
         rc = cancel(sb, argv[2]);
     } else {
