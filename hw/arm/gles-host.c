@@ -14,11 +14,17 @@
  * which is the whole reason this approach is viable -- there is no shader
  * translation anywhere in this file.
  *
- * SCOPE. This is deliberately not 178 entry points. It is the smallest set that
- * gets a triangle onto the panel and can be verified end to end; 125 of the
- * remaining entry points are pure state setters that are cheap to add once the
- * pixel path is known good, and adding them before that would be broad
- * untested coverage.
+ * SCOPE. This is deliberately not 178 entry points, and it is not a guess at
+ * what a game might want either. The bring-up set was the smallest thing that
+ * gets a triangle onto the panel end to end; it has since been extended by
+ * exactly the entry points a real game imports -- `nm -u` on Cube Runner lists
+ * 41 gl* symbols and no others, and all 41 are now handled. Everything else is
+ * still a logged no-op, which is the right default: an unimplemented state
+ * setter that silently does nothing costs a wrong pixel, while guessing at
+ * semantics costs a debugging session.
+ *
+ * Notably absent from that list: textures. The game uploads none, so the
+ * texture path here is still only exercised by the bring-up tests.
  *
  * Copyright (c) 2026 the qemu-ios contributors.
  */
@@ -47,6 +53,19 @@ typedef struct {
     uint32_t type;      /* GL_FLOAT etc, in ES enum values (same as desktop) */
     uint32_t stride;
     uint32_t ptr;       /* guest VA */
+
+    /* Scratch for pulling this array across. Grown as needed, never shrunk.
+     * Per-array rather than shared, because a single draw needs several of
+     * them live at once -- position, colour and normal all point into their
+     * own copy while glDrawArrays runs. */
+    uint8_t *buf;
+    size_t buf_size;
+    /* Second scratch, used only to widen GL_FIXED to float. */
+    float *fbuf;
+    size_t fbuf_count;
+
+    /* Which client-state enum turns this array on, e.g. GL_VERTEX_ARRAY. */
+    GLenum client_state;
 } GLESArray;
 
 typedef struct {
@@ -58,12 +77,11 @@ typedef struct {
     GLESArray vertex;
     GLESArray texcoord;
     GLESArray color;
+    GLESArray normal;
 
-    /* Scratch for pulling guest arrays across. Grown as needed, never shrunk. */
-    uint8_t *vbuf;
-    size_t vbuf_size;
-    uint8_t *tbuf;
-    size_t tbuf_size;
+    /* Scratch for glDrawElements' index list. */
+    uint8_t *ibuf;
+    size_t ibuf_size;
 
     uint8_t *readback;  /* GLES_FB_WIDTH * GLES_FB_HEIGHT * 4 */
 
@@ -74,6 +92,19 @@ typedef struct {
 
     uint64_t draws;
     uint64_t presents;
+
+    /* Split by call, and reported per burst of frames. "The scene is empty"
+     * has two very different causes -- the app issued no geometry, or it
+     * issued plenty and none of it landed on screen -- and a single number
+     * cannot tell them apart. */
+    uint64_t draw_arrays;
+    uint64_t draw_elements;
+    uint64_t last_report_present;
+    uint64_t last_report_arrays;
+    uint64_t last_report_elements;
+
+    /* When nonzero, log every draw for one frame. See gles_trace_draw. */
+    int trace_draws;
 } GLESHost;
 
 /*
@@ -164,6 +195,13 @@ static bool gles_host_init(void)
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
 
+    gh.vertex.client_state   = GL_VERTEX_ARRAY;
+    gh.texcoord.client_state = GL_TEXTURE_COORD_ARRAY;
+    gh.color.client_state    = GL_COLOR_ARRAY;
+    gh.normal.client_state   = GL_NORMAL_ARRAY;
+    /* glNormalPointer takes no size; the array is always 3 components. */
+    gh.normal.size = 3;
+
     gh.readback = g_malloc0((size_t)GLES_FB_WIDTH * GLES_FB_HEIGHT * 4);
     gh.inited = true;
 
@@ -190,37 +228,315 @@ static uint32_t gles_type_size(uint32_t type)
     }
 }
 
+/* GL_FIXED is an ES 1.1 type with no desktop equivalent. */
+#define GLES_FIXED 0x140C
+
 /*
- * Pull `count` elements of a client array out of guest memory.
+ * Does this array's type have to be widened to float before the host will take
+ * it?
+ *
+ * ES 1.1 and desktop GL do NOT accept the same array types, and the difference
+ * is not symmetric across the four pointer calls:
+ *
+ *   glVertexPointer     ES: BYTE SHORT FIXED FLOAT   desktop: SHORT INT FLOAT DOUBLE
+ *   glTexCoordPointer   ES: BYTE SHORT FIXED FLOAT   desktop: SHORT INT FLOAT DOUBLE
+ *   glNormalPointer     ES: BYTE SHORT FIXED FLOAT   desktop: BYTE SHORT INT FLOAT DOUBLE
+ *   glColorPointer      ES: UBYTE FIXED FLOAT        desktop: BYTE UBYTE SHORT ... FLOAT
+ *
+ * So GL_BYTE positions and texture coordinates are legal ES and illegal
+ * desktop, while GL_BYTE normals and UNSIGNED_BYTE colours are legal in both.
+ *
+ * THIS IS WHY IT MATTERS, and it cost a QEMU crash to find: a rejected
+ * glVertexPointer does not fail loudly. It sets GL_INVALID_ENUM and leaves the
+ * array's pointer at NULL -- while glEnableClientState(GL_VERTEX_ARRAY) has
+ * already succeeded. The next glDrawArrays then walks a null pointer inside the
+ * driver and takes the whole emulator down with SIGSEGV in
+ * gleRunVertexSubmitImmediate. Cube Runner stores its cube geometry as bytes,
+ * which was an entirely sensible thing to do in 2009, and it hit this on its
+ * very first draw call.
+ *
+ * Widening is only correct because these are the types whose values are used
+ * unscaled. Normals and colours are NOT widened here: GL_BYTE normals and
+ * GL_UNSIGNED_BYTE colours are normalised to [-1,1] and [0,1] by both ES and
+ * desktop GL, so passing them through keeps that conversion in the driver where
+ * it belongs -- converting them by hand would mean reimplementing the scaling
+ * and getting it subtly wrong.
+ */
+static bool gles_needs_widen(GLenum client_state, uint32_t type)
+{
+    if (type == GLES_FIXED) {
+        return true;            /* no desktop equivalent for any array */
+    }
+    if (type == GL_BYTE && (client_state == GL_VERTEX_ARRAY ||
+                            client_state == GL_TEXTURE_COORD_ARRAY)) {
+        return true;
+    }
+    return false;
+}
+
+/*
+ * Pull `count` elements of a client array out of guest memory and point the
+ * host GL at the copy.
  *
  * A stride of 0 means tightly packed, per GL. Anything else and we still have
  * to copy the whole span including the gaps, because the host GL will walk it
  * with the same stride.
+ *
+ * Returns true if the array was bound and the caller must disable it again.
  */
-static uint8_t *gles_fetch_array(CPUState *cpu, GLESArray *a, uint32_t first,
-                                 uint32_t count, uint8_t **buf, size_t *cap)
+static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
+                            uint32_t count)
 {
-    uint32_t esz = gles_type_size(a->type) * a->size;
-    uint32_t stride = a->stride ? a->stride : esz;
+    uint32_t esz, stride;
     size_t need;
+    const void *data;
+    GLenum type;
 
-    if (!esz || !count) {
-        return NULL;
+    if (!a->enabled || !a->ptr || !count) {
+        return false;
     }
+    esz = gles_type_size(a->type) * a->size;
+    if (!esz) {
+        return false;
+    }
+    stride = a->stride ? a->stride : esz;
     /* Last element still only occupies esz bytes, not a full stride. */
     need = (size_t)stride * (count - 1) + esz;
 
-    if (need > *cap) {
-        *buf = g_realloc(*buf, need);
-        *cap = need;
+    if (need > a->buf_size) {
+        a->buf = g_realloc(a->buf, need);
+        a->buf_size = need;
     }
     if (cpu_memory_rw_debug(cpu, a->ptr + (hwaddr)stride * first,
-                            *buf, need, 0) != 0) {
-        fprintf(stderr, "[gles] failed to read %zu bytes of vertex data at "
+                            a->buf, need, 0) != 0) {
+        fprintf(stderr, "[gles] failed to read %zu bytes of array data at "
                 "guest 0x%08x\n", need, a->ptr);
+        return false;
+    }
+
+    data = a->buf;
+    type = a->type;
+
+    /* Convert the types the host would refuse. See gles_needs_widen. */
+    if (gles_needs_widen(a->client_state, type)) {
+        size_t n = (size_t)count * a->size;
+        uint32_t i, c;
+
+        if (n > a->fbuf_count) {
+            a->fbuf = g_realloc(a->fbuf, n * sizeof(float));
+            a->fbuf_count = n;
+        }
+        for (i = 0; i < count; i++) {
+            const uint8_t *row = a->buf + (size_t)stride * i;
+            for (c = 0; c < a->size; c++) {
+                float v;
+                if (type == GLES_FIXED) {
+                    v = (float)((const int32_t *)row)[c] / 65536.0f;
+                } else {
+                    /* GL_BYTE positions are used unscaled, not normalised. */
+                    v = (float)((const int8_t *)row)[c];
+                }
+                a->fbuf[(size_t)i * a->size + c] = v;
+            }
+        }
+        data = a->fbuf;
+        type = GL_FLOAT;
+        stride = 0;   /* the converted copy is tightly packed */
+    }
+
+    glEnableClientState(a->client_state);
+    while (glGetError() != GL_NO_ERROR) {
+        /* Drain, so the check below sees only this call's error. */
+    }
+    switch (a->client_state) {
+    case GL_VERTEX_ARRAY:
+        glVertexPointer(a->size, type, stride, data);
+        break;
+    case GL_TEXTURE_COORD_ARRAY:
+        glTexCoordPointer(a->size, type, stride, data);
+        break;
+    case GL_COLOR_ARRAY:
+        glColorPointer(a->size, type, stride, data);
+        break;
+    case GL_NORMAL_ARRAY:
+        /* glNormalPointer has no size argument; normals are always 3-vectors. */
+        glNormalPointer(type, stride, data);
+        break;
+    default:
+        glDisableClientState(a->client_state);
+        return false;
+    }
+
+    /*
+     * An array that is enabled but whose pointer the host refused is a loaded
+     * gun: the driver dereferences NULL inside the next draw and takes QEMU
+     * down with it, with no diagnostic naming the array. Turning it back off
+     * costs a missing attribute instead of a crash, and says which one.
+     */
+    {
+        GLenum e = glGetError();
+        if (e != GL_NO_ERROR) {
+            fprintf(stderr, "[gles] host refused %s pointer "
+                    "(size=%u type=0x%x stride=%u): GL error 0x%x -- "
+                    "array disabled for this draw\n",
+                    a->client_state == GL_VERTEX_ARRAY ? "vertex" :
+                    a->client_state == GL_TEXTURE_COORD_ARRAY ? "texcoord" :
+                    a->client_state == GL_COLOR_ARRAY ? "color" : "normal",
+                    a->size, type, stride, e);
+            glDisableClientState(a->client_state);
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * Bind every enabled client array for a draw covering elements [first, first+count).
+ *
+ * Returns a mask of which arrays were bound so the caller can unbind exactly
+ * those. Leaving an array enabled across draws would make the next draw walk a
+ * scratch buffer that has since been reallocated for a different array.
+ */
+static uint32_t gles_bind_all_arrays(CPUState *cpu, uint32_t first,
+                                     uint32_t count)
+{
+    GLESArray *arrays[] = { &gh.vertex, &gh.texcoord, &gh.color, &gh.normal };
+    uint32_t bound = 0;
+    unsigned i;
+
+    for (i = 0; i < ARRAY_SIZE(arrays); i++) {
+        if (gles_bind_array(cpu, arrays[i], first, count)) {
+            bound |= 1u << i;
+        }
+    }
+    return bound;
+}
+
+/*
+ * Report a draw the host rejected, once per distinct error.
+ *
+ * A rejected draw is silent: the frame simply comes out missing whatever that
+ * call would have contributed, which is indistinguishable from the app not
+ * having drawn it. Cube Runner renders its obstacles with one glDrawElements
+ * each, so "no cubes on screen" and "every cube draw returned GL_INVALID_ENUM"
+ * look exactly the same from outside.
+ */
+static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
+{
+    static GLenum reported[8];
+    static unsigned n_reported;
+    GLenum e = glGetError();
+    unsigned i;
+
+    if (e == GL_NO_ERROR) {
+        return;
+    }
+    for (i = 0; i < n_reported; i++) {
+        if (reported[i] == e) {
+            return;
+        }
+    }
+    if (n_reported < ARRAY_SIZE(reported)) {
+        reported[n_reported++] = e;
+    }
+    fprintf(stderr, "[gles] %s(mode=0x%x, count=%u) -> GL error 0x%x\n",
+            what, mode, count, e);
+}
+
+/*
+ * Log one frame's worth of draws, in order, with the state that decides
+ * whether each one is visible.
+ *
+ * Order is the thing a state dump cannot show. Cube Runner's gameplay and its
+ * title flythrough have byte-identical GL state at end of frame and submit
+ * about the same number of cube draws, yet only the title screen shows any --
+ * so the difference has to be in what is drawn when, and against what depth
+ * state. The gameplay screen is two flat colour bands, which is what two
+ * full-screen quads drawn last would look like.
+ */
+static void gles_trace_draw(const char *what, uint32_t mode, uint32_t count)
+{
+    GLfloat mv[16];
+    GLboolean depth_mask = 0;
+
+    if (gh.trace_draws <= 0) {
+        return;
+    }
+    gh.trace_draws--;
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &depth_mask);
+    glGetFloatv(GL_MODELVIEW_MATRIX, mv);
+    fprintf(stderr, "[gles]   draw %-14s mode=0x%x count=%-4u depthmask=%d "
+            "depthtest=%d xyz=(%.2f %.2f %.2f)\n",
+            what, mode, count, depth_mask, glIsEnabled(GL_DEPTH_TEST),
+            mv[12], mv[13], mv[14]);
+}
+
+static void gles_unbind_arrays(uint32_t bound)
+{
+    GLESArray *arrays[] = { &gh.vertex, &gh.texcoord, &gh.color, &gh.normal };
+    unsigned i;
+
+    for (i = 0; i < ARRAY_SIZE(arrays); i++) {
+        if (bound & (1u << i)) {
+            glDisableClientState(arrays[i]->client_state);
+        }
+    }
+}
+
+/*
+ * Read a small run of floats out of guest memory -- the argument of the *fv
+ * setters (glLightfv, glMaterialfv, glFogfv) and of glMultMatrixf.
+ *
+ * Returns NULL if the guest pointer is unreadable, and the caller drops the
+ * call rather than applying whatever was left in the buffer.
+ */
+static const float *gles_fetch_floats(CPUState *cpu, uint32_t ptr, unsigned n,
+                                      float *out)
+{
+    if (!ptr || !n) {
         return NULL;
     }
-    return *buf;
+    if (cpu_memory_rw_debug(cpu, ptr, (uint8_t *)out, n * sizeof(float), 0)
+        != 0) {
+        fprintf(stderr, "[gles] cannot read %u floats at guest 0x%08x\n",
+                n, ptr);
+        return NULL;
+    }
+    return out;
+}
+
+/*
+ * How many floats a *fv parameter carries. GL says the count depends on the
+ * pname, and reading four where the guest allocated one walks off the end of
+ * its buffer, so this is not a detail that can be rounded up to 4.
+ */
+static unsigned gles_light_nparams(uint32_t pname)
+{
+    switch (pname) {
+    case GL_AMBIENT:                /* 0x1200 */
+    case GL_DIFFUSE:                /* 0x1201 */
+    case GL_SPECULAR:               /* 0x1202 */
+    case GL_POSITION:               /* 0x1203 */
+        return 4;
+    case GL_SPOT_DIRECTION:         /* 0x1204 */
+        return 3;
+    default:
+        return 1;                   /* the scalar spot/attenuation parameters */
+    }
+}
+
+static unsigned gles_material_nparams(uint32_t pname)
+{
+    switch (pname) {
+    case GL_AMBIENT:
+    case GL_DIFFUSE:
+    case GL_SPECULAR:
+    case GL_EMISSION:               /* 0x1600 */
+    case GL_AMBIENT_AND_DIFFUSE:    /* 0x1602 */
+        return 4;
+    default:
+        return 1;                   /* GL_SHININESS */
+    }
 }
 
 /* ------------------------------------------------------------------ present */
@@ -274,6 +590,96 @@ static void gles_present_to_panel(void)
                                   row, sizeof(row));
     }
     gh.presents++;
+}
+
+/*
+ * Every 60 presented frames, say how many frames and how much geometry went by
+ * and how fast. Both halves matter: the frame rate is the number to report for
+ * a port, and the draw split is what distinguishes "the app drew nothing this
+ * scene" from "the app drew plenty and none of it was visible".
+ */
+/*
+ * The state that decides whether submitted geometry is actually visible.
+ *
+ * Printed alongside the frame counter so the same scene can be compared
+ * against itself over time, and one scene against another. Cube Runner draws
+ * tens of cubes per frame in both its title flythrough and its gameplay, but
+ * they only appear in one of them -- so the question is not "is it drawing"
+ * but "which piece of state differs", and this prints every candidate at once
+ * rather than testing them one reboot at a time.
+ */
+static void gles_dump_state(void)
+{
+    GLfloat fog_col[4], mv[16], pr[16], depth_range[2];
+    GLfloat fog_start = 0, fog_end = 0, fog_density = 0;
+    GLint fog_mode = 0, depth_func = 0, cull_face = 0;
+
+    glGetIntegerv(GL_FOG_MODE, &fog_mode);
+    glGetFloatv(GL_FOG_START, &fog_start);
+    glGetFloatv(GL_FOG_END, &fog_end);
+    glGetFloatv(GL_FOG_DENSITY, &fog_density);
+    glGetFloatv(GL_FOG_COLOR, fog_col);
+    glGetIntegerv(GL_DEPTH_FUNC, &depth_func);
+    glGetIntegerv(GL_CULL_FACE_MODE, &cull_face);
+    glGetFloatv(GL_DEPTH_RANGE, depth_range);
+    glGetFloatv(GL_MODELVIEW_MATRIX, mv);
+    glGetFloatv(GL_PROJECTION_MATRIX, pr);
+
+    fprintf(stderr,
+            "[gles]   enabled: fog=%d depth=%d lighting=%d cull=%d blend=%d "
+            "texture2d=%d\n"
+            "[gles]   fog: mode=0x%x start=%.3f end=%.3f density=%.4f "
+            "colour=(%.2f %.2f %.2f %.2f)\n"
+            "[gles]   depth: func=0x%x range=(%.2f %.2f) mask=%d cullmode=0x%x\n"
+            "[gles]   modelview  translate=(%.3f %.3f %.3f)  scale=(%.3f %.3f %.3f)\n"
+            "[gles]   projection diag=(%.3f %.3f %.3f) m[14]=%.3f\n",
+            glIsEnabled(GL_FOG), glIsEnabled(GL_DEPTH_TEST),
+            glIsEnabled(GL_LIGHTING), glIsEnabled(GL_CULL_FACE),
+            glIsEnabled(GL_BLEND), glIsEnabled(GL_TEXTURE_2D),
+            fog_mode, fog_start, fog_end, fog_density,
+            fog_col[0], fog_col[1], fog_col[2], fog_col[3],
+            depth_func, depth_range[0], depth_range[1],
+            (int)glIsEnabled(GL_DEPTH_WRITEMASK), cull_face,
+            mv[12], mv[13], mv[14], mv[0], mv[5], mv[10],
+            pr[0], pr[5], pr[10], pr[14]);
+}
+
+static void gles_report_progress(void)
+{
+    uint64_t now_ms, dt;
+    static int verbose = -1;
+
+    if (verbose < 0) {
+        const char *v = getenv("IT_GLES_VERBOSE");
+        verbose = v ? atoi(v) : 0;
+    }
+    if (gh.presents % 60 != 0) {
+        return;
+    }
+    now_ms = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+    dt = gh.last_report_present ? now_ms - gh.last_report_present : 0;
+    fprintf(stderr, "[gles] %" PRIu64 " frames; last 60 in %" PRIu64 " ms "
+            "(%.1f fps), draws since last: %" PRIu64 " arrays / %" PRIu64
+            " elements\n",
+            gh.presents, dt, dt ? 60000.0 / (double)dt : 0.0,
+            gh.draw_arrays - gh.last_report_arrays,
+            gh.draw_elements - gh.last_report_elements);
+    /*
+     * The state dump and the per-draw trace are the two tools that answer
+     * "the app is drawing and nothing appears". They are off unless asked for,
+     * because a per-draw log at 60 fps changes the timing it is reporting on.
+     *   IT_GLES_VERBOSE=1  state dump every 60 frames
+     *   IT_GLES_VERBOSE=2  and one frame of per-draw trace every 300
+     */
+    if (verbose >= 1) {
+        gles_dump_state();
+        if (verbose >= 2 && gh.presents % 300 == 0) {
+            gh.trace_draws = 80;
+        }
+    }
+    gh.last_report_present = now_ms;
+    gh.last_report_arrays = gh.draw_arrays;
+    gh.last_report_elements = gh.draw_elements;
 }
 
 /*
@@ -354,6 +760,7 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
         }
     }
     gh.presents++;
+    gles_report_progress();
     return 0;
 }
 
@@ -416,6 +823,7 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
         case GL_VERTEX_ARRAY:        gh.vertex.enabled = on;   break;
         case GL_TEXTURE_COORD_ARRAY: gh.texcoord.enabled = on; break;
         case GL_COLOR_ARRAY:         gh.color.enabled = on;    break;
+        case GL_NORMAL_ARRAY:        gh.normal.enabled = on;   break;
         default: break;
         }
         return 0;
@@ -435,39 +843,94 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
         gh.texcoord.ptr = a[3];
         return 0;
 
+    case GLES_SLOT_COLOR_POINTER:               /* size,type,stride,ptr */
+        gh.color.size = a[0];
+        gh.color.type = a[1];
+        gh.color.stride = a[2];
+        gh.color.ptr = a[3];
+        return 0;
+
+    case GLES_SLOT_NORMAL_POINTER:              /* type,stride,ptr */
+        gh.normal.size = 3;                     /* always, per GL */
+        gh.normal.type = a[0];
+        gh.normal.stride = a[1];
+        gh.normal.ptr = a[2];
+        return 0;
+
     case GLES_SLOT_DRAW_ARRAYS: {               /* mode, first, count */
         uint32_t mode = a[0], first = a[1], count = a[2];
-        uint8_t *vp, *tp = NULL;
+        uint32_t bound;
 
         if (!gh.vertex.enabled) {
             return 0;
         }
-        vp = gles_fetch_array(cpu, &gh.vertex, first, count,
-                              &gh.vbuf, &gh.vbuf_size);
-        if (!vp) {
+        bound = gles_bind_all_arrays(cpu, first, count);
+        if (!(bound & 1u)) {                    /* no positions -> no draw */
             return -1;
         }
-        glEnableClientState(GL_VERTEX_ARRAY);
-        glVertexPointer(gh.vertex.size, gh.vertex.type, gh.vertex.stride, vp);
+        /* We already applied `first` when fetching, so draw from 0. */
+        glDrawArrays(mode, 0, count);
+        gles_check_draw("glDrawArrays", mode, count);
+        gles_trace_draw("glDrawArrays", mode, count);
+        gles_unbind_arrays(bound);
+        gh.draws++;
+        gh.draw_arrays++;
+        return 0;
+    }
 
-        if (gh.texcoord.enabled && gh.texcoord.ptr) {
-            tp = gles_fetch_array(cpu, &gh.texcoord, first, count,
-                                  &gh.tbuf, &gh.tbuf_size);
-            if (tp) {
-                glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-                glTexCoordPointer(gh.texcoord.size, gh.texcoord.type,
-                                  gh.texcoord.stride, tp);
+    case GLES_SLOT_DRAW_ELEMENTS: {             /* mode, count, type, indices */
+        uint32_t mode = a[0], count = a[1], itype = a[2], iptr = a[3];
+        uint32_t isz = gles_type_size(itype);
+        uint32_t bound, i, maxidx = 0;
+        size_t need;
+
+        if (!gh.vertex.enabled || !count || !iptr) {
+            return 0;
+        }
+        /* ES 1.1 allows only UNSIGNED_BYTE and UNSIGNED_SHORT here. */
+        if (itype != GL_UNSIGNED_BYTE && itype != GL_UNSIGNED_SHORT) {
+            fprintf(stderr, "[gles] glDrawElements: bad index type 0x%x\n",
+                    itype);
+            return -1;
+        }
+
+        need = (size_t)count * isz;
+        if (need > gh.ibuf_size) {
+            gh.ibuf = g_realloc(gh.ibuf, need);
+            gh.ibuf_size = need;
+        }
+        if (cpu_memory_rw_debug(cpu, iptr, gh.ibuf, need, 0) != 0) {
+            fprintf(stderr, "[gles] glDrawElements: cannot read %zu index "
+                    "bytes at guest 0x%08x\n", need, iptr);
+            return -1;
+        }
+
+        /*
+         * Indices are absolute, so the vertex data that has to come across is
+         * everything up to the largest one -- there is no `first` to lean on
+         * the way glDrawArrays has. Scanning for the maximum costs one pass
+         * over the indices and is the only way to know how much of the guest's
+         * array is actually referenced; fetching a fixed amount would either
+         * truncate the mesh or read guest memory the app never allocated.
+         */
+        for (i = 0; i < count; i++) {
+            uint32_t v = (isz == 1) ? gh.ibuf[i]
+                                    : ((const uint16_t *)gh.ibuf)[i];
+            if (v > maxidx) {
+                maxidx = v;
             }
         }
 
-        /* We already applied `first` when fetching, so draw from 0. */
-        glDrawArrays(mode, 0, count);
-
-        glDisableClientState(GL_VERTEX_ARRAY);
-        if (tp) {
-            glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+        bound = gles_bind_all_arrays(cpu, 0, maxidx + 1);
+        if (!(bound & 1u)) {
+            return -1;
         }
+        glDrawElements(mode, count, itype, gh.ibuf);
+        gles_check_draw("glDrawElements", mode, count);
+        gles_trace_draw("glDrawElements", mode, count);
+        gles_unbind_arrays(bound);
         gh.draws++;
+        gh.draw_elements++;
         return 0;
     }
 
@@ -535,6 +998,117 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
         glOrtho(gles_f(a[0]), gles_f(a[1]), gles_f(a[2]),
                 gles_f(a[3]), gles_f(a[4]), gles_f(a[5]));
         return 0;
+
+    case GLES_SLOT_FRUSTUMF:                    /* l,r,b,t,n,f -- spilled */
+        glFrustum(gles_f(a[0]), gles_f(a[1]), gles_f(a[2]),
+                  gles_f(a[3]), gles_f(a[4]), gles_f(a[5]));
+        return 0;
+
+    /* ---- matrix stack ---- */
+    case GLES_SLOT_PUSH_MATRIX:
+        glPushMatrix();
+        return 0;
+
+    case GLES_SLOT_POP_MATRIX:
+        glPopMatrix();
+        return 0;
+
+    case GLES_SLOT_TRANSLATEF:                  /* x,y,z */
+        glTranslatef(gles_f(a[0]), gles_f(a[1]), gles_f(a[2]));
+        return 0;
+
+    case GLES_SLOT_SCALEF:                      /* x,y,z */
+        glScalef(gles_f(a[0]), gles_f(a[1]), gles_f(a[2]));
+        return 0;
+
+    case GLES_SLOT_ROTATEF:                     /* angle,x,y,z */
+        glRotatef(gles_f(a[0]), gles_f(a[1]), gles_f(a[2]), gles_f(a[3]));
+        return 0;
+
+    case GLES_SLOT_MULT_MATRIXF: {              /* const GLfloat m[16] */
+        float m[16];
+        if (!gles_fetch_floats(cpu, a[0], 16, m)) {
+            return -1;
+        }
+        glMultMatrixf(m);
+        return 0;
+    }
+
+    /* ---- per-fragment state ---- */
+    case GLES_SLOT_BLEND_FUNC:                  /* sfactor, dfactor */
+        glBlendFunc(a[0], a[1]);
+        return 0;
+
+    case GLES_SLOT_DEPTH_MASK:
+        /*
+         * Measured on Cube Runner: it calls this exactly once, with 0, at
+         * startup, and never clears GL_DEPTH_BUFFER_BIT at all -- every one of
+         * its glClear calls is GL_COLOR_BUFFER_BIT alone. So the depth buffer
+         * keeps its initial value forever and GL_LESS always passes: the game
+         * is a pure painter's-order renderer that sorts its own geometry back
+         * to front. Worth knowing before blaming the depth attachment for
+         * anything: depth is enabled here but carries no information.
+         */
+        glDepthMask(a[0] ? GL_TRUE : GL_FALSE);
+        return 0;
+
+    case GLES_SLOT_CLEAR_DEPTHF:
+        /* ES takes a float in [0,1]; desktop GL takes a double. */
+        glClearDepth(gles_f(a[0]));
+        return 0;
+
+    case GLES_SLOT_SHADE_MODEL:
+        glShadeModel(a[0]);
+        return 0;
+
+    case GLES_SLOT_LINE_WIDTH:
+        glLineWidth(gles_f(a[0]));
+        return 0;
+
+    case GLES_SLOT_HINT:                        /* target, mode */
+        /*
+         * Dropped rather than forwarded. Every hint is by definition allowed to
+         * do nothing, but the ES hint targets are not all desktop enums, and a
+         * bad one sets GL_INVALID_ENUM -- which the guest can read back through
+         * glGetError and interpret as a failure of whatever it called next.
+         * Trading a no-op hint for a spurious error is a bad bargain.
+         */
+        return 0;
+
+    /* ---- lighting and fog ---- */
+    case GLES_SLOT_LIGHTFV: {                   /* light, pname, params */
+        float p[4];
+        unsigned n = gles_light_nparams(a[1]);
+        if (!gles_fetch_floats(cpu, a[2], n, p)) {
+            return -1;
+        }
+        glLightfv(a[0], a[1], p);
+        return 0;
+    }
+
+    case GLES_SLOT_MATERIALFV: {                /* face, pname, params */
+        float p[4];
+        unsigned n = gles_material_nparams(a[1]);
+        if (!gles_fetch_floats(cpu, a[2], n, p)) {
+            return -1;
+        }
+        glMaterialfv(a[0], a[1], p);
+        return 0;
+    }
+
+    case GLES_SLOT_FOGF:                        /* pname, param */
+        glFogf(a[0], gles_f(a[1]));
+        return 0;
+
+    case GLES_SLOT_FOGFV: {                     /* pname, params */
+        float p[4];
+        unsigned n = (a[0] == GL_FOG_COLOR) ? 4 : 1;
+        if (!gles_fetch_floats(cpu, a[1], n, p)) {
+            return -1;
+        }
+        glFogfv(a[0], p);
+        return 0;
+    }
 
     case GLES_SLOT_FINISH:
         glFinish();
