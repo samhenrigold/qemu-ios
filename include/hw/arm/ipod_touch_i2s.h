@@ -78,11 +78,21 @@
  * delivered was the silence the ring had been allocated with.
  *
  * The real TX FIFO is a handful of samples; that is far too tight for a host
- * timer, so we model a deeper one. IT_I2S_FIFO_BYTES overrides it. What matters
- * is only that it is small compared to the ring (72 KB), so the transfer takes
- * roughly its own real-time duration rather than none at all.
+ * timer, so we model a deeper one. IT_I2S_FIFO_BYTES overrides it.
+ *
+ * THE DEPTH IS AUDIBLE, so do not raise it casually. It is exactly how far the
+ * DMA's read head runs ahead of the sound leaving the device, and the guest's
+ * audio engine refills the ring in real time just behind that head. At 8192
+ * bytes (46 ms, two of the guest's 4096-byte periods) the head sits on top of
+ * the producer: measured, single samples were read torn out of a page the
+ * engine was still writing, and after a clip ended the engine's silence-fill
+ * lost the race and whole pages of the clip were played a second time. At 2048
+ * (11.6 ms) the shutter comes out sample-exact, six times out of six.
+ *
+ * The floor is the pace timer: one tick must be refillable, i.e. the depth must
+ * comfortably exceed IT_I2S_PACE_PERIOD_NS worth of audio (2 ms = 352 bytes).
  */
-#define IT_I2S_FIFO_BYTES_DEFAULT 8192
+#define IT_I2S_FIFO_BYTES_DEFAULT 2048
 #define IT_I2S_PACE_PERIOD_NS     (2 * 1000 * 1000)
 
 #define TYPE_IPOD_TOUCH_I2S "ipodtouch.i2s"
