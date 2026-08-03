@@ -194,6 +194,58 @@ static int s_orthof(void *gc, unsigned l, unsigned r, unsigned b,
 static int s_bindTexture(void *gc, unsigned target, unsigned tex)
     { return (int)qc(5, gc, 2, A(target, tex)); }
 
+/* ---- the fixed-function set a real ES 1.1 game needs ----------------------
+ *
+ * These are exactly Cube Runner's imports: `nm -u` on the binary lists 41 gl*
+ * symbols, the 21 above cover part of it and these 20 cover the rest. Slot
+ * numbers come from the framework's own trampolines (see gles.h), not from a
+ * table of ours.
+ */
+static int s_blendFunc(void *gc, unsigned s, unsigned d)
+    { return (int)qc(7, gc, 2, A(s, d)); }
+static int s_colorPointer(void *gc, unsigned size, unsigned type,
+                          unsigned stride, unsigned ptr)
+    { return (int)qc(51, gc, 4, A(size, type, stride, ptr)); }
+static int s_depthMask(void *gc, unsigned flag)
+    { return (int)qc(61, gc, 1, A(flag)); }
+static int s_drawElements(void *gc, unsigned mode, unsigned count,
+                          unsigned type, unsigned indices)
+    { return (int)qc(67, gc, 4, A(mode, count, type, indices)); }
+static int s_fogf(void *gc, unsigned pname, unsigned param)
+    { return (int)qc(91, gc, 2, A(pname, param)); }
+static int s_fogfv(void *gc, unsigned pname, unsigned params)
+    { return (int)qc(92, gc, 2, A(pname, params)); }
+static int s_hint(void *gc, unsigned target, unsigned mode)
+    { return (int)qc(128, gc, 2, A(target, mode)); }
+static int s_lightfv(void *gc, unsigned light, unsigned pname, unsigned params)
+    { return (int)qc(151, gc, 3, A(light, pname, params)); }
+static int s_lineWidth(void *gc, unsigned width)
+    { return (int)qc(155, gc, 1, A(width)); }
+static int s_materialfv(void *gc, unsigned face, unsigned pname, unsigned params)
+    { return (int)qc(171, gc, 3, A(face, pname, params)); }
+static int s_multMatrixf(void *gc, unsigned m)
+    { return (int)qc(176, gc, 1, A(m)); }
+static int s_normalPointer(void *gc, unsigned type, unsigned stride,
+                           unsigned ptr)
+    { return (int)qc(188, gc, 3, A(type, stride, ptr)); }
+static int s_popMatrix(void *gc)
+    { return (int)qc(205, gc, 0, A(0)); }
+static int s_pushMatrix(void *gc)
+    { return (int)qc(210, gc, 0, A(0)); }
+static int s_rotatef(void *gc, unsigned an, unsigned x, unsigned y, unsigned z)
+    { return (int)qc(248, gc, 4, A(an, x, y, z)); }
+static int s_scalef(void *gc, unsigned x, unsigned y, unsigned z)
+    { return (int)qc(250, gc, 3, A(x, y, z)); }
+static int s_shadeModel(void *gc, unsigned mode)
+    { return (int)qc(253, gc, 1, A(mode)); }
+static int s_translatef(void *gc, unsigned x, unsigned y, unsigned z)
+    { return (int)qc(309, gc, 3, A(x, y, z)); }
+static int s_clearDepthf(void *gc, unsigned d)
+    { return (int)qc(763, gc, 1, A(d)); }
+static int s_frustumf(void *gc, unsigned l, unsigned r, unsigned b,
+                      unsigned t, unsigned n, unsigned f)
+    { return (int)qc(772, gc, 6, A(l, r, b, t, n, f)); }
+
 /* OES framebuffer objects. EAGL calls these itself inside
  * -renderbufferStorage:fromDrawable:, so a CAEAGLLayer client needs them
  * before it can draw anything at all. */
@@ -296,6 +348,27 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
         table[677] = (void *)s_framebufferTexture2D;
         table[679] = (void *)s_framebufferRenderbuffer;
         table[680] = (void *)s_getFramebufferAttachmentParameteriv;
+
+        table[7]   = (void *)s_blendFunc;
+        table[51]  = (void *)s_colorPointer;
+        table[61]  = (void *)s_depthMask;
+        table[67]  = (void *)s_drawElements;
+        table[91]  = (void *)s_fogf;
+        table[92]  = (void *)s_fogfv;
+        table[128] = (void *)s_hint;
+        table[151] = (void *)s_lightfv;
+        table[155] = (void *)s_lineWidth;
+        table[171] = (void *)s_materialfv;
+        table[176] = (void *)s_multMatrixf;
+        table[188] = (void *)s_normalPointer;
+        table[205] = (void *)s_popMatrix;
+        table[210] = (void *)s_pushMatrix;
+        table[248] = (void *)s_rotatef;
+        table[250] = (void *)s_scalef;
+        table[253] = (void *)s_shadeModel;
+        table[309] = (void *)s_translatef;
+        table[763] = (void *)s_clearDepthf;
+        table[772] = (void *)s_frustumf;
     }
 
     if (gc_out) {

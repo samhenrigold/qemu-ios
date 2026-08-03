@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SpringBoard checks this entitlement on the CALLER of
+  SBSLaunchApplicationWithIdentifier, and refuses without it:
+
+    SpringBoard[20] <Warning>: Entitlement com.apple.springboard.launchapplications
+                               required to use _SBXXLaunchApplicationWithIdentifier
+
+  The call still returns a plain 1, which is the same value it returns for an
+  app that is not installed -- so without reading the device console this looks
+  exactly like a failed install. It is not: it is a missing entitlement on the
+  tool, and `ldid -S<this file>` is the whole fix.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.springboard.launchapplications</key>
+	<true/>
+</dict>
+</plist>

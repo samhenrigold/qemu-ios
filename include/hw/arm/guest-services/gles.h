@@ -92,6 +92,39 @@ typedef struct __attribute__((packed)) {
 #define GLES_SLOT_VIEWPORT              335  /* 0x054c */
 #define GLES_SLOT_ORTHOF                791  /* 0x0c6c */
 
+/*
+ * The fixed-function set a real ES 1.1 game needs on top of the bring-up subset
+ * above: matrix stack, lighting, fog, blending, depth, and the remaining client
+ * arrays. Every one of these was recovered the same way as the slots above --
+ * by disassembling the armv6 slice of the 3.1.3 SDK's OpenGLES and reading the
+ * `ldr pc, [ctx, #off]` out of each trampoline -- and the extractor was
+ * validated by reproducing all 23 of the already-known slots above exactly
+ * before any new number was trusted.
+ *
+ * The set is not a guess at what games use: it is `nm -u` on Cube Runner,
+ * which imports exactly 41 gl* symbols and no others.
+ */
+#define GLES_SLOT_BLEND_FUNC            7    /* 0x002c */
+#define GLES_SLOT_COLOR_POINTER         51   /* 0x00dc */
+#define GLES_SLOT_DEPTH_MASK            61   /* 0x0104 */
+#define GLES_SLOT_DRAW_ELEMENTS         67   /* 0x011c */
+#define GLES_SLOT_FOGF                  91   /* 0x017c */
+#define GLES_SLOT_FOGFV                 92   /* 0x0180 */
+#define GLES_SLOT_HINT                  128  /* 0x0210 */
+#define GLES_SLOT_LIGHTFV               151  /* 0x026c */
+#define GLES_SLOT_LINE_WIDTH            155  /* 0x027c */
+#define GLES_SLOT_MATERIALFV            171  /* 0x02bc */
+#define GLES_SLOT_MULT_MATRIXF          176  /* 0x02d0 */
+#define GLES_SLOT_NORMAL_POINTER        188  /* 0x0300 */
+#define GLES_SLOT_POP_MATRIX            205  /* 0x0344 */
+#define GLES_SLOT_PUSH_MATRIX           210  /* 0x0358 */
+#define GLES_SLOT_ROTATEF               248  /* 0x03f0 */
+#define GLES_SLOT_SCALEF                250  /* 0x03f8 */
+#define GLES_SLOT_SHADE_MODEL           253  /* 0x0404 */
+#define GLES_SLOT_TRANSLATEF            309  /* 0x04e4 */
+#define GLES_SLOT_CLEAR_DEPTHF          763  /* 0x0bfc */
+#define GLES_SLOT_FRUSTUMF              772  /* 0x0c20 */
+
 /* OES framebuffer-object entry points. EAGL uses these itself inside
  * -renderbufferStorage:fromDrawable:, so a real CAEAGLLayer client cannot get
  * off the ground without them -- they are not optional coverage. The non-OES
