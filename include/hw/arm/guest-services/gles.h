@@ -92,6 +92,23 @@ typedef struct __attribute__((packed)) {
 #define GLES_SLOT_VIEWPORT              335  /* 0x054c */
 #define GLES_SLOT_ORTHOF                791  /* 0x0c6c */
 
+/* OES framebuffer-object entry points. EAGL uses these itself inside
+ * -renderbufferStorage:fromDrawable:, so a real CAEAGLLayer client cannot get
+ * off the ground without them -- they are not optional coverage. The non-OES
+ * and OES spellings share a slot (the framework aliases them). */
+#define GLES_SLOT_BIND_RENDERBUFFER     666  /* 0x0a78 */
+#define GLES_SLOT_DELETE_RENDERBUFFERS  667  /* 0x0a7c */
+#define GLES_SLOT_GEN_RENDERBUFFERS     668  /* 0x0a80 */
+#define GLES_SLOT_RENDERBUFFER_STORAGE  669  /* 0x0a84 */
+#define GLES_SLOT_GET_RB_PARAMETERIV    670  /* 0x0a88 */
+#define GLES_SLOT_BIND_FRAMEBUFFER      672  /* 0x0a90 */
+#define GLES_SLOT_DELETE_FRAMEBUFFERS   673  /* 0x0a94 */
+#define GLES_SLOT_GEN_FRAMEBUFFERS      674  /* 0x0a98 */
+#define GLES_SLOT_CHECK_FB_STATUS       675  /* 0x0a9c */
+#define GLES_SLOT_FB_TEXTURE_2D         677  /* 0x0aa4 */
+#define GLES_SLOT_FB_RENDERBUFFER       679  /* 0x0aac */
+#define GLES_SLOT_GET_FB_ATTACH_PARAM   680  /* 0x0ab0 */
+
 /* The framework's table tops out at slot 820. Engine-level operations that are
  * not dispatch entries at all live above it, well clear of anything Apple could
  * be indexing. */
