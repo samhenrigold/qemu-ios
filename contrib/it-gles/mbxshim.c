@@ -676,7 +676,24 @@ static int GLESBindView(void *gc, void *drawable, void *ifmt, void *flags)
         return 0;
     }
 
-    ca_drawable = drawable;
+    /*
+     * DO NOT install this drawable as the active one until CA has accepted it.
+     *
+     * This assignment used to happen here, before the bind, and the failure
+     * path below set ca_drawable to 0 -- so a bind that CA REFUSED destroyed
+     * the pointer to the drawable that was working. Measured on Cube Runner:
+     * the first view binds, presents and composites happily for 24 seconds;
+     * the moment a game starts the app binds a SECOND view, CA returns 0 for
+     * it, and from that instant ca_drawable is null, so GLESPresentView stops
+     * calling CA's present callback entirely. The app carries on rendering at
+     * a full 60 fps and the pixels keep landing in CA's surfaces -- nothing
+     * anywhere reports an error -- but CA is never told a frame is ready, so
+     * the panel keeps showing whatever it last composited. That is the frozen
+     * GL world behind the menus, and it is why the frame counter stays honest
+     * while the screen is a photograph.
+     *
+     * A refused bind now costs the caller its own view and nothing else.
+     */
     ca_block[0] = ca_block;          /* handed back to us as createBuffer's arg0 */
     ca_block[1] = (void *)ca_create_buffer;
     ca_block[2] = (void *)ca_destroy_buffer;
@@ -690,9 +707,10 @@ static int GLESBindView(void *gc, void *drawable, void *ifmt, void *flags)
     w("[mbxshim]   drawable->bind(fourcc="); wx(fourcc); w(") -> "); wd((unsigned)r);
     w("\n");
     if (!r) {
-        ca_drawable = 0;
+        /* Leave any previously bound drawable alone -- see above. */
         return 0;
     }
+    ca_drawable = drawable;
 
     /* The engine asks for the first buffer here, inside the bind, through
      * _ViewTextureBeginIfNeeded. Do the same: it is what makes CA announce its
