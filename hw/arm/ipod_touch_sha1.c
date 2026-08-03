@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_sha1.h"
+#include "migration/vmstate.h"
 
 /*
  * S5L8720 SHA1 engine.
@@ -277,9 +278,53 @@ static void ipod_touch_sha1_init(Object *obj)
     sha1_reset(s);
 }
 
+/* The engine chains from whatever the guest last left in the hash registers,
+ * so a stale chaining state would corrupt the first digest of a second boot.
+ * int_status must go with the IRQ line, not just be zeroed alongside it. */
+static void ipod_touch_sha1_reset(DeviceState *dev)
+{
+    IPodTouchSHA1State *s = IPOD_TOUCH_SHA1(dev);
+
+    s->config = 0;
+    s->memory_start = 0;
+    s->memory_mode = 0;
+    s->insize = 0;
+    memset(s->state, 0, sizeof(s->state));
+    memset(s->hw_buffer, 0, sizeof(s->hw_buffer));
+    s->hw_buffer_dirty = false;
+    s->int_enable = 0;
+    s->int_status = 0;
+    if (s->irq) {
+        qemu_irq_lower(s->irq);
+    }
+}
+
+/* The chaining state in state[] is the whole point: a digest in progress at
+ * snapshot time must resume from exactly the same intermediate value. */
+static const VMStateDescription vmstate_ipod_touch_sha1 = {
+    .name = "ipod_touch_sha1",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(config, IPodTouchSHA1State),
+        VMSTATE_UINT32(memory_start, IPodTouchSHA1State),
+        VMSTATE_UINT32(memory_mode, IPodTouchSHA1State),
+        VMSTATE_UINT32(insize, IPodTouchSHA1State),
+        VMSTATE_UINT32_ARRAY(state, IPodTouchSHA1State, 5),
+        VMSTATE_UINT32_ARRAY(hw_buffer, IPodTouchSHA1State, 0x10),
+        VMSTATE_BOOL(hw_buffer_dirty, IPodTouchSHA1State),
+        VMSTATE_UINT32(int_enable, IPodTouchSHA1State),
+        VMSTATE_UINT32(int_status, IPodTouchSHA1State),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_sha1_class_init(ObjectClass *klass, void *data)
 {
+    DeviceClass *dc = DEVICE_CLASS(klass);
 
+    dc->reset = ipod_touch_sha1_reset;
+    dc->vmsd = &vmstate_ipod_touch_sha1;
 }
 
 static const TypeInfo ipod_touch_sha1_info = {

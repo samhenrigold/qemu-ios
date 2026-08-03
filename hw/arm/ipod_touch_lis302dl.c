@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_lis302dl.h"
+#include "migration/vmstate.h"
 #include "hw/arm/ipod_touch_lcd.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
@@ -266,8 +267,35 @@ static void lis302dl_init(Object *obj)
     object_property_add(obj, "shake", "bool", NULL, lis302dl_set_shake, NULL, NULL);
 }
 
+/* shake_timer is transient host animation, not guest-visible state: a restore
+ * lands with the accelerometer at rest at its steady-state vector. */
+static const VMStateDescription vmstate_lis302dl = {
+    .name = "lis302dl",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(i2c, LIS302DLState),
+        VMSTATE_UINT32(cmd, LIS302DLState),
+        VMSTATE_BOOL(pointer_set, LIS302DLState),
+        VMSTATE_INT8(out_x, LIS302DLState),
+        VMSTATE_INT8(out_y, LIS302DLState),
+        VMSTATE_INT8(out_z, LIS302DLState),
+        VMSTATE_INT8(base_x, LIS302DLState),
+        VMSTATE_INT8(base_y, LIS302DLState),
+        VMSTATE_INT8(base_z, LIS302DLState),
+        VMSTATE_UINT32(orientation, LIS302DLState),
+        VMSTATE_UINT16(ctrl_reg1, LIS302DLState),
+        VMSTATE_UINT16(ctrl_reg2, LIS302DLState),
+        VMSTATE_UINT16(ctrl_reg3, LIS302DLState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void lis302dl_class_init(ObjectClass *klass, void *data)
 {
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->vmsd = &vmstate_lis302dl;
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
 
     k->event = lis302dl_event;

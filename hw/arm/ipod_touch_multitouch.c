@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_multitouch.h"
+#include "migration/vmstate.h"
 #include "qemu/log.h"
 
 static MTFrame *get_empty_frame(IPodTouchMultitouchState *s);
@@ -720,6 +721,50 @@ static void ipod_touch_multitouch_reset(DeviceState *dev)
     }
 }
 
+/*
+ * KNOWN GAP, deliberate: out_buffer/in_buffer and next_frame are heap pointers
+ * holding an SPI transaction and a touch report in flight. They are not
+ * migrated, so a snapshot taken with a finger down restores as a finger that
+ * was never pressed. post_load therefore forces the released state rather than
+ * leaving touch_down set with no frame to deliver -- otherwise the guest would
+ * wait for a TOUCH_ENDED that can no longer arrive. Snapshots are taken at
+ * rest in practice; this only bounds the damage if one is not.
+ */
+static int ipod_touch_multitouch_post_load(void *opaque, int version_id)
+{
+    IPodTouchMultitouchState *s = opaque;
+
+    s->next_frame = NULL;
+    s->buf_ind = 0;
+    s->in_buffer_ind = 0;
+    s->touch_down = false;
+    if (s->touch_timer) {
+        timer_del(s->touch_timer);
+    }
+    if (s->touch_end_timer) {
+        timer_del(s->touch_end_timer);
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_ipod_touch_multitouch = {
+    .name = "ipod_touch_multitouch",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = ipod_touch_multitouch_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SSI_PERIPHERAL(ssidev, IPodTouchMultitouchState),
+        VMSTATE_UINT8(cur_cmd, IPodTouchMultitouchState),
+        VMSTATE_UINT8(prev_cmd_log, IPodTouchMultitouchState),
+        VMSTATE_UINT32(buf_size, IPodTouchMultitouchState),
+        VMSTATE_UINT8_ARRAY(hbpp_atn_ack_response, IPodTouchMultitouchState, 2),
+        VMSTATE_UINT32(frame_counter, IPodTouchMultitouchState),
+        VMSTATE_UINT64(last_frame_timestamp, IPodTouchMultitouchState),
+        VMSTATE_INT64(last_motion_ns, IPodTouchMultitouchState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_multitouch_class_init(ObjectClass *klass, void *data)
 {
     SSIPeripheralClass *k = SSI_PERIPHERAL_CLASS(klass);
@@ -728,6 +773,7 @@ static void ipod_touch_multitouch_class_init(ObjectClass *klass, void *data)
     k->realize = ipod_touch_multitouch_realize;
     k->transfer = ipod_touch_multitouch_transfer;
     dc->reset = ipod_touch_multitouch_reset;
+    dc->vmsd = &vmstate_ipod_touch_multitouch;
 }
 
 static const TypeInfo ipod_touch_multitouch_type_info = {

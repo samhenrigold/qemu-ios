@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_wdt.h"
+#include "migration/vmstate.h"
 #include "sysemu/runstate.h"
 #include "hw/core/cpu.h"
 #include "target/arm/cpu.h"
@@ -74,8 +75,33 @@ static void ipod_touch_wdt_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
 }
 
+/* The watchdog must come out of a reset DISARMED. Carrying ctrl across meant
+ * the device it had just reset was still holding a loaded watchdog. */
+static void ipod_touch_wdt_reset(DeviceState *dev)
+{
+    IPodTouchWDTState *s = IPOD_TOUCH_WDT(dev);
+
+    s->ctrl = 0;
+    s->cnt = 0;
+}
+
+static const VMStateDescription vmstate_ipod_touch_wdt = {
+    .name = "ipod_touch_wdt",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(ctrl, IPodTouchWDTState),
+        VMSTATE_UINT32(cnt, IPodTouchWDTState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_wdt_class_init(ObjectClass *klass, void *data)
 {
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->vmsd = &vmstate_ipod_touch_wdt;
+    dc->reset = ipod_touch_wdt_reset;
 }
 
 static const TypeInfo ipod_touch_wdt_type_info = {

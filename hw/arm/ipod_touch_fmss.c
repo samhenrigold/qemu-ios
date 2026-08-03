@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_fmss.h"
+#include "migration/vmstate.h"
 #include "qemu/log.h"
 
 /*
@@ -432,16 +433,20 @@ static void fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
 #define IBOOT_SCAN_PA_START  0x0ff00000u
 #define IBOOT_SCAN_LEN       0x00040000u   /* covers both builds' iBoot images */
 
+/* One-shot: the DeviceTree node is patched in the iBoot image in RAM the first
+ * time the guest reads a page. A reset reloads that RAM, so the latch has to be
+ * re-armed from ipod_touch_fmss_reset() or the second boot runs unpatched. */
+static bool iboot_bt_patched;
+
 static void patch_iboot_bluetooth_node(void)
 {
     static const char needle[] = "arm-io/uart3/bluetooth";
     static const char replace[] = "arm-io/uart1/bluetooth";
-    static bool done;
 
-    if (done) {
+    if (iboot_bt_patched) {
         return;
     }
-    done = true;
+    iboot_bt_patched = true;
 
     g_autofree uint8_t *image = g_try_malloc(IBOOT_SCAN_LEN);
     if (!image) {
@@ -825,11 +830,71 @@ static void ipod_touch_fmss_finalize(Object *obj)
     }
 }
 
+/*
+ * Only the controller registers are reset. phys_pages and erased_blocks are
+ * FLASH CONTENT, not controller state -- a warm reset does not un-program a
+ * NAND page -- so clearing them here would silently discard everything the
+ * guest wrote this session. total_blocks is read out of the image's GPT and
+ * cannot change either.
+ */
+static void ipod_touch_fmss_reset(DeviceState *dev)
+{
+    IPodTouchFMSSState *s = IPOD_TOUCH_FMSS(dev);
+
+    s->reg_cs_irq_bit = 0;
+    s->reg_cinfo_target_addr = 0;
+    s->reg_pages_in_addr = 0;
+    s->reg_cs_buf_addr = 0;
+    s->reg_num_pages = 0;
+    s->reg_page_spare_out_addr = 0;
+    s->reg_pages_out_addr = 0;
+    s->reg_csgenrc = 0;
+    memset(s->page_buffer, 0, NAND_BYTES_PER_PAGE);
+    memset(s->page_spare_buffer, 0, NAND_BYTES_PER_SPARE);
+    iboot_bt_patched = false;
+    if (s->irq) {
+        qemu_irq_lower(s->irq);
+    }
+}
+
+/*
+ * KNOWN GAP, deliberate: phys_pages and erased_blocks are GHashTables holding
+ * this session's programmed pages, and they are not migrated. The persisted
+ * side of a write is in the NAND overlay directory, which the destination
+ * opens for itself, so file content survives; what does not survive is the
+ * physical-page memory that makes a page the FTL just relocated read back at
+ * the address it was programmed to. In practice that mapping only has to hold
+ * until the FTL is rebuilt, which a restore does not disturb.
+ *
+ * page_buffer/page_spare_buffer are the DMA staging area for one transfer;
+ * they are only meaningful between the register write that starts a transfer
+ * and its completion, which cannot straddle a snapshot.
+ */
+static const VMStateDescription vmstate_ipod_touch_fmss = {
+    .name = "ipod_touch_fmss",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(reg_cs_irq_bit, IPodTouchFMSSState),
+        VMSTATE_UINT32(reg_cinfo_target_addr, IPodTouchFMSSState),
+        VMSTATE_UINT32(reg_pages_in_addr, IPodTouchFMSSState),
+        VMSTATE_UINT32(reg_cs_buf_addr, IPodTouchFMSSState),
+        VMSTATE_UINT32(reg_num_pages, IPodTouchFMSSState),
+        VMSTATE_UINT32(reg_page_spare_out_addr, IPodTouchFMSSState),
+        VMSTATE_UINT32(reg_pages_out_addr, IPodTouchFMSSState),
+        VMSTATE_UINT32(reg_csgenrc, IPodTouchFMSSState),
+        VMSTATE_UINT32(total_blocks, IPodTouchFMSSState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_fmss_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = ipod_touch_fmss_realize;
+    dc->reset = ipod_touch_fmss_reset;
+    dc->vmsd = &vmstate_ipod_touch_fmss;
 }
 
 static const TypeInfo ipod_touch_fmss_info = {

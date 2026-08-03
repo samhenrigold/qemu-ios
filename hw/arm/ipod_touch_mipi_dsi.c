@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_mipi_dsi.h"
+#include "migration/vmstate.h"
 
 static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -129,12 +130,26 @@ static void ipod_touch_mipi_dsi_init(Object *obj)
     s->return_panel_id = 0;
 }
 
+static const VMStateDescription vmstate_ipod_touch_mipi_dsi = {
+    .name = "ipod_touch_mipi_dsi",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(pkthdr_reg, IPodTouchMIPIDSIState),
+        VMSTATE_UINT32(clkctrl, IPodTouchMIPIDSIState),
+        VMSTATE_UINT32(cmd_pending, IPodTouchMIPIDSIState),
+        VMSTATE_BOOL(return_panel_id, IPodTouchMIPIDSIState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_mipi_dsi_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = ipod_touch_mipi_dsi_realize;
     dc->reset = ipod_touch_mipi_dsi_reset;
+    dc->vmsd = &vmstate_ipod_touch_mipi_dsi;
 }
 
 static const TypeInfo ipod_touch_mipi_dsi_info = {

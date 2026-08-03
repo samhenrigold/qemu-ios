@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_mpvd.h"
+#include "migration/vmstate.h"
 
 /*
  * MPVD (video decode) register window, backing only.
@@ -51,8 +52,29 @@ static void ipod_touch_mpvd_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
 }
 
+static void ipod_touch_mpvd_reset(DeviceState *dev)
+{
+    IPodTouchMPVDState *s = IPOD_TOUCH_MPVD(dev);
+
+    memset(s->regs, 0, sizeof(s->regs));
+}
+
+static const VMStateDescription vmstate_ipod_touch_mpvd = {
+    .name = "ipod_touch_mpvd",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(regs, IPodTouchMPVDState, MPVD_REG_SIZE / 4),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_mpvd_class_init(ObjectClass *klass, void *data)
 {
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->vmsd = &vmstate_ipod_touch_mpvd;
+    dc->reset = ipod_touch_mpvd_reset;
 }
 
 static const TypeInfo ipod_touch_mpvd_type_info = {

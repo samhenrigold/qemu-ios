@@ -21,6 +21,7 @@
  */
 
 #include "hw/i2c/ipod_touch_i2c.h"
+#include "migration/vmstate.h"
 
 /*
  * Address-phase acknowledge.
@@ -331,10 +332,32 @@ static void ipod_touch_i2c_reset(DeviceState *d)
     
 }
 
+/* The I2CBus itself is machine wiring; its slaves migrate their own state
+ * through their own VMStateDescriptions. */
+static const VMStateDescription vmstate_ipod_touch_i2c = {
+    .name = "ipod_touch_i2c",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(control, IPodTouchI2CState),
+        VMSTATE_UINT8(status, IPodTouchI2CState),
+        VMSTATE_UINT8(address, IPodTouchI2CState),
+        VMSTATE_UINT8(datashift, IPodTouchI2CState),
+        VMSTATE_UINT8(line_ctrl, IPodTouchI2CState),
+        VMSTATE_UINT32(iicreg20, IPodTouchI2CState),
+        VMSTATE_UINT8(active, IPodTouchI2CState),
+        VMSTATE_UINT8(ibmr, IPodTouchI2CState),
+        VMSTATE_UINT8(data, IPodTouchI2CState),
+        VMSTATE_UINT8(cur_addr, IPodTouchI2CState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_i2c_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->reset = ipod_touch_i2c_reset;
+    dc->vmsd = &vmstate_ipod_touch_i2c;
 }
 
 static const TypeInfo ipod_touch_i2c_type_info = {

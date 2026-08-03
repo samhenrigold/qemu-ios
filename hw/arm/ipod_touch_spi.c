@@ -5,6 +5,7 @@
  */
 
 #include "hw/arm/ipod_touch_spi.h"
+#include "migration/vmstate.h"
 
 static int apple_spi_word_size(IPodTouchSPIState *s)
 {
@@ -323,11 +324,42 @@ static void ipod_touch_spi_realize(DeviceState *dev, struct Error **errp)
     }
 }
 
+/*
+ * last_irq is our shadow of the level we drove; apple_spi_update_irq only
+ * touches the line when that shadow changes, so restoring last_irq = 1 without
+ * driving the line would leave the guest waiting for an interrupt that is
+ * already "delivered" as far as this model is concerned. Drive the line to
+ * match the restored shadow.
+ */
+static int ipod_touch_spi_post_load(void *opaque, int version_id)
+{
+    IPodTouchSPIState *s = opaque;
+
+    qemu_set_irq(s->irq, s->last_irq);
+    return 0;
+}
+
+static const VMStateDescription vmstate_ipod_touch_spi = {
+    .name = "ipod_touch_spi",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = ipod_touch_spi_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(last_irq, IPodTouchSPIState),
+        VMSTATE_UINT32_ARRAY(regs, IPodTouchSPIState, MMIO_SIZE >> 2),
+        VMSTATE_UINT8(base, IPodTouchSPIState),
+        VMSTATE_FIFO8(rx_fifo, IPodTouchSPIState),
+        VMSTATE_FIFO8(tx_fifo, IPodTouchSPIState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_spi_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->realize = ipod_touch_spi_realize;
     dc->reset = ipod_touch_spi_reset;
+    dc->vmsd = &vmstate_ipod_touch_spi;
 }
 
 static const TypeInfo ipod_touch_spi_info = {

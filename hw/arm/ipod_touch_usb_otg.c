@@ -22,6 +22,7 @@
 #include "qemu/log.h"
 #include "hw/hw.h"
 #include "hw/arm/ipod_touch_usb_otg.h"
+#include "migration/vmstate.h"
 
 /*
  * Phase 0 diagnostics. This model was written against openiBoot, so the iOS
@@ -942,17 +943,23 @@ static void s5l8900_usb_otg_reset(DeviceState *d)
 
 	for(i = 0; i < USB_NUM_ENDPOINTS; i++)
 	{
+		/* interrupt_status was the one field left standing: DIEPINT/DOEPINT
+		 * kept the previous boot's bits, so the first diepmsk/doepmsk the new
+		 * driver writes would immediately re-raise an interrupt for a transfer
+		 * that completed before the reset. */
 		synopsys_usb_ep_state *in = &state->in_eps[i];
 		in->control = 0;
 		in->dma_address = 0;
 		in->fifo = 0;
 		in->tx_size = 0;
+		in->interrupt_status = 0;
 
 		synopsys_usb_ep_state *out = &state->out_eps[i];
 		out->control = 0;
 		out->dma_address = 0;
 		out->fifo = 0;
 		out->tx_size = 0;
+		out->interrupt_status = 0;
 	}
 
 	synopsys_usb_update_irq(state);
@@ -1000,10 +1007,81 @@ static void s5l8900_usb_otg_realize(DeviceState *dev, Error **errp)
     synopsys_usb_tcp_start(S5L8900USBOTG(dev));
 }
 
+static const VMStateDescription vmstate_synopsys_usb_ep = {
+    .name = "synopsys_usb_ep",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(control, synopsys_usb_ep_state),
+        VMSTATE_UINT32(tx_size, synopsys_usb_ep_state),
+        VMSTATE_UINT32(fifo, synopsys_usb_ep_state),
+        VMSTATE_UINT32(interrupt_status, synopsys_usb_ep_state),
+        VMSTATE_UINT64(dma_address, synopsys_usb_ep_state),
+        VMSTATE_UINT64(dma_buffer, synopsys_usb_ep_state),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * KNOWN GAP, deliberate: tcp_state is a live socket to usbmuxd and cannot be
+ * migrated. A restored snapshot comes up with the USB core's registers intact
+ * but the host bridge disconnected -- the same situation as unplugging the
+ * cable, which the guest already handles. ghwcfg1-4 are machine configuration
+ * rather than state, but they are cheap and migrating them makes a mismatched
+ * destination fail loudly instead of subtly.
+ *
+ * post_load re-drives the interrupt line from the restored masks and status,
+ * for the same reason pl192 does: restoring gintsts is not the same as
+ * asserting the line.
+ */
+static int synopsys_usb_post_load(void *opaque, int version_id)
+{
+    synopsys_usb_update_irq(opaque);
+    return 0;
+}
+
+static const VMStateDescription vmstate_synopsys_usb = {
+    .name = "synopsys_usb_otg",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = synopsys_usb_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(pcgcctl, synopsys_usb_state),
+        VMSTATE_UINT32(ghwcfg1, synopsys_usb_state),
+        VMSTATE_UINT32(ghwcfg2, synopsys_usb_state),
+        VMSTATE_UINT32(ghwcfg3, synopsys_usb_state),
+        VMSTATE_UINT32(ghwcfg4, synopsys_usb_state),
+        VMSTATE_UINT32(gahbcfg, synopsys_usb_state),
+        VMSTATE_UINT32(gusbcfg, synopsys_usb_state),
+        VMSTATE_UINT32(grxfsiz, synopsys_usb_state),
+        VMSTATE_UINT32(gnptxfsiz, synopsys_usb_state),
+        VMSTATE_UINT32(gotgctl, synopsys_usb_state),
+        VMSTATE_UINT32(gotgint, synopsys_usb_state),
+        VMSTATE_UINT32(grstctl, synopsys_usb_state),
+        VMSTATE_UINT32(gintmsk, synopsys_usb_state),
+        VMSTATE_UINT32(gintsts, synopsys_usb_state),
+        VMSTATE_UINT32_ARRAY(dptxfsiz, synopsys_usb_state, USB_NUM_FIFOS),
+        VMSTATE_UINT32(dctl, synopsys_usb_state),
+        VMSTATE_UINT32(dcfg, synopsys_usb_state),
+        VMSTATE_UINT32(dsts, synopsys_usb_state),
+        VMSTATE_UINT32(daintmsk, synopsys_usb_state),
+        VMSTATE_UINT32(daintsts, synopsys_usb_state),
+        VMSTATE_UINT32(diepmsk, synopsys_usb_state),
+        VMSTATE_UINT32(doepmsk, synopsys_usb_state),
+        VMSTATE_STRUCT_ARRAY(in_eps, synopsys_usb_state, USB_NUM_ENDPOINTS, 1,
+                             vmstate_synopsys_usb_ep, synopsys_usb_ep_state),
+        VMSTATE_STRUCT_ARRAY(out_eps, synopsys_usb_state, USB_NUM_ENDPOINTS, 1,
+                             vmstate_synopsys_usb_ep, synopsys_usb_ep_state),
+        VMSTATE_UINT8_ARRAY(fifos, synopsys_usb_state, 0x100 * (USB_NUM_FIFOS + 1)),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void s5l8900_usb_otg_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->reset = s5l8900_usb_otg_reset;
+    dc->vmsd = &vmstate_synopsys_usb;
     dc->realize = s5l8900_usb_otg_realize;
 }
 

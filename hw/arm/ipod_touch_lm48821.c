@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_lm48821.h"
+#include "migration/vmstate.h"
 
 /*
  * LM48821 speaker amp, I2C 0x76. Register-mapped I2C stub: first written byte is
@@ -39,8 +40,24 @@ static int lm48821_send(I2CSlave *i2c, uint8_t data)
     return 0;
 }
 
+static const VMStateDescription vmstate_lm48821 = {
+    .name = "lm48821",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(i2c, LM48821State),
+        VMSTATE_UINT32(cmd, LM48821State),
+        VMSTATE_BOOL(have_reg, LM48821State),
+        VMSTATE_UINT8_ARRAY(regs, LM48821State, 256),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void lm48821_class_init(ObjectClass *klass, void *data)
 {
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->vmsd = &vmstate_lm48821;
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
 
     k->event = lm48821_event;

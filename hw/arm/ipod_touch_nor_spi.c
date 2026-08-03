@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_nor_spi.h"
+#include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
@@ -264,8 +265,44 @@ static void ipod_touch_nor_spi_realize(SSIPeripheral *d, Error **errp)
     s->nor_initialized = 0;
 }
 
+/*
+ * nor_data is the NOR image, loaded from the same file by the destination's own
+ * realize, so it is identical without being migrated -- but that also means a
+ * guest WRITE to NOR made before the snapshot is lost on restore, since the
+ * model keeps it only in that RAM copy. in_buf/out_buf hold a transaction in
+ * flight; post_load rewinds to a clean command boundary rather than restoring
+ * half a transfer.
+ */
+static int ipod_touch_nor_spi_post_load(void *opaque, int version_id)
+{
+    IPodTouchNORSPIState *s = opaque;
+
+    s->cur_cmd = 0;
+    s->in_buf_cur_ind = 0;
+    s->out_buf_cur_ind = 0;
+    s->in_buf_size = 0;
+    s->out_buf_size = 0;
+    return 0;
+}
+
+static const VMStateDescription vmstate_ipod_touch_nor_spi = {
+    .name = "ipod_touch_nor_spi",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = ipod_touch_nor_spi_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SSI_PERIPHERAL(ssidev, IPodTouchNORSPIState),
+        VMSTATE_UINT8(write_enabled, IPodTouchNORSPIState),
+        VMSTATE_UINT32(nor_read_ind, IPodTouchNORSPIState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_nor_spi_class_init(ObjectClass *klass, void *data)
 {
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->vmsd = &vmstate_ipod_touch_nor_spi;
     SSIPeripheralClass *k = SSI_PERIPHERAL_CLASS(klass);
     k->realize = ipod_touch_nor_spi_realize;
     k->transfer = ipod_touch_nor_spi_transfer;

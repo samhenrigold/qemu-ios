@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_lcd.h"
+#include "migration/vmstate.h"
 #include "ui/pixel_ops.h"
 #include "ui/console.h"
 #include "hw/display/framebuffer.h"
@@ -381,6 +382,16 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
     s->w1_display_depth_info = 0;
     s->invalidate = 1;
     memset(&s->fbsection, 0, sizeof(s->fbsection));
+    /*
+     * The device comes up portrait. it_display_rotation_req is file-scope and
+     * survived reset, so a reboot taken in landscape inherited the previous
+     * boot's rotation. s->rotation is deliberately NOT cleared here: the
+     * refresh path resizes the console only when rotation != request, so
+     * leaving the applied value is what makes it rotate back. rotbuf is a
+     * fixed-size scratch buffer refilled from guest memory every frame, not
+     * state.
+     */
+    it_display_rotation_req = 0;
     if (getenv("LCD_TRACE")) {
         fprintf(stderr, "[LCD] ==== reset ====\n");
     }
@@ -411,12 +422,49 @@ static void ipod_touch_lcd_init(Object *obj)
     sysbus_init_irq(sbd, &s->irq);
 }
 
+/*
+ * con, sysmem, mt, irq and refresh_timer are all machine wiring, rebuilt by
+ * realize on the destination before the snapshot is read. rotbuf is a scratch
+ * buffer refilled from guest memory every frame. fbsection is a cached
+ * MemoryRegionSection - a host pointer - and must never be migrated; it is
+ * rebuilt from w1_framebuffer_base. post_load forces a full repaint, otherwise
+ * the destination's blank surface is diffed against a framebuffer it never
+ * drew and most of the screen stays black.
+ */
+static int ipod_touch_lcd_post_load(void *opaque, int version_id)
+{
+    IPodTouchLCDState *s = opaque;
+
+    memset(&s->fbsection, 0, sizeof(s->fbsection));
+    s->invalidate = 1;
+    return 0;
+}
+
+static const VMStateDescription vmstate_ipod_touch_lcd = {
+    .name = "ipod_touch_lcd",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = ipod_touch_lcd_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(brightness, IPodTouchLCDState),
+        VMSTATE_UINT32(lcd_con, IPodTouchLCDState),
+        VMSTATE_UINT32(w1_display_resolution_info, IPodTouchLCDState),
+        VMSTATE_UINT32(w1_framebuffer_base, IPodTouchLCDState),
+        VMSTATE_UINT32(w1_hspan, IPodTouchLCDState),
+        VMSTATE_UINT32(w1_display_depth_info, IPodTouchLCDState),
+        VMSTATE_UINT32(render, IPodTouchLCDState),
+        VMSTATE_INT32(rotation, IPodTouchLCDState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void ipod_touch_lcd_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = ipod_touch_lcd_realize;
     dc->reset = ipod_touch_lcd_reset;
+    dc->vmsd = &vmstate_ipod_touch_lcd;
 }
 
 static const TypeInfo ipod_touch_lcd_info = {
