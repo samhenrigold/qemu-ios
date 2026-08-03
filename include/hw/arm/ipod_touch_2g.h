@@ -34,6 +34,7 @@
 #include "hw/arm/ipod_touch_sdio.h"
 #include "hw/arm/ipod_touch_tvout.h"
 #include "hw/arm/ipod_touch_lis302dl.h"
+#include "hw/arm/ipod_touch_tethered.h"
 #include "hw/arm/guest-services/general.h"
 
 #define TYPE_IPOD_TOUCH "iPod-Touch"

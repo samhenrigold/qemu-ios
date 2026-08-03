@@ -2528,6 +2528,16 @@ static void ipod_touch_machine_init(MachineState *machine)
     I2CSlave *accelerometer = i2c_slave_create_simple(i2c_state->bus, "lis302dl", 0x1D);
     nms->lis302dl_state = LIS302DL(accelerometer);
 
+    /*
+     * Simulated "demo card" / AppleTetheredDevice.  The N72AP DeviceTree has an
+     * I2C node at i2c0/0x29 (compatible "tethered,tethereddevice"); the kext's
+     * probe reads one byte and requires 0x82 before it reports a card present.
+     * Present it only when asked, so ordinary runs stay untethered.
+     */
+    if (getenv("IT_TETHERED") != NULL) {
+        i2c_slave_create_simple(i2c_state->bus, TYPE_IPOD_TOUCH_TETHERED, 0x29);
+    }
+
     // init the audio codec (CS42L58, device tree /arm-io/i2c0/audio0) and the
     // LM48821 speaker amp (/arm-io/i2c0/spkr-amp)
     if (ipod_touch_audio_hw_enabled()) {
