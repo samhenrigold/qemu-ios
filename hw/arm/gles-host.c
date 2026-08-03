@@ -67,6 +67,11 @@ typedef struct {
 
     uint8_t *readback;  /* GLES_FB_WIDTH * GLES_FB_HEIGHT * 4 */
 
+    /* Guest-visible FBO/renderbuffer names. Handed out but never bound to
+     * anything on the host -- see the OES cases in the dispatch switch. */
+    uint32_t next_fbo_name;
+    uint32_t bound_renderbuffer;
+
     uint64_t draws;
     uint64_t presents;
 } GLESHost;
@@ -541,6 +546,69 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     case GLES_SLOT_GET_ERROR:
         return glGetError();
+
+    /*
+     * OES framebuffer objects.
+     *
+     * These are answered rather than executed. The guest's renderbuffer IS the
+     * drawable -- CoreAnimation allocated it and we present into it through
+     * GLES_OP_PRESENT_SURFACE -- so there is nothing on the host for the guest's
+     * FBO names to attach to. The host renders into its own FBO regardless.
+     * What EAGL needs from these calls is plausible bookkeeping: names that are
+     * non-zero, dimensions that match the drawable, and a framebuffer that
+     * reports COMPLETE. Wiring them to real host FBO state would be work with
+     * no observable effect.
+     */
+    case GLES_SLOT_GEN_RENDERBUFFERS:
+    case GLES_SLOT_GEN_FRAMEBUFFERS: {   /* n, guest uint* */
+        uint32_t n = a[0], i;
+        g_autofree uint32_t *ids = g_new0(uint32_t, n ? n : 1);
+        for (i = 0; i < n; i++) {
+            ids[i] = ++gh.next_fbo_name;
+        }
+        if (a[1] && n) {
+            cpu_memory_rw_debug(cpu, a[1], (uint8_t *)ids,
+                                n * sizeof(uint32_t), 1);
+        }
+        return 0;
+    }
+
+    case GLES_SLOT_BIND_RENDERBUFFER:
+        gh.bound_renderbuffer = a[1];
+        return 0;
+
+    case GLES_SLOT_BIND_FRAMEBUFFER:
+    case GLES_SLOT_DELETE_RENDERBUFFERS:
+    case GLES_SLOT_DELETE_FRAMEBUFFERS:
+    case GLES_SLOT_RENDERBUFFER_STORAGE:
+    case GLES_SLOT_FB_RENDERBUFFER:
+    case GLES_SLOT_FB_TEXTURE_2D:
+        return 0;
+
+    case GLES_SLOT_CHECK_FB_STATUS:
+        return 0x8CD5;                   /* GL_FRAMEBUFFER_COMPLETE_OES */
+
+    case GLES_SLOT_GET_RB_PARAMETERIV: { /* target, pname, guest int* */
+        uint32_t v = 0;
+        switch (a[1]) {
+        case 0x8D42: v = GLES_FB_WIDTH;  break;  /* RENDERBUFFER_WIDTH_OES  */
+        case 0x8D43: v = GLES_FB_HEIGHT; break;  /* RENDERBUFFER_HEIGHT_OES */
+        case 0x8D44: v = 0x8058;         break;  /* INTERNAL_FORMAT -> RGBA8 */
+        default:     v = 0;              break;
+        }
+        if (a[2]) {
+            cpu_memory_rw_debug(cpu, a[2], (uint8_t *)&v, sizeof(v), 1);
+        }
+        return 0;
+    }
+
+    case GLES_SLOT_GET_FB_ATTACH_PARAM: { /* target, attach, pname, int* */
+        uint32_t v = gh.bound_renderbuffer;
+        if (a[3]) {
+            cpu_memory_rw_debug(cpu, a[3], (uint8_t *)&v, sizeof(v), 1);
+        }
+        return 0;
+    }
 
     default:
         /* Unimplemented on purpose -- see SCOPE at the top. Returning 0 rather
