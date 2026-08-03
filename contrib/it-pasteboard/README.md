@@ -90,18 +90,59 @@ Two consequences worth knowing before debugging anything here:
 
 ## Installing it
 
-    scp it_pbd            root@device:/usr/local/bin/it_pbd
-    scp com.qemu.it-pbd.plist \
-        root@device:/System/Library/LaunchDaemons/com.qemu.it-pbd.plist
-    ssh root@device 'chmod 755 /usr/local/bin/it_pbd
-                     chown root:wheel /System/Library/LaunchDaemons/com.qemu.it-pbd.plist
-                     launchctl load /System/Library/LaunchDaemons/com.qemu.it-pbd.plist'
+It is already baked into `nand-grow7g` (what `run-ios3.sh` boots by default) and
+`nand-appsync3` (`--appsync`). Nothing else is needed to use it.
 
-`chown root:wheel` is not decoration: **launchd silently ignores a plist it does
-not see as root-owned**, and `imgtools/editimg.py` creates files as uid 501. The
-daemon logs to `/var/log/it_pbd.log`, one line per item in either direction,
+An ssh install onto a running device works too, but ssh writes into the **NAND
+overlay**, and the overlay is thrown away — that is how this feature came to be
+"verified working" and yet dead on every image anyone actually boots. To put it
+in an image, three steps, in this order:
+
+    cp -Rc <image> <image>-pb                     # COW clone; never edit in place
+    imgtools/editimg.py --nand <image>-pb --blocks <N> --script install.sh
+    imgtools/setowner.py --nand <image>-pb \
+        /usr/local:0:0:755 /usr/local/bin:0:0:755 \
+        /usr/local/bin/it_pbd:0:0:755 \
+        /System/Library/LaunchDaemons/com.qemu.it-pbd.plist:0:0:644
+
+`--blocks` is the volume size: 1835008 for the 7 GiB images, 128000 for the
+500 MB ones. `install.sh` just copies `it_pbd` to `/usr/local/bin` and the plist
+to `/System/Library/LaunchDaemons`, both `chmod`ped.
+
+Three ways this silently produces a dead daemon, all of them hit:
+
+1. **Ownership.** launchd ignores a plist it does not see as root-owned, without
+   a word in any log. You cannot fix it inside the `editimg.py` script: that
+   mount is `noowners` and unprivileged, so `chown` fails outright, and worse,
+   `ls -ln` there reports *every* file as 501:20 — Apple's own included — so the
+   listing cannot tell you either way. Files created through it land as **99:99**
+   on disk. `setowner.py` edits the HFS+ catalog directly and is the fix.
+2. **The code-signing gate.** `it_pbd` is our own armv6 binary and 3.1.3's kernel
+   will not exec anything that is not Apple-signed. It needs
+   `amfi_allow_any_signature=1 cs_enforcement_disable=1` to reach the kernel —
+   `run-ios3.sh` now sets those on **every** run, not just `--apps`. Measured:
+   without them the daemon never starts, and `ldid -S` plus patching
+   `MISValidateSignature` in the dyld shared cache is **not** a substitute (both
+   tried, both dead).
+3. **A stale overlay.** An overlay shadows blocks the base image changed after
+   the overlay was made, so an old `ios3/nandrw` hides the newly added files
+   completely — the device boots perfectly and the daemon is simply not there.
+   `run-ios3.sh` now warns when the base is newer than the overlay; `--fresh`
+   clears it.
+
+The daemon logs to `/var/log/it_pbd.log`, one line per item in either direction,
 which is the fastest way to tell "the host never sent it" from "the guest never
 took it".
+
+## Is anything actually listening?
+
+    qom-get path=/machine property=pasteboard-agent
+    # -> "alive: 786 polls" | "stale: last polled 34 s ago" | "absent: ..."
+
+Ask this before believing a paste worked. Setting `pasteboard` succeeds whether
+or not a guest agent exists, so the host side alone can never tell you. If text
+is queued and nothing collects it within ten seconds the machine also says so on
+stderr, unprompted.
 
 ## Driving it from the host
 
