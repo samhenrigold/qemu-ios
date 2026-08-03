@@ -9,6 +9,7 @@
 #include "audio/audio.h"
 #include "qemu/timer.h"
 #include "hw/arm/ipod_touch_sysic.h"
+#include "hw/dma/pl080.h"
 
 /*
  * S5L8720 I2S controller (AppleS5L8900XI2SController).
@@ -66,6 +67,24 @@
  * absorb scheduling jitter, not a whole clip. */
 #define IT_I2S_RING_SIZE (1 << 20)
 
+/*
+ * TX FIFO pacing (see it_i2s_pace_cb).
+ *
+ * The real block clocks samples out at the bit clock and asserts its DMA
+ * request line whenever the TX FIFO has room; the PL080 refills it a burst at a
+ * time. Our PL080 used to ignore the request line, so a channel start drained
+ * the guest's entire audio ring instantly -- and the guest's audio stack fills
+ * that ring in real time, ahead of the play position, so everything we
+ * delivered was the silence the ring had been allocated with.
+ *
+ * The real TX FIFO is a handful of samples; that is far too tight for a host
+ * timer, so we model a deeper one. IT_I2S_FIFO_BYTES overrides it. What matters
+ * is only that it is small compared to the ring (72 KB), so the transfer takes
+ * roughly its own real-time duration rather than none at all.
+ */
+#define IT_I2S_FIFO_BYTES_DEFAULT 8192
+#define IT_I2S_PACE_PERIOD_NS     (2 * 1000 * 1000)
+
 #define TYPE_IPOD_TOUCH_I2S "ipodtouch.i2s"
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchI2SState, IPOD_TOUCH_I2S)
 
@@ -102,6 +121,15 @@ typedef struct IPodTouchI2SState {
     bool card_ok;         /* AUD_register_card succeeded */
     bool active;          /* SWVoiceOut is active */
     bool running;         /* TX command == run */
+
+    /* TX FIFO pacing: the DMA request line back to the PL080 that feeds us. */
+    struct PL080State *dmac;  /* dmac0, set by the machine at init */
+    int dma_req_id;           /* peripheral request line on it (10) */
+    bool dma_req;             /* current level of that line */
+    QEMUTimer *pace_timer;
+    uint32_t fifo_bytes;      /* modelled TX FIFO occupancy */
+    uint32_t fifo_depth;      /* IT_I2S_FIFO_BYTES */
+    int64_t pace_last_ns;     /* when we last drained the modelled FIFO */
 
     FILE *dump;           /* IT_I2S_DUMP: raw s16le stereo tap of the FIFO */
     uint64_t total_bytes; /* lifetime PCM bytes seen at the FIFO (debug) */
