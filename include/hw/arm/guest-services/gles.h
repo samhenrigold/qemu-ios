@@ -96,7 +96,25 @@ typedef struct __attribute__((packed)) {
  * not dispatch entries at all live above it, well clear of anything Apple could
  * be indexing. */
 #define GLES_OP_BASE                    0x1000
+/* Debug present: blit straight to where the LCD scans out. Bypasses
+ * CoreAnimation, so whatever CA draws next overwrites it. */
 #define GLES_OP_PRESENT                 (GLES_OP_BASE + 0)
+/*
+ * Real present: write the frame into a caller-supplied CPU-addressable buffer.
+ *
+ * args: base (guest VA), stride in bytes, width, height, format
+ *
+ * This is the shape CoreAnimation's IOSurface has. The engine is a pure
+ * consumer of that surface -- all ten of the stock bundle's IOSurface imports
+ * are read-side (Get*, Lock/Unlock; there is no IOSurfaceCreate anywhere in
+ * it) -- so the host never needs to know what an IOSurface is. It is handed an
+ * address, a stride and a format, and it writes pixels.
+ */
+#define GLES_OP_PRESENT_SURFACE         (GLES_OP_BASE + 1)
+
+/* Surface pixel formats, as IOSurfaceGetPixelFormat reports them (FourCC). */
+#define GLES_SURFACE_BGRA32             0x42475241  /* 'BGRA' */
+#define GLES_SURFACE_RGBA32             0x52474241  /* 'RGBA' */
 
 #ifndef OUT_OF_TREE_BUILD
 int64_t qc_handle_gles(CPUState *cpu, qc_gles_args_t *a);

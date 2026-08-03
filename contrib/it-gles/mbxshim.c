@@ -66,7 +66,8 @@ typedef struct __attribute__((packed)) {
     long long error;
 } qemu_call_t;
 
-#define GLES_OP_PRESENT 0x1000
+#define GLES_OP_PRESENT         0x1000
+#define GLES_OP_PRESENT_SURFACE 0x1001
 
 extern long write(int, const void *, unsigned long);
 
@@ -251,29 +252,132 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
 
 static int GLESDestroyGC(void *gc) { (void)gc; return 0; }
 
+/*
+ * The surface CoreAnimation gave us, if any.
+ *
+ * The stock engine imports ten IOSurface functions and every one is read-side
+ * (IOSurfaceGetBaseAddress/BytesPerRow/Width/Height/PixelFormat/AllocSize/ID/
+ * PlaneCount, IOSurfaceLock, IOSurfaceUnlock). There is no IOSurfaceCreate: CA
+ * owns the allocation and the engine only renders into it. So all we keep is
+ * what the host needs to write pixels.
+ */
+static struct {
+    void *ref;
+    unsigned base, stride, width, height, format;
+} surf_state;
+
+static void *iosurf;    /* IOSurface.framework handle */
+static void *(*p_IOSurfaceGetBaseAddress)(void *);
+static unsigned (*p_IOSurfaceGetBytesPerRow)(void *);
+static unsigned (*p_IOSurfaceGetWidth)(void *);
+static unsigned (*p_IOSurfaceGetHeight)(void *);
+static unsigned (*p_IOSurfaceGetPixelFormat)(void *);
+static int (*p_IOSurfaceLock)(void *, unsigned, unsigned *);
+static int (*p_IOSurfaceUnlock)(void *, unsigned, unsigned *);
+
+extern void *dlopen(const char *, int);
+extern void *dlsym(void *, const char *);
+#define RTLD_NOW 2
+
+static void iosurface_init(void)
+{
+    if (iosurf) return;
+    iosurf = dlopen("/System/Library/PrivateFrameworks/IOSurface.framework/IOSurface",
+                    RTLD_NOW);
+    if (!iosurf) { w("[mbxshim] IOSurface.framework not available\n"); return; }
+    p_IOSurfaceGetBaseAddress = dlsym(iosurf, "IOSurfaceGetBaseAddress");
+    p_IOSurfaceGetBytesPerRow = dlsym(iosurf, "IOSurfaceGetBytesPerRow");
+    p_IOSurfaceGetWidth       = dlsym(iosurf, "IOSurfaceGetWidth");
+    p_IOSurfaceGetHeight      = dlsym(iosurf, "IOSurfaceGetHeight");
+    p_IOSurfaceGetPixelFormat = dlsym(iosurf, "IOSurfaceGetPixelFormat");
+    p_IOSurfaceLock           = dlsym(iosurf, "IOSurfaceLock");
+    p_IOSurfaceUnlock         = dlsym(iosurf, "IOSurfaceUnlock");
+}
+
+/* Read a surface's geometry. Returns 1 if it looks usable. */
+static int surface_capture(void *s)
+{
+    iosurface_init();
+    if (!s || !p_IOSurfaceGetBaseAddress) return 0;
+
+    surf_state.ref    = s;
+    surf_state.base   = (unsigned)(unsigned long)p_IOSurfaceGetBaseAddress(s);
+    surf_state.stride = p_IOSurfaceGetBytesPerRow ? p_IOSurfaceGetBytesPerRow(s) : 0;
+    surf_state.width  = p_IOSurfaceGetWidth ? p_IOSurfaceGetWidth(s) : 0;
+    surf_state.height = p_IOSurfaceGetHeight ? p_IOSurfaceGetHeight(s) : 0;
+    surf_state.format = p_IOSurfaceGetPixelFormat ? p_IOSurfaceGetPixelFormat(s) : 0;
+
+    w("[mbxshim]   surface base="); wd(surf_state.base);
+    w(" stride="); wd(surf_state.stride);
+    w(" "); wd(surf_state.width); w("x"); wd(surf_state.height);
+    w(" fmt="); wd(surf_state.format); w("\n");
+    return surf_state.base && surf_state.width && surf_state.height;
+}
+
+/*
+ * Both bind entry points log their arguments. Which of the two actually carries
+ * the render target on 3.1.3 is not settled: in the stock engine
+ * GLESBindCoreSurface reaches _DetachTexture, which reads more like the
+ * texture-from-surface path than the drawable. Rather than guess from ARM, both
+ * record whatever they are given and the log says which one fired with what --
+ * the first real CAEAGLLayer client answers it as data.
+ */
 static int GLESBindCoreSurface(void *gc, void *surf, void *a, void *b)
 {
-    (void)gc; (void)surf; (void)a; (void)b;
-    w("[mbxshim] GLESBindCoreSurface\n");
-    return 0;
+    (void)gc; (void)a; (void)b;
+    w("[mbxshim] GLESBindCoreSurface arg1="); wd((unsigned)(unsigned long)surf);
+    w("\n");
+    surface_capture(surf);
+    return 1;
 }
 
 static int GLESBindView(void *gc, void *view, void *a, void *b)
 {
-    (void)gc; (void)view; (void)a; (void)b;
-    w("[mbxshim] GLESBindView\n");
-    return 0;
+    (void)gc; (void)a; (void)b;
+    w("[mbxshim] GLESBindView arg1="); wd((unsigned)(unsigned long)view);
+    w(" arg2="); wd((unsigned)(unsigned long)a);
+    w(" arg3="); wd((unsigned)(unsigned long)b); w("\n");
+    surface_capture(view);
+    return 1;
 }
 
 static int GLESFinishTexture(void *gc, void *a) { (void)gc; (void)a; return 0; }
 
+/*
+ * Where a frame becomes visible.
+ *
+ * If CoreAnimation has handed us a surface, render into it and let CA composite
+ * -- that is the real path, and the only one that survives CA repainting. The
+ * blit straight to the panel is the fallback for clients that never bind one
+ * (the direct-trap tests), and it is deliberately second: it bypasses CA
+ * entirely, so anything CA draws next overwrites it, which makes a stale frame
+ * look like a live one.
+ */
 static int GLESPresentView(void *gc, void *view)
 {
     (void)view;
-    /* This is where a frame becomes visible. For now it drives the host's debug
-     * blit straight to the panel; the IOSurface path replaces it. */
-    qc(GLES_OP_PRESENT, gc, 0, (const unsigned[]){ 0 });
-    return 0;
+
+    if (surf_state.ref && surf_state.base) {
+        unsigned lockseed = 0;
+        long long r;
+
+        if (p_IOSurfaceLock) p_IOSurfaceLock(surf_state.ref, 0, &lockseed);
+        /* Re-read the base each frame: CA is entitled to move or reallocate a
+         * surface between frames, and caching it would write into whatever now
+         * owns the old address. */
+        if (p_IOSurfaceGetBaseAddress) {
+            surf_state.base =
+                (unsigned)(unsigned long)p_IOSurfaceGetBaseAddress(surf_state.ref);
+        }
+        r = qc(GLES_OP_PRESENT_SURFACE, gc, 5,
+               A(surf_state.base, surf_state.stride, surf_state.width,
+                 surf_state.height, surf_state.format));
+        if (p_IOSurfaceUnlock) p_IOSurfaceUnlock(surf_state.ref, 0, &lockseed);
+        return r == 0;
+    }
+
+    qc(GLES_OP_PRESENT, gc, 0, A(0));
+    return 1;
 }
 
 static int GLESSwapNotification(void *gc, void *a) { (void)gc; (void)a; return 0; }
