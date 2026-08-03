@@ -13,6 +13,7 @@
 #include "hw/qdev-clock.h"
 #include "hw/arm/exynos4210.h"
 #include "hw/arm/ipod_touch_2g.h"
+#include "hw/core/split-irq.h"
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "target/arm/cpregs.h"
 #include "qemu/error-report.h"
@@ -85,6 +86,9 @@ typedef struct {
     uint8_t *ram;          /* the shadowed RAM, which still holds the data */
     bool log_reads;
     bool log_writes;
+    bool nonzero_only;     /* IT_RAM_WATCH: only report writes that carry data */
+    const char *tag;
+    hwaddr base;
     int budget;
 } ApertureWatch;
 
@@ -96,12 +100,15 @@ static void aperture_watch_log(ApertureWatch *w, const char *dir, hwaddr off,
     if (w->budget <= 0) {
         return;
     }
+    if (w->nonzero_only && val == 0) {
+        return;
+    }
     w->budget--;
     if (current_cpu) {
         pc = ARM_CPU(current_cpu)->env.regs[15];
     }
-    fprintf(stderr, "[APW] %s +%05x size=%u val=%08x pc=%08x\n",
-            dir, (unsigned)off, size, (uint32_t)val, pc);
+    fprintf(stderr, "[%s] %s +%05x size=%u val=%08x pc=%08x\n",
+            w->tag, dir, (unsigned)off, size, (uint32_t)val, pc);
 }
 
 static uint64_t aperture_watch_read(void *opaque, hwaddr off, unsigned size)
@@ -146,6 +153,8 @@ static void install_aperture_watch(MemoryRegion *top, MemoryRegion *backing,
     }
     w = g_new0(ApertureWatch, 1);
     w->ram = memory_region_get_ram_ptr(backing);
+    w->tag = "APW";
+    w->base = base;
     w->log_reads = !strchr(spec, 'w') || strchr(spec, 'r');
     w->log_writes = strchr(spec, 'w') != NULL;
     w->budget = 400000;
@@ -156,6 +165,55 @@ static void install_aperture_watch(MemoryRegion *top, MemoryRegion *backing,
     warn_report("ipod: AMC aperture watch active (reads=%d writes=%d) -- "
                 "this is a probe and slows the guest",
                 w->log_reads, w->log_writes);
+}
+
+/*
+ * IT_RAM_WATCH=<hex base>:<hex size>[:rw][:nz] -- the same shadow trick, but
+ * over an arbitrary window of ordinary DRAM.
+ *
+ * The audio investigation needs it: the PL080 reads the guest's PCM ring out of
+ * plain kernel RAM (0x08c99000, 64 KB) and delivers pure silence, and the only
+ * way to tell "nobody wrote it" from "somebody wrote zeroes" or "somebody wrote
+ * a DIFFERENT buffer" is to watch the physical pages themselves. `nz` logs only
+ * writes carrying a non-zero value, which is what separates a producer from an
+ * allocator zeroing a page.
+ *
+ * Off unless set, and when set the guest sees identical memory -- every access
+ * is forwarded to the RAM that would have served it. It costs guest time, so
+ * keep the window small (see the instrumentation trap in the memory notes: a
+ * probe that slows the guest can change the gesture it observes).
+ */
+static void install_ram_watch(MemoryRegion *top, MemoryRegion *backing,
+                              hwaddr backing_base, uint64_t backing_size)
+{
+    const char *spec = getenv("IT_RAM_WATCH");
+    unsigned long long base, size;
+    ApertureWatch *w;
+
+    if (!spec) {
+        return;
+    }
+    if (sscanf(spec, "%llx:%llx", &base, &size) != 2 || size == 0) {
+        error_report("IT_RAM_WATCH: expected <hexbase>:<hexsize>[:rw][:nz]");
+        exit(1);
+    }
+    if (base < backing_base || base + size > backing_base + backing_size) {
+        return;         /* not this region */
+    }
+    w = g_new0(ApertureWatch, 1);
+    w->ram = memory_region_get_ram_ptr(backing) + (base - backing_base);
+    w->tag = "RAMW";
+    w->base = base;
+    w->log_writes = strchr(spec, 'w') != NULL || !strchr(spec, 'r');
+    w->log_reads = strchr(spec, 'r') != NULL;
+    w->nonzero_only = strstr(spec, ":nz") != NULL;
+    w->budget = 200000;
+    memory_region_init_io(&w->io, NULL, &aperture_watch_ops, w,
+                          "ipod-ram-watch", size);
+    memory_region_add_subregion_overlap(top, base, &w->io, 1);
+    warn_report("ipod: RAM watch on %08llx+%llx (reads=%d writes=%d nz=%d) -- "
+                "a probe; it slows the guest",
+                base, size, w->log_reads, w->log_writes, w->nonzero_only);
 }
 
 /*
@@ -875,8 +933,12 @@ static void ipod_touch_memory_setup(MachineState *machine, MemoryRegion *sysmem,
 {
     IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(machine);
 
-    allocate_ram(sysmem, "insecure_ram", INSECURE_RAM_MEM_BASE, 0x3000000);
-    allocate_ram(sysmem, "secure_ram", SECURE_RAM_MEM_BASE, 0x4B04000);
+    MemoryRegion *insecure = allocate_ram(sysmem, "insecure_ram",
+                                          INSECURE_RAM_MEM_BASE, 0x3000000);
+    MemoryRegion *secure = allocate_ram(sysmem, "secure_ram",
+                                        SECURE_RAM_MEM_BASE, 0x4B04000);
+    install_ram_watch(sysmem, insecure, INSECURE_RAM_MEM_BASE, 0x3000000);
+    install_ram_watch(sysmem, secure, SECURE_RAM_MEM_BASE, 0x4B04000);
     allocate_ram(sysmem, "iboot", IBOOT_MEM_BASE, 0x100000);
     MemoryRegion *llb = allocate_ram(sysmem, "llb", 0x22000000, 0x100000);
     install_aperture_watch(sysmem, llb, 0x22000000, AMC_BUF_SIZE);
@@ -2151,8 +2213,43 @@ static void ipod_touch_machine_init(MachineState *machine)
      * kexts). 2.1.1 uses DMAC0 in PIO and never enables either line, so keep its
      * historical wiring (16) and only shift under IT_DIRECT_IBOOT.
      */
-    sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms,
-                       getenv("IT_DIRECT_IBOOT") ? 0x11 : S5L8720_DMAC0_IRQ));
+    /*
+     * IT_DMAC0_IRQ=<decimal> overrides the line, for the experiment this
+     * comment used to make impossible.
+     *
+     * Measured with the IRQ-transition trace in pl080_update: on 0x11, DMAC0
+     * raises the line once during boot (channel 3's terminal count) and it is
+     * NEVER acknowledged -- no IntStatus read, no IntTCClear, for the rest of
+     * the run -- while DMAC1 on the same number is serviced cleanly every time.
+     * s5l8900_get_irq() hands both devices the SAME qemu_irq, so DMAC1's
+     * deassertions silently drop DMAC0's pending interrupt. Audio's DMA channel
+     * is on DMAC0, so its per-period terminal counts go the same way.
+     */
+    int dmac0_irq = getenv("IT_DIRECT_IBOOT") ? 0x11 : S5L8720_DMAC0_IRQ;
+    if (getenv("IT_DMAC0_IRQ")) {
+        dmac0_irq = atoi(getenv("IT_DMAC0_IRQ"));
+    }
+    /*
+     * IT_DMAC0_SPLIT=1 drives BOTH 0x10 and 0x11.
+     *
+     * A/B, one variable, same overlay state: on 0x11 the kernel makes zero
+     * IntStatus reads and zero IntTCClear writes to DMAC0 for a whole boot; on
+     * 0x10 it makes 1838 of each. So the driver's DMAC0 instance is listening
+     * on 0x10 and our production wiring delivers nowhere -- but 0x10 alone does
+     * not boot (stops at the logo, lit 0.0214), which is what put the line on
+     * 0x11 in the first place.
+     */
+    if (getenv("IT_DMAC0_SPLIT")) {
+        DeviceState *split = qdev_new(TYPE_SPLIT_IRQ);
+        qdev_prop_set_uint16(split, "num-lines", 2);
+        qdev_realize_and_unref(split, NULL, &error_fatal);
+        qdev_connect_gpio_out(split, 0, s5l8900_get_irq(nms,
+                                                        S5L8720_DMAC0_IRQ));
+        qdev_connect_gpio_out(split, 1, s5l8900_get_irq(nms, 0x11));
+        sysbus_connect_irq(busdev, 0, qdev_get_gpio_in(split, 0));
+    } else {
+        sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, dmac0_irq));
+    }
 
     dev = qdev_new("pl080");
     PL080State *pl080_2 = PL080(dev);
@@ -2211,6 +2308,18 @@ static void ipod_touch_machine_init(MachineState *machine)
         dev = qdev_new(TYPE_IPOD_TOUCH_I2S);
         busdev = SYS_BUS_DEVICE(dev);
         IPOD_TOUCH_I2S(dev)->sysic = sysic_state;
+        /*
+         * The TX DMA request line back to dmac0. The driver programs the
+         * channel with Config 0x00008a81 -- flow type 1 (memory to peripheral,
+         * DMAC as flow controller) with destination peripheral id 10 -- so
+         * request line 10 on dmac0 is this FIFO's, and without it the PL080
+         * drains the guest's whole 72 KB audio ring in zero guest time, before
+         * the audio stack has written a single sample into it. See the pacing
+         * comment in ipod_touch_i2s.c.
+         */
+        IPOD_TOUCH_I2S(dev)->dmac = pl080_1;
+        IPOD_TOUCH_I2S(dev)->dma_req_id = I2S0_DMA_REQ_ID;
+        pl080_attach_paced_peripheral(pl080_1, I2S0_DMA_REQ_ID);
         sysbus_realize(busdev, &error_fatal);
         memory_region_add_subregion(sysmem, I2S0_MEM_BASE,
                                     &IPOD_TOUCH_I2S(dev)->iomem);

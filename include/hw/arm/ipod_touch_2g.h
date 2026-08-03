@@ -137,6 +137,9 @@ extern const int S5L8900_GPIO_IRQS[5];
 #define WDT_MEM_BASE          0x3C800000
 #define I2C1_MEM_BASE         0x3C900000
 #define I2S0_MEM_BASE         0x3CA00000
+/* I2S0 TX's peripheral request line on dmac0, read out of the Config word the
+ * driver programs (0x00008a81: flow 1, destination peripheral id 10). */
+#define I2S0_DMA_REQ_ID       10
 #define UART0_MEM_BASE        0x3CC00000
 #define SPI1_MEM_BASE         0x3CE00000
 #define GPIO_MEM_BASE         0x3CF00000

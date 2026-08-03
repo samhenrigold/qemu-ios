@@ -152,6 +152,20 @@ static void pl080_update(PL080State *s)
     bool tclevel = (s->tc_int & s->tc_mask);
     bool errlevel = (s->err_int & s->err_mask);
 
+    /*
+     * IT_DMAC_TRACE also shows every transition of the combined interrupt line,
+     * with the pending mask. Both iPod touch DMACs are wired to the same VIC
+     * number and s5l8900_get_irq() hands out the SAME qemu_irq for it, so
+     * whichever controller drives it last wins -- and the register trace alone
+     * cannot show that, because the loser's transition leaves no register
+     * access behind.
+     */
+    if (it_dmac_trace_on() && s->last_level != (int)(errlevel || tclevel)) {
+        s->last_level = errlevel || tclevel;
+        fprintf(stderr, "[dmac%d] IRQ %s  tc_int=%02x tc_mask=%02x\n",
+                s->trace_id, s->last_level ? "HIGH" : "low ",
+                s->tc_int, s->tc_mask);
+    }
     qemu_set_irq(s->interr, errlevel);
     qemu_set_irq(s->inttc, tclevel);
     qemu_set_irq(s->irq, errlevel || tclevel);
@@ -221,13 +235,33 @@ again:
             switch (flow) {
             case 0:
                 break;
+            /*
+             * Flow control. Historically this model ignored the peripheral
+             * request lines entirely for cases 1 and 2 -- nothing in this tree
+             * drives them, so honouring them would have stalled every channel
+             * forever. The cost was that a memory->peripheral descriptor was
+             * drained at infinite speed inside the Config write: the iPod
+             * touch's audio path programmed an 18-period, 72 KB ring and this
+             * model copied all of it to the I2S TX FIFO in zero guest time,
+             * so the guest's audio stack -- which fills that ring ahead of the
+             * play position, in real time, off the terminal-count interrupts --
+             * had written nothing yet and every sample delivered was silence.
+             *
+             * A peripheral that really drives its line opts in via
+             * pl080_attach_paced_peripheral(); only then is it gated. Everyone
+             * else (NAND, UART, SPI) behaves exactly as before.
+             */
             case 1:
-                // if ((req & (1u << dest_id)) == 0)
-                //     size = 0;
+                if ((s->paced_req & (1u << dest_id))
+                        && (req & (1u << dest_id)) == 0) {
+                    size = 0;
+                }
                 break;
             case 2:
-                // if ((req & (1u << src_id)) == 0)
-                //     size = 0;
+                if ((s->paced_req & (1u << src_id))
+                        && (req & (1u << src_id)) == 0) {
+                    size = 0;
+                }
                 break;
             case 3:
                 if ((req & (1u << src_id)) == 0
@@ -296,6 +330,32 @@ again:
             s->running = 1;
     }
     pl080_update(s);
+}
+
+void pl080_attach_paced_peripheral(PL080State *s, int id)
+{
+    if (id >= 0 && id < 32) {
+        s->paced_req |= 1u << id;
+    }
+}
+
+void pl080_set_dma_request(PL080State *s, int id, bool level)
+{
+    uint32_t bit;
+
+    if (id < 0 || id >= 32) {
+        return;
+    }
+    bit = 1u << id;
+    if (level) {
+        if (s->req_single & bit) {
+            return;
+        }
+        s->req_single |= bit;
+        pl080_run(s);
+    } else {
+        s->req_single &= ~bit;
+    }
 }
 
 static uint64_t pl080_do_read(void *opaque, hwaddr offset,
