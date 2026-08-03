@@ -110,7 +110,13 @@ def swipe(q, x0, y0, x1, y1, steps=12, dt=0.03):
 
 
 def key(q, name, hold_ms=250):
-    """'h' = home, 'p' = power (see ipod_touch_key_event).
+    """Send a raw qcode key.
+
+    NOT the hardware buttons any more. ipod_touch_kbd_button now puts those
+    behind Command, so plain 'h' TYPES THE LETTER h and plain 'p' types p - a
+    verification run once spent its whole sequence lost inside Safari's
+    bookmarks because of this. For the buttons use send-key with a modifier:
+    home = meta_l+shift+h, power = meta_l+l, volume = meta_l+minus / meta_l+equal.
 
     A brief press is easy for the guest to miss - the button is a GPIO level
     that iOS samples - so hold it for a quarter second by default.
