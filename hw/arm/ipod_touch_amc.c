@@ -446,8 +446,18 @@ static uint64_t ipod_touch_amc_read(void *opaque, hwaddr addr, unsigned size)
          * source, so int_mask is 0 and the mask-mirroring above answers 0 and
          * the loop never ends. We do not know which bit it is waiting on, so
          * report every source pending; whatever the mask is, it is satisfied.
+         *
+         * STILL REQUIRED, re-measured after the result block landed. Once the
+         * self test passes, the driver does finally write the real enable
+         * register 0xa8c -- which looked like it might retire this fake. It
+         * does not: that write happens *after* the wait above, so the wait is
+         * still unsatisfiable without us. Measured with IT_AMC_NOFAKE=1, one
+         * variable, same warm overlay: 696 AMC accesses with the fake, and
+         * 1,716,145 with it off, with the I2S controller never brought up at
+         * all. Do not delete this without re-running that A/B.
          */
-        if (s->state_handshake && res == 0 && c == 0) {
+        if (s->state_handshake && res == 0 && c == 0 &&
+            !getenv("IT_AMC_NOFAKE")) {
             /* Controller 0 only: reporting controller 1 pending as well made
              * the driver service a source that does not exist. */
             res = s->irq_armed ? 0xffffffff : 0;
