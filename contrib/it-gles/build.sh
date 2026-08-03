@@ -35,6 +35,13 @@ rm -f "$HERE/glapp.o"
 cc6 "$HERE/sblaunch.c" "$HERE/sblaunch.o"
 link6 -execute "$HERE/sblaunch" "$HERE/sblaunch.o"
 rm -f "$HERE/sblaunch.o"
+# SpringBoard rejects SBSLaunchApplicationWithIdentifier from a caller without
+# com.apple.springboard.launchapplications, and reports the refusal only to the
+# device console -- the call itself returns 1, exactly as it does for an app
+# that is not installed. Signing with the entitlement is not optional.
+if command -v ldid >/dev/null; then
+    ldid "-S$HERE/sblaunch-entitlements.xml" "$HERE/sblaunch"
+fi
 
 APP="$HERE/GLTest.app"
 rm -rf "$APP"

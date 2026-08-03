@@ -12,15 +12,25 @@
  * path a tap does (SpringBoard is what execs the app either way), so this
  * removes touch as a variable without weakening the test.
  *
- * Build with contrib/it-gles/build.sh; run on the guest over ssh:
- *     sblaunch com.qemuios.gltest
+ * WHICH APP. There is no argv -- the binary has no crt1, only LC_UNIXTHREAD, so
+ * main() is entered with nothing on the stack to read. The identifier
+ * therefore comes from a file, /tmp/sblaunch.id, and falls back to the GL test
+ * app when that file is absent. A file rather than an argument is not a
+ * preference; it is the only channel available, and it is enough because the
+ * caller is always a shell on the other end of ssh:
+ *
+ *     echo -n com.andyqua.CubeRunner > /tmp/sblaunch.id && sblaunch
  */
 
 extern long write(int, const void *, unsigned long);
 extern void _exit(int);
 extern void *dlopen(const char *, int);
 extern void *dlsym(void *, const char *);
+extern int open(const char *, int, ...);
+extern long read(int, void *, unsigned long);
+extern int close(int);
 #define RTLD_NOW 2
+#define O_RDONLY 0
 
 static unsigned slen(const char *s) { unsigned n = 0; while (s && s[n]) n++; return n; }
 static void w(const char *s) { write(1, s, slen(s)); }
@@ -37,14 +47,31 @@ static void wd(unsigned v)
 
 int main(void)
 {
-    /* No crt1 (LC_UNIXTHREAD), so there is no argv to read. The identifier is
-     * baked in; this tool exists for one app. */
-    static const char bundle_id[] = "com.qemuios.gltest";
+    static char bundle_id[128] = "com.qemuios.gltest";
     void *cf, *sbs;
     void *(*p_CFStringCreateWithCString)(void *, const char *, unsigned);
     int (*p_SBSLaunchApplicationWithIdentifier)(void *, int);
     void *str;
     int r;
+
+    /* Read the identifier, if one was left for us. Trailing whitespace is
+     * trimmed so that a plain `echo` (which appends a newline) works -- an
+     * identifier with a stray \n is rejected by SpringBoard with the same
+     * error code as an app that is not installed, which is a confusing way to
+     * lose an afternoon. */
+    {
+        int fd = open("/tmp/sblaunch.id", O_RDONLY);
+        if (fd >= 0) {
+            long n = read(fd, bundle_id, sizeof(bundle_id) - 1);
+            close(fd);
+            if (n > 0) {
+                while (n > 0 && (unsigned char)bundle_id[n - 1] <= ' ') {
+                    n--;
+                }
+                bundle_id[n] = 0;
+            }
+        }
+    }
 
     cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/"
                 "CoreFoundation", RTLD_NOW);
