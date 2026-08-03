@@ -18,6 +18,7 @@
 #include "target/arm/cpregs.h"
 #include "qemu/error-report.h"
 #include "ui/input.h"
+#include "ui/clipboard.h"
 
 // The D1759 PMU raises this GPIO IRQ when a wake button (hold/menu) is pressed.
 // It lands in the same GPIO interrupt group the button code already drives.
@@ -1149,6 +1150,12 @@ static void ipod_touch_set_accel_shake(Object *obj, Visitor *v, const char *name
     }
 }
 
+/* Defined with the rest of the pasteboard code, further down. */
+static char *ipod_touch_get_pasteboard(Object *obj, Error **errp);
+static void ipod_touch_set_pasteboard(Object *obj, const char *value,
+                                      Error **errp);
+static char *ipod_touch_get_guest_pasteboard(Object *obj, Error **errp);
+
 static void ipod_touch_instance_init(Object *obj)
 {
     object_property_add_str(obj, "bootrom", ipod_touch_get_bootrom_path, ipod_touch_set_bootrom_path);
@@ -1221,6 +1228,30 @@ static void ipod_touch_instance_init(Object *obj)
     object_property_add(obj, "accel-y", "int", NULL, ipod_touch_set_accel_axis, NULL, NULL);
     object_property_add(obj, "accel-z", "int", NULL, ipod_touch_set_accel_axis, NULL, NULL);
     object_property_add(obj, "accel-shake", "bool", NULL, ipod_touch_set_accel_shake, NULL, NULL);
+
+    /*
+     * Pasteboard. Setting this from QMP is the headless equivalent of the
+     * Cocoa "Paste Text to Guest" menu item, and the only one available when
+     * there is no display and so no clipboard peer at all:
+     *
+     *   qom-set  path=/machine property=pasteboard value="Hello. World #1"
+     *   qom-get  path=/machine property=guest-pasteboard
+     */
+    object_property_add_str(obj, "pasteboard", ipod_touch_get_pasteboard,
+                            ipod_touch_set_pasteboard);
+    object_property_set_description(obj, "pasteboard",
+        "Text to hand to the guest's UIPasteboard. Collected by the guest "
+        "pasteboard agent (contrib/it-pasteboard/it_pbd.c), after which the "
+        "user pastes it wherever they like -- unlike the on-screen-keyboard "
+        "typist, punctuation and symbols survive. Reads back what is still "
+        "waiting to be collected");
+
+    object_property_add_str(obj, "guest-pasteboard",
+                            ipod_touch_get_guest_pasteboard, NULL);
+    object_property_set_description(obj, "guest-pasteboard",
+        "The last text copied inside the guest, as reported by the pasteboard "
+        "agent. Also pushed to the host clipboard when a UI with a clipboard "
+        "peer is attached");
 }
 
 static inline qemu_irq s5l8900_get_irq(IPodTouchMachineState *s, int n)
@@ -1453,6 +1484,106 @@ static uint16_t qcode_to_unichar(int q, bool shift)
 	case Q_KEY_CODE_TAB: return '\t';
 	default: return 0;
 	}
+}
+
+/*
+ * Host <-> guest pasteboard.
+ *
+ * The point of this path is that it is not the keyboard. Typing by synthesising
+ * taps on iOS's own on-screen keyboard loses exactly the characters people most
+ * want to move between the two machines -- punctuation, spaces in URL fields,
+ * anything on the symbols page -- because each of those depends on keyboard page
+ * state that has no feedback channel. Handing the text to UIPasteboard and
+ * letting the user tap Paste has no geometry in it at all.
+ *
+ * The host cannot write the guest pasteboard by itself: pasteboardd owns the
+ * live state and UIPasteboard is its only client (contrib/it-pasteboard/README).
+ * So the host only ever parks text here, and the guest agent collects it over
+ * the QC_PB_* ops.
+ */
+static void ipod_touch_pb_notify(Notifier *notifier, void *data)
+{
+    /* We only ever publish; host-side clipboard changes are pushed to the
+     * guest explicitly (menu item / qom-set), never automatically. */
+}
+
+static void ipod_touch_pb_request(QemuClipboardInfo *info,
+                                  QemuClipboardType type)
+{
+    /* Unreachable in practice: we always set the data at the same time as we
+     * announce it, and qemu_clipboard_request only calls back for announced
+     * types whose data is still missing. */
+}
+
+static QemuClipboardPeer ipod_touch_pb_peer = {
+    .name = "ipod-touch",
+    .notifier = { .notify = ipod_touch_pb_notify },
+    .request = ipod_touch_pb_request,
+};
+
+void ipod_touch_pb_set(IPodTouchMachineState *nms, const char *text)
+{
+    g_free(nms->pb_out);
+    nms->pb_out = NULL;
+    nms->pb_out_len = 0;
+
+    if (!text || !*text) {
+        return;
+    }
+    /* A clipboard holds one item. Replacing rather than queueing means a
+     * second copy on the host wins, which is what the user just asked for. */
+    nms->pb_out = g_strndup(text, QC_PB_MAX_LEN);
+    nms->pb_out_len = strlen(nms->pb_out);
+}
+
+void ipod_touch_pb_guest_commit(IPodTouchMachineState *nms)
+{
+    QemuClipboardInfo *info;
+
+    g_free(nms->pb_guest);
+    nms->pb_guest = nms->pb_in;
+    nms->pb_guest_len = nms->pb_in_len;
+    nms->pb_in = NULL;
+    nms->pb_in_len = 0;
+
+    if (!nms->pb_guest) {
+        return;
+    }
+
+    /*
+     * Registered on first use rather than at machine init: a headless run has
+     * no clipboard peer on the other side at all, and the guest text is still
+     * readable there through the guest-pasteboard property.
+     */
+    if (!nms->pb_peer_registered) {
+        qemu_clipboard_peer_register(&ipod_touch_pb_peer);
+        nms->pb_peer_registered = true;
+    }
+
+    info = qemu_clipboard_info_new(&ipod_touch_pb_peer,
+                                   QEMU_CLIPBOARD_SELECTION_CLIPBOARD);
+    qemu_clipboard_set_data(&ipod_touch_pb_peer, info,
+                            QEMU_CLIPBOARD_TYPE_TEXT,
+                            nms->pb_guest_len, nms->pb_guest, true);
+    qemu_clipboard_info_unref(info);
+}
+
+static char *ipod_touch_get_pasteboard(Object *obj, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    return g_strdup(nms->pb_out ? nms->pb_out : "");
+}
+
+static void ipod_touch_set_pasteboard(Object *obj, const char *value,
+                                      Error **errp)
+{
+    ipod_touch_pb_set(IPOD_TOUCH_MACHINE(obj), value);
+}
+
+static char *ipod_touch_get_guest_pasteboard(Object *obj, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    return g_strdup(nms->pb_guest ? nms->pb_guest : "");
 }
 
 static void ipod_touch_kbd_enqueue(IPodTouchMachineState *nms, uint16_t ch)

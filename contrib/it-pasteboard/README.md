@@ -81,15 +81,47 @@ Two consequences worth knowing before debugging anything here:
   that crashes the daemon.
 * `pbset.c` — the working version: reads `/tmp/pbtext` and sets it with an
   explicit UTI, no reads at all (the reads are what send an empty type).
+* `it_pbd.c` — the real thing: a launchd-started daemon that carries text both
+  ways over the `QC_PB_*` ops. `it_pbd` is the built armv6 binary, tracked so
+  an image can be built without the toolchain.
+* `com.qemu.it-pbd.plist` — its LaunchDaemon.
 * `build.sh` — armv6 build, see `../armv6-toolchain/README.md`. Plain C with a
   dlopen'd ObjC runtime, because `ld -lobjc` against the 3.1.3 SDK is fatal.
 
-## What is NOT here yet
+## Installing it
 
-The host half. The intended shape is a `QC_PB_*` pair on the existing cp15
-`QEMU_CALL` tunnel (`include/hw/arm/guest-services/general.h`) — the same
-mechanism `QC_POLL_INPUT` already uses, and reachable from PL0 — with a small
-launchd-started guest agent polling it and calling `setValue:forPasteboardType:`,
-fed from QEMU's Cocoa clipboard peer (`ui/cocoa.m`,
-`QEMU_CLIPBOARD_TYPE_TEXT`). Note the frozen 52-byte `qemu_call_t` layout: any
-new args struct must stay at or under 32 bytes.
+    scp it_pbd            root@device:/usr/local/bin/it_pbd
+    scp com.qemu.it-pbd.plist \
+        root@device:/System/Library/LaunchDaemons/com.qemu.it-pbd.plist
+    ssh root@device 'chmod 755 /usr/local/bin/it_pbd
+                     chown root:wheel /System/Library/LaunchDaemons/com.qemu.it-pbd.plist
+                     launchctl load /System/Library/LaunchDaemons/com.qemu.it-pbd.plist'
+
+`chown root:wheel` is not decoration: **launchd silently ignores a plist it does
+not see as root-owned**, and `imgtools/editimg.py` creates files as uid 501. The
+daemon logs to `/var/log/it_pbd.log`, one line per item in either direction,
+which is the fastest way to tell "the host never sent it" from "the guest never
+took it".
+
+## Driving it from the host
+
+    # headless / scripted
+    qom-set path=/machine property=pasteboard value="Hello. World 42 #tag"
+    qom-get path=/machine property=guest-pasteboard
+
+    # in a window
+    Edit > Paste Text to Guest   (Cmd+Ctrl+V, as in the iPhone Simulator)
+
+Both go through the same machine property, so there is one implementation, not
+two. The Cocoa item is the only part that needs a clipboard peer; a headless run
+has none, which is why the QMP path is not the afterthought it looks like.
+
+## The host half
+
+`QC_PB_POLL/READ/ACK` and `QC_PB_WRITE/COMMIT` in
+`include/hw/arm/guest-services/general.h`, on the existing cp15 `QEMU_CALL`
+tunnel — the same mechanism `QC_POLL_INPUT` uses, and reachable from PL0, so no
+kernel patch is involved. The text is windowed through a guest buffer rather
+than carried in the args union: the 52-byte `qemu_call_t` layout is frozen
+(`contrib/it-kbd-agent` is compiled into NAND images we cannot rebuild and
+hardcodes it), so any new args struct has to stay at or under 32 bytes.

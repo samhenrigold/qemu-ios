@@ -73,9 +73,40 @@ typedef enum {
     // which is otherwise indistinguishable: an unhandled cp15 write on this
     // machine silently does nothing rather than faulting.
     QC_GLES_PING = 0x141,
+
+    // Host <-> guest pasteboard (contrib/it-pasteboard/it_pbd.c).
+    //
+    // The guest's pasteboard is owned by com.apple.UIKit.pasteboardd and is only
+    // reachable through UIPasteboard, so the host cannot write it directly -- a
+    // guest process has to make the call. These ops are the transport for that
+    // process, and are issued from PL0 exactly like QC_GLES.
+    //
+    // Text does not fit in the frozen 32-byte args union, so it is chunked
+    // through a guest buffer rather than carried inline: POLL reports how many
+    // bytes are waiting, READ copies a window of them into the guest, ACK
+    // retires the item. WRITE/COMMIT are the same thing backwards, for the
+    // guest's own copies.
+    QC_PB_POLL   = 0x150,  // retval: bytes of host text waiting, 0 if none
+    QC_PB_READ   = 0x151,  // copy args.pb window out to the guest; retval: bytes
+    QC_PB_ACK    = 0x152,  // the guest took it; drop the pending item
+    QC_PB_WRITE  = 0x153,  // guest -> host staging buffer; retval: bytes taken
+    QC_PB_COMMIT = 0x154,  // publish the staging buffer to the host clipboard
 } qemu_call_number_t;
 
 #define QC_GLES_PING_MAGIC 0x6a17c0deLL
+
+// Window into one side's pasteboard text. 12 bytes -- see the layout note on
+// qemu_call_t below before adding anything to this.
+typedef struct __attribute__((packed)) {
+    uint32_t buffer_guest_ptr;
+    uint32_t offset;
+    uint32_t length;
+} qc_pb_args_t;
+
+// Cap on a single pasteboard item, both directions. Large enough for anything
+// anyone pastes by hand, small enough that a confused guest cannot make the
+// host allocate without bound.
+#define QC_PB_MAX_LEN (256 * 1024)
 
 typedef struct __attribute__((packed)) {
     // Request
@@ -97,6 +128,8 @@ typedef struct __attribute__((packed)) {
         qc_size_file_args_t size_file;
         // OpenGL ES HLE
         qc_gles_args_t gles;
+        // Pasteboard
+        qc_pb_args_t pb;
     } args;
 
     // Response
