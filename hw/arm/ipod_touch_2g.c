@@ -107,8 +107,9 @@ static void aperture_watch_log(ApertureWatch *w, const char *dir, hwaddr off,
     if (current_cpu) {
         pc = ARM_CPU(current_cpu)->env.regs[15];
     }
-    fprintf(stderr, "[%s] %s +%05x size=%u val=%08x pc=%08x\n",
-            w->tag, dir, (unsigned)off, size, (uint32_t)val, pc);
+    fprintf(stderr, "[%s] %s +%05x size=%u val=%08x pc=%08x t=%" PRId64 "\n",
+            w->tag, dir, (unsigned)off, size, (uint32_t)val, pc,
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
 }
 
 static uint64_t aperture_watch_read(void *opaque, hwaddr off, unsigned size)
