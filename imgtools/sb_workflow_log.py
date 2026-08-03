@@ -44,11 +44,32 @@ OFF = 0xfffc            # file offset of VA 0x10ffc (__TEXT is mapped at +0)
 ORIG = bytes.fromhex("0fb4f0b5464640b4")
 NEW  = bytes([0x80, 0xB5, 0x9F, 0xF0, 0xBA, 0xEF, 0x80, 0xBD])
 
+# --syslog: bypass NSLog and call syslog(3) directly.
+#
+#     00010ffc  push {r7, lr}
+#     00010ffe  adds r2, r0, #0     ; r2 = the CFStringRef format (event identity)
+#     00011000  movs r0, #4         ; LOG_WARNING
+#     00011002  adr  r1, #0xc       ; -> "SBW %p" at 0x11010
+#     00011004  blx  #0xb1d00       ; _syslog
+#     00011008  pop  {r7, pc}
+#
+# syslog is a C printf, so it cannot render the workflow formats' %@ arguments
+# -- but it does not need to.  Every format is a *constant* CFString at a fixed
+# address in __cfstring, so logging the pointer identifies the event exactly;
+# resolve it back to text offline against the __cfstring table (this file's
+# companion dump).  The point of doing it this way is that syslog reaches ASL
+# without going through CFLog, which is the part that stops being readable.
+SYSLOG = bytes([0x80, 0xB5, 0x02, 0x1C, 0x04, 0x20, 0x03, 0xA1,
+                0xA0, 0xF0, 0x7C, 0xEE, 0x80, 0xBD,
+                0xC0, 0x46, 0xC0, 0x46, 0xC0, 0x46]) + b"SBW %p\0\0"
+
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("binary")
     ap.add_argument("-o", "--out")
+    ap.add_argument("--syslog", action="store_true",
+                    help="call syslog(3) instead of NSLog (reaches ASL directly)")
     a = ap.parse_args()
 
     out = a.out or a.binary + ".logging"
@@ -56,16 +77,17 @@ def main():
         shutil.copyfile(a.binary, out)
     with open(out, "r+b") as f:
         f.seek(OFF)
+        want = SYSLOG if a.syslog else NEW
         cur = f.read(len(ORIG))
-        if cur == NEW:
+        if cur in (NEW, SYSLOG[:len(ORIG)]):
             print("already patched")
             return
         if cur != ORIG:
             raise SystemExit("not a 3.1.3 (7E18) SpringBoard: %s at %#x"
                              % (cur.hex(), OFF))
         f.seek(OFF)
-        f.write(NEW)
-    print("patched %s" % out)
+        f.write(want)
+    print("patched %s (%s)" % (out, "syslog" if a.syslog else "NSLog"))
 
 
 if __name__ == "__main__":
