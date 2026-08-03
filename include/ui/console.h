@@ -387,6 +387,21 @@ void graphic_hw_invalidate(QemuConsole *con);
 void graphic_hw_text_update(QemuConsole *con, console_ch_t *chardata);
 void graphic_hw_gl_block(QemuConsole *con, bool block);
 
+/*
+ * Capture exposure.
+ *
+ * A device whose panel scales the whole framebuffer by a backlight level draws
+ * a faithful picture of a dim screen -- and an illegible one. Brightening the
+ * result afterwards cannot put back what the scaling quantised away, so instead
+ * the device may offer to render the next frame as if the backlight were full,
+ * and a frontend copying the screen for a human asks for that around the grab.
+ *
+ * Nothing else may turn this on: it changes what a redraw produces, and a
+ * screendump taken while it is set would not be the screen.
+ */
+void qemu_display_register_capture_exposure(void (*fn)(bool on));
+void qemu_display_set_capture_exposure(bool on);
+
 void qemu_console_early_init(void);
 
 void qemu_console_set_display_gl_ctx(QemuConsole *con, DisplayGLCtx *ctx);
