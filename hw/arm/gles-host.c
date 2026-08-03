@@ -105,6 +105,38 @@ typedef struct {
 
     /* When nonzero, log every draw for one frame. See gles_trace_draw. */
     int trace_draws;
+
+    /*
+     * Where the frame time goes, behind IT_GLES_PROF. Sampling the clock is
+     * itself measurable at this call rate -- tens of thousands of requests a
+     * second -- so it is off unless asked for, and the totals are reported
+     * alongside the frame rate they explain.
+     *
+     *   t_call    everything between entering and leaving gles_host_call
+     *   t_fetch   pulling guest memory across (vertex/colour/normal arrays,
+     *             index lists)
+     *   t_err     glGetError, which is the one call in the draw path that
+     *             cannot be pipelined -- it drains the driver's queue
+     *   t_present glFinish + glReadPixels + the write back into guest memory
+     */
+    uint64_t calls;
+    uint64_t t_call, t_fetch, t_err, t_present;
+    uint64_t last_report_calls;
+    uint64_t last_report_t_call, last_report_t_fetch;
+    uint64_t last_report_t_err, last_report_t_present;
+
+    /*
+     * Frame-to-frame interval over the reporting burst. A mean of 60 fps is
+     * exactly what a stutter looks like when it is averaged: sixty frames
+     * containing one 300 ms stall and fifty-nine 3 ms frames still average out
+     * near 60. "Starts and stops" is a claim about the tail, so the tail is
+     * what gets recorded -- the worst interval and how many were over 33 ms
+     * (two panel refreshes) and 100 ms (visible as a hitch).
+     */
+    uint64_t last_present_ns;
+    uint64_t frame_gap_max;
+    uint32_t frames_over_33ms;
+    uint32_t frames_over_100ms;
 } GLESHost;
 
 /*
@@ -121,6 +153,64 @@ typedef struct {
  * deferred until the pixel path itself is trustworthy.
  */
 static GLESHost gh;
+
+/*
+ * Profiling and strictness switches, read once.
+ *
+ *   IT_GLES_PROF    account for the frame time (see the t_* fields above)
+ *   IT_GLES_STRICT  check glGetError after every pointer call and every draw
+ *
+ * IT_GLES_STRICT defaults ON, and that is a measurement talking, not caution.
+ * glGetError is a synchronisation point -- it drains the driver's command
+ * queue, so it cannot be pipelined -- and the draw path calls it up to nine
+ * times per draw (twice per bound array, once after the draw). That reads like
+ * an obvious bottleneck and it is not: profiled through Cube Runner's title
+ * screen, its menus and its gameplay, at 400-500 requests a frame, glGetError
+ * accounts for 0.1% of wall time. Removing it would buy nothing, so it stays,
+ * and the switch exists only to take it out of the way when profiling
+ * something else.
+ *
+ * The checks earn their keep: a pointer the host had refused left a null array
+ * armed and the next draw took QEMU down inside the driver. gles_pointer_ok is
+ * now the primary guard -- it rejects the type/size combinations desktop GL
+ * does not accept, from tables rather than from the driver's verdict, so the
+ * bad call never reaches it -- and these are the backstop for a combination we
+ * have not thought of.
+ */
+static int gles_prof = -1;
+static int gles_strict = -1;
+/*
+ * IT_GLES_SWIZZLE=1 restores the old readback -- RGBA plus a per-pixel byte
+ * swap -- and =2 alternates between old and new every 300 frames. Alternating
+ * is the only honest way to measure this here: the machine runs several
+ * emulators at once and its load moves by a factor of five within a minute, so
+ * two boots minutes apart cannot be compared. Interleaved, both paths see the
+ * same conditions.
+ */
+static int gles_swizzle;
+static int gles_swizzle_mode;
+
+static void gles_read_switches(void)
+{
+    const char *v;
+
+    if (gles_prof >= 0) {
+        return;
+    }
+    v = getenv("IT_GLES_PROF");
+    gles_prof = v ? atoi(v) : 0;
+    v = getenv("IT_GLES_STRICT");
+    gles_strict = v ? atoi(v) : 1;
+    v = getenv("IT_GLES_SWIZZLE");
+    gles_swizzle_mode = v ? atoi(v) : 0;
+    gles_swizzle = (gles_swizzle_mode == 1);
+}
+
+/* Nanoseconds, or 0 when profiling is off -- so the caller pays nothing. */
+static inline uint64_t gles_t(void)
+{
+    return gles_prof ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
+}
 
 /* ---------------------------------------------------------------- context */
 
@@ -284,6 +374,53 @@ static bool gles_needs_widen(GLenum client_state, uint32_t type)
  *
  * Returns true if the array was bound and the caller must disable it again.
  */
+static const char *gles_array_name(GLenum client_state)
+{
+    switch (client_state) {
+    case GL_VERTEX_ARRAY:        return "vertex";
+    case GL_TEXTURE_COORD_ARRAY: return "texcoord";
+    case GL_COLOR_ARRAY:         return "color";
+    case GL_NORMAL_ARRAY:        return "normal";
+    default:                     return "unknown";
+    }
+}
+
+/*
+ * Would desktop GL accept this pointer call?
+ *
+ * These are GL 2.1's tables for the four gl*Pointer entry points, and they are
+ * spelled out rather than inferred because the four do NOT agree: GL_BYTE is
+ * legal for colours and normals and illegal for positions and texture
+ * coordinates, and sizes differ per call. The types ES allows and desktop does
+ * not are widened before we get here (gles_needs_widen), so anything this
+ * rejects is a genuine combination neither API accepts.
+ *
+ * Asking the driver instead -- call, then glGetError -- is what this replaces;
+ * that answer costs a queue drain per array per draw.
+ */
+static bool gles_pointer_ok(GLenum client_state, uint32_t size, GLenum type)
+{
+    bool float_like = (type == GL_FLOAT || type == GL_DOUBLE);
+    bool wide_int = (type == GL_SHORT || type == GL_INT);
+
+    switch (client_state) {
+    case GL_VERTEX_ARRAY:
+        return (size >= 2 && size <= 4) && (float_like || wide_int);
+    case GL_TEXTURE_COORD_ARRAY:
+        return (size >= 1 && size <= 4) && (float_like || wide_int);
+    case GL_COLOR_ARRAY:
+        return (size == 3 || size == 4) &&
+               (float_like || wide_int ||
+                type == GL_BYTE || type == GL_UNSIGNED_BYTE ||
+                type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT);
+    case GL_NORMAL_ARRAY:
+        /* glNormalPointer takes no size; normals are always 3-vectors. */
+        return float_like || wide_int || type == GL_BYTE;
+    default:
+        return false;
+    }
+}
+
 static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
                             uint32_t count)
 {
@@ -307,11 +444,16 @@ static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
         a->buf = g_realloc(a->buf, need);
         a->buf_size = need;
     }
-    if (cpu_memory_rw_debug(cpu, a->ptr + (hwaddr)stride * first,
-                            a->buf, need, 0) != 0) {
-        fprintf(stderr, "[gles] failed to read %zu bytes of array data at "
-                "guest 0x%08x\n", need, a->ptr);
-        return false;
+    {
+        uint64_t t0 = gles_t();
+        int rc = cpu_memory_rw_debug(cpu, a->ptr + (hwaddr)stride * first,
+                                     a->buf, need, 0);
+        gh.t_fetch += gles_t() - t0;
+        if (rc != 0) {
+            fprintf(stderr, "[gles] failed to read %zu bytes of array data at "
+                    "guest 0x%08x\n", need, a->ptr);
+            return false;
+        }
     }
 
     data = a->buf;
@@ -344,9 +486,32 @@ static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
         stride = 0;   /* the converted copy is tightly packed */
     }
 
+    /*
+     * Decide up front whether the host will take this pointer, instead of
+     * asking it afterwards. Same protection, no synchronisation: see the note
+     * on IT_GLES_STRICT.
+     */
+    if (!gles_pointer_ok(a->client_state, a->size, type)) {
+        static uint32_t reported;
+        uint32_t key = (a->client_state << 16) ^ (a->size << 8) ^ (type & 0xff);
+
+        if (reported != key) {
+            reported = key;
+            fprintf(stderr, "[gles] refusing %s pointer (size=%u type=0x%x) -- "
+                    "not a combination desktop GL accepts; array disabled for "
+                    "this draw\n", gles_array_name(a->client_state),
+                    a->size, type);
+        }
+        return false;
+    }
+
     glEnableClientState(a->client_state);
-    while (glGetError() != GL_NO_ERROR) {
-        /* Drain, so the check below sees only this call's error. */
+    if (gles_strict) {
+        uint64_t t0 = gles_t();
+        while (glGetError() != GL_NO_ERROR) {
+            /* Drain, so the check below sees only this call's error. */
+        }
+        gh.t_err += gles_t() - t0;
     }
     switch (a->client_state) {
     case GL_VERTEX_ARRAY:
@@ -370,18 +535,21 @@ static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
     /*
      * An array that is enabled but whose pointer the host refused is a loaded
      * gun: the driver dereferences NULL inside the next draw and takes QEMU
-     * down with it, with no diagnostic naming the array. Turning it back off
-     * costs a missing attribute instead of a crash, and says which one.
+     * down with it, with no diagnostic naming the array. gles_pointer_ok above
+     * is what now prevents that; this is the belt-and-braces version, kept for
+     * bring-up because a combination we have not thought of would otherwise
+     * reach the driver.
      */
-    {
+    if (gles_strict) {
+        uint64_t t0 = gles_t();
         GLenum e = glGetError();
+
+        gh.t_err += gles_t() - t0;
         if (e != GL_NO_ERROR) {
             fprintf(stderr, "[gles] host refused %s pointer "
                     "(size=%u type=0x%x stride=%u): GL error 0x%x -- "
                     "array disabled for this draw\n",
-                    a->client_state == GL_VERTEX_ARRAY ? "vertex" :
-                    a->client_state == GL_TEXTURE_COORD_ARRAY ? "texcoord" :
-                    a->client_state == GL_COLOR_ARRAY ? "color" : "normal",
+                    gles_array_name(a->client_state),
                     a->size, type, stride, e);
             glDisableClientState(a->client_state);
             return false;
@@ -425,8 +593,17 @@ static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
 {
     static GLenum reported[8];
     static unsigned n_reported;
-    GLenum e = glGetError();
+    GLenum e;
     unsigned i;
+    uint64_t t0;
+
+    /* See IT_GLES_STRICT: this is a queue drain, once per draw. */
+    if (!gles_strict) {
+        return;
+    }
+    t0 = gles_t();
+    e = glGetError();
+    gh.t_err += gles_t() - t0;
 
     if (e == GL_NO_ERROR) {
         return;
@@ -456,8 +633,9 @@ static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
  */
 static void gles_trace_draw(const char *what, uint32_t mode, uint32_t count)
 {
-    GLfloat mv[16];
+    GLfloat mv[16], cur_col[4], mat_dif[4], line_width = 0;
     GLboolean depth_mask = 0;
+    GLint src = 0, dst = 0;
 
     if (gh.trace_draws <= 0) {
         return;
@@ -465,10 +643,33 @@ static void gles_trace_draw(const char *what, uint32_t mode, uint32_t count)
     gh.trace_draws--;
     glGetBooleanv(GL_DEPTH_WRITEMASK, &depth_mask);
     glGetFloatv(GL_MODELVIEW_MATRIX, mv);
+    /*
+     * The state that decides whether a LINE is visible is not the set that
+     * decides it for a triangle, and this app splits cleanly along that line:
+     * its title flythrough is 100% GL_TRIANGLES and renders, its gameplay
+     * obstacles are 100% GL_LINE_STRIP and do not. A zero line width, a zero
+     * alpha under an enabled blend, or a colour array that is off for these
+     * draws would each produce exactly nothing, and none of the three is
+     * visible in the geometry -- which is why the geometry looked innocent for
+     * so long.
+     */
+    glGetFloatv(GL_LINE_WIDTH, &line_width);
+    glGetFloatv(GL_CURRENT_COLOR, cur_col);
+    glGetMaterialfv(GL_FRONT, GL_DIFFUSE, mat_dif);
+    glGetIntegerv(GL_BLEND_SRC, &src);
+    glGetIntegerv(GL_BLEND_DST, &dst);
     fprintf(stderr, "[gles]   draw %-14s mode=0x%x count=%-4u depthmask=%d "
-            "depthtest=%d xyz=(%.2f %.2f %.2f)\n",
+            "depthtest=%d xyz=(%.2f %.2f %.2f)\n"
+            "[gles]     linewidth=%.2f blend=%d(src=0x%x dst=0x%x) "
+            "colour=(%.2f %.2f %.2f %.2f) matdiffuse=(%.2f %.2f %.2f %.2f) "
+            "arrays vtx=%u col=%u nrm=%u tex=%u lighting=%d\n",
             what, mode, count, depth_mask, glIsEnabled(GL_DEPTH_TEST),
-            mv[12], mv[13], mv[14]);
+            mv[12], mv[13], mv[14],
+            line_width, glIsEnabled(GL_BLEND), (unsigned)src, (unsigned)dst,
+            cur_col[0], cur_col[1], cur_col[2], cur_col[3],
+            mat_dif[0], mat_dif[1], mat_dif[2], mat_dif[3],
+            gh.vertex.enabled, gh.color.enabled, gh.normal.enabled,
+            gh.texcoord.enabled, glIsEnabled(GL_LIGHTING));
 }
 
 static void gles_unbind_arrays(uint32_t bound)
@@ -592,6 +793,30 @@ static void gles_present_to_panel(void)
     gh.presents++;
 }
 
+/* Fold this frame's interval into the tail statistics. See the fields. */
+static void gles_note_frame_gap(void)
+{
+    uint64_t now, gap;
+
+    if (!gles_prof) {
+        return;
+    }
+    now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    if (gh.last_present_ns) {
+        gap = now - gh.last_present_ns;
+        if (gap > gh.frame_gap_max) {
+            gh.frame_gap_max = gap;
+        }
+        if (gap > 33 * 1000000ull) {
+            gh.frames_over_33ms++;
+        }
+        if (gap > 100 * 1000000ull) {
+            gh.frames_over_100ms++;
+        }
+    }
+    gh.last_present_ns = now;
+}
+
 /*
  * Every 60 presented frames, say how many frames and how much geometry went by
  * and how fast. Both halves matter: the frame rate is the number to report for
@@ -664,6 +889,51 @@ static void gles_report_progress(void)
             gh.presents, dt, dt ? 60000.0 / (double)dt : 0.0,
             gh.draw_arrays - gh.last_report_arrays,
             gh.draw_elements - gh.last_report_elements);
+
+    /*
+     * The accounting line. Percentages are of WALL time over the same 60
+     * frames, not of each other, so what is left over is the guest: if the
+     * host side adds up to 20% of the interval then the other 80% is the ARM
+     * executing the game, and no amount of work here will help.
+     */
+    if (gles_swizzle_mode == 2) {
+        gles_swizzle = (gh.presents / 300) % 2;
+    }
+    if (gles_prof && dt) {
+        double wall = (double)dt * 1e6;      /* ms -> ns */
+        fprintf(stderr, "[gles]   readback path: %s\n",
+                gles_swizzle ? "RGBA + per-pixel swizzle (old)"
+                             : "BGRA direct (new)");
+        fprintf(stderr, "[gles]   frame gaps: worst %.1f ms, %u over 33 ms, "
+                "%u over 100 ms\n",
+                gh.frame_gap_max / 1e6, gh.frames_over_33ms,
+                gh.frames_over_100ms);
+        gh.frame_gap_max = 0;
+        gh.frames_over_33ms = 0;
+        gh.frames_over_100ms = 0;
+    }
+    if (gles_prof && dt) {
+        double wall = (double)dt * 1e6;      /* ms -> ns */
+        uint64_t calls = gh.calls - gh.last_report_calls;
+        uint64_t tc = gh.t_call - gh.last_report_t_call;
+        uint64_t tf = gh.t_fetch - gh.last_report_t_fetch;
+        uint64_t te = gh.t_err - gh.last_report_t_err;
+        uint64_t tp = gh.t_present - gh.last_report_t_present;
+
+        fprintf(stderr, "[gles]   %" PRIu64 " calls (%.0f/frame, %.1f us each);"
+                " host %.1f%% of wall  [fetch %.1f%%  glGetError %.1f%%  "
+                "present %.1f%%]\n",
+                calls, calls / 60.0,
+                calls ? (double)tc / calls / 1000.0 : 0.0,
+                100.0 * tc / wall, 100.0 * tf / wall,
+                100.0 * te / wall, 100.0 * tp / wall);
+
+        gh.last_report_calls = gh.calls;
+        gh.last_report_t_call = gh.t_call;
+        gh.last_report_t_fetch = gh.t_fetch;
+        gh.last_report_t_err = gh.t_err;
+        gh.last_report_t_present = gh.t_present;
+    }
     /*
      * The state dump and the per-draw trace are the two tools that answer
      * "the app is drawing and nothing appears". They are off unless asked for,
@@ -701,7 +971,7 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
                                    uint32_t format)
 {
     uint32_t y;
-    g_autofree uint8_t *row = NULL;
+
     bool bgra;
 
     if (!base || !width || !height) {
@@ -730,29 +1000,47 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
         uint32_t rw = width < GLES_FB_WIDTH ? width : GLES_FB_WIDTH;
         uint32_t rh = height < GLES_FB_HEIGHT ? height : GLES_FB_HEIGHT;
 
-        glReadPixels(0, 0, rw, rh, GL_RGBA, GL_UNSIGNED_BYTE, gh.readback);
+        /*
+         * Ask GL for the byte order the destination wants instead of reading
+         * RGBA and swapping 150k pixels by hand every frame. GL_BGRA with
+         * UNSIGNED_INT_8_8_8_8_REV lands as B,G,R,A in memory on a
+         * little-endian host, which is exactly CoreAnimation's layout, so the
+         * row copy below becomes a memcpy. The swizzle loop was the largest
+         * single item in the frame's host time.
+         */
+        if (bgra && !gles_swizzle) {
+            glReadPixels(0, 0, rw, rh, GL_BGRA,
+                         GL_UNSIGNED_INT_8_8_8_8_REV, gh.readback);
+        } else {
+            glReadPixels(0, 0, rw, rh, GL_RGBA, GL_UNSIGNED_BYTE, gh.readback);
+        }
+        /*
+         * The old path, kept switchable so the two can be compared inside one
+         * run. This machine never goes quiet -- eight emulators at once while
+         * this was measured -- and a before/after taken from two boots minutes
+         * apart measures the host's mood, not the change.
+         */
+        if (bgra && gles_swizzle) {
+            uint32_t i, n = rw * rh;
 
-        row = g_malloc(stride);
-        for (y = 0; y < rh; y++) {
-            /* GL's origin is bottom-left, the surface's is top-left. */
-            const uint8_t *src = gh.readback + (size_t)(rh - 1 - y) * rw * 4;
-            uint32_t x;
+            for (i = 0; i < n; i++) {
+                uint8_t *p = gh.readback + (size_t)i * 4;
+                uint8_t r = p[0];
 
-            memset(row, 0, stride);
-            for (x = 0; x < rw; x++) {
-                if (bgra) {
-                    row[x * 4 + 0] = src[x * 4 + 2];
-                    row[x * 4 + 1] = src[x * 4 + 1];
-                    row[x * 4 + 2] = src[x * 4 + 0];
-                } else {
-                    row[x * 4 + 0] = src[x * 4 + 0];
-                    row[x * 4 + 1] = src[x * 4 + 1];
-                    row[x * 4 + 2] = src[x * 4 + 2];
-                }
-                row[x * 4 + 3] = src[x * 4 + 3];
+                p[0] = p[2];
+                p[2] = r;
             }
+        }
+
+        for (y = 0; y < rh; y++) {
+            /* GL's origin is bottom-left, the surface's is top-left. Only the
+             * rw*4 bytes the row actually covers are written, so the staging
+             * buffer the swizzle needed is gone with it -- the readback is
+             * already in the destination's layout. */
+            uint8_t *src = gh.readback + (size_t)(rh - 1 - y) * rw * 4;
+
             if (cpu_memory_rw_debug(cpu, base + (hwaddr)y * stride,
-                                    row, rw * 4, 1) != 0) {
+                                    src, rw * 4, 1) != 0) {
                 fprintf(stderr, "[gles] present-surface: write failed at row %u "
                         "(guest 0x%08x)\n", y, base + y * stride);
                 return -1;
@@ -760,6 +1048,7 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
         }
     }
     gh.presents++;
+    gles_note_frame_gap();
     gles_report_progress();
     return 0;
 }
@@ -772,23 +1061,29 @@ static float gles_f(uint32_t bits)
     return c.f;
 }
 
-int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
-                       uint32_t argc, const uint32_t *a)
+static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+                                uint32_t argc, const uint32_t *a)
 {
     if (!gles_host_init()) {
         return -1;
     }
-    CGLSetCurrentContext(gh.cgl);
 
     switch (slot) {
 
     /* ---- engine-level operations (not framework dispatch slots) ---- */
-    case GLES_OP_PRESENT:
+    case GLES_OP_PRESENT: {
+        uint64_t t0 = gles_t();
         gles_present_to_panel();
+        gh.t_present += gles_t() - t0;
         return 0;
+    }
 
-    case GLES_OP_PRESENT_SURFACE:   /* base, stride, w, h, format */
-        return gles_present_to_surface(cpu, a[0], a[1], a[2], a[3], a[4]);
+    case GLES_OP_PRESENT_SURFACE: {  /* base, stride, w, h, format */
+        uint64_t t0 = gles_t();
+        int64_t r = gles_present_to_surface(cpu, a[0], a[1], a[2], a[3], a[4]);
+        gh.t_present += gles_t() - t0;
+        return r;
+    }
 
     /* ---- framework dispatch slots, numbering from GATE1_slotmap.txt ---- */
     case GLES_SLOT_CLEAR_COLOR:                 /* glClearColor(r,g,b,a) */
@@ -1190,6 +1485,34 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * running, so the call stream can still be observed end to end. */
         return 0;
     }
+}
+
+int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
+                       uint32_t argc, const uint32_t *a)
+{
+    uint64_t t0;
+    int64_t r;
+
+    gles_read_switches();
+    if (!gles_host_init()) {
+        return -1;
+    }
+
+    /*
+     * Every request used to call CGLSetCurrentContext unconditionally. All of
+     * them arrive on the one vCPU thread and nothing else on this process's
+     * threads touches CGL, so after the first it is always already current --
+     * and the check is a thread-local read against a call into the GL stack.
+     */
+    if (CGLGetCurrentContext() != gh.cgl) {
+        CGLSetCurrentContext(gh.cgl);
+    }
+
+    gh.calls++;
+    t0 = gles_t();
+    r = gles_host_call_1(cpu, slot, ctx, argc, a);
+    gh.t_call += gles_t() - t0;
+    return r;
 }
 
 void gles_host_stats(uint64_t *draws, uint64_t *presents)
