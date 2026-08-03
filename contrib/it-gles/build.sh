@@ -25,4 +25,29 @@ cc6 "$HERE/mbxshim.c" "$HERE/mbxshim.o"
 link6 -bundle "$HERE/MBXGLEngine" "$HERE/mbxshim.o"
 rm -f "$HERE/mbxshim.o"
 
-file "$HERE/gles_tri" "$HERE/gles_tex" "$HERE/gles_fw" "$HERE/MBXGLEngine"
+# GLTest.app -- a real app bundle with a CAEAGLLayer. Same no-linking rules as
+# gles_fw: UIKit, QuartzCore, Foundation, OpenGLES and libobjc are all dlopen'd,
+# so nothing here links anything but libSystem.
+cc6 "$HERE/glapp.c" "$HERE/glapp.o"
+link6 -execute "$HERE/GLTest" "$HERE/glapp.o"
+rm -f "$HERE/glapp.o"
+
+cc6 "$HERE/sblaunch.c" "$HERE/sblaunch.o"
+link6 -execute "$HERE/sblaunch" "$HERE/sblaunch.o"
+rm -f "$HERE/sblaunch.o"
+
+APP="$HERE/GLTest.app"
+rm -rf "$APP"
+mkdir -p "$APP"
+cp "$HERE/GLTest" "$APP/GLTest"
+cp "$HERE/glapp-Info.plist" "$APP/Info.plist"
+chmod 755 "$APP/GLTest"
+# Ad-hoc sign it. The image's boot args disable enforcement, but installd and
+# SpringBoard both walk the signature before anything is executed, and an
+# unsigned binary is a different rejection from a bad one.
+if command -v ldid >/dev/null; then
+    ldid -S "$APP/GLTest"
+fi
+
+file "$HERE/gles_tri" "$HERE/gles_tex" "$HERE/gles_fw" "$HERE/MBXGLEngine" \
+     "$APP/GLTest"
