@@ -986,14 +986,71 @@ static void gles_dump_frame(uint32_t rw, uint32_t rh, bool bgra)
     }
 }
 
+/*
+ * WHICH GC DREW WHAT, and how each one gets its frame to the screen.
+ *
+ * The app runs several GCs through this one host context, and only a GC that
+ * bound a CA drawable can present into a surface -- the rest fall through to
+ * the panel blit, which CoreAnimation then paints over. So "the obstacles are
+ * drawn by a context that cannot be seen" is a claim about which ctx issues
+ * which primitive, and every request already carries its ctx. Counting it is
+ * the whole measurement.
+ */
+#define GLES_MAX_CTX 8
+static struct {
+    uint32_t ctx;
+    uint64_t tris, linestrips, tristrips, other;
+    uint64_t present_surface, present_panel;
+} gles_ctx_stats[GLES_MAX_CTX];
+static uint32_t gles_cur_ctx;
+
+static unsigned gles_ctx_slot(uint32_t ctx)
+{
+    unsigned i;
+
+    for (i = 0; i < GLES_MAX_CTX; i++) {
+        if (gles_ctx_stats[i].ctx == ctx) {
+            return i;
+        }
+        if (!gles_ctx_stats[i].ctx) {
+            gles_ctx_stats[i].ctx = ctx;
+            return i;
+        }
+    }
+    return GLES_MAX_CTX - 1;
+}
+
+static void gles_report_ctx(void)
+{
+    unsigned i;
+
+    fprintf(stderr, "[gles] per-GC attribution:\n");
+    for (i = 0; i < GLES_MAX_CTX && gles_ctx_stats[i].ctx; i++) {
+        fprintf(stderr, "[gles]   ctx=0x%08x  tris=%" PRIu64 " linestrips=%"
+                PRIu64 " tristrips=%" PRIu64 " other=%" PRIu64
+                "  presents: %" PRIu64 " to a CA surface, %" PRIu64
+                " to the panel blit (invisible -- CA paints over it)\n",
+                gles_ctx_stats[i].ctx, gles_ctx_stats[i].tris,
+                gles_ctx_stats[i].linestrips, gles_ctx_stats[i].tristrips,
+                gles_ctx_stats[i].other, gles_ctx_stats[i].present_surface,
+                gles_ctx_stats[i].present_panel);
+    }
+}
+
 /* Count a draw into this frame's primitive mix. */
 static void gles_note_primitive(uint32_t mode)
 {
+    unsigned i = gles_ctx_slot(gles_cur_ctx);
+
     switch (mode) {
-    case GL_TRIANGLES:      gh.f_tris++;       break;
-    case GL_LINE_STRIP:     gh.f_linestrips++; break;
-    case GL_TRIANGLE_STRIP: gh.f_tristrips++;  break;
-    default:                gh.f_other++;      break;
+    case GL_TRIANGLES:
+        gh.f_tris++;       gles_ctx_stats[i].tris++;       break;
+    case GL_LINE_STRIP:
+        gh.f_linestrips++; gles_ctx_stats[i].linestrips++; break;
+    case GL_TRIANGLE_STRIP:
+        gh.f_tristrips++;  gles_ctx_stats[i].tristrips++;  break;
+    default:
+        gh.f_other++;      gles_ctx_stats[i].other++;      break;
     }
 }
 
@@ -1189,6 +1246,9 @@ static void gles_report_progress(void)
             }
         }
     }
+    if (verbose >= 1) {
+        gles_report_ctx();
+    }
     gh.last_report_present = now_ms;
     gh.last_report_arrays = gh.draw_arrays;
     gh.last_report_elements = gh.draw_elements;
@@ -1352,8 +1412,23 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     /* ---- engine-level operations (not framework dispatch slots) ---- */
     case GLES_OP_PRESENT: {
         uint64_t t0 = gles_t();
+
         gles_present_to_panel();
         gh.t_present += gles_t() - t0;
+        gles_ctx_stats[gles_ctx_slot(ctx)].present_panel++;
+        /*
+         * Report from HERE too.
+         *
+         * gles_report_progress was only reachable from the present-to-surface
+         * path, so the moment a GC lost its drawable and fell back to this
+         * blit the frame counter went silent -- and it went silent in exactly
+         * the situation being debugged, which reads as the app slowing down
+         * when nothing of the sort has happened. A counter that stops counting
+         * when the interesting thing starts is worse than no counter.
+         */
+        gles_note_scene();
+        gles_note_frame_gap();
+        gles_report_progress();
         return 0;
     }
 
@@ -1361,6 +1436,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         uint64_t t0 = gles_t();
         int64_t r = gles_present_to_surface(cpu, a[0], a[1], a[2], a[3], a[4]);
         gh.t_present += gles_t() - t0;
+        gles_ctx_stats[gles_ctx_slot(ctx)].present_surface++;
         return r;
     }
 
@@ -1790,6 +1866,7 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
     }
 
     gh.calls++;
+    gles_cur_ctx = ctx;
     t0 = gles_t();
     r = gles_host_call_1(cpu, slot, ctx, argc, a);
     gh.t_call += gles_t() - t0;

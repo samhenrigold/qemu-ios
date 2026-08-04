@@ -625,6 +625,7 @@ typedef int (*ca_present_fn)(void *drawable, unsigned n);
 /* These fire every frame; one log line per process is enough to know the path
  * is live, and a line per frame would change the timing it is reporting on. */
 static unsigned char present_logged;
+static unsigned present_ok, present_fail;
 static unsigned char surface_logged;
 /* Mirrors the engine's ctx+0x21c: "a buffer is wanted for the next frame". */
 
@@ -726,6 +727,7 @@ static int GLESBindView(void *gc, void *drawable, void *ifmt, void *flags)
 {
     void **vt = drawable;
     ca_view_t *v;
+    int had_drawable;
     unsigned f = (unsigned)(unsigned long)ifmt;
     unsigned fourcc = (f == GL_RGB565_OES) ? CA_FOURCC_565L : CA_FOURCC_BGRA;
     int r;
@@ -762,6 +764,18 @@ static int GLESBindView(void *gc, void *drawable, void *ifmt, void *flags)
         w("[mbxshim] GLESBindView: no free view slot\n");
         return 0;
     }
+    /*
+     * Is this GC already holding a working drawable?
+     *
+     * ca_view_for_gc returns the EXISTING slot when one GC binds twice, which
+     * this app does: it binds successfully, and later binds again for a
+     * drawable CA refuses. Freeing the slot on that failure threw away the
+     * working view -- the same "a failure clears state the caller does not own"
+     * bug as the global ca_drawable, reintroduced one layer down and costing
+     * 4164 of 5220 presents, which fell through to the invisible panel blit.
+     * A failed re-bind must leave a GC exactly as it found it.
+     */
+    had_drawable = (v->drawable != 0);
     v->block[0] = v->block;      /* handed back to us as createBuffer's arg0 */
     v->block[1] = (void *)ca_create_buffer;
     v->block[2] = (void *)ca_destroy_buffer;
@@ -775,9 +789,12 @@ static int GLESBindView(void *gc, void *drawable, void *ifmt, void *flags)
     w("[mbxshim]   drawable->bind(fourcc="); wx(fourcc); w(") -> "); wd((unsigned)r);
     w("\n");
     if (!r) {
-        /* Leave every other view alone -- see above. Free this slot again so a
-         * later retry is not blocked by a GC that never bound. */
-        v->gc = 0;
+        /* Leave every other view alone -- and leave THIS one alone too if it
+         * already had a drawable. Only release a slot this call created, so a
+         * GC that never bound does not hold one forever. */
+        if (!had_drawable) {
+            v->gc = 0;
+        }
         return 0;
     }
     v->drawable = drawable;
@@ -860,9 +877,21 @@ static int GLESPresentView(void *gc, void *view)
              * present (0xd70c), which is what makes it one nextBuffer per
              * frame rather than one for the whole context. */
             v->need_buffer = 1;
-            if (!present_logged) {
+            /*
+             * Count every one of these, not just the first.
+             *
+             * This used to log once per process, which said only that the FIRST
+             * present succeeded -- and the first present succeeding is exactly
+             * what a layer that CA later drops looks like. A running tally is
+             * the difference between "we never signal" and "we signal and CA
+             * refuses", and those have completely different fixes.
+             */
+            if (rr) present_ok++; else present_fail++;
+            if (!present_logged || (present_ok + present_fail) % 300 == 0) {
                 present_logged = 1;
-                w("[mbxshim] drawable->present -> "); wd((unsigned)rr); w("\n");
+                w("[mbxshim] present tally: ok="); wd(present_ok);
+                w(" failed="); wd(present_fail);
+                w(" (last -> "); wd((unsigned)rr); w(")\n");
             }
             return rr != 0;
         }
