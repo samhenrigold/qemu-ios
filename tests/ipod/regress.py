@@ -752,13 +752,25 @@ def check_applaunch(cfg, dev, before_ppm, r):
 
 
 def check_persist(cfg, dev2, marker_src, remote, r):
+    # The directory has to exist before afcclient can create the local file:
+    # it reports a missing *local* directory with exactly the same "No such
+    # file or directory" it uses for a missing *remote* file, so without this
+    # the check reads as "the guest lost the file" whenever `afc` -- which is
+    # what used to create this directory -- was not among the selected checks.
     dst = os.path.join(cfg.out, "afc", "persist-back.bin")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
     if os.path.exists(dst):
         os.remove(dst)
     g = afc(cfg, ["get -f %s %s" % (remote, dst)])
     if not os.path.exists(dst):
-        return r.set(False, "file gone after reboot: %s"
-                     % (g.stdout + g.stderr).strip()[-200:])
+        # Distinguish the two failures the message above conflates: ask the
+        # guest whether the file is in its directory listing at all.
+        ls = afc(cfg, ["ls /"])
+        seen = os.path.basename(remote) in (ls.stdout + ls.stderr)
+        return r.set(False, "%s: %s"
+                     % ("file gone after reboot" if not seen else
+                        "the guest still lists the file but the read failed",
+                        (g.stdout + g.stderr).strip()[-200:]))
     if sha256_file(dst) != sha256_file(marker_src):
         return r.set(False, "file survived but the contents changed")
     return r.set(True, "%s identical after clean shutdown + reboot" % remote)
