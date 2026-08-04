@@ -49,6 +49,20 @@ typedef struct IPodTouchFMSSState
     uint32_t reg_csgenrc;
     char *nand_path;
     char *nand_overlay;   /* writable COW overlay dir, or NULL to discard writes */
+
+    /*
+     * Packed base image (see imgtools/pack_nand.py), mapped once at realize.
+     * When this is set the base NAND is served from memory and nand_path is
+     * never opened per page -- which is the difference between one memcpy and
+     * an fopen/fread/fclose for every 4 KB the guest reads. NULL means the base
+     * is still a directory of .page files.
+     */
+    const uint8_t *packed;
+    size_t packed_size;
+    const uint32_t *packed_index;   /* num_cs * pages_per_cs, 1-based, 0 = absent */
+    const uint8_t *packed_records;
+    uint32_t packed_num_cs;
+    uint32_t packed_pages_per_cs;
     GHashTable *erased_blocks; /* (cs << 32) | block for blocks erased in the overlay */
     /* Allocation blocks the volume in the base image covers; 0 until read out
      * of the image's GPT on first use. See fmss_total_blocks(). */

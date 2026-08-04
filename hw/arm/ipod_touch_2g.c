@@ -1021,9 +1021,16 @@ static char *ipod_touch_get_nand_path(Object *obj, Error **errp)
 
 static void ipod_touch_set_nand_path(Object *obj, const char *value, Error **errp)
 {
-    gboolean nand_exists = g_file_test(value, G_FILE_TEST_IS_DIR);
-    if(!nand_exists) {
-        error_report("NAND at path \"%s\" must be a directory", value);
+    /*
+     * Either a directory of .page files or a packed image
+     * (imgtools/pack_nand.py). The packed form is one mapping instead of an
+     * fopen/fread/fclose per 4 KB the guest reads, which is what makes this
+     * usable on a phone.
+     */
+    if (!g_file_test(value, G_FILE_TEST_IS_DIR) &&
+        !g_file_test(value, G_FILE_TEST_IS_REGULAR)) {
+        error_report("no NAND at \"%s\": expected a page directory or a "
+                     "packed image", value);
         exit(1);
     }
     
@@ -1963,6 +1970,33 @@ static void ipod_touch_powerdown_arm(IPodTouchMachineState *nms, int ms)
 	timer_mod(nms->pwroff_timer,
 	          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
 	              (int64_t)ms * SCALE_MS);
+}
+
+/*
+ * Press or release a hardware button from a host UI that has no keyboard.
+ *
+ * On a Mac the four buttons are Command combos routed through
+ * ipod_touch_kbd_button(); a phone has nowhere to type them, and without the
+ * power and home buttons an emulated device that sleeps can never be woken.
+ * This is the same key path, addressed by name instead of by keystroke.
+ */
+void ipod_touch_press_button(IPodTouchButton button, bool down)
+{
+	int base;
+
+	if (!s_kbd_mt) {
+		return;
+	}
+
+	switch (button) {
+	case IPOD_TOUCH_BUTTON_HOME:    base = KEY_H;    break;
+	case IPOD_TOUCH_BUTTON_POWER:   base = KEY_P;    break;
+	case IPOD_TOUCH_BUTTON_VOLUP:   base = KEY_PLUS; break;
+	case IPOD_TOUCH_BUTTON_VOLDOWN: base = KEY_MIN;  break;
+	default: return;
+	}
+
+	ipod_touch_key_event(s_kbd_mt, down ? base : (base | KEY_UP));
 }
 
 static void ipod_touch_powerdown_tick(void *opaque)

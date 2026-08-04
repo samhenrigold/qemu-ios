@@ -558,8 +558,12 @@ static int alloc_code_gen_buffer_anon(size_t size, int prot,
 
     buf = mmap(NULL, size, prot, flags, -1, 0);
     if (buf == MAP_FAILED) {
+        /* prot/flags matter: on Apple platforms the same size succeeds or
+         * fails purely on whether PROT_EXEC or MAP_JIT was asked for, and
+         * without them the message cannot say which attempt this was. */
         error_setg_errno(errp, errno,
-                         "allocate %zu bytes for jit buffer", size);
+                         "allocate %zu bytes for jit buffer (prot=%#x flags=%#x)",
+                         size, prot, flags);
         return -1;
     }
 
@@ -623,14 +627,77 @@ extern kern_return_t mach_vm_remap(vm_map_t target_task,
                                    vm_prot_t *max_protection,
                                    vm_inherit_t inheritance);
 
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+#include <sys/types.h>
+#include <sys/sysctl.h>
+
+/*
+ * iOS has no JIT entitlement a development certificate can carry, so the only
+ * way to hold executable pages is CS_DEBUGGED -- which the kernel grants a
+ * get-task-allow process while a debugger is attached. From iOS 26, TXM
+ * additionally refuses to let a process bless its OWN pages as executable:
+ * only the attached debugger may do that (it holds
+ * com.apple.private.cs.debugger). See the workaround below.
+ */
+static int is_debugger_attached(void)
+{
+    int mib[4];
+    struct kinfo_proc info;
+    size_t size;
+
+    info.kp_proc.p_flag = 0;
+
+    mib[0] = CTL_KERN;
+    mib[1] = KERN_PROC;
+    mib[2] = KERN_PROC_PID;
+    mib[3] = getpid();
+
+    size = sizeof(info);
+
+    if (sysctl(mib, 4, &info, &size, NULL, 0) == -1) {
+        return 0;               /* be conservative if we cannot tell */
+    }
+
+    return (info.kp_proc.p_flag & P_TRACED) != 0;
+}
+
+/*
+ * Ask the debugger to associate the code buffer as a legitimate debug mapping,
+ * by trapping with the range in x0/x1. The debugger writes into the range,
+ * which is what makes TXM accept it; without that, the first jump into
+ * generated code dies with EXC_BAD_ACCESS (code=50).
+ *
+ * Nothing happens if the attached debugger does not understand this trap, so
+ * contrib/ios-app/lldb-jit.py has to be loaded for a JIT build to run.
+ */
+static void break_prepare_jit_region(mach_vm_address_t addr, size_t len)
+{
+    asm ("mov x0, %0\n"
+         "mov x1, %1\n"
+         "brk #0x69" :: "r" (addr), "r" (len) : "x0", "x1");
+}
+#endif
+
 static int alloc_code_gen_buffer_splitwx_vmremap(size_t size, Error **errp)
 {
     kern_return_t ret;
     mach_vm_address_t buf_rw, buf_rx;
     vm_prot_t cur_prot, max_prot;
+    int orig_prot = PROT_READ | PROT_WRITE;
+
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+    /*
+     * Under TXM the pages have to START executable: a plain RW mapping can
+     * never be promoted to RX afterwards, by us or by anyone.
+     */
+    if (__builtin_available(iOS 26, visionOS 26, watchOS 26, tvOS 26, *)) {
+        orig_prot = PROT_READ | PROT_EXEC;
+    }
+#endif
 
     /* Map the read-write portion via normal anon memory. */
-    if (!alloc_code_gen_buffer_anon(size, PROT_READ | PROT_WRITE,
+    if (!alloc_code_gen_buffer_anon(size, orig_prot,
                                     MAP_PRIVATE | MAP_ANONYMOUS, errp)) {
         return -1;
     }
@@ -661,6 +728,23 @@ static int alloc_code_gen_buffer_splitwx_vmremap(size_t size, Error **errp)
         munmap((void *)buf_rw, size);
         return -1;
     }
+
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+    if (__builtin_available(iOS 26, visionOS 26, watchOS 26, tvOS 26, *)) {
+        if (is_debugger_attached()) {
+            /* Only the debugger may bless this range; ask it to. */
+            break_prepare_jit_region(buf_rx, size);
+        }
+
+        /* The alias TCG writes through starts executable too; make it RW. */
+        if (mprotect((void *)buf_rw, size, PROT_READ | PROT_WRITE) != 0) {
+            error_setg_errno(errp, errno, "mprotect for jit splitwx (rw)");
+            munmap((void *)buf_rx, size);
+            munmap((void *)buf_rw, size);
+            return -1;
+        }
+    }
+#endif
 
     tcg_splitwx_diff = buf_rx - buf_rw;
     return PROT_READ | PROT_WRITE;

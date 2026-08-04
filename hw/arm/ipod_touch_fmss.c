@@ -1,6 +1,8 @@
 #include "hw/arm/ipod_touch_fmss.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
+#include <sys/mman.h>
+#include <sys/stat.h>
 
 /*
  * Cached env lookups.
@@ -225,6 +227,91 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
     fmss_stats_report();
 }
 
+/*
+ * Map a packed base image, if that is what nand= points at.
+ *
+ * Serving the base NAND from a directory costs an fopen/fread/fclose per 4 KB
+ * the guest reads -- three syscalls for every page of every file it opens, on
+ * the vCPU thread. Packed (imgtools/pack_nand.py) the whole base is one
+ * mapping and a read is a memcpy. Falls back silently: a directory still
+ * works, just slower.
+ */
+static void fmss_try_map_packed(IPodTouchFMSSState *s)
+{
+    static const char magic[8] = "ITNAND01";
+    struct stat st;
+    const uint8_t *p;
+    uint32_t page_size, spare_size;
+    size_t index_bytes;
+    int fd;
+
+    if (!s->nand_path || stat(s->nand_path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        return;                       /* a directory, or nothing: legacy path */
+    }
+
+    fd = open(s->nand_path, O_RDONLY);
+    if (fd < 0) {
+        return;
+    }
+    p = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);                        /* the mapping keeps its own reference */
+    if (p == MAP_FAILED) {
+        return;
+    }
+
+    if ((size_t)st.st_size < 24 || memcmp(p, magic, sizeof(magic)) != 0) {
+        fprintf(stderr, "[fmss] %s is not a packed NAND image\n", s->nand_path);
+        munmap((void *)p, st.st_size);
+        return;
+    }
+
+    page_size = ldl_le_p(p + 8);
+    spare_size = ldl_le_p(p + 12);
+    if (page_size != NAND_BYTES_PER_PAGE || spare_size != NAND_BYTES_PER_SPARE) {
+        fprintf(stderr, "[fmss] %s has %u+%u byte pages, expected %u+%u\n",
+                s->nand_path, page_size, spare_size,
+                NAND_BYTES_PER_PAGE, NAND_BYTES_PER_SPARE);
+        munmap((void *)p, st.st_size);
+        return;
+    }
+
+    s->packed = p;
+    s->packed_size = st.st_size;
+    s->packed_num_cs = ldl_le_p(p + 16);
+    s->packed_pages_per_cs = ldl_le_p(p + 20);
+    index_bytes = (size_t)s->packed_num_cs * s->packed_pages_per_cs * 4;
+    s->packed_index = (const uint32_t *)(p + 24);
+    s->packed_records = p + 24 + index_bytes;
+
+    fprintf(stderr, "[fmss] mapped packed NAND %s (%u cs x %u pages, %zu MiB)\n",
+            s->nand_path, s->packed_num_cs, s->packed_pages_per_cs,
+            s->packed_size >> 20);
+}
+
+/* True when the packed image carries this page; fills data and spare if so. */
+static bool fmss_packed_page(IPodTouchFMSSState *s, uint32_t cs,
+                             uint32_t page_nr, uint8_t *data, uint8_t *spare)
+{
+    const uint8_t *rec;
+    uint32_t slot;
+
+    if (!s->packed || cs >= s->packed_num_cs ||
+        page_nr >= s->packed_pages_per_cs) {
+        return false;
+    }
+
+    slot = ldl_le_p(&s->packed_index[(size_t)cs * s->packed_pages_per_cs + page_nr]);
+    if (slot == 0) {
+        return false;                 /* absent, i.e. erased */
+    }
+
+    rec = s->packed_records +
+          (size_t)(slot - 1) * (NAND_BYTES_PER_PAGE + NAND_BYTES_PER_SPARE);
+    memcpy(data, rec, NAND_BYTES_PER_PAGE);
+    memcpy(spare, rec + NAND_BYTES_PER_PAGE, NAND_BYTES_PER_SPARE);
+    return true;
+}
+
 static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
                                  uint32_t page_nr, uint8_t *data,
                                  uint8_t *spare)
@@ -258,6 +345,23 @@ static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
         }
     }
     if (!f && !fmss_block_is_erased(s, cs, page_nr / NAND_PAGES_PER_BLOCK)) {
+        if (s->packed) {
+            if (fmss_packed_page(s, cs, page_nr, data, spare)) {
+                fmss_stats.base++;
+                /* The two diagnostics below only ever rewrite the spare of a
+                 * base-image page, and both are off unless asked for. */
+                if (fmss_usedspare() &&
+                    ((uint32_t *)spare)[2] == 0x00FF00FF) {
+                    ((uint32_t *)spare)[2] = 0xFFFF40FF;
+                }
+                return;
+            }
+            fmss_stats.blank++;
+            memset(data, 0, NAND_BYTES_PER_PAGE);
+            memset(spare, 0, NAND_BYTES_PER_SPARE);
+            ((uint32_t *)spare)[2] = 0x00FF00FF; /* clean/erased marker */
+            return;
+        }
         snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_path, cs, page_nr);
         f = fopen(filename, "rb");
         if (f) { fmss_stats.base++; }
@@ -800,7 +904,7 @@ static const MemoryRegionOps fmss_ops = {
 
 static void ipod_touch_fmss_realize(DeviceState *dev, Error **errp)
 {
-
+    fmss_try_map_packed(IPOD_TOUCH_FMSS(dev));
 }
 
 static void ipod_touch_fmss_init(Object *obj)
