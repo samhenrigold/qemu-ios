@@ -1710,6 +1710,9 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
 - (IBAction) do_about_menu_item: (id) sender;
 - (void)adjustSpeed:(id)sender;
 - (void)copyScreen:(id)sender;
+- (void)deviceButton:(id)sender;
+- (void)installApp:(id)sender;
+- (void)openTerminal:(id)sender;
 @end
 
 @implementation QemuCocoaAppController
@@ -2148,6 +2151,167 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
     [cocoaView copyScreenToPasteboard];
 }
 
+/*
+ * Device menu tags. The hardware buttons already exist as Command-gated key
+ * chords (see ipod_touch_kbd_button), and the menu drives that same path rather
+ * than a second one into the GPIOs -- so anything true of the keyboard shortcut
+ * stays true of the menu item, including the release-always guarantee.
+ */
+enum {
+    IT_BTN_HOME = 1,
+    IT_BTN_POWER,
+    IT_BTN_VOLUP,
+    IT_BTN_VOLDOWN,
+    IT_BTN_ROTATE_CCW,
+    IT_BTN_ROTATE_CW,
+    IT_BTN_SHAKE,
+};
+
+/*
+ * A real press is not instantaneous and the guest can tell. SpringBoard
+ * distinguishes a Home tap from a hold, and the volume keys ramp for as long as
+ * the GPIO stays asserted, so the release is scheduled rather than sent in the
+ * same breath as the press.
+ */
+#define IT_BTN_HOLD_MS 250
+
+static void it_send_chord(int key, bool shift, bool down)
+{
+    with_bql(^{
+        if (down) {
+            qkbd_state_key_event(kbd, Q_KEY_CODE_META_L, true);
+            if (shift) {
+                qkbd_state_key_event(kbd, Q_KEY_CODE_SHIFT, true);
+            }
+            qkbd_state_key_event(kbd, key, true);
+        } else {
+            qkbd_state_key_event(kbd, key, false);
+            if (shift) {
+                qkbd_state_key_event(kbd, Q_KEY_CODE_SHIFT, false);
+            }
+            qkbd_state_key_event(kbd, Q_KEY_CODE_META_L, false);
+        }
+    });
+}
+
+- (void)deviceButton:(id)sender
+{
+    int key;
+    bool shift = false;
+    bool momentary = true;
+
+    switch ([sender tag]) {
+    case IT_BTN_HOME:       key = Q_KEY_CODE_H; shift = true; break;
+    case IT_BTN_POWER:      key = Q_KEY_CODE_L; break;
+    case IT_BTN_VOLUP:      key = Q_KEY_CODE_EQUAL; break;
+    case IT_BTN_VOLDOWN:    key = Q_KEY_CODE_MINUS; break;
+    /* Rotation is edge-triggered on the press; there is nothing to release. */
+    case IT_BTN_ROTATE_CCW: key = Q_KEY_CODE_LEFT;  momentary = false; break;
+    case IT_BTN_ROTATE_CW:  key = Q_KEY_CODE_RIGHT; momentary = false; break;
+    case IT_BTN_SHAKE: {
+        __block Error *err = NULL;
+        with_bql(^{
+            Object *machine = qdev_get_machine();
+            if (machine && object_property_find(machine, "accel-shake")) {
+                object_property_set_bool(machine, "accel-shake", true, &err);
+            } else {
+                error_setg(&err, "this machine has no accelerometer");
+            }
+        });
+        if (err) {
+            QEMU_Alert([NSString stringWithUTF8String: error_get_pretty(err)]);
+            error_free(err);
+        }
+        return;
+    }
+    default:
+        return;
+    }
+
+    it_send_chord(key, shift, true);
+    if (!momentary) {
+        it_send_chord(key, shift, false);
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(IT_BTN_HOLD_MS * NSEC_PER_MSEC)),
+                   dispatch_get_main_queue(), ^{
+        it_send_chord(key, shift, false);
+    });
+}
+
+/*
+ * Device ▸ Install App… -- the same handler a dropped .ipa takes. Dragging onto
+ * the window is not discoverable, and someone who downloaded a prebuilt app has
+ * no terminal open to be told about it in.
+ */
+- (void)installApp:(id)sender
+{
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+
+    [panel setAllowedFileTypes:@[@"ipa"]];
+    [panel setAllowsMultipleSelection:NO];
+    [panel setMessage:@"Choose a decrypted .ipa to install on the device."];
+    if ([panel runModal] != NSModalResponseOK) {
+        return;
+    }
+    [cocoaView installIPA:[[panel URL] path]];
+}
+
+/*
+ * Device ▸ Open Terminal -- a root shell on the guest, over USB.
+ *
+ * The script is the deliverable, not this method: it is runnable from a
+ * terminal, so the ordering it has to get right (usbmuxd, then iproxy, then
+ * ssh) can be debugged without going through the menu. All that happens here is
+ * that its refusals become a dialog, because someone running a prebuilt app has
+ * no stderr to read them on.
+ */
+- (void)openTerminal:(id)sender
+{
+    const char *env = getenv("IT_SSH_TERMINAL");
+    NSString *tool = env ? [NSString stringWithUTF8String:env]
+                         : [[[NSBundle mainBundle] bundlePath]
+                            stringByAppendingPathComponent:@"../contrib/it-ssh-terminal.sh"];
+
+    if (![[NSFileManager defaultManager] isExecutableFileAtPath:tool]) {
+        QEMU_Alert([NSString stringWithFormat:
+            @"Cannot open a terminal: %@ is missing.\n\nSet IT_SSH_TERMINAL to "
+            @"its path if the tree is somewhere else.", tool]);
+        return;
+    }
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSTask *task = [[NSTask alloc] init];
+        NSPipe *pipe = [NSPipe pipe];
+        NSData *out = nil;
+        int status = -1;
+
+        [task setLaunchPath:tool];
+        [task setStandardError:pipe];
+        [task setStandardOutput:[NSFileHandle fileHandleWithNullDevice]];
+        @try {
+            [task launch];
+            out = [[pipe fileHandleForReading] readDataToEndOfFile];
+            [task waitUntilExit];
+            status = [task terminationStatus];
+        } @catch (NSException *e) {
+            out = [[e reason] dataUsingEncoding:NSUTF8StringEncoding];
+        }
+        NSString *text = [[[NSString alloc] initWithData:out
+                            encoding:NSUTF8StringEncoding] autorelease];
+        [task release];
+
+        if (status != 0) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                QEMU_Alert([NSString stringWithFormat:@"Could not open a "
+                            @"terminal on the device.\n\n%@",
+                            [text length] ? text : @"(no output)"]);
+            });
+        }
+    });
+}
+
 /* Used by the Speed menu items */
 - (void)adjustSpeed:(id)sender
 {
@@ -2248,6 +2412,47 @@ static void create_initial_menus(void)
     [menuItem setKeyEquivalentModifierMask:(NSEventModifierFlagControl|NSEventModifierFlagCommand)];
     [menu addItem: menuItem];
     menuItem = [[[NSMenuItem alloc] initWithTitle:@"Edit" action:nil keyEquivalent:@""] autorelease];
+    [menuItem setSubmenu:menu];
+    [[NSApp mainMenu] addItem:menuItem];
+
+    /*
+     * Device menu -- the hardware the emulated iPod has and a Mac does not.
+     * Every item here was previously a Command chord you had to be told about,
+     * which is no use to someone running a prebuilt app with no docs open.
+     */
+    menu = [[NSMenu alloc] initWithTitle:@"Device"];
+    struct { const char *title; int tag; const char *key; NSEventModifierFlags mods; } it_buttons[] = {
+        { "Home",            IT_BTN_HOME,       "h", NSEventModifierFlagCommand | NSEventModifierFlagShift },
+        { "Lock",            IT_BTN_POWER,      "l", NSEventModifierFlagCommand },
+        { NULL, 0, NULL, 0 },
+        { "Volume Up",       IT_BTN_VOLUP,      "=", NSEventModifierFlagCommand },
+        { "Volume Down",     IT_BTN_VOLDOWN,    "-", NSEventModifierFlagCommand },
+        { NULL, 0, NULL, 0 },
+        { "Rotate Left",     IT_BTN_ROTATE_CCW, "",  0 },
+        { "Rotate Right",    IT_BTN_ROTATE_CW,  "",  0 },
+        { "Shake",           IT_BTN_SHAKE,      "",  0 },
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(it_buttons); i++) {
+        if (it_buttons[i].title == NULL) {
+            [menu addItem: [NSMenuItem separatorItem]];
+            continue;
+        }
+        menuItem = [[[NSMenuItem alloc]
+                     initWithTitle: [NSString stringWithUTF8String: it_buttons[i].title]
+                     action: @selector(deviceButton:)
+                     keyEquivalent: [NSString stringWithUTF8String: it_buttons[i].key]] autorelease];
+        if (it_buttons[i].mods) {
+            [menuItem setKeyEquivalentModifierMask: it_buttons[i].mods];
+        }
+        [menuItem setTag: it_buttons[i].tag];
+        [menu addItem: menuItem];
+    }
+    [menu addItem: [NSMenuItem separatorItem]];
+    [menu addItem: [[[NSMenuItem alloc] initWithTitle:@"Install App…"
+                     action:@selector(installApp:) keyEquivalent:@""] autorelease]];
+    [menu addItem: [[[NSMenuItem alloc] initWithTitle:@"Open Terminal"
+                     action:@selector(openTerminal:) keyEquivalent:@""] autorelease]];
+    menuItem = [[[NSMenuItem alloc] initWithTitle:@"Device" action:nil keyEquivalent:@""] autorelease];
     [menuItem setSubmenu:menu];
     [[NSApp mainMenu] addItem:menuItem];
 

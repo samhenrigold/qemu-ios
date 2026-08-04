@@ -14,6 +14,7 @@ and verify against `SHA256SUMS`.
 |---|---|
 | `bootrom_240_4` | S5L8720 bootrom, unchanged from upstream |
 | `nor_7E18.bin` | 3.1.3 NOR, SHSH wrapped for the emulated device's UID |
+| `iBoot.bin` | 7E18 iBoot, loaded directly — 3.1.3 does not boot without it |
 | `nand-canonical.tar.gz` | Clean 3.1.3 image; the regression harness's baseline |
 | `nand-appsync3.tar.gz` | Same, plus the patches that let decrypted apps install **and launch** |
 
@@ -30,10 +31,25 @@ so the guest has room to write. See §4 to build your own.
 
 ## 2. Run it
 
-    build/qemu-system-arm -M iPod-Touch,bootrom=bootrom_240_4,nand=nand-appsync3,nor=nor_7E18.bin \
-        -serial mon:stdio -m 2G -display cocoa,show-cursor=on
+Unpack the release next to each other in one directory and point the runner at
+it:
 
-Boot takes a couple of minutes. Two things to know:
+    IPOD_FILES=~/ipod-touch-files contrib/run-ipod-touch.sh          # keeps state across runs
+    IPOD_FILES=~/ipod-touch-files contrib/run-ipod-touch.sh --net    # ...with WiFi
+    IPOD_FILES=~/ipod-touch-files contrib/run-ipod-touch.sh --sound  # ...with audio
+    contrib/run-ipod-touch.sh --help                                 # the full list
+
+Use the runner rather than calling QEMU directly. 3.1.3 needs half a dozen
+environment settings to boot at all — the 7E18 iBoot loaded directly, the
+watchdog left unarmed, the TV-out gates answered, the panel backlight forced,
+and the two kernel boot args that open the code-signing gate — and the failure
+when one is missing is a hang at the Apple logo with nothing in the log. The
+runner sets them and documents why each one is there.
+
+Writes go to a copy-on-write overlay, so the base image is never modified and
+`--fresh` always gets you back to a clean device.
+
+Two things to know:
 
 - **Do not pass `-cpu max`.** Older instructions recommend it. It makes the
   guest appear to burn a full core forever, because it turns XNU's CP15 wait-
@@ -53,6 +69,10 @@ own keyboard:
 | `Cmd+-` / `Cmd+=` | Volume down / up |
 | `Cmd+←` / `Cmd+→` | Rotate a quarter turn |
 
+All of them are also in the **Device** menu, along with **Install App…** (the
+same handler a dropped `.ipa` takes) and **Open Terminal**, which opens a root
+shell on the guest over USB.
+
 `imgtools/itdrive.py` drives the same things over QMP — taps, swipes,
 screendumps — and `tests/ipod/run-regression.sh` is a regression harness whose
 every check corresponds to a bug that shipped in this tree.
@@ -69,9 +89,10 @@ Do not pass `--disable-slirp` if you want the network to work.
 
 ## 4. Build the images yourself
 
-Two pieces cannot be synthesised and must come from real hardware: the
-**bootrom**, and a **NAND page directory** to use as a template. Everything
-else `imgtools` can build for you.
+Two pieces cannot be generated from scratch — the **bootrom** and a **NAND page
+directory** to use as a template — but you do not need a device to get them:
+both are in the release above, and the bootrom doubles as its own download.
+Everything else `imgtools` builds for you.
 
 The template is needed because a NAND image is not only a filesystem — it also
 carries the FTL's bookkeeping pages, the NAND driver signature and a GPT at
@@ -135,12 +156,5 @@ rather than raw PCM and have not been looked at.
 
 **Encrypted App Store binaries cannot run** — only decrypted ones.
 
-## 6. A note on demo mode
-
-This emulator has always presented itself to iOS as a tethered demo unit. On
-3.1.3 the entire presence test for Apple's demo card is "did the I2C write to
-address 0x29 succeed", and this tree's I2C never NAKs anything. That is why the
-device never auto-locks, never dims, and hides its charging UI.
-
-`IT_I2C_NAK=1` makes absent I2C slaves behave like absent slaves. It is more
-faithful, and it turns those behaviours back on.
+**The device never auto-locks, dims, or idle-sleeps** on a stock run. Set
+`IT_I2C_NAK=1` to get those behaviours back.
