@@ -19,11 +19,17 @@ NAND_NAME="$(cat "$RES/device/nand.name")"
 want="$(cat "$RES/device.version" 2>/dev/null || echo unknown)"
 have="$(cat "$VERSION_FILE" 2>/dev/null || echo none)"
 
-# Small and read-only: symlinked out of the bundle rather than copied.
+# COPIED, not symlinked, even though together they are only 1.2 MB.
+#
+# A symlink into the bundle assumes the bundle stays where it is, and on the
+# first launch of a downloaded app it does not: Gatekeeper runs it from a
+# randomised read-only App Translocation mount that goes away afterwards, so the
+# links would point at a path that no longer exists. Copies do not care where
+# the app was, or whether it is later moved to Applications.
 mkdir -p "$STATE/ios3"
-ln -sfn "$RES/device/bootrom_240_4"     "$STATE/bootrom_240_4"
-ln -sfn "$RES/device/ios3/nor_7E18.bin" "$STATE/ios3/nor_7E18.bin"
-ln -sfn "$RES/device/ios3/iBoot.bin"    "$STATE/ios3/iBoot.bin"
+cp -f "$RES/device/bootrom_240_4"     "$STATE/bootrom_240_4"
+cp -f "$RES/device/ios3/nor_7E18.bin" "$STATE/ios3/nor_7E18.bin"
+cp -f "$RES/device/ios3/iBoot.bin"    "$STATE/ios3/iBoot.bin"
 
 if [ "$want" != "$have" ]; then
     # The only slow thing this app ever does, and it happens with no window on
