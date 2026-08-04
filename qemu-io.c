@@ -27,10 +27,10 @@
 #include "qemu/readline.h"
 #include "qemu/log.h"
 #include "qemu/sockets.h"
-#include "qapi/qmp/qstring.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qstring.h"
+#include "qobject/qdict.h"
 #include "qom/object_interfaces.h"
-#include "sysemu/block-backend.h"
+#include "system/block-backend.h"
 #include "block/block_int.h"
 #include "trace/control.h"
 #include "crypto/init.h"
@@ -414,15 +414,7 @@ static void prep_fetchline(void *opaque)
 
 static int do_qemuio_command(const char *cmd)
 {
-    int ret;
-    AioContext *ctx =
-        qemuio_blk ? blk_get_aio_context(qemuio_blk) : qemu_get_aio_context();
-
-    aio_context_acquire(ctx);
-    ret = qemuio_command(qemuio_blk, cmd);
-    aio_context_release(ctx);
-
-    return ret;
+    return qemuio_command(qemuio_blk, cmd);
 }
 
 static int command_loop(void)

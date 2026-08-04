@@ -23,11 +23,11 @@
 #include "block/qdict.h"
 #include "crypto/secret.h"
 #include "qemu/cutils.h"
-#include "sysemu/replay.h"
-#include "qapi/qmp/qstring.h"
-#include "qapi/qmp/qdict.h"
-#include "qapi/qmp/qjson.h"
-#include "qapi/qmp/qlist.h"
+#include "system/replay.h"
+#include "qobject/qstring.h"
+#include "qobject/qdict.h"
+#include "qobject/qjson.h"
+#include "qobject/qlist.h"
 #include "qapi/qobject-input-visitor.h"
 #include "qapi/qapi-visit-block-core.h"
 
@@ -367,11 +367,11 @@ static int qemu_rbd_convert_luks_create_options(
 
     if (luks_opts->has_cipher_alg) {
         switch (luks_opts->cipher_alg) {
-            case QCRYPTO_CIPHER_ALG_AES_128: {
+            case QCRYPTO_CIPHER_ALGO_AES_128: {
                 *alg = RBD_ENCRYPTION_ALGORITHM_AES128;
                 break;
             }
-            case QCRYPTO_CIPHER_ALG_AES_256: {
+            case QCRYPTO_CIPHER_ALGO_AES_256: {
                 *alg = RBD_ENCRYPTION_ALGORITHM_AES256;
                 break;
             }
@@ -1815,8 +1815,9 @@ static const char *const qemu_rbd_strong_runtime_opts[] = {
 static BlockDriver bdrv_rbd = {
     .format_name            = "rbd",
     .instance_size          = sizeof(BDRVRBDState),
+
     .bdrv_parse_filename    = qemu_rbd_parse_filename,
-    .bdrv_file_open         = qemu_rbd_open,
+    .bdrv_open              = qemu_rbd_open,
     .bdrv_close             = qemu_rbd_close,
     .bdrv_reopen_prepare    = qemu_rbd_reopen_prepare,
     .bdrv_co_create         = qemu_rbd_co_create,

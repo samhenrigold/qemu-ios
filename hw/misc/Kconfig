@@ -30,10 +30,6 @@ config EDU
     default y if TEST_DEVICES
     depends on PCI && MSI_NONBROKEN
 
-config PCA9552
-    bool
-    depends on I2C
-
 config I2C_ECHO
     bool
     default y if TEST_DEVICES
@@ -68,15 +64,28 @@ config IVSHMEM_DEVICE
     default y if PCI_DEVICES
     depends on PCI && LINUX && IVSHMEM && MSI_NONBROKEN
 
+config IVSHMEM_FLAT_DEVICE
+    bool
+    default y
+    depends on LINUX && IVSHMEM
+
 config ECCMEMCTL
     bool
-    select ECC
 
 config IMX
     bool
     select PTIMER
     select SSI
     select USB_EHCI_SYSBUS
+
+config FSL_IMX8MP_ANALOG
+    bool
+
+config FSL_IMX8MP_CCM
+    bool
+
+config STM32_RCC
+    bool
 
 config STM32F2XX_SYSCFG
     bool
@@ -85,6 +94,15 @@ config STM32F4XX_SYSCFG
     bool
 
 config STM32F4XX_EXTI
+    bool
+
+config STM32L4X5_EXTI
+    bool
+
+config STM32L4X5_SYSCFG
+    bool
+
+config STM32L4X5_RCC
     bool
 
 config MIPS_ITU
@@ -128,6 +146,10 @@ config PVPANIC_PCI
 config PVPANIC_ISA
     bool
     depends on ISA_BUS
+    select PVPANIC_COMMON
+
+config PVPANIC_MMIO
+    bool
     select PVPANIC_COMMON
 
 config AUX

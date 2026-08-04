@@ -21,7 +21,7 @@
 #include "hw/qdev-properties.h"
 #include "net/tap.h"
 #include "net/checksum.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -456,7 +456,6 @@ vmxnet3_setup_tx_offloads(VMXNET3State *s)
 
     default:
         g_assert_not_reached();
-        return false;
     }
 
     return true;
@@ -2091,8 +2090,6 @@ static void vmxnet3_net_init(VMXNET3State *s)
     if (s->peer_has_vhdr) {
         qemu_set_vnet_hdr_len(qemu_get_queue(s->nic)->peer,
             sizeof(struct virtio_net_hdr));
-
-        qemu_using_vnet_hdr(qemu_get_queue(s->nic)->peer, 1);
     }
 
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
@@ -2307,7 +2304,7 @@ static const VMStateDescription vmxstate_vmxnet3_mcast_list = {
     .minimum_version_id = 1,
     .pre_load = vmxnet3_mcast_list_pre_load,
     .needed = vmxnet3_mc_list_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_VBUFFER_UINT32(mcast_list, VMXNET3State, 0, NULL,
             mcast_list_buff_size),
         VMSTATE_END_OF_LIST()
@@ -2317,7 +2314,7 @@ static const VMStateDescription vmxstate_vmxnet3_mcast_list = {
 static const VMStateDescription vmstate_vmxnet3_ring = {
     .name = "vmxnet3-ring",
     .version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT64(pa, Vmxnet3Ring),
         VMSTATE_UINT32(size, Vmxnet3Ring),
         VMSTATE_UINT32(cell_size, Vmxnet3Ring),
@@ -2330,7 +2327,7 @@ static const VMStateDescription vmstate_vmxnet3_ring = {
 static const VMStateDescription vmstate_vmxnet3_tx_stats = {
     .name = "vmxnet3-tx-stats",
     .version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT64(TSOPktsTxOK, struct UPT1_TxStats),
         VMSTATE_UINT64(TSOBytesTxOK, struct UPT1_TxStats),
         VMSTATE_UINT64(ucastPktsTxOK, struct UPT1_TxStats),
@@ -2348,7 +2345,7 @@ static const VMStateDescription vmstate_vmxnet3_tx_stats = {
 static const VMStateDescription vmstate_vmxnet3_txq_descr = {
     .name = "vmxnet3-txq-descr",
     .version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(tx_ring, Vmxnet3TxqDescr, 0, vmstate_vmxnet3_ring,
                        Vmxnet3Ring),
         VMSTATE_STRUCT(comp_ring, Vmxnet3TxqDescr, 0, vmstate_vmxnet3_ring,
@@ -2364,7 +2361,7 @@ static const VMStateDescription vmstate_vmxnet3_txq_descr = {
 static const VMStateDescription vmstate_vmxnet3_rx_stats = {
     .name = "vmxnet3-rx-stats",
     .version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT64(LROPktsRxOK, struct UPT1_RxStats),
         VMSTATE_UINT64(LROBytesRxOK, struct UPT1_RxStats),
         VMSTATE_UINT64(ucastPktsRxOK, struct UPT1_RxStats),
@@ -2382,7 +2379,7 @@ static const VMStateDescription vmstate_vmxnet3_rx_stats = {
 static const VMStateDescription vmstate_vmxnet3_rxq_descr = {
     .name = "vmxnet3-rxq-descr",
     .version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(rx_ring, Vmxnet3RxqDescr,
                              VMXNET3_RX_RINGS_PER_QUEUE, 0,
                              vmstate_vmxnet3_ring, Vmxnet3Ring),
@@ -2418,7 +2415,7 @@ static int vmxnet3_post_load(void *opaque, int version_id)
 static const VMStateDescription vmstate_vmxnet3_int_state = {
     .name = "vmxnet3-int-state",
     .version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_BOOL(is_masked, Vmxnet3IntState),
         VMSTATE_BOOL(is_pending, Vmxnet3IntState),
         VMSTATE_BOOL(is_asserted, Vmxnet3IntState),
@@ -2432,7 +2429,7 @@ static const VMStateDescription vmstate_vmxnet3 = {
     .minimum_version_id = 1,
     .pre_save = vmxnet3_pre_save,
     .post_load = vmxnet3_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
             VMSTATE_PCI_DEVICE(parent_obj, VMXNET3State),
             VMSTATE_MSIX(parent_obj, VMXNET3State),
             VMSTATE_BOOL(rx_packets_compound, VMXNET3State),
@@ -2468,19 +2465,18 @@ static const VMStateDescription vmstate_vmxnet3 = {
 
             VMSTATE_END_OF_LIST()
     },
-    .subsections = (const VMStateDescription*[]) {
+    .subsections = (const VMStateDescription * const []) {
         &vmxstate_vmxnet3_mcast_list,
         NULL
     }
 };
 
-static Property vmxnet3_properties[] = {
+static const Property vmxnet3_properties[] = {
     DEFINE_NIC_PROPERTIES(VMXNET3State, conf),
     DEFINE_PROP_BIT("x-old-msi-offsets", VMXNET3State, compat_flags,
                     VMXNET3_COMPAT_FLAG_OLD_MSI_OFFSETS_BIT, false),
     DEFINE_PROP_BIT("x-disable-pcie", VMXNET3State, compat_flags,
                     VMXNET3_COMPAT_FLAG_DISABLE_PCIE_BIT, false),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void vmxnet3_realize(DeviceState *qdev, Error **errp)
@@ -2514,7 +2510,7 @@ static void vmxnet3_class_init(ObjectClass *class, void *data)
     device_class_set_parent_realize(dc, vmxnet3_realize,
                                     &vc->parent_dc_realize);
     dc->desc = "VMWare Paravirtualized Ethernet v3";
-    dc->reset = vmxnet3_qdev_reset;
+    device_class_set_legacy_reset(dc, vmxnet3_qdev_reset);
     dc->vmsd = &vmstate_vmxnet3;
     device_class_set_props(dc, vmxnet3_properties);
     set_bit(DEVICE_CATEGORY_NETWORK, dc->categories);

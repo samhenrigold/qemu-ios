@@ -7,12 +7,13 @@ Enabling migration QMP events on VM...
 {"return": {}}
 {"data": {"status": "setup"}, "event": "MIGRATION", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
 {"data": {"status": "active"}, "event": "MIGRATION", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+{"data": {"status": "device"}, "event": "MIGRATION", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
 {"data": {"status": "completed"}, "event": "MIGRATION", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
 
 VM is now stopped:
 completed
 {"execute": "query-status", "arguments": {}}
-{"return": {"running": false, "singlestep": false, "status": "postmigrate"}}
+{"return": {"running": false, "status": "postmigrate"}}
 
 === Create a snapshot of the disk image ===
 {"execute": "blockdev-create", "arguments": {"job-id": "job0", "options": {"driver": "file", "filename": "TEST_DIR/PID-top", "size": 0}}}

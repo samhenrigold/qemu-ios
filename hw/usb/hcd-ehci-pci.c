@@ -83,7 +83,7 @@ static void usb_ehci_pci_init(Object *obj)
     s->capsbase = 0x00;
     s->opregbase = 0x20;
     s->portscbase = 0x44;
-    s->portnr = NB_PORTS;
+    s->portnr = EHCI_PORTS;
 
     if (!dc->hotpluggable) {
         s->companion_enable = true;
@@ -135,16 +135,15 @@ static void usb_ehci_pci_write_config(PCIDevice *dev, uint32_t addr,
     i->ehci.as = busmaster ? pci_get_address_space(dev) : &address_space_memory;
 }
 
-static Property ehci_pci_properties[] = {
+static const Property ehci_pci_properties[] = {
     DEFINE_PROP_UINT32("maxframes", EHCIPCIState, ehci.maxframes, 128),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static const VMStateDescription vmstate_ehci_pci = {
     .name        = "ehci",
     .version_id  = 2,
     .minimum_version_id  = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(pcidev, EHCIPCIState),
         VMSTATE_STRUCT(ehci, EHCIPCIState, 2, vmstate_ehci, EHCIState),
         VMSTATE_END_OF_LIST()
@@ -162,7 +161,7 @@ static void ehci_class_init(ObjectClass *klass, void *data)
     k->config_write = usb_ehci_pci_write_config;
     dc->vmsd = &vmstate_ehci_pci;
     device_class_set_props(dc, ehci_pci_properties);
-    dc->reset = usb_ehci_pci_reset;
+    device_class_set_legacy_reset(dc, usb_ehci_pci_reset);
 }
 
 static const TypeInfo ehci_pci_type_info = {
@@ -183,7 +182,7 @@ static void ehci_data_class_init(ObjectClass *klass, void *data)
 {
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
-    EHCIPCIInfo *i = data;
+    const EHCIPCIInfo *i = data;
 
     k->vendor_id = i->vendor_id;
     k->device_id = i->device_id;
@@ -228,7 +227,7 @@ static void ehci_pci_register_types(void)
     for (i = 0; i < ARRAY_SIZE(ehci_pci_info); i++) {
         ehci_type_info.name = ehci_pci_info[i].name;
         ehci_type_info.class_data = ehci_pci_info + i;
-        type_register(&ehci_type_info);
+        type_register_static(&ehci_type_info);
     }
 }
 

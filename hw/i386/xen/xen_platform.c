@@ -30,8 +30,8 @@
 #include "migration/vmstate.h"
 #include "net/net.h"
 #include "trace.h"
-#include "sysemu/xen.h"
-#include "sysemu/block-backend.h"
+#include "system/xen.h"
+#include "system/block-backend.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "qom/object.h"
@@ -514,7 +514,7 @@ static void platform_mmio_write(void *opaque, hwaddr addr,
 static const MemoryRegionOps platform_mmio_handler = {
     .read = &platform_mmio_read,
     .write = &platform_mmio_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
 static void platform_mmio_setup(PCIXenPlatformState *d)
@@ -537,7 +537,7 @@ static const VMStateDescription vmstate_xen_platform = {
     .version_id = 4,
     .minimum_version_id = 4,
     .post_load = xen_platform_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, PCIXenPlatformState),
         VMSTATE_UINT8(flags, PCIXenPlatformState),
         VMSTATE_END_OF_LIST()
@@ -595,7 +595,7 @@ static void xen_platform_class_init(ObjectClass *klass, void *data)
     k->revision = 1;
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
     dc->desc = "XEN platform pci device";
-    dc->reset = platform_reset;
+    device_class_set_legacy_reset(dc, platform_reset);
     dc->vmsd = &vmstate_xen_platform;
 }
 

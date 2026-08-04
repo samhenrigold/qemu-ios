@@ -4,8 +4,6 @@
 #ifndef QEMU_RECT_H
 #define QEMU_RECT_H
 
-#include <stdint.h>
-#include <stdbool.h>
 
 typedef struct QemuRect {
     int16_t x;
@@ -19,7 +17,7 @@ static inline void qemu_rect_init(QemuRect *rect,
                                   uint16_t width, uint16_t height)
 {
     rect->x = x;
-    rect->y = x;
+    rect->y = y;
     rect->width = width;
     rect->height = height;
 }

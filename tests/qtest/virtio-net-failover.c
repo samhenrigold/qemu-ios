@@ -11,10 +11,11 @@
 #include "libqtest.h"
 #include "libqos/pci.h"
 #include "libqos/pci-pc.h"
-#include "migration-helpers.h"
-#include "qapi/qmp/qdict.h"
-#include "qapi/qmp/qlist.h"
-#include "qapi/qmp/qjson.h"
+#include "migration/migration-qmp.h"
+#include "migration/migration-util.h"
+#include "qobject/qdict.h"
+#include "qobject/qlist.h"
+#include "qobject/qjson.h"
 #include "libqos/malloc-pc.h"
 #include "libqos/virtio-pci.h"
 #include "hw/pci/pci.h"
@@ -486,7 +487,7 @@ static void test_hotplug_1_reverse(void)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby0",
                          "{'bus': 'root0',"
-                         "'failover': 'on',"
+                         "'failover': true,"
                          "'netdev': 'hs0',"
                          "'mac': '"MAC_STANDBY0"'}");
 
@@ -517,7 +518,7 @@ static void test_hotplug_2(void)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby0",
                          "{'bus': 'root0',"
-                         "'failover': 'on',"
+                         "'failover': true,"
                          "'netdev': 'hs0',"
                          "'mac': '"MAC_STANDBY0"'}");
 
@@ -566,7 +567,7 @@ static void test_hotplug_2_reverse(void)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby0",
                          "{'bus': 'root0',"
-                         "'failover': 'on',"
+                         "'failover': true,"
                          "'netdev': 'hs0',"
                          "'rombar': 0,"
                          "'romfile': '',"
@@ -639,7 +640,7 @@ static void test_migrate_out(gconstpointer opaque)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby0",
                          "{'bus': 'root0',"
-                         "'failover': 'on',"
+                         "'failover': true,"
                          "'netdev': 'hs0',"
                          "'mac': '"MAC_STANDBY0"'}");
 
@@ -754,7 +755,7 @@ static void test_migrate_in(gconstpointer opaque)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby0",
                          "{'bus': 'root0',"
-                         "'failover': 'on',"
+                         "'failover': true,"
                          "'netdev': 'hs0',"
                          "'mac': '"MAC_STANDBY0"'}");
 
@@ -772,7 +773,7 @@ static void test_migrate_in(gconstpointer opaque)
     check_one_card(qts, true, "standby0", MAC_STANDBY0);
     check_one_card(qts, false, "primary0", MAC_PRIMARY0);
 
-    migrate_incoming_qmp(qts, uri, "{}");
+    migrate_incoming_qmp(qts, uri, NULL, "{}");
 
     resp = get_failover_negociated_event(qts);
     g_assert_cmpstr(qdict_get_str(resp, "device-id"), ==, "standby0");
@@ -808,7 +809,7 @@ static void test_off_migrate_out(gconstpointer opaque)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby0",
                          "{'bus': 'root0',"
-                         "'failover': 'off',"
+                         "'failover': false,"
                          "'netdev': 'hs0',"
                          "'mac': '"MAC_STANDBY0"'}");
 
@@ -876,7 +877,7 @@ static void test_off_migrate_in(gconstpointer opaque)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby0",
                          "{'bus': 'root0',"
-                         "'failover': 'off',"
+                         "'failover': false,"
                          "'netdev': 'hs0',"
                          "'mac': '"MAC_STANDBY0"'}");
 
@@ -894,7 +895,7 @@ static void test_off_migrate_in(gconstpointer opaque)
     check_one_card(qts, true, "standby0", MAC_STANDBY0);
     check_one_card(qts, true, "primary0", MAC_PRIMARY0);
 
-    migrate_incoming_qmp(qts, uri, "{}");
+    migrate_incoming_qmp(qts, uri, NULL, "{}");
 
     check_one_card(qts, true, "standby0", MAC_STANDBY0);
     check_one_card(qts, true, "primary0", MAC_PRIMARY0);
@@ -927,7 +928,7 @@ static void test_guest_off_migrate_out(gconstpointer opaque)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby0",
                          "{'bus': 'root0',"
-                         "'failover': 'on',"
+                         "'failover': true,"
                          "'netdev': 'hs0',"
                          "'mac': '"MAC_STANDBY0"'}");
 
@@ -1003,7 +1004,7 @@ static void test_guest_off_migrate_in(gconstpointer opaque)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby0",
                          "{'bus': 'root0',"
-                         "'failover': 'on',"
+                         "'failover': true,"
                          "'netdev': 'hs0',"
                          "'mac': '"MAC_STANDBY0"'}");
 
@@ -1021,7 +1022,7 @@ static void test_guest_off_migrate_in(gconstpointer opaque)
     check_one_card(qts, true, "standby0", MAC_STANDBY0);
     check_one_card(qts, false, "primary0", MAC_PRIMARY0);
 
-    migrate_incoming_qmp(qts, uri, "{}");
+    migrate_incoming_qmp(qts, uri, NULL, "{}");
 
     check_one_card(qts, true, "standby0", MAC_STANDBY0);
     check_one_card(qts, false, "primary0", MAC_PRIMARY0);
@@ -1054,7 +1055,7 @@ static void test_migrate_guest_off_abort(gconstpointer opaque)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby0",
                          "{'bus': 'root0',"
-                         "'failover': 'on',"
+                         "'failover': true,"
                          "'netdev': 'hs0',"
                          "'mac': '"MAC_STANDBY0"'}");
 
@@ -1154,7 +1155,7 @@ static void test_migrate_abort_wait_unplug(gconstpointer opaque)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby0",
                          "{'bus': 'root0',"
-                         "'failover': 'on',"
+                         "'failover': true,"
                          "'netdev': 'hs0',"
                          "'mac': '"MAC_STANDBY0"'}");
 
@@ -1243,7 +1244,7 @@ static void test_migrate_abort_active(gconstpointer opaque)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby0",
                          "{'bus': 'root0',"
-                         "'failover': 'on',"
+                         "'failover': true,"
                          "'netdev': 'hs0',"
                          "'mac': '"MAC_STANDBY0"'}");
 
@@ -1342,7 +1343,7 @@ static void test_migrate_off_abort(gconstpointer opaque)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby0",
                          "{'bus': 'root0',"
-                         "'failover': 'off',"
+                         "'failover': false,"
                          "'netdev': 'hs0',"
                          "'mac': '"MAC_STANDBY0"'}");
 
@@ -1434,7 +1435,7 @@ static void test_migrate_abort_timeout(gconstpointer opaque)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby0",
                          "{'bus': 'root0',"
-                         "'failover': 'on',"
+                         "'failover': true,"
                          "'netdev': 'hs0',"
                          "'mac': '"MAC_STANDBY0"'}");
 
@@ -1530,7 +1531,7 @@ static void test_multi_out(gconstpointer opaque)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby0",
                          "{'bus': 'root0',"
-                         "'failover': 'on',"
+                         "'failover': true,"
                          "'netdev': 'hs0',"
                          "'mac': '"MAC_STANDBY0"'}");
 
@@ -1561,7 +1562,7 @@ static void test_multi_out(gconstpointer opaque)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby1",
                          "{'bus': 'root2',"
-                         "'failover': 'on',"
+                         "'failover': true,"
                          "'netdev': 'hs2',"
                          "'mac': '"MAC_STANDBY1"'}");
 
@@ -1700,7 +1701,7 @@ static void test_multi_in(gconstpointer opaque)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby0",
                          "{'bus': 'root0',"
-                         "'failover': 'on',"
+                         "'failover': true,"
                          "'netdev': 'hs0',"
                          "'mac': '"MAC_STANDBY0"'}");
 
@@ -1724,7 +1725,7 @@ static void test_multi_in(gconstpointer opaque)
 
     qtest_qmp_device_add(qts, "virtio-net", "standby1",
                          "{'bus': 'root2',"
-                         "'failover': 'on',"
+                         "'failover': true,"
                          "'netdev': 'hs2',"
                          "'mac': '"MAC_STANDBY1"'}");
 
@@ -1746,7 +1747,7 @@ static void test_multi_in(gconstpointer opaque)
     check_one_card(qts, true, "standby1", MAC_STANDBY1);
     check_one_card(qts, false, "primary1", MAC_PRIMARY1);
 
-    migrate_incoming_qmp(qts, uri, "{}");
+    migrate_incoming_qmp(qts, uri, NULL, "{}");
 
     resp = get_failover_negociated_event(qts);
     g_assert_cmpstr(qdict_get_str(resp, "device-id"), ==, "standby0");

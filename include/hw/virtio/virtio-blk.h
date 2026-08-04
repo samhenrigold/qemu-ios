@@ -17,13 +17,14 @@
 #include "standard-headers/linux/virtio_blk.h"
 #include "hw/virtio/virtio.h"
 #include "hw/block/block.h"
-#include "sysemu/iothread.h"
-#include "sysemu/block-backend.h"
-#include "sysemu/block-ram-registrar.h"
+#include "system/iothread.h"
+#include "system/block-backend.h"
+#include "system/block-ram-registrar.h"
 #include "qom/object.h"
+#include "qapi/qapi-types-virtio.h"
 
 #define TYPE_VIRTIO_BLK "virtio-blk-device"
-OBJECT_DECLARE_SIMPLE_TYPE(VirtIOBlock, VIRTIO_BLK)
+OBJECT_DECLARE_TYPE(VirtIOBlock, VirtIOBlkClass, VIRTIO_BLK)
 
 /* This is the last element of the write scatter-gather list */
 struct virtio_blk_inhdr
@@ -37,6 +38,7 @@ struct VirtIOBlkConf
 {
     BlockConf conf;
     IOThread *iothread;
+    IOThreadVirtQueueMappingList *iothread_vq_mapping_list;
     char *serial;
     uint32_t request_merging;
     uint16_t num_queues;
@@ -48,20 +50,27 @@ struct VirtIOBlkConf
     bool x_enable_wce_if_config_wce;
 };
 
-struct VirtIOBlockDataPlane;
-
 struct VirtIOBlockReq;
 struct VirtIOBlock {
     VirtIODevice parent_obj;
     BlockBackend *blk;
-    void *rq;
+    QemuMutex rq_lock;
+    struct VirtIOBlockReq *rq; /* protected by rq_lock */
     VirtIOBlkConf conf;
     unsigned short sector_mask;
     bool original_wce;
     VMChangeStateEntry *change;
-    bool dataplane_disabled;
-    bool dataplane_started;
-    struct VirtIOBlockDataPlane *dataplane;
+    bool ioeventfd_disabled;
+    bool ioeventfd_started;
+    bool ioeventfd_starting;
+    bool ioeventfd_stopping;
+
+    /*
+     * The AioContext for each virtqueue. The BlockDriverState will use the
+     * first element as its AioContext.
+     */
+    AioContext **vq_aio_context;
+
     uint64_t host_features;
     size_t config_size;
     BlockRAMRegistrar blk_ram_registrar;
@@ -91,6 +100,15 @@ typedef struct MultiReqBuffer {
     bool is_write;
 } MultiReqBuffer;
 
+typedef struct VirtIOBlkClass {
+    /*< private >*/
+    VirtioDeviceClass parent;
+    /*< public >*/
+    bool (*handle_unknown_request)(VirtIOBlockReq *req, MultiReqBuffer *mrb,
+                                   uint32_t type);
+} VirtIOBlkClass;
+
 void virtio_blk_handle_vq(VirtIOBlock *s, VirtQueue *vq);
+void virtio_blk_req_complete(VirtIOBlockReq *req, unsigned char status);
 
 #endif

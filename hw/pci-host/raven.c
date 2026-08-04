@@ -200,6 +200,7 @@ static const MemoryRegionOps raven_io_ops = {
     .write = raven_io_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .impl.max_access_size = 4,
+    .impl.unaligned = true,
     .valid.unaligned = true,
 };
 
@@ -345,8 +346,10 @@ static void raven_realize(PCIDevice *d, Error **errp)
     d->config[PCI_LATENCY_TIMER] = 0x10;
     d->config[PCI_CAPABILITY_LIST] = 0x00;
 
-    memory_region_init_rom_nomigrate(&s->bios, OBJECT(s), "bios", BIOS_SIZE,
-                                     &error_fatal);
+    if (!memory_region_init_rom_nomigrate(&s->bios, OBJECT(s), "bios",
+                                          BIOS_SIZE, errp)) {
+        return;
+    }
     memory_region_add_subregion(get_system_memory(), (uint32_t)(-BIOS_SIZE),
                                 &s->bios);
     if (s->bios_name) {
@@ -354,8 +357,8 @@ static void raven_realize(PCIDevice *d, Error **errp)
         if (filename) {
             if (s->elf_machine != EM_NONE) {
                 bios_size = load_elf(filename, NULL, NULL, NULL, NULL,
-                                     NULL, NULL, NULL, 1, s->elf_machine,
-                                     0, 0);
+                                     NULL, NULL, NULL,
+                                     ELFDATA2MSB, s->elf_machine, 0, 0);
             }
             if (bios_size < 0) {
                 bios_size = get_image_size(filename);
@@ -383,7 +386,7 @@ static const VMStateDescription vmstate_raven = {
     .name = "raven",
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(dev, RavenPCIState),
         VMSTATE_END_OF_LIST()
     },
@@ -419,14 +422,13 @@ static const TypeInfo raven_info = {
     },
 };
 
-static Property raven_pcihost_properties[] = {
+static const Property raven_pcihost_properties[] = {
     DEFINE_PROP_UINT32("elf-machine", PREPPCIState, pci_dev.elf_machine,
                        EM_NONE),
     DEFINE_PROP_STRING("bios-name", PREPPCIState, pci_dev.bios_name),
     /* Temporary workaround until legacy prep machine is removed */
     DEFINE_PROP_BOOL("is-legacy-prep", PREPPCIState, is_legacy_prep,
                      false),
-    DEFINE_PROP_END_OF_LIST()
 };
 
 static void raven_pcihost_class_init(ObjectClass *klass, void *data)

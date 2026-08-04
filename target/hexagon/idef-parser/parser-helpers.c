@@ -1541,10 +1541,8 @@ void gen_circ_op(Context *c,
                  HexValue *increment,
                  HexValue *modifier)
 {
-    HexValue cs = gen_tmp(c, locp, 32, UNSIGNED);
     HexValue increment_m = *increment;
     increment_m = rvalue_materialize(c, locp, &increment_m);
-    OUT(c, locp, "gen_read_reg(", &cs, ", HEX_REG_CS0 + MuN);\n");
     OUT(c,
         locp,
         "gen_helper_fcircadd(",
@@ -1555,7 +1553,7 @@ void gen_circ_op(Context *c,
         &increment_m,
         ", ",
         modifier);
-    OUT(c, locp, ", ", &cs, ");\n");
+    OUT(c, locp, ", CS);\n");
 }
 
 HexValue gen_locnt_op(Context *c, YYLTYPE *locp, HexValue *src)
@@ -1654,26 +1652,28 @@ void gen_inst(Context *c, GString *iname)
 
 
 /*
- * Initialize declared but uninitialized registers, but only for
- * non-conditional instructions
+ * Initialize declared but uninitialized instruction arguments. Only needed for
+ * predicate arguments, initialization of registers is handled by the Hexagon
+ * frontend.
  */
 void gen_inst_init_args(Context *c, YYLTYPE *locp)
 {
+    HexValue *val = NULL;
+    char suffix;
+
+    /* If init_list is NULL arguments have already been initialized */
     if (!c->inst.init_list) {
         return;
     }
 
     for (unsigned i = 0; i < c->inst.init_list->len; i++) {
-        HexValue *val = &g_array_index(c->inst.init_list, HexValue, i);
-        if (val->type == REGISTER_ARG) {
-            /* Nothing to do here */
-        } else if (val->type == PREDICATE) {
-            char suffix = val->is_dotnew ? 'N' : 'V';
-            EMIT_HEAD(c, "tcg_gen_movi_i%u(P%c%c, 0);\n", val->bit_width,
-                      val->pred.id, suffix);
-        } else {
-            yyassert(c, locp, false, "Invalid arg type!");
-        }
+        val = &g_array_index(c->inst.init_list, HexValue, i);
+        suffix = val->is_dotnew ? 'N' : 'V';
+        yyassert(c, locp, val->type == PREDICATE,
+                 "Only predicates need to be initialized!");
+        yyassert(c, locp, val->bit_width == 32,
+                 "Predicates should always be 32 bits");
+        EMIT_HEAD(c, "tcg_gen_movi_i32(P%c%c, 0);\n", val->pred.id, suffix);
     }
 
     /* Free argument init list once we have initialized everything */
@@ -2080,9 +2080,9 @@ void emit_arg(Context *c, YYLTYPE *locp, HexValue *arg)
             char reg_id[5];
             reg_compose(c, locp, &(arg->reg), reg_id);
             EMIT_SIG(c, ", %s %s", type, reg_id);
-            /* MuV register requires also MuN to provide its index */
+            /* MuV register requires also CS for circular addressing*/
             if (arg->reg.type == MODIFIER) {
-                EMIT_SIG(c, ", int MuN");
+                EMIT_SIG(c, ", TCGv CS");
             }
         }
         break;
@@ -2123,9 +2123,16 @@ void free_instruction(Context *c)
         g_string_free(g_array_index(c->inst.strings, GString*, i), TRUE);
     }
     g_array_free(c->inst.strings, TRUE);
+    /*
+     * Free list of arguments that might need initialization, if they haven't
+     * already been freed.
+     */
+    if (c->inst.init_list) {
+        g_array_free(c->inst.init_list, TRUE);
+    }
     /* Free INAME token value */
     g_string_free(c->inst.name, TRUE);
-    /* Free variables and registers */
+    /* Free declared TCGv variables */
     g_array_free(c->inst.allocated, TRUE);
     /* Initialize instruction-specific portion of the context */
     memset(&(c->inst), 0, sizeof(Inst));

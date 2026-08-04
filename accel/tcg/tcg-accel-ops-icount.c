@@ -24,11 +24,11 @@
  */
 
 #include "qemu/osdep.h"
-#include "sysemu/replay.h"
-#include "sysemu/cpu-timers.h"
+#include "system/replay.h"
+#include "system/cpu-timers.h"
 #include "qemu/main-loop.h"
 #include "qemu/guest-random.h"
-#include "exec/exec-all.h"
+#include "hw/core/cpu.h"
 
 #include "tcg-accel-ops.h"
 #include "tcg-accel-ops-icount.h"
@@ -123,12 +123,12 @@ void icount_prepare_for_run(CPUState *cpu, int64_t cpu_budget)
 
     if (cpu->icount_budget == 0) {
         /*
-         * We're called without the iothread lock, so must take it while
+         * We're called without the BQL, so must take it while
          * we're calling timer handlers.
          */
-        qemu_mutex_lock_iothread();
+        bql_lock();
         icount_notify_aio_contexts();
-        qemu_mutex_unlock_iothread();
+        bql_unlock();
     }
 }
 

@@ -19,7 +19,7 @@
 #include "qemu/module.h"
 #include "trace.h"
 #include "i82596.h"
-#include <zlib.h>       /* For crc32 */
+#include <zlib.h> /* for crc32 */
 
 #if defined(ENABLE_DEBUG)
 #define DBG(x)          x
@@ -282,7 +282,7 @@ static void command_loop(I82596State *s)
         case CmdDump:
         case CmdDiagnose:
             printf("FIXME Command %d !!\n", cmd & 7);
-            assert(0);
+            g_assert_not_reached();
         }
 
         /* update status */
@@ -713,7 +713,7 @@ const VMStateDescription vmstate_i82596 = {
     .name = "i82596",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT16(lnkst, I82596State),
         VMSTATE_TIMER_PTR(flush_queue_timer, I82596State),
         VMSTATE_END_OF_LIST()
