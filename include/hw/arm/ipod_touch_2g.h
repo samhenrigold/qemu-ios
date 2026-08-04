@@ -92,6 +92,8 @@
 #define KEY_PLUS_DOWN KEY_PLUS
 #define KEY_PLUS_UP   (KEY_PLUS_DOWN | KEY_UP)
 
+#include "hw/arm/ipod_touch_buttons.h"
+
 extern const int S5L8900_GPIO_IRQS[5];
 
 #define IT2G_CPREG_VAR_NAME(name) cpreg_##name
