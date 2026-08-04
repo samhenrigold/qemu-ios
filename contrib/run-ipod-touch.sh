@@ -228,6 +228,14 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+# Device > Erase All Content and Settings drops this marker and quits, because
+# the overlay's pages are open and being written to while the machine runs and
+# deleting them underneath it corrupts whatever is in flight. Acting on it here,
+# before QEMU starts, is the only point where the overlay is nobody's.
+if [ -e "$OVL/.erase-on-next-start" ]; then
+    echo "--- erasing $OVL (requested from the Device menu)"
+    FRESH=1
+fi
 [ "$FRESH" = 1 ] && rm -rf "$OVL"
 mkdir -p "$OVL"
 

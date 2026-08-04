@@ -40,6 +40,7 @@
 #include "system/cpu-throttle.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-block.h"
+#include "qapi/qapi-commands-control.h"
 #include "qapi/qapi-commands-machine.h"
 #include "qapi/qapi-commands-misc.h"
 #include "system/blockdev.h"
@@ -1713,6 +1714,7 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
 - (void)deviceButton:(id)sender;
 - (void)installApp:(id)sender;
 - (void)openTerminal:(id)sender;
+- (void)eraseDevice:(id)sender;
 @end
 
 @implementation QemuCocoaAppController
@@ -2259,6 +2261,67 @@ static void it_send_chord(int key, bool shift, bool down)
 }
 
 /*
+ * Device ▸ Erase All Content and Settings…
+ *
+ * Everything the guest has ever written lives in the copy-on-write overlay, so
+ * a factory reset is deleting one directory -- but NOT from here. The overlay's
+ * page files are open and being written to by the running machine, and removing
+ * them underneath it corrupts whatever is in flight. So this drops a marker in
+ * the overlay and quits; the runner sees the marker on its next start and wipes
+ * before QEMU exists to care. Same reason the marker is not simply "wipe on
+ * exit": a crash or a kill -9 would skip it, and the device would come back
+ * with the state the user just asked to be rid of.
+ */
+- (void)eraseDevice:(id)sender
+{
+    __block char *overlay = NULL;
+    NSAlert *alert;
+
+    with_bql(^{
+        Object *machine = qdev_get_machine();
+        if (machine && object_property_find(machine, "nandrw")) {
+            overlay = object_property_get_str(machine, "nandrw", NULL);
+        }
+    });
+
+    if (overlay == NULL || *overlay == '\0') {
+        g_free(overlay);
+        QEMU_Alert(@"This device has no writable overlay, so there is nothing "
+                   @"to erase -- it already starts clean every time.");
+        return;
+    }
+
+    alert = [[[NSAlert alloc] init] autorelease];
+    [alert setMessageText:@"Erase all content and settings?"];
+    [alert setInformativeText:@"Every app you installed and every setting you "
+                              @"changed will be deleted, and the device will "
+                              @"return to how it shipped.\n\nThe emulator will "
+                              @"quit; the erase happens the next time you open "
+                              @"it."];
+    [alert addButtonWithTitle:@"Cancel"];
+    [alert addButtonWithTitle:@"Erase"];
+    [alert setAlertStyle:NSAlertStyleCritical];
+    if ([alert runModal] != NSAlertSecondButtonReturn) {
+        g_free(overlay);
+        return;
+    }
+
+    NSString *marker = [[NSString stringWithUTF8String:overlay]
+                        stringByAppendingPathComponent:@".erase-on-next-start"];
+    g_free(overlay);
+
+    if (![@"" writeToFile:marker atomically:YES
+                 encoding:NSUTF8StringEncoding error:NULL]) {
+        QEMU_Alert([NSString stringWithFormat:
+            @"Could not mark the device for erase: %@ is not writable.", marker]);
+        return;
+    }
+    with_bql(^{
+        qmp_quit(NULL);
+    });
+}
+
+/*
  * Device ▸ Open Terminal -- a root shell on the guest, over USB.
  *
  * The script is the deliverable, not this method: it is runnable from a
@@ -2452,6 +2515,9 @@ static void create_initial_menus(void)
                      action:@selector(installApp:) keyEquivalent:@""] autorelease]];
     [menu addItem: [[[NSMenuItem alloc] initWithTitle:@"Open Terminal"
                      action:@selector(openTerminal:) keyEquivalent:@""] autorelease]];
+    [menu addItem: [NSMenuItem separatorItem]];
+    [menu addItem: [[[NSMenuItem alloc] initWithTitle:@"Erase All Content and Settings…"
+                     action:@selector(eraseDevice:) keyEquivalent:@""] autorelease]];
     menuItem = [[[NSMenuItem alloc] initWithTitle:@"Device" action:nil keyEquivalent:@""] autorelease];
     [menuItem setSubmenu:menu];
     [[NSApp mainMenu] addItem:menuItem];
