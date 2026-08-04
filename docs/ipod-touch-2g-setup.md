@@ -124,20 +124,34 @@ appears completely dead.
 
 ## What works
 
-Boot to a usable home screen; reboot; touch and the on-screen keyboard; WiFi
-(Safari renders pages); installing and launching decrypted third-party apps over
-USB; root ssh over USB; `lldb` attaching to guest processes, reading registers
-and hitting breakpoints; save and restore of a running machine via
-`migrate file:` / `-incoming file:`.
+Boot to a usable home screen; reboot; touch, multitouch (pinch-to-zoom) and the
+on-screen keyboard; WiFi (Safari renders pages); installing and launching
+decrypted third-party apps over USB; real OpenGL ES games; sound; the host
+clipboard writing into the guest pasteboard; root ssh over USB; `lldb` attaching
+to guest processes, reading registers and hitting breakpoints; save and restore
+of a running machine via `migrate file:` / `-incoming file:`.
 
 ## What does not
 
-**Audio produces no sound.** The host output path is proven — a synthesised tone
-reaches the host — but the guest's DMA engine never moves audio data.
+**3D is partial.** A game's world, camera and menus render and animate, and
+frames reach CoreAnimation through the real IOSurface present path. But at least
+one app reaches a state where the panel keeps compositing a stale frame: the
+missing geometry is provably in the GL colour buffer and provably absent from
+the panel, with CA accepting every frame it is handed. Pacing on 3.1.3 also
+judders while the guest sits at 3.5% CPU.
 
-**3D is partial.** Guest GL calls trap to the host and render with real OpenGL,
-and a triangle and a texture reach the panel, but the `MBXGLEngine.bundle`
-replacement that would route a real app's GL through it is not written. Games
-will not render yet.
+**Audio is imperfect.** Output is sample-exact against the source and correctly
+paced, but a clip can replay a fragment of itself about 0.37 s later — one
+period of the guest's 16-page DMA ring. Ringtones go through the AMC AAC engine
+rather than raw PCM and have not been looked at.
 
 Encrypted App Store binaries cannot run — only decrypted ones.
+
+## A note on demo mode
+
+This emulator has always presented itself to iOS as a tethered demo unit,
+because 3.1.3's presence test for Apple's demo card is nothing more than "did
+the I2C write to address 0x29 succeed", and this tree's I2C never NAKs. That is
+why the device never auto-locks, never dims and hides its charging UI.
+`IT_I2C_NAK=1` makes absent I2C slaves behave like absent slaves, which is more
+faithful — and turns those behaviours back on.
