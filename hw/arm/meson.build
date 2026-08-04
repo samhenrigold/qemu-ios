@@ -63,7 +63,7 @@ arm_ss.add(when: 'CONFIG_XEN', if_true: files(
   'xen-stubs.c',
   'xen-pvh.c',
 ))
-arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: files('ipod_touch_2g.c', 'ipod_touch_clock.c', 'ipod_touch_chipid.c', 'ipod_touch_gpio.c', 'guest-services.c', 'guest-gles.c', 'gles-host.c', 'guest-socket.c', 'guest-fds.c', 'guest-file.c', 'ipod_touch_sysic.c', 'ipod_touch_timer.c', 'ipod_touch_usb_otg.c', 'ipod_touch_tcp_usb.c', 'ipod_touch_usb_phys.c', 'ipod_touch_spi.c', 'ipod_touch_nor_spi.c', 'ipod_touch_sha1.c', 'ipod_touch_aes.c', 'ipod_touch_pke.c', 'ipod_touch_pcf50633_pmu.c', 'ipod_touch_unknown1.c', 'ipod_touch_wdt.c', 'ipod_touch_mpvd.c', 'ipod_touch_lcd.c', 'ipod_touch_mipi_dsi.c', 'ipod_touch_fmss.c', 'ipod_touch_mbx.c', 'ipod_touch_cd3272_mikey.c', 'ipod_touch_cs42l58.c', 'ipod_touch_amc.c', 'ipod_touch_i2s.c', 'ipod_touch_lm48821.c', 'ipod_touch_lis302dl.c', 'ipod_touch_tethered.c', 'ipod_touch_multitouch.c', 'ipod_touch_scaler_csc.c', 'ipod_touch_sdio.c', 'ipod_touch_tvout.c', 'ipod_touch_isl29003dl.c'))
+arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: files('ipod_touch_2g.c', 'ipod_touch_clock.c', 'ipod_touch_chipid.c', 'ipod_touch_gpio.c', 'guest-services.c', 'guest-gles.c', 'guest-socket.c', 'guest-fds.c', 'guest-file.c', 'ipod_touch_sysic.c', 'ipod_touch_timer.c', 'ipod_touch_usb_otg.c', 'ipod_touch_tcp_usb.c', 'ipod_touch_usb_phys.c', 'ipod_touch_spi.c', 'ipod_touch_nor_spi.c', 'ipod_touch_sha1.c', 'ipod_touch_aes.c', 'ipod_touch_pke.c', 'ipod_touch_pcf50633_pmu.c', 'ipod_touch_unknown1.c', 'ipod_touch_wdt.c', 'ipod_touch_mpvd.c', 'ipod_touch_lcd.c', 'ipod_touch_mipi_dsi.c', 'ipod_touch_fmss.c', 'ipod_touch_mbx.c', 'ipod_touch_cd3272_mikey.c', 'ipod_touch_cs42l58.c', 'ipod_touch_amc.c', 'ipod_touch_i2s.c', 'ipod_touch_lm48821.c', 'ipod_touch_lis302dl.c', 'ipod_touch_tethered.c', 'ipod_touch_multitouch.c', 'ipod_touch_scaler_csc.c', 'ipod_touch_sdio.c', 'ipod_touch_tvout.c', 'ipod_touch_isl29003dl.c'))
 
 system_ss.add(when: 'CONFIG_ARM_SMMUV3', if_true: files('smmu-common.c'))
 system_ss.add(when: 'CONFIG_COLLIE', if_true: files('collie.c'))
@@ -76,8 +76,13 @@ system_ss.add(when: 'CONFIG_SX1', if_true: files('omap_sx1.c'))
 system_ss.add(when: 'CONFIG_VERSATILE', if_true: files('versatilepb.c'))
 system_ss.add(when: 'CONFIG_VEXPRESS', if_true: files('vexpress.c'))
 
-# gles-host.c renders through a legacy CGL context; the machine only builds on
-# hosts where that exists.
-arm_ss.add(when: ['CONFIG_IPOD_TOUCH_2G', host_opengl], if_true: host_opengl)
+# gles-host.c renders through a legacy CGL context; on hosts without one
+# (iOS SDKs have no OpenGL.framework) a stub takes its place and the guest's
+# GLES HLE probe fails cleanly.
+if host_opengl.found()
+  arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: [files('gles-host.c'), host_opengl])
+else
+  arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: files('gles-host-stub.c'))
+endif
 
 hw_arch += {'arm': arm_ss}

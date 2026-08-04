@@ -812,6 +812,11 @@ size_t qemu_get_host_physmem(void);
  * for the current thread.
  */
 #ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+/* pthread_jit_write_protect_np() is macOS-only; the TCG-interpreter iOS
+ * builds never map anything executable, so no-ops are correct there. */
+#if defined(__APPLE__) && TARGET_OS_OSX
 static inline void qemu_thread_jit_execute(void)
 {
     pthread_jit_write_protect_np(true);
