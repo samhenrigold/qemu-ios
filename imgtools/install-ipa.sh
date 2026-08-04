@@ -303,7 +303,13 @@ fi
 # emulators run on this machine and they all report the same UDID (it is
 # derived from our shared NOR), so guessing means an install can land on
 # somebody else's device with nothing to notice it by.
-SESSION="${SESSION:-$HOME/Developer/qemu-ios-files/apps/work/session.env}"
+#
+# IPOD_FILES is where the runner keeps its state, and the packaged app moves it
+# to Application Support because an app bundle is read-only. Honouring it here
+# is what makes Install App... work inside the app: without it this looks in a
+# home directory the app never writes to, and reports "usbmuxd is not running"
+# about a usbmuxd that is running perfectly well a few directories away.
+SESSION="${SESSION:-${IPOD_FILES:-$HOME/Developer/qemu-ios-files}/apps/work/session.env}"
 if [ -z "${SOCK:-}" ] && [ -f "$SESSION" ]; then
     # shellcheck disable=SC1090
     . "$SESSION"
@@ -317,7 +323,8 @@ install-ipa.sh: no emulator session -- usbmuxd is not running for any device.
   usbmuxd belongs to which emulator.
 
   Start the emulator with USB:
-      \$HOME/Developer/qemu-ios-files/ios3/run-ios3.sh --appsync
+      contrib/run-ipod-touch.sh --appsync
+  (or just launch the packaged app, which passes --appsync for you)
 
   usbmuxd HAS TO BE UP BEFORE QEMU. QEMU dials out to it when the guest's USB
   core comes up, and if nothing is listening it gives up for the rest of that

@@ -25,16 +25,30 @@ command -v iproxy >/dev/null || {
 # usbmuxd has to be listening before iproxy will connect to anything. Checking
 # here turns "the terminal opened and ssh timed out" into a sentence that names
 # the actual problem.
+SESSION="${SESSION:-${IPOD_FILES:-$HOME/Developer/qemu-ios-files}/apps/work/session.env}"
 SOCK="${USBMUXD_SOCKET_ADDRESS:-}"
-if [ -z "$SOCK" ] && [ -f "$HOME/Developer/qemu-ios-files/apps/work/session.env" ]; then
-    # shellcheck disable=SC1091
-    . "$HOME/Developer/qemu-ios-files/apps/work/session.env"
+if [ -z "$SOCK" ] && [ -f "$SESSION" ]; then
+    # shellcheck disable=SC1090
+    . "$SESSION"
     SOCK="${SOCK:-}"
 fi
-[ -n "$SOCK" ] && export USBMUXD_SOCKET_ADDRESS="$SOCK"
 
-if ! USBMUXD_SOCKET_ADDRESS="${SOCK:-}" idevice_id -l >/dev/null 2>&1; then
-    echo "no device on usbmuxd${SOCK:+ at $SOCK} -- start the emulator with --appsync first" >&2
+# No socket means no emulator of OURS. Falling through to the default would
+# reach the Mac's own Apple usbmuxd, which is running, answers happily, and has
+# no emulated device on it -- so iproxy connects to nothing and ssh dies
+# instantly with no message. Refuse instead of producing that.
+if [ -z "$SOCK" ]; then
+    echo "no emulator session at $SESSION -- start the emulator with --appsync" >&2
+    echo "(the packaged app passes --appsync for you)" >&2
+    exit 1
+fi
+export USBMUXD_SOCKET_ADDRESS="$SOCK"
+
+# idevice_id exits 0 with an EMPTY list when usbmuxd is up but has no device, so
+# the exit status alone cannot tell "connected" from "nothing there".
+if [ -z "$(idevice_id -l 2>/dev/null)" ]; then
+    echo "usbmuxd at $SOCK has no device attached yet." >&2
+    echo "Wait for the device to finish booting, then try again." >&2
     exit 1
 fi
 
@@ -45,9 +59,11 @@ fi
 CMD="$(mktemp -t itssh).command"
 cat >"$CMD" <<EOF
 #!/bin/bash
-cleanup() { [ -n "\${IPROXY:-}" ] && kill "\$IPROXY" 2>/dev/null; rm -f "$CMD"; }
+# disown first: otherwise job control prints "Terminated: 15" over the last
+# thing the user was reading, which looks like the shell crashed.
+cleanup() { if [ -n "\${IPROXY:-}" ]; then disown "\$IPROXY" 2>/dev/null; kill "\$IPROXY" 2>/dev/null; fi; rm -f "$CMD"; }
 trap cleanup EXIT
-${SOCK:+export USBMUXD_SOCKET_ADDRESS=$SOCK}
+export USBMUXD_SOCKET_ADDRESS=$SOCK
 iproxy $PORT 22 >/dev/null 2>&1 &
 IPROXY=\$!
 sleep 1
