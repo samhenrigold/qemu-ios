@@ -1198,8 +1198,10 @@ cocoa = dependency('appleframeworks',
 # Host-side OpenGL for the iPod Touch's GLES high-level emulation. A legacy
 # CGL context is still a real fixed-function GL 2.1 on modern macOS, which is
 # what lets ES 1.1 entry points forward one-to-one with no shader translation.
+# iOS SDKs have no OpenGL.framework; there the machine builds with a stub
+# (gles-host-stub.c) and the guest's GLES HLE probe fails cleanly.
 host_opengl = dependency('appleframeworks', modules: 'OpenGL',
-                         required: host_os == 'darwin')
+                         required: false)
 
 vmnet = dependency('appleframeworks', modules: 'vmnet', required: get_option('vmnet'))
 if vmnet.found() and not cc.has_header_symbol('vmnet/vmnet.h',

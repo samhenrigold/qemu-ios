@@ -22,3 +22,5 @@ GTAGS
 *.gcov
 
 *.DS_Store
+/build-min
+/build-ios-sim

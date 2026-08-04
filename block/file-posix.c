@@ -44,10 +44,10 @@
 
 #if defined(__APPLE__) && (__MACH__)
 #include <sys/ioctl.h>
-#if defined(HAVE_HOST_BLOCK_DEVICE)
-#include <paths.h>
 #include <sys/param.h>
 #include <sys/mount.h>
+#if defined(HAVE_HOST_BLOCK_DEVICE)
+#include <paths.h>
 #include <IOKit/IOKitLib.h>
 #include <IOKit/IOBSD.h>
 #include <IOKit/storage/IOMediaBSDClient.h>
