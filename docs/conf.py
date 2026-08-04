@@ -29,7 +29,6 @@
 import os
 import sys
 import sphinx
-from distutils.version import LooseVersion
 from sphinx.errors import ConfigError
 
 # The per-manual conf.py will set qemu_docdir for a single-manual build;
@@ -54,15 +53,21 @@ sys.path.insert(0, os.path.join(qemu_docdir, "../scripts"))
 
 # If your documentation needs a minimal Sphinx version, state it here.
 #
-# Sphinx 1.5 and earlier can't build our docs because they are too
-# picky about the syntax of the argument to the option:: directive
-# (see Sphinx bugs #646, #3366).
-needs_sphinx = '1.6'
+# 3.4.3 is the oldest version of Sphinx that ships on a platform we
+# pledge build support for.
+needs_sphinx = '3.4.3'
 
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
-extensions = ['kerneldoc', 'qmp_lexer', 'hxtool', 'depfile', 'qapidoc']
+extensions = [
+    'depfile',
+    'hxtool',
+    'kerneldoc',
+    'qapi_domain',
+    'qapidoc',
+    'qmp_lexer',
+]
 
 if sphinx.version_info[:3] > (4, 0, 0):
     tags.add('sphinx4')
@@ -89,7 +94,7 @@ default_role = 'any'
 
 # General information about the project.
 project = u'QEMU'
-copyright = u'2023, The QEMU Project Developers'
+copyright = u'2025, The QEMU Project Developers'
 author = u'The QEMU Project Developers'
 
 # The version info for the project you're documenting, acts as replacement for
@@ -148,6 +153,22 @@ rst_epilog = ".. |CONFDIR| replace:: ``" + confdir + "``\n"
 with open(os.path.join(qemu_docdir, 'defs.rst.inc')) as f:
     rst_epilog += f.read()
 
+
+# Normally, the QAPI domain is picky about what field lists you use to
+# describe a QAPI entity. If you'd like to use arbitrary additional
+# fields in source documentation, add them here.
+qapi_allowed_fields = {
+    "see also",
+}
+
+# Due to a limitation in Sphinx, we need to know which indices to
+# generate in advance. Adding a namespace here allows that generation.
+qapi_namespaces = {
+    "QGA",
+    "QMP",
+    "QSD",
+}
+
 # -- Options for HTML output ----------------------------------------------
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for
@@ -165,11 +186,10 @@ html_theme = 'sphinx_rtd_theme'
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.  For a list of options available for each theme, see the
 # documentation.
-if LooseVersion(sphinx_rtd_theme.__version__) >= LooseVersion("0.4.3"):
-    html_theme_options = {
-        "style_nav_header_background": "#802400",
-        "navigation_with_keys": True,
-    }
+html_theme_options = {
+    "style_nav_header_background": "#802400",
+    "navigation_with_keys": True,
+}
 
 html_logo = os.path.join(qemu_docdir, "../ui/icons/qemu_128x128.png")
 
@@ -189,7 +209,7 @@ html_js_files = [
 ]
 
 html_context = {
-    "display_gitlab": True,
+    "source_url_prefix": "https://gitlab.com/qemu-project/qemu/-/blob/master/docs/",
     "gitlab_user": "qemu-project",
     "gitlab_repo": "qemu",
     "gitlab_version": "master",
@@ -278,9 +298,6 @@ man_pages = [
     ('tools/qemu-trace-stap', 'qemu-trace-stap',
      'QEMU SystemTap trace tool',
      [], 1),
-    ('tools/virtfs-proxy-helper', 'virtfs-proxy-helper',
-     'QEMU 9p virtfs proxy filesystem helper',
-     ['M. Mohan Kumar'], 1),
 ]
 man_make_section_directory = False
 

@@ -366,7 +366,7 @@ static const VMStateDescription cmsdk_apb_uart_vmstate = {
     .version_id = 1,
     .minimum_version_id = 1,
     .post_load = cmsdk_apb_uart_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(state, CMSDKAPBUART),
         VMSTATE_UINT32(ctrl, CMSDKAPBUART),
         VMSTATE_UINT32(intstatus, CMSDKAPBUART),
@@ -377,10 +377,9 @@ static const VMStateDescription cmsdk_apb_uart_vmstate = {
     }
 };
 
-static Property cmsdk_apb_uart_properties[] = {
+static const Property cmsdk_apb_uart_properties[] = {
     DEFINE_PROP_CHR("chardev", CMSDKAPBUART, chr),
     DEFINE_PROP_UINT32("pclk-frq", CMSDKAPBUART, pclk_frq, 0),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void cmsdk_apb_uart_class_init(ObjectClass *klass, void *data)
@@ -389,7 +388,7 @@ static void cmsdk_apb_uart_class_init(ObjectClass *klass, void *data)
 
     dc->realize = cmsdk_apb_uart_realize;
     dc->vmsd = &cmsdk_apb_uart_vmstate;
-    dc->reset = cmsdk_apb_uart_reset;
+    device_class_set_legacy_reset(dc, cmsdk_apb_uart_reset);
     device_class_set_props(dc, cmsdk_apb_uart_properties);
 }
 

@@ -26,6 +26,10 @@
 #include "mmvec/mmvec.h"
 #include "hw/registerfields.h"
 
+#ifndef CONFIG_USER_ONLY
+#error "Hexagon does not support system emulation"
+#endif
+
 #define NUM_PREGS 4
 #define TOTAL_PER_THREAD_REGS 64
 
@@ -36,9 +40,6 @@
 #define VSTORES_MAX 2
 
 #define CPU_RESOLVING_TYPE TYPE_HEXAGON_CPU
-
-void hexagon_cpu_list(void);
-#define cpu_list hexagon_cpu_list
 
 #define MMU_USER_IDX 0
 
@@ -81,12 +82,6 @@ typedef struct CPUArchState {
 
     uint8_t slot_cancelled;
     target_ulong new_value_usr;
-
-    /*
-     * Only used when HEX_DEBUG is on, but unconditionally included
-     * to reduce recompile time when turning HEX_DEBUG on/off.
-     */
-    target_ulong reg_written[TOTAL_PER_THREAD_REGS];
 
     MemLog mem_log_stores[STORES_MAX];
 
@@ -137,6 +132,10 @@ struct ArchCPU {
 
 FIELD(TB_FLAGS, IS_TIGHT_LOOP, 0, 1)
 
+G_NORETURN void hexagon_raise_exception_err(CPUHexagonState *env,
+                                            uint32_t exception,
+                                            uintptr_t pc);
+
 static inline void cpu_get_tb_cpu_state(CPUHexagonState *env, vaddr *pc,
                                         uint64_t *cs_base, uint32_t *flags)
 {
@@ -147,20 +146,16 @@ static inline void cpu_get_tb_cpu_state(CPUHexagonState *env, vaddr *pc,
         hex_flags = FIELD_DP32(hex_flags, TB_FLAGS, IS_TIGHT_LOOP, 1);
     }
     *flags = hex_flags;
-}
-
-static inline int cpu_mmu_index(CPUHexagonState *env, bool ifetch)
-{
-#ifdef CONFIG_USER_ONLY
-    return MMU_USER_IDX;
-#else
-#error System mode not supported on Hexagon yet
-#endif
+    if (*pc & PCALIGN_MASK) {
+        hexagon_raise_exception_err(env, HEX_CAUSE_PC_NOT_ALIGNED, 0);
+    }
 }
 
 typedef HexagonCPU ArchCPU;
 
 void hexagon_translate_init(void);
+void hexagon_translate_code(CPUState *cs, TranslationBlock *tb,
+                            int *max_insns, vaddr pc, void *host_pc);
 
 #include "exec/cpu-all.h"
 

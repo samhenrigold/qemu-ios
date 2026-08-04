@@ -26,6 +26,52 @@ static inline bool fgt_svc(CPUARMState *env, int el)
         FIELD_EX64(env->cp15.fgt_exec[FGTREG_HFGITR], HFGITR_EL2, SVC_EL1);
 }
 
+/* Return true if memory alignment should be enforced. */
+static bool aprofile_require_alignment(CPUARMState *env, int el, uint64_t sctlr)
+{
+#ifdef CONFIG_USER_ONLY
+    return false;
+#else
+    /* Check the alignment enable bit. */
+    if (sctlr & SCTLR_A) {
+        return true;
+    }
+
+    /*
+     * With PMSA, when the MPU is disabled, all memory types in the
+     * default map are Normal, so don't need aligment enforcing.
+     */
+    if (arm_feature(env, ARM_FEATURE_PMSA)) {
+        return false;
+    }
+
+    /*
+     * With VMSA, if translation is disabled, then the default memory type
+     * is Device(-nGnRnE) instead of Normal, which requires that alignment
+     * be enforced.  Since this affects all ram, it is most efficient
+     * to handle this during translation.
+     */
+    if (sctlr & SCTLR_M) {
+        /* Translation enabled: memory type in PTE via MAIR_ELx. */
+        return false;
+    }
+    if (el < 2 && (arm_hcr_el2_eff(env) & (HCR_DC | HCR_VM))) {
+        /* Stage 2 translation enabled: memory type in PTE. */
+        return false;
+    }
+    return true;
+#endif
+}
+
+bool access_secure_reg(CPUARMState *env)
+{
+    bool ret = (arm_feature(env, ARM_FEATURE_EL3) &&
+                !arm_el_is_aa64(env, 3) &&
+                !(env->cp15.scr_el3 & SCR_NS));
+
+    return ret;
+}
+
 static CPUARMTBFlags rebuild_hflags_common(CPUARMState *env, int fp_el,
                                            ARMMMUIdx mmu_idx,
                                            CPUARMTBFlags flags)
@@ -121,8 +167,9 @@ static CPUARMTBFlags rebuild_hflags_a32(CPUARMState *env, int fp_el,
 {
     CPUARMTBFlags flags = {};
     int el = arm_current_el(env);
+    uint64_t sctlr = arm_sctlr(env, el);
 
-    if (arm_sctlr(env, el) & SCTLR_A) {
+    if (aprofile_require_alignment(env, el, sctlr)) {
         DP_TBFLAG_ANY(flags, ALIGN_MEM, 1);
     }
 
@@ -169,6 +216,7 @@ static CPUARMTBFlags rebuild_hflags_a64(CPUARMState *env, int el, int fp_el,
     CPUARMTBFlags flags = {};
     ARMMMUIdx stage1 = stage_1_mmu_idx(mmu_idx);
     uint64_t tcr = regime_tcr(env, mmu_idx);
+    uint64_t hcr = arm_hcr_el2_eff(env);
     uint64_t sctlr;
     int tbii, tbid;
 
@@ -222,7 +270,7 @@ static CPUARMTBFlags rebuild_hflags_a64(CPUARMState *env, int el, int fp_el,
 
     sctlr = regime_sctlr(env, stage1);
 
-    if (sctlr & SCTLR_A) {
+    if (aprofile_require_alignment(env, el, sctlr)) {
         DP_TBFLAG_ANY(flags, ALIGN_MEM, 1);
     }
 
@@ -260,8 +308,10 @@ static CPUARMTBFlags rebuild_hflags_a64(CPUARMState *env, int el, int fp_el,
         switch (mmu_idx) {
         case ARMMMUIdx_E10_1:
         case ARMMMUIdx_E10_1_PAN:
-            /* TODO: ARMv8.3-NV */
-            DP_TBFLAG_A64(flags, UNPRIV, 1);
+            /* FEAT_NV: NV,NV1 == 1,1 means we don't do UNPRIV accesses */
+            if ((hcr & (HCR_NV | HCR_NV1)) != (HCR_NV | HCR_NV1)) {
+                DP_TBFLAG_A64(flags, UNPRIV, 1);
+            }
             break;
         case ARMMMUIdx_E20_2:
         case ARMMMUIdx_E20_2_PAN:
@@ -285,10 +335,31 @@ static CPUARMTBFlags rebuild_hflags_a64(CPUARMState *env, int el, int fp_el,
     if (arm_fgt_active(env, el)) {
         DP_TBFLAG_ANY(flags, FGT_ACTIVE, 1);
         if (FIELD_EX64(env->cp15.fgt_exec[FGTREG_HFGITR], HFGITR_EL2, ERET)) {
-            DP_TBFLAG_A64(flags, FGT_ERET, 1);
+            DP_TBFLAG_A64(flags, TRAP_ERET, 1);
         }
         if (fgt_svc(env, el)) {
             DP_TBFLAG_ANY(flags, FGT_SVC, 1);
+        }
+    }
+
+    /*
+     * ERET can also be trapped for FEAT_NV. arm_hcr_el2_eff() takes care
+     * of "is EL2 enabled" and the NV bit can only be set if FEAT_NV is present.
+     */
+    if (el == 1 && (hcr & HCR_NV)) {
+        DP_TBFLAG_A64(flags, TRAP_ERET, 1);
+        DP_TBFLAG_A64(flags, NV, 1);
+        if (hcr & HCR_NV1) {
+            DP_TBFLAG_A64(flags, NV1, 1);
+        }
+        if (hcr & HCR_NV2) {
+            DP_TBFLAG_A64(flags, NV2, 1);
+            if (hcr & HCR_E2H) {
+                DP_TBFLAG_A64(flags, NV2_MEM_E20, 1);
+            }
+            if (env->cp15.sctlr_el[2] & SCTLR_EE) {
+                DP_TBFLAG_A64(flags, NV2_MEM_BE, 1);
+            }
         }
     }
 
@@ -340,6 +411,19 @@ static CPUARMTBFlags rebuild_hflags_a64(CPUARMState *env, int el, int fp_el,
         }
         /* Cache TCMA as well as TBI. */
         DP_TBFLAG_A64(flags, TCMA, aa64_va_parameter_tcma(tcr, mmu_idx));
+    }
+
+    if (env->vfp.fpcr & FPCR_AH) {
+        DP_TBFLAG_A64(flags, AH, 1);
+    }
+    if (env->vfp.fpcr & FPCR_NEP) {
+        /*
+         * In streaming-SVE without FA64, NEP behaves as if zero;
+         * compare pseudocode IsMerging()
+         */
+        if (!(EX_TBFLAG_A64(flags, PSTATE_SM) && !sme_fa64(env, el))) {
+            DP_TBFLAG_A64(flags, NEP, 1);
+        }
     }
 
     return rebuild_hflags_common(env, fp_el, mmu_idx, flags);

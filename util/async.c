@@ -30,11 +30,12 @@
 #include "block/graph-lock.h"
 #include "qemu/main-loop.h"
 #include "qemu/atomic.h"
+#include "qemu/lockcnt.h"
 #include "qemu/rcu_queue.h"
 #include "block/raw-aio.h"
 #include "qemu/coroutine_int.h"
 #include "qemu/coroutine-tls.h"
-#include "sysemu/cpu-timers.h"
+#include "system/cpu-timers.h"
 #include "trace.h"
 
 /***********************************************************/
@@ -94,13 +95,15 @@ static void aio_bh_enqueue(QEMUBH *bh, unsigned new_flags)
     }
 
     aio_notify(ctx);
-    /*
-     * Workaround for record/replay.
-     * vCPU execution should be suspended when new BH is set.
-     * This is needed to avoid guest timeouts caused
-     * by the long cycles of the execution.
-     */
-    icount_notify_exit();
+    if (unlikely(icount_enabled())) {
+        /*
+         * Workaround for record/replay.
+         * vCPU execution should be suspended when new BH is set.
+         * This is needed to avoid guest timeouts caused
+         * by the long cycles of the execution.
+         */
+        icount_notify_exit();
+    }
 }
 
 /* Only called from aio_bh_poll() and aio_ctx_finalize() */
@@ -366,7 +369,7 @@ aio_ctx_finalize(GSource     *source)
     QEMUBH *bh;
     unsigned flags;
 
-    thread_pool_free(ctx->thread_pool);
+    thread_pool_free_aio(ctx->thread_pool);
 
 #ifdef CONFIG_LINUX_AIO
     if (ctx->linux_aio) {
@@ -432,10 +435,10 @@ GSource *aio_get_g_source(AioContext *ctx)
     return &ctx->source;
 }
 
-ThreadPool *aio_get_thread_pool(AioContext *ctx)
+ThreadPoolAio *aio_get_thread_pool(AioContext *ctx)
 {
     if (!ctx->thread_pool) {
-        ctx->thread_pool = thread_pool_new(ctx);
+        ctx->thread_pool = thread_pool_new_aio(ctx);
     }
     return ctx->thread_pool;
 }
@@ -562,12 +565,10 @@ static void co_schedule_bh_cb(void *opaque)
         Coroutine *co = QSLIST_FIRST(&straight);
         QSLIST_REMOVE_HEAD(&straight, co_scheduled_next);
         trace_aio_co_schedule_bh_cb(ctx, co);
-        aio_context_acquire(ctx);
 
         /* Protected by write barrier in qemu_aio_coroutine_enter */
         qatomic_set(&co->scheduled, NULL);
         qemu_aio_coroutine_enter(ctx, co);
-        aio_context_release(ctx);
     }
 }
 
@@ -608,7 +609,6 @@ AioContext *aio_context_new(Error **errp)
     qemu_rec_mutex_init(&ctx->lock);
     timerlistgroup_init(&ctx->tlg, aio_timerlist_notify, ctx);
 
-    ctx->poll_ns = 0;
     ctx->poll_max_ns = 0;
     ctx->poll_grow = 0;
     ctx->poll_shrink = 0;
@@ -707,9 +707,7 @@ void aio_co_enter(AioContext *ctx, Coroutine *co)
         assert(self != co);
         QSIMPLEQ_INSERT_TAIL(&self->co_queue_wakeup, co, co_queue_next);
     } else {
-        aio_context_acquire(ctx);
         qemu_aio_coroutine_enter(ctx, co);
-        aio_context_release(ctx);
     }
 }
 
@@ -723,16 +721,6 @@ void aio_context_unref(AioContext *ctx)
     g_source_unref(&ctx->source);
 }
 
-void aio_context_acquire(AioContext *ctx)
-{
-    qemu_rec_mutex_lock(&ctx->lock);
-}
-
-void aio_context_release(AioContext *ctx)
-{
-    qemu_rec_mutex_unlock(&ctx->lock);
-}
-
 QEMU_DEFINE_STATIC_CO_TLS(AioContext *, my_aiocontext)
 
 AioContext *qemu_get_current_aio_context(void)
@@ -741,7 +729,7 @@ AioContext *qemu_get_current_aio_context(void)
     if (ctx) {
         return ctx;
     }
-    if (qemu_mutex_iothread_locked()) {
+    if (bql_locked()) {
         /* Possibly in a vCPU thread.  */
         return qemu_get_aio_context();
     }
@@ -758,7 +746,7 @@ void aio_context_set_thread_pool_params(AioContext *ctx, int64_t min,
                                         int64_t max, Error **errp)
 {
 
-    if (min > max || !max || min > INT_MAX || max > INT_MAX) {
+    if (min > max || max <= 0 || min < 0 || min > INT_MAX || max > INT_MAX) {
         error_setg(errp, "bad thread-pool-min/thread-pool-max values");
         return;
     }

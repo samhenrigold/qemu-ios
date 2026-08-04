@@ -326,7 +326,7 @@ static const VMStateDescription vmstate_sifive_gpio = {
     .name = TYPE_SIFIVE_GPIO,
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(value,     SIFIVEGPIOState),
         VMSTATE_UINT32(input_en,  SIFIVEGPIOState),
         VMSTATE_UINT32(output_en, SIFIVEGPIOState),
@@ -349,9 +349,8 @@ static const VMStateDescription vmstate_sifive_gpio = {
     }
 };
 
-static Property sifive_gpio_properties[] = {
+static const Property sifive_gpio_properties[] = {
     DEFINE_PROP_UINT32("ngpio", SIFIVEGPIOState, ngpio, SIFIVE_GPIO_PINS),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void sifive_gpio_realize(DeviceState *dev, Error **errp)
@@ -378,7 +377,7 @@ static void sifive_gpio_class_init(ObjectClass *klass, void *data)
     device_class_set_props(dc, sifive_gpio_properties);
     dc->vmsd = &vmstate_sifive_gpio;
     dc->realize = sifive_gpio_realize;
-    dc->reset = sifive_gpio_reset;
+    device_class_set_legacy_reset(dc, sifive_gpio_reset);
     dc->desc = "SiFive GPIO";
 }
 

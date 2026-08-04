@@ -96,7 +96,7 @@ static void cs42l58_class_init(ObjectClass *klass, void *data)
     k->event = cs42l58_event;
     k->recv = cs42l58_recv;
     k->send = cs42l58_send;
-    dc->reset = cs42l58_reset;
+    device_class_set_legacy_reset(dc, cs42l58_reset);
 }
 
 static const TypeInfo cs42l58_info = {

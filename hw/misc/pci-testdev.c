@@ -23,7 +23,7 @@
 #include "hw/qdev-properties.h"
 #include "qemu/event_notifier.h"
 #include "qemu/module.h"
-#include "sysemu/kvm.h"
+#include "system/kvm.h"
 #include "qom/object.h"
 
 typedef struct PCITestDevHdr {
@@ -319,9 +319,8 @@ static void qdev_pci_testdev_reset(DeviceState *dev)
     pci_testdev_reset(d);
 }
 
-static Property pci_testdev_properties[] = {
+static const Property pci_testdev_properties[] = {
     DEFINE_PROP_SIZE("membar", PCITestDevState, membar_size, 0),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void pci_testdev_class_init(ObjectClass *klass, void *data)
@@ -337,7 +336,7 @@ static void pci_testdev_class_init(ObjectClass *klass, void *data)
     k->class_id = PCI_CLASS_OTHERS;
     dc->desc = "PCI Test Device";
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
-    dc->reset = qdev_pci_testdev_reset;
+    device_class_set_legacy_reset(dc, qdev_pci_testdev_reset);
     device_class_set_props(dc, pci_testdev_properties);
 }
 

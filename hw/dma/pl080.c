@@ -40,7 +40,7 @@ static const VMStateDescription vmstate_pl080_channel = {
     .name = "pl080_channel",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(src, pl080_channel),
         VMSTATE_UINT32(dest, pl080_channel),
         VMSTATE_UINT32(lli, pl080_channel),
@@ -54,7 +54,7 @@ static const VMStateDescription vmstate_pl080 = {
     .name = "pl080",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(tc_int, PL080State),
         VMSTATE_UINT8(tc_mask, PL080State),
         VMSTATE_UINT8(err_int, PL080State),
@@ -537,10 +537,9 @@ static void pl081_init(Object *obj)
     s->nchannels = 2;
 }
 
-static Property pl080_properties[] = {
+static const Property pl080_properties[] = {
     DEFINE_PROP_LINK("downstream", PL080State, downstream,
                      TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void pl080_class_init(ObjectClass *oc, void *data)
@@ -550,7 +549,7 @@ static void pl080_class_init(ObjectClass *oc, void *data)
     dc->vmsd = &vmstate_pl080;
     dc->realize = pl080_realize;
     device_class_set_props(dc, pl080_properties);
-    dc->reset = pl080_reset;
+    device_class_set_legacy_reset(dc, pl080_reset);
 }
 
 static const TypeInfo pl080_info = {

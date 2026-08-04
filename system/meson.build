@@ -1,16 +1,15 @@
 specific_ss.add(when: 'CONFIG_SYSTEM_ONLY', if_true: [files(
   'arch_init.c',
   'ioport.c',
+  'globals-target.c',
   'memory.c',
   'physmem.c',
-  'watchpoint.c',
 )])
 
 system_ss.add(files(
   'balloon.c',
   'bootdevice.c',
   'cpus.c',
-  'cpu-throttle.c',
   'cpu-timers.c',
   'datadir.c',
   'dirtylimit.c',
@@ -25,6 +24,7 @@ system_ss.add(files(
   'runstate.c',
   'tpm-hmp-cmds.c',
   'vl.c',
+  'watchpoint.c',
 ), sdl, libpmem, libdaxctl)
 
 if have_tpm
@@ -32,5 +32,9 @@ if have_tpm
 endif
 
 system_ss.add(when: seccomp, if_true: files('qemu-seccomp.c'))
-system_ss.add(when: fdt, if_true: files('device_tree.c'))
-system_ss.add(when: 'CONFIG_LINUX', if_true: files('async-teardown.c'))
+system_ss.add(when: 'CONFIG_DEVICE_TREE',
+              if_true: [fdt, files('device_tree.c')],
+              if_false: files('device_tree-stub.c'))
+if host_os == 'linux'
+  system_ss.add(files('async-teardown.c'))
+endif

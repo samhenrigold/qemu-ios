@@ -166,6 +166,7 @@ static LayoutInfo common_semi_find_bases(CPUState *cs)
 
 #endif
 
+#include "cpu.h"
 #include "common-semi-target.h"
 
 /*
@@ -214,7 +215,7 @@ static target_ulong syscall_err;
 static inline uint32_t get_swi_errno(CPUState *cs)
 {
 #ifdef CONFIG_USER_ONLY
-    TaskState *ts = cs->opaque;
+    TaskState *ts = get_task_state(cs);
 
     return ts->swi_errno;
 #else
@@ -226,7 +227,7 @@ static void common_semi_cb(CPUState *cs, uint64_t ret, int err)
 {
     if (err) {
 #ifdef CONFIG_USER_ONLY
-        TaskState *ts = cs->opaque;
+        TaskState *ts = get_task_state(cs);
         ts->swi_errno = err;
 #else
         syscall_err = err;
@@ -586,7 +587,7 @@ void do_common_semihosting(CPUState *cs)
 #if !defined(CONFIG_USER_ONLY)
             const char *cmdline;
 #else
-            TaskState *ts = cs->opaque;
+            TaskState *ts = get_task_state(cs);
 #endif
             GET_ARG(0);
             GET_ARG(1);
@@ -664,7 +665,7 @@ void do_common_semihosting(CPUState *cs)
             target_ulong retvals[4];
             int i;
 #ifdef CONFIG_USER_ONLY
-            TaskState *ts = cs->opaque;
+            TaskState *ts = get_task_state(cs);
             target_ulong limit;
 #else
             LayoutInfo info = common_semi_find_bases(cs);

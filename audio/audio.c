@@ -32,15 +32,15 @@
 #include "qapi/qobject-input-visitor.h"
 #include "qapi/qapi-visit-audio.h"
 #include "qapi/qapi-commands-audio.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qdict.h"
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/help_option.h"
-#include "sysemu/sysemu.h"
-#include "sysemu/replay.h"
-#include "sysemu/runstate.h"
+#include "system/system.h"
+#include "system/replay.h"
+#include "system/runstate.h"
 #include "ui/qemu-spice.h"
 #include "trace.h"
 
@@ -1683,7 +1683,7 @@ static const VMStateDescription vmstate_audio = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = vmstate_audio_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1744,7 +1744,7 @@ static AudioState *audio_init(Audiodev *dev, Error **errp)
         if (driver) {
             done = !audio_driver_init(s, driver, dev, errp);
         } else {
-            error_setg(errp, "Unknown audio driver `%s'\n", drvname);
+            error_setg(errp, "Unknown audio driver `%s'", drvname);
         }
         if (!done) {
             goto out;

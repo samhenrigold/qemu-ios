@@ -21,12 +21,12 @@
 #include "qemu/osdep.h"
 #include "cpu.h"
 #include "exec/exec-all.h"
-#include "disas/disas.h"
 #include "tcg/tcg-op.h"
 #include "qemu/log.h"
 #include "qemu/bitops.h"
 #include "qemu/qemu-print.h"
 #include "exec/translator.h"
+#include "exec/translation-block.h"
 
 #include "exec/helper-proto.h"
 #include "exec/helper-gen.h"
@@ -1528,7 +1528,7 @@ static void openrisc_tr_init_disas_context(DisasContextBase *dcb, CPUState *cs)
     CPUOpenRISCState *env = cpu_env(cs);
     int bound;
 
-    dc->mem_idx = cpu_mmu_index(env, false);
+    dc->mem_idx = cpu_mmu_index(cs, false);
     dc->tb_flags = dc->base.tb->flags;
     dc->delayed_branch = (dc->tb_flags & TB_FLAGS_DFLAG) != 0;
     dc->cpucfgr = env->cpucfgr;
@@ -1564,8 +1564,7 @@ static void openrisc_tr_insn_start(DisasContextBase *dcbase, CPUState *cs)
 static void openrisc_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
 {
     DisasContext *dc = container_of(dcbase, DisasContext, base);
-    OpenRISCCPU *cpu = OPENRISC_CPU(cs);
-    uint32_t insn = translator_ldl(&cpu->env, &dc->base, dc->base.pc_next);
+    uint32_t insn = translator_ldl(cpu_env(cs), &dc->base, dc->base.pc_next);
 
     if (!decode(dc, insn)) {
         gen_illegal_exception(dc);
@@ -1639,26 +1638,16 @@ static void openrisc_tr_tb_stop(DisasContextBase *dcbase, CPUState *cs)
     }
 }
 
-static void openrisc_tr_disas_log(const DisasContextBase *dcbase,
-                                  CPUState *cs, FILE *logfile)
-{
-    DisasContext *s = container_of(dcbase, DisasContext, base);
-
-    fprintf(logfile, "IN: %s\n", lookup_symbol(s->base.pc_first));
-    target_disas(logfile, cs, s->base.pc_first, s->base.tb->size);
-}
-
 static const TranslatorOps openrisc_tr_ops = {
     .init_disas_context = openrisc_tr_init_disas_context,
     .tb_start           = openrisc_tr_tb_start,
     .insn_start         = openrisc_tr_insn_start,
     .translate_insn     = openrisc_tr_translate_insn,
     .tb_stop            = openrisc_tr_tb_stop,
-    .disas_log          = openrisc_tr_disas_log,
 };
 
-void gen_intermediate_code(CPUState *cs, TranslationBlock *tb, int *max_insns,
-                           target_ulong pc, void *host_pc)
+void openrisc_translate_code(CPUState *cs, TranslationBlock *tb,
+                             int *max_insns, vaddr pc, void *host_pc)
 {
     DisasContext ctx;
 
@@ -1668,8 +1657,7 @@ void gen_intermediate_code(CPUState *cs, TranslationBlock *tb, int *max_insns,
 
 void openrisc_cpu_dump_state(CPUState *cs, FILE *f, int flags)
 {
-    OpenRISCCPU *cpu = OPENRISC_CPU(cs);
-    CPUOpenRISCState *env = &cpu->env;
+    CPUOpenRISCState *env = cpu_env(cs);
     int i;
 
     qemu_fprintf(f, "PC=%08x\n", env->pc);

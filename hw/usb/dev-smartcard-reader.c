@@ -1171,9 +1171,8 @@ static Answer *ccid_peek_next_answer(USBCCIDState *s)
         : &s->pending_answers[s->pending_answers_start % PENDING_ANSWERS_NUM];
 }
 
-static Property ccid_props[] = {
+static const Property ccid_props[] = {
     DEFINE_PROP_UINT32("slot", struct CCIDCardState, slot, 0),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static const TypeInfo ccid_bus_info = {
@@ -1367,7 +1366,7 @@ static const VMStateDescription bulk_in_vmstate = {
     .name = "CCID BulkIn state",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_BUFFER(data, BulkIn),
         VMSTATE_UINT32(len, BulkIn),
         VMSTATE_UINT32(pos, BulkIn),
@@ -1379,7 +1378,7 @@ static const VMStateDescription answer_vmstate = {
     .name = "CCID Answer state",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(slot, Answer),
         VMSTATE_UINT8(seq, Answer),
         VMSTATE_END_OF_LIST()
@@ -1390,7 +1389,7 @@ static const VMStateDescription usb_device_vmstate = {
     .name = "usb_device",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(addr, USBDevice),
         VMSTATE_BUFFER(setup_buf, USBDevice),
         VMSTATE_BUFFER(data_buf, USBDevice),
@@ -1404,7 +1403,7 @@ static const VMStateDescription ccid_vmstate = {
     .minimum_version_id = 1,
     .post_load = ccid_post_load,
     .pre_save = ccid_pre_save,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(dev, USBCCIDState, 1, usb_device_vmstate, USBDevice),
         VMSTATE_UINT8(debug, USBCCIDState),
         VMSTATE_BUFFER(bulk_out_data, USBCCIDState),
@@ -1431,9 +1430,8 @@ static const VMStateDescription ccid_vmstate = {
     }
 };
 
-static Property ccid_properties[] = {
+static const Property ccid_properties[] = {
     DEFINE_PROP_UINT8("debug", USBCCIDState, debug, 0),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void ccid_class_initfn(ObjectClass *klass, void *data)

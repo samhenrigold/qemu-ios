@@ -24,6 +24,8 @@
 #include "hw/virtio/virtio.h"
 #include "hw/pci/pci.h"
 #include "qom/object.h"
+#include "qapi/qapi-types-virtio.h"
+#include "system/host_iommu_device.h"
 
 #define TYPE_VIRTIO_IOMMU "virtio-iommu-device"
 #define TYPE_VIRTIO_IOMMU_PCI "virtio-iommu-pci"
@@ -41,7 +43,6 @@ typedef struct IOMMUDevice {
     MemoryRegion bypass_mr;     /* The alias of shared memory MR */
     GList *resv_regions;
     GList *host_resv_ranges;
-    bool probe_done;
 } IOMMUDevice;
 
 typedef struct IOMMUPciBus {
@@ -56,6 +57,7 @@ struct VirtIOIOMMU {
     struct virtio_iommu_config config;
     uint64_t features;
     GHashTable *as_by_busptr;
+    GHashTable *host_iommu_devices;
     IOMMUPciBus *iommu_pcibus_by_bus_num[PCI_BUS_MAX];
     PCIBus *primary_bus;
     ReservedRegion *prop_resv_regions;
@@ -66,6 +68,8 @@ struct VirtIOIOMMU {
     bool boot_bypass;
     Notifier machine_done;
     bool granule_frozen;
+    GranuleMode granule_mode;
+    uint8_t aw_bits;
 };
 
 #endif

@@ -28,7 +28,7 @@
 #include "qemu/main-loop.h"
 #include "qemu/option.h"
 #include "qom/object_interfaces.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "ui/dbus-module.h"
 #ifdef CONFIG_OPENGL
 #include "ui/egl-helpers.h"
@@ -176,7 +176,7 @@ dbus_display_add_console(DBusDisplay *dd, int idx, Error **errp)
     assert(con);
 
     if (qemu_console_is_graphic(con) &&
-        dd->gl_mode != DISPLAYGL_MODE_OFF) {
+        dd->gl_mode != DISPLAY_GL_MODE_OFF) {
         qemu_console_set_display_gl_ctx(con, &dd->glctx);
     }
 
@@ -317,11 +317,17 @@ dbus_display_add_client(int csock, Error **errp)
     conn = g_socket_connection_factory_create_connection(socket);
 
     dbus_display->add_client_cancellable = g_cancellable_new();
+    GDBusConnectionFlags flags =
+        G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_SERVER |
+        G_DBUS_CONNECTION_FLAGS_DELAY_MESSAGE_PROCESSING;
+
+#ifdef WIN32
+    flags |= G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_ALLOW_ANONYMOUS;
+#endif
 
     g_dbus_connection_new(G_IO_STREAM(conn),
                           guid,
-                          G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_SERVER |
-                          G_DBUS_CONNECTION_FLAGS_DELAY_MESSAGE_PROCESSING,
+                          flags,
                           NULL,
                           dbus_display->add_client_cancellable,
                           dbus_display_add_client_ready,
@@ -466,9 +472,9 @@ static const TypeInfo dbus_vc_type_info = {
 static void
 early_dbus_init(DisplayOptions *opts)
 {
-    DisplayGLMode mode = opts->has_gl ? opts->gl : DISPLAYGL_MODE_OFF;
+    DisplayGLMode mode = opts->has_gl ? opts->gl : DISPLAY_GL_MODE_OFF;
 
-    if (mode != DISPLAYGL_MODE_OFF) {
+    if (mode != DISPLAY_GL_MODE_OFF) {
 #ifdef CONFIG_OPENGL
         egl_init(opts->u.dbus.rendernode, mode, &error_fatal);
 #else
@@ -476,13 +482,13 @@ early_dbus_init(DisplayOptions *opts)
 #endif
     }
 
-    type_register(&dbus_vc_type_info);
+    type_register_static(&dbus_vc_type_info);
 }
 
 static void
 dbus_init(DisplayState *ds, DisplayOptions *opts)
 {
-    DisplayGLMode mode = opts->has_gl ? opts->gl : DISPLAYGL_MODE_OFF;
+    DisplayGLMode mode = opts->has_gl ? opts->gl : DISPLAY_GL_MODE_OFF;
 
     if (opts->u.dbus.addr && opts->u.dbus.p2p) {
         error_report("dbus: can't accept both addr=X and p2p=yes options");

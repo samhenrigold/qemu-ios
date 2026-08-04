@@ -31,18 +31,19 @@
 #include "qapi/qapi-events-run-state.h"
 #include "qapi/qmp/qerror.h"
 #include "exec/gdbstub.h"
-#include "sysemu/hw_accel.h"
+#include "system/accel-ops.h"
+#include "system/hw_accel.h"
 #include "exec/cpu-common.h"
 #include "qemu/thread.h"
 #include "qemu/main-loop.h"
 #include "qemu/plugin.h"
-#include "sysemu/cpus.h"
+#include "system/cpus.h"
 #include "qemu/guest-random.h"
 #include "hw/nmi.h"
-#include "sysemu/replay.h"
-#include "sysemu/runstate.h"
-#include "sysemu/cpu-timers.h"
-#include "sysemu/whpx.h"
+#include "system/replay.h"
+#include "system/runstate.h"
+#include "system/cpu-timers.h"
+#include "system/whpx.h"
 #include "hw/boards.h"
 #include "hw/hw.h"
 #include "trace.h"
@@ -65,7 +66,8 @@
 
 #endif /* CONFIG_LINUX */
 
-static QemuMutex qemu_global_mutex;
+/* The Big QEMU Lock (BQL) */
+static QemuMutex bql;
 
 /*
  * The chosen accelerator is supposed to register this.
@@ -229,6 +231,17 @@ int64_t cpus_get_virtual_clock(void)
 }
 
 /*
+ * Signal the new virtual time to the accelerator. This is only needed
+ * by accelerators that need to track the changes as we warp time.
+ */
+void cpus_set_virtual_clock(int64_t new_time)
+{
+    if (cpus_accel && cpus_accel->set_virtual_clock) {
+        cpus_accel->set_virtual_clock(new_time);
+    }
+}
+
+/*
  * return the time elapsed in VM between vm_start and vm_stop.  Unless
  * icount is active, cpus_get_elapsed_ticks() uses units of the host CPU cycle
  * counter.
@@ -259,14 +272,33 @@ void cpu_interrupt(CPUState *cpu, int mask)
     }
 }
 
+/*
+ * True if the vm was previously suspended, and has not been woken or reset.
+ */
+static int vm_was_suspended;
+
+void vm_set_suspended(bool suspended)
+{
+    vm_was_suspended = suspended;
+}
+
+bool vm_get_suspended(void)
+{
+    return vm_was_suspended;
+}
+
 static int do_vm_stop(RunState state, bool send_stop)
 {
     int ret = 0;
+    RunState oldstate = runstate_get();
 
-    if (runstate_is_running()) {
+    if (runstate_is_live(oldstate)) {
+        vm_was_suspended = (oldstate == RUN_STATE_SUSPENDED);
         runstate_set(state);
         cpu_disable_ticks();
-        pause_all_vcpus();
+        if (oldstate == RUN_STATE_RUNNING) {
+            pause_all_vcpus();
+        }
         vm_state_notify(0, state);
         if (send_stop) {
             qapi_event_send_stop();
@@ -389,14 +421,14 @@ void qemu_init_cpu_loop(void)
     qemu_init_sigbus();
     qemu_cond_init(&qemu_cpu_cond);
     qemu_cond_init(&qemu_pause_cond);
-    qemu_mutex_init(&qemu_global_mutex);
+    qemu_mutex_init(&bql);
 
     qemu_thread_get_self(&io_thread);
 }
 
 void run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data)
 {
-    do_run_on_cpu(cpu, func, data, &qemu_global_mutex);
+    do_run_on_cpu(cpu, func, data, &bql);
 }
 
 static void qemu_cpu_stop(CPUState *cpu, bool exit)
@@ -428,7 +460,7 @@ void qemu_wait_io_event(CPUState *cpu)
             slept = true;
             qemu_plugin_vcpu_idle_cb(cpu);
         }
-        qemu_cond_wait(cpu->halt_cond, &qemu_global_mutex);
+        qemu_cond_wait(cpu->halt_cond, &bql);
     }
     if (slept) {
         qemu_plugin_vcpu_resume_cb(cpu);
@@ -481,46 +513,67 @@ bool qemu_in_vcpu_thread(void)
     return current_cpu && qemu_cpu_is_self(current_cpu);
 }
 
-QEMU_DEFINE_STATIC_CO_TLS(bool, iothread_locked)
+QEMU_DEFINE_STATIC_CO_TLS(bool, bql_locked)
 
-bool qemu_mutex_iothread_locked(void)
+static uint32_t bql_unlock_blocked;
+
+void bql_block_unlock(bool increase)
 {
-    return get_iothread_locked();
+    uint32_t new_value;
+
+    assert(bql_locked());
+
+    /* check for overflow! */
+    new_value = bql_unlock_blocked + increase - !increase;
+    assert((new_value > bql_unlock_blocked) == increase);
+    bql_unlock_blocked = new_value;
+}
+
+bool bql_locked(void)
+{
+    return get_bql_locked();
 }
 
 bool qemu_in_main_thread(void)
 {
-    return qemu_mutex_iothread_locked();
+    return bql_locked();
+}
+
+void rust_bql_mock_lock(void)
+{
+    error_report("This function should be used only from tests");
+    abort();
 }
 
 /*
  * The BQL is taken from so many places that it is worth profiling the
  * callers directly, instead of funneling them all through a single function.
  */
-void qemu_mutex_lock_iothread_impl(const char *file, int line)
+void bql_lock_impl(const char *file, int line)
 {
-    QemuMutexLockFunc bql_lock = qatomic_read(&qemu_bql_mutex_lock_func);
+    QemuMutexLockFunc bql_lock_fn = qatomic_read(&bql_mutex_lock_func);
 
-    g_assert(!qemu_mutex_iothread_locked());
-    bql_lock(&qemu_global_mutex, file, line);
-    set_iothread_locked(true);
+    g_assert(!bql_locked());
+    bql_lock_fn(&bql, file, line);
+    set_bql_locked(true);
 }
 
-void qemu_mutex_unlock_iothread(void)
+void bql_unlock(void)
 {
-    g_assert(qemu_mutex_iothread_locked());
-    set_iothread_locked(false);
-    qemu_mutex_unlock(&qemu_global_mutex);
+    g_assert(bql_locked());
+    g_assert(!bql_unlock_blocked);
+    set_bql_locked(false);
+    qemu_mutex_unlock(&bql);
 }
 
-void qemu_cond_wait_iothread(QemuCond *cond)
+void qemu_cond_wait_bql(QemuCond *cond)
 {
-    qemu_cond_wait(cond, &qemu_global_mutex);
+    qemu_cond_wait(cond, &bql);
 }
 
-void qemu_cond_timedwait_iothread(QemuCond *cond, int ms)
+void qemu_cond_timedwait_bql(QemuCond *cond, int ms)
 {
-    qemu_cond_timedwait(cond, &qemu_global_mutex, ms);
+    qemu_cond_timedwait(cond, &bql, ms);
 }
 
 /* signal CPU creation */
@@ -537,6 +590,22 @@ void cpu_thread_signal_destroyed(CPUState *cpu)
     qemu_cond_signal(&qemu_cpu_cond);
 }
 
+void cpu_pause(CPUState *cpu)
+{
+    if (qemu_cpu_is_self(cpu)) {
+        qemu_cpu_stop(cpu, true);
+    } else {
+        cpu->stop = true;
+        qemu_cpu_kick(cpu);
+    }
+}
+
+void cpu_resume(CPUState *cpu)
+{
+    cpu->stop = false;
+    cpu->stopped = false;
+    qemu_cpu_kick(cpu);
+}
 
 static bool all_vcpus_paused(void)
 {
@@ -557,12 +626,7 @@ void pause_all_vcpus(void)
 
     qemu_clock_enable(QEMU_CLOCK_VIRTUAL, false);
     CPU_FOREACH(cpu) {
-        if (qemu_cpu_is_self(cpu)) {
-            qemu_cpu_stop(cpu, true);
-        } else {
-            cpu->stop = true;
-            qemu_cpu_kick(cpu);
-        }
+        cpu_pause(cpu);
     }
 
     /* We need to drop the replay_lock so any vCPU threads woken up
@@ -571,22 +635,15 @@ void pause_all_vcpus(void)
     replay_mutex_unlock();
 
     while (!all_vcpus_paused()) {
-        qemu_cond_wait(&qemu_pause_cond, &qemu_global_mutex);
+        qemu_cond_wait(&qemu_pause_cond, &bql);
         CPU_FOREACH(cpu) {
             qemu_cpu_kick(cpu);
         }
     }
 
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
     replay_mutex_lock();
-    qemu_mutex_lock_iothread();
-}
-
-void cpu_resume(CPUState *cpu)
-{
-    cpu->stop = false;
-    cpu->stopped = false;
-    qemu_cpu_kick(cpu);
+    bql_lock();
 }
 
 void resume_all_vcpus(void)
@@ -608,9 +665,9 @@ void cpu_remove_sync(CPUState *cpu)
     cpu->stop = true;
     cpu->unplug = true;
     qemu_cpu_kick(cpu);
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
     qemu_thread_join(cpu->thread);
-    qemu_mutex_lock_iothread();
+    bql_lock();
 }
 
 void cpus_register_accel(const AccelOpsClass *ops)
@@ -631,7 +688,6 @@ void qemu_init_vcpu(CPUState *cpu)
 {
     MachineState *ms = MACHINE(qdev_get_machine());
 
-    cpu->nr_cores = machine_topo_get_cores_per_socket(ms);
     cpu->nr_threads =  ms->smp.threads;
     cpu->stopped = true;
     cpu->random_seed = qemu_guest_random_seed_thread_part1();
@@ -649,7 +705,7 @@ void qemu_init_vcpu(CPUState *cpu)
     cpus_accel->create_vcpu_thread(cpu);
 
     while (!cpu->created) {
-        qemu_cond_wait(&qemu_cpu_cond, &qemu_global_mutex);
+        qemu_cond_wait(&qemu_cpu_cond, &bql);
     }
 }
 
@@ -679,11 +735,13 @@ int vm_stop(RunState state)
 
 /**
  * Prepare for (re)starting the VM.
- * Returns -1 if the vCPUs are not to be restarted (e.g. if they are already
- * running or in case of an error condition), 0 otherwise.
+ * Returns 0 if the vCPUs should be restarted, -1 on an error condition,
+ * and 1 otherwise.
  */
 int vm_prepare_start(bool step_pending)
 {
+    int ret = vm_was_suspended ? 1 : 0;
+    RunState state = vm_was_suspended ? RUN_STATE_SUSPENDED : RUN_STATE_RUNNING;
     RunState requested;
 
     qemu_vmstop_requested(&requested);
@@ -714,9 +772,10 @@ int vm_prepare_start(bool step_pending)
     qapi_event_send_resume();
 
     cpu_enable_ticks();
-    runstate_set(RUN_STATE_RUNNING);
-    vm_state_notify(1, RUN_STATE_RUNNING);
-    return 0;
+    runstate_set(state);
+    vm_state_notify(1, state);
+    vm_was_suspended = false;
+    return ret;
 }
 
 void vm_start(void)
@@ -726,11 +785,20 @@ void vm_start(void)
     }
 }
 
+void vm_resume(RunState state)
+{
+    if (runstate_is_live(state)) {
+        vm_start();
+    } else {
+        runstate_set(state);
+    }
+}
+
 /* does a state transition even if the VM is already stopped,
    current state is forgotten forever */
 int vm_stop_force_state(RunState state)
 {
-    if (runstate_is_running()) {
+    if (runstate_is_live(runstate_get())) {
         return vm_stop(state);
     } else {
         int ret;
@@ -745,14 +813,14 @@ int vm_stop_force_state(RunState state)
     }
 }
 
-void qmp_memsave(int64_t addr, int64_t size, const char *filename,
+void qmp_memsave(uint64_t addr, uint64_t size, const char *filename,
                  bool has_cpu, int64_t cpu_index, Error **errp)
 {
     FILE *f;
-    uint32_t l;
+    uint64_t l;
     CPUState *cpu;
     uint8_t buf[1024];
-    int64_t orig_addr = addr, orig_size = size;
+    uint64_t orig_addr = addr, orig_size = size;
 
     if (!has_cpu) {
         cpu_index = 0;
@@ -776,12 +844,13 @@ void qmp_memsave(int64_t addr, int64_t size, const char *filename,
         if (l > size)
             l = size;
         if (cpu_memory_rw_debug(cpu, addr, buf, l, 0) != 0) {
-            error_setg(errp, "Invalid addr 0x%016" PRIx64 "/size %" PRId64
+            error_setg(errp, "Invalid addr 0x%016" PRIx64 "/size %" PRIu64
                              " specified", orig_addr, orig_size);
             goto exit;
         }
         if (fwrite(buf, 1, l, f) != l) {
-            error_setg(errp, QERR_IO_ERROR);
+            error_setg(errp, "writing memory to '%s' failed",
+                       filename);
             goto exit;
         }
         addr += l;
@@ -792,11 +861,11 @@ exit:
     fclose(f);
 }
 
-void qmp_pmemsave(int64_t addr, int64_t size, const char *filename,
+void qmp_pmemsave(uint64_t addr, uint64_t size, const char *filename,
                   Error **errp)
 {
     FILE *f;
-    uint32_t l;
+    uint64_t l;
     uint8_t buf[1024];
 
     f = fopen(filename, "wb");
@@ -811,7 +880,8 @@ void qmp_pmemsave(int64_t addr, int64_t size, const char *filename,
             l = size;
         cpu_physical_memory_read(addr, buf, l);
         if (fwrite(buf, 1, l, f) != l) {
-            error_setg(errp, QERR_IO_ERROR);
+            error_setg(errp, "writing memory to '%s' failed",
+                       filename);
             goto exit;
         }
         addr += l;

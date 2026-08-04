@@ -1,5 +1,5 @@
 /*
- * gdb server stub - softmmu specific bits
+ * gdb server stub - system specific bits
  *
  * Debug integration depends on support from the individual
  * accelerators so most of this involves calling the ops helpers.
@@ -7,7 +7,7 @@
  * Copyright (c) 2003-2005 Fabrice Bellard
  * Copyright (c) 2022 Linaro Ltd
  *
- * SPDX-License-Identifier: LGPL-2.0+
+ * SPDX-License-Identifier: LGPL-2.0-or-later
  */
 
 #include "qemu/osdep.h"
@@ -16,11 +16,14 @@
 #include "qemu/cutils.h"
 #include "exec/gdbstub.h"
 #include "gdbstub/syscalls.h"
+#include "gdbstub/commands.h"
 #include "exec/hwaddr.h"
 #include "exec/tb-flush.h"
-#include "sysemu/cpus.h"
-#include "sysemu/runstate.h"
-#include "sysemu/replay.h"
+#include "system/accel-ops.h"
+#include "system/cpus.h"
+#include "system/runstate.h"
+#include "system/replay.h"
+#include "system/tcg.h"
 #include "hw/core/cpu.h"
 #include "hw/cpu/cluster.h"
 #include "hw/boards.h"
@@ -170,7 +173,9 @@ static void gdb_vm_state_change(void *opaque, bool running, RunState state)
         } else {
             trace_gdbstub_hit_break();
         }
-        tb_flush(cpu);
+        if (tcg_enabled()) {
+            tb_flush(cpu);
+        }
         ret = GDB_SIGNAL_TRAP;
         break;
     case RUN_STATE_PAUSED:
@@ -329,26 +334,27 @@ static void create_processes(GDBState *s)
     gdb_create_default_process(s);
 }
 
-int gdbserver_start(const char *device)
+bool gdbserver_start(const char *device, Error **errp)
 {
     Chardev *chr = NULL;
     Chardev *mon_chr;
     g_autoptr(GString) cs = g_string_new(device);
 
     if (!first_cpu) {
-        error_report("gdbstub: meaningless to attach gdb to a "
-                     "machine without any CPU.");
-        return -1;
+        error_setg(errp, "gdbstub: meaningless to attach gdb to a "
+                   "machine without any CPU.");
+        return false;
     }
 
     if (!gdb_supports_guest_debug()) {
-        error_report("gdbstub: current accelerator doesn't "
-                     "support guest debugging");
-        return -1;
+        error_setg(errp, "gdbstub: current accelerator doesn't "
+                   "support guest debugging");
+        return false;
     }
 
     if (cs->len == 0) {
-        return -1;
+        error_setg(errp, "gdbstub: missing connection string");
+        return false;
     }
 
     trace_gdbstub_op_start(cs->str);
@@ -373,7 +379,8 @@ int gdbserver_start(const char *device)
          */
         chr = qemu_chr_new_noreplay("gdb", cs->str, true, NULL);
         if (!chr) {
-            return -1;
+            error_setg(errp, "gdbstub: couldn't create chardev");
+            return false;
         }
     }
 
@@ -405,7 +412,7 @@ int gdbserver_start(const char *device)
     gdbserver_system_state.mon_chr = mon_chr;
     gdb_syscall_reset();
 
-    return 0;
+    return true;
 }
 
 static void register_types(void)
@@ -449,8 +456,6 @@ static int phy_memory_mode;
 int gdb_target_memory_rw_debug(CPUState *cpu, hwaddr addr,
                                uint8_t *buf, int len, bool is_write)
 {
-    CPUClass *cc;
-
     if (phy_memory_mode) {
         if (is_write) {
             cpu_physical_memory_write(addr, buf, len);
@@ -460,9 +465,8 @@ int gdb_target_memory_rw_debug(CPUState *cpu, hwaddr addr,
         return 0;
     }
 
-    cc = CPU_GET_CLASS(cpu);
-    if (cc->memory_rw_debug) {
-        return cc->memory_rw_debug(cpu, addr, buf, len, is_write);
+    if (cpu->cc->memory_rw_debug) {
+        return cpu->cc->memory_rw_debug(cpu, addr, buf, len, is_write);
     }
 
     return cpu_memory_rw_debug(cpu, addr, buf, len, is_write);
@@ -488,20 +492,20 @@ bool gdb_can_reverse(void)
  */
 
 void gdb_handle_query_qemu_phy_mem_mode(GArray *params,
-                                        void *user_ctx)
+                                        void *ctx)
 {
     g_string_printf(gdbserver_state.str_buf, "%d", phy_memory_mode);
     gdb_put_strbuf();
 }
 
-void gdb_handle_set_qemu_phy_mem_mode(GArray *params, void *user_ctx)
+void gdb_handle_set_qemu_phy_mem_mode(GArray *params, void *ctx)
 {
     if (!params->len) {
         gdb_put_packet("E22");
         return;
     }
 
-    if (!get_param(params, 0)->val_ul) {
+    if (!gdb_get_cmd_param(params, 0)->val_ul) {
         phy_memory_mode = 0;
     } else {
         phy_memory_mode = 1;
@@ -509,7 +513,7 @@ void gdb_handle_set_qemu_phy_mem_mode(GArray *params, void *user_ctx)
     gdb_put_packet("OK");
 }
 
-void gdb_handle_query_rcmd(GArray *params, void *user_ctx)
+void gdb_handle_query_rcmd(GArray *params, void *ctx)
 {
     const guint8 zero = 0;
     int len;
@@ -519,7 +523,7 @@ void gdb_handle_query_rcmd(GArray *params, void *user_ctx)
         return;
     }
 
-    len = strlen(get_param(params, 0)->data);
+    len = strlen(gdb_get_cmd_param(params, 0)->data);
     if (len % 2) {
         gdb_put_packet("E01");
         return;
@@ -527,7 +531,7 @@ void gdb_handle_query_rcmd(GArray *params, void *user_ctx)
 
     g_assert(gdbserver_state.mem_buf->len == 0);
     len = len / 2;
-    gdb_hextomem(gdbserver_state.mem_buf, get_param(params, 0)->data, len);
+    gdb_hextomem(gdbserver_state.mem_buf, gdb_get_cmd_param(params, 0)->data, len);
     g_byte_array_append(gdbserver_state.mem_buf, &zero, 1);
     qemu_chr_be_write(gdbserver_system_state.mon_chr,
                       gdbserver_state.mem_buf->data,
@@ -539,7 +543,7 @@ void gdb_handle_query_rcmd(GArray *params, void *user_ctx)
  * Execution state helpers
  */
 
-void gdb_handle_query_attached(GArray *params, void *user_ctx)
+void gdb_handle_query_attached(GArray *params, void *ctx)
 {
     gdb_put_packet("1");
 }

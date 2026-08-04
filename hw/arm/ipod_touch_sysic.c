@@ -196,7 +196,7 @@ static void ipod_touch_sysic_class_init(ObjectClass *klass, void *data)
 
     dc->vmsd = &vmstate_ipod_touch_sysic;
 
-    dc->reset = ipod_touch_sysic_reset;
+    device_class_set_legacy_reset(dc, ipod_touch_sysic_reset);
 }
 
 static const TypeInfo ipod_touch_sysic_type_info = {

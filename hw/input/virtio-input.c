@@ -293,16 +293,15 @@ static const VMStateDescription vmstate_virtio_input = {
     .name = "virtio-input",
     .minimum_version_id = VIRTIO_INPUT_VM_VERSION,
     .version_id = VIRTIO_INPUT_VM_VERSION,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_VIRTIO_DEVICE,
         VMSTATE_END_OF_LIST()
     },
     .post_load = virtio_input_post_load,
 };
 
-static Property virtio_input_properties[] = {
+static const Property virtio_input_properties[] = {
     DEFINE_PROP_STRING("serial", VirtIOInput, serial),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void virtio_input_class_init(ObjectClass *klass, void *data)

@@ -511,9 +511,8 @@ void omap_i2c_set_fclk(OMAPI2CState *i2c, omap_clk clk)
     i2c->fclk = clk;
 }
 
-static Property omap_i2c_properties[] = {
+static const Property omap_i2c_properties[] = {
     DEFINE_PROP_UINT8("revision", OMAPI2CState, revision, 0),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void omap_i2c_class_init(ObjectClass *klass, void *data)
@@ -521,7 +520,7 @@ static void omap_i2c_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     device_class_set_props(dc, omap_i2c_properties);
-    dc->reset = omap_i2c_reset;
+    device_class_set_legacy_reset(dc, omap_i2c_reset);
     /* Reason: pointer properties "iclk", "fclk" */
     dc->user_creatable = false;
     dc->realize = omap_i2c_realize;

@@ -592,7 +592,7 @@ static const VMStateDescription vmstate_wm8750 = {
     .minimum_version_id = 0,
     .pre_save = wm8750_pre_save,
     .post_load = wm8750_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8_ARRAY(i2c_data, WM8750State, 2),
         VMSTATE_INT32(i2c_len, WM8750State),
         VMSTATE_INT32(enable, WM8750State),
@@ -706,9 +706,8 @@ void wm8750_set_bclk_in(void *opaque, int new_hz)
     wm8750_clk_update(s, 1);
 }
 
-static Property wm8750_properties[] = {
+static const Property wm8750_properties[] = {
     DEFINE_AUDIO_PROPERTIES(WM8750State, card),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void wm8750_class_init(ObjectClass *klass, void *data)

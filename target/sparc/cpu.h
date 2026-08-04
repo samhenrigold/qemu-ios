@@ -6,33 +6,12 @@
 #include "exec/cpu-defs.h"
 #include "qemu/cpu-float.h"
 
-/*
- * From Oracle SPARC Architecture 2015:
- *
- *   Compatibility notes: The PSO memory model described in SPARC V8 and
- *   SPARC V9 compatibility architecture specifications was never implemented
- *   in a SPARC V9 implementation and is not included in the Oracle SPARC
- *   Architecture specification.
- *
- *   The RMO memory model described in the SPARC V9 specification was
- *   implemented in some non-Sun SPARC V9 implementations, but is not
- *   directly supported in Oracle SPARC Architecture 2015 implementations.
- *
- * Therefore always use TSO in QEMU.
- *
- * D.5 Specification of Partial Store Order (PSO)
- *   ... [loads] are followed by an implied MEMBAR #LoadLoad | #LoadStore.
- *
- * D.6 Specification of Total Store Order (TSO)
- *   ... PSO with the additional requirement that all [stores] are followed
- *   by an implied MEMBAR #StoreStore.
- */
-#define TCG_GUEST_DEFAULT_MO  (TCG_MO_LD_LD | TCG_MO_LD_ST | TCG_MO_ST_ST)
-
 #if !defined(TARGET_SPARC64)
 #define TARGET_DPREGS 16
+#define TARGET_FCCREGS 1
 #else
 #define TARGET_DPREGS 32
+#define TARGET_FCCREGS 4
 #endif
 
 /*#define EXCP_INTERRUPT 0x100*/
@@ -176,6 +155,7 @@ enum {
 #define FSR_DZM   (1ULL << 24)
 #define FSR_NXM   (1ULL << 23)
 #define FSR_TEM_MASK (FSR_NVM | FSR_OFM | FSR_UFM | FSR_DZM | FSR_NXM)
+#define FSR_TEM_SHIFT  23
 
 #define FSR_NVA   (1ULL << 9)
 #define FSR_OFA   (1ULL << 8)
@@ -183,6 +163,7 @@ enum {
 #define FSR_DZA   (1ULL << 6)
 #define FSR_NXA   (1ULL << 5)
 #define FSR_AEXC_MASK (FSR_NVA | FSR_OFA | FSR_UFA | FSR_DZA | FSR_NXA)
+#define FSR_AEXC_SHIFT 5
 
 #define FSR_NVC   (1ULL << 4)
 #define FSR_OFC   (1ULL << 3)
@@ -191,31 +172,24 @@ enum {
 #define FSR_NXC   (1ULL << 0)
 #define FSR_CEXC_MASK (FSR_NVC | FSR_OFC | FSR_UFC | FSR_DZC | FSR_NXC)
 
+#define FSR_VER_SHIFT  17
+#define FSR_VER_MASK   (7 << FSR_VER_SHIFT)
+
 #define FSR_FTT2   (1ULL << 16)
 #define FSR_FTT1   (1ULL << 15)
 #define FSR_FTT0   (1ULL << 14)
 #define FSR_FTT_MASK (FSR_FTT2 | FSR_FTT1 | FSR_FTT0)
-#ifdef TARGET_SPARC64
-#define FSR_FTT_NMASK      0xfffffffffffe3fffULL
-#define FSR_FTT_CEXC_NMASK 0xfffffffffffe3fe0ULL
-#define FSR_LDFSR_OLDMASK  0x0000003f000fc000ULL
-#define FSR_LDXFSR_MASK    0x0000003fcfc00fffULL
-#define FSR_LDXFSR_OLDMASK 0x00000000000fc000ULL
-#else
-#define FSR_FTT_NMASK      0xfffe3fffULL
-#define FSR_FTT_CEXC_NMASK 0xfffe3fe0ULL
-#define FSR_LDFSR_OLDMASK  0x000fc000ULL
-#endif
-#define FSR_LDFSR_MASK     0xcfc00fffULL
 #define FSR_FTT_IEEE_EXCP (1ULL << 14)
 #define FSR_FTT_UNIMPFPOP (3ULL << 14)
 #define FSR_FTT_SEQ_ERROR (4ULL << 14)
 #define FSR_FTT_INVAL_FPR (6ULL << 14)
 
-#define FSR_FCC1_SHIFT 11
-#define FSR_FCC1  (1ULL << FSR_FCC1_SHIFT)
-#define FSR_FCC0_SHIFT 10
-#define FSR_FCC0  (1ULL << FSR_FCC0_SHIFT)
+#define FSR_QNE    (1ULL << 13)
+
+#define FSR_FCC0_SHIFT    10
+#define FSR_FCC1_SHIFT    32
+#define FSR_FCC2_SHIFT    34
+#define FSR_FCC3_SHIFT    36
 
 /* MMU */
 #define MMU_E     (1<<0)
@@ -461,7 +435,31 @@ struct CPUArchState {
     target_ulong cond; /* conditional branch result (XXX: save it in a
                           temporary register when possible) */
 
-    target_ulong fsr;      /* FPU state register */
+    /* FPU State Register, in parts */
+    uint32_t fsr;                    /* rm, tem, aexc */
+    uint32_t fsr_cexc_ftt;           /* cexc, ftt */
+    uint32_t fcc[TARGET_FCCREGS];    /* fcc* */
+
+#if !defined(TARGET_SPARC64) && !defined(CONFIG_USER_ONLY)
+    /*
+     * Single-element FPU fault queue, with address and insn,
+     * packaged into the double-word with which it is stored.
+     */
+    uint32_t fsr_qne;                /* qne */
+    union {
+        uint64_t d;
+        struct {
+#if HOST_BIG_ENDIAN
+            uint32_t addr;
+            uint32_t insn;
+#else
+            uint32_t insn;
+            uint32_t addr;
+#endif
+        } s;
+    } fq;
+#endif
+
     CPU_DoubleU fpr[TARGET_DPREGS];  /* floating point registers */
     uint32_t cwp;      /* index of current register window (extracted
                           from PSR) */
@@ -509,8 +507,6 @@ struct CPUArchState {
     uint64_t mmubpregs[4];
     uint64_t prom_addr;
 #endif
-    /* temporary float registers */
-    float128 qt0, qt1;
     float_status fp_status;
 #if defined(TARGET_SPARC64)
 #define MAXTL_MAX 8
@@ -548,10 +544,9 @@ struct CPUArchState {
 #endif
     sparc_def_t def;
 
-    void *irq_manager;
-    void (*qemu_irq_ack)(CPUSPARCState *env, void *irq_manager, int intno);
-
-    /* Leon3 cache control */
+    /* Leon3 */
+    DeviceState *irq_manager;
+    void (*qemu_irq_ack)(CPUSPARCState *env, int intno);
     uint32_t cache_control;
 };
 
@@ -579,7 +574,7 @@ struct SPARCCPUClass {
 
     DeviceRealize parent_realize;
     ResettablePhases parent_phases;
-    sparc_def_t *cpu_def;
+    const sparc_def_t *cpu_def;
 };
 
 #ifndef CONFIG_USER_ONLY
@@ -609,17 +604,17 @@ void dump_mmu(CPUSPARCState *env);
 
 #if !defined(TARGET_SPARC64) && !defined(CONFIG_USER_ONLY)
 int sparc_cpu_memory_rw_debug(CPUState *cpu, vaddr addr,
-                              uint8_t *buf, int len, bool is_write);
+                              uint8_t *buf, size_t len, bool is_write);
 #endif
-
 
 /* translate.c */
 void sparc_tcg_init(void);
-void sparc_restore_state_to_opc(CPUState *cs,
-                                const TranslationBlock *tb,
-                                const uint64_t *data);
+void sparc_translate_code(CPUState *cs, TranslationBlock *tb,
+                          int *max_insns, vaddr pc, void *host_pc);
 
-/* cpu-exec.c */
+/* fop_helper.c */
+target_ulong cpu_get_fsr(CPUSPARCState *);
+void cpu_put_fsr(CPUSPARCState *, target_ulong);
 
 /* win_helper.c */
 target_ulong cpu_get_psr(CPUSPARCState *env1);
@@ -708,34 +703,6 @@ static inline int cpu_supervisor_mode(CPUSPARCState *env1)
 }
 #endif
 
-static inline int cpu_mmu_index(CPUSPARCState *env, bool ifetch)
-{
-#if defined(CONFIG_USER_ONLY)
-    return MMU_USER_IDX;
-#elif !defined(TARGET_SPARC64)
-    if ((env->mmuregs[0] & MMU_E) == 0) { /* MMU disabled */
-        return MMU_PHYS_IDX;
-    } else {
-        return env->psrs;
-    }
-#else
-    /* IMMU or DMMU disabled.  */
-    if (ifetch
-        ? (env->lsu & IMMU_E) == 0 || (env->pstate & PS_RED) != 0
-        : (env->lsu & DMMU_E) == 0) {
-        return MMU_PHYS_IDX;
-    } else if (cpu_hypervisor_mode(env)) {
-        return MMU_PHYS_IDX;
-    } else if (env->tl > 0) {
-        return MMU_NUCLEUS_IDX;
-    } else if (cpu_supervisor_mode(env)) {
-        return MMU_KERNEL_IDX;
-    } else {
-        return MMU_USER_IDX;
-    }
-#endif
-}
-
 static inline int cpu_interrupts_enabled(CPUSPARCState *env1)
 {
 #if !defined (TARGET_SPARC64)
@@ -775,40 +742,11 @@ trap_state* cpu_tsptr(CPUSPARCState* env);
 #define TB_FLAG_AM_ENABLED   (1 << 5)
 #define TB_FLAG_SUPER        (1 << 6)
 #define TB_FLAG_HYPER        (1 << 7)
+#define TB_FLAG_FSR_QNE      (1 << 8)
 #define TB_FLAG_ASI_SHIFT    24
 
-static inline void cpu_get_tb_cpu_state(CPUSPARCState *env, vaddr *pc,
-                                        uint64_t *cs_base, uint32_t *pflags)
-{
-    uint32_t flags;
-    *pc = env->pc;
-    *cs_base = env->npc;
-    flags = cpu_mmu_index(env, false);
-#ifndef CONFIG_USER_ONLY
-    if (cpu_supervisor_mode(env)) {
-        flags |= TB_FLAG_SUPER;
-    }
-#endif
-#ifdef TARGET_SPARC64
-#ifndef CONFIG_USER_ONLY
-    if (cpu_hypervisor_mode(env)) {
-        flags |= TB_FLAG_HYPER;
-    }
-#endif
-    if (env->pstate & PS_AM) {
-        flags |= TB_FLAG_AM_ENABLED;
-    }
-    if ((env->pstate & PS_PEF) && (env->fprs & FPRS_FEF)) {
-        flags |= TB_FLAG_FPU_ENABLED;
-    }
-    flags |= env->asi << TB_FLAG_ASI_SHIFT;
-#else
-    if (env->psref) {
-        flags |= TB_FLAG_FPU_ENABLED;
-    }
-#endif
-    *pflags = flags;
-}
+void cpu_get_tb_cpu_state(CPUSPARCState *env, vaddr *pc,
+                          uint64_t *cs_base, uint32_t *pflags);
 
 static inline bool tb_fpu_enabled(int tb_flags)
 {

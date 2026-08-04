@@ -602,7 +602,7 @@ static void ipod_touch_aes_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = ipod_touch_aes_reset;
+    device_class_set_legacy_reset(dc, ipod_touch_aes_reset);
     dc->vmsd = &vmstate_ipod_touch_aes;
 }
 

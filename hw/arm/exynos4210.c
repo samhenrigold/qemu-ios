@@ -23,11 +23,12 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "exec/tswap.h"
 #include "cpu.h"
 #include "hw/cpu/a9mpcore.h"
 #include "hw/irq.h"
-#include "sysemu/blockdev.h"
-#include "sysemu/sysemu.h"
+#include "system/blockdev.h"
+#include "system/system.h"
 #include "hw/sysbus.h"
 #include "hw/arm/boot.h"
 #include "hw/loader.h"
@@ -35,6 +36,7 @@
 #include "hw/arm/exynos4210.h"
 #include "hw/sd/sdhci.h"
 #include "hw/usb/hcd-ehci.h"
+#include "target/arm/cpu-qom.h"
 
 #define EXYNOS4210_CHIPID_ADDR         0x10000000
 
@@ -100,6 +102,8 @@
 #define EXYNOS4210_PL330_BASE0_ADDR         0x12680000
 #define EXYNOS4210_PL330_BASE1_ADDR         0x12690000
 #define EXYNOS4210_PL330_BASE2_ADDR         0x12850000
+
+#define GIC_EXT_IRQS 64 /* FIXME: verify for this SoC */
 
 enum ExtGicId {
     EXT_GIC_ID_MDMA_LCD0 = 66,
@@ -392,7 +396,8 @@ static void exynos4210_init_board_irqs(Exynos4210State *s)
         }
         if (irq_id) {
             qdev_connect_gpio_out(splitter, splitin,
-                                  qdev_get_gpio_in(extgicdev, irq_id - 32));
+                                  qdev_get_gpio_in(extgicdev,
+                                                   irq_id - GIC_INTERNAL));
         }
     }
     for (; n < EXYNOS4210_MAX_INT_COMBINER_IN_IRQ; n++) {
@@ -419,7 +424,8 @@ static void exynos4210_init_board_irqs(Exynos4210State *s)
             s->irq_table[n] = qdev_get_gpio_in(splitter, 0);
             qdev_connect_gpio_out(splitter, 0, qdev_get_gpio_in(intcdev, n));
             qdev_connect_gpio_out(splitter, 1,
-                                  qdev_get_gpio_in(extgicdev, irq_id - 32));
+                                  qdev_get_gpio_in(extgicdev,
+                                                   irq_id - GIC_INTERNAL));
         } else {
             s->irq_table[n] = qdev_get_gpio_in(intcdev, n);
         }
@@ -554,6 +560,7 @@ static void exynos4210_realize(DeviceState *socdev, Error **errp)
     for (n = 0; n < EXYNOS4210_NCPUS; n++) {
         Object *cpuobj = object_new(ARM_CPU_TYPE_NAME("cortex-a9"));
 
+        object_property_add_child(OBJECT(s), "cpu[*]", cpuobj);
         /* By default A9 CPUs have EL3 enabled.  This board does not currently
          * support EL3 so the CPU EL3 property is disabled before realization.
          */
@@ -583,6 +590,8 @@ static void exynos4210_realize(DeviceState *socdev, Error **errp)
 
     /* Private memory region and Internal GIC */
     qdev_prop_set_uint32(DEVICE(&s->a9mpcore), "num-cpu", EXYNOS4210_NCPUS);
+    qdev_prop_set_uint32(DEVICE(&s->a9mpcore), "num-irq",
+                         GIC_EXT_IRQS + GIC_INTERNAL);
     busdev = SYS_BUS_DEVICE(&s->a9mpcore);
     sysbus_realize(busdev, &error_fatal);
     sysbus_mmio_map(busdev, 0, EXYNOS4210_SMP_PRIVATE_BASE_ADDR);
@@ -766,11 +775,15 @@ static void exynos4210_realize(DeviceState *socdev, Error **errp)
     }
 
     /*** Display controller (FIMD) ***/
-    sysbus_create_varargs("exynos4210.fimd", EXYNOS4210_FIMD0_BASE_ADDR,
-            s->irq_table[exynos4210_get_irq(11, 0)],
-            s->irq_table[exynos4210_get_irq(11, 1)],
-            s->irq_table[exynos4210_get_irq(11, 2)],
-            NULL);
+    dev = qdev_new("exynos4210.fimd");
+    object_property_set_link(OBJECT(dev), "framebuffer-memory",
+                             OBJECT(system_mem), &error_fatal);
+    busdev = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(busdev, &error_fatal);
+    sysbus_mmio_map(busdev, 0, EXYNOS4210_FIMD0_BASE_ADDR);
+    for (n = 0; n < 3; n++) {
+        sysbus_connect_irq(busdev, n, s->irq_table[exynos4210_get_irq(11, n)]);
+    }
 
     sysbus_create_simple(TYPE_EXYNOS4210_EHCI, EXYNOS4210_EHCI_BASE_ADDR,
             s->irq_table[exynos4210_get_irq(28, 3)]);

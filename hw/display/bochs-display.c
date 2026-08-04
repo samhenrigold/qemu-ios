@@ -61,7 +61,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(BochsDisplayState, BOCHS_DISPLAY)
 
 static const VMStateDescription vmstate_bochs_display = {
     .name = "bochs-display",
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(pci, BochsDisplayState),
         VMSTATE_UINT16_ARRAY(vbe_regs, BochsDisplayState, VBE_DISPI_INDEX_NB),
         VMSTATE_BOOL(big_endian_fb, BochsDisplayState),
@@ -345,11 +345,10 @@ static void bochs_display_exit(PCIDevice *dev)
     graphic_console_close(s->con);
 }
 
-static Property bochs_display_properties[] = {
+static const Property bochs_display_properties[] = {
     DEFINE_PROP_SIZE("vgamem", BochsDisplayState, vgamem, 16 * MiB),
     DEFINE_PROP_BOOL("edid", BochsDisplayState, enable_edid, true),
     DEFINE_EDID_PROPERTIES(BochsDisplayState, edid_info),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void bochs_display_class_init(ObjectClass *klass, void *data)

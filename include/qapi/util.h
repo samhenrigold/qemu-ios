@@ -18,7 +18,7 @@ typedef enum {
 
 typedef struct QEnumLookup {
     const char *const *array;
-    const unsigned char *const special_features;
+    const uint64_t *const features;
     const int size;
 } QEnumLookup;
 
@@ -55,5 +55,18 @@ int parse_qapi_name(const char *name, bool complete);
     (*(tail))->value = (element); \
     (tail) = &(*(tail))->next; \
 } while (0)
+
+/*
+ * For any GenericList @list, return its length.
+ */
+#define QAPI_LIST_LENGTH(list)                                      \
+    ({                                                              \
+        size_t _len = 0;                                            \
+        typeof_strip_qual(list) _tail;                              \
+        for (_tail = list; _tail != NULL; _tail = _tail->next) {    \
+            _len++;                                                 \
+        }                                                           \
+        _len;                                                       \
+    })
 
 #endif

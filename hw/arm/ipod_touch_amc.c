@@ -563,7 +563,7 @@ static void ipod_touch_amc_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = ipod_touch_amc_reset;
+    device_class_set_legacy_reset(dc, ipod_touch_amc_reset);
 }
 
 static const TypeInfo ipod_touch_amc_info = {

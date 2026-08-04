@@ -8,7 +8,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "sysemu/blockdev.h"
+#include "system/blockdev.h"
 #include "hw/sysbus.h"
 #include "migration/vmstate.h"
 #include "hw/irq.h"
@@ -63,7 +63,7 @@ static const VMStateDescription vmstate_pl181 = {
     .name = "pl181",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(clock, PL181State),
         VMSTATE_UINT32(power, PL181State),
         VMSTATE_UINT32(cmdarg, PL181State),
@@ -514,7 +514,7 @@ static void pl181_class_init(ObjectClass *klass, void *data)
     DeviceClass *k = DEVICE_CLASS(klass);
 
     k->vmsd = &vmstate_pl181;
-    k->reset = pl181_reset;
+    device_class_set_legacy_reset(k, pl181_reset);
     /* Reason: output IRQs should be wired up */
     k->user_creatable = false;
 }

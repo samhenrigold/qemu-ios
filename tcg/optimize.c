@@ -28,6 +28,7 @@
 #include "qemu/interval-tree.h"
 #include "tcg/tcg-op-common.h"
 #include "tcg-internal.h"
+#include "tcg-has.h"
 
 #define CASE_OP_32_64(x)                        \
         glue(glue(case INDEX_op_, x), _i32):    \
@@ -52,7 +53,7 @@ typedef struct TempOptInfo {
     QSIMPLEQ_HEAD(, MemCopyInfo) mem_copy;
     uint64_t val;
     uint64_t z_mask;  /* mask bit is 0 if and only if value bit is 0 */
-    uint64_t s_mask;  /* a left-aligned mask of clrsb(value) bits. */
+    uint64_t s_mask;  /* mask bit is 1 if value bit matches msb */
 } TempOptInfo;
 
 typedef struct OptContext {
@@ -64,50 +65,8 @@ typedef struct OptContext {
     QSIMPLEQ_HEAD(, MemCopyInfo) mem_free;
 
     /* In flight values from optimization. */
-    uint64_t a_mask;  /* mask bit is 0 iff value identical to first input */
-    uint64_t z_mask;  /* mask bit is 0 iff value bit is 0 */
-    uint64_t s_mask;  /* mask of clrsb(value) bits */
     TCGType type;
 } OptContext;
-
-/* Calculate the smask for a specific value. */
-static uint64_t smask_from_value(uint64_t value)
-{
-    int rep = clrsb64(value);
-    return ~(~0ull >> rep);
-}
-
-/*
- * Calculate the smask for a given set of known-zeros.
- * If there are lots of zeros on the left, we can consider the remainder
- * an unsigned field, and thus the corresponding signed field is one bit
- * larger.
- */
-static uint64_t smask_from_zmask(uint64_t zmask)
-{
-    /*
-     * Only the 0 bits are significant for zmask, thus the msb itself
-     * must be zero, else we have no sign information.
-     */
-    int rep = clz64(zmask);
-    if (rep == 0) {
-        return 0;
-    }
-    rep -= 1;
-    return ~(~0ull >> rep);
-}
-
-/*
- * Recreate a properly left-aligned smask after manipulation.
- * Some bit-shuffling, particularly shifts and rotates, may
- * retain sign bits on the left, but may scatter disconnected
- * sign bits on the right.  Retain only what remains to the left.
- */
-static uint64_t smask_from_smask(int64_t smask)
-{
-    /* Only the 1 bits are significant for smask */
-    return smask_from_zmask(~smask);
-}
 
 static inline TempOptInfo *ts_info(TCGTemp *ts)
 {
@@ -119,14 +78,39 @@ static inline TempOptInfo *arg_info(TCGArg arg)
     return ts_info(arg_temp(arg));
 }
 
+static inline bool ti_is_const(TempOptInfo *ti)
+{
+    return ti->is_const;
+}
+
+static inline uint64_t ti_const_val(TempOptInfo *ti)
+{
+    return ti->val;
+}
+
+static inline bool ti_is_const_val(TempOptInfo *ti, uint64_t val)
+{
+    return ti_is_const(ti) && ti_const_val(ti) == val;
+}
+
 static inline bool ts_is_const(TCGTemp *ts)
 {
-    return ts_info(ts)->is_const;
+    return ti_is_const(ts_info(ts));
+}
+
+static inline bool ts_is_const_val(TCGTemp *ts, uint64_t val)
+{
+    return ti_is_const_val(ts_info(ts), val);
 }
 
 static inline bool arg_is_const(TCGArg arg)
 {
     return ts_is_const(arg_temp(arg));
+}
+
+static inline bool arg_is_const_val(TCGArg arg, uint64_t val)
+{
+    return ts_is_const_val(arg_temp(arg), val);
 }
 
 static inline bool ts_is_copy(TCGTemp *ts)
@@ -163,7 +147,7 @@ static void init_ts_info(OptContext *ctx, TCGTemp *ts)
         ti->is_const = true;
         ti->val = ts->val;
         ti->z_mask = ts->val;
-        ti->s_mask = smask_from_value(ts->val);
+        ti->s_mask = INT64_MIN >> clrsb64(ts->val);
     } else {
         ti->is_const = false;
         ti->z_mask = -1;
@@ -353,6 +337,13 @@ static TCGArg arg_new_constant(OptContext *ctx, uint64_t val)
     return temp_arg(ts);
 }
 
+static TCGArg arg_new_temp(OptContext *ctx)
+{
+    TCGTemp *ts = tcg_temp_new_internal(ctx->type, TEMP_EBB);
+    init_ts_info(ctx, ts);
+    return temp_arg(ts);
+}
+
 static bool tcg_opt_gen_mov(OptContext *ctx, TCGOp *op, TCGArg dst, TCGArg src)
 {
     TCGTemp *dst_ts = arg_temp(dst);
@@ -380,7 +371,7 @@ static bool tcg_opt_gen_mov(OptContext *ctx, TCGOp *op, TCGArg dst, TCGArg src)
     case TCG_TYPE_V64:
     case TCG_TYPE_V128:
     case TCG_TYPE_V256:
-        /* TCGOP_VECL and TCGOP_VECE remain unchanged.  */
+        /* TCGOP_TYPE and TCGOP_VECE remain unchanged.  */
         new_op = INDEX_op_mov_vec;
         break;
     default:
@@ -614,9 +605,15 @@ static bool do_constant_folding_cond_32(uint32_t x, uint32_t y, TCGCond c)
         return x <= y;
     case TCG_COND_GTU:
         return x > y;
-    default:
-        g_assert_not_reached();
+    case TCG_COND_TSTEQ:
+        return (x & y) == 0;
+    case TCG_COND_TSTNE:
+        return (x & y) != 0;
+    case TCG_COND_ALWAYS:
+    case TCG_COND_NEVER:
+        break;
     }
+    g_assert_not_reached();
 }
 
 static bool do_constant_folding_cond_64(uint64_t x, uint64_t y, TCGCond c)
@@ -642,12 +639,18 @@ static bool do_constant_folding_cond_64(uint64_t x, uint64_t y, TCGCond c)
         return x <= y;
     case TCG_COND_GTU:
         return x > y;
-    default:
-        g_assert_not_reached();
+    case TCG_COND_TSTEQ:
+        return (x & y) == 0;
+    case TCG_COND_TSTNE:
+        return (x & y) != 0;
+    case TCG_COND_ALWAYS:
+    case TCG_COND_NEVER:
+        break;
     }
+    g_assert_not_reached();
 }
 
-static bool do_constant_folding_cond_eq(TCGCond c)
+static int do_constant_folding_cond_eq(TCGCond c)
 {
     switch (c) {
     case TCG_COND_GT:
@@ -662,9 +665,14 @@ static bool do_constant_folding_cond_eq(TCGCond c)
     case TCG_COND_LEU:
     case TCG_COND_EQ:
         return 1;
-    default:
-        g_assert_not_reached();
+    case TCG_COND_TSTEQ:
+    case TCG_COND_TSTNE:
+        return -1;
+    case TCG_COND_ALWAYS:
+    case TCG_COND_NEVER:
+        break;
     }
+    g_assert_not_reached();
 }
 
 /*
@@ -689,52 +697,17 @@ static int do_constant_folding_cond(TCGType type, TCGArg x,
         }
     } else if (args_are_copies(x, y)) {
         return do_constant_folding_cond_eq(c);
-    } else if (arg_is_const(y) && arg_info(y)->val == 0) {
+    } else if (arg_is_const_val(y, 0)) {
         switch (c) {
         case TCG_COND_LTU:
+        case TCG_COND_TSTNE:
             return 0;
         case TCG_COND_GEU:
+        case TCG_COND_TSTEQ:
             return 1;
         default:
             return -1;
         }
-    }
-    return -1;
-}
-
-/*
- * Return -1 if the condition can't be simplified,
- * and the result of the condition (0 or 1) if it can.
- */
-static int do_constant_folding_cond2(TCGArg *p1, TCGArg *p2, TCGCond c)
-{
-    TCGArg al = p1[0], ah = p1[1];
-    TCGArg bl = p2[0], bh = p2[1];
-
-    if (arg_is_const(bl) && arg_is_const(bh)) {
-        tcg_target_ulong blv = arg_info(bl)->val;
-        tcg_target_ulong bhv = arg_info(bh)->val;
-        uint64_t b = deposit64(blv, 32, 32, bhv);
-
-        if (arg_is_const(al) && arg_is_const(ah)) {
-            tcg_target_ulong alv = arg_info(al)->val;
-            tcg_target_ulong ahv = arg_info(ah)->val;
-            uint64_t a = deposit64(alv, 32, 32, ahv);
-            return do_constant_folding_cond_64(a, b, c);
-        }
-        if (b == 0) {
-            switch (c) {
-            case TCG_COND_LTU:
-                return 0;
-            case TCG_COND_GEU:
-                return 1;
-            default:
-                break;
-            }
-        }
-    }
-    if (args_are_copies(al, bl) && args_are_copies(ah, bh)) {
-        return do_constant_folding_cond_eq(c);
     }
     return -1;
 }
@@ -785,6 +758,169 @@ static bool swap_commutative2(TCGArg *p1, TCGArg *p2)
     return false;
 }
 
+/*
+ * Return -1 if the condition can't be simplified,
+ * and the result of the condition (0 or 1) if it can.
+ */
+static int do_constant_folding_cond1(OptContext *ctx, TCGOp *op, TCGArg dest,
+                                     TCGArg *p1, TCGArg *p2, TCGArg *pcond)
+{
+    TCGCond cond;
+    TempOptInfo *i1;
+    bool swap;
+    int r;
+
+    swap = swap_commutative(dest, p1, p2);
+    cond = *pcond;
+    if (swap) {
+        *pcond = cond = tcg_swap_cond(cond);
+    }
+
+    r = do_constant_folding_cond(ctx->type, *p1, *p2, cond);
+    if (r >= 0) {
+        return r;
+    }
+    if (!is_tst_cond(cond)) {
+        return -1;
+    }
+
+    i1 = arg_info(*p1);
+
+    /*
+     * TSTNE x,x -> NE x,0
+     * TSTNE x,i -> NE x,0 if i includes all nonzero bits of x
+     */
+    if (args_are_copies(*p1, *p2) ||
+        (arg_is_const(*p2) && (i1->z_mask & ~arg_info(*p2)->val) == 0)) {
+        *p2 = arg_new_constant(ctx, 0);
+        *pcond = tcg_tst_eqne_cond(cond);
+        return -1;
+    }
+
+    /* TSTNE x,i -> LT x,0 if i only includes sign bit copies */
+    if (arg_is_const(*p2) && (arg_info(*p2)->val & ~i1->s_mask) == 0) {
+        *p2 = arg_new_constant(ctx, 0);
+        *pcond = tcg_tst_ltge_cond(cond);
+        return -1;
+    }
+
+    /* Expand to AND with a temporary if no backend support. */
+    if (!TCG_TARGET_HAS_tst) {
+        TCGOpcode and_opc = (ctx->type == TCG_TYPE_I32
+                             ? INDEX_op_and_i32 : INDEX_op_and_i64);
+        TCGOp *op2 = tcg_op_insert_before(ctx->tcg, op, and_opc, 3);
+        TCGArg tmp = arg_new_temp(ctx);
+
+        op2->args[0] = tmp;
+        op2->args[1] = *p1;
+        op2->args[2] = *p2;
+
+        *p1 = tmp;
+        *p2 = arg_new_constant(ctx, 0);
+        *pcond = tcg_tst_eqne_cond(cond);
+    }
+    return -1;
+}
+
+static int do_constant_folding_cond2(OptContext *ctx, TCGOp *op, TCGArg *args)
+{
+    TCGArg al, ah, bl, bh;
+    TCGCond c;
+    bool swap;
+    int r;
+
+    swap = swap_commutative2(args, args + 2);
+    c = args[4];
+    if (swap) {
+        args[4] = c = tcg_swap_cond(c);
+    }
+
+    al = args[0];
+    ah = args[1];
+    bl = args[2];
+    bh = args[3];
+
+    if (arg_is_const(bl) && arg_is_const(bh)) {
+        tcg_target_ulong blv = arg_info(bl)->val;
+        tcg_target_ulong bhv = arg_info(bh)->val;
+        uint64_t b = deposit64(blv, 32, 32, bhv);
+
+        if (arg_is_const(al) && arg_is_const(ah)) {
+            tcg_target_ulong alv = arg_info(al)->val;
+            tcg_target_ulong ahv = arg_info(ah)->val;
+            uint64_t a = deposit64(alv, 32, 32, ahv);
+
+            r = do_constant_folding_cond_64(a, b, c);
+            if (r >= 0) {
+                return r;
+            }
+        }
+
+        if (b == 0) {
+            switch (c) {
+            case TCG_COND_LTU:
+            case TCG_COND_TSTNE:
+                return 0;
+            case TCG_COND_GEU:
+            case TCG_COND_TSTEQ:
+                return 1;
+            default:
+                break;
+            }
+        }
+
+        /* TSTNE x,-1 -> NE x,0 */
+        if (b == -1 && is_tst_cond(c)) {
+            args[3] = args[2] = arg_new_constant(ctx, 0);
+            args[4] = tcg_tst_eqne_cond(c);
+            return -1;
+        }
+
+        /* TSTNE x,sign -> LT x,0 */
+        if (b == INT64_MIN && is_tst_cond(c)) {
+            /* bl must be 0, so copy that to bh */
+            args[3] = bl;
+            args[4] = tcg_tst_ltge_cond(c);
+            return -1;
+        }
+    }
+
+    if (args_are_copies(al, bl) && args_are_copies(ah, bh)) {
+        r = do_constant_folding_cond_eq(c);
+        if (r >= 0) {
+            return r;
+        }
+
+        /* TSTNE x,x -> NE x,0 */
+        if (is_tst_cond(c)) {
+            args[3] = args[2] = arg_new_constant(ctx, 0);
+            args[4] = tcg_tst_eqne_cond(c);
+            return -1;
+        }
+    }
+
+    /* Expand to AND with a temporary if no backend support. */
+    if (!TCG_TARGET_HAS_tst && is_tst_cond(c)) {
+        TCGOp *op1 = tcg_op_insert_before(ctx->tcg, op, INDEX_op_and_i32, 3);
+        TCGOp *op2 = tcg_op_insert_before(ctx->tcg, op, INDEX_op_and_i32, 3);
+        TCGArg t1 = arg_new_temp(ctx);
+        TCGArg t2 = arg_new_temp(ctx);
+
+        op1->args[0] = t1;
+        op1->args[1] = al;
+        op1->args[2] = bl;
+        op2->args[0] = t2;
+        op2->args[1] = ah;
+        op2->args[2] = bh;
+
+        args[0] = t1;
+        args[1] = t2;
+        args[3] = args[2] = arg_new_constant(ctx, 0);
+        args[4] = tcg_tst_eqne_cond(c);
+    }
+    return -1;
+}
+
 static void init_arguments(OptContext *ctx, TCGOp *op, int nb_args)
 {
     for (int i = 0; i < nb_args; i++) {
@@ -804,37 +940,31 @@ static void copy_propagate(OptContext *ctx, TCGOp *op,
     }
 }
 
-static void finish_folding(OptContext *ctx, TCGOp *op)
+static void finish_bb(OptContext *ctx)
+{
+    /* We only optimize memory barriers across basic blocks. */
+    ctx->prev_mb = NULL;
+}
+
+static void finish_ebb(OptContext *ctx)
+{
+    finish_bb(ctx);
+    /* We only optimize across extended basic blocks. */
+    memset(&ctx->temps_used, 0, sizeof(ctx->temps_used));
+    remove_mem_copy_all(ctx);
+}
+
+static bool finish_folding(OptContext *ctx, TCGOp *op)
 {
     const TCGOpDef *def = &tcg_op_defs[op->opc];
     int i, nb_oargs;
-
-    /*
-     * We only optimize extended basic blocks.  If the opcode ends a BB
-     * and is not a conditional branch, reset all temp data.
-     */
-    if (def->flags & TCG_OPF_BB_END) {
-        ctx->prev_mb = NULL;
-        if (!(def->flags & TCG_OPF_COND_BRANCH)) {
-            memset(&ctx->temps_used, 0, sizeof(ctx->temps_used));
-            remove_mem_copy_all(ctx);
-        }
-        return;
-    }
 
     nb_oargs = def->nb_oargs;
     for (i = 0; i < nb_oargs; i++) {
         TCGTemp *ts = arg_temp(op->args[i]);
         reset_ts(ctx, ts);
-        /*
-         * Save the corresponding known-zero/sign bits mask for the
-         * first output argument (only one supported so far).
-         */
-        if (i == 0) {
-            ts_info(ts)->z_mask = ctx->z_mask;
-            ts_info(ts)->s_mask = ctx->s_mask;
-        }
     }
+    return true;
 }
 
 /*
@@ -884,11 +1014,22 @@ static bool fold_const2_commutative(OptContext *ctx, TCGOp *op)
     return fold_const2(ctx, op);
 }
 
-static bool fold_masks(OptContext *ctx, TCGOp *op)
+/*
+ * Record "zero" and "sign" masks for the single output of @op.
+ * See TempOptInfo definition of z_mask and s_mask.
+ * If z_mask allows, fold the output to constant zero.
+ * The passed s_mask may be augmented by z_mask.
+ */
+static bool fold_masks_zs(OptContext *ctx, TCGOp *op,
+                          uint64_t z_mask, int64_t s_mask)
 {
-    uint64_t a_mask = ctx->a_mask;
-    uint64_t z_mask = ctx->z_mask;
-    uint64_t s_mask = ctx->s_mask;
+    const TCGOpDef *def = &tcg_op_defs[op->opc];
+    TCGTemp *ts;
+    TempOptInfo *ti;
+    int rep;
+
+    /* Only single-output opcodes are supported here. */
+    tcg_debug_assert(def->nb_oargs == 1);
 
     /*
      * 32-bit ops generate 32-bit results, which for the purpose of
@@ -898,15 +1039,48 @@ static bool fold_masks(OptContext *ctx, TCGOp *op)
      * type changing opcodes.
      */
     if (ctx->type == TCG_TYPE_I32) {
-        a_mask = (int32_t)a_mask;
         z_mask = (int32_t)z_mask;
-        s_mask |= MAKE_64BIT_MASK(32, 32);
-        ctx->z_mask = z_mask;
-        ctx->s_mask = s_mask;
+        s_mask |= INT32_MIN;
     }
 
     if (z_mask == 0) {
         return tcg_opt_gen_movi(ctx, op, op->args[0], 0);
+    }
+
+    ts = arg_temp(op->args[0]);
+    reset_ts(ctx, ts);
+
+    ti = ts_info(ts);
+    ti->z_mask = z_mask;
+
+    /* Canonicalize s_mask and incorporate data from z_mask. */
+    rep = clz64(~s_mask);
+    rep = MAX(rep, clz64(z_mask));
+    rep = MAX(rep - 1, 0);
+    ti->s_mask = INT64_MIN >> rep;
+
+    return true;
+}
+
+static bool fold_masks_z(OptContext *ctx, TCGOp *op, uint64_t z_mask)
+{
+    return fold_masks_zs(ctx, op, z_mask, 0);
+}
+
+static bool fold_masks_s(OptContext *ctx, TCGOp *op, uint64_t s_mask)
+{
+    return fold_masks_zs(ctx, op, -1, s_mask);
+}
+
+/*
+ * An "affected" mask bit is 0 if and only if the result is identical
+ * to the first input.  Thus if the entire mask is 0, the operation
+ * is equivalent to a copy.
+ */
+static bool fold_affected_mask(OptContext *ctx, TCGOp *op, uint64_t a_mask)
+{
+    if (ctx->type == TCG_TYPE_I32) {
+        a_mask = (uint32_t)a_mask;
     }
     if (a_mask == 0) {
         return tcg_opt_gen_mov(ctx, op, op->args[0], op->args[1]);
@@ -954,7 +1128,7 @@ static bool fold_to_not(OptContext *ctx, TCGOp *op, int idx)
 /* If the binary operation has first argument @i, fold to @i. */
 static bool fold_ix_to_i(OptContext *ctx, TCGOp *op, uint64_t i)
 {
-    if (arg_is_const(op->args[1]) && arg_info(op->args[1])->val == i) {
+    if (arg_is_const_val(op->args[1], i)) {
         return tcg_opt_gen_movi(ctx, op, op->args[0], i);
     }
     return false;
@@ -963,7 +1137,7 @@ static bool fold_ix_to_i(OptContext *ctx, TCGOp *op, uint64_t i)
 /* If the binary operation has first argument @i, fold to NOT. */
 static bool fold_ix_to_not(OptContext *ctx, TCGOp *op, uint64_t i)
 {
-    if (arg_is_const(op->args[1]) && arg_info(op->args[1])->val == i) {
+    if (arg_is_const_val(op->args[1], i)) {
         return fold_to_not(ctx, op, 2);
     }
     return false;
@@ -972,7 +1146,7 @@ static bool fold_ix_to_not(OptContext *ctx, TCGOp *op, uint64_t i)
 /* If the binary operation has second argument @i, fold to @i. */
 static bool fold_xi_to_i(OptContext *ctx, TCGOp *op, uint64_t i)
 {
-    if (arg_is_const(op->args[2]) && arg_info(op->args[2])->val == i) {
+    if (arg_is_const_val(op->args[2], i)) {
         return tcg_opt_gen_movi(ctx, op, op->args[0], i);
     }
     return false;
@@ -981,7 +1155,7 @@ static bool fold_xi_to_i(OptContext *ctx, TCGOp *op, uint64_t i)
 /* If the binary operation has second argument @i, fold to identity. */
 static bool fold_xi_to_x(OptContext *ctx, TCGOp *op, uint64_t i)
 {
-    if (arg_is_const(op->args[2]) && arg_info(op->args[2])->val == i) {
+    if (arg_is_const_val(op->args[2], i)) {
         return tcg_opt_gen_mov(ctx, op, op->args[0], op->args[1]);
     }
     return false;
@@ -990,7 +1164,7 @@ static bool fold_xi_to_x(OptContext *ctx, TCGOp *op, uint64_t i)
 /* If the binary operation has second argument @i, fold to NOT. */
 static bool fold_xi_to_not(OptContext *ctx, TCGOp *op, uint64_t i)
 {
-    if (arg_is_const(op->args[2]) && arg_info(op->args[2])->val == i) {
+    if (arg_is_const_val(op->args[2], i)) {
         return fold_to_not(ctx, op, 1);
     }
     return false;
@@ -1023,13 +1197,17 @@ static bool fold_xx_to_x(OptContext *ctx, TCGOp *op)
  *   3) those that produce information about the result value.
  */
 
+static bool fold_or(OptContext *ctx, TCGOp *op);
+static bool fold_orc(OptContext *ctx, TCGOp *op);
+static bool fold_xor(OptContext *ctx, TCGOp *op);
+
 static bool fold_add(OptContext *ctx, TCGOp *op)
 {
     if (fold_const2_commutative(ctx, op) ||
         fold_xi_to_x(ctx, op, 0)) {
         return true;
     }
-    return false;
+    return finish_folding(ctx, op);
 }
 
 /* We cannot as yet do_constant_folding with vectors. */
@@ -1039,7 +1217,7 @@ static bool fold_add_vec(OptContext *ctx, TCGOp *op)
         fold_xi_to_x(ctx, op, 0)) {
         return true;
     }
-    return false;
+    return finish_folding(ctx, op);
 }
 
 static bool fold_addsub2(OptContext *ctx, TCGOp *op, bool add)
@@ -1106,7 +1284,7 @@ static bool fold_addsub2(OptContext *ctx, TCGOp *op, bool add)
         op->args[4] = arg_new_constant(ctx, bl);
         op->args[5] = arg_new_constant(ctx, bh);
     }
-    return false;
+    return finish_folding(ctx, op);
 }
 
 static bool fold_add2(OptContext *ctx, TCGOp *op)
@@ -1120,7 +1298,8 @@ static bool fold_add2(OptContext *ctx, TCGOp *op)
 
 static bool fold_and(OptContext *ctx, TCGOp *op)
 {
-    uint64_t z1, z2;
+    uint64_t z1, z2, z_mask, s_mask;
+    TempOptInfo *t1, *t2;
 
     if (fold_const2_commutative(ctx, op) ||
         fold_xi_to_i(ctx, op, 0) ||
@@ -1129,31 +1308,34 @@ static bool fold_and(OptContext *ctx, TCGOp *op)
         return true;
     }
 
-    z1 = arg_info(op->args[1])->z_mask;
-    z2 = arg_info(op->args[2])->z_mask;
-    ctx->z_mask = z1 & z2;
-
-    /*
-     * Sign repetitions are perforce all identical, whether they are 1 or 0.
-     * Bitwise operations preserve the relative quantity of the repetitions.
-     */
-    ctx->s_mask = arg_info(op->args[1])->s_mask
-                & arg_info(op->args[2])->s_mask;
+    t1 = arg_info(op->args[1]);
+    t2 = arg_info(op->args[2]);
+    z1 = t1->z_mask;
+    z2 = t2->z_mask;
 
     /*
      * Known-zeros does not imply known-ones.  Therefore unless
      * arg2 is constant, we can't infer affected bits from it.
      */
-    if (arg_is_const(op->args[2])) {
-        ctx->a_mask = z1 & ~z2;
+    if (ti_is_const(t2) && fold_affected_mask(ctx, op, z1 & ~z2)) {
+        return true;
     }
 
-    return fold_masks(ctx, op);
+    z_mask = z1 & z2;
+
+    /*
+     * Sign repetitions are perforce all identical, whether they are 1 or 0.
+     * Bitwise operations preserve the relative quantity of the repetitions.
+     */
+    s_mask = t1->s_mask & t2->s_mask;
+
+    return fold_masks_zs(ctx, op, z_mask, s_mask);
 }
 
 static bool fold_andc(OptContext *ctx, TCGOp *op)
 {
-    uint64_t z1;
+    uint64_t z_mask, s_mask;
+    TempOptInfo *t1, *t2;
 
     if (fold_const2(ctx, op) ||
         fold_xx_to_i(ctx, op, 0) ||
@@ -1162,34 +1344,85 @@ static bool fold_andc(OptContext *ctx, TCGOp *op)
         return true;
     }
 
-    z1 = arg_info(op->args[1])->z_mask;
+    t1 = arg_info(op->args[1]);
+    t2 = arg_info(op->args[2]);
+    z_mask = t1->z_mask;
 
     /*
      * Known-zeros does not imply known-ones.  Therefore unless
      * arg2 is constant, we can't infer anything from it.
      */
-    if (arg_is_const(op->args[2])) {
-        uint64_t z2 = ~arg_info(op->args[2])->z_mask;
-        ctx->a_mask = z1 & ~z2;
-        z1 &= z2;
+    if (ti_is_const(t2)) {
+        uint64_t v2 = ti_const_val(t2);
+        if (fold_affected_mask(ctx, op, z_mask & v2)) {
+            return true;
+        }
+        z_mask &= ~v2;
     }
-    ctx->z_mask = z1;
 
-    ctx->s_mask = arg_info(op->args[1])->s_mask
-                & arg_info(op->args[2])->s_mask;
-    return fold_masks(ctx, op);
+    s_mask = t1->s_mask & t2->s_mask;
+    return fold_masks_zs(ctx, op, z_mask, s_mask);
+}
+
+static bool fold_bitsel_vec(OptContext *ctx, TCGOp *op)
+{
+    /* If true and false values are the same, eliminate the cmp. */
+    if (args_are_copies(op->args[2], op->args[3])) {
+        return tcg_opt_gen_mov(ctx, op, op->args[0], op->args[2]);
+    }
+
+    if (arg_is_const(op->args[2]) && arg_is_const(op->args[3])) {
+        uint64_t tv = arg_info(op->args[2])->val;
+        uint64_t fv = arg_info(op->args[3])->val;
+
+        if (tv == -1 && fv == 0) {
+            return tcg_opt_gen_mov(ctx, op, op->args[0], op->args[1]);
+        }
+        if (tv == 0 && fv == -1) {
+            if (TCG_TARGET_HAS_not_vec) {
+                op->opc = INDEX_op_not_vec;
+                return fold_not(ctx, op);
+            } else {
+                op->opc = INDEX_op_xor_vec;
+                op->args[2] = arg_new_constant(ctx, -1);
+                return fold_xor(ctx, op);
+            }
+        }
+    }
+    if (arg_is_const(op->args[2])) {
+        uint64_t tv = arg_info(op->args[2])->val;
+        if (tv == -1) {
+            op->opc = INDEX_op_or_vec;
+            op->args[2] = op->args[3];
+            return fold_or(ctx, op);
+        }
+        if (tv == 0 && TCG_TARGET_HAS_andc_vec) {
+            op->opc = INDEX_op_andc_vec;
+            op->args[2] = op->args[1];
+            op->args[1] = op->args[3];
+            return fold_andc(ctx, op);
+        }
+    }
+    if (arg_is_const(op->args[3])) {
+        uint64_t fv = arg_info(op->args[3])->val;
+        if (fv == 0) {
+            op->opc = INDEX_op_and_vec;
+            return fold_and(ctx, op);
+        }
+        if (fv == -1 && TCG_TARGET_HAS_orc_vec) {
+            op->opc = INDEX_op_orc_vec;
+            op->args[2] = op->args[1];
+            op->args[1] = op->args[3];
+            return fold_orc(ctx, op);
+        }
+    }
+    return finish_folding(ctx, op);
 }
 
 static bool fold_brcond(OptContext *ctx, TCGOp *op)
 {
-    TCGCond cond = op->args[2];
-    int i;
-
-    if (swap_commutative(NO_DEST, &op->args[0], &op->args[1])) {
-        op->args[2] = cond = tcg_swap_cond(cond);
-    }
-
-    i = do_constant_folding_cond(ctx->type, op->args[0], op->args[1], cond);
+    int i = do_constant_folding_cond1(ctx, op, NO_DEST, &op->args[0],
+                                      &op->args[1], &op->args[2]);
     if (i == 0) {
         tcg_op_remove(ctx->tcg, op);
         return true;
@@ -1197,21 +1430,22 @@ static bool fold_brcond(OptContext *ctx, TCGOp *op)
     if (i > 0) {
         op->opc = INDEX_op_br;
         op->args[0] = op->args[3];
+        finish_ebb(ctx);
+    } else {
+        finish_bb(ctx);
     }
-    return false;
+    return true;
 }
 
 static bool fold_brcond2(OptContext *ctx, TCGOp *op)
 {
-    TCGCond cond = op->args[4];
-    TCGArg label = op->args[5];
+    TCGCond cond;
+    TCGArg label;
     int i, inv = 0;
 
-    if (swap_commutative2(&op->args[0], &op->args[2])) {
-        op->args[4] = cond = tcg_swap_cond(cond);
-    }
-
-    i = do_constant_folding_cond2(&op->args[0], &op->args[2], cond);
+    i = do_constant_folding_cond2(ctx, op, &op->args[0]);
+    cond = op->args[4];
+    label = op->args[5];
     if (i >= 0) {
         goto do_brcond_const;
     }
@@ -1223,8 +1457,8 @@ static bool fold_brcond2(OptContext *ctx, TCGOp *op)
          * Simplify LT/GE comparisons vs zero to a single compare
          * vs the high word of the input.
          */
-        if (arg_is_const(op->args[2]) && arg_info(op->args[2])->val == 0 &&
-            arg_is_const(op->args[3]) && arg_info(op->args[3])->val == 0) {
+        if (arg_is_const_val(op->args[2], 0) &&
+            arg_is_const_val(op->args[3], 0)) {
             goto do_brcond_high;
         }
         break;
@@ -1252,16 +1486,29 @@ static bool fold_brcond2(OptContext *ctx, TCGOp *op)
         case 0:
             goto do_brcond_const;
         case 1:
-            op->opc = INDEX_op_brcond_i32;
-            op->args[1] = op->args[2];
-            op->args[2] = cond;
-            op->args[3] = label;
-            break;
+            goto do_brcond_low;
+        }
+        break;
+
+    case TCG_COND_TSTEQ:
+    case TCG_COND_TSTNE:
+        if (arg_is_const_val(op->args[2], 0)) {
+            goto do_brcond_high;
+        }
+        if (arg_is_const_val(op->args[3], 0)) {
+            goto do_brcond_low;
         }
         break;
 
     default:
         break;
+
+    do_brcond_low:
+        op->opc = INDEX_op_brcond_i32;
+        op->args[1] = op->args[2];
+        op->args[2] = cond;
+        op->args[3] = label;
+        return fold_brcond(ctx, op);
 
     do_brcond_high:
         op->opc = INDEX_op_brcond_i32;
@@ -1269,7 +1516,7 @@ static bool fold_brcond2(OptContext *ctx, TCGOp *op)
         op->args[1] = op->args[3];
         op->args[2] = cond;
         op->args[3] = label;
-        break;
+        return fold_brcond(ctx, op);
 
     do_brcond_const:
         if (i == 0) {
@@ -1278,24 +1525,27 @@ static bool fold_brcond2(OptContext *ctx, TCGOp *op)
         }
         op->opc = INDEX_op_br;
         op->args[0] = label;
-        break;
+        finish_ebb(ctx);
+        return true;
     }
-    return false;
+
+    finish_bb(ctx);
+    return true;
 }
 
 static bool fold_bswap(OptContext *ctx, TCGOp *op)
 {
     uint64_t z_mask, s_mask, sign;
+    TempOptInfo *t1 = arg_info(op->args[1]);
 
-    if (arg_is_const(op->args[1])) {
-        uint64_t t = arg_info(op->args[1])->val;
-
-        t = do_constant_folding(op->opc, ctx->type, t, op->args[2]);
-        return tcg_opt_gen_movi(ctx, op, op->args[0], t);
+    if (ti_is_const(t1)) {
+        return tcg_opt_gen_movi(ctx, op, op->args[0],
+                                do_constant_folding(op->opc, ctx->type,
+                                                    ti_const_val(t1),
+                                                    op->args[2]));
     }
 
-    z_mask = arg_info(op->args[1])->z_mask;
-
+    z_mask = t1->z_mask;
     switch (op->opc) {
     case INDEX_op_bswap16_i32:
     case INDEX_op_bswap16_i64:
@@ -1314,8 +1564,8 @@ static bool fold_bswap(OptContext *ctx, TCGOp *op)
     default:
         g_assert_not_reached();
     }
-    s_mask = smask_from_zmask(z_mask);
 
+    s_mask = 0;
     switch (op->args[2] & (TCG_BSWAP_OZ | TCG_BSWAP_OS)) {
     case TCG_BSWAP_OZ:
         break;
@@ -1323,19 +1573,17 @@ static bool fold_bswap(OptContext *ctx, TCGOp *op)
         /* If the sign bit may be 1, force all the bits above to 1. */
         if (z_mask & sign) {
             z_mask |= sign;
-            s_mask = sign << 1;
         }
+        /* The value and therefore s_mask is explicitly sign-extended. */
+        s_mask = sign;
         break;
     default:
         /* The high bits are undefined: force all bits above the sign to 1. */
         z_mask |= sign << 1;
-        s_mask = 0;
         break;
     }
-    ctx->z_mask = z_mask;
-    ctx->s_mask = s_mask;
 
-    return fold_masks(ctx, op);
+    return fold_masks_zs(ctx, op, z_mask, s_mask);
 }
 
 static bool fold_call(OptContext *ctx, TCGOp *op)
@@ -1375,12 +1623,44 @@ static bool fold_call(OptContext *ctx, TCGOp *op)
     return true;
 }
 
+static bool fold_cmp_vec(OptContext *ctx, TCGOp *op)
+{
+    /* Canonicalize the comparison to put immediate second. */
+    if (swap_commutative(NO_DEST, &op->args[1], &op->args[2])) {
+        op->args[3] = tcg_swap_cond(op->args[3]);
+    }
+    return finish_folding(ctx, op);
+}
+
+static bool fold_cmpsel_vec(OptContext *ctx, TCGOp *op)
+{
+    /* If true and false values are the same, eliminate the cmp. */
+    if (args_are_copies(op->args[3], op->args[4])) {
+        return tcg_opt_gen_mov(ctx, op, op->args[0], op->args[3]);
+    }
+
+    /* Canonicalize the comparison to put immediate second. */
+    if (swap_commutative(NO_DEST, &op->args[1], &op->args[2])) {
+        op->args[5] = tcg_swap_cond(op->args[5]);
+    }
+    /*
+     * Canonicalize the "false" input reg to match the destination,
+     * so that the tcg backend can implement "move if true".
+     */
+    if (swap_commutative(op->args[0], &op->args[4], &op->args[3])) {
+        op->args[5] = tcg_invert_cond(op->args[5]);
+    }
+    return finish_folding(ctx, op);
+}
+
 static bool fold_count_zeros(OptContext *ctx, TCGOp *op)
 {
-    uint64_t z_mask;
+    uint64_t z_mask, s_mask;
+    TempOptInfo *t1 = arg_info(op->args[1]);
+    TempOptInfo *t2 = arg_info(op->args[2]);
 
-    if (arg_is_const(op->args[1])) {
-        uint64_t t = arg_info(op->args[1])->val;
+    if (ti_is_const(t1)) {
+        uint64_t t = ti_const_val(t1);
 
         if (t != 0) {
             t = do_constant_folding(op->opc, ctx->type, t, 0);
@@ -1399,82 +1679,91 @@ static bool fold_count_zeros(OptContext *ctx, TCGOp *op)
     default:
         g_assert_not_reached();
     }
-    ctx->z_mask = arg_info(op->args[2])->z_mask | z_mask;
-    ctx->s_mask = smask_from_zmask(ctx->z_mask);
-    return false;
+    s_mask = ~z_mask;
+    z_mask |= t2->z_mask;
+    s_mask &= t2->s_mask;
+
+    return fold_masks_zs(ctx, op, z_mask, s_mask);
 }
 
 static bool fold_ctpop(OptContext *ctx, TCGOp *op)
 {
+    uint64_t z_mask;
+
     if (fold_const1(ctx, op)) {
         return true;
     }
 
     switch (ctx->type) {
     case TCG_TYPE_I32:
-        ctx->z_mask = 32 | 31;
+        z_mask = 32 | 31;
         break;
     case TCG_TYPE_I64:
-        ctx->z_mask = 64 | 63;
+        z_mask = 64 | 63;
         break;
     default:
         g_assert_not_reached();
     }
-    ctx->s_mask = smask_from_zmask(ctx->z_mask);
-    return false;
+    return fold_masks_z(ctx, op, z_mask);
 }
 
 static bool fold_deposit(OptContext *ctx, TCGOp *op)
 {
+    TempOptInfo *t1 = arg_info(op->args[1]);
+    TempOptInfo *t2 = arg_info(op->args[2]);
+    int ofs = op->args[3];
+    int len = op->args[4];
+    int width;
     TCGOpcode and_opc;
+    uint64_t z_mask, s_mask;
 
-    if (arg_is_const(op->args[1]) && arg_is_const(op->args[2])) {
-        uint64_t t1 = arg_info(op->args[1])->val;
-        uint64_t t2 = arg_info(op->args[2])->val;
-
-        t1 = deposit64(t1, op->args[3], op->args[4], t2);
-        return tcg_opt_gen_movi(ctx, op, op->args[0], t1);
+    if (ti_is_const(t1) && ti_is_const(t2)) {
+        return tcg_opt_gen_movi(ctx, op, op->args[0],
+                                deposit64(ti_const_val(t1), ofs, len,
+                                          ti_const_val(t2)));
     }
 
     switch (ctx->type) {
     case TCG_TYPE_I32:
         and_opc = INDEX_op_and_i32;
+        width = 32;
         break;
     case TCG_TYPE_I64:
         and_opc = INDEX_op_and_i64;
+        width = 64;
         break;
     default:
         g_assert_not_reached();
     }
 
     /* Inserting a value into zero at offset 0. */
-    if (arg_is_const(op->args[1])
-        && arg_info(op->args[1])->val == 0
-        && op->args[3] == 0) {
-        uint64_t mask = MAKE_64BIT_MASK(0, op->args[4]);
+    if (ti_is_const_val(t1, 0) && ofs == 0) {
+        uint64_t mask = MAKE_64BIT_MASK(0, len);
 
         op->opc = and_opc;
         op->args[1] = op->args[2];
         op->args[2] = arg_new_constant(ctx, mask);
-        ctx->z_mask = mask & arg_info(op->args[1])->z_mask;
-        return false;
+        return fold_and(ctx, op);
     }
 
     /* Inserting zero into a value. */
-    if (arg_is_const(op->args[2])
-        && arg_info(op->args[2])->val == 0) {
-        uint64_t mask = deposit64(-1, op->args[3], op->args[4], 0);
+    if (ti_is_const_val(t2, 0)) {
+        uint64_t mask = deposit64(-1, ofs, len, 0);
 
         op->opc = and_opc;
         op->args[2] = arg_new_constant(ctx, mask);
-        ctx->z_mask = mask & arg_info(op->args[1])->z_mask;
-        return false;
+        return fold_and(ctx, op);
     }
 
-    ctx->z_mask = deposit64(arg_info(op->args[1])->z_mask,
-                            op->args[3], op->args[4],
-                            arg_info(op->args[2])->z_mask);
-    return false;
+    /* The s_mask from the top portion of the deposit is still valid. */
+    if (ofs + len == width) {
+        s_mask = t2->s_mask << ofs;
+    } else {
+        s_mask = t1->s_mask & ~MAKE_64BIT_MASK(0, ofs + len);
+    }
+
+    z_mask = deposit64(t1->z_mask, ofs, len, t2->z_mask);
+    return fold_masks_zs(ctx, op, z_mask, s_mask);
 }
 
 static bool fold_divide(OptContext *ctx, TCGOp *op)
@@ -1483,7 +1772,7 @@ static bool fold_divide(OptContext *ctx, TCGOp *op)
         fold_xi_to_x(ctx, op, 1)) {
         return true;
     }
-    return false;
+    return finish_folding(ctx, op);
 }
 
 static bool fold_dup(OptContext *ctx, TCGOp *op)
@@ -1493,7 +1782,7 @@ static bool fold_dup(OptContext *ctx, TCGOp *op)
         t = dup_const(TCGOP_VECE(op), t);
         return tcg_opt_gen_movi(ctx, op, op->args[0], t);
     }
-    return false;
+    return finish_folding(ctx, op);
 }
 
 static bool fold_dup2(OptContext *ctx, TCGOp *op)
@@ -1508,45 +1797,43 @@ static bool fold_dup2(OptContext *ctx, TCGOp *op)
         op->opc = INDEX_op_dup_vec;
         TCGOP_VECE(op) = MO_32;
     }
-    return false;
+    return finish_folding(ctx, op);
 }
 
 static bool fold_eqv(OptContext *ctx, TCGOp *op)
 {
+    uint64_t s_mask;
+
     if (fold_const2_commutative(ctx, op) ||
         fold_xi_to_x(ctx, op, -1) ||
         fold_xi_to_not(ctx, op, 0)) {
         return true;
     }
 
-    ctx->s_mask = arg_info(op->args[1])->s_mask
-                & arg_info(op->args[2])->s_mask;
-    return false;
+    s_mask = arg_info(op->args[1])->s_mask
+           & arg_info(op->args[2])->s_mask;
+    return fold_masks_s(ctx, op, s_mask);
 }
 
 static bool fold_extract(OptContext *ctx, TCGOp *op)
 {
     uint64_t z_mask_old, z_mask;
+    TempOptInfo *t1 = arg_info(op->args[1]);
     int pos = op->args[2];
     int len = op->args[3];
 
-    if (arg_is_const(op->args[1])) {
-        uint64_t t;
-
-        t = arg_info(op->args[1])->val;
-        t = extract64(t, pos, len);
-        return tcg_opt_gen_movi(ctx, op, op->args[0], t);
+    if (ti_is_const(t1)) {
+        return tcg_opt_gen_movi(ctx, op, op->args[0],
+                                extract64(ti_const_val(t1), pos, len));
     }
 
-    z_mask_old = arg_info(op->args[1])->z_mask;
+    z_mask_old = t1->z_mask;
     z_mask = extract64(z_mask_old, pos, len);
-    if (pos == 0) {
-        ctx->a_mask = z_mask_old ^ z_mask;
+    if (pos == 0 && fold_affected_mask(ctx, op, z_mask_old ^ z_mask)) {
+        return true;
     }
-    ctx->z_mask = z_mask;
-    ctx->s_mask = smask_from_zmask(z_mask);
 
-    return fold_masks(ctx, op);
+    return fold_masks_z(ctx, op, z_mask);
 }
 
 static bool fold_extract2(OptContext *ctx, TCGOp *op)
@@ -1565,54 +1852,49 @@ static bool fold_extract2(OptContext *ctx, TCGOp *op)
         }
         return tcg_opt_gen_movi(ctx, op, op->args[0], v1 | v2);
     }
-    return false;
+    return finish_folding(ctx, op);
 }
 
 static bool fold_exts(OptContext *ctx, TCGOp *op)
 {
-    uint64_t s_mask_old, s_mask, z_mask, sign;
+    uint64_t s_mask_old, s_mask, z_mask;
     bool type_change = false;
+    TempOptInfo *t1;
 
     if (fold_const1(ctx, op)) {
         return true;
     }
 
-    z_mask = arg_info(op->args[1])->z_mask;
-    s_mask = arg_info(op->args[1])->s_mask;
+    t1 = arg_info(op->args[1]);
+    z_mask = t1->z_mask;
+    s_mask = t1->s_mask;
     s_mask_old = s_mask;
 
     switch (op->opc) {
     CASE_OP_32_64(ext8s):
-        sign = INT8_MIN;
-        z_mask = (uint8_t)z_mask;
+        s_mask |= INT8_MIN;
+        z_mask = (int8_t)z_mask;
         break;
     CASE_OP_32_64(ext16s):
-        sign = INT16_MIN;
-        z_mask = (uint16_t)z_mask;
+        s_mask |= INT16_MIN;
+        z_mask = (int16_t)z_mask;
         break;
     case INDEX_op_ext_i32_i64:
         type_change = true;
         QEMU_FALLTHROUGH;
     case INDEX_op_ext32s_i64:
-        sign = INT32_MIN;
-        z_mask = (uint32_t)z_mask;
+        s_mask |= INT32_MIN;
+        z_mask = (int32_t)z_mask;
         break;
     default:
         g_assert_not_reached();
     }
 
-    if (z_mask & sign) {
-        z_mask |= sign;
-    }
-    s_mask |= sign << 1;
-
-    ctx->z_mask = z_mask;
-    ctx->s_mask = s_mask;
-    if (!type_change) {
-        ctx->a_mask = s_mask & ~s_mask_old;
+    if (!type_change && fold_affected_mask(ctx, op, s_mask & ~s_mask_old)) {
+        return true;
     }
 
-    return fold_masks(ctx, op);
+    return fold_masks_zs(ctx, op, z_mask, s_mask);
 }
 
 static bool fold_extu(OptContext *ctx, TCGOp *op)
@@ -1648,12 +1930,11 @@ static bool fold_extu(OptContext *ctx, TCGOp *op)
         g_assert_not_reached();
     }
 
-    ctx->z_mask = z_mask;
-    ctx->s_mask = smask_from_zmask(z_mask);
-    if (!type_change) {
-        ctx->a_mask = z_mask_old ^ z_mask;
+    if (!type_change && fold_affected_mask(ctx, op, z_mask_old ^ z_mask)) {
+        return true;
     }
-    return fold_masks(ctx, op);
+
+    return fold_masks_z(ctx, op, z_mask);
 }
 
 static bool fold_mb(OptContext *ctx, TCGOp *op)
@@ -1687,34 +1968,39 @@ static bool fold_mov(OptContext *ctx, TCGOp *op)
 
 static bool fold_movcond(OptContext *ctx, TCGOp *op)
 {
-    TCGCond cond = op->args[5];
+    uint64_t z_mask, s_mask;
+    TempOptInfo *tt, *ft;
     int i;
 
-    if (swap_commutative(NO_DEST, &op->args[1], &op->args[2])) {
-        op->args[5] = cond = tcg_swap_cond(cond);
+    /* If true and false values are the same, eliminate the cmp. */
+    if (args_are_copies(op->args[3], op->args[4])) {
+        return tcg_opt_gen_mov(ctx, op, op->args[0], op->args[3]);
     }
+
     /*
      * Canonicalize the "false" input reg to match the destination reg so
      * that the tcg backend can implement a "move if true" operation.
      */
     if (swap_commutative(op->args[0], &op->args[4], &op->args[3])) {
-        op->args[5] = cond = tcg_invert_cond(cond);
+        op->args[5] = tcg_invert_cond(op->args[5]);
     }
 
-    i = do_constant_folding_cond(ctx->type, op->args[1], op->args[2], cond);
+    i = do_constant_folding_cond1(ctx, op, NO_DEST, &op->args[1],
+                                  &op->args[2], &op->args[5]);
     if (i >= 0) {
         return tcg_opt_gen_mov(ctx, op, op->args[0], op->args[4 - i]);
     }
 
-    ctx->z_mask = arg_info(op->args[3])->z_mask
-                | arg_info(op->args[4])->z_mask;
-    ctx->s_mask = arg_info(op->args[3])->s_mask
-                & arg_info(op->args[4])->s_mask;
+    tt = arg_info(op->args[3]);
+    ft = arg_info(op->args[4]);
+    z_mask = tt->z_mask | ft->z_mask;
+    s_mask = tt->s_mask & ft->s_mask;
 
-    if (arg_is_const(op->args[3]) && arg_is_const(op->args[4])) {
-        uint64_t tv = arg_info(op->args[3])->val;
-        uint64_t fv = arg_info(op->args[4])->val;
+    if (ti_is_const(tt) && ti_is_const(ft)) {
+        uint64_t tv = ti_const_val(tt);
+        uint64_t fv = ti_const_val(ft);
         TCGOpcode opc, negopc = 0;
+        TCGCond cond = op->args[5];
 
         switch (ctx->type) {
         case TCG_TYPE_I32:
@@ -1751,7 +2037,8 @@ static bool fold_movcond(OptContext *ctx, TCGOp *op)
             }
         }
     }
-    return false;
+
+    return fold_masks_zs(ctx, op, z_mask, s_mask);
 }
 
 static bool fold_mul(OptContext *ctx, TCGOp *op)
@@ -1761,7 +2048,7 @@ static bool fold_mul(OptContext *ctx, TCGOp *op)
         fold_xi_to_x(ctx, op, 1)) {
         return true;
     }
-    return false;
+    return finish_folding(ctx, op);
 }
 
 static bool fold_mul_highpart(OptContext *ctx, TCGOp *op)
@@ -1770,7 +2057,7 @@ static bool fold_mul_highpart(OptContext *ctx, TCGOp *op)
         fold_xi_to_i(ctx, op, 0)) {
         return true;
     }
-    return false;
+    return finish_folding(ctx, op);
 }
 
 static bool fold_multiply2(OptContext *ctx, TCGOp *op)
@@ -1815,51 +2102,49 @@ static bool fold_multiply2(OptContext *ctx, TCGOp *op)
         tcg_opt_gen_movi(ctx, op2, rh, h);
         return true;
     }
-    return false;
+    return finish_folding(ctx, op);
 }
 
 static bool fold_nand(OptContext *ctx, TCGOp *op)
 {
+    uint64_t s_mask;
+
     if (fold_const2_commutative(ctx, op) ||
         fold_xi_to_not(ctx, op, -1)) {
         return true;
     }
 
-    ctx->s_mask = arg_info(op->args[1])->s_mask
-                & arg_info(op->args[2])->s_mask;
-    return false;
+    s_mask = arg_info(op->args[1])->s_mask
+           & arg_info(op->args[2])->s_mask;
+    return fold_masks_s(ctx, op, s_mask);
+}
+
+static bool fold_neg_no_const(OptContext *ctx, TCGOp *op)
+{
+    /* Set to 1 all bits to the left of the rightmost.  */
+    uint64_t z_mask = arg_info(op->args[1])->z_mask;
+    z_mask = -(z_mask & -z_mask);
+
+    return fold_masks_z(ctx, op, z_mask);
 }
 
 static bool fold_neg(OptContext *ctx, TCGOp *op)
 {
-    uint64_t z_mask;
-
-    if (fold_const1(ctx, op)) {
-        return true;
-    }
-
-    /* Set to 1 all bits to the left of the rightmost.  */
-    z_mask = arg_info(op->args[1])->z_mask;
-    ctx->z_mask = -(z_mask & -z_mask);
-
-    /*
-     * Because of fold_sub_to_neg, we want to always return true,
-     * via finish_folding.
-     */
-    finish_folding(ctx, op);
-    return true;
+    return fold_const1(ctx, op) || fold_neg_no_const(ctx, op);
 }
 
 static bool fold_nor(OptContext *ctx, TCGOp *op)
 {
+    uint64_t s_mask;
+
     if (fold_const2_commutative(ctx, op) ||
         fold_xi_to_not(ctx, op, 0)) {
         return true;
     }
 
-    ctx->s_mask = arg_info(op->args[1])->s_mask
-                & arg_info(op->args[2])->s_mask;
-    return false;
+    s_mask = arg_info(op->args[1])->s_mask
+           & arg_info(op->args[2])->s_mask;
+    return fold_masks_s(ctx, op, s_mask);
 }
 
 static bool fold_not(OptContext *ctx, TCGOp *op)
@@ -1867,31 +2152,31 @@ static bool fold_not(OptContext *ctx, TCGOp *op)
     if (fold_const1(ctx, op)) {
         return true;
     }
-
-    ctx->s_mask = arg_info(op->args[1])->s_mask;
-
-    /* Because of fold_to_not, we want to always return true, via finish. */
-    finish_folding(ctx, op);
-    return true;
+    return fold_masks_s(ctx, op, arg_info(op->args[1])->s_mask);
 }
 
 static bool fold_or(OptContext *ctx, TCGOp *op)
 {
+    uint64_t z_mask, s_mask;
+    TempOptInfo *t1, *t2;
+
     if (fold_const2_commutative(ctx, op) ||
         fold_xi_to_x(ctx, op, 0) ||
         fold_xx_to_x(ctx, op)) {
         return true;
     }
 
-    ctx->z_mask = arg_info(op->args[1])->z_mask
-                | arg_info(op->args[2])->z_mask;
-    ctx->s_mask = arg_info(op->args[1])->s_mask
-                & arg_info(op->args[2])->s_mask;
-    return fold_masks(ctx, op);
+    t1 = arg_info(op->args[1]);
+    t2 = arg_info(op->args[2]);
+    z_mask = t1->z_mask | t2->z_mask;
+    s_mask = t1->s_mask & t2->s_mask;
+    return fold_masks_zs(ctx, op, z_mask, s_mask);
 }
 
 static bool fold_orc(OptContext *ctx, TCGOp *op)
 {
+    uint64_t s_mask;
+
     if (fold_const2(ctx, op) ||
         fold_xx_to_i(ctx, op, -1) ||
         fold_xi_to_x(ctx, op, -1) ||
@@ -1899,36 +2184,45 @@ static bool fold_orc(OptContext *ctx, TCGOp *op)
         return true;
     }
 
-    ctx->s_mask = arg_info(op->args[1])->s_mask
-                & arg_info(op->args[2])->s_mask;
-    return false;
+    s_mask = arg_info(op->args[1])->s_mask
+           & arg_info(op->args[2])->s_mask;
+    return fold_masks_s(ctx, op, s_mask);
 }
 
-static bool fold_qemu_ld(OptContext *ctx, TCGOp *op)
+static bool fold_qemu_ld_1reg(OptContext *ctx, TCGOp *op)
 {
     const TCGOpDef *def = &tcg_op_defs[op->opc];
     MemOpIdx oi = op->args[def->nb_oargs + def->nb_iargs];
     MemOp mop = get_memop(oi);
     int width = 8 * memop_size(mop);
+    uint64_t z_mask = -1, s_mask = 0;
 
     if (width < 64) {
-        ctx->s_mask = MAKE_64BIT_MASK(width, 64 - width);
-        if (!(mop & MO_SIGN)) {
-            ctx->z_mask = MAKE_64BIT_MASK(0, width);
-            ctx->s_mask <<= 1;
+        if (mop & MO_SIGN) {
+            s_mask = MAKE_64BIT_MASK(width - 1, 64 - (width - 1));
+        } else {
+            z_mask = MAKE_64BIT_MASK(0, width);
         }
     }
 
     /* Opcodes that touch guest memory stop the mb optimization.  */
     ctx->prev_mb = NULL;
-    return false;
+
+    return fold_masks_zs(ctx, op, z_mask, s_mask);
+}
+
+static bool fold_qemu_ld_2reg(OptContext *ctx, TCGOp *op)
+{
+    /* Opcodes that touch guest memory stop the mb optimization.  */
+    ctx->prev_mb = NULL;
+    return finish_folding(ctx, op);
 }
 
 static bool fold_qemu_st(OptContext *ctx, TCGOp *op)
 {
     /* Opcodes that touch guest memory stop the mb optimization.  */
     ctx->prev_mb = NULL;
-    return false;
+    return true;
 }
 
 static bool fold_remainder(OptContext *ctx, TCGOp *op)
@@ -1937,58 +2231,255 @@ static bool fold_remainder(OptContext *ctx, TCGOp *op)
         fold_xx_to_i(ctx, op, 0)) {
         return true;
     }
-    return false;
+    return finish_folding(ctx, op);
+}
+
+/* Return 1 if finished, -1 if simplified, 0 if unchanged. */
+static int fold_setcond_zmask(OptContext *ctx, TCGOp *op, bool neg)
+{
+    uint64_t a_zmask, b_val;
+    TCGCond cond;
+
+    if (!arg_is_const(op->args[2])) {
+        return false;
+    }
+
+    a_zmask = arg_info(op->args[1])->z_mask;
+    b_val = arg_info(op->args[2])->val;
+    cond = op->args[3];
+
+    if (ctx->type == TCG_TYPE_I32) {
+        a_zmask = (uint32_t)a_zmask;
+        b_val = (uint32_t)b_val;
+    }
+
+    /*
+     * A with only low bits set vs B with high bits set means that A < B.
+     */
+    if (a_zmask < b_val) {
+        bool inv = false;
+
+        switch (cond) {
+        case TCG_COND_NE:
+        case TCG_COND_LEU:
+        case TCG_COND_LTU:
+            inv = true;
+            /* fall through */
+        case TCG_COND_GTU:
+        case TCG_COND_GEU:
+        case TCG_COND_EQ:
+            return tcg_opt_gen_movi(ctx, op, op->args[0], neg ? -inv : inv);
+        default:
+            break;
+        }
+    }
+
+    /*
+     * A with only lsb set is already boolean.
+     */
+    if (a_zmask <= 1) {
+        bool convert = false;
+        bool inv = false;
+
+        switch (cond) {
+        case TCG_COND_EQ:
+            inv = true;
+            /* fall through */
+        case TCG_COND_NE:
+            convert = (b_val == 0);
+            break;
+        case TCG_COND_LTU:
+        case TCG_COND_TSTEQ:
+            inv = true;
+            /* fall through */
+        case TCG_COND_GEU:
+        case TCG_COND_TSTNE:
+            convert = (b_val == 1);
+            break;
+        default:
+            break;
+        }
+        if (convert) {
+            TCGOpcode add_opc, xor_opc, neg_opc;
+
+            if (!inv && !neg) {
+                return tcg_opt_gen_mov(ctx, op, op->args[0], op->args[1]);
+            }
+
+            switch (ctx->type) {
+            case TCG_TYPE_I32:
+                add_opc = INDEX_op_add_i32;
+                neg_opc = INDEX_op_neg_i32;
+                xor_opc = INDEX_op_xor_i32;
+                break;
+            case TCG_TYPE_I64:
+                add_opc = INDEX_op_add_i64;
+                neg_opc = INDEX_op_neg_i64;
+                xor_opc = INDEX_op_xor_i64;
+                break;
+            default:
+                g_assert_not_reached();
+            }
+
+            if (!inv) {
+                op->opc = neg_opc;
+            } else if (neg) {
+                op->opc = add_opc;
+                op->args[2] = arg_new_constant(ctx, -1);
+            } else {
+                op->opc = xor_opc;
+                op->args[2] = arg_new_constant(ctx, 1);
+            }
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void fold_setcond_tst_pow2(OptContext *ctx, TCGOp *op, bool neg)
+{
+    TCGOpcode and_opc, sub_opc, xor_opc, neg_opc, shr_opc;
+    TCGOpcode uext_opc = 0, sext_opc = 0;
+    TCGCond cond = op->args[3];
+    TCGArg ret, src1, src2;
+    TCGOp *op2;
+    uint64_t val;
+    int sh;
+    bool inv;
+
+    if (!is_tst_cond(cond) || !arg_is_const(op->args[2])) {
+        return;
+    }
+
+    src2 = op->args[2];
+    val = arg_info(src2)->val;
+    if (!is_power_of_2(val)) {
+        return;
+    }
+    sh = ctz64(val);
+
+    switch (ctx->type) {
+    case TCG_TYPE_I32:
+        and_opc = INDEX_op_and_i32;
+        sub_opc = INDEX_op_sub_i32;
+        xor_opc = INDEX_op_xor_i32;
+        shr_opc = INDEX_op_shr_i32;
+        neg_opc = INDEX_op_neg_i32;
+        if (TCG_TARGET_extract_valid(TCG_TYPE_I32, sh, 1)) {
+            uext_opc = INDEX_op_extract_i32;
+        }
+        if (TCG_TARGET_sextract_valid(TCG_TYPE_I32, sh, 1)) {
+            sext_opc = INDEX_op_sextract_i32;
+        }
+        break;
+    case TCG_TYPE_I64:
+        and_opc = INDEX_op_and_i64;
+        sub_opc = INDEX_op_sub_i64;
+        xor_opc = INDEX_op_xor_i64;
+        shr_opc = INDEX_op_shr_i64;
+        neg_opc = INDEX_op_neg_i64;
+        if (TCG_TARGET_extract_valid(TCG_TYPE_I64, sh, 1)) {
+            uext_opc = INDEX_op_extract_i64;
+        }
+        if (TCG_TARGET_sextract_valid(TCG_TYPE_I64, sh, 1)) {
+            sext_opc = INDEX_op_sextract_i64;
+        }
+        break;
+    default:
+        g_assert_not_reached();
+    }
+
+    ret = op->args[0];
+    src1 = op->args[1];
+    inv = cond == TCG_COND_TSTEQ;
+
+    if (sh && sext_opc && neg && !inv) {
+        op->opc = sext_opc;
+        op->args[1] = src1;
+        op->args[2] = sh;
+        op->args[3] = 1;
+        return;
+    } else if (sh && uext_opc) {
+        op->opc = uext_opc;
+        op->args[1] = src1;
+        op->args[2] = sh;
+        op->args[3] = 1;
+    } else {
+        if (sh) {
+            op2 = tcg_op_insert_before(ctx->tcg, op, shr_opc, 3);
+            op2->args[0] = ret;
+            op2->args[1] = src1;
+            op2->args[2] = arg_new_constant(ctx, sh);
+            src1 = ret;
+        }
+        op->opc = and_opc;
+        op->args[1] = src1;
+        op->args[2] = arg_new_constant(ctx, 1);
+    }
+
+    if (neg && inv) {
+        op2 = tcg_op_insert_after(ctx->tcg, op, sub_opc, 3);
+        op2->args[0] = ret;
+        op2->args[1] = ret;
+        op2->args[2] = arg_new_constant(ctx, 1);
+    } else if (inv) {
+        op2 = tcg_op_insert_after(ctx->tcg, op, xor_opc, 3);
+        op2->args[0] = ret;
+        op2->args[1] = ret;
+        op2->args[2] = arg_new_constant(ctx, 1);
+    } else if (neg) {
+        op2 = tcg_op_insert_after(ctx->tcg, op, neg_opc, 2);
+        op2->args[0] = ret;
+        op2->args[1] = ret;
+    }
 }
 
 static bool fold_setcond(OptContext *ctx, TCGOp *op)
 {
-    TCGCond cond = op->args[3];
-    int i;
-
-    if (swap_commutative(op->args[0], &op->args[1], &op->args[2])) {
-        op->args[3] = cond = tcg_swap_cond(cond);
-    }
-
-    i = do_constant_folding_cond(ctx->type, op->args[1], op->args[2], cond);
+    int i = do_constant_folding_cond1(ctx, op, op->args[0], &op->args[1],
+                                      &op->args[2], &op->args[3]);
     if (i >= 0) {
         return tcg_opt_gen_movi(ctx, op, op->args[0], i);
     }
 
-    ctx->z_mask = 1;
-    ctx->s_mask = smask_from_zmask(1);
-    return false;
+    i = fold_setcond_zmask(ctx, op, false);
+    if (i > 0) {
+        return true;
+    }
+    if (i == 0) {
+        fold_setcond_tst_pow2(ctx, op, false);
+    }
+
+    return fold_masks_z(ctx, op, 1);
 }
 
 static bool fold_negsetcond(OptContext *ctx, TCGOp *op)
 {
-    TCGCond cond = op->args[3];
-    int i;
-
-    if (swap_commutative(op->args[0], &op->args[1], &op->args[2])) {
-        op->args[3] = cond = tcg_swap_cond(cond);
-    }
-
-    i = do_constant_folding_cond(ctx->type, op->args[1], op->args[2], cond);
+    int i = do_constant_folding_cond1(ctx, op, op->args[0], &op->args[1],
+                                      &op->args[2], &op->args[3]);
     if (i >= 0) {
         return tcg_opt_gen_movi(ctx, op, op->args[0], -i);
     }
 
-    /* Value is {0,-1} so all bits are repetitions of the sign. */
-    ctx->s_mask = -1;
-    return false;
-}
+    i = fold_setcond_zmask(ctx, op, true);
+    if (i > 0) {
+        return true;
+    }
+    if (i == 0) {
+        fold_setcond_tst_pow2(ctx, op, true);
+    }
 
+    /* Value is {0,-1} so all bits are repetitions of the sign. */
+    return fold_masks_s(ctx, op, -1);
+}
 
 static bool fold_setcond2(OptContext *ctx, TCGOp *op)
 {
-    TCGCond cond = op->args[5];
+    TCGCond cond;
     int i, inv = 0;
 
-    if (swap_commutative2(&op->args[1], &op->args[3])) {
-        op->args[5] = cond = tcg_swap_cond(cond);
-    }
-
-    i = do_constant_folding_cond2(&op->args[1], &op->args[3], cond);
+    i = do_constant_folding_cond2(ctx, op, &op->args[1]);
+    cond = op->args[5];
     if (i >= 0) {
         goto do_setcond_const;
     }
@@ -2000,8 +2491,8 @@ static bool fold_setcond2(OptContext *ctx, TCGOp *op)
          * Simplify LT/GE comparisons vs zero to a single compare
          * vs the high word of the input.
          */
-        if (arg_is_const(op->args[3]) && arg_info(op->args[3])->val == 0 &&
-            arg_is_const(op->args[4]) && arg_info(op->args[4])->val == 0) {
+        if (arg_is_const_val(op->args[3], 0) &&
+            arg_is_const_val(op->args[4], 0)) {
             goto do_setcond_high;
         }
         break;
@@ -2029,27 +2520,38 @@ static bool fold_setcond2(OptContext *ctx, TCGOp *op)
         case 0:
             goto do_setcond_const;
         case 1:
-            op->args[2] = op->args[3];
-            op->args[3] = cond;
-            op->opc = INDEX_op_setcond_i32;
-            break;
+            goto do_setcond_low;
+        }
+        break;
+
+    case TCG_COND_TSTEQ:
+    case TCG_COND_TSTNE:
+        if (arg_is_const_val(op->args[3], 0)) {
+            goto do_setcond_high;
+        }
+        if (arg_is_const_val(op->args[4], 0)) {
+            goto do_setcond_low;
         }
         break;
 
     default:
         break;
 
+    do_setcond_low:
+        op->args[2] = op->args[3];
+        op->args[3] = cond;
+        op->opc = INDEX_op_setcond_i32;
+        return fold_setcond(ctx, op);
+
     do_setcond_high:
         op->args[1] = op->args[2];
         op->args[2] = op->args[4];
         op->args[3] = cond;
         op->opc = INDEX_op_setcond_i32;
-        break;
+        return fold_setcond(ctx, op);
     }
 
-    ctx->z_mask = 1;
-    ctx->s_mask = smask_from_zmask(1);
-    return false;
+    return fold_masks_z(ctx, op, 1);
 
  do_setcond_const:
     return tcg_opt_gen_movi(ctx, op, op->args[0], i);
@@ -2058,36 +2560,31 @@ static bool fold_setcond2(OptContext *ctx, TCGOp *op)
 static bool fold_sextract(OptContext *ctx, TCGOp *op)
 {
     uint64_t z_mask, s_mask, s_mask_old;
+    TempOptInfo *t1 = arg_info(op->args[1]);
     int pos = op->args[2];
     int len = op->args[3];
 
-    if (arg_is_const(op->args[1])) {
-        uint64_t t;
-
-        t = arg_info(op->args[1])->val;
-        t = sextract64(t, pos, len);
-        return tcg_opt_gen_movi(ctx, op, op->args[0], t);
+    if (ti_is_const(t1)) {
+        return tcg_opt_gen_movi(ctx, op, op->args[0],
+                                sextract64(ti_const_val(t1), pos, len));
     }
 
-    z_mask = arg_info(op->args[1])->z_mask;
-    z_mask = sextract64(z_mask, pos, len);
-    ctx->z_mask = z_mask;
+    s_mask_old = t1->s_mask;
+    s_mask = s_mask_old >> pos;
+    s_mask |= -1ull << (len - 1);
 
-    s_mask_old = arg_info(op->args[1])->s_mask;
-    s_mask = sextract64(s_mask_old, pos, len);
-    s_mask |= MAKE_64BIT_MASK(len, 64 - len);
-    ctx->s_mask = s_mask;
-
-    if (pos == 0) {
-        ctx->a_mask = s_mask & ~s_mask_old;
+    if (pos == 0 && fold_affected_mask(ctx, op, s_mask & ~s_mask_old)) {
+        return true;
     }
 
-    return fold_masks(ctx, op);
+    z_mask = sextract64(t1->z_mask, pos, len);
+    return fold_masks_zs(ctx, op, z_mask, s_mask);
 }
 
 static bool fold_shift(OptContext *ctx, TCGOp *op)
 {
-    uint64_t s_mask, z_mask, sign;
+    uint64_t s_mask, z_mask;
+    TempOptInfo *t1, *t2;
 
     if (fold_const2(ctx, op) ||
         fold_ix_to_i(ctx, op, 0) ||
@@ -2095,18 +2592,18 @@ static bool fold_shift(OptContext *ctx, TCGOp *op)
         return true;
     }
 
-    s_mask = arg_info(op->args[1])->s_mask;
-    z_mask = arg_info(op->args[1])->z_mask;
+    t1 = arg_info(op->args[1]);
+    t2 = arg_info(op->args[2]);
+    s_mask = t1->s_mask;
+    z_mask = t1->z_mask;
 
-    if (arg_is_const(op->args[2])) {
-        int sh = arg_info(op->args[2])->val;
+    if (ti_is_const(t2)) {
+        int sh = ti_const_val(t2);
 
-        ctx->z_mask = do_constant_folding(op->opc, ctx->type, z_mask, sh);
-
+        z_mask = do_constant_folding(op->opc, ctx->type, z_mask, sh);
         s_mask = do_constant_folding(op->opc, ctx->type, s_mask, sh);
-        ctx->s_mask = smask_from_smask(s_mask);
 
-        return fold_masks(ctx, op);
+        return fold_masks_zs(ctx, op, z_mask, s_mask);
     }
 
     switch (op->opc) {
@@ -2115,23 +2612,21 @@ static bool fold_shift(OptContext *ctx, TCGOp *op)
          * Arithmetic right shift will not reduce the number of
          * input sign repetitions.
          */
-        ctx->s_mask = s_mask;
-        break;
+        return fold_masks_s(ctx, op, s_mask);
     CASE_OP_32_64(shr):
         /*
          * If the sign bit is known zero, then logical right shift
-         * will not reduced the number of input sign repetitions.
+         * will not reduce the number of input sign repetitions.
          */
-        sign = (s_mask & -s_mask) >> 1;
-        if (!(z_mask & sign)) {
-            ctx->s_mask = s_mask;
+        if (~z_mask & -s_mask) {
+            return fold_masks_s(ctx, op, s_mask);
         }
         break;
     default:
         break;
     }
 
-    return false;
+    return finish_folding(ctx, op);
 }
 
 static bool fold_sub_to_neg(OptContext *ctx, TCGOp *op)
@@ -2165,7 +2660,7 @@ static bool fold_sub_to_neg(OptContext *ctx, TCGOp *op)
     if (have_neg) {
         op->opc = neg_op;
         op->args[1] = op->args[2];
-        return fold_neg(ctx, op);
+        return fold_neg_no_const(ctx, op);
     }
     return false;
 }
@@ -2178,12 +2673,15 @@ static bool fold_sub_vec(OptContext *ctx, TCGOp *op)
         fold_sub_to_neg(ctx, op)) {
         return true;
     }
-    return false;
+    return finish_folding(ctx, op);
 }
 
 static bool fold_sub(OptContext *ctx, TCGOp *op)
 {
-    if (fold_const2(ctx, op) || fold_sub_vec(ctx, op)) {
+    if (fold_const2(ctx, op) ||
+        fold_xx_to_i(ctx, op, 0) ||
+        fold_xi_to_x(ctx, op, 0) ||
+        fold_sub_to_neg(ctx, op)) {
         return true;
     }
 
@@ -2195,7 +2693,7 @@ static bool fold_sub(OptContext *ctx, TCGOp *op)
                    ? INDEX_op_add_i32 : INDEX_op_add_i64);
         op->args[2] = arg_new_constant(ctx, -val);
     }
-    return false;
+    return finish_folding(ctx, op);
 }
 
 static bool fold_sub2(OptContext *ctx, TCGOp *op)
@@ -2205,33 +2703,32 @@ static bool fold_sub2(OptContext *ctx, TCGOp *op)
 
 static bool fold_tcg_ld(OptContext *ctx, TCGOp *op)
 {
+    uint64_t z_mask = -1, s_mask = 0;
+
     /* We can't do any folding with a load, but we can record bits. */
     switch (op->opc) {
     CASE_OP_32_64(ld8s):
-        ctx->s_mask = MAKE_64BIT_MASK(8, 56);
+        s_mask = INT8_MIN;
         break;
     CASE_OP_32_64(ld8u):
-        ctx->z_mask = MAKE_64BIT_MASK(0, 8);
-        ctx->s_mask = MAKE_64BIT_MASK(9, 55);
+        z_mask = MAKE_64BIT_MASK(0, 8);
         break;
     CASE_OP_32_64(ld16s):
-        ctx->s_mask = MAKE_64BIT_MASK(16, 48);
+        s_mask = INT16_MIN;
         break;
     CASE_OP_32_64(ld16u):
-        ctx->z_mask = MAKE_64BIT_MASK(0, 16);
-        ctx->s_mask = MAKE_64BIT_MASK(17, 47);
+        z_mask = MAKE_64BIT_MASK(0, 16);
         break;
     case INDEX_op_ld32s_i64:
-        ctx->s_mask = MAKE_64BIT_MASK(32, 32);
+        s_mask = INT32_MIN;
         break;
     case INDEX_op_ld32u_i64:
-        ctx->z_mask = MAKE_64BIT_MASK(0, 32);
-        ctx->s_mask = MAKE_64BIT_MASK(33, 31);
+        z_mask = MAKE_64BIT_MASK(0, 32);
         break;
     default:
         g_assert_not_reached();
     }
-    return false;
+    return fold_masks_zs(ctx, op, z_mask, s_mask);
 }
 
 static bool fold_tcg_ld_memcopy(OptContext *ctx, TCGOp *op)
@@ -2241,7 +2738,7 @@ static bool fold_tcg_ld_memcopy(OptContext *ctx, TCGOp *op)
     TCGType type;
 
     if (op->args[1] != tcgv_ptr_arg(tcg_env)) {
-        return false;
+        return finish_folding(ctx, op);
     }
 
     type = ctx->type;
@@ -2264,7 +2761,7 @@ static bool fold_tcg_st(OptContext *ctx, TCGOp *op)
 
     if (op->args[1] != tcgv_ptr_arg(tcg_env)) {
         remove_mem_copy_all(ctx);
-        return false;
+        return true;
     }
 
     switch (op->opc) {
@@ -2288,7 +2785,7 @@ static bool fold_tcg_st(OptContext *ctx, TCGOp *op)
         g_assert_not_reached();
     }
     remove_mem_copy_in(ctx, ofs, ofs + lm1);
-    return false;
+    return true;
 }
 
 static bool fold_tcg_st_memcopy(OptContext *ctx, TCGOp *op)
@@ -2298,8 +2795,7 @@ static bool fold_tcg_st_memcopy(OptContext *ctx, TCGOp *op)
     TCGType type;
 
     if (op->args[1] != tcgv_ptr_arg(tcg_env)) {
-        fold_tcg_st(ctx, op);
-        return false;
+        return fold_tcg_st(ctx, op);
     }
 
     src = arg_temp(op->args[0]);
@@ -2321,11 +2817,14 @@ static bool fold_tcg_st_memcopy(OptContext *ctx, TCGOp *op)
     last = ofs + tcg_type_size(type) - 1;
     remove_mem_copy_in(ctx, ofs, last);
     record_mem_copy(ctx, type, src, ofs, last);
-    return false;
+    return true;
 }
 
 static bool fold_xor(OptContext *ctx, TCGOp *op)
 {
+    uint64_t z_mask, s_mask;
+    TempOptInfo *t1, *t2;
+
     if (fold_const2_commutative(ctx, op) ||
         fold_xx_to_i(ctx, op, 0) ||
         fold_xi_to_x(ctx, op, 0) ||
@@ -2333,11 +2832,11 @@ static bool fold_xor(OptContext *ctx, TCGOp *op)
         return true;
     }
 
-    ctx->z_mask = arg_info(op->args[1])->z_mask
-                | arg_info(op->args[2])->z_mask;
-    ctx->s_mask = arg_info(op->args[1])->s_mask
-                & arg_info(op->args[2])->s_mask;
-    return fold_masks(ctx, op);
+    t1 = arg_info(op->args[1]);
+    t2 = arg_info(op->args[2]);
+    z_mask = t1->z_mask | t2->z_mask;
+    s_mask = t1->s_mask & t2->s_mask;
+    return fold_masks_zs(ctx, op, z_mask, s_mask);
 }
 
 /* Propagate constants and copies, fold constant expressions. */
@@ -2375,18 +2874,7 @@ void tcg_optimize(TCGContext *s)
         copy_propagate(&ctx, op, def->nb_oargs, def->nb_iargs);
 
         /* Pre-compute the type of the operation. */
-        if (def->flags & TCG_OPF_VECTOR) {
-            ctx.type = TCG_TYPE_V64 + TCGOP_VECL(op);
-        } else if (def->flags & TCG_OPF_64BIT) {
-            ctx.type = TCG_TYPE_I64;
-        } else {
-            ctx.type = TCG_TYPE_I32;
-        }
-
-        /* Assume all bits affected, no bits known zero, no sign reps. */
-        ctx.a_mask = -1;
-        ctx.z_mask = -1;
-        ctx.s_mask = 0;
+        ctx.type = TCGOP_TYPE(op);
 
         /*
          * Process each opcode.
@@ -2523,22 +3011,22 @@ void tcg_optimize(TCGContext *s)
         CASE_OP_32_64_VEC(orc):
             done = fold_orc(&ctx, op);
             break;
-        case INDEX_op_qemu_ld_a32_i32:
-        case INDEX_op_qemu_ld_a64_i32:
-        case INDEX_op_qemu_ld_a32_i64:
-        case INDEX_op_qemu_ld_a64_i64:
-        case INDEX_op_qemu_ld_a32_i128:
-        case INDEX_op_qemu_ld_a64_i128:
-            done = fold_qemu_ld(&ctx, op);
+        case INDEX_op_qemu_ld_i32:
+            done = fold_qemu_ld_1reg(&ctx, op);
             break;
-        case INDEX_op_qemu_st8_a32_i32:
-        case INDEX_op_qemu_st8_a64_i32:
-        case INDEX_op_qemu_st_a32_i32:
-        case INDEX_op_qemu_st_a64_i32:
-        case INDEX_op_qemu_st_a32_i64:
-        case INDEX_op_qemu_st_a64_i64:
-        case INDEX_op_qemu_st_a32_i128:
-        case INDEX_op_qemu_st_a64_i128:
+        case INDEX_op_qemu_ld_i64:
+            if (TCG_TARGET_REG_BITS == 64) {
+                done = fold_qemu_ld_1reg(&ctx, op);
+                break;
+            }
+            QEMU_FALLTHROUGH;
+        case INDEX_op_qemu_ld_i128:
+            done = fold_qemu_ld_2reg(&ctx, op);
+            break;
+        case INDEX_op_qemu_st8_i32:
+        case INDEX_op_qemu_st_i32:
+        case INDEX_op_qemu_st_i64:
+        case INDEX_op_qemu_st_i128:
             done = fold_qemu_st(&ctx, op);
             break;
         CASE_OP_32_64(rem):
@@ -2561,6 +3049,15 @@ void tcg_optimize(TCGContext *s)
         case INDEX_op_setcond2_i32:
             done = fold_setcond2(&ctx, op);
             break;
+        case INDEX_op_cmp_vec:
+            done = fold_cmp_vec(&ctx, op);
+            break;
+        case INDEX_op_cmpsel_vec:
+            done = fold_cmpsel_vec(&ctx, op);
+            break;
+        case INDEX_op_bitsel_vec:
+            done = fold_bitsel_vec(&ctx, op);
+            break;
         CASE_OP_32_64(sextract):
             done = fold_sextract(&ctx, op);
             break;
@@ -2576,12 +3073,18 @@ void tcg_optimize(TCGContext *s)
         CASE_OP_32_64_VEC(xor):
             done = fold_xor(&ctx, op);
             break;
+        case INDEX_op_set_label:
+        case INDEX_op_br:
+        case INDEX_op_exit_tb:
+        case INDEX_op_goto_tb:
+        case INDEX_op_goto_ptr:
+            finish_ebb(&ctx);
+            done = true;
+            break;
         default:
+            done = finish_folding(&ctx, op);
             break;
         }
-
-        if (!done) {
-            finish_folding(&ctx, op);
-        }
+        tcg_debug_assert(done);
     }
 }

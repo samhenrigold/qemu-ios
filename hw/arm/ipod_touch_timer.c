@@ -187,7 +187,7 @@ static void s5l8900_timer_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_ipod_touch_timer;
-    dc->reset = ipod_touch_timer_reset;
+    device_class_set_legacy_reset(dc, ipod_touch_timer_reset);
 
 }
 

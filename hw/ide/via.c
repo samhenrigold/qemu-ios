@@ -29,10 +29,11 @@
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "qemu/range.h"
-#include "sysemu/dma.h"
+#include "system/dma.h"
 #include "hw/isa/vt82c686.h"
 #include "hw/ide/pci.h"
 #include "hw/irq.h"
+#include "ide-internal.h"
 #include "trace.h"
 
 static uint64_t bmdma_read(void *opaque, hwaddr addr,
@@ -249,7 +250,7 @@ static void via_ide_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
 
-    dc->reset = via_ide_reset;
+    device_class_set_legacy_reset(dc, via_ide_reset);
     dc->vmsd = &vmstate_ide_pci;
     /* Reason: only works as function of VIA southbridge */
     dc->user_creatable = false;

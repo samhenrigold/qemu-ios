@@ -24,6 +24,7 @@
  */
 
 #include "qemu/osdep.h"
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <pwd.h>
 #include <grp.h>
@@ -31,7 +32,7 @@
 
 #include "qemu/error-report.h"
 #include "qemu/log.h"
-#include "sysemu/runstate.h"
+#include "system/runstate.h"
 #include "qemu/cutils.h"
 
 #ifdef CONFIG_LINUX
@@ -256,6 +257,31 @@ void os_daemonize(void)
     }
 }
 
+void os_setup_limits(void)
+{
+    struct rlimit nofile;
+
+    if (getrlimit(RLIMIT_NOFILE, &nofile) < 0) {
+        warn_report("unable to query NOFILE limit: %s", strerror(errno));
+        return;
+    }
+
+    if (nofile.rlim_cur == nofile.rlim_max) {
+        return;
+    }
+
+#ifdef CONFIG_DARWIN
+    nofile.rlim_cur = OPEN_MAX < nofile.rlim_max ? OPEN_MAX : nofile.rlim_max;
+#else
+    nofile.rlim_cur = nofile.rlim_max;
+#endif
+
+    if (setrlimit(RLIMIT_NOFILE, &nofile) < 0) {
+        warn_report("unable to set NOFILE limit: %s", strerror(errno));
+        return;
+    }
+}
+
 void os_setup_post(void)
 {
     int fd = 0;
@@ -301,18 +327,29 @@ void os_set_line_buffering(void)
     setvbuf(stdout, NULL, _IOLBF, 0);
 }
 
-int os_mlock(void)
+int os_mlock(bool on_fault)
 {
 #ifdef HAVE_MLOCKALL
     int ret = 0;
+    int flags = MCL_CURRENT | MCL_FUTURE;
 
-    ret = mlockall(MCL_CURRENT | MCL_FUTURE);
+    if (on_fault) {
+#ifdef HAVE_MLOCK_ONFAULT
+        flags |= MCL_ONFAULT;
+#else
+        error_report("mlockall: on_fault not supported");
+        return -EINVAL;
+#endif
+    }
+
+    ret = mlockall(flags);
     if (ret < 0) {
         error_report("mlockall: %s", strerror(errno));
     }
 
     return ret;
 #else
+    (void)on_fault;
     return -ENOSYS;
 #endif
 }

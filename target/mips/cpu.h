@@ -10,8 +10,6 @@
 #include "hw/clock.h"
 #include "mips-defs.h"
 
-#define TCG_GUEST_DEFAULT_MO (0)
-
 typedef struct CPUMIPSTLBContext CPUMIPSTLBContext;
 
 /* MSA Context */
@@ -532,7 +530,6 @@ typedef struct CPUArchState {
     CPUMIPSFPUContext active_fpu;
 
     uint32_t current_tc;
-    uint32_t current_fpu;
 
     uint32_t SEGBITS;
     uint32_t PABITS;
@@ -747,9 +744,7 @@ typedef struct CPUArchState {
  * CP0 Register 9
  */
     int32_t CP0_Count;
-    uint32_t CP0_SAARI;
 #define CP0SAARI_TARGET 0    /*  5..0  */
-    uint64_t CP0_SAAR[2];
 #define CP0SAAR_BASE    12   /* 43..12 */
 #define CP0SAAR_SIZE    1    /*  5..1  */
 #define CP0SAAR_EN      0
@@ -1174,7 +1169,6 @@ typedef struct CPUArchState {
     uint32_t CP0_Status_rw_bitmask; /* Read/write bits in CP0_Status */
     uint32_t CP0_TCStatus_rw_bitmask; /* Read/write bits in CP0_TCStatus */
     uint64_t insn_flags; /* Supported instruction set */
-    int saarp;
 
     /* Fields up to this point are cleared by a CPU reset */
     struct {} end_reset_fields;
@@ -1183,8 +1177,7 @@ typedef struct CPUArchState {
     CPUMIPSMVPContext *mvp;
 #if !defined(CONFIG_USER_ONLY)
     CPUMIPSTLBContext *tlb;
-    void *irq[8];
-    struct MIPSITUState *itu;
+    qemu_irq irq[8];
     MemoryRegion *itc_tag; /* ITC Configuration Tags */
 
     /* Loongson IOCSR memory */
@@ -1215,6 +1208,9 @@ struct ArchCPU {
 
     Clock *clock;
     Clock *count_div; /* Divider for CP0_Count clock */
+
+    /* Properties */
+    bool is_big_endian;
 };
 
 /**
@@ -1235,10 +1231,6 @@ struct MIPSCPUClass {
     bool no_data_aborts;
 };
 
-void mips_cpu_list(void);
-
-#define cpu_list mips_cpu_list
-
 void cpu_wrdsp(uint32_t rs, uint32_t mask_num, CPUMIPSState *env);
 uint32_t cpu_rddsp(uint32_t mask_num, CPUMIPSState *env);
 
@@ -1246,18 +1238,20 @@ uint32_t cpu_rddsp(uint32_t mask_num, CPUMIPSState *env);
  * MMU modes definitions. We carefully match the indices with our
  * hflags layout.
  */
+#define MMU_KERNEL_IDX 0
 #define MMU_USER_IDX 2
+#define MMU_ERL_IDX 3
 
 static inline int hflags_mmu_index(uint32_t hflags)
 {
     if (hflags & MIPS_HFLAG_ERL) {
-        return 3; /* ERL */
+        return MMU_ERL_IDX;
     } else {
         return hflags & MIPS_HFLAG_KSU;
     }
 }
 
-static inline int cpu_mmu_index(CPUMIPSState *env, bool ifetch)
+static inline int mips_env_mmu_index(CPUMIPSState *env)
 {
     return hflags_mmu_index(env->hflags);
 }
@@ -1324,6 +1318,12 @@ bool cpu_type_supports_cps_smp(const char *cpu_type);
 bool cpu_supports_isa(const CPUMIPSState *env, uint64_t isa_mask);
 bool cpu_type_supports_isa(const char *cpu_type, uint64_t isa);
 
+/* Check presence of MIPS-3D ASE */
+static inline bool ase_3d_available(const CPUMIPSState *env)
+{
+    return env->active_fpu.fcr0 & (1 << FCR0_3D);
+}
+
 /* Check presence of MSA implementation */
 static inline bool ase_msa_available(CPUMIPSState *env)
 {
@@ -1381,12 +1381,14 @@ static inline void cpu_get_tb_cpu_state(CPUMIPSState *env, vaddr *pc,
  * mips_cpu_create_with_clock:
  * @typename: a MIPS CPU type.
  * @cpu_refclk: this cpu input clock (an output clock of another device)
+ * @is_big_endian: whether this CPU is configured in big endianness
  *
  * Instantiates a MIPS CPU, set the input clock of the CPU to @cpu_refclk,
  * then realizes the CPU.
  *
  * Returns: A #CPUState or %NULL if an error occurred.
  */
-MIPSCPU *mips_cpu_create_with_clock(const char *cpu_type, Clock *cpu_refclk);
+MIPSCPU *mips_cpu_create_with_clock(const char *cpu_type, Clock *cpu_refclk,
+                                    bool is_big_endian);
 
 #endif /* MIPS_CPU_H */

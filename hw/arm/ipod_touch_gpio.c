@@ -110,7 +110,7 @@ static void s5l8900_gpio_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = s5l8900_gpio_reset;
+    device_class_set_legacy_reset(dc, s5l8900_gpio_reset);
     dc->vmsd = &vmstate_ipod_touch_gpio;
 }
 

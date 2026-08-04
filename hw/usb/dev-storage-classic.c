@@ -13,8 +13,8 @@
 #include "hw/usb.h"
 #include "hw/usb/desc.h"
 #include "hw/usb/msd.h"
-#include "sysemu/sysemu.h"
-#include "sysemu/block-backend.h"
+#include "system/system.h"
+#include "system/block-backend.h"
 
 static const struct SCSIBusInfo usb_msd_scsi_info_storage = {
     .tcq = false,
@@ -38,15 +38,6 @@ static void usb_msd_storage_realize(USBDevice *dev, Error **errp)
         return;
     }
 
-    if (!blkconf_blocksizes(&s->conf, errp)) {
-        return;
-    }
-
-    if (!blkconf_apply_backend_options(&s->conf, !blk_supports_write_perm(blk),
-                                       true, errp)) {
-        return;
-    }
-
     /*
      * Hack alert: this pretends to be a block device, but it's really
      * a SCSI bus that can serve only a single device, which it
@@ -67,10 +58,7 @@ static void usb_msd_storage_realize(USBDevice *dev, Error **errp)
     scsi_bus_init(&s->bus, sizeof(s->bus), DEVICE(dev),
                  &usb_msd_scsi_info_storage);
     scsi_dev = scsi_bus_legacy_add_drive(&s->bus, blk, 0, !!s->removable,
-                                         s->conf.bootindex, s->conf.share_rw,
-                                         s->conf.rerror, s->conf.werror,
-                                         dev->serial,
-                                         errp);
+                                         &s->conf, dev->serial, errp);
     blk_unref(blk);
     if (!scsi_dev) {
         return;
@@ -79,12 +67,11 @@ static void usb_msd_storage_realize(USBDevice *dev, Error **errp)
     s->scsi_dev = scsi_dev;
 }
 
-static Property msd_properties[] = {
+static const Property msd_properties[] = {
     DEFINE_BLOCK_PROPERTIES(MSDState, conf),
     DEFINE_BLOCK_ERROR_PROPERTIES(MSDState, conf),
     DEFINE_PROP_BOOL("removable", MSDState, removable, false),
     DEFINE_PROP_BOOL("commandlog", MSDState, commandlog, false),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void usb_msd_class_storage_initfn(ObjectClass *klass, void *data)

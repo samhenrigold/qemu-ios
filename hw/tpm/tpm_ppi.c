@@ -14,7 +14,7 @@
 #include "qemu/osdep.h"
 #include "qemu/memalign.h"
 #include "qapi/error.h"
-#include "sysemu/memory_mapping.h"
+#include "system/memory_mapping.h"
 #include "migration/vmstate.h"
 #include "hw/qdev-core.h"
 #include "hw/acpi/tpm.h"
@@ -47,8 +47,10 @@ void tpm_ppi_reset(TPMPPI *tpmppi)
 void tpm_ppi_init(TPMPPI *tpmppi, MemoryRegion *m,
                   hwaddr addr, Object *obj)
 {
-    tpmppi->buf = qemu_memalign(qemu_real_host_page_size(),
-                                HOST_PAGE_ALIGN(TPM_PPI_ADDR_SIZE));
+    size_t host_page_size = qemu_real_host_page_size();
+
+    tpmppi->buf = qemu_memalign(host_page_size,
+                                ROUND_UP(TPM_PPI_ADDR_SIZE, host_page_size));
     memory_region_init_ram_device_ptr(&tpmppi->ram, obj, "tpm-ppi",
                                       TPM_PPI_ADDR_SIZE, tpmppi->buf);
     vmstate_register_ram(&tpmppi->ram, DEVICE(obj));

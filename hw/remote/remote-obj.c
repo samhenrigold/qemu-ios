@@ -17,7 +17,7 @@
 #include "hw/remote/machine.h"
 #include "io/channel-util.h"
 #include "qapi/error.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "hw/pci/pci.h"
 #include "qemu/sockets.h"
 #include "monitor/monitor.h"
@@ -49,6 +49,7 @@ struct RemoteObject {
 
 static void remote_object_set_fd(Object *obj, const char *str, Error **errp)
 {
+    ERRP_GUARD();
     RemoteObject *o = REMOTE_OBJECT(obj);
     int fd = -1;
 

@@ -209,7 +209,7 @@ struct VMStateDescription {
     bool (*dev_unplug_pending)(void *opaque);
 
     const VMStateField *fields;
-    const VMStateDescription **subsections;
+    const VMStateDescription * const *subsections;
 };
 
 extern const VMStateInfo vmstate_info_bool;
@@ -230,6 +230,7 @@ extern const VMStateInfo vmstate_info_uint8;
 extern const VMStateInfo vmstate_info_uint16;
 extern const VMStateInfo vmstate_info_uint32;
 extern const VMStateInfo vmstate_info_uint64;
+extern const VMStateInfo vmstate_info_fd;
 
 /** Put this in the stream when migrating a null pointer.*/
 #define VMS_NULLPTR_MARKER (0x30U) /* '0' */
@@ -386,16 +387,6 @@ extern const VMStateInfo vmstate_info_qlist;
     .size       = sizeof(_type),                                     \
     .flags      = VMS_VARRAY_UINT32|VMS_MULTIPLY_ELEMENTS,           \
     .offset     = vmstate_offset_varray(_state, _field, _type),      \
-}
-
-#define VMSTATE_ARRAY_TEST(_field, _state, _num, _test, _info, _type) {\
-    .name         = (stringify(_field)),                              \
-    .field_exists = (_test),                                          \
-    .num          = (_num),                                           \
-    .info         = &(_info),                                         \
-    .size         = sizeof(_type),                                    \
-    .flags        = VMS_ARRAY,                                        \
-    .offset       = vmstate_offset_array(_state, _field, _type, _num),\
 }
 
 #define VMSTATE_SUB_ARRAY(_field, _state, _start, _num, _version, _info, _type) { \
@@ -912,6 +903,9 @@ extern const VMStateInfo vmstate_info_qlist;
 #define VMSTATE_UINT64_V(_f, _s, _v)                                  \
     VMSTATE_SINGLE(_f, _s, _v, vmstate_info_uint64, uint64_t)
 
+#define VMSTATE_FD_V(_f, _s, _v)                                  \
+    VMSTATE_SINGLE(_f, _s, _v, vmstate_info_fd, int32_t)
+
 #ifdef CONFIG_LINUX
 
 #define VMSTATE_U8_V(_f, _s, _v)                                   \
@@ -945,6 +939,9 @@ extern const VMStateInfo vmstate_info_qlist;
     VMSTATE_UINT32_V(_f, _s, 0)
 #define VMSTATE_UINT64(_f, _s)                                        \
     VMSTATE_UINT64_V(_f, _s, 0)
+
+#define VMSTATE_FD(_f, _s)                                            \
+    VMSTATE_FD_V(_f, _s, 0)
 
 #ifdef CONFIG_LINUX
 
@@ -1019,6 +1016,8 @@ extern const VMStateInfo vmstate_info_qlist;
 #define VMSTATE_UINT64_TEST(_f, _s, _t)                                  \
     VMSTATE_SINGLE_TEST(_f, _s, _t, 0, vmstate_info_uint64, uint64_t)
 
+#define VMSTATE_FD_TEST(_f, _s, _t)                                            \
+    VMSTATE_SINGLE_TEST(_f, _s, _t, 0, vmstate_info_fd, int32_t)
 
 #define VMSTATE_TIMER_PTR_TEST(_f, _s, _test)                             \
     VMSTATE_POINTER_TEST(_f, _s, _test, vmstate_info_timer, QEMUTimer *)

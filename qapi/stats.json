@@ -114,11 +114,13 @@
 #
 # The arguments to the query-stats command; specifies a target for
 # which to request statistics and optionally the required subset of
-# information for that target:
+# information for that target.
 #
-# - which vCPUs to request statistics for
-# - which providers to request statistics from
-# - which named values to return within each provider
+# @target: the kind of objects to query.  Note that each possible
+#     target may enable additional filtering options
+#
+# @providers: which providers to request statistics from, and
+#     optionally which named values to return within each provider
 #
 # Since: 7.1
 ##
@@ -133,6 +135,8 @@
 # @StatsValue:
 #
 # @scalar: single unsigned 64-bit integers.
+#
+# @boolean: single boolean value.
 #
 # @list: list of unsigned 64-bit integers (used for histograms).
 #
@@ -252,17 +256,19 @@
 #
 # Return the schema for all available runtime-collected statistics.
 #
-# Note: runtime-collected statistics and their names fall outside
-#     QEMU's usual deprecation policies.  QEMU will try to keep the
-#     set of available data stable, together with their names, but
-#     will not guarantee stability at all costs; the same is true of
-#     providers that source statistics externally, e.g. from Linux.
-#     For example, if the same value is being tracked with different
-#     names on different architectures or by different providers, one
-#     of them might be renamed.  A statistic might go away if an
-#     algorithm is changed or some code is removed; changing a default
-#     might cause previously useful statistics to always report 0.
-#     Such changes, however, are expected to be rare.
+# @provider: a provider to restrict the query to.
+#
+# .. note:: Runtime-collected statistics and their names fall outside
+#    QEMU's usual deprecation policies.  QEMU will try to keep the set
+#    of available data stable, together with their names, but will not
+#    guarantee stability at all costs; the same is true of providers
+#    that source statistics externally, e.g. from Linux.  For example,
+#    if the same value is being tracked with different names on
+#    different architectures or by different providers, one of them
+#    might be renamed.  A statistic might go away if an algorithm is
+#    changed or some code is removed; changing a default might cause
+#    previously useful statistics to always report 0.  Such changes,
+#    however, are expected to be rare.
 #
 # Since: 7.1
 ##

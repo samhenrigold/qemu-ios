@@ -24,8 +24,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(ElroyState, ELROY_PCI_HOST_BRIDGE)
 #define LMMIO_DIST_BASE_ADDR      0xf4000000ULL
 #define LMMIO_DIST_BASE_SIZE       0x4000000ULL
 
+#define LMMIO_DIRECT_RANGES     4
+
 #define IOS_DIST_BASE_ADDR      0xfffee00000ULL
 #define IOS_DIST_BASE_SIZE           0x10000ULL
+
+#define HF_ENABLE       0x40    /* enable HF mode (default is -1 mode) */
 
 struct AstroState;
 
@@ -81,9 +85,7 @@ struct AstroState {
     struct ElroyState *elroy[ELROY_NUM];
 
     MemoryRegion this_mem;
-
-    MemoryRegion pci_mmio;
-    MemoryRegion pci_io;
+    MemoryRegion lmmio_direct[LMMIO_DIRECT_RANGES];
 
     IOMMUMemoryRegion iommu;
     AddressSpace iommu_as;

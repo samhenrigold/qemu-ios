@@ -15,11 +15,12 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/log.h"
 #include "hw/pci/msi.h"
 #include "hw/pci/msix.h"
 #include "hw/pci/pci.h"
 #include "hw/xen/xen.h"
-#include "sysemu/xen.h"
+#include "system/xen.h"
 #include "migration/qemu-file-types.h"
 #include "migration/vmstate.h"
 #include "qemu/range.h"
@@ -250,7 +251,7 @@ static uint64_t msix_pba_mmio_read(void *opaque, hwaddr addr,
     PCIDevice *dev = opaque;
     if (dev->msix_vector_poll_notifier) {
         unsigned vector_start = addr * 8;
-        unsigned vector_end = MIN(addr + size * 8, dev->msix_entries_nr);
+        unsigned vector_end = MIN((addr + size) * 8, dev->msix_entries_nr);
         dev->msix_vector_poll_notifier(dev, vector_start, vector_end);
     }
 
@@ -260,6 +261,14 @@ static uint64_t msix_pba_mmio_read(void *opaque, hwaddr addr,
 static void msix_pba_mmio_write(void *opaque, hwaddr addr,
                                 uint64_t val, unsigned size)
 {
+    PCIDevice *dev = opaque;
+
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "PCI [%s:%02x:%02x.%x] attempt to write to MSI-X "
+                  "PBA at 0x%" FMT_PCIBUS ", ignoring.\n",
+                  pci_root_bus_path(dev), pci_dev_bus_num(dev),
+                  PCI_SLOT(dev->devfn), PCI_FUNC(dev->devfn),
+                  addr);
 }
 
 static const MemoryRegionOps msix_pba_mmio_ops = {
@@ -685,7 +694,7 @@ static int get_msix_state(QEMUFile *f, void *pv, size_t size,
     return 0;
 }
 
-static VMStateInfo vmstate_info_msix = {
+static const VMStateInfo vmstate_info_msix = {
     .name = "msix state",
     .get  = get_msix_state,
     .put  = put_msix_state,
@@ -693,7 +702,7 @@ static VMStateInfo vmstate_info_msix = {
 
 const VMStateDescription vmstate_msix = {
     .name = "msix",
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         {
             .name         = "msix",
             .version_id   = 0,

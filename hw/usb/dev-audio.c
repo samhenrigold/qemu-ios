@@ -124,7 +124,6 @@ static const USBDescIface desc_iface[] = {
         .bNumEndpoints                 = 0,
         .bInterfaceClass               = USB_CLASS_AUDIO,
         .bInterfaceSubClass            = USB_SUBCLASS_AUDIO_CONTROL,
-        .bInterfaceProtocol            = 0x04,
         .iInterface                    = STRING_USBAUDIO_CONTROL,
         .ndesc                         = 4,
         .descs = (USBDescOther[]) {
@@ -282,7 +281,6 @@ static const USBDescIface desc_iface_multi[] = {
         .bNumEndpoints                 = 0,
         .bInterfaceClass               = USB_CLASS_AUDIO,
         .bInterfaceSubClass            = USB_SUBCLASS_AUDIO_CONTROL,
-        .bInterfaceProtocol            = 0x04,
         .iInterface                    = STRING_USBAUDIO_CONTROL,
         .ndesc                         = 4,
         .descs = (USBDescOther[]) {
@@ -293,7 +291,7 @@ static const USBDescIface desc_iface_multi[] = {
                     USB_DT_CS_INTERFACE,        /*  u8  bDescriptorType */
                     DST_AC_HEADER,              /*  u8  bDescriptorSubtype */
                     U16(0x0100),                /* u16  bcdADC */
-                    U16(0x38),                  /* u16  wTotalLength */
+                    U16(0x37),                  /* u16  wTotalLength */
                     0x01,                       /*  u8  bInCollection */
                     0x01,                       /*  u8  baInterfaceNr */
                 }
@@ -992,12 +990,11 @@ static const VMStateDescription vmstate_usb_audio = {
     .unmigratable = 1,
 };
 
-static Property usb_audio_properties[] = {
+static const Property usb_audio_properties[] = {
     DEFINE_AUDIO_PROPERTIES(USBAudioState, card),
     DEFINE_PROP_UINT32("debug", USBAudioState, debug, 0),
     DEFINE_PROP_UINT32("buffer", USBAudioState, buffer_user, 0),
     DEFINE_PROP_BOOL("multi", USBAudioState, multi, false),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void usb_audio_class_init(ObjectClass *klass, void *data)

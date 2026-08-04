@@ -164,7 +164,7 @@ static uint64_t ipod_touch_spi_read(void *opaque, hwaddr addr, unsigned size)
                 r = 0;
                 break;
             }
-            buf = fifo8_pop_buf(&s->rx_fifo, word_size, &num);
+            buf = fifo8_pop_bufptr(&s->rx_fifo, word_size, &num);
             memcpy(&r, buf, num);
 
             if (fifo8_is_empty(&s->rx_fifo)) {
@@ -358,7 +358,7 @@ static void ipod_touch_spi_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->realize = ipod_touch_spi_realize;
-    dc->reset = ipod_touch_spi_reset;
+    device_class_set_legacy_reset(dc, ipod_touch_spi_reset);
     dc->vmsd = &vmstate_ipod_touch_spi;
 }
 

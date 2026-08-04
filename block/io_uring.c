@@ -17,7 +17,7 @@
 #include "qemu/coroutine.h"
 #include "qemu/defer-call.h"
 #include "qapi/error.h"
-#include "sysemu/block-backend.h"
+#include "system/block-backend.h"
 #include "trace.h"
 
 /* Only used for assertions.  */
@@ -49,7 +49,7 @@ typedef struct LuringQueue {
     QSIMPLEQ_HEAD(, LuringAIOCB) submit_queue;
 } LuringQueue;
 
-typedef struct LuringState {
+struct LuringState {
     AioContext *aio_context;
 
     struct io_uring ring;
@@ -58,7 +58,7 @@ typedef struct LuringState {
     LuringQueue io_q;
 
     QEMUBH *completion_bh;
-} LuringState;
+};
 
 /**
  * luring_resubmit:
@@ -102,7 +102,7 @@ static void luring_resubmit_short_read(LuringState *s, LuringAIOCB *luringcb,
 
     /* Update sqe */
     luringcb->sqeq.off += nread;
-    luringcb->sqeq.addr = (__u64)(uintptr_t)luringcb->resubmit_qiov.iov;
+    luringcb->sqeq.addr = (uintptr_t)luringcb->resubmit_qiov.iov;
     luringcb->sqeq.len = luringcb->resubmit_qiov.niov;
 
     luring_resubmit(s, luringcb);
@@ -335,15 +335,24 @@ static void luring_deferred_fn(void *opaque)
  *
  */
 static int luring_do_submit(int fd, LuringAIOCB *luringcb, LuringState *s,
-                            uint64_t offset, int type)
+                            uint64_t offset, int type, BdrvRequestFlags flags)
 {
     int ret;
     struct io_uring_sqe *sqes = &luringcb->sqeq;
 
     switch (type) {
     case QEMU_AIO_WRITE:
+#ifdef HAVE_IO_URING_PREP_WRITEV2
+    {
+        int luring_flags = (flags & BDRV_REQ_FUA) ? RWF_DSYNC : 0;
+        io_uring_prep_writev2(sqes, fd, luringcb->qiov->iov,
+                              luringcb->qiov->niov, offset, luring_flags);
+    }
+#else
+        assert(flags == 0);
         io_uring_prep_writev(sqes, fd, luringcb->qiov->iov,
                              luringcb->qiov->niov, offset);
+#endif
         break;
     case QEMU_AIO_ZONE_APPEND:
         io_uring_prep_writev(sqes, fd, luringcb->qiov->iov,
@@ -380,7 +389,8 @@ static int luring_do_submit(int fd, LuringAIOCB *luringcb, LuringState *s,
 }
 
 int coroutine_fn luring_co_submit(BlockDriverState *bs, int fd, uint64_t offset,
-                                  QEMUIOVector *qiov, int type)
+                                  QEMUIOVector *qiov, int type,
+                                  BdrvRequestFlags flags)
 {
     int ret;
     AioContext *ctx = qemu_get_current_aio_context();
@@ -393,7 +403,7 @@ int coroutine_fn luring_co_submit(BlockDriverState *bs, int fd, uint64_t offset,
     };
     trace_luring_co_submit(bs, s, &luringcb, fd, offset, qiov ? qiov->size : 0,
                            type);
-    ret = luring_do_submit(fd, &luringcb, s, offset, type);
+    ret = luring_do_submit(fd, &luringcb, s, offset, type, flags);
 
     if (ret < 0) {
         return ret;
@@ -432,7 +442,7 @@ LuringState *luring_init(Error **errp)
 
     rc = io_uring_queue_init(MAX_ENTRIES, ring, 0);
     if (rc < 0) {
-        error_setg_errno(errp, errno, "failed to init linux io_uring ring");
+        error_setg_errno(errp, -rc, "failed to init linux io_uring ring");
         g_free(s);
         return NULL;
     }
@@ -447,4 +457,13 @@ void luring_cleanup(LuringState *s)
     io_uring_queue_exit(&s->ring);
     trace_luring_cleanup_state(s);
     g_free(s);
+}
+
+bool luring_has_fua(void)
+{
+#ifdef HAVE_IO_URING_PREP_WRITEV2
+    return true;
+#else
+    return false;
+#endif
 }

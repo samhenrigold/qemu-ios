@@ -36,12 +36,14 @@ RUN DEBIAN_FRONTEND=noninteractive eatmydata \
         python3-pip \
         python3-setuptools \
         python3-venv \
-        python3-wheel
+        python3-wheel && \
+        dpkg-query --showformat '${Package}_${Version}_${Architecture}\n' --show > /packages.txt
 
 RUN /usr/bin/pip3 install tomli
 
 ENV QEMU_CONFIGURE_OPTS --disable-system --disable-docs --disable-tools
 ENV DEF_TARGET_LIST alpha-linux-user,sh4-linux-user
+ENV MAKE /usr/bin/make
 # As a final step configure the user (if env is defined)
 ARG USER
 ARG UID

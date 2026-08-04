@@ -42,7 +42,7 @@ static void tricore_load_kernel(CPUTriCoreState *env)
 
     kernel_size = load_elf(tricoretb_binfo.kernel_filename, NULL,
                            NULL, NULL, &entry, NULL,
-                           NULL, NULL, 0,
+                           NULL, NULL, ELFDATA2LSB,
                            EM_TRICORE, 1, 0);
     if (kernel_size <= 0) {
         error_report("no kernel file '%s'",
@@ -89,9 +89,7 @@ static void tricore_testboard_init(MachineState *machine, int board_id)
     memory_region_add_subregion(sysmem, 0xf0050000, pcp_data);
     memory_region_add_subregion(sysmem, 0xf0060000, pcp_text);
 
-    test_dev = g_new(TriCoreTestDeviceState, 1);
-    object_initialize(test_dev, sizeof(TriCoreTestDeviceState),
-                      TYPE_TRICORE_TESTDEVICE);
+    test_dev = TRICORE_TESTDEVICE(qdev_new(TYPE_TRICORE_TESTDEVICE));
     memory_region_add_subregion(sysmem, 0xf0000000, &test_dev->iomem);
 
 

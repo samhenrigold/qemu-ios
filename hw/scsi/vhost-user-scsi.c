@@ -27,7 +27,7 @@
 #include "hw/virtio/vhost-user-scsi.h"
 #include "hw/virtio/virtio.h"
 #include "chardev/char-fe.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 
 /* Features supported by the host application */
 static const int user_feature_bits[] = {
@@ -36,6 +36,8 @@ static const int user_feature_bits[] = {
     VIRTIO_RING_F_EVENT_IDX,
     VIRTIO_SCSI_F_HOTPLUG,
     VIRTIO_F_RING_RESET,
+    VIRTIO_F_IN_ORDER,
+    VIRTIO_F_NOTIFICATION_DATA,
     VHOST_INVALID_FEATURE_BIT
 };
 
@@ -83,7 +85,8 @@ static void vhost_user_scsi_set_status(VirtIODevice *vdev, uint8_t status)
     if (should_start) {
         ret = vhost_user_scsi_start(s, &local_err);
         if (ret < 0) {
-            error_reportf_err(local_err, "unable to start vhost-user-scsi: %s",
+            error_reportf_err(local_err,
+                              "unable to start vhost-user-scsi: %s: ",
                               strerror(-ret));
             qemu_chr_fe_disconnect(&vs->conf.chardev);
         }
@@ -180,7 +183,7 @@ static void vhost_user_scsi_disconnect(DeviceState *dev)
     VirtIOSCSICommon *vs = VIRTIO_SCSI_COMMON(dev);
 
     if (!s->connected) {
-        return;
+        goto done;
     }
     s->connected = false;
 
@@ -188,6 +191,7 @@ static void vhost_user_scsi_disconnect(DeviceState *dev)
 
     vhost_dev_cleanup(&vsc->dev);
 
+done:
     /* Re-instate the event handler for new connections */
     qemu_chr_fe_set_handlers(&vs->conf.chardev, NULL, NULL,
                              vhost_user_scsi_event, NULL, dev, NULL, true);
@@ -213,8 +217,7 @@ static void vhost_user_scsi_event(void *opaque, QEMUChrEvent event)
     case CHR_EVENT_CLOSED:
         /* defer close until later to avoid circular close */
         vhost_user_async_close(dev, &vs->conf.chardev, &vsc->dev,
-                               vhost_user_scsi_disconnect,
-                               vhost_user_scsi_event);
+                               vhost_user_scsi_disconnect);
         break;
     case CHR_EVENT_BREAK:
     case CHR_EVENT_MUX_IN:
@@ -338,7 +341,7 @@ static void vhost_user_scsi_unrealize(DeviceState *dev)
     virtio_scsi_common_unrealize(dev);
 }
 
-static Property vhost_user_scsi_properties[] = {
+static const Property vhost_user_scsi_properties[] = {
     DEFINE_PROP_CHR("chardev", VirtIOSCSICommon, conf.chardev),
     DEFINE_PROP_UINT32("boot_tpgt", VirtIOSCSICommon, conf.boot_tpgt, 0),
     DEFINE_PROP_UINT32("num_queues", VirtIOSCSICommon, conf.num_queues,
@@ -357,7 +360,6 @@ static Property vhost_user_scsi_properties[] = {
     DEFINE_PROP_BIT64("t10_pi", VHostSCSICommon, host_features,
                                                  VIRTIO_SCSI_F_T10_PI,
                                                  false),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void vhost_user_scsi_reset(VirtIODevice *vdev)
@@ -378,7 +380,7 @@ static const VMStateDescription vmstate_vhost_scsi = {
     .name = "virtio-scsi",
     .minimum_version_id = 1,
     .version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_VIRTIO_DEVICE,
         VMSTATE_END_OF_LIST()
     },

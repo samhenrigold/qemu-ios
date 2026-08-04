@@ -102,7 +102,7 @@ typedef struct VirtioNetRscStat {
 /* Rsc unit general info used to checking if can coalescing */
 typedef struct VirtioNetRscUnit {
     void *ip;   /* ip header */
-    uint16_t *ip_plen;      /* data len pointer in ip header field */
+    void *ip_plen; /* pointer to unaligned uint16_t data len in ip header */
     struct tcp_header *tcp; /* tcp header */
     uint16_t tcp_hdrlen;    /* tcp header len */
     uint16_t payload;       /* pure payload without virtio/eth/ip/tcp */
@@ -221,10 +221,12 @@ struct VirtIONet {
     DeviceListener primary_listener;
     QDict *primary_opts;
     bool primary_opts_from_json;
-    Notifier migration_state;
+    NotifierWithReturn migration_state;
     VirtioNetRssData rss_data;
     struct NetRxPkt *rx_pkt;
     struct EBPFRSSContext ebpf_rss;
+    uint32_t nr_ebpf_rss_fds;
+    char **ebpf_rss_fds;
 };
 
 size_t virtio_net_handle_ctrl_iov(VirtIODevice *vdev,

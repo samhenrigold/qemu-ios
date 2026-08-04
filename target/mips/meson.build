@@ -9,10 +9,10 @@ mips_ss.add(files(
 ))
 
 if have_system
-  subdir('sysemu')
+  subdir('system')
 endif
 
-if 'CONFIG_TCG' in config_all
+if 'CONFIG_TCG' in config_all_accel
   subdir('tcg')
 endif
 

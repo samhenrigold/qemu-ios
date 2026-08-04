@@ -44,11 +44,6 @@ typedef struct coreaudioVoiceOut {
     bool enabled;
 } coreaudioVoiceOut;
 
-#if !defined(MAC_OS_VERSION_12_0) \
-    || (MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_VERSION_12_0)
-#define kAudioObjectPropertyElementMain kAudioObjectPropertyElementMaster
-#endif
-
 static const AudioObjectPropertyAddress voice_addr = {
     kAudioHardwarePropertyDefaultOutputDevice,
     kAudioObjectPropertyScopeGlobal,
@@ -299,7 +294,7 @@ COREAUDIO_WRAPPER_FUNC(write, size_t, (HWVoiceOut *hw, void *buf, size_t size),
 #undef COREAUDIO_WRAPPER_FUNC
 
 /*
- * callback to feed audiooutput buffer. called without iothread lock.
+ * callback to feed audiooutput buffer. called without BQL.
  * allowed to lock "buf_mutex", but disallowed to have any other locks.
  */
 static OSStatus audioDeviceIOProc(
@@ -538,7 +533,7 @@ static void update_device_playback_state(coreaudioVoiceOut *core)
     }
 }
 
-/* called without iothread lock. */
+/* called without BQL. */
 static OSStatus handle_voice_change(
     AudioObjectID in_object_id,
     UInt32 in_number_addresses,
@@ -547,7 +542,7 @@ static OSStatus handle_voice_change(
 {
     coreaudioVoiceOut *core = in_client_data;
 
-    qemu_mutex_lock_iothread();
+    bql_lock();
 
     if (core->outputDeviceID) {
         fini_out_device(core);
@@ -557,7 +552,7 @@ static OSStatus handle_voice_change(
         update_device_playback_state(core);
     }
 
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
     return 0;
 }
 

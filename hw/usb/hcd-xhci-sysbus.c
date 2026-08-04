@@ -82,16 +82,15 @@ void xhci_sysbus_build_aml(Aml *scope, uint32_t mmio, unsigned int irq)
     aml_append(scope, dev);
 }
 
-static Property xhci_sysbus_props[] = {
+static const Property xhci_sysbus_props[] = {
     DEFINE_PROP_UINT32("intrs", XHCISysbusState, xhci.numintrs, XHCI_MAXINTRS),
     DEFINE_PROP_UINT32("slots", XHCISysbusState, xhci.numslots, XHCI_MAXSLOTS),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static const VMStateDescription vmstate_xhci_sysbus = {
     .name = "xhci-sysbus",
     .version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(xhci, XHCISysbusState, 1, vmstate_xhci, XHCIState),
         VMSTATE_END_OF_LIST()
     }
@@ -101,7 +100,7 @@ static void xhci_sysbus_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = xhci_sysbus_reset;
+    device_class_set_legacy_reset(dc, xhci_sysbus_reset);
     dc->realize = xhci_sysbus_realize;
     dc->vmsd = &vmstate_xhci_sysbus;
     device_class_set_props(dc, xhci_sysbus_props);

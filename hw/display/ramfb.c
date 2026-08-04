@@ -17,7 +17,7 @@
 #include "hw/display/ramfb.h"
 #include "hw/display/bochs-vbe.h" /* for limits */
 #include "ui/console.h"
-#include "sysemu/reset.h"
+#include "system/reset.h"
 
 struct QEMU_PACKED RAMFBCfg {
     uint64_t addr;
@@ -129,7 +129,7 @@ const VMStateDescription ramfb_vmstate = {
     .version_id = 1,
     .minimum_version_id = 1,
     .post_load = ramfb_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_BUFFER_UNSAFE(cfg, RAMFBState, 0, sizeof(RAMFBCfg)),
         VMSTATE_END_OF_LIST()
     }

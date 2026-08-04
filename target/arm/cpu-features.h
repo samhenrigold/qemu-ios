@@ -20,6 +20,9 @@
 #ifndef TARGET_ARM_FEATURES_H
 #define TARGET_ARM_FEATURES_H
 
+#include "hw/registerfields.h"
+#include "qemu/host-utils.h"
+
 /*
  * Naming convention for isar_feature functions:
  * Functions which test 32-bit ID registers should have _aa32_ in
@@ -471,6 +474,11 @@ static inline bool isar_feature_aa64_fcma(const ARMISARegisters *id)
     return FIELD_EX64(id->id_aa64isar1, ID_AA64ISAR1, FCMA) != 0;
 }
 
+static inline bool isar_feature_aa64_xs(const ARMISARegisters *id)
+{
+    return FIELD_EX64(id->id_aa64isar1, ID_AA64ISAR1, XS) != 0;
+}
+
 /*
  * These are the values from APA/API/APA3.
  * In general these must be compared '>=', per the normal Arm ARM
@@ -554,6 +562,11 @@ static inline bool isar_feature_aa64_bf16(const ARMISARegisters *id)
     return FIELD_EX64(id->id_aa64isar1, ID_AA64ISAR1, BF16) != 0;
 }
 
+static inline bool isar_feature_aa64_ebf16(const ARMISARegisters *id)
+{
+    return FIELD_EX64(id->id_aa64isar1, ID_AA64ISAR1, BF16) > 1;
+}
+
 static inline bool isar_feature_aa64_rcpc_8_3(const ARMISARegisters *id)
 {
     return FIELD_EX64(id->id_aa64isar1, ID_AA64ISAR1, LRCPC) != 0;
@@ -569,6 +582,11 @@ static inline bool isar_feature_aa64_i8mm(const ARMISARegisters *id)
     return FIELD_EX64(id->id_aa64isar1, ID_AA64ISAR1, I8MM) != 0;
 }
 
+static inline bool isar_feature_aa64_wfxt(const ARMISARegisters *id)
+{
+    return FIELD_EX64(id->id_aa64isar2, ID_AA64ISAR2, WFXT) >= 2;
+}
+
 static inline bool isar_feature_aa64_hbc(const ARMISARegisters *id)
 {
     return FIELD_EX64(id->id_aa64isar2, ID_AA64ISAR2, BC) != 0;
@@ -577,6 +595,11 @@ static inline bool isar_feature_aa64_hbc(const ARMISARegisters *id)
 static inline bool isar_feature_aa64_mops(const ARMISARegisters *id)
 {
     return FIELD_EX64(id->id_aa64isar2, ID_AA64ISAR2, MOPS);
+}
+
+static inline bool isar_feature_aa64_rpres(const ARMISARegisters *id)
+{
+    return FIELD_EX64(id->id_aa64isar2, ID_AA64ISAR2, RPRES);
 }
 
 static inline bool isar_feature_aa64_fp_simd(const ARMISARegisters *id)
@@ -679,6 +702,11 @@ static inline bool isar_feature_aa64_sme(const ARMISARegisters *id)
     return FIELD_EX64(id->id_aa64pfr1, ID_AA64PFR1, SME) != 0;
 }
 
+static inline bool isar_feature_aa64_nmi(const ARMISARegisters *id)
+{
+    return FIELD_EX64(id->id_aa64pfr1, ID_AA64PFR1, NMI) != 0;
+}
+
 static inline bool isar_feature_aa64_tgran4_lpa2(const ARMISARegisters *id)
 {
     return FIELD_SEX64(id->id_aa64mmfr0, ID_AA64MMFR0, TGRAN4) >= 1;
@@ -739,6 +767,16 @@ static inline bool isar_feature_aa64_fgt(const ARMISARegisters *id)
     return FIELD_EX64(id->id_aa64mmfr0, ID_AA64MMFR0, FGT) != 0;
 }
 
+static inline bool isar_feature_aa64_ecv_traps(const ARMISARegisters *id)
+{
+    return FIELD_EX64(id->id_aa64mmfr0, ID_AA64MMFR0, ECV) > 0;
+}
+
+static inline bool isar_feature_aa64_ecv(const ARMISARegisters *id)
+{
+    return FIELD_EX64(id->id_aa64mmfr0, ID_AA64MMFR0, ECV) > 1;
+}
+
 static inline bool isar_feature_aa64_vh(const ARMISARegisters *id)
 {
     return FIELD_EX64(id->id_aa64mmfr1, ID_AA64MMFR1, VH) != 0;
@@ -769,9 +807,19 @@ static inline bool isar_feature_aa64_hcx(const ARMISARegisters *id)
     return FIELD_EX64(id->id_aa64mmfr1, ID_AA64MMFR1, HCX) != 0;
 }
 
+static inline bool isar_feature_aa64_afp(const ARMISARegisters *id)
+{
+    return FIELD_EX64(id->id_aa64mmfr1, ID_AA64MMFR1, AFP) != 0;
+}
+
 static inline bool isar_feature_aa64_tidcp1(const ARMISARegisters *id)
 {
-    return FIELD_EX64(id->id_aa64mmfr2, ID_AA64MMFR1, TIDCP1) != 0;
+    return FIELD_EX64(id->id_aa64mmfr1, ID_AA64MMFR1, TIDCP1) != 0;
+}
+
+static inline bool isar_feature_aa64_cmow(const ARMISARegisters *id)
+{
+    return FIELD_EX64(id->id_aa64mmfr1, ID_AA64MMFR1, CMOW) != 0;
 }
 
 static inline bool isar_feature_aa64_hafs(const ARMISARegisters *id)
@@ -837,6 +885,16 @@ static inline bool isar_feature_aa64_lva(const ARMISARegisters *id)
 static inline bool isar_feature_aa64_e0pd(const ARMISARegisters *id)
 {
     return FIELD_EX64(id->id_aa64mmfr2, ID_AA64MMFR2, E0PD) != 0;
+}
+
+static inline bool isar_feature_aa64_nv(const ARMISARegisters *id)
+{
+    return FIELD_EX64(id->id_aa64mmfr2, ID_AA64MMFR2, NV) != 0;
+}
+
+static inline bool isar_feature_aa64_nv2(const ARMISARegisters *id)
+{
+    return FIELD_EX64(id->id_aa64mmfr2, ID_AA64MMFR2, NV) >= 2;
 }
 
 static inline bool isar_feature_aa64_pmuv3p1(const ARMISARegisters *id)
@@ -988,6 +1046,55 @@ static inline bool isar_feature_any_half_evt(const ARMISARegisters *id)
 static inline bool isar_feature_any_evt(const ARMISARegisters *id)
 {
     return isar_feature_aa64_evt(id) || isar_feature_aa32_evt(id);
+}
+
+typedef enum {
+    CCSIDR_FORMAT_LEGACY,
+    CCSIDR_FORMAT_CCIDX,
+} CCSIDRFormat;
+
+static inline uint64_t make_ccsidr(CCSIDRFormat format, unsigned assoc,
+                                   unsigned linesize, unsigned cachesize,
+                                   uint8_t flags)
+{
+    unsigned lg_linesize = ctz32(linesize);
+    unsigned sets;
+    uint64_t ccsidr = 0;
+
+    assert(assoc != 0);
+    assert(is_power_of_2(linesize));
+    assert(lg_linesize >= 4 && lg_linesize <= 7 + 4);
+
+    /* sets * associativity * linesize == cachesize. */
+    sets = cachesize / (assoc * linesize);
+    assert(cachesize % (assoc * linesize) == 0);
+
+    if (format == CCSIDR_FORMAT_LEGACY) {
+        /*
+         * The 32-bit CCSIDR format is:
+         *   [27:13] number of sets - 1
+         *   [12:3]  associativity - 1
+         *   [2:0]   log2(linesize) - 4
+         *           so 0 == 16 bytes, 1 == 32 bytes, 2 == 64 bytes, etc
+         */
+        ccsidr = deposit32(ccsidr, 28,  4, flags);
+        ccsidr = deposit32(ccsidr, 13, 15, sets - 1);
+        ccsidr = deposit32(ccsidr,  3, 10, assoc - 1);
+        ccsidr = deposit32(ccsidr,  0,  3, lg_linesize - 4);
+    } else {
+        /*
+         * The 64-bit CCSIDR_EL1 format is:
+         *   [55:32] number of sets - 1
+         *   [23:3]  associativity - 1
+         *   [2:0]   log2(linesize) - 4
+         *           so 0 == 16 bytes, 1 == 32 bytes, 2 == 64 bytes, etc
+         */
+        ccsidr = deposit64(ccsidr, 32, 24, sets - 1);
+        ccsidr = deposit64(ccsidr,  3, 21, assoc - 1);
+        ccsidr = deposit64(ccsidr,  0,  3, lg_linesize - 4);
+    }
+
+    return ccsidr;
 }
 
 /*

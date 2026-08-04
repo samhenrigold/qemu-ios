@@ -183,7 +183,7 @@ static void s5l8900_clock_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_ipod_touch_clock;
-    dc->reset = ipod_touch_clock_reset;
+    device_class_set_legacy_reset(dc, ipod_touch_clock_reset);
 }
 
 static const TypeInfo ipod_touch_clock_info = {

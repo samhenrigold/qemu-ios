@@ -20,7 +20,7 @@ static const VMStateDescription vmstate_imx_usbphy = {
     .name = TYPE_IMX_USBPHY,
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(usbphy, IMXUSBPHYState, USBPHY_MAX),
         VMSTATE_END_OF_LIST()
     },
@@ -218,7 +218,7 @@ static void imx_usbphy_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = imx_usbphy_reset;
+    device_class_set_legacy_reset(dc, imx_usbphy_reset);
     dc->vmsd = &vmstate_imx_usbphy;
     dc->desc = "i.MX USB PHY Module";
     dc->realize = imx_usbphy_realize;

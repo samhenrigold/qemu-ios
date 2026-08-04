@@ -16,6 +16,9 @@
  * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#ifndef RISCV_PMU_H
+#define RISCV_PMU_H
+
 #include "cpu.h"
 #include "qapi/error.h"
 
@@ -31,3 +34,9 @@ int riscv_pmu_incr_ctr(RISCVCPU *cpu, enum riscv_pmu_event_idx event_idx);
 void riscv_pmu_generate_fdt_node(void *fdt, uint32_t cmask, char *pmu_name);
 int riscv_pmu_setup_timer(CPURISCVState *env, uint64_t value,
                           uint32_t ctr_idx);
+void riscv_pmu_update_fixed_ctrs(CPURISCVState *env, target_ulong newpriv,
+                                 bool new_virt);
+RISCVException riscv_pmu_read_ctr(CPURISCVState *env, target_ulong *val,
+                                  bool upper_half, uint32_t ctr_idx);
+
+#endif /* RISCV_PMU_H */

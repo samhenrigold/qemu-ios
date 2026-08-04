@@ -3,7 +3,7 @@
 #include "hw/arm/ipod_touch_lcd.h"
 #include "hw/core/cpu.h"
 #include "target/arm/cpu.h"
-#include "sysemu/runstate.h"
+#include "system/runstate.h"
 
 /*
  * IT_PMU_TRACE=1 logs every PMU register access in hex together with the guest

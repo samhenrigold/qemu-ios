@@ -228,7 +228,7 @@ static const VMStateDescription vmstate_emc141x = {
     .name = "EMC141X",
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(len, EMC141XState),
         VMSTATE_UINT8(data, EMC141XState),
         VMSTATE_UINT8(pointer, EMC141XState),
@@ -265,12 +265,12 @@ static void emc141x_initfn(Object *obj)
                         emc141x_set_temperature, NULL, NULL);
 }
 
-static void emc141x_class_init(ObjectClass *klass, void *data)
+static void emc141x_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
 
-    dc->reset = emc141x_reset;
+    device_class_set_legacy_reset(dc, emc141x_reset);
     k->event = emc141x_event;
     k->recv = emc141x_rx;
     k->send = emc141x_tx;

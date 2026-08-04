@@ -525,7 +525,7 @@ static void cadence_uart_reset_init(Object *obj, ResetType type)
     s->r[R_TTRIG] = 0x00000020;
 }
 
-static void cadence_uart_reset_hold(Object *obj)
+static void cadence_uart_reset_hold(Object *obj, ResetType type)
 {
     CadenceUARTState *s = CADENCE_UART(obj);
 
@@ -602,7 +602,7 @@ static const VMStateDescription vmstate_cadence_uart = {
     .minimum_version_id = 2,
     .pre_load = cadence_uart_pre_load,
     .post_load = cadence_uart_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(r, CadenceUARTState, CADENCE_UART_R_MAX),
         VMSTATE_UINT8_ARRAY(rx_fifo, CadenceUARTState,
                             CADENCE_UART_RX_FIFO_SIZE),
@@ -617,9 +617,8 @@ static const VMStateDescription vmstate_cadence_uart = {
     },
 };
 
-static Property cadence_uart_properties[] = {
+static const Property cadence_uart_properties[] = {
     DEFINE_PROP_CHR("chardev", CadenceUARTState, chr),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void cadence_uart_class_init(ObjectClass *klass, void *data)

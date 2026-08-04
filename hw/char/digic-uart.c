@@ -165,16 +165,15 @@ static const VMStateDescription vmstate_digic_uart = {
     .name = "digic-uart",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(reg_rx, DigicUartState),
         VMSTATE_UINT32(reg_st, DigicUartState),
         VMSTATE_END_OF_LIST()
     }
 };
 
-static Property digic_uart_properties[] = {
+static const Property digic_uart_properties[] = {
     DEFINE_PROP_CHR("chardev", DigicUartState, chr),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void digic_uart_class_init(ObjectClass *klass, void *data)
@@ -182,7 +181,7 @@ static void digic_uart_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = digic_uart_realize;
-    dc->reset = digic_uart_reset;
+    device_class_set_legacy_reset(dc, digic_uart_reset);
     dc->vmsd = &vmstate_digic_uart;
     device_class_set_props(dc, digic_uart_properties);
 }

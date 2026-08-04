@@ -163,7 +163,7 @@ static const VMStateDescription vmstate_arm_timer = {
     .name = "arm_timer",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(control, arm_timer_state),
         VMSTATE_UINT32(limit, arm_timer_state),
         VMSTATE_INT32(int_level, arm_timer_state),
@@ -282,7 +282,7 @@ static const VMStateDescription vmstate_sp804 = {
     .name = "sp804",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT32_ARRAY(level, SP804State, 2),
         VMSTATE_END_OF_LIST()
     }
@@ -387,10 +387,9 @@ static const TypeInfo icp_pit_info = {
     .instance_init = icp_pit_init,
 };
 
-static Property sp804_properties[] = {
+static const Property sp804_properties[] = {
     DEFINE_PROP_UINT32("freq0", SP804State, freq0, 1000000),
     DEFINE_PROP_UINT32("freq1", SP804State, freq1, 1000000),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void sp804_class_init(ObjectClass *klass, void *data)

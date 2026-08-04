@@ -22,8 +22,8 @@
 #include "qemu/module.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
-#include "sysemu/blockdev.h"
-#include "sysemu/dma.h"
+#include "system/blockdev.h"
+#include "system/dma.h"
 #include "hw/qdev-properties.h"
 #include "hw/irq.h"
 #include "hw/sd/allwinner-sdhost.h"
@@ -761,7 +761,7 @@ static void allwinner_sdhost_write(void *opaque, hwaddr offset,
 static const MemoryRegionOps allwinner_sdhost_ops = {
     .read = allwinner_sdhost_read,
     .write = allwinner_sdhost_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -773,7 +773,7 @@ static const VMStateDescription vmstate_allwinner_sdhost = {
     .name = "allwinner-sdhost",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(global_ctl, AwSdHostState),
         VMSTATE_UINT32(clock_ctl, AwSdHostState),
         VMSTATE_UINT32(timeout, AwSdHostState),
@@ -808,10 +808,9 @@ static const VMStateDescription vmstate_allwinner_sdhost = {
     }
 };
 
-static Property allwinner_sdhost_properties[] = {
+static const Property allwinner_sdhost_properties[] = {
     DEFINE_PROP_LINK("dma-memory", AwSdHostState, dma_mr,
                      TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void allwinner_sdhost_init(Object *obj)
@@ -900,7 +899,7 @@ static void allwinner_sdhost_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = allwinner_sdhost_reset;
+    device_class_set_legacy_reset(dc, allwinner_sdhost_reset);
     dc->vmsd = &vmstate_allwinner_sdhost;
     dc->realize = allwinner_sdhost_realize;
     device_class_set_props(dc, allwinner_sdhost_properties);

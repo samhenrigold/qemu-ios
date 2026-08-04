@@ -10,7 +10,6 @@
 #ifndef INCLUDE_HW_MISC_RASPBERRYPI_FW_DEFS_H_
 #define INCLUDE_HW_MISC_RASPBERRYPI_FW_DEFS_H_
 
-#include "qemu/osdep.h"
 
 enum rpi_firmware_property_tag {
     RPI_FWREQ_PROPERTY_END =                           0,
@@ -57,6 +56,7 @@ enum rpi_firmware_property_tag {
     RPI_FWREQ_GET_THROTTLED =                          0x00030046,
     RPI_FWREQ_GET_CLOCK_MEASURED =                     0x00030047,
     RPI_FWREQ_NOTIFY_REBOOT =                          0x00030048,
+    RPI_FWREQ_GET_PRIVATE_KEY =                        0x00030081,
     RPI_FWREQ_SET_CLOCK_STATE =                        0x00038001,
     RPI_FWREQ_SET_CLOCK_RATE =                         0x00038002,
     RPI_FWREQ_SET_VOLTAGE =                            0x00038003,
@@ -74,6 +74,7 @@ enum rpi_firmware_property_tag {
     RPI_FWREQ_SET_PERIPH_REG =                         0x00038045,
     RPI_FWREQ_GET_POE_HAT_VAL =                        0x00030049,
     RPI_FWREQ_SET_POE_HAT_VAL =                        0x00038049,
+    RPI_FWREQ_SET_PRIVATE_KEY =                        0x00038081,
     RPI_FWREQ_SET_POE_HAT_VAL_OLD =                    0x00030050,
     RPI_FWREQ_NOTIFY_XHCI_RESET =                      0x00030058,
     RPI_FWREQ_GET_REBOOT_FLAGS =                       0x00030064,
@@ -159,5 +160,16 @@ enum rpi_firmware_clk_id {
     RPI_FIRMWARE_VEC_CLK_ID,
     RPI_FIRMWARE_NUM_CLK_ID,
 };
+
+struct rpi_firmware_property_tag_header {
+    uint32_t tag;
+    uint32_t buf_size;
+    uint32_t req_resp_size;
+};
+
+typedef struct rpi_firmware_prop_request {
+    struct rpi_firmware_property_tag_header hdr;
+    uint8_t payload[0];
+} rpi_firmware_prop_request_t;
 
 #endif /* INCLUDE_HW_MISC_RASPBERRYPI_FW_DEFS_H_ */

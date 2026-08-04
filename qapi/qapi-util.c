@@ -37,19 +37,19 @@ static bool compat_policy_input_ok1(const char *adjective,
     }
 }
 
-bool compat_policy_input_ok(unsigned special_features,
+bool compat_policy_input_ok(uint64_t features,
                             const CompatPolicy *policy,
                             ErrorClass error_class,
                             const char *kind, const char *name,
                             Error **errp)
 {
-    if ((special_features & 1u << QAPI_DEPRECATED)
+    if ((features & 1u << QAPI_DEPRECATED)
         && !compat_policy_input_ok1("Deprecated",
                                     policy->deprecated_input,
                                     error_class, kind, name, errp)) {
         return false;
     }
-    if ((special_features & (1u << QAPI_UNSTABLE))
+    if ((features & (1u << QAPI_UNSTABLE))
         && !compat_policy_input_ok1("Unstable",
                                     policy->unstable_input,
                                     error_class, kind, name, errp)) {
@@ -112,7 +112,7 @@ bool qapi_bool_parse(const char *name, const char *value, bool *obj, Error **err
  * It may be prefixed by __RFQDN_ (downstream extension), where RFQDN
  * may contain only letters, digits, hyphen and period.
  * The special exception for enumeration names is not implemented.
- * See docs/devel/qapi-code-gen.txt for more on QAPI naming rules.
+ * See docs/devel/qapi-code-gen.rst for more on QAPI naming rules.
  * Keep this consistent with scripts/qapi-gen.py!
  * If @complete, the parse fails unless it consumes @str completely.
  * Return its length on success, -1 on failure.

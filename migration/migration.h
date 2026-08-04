@@ -17,17 +17,33 @@
 #include "exec/cpu-common.h"
 #include "hw/qdev-core.h"
 #include "qapi/qapi-types-migration.h"
-#include "qapi/qmp/json-writer.h"
+#include "qobject/json-writer.h"
 #include "qemu/thread.h"
-#include "qemu/coroutine_int.h"
+#include "qemu/coroutine.h"
 #include "io/channel.h"
 #include "io/channel-buffer.h"
 #include "net/announce.h"
 #include "qom/object.h"
 #include "postcopy-ram.h"
-#include "sysemu/runstate.h"
+#include "system/runstate.h"
+#include "migration/misc.h"
+
+#define  MIGRATION_THREAD_SNAPSHOT          "mig/snapshot"
+#define  MIGRATION_THREAD_DIRTY_RATE        "mig/dirtyrate"
+
+#define  MIGRATION_THREAD_SRC_MAIN          "mig/src/main"
+#define  MIGRATION_THREAD_SRC_MULTIFD       "mig/src/send_%d"
+#define  MIGRATION_THREAD_SRC_RETURN        "mig/src/return"
+#define  MIGRATION_THREAD_SRC_TLS           "mig/src/tls"
+
+#define  MIGRATION_THREAD_DST_COLO          "mig/dst/colo"
+#define  MIGRATION_THREAD_DST_MULTIFD       "mig/dst/recv_%d"
+#define  MIGRATION_THREAD_DST_FAULT         "mig/dst/fault"
+#define  MIGRATION_THREAD_DST_LISTEN        "mig/dst/listen"
+#define  MIGRATION_THREAD_DST_PREEMPT       "mig/dst/preempt"
 
 struct PostcopyBlocktimeContext;
+typedef struct ThreadPool ThreadPool;
 
 #define  MIGRATION_RESUME_ACK_VALUE  (1)
 
@@ -159,9 +175,7 @@ struct MigrationIncomingState {
     /* PostCopyFD's for external userfaultfds & handlers of shared memory */
     GArray   *postcopy_remote_fds;
 
-    QEMUBH *bh;
-
-    int state;
+    MigrationStatus state;
 
     /*
      * The incoming migration coroutine, non-NULL during qemu_loadvm_state().
@@ -173,6 +187,10 @@ struct MigrationIncomingState {
     /* The coroutine we should enter (back) after failover */
     Coroutine *colo_incoming_co;
     QemuSemaphore colo_incoming_sem;
+
+    /* Optional load threads pool and its thread exit request flag */
+    ThreadPool *load_threads;
+    bool load_threads_abort;
 
     /*
      * PostcopyBlocktimeContext to keep information for postcopy
@@ -228,6 +246,9 @@ struct MigrationIncomingState {
      * is needed as this field is updated serially.
      */
     unsigned int switchover_ack_pending_num;
+
+    /* Do exit on incoming migration failure */
+    bool exit_on_error;
 };
 
 MigrationIncomingState *migration_incoming_get_current(void);
@@ -255,8 +276,6 @@ struct MigrationState {
 
     /*< public >*/
     QemuThread thread;
-    QEMUBH *vm_start_bh;
-    QEMUBH *cleanup_bh;
     /* Protected by qemu_file_lock */
     QEMUFile *to_dst_file;
     /* Postcopy specific transfer channel */
@@ -296,12 +315,12 @@ struct MigrationState {
      * this threshold; it's calculated from the requested downtime and
      * measured bandwidth, or avail-switchover-bandwidth if specified.
      */
-    int64_t threshold_size;
+    uint64_t threshold_size;
 
     /* params from 'migrate-set-parameters' */
     MigrationParameters parameters;
 
-    int state;
+    MigrationStatus state;
 
     /* State related to return path */
     struct {
@@ -352,14 +371,9 @@ struct MigrationState {
 
     /* Flag set once the migration has been asked to enter postcopy */
     bool start_postcopy;
-    /* Flag set after postcopy has sent the device state */
-    bool postcopy_after_devices;
 
     /* Flag set once the migration thread is running (and needs joining) */
     bool migration_thread_running;
-
-    /* Flag set once the migration thread called bdrv_inactivate_all */
-    bool block_inactive;
 
     /* Migration is waiting for guest to unplug device */
     QemuSemaphore wait_unplug_sem;
@@ -381,10 +395,6 @@ struct MigrationState {
     /* mutex to protect errp */
     QemuMutex error_mutex;
 
-    /* Do we have to clean up -b/-i from old migrate parameters */
-    /* This feature is deprecated and will be removed */
-    bool must_remove_block_options;
-
     /*
      * Global switch on whether we need to store the global state
      * during migration.
@@ -395,16 +405,11 @@ struct MigrationState {
     bool send_configuration;
     /* Whether we send section footer during migration */
     bool send_section_footer;
+    /* Whether we send switchover start notification during migration */
+    bool send_switchover_start;
 
     /* Needed by postcopy-pause state */
     QemuSemaphore postcopy_pause_sem;
-    /*
-     * Whether we abort the migration if decompression errors are
-     * detected at the destination. It is left at false for qemu
-     * older than 3.0, since only newer qemu sends streams that
-     * do not trigger spurious decompression errors.
-     */
-    bool decompress_error_check;
     /*
      * This variable only affects behavior when postcopy preempt mode is
      * enabled.
@@ -445,6 +450,39 @@ struct MigrationState {
      * Default value is false. (since 8.1)
      */
     bool multifd_flush_after_each_section;
+
+    /*
+     * This variable only makes sense when set on the machine that is
+     * the destination of a multifd migration with TLS enabled. It
+     * affects the behavior of the last send->recv iteration with
+     * regards to termination of the TLS session.
+     *
+     * When set:
+     *
+     * - the destination QEMU instance can expect to never get a
+     *   GNUTLS_E_PREMATURE_TERMINATION error. Manifested as the error
+     *   message: "The TLS connection was non-properly terminated".
+     *
+     * When clear:
+     *
+     * - the destination QEMU instance can expect to see a
+     *   GNUTLS_E_PREMATURE_TERMINATION error in any multifd channel
+     *   whenever the last recv() call of that channel happens after
+     *   the source QEMU instance has already issued shutdown() on the
+     *   channel.
+     *
+     *   Commit 637280aeb2 (since 9.1) introduced a side effect that
+     *   causes the destination instance to not be affected by the
+     *   premature termination, while commit 1d457daf86 (since 10.0)
+     *   causes the premature termination condition to be once again
+     *   reachable.
+     *
+     * NOTE: Regardless of the state of this option, a premature
+     * termination of the TLS connection might happen due to error at
+     * any moment prior to the last send->recv iteration.
+     */
+    bool multifd_clean_tls_termination;
+
     /*
      * This decides the size of guest memory chunk that will be used
      * to track dirty bitmap clearing.  The size of memory chunk will
@@ -470,32 +508,35 @@ struct MigrationState {
     bool switchover_acked;
     /* Is this a rdma migration */
     bool rdma_migration;
+
+    GSource *hup_source;
 };
 
-void migrate_set_state(int *state, int old_state, int new_state);
+void migrate_set_state(MigrationStatus *state, MigrationStatus old_state,
+                       MigrationStatus new_state);
 
-void migration_fd_process_incoming(QEMUFile *f, Error **errp);
+void migration_fd_process_incoming(QEMUFile *f);
 void migration_ioc_process_incoming(QIOChannel *ioc, Error **errp);
 void migration_incoming_process(void);
 
 bool  migration_has_all_channels(void);
 
-uint64_t migrate_max_downtime(void);
-
 void migrate_set_error(MigrationState *s, const Error *error);
 bool migrate_has_error(MigrationState *s);
 
-void migrate_fd_connect(MigrationState *s, Error *error_in);
+void migration_connect(MigrationState *s, Error *error_in);
 
-bool migration_is_setup_or_active(int state);
-bool migration_is_running(int state);
+int migration_call_notifiers(MigrationState *s, MigrationEventType type,
+                             Error **errp);
 
 int migrate_init(MigrationState *s, Error **errp);
 bool migration_is_blocked(Error **errp);
 /* True if outgoing migration has entered postcopy phase */
 bool migration_in_postcopy(void);
-bool migration_postcopy_is_alive(int state);
+bool migration_postcopy_is_alive(MigrationStatus state);
 MigrationState *migrate_get_current(void);
+bool migration_has_failed(MigrationState *);
+bool migrate_mode_is_cpr(MigrationState *);
 
 uint64_t ram_get_total_transferred_pages(void);
 
@@ -520,8 +561,6 @@ bool check_dirty_bitmap_mig_alias_map(const BitmapMigrationNodeAliasList *bbm,
                                       Error **errp);
 
 void migrate_add_address(SocketAddress *address);
-bool migrate_uri_parse(const char *uri, MigrationChannel **channel,
-                       Error **errp);
 int foreach_not_ignored_block(RAMBlockIterFunc func, void *opaque);
 
 #define qemu_ram_foreach_block \
@@ -530,7 +569,8 @@ int foreach_not_ignored_block(RAMBlockIterFunc func, void *opaque);
 void migration_make_urgent_request(void);
 void migration_consume_urgent_request(void);
 bool migration_rate_limit(void);
-void migration_cancel(const Error *error);
+void migration_bh_schedule(QEMUBHFunc *cb, void *opaque);
+void migration_cancel(void);
 
 void migration_populate_vfio_info(MigrationInfo *info);
 void migration_reset_vfio_bytes_transferred(void);
@@ -548,6 +588,10 @@ int migration_rp_wait(MigrationState *s);
  */
 void migration_rp_kick(MigrationState *s);
 
-int migration_stop_vm(RunState state);
+void migration_bitmap_sync_precopy(bool last_stage);
+
+/* migration/block-dirty-bitmap.c */
+void dirty_bitmap_mig_init(void);
+bool should_send_vmdesc(void);
 
 #endif

@@ -59,7 +59,7 @@
 #include "hw/ppc/mac_dbdma.h"
 #include "hw/pci/pci.h"
 #include "net/net.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "hw/nvram/fw_cfg.h"
 #include "hw/char/escc.h"
 #include "hw/misc/macio/macio.h"
@@ -68,8 +68,8 @@
 #include "hw/fw-path-provider.h"
 #include "elf.h"
 #include "qemu/error-report.h"
-#include "sysemu/kvm.h"
-#include "sysemu/reset.h"
+#include "system/kvm.h"
+#include "system/reset.h"
 #include "kvm_ppc.h"
 #include "hw/usb.h"
 #include "hw/sysbus.h"
@@ -77,7 +77,7 @@
 
 #define MAX_IDE_BUS 2
 #define CFG_ADDR 0xf0000510
-#define TBFREQ (100UL * 1000UL * 1000UL)
+#define TBFREQ (25UL * 1000UL * 1000UL)
 #define CLOCKFREQ (900UL * 1000UL * 1000UL)
 #define BUSFREQ (100UL * 1000UL * 1000UL)
 
@@ -182,7 +182,8 @@ static void ppc_core99_init(MachineState *machine)
     if (filename) {
         /* Load OpenBIOS (ELF) */
         bios_size = load_elf(filename, NULL, NULL, NULL, NULL,
-                             NULL, NULL, NULL, 1, PPC_ELF_MACHINE, 0, 0);
+                             NULL, NULL, NULL,
+                             ELFDATA2MSB, PPC_ELF_MACHINE, 0, 0);
 
         if (bios_size <= 0) {
             /* or load binary ROM image */
@@ -196,19 +197,14 @@ static void ppc_core99_init(MachineState *machine)
     }
 
     if (machine->kernel_filename) {
-        int bswap_needed = 0;
-
-#ifdef BSWAP_NEEDED
-        bswap_needed = 1;
-#endif
         kernel_base = KERNEL_LOAD_ADDR;
         kernel_size = load_elf(machine->kernel_filename, NULL,
                                translate_kernel_address, NULL, NULL, NULL,
-                               NULL, NULL, 1, PPC_ELF_MACHINE, 0, 0);
+                               NULL, NULL, ELFDATA2MSB, PPC_ELF_MACHINE, 0, 0);
         if (kernel_size < 0) {
             kernel_size = load_aout(machine->kernel_filename, kernel_base,
                                     machine->ram_size - kernel_base,
-                                    bswap_needed, TARGET_PAGE_SIZE);
+                                    true, TARGET_PAGE_SIZE);
         }
         if (kernel_size < 0) {
             kernel_size = load_image_targphys(machine->kernel_filename,
@@ -431,8 +427,10 @@ static void ppc_core99_init(MachineState *machine)
         /* U3 needs to use USB for input because Linux doesn't support via-cuda
         on PPC64 */
         if (!has_adb || machine_arch == ARCH_MAC99_U3) {
-            USBBus *usb_bus = usb_bus_find(-1);
+            USBBus *usb_bus;
 
+            usb_bus = USB_BUS(object_resolve_type_unambiguous(TYPE_USB_BUS,
+                                                              &error_abort));
             usb_create_simple(usb_bus, "usb-kbd");
             usb_create_simple(usb_bus, "usb-mouse");
         }
@@ -444,9 +442,7 @@ static void ppc_core99_init(MachineState *machine)
         graphic_depth = 15;
     }
 
-    for (i = 0; i < nb_nics; i++) {
-        pci_nic_init_nofail(&nd_table[i], pci_bus, mc->default_nic, NULL);
-    }
+    pci_init_nic_devices(pci_bus, mc->default_nic);
 
     /* The NewWorld NVRAM is not located in the MacIO device */
     if (kvm_enabled() && qemu_real_host_page_size() > 4096) {
@@ -571,7 +567,7 @@ static void core99_machine_class_init(ObjectClass *oc, void *data)
     MachineClass *mc = MACHINE_CLASS(oc);
     FWPathProviderClass *fwc = FW_PATH_PROVIDER_CLASS(oc);
 
-    mc->desc = "Mac99 based PowerMAC";
+    mc->desc = "Mac99 based PowerMac";
     mc->init = ppc_core99_init;
     mc->block_default_type = IF_IDE;
     /* SMP is not supported currently */

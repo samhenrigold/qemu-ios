@@ -383,7 +383,7 @@ static const VMStateDescription vmstate_imx_timer_epit = {
     .name = TYPE_IMX_EPIT,
     .version_id = 3,
     .minimum_version_id = 3,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(cr, IMXEPITState),
         VMSTATE_UINT32(sr, IMXEPITState),
         VMSTATE_UINT32(lr, IMXEPITState),
@@ -432,7 +432,7 @@ static void imx_epit_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc  = DEVICE_CLASS(klass);
 
     dc->realize = imx_epit_realize;
-    dc->reset = imx_epit_dev_reset;
+    device_class_set_legacy_reset(dc, imx_epit_dev_reset);
     dc->vmsd = &vmstate_imx_timer_epit;
     dc->desc = "i.MX periodic timer";
 }

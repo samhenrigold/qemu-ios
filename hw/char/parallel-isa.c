@@ -10,7 +10,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "hw/isa/isa.h"
 #include "hw/qdev-properties.h"
 #include "hw/char/parallel-isa.h"
@@ -40,4 +40,18 @@ void parallel_hds_isa_init(ISABus *bus, int n)
             parallel_init(bus, i, parallel_hds[i]);
         }
     }
+}
+
+void isa_parallel_set_iobase(ISADevice *parallel, hwaddr iobase)
+{
+    ISAParallelState *s = ISA_PARALLEL(parallel);
+
+    parallel->ioport_id = iobase;
+    s->iobase = iobase;
+    portio_list_set_address(&s->portio_list, s->iobase);
+}
+
+void isa_parallel_set_enabled(ISADevice *parallel, bool enabled)
+{
+    portio_list_set_enabled(&ISA_PARALLEL(parallel)->portio_list, enabled);
 }

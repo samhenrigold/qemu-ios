@@ -28,7 +28,9 @@
 #include "qemu/module.h"
 #include "hw/qdev-properties.h"
 #include "exec/exec-all.h"
+#include "exec/cpu_ldst.h"
 #include "exec/gdbstub.h"
+#include "exec/translation-block.h"
 #include "fpu/softfloat-helpers.h"
 #include "tcg/tcg.h"
 
@@ -98,7 +100,7 @@ static void mb_cpu_synchronize_from_tb(CPUState *cs,
 {
     MicroBlazeCPU *cpu = MICROBLAZE_CPU(cs);
 
-    tcg_debug_assert(!(cs->tcg_cflags & CF_PCREL));
+    tcg_debug_assert(!tcg_cflags_has(cs, CF_PCREL));
     cpu->env.pc = tb->pc;
     cpu->env.iflags = tb->flags & IFLAGS_TB_MASK;
 }
@@ -113,9 +115,27 @@ static void mb_restore_state_to_opc(CPUState *cs,
     cpu->env.iflags = data[1];
 }
 
+#ifndef CONFIG_USER_ONLY
 static bool mb_cpu_has_work(CPUState *cs)
 {
     return cs->interrupt_request & (CPU_INTERRUPT_HARD | CPU_INTERRUPT_NMI);
+}
+#endif /* !CONFIG_USER_ONLY */
+
+static int mb_cpu_mmu_index(CPUState *cs, bool ifetch)
+{
+    CPUMBState *env = cpu_env(cs);
+    MicroBlazeCPU *cpu = env_archcpu(env);
+
+    /* Are we in nommu mode?.  */
+    if (!(env->msr & MSR_VM) || !cpu->cfg.use_mmu) {
+        return MMU_NOMMU_IDX;
+    }
+
+    if (env->msr & MSR_UM) {
+        return MMU_USER_IDX;
+    }
+    return MMU_KERNEL_IDX;
 }
 
 #ifndef CONFIG_USER_ONLY
@@ -165,15 +185,15 @@ static void microblaze_cpu_set_irq(void *opaque, int irq, int level)
 }
 #endif
 
-static void mb_cpu_reset_hold(Object *obj)
+static void mb_cpu_reset_hold(Object *obj, ResetType type)
 {
-    CPUState *s = CPU(obj);
-    MicroBlazeCPU *cpu = MICROBLAZE_CPU(s);
-    MicroBlazeCPUClass *mcc = MICROBLAZE_CPU_GET_CLASS(cpu);
+    CPUState *cs = CPU(obj);
+    MicroBlazeCPU *cpu = MICROBLAZE_CPU(cs);
+    MicroBlazeCPUClass *mcc = MICROBLAZE_CPU_GET_CLASS(obj);
     CPUMBState *env = &cpu->env;
 
     if (mcc->parent_phases.hold) {
-        mcc->parent_phases.hold(obj);
+        mcc->parent_phases.hold(obj, type);
     }
 
     memset(env, 0, offsetof(CPUMBState, end_reset_fields));
@@ -183,6 +203,15 @@ static void mb_cpu_reset_hold(Object *obj)
     env->shr = ~0;
 
     env->pc = cpu->cfg.base_vectors;
+
+    set_float_rounding_mode(float_round_nearest_even, &env->fp_status);
+    /*
+     * TODO: this is probably not the correct NaN propagation rule for
+     * this architecture.
+     */
+    set_float_2nan_prop_rule(float_2nan_prop_x87, &env->fp_status);
+    /* Default NaN: sign bit set, most significant frac bit set */
+    set_float_default_nan_pattern(0b11000000, &env->fp_status);
 
 #if defined(CONFIG_USER_ONLY)
     /* start in user mode with interrupts enabled.  */
@@ -197,6 +226,8 @@ static void mb_disas_set_info(CPUState *cpu, disassemble_info *info)
 {
     info->mach = bfd_arch_microblaze;
     info->print_insn = print_insn_microblaze;
+    info->endian = TARGET_BIG_ENDIAN ? BFD_ENDIAN_BIG
+                                     : BFD_ENDIAN_LITTLE;
 }
 
 static void mb_cpu_realizefn(DeviceState *dev, Error **errp)
@@ -294,13 +325,11 @@ static void mb_cpu_realizefn(DeviceState *dev, Error **errp)
 static void mb_cpu_initfn(Object *obj)
 {
     MicroBlazeCPU *cpu = MICROBLAZE_CPU(obj);
-    CPUMBState *env = &cpu->env;
 
     gdb_register_coprocessor(CPU(cpu), mb_cpu_gdb_read_stack_protect,
-                             mb_cpu_gdb_write_stack_protect, 2,
-                             "microblaze-stack-protect.xml", 0);
-
-    set_float_rounding_mode(float_round_nearest_even, &env->fp_status);
+                             mb_cpu_gdb_write_stack_protect,
+                             gdb_find_static_feature("microblaze-stack-protect.xml"),
+                             0);
 
 #ifndef CONFIG_USER_ONLY
     /* Inbound IRQ and FIR lines */
@@ -310,9 +339,16 @@ static void mb_cpu_initfn(Object *obj)
     qdev_init_gpio_in_named(DEVICE(cpu), mb_cpu_ns_axi_dc, "ns_axi_dc", 1);
     qdev_init_gpio_in_named(DEVICE(cpu), mb_cpu_ns_axi_ic, "ns_axi_ic", 1);
 #endif
+
+    /* Restricted 'endianness' property is equivalent of 'little-endian' */
+    object_property_add_alias(obj, "little-endian", obj, "endianness");
 }
 
-static Property mb_properties[] = {
+static const Property mb_properties[] = {
+    /*
+     * Following properties are used by Xilinx DTS conversion tool
+     * do not rename them.
+     */
     DEFINE_PROP_UINT32("base-vectors", MicroBlazeCPU, cfg.base_vectors, 0),
     DEFINE_PROP_BOOL("use-stack-protection", MicroBlazeCPU, cfg.stackprot,
                      false),
@@ -369,7 +405,9 @@ static Property mb_properties[] = {
     DEFINE_PROP_UINT8("pvr", MicroBlazeCPU, cfg.pvr, C_PVR_FULL),
     DEFINE_PROP_UINT8("pvr-user1", MicroBlazeCPU, cfg.pvr_user1, 0),
     DEFINE_PROP_UINT32("pvr-user2", MicroBlazeCPU, cfg.pvr_user2, 0),
-    DEFINE_PROP_END_OF_LIST(),
+    /*
+     * End of properties reserved by Xilinx DTS conversion tool.
+     */
 };
 
 static ObjectClass *mb_cpu_class_by_name(const char *cpu_model)
@@ -381,20 +419,23 @@ static ObjectClass *mb_cpu_class_by_name(const char *cpu_model)
 #include "hw/core/sysemu-cpu-ops.h"
 
 static const struct SysemuCPUOps mb_sysemu_ops = {
+    .has_work = mb_cpu_has_work,
     .get_phys_page_attrs_debug = mb_cpu_get_phys_page_attrs_debug,
 };
 #endif
 
-#include "hw/core/tcg-cpu-ops.h"
+#include "accel/tcg/cpu-ops.h"
 
-static const struct TCGCPUOps mb_tcg_ops = {
+static const TCGCPUOps mb_tcg_ops = {
     .initialize = mb_tcg_init,
+    .translate_code = mb_translate_code,
     .synchronize_from_tb = mb_cpu_synchronize_from_tb,
     .restore_state_to_opc = mb_restore_state_to_opc,
 
 #ifndef CONFIG_USER_ONLY
     .tlb_fill = mb_cpu_tlb_fill,
     .cpu_exec_interrupt = mb_cpu_exec_interrupt,
+    .cpu_exec_halt = mb_cpu_has_work,
     .do_interrupt = mb_cpu_do_interrupt,
     .do_transaction_failed = mb_cpu_transaction_failed,
     .do_unaligned_access = mb_cpu_do_unaligned_access,
@@ -414,8 +455,7 @@ static void mb_cpu_class_init(ObjectClass *oc, void *data)
                                        &mcc->parent_phases);
 
     cc->class_by_name = mb_cpu_class_by_name;
-    cc->has_work = mb_cpu_has_work;
-
+    cc->mmu_index = mb_cpu_mmu_index;
     cc->dump_state = mb_cpu_dump_state;
     cc->set_pc = mb_cpu_set_pc;
     cc->get_pc = mb_cpu_get_pc;
@@ -427,7 +467,6 @@ static void mb_cpu_class_init(ObjectClass *oc, void *data)
     cc->sysemu_ops = &mb_sysemu_ops;
 #endif
     device_class_set_props(dc, mb_properties);
-    cc->gdb_num_core_regs = 32 + 25;
     cc->gdb_core_xml_file = "microblaze-core.xml";
 
     cc->disas_set_info = mb_disas_set_info;

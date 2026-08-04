@@ -196,6 +196,8 @@
 ##
 # @ImageInfoSpecificQCow2Wrapper:
 #
+# @data: image information specific to QCOW2
+#
 # Since: 1.7
 ##
 { 'struct': 'ImageInfoSpecificQCow2Wrapper',
@@ -204,6 +206,8 @@
 ##
 # @ImageInfoSpecificVmdkWrapper:
 #
+# @data: image information specific to VMDK
+#
 # Since: 6.1
 ##
 { 'struct': 'ImageInfoSpecificVmdkWrapper',
@@ -211,6 +215,8 @@
 
 ##
 # @ImageInfoSpecificLUKSWrapper:
+#
+# @data: image information specific to LUKS
 #
 # Since: 2.7
 ##
@@ -223,6 +229,8 @@
 ##
 # @ImageInfoSpecificRbdWrapper:
 #
+# @data: image information specific to RBD
+#
 # Since: 6.1
 ##
 { 'struct': 'ImageInfoSpecificRbdWrapper',
@@ -230,6 +238,8 @@
 
 ##
 # @ImageInfoSpecificFileWrapper:
+#
+# @data: image information specific to files
 #
 # Since: 8.0
 ##
@@ -241,6 +251,8 @@
 #
 # A discriminated record of image format specific information
 # structures.
+#
+# @type: block driver name
 #
 # Since: 1.7
 ##
@@ -474,6 +486,10 @@
 # @backing_file_depth: number of files in the backing file chain
 #     (since: 1.2)
 #
+# @active: true if the backend is active; typical cases for inactive backends
+#     are on the migration source instance after migration completes and on the
+#     destination before it completes. (since: 10.0)
+#
 # @encrypted: true if the backing device is encrypted
 #
 # @detect_zeroes: detect and optimize zero writes (Since 2.1)
@@ -544,7 +560,7 @@
 { 'struct': 'BlockDeviceInfo',
   'data': { 'file': 'str', '*node-name': 'str', 'ro': 'bool', 'drv': 'str',
             '*backing_file': 'str', 'backing_file_depth': 'int',
-            'encrypted': 'bool',
+            'active': 'bool', 'encrypted': 'bool',
             'detect_zeroes': 'BlockdevDetectZeroesOptions',
             'bps': 'int', 'bps_rd': 'int', 'bps_wr': 'int',
             'iops': 'int', 'iops_rd': 'int', 'iops_wr': 'int',
@@ -656,9 +672,7 @@
 # @bins: list of io request counts corresponding to histogram
 #     intervals, one more element than @boundaries has.  For the
 #     example above, @bins may be something like [3, 1, 5, 2], and
-#     corresponding histogram looks like:
-#
-# ::
+#     corresponding histogram looks like::
 #
 #        5|           *
 #        4|           *
@@ -754,89 +768,89 @@
 #
 # Since: 0.14
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "query-block" }
-# <- {
-#       "return":[
-#          {
-#             "io-status": "ok",
-#             "device":"ide0-hd0",
-#             "locked":false,
-#             "removable":false,
-#             "inserted":{
-#                "ro":false,
-#                "drv":"qcow2",
-#                "encrypted":false,
-#                "file":"disks/test.qcow2",
-#                "backing_file_depth":1,
-#                "bps":1000000,
-#                "bps_rd":0,
-#                "bps_wr":0,
-#                "iops":1000000,
-#                "iops_rd":0,
-#                "iops_wr":0,
-#                "bps_max": 8000000,
-#                "bps_rd_max": 0,
-#                "bps_wr_max": 0,
-#                "iops_max": 0,
-#                "iops_rd_max": 0,
-#                "iops_wr_max": 0,
-#                "iops_size": 0,
-#                "detect_zeroes": "on",
-#                "write_threshold": 0,
-#                "image":{
-#                   "filename":"disks/test.qcow2",
-#                   "format":"qcow2",
-#                   "virtual-size":2048000,
-#                   "backing_file":"base.qcow2",
-#                   "full-backing-filename":"disks/base.qcow2",
-#                   "backing-filename-format":"qcow2",
-#                   "snapshots":[
-#                      {
-#                         "id": "1",
-#                         "name": "snapshot1",
-#                         "vm-state-size": 0,
-#                         "date-sec": 10000200,
-#                         "date-nsec": 12,
-#                         "vm-clock-sec": 206,
-#                         "vm-clock-nsec": 30
-#                      }
-#                   ],
-#                   "backing-image":{
-#                       "filename":"disks/base.qcow2",
+#     -> { "execute": "query-block" }
+#     <- {
+#           "return":[
+#              {
+#                 "io-status": "ok",
+#                 "device":"ide0-hd0",
+#                 "locked":false,
+#                 "removable":false,
+#                 "inserted":{
+#                    "ro":false,
+#                    "drv":"qcow2",
+#                    "encrypted":false,
+#                    "file":"disks/test.qcow2",
+#                    "backing_file_depth":1,
+#                    "bps":1000000,
+#                    "bps_rd":0,
+#                    "bps_wr":0,
+#                    "iops":1000000,
+#                    "iops_rd":0,
+#                    "iops_wr":0,
+#                    "bps_max": 8000000,
+#                    "bps_rd_max": 0,
+#                    "bps_wr_max": 0,
+#                    "iops_max": 0,
+#                    "iops_rd_max": 0,
+#                    "iops_wr_max": 0,
+#                    "iops_size": 0,
+#                    "detect_zeroes": "on",
+#                    "write_threshold": 0,
+#                    "image":{
+#                       "filename":"disks/test.qcow2",
 #                       "format":"qcow2",
-#                       "virtual-size":2048000
-#                   }
-#                }
-#             },
-#             "qdev": "ide_disk",
-#             "type":"unknown"
-#          },
-#          {
-#             "io-status": "ok",
-#             "device":"ide1-cd0",
-#             "locked":false,
-#             "removable":true,
-#             "qdev": "/machine/unattached/device[23]",
-#             "tray_open": false,
-#             "type":"unknown"
-#          },
-#          {
-#             "device":"floppy0",
-#             "locked":false,
-#             "removable":true,
-#             "qdev": "/machine/unattached/device[20]",
-#             "type":"unknown"
-#          },
-#          {
-#             "device":"sd0",
-#             "locked":false,
-#             "removable":true,
-#             "type":"unknown"
-#          }
-#       ]
-#    }
+#                       "virtual-size":2048000,
+#                       "backing_file":"base.qcow2",
+#                       "full-backing-filename":"disks/base.qcow2",
+#                       "backing-filename-format":"qcow2",
+#                       "snapshots":[
+#                          {
+#                             "id": "1",
+#                             "name": "snapshot1",
+#                             "vm-state-size": 0,
+#                             "date-sec": 10000200,
+#                             "date-nsec": 12,
+#                             "vm-clock-sec": 206,
+#                             "vm-clock-nsec": 30
+#                          }
+#                       ],
+#                       "backing-image":{
+#                           "filename":"disks/base.qcow2",
+#                           "format":"qcow2",
+#                           "virtual-size":2048000
+#                       }
+#                    }
+#                 },
+#                 "qdev": "ide_disk",
+#                 "type":"unknown"
+#              },
+#              {
+#                 "io-status": "ok",
+#                 "device":"ide1-cd0",
+#                 "locked":false,
+#                 "removable":true,
+#                 "qdev": "/machine/unattached/device[23]",
+#                 "tray_open": false,
+#                 "type":"unknown"
+#              },
+#              {
+#                 "device":"floppy0",
+#                 "locked":false,
+#                 "removable":true,
+#                 "qdev": "/machine/unattached/device[20]",
+#                 "type":"unknown"
+#              },
+#              {
+#                 "device":"sd0",
+#                 "locked":false,
+#                 "removable":true,
+#                 "type":"unknown"
+#              }
+#           ]
+#        }
 ##
 { 'command': 'query-block', 'returns': ['BlockInfo'],
   'allow-preconfig': true }
@@ -1094,6 +1108,8 @@
 #
 # Block driver specific statistics
 #
+# @driver: block driver name
+#
 # Since: 4.2
 ##
 { 'union': 'BlockStatsSpecific',
@@ -1146,117 +1162,117 @@
 #
 # @query-nodes: If true, the command will query all the block nodes
 #     that have a node name, in a list which will include "parent"
-#     information, but not "backing". If false or omitted, the
+#     information, but not "backing".  If false or omitted, the
 #     behavior is as before - query all the device backends,
-#     recursively including their "parent" and "backing". Filter nodes
-#     that were created implicitly are skipped over in this mode.
-#     (Since 2.3)
+#     recursively including their "parent" and "backing".  Filter
+#     nodes that were created implicitly are skipped over in this
+#     mode.  (Since 2.3)
 #
 # Returns: A list of @BlockStats for each virtual block devices.
 #
 # Since: 0.14
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "query-blockstats" }
-# <- {
-#       "return":[
-#          {
-#             "device":"ide0-hd0",
-#             "parent":{
-#                "stats":{
-#                   "wr_highest_offset":3686448128,
-#                   "wr_bytes":9786368,
-#                   "wr_operations":751,
-#                   "rd_bytes":122567168,
-#                   "rd_operations":36772
-#                   "wr_total_times_ns":313253456
-#                   "rd_total_times_ns":3465673657
-#                   "flush_total_times_ns":49653
-#                   "flush_operations":61,
-#                   "rd_merged":0,
-#                   "wr_merged":0,
-#                   "idle_time_ns":2953431879,
-#                   "account_invalid":true,
-#                   "account_failed":false
-#                }
-#             },
-#             "stats":{
-#                "wr_highest_offset":2821110784,
-#                "wr_bytes":9786368,
-#                "wr_operations":692,
-#                "rd_bytes":122739200,
-#                "rd_operations":36604
-#                "flush_operations":51,
-#                "wr_total_times_ns":313253456
-#                "rd_total_times_ns":3465673657
-#                "flush_total_times_ns":49653,
-#                "rd_merged":0,
-#                "wr_merged":0,
-#                "idle_time_ns":2953431879,
-#                "account_invalid":true,
-#                "account_failed":false
-#             },
-#             "qdev": "/machine/unattached/device[23]"
-#          },
-#          {
-#             "device":"ide1-cd0",
-#             "stats":{
-#                "wr_highest_offset":0,
-#                "wr_bytes":0,
-#                "wr_operations":0,
-#                "rd_bytes":0,
-#                "rd_operations":0
-#                "flush_operations":0,
-#                "wr_total_times_ns":0
-#                "rd_total_times_ns":0
-#                "flush_total_times_ns":0,
-#                "rd_merged":0,
-#                "wr_merged":0,
-#                "account_invalid":false,
-#                "account_failed":false
-#             },
-#             "qdev": "/machine/unattached/device[24]"
-#          },
-#          {
-#             "device":"floppy0",
-#             "stats":{
-#                "wr_highest_offset":0,
-#                "wr_bytes":0,
-#                "wr_operations":0,
-#                "rd_bytes":0,
-#                "rd_operations":0
-#                "flush_operations":0,
-#                "wr_total_times_ns":0
-#                "rd_total_times_ns":0
-#                "flush_total_times_ns":0,
-#                "rd_merged":0,
-#                "wr_merged":0,
-#                "account_invalid":false,
-#                "account_failed":false
-#             },
-#             "qdev": "/machine/unattached/device[16]"
-#          },
-#          {
-#             "device":"sd0",
-#             "stats":{
-#                "wr_highest_offset":0,
-#                "wr_bytes":0,
-#                "wr_operations":0,
-#                "rd_bytes":0,
-#                "rd_operations":0
-#                "flush_operations":0,
-#                "wr_total_times_ns":0
-#                "rd_total_times_ns":0
-#                "flush_total_times_ns":0,
-#                "rd_merged":0,
-#                "wr_merged":0,
-#                "account_invalid":false,
-#                "account_failed":false
-#             }
-#          }
-#       ]
-#    }
+#     -> { "execute": "query-blockstats" }
+#     <- {
+#           "return":[
+#              {
+#                 "device":"ide0-hd0",
+#                 "parent":{
+#                    "stats":{
+#                       "wr_highest_offset":3686448128,
+#                       "wr_bytes":9786368,
+#                       "wr_operations":751,
+#                       "rd_bytes":122567168,
+#                       "rd_operations":36772
+#                       "wr_total_times_ns":313253456
+#                       "rd_total_times_ns":3465673657
+#                       "flush_total_times_ns":49653
+#                       "flush_operations":61,
+#                       "rd_merged":0,
+#                       "wr_merged":0,
+#                       "idle_time_ns":2953431879,
+#                       "account_invalid":true,
+#                       "account_failed":false
+#                    }
+#                 },
+#                 "stats":{
+#                    "wr_highest_offset":2821110784,
+#                    "wr_bytes":9786368,
+#                    "wr_operations":692,
+#                    "rd_bytes":122739200,
+#                    "rd_operations":36604
+#                    "flush_operations":51,
+#                    "wr_total_times_ns":313253456
+#                    "rd_total_times_ns":3465673657
+#                    "flush_total_times_ns":49653,
+#                    "rd_merged":0,
+#                    "wr_merged":0,
+#                    "idle_time_ns":2953431879,
+#                    "account_invalid":true,
+#                    "account_failed":false
+#                 },
+#                 "qdev": "/machine/unattached/device[23]"
+#              },
+#              {
+#                 "device":"ide1-cd0",
+#                 "stats":{
+#                    "wr_highest_offset":0,
+#                    "wr_bytes":0,
+#                    "wr_operations":0,
+#                    "rd_bytes":0,
+#                    "rd_operations":0
+#                    "flush_operations":0,
+#                    "wr_total_times_ns":0
+#                    "rd_total_times_ns":0
+#                    "flush_total_times_ns":0,
+#                    "rd_merged":0,
+#                    "wr_merged":0,
+#                    "account_invalid":false,
+#                    "account_failed":false
+#                 },
+#                 "qdev": "/machine/unattached/device[24]"
+#              },
+#              {
+#                 "device":"floppy0",
+#                 "stats":{
+#                    "wr_highest_offset":0,
+#                    "wr_bytes":0,
+#                    "wr_operations":0,
+#                    "rd_bytes":0,
+#                    "rd_operations":0
+#                    "flush_operations":0,
+#                    "wr_total_times_ns":0
+#                    "rd_total_times_ns":0
+#                    "flush_total_times_ns":0,
+#                    "rd_merged":0,
+#                    "wr_merged":0,
+#                    "account_invalid":false,
+#                    "account_failed":false
+#                 },
+#                 "qdev": "/machine/unattached/device[16]"
+#              },
+#              {
+#                 "device":"sd0",
+#                 "stats":{
+#                    "wr_highest_offset":0,
+#                    "wr_bytes":0,
+#                    "wr_operations":0,
+#                    "rd_bytes":0,
+#                    "rd_operations":0
+#                    "flush_operations":0,
+#                    "wr_total_times_ns":0
+#                    "rd_total_times_ns":0
+#                    "flush_total_times_ns":0,
+#                    "rd_merged":0,
+#                    "wr_merged":0,
+#                    "account_invalid":false,
+#                    "account_failed":false
+#                 }
+#              }
+#           ]
+#        }
 ##
 { 'command': 'query-blockstats',
   'data': { '*query-nodes': 'bool' },
@@ -1274,7 +1290,7 @@
 #     jobs, cancel the job
 #
 # @ignore: ignore the error, only report a QMP event (BLOCK_IO_ERROR
-#     or BLOCK_JOB_ERROR). The backup, mirror and commit block jobs
+#     or BLOCK_JOB_ERROR).  The backup, mirror and commit block jobs
 #     retry the failing request later and may still complete
 #     successfully.  The stream block job continues to stream and will
 #     complete with an error.
@@ -1361,7 +1377,7 @@
 #     target, i.e. same data and new writes are done synchronously to
 #     both.
 #
-# Since 8.2
+# Since: 8.2
 ##
 { 'struct': 'BlockJobInfoMirror',
   'data': { 'actively-synced': 'bool' } }
@@ -1444,17 +1460,16 @@
 #
 # @size: new image size in bytes
 #
-# Returns:
-#     - nothing on success
+# Errors:
 #     - If @device is not a valid block device, DeviceNotFound
 #
 # Since: 0.14
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "block_resize",
-#      "arguments": { "device": "scratch", "size": 1073741824 } }
-# <- { "return": {} }
+#     -> { "execute": "block_resize",
+#          "arguments": { "device": "scratch", "size": 1073741824 } }
+#     <- { "return": {} }
 ##
 { 'command': 'block_resize',
   'data': { '*device': 'str',
@@ -1540,11 +1555,16 @@
 #     it should not be less than job cluster size which is calculated
 #     as maximum of target image cluster size and 64k.  Default 0.
 #
+# @min-cluster-size: Minimum size of blocks used by copy-before-write
+#     and background copy operations.  Has to be a power of 2.  No
+#     effect if smaller than the maximum of the target's cluster size
+#     and 64 KiB.  Default 0.  (Since 9.2)
+#
 # Since: 6.0
 ##
 { 'struct': 'BackupPerf',
-  'data': { '*use-copy-range': 'bool',
-            '*max-workers': 'int', '*max-chunk': 'int64' } }
+  'data': { '*use-copy-range': 'bool', '*max-workers': 'int',
+            '*max-chunk': 'int64', '*min-cluster-size': 'size' } }
 
 ##
 # @BackupCommon:
@@ -1563,7 +1583,7 @@
 #     for unlimited.
 #
 # @bitmap: The name of a dirty bitmap to use.  Must be present if sync
-#     is "bitmap" or "incremental". Can be present if sync is "full"
+#     is "bitmap" or "incremental".  Can be present if sync is "full"
 #     or "top".  Must not be present otherwise.
 #     (Since 2.4 (drive-backup), 3.1 (blockdev-backup))
 #
@@ -1599,15 +1619,18 @@
 #     node specified by @drive.  If this option is not given, a node
 #     name is autogenerated.  (Since: 4.2)
 #
+# @discard-source: Discard blocks on source which have already been
+#     copied to the target.  (Since 9.1)
+#
 # @x-perf: Performance options.  (Since 6.0)
 #
 # Features:
 #
 # @unstable: Member @x-perf is experimental.
 #
-# Note: @on-source-error and @on-target-error only affect background
-#     I/O.  If an error occurs during a guest write request, the
-#     device's rerror/werror actions will be used.
+# .. note:: @on-source-error and @on-target-error only affect
+#    background I/O.  If an error occurs during a guest write request,
+#    the device's rerror/werror actions will be used.
 #
 # Since: 4.2
 ##
@@ -1620,6 +1643,7 @@
             '*on-target-error': 'BlockdevOnError',
             '*auto-finalize': 'bool', '*auto-dismiss': 'bool',
             '*filter-node-name': 'str',
+            '*discard-source': 'bool',
             '*x-perf': { 'type': 'BackupPerf',
                          'features': [ 'unstable' ] } } }
 
@@ -1660,22 +1684,19 @@
 #
 # Takes a synchronous snapshot of a block device.
 #
-# For the arguments, see the documentation of BlockdevSnapshotSync.
-#
-# Returns:
-#     - nothing on success
+# Errors:
 #     - If @device is not a valid block device, DeviceNotFound
 #
 # Since: 0.14
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "blockdev-snapshot-sync",
-#      "arguments": { "device": "ide-hd0",
-#                     "snapshot-file":
-#                     "/some/place/my-image",
-#                     "format": "qcow2" } }
-# <- { "return": {} }
+#     -> { "execute": "blockdev-snapshot-sync",
+#          "arguments": { "device": "ide-hd0",
+#                         "snapshot-file":
+#                         "/some/place/my-image",
+#                         "format": "qcow2" } }
+#     <- { "return": {} }
 ##
 { 'command': 'blockdev-snapshot-sync',
   'data': 'BlockdevSnapshotSync',
@@ -1687,11 +1708,9 @@
 # Takes a snapshot of a block device.
 #
 # Take a snapshot, by installing 'node' as the backing image of
-# 'overlay'. Additionally, if 'node' is associated with a block
+# 'overlay'.  Additionally, if 'node' is associated with a block
 # device, the block device changes to using 'overlay' as its new
 # active image.
-#
-# For the arguments, see the documentation of BlockdevSnapshot.
 #
 # Features:
 #
@@ -1701,21 +1720,21 @@
 #
 # Since: 2.5
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "blockdev-add",
-#      "arguments": { "driver": "qcow2",
-#                     "node-name": "node1534",
-#                     "file": { "driver": "file",
-#                               "filename": "hd1.qcow2" },
-#                     "backing": null } }
+#     -> { "execute": "blockdev-add",
+#          "arguments": { "driver": "qcow2",
+#                         "node-name": "node1534",
+#                         "file": { "driver": "file",
+#                                   "filename": "hd1.qcow2" },
+#                         "backing": null } }
 #
-# <- { "return": {} }
+#     <- { "return": {} }
 #
-# -> { "execute": "blockdev-snapshot",
-#      "arguments": { "node": "ide-hd0",
-#                     "overlay": "node1534" } }
-# <- { "return": {} }
+#     -> { "execute": "blockdev-snapshot",
+#          "arguments": { "node": "ide-hd0",
+#                         "overlay": "node1534" } }
+#     <- { "return": {} }
 ##
 { 'command': 'blockdev-snapshot',
   'data': 'BlockdevSnapshot',
@@ -1728,7 +1747,7 @@
 # Change the backing file in the image file metadata.  This does not
 # cause QEMU to reopen the image file to reparse the backing filename
 # (it may, however, perform a reopen to change permissions from r/o ->
-# r/w -> r/o, if needed). The new backing file string is written into
+# r/w -> r/o, if needed).  The new backing file string is written into
 # the image file metadata, and the QEMU internal strings are updated.
 #
 # @image-node-name: The name of the block driver state node of the
@@ -1742,8 +1761,7 @@
 #     is not validated, so care should be taken when specifying the
 #     string or the image chain may not be able to be reopened again.
 #
-# Returns:
-#     - Nothing on success
+# Errors:
 #     - If "device" does not exist or cannot be determined,
 #       DeviceNotFound
 #
@@ -1810,6 +1828,11 @@
 #     Care should be taken when specifying the string, to specify a
 #     valid filename or protocol.  (Since 2.1)
 #
+# @backing-mask-protocol: If true, replace any protocol mentioned in
+#     the 'backing file format' with 'raw', rather than storing the
+#     protocol name as the backing format.  Can be used even when no
+#     image header will be updated (default false; since 9.0).
+#
 # @speed: the maximum speed, in bytes per second
 #
 # @on-error: the action to take on an error.  'ignore' means that the
@@ -1837,26 +1860,25 @@
 # @deprecated: Members @base and @top are deprecated.  Use @base-node
 #     and @top-node instead.
 #
-# Returns:
-#     - Nothing on success
+# Errors:
 #     - If @device does not exist, DeviceNotFound
-#     - Any other error returns a GenericError.
 #
 # Since: 1.3
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "block-commit",
-#      "arguments": { "device": "virtio0",
-#                     "top": "/tmp/snap1.qcow2" } }
-# <- { "return": {} }
+#     -> { "execute": "block-commit",
+#          "arguments": { "device": "virtio0",
+#                         "top": "/tmp/snap1.qcow2" } }
+#     <- { "return": {} }
 ##
 { 'command': 'block-commit',
   'data': { '*job-id': 'str', 'device': 'str', '*base-node': 'str',
             '*base': { 'type': 'str', 'features': [ 'deprecated' ] },
             '*top-node': 'str',
             '*top': { 'type': 'str', 'features': [ 'deprecated' ] },
-            '*backing-file': 'str', '*speed': 'int',
+            '*backing-file': 'str', '*backing-mask-protocol': 'bool',
+            '*speed': 'int',
             '*on-error': 'BlockdevOnError',
             '*filter-node-name': 'str',
             '*auto-finalize': 'bool', '*auto-dismiss': 'bool' },
@@ -1868,27 +1890,26 @@
 # Start a point-in-time copy of a block device to a new destination.
 # The status of ongoing drive-backup operations can be checked with
 # query-block-jobs where the BlockJobInfo.type field has the value
-# 'backup'. The operation can be stopped before it has completed using
-# the block-job-cancel command.
+# 'backup'.  The operation can be stopped before it has completed
+# using the block-job-cancel command.
 #
 # Features:
 #
 # @deprecated: This command is deprecated.  Use @blockdev-backup
 #     instead.
 #
-# Returns:
-#     - nothing on success
+# Errors:
 #     - If @device is not a valid block device, GenericError
 #
 # Since: 1.6
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "drive-backup",
-#      "arguments": { "device": "drive0",
-#                     "sync": "full",
-#                     "target": "backup.img" } }
-# <- { "return": {} }
+#     -> { "execute": "drive-backup",
+#          "arguments": { "device": "drive0",
+#                         "sync": "full",
+#                         "target": "backup.img" } }
+#     <- { "return": {} }
 ##
 { 'command': 'drive-backup', 'boxed': true,
   'data': 'DriveBackup', 'features': ['deprecated'],
@@ -1900,22 +1921,21 @@
 # Start a point-in-time copy of a block device to a new destination.
 # The status of ongoing blockdev-backup operations can be checked with
 # query-block-jobs where the BlockJobInfo.type field has the value
-# 'backup'. The operation can be stopped before it has completed using
-# the block-job-cancel command.
+# 'backup'.  The operation can be stopped before it has completed
+# using the block-job-cancel command.
 #
-# Returns:
-#     - nothing on success
+# Errors:
 #     - If @device is not a valid block device, DeviceNotFound
 #
 # Since: 2.3
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "blockdev-backup",
-#      "arguments": { "device": "src-id",
-#                     "sync": "full",
-#                     "target": "tgt-id" } }
-# <- { "return": {} }
+#     -> { "execute": "blockdev-backup",
+#          "arguments": { "device": "src-id",
+#                         "sync": "full",
+#                         "target": "tgt-id" } }
+#     <- { "return": {} }
 ##
 { 'command': 'blockdev-backup', 'boxed': true,
   'data': 'BlockdevBackup',
@@ -1933,54 +1953,54 @@
 #
 # Since: 2.0
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "query-named-block-nodes" }
-# <- { "return": [ { "ro":false,
-#                    "drv":"qcow2",
-#                    "encrypted":false,
-#                    "file":"disks/test.qcow2",
-#                    "node-name": "my-node",
-#                    "backing_file_depth":1,
-#                    "detect_zeroes":"off",
-#                    "bps":1000000,
-#                    "bps_rd":0,
-#                    "bps_wr":0,
-#                    "iops":1000000,
-#                    "iops_rd":0,
-#                    "iops_wr":0,
-#                    "bps_max": 8000000,
-#                    "bps_rd_max": 0,
-#                    "bps_wr_max": 0,
-#                    "iops_max": 0,
-#                    "iops_rd_max": 0,
-#                    "iops_wr_max": 0,
-#                    "iops_size": 0,
-#                    "write_threshold": 0,
-#                    "image":{
-#                       "filename":"disks/test.qcow2",
-#                       "format":"qcow2",
-#                       "virtual-size":2048000,
-#                       "backing_file":"base.qcow2",
-#                       "full-backing-filename":"disks/base.qcow2",
-#                       "backing-filename-format":"qcow2",
-#                       "snapshots":[
-#                          {
-#                             "id": "1",
-#                             "name": "snapshot1",
-#                             "vm-state-size": 0,
-#                             "date-sec": 10000200,
-#                             "date-nsec": 12,
-#                             "vm-clock-sec": 206,
-#                             "vm-clock-nsec": 30
-#                          }
-#                       ],
-#                       "backing-image":{
-#                           "filename":"disks/base.qcow2",
+#     -> { "execute": "query-named-block-nodes" }
+#     <- { "return": [ { "ro":false,
+#                        "drv":"qcow2",
+#                        "encrypted":false,
+#                        "file":"disks/test.qcow2",
+#                        "node-name": "my-node",
+#                        "backing_file_depth":1,
+#                        "detect_zeroes":"off",
+#                        "bps":1000000,
+#                        "bps_rd":0,
+#                        "bps_wr":0,
+#                        "iops":1000000,
+#                        "iops_rd":0,
+#                        "iops_wr":0,
+#                        "bps_max": 8000000,
+#                        "bps_rd_max": 0,
+#                        "bps_wr_max": 0,
+#                        "iops_max": 0,
+#                        "iops_rd_max": 0,
+#                        "iops_wr_max": 0,
+#                        "iops_size": 0,
+#                        "write_threshold": 0,
+#                        "image":{
+#                           "filename":"disks/test.qcow2",
 #                           "format":"qcow2",
-#                           "virtual-size":2048000
-#                       }
-#                    } } ] }
+#                           "virtual-size":2048000,
+#                           "backing_file":"base.qcow2",
+#                           "full-backing-filename":"disks/base.qcow2",
+#                           "backing-filename-format":"qcow2",
+#                           "snapshots":[
+#                              {
+#                                 "id": "1",
+#                                 "name": "snapshot1",
+#                                 "vm-state-size": 0,
+#                                 "date-sec": 10000200,
+#                                 "date-nsec": 12,
+#                                 "vm-clock-sec": 206,
+#                                 "vm-clock-nsec": 30
+#                              }
+#                           ],
+#                           "backing-image":{
+#                               "filename":"disks/base.qcow2",
+#                               "format":"qcow2",
+#                               "virtual-size":2048000
+#                           }
+#                        } } ] }
 ##
 { 'command': 'query-named-block-nodes',
   'returns': [ 'BlockDeviceInfo' ],
@@ -2105,24 +2125,23 @@
 # Start mirroring a block device's writes to a new destination.
 # target specifies the target of the new image.  If the file exists,
 # or if it is a device, it will be used as the new destination for
-# writes.  If it does not exist, a new file will be created.  format
+# writes.  If it does not exist, a new file will be created.  @format
 # specifies the format of the mirror image, default is to probe if
 # mode='existing', else the format of the source.
 #
-# Returns:
-#     - nothing on success
+# Errors:
 #     - If @device is not a valid block device, GenericError
 #
 # Since: 1.3
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "drive-mirror",
-#      "arguments": { "device": "ide-hd0",
-#                     "target": "/some/place/my-image",
-#                     "sync": "full",
-#                     "format": "qcow2" } }
-# <- { "return": {} }
+#     -> { "execute": "drive-mirror",
+#          "arguments": { "device": "ide-hd0",
+#                         "target": "/some/place/my-image",
+#                         "sync": "full",
+#                         "format": "qcow2" } }
+#     <- { "return": {} }
 ##
 { 'command': 'drive-mirror', 'boxed': true,
   'data': 'DriveMirror',
@@ -2286,18 +2305,17 @@
 # Create a dirty bitmap with a name on the node, and start tracking
 # the writes.
 #
-# Returns:
-#     - nothing on success
+# Errors:
 #     - If @node is not a valid block device or node, DeviceNotFound
-#     - If @name is already taken, GenericError with an explanation
+#     - If @name is already taken, GenericError
 #
 # Since: 2.4
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "block-dirty-bitmap-add",
-#      "arguments": { "node": "drive0", "name": "bitmap0" } }
-# <- { "return": {} }
+#     -> { "execute": "block-dirty-bitmap-add",
+#          "arguments": { "node": "drive0", "name": "bitmap0" } }
+#     <- { "return": {} }
 ##
 { 'command': 'block-dirty-bitmap-add',
   'data': 'BlockDirtyBitmapAdd',
@@ -2310,19 +2328,18 @@
 # with block-dirty-bitmap-add.  If the bitmap is persistent, remove it
 # from its storage too.
 #
-# Returns:
-#     - nothing on success
+# Errors:
 #     - If @node is not a valid block device or node, DeviceNotFound
-#     - If @name is not found, GenericError with an explanation
+#     - If @name is not found, GenericError
 #     - if @name is frozen by an operation, GenericError
 #
 # Since: 2.4
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "block-dirty-bitmap-remove",
-#      "arguments": { "node": "drive0", "name": "bitmap0" } }
-# <- { "return": {} }
+#     -> { "execute": "block-dirty-bitmap-remove",
+#          "arguments": { "node": "drive0", "name": "bitmap0" } }
+#     <- { "return": {} }
 ##
 { 'command': 'block-dirty-bitmap-remove',
   'data': 'BlockDirtyBitmap',
@@ -2335,18 +2352,17 @@
 # backup from this point in time forward will only backup clusters
 # modified after this clear operation.
 #
-# Returns:
-#     - nothing on success
+# Errors:
 #     - If @node is not a valid block device, DeviceNotFound
-#     - If @name is not found, GenericError with an explanation
+#     - If @name is not found, GenericError
 #
 # Since: 2.4
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "block-dirty-bitmap-clear",
-#      "arguments": { "node": "drive0", "name": "bitmap0" } }
-# <- { "return": {} }
+#     -> { "execute": "block-dirty-bitmap-clear",
+#          "arguments": { "node": "drive0", "name": "bitmap0" } }
+#     <- { "return": {} }
 ##
 { 'command': 'block-dirty-bitmap-clear',
   'data': 'BlockDirtyBitmap',
@@ -2357,18 +2373,17 @@
 #
 # Enables a dirty bitmap so that it will begin tracking disk changes.
 #
-# Returns:
-#     - nothing on success
+# Errors:
 #     - If @node is not a valid block device, DeviceNotFound
-#     - If @name is not found, GenericError with an explanation
+#     - If @name is not found, GenericError
 #
 # Since: 4.0
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "block-dirty-bitmap-enable",
-#      "arguments": { "node": "drive0", "name": "bitmap0" } }
-# <- { "return": {} }
+#     -> { "execute": "block-dirty-bitmap-enable",
+#          "arguments": { "node": "drive0", "name": "bitmap0" } }
+#     <- { "return": {} }
 ##
 { 'command': 'block-dirty-bitmap-enable',
   'data': 'BlockDirtyBitmap',
@@ -2379,18 +2394,17 @@
 #
 # Disables a dirty bitmap so that it will stop tracking disk changes.
 #
-# Returns:
-#     - nothing on success
+# Errors:
 #     - If @node is not a valid block device, DeviceNotFound
-#     - If @name is not found, GenericError with an explanation
+#     - If @name is not found, GenericError
 #
 # Since: 4.0
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "block-dirty-bitmap-disable",
-#      "arguments": { "node": "drive0", "name": "bitmap0" } }
-# <- { "return": {} }
+#     -> { "execute": "block-dirty-bitmap-disable",
+#          "arguments": { "node": "drive0", "name": "bitmap0" } }
+#     <- { "return": {} }
 ##
 { 'command': 'block-dirty-bitmap-disable',
   'data': 'BlockDirtyBitmap',
@@ -2409,8 +2423,7 @@
 # dirty in any of the source bitmaps.  This can be used to achieve
 # backup checkpoints, or in simpler usages, to copy bitmaps.
 #
-# Returns:
-#     - nothing on success
+# Errors:
 #     - If @node is not a valid block device, DeviceNotFound
 #     - If any bitmap in @bitmaps or @target is not found,
 #       GenericError
@@ -2419,12 +2432,12 @@
 #
 # Since: 4.0
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "block-dirty-bitmap-merge",
-#      "arguments": { "node": "drive0", "target": "bitmap0",
-#                     "bitmaps": ["bitmap1"] } }
-# <- { "return": {} }
+#     -> { "execute": "block-dirty-bitmap-merge",
+#          "arguments": { "node": "drive0", "target": "bitmap0",
+#                         "bitmaps": ["bitmap1"] } }
+#     <- { "return": {} }
 ##
 { 'command': 'block-dirty-bitmap-merge',
   'data': 'BlockDirtyBitmapMerge',
@@ -2452,10 +2465,11 @@
 # @unstable: This command is meant for debugging.
 #
 # Returns:
-#     - BlockDirtyBitmapSha256 on success
+#     BlockDirtyBitmapSha256
+#
+# Errors:
 #     - If @node is not a valid block device, DeviceNotFound
 #     - If @name is not found or if hashing has failed, GenericError
-#       with an explanation
 #
 # Since: 2.10
 ##
@@ -2524,17 +2538,15 @@
 #     disappear from the query list without user intervention.
 #     Defaults to true.  (Since 3.1)
 #
-# Returns: nothing on success.
-#
 # Since: 2.6
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "blockdev-mirror",
-#      "arguments": { "device": "ide-hd0",
-#                     "target": "target0",
-#                     "sync": "full" } }
-# <- { "return": {} }
+#     -> { "execute": "blockdev-mirror",
+#          "arguments": { "device": "ide-hd0",
+#                         "target": "target0",
+#                         "sync": "full" } }
+#     <- { "return": {} }
 ##
 { 'command': 'blockdev-mirror',
   'data': { '*job-id': 'str', 'device': 'str', 'target': 'str',
@@ -2588,27 +2600,27 @@
 #
 # @bps_max_length: maximum length of the @bps_max burst period, in
 #     seconds.  It must only be set if @bps_max is set as well.
-#     Defaults to 1. (Since 2.6)
+#     Defaults to 1.  (Since 2.6)
 #
 # @bps_rd_max_length: maximum length of the @bps_rd_max burst period,
 #     in seconds.  It must only be set if @bps_rd_max is set as well.
-#     Defaults to 1. (Since 2.6)
+#     Defaults to 1.  (Since 2.6)
 #
 # @bps_wr_max_length: maximum length of the @bps_wr_max burst period,
 #     in seconds.  It must only be set if @bps_wr_max is set as well.
-#     Defaults to 1. (Since 2.6)
+#     Defaults to 1.  (Since 2.6)
 #
 # @iops_max_length: maximum length of the @iops burst period, in
 #     seconds.  It must only be set if @iops_max is set as well.
-#     Defaults to 1. (Since 2.6)
+#     Defaults to 1.  (Since 2.6)
 #
 # @iops_rd_max_length: maximum length of the @iops_rd_max burst
 #     period, in seconds.  It must only be set if @iops_rd_max is set
-#     as well.  Defaults to 1. (Since 2.6)
+#     as well.  Defaults to 1.  (Since 2.6)
 #
 # @iops_wr_max_length: maximum length of the @iops_wr_max burst
 #     period, in seconds.  It must only be set if @iops_wr_max is set
-#     as well.  Defaults to 1. (Since 2.6)
+#     as well.  Defaults to 1.  (Since 2.6)
 #
 # @iops_size: an I/O size in bytes (Since 1.7)
 #
@@ -2820,9 +2832,14 @@
 #     Care should be taken when specifying the string, to specify a
 #     valid filename or protocol.  (Since 2.1)
 #
+# @backing-mask-protocol: If true, replace any protocol mentioned in
+#     the 'backing file format' with 'raw', rather than storing the
+#     protocol name as the backing format.  Can be used even when no
+#     image header will be updated (default false; since 9.0).
+#
 # @speed: the maximum speed, in bytes per second
 #
-# @on-error: the action to take on an error (default report). 'stop'
+# @on-error: the action to take on an error (default report).  'stop'
 #     and 'enospc' can only be used if the block device supports
 #     io-status (see BlockInfo).  (Since 1.3)
 #
@@ -2843,22 +2860,23 @@
 #     disappear from the query list without user intervention.
 #     Defaults to true.  (Since 3.1)
 #
-# Returns:
-#     - Nothing on success.
+# Errors:
 #     - If @device does not exist, DeviceNotFound.
 #
 # Since: 1.1
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "block-stream",
-#      "arguments": { "device": "virtio0",
-#                     "base": "/tmp/master.qcow2" } }
-# <- { "return": {} }
+#     -> { "execute": "block-stream",
+#          "arguments": { "device": "virtio0",
+#                         "base": "/tmp/master.qcow2" } }
+#     <- { "return": {} }
 ##
 { 'command': 'block-stream',
   'data': { '*job-id': 'str', 'device': 'str', '*base': 'str',
-            '*base-node': 'str', '*backing-file': 'str', '*bottom': 'str',
+            '*base-node': 'str', '*backing-file': 'str',
+            '*backing-mask-protocol': 'bool',
+            '*bottom': 'str',
             '*speed': 'int', '*on-error': 'BlockdevOnError',
             '*filter-node-name': 'str',
             '*auto-finalize': 'bool', '*auto-dismiss': 'bool' },
@@ -2880,8 +2898,7 @@
 # @speed: the maximum speed, in bytes per second, or 0 for unlimited.
 #     Defaults to 0.
 #
-# Returns:
-#     - Nothing on success
+# Errors:
 #     - If no background operation is active on this device,
 #       DeviceNotActive
 #
@@ -2925,8 +2942,7 @@
 #     paused) instead of waiting for the destination to complete its
 #     final synchronization (since 1.3)
 #
-# Returns:
-#     - Nothing on success
+# Errors:
 #     - If no background operation is active on this device,
 #       DeviceNotActive
 #
@@ -2952,8 +2968,7 @@
 #     the name of the parameter), but since QEMU 2.7 it can have other
 #     values.
 #
-# Returns:
-#     - Nothing on success
+# Errors:
 #     - If no background operation is active on this device,
 #       DeviceNotActive
 #
@@ -2977,8 +2992,7 @@
 #     the name of the parameter), but since QEMU 2.7 it can have other
 #     values.
 #
-# Returns:
-#     - Nothing on success
+# Errors:
 #     - If no background operation is active on this device,
 #       DeviceNotActive
 #
@@ -3009,8 +3023,7 @@
 #     the name of the parameter), but since QEMU 2.7 it can have other
 #     values.
 #
-# Returns:
-#     - Nothing on success
+# Errors:
 #     - If no background operation is active on this device,
 #       DeviceNotActive
 #
@@ -3028,13 +3041,11 @@
 # semantics.
 #
 # This command will refuse to operate on any job that has not yet
-# reached its terminal state, JOB_STATUS_CONCLUDED. For jobs that make
-# use of the BLOCK_JOB_READY event, block-job-cancel or
+# reached its terminal state, JOB_STATUS_CONCLUDED.  For jobs that
+# make use of the BLOCK_JOB_READY event, block-job-cancel or
 # block-job-complete will still need to be used as appropriate.
 #
 # @id: The job identifier.
-#
-# Returns: Nothing on success
 #
 # Since: 2.12
 ##
@@ -3052,8 +3063,6 @@
 # finalize.
 #
 # @id: The job identifier.
-#
-# Returns: Nothing on success
 #
 # Since: 2.12
 ##
@@ -3080,7 +3089,7 @@
 #
 # @type: The job type
 #
-# Since 8.2
+# Since: 8.2
 ##
 { 'union': 'BlockJobChangeOptions',
   'base': { 'id': 'str', 'type': 'JobType' },
@@ -3185,12 +3194,18 @@
 #
 # @snapshot-access: Since 7.0
 #
+# Features:
+#
+# @deprecated: Member @gluster is deprecated because GlusterFS
+#     development ceased.
+#
 # Since: 2.9
 ##
 { 'enum': 'BlockdevDriver',
   'data': [ 'blkdebug', 'blklogwrites', 'blkreplay', 'blkverify', 'bochs',
             'cloop', 'compress', 'copy-before-write', 'copy-on-read', 'dmg',
-            'file', 'snapshot-access', 'ftp', 'ftps', 'gluster',
+            'file', 'snapshot-access', 'ftp', 'ftps',
+            {'name': 'gluster', 'features': [ 'deprecated' ] },
             {'name': 'host_cdrom', 'if': 'HAVE_HOST_BLOCK_DEVICE' },
             {'name': 'host_device', 'if': 'HAVE_HOST_BLOCK_DEVICE' },
             'http', 'https',
@@ -3349,14 +3364,17 @@
 # Driver specific block device options for LUKS.
 #
 # @key-secret: the ID of a QCryptoSecret object providing the
-#     decryption key (since 2.6). Mandatory except when doing a
+#     decryption key (since 2.6).  Mandatory except when doing a
 #     metadata-only probe of the image.
+#
+# @header: block device holding a detached LUKS header.  (since 9.0)
 #
 # Since: 2.9
 ##
 { 'struct': 'BlockdevOptionsLUKS',
   'base': 'BlockdevOptionsGenericFormat',
-  'data': { '*key-secret': 'str' } }
+  'data': { '*key-secret': 'str',
+            '*header': 'BlockdevRef'} }
 
 ##
 # @BlockdevOptionsGenericCOWFormat:
@@ -3398,14 +3416,31 @@
 # @Qcow2OverlapCheckFlags:
 #
 # Structure of flags for each metadata structure.  Setting a field to
-# 'true' makes qemu guard that structure against unintended
-# overwriting.  The default value is chosen according to the template
-# given.
+# 'true' makes QEMU guard that Qcow2 format structure against
+# unintended overwriting.  See Qcow2 format specification for detailed
+# information on these structures.  The default value is chosen
+# according to the template given.
 #
 # @template: Specifies a template mode which can be adjusted using the
 #     other flags, defaults to 'cached'
 #
-# @bitmap-directory: since 3.0
+# @main-header: Qcow2 format header
+#
+# @active-l1: Qcow2 active L1 table
+#
+# @active-l2: Qcow2 active L2 table
+#
+# @refcount-table: Qcow2 refcount table
+#
+# @refcount-block: Qcow2 refcount blocks
+#
+# @snapshot-table: Qcow2 snapshot table
+#
+# @inactive-l1: Qcow2 inactive L1 tables
+#
+# @inactive-l2: Qcow2 inactive L2 tables
+#
+# @bitmap-directory: Qcow2 bitmap directory (since 3.0)
 #
 # Since: 2.9
 ##
@@ -3451,6 +3486,8 @@
 ##
 # @BlockdevQcowEncryption:
 #
+# @format: encryption format
+#
 # Since: 2.10
 ##
 { 'union': 'BlockdevQcowEncryption',
@@ -3484,6 +3521,8 @@
 
 ##
 # @BlockdevQcow2Encryption:
+#
+# @format: encryption format
 #
 # Since: 2.10
 ##
@@ -3538,10 +3577,10 @@
 #     re-allocating them later.  Besides potential performance
 #     degradation, such fragmentation can lead to increased allocation
 #     of clusters past the end of the image file, resulting in image
-#     files whose file length can grow much larger than their guest disk
-#     size would suggest.  If image file length is of concern (e.g. when
-#     storing qcow2 images directly on block devices), you should
-#     consider enabling this option.  (since 8.1)
+#     files whose file length can grow much larger than their guest
+#     disk size would suggest.  If image file length is of concern
+#     (e.g. when storing qcow2 images directly on block devices), you
+#     should consider enabling this option.  (since 8.1)
 #
 # @overlap-check: which overlap checks to perform for writes to the
 #     image, defaults to 'cached' (since 2.2)
@@ -3635,6 +3674,8 @@
 ##
 # @SshHostKeyCheck:
 #
+# @mode: How to check the host key
+#
 # Since: 2.12
 ##
 { 'union': 'SshHostKeyCheck',
@@ -3718,7 +3759,7 @@
 #
 # Since: 4.1
 ##
-{ 'enum': 'BlkdebugIOType', 'prefix': 'BLKDEBUG_IO_TYPE',
+{ 'enum': 'BlkdebugIOType',
   'data': [ 'read', 'write', 'write-zeroes', 'discard', 'flush',
             'block-status' ] }
 
@@ -4022,6 +4063,7 @@
 # @path: path to the vhost-vdpa character device.
 #
 # Features:
+#
 # @fdset: Member @path supports the special "/dev/fdset/N" path
 #     (since 8.1)
 #
@@ -4057,6 +4099,8 @@
 ##
 # @BlockdevOptionsIscsi:
 #
+# Driver specific block device options for iscsi
+#
 # @transport: The iscsi transport type
 #
 # @portal: The address of the iscsi portal
@@ -4080,8 +4124,6 @@
 #
 # @timeout: Timeout in seconds after which a request will timeout.  0
 #     means no timeout and is the default.
-#
-# Driver specific block device options for iscsi
 #
 # Since: 2.9
 ##
@@ -4134,7 +4176,7 @@
 ##
 { 'struct': 'RbdEncryptionCreateOptionsLUKSBase',
   'base': 'RbdEncryptionOptionsLUKSBase',
-  'data': { '*cipher-alg': 'QCryptoCipherAlgorithm' } }
+  'data': { '*cipher-alg': 'QCryptoCipherAlgo' } }
 
 ##
 # @RbdEncryptionOptionsLUKS:
@@ -4203,6 +4245,8 @@
 
 ##
 # @RbdEncryptionCreateOptions:
+#
+# @format: Encryption format.
 #
 # Since: 6.1
 ##
@@ -4397,7 +4441,7 @@
 # curl backend.  URLs must start with "http://".
 #
 # @cookie: List of cookies to set; format is "name1=content1;
-#     name2=content2;" as explained by CURLOPT_COOKIE(3). Defaults to
+#     name2=content2;" as explained by CURLOPT_COOKIE(3).  Defaults to
 #     no cookies.
 #
 # @cookie-secret: ID of a QCryptoSecret object providing the cookie
@@ -4417,7 +4461,7 @@
 # curl backend.  URLs must start with "https://".
 #
 # @cookie: List of cookies to set; format is "name1=content1;
-#     name2=content2;" as explained by CURLOPT_COOKIE(3). Defaults to
+#     name2=content2;" as explained by CURLOPT_COOKIE(3).  Defaults to
 #     no cookies.
 #
 # @sslverify: Whether to verify the SSL certificate's validity
@@ -4606,14 +4650,20 @@
 #     seconds for copy-before-write operation.  When a timeout occurs,
 #     the respective copy-before-write operation will fail, and the
 #     @on-cbw-error parameter will decide how this failure is handled.
-#     Default 0. (Since 7.1)
+#     Default 0.  (Since 7.1)
+#
+# @min-cluster-size: Minimum size of blocks used by copy-before-write
+#     operations.  Has to be a power of 2.  No effect if smaller than
+#     the maximum of the target's cluster size and 64 KiB.  Default 0.
+#     (Since 9.2)
 #
 # Since: 6.2
 ##
 { 'struct': 'BlockdevOptionsCbw',
   'base': 'BlockdevOptionsGenericFormat',
   'data': { 'target': 'BlockdevRef', '*bitmap': 'BlockDirtyBitmap',
-            '*on-cbw-error': 'OnCbwError', '*cbw-timeout': 'uint32' } }
+            '*on-cbw-error': 'OnCbwError', '*cbw-timeout': 'uint32',
+            '*min-cluster-size': 'size' } }
 
 ##
 # @BlockdevOptions:
@@ -4623,18 +4673,23 @@
 #
 # @driver: block driver name
 #
-# @node-name: the node name of the new node (Since 2.0). This option
+# @node-name: the node name of the new node (Since 2.0).  This option
 #     is required on the top level of blockdev-add.  Valid node names
 #     start with an alphabetic character and may contain only
-#     alphanumeric characters, '-', '.' and '_'. Their maximum length
+#     alphanumeric characters, '-', '.' and '_'.  Their maximum length
 #     is 31 characters.
 #
 # @discard: discard-related options (default: ignore)
 #
 # @cache: cache-related options
 #
+# @active: whether the block node should be activated (default: true).
+#     Having inactive block nodes is useful primarily for migration because it
+#     allows opening an image on the destination while the source is still
+#     holding locks for it. (Since 10.0)
+#
 # @read-only: whether the block device should be read-only (default:
-#     false). Note that some block drivers support only read-only
+#     false).  Note that some block drivers support only read-only
 #     access, either generally or in certain configurations.  In this
 #     case, the default value does not work and the option must be
 #     specified explicitly.
@@ -4652,8 +4707,6 @@
 # @force-share: force share all permission on added nodes.  Requires
 #     read-only=true.  (Since 2.10)
 #
-# Remaining options are determined by the block driver.
-#
 # Since: 2.9
 ##
 { 'union': 'BlockdevOptions',
@@ -4661,6 +4714,7 @@
             '*node-name': 'str',
             '*discard': 'BlockdevDiscardOptions',
             '*cache': 'BlockdevCacheOptions',
+            '*active': 'bool',
             '*read-only': 'bool',
             '*auto-read-only': 'bool',
             '*force-share': 'bool',
@@ -4769,43 +4823,45 @@
 #
 # Since: 2.9
 #
-# Examples:
+# .. qmp-example::
 #
-# -> { "execute": "blockdev-add",
-#      "arguments": {
-#           "driver": "qcow2",
-#           "node-name": "test1",
-#           "file": {
-#               "driver": "file",
-#               "filename": "test.qcow2"
-#            }
-#       }
-#     }
-# <- { "return": {} }
-#
-# -> { "execute": "blockdev-add",
-#      "arguments": {
-#           "driver": "qcow2",
-#           "node-name": "node0",
-#           "discard": "unmap",
-#           "cache": {
-#              "direct": true
-#            },
-#            "file": {
-#              "driver": "file",
-#              "filename": "/tmp/test.qcow2"
-#            },
-#            "backing": {
-#               "driver": "raw",
+#     -> { "execute": "blockdev-add",
+#          "arguments": {
+#               "driver": "qcow2",
+#               "node-name": "test1",
 #               "file": {
+#                   "driver": "file",
+#                   "filename": "test.qcow2"
+#                }
+#           }
+#         }
+#     <- { "return": {} }
+#
+# .. qmp-example::
+#
+#     -> { "execute": "blockdev-add",
+#          "arguments": {
+#               "driver": "qcow2",
+#               "node-name": "node0",
+#               "discard": "unmap",
+#               "cache": {
+#                  "direct": true
+#                },
+#                "file": {
 #                  "driver": "file",
-#                  "filename": "/dev/fdset/4"
+#                  "filename": "/tmp/test.qcow2"
+#                },
+#                "backing": {
+#                   "driver": "raw",
+#                   "file": {
+#                      "driver": "file",
+#                      "filename": "/dev/fdset/4"
+#                    }
 #                }
 #            }
-#        }
-#      }
+#          }
 #
-# <- { "return": {} }
+#     <- { "return": {} }
 ##
 { 'command': 'blockdev-add', 'data': 'BlockdevOptions', 'boxed': true,
   'allow-preconfig': true }
@@ -4867,26 +4923,58 @@
 #
 # Since: 2.9
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "blockdev-add",
-#      "arguments": {
-#           "driver": "qcow2",
-#           "node-name": "node0",
-#           "file": {
-#               "driver": "file",
-#               "filename": "test.qcow2"
-#           }
-#      }
-#    }
-# <- { "return": {} }
+#     -> { "execute": "blockdev-add",
+#          "arguments": {
+#               "driver": "qcow2",
+#               "node-name": "node0",
+#               "file": {
+#                   "driver": "file",
+#                   "filename": "test.qcow2"
+#               }
+#          }
+#        }
+#     <- { "return": {} }
 #
-# -> { "execute": "blockdev-del",
-#      "arguments": { "node-name": "node0" }
-#    }
-# <- { "return": {} }
+#     -> { "execute": "blockdev-del",
+#          "arguments": { "node-name": "node0" }
+#        }
+#     <- { "return": {} }
 ##
 { 'command': 'blockdev-del', 'data': { 'node-name': 'str' },
+  'allow-preconfig': true }
+
+##
+# @blockdev-set-active:
+#
+# Activate or inactivate a block device. Use this to manage the handover of
+# block devices on migration with qemu-storage-daemon.
+#
+# Activating a node automatically activates all of its child nodes first.
+# Inactivating a node automatically inactivates any of its child nodes that are
+# not in use by a still active node.
+#
+# @node-name: Name of the graph node to activate or inactivate. By default, all
+#     nodes are affected by the operation.
+#
+# @active: true if the nodes should be active when the command returns success,
+#     false if they should be inactive.
+#
+# Since: 10.0
+#
+# .. qmp-example::
+#
+#     -> { "execute": "blockdev-set-active",
+#          "arguments": {
+#               "node-name": "node0",
+#               "active": false
+#          }
+#        }
+#     <- { "return": {} }
+##
+{ 'command': 'blockdev-set-active',
+  'data': { '*node-name': 'str', 'active': 'bool' },
   'allow-preconfig': true }
 
 ##
@@ -4941,7 +5029,10 @@
 #
 # Driver specific image creation options for LUKS.
 #
-# @file: Node to create the image format on
+# @file: Node to create the image format on, mandatory except when
+#     'preallocation' is not requested
+#
+# @header: Block device holding a detached LUKS header.  (since 9.0)
 #
 # @size: Size of the virtual disk in bytes
 #
@@ -4952,7 +5043,8 @@
 ##
 { 'struct': 'BlockdevCreateOptionsLUKS',
   'base': 'QCryptoBlockCreateOptionsLUKS',
-  'data': { 'file':             'BlockdevRef',
+  'data': { '*file':            'BlockdevRef',
+            '*header':          'BlockdevRef',
             'size':             'size',
             '*preallocation':   'PreallocMode' } }
 
@@ -5197,8 +5289,8 @@
 #     monolithcFlat, twoGbMaxExtentSparse and twoGbMaxExtentFlat
 #     formats.  For monolithicFlat, only one entry is required; for
 #     twoGbMaxExtent* formats, the number of entries required is
-#     calculated as extent_number = virtual_size / 2GB. Providing more
-#     extents than will be used is an error.
+#     calculated as extent_number = virtual_size / 2GB.  Providing
+#     more extents than will be used is an error.
 #
 # @subformat: The subformat of the VMDK image.  Default:
 #     "monolithicSparse".
@@ -5210,7 +5302,7 @@
 #     Default: ide.
 #
 # @hwversion: Hardware version.  The meaningful options are "4" or
-#     "6". Default: "4".
+#     "6".  Default: "4".
 #
 # @toolsversion: VMware guest tools version.  Default: "2147483647"
 #     (Since 6.2)
@@ -5406,7 +5498,7 @@
 ##
 # @BlockdevAmendOptionsQcow2:
 #
-# Driver specific image amend options for qcow2. For now, only
+# Driver specific image amend options for qcow2.  For now, only
 # encryption options can be amended
 #
 # @encrypt: Encryption options to be amended
@@ -5509,15 +5601,15 @@
 #     after this event and must be repaired (Since 2.2; before, every
 #     BLOCK_IMAGE_CORRUPTED event was fatal)
 #
-# Note: If action is "stop", a STOP event will eventually follow the
-#     BLOCK_IO_ERROR event.
+# .. note:: If action is "stop", a STOP event will eventually follow
+#    the BLOCK_IO_ERROR event.
 #
-# Example:
+# .. qmp-example::
 #
-# <- { "event": "BLOCK_IMAGE_CORRUPTED",
-#      "data": { "device": "", "node-name": "drive", "fatal": false,
-#                "msg": "L2 table offset 0x2a2a2a00 unaligned (L1 index: 0)" },
-#      "timestamp": { "seconds": 1648243240, "microseconds": 906060 } }
+#     <- { "event": "BLOCK_IMAGE_CORRUPTED",
+#          "data": { "device": "", "node-name": "drive", "fatal": false,
+#                    "msg": "L2 table offset 0x2a2a2a00 unaligned (L1 index: 0)" },
+#          "timestamp": { "seconds": 1648243240, "microseconds": 906060 } }
 #
 # Since: 1.7
 ##
@@ -5533,6 +5625,8 @@
 # @BLOCK_IO_ERROR:
 #
 # Emitted when a disk I/O error occurs
+#
+# @qom-path: path to the device object in the QOM tree (since 9.2)
 #
 # @device: device name.  This is always present for compatibility
 #     reasons, but it can be empty ("") if the image does not have a
@@ -5556,23 +5650,26 @@
 #     field is a debugging aid for humans, it should not be parsed by
 #     applications) (since: 2.2)
 #
-# Note: If action is "stop", a STOP event will eventually follow the
-#     BLOCK_IO_ERROR event
+# .. note:: If action is "stop", a STOP event will eventually follow
+#    the BLOCK_IO_ERROR event.
+#
+# .. note:: This event is rate-limited.
 #
 # Since: 0.13
 #
-# Example:
+# .. qmp-example::
 #
-# <- { "event": "BLOCK_IO_ERROR",
-#      "data": { "device": "ide0-hd1",
-#                "node-name": "#block212",
-#                "operation": "write",
-#                "action": "stop",
-#                "reason": "No space left on device" },
-#      "timestamp": { "seconds": 1265044230, "microseconds": 450486 } }
+#     <- { "event": "BLOCK_IO_ERROR",
+#          "data": { "qom-path": "/machine/unattached/device[0]",
+#                    "device": "ide0-hd1",
+#                    "node-name": "#block212",
+#                    "operation": "write",
+#                    "action": "stop",
+#                    "reason": "No space left on device" },
+#          "timestamp": { "seconds": 1265044230, "microseconds": 450486 } }
 ##
 { 'event': 'BLOCK_IO_ERROR',
-  'data': { 'device': 'str', '*node-name': 'str',
+  'data': { 'qom-path': 'str', 'device': 'str', '*node-name': 'str',
             'operation': 'IoOperationType',
             'action': 'BlockErrorAction', '*nospace': 'bool',
             'reason': 'str' } }
@@ -5601,13 +5698,13 @@
 #
 # Since: 1.1
 #
-# Example:
+# .. qmp-example::
 #
-# <- { "event": "BLOCK_JOB_COMPLETED",
-#      "data": { "type": "stream", "device": "virtio-disk0",
-#                "len": 10737418240, "offset": 10737418240,
-#                "speed": 0 },
-#      "timestamp": { "seconds": 1267061043, "microseconds": 959568 } }
+#     <- { "event": "BLOCK_JOB_COMPLETED",
+#          "data": { "type": "stream", "device": "virtio-disk0",
+#                    "len": 10737418240, "offset": 10737418240,
+#                    "speed": 0 },
+#          "timestamp": { "seconds": 1267061043, "microseconds": 959568 } }
 ##
 { 'event': 'BLOCK_JOB_COMPLETED',
   'data': { 'type'  : 'JobType',
@@ -5636,13 +5733,13 @@
 #
 # Since: 1.1
 #
-# Example:
+# .. qmp-example::
 #
-# <- { "event": "BLOCK_JOB_CANCELLED",
-#      "data": { "type": "stream", "device": "virtio-disk0",
-#                "len": 10737418240, "offset": 134217728,
-#                "speed": 0 },
-#      "timestamp": { "seconds": 1267061043, "microseconds": 959568 } }
+#     <- { "event": "BLOCK_JOB_CANCELLED",
+#          "data": { "type": "stream", "device": "virtio-disk0",
+#                    "len": 10737418240, "offset": 134217728,
+#                    "speed": 0 },
+#          "timestamp": { "seconds": 1267061043, "microseconds": 959568 } }
 ##
 { 'event': 'BLOCK_JOB_CANCELLED',
   'data': { 'type'  : 'JobType',
@@ -5665,13 +5762,13 @@
 #
 # Since: 1.3
 #
-# Example:
+# .. qmp-example::
 #
-# <- { "event": "BLOCK_JOB_ERROR",
-#      "data": { "device": "ide0-hd1",
-#                "operation": "write",
-#                "action": "stop" },
-#      "timestamp": { "seconds": 1265044230, "microseconds": 450486 } }
+#     <- { "event": "BLOCK_JOB_ERROR",
+#          "data": { "device": "ide0-hd1",
+#                    "operation": "write",
+#                    "action": "stop" },
+#          "timestamp": { "seconds": 1265044230, "microseconds": 450486 } }
 ##
 { 'event': 'BLOCK_JOB_ERROR',
   'data': { 'device'   : 'str',
@@ -5695,17 +5792,17 @@
 #
 # @speed: rate limit, bytes per second
 #
-# Note: The "ready to complete" status is always reset by a
-#     @BLOCK_JOB_ERROR event
+# .. note:: The "ready to complete" status is always reset by a
+#    @BLOCK_JOB_ERROR event.
 #
 # Since: 1.3
 #
-# Example:
+# .. qmp-example::
 #
-# <- { "event": "BLOCK_JOB_READY",
-#      "data": { "device": "drive0", "type": "mirror", "speed": 0,
-#                "len": 2097152, "offset": 2097152 },
-#      "timestamp": { "seconds": 1265044230, "microseconds": 450486 } }
+#     <- { "event": "BLOCK_JOB_READY",
+#          "data": { "device": "drive0", "type": "mirror", "speed": 0,
+#                    "len": 2097152, "offset": 2097152 },
+#          "timestamp": { "seconds": 1265044230, "microseconds": 450486 } }
 ##
 { 'event': 'BLOCK_JOB_READY',
   'data': { 'type'  : 'JobType',
@@ -5728,11 +5825,11 @@
 #
 # Since: 2.12
 #
-# Example:
+# .. qmp-example::
 #
-# <- { "event": "BLOCK_JOB_PENDING",
-#      "data": { "type": "mirror", "id": "backup_1" },
-#      "timestamp": { "seconds": 1265044230, "microseconds": 450486 } }
+#     <- { "event": "BLOCK_JOB_PENDING",
+#          "data": { "type": "mirror", "id": "backup_1" },
+#          "timestamp": { "seconds": 1265044230, "microseconds": 450486 } }
 ##
 { 'event': 'BLOCK_JOB_PENDING',
   'data': { 'type'  : 'JobType',
@@ -5802,12 +5899,12 @@
 #
 # Since: 2.3
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "block-set-write-threshold",
-#      "arguments": { "node-name": "mydev",
-#                     "write-threshold": 17179869184 } }
-# <- { "return": {} }
+#     -> { "execute": "block-set-write-threshold",
+#          "arguments": { "node-name": "mydev",
+#                         "write-threshold": 17179869184 } }
+#     <- { "return": {} }
 ##
 { 'command': 'block-set-write-threshold',
   'data': { 'node-name': 'str', 'write-threshold': 'uint64' },
@@ -5816,59 +5913,55 @@
 ##
 # @x-blockdev-change:
 #
-# Dynamically reconfigure the block driver state graph.  It can be
-# used to add, remove, insert or replace a graph node.  Currently only
-# the Quorum driver implements this feature to add or remove its
-# child.  This is useful to fix a broken quorum child.
+# Dynamically reconfigure the block driver state graph.
 #
-# If @node is specified, it will be inserted under @parent.  @child
-# may not be specified in this case.  If both @parent and @child are
-# specified but @node is not, @child will be detached from @parent.
+# Currently only supports adding and deleting quorum children.  A
+# child will be added at the end of the list of children.  Its
+# contents *must* be consistent with the other childrens' contents.
+# Deleting a child that is not last in the list of children is
+# problematic, because it "renumbers" the children following it.
 #
 # @parent: the id or name of the parent node.
 #
-# @child: the name of a child under the given parent node.
+# @child: the name of a child to be deleted.  Mutually exclusive with
+#     @node.
 #
-# @node: the name of the node that will be added.
+# @node: the name of the node to be added.  Mutually exclusive with
+#     @child.
 #
 # Features:
 #
-# @unstable: This command is experimental, and its API is not stable.
-#     It does not support all kinds of operations, all kinds of
-#     children, nor all block drivers.
+# @unstable: This command is experimental.
 #
-#     FIXME Removing children from a quorum node means introducing
+# TODO: Removing children from a quorum node means introducing
 #     gaps in the child indices.  This cannot be represented in the
 #     'children' list of BlockdevOptionsQuorum, as returned by
 #     .bdrv_refresh_filename().
 #
-#     Warning: The data in a new quorum child MUST be consistent with
-#     that of the rest of the array.
-#
 # Since: 2.7
 #
-# Examples:
+# .. qmp-example::
+#    :title: Add a new node to a quorum
 #
-# 1. Add a new node to a quorum
+#     -> { "execute": "blockdev-add",
+#          "arguments": {
+#              "driver": "raw",
+#              "node-name": "new_node",
+#              "file": { "driver": "file",
+#                        "filename": "test.raw" } } }
+#     <- { "return": {} }
+#     -> { "execute": "x-blockdev-change",
+#          "arguments": { "parent": "disk1",
+#                         "node": "new_node" } }
+#     <- { "return": {} }
 #
-# -> { "execute": "blockdev-add",
-#      "arguments": {
-#          "driver": "raw",
-#          "node-name": "new_node",
-#          "file": { "driver": "file",
-#                    "filename": "test.raw" } } }
-# <- { "return": {} }
-# -> { "execute": "x-blockdev-change",
-#      "arguments": { "parent": "disk1",
-#                     "node": "new_node" } }
-# <- { "return": {} }
+# .. qmp-example::
+#    :title: Delete a quorum's node
 #
-# 2. Delete a quorum's node
-#
-# -> { "execute": "x-blockdev-change",
-#      "arguments": { "parent": "disk1",
-#                     "child": "children.1" } }
-# <- { "return": {} }
+#     -> { "execute": "x-blockdev-change",
+#          "arguments": { "parent": "disk1",
+#                         "child": "children.1" } }
+#     <- { "return": {} }
 ##
 { 'command': 'x-blockdev-change',
   'data' : { 'parent': 'str',
@@ -5899,21 +5992,21 @@
 #
 # Since: 2.12
 #
-# Examples:
+# .. qmp-example::
+#    :title: Move a node into an IOThread
 #
-# 1. Move a node into an IOThread
+#     -> { "execute": "x-blockdev-set-iothread",
+#          "arguments": { "node-name": "disk1",
+#                         "iothread": "iothread0" } }
+#     <- { "return": {} }
 #
-# -> { "execute": "x-blockdev-set-iothread",
-#      "arguments": { "node-name": "disk1",
-#                     "iothread": "iothread0" } }
-# <- { "return": {} }
+# .. qmp-example::
+#    :title: Move a node into the main loop
 #
-# 2. Move a node into the main loop
-#
-# -> { "execute": "x-blockdev-set-iothread",
-#      "arguments": { "node-name": "disk1",
-#                     "iothread": null } }
-# <- { "return": {} }
+#     -> { "execute": "x-blockdev-set-iothread",
+#          "arguments": { "node-name": "disk1",
+#                         "iothread": null } }
+#     <- { "return": {} }
 ##
 { 'command': 'x-blockdev-set-iothread',
   'data' : { 'node-name': 'str',
@@ -5949,15 +6042,15 @@
 #
 # @sectors-count: failed read operation sector count
 #
-# Note: This event is rate-limited.
+# .. note:: This event is rate-limited.
 #
 # Since: 2.0
 #
-# Example:
+# .. qmp-example::
 #
-# <- { "event": "QUORUM_FAILURE",
-#      "data": { "reference": "usr1", "sector-num": 345435, "sectors-count": 5 },
-#      "timestamp": { "seconds": 1344522075, "microseconds": 745528 } }
+#     <- { "event": "QUORUM_FAILURE",
+#          "data": { "reference": "usr1", "sector-num": 345435, "sectors-count": 5 },
+#          "timestamp": { "seconds": 1344522075, "microseconds": 745528 } }
 ##
 { 'event': 'QUORUM_FAILURE',
   'data': { 'reference': 'str', 'sector-num': 'int', 'sectors-count': 'int' } }
@@ -5980,25 +6073,25 @@
 #
 # @sectors-count: failed read operation sector count
 #
-# Note: This event is rate-limited.
+# .. note:: This event is rate-limited.
 #
 # Since: 2.0
 #
-# Examples:
+# .. qmp-example::
+#    :title: Read operation
 #
-# 1. Read operation
+#     <- { "event": "QUORUM_REPORT_BAD",
+#          "data": { "node-name": "node0", "sector-num": 345435, "sectors-count": 5,
+#                    "type": "read" },
+#          "timestamp": { "seconds": 1344522075, "microseconds": 745528 } }
 #
-# <- { "event": "QUORUM_REPORT_BAD",
-#      "data": { "node-name": "node0", "sector-num": 345435, "sectors-count": 5,
-#                "type": "read" },
-#      "timestamp": { "seconds": 1344522075, "microseconds": 745528 } }
+# .. qmp-example::
+#    :title: Flush operation
 #
-# 2. Flush operation
-#
-# <- { "event": "QUORUM_REPORT_BAD",
-#      "data": { "node-name": "node0", "sector-num": 0, "sectors-count": 2097120,
-#                "type": "flush", "error": "Broken pipe" },
-#      "timestamp": { "seconds": 1456406829, "microseconds": 291763 } }
+#     <- { "event": "QUORUM_REPORT_BAD",
+#          "data": { "node-name": "node0", "sector-num": 0, "sectors-count": 2097120,
+#                    "type": "flush", "error": "Broken pipe" },
+#          "timestamp": { "seconds": 1456406829, "microseconds": 291763 } }
 ##
 { 'event': 'QUORUM_REPORT_BAD',
   'data': { 'type': 'QuorumOpType', '*error': 'str', 'node-name': 'str',
@@ -6011,10 +6104,6 @@
 #     snapshot from
 #
 # @name: the name of the internal snapshot to be created
-#
-# Notes: In transaction, if @name is empty, or any snapshot matching
-#     @name exists, the operation will fail.  Only some image formats
-#     support it, for example, qcow2, and rbd.
 #
 # Since: 1.7
 ##
@@ -6029,26 +6118,25 @@
 # string, or a snapshot with name already exists, the operation will
 # fail.
 #
-# For the arguments, see the documentation of
-# BlockdevSnapshotInternal.
-#
-# Returns:
-#     - nothing on success
+# Errors:
 #     - If @device is not a valid block device, GenericError
 #     - If any snapshot matching @name exists, or @name is empty,
 #       GenericError
 #     - If the format of the image used does not support it,
 #       GenericError
 #
+# .. note:: Only some image formats such as qcow2 and rbd support
+#    internal snapshots.
+#
 # Since: 1.7
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "blockdev-snapshot-internal-sync",
-#      "arguments": { "device": "ide-hd0",
-#                     "name": "snapshot0" }
-#    }
-# <- { "return": {} }
+#     -> { "execute": "blockdev-snapshot-internal-sync",
+#          "arguments": { "device": "ide-hd0",
+#                         "name": "snapshot0" }
+#        }
+#     <- { "return": {} }
 ##
 { 'command': 'blockdev-snapshot-internal-sync',
   'data': 'BlockdevSnapshotInternal',
@@ -6070,7 +6158,9 @@
 # @name: optional the snapshot's name to be deleted
 #
 # Returns:
-#     - SnapshotInfo on success
+#     SnapshotInfo
+#
+# Errors:
 #     - If @device is not a valid block device, GenericError
 #     - If snapshot not found, GenericError
 #     - If the format of the image used does not support it,
@@ -6079,23 +6169,23 @@
 #
 # Since: 1.7
 #
-# Example:
+# .. qmp-example::
 #
-# -> { "execute": "blockdev-snapshot-delete-internal-sync",
-#      "arguments": { "device": "ide-hd0",
-#                     "name": "snapshot0" }
-#    }
-# <- { "return": {
-#                    "id": "1",
-#                    "name": "snapshot0",
-#                    "vm-state-size": 0,
-#                    "date-sec": 1000012,
-#                    "date-nsec": 10,
-#                    "vm-clock-sec": 100,
-#                    "vm-clock-nsec": 20,
-#                    "icount": 220414
-#      }
-#    }
+#     -> { "execute": "blockdev-snapshot-delete-internal-sync",
+#          "arguments": { "device": "ide-hd0",
+#                         "name": "snapshot0" }
+#        }
+#     <- { "return": {
+#                        "id": "1",
+#                        "name": "snapshot0",
+#                        "vm-state-size": 0,
+#                        "date-sec": 1000012,
+#                        "date-nsec": 10,
+#                        "vm-clock-sec": 100,
+#                        "vm-clock-nsec": 20,
+#                        "icount": 220414
+#          }
+#        }
 ##
 { 'command': 'blockdev-snapshot-delete-internal-sync',
   'data': { 'device': 'str', '*id': 'str', '*name': 'str'},

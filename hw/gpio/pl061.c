@@ -87,7 +87,7 @@ static const VMStateDescription vmstate_pl061 = {
     .name = "pl061",
     .version_id = 4,
     .minimum_version_id = 4,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(locked, PL061State),
         VMSTATE_UINT32(data, PL061State),
         VMSTATE_UINT32(old_out_data, PL061State),
@@ -484,7 +484,7 @@ static void pl061_enter_reset(Object *obj, ResetType type)
     s->amsel = 0;
 }
 
-static void pl061_hold_reset(Object *obj)
+static void pl061_hold_reset(Object *obj, ResetType type)
 {
     PL061State *s = PL061(obj);
     int i, level;
@@ -562,10 +562,9 @@ static void pl061_realize(DeviceState *dev, Error **errp)
     }
 }
 
-static Property pl061_props[] = {
+static const Property pl061_props[] = {
     DEFINE_PROP_UINT32("pullups", PL061State, pullups, 0xff),
     DEFINE_PROP_UINT32("pulldowns", PL061State, pulldowns, 0x0),
-    DEFINE_PROP_END_OF_LIST()
 };
 
 static void pl061_class_init(ObjectClass *klass, void *data)

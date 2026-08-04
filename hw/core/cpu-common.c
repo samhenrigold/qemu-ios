@@ -21,28 +21,26 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "hw/core/cpu.h"
-#include "sysemu/hw_accel.h"
-#include "qemu/notify.h"
+#include "system/hw_accel.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
+#include "qemu/lockcnt.h"
 #include "exec/log.h"
-#include "exec/cpu-common.h"
-#include "qemu/error-report.h"
-#include "qemu/qemu-print.h"
-#include "sysemu/tcg.h"
+#include "exec/gdbstub.h"
+#include "system/tcg.h"
 #include "hw/boards.h"
 #include "hw/qdev-properties.h"
 #include "trace.h"
+#ifdef CONFIG_PLUGIN
 #include "qemu/plugin.h"
+#endif
 
 CPUState *cpu_by_arch_id(int64_t id)
 {
     CPUState *cpu;
 
     CPU_FOREACH(cpu) {
-        CPUClass *cc = CPU_GET_CLASS(cpu);
-
-        if (cc->get_arch_id(cpu) == id) {
+        if (cpu->cc->get_arch_id(cpu) == id) {
             return cpu;
         }
     }
@@ -70,14 +68,14 @@ CPUState *cpu_create(const char *typename)
  * BQL here if we need to.  cpu_interrupt assumes it is held.*/
 void cpu_reset_interrupt(CPUState *cpu, int mask)
 {
-    bool need_lock = !qemu_mutex_iothread_locked();
+    bool need_lock = !bql_locked();
 
     if (need_lock) {
-        qemu_mutex_lock_iothread();
+        bql_lock();
     }
     cpu->interrupt_request &= ~mask;
     if (need_lock) {
-        qemu_mutex_unlock_iothread();
+        bql_unlock();
     }
 }
 
@@ -101,11 +99,9 @@ static int cpu_common_gdb_write_register(CPUState *cpu, uint8_t *buf, int reg)
 
 void cpu_dump_state(CPUState *cpu, FILE *f, int flags)
 {
-    CPUClass *cc = CPU_GET_CLASS(cpu);
-
-    if (cc->dump_state) {
+    if (cpu->cc->dump_state) {
         cpu_synchronize_state(cpu);
-        cc->dump_state(cpu, f, flags);
+        cpu->cc->dump_state(cpu, f, flags);
     }
 }
 
@@ -116,14 +112,13 @@ void cpu_reset(CPUState *cpu)
     trace_cpu_reset(cpu->cpu_index);
 }
 
-static void cpu_common_reset_hold(Object *obj)
+static void cpu_common_reset_hold(Object *obj, ResetType type)
 {
     CPUState *cpu = CPU(obj);
-    CPUClass *cc = CPU_GET_CLASS(cpu);
 
     if (qemu_loglevel_mask(CPU_LOG_RESET)) {
         qemu_log("CPU Reset (CPU %d)\n", cpu->cpu_index);
-        log_cpu_state(cpu, cc->reset_dump_flags);
+        log_cpu_state(cpu, cpu->cc->reset_dump_flags);
     }
 
     cpu->interrupt_request = 0;
@@ -139,11 +134,6 @@ static void cpu_common_reset_hold(Object *obj)
     cpu_exec_reset_hold(cpu);
 }
 
-static bool cpu_common_has_work(CPUState *cs)
-{
-    return false;
-}
-
 ObjectClass *cpu_class_by_name(const char *typename, const char *cpu_model)
 {
     ObjectClass *oc;
@@ -154,10 +144,12 @@ ObjectClass *cpu_class_by_name(const char *typename, const char *cpu_model)
     assert(cc->class_by_name);
     assert(cpu_model);
     oc = cc->class_by_name(cpu_model);
-    if (oc == NULL || object_class_is_abstract(oc)) {
-        return NULL;
+    if (object_class_dynamic_cast(oc, typename) &&
+        !object_class_is_abstract(oc)) {
+        return oc;
     }
-    return oc;
+
+    return NULL;
 }
 
 static void cpu_common_parse_features(const char *typename, char *features,
@@ -191,6 +183,20 @@ static void cpu_common_parse_features(const char *typename, char *features,
     }
 }
 
+bool cpu_exec_realizefn(CPUState *cpu, Error **errp)
+{
+    if (!accel_cpu_common_realize(cpu, errp)) {
+        return false;
+    }
+
+    /* Wait until cpu initialization complete before exposing cpu. */
+    cpu_list_add(cpu);
+
+    cpu_vmstate_register(cpu);
+
+    return true;
+}
+
 static void cpu_common_realizefn(DeviceState *dev, Error **errp)
 {
     CPUState *cpu = CPU(dev);
@@ -214,11 +220,6 @@ static void cpu_common_realizefn(DeviceState *dev, Error **errp)
         cpu_resume(cpu);
     }
 
-    /* Plugin initialization must wait until the cpu is fully realized. */
-    if (tcg_enabled()) {
-        qemu_plugin_vcpu_init_hook(cpu);
-    }
-
     /* NOTE: latest generic point where the cpu is fully realized */
 }
 
@@ -227,27 +228,50 @@ static void cpu_common_unrealizefn(DeviceState *dev)
     CPUState *cpu = CPU(dev);
 
     /* Call the plugin hook before clearing the cpu is fully unrealized */
+#ifdef CONFIG_PLUGIN
     if (tcg_enabled()) {
         qemu_plugin_vcpu_exit_hook(cpu);
     }
+#endif
 
     /* NOTE: latest generic point before the cpu is fully unrealized */
     cpu_exec_unrealizefn(cpu);
 }
 
+void cpu_exec_unrealizefn(CPUState *cpu)
+{
+    cpu_vmstate_unregister(cpu);
+
+    cpu_list_remove(cpu);
+    /*
+     * Now that the vCPU has been removed from the RCU list, we can call
+     * accel_cpu_common_unrealize, which may free fields using call_rcu.
+     */
+    accel_cpu_common_unrealize(cpu);
+}
+
 static void cpu_common_initfn(Object *obj)
 {
     CPUState *cpu = CPU(obj);
-    CPUClass *cc = CPU_GET_CLASS(obj);
 
+    cpu_exec_class_post_init(CPU_GET_CLASS(obj));
+
+    /* cache the cpu class for the hotpath */
+    cpu->cc = CPU_GET_CLASS(cpu);
+
+    gdb_init_cpu(cpu);
     cpu->cpu_index = UNASSIGNED_CPU_INDEX;
     cpu->cluster_index = UNASSIGNED_CLUSTER_INDEX;
-    cpu->gdb_num_regs = cpu->gdb_num_g_regs = cc->gdb_num_core_regs;
+    cpu->as = NULL;
+    cpu->num_ases = 0;
     /* user-mode doesn't have configurable SMP topology */
     /* the default value is changed by qemu_init_vcpu() for system-mode */
-    cpu->nr_cores = 1;
     cpu->nr_threads = 1;
-    cpu->cflags_next_tb = -1;
+
+    /* allocate storage for thread info, initialise condition variables */
+    cpu->thread = g_new0(QemuThread, 1);
+    cpu->halt_cond = g_new0(QemuCond, 1);
+    qemu_cond_init(cpu->halt_cond);
 
     qemu_mutex_init(&cpu->work_mutex);
     qemu_lockcnt_init(&cpu->in_ioctl_lock);
@@ -256,14 +280,39 @@ static void cpu_common_initfn(Object *obj)
     QTAILQ_INIT(&cpu->watchpoints);
 
     cpu_exec_initfn(cpu);
+
+    /*
+     * Plugin initialization must wait until the cpu start executing
+     * code, but we must queue this work before the threads are
+     * created to ensure we don't race.
+     */
+#ifdef CONFIG_PLUGIN
+    if (tcg_enabled()) {
+        cpu->plugin_state = qemu_plugin_create_vcpu_state();
+        qemu_plugin_vcpu_init_hook(cpu);
+    }
+#endif
 }
 
 static void cpu_common_finalize(Object *obj)
 {
     CPUState *cpu = CPU(obj);
 
+#ifdef CONFIG_PLUGIN
+    if (tcg_enabled()) {
+        g_free(cpu->plugin_state);
+    }
+#endif
+    free_queued_cpu_work(cpu);
+    /* If cleanup didn't happen in context to gdb_unregister_coprocessor_all */
+    if (cpu->gdb_regs) {
+        g_array_free(cpu->gdb_regs, TRUE);
+    }
     qemu_lockcnt_destroy(&cpu->in_ioctl_lock);
     qemu_mutex_destroy(&cpu->work_mutex);
+    qemu_cond_destroy(cpu->halt_cond);
+    g_free(cpu->halt_cond);
+    g_free(cpu->thread);
 }
 
 static int64_t cpu_common_get_arch_id(CPUState *cpu)
@@ -271,7 +320,7 @@ static int64_t cpu_common_get_arch_id(CPUState *cpu)
     return cpu->cpu_index;
 }
 
-static void cpu_class_init(ObjectClass *klass, void *data)
+static void cpu_common_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
@@ -279,7 +328,6 @@ static void cpu_class_init(ObjectClass *klass, void *data)
 
     k->parse_features = cpu_common_parse_features;
     k->get_arch_id = cpu_common_get_arch_id;
-    k->has_work = cpu_common_has_work;
     k->gdb_read_register = cpu_common_gdb_read_register;
     k->gdb_write_register = cpu_common_gdb_write_register;
     set_bit(DEVICE_CATEGORY_CPU, dc->categories);
@@ -302,7 +350,7 @@ static const TypeInfo cpu_type_info = {
     .instance_finalize = cpu_common_finalize,
     .abstract = true,
     .class_size = sizeof(CPUClass),
-    .class_init = cpu_class_init,
+    .class_init = cpu_common_class_init,
 };
 
 static void cpu_register_types(void)

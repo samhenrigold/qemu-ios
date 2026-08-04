@@ -31,7 +31,7 @@
 
 #include <glib/gprintf.h>
 
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "trace.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
@@ -42,6 +42,7 @@
 #include "qemu/cutils.h"
 #include "qemu/units.h"
 #include "qemu/thread-context.h"
+#include "qemu/main-loop.h"
 
 #ifdef CONFIG_LINUX
 #include <sys/syscall.h>
@@ -63,11 +64,15 @@
 
 struct MemsetThread;
 
+static QLIST_HEAD(, MemsetContext) memset_contexts =
+    QLIST_HEAD_INITIALIZER(memset_contexts);
+
 typedef struct MemsetContext {
     bool all_threads_created;
     bool any_thread_failed;
     struct MemsetThread *threads;
     int num_threads;
+    QLIST_ENTRY(MemsetContext) next;
 } MemsetContext;
 
 struct MemsetThread {
@@ -103,6 +108,21 @@ int qemu_get_thread_id(void)
     return getthrid();
 #else
     return getpid();
+#endif
+}
+
+int qemu_kill_thread(int tid, int sig)
+{
+#if defined(__linux__)
+    return syscall(__NR_tgkill, getpid(), tid, sig);
+#elif defined(__FreeBSD__)
+    return thr_kill2(getpid(), tid, sig);
+#elif defined(__NetBSD__)
+    return _lwp_kill(tid, sig);
+#elif defined(__OpenBSD__)
+    return thrkill(tid, sig, NULL);
+#else
+    return kill(tid, sig);
 #endif
 }
 
@@ -258,7 +278,7 @@ int qemu_socketpair(int domain, int type, int protocol, int sv[2])
         return ret;
     }
 #endif
-    ret = socketpair(domain, type, protocol, sv);;
+    ret = socketpair(domain, type, protocol, sv);
     if (ret == 0) {
         qemu_set_cloexec(sv[0]);
         qemu_set_cloexec(sv[1]);
@@ -412,18 +432,43 @@ static inline int get_memset_num_threads(size_t hpagesize, size_t numpages,
     return ret;
 }
 
+static int wait_and_free_mem_prealloc_context(MemsetContext *context)
+{
+    int i, ret = 0, tmp;
+
+    for (i = 0; i < context->num_threads; i++) {
+        tmp = (uintptr_t)qemu_thread_join(&context->threads[i].pgthread);
+
+        if (tmp) {
+            ret = tmp;
+        }
+    }
+    g_free(context->threads);
+    g_free(context);
+    return ret;
+}
+
 static int touch_all_pages(char *area, size_t hpagesize, size_t numpages,
-                           int max_threads, ThreadContext *tc,
+                           int max_threads, ThreadContext *tc, bool async,
                            bool use_madv_populate_write)
 {
     static gsize initialized = 0;
-    MemsetContext context = {
-        .num_threads = get_memset_num_threads(hpagesize, numpages, max_threads),
-    };
+    MemsetContext *context = g_malloc0(sizeof(MemsetContext));
     size_t numpages_per_thread, leftover;
     void *(*touch_fn)(void *);
-    int ret = 0, i = 0;
+    int ret, i = 0;
     char *addr = area;
+
+    /*
+     * Asynchronous preallocation is only allowed when using MADV_POPULATE_WRITE
+     * and prealloc context for thread placement.
+     */
+    if (!use_madv_populate_write || !tc) {
+        async = false;
+    }
+
+    context->num_threads =
+        get_memset_num_threads(hpagesize, numpages, max_threads);
 
     if (g_once_init_enter(&initialized)) {
         qemu_mutex_init(&page_mutex);
@@ -432,63 +477,104 @@ static int touch_all_pages(char *area, size_t hpagesize, size_t numpages,
     }
 
     if (use_madv_populate_write) {
-        /* Avoid creating a single thread for MADV_POPULATE_WRITE */
-        if (context.num_threads == 1) {
+        /*
+         * Avoid creating a single thread for MADV_POPULATE_WRITE when
+         * preallocating synchronously.
+         */
+        if (context->num_threads == 1 && !async) {
+            ret = 0;
             if (qemu_madvise(area, hpagesize * numpages,
                              QEMU_MADV_POPULATE_WRITE)) {
-                return -errno;
+                ret = -errno;
             }
-            return 0;
+            g_free(context);
+            return ret;
         }
         touch_fn = do_madv_populate_write_pages;
     } else {
         touch_fn = do_touch_pages;
     }
 
-    context.threads = g_new0(MemsetThread, context.num_threads);
-    numpages_per_thread = numpages / context.num_threads;
-    leftover = numpages % context.num_threads;
-    for (i = 0; i < context.num_threads; i++) {
-        context.threads[i].addr = addr;
-        context.threads[i].numpages = numpages_per_thread + (i < leftover);
-        context.threads[i].hpagesize = hpagesize;
-        context.threads[i].context = &context;
+    context->threads = g_new0(MemsetThread, context->num_threads);
+    numpages_per_thread = numpages / context->num_threads;
+    leftover = numpages % context->num_threads;
+    for (i = 0; i < context->num_threads; i++) {
+        context->threads[i].addr = addr;
+        context->threads[i].numpages = numpages_per_thread + (i < leftover);
+        context->threads[i].hpagesize = hpagesize;
+        context->threads[i].context = context;
         if (tc) {
-            thread_context_create_thread(tc, &context.threads[i].pgthread,
+            thread_context_create_thread(tc, &context->threads[i].pgthread,
                                          "touch_pages",
-                                         touch_fn, &context.threads[i],
+                                         touch_fn, &context->threads[i],
                                          QEMU_THREAD_JOINABLE);
         } else {
-            qemu_thread_create(&context.threads[i].pgthread, "touch_pages",
-                               touch_fn, &context.threads[i],
+            qemu_thread_create(&context->threads[i].pgthread, "touch_pages",
+                               touch_fn, &context->threads[i],
                                QEMU_THREAD_JOINABLE);
         }
-        addr += context.threads[i].numpages * hpagesize;
+        addr += context->threads[i].numpages * hpagesize;
+    }
+
+    if (async) {
+        /*
+         * async requests currently require the BQL. Add it to the list and kick
+         * preallocation off during qemu_finish_async_prealloc_mem().
+         */
+        assert(bql_locked());
+        QLIST_INSERT_HEAD(&memset_contexts, context, next);
+        return 0;
     }
 
     if (!use_madv_populate_write) {
-        sigbus_memset_context = &context;
+        sigbus_memset_context = context;
     }
 
     qemu_mutex_lock(&page_mutex);
-    context.all_threads_created = true;
+    context->all_threads_created = true;
     qemu_cond_broadcast(&page_cond);
     qemu_mutex_unlock(&page_mutex);
 
-    for (i = 0; i < context.num_threads; i++) {
-        int tmp = (uintptr_t)qemu_thread_join(&context.threads[i].pgthread);
+    ret = wait_and_free_mem_prealloc_context(context);
 
+    if (!use_madv_populate_write) {
+        sigbus_memset_context = NULL;
+    }
+    return ret;
+}
+
+bool qemu_finish_async_prealloc_mem(Error **errp)
+{
+    int ret = 0, tmp;
+    MemsetContext *context, *next_context;
+
+    /* Waiting for preallocation requires the BQL. */
+    assert(bql_locked());
+    if (QLIST_EMPTY(&memset_contexts)) {
+        return true;
+    }
+
+    qemu_mutex_lock(&page_mutex);
+    QLIST_FOREACH(context, &memset_contexts, next) {
+        context->all_threads_created = true;
+    }
+    qemu_cond_broadcast(&page_cond);
+    qemu_mutex_unlock(&page_mutex);
+
+    QLIST_FOREACH_SAFE(context, &memset_contexts, next, next_context) {
+        QLIST_REMOVE(context, next);
+        tmp = wait_and_free_mem_prealloc_context(context);
         if (tmp) {
             ret = tmp;
         }
     }
 
-    if (!use_madv_populate_write) {
-        sigbus_memset_context = NULL;
+    if (ret) {
+        error_setg_errno(errp, -ret,
+                         "qemu_prealloc_mem: preallocating memory failed");
+        return false;
     }
-    g_free(context.threads);
-
-    return ret;
+    return true;
 }
 
 static bool madv_populate_write_possible(char *area, size_t pagesize)
@@ -497,8 +583,8 @@ static bool madv_populate_write_possible(char *area, size_t pagesize)
            errno != EINVAL;
 }
 
-void qemu_prealloc_mem(int fd, char *area, size_t sz, int max_threads,
-                       ThreadContext *tc, Error **errp)
+bool qemu_prealloc_mem(int fd, char *area, size_t sz, int max_threads,
+                       ThreadContext *tc, bool async, Error **errp)
 {
     static gsize initialized;
     int ret;
@@ -506,6 +592,7 @@ void qemu_prealloc_mem(int fd, char *area, size_t sz, int max_threads,
     size_t numpages = DIV_ROUND_UP(sz, hpagesize);
     bool use_madv_populate_write;
     struct sigaction act;
+    bool rv = true;
 
     /*
      * Sense on every invocation, as MADV_POPULATE_WRITE cannot be used for
@@ -534,16 +621,17 @@ void qemu_prealloc_mem(int fd, char *area, size_t sz, int max_threads,
             qemu_mutex_unlock(&sigbus_mutex);
             error_setg_errno(errp, errno,
                 "qemu_prealloc_mem: failed to install signal handler");
-            return;
+            return false;
         }
     }
 
     /* touch pages simultaneously */
-    ret = touch_all_pages(area, hpagesize, numpages, max_threads, tc,
+    ret = touch_all_pages(area, hpagesize, numpages, max_threads, tc, async,
                           use_madv_populate_write);
     if (ret) {
         error_setg_errno(errp, -ret,
                          "qemu_prealloc_mem: preallocating memory failed");
+        rv = false;
     }
 
     if (!use_madv_populate_write) {
@@ -555,6 +643,7 @@ void qemu_prealloc_mem(int fd, char *area, size_t sz, int max_threads,
         }
         qemu_mutex_unlock(&sigbus_mutex);
     }
+    return rv;
 }
 
 char *qemu_get_pid_name(pid_t pid)
@@ -732,4 +821,180 @@ int qemu_msync(void *addr, size_t length, int fd)
     addr = (void *)((uintptr_t)addr & align_mask);
 
     return msync(addr, length, MS_SYNC);
+}
+
+static bool qemu_close_all_open_fd_proc(const int *skip, unsigned int nskip)
+{
+    struct dirent *de;
+    int fd, dfd;
+    DIR *dir;
+    unsigned int skip_start = 0, skip_end = nskip;
+
+    dir = opendir("/proc/self/fd");
+    if (!dir) {
+        /* If /proc is not mounted, there is nothing that can be done. */
+        return false;
+    }
+    /* Avoid closing the directory. */
+    dfd = dirfd(dir);
+
+    for (de = readdir(dir); de; de = readdir(dir)) {
+        bool close_fd = true;
+
+        if (de->d_name[0] == '.') {
+            continue;
+        }
+        fd = atoi(de->d_name);
+        if (fd == dfd) {
+            continue;
+        }
+
+        for (unsigned int i = skip_start; i < skip_end; i++) {
+            if (fd < skip[i]) {
+                /* We are below the next skipped fd, break */
+                break;
+            } else if (fd == skip[i]) {
+                close_fd = false;
+                /* Restrict the range as we found fds matching start/end */
+                if (i == skip_start) {
+                    skip_start++;
+                } else if (i == skip_end) {
+                    skip_end--;
+                }
+                break;
+            }
+        }
+
+        if (close_fd) {
+            close(fd);
+        }
+    }
+    closedir(dir);
+
+    return true;
+}
+
+static bool qemu_close_all_open_fd_close_range(const int *skip,
+                                               unsigned int nskip,
+                                               int open_max)
+{
+#ifdef CONFIG_CLOSE_RANGE
+    int max_fd = open_max - 1;
+    int first = 0, last;
+    unsigned int cur_skip = 0;
+    int ret;
+
+    do {
+        /* Find the start boundary of the range to close */
+        while (cur_skip < nskip && first == skip[cur_skip]) {
+            cur_skip++;
+            first++;
+        }
+
+        /* Find the upper boundary of the range to close */
+        last = max_fd;
+        if (cur_skip < nskip) {
+            last = skip[cur_skip] - 1;
+            last = MIN(last, max_fd);
+        }
+
+        /* With the adjustments to the range, we might be done. */
+        if (first > last) {
+            break;
+        }
+
+        ret = close_range(first, last, 0);
+        if (ret < 0) {
+            return false;
+        }
+
+        first = last + 1;
+    } while (last < max_fd);
+
+    return true;
+#else
+    return false;
+#endif
+}
+
+static void qemu_close_all_open_fd_fallback(const int *skip, unsigned int nskip,
+                                            int open_max)
+{
+    unsigned int cur_skip = 0;
+
+    /* Fallback */
+    for (int i = 0; i < open_max; i++) {
+        if (cur_skip < nskip && i == skip[cur_skip]) {
+            cur_skip++;
+            continue;
+        }
+        close(i);
+    }
+}
+
+/*
+ * Close all open file descriptors.
+ */
+void qemu_close_all_open_fd(const int *skip, unsigned int nskip)
+{
+    int open_max = sysconf(_SC_OPEN_MAX);
+
+    assert(skip != NULL || nskip == 0);
+
+    if (!qemu_close_all_open_fd_close_range(skip, nskip, open_max) &&
+        !qemu_close_all_open_fd_proc(skip, nskip)) {
+        qemu_close_all_open_fd_fallback(skip, nskip, open_max);
+    }
+}
+
+int qemu_shm_alloc(size_t size, Error **errp)
+{
+    g_autoptr(GString) shm_name = g_string_new(NULL);
+    int fd, oflag, cur_sequence;
+    static int sequence;
+    mode_t mode;
+
+    cur_sequence = qatomic_fetch_inc(&sequence);
+
+    /*
+     * Let's use `mode = 0` because we don't want other processes to open our
+     * memory unless we share the file descriptor with them.
+     */
+    mode = 0;
+    oflag = O_RDWR | O_CREAT | O_EXCL;
+
+    /*
+     * Some operating systems allow creating anonymous POSIX shared memory
+     * objects (e.g. FreeBSD provides the SHM_ANON constant), but this is not
+     * defined by POSIX, so let's create a unique name.
+     *
+     * From Linux's shm_open(3) man-page:
+     *   For  portable  use,  a shared  memory  object should be identified
+     *   by a name of the form /somename;"
+     */
+    g_string_printf(shm_name, "/qemu-" FMT_pid "-shm-%d", getpid(),
+                    cur_sequence);
+
+    fd = shm_open(shm_name->str, oflag, mode);
+    if (fd < 0) {
+        error_setg_errno(errp, errno,
+                         "failed to create POSIX shared memory");
+        return -1;
+    }
+
+    /*
+     * We have the file descriptor, so we no longer need to expose the
+     * POSIX shared memory object. However it will remain allocated as long as
+     * there are file descriptors pointing to it.
+     */
+    shm_unlink(shm_name->str);
+
+    if (ftruncate(fd, size) == -1) {
+        error_setg_errno(errp, errno,
+                         "failed to resize POSIX shared memory to %zu", size);
+        close(fd);
+        return -1;
+    }
+
+    return fd;
 }
