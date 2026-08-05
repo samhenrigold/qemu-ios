@@ -250,6 +250,7 @@ typedef struct {
 	QEMUTimer *pwroff_timer;
 	int pwroff_phase;
 	int pwroff_step;
+	int pwroff_knob_y;   /* found once when the sheet settles, then held */
 
 	/*
 	 * On-screen-keyboard typist (see ipod_touch_osk_tick). Enabled with
