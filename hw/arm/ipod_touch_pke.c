@@ -64,10 +64,17 @@ static uint8_t *datahex(char* string) {
     if((slength % 2) != 0) // must be even
        return NULL;
 
+    /*
+     * No guard on dlength: it is strlen(string)/2 of a NUL-terminated string
+     * this file produced with BN_bn2hex, so the allocation is by construction
+     * exactly as long as what is written into it. The guest influences the
+     * VALUE through the segments, but not the length relationship -- and the
+     * modexp result is bounded by the modulus, i.e. by segment_size, which
+     * START already rejects unless it is 128 or 256 bytes.
+     */
     size_t dlength = slength / 2;
 
-    uint8_t* data = malloc(dlength);
-    memset(data, 0, dlength);
+    uint8_t *data = g_malloc0(dlength);
 
     size_t index = 0;
     while (index < slength) {
@@ -80,7 +87,7 @@ static uint8_t *datahex(char* string) {
         else if (c >= 'a' && c <= 'f')
           value = (10 + (c - 'a'));
         else {
-          free(data);
+          g_free(data);
           return NULL;
         }
 
@@ -172,7 +179,9 @@ static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, un
                 // printf("\n\n");
 
                 char *bn_hex = BN_bn2hex(res);
-                char *res_hex = (char *)datahex(bn_hex);
+                /* g_autofree: the forge path below leaves this block with a
+                 * `break`, so the buffer was leaked once per signature check. */
+                g_autofree char *res_hex = (char *)datahex(bn_hex);
                 /*
                  * res_hex is exactly strlen(bn_hex)/2 bytes and BN_bn2hex is
                  * minimal-length, so on a FAILED verification it is shorter
