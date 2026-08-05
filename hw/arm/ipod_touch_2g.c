@@ -2136,34 +2136,32 @@ static void ipod_touch_powerdown_req(Notifier *n, void *opaque)
 		fprintf(stderr, "[PWROFF] holding the hold button\n");
 	}
 	/*
-	 * Unplug, as a user would before switching a device off.
+	 * Clear the USB-cable bit while powering down.
 	 *
-	 * usb-attached defaults ON because the emulated device is effectively
-	 * tethered, and the PMU reports that as a live cable in PMU_PWRSRC_STATUS
-	 * bit 3. A real device charges rather than powers off while plugged in, and
-	 * 3.1.3 honours that: with the cable asserted the kernel sat in its
-	 * power-source poll forever at 100% CPU -- reg 0x04 read as 0x08, two writes
-	 * to 0x40, repeat, all from one PC -- never reaching the power latch at 0x10
-	 * whose falling edge is what raises this machine's shutdown request.
+	 * DISPROVEN RATIONALE, KEPT AS A WARNING. This was added believing that a
+	 * real device refuses to power off while plugged in and that 3.1.3 was
+	 * faithfully honouring that. **That is false.** Tested on real hardware
+	 * (iPod touch 2G, MB528, build 7E18, tethered over USB the whole time):
+	 * hold power, slide, and it powers off normally with the cable attached.
+	 * So the guest's refusal here is OUR bug, not emulated fidelity.
 	 *
-	 * PARTIAL FIX, MEASURED. Clearing the cable does get the guest past that
-	 * gate: the 0x04 spin stops and it proceeds to step through 0x05/0x06/0x0a
-	 * (read 0x0a=0x18, write 0x0a=0x19), i.e. it starts sequencing rails down.
-	 * But it still does not complete a halt -- 180 s and counting, QEMU never
-	 * exits. So system_powerdown remains BROKEN on 3.1.3; this only moves the
-	 * stall later.
+	 * What is still true is the observation, not the explanation: with the cable
+	 * bit asserted the guest sits in its power-source poll forever at 100% CPU
+	 * -- reg 0x04 read as 0x08, two writes to 0x40, repeat, one PC -- and
+	 * clearing the bit demonstrably advances it to 0x05/0x06/0x0a. It just does
+	 * not finish, so this is a perturbation that moves the stall, not a fix.
 	 *
-	 * Consequence for the regression suite: with the default image on 3.1.3 the
-	 * guest has to be killed at a timeout, leaving a dirty volume, so fsck
-	 * ("volume found corrupt") and persist ("did not shut down cleanly") both
-	 * fail downstream of that -- not because of anything wrong in those checks.
+	 * The better lead, from the same hardware test: our PMU answers the
+	 * power-source block as 0x04=cable-bit-only, 0x05=0, 0x06=0, and the header
+	 * notes AppleD1759PMUPowerSource reads 0x04..0x06 AS A BLOCK. Real silicon
+	 * returns a coherent charger/battery state across all three. Returning zeros
+	 * for two thirds of it is the likelier reason the driver never concludes,
+	 * and it explains why toggling one bit in 0x04 changes where it hangs
+	 * without ever letting it finish. Model 0x04..0x06 properly before touching
+	 * anything else.
 	 *
-	 * Next step for whoever picks this up: identify reg 0x0a and what the guest
-	 * is waiting for after it writes 0x19 there. IT_PMU_TRACE=1 shows the whole
-	 * conversation with guest PC/LR on every access, which is how the 0x04 gate
-	 * above was found. Do NOT go back to the slide-gesture coordinates: the
-	 * gesture is accepted and correct on 3.1.3 (screendumped mid-drag, knob on
-	 * the track), and that blind alley has already cost two investigations.
+	 * Do NOT revisit the slide gesture: it is accepted and correct on 3.1.3
+	 * (screendumped mid-drag, knob on the track). Two investigations died there.
 	 */
 	if (s_kbd_mt) {
 		ipod_touch_key_event(s_kbd_mt, KEY_P_DOWN);
