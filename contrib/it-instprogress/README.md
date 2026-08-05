@@ -7,8 +7,8 @@ end.
 
 **Shipped: the placeholder, end to end.** Drop an `.ipa` on the QEMU window and
 a placeholder appears on the home screen while the install runs, then the real
-icon takes its place — `DELIVERABLE-2-placeholder-during-install.png` and
-`DELIVERABLE-3-real-icon-after-install.png` are two frames of one Epicurious
+icon takes its place — `docs/screenshots/DELIVERABLE-2-placeholder-during-install.png`
+and `docs/screenshots/DELIVERABLE-3-real-icon-after-install.png` are two frames of one Epicurious
 install, the same slot before and after. No injection and no entitlement.
 
 **Not shipped: the filling progress bar.** It is fed only by an `ISDownload`
@@ -143,7 +143,7 @@ sets its bundle ID, and then:
   and the placeholder appears immediately, in that app's slot. Measured:
   `sbdlicon add dl-demo-2 com.apple.mobilenotes` replaced the Notes icon with a
   dark placeholder labelled "Waiting…"
-  (`DELIVERABLE-1-placeholder-over-an-installed-app.png`).
+  (`docs/screenshots/DELIVERABLE-1-placeholder-over-an-installed-app.png`).
 * if it is **not installed** -> only `[SBIconController setIconToInstall:]`,
   which just stashes the icon in an ivar. Measured: nothing appears.
 

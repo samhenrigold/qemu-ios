@@ -82,8 +82,8 @@ Two consequences worth knowing before debugging anything here:
 * `pbset.c` — the working version: reads `/tmp/pbtext` and sets it with an
   explicit UTI, no reads at all (the reads are what send an empty type).
 * `it_pbd.c` — the real thing: a launchd-started daemon that carries text both
-  ways over the `QC_PB_*` ops. `it_pbd` is the built armv6 binary, tracked so
-  an image can be built without the toolchain.
+  ways over the `QC_PB_*` ops. `it_pbd` is the built armv6 binary, rebuilt by
+  `build.sh` (gitignored, not tracked).
 * `com.qemu.it-pbd.plist` — its LaunchDaemon.
 * `build.sh` — armv6 build, see `../armv6-toolchain/README.md`. Plain C with a
   dlopen'd ObjC runtime, because `ld -lobjc` against the 3.1.3 SDK is fatal.

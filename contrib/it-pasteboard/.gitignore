@@ -2,6 +2,6 @@
 # seconds, and a stale checked-in copy is worse than none: several agents share
 # this tree, and "a successful build does not mean the binary you ran is the one
 # you built" applies to guest binaries too.
-probe_insert.dylib
-sbdlicon
-sbunlock
+pbprobe
+pbset
+it_pbd
