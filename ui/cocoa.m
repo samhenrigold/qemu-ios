@@ -1001,6 +1001,42 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
             stringByAppendingPathComponent:@"../imgtools/install-ipa.sh"];
 }
 
+/*
+ * A fixed-size scrollable box for script output.
+ *
+ * NSAlert grows to fit its informative text and does NOT cap itself at the
+ * screen height, so a long enough install log pushed the buttons off the bottom
+ * of a laptop display -- the alert became unusable without changing the screen
+ * resolution to dismiss it. An accessory view has a frame we choose, so the
+ * alert's height stops being a function of how much the installer had to say.
+ *
+ * Selectable on purpose: the text is a diagnosis, and being able to copy it is
+ * the difference between reporting a problem and describing one.
+ */
+static NSView *it_output_box(NSString *text, NSSize size)
+{
+    NSRect frame = NSMakeRect(0, 0, size.width, size.height);
+    NSScrollView *sv = [[[NSScrollView alloc] initWithFrame:frame] autorelease];
+    NSTextView *tv = [[[NSTextView alloc] initWithFrame:frame] autorelease];
+
+    [tv setEditable:NO];
+    [tv setSelectable:YES];
+    [tv setRichText:NO];
+    [tv setFont:[NSFont monospacedSystemFontOfSize:11
+                                            weight:NSFontWeightRegular]];
+    [tv setString:text];
+    [tv setVerticallyResizable:YES];
+    [tv setHorizontallyResizable:NO];
+    [[tv textContainer] setWidthTracksTextView:YES];
+
+    [sv setDocumentView:tv];
+    [sv setHasVerticalScroller:YES];
+    [sv setAutohidesScrollers:YES];
+    [sv setBorderType:NSBezelBorder];
+    [sv setDrawsBackground:YES];
+    return sv;
+}
+
 - (void) installIPA:(NSString *)path
 {
     NSString *tool = [self installerPath];
@@ -1045,8 +1081,30 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
                    [path lastPathComponent]]
                 : [NSString stringWithFormat:@"Could not install %@",
                    [path lastPathComponent]]];
-            /* The script's own diagnosis, verbatim -- it is the useful part. */
-            [a setInformativeText:text ?: @"(no output)"];
+            /*
+             * The script's own diagnosis, verbatim -- it is the useful part.
+             *
+             * `text ?: ...` was not the nil-guard it looks like: a script that
+             * prints nothing yields an EMPTY STRING, not nil, so the fallback
+             * never fired and the alert came up with a blank body. Trim and
+             * test the length instead.
+             */
+            NSString *body = [text stringByTrimmingCharactersInSet:
+                [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+            if ([body length] == 0) {
+                body = @"(no output)";
+            }
+
+            /*
+             * Always the box, whatever the length. Sizing the dialog to the
+             * output meant the same action produced a different-shaped window
+             * each time, and the one you had to read carefully -- the long
+             * failure -- was the one that reshaped itself off the screen. One
+             * fixed frame is worth a little empty space under a short message.
+             */
+            [a setInformativeText:@"The installer reported:"];
+            [a setAccessoryView:it_output_box(body, NSMakeSize(480, 220))];
             [a runModal];
         });
     });
