@@ -59,6 +59,10 @@ DEF_HELPER_1(pre_hvc, void, env)
 DEF_HELPER_2(pre_smc, void, env, i32)
 DEF_HELPER_1(vesb, void, env)
 
+/* Guest framework hoisting -- see target/arm/tcg/it-hle.c. */
+DEF_HELPER_2(it_hle_count, void, env, i32)
+DEF_HELPER_2(it_hle_hoist, void, env, i32)
+
 DEF_HELPER_3(cpsr_write, void, env, i32, i32)
 DEF_HELPER_2(cpsr_write_eret, void, env, i32)
 DEF_HELPER_1(cpsr_read, i32, env)

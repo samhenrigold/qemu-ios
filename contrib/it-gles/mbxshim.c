@@ -246,6 +246,28 @@ static int s_frustumf(void *gc, unsigned l, unsigned r, unsigned b,
                       unsigned t, unsigned n, unsigned f)
     { return (int)qc(772, gc, 6, A(l, r, b, t, n, f)); }
 
+/* The rest of Super Monkey Ball's import set -- its `nm -u` lists 49 gl*
+ * symbols and these seven were the only unimplemented ones. Slot numbers read
+ * out of the 3.1.3 SDK trampolines like all the others (see gles.h). */
+static int s_alphaFunc(void *gc, unsigned func, unsigned ref)
+    { return (int)qc(1, gc, 2, A(func, ref)); }
+static int s_deleteTextures(void *gc, unsigned n, unsigned ids)
+    { return (int)qc(59, gc, 2, A(n, ids)); }
+static int s_getIntegerv(void *gc, unsigned pname, unsigned out)
+    { return (int)qc(104, gc, 2, A(pname, out)); }
+static int s_loadMatrixf(void *gc, unsigned m)
+    { return (int)qc(159, gc, 1, A(m)); }
+static int s_texSubImage2D(void *gc, unsigned target, unsigned level,
+                           unsigned xoff, unsigned yoff, unsigned wd_,
+                           unsigned ht, unsigned fmt, unsigned type,
+                           unsigned pixels)
+    { return (int)qc(307, gc, 9,
+                     A(target, level, xoff, yoff, wd_, ht, fmt, type, pixels)); }
+static int s_bindBuffer(void *gc, unsigned target, unsigned buf)
+    { return (int)qc(642, gc, 2, A(target, buf)); }
+static int s_scalex(void *gc, unsigned x, unsigned y, unsigned z)
+    { return (int)qc(796, gc, 3, A(x, y, z)); }
+
 /* OES framebuffer objects. EAGL calls these itself inside
  * -renderbufferStorage:fromDrawable:, so a CAEAGLLayer client needs them
  * before it can draw anything at all. */
@@ -369,6 +391,14 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
         table[309] = (void *)s_translatef;
         table[763] = (void *)s_clearDepthf;
         table[772] = (void *)s_frustumf;
+
+        table[1]   = (void *)s_alphaFunc;
+        table[59]  = (void *)s_deleteTextures;
+        table[104] = (void *)s_getIntegerv;
+        table[159] = (void *)s_loadMatrixf;
+        table[307] = (void *)s_texSubImage2D;
+        table[642] = (void *)s_bindBuffer;
+        table[796] = (void *)s_scalex;
     }
 
     if (gc_out) {

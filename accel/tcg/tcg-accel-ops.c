@@ -64,6 +64,30 @@ void tcg_cpu_init_cflags(CPUState *cpu, bool parallel)
 
     cflags |= parallel ? CF_PARALLEL : 0;
     cflags |= icount_enabled() ? CF_USE_ICOUNT : 0;
+    /*
+     * goto_ptr is too complex to emit a gadget for, so under TCTI
+     * tcg_op_supported() reports it unsupported and the translator must be
+     * told not to emit it at all.
+     *
+     * The upstream comment claims "letting C take the exit costs about the
+     * same anyway". That is an untested assumption, and an expensive one if
+     * wrong: goto_ptr is what lets an INDIRECT branch jump straight into the
+     * next translation block, and ARM code returns through `bx lr` constantly.
+     * Without it every function return leaves the generated code and looks the
+     * target up in C. IT_NO_GOTO_PTR forces the same restriction onto backends
+     * that do implement goto_ptr (plain TCI does), which is the only way to
+     * measure what TCTI is giving up here.
+     */
+#if defined(CONFIG_TCG_THREADED_INTERPRETER)
+    bool no_goto_ptr = true;
+#else
+    bool no_goto_ptr = getenv("IT_NO_GOTO_PTR") != NULL;
+#endif
+
+    if (no_goto_ptr) {
+        cflags |= CF_NO_GOTO_PTR;
+        cpu->cflags_next_tb = CF_NO_GOTO_PTR;
+    }
     tcg_cflags_set(cpu, cflags);
 }
 

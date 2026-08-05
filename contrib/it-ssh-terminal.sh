@@ -56,18 +56,27 @@ fi
 # shell, take the tunnel down when they leave. iproxy is not left running,
 # because a second one on the same port fails silently and the NEXT window is
 # the one that appears broken.
-CMD="$(mktemp -t itssh).command"
+# Terminal runs this under the USER'S LOGIN SHELL, not ours, so it does not
+# inherit the PATH the app launcher set -- a bare `iproxy` here is
+# command-not-found on any Mac without Homebrew even though the bundled one is
+# sitting right there. Resolve it to an absolute path now, while we still have
+# the PATH that can find it.
+IPROXY_BIN="$(command -v iproxy)"
+# mktemp CREATES the file it names; appending .command means the script is
+# written somewhere else and the original is leaked on every use. Make the
+# directory instead and put the script inside it.
+CMD="$(mktemp -d -t itssh)/iPod touch.command"
 cat >"$CMD" <<EOF
 #!/bin/bash
 # disown first: otherwise job control prints "Terminated: 15" over the last
 # thing the user was reading, which looks like the shell crashed.
-cleanup() { if [ -n "\${IPROXY:-}" ]; then disown "\$IPROXY" 2>/dev/null; kill "\$IPROXY" 2>/dev/null; fi; rm -f "$CMD"; }
+cleanup() { if [ -n "\${IPROXY:-}" ]; then disown "\$IPROXY" 2>/dev/null; kill "\$IPROXY" 2>/dev/null; fi; rm -rf "$(dirname "$CMD")"; }
 trap cleanup EXIT
 export USBMUXD_SOCKET_ADDRESS=$SOCK
-iproxy $PORT 22 >/dev/null 2>&1 &
+"$IPROXY_BIN" $PORT 22 >/dev/null 2>&1 &
 IPROXY=\$!
 sleep 1
-kill -0 "\$IPROXY" 2>/dev/null || { echo "iproxy would not start on port $PORT."; read -r; exit 1; }
+kill -0 "\$IPROXY" 2>/dev/null || { echo "The USB tunnel would not start on port $PORT -- something else may be using it."; read -r; exit 1; }
 echo "iPod touch 2G -- iOS 3.1.3.  The root password is: $PASSWORD"
 echo
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \\

@@ -135,10 +135,23 @@ static void sha1_run(IPodTouchSHA1State *s)
     }
 
     if (s->memory_mode) {
-        uint8_t block[64];
-        for (uint32_t i = 0; i < s->insize / 0x40; i++) {
-            cpu_physical_memory_read(s->memory_start + i * 0x40, block, 0x40);
-            sha1_compress(s->state, block);
+        uint32_t nblocks = s->insize / 0x40;
+
+        /*
+         * Fetch the whole region once rather than per 64-byte block. XNU hands
+         * this engine entire pages to hash, so a block-at-a-time read was 64
+         * full address-space dispatches per page -- all of it on the vCPU
+         * thread inside the MMIO handler, and all of it to walk memory that is
+         * contiguous anyway.
+         */
+        if (nblocks) {
+            uint8_t *buf = g_malloc(nblocks * 0x40);
+
+            cpu_physical_memory_read(s->memory_start, buf, nblocks * 0x40);
+            for (uint32_t i = 0; i < nblocks; i++) {
+                sha1_compress(s->state, buf + i * 0x40);
+            }
+            g_free(buf);
         }
     }
 

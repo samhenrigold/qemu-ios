@@ -23,13 +23,55 @@
  * written down, rather than traded for measurably worse animation. Anyone
  * fixing it properly needs to deal with the dispatch latency first.
  */
+/*
+ * Cached, because the second caller sits on the counter-read path: this file's
+ * own accounting records 8.24 million reads of TICKSHIGH/TICKSLOW in one boot,
+ * and getenv() scans environ on every one of them -- synchronously on the vCPU
+ * thread, so it is guest stall rather than background work. Same pattern as
+ * FMSS_ENV_FLAG in ipod_touch_fmss.c.
+ */
+static bool timer_trace(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_TIMER_TRACE") != NULL;
+    }
+    return on;
+}
+
+/*
+ * IT_TIME_DILATION: stretch the guest's timer tick by this factor.
+ *
+ * Timer interrupts arrive on the HOST clock, but the guest executes at
+ * whatever rate the emulator manages. Under an interpreter that is roughly a
+ * tenth of real speed, so the guest receives ten times more interrupts per
+ * unit of work than the hardware ever delivered, and drowns in exception entry
+ * and exit -- which is exactly what the guest profile shows dominating a slow
+ * UI. Stretching the tick trades correct wall-clock time for the guest getting
+ * a sane number of interrupts per instruction executed: the clock runs slow,
+ * but the device stops thrashing.
+ */
+static uint64_t timer_dilation(void)
+{
+    static int64_t f = -1;
+    if (f < 0) {
+        const char *v = getenv("IT_TIME_DILATION");
+        f = v ? strtoll(v, NULL, 0) : 1;
+        if (f < 1) {
+            f = 1;
+        }
+    }
+    return (uint64_t)f;
+}
+
 static void s5l8900_st_update(IPodTouchTimerState *s)
 {
     s->freq_out = 1000000000 / 100;
     s->tick_interval = /* bcount1 * get_ticks / freq  + ((bcount2 * get_ticks / freq)*/
     muldiv64((s->bcount1 < 1000) ? 1000 : s->bcount1, NANOSECONDS_PER_SECOND, s->freq_out);
+    s->tick_interval *= timer_dilation();
     s->next_planned_tick = 0;
-    if (getenv("IT_TIMER_TRACE")) {
+    if (timer_trace()) {
         fprintf(stderr, "[TIMER] update: bcount1=%u bcount2=%u freq_out=%u "
                 "-> tick_interval=%" PRIu64 " ns (%.3f Hz)\n",
                 s->bcount1, s->bcount2, s->freq_out, s->tick_interval,
@@ -167,7 +209,7 @@ static uint64_t s5l8900_timer1_read(void *opaque, hwaddr addr, unsigned size)
     IPodTouchTimerState *s = (struct IPodTouchTimerState *) opaque;
     uint64_t elapsed_ns, ticks;
 
-    if (getenv("IT_TIMER_TRACE") &&
+    if (timer_trace() &&
         (addr == TIMER_TICKSHIGH || addr == TIMER_TICKSLOW)) {
         timer_count_order(addr == TIMER_TICKSHIGH);
     }

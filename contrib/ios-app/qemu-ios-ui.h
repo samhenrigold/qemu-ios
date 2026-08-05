@@ -67,6 +67,23 @@ void qemu_ios_ui_touch(int slot, int phase, double nx, double ny);
  */
 void qemu_ios_ui_button(int button, bool down);
 
+/*
+ * Save the machine to `path`, so the next launch can restore instead of
+ * booting. Asynchronous: poll qemu_ios_snapshot_done(). The guest is stopped
+ * as a side effect and does not resume.
+ *
+ * Restore by passing `-incoming file:<path>` at startup.
+ */
+/*
+ * Whether the app is foreground. iOS kills a process that issues GL commands
+ * while it is not, so this must be cleared BEFORE the app is backgrounded --
+ * on willResignActive, not on didEnterBackground.
+ */
+void qemu_ios_set_foreground(bool foreground);
+
+void qemu_ios_snapshot_save(const char *path);
+bool qemu_ios_snapshot_done(void);
+
 #ifdef __cplusplus
 }
 #endif

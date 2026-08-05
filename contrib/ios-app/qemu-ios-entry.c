@@ -26,6 +26,17 @@ int qemu_ios_main(int argc, char **argv)
 
     qemu_init(argc, argv);
 
+    /*
+     * Resume automatically when restoring a snapshot.
+     *
+     * -incoming clears `autostart` (system/vl.c), so a restored machine sits
+     * in `paused` forever waiting for a `cont` that, in this app, no monitor is
+     * ever going to send. Setting it back here means the VM starts itself the
+     * moment the incoming stream is consumed -- which is what makes restore
+     * look instant rather than look broken.
+     */
+    autostart = 1;
+
     /* Console and AIO context exist only now; the display attaches here. */
     qemu_ios_ui_vm_started();
 

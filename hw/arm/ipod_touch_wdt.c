@@ -4,6 +4,27 @@
 #include "hw/core/cpu.h"
 #include "target/arm/cpu.h"
 
+/* IT_WDT_TRACE: one line per watchdog kick. Cached; see the call site. */
+static bool wdt_trace(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_WDT_TRACE") != NULL;
+    }
+    return on;
+}
+
+/* IT_WDT_NORESET: wedge at the reset site instead of resetting, for QMP. */
+static bool wdt_noreset(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_WDT_NORESET") != NULL;
+    }
+    return on;
+}
+
+
 /*
  * S5L8720 watchdog timer at 0x3C800000.
  *
@@ -37,14 +58,25 @@ static void ipod_touch_wdt_write(void *opaque, hwaddr addr, uint64_t val, unsign
         case WDT_CTRL:
             s->ctrl = (uint32_t)val;
             if (val & WDT_RESET_BIT) {
-                if (current_cpu) {
-                    ARMCPU *ac = ARM_CPU(current_cpu);
-                    fprintf(stderr, "%s: reset bit set (val=0x%08x) from PC=0x%08x LR=0x%08x\n",
-                            __func__, (uint32_t)val, ac->env.regs[15], ac->env.regs[14]);
-                } else {
-                    fprintf(stderr, "%s: reset bit set (val=0x%08x)\n", __func__, (uint32_t)val);
+                /*
+                 * Only when asked. With IT_WDT_NORESET set -- which every
+                 * runner sets, because 3.1.3 arms the real watchdog -- the
+                 * guest kicks this constantly, so an unconditional line here
+                 * is a write syscall per kick for the life of the VM. It also
+                 * dragged in a checked QOM cast each time.
+                 */
+                if (wdt_trace()) {
+                    if (current_cpu) {
+                        ARMCPU *ac = ARM_CPU(current_cpu);
+                        fprintf(stderr, "%s: reset bit set (val=0x%08x) from "
+                                "PC=0x%08x LR=0x%08x\n", __func__,
+                                (uint32_t)val, ac->env.regs[15], ac->env.regs[14]);
+                    } else {
+                        fprintf(stderr, "%s: reset bit set (val=0x%08x)\n",
+                                __func__, (uint32_t)val);
+                    }
                 }
-                if (getenv("IT_WDT_NORESET")) {
+                if (wdt_noreset()) {
                     /* Diagnostic: don't actually reset, so the machine wedges at
                      * the reset site and QMP can inspect it. */
                     break;

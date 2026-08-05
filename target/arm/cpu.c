@@ -2288,8 +2288,16 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
             /*
              * For CPUs which might have tiny 1K pages, or which have an
              * MPU and might have small region sizes, stick with 1K pages.
+             *
+             * "Might" is doing a lot of work there: this sizes every softmmu
+             * TLB entry at 1 KB, so a guest that never maps a tiny page still
+             * pays four times the TLB misses -- and under a TCG interpreter a
+             * miss is a full helper call. XNU on ARMv6 sets SCTLR.XP, which
+             * routes it through the v6 walker that cannot produce anything
+             * smaller than 4 KB. IT_PAGE_BITS_12 lets such a guest say so.
+             * The tiny-page path in ptw.c warns if that promise is broken.
              */
-            pagebits = 10;
+            pagebits = getenv("IT_PAGE_BITS_12") ? 12 : 10;
         }
         if (!set_preferred_target_page_bits(pagebits)) {
             /*

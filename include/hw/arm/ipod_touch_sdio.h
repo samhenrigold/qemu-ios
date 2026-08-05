@@ -203,6 +203,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define WLC_EVENT_MSG_LINK  0x01
 
 /* ioctls the model answers with something other than zeros. */
+#define WLC_UP              2
 #define WLC_GET_RATE        12
 #define WLC_GET_BSSID       23
 #define WLC_GET_SSID        25
@@ -326,6 +327,8 @@ typedef struct IPodTouchSDIOState
     NICConf conf;
     bool iscan_reported;     /* this scan run has already reported its BSS */
     QEMUTimer *scan_timer;   /* delays the scan-complete event */
+    bool associated;         /* the association events have been pushed */
+    QEMUTimer *join_timer;   /* auto-join clock, armed at WLC_UP */
     unsigned tx_log;
     unsigned host_rx_log;
 

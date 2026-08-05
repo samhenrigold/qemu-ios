@@ -7,7 +7,9 @@
  * GLESCreateSharegroup, and once the engine is ours there is no reason to keep
  * that rendezvous alive.
  *
- * The host context is legacy-profile CGL, which on modern macOS is still a
+ * The host context is legacy-profile CGL on macOS and an EAGL ES 1.1 context
+ * on iOS (see the include block below, and gles-host-eagl.c). CGL on modern
+ * macOS is still a
  * genuine fixed-function GL 2.1 implementation (measured: "2.1 Metal - 91.7",
  * glMatrixMode/glOrtho/glColor4f/glVertexPointer/glDrawArrays all real). ES 1.1
  * is close enough to that subset that most entry points forward one-to-one,
@@ -35,9 +37,113 @@
 #include "hw/arm/ipod_touch_2g.h"
 #include "hw/arm/guest-services/general.h"
 
+/*
+ * TWO HOSTS, ONE RENDERER.
+ *
+ * Everything below the include block is platform-neutral: it speaks
+ * fixed-function GL and reads the finished frame back into guest memory, and
+ * that is all it ever needs the host for. The only parts that differ between
+ * macOS and iOS are (a) which header spells the API and (b) who creates the
+ * context, so those are the only parts that are conditional:
+ *
+ *   macOS   OpenGL.framework, a legacy CGL context (created here).
+ *   iOS     OpenGLES.framework ES 1.1, an EAGLContext (created in
+ *           gles-host-eagl.m -- context creation is the one piece that has to
+ *           be Objective-C).
+ *
+ * iOS is the easier of the two targets, not the harder one: the guest API IS
+ * the host API there, so the desktop-vs-ES differences run the other way. What
+ * has to be bridged is the handful of places where this file was written
+ * against desktop GL -- the *EXT framebuffer-object names are *OES in ES, and
+ * glOrtho/glFrustum/glClearDepth take doubles on the desktop and floats in ES.
+ * Nothing here is a reimplementation; each shim below is a rename.
+ */
+#include <TargetConditionals.h>
+
+#if TARGET_OS_IPHONE
+#define GLES_HOST_EAGL 1
+#endif
+
+#ifdef GLES_HOST_EAGL
+
+#include <OpenGLES/ES1/gl.h>
+#include <OpenGLES/ES1/glext.h>
+
+/* Framebuffer objects are core in ES 1.1's OES form. Same tokens, same
+ * arguments, different suffix. */
+#define glGenFramebuffersEXT          glGenFramebuffersOES
+#define glBindFramebufferEXT          glBindFramebufferOES
+#define glFramebufferTexture2DEXT     glFramebufferTexture2DOES
+#define glGenRenderbuffersEXT         glGenRenderbuffersOES
+#define glBindRenderbufferEXT         glBindRenderbufferOES
+#define glRenderbufferStorageEXT      glRenderbufferStorageOES
+#define glFramebufferRenderbufferEXT  glFramebufferRenderbufferOES
+#define glCheckFramebufferStatusEXT   glCheckFramebufferStatusOES
+#define GL_FRAMEBUFFER_EXT            GL_FRAMEBUFFER_OES
+#define GL_RENDERBUFFER_EXT           GL_RENDERBUFFER_OES
+#define GL_COLOR_ATTACHMENT0_EXT      GL_COLOR_ATTACHMENT0_OES
+#define GL_DEPTH_ATTACHMENT_EXT       GL_DEPTH_ATTACHMENT_OES
+#define GL_FRAMEBUFFER_COMPLETE_EXT   GL_FRAMEBUFFER_COMPLETE_OES
+#define GL_DEPTH_COMPONENT16          GL_DEPTH_COMPONENT16_OES
+
+/* ES has no double-precision entry points; the guest only ever had floats. */
+#define glOrtho(l, r, b, t, n, f)     glOrthof(l, r, b, t, n, f)
+#define glFrustum(l, r, b, t, n, f)   glFrustumf(l, r, b, t, n, f)
+#define glClearDepth(d)               glClearDepthf(d)
+
+/*
+ * Enums that exist only as values on ES: the guest can name a client-array
+ * type this host cannot serve, and gles_pointer_ok has to be able to recognise
+ * it in order to reject it. Defining them is not claiming support.
+ */
+#ifndef GL_INT
+#define GL_INT                        0x1404
+#endif
+#ifndef GL_UNSIGNED_INT
+#define GL_UNSIGNED_INT               0x1405
+#endif
+#ifndef GL_DOUBLE
+#define GL_DOUBLE                     0x140A
+#endif
+
+/*
+ * Readback format for a BGRA destination.
+ *
+ * The desktop asks for GL_BGRA + UNSIGNED_INT_8_8_8_8_REV, which lands as
+ * B,G,R,A bytes on a little-endian host. ES has no packed-int pixel types, but
+ * GL_EXT_read_format_bgra (present on every iOS GL stack, verified on the
+ * runtime) gives the same byte order from GL_BGRA + GL_UNSIGNED_BYTE. Measured
+ * against a red triangle: RGBA reads ff0000ff, BGRA reads 0000ffff.
+ */
+#define GLES_BGRA_READ_TYPE           GL_UNSIGNED_BYTE
+
+/* GL_BGRA is GL_BGRA_EXT in ES's headers -- same token, and the extension that
+ * defines it (GL_APPLE_texture_format_BGRA8888) is present on every iOS GL
+ * stack. It is what an IOSurface colour attachment is described with. */
+#ifndef GL_BGRA
+#define GL_BGRA                       GL_BGRA_EXT
+#endif
+
+/* Context management and the IOSurface render target live in
+ * gles-host-eagl.c; both need Objective-C. */
+bool gles_eagl_context_create(void);
+void gles_eagl_make_current(void);
+bool gles_eagl_iosurface_bind(uint32_t width, uint32_t height,
+                              unsigned long target,
+                              unsigned long internal_format,
+                              unsigned long format, unsigned long type);
+void *gles_eagl_iosurface_lock(size_t *stride);
+void gles_eagl_iosurface_unlock(void);
+
+#else /* macOS: legacy CGL */
+
 #include <OpenGL/OpenGL.h>
 #include <OpenGL/gl.h>
 #include <OpenGL/glext.h>
+
+#define GLES_BGRA_READ_TYPE           GL_UNSIGNED_INT_8_8_8_8_REV
+
+#endif
 
 /* The panel. iOS keeps its framebuffer in portrait and rotates inside it, so
  * these are the framebuffer's dimensions, not the UI's. */
@@ -71,8 +177,17 @@ typedef struct {
 typedef struct {
     bool inited;
     bool failed;
+#ifndef GLES_HOST_EAGL
     CGLContextObj cgl;
+#endif
     GLuint fbo, tex, depth;
+
+    /*
+     * True when the colour attachment is an IOSurface and the present can read
+     * the frame straight out of it. False means the readback path below, which
+     * is both the macOS behaviour and the iOS fallback.
+     */
+    bool iosurface;
 
     GLESArray vertex;
     GLESArray texcoord;
@@ -117,7 +232,7 @@ typedef struct {
      *             index lists)
      *   t_err     glGetError, which is the one call in the draw path that
      *             cannot be pipelined -- it drains the driver's queue
-     *   t_present glFinish + glReadPixels + the write back into guest memory
+     *   t_present waiting for the GPU and writing the frame into guest memory
      */
     uint64_t calls;
     uint64_t t_call, t_fetch, t_err, t_present;
@@ -217,6 +332,14 @@ static int gles_strict = -1;
  */
 static int gles_swizzle;
 static int gles_swizzle_mode;
+/*
+ * IT_GLES_NO_IOSURFACE=1 forces the readback present even where the IOSurface
+ * attachment would work. The two paths produce identical pixels by design, so
+ * the only way to tell them apart is to time them against each other on the
+ * same device in the same run -- and the same argument as IT_GLES_SWIZZLE
+ * applies: a comparison across two boots measures the phone's mood.
+ */
+static int gles_no_iosurface;
 
 static void gles_read_switches(void)
 {
@@ -225,6 +348,8 @@ static void gles_read_switches(void)
     if (gles_prof >= 0) {
         return;
     }
+    v = getenv("IT_GLES_NO_IOSURFACE");
+    gles_no_iosurface = v ? atoi(v) : 0;
     v = getenv("IT_GLES_PROF");
     gles_prof = v ? atoi(v) : 0;
     v = getenv("IT_GLES_STRICT");
@@ -242,7 +367,52 @@ static inline uint64_t gles_t(void)
 
 /* ---------------------------------------------------------------- context */
 
-static bool gles_host_init(void)
+/*
+ * Create the host context and make it current, or say why not.
+ *
+ * The contract both backends satisfy: on success a fixed-function context is
+ * current on THIS thread and the shared FBO setup below can run against it. On
+ * failure gles_host_init marks the host failed and every request from then on
+ * returns -1, which is the guest's cue to fall back to its software renderer.
+ * A missing context is therefore never fatal to the emulator.
+ */
+#ifdef GLES_HOST_EAGL
+
+static bool gles_platform_context_create(void)
+{
+    return gles_eagl_context_create();
+}
+
+static inline void gles_platform_make_current(void)
+{
+    gles_eagl_make_current();
+}
+
+/*
+ * Make the frame buffer's colour attachment an IOSurface, if this OS still
+ * allows it. The caller has the texture bound; on success this has taken the
+ * place of its glTexImage2D.
+ */
+static bool gles_platform_attach_iosurface(void)
+{
+    return gles_eagl_iosurface_bind(GLES_FB_WIDTH, GLES_FB_HEIGHT,
+                                    GL_TEXTURE_2D, GL_RGBA, GL_BGRA,
+                                    GL_UNSIGNED_BYTE);
+}
+
+static inline void *gles_platform_frame_lock(size_t *stride)
+{
+    return gles_eagl_iosurface_lock(stride);
+}
+
+static inline void gles_platform_frame_unlock(void)
+{
+    gles_eagl_iosurface_unlock();
+}
+
+#else /* CGL */
+
+static bool gles_platform_context_create(void)
 {
     CGLPixelFormatAttribute attrs[] = {
         kCGLPFAAccelerated,
@@ -255,6 +425,63 @@ static bool gles_host_init(void)
     GLint npix = 0;
     CGLError e;
 
+    e = CGLChoosePixelFormat(attrs, &pix, &npix);
+    if (e || !pix) {
+        fprintf(stderr, "[gles] CGLChoosePixelFormat failed (%d)\n", e);
+        return false;
+    }
+    e = CGLCreateContext(pix, NULL, &gh.cgl);
+    CGLDestroyPixelFormat(pix);
+    if (e || !gh.cgl) {
+        fprintf(stderr, "[gles] CGLCreateContext failed (%d)\n", e);
+        return false;
+    }
+    CGLSetCurrentContext(gh.cgl);
+    return true;
+}
+
+/*
+ * Every request used to call CGLSetCurrentContext unconditionally. All of them
+ * arrive on the one vCPU thread and nothing else on this process's threads
+ * touches CGL, so after the first it is always already current -- and the
+ * check is a thread-local read against a call into the GL stack.
+ */
+static inline void gles_platform_make_current(void)
+{
+    if (CGLGetCurrentContext() != gh.cgl) {
+        CGLSetCurrentContext(gh.cgl);
+    }
+}
+
+/*
+ * macOS keeps the readback present, on purpose.
+ *
+ * CGLTexImageIOSurface2D exists and the same attachment could be built here,
+ * but the problem it solves is a tiler's: an on-demand tile resolve into
+ * driver staging, which is what makes glReadPixels pathological on a phone and
+ * merely unremarkable on an immediate-mode desktop GPU. The macOS path is the
+ * one that is measured, boots and renders today, so it keeps the code that was
+ * measured. Half-converting it would buy an unmeasured maybe and put the
+ * working host at risk.
+ */
+static bool gles_platform_attach_iosurface(void)
+{
+    return false;
+}
+
+static inline void *gles_platform_frame_lock(size_t *stride)
+{
+    return NULL;
+}
+
+static inline void gles_platform_frame_unlock(void)
+{
+}
+
+#endif /* GLES_HOST_EAGL */
+
+static bool gles_host_init(void)
+{
     if (gh.inited) {
         return true;
     }
@@ -262,28 +489,28 @@ static bool gles_host_init(void)
         return false;
     }
 
-    e = CGLChoosePixelFormat(attrs, &pix, &npix);
-    if (e || !pix) {
-        fprintf(stderr, "[gles] CGLChoosePixelFormat failed (%d)\n", e);
+    if (!gles_platform_context_create()) {
         gh.failed = true;
         return false;
     }
-    e = CGLCreateContext(pix, NULL, &gh.cgl);
-    CGLDestroyPixelFormat(pix);
-    if (e || !gh.cgl) {
-        fprintf(stderr, "[gles] CGLCreateContext failed (%d)\n", e);
-        gh.failed = true;
-        return false;
-    }
-    CGLSetCurrentContext(gh.cgl);
 
     glGenFramebuffersEXT(1, &gh.fbo);
     glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gh.fbo);
 
     glGenTextures(1, &gh.tex);
     glBindTexture(GL_TEXTURE_2D, gh.tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GLES_FB_WIDTH, GLES_FB_HEIGHT, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    /*
+     * Storage for the colour attachment, from one of two places. An IOSurface
+     * gives the CPU a mapped view of the very memory the GPU renders into, so
+     * the present becomes a copy out of it instead of a glReadPixels; ordinary
+     * texture storage is the fallback and stays the readback path. Either way
+     * this is the same attachment to the same FBO and the guest cannot tell.
+     */
+    gh.iosurface = !gles_no_iosurface && gles_platform_attach_iosurface();
+    if (!gh.iosurface) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GLES_FB_WIDTH, GLES_FB_HEIGHT,
+                     0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
@@ -295,6 +522,26 @@ static bool gles_host_init(void)
                              GLES_FB_WIDTH, GLES_FB_HEIGHT);
     glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT,
                                  GL_RENDERBUFFER_EXT, gh.depth);
+
+    /*
+     * An IOSurface attachment that the driver accepts and then cannot render to
+     * is the one failure that must not be fatal: it would take the whole HLE
+     * down over a fast path. Rebuild the attachment out of ordinary texture
+     * storage and check again -- that configuration is the one that has been
+     * running all along.
+     */
+    if (gh.iosurface
+        && glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT)
+           != GL_FRAMEBUFFER_COMPLETE_EXT) {
+        fprintf(stderr, "[gles] FBO incomplete with an IOSurface colour "
+                "attachment; presenting by readback\n");
+        gh.iosurface = false;
+        glBindTexture(GL_TEXTURE_2D, gh.tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GLES_FB_WIDTH, GLES_FB_HEIGHT,
+                     0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
+                                  GL_TEXTURE_2D, gh.tex, 0);
+    }
 
     if (glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT)
         != GL_FRAMEBUFFER_COMPLETE_EXT) {
@@ -323,8 +570,9 @@ static bool gles_host_init(void)
     gh.readback = g_malloc0((size_t)GLES_FB_WIDTH * GLES_FB_HEIGHT * 4);
     gh.inited = true;
 
-    fprintf(stderr, "[gles] host GL up: %s / %s\n",
-            glGetString(GL_VERSION), glGetString(GL_RENDERER));
+    fprintf(stderr, "[gles] host GL up: %s / %s, present by %s\n",
+            glGetString(GL_VERSION), glGetString(GL_RENDERER),
+            gh.iosurface ? "IOSurface" : "readback");
     return true;
 }
 
@@ -851,10 +1099,48 @@ static unsigned gles_material_nparams(uint32_t pname)
  * GL's origin is bottom-left and the framebuffer's is top-left, hence the row
  * flip. The panel is BGRA (see lcd_refresh_rotated), GL gives us RGBA.
  */
+/*
+ * Make this frame's pixels readable by the CPU, or say the fast path is not
+ * available. Rows run bottom-up and are BGRA, which is what both destinations
+ * want; `stride` is the surface's, not the frame's, so callers must use it.
+ *
+ * THE SYNCHRONISATION, in one place because it is the only part of this that
+ * can be silently wrong. Two things stand between the guest and a half-drawn
+ * frame:
+ *
+ *   glFlush   submits the frame's commands. It does not wait -- that is the
+ *             whole point -- but a lock can only wait for work the driver has
+ *             been handed, so without this there is a window where the GPU has
+ *             nothing queued and the lock has nothing to wait for.
+ *   the lock  IOSurfaceLock, without kIOSurfaceLockAvoidSync, is defined to
+ *             perform "a potentially expensive paging operation (such as
+ *             readback from a GPU to system memory)" -- that flag exists to
+ *             let a caller REFUSE that wait. Taking the lock is therefore
+ *             taking the wait, scoped to this surface rather than to every
+ *             queue in the context the way glFinish is.
+ *
+ * What is gone is the DOUBLE wait the old path took: a glFinish that drained
+ * the pipeline, followed by a glReadPixels that resolved the tiles a second
+ * time into driver staging. What remains is one wait for one surface's GPU
+ * work, which is not negotiable while the guest's present is synchronous --
+ * CoreAnimation composites the buffer as soon as the request returns, so
+ * handing it pixels the GPU has not finished writing would be a torn frame.
+ */
+static const uint8_t *gles_frame_lock(size_t *stride)
+{
+    if (!gh.iosurface) {
+        return NULL;
+    }
+    glFlush();
+    return gles_platform_frame_lock(stride);
+}
+
 static void gles_present_to_panel(void)
 {
     IPodTouchMachineState *nms;
     hwaddr fb;
+    const uint8_t *frame;
+    size_t fstride = 0;
     int y;
 
     nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
@@ -864,6 +1150,22 @@ static void gles_present_to_panel(void)
     fb = nms->lcd_state->w1_framebuffer_base;
     if (!fb) {
         fprintf(stderr, "[gles] present: no framebuffer base yet\n");
+        return;
+    }
+
+    /* The surface is already in the panel's byte order, so the row is a copy
+     * and the flip is the only work left. */
+    frame = gles_frame_lock(&fstride);
+    if (frame) {
+        for (y = 0; y < GLES_FB_HEIGHT; y++) {
+            const uint8_t *src = frame + (size_t)(GLES_FB_HEIGHT - 1 - y)
+                                 * fstride;
+
+            cpu_physical_memory_write(fb + (hwaddr)y * GLES_FB_WIDTH * 4,
+                                      src, GLES_FB_WIDTH * 4);
+        }
+        gles_platform_frame_unlock();
+        gh.presents++;
         return;
     }
 
@@ -897,7 +1199,8 @@ static void gles_present_to_panel(void)
  * only way to answer "was this geometry actually invisible" rather than
  * inferring it from a screenshot taken at some other moment.
  */
-static void gles_dump_frame(uint32_t rw, uint32_t rh, bool bgra)
+static void gles_dump_frame(const uint8_t *frame, size_t stride,
+                            uint32_t rw, uint32_t rh, bool bgra)
 {
     const char *dir = getenv("IT_GLES_DUMP_DIR");
     char path[1024];
@@ -916,7 +1219,7 @@ static void gles_dump_frame(uint32_t rw, uint32_t rh, bool bgra)
     fprintf(f, "P6\n%u %u\n255\n", rw, rh);
     for (y = 0; y < rh; y++) {
         /* GL's origin is bottom-left; PPM's is top-left. */
-        const uint8_t *src = gh.readback + (size_t)(rh - 1 - y) * rw * 4;
+        const uint8_t *src = frame + (size_t)(rh - 1 - y) * stride;
 
         for (x = 0; x < rw; x++) {
             uint8_t rgb[3];
@@ -1330,11 +1633,47 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
         }
     }
 
-    glFinish();
-    /* The FBO is GLES_FB_WIDTH x GLES_FB_HEIGHT; read back only what fits. */
+    /* The FBO is GLES_FB_WIDTH x GLES_FB_HEIGHT; take only what fits. */
     {
         uint32_t rw = width < GLES_FB_WIDTH ? width : GLES_FB_WIDTH;
         uint32_t rh = height < GLES_FB_HEIGHT ? height : GLES_FB_HEIGHT;
+        const uint8_t *frame = NULL;
+        size_t fstride = 0;
+
+        /*
+         * The frame, from the render target itself where the host allows it.
+         *
+         * The IOSurface is BGRA because that is what CoreAnimation wants, so a
+         * guest that asked for RGBA has no fast path -- and neither does a run
+         * that asked for the old readback in order to time it. Both fall
+         * through, and so does any host that never got a surface at all.
+         */
+        if (bgra && !gles_swizzle) {
+            frame = gles_frame_lock(&fstride);
+        }
+        if (frame) {
+            for (y = 0; y < rh; y++) {
+                /* GL's origin is bottom-left, the surface's is top-left. */
+                const uint8_t *src = frame + (size_t)(rh - 1 - y) * fstride;
+
+                if (cpu_memory_rw_debug(cpu, base + (hwaddr)y * stride,
+                                        (void *)src, rw * 4, 1) != 0) {
+                    fprintf(stderr, "[gles] present-surface: write failed at "
+                            "row %u (guest 0x%08x)\n", y, base + y * stride);
+                    gles_platform_frame_unlock();
+                    return -1;
+                }
+            }
+            gles_dump_frame(frame, fstride, rw, rh, bgra);
+            gles_platform_frame_unlock();
+            gh.presents++;
+            gles_note_scene();
+            gles_note_frame_gap();
+            gles_report_progress();
+            return 0;
+        }
+
+        glFinish();
 
         /*
          * Ask GL for the byte order the destination wants instead of reading
@@ -1346,7 +1685,7 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
          */
         if (bgra && !gles_swizzle) {
             glReadPixels(0, 0, rw, rh, GL_BGRA,
-                         GL_UNSIGNED_INT_8_8_8_8_REV, gh.readback);
+                         GLES_BGRA_READ_TYPE, gh.readback);
         } else {
             glReadPixels(0, 0, rw, rh, GL_RGBA, GL_UNSIGNED_BYTE, gh.readback);
         }
@@ -1382,9 +1721,8 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
                 return -1;
             }
         }
+        gles_dump_frame(gh.readback, (size_t)rw * 4, rw, rh, bgra);
     }
-    gles_dump_frame(width < GLES_FB_WIDTH ? width : GLES_FB_WIDTH,
-                    height < GLES_FB_HEIGHT ? height : GLES_FB_HEIGHT, bgra);
     gh.presents++;
     gles_note_scene();
     gles_note_frame_gap();
@@ -1638,6 +1976,121 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         return 0;
     }
 
+    case GLES_SLOT_TEX_SUB_IMAGE_2D: {
+        /* target, level, xoffset, yoffset, width, height, format, type,
+         * pixels -- nine arguments, spilled, same shape as glTexImage2D.
+         * This is the streaming half of the alloc-then-upload idiom
+         * (glTexImage2D with NULL, then glTexSubImage2D per frame or per
+         * asset); dropping it leaves every such texture incomplete, which
+         * fixed-function GL renders as solid white. */
+        uint32_t target = a[0], level = a[1], xoff = a[2], yoff = a[3];
+        uint32_t w = a[4], h = a[5], fmt = a[6], type = a[7], pixels = a[8];
+        size_t bpp, n;
+        g_autofree uint8_t *px = NULL;
+
+        switch (fmt) {
+        case GL_RGBA:            bpp = 4; break;
+        case GL_RGB:             bpp = 3; break;
+        case GL_LUMINANCE_ALPHA: bpp = 2; break;
+        case GL_ALPHA:
+        case GL_LUMINANCE:       bpp = 1; break;
+        default:                 bpp = 4; break;
+        }
+        if (type == GL_UNSIGNED_SHORT_5_6_5 ||
+            type == GL_UNSIGNED_SHORT_4_4_4_4 ||
+            type == GL_UNSIGNED_SHORT_5_5_5_1) {
+            bpp = 2;
+        }
+
+        n = (size_t)w * h * bpp;
+        if (!pixels || !n) {
+            return 0;
+        }
+        px = g_malloc(n);
+        if (cpu_memory_rw_debug(cpu, pixels, px, n, 0) != 0) {
+            fprintf(stderr, "[gles] glTexSubImage2D: cannot read %zu bytes "
+                    "at guest 0x%08x\n", n, pixels);
+            return -1;
+        }
+        glTexSubImage2D(target, level, xoff, yoff, w, h, fmt, type, px);
+        return 0;
+    }
+
+    case GLES_SLOT_DELETE_TEXTURES: {           /* n, guest uint* */
+        uint32_t n = a[0];
+        g_autofree GLuint *ids = NULL;
+        if (!n || !a[1]) {
+            return 0;
+        }
+        ids = g_new0(GLuint, n);
+        if (cpu_memory_rw_debug(cpu, a[1], (uint8_t *)ids,
+                                n * sizeof(GLuint), 0) != 0) {
+            return -1;
+        }
+        glDeleteTextures(n, ids);
+        return 0;
+    }
+
+    case GLES_SLOT_ALPHA_FUNC:                  /* func, ref(float) */
+        glAlphaFunc(a[0], gles_f(a[1]));
+        return 0;
+
+    case GLES_SLOT_BIND_BUFFER:                 /* target, buffer */
+        /*
+         * No VBO data path exists (no glGenBuffers/glBufferData slot is
+         * implemented), so the only bind that can be correct is the unbind.
+         * Super Monkey Ball imports glBindBuffer and nothing else from the
+         * buffer-object family -- it binds 0 defensively. A nonzero name
+         * would mean an app is about to source vertex data from a buffer we
+         * never stored, so say so instead of silently drawing garbage.
+         */
+        if (a[1] != 0) {
+            fprintf(stderr, "[gles] glBindBuffer(0x%x, %u): buffer objects "
+                    "are not implemented\n", a[0], a[1]);
+        }
+        return 0;
+
+    case GLES_SLOT_GET_INTEGERV: {              /* pname, guest int* */
+        uint32_t pname = a[0];
+        int32_t v[4] = { 0, 0, 0, 0 };
+        unsigned n = 1;
+
+        if (!a[1]) {
+            return 0;
+        }
+        switch (pname) {
+        /* FBO state is bookkeeping here, not host GL state -- the host
+         * renders into its own FBO regardless (see the OES block below).
+         * Answer from the same bookkeeping so save/restore idioms
+         * round-trip. */
+        case 0x8CA6: /* GL_FRAMEBUFFER_BINDING_OES */
+            v[0] = 0;
+            break;
+        case 0x8CA7: /* GL_RENDERBUFFER_BINDING_OES */
+            v[0] = gh.bound_renderbuffer;
+            break;
+        case GL_VIEWPORT:
+        case GL_SCISSOR_BOX:
+            n = 4;
+            glGetIntegerv(pname, v);
+            break;
+        case GL_MAX_VIEWPORT_DIMS:
+            n = 2;
+            glGetIntegerv(pname, v);
+            break;
+        default:
+            /* Scalar queries (GL_MAX_TEXTURE_SIZE and friends) pass
+             * through. An ES-only pname sets GL_INVALID_ENUM on the host
+             * and writes nothing, so the guest sees 0 -- the same thing
+             * the silent default used to hand it, minus the stack
+             * garbage. */
+            glGetIntegerv(pname, v);
+            break;
+        }
+        cpu_memory_rw_debug(cpu, a[1], (uint8_t *)v, n * sizeof(v[0]), 1);
+        return 0;
+    }
+
     case GLES_SLOT_MATRIX_MODE:
         glMatrixMode(a[0]);
         return 0;
@@ -1685,6 +2138,21 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         glMultMatrixf(m);
         return 0;
     }
+
+    case GLES_SLOT_LOAD_MATRIXF: {              /* const GLfloat m[16] */
+        float m[16];
+        if (!gles_fetch_floats(cpu, a[0], 16, m)) {
+            return -1;
+        }
+        glLoadMatrixf(m);
+        return 0;
+    }
+
+    case GLES_SLOT_SCALEX:                      /* x,y,z in 16.16 fixed */
+        glScalef((int32_t)a[0] / 65536.0f,
+                 (int32_t)a[1] / 65536.0f,
+                 (int32_t)a[2] / 65536.0f);
+        return 0;
 
     /* ---- per-fragment state ---- */
     case GLES_SLOT_BLEND_FUNC:                  /* sfactor, dfactor */
@@ -1844,26 +2312,38 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     }
 }
 
+/*
+ * Whether the host will accept GL right now.
+ *
+ * iOS terminates a process that issues GL commands while it is not foreground,
+ * and the vCPU thread has no idea the app was backgrounded -- it will keep
+ * servicing guest GL calls into a context the system has already disowned. The
+ * app clears this on the way out and sets it on the way back in; the guest sees
+ * the same -1 it gets from any other host refusal and falls back to software.
+ */
+static bool gles_allowed = true;
+
+void gles_host_set_allowed(bool allowed)
+{
+    gles_allowed = allowed;
+}
+
 int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
                        uint32_t argc, const uint32_t *a)
 {
     uint64_t t0;
     int64_t r;
 
+    if (!gles_allowed) {
+        return -1;
+    }
+
     gles_read_switches();
     if (!gles_host_init()) {
         return -1;
     }
 
-    /*
-     * Every request used to call CGLSetCurrentContext unconditionally. All of
-     * them arrive on the one vCPU thread and nothing else on this process's
-     * threads touches CGL, so after the first it is always already current --
-     * and the check is a thread-local read against a call into the GL stack.
-     */
-    if (CGLGetCurrentContext() != gh.cgl) {
-        CGLSetCurrentContext(gh.cgl);
-    }
+    gles_platform_make_current();
 
     gh.calls++;
     gles_cur_ctx = ctx;

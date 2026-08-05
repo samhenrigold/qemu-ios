@@ -1,6 +1,20 @@
 #include "hw/arm/ipod_touch_sysic.h"
 #include "migration/vmstate.h"
 
+/*
+ * Cached: consulted on every GPIO interrupt-status access, and the guest polls
+ * those. getenv() scans environ each call, on the vCPU thread.
+ */
+static bool sysic_gpio_trace(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_GPIO_TRACE") != NULL;
+    }
+    return on;
+}
+
+
 static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
 {
     IPodTouchSYSICState *s = (IPodTouchSYSICState *) opaque;
@@ -43,7 +57,7 @@ static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
         {
             uint8_t group = (addr - GPIO_INTSTAT) / 4;
             uint32_t v = group < GPIO_NUMINTGROUPS ? s->gpio_int_status[group] : 0;
-            if (v && getenv("IT_GPIO_TRACE")) {
+            if (v && sysic_gpio_trace()) {
                 fprintf(stderr, "[gpio] STAT  group %u -> %08x\n", group, v);
             }
             return v;
@@ -101,7 +115,7 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
              * silently read as 0) but ignore an out-of-range group.
              */
             if (group < GPIO_NUMINTGROUPS) {
-                if (getenv("IT_GPIO_TRACE")) {
+                if (sysic_gpio_trace()) {
                     fprintf(stderr, "[gpio] ACK   group %u <- %08x "
                             "(stat %08x -> %08x)\n", group, (uint32_t)val,
                             s->gpio_int_status[group],
@@ -126,7 +140,7 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
                  * armed and one that is armed but never asserted look identical
                  * from the driver's side.
                  */
-                if (getenv("IT_GPIO_TRACE")) {
+                if (sysic_gpio_trace()) {
                     fprintf(stderr, "[gpio] INTEN group %u <- %08x "
                             "(was %08x, stat %08x)\n", group, (uint32_t)val,
                             s->gpio_int_enabled[group],

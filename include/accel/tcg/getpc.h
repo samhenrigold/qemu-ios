@@ -16,6 +16,14 @@
 #ifdef CONFIG_TCG_INTERPRETER
 extern __thread uintptr_t tci_tb_ptr;
 # define GETPC() tci_tb_ptr
+#elif defined(CONFIG_TCG_THREADED_INTERPRETER)
+/*
+ * A TCTI gadget calls the helper, so the helper's own return address points
+ * back into the gadget, not into the translation. The gadget stashes the
+ * address it will resume the bytecode at here.
+ */
+extern __thread uintptr_t tcti_call_return_address;
+# define GETPC() tcti_call_return_address
 #else
 # define GETPC() \
     ((uintptr_t)__builtin_extract_return_addr(__builtin_return_address(0)))

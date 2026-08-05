@@ -149,6 +149,9 @@ static void fmss_erase_block(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
     for (uint32_t p = first; p < first + NAND_PAGES_PER_BLOCK; p++) {
         snprintf(path, sizeof(path), "%s/cs%d/%u.page", s->nand_overlay, cs, p);
         remove(path);
+        if (s->overlay_pages) {
+            g_hash_table_remove(s->overlay_pages, fmss_block_key(cs, p));
+        }
     }
 
     snprintf(path, sizeof(path), "%s/cs%d", s->nand_overlay, cs);
@@ -312,6 +315,53 @@ static bool fmss_packed_page(IPodTouchFMSSState *s, uint32_t cs,
     return true;
 }
 
+/*
+ * Index the overlay once, so misses never reach the filesystem.
+ *
+ * Built by listing the directories rather than by remembering what this session
+ * wrote, because the overlay persists across runs -- the pages that matter most
+ * are the ones a previous boot left behind.
+ */
+static void fmss_overlay_index(IPodTouchFMSSState *s)
+{
+    uint32_t cs;
+
+    if (s->overlay_indexed || !s->nand_overlay) {
+        return;
+    }
+    s->overlay_indexed = true;
+    s->overlay_pages = g_hash_table_new(g_direct_hash, g_direct_equal);
+
+    for (cs = 0; cs < 4; cs++) {
+        char dir[1088];
+        const gchar *name;
+        GDir *d;
+
+        snprintf(dir, sizeof(dir), "%s/cs%u", s->nand_overlay, cs);
+        d = g_dir_open(dir, 0, NULL);
+        if (!d) {
+            continue;
+        }
+        while ((name = g_dir_read_name(d))) {
+            char *end;
+            unsigned long page = strtoul(name, &end, 10);
+
+            if (end != name && g_str_equal(end, ".page")) {
+                g_hash_table_add(s->overlay_pages,
+                                 fmss_block_key(cs, (uint32_t)page));
+            }
+        }
+        g_dir_close(d);
+    }
+}
+
+static bool fmss_overlay_has(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr)
+{
+    fmss_overlay_index(s);
+    return s->overlay_pages &&
+           g_hash_table_contains(s->overlay_pages, fmss_block_key(cs, page_nr));
+}
+
 static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
                                  uint32_t page_nr, uint8_t *data,
                                  uint8_t *spare)
@@ -335,7 +385,7 @@ static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
         return;
     }
 
-    if (s->nand_overlay) {
+    if (s->nand_overlay && fmss_overlay_has(s, cs, page_nr)) {
         snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_overlay, cs, page_nr);
         f = fopen(filename, "rb");
         from_overlay = (f != NULL);
@@ -520,7 +570,14 @@ static void fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
     fwrite(data, 1, NAND_BYTES_PER_PAGE, f);
     fwrite(spare, 1, NAND_BYTES_PER_SPARE, f);
     fclose(f);
-    if (rename(tmp, filename) != 0) { remove(tmp); }
+    if (rename(tmp, filename) != 0) {
+        remove(tmp);
+    } else {
+        fmss_overlay_index(s);
+        if (s->overlay_pages) {
+            g_hash_table_add(s->overlay_pages, fmss_block_key(cs, page_nr));
+        }
+    }
 }
 
 /*

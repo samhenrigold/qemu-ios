@@ -47,6 +47,14 @@ die() {
 # word changes; every byte of every member is carried across unaltered, which
 # matters because the code directory hashes the file contents.
 repack_mode() {
+    # ipod-helper in the app bundle -- a clean macOS has no python3. It patches
+    # the central directory's mode word in place rather than rebuilding the
+    # zip, so the compressed bytes are carried across untouched by
+    # construction, which matters because the code directory hashes them.
+    if [ -x "${IT_HELPER:-}" ]; then
+        "$IT_HELPER" ipa-chmod "$1" "$2" "$3"
+        return
+    fi
     python3 - "$1" "$2" "$3" <<'PY'
 import shutil, sys, zipfile
 
@@ -152,7 +160,8 @@ install_shim() {
 PLACEHOLDER=""
 
 placeholder_add() {
-    local tool="$REPO/contrib/it-instprogress/sbdlicon" id="$1"
+    local tool="${IT_GUEST_TOOLS:-$REPO/contrib/it-instprogress}/sbdlicon" id="$1"
+    [ -f "$tool" ] || tool="$REPO/contrib/it-instprogress/sbdlicon"
 
     [ -f "$tool" ] || {
         echo "install-ipa.sh: no $tool, so no home-screen placeholder" >&2
@@ -214,7 +223,11 @@ LINKS_GLES=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # Our MBXGLEngine.bundle replacement, built by contrib/it-gles/build.sh. It is
 # not committed -- it is an armv6 Mach-O bundle produced from committed source.
-SHIM="${SHIM:-$REPO/contrib/it-gles/MBXGLEngine}"
+# IT_GUEST_TOOLS is where the app unpacks the guest binaries it ships (see
+# stage-and-run.sh). Run from a source tree there is no such directory and the
+# repo copies are used instead, so both work.
+SHIM="${SHIM:-${IT_GUEST_TOOLS:-$REPO/contrib/it-gles}/MBXGLEngine}"
+[ -f "$SHIM" ] || SHIM="$REPO/contrib/it-gles/MBXGLEngine"
 
 if ! unzip -qq -o "$IPA" 'Payload/*' -d "$TMP" 2>/dev/null; then
     die "$NAME is not a readable .ipa (no Payload/)"
@@ -256,28 +269,56 @@ if [ -n "$SDK" ]; then
     fi
 fi
 
-if [ -f "$BIN" ] && command -v otool >/dev/null; then
-    if otool -l "$BIN" 2>/dev/null | grep -A6 LC_ENCRYPTION_INFO | grep -q 'cryptid 1'; then
-        echo "WARNING: cryptid 1 -- still FairPlay encrypted." >&2
-        echo "  It will install and then fail to launch: the code directory hash" >&2
-        echo "  is checked against the first __TEXT page, which is ciphertext." >&2
-        echo "  You need a decrypted (Clutch-style) copy." >&2
+# NOT `command -v otool`. /usr/bin/otool is the SAME Command Line Tools shim as
+# /usr/bin/python3 -- one of ~78 hard links to one binary -- so on a Mac without
+# the developer tools the guard PASSES and both pipelines then return nothing.
+# That silently set LINKS_GLES=0 for a GL app: the engine replacement was never
+# installed, nothing was printed, and the device wedged on first launch. The
+# helper reads the load commands itself and is always present in the app.
+MACHO_INFO=""
+if [ -f "$BIN" ]; then
+    if [ -x "${IT_HELPER:-}" ]; then
+        MACHO_INFO="$("$IT_HELPER" macho-info "$BIN" 2>/dev/null)"
+    elif command -v otool >/dev/null && otool -h "$BIN" >/dev/null 2>&1; then
+        # Source tree with real developer tools: otool actually works here.
+        MACHO_INFO="cryptid=$(otool -l "$BIN" 2>/dev/null |
+            /usr/bin/grep -A6 LC_ENCRYPTION_INFO |
+            /usr/bin/grep -oE 'cryptid [0-9]+' | head -1 | awk '{print $2}')
+gles=$(otool -L "$BIN" 2>/dev/null | /usr/bin/grep -c OpenGLES)"
+    fi
+fi
+
+case "$MACHO_INFO" in
+*"cryptid=1"*)
+    echo "WARNING: cryptid 1 -- still FairPlay encrypted." >&2
+    echo "  It will install and then fail to launch: the code directory hash" >&2
+    echo "  is checked against the first __TEXT page, which is ciphertext." >&2
+    echo "  You need a decrypted (Clutch-style) copy." >&2
+    WARN=1
+    ;;
+esac
+
+case "$MACHO_INFO" in
+*"gles=0"* | "") ;;
+*"gles="*)
+    LINKS_GLES=1
+    if [ -f "$SHIM" ]; then
+        echo "    links OpenGLES -- the GL engine replacement will be installed"
+    else
+        echo "WARNING: links OpenGLES, and the GL engine replacement is missing." >&2
+        echo "  The stock MBXGLEngine drives the PowerVR MBX, which is not" >&2
+        echo "  emulated: the app launches, draws its UIKit chrome once, and" >&2
+        echo "  then WEDGES THE WHOLE DEVICE spinning on an MBX register that" >&2
+        echo "  never acknowledges. Looked for it at:" >&2
+        echo "      $SHIM" >&2
         WARN=1
     fi
-    if otool -L "$BIN" 2>/dev/null | grep -q OpenGLES; then
-        LINKS_GLES=1
-        if [ -f "$SHIM" ]; then
-            echo "    links OpenGLES -- the GL engine replacement will be installed"
-        else
-            echo "WARNING: links OpenGLES, and $SHIM does not exist." >&2
-            echo "  The stock MBXGLEngine drives the PowerVR MBX, which is not" >&2
-            echo "  emulated: the app launches, draws its UIKit chrome once, and" >&2
-            echo "  then WEDGES THE WHOLE DEVICE spinning on an MBX register that" >&2
-            echo "  never acknowledges. Build the replacement first:" >&2
-            echo "      contrib/it-gles/build.sh" >&2
-            WARN=1
-        fi
-    fi
+    ;;
+esac
+
+if [ -z "$MACHO_INFO" ] && [ -f "$BIN" ]; then
+    echo "NOTE: could not read $EXE's load commands, so the FairPlay and" >&2
+    echo "  OpenGLES checks were skipped." >&2
 fi
 
 # An .ipa is a zip and installd extracts it preserving the archived mode, so an
