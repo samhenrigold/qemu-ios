@@ -28,28 +28,8 @@ set -u
 TARGET="${1:?usage: it-poweroff.sh <qmp-socket-or-host:port> [max-seconds]}"
 MAX="${2:-90}"
 
-python3 - "$TARGET" <<'EOF'
-import json, socket, sys
-
-target = sys.argv[1]
-if ':' in target and not target.startswith('/'):
-    host, port = target.rsplit(':', 1)
-    s = socket.create_connection((host, int(port)))
-else:
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect(target)
-
-f = s.makefile('rwb')
-f.readline()                                     # greeting
-f.write(b'{"execute":"qmp_capabilities"}\n'); f.flush(); f.readline()
-f.write(b'{"execute":"system_powerdown"}\n'); f.flush()
-while True:
-    line = f.readline()
-    if not line:
-        break
-    if 'event' not in json.loads(line):
-        break
-EOF
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python3 "$HERE/imgtools/itqmp.py" "$TARGET" cmd system_powerdown >/dev/null
 
 echo "it-poweroff: powerdown requested; the guest takes ~10s to unmount and halt"
 

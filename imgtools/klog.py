@@ -19,13 +19,14 @@ dump it soon after the thing you care about, not at the end of a long run.
 """
 
 import argparse
-import json
 import os
 import re
-import socket
 import struct
 import sys
 import tempfile
+
+sys.path.insert(0, os.path.dirname(__file__))
+from itqmp import QMP, pmemsave as _pmemsave
 
 RAM_BASE = 0x08000000
 RAM_SIZE = 128 * 1024 * 1024
@@ -35,19 +36,11 @@ MSGBUF_MAGIC = 0x063061
 
 
 def pmemsave(port, path):
-    s = socket.create_connection(("127.0.0.1", port), timeout=30)
-    f = s.makefile("rw")
-    f.readline()
-    f.write(json.dumps({"execute": "qmp_capabilities"}) + "\n")
-    f.flush()
-    f.readline()
-    f.write(json.dumps({"execute": "pmemsave", "arguments": {
-        "val": RAM_BASE, "size": RAM_SIZE, "filename": path}}) + "\n")
-    f.flush()
-    reply = json.loads(f.readline())
-    s.close()
-    if "error" in reply:
-        sys.exit("pmemsave failed: %s" % reply["error"])
+    q = QMP("127.0.0.1", port, timeout=30)
+    try:
+        _pmemsave(q, path, RAM_BASE, RAM_SIZE)
+    except RuntimeError as e:
+        sys.exit("pmemsave failed: %s" % e)
 
 
 def find_msgbuf(ram):
