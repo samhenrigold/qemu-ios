@@ -174,7 +174,10 @@ static size_t tcp_usb_payload_len(const tcp_usb_header_t *_hdr)
 	return _hdr->length > 0 ? (size_t)_hdr->length : 0;
 }
 
-static void tcp_usb_callback(tcp_usb_state_t *state, int _can_read, int _can_write)
+static void tcp_usb_read_callback(void *_arg);
+static void tcp_usb_write_callback(void *_arg);
+
+static void tcp_usb_pump(tcp_usb_state_t *state, int _can_read, int _can_write)
 {
 	ssize_t ret;
 
@@ -423,6 +426,28 @@ static void tcp_usb_callback(tcp_usb_state_t *state, int _can_read, int _can_wri
 	}
 }
 
+/*
+ * Run the state machine, then re-arm the main-loop fd handler: always watch for
+ * readable, but watch for writable ONLY while a write is actually in progress.
+ *
+ * A connected TCP socket is almost always writable, so a permanently-registered
+ * write handler fires on every single main-loop iteration -- which pegged a
+ * whole core the entire time usbmuxd was attached (even with the VM paused),
+ * because in the idle state the write callback did nothing but return.
+ */
+static void tcp_usb_callback(tcp_usb_state_t *state, int _can_read, int _can_write)
+{
+	tcp_usb_pump(state, _can_read, _can_write);
+
+	if (state->closed || state->socket < 0) {
+		return;
+	}
+	bool want_write = state->state == tcp_usb_write_request ||
+					  state->state == tcp_usb_write_response;
+	qemu_set_fd_handler(state->socket, tcp_usb_read_callback,
+						want_write ? tcp_usb_write_callback : NULL, state);
+}
+
 static void tcp_usb_read_callback(void *_arg)
 {
 	tcp_usb_callback((tcp_usb_state_t *)_arg, 1, 0);
@@ -472,7 +497,9 @@ int tcp_usb_connect(tcp_usb_state_t *_state, const char *_host, uint32_t _port)
 
 	int flags = fcntl(fd, F_GETFL, 0);
 	fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-	qemu_set_fd_handler(fd, tcp_usb_read_callback, tcp_usb_write_callback, _state);
+	/* Read-only to start; the write handler is armed on demand (see the note on
+	 * tcp_usb_callback) only while a write is pending, or the loop spins. */
+	qemu_set_fd_handler(fd, tcp_usb_read_callback, NULL, _state);
 	return 0;
 }
 
