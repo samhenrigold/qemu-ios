@@ -326,6 +326,32 @@ static int s_getFramebufferAttachmentParameteriv(void *gc, unsigned t,
                                                  unsigned out)
     { return (int)qc(680, gc, 4, A(t, at, p, out)); }
 
+/* Compressed textures and buffer objects. glCompressedTexImage2D carries eight
+ * scalars and glCompressedTexSubImage2D nine, so both spill exactly the way
+ * s_texImage2D does. Slots read out of the 3.1.3 SDK trampolines; see gles.h. */
+static int s_compressedTexImage2D(void *gc, unsigned target, unsigned level,
+                                  unsigned ifmt, unsigned wd_, unsigned ht,
+                                  unsigned border, unsigned imgsz,
+                                  unsigned data)
+    { return (int)qc(380, gc, 8,
+                     A(target, level, ifmt, wd_, ht, border, imgsz, data)); }
+static int s_compressedTexSubImage2D(void *gc, unsigned target, unsigned level,
+                                     unsigned xoff, unsigned yoff, unsigned wd_,
+                                     unsigned ht, unsigned fmt, unsigned imgsz,
+                                     unsigned data)
+    { return (int)qc(383, gc, 9,
+                     A(target, level, xoff, yoff, wd_, ht, fmt, imgsz, data)); }
+static int s_genBuffers(void *gc, unsigned n, unsigned ids)
+    { return (int)qc(644, gc, 2, A(n, ids)); }
+static int s_deleteBuffers(void *gc, unsigned n, unsigned ids)
+    { return (int)qc(643, gc, 2, A(n, ids)); }
+static int s_bufferData(void *gc, unsigned target, unsigned size,
+                        unsigned data, unsigned usage)
+    { return (int)qc(646, gc, 4, A(target, size, data, usage)); }
+static int s_bufferSubData(void *gc, unsigned target, unsigned offset,
+                           unsigned size, unsigned data)
+    { return (int)qc(647, gc, 4, A(target, offset, size, data)); }
+
 /* ------------------------------------------------------------ EGL interface */
 
 /* One GC per context. The framework only ever hands this back to us as arg0,
@@ -423,6 +449,13 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
         table[307] = (void *)s_texSubImage2D;
         table[642] = (void *)s_bindBuffer;
         table[796] = (void *)s_scalex;
+
+        table[380] = (void *)s_compressedTexImage2D;
+        table[383] = (void *)s_compressedTexSubImage2D;
+        table[643] = (void *)s_deleteBuffers;
+        table[644] = (void *)s_genBuffers;
+        table[646] = (void *)s_bufferData;
+        table[647] = (void *)s_bufferSubData;
 
         table[60]  = (void *)s_depthFunc;
         table[95]  = (void *)s_frontFace;
