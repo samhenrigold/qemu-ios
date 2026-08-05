@@ -65,7 +65,6 @@ documented bug does not turn a green run red.
 
 import argparse
 import hashlib
-import json
 import os
 import plistlib
 import re
@@ -79,6 +78,9 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 
+sys.path.insert(0, os.path.join(ROOT, "imgtools"))
+import itqmp  # noqa: E402  (needs the path above)
+
 W, H = 320, 480
 FRAME_BYTES = W * H * 3
 
@@ -88,6 +90,14 @@ FRAME_BYTES = W * H * 3
 # logo - the first version of this harness passed at 121k and called a boot
 # finished while SpringBoard was still painting.
 HOME_LIT_MIN = 180000
+# ...and it has to be a picture rather than a solid fill. iBoot paints the panel
+# its default colour - white on the pinot panel - and leaves it there when the
+# boot fails, so a device sitting in recovery mode lights EVERY sub-pixel and
+# sails through a lit floor at 460800. That is not hypothetical: it is what made
+# this harness report PASS at t+13s against a NOR whose device tree iBoot could
+# not load, and then spend 420s waiting for a mux device that was never going to
+# arrive. A home screen has dark pixels in it; a fill does not.
+SOLID_LIT_MAX = int(FRAME_BYTES * 0.98)
 # And the frame has to stay there: one confirming sample this many seconds later
 # must also be above the gate, so a transient cannot be mistaken for a boot.
 HOME_CONFIRM_S = 15
@@ -124,6 +134,11 @@ GLES_BUNDLE_ID = "com.qemuios.gltest"
 # alone could not tell them apart at all (the home screen lights *more*
 # sub-pixels than the GL frame does).
 GLES_QUAD_MIN = 0.05
+# Telling the lock screen from the home screen by lit sub-pixels. Measured on
+# nand-appsync3: lock screen 253.7k-254.0k across five boots, home screen
+# 308.6k. The gate sits between them with room on both sides.
+UNLOCKED_LIT_MIN = 280000
+UNLOCK_TRIES = 4
 # Seconds after launch before the first sample: the app has to get through
 # SpringBoard's launch animation and its first present.
 GLES_SETTLE_S = 25
@@ -228,51 +243,24 @@ def to_png(ppm, png):
 # QMP
 # --------------------------------------------------------------------------
 
-class QMP:
-    """One long-lived QMP connection.
+class QMP(itqmp.QMP):
+    """One long-lived QMP connection, on the shared client.
 
     QEMU's QMP listener accepts a single client at a time; a second connection
     is accepted by the kernel and then never answered, which looks exactly like
     a guest hang. Everything the harness does over QMP therefore goes through
     one instance of this class, and it is closed before contrib/it-poweroff.sh
     (which opens its own) is invoked.
+
+    Only the two things imgtools/itqmp.py deliberately does differently are
+    overridden: it returns a *PNG* from shot() and the harness measures raw PPM
+    samples, and it has no socket read timeout while a wedged guest here must
+    fail the check rather than hang the suite.
     """
 
     def __init__(self, port, timeout=180):
-        deadline = time.time() + timeout
-        while True:
-            try:
-                self.s = socket.create_connection(("127.0.0.1", port), 5)
-                break
-            except OSError:
-                if time.time() > deadline:
-                    raise
-                time.sleep(0.5)
+        itqmp.QMP.__init__(self, port, timeout=timeout)
         self.s.settimeout(60)
-        self.f = self.s.makefile("rwb")
-        self._read()
-        self.cmd("qmp_capabilities")
-
-    def _read(self):
-        while True:
-            line = self.f.readline()
-            if not line:
-                raise EOFError("qmp closed")
-            msg = json.loads(line)
-            if "event" in msg:
-                continue
-            return msg
-
-    def cmd(self, name, **args):
-        req = {"execute": name}
-        if args:
-            req["arguments"] = args
-        self.f.write((json.dumps(req) + "\n").encode())
-        self.f.flush()
-        r = self._read()
-        if "error" in r:
-            raise RuntimeError("%s: %s" % (name, r["error"]))
-        return r.get("return")
 
     def shot(self, path):
         self.cmd("screendump", filename=path)
@@ -282,53 +270,16 @@ class QMP:
             time.sleep(0.1)
         return path
 
-    def _abs(self, x, y):
-        return (max(0, min(32767, int(x / W * 32768))),
-                max(0, min(32767, int(y / H * 32768))))
-
     def tap(self, x, y, hold=0.15):
-        ax, ay = self._abs(x, y)
-        move = [{"type": "abs", "data": {"axis": "x", "value": ax}},
-                {"type": "abs", "data": {"axis": "y", "value": ay}}]
-        self.cmd("input-send-event", events=move)
-        self.cmd("input-send-event", events=move + [
-            {"type": "btn", "data": {"button": "left", "down": True}}])
-        time.sleep(hold)
-        self.cmd("input-send-event", events=[
-            {"type": "btn", "data": {"button": "left", "down": False}}])
+        itqmp.tap(self, x, y, hold=hold)
 
     def swipe(self, x1, y1, x2, y2, steps=12, dwell=0.05):
         """A slow multi-step drag. A two-point jump is below the digitizer's
         report rate and SpringBoard's unlock recogniser never sees it move."""
-        ax, ay = self._abs(x1, y1)
-        self.cmd("input-send-event", events=[
-            {"type": "abs", "data": {"axis": "x", "value": ax}},
-            {"type": "abs", "data": {"axis": "y", "value": ay}}])
-        self.cmd("input-send-event", events=[
-            {"type": "btn", "data": {"button": "left", "down": True}}])
-        for i in range(1, steps + 1):
-            ax, ay = self._abs(x1 + (x2 - x1) * i / steps,
-                               y1 + (y2 - y1) * i / steps)
-            self.cmd("input-send-event", events=[
-                {"type": "abs", "data": {"axis": "x", "value": ax}},
-                {"type": "abs", "data": {"axis": "y", "value": ay}}])
-            time.sleep(dwell)
-        self.cmd("input-send-event", events=[
-            {"type": "btn", "data": {"button": "left", "down": False}}])
+        itqmp.swipe(self, x1, y1, x2, y2, steps=steps, dt=dwell)
 
     def home(self):
-        # The hardware buttons live behind the host Command modifier so plain
-        # keys stay available for text entry: `key h` types an 'h'.
-        self.cmd("send-key",
-                 keys=[{"type": "qcode", "data": k}
-                       for k in ("meta_l", "shift", "h")],
-                 **{"hold-time": 250})
-
-    def close(self):
-        try:
-            self.s.close()
-        except OSError:
-            pass
+        itqmp.button(self, "home")
 
 
 # --------------------------------------------------------------------------
@@ -441,21 +392,36 @@ class Device:
                 % (self.tag, self.mux.pid, cfg.mux_port, cfg.usb_port))
             time.sleep(2)
 
+        # NO usb-patch-mux-gate. That patch is for 2.1.1/5F138, and on a 3.1.3
+        # kernel it locates an instruction that is not the one it means and
+        # rewrites it: the guest gets as far as loading drivers and then stops
+        # dead - framebuffer frozen on the Apple logo, no further NAND writes,
+        # and the vCPU spinning. Measured side by side on nand-appsync3: with
+        # the flag, no home screen in 900s; without it (everything else
+        # identical, usbmuxd included) the lock screen at t+32s and
+        # `idevice_id -l` answering with the UDID. The gate it exists to open
+        # is simply not shut on 3.1.3 - the mux enumerates without it.
         machine = ("iPod-Touch,bootrom=%s/bootrom_240_4,nand=%s,nor=%s,"
-                   "nandrw=%s,usb-attached=on,"
-                   "usb-patch-mux-gate=on,usb-tcp-addr=127.0.0.1:%d"
+                   "nandrw=%s,usb-attached=on,usb-tcp-addr=127.0.0.1:%d"
                    % (cfg.files, cfg.base_nand, cfg.nor, cfg.overlay,
                       cfg.usb_port))
-        argv = [cfg.qemu, "-M", machine + ",wifi=on",
-                "-cpu", cfg.cpu, "-m", cfg.mem, "-display", "none",
+        # The BCM4325 is attached only for the check that tests it. It is not
+        # free: 3.1.3's driver associates and then keeps the SDIO bus busy, and
+        # every other check pays for a radio it never looks at. run-ios3.sh
+        # makes the same split (--net is separate from --appsync).
+        argv = [cfg.qemu, "-M", machine + (",wifi=on" if cfg.wifi else "")]
+        argv += ["-cpu", cfg.cpu] if cfg.cpu else []
+        argv += ["-m", cfg.mem, "-display", "none",
                 # Headless runs stay silent: without this QEMU opens the host's
                 # CoreAudio device and plays guest sound out of the speakers.
                 "-audio", "driver=none",
                 "-serial", "file:" + self.serial,
-                "-qmp", "tcp:127.0.0.1:%d,server=on,wait=off" % cfg.qmp_port,
-                "-netdev", "user,id=wifi0,net=10.0.2.0/24,host=10.0.2.2,"
-                           "dhcpstart=10.0.2.15",
-                "-object", "filter-dump,id=cap0,netdev=wifi0,file=" + self.pcap]
+                "-qmp", "tcp:127.0.0.1:%d,server=on,wait=off" % cfg.qmp_port]
+        if cfg.wifi:
+            argv += ["-netdev", "user,id=wifi0,net=10.0.2.0/24,host=10.0.2.2,"
+                                "dhcpstart=10.0.2.15",
+                     "-object",
+                     "filter-dump,id=cap0,netdev=wifi0,file=" + self.pcap]
         self.qemu = self.procs.spawn(argv, os.path.join(self.dir, "qemu.log"),
                                      env=boot_env(cfg))
         log("%s: qemu pid %d (qmp %d)" % (self.tag, self.qemu.pid, cfg.qmp_port))
@@ -505,6 +471,12 @@ class Device:
             except Exception as e:
                 return False, "screendump failed: %s" % e, best
             hi, lit = lit_count(shot)
+            if lit >= SOLID_LIT_MAX:
+                # See SOLID_LIT_MAX: a fill is iBoot, not SpringBoard.
+                log("%s: t+%.0fs solid fill (%d lit) - the panel is showing a "
+                    "flat colour, so this is iBoot/recovery, not a boot"
+                    % (self.tag, time.time() - START, lit))
+                continue
             best = max(best, lit)
             if n % 3 == 0 or lit > HOME_LIT_MIN // 2:
                 log("%s: t+%.0fs max=%d lit=%d"
@@ -899,6 +871,68 @@ def quad_signature(path):
     return m / n, c / n
 
 
+def install_gles_app(cfg, r):
+    """Install GLTest.app over USB, as an .ipa, and confirm installd lists it.
+
+    The .ipa is built here rather than committed: it is just Payload/ around
+    the bundle contrib/it-gles/build.sh already produces, and a stale one would
+    silently test an old binary.
+    """
+    if GLES_BUNDLE_ID in run(["ideviceinstaller", "list"], cfg, 300).stdout:
+        return True
+    ipa_dir = os.path.join(cfg.out, "glesipa")
+    shutil.rmtree(ipa_dir, ignore_errors=True)
+    os.makedirs(os.path.join(ipa_dir, "Payload"))
+    shutil.copytree(os.path.join(GLES_DIR, "GLTest.app"),
+                    os.path.join(ipa_dir, "Payload", "GLTest.app"))
+    ipa = os.path.join(cfg.out, "GLTest.ipa")
+    # zip(1) rather than shutil.make_archive: the executable bit has to survive
+    # into the archive or the app installs and only ever bounces.
+    z = subprocess.run(["zip", "-qr", ipa, "Payload"], cwd=ipa_dir,
+                       capture_output=True, text=True, timeout=120)
+    if z.returncode != 0:
+        return r.set(False, "could not build GLTest.ipa: %s"
+                     % z.stderr.strip()[-160:])
+    ins = run(["ideviceinstaller", "install", ipa], cfg, cfg.install_timeout)
+    if GLES_BUNDLE_ID not in run(["ideviceinstaller", "list"], cfg, 300).stdout:
+        return r.set(False, "GLTest did not install: %s"
+                     % (ins.stdout + ins.stderr).strip().replace("\n", " | ")[-250:])
+    return True
+
+
+def unlock(dev, tries=None):
+    """Wake the device and slide to unlock, verified rather than assumed.
+
+    Touch on 3.1.3 is load-sensitive, and a swipe that misses is
+    indistinguishable from one that landed until sblaunch returns 7 much later
+    -- the code it also uses for "no such app". So the result is checked: the
+    home screen lights ~308k sub-pixels against the lock screen's ~254k, which
+    is far more separation than a retry loop needs. A run that got its render
+    only because the device happened to already be unlocked is exactly the kind
+    of accidental pass this exists to prevent.
+    """
+    tries = tries or UNLOCK_TRIES
+    shot = os.path.join(dev.dir, "unlock.ppm")
+    lit = 0
+    for _ in range(tries):
+        dev.qmp.home()
+        time.sleep(2)
+        # Check BEFORE swiping. y=427 is the slide-to-unlock bar on the lock
+        # screen but the dock on the home screen, so swiping at an
+        # already-unlocked device drags a dock icon, drops SpringBoard into
+        # edit mode and raises a translucent "Edit Home Screen" alert over
+        # everything drawn afterwards -- which reads as a render failure.
+        _hi, lit = lit_count(dev.qmp.shot(shot))
+        if lit >= UNLOCKED_LIT_MIN:
+            return True, lit
+        dev.qmp.swipe(60, 427, 295, 427)
+        time.sleep(3)
+        _hi, lit = lit_count(dev.qmp.shot(shot))
+        if lit >= UNLOCKED_LIT_MIN:
+            return True, lit
+    return False, lit
+
+
 def slot_names():
     """slot -> glFunctionName, from contrib/it-gles/slotmap.txt.
 
@@ -987,9 +1021,15 @@ def check_gles(cfg, procs, dev, r):
                       % (probe.stderr.strip()[-120:] or "rc=%d"
                          % probe.returncode))
 
-    fresh = guest_ssh(cfg, port, ["test -d /Applications/GLTest.app"]).returncode != 0
-    for src, dst in ((app, "/Applications/"), (launcher, "/tmp/sblaunch"),
-                     (shim, "/tmp/MBXGLEngine")):
+    # Install GLTest properly rather than dropping it in /Applications. A
+    # hand-copied bundle is not installed: SpringBoard launches from installd's
+    # database, and installd adopts a directory that appeared behind its back
+    # only sporadically -- measured 4 times out of 8 identical runs, with pokes
+    # over 200s failing to force it. `ideviceinstaller install` is the path
+    # this image was built to accept and it registers first time, every time.
+    if not install_gles_app(cfg, r):
+        return False
+    for src, dst in ((launcher, "/tmp/sblaunch"), (shim, "/tmp/MBXGLEngine")):
         p = guest_ssh(cfg, port, None, timeout=300, scp_from=src, scp_to=dst)
         if p.returncode != 0:
             return r.set(False, "scp %s failed: %s"
@@ -1000,7 +1040,7 @@ def check_gles(cfg, procs, dev, r):
               "MBXGLEngine.bundle")
     p = guest_ssh(cfg, port, [
         "set -e; "
-        "chmod 755 /tmp/sblaunch /Applications/GLTest.app/GLTest; "
+        "chmod 755 /tmp/sblaunch; "
         "if [ ! -f {b}/MBXGLEngine.stock ]; then "
         "cp {b}/MBXGLEngine {b}/MBXGLEngine.stock; fi; "
         "cp /tmp/MBXGLEngine {b}/MBXGLEngine; chmod 755 {b}/MBXGLEngine; "
@@ -1011,24 +1051,17 @@ def check_gles(cfg, procs, dev, r):
         return r.set(False, "staging the shim failed: %s"
                      % (p.stdout + p.stderr).strip()[-200:])
 
-    if fresh:
-        # SpringBoard caches /Applications at launch, so a bundle that was not
-        # already in the image is invisible to SBSLaunchApplicationWithIdentifier
-        # until it re-reads the directory.
-        log("  gles: GLTest.app is new to this image, respringing")
-        guest_ssh(cfg, port, ["killall SpringBoard"], timeout=30)
-        ok, detail, _best = dev.wait_for_home(cfg.boot_timeout)
-        if not ok:
-            return r.set(False, "SpringBoard did not come back: %s" % detail)
-
-    # The digitizer sleeps through the boot and sblaunch is refused on a locked
-    # device with the same error code it uses for "no such app", so wake and
-    # unlock before launching rather than debugging that ambiguity later.
-    dev.qmp.home()
-    time.sleep(3)
-    dev.qmp.swipe(60, 427, 295, 427)
-    time.sleep(3)
-
+    ok, lit = unlock(dev)
+    if not ok:
+        return r.set(False, "could not get past the lock screen in %d attempts "
+                            "(last frame lit=%d, need >=%d); sblaunch is "
+                            "refused on a locked device"
+                     % (UNLOCK_TRIES, lit, UNLOCKED_LIT_MIN))
+    # Nothing may be inserted between the unlock and the launch: the device
+    # re-locks about 9s after being woken, and sblaunch on a locked device
+    # returns 7 -- the same code it uses for "no such app". An earlier version
+    # pressed Home here to clear edit mode (see the tap below) and that alone
+    # was enough delay to turn a working launch into a bogus "app not found".
     p = guest_ssh(cfg, port, ["/tmp/sblaunch"], timeout=60)
     out = (p.stdout + p.stderr).strip()
     if p.returncode != 0:
@@ -1036,6 +1069,17 @@ def check_gles(cfg, procs, dev, r):
     log("  gles: %s" % out)
 
     time.sleep(GLES_SETTLE_S)
+    # y=427 is the slide-to-unlock bar on the lock screen but the dock on the
+    # home screen, so on an already-unlocked device the unlock drag grabs a
+    # dock icon, enters edit mode and raises the "Edit Home Screen" alert. That
+    # alert is translucent and sits above the app: it shifted every pixel just
+    # enough that the colour signature read 0.002 on a frame that was in fact
+    # rendering perfectly. Dismissing it here rather than before the launch
+    # keeps the unlock->sblaunch gap inside the re-lock window. The tap is
+    # blind but safe when no alert is up: GLTest handles no touches, so it
+    # lands in an inert view.
+    dev.qmp.tap(160, 335)
+    time.sleep(2)
     a = dev.qmp.shot(os.path.join(dev.dir, "gles-a.ppm"))
     time.sleep(GLES_HOLD_S)
     b = dev.qmp.shot(os.path.join(dev.dir, "gles-b.ppm"))
@@ -1222,13 +1266,15 @@ def main():
                     default=os.path.expanduser("~/Developer/qemu-ios-files"))
     ap.add_argument("--base-nand", default=None,
                     help="base NAND image dir (default <files-dir>/nand-canonical)")
-    ap.add_argument("--cpu", default="max", help="-cpu (default max)")
-    ap.add_argument("--mem", default="2G", help="-m (default 2G). The 3.1.3 "
-                                                "image wants 128M.")
+    ap.add_argument("--cpu", default=None,
+                    help="-cpu (default: the machine's own, arm1176). Do not "
+                         "pass 'max': it NOPs the CP15 WFI XNU idles on, so "
+                         "the guest burns a host core doing nothing.")
+    ap.add_argument("--mem", default="128M",
+                    help="-m (default 128M, what the device has)")
     ap.add_argument("--nor", default=None,
-                    help="NOR image (default <files-dir>/nor_n72ap.bin). A "
-                         "3.1.3 image needs its own NOR and the IT_* boot-args "
-                         "environment; both are inherited, not set here.")
+                    help="NOR image (default <files-dir>/ios3/nor_7E18.bin if "
+                         "present, else <files-dir>/nor_n72ap.bin)")
     ap.add_argument("--qemu", default=os.path.join(ROOT, "build",
                                                    "qemu-system-arm"))
     ap.add_argument("--usbmuxd",
@@ -1270,8 +1316,30 @@ def main():
     cfg = ap.parse_args()
 
     cfg.files = os.path.expanduser(cfg.files_dir)
-    cfg.base_nand = cfg.base_nand or os.path.join(cfg.files, "nand-canonical")
-    cfg.nor = cfg.nor or os.path.join(cfg.files, "nor_n72ap.bin")
+    # NAND, NOR and iBoot are one set and cannot be mixed: nand-canonical is a
+    # 2.1.1 image, and against 3.1.3's iBoot its FTL will not even open --
+    # "NAND initialisation failed due to format mismatch", "root filesystem
+    # mount failed", "Entering recovery mode". That recovery-mode device is the
+    # 05ac:1281 with no mux interface described below, so picking the 3.1.3 NOR
+    # while leaving the 2.1.1 NAND reports itself as a USB fault several
+    # minutes later rather than as the image mismatch it is. Whichever
+    # firmware boot_env() and the NOR default choose, the NAND matches it.
+    cfg.base_nand = cfg.base_nand or next(
+        (p for p in (os.path.join(cfg.files, "nand-appsync3"),
+                     os.path.join(cfg.files, "nand-canonical"))
+         if os.path.exists(p)), os.path.join(cfg.files, "nand-canonical"))
+    # The 3.1.3 NOR, if this checkout has one. 3.x iBoot unwraps the SHSH blob
+    # in flash with a UID-derived key, and nor_n72ap.bin (the 2.1.1 NOR) has no
+    # wrapped blob: iBoot then prints "load_macho_image: failed to load device
+    # tree", drops into recovery mode, and paints the panel solid white. That
+    # device answers USB as 05ac:1281 with no AppleUSBMux interface, which is
+    # the "device never appeared on the mux" every USB check used to report.
+    # boot_env() already picks the matching 3.1.3 iBoot the same way; the NOR
+    # has to travel with it.
+    cfg.nor = cfg.nor or next(
+        (p for p in (os.path.join(cfg.files, "ios3", "nor_7E18.bin"),
+                     os.path.join(cfg.files, "nor_n72ap.bin"))
+         if os.path.exists(p)), os.path.join(cfg.files, "nor_n72ap.bin"))
 
     if cfg.check_prereqs:
         return report_prereqs(cfg)
@@ -1335,6 +1403,7 @@ def main():
             results[c].skip("ipa not found: %s" % cfg.ipa)
             skipped.add(c)
     selected = [c for c in selected if c not in skipped]
+    cfg.wifi = "wifi" in selected
 
     log("run dir   %s" % cfg.out)
     log("base nand %s" % cfg.base_nand)
