@@ -142,6 +142,28 @@ typedef struct __attribute__((packed)) {
 #define GLES_SLOT_BIND_BUFFER           642  /* 0x0a18 */
 #define GLES_SLOT_SCALEX                796  /* 0x0c80 */
 
+/*
+ * Cheap state setters a survey of 20 real App Store apps found imported but
+ * unimplemented. Same provenance as everything above -- read out of the 3.1.3
+ * SDK trampolines, with the extractor re-validated against seven already-known
+ * slots (7, 1, 61, 253, 301, 307, 335) before any new number was trusted.
+ *
+ * glPixelStorei is the one with teeth. ES 1.1's GL_UNPACK_ALIGNMENT defaults to
+ * 4, so a guest uploading GL_RGB, GL_LUMINANCE, GL_ALPHA or GL_LUMINANCE_ALPHA
+ * at a width whose row is not a multiple of four bytes pads every row -- and
+ * the upload path here used to size the fetch as w*h*bpp, with no padding at
+ * all. That under-reads, and each row after the first is sheared by a
+ * progressively larger offset. Honouring the alignment is not about supporting
+ * the call; it is a correctness fix to uploads that were already wrong.
+ */
+#define GLES_SLOT_DEPTH_FUNC            60   /* 0x0100 */
+#define GLES_SLOT_FRONT_FACE            95   /* 0x018c */
+#define GLES_SLOT_PIXEL_STOREI          195  /* 0x031c */
+#define GLES_SLOT_SCISSOR               251  /* 0x03fc */
+#define GLES_SLOT_TEX_ENVI              292  /* 0x04a0 */
+#define GLES_SLOT_CLIENT_ACTIVE_TEXTURE 341  /* 0x0558 */
+#define GLES_SLOT_ACTIVE_TEXTURE        342  /* 0x055c */
+
 /* OES framebuffer-object entry points. EAGL uses these itself inside
  * -renderbufferStorage:fromDrawable:, so a real CAEAGLLayer client cannot get
  * off the ground without them -- they are not optional coverage. The non-OES
@@ -182,6 +204,10 @@ typedef struct __attribute__((packed)) {
 /* Surface pixel formats, as IOSurfaceGetPixelFormat reports them (FourCC). */
 #define GLES_SURFACE_BGRA32             0x42475241  /* 'BGRA' */
 #define GLES_SURFACE_RGBA32             0x52474241  /* 'RGBA' */
+/* 16 bits per pixel, not 32. A CAEAGLLayer that asked for
+ * kEAGLColorFormatRGB565 gets this, and every size in the present path has to
+ * follow the format rather than assume four bytes. */
+#define GLES_SURFACE_RGB565             0x4c353635  /* 'L565' */
 
 #ifndef OUT_OF_TREE_BUILD
 int64_t qc_handle_gles(CPUState *cpu, qc_gles_args_t *a);
