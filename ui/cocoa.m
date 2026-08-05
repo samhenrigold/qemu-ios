@@ -344,6 +344,8 @@ static void handleAnyDeviceErrors(Error * err)
     BOOL showTaps;
     NSRect tapRects[2];
     int tapCount;
+    /* The dots are a preview -- Option is held but nothing is touching yet. */
+    BOOL tapPreview;
 }
 - (void) switchSurface:(pixman_image_t *)image;
 - (void) grabMouse;
@@ -641,9 +643,20 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
     for (i = 0; i < tapCount; i++) {
         CGRect r = NSRectToCGRect(tapRects[i]);
 
-        CGContextSetRGBFillColor(ctx, 0.75, 0.75, 0.75, 0.45);
-        CGContextFillEllipseInRect(ctx, r);
-        CGContextSetRGBStrokeColor(ctx, 0.95, 0.95, 0.95, 0.8);
+        /*
+         * A preview is drawn as an outline: it has to read as "this is where
+         * the fingers will land", not as "the screen is being touched", or
+         * aiming a pinch and performing one look the same.
+         */
+        if (tapPreview) {
+            CGContextSetRGBFillColor(ctx, 0.75, 0.75, 0.75, 0.12);
+            CGContextFillEllipseInRect(ctx, r);
+            CGContextSetRGBStrokeColor(ctx, 0.95, 0.95, 0.95, 0.55);
+        } else {
+            CGContextSetRGBFillColor(ctx, 0.75, 0.75, 0.75, 0.45);
+            CGContextFillEllipseInRect(ctx, r);
+            CGContextSetRGBStrokeColor(ctx, 0.95, 0.95, 0.95, 0.8);
+        }
         CGContextSetLineWidth(ctx, 1.5);
         CGContextStrokeEllipseInRect(ctx, CGRectInset(r, 0.75, 0.75));
     }
@@ -669,12 +682,33 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
         return;
     }
     memcpy(old, tapRects, sizeof(old));
+    tapPreview = FALSE;
 
     if (leftButtonDown && haveMousePoint) {
         pts[n++] = mousePoint;
     }
     if (pinchDown) {
         pts[n++] = pinchPoint;
+    }
+
+    /*
+     * Nothing is touching, but Option is held: show where the two contacts
+     * WOULD be. Holding Option is how you aim a pinch, and doing that blind --
+     * press first, then discover the second finger landed somewhere useless --
+     * is the thing that made the gesture hard to place. No touch is injected
+     * here; these are markers only, and pressing is still what starts the
+     * contact.
+     */
+    if (n == 0 && haveMousePoint && isAbsoluteEnabled && isMouseGrabbed &&
+        (previousModifierFlags & NSEventModifierFlagOption)) {
+        NSPoint partner = [self pinchPartnerFor:previousModifierFlags];
+
+        if (partner.x >= 0 && partner.y >= 0 &&
+            partner.x < screen.width && partner.y < screen.height) {
+            pts[n++] = mousePoint;
+            pts[n++] = partner;
+            tapPreview = TRUE;
+        }
     }
     for (i = 0; i < n; i++) {
         /* Guest coordinates have y downwards; the view's origin is bottom left. */
@@ -1414,6 +1448,26 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
  * mousePoint/pinchPoint are guest framebuffer coordinates. Callers update
  * mousePoint (and prevMousePoint) first; this only decides what finger 1 does.
  */
+/*
+ * Where finger 1 goes for the current pointer position. Shared by the real
+ * contact and by the hover preview, so the dot you line up before pressing is
+ * by construction the dot you get when you press.
+ */
+- (NSPoint) pinchPartnerFor:(NSUInteger)modifiers
+{
+    NSPoint p;
+
+    if (pinchDown && (modifiers & NSEventModifierFlagShift)) {
+        /* Rigid translation: carry the existing separation to the new point. */
+        p.x = mousePoint.x + (pinchPoint.x - prevMousePoint.x);
+        p.y = mousePoint.y + (pinchPoint.y - prevMousePoint.y);
+    } else {
+        p.x = screen.width - mousePoint.x;
+        p.y = screen.height - mousePoint.y;
+    }
+    return p;
+}
+
 - (void) updatePinch:(NSUInteger)modifiers
 {
     BOOL wantsPinch = (modifiers & NSEventModifierFlagOption) != 0 &&
@@ -1430,14 +1484,7 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
         return;
     }
 
-    if (pinchDown && (modifiers & NSEventModifierFlagShift)) {
-        /* Rigid translation: carry the existing separation to the new point. */
-        p.x = mousePoint.x + (pinchPoint.x - prevMousePoint.x);
-        p.y = mousePoint.y + (pinchPoint.y - prevMousePoint.y);
-    } else {
-        p.x = screen.width - mousePoint.x;
-        p.y = screen.height - mousePoint.y;
-    }
+    p = [self pinchPartnerFor:modifiers];
 
     /*
      * Leaving the panel is a transition, not a stuck touch. The mirrored finger
