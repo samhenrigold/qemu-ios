@@ -160,12 +160,33 @@ void gles_eagl_iosurface_unlock(void);
 /* Guest vertex/texcoord array state. The guest hands us a pointer into its own
  * address space; nothing is read from it until a draw call, exactly as GL
  * specifies, so the guest is free to refill the buffer between calls. */
+/*
+ * A buffer object's bytes, held here rather than on the host GL.
+ *
+ * The host never sees a VBO: the draw path already has to marshal client arrays
+ * out of guest memory into scratch and hand GL a host pointer, and a buffer's
+ * contents are just that same scratch with a longer lifetime. Keeping them here
+ * means the two sources meet at one place (gles_bind_array) instead of forking
+ * the whole draw path.
+ */
+typedef struct {
+    uint8_t *data;
+    size_t size;
+} GLESBuffer;
+
 typedef struct {
     uint32_t enabled;
     uint32_t size;      /* components per element */
     uint32_t type;      /* GL_FLOAT etc, in ES enum values (same as desktop) */
     uint32_t stride;
-    uint32_t ptr;       /* guest VA */
+    /*
+     * Guest VA, OR a byte offset into `vbo` when one is set. GL decides which
+     * at the moment gl*Pointer is called -- the binding in force then is
+     * captured with the pointer -- so the resolution happens there and not at
+     * draw time, and the draw path pays a null check rather than a lookup.
+     */
+    uint32_t ptr;
+    const GLESBuffer *vbo;
 
     /* Scratch for pulling this array across. Grown as needed, never shrunk.
      * Per-array rather than shared, because a single draw needs several of
@@ -210,6 +231,20 @@ typedef struct {
      * texture slots used to) allocates megabyte buffers 60x/s for no reason. */
     uint8_t *txbuf;
     size_t txbuf_size;
+
+    /* Where a compressed upload is expanded to RGBA8 before it goes to the
+     * host. Same grow-and-keep idiom, and separate from txbuf because the
+     * decode reads one while writing the other. */
+    uint8_t *decbuf;
+    size_t decbuf_size;
+
+    /* Buffer objects: name -> GLESBuffer. Created lazily; a title that uses no
+     * VBOs never allocates it. The two bindings are resolved pointers rather
+     * than names, because that is what the draw path wants. */
+    GHashTable *buffers;
+    uint32_t next_buffer_name;
+    const GLESBuffer *array_buffer;
+    const GLESBuffer *element_buffer;
 
     uint8_t *readback;  /* GLES_FB_WIDTH * GLES_FB_HEIGHT * 4 */
 
@@ -501,6 +536,9 @@ static inline void gles_platform_frame_unlock(void)
 
 #endif /* GLES_HOST_EAGL */
 
+/* Defined with the compressed-texture decoder below; run once from init. */
+static void pvrtc_selfcheck(void);
+
 static bool gles_host_init(void)
 {
     if (gh.inited) {
@@ -590,6 +628,10 @@ static bool gles_host_init(void)
 
     gh.readback = g_malloc0((size_t)GLES_FB_WIDTH * GLES_FB_HEIGHT * 4);
     gh.inited = true;
+
+    /* Microseconds, once, and it is the only thing standing between a broken
+     * PVRTC decoder and a silently wrong picture. See pvrtc_selfcheck. */
+    pvrtc_selfcheck();
 
     fprintf(stderr, "[gles] host GL up: %s / %s, present by %s\n",
             glGetString(GL_VERSION), glGetString(GL_RENDERER),
@@ -722,11 +764,15 @@ static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
                             uint32_t count)
 {
     uint32_t esz, stride;
-    size_t need;
+    size_t need, off;
+    const uint8_t *base;
     const void *data;
     GLenum type;
 
-    if (!a->enabled || !a->ptr || !count) {
+    /* A zero `ptr` is a legitimate offset into a bound buffer -- offset 0 is
+     * where geometry usually starts -- so the null-pointer guard only applies
+     * to the guest-VA case. */
+    if (!a->enabled || (!a->ptr && !a->vbo) || !count) {
         return false;
     }
     esz = gles_type_size(a->type) * a->size;
@@ -736,24 +782,48 @@ static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
     stride = a->stride ? a->stride : esz;
     /* Last element still only occupies esz bytes, not a full stride. */
     need = (size_t)stride * (count - 1) + esz;
+    off = (size_t)stride * first;
 
-    if (need > a->buf_size) {
-        a->buf = g_realloc(a->buf, need);
-        a->buf_size = need;
-    }
-    {
-        uint64_t t0 = gles_t();
-        int rc = cpu_memory_rw_debug(cpu, a->ptr + (hwaddr)stride * first,
-                                     a->buf, need, 0);
-        gh.t_fetch += gles_t() - t0;
-        if (rc != 0) {
-            fprintf(stderr, "[gles] failed to read %zu bytes of array data at "
-                    "guest 0x%08x\n", need, a->ptr);
+    if (a->vbo) {
+        /*
+         * The pointer was an offset into the buffer bound when gl*Pointer was
+         * called, and the bytes are already here -- no guest read at all. This
+         * is the only branch in the draw path that VBO support adds; the
+         * guest-VA case below is untouched.
+         */
+        if (a->ptr + off + need > a->vbo->size) {
+            static bool warned;
+
+            if (!warned) {
+                warned = true;
+                fprintf(stderr, "[gles] %s array reads past its buffer "
+                        "(offset %u + %zu, buffer %zu bytes); array disabled\n",
+                        gles_array_name(a->client_state), a->ptr, off + need,
+                        a->vbo->size);
+            }
             return false;
         }
+        base = a->vbo->data + a->ptr + off;
+    } else {
+        if (need > a->buf_size) {
+            a->buf = g_realloc(a->buf, need);
+            a->buf_size = need;
+        }
+        {
+            uint64_t t0 = gles_t();
+            int rc = cpu_memory_rw_debug(cpu, a->ptr + (hwaddr)off,
+                                         a->buf, need, 0);
+            gh.t_fetch += gles_t() - t0;
+            if (rc != 0) {
+                fprintf(stderr, "[gles] failed to read %zu bytes of array data "
+                        "at guest 0x%08x\n", need, a->ptr);
+                return false;
+            }
+        }
+        base = a->buf;
     }
 
-    data = a->buf;
+    data = base;
     type = a->type;
 
     /* Convert the types the host would refuse. See gles_needs_widen. */
@@ -766,7 +836,7 @@ static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
             a->fbuf_count = n;
         }
         for (i = 0; i < count; i++) {
-            const uint8_t *row = a->buf + (size_t)stride * i;
+            const uint8_t *row = base + (size_t)stride * i;
             for (c = 0; c < a->size; c++) {
                 float v;
                 if (type == GLES_FIXED) {
@@ -927,6 +997,493 @@ static size_t gles_image_bytes(uint32_t w, uint32_t h, size_t bpp)
     return row * (h - 1) + (size_t)w * bpp;
 }
 
+/* ------------------------------------------------- compressed textures ---- */
+
+/*
+ * PVRTC and the paletted formats, decoded on the CPU.
+ *
+ * PVRTC was THE texture format on the PowerVR MBX, so a large share of the
+ * 2008-2010 catalogue uploads nothing else -- and desktop CGL has no PVRTC at
+ * all, nor does any GL this ever runs on outside iOS. So the choice is decode
+ * it here or render those titles untextured.
+ *
+ * A WARNING ABOUT `.pvr` FILES, because it cost a wrong assumption once
+ * already: a .pvr is a CONTAINER, not a format. Decoding the 52-byte PVR v2
+ * headers in one shipping title's bundle found only four of its nine .pvr
+ * assets were actually PVRTC; the other five were uncompressed RGBA4444 merely
+ * stored in a .pvr. Nothing here may key off a file extension or an asset
+ * pipeline's habits -- the only trustworthy signal is the `internalformat`
+ * enum the guest passes, and that is what is switched on below.
+ */
+#define PVRTC_RGB_4BPP    0x8C00
+#define PVRTC_RGB_2BPP    0x8C01
+#define PVRTC_RGBA_4BPP   0x8C02
+#define PVRTC_RGBA_2BPP   0x8C03
+#define GLES_PALETTE_FIRST 0x8B90
+#define GLES_PALETTE_LAST  0x8B99
+
+static bool gles_is_pvrtc(uint32_t f)
+{
+    return f >= PVRTC_RGB_4BPP && f <= PVRTC_RGBA_2BPP;
+}
+
+static bool gles_is_paletted(uint32_t f)
+{
+    return f >= GLES_PALETTE_FIRST && f <= GLES_PALETTE_LAST;
+}
+
+/*
+ * A PVRTC1 block's two endpoint colours, unpacked to 5:5:5:4.
+ *
+ * The two are NOT symmetric and that asymmetry is the format, not a typo:
+ * colour A gets 14 bits (bit 0 is the modulation mode flag) so its blue channel
+ * loses a bit, colour B gets 15. Each has an opaque flag that switches its
+ * whole layout between RGB and ARGB. Channels are widened by bit replication,
+ * which is what the hardware does.
+ */
+static void pvrtc_endpoints(uint32_t cw, int a[4], int b[4])
+{
+    if (cw & 0x8000) {                  /* A opaque: RGB 554 */
+        a[0] = (cw & 0x7c00) >> 10;
+        a[1] = (cw & 0x3e0) >> 5;
+        a[2] = cw & 0x1e;
+        a[2] |= a[2] >> 4;
+        a[3] = 0xf;
+    } else {                            /* A transparent: ARGB 3443 */
+        a[0] = ((cw & 0xf00) >> 7) | ((cw & 0xf00) >> 11);
+        a[1] = ((cw & 0xf0) >> 3) | ((cw & 0xf0) >> 7);
+        a[2] = ((cw & 0xe) << 1) | ((cw & 0xe) >> 2);
+        a[3] = (cw & 0x7000) >> 11;
+    }
+    if (cw & 0x80000000u) {             /* B opaque: RGB 555 */
+        b[0] = (cw & 0x7c000000) >> 26;
+        b[1] = (cw & 0x3e00000) >> 21;
+        b[2] = (cw & 0x1f0000) >> 16;
+        b[3] = 0xf;
+    } else {                            /* B transparent: ARGB 3444 */
+        b[0] = ((cw & 0xf000000) >> 23) | ((cw & 0xf000000) >> 27);
+        b[1] = ((cw & 0xf00000) >> 19) | ((cw & 0xf00000) >> 23);
+        b[2] = ((cw & 0xf0000) >> 15) | ((cw & 0xf0000) >> 19);
+        b[3] = (cw & 0x70000000) >> 27;
+    }
+}
+
+/*
+ * Morton order over the block grid -- "twiddling", and the classic PVRTC bug.
+ *
+ * Blocks are NOT stored row-major. The x and y block indices are bit-interleaved
+ * for as many bits as the SMALLER dimension has, and whatever is left of the
+ * larger index is appended above. Getting this wrong does not produce a broken
+ * image; it produces a plausible one with its 4x4 tiles shuffled, which is easy
+ * to look at and not notice.
+ */
+static uint32_t pvrtc_twiddle(uint32_t bw, uint32_t bh, uint32_t bx, uint32_t by)
+{
+    uint32_t min_dim = bw < bh ? bw : bh;
+    /* The leftover high bits come from the index along the LARGER dimension --
+     * the one with bits the interleave could not pair up. Taking the smaller
+     * one instead is invisible on a square texture (both indices have the same
+     * bit count, so the leftover is zero either way) and shuffles every
+     * non-square one, which is the classic way to get this wrong. */
+    uint32_t max_val = bw < bh ? by : bx;
+    uint32_t twiddled = 0, src = 1, dst = 1;
+    int shift = 0;
+
+    while (src < min_dim) {
+        if (by & src) {
+            twiddled |= dst;
+        }
+        if (bx & src) {
+            twiddled |= dst << 1;
+        }
+        src <<= 1;
+        dst <<= 2;
+        shift++;
+    }
+    return twiddled | ((max_val >> shift) << (2 * shift));
+}
+
+/* 5-bit colour and 4-bit alpha, widened to 8 bits from a weighted sum whose
+ * denominator is `den`. One rounding step, not two. */
+static inline int pvrtc_to8(int num, int den, int bits)
+{
+    int maxv = (1 << bits) - 1;
+
+    return (num * 255 + den * maxv / 2) / (den * maxv);
+}
+
+/*
+ * Decode a PVRTC1 image to RGBA8. `bpp` is 2 or 4.
+ *
+ * The shape of the format: each 8-byte block holds two endpoint colours for a
+ * 4x4 (4bpp) or 8x4 (2bpp) region plus per-texel modulation weights. The
+ * endpoints are bilinearly interpolated ACROSS blocks -- a texel's colour comes
+ * from the four nearest block centres, wrapping at the edges -- and the
+ * modulation then picks a point on the line between the interpolated A and B.
+ * Block centres sit at (cw/2, ch/2) within each block, which is why every
+ * lookup below is offset by half a block.
+ */
+static void pvrtc_decode(const uint8_t *src, uint32_t w, uint32_t h, int bpp,
+                         uint8_t *dst)
+{
+    const uint32_t cw = (bpp == 2) ? 8 : 4, ch = 4;
+    /*
+     * At least one block each way. The tail of a mip chain is smaller than a
+     * block -- a 2x2 and a 1x1 level are each still one whole 8-byte block --
+     * and dropping those levels leaves the chain incomplete, which
+     * fixed-function GL renders as solid white. That is exactly what a real
+     * title's upload looked like before this clamp existed.
+     */
+    const uint32_t bw = w / cw ? w / cw : 1, bh = h / ch ? h / ch : 1;
+    /* Modulation weight in eighths. The second table is the punch-through
+     * mode; 14 is 4 with a flag meaning "and force alpha to zero". */
+    static const int mod0[4] = { 0, 3, 5, 8 };
+    static const int mod1[4] = { 0, 4, 14, 8 };
+    uint32_t px, py;
+
+    if (!bw || !bh) {
+        return;
+    }
+    for (py = 0; py < h; py++) {
+        for (px = 0; px < w; px++) {
+            /* The four block centres this texel sits between, and its position
+             * between them. Both indices wrap: PVRTC textures tile. */
+            uint32_t fx = (px + cw - cw / 2) % cw;
+            uint32_t fy = (py + ch - ch / 2) % ch;
+            uint32_t bx0 = ((px + cw * bw - cw / 2) / cw) % bw;
+            uint32_t by0 = ((py + ch * bh - ch / 2) / ch) % bh;
+            uint32_t bx1 = (bx0 + 1) % bw, by1 = (by0 + 1) % bh;
+            uint32_t wx1 = fx, wx0 = cw - fx;
+            uint32_t wy1 = fy, wy0 = ch - fy;
+            uint32_t den = cw * ch;
+            /* The block that spatially CONTAINS this texel owns its modulation
+             * -- a different block from any of the four above, in general. */
+            const uint8_t *mb = src + (size_t)pvrtc_twiddle(bw, bh,
+                                                            px / cw, py / ch) * 8;
+            uint32_t mbits = ldl_le_p(mb), mcolor = ldl_le_p(mb + 4);
+            uint32_t lx = px % cw, ly = py % ch;
+            int wsum[4] = { wx0 * wy0, wx1 * wy0, wx0 * wy1, wx1 * wy1 };
+            uint32_t corner[4] = {
+                pvrtc_twiddle(bw, bh, bx0, by0), pvrtc_twiddle(bw, bh, bx1, by0),
+                pvrtc_twiddle(bw, bh, bx0, by1), pvrtc_twiddle(bw, bh, bx1, by1),
+            };
+            int acc_a[4] = { 0, 0, 0, 0 }, acc_b[4] = { 0, 0, 0, 0 };
+            int a8[4], b8[4], mod, i, c;
+            bool punch = false;
+            uint8_t *out = dst + ((size_t)py * w + px) * 4;
+
+            for (i = 0; i < 4; i++) {
+                int ea[4], eb[4];
+
+                pvrtc_endpoints(ldl_le_p(src + (size_t)corner[i] * 8 + 4),
+                                ea, eb);
+                for (c = 0; c < 4; c++) {
+                    acc_a[c] += ea[c] * wsum[i];
+                    acc_b[c] += eb[c] * wsum[i];
+                }
+            }
+            for (c = 0; c < 4; c++) {
+                a8[c] = pvrtc_to8(acc_a[c], den, c == 3 ? 4 : 5);
+                b8[c] = pvrtc_to8(acc_b[c], den, c == 3 ? 4 : 5);
+            }
+
+            if (bpp == 4) {
+                mod = (mcolor & 1) ? mod1[(mbits >> (2 * (4 * ly + lx))) & 3]
+                                   : mod0[(mbits >> (2 * (4 * ly + lx))) & 3];
+            } else {
+                /*
+                 * ponytail: 2bpp local-modulation (the mode-1 encodings, where
+                 * half the texels carry explicit weights and the rest are
+                 * averaged from their neighbours) is NOT decoded -- those
+                 * blocks come out as the midpoint of the two endpoints. 2bpp is
+                 * absent from every title surveyed here, and the mode-0 path
+                 * below is the whole of the format that anything is known to
+                 * use. Implement the H/V/checkerboard cases if a title turns up
+                 * that needs them; the warning below says when.
+                 */
+                if (mcolor & 1) {
+                    static bool warned;
+
+                    if (!warned) {
+                        warned = true;
+                        fprintf(stderr, "[gles] PVRTC 2bpp local-modulation "
+                                "blocks are approximated (flat A/B midpoint) -- "
+                                "this texture will look soft\n");
+                    }
+                    mod = 4;
+                } else {
+                    mod = ((mbits >> (8 * ly + lx)) & 1) ? 8 : 0;
+                }
+            }
+            if (mod > 10) {
+                punch = true;
+                mod -= 10;
+            }
+            for (c = 0; c < 3; c++) {
+                out[c] = (a8[c] * (8 - mod) + b8[c] * mod) / 8;
+            }
+            out[3] = punch ? 0 : (a8[3] * (8 - mod) + b8[3] * mod) / 8;
+        }
+    }
+}
+
+/*
+ * Bytes a PVRTC1 image of this size occupies, or 0 if the size is not one the
+ * format can express.
+ */
+static size_t pvrtc_size(uint32_t w, uint32_t h, int bpp)
+{
+    uint32_t cw = (bpp == 2) ? 8 : 4;
+    uint32_t bw, bh;
+
+    if (!w || !h || (w & (w - 1)) || (h & (h - 1))) {
+        return 0;
+    }
+    /* Levels below one block still occupy a whole block. See pvrtc_decode. */
+    bw = w / cw ? w / cw : 1;
+    bh = h / 4 ? h / 4 : 1;
+    return (size_t)bw * bh * 8;
+}
+
+/*
+ * The paletted formats: a palette of 16 or 256 entries followed by the index
+ * data for EVERY mip level, back to back. Cheap next to PVRTC -- a lookup and a
+ * channel widening -- and worth having in the same pass because a title that
+ * ships one usually ships no uncompressed fallback.
+ */
+static bool gles_palette_info(uint32_t fmt, unsigned *idx_bits,
+                              unsigned *entry_bytes, uint32_t *type)
+{
+    if (!gles_is_paletted(fmt)) {
+        return false;
+    }
+    *idx_bits = (fmt <= 0x8B94) ? 4 : 8;
+    switch ((fmt - GLES_PALETTE_FIRST) % 5) {
+    case 0: *entry_bytes = 3; *type = GL_RGB;  break;   /* RGB8    */
+    case 1: *entry_bytes = 4; *type = GL_RGBA; break;   /* RGBA8   */
+    case 2: *entry_bytes = 2; *type = GL_UNSIGNED_SHORT_5_6_5;   break;
+    case 3: *entry_bytes = 2; *type = GL_UNSIGNED_SHORT_4_4_4_4; break;
+    default:*entry_bytes = 2; *type = GL_UNSIGNED_SHORT_5_5_5_1; break;
+    }
+    return true;
+}
+
+static void gles_palette_entry(const uint8_t *e, uint32_t type, uint8_t out[4])
+{
+    unsigned v;
+
+    switch (type) {
+    case GL_RGB:
+        out[0] = e[0]; out[1] = e[1]; out[2] = e[2]; out[3] = 0xff;
+        return;
+    case GL_RGBA:
+        out[0] = e[0]; out[1] = e[1]; out[2] = e[2]; out[3] = e[3];
+        return;
+    default:
+        break;
+    }
+    /* The 16-bit entries are big-endian in the compressed-paletted spec: the
+     * data is a byte stream, not host shorts. */
+    v = ((unsigned)e[0] << 8) | e[1];
+    if (type == GL_UNSIGNED_SHORT_5_6_5) {
+        out[0] = (v >> 11) * 255 / 31;
+        out[1] = ((v >> 5) & 0x3f) * 255 / 63;
+        out[2] = (v & 0x1f) * 255 / 31;
+        out[3] = 0xff;
+    } else if (type == GL_UNSIGNED_SHORT_4_4_4_4) {
+        out[0] = (v >> 12) * 17;
+        out[1] = ((v >> 8) & 0xf) * 17;
+        out[2] = ((v >> 4) & 0xf) * 17;
+        out[3] = (v & 0xf) * 17;
+    } else {                                   /* 5_5_5_1 */
+        out[0] = (v >> 11) * 255 / 31;
+        out[1] = ((v >> 6) & 0x1f) * 255 / 31;
+        out[2] = ((v >> 1) & 0x1f) * 255 / 31;
+        out[3] = (v & 1) ? 0xff : 0;
+    }
+}
+
+/*
+ * Decode one mip level of paletted index data to RGBA8. `idx` points at that
+ * level's indices; returns how many index bytes it consumed.
+ */
+static size_t gles_palette_level(const uint8_t *pal, uint32_t type,
+                                 const uint8_t *idx, unsigned idx_bits,
+                                 unsigned entry_bytes, uint32_t w, uint32_t h,
+                                 uint8_t *dst)
+{
+    size_t n = (size_t)w * h, i;
+
+    for (i = 0; i < n; i++) {
+        unsigned e = (idx_bits == 8) ? idx[i]
+                                     : ((i & 1) ? (idx[i / 2] & 0xf)
+                                                : (idx[i / 2] >> 4));
+
+        gles_palette_entry(pal + (size_t)e * entry_bytes, type, dst + i * 4);
+    }
+    return (idx_bits == 8) ? n : (n + 1) / 2;
+}
+
+/*
+ * Say what a decode actually produced, once per distinct format and size.
+ *
+ * "The texture is wrong" and "the texture never arrived" look identical from
+ * the panel -- both render as a flat fill -- and this layer can produce either.
+ * The mean channel values separate them at a glance: real art is never flat,
+ * and a decoder that has silently degenerated reports 255,255,255 here while
+ * the app looks like it is drawing nothing. Bounded to one line per format and
+ * size, so a mip chain costs a handful of lines at load time and nothing after.
+ */
+static void gles_report_decode(uint32_t fmt, uint32_t w, uint32_t h,
+                               const uint8_t *rgba)
+{
+    static struct { uint32_t fmt, w, h; } seen[32];
+    static unsigned n_seen;
+    uint64_t sum[4] = { 0, 0, 0, 0 };
+    size_t n = (size_t)w * h, i;
+    unsigned c;
+
+    for (i = 0; i < n_seen; i++) {
+        if (seen[i].fmt == fmt && seen[i].w == w && seen[i].h == h) {
+            return;
+        }
+    }
+    if (n_seen == ARRAY_SIZE(seen)) {
+        return;
+    }
+    seen[n_seen++] = (typeof(seen[0])){ fmt, w, h };
+
+    for (i = 0; i < n; i++) {
+        for (c = 0; c < 4; c++) {
+            sum[c] += rgba[i * 4 + c];
+        }
+    }
+    fprintf(stderr, "[gles] decoded 0x%x %ux%u -> mean rgba %llu,%llu,%llu,%llu"
+            "%s\n", fmt, w, h,
+            (unsigned long long)(sum[0] / n), (unsigned long long)(sum[1] / n),
+            (unsigned long long)(sum[2] / n), (unsigned long long)(sum[3] / n),
+            (sum[0] / n == 255 && sum[1] / n == 255 && sum[2] / n == 255)
+                ? "  (FLAT WHITE -- decode produced nothing)" : "");
+}
+
+/*
+ * Grow-and-keep staging for the decoded RGBA8.
+ */
+static uint8_t *gles_decode_buf(size_t n)
+{
+    if (n > GLES_MAX_TEX_BYTES) {
+        return NULL;
+    }
+    if (n > gh.decbuf_size) {
+        gh.decbuf = g_realloc(gh.decbuf, n);
+        gh.decbuf_size = n;
+    }
+    return gh.decbuf;
+}
+
+/*
+ * Decode a known image and check the pixels, once, at startup.
+ *
+ * This exists because every failure mode of this decoder is a picture: a
+ * transposed twiddle, a swapped endpoint, an off-by-one modulation table all
+ * produce something that renders, and none of them produce an error. Without a
+ * check that names the expected bytes, a refactor can break the format
+ * silently and the only symptom is that one game's art looks wrong -- which is
+ * exactly the report nobody can act on.
+ *
+ * The fixture is a 2x2 block grid (8x8 texels) whose four blocks are flat
+ * white, green, red and black. Reading the four block centres back therefore
+ * tests the endpoint unpack, the interpolation weights (a centre must land on
+ * its own block's colour exactly, with zero bleed) and the twiddle order --
+ * green and red are placed so that a row-major block order swaps them.
+ */
+static void pvrtc_selfcheck(void)
+{
+    /* Opaque colour A, in the A-opaque layout: bit15 set, RGB 5:5:4. */
+    static const struct { uint32_t cw; uint8_t rgb[3]; } blocks[4] = {
+        { 0x8000u | (31 << 10) | (31 << 5) | 0x1e, { 255, 255, 255 } },
+        { 0x8000u | (0 << 10)  | (31 << 5) | 0x00, {   0, 255,   0 } },
+        { 0x8000u | (31 << 10) | (0 << 5)  | 0x00, { 255,   0,   0 } },
+        { 0x8000u | (0 << 10)  | (0 << 5)  | 0x00, {   0,   0,   0 } },
+    };
+    /* Twiddled block order for a 2x2 grid: index = by | (bx << 1). Centres are
+     * at texel (4*bx + 2, 4*by + 2). */
+    static const struct { uint32_t x, y; unsigned block; } probes[4] = {
+        { 2, 2, 0 },  /* bx=0 by=0 -> word 0 */
+        { 6, 2, 2 },  /* bx=1 by=0 -> word 2, NOT word 1 */
+        { 2, 6, 1 },  /* bx=0 by=1 -> word 1 */
+        { 6, 6, 3 },
+    };
+    uint8_t src[4 * 8], out[8 * 8 * 4];
+    unsigned i, c;
+    bool ok = true;
+
+    memset(src, 0, sizeof(src));
+    for (i = 0; i < 4; i++) {
+        /* Modulation all zero -> every texel is colour A. */
+        stl_le_p(src + i * 8 + 4, blocks[i].cw);
+    }
+    /* Words are laid out in twiddled order, so word i is block i by
+     * construction: probe[k].block is the word index to expect. */
+    pvrtc_decode(src, 8, 8, 4, out);
+
+    for (i = 0; i < 4; i++) {
+        const uint8_t *p = out + ((size_t)probes[i].y * 8 + probes[i].x) * 4;
+        const uint8_t *want = blocks[probes[i].block].rgb;
+
+        for (c = 0; c < 3; c++) {
+            if (p[c] != want[c]) {
+                ok = false;
+            }
+        }
+        if (p[3] != 255) {
+            ok = false;
+        }
+        if (!ok) {
+            fprintf(stderr, "[gles] PVRTC SELF-CHECK FAILED at texel (%u,%u): "
+                    "got %u,%u,%u,%u want %u,%u,%u,255 -- the decoder is "
+                    "broken, textures will be wrong\n",
+                    probes[i].x, probes[i].y, p[0], p[1], p[2], p[3],
+                    want[0], want[1], want[2]);
+            return;
+        }
+    }
+
+    /*
+     * And the twiddle over NON-SQUARE grids, which the fixture above cannot
+     * reach. On a square grid both block indices have the same bit count, so
+     * taking the leftover high bits from the wrong one is a no-op -- the bug
+     * hides completely until a 256x128 atlas turns up and comes back shuffled.
+     * A bijection check is the cheap invariant that catches it: every block
+     * index must map to a distinct word inside the image.
+     */
+    {
+        static const uint8_t dims[][2] = { { 8, 2 }, { 2, 8 }, { 16, 4 } };
+        unsigned d;
+
+        for (d = 0; d < ARRAY_SIZE(dims); d++) {
+            uint32_t bw = dims[d][0], bh = dims[d][1], x, y;
+            uint64_t seen = 0;
+
+            for (y = 0; y < bh; y++) {
+                for (x = 0; x < bw; x++) {
+                    uint32_t t = pvrtc_twiddle(bw, bh, x, y);
+
+                    if (t >= bw * bh || (seen & (1ull << t))) {
+                        fprintf(stderr, "[gles] PVRTC SELF-CHECK FAILED: "
+                                "twiddle %ux%u block (%u,%u) -> word %u, which "
+                                "is %s -- non-square textures will be "
+                                "shuffled\n", bw, bh, x, y, t,
+                                t >= bw * bh ? "out of range" : "already used");
+                        return;
+                    }
+                    seen |= 1ull << t;
+                }
+            }
+        }
+    }
+}
+
 /*
  * Fetch `n` bytes of guest pixel data into the reusable texture staging buffer.
  * Returns the buffer, or NULL on an out-of-range size or a failed read (the
@@ -1023,7 +1580,24 @@ static void gles_trace_vertices(void)
     unsigned i, c, n = 3;
     float lo[4], hi[4];
 
-    if (!a->enabled || !a->buf || !a->size) {
+    if (!a->enabled || !a->size) {
+        fprintf(stderr, "[gles]     positions: NO VERTEX ARRAY BOUND\n");
+        return;
+    }
+    /*
+     * A VBO-sourced array never fills the guest-VA scratch -- its bytes come
+     * straight from the stored buffer -- so printing a->buf here would show
+     * whatever the last client-array draw left behind. That is a trace that
+     * lies, and this trace exists precisely to settle "did the geometry arrive
+     * correctly", so it has to read the source the draw actually used.
+     */
+    if (a->vbo) {
+        if (a->ptr >= a->vbo->size) {
+            fprintf(stderr, "[gles]     positions: VBO offset %u past a "
+                    "%zu-byte buffer\n", a->ptr, a->vbo->size);
+            return;
+        }
+    } else if (!a->buf) {
         fprintf(stderr, "[gles]     positions: NO VERTEX ARRAY BOUND\n");
         return;
     }
@@ -1036,9 +1610,11 @@ static void gles_trace_vertices(void)
     for (i = 0; i < n; i++) {
         uint32_t stride = a->stride ? a->stride
                                     : gles_type_size(a->type) * a->size;
-        const uint8_t *row = a->buf + (size_t)stride * i;
+        const uint8_t *src = a->vbo ? a->vbo->data + a->ptr : a->buf;
+        size_t avail = a->vbo ? a->vbo->size - a->ptr : a->buf_size;
+        const uint8_t *row = src + (size_t)stride * i;
 
-        if ((size_t)stride * i + stride > a->buf_size) {
+        if ((size_t)stride * i + stride > avail) {
             break;
         }
         fprintf(stderr, " (");
@@ -1850,6 +2426,84 @@ static float gles_f(uint32_t bits)
     return c.f;
 }
 
+/* ------------------------------------------------------- buffer objects ---- */
+
+/* ES enum values, same as desktop. */
+#define GLES_ARRAY_BUFFER         0x8892
+#define GLES_ELEMENT_ARRAY_BUFFER 0x8893
+/* A guest buffer big enough to matter is a few MB of geometry; anything past
+ * this is a corrupt size, and g_malloc aborts QEMU rather than failing. */
+#define GLES_MAX_BUFFER_BYTES ((size_t)64 * 1024 * 1024)
+
+static void gles_buffer_destroy(gpointer p)
+{
+    GLESBuffer *b = p;
+
+    g_free(b->data);
+    g_free(b);
+}
+
+/*
+ * The buffer with this name, created empty if the guest has not seen it before.
+ *
+ * ES 1.1 lets an app bind a name it never generated, so "unknown name" is not
+ * an error to report -- it is a buffer coming into existence.
+ */
+static GLESBuffer *gles_buffer_intern(uint32_t name)
+{
+    GLESBuffer *b;
+
+    if (!name) {
+        return NULL;
+    }
+    if (!gh.buffers) {
+        gh.buffers = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
+                                           gles_buffer_destroy);
+    }
+    b = g_hash_table_lookup(gh.buffers, GUINT_TO_POINTER(name));
+    if (!b) {
+        b = g_new0(GLESBuffer, 1);
+        g_hash_table_insert(gh.buffers, GUINT_TO_POINTER(name), b);
+    }
+    return b;
+}
+
+/* Whichever buffer the guest has bound to this target, or NULL. */
+static GLESBuffer *gles_buffer_bound(uint32_t target)
+{
+    if (target == GLES_ELEMENT_ARRAY_BUFFER) {
+        return (GLESBuffer *)gh.element_buffer;
+    }
+    return (GLESBuffer *)gh.array_buffer;
+}
+
+/*
+ * Forget every reference to a buffer that is about to be freed.
+ *
+ * The arrays hold resolved pointers, not names -- that is what keeps the draw
+ * path free of lookups -- so a delete has to reach in and clear them, or the
+ * next draw walks freed memory. Deleting a bound buffer is legal GL and an
+ * engine tearing down a level does exactly this.
+ */
+static void gles_buffer_forget(const GLESBuffer *b)
+{
+    GLESArray *arrays[] = { &gh.vertex, &gh.texcoord, &gh.color, &gh.normal };
+    unsigned i;
+
+    for (i = 0; i < ARRAY_SIZE(arrays); i++) {
+        if (arrays[i]->vbo == b) {
+            arrays[i]->vbo = NULL;
+            arrays[i]->ptr = 0;
+        }
+    }
+    if (gh.array_buffer == b) {
+        gh.array_buffer = NULL;
+    }
+    if (gh.element_buffer == b) {
+        gh.element_buffer = NULL;
+    }
+}
+
 static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                                 uint32_t argc, const uint32_t *a)
 {
@@ -1929,11 +2583,19 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         return 0;
     }
 
+    /*
+     * The four client-array pointers. Each captures the ARRAY_BUFFER binding in
+     * force right now, because that is when GL decides what the pointer means:
+     * with a buffer bound it is an offset into that buffer, without one it is a
+     * guest virtual address. Resolving it here rather than at draw time also
+     * keeps the draw path's cost at a single null check.
+     */
     case GLES_SLOT_VERTEX_POINTER:              /* size,type,stride,ptr */
         gh.vertex.size = a[0];
         gh.vertex.type = a[1];
         gh.vertex.stride = a[2];
         gh.vertex.ptr = a[3];
+        gh.vertex.vbo = gh.array_buffer;
         return 0;
 
     case GLES_SLOT_TEXCOORD_POINTER:
@@ -1941,6 +2603,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         gh.texcoord.type = a[1];
         gh.texcoord.stride = a[2];
         gh.texcoord.ptr = a[3];
+        gh.texcoord.vbo = gh.array_buffer;
         return 0;
 
     case GLES_SLOT_COLOR_POINTER:               /* size,type,stride,ptr */
@@ -1948,6 +2611,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         gh.color.type = a[1];
         gh.color.stride = a[2];
         gh.color.ptr = a[3];
+        gh.color.vbo = gh.array_buffer;
         return 0;
 
     case GLES_SLOT_NORMAL_POINTER:              /* type,stride,ptr */
@@ -1955,6 +2619,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         gh.normal.type = a[0];
         gh.normal.stride = a[1];
         gh.normal.ptr = a[2];
+        gh.normal.vbo = gh.array_buffer;
         return 0;
 
     case GLES_SLOT_DRAW_ARRAYS: {               /* mode, first, count */
@@ -1989,9 +2654,14 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         uint32_t mode = a[0], count = a[1], itype = a[2], iptr = a[3];
         uint32_t isz = gles_type_size(itype);
         uint32_t bound, i, maxidx = 0;
+        const uint8_t *idx;
         size_t need;
 
-        if (!gh.vertex.enabled || !count || !iptr) {
+        /* With an ELEMENT_ARRAY_BUFFER bound, `indices` is an offset into it --
+         * and offset 0 is the common case, so the null check below only applies
+         * without one. */
+        if (!gh.vertex.enabled || !count ||
+            (!iptr && !gh.element_buffer)) {
             return 0;
         }
         /* ES 1.1 allows only UNSIGNED_BYTE and UNSIGNED_SHORT here. */
@@ -2002,14 +2672,25 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         }
 
         need = (size_t)count * isz;
-        if (need > gh.ibuf_size) {
-            gh.ibuf = g_realloc(gh.ibuf, need);
-            gh.ibuf_size = need;
-        }
-        if (cpu_memory_rw_debug(cpu, iptr, gh.ibuf, need, 0) != 0) {
-            fprintf(stderr, "[gles] glDrawElements: cannot read %zu index "
-                    "bytes at guest 0x%08x\n", need, iptr);
-            return -1;
+        if (gh.element_buffer) {
+            if (iptr + need > gh.element_buffer->size) {
+                fprintf(stderr, "[gles] glDrawElements: %zu index bytes at "
+                        "offset %u overrun a %zu-byte buffer\n", need, iptr,
+                        gh.element_buffer->size);
+                return -1;
+            }
+            idx = gh.element_buffer->data + iptr;
+        } else {
+            if (need > gh.ibuf_size) {
+                gh.ibuf = g_realloc(gh.ibuf, need);
+                gh.ibuf_size = need;
+            }
+            if (cpu_memory_rw_debug(cpu, iptr, gh.ibuf, need, 0) != 0) {
+                fprintf(stderr, "[gles] glDrawElements: cannot read %zu index "
+                        "bytes at guest 0x%08x\n", need, iptr);
+                return -1;
+            }
+            idx = gh.ibuf;
         }
 
         /*
@@ -2021,8 +2702,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * truncate the mesh or read guest memory the app never allocated.
          */
         for (i = 0; i < count; i++) {
-            uint32_t v = (isz == 1) ? gh.ibuf[i]
-                                    : ((const uint16_t *)gh.ibuf)[i];
+            /* An index list inside a VBO starts at an arbitrary offset, so the
+             * 16-bit read cannot assume alignment the way a cast would. */
+            uint32_t v = (isz == 1) ? idx[i] : lduw_le_p(idx + i * 2);
             if (v > maxidx) {
                 maxidx = v;
             }
@@ -2033,7 +2715,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             gles_unbind_arrays(bound);           /* see glDrawArrays above */
             return -1;
         }
-        glDrawElements(mode, count, itype, gh.ibuf);
+        glDrawElements(mode, count, itype, idx);
         gles_check_draw("glDrawElements", mode, count);
         gles_trace_draw("glDrawElements", mode, count);
         gles_unbind_arrays(bound);
@@ -2112,6 +2794,135 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         return 0;
     }
 
+    case GLES_SLOT_COMPRESSED_TEX_IMAGE_2D: {
+        /* target, level, internalformat, width, height, border, imageSize,
+         * data -- eight arguments, so they arrive spilled. */
+        uint32_t target = a[0], level = a[1], ifmt = a[2];
+        uint32_t w = a[3], h = a[4], imgsz = a[6], data = a[7];
+        const uint8_t *src;
+
+        if (!data || !imgsz) {
+            return 0;
+        }
+        src = gles_fetch_texels(cpu, data, imgsz, "glCompressedTexImage2D");
+        if (!src) {
+            return -1;
+        }
+        /* Decoded output is always tightly packed RGBA8, whatever the guest's
+         * GL_UNPACK_ALIGNMENT says about its own compressed bytes. */
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+        if (gles_is_pvrtc(ifmt)) {
+            int bpp = (ifmt == PVRTC_RGB_2BPP || ifmt == PVRTC_RGBA_2BPP) ? 2 : 4;
+            size_t want = pvrtc_size(w, h, bpp);
+            uint8_t *dst;
+
+            if (!want) {
+                fprintf(stderr, "[gles] PVRTC %dbpp: %ux%u is not a size the "
+                        "format can express; dropped\n", bpp, w, h);
+                return -1;
+            }
+            if (imgsz < want) {
+                fprintf(stderr, "[gles] PVRTC %dbpp %ux%u needs %zu bytes but "
+                        "only %u were supplied; dropped\n",
+                        bpp, w, h, want, imgsz);
+                return -1;
+            }
+            dst = gles_decode_buf((size_t)w * h * 4);
+            if (!dst) {
+                return -1;
+            }
+            pvrtc_decode(src, w, h, bpp, dst);
+            gles_report_decode(ifmt, w, h, dst);
+            glTexImage2D(target, level, GL_RGBA, w, h, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, dst);
+            return 0;
+        }
+
+        if (gles_is_paletted(ifmt)) {
+            unsigned idx_bits, entry_bytes;
+            uint32_t ptype;
+            /* A non-positive level means |level|+1 mip levels are packed in
+             * after the palette, per OES_compressed_paletted_texture. */
+            int32_t slevel = (int32_t)level;
+            unsigned nlevels = slevel <= 0 ? (unsigned)(-slevel) + 1 : 1;
+            size_t pal_bytes, consumed;
+            unsigned lv;
+
+            gles_palette_info(ifmt, &idx_bits, &entry_bytes, &ptype);
+            pal_bytes = (size_t)(idx_bits == 4 ? 16 : 256) * entry_bytes;
+            if (imgsz < pal_bytes) {
+                fprintf(stderr, "[gles] paletted texture 0x%x: %u bytes is not "
+                        "even a palette; dropped\n", ifmt, imgsz);
+                return -1;
+            }
+            consumed = pal_bytes;
+            for (lv = 0; lv < nlevels; lv++) {
+                uint32_t lw = w >> lv, lh = h >> lv;
+                size_t idx_bytes;
+                uint8_t *dst;
+
+                lw = lw ? lw : 1;
+                lh = lh ? lh : 1;
+                idx_bytes = (idx_bits == 8) ? (size_t)lw * lh
+                                            : ((size_t)lw * lh + 1) / 2;
+                if (consumed + idx_bytes > imgsz) {
+                    fprintf(stderr, "[gles] paletted texture 0x%x: level %u "
+                            "runs past the %u supplied bytes; stopping\n",
+                            ifmt, lv, imgsz);
+                    break;
+                }
+                dst = gles_decode_buf((size_t)lw * lh * 4);
+                if (!dst) {
+                    return -1;
+                }
+                gles_palette_level(src, ptype, src + consumed, idx_bits,
+                                   entry_bytes, lw, lh, dst);
+                gles_report_decode(ifmt, lw, lh, dst);
+                glTexImage2D(target, lv, GL_RGBA, lw, lh, 0, GL_RGBA,
+                             GL_UNSIGNED_BYTE, dst);
+                consumed += idx_bytes;
+            }
+            return 0;
+        }
+
+        {
+            /* Anything else: ETC1, S3TC, a vendor format. Guessing at a layout
+             * we have not decoded produces a plausible-looking wrong texture,
+             * which is the hardest failure to attribute -- so say so once and
+             * leave the texture alone. */
+            static uint32_t warned;
+
+            if (warned != ifmt) {
+                warned = ifmt;
+                fprintf(stderr, "[gles] glCompressedTexImage2D: unhandled "
+                        "compressed format 0x%x (%ux%u, %u bytes); dropped\n",
+                        ifmt, w, h, imgsz);
+            }
+            return -1;
+        }
+    }
+
+    case GLES_SLOT_COMPRESSED_TEX_SUB_IMAGE_2D: {
+        /* target, level, xoffset, yoffset, width, height, format, imageSize,
+         * data -- nine arguments, spilled.
+         *
+         * ES 1.1 defines no compressed format that can be sub-imaged: PVRTC
+         * needs the whole surface because its endpoints interpolate ACROSS
+         * block boundaries, and the paletted formats carry their palette with
+         * the base level. So this is a call that has no correct partial
+         * implementation, and the honest answer is the one GL itself gives. */
+        static bool warned;
+
+        if (!warned) {
+            warned = true;
+            fprintf(stderr, "[gles] glCompressedTexSubImage2D(fmt=0x%x): no ES "
+                    "1.1 compressed format supports sub-image updates; "
+                    "dropped\n", a[6]);
+        }
+        return -1;
+    }
+
     case GLES_SLOT_DELETE_TEXTURES: {           /* n, guest uint* */
         uint32_t n = a[0];
         g_autofree GLuint *ids = NULL;
@@ -2135,20 +2946,119 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         glAlphaFunc(a[0], gles_f(a[1]));
         return 0;
 
-    case GLES_SLOT_BIND_BUFFER:                 /* target, buffer */
-        /*
-         * No VBO data path exists (no glGenBuffers/glBufferData slot is
-         * implemented), so the only bind that can be correct is the unbind.
-         * Super Monkey Ball imports glBindBuffer and nothing else from the
-         * buffer-object family -- it binds 0 defensively. A nonzero name
-         * would mean an app is about to source vertex data from a buffer we
-         * never stored, so say so instead of silently drawing garbage.
-         */
-        if (a[1] != 0) {
-            fprintf(stderr, "[gles] glBindBuffer(0x%x, %u): buffer objects "
-                    "are not implemented\n", a[0], a[1]);
+    case GLES_SLOT_BIND_BUFFER: {               /* target, buffer */
+        GLESBuffer *b = gles_buffer_intern(a[1]);
+
+        if (a[0] == GLES_ELEMENT_ARRAY_BUFFER) {
+            gh.element_buffer = b;
+        } else {
+            gh.array_buffer = b;
         }
         return 0;
+    }
+
+    case GLES_SLOT_GEN_BUFFERS: {               /* n, guest uint* */
+        uint32_t n = a[0], i;
+        g_autofree uint32_t *ids = NULL;
+
+        if (n > GLES_MAX_NAMES) {
+            fprintf(stderr, "[gles] glGenBuffers: n=%u exceeds cap\n", n);
+            return -1;
+        }
+        ids = g_new0(uint32_t, n ? n : 1);
+        for (i = 0; i < n; i++) {
+            ids[i] = ++gh.next_buffer_name;
+            gles_buffer_intern(ids[i]);
+        }
+        if (a[1] && n) {
+            cpu_memory_rw_debug(cpu, a[1], (uint8_t *)ids,
+                                n * sizeof(uint32_t), 1);
+        }
+        return 0;
+    }
+
+    case GLES_SLOT_DELETE_BUFFERS: {            /* n, guest uint* */
+        uint32_t n = a[0], i;
+        g_autofree uint32_t *ids = NULL;
+
+        if (!n || !a[1] || !gh.buffers) {
+            return 0;
+        }
+        if (n > GLES_MAX_NAMES) {
+            fprintf(stderr, "[gles] glDeleteBuffers: n=%u exceeds cap\n", n);
+            return -1;
+        }
+        ids = g_new0(uint32_t, n);
+        if (cpu_memory_rw_debug(cpu, a[1], (uint8_t *)ids,
+                                n * sizeof(uint32_t), 0) != 0) {
+            return -1;
+        }
+        for (i = 0; i < n; i++) {
+            gpointer key = GUINT_TO_POINTER(ids[i]);
+            GLESBuffer *b = ids[i] ? g_hash_table_lookup(gh.buffers, key)
+                                   : NULL;
+
+            if (b) {
+                gles_buffer_forget(b);
+                g_hash_table_remove(gh.buffers, key);
+            }
+        }
+        return 0;
+    }
+
+    case GLES_SLOT_BUFFER_DATA: {               /* target, size, data, usage */
+        GLESBuffer *b = gles_buffer_bound(a[0]);
+        size_t n = a[1];
+
+        /* Usage hints are advisory and there is no host object to hint at. */
+        if (!b) {
+            fprintf(stderr, "[gles] glBufferData with no buffer bound to "
+                    "target 0x%x; dropped\n", a[0]);
+            return -1;
+        }
+        if (n > GLES_MAX_BUFFER_BYTES) {
+            fprintf(stderr, "[gles] glBufferData: %zu bytes exceeds cap\n", n);
+            return -1;
+        }
+        b->data = g_realloc(b->data, n ? n : 1);
+        b->size = n;
+        /* A NULL data pointer means "allocate, contents undefined" -- the
+         * alloc-then-glBufferSubData idiom. Zero it so an app that draws
+         * before filling gets degenerate geometry rather than whatever the
+         * allocator handed back. */
+        if (a[2] && n) {
+            if (cpu_memory_rw_debug(cpu, a[2], b->data, n, 0) != 0) {
+                fprintf(stderr, "[gles] glBufferData: cannot read %zu bytes at "
+                        "guest 0x%08x\n", n, a[2]);
+                memset(b->data, 0, n);
+                return -1;
+            }
+        } else if (n) {
+            memset(b->data, 0, n);
+        }
+        return 0;
+    }
+
+    case GLES_SLOT_BUFFER_SUB_DATA: {           /* target, offset, size, data */
+        GLESBuffer *b = gles_buffer_bound(a[0]);
+        size_t off = a[1], n = a[2];
+
+        if (!b || !n) {
+            return b ? 0 : -1;
+        }
+        if (off > b->size || n > b->size - off) {
+            fprintf(stderr, "[gles] glBufferSubData: %zu bytes at offset %zu "
+                    "overruns a %zu-byte buffer; dropped\n", n, off, b->size);
+            return -1;
+        }
+        if (!a[3] ||
+            cpu_memory_rw_debug(cpu, a[3], b->data + off, n, 0) != 0) {
+            fprintf(stderr, "[gles] glBufferSubData: cannot read %zu bytes at "
+                    "guest 0x%08x\n", n, a[3]);
+            return -1;
+        }
+        return 0;
+    }
 
     case GLES_SLOT_GET_INTEGERV: {              /* pname, guest int* */
         uint32_t pname = a[0];

@@ -42,8 +42,11 @@
 typedef struct __attribute__((packed)) {
     /* Dispatch-table slot, i.e. the framework's table offset / 4. */
     uint32_t slot;
-    /* The engine's GC handle -- arg0 of every trampoline. Opaque to the guest;
-     * the host uses it to pick which GL context the call belongs to. */
+    /* The engine's GC handle -- arg0 of every trampoline. Opaque to the guest.
+     * The host does NOT switch context on it: there is one host GL context and
+     * its state is global, shared by every guest GC (see the note on the `gh`
+     * global in gles-host.c). This is carried only so the host can attribute
+     * per-GC statistics -- which GC drew what, and which one presented. */
     uint32_t ctx;
     /* How many 32-bit arguments this call carries, GC excluded. */
     uint32_t argc;
@@ -163,6 +166,30 @@ typedef struct __attribute__((packed)) {
 #define GLES_SLOT_TEX_ENVI              292  /* 0x04a0 */
 #define GLES_SLOT_CLIENT_ACTIVE_TEXTURE 341  /* 0x0558 */
 #define GLES_SLOT_ACTIVE_TEXTURE        342  /* 0x055c */
+
+/*
+ * Compressed textures and buffer objects.
+ *
+ * Read out of the 3.1.3 SDK trampolines like everything above, and
+ * cross-checked against contrib/it-gles/slotmap.txt; the extractor was
+ * re-validated here by re-deriving GLES_SLOT_BIND_BUFFER (642, `ldr r12,
+ * [r3, #0xa18]`) before any neighbouring number was trusted.
+ *
+ * glCompressedTexImage2D is what a PowerVR-era title uploads its art with --
+ * PVRTC was THE texture format on the MBX -- and it takes eight scalars, so it
+ * spills exactly like glTexImage2D. The host has no PVRTC, so it decodes to
+ * RGBA8 on the CPU; see gles-host.c.
+ *
+ * The buffer-object four close the asymmetry glBindBuffer was left in: the bind
+ * was accepted with no way to ever put data behind it, so any engine keeping
+ * geometry in a VBO drew from memory the host never received.
+ */
+#define GLES_SLOT_COMPRESSED_TEX_IMAGE_2D     380  /* 0x0600 */
+#define GLES_SLOT_COMPRESSED_TEX_SUB_IMAGE_2D 383  /* 0x060c */
+#define GLES_SLOT_DELETE_BUFFERS              643  /* 0x0a1c */
+#define GLES_SLOT_GEN_BUFFERS                 644  /* 0x0a20 */
+#define GLES_SLOT_BUFFER_DATA                 646  /* 0x0a28 */
+#define GLES_SLOT_BUFFER_SUB_DATA             647  /* 0x0a2c */
 
 /* OES framebuffer-object entry points. EAGL uses these itself inside
  * -renderbufferStorage:fromDrawable:, so a real CAEAGLLayer client cannot get
