@@ -122,9 +122,11 @@
  *     prebuffer 32768 alone              1 hole, 1 starvation
  *     32768 + out.buffer-count=16        0 of 3 damaged, 0 starvations
  *
- * So run-ios3.sh --sound must pass `-audio driver=coreaudio,out.buffer-count=16`,
- * and it now does. The cost of this constant is that much added output latency,
- * once at the start of each sound.
+ * So `--sound` (`contrib/run-ipod-touch.sh`, or your local
+ * `~/Developer/qemu-ios-files/ios3/run-ios3.sh`) must pass
+ * `-audio driver=coreaudio,out.buffer-count=16`, and it now does. The cost of
+ * this constant is that much added output latency, once at the start of each
+ * sound.
  *
  * IT_I2S_PREBUFFER_BYTES overrides it; 0 restores the old just-in-time
  * behaviour for A/B.

@@ -10,8 +10,9 @@
 # hangs for a minute and then says nothing useful.
 #
 # REQUIRES a --appsync (or --usb) run: ssh reaches the guest over USB, through
-# the usbmuxd that run-ios3.sh starts BEFORE QEMU. Without it there is no
-# transport and no amount of retrying helps.
+# the usbmuxd that contrib/run-ipod-touch.sh (or your local
+# ~/Developer/qemu-ios-files/ios3/run-ios3.sh) starts BEFORE QEMU. Without it
+# there is no transport and no amount of retrying helps.
 set -u
 
 PORT="${1:-${SSH_PORT:-2239}}"

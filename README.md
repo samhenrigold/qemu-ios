@@ -1,5 +1,40 @@
 # QEMU-iOS
 
+This is a fork of [devos50/qemu-ios](https://github.com/devos50/qemu-ios),
+targeting an emulated **iPod touch 2G (n72ap) running iOS 3.1.3**. It boots to
+an interactive home screen, runs real 2008-era App Store apps (including
+OpenGL ES 1.1 games — see `docs/capabilities.md`), talks to `libimobiledevice`
+over an emulated USB link, and persists guest writes across reboots. See
+`docs/capabilities.md` for the full, currently-accurate list of what works and
+where it stops.
+
+## Build
+
+```sh
+../configure --enable-sdl --target-list=arm-softmmu --disable-capstone --disable-pie --disable-slirp --disable-fuse \
+    --extra-cflags=-I/opt/homebrew/opt/openssl@3/include --extra-ldflags='-L/opt/homebrew/opt/openssl@3/lib -lcrypto'
+ninja -C build qemu-system-arm
+```
+
+(Apple Silicon Homebrew paths shown; see `RUNNING.md` for other platforms and
+build troubleshooting.)
+
+## Run
+
+```sh
+contrib/run-ipod-touch.sh
+```
+
+This is the in-repo launcher; run `contrib/run-ipod-touch.sh --help` for the
+full flag list (installing apps, USB/networking, audio, headless QMP driving,
+etc). It expects the 3.1.3 release images under `~/Developer/qemu-ios-files`
+(override with `IPOD_FILES`) — these are not included in this repository.
+
+There is also a packaged, double-clickable macOS app; see
+`contrib/macos-app/build-app.sh` for how it is built and what it bundles.
+
+---
+
 QEMU-iOS is an emulator for legacy Apple devices.
 Currently, the iPod Touch 1G and iPod Touch 2G are supported.
 

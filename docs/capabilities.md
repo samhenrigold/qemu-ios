@@ -1,7 +1,17 @@
 # What the emulator can do
 
-An iPod touch 2G (n72ap) running iPhone OS 2.1.1, build 5F138. This is the
-practical list: what works, the exact command, and where each thing stops.
+An iPod touch 2G (n72ap). This is the practical list: what works, the exact
+command, and where each thing stops.
+
+Most of the commands and specific figures below (build `5F138`, `ProductVersion
+2.1.1`, the `nand-*` image names) were captured against iPhone OS **2.1.1**,
+which is what this file was originally written for. The project's target has
+since moved to **3.1.3**, and this file has not been fully re-verified against
+that boot path (unverified as of 2026-08-05). Treat 2.1.1-specific numbers here
+as historically accurate rather than current unless you re-check them. The GLES
+section below describes the **3.1.3** path specifically: the replacement engine
+and every dispatch-slot number were recovered from the 3.1.3 SDK, so whether any
+of it works on 2.1.1 is untested.
 
 Everything below assumes:
 
@@ -42,7 +52,7 @@ press nothing and screenshot before it sleeps, or expect black.
 | `usb-tcp-addr=` | - | `host:port` of a USB-over-TCP bridge. Empty disables the link. |
 | `usb-patch-mux-gate=` | off | Patch the kernel so the USB stack goes on bus. Build-specific (5F138). |
 | `wifi=` | off | Present a BCM4325 on the SDIO bus. |
-| `mbx-irq=` | **on** | Acknowledge the MBX MMU handshake (and raise a completion interrupt) so a GLES app does not spin ~21M reads on the MMU register. Cannot make anything render. |
+| `mbx-irq=` | **on** | Acknowledge the MBX MMU handshake (and raise a completion interrupt) so a GLES app does not spin ~21M reads on the MMU register. This is unrelated to whether GL content renders — see [OpenGL ES](#opengl-es) below, which bypasses the MBX GPU entirely via a host-side HLE layer. |
 
 ## Talk to it as a real iOS device
 
@@ -132,7 +142,36 @@ Two things decide whether a given app works:
 to open, proven by an A/B with the identical bundle in one boot. Use
 `/Applications`.
 
-Verified running: Obama '08, Guangzhou Metro. OpenGL ES apps still hang.
+Verified running: Obama '08, Guangzhou Metro. OpenGL ES apps render — see
+[OpenGL ES](#opengl-es) below.
+
+## OpenGL ES
+
+OpenGL ES 1.1 apps **render**, via a host-side high-level emulation (HLE) layer
+that bypasses the PowerVR MBX GPU entirely: guest GL calls trap through a
+`QEMU_CALL` cp15 hook and execute as real GL calls on a host OpenGL context
+(CGL on macOS). The guest side is `contrib/it-gles/mbxshim.c`, which stands in
+for Apple's `MBXGLEngine.bundle`; the host side is `hw/arm/gles-host.c`
+(renderer + slot dispatch) and `hw/arm/guest-gles.c`, with the call-slot numbers
+in `include/hw/arm/guest-services/gles.h`.
+
+Two real App Store 3D games are verified rendering and playable:
+
+- **Cube Runner** — full gameplay.
+- **Super Monkey Ball** — menus and level select render; this needed the
+  `glTexSubImage2D` and `glLoadMatrixf` dispatch slots implemented.
+
+Known gaps, each with a plan in `plans/`:
+
+- **Compressed textures (PVRTC)** are not implemented — a `.pvr`-only app's
+  surfaces come out wrong or missing. Plan `03-pvrtc-textures.md`.
+- **No vertex-buffer-object data path** — `glBindBuffer` is accepted but
+  `glBufferData` is absent, so any engine that actually uploads buffer data
+  (rather than only binding 0) will not render correctly. Plan
+  `04-vbo-data-path.md`.
+- **Host GL state is global, not per-guest-context** — one FBO, one texture
+  namespace, one matrix stack, shared across all guest GCs, so
+  render-to-texture is discarded. Plan `05-per-gc-gl-state.md`.
 
 ## Persist guest writes across reboots
 
@@ -326,12 +365,11 @@ All under `$F`. The golden `nand` is never written.
   the power-down transition.
 - **No self-reboot.** The watchdog device is modelled, but the guest never
   reaches the handler that would write it, for the reason above.
-- **OpenGL ES apps do not render.** The MBX GPU is not emulated. The MMU
-  handshake is acknowledged (`mbx-irq`, now on by default, boot-verified not to
-  affect the 2D path) so a GLES app no longer spins ~21M reads on the MMU
-  register - but it still hangs without rendering. Real rendering would mean
-  reverse-engineering the proprietary PowerVR MBX command-buffer format; see the
-  roadmap's GPU section for why that is deferred.
+- **OpenGL ES apps render**, via the host-side HLE layer described in
+  [OpenGL ES](#opengl-es) — the MBX GPU itself is still not emulated, but guest
+  GL calls are trapped and executed on a real host GL context instead. Two
+  verified games (Cube Runner, Super Monkey Ball); PVRTC textures, VBO data
+  upload, and per-context GL state are the known remaining gaps (plans 03/04/05).
 - **Debugger attach fails** (see above).
 - **WiFi remote-name DNS is the last gap** - scan, association, DHCP and IP/local-name browsing all work; only names needing a unicast DNS query fail (an SCNetworkReachability gate). See the WiFi section.
 - **`ideviceinstaller` installs cannot produce a launchable app.** The install
