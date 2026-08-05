@@ -510,7 +510,46 @@ static void it_i2s_update_dma_req(IPodTouchI2SState *s)
     pl080_set_dma_request(s->dmac, s->dma_req_id, want);
 }
 
-/* Advance the modelled FIFO by however much real time has passed. */
+/*
+ * Advance the modelled FIFO by however much real time has passed.
+ *
+ * TIME MUST NEVER BE DISCARDED HERE, and it used to be: draining clamped at an
+ * empty FIFO and forgot the excess, so every host stall longer than the 11.6 ms
+ * the FIFO covers permanently slipped the stream. Measured on nand-grow7g, the
+ * main loop stalls 20-50 ms roughly every 300 ms, and the guest's 16-page ring
+ * laps took 390-411 ms against the ideal 371.5 -- an effective sample clock
+ * 5-10% slow and irregular. The guest's engine paces its producer against its
+ * own timers, notices the DAC position falling behind, and periodically resyncs
+ * its mix cursor forward -- which lands the next content 3-4 pages ahead and
+ * leaves the pre-zeroed pages in between to play as inserted silence. That, not
+ * the host sink, was the residual audible garble: 7 of 7 shutter captures
+ * carried a 3-7 page hole of pure zeros at a page boundary mid-clip.
+ *
+ * So the shortfall is carried as a debt instead. While the debt is nonzero the
+ * FIFO reads empty, the request line stays up, and it_i2s_push() repays the
+ * debt byte-for-byte as the PL080 refills -- a catch-up burst that ends exactly
+ * when the head is back on real time. The producer is paced by real time and is
+ * therefore ahead of a stalled consumer, so the burst only ever reads pages the
+ * engine has already written.
+ *
+ * The debt is bounded (a stall longer than half a ring lap is not worth
+ * chasing; the engine will resync regardless) and cleared at every stream
+ * boundary, so an idle gap between sounds can never fast-forward the next
+ * sound's attack.
+ */
+#define IT_I2S_PACE_DEBT_MAX 32768u     /* bytes; ~186 ms, half a ring lap */
+
+/* IT_I2S_DEBT=0 restores the old discard-on-stall behaviour, for bisecting. */
+static bool it_i2s_debt_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("IT_I2S_DEBT");
+        cached = (v == NULL) ? 1 : (atoi(v) != 0);
+    }
+    return cached != 0;
+}
+
 static void it_i2s_pace_drain(IPodTouchI2SState *s)
 {
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
@@ -527,8 +566,93 @@ static void it_i2s_pace_drain(IPodTouchI2SState *s)
         return;
     }
     s->pace_last_ns = now;
+
+    /*
+     * Debt must only chase HOST stalls, never the guest. If the timer is
+     * ticking on cadence, the request line is up, and the PL080 still gave us
+     * nothing since the last tick, then the guest's descriptor chain is the
+     * limiter -- the engine appends work in real time and the DMA has caught
+     * its append edge. Carrying debt there glues the read head to the append
+     * edge with zero margin, and the next slightly-late append plays pages the
+     * mixer has not written yet (measured: delivery degenerated into 3 ms
+     * stop-go bursts and the skips returned). Forgive the debt instead: the
+     * head falls back to the guest's own pace, which is the honest rate.
+     * A genuine host stall is distinguishable because the tick itself is late.
+     */
+    if (it_i2s_debt_enabled() &&
+        elapsed < 3 * IT_I2S_PACE_PERIOD_NS &&
+        s->fifo_bytes == 0 && s->dma_req && !s->pushed_since_tick) {
+        s->pace_debt = 0;
+        return;
+    }
+    s->pushed_since_tick = false;
+
     bytes = ((uint64_t)s->as.freq * frame * (uint64_t)elapsed) / 1000000000ULL;
-    s->fifo_bytes = (bytes >= s->fifo_bytes) ? 0 : s->fifo_bytes - bytes;
+    if (it_i2s_debt_enabled()) {
+        /*
+         * Repay debt GRADUALLY: at most 25% over real rate per tick. An
+         * instant catch-up burst was tried first and it re-created the very
+         * skip it was meant to fix -- after a whole-process stall the guest's
+         * mixer is exactly as far behind as the DMA, and a zero-time burst
+         * reads the pages it has not yet rewritten. At 1.25x the head recovers
+         * a 40 ms stall over ~160 ms while the resumed mixer (which refills 8
+         * pages in ~7 ms) stays comfortably ahead of it.
+         */
+        uint64_t due = bytes + s->pace_debt;
+        uint64_t budget = bytes + bytes / 4;
+        uint64_t apply = MIN(due, budget);
+
+        s->pace_debt = MIN(due - apply, (uint64_t)IT_I2S_PACE_DEBT_MAX);
+        bytes = apply;
+    }
+    if (bytes >= s->fifo_bytes) {
+        /* Whatever the FIFO could not supply is still owed, not forgotten. */
+        if (it_i2s_debt_enabled()) {
+            s->pace_debt = MIN(s->pace_debt + (bytes - s->fifo_bytes),
+                               (uint64_t)IT_I2S_PACE_DEBT_MAX);
+        }
+        s->fifo_bytes = 0;
+    } else {
+        s->fifo_bytes -= bytes;
+    }
+}
+
+/*
+ * IT_I2S_STALLDBG=1 -- when the stream is up and nothing has reached the FIFO
+ * for >10 ms, print the whole gating state once per episode: the FIFO model,
+ * the request line, and the PL080 channel-5 registers. This exists to NAME the
+ * limiter during the recurring mid-stream delivery pauses rather than infer it.
+ */
+static void it_i2s_stall_debug(IPodTouchI2SState *s)
+{
+    static int on = -1;
+    static int64_t episode_reported;
+    int64_t now;
+
+    if (on < 0) {
+        on = getenv("IT_I2S_STALLDBG") != NULL;
+    }
+    if (!on || !s->running || !s->dmac || s->last_push_ns == 0) {
+        return;
+    }
+    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (now - s->last_push_ns < 10 * 1000 * 1000) {
+        episode_reported = 0;
+        return;
+    }
+    if (episode_reported) {
+        return;
+    }
+    episode_reported = 1;
+    fprintf(stderr, "[i2s-stall] t=%" PRId64 " no push for %.1f ms: "
+            "fifo=%u/%u debt=%u req=%d req_single=%08x running=%d | "
+            "ch5 src=%08x dest=%08x lli=%08x ctrl=%08x conf=%08x\n",
+            now, (now - s->last_push_ns) / 1e6,
+            s->fifo_bytes, s->fifo_depth, s->pace_debt, s->dma_req,
+            s->dmac->req_single, s->dmac->running,
+            s->dmac->chan[5].src, s->dmac->chan[5].dest,
+            s->dmac->chan[5].lli, s->dmac->chan[5].ctrl,
+            s->dmac->chan[5].conf);
 }
 
 static void it_i2s_pace_cb(void *opaque)
@@ -544,6 +668,7 @@ static void it_i2s_pace_cb(void *opaque)
     }
     it_i2s_pace_drain(s);
     it_i2s_update_dma_req(s);
+    it_i2s_stall_debug(s);
     timer_mod(s->pace_timer,
               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + IT_I2S_PACE_PERIOD_NS);
 }
@@ -554,6 +679,9 @@ static void it_i2s_pace_start(IPodTouchI2SState *s)
         return;
     }
     s->pace_last_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    /* A new stream starts on real time, owing nothing: debt accrued across an
+     * idle gap must never fast-forward the next sound's attack. */
+    s->pace_debt = 0;
     it_i2s_update_dma_req(s);
     timer_mod(s->pace_timer, s->pace_last_ns + IT_I2S_PACE_PERIOD_NS);
 }
@@ -757,6 +885,11 @@ static void it_i2s_push(IPodTouchI2SState *s, const uint8_t *buf, unsigned len)
      * else: this runs inside the DMA controller's own transfer loop, and the
      * request line we lower here is what ends the burst. */
     s->fifo_bytes += len;
+    s->pushed_since_tick = true;
+    s->last_push_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    /* Stall debt is repaid only by it_i2s_pace_drain(), rate-limited. Repaying
+     * it here, instantly, turned a recovered stall into a zero-time burst that
+     * outran the guest's own recovery -- see the note in the drain. */
 
     /* Raw tap: everything that reaches the FIFO, regardless of the backend.
      * Play it back with e.g.
@@ -994,6 +1127,7 @@ static void ipod_touch_i2s_write(void *opaque, hwaddr offset, uint64_t value,
         s->txcom = value;
         if ((value & 0x7) == IT_I2S_CMD_RUN) {
             s->running = true;
+            s->pace_debt = 0;   /* stream boundary: start on real time */
             /* Restart the prebuffer deadline with the stream it belongs to;
              * otherwise it runs from whatever setup byte happened to land in the
              * ring, and can expire before there is anything to play. */
@@ -1005,6 +1139,7 @@ static void ipod_touch_i2s_write(void *opaque, hwaddr offset, uint64_t value,
                            s->total_bytes, s->dropped);
         } else if (value == IT_I2S_CMD_HALT) {
             s->running = false;
+            s->pace_debt = 0;   /* stream boundary: nothing owed across a halt */
             /* A clip shorter than the prebuffer has nothing left to push, so
              * this is its only chance to start the voice -- but ONLY if there is
              * something to play. The driver writes TXCOM = 0 during SETUP as

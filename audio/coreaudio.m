@@ -711,22 +711,21 @@ static void update_device_playback_state(coreaudioVoiceOut *core)
         return;
     }
 
-    if (core->enabled) {
-        /* start playback */
-        if (!isrunning) {
-            status = AudioDeviceStart(core->outputDeviceID, core->ioprocid);
-            if (status != kAudioHardwareBadDeviceError && status != kAudioHardwareNoError) {
-                coreaudio_logerr (status, "Could not resume playback\n");
-            }
-        }
-    } else {
-        /* stop playback */
-        if (isrunning) {
-            status = AudioDeviceStop(core->outputDeviceID,
-                                     core->ioprocid);
-            if (status != kAudioHardwareBadDeviceError && status != kAudioHardwareNoError) {
-                coreaudio_logerr(status, "Could not pause playback\n");
-            }
+    /*
+     * Start once, never stop. AudioDeviceStart takes 30-45 ms and runs with
+     * the BQL held, freezing the whole machine -- guest included -- at the
+     * start of EVERY stream. On the iPod touch that freeze lands ~180 ms into
+     * each sound (the voice activates after a prebuffer), and the guest's
+     * mixer, whose clock runs through the freeze, re-anchors and skips 3-4
+     * ring pages: pages of silence in the middle of the clip. Keeping the
+     * device running makes activation free. A running IOProc with an idle
+     * voice takes the starvation path, which plays (and now clears to)
+     * silence, so an open-but-quiet device is inaudible by construction.
+     */
+    if (!isrunning) {
+        status = AudioDeviceStart(core->outputDeviceID, core->ioprocid);
+        if (status != kAudioHardwareBadDeviceError && status != kAudioHardwareNoError) {
+            coreaudio_logerr (status, "Could not resume playback\n");
         }
     }
 }
@@ -804,6 +803,11 @@ static int coreaudio_init_out(HWVoiceOut *hw, struct audsettings *as,
 
         return -1;
     }
+
+    /* Pay the expensive first AudioDeviceStart here, at device open during
+     * machine bring-up, not on the guest's timeline (see
+     * update_device_playback_state). */
+    update_device_playback_state(core);
 
     return 0;
 }

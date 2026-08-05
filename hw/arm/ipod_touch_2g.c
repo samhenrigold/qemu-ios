@@ -650,23 +650,47 @@ static void ipod_touch_set_boot_args_now(void *opaque)
 
     if (addr_s) {
         ba = (uint32_t)strtoul(addr_s, NULL, 0);
-    } else {
-        /* Scan DRAM for the boot_args signature. */
-        uint32_t probe;
-        for (probe = 0x08000000; probe < 0x08000000 + 0x00800000; probe += 4) {
-            uint32_t rev_ver, virt, phys;
-            address_space_rw(nms->nsas, probe, MEMTXATTRS_UNSPECIFIED,
-                             (uint8_t *)&rev_ver, 4, 0);
-            if ((rev_ver & 0xFFFF) != 1) {
-                continue;
-            }
-            address_space_rw(nms->nsas, probe + 4, MEMTXATTRS_UNSPECIFIED,
-                             (uint8_t *)&virt, 4, 0);
-            address_space_rw(nms->nsas, probe + 8, MEMTXATTRS_UNSPECIFIED,
-                             (uint8_t *)&phys, 4, 0);
-            if (virt == 0xC0000000 && phys == 0x08000000) {
-                ba = probe;
-                break;
+    } else if (nms->boot_args_addr) {
+        /* Found on an earlier tick; boot_args does not move once the kernel
+         * has built it. Re-verify the signature so a reboot (which rebuilds
+         * DRAM) falls back to a fresh scan instead of scribbling blindly. */
+        uint32_t sig[3] = { 0, 0, 0 };
+        address_space_rw(nms->nsas, nms->boot_args_addr, MEMTXATTRS_UNSPECIFIED,
+                         (uint8_t *)sig, sizeof(sig), 0);
+        if ((sig[0] & 0xFFFF) == 1 && sig[1] == 0xC0000000 &&
+            sig[2] == 0x08000000) {
+            ba = nms->boot_args_addr;
+        } else {
+            nms->boot_args_addr = 0;
+        }
+    }
+    if (!addr_s && !ba) {
+        /*
+         * Scan DRAM for the boot_args signature -- in bulk. This used to be
+         * three 4-byte address_space_rw calls per word over 8 MB, ~2 million
+         * MMIO-path round trips, 30-45 ms on the main loop with the BQL held,
+         * EVERY 250 ms tick of this timer, for the whole repeat window. Those
+         * were the recurring whole-process freezes that put pages of silence
+         * into the middle of every sound the guest played while the window was
+         * open (see hw/arm/ipod_touch_i2s.c). Read 64 KB at a time instead and
+         * scan in host memory; the windows overlap by 8 bytes so a signature
+         * straddling a boundary is still seen.
+         */
+        uint8_t window[0x10000];
+        uint32_t base;
+        for (base = 0x08000000; base < 0x08000000 + 0x00800000 && !ba;
+             base += sizeof(window) - 8) {
+            uint32_t off;
+            address_space_rw(nms->nsas, base, MEMTXATTRS_UNSPECIFIED,
+                             window, sizeof(window), 0);
+            for (off = 0; off + 12 <= sizeof(window); off += 4) {
+                if ((ldl_le_p(window + off) & 0xFFFF) == 1 &&
+                    ldl_le_p(window + off + 4) == 0xC0000000 &&
+                    ldl_le_p(window + off + 8) == 0x08000000) {
+                    ba = base + off;
+                    nms->boot_args_addr = ba;
+                    break;
+                }
             }
         }
         if (!ba) {
