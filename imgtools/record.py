@@ -46,41 +46,16 @@ letterboxed rather than ending at the rotation.
 """
 
 import argparse
-import json
 import os
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
 import time
 
-
-class QMP:
-    def __init__(self, host, port, timeout=10):
-        self.s = socket.create_connection((host, port), timeout)
-        self.f = self.s.makefile("rwb")
-        self.f.readline()                 # greeting, which carries no "return"
-        self.cmd("qmp_capabilities")
-
-    def _read(self):
-        while True:
-            line = self.f.readline()
-            if not line:
-                raise RuntimeError("QMP closed the connection")
-            msg = json.loads(line)
-            if "return" in msg or "error" in msg:
-                return msg
-
-    def cmd(self, name, **args):
-        self.f.write(json.dumps({"execute": name, "arguments": args}).encode()
-                     + b"\n")
-        self.f.flush()
-        msg = self._read()
-        if "error" in msg:
-            raise RuntimeError("%s: %s" % (name, msg["error"]["desc"]))
-        return msg["return"]
+sys.path.insert(0, os.path.dirname(__file__))
+from itqmp import QMP
 
 
 def read_ppm(path):
@@ -138,7 +113,7 @@ def main():
         sys.exit("record.py: ffmpeg is not on PATH")
 
     host, _, port = args.qmp.rpartition(":")
-    q = QMP(host or "127.0.0.1", int(port))
+    q = QMP(host or "127.0.0.1", int(port), timeout=10)
 
     tmpdir = tempfile.mkdtemp(prefix="itrecord-")
     shot = os.path.join(tmpdir, "frame.ppm")
