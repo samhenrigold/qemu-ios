@@ -293,6 +293,14 @@ typedef struct {
      * compared against a draw list from another.
      */
     bool dump_pending;
+
+    /*
+     * GL_UNPACK_ALIGNMENT as the guest last set it. Zero means "never set",
+     * which is treated as ES 1.1's default of 4 -- not 1. Getting that default
+     * backwards is silent: it only shows up as sheared rows on the non-4-byte
+     * formats, and only at widths that are not already aligned.
+     */
+    uint32_t unpack_alignment;
 } GLESHost;
 
 /*
@@ -867,6 +875,56 @@ static uint32_t gles_bind_all_arrays(CPUState *cpu, uint32_t first,
         }
     }
     return bound;
+}
+
+/*
+ * Bytes per texel for the ES 1.1 format/type pairs. The packed 16-bit types
+ * override the format's component count -- 5_6_5 is GL_RGB but two bytes, not
+ * three -- so type is checked second and wins.
+ */
+static size_t gles_texel_bytes(uint32_t fmt, uint32_t type)
+{
+    if (type == GL_UNSIGNED_SHORT_5_6_5 ||
+        type == GL_UNSIGNED_SHORT_4_4_4_4 ||
+        type == GL_UNSIGNED_SHORT_5_5_5_1) {
+        return 2;
+    }
+    switch (fmt) {
+    case GL_RGBA:            return 4;
+    case GL_RGB:             return 3;
+    case GL_LUMINANCE_ALPHA: return 2;
+    case GL_ALPHA:
+    case GL_LUMINANCE:       return 1;
+    default:                 return 4;
+    }
+}
+
+/* GL_UNPACK_ALIGNMENT in force, defaulting to ES 1.1's 4 if the guest never
+ * set it. */
+static uint32_t gles_unpack(void)
+{
+    return gh.unpack_alignment ? gh.unpack_alignment : 4;
+}
+
+/*
+ * How many bytes a w*h image of `bpp` texels occupies in guest memory under the
+ * current GL_UNPACK_ALIGNMENT.
+ *
+ * The last row is deliberately NOT padded. GL only pads *between* rows, and the
+ * guest is entitled to allocate exactly this much -- so fetching a padded final
+ * row can run off the end of the allocation and into an unmapped page, which
+ * fails the read and drops the whole texture. Under-reading shears the image;
+ * over-reading loses it entirely.
+ */
+static size_t gles_image_bytes(uint32_t w, uint32_t h, size_t bpp)
+{
+    size_t align = gles_unpack();
+    size_t row = ((size_t)w * bpp + align - 1) & ~(align - 1);
+
+    if (!w || !h) {
+        return 0;
+    }
+    return row * (h - 1) + (size_t)w * bpp;
 }
 
 /*
@@ -1615,6 +1673,10 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
                                    uint32_t format)
 {
     uint32_t y;
+    /* Bytes per pixel of the DESTINATION surface. CA picks this from the
+     * drawable's format, so every size below follows it rather than assuming
+     * the 32-bit case. */
+    uint32_t bpp = (format == GLES_SURFACE_RGB565) ? 2 : 4;
 
     bool bgra;
 
@@ -1628,9 +1690,9 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
                 width, height);
         return -1;
     }
-    if (stride < width * 4) {
+    if (stride < width * bpp) {
         fprintf(stderr, "[gles] present-surface: stride %u too small for "
-                "width %u\n", stride, width);
+                "width %u at %u bpp\n", stride, width, bpp);
         return -1;
     }
 
@@ -1687,7 +1749,10 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
          * that asked for the old readback in order to time it. Both fall
          * through, and so does any host that never got a surface at all.
          */
-        if (bgra && !gles_swizzle) {
+        /* The zero-copy path hands back the render target's own BGRA rows, so
+         * it can only serve a 32-bit destination; 565 goes via the readback,
+         * where GL does the packing. */
+        if (bpp == 4 && bgra && !gles_swizzle) {
             frame = gles_frame_lock(&fstride);
         }
         if (frame) {
@@ -1722,7 +1787,12 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
          * row copy below becomes a memcpy. The swizzle loop was the largest
          * single item in the frame's host time.
          */
-        if (bgra && !gles_swizzle) {
+        if (bpp == 2) {
+            /* GL packs 565 itself, so there is no conversion loop here: the
+             * result already matches CA's little-endian 'L565' layout. */
+            glReadPixels(0, 0, rw, rh, GL_RGB, GL_UNSIGNED_SHORT_5_6_5,
+                         gh.readback);
+        } else if (bgra && !gles_swizzle) {
             glReadPixels(0, 0, rw, rh, GL_BGRA,
                          GLES_BGRA_READ_TYPE, gh.readback);
         } else {
@@ -1734,7 +1804,7 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
          * this was measured -- and a before/after taken from two boots minutes
          * apart measures the host's mood, not the change.
          */
-        if (bgra && gles_swizzle) {
+        if (bpp == 4 && bgra && gles_swizzle) {
             uint32_t i, n = rw * rh;
 
             for (i = 0; i < n; i++) {
@@ -1751,16 +1821,19 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
              * rw*4 bytes the row actually covers are written, so the staging
              * buffer the swizzle needed is gone with it -- the readback is
              * already in the destination's layout. */
-            uint8_t *src = gh.readback + (size_t)(rh - 1 - y) * rw * 4;
+            uint8_t *src = gh.readback + (size_t)(rh - 1 - y) * rw * bpp;
 
             if (cpu_memory_rw_debug(cpu, base + (hwaddr)y * stride,
-                                    src, rw * 4, 1) != 0) {
+                                    src, rw * bpp, 1) != 0) {
                 fprintf(stderr, "[gles] present-surface: write failed at row %u "
                         "(guest 0x%08x)\n", y, base + y * stride);
                 return -1;
             }
         }
-        gles_dump_frame(gh.readback, (size_t)rw * 4, rw, rh, bgra);
+        /* The dump writes 32-bit pixels; a 565 frame is not its format. */
+        if (bpp == 4) {
+            gles_dump_frame(gh.readback, (size_t)rw * 4, rw, rh, bgra);
+        }
     }
     gh.presents++;
     gles_note_scene();
@@ -1997,30 +2070,19 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         uint32_t target = a[0], level = a[1], ifmt = a[2];
         uint32_t w = a[3], h = a[4], border = a[5];
         uint32_t fmt = a[6], type = a[7], pixels = a[8];
-        size_t bpp, n;
+        size_t bpp = gles_texel_bytes(fmt, type), n;
         const uint8_t *px = NULL;   /* borrowed: points into gh.txbuf */
 
-        switch (fmt) {
-        case GL_RGBA:            bpp = 4; break;
-        case GL_RGB:             bpp = 3; break;
-        case GL_LUMINANCE_ALPHA: bpp = 2; break;
-        case GL_ALPHA:
-        case GL_LUMINANCE:       bpp = 1; break;
-        default:                 bpp = 4; break;
-        }
-        if (type == GL_UNSIGNED_SHORT_5_6_5 ||
-            type == GL_UNSIGNED_SHORT_4_4_4_4 ||
-            type == GL_UNSIGNED_SHORT_5_5_5_1) {
-            bpp = 2;
-        }
-
-        n = (size_t)w * h * bpp;
+        n = gles_image_bytes(w, h, bpp);
         if (pixels && n) {
             px = gles_fetch_texels(cpu, pixels, n, "glTexImage2D");
             if (!px) {
                 return -1;
             }
         }
+        /* The staging buffer reproduces the guest's row padding verbatim, so
+         * the host must unpack with the guest's alignment, not its own. */
+        glPixelStorei(GL_UNPACK_ALIGNMENT, gles_unpack());
         glTexImage2D(target, level, ifmt, w, h, border, fmt, type, px);
         return 0;
     }
@@ -2034,24 +2096,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * fixed-function GL renders as solid white. */
         uint32_t target = a[0], level = a[1], xoff = a[2], yoff = a[3];
         uint32_t w = a[4], h = a[5], fmt = a[6], type = a[7], pixels = a[8];
-        size_t bpp, n;
+        size_t bpp = gles_texel_bytes(fmt, type), n;
         const uint8_t *px = NULL;   /* borrowed: points into gh.txbuf */
 
-        switch (fmt) {
-        case GL_RGBA:            bpp = 4; break;
-        case GL_RGB:             bpp = 3; break;
-        case GL_LUMINANCE_ALPHA: bpp = 2; break;
-        case GL_ALPHA:
-        case GL_LUMINANCE:       bpp = 1; break;
-        default:                 bpp = 4; break;
-        }
-        if (type == GL_UNSIGNED_SHORT_5_6_5 ||
-            type == GL_UNSIGNED_SHORT_4_4_4_4 ||
-            type == GL_UNSIGNED_SHORT_5_5_5_1) {
-            bpp = 2;
-        }
-
-        n = (size_t)w * h * bpp;
+        n = gles_image_bytes(w, h, bpp);
         if (!pixels || !n) {
             return 0;
         }
@@ -2059,6 +2107,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         if (!px) {
             return -1;
         }
+        glPixelStorei(GL_UNPACK_ALIGNMENT, gles_unpack());
         glTexSubImage2D(target, level, xoff, yoff, w, h, fmt, type, px);
         return 0;
     }
@@ -2230,6 +2279,47 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     case GLES_SLOT_SHADE_MODEL:
         glShadeModel(a[0]);
+        return 0;
+
+    case GLES_SLOT_PIXEL_STOREI:                /* pname, param */
+        /*
+         * Recorded rather than forwarded. The value describes how the GUEST's
+         * pixels are laid out, and it has to be applied at each upload against
+         * the staging buffer -- forwarding it here would set it on a host
+         * context whose alignment the intervening calls are free to change.
+         * GL_PACK_ALIGNMENT is readback-side and nothing here reads back.
+         */
+        if (a[0] == GL_UNPACK_ALIGNMENT) {
+            gh.unpack_alignment = a[1];
+        }
+        return 0;
+
+    case GLES_SLOT_SCISSOR:                     /* x, y, width, height */
+        glScissor(a[0], a[1], a[2], a[3]);
+        return 0;
+
+    case GLES_SLOT_DEPTH_FUNC:                  /* func */
+        glDepthFunc(a[0]);
+        return 0;
+
+    case GLES_SLOT_FRONT_FACE:                  /* mode */
+        glFrontFace(a[0]);
+        return 0;
+
+    case GLES_SLOT_TEX_ENVI:                    /* target, pname, param */
+        /* Desktop GL has no glTexEnvi -- the integer entry point is spelled
+         * glTexEnvf there, and every ES 1.1 pname (GL_TEXTURE_ENV_MODE and the
+         * combiner selectors) is an enum that survives the float round trip
+         * exactly. */
+        glTexEnvf(a[0], a[1], (GLfloat)(GLint)a[2]);
+        return 0;
+
+    case GLES_SLOT_ACTIVE_TEXTURE:              /* texture */
+        glActiveTexture(a[0]);
+        return 0;
+
+    case GLES_SLOT_CLIENT_ACTIVE_TEXTURE:       /* texture */
+        glClientActiveTexture(a[0]);
         return 0;
 
     case GLES_SLOT_LINE_WIDTH:

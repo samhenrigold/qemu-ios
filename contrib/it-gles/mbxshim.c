@@ -69,6 +69,12 @@ typedef struct __attribute__((packed)) {
 #define GLES_OP_PRESENT         0x1000
 #define GLES_OP_PRESENT_SURFACE 0x1001
 
+/* The two drawable formats CA hands the engine. Declared up here because the
+ * surface plausibility check needs the pixel size before the drawable code
+ * below gets to them; see the fourcc mapping at GLESBindView. */
+#define CA_FOURCC_BGRA 0x42475241
+#define CA_FOURCC_565L 0x4c353635
+
 extern long write(int, const void *, unsigned long);
 
 static unsigned slen(const char *s) { unsigned n = 0; while (s && s[n]) n++; return n; }
@@ -268,6 +274,24 @@ static int s_bindBuffer(void *gc, unsigned target, unsigned buf)
 static int s_scalex(void *gc, unsigned x, unsigned y, unsigned z)
     { return (int)qc(796, gc, 3, A(x, y, z)); }
 
+/* Cheap state setters that a survey of 20 shipping App Store apps found
+ * imported but unimplemented. Slots read out of the 3.1.3 SDK trampolines and
+ * cross-checked against slotmap.txt; see gles.h. */
+static int s_pixelStorei(void *gc, unsigned pname, unsigned param)
+    { return (int)qc(195, gc, 2, A(pname, param)); }
+static int s_scissor(void *gc, unsigned x, unsigned y, unsigned wd_, unsigned ht)
+    { return (int)qc(251, gc, 4, A(x, y, wd_, ht)); }
+static int s_texEnvi(void *gc, unsigned target, unsigned pname, unsigned param)
+    { return (int)qc(292, gc, 3, A(target, pname, param)); }
+static int s_activeTexture(void *gc, unsigned tex)
+    { return (int)qc(342, gc, 1, A(tex)); }
+static int s_clientActiveTexture(void *gc, unsigned tex)
+    { return (int)qc(341, gc, 1, A(tex)); }
+static int s_depthFunc(void *gc, unsigned func)
+    { return (int)qc(60, gc, 1, A(func)); }
+static int s_frontFace(void *gc, unsigned mode)
+    { return (int)qc(95, gc, 1, A(mode)); }
+
 /* OES framebuffer objects. EAGL calls these itself inside
  * -renderbufferStorage:fromDrawable:, so a CAEAGLLayer client needs them
  * before it can draw anything at all. */
@@ -399,6 +423,14 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
         table[307] = (void *)s_texSubImage2D;
         table[642] = (void *)s_bindBuffer;
         table[796] = (void *)s_scalex;
+
+        table[60]  = (void *)s_depthFunc;
+        table[95]  = (void *)s_frontFace;
+        table[195] = (void *)s_pixelStorei;
+        table[251] = (void *)s_scissor;
+        table[292] = (void *)s_texEnvi;
+        table[341] = (void *)s_clientActiveTexture;
+        table[342] = (void *)s_activeTexture;
     }
 
     if (gc_out) {
@@ -536,7 +568,7 @@ static void iosurface_init(void)
  */
 static int surface_capture(ca_view_t *v, void *s)
 {
-    unsigned base, stride, width, height, format;
+    unsigned base, stride, width, height, format, bpp;
 
     iosurface_init();
     if (!v || !s || !p_IOSurfaceGetBaseAddress) return 0;
@@ -553,10 +585,15 @@ static int surface_capture(ca_view_t *v, void *s)
     w(" fmt="); wd(format); w("\n");
 
     /* A real drawable on this device is at most a screenful and its stride has
-     * to cover its width. */
+     * to cover its width -- at ITS OWN pixel size. A CAEAGLLayer asking for
+     * kEAGLColorFormatRGB565 gets a 2-byte surface (320 wide, stride 640), and
+     * measuring that against a hardcoded 4 bytes rejected it as garbage: the
+     * app then rendered every frame into a framebuffer with no colour
+     * attachment, which looks like a healthy draw count and a white screen. */
+    bpp = (format == CA_FOURCC_565L) ? 2 : 4;
     if (!base || width == 0 || height == 0 ||
-        width > 2048 || height > 2048 || stride < width * 4 ||
-        stride > width * 4 + 4096) {
+        width > 2048 || height > 2048 || stride < width * bpp ||
+        stride > width * bpp + 4096) {
         w("[mbxshim]   -> REJECTED (not a plausible IOSurface); "
           "keeping panel fallback\n");
         return 0;
@@ -640,9 +677,6 @@ static int surface_capture(ca_view_t *v, void *s)
  * `subs r5,r0,#0` then `beq` to SetError; 0xd624 likewise), and so does
  * _GLESCreateBuffer (0xdc50 `mov r0,#1` on the success path only).
  */
-
-#define CA_FOURCC_BGRA 0x42475241
-#define CA_FOURCC_565L 0x4c353635
 
 #define GL_RGB565_OES  0x8d62
 
