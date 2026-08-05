@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_chipid.h"
+#include "qemu/log.h"
 
 static uint64_t ipod_touch_chipid_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -40,14 +41,33 @@ static uint64_t ipod_touch_chipid_read(void *opaque, hwaddr addr, unsigned size)
         case CHIPID_UNKNOWN3:
             return 0;
         default:
-            hw_error("%s: reading from unknown chip ID register 0x%08x\n", __func__, addr);
+            /*
+             * Offset 0 is inside the 0x14 region but has no named register, and
+             * a guest read of it used to hw_error() the whole process. Read as
+             * 0, like every other unhandled ChipID offset.
+             */
+            qemu_log_mask(LOG_UNIMP,
+                          "%s: read from unknown chip ID register 0x%08x\n",
+                          __func__, (uint32_t)addr);
     }
 
     return 0;
 }
 
+static void ipod_touch_chipid_write(void *opaque, hwaddr addr, uint64_t val,
+                                    unsigned size)
+{
+    /* ChipID is read-only fuses; there is no .write path on hardware. Swallow
+     * stores (the ops table had no .write at all, so any store dispatched
+     * through a NULL pointer). */
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "%s: write 0x%08x to read-only chip ID register 0x%08x\n",
+                  __func__, (uint32_t)val, (uint32_t)addr);
+}
+
 static const MemoryRegionOps ipod_touch_chipid_ops = {
     .read = ipod_touch_chipid_read,
+    .write = ipod_touch_chipid_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 

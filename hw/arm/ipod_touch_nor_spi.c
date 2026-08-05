@@ -151,10 +151,12 @@ static uint32_t ipod_touch_nor_spi_transfer(SSIPeripheral *dev, uint32_t value)
     }
 
     if(s->cur_cmd == 0) {
-        // this is a new command -> set it
+        // this is a new command -> set it. in_buf/out_buf are fixed 0x1000-byte
+        // members, so nothing is allocated or freed per command (the old code
+        // malloc'd both here and freed them only on the one completion path
+        // that READ_DATA/ENABLE_WRITE/DISABLE_WRITE never reach -- a leak on
+        // every such command, i.e. continuously during boot).
         s->cur_cmd = value;
-        s->out_buf = malloc(0x1000);
-        s->in_buf = malloc(0x1000);
         s->in_buf[0] = value;
         s->in_buf_size = 0;
         s->in_buf_cur_ind = 1;
@@ -258,10 +260,8 @@ static uint32_t ipod_touch_nor_spi_transfer(SSIPeripheral *dev, uint32_t value)
             s->out_buf_cur_ind++;
 
             if(s->cur_cmd != 0 && (s->out_buf_cur_ind == s->out_buf_size)) {
-                // the command is done - clean up
+                // the command is done
                 s->cur_cmd = 0;
-                free(s->in_buf);
-                free(s->out_buf);
             }
         }
         return ret_val;

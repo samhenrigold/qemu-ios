@@ -150,6 +150,13 @@ void gles_eagl_iosurface_unlock(void);
 #define GLES_FB_WIDTH  320
 #define GLES_FB_HEIGHT 480
 
+/* Ceilings on guest-supplied sizes. The guest is the thing being emulated, so
+ * a corrupt or hostile value must not be able to drive a multi-GB g_malloc
+ * (which aborts QEMU on failure). A 4Kx4K RGBA texture and 64K object names are
+ * both far above anything this device does. */
+#define GLES_MAX_TEX_BYTES ((size_t)4096 * 4096 * 4)
+#define GLES_MAX_NAMES     65536u
+
 /* Guest vertex/texcoord array state. The guest hands us a pointer into its own
  * address space; nothing is read from it until a draw call, exactly as GL
  * specifies, so the guest is free to refill the buffer between calls. */
@@ -197,6 +204,12 @@ typedef struct {
     /* Scratch for glDrawElements' index list. */
     uint8_t *ibuf;
     size_t ibuf_size;
+
+    /* Grow-never-shrink staging buffer for texture uploads. A streaming
+     * glTexSubImage2D runs per frame, so malloc/free'ing it each call (as the
+     * texture slots used to) allocates megabyte buffers 60x/s for no reason. */
+    uint8_t *txbuf;
+    size_t txbuf_size;
 
     uint8_t *readback;  /* GLES_FB_WIDTH * GLES_FB_HEIGHT * 4 */
 
@@ -854,6 +867,32 @@ static uint32_t gles_bind_all_arrays(CPUState *cpu, uint32_t first,
         }
     }
     return bound;
+}
+
+/*
+ * Fetch `n` bytes of guest pixel data into the reusable texture staging buffer.
+ * Returns the buffer, or NULL on an out-of-range size or a failed read (the
+ * caller skips the upload). Grows the buffer and keeps it, so a per-frame
+ * streaming upload does not allocate.
+ */
+static const uint8_t *gles_fetch_texels(CPUState *cpu, uint32_t pixels,
+                                        size_t n, const char *who)
+{
+    if (n > GLES_MAX_TEX_BYTES) {
+        fprintf(stderr, "[gles] %s: %zu-byte upload exceeds cap; dropped\n",
+                who, n);
+        return NULL;
+    }
+    if (n > gh.txbuf_size) {
+        gh.txbuf = g_realloc(gh.txbuf, n);
+        gh.txbuf_size = n;
+    }
+    if (cpu_memory_rw_debug(cpu, pixels, gh.txbuf, n, 0) != 0) {
+        fprintf(stderr, "[gles] %s: cannot read %zu bytes at guest 0x%08x\n",
+                who, n, pixels);
+        return NULL;
+    }
+    return gh.txbuf;
 }
 
 /*
@@ -1854,6 +1893,12 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         }
         bound = gles_bind_all_arrays(cpu, first, count);
         if (!(bound & 1u)) {                    /* no positions -> no draw */
+            /* Unbind the arrays that DID bind: leaving e.g. GL_COLOR_ARRAY
+             * enabled on the host, pointing into scratch that a later draw
+             * reallocs, is the stale-pointer host crash this file warns about
+             * (gles_bind_array's "loaded gun" note) -- reintroduced on the
+             * error path if we return without unbinding. */
+            gles_unbind_arrays(bound);
             return -1;
         }
         /* We already applied `first` when fetching, so draw from 0. */
@@ -1912,6 +1957,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
         bound = gles_bind_all_arrays(cpu, 0, maxidx + 1);
         if (!(bound & 1u)) {
+            gles_unbind_arrays(bound);           /* see glDrawArrays above */
             return -1;
         }
         glDrawElements(mode, count, itype, gh.ibuf);
@@ -1926,7 +1972,12 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     case GLES_SLOT_GEN_TEXTURES: {              /* n, guest uint* */
         uint32_t n = a[0];
-        g_autofree GLuint *ids = g_new0(GLuint, n ? n : 1);
+        g_autofree GLuint *ids = NULL;
+        if (n > GLES_MAX_NAMES) {
+            fprintf(stderr, "[gles] glGenTextures: n=%u exceeds cap\n", n);
+            return -1;
+        }
+        ids = g_new0(GLuint, n ? n : 1);
         glGenTextures(n, ids);
         cpu_memory_rw_debug(cpu, a[1], (uint8_t *)ids, n * sizeof(GLuint), 1);
         return 0;
@@ -1947,7 +1998,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         uint32_t w = a[3], h = a[4], border = a[5];
         uint32_t fmt = a[6], type = a[7], pixels = a[8];
         size_t bpp, n;
-        g_autofree uint8_t *px = NULL;
+        const uint8_t *px = NULL;   /* borrowed: points into gh.txbuf */
 
         switch (fmt) {
         case GL_RGBA:            bpp = 4; break;
@@ -1965,10 +2016,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
         n = (size_t)w * h * bpp;
         if (pixels && n) {
-            px = g_malloc(n);
-            if (cpu_memory_rw_debug(cpu, pixels, px, n, 0) != 0) {
-                fprintf(stderr, "[gles] glTexImage2D: cannot read %zu bytes "
-                        "at guest 0x%08x\n", n, pixels);
+            px = gles_fetch_texels(cpu, pixels, n, "glTexImage2D");
+            if (!px) {
                 return -1;
             }
         }
@@ -1986,7 +2035,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         uint32_t target = a[0], level = a[1], xoff = a[2], yoff = a[3];
         uint32_t w = a[4], h = a[5], fmt = a[6], type = a[7], pixels = a[8];
         size_t bpp, n;
-        g_autofree uint8_t *px = NULL;
+        const uint8_t *px = NULL;   /* borrowed: points into gh.txbuf */
 
         switch (fmt) {
         case GL_RGBA:            bpp = 4; break;
@@ -2006,10 +2055,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         if (!pixels || !n) {
             return 0;
         }
-        px = g_malloc(n);
-        if (cpu_memory_rw_debug(cpu, pixels, px, n, 0) != 0) {
-            fprintf(stderr, "[gles] glTexSubImage2D: cannot read %zu bytes "
-                    "at guest 0x%08x\n", n, pixels);
+        px = gles_fetch_texels(cpu, pixels, n, "glTexSubImage2D");
+        if (!px) {
             return -1;
         }
         glTexSubImage2D(target, level, xoff, yoff, w, h, fmt, type, px);
@@ -2021,6 +2068,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         g_autofree GLuint *ids = NULL;
         if (!n || !a[1]) {
             return 0;
+        }
+        if (n > GLES_MAX_NAMES) {
+            fprintf(stderr, "[gles] glDeleteTextures: n=%u exceeds cap\n", n);
+            return -1;
         }
         ids = g_new0(GLuint, n);
         if (cpu_memory_rw_debug(cpu, a[1], (uint8_t *)ids,
@@ -2256,7 +2307,12 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     case GLES_SLOT_GEN_RENDERBUFFERS:
     case GLES_SLOT_GEN_FRAMEBUFFERS: {   /* n, guest uint* */
         uint32_t n = a[0], i;
-        g_autofree uint32_t *ids = g_new0(uint32_t, n ? n : 1);
+        g_autofree uint32_t *ids = NULL;
+        if (n > GLES_MAX_NAMES) {
+            fprintf(stderr, "[gles] glGen*: n=%u exceeds cap\n", n);
+            return -1;
+        }
+        ids = g_new0(uint32_t, n ? n : 1);
         for (i = 0; i < n; i++) {
             ids[i] = ++gh.next_fbo_name;
         }

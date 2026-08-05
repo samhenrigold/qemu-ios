@@ -133,7 +133,10 @@ static void apple_spi_run(IPodTouchSPIState *s)
         apple_spi_update_xfer_tx(s);
         if (REG(s, R_RXCNT) > 0) {
             if (fifo8_is_full(&s->rx_fifo)) {
-                hw_error("Rx buffer overflow: %d\n", fifo8_num_free(&s->rx_fifo));
+                /* A full RX FIFO is a guest pacing error, not a QEMU bug: set
+                 * the overflow status bit and drop the byte instead of
+                 * aborting the whole process (the abort used to shadow this
+                 * recovery, which was already written). */
                 qemu_log_mask(LOG_GUEST_ERROR, "%s: rx overflow\n", __func__);
                 REG(s, R_STATUS) |= R_STATUS_RXOVERFLOW;
             } else {
@@ -147,16 +150,10 @@ static void apple_spi_run(IPodTouchSPIState *s)
     // fetch the remaining bytes by sending sentinel bytes.
     while (!fifo8_is_full(&s->rx_fifo) && (REG(s, R_RXCNT) > 0) && (REG(s, R_CFG) & R_CFG_AGD)) {
         rx = ssi_transfer(s->spi, 0xff);
-        if (fifo8_is_full(&s->rx_fifo)) {
-            hw_error("Rx buffer overflow: %d\n", fifo8_num_free(&s->rx_fifo));
-            qemu_log_mask(LOG_GUEST_ERROR, "%s: rx overflow\n", __func__);
-            REG(s, R_STATUS) |= R_STATUS_RXOVERFLOW;
-            break;
-        } else {
-            fifo8_push(&s->rx_fifo, (uint8_t)rx);
-            REG(s, R_RXCNT)--;
-            apple_spi_update_xfer_rx(s);
-        }
+        /* The loop condition already guarantees the FIFO is not full here. */
+        fifo8_push(&s->rx_fifo, (uint8_t)rx);
+        REG(s, R_RXCNT)--;
+        apple_spi_update_xfer_rx(s);
     }
     if (REG(s, R_RXCNT) == 0 && REG(s, R_TXCNT) == 0) {
         REG(s, R_STATUS) |= R_STATUS_COMPLETE;
@@ -180,7 +177,8 @@ static uint64_t ipod_touch_spi_read(void *opaque, hwaddr addr, unsigned size)
             int word_size = apple_spi_word_size(s);
             uint32_t num = 0;
             if (fifo8_is_empty(&s->rx_fifo)) {
-                hw_error("Rx buffer underflow\n");
+                /* Reading RXDATA with an empty FIFO returns 0 rather than
+                 * aborting QEMU (a bare guest MMIO read could reach here). */
                 qemu_log_mask(LOG_GUEST_ERROR, "%s: rx underflow\n", __func__);
                 r = 0;
                 break;
@@ -244,7 +242,9 @@ static void ipod_touch_spi_write(void *opaque, hwaddr addr, uint64_t data, unsig
     case R_TXDATA ... R_TXDATA + 3: {
         int word_size = apple_spi_word_size(s);
         if (fifo8_is_full(&s->tx_fifo) || fifo8_num_free(&s->tx_fifo) < word_size) {
-            hw_error("Tx buffer overflow: %d\n", fifo8_num_free(&s->tx_fifo));
+            /* Drop the write instead of aborting when the guest overruns TX. */
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: tx overflow\n", __func__);
+            break;
         }
         fifo8_push_all(&s->tx_fifo, (uint8_t *)&r, word_size);
         break;

@@ -352,6 +352,17 @@ static void lcd_refresh_rotated(IPodTouchLCDState *lcd, DisplaySurface *surface,
     lcd->last_bright = bri;   /* keeps the duplicate-frame test in lcd_refresh honest */
     int sx, sy;
 
+    /*
+     * Same identity-conversion shortcut the unrotated path uses (see
+     * draw_line32_32 / lcd_line_is_copy): at full backlight into an x8r8g8b8
+     * surface the guest's BGRX pixel is already the destination pixel, so the
+     * per-pixel copy skips three LUT loads and the rgb_to_pixel32 call. This is
+     * the steady-state path for landscape games, which stay rotated the whole
+     * session, so it is not the "rare state" the comment above once assumed.
+     */
+    bool fast_copy = (bri == 255 &&
+                      surface_format(surface) == PIXMAN_x8r8g8b8);
+
     if (surface_width(surface) != dw || surface_height(surface) != dh) {
         return; /* resize has not landed yet; skip this frame */
     }
@@ -385,10 +396,16 @@ static void lcd_refresh_rotated(IPodTouchLCDState *lcd, DisplaySurface *surface,
             step = -4;
             break;
         }
-        for (sx = 0; sx < sw; sx++, s += 4, d += step) {
-            *(uint32_t *)d = rgb_to_pixel32(lcd_bright_lut[s[2]],
-                                            lcd_bright_lut[s[1]],
-                                            lcd_bright_lut[s[0]]);
+        if (fast_copy) {
+            for (sx = 0; sx < sw; sx++, s += 4, d += step) {
+                *(uint32_t *)d = *(const uint32_t *)s;
+            }
+        } else {
+            for (sx = 0; sx < sw; sx++, s += 4, d += step) {
+                *(uint32_t *)d = rgb_to_pixel32(lcd_bright_lut[s[2]],
+                                                lcd_bright_lut[s[1]],
+                                                lcd_bright_lut[s[0]]);
+            }
         }
     }
     dpy_gfx_update(lcd->con, 0, 0, dw, dh);
