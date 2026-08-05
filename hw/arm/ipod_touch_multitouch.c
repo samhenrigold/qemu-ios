@@ -16,6 +16,12 @@ QEMU_BUILD_BUG_ON(MT_FRAME_PREFIX_LEN + sizeof(MTFrameHeader) +
 static MTFrame *mt_build_frame(IPodTouchMultitouchState *s,
                                MTFingerState *fingers, uint32_t *out_len);
 
+/*
+ * The largest data_len the HBPP data header can encode, given that its two
+ * length bytes are uint8_t: ((0xff << 10) | (0xff << 2)) + 5.
+ */
+#define MT_HBPP_MAX_DATA_LEN (((0xffu << 10) | (0xffu << 2)) + 5)
+
 static bool mt_trace(void)
 {
     static int on = -1;
@@ -193,12 +199,12 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
          * out_buffer - MT_CMD_FRAME_READ clears it on handover - so freeing
          * here is safe.
          */
-        free(s->out_buffer);
-        free(s->in_buffer);
-        s->out_buffer = calloc(1, MT_BUFFER_SIZE);
+        g_free(s->out_buffer);
+        g_free(s->in_buffer);
+        s->out_buffer = g_malloc0(MT_BUFFER_SIZE);
         s->out_buffer[0] = value; // the response header
         s->buf_ind = 0;
-        s->in_buffer = calloc(1, MT_BUFFER_SIZE);
+        s->in_buffer = g_malloc0(MT_BUFFER_SIZE);
         s->in_buffer_size = MT_BUFFER_SIZE;
         s->in_buffer_ind = 0;
         
@@ -332,11 +338,11 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
                 if (every > 0 && s->next_frame &&
                     (s->frame_counter % every) == 0) {
                     MTT("EMPTY_TEST: dropping pending frame %d", s->frame_counter);
-                    free(s->next_frame);
+                    g_free(s->next_frame);
                     s->next_frame = NULL;
                 }
             }
-            free(s->out_buffer);
+            g_free(s->out_buffer);
             if (s->next_frame) {
                 s->out_buffer = (uint8_t *) s->next_frame;
                 s->buf_size = s->next_frame_len;
@@ -437,14 +443,27 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
          * guest then clocked out, terminating the command early and
          * re-parsing the tail as fresh commands. */
         uint32_t data_len = ((s->in_buffer[2] << 10) | (s->in_buffer[3] << 2)) + 5;
+
+        /*
+         * Two guest bytes sizing two host allocations. The ceiling is the most
+         * those two bytes can express, which is what the panel's own length
+         * encoding permits -- deliberately NOT something smaller. The driver
+         * downloads ~48 KB of panel firmware through this path and the largest
+         * legitimate chunk it uses has never been measured, so any tighter
+         * bound would be a guess that silently truncates a firmware packet and
+         * kills touch (the FMSS reg_num_pages mistake, in this file's terms).
+         * As written the clamp cannot fire today; it exists so the allocation
+         * stays bounded if the expression above ever widens.
+         */
+        data_len = IT_SIZE("multitouch", data_len, MT_HBPP_MAX_DATA_LEN);
+
         // extend the lengths of the in/out buffers
-        free(s->in_buffer);
-        s->in_buffer = malloc(data_len + 0x10);
+        g_free(s->in_buffer);
+        s->in_buffer = g_malloc0(data_len + 0x10);
         s->in_buffer_size = data_len + 0x10;
 
-        free(s->out_buffer);
-        s->out_buffer = malloc(data_len);
-        memset(s->out_buffer, 0, data_len);
+        g_free(s->out_buffer);
+        s->out_buffer = g_malloc0(data_len);
         s->buf_size = data_len;
         s->buf_ind = 0;
     }
@@ -574,7 +593,7 @@ static bool mt_const_fingerid(void)
 static MTFrame *mt_build_frame(IPodTouchMultitouchState *s,
                                MTFingerState *fingers, uint32_t *out_len)
 {
-    uint8_t *buf = calloc(1, MT_FRAME_ALLOC);
+    uint8_t *buf = g_malloc0(MT_FRAME_ALLOC);
     MTFrame *frame = (MTFrame *) buf;
     uint8_t *hdr = (uint8_t *) &frame->frame_packet.header;
     FingerData *fd = (FingerData *) (hdr + sizeof(MTFrameHeader));
@@ -829,7 +848,7 @@ static void mt_emit_frame(IPodTouchMultitouchState *s)
      * buffer per skipped report. It is never aliased into out_buffer without
      * being cleared, so freeing here is safe.
      */
-    free(s->next_frame);
+    g_free(s->next_frame);
     s->next_frame = mt_build_frame(s, s->fingers, &len);
     s->next_frame_len = len;
 
@@ -1063,7 +1082,7 @@ static void ipod_touch_multitouch_reset(DeviceState *dev)
     s->in_buffer_size = 0;
     memset(s->hbpp_atn_ack_response, 0, sizeof(s->hbpp_atn_ack_response));
 
-    free(s->next_frame);
+    g_free(s->next_frame);
     s->next_frame = NULL;
     s->next_frame_len = 0;
     s->frame_counter = 0;

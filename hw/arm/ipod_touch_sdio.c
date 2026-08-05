@@ -234,6 +234,12 @@ static void sdpcm_queue_frame(IPodTouchSDIOState *s, uint8_t *data, uint32_t len
 static void sdpcm_send(IPodTouchSDIOState *s, uint8_t channel,
                        const uint8_t *payload, uint32_t payload_len)
 {
+    /*
+     * payload_len needs no guard: every caller bounds it already. sdpcm_send_event
+     * passes a host-constant frame length, sdio_net_receive is capped at 1600
+     * bytes by its own size test, and sdpcm_handle_cdc clamps to CDC_MAX_PAYLOAD
+     * on a get and to the received frame length on a set.
+     */
     uint32_t len = SDPCM_HDRLEN + payload_len;
     uint8_t *buf = g_malloc0(len);
 
@@ -915,6 +921,15 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                 backplane_store(s, backplane_addr(s, addr), &byte, 1);
             }
             else {
+                /*
+                 * No IT_IDX here, and none on the sdiod_regs accesses above:
+                 * addr is (arg >> 9) & 0x1ffff, so the guest can express
+                 * 0..0x1ffff and both arrays are sized to cover exactly that
+                 * (registers[0x20000]; sdiod_regs[0x10000] indexed from
+                 * SDIOD_CORE_BASE == 0x10000). A clamp would be dead code, and
+                 * the bound that matters is the array declaration -- if either
+                 * is ever shrunk, these four sites need a real guard.
+                 */
                 s->registers[addr] = data;
                 if(addr == 0x2) { s->registers[0x3] = data; } // if we write to register 2, we also write the same result to register 3 (this is the enabled functions register)
             }
