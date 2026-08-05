@@ -42,6 +42,16 @@ typedef struct coreaudioVoiceOut {
     UInt32 audioDevicePropertyBufferFrameSize;
     AudioDeviceIOProcID ioprocid;
     bool enabled;
+    /*
+     * Channels the DEVICE actually runs, which is not always the number we
+     * asked it for. We request stereo, but a device is free to refuse: the
+     * Studio Display's speakers run 8 channels and keep running 8 after our
+     * set-format call. The IOProc buffer is then frameCount * dev_nchannels
+     * frames wide while our samples are 2 wide, so writing them contiguously
+     * lays every frame at the wrong stride and plays as garbage. Recorded here
+     * so the IOProc can scatter into the device's layout instead.
+     */
+    UInt32 dev_nchannels;
 } coreaudioVoiceOut;
 
 static const AudioObjectPropertyAddress voice_addr = {
@@ -479,7 +489,8 @@ static OSStatus audioDeviceIOProc(
      * Silence is the honest thing to play when there is nothing to play.
      */
     if (pending_frames < frameCount) {
-        memset(out, 0, frameCount * hw->info.bytes_per_frame);
+        memset(out, 0, frameCount * core->dev_nchannels *
+                       (hw->info.bytes_per_frame / hw->info.nchannels));
         if (ca_tap.pcm) {
             size_t n = frameCount * hw->info.bytes_per_frame;
             ca_tap.calls++;
@@ -503,19 +514,66 @@ static OSStatus audioDeviceIOProc(
         ca_tap.calls++;
         ca_tap.frames_played += frameCount;
     }
-    while (len) {
-        size_t write_len, start;
 
-        start = audio_ring_posb(hw->pos_emul, hw->pending_emul, hw->size_emul);
-        assert(start < hw->size_emul);
+    if (core->dev_nchannels != hw->info.nchannels) {
+        /*
+         * The device runs a different channel count than we produce, so the
+         * samples cannot simply be poured in: each of our frames occupies one
+         * device frame, of which we fill the leading channels and leave the
+         * rest silent. Zero first, so any channel we do not drive (and any
+         * frame we run short on) is silence rather than whatever the device
+         * held.
+         */
+        const unsigned ssz = hw->info.bytes_per_frame / hw->info.nchannels;
+        const unsigned scpy = MIN(core->dev_nchannels, hw->info.nchannels);
+        uint8_t *dst = out;
+        size_t frames_done = 0;
 
-        write_len = MIN(MIN(hw->pending_emul, len),
-                        hw->size_emul - start);
+        memset(out, 0, (size_t)frameCount * core->dev_nchannels * ssz);
 
-        memcpy(out, hw->buf_emul + start, write_len);
-        hw->pending_emul -= write_len;
-        len -= write_len;
-        out += write_len;
+        while (len && hw->pending_emul) {
+            size_t write_len, start, nframes, f;
+            const uint8_t *src;
+
+            start = audio_ring_posb(hw->pos_emul, hw->pending_emul,
+                                    hw->size_emul);
+            assert(start < hw->size_emul);
+
+            write_len = MIN(MIN(hw->pending_emul, len),
+                            hw->size_emul - start);
+            nframes = write_len / hw->info.bytes_per_frame;
+            src = hw->buf_emul + start;
+
+            for (f = 0; f < nframes; f++) {
+                memcpy(dst + (frames_done + f) * core->dev_nchannels * ssz,
+                       src + f * hw->info.bytes_per_frame,
+                       (size_t)scpy * ssz);
+            }
+
+            frames_done += nframes;
+            write_len = nframes * hw->info.bytes_per_frame;
+            if (!write_len) {
+                break;              /* partial frame: leave it for next time */
+            }
+            hw->pending_emul -= write_len;
+            len -= write_len;
+        }
+    } else {
+        while (len) {
+            size_t write_len, start;
+
+            start = audio_ring_posb(hw->pos_emul, hw->pending_emul,
+                                    hw->size_emul);
+            assert(start < hw->size_emul);
+
+            write_len = MIN(MIN(hw->pending_emul, len),
+                            hw->size_emul - start);
+
+            memcpy(out, hw->buf_emul + start, write_len);
+            hw->pending_emul -= write_len;
+            len -= write_len;
+            out += write_len;
+        }
     }
 
     if (ca_tap.pcm) {
@@ -565,6 +623,13 @@ static OSStatus init_out_device(coreaudioVoiceOut *core)
         .mFramesPerPacket = 1,
         .mSampleRate = core->hw.info.freq
     };
+
+    /*
+     * Assume the device runs what we produce until we have asked it; several
+     * paths below return early, and a zero here would make the IOProc scatter
+     * into nothing and play silence.
+     */
+    core->dev_nchannels = core->hw.info.nchannels;
 
     status = coreaudio_get_voice(&core->outputDeviceID);
     if (status != kAudioHardwareNoError) {
@@ -637,6 +702,40 @@ static OSStatus init_out_device(coreaudioVoiceOut *core)
                                    streamBasicDescription.mSampleRate);
         core->outputDeviceID = kAudioDeviceUnknown;
         return status;
+    }
+
+    /*
+     * Ask the device what it is ACTUALLY running, rather than assuming it took
+     * what we just asked for. Setting the stream format can succeed without
+     * giving us the channel count we requested -- a multi-channel output (the
+     * Studio Display's speakers report 8) stays multi-channel, and then the
+     * IOProc's buffer is dev_nchannels wide while our samples are 2 wide. The
+     * old code wrote stereo frames into it contiguously, so every frame landed
+     * at the wrong stride and the result was unintelligible garbage for any
+     * audio at all, guest-generated or not.
+     */
+    {
+        AudioStreamBasicDescription actual = { 0 };
+        UInt32 sz = sizeof(actual);
+        AudioObjectPropertyAddress addr = {
+            kAudioDevicePropertyStreamFormat,
+            kAudioDevicePropertyScopeOutput,
+            kAudioObjectPropertyElementMain
+        };
+        OSStatus s2 = AudioObjectGetPropertyData(core->outputDeviceID, &addr,
+                                                 0, NULL, &sz, &actual);
+
+        core->dev_nchannels = (s2 == kAudioHardwareNoError &&
+                               actual.mChannelsPerFrame)
+                              ? actual.mChannelsPerFrame
+                              : core->hw.info.nchannels;
+        if (core->dev_nchannels != core->hw.info.nchannels) {
+            dolog("device runs %u channels, we produce %u -- "
+                  "scattering into the first %u\n",
+                  (unsigned)core->dev_nchannels,
+                  (unsigned)core->hw.info.nchannels,
+                  (unsigned)MIN(core->dev_nchannels, core->hw.info.nchannels));
+        }
     }
 
     /*
