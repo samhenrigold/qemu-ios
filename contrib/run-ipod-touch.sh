@@ -71,6 +71,14 @@ SESSION="$F/apps/work/session.env"
 # before the process that claims it. Not worth a lockfile yet; if you ever see
 # two instances collide, that is this.
 pick_port() {
+    # In the app bundle this is ipod-helper, because a clean macOS has no
+    # python3 -- /usr/bin/python3 is a Command Line Tools shim that pops an
+    # install dialog. Run from a source tree the helper may not be built, and
+    # a developer machine has python3, so that path still works.
+    if [ -x "${IT_HELPER:-}" ]; then
+        "$IT_HELPER" pick-port "$1"
+        return
+    fi
     python3 - "$1" <<'PY'
 import socket, sys
 for p in (int(sys.argv[1]), 0):
@@ -107,7 +115,7 @@ ensure_usbmuxd() {
 
     USBMUXD_QEMU_ADDR="$QEMU_ADDR" USBMUXD_QEMU_DELAY=100 \
         "$muxd" -f -v -v -S "$SOCK" -P NONE \
-        -C "$root/run/conf" \
+        -C "${MUXD_CONF:-$root/run/conf}" \
         >"$F/apps/work/usbmuxd.log" 2>&1 &
     MUXD_PID=$!
     sleep 1
@@ -197,7 +205,18 @@ while [ $# -gt 0 ]; do
     # Everything needed to install and run third-party apps, in one flag: the
     # AppSync-patched image, the kernel gate, and USB. See apps/README.md.
     # Also starts usbmuxd -- see the ordering note at ensure_usbmuxd below.
-    --appsync)  NAND="$F/nand-appsync3"; OVL="$HERE/nandrw-appsync"
+    # NAND is only defaulted, not forced: the app stages whichever image it
+    # actually shipped (build-app.sh --nand) and exports NAND, and clobbering
+    # that pointed QEMU at a directory the app never unpacked.
+    --appsync)  NAND="${NAND:-$F/nand-appsync3}"
+                OVL="$HERE/nandrw-appsync"
+                # One overlay per base image, still. The name above is kept
+                # verbatim for the default so existing devices keep their apps
+                # and settings; anything else gets its own, because an overlay
+                # replayed onto a different base shadows blocks that mean
+                # something else there.
+                [ "$(basename "$NAND")" = "nand-appsync3" ] ||
+                    OVL="$HERE/nandrw-$(basename "$NAND")"
                 APPSYNC=1
                 export IT_BOOT_ARGS="amfi_allow_any_signature=1 cs_enforcement_disable=1"
                 export IT_BOOT_ARGS_DELAY_MS=1500

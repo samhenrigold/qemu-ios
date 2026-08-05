@@ -52,6 +52,15 @@ uint32_t curr_cflags(CPUState *cpu)
         cflags |= CF_NO_GOTO_TB | 1;
     } else if (qemu_loglevel_mask(CPU_LOG_TB_NOCHAIN)) {
         cflags |= CF_NO_GOTO_TB;
+        /*
+         * IT_PROF_STRICT: also suppress goto_ptr. The guest profiler samples in
+         * cpu_tb_exec(), which a block reached by goto_ptr never passes through,
+         * so without this a "nochain" profile still silently omits every
+         * indirectly-chained execution and over-weights exception entry points.
+         */
+        if (getenv("IT_PROF_STRICT")) {
+            cflags |= CF_NO_GOTO_PTR;
+        }
     }
 
     return cflags;

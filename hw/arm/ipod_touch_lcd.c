@@ -34,6 +34,56 @@ static int lcd_frametrace(void)
     return on;
 }
 
+/*
+ * The same caching for the two flags consulted from the MMIO handlers. Both
+ * sit on paths the guest hits constantly -- IT_LCD_READY guards registers this
+ * file's own comment describes as "polled thousands of times", and LCD_TRACE is
+ * read on every single register write -- and getenv() is a linear scan of
+ * environ each time, run synchronously on the vCPU thread. None of these are
+ * meant to be togglable mid-run.
+ */
+static int lcd_ready_hack(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_LCD_READY") ? 1 : 0;
+    }
+    return on;
+}
+
+static int lcd_trace(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("LCD_TRACE") ? 1 : 0;
+    }
+    return on;
+}
+
+
+/*
+ * IT_VSYNC_DIVISOR: deliver the panel's frame interrupt every Nth period.
+ *
+ * The panel signals 60 Hz because that is what the hardware did, but under an
+ * interpreter the guest may only manage one or two frames a second. It still
+ * takes all sixty interrupts and runs the whole compositing path for each,
+ * discovering only at the end that it is out of time -- so the great majority
+ * of that work is thrown away, and the frames it does finish are late. Asking
+ * for fewer frames it can actually complete may produce more of them.
+ */
+static int lcd_vsync_divisor(void)
+{
+    static int n = -1;
+    if (n < 0) {
+        const char *v = getenv("IT_VSYNC_DIVISOR");
+        n = v ? atoi(v) : 1;
+        if (n < 1) {
+            n = 1;
+        }
+    }
+    return n;
+}
+
 /* True while refresh_timer_tick is driving a frame out; see lcd_refresh(). */
 static bool lcd_in_vsync_present;
 
@@ -118,7 +168,7 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
              * It is a bring-up probe, not a model: once the specific bits are
              * known they should be implemented properly per register.
              */
-            if (getenv("IT_LCD_READY")) {
+            if (lcd_ready_hack()) {
                 return 0xffffffff;
             }
             qemu_log_mask(LOG_UNIMP, "%s: read invalid location 0x%08x.\n",
@@ -133,7 +183,7 @@ static void ipod_touch_lcd_write(void *opaque, hwaddr addr, uint64_t val, unsign
     IPodTouchLCDState *s = (IPodTouchLCDState *)opaque;
     // printf("%s: writing 0x%08x to 0x%08x\n", __func__, val, addr);
 
-    if (getenv("LCD_TRACE")) {
+    if (lcd_trace()) {
         fprintf(stderr, "[LCD] wr [0x%04x] <- 0x%08x\n", (unsigned)addr, (unsigned)val);
     }
 
@@ -167,7 +217,7 @@ static void ipod_touch_lcd_write(void *opaque, hwaddr addr, uint64_t val, unsign
 void lcd_changebrightness(int brightness)
 {
     lcd_brightness = brightness & 0xFF;
-    if (getenv("LCD_TRACE")) {
+    if (lcd_trace()) {
         fprintf(stderr, "[LCD] brightness <- %d\n", lcd_brightness);
     }
 }
@@ -217,11 +267,35 @@ void it_display_set_orientation(uint32_t orientation)
     }
     if (rot != it_display_rotation_req) {
         it_display_rotation_req = rot;
-        if (getenv("LCD_TRACE")) {
+        if (lcd_trace()) {
             fprintf(stderr, "[LCD] orientation %u -> window rotation %d\n",
                     orientation, rot);
         }
     }
+}
+
+/*
+ * Brightness as a lookup table.
+ *
+ * The panel's backlight scales every channel of every pixel, which used to
+ * mean a getenv-backed accessor call and three float multiply-and-rounds per
+ * pixel -- 153,600 pixels a frame, up to ninety frames a second, on the
+ * iothread with the BQL held. The arithmetic only has 256 possible answers.
+ */
+static uint8_t lcd_bright_lut[256];
+static int lcd_bright_lut_for = -1;
+
+static void lcd_bright_lut_sync(int bri)
+{
+    int i;
+
+    if (lcd_bright_lut_for == bri) {
+        return;
+    }
+    for (i = 0; i < 256; i++) {
+        lcd_bright_lut[i] = (uint8_t)lround(i * (double)bri / 255.0);
+    }
+    lcd_bright_lut_for = bri;
 }
 
 static void lcd_invalidate(void *opaque)
@@ -230,22 +304,29 @@ static void lcd_invalidate(void *opaque)
     s->invalidate = 1;
 }
 
+/*
+ * Set for a frame whose conversion is the identity: rgb_to_pixel32() packs
+ * 0x00RRGGBB, which is byte-for-byte the guest's little-endian BGRX pixel, so
+ * at full backlight into an x8r8g8b8 surface the "conversion" is a copy with
+ * the ignored top byte zeroed. lcd_refresh() owns this; see there for why the
+ * surface format has to be checked and not assumed.
+ */
+static bool lcd_line_is_copy;
+
 static void draw_line32_32(void *opaque, uint8_t *d, const uint8_t *s, int width, int deststep)
 {
-    // IPodTouchLCDState *lcd = (IPodTouchLCDState *) opaque;
-    uint8_t r, g, b;
+    uint32_t *dp = (uint32_t *)d;
 
+    if (lcd_line_is_copy) {
+        memcpy(dp, s, (size_t)width * 4);
+        return;
+    }
+
+    /* The LUT is synchronised once per frame by lcd_refresh(). */
     do {
-        //v = lduw_le_p((void *) s);
-        //printf("V: %d\n", *s);
-        b = s[0];
-        g = s[1];
-        r = s[2];
-        // printf("R: %d, G: %d, B: %d, A: %d\n", r, g, b, lcd_brightness);
-        int bri = lcd_bright_effective();
-        ((uint32_t *) d)[0] = rgb_to_pixel32(round((float)r * ((float)bri / 255.0f)), round((float)g * ((float)bri / 255.0f)), round((float)b * ((float)bri / 255.0f)));
+        *dp++ = rgb_to_pixel32(lcd_bright_lut[s[2]], lcd_bright_lut[s[1]],
+                               lcd_bright_lut[s[0]]);
         s += 4;
-        d += 4;
     } while (-- width != 0);
 }
 
@@ -254,8 +335,8 @@ static void draw_line32_32(void *opaque, uint8_t *d, const uint8_t *s, int width
  *
  * framebuffer_update_display() can only walk source and destination with fixed
  * strides, which cannot express a transpose, so the rotated case gets its own
- * blit. The whole frame is redrawn every time (the portrait path already forces
- * invalidate on every refresh, so this costs no more than the status quo).
+ * blit -- and with it, no dirty tracking: the whole frame is redrawn every
+ * time. Rotation is a rare, deliberate state, so that is left alone.
  */
 static void lcd_refresh_rotated(IPodTouchLCDState *lcd, DisplaySurface *surface,
                                 int rot)
@@ -266,6 +347,9 @@ static void lcd_refresh_rotated(IPodTouchLCDState *lcd, DisplaySurface *surface,
     uint8_t *dst = surface_data(surface);
     int dstride = surface_stride(surface);
     int bri = lcd_bright_effective();
+
+    lcd_bright_lut_sync(bri);
+    lcd->last_bright = bri;   /* keeps the duplicate-frame test in lcd_refresh honest */
     int sx, sy;
 
     if (surface_width(surface) != dw || surface_height(surface) != dh) {
@@ -276,21 +360,35 @@ static void lcd_refresh_rotated(IPodTouchLCDState *lcd, DisplaySurface *surface,
     }
     cpu_physical_memory_read(lcd->scanout_base, lcd->rotbuf, sw * sh * 4);
 
+    /*
+     * A source row maps to a straight line in the destination for every one of
+     * the three rotations, so the transpose is a start address and a signed
+     * step per row -- the per-pixel switch it replaces was re-deciding the same
+     * thing 153,600 times a frame.
+     */
     for (sy = 0; sy < sh; sy++) {
         const uint8_t *s = lcd->rotbuf + (size_t)sy * sw * 4;
-        for (sx = 0; sx < sw; sx++, s += 4) {
-            int dx, dy;
-            uint8_t b = s[0], g = s[1], r = s[2];
+        uint8_t *d;
+        int step;
 
-            switch (rot) {
-            case 90:  dx = sh - 1 - sy; dy = sx;          break;
-            case 270: dx = sy;          dy = sw - 1 - sx; break;
-            default:  dx = sw - 1 - sx; dy = sh - 1 - sy; break;
-            }
-            ((uint32_t *)(dst + (size_t)dy * dstride))[dx] =
-                rgb_to_pixel32((r * bri + 127) / 255,
-                               (g * bri + 127) / 255,
-                               (b * bri + 127) / 255);
+        switch (rot) {
+        case 90:
+            d = dst + (size_t)(sh - 1 - sy) * 4;
+            step = dstride;
+            break;
+        case 270:
+            d = dst + (size_t)(sw - 1) * dstride + (size_t)sy * 4;
+            step = -dstride;
+            break;
+        default:
+            d = dst + (size_t)(sh - 1 - sy) * dstride + (size_t)(sw - 1) * 4;
+            step = -4;
+            break;
+        }
+        for (sx = 0; sx < sw; sx++, s += 4, d += step) {
+            *(uint32_t *)d = rgb_to_pixel32(lcd_bright_lut[s[2]],
+                                            lcd_bright_lut[s[1]],
+                                            lcd_bright_lut[s[0]]);
         }
     }
     dpy_gfx_update(lcd->con, 0, 0, dw, dh);
@@ -314,6 +412,29 @@ static void lcd_refresh(void *opaque)
      * free-running 30 ms display poll. The distinction is the whole point of
      * the change; a trace that cannot tell them apart cannot show it worked. */
     lcd_ft(lcd_in_vsync_present ? "vscan" : "scan", lcd->scanout_base);
+
+    /*
+     * The frame interrupt already presents every frame at the panel's own
+     * 60 Hz. QEMU's display poll then asks for a second conversion of a frame
+     * the window has already been shown -- about 33 of them a second, none of
+     * which can contain anything the vsync push did not already draw.
+     *
+     * Gated on the push having actually run recently rather than on "a UI is
+     * attached": with -display none nothing else ever draws, and a screendump
+     * arriving through this same path must still be able to force a frame.
+     * The frame is only a duplicate if nothing outside guest memory has changed
+     * either -- Cmd+C re-renders at full exposure through exactly this call and
+     * would otherwise copy the dimmed frame the panel last presented.
+     */
+    if (!lcd_in_vsync_present && !lcd->invalidate &&
+        lcd->rotation == it_display_rotation_req &&
+        lcd_bright_effective() == lcd->last_bright &&
+        lcd->last_present_ns &&
+        qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - lcd->last_present_ns <
+            2 * LCD_VSYNC_PERIOD_NS) {
+        lcd_ft("scanskip", lcd->scanout_base);
+        return;
+    }
 
     /*
      * Pick up a pending orientation change. The console resize has to happen
@@ -343,26 +464,54 @@ static void lcd_refresh(void *opaque)
                    (uint32_t)((qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t)/1000));
         }
         lcd->invalidate = 0;
+        if (lcd_in_vsync_present) {
+            lcd->last_present_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+        }
         return;
     }
 
     int64_t t_blit = lcd_frametrace() ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
+    int bri = lcd_bright_effective();
 
     dest_width = 4;
     draw_line = draw_line32_32;
 
     /* Resolution */
     first = last = 0;
-    width = 320;
-    height = 480;
-    lcd->invalidate = 1;
+    width = LCD_FB_WIDTH;
+    height = LCD_FB_HEIGHT;
 
     src_width =  4 * width;
     linesize = surface_stride(surface);
 
-    if(lcd->invalidate) {
-        framebuffer_update_memory_section(&lcd->fbsection, lcd->sysmem, lcd->scanout_base, height, 4 * width);
+    /*
+     * Only the lines the guest wrote since the last frame are converted, so
+     * every way the frame can change without a guest write has to force a full
+     * one instead. A flip installs a buffer whose contents this surface has
+     * never been diffed against; a new surface starts blank; and the backlight
+     * rescales every pixel from the same memory. fbsection also caches a host
+     * pointer, so it has to be rebuilt on a flip either way.
+     */
+    if (lcd->scanout_base != lcd->fbsection_base || !lcd->fbsection.mr) {
+        framebuffer_update_memory_section(&lcd->fbsection, lcd->sysmem,
+                                          lcd->scanout_base, height, src_width);
+        lcd->fbsection_base = lcd->scanout_base;
+        lcd->invalidate = 1;
     }
+    if (lcd->last_surface != surface) {
+        lcd->last_surface = surface;
+        lcd->invalidate = 1;
+    }
+    if (lcd->last_bright != bri) {
+        lcd->last_bright = bri;
+        lcd->invalidate = 1;
+    }
+    lcd_bright_lut_sync(bri);
+
+    /* See draw_line32_32(). x8r8g8b8 is what qemu_default_pixman_format() hands
+     * out here, but a frontend is free to ask for something else. */
+    lcd_line_is_copy = (bri == 255 &&
+                        surface_format(surface) == PIXMAN_x8r8g8b8);
 
     framebuffer_update_display(surface, &lcd->fbsection,
                                width, height,
@@ -376,10 +525,16 @@ static void lcd_refresh(void *opaque)
         dpy_gfx_update(lcd->con, 0, first, width, last - first + 1);
     }
     if (lcd_frametrace()) {
-        lcd_ft("blit", (uint32_t)((qemu_clock_get_ns(QEMU_CLOCK_REALTIME)
-                                   - t_blit)/1000));
+        /* "blit" converted lines, "still" found the scanout buffer untouched:
+         * the two have to be distinguishable to count conversions per second. */
+        lcd_ft(first >= 0 ? "blit" : "still",
+               (uint32_t)((qemu_clock_get_ns(QEMU_CLOCK_REALTIME)
+                           - t_blit)/1000));
     }
     lcd->invalidate = 0;
+    if (lcd_in_vsync_present) {
+        lcd->last_present_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    }
 }
 
 static const MemoryRegionOps lcd_ops = {
@@ -620,12 +775,12 @@ static void refresh_timer_tick(void *opaque)
     /* IT_LCD_VSYNC_LEGACY restores the old re-arm-from-now behaviour, so the
      * two can be A/B'd from one binary. Bisecting only. */
     if (lcd_vsync_legacy()) {
-        s->next_vsync = now + LCD_VSYNC_PERIOD_NS;
+        s->next_vsync = now + LCD_VSYNC_PERIOD_NS * lcd_vsync_divisor();
         timer_mod(s->refresh_timer, s->next_vsync);
         return;
     }
 
-    s->next_vsync += LCD_VSYNC_PERIOD_NS;
+    s->next_vsync += LCD_VSYNC_PERIOD_NS * lcd_vsync_divisor();
     if (s->next_vsync <= now) {
         /*
          * More than a whole frame behind -- the host was descheduled, or the
@@ -633,7 +788,7 @@ static void refresh_timer_tick(void *opaque)
          * hand the guest a burst of frame interrupts it cannot use, so
          * resynchronise to the current time and carry on.
          */
-        s->next_vsync = now + LCD_VSYNC_PERIOD_NS;
+        s->next_vsync = now + LCD_VSYNC_PERIOD_NS * lcd_vsync_divisor();
     }
     timer_mod(s->refresh_timer, s->next_vsync);
 }
@@ -660,6 +815,10 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
     s->w1_display_depth_info = 0;
     s->invalidate = 1;
     memset(&s->fbsection, 0, sizeof(s->fbsection));
+    s->fbsection_base = 0;
+    s->last_surface = NULL;
+    s->last_bright = -1;
+    s->last_present_ns = 0;
     /*
      * The device comes up portrait. it_display_rotation_req is file-scope and
      * survived reset, so a reboot taken in landscape inherited the previous
@@ -671,7 +830,7 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
      */
     it_display_rotation_req = 0;
     s->next_vsync = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + LCD_VSYNC_PERIOD_NS;
-    if (getenv("LCD_TRACE")) {
+    if (lcd_trace()) {
         fprintf(stderr, "[LCD] ==== reset ====\n");
     }
 }
@@ -724,6 +883,12 @@ static int ipod_touch_lcd_post_load(void *opaque, int version_id)
 
     memset(&s->fbsection, 0, sizeof(s->fbsection));
     s->invalidate = 1;
+    s->fbsection_base = 0;
+    s->last_surface = NULL;
+    s->last_bright = -1;
+    /* ...and let the first refresh after the restore through, rather than
+     * having it dropped as a duplicate of a frame from before the snapshot. */
+    s->last_present_ns = 0;
     /* scanout_base is re-latched by the next frame interrupt anyway, but a
      * repaint can be asked for before that and would otherwise draw black. */
     s->scanout_base = s->w1_framebuffer_base;

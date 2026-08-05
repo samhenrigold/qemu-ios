@@ -27,6 +27,7 @@
 #include "semihosting/semihost.h"
 #include "cpregs.h"
 #include "exec/helper-proto.h"
+#include "it-hle.h"
 
 #define HELPER_H "helper.h"
 #include "exec/helper-info.c.inc"
@@ -7816,6 +7817,30 @@ static void arm_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     insn = arm_ldl_code(env, &dc->base, pc, dc->sctlr_b);
     dc->insn = insn;
     dc->base.pc_next = pc + 4;
+
+    /*
+     * Guest framework hoisting. If this address is the entry point of a
+     * function the host implements, either count the call and carry on, or
+     * perform it host-side and return to the caller without translating a
+     * single instruction of the guest's body. See target/arm/tcg/it-hle.c for
+     * why the interception lives here rather than in the guest image.
+     */
+    if (unlikely(it_hle_active())) {
+        switch (it_hle_match(pc, insn)) {
+        case IT_HLE_COUNT:
+            gen_helper_it_hle_count(tcg_env, tcg_constant_i32(pc));
+            break;
+        case IT_HLE_HOIST:
+            gen_helper_it_hle_hoist(tcg_env, tcg_constant_i32(pc));
+            /* The helper wrote r15 and the T bit; leave as if this were a
+             * `bx lr`, which is exactly what it stands in for. */
+            dc->base.is_jmp = DISAS_JUMP;
+            return;
+        default:
+            break;
+        }
+    }
+
     disas_arm_insn(dc, insn);
 
     arm_post_translate_insn(dc);

@@ -94,7 +94,7 @@ bool in_code_gen_buffer(const void *p)
     return (size_t)(p - region.start_aligned) <= region.total_size;
 }
 
-#ifndef CONFIG_TCG_INTERPRETER
+#if !defined(CONFIG_TCG_INTERPRETER) && !defined(CONFIG_TCG_THREADED_INTERPRETER)
 static int host_prot_read_exec(void)
 {
 #if defined(CONFIG_LINUX) && defined(HOST_AARCH64) && defined(PROT_BTI)
@@ -572,7 +572,7 @@ static int alloc_code_gen_buffer_anon(size_t size, int prot,
     return prot;
 }
 
-#ifndef CONFIG_TCG_INTERPRETER
+#if !defined(CONFIG_TCG_INTERPRETER) && !defined(CONFIG_TCG_THREADED_INTERPRETER)
 #ifdef CONFIG_POSIX
 #include "qemu/memfd.h"
 
@@ -687,11 +687,26 @@ static int alloc_code_gen_buffer_splitwx_vmremap(size_t size, Error **errp)
     int orig_prot = PROT_READ | PROT_WRITE;
 
 #if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
-    /*
-     * Under TXM the pages have to START executable: a plain RW mapping can
-     * never be promoted to RX afterwards, by us or by anyone.
-     */
     if (__builtin_available(iOS 26, visionOS 26, watchOS 26, tvOS 26, *)) {
+        /*
+         * Refuse early without a debugger. The mappings below would all
+         * SUCCEED -- measured on an A19: rx and rwx both map fine with
+         * CS_DEBUGGED unset -- and the guest would then die with
+         * EXC_BAD_ACCESS the first time it entered generated code, because
+         * under TXM only a debugger's write makes a region genuinely
+         * executable. Failing here turns that crash into a diagnosable error
+         * and lets the caller fall back to the interpreter.
+         */
+        if (!is_debugger_attached()) {
+            error_setg(errp, "jit needs an attached debugger on this OS "
+                             "(TXM only honours debugger-blessed code pages)");
+            return -1;
+        }
+
+        /*
+         * The pages have to START executable: under TXM a plain RW mapping
+         * can never be promoted to RX afterwards, by us or by anyone.
+         */
         orig_prot = PROT_READ | PROT_EXEC;
     }
 #endif
@@ -750,11 +765,11 @@ static int alloc_code_gen_buffer_splitwx_vmremap(size_t size, Error **errp)
     return PROT_READ | PROT_WRITE;
 }
 #endif /* CONFIG_DARWIN */
-#endif /* CONFIG_TCG_INTERPRETER */
+#endif /* !CONFIG_TCG_INTERPRETER && !CONFIG_TCG_THREADED_INTERPRETER */
 
 static int alloc_code_gen_buffer_splitwx(size_t size, Error **errp)
 {
-#ifndef CONFIG_TCG_INTERPRETER
+#if !defined(CONFIG_TCG_INTERPRETER) && !defined(CONFIG_TCG_THREADED_INTERPRETER)
 # ifdef CONFIG_DARWIN
     return alloc_code_gen_buffer_splitwx_vmremap(size, errp);
 # endif
@@ -794,7 +809,15 @@ static int alloc_code_gen_buffer(size_t size, int splitwx, Error **errp)
      */
     prot = PROT_NONE;
     flags = MAP_PRIVATE | MAP_ANONYMOUS;
-#ifdef CONFIG_DARWIN
+#if defined(CONFIG_TCG_INTERPRETER) || defined(CONFIG_TCG_THREADED_INTERPRETER)
+    /*
+     * The interpreter reads its translations, it never jumps into them, so
+     * this buffer wants no execute permission and no MAP_JIT. Asking anyway
+     * is fatal on iOS, which refuses MAP_JIT without a private entitlement --
+     * so the interpreter build, the one that needs no privileges at all,
+     * would fail to start for want of a privilege it never uses.
+     */
+#elif defined(CONFIG_DARWIN)
     /* Applicable to both iOS and macOS (Apple Silicon). */
     if (!splitwx) {
         flags |= MAP_JIT;
@@ -900,7 +923,7 @@ void tcg_region_init(size_t tb_size, int splitwx, unsigned max_cpus)
      * Work with the page protections set up with the initial mapping.
      */
     need_prot = PROT_READ | PROT_WRITE;
-#ifndef CONFIG_TCG_INTERPRETER
+#if !defined(CONFIG_TCG_INTERPRETER) && !defined(CONFIG_TCG_THREADED_INTERPRETER)
     if (tcg_splitwx_diff == 0) {
         need_prot |= host_prot_read_exec();
     }

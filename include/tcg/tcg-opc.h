@@ -40,7 +40,11 @@ DEF(mb, 0, 0, 1, TCG_OPF_NOT_PRESENT)
 DEF(mov_i32, 1, 1, 0, TCG_OPF_NOT_PRESENT)
 DEF(setcond_i32, 1, 2, 1, 0)
 DEF(negsetcond_i32, 1, 2, 1, 0)
+#if defined(CONFIG_TCG_THREADED_INTERPRETER)
+DEF(movcond_i32, 1, 4, 1, TCG_OPF_NOT_PRESENT)
+#else
 DEF(movcond_i32, 1, 4, 1, 0)
+#endif
 /* load/store */
 DEF(ld8u_i32, 1, 1, 1, 0)
 DEF(ld8s_i32, 1, 1, 1, 0)
@@ -105,7 +109,11 @@ DEF(ctpop_i32, 1, 1, 0, 0)
 DEF(mov_i64, 1, 1, 0, TCG_OPF_NOT_PRESENT)
 DEF(setcond_i64, 1, 2, 1, 0)
 DEF(negsetcond_i64, 1, 2, 1, 0)
+#if defined(CONFIG_TCG_THREADED_INTERPRETER)
+DEF(movcond_i64, 1, 4, 1, TCG_OPF_NOT_PRESENT)
+#else
 DEF(movcond_i64, 1, 4, 1, 0)
+#endif
 /* load/store */
 DEF(ld8u_i64, 1, 1, 1, 0)
 DEF(ld8s_i64, 1, 1, 1, 0)
@@ -183,7 +191,11 @@ DEF(insn_start, 0, 0, DATA64_ARGS, TCG_OPF_NOT_PRESENT)
 
 DEF(exit_tb, 0, 0, 1, TCG_OPF_BB_EXIT | TCG_OPF_BB_END | TCG_OPF_NOT_PRESENT)
 DEF(goto_tb, 0, 0, 1, TCG_OPF_BB_EXIT | TCG_OPF_BB_END | TCG_OPF_NOT_PRESENT)
+#if defined(CONFIG_TCG_THREADED_INTERPRETER)
+DEF(goto_ptr, 0, 1, 0, TCG_OPF_BB_EXIT | TCG_OPF_BB_END | TCG_OPF_NOT_PRESENT)
+#else
 DEF(goto_ptr, 0, 1, 0, TCG_OPF_BB_EXIT | TCG_OPF_BB_END)
+#endif
 
 DEF(plugin_cb, 0, 0, 1, TCG_OPF_NOT_PRESENT)
 DEF(plugin_mem_cb, 0, 1, 1, TCG_OPF_NOT_PRESENT)

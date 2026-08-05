@@ -40,7 +40,10 @@ if [ "$want" != "$have" ]; then
     # Unpacked over the top, never deleting first: the NAND overlay with the
     # user's apps and settings lives in this same directory under ios3/, and an
     # app update must not take it away.
-    if ! python3 "$RES/tools/nandpack.py" unpack \
+    # ipod-helper, NOT python3: a clean macOS has no python3 (see
+    # ipod-helper.c), and this is the first thing the app does, so a python
+    # dependency here is a launch failure rather than a missing feature.
+    if ! "${IT_HELPER:-$RES/tools/ipod-helper}" nand-unpack \
             "$RES/device/nand.itnand" "$STATE/$NAND_NAME"; then
         osascript -e 'display alert "iPod touch" message "The device images could not be unpacked. There may not be enough disk space -- about 1 GB is needed." as critical' >/dev/null 2>&1
         exit 1
@@ -48,6 +51,18 @@ if [ "$want" != "$have" ]; then
     echo "$want" >"$VERSION_FILE"
 fi
 export NAND="$STATE/$NAND_NAME"
+
+# The guest-side binaries (MBX GL engine replacement, home-screen placeholder).
+# They ship packed because they are armv6 Mach-O and the notary service rejects
+# those; see build-app.sh. Unpacked every launch -- it is 300 KB and takes
+# milliseconds, and that way a repaired binary in an app update always wins over
+# whatever an earlier version left here.
+if [ -f "$RES/device/tools.itblob" ]; then
+    if "${IT_HELPER:-$RES/tools/ipod-helper}" blob-unpack \
+            "$RES/device/tools.itblob" "$STATE/guest-tools"; then
+        export IT_GUEST_TOOLS="$STATE/guest-tools"
+    fi
+fi
 
 # Everything on. Someone who double-clicked an app expects a working iPod, not
 # a set of flags to discover: --appsync is USB (Install App..., Open Terminal)

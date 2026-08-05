@@ -437,6 +437,134 @@ static vaddr log_pc(CPUState *cpu, const TranslationBlock *tb)
  * TCG is not considered a security-sensitive part of QEMU so this does not
  * affect the impact of CFI in environment with high security requirements
  */
+
+/*
+ * IT_GUEST_PROF: where the guest actually spends its time.
+ *
+ * Host profilers answer "which emulator function is hot", which for an
+ * interpreter is always the dispatch loop -- true and useless. What decides
+ * what is worth high-level-emulating is which GUEST code is executing, and
+ * nothing else in the tree can see that.
+ *
+ * Sampled one execution in IT_GUEST_PROF_EVERY (default 4096) rather than
+ * counted, so the cost is a decrement and a predictable branch on the hot path.
+ * Blocks are bucketed by start PC; dump with qc_guest_prof_dump().
+ */
+/*
+ * IT_VCPU_ACCT: where the vCPU thread's WALL time goes, and how much guest
+ * work it got done with it.
+ *
+ * The guest profiler above answers "which guest code runs"; this answers a
+ * different and, when the emulator is slow for no visible reason, more
+ * important question: is the vCPU thread actually executing? An engine that is
+ * merely slow pins its thread at 100%. One that is blocked -- on the BQL, on a
+ * halt waiting for the next interrupt, on the main loop -- does not, and no
+ * amount of making the engine faster will help it.
+ *
+ * Counters are plain non-atomic adds on the vCPU thread. There is one vCPU
+ * here, so that is exact; on SMP they would race, which is acceptable for a
+ * measurement build.
+ */
+bool it_acct_on;
+uint64_t it_acct_insns;     /* guest instructions handed to the engine */
+uint64_t it_acct_blocks;    /* translation blocks entered */
+uint64_t it_acct_irqs;      /* interrupts actually delivered to the guest */
+uint64_t it_acct_exits;     /* exits to the main loop (kicks) */
+
+static GHashTable *guest_prof;
+static uint64_t guest_prof_samples;
+static uint64_t guest_prof_next_dump;
+static uint64_t guest_prof_dump_interval;
+static int guest_prof_every = -1;
+
+static void qc_guest_prof_dump(void);
+
+static void guest_prof_sample(CPUState *cpu, const TranslationBlock *tb)
+{
+    uintptr_t n;
+    vaddr pc;
+
+    if (guest_prof_every < 0) {
+        const char *v = getenv("IT_GUEST_PROF");
+        const char *e = getenv("IT_GUEST_PROF_EVERY");
+        guest_prof_every = v ? (e ? atoi(e) : 4096) : 0;
+        if (guest_prof_every > 0) {
+            guest_prof = g_hash_table_new(g_direct_hash, g_direct_equal);
+            /* SIGUSR1 dumps mid-run, so a long session can be sampled
+             * without stopping it. SIGUSR2 is taken by the coroutine
+             * backend. */
+            guest_prof_dump_interval =
+                getenv("IT_GUEST_PROF_DUMP") ?
+                strtoull(getenv("IT_GUEST_PROF_DUMP"), NULL, 0) : 20000;
+            guest_prof_next_dump = guest_prof_dump_interval;
+        }
+    }
+    /*
+     * Dumped on a sample count rather than a signal: QEMU blocks signals on
+     * vCPU threads and routes them through its own handler, so a SIGUSR1 here
+     * never arrives.
+     */
+    if (guest_prof_next_dump && guest_prof_samples / guest_prof_every
+            >= guest_prof_next_dump) {
+        guest_prof_next_dump += guest_prof_dump_interval;
+        qc_guest_prof_dump();
+    }
+    if (guest_prof_every <= 0) {
+        return;
+    }
+    if (++guest_prof_samples % guest_prof_every) {
+        return;
+    }
+
+    /*
+     * Weighted by the block's guest instruction count, not by executions.
+     * Counting executions makes a three-instruction interrupt-toggle that runs
+     * constantly outrank a large loop doing the actual work -- which is
+     * exactly the wrong answer for deciding what to optimise.
+     */
+    pc = log_pc(cpu, tb);
+    n = (uintptr_t)g_hash_table_lookup(guest_prof, GUINT_TO_POINTER(pc));
+    g_hash_table_insert(guest_prof, GUINT_TO_POINTER(pc),
+                        (gpointer)(n + tb->icount));
+}
+
+static gint guest_prof_cmp(gconstpointer a, gconstpointer b, gpointer d)
+{
+    GHashTable *h = d;
+    uintptr_t ca = (uintptr_t)g_hash_table_lookup(h, a);
+    uintptr_t cb = (uintptr_t)g_hash_table_lookup(h, b);
+    return cb > ca ? 1 : (cb < ca ? -1 : 0);
+}
+
+static void qc_guest_prof_dump(void)
+{
+    GList *keys, *l;
+    uint64_t total = 0;
+    int shown = 0;
+    int top = getenv("IT_GUEST_PROF_TOP") ?
+        atoi(getenv("IT_GUEST_PROF_TOP")) : 40;
+
+    if (!guest_prof) {
+        return;
+    }
+    keys = g_hash_table_get_keys(guest_prof);
+    for (l = keys; l; l = l->next) {
+        total += (uintptr_t)g_hash_table_lookup(guest_prof, l->data);
+    }
+    keys = g_list_sort_with_data(keys, guest_prof_cmp, guest_prof);
+
+    fprintf(stderr, "[gprof] %" PRIu64 " weighted guest-instructions over %u "
+            "blocks (1 in %d executions)\n", total,
+            g_hash_table_size(guest_prof), guest_prof_every);
+    for (l = keys; l && shown < top; l = l->next, shown++) {
+        uintptr_t n = (uintptr_t)g_hash_table_lookup(guest_prof, l->data);
+        fprintf(stderr, "[gprof] 0x%08x %8lu %5.2f%%\n",
+                (unsigned)GPOINTER_TO_UINT(l->data), (unsigned long)n,
+                100.0 * n / total);
+    }
+    g_list_free(keys);
+}
+
 static inline TranslationBlock * QEMU_DISABLE_CFI
 cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
 {
@@ -447,6 +575,8 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
     if (qemu_loglevel_mask(CPU_LOG_TB_CPU | CPU_LOG_EXEC)) {
         log_cpu_exec(log_pc(cpu, itb), cpu, itb);
     }
+
+    guest_prof_sample(cpu, itb);
 
     qemu_thread_jit_execute();
     ret = tcg_qemu_tb_exec(cpu_env(cpu), tb_ptr);
@@ -849,6 +979,9 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
             const TCGCPUOps *tcg_ops = cpu->cc->tcg_ops;
 
             if (tcg_ops->cpu_exec_interrupt(cpu, interrupt_request)) {
+                if (unlikely(it_acct_on)) {
+                    it_acct_irqs++;
+                }
                 if (!tcg_ops->need_replay_interrupt ||
                     tcg_ops->need_replay_interrupt(interrupt_request)) {
                     replay_interrupt();
@@ -884,6 +1017,9 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
 
     /* Finally, check if we need to exit to the main loop.  */
     if (unlikely(qatomic_read(&cpu->exit_request)) || icount_exit_request(cpu)) {
+        if (unlikely(it_acct_on)) {
+            it_acct_exits++;
+        }
         qatomic_set(&cpu->exit_request, 0);
         if (cpu->exception_index == -1) {
             cpu->exception_index = EXCP_INTERRUPT;
@@ -1011,6 +1147,11 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
             /* See if we can patch the calling TB. */
             if (last_tb) {
                 tb_add_jump(last_tb, tb_exit, tb);
+            }
+
+            if (unlikely(it_acct_on)) {
+                it_acct_insns += tb->icount;
+                it_acct_blocks++;
             }
 
             cpu_loop_exec_tb(cpu, tb, pc, &last_tb, &tb_exit);

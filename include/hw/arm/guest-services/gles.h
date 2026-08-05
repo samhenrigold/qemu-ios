@@ -125,6 +125,23 @@ typedef struct __attribute__((packed)) {
 #define GLES_SLOT_CLEAR_DEPTHF          763  /* 0x0bfc */
 #define GLES_SLOT_FRUSTUMF              772  /* 0x0c20 */
 
+/*
+ * The remainder of Super Monkey Ball's import set (`nm -u` lists 49 gl*
+ * symbols; these seven were the only ones missing). Same provenance as above:
+ * read out of the 3.1.3 SDK trampolines, extractor re-validated against the
+ * known slots first. glLoadMatrixf and glTexSubImage2D are the load-bearing
+ * two -- a console-engine port sets matrices wholesale and streams textures
+ * into pre-allocated storage, and with both silently dropped every draw lands
+ * off-screen or samples an incomplete (white) texture.
+ */
+#define GLES_SLOT_ALPHA_FUNC            1    /* 0x0014 */
+#define GLES_SLOT_DELETE_TEXTURES       59   /* 0x00fc */
+#define GLES_SLOT_GET_INTEGERV          104  /* 0x01b0 */
+#define GLES_SLOT_LOAD_MATRIXF          159  /* 0x028c */
+#define GLES_SLOT_TEX_SUB_IMAGE_2D      307  /* 0x04dc */
+#define GLES_SLOT_BIND_BUFFER           642  /* 0x0a18 */
+#define GLES_SLOT_SCALEX                796  /* 0x0c80 */
+
 /* OES framebuffer-object entry points. EAGL uses these itself inside
  * -renderbufferStorage:fromDrawable:, so a real CAEAGLLayer client cannot get
  * off the ground without them -- they are not optional coverage. The non-OES

@@ -216,6 +216,51 @@ else
     echo "==> no usbmuxd at $MUXD -- Install App and Open Terminal will be unavailable" >&2
 fi
 
+# usbmuxd above is our own fork and speaks the real usbmuxd protocol, but
+# nothing in this tree implements a CLIENT of it -- Install App and Open
+# Terminal shell out to libimobiledevice's tools for that, and until now those
+# had to already be on the machine (Homebrew) for either feature to work. Bundle
+# them the same way as everything else: copy the binary, walk its real link
+# graph with bundle_libs, and let the sealing check below prove nothing still
+# points at Homebrew.
+IDEVICE_TOOLS=(ideviceinstaller iproxy ideviceinfo idevice_id)
+# Overridable, because Homebrew's binaries are built for whatever macOS its
+# bottle host used (26.0 today) and dyld ENFORCES minos on executables -- so
+# bundling them pins the whole app's floor there. Point this at a prefix built
+# to MACOS_MIN to get the floor back down; see qemu-ios-deps12.
+IDEVICE_PREFIX="${IDEVICE_PREFIX:-$(brew --prefix libimobiledevice 2>/dev/null)}"
+for t in "${IDEVICE_TOOLS[@]}"; do
+    src=""
+    for cand in "${IDEVICE_PREFIX:+$IDEVICE_PREFIX/bin/$t}" "/opt/homebrew/bin/$t" "/usr/local/bin/$t"; do
+        [ -n "$cand" ] && [ -x "$cand" ] && { src="$cand"; break; }
+    done
+    if [ -n "$src" ]; then
+        cp "$src" "$C/Resources/tools/$t"
+        bundle_libs "$C/Resources/tools/$t"
+        install_name_tool -add_rpath "@executable_path/../../Frameworks" \
+            "$C/Resources/tools/$t" 2>/dev/null || true
+    else
+        echo "==> no $t found (brew install libimobiledevice) -- Install App / Open Terminal will report it missing" >&2
+    fi
+done
+echo "==> bundled libimobiledevice tools"
+
+# ---------------------------------------------------------------- the helper
+#
+# Everything the scripts used to call python3 for. A clean macOS HAS NO PYTHON:
+# /usr/bin/python3 exists but is one of the ~78 hard links to the Xcode Command
+# Line Tools shim, and on a Mac that never had the developer tools it pops
+# "requires the command line developer tools" and exits non-zero. The first-run
+# NAND unpack was a python3 call, so the app did not lose an optional feature on
+# a clean Mac -- it failed to start. libz is in the base OS, so this adds no
+# dependency of its own.
+#
+# Compiled BEFORE the payload, because the payload uses it to pack the guest
+# binaries.
+echo "==> compiling helper"
+cc -O2 -Wall -mmacosx-version-min="$MACOS_MIN" -o "$C/Resources/tools/ipod-helper" \
+    "$HERE/ipod-helper.c" -lz
+
 # ---------------------------------------------------------------- the payload
 #
 # The NAND goes in as ONE opaque file, not as pages and not as a tarball. See
@@ -236,6 +281,30 @@ python3 "$HERE/nandpack.py" pack "$IMAGES/$NAND_NAME" "$C/Resources/device/nand.
 echo "$NAND_NAME" >"$C/Resources/device/nand.name"
 cp "$HERE/nandpack.py" "$C/Resources/tools/"
 
+# ------------------------------------------------- the guest-side binaries
+#
+# The MBX GL engine replacement and the home-screen placeholder tool. Both run
+# on the GUEST, so they are armv6 iOS Mach-O -- which the notary service walks
+# the bundle looking for and rejects as unsigned executables, and which cannot
+# be signed for macOS. Same problem as the NAND, same answer: one opaque
+# container with a custom magic (see ipod-helper.c).
+#
+# Without the GL engine, install-ipa.sh can only WARN, and a friend who
+# installs a game gets a device that wedges on first launch. That is worth
+# shipping the container for.
+GUEST_TOOLS=()
+[ -f "$TREE/contrib/it-gles/MBXGLEngine" ] &&
+    GUEST_TOOLS+=("MBXGLEngine=$TREE/contrib/it-gles/MBXGLEngine")
+[ -f "$TREE/contrib/it-instprogress/sbdlicon" ] &&
+    GUEST_TOOLS+=("sbdlicon=$TREE/contrib/it-instprogress/sbdlicon")
+if [ ${#GUEST_TOOLS[@]} -gt 0 ]; then
+    "$C/Resources/tools/ipod-helper" blob-pack \
+        "$C/Resources/device/tools.itblob" "${GUEST_TOOLS[@]}"
+else
+    echo "==> no guest tools built -- GL apps will WEDGE the device." >&2
+    echo "    build them with contrib/it-gles/build.sh and contrib/it-instprogress/build.sh" >&2
+fi
+
 # Stamped so an updated app re-expands instead of running on the old images,
 # which is a failure nobody would think to look for.
 shasum -a 256 "$C/Resources/device/nand.itnand" | cut -c1-16 >"$C/Resources/device.version"
@@ -254,6 +323,7 @@ chmod 755 "$C/Resources/tools/"*.sh
 # command line still boot the device through exactly one set of settings.
 echo "==> compiling launcher"
 cc -O2 -Wall -mmacosx-version-min="$MACOS_MIN" -o "$C/MacOS/iPod touch" "$HERE/launcher.c"
+
 cp "$HERE/stage-and-run.sh" "$C/Resources/tools/"
 chmod 755 "$C/Resources/tools/stage-and-run.sh"
 
@@ -318,7 +388,10 @@ minos_of() {
 
 FLOOR="0"
 FLOOR_SETTERS=""
-for bin in "$C/MacOS/iPod touch" "$C/MacOS/qemu-system-arm" "$C/Resources/tools/usbmuxd"; do
+FLOOR_BINS=("$C/MacOS/iPod touch" "$C/MacOS/qemu-system-arm" "$C/Resources/tools/usbmuxd"
+            "$C/Resources/tools/ipod-helper")
+for t in "${IDEVICE_TOOLS[@]}"; do FLOOR_BINS+=("$C/Resources/tools/$t"); done
+for bin in "${FLOOR_BINS[@]}"; do
     [ -e "$bin" ] || continue
     v="$(minos_of "$bin")"
     [ -n "$v" ] || continue
@@ -332,10 +405,13 @@ done
 echo "    floor is macOS $FLOOR, set by:$FLOOR_SETTERS"
 plutil -replace LSMinimumSystemVersion -string "$FLOOR" "$C/Info.plist"
 
-# Every one of those three is ours and is meant to be built to MACOS_MIN, so a
-# higher floor is a misconfigured build rather than a real constraint: it means
-# something got compiled against the host's default target and will refuse to
-# launch on any Mac older than whatever this one happens to be running.
+# The launcher, emulator and usbmuxd are ours and meant to be built to
+# MACOS_MIN, so if one of those holds the floor up it is a misconfigured build:
+# something got compiled against the host's default target. The bundled
+# libimobiledevice tools are Homebrew's, built to whatever target Homebrew's
+# bottle host used -- if one of THOSE holds the floor up instead, it is a real
+# constraint (Install App / Open Terminal specifically would refuse to launch
+# below it), not a build mistake, and rebuilding this tree changes nothing.
 if [ "$FLOOR" != "$MACOS_MIN" ]; then
     echo "    NOTE:$FLOOR_SETTERS holds the floor at $FLOOR, not $MACOS_MIN." >&2
     echo "          Rebuild with MACOSX_DEPLOYMENT_TARGET=$MACOS_MIN to lower it." >&2
@@ -435,6 +511,12 @@ for f in "$C/Frameworks/"*.dylib; do
 done
 [ -e "$C/Resources/tools/usbmuxd" ] && \
     codesign "${SIGN_ARGS[@]}" "$C/Resources/tools/usbmuxd" >/dev/null 2>&1
+codesign "${SIGN_ARGS[@]}" "$C/Resources/tools/ipod-helper" >/dev/null 2>&1 ||
+    die "could not sign ipod-helper"
+for t in "${IDEVICE_TOOLS[@]}"; do
+    [ -e "$C/Resources/tools/$t" ] && \
+        { codesign "${SIGN_ARGS[@]}" "$C/Resources/tools/$t" >/dev/null 2>&1 || die "could not sign $t"; }
+done
 codesign "${SIGN_ARGS[@]}" "$C/MacOS/qemu-system-arm" >/dev/null 2>&1 || die "could not sign the emulator"
 codesign "${SIGN_ARGS[@]}" "$APP" >/dev/null 2>&1 || die "could not sign the bundle"
 codesign --verify --strict "$APP" || die "the signature does not verify"

@@ -428,6 +428,7 @@ static void sdio_scan_complete(void *opaque)
  */
 static void sdio_send_assoc_events(IPodTouchSDIOState *s)
 {
+    s->associated = true;
     sdpcm_send_event(s, WLC_E_AUTH, 0, 0);
     sdpcm_send_event(s, WLC_E_ASSOC, 0, 0);
     sdpcm_send_event(s, WLC_E_SET_SSID, 0, 0);
@@ -455,12 +456,52 @@ static void sdio_handle_set_ssid(IPodTouchSDIOState *s, const uint8_t *payload,
     /* A zero-length SSID is a disassociate request, not a join. */
     if (n == 0) {
         printf("[SDIO] WLC_SET_SSID with no SSID: leaving the network\n");
+        s->associated = false;
         sdpcm_send_event(s, WLC_E_LINK, 0, 0);
         return;
     }
 
     printf("[SDIO] WLC_SET_SSID '%s': associating\n", ssid);
     sdio_send_assoc_events(s);
+}
+
+/*
+ * Join without waiting to be asked. iOS only scans while the Wi-Fi pane is open
+ * or when it already knows a network, so a device that has never been taken
+ * through Settings sits with the radio up and never associates - no scan, no
+ * WLC_SET_SSID, no link, no DHCP. That is the state every fresh image and every
+ * app-shipped image is in, and there is no UI to tap on a headless run, so the
+ * model asserts the association itself. Set IT_WIFI_AUTOJOIN=0 to require a
+ * real driver-driven join instead; any other value is the delay in seconds.
+ */
+static void sdio_autojoin(void *opaque)
+{
+    IPodTouchSDIOState *s = (IPodTouchSDIOState *)opaque;
+
+    if (s->associated) {
+        return;
+    }
+    printf("[SDIO] no join requested: associating with '%s' anyway\n",
+           FAKE_SSID);
+    sdio_send_assoc_events(s);
+}
+
+static void sdio_arm_autojoin(IPodTouchSDIOState *s)
+{
+    const char *v = getenv("IT_WIFI_AUTOJOIN");
+    int delay = 10;
+
+    if (v && (!*v || *v == '0')) {
+        return;
+    }
+    if (s->associated || !s->join_timer) {
+        return;
+    }
+    if (v && atoi(v) > 0) {
+        delay = atoi(v);
+    }
+    timer_mod(s->join_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              (int64_t)delay * NANOSECONDS_PER_SECOND);
 }
 
 /*
@@ -593,6 +634,11 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
                              len > hdrlen ? len - hdrlen : 0);
     }
 
+    /* WLC_UP is the last thing initDongle does before the driver is usable,
+     * so it is the earliest sensible moment to start the auto-join clock. */
+    if (cmd == WLC_UP) {
+        sdio_arm_autojoin(s);
+    }
 }
 
 /*
@@ -1151,6 +1197,7 @@ static void ipod_touch_sdio_init(Object *obj)
 
     s->irq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, trigger_irq, s);
     s->scan_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sdio_scan_complete, s);
+    s->join_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sdio_autojoin, s);
 
     s->rx_fifo = g_queue_new();
 }

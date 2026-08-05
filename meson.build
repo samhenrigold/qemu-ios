@@ -53,6 +53,7 @@ bsd_oses = ['gnu/kfreebsd', 'freebsd', 'netbsd', 'openbsd', 'dragonfly', 'darwin
 supported_oses = ['windows', 'freebsd', 'netbsd', 'openbsd', 'darwin', 'sunos', 'linux']
 supported_cpus = ['ppc', 'ppc64', 's390x', 'riscv32', 'riscv64', 'x86', 'x86_64',
   'arm', 'aarch64', 'loongarch64', 'mips', 'mips64', 'sparc64']
+tcti_supported_cpus = ['aarch64']
 
 cpu = host_machine.cpu_family()
 
@@ -912,6 +913,13 @@ if get_option('tcg').allowed()
   endif
   if get_option('tcg_interpreter')
     tcg_arch = 'tci'
+  elif get_option('tcg_threaded_interpreter')
+    if cpu not in tcti_supported_cpus
+      error('Unsupported CPU @0@ for TCTI, try --enable-tcg-interpreter'.format(cpu))
+    else
+      warning('TCTI is extremely experimental and incomplete! Things might break!')
+      tcg_arch = '@0@-tcti'.format(cpu)
+    endif
   elif host_arch == 'x86_64'
     tcg_arch = 'i386'
   elif host_arch == 'ppc64'
@@ -1198,10 +1206,23 @@ cocoa = dependency('appleframeworks',
 # Host-side OpenGL for the iPod Touch's GLES high-level emulation. A legacy
 # CGL context is still a real fixed-function GL 2.1 on modern macOS, which is
 # what lets ES 1.1 entry points forward one-to-one with no shader translation.
-# iOS SDKs have no OpenGL.framework; there the machine builds with a stub
-# (gles-host-stub.c) and the guest's GLES HLE probe fails cleanly.
+# iOS SDKs have no OpenGL.framework -- they have OpenGLES.framework, which
+# still ships the full fixed-function ES 1.1 the guest speaks, so there the same
+# renderer builds against an EAGL context instead (gles-host-eagl.m). The two
+# dependencies are naturally exclusive: only iOS SDKs carry OpenGLES, only macOS
+# SDKs carry OpenGL. A host with neither falls back to gles-host-stub.c and the
+# guest's GLES HLE probe fails cleanly.
 host_opengl = dependency('appleframeworks', modules: 'OpenGL',
                          required: false)
+# IOSurface (and the CoreFoundation dictionary that configures one) is not
+# optional garnish here: it is the render target the iOS present path reads,
+# which is what keeps a tile-based GPU from being drained by a glReadPixels
+# every frame. gles-host.c falls back to that readback if any of it is missing
+# at RUNTIME, but the link needs all three.
+host_gles = dependency('appleframeworks',
+                       modules: ['OpenGLES', 'Foundation', 'IOSurface',
+                                 'CoreFoundation'],
+                       required: false)
 
 vmnet = dependency('appleframeworks', modules: 'vmnet', required: get_option('vmnet'))
 if vmnet.found() and not cc.has_header_symbol('vmnet/vmnet.h',
@@ -2534,6 +2555,7 @@ config_host_data.set('CONFIG_SOLARIS', host_os == 'sunos')
 if get_option('tcg').allowed()
   config_host_data.set('CONFIG_TCG', 1)
   config_host_data.set('CONFIG_TCG_INTERPRETER', tcg_arch == 'tci')
+  config_host_data.set('CONFIG_TCG_THREADED_INTERPRETER', tcg_arch.endswith('tcti'))
 endif
 config_host_data.set('CONFIG_TPM', have_tpm)
 config_host_data.set('CONFIG_TSAN', get_option('tsan'))
@@ -4670,6 +4692,8 @@ summary_info += {'TCG support':       config_all_accel.has_key('CONFIG_TCG')}
 if config_all_accel.has_key('CONFIG_TCG')
   if get_option('tcg_interpreter')
     summary_info += {'TCG backend':   'TCI (TCG with bytecode interpreter, slow)'}
+  elif get_option('tcg_threaded_interpreter')
+    summary_info += {'TCG backend':   'TCTI (TCG with threaded-dispatch interpreter, less slow)'}
   else
     summary_info += {'TCG backend':   'native (@0@)'.format(cpu)}
   endif

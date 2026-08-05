@@ -64,6 +64,19 @@ typedef struct IPodTouchFMSSState
     uint32_t packed_num_cs;
     uint32_t packed_pages_per_cs;
     GHashTable *erased_blocks; /* (cs << 32) | block for blocks erased in the overlay */
+
+    /*
+     * Which pages the overlay actually holds, so a read that the overlay does
+     * NOT have costs a hash lookup instead of a failed open().
+     *
+     * The overlay was consulted with fopen() on every single page read, on the
+     * vCPU thread. That is invisible on a clean device -- almost every probe
+     * misses -- but it is why a device with accumulated writes booted 2.5x
+     * slower than a fresh one: the base image is mmap'd and free to read,
+     * while every overlay probe was a syscall.
+     */
+    GHashTable *overlay_pages;
+    bool overlay_indexed;
     /* Allocation blocks the volume in the base image covers; 0 until read out
      * of the image's GPT on first use. See fmss_total_blocks(). */
     uint32_t total_blocks;

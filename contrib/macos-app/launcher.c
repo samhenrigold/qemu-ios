@@ -48,15 +48,33 @@ int main(int argc, char **argv)
     setenv("IPOD_FILES", state, 1);
     setenv_fmt("QEMU",            "%s/../MacOS/qemu-system-arm", res);
     setenv_fmt("MUXD",            "%s/tools/usbmuxd", res);
+    /*
+     * usbmuxd's config directory, which holds the lockdown pairing records.
+     * Without this the runner falls back to ~/Developer/usbmuxd-qemu/run/conf
+     * and silently creates that tree in the home directory of someone who has
+     * never heard of the project -- and puts device state outside Application
+     * Support, so "delete that folder to factory reset" stops being true.
+     */
+    setenv_fmt("MUXD_CONF", "%s/usbmuxd-conf", state);
     setenv_fmt("IT_INSTALL_IPA",  "%s/tools/install-ipa.sh", res);
     setenv_fmt("IT_SSH_TERMINAL", "%s/tools/it-ssh-terminal.sh", res);
     setenv_fmt("IT_APP_RESOURCES", "%s", res);
+    /*
+     * Everything the scripts would otherwise need python3 for. A clean macOS
+     * has none -- /usr/bin/python3 is a Command Line Tools shim that pops an
+     * install dialog -- and the first-run NAND unpack went through it, so
+     * without this the app cannot start on the machine it is meant for.
+     */
+    setenv_fmt("IT_HELPER", "%s/tools/ipod-helper", res);
 
     /*
-     * libimobiledevice's tools (iproxy, ideviceinstaller) are not bundled --
-     * they are a large dependency tree that only Install App... and Open
-     * Terminal need. Look for them where Homebrew puts them; both features
-     * report their own absence clearly if they are not there.
+     * libimobiledevice's tools (iproxy, ideviceinstaller, ideviceinfo,
+     * idevice_id) are bundled into Resources/tools by build-app.sh, so a
+     * fresh Mac needs nothing extra for Install App... or Open Terminal.
+     * The bundle directory comes first on PATH; the Homebrew locations
+     * after it are only a fallback for a build that skipped bundling them
+     * (no libimobiledevice on the build machine), and both features still
+     * report their own absence clearly if nothing resolves.
      */
     setenv_fmt("PATH", "%s/tools:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", res);
 

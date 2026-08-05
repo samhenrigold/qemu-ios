@@ -16,6 +16,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/main-loop.h"
+#include "qemu/timer.h"
 #include "block/aio.h"
 #include "ui/console.h"
 #include "ui/surface.h"
@@ -23,7 +24,16 @@
 #include "qapi/error.h"
 #include "hw/arm/ipod_touch_buttons.h"
 
+void gles_host_set_allowed(bool allowed);
+
 #include "qemu-ios-ui.h"
+
+#include <sys/resource.h>
+
+#include "qapi/qapi-commands-migration.h"
+#include "qapi/qapi-commands-misc.h"
+#include "migration/misc.h"
+#include "system/runstate.h"
 
 #define IOS_MAX_SLOTS 8
 
@@ -54,9 +64,69 @@ static struct {
     void *cb_opaque;
 
     struct touch_slot slots[INPUT_EVENT_SLOTS_MAX];
+
+    /* Set by a partial update, cleared when a whole frame is published. */
+    bool pending;
 } ios;
 
 /* --- frames out: QEMU thread ------------------------------------------- */
+
+/*
+ * Time to the first frame the guest has actually DRAWN.
+ *
+ * "First frame" on its own is worthless as a boot measurement: the panel
+ * publishes a blank surface the moment the console exists, which is a few
+ * milliseconds in and says nothing about the guest. The first frame with
+ * light in it is the earliest honest sign the guest is alive, and it is the
+ * only figure comparable between TCG backends.
+ *
+ * Sampled sparsely and only until it fires, so it costs nothing thereafter.
+ */
+static void ios_report_first_lit_frame(const uint8_t *bgra, int w, int h)
+{
+    static bool reported;
+    static int64_t first_capture_ns;
+    size_t pixels, lit = 0, i;
+
+    if (reported) {
+        return;
+    }
+    if (first_capture_ns == 0) {
+        first_capture_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    }
+
+    pixels = (size_t)w * h;
+    for (i = 0; i < pixels; i += 64) {
+        const uint8_t *p = bgra + i * 4;
+        if (p[0] > 24 || p[1] > 24 || p[2] > 24) {
+            lit++;
+        }
+    }
+
+    /* A handful of stray pixels is noise; a drawn screen is nothing like it. */
+    if (lit * 64 > pixels / 100) {
+        struct rusage ru;
+        double cpu = 0;
+
+        reported = true;
+
+        /*
+         * CPU time as well as wall time, because wall time cannot compare TCG
+         * backends on this workload: boot is mostly fixed timer and I/O waits,
+         * so a backend that burns half the cycles still finishes at about the
+         * same moment. CPU seconds for identical guest work is the honest
+         * measure of interpreter throughput.
+         */
+        if (getrusage(RUSAGE_SELF, &ru) == 0) {
+            cpu = ru.ru_utime.tv_sec + ru.ru_utime.tv_usec / 1e6
+                + ru.ru_stime.tv_sec + ru.ru_stime.tv_usec / 1e6;
+        }
+
+        fprintf(stderr, "[boot] first lit frame after %.1f s wall, %.1f s cpu\n",
+                (qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - first_capture_ns)
+                    / 1e9, cpu);
+    }
+}
 
 /*
  * Copy the surface rather than handing the app QEMU's pixels directly: the
@@ -106,31 +176,52 @@ static void ios_capture(DisplaySurface *surface)
     ios.serial++;
     qemu_mutex_unlock(&ios.frame_lock);
 
+    ios_report_first_lit_frame(dst, w, h);
+
     if (ios.cb) {
         ios.cb(ios.cb_opaque);
     }
 }
 
+/*
+ * Note what changed; do not publish yet.
+ *
+ * Now that the panel does proper dirty tracking, one guest frame arrives as
+ * SEVERAL partial updates. Publishing each one hands the app a frame caught
+ * mid-paint, which is visible as the screen wiping top-to-bottom instead of
+ * changing at once -- and costs a full-surface copy per fragment rather than
+ * per frame. Frames are published at the refresh boundary instead, where the
+ * picture is whole.
+ */
 static void ios_gfx_update(DisplayChangeListener *dcl,
                            int x, int y, int w, int h)
 {
-    DisplaySurface *surface = qemu_console_surface(dcl->con);
-
-    if (surface) {
-        ios_capture(surface);
-    }
+    ios.pending = true;
 }
 
 static void ios_gfx_switch(DisplayChangeListener *dcl, DisplaySurface *surface)
 {
+    /* A new surface replaces everything, so it is whole by definition. */
     if (surface) {
         ios_capture(surface);
+        ios.pending = false;
     }
 }
 
 static void ios_refresh(DisplayChangeListener *dcl)
 {
+    DisplaySurface *surface;
+
     graphic_hw_update(dcl->con);
+
+    if (!ios.pending) {
+        return;
+    }
+    surface = qemu_console_surface(dcl->con);
+    if (surface) {
+        ios_capture(surface);
+        ios.pending = false;
+    }
 }
 
 static const DisplayChangeListenerOps ios_dcl_ops = {
@@ -318,4 +409,97 @@ void qemu_ios_ui_button(int button, bool down)
     b->button = button;
     b->down = down;
     aio_bh_schedule_oneshot(qemu_get_aio_context(), ios_button_bh, b);
+}
+
+/* --- snapshots ---------------------------------------------------------- */
+
+/*
+ * Save the whole machine to a file, so the next launch can resume instead of
+ * spending half a minute booting.
+ *
+ * This machine has no block device, so the classic savevm/loadvm path is
+ * unavailable -- the migration stream to a `file:` URI is the equivalent, and
+ * restoring is just `-incoming file:...` on the next run (plus the autostart
+ * fix in qemu-ios-entry.c, or the machine comes back paused).
+ *
+ * The guest is stopped first: a snapshot taken while the vCPU is running would
+ * capture RAM that disagrees with itself.
+ */
+static void ios_snapshot_bh(void *opaque)
+{
+    char *path = opaque;
+    Error *err = NULL;
+    g_autofree char *uri = g_strdup_printf("file:%s", path);
+
+    qmp_stop(&err);
+    if (err) {
+        fprintf(stderr, "[snapshot] stop failed: %s\n", error_get_pretty(err));
+        error_free(err);
+        g_free(path);
+        return;
+    }
+
+    qmp_migrate(uri, false, NULL, false, false, false, false, &err);
+    if (err) {
+        fprintf(stderr, "[snapshot] save failed: %s\n", error_get_pretty(err));
+        error_free(err);
+    } else {
+        fprintf(stderr, "[snapshot] writing %s\n", path);
+    }
+    g_free(path);
+}
+
+void qemu_ios_snapshot_save(const char *path)
+{
+    if (!ios.attached) {
+        return;
+    }
+    /* Runs on the QEMU thread under the BQL, like every other command here. */
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), ios_snapshot_bh,
+                            g_strdup(path));
+}
+
+/*
+ * Whether the save has finished. The app has only a few seconds of background
+ * time, so it needs to know when the file is complete rather than guessing.
+ */
+bool qemu_ios_snapshot_done(void)
+{
+    return !migration_is_running();
+}
+
+/* --- foreground/background ---------------------------------------------- */
+
+/*
+ * iOS terminates an app that touches GL while it is not foreground, and the
+ * emulated CPU has no notion of app lifecycle -- it keeps executing guest code,
+ * including whatever GL the guest is in the middle of. The app tells us when
+ * that is no longer safe.
+ *
+ * Deliberately NOT scheduled through a bottom half: by the time a BH runs, the
+ * app may already have been backgrounded and the first illegal GL call made.
+ * The flag is a plain bool read on the vCPU thread; a stale read costs one
+ * rejected call, whereas being late costs the process.
+ */
+static void ios_resume_bh(void *opaque)
+{
+    /*
+     * Saving a snapshot stops the machine and leaves it stopped -- migration
+     * refuses to run from a live VM, and refuses a SECOND save from one it
+     * already paused ("Can't migrate the vm that was paused due to previous
+     * migration"). So coming back to the foreground has to restart it, or the
+     * guest is frozen from the first time the app was backgrounded onwards.
+     */
+    if (!runstate_is_running()) {
+        vm_start();
+    }
+}
+
+void qemu_ios_set_foreground(bool foreground)
+{
+    gles_host_set_allowed(foreground);
+
+    if (foreground && ios.attached) {
+        aio_bh_schedule_oneshot(qemu_get_aio_context(), ios_resume_bh, NULL);
+    }
 }

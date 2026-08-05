@@ -32,6 +32,24 @@ typedef struct IPodTouchLCDState
     int invalidate;
     uint8_t brightness;
     MemoryRegionSection fbsection;
+    /*
+     * What the surface currently on screen was drawn from. The blit only
+     * redraws the lines the guest wrote since the last frame, so anything that
+     * changes the meaning of "unchanged" without dirtying guest memory has to
+     * be noticed here and turned into a full repaint: a flip to a different
+     * scanout buffer, a new host surface, or a new backlight level (which
+     * rescales every pixel with no guest write behind it).
+     */
+    uint32_t fbsection_base;
+    void *last_surface;
+    int last_bright;
+    /*
+     * Host time of the last frame pushed by the panel's frame interrupt, in
+     * QEMU_CLOCK_REALTIME ns. QEMU's own display poll asks for a second
+     * conversion of a frame already on screen; that is dropped while this shows
+     * the vsync push is running. See lcd_refresh().
+     */
+    int64_t last_present_ns;
     qemu_irq irq;
     uint32_t lcd_con;
 

@@ -976,6 +976,8 @@ static int simple_ap_to_rw_prot(CPUARMState *env, ARMMMUIdx mmu_idx, int ap)
     return simple_ap_to_rw_prot_is_user(ap, regime_is_user(env, mmu_idx));
 }
 
+static bool warned_tiny_page;
+
 static bool get_phys_addr_v5(CPUARMState *env, S1Translate *ptw,
                              uint32_t address, MMUAccessType access_type,
                              GetPhysAddrResult *result, ARMMMUFaultInfo *fi)
@@ -1077,6 +1079,18 @@ static bool get_phys_addr_v5(CPUARMState *env, S1Translate *ptw,
             } else {
                 phys_addr = (desc & 0xfffffc00) | (address & 0x3ff);
                 result->f.lg_page_size = 10;
+                /*
+                 * A genuine ARMv5 "tiny" page. QEMU sizes every softmmu TLB
+                 * entry for the smallest page the CPU can map, so the mere
+                 * possibility of these costs a 32-bit ARM guest 4x its TLB
+                 * coverage. Shout if one ever actually appears -- for a guest
+                 * that never maps one, the pessimism is pure loss.
+                 */
+                if (!warned_tiny_page) {
+                    warned_tiny_page = true;
+                    fprintf(stderr, "[ptw] guest mapped a 1KB tiny page at "
+                            "0x%08x\n", (uint32_t)address);
+                }
             }
             ap = (desc >> 4) & 3;
             break;

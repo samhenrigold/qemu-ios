@@ -7,11 +7,17 @@
 # contrib/ios-app/qemu-ios-entry.c, which runs everything on the calling
 # thread. The app dlsyms qemu_ios_main and calls it on a background pthread.
 #
-#     make-dylib.sh device     # real iPhone/iPad
-#     make-dylib.sh sim        # iOS Simulator
+#     make-dylib.sh device            # real iPhone/iPad
+#     TCG=interp make-dylib.sh device # the standalone interpreter build
+#     TCG=tcti make-dylib.sh device   # the threaded interpreter build
+#     make-dylib.sh sim               # iOS Simulator
+#
+# The backend is baked into the dylib's name so the app can carry both and
+# choose at launch: only the JIT one needs a debugger.
 set -eu
 
 PLATFORM="${1:-device}"
+TCG="${TCG:-jit}"
 SRC="$(cd "$(dirname "$0")/../.." && pwd)"
 SYSROOTS="$HOME/Developer/qemu-ios-files/ios-sysroots"
 
@@ -33,7 +39,15 @@ sim)
     exit 2
     ;;
 esac
-OUT="$BUILD/libqemu-arm-softmmu.dylib"
+
+case "$TCG" in
+jit)    ;;
+interp) BUILD="$BUILD-interp" ;;
+tcti)   BUILD="$BUILD-tcti" ;;
+*)      echo "TCG must be jit, interp or tcti" >&2; exit 2 ;;
+esac
+LIBNAME="libqemu-arm-$TCG.dylib"
+OUT="$BUILD/$LIBNAME"
 
 cd "$BUILD"
 
@@ -72,7 +86,7 @@ for i, a in enumerate(argv):
 # an executable; a dylib must export our entry point too, so replace them.
 out = [a for a in out if not a.startswith("@")]
 out += ["-dynamiclib", "-o", "'"$OUT"'",
-        "-install_name", "@rpath/libqemu-arm-softmmu.dylib",
+        "-install_name", "@rpath/'"$LIBNAME"'",
         "-Wl,-exported_symbols_list,'"$BUILD"'/ios-exports.syms",
         "-Wl,-undefined,dynamic_lookup"]
 print(shlex.join(out))
@@ -87,6 +101,9 @@ _qemu_ios_ui_frame
 _qemu_ios_ui_frame_size
 _qemu_ios_ui_touch
 _qemu_ios_ui_button
+_qemu_ios_set_foreground
+_qemu_ios_snapshot_save
+_qemu_ios_snapshot_done
 SYMS
 
 sh ios-link-dylib.sh

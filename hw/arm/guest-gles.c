@@ -19,6 +19,15 @@
 #include "cpu.h"
 #include "hw/arm/guest-services/general.h"
 
+static bool gles_null_render(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_GLES_NULL") != NULL;
+    }
+    return on;
+}
+
 /* One counter per slot. The framework's table tops out at slot 820 and our
  * engine-level ops start at GLES_OP_BASE (0x1000), so this covers both. A slot
  * the guest invents must never index outside it -- the guest is not trusted to
@@ -80,6 +89,24 @@ int64_t qc_handle_gles(CPUState *cpu, qc_gles_args_t *a)
                     "guest 0x%08x\n", a->slot, argc, a->spill);
             return -1;
         }
+    }
+
+    /*
+     * IT_GLES_NULL: accept every GL call and do nothing.
+     *
+     * This separates the two halves of a 3D workload's cost. The guest keeps
+     * doing all its CPU work -- game logic, scene traversal, matrix math,
+     * issuing calls -- while the rendering underneath costs nothing, so what
+     * remains is the CPU-only frame rate. If that already clears the guest's
+     * intended cadence, then offloading rendering to the host GPU is the whole
+     * problem and the CPU emulation is fast enough as it stands.
+     *
+     * Reports success rather than the -1 that means "host refused", because a
+     * refusal sends the guest down its SOFTWARE renderer -- which is more CPU
+     * work, not less, and would measure the opposite of what is wanted.
+     */
+    if (gles_null_render()) {
+        return 0;
     }
 
     return gles_host_call(cpu, a->slot, a->ctx, argc, args);
