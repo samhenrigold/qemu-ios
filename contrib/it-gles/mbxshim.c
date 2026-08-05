@@ -8,8 +8,13 @@
  *
  * WHAT THE FRAMEWORK ACTUALLY REQUIRES OF US
  *
- * All of it was read out of the device's own MBXGLEngine (md5 92ddd55f...,
- * byte-identical to the 3.1.3 SDK copy), not assumed:
+ * All of it was read out of the device's own MBXGLEngine, not assumed. Verified
+ * against REAL HARDWARE 2026-08-05: the binary pulled off a physical iPod touch
+ * 2G (MB528, build 7E18) is md5 92ddd55fc2968356835760b0ec9b4a15, and that is
+ * byte-identical to the ARMV6 SLICE of the 3.1.3 SDK copy. Note the slice: the
+ * SDK ships a fat armv6+armv7 bundle (549232 bytes, md5 90c5c928...), so a
+ * whole-file comparison against the device's 299648 bytes differs and looks
+ * alarming. `lipo -thin armv6` first.
  *
  *   - The bundle exports exactly ONE symbol, _GLESGetEGLInterface. Everything
  *     else reaches us through the table it returns. `nm -gU` on the real binary
