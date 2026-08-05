@@ -1,6 +1,12 @@
 #include "hw/arm/ipod_touch_aes.h"
+#include "hw/arm/ipod_touch_guard.h"
 #include "migration/vmstate.h"
 #include "qemu/error-report.h"
+
+/* The largest thing the boot chain ever hands the engine is an img3 payload
+ * (the biggest is a ~35 KB device tree). Clamp well above that so a stray or
+ * hostile INSIZE cannot drive a multi-GB allocation / DMA. */
+#define IT_AES_MAX_XFER (16 * 1024 * 1024)
 
 /*
  * The SoC GID key is fused into the S5L8720 and has never been extracted, so we
@@ -409,7 +415,7 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
 
     switch(offset) {
         case AES_GO:
-            inbuf = (uint8_t *)malloc(aesop->insize);
+            inbuf = (uint8_t *)g_malloc(aesop->insize);
             cpu_physical_memory_read((aesop->inaddr), inbuf, aesop->insize);
 
             switch(aesop->keytype) {
@@ -423,7 +429,7 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
                         break;
             }
 
-            buf = (uint8_t *) malloc(aesop->insize);
+            buf = (uint8_t *) g_malloc(aesop->insize);
             if (it_aes_debug()) {
                 fprintf(stderr, "ipodtouch.aes: type=%d in=0x%08x/%u out=0x%08x\n",
                         aesop->keytype, aesop->inaddr, aesop->insize, aesop->outaddr);
@@ -488,8 +494,8 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
 
             memset(aesop->custkey, 0, 0x20);
             memset(aesop->ivec, 0, 0x10);
-            free(inbuf);
-            free(buf);
+            g_free(inbuf);
+            g_free(buf);
             aesop->outsize = aesop->insize;
             aesop->status = 0xf;
             break;
@@ -501,7 +507,7 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
             aesop->inaddr = value;
             break;
         case AES_INSIZE:
-            aesop->insize = value;
+            aesop->insize = IT_SIZE("aes", value, IT_AES_MAX_XFER);
             break;
         case AES_OUTSIZE:
             aesop->outsize = value;

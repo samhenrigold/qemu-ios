@@ -486,57 +486,59 @@ static void patch_kernel(bool *alreadypatched)
     char *bcm4325_vars = "test";
 
     // write the pointer to our custom subroutine
-    uint32_t *data = malloc(sizeof(uint32_t) * 200);
-    data[0] = 0xC0460000;
-    cpu_physical_memory_write(0x8324aa8, (uint8_t *)data, sizeof(uint32_t) * 1);
+    uint32_t ptr = 0xC0460000;
+    cpu_physical_memory_write(0x8324aa8, (uint8_t *)&ptr, sizeof(ptr));
 
     // create the call to the subroutine
-    data = malloc(sizeof(uint32_t) * 200);
-    data[0] = reverse_byte_order(0x0640A0E1); // mov r4, r6
-    data[1] = reverse_byte_order(0x9C309FE5); // ldr r3, [pc, #0x9c]
-    data[2] = reverse_byte_order(0x33FF2FE1); // blx r3
-    data[3] = reverse_byte_order(0x00F020E3); // NOP
-    data[4] = reverse_byte_order(0x00F020E3); // NOP
-    data[5] = reverse_byte_order(0x00F020E3); // NOP
-    cpu_physical_memory_write(0x8324a00, (uint8_t *)data, sizeof(uint32_t) * 6);
+    uint32_t call[6] = {
+        reverse_byte_order(0x0640A0E1), // mov r4, r6
+        reverse_byte_order(0x9C309FE5), // ldr r3, [pc, #0x9c]
+        reverse_byte_order(0x33FF2FE1), // blx r3
+        reverse_byte_order(0x00F020E3), // NOP
+        reverse_byte_order(0x00F020E3), // NOP
+        reverse_byte_order(0x00F020E3), // NOP
+    };
+    cpu_physical_memory_write(0x8324a00, (uint8_t *)call, sizeof(call));
 
-    // fill in the driver load subroutine
-    data = malloc(sizeof(uint32_t) * 200);
-    data[0] = reverse_byte_order(0xFE402DE9); // push on stack
+    // fill in the driver load subroutine. Zero-initialised: words 30..49 are
+    // padding but are still written to the guest, so they must not be leaked
+    // host heap (which is also what the old code did by writing 50 words out of
+    // a malloc(200) that only filled 30).
+    uint32_t sub[50] = {0};
+    sub[0] = reverse_byte_order(0xFE402DE9); // push on stack
 
-    // TODO I should clean this up
-    for(int i = 1; i < 21; i++) { data[i] = reverse_byte_order(0x00F020E3); } // NOP
+    for(int i = 1; i < 21; i++) { sub[i] = reverse_byte_order(0x00F020E3); } // NOP
 
     // call the IONetworkController metaclass initialization
-    data[21] = reverse_byte_order(0x0100B0E3); // movs r0, #0x1
-    data[22] = reverse_byte_order(0xB8109FE5); // ldr r1, [pc, #0xb8]
-    data[23] = reverse_byte_order(0xB8209FE5); // ldr r2, [pc, #0xb8]
-    data[24] = reverse_byte_order(0x32FF2FE1); // blx r2
+    sub[21] = reverse_byte_order(0x0100B0E3); // movs r0, #0x1
+    sub[22] = reverse_byte_order(0xB8109FE5); // ldr r1, [pc, #0xb8]
+    sub[23] = reverse_byte_order(0xB8209FE5); // ldr r2, [pc, #0xb8]
+    sub[24] = reverse_byte_order(0x32FF2FE1); // blx r2
 
     // load the "com.apple.driver.AppleBCM4325" kext
-    data[25] = reverse_byte_order(0xB4009FE5); // ldr r0, [pc, #0xb4]
-    data[26] = reverse_byte_order(0x0110B0E3); // movs r1, #0x1
-    data[27] = reverse_byte_order(0xB0209FE5); // ldr r2, [pc, #0xd8]
-    data[28] = reverse_byte_order(0x32FF2FE1); // blx r2
+    sub[25] = reverse_byte_order(0xB4009FE5); // ldr r0, [pc, #0xb4]
+    sub[26] = reverse_byte_order(0x0110B0E3); // movs r1, #0x1
+    sub[27] = reverse_byte_order(0xB0209FE5); // ldr r2, [pc, #0xd8]
+    sub[28] = reverse_byte_order(0x32FF2FE1); // blx r2
 
-    data[29] = reverse_byte_order(0xFE80BDE8); // pop from stack
+    sub[29] = reverse_byte_order(0xFE80BDE8); // pop from stack
 
-    cpu_physical_memory_write(0x8460000, (uint8_t *)data, sizeof(uint32_t) * 50);
+    cpu_physical_memory_write(0x8460000, (uint8_t *)sub, sizeof(sub));
 
     // write the data section of the driver load subroutine (0x100 items from the start of the subroutine)
-    data = malloc(sizeof(uint32_t) * 200);
-    data[0] = 0xc0460200; // the address of the BCM4325Vars string
-    data[1] = 0xc013c373; // the address of OSData::withBytes
-    data[2] = 0xc013cc3d; // the address of OSDictionary::withCapacity
-    data[3] = 0xc03467bc; // the "BCM4325Vars" string
-    data[4] = 0xc013ad8d; // the address of OSObject::operator.new
-    data[5] = 0xc032c294; // the object initialization method of AppleBCM4325
-    data[6] = 0xffff; // the 2nd parameter for the call to the IONetworkController metaclass initialization
-    data[7] = 0xc02f94f9; // the initialization method of the IONetworkController metaclass
-    data[8] = 0xc038a320; // the "com.apple.driver.AppleBCM4325" string
-    data[9] = 0xc015de01; // the kmod_load_request method
-
-    cpu_physical_memory_write(0x8460100, (uint8_t *)data, sizeof(uint32_t) * 10);
+    uint32_t sdata[10] = {
+        0xc0460200, // the address of the BCM4325Vars string
+        0xc013c373, // the address of OSData::withBytes
+        0xc013cc3d, // the address of OSDictionary::withCapacity
+        0xc03467bc, // the "BCM4325Vars" string
+        0xc013ad8d, // the address of OSObject::operator.new
+        0xc032c294, // the object initialization method of AppleBCM4325
+        0xffff,     // the 2nd parameter for the call to the IONetworkController metaclass initialization
+        0xc02f94f9, // the initialization method of the IONetworkController metaclass
+        0xc038a320, // the "com.apple.driver.AppleBCM4325" string
+        0xc015de01, // the kmod_load_request method
+    };
+    cpu_physical_memory_write(0x8460100, (uint8_t *)sdata, sizeof(sdata));
 }
 
 static uint64_t ipod_touch_mbx2_read(void *opaque, hwaddr addr, unsigned size)

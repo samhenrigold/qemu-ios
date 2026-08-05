@@ -30,7 +30,6 @@
 #include "hw/arm/ipod_touch_mipi_dsi.h"
 #include "hw/arm/ipod_touch_fmss.h"
 #include "hw/arm/ipod_touch_mbx.h"
-#include "hw/arm/ipod_touch_scaler_csc.h"
 #include "hw/arm/ipod_touch_sdio.h"
 #include "hw/arm/ipod_touch_tvout.h"
 #include "hw/arm/ipod_touch_lis302dl.h"
@@ -210,7 +209,6 @@ typedef struct {
 	IPodTouchMIPIDSIState *mipi_dsi_state;
 	IPodTouchFMSSState *fmss_state;
 	IPodTouchMBXState *mbx_state;
-	IPodTouchScalerCSCState *scaler_csc_state;
 	IPodTouchSDIOState *sdio_state;
 	IPodTouchTVOutState *tvout_state;
 	LIS302DLState *lis302dl_state;

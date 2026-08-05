@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_fmss.h"
+#include "hw/arm/ipod_touch_guard.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include <sys/mman.h>
@@ -683,8 +684,12 @@ static void read_nand_pages(IPodTouchFMSSState *s)
         cs = find_bit_index(cs);
 
         if(cs > 3) {
-            printf("CS %d invalid! (original CS: %d, reading page %d)\n", cs, og_cs, page_nr);
-            hw_error("CS %d invalid!", cs);
+            /* The chip-select comes from a guest descriptor; a bad one skips
+             * the page rather than aborting the whole process. */
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "[fmss] invalid CS %u (original 0x%x, page %u); skipped\n",
+                          cs, og_cs, page_nr);
+            continue;
         }
 
         fmss_load_page(s, cs, page_nr, s->page_buffer, s->page_spare_buffer);
@@ -914,7 +919,18 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
             s->reg_cs_buf_addr = val;
             break;
         case FMSS_NUM_PAGES:
-            s->reg_num_pages = val;
+            /*
+             * Bound to the device's own page count -- a command cannot
+             * legitimately reference more pages than the NAND physically has,
+             * so this can NEVER truncate a real read (kernel/ramdisk loads run
+             * to thousands of pages), while still stopping a hostile
+             * 0xFFFFFFFF from spinning the read/write loop for billions of
+             * iterations under the BQL. Do NOT lower this to the write path's
+             * 512-entry cap: that truncates the boot read and forces recovery
+             * mode (measured 2026-08-05).
+             */
+            s->reg_num_pages = IT_SIZE("fmss", val,
+                (uint64_t)fmss_total_blocks(s) * NAND_PAGES_PER_BLOCK);
             break;
         case FMSS_PAGE_SPARE_OUT_ADDR:
             s->reg_page_spare_out_addr = val;

@@ -24,8 +24,8 @@ typedef struct IPodTouchNORSPIState {
     char *nor_path;
     const char *boot_args;
     uint32_t cur_cmd;
-    uint8_t *in_buf;
-    uint8_t *out_buf;
+    uint8_t in_buf[0x1000];
+    uint8_t out_buf[0x1000];
     uint32_t in_buf_size;
     uint32_t out_buf_size;
     uint32_t in_buf_cur_ind;

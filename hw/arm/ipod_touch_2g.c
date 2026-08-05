@@ -2765,13 +2765,9 @@ static void ipod_touch_machine_init(MachineState *machine)
     sysbus_realize(busdev, &error_fatal);
     sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, S5L8720_LCD_IRQ));
 
-    // init scaler / CSC
-    dev = qdev_new("ipodtouch.scalercsc");
-    IPodTouchScalerCSCState *scaler_csc_state = IPOD_TOUCH_SCALER_CSC(dev);
-    nms->scaler_csc_state = scaler_csc_state;
-    busdev = SYS_BUS_DEVICE(dev);
-    memory_region_add_subregion(sysmem, SCALER_CSC_MEM_BASE, &scaler_csc_state->iomem);
-    sysbus_realize(busdev, &error_fatal);
+    // init scaler / CSC -- reads 0, writes ignored, so upstream's stub device
+    // covers it exactly (and logs, which the hand-rolled model did not).
+    create_unimplemented_device("scaler-csc", SCALER_CSC_MEM_BASE, 0x1000);
 
     // init SHA1 engine
     dev = qdev_new("ipodtouch.sha1");
