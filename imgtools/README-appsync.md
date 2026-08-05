@@ -78,4 +78,4 @@ patch is what actually works and is what `patch_codesign_gate.py` uses. That
 attempt is preserved on the `appsync-offline-patch` branch, not shipped here.
 
 The verified launch — decrypted Obama '08 installed over USB and opened to its
-rendered main menu — is `imgtools/appsync-obama08-launched.png`.
+rendered main menu — is `docs/screenshots/appsync-obama08-launched.png`.
