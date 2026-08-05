@@ -1936,17 +1936,62 @@ static const QemuInputHandler ipod_touch_kbd_handler = {
  * under host load: SpringBoard's hold-to-power-off threshold is measured in
  * guest time, so the hold must be too.
  *
- * The slider geometry is in display pixels on the 320x480 panel, measured from
- * a screendump of the sheet: the knob sits at the left of a track running the
- * width of the screen, vertically centred at y=68.
+ * The slider geometry is in display pixels on the 320x480 panel. The knob's Y
+ * is FOUND, not assumed: it was hardcoded to 68, measured off a 2.1.1
+ * screendump, and 3.1.3 puts its sheet at the top of the screen with the knob
+ * centred at y=51 -- five pixels above where the synthetic finger came down. It
+ * missed the knob entirely, the slide never happened, the PMU latch never
+ * cleared, and QEMU sat until the caller's timeout and got killed. The visible
+ * damage was two unrelated-looking regression failures (fsck "volume found
+ * corrupt", persist "did not shut down cleanly"), both just downstream of an
+ * unclean unmount.
+ *
+ * KNOWN BROKEN ON 3.1.3, and the coordinate is NOT the whole story.
+ *
+ * 68 is measured off 2.1.1's sheet and works there (clean halt in ~14s). On
+ * 3.1.3 system_powerdown never completes: QEMU sits until the caller's timeout
+ * and is killed, which surfaces as two unrelated-looking regression failures --
+ * fsck "volume found corrupt" and persist "did not shut down cleanly" -- both
+ * merely downstream of the unclean unmount.
+ *
+ * Measured on 3.1.3: the sheet DOES appear, and its knob is a red bar spanning
+ * rows 39..63 (centre 51, x 24..91), i.e. 68 lands five pixels below the knob.
+ * But dragging at the measured 51 does NOT fix it either, and neither does
+ * waking the digitizer with a Home press first. So the miss is real but there
+ * is a second cause -- the likeliest suspect is ipod_touch_synth_touch(), which
+ * is the ONE toucher that does not go through
+ * ipod_touch_multitouch_set_finger(); that path may simply not deliver on
+ * 3.1.3. Whoever picks this up: instrument synth_touch and confirm the guest
+ * driver ever sees these frames before touching coordinates again.
+ *
+ * Auto-detection from scanout_base was tried and removed: it chose a row 27 px
+ * off, because the panel triple-buffers and that pointer is not reliably the
+ * surface on screen. IT_PWROFF_KNOB_Y overrides the row so a fix can be swept
+ * without rebuilding.
  */
 #define PWROFF_HOLD_MS      3500   /* > SpringBoard's hold threshold           */
 #define PWROFF_SETTLE_MS    1500   /* sheet slides in and settles              */
 #define PWROFF_DRAG_STEPS   24
 #define PWROFF_DRAG_STEP_MS 80
 #define PWROFF_KNOB_X       65
-#define PWROFF_KNOB_Y       68
+#define PWROFF_KNOB_Y       68     /* 2.1.1, verified; see the note above       */
 #define PWROFF_TRACK_END_X  295
+
+/*
+ * Which row the knob sits on, once per powerdown.
+ *
+ * This is a measured constant per OS, not something derivable: reading
+ * scanout_base directly was tried and picked a row 27 px off, because the panel
+ * triple-buffers and that pointer is not reliably the surface being displayed.
+ * Rather than chase framebuffer semantics for a shutdown gesture, the value is
+ * explicit and overridable.
+ */
+static int pwroff_knob_row(void)
+{
+    const char *e = getenv("IT_PWROFF_KNOB_Y");
+
+    return e ? atoi(e) : PWROFF_KNOB_Y;
+}
 
 enum {
 	PWROFF_IDLE = 0,
@@ -2039,7 +2084,14 @@ static void ipod_touch_powerdown_tick(void *opaque)
 		break;
 
 	case PWROFF_SETTLING:
-		ipod_touch_synth_touch(nms, PWROFF_KNOB_X, PWROFF_KNOB_Y, 1);
+		/* The sheet is up and still, so this is the moment its knob can be
+		 * located. Found once and held for the whole drag: re-scanning per
+		 * step would follow the knob we are ourselves dragging. */
+		nms->pwroff_knob_y = pwroff_knob_row();
+		if (trace) {
+			fprintf(stderr, "[PWROFF] knob row %d\n", nms->pwroff_knob_y);
+		}
+		ipod_touch_synth_touch(nms, PWROFF_KNOB_X, nms->pwroff_knob_y, 1);
 		nms->pwroff_phase = PWROFF_DRAGGING;
 		nms->pwroff_step = 0;
 		ipod_touch_powerdown_arm(nms, PWROFF_DRAG_STEP_MS);
@@ -2051,11 +2103,11 @@ static void ipod_touch_powerdown_tick(void *opaque)
 		        (PWROFF_TRACK_END_X - PWROFF_KNOB_X) * i / PWROFF_DRAG_STEPS;
 
 		if (i < PWROFF_DRAG_STEPS) {
-			ipod_touch_synth_touch(nms, x, PWROFF_KNOB_Y, 1);
+			ipod_touch_synth_touch(nms, x, nms->pwroff_knob_y, 1);
 			ipod_touch_powerdown_arm(nms, PWROFF_DRAG_STEP_MS);
 		} else {
 			ipod_touch_synth_touch(nms, PWROFF_TRACK_END_X,
-			                       PWROFF_KNOB_Y, 0);
+			                       nms->pwroff_knob_y, 0);
 			nms->pwroff_phase = PWROFF_DONE;
 			if (trace) {
 				fprintf(stderr, "[PWROFF] slider released; "
@@ -2083,6 +2135,36 @@ static void ipod_touch_powerdown_req(Notifier *n, void *opaque)
 	if (getenv("IT_PWROFF_TRACE")) {
 		fprintf(stderr, "[PWROFF] holding the hold button\n");
 	}
+	/*
+	 * Unplug, as a user would before switching a device off.
+	 *
+	 * usb-attached defaults ON because the emulated device is effectively
+	 * tethered, and the PMU reports that as a live cable in PMU_PWRSRC_STATUS
+	 * bit 3. A real device charges rather than powers off while plugged in, and
+	 * 3.1.3 honours that: with the cable asserted the kernel sat in its
+	 * power-source poll forever at 100% CPU -- reg 0x04 read as 0x08, two writes
+	 * to 0x40, repeat, all from one PC -- never reaching the power latch at 0x10
+	 * whose falling edge is what raises this machine's shutdown request.
+	 *
+	 * PARTIAL FIX, MEASURED. Clearing the cable does get the guest past that
+	 * gate: the 0x04 spin stops and it proceeds to step through 0x05/0x06/0x0a
+	 * (read 0x0a=0x18, write 0x0a=0x19), i.e. it starts sequencing rails down.
+	 * But it still does not complete a halt -- 180 s and counting, QEMU never
+	 * exits. So system_powerdown remains BROKEN on 3.1.3; this only moves the
+	 * stall later.
+	 *
+	 * Consequence for the regression suite: with the default image on 3.1.3 the
+	 * guest has to be killed at a timeout, leaving a dirty volume, so fsck
+	 * ("volume found corrupt") and persist ("did not shut down cleanly") both
+	 * fail downstream of that -- not because of anything wrong in those checks.
+	 *
+	 * Next step for whoever picks this up: identify reg 0x0a and what the guest
+	 * is waiting for after it writes 0x19 there. IT_PMU_TRACE=1 shows the whole
+	 * conversation with guest PC/LR on every access, which is how the 0x04 gate
+	 * above was found. Do NOT go back to the slide-gesture coordinates: the
+	 * gesture is accepted and correct on 3.1.3 (screendumped mid-drag, knob on
+	 * the track), and that blind alley has already cost two investigations.
+	 */
 	if (s_kbd_mt) {
 		ipod_touch_key_event(s_kbd_mt, KEY_P_DOWN);
 	}
