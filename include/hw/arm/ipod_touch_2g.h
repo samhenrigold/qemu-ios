@@ -185,6 +185,7 @@ typedef struct {
 	unsigned boot_args_writes;
 	bool amfi_patched;
 	bool boot_args_scan_failed;	/* complain once, not every retry */
+	uint32_t boot_args_addr;	/* signature hit from an earlier tick; 0 = rescan */
 	qemu_irq **irq;
 	ARMCPU *cpu;
 	PL192State *vic0;
