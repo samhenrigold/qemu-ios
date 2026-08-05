@@ -12,7 +12,9 @@
  * Use `-audio driver=wav,path=...`, NOT `-audiodev`. A sound card created in C
  * resolves its backend through the DEFAULT audiodev list, and only `-audio`
  * populates that; `-audiodev` alone leaves this device with nowhere to send
- * samples and looks exactly like a broken audio path. run-ios3.sh --sound.
+ * samples and looks exactly like a broken audio path.
+ * contrib/run-ipod-touch.sh --sound (or your local
+ * ~/Developer/qemu-ios-files/ios3/run-ios3.sh --sound) sets this up for you.
  *
  * Sample format: 44100 Hz, 16-bit, stereo, little-endian. IT_I2S_RATE overrides.
  * This is no longer an assumption -- it is confirmed from the guest's own

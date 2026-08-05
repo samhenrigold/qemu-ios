@@ -339,7 +339,8 @@ fi
 
 # ------------------------------------------------------------------- install
 #
-# The session file is written by run-ios3.sh --appsync and says which usbmuxd
+# The session file is written by your local ~/Developer/qemu-ios-files/ios3/
+# run-ios3.sh --appsync and says which usbmuxd
 # belongs to which emulator. There is deliberately NO default port: several
 # emulators run on this machine and they all report the same UDID (it is
 # derived from our shared NOR), so guessing means an install can land on
