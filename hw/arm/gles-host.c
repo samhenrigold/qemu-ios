@@ -591,13 +591,39 @@ static void pvrtc_selfcheck(void);
  * render target (EAGL always renders into an FBO) but is what an app binds to
  * mean "back to the screen".
  */
+static bool gles_is_drawable(uint32_t name)
+{
+    return !name || g_hash_table_contains(gh.fbo_drawable,
+                                          GUINT_TO_POINTER(name));
+}
+
 static GLuint gles_host_fbo(uint32_t name)
 {
-    if (!name || g_hash_table_contains(gh.fbo_drawable,
-                                       GUINT_TO_POINTER(name))) {
-        return gh.fbo;
+    return gles_is_drawable(name) ? gh.fbo : name;
+}
+
+/*
+ * Make a framebuffer name mean the drawable, or stop meaning it.
+ *
+ * This is a property of the framebuffer's CURRENT COLOUR ATTACHMENT, not of the
+ * name, because an engine may reuse one framebuffer object and swap what is
+ * attached to it. The role therefore flips while the framebuffer is bound, and
+ * the live binding has to follow it -- otherwise the calls between here and the
+ * next glBindFramebuffer land on the wrong target.
+ */
+static void gles_set_drawable(uint32_t name, bool drawable)
+{
+    if (!name || gles_is_drawable(name) == drawable) {
+        return;
     }
-    return name;
+    if (drawable) {
+        g_hash_table_add(gh.fbo_drawable, GUINT_TO_POINTER(name));
+    } else {
+        g_hash_table_remove(gh.fbo_drawable, GUINT_TO_POINTER(name));
+    }
+    if (gh.bound_framebuffer == name) {
+        glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gles_host_fbo(name));
+    }
 }
 
 /*
@@ -3793,23 +3819,19 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     case GLES_SLOT_FB_RENDERBUFFER: {    /* target, attach, rbtarget, rb */
         uint32_t attach = a[1], rb = a[3];
-        /*
-         * A colour attachment whose renderbuffer never got GL storage is the
-         * CA drawable, so this framebuffer is the one that must keep meaning
-         * gh.fbo. Its attachments are then left alone entirely -- gh.fbo
-         * already carries the colour target we present out of and a matching
-         * depth buffer, and letting the guest re-attach over either would
-         * break the present path.
-         */
-        if (attach == GL_COLOR_ATTACHMENT0_EXT && rb
-            && !g_hash_table_contains(gh.rb_sized, GUINT_TO_POINTER(rb))) {
-            g_hash_table_add(gh.fbo_drawable,
-                             GUINT_TO_POINTER(gh.bound_framebuffer));
-            glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gh.fbo);
-            return 0;
+
+        if (attach == GL_COLOR_ATTACHMENT0_EXT) {
+            /* A colour renderbuffer that never got GL storage is the CA
+             * drawable, so from now on this framebuffer MEANS gh.fbo. Any
+             * other colour attachment takes that meaning away again. */
+            gles_set_drawable(gh.bound_framebuffer,
+                              rb && !g_hash_table_contains(
+                                  gh.rb_sized, GUINT_TO_POINTER(rb)));
         }
-        if (g_hash_table_contains(gh.fbo_drawable,
-                                  GUINT_TO_POINTER(gh.bound_framebuffer))) {
+        if (gles_is_drawable(gh.bound_framebuffer)) {
+            /* gh.fbo already carries the colour target we present out of and a
+             * matching depth buffer; re-attaching over either breaks the
+             * present path. */
             return 0;
         }
         glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, attach,
@@ -3818,8 +3840,19 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     }
 
     case GLES_SLOT_FB_TEXTURE_2D:        /* target, attach, textarget, tex, lvl */
-        if (g_hash_table_contains(gh.fbo_drawable,
-                                  GUINT_TO_POINTER(gh.bound_framebuffer))) {
+        /* Attaching a texture as colour makes this a real offscreen target,
+         * even if the very same framebuffer was the drawable a moment ago.
+         * Engines reuse ONE framebuffer object and swap its attachments --
+         * save the binding, attach a texture, render, attach the drawable
+         * renderbuffer back -- and Labyrinth does exactly that. Treating
+         * "drawable" as a permanent property of the NAME rather than of the
+         * current colour attachment sent its render-to-texture pass to the
+         * screen and left the texture empty, which composited as a white
+         * level while the menus (UIKit) looked perfect. */
+        if (a[1] == GL_COLOR_ATTACHMENT0_EXT) {
+            gles_set_drawable(gh.bound_framebuffer, false);
+        }
+        if (gles_is_drawable(gh.bound_framebuffer)) {
             return 0;
         }
         glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, a[1], a[2], a[3], a[4]);
