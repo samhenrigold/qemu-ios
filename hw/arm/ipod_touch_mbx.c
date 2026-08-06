@@ -144,8 +144,29 @@ static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
     {
         case MBX_STATUS_REG:
             /* 0x40 was pinned here unconditionally; keep that as the base so
-             * behaviour is unchanged when the shim is off. */
-            val = 0x40 | s->status;
+             * behaviour is unchanged when the shim is off.
+             *
+             * 0x100 is pinned for the same reason, and it is what stopped
+             * Doodle Jump dead. DECODED FROM THE HANG, not guessed: with the
+             * app on screen the vCPU sat at 100% with PC pinned at 0xc075ad18,
+             * which disassembles to
+             *
+             *     ldr r3, [r2, #0x12c]   ; MBX status
+             *     tst r3, #0x100
+             *     beq .-8                ; spin until bit 8 is set
+             *
+             * and the instructions immediately after the loop load r2=0x100,
+             * r1=0x134 to acknowledge it through the write-1-to-clear register.
+             * So 0x100 is a completion the driver waits on and then clears, and
+             * nothing in this model ever set it -- the same shape as the 2D-sync
+             * gap noted above for 0x400.
+             *
+             * Worth knowing WHY this only surfaced now: it is not a regression.
+             * Improvements to the GLES layer let the app render further than it
+             * ever had (its background draws now), which walked it into an MBX
+             * path we had never reached, let alone modelled.
+             */
+            val = 0x40 | 0x100 | s->status;
             if (s->irq_enabled && s->irq) {
                 /* Reading the status acknowledges the completion. */
                 s->status = 0;
