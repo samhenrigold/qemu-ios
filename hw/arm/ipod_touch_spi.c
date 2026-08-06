@@ -177,10 +177,20 @@ static uint64_t ipod_touch_spi_read(void *opaque, hwaddr addr, unsigned size)
             int word_size = apple_spi_word_size(s);
             uint32_t num = 0;
             if (fifo8_is_empty(&s->rx_fifo)) {
-                /* Reading RXDATA with an empty FIFO returns 0 rather than
-                 * aborting QEMU (a bare guest MMIO read could reach here). */
+                /*
+                 * Reading RXDATA with an empty FIFO returns 0 rather than
+                 * aborting QEMU (a bare guest MMIO read could reach here).
+                 *
+                 * `run` mirrors what the normal path below does when a read
+                 * drains the FIFO: kick apple_spi_run() so the controller can
+                 * refill it, rather than leaving it un-kicked. Consistency
+                 * only -- this was investigated as a suspect for the Doodle
+                 * Jump 100%-CPU hang and is NOT the cause of it (that was an
+                 * unmodelled MBX status bit; see ipod_touch_mbx.c 0x12c).
+                 */
                 qemu_log_mask(LOG_GUEST_ERROR, "%s: rx underflow\n", __func__);
                 r = 0;
+                run = true;
                 break;
             }
             buf = fifo8_pop_bufptr(&s->rx_fifo, word_size, &num);
