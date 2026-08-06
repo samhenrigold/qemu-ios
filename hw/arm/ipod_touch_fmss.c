@@ -665,6 +665,53 @@ static void patch_iboot_boot_args(void)
                               strlen(boot_args));
 }
 
+/*
+ * Noticing that the home screen was rearranged.
+ *
+ * SpringBoard 3.1.3 publishes NOTHING when the user moves an icon.
+ * -[SBIconModel saveIconState] writes the layout straight into CFPreferences
+ * under the `iconState2` key and calls CFPreferencesAppSynchronize -- and 3.1.3
+ * has no cfprefsd, so that synchronize is a direct file write from inside
+ * SpringBoard's own process. There is no notification to observe, and the file
+ * (/var/mobile/Library/Preferences/com.apple.springboard.plist) is outside
+ * /var/mobile/Media, so AFC cannot reach it either. The host's only option used
+ * to be re-reading the layout over sbservices every 15 seconds and hoping.
+ *
+ * But the write has to cross this device on its way to flash, and the key name
+ * is literal ASCII in the plist whichever format CFPreferences chose. So sniff
+ * the page: a programmed page carrying "iconState" is that file being
+ * rewritten, and the host can re-read the layout the moment it lands.
+ *
+ * Deliberately a content match rather than resolving the plist's HFS+ catalog
+ * extents once and filtering by page number. Extents have to be re-derived
+ * whenever the file grows, moves, or the volume is rebuilt, and when they go
+ * stale they go stale SILENTLY -- the signal simply stops, which looks exactly
+ * like "the feature was never there". A byte match cannot rot that way.
+ *
+ * It is also allowed to be imprecise, because of what the signal is for: it
+ * only tells the host to redo a read it already performs correctly on a timer.
+ * A false positive costs one sbservices round trip; a false negative costs
+ * nothing the existing poll does not already cover. That asymmetry is why the
+ * cheap mechanism is the right one here.
+ */
+static uint64_t fmss_icon_state_writes;
+
+uint64_t ipod_touch_fmss_icon_state_writes(void);
+
+uint64_t ipod_touch_fmss_icon_state_writes(void)
+{
+    return qatomic_read(&fmss_icon_state_writes);
+}
+
+static void fmss_sniff_icon_state(const uint8_t *page)
+{
+    static const char needle[] = "iconState";
+
+    if (memmem(page, NAND_BYTES_PER_PAGE, needle, sizeof(needle) - 1)) {
+        qatomic_inc(&fmss_icon_state_writes);
+    }
+}
+
 /* Cap on entries in one FMSS transfer, shared by the read and write paths. */
 #define FMSS_MAX_WRITE_ENTRIES 512
 
@@ -825,6 +872,11 @@ static void write_nand_pages(IPodTouchFMSSState *s)
                 fflush(stdout);
             }
         }
+
+        /* Before the relocation below, which can drop the page entirely: what
+         * matters here is that the guest wrote these bytes, not where they end
+         * up living. */
+        fmss_sniff_icon_state(s->page_buffer);
 
         /*
          * The page reads back at the address it was programmed to for the rest

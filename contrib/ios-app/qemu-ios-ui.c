@@ -25,6 +25,7 @@
 #include "hw/arm/ipod_touch_buttons.h"
 
 void gles_host_set_allowed(bool allowed);
+uint64_t ipod_touch_fmss_icon_state_writes(void);
 
 #include "qemu-ios-ui.h"
 
@@ -643,6 +644,24 @@ static void ios_resume_bh(void *opaque)
     if (!runstate_is_running()) {
         vm_start();
     }
+}
+
+/* --- home-screen layout -------------------------------------------------- */
+
+/*
+ * A pass-through, not a copy of the state: the counter lives in the NAND device
+ * because that is where it is incremented, and the dependency can only point
+ * this way -- hw/arm/ipod_touch_fmss.c is linked into every build of the
+ * emulator, while this file is linked only into the app dylib. A device calling
+ * into here would break plain qemu-system-arm.
+ *
+ * No lock and no bottom half: it is one atomic load of a value the vCPU thread
+ * only ever increments, which is exactly what an app polling on its own tick
+ * wants.
+ */
+uint64_t qemu_ios_ui_icon_state_generation(void)
+{
+    return ipod_touch_fmss_icon_state_writes();
 }
 
 void qemu_ios_set_foreground(bool foreground)
