@@ -2108,7 +2108,15 @@ static void ipod_touch_powerdown_tick(void *opaque)
 		} else {
 			ipod_touch_synth_touch(nms, PWROFF_TRACK_END_X,
 			                       nms->pwroff_knob_y, 0);
-			nms->pwroff_phase = PWROFF_DONE;
+			/* Back to IDLE, not DONE. The sequence is over -- the
+			 * guard this feeds only exists to stop a second request
+			 * interleaving with an IN-FLIGHT drag. Parking in DONE
+			 * meant the phase never returned to IDLE for the life of
+			 * the machine, so a second system_powerdown was silently
+			 * a no-op: if the first attempt did not halt the guest,
+			 * every later one (including the app's quit-time flush)
+			 * did nothing at all and the HFS+ catalog was lost. */
+			nms->pwroff_phase = PWROFF_IDLE;
 			if (trace) {
 				fprintf(stderr, "[PWROFF] slider released; "
 				                "waiting for the guest to halt\n");
