@@ -201,10 +201,17 @@ static void ios_gfx_update(DisplayChangeListener *dcl,
 
 static void ios_gfx_switch(DisplayChangeListener *dcl, DisplaySurface *surface)
 {
-    /* A new surface replaces everything, so it is whole by definition. */
+    /*
+     * A new surface replaces everything, so it is whole by definition -- but
+     * do NOT capture it here: on a rotation the console resize happens in the
+     * middle of the panel's refresh, BEFORE it has blitted anything into the
+     * new surface, so capturing now publishes one all-black frame at the new
+     * size and the app visibly blinks. Marking it pending instead lets
+     * ios_refresh publish it right after graphic_hw_update returns, by which
+     * point the same refresh has painted the surface.
+     */
     if (surface) {
-        ios_capture(surface);
-        ios.pending = false;
+        ios.pending = true;
     }
 }
 
