@@ -223,6 +223,24 @@ static const char *s_getString(void *gc, unsigned name)
     default:     return "";
     }
 }
+static int s_copyTexImage2D(void *gc, unsigned target, unsigned level,
+                            unsigned ifmt, unsigned x, unsigned y,
+                            unsigned w, unsigned h, unsigned border)
+    { return (int)qc(54, gc, 8, A(target, level, ifmt, x, y, w, h, border)); }
+static int s_getFloatv(void *gc, unsigned pname, unsigned params)
+    { return (int)qc(103, gc, 2, A(pname, params)); }
+static int s_materialf(void *gc, unsigned face, unsigned pname, unsigned param)
+    { return (int)qc(170, gc, 3, A(face, pname, param)); }
+static int s_readPixels(void *gc, unsigned x, unsigned y, unsigned w,
+                        unsigned h, unsigned fmt, unsigned type, unsigned px)
+    { return (int)qc(237, gc, 7, A(x, y, w, h, fmt, type, px)); }
+static int s_texEnvf(void *gc, unsigned target, unsigned pname, unsigned param)
+    { return (int)qc(290, gc, 3, A(target, pname, param)); }
+static int s_texEnvfv(void *gc, unsigned target, unsigned pname, unsigned params)
+    { return (int)qc(291, gc, 3, A(target, pname, params)); }
+static int s_texParameterx(void *gc, unsigned target, unsigned pname,
+                           unsigned param)
+    { return (int)qc(799, gc, 3, A(target, pname, param)); }
 static int s_loadIdentity(void *gc)
     { return (int)qc(157, gc, 0, A(0)); }
 static int s_matrixMode(void *gc, unsigned m)
@@ -449,6 +467,17 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
         table[98]  = (void *)s_genTextures;
         table[102] = (void *)s_getError;
         table[117] = (void *)s_getString;
+        /* Forwarded rather than dropped. A call the shim does not forward is
+         * invisible to the host's unhandled-slot warning too, so these were
+         * silent on both sides -- glCopyTexImage2D among them, which is what
+         * left Labyrinth's render target with no storage. */
+        table[54]  = (void *)s_copyTexImage2D;
+        table[103] = (void *)s_getFloatv;
+        table[170] = (void *)s_materialf;
+        table[237] = (void *)s_readPixels;
+        table[290] = (void *)s_texEnvf;
+        table[291] = (void *)s_texEnvfv;
+        table[799] = (void *)s_texParameterx;
         table[157] = (void *)s_loadIdentity;
         table[174] = (void *)s_matrixMode;
         table[289] = (void *)s_texCoordPointer;
