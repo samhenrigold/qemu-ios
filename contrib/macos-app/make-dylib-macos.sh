@@ -76,6 +76,7 @@ _qemu_ios_ui_key
 _qemu_ios_ui_key_mac
 _qemu_ios_ui_rotate
 _qemu_ios_ui_shake
+_qemu_ios_ui_accel
 _qemu_ios_ui_paste
 _qemu_ios_ui_pause
 _qemu_ios_ui_resume
