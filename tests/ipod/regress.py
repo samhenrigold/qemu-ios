@@ -1203,15 +1203,46 @@ def check_fsck(cfg, clean_stop, r):
     tail = " | ".join(l.strip() for l in out.strip().split("\n")[-4:])
     if fs.returncode == 0:
         return r.set(True, "%d overlay pages in the volume; %s" % (used, tail))
-    # A free-block-count mismatch after an *unclean* stop is bookkeeping, not
-    # corruption: the volume header's counter is only rewritten on unmount.
-    only_freeblocks = ("free blocks" in out.lower()
-                       and "invalid" not in out.lower()
-                       and "missing" not in out.lower())
-    if not clean_stop and only_freeblocks:
-        return r.set(True, "free-block count off after an unclean stop "
-                           "(expected); %s" % tail)
-    return r.set(False, "fsck_hfs rc=%d: %s" % (fs.returncode, tail))
+
+    # Complaints this composition ALWAYS produces, guest or no guest.
+    #
+    # Measured 2026-08-06: the pristine base image, composed the same way and
+    # never booted, fails fsck with exactly these lines -- "It should be 11174
+    # instead of 1718130" against the post-run "10873 instead of 1717829", i.e.
+    # the identical 1,706,956-block discrepancy. The reason is right here in this
+    # function: we compose the first 128000 allocation blocks of a volume that is
+    # larger than that, so the header's free-block count and the bitmap can never
+    # agree with the truncated device fsck is handed.
+    #
+    # This check therefore called a FACTORY IMAGE corrupt, and had done since it
+    # was written -- which is worse than useless, because a real corruption would
+    # have looked exactly like the noise it was already emitting. What it can
+    # still judge, and what actually matters, is the catalog: extents overflow,
+    # catalog file, multi-linked files, catalog hierarchy, extended attributes.
+    # Anything wrong THERE is a genuine loss of the user's files.
+    BENIGN = (
+        "invalid volume free block count",
+        "volume bitmap needs minor repair for orphaned blocks",
+        "volume bitmap needs repair for under-allocation",
+        "volume header needs minor repair",
+    )
+    # Lines beginning with "**" are fsck's own section headers and its final
+    # verdict ("** The volume ... needs to be repaired"), not individual
+    # findings — the verdict says "repaired", so counting it as a finding makes
+    # every run fail no matter what the findings were.
+    problems = [l.strip() for l in out.splitlines()
+                if l.strip() and not l.strip().startswith("**")
+                and ("repair" in l.lower() or "invalid" in l.lower()
+                     or "missing" in l.lower() or "overlap" in l.lower())]
+    real = [l for l in problems
+            if not any(b in l.lower() for b in BENIGN)]
+    if not real:
+        return r.set(True, "catalog, extents and hierarchy clean; %d overlay "
+                           "pages. (Free-block/bitmap counts differ because we "
+                           "compose only the first 128000 blocks of a larger "
+                           "volume -- the pristine base image reports the same.)"
+                     % used)
+    return r.set(False, "fsck_hfs rc=%d: %s" % (fs.returncode, " | ".join(real[:4])))
 
 
 # --------------------------------------------------------------------------

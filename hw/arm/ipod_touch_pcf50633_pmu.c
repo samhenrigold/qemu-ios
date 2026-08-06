@@ -147,6 +147,11 @@ void pcf50633_latch_wake_event(Pcf50633State *s, uint8_t bits)
     s->regs[PMU_EVENT_C_REG] |= bits;
 }
 
+void pcf50633_arm_shutdown(Pcf50633State *s)
+{
+    s->shutdown_armed = true;
+}
+
 void pcf50633_set_stat(Pcf50633State *s, uint8_t bits, bool on)
 {
     if (on) {
@@ -187,6 +192,19 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
             lcd_changebrightness(data);
 	    break;
 
+        case PMU_STANDBY_CMD:
+            /*
+             * The end of 3.1.3's shutdown: rails sequenced down, interrupts
+             * masked, root volume already unmounted, and this is the last thing
+             * it says before waiting for the power to go. See the header. Armed
+             * only, so nothing else can trigger it.
+             */
+            if (s->shutdown_armed && data == PMU_STANDBY_GO) {
+                s->shutdown_armed = false;
+                qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+            }
+            break;
+
         case PMU_PWRLATCH_REG:
             // Guest-requested power off (see the note in the header). On real
             // hardware the PMU drops the rails here and the SoC simply stops;
@@ -224,6 +242,7 @@ static const VMStateDescription vmstate_pcf50633 = {
         VMSTATE_UINT8_ARRAY(regs, Pcf50633State, 256),
         VMSTATE_UINT32(rtc_latch, Pcf50633State),
         VMSTATE_BOOL(usb_cable, Pcf50633State),
+        VMSTATE_BOOL(shutdown_armed, Pcf50633State),
         VMSTATE_END_OF_LIST()
     }
 };
