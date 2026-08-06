@@ -2171,6 +2171,12 @@ static void ipod_touch_powerdown_req(Notifier *n, void *opaque)
 	 * Do NOT revisit the slide gesture: it is accepted and correct on 3.1.3
 	 * (screendumped mid-drag, knob on the track). Two investigations died there.
 	 */
+	/* Arm the PMU: from here until the guest's standby write, a write of 0x90
+	 * to 0x6f means "the rails may go now". Without this the guest finished its
+	 * whole shutdown -- unmount included -- and then waited forever. */
+	if (s_kbd_mt && s_kbd_mt->pmu) {
+		pcf50633_arm_shutdown(PCF50633(s_kbd_mt->pmu));
+	}
 	if (s_kbd_mt) {
 		ipod_touch_key_event(s_kbd_mt, KEY_P_DOWN);
 	}
