@@ -332,4 +332,11 @@ void ipod_touch_pb_set(IPodTouchMachineState *nms, const char *text);
 /* The guest finished sending an item: publish it to the host clipboard. */
 void ipod_touch_pb_guest_commit(IPodTouchMachineState *nms);
 
+/*
+ * The Bluetooth HCI that lives on UART1 (hw/arm/ipod_touch_bt.c). Returns
+ * `user` unchanged if the user pointed -serial at that port, so the HCI can be
+ * watched or replaced from outside. IT_BT=0 disables the model entirely.
+ */
+Chardev *it_bt_chardev(Chardev *user);
+
 #endif

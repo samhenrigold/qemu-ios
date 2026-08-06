@@ -53,6 +53,10 @@ FMSS_ENV_FLAG(fmss_stats_on,  "FMSS_STATS")
  */
 static struct {
     uint64_t reads, base, overlay, recall, blank, ns;
+    /* Stores that landed on coordinates this session had already programmed --
+     * the only way the phys_pages read-cache could shadow a newer write. See
+     * the note in fmss_store_page. */
+    uint64_t shadowed;
 } fmss_stats;
 
 static void fmss_stats_report(void)
@@ -65,12 +69,13 @@ static void fmss_stats_report(void)
     }
     fprintf(stderr,
             "[FMSS] reads=%llu base=%llu ovl=%llu recall=%llu blank=%llu "
-            "read_ms=%.1f\n",
+            "shadowed=%llu read_ms=%.1f\n",
             (unsigned long long)fmss_stats.reads,
             (unsigned long long)fmss_stats.base,
             (unsigned long long)fmss_stats.overlay,
             (unsigned long long)fmss_stats.recall,
             (unsigned long long)fmss_stats.blank,
+            (unsigned long long)fmss_stats.shadowed,
             fmss_stats.ns / 1.0e6);
 }
 
@@ -616,6 +621,30 @@ static void fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
     if (rename(tmp, filename) != 0) {
         remove(tmp);
     } else {
+        /*
+         * DETECTION, not a fix. Reads consult phys_pages (pages the guest
+         * programmed this session, remembered at the address it programmed
+         * them to) BEFORE the overlay, and nothing invalidates an entry when a
+         * later store lands on those same coordinates -- so in principle a
+         * stale cached page can shadow a newer overlay write forever.
+         *
+         * Whether that is reachable depends on the FTL's allocation colliding
+         * with fmss_generated_layout's relocation target, which is not obvious
+         * either way. Removing the entry here would "fix" it and would ALSO
+         * break the invariant the cache exists for -- the FTL must read back
+         * what it programmed at an address, and a different logical block now
+         * living there on disk is not that. So: count it, and only act if a
+         * real session ever hits it. IT_FMSS_SHADOW=1 prints each one.
+         */
+        if (s->phys_pages &&
+            g_hash_table_contains(s->phys_pages, fmss_block_key(cs, page_nr))) {
+            fmss_stats.shadowed++;
+            if (getenv("IT_FMSS_SHADOW")) {
+                fprintf(stderr, "[fmss] store cs=%u page=%u lands on a page this "
+                        "session programmed there (%llu so far)\n",
+                        cs, page_nr, (unsigned long long)fmss_stats.shadowed);
+            }
+        }
         fmss_overlay_index(s);
         if (s->overlay_pages) {
             g_hash_table_add(s->overlay_pages, fmss_block_key(cs, page_nr));

@@ -1969,6 +1969,16 @@ static const QemuInputHandler ipod_touch_kbd_handler = {
  * surface on screen. IT_PWROFF_KNOB_Y overrides the row so a fix can be swept
  * without rebuilding.
  */
+/*
+ * Time for the foreground app to quit and SpringBoard to come forward after the
+ * synthetic Home press. The power-off sheet belongs to SpringBoard, so the
+ * slide below cannot reach it from inside a full-screen app -- measured: a
+ * powerdown requested while GLTest was foreground never completed, and the same
+ * build powers off in 14s from the home screen. 3.1.3 has no app switcher, so
+ * Home really does terminate the app, which also gives it its
+ * applicationWillTerminate: to save with.
+ */
+#define PWROFF_HOME_MS      2500
 #define PWROFF_HOLD_MS      3500   /* > SpringBoard's hold threshold           */
 #define PWROFF_SETTLE_MS    1500   /* sheet slides in and settles              */
 #define PWROFF_DRAG_STEPS   24
@@ -1995,6 +2005,7 @@ static int pwroff_knob_row(void)
 
 enum {
 	PWROFF_IDLE = 0,
+	PWROFF_HOME,
 	PWROFF_PRESSED,
 	PWROFF_SETTLING,
 	PWROFF_DRAGGING,
@@ -2074,6 +2085,21 @@ static void ipod_touch_powerdown_tick(void *opaque)
 	bool trace = getenv("IT_PWROFF_TRACE") != NULL;
 
 	switch (nms->pwroff_phase) {
+	case PWROFF_HOME:
+		/* Home is released here; the press went in with the request. */
+		if (s_kbd_mt) {
+			ipod_touch_key_event(s_kbd_mt, KEY_H_UP);
+		}
+		if (trace) {
+			fprintf(stderr, "[PWROFF] home pressed; holding the hold button\n");
+		}
+		if (s_kbd_mt) {
+			ipod_touch_key_event(s_kbd_mt, KEY_P_DOWN);
+		}
+		nms->pwroff_phase = PWROFF_PRESSED;
+		ipod_touch_powerdown_arm(nms, PWROFF_HOLD_MS);
+		break;
+
 	case PWROFF_PRESSED:
 		/* Hold expired: release the button. The sheet is already up. */
 		if (s_kbd_mt) {
@@ -2141,7 +2167,7 @@ static void ipod_touch_powerdown_req(Notifier *n, void *opaque)
 		return;   /* a sequence is already running */
 	}
 	if (getenv("IT_PWROFF_TRACE")) {
-		fprintf(stderr, "[PWROFF] holding the hold button\n");
+		fprintf(stderr, "[PWROFF] home first, to get SpringBoard in front\n");
 	}
 	/*
 	 * Clear the USB-cable bit while powering down.
@@ -2177,11 +2203,14 @@ static void ipod_touch_powerdown_req(Notifier *n, void *opaque)
 	if (s_kbd_mt && s_kbd_mt->pmu) {
 		pcf50633_arm_shutdown(PCF50633(s_kbd_mt->pmu));
 	}
+	/* Home FIRST. The sheet the slide targets is SpringBoard's, so a
+	 * powerdown requested while an app is foreground had nothing to slide and
+	 * simply never completed -- which is precisely when a user hits quit. */
 	if (s_kbd_mt) {
-		ipod_touch_key_event(s_kbd_mt, KEY_P_DOWN);
+		ipod_touch_key_event(s_kbd_mt, KEY_H_DOWN);
 	}
-	nms->pwroff_phase = PWROFF_PRESSED;
-	ipod_touch_powerdown_arm(nms, PWROFF_HOLD_MS);
+	nms->pwroff_phase = PWROFF_HOME;
+	ipod_touch_powerdown_arm(nms, PWROFF_HOME_MS);
 }
 
 static Notifier ipod_touch_powerdown_notifier = {
@@ -2429,6 +2458,18 @@ static void it_realize_into_qom_tree(DeviceState *dev)
     sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
 }
 
+/*
+ * A UART's Rx DMA REQUEST line, routed to the DMAC. `n` carries the request id
+ * so one handler serves any port; `opaque` is the controller the port is wired
+ * to. The line is high only while that port has Rx DMA selected and bytes
+ * waiting, which is what keeps an idle port from feeding the DMAC an empty
+ * FIFO -- see pl080_attach_paced_peripheral() below.
+ */
+static void it_uart_rx_dma_req(void *opaque, int n, int level)
+{
+    pl080_set_dma_request((PL080State *)opaque, n, level);
+}
+
 static void ipod_touch_machine_init(MachineState *machine)
 {
 	IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(machine);
@@ -2447,6 +2488,7 @@ static void ipod_touch_machine_init(MachineState *machine)
 
     // setup VICs
     nms->irq = g_malloc0(sizeof(qemu_irq *) * 2);
+    DeviceState *uart1_dev;
     DeviceState *dev = pl192_manual_init("vic0", qdev_get_gpio_in(DEVICE(nms->cpu), ARM_CPU_IRQ), qdev_get_gpio_in(DEVICE(nms->cpu), ARM_CPU_FIQ), NULL);
     PL192State *s = PL192(dev);
     nms->vic0 = s;
@@ -2528,9 +2570,16 @@ static void ipod_touch_machine_init(MachineState *machine)
         hw_error("Failed to create UART0 device!");
     }
 
-    dev = exynos4210_uart_create(UART1_MEM_BASE, 256, 1, serial_hd(1), nms->irq[0][25]);
-    if (!dev) {
-        hw_error("Failed to create UART0 device!");
+    /*
+     * UART1 carries the Bluetooth HCI (the DeviceTree puts a "bluetooth,n72"
+     * node under /arm-io/uart1). Its Rx DMA request line is connected below,
+     * once DMAC0 exists.
+     */
+    uart1_dev = exynos4210_uart_create(UART1_MEM_BASE, 256, 1,
+                                       it_bt_chardev(serial_hd(1)),
+                                       nms->irq[0][25]);
+    if (!uart1_dev) {
+        hw_error("Failed to create UART1 device!");
     }
 
     dev = exynos4210_uart_create(UART2_MEM_BASE, 256, 2, serial_hd(2), nms->irq[0][26]);
@@ -2673,6 +2722,18 @@ static void ipod_touch_machine_init(MachineState *machine)
      */
     pl080_attach_paced_peripheral(pl080_1, UART0_RX_DMA_REQ_ID);
     pl080_attach_paced_peripheral(pl080_1, UART1_RX_DMA_REQ_ID);
+    /*
+     * ...and now one of them IS driven. UART1's Rx path is DMA: the Bluetooth
+     * driver arms a peripheral->memory channel on URXH and never reads the
+     * register itself, so bytes we put in the Rx FIFO sat there forever and
+     * BTServer retried HCI_Reset every 10 s for the whole session. Every
+     * BluetoothManager call in the guest then blocked for its full client-side
+     * timeout (~1 s), which is what stalls SpringBoard's status bar and eats
+     * the app-launch animation.
+     */
+    sysbus_connect_irq(SYS_BUS_DEVICE(uart1_dev), 2,
+                       qemu_allocate_irq(it_uart_rx_dma_req, pl080_1,
+                                         UART1_RX_DMA_REQ_ID));
     /*
      * DMAC0's completion IRQ is VIC line 0x10, and DMAC1's is 0x11. They are
      * NOT a shared line: our own 3.1.3 DeviceTree says so directly --

@@ -181,6 +181,15 @@ struct Exynos4210UartState {
     CharBackend       chr;
     qemu_irq          irq;
     qemu_irq          dmairq;
+    /*
+     * Rx DMA REQUEST, as the peripheral actually drives it: high only while
+     * the guest has Rx DMA selected AND there are bytes to fetch. dmairq
+     * cannot be reused for this -- it also reads low when Rx DMA is disabled,
+     * and asserting a request then makes the DMAC read an empty FIFO, which is
+     * the invented-data wedge described at pl080_attach_paced_peripheral() in
+     * hw/arm/ipod_touch_2g.c.
+     */
+    qemu_irq          rxdmareq;
 
     uint32_t channel;
 
@@ -294,7 +303,17 @@ exynos4210_uart_Rx_FIFO_trigger_level(const Exynos4210UartState *s)
  */
 static void exynos4210_uart_update_dmabusy(Exynos4210UartState *s)
 {
-    bool rx_dma_enabled = (s->reg[I_(UCON)] & 0x03) == 0x02;
+    /*
+     * UCON[1:0] selects the receive mode. The exynos TRM defines 10b as DMA
+     * and leaves 11b reserved, but the S5L8720 in the iPod touch uses 11b --
+     * its Bluetooth driver writes UCON=0x10040f, arms a peripheral->memory
+     * channel on URXH, and then never reads the register itself. Reading 11b
+     * as "not DMA" left the HCI reply sitting in the Rx FIFO: the driver saw
+     * UFSTAT report the bytes, saw no DMA progress, reset the FIFO and started
+     * over, so BTServer retried HCI_Reset forever. Accepting both encodings is
+     * safe for a real exynos guest, which never programs the reserved one.
+     */
+    bool rx_dma_enabled = (s->reg[I_(UCON)] & 0x03) >= 0x02;
     uint32_t count = fifo_elements_number(&s->rx);
 
     if (rx_dma_enabled && !count) {
@@ -304,6 +323,8 @@ static void exynos4210_uart_update_dmabusy(Exynos4210UartState *s)
         qemu_irq_lower(s->dmairq);
         trace_exynos_uart_dmaready(s->channel);
     }
+
+    qemu_set_irq(s->rxdmareq, rx_dma_enabled && count > 0);
 }
 
 static void exynos4210_uart_update_irq(Exynos4210UartState *s)
@@ -761,6 +782,7 @@ static void exynos4210_uart_init(Object *obj)
 
     sysbus_init_irq(dev, &s->irq);
     sysbus_init_irq(dev, &s->dmairq);
+    sysbus_init_irq(dev, &s->rxdmareq);
 }
 
 static void exynos4210_uart_realize(DeviceState *dev, Error **errp)
