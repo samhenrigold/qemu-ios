@@ -1882,6 +1882,28 @@ static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
     } else {
         gh.draws_offscreen++;
         gh.offscreen_draws_here++;
+        /*
+         * Offscreen draws are few and decide a whole texture, so each one is
+         * worth a line. A render-to-texture that comes back flat is either not
+         * sampling what it thinks (texture 0 / an incomplete texture), or
+         * multiplying itself away (colour or blend), and only the per-draw
+         * state says which.
+         */
+        if (gh.draws_offscreen <= 16) {
+            GLint tex = 0, sb = 0, db = 0;
+            GLfloat col[4] = { 0, 0, 0, 0 };
+
+            glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex);
+            glGetIntegerv(GL_BLEND_SRC, &sb);
+            glGetIntegerv(GL_BLEND_DST, &db);
+            glGetFloatv(GL_CURRENT_COLOR, col);
+            fprintf(stderr, "[gles]   offscreen draw %s mode=0x%x count=%u "
+                    "tex2d=%d bound_tex=%d colour=(%.2f %.2f %.2f %.2f) "
+                    "blend=%d(0x%x,0x%x) lighting=%d texunits=0x%02x\n",
+                    what, mode, count, glIsEnabled(GL_TEXTURE_2D), tex,
+                    col[0], col[1], col[2], col[3], glIsEnabled(GL_BLEND),
+                    sb, db, glIsEnabled(GL_LIGHTING), gles_texcoord_mask());
+        }
     }
     if (!gh.vis_captured) {
         gh.vis_captured = true;
@@ -3422,6 +3444,67 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * the host must unpack with the guest's alignment, not its own. */
         glPixelStorei(GL_UNPACK_ALIGNMENT, gles_unpack());
         glTexImage2D(target, level, ifmt, w, h, border, fmt, type, px);
+        /*
+         * Keep the texture COMPLETE for whatever filter it ends up with.
+         *
+         * ES 1.1 and desktop GL disagree about an incomplete texture in the
+         * way that matters most: ES says texturing is treated as DISABLED, so
+         * the fragment keeps its own colour, while desktop GL samples
+         * (0,0,0,1) -- BLACK. An app that uploads only level 0 and leaves a
+         * mipmapping min filter therefore looks fine on the device and paints
+         * black here. Labyrinth's board is exactly that: the wood renders into
+         * a 512x512 texture correctly (measured), and the floor that samples it
+         * comes out black.
+         *
+         * Capping MAX_LEVEL at the highest level actually supplied makes the
+         * texture complete by definition, whatever the filter asks for, without
+         * inventing mip data the guest never uploaded. Levels arrive in
+         * increasing order, so raising the cap as they come is enough.
+         */
+        {
+            GLint cap = 0;
+
+            glGetTexParameteriv(target, GL_TEXTURE_MAX_LEVEL, &cap);
+            if ((GLint)level > cap || level == 0) {
+                glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, (GLint)level);
+            }
+        }
+        /*
+         * What actually went INTO each texture, and whether it has the mip
+         * chain its filter needs. A texture that samples black takes an entire
+         * pass with it when the draw multiplies by it, and nothing else in the
+         * log distinguishes "sampled black" from "drew nothing".
+         */
+        if (level == 0) {
+            GLint name = 0, minf = 0;
+
+            glGetIntegerv(GL_TEXTURE_BINDING_2D, &name);
+            glGetTexParameteriv(target, GL_TEXTURE_MIN_FILTER, &minf);
+            if (name && name <= 32) {
+                bool mips = (minf == GL_NEAREST_MIPMAP_NEAREST
+                             || minf == GL_LINEAR_MIPMAP_NEAREST
+                             || minf == GL_NEAREST_MIPMAP_LINEAR
+                             || minf == GL_LINEAR_MIPMAP_LINEAR);
+                unsigned long long sum = 0;
+                size_t i, cnt = 0;
+
+                /* Mean of the SOURCE bytes. A texture uploaded full of zeros
+                 * and a texture never uploaded look identical afterwards, and
+                 * a black one takes a whole pass with it when something
+                 * multiplies by it. */
+                if (px && n) {
+                    for (i = 0; i < n; i += 3) {
+                        sum += px[i];
+                        cnt++;
+                    }
+                }
+                fprintf(stderr, "[gles] texture %d level0 %ux%u fmt=0x%x "
+                        "minfilter=0x%x mean=%llu%s%s\n", name, w, h, fmt, minf,
+                        cnt ? sum / cnt : 0ULL,
+                        mips ? " NEEDS-MIPS" : "",
+                        px ? "" : " (NO CONTENT)");
+            }
+        }
         return 0;
     }
 
@@ -4153,20 +4236,65 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * away. The mean is enough to tell "the scene" from "the clear colour".
          */
         if (gh.offscreen_draws_here && !gles_is_drawable(gh.bound_framebuffer)) {
-            uint8_t px[64 * 64 * 4];
+            /*
+             * Sample the WHOLE target, not a corner of it. A 64x64 patch at
+             * (0,0) reported pure black for a 512x512 render-to-texture whose
+             * content simply did not reach the corner -- the measurement said
+             * "this pass drew nothing" when the truth was "this pass drew
+             * somewhere else".
+             */
+            GLint fw = 0, fh = 0;
+            g_autofree uint8_t *px = NULL;
             uint64_t r = 0, g = 0, b = 0, al = 0;
-            unsigned i;
+            unsigned i, cnt;
+            GLint vp[4] = { 0, 0, 0, 0 };
 
-            glReadPixels(0, 0, 64, 64, GL_RGBA, GL_UNSIGNED_BYTE, px);
-            for (i = 0; i < 64 * 64; i++) {
+            glGetIntegerv(GL_VIEWPORT, vp);
+            fw = vp[2] > 0 ? vp[2] : 64;
+            fh = vp[3] > 0 ? vp[3] : 64;
+            if (fw > 1024) { fw = 1024; }
+            if (fh > 1024) { fh = 1024; }
+            px = g_malloc0((size_t)fw * fh * 4);
+            glReadPixels(0, 0, fw, fh, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            cnt = (unsigned)(fw * fh);
+            for (i = 0; i < cnt; i++) {
                 r += px[i * 4]; g += px[i * 4 + 1];
                 b += px[i * 4 + 2]; al += px[i * 4 + 3];
             }
+            GLint attach_obj = 0, attach_type = 0, tw = 0, th = 0;
+
+            glGetFramebufferAttachmentParameterivEXT(
+                GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
+                GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE_EXT, &attach_type);
+            glGetFramebufferAttachmentParameterivEXT(
+                GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
+                GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME_EXT, &attach_obj);
+            if (attach_obj) {
+                GLint prev = 0;
+
+                glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
+                glBindTexture(GL_TEXTURE_2D, attach_obj);
+                glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &tw);
+                glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &th);
+                glBindTexture(GL_TEXTURE_2D, prev);
+            }
+            /*
+             * The geometry as well as the colour. A render-to-texture that
+             * comes back flat has three ordinary causes and they are told
+             * apart here: an attachment that is not what the guest thinks, a
+             * target with no storage (0x0), or a viewport that does not cover
+             * it -- the last is easy to hit because the viewport is global
+             * state and an app that forgets to set it for the offscreen pass
+             * inherits the screen's.
+             */
             fprintf(stderr, "[gles] offscreen fb %u after %u draws -> mean rgba "
-                    "%llu,%llu,%llu,%llu\n", gh.bound_framebuffer,
+                    "%llu,%llu,%llu,%llu  attach=type0x%x obj%d %dx%d "
+                    "viewport=(%d,%d %dx%d)\n", gh.bound_framebuffer,
                     gh.offscreen_draws_here,
-                    (unsigned long long)(r / 4096), (unsigned long long)(g / 4096),
-                    (unsigned long long)(b / 4096), (unsigned long long)(al / 4096));
+                    (unsigned long long)(r / cnt), (unsigned long long)(g / cnt),
+                    (unsigned long long)(b / cnt), (unsigned long long)(al / cnt),
+                    attach_type, attach_obj, tw, th,
+                    vp[0], vp[1], vp[2], vp[3]);
         }
         gh.offscreen_draws_here = 0;
         gh.bound_framebuffer = a[1];
