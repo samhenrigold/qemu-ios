@@ -20,3 +20,12 @@ link6 -dylib "$HERE/probe_insert.dylib" "$HERE/probe_insert.o" \
     -install_name /usr/lib/it-probe-insert.dylib
 rm -f "$HERE/probe_insert.o"
 file "$HERE/probe_insert.dylib"
+
+# The progress-bar dylib, injected into itunesstored the same way. Its
+# install_name is where com.apple.itunesstored.plist's DYLD_INSERT_LIBRARIES
+# points, so the two have to agree.
+cc6 "$HERE/isprogress.c" "$HERE/isprogress.o"
+link6 -dylib "$HERE/isprogress.dylib" "$HERE/isprogress.o" \
+    -install_name /usr/lib/it-isprogress.dylib
+rm -f "$HERE/isprogress.o"
+file "$HERE/isprogress.dylib"
