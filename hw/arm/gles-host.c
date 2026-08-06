@@ -2501,6 +2501,38 @@ static void gles_dump_state(void)
             pr[0], pr[5], pr[10], pr[14]);
 }
 
+/*
+ * The GL state that decides whether a draw is VISIBLE, sampled once per
+ * progress line rather than per draw so it can be on permanently.
+ *
+ * "Geometry is submitted to the right target and the screen stays blank" has a
+ * small number of causes and they are all here: a projection that puts the
+ * geometry outside the frustum, a depth func that rejects it, a blend that
+ * multiplies it away, or texturing that samples nothing. Chasing that set one
+ * hypothesis per round -- each needing a fresh capture from the user -- is what
+ * made Labyrinth expensive; printing all of it at once costs four GL queries a
+ * second.
+ */
+static void gles_report_visibility(void)
+{
+    float pr[16], mv[16];
+    GLint df = 0, sf = 0, dfac = 0;
+
+    glGetFloatv(GL_PROJECTION_MATRIX, pr);
+    glGetFloatv(GL_MODELVIEW_MATRIX, mv);
+    glGetIntegerv(GL_DEPTH_FUNC, &df);
+    glGetIntegerv(GL_BLEND_SRC, &sf);
+    glGetIntegerv(GL_BLEND_DST, &dfac);
+
+    fprintf(stderr, "[gles]   visibility: proj diag=(%.4f %.4f %.4f) m[14]=%.3f"
+            "  mv xyz=(%.2f %.2f %.2f)  depth=%d func=0x%x  blend=%d"
+            "(0x%x,0x%x)  tex2d=%d texunits=0x%02x  cull=%d\n",
+            pr[0], pr[5], pr[10], pr[14], mv[12], mv[13], mv[14],
+            glIsEnabled(GL_DEPTH_TEST), df, glIsEnabled(GL_BLEND), sf, dfac,
+            glIsEnabled(GL_TEXTURE_2D), gles_texcoord_mask(),
+            glIsEnabled(GL_CULL_FACE));
+}
+
 static void gles_report_progress(void)
 {
     uint64_t now_ms, dt;
@@ -2526,6 +2558,7 @@ static void gles_report_progress(void)
             gh.draws_offscreen - gh.last_report_offscreen);
     gh.last_report_drawable = gh.draws_drawable;
     gh.last_report_offscreen = gh.draws_offscreen;
+    gles_report_visibility();
 
     /*
      * The accounting line. Percentages are of WALL time over the same 60
