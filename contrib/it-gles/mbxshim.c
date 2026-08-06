@@ -180,6 +180,49 @@ static int s_genTextures(void *gc, unsigned n, unsigned ids)
     { return (int)qc(98, gc, 2, A(n, ids)); }
 static int s_getError(void *gc)
     { return (int)qc(102, gc, 0, A(0)); }
+
+/*
+ * glGetString is answered HERE rather than on the host, because it returns a
+ * pointer to a string the guest then reads. A host-side handler would have to
+ * put those bytes somewhere in guest memory and hand back an address; static
+ * storage in this bundle is already guest memory, so there is nothing to
+ * marshal.
+ *
+ * It was previously unimplemented, which meant it returned 0 -- and an app that
+ * does the ordinary
+ *
+ *     if (strstr((char *)glGetString(GL_EXTENSIONS), "GL_OES_...")) ...
+ *
+ * gets NULL passed to strstr. Both Temple Run builds do exactly this and no
+ * other title tested imports glGetString at all, which is why they alone hung
+ * on the splash screen while everything else ran.
+ *
+ * NEVER return 0 from here, for any argument: an unknown enum answers with an
+ * empty string, which every caller survives.
+ *
+ * The extension list is deliberately short and honest. Advertising something
+ * the host does not implement is the failure mode this tree already knows well
+ * -- a driver that is told a feature exists will use it and go wrong further
+ * away. Every entry below is genuinely handled in gles-host.c: real
+ * framebuffer objects, the PVRTC decoder, the paletted decoder, and GL_FIXED
+ * widening. The APPLE multisample and EXT discard extensions are NOT listed,
+ * and must not be until they are real.
+ */
+static const char *s_getString(void *gc, unsigned name)
+{
+    (void)gc;
+    switch (name) {
+    case 0x1F00: return "Imagination Technologies";   /* GL_VENDOR   */
+    case 0x1F01: return "PowerVR MBX";                /* GL_RENDERER */
+    case 0x1F02: return "OpenGL ES-CM 1.1";           /* GL_VERSION  */
+    case 0x1F03:                                      /* GL_EXTENSIONS */
+        return "GL_OES_framebuffer_object "
+               "GL_OES_compressed_paletted_texture "
+               "GL_OES_fixed_point "
+               "GL_IMG_texture_compression_pvrtc";
+    default:     return "";
+    }
+}
 static int s_loadIdentity(void *gc)
     { return (int)qc(157, gc, 0, A(0)); }
 static int s_matrixMode(void *gc, unsigned m)
@@ -405,6 +448,7 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
         table[90]  = (void *)s_flush;
         table[98]  = (void *)s_genTextures;
         table[102] = (void *)s_getError;
+        table[117] = (void *)s_getString;
         table[157] = (void *)s_loadIdentity;
         table[174] = (void *)s_matrixMode;
         table[289] = (void *)s_texCoordPointer;
