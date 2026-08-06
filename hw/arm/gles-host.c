@@ -162,6 +162,17 @@ void gles_eagl_iosurface_unlock(void);
 #define GLES_MAX_TEX_BYTES ((size_t)4096 * 4096 * 4)
 #define GLES_MAX_NAMES     65536u
 
+/*
+ * Texture units modelled. ES 1.1 requires at least 2 and the MBX has exactly 2;
+ * 8 costs four pointers apiece and means a guest that asks for more than the
+ * hardware had still gets coherent state rather than a silently dropped array.
+ */
+#define GLES_MAX_TEXUNITS  8u
+
+/* Bit positions in the bound-array mask: the three non-texture arrays take
+ * 0..2, then one bit per texture unit. */
+#define GLES_TEXCOORD_BIT  3u
+
 /* Guest vertex/texcoord array state. The guest hands us a pointer into its own
  * address space; nothing is read from it until a draw call, exactly as GL
  * specifies, so the guest is free to refill the buffer between calls. */
@@ -223,7 +234,20 @@ typedef struct {
     bool iosurface;
 
     GLESArray vertex;
-    GLESArray texcoord;
+    /*
+     * ONE TEXCOORD ARRAY PER TEXTURE UNIT. There used to be a single one, which
+     * silently modelled a single-texturing GL: an app that set unit 0's coords,
+     * switched to unit 1 and set those overwrote the only slot, so at draw time
+     * unit 0 had no array bound at all and every fragment sampled the same
+     * texel. That renders as flat untextured colour with the lighting and
+     * geometry still perfectly correct -- which is what Temple Run looked like,
+     * and it is not a subtle-looking bug, so it hid as "textures are broken".
+     *
+     * Multitexturing is how this era did lightmaps, detail maps and decals, so
+     * this is a whole family of titles rather than one.
+     */
+    GLESArray texcoord[GLES_MAX_TEXUNITS];
+    unsigned client_active_unit;    /* glClientActiveTexture, as an index */
     GLESArray color;
     GLESArray normal;
 
@@ -695,7 +719,9 @@ static bool gles_host_init(void)
     glLoadIdentity();
 
     gh.vertex.client_state   = GL_VERTEX_ARRAY;
-    gh.texcoord.client_state = GL_TEXTURE_COORD_ARRAY;
+    for (unsigned u = 0; u < GLES_MAX_TEXUNITS; u++) {
+        gh.texcoord[u].client_state = GL_TEXTURE_COORD_ARRAY;
+    }
     gh.color.client_state    = GL_COLOR_ARRAY;
     gh.normal.client_state   = GL_NORMAL_ARRAY;
     /* glNormalPointer takes no size; the array is always 3 components. */
@@ -1007,10 +1033,25 @@ static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
  * those. Leaving an array enabled across draws would make the next draw walk a
  * scratch buffer that has since been reallocated for a different array.
  */
+/* Which texture units have a coordinate array enabled, as a bitmask. A draw
+ * with texturing on but 0x00 here samples one texel for every fragment, which
+ * looks like flat untextured colour rather than like a missing array. */
+static unsigned gles_texcoord_mask(void)
+{
+    unsigned i, m = 0;
+
+    for (i = 0; i < GLES_MAX_TEXUNITS; i++) {
+        if (gh.texcoord[i].enabled) {
+            m |= 1u << i;
+        }
+    }
+    return m;
+}
+
 static uint32_t gles_bind_all_arrays(CPUState *cpu, uint32_t first,
                                      uint32_t count)
 {
-    GLESArray *arrays[] = { &gh.vertex, &gh.texcoord, &gh.color, &gh.normal };
+    GLESArray *arrays[] = { &gh.vertex, &gh.color, &gh.normal };
     uint32_t bound = 0;
     unsigned i;
 
@@ -1019,6 +1060,24 @@ static uint32_t gles_bind_all_arrays(CPUState *cpu, uint32_t first,
             bound |= 1u << i;
         }
     }
+
+    /*
+     * Texture coordinates are per-unit, and glTexCoordPointer applies to
+     * whichever unit is CLIENT-active -- so each one has to be selected before
+     * its array is bound. The guest's own client-active unit is restored
+     * afterwards, because it is state the guest can observe and did not ask us
+     * to change.
+     */
+    for (i = 0; i < GLES_MAX_TEXUNITS; i++) {
+        if (!gh.texcoord[i].enabled) {
+            continue;
+        }
+        glClientActiveTexture(GL_TEXTURE0 + i);
+        if (gles_bind_array(cpu, &gh.texcoord[i], first, count)) {
+            bound |= 1u << (GLES_TEXCOORD_BIT + i);
+        }
+    }
+    glClientActiveTexture(GL_TEXTURE0 + gh.client_active_unit);
     return bound;
 }
 
@@ -1616,6 +1675,26 @@ static const uint8_t *gles_fetch_texels(CPUState *cpu, uint32_t pixels,
  * each, so "no cubes on screen" and "every cube draw returned GL_INVALID_ENUM"
  * look exactly the same from outside.
  */
+/*
+ * Texturing is on but no unit has a coordinate array. Every fragment then
+ * samples the same texel, which draws as FLAT UNTEXTURED COLOUR with the
+ * geometry and lighting still perfectly correct -- so it reads as "textures are
+ * broken" rather than as a client-array problem, and it is exactly what a
+ * single-texcoord-slot bug produces once an app touches unit 1. Warned once.
+ */
+static void gles_check_texcoords(void)
+{
+    static bool warned;
+
+    if (warned || !glIsEnabled(GL_TEXTURE_2D) || gles_texcoord_mask()) {
+        return;
+    }
+    warned = true;
+    fprintf(stderr, "[gles] drawing with GL_TEXTURE_2D enabled but NO texture "
+            "coordinate array on any unit -- every fragment samples one texel, "
+            "which looks like flat untextured colour\n");
+}
+
 static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
 {
     static GLenum reported[8];
@@ -1623,6 +1702,8 @@ static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
     GLenum e;
     unsigned i;
     uint64_t t0;
+
+    gles_check_texcoords();
 
     /* See IT_GLES_STRICT: this is a queue drain, once per draw. */
     if (!gles_strict) {
@@ -1775,14 +1856,14 @@ static void gles_trace_draw(const char *what, uint32_t mode, uint32_t count)
             "depthtest=%d xyz=(%.2f %.2f %.2f)\n"
             "[gles]     linewidth=%.2f blend=%d(src=0x%x dst=0x%x) "
             "colour=(%.2f %.2f %.2f %.2f) matdiffuse=(%.2f %.2f %.2f %.2f) "
-            "arrays vtx=%u col=%u nrm=%u tex=%u lighting=%d\n",
+            "arrays vtx=%u col=%u nrm=%u texunits=0x%02x lighting=%d\n",
             gh.presents, what, mode, count, depth_mask,
             glIsEnabled(GL_DEPTH_TEST), mv[12], mv[13], mv[14],
             line_width, glIsEnabled(GL_BLEND), (unsigned)src, (unsigned)dst,
             cur_col[0], cur_col[1], cur_col[2], cur_col[3],
             mat_dif[0], mat_dif[1], mat_dif[2], mat_dif[3],
             gh.vertex.enabled, gh.color.enabled, gh.normal.enabled,
-            gh.texcoord.enabled, glIsEnabled(GL_LIGHTING));
+            gles_texcoord_mask(), glIsEnabled(GL_LIGHTING));
     /*
      * The PROJECTION in force for THIS draw, not the one left at end of frame.
      * The end-of-frame state dump always caught the 2D HUD's ortho, so a broken
@@ -1803,7 +1884,7 @@ static void gles_trace_draw(const char *what, uint32_t mode, uint32_t count)
 
 static void gles_unbind_arrays(uint32_t bound)
 {
-    GLESArray *arrays[] = { &gh.vertex, &gh.texcoord, &gh.color, &gh.normal };
+    GLESArray *arrays[] = { &gh.vertex, &gh.color, &gh.normal };
     unsigned i;
 
     for (i = 0; i < ARRAY_SIZE(arrays); i++) {
@@ -1811,6 +1892,13 @@ static void gles_unbind_arrays(uint32_t bound)
             glDisableClientState(arrays[i]->client_state);
         }
     }
+    for (i = 0; i < GLES_MAX_TEXUNITS; i++) {
+        if (bound & (1u << (GLES_TEXCOORD_BIT + i))) {
+            glClientActiveTexture(GL_TEXTURE0 + i);
+            glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+        }
+    }
+    glClientActiveTexture(GL_TEXTURE0 + gh.client_active_unit);
 }
 
 /*
@@ -2613,13 +2701,19 @@ static GLESBuffer *gles_buffer_bound(uint32_t target)
  */
 static void gles_buffer_forget(const GLESBuffer *b)
 {
-    GLESArray *arrays[] = { &gh.vertex, &gh.texcoord, &gh.color, &gh.normal };
+    GLESArray *arrays[] = { &gh.vertex, &gh.color, &gh.normal };
     unsigned i;
 
     for (i = 0; i < ARRAY_SIZE(arrays); i++) {
         if (arrays[i]->vbo == b) {
             arrays[i]->vbo = NULL;
             arrays[i]->ptr = 0;
+        }
+    }
+    for (i = 0; i < GLES_MAX_TEXUNITS; i++) {
+        if (gh.texcoord[i].vbo == b) {
+            gh.texcoord[i].vbo = NULL;
+            gh.texcoord[i].ptr = 0;
         }
     }
     if (gh.array_buffer == b) {
@@ -2763,7 +2857,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         bool on = (slot == GLES_SLOT_ENABLE_CLIENT_STATE);
         switch (a[0]) {
         case GL_VERTEX_ARRAY:        gh.vertex.enabled = on;   break;
-        case GL_TEXTURE_COORD_ARRAY: gh.texcoord.enabled = on; break;
+        /* Per-unit: this enables the array of the CLIENT-active unit only. */
+        case GL_TEXTURE_COORD_ARRAY:
+            gh.texcoord[gh.client_active_unit].enabled = on;
+            break;
         case GL_COLOR_ARRAY:         gh.color.enabled = on;    break;
         case GL_NORMAL_ARRAY:        gh.normal.enabled = on;   break;
         default: break;
@@ -2787,11 +2884,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         return 0;
 
     case GLES_SLOT_TEXCOORD_POINTER:
-        gh.texcoord.size = a[0];
-        gh.texcoord.type = a[1];
-        gh.texcoord.stride = a[2];
-        gh.texcoord.ptr = a[3];
-        gh.texcoord.vbo = gh.array_buffer;
+        gh.texcoord[gh.client_active_unit].size = a[0];
+        gh.texcoord[gh.client_active_unit].type = a[1];
+        gh.texcoord[gh.client_active_unit].stride = a[2];
+        gh.texcoord[gh.client_active_unit].ptr = a[3];
+        gh.texcoord[gh.client_active_unit].vbo = gh.array_buffer;
         return 0;
 
     case GLES_SLOT_COLOR_POINTER:               /* size,type,stride,ptr */
@@ -3498,9 +3595,22 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         glActiveTexture(a[0]);
         return 0;
 
-    case GLES_SLOT_CLIENT_ACTIVE_TEXTURE:       /* texture */
-        glClientActiveTexture(a[0]);
+    case GLES_SLOT_CLIENT_ACTIVE_TEXTURE: {     /* texture */
+        /* Remembered, because it decides which unit's array the NEXT
+         * glTexCoordPointer / glEnableClientState applies to. Out-of-range is
+         * clamped rather than dropped: losing the call would silently steer
+         * those setters at the wrong unit. */
+        unsigned u = a[0] - GL_TEXTURE0;
+
+        if (u >= GLES_MAX_TEXUNITS) {
+            fprintf(stderr, "[gles] glClientActiveTexture: unit %u beyond the "
+                    "%u modelled; clamped\n", u, GLES_MAX_TEXUNITS);
+            u = GLES_MAX_TEXUNITS - 1;
+        }
+        gh.client_active_unit = u;
+        glClientActiveTexture(GL_TEXTURE0 + u);
         return 0;
+    }
 
     case GLES_SLOT_LINE_WIDTH:
         glLineWidth(gles_f(a[0]));
@@ -3747,11 +3857,30 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         return 0;
     }
 
-    case GLES_SLOT_CHECK_FB_STATUS:
+    case GLES_SLOT_CHECK_FB_STATUS: {
         /* Report what the host actually thinks. Claiming COMPLETE
          * unconditionally is how an app gets told its render target is fine
          * when nothing was ever attached to it. */
-        return glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
+        GLenum st = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
+
+        /*
+         * SAY SO. An app that is handed a non-COMPLETE status usually gives up
+         * quietly and draws nothing, so the visible result is a white or black
+         * screen with no other symptom -- indistinguishable from a dozen
+         * unrelated causes. Naming the status turns that into one line.
+         */
+        if (st != GL_FRAMEBUFFER_COMPLETE_EXT) {
+            static uint32_t warned_fb = 0xffffffff;
+
+            if (warned_fb != gh.bound_framebuffer) {
+                warned_fb = gh.bound_framebuffer;
+                fprintf(stderr, "[gles] framebuffer %u is INCOMPLETE: status "
+                        "0x%x -- the guest will most likely render nothing "
+                        "into it\n", gh.bound_framebuffer, st);
+            }
+        }
+        return st;
+    }
 
     case GLES_SLOT_GET_RB_PARAMETERIV: { /* target, pname, guest int* */
         GLint v = 0;
