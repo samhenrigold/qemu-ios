@@ -93,7 +93,15 @@ guest_open() {
     GUEST_PORT="${SSH_PORT:-2239}"
     iproxy "$GUEST_PORT" 22 >/dev/null 2>&1 &
     GUEST_IPROXY=$!
-    sleep 2
+
+    # Poll for the port instead of sleeping a flat 2 s. Everything the guest
+    # does is behind this, including the home-screen placeholder, and a second
+    # spent here is a second the home screen says nothing is happening.
+    for _ in $(seq 40); do
+        kill -0 "$GUEST_IPROXY" 2>/dev/null || break
+        nc -z 127.0.0.1 "$GUEST_PORT" 2>/dev/null && break
+        sleep 0.1
+    done
     if ! kill -0 "$GUEST_IPROXY" 2>/dev/null; then
         GUEST_IPROXY=""
         echo "install-ipa.sh: iproxy would not start on port $GUEST_PORT" >&2
@@ -106,11 +114,24 @@ guest_open() {
     printf '#!/bin/sh\necho %s\n' "${DEVICE_PASSWORD:-alpine}" >"$ask"
     chmod 755 "$ask"
     export SSH_ASKPASS="$ask" SSH_ASKPASS_REQUIRE=force DISPLAY="${DISPLAY:-:0}"
+
+    # Share one connection for every command that follows. An install makes at
+    # least four (put sbdlicon, run it, copy MBXGLEngine, take the placeholder
+    # down) and on an emulated 400 MHz ARM the SSH handshake -- not the copy --
+    # is what each one costs, several seconds of RSA and key exchange apiece.
+    # Multiplexed, only the first pays it. Set here rather than in the array
+    # above because ControlPath needs $TMP, which does not exist that early.
+    GUEST_SSH_OPTS+=(-o ControlMaster=auto -o ControlPath="$TMP/ssh-%C"
+        -o ControlPersist=120)
     return 0
 }
 
 guest_close() {
     [ -n "$GUEST_IPROXY" ] || return 0
+    # Drop the multiplexed master first: it outlives this script by
+    # ControlPersist, and a master still holding a tunnel whose iproxy has been
+    # killed makes the NEXT install's first command hang until it times out.
+    ssh "${GUEST_SSH_OPTS[@]}" -p "$GUEST_PORT" -O exit root@127.0.0.1 >/dev/null 2>&1 || true
     # Job control announces the kill on the terminal ("Terminated: 15") unless
     # the job is disowned first, which reads as an error in the middle of a
     # successful install.
@@ -169,7 +190,10 @@ placeholder_add() {
         return 1
     }
     guest_open || return 1
-    guest_put "$tool" /tmp/sbdlicon || return 1
+    # Already there from an earlier install this boot? /tmp does not survive a
+    # reboot, so a hit means the copy would be byte-for-byte the same one.
+    guest_sh "test -x /tmp/sbdlicon" ||
+        guest_put "$tool" /tmp/sbdlicon || return 1
     guest_sh "chmod 755 /tmp/sbdlicon && /tmp/sbdlicon add '$id'" || return 1
     PLACEHOLDER="$id"
 }
@@ -191,6 +215,38 @@ cleanup() {
     placeholder_remove
     guest_close
     rm -rf "$TMP"
+}
+
+# ------------------------------------------------------------------- install
+#
+# "Could not start com.apple.afc: Invalid service" is lockdownd declining to
+# spawn afcd, not a bad .ipa: it comes and goes on a 128 MB device, and most
+# often right after something else has just used a service (our own ssh copy of
+# the GL engine, or an uninstall). Retried here rather than one level up in the
+# app, because the app's retry re-runs the entire pre-flight -- unpacking the
+# .ipa, re-copying MBXGLEngine, taking the placeholder down and putting it back
+# -- to arrive at the same one command. The waits get longer each time; lockdown
+# has usually recovered by the second.
+#
+# Only service-startup failures are retried. A rejected .ipa fails the same way
+# every time and should say so immediately.
+install_retry() {
+    local out rc=1 delay
+    for delay in 0 3 8; do
+        if [ "$delay" != 0 ]; then
+            echo "--- lockdown would not start the service; retrying in ${delay}s"
+            sleep "$delay"
+        fi
+        out="$(ideviceinstaller install "$1" 2>&1)"
+        rc=$?
+        printf '%s\n' "$out"
+        [ "$rc" = 0 ] && return 0
+        case "$out" in
+        *"Invalid service"* | *"Could not start"* | *"Could not connect"*) ;;
+        *) return "$rc" ;;
+        esac
+    done
+    return "$rc"
 }
 
 CHECK_ONLY=0
@@ -398,6 +454,21 @@ if ! ideviceinfo -k ProductVersion >/dev/null 2>&1; then
 fi
 echo "--- device is up: iOS $(ideviceinfo -k ProductVersion)"
 
+# The placeholder goes up FIRST -- before the GL engine, before the repack,
+# before the install -- because it is the only thing on the home screen saying
+# anything is happening at all, and everything after it is slow. It used to go
+# up after the GL engine replacement, which meant a GL app (the ones people
+# actually wait on) spent an iproxy handshake and a whole scp of MBXGLEngine
+# showing nothing. Its own upload is one small binary over the tunnel the GL
+# copy then reuses, so moving it first costs the install nothing.
+#
+# Keyed on the bundle id so dropping the same .ipa twice reuses the one icon
+# instead of stacking them up.
+if [ -n "$BUNDLE_ID" ]; then
+    placeholder_add "qemu-install-$BUNDLE_ID" ||
+        echo "install-ipa.sh: continuing without the home-screen placeholder" >&2
+fi
+
 # The GL engine has to be in place BEFORE the app is launched, and it is worth
 # doing before the install too: a wedged device cannot finish an scp, so the
 # first launch is the last chance to get anything onto it.
@@ -406,22 +477,13 @@ if [ "$LINKS_GLES" = 1 ] && [ -f "$SHIM" ]; then
     install_shim || echo "install-ipa.sh: could not install the GL engine; the app will wedge the device" >&2
 fi
 
-# The placeholder goes up BEFORE the install, which is the whole point of it:
-# an install takes tens of seconds and until now the home screen said nothing
-# at all was happening. Keyed on the bundle id so dropping the same .ipa twice
-# reuses the one icon instead of stacking them up.
-if [ -n "$BUNDLE_ID" ]; then
-    placeholder_add "qemu-install-$BUNDLE_ID" ||
-        echo "install-ipa.sh: continuing without the home-screen placeholder" >&2
-fi
-
 echo "--- installing $NAME"
 if [ "$NEEDS_MODE" = 1 ]; then
     FIXED="$TMP/$NAME"
     repack_mode "$IPA" "$FIXED" "Payload/$(basename "$APP")/$EXE"
-    ideviceinstaller install "$FIXED"
+    install_retry "$FIXED"
 else
-    ideviceinstaller install "$IPA"
+    install_retry "$IPA"
 fi
 RC=$?
 
