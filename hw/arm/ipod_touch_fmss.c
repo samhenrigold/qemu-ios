@@ -147,6 +147,27 @@ static void fmss_erase_block(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
     char path[1152];
     uint32_t first = block * NAND_PAGES_PER_BLOCK;
 
+    /*
+     * Marker FIRST. The pages and the marker together say "this block is
+     * erased"; with the pages removed and no marker, reads fall through to the
+     * pristine BASE image and serve its stale contents in the middle of a live
+     * volume -- valid-looking bytes, which is the worst kind of wrong. Writing
+     * the marker first can only cost a block that reads back as erased, which
+     * is what the guest asked for anyway.
+     */
+    snprintf(path, sizeof(path), "%s/cs%d", s->nand_overlay, cs);
+    g_mkdir_with_parents(path, 0755);
+    fmss_block_marker_path(s, cs, block, path, sizeof(path));
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "[fmss] cannot mark block %u/cs%d erased (%s); "
+                "leaving it intact\n", block, cs, strerror(errno));
+        return;
+    }
+    fflush(f);
+    fsync(fileno(f));
+    fclose(f);
+
     for (uint32_t p = first; p < first + NAND_PAGES_PER_BLOCK; p++) {
         snprintf(path, sizeof(path), "%s/cs%d/%u.page", s->nand_overlay, cs, p);
         remove(path);
@@ -154,12 +175,6 @@ static void fmss_erase_block(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
             g_hash_table_remove(s->overlay_pages, fmss_block_key(cs, p));
         }
     }
-
-    snprintf(path, sizeof(path), "%s/cs%d", s->nand_overlay, cs);
-    g_mkdir_with_parents(path, 0755);
-    fmss_block_marker_path(s, cs, block, path, sizeof(path));
-    FILE *f = fopen(path, "wb");
-    if (f) { fclose(f); }
 
     if (!s->erased_blocks) {
         s->erased_blocks = g_hash_table_new(g_direct_hash, g_direct_equal);
@@ -425,8 +440,18 @@ static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
         ((uint32_t *)spare)[2] = 0x00FF00FF; /* clean/erased marker */
         return;
     }
-    if (fread(data, 1, NAND_BYTES_PER_PAGE, f) != NAND_BYTES_PER_PAGE) { /* short read tolerated */ }
-    if (fread(spare, 1, NAND_BYTES_PER_SPARE, f) != NAND_BYTES_PER_SPARE) { /* ditto */ }
+    /* A short read is tolerated, but the tail MUST be zeroed: these buffers are
+     * reused across pages, so leaving it would serve the previous page's bytes
+     * as the missing half of this one -- a plausible-looking frankenpage in the
+     * middle of a live filesystem. */
+    size_t got = fread(data, 1, NAND_BYTES_PER_PAGE, f);
+    if (got != NAND_BYTES_PER_PAGE) {
+        memset(data + got, 0, NAND_BYTES_PER_PAGE - got);
+    }
+    got = fread(spare, 1, NAND_BYTES_PER_SPARE, f);
+    if (got != NAND_BYTES_PER_SPARE) {
+        memset(spare + got, 0, NAND_BYTES_PER_SPARE - got);
+    }
     fclose(f);
 
     /* Diagnostic: every page of the reference image carries the emulator's own
@@ -566,11 +591,28 @@ static void fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
         fmss_erase_block(s, cs, block);
     }
 
+    /*
+     * The rename below is what makes a page store atomic, but a rename only
+     * orders the *name*: without an fsync the directory entry can reach the
+     * host filesystem while the bytes behind it have not, so a host crash or a
+     * SIGKILL leaves a short or empty N.page shadowing the good base-image page
+     * underneath it. And an unchecked fwrite renames a truncated page over a
+     * correct one even with no crash at all -- a full host disk was enough.
+     * This is the guest's only durable storage; both cases lose user data.
+     */
     FILE *f = fopen(tmp, "wb");
     if (!f) { return; }
-    fwrite(data, 1, NAND_BYTES_PER_PAGE, f);
-    fwrite(spare, 1, NAND_BYTES_PER_SPARE, f);
-    fclose(f);
+    bool ok = fwrite(data, 1, NAND_BYTES_PER_PAGE, f) == NAND_BYTES_PER_PAGE
+           && fwrite(spare, 1, NAND_BYTES_PER_SPARE, f) == NAND_BYTES_PER_SPARE
+           && fflush(f) == 0
+           && fsync(fileno(f)) == 0;
+    if (fclose(f) != 0) { ok = false; }
+    if (!ok) {
+        fprintf(stderr, "[fmss] page %u/cs%d not written (%s); overlay left "
+                "untouched\n", page_nr, cs, strerror(errno));
+        remove(tmp);
+        return;
+    }
     if (rename(tmp, filename) != 0) {
         remove(tmp);
     } else {
@@ -826,6 +868,12 @@ static void write_nand_pages(IPodTouchFMSSState *s)
     for (int i = 0; i < FMSS_MAX_WRITE_ENTRIES; i++) {
         uint32_t cmd = 0, page_nr = 0;
 
+        if (i == FMSS_MAX_WRITE_ENTRIES - 1) {
+            qemu_log_mask(LOG_GUEST_ERROR, "[fmss] write script hit the %d entry "
+                          "cap; the rest of it is being dropped\n",
+                          FMSS_MAX_WRITE_ENTRIES);
+        }
+
         if (legacy) {
             if (i >= legacy_np) {
                 break;
@@ -841,10 +889,17 @@ static void write_nand_pages(IPodTouchFMSSState *s)
         }
 
         uint32_t cs = find_bit_index(cmd & 0xff);
-        if (cs > 3) {
-            printf("%s: bad chip-select in command word 0x%08x (entry %d)\n",
-                   __func__, cmd, i);
-            break;
+        /* `continue`, not `break`, and an explicit zero check. One unparseable
+         * entry used to discard every REMAINING page of the write -- a partial
+         * write of a file the guest believes it wrote whole, silently. The read
+         * path already skips-and-continues for the same reason. A zero
+         * chip-select field is rejected rather than passed to find_bit_index,
+         * which answers 0 for it and would send the page to cs0. */
+        if ((cmd & 0xff) == 0 || cs > 3) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "[fmss] bad chip-select in command word 0x%08x "
+                          "(entry %d); page skipped\n", cmd, i);
+            continue;
         }
 
         /* gather the 4096-byte page from the two 2048-byte DMA source halves */

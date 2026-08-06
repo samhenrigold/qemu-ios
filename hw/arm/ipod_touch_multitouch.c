@@ -1119,6 +1119,14 @@ static int ipod_touch_multitouch_post_load(void *opaque, int version_id)
     s->next_frame_len = 0;
     s->buf_ind = 0;
     s->in_buffer_ind = 0;
+    /* out_buffer is a pointer and is NOT migrated, so a snapshot taken mid-SPI
+     * command restores cur_cmd/buf_size as "in progress" with nothing to serve:
+     * the driver then clocks out zeros for the rest of the reply, fails the
+     * frame checksum, and the panel is dead for the life of the VM ("Too many
+     * errors reading a frame of data"). Abort the command instead -- the driver
+     * retries a dropped one; it cannot recover from a half-restored one. */
+    s->cur_cmd = 0;
+    s->buf_size = 0;
     memset(s->fingers, 0, sizeof(s->fingers));
     s->touch_down = false;
     if (s->touch_timer) {

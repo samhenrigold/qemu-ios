@@ -271,6 +271,13 @@ bool qemu_ios_ui_ready(void)
 void qemu_ios_ui_vm_stopped(void)
 {
     qatomic_set(&ios_vm_alive, 0);
+    /* Also drop `attached`. It used to stay true for the life of the process,
+     * so every entry point below that guarded on it kept accepting work after
+     * the main loop had gone -- most damagingly snapshot_save2, which then
+     * queued a BH nobody would ever run and pinned its status at RUNNING,
+     * stalling the app's save poll for its full timeout on every quit that
+     * races the VM exiting. */
+    ios.attached = false;
 }
 
 void qemu_ios_ui_vm_started(void)
@@ -391,7 +398,7 @@ void qemu_ios_ui_touch(int slot, int phase, double nx, double ny)
 {
     struct ios_touch *t;
 
-    if (slot != 0 || !ios.attached) {
+    if (slot != 0 || !qemu_ios_ui_ready()) {
         return;                 /* one finger; no AIO context before attach */
     }
 
@@ -436,7 +443,7 @@ void qemu_ios_ui_button(int button, bool down)
 {
     struct ios_button *b;
 
-    if (!ios.attached) {
+    if (!qemu_ios_ui_ready()) {
         return;
     }
     b = g_new0(struct ios_button, 1);
@@ -488,7 +495,7 @@ static void ios_snapshot_bh(void *opaque)
 
 void qemu_ios_snapshot_save(const char *path)
 {
-    if (!ios.attached) {
+    if (!qemu_ios_ui_ready()) {
         return;
     }
     /* Runs on the QEMU thread under the BQL, like every other command here. */
@@ -568,7 +575,7 @@ static void ios_snapshot2_bh(void *opaque)
 
 void qemu_ios_snapshot_save2(const char *path)
 {
-    if (!ios.attached) {
+    if (!qemu_ios_ui_ready()) {
         snprintf(ios_snap_err, sizeof(ios_snap_err), "device not attached");
         qatomic_set(&ios_snap_status, QEMU_IOS_SNAPSHOT_FAILED);
         return;
@@ -616,6 +623,10 @@ static void ios_snapshot_resume_bh(void *opaque)
 
 void qemu_ios_snapshot_resume(void)
 {
+    if (!qemu_ios_ui_ready()) {
+        return;   /* NULL AioContext before qemu_init(); the only entry point
+                   * here that was missing this check. */
+    }
     aio_bh_schedule_oneshot(qemu_get_aio_context(), ios_snapshot_resume_bh, NULL);
 }
 
@@ -668,7 +679,7 @@ void qemu_ios_set_foreground(bool foreground)
 {
     gles_host_set_allowed(foreground);
 
-    if (foreground && ios.attached) {
+    if (foreground && qemu_ios_ui_ready()) {
         aio_bh_schedule_oneshot(qemu_get_aio_context(), ios_resume_bh, NULL);
     }
 }
