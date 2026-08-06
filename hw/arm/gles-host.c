@@ -3107,8 +3107,48 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         return 0;
     }
 
+    case GLES_OP_LOG: {              /* guest bytes, length */
+        char buf[512];
+        uint32_t n = a[1];
+
+        if (!a[0] || !n) {
+            return 0;
+        }
+        if (n > sizeof(buf) - 1) {
+            n = sizeof(buf) - 1;
+        }
+        if (cpu_memory_rw_debug(cpu, a[0], (uint8_t *)buf, n, 0) != 0) {
+            return -1;
+        }
+        buf[n] = 0;
+        fputs(buf, stderr);
+        return 0;
+    }
+
     case GLES_OP_PRESENT_SURFACE: {  /* base, stride, w, h, format */
         uint64_t t0 = gles_t();
+
+        /*
+         * IT_GLES_PANEL_ALSO: blit the same frame straight to where the LCD
+         * scans out, in ADDITION to writing CoreAnimation's surface. Anything
+         * CA composites afterwards overwrites it, so if the frame becomes
+         * visible with this on and not without, the pixels are reaching the
+         * surface and CA is discarding them -- which separates our present
+         * from CA's compositing. Nothing guest-side can distinguish those:
+         * the shim reports the surface accepted and every present accepted in
+         * both cases.
+         */
+        {
+            static int also = -1;
+
+            if (also < 0) {
+                const char *e = getenv("IT_GLES_PANEL_ALSO");
+                also = e ? atoi(e) : 0;
+            }
+            if (also) {
+                gles_present_to_panel();
+            }
+        }
 
         /*
          * Which SURFACE we are presenting into, reported when it changes.
@@ -3991,9 +4031,23 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     }
 
     case GLES_SLOT_TEX_PARAMETERX:              /* target, pname, param */
-        /* ES fixed-point 16.16. Every pname this accepts takes an enum or an
-         * integer, so the value converts to int rather than staying a scale. */
-        glTexParameteri(a[0], a[1], (int32_t)a[2] >> 16);
+        /*
+         * The value is passed RAW, not shifted.
+         *
+         * glTexParameterx's parameter is typed GLfixed, but every pname ES 1.1
+         * accepts here is enum- or integer-valued -- the filters, the wrap
+         * modes, GL_GENERATE_MIPMAP -- and those are passed as themselves. Only
+         * a genuinely numeric parameter would be 16.16, and this entry point
+         * has none.
+         *
+         * Treating it as fixed-point turned GL_LINEAR (0x2601) into 0, which is
+         * GL_INVALID_ENUM, so the filter was never set and the texture kept the
+         * default GL_NEAREST_MIPMAP_LINEAR -- incomplete for anything without a
+         * mip chain. It showed up as SpringBoard's icons losing their
+         * rounded-corner mask and gloss, both of which are composite-time
+         * decoration sampled from exactly such a texture.
+         */
+        glTexParameteri(a[0], a[1], (int32_t)a[2]);
         return 0;
 
     case GLES_SLOT_READ_PIXELS: {
