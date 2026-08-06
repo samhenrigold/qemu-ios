@@ -79,6 +79,11 @@
 #define glRenderbufferStorageEXT      glRenderbufferStorageOES
 #define glFramebufferRenderbufferEXT  glFramebufferRenderbufferOES
 #define glCheckFramebufferStatusEXT   glCheckFramebufferStatusOES
+#define glDeleteFramebuffersEXT       glDeleteFramebuffersOES
+#define glDeleteRenderbuffersEXT      glDeleteRenderbuffersOES
+#define glGetRenderbufferParameterivEXT glGetRenderbufferParameterivOES
+#define GL_RGB8                       GL_RGB8_OES
+#define GL_RGBA8                      GL_RGBA8_OES
 #define GL_FRAMEBUFFER_EXT            GL_FRAMEBUFFER_OES
 #define GL_RENDERBUFFER_EXT           GL_RENDERBUFFER_OES
 #define GL_COLOR_ATTACHMENT0_EXT      GL_COLOR_ATTACHMENT0_OES
@@ -250,10 +255,25 @@ typedef struct {
 
     uint8_t *readback;  /* GLES_FB_WIDTH * GLES_FB_HEIGHT * 4 */
 
-    /* Guest-visible FBO/renderbuffer names. Handed out but never bound to
-     * anything on the host -- see the OES cases in the dispatch switch. */
-    uint32_t next_fbo_name;
+    /*
+     * Framebuffer objects, wired to real host FBOs -- with ONE exception.
+     *
+     * Exactly one of the guest's framebuffers is the drawable: CoreAnimation
+     * owns its colour renderbuffer and we present out of gh.fbo, so that one
+     * has to keep resolving to gh.fbo. Every OTHER framebuffer the guest
+     * creates is a genuine offscreen target and gets a genuine host FBO.
+     *
+     * Telling them apart needs no guesswork. EAGL gives the drawable its
+     * storage through -renderbufferStorage:fromDrawable:, which is not a GL
+     * call at all, so the drawable renderbuffer is precisely the one the guest
+     * never passes to glRenderbufferStorage. rb_sized records the ones it
+     * does; a colour attachment missing from that set marks its framebuffer
+     * as the drawable, in fbo_drawable.
+     */
+    GHashTable *rb_sized;       /* renderbuffer name -> given explicit storage */
+    GHashTable *fbo_drawable;   /* framebuffer name  -> is the CA drawable */
     uint32_t bound_renderbuffer;
+    uint32_t bound_framebuffer;
 
     uint64_t draws;
     uint64_t presents;
@@ -541,6 +561,36 @@ static inline void gles_platform_frame_unlock(void)
 /* Defined with the compressed-texture decoder below; run once from init. */
 static void pvrtc_selfcheck(void);
 
+/*
+ * The host framebuffer a guest framebuffer name means. Everything resolves to
+ * itself except the drawable -- and framebuffer 0, which on iOS is never the
+ * render target (EAGL always renders into an FBO) but is what an app binds to
+ * mean "back to the screen".
+ */
+static GLuint gles_host_fbo(uint32_t name)
+{
+    if (!name || g_hash_table_contains(gh.fbo_drawable,
+                                       GUINT_TO_POINTER(name))) {
+        return gh.fbo;
+    }
+    return name;
+}
+
+/*
+ * ES renderbuffer formats in desktop GL terms. Most are spelled the same, but
+ * GL_RGB565 is ES-only and desktop GL rejects it -- which would leave the
+ * framebuffer INCOMPLETE and the app staring at an empty target.
+ */
+static GLenum gles_rb_format(uint32_t fmt)
+{
+    switch (fmt) {
+    case 0x8D62: return GL_RGB8;    /* GL_RGB565 -- no desktop equivalent */
+    case 0x8058: return GL_RGBA8;   /* GL_RGBA8_OES  */
+    case 0x8051: return GL_RGB8;    /* GL_RGB8_OES   */
+    default:     return fmt;        /* RGBA4, RGB5_A1, DEPTH_COMPONENT16... */
+    }
+}
+
 static bool gles_host_init(void)
 {
     if (gh.inited) {
@@ -554,6 +604,9 @@ static bool gles_host_init(void)
         gh.failed = true;
         return false;
     }
+
+    gh.rb_sized = g_hash_table_new(g_direct_hash, g_direct_equal);
+    gh.fbo_drawable = g_hash_table_new(g_direct_hash, g_direct_equal);
 
     glGenFramebuffersEXT(1, &gh.fbo);
     glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gh.fbo);
@@ -1901,9 +1954,17 @@ static void gles_present_to_panel(void)
         return;
     }
 
+    /* Read the DRAWABLE, whatever the guest happens to have bound. Now that
+     * offscreen framebuffers are real, "the bound FBO" and "the frame we
+     * present" are no longer the same thing, and a guest that presents with
+     * its render-to-texture target still bound would otherwise have that
+     * texture scanned out to the panel. */
+    glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gh.fbo);
     glFinish();
     glReadPixels(0, 0, GLES_FB_WIDTH, GLES_FB_HEIGHT, GL_RGBA,
                  GL_UNSIGNED_BYTE, gh.readback);
+    glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,
+                         gles_host_fbo(gh.bound_framebuffer));
 
     for (y = 0; y < GLES_FB_HEIGHT; y++) {
         uint8_t row[GLES_FB_WIDTH * 4];
@@ -2412,6 +2473,9 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
             return 0;
         }
 
+        /* Same as the panel present above: read the drawable, not whichever
+         * offscreen target the guest left bound. */
+        glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gh.fbo);
         glFinish();
 
         /*
@@ -2470,6 +2534,9 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
             gles_dump_frame(gh.readback, (size_t)rw * 4, rw, rh, bgra);
         }
     }
+    /* Hand the guest's own render target back; the present borrowed it. */
+    glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,
+                         gles_host_fbo(gh.bound_framebuffer));
     gh.presents++;
     gles_note_scene();
     gles_note_frame_gap();
@@ -3463,58 +3530,149 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         return glGetError();
 
     /*
-     * OES framebuffer objects.
+     * OES framebuffer objects, executed rather than answered.
      *
-     * These are answered rather than executed. The guest's renderbuffer IS the
-     * drawable -- CoreAnimation allocated it and we present into it through
-     * GLES_OP_PRESENT_SURFACE -- so there is nothing on the host for the guest's
-     * FBO names to attach to. The host renders into its own FBO regardless.
-     * What EAGL needs from these calls is plausible bookkeeping: names that are
-     * non-zero, dimensions that match the drawable, and a framebuffer that
-     * reports COMPLETE. Wiring them to real host FBO state would be work with
-     * no observable effect.
+     * These used to be a facade: every call returned 0, glCheckFramebufferStatus
+     * always claimed COMPLETE, and every draw landed in gh.fbo no matter what
+     * the guest had bound. That is accidentally correct for an app with a
+     * single render target -- which is most of them, and why it survived --
+     * but it silently destroys any app that renders to more than one. Binding
+     * a second framebuffer did nothing, so a scene meant for an offscreen
+     * texture was drawn over the drawable instead and the texture stayed
+     * empty. Labyrinth's 3D level came out WHITE for exactly this reason: it
+     * renders the world to a texture via glFramebufferTexture2DOES, then draws
+     * that texture to the screen, and the texture it sampled was never
+     * written. Its menus are UIKit, which is why only the game looked broken.
+     *
+     * So the names are real host names and the calls are real host calls. Only
+     * the drawable framebuffer is special-cased -- see gh.fbo_drawable.
      */
     case GLES_SLOT_GEN_RENDERBUFFERS:
     case GLES_SLOT_GEN_FRAMEBUFFERS: {   /* n, guest uint* */
-        uint32_t n = a[0], i;
-        g_autofree uint32_t *ids = NULL;
+        uint32_t n = a[0];
+        g_autofree GLuint *ids = NULL;
         if (n > GLES_MAX_NAMES) {
             fprintf(stderr, "[gles] glGen*: n=%u exceeds cap\n", n);
             return -1;
         }
-        ids = g_new0(uint32_t, n ? n : 1);
-        for (i = 0; i < n; i++) {
-            ids[i] = ++gh.next_fbo_name;
+        ids = g_new0(GLuint, n ? n : 1);
+        if (slot == GLES_SLOT_GEN_RENDERBUFFERS) {
+            glGenRenderbuffersEXT(n, ids);
+        } else {
+            glGenFramebuffersEXT(n, ids);
         }
         if (a[1] && n) {
             cpu_memory_rw_debug(cpu, a[1], (uint8_t *)ids,
-                                n * sizeof(uint32_t), 1);
+                                n * sizeof(GLuint), 1);
         }
         return 0;
     }
 
-    case GLES_SLOT_BIND_RENDERBUFFER:
+    case GLES_SLOT_BIND_RENDERBUFFER:    /* target, renderbuffer */
         gh.bound_renderbuffer = a[1];
+        glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, a[1]);
         return 0;
 
-    case GLES_SLOT_BIND_FRAMEBUFFER:
-    case GLES_SLOT_DELETE_RENDERBUFFERS:
-    case GLES_SLOT_DELETE_FRAMEBUFFERS:
-    case GLES_SLOT_RENDERBUFFER_STORAGE:
-    case GLES_SLOT_FB_RENDERBUFFER:
-    case GLES_SLOT_FB_TEXTURE_2D:
+    case GLES_SLOT_BIND_FRAMEBUFFER:     /* target, framebuffer */
+        gh.bound_framebuffer = a[1];
+        glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gles_host_fbo(a[1]));
         return 0;
+
+    case GLES_SLOT_RENDERBUFFER_STORAGE: /* target, internalformat, w, h */
+        /* Storage through GL means this is NOT the drawable; the drawable gets
+         * its own from -renderbufferStorage:fromDrawable:, outside GL. */
+        g_hash_table_add(gh.rb_sized,
+                         GUINT_TO_POINTER(gh.bound_renderbuffer));
+        glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT,
+                                 gles_rb_format(a[1]), a[2], a[3]);
+        return 0;
+
+    case GLES_SLOT_FB_RENDERBUFFER: {    /* target, attach, rbtarget, rb */
+        uint32_t attach = a[1], rb = a[3];
+        /*
+         * A colour attachment whose renderbuffer never got GL storage is the
+         * CA drawable, so this framebuffer is the one that must keep meaning
+         * gh.fbo. Its attachments are then left alone entirely -- gh.fbo
+         * already carries the colour target we present out of and a matching
+         * depth buffer, and letting the guest re-attach over either would
+         * break the present path.
+         */
+        if (attach == GL_COLOR_ATTACHMENT0_EXT && rb
+            && !g_hash_table_contains(gh.rb_sized, GUINT_TO_POINTER(rb))) {
+            g_hash_table_add(gh.fbo_drawable,
+                             GUINT_TO_POINTER(gh.bound_framebuffer));
+            glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gh.fbo);
+            return 0;
+        }
+        if (g_hash_table_contains(gh.fbo_drawable,
+                                  GUINT_TO_POINTER(gh.bound_framebuffer))) {
+            return 0;
+        }
+        glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, attach,
+                                     GL_RENDERBUFFER_EXT, rb);
+        return 0;
+    }
+
+    case GLES_SLOT_FB_TEXTURE_2D:        /* target, attach, textarget, tex, lvl */
+        if (g_hash_table_contains(gh.fbo_drawable,
+                                  GUINT_TO_POINTER(gh.bound_framebuffer))) {
+            return 0;
+        }
+        glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, a[1], a[2], a[3], a[4]);
+        return 0;
+
+    case GLES_SLOT_DELETE_RENDERBUFFERS:
+    case GLES_SLOT_DELETE_FRAMEBUFFERS: {   /* n, guest const uint* */
+        uint32_t n = a[0], i;
+        g_autofree GLuint *ids = NULL;
+        if (n > GLES_MAX_NAMES) {
+            fprintf(stderr, "[gles] glDelete*: n=%u exceeds cap\n", n);
+            return -1;
+        }
+        if (!n || !a[1]) {
+            return 0;
+        }
+        ids = g_new0(GLuint, n);
+        cpu_memory_rw_debug(cpu, a[1], (uint8_t *)ids, n * sizeof(GLuint), 0);
+        if (slot == GLES_SLOT_DELETE_RENDERBUFFERS) {
+            for (i = 0; i < n; i++) {
+                g_hash_table_remove(gh.rb_sized, GUINT_TO_POINTER(ids[i]));
+            }
+            glDeleteRenderbuffersEXT(n, ids);
+        } else {
+            for (i = 0; i < n; i++) {
+                /* Never let the guest delete gh.fbo out from under the
+                 * present path by deleting the name that stands for it. */
+                if (g_hash_table_remove(gh.fbo_drawable,
+                                        GUINT_TO_POINTER(ids[i]))) {
+                    ids[i] = 0;
+                }
+            }
+            glDeleteFramebuffersEXT(n, ids);
+        }
+        return 0;
+    }
 
     case GLES_SLOT_CHECK_FB_STATUS:
-        return 0x8CD5;                   /* GL_FRAMEBUFFER_COMPLETE_OES */
+        /* Report what the host actually thinks. Claiming COMPLETE
+         * unconditionally is how an app gets told its render target is fine
+         * when nothing was ever attached to it. */
+        return glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
 
     case GLES_SLOT_GET_RB_PARAMETERIV: { /* target, pname, guest int* */
-        uint32_t v = 0;
-        switch (a[1]) {
-        case 0x8D42: v = GLES_FB_WIDTH;  break;  /* RENDERBUFFER_WIDTH_OES  */
-        case 0x8D43: v = GLES_FB_HEIGHT; break;  /* RENDERBUFFER_HEIGHT_OES */
-        case 0x8D44: v = 0x8058;         break;  /* INTERNAL_FORMAT -> RGBA8 */
-        default:     v = 0;              break;
+        GLint v = 0;
+        if (g_hash_table_contains(gh.rb_sized,
+                                  GUINT_TO_POINTER(gh.bound_renderbuffer))) {
+            glGetRenderbufferParameterivEXT(GL_RENDERBUFFER_EXT, a[1], &v);
+        } else {
+            /* The drawable: CA owns its storage, so the host renderbuffer has
+             * none to report and the answer is the panel's own geometry. */
+            switch (a[1]) {
+            case 0x8D42: v = GLES_FB_WIDTH;  break; /* RENDERBUFFER_WIDTH_OES  */
+            case 0x8D43: v = GLES_FB_HEIGHT; break; /* RENDERBUFFER_HEIGHT_OES */
+            case 0x8D44: v = 0x8058;         break; /* INTERNAL_FORMAT -> RGBA8 */
+            default:     v = 0;              break;
+            }
         }
         if (a[2]) {
             cpu_memory_rw_debug(cpu, a[2], (uint8_t *)&v, sizeof(v), 1);
