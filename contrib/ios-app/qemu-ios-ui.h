@@ -44,6 +44,14 @@ void qemu_ios_ui_attach(qemu_ios_frame_cb cb, void *opaque);
 void qemu_ios_ui_vm_started(void);
 
 /*
+ * True only while the emulator is initialised and its main loop is running.
+ * Entry points that schedule bottom halves must check this: before qemu_init()
+ * the AioContext is NULL, and after the main loop returns nothing services it.
+ */
+bool qemu_ios_ui_ready(void);
+void qemu_ios_ui_vm_stopped(void);
+
+/*
  * The newest frame as tightly packed BGRA, WITHOUT a copy. `serial` is in-out:
  * pass the last one you saw and this returns false if nothing is newer, which
  * is the common case (the guest paints slower than the display refreshes).

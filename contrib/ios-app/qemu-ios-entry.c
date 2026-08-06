@@ -51,6 +51,11 @@ int qemu_ios_main(int argc, char **argv)
     replay_mutex_lock();
     bql_lock();
     status = qemu_main_loop();
+
+    /* Main loop is done: no further bottom half will ever run. Tell the
+     * app side before cleanup so late input events are dropped rather than
+     * queued onto a context nobody services. */
+    qemu_ios_ui_vm_stopped();
     qemu_cleanup(status);
     bql_unlock();
     replay_mutex_unlock();

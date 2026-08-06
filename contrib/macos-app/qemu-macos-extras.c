@@ -23,6 +23,13 @@
 
 #include "qemu-macos-extras.h"
 
+/* From qemu-ios-ui.c. Forward-declared rather than #included: that header
+ * has no include guards (see the note below). True only while the emulator
+ * is initialised and its main loop is running -- every entry point here
+ * schedules a bottom half, and the AioContext is NULL before qemu_init()
+ * and unserviced after the main loop returns. */
+bool qemu_ios_ui_ready(void);
+
 /*
  * system/main.c (replaced by qemu-ios-entry.c) defined this; ui/cocoa.m still
  * references it. It stays NULL under -display none, and qemu-ios-entry.c owns
@@ -78,6 +85,9 @@ static void mtt_bh(void *opaque)
 
 void qemu_ios_ui_touch2(int phase, double nx, double ny)
 {
+    if (!qemu_ios_ui_ready()) {
+        return;
+    }
     struct mtt_touch *t = g_new0(struct mtt_touch, 1);
     t->phase = phase;
     t->nx = nx;
@@ -105,6 +115,9 @@ static void key_bh(void *opaque)
 
 void qemu_ios_ui_key(int qcode, bool down)
 {
+    if (!qemu_ios_ui_ready()) {
+        return;
+    }
     struct key_event *k = g_new0(struct key_event, 1);
     k->qcode = qcode;
     k->down = down;
@@ -200,6 +213,9 @@ static void rotate_bh(void *opaque)
 
 void qemu_ios_ui_rotate(bool clockwise)
 {
+    if (!qemu_ios_ui_ready()) {
+        return;
+    }
     aio_bh_schedule_oneshot(qemu_get_aio_context(), rotate_bh,
                             (void *)(intptr_t)clockwise);
 }
@@ -220,6 +236,9 @@ static void shake_bh(void *opaque)
 
 void qemu_ios_ui_shake(void)
 {
+    if (!qemu_ios_ui_ready()) {
+        return;
+    }
     aio_bh_schedule_oneshot(qemu_get_aio_context(), shake_bh, NULL);
 }
 
@@ -242,6 +261,9 @@ static void accel_bh(void *opaque)
 
 void qemu_ios_ui_accel(int x, int y, int z)
 {
+    if (!qemu_ios_ui_ready()) {
+        return;
+    }
     int *v = g_new(int, 3);
     v[0] = x; v[1] = y; v[2] = z;
     aio_bh_schedule_oneshot(qemu_get_aio_context(), accel_bh, v);
@@ -263,6 +285,9 @@ static void paste_bh(void *opaque)
 
 void qemu_ios_ui_paste(const char *utf8)
 {
+    if (!qemu_ios_ui_ready()) {
+        return;
+    }
     aio_bh_schedule_oneshot(qemu_get_aio_context(), paste_bh, g_strdup(utf8));
 }
 
@@ -284,6 +309,9 @@ static void qmp_bh(void *opaque)
 
 static void schedule_qmp(qmp_void_fn fn)
 {
+    if (!qemu_ios_ui_ready()) {
+        return;
+    }
     aio_bh_schedule_oneshot(qemu_get_aio_context(), qmp_bh, (void *)fn);
 }
 
