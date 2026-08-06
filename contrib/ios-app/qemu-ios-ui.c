@@ -47,6 +47,9 @@ void gles_host_set_allowed(bool allowed);
  */
 #define IOS_FRAME_BUFFERS 3
 
+/* Set once the console/display are attached, cleared when the main loop returns. */
+static int ios_vm_alive;
+
 static struct {
     DisplayChangeListener dcl;
     QemuConsole *con;
@@ -248,6 +251,27 @@ static const DisplayChangeListenerOps ios_dcl_ops = {
  * the app -- the obvious design -- dereferences a null context and segfaults
  * on the app's main thread.
  */
+/*
+ * Whether the emulator is up and its AioContext is safe to schedule onto.
+ *
+ * qemu_get_aio_context() returns NULL until qemu_init() has run, and after the
+ * main loop returns the context is no longer serviced -- so a bottom half
+ * scheduled outside that window either dereferences NULL on the app's main
+ * thread or is silently dropped (leaking its payload). The app starts QEMU on a
+ * background thread and shows its window immediately, so key/mouse/tilt events
+ * genuinely can arrive on both sides of that window. Every ABI entry point that
+ * schedules work checks this first.
+ */
+bool qemu_ios_ui_ready(void)
+{
+    return qatomic_read(&ios_vm_alive) != 0;
+}
+
+void qemu_ios_ui_vm_stopped(void)
+{
+    qatomic_set(&ios_vm_alive, 0);
+}
+
 void qemu_ios_ui_vm_started(void)
 {
     int i;
@@ -266,6 +290,7 @@ void qemu_ios_ui_vm_started(void)
     ios.dcl.con = ios.con;
     register_displaychangelistener(&ios.dcl);
     ios.attached = true;
+    qatomic_set(&ios_vm_alive, 1);
 }
 
 /* --- app thread -------------------------------------------------------- */
@@ -447,6 +472,9 @@ static void ios_snapshot_bh(void *opaque)
         return;
     }
 
+    /* Omit global-state so the restore autostarts running, not frozen-paused.
+     * See ios_snapshot2_bh for the full reasoning. */
+    migrate_get_current()->store_global_state = false;
     qmp_migrate(uri, false, NULL, false, false, false, false, &err);
     if (err) {
         fprintf(stderr, "[snapshot] save failed: %s\n", error_get_pretty(err));
@@ -486,6 +514,18 @@ bool qemu_ios_snapshot_done(void)
  */
 static int ios_snap_status = QEMU_IOS_SNAPSHOT_IDLE;
 static char ios_snap_err[256];
+/*
+ * Whether THIS save's bottom half has run and its qmp_migrate was accepted.
+ *
+ * Without it, status() resolved RUNNING by reading migrate_get_current()->state
+ * -- a global only reset to SETUP inside qmp_migrate, i.e. inside the BH. After
+ * one successful save it stays COMPLETED forever, so the SECOND save in a
+ * process read COMPLETED before its BH had run and reported DONE instantly. The
+ * app then ran its atomic promote: deleted the good snapshot and renamed a .tmp
+ * that did not exist yet -- silent total loss of the saved state, reported as
+ * success. Gate the migration-state read on the BH having actually started.
+ */
+static int ios_snap_bh_ran;
 
 static void ios_snapshot2_bh(void *opaque)
 {
@@ -501,12 +541,25 @@ static void ios_snapshot2_bh(void *opaque)
         g_free(path);
         return;
     }
+    /*
+     * Do NOT migrate the global-state section. It would record the runstate we
+     * just stopped into ("paused"), and on restore process_incoming_migration_bh
+     * sees a non-live target runstate and parks the machine paused forever --
+     * autostart (qemu-ios-entry.c) is bypassed and the guest comes back frozen:
+     * no vCPU, no input, no orientation. With the section omitted the
+     * destination assumes RUNNING (migration_get_target_runstate) and autostart
+     * resumes the vCPU the instant the incoming stream is consumed. We never use
+     * suspend, so nothing else in global-state is needed.
+     */
+    migrate_get_current()->store_global_state = false;
     qmp_migrate(uri, false, NULL, false, false, false, false, &err);
     if (err) {
         snprintf(ios_snap_err, sizeof(ios_snap_err), "save: %s", error_get_pretty(err));
         error_free(err);
         qatomic_set(&ios_snap_status, QEMU_IOS_SNAPSHOT_FAILED);
     } else {
+        /* Migration accepted: only NOW may status() trust the migration state. */
+        qatomic_set(&ios_snap_bh_ran, 1);
         fprintf(stderr, "[snapshot] writing %s\n", path);
     }
     g_free(path);
@@ -520,6 +573,7 @@ void qemu_ios_snapshot_save2(const char *path)
         return;
     }
     ios_snap_err[0] = '\0';
+    qatomic_set(&ios_snap_bh_ran, 0);
     /* Set RUNNING here, on the app thread, so a status() before the BH runs
      * does not read a leftover DONE/IDLE. */
     qatomic_set(&ios_snap_status, QEMU_IOS_SNAPSHOT_RUNNING);
@@ -529,9 +583,11 @@ void qemu_ios_snapshot_save2(const char *path)
 QemuIosSnapshotStatus qemu_ios_snapshot_status(char *errbuf, unsigned long errlen)
 {
     int s = qatomic_read(&ios_snap_status);
-    if (s == QEMU_IOS_SNAPSHOT_RUNNING) {
-        /* Resolve against the migration state. Reading the enum field is a
-         * plain int load; good enough for a status poll. */
+    if (s == QEMU_IOS_SNAPSHOT_RUNNING && qatomic_read(&ios_snap_bh_ran)) {
+        /* Resolve against the migration state -- but only once this save's BH
+         * has actually started a migration, or we would read the PREVIOUS
+         * save's leftover COMPLETED. Reading the enum field is a plain int
+         * load; good enough for a status poll. */
         MigrationState *ms = migrate_get_current();
         int st = ms ? (int)ms->state : 0;
         if (st == MIGRATION_STATUS_COMPLETED) {
