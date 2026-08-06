@@ -22,6 +22,7 @@
 #include "qemu/log.h"
 #include "hw/hw.h"
 #include "hw/arm/ipod_touch_usb_otg.h"
+#include "qemu/timer.h"
 #include "migration/vmstate.h"
 
 /*
@@ -1014,11 +1015,39 @@ DeviceState *ipod_touch_init_usb_otg(qemu_irq _irq, uint32_t _hwcfg[4])
     return dev;
 }
 
+/*
+ * Redial the host bridge whenever the link is down. A core soft reset also
+ * retries, but the guest only resets the core around its own USB state
+ * changes -- if usbmuxd drops the connection while the guest is up and idle
+ * (its socket timeout misreading a busy guest as a wedged one, say), nothing
+ * ever redials and the device is stranded until reboot. usbmuxd answers a
+ * fresh connection by re-enumerating, which the guest experiences as the
+ * cable being replugged.
+ */
+#define TCP_USB_RETRY_MS 3000
+
+static void synopsys_usb_tcp_retry_tick(void *opaque)
+{
+    synopsys_usb_state *state = opaque;
+
+    if (!state->tcp_connected || tcp_usb_closed(&state->tcp_state)) {
+        synopsys_usb_tcp_start(state);
+    }
+    timer_mod(state->tcp_retry_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + TCP_USB_RETRY_MS);
+}
+
 static void s5l8900_usb_otg_realize(DeviceState *dev, Error **errp)
 {
+    synopsys_usb_state *state = S5L8900USBOTG(dev);
+
     /* Dial the host bridge once, if one is configured. A core soft reset
      * retries, so the bridge may also be started after the guest is up. */
-    synopsys_usb_tcp_start(S5L8900USBOTG(dev));
+    synopsys_usb_tcp_start(state);
+    state->tcp_retry_timer = timer_new_ms(QEMU_CLOCK_REALTIME,
+                                          synopsys_usb_tcp_retry_tick, state);
+    timer_mod(state->tcp_retry_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + TCP_USB_RETRY_MS);
 }
 
 static const VMStateDescription vmstate_synopsys_usb_ep = {
