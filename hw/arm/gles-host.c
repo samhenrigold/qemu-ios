@@ -304,6 +304,12 @@ typedef struct {
     bool fb_dirty;
 
     uint64_t draws;
+    /* Draws split by WHERE they landed. "The screen is blank but the app is
+     * drawing" has two completely different causes -- geometry going to an
+     * offscreen target that is never sampled back, or no geometry at all --
+     * and the frame counter alone cannot tell them apart. */
+    uint64_t draws_drawable, draws_offscreen;
+    uint64_t last_report_drawable, last_report_offscreen;
     uint64_t presents;
 
     /* Split by call, and reported per burst of frames. "The scene is empty"
@@ -1796,6 +1802,12 @@ static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
     unsigned i;
     uint64_t t0;
 
+    if (gles_is_drawable(gh.bound_framebuffer)) {
+        gh.draws_drawable++;
+    } else {
+        gh.draws_offscreen++;
+    }
+
     /* Both of these are ALWAYS on -- see the note in gles_check_fb_complete. */
     gles_check_fb_complete();
     gles_check_texcoords();
@@ -2445,10 +2457,15 @@ static void gles_report_progress(void)
     dt = gh.last_report_present ? now_ms - gh.last_report_present : 0;
     fprintf(stderr, "[gles] %" PRIu64 " frames; last 60 in %" PRIu64 " ms "
             "(%.1f fps), draws since last: %" PRIu64 " arrays / %" PRIu64
-            " elements\n",
+            " elements (%" PRIu64 " to the drawable, %" PRIu64
+            " offscreen)\n",
             gh.presents, dt, dt ? 60000.0 / (double)dt : 0.0,
             gh.draw_arrays - gh.last_report_arrays,
-            gh.draw_elements - gh.last_report_elements);
+            gh.draw_elements - gh.last_report_elements,
+            gh.draws_drawable - gh.last_report_drawable,
+            gh.draws_offscreen - gh.last_report_offscreen);
+    gh.last_report_drawable = gh.draws_drawable;
+    gh.last_report_offscreen = gh.draws_offscreen;
 
     /*
      * The accounting line. Percentages are of WALL time over the same 60
