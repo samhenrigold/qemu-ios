@@ -298,6 +298,10 @@ typedef struct {
     GHashTable *fbo_drawable;   /* framebuffer name  -> is the CA drawable */
     uint32_t bound_renderbuffer;
     uint32_t bound_framebuffer;
+    /* Set whenever the render target or its attachments change; the draw path
+     * revalidates completeness only when it is set, which is what makes the
+     * check cheap enough to leave on permanently. */
+    bool fb_dirty;
 
     uint64_t draws;
     uint64_t presents;
@@ -1753,9 +1757,20 @@ static void gles_check_fb_complete(void)
     GLenum st;
     unsigned i;
 
-    if (!gles_strict) {
+    /*
+     * NOT gated behind IT_GLES_STRICT. This one has to be on by default: an
+     * incomplete framebuffer draws nothing, and the resulting blank screen is
+     * indistinguishable from every other cause of a blank screen. A diagnostic
+     * you only get by knowing a flag exists is not a diagnostic -- this stayed
+     * silent through two rounds of debugging Labyrinth for exactly that reason.
+     *
+     * The cost is one glCheckFramebufferStatus per render-target change rather
+     * than per draw, which is nothing.
+     */
+    if (!gh.fb_dirty) {
         return;
     }
+    gh.fb_dirty = false;
     st = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
     if (st == GL_FRAMEBUFFER_COMPLETE_EXT) {
         return;
@@ -1775,14 +1790,14 @@ static void gles_check_fb_complete(void)
 
 static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
 {
-    gles_check_fb_complete();
-
     static GLenum reported[8];
     static unsigned n_reported;
     GLenum e;
     unsigned i;
     uint64_t t0;
 
+    /* Both of these are ALWAYS on -- see the note in gles_check_fb_complete. */
+    gles_check_fb_complete();
     gles_check_texcoords();
 
     /* See IT_GLES_STRICT: this is a queue drain, once per draw. */
@@ -3859,6 +3874,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     case GLES_SLOT_BIND_FRAMEBUFFER:     /* target, framebuffer */
         gh.bound_framebuffer = a[1];
+        gh.fb_dirty = true;
         glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gles_host_fbo(a[1]));
         return 0;
 
@@ -3883,6 +3899,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                                   gh.rb_sized, GUINT_TO_POINTER(rb)));
         }
         gles_trace_attach("glFramebufferRenderbuffer", attach, rb);
+        gh.fb_dirty = true;
         if (gles_is_drawable(gh.bound_framebuffer)) {
             /* gh.fbo already carries the colour target we present out of and a
              * matching depth buffer; re-attaching over either breaks the
@@ -3908,6 +3925,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             gles_set_drawable(gh.bound_framebuffer, false);
         }
         gles_trace_attach("glFramebufferTexture2D", a[1], a[3]);
+        gh.fb_dirty = true;
         if (gles_is_drawable(gh.bound_framebuffer)) {
             return 0;
         }
