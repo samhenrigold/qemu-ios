@@ -977,6 +977,28 @@ static void s5l8900_usb_otg_reset(DeviceState *d)
 		out->interrupt_status = 0;
 	}
 
+	/*
+	 * Drop the host link so the reset looks like a cable replug.
+	 *
+	 * Everything above returns the core to its power-on state, but the TCP
+	 * connection to usbmuxd used to survive untouched -- and usbmuxd had no way
+	 * to notice. Its device record stayed alive (no EOF on the socket), the
+	 * bulk IN poll just NAKed forever, and NAK is not one of the codes that
+	 * clears `alive`, so the device was never reaped or re-enumerated. After a
+	 * guest reboot or Device > Restart the daemon therefore held a permanently
+	 * dead device: the app still reported "Running", deviceReady() still said
+	 * yes (idevice_new succeeds against the stale record), and every install or
+	 * list hung until its own deadline with no recovery short of quitting.
+	 *
+	 * Closing it here gives usbmuxd the EOF it needs to reap and re-enumerate,
+	 * and the 3 s retry tick below redials once the guest re-arms the core --
+	 * which is exactly the replug this transport already knows how to handle.
+	 */
+	if (state->tcp_connected) {
+		tcp_usb_cleanup(&state->tcp_state);
+		state->tcp_connected = false;
+	}
+
 	synopsys_usb_update_irq(state);
 }
 
