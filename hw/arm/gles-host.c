@@ -626,6 +626,21 @@ static void gles_set_drawable(uint32_t name, bool drawable)
     }
 }
 
+/* Every attachment change, with the role it left the framebuffer in. Which
+ * framebuffer is the drawable decides where a whole pass lands, and getting it
+ * wrong sends a render-to-texture to the screen with no error anywhere. */
+static void gles_trace_attach(const char *what, uint32_t attach, uint32_t obj)
+{
+    if (!getenv("IT_GLES_VERBOSE")) {
+        return;
+    }
+    fprintf(stderr, "[gles] %s(attach=0x%x obj=%u) on fb %u -> %s (host %u)\n",
+            what, attach, obj, gh.bound_framebuffer,
+            gles_is_drawable(gh.bound_framebuffer) ? "DRAWABLE" : "offscreen",
+            gles_host_fbo(gh.bound_framebuffer));
+}
+
+
 /*
  * ES renderbuffer formats in desktop GL terms. Most are spelled the same, but
  * GL_RGB565 is ES-only and desktop GL rejects it -- which would leave the
@@ -1721,8 +1736,47 @@ static void gles_check_texcoords(void)
             "which looks like flat untextured colour\n");
 }
 
+/*
+ * Is the framebuffer we are about to draw into actually complete?
+ *
+ * Checking only inside glCheckFramebufferStatus is not enough, because that
+ * reports what the GUEST asked about, whenever it happened to ask. An app that
+ * checks once at startup and later swaps in a different colour attachment gets
+ * no second opinion -- and a draw into an incomplete framebuffer produces
+ * nothing at all, silently, which is indistinguishable from a dozen other
+ * causes of a blank screen. Warned once per framebuffer name.
+ */
+static void gles_check_fb_complete(void)
+{
+    static uint32_t warned[8];
+    static unsigned n_warned;
+    GLenum st;
+    unsigned i;
+
+    if (!gles_strict) {
+        return;
+    }
+    st = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
+    if (st == GL_FRAMEBUFFER_COMPLETE_EXT) {
+        return;
+    }
+    for (i = 0; i < n_warned; i++) {
+        if (warned[i] == gh.bound_framebuffer) {
+            return;
+        }
+    }
+    if (n_warned < ARRAY_SIZE(warned)) {
+        warned[n_warned++] = gh.bound_framebuffer;
+    }
+    fprintf(stderr, "[gles] DRAWING INTO INCOMPLETE framebuffer %u (host %u, "
+            "status 0x%x) -- this draw produces nothing\n",
+            gh.bound_framebuffer, gles_host_fbo(gh.bound_framebuffer), st);
+}
+
 static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
 {
+    gles_check_fb_complete();
+
     static GLenum reported[8];
     static unsigned n_reported;
     GLenum e;
@@ -3828,6 +3882,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                               rb && !g_hash_table_contains(
                                   gh.rb_sized, GUINT_TO_POINTER(rb)));
         }
+        gles_trace_attach("glFramebufferRenderbuffer", attach, rb);
         if (gles_is_drawable(gh.bound_framebuffer)) {
             /* gh.fbo already carries the colour target we present out of and a
              * matching depth buffer; re-attaching over either breaks the
@@ -3852,6 +3907,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         if (a[1] == GL_COLOR_ATTACHMENT0_EXT) {
             gles_set_drawable(gh.bound_framebuffer, false);
         }
+        gles_trace_attach("glFramebufferTexture2D", a[1], a[3]);
         if (gles_is_drawable(gh.bound_framebuffer)) {
             return 0;
         }
