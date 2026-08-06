@@ -90,9 +90,22 @@ guest_open() {
         echo "install-ipa.sh: iproxy is not on PATH (libimobiledevice)" >&2
         return 1
     }
-    GUEST_PORT="${SSH_PORT:-2239}"
-    iproxy "$GUEST_PORT" 22 >/dev/null 2>&1 &
-    GUEST_IPROXY=$!
+    # A fixed port here was a single point of failure for every install on the
+    # machine: one leaked iproxy (SIGKILLed script, crashed app) held 2239 and
+    # every later install silently lost its ssh tunnel -- which for a GL app
+    # means the engine replacement never lands and the app wedges the device.
+    # Try the preferred port first so nothing else changes, then walk.
+    for GUEST_PORT in "${SSH_PORT:-2239}" 2241 2243 2245 2247; do
+        iproxy "$GUEST_PORT" 22 >/dev/null 2>&1 &
+        GUEST_IPROXY=$!
+        sleep 0.2
+        kill -0 "$GUEST_IPROXY" 2>/dev/null && break
+        GUEST_IPROXY=""
+    done
+    [ -n "$GUEST_IPROXY" ] || {
+        echo "install-ipa.sh: iproxy would not start on any port" >&2
+        return 1
+    }
 
     # Poll for the port instead of sleeping a flat 2 s. Everything the guest
     # does is behind this, including the home-screen placeholder, and a second
@@ -121,9 +134,31 @@ guest_open() {
     # is what each one costs, several seconds of RSA and key exchange apiece.
     # Multiplexed, only the first pays it. Set here rather than in the array
     # above because ControlPath needs $TMP, which does not exist that early.
-    GUEST_SSH_OPTS+=(-o ControlMaster=auto -o ControlPath="$TMP/ssh-%C"
+    # ControlPath is a Unix socket and macOS caps those at ~104 bytes; $TMP
+    # lives under /var/folders/<deep>/T/, and "$TMP/ssh-%C" (a 40-hex hash)
+    # overflowed that -- at which point ssh refuses to run AT ALL, not just
+    # without multiplexing. Every guest command failed silently for as long
+    # as that path was in place: no placeholder, no sbdlicon, and no GL
+    # engine, which is how GL apps came to be installed in a state that
+    # wedged the device. Short, fixed, pid-unique: one master per run is
+    # exactly right since a run only ever talks to one guest.
+    GUEST_SSH_OPTS+=(-o ControlMaster=auto -o ControlPath="/tmp/it-ssh.$$"
         -o ControlPersist=120)
-    return 0
+
+    # Prove the tunnel with a real round trip before reporting it open. sshd
+    # is one of the last things a fresh boot starts -- lockdown answers
+    # queries a good minute before it -- and every guest_sh/guest_put above
+    # this discards stderr, so an ssh that was never going to work used to
+    # fail silently and read as "the placeholder/engine step is broken".
+    # This also warms the ControlMaster, so the commands that follow are free.
+    local err="" _t
+    for _t in $(seq 18); do
+        err=$(ssh "${GUEST_SSH_OPTS[@]}" -p "$GUEST_PORT" root@127.0.0.1 true 2>&1) && return 0
+        sleep 5
+    done
+    echo "install-ipa.sh: no ssh answer from the guest after 90s: ${err:-no error output}" >&2
+    guest_close
+    return 1
 }
 
 guest_close() {
@@ -232,7 +267,11 @@ cleanup() {
 # every time and should say so immediately.
 install_retry() {
     local out rc=1 delay
-    for delay in 0 3 8; do
+    # The ladder reaches past a minute on purpose: right after a fresh boot,
+    # or an uninstall, lockdown can refuse services for tens of seconds, and
+    # an install that fails at 11s (the old 0/3/8 ceiling) reported a healthy
+    # device as broken. Only the known-transient refusals retry at all.
+    for delay in 0 3 8 15 30; do
         if [ "$delay" != 0 ]; then
             echo "--- lockdown would not start the service; retrying in ${delay}s"
             sleep "$delay"
@@ -454,6 +493,40 @@ if ! ideviceinfo -k ProductVersion >/dev/null 2>&1; then
 fi
 echo "--- device is up: iOS $(ideviceinfo -k ProductVersion)"
 
+# lockdownd answering ideviceinfo does NOT mean it will start services yet:
+# on a freshly-wiped device the first boot brings afcd/installd up well after
+# lockdown starts taking queries, and asking too early gets "Could not start
+# com.apple.afc: Invalid service" for every service until the guest settles.
+# Gate on a real service round trip, not on lockdown liveness.
+if ! ideviceinstaller list >/dev/null 2>&1; then
+    echo "--- device is up but services are still starting; waiting"
+    services_ok=0
+    for _ in $(seq 24); do
+        sleep 5
+        if ideviceinstaller list >/dev/null 2>&1; then
+            services_ok=1
+            break
+        fi
+    done
+    [ "$services_ok" = 1 ] || echo "install-ipa.sh: services never settled after 120s; trying anyway" >&2
+fi
+
+# Say "device is full" while it can still be said clearly: a full device gets
+# to ExtractingPackage (15%) and dies with the opaque "PackageExtractionFailed".
+# Staging costs roughly the .ipa twice (the copy plus its extraction), so three
+# times the archive is a comfortable floor.
+AVAIL="$(ideviceinfo -q com.apple.disk_usage -k TotalDataAvailable 2>/dev/null)"
+IPA_BYTES="$(stat -f%z "$IPA" 2>/dev/null || echo 0)"
+case "$AVAIL" in
+'' | *[!0-9]*) ;;   # unreadable -- proceed, installd will have the last word
+*)
+    if [ "$AVAIL" -lt "$((IPA_BYTES * 3))" ]; then
+        die "not enough free space on the device: $((AVAIL / 1048576)) MB free,
+    ~$((IPA_BYTES * 3 / 1048576)) MB needed to stage this app. Uninstall something first."
+    fi
+    ;;
+esac
+
 # The placeholder goes up FIRST -- before the GL engine, before the repack,
 # before the install -- because it is the only thing on the home screen saying
 # anything is happening at all, and everything after it is slow. It used to go
@@ -474,7 +547,15 @@ fi
 # first launch is the last chance to get anything onto it.
 if [ "$LINKS_GLES" = 1 ] && [ -f "$SHIM" ]; then
     echo "--- installing the GL engine replacement"
-    install_shim || echo "install-ipa.sh: could not install the GL engine; the app will wedge the device" >&2
+    # Abort, do not limp on: a GL app installed without the engine drives the
+    # real MBX model into unimplemented territory on first launch -- splash
+    # screen, then black, then a frozen device. An install that fails loudly
+    # here is recoverable by installing again; a wedged device is a reboot.
+    install_shim || {
+        placeholder_remove
+        die "could not install the GL engine (is the ssh tunnel up?); refusing
+    to install a GL app without it -- launching one would wedge the device."
+    }
 fi
 
 echo "--- installing $NAME"
