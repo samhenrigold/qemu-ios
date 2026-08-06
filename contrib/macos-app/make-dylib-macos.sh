@@ -90,6 +90,7 @@ _qemu_ios_snapshot_save2
 _qemu_ios_snapshot_status
 _qemu_ios_snapshot_resume
 _qemu_ios_set_foreground
+_qemu_ios_ui_icon_state_generation
 SYMS
 
 sh macos-link-dylib.sh

@@ -113,6 +113,20 @@ QemuIosSnapshotStatus qemu_ios_snapshot_status(char *errbuf, unsigned long errle
  * (qemu_ios_set_foreground(true) is the only other thing that restarts it). */
 void qemu_ios_snapshot_resume(void);
 
+/*
+ * Bumped whenever the guest writes SpringBoard's icon layout to flash.
+ *
+ * 3.1.3 has no notification for a home-screen rearrange (see the long comment
+ * in hw/arm/ipod_touch_fmss.c), so this is the only prompt an app gets. Poll it
+ * on a tick you already have; a change means no more than "re-read the layout",
+ * and the app is expected to do that over sbservices as it already does. The
+ * value is monotonic but not a count of rearranges -- one rearrange can bump it
+ * several times, and something else entirely can bump it once.
+ *
+ * Safe from any thread and valid before the VM starts, when it reads 0.
+ */
+uint64_t qemu_ios_ui_icon_state_generation(void);
+
 #ifdef __cplusplus
 }
 #endif
