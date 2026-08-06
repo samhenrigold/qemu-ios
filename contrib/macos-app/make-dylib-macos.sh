@@ -85,6 +85,9 @@ _qemu_ios_ui_powerdown
 _qemu_ios_ui_quit
 _qemu_ios_snapshot_save
 _qemu_ios_snapshot_done
+_qemu_ios_snapshot_save2
+_qemu_ios_snapshot_status
+_qemu_ios_snapshot_resume
 _qemu_ios_set_foreground
 SYMS
 

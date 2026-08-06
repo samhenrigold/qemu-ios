@@ -84,6 +84,27 @@ void qemu_ios_set_foreground(bool foreground);
 void qemu_ios_snapshot_save(const char *path);
 bool qemu_ios_snapshot_done(void);
 
+/*
+ * Tracked snapshot save. Unlike qemu_ios_snapshot_save/_done, this reports
+ * real progress: _status() distinguishes "not started", "in flight", "done"
+ * and "failed", and fills errbuf with the reason on failure. _save2 sets the
+ * status to RUNNING on the calling thread before scheduling the work, so a
+ * status() call that races ahead of the bottom half never reads a stale DONE.
+ */
+typedef enum {
+    QEMU_IOS_SNAPSHOT_IDLE = 0,
+    QEMU_IOS_SNAPSHOT_RUNNING = 1,
+    QEMU_IOS_SNAPSHOT_DONE = 2,
+    QEMU_IOS_SNAPSHOT_FAILED = 3,
+} QemuIosSnapshotStatus;
+
+void qemu_ios_snapshot_save2(const char *path);
+QemuIosSnapshotStatus qemu_ios_snapshot_status(char *errbuf, unsigned long errlen);
+
+/* Resume the vCPU after a completed save, without touching foreground state
+ * (qemu_ios_set_foreground(true) is the only other thing that restarts it). */
+void qemu_ios_snapshot_resume(void);
+
 #ifdef __cplusplus
 }
 #endif
