@@ -919,7 +919,25 @@ static int GLESBindView(void *gc, void *drawable, void *ifmt, void *flags)
     ca_view_t *v;
     int had_drawable;
     unsigned f = (unsigned)(unsigned long)ifmt;
-    unsigned fourcc = (f == GL_RGB565_OES) ? CA_FOURCC_565L : CA_FOURCC_BGRA;
+    /*
+     * ALWAYS ask CoreAnimation for a 32-bit surface, even when the app asked
+     * for kEAGLColorFormatRGB565.
+     *
+     * A 565 drawable exists to halve the MBX's write bandwidth. We do not have
+     * an MBX -- the frame is rendered by a host GPU and copied in by the host --
+     * so the saving buys nothing here, and the app cannot tell: it never
+     * touches this surface, it renders through GL and calls present.
+     *
+     * And a 565 surface is not merely pointless, it is INVISIBLE. Measured:
+     * Angry Birds and Labyrinth both take this path, CA accepts the surface and
+     * returns success for every present, the pixels are written to the address
+     * CA gave us -- and nothing reaches the panel. Blitting the identical frame
+     * straight to the LCD scanout (IT_GLES_PANEL_ALSO=1) shows it rendering
+     * perfectly, so the loss is entirely in CA's compositing of a 16-bit
+     * surface. Monkey Ball, which asks for RGBA8, composites correctly through
+     * the very same code.
+     */
+    unsigned fourcc = CA_FOURCC_BGRA;
     int r;
 
     (void)flags;
