@@ -319,6 +319,14 @@ typedef struct {
     GLint vis_depth, vis_func, vis_blend, vis_src, vis_dst;
     GLint vis_tex2d, vis_cull, vis_units;
     uint32_t vis_fb;
+    /* The surface the guest last asked us to present into. CoreAnimation hands
+     * out a different one per layer, so a change here is the app switching
+     * which CAEAGLLayer is on screen. */
+    uint32_t last_surface_base, last_surface_w, last_surface_h, last_surface_fmt;
+    unsigned surface_changes;
+    /* Draws made into the currently bound offscreen target, so its result can
+     * be sampled when the guest binds away from it. */
+    unsigned offscreen_draws_here;
     uint64_t last_report_drawable, last_report_offscreen;
     uint64_t presents;
 
@@ -1873,6 +1881,7 @@ static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
         gh.draws_drawable++;
     } else {
         gh.draws_offscreen++;
+        gh.offscreen_draws_here++;
     }
     if (!gh.vis_captured) {
         gh.vis_captured = true;
@@ -2579,6 +2588,26 @@ static void gles_report_progress(void)
     gh.last_report_drawable = gh.draws_drawable;
     gh.last_report_offscreen = gh.draws_offscreen;
     gles_report_visibility();
+    {
+        /* What the DRAWABLE actually contains, read from the same buffer the
+         * present just wrote out. Distinguishes "the app drew nothing / drew
+         * the clear colour" from "we drew a scene and lost it on the way to
+         * the panel" -- which no counter can. */
+        uint64_t r = 0, g = 0, b = 0;
+        unsigned i, n = GLES_FB_WIDTH * GLES_FB_HEIGHT;
+
+        if (gh.readback) {
+            for (i = 0; i < n; i += 7) {
+                r += gh.readback[i * 4];
+                g += gh.readback[i * 4 + 1];
+                b += gh.readback[i * 4 + 2];
+            }
+            n = (n + 6) / 7;
+            fprintf(stderr, "[gles]   drawable mean rgb = %llu,%llu,%llu\n",
+                    (unsigned long long)(r / n), (unsigned long long)(g / n),
+                    (unsigned long long)(b / n));
+        }
+    }
 
     /*
      * The accounting line. Percentages are of WALL time over the same 60
@@ -2785,6 +2814,39 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
             gles_note_frame_gap();
             gles_report_progress();
             return 0;
+        }
+
+        /*
+         * IT_GLES_PRESENT_TEST: overwrite the frame with flat red just before
+         * it goes to the guest surface. If the panel does NOT turn red, then
+         * whatever we hand CoreAnimation for this layer is not what reaches
+         * the screen -- which separates "we rendered nothing" from "we
+         * rendered and it was discarded downstream". No amount of GL-side
+         * instrumentation can tell those apart.
+         */
+        {
+            static int t = -1;
+
+            if (t < 0) {
+                const char *e = getenv("IT_GLES_PRESENT_TEST");
+                t = e ? atoi(e) : 0;
+            }
+            if (t) {
+                size_t i, n = (size_t)rw * rh;
+                uint16_t *p16 = (uint16_t *)gh.readback;
+
+                for (i = 0; i < n; i++) {
+                    p16[i] = 0xF800;              /* RGB565 red */
+                }
+                for (y = 0; y < rh; y++) {
+                    cpu_memory_rw_debug(cpu, base + (hwaddr)y * stride,
+                                        (uint8_t *)p16 + (size_t)y * rw * 2,
+                                        rw * 2, 1);
+                }
+                gh.presents++;
+                gles_frame_end();
+                return 0;
+            }
         }
 
         /* Same as the panel present above: read the drawable, not whichever
@@ -3047,6 +3109,27 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     case GLES_OP_PRESENT_SURFACE: {  /* base, stride, w, h, format */
         uint64_t t0 = gles_t();
+
+        /*
+         * Which SURFACE we are presenting into, reported when it changes.
+         * CoreAnimation gives each CAEAGLLayer its own, so a change is the app
+         * putting a different layer on screen -- and an app whose new view
+         * renders nothing while the old one keeps drawing looks exactly like a
+         * render bug. There is no way to tell those apart from draw counts.
+         */
+        if (a[0] != gh.last_surface_base || a[2] != gh.last_surface_w
+            || a[3] != gh.last_surface_h || a[4] != gh.last_surface_fmt) {
+            gh.last_surface_base = a[0];
+            gh.last_surface_w = a[2];
+            gh.last_surface_h = a[3];
+            gh.last_surface_fmt = a[4];
+            if (gh.surface_changes++ < 32) {
+                fprintf(stderr, "[gles] present target -> base=0x%08x %ux%u "
+                        "fmt=%u (change #%u at frame %" PRIu64 ")\n",
+                        a[0], a[2], a[3], a[4], gh.surface_changes,
+                        gh.presents);
+            }
+        }
         int64_t r = gles_present_to_surface(cpu, a[0], a[1], a[2], a[3], a[4]);
         gh.t_present += gles_t() - t0;
         gles_ctx_stats[gles_ctx_slot(ctx)].present_surface++;
@@ -4008,6 +4091,30 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         return 0;
 
     case GLES_SLOT_BIND_FRAMEBUFFER:     /* target, framebuffer */
+        /*
+         * Leaving an offscreen target that was drawn into: say what it
+         * actually CONTAINS. A render-to-texture pass that runs, reports no
+         * error and produces a blank result is invisible otherwise -- the only
+         * symptom is whatever samples it later looking wrong, arbitrarily far
+         * away. The mean is enough to tell "the scene" from "the clear colour".
+         */
+        if (gh.offscreen_draws_here && !gles_is_drawable(gh.bound_framebuffer)) {
+            uint8_t px[64 * 64 * 4];
+            uint64_t r = 0, g = 0, b = 0, al = 0;
+            unsigned i;
+
+            glReadPixels(0, 0, 64, 64, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            for (i = 0; i < 64 * 64; i++) {
+                r += px[i * 4]; g += px[i * 4 + 1];
+                b += px[i * 4 + 2]; al += px[i * 4 + 3];
+            }
+            fprintf(stderr, "[gles] offscreen fb %u after %u draws -> mean rgba "
+                    "%llu,%llu,%llu,%llu\n", gh.bound_framebuffer,
+                    gh.offscreen_draws_here,
+                    (unsigned long long)(r / 4096), (unsigned long long)(g / 4096),
+                    (unsigned long long)(b / 4096), (unsigned long long)(al / 4096));
+        }
+        gh.offscreen_draws_here = 0;
         gh.bound_framebuffer = a[1];
         gh.fb_dirty = true;
         glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gles_host_fbo(a[1]));
