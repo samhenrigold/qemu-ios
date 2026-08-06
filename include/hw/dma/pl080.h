@@ -113,4 +113,11 @@ void pl080_attach_paced_peripheral(PL080State *s, int id);
  */
 void pl080_set_dma_request(PL080State *s, int id, bool level);
 
+/*
+ * DMACLBREQ/DMACLSREQ: the peripheral's packet has ended. Moves whatever is
+ * pending, then terminates the descriptor early and raises terminal count --
+ * how a variable-length peripheral read (a UART receive) ever completes.
+ */
+void pl080_set_dma_last_request(PL080State *s, int id);
+
 #endif

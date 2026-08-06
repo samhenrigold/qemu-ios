@@ -1,5 +1,14 @@
 #include "hw/arm/ipod_touch_sha1.h"
+#include "hw/arm/ipod_touch_guard.h"
 #include "migration/vmstate.h"
+
+/* XNU hands this engine whole pages; a megabyte is orders of magnitude of
+ * headroom, and the point is only to keep a garbage value away from malloc. */
+/* Same ceiling as the AES engine. The point is only to keep a garbage
+ * value away from g_malloc, so it should sit far above any real transfer
+ * rather than as close as possible to one -- a clamp that trips on a legitimate
+ * hash would silently corrupt the digest and fail a signature check. */
+#define IT_SHA1_MAX_XFER (16 * 1024 * 1024)
 
 /*
  * S5L8720 SHA1 engine.
@@ -259,7 +268,13 @@ static void ipod_touch_sha1_write(void *opaque, hwaddr offset, uint64_t value, u
 			s->memory_mode = value;
 			break;
 		case SHA_INSIZE:
-			s->insize = value;
+			/* Bounded like every other engine's length (ipod_touch_aes.c:510).
+			 * Raw, this value reaches g_malloc and cpu_physical_memory_read
+			 * directly: 0xFFFFFFFF asks for a 4 GiB allocation on the vCPU
+			 * thread inside the MMIO handler, and g_malloc ABORTS the process
+			 * when it fails -- one guest store takes the user's whole session
+			 * down with it. */
+			s->insize = IT_SIZE("sha1", value, IT_SHA1_MAX_XFER);
 			break;
 		case SHA_HASHOUT ... SHA_HASHOUT_END:
 			/* Load the chaining state to continue from. */

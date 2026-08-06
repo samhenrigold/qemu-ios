@@ -246,6 +246,12 @@ static void pl080_run(PL080State *s)
         s->running++;
         return;
     }
+    /* A descriptor chain that loops back on itself would spin here forever with
+     * the BQL held -- no timer, no monitor, no UI, and the app's own watchdogs
+     * all stopped with it. The guest cannot be trusted to write an acyclic
+     * chain, so bound the work per invocation instead of proving it. */
+    uint64_t budget = 1u << 20;
+
     s->running = 1;
     while (s->running) {
         for (c = 0; c < s->nchannels; c++) {
@@ -257,8 +263,15 @@ again:
                 continue;
             flow = (ch->conf >> 11) & 7;
             if (flow >= 4) {
-                hw_error(
-                    "pl080_run: Peripheral flow control not implemented\n");
+                /* Was hw_error(), i.e. abort(). One guest store to a channel
+                 * config with this field set killed the emulator -- and in this
+                 * fork the emulator is the user's whole session, running
+                 * in-process behind their device. Refuse the channel instead,
+                 * the way the reserved width encoding below already does. */
+                qemu_log_mask(LOG_UNIMP, "pl080: peripheral flow control %d is "
+                              "not implemented; channel %d disabled\n", flow, c);
+                ch->conf &= ~PL080_CCONF_E;
+                continue;
             }
             src_id = (ch->conf >> 1) & 0x1f;
             dest_id = (ch->conf >> 6) & 0x1f;
@@ -342,6 +355,14 @@ again:
             //printf("Transfer size: %d, destination: 0x%08x\n", size, ch->dest);
             size--;
             ch->ctrl = (ch->ctrl & 0xfffff000) | size;
+            if (budget-- == 0) {
+                qemu_log_mask(LOG_GUEST_ERROR, "pl080: transfer exceeded its "
+                              "work budget; channel %d disabled (a looping "
+                              "descriptor chain?)\n", c);
+                ch->conf &= ~PL080_CCONF_E;
+                s->running = 0;
+                break;
+            }
             if (size == 0) {
                 /*
                  * Transfer complete. Latch the COMPLETED descriptor's terminal
@@ -403,6 +424,93 @@ again:
         }
         if (--s->running)
             s->running = 1;
+    }
+    pl080_update(s);
+}
+
+/*
+ * DMACLBREQ / DMACLSREQ -- the "last burst/single request" lines.
+ *
+ * A PL080 peripheral has four request lines, not two. SREQ and BREQ mean "I
+ * have data"; LSREQ and LBREQ mean "I have data AND this is the end of the
+ * packet". On the last kind the DMAC moves what is there and then TERMINATES
+ * the descriptor early, raising terminal count for a transfer that never
+ * reached its programmed size.
+ *
+ * That is the only way a variable-length peripheral read ever completes. A
+ * UART arms a big receive -- the iPod touch's Bluetooth driver programs 2048
+ * bytes -- and a 7-byte HCI reply can never reach it, so without this the
+ * channel simply sits there and the driver, which is waiting on an
+ * IODMAEventSource fed by terminal count, is never woken. Measured: the reply
+ * was DMA'd into the driver's buffer correctly (residue 0x800 -> 0x7f9) and it
+ * did not look at the buffer for another ten seconds, when its own retry timer
+ * fired and it reset the port.
+ *
+ * The UART raises this off its Rx timeout, which is exactly what the line
+ * means on real hardware: the line went idle, so the packet has ended.
+ */
+void pl080_set_dma_last_request(PL080State *s, int id)
+{
+    int c;
+
+    if (id < 0 || id >= 32) {
+        return;
+    }
+
+    /* Move whatever the peripheral still has buffered first. */
+    pl080_run(s);
+
+    for (c = 0; c < s->nchannels; c++) {
+        pl080_channel *ch = &s->chan[c];
+        uint32_t done_ctrl;
+        int flow, src_id, dest_id;
+
+        if ((ch->conf & (PL080_CCONF_H | PL080_CCONF_E)) != PL080_CCONF_E) {
+            continue;
+        }
+        flow = (ch->conf >> 11) & 7;
+        src_id = (ch->conf >> 1) & 0x1f;
+        dest_id = (ch->conf >> 6) & 0x1f;
+        /* Only the side the peripheral actually drives can end the packet. */
+        if (!((flow == 2 && src_id == id) || (flow == 1 && dest_id == id))) {
+            continue;
+        }
+        if ((ch->ctrl & 0xfff) == 0) {
+            continue;   /* already finished by the normal path */
+        }
+
+        /*
+         * Terminate the descriptor and walk the chain exactly as a normal
+         * completion does. Leaving the channel disabled with its residue
+         * intact reads better on paper -- the driver could then see how many
+         * bytes the packet held -- but it wedges the boot: the terminal count
+         * is latched on a channel pl080_run() then skips, so nothing re-arms
+         * it and the interrupt line stays high. That is the same stuck-line
+         * failure described at pl080_refresh_masks() above.
+         */
+        done_ctrl = ch->ctrl & 0xfffff000;   /* remaining size := 0 */
+        ch->ctrl = done_ctrl;
+        if (ch->lli) {
+            ch->src = address_space_ldl_le(&s->downstream_as, ch->lli,
+                                           MEMTXATTRS_UNSPECIFIED, NULL);
+            ch->dest = address_space_ldl_le(&s->downstream_as, ch->lli + 4,
+                                            MEMTXATTRS_UNSPECIFIED, NULL);
+            ch->ctrl = address_space_ldl_le(&s->downstream_as, ch->lli + 12,
+                                            MEMTXATTRS_UNSPECIFIED, NULL);
+            ch->lli = address_space_ldl_le(&s->downstream_as, ch->lli + 8,
+                                           MEMTXATTRS_UNSPECIFIED, NULL);
+        } else {
+            ch->conf &= ~PL080_CCONF_E;
+        }
+        /* The terminal count belongs to the descriptor that just ended. */
+        if (done_ctrl & PL080_CCTRL_I) {
+            s->tc_int |= 1 << c;
+        }
+        if (it_dmac_trace_on()) {
+            fprintf(stderr, "[dmac%d] LAST req%d ch%d residue=%u t=%" PRId64
+                    "\n", s->trace_id, id, c, ch->ctrl & 0xfff,
+                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+        }
     }
     pl080_update(s);
 }
