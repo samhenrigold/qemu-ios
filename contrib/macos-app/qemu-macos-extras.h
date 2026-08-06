@@ -37,6 +37,13 @@ void qemu_ios_ui_key_mac(int mac_keycode, bool down);
 /* Shake gesture (machine property "accel-shake"). */
 void qemu_ios_ui_shake(void);
 
+/*
+ * Raw accelerometer counts (machine properties "accel-x/y/z"; ±0x40 == ±1 g).
+ * Sets the steady-state vector, so it persists until the next call or the
+ * next orientation change.
+ */
+void qemu_ios_ui_accel(int x, int y, int z);
+
 /* Queue UTF-8 text for the guest pasteboard (machine property "pasteboard"). */
 void qemu_ios_ui_paste(const char *utf8);
 

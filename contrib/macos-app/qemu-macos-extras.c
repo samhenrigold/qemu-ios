@@ -223,6 +223,30 @@ void qemu_ios_ui_shake(void)
     aio_bh_schedule_oneshot(qemu_get_aio_context(), shake_bh, NULL);
 }
 
+static void accel_bh(void *opaque)
+{
+    int *v = opaque;
+    Object *machine = OBJECT(qdev_get_machine());
+    static const char *props[] = { "accel-x", "accel-y", "accel-z" };
+    Error *err = NULL;
+
+    for (int i = 0; i < 3 && !err; i++) {
+        object_property_set_int(machine, props[i], v[i], &err);
+    }
+    if (err) {
+        fprintf(stderr, "[accel] %s\n", error_get_pretty(err));
+        error_free(err);
+    }
+    g_free(v);
+}
+
+void qemu_ios_ui_accel(int x, int y, int z)
+{
+    int *v = g_new(int, 3);
+    v[0] = x; v[1] = y; v[2] = z;
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), accel_bh, v);
+}
+
 static void paste_bh(void *opaque)
 {
     char *text = opaque;
