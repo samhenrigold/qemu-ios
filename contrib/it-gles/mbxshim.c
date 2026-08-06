@@ -83,7 +83,24 @@ typedef struct __attribute__((packed)) {
 extern long write(int, const void *, unsigned long);
 
 static unsigned slen(const char *s) { unsigned n = 0; while (s && s[n]) n++; return n; }
-static void w(const char *s) { write(2, s, slen(s)); }
+/*
+ * The shim's log goes to fd 2 AND to the host.
+ *
+ * fd 2 is nowhere readable for an app SpringBoard launched, so everything this
+ * file reports -- whether CoreAnimation accepted a surface, whether it accepted
+ * the frames presented into it -- used to be invisible from the QEMU side. Both
+ * facts are decided here and cannot be inferred from the host.
+ */
+#define GLES_OP_LOG 0x1002
+static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args);
+#define A(...) (const unsigned[]){ __VA_ARGS__ }
+static void w(const char *s)
+{
+    unsigned n = slen(s);
+
+    write(2, s, n);
+    qc(GLES_OP_LOG, 0, 2, A((unsigned)(unsigned long)s, n));
+}
 static void wd(unsigned v)
 {
     char b[12], *p = b + 11;
@@ -153,8 +170,6 @@ __attribute__((visibility("hidden"))) int gles_unimpl(unsigned slot)
  * it reinterprets them itself. Declaring them float here would round-trip them
  * through a VFP register for no reason and invite an ABI mismatch.
  */
-
-#define A(...) (const unsigned[]){ __VA_ARGS__ }
 
 static int s_clear(void *gc, unsigned mask)
     { return (int)qc(10, gc, 1, A(mask)); }

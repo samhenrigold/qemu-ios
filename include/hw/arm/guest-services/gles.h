@@ -248,6 +248,19 @@ typedef struct __attribute__((packed)) {
  */
 #define GLES_OP_PRESENT_SURFACE         (GLES_OP_BASE + 1)
 
+/*
+ * The shim's own log, forwarded to the host.
+ *
+ * args: guest pointer to bytes, length
+ *
+ * The shim writes to fd 2, which for an app launched by SpringBoard goes
+ * nowhere anybody can read. That invisibility has cost real debugging time more
+ * than once: whether CoreAnimation ACCEPTED a surface, and whether it accepted
+ * the frames presented into it, are both decided guest-side and were only ever
+ * reported there. The host cannot infer either.
+ */
+#define GLES_OP_LOG                     (GLES_OP_BASE + 2)
+
 /* Surface pixel formats, as IOSurfaceGetPixelFormat reports them (FourCC). */
 #define GLES_SURFACE_BGRA32             0x42475241  /* 'BGRA' */
 #define GLES_SURFACE_RGBA32             0x52474241  /* 'RGBA' */
