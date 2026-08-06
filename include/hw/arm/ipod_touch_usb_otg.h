@@ -227,6 +227,7 @@ typedef struct synopsys_usb_state
 	uint32_t server_port;
 	tcp_usb_state_t tcp_state;
 	bool tcp_connected;
+	QEMUTimer *tcp_retry_timer;
 
 	uint32_t pcgcctl;
 
