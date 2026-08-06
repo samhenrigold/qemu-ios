@@ -3801,7 +3801,15 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     case GLES_SLOT_GET_INTEGERV: {              /* pname, guest int* */
         uint32_t pname = a[0];
-        int32_t v[4] = { 0, 0, 0, 0 };
+        /* 32, not 4. The default arm forwards ANY pname to the host, and its
+         * comment's claim that everything reaching it is scalar is enforced by
+         * nothing: GL_COMPRESSED_TEXTURE_FORMATS alone returns ~20-30 ints on
+         * desktop GL and GL_MODELVIEW_MATRIX returns 16, so a texture loader
+         * asking the ordinary "which compressed formats do you support"
+         * question wrote 80-120 bytes into 16 and smashed this frame.
+         * (glGetFloatv next door survives the same shape only because its
+         * buffer is 16.) */
+        int32_t v[32] = { 0 };
         unsigned n = 1;
 
         if (!a[1]) {
@@ -3830,6 +3838,20 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             n = 2;
             glGetIntegerv(pname, v);
             break;
+        case GL_COMPRESSED_TEXTURE_FORMATS: {
+            /* However many the host has, clamped to what we can hold -- and to
+             * what the guest was told by GL_NUM_COMPRESSED_TEXTURE_FORMATS. */
+            GLint count = 0;
+            glGetIntegerv(GL_NUM_COMPRESSED_TEXTURE_FORMATS, &count);
+            if (count < 0) {
+                count = 0;
+            }
+            n = (unsigned)MIN(count, (GLint)ARRAY_SIZE(v));
+            if (n) {
+                glGetIntegerv(pname, v);
+            }
+            break;
+        }
         default:
             /* Scalar queries (GL_MAX_TEXTURE_SIZE and friends) pass
              * through. An ES-only pname sets GL_INVALID_ENUM on the host
@@ -4153,6 +4175,14 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             gh.txbuf = g_realloc(gh.txbuf, n);
             gh.txbuf_size = n;
         }
+        /* gles_image_bytes sizes each row with the guest's UNPACK alignment;
+         * glReadPixels writes them with the PACK alignment, which nothing in
+         * this file ever set -- so it was the host default of 4. A guest that
+         * set UNPACK to 1 (every texture loader does) and read a row whose
+         * length is not a multiple of 4 had GL write up to 3 bytes per row past
+         * the allocation. Make the two agree, which also hands the guest back
+         * the layout it is expecting. */
+        glPixelStorei(GL_PACK_ALIGNMENT, (GLint)gles_unpack());
         glReadPixels(x, y, w, h, fmt, type, gh.txbuf);
         cpu_memory_rw_debug(cpu, dst, gh.txbuf, n, 1);
         return 0;

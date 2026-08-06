@@ -299,13 +299,32 @@ static void fmss_try_map_packed(IPodTouchFMSSState *s)
         return;
     }
 
-    s->packed = p;
-    s->packed_size = st.st_size;
     s->packed_num_cs = ldl_le_p(p + 16);
     s->packed_pages_per_cs = ldl_le_p(p + 20);
     index_bytes = (size_t)s->packed_num_cs * s->packed_pages_per_cs * 4;
+
+    /*
+     * Every bound below comes out of the file, so the file has to be checked
+     * against itself. Only the 24-byte header was validated before: a
+     * truncated or half-written image (an interrupted copy, a full disk) still
+     * passed the magic check, and the first guest page read then indexed past
+     * the mapping and took SIGBUS -- the whole app, during boot, with nothing
+     * to suggest the image was the problem.
+     */
+    if (index_bytes > (size_t)st.st_size - 24) {
+        fprintf(stderr, "[fmss] packed NAND %s is truncated (index wants %zu of "
+                "%zu bytes); ignoring it\n", s->nand_path, index_bytes,
+                (size_t)st.st_size - 24);
+        munmap(p, st.st_size);
+        return;
+    }
+
+    s->packed = p;
+    s->packed_size = st.st_size;
     s->packed_index = (const uint32_t *)(p + 24);
     s->packed_records = p + 24 + index_bytes;
+    s->packed_record_count = ((size_t)st.st_size - 24 - index_bytes)
+                             / (NAND_BYTES_PER_PAGE + NAND_BYTES_PER_SPARE);
 
     fprintf(stderr, "[fmss] mapped packed NAND %s (%u cs x %u pages, %zu MiB)\n",
             s->nand_path, s->packed_num_cs, s->packed_pages_per_cs,
@@ -327,6 +346,14 @@ static bool fmss_packed_page(IPodTouchFMSSState *s, uint32_t cs,
     slot = ldl_le_p(&s->packed_index[(size_t)cs * s->packed_pages_per_cs + page_nr]);
     if (slot == 0) {
         return false;                 /* absent, i.e. erased */
+    }
+    /* The slot number is file data too, and it is the one that becomes a
+     * pointer. Out of range means the image disagrees with itself. */
+    if (slot > s->packed_record_count) {
+        qemu_log_mask(LOG_GUEST_ERROR, "[fmss] packed slot %u past the end of "
+                      "the image (%zu records); page treated as erased\n",
+                      slot, s->packed_record_count);
+        return false;
     }
 
     rec = s->packed_records +

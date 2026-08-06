@@ -831,6 +831,16 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
     s->w1_hspan = 0;
     s->w1_display_depth_info = 0;
     s->invalidate = 1;
+    /* Release through the helper that took the reference: it also turns
+     * DIRTY_MEMORY_VGA logging back off. Zeroing the struct by hand dropped the
+     * only pointer that could do either, so every warm reset and every restore
+     * leaked a MemoryRegion reference and left dirty tracking on for all of
+     * guest RAM. */
+    if (s->fbsection.mr) {
+        /* Only when it was actually populated: the helper dereferences its root
+         * MemoryRegion, and at the first reset this section is still zeroed. */
+        framebuffer_update_memory_section(&s->fbsection, s->sysmem, 0, 0, 0);
+    }
     memset(&s->fbsection, 0, sizeof(s->fbsection));
     s->fbsection_base = 0;
     s->last_surface = NULL;
@@ -898,6 +908,16 @@ static int ipod_touch_lcd_post_load(void *opaque, int version_id)
 {
     IPodTouchLCDState *s = opaque;
 
+    /* Release through the helper that took the reference: it also turns
+     * DIRTY_MEMORY_VGA logging back off. Zeroing the struct by hand dropped the
+     * only pointer that could do either, so every warm reset and every restore
+     * leaked a MemoryRegion reference and left dirty tracking on for all of
+     * guest RAM. */
+    if (s->fbsection.mr) {
+        /* Only when it was actually populated: the helper dereferences its root
+         * MemoryRegion, and at the first reset this section is still zeroed. */
+        framebuffer_update_memory_section(&s->fbsection, s->sysmem, 0, 0, 0);
+    }
     memset(&s->fbsection, 0, sizeof(s->fbsection));
     s->invalidate = 1;
     s->fbsection_base = 0;

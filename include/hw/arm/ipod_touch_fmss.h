@@ -61,6 +61,7 @@ typedef struct IPodTouchFMSSState
     size_t packed_size;
     const uint32_t *packed_index;   /* num_cs * pages_per_cs, 1-based, 0 = absent */
     const uint8_t *packed_records;
+    size_t packed_record_count;   /* bounds the index's slot numbers */
     uint32_t packed_num_cs;
     uint32_t packed_pages_per_cs;
     GHashTable *erased_blocks; /* (cs << 32) | block for blocks erased in the overlay */

@@ -190,6 +190,12 @@ struct Exynos4210UartState {
      * hw/arm/ipod_touch_2g.c.
      */
     qemu_irq          rxdmareq;
+    /*
+     * DMACLSREQ/DMACLBREQ: pulsed on the Rx timeout, i.e. the line went idle
+     * after data, so the packet has ended. Without it a short receive into a
+     * big DMA descriptor never completes and the driver is never woken.
+     */
+    qemu_irq          rxdmalast;
 
     uint32_t channel;
 
@@ -410,6 +416,15 @@ static void exynos4210_uart_timeout_int(void *opaque)
         s->reg[I_(UTRSTAT)] |= UTRSTAT_Rx_TIMEOUT;
         exynos4210_uart_update_dmabusy(s);
         exynos4210_uart_update_irq(s);
+        /*
+         * Tell the DMAC the packet ended, AFTER the request line above has let
+         * it drain the FIFO. This is the "last request" a real UART asserts on
+         * an Rx timeout; it is what turns a 7-byte reply sitting in a
+         * 2048-byte descriptor into a completed transfer.
+         */
+        if ((s->reg[I_(UCON)] & 0x03) >= 0x02) {
+            qemu_irq_pulse(s->rxdmalast);
+        }
     }
 }
 
@@ -783,6 +798,7 @@ static void exynos4210_uart_init(Object *obj)
     sysbus_init_irq(dev, &s->irq);
     sysbus_init_irq(dev, &s->dmairq);
     sysbus_init_irq(dev, &s->rxdmareq);
+    sysbus_init_irq(dev, &s->rxdmalast);
 }
 
 static void exynos4210_uart_realize(DeviceState *dev, Error **errp)

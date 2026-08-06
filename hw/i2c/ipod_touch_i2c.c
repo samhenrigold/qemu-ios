@@ -134,6 +134,18 @@ static void s5l8900_i2c_update(IPodTouchI2CState *s)
     if (s->control & S5L8900_IICCON_IRQPEND)
         level = 0;
 
+    /*
+     * UNCONDITIONAL, deliberately. `level` above is computed and thrown away,
+     * which reads like a bug and is one on paper -- an unmasked-but-idle period
+     * leaves this shared line asserted into the VIC. But switching to
+     * qemu_set_irq(s->irq, level) HANGS THE BOOT: measured 2026-08-06, the
+     * kernel loads and then never brings the UI up (framebuffer stuck on the
+     * boot logo at lit=9852 for 900s). The guest's driver depends on getting an
+     * interrupt here regardless of IRQPEND/IRQEN, and until someone maps what
+     * AppleS5L8900X-I2C actually expects, the honest state is: known-imperfect,
+     * known-working. Do not "clean this up" without a boot test.
+     */
+    (void)level;
     qemu_irq_raise(s->irq);
 }
 
