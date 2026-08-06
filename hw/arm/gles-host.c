@@ -310,6 +310,15 @@ typedef struct {
      * and the frame counter alone cannot tell them apart. */
     uint64_t draws_drawable, draws_offscreen;
     bool depth_cleared_this_frame;
+    /* Visibility state captured at the FIRST draw of the frame, not at present.
+     * Sampling at present catches whatever was drawn last -- typically a 2D
+     * overlay with its own ortho -- and hides the state of the scene draws.
+     * This exact mistake is on record from Super Monkey Ball. */
+    bool vis_captured;
+    float vis_proj[16], vis_mv[16];
+    GLint vis_depth, vis_func, vis_blend, vis_src, vis_dst;
+    GLint vis_tex2d, vis_cull, vis_units;
+    uint32_t vis_fb;
     uint64_t last_report_drawable, last_report_offscreen;
     uint64_t presents;
 
@@ -1865,6 +1874,20 @@ static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
     } else {
         gh.draws_offscreen++;
     }
+    if (!gh.vis_captured) {
+        gh.vis_captured = true;
+        glGetFloatv(GL_PROJECTION_MATRIX, gh.vis_proj);
+        glGetFloatv(GL_MODELVIEW_MATRIX, gh.vis_mv);
+        glGetIntegerv(GL_DEPTH_FUNC, &gh.vis_func);
+        glGetIntegerv(GL_BLEND_SRC, &gh.vis_src);
+        glGetIntegerv(GL_BLEND_DST, &gh.vis_dst);
+        gh.vis_depth = glIsEnabled(GL_DEPTH_TEST);
+        gh.vis_blend = glIsEnabled(GL_BLEND);
+        gh.vis_tex2d = glIsEnabled(GL_TEXTURE_2D);
+        gh.vis_cull  = glIsEnabled(GL_CULL_FACE);
+        gh.vis_units = gles_texcoord_mask();
+        gh.vis_fb = gh.bound_framebuffer;
+    }
 
     /* Both of these are ALWAYS on -- see the note in gles_check_fb_complete. */
     gles_check_fb_complete();
@@ -2515,22 +2538,19 @@ static void gles_dump_state(void)
  */
 static void gles_report_visibility(void)
 {
-    float pr[16], mv[16];
-    GLint df = 0, sf = 0, dfac = 0;
-
-    glGetFloatv(GL_PROJECTION_MATRIX, pr);
-    glGetFloatv(GL_MODELVIEW_MATRIX, mv);
-    glGetIntegerv(GL_DEPTH_FUNC, &df);
-    glGetIntegerv(GL_BLEND_SRC, &sf);
-    glGetIntegerv(GL_BLEND_DST, &dfac);
-
-    fprintf(stderr, "[gles]   visibility: proj diag=(%.4f %.4f %.4f) m[14]=%.3f"
-            "  mv xyz=(%.2f %.2f %.2f)  depth=%d func=0x%x  blend=%d"
-            "(0x%x,0x%x)  tex2d=%d texunits=0x%02x  cull=%d\n",
-            pr[0], pr[5], pr[10], pr[14], mv[12], mv[13], mv[14],
-            glIsEnabled(GL_DEPTH_TEST), df, glIsEnabled(GL_BLEND), sf, dfac,
-            glIsEnabled(GL_TEXTURE_2D), gles_texcoord_mask(),
-            glIsEnabled(GL_CULL_FACE));
+    if (!gh.vis_captured) {
+        fprintf(stderr, "[gles]   visibility: NO DRAWS this interval\n");
+        return;
+    }
+    fprintf(stderr, "[gles]   visibility @first draw (fb %u): "
+            "proj diag=(%.4f %.4f %.4f) m[14]=%.3f  mv xyz=(%.2f %.2f %.2f)  "
+            "depth=%d func=0x%x  blend=%d(0x%x,0x%x)  tex2d=%d texunits=0x%02x  "
+            "cull=%d\n",
+            gh.vis_fb, gh.vis_proj[0], gh.vis_proj[5], gh.vis_proj[10],
+            gh.vis_proj[14], gh.vis_mv[12], gh.vis_mv[13], gh.vis_mv[14],
+            gh.vis_depth, gh.vis_func, gh.vis_blend, gh.vis_src, gh.vis_dst,
+            gh.vis_tex2d, gh.vis_units, gh.vis_cull);
+    gh.vis_captured = false;
 }
 
 static void gles_report_progress(void)
