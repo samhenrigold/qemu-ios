@@ -47,15 +47,19 @@ if [ "$cmds" -lt 1 ]; then
     exit 1
 fi
 
-# Any residue below 0x800 on the UART1 Rx channel means the DMAC moved bytes.
-if grep -qE 'R 14c Control        8800(07|06|05)' "$WORK/trace.log"; then
-    echo "PASS: guest DMA drained the HCI reply out of the Rx FIFO"
-    grep -m1 -E 'R 14c Control        8800(07|06|05)' "$WORK/trace.log"
+# The real assertion: the guest gets PAST HCI_Reset. It can only send the
+# Broadcom vendor commands (0xfc18 Update Baud Rate, 0xfc2e Download
+# Minidriver) after it has received AND accepted the Command Complete for
+# Reset, which exercises the whole path -- chardev -> Rx FIFO -> Rx DMA request
+# -> DMAC -> guest memory -> last-request -> terminal count -> driver. With any
+# one of the three bugs back, the guest sends nothing but 0x0c03 forever.
+if grep -q '0xfc18' "$WORK/trace.log"; then
+    echo "PASS: guest accepted the HCI_Reset reply and moved on to $(grep -c '\[BT\] cmd' "$WORK/trace.log") commands"
+    grep -o '\[BT\] cmd .*' "$WORK/trace.log" | sort -u
     exit 0
 fi
 
-echo "FAIL: Rx DMA residue never moved -- bytes handed to the chardev did not" >&2
-echo "      reach guest memory. Check the rxdmareq wiring and the UCON[1:0]" >&2
-echo "      DMA-mode decode." >&2
-grep -m3 'R 14c Control' "$WORK/trace.log" >&2
+echo "FAIL: the guest never got past HCI_Reset, so it never accepted a reply." >&2
+echo "      Check the rxdmareq wiring, the UCON[1:0] DMA-mode decode, and" >&2
+echo "      pl080_set_dma_last_request()." >&2
 exit 1

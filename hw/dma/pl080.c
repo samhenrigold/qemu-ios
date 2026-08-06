@@ -462,7 +462,7 @@ void pl080_set_dma_last_request(PL080State *s, int id)
 
     for (c = 0; c < s->nchannels; c++) {
         pl080_channel *ch = &s->chan[c];
-        uint32_t done_ctrl;
+        uint32_t done_ctrl = 0;
         int flow, src_id, dest_id;
 
         if ((ch->conf & (PL080_CCONF_H | PL080_CCONF_E)) != PL080_CCONF_E) {
@@ -479,15 +479,6 @@ void pl080_set_dma_last_request(PL080State *s, int id)
             continue;   /* already finished by the normal path */
         }
 
-        /*
-         * Terminate the descriptor and walk the chain exactly as a normal
-         * completion does. Leaving the channel disabled with its residue
-         * intact reads better on paper -- the driver could then see how many
-         * bytes the packet held -- but it wedges the boot: the terminal count
-         * is latched on a channel pl080_run() then skips, so nothing re-arms
-         * it and the interrupt line stays high. That is the same stuck-line
-         * failure described at pl080_refresh_masks() above.
-         */
         done_ctrl = ch->ctrl & 0xfffff000;   /* remaining size := 0 */
         ch->ctrl = done_ctrl;
         if (ch->lli) {
@@ -502,7 +493,6 @@ void pl080_set_dma_last_request(PL080State *s, int id)
         } else {
             ch->conf &= ~PL080_CCONF_E;
         }
-        /* The terminal count belongs to the descriptor that just ended. */
         if (done_ctrl & PL080_CCTRL_I) {
             s->tc_int |= 1 << c;
         }

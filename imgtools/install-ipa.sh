@@ -215,8 +215,17 @@ install_shim() {
 # "Waiting…", which is what iOS 3 really shows, so nothing here is faked.
 PLACEHOLDER=""
 
+# The id comes out of an untrusted .ipa's Info.plist and is interpolated into a
+# command a ROOT shell on the guest re-parses, inside single quotes it can close.
+# The Swift path filters for exactly this reason; this one did not.
+placeholder_safe_id() {
+    printf '%s' "${1//[^A-Za-z0-9._-]/}"
+}
+
 placeholder_add() {
-    local tool="${IT_GUEST_TOOLS:-$REPO/contrib/it-instprogress}/sbdlicon" id="$1"
+    local tool="${IT_GUEST_TOOLS:-$REPO/contrib/it-instprogress}/sbdlicon"
+    local id
+    id="$(placeholder_safe_id "$1")"
     [ -f "$tool" ] || tool="$REPO/contrib/it-instprogress/sbdlicon"
 
     [ -f "$tool" ] || {
