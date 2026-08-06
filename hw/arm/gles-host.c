@@ -231,6 +231,8 @@ typedef struct {
      * texture slots used to) allocates megabyte buffers 60x/s for no reason. */
     uint8_t *txbuf;
     size_t txbuf_size;
+    uint8_t *zerobuf;           /* cleared storage for contentless textures */
+    size_t zerobuf_size;
 
     /* Where a compressed upload is expanded to RGBA8 before it goes to the
      * host. Same grow-and-keep idiom, and separate from txbuf because the
@@ -609,13 +611,33 @@ static bool gles_host_init(void)
         return false;
     }
 
-    /* ES 1.1's default matrices are identity with a viewport-sized ortho set up
-     * by the app; we only pre-load something sane so that a guest which never
-     * touches the matrix stack still draws in framebuffer pixel coordinates. */
+    /*
+     * Both matrices start as IDENTITY, because that is what ES 1.1 specifies
+     * and therefore what every app was written against.
+     *
+     * This used to pre-load a viewport-sized ortho "so that a guest which never
+     * touches the matrix stack still draws in framebuffer pixel coordinates".
+     * That convenience was a trap. glFrustumf/glOrthof MULTIPLY into the
+     * current matrix, and an app is entitled to skip glLoadIdentity for its
+     * very first projection because the spec promises identity is already
+     * there. Super Monkey Ball does exactly that:
+     *
+     *     glMatrixMode(GL_PROJECTION);
+     *     glFrustumf(-0.0866, 0.0866, -0.1299, 0.1299, 0.15, 1000);
+     *
+     * so its perspective matrix came out as ortho(320x480) x frustum -- every
+     * world coordinate scaled down by 160 in x and 240 in y, which collapsed
+     * the entire 3D scene into a few slivers radiating from one corner while
+     * the 2D HUD (which sets its own ortho each frame) drew perfectly. The
+     * measured projection was diag=(0.0108 0.0048 1.0003) against the
+     * (1.732 1.1547 -1.0003) the app asked for: off by exactly 2/320 and 2/480.
+     *
+     * A guest that truly never sets a projection now gets clip coordinates,
+     * which is what it would get on the device.
+     */
     glViewport(0, 0, GLES_FB_WIDTH, GLES_FB_HEIGHT);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    glOrtho(0, GLES_FB_WIDTH, 0, GLES_FB_HEIGHT, -1, 1);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
 
@@ -1490,6 +1512,28 @@ static void pvrtc_selfcheck(void)
  * caller skips the upload). Grows the buffer and keeps it, so a per-frame
  * streaming upload does not allocate.
  */
+/*
+ * `n` zero bytes, for a texture the guest allocated without contents.
+ *
+ * Grow-and-keep like the other staging buffers, but this one has to be cleared
+ * every time: it is handed to GL as image data, and a previous, larger upload
+ * would otherwise show through as the tail of the new one.
+ */
+static const uint8_t *gles_zeroed(size_t n)
+{
+    if (n > GLES_MAX_TEX_BYTES) {
+        fprintf(stderr, "[gles] zero-fill of %zu bytes exceeds cap; dropped\n",
+                n);
+        return NULL;
+    }
+    if (n > gh.zerobuf_size) {
+        gh.zerobuf = g_realloc(gh.zerobuf, n);
+        gh.zerobuf_size = n;
+    }
+    memset(gh.zerobuf, 0, n);
+    return gh.zerobuf;
+}
+
 static const uint8_t *gles_fetch_texels(CPUState *cpu, uint32_t pixels,
                                         size_t n, const char *who)
 {
@@ -1686,6 +1730,21 @@ static void gles_trace_draw(const char *what, uint32_t mode, uint32_t count)
             mat_dif[0], mat_dif[1], mat_dif[2], mat_dif[3],
             gh.vertex.enabled, gh.color.enabled, gh.normal.enabled,
             gh.texcoord.enabled, glIsEnabled(GL_LIGHTING));
+    /*
+     * The PROJECTION in force for THIS draw, not the one left at end of frame.
+     * The end-of-frame state dump always caught the 2D HUD's ortho, so a broken
+     * perspective matrix for the 3D pass could never be seen -- and geometry
+     * that is transformed to nothing looks exactly like geometry that was never
+     * submitted. m[11] tells the two projections apart at a glance: -1 for a
+     * frustum, 0 for an ortho.
+     */
+    {
+        float pr[16];
+        glGetFloatv(GL_PROJECTION_MATRIX, pr);
+        fprintf(stderr, "[gles]     projection diag=(%.4f %.4f %.4f) "
+                "m[11]=%.2f m[14]=%.3f viewport-ok\n",
+                pr[0], pr[5], pr[10], pr[11], pr[14]);
+    }
     gles_trace_vertices();
 }
 
@@ -2504,6 +2563,68 @@ static void gles_buffer_forget(const GLESBuffer *b)
     }
 }
 
+
+/*
+ * The first N matrix-stack operations, with the mode each ran against.
+ *
+ * A projection that is wrong by a FACTOR rather than by garbage means some
+ * earlier matrix survived into it, and only the order of these calls can show
+ * which one -- the final matrix cannot.
+ */
+
+/*
+ * Did that push/pop actually take?
+ *
+ * Desktop GL only guarantees a PROJECTION stack two deep, and ES guarantees the
+ * same -- but an implementation that refuses the push leaves the matrix the app
+ * believed it had saved sitting in the live slot. The matching pop then
+ * underflows, the app carries on, and every later matrix is silently composed
+ * onto the wrong base. Nothing else reports it: the error is raised here and
+ * drained by the next draw check long before anyone looks.
+ */
+static void gles_matrix_stack_check(const char *op)
+{
+    static unsigned complained;
+    GLenum e = glGetError();
+
+    if (e == GL_NO_ERROR || complained >= 4) {
+        return;
+    }
+    complained++;
+    {
+        GLint mode = 0, depth = 0, maxd = 0;
+        glGetIntegerv(GL_MATRIX_MODE, &mode);
+        if (mode == GL_PROJECTION) {
+            glGetIntegerv(GL_PROJECTION_STACK_DEPTH, &depth);
+            glGetIntegerv(GL_MAX_PROJECTION_STACK_DEPTH, &maxd);
+        } else {
+            glGetIntegerv(GL_MODELVIEW_STACK_DEPTH, &depth);
+            glGetIntegerv(GL_MAX_MODELVIEW_STACK_DEPTH, &maxd);
+        }
+        fprintf(stderr, "[gles] %s FAILED: GL error 0x%x, mode=0x%x "
+                "depth=%d/%d -- the matrix stack is now out of step with the "
+                "guest's\n", op, e, mode, depth, maxd);
+    }
+}
+
+static void gles_trace_matrix_op(const char *op, uint32_t arg)
+{
+    static unsigned n;
+    GLint mode = 0;
+
+    if (!getenv("IT_GLES_VERBOSE") || n >= 120) {
+        return;
+    }
+    n++;
+    glGetIntegerv(GL_MATRIX_MODE, &mode);
+    if (arg) {
+        fprintf(stderr, "[gles] mtx %-16s arg=0x%x (mode now 0x%x)\n",
+                op, arg, mode);
+    } else {
+        fprintf(stderr, "[gles] mtx %-16s (mode 0x%x)\n", op, mode);
+    }
+}
+
 static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                                 uint32_t argc, const uint32_t *a)
 {
@@ -2758,6 +2879,24 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         n = gles_image_bytes(w, h, bpp);
         if (pixels && n) {
             px = gles_fetch_texels(cpu, pixels, n, "glTexImage2D");
+            if (!px) {
+                return -1;
+            }
+        } else if (n) {
+            /* A NULL pixel pointer is the "allocate now, fill later" half of
+             * the alloc-then-upload idiom, and GL says the contents are
+             * UNDEFINED. Undefined is not the same thing on both sides of this
+             * shim: the MBX driver handed back cleared pages, while desktop GL
+             * hands back whatever was already in that VRAM.
+             *
+             * So an app that allocates a texture and then fills only the part
+             * it actually uses looked perfect on the device and rendered the
+             * untouched remainder as STATIC NOISE here. That is precisely what
+             * Super Monkey Ball's backgrounds and message panels showed. Zero
+             * the storage to match the hardware the guest was written against;
+             * it also turns any upload we drop into a visible black region
+             * instead of convincing-looking garbage. */
+            px = gles_zeroed(n);
             if (!px) {
                 return -1;
             }
@@ -3102,30 +3241,47 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     }
 
     case GLES_SLOT_MATRIX_MODE:
+        gles_trace_matrix_op("glMatrixMode", a[0]);
         glMatrixMode(a[0]);
         return 0;
 
     case GLES_SLOT_LOAD_IDENTITY:
+        gles_trace_matrix_op("glLoadIdentity", 0);
         glLoadIdentity();
         return 0;
 
     case GLES_SLOT_ORTHOF:                      /* l,r,b,t,n,f -- spilled */
+        gles_trace_matrix_op("glOrthof", 0);
         glOrtho(gles_f(a[0]), gles_f(a[1]), gles_f(a[2]),
                 gles_f(a[3]), gles_f(a[4]), gles_f(a[5]));
         return 0;
 
     case GLES_SLOT_FRUSTUMF:                    /* l,r,b,t,n,f -- spilled */
+        {
+            static bool said;
+            if (!said && getenv("IT_GLES_VERBOSE")) {
+                said = true;
+                fprintf(stderr, "[gles] glFrustumf(l=%g r=%g b=%g t=%g "
+                        "n=%g f=%g)\n", gles_f(a[0]), gles_f(a[1]),
+                        gles_f(a[2]), gles_f(a[3]), gles_f(a[4]), gles_f(a[5]));
+            }
+        }
+        gles_trace_matrix_op("glFrustumf", 0);
         glFrustum(gles_f(a[0]), gles_f(a[1]), gles_f(a[2]),
                   gles_f(a[3]), gles_f(a[4]), gles_f(a[5]));
         return 0;
 
     /* ---- matrix stack ---- */
     case GLES_SLOT_PUSH_MATRIX:
+        gles_trace_matrix_op("glPushMatrix", 0);
         glPushMatrix();
+        gles_matrix_stack_check("glPushMatrix");
         return 0;
 
     case GLES_SLOT_POP_MATRIX:
+        gles_trace_matrix_op("glPopMatrix", 0);
         glPopMatrix();
+        gles_matrix_stack_check("glPopMatrix");
         return 0;
 
     case GLES_SLOT_TRANSLATEF:                  /* x,y,z */
@@ -3151,8 +3307,22 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     case GLES_SLOT_LOAD_MATRIXF: {              /* const GLfloat m[16] */
         float m[16];
+        GLint mm = 0;
         if (!gles_fetch_floats(cpu, a[0], 16, m)) {
             return -1;
+        }
+        /* Report the first PROJECTION load: an app that builds its own
+         * perspective matrix never calls glFrustumf at all, so this is the only
+         * place its near/far convention becomes visible. */
+        glGetIntegerv(GL_MATRIX_MODE, &mm);
+        if (mm == GL_PROJECTION) {
+            static bool said;
+            if (!said && getenv("IT_GLES_VERBOSE")) {
+                said = true;
+                fprintf(stderr, "[gles] glLoadMatrixf(PROJECTION) "
+                        "diag=(%g %g %g) m[11]=%g m[14]=%g\n",
+                        m[0], m[5], m[10], m[11], m[14]);
+            }
         }
         glLoadMatrixf(m);
         return 0;
@@ -3363,7 +3533,23 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     default:
         /* Unimplemented on purpose -- see SCOPE at the top. Returning 0 rather
          * than an error keeps a guest that touches an unhandled state setter
-         * running, so the call stream can still be observed end to end. */
+         * running, so the call stream can still be observed end to end.
+         *
+         * But say so ONCE per slot. Silence here cost real debugging time:
+         * Super Monkey Ball's 3D world came through as static noise, and the
+         * cause was an entry point the guest called happily and we dropped on
+         * the floor without a word. A missing slot must never again be
+         * invisible -- an app that renders wrong looks identical to an app
+         * that renders right until something says which call went nowhere. */
+        {
+            static bool warned[1024];
+            if (slot < ARRAY_SIZE(warned) && !warned[slot]) {
+                warned[slot] = true;
+                fprintf(stderr, "[gles] UNHANDLED slot %u (0x%03x) argc=%u -- "
+                        "returning 0; the guest will render wrong\n",
+                        slot, slot * 4 + 0x10, argc);
+            }
+        }
         return 0;
     }
 }
@@ -3404,7 +3590,47 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
     gh.calls++;
     gles_cur_ctx = ctx;
     t0 = gles_t();
-    r = gles_host_call_1(cpu, slot, ctx, argc, a);
+    if (gles_strict) {
+        /*
+         * Attribute GL errors to the call that RAISED them.
+         *
+         * glGetError reports the first error since it was last called, so a
+         * check placed anywhere else blames whichever call happened to look
+         * next -- which is how a real GL_INVALID_OPERATION first showed up
+         * pinned on an innocent glPushMatrix. Draining immediately before and
+         * reading immediately after is the only attribution that holds, and it
+         * is what turns "something in this frame is wrong" into a slot number.
+         */
+        while (glGetError() != GL_NO_ERROR) {
+            /* drain whatever was pending from before this call */
+        }
+        r = gles_host_call_1(cpu, slot, ctx, argc, a);
+        {
+            GLenum e = glGetError();
+            if (e != GL_NO_ERROR) {
+                static uint16_t seen[64];
+                static unsigned n_seen;
+                unsigned i;
+                bool known = false;
+
+                for (i = 0; i < n_seen; i++) {
+                    if (seen[i] == (uint16_t)slot) {
+                        known = true;
+                        break;
+                    }
+                }
+                if (!known) {
+                    if (n_seen < ARRAY_SIZE(seen)) {
+                        seen[n_seen++] = (uint16_t)slot;
+                    }
+                    fprintf(stderr, "[gles] slot %u raised GL error 0x%x\n",
+                            slot, e);
+                }
+            }
+        }
+    } else {
+        r = gles_host_call_1(cpu, slot, ctx, argc, a);
+    }
     gh.t_call += gles_t() - t0;
     return r;
 }
