@@ -33,6 +33,7 @@ void gles_host_set_allowed(bool allowed);
 #include "qapi/qapi-commands-migration.h"
 #include "qapi/qapi-commands-misc.h"
 #include "migration/misc.h"
+#include "migration/migration.h"      /* migrate_get_current, MigrationState.state */
 #include "system/runstate.h"
 
 #define IOS_MAX_SLOTS 8
@@ -473,6 +474,92 @@ void qemu_ios_snapshot_save(const char *path)
 bool qemu_ios_snapshot_done(void)
 {
     return !migration_is_running();
+}
+
+/*
+ * Tracked variant. The plain _done() above is true both before the bottom half
+ * has run (nothing is migrating yet) and after a failed migrate (it stopped
+ * running) -- so the app could not tell "not started" from "done" from
+ * "failed". This tracks an explicit status, set RUNNING on the app thread
+ * before the BH so the pre-BH window reads RUNNING, then resolved by reading
+ * the migration state.
+ */
+static int ios_snap_status = QEMU_IOS_SNAPSHOT_IDLE;
+static char ios_snap_err[256];
+
+static void ios_snapshot2_bh(void *opaque)
+{
+    char *path = opaque;
+    Error *err = NULL;
+    g_autofree char *uri = g_strdup_printf("file:%s", path);
+
+    qmp_stop(&err);
+    if (err) {
+        snprintf(ios_snap_err, sizeof(ios_snap_err), "stop: %s", error_get_pretty(err));
+        error_free(err);
+        qatomic_set(&ios_snap_status, QEMU_IOS_SNAPSHOT_FAILED);
+        g_free(path);
+        return;
+    }
+    qmp_migrate(uri, false, NULL, false, false, false, false, &err);
+    if (err) {
+        snprintf(ios_snap_err, sizeof(ios_snap_err), "save: %s", error_get_pretty(err));
+        error_free(err);
+        qatomic_set(&ios_snap_status, QEMU_IOS_SNAPSHOT_FAILED);
+    } else {
+        fprintf(stderr, "[snapshot] writing %s\n", path);
+    }
+    g_free(path);
+}
+
+void qemu_ios_snapshot_save2(const char *path)
+{
+    if (!ios.attached) {
+        snprintf(ios_snap_err, sizeof(ios_snap_err), "device not attached");
+        qatomic_set(&ios_snap_status, QEMU_IOS_SNAPSHOT_FAILED);
+        return;
+    }
+    ios_snap_err[0] = '\0';
+    /* Set RUNNING here, on the app thread, so a status() before the BH runs
+     * does not read a leftover DONE/IDLE. */
+    qatomic_set(&ios_snap_status, QEMU_IOS_SNAPSHOT_RUNNING);
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), ios_snapshot2_bh, g_strdup(path));
+}
+
+QemuIosSnapshotStatus qemu_ios_snapshot_status(char *errbuf, unsigned long errlen)
+{
+    int s = qatomic_read(&ios_snap_status);
+    if (s == QEMU_IOS_SNAPSHOT_RUNNING) {
+        /* Resolve against the migration state. Reading the enum field is a
+         * plain int load; good enough for a status poll. */
+        MigrationState *ms = migrate_get_current();
+        int st = ms ? (int)ms->state : 0;
+        if (st == MIGRATION_STATUS_COMPLETED) {
+            s = QEMU_IOS_SNAPSHOT_DONE;
+            qatomic_set(&ios_snap_status, s);
+        } else if (st == MIGRATION_STATUS_FAILED || st == MIGRATION_STATUS_CANCELLED) {
+            snprintf(ios_snap_err, sizeof(ios_snap_err), "migration did not complete (state %d)", st);
+            s = QEMU_IOS_SNAPSHOT_FAILED;
+            qatomic_set(&ios_snap_status, s);
+        }
+    }
+    if (errbuf && errlen) {
+        strncpy(errbuf, ios_snap_err, errlen - 1);
+        errbuf[errlen - 1] = '\0';
+    }
+    return s;
+}
+
+static void ios_snapshot_resume_bh(void *opaque)
+{
+    if (!runstate_is_running()) {
+        vm_start();
+    }
+}
+
+void qemu_ios_snapshot_resume(void)
+{
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), ios_snapshot_resume_bh, NULL);
 }
 
 /* --- foreground/background ---------------------------------------------- */
