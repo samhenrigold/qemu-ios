@@ -63,7 +63,13 @@ def main():
     print("[2/5] attached %s, mounting read-write" % dev)
     ok = False
     try:
-        run(["mount", "-t", "hfs", "-o", "noowners,nobrowse", dev, mnt])
+        # `diskutil mount`, NOT `mount -t hfs`. The raw mount(8) call fails on
+        # recent macOS ("returned non-zero exit status 1") even as root, which
+        # read as a permissions problem and is not one -- diskutil mounts the
+        # very same case-sensitive HFS+ volume read-write as an ordinary user.
+        # So this whole script needs no sudo; if you find yourself reaching for
+        # it here, the mount is not why.
+        run(["diskutil", "mount", "-mountPoint", mnt, dev])
         try:
             print("[3/5] running %s" % a.script)
             env = dict(os.environ, MNT=mnt)
@@ -76,7 +82,9 @@ def main():
             for junk in (".fseventsd", ".Spotlight-V100", ".Trashes", ".TemporaryItems"):
                 shutil.rmtree(os.path.join(mnt, junk), ignore_errors=True)
         finally:
-            subprocess.run(["umount", mnt])
+            # Match the mount above: umount(8) is the raw counterpart to the
+            # mount(8) that no longer works here.
+            subprocess.run(["diskutil", "unmount", mnt])
         print("[4/5] fsck_hfs ...")
         r = subprocess.run(["fsck_hfs", "-n", dev], capture_output=True, text=True)
         sys.stdout.write(r.stdout[-800:])

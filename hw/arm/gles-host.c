@@ -3280,7 +3280,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * Answer from the same bookkeeping so save/restore idioms
          * round-trip. */
         case 0x8CA6: /* GL_FRAMEBUFFER_BINDING_OES */
-            v[0] = 0;
+            /* The guest's own name, not the host's: an app that saves this,
+             * binds its offscreen target and restores must get back the
+             * number it passed to glBindFramebuffer. */
+            v[0] = gh.bound_framebuffer;
             break;
         case 0x8CA7: /* GL_RENDERBUFFER_BINDING_OES */
             v[0] = gh.bound_renderbuffer;
@@ -3303,6 +3306,36 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             glGetIntegerv(pname, v);
             break;
         }
+        cpu_memory_rw_debug(cpu, a[1], (uint8_t *)v, n * sizeof(v[0]), 1);
+        return 0;
+    }
+
+    case GLES_SLOT_GET_FLOATV: {                /* pname, guest float* */
+        float v[16] = { 0 };
+        unsigned n;
+
+        if (!a[1]) {
+            return 0;
+        }
+        switch (a[0]) {
+        case GL_MODELVIEW_MATRIX:
+        case GL_PROJECTION_MATRIX:
+        case GL_TEXTURE_MATRIX:
+            n = 16;
+            break;
+        case GL_CURRENT_COLOR:
+        case GL_FOG_COLOR:
+        case GL_LIGHT_MODEL_AMBIENT:
+            n = 4;
+            break;
+        case GL_DEPTH_RANGE:
+            n = 2;
+            break;
+        default:
+            n = 1;
+            break;
+        }
+        glGetFloatv(a[0], v);
         cpu_memory_rw_debug(cpu, a[1], (uint8_t *)v, n * sizeof(v[0]), 1);
         return 0;
     }
@@ -3501,6 +3534,67 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             return -1;
         }
         glMaterialfv(a[0], a[1], p);
+        return 0;
+    }
+
+    case GLES_SLOT_MATERIALF:                   /* face, pname, param */
+        glMaterialf(a[0], a[1], gles_f(a[2]));
+        return 0;
+
+    case GLES_SLOT_COPY_TEX_IMAGE_2D:
+        /* target, level, internalformat, x, y, w, h, border.
+         * This is how an app builds a texture out of what it just drew, and
+         * dropping it left the texture with no storage at all -- which an FBO
+         * it is attached to then reports as INCOMPLETE. */
+        glCopyTexImage2D(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
+        return 0;
+
+    case GLES_SLOT_TEX_ENVF:                    /* target, pname, param */
+        glTexEnvf(a[0], a[1], gles_f(a[2]));
+        return 0;
+
+    case GLES_SLOT_TEX_ENVFV: {                 /* target, pname, params */
+        float p[4];
+        /* GL_TEXTURE_ENV_COLOR is the only vector parameter here; every other
+         * pname takes one float, and reading four for those would fault on a
+         * guest pointer to a single float. */
+        unsigned n = (a[1] == GL_TEXTURE_ENV_COLOR) ? 4 : 1;
+
+        if (!gles_fetch_floats(cpu, a[2], n, p)) {
+            return -1;
+        }
+        glTexEnvfv(a[0], a[1], p);
+        return 0;
+    }
+
+    case GLES_SLOT_TEX_PARAMETERX:              /* target, pname, param */
+        /* ES fixed-point 16.16. Every pname this accepts takes an enum or an
+         * integer, so the value converts to int rather than staying a scale. */
+        glTexParameteri(a[0], a[1], (int32_t)a[2] >> 16);
+        return 0;
+
+    case GLES_SLOT_READ_PIXELS: {
+        /* x, y, w, h, format, type, guest void* */
+        uint32_t x = a[0], y = a[1], w = a[2], h = a[3];
+        uint32_t fmt = a[4], type = a[5], dst = a[6];
+        size_t px = gles_texel_bytes(fmt, type), n;
+
+        if (!dst || !w || !h || !px) {
+            return 0;
+        }
+        /* Rows are padded to GL_PACK_ALIGNMENT, same as an upload; sizing this
+         * as a bare w*h*bpp would under-allocate and truncate the last rows. */
+        n = gles_image_bytes(w, h, px);
+        if (n > GLES_MAX_TEX_BYTES) {
+            fprintf(stderr, "[gles] glReadPixels: %zu bytes exceeds cap\n", n);
+            return -1;
+        }
+        if (n > gh.txbuf_size) {
+            gh.txbuf = g_realloc(gh.txbuf, n);
+            gh.txbuf_size = n;
+        }
+        glReadPixels(x, y, w, h, fmt, type, gh.txbuf);
+        cpu_memory_rw_debug(cpu, dst, gh.txbuf, n, 1);
         return 0;
     }
 

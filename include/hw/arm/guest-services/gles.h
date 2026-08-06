@@ -117,6 +117,26 @@ typedef struct __attribute__((packed)) {
 #define GLES_SLOT_LIGHTFV               151  /* 0x026c */
 #define GLES_SLOT_LINE_WIDTH            155  /* 0x027c */
 #define GLES_SLOT_MATERIALFV            171  /* 0x02bc */
+#define GLES_SLOT_MATERIALF             170  /* 0x02b8 */
+
+/*
+ * Calls the shim used to drop on the floor. Each one was silently unimplemented
+ * on BOTH sides, which is worse than it sounds: the host's unhandled-slot
+ * warning cannot fire for a call the shim never forwards, so these were
+ * invisible from the QEMU log no matter how verbose it was set.
+ *
+ * glCopyTexImage2D is the one that mattered. Labyrinth builds its render target
+ * by copying the framebuffer into a texture, so dropping it left that texture
+ * with NO storage -- and once framebuffer objects became real, an FBO with a
+ * storage-less texture attached reports INCOMPLETE, which the app treats as
+ * fatal. It is the reason Labyrinth went from a white level to a crash on Play.
+ */
+#define GLES_SLOT_COPY_TEX_IMAGE_2D      54  /* 0x00d8 */
+#define GLES_SLOT_GET_FLOATV            103  /* 0x019c */
+#define GLES_SLOT_READ_PIXELS           237  /* 0x03b4 */
+#define GLES_SLOT_TEX_ENVF              290  /* 0x0498 */
+#define GLES_SLOT_TEX_ENVFV             291  /* 0x049c */
+#define GLES_SLOT_TEX_PARAMETERX        799  /* 0x0c7c */
 #define GLES_SLOT_MULT_MATRIXF          176  /* 0x02d0 */
 #define GLES_SLOT_NORMAL_POINTER        188  /* 0x0300 */
 #define GLES_SLOT_POP_MATRIX            205  /* 0x0344 */
