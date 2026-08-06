@@ -309,6 +309,7 @@ typedef struct {
      * offscreen target that is never sampled back, or no geometry at all --
      * and the frame counter alone cannot tell them apart. */
     uint64_t draws_drawable, draws_offscreen;
+    bool depth_cleared_this_frame;
     uint64_t last_report_drawable, last_report_offscreen;
     uint64_t presents;
 
@@ -1794,6 +1795,63 @@ static void gles_check_fb_complete(void)
             gh.bound_framebuffer, gles_host_fbo(gh.bound_framebuffer), st);
 }
 
+/*
+ * End of frame on a TILE-BASED DEFERRED renderer.
+ *
+ * The MBX is a PowerVR: it renders into tile memory and resolves only the
+ * colour buffer out to the framebuffer. Depth and stencil live and die inside
+ * the tile, so every frame begins with them fresh whether or not the app asked
+ * -- and omitting glClear(GL_DEPTH_BUFFER_BIT) was normal practice on that
+ * hardware because the clear bought nothing.
+ *
+ * Our host GL has an ordinary persistent depth renderbuffer, so those apps got
+ * frame 1 correct and then a depth buffer full of near values that z-failed
+ * every fragment afterwards. The screen goes to whatever the colour clear is
+ * and stays there, with the app still submitting geometry at full rate --
+ * Labyrinth's white level, which enables GL_DEPTH_TEST, writes depth, and
+ * clears colour only.
+ *
+ * glClear honours the depth mask and the scissor box, so both are stood down
+ * for the clear and put back: an app that finished its frame with depth writes
+ * masked off, or a scissor covering part of the screen, would otherwise leave
+ * the stale depth exactly where it does the damage.
+ */
+static void gles_frame_end(void)
+{
+    GLboolean depth_mask = GL_TRUE;
+    GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &depth_mask);
+    if (!depth_mask) {
+        glDepthMask(GL_TRUE);
+    }
+    if (scissor) {
+        glDisable(GL_SCISSOR_TEST);
+    }
+    glClear(GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    if (scissor) {
+        glEnable(GL_SCISSOR_TEST);
+    }
+    if (!depth_mask) {
+        glDepthMask(GL_FALSE);
+    }
+
+    /* Say so once, because it changes what the app sees. An app relying on the
+     * tile behaviour renders correctly BECAUSE of this; without it the symptom
+     * is a screen frozen at the clear colour from frame 2 onward. */
+    if (!gh.depth_cleared_this_frame && glIsEnabled(GL_DEPTH_TEST)) {
+        static bool warned;
+
+        if (!warned) {
+            warned = true;
+            fprintf(stderr, "[gles] the guest depth-tests but never clears "
+                    "depth; invalidating it per frame as the tile-based MBX "
+                    "does, which host GL would otherwise persist\n");
+        }
+    }
+    gh.depth_cleared_this_frame = false;
+}
+
 static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
 {
     static GLenum reported[8];
@@ -2146,6 +2204,7 @@ static void gles_present_to_panel(void)
         }
         gles_platform_frame_unlock();
         gh.presents++;
+        gles_frame_end();
         return;
     }
 
@@ -2177,6 +2236,7 @@ static void gles_present_to_panel(void)
                                   row, sizeof(row));
     }
     gh.presents++;
+    gles_frame_end();
 }
 
 
@@ -2667,6 +2727,7 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
             gles_dump_frame(frame, fstride, rw, rh, bgra);
             gles_platform_frame_unlock();
             gh.presents++;
+            gles_frame_end();
             gles_note_scene();
             gles_note_frame_gap();
             gles_report_progress();
@@ -2738,6 +2799,7 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
     glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,
                          gles_host_fbo(gh.bound_framebuffer));
     gh.presents++;
+    gles_frame_end();
     gles_note_scene();
     gles_note_frame_gap();
     gles_report_progress();
@@ -2943,7 +3005,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         glClearColor(gles_f(a[0]), gles_f(a[1]), gles_f(a[2]), gles_f(a[3]));
         return 0;
 
-    case GLES_SLOT_CLEAR:                       /* glClear(mask) */
+    case GLES_SLOT_CLEAR:
+        if (a[0] & GL_DEPTH_BUFFER_BIT) {
+            gh.depth_cleared_this_frame = true;
+        }                       /* glClear(mask) */
         /* ES and desktop agree on these bits, so the mask passes through. */
         glClear(a[0]);
         return 0;
