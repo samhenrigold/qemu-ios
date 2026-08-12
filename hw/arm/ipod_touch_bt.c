@@ -27,6 +27,7 @@
 #include "qemu/module.h"
 #include "qapi/error.h"
 #include "hw/sysbus.h"
+#include "system/reset.h"
 #include "hw/arm/ipod_touch_2g.h"
 
 /* chardev_new() asserts on the prefix; every chardev type carries it. */
@@ -270,6 +271,28 @@ static void bt_command_complete(ItBtChardev *bt, uint16_t opcode)
         memcpy(ev + 7, ret, rlen);
     }
     bt_queue(bt, ev, 7 + rlen);
+
+    /*
+     * BCM_DOWNLOAD_MINIDRIVER is followed by a LAUNCH ANNOUNCEMENT: two ASCII
+     * digits the controller emits once the minidriver is running. BlueTool
+     * writes the command, waits for this Command Complete, sleeps 50 ms, and
+     * then does a RAW read(fd, buf, 2) on the port -- not a packet read. Short
+     * of two bytes it prints "Didn't receive enough data"; if either byte is
+     * outside '0'-'9' it prints "Bad response from launch anouncement". Either
+     * way it abandons the script, and BTServer re-runs the whole thing ten
+     * seconds later, forever. That is exactly where this model used to stop.
+     *
+     * It validates the shape and never reads the value -- 0x3f14..0x406c in
+     * the 7E18 /usr/sbin/BlueTool -- so the digits carry no information and
+     * there is nothing here to get subtly wrong. Two bytes, both digits, is
+     * the whole contract. It has to be exactly two: BlueTool goes straight
+     * back to packet reads afterwards, so a longer banner would desync it.
+     */
+    if (opcode == 0xfc2e) {
+        static const uint8_t launch_announcement[] = { '0', '0' };
+
+        bt_queue(bt, launch_announcement, sizeof(launch_announcement));
+    }
 }
 
 static int bt_chr_write(Chardev *chr, const uint8_t *buf, int len)
@@ -313,11 +336,29 @@ static void bt_chr_accept_input(Chardev *chr)
     bt_arm(IT_BT_CHARDEV(chr));
 }
 
+/*
+ * A chardev gets no machine reset of its own, and this one carries state that
+ * MUST NOT outlive a guest reboot: a half-parsed command, and queued reply
+ * bytes for a command the previous boot asked. Delivered to the newly booted
+ * guest they land in the middle of BlueTool's packet stream and desync it, so
+ * bring-up fails and Bluetooth reads "unavailable" -- on that boot only, which
+ * is what made this look intermittent. Reset with the machine instead.
+ */
+static void bt_machine_reset(void *opaque)
+{
+    ItBtChardev *bt = IT_BT_CHARDEV(opaque);
+
+    bt->cmd_len = 0;
+    bt->resp_head = bt->resp_tail = 0;
+    timer_del(bt->timer);
+}
+
 static void bt_chr_open(Chardev *chr, ChardevBackend *backend,
                         bool *be_opened, Error **errp)
 {
     IT_BT_CHARDEV(chr)->timer =
         timer_new_ns(QEMU_CLOCK_VIRTUAL, bt_timer, chr);
+    qemu_register_reset(bt_machine_reset, chr);
     *be_opened = true;
 }
 

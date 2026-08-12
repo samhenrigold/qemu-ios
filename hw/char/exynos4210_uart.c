@@ -196,6 +196,15 @@ struct Exynos4210UartState {
      * big DMA descriptor never completes and the driver is never woken.
      */
     qemu_irq          rxdmalast;
+    /*
+     * Whether anything has actually arrived since the last Rx timeout. The
+     * timeout itself is NOT proof of that: it also fires on a completely idle
+     * line whenever UCON bit 11 is set, and pulsing the last request then ends
+     * a descriptor the guest has only just armed and never fed. That is a
+     * transient: it depends on whether the idle timeout beats the first byte,
+     * so Bluetooth would come up on one boot and not the next.
+     */
+    bool              rx_since_timeout;
 
     uint32_t channel;
 
@@ -422,9 +431,10 @@ static void exynos4210_uart_timeout_int(void *opaque)
          * an Rx timeout; it is what turns a 7-byte reply sitting in a
          * 2048-byte descriptor into a completed transfer.
          */
-        if ((s->reg[I_(UCON)] & 0x03) >= 0x02) {
+        if ((s->reg[I_(UCON)] & 0x03) >= 0x02 && s->rx_since_timeout) {
             qemu_irq_pulse(s->rxdmalast);
         }
+        s->rx_since_timeout = false;
     }
 }
 
@@ -686,6 +696,7 @@ static void exynos4210_uart_receive(void *opaque, const uint8_t *buf, int size)
         s->reg[I_(URXH)] = buf[0];
     }
     s->reg[I_(UTRSTAT)] |= UTRSTAT_Rx_BUFFER_DATA_READY;
+    s->rx_since_timeout = true;
 
     exynos4210_uart_update_irq(s);
 }
@@ -717,6 +728,7 @@ static void exynos4210_uart_reset(DeviceState *dev)
 
     fifo_reset(&s->rx);
     fifo_reset(&s->tx);
+    s->rx_since_timeout = false;
 
     trace_exynos_uart_rxsize(s->channel, s->rx.size);
 }
