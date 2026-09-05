@@ -22,23 +22,30 @@ static void tvout_ack_vblank(IPodTouchTVOutState *s)
     }
 }
 
+/* A masked source may remain latched, but must not keep the VIC line high.
+ * AppleM2TVOut masks SDO before tearing down its active framebuffer; leaving
+ * the old level asserted makes its inactive handler spin without acknowledging
+ * it, starving unrelated workloop handlers (including FMSS completion).
+ */
+static void tvout_update_irq(IPodTouchTVOutState *s)
+{
+    if (s->irq) {
+        qemu_set_irq(s->irq, (s->sdo_irq & ~s->sdo_irq_mask) != 0);
+    }
+}
+
 static void tvout_vblank(void *opaque)
 {
     IPodTouchTVOutState *s = (IPodTouchTVOutState *)opaque;
 
-    /*
-     * Post a frame interrupt on the SDO line. AppleM2TVOut's SDO filter
-     * requires SDO_IRQ bit 0, and its handler is what retires queued swaps;
-     * without a periodic one, IOMobileFramebuffer's close path sleeps forever
-     * waiting for the swap queue to drain. Only raise while nothing is pending
-     * - the driver acknowledges by writing SDO_IRQ, which lowers the line.
-     */
-    if (!s->sdo_irq && (s->sdo_irq_mask & 1) == 0) {
-        s->sdo_irq = 0x1;
-        if (s->irq) {
-            qemu_irq_raise(s->irq);
-        }
-        TVT("vblank -> raise SDO irq");
+    /* Complete swaps at the frame boundary. Raising inline from MXR_STATUS
+     * lets the guest's frame handler request its next frame and immediately
+     * re-enter forever, starving other interrupt workloops. */
+    if ((s->mixer1_status & 1) && (s->sdo_clkcon & 1)) {
+        s->mixer1_status |= 4;
+        s->sdo_irq |= 1;
+        tvout_update_irq(s);
+        TVT("vblank pending=%x mask=%x", s->sdo_irq, s->sdo_irq_mask);
     }
     timer_mod(s->vblank_timer,
               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 16 * 1000 * 1000);
@@ -111,12 +118,13 @@ static void ipod_touch_tvout_sdo_write(void *opaque, hwaddr offset, uint64_t val
             s->sdo_config = value;
             return;
         case SDO_IRQ:
-            s->sdo_irq = 0x0;
-            qemu_irq_lower(s->irq);
+            s->sdo_irq &= ~(uint32_t)value;
+            tvout_update_irq(s);
             tvout_ack_vblank(s);
             return;
         case SDO_IRQMASK:
             s->sdo_irq_mask = value;
+            tvout_update_irq(s);
             return;
     }
 }
@@ -138,9 +146,9 @@ static uint64_t ipod_touch_tvout_mixer1_read(void *opaque, hwaddr offset, unsign
              */
             return s->mixer1_intstat;
         case MXR_STATUS:
-            /* reg_mixer_ready_clk_down lives in the mixer status/ctrl block;
-             * report every ready bit while probing the shutdown gates. */
-            return getenv("IT_TVOUT_READY") ? 0xffffffff : 0x4;
+            /* AppleM2TVOut polls bit 1 after clearing RUN at c05e6794,
+             * and bit 2 reports that the frame update has completed. */
+            return s->mixer1_status | 2u;
         case MXR_CFG:
             return getenv("IT_TVOUT_READY") ? (s->mixer1_cfg | 0xffff0000)
                                             : s->mixer1_cfg;
@@ -168,24 +176,7 @@ static void ipod_touch_tvout_mixer1_write(void *opaque, hwaddr offset, uint64_t 
             s->mixer1_intstat &= ~(uint32_t)value;   /* write-1-to-clear */
             break;
         case MXR_STATUS:
-            /*
-             * Starting the mixer completes a swap, which the driver learns
-             * about through the SDO interrupt.
-             *
-             * This used to be capped at two interrupts ever ("ugly hack for
-             * now"). 3.1.3 swaps continuously, and AppleM2TVOut sleeps on the
-             * swap-complete event on SpringBoard's own thread, so once the cap
-             * was reached SpringBoard blocked forever and the watchdog killed
-             * it. The cap is unnecessary: raising only while no interrupt is
-             * already pending is enough to keep the line from sticking high,
-             * because the driver acknowledges by writing SDO_IRQ, which lowers
-             * it and re-arms us.
-             */
-            if((value & 0x1) && (s->sdo_irq_mask & 1) == 0 && !s->sdo_irq) {
-                s->sdo_irq = 0x1;
-                qemu_irq_raise(s->irq);
-                TVT("mix1  -> RAISE sdo irq");
-            }
+            s->mixer1_status = value & ~2u; /* bit 1 is clock-down ready */
             break;
         case MXR_CFG:
             s->mixer1_cfg = value;
@@ -270,22 +261,33 @@ static void ipod_touch_tvout_init(Object *obj)
     sysbus_init_irq(sbd, &s->irq);
     sysbus_init_irq(sbd, &s->irq2);
 
-    s->vblank_shim = getenv("IT_TVOUT_VBLANK") != NULL;
-    if (s->vblank_shim) {
-        s->vblank_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, tvout_vblank, s);
+    s->vblank_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, tvout_vblank, s);
+    timer_mod(s->vblank_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 16 * 1000 * 1000);
+}
+
+/* Older snapshots predate the paced mixer; restore them stopped and let the
+ * guest's next register programming start frames again. */
+static int tvout_post_load(void *opaque, int version_id)
+{
+    IPodTouchTVOutState *s = opaque;
+    if (version_id < 3) {
+        s->mixer1_status = 0;
         timer_mod(s->vblank_timer,
                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 16 * 1000 * 1000);
     }
+    tvout_update_irq(s);
+    if (s->irq2) {
+        qemu_set_irq(s->irq2, s->irq2_pending);
+    }
+    return 0;
 }
 
-/* vblank_shim is an environment switch, not guest state, and vblank_timer only
- * exists when it is on -- a NULL timer pointer in a VMStateField aborts the
- * save. It is a free-running periodic timer that the destination arms for
- * itself at realize, so there is nothing to carry across. */
 static const VMStateDescription vmstate_ipod_touch_tvout = {
     .name = "ipod_touch_tvout",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 2,
+    .post_load = tvout_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_BOOL(irq2_pending, IPodTouchTVOutState),
         VMSTATE_UINT32(mixer1_intstat, IPodTouchTVOutState),
@@ -296,15 +298,42 @@ static const VMStateDescription vmstate_ipod_touch_tvout = {
         VMSTATE_UINT32(sdo_config, IPodTouchTVOutState),
         VMSTATE_UINT32(sdo_irq, IPodTouchTVOutState),
         VMSTATE_UINT32(sdo_irq_mask, IPodTouchTVOutState),
+        VMSTATE_UINT32_V(mixer1_status, IPodTouchTVOutState, 3),
+        VMSTATE_TIMER_PTR_V(vblank_timer, IPodTouchTVOutState, 3),
         VMSTATE_END_OF_LIST()
     }
 };
+
+static void ipod_touch_tvout_reset(DeviceState *dev)
+{
+    IPodTouchTVOutState *s = IPOD_TOUCH_TVOUT(dev);
+    s->mixer1_status = 0;
+    s->mixer1_cfg = 0;
+    s->mixer1_intstat = 0;
+    s->mixer2_status = 0;
+    s->mixer2_cfg = 0;
+    s->sdo_clkcon = 0;
+    s->sdo_config = 0;
+    s->sdo_irq = 0;
+    s->sdo_irq_mask = 0;
+    tvout_ack_vblank(s);
+    tvout_update_irq(s);
+    timer_mod(s->vblank_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 16 * 1000 * 1000);
+}
+
+static void ipod_touch_tvout_finalize(Object *obj)
+{
+    IPodTouchTVOutState *s = IPOD_TOUCH_TVOUT(obj);
+    timer_free(s->vblank_timer);
+}
 
 static void ipod_touch_tvout_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_ipod_touch_tvout;
+    device_class_set_legacy_reset(dc, ipod_touch_tvout_reset);
 
 }
 
@@ -313,6 +342,7 @@ static const TypeInfo ipod_touch_tvout_type_info = {
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(IPodTouchTVOutState),
     .instance_init = ipod_touch_tvout_init,
+    .instance_finalize = ipod_touch_tvout_finalize,
     .class_init = ipod_touch_tvout_class_init,
 };
 
