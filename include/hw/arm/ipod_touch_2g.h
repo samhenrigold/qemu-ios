@@ -215,6 +215,7 @@ typedef struct {
 	LIS302DLState *lis302dl_state;
     Pcf50633State *pmu_state;
     uint32_t battery_adc;
+    uint8_t battery_charging;
 	Clock *sysclk;
 	char bootrom_path[1024];
 	char nor_path[1024];

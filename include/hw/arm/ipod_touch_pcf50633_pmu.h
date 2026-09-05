@@ -64,6 +64,7 @@ typedef struct Pcf50633State {
     QEMUTimer *adc_timer;
     uint16_t adc_values[16];
     uint16_t adc_sample;
+    uint8_t charging_mode; /* 0 auto, 1 on, 2 off; external power still required */
 } Pcf50633State;
 
 // The D1759 PMU is itself a nested interrupt controller (device tree pmu@73:
@@ -129,6 +130,10 @@ typedef struct Pcf50633State {
 
 // Update live cable status and latch the corresponding power-source event.
 void pcf50633_set_usb_cable(Pcf50633State *s, bool attached);
+unsigned pcf50633_adc_for_level(unsigned percent);
+unsigned pcf50633_level_for_adc(unsigned counts);
+void pcf50633_set_battery_adc(Pcf50633State *s, unsigned counts);
+void pcf50633_set_charging_mode(Pcf50633State *s, unsigned mode);
 // Set/clear the live button STATE bits in reg 0x19.
 void pcf50633_set_stat(Pcf50633State *s, uint8_t bits, bool on);
 // Latch a wake-button interrupt in EVENT_C (reg 0x03); cleared when iOS reads it.
