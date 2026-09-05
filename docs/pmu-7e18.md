@@ -32,10 +32,18 @@ using `counts * 20 * scale / 1024`. Battery voltage, thermistor and accessory
 channels therefore need separate values; one arbitrary battery percentage
 cannot safely stand in for every ADC channel.
 
+The event dispatcher at `c05fc17c` reads three bytes from `0x01`; it tests bit 5
+of the second byte at `c05fc1d0` and invokes the completion callback at
+`c05fc1e4`. EVENT_B bit 5 is therefore confirmed on 7E18 too. The driver writes
+mask B (`0x08`) to `0xdf` at boot, enabling precisely that bit.
+
+Battery voltage is **channel 4**, not channel 3: `c05ff878` selects it and
+`c05ff884..c05ff8a0` computes `2500 + counts * 2000 / 1024` millivolts. The
+thermistor read at `c05ff81c` uses channel 2 with scale 2500. Calibration must
+still establish the guest's voltage-to-percentage curve and filtering delay.
+
 Still to verify before implementation is accepted:
 
-- Confirm the ADC completion event registration in this kernel (the older
-  firmware analysis identifies EVENT_B bit 5).
 - Wire masked PMU events through GPIO IRQ 0x61, with coherent read-to-clear and
   group acknowledgment. The current button path manually latches SYSIC state.
 - Sweep calibrated voltage counts and compare guest battery properties; derive

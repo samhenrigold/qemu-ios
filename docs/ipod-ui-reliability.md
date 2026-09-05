@@ -177,3 +177,10 @@ cleanup attempted to close the already-cleared QMP handle after shutdown;
 cold-boot verification is therefore run separately against this saved overlay.
 The preceding mask-only build failed after six cycles, so masking alone must
 not be presented as the complete fix.
+
+Cold-boot verification subsequently passed from a copy of the saved overlay:
+both app IDs remained installed and BluetoothManager's plist matched the
+pre-stress bytes (`/tmp/it-nand-coldverify.log`). Read-only `fsck_hfs -n` also
+passed across the complete 1,835,008-block HFS volume, incorporating 497,220
+overlay pages (`/tmp/it-nand-fsckverify.log`). This closes the reproduced
+install/respring corruption and interrupt-starvation failures.

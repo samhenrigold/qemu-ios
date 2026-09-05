@@ -34,7 +34,7 @@ QMP="${QMP_PORT:-4599}"
 trap 'rm -rf "$WORK"; [ -n "${PID:-}" ] && kill "$PID" 2>/dev/null' EXIT
 
 IT_LCD_BRIGHT=255 IT_DIRECT_IBOOT="$F/ios3/iBoot.bin" \
-IT_TVOUT_READY=1 IT_TVOUT_VBLANK=1 \
+IT_TVOUT_READY=1 \
 IT_BOOT_ARGS="amfi_allow_any_signature=1 cs_enforcement_disable=1" \
 IT_BOOT_ARGS_DELAY_MS=1500 IT_BOOT_ARGS_REPEAT=200 IT_BOOT_ARGS_INTERVAL_MS=250 \
 IT_BT_TRACE=1 IT_DMAC_TRACE=1 \

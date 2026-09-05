@@ -37,6 +37,19 @@ The stock base images are read-only inputs. Guest writes belong in a separate
   lock/backlight behavior and first-run packed-NAND extraction. Timezone writes
   were moved out of process after an in-process heap-corruption failure.
 
+## Kernel console
+
+`-M 'iPod-Touch,...,boot-args=amfi_allow_any_signature=1 cs_enforcement_disable=1 serial=3 debug=0x8'`
+enables XNU serial output on 7E18. Explicit machine arguments take precedence over
+`IT_BOOT_ARGS`, including the version-checked early iBoot handoff. Add `-v` for
+verbose text on the panel; serial logging works without it. The earliest kernel
+banner precedes serial initialization, but driver startup and `BSD root:` are
+captured. `tests/ipod/regress.py --checks serial-console` verifies those outputs.
+
+Light Touch exposes Kernel Console under Device > Advanced, applying on the next
+boot; Export Diagnostics includes the log. The local asset launcher
+`qemu-ios-files/ios3/run-ios3.sh --console` enables both serial and verbose boot.
+
 ## September reliability fixes
 
 The September 5 continuation, frontend changes, verification evidence, and

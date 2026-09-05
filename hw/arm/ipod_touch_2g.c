@@ -634,10 +634,17 @@ static void ipod_touch_amfi_patch_now(IPodTouchMachineState *nms)
     }
 }
 
+static const char *ipod_touch_requested_boot_args(IPodTouchMachineState *nms)
+{
+    /* Explicit machine options win over the legacy environment fallback,
+     * for both the early handoff and subsequent AMFI argument refreshes. */
+    return nms->boot_args[0] ? nms->boot_args : getenv("IT_BOOT_ARGS");
+}
+
 static void ipod_touch_set_boot_args_now(void *opaque)
 {
     IPodTouchMachineState *nms = (IPodTouchMachineState *)opaque;
-    const char *args = getenv("IT_BOOT_ARGS");
+    const char *args = ipod_touch_requested_boot_args(nms);
     const char *addr_s = getenv("IT_BOOT_ARGS_ADDR");
     uint32_t ba = 0;
     uint8_t buf[BOOT_ARGS_CMDLINE_LEN];
@@ -762,7 +769,7 @@ static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
     const char *delay_s = getenv("IT_BOOT_ARGS_DELAY_MS");
     uint64_t delay_ms = delay_s ? strtoull(delay_s, NULL, 0) : 2000;
 
-    if (!getenv("IT_BOOT_ARGS") && !getenv("IT_AMFI_ALLOW_TASKPORT")) {
+    if (!ipod_touch_requested_boot_args(nms) && !getenv("IT_AMFI_ALLOW_TASKPORT")) {
         return;
     }
 
@@ -892,7 +899,7 @@ static void ipod_touch_inject_boot_logo(IPodTouchMachineState *nms)
 
 static void ipod_touch_inject_boot_args(IPodTouchMachineState *nms)
 {
-    const char *args = getenv("IT_BOOT_ARGS");
+    const char *args = ipod_touch_requested_boot_args(nms);
     /* Release 7E18 iBoot deliberately ignores NVRAM boot-args. Redirect its
      * normal-boot empty-string literal, before it constructs XNU's arguments.
      * The late AMFI timer is too late for PE_init_platform's verbose flag. */
