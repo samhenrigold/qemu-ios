@@ -68,3 +68,23 @@ RTC counter reads at `0x5c..0x5f` and offset writes at `0x64..0x67` already work
 The guest reaches its final native shutdown command `0x6f=0x90`; shutdown no
 longer needs an ADC-related workaround. Runtime power-source status uses
 `0x04` bit 3 for USB cable presence. Other status bits remain unverified.
+
+## Charging status and filtering
+
+`c05ff45c` reads the power status block and tests **register 0x05 bits 1/2**
+at `c05ff4a0..4b8` to update IsCharging. Leaving both bits zero made the guest
+stop charging and report fully charged after its first status poll, regardless
+of voltage. The model now reports bit 1 while USB power is present and the
+charge-disable bits in 0x0a are clear. The guest charge-control routine at
+`c05ff5f0` clears 0x0a[3:2] before selecting its permitted charging current and
+sets bit 3 when USB charging is unavailable.
+
+The real IOPMPowerSource dictionary provides the `0003-default` battery table.
+At ADC 660, a fresh guest reports 3789 mV, BootCapacityEstimate 20 and
+CurrentCapacity 20 (`/tmp/it-battery-cold20.log`); native shutdown passes.
+Connected operation has a three-minute measurement interval and a four-sample
+capacity filter (`c0600430`, `c05ffa48`). In a live 850-to-750 sweep, voltage
+changed from 4160 to 3964 mV after about three minutes and capacity changed from
+95 to 82 while IsCharging stayed true. Immediate lockdown battery queries can
+lag the IOPMPowerSource dictionary. Percentage acceptance must account for
+these native measurement/filtering intervals.

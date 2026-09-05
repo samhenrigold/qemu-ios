@@ -145,6 +145,15 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
                 res |= PMU_PWRSRC_USB;
             }
             break;
+        case PMU_PWRSRC_STATUS + 1:
+            /* 7E18 c05ff4a0 tests status byte 1 bits 1/2 for charging.
+             * Report an active charging phase while external USB power is
+             * available and the guest has not disabled charging (0x0a[3:2]). */
+            res = s->regs[reg] & ~6;
+            if (s->usb_cable && !(s->regs[0x0a] & 0x0c)) {
+                res |= 2;
+            }
+            break;
         case PMU_EVENT_A_REG:     // 0x01
         case PMU_EVENT_A_REG + 1: // 0x02
         case PMU_EVENT_C_REG:     // 0x03
