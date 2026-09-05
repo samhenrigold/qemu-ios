@@ -268,6 +268,9 @@ static bool fmss_recall_physical(IPodTouchFMSSState *s, uint32_t cs,
 static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
                                  uint32_t page_nr, uint8_t *data,
                                  uint8_t *spare);
+static void fmss_fix_generated_free_pool(IPodTouchFMSSState *s, uint32_t cs,
+                                         uint32_t page, uint8_t *data,
+                                         const uint8_t *spare);
 
 /*
  * Time every page read. Split from the body so the accounting cannot miss one
@@ -281,10 +284,12 @@ static void fmss_load_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
 
     if (!fmss_stats_on()) {
         fmss_load_page_inner(s, cs, page_nr, data, spare);
+        fmss_fix_generated_free_pool(s, cs, page_nr, data, spare);
         return;
     }
     t0 = qemu_clock_get_ns(QEMU_CLOCK_HOST);
     fmss_load_page_inner(s, cs, page_nr, data, spare);
+    fmss_fix_generated_free_pool(s, cs, page_nr, data, spare);
     fmss_stats.ns += qemu_clock_get_ns(QEMU_CLOCK_HOST) - t0;
     fmss_stats.reads++;
     fmss_stats_report();
@@ -603,8 +608,9 @@ static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
 static uint32_t fmss_total_blocks(IPodTouchFMSSState *s)
 {
     char path[1088];
-    uint8_t ent[0x30];
+    uint8_t ent[NAND_BYTES_PER_PAGE], spare[NAND_BYTES_PER_SPARE];
     FILE *f;
+    bool got = false;
 
     if (s->total_blocks) {
         return s->total_blocks;
@@ -612,19 +618,70 @@ static uint32_t fmss_total_blocks(IPodTouchFMSSState *s)
     s->total_blocks = NAND_DEFAULT_TOTAL_BLOCKS;
 
     /* logical 2 is cs2 page 256 under the formula below */
-    snprintf(path, sizeof(path), "%s/cs2/256.page", s->nand_path);
-    f = fopen(path, "rb");
-    if (f) {
-        if (fread(ent, 1, sizeof(ent), f) == sizeof(ent)) {
-            uint64_t start = ldq_le_p(ent + 0x20);
-            uint64_t end = ldq_le_p(ent + 0x28);
-            if (start == 3 && end > start && end - start < NAND_MAX_TOTAL_BLOCKS) {
-                s->total_blocks = end - start + 1;
-            }
+    if (s->packed) {
+        got = fmss_packed_page(s, 2, 256, ent, spare);
+    } else {
+        snprintf(path, sizeof(path), "%s/cs2/256.page", s->nand_path);
+        f = fopen(path, "rb");
+        if (f) {
+            got = fread(ent, 1, 0x30, f) == 0x30;
+            fclose(f);
         }
-        fclose(f);
+    }
+    if (got) {
+        uint64_t start = ldq_le_p(ent + 0x20);
+        uint64_t end = ldq_le_p(ent + 0x28);
+        if (start == 3 && end > start && end - start < NAND_MAX_TOTAL_BLOCKS) {
+            s->total_blocks = end - start + 1;
+            s->total_blocks_from_gpt = true;
+        }
     }
     return s->total_blocks;
+}
+
+/* The legacy generated image has an identity block map (LBN n -> VBN n+1),
+ * but copied a factory free list containing VBNs 3..22. Those blocks already
+ * contain system files. After a large install, phys_pages correctly returns
+ * newly programmed IPA data there, corrupting reads of the original files.
+ * Keep the pool outside the entire GPT volume, including its currently free
+ * filesystem blocks. One VBN is 1024 pages: four chips, two 128-page planes.
+ *
+ * This is a compatibility correction to the known synthetic FTL context, not
+ * a change to real NAND behavior. Physical images and updated/live contexts
+ * are left alone. The image on disk is unchanged; reset reapplies the same
+ * pool while the generated logical write-back preserves the filesystem.
+ */
+static void fmss_fix_generated_free_pool(IPodTouchFMSSState *s, uint32_t cs,
+                                         uint32_t page, uint8_t *data,
+                                         const uint8_t *spare)
+{
+    if (cs != 3 || page != 255 || fmss_physical() || spare[9] != 0x43 ||
+        ldl_le_p(data) != 0 || ldl_le_p(data + 4) != 0 ||
+        ldl_le_p(data + 8) != 20 || lduw_le_p(data + 12) != 0 ||
+        ldl_le_p(data + 2040) != 0x46560000 ||
+        ldl_le_p(data + 2044) != 0xb9a9ffff) {
+        return;
+    }
+    for (unsigned i = 0; i < 20; i++) {
+        if (lduw_le_p(data + 14 + i * 2) != i + 3) {
+            return;
+        }
+    }
+    uint32_t first = MAX(23, (fmss_total_blocks(s) + 3 + 1023) / 1024 + 1);
+    if (!s->total_blocks_from_gpt) {
+        fmss_io_error("generated NAND free pool requires a valid GPT", EINVAL);
+        return;
+    }
+    /* Leave the reserved final physical erase block outside the pool. */
+    if (first + 20 > 2047) {
+        fmss_io_error("generated NAND has no room for a disjoint FTL free pool", EINVAL);
+        return;
+    }
+    for (unsigned i = 0; i < 20; i++) {
+        stw_le_p(data + 14 + i * 2, first + i);
+    }
+    fprintf(stderr, "[fmss] generated FTL free pool %u..%u (outside %u filesystem pages)\n",
+            first, first + 19, fmss_total_blocks(s));
 }
 
 static bool fmss_generated_layout(IPodTouchFMSSState *s, uint32_t logical,
