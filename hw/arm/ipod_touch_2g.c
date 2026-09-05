@@ -976,6 +976,7 @@ static void ipod_touch_cpu_reset(void *opaque)
     ARMCPU *cpu = nms->cpu;
     CPUState *cs = CPU(cpu);
 
+    ipod_agent_reset(nms->agent);
     gles_host_reset();
     cpu_reset(cs);
     ipod_touch_load_bootrom(nms);
@@ -1318,8 +1319,36 @@ static char *ipod_touch_get_guest_pasteboard(Object *obj, Error **errp);
 static char *ipod_touch_get_pb_agent(Object *obj, Error **errp);
 static char *ipod_touch_get_pb_status(Object *obj, Error **errp);
 
+static void ipod_touch_set_agent_request(Object *obj, const char *value, Error **errp)
+{
+    if (!ipod_agent_submit(IPOD_TOUCH_MACHINE(obj)->agent, value)) {
+        error_setg(errp, "Invalid, duplicate, or full agent request queue");
+    }
+}
+
+static char *ipod_touch_get_agent_result(Object *obj, Error **errp)
+{
+    return ipod_agent_take_result(IPOD_TOUCH_MACHINE(obj)->agent);
+}
+
+static char *ipod_touch_get_agent_status(Object *obj, Error **errp)
+{
+    return g_strdup(ipod_agent_status(IPOD_TOUCH_MACHINE(obj)->agent,
+                                     qemu_clock_get_ms(QEMU_CLOCK_REALTIME)));
+}
+
+static void ipod_touch_instance_finalize(Object *obj)
+{
+    ipod_agent_free(IPOD_TOUCH_MACHINE(obj)->agent);
+}
+
 static void ipod_touch_instance_init(Object *obj)
 {
+    IPOD_TOUCH_MACHINE(obj)->agent = ipod_agent_new();
+    object_property_add_str(obj, "agent-request", NULL, ipod_touch_set_agent_request);
+    object_property_add_str(obj, "agent-result", ipod_touch_get_agent_result, NULL);
+    object_property_add_str(obj, "agent-status", ipod_touch_get_agent_status, NULL);
+
     object_property_add_str(obj, "bootrom", ipod_touch_get_bootrom_path, ipod_touch_set_bootrom_path);
     object_property_set_description(obj, "bootrom", "Path to the S5L8720 bootrom binary");
 
@@ -3159,6 +3188,7 @@ static const TypeInfo ipod_touch_machine_info = {
     .class_size    = sizeof(IPodTouchMachineClass),
     .class_init    = ipod_touch_machine_class_init,
     .instance_init = ipod_touch_instance_init,
+    .instance_finalize = ipod_touch_instance_finalize,
 };
 
 static void ipod_touch_machine_types(void)

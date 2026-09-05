@@ -2,6 +2,7 @@
 #define HW_ARM_IPOD_TOUCH_H
 
 #include "exec/hwaddr.h"
+#include "hw/arm/ipod-agent.h"
 #include "hw/boards.h"
 #include "hw/intc/pl192.h"
 #include "hw/arm/boot.h"
@@ -324,6 +325,7 @@ typedef struct {
 	size_t pb_delivered_len;
 	int64_t pb_delivered_ns;
 	uint64_t pb_deliveries;
+    IPodAgent *agent;
 } IPodTouchMachineState;
 
 /*

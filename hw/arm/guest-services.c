@@ -23,6 +23,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/guest-random.h"
 #include "qapi/error.h"
 #include "hw/arm/boot.h"
 #include "exec/address-spaces.h"
@@ -39,6 +40,15 @@ uint64_t qemu_call_status(CPUARMState *env, const struct ARMCPRegInfo *ri)
 {
     // NOT USED FOR NOW
     return 0;
+}
+
+static int agent_copy(void *opaque, uint32_t address, uint8_t *data,
+                      size_t length, bool write)
+{
+    if (length && length - 1 > UINT32_MAX - address) {
+        return -1;
+    }
+    return cpu_memory_rw_debug(opaque, address, data, length, write);
 }
 
 void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
@@ -88,7 +98,9 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
     }
     */
     // Read the request
-    cpu_memory_rw_debug(cpu, value, (uint8_t*) &qcall, sizeof(qcall), 0);
+    if (cpu_memory_rw_debug(cpu, value, (uint8_t *)&qcall, sizeof(qcall), 0)) {
+        return;
+    }
 
     switch (qcall.call_number) {
         // File Descriptors
@@ -192,6 +204,25 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
          * from under the already-deployed keyboard agent -- so it is windowed
          * through a guest buffer instead.
          */
+        case QC_AG_HELLO:
+        case QC_AG_POLL:
+        case QC_AG_READ:
+        case QC_AG_WRITE:
+        case QC_AG_DONE:
+        case QC_AG_HOSTTIME: {
+            IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
+            uint64_t candidate = 0;
+            if (qcall.call_number == QC_AG_HELLO) {
+                qemu_guest_getrandom_nofail(&candidate, sizeof(candidate));
+            }
+            qcall.retval = ipod_agent_call(nms->agent, qcall.call_number,
+                qcall.args.ag.token, qcall.args.ag.buffer_guest_ptr,
+                qcall.args.ag.offset, qcall.args.ag.length,
+                qemu_clock_get_ms(QEMU_CLOCK_REALTIME), candidate,
+                agent_copy, cpu);
+            guest_svcs_errno = qcall.retval < 0 ? EINVAL : 0;
+            break;
+        }
         case QC_PB_POLL: {
             IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
             /* The only proof the host ever gets that a guest agent exists. */
