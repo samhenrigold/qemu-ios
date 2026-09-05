@@ -5,7 +5,7 @@ import re, shlex, subprocess, tempfile
 root = Path(__file__).resolve().parents[2]
 source = (root / 'contrib/ios-app/qemu-ios-ui.c').read_text()
 functions = []
-for name in ('ios_init_frame_lock', 'qemu_ios_ui_attach', 'qemu_ios_ui_frame', 'qemu_ios_ui_frame_size'):
+for name in ('ios_init_frame_lock', 'qemu_ios_ui_attach', 'qemu_ios_ui_frame', 'qemu_ios_ui_frame_size', 'qemu_ios_ui_copy_frame'):
     match = re.search(r'^(?:static )?[^\n]*\b' + name + r'\([^)]*\)\s*\{.*?^}', source, re.M | re.S)
     assert match, name
     functions.append(match.group())
@@ -16,6 +16,7 @@ prelude = r'''
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 typedef struct { pthread_mutex_t lock; bool initialized; } QemuMutex;
 static void qemu_mutex_init(QemuMutex *m) { assert(!m->initialized); assert(!pthread_mutex_init(&m->lock, NULL)); m->initialized=true; }
 static void qemu_mutex_lock(QemuMutex *m) { assert(m->initialized); assert(!pthread_mutex_lock(&m->lock)); }
@@ -33,6 +34,7 @@ static void *poll(void *unused) {
   const void *pixels=(void *)1; int w=-1,h=-1; uint64_t serial=0;
   assert(!qemu_ios_ui_frame(&pixels,&w,&h,&serial));
   assert(pixels==(void *)1 && w==-1 && h==-1 && serial==0);
+  assert(!qemu_ios_ui_copy_frame((void *)&w, sizeof(w), &w, &h));
   qemu_ios_ui_frame_size(&w,&h); assert(w==0 && h==0);
  }
  return NULL;
@@ -48,6 +50,11 @@ int main(void) {
  assert(p==&pixel && w==1 && h==1 && serial==1);
  qemu_ios_ui_attach(NULL,NULL); /* no reinitialization or frame loss */
  assert(!qemu_ios_ui_frame(&p,&w,&h,&serial));
+ int copy=0;
+ assert(!qemu_ios_ui_copy_frame(&copy,3,&w,&h)); assert(copy==0);
+ assert(qemu_ios_ui_copy_frame(&copy,sizeof(copy),&w,&h));
+ pixel=99; assert(copy==42 && w==1 && h==1);
+ assert(qemu_ios_ui_copy_frame(&copy,sizeof(copy),&w,&h)); assert(copy==99);
  puts("PASS: concurrent frame polls before attach, empty outputs and retained publication");
 }
 '''

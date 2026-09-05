@@ -374,6 +374,25 @@ bool qemu_ios_ui_frame(const void **pixels, int *width, int *height,
     return true;
 }
 
+/* Copy under the publication lock, including a stationary/paused frame.
+ * Capture consumers can retain their destination indefinitely; unlike the
+ * preview ring pointer it cannot be recycled while a writer encodes it. */
+bool qemu_ios_ui_copy_frame(void *pixels, size_t capacity, int *width, int *height)
+{
+    ios_init_frame_lock();
+    qemu_mutex_lock(&ios.frame_lock);
+    size_t bytes = (size_t)ios.width * ios.height * 4;
+    if (!pixels || ios.published < 0 || !bytes || capacity < bytes) {
+        qemu_mutex_unlock(&ios.frame_lock);
+        return false;
+    }
+    memcpy(pixels, ios.buf[ios.published], bytes);
+    *width = ios.width;
+    *height = ios.height;
+    qemu_mutex_unlock(&ios.frame_lock);
+    return true;
+}
+
 void qemu_ios_ui_frame_size(int *width, int *height)
 {
     ios_init_frame_lock();

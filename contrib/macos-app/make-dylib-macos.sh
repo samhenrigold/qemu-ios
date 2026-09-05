@@ -69,6 +69,7 @@ _qemu_ios_main
 _qemu_ios_ui_attach
 _qemu_ios_ui_frame
 _qemu_ios_ui_frame_size
+_qemu_ios_ui_copy_frame
 _qemu_ios_ui_touch
 _qemu_ios_ui_touch2
 _qemu_ios_ui_button
