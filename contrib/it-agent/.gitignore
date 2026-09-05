@@ -1,2 +1,4 @@
 it_agent
 *.o
+
+it_typein.dylib

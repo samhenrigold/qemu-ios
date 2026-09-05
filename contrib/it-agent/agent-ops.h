@@ -154,6 +154,10 @@ static void agent_dispatch(unsigned size)
         status = agent_exec(args, body, body_len);
         if (!status) return;
         status = -status;
+    } else if (!strcmp(op, "type") || !strcmp(op, "backspace") || !strcmp(op, "uidump")) {
+        if (body_len > 65536) status = -EFBIG;
+        else status = agent_sbs(op, args);
+        if (!status) return; /* The target process commits the result. */
     } else if (!strcmp(op, "launch") || !strcmp(op, "frontmost") || !strcmp(op, "lockstatus")) {
         status = agent_sbs(op, args);
     } else if (!strcmp(op, "halt")) {
@@ -178,23 +182,48 @@ static void agent_dispatch(unsigned size)
         }
     } else if (!strcmp(op, "settime")) {
         char *end;
+        errno = 0;
         long epoch = strtol(args, &end, 10);
         struct timeval tv = { epoch, 0 };
-        if (!*args || *end || epoch <= 0) status = -EINVAL;
+        if (errno || !*args || *end || epoch <= 0) status = -EINVAL;
         else if (settimeofday(&tv, 0)) status = -errno;
-    } else if (!strcmp(op, "get")) {
+    } else if (!strcmp(op, "get") || !strcmp(op, "getrange")) {
+        long long offset = 0;
+        unsigned limit = AG_RESPONSE_MAX;
+        int ranged = !strcmp(op, "getrange");
+        if (ranged) {
+            char *end;
+            errno = 0;
+            offset = strtoll(args, &end, 10);
+            if (errno || end == args || *end != ' ' || offset < 0) {
+                agent_done(-EINVAL); return;
+            }
+            args = end + 1;
+            errno = 0;
+            unsigned long requested = strtoul(args, &end, 10);
+            if (errno || end == args || *end != ' ' || !end[1] ||
+                requested > AG_RESPONSE_MAX) {
+                agent_done(-EINVAL); return;
+            }
+            limit = requested;
+            args = end + 1;
+        }
         int fd = open(args, O_RDONLY | O_NOFOLLOW);
         struct stat st;
         if (fd < 0) status = -errno;
         else {
             if (fstat(fd, &st)) status = -errno;
-            else if (!S_ISREG(st.st_mode)) status = -EINVAL;
-            else if (st.st_size > AG_RESPONSE_MAX) status = -EFBIG;
-            while (!status && ag_response_len < st.st_size) {
-                long n = read(fd, ag_response + ag_response_len, st.st_size - ag_response_len);
-                if (n < 0 && errno == EINTR) continue;
-                if (n <= 0) { status = n < 0 ? -errno : -EIO; break; }
-                ag_response_len += n;
+            else if (!S_ISREG(st.st_mode) || st.st_size < 0) status = -EINVAL;
+            else if (!ranged && st.st_size > AG_RESPONSE_MAX) status = -EFBIG;
+            else if (offset < st.st_size) {
+                if (st.st_size - offset < limit) limit = st.st_size - offset;
+                if (lseek(fd, offset, SEEK_SET) < 0) status = -errno;
+                while (!status && ag_response_len < limit) {
+                    long n = read(fd, ag_response + ag_response_len, limit - ag_response_len);
+                    if (n < 0 && errno == EINTR) continue;
+                    if (n <= 0) { status = n < 0 ? -errno : -EIO; break; }
+                    ag_response_len += n;
+                }
             }
             close(fd);
         }

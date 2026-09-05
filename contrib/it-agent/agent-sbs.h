@@ -7,6 +7,18 @@ static int agent_sbs(const char *op, const char *args)
     if (!cf || !sbs) return -ENOSYS;
     void (*release)(void *) = dlsym(cf, "CFRelease");
     if (!release) return -ENOSYS;
+    if (!strcmp(op, "type") || !strcmp(op, "backspace") || !strcmp(op, "uidump")) {
+        void *(*frontmost)(void) = dlsym(sbs, "SBSCopyFrontmostApplicationDisplayIdentifier");
+        int (*process)(void *, int *) = dlsym(sbs, "SBSProcessIDForDisplayIdentifier");
+        if (!frontmost || !process) return -ENOSYS;
+        void *identifier = frontmost();
+        if (!identifier) return -ENODEV;
+        int pid = 0;
+        int found = process(identifier, &pid);
+        release(identifier);
+        if (!found || pid <= 1) return -ESRCH;
+        return qc(0x16a, 0, pid, 0) < 0 ? -EIO : 0;
+    }
     if (!strcmp(op, "lockstatus")) {
         unsigned (*port)(void) = dlsym(sbs, "SBSSpringBoardServerPort");
         int (*status)(unsigned, unsigned char *, unsigned char *) = dlsym(sbs, "SBGetScreenLockStatus");

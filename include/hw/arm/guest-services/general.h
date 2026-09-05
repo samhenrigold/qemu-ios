@@ -57,6 +57,7 @@ typedef enum {
     // retval, or returns 0 when the ring is empty. A small injected guest
     // agent polls this and feeds each char to _GSPostSyntheticKeyEvent.
     QC_POLL_INPUT = 0x130,
+    QC_PEEK_INPUT = 0x131, // non-consuming presence check for foreground routing
 
     // OpenGL ES 1.1 high-level emulation. One request per GL entry point, from
     // the guest-side MBXGLEngine replacement. See guest-services/gles.h.
@@ -97,6 +98,12 @@ typedef enum {
     QC_AG_WRITE = 0x163,
     QC_AG_DONE = 0x164,
     QC_AG_HOSTTIME = 0x165,
+    QC_UI_POLL = 0x166,  // offset = process id; retval = request cookie or zero
+    QC_UI_READ = 0x167,  // token = cookie, same bounded window ABI
+    QC_UI_WRITE = 0x168,
+    QC_UI_DONE = 0x169,
+    QC_AG_UI_ROUTE = 0x16a, // root daemon hands current request to offset = pid
+
 } qemu_call_number_t;
 
 #define QC_GLES_PING_MAGIC 0x6a17c0deLL
