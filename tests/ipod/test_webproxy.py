@@ -12,6 +12,18 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 class Origin(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path.startswith('/web/20090909id_/'):
+            self.send_response(302)
+            self.send_header('Location', self.path.replace('20090909id_', '20090910000000id_'))
+            self.end_headers()
+            return
+        if self.path.startswith('/web/'):
+            assert 'Cookie' not in self.headers and 'Authorization' not in self.headers
+            self.send_response(200)
+            self.send_header('Set-Cookie', 'archive=must-not-leak')
+            self.end_headers()
+            self.wfile.write(b'ARCHIVED ORIGINAL PAGE')
+            return
         self.send_response(200)
         self.send_header('Transfer-Encoding', 'chunked')
         self.end_headers()
@@ -69,7 +81,20 @@ with tempfile.TemporaryDirectory() as tmp:
     # External mode preserves absolute URI, response bytes and arbitrary methods.
     config.write_text(f'upstream\n127.0.0.1\n{origin.server_port}\n')
     assert request(f'GET {url} HTTP/1.0\r\n\r\n'.encode()).endswith(b'5\r\nhello\r\n0\r\n\r\n')
+    # A built-in archive replay follows canonical snapshot redirects on the
+    # host and sends neither guest cookies nor credentials to the archive.
+    subprocess.run(['cc', '-g', '-fsanitize=address,undefined', '-Wno-deprecated-declarations',
+                    f'-DARCHIVE_ORIGIN="http://127.0.0.1:{origin.server_port}"',
+                    str(ROOT / 'contrib/it-webproxy/itwebproxy.c'), '-lcurl', '-o', str(exe)], check=True)
+    config.write_text('archive\n20090909\n')
+    archived = request(b'GET http://example.invalid/page HTTP/1.0\r\nCookie: secret=value\r\nAuthorization: Basic secret\r\n\r\n')
+    assert archived.count(b'HTTP/1.0') == 1 and b'200 Archive response' in archived, archived
+    assert archived.endswith(b'ARCHIVED ORIGINAL PAGE') and b'Set-Cookie' not in archived, archived
+    assert b'405' in request(b'POST http://example.invalid/page HTTP/1.0\r\n\r\n')
+    assert b'400' in request(b'GET http://name:password@example.invalid/page HTTP/1.0\r\n\r\n')
+    config.write_text('archive\ninvalid\n')
+    assert b'503' in request(b'GET http://example.invalid/ HTTP/1.0\r\n\r\n')
     config.write_text('off\n')
     assert b'503' in request(b'GET / HTTP/1.0\r\n\r\n')
     origin.shutdown(); origin.server_close()
-print('PASS: concurrent HTTP, dechunking, binary POST, malformed framing, CONNECT half-close, upstream and off')
+print('PASS: concurrent HTTP, dechunking, binary POST, malformed framing, CONNECT half-close, upstream, built-in archive redirects/privacy and off')

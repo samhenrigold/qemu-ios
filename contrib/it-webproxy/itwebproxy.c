@@ -105,6 +105,106 @@ static size_t response_header(char *data, size_t size, size_t count, void *ctx)
     }
     return sendall(1, data, n) ? n : 0;
 }
+#ifndef ARCHIVE_ORIGIN
+#define ARCHIVE_ORIGIN "https://web.archive.org"
+#endif
+#define ARCHIVE_BODY_MAX (32 * 1024 * 1024)
+typedef struct ArchiveReply {
+    char headers[HEAD_MAX], location[16384];
+    size_t headers_len, body_len, body_capacity;
+    char *body;
+} ArchiveReply;
+static size_t archive_body(char *data, size_t size, size_t count, void *opaque)
+{
+    ArchiveReply *reply = opaque;
+    size_t n = size * count;
+    if (n > ARCHIVE_BODY_MAX - reply->body_len) return 0;
+    size_t needed = reply->body_len + n;
+    if (needed > reply->body_capacity) {
+        size_t capacity = reply->body_capacity ? reply->body_capacity : 16384;
+        while (capacity < needed) capacity = capacity > ARCHIVE_BODY_MAX / 2 ? ARCHIVE_BODY_MAX : capacity * 2;
+        char *body = realloc(reply->body, capacity);
+        if (!body) return 0;
+        reply->body = body; reply->body_capacity = capacity;
+    }
+    if (n) memcpy(reply->body + reply->body_len, data, n);
+    reply->body_len += n;
+    return n;
+}
+static size_t archive_header(char *data, size_t size, size_t count, void *opaque)
+{
+    ArchiveReply *reply = opaque;
+    size_t n = size * count;
+    if (n >= HEAD_MAX) return 0;
+    char line[HEAD_MAX]; memcpy(line, data, n); line[n] = 0;
+    if (!strncasecmp(line, "HTTP/", 5)) {
+        reply->headers_len = 0; reply->body_len = 0; reply->location[0] = 0;
+        return n;
+    }
+    if (header_is(line, "Location")) {
+        const char *value = strchr(line, ':') + 1;
+        while (*value == ' ' || *value == '\t') value++;
+        size_t length = strcspn(value, "\r\n");
+        if (length >= sizeof(reply->location)) return 0;
+        memcpy(reply->location, value, length); reply->location[length] = 0;
+    }
+    if (hop(line) || header_is(line, "Content-Length") || header_is(line, "Set-Cookie") ||
+        !strcmp(line, "\r\n")) return n;
+    if (n > HEAD_MAX - reply->headers_len - 1) return 0;
+    memcpy(reply->headers + reply->headers_len, line, n);
+    reply->headers_len += n;
+    return n;
+}
+static void archived_request(const char *target, const char *date, bool head_only)
+{
+    /* Replay original pages over verified host TLS. The guest never needs a
+     * modern TLS stack, Python, a separate server, or a host listening port. */
+    char url[32768];
+    snprintf(url, sizeof(url), "%s/web/%sid_/%s", ARCHIVE_ORIGIN, date, target);
+    CURL *curl = curl_easy_init();
+    ArchiveReply *reply = calloc(1, sizeof(*reply));
+    if (!curl || !reply) fail(503, "Archive proxy unavailable");
+    curl_easy_setopt(curl, CURLOPT_PROXY, "");
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_NOBODY, head_only ? 1L : 0L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "LightTouch/1.0 (archive replay)");
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, archive_header);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, reply);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, archive_body);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, reply);
+    long status = 0;
+    for (int redirect = 0; redirect < 8; redirect++) {
+        reply->headers_len = 0; reply->body_len = 0; reply->location[0] = 0;
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        CURLcode rc = curl_easy_perform(curl);
+        if (rc) fail(502, "The archive could not be reached or its response was too large");
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+        const char *location = reply->location;
+        if (status >= 300 && status < 400 && location[0]) {
+            size_t base = strlen(ARCHIVE_ORIGIN);
+            if (!strncmp(location, ARCHIVE_ORIGIN, base) && location[base] == '/') {
+                snprintf(url, sizeof(url), "%s", location);
+                continue;
+            }
+            if (location[0] == '/' && location[1] != '/') {
+                snprintf(url, sizeof(url), "%s%s", ARCHIVE_ORIGIN, location);
+                continue;
+            }
+        }
+        dprintf(1, "HTTP/1.0 %ld Archive response\r\n", status);
+        sendall(1, reply->headers, reply->headers_len);
+        if (!head_only) dprintf(1, "Content-Length: %zu\r\n", reply->body_len);
+        dprintf(1, "Connection: close\r\n\r\n");
+        if (!head_only) sendall(1, reply->body, reply->body_len);
+        curl_easy_cleanup(curl); free(reply->body); free(reply);
+        exit(0);
+    }
+    fail(502, "The archive returned too many redirects");
+}
+
 int main(int argc, char **argv)
 {
     signal(SIGPIPE, SIG_IGN);
@@ -123,7 +223,11 @@ int main(int argc, char **argv)
         if (fd < 0) fail(502, "Upstream proxy unavailable");
         relay(fd); close(fd); return 0;
     }
-    if (strcmp(mode, "direct")) fail(503, "Proxy is disabled");
+    bool archive = !strcmp(mode, "archive");
+    if (archive) {
+        if (fields != 2 || strlen(host) != 8) fail(503, "Invalid archive date");
+        for (int i = 0; i < 8; i++) if (!isdigit((unsigned char)host[i])) fail(503, "Invalid archive date");
+    } else if (strcmp(mode, "direct")) fail(503, "Proxy is disabled");
     char head[HEAD_MAX]; size_t n = 0;
     while (n < sizeof(head) - 1) {
         ssize_t k = read(0, head + n, 1);
@@ -140,6 +244,8 @@ int main(int argc, char **argv)
     *line_end = 0;
     if (sscanf(head, "%31s %16383s %15s %c", method, target, version, &extra) != 3 ||
         (strcmp(version, "HTTP/1.0") && strcmp(version, "HTTP/1.1"))) fail(400, "Invalid request");
+    if (archive && strcmp(method, "GET") && strcmp(method, "HEAD"))
+        fail(405, "Archive browsing supports HTTP GET and HEAD");
     if (!strcmp(method, "CONNECT")) {
         char *colon = strrchr(target, ':');
         if (!colon || colon == target) fail(400, "Invalid tunnel destination");
@@ -158,6 +264,13 @@ int main(int argc, char **argv)
     }
     for (const char *p = method; *p; p++) if (!isupper((unsigned char)*p)) fail(400, "Invalid method");
     if (strncmp(target, "http://", 7)) fail(400, "An absolute HTTP URL is required");
+    if (archive) {
+        const char *authority = target + 7;
+        const char *end = strchr(authority, '/');
+        const char *at = strchr(authority, '@');
+        if (at && (!end || at < end)) fail(400, "Archive URLs cannot contain credentials");
+        archived_request(target, host, !strcmp(method, "HEAD"));
+    }
     struct curl_slist *headers = NULL;
     size_t body_length = 0; bool seen_length = false;
     for (char *p = line_end + 2; *p && strcmp(p, "\r\n"); ) {
