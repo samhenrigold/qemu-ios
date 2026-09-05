@@ -138,6 +138,18 @@ with tempfile.TemporaryDirectory() as tmp:
     assert Origin.archive_requests == upstream_count, 'Cached pages remain available during cooldown'
     config.write_text('archive\ninvalid\n')
     assert b'503' in request(b'GET http://example.invalid/ HTTP/1.0\r\n\r\n')
+    config.write_text('direct\n')
+    refused = socket.socket()
+    refused.bind(('127.0.0.1', 0))
+    refused_port = refused.getsockname()[1]
+    # libslirp merges diagnostics into the protocol stream. Test that transport,
+    # not only subprocess's usual separate stdout/stderr pipes.
+    failed = subprocess.run([str(exe), str(config)],
+        input=f'GET http://127.0.0.1:{refused_port}/ HTTP/1.0\r\n\r\n'.encode(),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10)
+    assert failed.stdout.startswith(b'HTTP/1.0 502 '), failed.stdout
+    assert failed.stdout.count(b'HTTP/1.0') == 1 and b'itwebproxy:' not in failed.stdout, failed.stdout
+    refused.close()
     config.write_text('off\n')
     get(None)  # Safari's stale proxy connection remains usable while configd switches off.
     origin.shutdown(); origin.server_close()

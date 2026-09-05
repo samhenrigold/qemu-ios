@@ -214,7 +214,7 @@ static void sdpcm_announce_ready(IPodTouchSDIOState *s)
     sdpcm_reg_write(s, SDPCM_TOHOSTMAILBOXDATA,
                     HMB_DATA_DEVREADY | HMB_DATA_FWREADY |
                     (SDPCM_PROT_VERSION << HMB_DATA_VERSION_SHIFT));
-    printf("[SDIO] dongle announced ready\n");
+    trace_sdio("[SDIO] dongle announced ready\n");
     sdpcm_raise(s, I_HMB_HOST_INT);
 }
 
@@ -327,7 +327,7 @@ static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t event_type,
     /* The driver sees the frame from the ethernet header onwards, so its
      * offsets 0x13 and 0x16 are relative to eth, not to the BDC header. */
     assert(eth[0x13] == BCMETH_OUI_0 && eth[0x16] == 0 && eth[0x17] == 1);
-    printf("[SDIO] sending event %u, status %u, flags 0x%04x (%u byte frame)\n",
+    trace_sdio("[SDIO] sending event %u, status %u, flags 0x%04x (%u byte frame)\n",
            event_type, status, msg_flags, framelen);
 
     /*
@@ -411,7 +411,7 @@ static void fill_iscan_results(IPodTouchSDIOState *s, uint8_t *p)
     stl_le_p(p + ISCAN_OFF_VERSION, BSS_INFO_VERSION);
     stl_le_p(p + ISCAN_OFF_COUNT, 1);
     fill_bss_info(p + ISCAN_OFF_BSS);
-    printf("[SDIO] iscanresults: 1 BSS, scan complete\n");
+    trace_sdio("[SDIO] iscanresults: 1 BSS, scan complete\n");
 }
 
 /*
@@ -461,13 +461,13 @@ static void sdio_handle_set_ssid(IPodTouchSDIOState *s, const uint8_t *payload,
 
     /* A zero-length SSID is a disassociate request, not a join. */
     if (n == 0) {
-        printf("[SDIO] WLC_SET_SSID with no SSID: leaving the network\n");
+        trace_sdio("[SDIO] WLC_SET_SSID with no SSID: leaving the network\n");
         s->associated = false;
         sdpcm_send_event(s, WLC_E_LINK, 0, 0);
         return;
     }
 
-    printf("[SDIO] WLC_SET_SSID '%s': associating\n", ssid);
+    trace_sdio("[SDIO] WLC_SET_SSID '%s': associating\n", ssid);
     sdio_send_assoc_events(s);
 }
 
@@ -487,7 +487,7 @@ static void sdio_autojoin(void *opaque)
     if (s->associated) {
         return;
     }
-    printf("[SDIO] no join requested: associating with '%s' anyway\n",
+    trace_sdio("[SDIO] no join requested: associating with '%s' anyway\n",
            FAKE_SSID);
     sdio_send_assoc_events(s);
 }
@@ -537,7 +537,7 @@ static unsigned cdc_hdrlen(IPodTouchSDIOState *s, uint32_t len,
                  * status word is the one that skips four bytes of BDC. */
                 s->bdc_hdrlen = hdr == CDC_HDRLEN_STATUS ? BDC_HDRLEN_STD
                                                          : BDC_HDRLEN;
-                printf("[SDIO] CDC header is %u bytes, BDC header is %u\n",
+                trace_sdio("[SDIO] CDC header is %u bytes, BDC header is %u\n",
                        s->cdc_hdrlen, s->bdc_hdrlen);
             }
         }
@@ -563,7 +563,7 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
             iovar = p;
         }
     }
-    printf("[SDIO] CDC command %u (%s), %u bytes, flags 0x%08x%s%s\n", cmd,
+    trace_sdio("[SDIO] CDC command %u (%s), %u bytes, flags 0x%08x%s%s\n", cmd,
            (flags & CDC_DCMD_SET) ? "set" : "get", payload_len, flags,
            *iovar ? " iovar " : "", iovar);
 
@@ -686,11 +686,11 @@ static void backplane_store(IPodTouchSDIOState *s, uint32_t sb_addr,
 
 static void hexdump_frame(const char *what, const uint8_t *p, uint32_t len)
 {
-    printf("[SDIO] %s (%u bytes):", what, len);
+    trace_sdio("[SDIO] %s (%u bytes):", what, len);
     for (unsigned i = 0; i < MIN(len, 42u); i++) {
-        printf(" %02x", p[i]);
+        trace_sdio(" %02x", p[i]);
     }
-    printf("\n");
+    trace_sdio("\n");
 }
 
 /*
@@ -703,7 +703,7 @@ static void sdio_tx_data(IPodTouchSDIOState *s, const uint8_t *payload,
                          uint32_t len)
 {
     if (len < BDC_HDRLEN_STD + 14) {
-        printf("[SDIO] data frame too short to be 802.3: %u bytes\n", len);
+        trace_sdio("[SDIO] data frame too short to be 802.3: %u bytes\n", len);
         return;
     }
 
@@ -729,7 +729,7 @@ static void sdio_tx_data(IPodTouchSDIOState *s, const uint8_t *payload,
 
     if (s->tx_log < 24) {
         s->tx_log++;
-        printf("[SDIO] guest -> host, bdc %u bytes (dataOffset byte %u), "
+        trace_sdio("[SDIO] guest -> host, bdc %u bytes (dataOffset byte %u), "
                "ethertype 0x%04x\n", chosen, payload[3],
                lduw_be_p(payload + chosen + 12));
         hexdump_frame("guest frame", payload + chosen, len - chosen);
@@ -803,7 +803,7 @@ void ipod_touch_sdio_setup_net(IPodTouchSDIOState *s)
     s->nic = qemu_new_nic(&sdio_net_info, &s->conf, TYPE_IPOD_TOUCH_SDIO,
                           "wifi", &DEVICE(s)->mem_reentrancy_guard, s);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
-    printf("[SDIO] network backend 'wifi0' attached\n");
+    trace_sdio("[SDIO] network backend 'wifi0' attached\n");
 }
 
 /* One frame written by the host on function 2. */
@@ -811,11 +811,11 @@ static void sdpcm_receive(IPodTouchSDIOState *s, const uint8_t *buf, uint32_t le
 {
     if (s->rx_log < 16) {
         s->rx_log++;
-        printf("[SDIO] host frame (%u bytes):", len);
+        trace_sdio("[SDIO] host frame (%u bytes):", len);
         for (unsigned i = 0; i < MIN(len, 24u); i++) {
-            printf(" %02x", buf[i]);
+            trace_sdio(" %02x", buf[i]);
         }
-        printf("\n");
+        trace_sdio("\n");
     }
 
     if (len < SDPCM_HDRLEN) {
@@ -825,7 +825,7 @@ static void sdpcm_receive(IPodTouchSDIOState *s, const uint8_t *buf, uint32_t le
     uint16_t framelen = lduw_le_p(buf);
     uint16_t check = lduw_le_p(buf + 2);
     if ((framelen ^ check) != 0xffff) {
-        printf("[SDIO] SDPCM frame with a bad tag: len %u check %04x\n",
+        trace_sdio("[SDIO] SDPCM frame with a bad tag: len %u check %04x\n",
                framelen, check);
         return;
     }
@@ -835,7 +835,7 @@ static void sdpcm_receive(IPodTouchSDIOState *s, const uint8_t *buf, uint32_t le
     s->rx_seq = buf[4];
 
     if (doff < SDPCM_HDRLEN || doff > framelen || framelen > len) {
-        printf("[SDIO] SDPCM frame with an unusable offset: doff %u len %u\n",
+        trace_sdio("[SDIO] SDPCM frame with an unusable offset: doff %u len %u\n",
                doff, framelen);
         return;
     }
@@ -850,7 +850,7 @@ static void sdpcm_receive(IPodTouchSDIOState *s, const uint8_t *buf, uint32_t le
         sdio_tx_data(s, buf + doff, framelen - doff);
         break;
     default:
-        printf("[SDIO] SDPCM frame on unhandled channel %u\n", channel);
+        trace_sdio("[SDIO] SDPCM frame on unhandled channel %u\n", channel);
         break;
     }
 }
@@ -869,7 +869,7 @@ static void trace_post_ready(IPodTouchSDIOState *s, const char *what,
         return;
     }
     s->ready_log++;
-    printf("[SDIO] %s func %u %s addr 0x%05x len %u\n", what,
+    trace_sdio("[SDIO] %s func %u %s addr 0x%05x len %u\n", what,
            func, is_write ? "write" : "read", addr, len);
 }
 
@@ -995,7 +995,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                     double secs = s->fw_last_us ? (now - s->fw_last_us) / 1e6 : 0;
                     s->fw_last_us = now;
                     s->fw_bytes_logged = s->fw_bytes;
-                    printf("[SDIO] %u KiB written to the backplane (now at 0x%08x); "
+                    trace_sdio("[SDIO] %u KiB written to the backplane (now at 0x%08x); "
                            "%.1fs for the last 64 KiB, %u register accesses "
                            "(%u of them polls of the interrupt status)\n",
                            s->fw_bytes >> 10, sb_addr, secs, s->mmio_ops, s->irq_polls);
@@ -1006,7 +1006,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
             else if(func == 0x2) {
                 if(!s->func2_seen) {
                     s->func2_seen = true;
-                    printf("[SDIO] first SDPCM frame on function 2 (%u bytes)\n", xfer_len);
+                    trace_sdio("[SDIO] first SDPCM frame on function 2 (%u bytes)\n", xfer_len);
                 }
                 g_autofree uint8_t *buf = g_malloc0(xfer_len);
                 cpu_physical_memory_read(s->baddr, buf, xfer_len);
@@ -1029,14 +1029,14 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                 SDPCMFrame *f = g_queue_peek_head(s->rx_fifo);
                 if (s->func2_reads < 400) {
                     s->func2_reads++;
-                    printf("[SDIO] function 2 read of %u bytes, %s", xfer_len,
+                    trace_sdio("[SDIO] function 2 read of %u bytes, %s", xfer_len,
                            f ? "handing up" : "nothing queued");
                     if (f) {
-                        printf(" frame len %u chan %u, %u already taken",
+                        trace_sdio(" frame len %u chan %u, %u already taken",
                                f->len, f->data[5] & SDPCM_CHANNEL_MASK,
                                f->read_off);
                     }
-                    printf("\n");
+                    trace_sdio("\n");
                 }
 
                 if (f) {
@@ -1075,7 +1075,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
          * transfer sets bit 1, and overwriting it here loses the only
          * indication the driver has that a reply is waiting. */
         raise_irq_soon(s, 0x1);
-        //printf("Raised IRQ\n");
+        //trace_sdio("Raised IRQ\n");
     }
     else {
         /* An unimplemented command is a timeout on real hardware, not a dead

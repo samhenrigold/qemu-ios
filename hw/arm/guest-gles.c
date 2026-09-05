@@ -55,7 +55,7 @@ int64_t qc_handle_gles(CPUState *cpu, qc_gles_args_t *a)
     /* Trace only the first sighting of each slot. A GL stream is tens of
      * thousands of calls a second; anything per-call would drown the log and
      * slow the guest enough to change what we are trying to measure. */
-    if (gles_slot_calls[a->slot] == 1) {
+    if (gles_slot_calls[a->slot] == 1 && getenv("IT_GLES_VERBOSE")) {
         fprintf(stderr, "[gles] slot %u first call: ctx=0x%08x argc=%u "
                 "spill=0x%08x args %08x %08x %08x %08x\n",
                 a->slot, a->ctx, a->argc, a->spill,

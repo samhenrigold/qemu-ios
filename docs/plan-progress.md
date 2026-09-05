@@ -65,3 +65,20 @@ LAN are deferred by explicit user request.
   require a future TLS bridge.
 - Release build passed. Isolated UI inspection showed the framebuffer visible
   after touch release, inline text recognition, and the animated Sleeping asset.
+
+### Console and capture toolbar follow-up
+
+- Routine SDIO traces require IPOD_SDIO_TRACE=1. GLES first-slot diagnostics and
+  framebuffer readbacks for diagnostic color averages require IT_GLES_VERBOSE.
+  Normal rendering no longer stalls on the diagnostic offscreen glReadPixels.
+  GLES surface/upload regressions and native builds passed.
+- guestfwd merges stderr into its socket. The HTTP helper now prevents diagnostics
+  from corrupting HTTP status/framing; merged-stream failure regression passed.
+  Native NSURLConnection fetched both example.com and neverssl.com with HTTP 200
+  through direct proxy, then neverssl.com with HTTP 200 after disabling it.
+  Evidence: /tmp/it-proxy-direct-native-v2.log. Earlier host NeverSSL TCP timeouts
+  were transient. Modern HTTPS/NYT compatibility still needs the TLS bridge.
+- Screenshot, Record/Stop, and Live Text are default/customizable toolbar items;
+  Copy Screen and Finger Dots are also customizable. Copy Screen is Shift-Cmd-C.
+  A native VisionKit fixture using the production view verified that the corner
+  Stop Analyzing Image button removes the complete Live Text overlay.

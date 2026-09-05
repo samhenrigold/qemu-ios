@@ -346,6 +346,9 @@ static void archived_request(const char *target, const char *date, bool head_onl
 
 int main(int argc, char **argv)
 {
+    /* libslirp's command transport merges stderr into the guest socket.
+     * No library/diagnostic output may precede an HTTP status line. */
+    if (!freopen("/dev/null", "w", stderr)) return 1;
     signal(SIGPIPE, SIG_IGN);
     /* Bounds even a stalled request or host resolver; process owns one stream. */
     alarm(120);
