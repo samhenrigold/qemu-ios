@@ -98,7 +98,7 @@ static unsigned slen(const char *s) { unsigned n = 0; while (s && s[n]) n++; ret
 #define GLES_OP_NEW_CONTEXT 0x1006
 #define GLES_OP_DELETE_CONTEXT 0x1007
 
-typedef struct { unsigned host; } GuestGC;
+typedef struct { unsigned host, unpack_alignment; } GuestGC;
 extern void *calloc(unsigned long, unsigned long);
 extern void free(void *);
 static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args);
@@ -169,6 +169,39 @@ __attribute__((visibility("hidden"))) int gles_unimpl(unsigned slot)
         w("[mbxshim] unimplemented slot "); wd(slot); w("\n");
     }
     return 0;
+}
+
+/* Host debug reads cannot page in guest memory. Touch upload pages here,
+ * where a normal ARM load lets the guest VM resolve zero-fill/file mappings. */
+static int guest_fault_read(unsigned long base, unsigned bytes)
+{
+    if (!base || !bytes || bytes > 64u * 1024 * 1024 || base > ~0UL - bytes) return 0;
+    volatile const unsigned char *p = (void *)base;
+    for (unsigned x = 0; x < bytes; x += 4096) (void)p[x];
+    (void)p[bytes - 1];
+    return 1;
+}
+
+static unsigned texture_bytes(void *gc, unsigned width, unsigned height,
+                              unsigned format, unsigned type)
+{
+    unsigned bpp = 0;
+    if (type == 0x8363 && format == 0x1907) bpp = 2; /* RGB565 */
+    else if ((type == 0x8033 || type == 0x8034) && format == 0x1908) bpp = 2;
+    else if (type == 0x1401) {
+        switch (format) {
+        case 0x1908: case 0x80e1: bpp = 4; break;
+        case 0x1907: bpp = 3; break;
+        case 0x190a: bpp = 2; break;
+        case 0x1906: case 0x1909: bpp = 1; break;
+        }
+    }
+    if (!bpp || !width || !height || width > (64u << 20)) return 0;
+    unsigned alignment = gc ? ((GuestGC *)gc)->unpack_alignment : 0;
+    if (!alignment) alignment = 4;
+    unsigned row = width * bpp, stride = (row + alignment - 1) & ~(alignment - 1);
+    unsigned long long total = (unsigned long long)(height - 1) * stride + row;
+    return total <= (64u << 20) ? (unsigned)total : 0;
 }
 
 /* ------------------------------------------------------- implemented slots --
@@ -275,7 +308,8 @@ static int s_texCoordPointer(void *gc, unsigned size, unsigned type,
 static int s_texImage2D(void *gc, unsigned target, unsigned level, unsigned ifmt,
                         unsigned wd_, unsigned ht, unsigned border,
                         unsigned fmt, unsigned type, unsigned pixels)
-    { return (int)qc(301, gc, 9,
+    { guest_fault_read(pixels, texture_bytes(gc, wd_, ht, fmt, type));
+      return (int)qc(301, gc, 9,
                      A(target, level, ifmt, wd_, ht, border, fmt, type, pixels)); }
 static int s_texParameteri(void *gc, unsigned target, unsigned pname, unsigned p)
     { return (int)qc(304, gc, 3, A(target, pname, p)); }
@@ -357,7 +391,8 @@ static int s_texSubImage2D(void *gc, unsigned target, unsigned level,
                            unsigned xoff, unsigned yoff, unsigned wd_,
                            unsigned ht, unsigned fmt, unsigned type,
                            unsigned pixels)
-    { return (int)qc(307, gc, 9,
+    { guest_fault_read(pixels, texture_bytes(gc, wd_, ht, fmt, type));
+      return (int)qc(307, gc, 9,
                      A(target, level, xoff, yoff, wd_, ht, fmt, type, pixels)); }
 static int s_bindBuffer(void *gc, unsigned target, unsigned buf)
     { return (int)qc(642, gc, 2, A(target, buf)); }
@@ -368,7 +403,11 @@ static int s_scalex(void *gc, unsigned x, unsigned y, unsigned z)
  * imported but unimplemented. Slots read out of the 3.1.3 SDK trampolines and
  * cross-checked against slotmap.txt; see gles.h. */
 static int s_pixelStorei(void *gc, unsigned pname, unsigned param)
-    { return (int)qc(195, gc, 2, A(pname, param)); }
+    {
+        if (gc && pname == 0x0cf5 && (param == 1 || param == 2 || param == 4 || param == 8))
+            ((GuestGC *)gc)->unpack_alignment = param;
+        return (int)qc(195, gc, 2, A(pname, param));
+    }
 static int s_scissor(void *gc, unsigned x, unsigned y, unsigned wd_, unsigned ht)
     { return (int)qc(251, gc, 4, A(x, y, wd_, ht)); }
 static int s_texEnvi(void *gc, unsigned target, unsigned pname, unsigned param)
@@ -423,7 +462,8 @@ static int s_compressedTexImage2D(void *gc, unsigned target, unsigned level,
                                   unsigned ifmt, unsigned wd_, unsigned ht,
                                   unsigned border, unsigned imgsz,
                                   unsigned data)
-    { return (int)qc(380, gc, 8,
+    { guest_fault_read(data, imgsz);
+      return (int)qc(380, gc, 8,
                      A(target, level, ifmt, wd_, ht, border, imgsz, data)); }
 static int s_compressedTexSubImage2D(void *gc, unsigned target, unsigned level,
                                      unsigned xoff, unsigned yoff, unsigned wd_,
@@ -437,10 +477,12 @@ static int s_deleteBuffers(void *gc, unsigned n, unsigned ids)
     { return (int)qc(643, gc, 2, A(n, ids)); }
 static int s_bufferData(void *gc, unsigned target, unsigned size,
                         unsigned data, unsigned usage)
-    { return (int)qc(646, gc, 4, A(target, size, data, usage)); }
+    { guest_fault_read(data, size);
+      return (int)qc(646, gc, 4, A(target, size, data, usage)); }
 static int s_bufferSubData(void *gc, unsigned target, unsigned offset,
                            unsigned size, unsigned data)
-    { return (int)qc(647, gc, 4, A(target, offset, size, data)); }
+    { guest_fault_read(data, size);
+      return (int)qc(647, gc, 4, A(target, offset, size, data)); }
 
 /* ------------------------------------------------------------ EGL interface */
 
@@ -934,14 +976,12 @@ static int ca_destroy_buffer(void *ctx, void *surface)
 static int surface_fault_read(unsigned long base, unsigned stride, unsigned rows,
                                unsigned bytes)
 {
-    unsigned row, x;
+    unsigned row;
     if (!base || !rows || rows > 2048 || !bytes || stride < bytes || stride > 16384 ||
         base > ~0UL - ((unsigned long)(rows - 1) * stride + bytes))
         return 0;
     for (row = 0; row < rows; row++) {
-        volatile const unsigned char *p = (void *)(unsigned long)(base + row * stride);
-        for (x = 0; x < bytes; x += 4096) (void)p[x];
-        (void)p[bytes - 1];
+        guest_fault_read(base + row * stride, bytes);
     }
     return 1;
 }
