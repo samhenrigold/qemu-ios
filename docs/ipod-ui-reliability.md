@@ -86,7 +86,10 @@ before a cold restart, requires the SpringBoard service to respond within 45
 seconds, and saves the latest guest crash report on failure. Select
 `--checks boot,appinstall,respring --ipa <IPA>` with the usual local firmware,
 QEMU and usbmuxd paths. `test_respring.py` checks that a timeout or unrelated
-successful reply cannot pass. Commit: `db7b34fdfe`.
+successful reply cannot pass. Commit: `db7b34fdfe`. The check was also run
+against the reproduced guest failure: installation passed, respring failed at
+the 45-second deadline, and the BluetoothManager/CoreFoundation crash was
+saved in `/tmp/it-blitz-spore-39802/device/respring-diagnostics.txt`.
 
 Reproduction evidence: `/tmp/it-resume-install-files.log`,
 `/tmp/it-blitz-spore-38758/bt-before.plist` and `bt-after.plist`,
