@@ -26,8 +26,10 @@
 
 void gles_host_set_allowed(bool allowed);
 uint64_t ipod_touch_fmss_icon_state_writes(void);
+bool ipod_touch_fmss_io_failed(void);
 
 #include "qemu-ios-ui.h"
+#include "hw/arm/ipod_touch_pcf50633_pmu.h"
 
 #include <sys/resource.h>
 
@@ -268,6 +270,16 @@ bool qemu_ios_ui_ready(void)
     return qatomic_read(&ios_vm_alive) != 0;
 }
 
+bool qemu_ios_ui_guest_shutdown_confirmed(void)
+{
+    return pcf50633_guest_shutdown_confirmed();
+}
+
+bool qemu_ios_ui_storage_failed(void)
+{
+    return ipod_touch_fmss_io_failed();
+}
+
 void qemu_ios_ui_vm_stopped(void)
 {
     qatomic_set(&ios_vm_alive, 0);
@@ -472,6 +484,12 @@ static void ios_snapshot_bh(void *opaque)
     Error *err = NULL;
     g_autofree char *uri = g_strdup_printf("file:%s", path);
 
+    if (qemu_ios_ui_storage_failed()) {
+        fprintf(stderr, "[snapshot] NAND storage failed; refusing save\n");
+        g_free(path);
+        return;
+    }
+
     qmp_stop(&err);
     if (err) {
         fprintf(stderr, "[snapshot] stop failed: %s\n", error_get_pretty(err));
@@ -509,7 +527,7 @@ void qemu_ios_snapshot_save(const char *path)
  */
 bool qemu_ios_snapshot_done(void)
 {
-    return !migration_is_running();
+    return !qemu_ios_ui_storage_failed() && !migration_is_running();
 }
 
 /*
@@ -540,6 +558,13 @@ static void ios_snapshot2_bh(void *opaque)
     char *path = opaque;
     Error *err = NULL;
     g_autofree char *uri = g_strdup_printf("file:%s", path);
+
+    if (qemu_ios_ui_storage_failed()) {
+        snprintf(ios_snap_err, sizeof(ios_snap_err), "NAND storage write failed");
+        qatomic_set(&ios_snap_status, QEMU_IOS_SNAPSHOT_FAILED);
+        g_free(path);
+        return;
+    }
 
     qmp_stop(&err);
     if (err) {
@@ -616,7 +641,7 @@ QemuIosSnapshotStatus qemu_ios_snapshot_status(char *errbuf, unsigned long errle
 
 static void ios_snapshot_resume_bh(void *opaque)
 {
-    if (!runstate_is_running()) {
+    if (!qemu_ios_ui_storage_failed() && !runstate_is_running()) {
         vm_start();
     }
 }
@@ -652,7 +677,7 @@ static void ios_resume_bh(void *opaque)
      * migration"). So coming back to the foreground has to restart it, or the
      * guest is frozen from the first time the app was backgrounded onwards.
      */
-    if (!runstate_is_running()) {
+    if (!qemu_ios_ui_storage_failed() && !runstate_is_running()) {
         vm_start();
     }
 }

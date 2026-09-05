@@ -49,6 +49,11 @@ void qemu_ios_ui_vm_started(void);
  * the AioContext is NULL, and after the main loop returns nothing services it.
  */
 bool qemu_ios_ui_ready(void);
+/* Session-latched host NAND I/O failure; thread-safe to poll from the UI. */
+bool qemu_ios_ui_storage_failed(void);
+
+/* True only after the guest writes the final PMU power-off command. */
+bool qemu_ios_ui_guest_shutdown_confirmed(void);
 void qemu_ios_ui_vm_stopped(void);
 
 /*

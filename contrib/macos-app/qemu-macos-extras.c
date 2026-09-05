@@ -6,6 +6,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu-ios-ui.h"
 #include "qemu/main-loop.h"
 #include "block/aio.h"
 #include "ui/console.h"
@@ -23,23 +24,12 @@
 
 #include "qemu-macos-extras.h"
 
-/* From qemu-ios-ui.c. Forward-declared rather than #included: that header
- * has no include guards (see the note below). True only while the emulator
- * is initialised and its main loop is running -- every entry point here
- * schedules a bottom half, and the AioContext is NULL before qemu_init()
- * and unserviced after the main loop returns. */
-bool qemu_ios_ui_ready(void);
-
 /*
  * system/main.c (replaced by qemu-ios-entry.c) defined this; ui/cocoa.m still
  * references it. It stays NULL under -display none, and qemu-ios-entry.c owns
  * the main loop regardless.
  */
 int (*qemu_main)(void);
-
-/* Phase values shared with qemu-ios-ui.h (not included: it has no guards
- * against double-declaring the ABI and this file only needs the constants). */
-#define TOUCH_END 2
 
 static QemuConsole *con0(void)
 {
@@ -61,7 +51,7 @@ static void mtt_bh(void *opaque)
 
     if (con) {
         InputMultiTouchType type;
-        if (t->phase == TOUCH_END) {
+        if (t->phase == QEMU_IOS_TOUCH_END) {
             type = INPUT_MULTI_TOUCH_TYPE_END;
             tracked = false;
         } else if (!tracked) {
@@ -300,6 +290,10 @@ static void qmp_bh(void *opaque)
     qmp_void_fn fn = opaque;
     Error *err = NULL;
 
+    if (qemu_ios_ui_storage_failed() && fn != qmp_quit) {
+        fprintf(stderr, "[machine] NAND storage failed; relaunch after fixing storage\n");
+        return;
+    }
     fn(&err);
     if (err) {
         fprintf(stderr, "[machine] %s\n", error_get_pretty(err));

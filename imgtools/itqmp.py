@@ -12,8 +12,8 @@ LOCAL CLIENT, NOT upstream `python/qemu/qmp/`: that library is asyncio-based,
 and every consumer here is a small blocking script (a CLI one-liner, a
 screendump loop, a shell-invoked subcommand) that wants a synchronous
 request/reply call, not an event loop. Wrapping each in asyncio would be more
-code than this file, for no capability gained. This class is ~30 lines with
-no external dependency, which is reason enough to keep it.
+code than this file, for no capability gained. This client has no external
+dependency.
 
 The LCD device registers a legacy absolute mouse handler
 (`ipod_touch_lcd_mouse_event`, 0..0x7fff on both axes) and a multi-touch
@@ -50,9 +50,15 @@ class QMP:
                 self.s = self._connect_unix(host, timeout)
         if port is not None:
             self.s = self._connect_tcp(host, port, timeout)
+        self.s.settimeout(timeout)
         self.f = self.s.makefile("rwb")
-        self._read()  # greeting
-        self.cmd("qmp_capabilities")
+        self.shutdown_event = None
+        try:
+            self._read()  # greeting
+            self.cmd("qmp_capabilities")
+        except BaseException:
+            self.close()
+            raise
 
     @staticmethod
     def _connect_tcp(host, port, timeout):
@@ -69,24 +75,52 @@ class QMP:
     def _connect_unix(path, timeout):
         deadline = time.time() + timeout
         while True:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             try:
-                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 s.connect(path)
                 return s
             except OSError:
+                s.close()
                 if time.time() > deadline:
                     raise
                 time.sleep(0.5)
 
+    def _read_message(self):
+        line = self.f.readline()
+        if not line:
+            raise EOFError("QMP closed without a guest shutdown confirmation")
+        msg = json.loads(line)
+        if msg.get("event") == "SHUTDOWN" and self.shutdown_event is None:
+            self.shutdown_event = msg
+        return msg
+
     def _read(self):
         while True:
-            line = self.f.readline()
-            if not line:
-                raise EOFError("qmp closed")
-            msg = json.loads(line)
-            if "event" in msg:
-                continue
-            return msg
+            msg = self._read_message()
+            if "event" not in msg:
+                return msg
+
+    def wait_for_guest_shutdown(self, timeout):
+        """Require QEMU's guest-origin shutdown event, never EOF or exit status.
+
+        This is a terminal wait: after a read timeout, socket.makefile cannot
+        safely resume reading, so callers must close the connection.
+        """
+        deadline = time.monotonic() + timeout
+        old_timeout = self.s.gettimeout()
+        try:
+            while self.shutdown_event is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("timed out waiting for guest SHUTDOWN event")
+                self.s.settimeout(remaining)
+                self._read_message()
+            data = self.shutdown_event.get("data", {})
+            if data.get("guest") is not True or data.get("reason") != "guest-shutdown":
+                raise RuntimeError("shutdown was not guest-confirmed: %s" % data)
+            return True
+        finally:
+            self.s.settimeout(old_timeout)
 
     def cmd(self, name, **args):
         req = {"execute": name}
@@ -101,9 +135,11 @@ class QMP:
 
     def close(self):
         try:
-            self.s.close()
+            self.f.close()
         except OSError:
             pass
+        finally:
+            self.s.close()
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ extern void *dlsym(void *, const char *);
 extern int open(const char *, int, ...);
 extern long read(int, void *, unsigned long);
 extern int close(int);
+extern int strcmp(const char *, const char *);
 #define RTLD_NOW 2
 #define O_RDONLY 0
 
@@ -78,6 +79,37 @@ int main(void)
     sbs = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices."
                  "framework/SpringBoardServices", RTLD_NOW);
     if (!cf || !sbs) { w("sblaunch: dlopen failed\n"); _exit(1); }
+
+    /* Diagnostic requests use the same no-argv file protocol. The lock ABI
+     * is verified against the 3.1.3 MIG stub: both out parameters are bytes. */
+    if (!strcmp(bundle_id, ":lock-status")) {
+        unsigned (*port)(void) = dlsym(sbs, "SBSSpringBoardServerPort");
+        int (*status)(unsigned, unsigned char *, unsigned char *) =
+            dlsym(sbs, "SBGetScreenLockStatus");
+        unsigned char locked = 1, passcode = 1;
+        if (!port || !status || status(port(), &locked, &passcode)) {
+            w("sblaunch: lock status unavailable\n"); _exit(1);
+        }
+        w("sblaunch: locked="); wd(locked);
+        w(" passcode="); wd(passcode); w("\n");
+        _exit(0);
+    }
+    if (!strcmp(bundle_id, ":frontmost")) {
+        void *(*frontmost)(void) = dlsym(sbs, "SBSCopyFrontmostApplicationDisplayIdentifier");
+        unsigned char (*get_string)(void *, char *, long, unsigned) =
+            dlsym(cf, "CFStringGetCString");
+        void (*release)(void *) = dlsym(cf, "CFRelease");
+        char name[1024];
+        void *front;
+        if (!frontmost || !get_string || !release) _exit(1);
+        front = frontmost();
+        if (!front || !get_string(front, name, sizeof(name), kCFStringEncodingUTF8)) {
+            w("sblaunch: no foreground app\n"); _exit(1);
+        }
+        w("sblaunch: frontmost="); w(name); w("\n");
+        release(front);
+        _exit(0);
+    }
 
     p_CFStringCreateWithCString = dlsym(cf, "CFStringCreateWithCString");
     p_SBSLaunchApplicationWithIdentifier =
