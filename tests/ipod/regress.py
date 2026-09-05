@@ -23,9 +23,9 @@ none of them is a smoke test: "did it boot?" would have missed all of them.
               capture, because a carrier with no lease looks identical in the log.
   appinstall  ideviceinstaller installs a decrypted App Store app and it appears
               in the installed list.
-  applaunch   The freshly installed icon is located by diffing the home screen
-              before and after the install, tapped, and the app is confirmed on
-              screen. Requires appinstall.
+  applaunch   Launch the installed IPA's bundle ID through SpringBoard, then
+              verify that exact foreground app and a lit screen. Requires
+              appinstall, guest SSH, and built contrib/it-gles/sblaunch.
   persist     A file written over AFC survives a *clean* shutdown and a reboot on
               the same overlay, byte-identical. HFS+ holds catalog updates in
               memory, so killing QEMU loses the directory entry while keeping the
@@ -58,9 +58,8 @@ fails - installd resets the mux connection mid-install
 completion status that never comes, because it has no timeout of its own.
 An app installs and launches perfectly on a device that has done nothing
 else first. --install-timeout bounds the hang so the rest of the suite still
-runs; appinstall (and applaunch, which depends on it) are reported XFAIL
-rather than FAIL when afc ran earlier in the same --with-apps run, so this
-documented bug does not turn a green run red.
+runs. This historical failure is still a FAIL: running AFC first is not
+proof that a later installation failure has the same cause.
 """
 
 import argparse
@@ -68,12 +67,16 @@ import hashlib
 import os
 import plistlib
 import re
+import shlex
 import shutil
 import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
+import zipfile
+from xml.parsers.expat import ExpatError
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
@@ -134,10 +137,6 @@ GLES_BUNDLE_ID = "com.qemuios.gltest"
 # alone could not tell them apart at all (the home screen lights *more*
 # sub-pixels than the GL frame does).
 GLES_QUAD_MIN = 0.05
-# Telling the lock screen from the home screen by lit sub-pixels. Measured on
-# nand-appsync3: lock screen 253.7k-254.0k across five boots, home screen
-# 308.6k. The gate sits between them with room on both sides.
-UNLOCKED_LIT_MIN = 280000
 UNLOCK_TRIES = 4
 # Seconds after launch before the first sample: the app has to get through
 # SpringBoard's launch animation and its first present.
@@ -153,7 +152,6 @@ GLES_HOLD_S = 6
 # app calls, it needs. Add a slot here only with a note saying why it is inert.
 GLES_ALLOWED_SLOTS = set()
 
-APP_BUNDLE_ID = "com.barackobama.Obama08"
 APP_IPA_DEFAULT = os.path.expanduser(
     "~/Downloads/random apps/com.barackobama.Obama08-iOS2.0-(Clutch-2.0.4).ipa")
 
@@ -249,8 +247,7 @@ class QMP(itqmp.QMP):
     QEMU's QMP listener accepts a single client at a time; a second connection
     is accepted by the kernel and then never answered, which looks exactly like
     a guest hang. Everything the harness does over QMP therefore goes through
-    one instance of this class, and it is closed before contrib/it-poweroff.sh
-    (which opens its own) is invoked.
+    one instance of this class, including the guest SHUTDOWN confirmation.
 
     Only the two things imgtools/itqmp.py deliberately does differently are
     overridden: it returns a *PNG* from shot() and the harness measures raw PPM
@@ -431,22 +428,42 @@ class Device:
         return self.qemu is not None and self.qemu.poll() is None
 
     def powerdown(self):
-        """Clean shutdown via contrib/it-poweroff.sh.
-
-        Killing QEMU instead would leave HFS+ catalog updates in guest memory,
-        so files written this boot would not exist on the next one - which is
-        precisely what the persist check is here to detect.
-        """
-        if self.qmp:
+        """Require guest-origin SHUTDOWN plus process exit; SIGTERM also exits 0."""
+        if self.qmp is None:
+            log("%s: no QMP connection to confirm guest shutdown" % self.tag)
+            return False
+        try:
+            helper = os.path.join(ROOT, "contrib", "it-halt", "ithalt")
+            port, error = ensure_guest_ssh(self.cfg, self.procs, self)
+            if port is not None and os.path.exists(helper):
+                copied = guest_ssh(self.cfg, port, None, scp_from=helper,
+                                   scp_to="/tmp/ithalt")
+                if copied.returncode != 0:
+                    log("%s: could not stage shutdown helper: %s" % (self.tag, copied.stderr))
+                    return False
+                halt = guest_ssh(self.cfg, port, ["chmod 755 /tmp/ithalt && /tmp/ithalt"], timeout=30)
+                log("%s: halt request rc=%d %s" %
+                    (self.tag, halt.returncode, (halt.stdout + halt.stderr).strip()[-200:]))
+                timeout = 60
+            else:
+                log("%s: gesture shutdown fallback (%s)" % (self.tag, error or "no ithalt"))
+                try:
+                    self.qmp.cmd("system_powerdown")
+                except EOFError:
+                    # An immediate shutdown may precede the command response;
+                    # the retained SHUTDOWN event must still prove its origin.
+                    pass
+                timeout = 180
+            self.qmp.wait_for_guest_shutdown(timeout)
+            rc = self.qemu.wait(timeout=10)
+            log("%s: guest-confirmed shutdown, qemu exit=%d" % (self.tag, rc))
+            return rc == 0
+        except (OSError, EOFError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+            log("%s: shutdown not confirmed: %s" % (self.tag, exc))
+            return False
+        finally:
             self.qmp.close()
             self.qmp = None
-        r = subprocess.run(
-            [os.path.join(ROOT, "contrib", "it-poweroff.sh"),
-             "127.0.0.1:%d" % self.cfg.qmp_port, "180"],
-            capture_output=True, text=True, timeout=300)
-        log("%s: poweroff rc=%d %s" % (self.tag, r.returncode,
-                                       r.stdout.strip().replace("\n", " | ")))
-        return r.returncode == 0 and not self.alive()
 
     # -- boot --------------------------------------------------------------
 
@@ -742,23 +759,50 @@ def check_wifi(cfg, dev, r):
     return r.set(False, "link=%s dhcp_replies=%d" % (link, leases))
 
 
-def check_appinstall(cfg, procs, dev, r, xfail=False):
+def ipa_bundle_id(path):
+    """Read the single root application's identity, including binary plists."""
+    with zipfile.ZipFile(path) as archive:
+        entries = [item for item in archive.infolist()
+                   if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", item.filename)]
+        if len(entries) != 1 or entries[0].file_size > 1024 * 1024:
+            raise ValueError("IPA needs exactly one root app Info.plist (at most 1 MiB)")
+        info = plistlib.loads(archive.read(entries[0]))
+    bundle_id = info.get("CFBundleIdentifier") if isinstance(info, dict) else None
+    if not isinstance(bundle_id, str) or not re.fullmatch(r"[A-Za-z0-9.-]+", bundle_id):
+        raise ValueError("IPA has no valid CFBundleIdentifier")
+    return bundle_id
+
+
+def app_is_installed(cfg, bundle_id):
+    listing = run(["ideviceinstaller", "list", "--xml"], cfg, 300)
+    if listing.returncode != 0:
+        return False
+    try:
+        apps = plistlib.loads(listing.stdout.encode())
+    except (ValueError, plistlib.InvalidFileException, ExpatError):
+        return False
+    return isinstance(apps, list) and any(
+        isinstance(app, dict) and app.get("CFBundleIdentifier") == bundle_id
+        for app in apps)
+
+
+def check_appinstall(cfg, procs, dev, r):
     """Install an IPA and confirm installd really registered it.
 
     The install runs through a file so that its progress output survives being
     killed: `ideviceinstaller install` waits for a completion status from
     installd in an unbounded loop (`idevice_wait_for_command_to_complete`), so
     if installd resets the connection part-way the tool never returns, and the
-    only evidence of how far it got is what it had already printed. The verdict
-    comes from `ideviceinstaller list`, not from the installer's exit code:
-    "the tool said OK" is weaker than "the device says the app is there".
-
-    xfail=True means afc already ran this boot: the documented afc->appinstall
-    interaction (see module docstring) makes failure here expected, not a
-    regression.
+    only evidence of how far it got is what it had already printed. Success
+    requires both installer completion and the exact IPA bundle ID in the
+    device's application list; an already-installed app cannot hide failure.
     """
     if not os.path.exists(cfg.ipa):
         return r.set(False, "ipa not found: %s" % cfg.ipa)
+    try:
+        bundle_id = ipa_bundle_id(cfg.ipa)
+    except (OSError, ValueError, zipfile.BadZipFile, RuntimeError, ExpatError) as exc:
+        return r.set(False, "invalid IPA: %s" % exc)
     logpath = os.path.join(dev.dir, "install.log")
     p = procs.spawn(["ideviceinstaller", "install", cfg.ipa], logpath,
                     env=mux_env(cfg))
@@ -773,75 +817,92 @@ def check_appinstall(cfg, procs, dev, r, xfail=False):
             out = " | ".join(l.strip() for l in f if l.strip())
     except OSError:
         out = ""
-    l = run(["ideviceinstaller", "list"], cfg, 300)
-    if APP_BUNDLE_ID in (l.stdout + l.stderr):
-        return r.set(True, "%s installed and listed" % APP_BUNDLE_ID)
+    listed = app_is_installed(cfg, bundle_id)
+    if not timed_out and p.returncode == 0 and listed:
+        return r.set(True, "%s installed and listed" % bundle_id)
     if timed_out:
         return r.set(False, "installer never finished within %ds and the app "
-                            "is not listed; last progress: %s"
-                     % (cfg.install_timeout, out[-300:]), xfail=xfail)
-    return r.set(False, "rc=%s, app not listed; %s"
-                 % (p.returncode, out[-300:]), xfail=xfail)
+                            "installation was not confirmed; last progress: %s"
+                     % (cfg.install_timeout, out[-300:]))
+    return r.set(False, "rc=%s, %s listed=%s; %s"
+                 % (p.returncode, bundle_id, listed, out[-300:]))
 
 
-def icon_centroid(before_ppm, after_ppm):
-    """Where the newly installed icon appeared.
+def ensure_guest_ssh(cfg, procs, dev):
+    """Return (forwarded port, error), reusing this boot's SSH session."""
+    if getattr(dev, "ssh_port", None) is not None:
+        return dev.ssh_port, None
+    if not shutil.which("iproxy") or not shutil.which("ssh"):
+        return None, "iproxy/ssh not on PATH"
+    port = free_port(cfg.proxy_lo, cfg.proxy_hi)
+    cfg.askpass = os.path.join(cfg.out, "askpass")
+    with open(cfg.askpass, "w") as f:
+        f.write("#!/bin/sh\nprintf '%s\\n' %s\n" % ("%s", shlex.quote(
+            os.environ.get("DEVICE_PASSWORD", "alpine"))))
+    os.chmod(cfg.askpass, 0o700)
+    procs.spawn(["iproxy", str(port), "22"],
+                os.path.join(dev.dir, "iproxy-launch.log"), env=mux_env(cfg))
+    time.sleep(2)
+    probe = guest_ssh(cfg, port, ["true"], timeout=40)
+    if probe.returncode != 0:
+        return None, "no ssh on guest: %s" % probe.stderr.strip()[-120:]
+    dev.ssh_port = port
+    return port, None
 
-    Diffing the home screen before and after the install localises the icon
-    without hard-coding a grid slot, which would depend on how many apps the
-    image already ships. The status bar is excluded because its clock and WiFi
-    indicator change on their own.
-    """
-    w, h, a = read_ppm(before_ppm)
-    _w2, _h2, b = read_ppm(after_ppm)
-    if len(a) != len(b):
+
+def prepare_launcher(cfg, procs, dev, r):
+    launcher = os.path.join(GLES_DIR, "sblaunch")
+    if not os.path.exists(launcher):
+        r.skip("requires built contrib/it-gles/sblaunch")
         return None
-    xs, ys, tot = 0, 0, 0
-    for y in range(24, h - 20):
-        row = y * w * 3
-        for x in range(w):
-            o = row + x * 3
-            d = (abs(a[o] - b[o]) + abs(a[o + 1] - b[o + 1])
-                 + abs(a[o + 2] - b[o + 2]))
-            if d > 6:
-                xs += x
-                ys += y
-                tot += 1
-    if tot < 400:
+    port, error = ensure_guest_ssh(cfg, procs, dev)
+    if port is None:
+        r.skip(error)
         return None
-    return xs // tot, ys // tot, tot
+    if getattr(dev, "launcher_ready", False):
+        return port
+    p = guest_ssh(cfg, port, None, timeout=300, scp_from=launcher, scp_to="/tmp/sblaunch")
+    if p.returncode != 0:
+        r.set(False, "scp sblaunch failed: %s" % p.stderr.strip()[-160:])
+        return None
+    p = guest_ssh(cfg, port, ["chmod 755 /tmp/sblaunch"])
+    if p.returncode != 0:
+        r.set(False, "could not make sblaunch executable")
+        return None
+    dev.launcher_ready = True
+    return port
 
 
-def frame_diff_fraction(p1, p2):
-    _w, _h, a = read_ppm(p1)
-    _w2, _h2, b = read_ppm(p2)
-    if len(a) != len(b) or not a:
-        return 1.0
-    diff = sum(1 for i in range(0, len(a), 3) if abs(a[i] - b[i]) > 4)
-    return diff / (len(a) / 3.0)
+def springboard(cfg, port, request):
+    return guest_ssh(cfg, port, ["printf '%s' %s > /tmp/sblaunch.id && /tmp/sblaunch"
+                               % ("%s", shlex.quote(request))])
 
 
-def check_applaunch(cfg, dev, before_ppm, r):
-    after = dev.qmp.shot(os.path.join(dev.dir, "home-after-install.ppm"))
-    to_png(after, os.path.join(dev.dir, "home-after-install.png"))
-    spot = icon_centroid(before_ppm, after)
-    if not spot:
-        return r.set(False, "no new icon appeared on the home screen")
-    x, y, npx = spot
-    log("  new icon at (%d,%d), %d changed px" % (x, y, npx))
-    dev.qmp.tap(x, y)
+def foreground_is(cfg, port, bundle_id):
+    p = springboard(cfg, port, ":frontmost")
+    return p.returncode == 0 and p.stdout.strip() == "sblaunch: frontmost=" + bundle_id
+
+
+def check_applaunch(cfg, procs, dev, r):
+    port = prepare_launcher(cfg, procs, dev, r)
+    if port is None:
+        return False
+    bundle_id = ipa_bundle_id(cfg.ipa)
+    ok, detail = unlock(cfg, port, dev)
+    if not ok:
+        return r.set(False, detail)
+    p = springboard(cfg, port, bundle_id)
+    if p.returncode != 0:
+        return r.set(False, "launch refused: %s" % (p.stdout + p.stderr).strip()[-200:])
     time.sleep(30)
     shot = dev.qmp.shot(os.path.join(dev.dir, "app.ppm"))
     to_png(shot, os.path.join(dev.dir, "app.png"))
-    hi, lit = lit_count(shot)
-    frac = frame_diff_fraction(after, shot)
+    _hi, lit = lit_count(shot)
+    if not foreground_is(cfg, port, bundle_id):
+        return r.set(False, "%s is not the foreground app after launch" % bundle_id)
     if lit < 20000:
-        return r.set(False, "screen went dark after tap (lit=%d)" % lit)
-    if frac < 0.25:
-        return r.set(False, "screen unchanged after tap (diff=%.2f) - still "
-                            "on the home screen" % frac)
-    return r.set(True, "app on screen: %.0f%% of the frame changed, lit=%d"
-                 % (frac * 100, lit))
+        return r.set(False, "%s is foreground but screen is dark (lit=%d)" % (bundle_id, lit))
+    return r.set(True, "%s verified foreground, lit=%d" % (bundle_id, lit))
 
 
 def quad_signature(path):
@@ -878,7 +939,7 @@ def install_gles_app(cfg, r):
     the bundle contrib/it-gles/build.sh already produces, and a stale one would
     silently test an old binary.
     """
-    if GLES_BUNDLE_ID in run(["ideviceinstaller", "list"], cfg, 300).stdout:
+    if app_is_installed(cfg, GLES_BUNDLE_ID):
         return True
     ipa_dir = os.path.join(cfg.out, "glesipa")
     shutil.rmtree(ipa_dir, ignore_errors=True)
@@ -894,43 +955,34 @@ def install_gles_app(cfg, r):
         return r.set(False, "could not build GLTest.ipa: %s"
                      % z.stderr.strip()[-160:])
     ins = run(["ideviceinstaller", "install", ipa], cfg, cfg.install_timeout)
-    if GLES_BUNDLE_ID not in run(["ideviceinstaller", "list"], cfg, 300).stdout:
+    if not app_is_installed(cfg, GLES_BUNDLE_ID):
         return r.set(False, "GLTest did not install: %s"
                      % (ins.stdout + ins.stderr).strip().replace("\n", " | ")[-250:])
     return True
 
 
-def unlock(dev, tries=None):
-    """Wake the device and slide to unlock, verified rather than assumed.
+def unlock(cfg, port, dev, tries=UNLOCK_TRIES):
+    """Swipe only after SpringBoard confirms that the screen is locked.
 
-    Touch on 3.1.3 is load-sensitive, and a swipe that misses is
-    indistinguishable from one that landed until sblaunch returns 7 much later
-    -- the code it also uses for "no such app". So the result is checked: the
-    home screen lights ~308k sub-pixels against the lock screen's ~254k, which
-    is far more separation than a retry loop needs. A run that got its render
-    only because the device happened to already be unlocked is exactly the kind
-    of accidental pass this exists to prevent.
+    Pixel totals vary with the installed icons and cannot identify a lock
+    screen. Unknown lock state fails rather than dragging an unlocked dock.
     """
-    tries = tries or UNLOCK_TRIES
-    shot = os.path.join(dev.dir, "unlock.ppm")
-    lit = 0
-    for _ in range(tries):
+    for attempt in range(tries + 1):
         dev.qmp.home()
         time.sleep(2)
-        # Check BEFORE swiping. y=427 is the slide-to-unlock bar on the lock
-        # screen but the dock on the home screen, so swiping at an
-        # already-unlocked device drags a dock icon, drops SpringBoard into
-        # edit mode and raises a translucent "Edit Home Screen" alert over
-        # everything drawn afterwards -- which reads as a render failure.
-        _hi, lit = lit_count(dev.qmp.shot(shot))
-        if lit >= UNLOCKED_LIT_MIN:
-            return True, lit
+        p = springboard(cfg, port, ":lock-status")
+        status = re.fullmatch(r"sblaunch: locked=([01]) passcode=([01])", p.stdout.strip())
+        if p.returncode != 0 or status is None:
+            return False, "SpringBoard lock status unavailable: %s" % (p.stdout + p.stderr).strip()[-160:]
+        if status[1] == "0":
+            return True, "SpringBoard reports unlocked"
+        if status[2] == "1":
+            return False, "device has a passcode; unlock manually"
+        if attempt == tries:
+            break
         dev.qmp.swipe(60, 427, 295, 427)
         time.sleep(3)
-        _hi, lit = lit_count(dev.qmp.shot(shot))
-        if lit >= UNLOCKED_LIT_MIN:
-            return True, lit
-    return False, lit
+    return False, "device remained locked after %d attempts" % tries
 
 
 def slot_names():
@@ -961,7 +1013,13 @@ def guest_ssh(cfg, port, argv, timeout=60, scp_from=None, scp_to=None):
     Password auth cannot read from a pipe, so the password goes through
     SSH_ASKPASS exactly as imgtools/install-ipa.sh does.
     """
-    opts = ["-o", "StrictHostKeyChecking=no",
+    # Reuse the installer's multiplexing pattern: short-lived SSH connections
+    # can race teardown in the old guest stack. Keep the Unix path below 104B.
+    if not hasattr(cfg, "ssh_control"):
+        cfg.ssh_control = tempfile.TemporaryDirectory(prefix="itssh-", dir="/tmp")
+    opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=30",
+            "-o", "ControlPath=" + os.path.join(cfg.ssh_control.name, "%C"),
+            "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "LogLevel=ERROR",
             "-o", "PreferredAuthentications=password",
@@ -1000,26 +1058,9 @@ def check_gles(cfg, procs, dev, r):
     if missing:
         return r.skip("run contrib/it-gles/build.sh first (no %s)"
                       % ", ".join(missing))
-    if not shutil.which("iproxy") or not shutil.which("ssh"):
-        return r.skip("iproxy/ssh not on PATH")
-
-    port = free_port(cfg.proxy_lo, cfg.proxy_hi)
-    cfg.askpass = os.path.join(cfg.out, "askpass")
-    with open(cfg.askpass, "w") as f:
-        f.write("#!/bin/sh\necho %s\n" % os.environ.get("DEVICE_PASSWORD",
-                                                        "alpine"))
-    os.chmod(cfg.askpass, 0o755)
-    procs.spawn(["iproxy", str(port), "22"],
-                os.path.join(dev.dir, "iproxy-gles.log"), env=mux_env(cfg))
-    time.sleep(2)
-
-    probe = guest_ssh(cfg, port, ["true"], timeout=40)
-    if probe.returncode != 0:
-        # Not every NAND image ships an sshd; that is a missing input, not a
-        # renderer regression.
-        return r.skip("no ssh on the guest (%s)"
-                      % (probe.stderr.strip()[-120:] or "rc=%d"
-                         % probe.returncode))
+    port = prepare_launcher(cfg, procs, dev, r)
+    if port is None:
+        return False
 
     # Install GLTest properly rather than dropping it in /Applications. A
     # hand-copied bundle is not installed: SpringBoard launches from installd's
@@ -1029,11 +1070,9 @@ def check_gles(cfg, procs, dev, r):
     # this image was built to accept and it registers first time, every time.
     if not install_gles_app(cfg, r):
         return False
-    for src, dst in ((launcher, "/tmp/sblaunch"), (shim, "/tmp/MBXGLEngine")):
-        p = guest_ssh(cfg, port, None, timeout=300, scp_from=src, scp_to=dst)
-        if p.returncode != 0:
-            return r.set(False, "scp %s failed: %s"
-                         % (os.path.basename(src), p.stderr.strip()[-160:]))
+    p = guest_ssh(cfg, port, None, timeout=300, scp_from=shim, scp_to="/tmp/MBXGLEngine")
+    if p.returncode != 0:
+        return r.set(False, "scp MBXGLEngine failed: %s" % p.stderr.strip()[-160:])
     # The stock bundle is kept alongside ours so a later manual run can restore
     # it; /System is why this goes over ssh and not AFC.
     bundle = ("/System/Library/Frameworks/OpenGLES.framework/"
@@ -1051,35 +1090,18 @@ def check_gles(cfg, procs, dev, r):
         return r.set(False, "staging the shim failed: %s"
                      % (p.stdout + p.stderr).strip()[-200:])
 
-    ok, lit = unlock(dev)
+    ok, detail = unlock(cfg, port, dev)
     if not ok:
-        return r.set(False, "could not get past the lock screen in %d attempts "
-                            "(last frame lit=%d, need >=%d); sblaunch is "
-                            "refused on a locked device"
-                     % (UNLOCK_TRIES, lit, UNLOCKED_LIT_MIN))
-    # Nothing may be inserted between the unlock and the launch: the device
-    # re-locks about 9s after being woken, and sblaunch on a locked device
-    # returns 7 -- the same code it uses for "no such app". An earlier version
-    # pressed Home here to clear edit mode (see the tap below) and that alone
-    # was enough delay to turn a working launch into a bogus "app not found".
-    p = guest_ssh(cfg, port, ["/tmp/sblaunch"], timeout=60)
+        return r.set(False, detail)
+    p = springboard(cfg, port, GLES_BUNDLE_ID)
     out = (p.stdout + p.stderr).strip()
     if p.returncode != 0:
         return r.set(False, "sblaunch refused: %s" % out[-200:])
     log("  gles: %s" % out)
 
     time.sleep(GLES_SETTLE_S)
-    # y=427 is the slide-to-unlock bar on the lock screen but the dock on the
-    # home screen, so on an already-unlocked device the unlock drag grabs a
-    # dock icon, enters edit mode and raises the "Edit Home Screen" alert. That
-    # alert is translucent and sits above the app: it shifted every pixel just
-    # enough that the colour signature read 0.002 on a frame that was in fact
-    # rendering perfectly. Dismissing it here rather than before the launch
-    # keeps the unlock->sblaunch gap inside the re-lock window. The tap is
-    # blind but safe when no alert is up: GLTest handles no touches, so it
-    # lands in an inert view.
-    dev.qmp.tap(160, 335)
-    time.sleep(2)
+    if not foreground_is(cfg, port, GLES_BUNDLE_ID):
+        return r.set(False, "GLTest is not the foreground app after launch")
     a = dev.qmp.shot(os.path.join(dev.dir, "gles-a.ppm"))
     time.sleep(GLES_HOLD_S)
     b = dev.qmp.shot(os.path.join(dev.dir, "gles-b.ppm"))
@@ -1159,39 +1181,86 @@ def check_persist(cfg, dev2, marker_src, remote, r):
     return r.set(True, "%s identical after clean shutdown + reboot" % remote)
 
 
-def check_fsck(cfg, clean_stop, r):
-    """Compose base + overlay into a flat volume and fsck it.
+def hfs_volume_blocks(first_page):
+    """Validate the header before using its size to construct a host file."""
+    if len(first_page) != 4096 or first_page[1024:1026] not in (b"H+", b"HX"):
+        raise ValueError("missing HFS+ volume header in allocation block 0")
+    block_size, total_blocks = struct.unpack_from(">II", first_page, 1024 + 40)
+    if block_size != 4096 or not 1 <= total_blocks <= 4 * 4096 * 128:
+        raise ValueError("unsupported HFS+ geometry: blockSize=%d totalBlocks=%d"
+                         % (block_size, total_blocks))
+    return total_blocks
 
-    imgtools/ftlmap.predict() is the single source of truth for the allocation
-    block -> (cs, page) mapping; a dirty result means persisted writes landed on
-    the wrong physical pages.
-    """
-    sys.path.insert(0, os.path.join(ROOT, "imgtools"))
-    try:
-        from ftlmap import predict
-    except Exception as e:
-        return r.set(False, "cannot import ftlmap: %s" % e)
-    img = os.path.join(cfg.out, "volume.img")
+
+def compose_fsck_volume(base, overlay, destination):
+    """Compose the full generated-layout volume; absent pages remain sparse zeros."""
+    from ftlmap import predict
+
+    if not os.path.isdir(base):
+        raise ValueError("fsck composition requires a NAND page directory")
+
+    def index(directory):
+        pages, erased = {}, set()
+        for cs in range(4):
+            try:
+                entries = os.scandir(os.path.join(directory, "cs%d" % cs))
+            except FileNotFoundError:
+                continue
+            with entries:
+                for entry in entries:
+                    page = re.fullmatch(r"([0-9]+)\.page", entry.name)
+                    marker = re.fullmatch(r"blk([0-9]+)\.erased", entry.name)
+                    if page:
+                        pages[cs, int(page.group(1))] = entry.path
+                    elif marker:
+                        erased.add((cs, int(marker.group(1))))
+        return pages, erased
+
+    base_pages, _ = index(base)
+    overlay_pages, erased = index(overlay)
+    if "FMSS_ERASE" not in os.environ:
+        erased.clear()  # Match the optional erase model used by boot_env().
+    zero = bytes(4096)
+
+    def read_page(key):
+        path = overlay_pages.get(key)
+        if path is None and (key[0], key[1] // 128) not in erased:
+            path = base_pages.get(key)
+        if path is None:
+            return zero
+        with open(path, "rb") as page:
+            data = page.read(4096)
+        if len(data) != 4096:
+            raise ValueError("short NAND page: %s (%d bytes)" % (path, len(data)))
+        return data
+
+    total_blocks = hfs_volume_blocks(read_page(predict(0)))
     used = 0
-    with open(img, "wb") as out:
-        for b in range(128000):
-            cs, p = predict(b)
-            f = os.path.join(cfg.overlay, "cs%d" % cs, "%d.page" % p)
-            if os.path.exists(f):
-                used += 1
-            else:
-                f = os.path.join(cfg.base_nand, "cs%d" % cs, "%d.page" % p)
-            with open(f, "rb") as pf:
-                out.write(pf.read(4096))
-    att = subprocess.run(["hdiutil", "attach", "-nomount", "-readonly",
-                          "-noverify", img], capture_output=True, text=True,
-                         timeout=300)
-    dev = ""
-    for tok in att.stdout.split():
-        if tok.startswith("/dev/disk"):
-            dev = tok
-            break
-    if not dev:
+    with open(destination, "wb") as out:
+        out.truncate(total_blocks * 4096)
+        for block in range(total_blocks):
+            key = predict(block)
+            used += key in overlay_pages
+            data = read_page(key)
+            if data != zero:
+                out.seek(block * 4096)
+                out.write(data)
+    return total_blocks, used
+
+
+def check_fsck(cfg, clean_stop, r):
+    """Check every allocation block; a nonzero fsck result is always a failure."""
+    img = os.path.join(cfg.out, "volume.img")
+    try:
+        blocks, used = compose_fsck_volume(cfg.base_nand, cfg.overlay, img)
+    except (OSError, ValueError) as exc:
+        return r.set(False, "cannot compose volume: %s" % exc)
+    att = subprocess.run(["hdiutil", "attach", "-imagekey", "diskimage-class=CRawDiskImage",
+                          "-nomount", "-readonly", "-noverify", img],
+                         capture_output=True, text=True, timeout=300)
+    dev = next((tok for tok in att.stdout.split()
+                if re.fullmatch(r"/dev/disk[0-9]+(?:s[0-9]+)?", tok)), "")
+    if att.returncode != 0 or not dev:
         return r.set(False, "hdiutil attach failed: %s" % att.stderr.strip())
     try:
         fs = subprocess.run(["fsck_hfs", "-n", dev], capture_output=True,
@@ -1199,50 +1268,14 @@ def check_fsck(cfg, clean_stop, r):
     finally:
         subprocess.run(["hdiutil", "detach", dev], capture_output=True,
                        timeout=120)
-    out = fs.stdout + fs.stderr
-    tail = " | ".join(l.strip() for l in out.strip().split("\n")[-4:])
-    if fs.returncode == 0:
-        return r.set(True, "%d overlay pages in the volume; %s" % (used, tail))
-
-    # Complaints this composition ALWAYS produces, guest or no guest.
-    #
-    # Measured 2026-08-06: the pristine base image, composed the same way and
-    # never booted, fails fsck with exactly these lines -- "It should be 11174
-    # instead of 1718130" against the post-run "10873 instead of 1717829", i.e.
-    # the identical 1,706,956-block discrepancy. The reason is right here in this
-    # function: we compose the first 128000 allocation blocks of a volume that is
-    # larger than that, so the header's free-block count and the bitmap can never
-    # agree with the truncated device fsck is handed.
-    #
-    # This check therefore called a FACTORY IMAGE corrupt, and had done since it
-    # was written -- which is worse than useless, because a real corruption would
-    # have looked exactly like the noise it was already emitting. What it can
-    # still judge, and what actually matters, is the catalog: extents overflow,
-    # catalog file, multi-linked files, catalog hierarchy, extended attributes.
-    # Anything wrong THERE is a genuine loss of the user's files.
-    BENIGN = (
-        "invalid volume free block count",
-        "volume bitmap needs minor repair for orphaned blocks",
-        "volume bitmap needs repair for under-allocation",
-        "volume header needs minor repair",
-    )
-    # Lines beginning with "**" are fsck's own section headers and its final
-    # verdict ("** The volume ... needs to be repaired"), not individual
-    # findings — the verdict says "repaired", so counting it as a finding makes
-    # every run fail no matter what the findings were.
-    problems = [l.strip() for l in out.splitlines()
-                if l.strip() and not l.strip().startswith("**")
-                and ("repair" in l.lower() or "invalid" in l.lower()
-                     or "missing" in l.lower() or "overlap" in l.lower())]
-    real = [l for l in problems
-            if not any(b in l.lower() for b in BENIGN)]
-    if not real:
-        return r.set(True, "catalog, extents and hierarchy clean; %d overlay "
-                           "pages. (Free-block/bitmap counts differ because we "
-                           "compose only the first 128000 blocks of a larger "
-                           "volume -- the pristine base image reports the same.)"
-                     % used)
-    return r.set(False, "fsck_hfs rc=%d: %s" % (fs.returncode, " | ".join(real[:4])))
+    output = fs.stdout + fs.stderr
+    with open(os.path.join(cfg.out, "fsck.log"), "w") as log_file:
+        log_file.write(output)
+    tail = " | ".join(line.strip() for line in output.strip().splitlines()[-4:])
+    return r.set(fs.returncode == 0,
+                 "fsck_hfs rc=%d; %d blocks, %d overlay pages%s; %s"
+                 % (fs.returncode, blocks, used,
+                    "" if clean_stop else "; guest shutdown was not clean", tail))
 
 
 # --------------------------------------------------------------------------
@@ -1477,26 +1510,12 @@ def main():
         if "usbtcp" in selected:
             check_usbtcp(cfg, dev, procs, results["usbtcp"])
 
-        home_before = None
         if "appinstall" in selected:
-            # The documented afc->appinstall interaction (module docstring):
-            # expect appinstall to fail, not regress, if afc ran first.
-            appinstall_xfail = "afc" in selected
-            dev.qmp.home()
-            time.sleep(3)
-            home_before = dev.qmp.shot(
-                os.path.join(dev.dir, "home-before-install.ppm"))
-            to_png(home_before,
-                   os.path.join(dev.dir, "home-before-install.png"))
-            if check_appinstall(cfg, procs, dev, results["appinstall"],
-                                xfail=appinstall_xfail):
-                time.sleep(20)          # SpringBoard adds the icon
+            if check_appinstall(cfg, procs, dev, results["appinstall"]):
                 if "applaunch" in selected:
-                    check_applaunch(cfg, dev, home_before,
-                                    results["applaunch"])
+                    check_applaunch(cfg, procs, dev, results["applaunch"])
             elif "applaunch" in selected:
-                results["applaunch"].set(False, "install failed",
-                                         xfail=appinstall_xfail)
+                results["applaunch"].set(False, "install failed")
 
         if "gles" in selected:
             check_gles(cfg, procs, dev, results["gles"])

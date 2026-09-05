@@ -1,5 +1,9 @@
 # App compatibility survey
 
+> Historical survey from August 5. Later commits implement PVRTC, VBOs and
+> the RGB565/texture fixes discussed below. See [current status](capabilities.md)
+> before treating a missing-function list or runtime failure here as current.
+
 A survey of 20 real 2008–2010 App Store apps against this emulator (1st/2nd-gen
 iPod touch, iOS 3.1.3). Surveyed 2026-08-05.
 
