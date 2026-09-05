@@ -67,3 +67,17 @@ and the fixture body for `http://example.invalid/fixture` through an external
 host proxy fixture; no guest origin DNS is needed. Repeat with
 `tests/ipod/regress.py --checks boot,webproxy` after building both helpers.
 Evidence from the initial native run is `/tmp/it-proxy-http-v2.log`.
+
+## TLS bridge acceptance (development)
+
+`ARMV6_SDK=/path/to/iPhoneOS3.1.3.sdk ../it-proxy/build.sh` also builds
+`ittrust add|remove CERT.der`. It calls the guest's native securityd trust-store
+API in user domain 2 and carries iOS 3's `modify-anchor-certificates` entitlement
+(signed with development tool `ldid`). It never edits the trust database directly.
+
+`python3 tests/ipod/test_webproxy_tls_guest.py` from the repository root creates a
+fresh disposable NAND overlay and a loopback OpenSSL TLS 1.0/AES128-SHA server.
+The native guest client must reject the untrusted chain, load HTTP 200 after
+adding its temporary CA, then reject it again after CA removal. This passed on
+7E18. No CA is installed on the Mac or in the default NAND. This acceptance step
+does not yet enable TLS termination in the shipping proxy.
