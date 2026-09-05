@@ -140,3 +140,10 @@ The two entries select different continuations, rebuild CPU translation/control
 state and enter the kernel. A full machine reset would destroy this state by
 staging the normal boot chain again. CPU-only reentry through the retained
 vector is under investigation; no working native hibernate wake is claimed yet.
+
+A CPU-only reset experiment in `/tmp/it-blitz-spore-61103` entered that vector
+and reached the native `pmu wake events: hold` handler. It subsequently reported
+an undefined kernel instruction at `c001be04`, with a saved CPSR of `0x113`,
+before the display returned. This narrows the missing work to resume CPU/device
+state rather than button interrupt delivery. The experimental reentry code was
+removed; it is not part of normal operation or the sound/menu app package.
