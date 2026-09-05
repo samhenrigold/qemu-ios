@@ -16,7 +16,7 @@ TV-out were explicitly deferred by that plan.
 | Kernel serial console | Complete: explicit machine arguments, live console regression and Light Touch control build pass | Include the updated control in the final package verification |
 | Settings Wi-Fi join | Pending | Manual join without known-network seed or alert loop; DHCP and traffic |
 | Two-instance LAN | Pending | Separate identities, MACs and state; bidirectional traffic between guests |
-| Hardware shortcuts | FMSS completion and TV-out frame timing fixed; VIC daisy-chain defects fixed | PKE, NOR persistence, FMSS erase, DSI response queue, remaining LCD/TV-out status and AES matching review |
+| Hardware shortcuts | FMSS completion and TV-out frame timing fixed; VIC daisy-chain defects fixed; DSI panel reply queue implemented | PKE, NOR persistence, FMSS erase, remaining LCD/TV-out status and AES matching review |
 | Light Touch integration | Original UI fixes committed | Package and verify the resulting hardware controls and readiness/recovery paths |
 | Bluetooth peers / TV-out | Deferred per supplied plan | No implementation claimed |
 
