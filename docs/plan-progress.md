@@ -125,3 +125,20 @@ This completes the TLS transport step; modern WebKit feature gaps remain.
   `nand-ultimate` remains untouched. Baked launchd/restart acceptance is ongoing.
 - Remaining Track A: typing injection, UI tree inspection, ranged reads,
   snapshot-load rekeying, and completing image/frontend rollout.
+
+### Native typing and UI inspection
+
+- SpringBoard's DYLD_INSERT_LIBRARIES is inherited by launched apps on 7E18;
+  the minimal native probe logged separate SpringBoard and Settings PIDs.
+- Added a bounded foreground-process route with expiring request cookies. The
+  injected library handles type/backspace/uidump on the main run loop, without
+  signal overrides or temporary IPC files. Root and UI replies cannot complete
+  one another's requests. A non-consuming key check avoids idle SBS IPC polling.
+- Native Notes and an installed Harness UITextField passed Unicode insertion,
+  deletion, physical host keys, and UI-tree/text inspection. Bulk input uses the
+  focused control's insertText: API; treating a paragraph as one keyboard key
+  produced an oversized autocorrection prompt and was corrected. Repeatable
+  acceptance: `test_agent_guest.py --typing`, /tmp/it-typein-regression.log.
+- Command-agent review artifact: `build-native14/Light Touch-agent.app`, signed
+  and verified, contains the validated agent-only NAND candidate. Typing rollout
+  into the baked image and existing devices is the next step.

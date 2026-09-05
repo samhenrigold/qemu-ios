@@ -38,6 +38,13 @@ int main(void) {
     request("4 put file with spaces 600\n",binary,sizeof(binary));assert(!result_status);
     request("5 get file with spaces\n","",0);
     assert(!result_status && result_len==sizeof(binary) && !memcmp(binary,result,sizeof(binary)));
+    request("5b getrange 257 2048 file with spaces\n","",0);
+    assert(!result_status && result_len==2048 && !memcmp(binary+257,result,2048));
+    request("5c getrange 999999 2048 file with spaces\n","",0);
+    assert(!result_status && result_len==0);
+    request("5d getrange -1 2048 file with spaces\n","",0);assert(result_status==-EINVAL);
+    request("5e getrange 0 1048577 file with spaces\n","",0);assert(result_status==-EINVAL);
+    request("5f getrange 0 4294967296 file with spaces\n","",0);assert(result_status==-EINVAL);
     struct stat st;assert(!stat("file with spaces",&st) && (st.st_mode&0777)==0600);
     request("6 put file with spaces bad\n","",0);assert(result_status==-EINVAL);
     request("7 get /dev/zero\n","",0);assert(result_status==-EINVAL);

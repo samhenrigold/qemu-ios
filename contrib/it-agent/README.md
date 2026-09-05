@@ -16,7 +16,7 @@ absent/alive/stale. The QMP helper exposes `agent(q, op, args, body)` and the CL
 `python3 imgtools/itqmp.py PORT agent ping`.
 
 Implemented: ping, exec (binary stdin and combined stdout/stderr), put (path and
-final octal mode, atomic rename), get (whole regular file), settime, launch,
+final octal mode, atomic rename), get (whole regular file), getrange (`offset length path`, binary output), settime, launch,
 frontmost (bundle id and localized name), lockstatus, kill (executable name),
 halt (launchd shutdown request; the host must still await PMU confirmation).
 Commands use a fixed guest PATH and C locale. Output is capped at 1 MiB,
@@ -39,5 +39,15 @@ copies, because debug memory writes cannot fault in iOS demand-zero pages.
 Tests: `test_agent_proto.py` and `test_agent_ops.py` exercise production C under
 ASan/UBSan. `test_agent_guest.py` boots a fresh native overlay and verifies binary
 transfers, root shell execution, clock correction and SpringBoard operations.
-Typing injection, UI tree inspection, ranged file reads and snapshot-load
-rekeying are subsequent steps.
+`it_typein.dylib` is inherited by SpringBoard-spawned UIKit apps. It receives
+`type` (UTF-8 body), `backspace`, and `uidump` requests routed by the daemon to the
+actual foreground PID. A separate per-request cookie and five-second deadline
+reject stale UI replies. UI clients use the same bounded transfer code and run
+all UIKit operations on the main run loop. There is no signal-handler override
+or cross-process UIKit access. Bulk text uses the focused delegate's insertText:
+method; physical keys use UIKeyboardImpl's one-key path. A non-consuming key
+check avoids polling SpringBoardServices while idle.
+
+Native acceptance covers Notes and an installed Harness UITextField:
+`python3 tests/ipod/test_agent_guest.py --typing`. Snapshot-load rekeying and
+existing-device rollout remain subsequent steps.

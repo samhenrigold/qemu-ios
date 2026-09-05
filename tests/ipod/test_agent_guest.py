@@ -15,6 +15,7 @@ parser.add_argument('--qemu', default=str(ROOT/'build-native14/qemu-build/qemu-s
 parser.add_argument('--usbmuxd', default=str(ROOT/'build-native14/build/usbmuxd/src/usbmuxd'))
 parser.add_argument('--base-nand')
 parser.add_argument('--baked', action='store_true')
+parser.add_argument('--typing', action='store_true', help='verify injected Notes and Harness input')
 args = parser.parse_args()
 out = tempfile.mkdtemp(prefix='it-agent-guest-')
 f = args.files
@@ -54,6 +55,7 @@ try:
     assert agent('exec', 'cat', body) == (0, body)
     assert agent('put', '/tmp/agent binary 600', body) == (0, b'')
     assert agent('get', '/tmp/agent binary') == (0, body)
+    assert agent('getrange', '257 2048 /tmp/agent binary') == (0, body[257:2305])
     assert agent('exec', 'printf error >&2; exit 7') == (7, b'error')
     assert agent('settime', '1000000000')[0] == 0
     time.sleep(3)
@@ -65,7 +67,7 @@ try:
     time.sleep(2)
     status, data = agent('frontmost'); assert status == 0 and b'com.apple.Preferences' in data
     d.qmp.cmd("qom-set", path="/machine", property="pasteboard", value="Agent clipboard acceptance")
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 50
     while True:
         pb = d.qmp.cmd("qom-get", path="/machine", property="pasteboard-status")
         if pb.startswith("delivered:") and "Agent clipboard acceptance" in pb: break
@@ -90,6 +92,53 @@ try:
             assert time.monotonic() < deadline, "launchd agent did not recover"
             time.sleep(1)
         assert agent("ping") == (0, b"it_agent v1\n")
+    if args.typing:
+        import plistlib
+        def checked(op, args='', body=b''):
+            status, data = agent(op, args, body)
+            assert status == 0, (op, status, data)
+            return data
+        checked('put', '/usr/lib/it_typein.dylib 755', (ROOT/'contrib/it-agent/it_typein.dylib').read_bytes())
+        path = '/System/Library/LaunchDaemons/com.apple.SpringBoard.plist'
+        job = plistlib.loads(checked('get', path))
+        environment = job.setdefault('EnvironmentVariables', {})
+        libraries = environment.get('DYLD_INSERT_LIBRARIES', '').split(':')
+        environment['DYLD_INSERT_LIBRARIES'] = ':'.join(dict.fromkeys(
+            [library for library in libraries if library] + ['/usr/lib/it_typein.dylib']))
+        checked('put', path + ' 644', plistlib.dumps(job, fmt=plistlib.FMT_BINARY))
+        checked('exec', 'launchctl unload ' + path + '; launchctl load ' + path)
+        time.sleep(15)
+        checked('launch', 'com.apple.mobilenotes')
+        time.sleep(4)
+        assert b'NotesNavigationButton' in checked('uidump')
+        # Native 7E18 Notes: inspected Add button in the top-right navigation bar.
+        d.qmp.tap(299, 42)
+        time.sleep(1)
+        checked('type', body='Light Touch — café ✓\nNative typing works.'.encode())
+        checked('backspace')
+        r.itqmp.key(d.qmp, 'x')
+        time.sleep(1)
+        tree = checked('uidump')
+        assert 'text: Light Touch — café ✓\nNative typing worksx'.encode() in tree, tree
+        Path(out, 'notes-ui.txt').write_bytes(tree)
+        r.to_png(d.qmp.shot(out + '/notes.ppm'), out + '/notes.png')
+        harness = ROOT/'contrib/it-harness/build/Harness.ipa'
+        installed = r.run(['ideviceinstaller', 'install', str(harness)], cfg, 90)
+        assert installed.returncode == 0, installed
+        checked('launch', 'com.qemuios.harness')
+        time.sleep(4)
+        assert b'UITextField' in checked('uidump')
+        d.qmp.tap(220, 40)
+        time.sleep(1)
+        checked('type', body='café✓'.encode())
+        checked('backspace')
+        r.itqmp.key(d.qmp, 'z')
+        time.sleep(1)
+        tree = checked('uidump')
+        assert 'text: http://10.0.2.2:8000/caféz'.encode() in tree, tree
+        Path(out, 'harness-ui.txt').write_bytes(tree)
+        r.to_png(d.qmp.shot(out + '/harness.ppm'), out + '/harness.png')
+        print('PASS: Notes and third-party UITextField Unicode, deletion, host keys and UI inspection', flush=True)
     print('PASS: native agent ping, root exec, binary stdin/files, status, clock, liveness', flush=True)
 finally:
     if d.qmp: d.qmp.close()

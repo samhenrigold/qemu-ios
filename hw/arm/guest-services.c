@@ -187,6 +187,11 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
             // "no effect" and "no trap" look identical from the guest.
             qcall.retval = QC_GLES_PING_MAGIC;
             break;
+        case QC_PEEK_INPUT: {
+            IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
+            qcall.retval = nms->kbd_head != nms->kbd_tail;
+            break;
+        }
         case QC_POLL_INPUT: {
             // Dequeue one host-keyboard unichar for the guest text-input agent.
             IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
@@ -209,10 +214,15 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
         case QC_AG_READ:
         case QC_AG_WRITE:
         case QC_AG_DONE:
-        case QC_AG_HOSTTIME: {
+        case QC_AG_HOSTTIME:
+        case QC_UI_POLL:
+        case QC_UI_READ:
+        case QC_UI_WRITE:
+        case QC_UI_DONE:
+        case QC_AG_UI_ROUTE: {
             IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
             uint64_t candidate = 0;
-            if (qcall.call_number == QC_AG_HELLO) {
+            if (qcall.call_number == QC_AG_HELLO || qcall.call_number == QC_AG_UI_ROUTE) {
                 qemu_guest_getrandom_nofail(&candidate, sizeof(candidate));
             }
             qcall.retval = ipod_agent_call(nms->agent, qcall.call_number,
