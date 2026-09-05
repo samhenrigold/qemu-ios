@@ -10,11 +10,15 @@
 
 typedef struct IPodAgent IPodAgent;
 typedef int (*IPodAgentCopy)(void *, uint32_t, uint8_t *, size_t, bool);
+/* acquire returns a reference released with free, or NULL after teardown. */
+void ipod_agent_publish(IPodAgent *a);
+IPodAgent *ipod_agent_acquire(void);
 IPodAgent *ipod_agent_new(void);
 void ipod_agent_free(IPodAgent *a);
 void ipod_agent_reset(IPodAgent *a);
 /* Request is an ASCII id/op header, newline, and base64 body. */
 bool ipod_agent_submit(IPodAgent *a, const char *request);
+bool ipod_agent_cancel(IPodAgent *a, const char *id);
 /* Owned result string; empty when none. */
 char *ipod_agent_take_result(IPodAgent *a);
 const char *ipod_agent_status(IPodAgent *a, int64_t now_ms);

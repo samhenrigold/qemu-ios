@@ -12,6 +12,8 @@
 #     imgtools/editimg.py --nand <image>-baked --blocks 1835008 \
 #         --script imgtools/bake-guest-tools.sh
 #     imgtools/setowner.py --nand <image>-baked \
+#         /usr/local/bin/it_agent:0:0:755 \
+#         /System/Library/LaunchDaemons/com.qemu.it-agent.plist:0:0:644 \
 #         /usr/local/bin/sblaunch:0:0:755 \
 #         /usr/local/bin/sbdlicon:0:0:755 \
 #         /System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine:0:0:755 \
@@ -53,6 +55,16 @@ if [ -f "$INST/sbdlicon" ]; then
     chmod 755 "$MNT/usr/local/bin/sbdlicon"
 fi
 
+# The agent owns the clipboard tunnel too: retire the previous KeepAlive job.
+AGENT="$SRC/contrib/it-agent"
+[ -f "$AGENT/it_agent" ] || { echo "build contrib/it-agent first" >&2; exit 1; }
+cp "$AGENT/it_agent" "$MNT/usr/local/bin/it_agent"
+chmod 755 "$MNT/usr/local/bin/it_agent"
+mkdir -p "$MNT/System/Library/LaunchDaemons"
+cp "$AGENT/com.qemu.it-agent.plist" "$MNT/System/Library/LaunchDaemons/com.qemu.it-agent.plist"
+chmod 644 "$MNT/System/Library/LaunchDaemons/com.qemu.it-agent.plist"
+rm -f "$MNT/System/Library/LaunchDaemons/com.qemu.it-pbd.plist"
+
 # Old AppSync images disabled even an explicit press of the lock button.
 SBP="$MNT/private/var/mobile/Library/Preferences/com.apple.springboard.plist"
 if [ -f "$SBP" ]; then
@@ -68,6 +80,8 @@ python3 "$SRC/imgtools/set-sound-defaults.py" --root "$MNT"
 #    stat it over AFC — no ssh — and take the fully in-process install path.
 mkdir -p "$MNT/var/mobile/Media"
 echo "v1" > "$MNT/var/mobile/Media/.lt-guest-tools-v1"
+# Keep v1 for older frontends; v2 additionally guarantees the agent job.
+echo "v2" > "$MNT/var/mobile/Media/.lt-guest-tools-v2"
 
-echo "baked: MBXGLEngine, sblaunch$([ -f "$INST/sbdlicon" ] && echo ', sbdlicon'), marker .lt-guest-tools-v1"
+echo "baked: MBXGLEngine, sblaunch$([ -f "$INST/sbdlicon" ] && echo ', sbdlicon'), it_agent, marker .lt-guest-tools-v2"
 echo "NEXT: run imgtools/setowner.py (see header) or the tools stay uid 99 and will not run"

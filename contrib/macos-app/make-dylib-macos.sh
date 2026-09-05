@@ -79,6 +79,11 @@ _qemu_ios_ui_rotate
 _qemu_ios_ui_shake
 _qemu_ios_ui_accel
 _qemu_ios_ui_paste
+_qemu_ios_agent_request
+_qemu_ios_agent_cancel
+_qemu_ios_agent_result
+_qemu_ios_agent_free_result
+_qemu_ios_agent_status
 _qemu_ios_ui_pause
 _qemu_ios_ui_resume
 _qemu_ios_ui_reset

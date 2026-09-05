@@ -11,6 +11,7 @@ typedef struct AgentItem {
 } AgentItem;
 
 struct IPodAgent {
+    int references;
     QemuMutex lock;
     GQueue pending, done;
     uint64_t token;
@@ -30,6 +31,7 @@ static void item_free(void *p)
 IPodAgent *ipod_agent_new(void)
 {
     IPodAgent *a = g_new0(IPodAgent, 1);
+    a->references = 1;
     qemu_mutex_init(&a->lock);
     return a;
 }
@@ -46,9 +48,40 @@ void ipod_agent_reset(IPodAgent *a)
 
 void ipod_agent_free(IPodAgent *a)
 {
+    if (!a || !g_atomic_int_dec_and_test(&a->references)) {
+        return;
+    }
     ipod_agent_reset(a);
     qemu_mutex_destroy(&a->lock);
     g_free(a);
+}
+
+/* Frontend calls may overlap machine cleanup. A published reference and a
+ * per-call reference keep the mutex alive across that boundary. */
+static GMutex published_lock;
+static IPodAgent *published_agent;
+
+void ipod_agent_publish(IPodAgent *a)
+{
+    g_mutex_lock(&published_lock);
+    IPodAgent *old = published_agent;
+    if (a) {
+        g_atomic_int_inc(&a->references);
+    }
+    published_agent = a;
+    g_mutex_unlock(&published_lock);
+    ipod_agent_free(old);
+}
+
+IPodAgent *ipod_agent_acquire(void)
+{
+    g_mutex_lock(&published_lock);
+    IPodAgent *a = published_agent;
+    if (a) {
+        g_atomic_int_inc(&a->references);
+    }
+    g_mutex_unlock(&published_lock);
+    return a;
 }
 
 bool ipod_agent_submit(IPodAgent *a, const char *request)
@@ -102,6 +135,29 @@ bool ipod_agent_submit(IPodAgent *a, const char *request)
         item_free(item);
     }
     return ok;
+}
+
+bool ipod_agent_cancel(IPodAgent *a, const char *id)
+{
+    bool found = false;
+    qemu_mutex_lock(&a->lock);
+    for (GList *p = a->pending.head; p; p = p->next) {
+        AgentItem *item = p->data;
+        if (!strcmp(item->id, id)) {
+            if (item->dispatched) {
+                /* The old daemon sees a failed POLL and kills its child group.
+                 * Late WRITE/DONE calls cannot complete another request. */
+                a->claimed = false;
+                a->token = 0;
+            }
+            g_queue_delete_link(&a->pending, p);
+            item_free(item);
+            found = true;
+            break;
+        }
+    }
+    qemu_mutex_unlock(&a->lock);
+    return found;
 }
 
 char *ipod_agent_take_result(IPodAgent *a)

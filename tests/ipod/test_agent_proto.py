@@ -80,7 +80,22 @@ int main(void) {
         assert(call(a,0x163,token,i*1024,1024,10002)==1024);
     }
     assert(call(a,0x163,token,IT_AGENT_RESPONSE_MAX,1,10002)==-1);
-    g_free(request);g_free(encoded);ipod_agent_free(a);
+    assert(ipod_agent_cancel(a,"fresh"));
+    assert(!ipod_agent_cancel(a,"missing"));
+    assert(call(a,0x164,token,0,0,10002)==-1);
+    token=call(a,0x160,0,0,0,10003);
+    assert(ipod_agent_submit(a,"pending ping\n"));
+    assert(ipod_agent_cancel(a,"pending"));
+    assert(call(a,0x161,token,0,0,10003)==0);
+    ipod_agent_publish(a);
+    IPodAgent *reader=ipod_agent_acquire();
+    assert(reader==a);
+    ipod_agent_publish(NULL);
+    ipod_agent_free(a);
+    assert(!strcmp(ipod_agent_status(reader,10003),"alive"));
+    ipod_agent_free(reader);
+    assert(!ipod_agent_acquire());
+    g_free(request);g_free(encoded);
     puts("PASS: binary windows, malformed input, memory faults, bounds, ownership, restart, reset");
 }
 '''
