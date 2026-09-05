@@ -557,6 +557,7 @@ static void ipod_touch_stage_ramdisk(IPodTouchMachineState *nms)
  */
 #define BOOT_ARGS_CMDLINE_OFF   0x38
 #define BOOT_ARGS_CMDLINE_LEN   256
+#define BOOT_ARGS_STAGING_BASE  0x220fff00
 
 /*
  * IT_AMFI_ALLOW_TASKPORT: let SpringBoard launch ad-hoc/invalidly-signed apps.
@@ -861,7 +862,8 @@ static void ipod_touch_inject_boot_logo(IPodTouchMachineState *nms)
         return;
     }
 
-    if (logo_size < 0x14 || memcmp(logo, "iBootIm\0", 8) != 0) {
+    if (logo_size < 0x14 || logo_size > BOOT_ARGS_STAGING_BASE - LOGO_STAGING_BASE ||
+        memcmp(logo, "iBootIm\0", 8) != 0) {
         fprintf(stderr, "[IT_INJECT_LOGO] '%s' is not a decrypted iBootIm "
                 "container; iBoot would reject it. Use "
                 "imgtools/extract_bootlogo.py\n", logo_path);
@@ -886,6 +888,36 @@ static void ipod_touch_inject_boot_logo(IPodTouchMachineState *nms)
             logo_path, (unsigned long long)logo_size, LOGO_STAGING_BASE,
             LOGO_THUNK_BASE);
     g_free(logo);
+}
+
+static void ipod_touch_inject_boot_args(IPodTouchMachineState *nms)
+{
+    const char *args = getenv("IT_BOOT_ARGS");
+    /* Release 7E18 iBoot deliberately ignores NVRAM boot-args. Redirect its
+     * normal-boot empty-string literal, before it constructs XNU's arguments.
+     * The late AMFI timer is too late for PE_init_platform's verbose flag. */
+    static const uint8_t expected[] = {
+        0x2c,0x4b,0x9b,0x46,0x1b,0x68,0x00,0x2b,0x03,0xd1,0x2a,0x48,
+        0x06,0x1c,0x01,0x90,0x02,0xe0,0x29,0x4e,0x28,0x49,0x01,0x91
+    };
+    uint8_t code[sizeof(expected)], literal[4], command[BOOT_ARGS_CMDLINE_LEN] = {0};
+    const hwaddr staging = BOOT_ARGS_STAGING_BASE; /* final 256 bytes of LLB SRAM */
+
+    if (!args) return;
+    address_space_read(nms->nsas, IBOOT_MEM_BASE + 0x11a72,
+                       MEMTXATTRS_UNSPECIFIED, code, sizeof(code));
+    address_space_read(nms->nsas, IBOOT_MEM_BASE + 0x11b28,
+                       MEMTXATTRS_UNSPECIFIED, literal, sizeof(literal));
+    if (memcmp(code, expected, sizeof(code)) || ldl_le_p(literal) != 0x0ff1dba0) {
+        fprintf(stderr, "[IT_BOOT_ARGS] unknown iBoot; early argument injection skipped\n");
+        return;
+    }
+    g_strlcpy((char *)command, args, sizeof(command));
+    address_space_write(nms->nsas, staging, MEMTXATTRS_UNSPECIFIED, command, sizeof(command));
+    stl_le_p(literal, staging);
+    address_space_write(nms->nsas, IBOOT_MEM_BASE + 0x11b28,
+                        MEMTXATTRS_UNSPECIFIED, literal, sizeof(literal));
+    fprintf(stderr, "[IT_BOOT_ARGS] staged early 7E18 command line\n");
 }
 
 static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
@@ -925,6 +957,7 @@ static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
          * after the iBoot image is staged so the code patch lands on top of it. */
         ipod_touch_inject_device_tree(nms);
         ipod_touch_inject_boot_logo(nms);
+        ipod_touch_inject_boot_args(nms);
         ipod_touch_stage_ramdisk(nms);
         ipod_touch_stage_boot_args(nms);
     }
