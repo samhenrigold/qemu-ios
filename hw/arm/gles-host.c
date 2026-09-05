@@ -2792,7 +2792,7 @@ static void gles_report_progress(void)
         const char *v = getenv("IT_GLES_VERBOSE");
         verbose = v ? atoi(v) : 0;
     }
-    if (gh.presents % 60 != 0) {
+    if ((!verbose && !gles_prof && gles_swizzle_mode != 2) || gh.presents % 60 != 0) {
         return;
     }
     now_ms = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
@@ -4674,7 +4674,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * symptom is whatever samples it later looking wrong, arbitrarily far
          * away. The mean is enough to tell "the scene" from "the clear colour".
          */
-        if (gh.offscreen_draws_here && !gles_is_drawable(gh.bound_framebuffer)) {
+        /* Diagnostic readback stalls the GPU; never do it during normal play. */
+        if (gh.offscreen_draws_here && getenv("IT_GLES_VERBOSE") &&
+            atoi(getenv("IT_GLES_VERBOSE")) > 0 &&
+            !gles_is_drawable(gh.bound_framebuffer)) {
             /*
              * Sample the WHOLE target, not a corner of it. A 64x64 patch at
              * (0,0) reported pure black for a 512x512 render-to-texture whose
