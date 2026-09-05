@@ -15,6 +15,14 @@ static bool sysic_gpio_trace(void)
 }
 
 
+static void sysic_update_gpio_irq(IPodTouchSYSICState *s, unsigned group)
+{
+    if (s->gpio_irqs[group]) {
+        qemu_set_irq(s->gpio_irqs[group],
+                     (s->gpio_int_status[group] & s->gpio_int_enabled[group]) != 0);
+    }
+}
+
 static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
 {
     IPodTouchSYSICState *s = (IPodTouchSYSICState *) opaque;
@@ -123,20 +131,7 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
                 }
                 // acknowledge the interrupts and clear the corresponding bits
                 s->gpio_int_status[group] = s->gpio_int_status[group] & ~val;
-                /*
-                 * KNOWN GAP, left alone on purpose. Lowering unconditionally
-                 * discards any OTHER source still pending in the same group --
-                 * group 3 carries the digitizer's attention line alongside all
-                 * four buttons -- and no model re-raises a level that is
-                 * already latched, so that interrupt is simply lost. The
-                 * obvious repair (re-assert while status & enabled) was tried
-                 * on 2026-08-06 together with a matching i2c change and the
-                 * pair hung the boot at the logo; reverted rather than shipped
-                 * on a theory. Fix it WITH a boot test, one change at a time.
-                 */
-                if (s->gpio_irqs[group]) {
-                    qemu_irq_lower(s->gpio_irqs[group]);
-                }
+                sysic_update_gpio_irq(s, group);
             }
             break;
         }
@@ -158,6 +153,7 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
                             s->gpio_int_status[group]);
                 }
                 s->gpio_int_enabled[group] = val;
+                sysic_update_gpio_irq(s, group);
             }
             break;
         }
@@ -223,10 +219,20 @@ static void ipod_touch_sysic_reset(DeviceState *dev)
     }
 }
 
+static int sysic_post_load(void *opaque, int version_id)
+{
+    IPodTouchSYSICState *s = opaque;
+    for (unsigned group = 0; group < GPIO_NUMINTGROUPS; group++) {
+        sysic_update_gpio_irq(s, group);
+    }
+    return 0;
+}
+
 static const VMStateDescription vmstate_ipod_touch_sysic = {
     .name = "ipod_touch_sysic",
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = sysic_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(power_id, IPodTouchSYSICState),
         VMSTATE_UINT32(power_state, IPodTouchSYSICState),
