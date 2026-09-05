@@ -66,9 +66,11 @@ try:
  result=r.guest_ssh(cfg,port,['/tmp/it-http https://10.0.2.100:3128/'])
  print('UNTRUSTED',result.returncode,result.stdout[:700],flush=True);assert result.returncode!=0,result
  result=r.guest_ssh(cfg,port,['/tmp/ittrust add /tmp/it-ca.der']);print('ADD CA',result.returncode,result.stdout,flush=True);assert result.returncode==0,result
+ result=r.guest_ssh(cfg,port,['/tmp/ittrust add /tmp/it-ca.der']);assert result.returncode==0,result
  result=r.guest_ssh(cfg,port,['/tmp/it-http https://10.0.2.100:3128/'])
  print('TRUSTED',result.returncode,result.stdout[:1400],flush=True);assert result.returncode==0 and 'HTTP 200' in result.stdout,result
  result=r.guest_ssh(cfg,port,['/tmp/ittrust remove /tmp/it-ca.der']);print('REMOVE CA',result.returncode,result.stdout,flush=True);assert result.returncode==0,result
+ result=r.guest_ssh(cfg,port,['/tmp/ittrust remove /tmp/it-ca.der']);assert result.returncode==0,result
  result=r.guest_ssh(cfg,port,['/tmp/it-http https://10.0.2.100:3128/'])
  print('REMOVED',result.returncode,result.stdout[:700],flush=True);assert result.returncode!=0,result
  print('PASS native TLS1.0 AES128-SHA with guest-local CA trust and revocation',flush=True)

@@ -1,7 +1,7 @@
 # Guest HTTP proxy
 
 `itwebproxy CONFIG` serves one slirp guestfwd connection on stdin/stdout; it
-never opens a host listening port. Build with `bash build.sh` (system libcurl).
+never opens a host listening port. Build with `bash build.sh` (system libcurl plus statically bundled OpenSSL; set OPENSSL_PREFIX for a custom build).
 The configuration file is read at connection start:
 
 ```
@@ -24,7 +24,7 @@ cookies or Authorization; archive Set-Cookie headers are not sent to the guest.
 Responses are bounded to 32 MiB. Archived HTTP-to-HTTPS redirects are resolved
 on the host, and absolute HTTPS links in HTML/CSS/JavaScript are presented as
 HTTP links to the guest. Binary resources are unchanged. Explicit HTTPS addresses
-still require guest TLS and are not supported in dated mode.
+are supported through the local TLS bridge.
 
 Archive requests share a process lock and a one-second request interval. A 429
 or 503 pauses all new archive fetches, honoring Retry-After (60 seconds by default),
@@ -44,8 +44,14 @@ Example slirp option:
 
 The app quotes both paths for the command shell and escapes QEMU option commas.
 Direct mode resolves origin hosts on the Mac, accepts bounded HTTP requests,
-closes each HTTP connection after its response, and supports end-to-end CONNECT.
-CONNECT does not upgrade old guest TLS or install a certificate authority.
+closes each HTTP connection after its response, and bridges CONNECT to modern
+HTTPS. `itwebproxy --init-ca CONFIG` creates a unique per-device RSA/SHA-1 CA in
+CONFIG.ca.pem (private key, mode 0600) and CONFIG.ca.der (public certificate).
+The app trusts only the public certificate inside its guest when Proxy is enabled,
+and removes that trust when disabled. Nothing is trusted on the Mac. Guest TLS
+1.0/AES-CBC terminates locally; system libcurl verifies the modern upstream TLS
+connection. Date-based HTTPS follows the same archive privacy rules as HTTP.
+CLI connections without an initialized CA retain the original raw CONNECT mode.
 Connections have a 120-second lifetime bound. Direct HTTP request headers are
 limited to 64 KiB and bodies to 8 MiB. Chunked request bodies and Expect are
 explicitly rejected. Direct responses stream without a size cap.
@@ -68,7 +74,7 @@ host proxy fixture; no guest origin DNS is needed. Repeat with
 `tests/ipod/regress.py --checks boot,webproxy` after building both helpers.
 Evidence from the initial native run is `/tmp/it-proxy-http-v2.log`.
 
-## TLS bridge acceptance (development)
+## TLS verification
 
 `ARMV6_SDK=/path/to/iPhoneOS3.1.3.sdk ../it-proxy/build.sh` also builds
 `ittrust add|remove CERT.der`. It calls the guest's native securityd trust-store
@@ -79,5 +85,11 @@ API in user domain 2 and carries iOS 3's `modify-anchor-certificates` entitlemen
 fresh disposable NAND overlay and a loopback OpenSSL TLS 1.0/AES128-SHA server.
 The native guest client must reject the untrusted chain, load HTTP 200 after
 adding its temporary CA, then reject it again after CA removal. This passed on
-7E18. No CA is installed on the Mac or in the default NAND. This acceptance step
-does not yet enable TLS termination in the shipping proxy.
+7E18. No CA is installed on the Mac or in the default NAND.
+
+`python3 tests/ipod/test_webproxy_tls.py` exercises real TLS 1.0 socket streams,
+concurrent/idempotent CA initialization, guest certificate/hostname checks,
+encrypted HTTP error framing, and rejection of untrusted upstream certificates.
+A native guest CONNECT run returned HTTP 200 from both https://example.com/ and
+https://www.nytimes.com/; evidence: /tmp/it-proxy-tls-bridge-native.log.
+Modern site JavaScript/CSS can still exceed iOS 3 WebKit's capabilities.
