@@ -102,3 +102,26 @@ statically. Native guest HTTPS returned HTTP 200 for example.com and NYT. Offlin
 TLS sanitizer tests cover concurrent CA initialization, trust/name validation,
 HTTP errors inside TLS, and rejection of an untrusted upstream. Release app built.
 This completes the TLS transport step; modern WebKit feature gaps remain.
+
+### Guest agent transport and native operations
+
+- Added bounded cp15 RPC queues, strict base64 framing, memory-copy error checks,
+  lease recovery, host cancellation, and reset invalidation. Tokens identify
+  sessions; they do not secure the tunnel against other guest processes.
+- `it_agent` retains the explicit-UTI clipboard pumps and adds ping, exec, atomic
+  put/get, settime, launch/frontmost/lockstatus, kill, and launchd halt requests.
+  Child process groups have bounded output and a timeout; command execution
+  keeps clipboard/heartbeat ticks running. Guest receive pages are touched before
+  host debug writes, which cannot fault in demand-zero pages.
+- Native acceptance passed binary stdin/files, root shell execution, exit status,
+  host-clock correction, and Settings launch/foreground detection. Evidence:
+  `/tmp/it-agent-native-v4.log`. Protocol and operation ASan/UBSan tests pass.
+- Added QMP and embedded frontend APIs. Acquired references protect frontend
+  calls that overlap machine cleanup. Light Touch's command dispatcher builds
+  and its isolated Swift check passes concurrent result routing, cancellation,
+  and absent-agent fallback. It never retries a submitted mutation through SSH.
+- Baked a separate `nand-agent-v2` candidate, removed its old clipboard launch
+  job, fixed daemon/job ownership, and passed HFS validation. The existing
+  `nand-ultimate` remains untouched. Baked launchd/restart acceptance is ongoing.
+- Remaining Track A: typing injection, UI tree inspection, ranged reads,
+  snapshot-load rekeying, and completing image/frontend rollout.

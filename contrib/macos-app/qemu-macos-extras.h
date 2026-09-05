@@ -47,6 +47,17 @@ void qemu_ios_ui_accel(int x, int y, int z);
 /* Queue UTF-8 text for the guest pasteboard (machine property "pasteboard"). */
 void qemu_ios_ui_paste(const char *utf8);
 
+/* Local bounded RPC. Request is id/op header + newline + base64 body.
+ * Result is an owned id/status header + newline + base64 body, or NULL.
+ * Always free a non-NULL result with qemu_ios_agent_free_result. */
+bool qemu_ios_agent_request(const char *request);
+/* Stops pending work; an already executed mutation cannot be undone. */
+void qemu_ios_agent_cancel(const char *id);
+char *qemu_ios_agent_result(void);
+void qemu_ios_agent_free_result(char *result);
+/* 0 absent/not running, 1 alive, 2 stale. */
+int qemu_ios_agent_status(void);
+
 /* Machine controls. */
 void qemu_ios_ui_pause(void);
 void qemu_ios_ui_resume(void);

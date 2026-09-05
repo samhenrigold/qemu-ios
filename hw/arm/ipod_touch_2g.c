@@ -1326,6 +1326,11 @@ static void ipod_touch_set_agent_request(Object *obj, const char *value, Error *
     }
 }
 
+static void ipod_touch_cancel_agent_request(Object *obj, const char *value, Error **errp)
+{
+    ipod_agent_cancel(IPOD_TOUCH_MACHINE(obj)->agent, value);
+}
+
 static char *ipod_touch_get_agent_result(Object *obj, Error **errp)
 {
     return ipod_agent_take_result(IPOD_TOUCH_MACHINE(obj)->agent);
@@ -1339,13 +1344,16 @@ static char *ipod_touch_get_agent_status(Object *obj, Error **errp)
 
 static void ipod_touch_instance_finalize(Object *obj)
 {
+    ipod_agent_publish(NULL);
     ipod_agent_free(IPOD_TOUCH_MACHINE(obj)->agent);
 }
 
 static void ipod_touch_instance_init(Object *obj)
 {
     IPOD_TOUCH_MACHINE(obj)->agent = ipod_agent_new();
+    ipod_agent_publish(IPOD_TOUCH_MACHINE(obj)->agent);
     object_property_add_str(obj, "agent-request", NULL, ipod_touch_set_agent_request);
+    object_property_add_str(obj, "agent-cancel", NULL, ipod_touch_cancel_agent_request);
     object_property_add_str(obj, "agent-result", ipod_touch_get_agent_result, NULL);
     object_property_add_str(obj, "agent-status", ipod_touch_get_agent_status, NULL);
 

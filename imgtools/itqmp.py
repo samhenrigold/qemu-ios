@@ -21,6 +21,8 @@ handler ("mtt") for pinch/rotate. Hardware buttons sit behind the host
 Command modifier so plain keys stay free for text entry (see `button()`).
 """
 
+import base64
+import uuid
 import json
 import math
 import os
@@ -143,6 +145,53 @@ class QMP:
             pass
         finally:
             self.s.close()
+
+
+def agent_alive(q):
+    return q.cmd("qom-get", path="/machine", property="agent-status") == "alive"
+
+
+def agent(q, op, args="", body=b"", timeout=65):
+    """One local RPC; returns (exit_status, binary_output).
+
+    A timeout is an unknown execution outcome, never a reason to retry a mutation.
+    Results for other callers are retained on this QMP connection. Use one shared
+    client per machine; competing QMP connections cannot consume each other's RPCs.
+    """
+    if any(c in op + args for c in "\r\n") or not op or " " in op:
+        raise ValueError("invalid agent header")
+    request_id = uuid.uuid4().hex
+    header = request_id + " " + op + (" " + args if args else "")
+    request = header + "\n" + base64.b64encode(body).decode("ascii")
+    q.cmd("qom-set", path="/machine", property="agent-request", value=request)
+    deadline = time.monotonic() + timeout
+    pending = getattr(q, "_agent_results", None)
+    if pending is None:
+        pending = q._agent_results = {}
+    completed = False
+    try:
+        while time.monotonic() < deadline:
+            result = q.cmd("qom-get", path="/machine", property="agent-result")
+            if result:
+                header, encoded = result.split("\n", 1)
+                identifier, status = header.split(" ", 1)
+                value = (int(status), base64.b64decode(encoded, validate=True))
+                if identifier == request_id:
+                    completed = True
+                    return value
+                if len(pending) >= 64:
+                    pending.pop(next(iter(pending)))
+                pending[identifier] = value
+            else:
+                time.sleep(0.25)
+        raise TimeoutError("agent request %s timed out; execution outcome unknown" % request_id)
+    finally:
+        if not completed:
+            try:
+                q.cmd("qom-set", path="/machine", property="agent-cancel", value=request_id)
+            except (OSError, EOFError, RuntimeError):
+                pass  # Preserve the original failure; never replay the command.
+
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +418,7 @@ itqmp.py <port-or-target> <action> [args...]
   key <qcode>                       # raw key, reaches the guest as text
   finger <slot> <x> <y> <begin|update|end>
   pinch <cx> <cy> <r0> <r1>
+  agent <operation> [args]          # binary body from stdin for exec/put
   cmd <qmp-command> [k=v ...]       # e.g. cmd system_powerdown
 
 <port-or-target> is a TCP port, "host:port", or a unix socket path.
@@ -386,7 +436,14 @@ def main(argv=None):
                  % (rest[0] if rest else None, ", ".join(sorted(BUTTONS))))
 
     q = QMP(int(target) if target.isdigit() else target)
-    if action == "shot":
+    if action == "agent":
+        if not rest: sys.exit("agent operation required")
+        body = sys.stdin.buffer.read() if rest[0] in ("exec", "put") and not sys.stdin.isatty() else b""
+        status, output = agent(q, rest[0], " ".join(rest[1:]), body)
+        sys.stdout.buffer.write(output)
+        q.close()
+        return 0 if status == 0 else 1
+    elif action == "shot":
         print(shot(q, rest[0]))
     elif action == "tap":
         tap(q, int(rest[0]), int(rest[1]))
@@ -421,4 +478,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

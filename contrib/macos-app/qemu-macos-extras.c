@@ -314,3 +314,60 @@ void qemu_ios_ui_resume(void)    { schedule_qmp(qmp_cont); }
 void qemu_ios_ui_reset(void)     { schedule_qmp(qmp_system_reset); }
 void qemu_ios_ui_powerdown(void) { schedule_qmp(qmp_system_powerdown); }
 void qemu_ios_ui_quit(void)      { schedule_qmp(qmp_quit); }
+
+/* Agent operations use a separate mutex and an acquired lifetime reference;
+ * they never touch CPU/device state or hold the BQL. */
+#include "hw/arm/ipod-agent.h"
+
+bool qemu_ios_agent_request(const char *request)
+{
+    if (!request || !qemu_ios_ui_ready()) {
+        return false;
+    }
+    IPodAgent *a = ipod_agent_acquire();
+    bool accepted = a && ipod_agent_submit(a, request);
+    ipod_agent_free(a);
+    return accepted;
+}
+
+char *qemu_ios_agent_result(void)
+{
+    if (!qemu_ios_ui_ready()) {
+        return NULL;
+    }
+    IPodAgent *a = ipod_agent_acquire();
+    char *result = a ? ipod_agent_take_result(a) : NULL;
+    ipod_agent_free(a);
+    if (result && !*result) {
+        g_free(result);
+        return NULL;
+    }
+    return result;
+}
+
+void qemu_ios_agent_free_result(char *result)
+{
+    g_free(result);
+}
+
+int qemu_ios_agent_status(void)
+{
+    if (!qemu_ios_ui_ready()) {
+        return 0;
+    }
+    IPodAgent *a = ipod_agent_acquire();
+    const char *status = a ? ipod_agent_status(a, qemu_clock_get_ms(QEMU_CLOCK_REALTIME)) : "absent";
+    ipod_agent_free(a);
+    return !strcmp(status, "alive") ? 1 : !strcmp(status, "stale") ? 2 : 0;
+}
+
+void qemu_ios_agent_cancel(const char *id)
+{
+    if (id && qemu_ios_ui_ready()) {
+        IPodAgent *a = ipod_agent_acquire();
+        if (a) {
+            ipod_agent_cancel(a, id);
+        }
+        ipod_agent_free(a);
+    }
+}
