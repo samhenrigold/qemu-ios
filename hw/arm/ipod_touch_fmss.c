@@ -1174,7 +1174,7 @@ static uint64_t ipod_touch_fmss_read(void *opaque, hwaddr addr, unsigned size)
         case FMSS__CS_IRQ:
             return s->reg_cs_irq_bit;
         case FMSS__CS_IRQMASK:
-            return 0x1;
+            return s->reg_cs_irq_mask;
         case FMSS__FMCTRL1:
             return (0x1 << 30);
         case 0xD00:
@@ -1189,18 +1189,59 @@ static uint64_t ipod_touch_fmss_read(void *opaque, hwaddr addr, unsigned size)
     return 0;
 }
 
+/* CSCTRL bit 0 starts the sequencer; bit 6 enables interrupt delivery
+ * (iBoot uses 0xffb5 and polls, XNU uses 0xfff5 and waits on its workloop).
+ * CSIRQ is W1C, and CSIRQMASK uses one bits to enable delivery. A pending
+ * completion survives masking until the guest acknowledges it.
+ */
+static void fmss_update_irq(IPodTouchFMSSState *s)
+{
+    qemu_set_irq(s->irq, (s->reg_cs_ctrl & 0x40) &&
+                 (s->reg_cs_irq_bit & s->reg_cs_irq_mask));
+}
+
+static void fmss_complete(void *opaque)
+{
+    IPodTouchFMSSState *s = opaque;
+    if (fmss_trace_on()) {
+        fprintf(stderr, "FMSS_DONE ctrl=%x pending=%x mask=%x time=%" PRId64 "\n",
+                s->reg_cs_ctrl, s->reg_cs_irq_bit, s->reg_cs_irq_mask,
+                qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+    if (!fmss_io_failed) {
+        s->reg_cs_irq_bit |= 1;
+        fmss_update_irq(s);
+    }
+}
+
 static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     IPodTouchFMSSState *s = (IPodTouchFMSSState *)opaque;
 
+    if (fmss_trace_on() && (addr == 0xc00 || addr == 0xc04 ||
+                            addr == 0xc0c || addr == 0xc10)) {
+        fprintf(stderr, "FMSS_CTL %03x=%08x pending=%x mask=%x time=%" PRId64 "\n",
+                (unsigned)addr, (unsigned)val, s->reg_cs_irq_bit,
+                s->reg_cs_irq_mask, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
     switch(addr) {
         case 0xC00:
-            if(val == 0x0000ffb5) { s->reg_cs_irq_bit = 1; } // TODO ugly and hard-coded
-            if(val == 0xfff5) { s->reg_cs_irq_bit = 1; qemu_set_irq(s->irq, 1); }
+            s->reg_cs_ctrl = val;
+            if (val & 1) {
+                timer_mod(s->completion_timer,
+                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000);
+            } else {
+                timer_del(s->completion_timer);
+            }
+            fmss_update_irq(s);
             break;
         case FMSS__CS_IRQ:
-            s->reg_cs_irq_bit = 0;
-            qemu_set_irq(s->irq, 0);
+            s->reg_cs_irq_bit &= ~(uint32_t)val;
+            fmss_update_irq(s);
+            break;
+        case FMSS__CS_IRQMASK:
+            s->reg_cs_irq_mask = val;
+            fmss_update_irq(s);
             break;
         case FMSS_CINFO_TARGET_ADDR:
             s->reg_cinfo_target_addr = val;
@@ -1282,6 +1323,7 @@ static void ipod_touch_fmss_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &fmss_ops, s, "fmss", 0xF00);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+    s->completion_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, fmss_complete, s);
 
     s->page_buffer = (uint8_t *)g_malloc(NAND_BYTES_PER_PAGE);
     s->page_spare_buffer = (uint8_t *)g_malloc(NAND_BYTES_PER_SPARE);
@@ -1291,6 +1333,7 @@ static void ipod_touch_fmss_finalize(Object *obj)
 {
     IPodTouchFMSSState *s = IPOD_TOUCH_FMSS(obj);
 
+    timer_free(s->completion_timer);
     g_free(s->page_buffer);
     g_free(s->page_spare_buffer);
     if (s->phys_pages) {
@@ -1315,6 +1358,9 @@ static void ipod_touch_fmss_reset(DeviceState *dev)
         g_hash_table_remove_all(s->phys_pages);
     }
     s->reg_cs_irq_bit = 0;
+    s->reg_cs_ctrl = 0;
+    s->reg_cs_irq_mask = 1;
+    timer_del(s->completion_timer);
     s->reg_cinfo_target_addr = 0;
     s->reg_pages_in_addr = 0;
     s->reg_cs_buf_addr = 0;
@@ -1339,14 +1385,28 @@ static void ipod_touch_fmss_reset(DeviceState *dev)
  * the address it was programmed to. In practice that mapping only has to hold
  * until the FTL is rebuilt, which a restore does not disturb.
  *
- * page_buffer/page_spare_buffer are the DMA staging area for one transfer;
- * they are only meaningful between the register write that starts a transfer
- * and its completion, which cannot straddle a snapshot.
+ * page_buffer/page_spare_buffer are scratch for synchronous DMA within a
+ * register write. Only the later sequencer-completion notification can cross
+ * a snapshot boundary; its virtual timer and interrupt state are migrated.
  */
+static int fmss_post_load(void *opaque, int version_id)
+{
+    IPodTouchFMSSState *s = opaque;
+
+    if (version_id < 2) {
+        s->reg_cs_ctrl = 0x40;
+        s->reg_cs_irq_mask = 1;
+        timer_del(s->completion_timer);
+    }
+    fmss_update_irq(s);
+    return 0;
+}
+
 static const VMStateDescription vmstate_ipod_touch_fmss = {
     .name = "ipod_touch_fmss",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = fmss_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(reg_cs_irq_bit, IPodTouchFMSSState),
         VMSTATE_UINT32(reg_cinfo_target_addr, IPodTouchFMSSState),
@@ -1357,6 +1417,9 @@ static const VMStateDescription vmstate_ipod_touch_fmss = {
         VMSTATE_UINT32(reg_pages_out_addr, IPodTouchFMSSState),
         VMSTATE_UINT32(reg_csgenrc, IPodTouchFMSSState),
         VMSTATE_UINT32(total_blocks, IPodTouchFMSSState),
+        VMSTATE_UINT32_V(reg_cs_ctrl, IPodTouchFMSSState, 2),
+        VMSTATE_UINT32_V(reg_cs_irq_mask, IPodTouchFMSSState, 2),
+        VMSTATE_TIMER_PTR_V(completion_timer, IPodTouchFMSSState, 2),
         VMSTATE_END_OF_LIST()
     }
 };
