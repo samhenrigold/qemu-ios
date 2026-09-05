@@ -3,7 +3,8 @@
 from pathlib import Path
 import subprocess,shlex,tempfile
 s=(Path(__file__).resolve().parents[2]/'hw/arm/ipod_touch_2g.c').read_text()
-a=s.index('static void ipod_touch_inject_boot_args(');s=s[a:s.index('\n}',a)+2]
+a=s.index('static const char *ipod_touch_requested_boot_args(');helper=s[a:s.index('\n}',a)+2]
+a=s.index('static void ipod_touch_inject_boot_args(');s=helper+'\n'+s[a:s.index('\n}',a)+2]
 code=r'''
 #include <glib.h>
 #include <stdint.h>
@@ -16,7 +17,7 @@ typedef uint64_t hwaddr;
 #define BOOT_ARGS_CMDLINE_LEN 256
 #define BOOT_ARGS_STAGING_BASE 0x220fff00
 #define MEMTXATTRS_UNSPECIFIED 0
-typedef struct {void*nsas;} IPodTouchMachineState;
+typedef struct {void*nsas;char boot_args[256];} IPodTouchMachineState;
 static uint8_t image[0x27000],staging[256];
 static unsigned writes;
 static uint8_t*memory(hwaddr a,size_t n){
@@ -38,6 +39,14 @@ int main(void){
  stl_le_p(image+0x11b28,0x0ff1dba0);image[0x11a72]^=1;ipod_touch_inject_boot_args(&machine);assert(writes==2);
  image[0x11a72]^=1;char oversized[512];memset(oversized,'x',511);oversized[511]=0;setenv("IT_BOOT_ARGS",oversized,1);
  ipod_touch_inject_boot_args(&machine);assert(writes==4&&staging[255]==0&&strlen((char*)staging)==255);
+ stl_le_p(image+0x11b28,0x0ff1dba0);
+ strcpy(machine.boot_args,"serial=3 debug=0x8");
+ ipod_touch_inject_boot_args(&machine);
+ assert(writes==6&&!strcmp((char*)staging,machine.boot_args));
+ assert(ipod_touch_requested_boot_args(&machine)==machine.boot_args);
+ unsetenv("IT_BOOT_ARGS");stl_le_p(image+0x11b28,0x0ff1dba0);
+ ipod_touch_inject_boot_args(&machine);assert(writes==8);
+ machine.boot_args[0]=0;assert(!ipod_touch_requested_boot_args(&machine));
 }
 '''
 flags=shlex.split(subprocess.check_output(['pkg-config','--cflags','--libs','glib-2.0'],text=True))

@@ -23,7 +23,7 @@ env = dict(os.environ)
 env.setdefault("IT_LCD_BRIGHT", "255")
 env.update(IT_DIRECT_IBOOT=HERE + "/iBoot.bin",
            IT_INJECT_DT=HERE + "/DeviceTree.nowdt.bin",
-           IT_WDT_NORESET="1", IT_TVOUT_READY="1", IT_TVOUT_VBLANK="1")
+           IT_WDT_NORESET="1", IT_TVOUT_READY="1")
 for k, v in list(os.environ.items()):
     if k.startswith("IT_SET_"):
         env[k[len("IT_SET_"):]] = v

@@ -31,6 +31,9 @@ none of them is a smoke test: "did it boot?" would have missed all of them.
               memory, so killing QEMU loses the directory entry while keeping the
               data blocks: the file silently ceases to exist. Only a
               system_powerdown unmounts the volume.
+  serial-console
+              Enable early serial boot arguments and require XNU driver output
+              and the BSD root mount in serial.log (explicit --checks only).
   fsck        The base image composed with the overlay fscks clean, i.e. the
               persisted pages landed on the physical pages the FTL mapping says
               they should.
@@ -115,7 +118,7 @@ DEFAULT_CHECKS = ["boot", "fsck", "persist"]
 # contrib/it-gles/build.sh (which needs the 3.1.3 SDK) and an sshd on the
 # image, neither of which a clean checkout has.
 OPT_IN_CHECKS = ["afc", "usbtcp", "wifi", "appinstall", "applaunch", "gles", "respring", "restart"]
-ALL_CHECKS = DEFAULT_CHECKS + OPT_IN_CHECKS
+ALL_CHECKS = DEFAULT_CHECKS + OPT_IN_CHECKS + ["serial-console"]
 QUICK_CHECKS = ["boot", "afc"]
 
 # Checks that talk to the device over usbmux and so need the usbmuxd fork.
@@ -341,7 +344,6 @@ def boot_env(cfg):
     defaults = {
         "IT_LCD_BRIGHT": "255",
         "IT_TVOUT_READY": "1",
-        "IT_TVOUT_VBLANK": "1",
         "IT_BOOT_ARGS": "amfi_allow_any_signature=1 cs_enforcement_disable=1",
         "IT_BOOT_ARGS_DELAY_MS": "1500",
         "IT_BOOT_ARGS_REPEAT": "200",
@@ -401,6 +403,9 @@ class Device:
                    "nandrw=%s,usb-attached=on,usb-tcp-addr=127.0.0.1:%d"
                    % (cfg.files, cfg.base_nand, cfg.nor, cfg.overlay,
                       cfg.usb_port))
+        if getattr(cfg, "kernel_console", False):
+            machine += (",boot-args=amfi_allow_any_signature=1 "
+                        "cs_enforcement_disable=1 serial=3 debug=0x8")
         # The BCM4325 is attached only for the check that tests it. It is not
         # free: 3.1.3's driver associates and then keeps the SDIO bus busy, and
         # every other check pays for a radio it never looks at. run-ios3.sh
@@ -880,6 +885,19 @@ def springboard(cfg, port, request):
 def foreground_is(cfg, port, bundle_id):
     p = springboard(cfg, port, ":frontmost")
     return p.returncode == 0 and p.stdout.strip() == "sblaunch: frontmost=" + bundle_id
+
+
+def check_serial_console(dev, result):
+    """Require real XNU output, not iBoot echoing the requested arguments."""
+    try:
+        with open(dev.serial, "rb") as f:
+            serial = f.read()
+    except OSError as exc:
+        return result.set(False, "cannot read kernel console: %s" % exc)
+    if (b"AppleS5L8720XFMSS::start:" in serial and
+            b"BSD root: disk0s1" in serial):
+        return result.set(True, "XNU driver startup and BSD mount logged on serial")
+    return result.set(False, "serial log lacks XNU driver startup or BSD mount")
 
 
 def check_respring(cfg, procs, dev, result):
@@ -1492,6 +1510,7 @@ def main():
     if "boot" not in selected:
         selected.insert(0, "boot")
 
+    cfg.kernel_console = "serial-console" in selected
     cfg.out = cfg.out or os.path.join(
         os.environ.get("TMPDIR", "/tmp"),
         "itregress-%d-%d" % (os.getpid(), int(START)))
@@ -1551,6 +1570,9 @@ def main():
                             % (detail, best, HOME_LIT_MIN))
         if not ok:
             return finish(results, procs, cfg)
+
+        if "serial-console" in selected:
+            check_serial_console(dev, results["serial-console"])
 
         if "wifi" in selected:
             check_wifi(cfg, dev, results["wifi"])

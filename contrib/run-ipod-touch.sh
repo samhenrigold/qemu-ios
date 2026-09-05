@@ -289,7 +289,6 @@ fi
 export IT_LCD_BRIGHT=255
 export IT_DIRECT_IBOOT="$HERE/iBoot.bin"      # 7E18 iBoot, loaded directly
 export IT_TVOUT_READY=1                        # TV-out shutdown gates
-export IT_TVOUT_VBLANK=1                       # periodic SDO frame interrupt
 
 # --- the code-signing gate, now open on EVERY run -------------------------
 # 3.1.3's kernel refuses to exec anything that is not Apple-signed, and it does
