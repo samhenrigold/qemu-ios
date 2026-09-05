@@ -48,16 +48,17 @@ static bool i2c_trace(void)
  *
  * A NAK is still a completed address phase: the interrupt must still be raised
  * so the driver runs, inspects the status bit and returns an error, rather than
- * waiting for a transfer that will not come. Gated behind IT_I2C_NAK because it
- * changes what every existing guest sees -- iOS probes at least one address we
- * do not model (0x29, /device-tree/arm-io/i2c0/tethered), and that probe
- * currently "succeeds".
+ * waiting for a transfer that will not come. This is the default: falsely
+ * acknowledging the absent tethered/demo card at 0x29 makes SpringBoard rewrite
+ * sound and idle preferences for demo mode. IT_I2C_NAK=0 retains the old fake
+ * ACK behavior only for diagnostics.
  */
 static bool i2c_nak_enabled(void)
 {
     static int on = -1;
     if (on < 0) {
-        on = getenv("IT_I2C_NAK") != NULL;
+        const char *value = getenv("IT_I2C_NAK");
+        on = !value || strcmp(value, "0") != 0;
     }
     return on;
 }
