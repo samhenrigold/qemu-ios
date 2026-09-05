@@ -38,7 +38,8 @@ static int cpu_memory_rw_debug(CPUState *cpu, uint64_t a, uint8_t *p, size_t n, 
 }
 '''
 shim = (root / 'contrib/it-gles/mbxshim.c').read_text()
-shim = shim[shim.index('static int surface_fault_read('):shim.index('/*\n * GLESBindView is')]
+fault = shim[shim.index('static int guest_fault_read('):shim.index('static unsigned texture_bytes(')]
+shim = fault + shim[shim.index('static int surface_fault_read('):shim.index('/*\n * GLESBindView is')]
 helper_end = shim.index('static int GLESBindCoreSurface(')
 shim = shim[:helper_end] + shim[helper_end:].replace('surface_fault_read(', 'abi_surface_fault_read(')
 finish_start = (root / 'contrib/it-gles/mbxshim.c').read_text().index('static int GLESFinishTexture(')
