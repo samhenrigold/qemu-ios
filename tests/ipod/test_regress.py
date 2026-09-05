@@ -160,6 +160,7 @@ def qmp_stream(messages, eof=True):
     q.s, peer = socket.socketpair()
     q.f = q.s.makefile("rwb")
     q.shutdown_event = None
+    q.reset_count = 0
     peer.sendall(b"".join(json.dumps(m).encode() + b"\n" for m in messages))
     if eof:
         peer.shutdown(socket.SHUT_WR)
@@ -168,6 +169,12 @@ def qmp_stream(messages, eof=True):
 
 guest = {"event": "SHUTDOWN", "data": {"guest": True, "reason": "guest-shutdown"}}
 host = {"event": "SHUTDOWN", "data": {"guest": False, "reason": "host-signal"}}
+q, peer = qmp_stream([{"event": "RESET"}, {"event": "RESET"},
+                      {"return": {"status": "running"}}])
+assert q.cmd("query-status") == {"status": "running"}
+assert q.reset_count == 2
+q.close()
+peer.close()
 q, peer = qmp_stream([guest, {"return": {"status": "shutdown"}}])
 assert q.cmd("query-status") == {"status": "shutdown"}
 assert q.wait_for_guest_shutdown(0.01)
