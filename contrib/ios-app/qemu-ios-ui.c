@@ -76,6 +76,19 @@ static struct {
     bool pending;
 } ios;
 
+/* Frame polling can begin even when startup fails before attach(). Initialize
+ * on every entry path through GLib's once primitive, including concurrent first
+ * reads. The lock lives for the process; published buffers outlive VM exit. */
+static void ios_init_frame_lock(void)
+{
+    static gsize initialized;
+    if (g_once_init_enter(&initialized)) {
+        qemu_mutex_init(&ios.frame_lock);
+        ios.published = -1;
+        g_once_init_leave(&initialized, 1);
+    }
+}
+
 /* --- frames out: QEMU thread ------------------------------------------- */
 
 /*
@@ -152,6 +165,7 @@ static void ios_capture(DisplaySurface *surface)
     int next, y;
     uint8_t *dst;
 
+    ios_init_frame_lock();
     qemu_mutex_lock(&ios.frame_lock);
 
     if (need > ios.buf_size) {
@@ -317,16 +331,7 @@ void qemu_ios_ui_vm_started(void)
 
 void qemu_ios_ui_attach(qemu_ios_frame_cb cb, void *opaque)
 {
-    static bool inited;
-
-    /*
-     * Called before the VM thread exists, so no lock is needed here and the
-     * frame lock is ready before anything can take it.
-     */
-    if (!inited) {
-        qemu_mutex_init(&ios.frame_lock);
-        inited = true;
-    }
+    ios_init_frame_lock();
     ios.cb = cb;
     ios.cb_opaque = opaque;
 }
@@ -346,6 +351,7 @@ void qemu_ios_ui_attach(qemu_ios_frame_cb cb, void *opaque)
 bool qemu_ios_ui_frame(const void **pixels, int *width, int *height,
                        uint64_t *serial)
 {
+    ios_init_frame_lock();
     qemu_mutex_lock(&ios.frame_lock);
 
     if (ios.published < 0 || ios.serial == *serial) {
@@ -364,6 +370,7 @@ bool qemu_ios_ui_frame(const void **pixels, int *width, int *height,
 
 void qemu_ios_ui_frame_size(int *width, int *height)
 {
+    ios_init_frame_lock();
     qemu_mutex_lock(&ios.frame_lock);
     *width = ios.width;
     *height = ios.height;
