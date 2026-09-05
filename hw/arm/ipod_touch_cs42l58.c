@@ -22,6 +22,26 @@ static bool codec_trace(void)
 #define CS42L58_MAP_INCR   0x80
 #define CS42L58_REG_CHIPID 0x01
 
+static unsigned cs42l58_sample_rate(uint8_t control)
+{
+    /* 7E18 AppleCS42L58Audio::setSampleRate, c05dd698: register 05's
+     * low five bits select LRCLK. The codec is the I2S clock master.
+     * ponytail: model the nine rates the driver supports; other clock modes
+     * need the part's clock specification before they can be enabled. */
+    switch (control & 0x1f) {
+    case 0x09: return 48000;
+    case 0x0b: return 44100;
+    case 0x0d: return 32000;
+    case 0x11: return 24000;
+    case 0x13: return 22050;
+    case 0x15: return 16000;
+    case 0x19: return 12000;
+    case 0x1b: return 11025;
+    case 0x1d: return 8000;
+    default: return 0;
+    }
+}
+
 static int cs42l58_event(I2CSlave *i2c, enum i2c_event event)
 {
     CS42L58State *s = CS42L58(i2c);
@@ -63,6 +83,12 @@ static int cs42l58_send(I2CSlave *i2c, uint8_t data)
     }
     if ((s->cmd & 0x7f) != CS42L58_REG_CHIPID) {
         s->regs[s->cmd & 0x7f] = data;
+        if ((s->cmd & 0x7f) == 0x05) {
+            unsigned rate = cs42l58_sample_rate(data);
+            if (rate) {
+                clock_update_hz(s->lrclk, rate);
+            }
+        }
     }
     if (s->autoinc) {
         s->cmd = ((s->cmd & 0x7f) + 1) & 0x7f;
@@ -85,7 +111,7 @@ static void cs42l58_reset(DeviceState *dev)
 
 static void cs42l58_init(Object *obj)
 {
-
+    CS42L58(obj)->lrclk = qdev_init_clock_out(DEVICE(obj), "lrclk");
 }
 
 static void cs42l58_class_init(ObjectClass *klass, void *data)

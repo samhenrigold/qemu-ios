@@ -13,6 +13,7 @@
 #include "hw/qdev-clock.h"
 #include "hw/arm/exynos4210.h"
 #include "hw/arm/ipod_touch_2g.h"
+#include "hw/arm/guest-services/gles.h"
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "target/arm/cpregs.h"
 #include "qemu/error-report.h"
@@ -935,6 +936,7 @@ static void ipod_touch_cpu_reset(void *opaque)
     ARMCPU *cpu = nms->cpu;
     CPUState *cs = CPU(cpu);
 
+    gles_host_reset();
     cpu_reset(cs);
     ipod_touch_load_bootrom(nms);
 
@@ -970,8 +972,11 @@ static void ipod_touch_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     allocate_ram(sysmem, "sram1", SRAM1_MEM_BASE, 0x100000);
     allocate_ram(sysmem, "framebuffer", FRAMEBUFFER_MEM_BASE, 0x400000);
     allocate_ram(sysmem, "edgeic", EDGEIC_MEM_BASE, 0x1000);
-    allocate_ram(sysmem, "swi", SWI_MEM_BASE, 0x1000);
-    allocate_ram(sysmem, "h264", H264_MEM_BASE, 0x4000);
+    sysbus_create_simple("ipodtouch.swi", SWI_MEM_BASE, NULL);
+    if (!getenv("IT_H264_DECODE")) {
+        MemoryRegion *h264 = allocate_ram(sysmem, "h264", H264_MEM_BASE, 0x4000);
+        install_ram_watch(sysmem, h264, H264_MEM_BASE, 0x4000);
+    }
 
     /* The bootrom itself is (re)staged by ipod_touch_load_bootrom(), which also
      * runs on every reset -- see the note there. */
@@ -2197,12 +2202,6 @@ static void ipod_touch_powerdown_req(Notifier *n, void *opaque)
 	 * Do NOT revisit the slide gesture: it is accepted and correct on 3.1.3
 	 * (screendumped mid-drag, knob on the track). Two investigations died there.
 	 */
-	/* Arm the PMU: from here until the guest's standby write, a write of 0x90
-	 * to 0x6f means "the rails may go now". Without this the guest finished its
-	 * whole shutdown -- unmount included -- and then waited forever. */
-	if (s_kbd_mt && s_kbd_mt->pmu) {
-		pcf50633_arm_shutdown(PCF50633(s_kbd_mt->pmu));
-	}
 	/* Home FIRST. The sheet the slide targets is SpringBoard's, so a
 	 * powerdown requested while an app is foreground had nothing to slide and
 	 * simply never completed -- which is precisely when a user hits quit. */
@@ -2668,6 +2667,11 @@ static void ipod_touch_machine_init(MachineState *machine)
     IPodTouchMPVDState *mpvd_state = IPOD_TOUCH_MPVD(dev);
     memory_region_add_subregion(sysmem, MPVD_MEM_BASE, &mpvd_state->iomem);
     it_realize_into_qom_tree(dev);
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, s5l8900_get_irq(nms, 45));
+
+    if (getenv("IT_H264_DECODE")) {
+        sysbus_create_simple("ipodtouch.h264", H264_MEM_BASE, s5l8900_get_irq(nms, 35));
+    }
 
     // init USB OTG
     dev = ipod_touch_init_usb_otg(s5l8900_get_irq(nms, S5L8720_USB_OTG_IRQ), s5l8720_usb_hwcfg);
@@ -2822,8 +2826,8 @@ static void ipod_touch_machine_init(MachineState *machine)
     // init the audio codec (CS42L58, device tree /arm-io/i2c0/audio0) and the
     // LM48821 speaker amp (/arm-io/i2c0/spkr-amp)
     if (ipod_touch_audio_hw_enabled()) {
-        i2c_slave_create_simple(i2c_state->bus, "cs42l58", 0x4A);
-        i2c_slave_create_simple(i2c_state->bus, "lm48821", 0x76);
+        I2CSlave *codec = i2c_slave_create_simple(i2c_state->bus, "cs42l58", 0x4A);
+        I2CSlave *amp = i2c_slave_create_simple(i2c_state->bus, "lm48821", 0x76);
 
         /*
          * I2S0. The TX FIFO at +0x10 is a PL080 DMA target (dma-parent is
@@ -2843,6 +2847,9 @@ static void ipod_touch_machine_init(MachineState *machine)
          * it_i2s_arm_ready), which is why it needs the sysic handle.
          */
         dev = qdev_new(TYPE_IPOD_TOUCH_I2S);
+        IPOD_TOUCH_I2S(dev)->amplifier = LM48821(amp);
+        qdev_connect_clock_in(dev, "lrclk",
+                              qdev_get_clock_out(DEVICE(codec), "lrclk"));
         busdev = SYS_BUS_DEVICE(dev);
         IPOD_TOUCH_I2S(dev)->sysic = sysic_state;
         /*
@@ -2931,9 +2938,15 @@ static void ipod_touch_machine_init(MachineState *machine)
     sysbus_realize(busdev, &error_fatal);
     sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, S5L8720_LCD_IRQ));
 
-    // init scaler / CSC -- reads 0, writes ignored, so upstream's stub device
-    // covers it exactly (and logs, which the hand-rolled model did not).
-    create_unimplemented_device("scaler-csc", SCALER_CSC_MEM_BASE, 0x1000);
+    if (getenv("IT_SCALER_DECODE")) {
+        dev = qdev_new("ipodtouch.scaler");
+        busdev = SYS_BUS_DEVICE(dev);
+        sysbus_realize(busdev, &error_fatal);
+        sysbus_mmio_map(busdev, 0, SCALER_CSC_MEM_BASE);
+        sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, 0x25));
+    } else {
+        create_unimplemented_device("scaler-csc", SCALER_CSC_MEM_BASE, 0x1000);
+    }
 
     // init SHA1 engine
     dev = qdev_new("ipodtouch.sha1");

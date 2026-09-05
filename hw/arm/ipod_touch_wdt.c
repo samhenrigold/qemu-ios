@@ -26,15 +26,12 @@ static bool wdt_noreset(void)
 
 
 /*
- * S5L8720 watchdog timer at 0x3C800000.
- *
- * The only behaviour the guest actually needs modelled is reset: after an
- * unclean shutdown the boot runs fsck, repairs the volume, and then asks to
- * restart ("MACH Reboot"). AppleARMWatchDogTimer's PEHaltRestart handler does
- * that by setting bit 0x100000 in the control register. With no device here
- * that write was a silent no-op, so the guest simply halted and needed a manual
- * relaunch. Turning the write into a QEMU reset request lets the machine
- * re-run its init and boot again on its own.
+ * 7E18 AppleARMWatchDogTimer writes 0x001f4a00 to arm/kick the watchdog
+ * (c056d364/c056d37c), zero to disable it, and exactly 0x00100000 to
+ * request a reset (c056d350). Testing only bit 20 made every normal kick
+ * reboot the machine. The nonzero timeout must not mean immediate reset.
+ * ponytail: timed expiry remains unmodeled; add a virtual-clock timer once
+ * the timeout field and clock are established from hardware evidence.
  */
 
 static uint64_t ipod_touch_wdt_read(void *opaque, hwaddr addr, unsigned size)
@@ -57,22 +54,15 @@ static void ipod_touch_wdt_write(void *opaque, hwaddr addr, uint64_t val, unsign
     switch (addr) {
         case WDT_CTRL:
             s->ctrl = (uint32_t)val;
-            if (val & WDT_RESET_BIT) {
-                /*
-                 * Only when asked. With IT_WDT_NORESET set -- which every
-                 * runner sets, because 3.1.3 arms the real watchdog -- the
-                 * guest kicks this constantly, so an unconditional line here
-                 * is a write syscall per kick for the life of the VM. It also
-                 * dragged in a checked QOM cast each time.
-                 */
+            if (val == WDT_RESET_COMMAND) {
                 if (wdt_trace()) {
                     if (current_cpu) {
                         ARMCPU *ac = ARM_CPU(current_cpu);
-                        fprintf(stderr, "%s: reset bit set (val=0x%08x) from "
+                        fprintf(stderr, "%s: reset command (val=0x%08x) from "
                                 "PC=0x%08x LR=0x%08x\n", __func__,
                                 (uint32_t)val, ac->env.regs[15], ac->env.regs[14]);
                     } else {
-                        fprintf(stderr, "%s: reset bit set (val=0x%08x)\n",
+                        fprintf(stderr, "%s: reset command (val=0x%08x)\n",
                                 __func__, (uint32_t)val);
                     }
                 }

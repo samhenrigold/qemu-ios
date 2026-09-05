@@ -92,6 +92,15 @@ static unsigned slen(const char *s) { unsigned n = 0; while (s && s[n]) n++; ret
  * facts are decided here and cannot be inferred from the host.
  */
 #define GLES_OP_LOG 0x1002
+#define GLES_OP_BIND_SURFACE 0x1003
+#define GLES_OP_NEW_SHAREGROUP 0x1004
+#define GLES_OP_DELETE_SHAREGROUP 0x1005
+#define GLES_OP_NEW_CONTEXT 0x1006
+#define GLES_OP_DELETE_CONTEXT 0x1007
+
+typedef struct { unsigned host; } GuestGC;
+extern void *calloc(unsigned long, unsigned long);
+extern void free(void *);
 static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args);
 #define A(...) (const unsigned[]){ __VA_ARGS__ }
 static void w(const char *s)
@@ -123,13 +132,13 @@ static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args
 {
     volatile qemu_call_t q;
     unsigned i;
-    static unsigned spill[16];
+    unsigned spill[16]; /* separate storage for concurrently issuing GCs */
 
     for (i = 0; i < QC_GLES_INLINE_ARGS; i++) q.gles.args[i] = 0;
 
     q.call_number = QC_GLES;
     q.gles.slot = slot;
-    q.gles.ctx = (unsigned)(unsigned long)gc;
+    q.gles.ctx = gc && ((GuestGC *)gc)->host ? ((GuestGC *)gc)->host : (unsigned)(unsigned long)gc;
     q.gles.argc = argc;
     q.gles.spill = 0;
     q.retval = 0;
@@ -437,19 +446,28 @@ static int s_bufferSubData(void *gc, unsigned target, unsigned offset,
 
 /* One GC per context. The framework only ever hands this back to us as arg0,
  * so its contents are ours; the host keys off the same pointer. */
-static unsigned gles_gc_storage[16];
-static unsigned gles_sharegroup_storage[8];
 
-static void *GLESCreateSharegroup(void *a, void *b, void *c, void *d)
+
+/* Stock 7E18 engine 0xa0d4 stores through argument 0 and returns 1. */
+static int GLESCreateSharegroup(void **out)
 {
-    (void)a; (void)b; (void)c; (void)d;
-    w("[mbxshim] GLESCreateSharegroup\n");
-    /* Must be non-NULL: the framework treats a null sharegroup as failure and
-     * -[EAGLContext initWithAPI:] returns nil without ever calling us again. */
-    return gles_sharegroup_storage;
+    if (!out) return 0;
+    *out = 0;
+    GuestGC *group = calloc(1, sizeof(*group));
+    if (!group) return 0;
+    long long host = qc(GLES_OP_NEW_SHAREGROUP, 0, 0, A(0));
+    if (host < 0) { free(group); return 0; }
+    group->host = (unsigned)host;
+    *out = group;
+    return 1;
 }
 
-static int GLESDestroySharegroup(void *sg) { (void)sg; return 0; }
+static int GLESDestroySharegroup(void *sg)
+{
+    if (sg && ((GuestGC *)sg)->host) qc(GLES_OP_DELETE_SHAREGROUP, 0, 1, A(((GuestGC *)sg)->host));
+    free(sg);
+    return 0;
+}
 
 /*
  * The one that matters. See the header comment for how the contract was read
@@ -460,7 +478,15 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
 {
     unsigned i;
 
-    (void)sharegroup; (void)x_ce8;
+    (void)x_ce8;
+    if (!gc_out || !sharegroup) return 0;
+    GuestGC *gc = calloc(1, sizeof(*gc));
+    if (!gc) return 0;
+    if (((GuestGC *)sharegroup)->host) {
+        long long host = qc(GLES_OP_NEW_CONTEXT, 0, 1, A(((GuestGC *)sharegroup)->host));
+        if (host <= 0) { free(gc); return 0; }
+        gc->host = (unsigned)host;
+    }
     w("[mbxshim] GLESCreateGC\n");
 
     if (table) {
@@ -560,13 +586,13 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
     }
 
     if (gc_out) {
-        *gc_out = gles_gc_storage;
+        *gc_out = gc;
     }
     return 1;   /* 1 = success. See the header comment; 0 here yields a nil
                  * EAGLContext with no other symptom. */
 }
 
-static int GLESDestroyGC(void *gc) { (void)gc; return 0; }
+static int GLESDestroyGC(void *gc);
 
 /*
  * The surface CoreAnimation gave us, if any.
@@ -633,12 +659,24 @@ static ca_view_t *ca_view_for_block(void *blk)
     return 0;
 }
 
+static int GLESDestroyGC(void *gc)
+{
+    ca_view_t *v = ca_view_for_gc(gc, 0);
+    if (v) { ca_view_t empty = {0}; *v = empty; }
+    if (gc && ((GuestGC *)gc)->host) qc(GLES_OP_DELETE_CONTEXT, gc, 0, A(0));
+    free(gc);
+    return 0;
+}
+
 static void *iosurf;    /* IOSurface.framework handle */
 static void *(*p_IOSurfaceGetBaseAddress)(void *);
 static unsigned (*p_IOSurfaceGetBytesPerRow)(void *);
 static unsigned (*p_IOSurfaceGetWidth)(void *);
 static unsigned (*p_IOSurfaceGetHeight)(void *);
 static unsigned (*p_IOSurfaceGetPixelFormat)(void *);
+static unsigned (*p_IOSurfaceGetPlaneCount)(void *);
+static void *(*p_IOSurfaceGetBaseAddressOfPlane)(void *, unsigned);
+static unsigned (*p_IOSurfaceGetBytesPerRowOfPlane)(void *, unsigned);
 static int (*p_IOSurfaceLock)(void *, unsigned, unsigned *);
 static int (*p_IOSurfaceUnlock)(void *, unsigned, unsigned *);
 static unsigned long (*p_IOSurfaceGetTypeID)(void);
@@ -666,6 +704,9 @@ static void iosurface_init(void)
     p_IOSurfaceGetWidth       = dlsym(iosurf, "IOSurfaceGetWidth");
     p_IOSurfaceGetHeight      = dlsym(iosurf, "IOSurfaceGetHeight");
     p_IOSurfaceGetPixelFormat = dlsym(iosurf, "IOSurfaceGetPixelFormat");
+    p_IOSurfaceGetPlaneCount = dlsym(iosurf, "IOSurfaceGetPlaneCount");
+    p_IOSurfaceGetBaseAddressOfPlane = dlsym(iosurf, "IOSurfaceGetBaseAddressOfPlane");
+    p_IOSurfaceGetBytesPerRowOfPlane = dlsym(iosurf, "IOSurfaceGetBytesPerRowOfPlane");
     p_IOSurfaceLock           = dlsym(iosurf, "IOSurfaceLock");
     p_IOSurfaceUnlock         = dlsym(iosurf, "IOSurfaceUnlock");
     p_IOSurfaceGetTypeID      = dlsym(iosurf, "IOSurfaceGetTypeID");
@@ -888,24 +929,68 @@ static int ca_destroy_buffer(void *ctx, void *surface)
     return 1;
 }
 
-/*
- * GLESBindCoreSurface is the texture-from-surface path, not the drawable one --
- * which is what its reach into _DetachTexture always suggested, and a real
- * CAEAGLLayer client confirmed by never calling it at all. Its first argument
- * IS an IOSurfaceRef (the stock one compares it against known formats and
- * texture-images it), so it is captured directly, with no callback dance.
- */
-static int GLESBindCoreSurface(void *gc, void *surf, void *a, void *b)
+/* A mapped IOSurface can still contain demand-paged memory. The host's debug
+ * memory reader cannot fault guest pages in as the real GPU's pinning does. */
+static int surface_fault_read(unsigned long base, unsigned stride, unsigned rows,
+                               unsigned bytes)
 {
-    /* Texture-from-surface, so it belongs to the calling GC like everything
-     * else now -- never called by a CAEAGLLayer client, but if one ever does
-     * it must not land in another view's slot. */
-    ca_view_t *v = ca_view_for_gc(gc, 1);
-
-    (void)a; (void)b;
-    w("[mbxshim] GLESBindCoreSurface arg1="); wx((unsigned long)surf); w("\n");
-    surface_capture(v, surf);
+    unsigned row, x;
+    if (!base || !rows || rows > 2048 || !bytes || stride < bytes || stride > 16384 ||
+        base > ~0UL - ((unsigned long)(rows - 1) * stride + bytes))
+        return 0;
+    for (row = 0; row < rows; row++) {
+        volatile const unsigned char *p = (void *)(unsigned long)(base + row * stride);
+        for (x = 0; x < bytes; x += 4096) (void)p[x];
+        (void)p[bytes - 1];
+    }
     return 1;
+}
+
+/* 7E18's engine at 0xd918 takes (gc, GL target, IOSurface), not
+ * (gc, IOSurface, ...). The target is 0x84f5 or 0x8d41; treating it as a
+ * surface pointer crashes the compositor. Texture bindings never own a view. */
+static int GLESBindCoreSurface(void *gc, unsigned target, void *surface)
+{
+    unsigned base, stride, width, height, format, uv = 0, uvstride = 0;
+    int result;
+    if (!surface) {
+        return qc(GLES_OP_BIND_SURFACE, gc, 8, A(target,0,0,0,0,0,0,0)) == 0;
+    }
+    iosurface_init();
+    if (!p_IOSurfaceLock || !p_IOSurfaceUnlock ||
+        !p_IOSurfaceGetBaseAddress || !p_IOSurfaceGetBytesPerRow ||
+        !p_IOSurfaceGetWidth || !p_IOSurfaceGetHeight || !p_IOSurfaceGetPixelFormat) {
+        return 0;
+    }
+    if (p_IOSurfaceLock(surface, 1, 0)) return 0;
+    base = (unsigned)p_IOSurfaceGetBaseAddress(surface);
+    stride = p_IOSurfaceGetBytesPerRow(surface);
+    width = p_IOSurfaceGetWidth(surface);
+    height = p_IOSurfaceGetHeight(surface);
+    format = p_IOSurfaceGetPixelFormat(surface);
+    if (p_IOSurfaceGetPlaneCount && p_IOSurfaceGetPlaneCount(surface) == 2 &&
+        p_IOSurfaceGetBaseAddressOfPlane && p_IOSurfaceGetBytesPerRowOfPlane) {
+        base = (unsigned)p_IOSurfaceGetBaseAddressOfPlane(surface, 0);
+        stride = p_IOSurfaceGetBytesPerRowOfPlane(surface, 0);
+        uv = (unsigned)p_IOSurfaceGetBaseAddressOfPlane(surface, 1);
+        uvstride = p_IOSurfaceGetBytesPerRowOfPlane(surface, 1);
+    }
+    unsigned rowbytes = format == CA_FOURCC_565L ? width * 2 : width * 4;
+    int readable = width && width <= 2048 && height && height <= 2048;
+    if (format == 0x34323076 || format == 0x34323066) {
+        readable = readable && uv && !(width & 1) && !(height & 1) &&
+            surface_fault_read(base, stride, height, width) &&
+            surface_fault_read(uv, uvstride, height / 2, width);
+    } else {
+        readable = readable && !uv &&
+            (format == CA_FOURCC_565L || format == CA_FOURCC_BGRA || format == 0x52474241) &&
+            surface_fault_read(base, stride, height, rowbytes);
+    }
+    if (!readable) { p_IOSurfaceUnlock(surface, 1, 0); return 0; }
+    result = qc(GLES_OP_BIND_SURFACE, gc, 8,
+                A(target,base,stride,width,height,format,uv,uvstride)) == 0;
+    p_IOSurfaceUnlock(surface, 1, 0);
+    return result;
 }
 
 /*
@@ -1025,7 +1110,13 @@ static int GLESBindView(void *gc, void *drawable, void *ifmt, void *flags)
     return 1;
 }
 
-static int GLESFinishTexture(void *gc, void *a) { (void)gc; (void)a; return 0; }
+/* 7E18 0x1d020 returns one after waiting for the bound texture. Returning
+ * zero falsely reports a failure, including when no GPU work is pending. */
+static int GLESFinishTexture(void *gc, unsigned target)
+{
+    if (target != 0x0de1 && target != 0x84f5) return 0;
+    return qc(89, gc, 0, A(0)) == 0;
+}
 
 /*
  * Where a frame becomes visible.
@@ -1110,7 +1201,23 @@ static int GLESPresentView(void *gc, void *view)
     return 1;
 }
 
-static int GLESSwapNotification(void *gc, void *a) { (void)gc; (void)a; return 0; }
+/* EAGL passes the framebuffer's IOConnect port, transaction and layer.
+ * Stock MBX queues these behind rendering; the software path signals selector
+ * 20 directly (IOMobileFramebufferSwapSignal, 7E18 0x332e8e9c). */
+static int GLESSwapNotification(void *gc, unsigned connection,
+                                unsigned transaction, unsigned layer)
+{
+    static int (*signal_swap)(unsigned, unsigned, const unsigned long long *,
+                              unsigned, unsigned long long *, unsigned *);
+    if (!signal_swap) {
+        void *io = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
+        if (io) signal_swap = dlsym(io, "IOConnectCallScalarMethod");
+    }
+    if (!signal_swap || qc(89, gc, 0, A(0)) != 0) return 0;
+    unsigned long long args[] = { transaction, layer };
+    return signal_swap(connection, 20, args, 2, 0, 0) == 0;
+}
+
 
 /*
  * The table GLESGetEGLInterface hands back: nine function pointers, then

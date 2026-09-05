@@ -52,6 +52,8 @@ typedef struct IPodTouchLCDState
     int64_t last_present_ns;
     qemu_irq irq;
     uint32_t lcd_con;
+    uint32_t plane_regs[0x300 / 4];
+    uint32_t plane_scanout[0x300 / 4];
 
     uint32_t w1_display_resolution_info;
     uint32_t w1_framebuffer_base;

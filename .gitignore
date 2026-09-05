@@ -19,6 +19,7 @@ GTAGS
 *.depend_raw
 *.swp
 *.patch
+!/contrib/ffmpeg/*.patch
 *.gcov
 
 *.DS_Store

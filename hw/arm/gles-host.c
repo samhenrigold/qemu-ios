@@ -59,6 +59,9 @@
  * Nothing here is a reimplementation; each shim below is a rename.
  */
 #include <TargetConditionals.h>
+#if !TARGET_OS_IPHONE
+#include <VideoToolbox/VideoToolbox.h>
+#endif
 
 #if TARGET_OS_IPHONE
 #define GLES_HOST_EAGL 1
@@ -189,6 +192,7 @@ typedef struct {
     uint8_t *data;
     size_t size;
     uint32_t name;
+    unsigned refs;
 } GLESBuffer;
 
 typedef struct {
@@ -203,7 +207,7 @@ typedef struct {
      * draw time, and the draw path pays a null check rather than a lookup.
      */
     uint32_t ptr;
-    const GLESBuffer *vbo;
+    GLESBuffer *vbo;
 
     /* Scratch for pulling this array across. Grown as needed, never shrunk.
      * Per-array rather than shared, because a single draw needs several of
@@ -220,6 +224,21 @@ typedef struct {
 } GLESArray;
 
 typedef struct {
+    uint32_t base, stride, width, height, format, uv, uvstride;
+} GLESSurface;
+
+typedef struct {
+#ifndef GLES_HOST_EAGL
+    CGLContextObj root;
+#endif
+    unsigned refs;
+    GHashTable *buffers, *surfaces, *rb_sized;
+    uint32_t next_buffer_name;
+} GLESGroup;
+
+typedef struct {
+    GLESGroup *group;
+    GHashTable *surfaces;
     bool inited;
     bool failed;
 #ifndef GLES_HOST_EAGL
@@ -275,8 +294,8 @@ typedef struct {
      * than names, because that is what the draw path wants. */
     GHashTable *buffers;
     uint32_t next_buffer_name;
-    const GLESBuffer *array_buffer;
-    const GLESBuffer *element_buffer;
+    GLESBuffer *array_buffer;
+    GLESBuffer *element_buffer;
 
     uint8_t *readback;  /* GLES_FB_WIDTH * GLES_FB_HEIGHT * 4 */
 
@@ -415,20 +434,11 @@ typedef struct {
     GLenum error;
 } GLESHost;
 
-/*
- * One global context, not one per guest GC.
- *
- * This is a real limitation and it is visible from the guest: run a test twice
- * and glGenTextures keeps counting up (2, then 3), because the host context
- * outlives the guest process that created the texture. Two guests rendering at
- * once would stomp on each other's state entirely.
- *
- * It is fine for bring-up and wrong for anything real. The fix is to key state
- * off the `ctx` field that every request already carries -- it is the engine's
- * GC handle, which is exactly the right identity -- and that is deliberately
- * deferred until the pixel path itself is trustworthy.
- */
-static GLESHost gh;
+/* Old guest engines retain their legacy context. New engines pass opaque
+ * host handles, so every GC gets independent native GL and client-array state. */
+static GLESHost gh_legacy;
+static GLESHost *gh_current = &gh_legacy;
+#define gh (*gh_current)
 
 /*
  * Profiling and strictness switches, read once.
@@ -563,11 +573,14 @@ static bool gles_platform_context_create(void)
         fprintf(stderr, "[gles] CGLChoosePixelFormat failed (%d)\n", e);
         return false;
     }
-    e = CGLCreateContext(pix, NULL, &gh.cgl);
+    e = CGLCreateContext(pix, gh.group ? gh.group->root : NULL, &gh.cgl);
     CGLDestroyPixelFormat(pix);
     if (e || !gh.cgl) {
         fprintf(stderr, "[gles] CGLCreateContext failed (%d)\n", e);
         return false;
+    }
+    if (gh.group && !gh.group->root) {
+        gh.group->root = CGLRetainContext(gh.cgl);
     }
     CGLSetCurrentContext(gh.cgl);
     return true;
@@ -701,7 +714,7 @@ static bool gles_host_init(void)
         return false;
     }
 
-    gh.rb_sized = g_hash_table_new(g_direct_hash, g_direct_equal);
+    if (!gh.rb_sized) gh.rb_sized = g_hash_table_new(g_direct_hash, g_direct_equal);
     gh.fbo_drawable = g_hash_table_new(g_direct_hash, g_direct_equal);
 
     glGenFramebuffersEXT(1, &gh.fbo);
@@ -1303,6 +1316,10 @@ static unsigned gles_query_count(uint32_t pname)
     case GL_MAX_MODELVIEW_STACK_DEPTH:
     case GL_MAX_PROJECTION_STACK_DEPTH:
     case GL_MAX_TEXTURE_SIZE:
+#ifndef GLES_HOST_EAGL
+    case GL_MAX_RECTANGLE_TEXTURE_SIZE_ARB:
+    case GL_TEXTURE_BINDING_RECTANGLE_ARB:
+#endif
     case GL_MAX_TEXTURE_STACK_DEPTH:
     case GL_MAX_TEXTURE_UNITS:
     case GL_MODELVIEW_STACK_DEPTH:
@@ -3146,8 +3163,18 @@ static void gles_buffer_destroy(gpointer p)
 {
     GLESBuffer *b = p;
 
-    g_free(b->data);
-    g_free(b);
+    if (b && !--b->refs) {
+        g_free(b->data);
+        g_free(b);
+    }
+}
+
+/* Bindings in sibling contexts retain deleted objects until unbound. */
+static void gles_buffer_bind(GLESBuffer **slot, GLESBuffer *b)
+{
+    if (b) b->refs++;
+    gles_buffer_destroy(*slot);
+    *slot = b;
 }
 
 /*
@@ -3171,6 +3198,7 @@ static GLESBuffer *gles_buffer_intern(uint32_t name)
     if (!b) {
         b = g_new0(GLESBuffer, 1);
         b->name = name;
+        b->refs = 1;
         g_hash_table_insert(gh.buffers, GUINT_TO_POINTER(name), b);
     }
     return b;
@@ -3200,21 +3228,21 @@ static void gles_buffer_forget(const GLESBuffer *b)
 
     for (i = 0; i < ARRAY_SIZE(arrays); i++) {
         if (arrays[i]->vbo == b) {
-            arrays[i]->vbo = NULL;
+            gles_buffer_bind(&arrays[i]->vbo, NULL);
             arrays[i]->ptr = 0;
         }
     }
     for (i = 0; i < GLES_MAX_TEXUNITS; i++) {
         if (gh.texcoord[i].vbo == b) {
-            gh.texcoord[i].vbo = NULL;
+            gles_buffer_bind(&gh.texcoord[i].vbo, NULL);
             gh.texcoord[i].ptr = 0;
         }
     }
     if (gh.array_buffer == b) {
-        gh.array_buffer = NULL;
+        gles_buffer_bind(&gh.array_buffer, NULL);
     }
     if (gh.element_buffer == b) {
-        gh.element_buffer = NULL;
+        gles_buffer_bind(&gh.element_buffer, NULL);
     }
 }
 
@@ -3280,6 +3308,190 @@ static void gles_trace_matrix_op(const char *op, uint32_t arg)
     }
 }
 
+/* IOSurface-backed textures are aliases of guest memory. Upload on bind;
+ * publish rendering before an FBO switch or flush makes it visible to CA. */
+static bool gles_surface_range(uint32_t base, uint32_t stride, unsigned rows,
+                               unsigned rowbytes)
+{
+    return base && rows && stride >= rowbytes && stride <= 16384 &&
+        (uint64_t)base + (uint64_t)(rows - 1) * stride + rowbytes <= UINT32_MAX;
+}
+
+static bool gles_surface_read(CPUState *cpu, uint32_t base, uint32_t stride,
+                              unsigned rows, unsigned rowbytes, uint8_t *dst)
+{
+    if (!gles_surface_range(base, stride, rows, rowbytes)) return false;
+    for (unsigned row = 0; row < rows; row++) {
+        if (cpu_memory_rw_debug(cpu, base + row * stride,
+                                dst + (size_t)row * rowbytes, rowbytes, 0)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+#ifndef GLES_HOST_EAGL
+static bool gles_surface_nv12(unsigned w, unsigned h, OSType format,
+                              uint8_t *input, uint8_t *bgra)
+{
+    CVPixelBufferRef source = NULL, dest = NULL;
+    VTPixelTransferSessionRef transfer = NULL;
+    void *planes[] = { input, input + (size_t)w * h };
+    size_t widths[] = { w, w / 2 }, heights[] = { h, h / 2 };
+    size_t strides[] = { w, w };
+    bool ok = false;
+    if (CVPixelBufferCreateWithPlanarBytes(NULL, w, h, format, NULL, 0, 2,
+            planes, widths, heights, strides, NULL, NULL, NULL, &source) ||
+        CVPixelBufferCreateWithBytes(NULL, w, h, kCVPixelFormatType_32BGRA,
+            bgra, (size_t)w * 4, NULL, NULL, NULL, &dest) ||
+        VTPixelTransferSessionCreate(NULL, &transfer)) goto done;
+    CVBufferSetAttachment(source, kCVImageBufferYCbCrMatrixKey,
+                         kCVImageBufferYCbCrMatrix_ITU_R_601_4,
+                         kCVAttachmentMode_ShouldPropagate);
+    ok = VTPixelTransferSessionTransferImage(transfer, source, dest) == noErr;
+done:
+    if (transfer) {
+        VTPixelTransferSessionInvalidate(transfer);
+        CFRelease(transfer);
+    }
+    if (dest) CVPixelBufferRelease(dest);
+    if (source) CVPixelBufferRelease(source);
+    return ok;
+}
+#endif
+
+static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
+{
+    unsigned target = a[0], w = a[3], h = a[4], fmt = a[5];
+    bool nv12 = fmt == 0x34323076 || fmt == 0x34323066;
+    unsigned bpp = fmt == GLES_SURFACE_RGB565 ? 2 : 4;
+    GLint texture = 0, unpack;
+    static unsigned traced;
+    if (getenv("IT_GLES_VERBOSE") && (nv12 || traced++ < 32)) {
+        fprintf(stderr, "[gles] surface target=%x base=%08x stride=%u %ux%u fmt=%08x uv=%08x/%u\n",
+                target, a[1], a[2], w, h, fmt, a[6], a[7]);
+    }
+    GLenum binding = GL_TEXTURE_BINDING_2D;
+    GLenum glfmt = fmt == GLES_SURFACE_RGBA32 ? GL_RGBA : GL_BGRA;
+    GLenum type = GL_UNSIGNED_BYTE;
+    g_autofree uint8_t *pixels = NULL;
+    if (target != GL_TEXTURE_2D) {
+#ifndef GLES_HOST_EAGL
+        if (target != GL_TEXTURE_RECTANGLE_ARB) return -1;
+        binding = GL_TEXTURE_BINDING_RECTANGLE_ARB;
+#else
+        return -1;
+#endif
+    }
+    glGetIntegerv(binding, &texture);
+    if (!texture) return -1;
+    if (!a[1]) {
+        if (gh.surfaces) g_hash_table_remove(gh.surfaces, GUINT_TO_POINTER(texture));
+        return 0;
+    }
+    if (!w || !h || w > 2048 || h > 2048 ||
+        (!nv12 && fmt != GLES_SURFACE_BGRA32 && fmt != GLES_SURFACE_RGBA32 &&
+         fmt != GLES_SURFACE_RGB565)) return -1;
+    pixels = g_malloc((size_t)w * h * bpp);
+    if (nv12) {
+#ifndef GLES_HOST_EAGL
+        if ((w | h) & 1) return -1;
+        g_autofree uint8_t *planes = g_malloc((size_t)w * h * 3 / 2);
+        if (!gles_surface_read(cpu, a[1], a[2], h, w, planes) ||
+            !gles_surface_read(cpu, a[6], a[7], h / 2, w, planes + (size_t)w * h) ||
+            !gles_surface_nv12(w, h, fmt, planes, pixels)) return -1;
+#else
+        return -1;
+#endif
+    } else if (!gles_surface_read(cpu, a[1], a[2], h, w * bpp, pixels)) {
+        return -1;
+    }
+    if (bpp == 2) { glfmt = GL_RGB; type = GL_UNSIGNED_SHORT_5_6_5; }
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &unpack);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(target, 0, GL_RGBA, w, h, 0, glfmt, type, pixels);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, unpack);
+    if (glGetError() != GL_NO_ERROR) return -1;
+    if (!gh.surfaces) gh.surfaces = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+    GLESSurface *surface = g_new(GLESSurface, 1);
+    *surface = (GLESSurface){ a[1], a[2], w, h, fmt, a[6], a[7] };
+    g_hash_table_replace(gh.surfaces, GUINT_TO_POINTER(texture), surface);
+    return 0;
+}
+
+static int64_t gles_sync_surface(CPUState *cpu)
+{
+    GLint kind = 0, texture = 0, pack = 4;
+    if (!gh.surfaces || !gh.bound_framebuffer) return 0;
+    glGetFramebufferAttachmentParameterivEXT(GL_FRAMEBUFFER_EXT,
+        GL_COLOR_ATTACHMENT0_EXT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE_EXT, &kind);
+    if (kind != GL_TEXTURE) return 0;
+    glGetFramebufferAttachmentParameterivEXT(GL_FRAMEBUFFER_EXT,
+        GL_COLOR_ATTACHMENT0_EXT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME_EXT, &texture);
+    GLESSurface *s = g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(texture));
+    if (!s) return 0;
+    if (s->format != GLES_SURFACE_BGRA32 && s->format != GLES_SURFACE_RGBA32 &&
+        s->format != GLES_SURFACE_RGB565) return -1;
+    unsigned bpp = s->format == GLES_SURFACE_RGB565 ? 2 : 4;
+    g_autofree uint8_t *pixels = g_malloc((size_t)s->width * s->height * bpp);
+    glGetIntegerv(GL_PACK_ALIGNMENT, &pack);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, s->width, s->height,
+        bpp == 2 ? GL_RGB : s->format == GLES_SURFACE_RGBA32 ? GL_RGBA : GL_BGRA,
+        bpp == 2 ? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_BYTE, pixels);
+    glPixelStorei(GL_PACK_ALIGNMENT, pack);
+    if (glGetError() != GL_NO_ERROR) return -1;
+    for (unsigned row = 0; row < s->height; row++) {
+        if (cpu_memory_rw_debug(cpu, s->base + row * s->stride,
+                pixels + (size_t)row * s->width * bpp, s->width * bpp, 1)) return -1;
+    }
+    return 0;
+}
+
+/* IOSurface storage is shared with guest DMA. A texture may be imported before
+ * the scaler fills it; refresh sampled aliases at draw time. Never replace the
+ * current render target with its older guest-memory copy. */
+static bool gles_refresh_surfaces(CPUState *cpu)
+{
+    if (!gh.surfaces || !g_hash_table_size(gh.surfaces)) return true;
+    GLint active, units = 0, kind = 0, attachment = 0;
+    GLenum targets[] = { GL_TEXTURE_2D,
+#ifndef GLES_HOST_EAGL
+        GL_TEXTURE_RECTANGLE_ARB,
+#endif
+    };
+    GLenum bindings[] = { GL_TEXTURE_BINDING_2D,
+#ifndef GLES_HOST_EAGL
+        GL_TEXTURE_BINDING_RECTANGLE_ARB,
+#endif
+    };
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+    glGetIntegerv(GL_MAX_TEXTURE_UNITS, &units);
+    glGetFramebufferAttachmentParameterivEXT(GL_FRAMEBUFFER_EXT,
+        GL_COLOR_ATTACHMENT0_EXT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE_EXT, &kind);
+    if (kind == GL_TEXTURE) glGetFramebufferAttachmentParameterivEXT(GL_FRAMEBUFFER_EXT,
+        GL_COLOR_ATTACHMENT0_EXT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME_EXT, &attachment);
+    bool ok = true;
+    /* ponytail: reupload sampled surface aliases; add dirty-page tracking only
+     * if this bounded scan becomes a measured bottleneck. */
+    for (unsigned unit = 0; unit < GLES_MAX_TEXUNITS && unit < units && ok; unit++) {
+        glActiveTexture(GL_TEXTURE0 + unit);
+        for (unsigned t = 0; t < ARRAY_SIZE(targets); t++) {
+            GLint name = 0;
+            if (!glIsEnabled(targets[t])) continue;
+            glGetIntegerv(bindings[t], &name);
+            if (!name || name == attachment) continue;
+            GLESSurface *surface = g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(name));
+            if (!surface) continue;
+            uint32_t a[] = { targets[t], surface->base, surface->stride,
+                surface->width, surface->height, surface->format, surface->uv, surface->uvstride };
+            if (gles_bind_surface(cpu, a)) { ok = false; break; }
+        }
+    }
+    glActiveTexture(active);
+    return ok;
+}
+
 static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                                 uint32_t argc, const uint32_t *a)
 {
@@ -3290,6 +3502,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     switch (slot) {
 
     /* ---- engine-level operations (not framework dispatch slots) ---- */
+    case GLES_OP_BIND_SURFACE:
+        return argc == 8 ? gles_bind_surface(cpu, a) : -1;
+
     case GLES_OP_PRESENT: {
         uint64_t t0 = gles_t();
 
@@ -3438,7 +3653,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         gh.vertex.type = a[1];
         gh.vertex.stride = a[2];
         gh.vertex.ptr = a[3];
-        gh.vertex.vbo = gh.array_buffer;
+        gles_buffer_bind(&gh.vertex.vbo, gh.array_buffer);
         return 0;
 
     case GLES_SLOT_TEXCOORD_POINTER:
@@ -3446,7 +3661,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         gh.texcoord[gh.client_active_unit].type = a[1];
         gh.texcoord[gh.client_active_unit].stride = a[2];
         gh.texcoord[gh.client_active_unit].ptr = a[3];
-        gh.texcoord[gh.client_active_unit].vbo = gh.array_buffer;
+        gles_buffer_bind(&gh.texcoord[gh.client_active_unit].vbo, gh.array_buffer);
         return 0;
 
     case GLES_SLOT_COLOR_POINTER:               /* size,type,stride,ptr */
@@ -3454,7 +3669,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         gh.color.type = a[1];
         gh.color.stride = a[2];
         gh.color.ptr = a[3];
-        gh.color.vbo = gh.array_buffer;
+        gles_buffer_bind(&gh.color.vbo, gh.array_buffer);
         return 0;
 
     case GLES_SLOT_NORMAL_POINTER:              /* type,stride,ptr */
@@ -3462,7 +3677,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         gh.normal.type = a[0];
         gh.normal.stride = a[1];
         gh.normal.ptr = a[2];
-        gh.normal.vbo = gh.array_buffer;
+        gles_buffer_bind(&gh.normal.vbo, gh.array_buffer);
         return 0;
 
     case GLES_SLOT_DRAW_ARRAYS: {               /* mode, first, count */
@@ -3472,6 +3687,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         if (!gh.vertex.enabled) {
             return 0;
         }
+        if (!gles_refresh_surfaces(cpu)) return -1;
         bound = gles_bind_all_arrays(cpu, first, count);
         if (!(bound & 1u)) {                    /* no positions -> no draw */
             /* Unbind the arrays that DID bind: leaving e.g. GL_COLOR_ARRAY
@@ -3553,6 +3769,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             }
         }
 
+        if (!gles_refresh_surfaces(cpu)) return -1;
         bound = gles_bind_all_arrays(cpu, 0, maxidx + 1);
         if (!(bound & 1u)) {
             gles_unbind_arrays(bound);           /* see glDrawArrays above */
@@ -3872,6 +4089,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                                 n * sizeof(GLuint), 0) != 0) {
             return -1;
         }
+        if (gh.surfaces) {
+            for (unsigned i = 0; i < n; i++) {
+                g_hash_table_remove(gh.surfaces, GUINT_TO_POINTER(ids[i]));
+            }
+        }
         glDeleteTextures(n, ids);
         return 0;
     }
@@ -3884,9 +4106,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         GLESBuffer *b = gles_buffer_intern(a[1]);
 
         if (a[0] == GLES_ELEMENT_ARRAY_BUFFER) {
-            gh.element_buffer = b;
+            gles_buffer_bind(&gh.element_buffer, b);
         } else {
-            gh.array_buffer = b;
+            gles_buffer_bind(&gh.array_buffer, b);
         }
         return 0;
     }
@@ -3901,7 +4123,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         }
         ids = g_new0(uint32_t, n ? n : 1);
         for (i = 0; i < n; i++) {
-            ids[i] = ++gh.next_buffer_name;
+            ids[i] = gh.group ? ++gh.group->next_buffer_name : ++gh.next_buffer_name;
             gles_buffer_intern(ids[i]);
         }
         if (a[1] && n) {
@@ -4387,11 +4609,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     case GLES_SLOT_FINISH:
         glFinish();
-        return 0;
+        return gles_sync_surface(cpu);
 
     case GLES_SLOT_FLUSH:
         glFlush();
-        return 0;
+        return gles_sync_surface(cpu);
 
     case GLES_SLOT_GET_ERROR: {
         GLenum error = gh.error;
@@ -4444,6 +4666,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         return 0;
 
     case GLES_SLOT_BIND_FRAMEBUFFER:     /* target, framebuffer */
+        if (gles_sync_surface(cpu)) return -1;
         /*
          * Leaving an offscreen target that was drawn into: say what it
          * actually CONTAINS. A render-to-texture pass that runs, reports no
@@ -4485,14 +4708,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             glGetFramebufferAttachmentParameterivEXT(
                 GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
                 GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME_EXT, &attach_obj);
-            if (attach_obj) {
-                GLint prev = 0;
-
-                glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
-                glBindTexture(GL_TEXTURE_2D, attach_obj);
-                glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &tw);
-                glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &th);
-                glBindTexture(GL_TEXTURE_2D, prev);
+            GLESSurface *surface = gh.surfaces ?
+                g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(attach_obj)) : NULL;
+            if (attach_type == GL_TEXTURE && surface) {
+                tw = surface->width;
+                th = surface->height;
             }
             /*
              * The geometry as well as the colour. A render-to-texture that
@@ -4698,6 +4918,128 @@ void gles_host_set_allowed(bool allowed)
     gles_allowed = allowed;
 }
 
+#ifndef GLES_HOST_EAGL
+static GHashTable *gles_contexts, *gles_groups;
+static uint32_t gles_handle = 0x80000000;
+
+static void gles_group_unref(GLESGroup *group)
+{
+    if (!group || --group->refs) return;
+    if (group->root) CGLReleaseContext(group->root);
+    g_hash_table_destroy(group->buffers);
+    g_hash_table_destroy(group->surfaces);
+    g_hash_table_destroy(group->rb_sized);
+    g_free(group);
+}
+
+static void gles_context_free(GLESHost *state)
+{
+    GLESArray *arrays[] = { &state->vertex, &state->color, &state->normal };
+    for (unsigned i = 0; i < ARRAY_SIZE(arrays); i++) {
+        gles_buffer_destroy(arrays[i]->vbo);
+        g_free(arrays[i]->buf); g_free(arrays[i]->fbuf);
+    }
+    for (unsigned i = 0; i < GLES_MAX_TEXUNITS; i++) {
+        gles_buffer_destroy(state->texcoord[i].vbo);
+        g_free(state->texcoord[i].buf); g_free(state->texcoord[i].fbuf);
+    }
+    gles_buffer_destroy(state->array_buffer);
+    gles_buffer_destroy(state->element_buffer);
+    g_free(state->ibuf); g_free(state->txbuf); g_free(state->zerobuf);
+    g_free(state->decbuf); g_free(state->readback);
+    if (state->fbo_drawable) g_hash_table_destroy(state->fbo_drawable);
+    if (state->cgl) {
+        CGLSetCurrentContext(state->cgl);
+        glDeleteFramebuffersEXT(1, &state->fbo);
+        glDeleteTextures(1, &state->tex);
+        glDeleteRenderbuffersEXT(1, &state->depth);
+        CGLSetCurrentContext(NULL);
+        CGLReleaseContext(state->cgl);
+    }
+    gles_group_unref(state->group);
+    if (!state->group) {
+        if (state->buffers) g_hash_table_destroy(state->buffers);
+        if (state->surfaces) g_hash_table_destroy(state->surfaces);
+        if (state->rb_sized) g_hash_table_destroy(state->rb_sized);
+    }
+    if (gh_current == state) gh_current = &gh_legacy;
+    if (state == &gh_legacy) memset(state, 0, sizeof(*state));
+    else g_free(state);
+}
+
+static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc,
+                                      const uint32_t *args)
+{
+    if (!gles_contexts) {
+        gles_contexts = g_hash_table_new(g_direct_hash, g_direct_equal);
+        gles_groups = g_hash_table_new(g_direct_hash, g_direct_equal);
+    }
+    if (slot == GLES_OP_NEW_SHAREGROUP) {
+        if (argc || gles_handle == UINT32_MAX) return -1;
+        GLESGroup *group = g_new0(GLESGroup, 1);
+        group->refs = 1;
+        group->buffers = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, gles_buffer_destroy);
+        group->surfaces = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+        group->rb_sized = g_hash_table_new(g_direct_hash, g_direct_equal);
+        uint32_t handle = ++gles_handle;
+        g_hash_table_insert(gles_groups, GUINT_TO_POINTER(handle), group);
+        return handle;
+    }
+    if (slot == GLES_OP_NEW_CONTEXT) {
+        if (argc != 1 || gles_handle == UINT32_MAX) return -1;
+        GLESGroup *group = g_hash_table_lookup(gles_groups, GUINT_TO_POINTER(args[0]));
+        if (!group) return -1;
+        GLESHost *state = g_new0(GLESHost, 1);
+        state->group = group; group->refs++;
+        state->buffers = group->buffers;
+        state->surfaces = group->surfaces;
+        state->rb_sized = group->rb_sized;
+        uint32_t handle = ++gles_handle;
+        g_hash_table_insert(gles_contexts, GUINT_TO_POINTER(handle), state);
+        return handle;
+    }
+    if (slot == GLES_OP_DELETE_CONTEXT) {
+        if (argc) return -1;
+        GLESHost *state = g_hash_table_lookup(gles_contexts, GUINT_TO_POINTER(ctx));
+        if (!state) return -1;
+        g_hash_table_remove(gles_contexts, GUINT_TO_POINTER(ctx));
+        gles_context_free(state);
+        return 0;
+    }
+    if (slot == GLES_OP_DELETE_SHAREGROUP) {
+        if (argc != 1) return -1;
+        GLESGroup *group = g_hash_table_lookup(gles_groups, GUINT_TO_POINTER(args[0]));
+        if (!group) return -1;
+        g_hash_table_remove(gles_groups, GUINT_TO_POINTER(args[0]));
+        gles_group_unref(group);
+        return 0;
+    }
+    return -1;
+}
+#endif
+
+void gles_host_reset(void)
+{
+#ifndef GLES_HOST_EAGL
+    /* A guest reboot cannot send destruction calls for its old processes.
+     * Drop every native context and DMA alias before the new kernel runs.
+     * Keep handles monotonic so a stale request cannot name a new context. */
+    if (gles_contexts) {
+        GHashTableIter it;
+        gpointer value;
+        g_hash_table_iter_init(&it, gles_contexts);
+        while (g_hash_table_iter_next(&it, NULL, &value))
+            gles_context_free(value);
+        g_hash_table_remove_all(gles_contexts);
+        g_hash_table_iter_init(&it, gles_groups);
+        while (g_hash_table_iter_next(&it, NULL, &value))
+            gles_group_unref(value);
+        g_hash_table_remove_all(gles_groups);
+    }
+    gles_context_free(&gh_legacy);
+#endif
+}
+
 int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
                        uint32_t argc, const uint32_t *a)
 {
@@ -4708,6 +5050,18 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
         return -1;
     }
 
+    if (slot >= GLES_OP_NEW_SHAREGROUP && slot <= GLES_OP_DELETE_CONTEXT) {
+#ifndef GLES_HOST_EAGL
+        return gles_context_operation(slot, ctx, argc, a);
+#else
+        return 0; /* legacy EAGL backend, no native-context handles */
+#endif
+    }
+#ifndef GLES_HOST_EAGL
+    GLESHost *state = gles_contexts ? g_hash_table_lookup(gles_contexts, GUINT_TO_POINTER(ctx)) : NULL;
+    if (ctx >= 0x80000000 && !state) return -1;
+    gh_current = state ? state : &gh_legacy;
+#endif
     gles_read_switches();
     if (!gles_host_init()) {
         return -1;

@@ -79,3 +79,12 @@ z2_aer915_event(int8_t event, int8_t len) "i2c event =0x%x len=%d bytes"
 
 # bcm2838.c
 bcm2838_gic_set_irq(int irq, int level) "gic irq:%d lvl:%d"
+
+# ipod_touch_mpvd.c
+ipod_touch_h264_read(uint64_t addr, uint32_t value) "offset 0x%" PRIx64 " value 0x%08x"
+ipod_touch_h264_write(uint64_t addr, uint32_t value, unsigned bit) "offset 0x%" PRIx64 " value 0x%08x bit=%u"
+ipod_touch_mpvd_read(uint64_t addr, uint32_t value) "offset 0x%" PRIx64 " value 0x%08x"
+ipod_touch_mpvd_write(uint64_t addr, uint32_t value, uint32_t pc, uint32_t lr) "offset 0x%" PRIx64 " value 0x%08x pc=0x%08x lr=0x%08x"
+
+# ipod_touch_clock.c
+ipod_touch_clock_write(uint64_t addr, uint32_t value) "offset 0x%" PRIx64 " value 0x%08x"

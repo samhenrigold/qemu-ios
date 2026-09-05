@@ -16,14 +16,10 @@
  * contrib/run-ipod-touch.sh --sound (or your local
  * ~/Developer/qemu-ios-files/ios3/run-ios3.sh --sound) sets this up for you.
  *
- * Sample format: 44100 Hz, 16-bit, stereo, little-endian. IT_I2S_RATE overrides.
- * This is no longer an assumption -- it is confirmed from the guest's own
- * behaviour, two ways. photoShutter.caf is lpcm 44100/mono/16, and what arrives
- * at this FIFO is that file's samples BIT FOR BIT with each one duplicated into
- * both channels: iOS resamples every clip to the hardware rate, so a hardware
- * rate other than 44100 would have left resampled samples here, not the file's.
- * And the guest's own ring producer refills its 16-page ring every 371.6 ms,
- * which is 16 x 1024 frames at 44.1 kHz.
+ * Sample format: 16-bit stereo little-endian, clocked by the CS42L58's LRCLK.
+ * System sounds use 44100 Hz, but movie playback can change the codec clock
+ * (for example register 05: cb -> d3 selects 22050 Hz). IT_I2S_RATE overrides
+ * this for diagnostics. QEMU's audio mixer converts to the host output rate.
  *
  * ---------------------------------------------------------------------------
  * FIDELITY, SETTLED: THE SHUTTER IS NOW SAMPLE-EXACT. (2026-08-03, later still)
@@ -589,7 +585,11 @@ static void it_i2s_pace_drain(IPodTouchI2SState *s)
     }
     s->pushed_since_tick = false;
 
-    bytes = ((uint64_t)s->as.freq * frame * (uint64_t)elapsed) / 1000000000ULL;
+    /* Preserve fractional bytes across ticks: e.g. 44.1 kHz stereo drains
+     * 352.8 bytes per 2 ms, not 352. Dropping the fraction causes clock drift. */
+    bytes = (uint64_t)s->as.freq * frame * (uint64_t)elapsed + s->pace_fraction;
+    s->pace_fraction = bytes % 1000000000ULL;
+    bytes /= 1000000000ULL;
     if (it_i2s_debt_enabled()) {
         /*
          * Repay debt GRADUALLY: at most 25% over real rate per tick. An
@@ -657,10 +657,13 @@ static void it_i2s_stall_debug(IPodTouchI2SState *s)
             s->dmac->chan[5].conf);
 }
 
+static void it_i2s_update_voice(IPodTouchI2SState *s);
+
 static void it_i2s_pace_cb(void *opaque)
 {
     IPodTouchI2SState *s = (IPodTouchI2SState *)opaque;
 
+    it_i2s_update_voice(s);
     if (!s->enable) {
         s->dma_req = false;
         if (s->dmac && it_i2s_pace_enabled()) {
@@ -681,6 +684,7 @@ static void it_i2s_pace_start(IPodTouchI2SState *s)
         return;
     }
     s->pace_last_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    s->pace_fraction = 0;
     /* A new stream starts on real time, owing nothing: debt accrued across an
      * idle gap must never fast-forward the next sound's attack. */
     s->pace_debt = 0;
@@ -725,7 +729,20 @@ static void it_i2s_vlog(IPodTouchI2SState *s, const char *what,
 /* Drain the PCM ring into the audio backend, up to `free_bytes` of headroom. */
 static void it_i2s_drain(IPodTouchI2SState *s, int free_bytes)
 {
-    while (free_bytes > 0 && s->ring_level > 0) {
+    uint8_t amplified[4096];
+    while (free_bytes > 0 && s->ring_level >= 4) {
+        uint32_t format = s->ring_format[s->ring_tail / 4];
+        if ((format >> 9) != s->voice_rate) {
+            /* Reopening a voice inside its callback can invalidate the audio
+             * iterator. The existing device timer runs outside that callback. */
+            timer_mod(s->pace_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+            break;
+        }
+        double gain[2] = { s->output_gain, s->output_gain };
+        if (format & 0x100) {
+            gain[0] *= lm48821_gain(format & 0xff, 0);
+            gain[1] *= lm48821_gain(format & 0xff, 1);
+        }
         uint32_t contig = IT_I2S_RING_SIZE - s->ring_tail; /* bytes to buffer end */
         uint32_t chunk = s->ring_level;
         if (chunk > (uint32_t)free_bytes) {
@@ -734,7 +751,24 @@ static void it_i2s_drain(IPodTouchI2SState *s, int free_bytes)
         if (chunk > contig) {
             chunk = contig;
         }
-        size_t written = AUD_write(s->voice, s->ring + s->ring_tail, chunk);
+        /* Preserve full stereo frames, including a partial DMA element left
+         * at the end of a callback. The raw I2S tap remains pre-amplifier. */
+        chunk = MIN(chunk, sizeof(amplified)) & ~3u;
+        if (!chunk) {
+            break;
+        }
+        for (unsigned i = 4; i < chunk; i += 4) {
+            if (s->ring_format[(s->ring_tail + i) / 4] != format) {
+                chunk = i;
+                break;
+            }
+        }
+        for (unsigned i = 0; i < chunk; i += 2) {
+            int16_t sample = lduw_le_p(s->ring + s->ring_tail + i);
+            long value = lrint(sample * gain[(i / 2) & 1]);
+            stw_le_p(amplified + i, CLAMP(value, INT16_MIN, INT16_MAX));
+        }
+        size_t written = AUD_write(s->voice, amplified, chunk);
         if (written == 0) {
             break;
         }
@@ -764,6 +798,44 @@ static void it_i2s_out_cb(void *opaque, int free_bytes)
         s->prefilled = false;
         s->prefill_start_ns = 0;
     }
+}
+
+static void it_i2s_update_voice(IPodTouchI2SState *s)
+{
+    if (!s->card_ok || s->ring_level < 4) return;
+    unsigned rate = s->ring_format[s->ring_tail / 4] >> 9;
+    if (rate == s->voice_rate) return;
+    struct audsettings as = s->as;
+    as.freq = rate;
+    s->voice = AUD_open_out(&s->card, s->voice, "ipod-i2s.out", s,
+                           it_i2s_out_cb, &as);
+    if (!s->voice) {
+        warn_report("ipod i2s: could not change output rate to %u", rate);
+        s->active = false;
+        return;
+    }
+    s->voice_rate = rate;
+    AUD_set_volume_out(s->voice, 0, 255, 255);
+    AUD_set_active_out(s->voice, s->active);
+}
+
+static void it_i2s_clock_update(void *opaque, ClockEvent event)
+{
+    IPodTouchI2SState *s = opaque;
+    unsigned rate = clock_get_hz(s->lrclk);
+
+    if (!rate || getenv("IT_I2S_RATE") || rate == s->as.freq) {
+        return;
+    }
+    /* Account for the elapsed interval using the old clock first. */
+    if (s->enable) {
+        it_i2s_pace_drain(s);
+    }
+    it_i2s_vlog(s, "rate", s->as.freq, rate);
+    s->as.freq = rate;
+    s->pace_debt = 0;
+    s->pace_fraction = 0;
+    IT_I2S_DPRINTF("codec LRCLK <- %u Hz\n", rate);
 }
 
 /*
@@ -907,6 +979,10 @@ static void it_i2s_push(IPodTouchI2SState *s, const uint8_t *buf, unsigned len)
             s->dropped += (len - i);
             break;
         }
+        if (!(s->ring_head & 3)) {
+            s->ring_format[s->ring_head / 4] = ((uint32_t)s->as.freq << 9) |
+                (s->amplifier ? 0x100 | s->amplifier->control : 0);
+        }
         s->ring[s->ring_head] = buf[i];
         s->ring_head = (s->ring_head + 1) % IT_I2S_RING_SIZE;
         s->ring_level++;
@@ -935,7 +1011,9 @@ static void it_i2s_push(IPodTouchI2SState *s, const uint8_t *buf, unsigned len)
 static void it_i2s_align_frame(IPodTouchI2SState *s)
 {
     unsigned frame = 2 * s->as.nchannels;
-    unsigned rem = (unsigned)(s->total_bytes % frame);
+    /* The lifetime tap count includes bytes discarded by machine reset or
+     * ring overflow. Only the retained ring defines the host channel phase. */
+    unsigned rem = s->ring_head % frame;
     uint8_t pad[8] = { 0 };
 
     if (rem) {
@@ -1247,6 +1325,7 @@ static void ipod_touch_i2s_reset(DeviceState *dev)
     s->prefilled = false;
     s->prefill_start_ns = 0;
     s->pace_last_ns = 0;
+    s->pace_fraction = 0;
     if (s->pace_timer) {
         timer_del(s->pace_timer);
     }
@@ -1264,6 +1343,17 @@ static void ipod_touch_i2s_realize(DeviceState *dev, Error **errp)
 {
     IPodTouchI2SState *s = IPOD_TOUCH_I2S(dev);
     const char *dump_path = getenv("IT_I2S_DUMP");
+    const char *gain_db = getenv("IT_I2S_GAIN_DB");
+    s->output_gain = 1.0;
+    if (gain_db) {
+        char *end;
+        double db = strtod(gain_db, &end);
+        if (end == gain_db || *end || !isfinite(db) || db < -96 || db > 24) {
+            error_setg(errp, "IT_I2S_GAIN_DB must be a finite dB value from -96 to 24");
+            return;
+        }
+        s->output_gain = pow(10.0, db / 20.0);
+    }
 
     if (dump_path) {
         s->dump = fopen(dump_path, "wb");
@@ -1275,10 +1365,13 @@ static void ipod_touch_i2s_realize(DeviceState *dev, Error **errp)
     s->as.freq = 44100;
     const char *rate = getenv("IT_I2S_RATE");
     if (rate) {
-        int r = atoi(rate);
-        if (r > 0) {
-            s->as.freq = r;
+        char *end;
+        unsigned long r = strtoul(rate, &end, 10);
+        if (end == rate || *end || r < 8000 || r > 192000) {
+            error_setg(errp, "IT_I2S_RATE must be from 8000 to 192000 Hz");
+            return;
         }
+        s->as.freq = r;
     }
     s->as.nchannels = 2;
     s->as.fmt = AUDIO_FORMAT_S16;
@@ -1318,12 +1411,16 @@ static void ipod_touch_i2s_realize(DeviceState *dev, Error **errp)
     }
     AUD_set_volume_out(s->voice, 0, 255, 255);
     AUD_set_active_out(s->voice, 0);
+    s->voice_rate = s->as.freq;
 }
 
 static void ipod_touch_i2s_init(Object *obj)
 {
     IPodTouchI2SState *s = IPOD_TOUCH_I2S(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+
+    s->lrclk = qdev_init_clock_in(DEVICE(obj), "lrclk", it_i2s_clock_update,
+                                  s, ClockUpdate);
 
     memory_region_init_io(&s->iomem, obj, &ipod_touch_i2s_ops, s,
                           "ipod_touch_i2s", 0x1000);

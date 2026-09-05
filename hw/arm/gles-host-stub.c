@@ -15,6 +15,7 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
                        uint32_t argc, const uint32_t *a);
 void gles_host_stats(uint64_t *draws, uint64_t *presents);
 void gles_host_set_allowed(bool allowed);
+void gles_host_reset(void);
 
 int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
                        uint32_t argc, const uint32_t *a)
@@ -30,5 +31,9 @@ void gles_host_stats(uint64_t *draws, uint64_t *presents)
 
 /* Nothing to gate when there is no host GL in the first place. */
 void gles_host_set_allowed(bool allowed)
+{
+}
+
+void gles_host_reset(void)
 {
 }

@@ -21,6 +21,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchMPVDState, IPOD_TOUCH_MPVD)
 typedef struct IPodTouchMPVDState {
     SysBusDevice busdev;
     MemoryRegion iomem;
+    qemu_irq irq;
+    void *decoder;
     uint32_t regs[MPVD_REG_SIZE / 4];
 } IPodTouchMPVDState;
 

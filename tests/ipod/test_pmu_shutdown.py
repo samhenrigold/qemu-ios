@@ -37,7 +37,7 @@ static void qemu_system_shutdown_request(int cause) {
 '''
 code += "\n".join(re.findall(r"^#define PMU_.*$", header, re.M)) + "\n"
 for name in ("pcf50633_guest_shutdown_confirmed", "pcf50633_guest_shutdown",
-             "pcf50633_arm_shutdown", "pcf50633_send"):
+             "pcf50633_send"):
     match = re.search(r"^(?:static )?[^\n]*\b" + name + r"\([^)]*\)[^{]*\{.*?^}",
                       source, re.M | re.S)
     assert match, name
@@ -50,10 +50,7 @@ static void write_reg(Pcf50633State *s, uint8_t reg, uint8_t value) {
 }
 int main(void) {
     Pcf50633State s = {0};
-    /* A standby value alone is not evidence of a completed guest shutdown. */
-    write_reg(&s, PMU_STANDBY_CMD, PMU_STANDBY_GO);
-    assert(!shutdowns && !pcf50633_guest_shutdown_confirmed());
-    pcf50633_arm_shutdown(&s);
+    /* Native guest standby must work without a host-side arming flag. */
     write_reg(&s, PMU_STANDBY_CMD, 0);
     assert(!shutdowns);
     write_reg(&s, PMU_STANDBY_CMD, PMU_STANDBY_GO);

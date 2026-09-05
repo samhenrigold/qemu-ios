@@ -288,7 +288,6 @@ fi
 # it the screendump/window can look almost black even though the UI is drawn.
 export IT_LCD_BRIGHT=255
 export IT_DIRECT_IBOOT="$HERE/iBoot.bin"      # 7E18 iBoot, loaded directly
-export IT_WDT_NORESET=1                        # 3.1.3's kernel arms the real watchdog
 export IT_TVOUT_READY=1                        # TV-out shutdown gates
 export IT_TVOUT_VBLANK=1                       # periodic SDO frame interrupt
 

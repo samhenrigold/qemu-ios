@@ -114,7 +114,7 @@ DEFAULT_CHECKS = ["boot", "fsck", "persist"]
 # the default tier because it needs a guest app built by
 # contrib/it-gles/build.sh (which needs the 3.1.3 SDK) and an sshd on the
 # image, neither of which a clean checkout has.
-OPT_IN_CHECKS = ["afc", "usbtcp", "wifi", "appinstall", "applaunch", "gles"]
+OPT_IN_CHECKS = ["afc", "usbtcp", "wifi", "appinstall", "applaunch", "gles", "restart"]
 ALL_CHECKS = DEFAULT_CHECKS + OPT_IN_CHECKS
 QUICK_CHECKS = ["boot", "afc"]
 
@@ -123,7 +123,7 @@ QUICK_CHECKS = ["boot", "afc"]
 # "current state" claim that it doesn't; that turned out not to hold, so it
 # SKIPs individually rather than being promised as an unconditional PASS.
 USB_DEPENDENT_CHECKS = {"afc", "usbtcp", "appinstall", "applaunch", "persist",
-                        "gles"}
+                        "gles", "restart"}
 # Checks that need a real .ipa.
 IPA_DEPENDENT_CHECKS = {"appinstall", "applaunch"}
 
@@ -322,7 +322,7 @@ class Procs:
 def boot_env(cfg):
     """Environment for the QEMU child, with the vars 3.1.3 needs to boot.
 
-    These are not tuning knobs. Without IT_DIRECT_IBOOT (and the watchdog and
+    These are not tuning knobs. Without IT_DIRECT_IBOOT (and the
     TV-out gates) a 3.1.3 image hangs on the Apple logo forever, and without
     IT_LCD_BRIGHT=255 the backlight scales every pixel so a perfectly good
     frame reads as nearly black -- which is indistinguishable, to a lit-pixel
@@ -340,7 +340,6 @@ def boot_env(cfg):
     iboot = os.path.join(cfg.files, "ios3", "iBoot.bin")
     defaults = {
         "IT_LCD_BRIGHT": "255",
-        "IT_WDT_NORESET": "1",      # 3.1.3's kernel arms the real watchdog
         "IT_TVOUT_READY": "1",
         "IT_TVOUT_VBLANK": "1",
         "IT_BOOT_ARGS": "amfi_allow_any_signature=1 cs_enforcement_disable=1",
@@ -1156,7 +1155,7 @@ def check_gles(cfg, procs, dev, r):
                     else " (no log source carried the slot trace)"))
 
 
-def check_persist(cfg, dev2, marker_src, remote, r):
+def check_persist(cfg, dev2, marker_src, remote, r, event="clean shutdown + reboot"):
     # The directory has to exist before afcclient can create the local file:
     # it reports a missing *local* directory with exactly the same "No such
     # file or directory" it uses for a missing *remote* file, so without this
@@ -1178,7 +1177,30 @@ def check_persist(cfg, dev2, marker_src, remote, r):
                         (g.stdout + g.stderr).strip()[-200:]))
     if sha256_file(dst) != sha256_file(marker_src):
         return r.set(False, "file survived but the contents changed")
-    return r.set(True, "%s identical after clean shutdown + reboot" % remote)
+    return r.set(True, "%s identical after %s" % (remote, event))
+
+
+def check_restart(cfg, procs, dev, result):
+    """Reset the running machine after writes, preserving its overlay in-process."""
+    port, error = ensure_guest_ssh(cfg, procs, dev)
+    if port is None:
+        return result.set(False, error)
+    src = os.path.join(dev.dir, "restart-marker.bin")
+    remote = "/regress_restart.bin"
+    with open(src, "wb") as f:
+        # Cross the old 512-page write-script limit and end on a partial page.
+        f.write(os.urandom(4 * 1024 * 1024 + 65535))
+    put = afc(cfg, ["put -f %s %s" % (src, remote)])
+    if put.returncode or guest_ssh(cfg, port, ["sync"]).returncode:
+        return result.set(False, "could not write and sync restart marker")
+    dev.qmp.cmd("system_reset")
+    ok, detail, _ = dev.wait_for_home(cfg.boot_timeout)
+    if not ok:
+        return result.set(False, "warm reset: " + detail)
+    udid, detail = wait_for_device(cfg)
+    if not udid:
+        return result.set(False, "USB after warm reset: " + detail)
+    return check_persist(cfg, dev, src, remote, result, event="warm reset")
 
 
 def hfs_volume_blocks(first_page):
@@ -1522,9 +1544,13 @@ def main():
             dev.qmp.home()              # leave GLTest so SpringBoard settles
             time.sleep(5)
 
+        if "restart" in selected:
+            if not check_restart(cfg, procs, dev, results["restart"]):
+                return finish(results, procs, cfg)
+
         if needs_second_boot:
             with open(marker_src, "wb") as f:
-                f.write(os.urandom(65535))
+                f.write(os.urandom(4 * 1024 * 1024 + 65535))
             p = afc(cfg, ["put -f %s %s" % (marker_src, marker_remote)])
             if p.returncode != 0:
                 results["persist"].set(

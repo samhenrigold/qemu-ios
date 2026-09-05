@@ -10,6 +10,8 @@
 #include "qemu/timer.h"
 #include "hw/arm/ipod_touch_sysic.h"
 #include "hw/dma/pl080.h"
+#include "hw/qdev-clock.h"
+#include "hw/arm/ipod_touch_lm48821.h"
 
 /*
  * S5L8720 I2S controller (AppleS5L8900XI2SController).
@@ -166,8 +168,15 @@ typedef struct IPodTouchI2SState {
     QEMUSoundCard card;
     SWVoiceOut *voice;
     struct audsettings as;
+    Clock *lrclk;
+    LM48821State *amplifier;
+    double output_gain;
 
     uint8_t ring[IT_I2S_RING_SIZE];
+    /* Rate and amplifier control when each stereo frame entered the FIFO.
+     * Fixed metadata keeps allocation bounded even with rapid control writes. */
+    uint32_t ring_format[IT_I2S_RING_SIZE / 4];
+    unsigned voice_rate;
     uint32_t ring_head;   /* write cursor */
     uint32_t ring_tail;   /* read cursor  */
     uint32_t ring_level;  /* bytes queued */
@@ -187,6 +196,7 @@ typedef struct IPodTouchI2SState {
     bool prefilled;           /* the current sound has passed the prebuffer */
     int64_t prefill_start_ns; /* when this sound's prebuffer began filling */
     int64_t pace_last_ns;     /* when we last drained the modelled FIFO */
+    uint64_t pace_fraction;   /* fractional bytes, denominator 1e9 */
     uint32_t pace_debt;       /* bytes the drain still owes after a host stall */
     bool pushed_since_tick;   /* any PL080 delivery since the last pace tick */
     int64_t last_push_ns;     /* IT_I2S_STALLDBG: when the FIFO last saw data */

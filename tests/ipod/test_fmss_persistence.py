@@ -12,8 +12,9 @@ source = (ROOT / "hw/arm/ipod_touch_fmss.c").read_text()
 functions = []
 for name in ("find_bit_index", "fmss_block_key", "fmss_block_marker_path",
              "fmss_block_is_erased", "ipod_touch_fmss_io_failed", "fmss_io_error", "fmss_erase_block",
-             "fmss_remember_physical", "fmss_store_page", "write_nand_pages"):
-    match = re.search(r"^(?:static )?[^\n]*\b" + name + r"\([^)]*\)[^{]*\{.*?^}", source, re.M | re.S)
+             "fmss_remember_physical", "fmss_store_page", "fmss_write_dma_read", "write_nand_pages",
+             "ipod_touch_fmss_reset"):
+    match = re.search(r"^(?:static )?[A-Za-z_][^\n]*\b" + name + r"\([^)]*\)[^{]*\{.*?^}", source, re.M | re.S)
     assert match, name
     functions.append(match.group())
 
@@ -30,7 +31,7 @@ harness = r'''
 #define NAND_BYTES_PER_PAGE 4096
 #define NAND_BYTES_PER_SPARE 64
 #define NAND_PAGES_PER_BLOCK 128
-#define FMSS_MAX_WRITE_ENTRIES 512
+/* FMSS_LIMIT */
 #define RUN_STATE_IO_ERROR 1
 #define LOG_GUEST_ERROR 1
 #define qemu_log_mask(...) ((void)0)
@@ -44,11 +45,27 @@ static struct { uint64_t shadowed; } fmss_stats;
 typedef struct {
     char *nand_overlay;
     GHashTable *phys_pages, *erased_blocks, *overlay_pages;
+    uint32_t reg_cs_irq_bit, reg_cinfo_target_addr, reg_csgenrc;
+    int irq;
     uint32_t reg_cs_buf_addr, reg_pages_in_addr, reg_num_pages;
     uint32_t reg_pages_out_addr, reg_page_spare_out_addr;
     uint8_t page_buffer[4096], page_spare_buffer[64];
 } IPodTouchFMSSState;
-static uint8_t memory[10000];
+typedef IPodTouchFMSSState DeviceState;
+#define IPOD_TOUCH_FMSS(s) (s)
+static bool iboot_bt_patched;
+static void qemu_irq_lower(int irq) {}
+static uint8_t memory[65536];
+typedef struct { void *mr; uint64_t size; } MemoryRegionSection;
+static void *get_system_memory(void) { return memory; }
+static MemoryRegionSection memory_region_find(void *root, uint64_t addr, size_t len) {
+    bool valid = addr <= sizeof(memory) && len <= sizeof(memory) - addr;
+    return (MemoryRegionSection){ valid ? memory : NULL, valid ? len : 0 };
+}
+static bool memory_region_is_ram(void *mr) { return mr == memory; }
+static void memory_region_unref(void *mr) {}
+#define int128_eq(a,b) ((a)==(b))
+#define int128_make64(a) (a)
 static void cpu_physical_memory_read(uint32_t addr, void *p, size_t n)
 { assert(addr + n <= sizeof(memory)); memcpy(p, memory + addr, n); }
 static uint32_t ldl_le_p(const void *p)
@@ -87,6 +104,7 @@ static int test_mkdir(const char *p, int mode)
 #define remove test_remove
 #define g_mkdir_with_parents test_mkdir
 '''
+harness = harness.replace("/* FMSS_LIMIT */", re.search(r"^#define FMSS_MAX_WRITE_ENTRIES.*$", source, re.M).group())
 harness += "\n".join(functions)
 harness += r'''
 #undef fopen
@@ -139,6 +157,9 @@ static void run_case(const char *op, int at, bool erase, bool physical)
         assert(!stops && !ipod_touch_fmss_io_failed());
         uint8_t *cached = g_hash_table_lookup(s.phys_pages, fmss_block_key(0, 128));
         assert(cached && cached[0] == 0xa5 && ldl_le_p(cached + 4096) == 7);
+        ipod_touch_fmss_reset(&s);
+        assert(g_hash_table_size(s.phys_pages) == (physical ? 1 : 0));
+        /* Reset does not remove the durable, relocated page. */
         struct stat st;
         assert(stat(old_path, &st) == 0 && st.st_size == 4160);
         assert(g_hash_table_contains(s.overlay_pages, fmss_block_key(physical ? 0 : 1,
@@ -147,6 +168,40 @@ static void run_case(const char *op, int at, bool erase, bool physical)
     if (s.phys_pages) g_hash_table_destroy(s.phys_pages);
     if (s.erased_blocks) g_hash_table_destroy(s.erased_blocks);
     g_hash_table_destroy(s.overlay_pages);
+}
+
+static void run_bulk(void)
+{
+    IPodTouchFMSSState s = { .nand_overlay = "bulk", .reg_cs_buf_addr = 16,
+        .reg_pages_out_addr = 10000, .reg_page_spare_out_addr = 20000 };
+    memset(memory, 0, sizeof(memory));
+    for (uint32_t i = 0; i < 1024; i++) {
+        uint32_t words[] = {1, i}, src[] = {40000, 42048}, logical = 7;
+        memcpy(memory+16+i*8,words,8);
+        memcpy(memory+10000+i*8,src,8);
+        memcpy(memory+20000+i*12,&logical,4);
+    }
+    memset(memory+40000,0xab,4096);
+    fault=NULL;stops=0;fmss_io_failed=false;erase_enabled=false;physical_enabled=true;
+    s.overlay_pages=g_hash_table_new(g_direct_hash,g_direct_equal);
+    write_nand_pages(&s);
+    assert(!stops && g_hash_table_size(s.phys_pages)==1024);
+    assert(g_hash_table_size(s.overlay_pages)==1024);
+    for (unsigned i=0;i<1024;i++) {
+        char path[64];uint8_t page[4160];
+        snprintf(path,sizeof(path),"bulk/cs0/%u.page",i);
+        FILE *f=fopen(path,"rb");assert(f && fread(page,1,sizeof(page),f)==sizeof(page));
+        fclose(f);assert(page[0]==0xab && page[4095]==0xab && ldl_le_p(page+4096)==7);
+    }
+    /* Crossing RAM or wrapping a 32-bit register must fail, never read MMIO. */
+    uint8_t byte;
+    assert(!fmss_write_dma_read(UINT64_C(0x100000000),&byte,1));
+    assert(!fmss_write_dma_read(sizeof(memory)-1,&byte,2));
+    assert(stops==2);
+    fmss_io_failed=false;stops=0;s.reg_cs_buf_addr=sizeof(memory)-4;
+    uint32_t bad=1;memcpy(memory+s.reg_cs_buf_addr,&bad,4);
+    write_nand_pages(&s);assert(stops==1 && fmss_io_failed);
+    g_hash_table_destroy(s.phys_pages);g_hash_table_destroy(s.overlay_pages);
 }
 int main(void)
 {
@@ -165,7 +220,8 @@ int main(void)
     run_case(NULL, 1, true, true);
     run_case(NULL, 1, false, false);
     run_case("rename", 1, false, false);
-    puts("FMSS persistence: 18 success/fault cases passed");
+    run_bulk();
+    puts("FMSS persistence: 18 fault cases, 1024-page bulk write and DMA bounds passed");
 }
 '''
 # stdbool is normally supplied by qemu/osdep.h.
