@@ -91,3 +91,14 @@ user-domain API; TLS 1.0/AES128-SHA HTTP 200; CA removed; chain rejected again.
 The helper needs the period-correct `modify-anchor-certificates` entitlement,
 not the modern prefixed name. Evidence: /tmp/it-proxy-tls-native-v4.log.
 Production CONNECT termination and automatic per-device CA management remain.
+
+### Built-in TLS bridge implemented
+
+CONNECT now terminates legacy guest TLS locally and fetches HTTPS using verified
+system libcurl. A per-device CA is generated atomically in private state; the app
+installs/removes only its public certificate in the guest through securityd.
+The Mac trust store and base NAND are unchanged. The helper bundles OpenSSL
+statically. Native guest HTTPS returned HTTP 200 for example.com and NYT. Offline
+TLS sanitizer tests cover concurrent CA initialization, trust/name validation,
+HTTP errors inside TLS, and rejection of an untrusted upstream. Release app built.
+This completes the TLS transport step; modern WebKit feature gaps remain.

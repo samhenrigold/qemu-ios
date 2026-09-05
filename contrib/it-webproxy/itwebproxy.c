@@ -20,14 +20,22 @@
 #include <limits.h>
 #include <stdint.h>
 #include <sys/stat.h>
+#include <stdarg.h>
+#include <unistd.h>
+#ifdef HAVE_OPENSSL
+#include "tls-bridge.h"
+#endif
 #include <unistd.h>
 
 #define HEAD_MAX 65536
 #define BODY_MAX (8 * 1024 * 1024)
+static void client_finish(void);
+static bool sendall(int fd, const void *data, size_t n);
+static int reply_printf(int fd, const char *format, ...);
 static void fail(int code, const char *message)
 {
-    dprintf(1, "HTTP/1.0 %d %s\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n%s\n", code, message, message);
-    exit(1);
+    reply_printf(1, "HTTP/1.0 %d %s\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n%s\n", code, message, message);
+    client_finish(); exit(1);
 }
 static bool sendall(int fd, const void *data, size_t n)
 {
@@ -35,12 +43,48 @@ static bool sendall(int fd, const void *data, size_t n)
     while (n) {
         struct pollfd f = {fd, POLLOUT, 0};
         if (poll(&f, 1, 30000) <= 0) return false;
-        ssize_t k = write(fd, p, n);
+        ssize_t k;
+#ifdef HAVE_OPENSSL
+        if (fd == 1 && client_tls) {
+            k = SSL_write(client_tls, p, n > INT_MAX ? INT_MAX : (int)n);
+            if (k <= 0) return false;
+        }
+        else
+#endif
+        k = write(fd, p, n);
         if (k < 0 && (errno == EINTR || errno == EAGAIN)) continue;
         if (k <= 0) return false;
         p += k; n -= k;
     }
     return true;
+}
+static int reply_printf(int fd, const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    char *text = NULL;
+    int count = vasprintf(&text, format, args);
+    va_end(args);
+    bool ok = count >= 0 && sendall(fd, text, (size_t)count);
+    free(text);
+    return ok ? count : -1;
+}
+static ssize_t client_read(void *data, size_t count)
+{
+#ifdef HAVE_OPENSSL
+    if (client_tls) {
+        int n = SSL_read(client_tls, data, count > INT_MAX ? INT_MAX : (int)count);
+        if (n < 0) errno = EIO;
+        return n;
+    }
+#endif
+    return read(0, data, count);
+}
+static void client_finish(void)
+{
+#ifdef HAVE_OPENSSL
+    if (client_tls) { SSL_shutdown(client_tls); SSL_free(client_tls); client_tls = NULL; }
+#endif
 }
 static int connect_host(const char *host, const char *port)
 {
@@ -195,14 +239,14 @@ static int archive_gate(const char *config)
 }
 static void archive_limited(long seconds)
 {
-    dprintf(1, "HTTP/1.0 429 Too Many Requests\r\nConnection: close\r\n"
+    reply_printf(1, "HTTP/1.0 429 Too Many Requests\r\nConnection: close\r\n"
             "Content-Type: text/html; charset=utf-8\r\nRetry-After: %ld\r\n"
             "Cache-Control: no-store\r\n\r\n"
             "<html><head><title>Archive temporarily busy</title></head><body>"
             "<h2>Wayback Machine is temporarily limiting requests</h2>"
             "<p>Light Touch has paused archive requests. Please wait %ld seconds, "
             "then reload this page.</p></body></html>", seconds, seconds);
-    exit(0);
+    client_finish(); exit(0);
 }
 static void archive_wait(int fd)
 {
@@ -260,10 +304,10 @@ static bool archive_cached(int fd, const char *key)
 }
 static void archive_emit(int fd, ArchiveReply *reply, long status, bool head_only)
 {
-    dprintf(fd, "HTTP/1.0 %ld Archive response\r\n", status);
+    reply_printf(fd, "HTTP/1.0 %ld Archive response\r\n", status);
     sendall(fd, reply->headers, reply->headers_len);
-    if (!head_only) dprintf(fd, "Content-Length: %zu\r\n", reply->body_len);
-    dprintf(fd, "Connection: close\r\n\r\n");
+    if (!head_only) reply_printf(fd, "Content-Length: %zu\r\n", reply->body_len);
+    reply_printf(fd, "Connection: close\r\n\r\n");
     if (!head_only) sendall(fd, reply->body, reply->body_len);
 }
 static void archived_request(const char *target, const char *date, bool head_only, const char *config)
@@ -274,7 +318,7 @@ static void archived_request(const char *target, const char *date, bool head_onl
     snprintf(url, sizeof(url), "%s/web/%sid_/%s", ARCHIVE_ORIGIN, date, target);
     int gate = archive_gate(config);
     int cache = head_only ? -1 : archive_cache(config, url);
-    if (archive_cached(cache, url)) exit(0);
+    if (archive_cached(cache, url)) { client_finish(); exit(0); }
     char cache_key[sizeof(url)];
     memcpy(cache_key, url, strlen(url) + 1);
     archive_wait(gate);
@@ -332,14 +376,14 @@ static void archived_request(const char *target, const char *date, bool head_onl
         if (cache >= 0 && status == 200 &&
             strlen(cache_key) + reply->headers_len + reply->body_len + 256 < CACHE_MAX &&
             ftruncate(cache, 0) == 0 && lseek(cache, 0, SEEK_SET) == 0) {
-            dprintf(cache, "%s\n", cache_key);
+            reply_printf(cache, "%s\n", cache_key);
             archive_emit(cache, reply, status, false);
         }
         if (cache >= 0) close(cache);
         flock(gate, LOCK_UN); close(gate);
         archive_emit(1, reply, status, head_only);
         curl_easy_cleanup(curl); free(reply->body); free(reply);
-        exit(0);
+        client_finish(); exit(0);
     }
     fail(502, "The archive returned too many redirects");
 }
@@ -352,6 +396,9 @@ int main(int argc, char **argv)
     signal(SIGPIPE, SIG_IGN);
     /* Bounds even a stalled request or host resolver; process owns one stream. */
     alarm(120);
+#ifdef HAVE_OPENSSL
+    if (argc == 3 && !strcmp(argv[1], "--init-ca")) return tls_initialize(argv[2]);
+#endif
     if (argc != 2) fail(503, "Proxy configuration unavailable");
     FILE *config = fopen(argv[1], "r");
     char mode[32] = "", host[256] = "", port[16] = "";
@@ -372,9 +419,13 @@ int main(int argc, char **argv)
     } else if (strcmp(mode, "direct") && strcmp(mode, "off")) fail(503, "Invalid proxy configuration");
     /* Safari can retain a proxy connection while configd applies No Proxy.
      * Stale connections go directly to their origin during that transition. */
+    char tunnel[300] = "";
+#ifdef HAVE_OPENSSL
+read_request:;
+#endif
     char head[HEAD_MAX]; size_t n = 0;
     while (n < sizeof(head) - 1) {
-        ssize_t k = read(0, head + n, 1);
+        ssize_t k = client_read(head + n, 1);
         if (k < 0 && (errno == EINTR || errno == EAGAIN)) continue;
         if (k <= 0) fail(400, "Incomplete request");
         if (head[n] == 0) fail(400, "Invalid request byte");
@@ -388,9 +439,10 @@ int main(int argc, char **argv)
     *line_end = 0;
     if (sscanf(head, "%31s %16383s %15s %c", method, target, version, &extra) != 3 ||
         (strcmp(version, "HTTP/1.0") && strcmp(version, "HTTP/1.1"))) fail(400, "Invalid request");
-    if (archive && strcmp(method, "GET") && strcmp(method, "HEAD"))
-        fail(405, "Archive browsing supports HTTP GET and HEAD");
     if (!strcmp(method, "CONNECT")) {
+        if (tunnel[0]) fail(400, "Nested TLS tunnels are unsupported");
+        if (strlen(target) >= sizeof(tunnel)) fail(400, "Tunnel destination too long");
+        strcpy(tunnel, target);
         char *colon = strrchr(target, ':');
         if (!colon || colon == target) fail(400, "Invalid tunnel destination");
         *colon++ = 0; char *end; long number = strtol(colon, &end, 10);
@@ -400,14 +452,38 @@ int main(int argc, char **argv)
         if (length > 2 && hostname[0] == '[' && hostname[length - 1] == ']') {
             hostname[length - 1] = 0; hostname++;
         }
+#ifdef HAVE_OPENSSL
+        char ca_path[PATH_MAX];
+        if (strcmp(mode, "off") && tls_path(ca_path, sizeof(ca_path), argv[1], ".ca.pem") && access(ca_path, F_OK) == 0) {
+            SSL_CTX *ctx = tls_server_context(argv[1], hostname);
+            if (!ctx) fail(503, "Local TLS certificate unavailable");
+            const char ok[] = "HTTP/1.0 200 Connection established\r\n\r\n";
+            if (!sendall(1, ok, sizeof(ok) - 1)) return 1;
+            fcntl(0, F_SETFL, fcntl(0, F_GETFL) & ~O_NONBLOCK);
+            fcntl(1, F_SETFL, fcntl(1, F_GETFL) & ~O_NONBLOCK);
+            client_tls = SSL_new(ctx); SSL_CTX_free(ctx);
+            if (!client_tls || !SSL_set_rfd(client_tls, 0) || !SSL_set_wfd(client_tls, 1) || SSL_accept(client_tls) != 1) return 1;
+            goto read_request;
+        }
+#endif
+        if (archive) fail(405, "Dated HTTPS needs the local TLS bridge");
         int fd = connect_host(hostname, colon);
         if (fd < 0) fail(502, "Destination unavailable");
         const char ok[] = "HTTP/1.0 200 Connection established\r\n\r\n";
         if (sendall(1, ok, sizeof(ok) - 1)) relay(fd);
         close(fd); return 0;
     }
+    if (archive && strcmp(method, "GET") && strcmp(method, "HEAD"))
+        fail(405, "Archive browsing supports HTTP GET and HEAD");
+    if (tunnel[0]) {
+        if (target[0] != '/') fail(400, "TLS request needs an origin-form path");
+        char absolute[sizeof(target)];
+        int length = snprintf(absolute, sizeof(absolute), "https://%s%s", tunnel, target);
+        if (length < 0 || length >= (int)sizeof(absolute)) fail(414, "URL too long");
+        strcpy(target, absolute);
+    }
     for (const char *p = method; *p; p++) if (!isupper((unsigned char)*p)) fail(400, "Invalid method");
-    if (strncmp(target, "http://", 7)) fail(400, "An absolute HTTP URL is required");
+    if (!tunnel[0] && strncmp(target, "http://", 7)) fail(400, "An absolute HTTP URL is required");
     if (archive) {
         const char *authority = target + 7;
         const char *end = strchr(authority, '/');
@@ -440,7 +516,7 @@ int main(int argc, char **argv)
     char *body = malloc(body_length + 1);
     if (!body) fail(503, "Out of memory");
     for (size_t read_bytes = 0; read_bytes < body_length;) {
-        ssize_t k = read(0, body + read_bytes, body_length - read_bytes);
+        ssize_t k = client_read(body + read_bytes, body_length - read_bytes);
         if (k < 0 && (errno == EINTR || errno == EAGAIN)) continue;
         if (k <= 0) fail(400, "Incomplete body");
         read_bytes += k;
@@ -449,7 +525,7 @@ int main(int argc, char **argv)
     if (!curl) fail(503, "HTTP unavailable");
     curl_easy_setopt(curl, CURLOPT_URL, target);
     curl_easy_setopt(curl, CURLOPT_PROXY, ""); /* Never inherit host proxy credentials/settings. */
-    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTP);
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, tunnel[0] ? (CURLPROTO_HTTP | CURLPROTO_HTTPS) : CURLPROTO_HTTP);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_0);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
@@ -471,5 +547,6 @@ int main(int argc, char **argv)
     if (rc) fprintf(stderr, "itwebproxy: %s\n", curl_easy_strerror(rc));
     curl_easy_cleanup(curl); curl_slist_free_all(headers); free(body);
     if (rc && !started) fail(502, "Destination unavailable");
+    client_finish();
     return rc ? 1 : 0;
 }
