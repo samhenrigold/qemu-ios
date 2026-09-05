@@ -39,6 +39,9 @@ The stock base images are read-only inputs. Guest writes belong in a separate
 
 ## September reliability fixes
 
+The September 5 continuation, frontend changes, verification evidence, and
+remaining master-plan priorities are recorded in [UI reliability](ipod-ui-reliability.md).
+
 - GLES pixel format/type and alignment validation precedes host calls. PACK
   and UNPACK are independent. Query output cardinalities are explicit; compressed
   format queries describe the emulator's decoders rather than host GL formats.
@@ -150,8 +153,10 @@ machine still needs separate validation.
 - The filesystem's inferred erase spans multiple files. I/O errors stop the
   session; fully transactional recovery from interruption mid-erase would
   require block journaling. No claim of universal power-loss recovery is made.
-- Snapshot resume is opt-in. Keep save/restore and snapshot/flash consistency
-  coverage when changing device migration state.
+- Light Touch no longer offers resume-on-launch or snapshot menu commands;
+  launch starts a fresh boot. The underlying snapshot machinery remains, so
+  keep save/restore and snapshot/flash consistency coverage when changing
+  device migration state.
 - Idle wake, self-reboot, debugger attach and remote-name DNS have historical
   open notes. Those 2.1.1 observations are not a current 3.1.3 failure list;
   reproduce each before changing hardware models.
