@@ -1,0 +1,58 @@
+--- a/libavcodec/h264dec.h
++++ b/libavcodec/h264dec.h
+@@ -279,6 +279,7 @@
+     unsigned int pps_id;
+ 
+     const uint8_t *intra_pcm_ptr;
++    uint8_t pcm_scratch[16 * 48 * 2 + AV_INPUT_BUFFER_PADDING_SIZE];
+ 
+     uint8_t *bipred_scratchpad;
+     uint8_t *edge_emu_buffer;
+@@ -562,6 +563,7 @@
+     int height_from_caller;
+ 
+     int enable_er;
++    int cavlc_pcm_bit_offset;
+     ERContext er;
+     int16_t *dc_val_base;
+ 
+--- a/libavcodec/h264dec.c
++++ b/libavcodec/h264dec.c
+@@ -1094,6 +1094,7 @@
+ static const AVOption h264_options[] = {
+     { "is_avc", "is avc", OFFSET(is_avc), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VDX },
+     { "nal_length_size", "nal_length_size", OFFSET(nal_length_size), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 4, VDX },
++    { "cavlc_pcm_bit_offset", "Original CAVLC payload alignment after slice-header replacement", OFFSET(cavlc_pcm_bit_offset), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 7, VD },
+     { "enable_er", "Enable error resilience on damaged frames (unsafe)", OFFSET(enable_er), AV_OPT_TYPE_BOOL, { .i64 = -1 }, -1, 1, VD },
+     { "x264_build", "Assume this x264 version if no x264 version found in any SEI", OFFSET(x264_build), AV_OPT_TYPE_INT, {.i64 = -1}, -1, INT_MAX, VD },
+     { "skip_gray", "Do not return gray gap frames", OFFSET(skip_gray), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
+--- a/libavcodec/h264_cavlc.c
++++ b/libavcodec/h264_cavlc.c
+@@ -744,12 +744,25 @@
+                             h->ps.sps->bit_depth_luma;
+ 
+         // We assume these blocks are very rare so we do not optimize it.
+-        sl->intra_pcm_ptr = align_get_bits(&sl->gb);
++        /* Hardware clients may replace the slice header while retaining
++         * CAVLC data. PCM padding follows the original payload alignment. */
++        skip_bits(&sl->gb, (-get_bits_count(&sl->gb) - h->cavlc_pcm_bit_offset) & 7);
+         if (get_bits_left(&sl->gb) < mb_size) {
+             av_log(h->avctx, AV_LOG_ERROR, "Not enough data for an intra PCM block.\n");
+             return AVERROR_INVALIDDATA;
+         }
+-        skip_bits_long(&sl->gb, mb_size);
++        if (h->cavlc_pcm_bit_offset) {
++            uint8_t *pcm = sl->pcm_scratch;
++            if (mb_size / 8 > sizeof(sl->pcm_scratch) - AV_INPUT_BUFFER_PADDING_SIZE)
++                return AVERROR_INVALIDDATA;
++            for (int i = 0; i < mb_size / 8; i++)
++                pcm[i] = get_bits(&sl->gb, 8);
++            memset(pcm + mb_size / 8, 0, AV_INPUT_BUFFER_PADDING_SIZE);
++            sl->intra_pcm_ptr = pcm;
++        } else {
++            sl->intra_pcm_ptr = sl->gb.buffer + (get_bits_count(&sl->gb) >> 3);
++            skip_bits_long(&sl->gb, mb_size);
++        }
+ 
+         // In deblocking, the quantizer is 0
+         h->cur_pic.qscale_table[mb_xy] = 0;

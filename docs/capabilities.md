@@ -1,6 +1,6 @@
 # iPod touch 2G / iOS 3.1.3 status
 
-Updated 2026-09-04. This is the current project entry point; the reverse-engineering
+Updated 2026-09-05. This is the current project entry point; the reverse-engineering
 notes in `ipod2g-re` mostly describe **2.1.1 / 5F138**, not the current **3.1.3 /
 7E18** target. Do not reuse kernel addresses or the 2.1.1 USB gate patch on 3.1.3.
 
@@ -42,6 +42,8 @@ The stock base images are read-only inputs. Guest writes belong in a separate
 - GLES pixel format/type and alignment validation precedes host calls. PACK
   and UNPACK are independent. Query output cardinalities are explicit; compressed
   format queries describe the emulator's decoders rather than host GL formats.
+- Bulk NAND writes no longer stop at 512 pages. DMA reads are bounded to RAM,
+  and invalid scripts stop the VM instead of silently dropping file data.
 - NAND persistence errors stop the VM and latch a host storage failure. Failed
   stores are not inserted as successful physical-cache writes. The app displays
   the failure and refuses resume/snapshot operations on that session.
@@ -62,6 +64,20 @@ The stock base images are read-only inputs. Guest writes belong in a separate
   after AFC. Filesystem checks reconstruct the full HFS+ volume and require
   `fsck_hfs` exit zero; they do not whitelist bitmap/header damage.
 
+Native shutdown now uses launchd-coordinated `reboot2`, and the PMU accepts
+its actual standby command without host-side gesture arming. The watchdog
+recognizes the exact immediate-reset command instead of treating ordinary
+keep-alives as resets; launchers no longer suppress guest resets. Generated
+NAND images discard the previous boot's temporary physical mapping on reset,
+while physical-image mode retains its programmed pages. This fixes the native
+reboot that entered recovery with an invalid HFS signature.
+
+The `boot,restart,persist,fsck` run passed with resets enabled: a 65,535-byte
+marker survived warm reset, another survived clean shutdown and cold boot,
+and all 1,835,008 HFS allocation blocks passed fsck. See
+[native shutdown evidence](ipod-native-halt.md). These fixes are included in
+`build-native14/LightTouchMac-blitz.app`; the running Debug app is unaffected.
+
 ## Verification
 
 Device-free checks (no firmware modifications):
@@ -72,6 +88,8 @@ python3 tests/ipod/test_fmss_persistence.py
 python3 tests/ipod/test_regress.py
 python3 tests/ipod/test_launch.py
 python3 tests/ipod/test_pmu_shutdown.py
+python3 tests/ipod/test_wdt_reset.py
+python3 tests/ipod/test_armv6_toolchain.py
 ```
 
 The GLES check compiles actual boundary handlers under ASan/UBSan. The NAND
@@ -84,7 +102,7 @@ Run the actual device checks with a **new output directory** and a real IPA:
 python3 tests/ipod/regress.py \
   --qemu build-native14/qemu-build/qemu-system-arm \
   --base-nand "$HOME/Developer/qemu-ios-files/nand-ultimate" \
-  --checks boot,afc,usbtcp,appinstall,applaunch,gles,persist,fsck \
+  --checks boot,afc,usbtcp,appinstall,applaunch,gles,restart,persist,fsck \
   --ipa /absolute/path/to/decrypted.ipa \
   --out /tmp/ipod-check-new-run
 ```
@@ -107,13 +125,28 @@ machine still needs separate validation.
 
 ## Remaining work and deliberate limits
 
-- **Native halt versus power-off remains unresolved.** `ithalt` reaches the
-  7E18 kernel's intentional terminal halt loop without emitting a PMU power-off
-  command. The clean-shutdown persistence check therefore cannot pass; successful
-  full-volume fsck is separate evidence. See [native halt investigation](ipod-native-halt.md).
+- Media is enabled for ordinary LightTouch launches; standalone QEMU still uses
+  the explicit media environment switches. Active decoder/graphics snapshot
+  state is unfinished. Packaged-app playback and existing-device component
+  upgrades are validated. AAC-LC, HE-AAC,
+  MP3 and ALAC reach native audio; Spore's original MPEG-4 intro and progressive
+  H.264 I/P video now display with controls and a status bar. Complete reference
+  clips pass sample/pixel checks, including playback after warm reset. NV12
+  LCD scanout supports unscaled and polyphase-scaled video. H.264 also handles multi-slice
+  pictures, repeated weighted reference entries, and later-slice reordering or
+  subsets of references, bounded replay when later slices introduce references,
+  mixed I/P slices, constrained intra prediction, nonzero deblocking offsets,
+  and CAVLC I_PCM alignment. Hardware filter rounding,
+  additional transforms/formats, H.264 B/field pictures and per-slice DMA,
+  and active-decoder snapshot state remain unfinished. Physical 7E18 reference
+  decoding confirms mono HE-AAC v2 behavior; both its LC and HE program outputs
+  now match complete emulator offline captures within codec rounding differences.
+  See [media evidence and runnable checks](ipod-media.md).
 
-- Host GLES state still uses a global context. Demonstrate a real affected
-  application before undertaking per-guest-context isolation (old plan 05).
+
+- The native macOS GLES bridge isolates guest contexts/sharegroups and clears
+  them on machine reset. The legacy EAGL backend still needs equivalent
+  context isolation and reset cleanup.
 - The filesystem's inferred erase spans multiple files. I/O errors stop the
   session; fully transactional recovery from interruption mid-erase would
   require block journaling. No claim of universal power-loss recovery is made.

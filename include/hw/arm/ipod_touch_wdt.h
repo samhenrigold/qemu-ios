@@ -8,11 +8,11 @@
 #define TYPE_IPOD_TOUCH_WDT "ipodtouch.wdt"
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchWDTState, IPOD_TOUCH_WDT)
 
-/* Watchdog control register (offset 0) and the bit AppleARMWatchDogTimer's
- * PEHaltRestart handler sets to trigger a full-SoC reset. */
+/* Watchdog control register (offset 0) and the command AppleARMWatchDogTimer's
+ * PEHaltRestart handler writes to trigger a full-SoC reset. */
 #define WDT_CTRL      0x0
 #define WDT_CNT       0x4
-#define WDT_RESET_BIT 0x100000
+#define WDT_RESET_COMMAND 0x100000
 
 typedef struct IPodTouchWDTState {
     SysBusDevice busdev;

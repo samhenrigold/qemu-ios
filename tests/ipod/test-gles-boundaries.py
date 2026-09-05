@@ -159,6 +159,9 @@ int main(void) {
     assert(gles_query_count(GL_COLOR_WRITEMASK) == 4);
     assert(gles_query_count(GL_POINT_DISTANCE_ATTENUATION) == 3);
     assert(gles_query_count(GL_GENERATE_MIPMAP_HINT) == 1);
+    a[0] = GL_MAX_RECTANGLE_TEXTURE_SIZE_ARB;
+    assert(dispatch(GLES_SLOT_GET_INTEGERV, a) == 0 && copied == 4);
+    assert(gles_query_count(GL_TEXTURE_BINDING_RECTANGLE_ARB) == 1);
     GLESBuffer buffer = { .name = 123 };
     gh.array_buffer = &buffer;
     a[0] = GL_ARRAY_BUFFER_BINDING;

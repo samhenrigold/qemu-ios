@@ -1,4 +1,36 @@
-# Native halt does not produce a PMU power-off on 7E18
+# Native shutdown on 7E18
+
+## Verified fix (2026-09-04)
+
+SpringBoard calls `reboot2(RB_HALT, NULL)`, which asks launchd to coordinate
+shutdown. The former `sync(); reboot(RB_HALT)` helper bypassed that path.
+`ithalt` now uses the same native entry point as SpringBoard. The resulting
+guest writes `0x90` to PMU register `0x6f`; the PMU now honors that command
+without requiring the host to arm a UI power gesture first. No guest-PC
+heuristic or timeout is used to declare shutdown.
+
+The isolated `boot,persist,fsck` regression passed using the rebuilt helper,
+QEMU, and usbmuxd bridge: two guest-origin SHUTDOWN events, byte-identical
+persistence after reboot, and a full 1,835,008-block HFS check. The volume
+attributes were `0x80000100`, including the clean-unmount bit.
+
+```sh
+python3 tests/ipod/test_pmu_shutdown.py
+python3 tests/ipod/test_armv6_toolchain.py
+python3 tests/ipod/regress.py --checks boot,persist,fsck \
+  --qemu build-native14/qemu-build/qemu-system-arm \
+  --usbmuxd build-native14/build/usbmuxd/src/usbmuxd \
+  --base-nand ../qemu-ios-files/nand-ultimate
+```
+
+The private usbmuxd listener also needs preflight to connect to its own
+address: `-S` alone previously left libimobiledevice connecting to the system
+daemon. The bridge now sets its internal `USBMUXD_SOCKET_ADDRESS` before
+preflight starts. This regression passed without an inherited override.
+
+## Earlier raw-syscall investigation
+
+The following records the failure before the fix, not the current helper.
 
 Investigated 2026-09-04 using the `nand-ultimate` image, 3.1.3/7E18,
 `contrib/it-halt/ithalt`, and an isolated temporary write overlay.
@@ -54,10 +86,10 @@ c00697b8  b    c00697aa
 ```
 
 The PMU's `shutdown_armed` gate is therefore not the cause of this native
-halt hanging: the standby command never arrives. Do not weaken the standby
-gate or recognize this particular guest PC as a synthetic power-off.
+halt hanging: the standby command never arrives. Recognizing this particular guest PC as a synthetic power-off would not
+solve that failure. The later launchd path above supplies the actual command.
 
-The unresolved issue is how this guest's native halt path should signal a
+At this point the unresolved issue was how the raw halt path should signal a
 completed shutdown to the host. The syscall reached its terminal halt loop;
 the observed register snapshots alone do not prove an unmount or establish
 an image-independent hardware completion signal. Keep persistence regression

@@ -8,7 +8,7 @@
 # compiles armv6 fine, ld refuses to link it, and everything after the link is
 # undoing things that did not exist in 2010.
 #
-#   cc6   <src> <obj>
+#   cc6   <src> <obj> [compiler flags...]
 #   link6 -bundle|-dylib|-execute <out> <objs/flags...>
 set -eu
 
@@ -19,9 +19,16 @@ cc6() {
     # -marm because clang defaults to Thumb for this target and would emit
     # Thumb-2, which the ARM1176 cannot execute. armv6 also keeps movw/movt out
     # of the output; constants go through the literal pool instead.
-    xcrun clang -target armv6-apple-ios5.0 -marm -O1 -fno-stack-protector \
-        -fno-builtin -nostdinc -isystem "$ARMV6_SDK/usr/include" \
-        -c "$1" -o "$2" 2>&1 | grep -v 'incompatible-sysroot' || true
+    rm -f "$2"
+    if ! xcrun clang -target armv6-apple-ios5.0 -marm -O1 -fno-stack-protector \
+        -fno-builtin -nostdinc -isystem "$ARMV6_SDK/usr/include" "${@:3}" \
+        -c "$1" -o "$2" >"$2.cclog" 2>&1; then
+        cat "$2.cclog" >&2
+        rm -f "$2" "$2.cclog"
+        return 1
+    fi
+    grep -v 'incompatible-sysroot' "$2.cclog" >&2 || true
+    rm -f "$2.cclog"
     # ld rejects -arch armv6 outright, so present the object as armv7 and put
     # the subtype back after linking.
     python3 "$ARMV6_HERE/subtype.py" "$2" 9 >/dev/null

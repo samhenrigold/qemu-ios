@@ -260,6 +260,15 @@ typedef struct __attribute__((packed)) {
  * reported there. The host cannot infer either.
  */
 #define GLES_OP_LOG                     (GLES_OP_BASE + 2)
+/* target, base, stride, width, height, FourCC, UV base, UV stride.
+ * A zero base detaches the currently bound texture from guest memory. */
+#define GLES_OP_BIND_SURFACE            (GLES_OP_BASE + 3)
+/* Native context lifecycle. New operations return opaque positive handles;
+ * a zero sharegroup handle means the backend only supports legacy contexts. */
+#define GLES_OP_NEW_SHAREGROUP          (GLES_OP_BASE + 4)
+#define GLES_OP_DELETE_SHAREGROUP       (GLES_OP_BASE + 5)
+#define GLES_OP_NEW_CONTEXT             (GLES_OP_BASE + 6)
+#define GLES_OP_DELETE_CONTEXT          (GLES_OP_BASE + 7)
 
 /* Surface pixel formats, as IOSurfaceGetPixelFormat reports them (FourCC). */
 #define GLES_SURFACE_BGRA32             0x42475241  /* 'BGRA' */
@@ -275,6 +284,7 @@ void qc_gles_dump_stats(void);
 int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
                        uint32_t argc, const uint32_t *args);
 void gles_host_stats(uint64_t *draws, uint64_t *presents);
+void gles_host_reset(void);
 #endif
 
 #endif /* HW_ARM_GUEST_SERVICES_GLES_H */

@@ -56,7 +56,7 @@ typedef struct Pcf50633State {
 	uint8_t regs[256];    // backing register file so writes read back consistently
 	uint32_t rtc_latch;   // snapshot of the RTC counter, taken when 0x5C is read
 	bool usb_cable;       // report a USB cable as present (reg 0x04 bit 3)
-	bool shutdown_armed;  // a powerdown is in flight; honour the standby write
+	bool shutdown_armed;  // obsolete host flag; retained for snapshot wire compatibility
 } Pcf50633State;
 
 // The D1759 PMU is itself a nested interrupt controller (device tree pmu@73:
@@ -106,9 +106,10 @@ typedef struct Pcf50633State {
  * which is the whole reason a clean shutdown has never worked on 3.1.3, and why
  * everything installed in a session could vanish with it.
  *
- * Honoured only while a powerdown is actually in flight (pcf50633_arm_shutdown,
- * called from the machine's powerdown notifier), so that if any sleep or idle
- * path ever writes the same register it cannot take the machine down with it.
+ * Native launchd shutdown emits this command without a host powerdown request.
+ * A host-only arming flag incorrectly discarded that genuine hardware command.
+ * The shutdown event proves the standby write; filesystem cleanliness must
+ * still be verified independently by the persistence regression.
  */
 #define PMU_STANDBY_CMD  0x6f
 #define PMU_STANDBY_GO   0x90
@@ -123,9 +124,6 @@ typedef struct Pcf50633State {
 void pcf50633_set_stat(Pcf50633State *s, uint8_t bits, bool on);
 // Latch a wake-button interrupt in EVENT_C (reg 0x03); cleared when iOS reads it.
 void pcf50633_latch_wake_event(Pcf50633State *s, uint8_t bits);
-// A powerdown has been requested: honour the guest's standby write when it
-// finishes unmounting and sequencing its rails down.
-void pcf50633_arm_shutdown(Pcf50633State *s);
 // Host-thread-safe evidence that the guest reached the final PMU power-off.
 bool pcf50633_guest_shutdown_confirmed(void);
 

@@ -51,6 +51,13 @@ static int lcd_ready_hack(void)
     return on;
 }
 
+static bool lcd_planes_enabled(void)
+{
+    static int enabled = -1;
+    if (enabled < 0) enabled = getenv("IT_LCD_PLANES") != NULL;
+    return enabled;
+}
+
 static int lcd_trace(void)
 {
     static int on = -1;
@@ -132,6 +139,8 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
     // printf("%s: read from location 0x%08x\n", __func__, addr);
 
     IPodTouchLCDState *s = (IPodTouchLCDState *)opaque;
+    if (lcd_planes_enabled() && !(addr & 3) && addr >= 0x10 &&
+        addr < sizeof(s->plane_regs)) return s->plane_regs[addr / 4];
     switch(addr)
     {
         case 0x0:
@@ -187,6 +196,7 @@ static void ipod_touch_lcd_write(void *opaque, hwaddr addr, uint64_t val, unsign
         fprintf(stderr, "[LCD] wr [0x%04x] <- 0x%08x\n", (unsigned)addr, (unsigned)val);
     }
 
+    if (!(addr & 3) && addr < sizeof(s->plane_regs)) s->plane_regs[addr / 4] = val;
     switch(addr) {
         case 0x4:
             s->lcd_con = val;
@@ -330,6 +340,158 @@ static void draw_line32_32(void *opaque, uint8_t *d, const uint8_t *s, int width
     } while (-- width != 0);
 }
 
+/* 7E18 AppleM2CLCD c05e3640..c05e3efc: RGB enables 4[4:5],
+ * video enable 4[3], limited range 4[8], plane geometry and Q10 matrix.
+ * ponytail: progressive NV12 and BGRA only; other formats/transforms still
+ * require register traces. Filter rounding/edge extension need hardware QA. */
+static bool lcd_plane_range(uint32_t base, unsigned stride, unsigned rows,
+                            unsigned bytes)
+{
+    return base >= 0x08000000 && rows && stride >= bytes &&
+        (uint64_t)base + (uint64_t)(rows - 1) * stride + bytes <= 0x10000000;
+}
+
+/* The driver uploads nine half-phases, high halfword first, signed Q7.
+ * Phases 9..15 are the reversed taps of phases 7..1. */
+static int lcd_filter_tap(const uint32_t *bank, unsigned taps,
+                          unsigned phase, unsigned tap)
+{
+    if (phase > 8) {
+        phase = 16 - phase;
+        tap = taps - 1 - tap;
+    }
+    unsigned v = bank[phase * taps / 2 + tap / 2];
+    v = (v >> ((tap & 1) ? 0 : 16)) & 0xfff;
+    return (v & 0x800) ? (int)v - 4096 : v;
+}
+
+static uint8_t lcd_filter_sample(const uint8_t *src, unsigned count,
+                                 unsigned step, uint32_t position,
+                                 const uint32_t *bank, unsigned taps)
+{
+    int sum = 0, first = (int)(position >> 16) - (int)(taps / 2 - 1);
+    unsigned phase = (position >> 12) & 15;
+    for (unsigned t = 0; t < taps; t++) {
+        int x = CLAMP(first + (int)t, 0, (int)count - 1);
+        sum += src[x * step] * lcd_filter_tap(bank, taps, phase, t);
+    }
+    return CLAMP((sum + 64) >> 7, 0, 255);
+}
+
+static void lcd_filter_plane(const uint8_t *src, unsigned sw, unsigned sh,
+                              unsigned stride, unsigned step, uint8_t *dst,
+                              unsigned dw, unsigned dh, unsigned xr, unsigned yr,
+                              unsigned xp, unsigned yp,
+                              const uint32_t *hbank, unsigned htaps,
+                              const uint32_t *vbank)
+{
+    g_autofree uint8_t *rows = g_malloc((size_t)dw * sh);
+    for (unsigned y = 0; y < sh; y++)
+        for (unsigned x = 0; x < dw; x++)
+            rows[y * dw + x] = lcd_filter_sample(src + y * stride, sw, step,
+                                                xp + x * xr, hbank, htaps);
+    for (unsigned y = 0; y < dh; y++)
+        for (unsigned x = 0; x < dw; x++)
+            dst[y * dw + x] = lcd_filter_sample(rows + x, sh, dw,
+                                                yp + y * yr, vbank, 4);
+}
+
+static bool lcd_compose_planes(const uint32_t *r, uint8_t *out)
+{
+    const unsigned pw = LCD_FB_WIDTH, ph = LCD_FB_HEIGHT;
+    memset(out, 0, pw * ph * 4);
+    if (r[4/4] & 8) {
+        unsigned sw = r[0x134/4] >> 16, sh = r[0x134/4] & 0xffff;
+        unsigned cx = r[0x130/4] >> 16, cy = r[0x130/4] & 0xffff;
+        unsigned dw = r[0x13c/4] >> 16, dh = r[0x13c/4] & 0xffff;
+        unsigned x0 = r[0x138/4] >> 16, y0 = r[0x138/4] & 0xffff;
+        unsigned ys = r[0x2e0/4] >> 17, uvs = r[0x2e4/4] >> 17;
+        /* Mode 3 matches CA's transition quad: (s,t) -> (height-1-t,s). */
+        unsigned rotation = r[0x118/4] & 7;
+        unsigned ow = rotation ? dh : dw, oh = rotation ? dw : dh;
+        unsigned xr = r[(rotation ? 0x2c4 : 0x2c0)/4];
+        unsigned yr = r[(rotation ? 0x2c0 : 0x2c4)/4];
+        bool scaled = xr != 0x10000 || yr != 0x10000;
+        unsigned cw = (sw + (cx & 1) + 1) & ~1u;
+        unsigned ch = (sh + (cy & 1) + 1) / 2;
+        uint32_t ybase = r[0x11c/4], uvbase = r[0x120/4];
+        if (!sw || !sh || sw > 2048 || sh > 2048 ||
+            r[0x118/4] != rotation ||
+            (rotation != 0 && rotation != 3) ||
+            !ow || !oh || ow > 2048 || oh > 2048 ||
+            xr != ((uint64_t)sw << 16) / ow ||
+            yr != ((uint64_t)sh << 16) / oh ||
+            !lcd_plane_range(ybase, ys, cy + sh, cx + sw) ||
+            !lcd_plane_range(uvbase, uvs, (cy + sh + 1) / 2,
+                              (cx + sw + 1) & ~1u)) return false;
+        ybase += cy * ys + cx;
+        uvbase += (cy / 2) * uvs + (cx & ~1u);
+        g_autofree uint8_t *y = g_malloc((size_t)sw * sh);
+        g_autofree uint8_t *uv = g_malloc((size_t)cw * ch);
+        for (unsigned row = 0; row < sh; row++)
+            cpu_physical_memory_read(ybase + row * ys, y + row * sw, sw);
+        for (unsigned row = 0; row < ch; row++)
+            cpu_physical_memory_read(uvbase + row * uvs, uv + row * cw, cw);
+        g_autofree uint8_t *filtered = scaled ? g_malloc((size_t)ow * oh * 3) : NULL;
+        if (scaled) {
+            lcd_filter_plane(y, sw, sh, sw, 1, filtered, ow, oh, xr, yr, 0, 0,
+                             r + 0x140/4, 8, r + 0x1d0/4);
+            for (unsigned c = 0; c < 2; c++)
+                lcd_filter_plane(uv + c, cw / 2, ch, cw, 2,
+                                 filtered + (c + 1) * ow * oh, ow, oh,
+                                 xr / 2, yr / 2, (cx & 1) * 0x8000,
+                                 (cy & 1) * 0x8000, r + 0x220/4, 4, r + 0x270/4);
+        }
+        int m[9];
+        for (unsigned i = 0; i < 9; i++) {
+            unsigned v = r[0x70/4 + i];
+            m[i] = (v & 0x1000) ? -(int)(v & 0xfff) : v & 0xfff;
+        }
+        for (unsigned dy = 0; dy < dh && dy + y0 < ph; dy++) {
+            for (unsigned dx = 0; dx < dw && dx + x0 < pw; dx++) {
+                unsigned sx = rotation ? dy : dx;
+                unsigned sy = rotation ? oh - 1 - dx : dy;
+                int input[] = {
+                    (scaled ? filtered[sy * ow + sx] : y[sy * sw + sx]) -
+                        ((r[1] & 0x100) ? 16 : 0),
+                    (scaled ? filtered[ow * oh + sy * ow + sx] :
+                        uv[((sy + (cy & 1)) / 2) * cw + ((sx + (cx & 1)) & ~1u)]) - 128,
+                    (scaled ? filtered[2 * ow * oh + sy * ow + sx] :
+                        uv[((sy + (cy & 1)) / 2) * cw + ((sx + (cx & 1)) & ~1u) + 1]) - 128 };
+                uint8_t *p = out + ((dy + y0) * pw + dx + x0) * 4;
+                for (unsigned c = 0; c < 3; c++) {
+                    int value = (m[c*3] * input[0] + m[c*3+1] * input[1] +
+                                 m[c*3+2] * input[2] + 512) >> 10;
+                    p[2-c] = CLAMP(value, 0, 255);
+                }
+                p[3] = 255;
+            }
+        }
+    }
+    for (unsigned plane = 0; plane < 2; plane++) {
+        if (!(r[1] & (0x10u << plane))) continue;
+        const uint32_t *p = r + (0x20 + plane * 0x20) / 4;
+        unsigned w = p[4] >> 16, h = p[4] & 0xffff, stride = p[2] * 4;
+        unsigned x0 = p[5] >> 16, y0 = p[5] & 0xffff;
+        if (!w || w > 2048 || !h || h > 2048 || p[2] > 8192 || p[3] ||
+            (p[0] & 0x700) != 0x700 || (p[0] >> 22) ||
+            !lcd_plane_range(p[1], stride, h, w * 4)) return false;
+        g_autofree uint8_t *row = g_malloc(w * 4);
+        for (unsigned dy = 0; dy < h && dy + y0 < ph; dy++) {
+            cpu_physical_memory_read(p[1] + dy * stride, row, w * 4);
+            for (unsigned dx = 0; dx < w && dx + x0 < pw; dx++) {
+                const uint8_t *src = row + dx * 4;
+                uint8_t *dst = out + ((dy + y0) * pw + dx + x0) * 4;
+                unsigned alpha = plane ? src[3] : 255;
+                for (unsigned c = 0; c < 3; c++)
+                    dst[c] = MIN(255, src[c] + (dst[c] * (255 - alpha) + 127) / 255);
+                dst[3] = 255;
+            }
+        }
+    }
+    return true;
+}
+
 /*
  * Blit the guest's portrait framebuffer into a rotated host surface.
  *
@@ -339,11 +501,11 @@ static void draw_line32_32(void *opaque, uint8_t *d, const uint8_t *s, int width
  * time. Rotation is a rare, deliberate state, so that is left alone.
  */
 static void lcd_refresh_rotated(IPodTouchLCDState *lcd, DisplaySurface *surface,
-                                int rot)
+                                int rot, bool composed)
 {
     const int sw = LCD_FB_WIDTH, sh = LCD_FB_HEIGHT;
-    int dw = (rot == 180) ? sw : sh;
-    int dh = (rot == 180) ? sh : sw;
+    int dw = (rot == 90 || rot == 270) ? sh : sw;
+    int dh = (rot == 90 || rot == 270) ? sw : sh;
     uint8_t *dst = surface_data(surface);
     int dstride = surface_stride(surface);
     int bri = lcd_bright_effective();
@@ -369,7 +531,7 @@ static void lcd_refresh_rotated(IPodTouchLCDState *lcd, DisplaySurface *surface,
     if (!lcd->rotbuf) {
         lcd->rotbuf = g_malloc(sw * sh * 4);
     }
-    cpu_physical_memory_read(lcd->scanout_base, lcd->rotbuf, sw * sh * 4);
+    if (!composed) cpu_physical_memory_read(lcd->scanout_base, lcd->rotbuf, sw * sh * 4);
 
     /*
      * A source row maps to a straight line in the destination for every one of
@@ -383,6 +545,10 @@ static void lcd_refresh_rotated(IPodTouchLCDState *lcd, DisplaySurface *surface,
         int step;
 
         switch (rot) {
+        case 0:
+            d = dst + (size_t)sy * dstride;
+            step = 4;
+            break;
         case 90:
             d = dst + (size_t)(sh - 1 - sy) * 4;
             step = dstride;
@@ -473,9 +639,18 @@ static void lcd_refresh(void *opaque)
         }
     }
 
-    if (lcd->rotation != 0) {
+    bool composed = false;
+    if (lcd_planes_enabled() && (lcd->plane_scanout[1] & 0x28)) {
+        if (!lcd->rotbuf) lcd->rotbuf = g_malloc(LCD_FB_WIDTH * LCD_FB_HEIGHT * 4);
+        composed = lcd_compose_planes(lcd->plane_scanout, lcd->rotbuf);
+        if (!composed) {
+            static bool warned;
+            if (!warned) { warned = true; fprintf(stderr, "[LCD] unsupported plane configuration\n"); }
+        }
+    }
+    if (lcd->rotation != 0 || composed) {
         int64_t t = lcd_frametrace() ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
-        lcd_refresh_rotated(lcd, surface, lcd->rotation);
+        lcd_refresh_rotated(lcd, surface, lcd->rotation, composed);
         if (t) {
             lcd_ft("blitrot",
                    (uint32_t)((qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t)/1000));
@@ -782,6 +957,7 @@ static void refresh_timer_tick(void *opaque)
      * the next vblank; that is what its triple buffering is for.
      */
     s->scanout_base = s->w1_framebuffer_base;
+    memcpy(s->plane_scanout, s->plane_regs, sizeof(s->plane_regs));
 
     if (s->con && qemu_console_is_visible(s->con) && !lcd_vsync_legacy()) {
         lcd_in_vsync_present = true;
@@ -823,6 +999,8 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
 {
     IPodTouchLCDState *s = IPOD_TOUCH_LCD(dev);
 
+    memset(s->plane_regs, 0, sizeof(s->plane_regs));
+    memset(s->plane_scanout, 0, sizeof(s->plane_scanout));
     s->lcd_con = 0;
     s->render = 0;
     s->w1_display_resolution_info = 0;
@@ -907,6 +1085,11 @@ static void ipod_touch_lcd_init(Object *obj)
 static int ipod_touch_lcd_post_load(void *opaque, int version_id)
 {
     IPodTouchLCDState *s = opaque;
+    if (version_id < 2) {
+        memset(s->plane_regs, 0, sizeof(s->plane_regs));
+        memset(s->plane_scanout, 0, sizeof(s->plane_scanout));
+    }
+
 
     /* Release through the helper that took the reference: it also turns
      * DIRTY_MEMORY_VGA logging back off. Zeroing the struct by hand dropped the
@@ -934,10 +1117,12 @@ static int ipod_touch_lcd_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_lcd = {
     .name = "ipod_touch_lcd",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .post_load = ipod_touch_lcd_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY_V(plane_regs, IPodTouchLCDState, 0x300 / 4, 2),
+        VMSTATE_UINT32_ARRAY_V(plane_scanout, IPodTouchLCDState, 0x300 / 4, 2),
         VMSTATE_UINT8(brightness, IPodTouchLCDState),
         VMSTATE_UINT32(lcd_con, IPodTouchLCDState),
         VMSTATE_UINT32(w1_display_resolution_info, IPodTouchLCDState),

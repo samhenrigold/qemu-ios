@@ -7,6 +7,7 @@
 #include "hw/sysbus.h"
 #include "hw/i2c/i2c.h"
 #include "hw/irq.h"
+#include "hw/qdev-clock.h"
 
 #define TYPE_CS42L58                 "cs42l58"
 OBJECT_DECLARE_SIMPLE_TYPE(CS42L58State, CS42L58)
@@ -17,6 +18,7 @@ typedef struct CS42L58State {
 	bool have_cmd;
 	bool autoinc;
 	uint8_t regs[128];
+	Clock *lrclk;
 } CS42L58State;
 
 #endif

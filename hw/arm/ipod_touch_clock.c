@@ -1,11 +1,13 @@
 #include "hw/arm/ipod_touch_clock.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
+#include "trace.h"
 
 static void s5l8900_clock_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     IPodTouchClockState *s = (struct IPodTouchClockState *) opaque;
 
+    trace_ipod_touch_clock_write(addr, val);
     switch (addr) {
         case CLOCK_CONFIG0:
             s->config0 = val;

@@ -4,6 +4,7 @@
 #include "qemu/log.h"
 #include "qemu/error-report.h"
 #include "system/runstate.h"
+#include "exec/address-spaces.h"
 #include <sys/mman.h>
 #include <sys/stat.h>
 
@@ -856,8 +857,23 @@ static void fmss_sniff_icon_state(const uint8_t *page)
     }
 }
 
-/* Cap on entries in one FMSS transfer, shared by the read and write paths. */
-#define FMSS_MAX_WRITE_ENTRIES 512
+/* Four chips, 4096 erase blocks per chip. This is a sanity bound, not a
+ * transfer size: real file writes exceed 512 pages in a single script. */
+#define FMSS_MAX_WRITE_ENTRIES (4 * 4096 * NAND_PAGES_PER_BLOCK)
+
+static bool fmss_write_dma_read(uint64_t addr, void *data, size_t len)
+{
+    MemoryRegionSection section = memory_region_find(get_system_memory(), addr, len);
+    bool valid = section.mr && memory_region_is_ram(section.mr) &&
+                 int128_eq(section.size, int128_make64(len));
+    if (valid) {
+        cpu_physical_memory_read(addr, data, len);
+    }
+    if (section.mr) {
+        memory_region_unref(section.mr);
+    }
+    return valid || fmss_io_error("guest write DMA", EFAULT);
+}
 
 static void read_nand_pages(IPodTouchFMSSState *s)
 {
@@ -966,60 +982,56 @@ static void write_nand_pages(IPodTouchFMSSState *s)
     int legacy_np = s->reg_num_pages;
     uint32_t legacy_hdr = 0;
     if (legacy) {
-        cpu_physical_memory_read(s->reg_pages_in_addr, &legacy_hdr, 4);
+        if (!fmss_write_dma_read(s->reg_pages_in_addr, &legacy_hdr, 4)) return;
         legacy_hdr = find_bit_index(legacy_hdr & 0xff);
         desc = s->reg_pages_in_addr;
     }
 
+    bool terminated = false;
     for (int i = 0; i < FMSS_MAX_WRITE_ENTRIES; i++) {
         uint32_t cmd = 0, page_nr = 0;
 
-        if (i == FMSS_MAX_WRITE_ENTRIES - 1) {
-            qemu_log_mask(LOG_GUEST_ERROR, "[fmss] write script hit the %d entry "
-                          "cap; the rest of it is being dropped\n",
-                          FMSS_MAX_WRITE_ENTRIES);
-        }
-
         if (legacy) {
             if (i >= legacy_np) {
+                terminated = true;
                 break;
             }
-            cpu_physical_memory_read(desc + (3 + i) * 4, &page_nr, 4);
+            if (!fmss_write_dma_read((uint64_t)desc + (3 + i) * 4, &page_nr, 4)) return;
             cmd = 1u << ((legacy_hdr + i) & 3);
         } else {
-            cpu_physical_memory_read(desc + (2 * i) * 4, &cmd, 4);
+            if (!fmss_write_dma_read((uint64_t)desc + (2 * i) * 4, &cmd, 4)) return;
             if (cmd == 0) {
+                terminated = true;
                 break; /* end-of-script terminator */
             }
-            cpu_physical_memory_read(desc + (2 * i + 1) * 4, &page_nr, 4);
+            if (!fmss_write_dma_read((uint64_t)desc + (2 * i + 1) * 4, &page_nr, 4)) return;
         }
 
         uint32_t cs = find_bit_index(cmd & 0xff);
-        /* `continue`, not `break`, and an explicit zero check. One unparseable
-         * entry used to discard every REMAINING page of the write -- a partial
-         * write of a file the guest believes it wrote whole, silently. The read
-         * path already skips-and-continues for the same reason. A zero
-         * chip-select field is rejected rather than passed to find_bit_index,
-         * which answers 0 for it and would send the page to cs0. */
-        if ((cmd & 0xff) == 0 || cs > 3) {
+        /* A malformed entry must not acknowledge an incomplete file write. */
+        unsigned select = cmd & 0xff;
+        if (!select || (select & (select - 1)) || cs > 3 ||
+            page_nr >= 4096 * NAND_PAGES_PER_BLOCK) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "[fmss] bad chip-select in command word 0x%08x "
-                          "(entry %d); page skipped\n", cmd, i);
-            continue;
+                          "(entry %d); write stopped\n", cmd, i);
+            fmss_io_error("guest write chip-select", EINVAL);
+            return;
         }
 
         /* gather the 4096-byte page from the two 2048-byte DMA source halves */
         int half = NAND_BYTES_PER_PAGE / 2;
         uint32_t src0 = 0, src1 = 0;
-        cpu_physical_memory_read(s->reg_pages_out_addr + (2*i) * 4, &src0, 4);
-        cpu_physical_memory_read(s->reg_pages_out_addr + (2*i + 1) * 4, &src1, 4);
+        if (!fmss_write_dma_read((uint64_t)s->reg_pages_out_addr + (2*i) * 4, &src0, 4) ||
+            !fmss_write_dma_read((uint64_t)s->reg_pages_out_addr + (2*i + 1) * 4, &src1, 4)) return;
         memset(s->page_buffer, 0, NAND_BYTES_PER_PAGE);
-        if (src0) cpu_physical_memory_read(src0, s->page_buffer, half);
-        if (src1) cpu_physical_memory_read(src1, s->page_buffer + half, half);
+        if (src0 && !fmss_write_dma_read(src0, s->page_buffer, half)) return;
+        if (src1 && !fmss_write_dma_read(src1, s->page_buffer + half, half)) return;
 
         /* gather the 12-byte spare record, zero-padded to the on-disk 64 bytes */
         memset(s->page_spare_buffer, 0, NAND_BYTES_PER_SPARE);
-        cpu_physical_memory_read(s->reg_page_spare_out_addr + i * 0xc, s->page_spare_buffer, 0xc);
+        if (!fmss_write_dma_read((uint64_t)s->reg_page_spare_out_addr + i * 0xc,
+                                s->page_spare_buffer, 0xc)) return;
 
         if (fmss_dump_on()) {
             static int nd = 0;
@@ -1090,6 +1102,9 @@ static void write_nand_pages(IPodTouchFMSSState *s)
         fmss_remember_physical(s, physical_cs, physical_page, s->page_buffer,
                                physical_spare);
     }
+    if (!terminated) {
+        fmss_io_error("unterminated guest write script", EINVAL);
+    }
 }
 
 static uint64_t ipod_touch_fmss_read(void *opaque, hwaddr addr, unsigned size)
@@ -1147,9 +1162,8 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
              * so this can NEVER truncate a real read (kernel/ramdisk loads run
              * to thousands of pages), while still stopping a hostile
              * 0xFFFFFFFF from spinning the read/write loop for billions of
-             * iterations under the BQL. Do NOT lower this to the write path's
-             * 512-entry cap: that truncates the boot read and forces recovery
-             * mode (measured 2026-08-05).
+             * iterations under the BQL. A 512-page limit truncates legitimate
+             * boot reads and bulk writes alike.
              */
             s->reg_num_pages = IT_SIZE("fmss", val,
                 (uint64_t)fmss_total_blocks(s) * NAND_PAGES_PER_BLOCK);
@@ -1230,17 +1244,19 @@ static void ipod_touch_fmss_finalize(Object *obj)
     }
 }
 
-/*
- * Only the controller registers are reset. phys_pages and erased_blocks are
- * FLASH CONTENT, not controller state -- a warm reset does not un-program a
- * NAND page -- so clearing them here would silently discard everything the
- * guest wrote this session. total_blocks is read out of the image's GPT and
- * cannot change either.
+/* Generated images persist writes at their logical home, while phys_pages
+ * serves the running FTL's temporary physical mapping. A new boot rebuilds
+ * the FTL from that generated layout, so retaining the previous mapping can
+ * shadow its HFS header with unrelated data. Physical-image mode does not
+ * relocate writes and must retain actual programmed pages across reset.
  */
 static void ipod_touch_fmss_reset(DeviceState *dev)
 {
     IPodTouchFMSSState *s = IPOD_TOUCH_FMSS(dev);
 
+    if (!fmss_physical() && s->phys_pages) {
+        g_hash_table_remove_all(s->phys_pages);
+    }
     s->reg_cs_irq_bit = 0;
     s->reg_cinfo_target_addr = 0;
     s->reg_pages_in_addr = 0;

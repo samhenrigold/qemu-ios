@@ -71,20 +71,20 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchAMCState, IPOD_TOUCH_AMC)
  * and is the payload cursor, so the header is 0x100 bytes and the payload
  * follows it:
  *
- *     +0x02  halfword  channel count -- the self test fails it if > 2
+ *     +0x02  halfword  output buffer count -- initialization fails if > 2
  *                                       (VA 0xc060c748)
- *     +0x04  halfword  frame count
+ *     +0x04  halfword  buffer capacity in S16 samples
  *
  * Assertions 934 and 935 (AppleAMCDriver_r2.cpp) are
- * `table[[this+0x7c]] == frame_count << 1`. The left-hand side is a CONSTANT
+ * `table[[this+0x7c]] == sample_capacity << 1`. The left-hand side is a CONSTANT
  * out of the driver's own __DATA -- table at VA 0xc0626ebc holds
  * { 0x1200, 0x1000, 0x2000, 0x4000, 0x140, 0x140 } and [this+0x7c] is 1 here,
- * so it is 0x1000 -- which means the frame count in this header is the only
+ * so it is 0x1000 -- which means the sample capacity in this header is the only
  * value hardware contributes to either assertion.
  */
 #define AMC_RESULT_OFFSET   0x28000
-#define AMC_RESULT_CHANNELS 0x02        /* halfword, must be <= 2 */
-#define AMC_RESULT_FRAMES   0x04        /* halfword */
+#define AMC_RESULT_BUFFERS 0x02        /* halfword, must be <= 2 */
+#define AMC_RESULT_CAPACITY   0x04        /* halfword */
 
 #define AMC_INT_ACK_MASK    0x7fff
 
@@ -101,6 +101,10 @@ typedef struct IPodTouchAMCState {
     uint32_t int_mask[AMC_NUM_CONTROLLERS];
     bool irq_armed;
     bool state_handshake;
+    bool codec_decode;
+    uint32_t pending;
+    void *decoder;
+    QEMUTimer *decode_timer;
 } IPodTouchAMCState;
 
 #endif

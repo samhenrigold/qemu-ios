@@ -160,11 +160,6 @@ static void pcf50633_guest_shutdown(void)
     qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
 }
 
-void pcf50633_arm_shutdown(Pcf50633State *s)
-{
-    s->shutdown_armed = true;
-}
-
 void pcf50633_set_stat(Pcf50633State *s, uint8_t bits, bool on)
 {
     if (on) {
@@ -209,10 +204,11 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
             /*
              * The end of 3.1.3's shutdown: rails sequenced down, interrupts
              * masked, root volume already unmounted, and this is the last thing
-             * it says before waiting for the power to go. See the header. Armed
-             * only, so nothing else can trigger it.
+             * it says before waiting for the power to go. Native launchd
+             * shutdown reaches this without any host powerdown notification;
+             * hardware must not require a host-only arming flag.
              */
-            if (s->shutdown_armed && data == PMU_STANDBY_GO) {
+            if (data == PMU_STANDBY_GO) {
                 s->shutdown_armed = false;
                 pcf50633_guest_shutdown();
             }
