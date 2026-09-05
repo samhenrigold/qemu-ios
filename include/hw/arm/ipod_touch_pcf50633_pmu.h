@@ -126,5 +126,7 @@ void pcf50633_latch_wake_event(Pcf50633State *s, uint8_t bits);
 // A powerdown has been requested: honour the guest's standby write when it
 // finishes unmounting and sequencing its rails down.
 void pcf50633_arm_shutdown(Pcf50633State *s);
+// Host-thread-safe evidence that the guest reached the final PMU power-off.
+bool pcf50633_guest_shutdown_confirmed(void);
 
 #endif

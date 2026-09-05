@@ -147,6 +147,19 @@ void pcf50633_latch_wake_event(Pcf50633State *s, uint8_t bits)
     s->regs[PMU_EVENT_C_REG] |= bits;
 }
 
+static bool guest_shutdown_confirmed;
+
+bool pcf50633_guest_shutdown_confirmed(void)
+{
+    return qatomic_read(&guest_shutdown_confirmed);
+}
+
+static void pcf50633_guest_shutdown(void)
+{
+    qatomic_set(&guest_shutdown_confirmed, true);
+    qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+}
+
 void pcf50633_arm_shutdown(Pcf50633State *s)
 {
     s->shutdown_armed = true;
@@ -201,7 +214,7 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
              */
             if (s->shutdown_armed && data == PMU_STANDBY_GO) {
                 s->shutdown_armed = false;
-                qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+                pcf50633_guest_shutdown();
             }
             break;
 
@@ -212,7 +225,7 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
             // for stdby" spin and the machine had to be killed, which is what
             // made a clean shutdown impossible to use.
             if ((prev & PMU_PWRLATCH_ON) && !(data & PMU_PWRLATCH_ON)) {
-                qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+                pcf50633_guest_shutdown();
             }
             break;
     }

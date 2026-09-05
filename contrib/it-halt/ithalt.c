@@ -49,13 +49,13 @@ int main(int argc, char **argv)
 
     /* Say so before the volume goes away, so the host sees this ran even if the
      * ssh session dies with the unmount (it will). */
-    write(1, "ithalt: syncing and halting\n", 28);
+    write(1, "ithalt: syncing and halting\n", sizeof("ithalt: syncing and halting\n") - 1);
     sync();
 
     reboot(RB_HALT);
 
     /* Only reached if the syscall was refused. */
-    write(2, "ithalt: reboot(RB_HALT) refused\n", 32);
+    write(2, "ithalt: reboot(RB_HALT) refused\n", sizeof("ithalt: reboot(RB_HALT) refused\n") - 1);
     _exit(1);
     return 1;
 }

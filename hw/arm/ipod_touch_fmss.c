@@ -2,6 +2,8 @@
 #include "hw/arm/ipod_touch_guard.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
+#include "qemu/error-report.h"
+#include "system/runstate.h"
 #include <sys/mman.h>
 #include <sys/stat.h>
 
@@ -146,10 +148,27 @@ static bool fmss_block_is_erased(IPodTouchFMSSState *s, uint32_t cs, uint32_t bl
     return false;
 }
 
-/* Drop every overlay page of a block and mark it erased. */
-static void fmss_erase_block(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
+/* Host persistence failure is fatal to this session, even after reset. */
+static bool fmss_io_failed;
+
+bool ipod_touch_fmss_io_failed(void)
 {
-    char path[1152];
+    return qatomic_read(&fmss_io_failed);
+}
+
+/* Stop before acknowledging writes that did not reach the host filesystem. */
+static bool fmss_io_error(const char *path, int err)
+{
+    qatomic_set(&fmss_io_failed, true);
+    error_report("FMSS: cannot persist %s: %s; VM stopped", path, strerror(err));
+    vm_stop(RUN_STATE_IO_ERROR);
+    return false;
+}
+
+/* Drop every overlay page of a block and mark it erased. */
+static bool fmss_erase_block(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
+{
+    char path[1152], tmp[1200];
     uint32_t first = block * NAND_PAGES_PER_BLOCK;
 
     /*
@@ -161,21 +180,39 @@ static void fmss_erase_block(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
      * is what the guest asked for anyway.
      */
     snprintf(path, sizeof(path), "%s/cs%d", s->nand_overlay, cs);
-    g_mkdir_with_parents(path, 0755);
-    fmss_block_marker_path(s, cs, block, path, sizeof(path));
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        fprintf(stderr, "[fmss] cannot mark block %u/cs%d erased (%s); "
-                "leaving it intact\n", block, cs, strerror(errno));
-        return;
+    if (g_mkdir_with_parents(path, 0755) != 0) {
+        return fmss_io_error(path, errno);
     }
-    fflush(f);
-    fsync(fileno(f));
-    fclose(f);
+    fmss_block_marker_path(s, cs, block, path, sizeof(path));
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) {
+        return fmss_io_error(path, errno);
+    }
+    int err = 0;
+    if (fflush(f) != 0 || fsync(fileno(f)) != 0) {
+        err = errno;
+    }
+    if (fclose(f) != 0 && !err) {
+        err = errno;
+    }
+    if (err) {
+        remove(tmp);
+        return fmss_io_error(path, err);
+    }
+    if (rename(tmp, path) != 0) {
+        err = errno;
+        remove(tmp);
+        return fmss_io_error(path, err);
+    }
 
+    /* ponytail: multi-file erase can stop partway; journal blocks if atomic
+     * crash recovery is needed. Never acknowledge a partial erase. */
     for (uint32_t p = first; p < first + NAND_PAGES_PER_BLOCK; p++) {
         snprintf(path, sizeof(path), "%s/cs%d/%u.page", s->nand_overlay, cs, p);
-        remove(path);
+        if (remove(path) != 0 && errno != ENOENT) {
+            return fmss_io_error(path, errno);
+        }
         if (s->overlay_pages) {
             g_hash_table_remove(s->overlay_pages, fmss_block_key(cs, p));
         }
@@ -185,6 +222,7 @@ static void fmss_erase_block(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
         s->erased_blocks = g_hash_table_new(g_direct_hash, g_direct_equal);
     }
     g_hash_table_add(s->erased_blocks, fmss_block_key(cs, block));
+    return true;
 }
 
 /*
@@ -603,25 +641,18 @@ static bool fmss_generated_layout(IPodTouchFMSSState *s, uint32_t logical,
 }
 
 /* Store one physical page (data + spare) into the overlay, atomically. */
-static void fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
+static bool fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr,
                             const uint8_t *data, const uint8_t *spare)
 {
     char dir[1088], filename[1152], tmp[1200];
     uint32_t block = page_nr / NAND_PAGES_PER_BLOCK;
 
     snprintf(dir, sizeof(dir), "%s/cs%d", s->nand_overlay, cs);
-    g_mkdir_with_parents(dir, 0755);
+    if (g_mkdir_with_parents(dir, 0755) != 0) {
+        return fmss_io_error(dir, errno);
+    }
     snprintf(filename, sizeof(filename), "%s/%d.page", dir, page_nr);
     snprintf(tmp, sizeof(tmp), "%s/.%d.page.tmp", dir, page_nr);
-
-    /* A page cannot be programmed unless its block was erased first: either
-     * this is the first program into the block, or the page already holds
-     * overlay data and is being reprogrammed. Either way, model the erase. */
-    if (!fmss_block_is_erased(s, cs, block) && fmss_erase_on()) {
-        fmss_erase_block(s, cs, block);
-    } else if (fmss_erase_on() && g_file_test(filename, G_FILE_TEST_EXISTS)) {
-        fmss_erase_block(s, cs, block);
-    }
 
     /*
      * The rename below is what makes a page store atomic, but a rename only
@@ -633,50 +664,65 @@ static void fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
      * This is the guest's only durable storage; both cases lose user data.
      */
     FILE *f = fopen(tmp, "wb");
-    if (!f) { return; }
-    bool ok = fwrite(data, 1, NAND_BYTES_PER_PAGE, f) == NAND_BYTES_PER_PAGE
-           && fwrite(spare, 1, NAND_BYTES_PER_SPARE, f) == NAND_BYTES_PER_SPARE
-           && fflush(f) == 0
-           && fsync(fileno(f)) == 0;
-    if (fclose(f) != 0) { ok = false; }
-    if (!ok) {
-        fprintf(stderr, "[fmss] page %u/cs%d not written (%s); overlay left "
-                "untouched\n", page_nr, cs, strerror(errno));
+    if (!f) {
+        return fmss_io_error(tmp, errno);
+    }
+    int err = 0;
+    if (fwrite(data, 1, NAND_BYTES_PER_PAGE, f) != NAND_BYTES_PER_PAGE ||
+        fwrite(spare, 1, NAND_BYTES_PER_SPARE, f) != NAND_BYTES_PER_SPARE ||
+        fflush(f) != 0 || fsync(fileno(f)) != 0) {
+        err = errno ? errno : EIO;
+    }
+    if (fclose(f) != 0 && !err) {
+        err = errno;
+    }
+    if (err) {
         remove(tmp);
-        return;
+        return fmss_io_error(tmp, err);
+    }
+
+    /* Stage the new page before an inferred erase can remove old data. */
+    if (fmss_erase_on() &&
+        (!fmss_block_is_erased(s, cs, block) ||
+         g_file_test(filename, G_FILE_TEST_EXISTS)) &&
+        !fmss_erase_block(s, cs, block)) {
+        remove(tmp);
+        return false;
     }
     if (rename(tmp, filename) != 0) {
+        err = errno;
         remove(tmp);
-    } else {
-        /*
-         * DETECTION, not a fix. Reads consult phys_pages (pages the guest
-         * programmed this session, remembered at the address it programmed
-         * them to) BEFORE the overlay, and nothing invalidates an entry when a
-         * later store lands on those same coordinates -- so in principle a
-         * stale cached page can shadow a newer overlay write forever.
-         *
-         * Whether that is reachable depends on the FTL's allocation colliding
-         * with fmss_generated_layout's relocation target, which is not obvious
-         * either way. Removing the entry here would "fix" it and would ALSO
-         * break the invariant the cache exists for -- the FTL must read back
-         * what it programmed at an address, and a different logical block now
-         * living there on disk is not that. So: count it, and only act if a
-         * real session ever hits it. IT_FMSS_SHADOW=1 prints each one.
-         */
-        if (s->phys_pages &&
-            g_hash_table_contains(s->phys_pages, fmss_block_key(cs, page_nr))) {
-            fmss_stats.shadowed++;
-            if (getenv("IT_FMSS_SHADOW")) {
-                fprintf(stderr, "[fmss] store cs=%u page=%u lands on a page this "
-                        "session programmed there (%llu so far)\n",
-                        cs, page_nr, (unsigned long long)fmss_stats.shadowed);
-            }
-        }
-        fmss_overlay_index(s);
-        if (s->overlay_pages) {
-            g_hash_table_add(s->overlay_pages, fmss_block_key(cs, page_nr));
+        return fmss_io_error(filename, err);
+    }
+    /*
+     * DETECTION, not a fix. Reads consult phys_pages (pages the guest
+     * programmed this session, remembered at the address it programmed
+     * them to) BEFORE the overlay, and nothing invalidates an entry when a
+     * later store lands on those same coordinates -- so in principle a
+     * stale cached page can shadow a newer overlay write forever.
+     *
+     * Whether that is reachable depends on the FTL's allocation colliding
+     * with fmss_generated_layout's relocation target, which is not obvious
+     * either way. Removing the entry here would "fix" it and would ALSO
+     * break the invariant the cache exists for -- the FTL must read back
+     * what it programmed at an address, and a different logical block now
+     * living there on disk is not that. So: count it, and only act if a
+     * real session ever hits it. IT_FMSS_SHADOW=1 prints each one.
+     */
+    if (s->phys_pages &&
+        g_hash_table_contains(s->phys_pages, fmss_block_key(cs, page_nr))) {
+        fmss_stats.shadowed++;
+        if (getenv("IT_FMSS_SHADOW")) {
+            fprintf(stderr, "[fmss] store cs=%u page=%u lands on a page this "
+                    "session programmed there (%llu so far)\n",
+                    cs, page_nr, (unsigned long long)fmss_stats.shadowed);
         }
     }
+    fmss_overlay_index(s);
+    if (s->overlay_pages) {
+        g_hash_table_add(s->overlay_pages, fmss_block_key(cs, page_nr));
+    }
+    return true;
 }
 
 /*
@@ -903,6 +949,10 @@ static void read_nand_pages(IPodTouchFMSSState *s)
 
 static void write_nand_pages(IPodTouchFMSSState *s)
 {
+    if (ipod_touch_fmss_io_failed()) {
+        vm_stop(RUN_STATE_IO_ERROR);
+        return;
+    }
     if (!s->nand_overlay) {
         return; /* no writable overlay -> writes are discarded (original behaviour) */
     }
@@ -995,8 +1045,9 @@ static void write_nand_pages(IPodTouchFMSSState *s)
          * the logical number it finds there, so it has to be the guest's own
          * bytes and not the synthetic "clean" spare substituted below.
          */
-        fmss_remember_physical(s, cs, page_nr, s->page_buffer,
-                               s->page_spare_buffer);
+        uint32_t physical_cs = cs, physical_page = page_nr;
+        uint8_t physical_spare[NAND_BYTES_PER_SPARE];
+        memcpy(physical_spare, s->page_spare_buffer, sizeof(physical_spare));
 
         /*
          * Undo the FTL's relocation -- see fmss_generated_layout(). The
@@ -1007,7 +1058,7 @@ static void write_nand_pages(IPodTouchFMSSState *s)
          * stays uniformly "generated".
          *
          * This is what makes the *persisted* image correct across a reboot;
-         * fmss_remember_physical above is what makes it correct before one.
+         * fmss_remember_physical below makes it correct before one.
          */
         if (!fmss_physical()) {
             uint32_t logical = ldl_le_p(s->page_spare_buffer);
@@ -1017,7 +1068,10 @@ static void write_nand_pages(IPodTouchFMSSState *s)
                     printf("SKIP logical=%u (cs=%u page=%u)\n", logical, cs, page_nr);
                     fflush(stdout);
                 }
-                continue; /* FTL bookkeeping, not a filesystem block */
+                /* FTL bookkeeping is intentionally session-only. */
+                fmss_remember_physical(s, cs, page_nr, s->page_buffer,
+                                       physical_spare);
+                continue;
             }
             if (fmss_rtrace()) {
                 printf("KEEP logical=%u -> cs=%u page=%u\n", logical, rcs, rpage);
@@ -1029,7 +1083,12 @@ static void write_nand_pages(IPodTouchFMSSState *s)
             ((uint32_t *)s->page_spare_buffer)[2] = 0x00FF00FF;
         }
 
-        fmss_store_page(s, cs, page_nr, s->page_buffer, s->page_spare_buffer);
+        if (!fmss_store_page(s, cs, page_nr, s->page_buffer,
+                             s->page_spare_buffer)) {
+            return;
+        }
+        fmss_remember_physical(s, physical_cs, physical_page, s->page_buffer,
+                               physical_spare);
     }
 }
 

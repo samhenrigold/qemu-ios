@@ -188,6 +188,7 @@ void gles_eagl_iosurface_unlock(void);
 typedef struct {
     uint8_t *data;
     size_t size;
+    uint32_t name;
 } GLESBuffer;
 
 typedef struct {
@@ -410,6 +411,8 @@ typedef struct {
      * formats, and only at widths that are not already aligned.
      */
     uint32_t unpack_alignment;
+    uint32_t pack_alignment;
+    GLenum error;
 } GLESHost;
 
 /*
@@ -1157,18 +1160,24 @@ static uint32_t gles_bind_all_arrays(CPUState *cpu, uint32_t first,
  */
 static size_t gles_texel_bytes(uint32_t fmt, uint32_t type)
 {
-    if (type == GL_UNSIGNED_SHORT_5_6_5 ||
-        type == GL_UNSIGNED_SHORT_4_4_4_4 ||
+    if (type == GL_UNSIGNED_SHORT_5_6_5) {
+        return fmt == GL_RGB ? 2 : 0;
+    }
+    if (type == GL_UNSIGNED_SHORT_4_4_4_4 ||
         type == GL_UNSIGNED_SHORT_5_5_5_1) {
-        return 2;
+        return fmt == GL_RGBA ? 2 : 0;
+    }
+    if (type != GL_UNSIGNED_BYTE) {
+        return 0;
     }
     switch (fmt) {
+    case GL_BGRA:
     case GL_RGBA:            return 4;
     case GL_RGB:             return 3;
     case GL_LUMINANCE_ALPHA: return 2;
     case GL_ALPHA:
     case GL_LUMINANCE:       return 1;
-    default:                 return 4;
+    default:                 return 0;
     }
 }
 
@@ -1189,15 +1198,188 @@ static uint32_t gles_unpack(void)
  * fails the read and drops the whole texture. Under-reading shears the image;
  * over-reading loses it entirely.
  */
-static size_t gles_image_bytes(uint32_t w, uint32_t h, size_t bpp)
+static size_t gles_image_bytes(uint32_t w, uint32_t h, size_t bpp,
+                               size_t align)
 {
-    size_t align = gles_unpack();
-    size_t row = ((size_t)w * bpp + align - 1) & ~(align - 1);
-
     if (!w || !h) {
         return 0;
     }
+    /* Bound before multiplying: guest dimensions are unsigned ABI words. */
+    if (!bpp || (align != 1 && align != 2 && align != 4 && align != 8) ||
+        w > GLES_MAX_TEX_BYTES / bpp) {
+        return SIZE_MAX;
+    }
+    size_t row = ((size_t)w * bpp + align - 1) & ~(align - 1);
+    if (h > GLES_MAX_TEX_BYTES / row) {
+        return SIZE_MAX;
+    }
     return row * (h - 1) + (size_t)w * bpp;
+}
+
+static int64_t gles_reject(GLenum error)
+{
+    if (!gh.error) {
+        gh.error = error;
+    }
+    return -1;
+}
+
+/* Only expose formats our decoder accepts, never the host's unrelated list. */
+static const GLint gles_compressed_formats[] = {
+    0x8C00, 0x8C01, 0x8C02, 0x8C03, /* PVRTC */
+    0x8B90, 0x8B91, 0x8B92, 0x8B93, 0x8B94, /* 4-bit palettes */
+    0x8B95, 0x8B96, 0x8B97, 0x8B98, 0x8B99, /* 8-bit palettes */
+};
+
+/* glGet has no capacity argument. Reject unknown pnames BEFORE host dispatch. */
+static unsigned gles_query_count(uint32_t pname)
+{
+    switch (pname) {
+    case GL_COMPRESSED_TEXTURE_FORMATS:
+        return ARRAY_SIZE(gles_compressed_formats);
+    case GL_MODELVIEW_MATRIX:
+    case GL_PROJECTION_MATRIX:
+    case GL_TEXTURE_MATRIX:
+        return 16;
+    case GL_CURRENT_COLOR:
+    case GL_CURRENT_TEXTURE_COORDS:
+    case GL_COLOR_CLEAR_VALUE:
+    case GL_COLOR_WRITEMASK:
+    case GL_FOG_COLOR:
+    case GL_LIGHT_MODEL_AMBIENT:
+    case GL_VIEWPORT:
+    case GL_SCISSOR_BOX:
+        return 4;
+    case GL_CURRENT_NORMAL:
+    case GL_POINT_DISTANCE_ATTENUATION:
+        return 3;
+    case GL_DEPTH_RANGE:
+    case GL_MAX_VIEWPORT_DIMS:
+    case GL_ALIASED_POINT_SIZE_RANGE:
+    case GL_ALIASED_LINE_WIDTH_RANGE:
+    case GL_SMOOTH_POINT_SIZE_RANGE:
+    case GL_SMOOTH_LINE_WIDTH_RANGE:
+        return 2;
+    case GL_ACTIVE_TEXTURE:
+    case GL_CLIENT_ACTIVE_TEXTURE:
+    case GL_ALPHA_TEST:
+    case GL_ALPHA_TEST_FUNC:
+    case GL_ALPHA_TEST_REF:
+    case GL_ALPHA_BITS:
+    case GL_BLEND:
+    case GL_BLEND_SRC:
+    case GL_BLEND_DST:
+    case GL_BLUE_BITS:
+    case GL_COLOR_ARRAY:
+    case GL_COLOR_ARRAY_SIZE:
+    case GL_COLOR_ARRAY_STRIDE:
+    case GL_COLOR_ARRAY_TYPE:
+    case GL_COLOR_LOGIC_OP:
+    case GL_CULL_FACE:
+    case GL_CULL_FACE_MODE:
+    case GL_DEPTH_BITS:
+    case GL_DEPTH_CLEAR_VALUE:
+    case GL_DEPTH_FUNC:
+    case GL_DEPTH_TEST:
+    case GL_DEPTH_WRITEMASK:
+    case GL_DITHER:
+    case GL_FOG:
+    case GL_FOG_DENSITY:
+    case GL_FOG_START:
+    case GL_FOG_END:
+    case GL_FOG_MODE:
+    case GL_FOG_HINT:
+    case GL_FRONT_FACE:
+    case GL_GREEN_BITS:
+    case GL_LIGHTING:
+    case GL_LIGHT_MODEL_TWO_SIDE:
+    case GL_LINE_SMOOTH:
+    case GL_LINE_SMOOTH_HINT:
+    case GL_LINE_WIDTH:
+    case GL_LOGIC_OP_MODE:
+    case GL_MATRIX_MODE:
+    case GL_MAX_CLIP_PLANES:
+    case GL_MAX_LIGHTS:
+    case GL_MAX_MODELVIEW_STACK_DEPTH:
+    case GL_MAX_PROJECTION_STACK_DEPTH:
+    case GL_MAX_TEXTURE_SIZE:
+    case GL_MAX_TEXTURE_STACK_DEPTH:
+    case GL_MAX_TEXTURE_UNITS:
+    case GL_MODELVIEW_STACK_DEPTH:
+    case GL_NORMAL_ARRAY:
+    case GL_NORMAL_ARRAY_STRIDE:
+    case GL_NORMAL_ARRAY_TYPE:
+    case GL_NORMALIZE:
+    case GL_PACK_ALIGNMENT:
+    case GL_PERSPECTIVE_CORRECTION_HINT:
+    case GL_POINT_SIZE:
+    case GL_POINT_SMOOTH:
+    case GL_POINT_SMOOTH_HINT:
+    case GL_POLYGON_OFFSET_FACTOR:
+    case GL_POLYGON_OFFSET_UNITS:
+    case GL_POLYGON_OFFSET_FILL:
+    case GL_PROJECTION_STACK_DEPTH:
+    case GL_RED_BITS:
+    case GL_RESCALE_NORMAL:
+    case GL_SAMPLE_ALPHA_TO_COVERAGE:
+    case GL_SAMPLE_ALPHA_TO_ONE:
+    case GL_SAMPLE_COVERAGE:
+    case GL_SAMPLE_COVERAGE_VALUE:
+    case GL_SAMPLE_COVERAGE_INVERT:
+    case GL_SAMPLE_BUFFERS:
+    case GL_SAMPLES:
+    case GL_SCISSOR_TEST:
+    case GL_STENCIL_BITS:
+    case GL_STENCIL_CLEAR_VALUE:
+    case GL_STENCIL_FAIL:
+    case GL_STENCIL_FUNC:
+    case GL_STENCIL_PASS_DEPTH_FAIL:
+    case GL_STENCIL_PASS_DEPTH_PASS:
+    case GL_STENCIL_REF:
+    case GL_STENCIL_TEST:
+    case GL_STENCIL_VALUE_MASK:
+    case GL_STENCIL_WRITEMASK:
+    case GL_SUBPIXEL_BITS:
+    case GL_TEXTURE_2D:
+    case GL_TEXTURE_BINDING_2D:
+    case GL_TEXTURE_COORD_ARRAY:
+    case GL_TEXTURE_COORD_ARRAY_SIZE:
+    case GL_TEXTURE_COORD_ARRAY_STRIDE:
+    case GL_TEXTURE_COORD_ARRAY_TYPE:
+    case GL_TEXTURE_STACK_DEPTH:
+    case GL_UNPACK_ALIGNMENT:
+    case GL_VERTEX_ARRAY:
+    case GL_VERTEX_ARRAY_SIZE:
+    case GL_VERTEX_ARRAY_STRIDE:
+    case GL_VERTEX_ARRAY_TYPE:
+    case GL_MULTISAMPLE:
+    case GL_NUM_COMPRESSED_TEXTURE_FORMATS:
+    case GL_POINT_SIZE_MIN:
+    case GL_POINT_SIZE_MAX:
+    case GL_POINT_FADE_THRESHOLD_SIZE:
+    case GL_GENERATE_MIPMAP_HINT:
+    case GL_MAX_ELEMENTS_VERTICES:
+    case GL_MAX_ELEMENTS_INDICES:
+    case GL_COLOR_MATERIAL:
+    case GL_ARRAY_BUFFER_BINDING:
+    case GL_ELEMENT_ARRAY_BUFFER_BINDING:
+    case GL_VERTEX_ARRAY_BUFFER_BINDING:
+    case GL_NORMAL_ARRAY_BUFFER_BINDING:
+    case GL_COLOR_ARRAY_BUFFER_BINDING:
+    case GL_TEXTURE_COORD_ARRAY_BUFFER_BINDING:
+    case 0x8B9A: /* GL_IMPLEMENTATION_COLOR_READ_TYPE_OES */
+    case 0x8B9B: /* GL_IMPLEMENTATION_COLOR_READ_FORMAT_OES */
+    case 0x8CA6: /* GL_FRAMEBUFFER_BINDING_OES */
+    case 0x8CA7: /* GL_RENDERBUFFER_BINDING_OES */
+    case 0x84E8: /* GL_MAX_RENDERBUFFER_SIZE_OES */
+        return 1;
+    default:
+        if ((pname >= GL_LIGHT0 && pname <= GL_LIGHT7) ||
+            (pname >= GL_CLIP_PLANE0 && pname <= GL_CLIP_PLANE5)) {
+            return 1;
+        }
+        return 0;
+    }
 }
 
 /* ------------------------------------------------- compressed textures ---- */
@@ -2988,6 +3170,7 @@ static GLESBuffer *gles_buffer_intern(uint32_t name)
     b = g_hash_table_lookup(gh.buffers, GUINT_TO_POINTER(name));
     if (!b) {
         b = g_new0(GLESBuffer, 1);
+        b->name = name;
         g_hash_table_insert(gh.buffers, GUINT_TO_POINTER(name), b);
     }
     return b;
@@ -3415,7 +3598,13 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         size_t bpp = gles_texel_bytes(fmt, type), n;
         const uint8_t *px = NULL;   /* borrowed: points into gh.txbuf */
 
-        n = gles_image_bytes(w, h, bpp);
+        if (!bpp) {
+            return gles_reject(GL_INVALID_ENUM);
+        }
+        n = gles_image_bytes(w, h, bpp, gles_unpack());
+        if (n > GLES_MAX_TEX_BYTES) {
+            return gles_reject(GL_INVALID_VALUE);
+        }
         if (pixels && n) {
             px = gles_fetch_texels(cpu, pixels, n, "glTexImage2D");
             if (!px) {
@@ -3520,7 +3709,13 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         size_t bpp = gles_texel_bytes(fmt, type), n;
         const uint8_t *px = NULL;   /* borrowed: points into gh.txbuf */
 
-        n = gles_image_bytes(w, h, bpp);
+        if (!bpp) {
+            return gles_reject(GL_INVALID_ENUM);
+        }
+        n = gles_image_bytes(w, h, bpp, gles_unpack());
+        if (n > GLES_MAX_TEX_BYTES) {
+            return gles_reject(GL_INVALID_VALUE);
+        }
         if (!pixels || !n) {
             return 0;
         }
@@ -3799,99 +3994,80 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         return 0;
     }
 
-    case GLES_SLOT_GET_INTEGERV: {              /* pname, guest int* */
+    case GLES_SLOT_GET_INTEGERV:
+    case GLES_SLOT_GET_FLOATV: {
         uint32_t pname = a[0];
-        /* 32, not 4. The default arm forwards ANY pname to the host, and its
-         * comment's claim that everything reaching it is scalar is enforced by
-         * nothing: GL_COMPRESSED_TEXTURE_FORMATS alone returns ~20-30 ints on
-         * desktop GL and GL_MODELVIEW_MATRIX returns 16, so a texture loader
-         * asking the ordinary "which compressed formats do you support"
-         * question wrote 80-120 bytes into 16 and smashed this frame.
-         * (glGetFloatv next door survives the same shape only because its
-         * buffer is 16.) */
-        int32_t v[32] = { 0 };
-        unsigned n = 1;
+        unsigned n = gles_query_count(pname);
+        union { GLint i[16]; GLfloat f[16]; } v = { 0 };
+        bool floating = slot == GLES_SLOT_GET_FLOATV;
+        bool emulated = true;
 
         if (!a[1]) {
             return 0;
+        }
+        if (!n) {
+            return gles_reject(GL_INVALID_ENUM);
         }
         switch (pname) {
-        /* FBO state is bookkeeping here, not host GL state -- the host
-         * renders into its own FBO regardless (see the OES block below).
-         * Answer from the same bookkeeping so save/restore idioms
-         * round-trip. */
+        case GL_COMPRESSED_TEXTURE_FORMATS:
+            memcpy(v.i, gles_compressed_formats, sizeof(gles_compressed_formats));
+            break;
+        case GL_NUM_COMPRESSED_TEXTURE_FORMATS:
+            v.i[0] = ARRAY_SIZE(gles_compressed_formats);
+            break;
+        case GL_PACK_ALIGNMENT:
+            v.i[0] = gh.pack_alignment ? gh.pack_alignment : 4;
+            break;
+        case GL_UNPACK_ALIGNMENT:
+            v.i[0] = gles_unpack();
+            break;
+        case GL_ARRAY_BUFFER_BINDING:
+            v.i[0] = gh.array_buffer ? gh.array_buffer->name : 0;
+            break;
+        case GL_ELEMENT_ARRAY_BUFFER_BINDING:
+            v.i[0] = gh.element_buffer ? gh.element_buffer->name : 0;
+            break;
+        case GL_VERTEX_ARRAY_BUFFER_BINDING:
+            v.i[0] = gh.vertex.vbo ? gh.vertex.vbo->name : 0;
+            break;
+        case GL_NORMAL_ARRAY_BUFFER_BINDING:
+            v.i[0] = gh.normal.vbo ? gh.normal.vbo->name : 0;
+            break;
+        case GL_COLOR_ARRAY_BUFFER_BINDING:
+            v.i[0] = gh.color.vbo ? gh.color.vbo->name : 0;
+            break;
+        case GL_TEXTURE_COORD_ARRAY_BUFFER_BINDING: {
+            const GLESBuffer *b = gh.texcoord[gh.client_active_unit].vbo;
+            v.i[0] = b ? b->name : 0;
+            break;
+        }
+        case 0x8B9A: /* GL_IMPLEMENTATION_COLOR_READ_TYPE_OES */
+            v.i[0] = GL_UNSIGNED_BYTE;
+            break;
+        case 0x8B9B: /* GL_IMPLEMENTATION_COLOR_READ_FORMAT_OES */
+            v.i[0] = GL_RGBA;
+            break;
         case 0x8CA6: /* GL_FRAMEBUFFER_BINDING_OES */
-            /* The guest's own name, not the host's: an app that saves this,
-             * binds its offscreen target and restores must get back the
-             * number it passed to glBindFramebuffer. */
-            v[0] = gh.bound_framebuffer;
+            v.i[0] = gh.bound_framebuffer;
             break;
         case 0x8CA7: /* GL_RENDERBUFFER_BINDING_OES */
-            v[0] = gh.bound_renderbuffer;
+            v.i[0] = gh.bound_renderbuffer;
             break;
-        case GL_VIEWPORT:
-        case GL_SCISSOR_BOX:
-            n = 4;
-            glGetIntegerv(pname, v);
-            break;
-        case GL_MAX_VIEWPORT_DIMS:
-            n = 2;
-            glGetIntegerv(pname, v);
-            break;
-        case GL_COMPRESSED_TEXTURE_FORMATS: {
-            /* However many the host has, clamped to what we can hold -- and to
-             * what the guest was told by GL_NUM_COMPRESSED_TEXTURE_FORMATS. */
-            GLint count = 0;
-            glGetIntegerv(GL_NUM_COMPRESSED_TEXTURE_FORMATS, &count);
-            if (count < 0) {
-                count = 0;
-            }
-            n = (unsigned)MIN(count, (GLint)ARRAY_SIZE(v));
-            if (n) {
-                glGetIntegerv(pname, v);
+        default:
+            emulated = false;
+            if (floating) {
+                glGetFloatv(pname, v.f);
+            } else {
+                glGetIntegerv(pname, v.i);
             }
             break;
         }
-        default:
-            /* Scalar queries (GL_MAX_TEXTURE_SIZE and friends) pass
-             * through. An ES-only pname sets GL_INVALID_ENUM on the host
-             * and writes nothing, so the guest sees 0 -- the same thing
-             * the silent default used to hand it, minus the stack
-             * garbage. */
-            glGetIntegerv(pname, v);
-            break;
+        if (emulated && floating) {
+            for (unsigned i = 0; i < n; i++) {
+                v.f[i] = v.i[i];
+            }
         }
-        cpu_memory_rw_debug(cpu, a[1], (uint8_t *)v, n * sizeof(v[0]), 1);
-        return 0;
-    }
-
-    case GLES_SLOT_GET_FLOATV: {                /* pname, guest float* */
-        float v[16] = { 0 };
-        unsigned n;
-
-        if (!a[1]) {
-            return 0;
-        }
-        switch (a[0]) {
-        case GL_MODELVIEW_MATRIX:
-        case GL_PROJECTION_MATRIX:
-        case GL_TEXTURE_MATRIX:
-            n = 16;
-            break;
-        case GL_CURRENT_COLOR:
-        case GL_FOG_COLOR:
-        case GL_LIGHT_MODEL_AMBIENT:
-            n = 4;
-            break;
-        case GL_DEPTH_RANGE:
-            n = 2;
-            break;
-        default:
-            n = 1;
-            break;
-        }
-        glGetFloatv(a[0], v);
-        cpu_memory_rw_debug(cpu, a[1], (uint8_t *)v, n * sizeof(v[0]), 1);
+        cpu_memory_rw_debug(cpu, a[1], (uint8_t *)&v, n * sizeof(GLint), 1);
         return 0;
     }
 
@@ -4022,10 +4198,18 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * pixels are laid out, and it has to be applied at each upload against
          * the staging buffer -- forwarding it here would set it on a host
          * context whose alignment the intervening calls are free to change.
-         * GL_PACK_ALIGNMENT is readback-side and nothing here reads back.
+         * PACK and UNPACK are independent guest state.
          */
+        if (a[0] != GL_UNPACK_ALIGNMENT && a[0] != GL_PACK_ALIGNMENT) {
+            return gles_reject(GL_INVALID_ENUM);
+        }
+        if (a[1] != 1 && a[1] != 2 && a[1] != 4 && a[1] != 8) {
+            return gles_reject(GL_INVALID_VALUE);
+        }
         if (a[0] == GL_UNPACK_ALIGNMENT) {
             gh.unpack_alignment = a[1];
+        } else {
+            gh.pack_alignment = a[1];
         }
         return 0;
 
@@ -4160,29 +4344,28 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         uint32_t x = a[0], y = a[1], w = a[2], h = a[3];
         uint32_t fmt = a[4], type = a[5], dst = a[6];
         size_t px = gles_texel_bytes(fmt, type), n;
+        size_t align = gh.pack_alignment ? gh.pack_alignment : 4;
 
-        if (!dst || !w || !h || !px) {
+        if (!px) {
+            return gles_reject(GL_INVALID_ENUM);
+        }
+        if (!dst || !w || !h) {
             return 0;
         }
         /* Rows are padded to GL_PACK_ALIGNMENT, same as an upload; sizing this
          * as a bare w*h*bpp would under-allocate and truncate the last rows. */
-        n = gles_image_bytes(w, h, px);
+        n = gles_image_bytes(w, h, px, align);
         if (n > GLES_MAX_TEX_BYTES) {
             fprintf(stderr, "[gles] glReadPixels: %zu bytes exceeds cap\n", n);
-            return -1;
+            return gles_reject(GL_INVALID_VALUE);
         }
         if (n > gh.txbuf_size) {
             gh.txbuf = g_realloc(gh.txbuf, n);
             gh.txbuf_size = n;
         }
-        /* gles_image_bytes sizes each row with the guest's UNPACK alignment;
-         * glReadPixels writes them with the PACK alignment, which nothing in
-         * this file ever set -- so it was the host default of 4. A guest that
-         * set UNPACK to 1 (every texture loader does) and read a row whose
-         * length is not a multiple of 4 had GL write up to 3 bytes per row past
-         * the allocation. Make the two agree, which also hands the guest back
-         * the layout it is expecting. */
-        glPixelStorei(GL_PACK_ALIGNMENT, (GLint)gles_unpack());
+        /* Padding and failed host reads must not expose a previous upload. */
+        memset(gh.txbuf, 0, n);
+        glPixelStorei(GL_PACK_ALIGNMENT, (GLint)align);
         glReadPixels(x, y, w, h, fmt, type, gh.txbuf);
         cpu_memory_rw_debug(cpu, dst, gh.txbuf, n, 1);
         return 0;
@@ -4210,8 +4393,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         glFlush();
         return 0;
 
-    case GLES_SLOT_GET_ERROR:
-        return glGetError();
+    case GLES_SLOT_GET_ERROR: {
+        GLenum error = gh.error;
+        gh.error = GL_NO_ERROR;
+        return error ? error : glGetError();
+    }
 
     /*
      * OES framebuffer objects, executed rather than answered.

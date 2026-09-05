@@ -9,6 +9,8 @@
 #include "hw/hw.h"
 #include "hw/irq.h"
 
+bool ipod_touch_fmss_io_failed(void);
+
 #define TYPE_IPOD_TOUCH_FMSS                "ipodtouch.fmss"
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchFMSSState, IPOD_TOUCH_FMSS)
 

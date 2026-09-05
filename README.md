@@ -30,8 +30,10 @@ full flag list (installing apps, USB/networking, audio, headless QMP driving,
 etc). It expects the 3.1.3 release images under `~/Developer/qemu-ios-files`
 (override with `IPOD_FILES`) — these are not included in this repository.
 
-There is also a packaged, double-clickable macOS app; see
-`contrib/macos-app/build-app.sh` for how it is built and what it bundles.
+The native macOS frontend is the sibling `LightTouchMac` repository. Its
+README and `scripts/build-package-native.sh` / `scripts/package.sh` describe
+the current self-contained build. `contrib/macos-app/build-app.sh` is the older
+launcher packaging pipeline.
 
 ---
 

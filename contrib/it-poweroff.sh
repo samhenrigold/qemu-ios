@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Shut the guest down cleanly and wait for QEMU to stop by itself.
+# Shut the guest down cleanly and require its QMP SHUTDOWN confirmation.
 #
 #     contrib/it-poweroff.sh <qmp-socket-or-host:port> [max-seconds]
 #
@@ -29,30 +29,24 @@ TARGET="${1:?usage: it-poweroff.sh <qmp-socket-or-host:port> [max-seconds]}"
 MAX="${2:-90}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-python3 "$HERE/imgtools/itqmp.py" "$TARGET" cmd system_powerdown >/dev/null
+python3 - "$HERE" "$TARGET" "$MAX" <<'PYTHON'
+import sys
+sys.path.insert(0, sys.argv[1] + "/imgtools")
+from itqmp import QMP
 
-echo "it-poweroff: powerdown requested; the guest takes ~10s to unmount and halt"
-
-# The QMP socket disappearing is QEMU exiting.
-i=0
-while [ "$i" -lt "$MAX" ]; do
-    if ! python3 -c "
-import socket,sys
-t='$TARGET'
+q = None
 try:
-    if ':' in t and not t.startswith('/'):
-        h,p=t.rsplit(':',1); socket.create_connection((h,int(p)),1).close()
-    else:
-        s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.connect(t); s.close()
-except Exception:
-    sys.exit(1)
-" 2>/dev/null; then
-        echo "it-poweroff: QEMU has stopped after ${i}s"
-        exit 0
-    fi
-    sleep 2
-    i=$((i + 2))
-done
-
-echo "it-poweroff: QEMU still running after ${MAX}s" >&2
-exit 1
+    q = QMP(sys.argv[2], timeout=10)
+    try:
+        q.cmd("system_powerdown")
+    except EOFError:
+        pass  # The guest may shut down before the command reply.
+    print("it-poweroff: powerdown requested; waiting for guest confirmation", flush=True)
+    q.wait_for_guest_shutdown(float(sys.argv[3]))
+    print("it-poweroff: guest-confirmed SHUTDOWN")
+except (OSError, EOFError, RuntimeError, ValueError) as exc:
+    sys.exit("it-poweroff: shutdown not confirmed: %s" % exc)
+finally:
+    if q is not None:
+        q.close()
+PYTHON
