@@ -14,7 +14,10 @@
 #     imgtools/setowner.py --nand <image>-baked \
 #         /usr/local/bin/sblaunch:0:0:755 \
 #         /usr/local/bin/sbdlicon:0:0:755 \
-#         /System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine:0:0:755
+#         /System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine:0:0:755 \
+#         /private/var/mobile/Library/Preferences/com.apple.mobilemail.plist:501:501:600 \
+#         /private/var/mobile/Library/Preferences/com.apple.springboard.plist:501:501:600 \
+#         /private/var/mobile/Library/Preferences/com.apple.preferences.sounds.plist:501:501:600
 #
 # --blocks is the volume size: 1835008 for the 7 GiB images, 128000 for 500 MB.
 #
@@ -57,6 +60,9 @@ if [ -f "$SBP" ]; then
     plutil -remove SBDontLockEver "$SBP" 2>/dev/null || true
     plutil -remove SBDisableCABlanking "$SBP" 2>/dev/null || true
 fi
+
+# New-device Sounds defaults, including the Calendar Alerts sound path.
+python3 "$SRC/imgtools/set-sound-defaults.py" --root "$MNT"
 
 # 3. The marker, inside the AFC jail (/var/mobile/Media) so the host app can
 #    stat it over AFC — no ssh — and take the fully in-process install path.

@@ -195,3 +195,24 @@ is latched and write-one-to-clear. Unit checks cover wraparound, full/empty,
 partial reset and restore. `/tmp/it-blitz-spore-56216` passed a fresh 7E18 boot,
 two `system_reset` boots with a lit home screen, and native shutdown (exit 0).
 Other panel read commands remain unimplemented; they do not invent an ID reply.
+
+## Default Sounds and device power menu
+
+`imgtools/set-sound-defaults.py` enables New Mail, Sent Mail, Calendar Alerts,
+Lock Sounds and Keyboard Clicks when baking a default image. Calendar Alerts
+stores `/Applications/MobileCal.app/alarm.aiff`, matching the guest Settings
+specifier; the other four settings are Boolean. Existing unrelated preferences
+and binary/XML format are preserved. Newly created preferences need mobile
+ownership (the bake instructions include the ownership step).
+
+Accurate absent-device I2C NAKs are now the default. The old fake ACK at demo-card
+address 0x29 made SpringBoard overwrite sound preferences during every fresh
+boot. `IT_I2C_NAK=0` remains a diagnostic compatibility switch. With the new
+default, `/tmp/it-blitz-spore-59237` verified all five enabled settings after a
+fresh boot and completed native shutdown. The staged HFS volume passed fsck.
+`nand-ultimate` receives the verified changed pages, with originals and hashes
+saved in `qemu-ios-files/nand-sound-defaults-backup-20260905`.
+
+Light Touch commit `a88f4fb` uses a native NSMenuToolbarItem for Lock: its main
+button locks/wakes, and its menu offers Lock and Power Off. Power Off follows
+the existing guarded guest shutdown and app quit path. Release arm64 build passes.
