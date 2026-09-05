@@ -91,6 +91,12 @@ typedef enum {
     QC_PB_ACK    = 0x152,  // the guest took it; drop the pending item
     QC_PB_WRITE  = 0x153,  // guest -> host staging buffer; retval: bytes taken
     QC_PB_COMMIT = 0x154,  // publish the staging buffer to the host clipboard
+    QC_AG_HELLO = 0x160,
+    QC_AG_POLL = 0x161,
+    QC_AG_READ = 0x162,
+    QC_AG_WRITE = 0x163,
+    QC_AG_DONE = 0x164,
+    QC_AG_HOSTTIME = 0x165,
 } qemu_call_number_t;
 
 #define QC_GLES_PING_MAGIC 0x6a17c0deLL
@@ -106,6 +112,13 @@ typedef struct __attribute__((packed)) {
 // Cap on a single pasteboard item, both directions. Large enough for anything
 // anyone pastes by hand, small enough that a confused guest cannot make the
 // host allocate without bound.
+typedef struct __attribute__((packed)) {
+    uint32_t buffer_guest_ptr;
+    uint32_t offset;
+    uint32_t length;
+    uint64_t token;
+} qc_ag_args_t;
+
 #define QC_PB_MAX_LEN (256 * 1024)
 
 typedef struct __attribute__((packed)) {
@@ -130,6 +143,7 @@ typedef struct __attribute__((packed)) {
         qc_gles_args_t gles;
         // Pasteboard
         qc_pb_args_t pb;
+        qc_ag_args_t ag;
     } args;
 
     // Response
