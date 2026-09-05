@@ -54,6 +54,8 @@ bool qemu_ios_ui_storage_failed(void);
 
 /* True only after the guest writes the final PMU power-off command. */
 bool qemu_ios_ui_guest_shutdown_confirmed(void);
+/* Guest backlight state, independent of black framebuffer contents. */
+bool qemu_ios_ui_display_sleeping(void);
 void qemu_ios_ui_vm_stopped(void);
 
 /*

@@ -216,3 +216,21 @@ saved in `qemu-ios-files/nand-sound-defaults-backup-20260905`.
 Light Touch commit `a88f4fb` uses a native NSMenuToolbarItem for Lock: its main
 button locks/wakes, and its menu offers Lock and Power Off. Power Off follows
 the existing guarded guest shutdown and app quit path. Release arm64 build passes.
+
+## Power Off without closing the app; startup crash
+
+Light Touch now requests QEMU's `-no-shutdown` mode. The native PMU standby
+command stops the guest but keeps QEMU's main loop alive; Power On queues a
+machine reset, waits for the PMU confirmation latch to clear, then resumes.
+The PMU reset must also consume register 0x6f's old 0x90 standby command:
+otherwise iBoot stays in the standby/charging path instead of booting iOS.
+`/tmp/it-power-cycle-v4.log` verified two guest-confirmed power-offs with a
+same-process cold boot, working SSH, and native Home Screen/Settings names.
+A lit retained frame alone is not evidence of a completed reboot.
+
+The startup abort reported in qemu_ios_ui_frame was a mutex used before
+qemu_ios_ui_attach initialized it. Startup can fail before attach while the
+window's display link is already polling. All frame entry points now initialize
+the process-lifetime mutex using GLib's once primitive. The sanitizer regression
+polls concurrently before attach and verifies empty-frame behavior and later
+publication; it passes. Commit 074da22b44 contains that fix.

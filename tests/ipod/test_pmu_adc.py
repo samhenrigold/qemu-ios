@@ -92,7 +92,8 @@ int main(void) {
     wr(&s,0x4b,0x55);wr(&s,0x57,0xaa); /* these are not ADC status registers */
     assert(rd(&s,0x4b)==0x55 && rd(&s,0x57)==0xaa);
     irq=0;pcf50633_post_load(&s,2);assert(irq);
-    wr(&s,0x40,0x14);s.regs[0x64]=0x31;pcf50633_reset(&s);
+    wr(&s,0x40,0x14);s.regs[0x64]=0x31;s.regs[PMU_STANDBY_CMD]=0x90;pcf50633_reset(&s);
+    assert(s.regs[PMU_STANDBY_CMD]==0);
     assert(!irq && !timer.pending && s.regs[0x64]==0x31);
     assert(s.regs[7]==0xff && s.regs[8]==0xff && s.regs[9]==0xff);
     unsigned last=0;
