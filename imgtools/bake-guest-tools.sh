@@ -50,6 +50,14 @@ if [ -f "$INST/sbdlicon" ]; then
     chmod 755 "$MNT/usr/local/bin/sbdlicon"
 fi
 
+# Old AppSync images disabled even an explicit press of the lock button.
+SBP="$MNT/private/var/mobile/Library/Preferences/com.apple.springboard.plist"
+if [ -f "$SBP" ]; then
+    plutil -lint "$SBP" >/dev/null
+    plutil -remove SBDontLockEver "$SBP" 2>/dev/null || true
+    plutil -remove SBDisableCABlanking "$SBP" 2>/dev/null || true
+fi
+
 # 3. The marker, inside the AFC jail (/var/mobile/Media) so the host app can
 #    stat it over AFC — no ssh — and take the fully in-process install path.
 mkdir -p "$MNT/var/mobile/Media"
