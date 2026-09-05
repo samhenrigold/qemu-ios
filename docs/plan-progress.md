@@ -9,7 +9,7 @@ TV-out were explicitly deferred by that plan.
 | --- | --- | --- |
 | Generated NAND integrity and restart stability | Complete for the reproduced failures: free-pool bounds, FMSS completion, VIC fixes and paced TV-out IRQs | Twelve alternating Coldplay/Spore install/respring cycles; unchanged system file; guest shutdown; cold boot with both apps; full-volume read-only fsck passed |
 | PMU ADC and masked event IRQ | Complete | Ten-bit results, settling vs conversion, mask/read-to-clear and GPIO tests pass; real 7E18 boot, three lock/wake cycles and native shutdown pass |
-| Battery controls | Pending | Calibrated guest percentage and charging state for runtime host changes |
+| Battery controls | Core implemented and guest verified; Light Touch integration pending | 20/60 percent cold calibration, full-voltage estimate, runtime off/on/auto and native shutdown pass; preserve guest filtering delay |
 | Headset/Mikey detection | Pending | Plug/unplug and headset button traces; correct guest routing |
 | Microphone/I2S RX | Pending | Deterministic input tone captured by the guest, then host microphone recording |
 | Native idle sleep/wake | Pending | Auto-lock, actual display/CPU sleep, power/Home wake without brightness overrides |

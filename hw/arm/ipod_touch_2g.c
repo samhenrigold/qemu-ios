@@ -1204,7 +1204,61 @@ static void ipod_touch_set_battery_adc(Object *obj, Visitor *v, const char *name
     }
     nms->battery_adc = value;
     if (nms->pmu_state) {
-        nms->pmu_state->adc_values[4] = value;
+        pcf50633_set_battery_adc(nms->pmu_state, value);
+    }
+}
+
+static void ipod_touch_get_battery_level(Object *obj, Visitor *v, const char *name,
+                                        void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    unsigned counts = nms->pmu_state ? nms->pmu_state->adc_values[4] : nms->battery_adc;
+    int64_t value = pcf50633_level_for_adc(counts);
+    visit_type_int(v, name, &value, errp);
+}
+
+static void ipod_touch_set_battery_level(Object *obj, Visitor *v, const char *name,
+                                        void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    int64_t value;
+    if (!visit_type_int(v, name, &value, errp)) {
+        return;
+    }
+    if (value < 0 || value > 100) {
+        error_setg(errp, "battery-level must be between 0 and 100");
+        return;
+    }
+    nms->battery_adc = pcf50633_adc_for_level(value);
+    if (nms->pmu_state) {
+        pcf50633_set_battery_adc(nms->pmu_state, nms->battery_adc);
+    }
+}
+
+static char *ipod_touch_get_battery_charging(Object *obj, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    unsigned mode = nms->pmu_state ? nms->pmu_state->charging_mode : nms->battery_charging;
+    return g_strdup(mode == 1 ? "on" : mode == 2 ? "off" : "auto");
+}
+
+static void ipod_touch_set_battery_charging(Object *obj, const char *value, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    unsigned mode;
+    if (!strcmp(value, "auto")) {
+        mode = 0;
+    } else if (!strcmp(value, "on")) {
+        mode = 1;
+    } else if (!strcmp(value, "off")) {
+        mode = 2;
+    } else {
+        error_setg(errp, "battery-charging must be auto, on or off");
+        return;
+    }
+    nms->battery_charging = mode;
+    if (nms->pmu_state) {
+        pcf50633_set_charging_mode(nms->pmu_state, mode);
     }
 }
 
@@ -1307,6 +1361,12 @@ static void ipod_touch_instance_init(Object *obj)
     IPOD_TOUCH_MACHINE(obj)->battery_adc = 850;
     object_property_add(obj, "battery-adc", "int", ipod_touch_get_battery_adc,
                         ipod_touch_set_battery_adc, NULL, NULL);
+    object_property_add(obj, "battery-level", "int", ipod_touch_get_battery_level,
+                        ipod_touch_set_battery_level, NULL, NULL);
+    object_property_set_description(obj, "battery-level",
+        "Battery voltage target (0-100 percent); guest sampling and filtering apply");
+    object_property_add_str(obj, "battery-charging", ipod_touch_get_battery_charging,
+                            ipod_touch_set_battery_charging);
     /* On by default: this gates the verified MBX MMU request/ack mirror
      * (ipod_touch_mbx.c), which stops the ~21M-read disable-loop spin that
      * froze OpenGL ES apps. The 2D boot path does not touch the MMU handshake,
@@ -2877,6 +2937,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     PCF50633(pmu)->usb_cable = nms->usb_attached;
     nms->pmu_state = PCF50633(pmu);
     nms->pmu_state->adc_values[4] = nms->battery_adc;
+    nms->pmu_state->charging_mode = nms->battery_charging;
     qdev_connect_gpio_out(DEVICE(pmu), 0,
                          qdev_get_gpio_in(DEVICE(sysic_state), PMU_WAKE_IRQ));
     ipod_touch_mbx_set_patch_usb_gate(nms->usb_patch_mux_gate);

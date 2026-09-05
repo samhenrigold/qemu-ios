@@ -103,3 +103,22 @@ latched address and active state for diagnosing future controller issues.
 and reattach, power-button lock, Home wake and touch unlock, then guest-confirmed
 shutdown. Its auto-lock test did not engage because the inherited demo preference
 `SBAutoDimTime=-1` remained set; this is distinct from the now-fixed PMU bus wedge.
+
+## Host controls
+
+`battery-level=0..100` converts a voltage target through the guest's published
+0003-default table. `battery-adc=0..1023` remains available for raw diagnostics.
+The reported host target is not the guest's filtered CurrentCapacity. Plateaus
+in the real table and ten-bit quantization mean arbitrary percentages are
+approximate; calibrated targets 20 and 60 report exactly on fresh boots.
+`battery-charging=auto|on|off` controls the charger phase. All modes require
+external USB power and respect guest charge-disable bits. Auto stops charging
+at the full-voltage target; on can keep the charging phase active there.
+Changing the mode latches a charger event (EVENT_C bit 2).
+
+`/tmp/it-blitz-spore-57272` booted at a 60-percent target, reported 60%, accepted
+off/on/auto with matching guest IsCharging values, accepted a 100-percent
+voltage target and stopped auto charging, then completed native shutdown.
+The 100-percent fresh-voltage check reported BootCapacityEstimate 100 at 4199 mV;
+while charging the guest deliberately caps CurrentCapacity at 95 until charge
+completion. Runtime voltage changes retain the native measurement/filter delay.

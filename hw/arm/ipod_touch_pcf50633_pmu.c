@@ -50,6 +50,72 @@ static void pmu_latch_event(Pcf50633State *s, unsigned event, uint8_t bits)
     pmu_update_irq(s);
 }
 
+/* 7E18 IOPMPowerSource battery-data/0003-default, percent and millivolts.
+ * The guest applies its own measurement interval and capacity filter. */
+static const uint16_t battery_curve[][2] = {
+    {0, 3000}, {2, 3450}, {3, 3667}, {5, 3707}, {9, 3742},
+    {14, 3765}, {18, 3783}, {23, 3800}, {27, 3800}, {32, 3824},
+    {36, 3824}, {41, 3841}, {45, 3853}, {50, 3877}, {55, 3888},
+    {59, 3912}, {64, 3941}, {68, 3965}, {73, 3994}, {77, 4023},
+    {82, 4047}, {86, 4094}, {91, 4129}, {95, 4150}, {100, 4200},
+};
+
+unsigned pcf50633_adc_for_level(unsigned percent)
+{
+    percent = MIN(percent, 100);
+    for (unsigned i = 1; i < ARRAY_SIZE(battery_curve); i++) {
+        unsigned lo = battery_curve[i - 1][0], hi = battery_curve[i][0];
+        if (percent <= hi) {
+            unsigned mv = battery_curve[i - 1][1] +
+                ((battery_curve[i][1] - battery_curve[i - 1][1]) *
+                 (percent - lo) + (hi - lo) / 2) / (hi - lo);
+            return ((mv - 2500) * 1024 + 1000) / 2000;
+        }
+    }
+    return 870;
+}
+
+unsigned pcf50633_level_for_adc(unsigned counts)
+{
+    unsigned mv = 2500 + MIN(counts, 1023) * 2000 / 1024;
+    if (mv <= battery_curve[0][1]) {
+        return 0;
+    }
+    for (unsigned i = 1; i < ARRAY_SIZE(battery_curve); i++) {
+        unsigned lo = battery_curve[i - 1][1], hi = battery_curve[i][1];
+        if (mv <= hi && hi > lo) {
+            return battery_curve[i - 1][0] +
+                ((battery_curve[i][0] - battery_curve[i - 1][0]) *
+                 (mv - lo) + (hi - lo) / 2) / (hi - lo);
+        }
+    }
+    return 100;
+}
+
+static bool pmu_charge_active(Pcf50633State *s)
+{
+    return s->usb_cable && !(s->regs[0x0a] & 0x0c) &&
+           s->charging_mode != 2 &&
+           (s->charging_mode == 1 || s->adc_values[4] < 870);
+}
+
+void pcf50633_set_battery_adc(Pcf50633State *s, unsigned counts)
+{
+    bool was_charging = pmu_charge_active(s);
+    s->adc_values[4] = MIN(counts, 1023);
+    if (was_charging != pmu_charge_active(s)) {
+        pmu_latch_event(s, PMU_EVENT_C_REG, 1 << 2);
+    }
+}
+
+void pcf50633_set_charging_mode(Pcf50633State *s, unsigned mode)
+{
+    if (s->charging_mode != mode) {
+        s->charging_mode = mode;
+        pmu_latch_event(s, PMU_EVENT_C_REG, 1 << 2);
+    }
+}
+
 static void pmu_adc_complete(void *opaque)
 {
     Pcf50633State *s = opaque;
@@ -150,7 +216,7 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
              * Report an active charging phase while external USB power is
              * available and the guest has not disabled charging (0x0a[3:2]). */
             res = s->regs[reg] & ~6;
-            if (s->usb_cable && !(s->regs[0x0a] & 0x0c)) {
+            if (pmu_charge_active(s)) {
                 res |= 2;
             }
             break;
@@ -332,7 +398,7 @@ static void pcf50633_finalize(Object *obj)
  * press outstanding restores with it still outstanding. */
 static const VMStateDescription vmstate_pcf50633 = {
     .name = "pcf50633",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = pcf50633_post_load,
     .fields = (const VMStateField[]) {
@@ -348,6 +414,7 @@ static const VMStateDescription vmstate_pcf50633 = {
         VMSTATE_UINT16_ARRAY_V(adc_values, Pcf50633State, 16, 2),
         VMSTATE_UINT16_V(adc_sample, Pcf50633State, 2),
         VMSTATE_TIMER_PTR_V(adc_timer, Pcf50633State, 2),
+        VMSTATE_UINT8_V(charging_mode, Pcf50633State, 3),
         VMSTATE_END_OF_LIST()
     }
 };

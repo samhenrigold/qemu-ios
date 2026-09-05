@@ -11,6 +11,8 @@ constants='\n'.join(re.findall(r'^#define PMU_.*$',header,re.M))
 state=re.search(r'typedef struct Pcf50633State \{.*?\n} Pcf50633State;',header,re.S).group()
 functions=[]
 for name in ('pmu_update_irq','pmu_latch_event','pmu_adc_complete','pmu_adc_command',
+             'pcf50633_adc_for_level','pcf50633_level_for_adc','pmu_charge_active',
+             'pcf50633_set_battery_adc','pcf50633_set_charging_mode',
              'pcf50633_set_usb_cable','pcf50633_recv','pcf50633_guest_shutdown_confirmed',
              'pcf50633_guest_shutdown','pcf50633_send','pcf50633_reset','pcf50633_post_load'):
     match=re.search(r'^(?:static )?[^\n]*\b'+name+r'\([^)]*\)\s*\{.*?^}',source,re.M|re.S)
@@ -26,6 +28,8 @@ prelude=r'''
 typedef struct {int unused;} I2CSlave;
 typedef struct {bool pending;int64_t deadline;} QEMUTimer;
 typedef int *qemu_irq;
+#define MIN(a,b) ((a)<(b)?(a):(b))
+#define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define PCF50633(s) ((Pcf50633State *)(s))
 #define QEMU_CLOCK_VIRTUAL 0
 #define qatomic_read(p) (*(p))
@@ -91,11 +95,30 @@ int main(void) {
     wr(&s,0x40,0x14);s.regs[0x64]=0x31;pcf50633_reset(&s);
     assert(!irq && !timer.pending && s.regs[0x64]==0x31);
     assert(s.regs[7]==0xff && s.regs[8]==0xff && s.regs[9]==0xff);
+    unsigned last=0;
+    for(unsigned i=0;i<=100;i++) {
+        unsigned count=pcf50633_adc_for_level(i);
+        assert(count>=last && count<=1023);last=count;
+    }
+    assert(pcf50633_adc_for_level(20)==660);
+    assert(pcf50633_adc_for_level(60)==726);
+    assert(pcf50633_adc_for_level(100)==870);
+    assert(pcf50633_level_for_adc(660)==20);
+    assert(pcf50633_level_for_adc(726)==60);
+    assert(pcf50633_level_for_adc(870)==100);
+    pcf50633_set_battery_adc(&s,850);pcf50633_set_usb_cable(&s,true);
+    assert(rd(&s,5)&6);
+    wr(&s,9,0xfb);pcf50633_set_charging_mode(&s,2);
+    assert(!(rd(&s,5)&6) && irq);assert(rd(&s,3)==4);
+    pcf50633_set_charging_mode(&s,0);assert(rd(&s,5)&6);rd(&s,3);
+    pcf50633_set_battery_adc(&s,870);assert(!(rd(&s,5)&6) && irq);rd(&s,3);
+    pcf50633_set_charging_mode(&s,1);assert(rd(&s,5)&6);rd(&s,3);
+    pcf50633_set_usb_cable(&s,false);assert(!(rd(&s,5)&6));
     puts("PASS: D1759 ADC settling/conversion, ten-bit results, masks, cable events and reset");
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
-    c=Path(tmp)/'check.c';c.write_text(prelude+constants+'\n'+state+'\ntypedef Pcf50633State DeviceState;\n'+'\n'.join(functions)+tests)
+    c=Path(tmp)/'check.c';c.write_text(prelude+constants+'\n'+re.search(r'static const uint16_t battery_curve\[\]\[2\] = \{.*?\n};',source,re.S).group()+'\n'+state+'\ntypedef Pcf50633State DeviceState;\n'+'\n'.join(functions)+tests)
     binary=str(Path(tmp)/'check')
     subprocess.run(['clang','-std=gnu11','-fsanitize=address,undefined','-fno-sanitize-recover=all',str(c),'-o',binary],check=True)
     subprocess.run([binary],check=True)
