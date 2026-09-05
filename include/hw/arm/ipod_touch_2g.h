@@ -33,6 +33,7 @@
 #include "hw/arm/ipod_touch_sdio.h"
 #include "hw/arm/ipod_touch_tvout.h"
 #include "hw/arm/ipod_touch_lis302dl.h"
+#include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "hw/arm/ipod_touch_tethered.h"
 #include "hw/arm/guest-services/general.h"
 
@@ -212,6 +213,8 @@ typedef struct {
 	IPodTouchSDIOState *sdio_state;
 	IPodTouchTVOutState *tvout_state;
 	LIS302DLState *lis302dl_state;
+    Pcf50633State *pmu_state;
+    uint32_t battery_adc;
 	Clock *sysclk;
 	char bootrom_path[1024];
 	char nor_path[1024];

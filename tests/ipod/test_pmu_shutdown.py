@@ -27,6 +27,8 @@ typedef Pcf50633State I2CSlave;
 static bool guest_shutdown_confirmed;
 static int shutdowns;
 static bool pmu_trace(void) { return false; }
+static void pmu_update_irq(Pcf50633State *s) {}
+static void pmu_adc_command(Pcf50633State *s, uint8_t value) {}
 static void pmu_trace_access(const char *what, uint8_t reg, uint8_t val) {}
 static void lcd_changebrightness(uint8_t val) {}
 static void qemu_system_shutdown_request(int cause) {

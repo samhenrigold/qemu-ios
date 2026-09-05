@@ -1147,7 +1147,11 @@ static bool ipod_touch_get_usb_attached(Object *obj, Error **errp)
 
 static void ipod_touch_set_usb_attached(Object *obj, bool value, Error **errp)
 {
-    IPOD_TOUCH_MACHINE(obj)->usb_attached = value;
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    nms->usb_attached = value;
+    if (nms->pmu_state) {
+        pcf50633_set_usb_cable(nms->pmu_state, value);
+    }
 }
 
 static bool ipod_touch_get_usb_patch_mux_gate(Object *obj, Error **errp)
@@ -1178,6 +1182,32 @@ static void ipod_touch_set_mbx_irq(Object *obj, bool value, Error **errp)
  *   qom-set path=/machine property=accel-x value=64
  * The i2c device itself cannot be given a fixed path (it is parented to the bus).
  */
+static void ipod_touch_get_battery_adc(Object *obj, Visitor *v, const char *name,
+                                      void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    int64_t value = nms->pmu_state ? nms->pmu_state->adc_values[4] : nms->battery_adc;
+    visit_type_int(v, name, &value, errp);
+}
+
+static void ipod_touch_set_battery_adc(Object *obj, Visitor *v, const char *name,
+                                      void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    int64_t value;
+    if (!visit_type_int(v, name, &value, errp)) {
+        return;
+    }
+    if (value < 0 || value > 1023) {
+        error_setg(errp, "battery-adc must be between 0 and 1023");
+        return;
+    }
+    nms->battery_adc = value;
+    if (nms->pmu_state) {
+        nms->pmu_state->adc_values[4] = value;
+    }
+}
+
 static void ipod_touch_get_accel_orientation(Object *obj, Visitor *v, const char *name,
                                              void *opaque, Error **errp)
 {
@@ -1274,6 +1304,9 @@ static void ipod_touch_instance_init(Object *obj)
 
     /* On by default: the emulated device is effectively tethered to the host. */
     IPOD_TOUCH_MACHINE(obj)->usb_attached = true;
+    IPOD_TOUCH_MACHINE(obj)->battery_adc = 850;
+    object_property_add(obj, "battery-adc", "int", ipod_touch_get_battery_adc,
+                        ipod_touch_set_battery_adc, NULL, NULL);
     /* On by default: this gates the verified MBX MMU request/ack mirror
      * (ipod_touch_mbx.c), which stops the ~21M-read disable-loop spin that
      * froze OpenGL ES apps. The 2D boot path does not touch the MMU handshake,
@@ -1509,10 +1542,7 @@ static void ipod_touch_key_event(void *opaque, int keycode)
             if (pressed) {
                 pcf50633_latch_wake_event(PCF50633(s->pmu), bit);
 
-                int pmu_group = PMU_WAKE_IRQ / NUM_GPIO_PINS;
-                int pmu_selector = PMU_WAKE_IRQ % NUM_GPIO_PINS;
-                s->sysic->gpio_int_status[pmu_group] |= (1 << pmu_selector);
-                qemu_irq_raise(s->sysic->gpio_irqs[pmu_group]);
+
             }
         }
     }
@@ -2845,6 +2875,10 @@ static void ipod_touch_machine_init(MachineState *machine)
     I2CSlave * pmu = i2c_slave_create_simple(i2c_state->bus, "pcf50633", 0x73);
     spi4_state->mt->pmu = PCF50633(pmu);
     PCF50633(pmu)->usb_cable = nms->usb_attached;
+    nms->pmu_state = PCF50633(pmu);
+    nms->pmu_state->adc_values[4] = nms->battery_adc;
+    qdev_connect_gpio_out(DEVICE(pmu), 0,
+                         qdev_get_gpio_in(DEVICE(sysic_state), PMU_WAKE_IRQ));
     ipod_touch_mbx_set_patch_usb_gate(nms->usb_patch_mux_gate);
 
     // init the accelerometer. Keep the handle so the machine's QMP properties

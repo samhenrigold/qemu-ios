@@ -24,8 +24,11 @@
 OBJECT_DECLARE_SIMPLE_TYPE(Pcf50633State, PCF50633)
 
 #define PMU_DSBL1 0x30	
-#define PMU_MBCS1 0x4B
-#define PMU_ADCC1 0x57
+#define PMU_ADC_CONTROL 0x40
+#define PMU_ADC_RESULT_LO 0x41
+#define PMU_ADC_RESULT_HI 0x42
+#define PMU_ADC_DONE (1 << 5)
+#define PMU_IRQ_MASK_A 0x07
 
 /*
  * RTC. There is no BCD calendar here -- that was a guess carried over from the
@@ -57,6 +60,10 @@ typedef struct Pcf50633State {
 	uint32_t rtc_latch;   // snapshot of the RTC counter, taken when 0x5C is read
 	bool usb_cable;       // report a USB cable as present (reg 0x04 bit 3)
 	bool shutdown_armed;  // obsolete host flag; retained for snapshot wire compatibility
+    qemu_irq irq;
+    QEMUTimer *adc_timer;
+    uint16_t adc_values[16];
+    uint16_t adc_sample;
 } Pcf50633State;
 
 // The D1759 PMU is itself a nested interrupt controller (device tree pmu@73:
@@ -120,6 +127,8 @@ typedef struct Pcf50633State {
 #define PMU_STAT_MENU   (1 << 0)
 #define PMU_STAT_HOLD   (1 << 1)
 
+// Update live cable status and latch the corresponding power-source event.
+void pcf50633_set_usb_cable(Pcf50633State *s, bool attached);
 // Set/clear the live button STATE bits in reg 0x19.
 void pcf50633_set_stat(Pcf50633State *s, uint8_t bits, bool on);
 // Latch a wake-button interrupt in EVENT_C (reg 0x03); cleared when iOS reads it.

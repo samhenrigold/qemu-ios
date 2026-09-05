@@ -23,6 +23,25 @@ static void sysic_update_gpio_irq(IPodTouchSYSICState *s, unsigned group)
     }
 }
 
+/* Inputs carry logical interrupt requests, rather than raw pad polarity.
+ * Edge-latched button and digitizer requests continue to use gpio_int_status.
+ * A nested controller's level stays pending until that device clears it. */
+static void sysic_gpio_irq_input(void *opaque, int pin, int level)
+{
+    IPodTouchSYSICState *s = opaque;
+    unsigned group = pin / 32;
+    uint32_t bit = 1u << (pin % 32);
+
+    if (level) {
+        s->gpio_level_pending[group] |= bit;
+        s->gpio_int_status[group] |= bit & s->gpio_int_enabled[group];
+    } else {
+        s->gpio_level_pending[group] &= ~bit;
+        s->gpio_int_status[group] &= ~bit;
+    }
+    sysic_update_gpio_irq(s, group);
+}
+
 static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
 {
     IPodTouchSYSICState *s = (IPodTouchSYSICState *) opaque;
@@ -130,7 +149,9 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
                             s->gpio_int_status[group] & ~(uint32_t)val);
                 }
                 // acknowledge the interrupts and clear the corresponding bits
-                s->gpio_int_status[group] = s->gpio_int_status[group] & ~val;
+                s->gpio_int_status[group] = (s->gpio_int_status[group] & ~val) |
+                                            (s->gpio_level_pending[group] &
+                                             s->gpio_int_enabled[group]);
                 sysic_update_gpio_irq(s, group);
             }
             break;
@@ -153,6 +174,9 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
                             s->gpio_int_status[group]);
                 }
                 s->gpio_int_enabled[group] = val;
+                /* A masked level can be ACKed while its device workloop
+                 * services the request. Re-latch it only when enabled again. */
+                s->gpio_int_status[group] |= s->gpio_level_pending[group] & val;
                 sysic_update_gpio_irq(s, group);
             }
             break;
@@ -183,6 +207,7 @@ static void ipod_touch_sysic_init(Object *obj)
 
     memory_region_init_io(&s->iomem, obj, &ipod_touch_sysic_ops, s, TYPE_IPOD_TOUCH_SYSIC, 0x1000);
     sysbus_init_mmio(sbd, &s->iomem);
+    qdev_init_gpio_in(DEVICE(obj), sysic_gpio_irq_input, GPIO_NUMINTGROUPS * 32);
     for(int grp = 0; grp < GPIO_NUMINTGROUPS; grp++) {
         sysbus_init_irq(sbd, &s->gpio_irqs[grp]);
     }
@@ -213,6 +238,7 @@ static void ipod_touch_sysic_reset(DeviceState *dev)
         s->gpio_int_status[grp] = 0;
         s->gpio_int_enabled[grp] = 0;
         s->gpio_int_type[grp] = 0;
+        s->gpio_level_pending[grp] = 0;
         if (s->gpio_irqs[grp]) {
             qemu_irq_lower(s->gpio_irqs[grp]);
         }
@@ -230,7 +256,7 @@ static int sysic_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_sysic = {
     .name = "ipod_touch_sysic",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .post_load = sysic_post_load,
     .fields = (const VMStateField[]) {
@@ -240,6 +266,8 @@ static const VMStateDescription vmstate_ipod_touch_sysic = {
         VMSTATE_UINT32_ARRAY(gpio_int_status, IPodTouchSYSICState, GPIO_NUMINTGROUPS),
         VMSTATE_UINT32_ARRAY(gpio_int_enabled, IPodTouchSYSICState, GPIO_NUMINTGROUPS),
         VMSTATE_UINT32_ARRAY(gpio_int_type, IPodTouchSYSICState, GPIO_NUMINTGROUPS),
+        VMSTATE_UINT32_ARRAY_V(gpio_level_pending, IPodTouchSYSICState,
+                               GPIO_NUMINTGROUPS, 2),
         VMSTATE_END_OF_LIST()
     }
 };

@@ -42,10 +42,22 @@ Battery voltage is **channel 4**, not channel 3: `c05ff878` selects it and
 thermistor read at `c05ff81c` uses channel 2 with scale 2500. Calibration must
 still establish the guest's voltage-to-percentage curve and filtering delay.
 
-Still to verify before implementation is accepted:
+The implemented converter samples on bit-4 START and completes after 1 ms of
+virtual time. PMU output is the OR of unmasked EVENT_A/B/C bits; event reads
+clear those bits and recompute the line. It connects to SYSIC pin 97. GPIO masks
+must allow the guest to mask then acknowledge a held PMU line while its I2C
+workloop runs; unmasking re-latches a still-held request. Relatching masked
+levels on every ACK trapped the guest in its GPIO dispatcher during boot.
 
-- Wire masked PMU events through GPIO IRQ 0x61, with coherent read-to-clear and
-  group acknowledgment. The current button path manually latches SYSIC state.
+ASan/UBSan checks cover conversions, masks, read-to-clear, cable transitions,
+reset, and shared GPIO handling. Live 7E18 validation in
+`/tmp/it-blitz-spore-54671` reached home, locked at 100/300/800 ms press lengths,
+woke through Home, unlocked, and completed native shutdown with QEMU exit 0.
+The runtime `battery-adc` control accepts raw ten-bit channel-4 counts, with 850
+as the default. It deliberately does not claim a calibrated percentage yet.
+
+Remaining calibration:
+
 - Sweep calibrated voltage counts and compare guest battery properties; derive
   charging status from observed driver decoding.
 - Verify channel 6's USB charging-identification sequence and input selection.

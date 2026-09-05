@@ -39,6 +39,8 @@ typedef struct IPodTouchSYSICState {
     uint32_t gpio_int_status[GPIO_NUMINTGROUPS];
     uint32_t gpio_int_enabled[GPIO_NUMINTGROUPS];
     uint32_t gpio_int_type[GPIO_NUMINTGROUPS];
+    /* Asserted logical level requests from devices such as the nested PMU IC. */
+    uint32_t gpio_level_pending[GPIO_NUMINTGROUPS];
 } IPodTouchSYSICState;
 
 #endif

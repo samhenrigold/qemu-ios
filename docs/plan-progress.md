@@ -8,7 +8,7 @@ TV-out were explicitly deferred by that plan.
 | Track | Status | Acceptance evidence still needed |
 | --- | --- | --- |
 | Generated NAND integrity and restart stability | Complete for the reproduced failures: free-pool bounds, FMSS completion, VIC fixes and paced TV-out IRQs | Twelve alternating Coldplay/Spore install/respring cycles; unchanged system file; guest shutdown; cold boot with both apps; full-volume read-only fsck passed |
-| PMU ADC and masked event IRQ | Pending | 7E18 conversion result and completion IRQ; event masking/read-to-clear; boot/shutdown |
+| PMU ADC and masked event IRQ | Complete | Ten-bit results, settling vs conversion, mask/read-to-clear and GPIO tests pass; real 7E18 boot, three lock/wake cycles and native shutdown pass |
 | Battery controls | Pending | Calibrated guest percentage and charging state for runtime host changes |
 | Headset/Mikey detection | Pending | Plug/unplug and headset button traces; correct guest routing |
 | Microphone/I2S RX | Pending | Deterministic input tone captured by the guest, then host microphone recording |

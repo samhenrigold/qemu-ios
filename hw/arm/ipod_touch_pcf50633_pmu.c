@@ -34,6 +34,53 @@ static void pmu_trace_access(const char *what, uint8_t reg, uint8_t val)
             what, reg, val, pc, lr);
 }
 
+static void pmu_update_irq(Pcf50633State *s)
+{
+    uint8_t pending = 0;
+    for (unsigned i = 0; i < 3; i++) {
+        pending |= s->regs[PMU_EVENT_A_REG + i] &
+                   ~s->regs[PMU_IRQ_MASK_A + i];
+    }
+    qemu_set_irq(s->irq, pending != 0);
+}
+
+static void pmu_latch_event(Pcf50633State *s, unsigned event, uint8_t bits)
+{
+    s->regs[event] |= bits;
+    pmu_update_irq(s);
+}
+
+static void pmu_adc_complete(void *opaque)
+{
+    Pcf50633State *s = opaque;
+    s->regs[PMU_ADC_CONTROL] &= ~0x10;
+    s->regs[PMU_ADC_RESULT_LO] = (s->regs[PMU_ADC_RESULT_LO] & ~3) |
+                               (s->adc_sample & 3);
+    s->regs[PMU_ADC_RESULT_HI] = s->adc_sample >> 2;
+    pmu_latch_event(s, PMU_EVENT_A_REG + 1, PMU_ADC_DONE);
+}
+
+static void pmu_adc_command(Pcf50633State *s, uint8_t command)
+{
+    timer_del(s->adc_timer);
+    /* Channel 3's bit-5 command is an 80 ms settling phase implemented by
+     * the driver's own timer. Signaling ADC completion there deadlocks its
+     * wait for the timeout state. Only bit 4 starts the actual conversion. */
+    if (command & 0x10) {
+        s->adc_sample = s->adc_values[command & 15] & 1023;
+        timer_mod(s->adc_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000);
+    }
+}
+
+void pcf50633_set_usb_cable(Pcf50633State *s, bool attached)
+{
+    if (s->usb_cable != attached) {
+        s->usb_cable = attached;
+        pmu_latch_event(s, PMU_EVENT_A_REG, PMU_PWRSRC_USB);
+    }
+}
+
 static int pcf50633_event(I2CSlave *i2c, enum i2c_event event)
 {
     Pcf50633State *s = PCF50633(i2c);
@@ -64,12 +111,6 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
     int res = 0;
 
     switch(reg) {
-        case PMU_MBCS1:
-            res = 1; // battery power source
-            break;
-        case PMU_ADCC1:
-            res = 3; // battery charge voltage
-            break;
         case PMU_RTC_COUNTER:
             // Take the snapshot on the low byte, so the four bytes the driver
             // reads back describe one instant even if the host second ticks
@@ -99,7 +140,7 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
             // the Apple logo. Gated on the machine's usb-attached option so an
             // unplugged device can still be emulated; it defaults on because the
             // emulated device is effectively tethered to the host.
-            res = s->regs[PMU_PWRSRC_STATUS];
+            res = s->regs[PMU_PWRSRC_STATUS] & ~PMU_PWRSRC_USB;
             if (s->usb_cable) {
                 res |= PMU_PWRSRC_USB;
             }
@@ -113,6 +154,7 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
             // exactly once.
             res = s->regs[reg];
             s->regs[reg] = 0;
+            pmu_update_irq(s);
             break;
         default:
             // Falls through to the register file, which is what the RTC offset
@@ -144,7 +186,7 @@ void pcf50633_latch_wake_event(Pcf50633State *s, uint8_t bits)
     // Latch the wake-button interrupt in EVENT_C (reg 0x03). It stays set until
     // iOS reads the event block (read-to-clear above), so it survives a quick
     // press/release until the guest's PMU interrupt handler consumes it.
-    s->regs[PMU_EVENT_C_REG] |= bits;
+    pmu_latch_event(s, PMU_EVENT_C_REG, bits);
 }
 
 static bool guest_shutdown_confirmed;
@@ -196,6 +238,12 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
     }
 
     switch(reg) {
+        case PMU_IRQ_MASK_A ... PMU_IRQ_MASK_A + 2:
+            pmu_update_irq(s);
+            break;
+        case PMU_ADC_CONTROL:
+            pmu_adc_command(s, data);
+            break;
         case PMU_DSBL1:
             lcd_changebrightness(data);
 	    break;
@@ -232,7 +280,42 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
 
 static void pcf50633_init(Object *obj)
 {
+    Pcf50633State *s = PCF50633(obj);
+    qdev_init_gpio_out(DEVICE(obj), &s->irq, 1);
+    s->adc_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, pmu_adc_complete, s);
+    /* 7E18: channel 2 thermistor (about 10 kohm), channel 4 battery voltage
+     * (2500 + counts * 2000 / 1024 mV), channel 6 USB charger identification.
+     * Battery percentage calibration is a separate machine control. */
+    s->adc_values[2] = 205;
+    s->adc_values[4] = 850;
+    s->adc_values[6] = 512;
+}
 
+static void pcf50633_reset(DeviceState *dev)
+{
+    Pcf50633State *s = PCF50633(dev);
+    timer_del(s->adc_timer);
+    s->regs[PMU_ADC_CONTROL] = 0;
+    s->adc_sample = 0;
+    for (unsigned i = 0; i < 3; i++) {
+        s->regs[PMU_EVENT_A_REG + i] = 0;
+        s->regs[PMU_IRQ_MASK_A + i] = 0xff;
+    }
+    s->addressing = true;
+    s->rtc_latch = 0;
+    qatomic_set(&guest_shutdown_confirmed, false);
+    pmu_update_irq(s);
+}
+
+static int pcf50633_post_load(void *opaque, int version_id)
+{
+    pmu_update_irq(opaque);
+    return 0;
+}
+
+static void pcf50633_finalize(Object *obj)
+{
+    timer_free(PCF50633(obj)->adc_timer);
 }
 
 /* regs[] holds the whole register file, including the power latch at 0x10 and
@@ -240,8 +323,9 @@ static void pcf50633_init(Object *obj)
  * press outstanding restores with it still outstanding. */
 static const VMStateDescription vmstate_pcf50633 = {
     .name = "pcf50633",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = pcf50633_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(i2c, Pcf50633State),
         VMSTATE_UINT32(cmd, Pcf50633State),
@@ -252,6 +336,9 @@ static const VMStateDescription vmstate_pcf50633 = {
         VMSTATE_UINT32(rtc_latch, Pcf50633State),
         VMSTATE_BOOL(usb_cable, Pcf50633State),
         VMSTATE_BOOL(shutdown_armed, Pcf50633State),
+        VMSTATE_UINT16_ARRAY_V(adc_values, Pcf50633State, 16, 2),
+        VMSTATE_UINT16_V(adc_sample, Pcf50633State, 2),
+        VMSTATE_TIMER_PTR_V(adc_timer, Pcf50633State, 2),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -261,6 +348,7 @@ static void pcf50633_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_pcf50633;
+    device_class_set_legacy_reset(dc, pcf50633_reset);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
 
     k->event = pcf50633_event;
@@ -272,6 +360,7 @@ static const TypeInfo pcf50633_info = {
     .name          = TYPE_PCF50633,
     .parent        = TYPE_I2C_SLAVE,
     .instance_init = pcf50633_init,
+    .instance_finalize = pcf50633_finalize,
     .instance_size = sizeof(Pcf50633State),
     .class_init    = pcf50633_class_init,
 };
