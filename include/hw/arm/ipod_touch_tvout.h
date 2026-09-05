@@ -32,11 +32,11 @@ typedef struct IPodTouchTVOutState {
     /*
      * AppleM2TVOut registers TWO interrupt event sources on the tv-out node
      * (indices 0 and 1); the node's "interrupts" property is <0x1e 0x26>. Only
-     * 0x1e was ever wired. IT_TVOUT_VBLANK drives the second one as a periodic
-     * vblank so queued swaps can retire.
+     * 0x1e is the SDO frame interrupt. The second line is reserved for mixer
+     * status; it does not generate synthetic frame pulses.
      */
     qemu_irq irq2;
-    bool vblank_shim;
+    uint32_t mixer1_status;
     bool irq2_pending;
     uint32_t mixer1_intstat;
     QEMUTimer *vblank_timer;

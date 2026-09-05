@@ -150,3 +150,30 @@ Local failure evidence: `/tmp/it-blitz-spore-45728/device/qemu.log` records an F
 completion at virtual time 140.549730 seconds, with pending still set when the
 wait times out at 142.549299 seconds. `/tmp/it-blitz-spore-46708/device/qemu.log`
 records the invalid child priority 33 and the final flash interrupt disable.
+
+### TV-out interrupt storm
+
+The VIC corrections did not by themselves cure the FMSS timeout. The wider
+trace showed more than two million TV-out SDO interrupts (VIC source 30) in the
+failing run. Two TV-out defects contributed: masking a pending source did not
+lower its line, and every mixer RUN write completed a frame immediately. The
+guest's frame handler acknowledges SDO and programs the next frame, so inline
+completion feeds that handler back into itself without a frame interval. FMSS
+completion remains pending while its workloop is starved.
+
+TV-out now derives the IRQ from pending and mask, acknowledges only W1C bits,
+and completes mixer updates on a 16 ms virtual frame timer while the mixer and
+SDO clocks run. Mixer status preserves RUN, reports the traced clock-down-ready
+bit 1, and marks frame completion with bit 2. Reset clears pending state and
+restore re-drives IRQ levels; the timer and mixer status are migrated.
+`tests/ipod/test_tvout_irq.py` covers masking, pacing, clock gating, the exact
+ACK/queue feedback pattern, reset and restore.
+
+The frame-paced build passed twelve alternating Coldplay/Spore installs and
+same-boot SpringBoard restarts, preserving the BluetoothManager plist at every
+cycle, followed by guest-confirmed shutdown (QEMU exit 0). Evidence:
+`/tmp/it-nand-tvoutpaced.log`, `/tmp/it-blitz-spore-49250`. The temporary driver's
+cleanup attempted to close the already-cleared QMP handle after shutdown;
+cold-boot verification is therefore run separately against this saved overlay.
+The preceding mask-only build failed after six cycles, so masking alone must
+not be presented as the complete fix.
