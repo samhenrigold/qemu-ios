@@ -118,7 +118,7 @@ DEFAULT_CHECKS = ["boot", "fsck", "persist"]
 # contrib/it-gles/build.sh (which needs the 3.1.3 SDK) and an sshd on the
 # image, neither of which a clean checkout has.
 OPT_IN_CHECKS = ["afc", "usbtcp", "wifi", "appinstall", "applaunch", "gles", "respring", "restart"]
-ALL_CHECKS = DEFAULT_CHECKS + OPT_IN_CHECKS + ["serial-console"]
+ALL_CHECKS = DEFAULT_CHECKS + OPT_IN_CHECKS + ["serial-console", "webproxy"]
 QUICK_CHECKS = ["boot", "afc"]
 
 # Checks that talk to the device over usbmux and so need the usbmuxd fork.
@@ -126,7 +126,7 @@ QUICK_CHECKS = ["boot", "afc"]
 # "current state" claim that it doesn't; that turned out not to hold, so it
 # SKIPs individually rather than being promised as an unconditional PASS.
 USB_DEPENDENT_CHECKS = {"afc", "usbtcp", "appinstall", "applaunch", "persist",
-                        "gles", "respring", "restart"}
+                        "gles", "respring", "restart", "webproxy"}
 # Checks that need a real .ipa.
 IPA_DEPENDENT_CHECKS = {"appinstall", "applaunch"}
 
@@ -419,8 +419,13 @@ class Device:
                 "-serial", "file:" + self.serial,
                 "-qmp", "tcp:127.0.0.1:%d,server=on,wait=off" % cfg.qmp_port]
         if cfg.wifi:
+            proxy_option = ""
+            if getattr(cfg, "web_proxy_config", None):
+                helper = os.path.join(ROOT, "contrib", "it-webproxy", "itwebproxy")
+                command = shlex.quote(helper) + " " + shlex.quote(cfg.web_proxy_config)
+                proxy_option = ",guestfwd=tcp:10.0.2.100:3128-cmd:" + command.replace(",", ",,")
             argv += ["-netdev", "user,id=wifi0,net=10.0.2.0/24,host=10.0.2.2,"
-                                "dhcpstart=10.0.2.15",
+                                "dhcpstart=10.0.2.15" + proxy_option,
                      "-object",
                      "filter-dump,id=cap0,netdev=wifi0,file=" + self.pcap]
         self.qemu = self.procs.spawn(argv, os.path.join(self.dir, "qemu.log"),
@@ -885,6 +890,55 @@ def springboard(cfg, port, request):
 def foreground_is(cfg, port, bundle_id):
     p = springboard(cfg, port, ":frontmost")
     return p.returncode == 0 and p.stdout.strip() == "sblaunch: frontmost=" + bundle_id
+
+
+def check_webproxy(cfg, procs, dev, result):
+    """Native NSURLConnection must reach the host without resolving the origin."""
+    import http.server
+    import threading
+    helpers = [os.path.join(ROOT, "contrib", "it-proxy", name)
+               for name in ("itproxy", "httpget")]
+    if not all(os.path.exists(p) for p in helpers):
+        return result.skip("requires built contrib/it-proxy helpers")
+    port, error = ensure_guest_ssh(cfg, procs, dev)
+    if port is None:
+        return result.set(False, error)
+    class Fixture(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"LIGHTTOUCH_PROXY_NATIVE_PASS")
+        def log_message(self, *args):
+            pass
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    enabled = False
+    try:
+        for helper in helpers:
+            copied = guest_ssh(cfg, port, None, scp_from=helper,
+                               scp_to="/tmp/" + os.path.basename(helper))
+            if copied.returncode:
+                return result.set(False, "could not stage proxy test helper")
+        with open(cfg.web_proxy_config, "w") as f:
+            f.write("upstream\n127.0.0.1\n%d\n" % server.server_port)
+        changed = guest_ssh(cfg, port, ["chmod 755 /tmp/itproxy /tmp/httpget && /tmp/itproxy on"])
+        if changed.returncode:
+            return result.set(False, "guest proxy configuration failed: " + changed.stderr[-200:])
+        enabled = True
+        time.sleep(8)
+        response = guest_ssh(cfg, port, ["/tmp/httpget http://example.invalid/fixture"], timeout=90)
+        result.set(response.returncode == 0 and "HTTP 200" in response.stdout and
+                   "LIGHTTOUCH_PROXY_NATIVE_PASS" in response.stdout,
+                   response.stdout.strip() or response.stderr[-200:])
+    finally:
+        if enabled:
+            restored = guest_ssh(cfg, port, ["/tmp/itproxy off"])
+            if restored.returncode:
+                result.set(False, "failed to restore guest proxy preferences")
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def check_serial_console(dev, result):
@@ -1548,7 +1602,11 @@ def main():
             results[c].skip("ipa not found: %s" % cfg.ipa)
             skipped.add(c)
     selected = [c for c in selected if c not in skipped]
-    cfg.wifi = "wifi" in selected
+    cfg.wifi = "wifi" in selected or "webproxy" in selected
+    if "webproxy" in selected:
+        cfg.web_proxy_config = os.path.join(cfg.out, "web-proxy.conf")
+        with open(cfg.web_proxy_config, "w") as f:
+            f.write("off\n")
 
     log("run dir   %s" % cfg.out)
     log("base nand %s" % cfg.base_nand)
@@ -1570,6 +1628,9 @@ def main():
                             % (detail, best, HOME_LIT_MIN))
         if not ok:
             return finish(results, procs, cfg)
+
+        if "webproxy" in selected:
+            check_webproxy(cfg, procs, dev, results["webproxy"])
 
         if "serial-console" in selected:
             check_serial_console(dev, results["serial-console"])

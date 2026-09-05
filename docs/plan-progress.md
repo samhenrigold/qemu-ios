@@ -32,3 +32,16 @@ WaybackProxy integration, followed by screen capture/recording, Live Text and
 optional touch/finger overlays (using WireView as a reference), then resume the
 remaining active plan. Headset/microphone, Settings Wi-Fi join and two-instance
 LAN are deferred by explicit user request.
+
+## Proxy and capture follow-up
+
+- Frame-poll startup crash fixed and sanitizer-tested (`074da22b44`).
+- Non-quitting Power Off/On, sleep/off visuals and foreground subtitle built
+  and native power cycles verified (`460d062`, `7c3cdae801`).
+- HTTP proxy: direct host HTTP and external WaybackProxy routing implemented.
+  Native NSURLConnection through guestfwd returned HTTP 200 for an unresolvable
+  origin using a controlled upstream fixture; reversible configd preferences
+  passed on/on/off/off. Host sanitizer tests cover HTTP framing and tunnels.
+  WaybackProxy is an external server; archive availability is not claimed tested.
+  Modern TLS termination remains a later phase.
+- Screen recording/capture, Live Text and finger overlays are in progress.

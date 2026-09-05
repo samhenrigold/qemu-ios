@@ -47,4 +47,8 @@ Host regression: `python3 tests/ipod/test_webproxy.py` from the repository root.
 It uses loopback fixtures and ASan/UBSan, including simultaneous requests,
 chunked response decoding, binary POST, framing rejection, CONNECT half-close,
 and unmodified external-proxy streams. Native guest preference on/on/off/off
-transactions were verified on 7E18; web request acceptance is tracked separately.
+transactions were verified on 7E18. Native NSURLConnection returned HTTP 200
+and the fixture body for `http://example.invalid/fixture` through an external
+host proxy fixture; no guest origin DNS is needed. Repeat with
+`tests/ipod/regress.py --checks boot,webproxy` after building both helpers.
+Evidence from the initial native run is `/tmp/it-proxy-http-v2.log`.
