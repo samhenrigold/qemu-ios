@@ -370,6 +370,9 @@ static void pcf50633_reset(DeviceState *dev)
 {
     Pcf50633State *s = PCF50633(dev);
     timer_del(s->adc_timer);
+    /* The power-on transition consumes the standby command. Leaving 0x90
+     * latched makes iBoot re-enter its charging/standby path after Power On. */
+    s->regs[PMU_STANDBY_CMD] = 0;
     s->regs[PMU_ADC_CONTROL] = 0;
     s->adc_sample = 0;
     for (unsigned i = 0; i < 3; i++) {

@@ -30,6 +30,7 @@ bool ipod_touch_fmss_io_failed(void);
 
 #include "qemu-ios-ui.h"
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
+#include "hw/arm/ipod_touch_lcd.h"
 
 #include <sys/resource.h>
 
@@ -287,6 +288,11 @@ bool qemu_ios_ui_ready(void)
 bool qemu_ios_ui_guest_shutdown_confirmed(void)
 {
     return pcf50633_guest_shutdown_confirmed();
+}
+
+bool qemu_ios_ui_display_sleeping(void)
+{
+    return lcd_backlight_is_off();
 }
 
 bool qemu_ios_ui_storage_failed(void)

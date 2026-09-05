@@ -102,6 +102,7 @@ typedef struct IPodTouchLCDState
     int64_t next_vsync;
 } IPodTouchLCDState;
 
+bool lcd_backlight_is_off(void);
 void lcd_changebrightness(int brightness);
 
 /*

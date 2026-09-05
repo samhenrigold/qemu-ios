@@ -6,7 +6,12 @@
 #include "exec/cpu-common.h"
 #include "qemu/log.h"
 
-int lcd_brightness = 255;
+static int lcd_brightness = 255;
+
+bool lcd_backlight_is_off(void)
+{
+    return qatomic_read(&lcd_brightness) == 0;
+}
 
 #define LCD_FB_WIDTH  320
 #define LCD_FB_HEIGHT 480
@@ -226,7 +231,7 @@ static void ipod_touch_lcd_write(void *opaque, hwaddr addr, uint64_t val, unsign
 
 void lcd_changebrightness(int brightness)
 {
-    lcd_brightness = brightness & 0xFF;
+    qatomic_set(&lcd_brightness, brightness & 0xFF);
     if (lcd_trace()) {
         fprintf(stderr, "[LCD] brightness <- %d\n", lcd_brightness);
     }
@@ -998,6 +1003,8 @@ static void refresh_timer_tick(void *opaque)
 static void ipod_touch_lcd_reset(DeviceState *dev)
 {
     IPodTouchLCDState *s = IPOD_TOUCH_LCD(dev);
+
+    lcd_changebrightness(255);
 
     memset(s->plane_regs, 0, sizeof(s->plane_regs));
     memset(s->plane_scanout, 0, sizeof(s->plane_scanout));
