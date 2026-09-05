@@ -21,11 +21,21 @@ Dated browsing fetches `https://web.archive.org/web/DATEid_/ORIGINAL_URL` using
 verified host TLS, follows canonical snapshot redirects on the host, and returns
 the original page to the guest. Archived GET/HEAD requests do not forward guest
 cookies or Authorization; archive Set-Cookie headers are not sent to the guest.
-Responses are bounded to 32 MiB. Archive availability and rate limits still apply:
+Responses are bounded to 32 MiB. Archived HTTP-to-HTTPS redirects are resolved
+on the host, and absolute HTTPS links in HTML/CSS/JavaScript are presented as
+HTTP links to the guest. Binary resources are unchanged. Explicit HTTPS addresses
+still require guest TLS and are not supported in dated mode.
+
+Archive requests share a process lock and a one-second request interval. A 429
+or 503 pauses all new archive fetches, honoring Retry-After (60 seconds by default),
+and displays a readable retry notice. A 64-slot disk cache stores successful
+responses below 2 MiB for one day, keyed by the complete URL and requested date;
+cache hits remain available during cooldown. Cache/gate files sit beside CONFIG. Archive availability and rate limits still apply:
 the first host acceptance request returned the original September 2009 example.com
 page; a subsequent native guest request reached the archive but received HTTP 429.
 
-`off` returns 503. Config files can be atomically replaced while QEMU runs.
+`off` passes stale proxy connections directly to the origin while the guest
+restores its previous network settings. Invalid/missing configuration fails closed. Config files can be atomically replaced while QEMU runs.
 Example slirp option:
 
 ```

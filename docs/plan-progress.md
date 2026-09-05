@@ -38,10 +38,30 @@ LAN are deferred by explicit user request.
 - Frame-poll startup crash fixed and sanitizer-tested (`074da22b44`).
 - Non-quitting Power Off/On, sleep/off visuals and foreground subtitle built
   and native power cycles verified (`460d062`, `7c3cdae801`).
-- HTTP proxy: direct host HTTP and external WaybackProxy routing implemented.
+- HTTP proxy: built-in direct HTTP and optional dated Internet Archive replay implemented.
   Native NSURLConnection through guestfwd returned HTTP 200 for an unresolvable
   origin using a controlled upstream fixture; reversible configd preferences
   passed on/on/off/off. Host sanitizer tests cover HTTP framing and tunnels.
-  WaybackProxy is an external server; archive availability is not claimed tested.
+  No external proxy installation is needed. Host archive acceptance returned a
+  September 2009 example.com page; the subsequent native guest request received
+  the archive's HTTP 429 response (rate limiting, not a local routing failure).
   Modern TLS termination remains a later phase.
-- Screen recording/capture, Live Text and finger overlays are in progress.
+- Native screenshots, inline Live Text and video recording implemented. Real
+  H.264 encode/decode tests cover colors, rotation margins, dimensions and timing;
+  a 68-second UI recording is playable. Guest audio recording remains pending.
+- Finger dots are 44 AppKit points, soft white/gray with shadow and fast release
+  fade, suppressed asleep/off. Their layers are siblings of the framebuffer to
+  isolate opacity. Sleeping uses the user's Sleeping.caar animation.
+
+### Proxy and overlay corrections verified
+
+- No Proxy tolerates Safari's stale proxy connections while configd applies
+  settings. Archive replay follows original HTTPS redirects on the host and
+  rewrites absolute HTTPS links only in text resources; binary data is unchanged.
+- Archive requests share a paced process gate, Retry-After cooldown and bounded
+  date/URL cache. Loopback ASan/UBSan tests cover compressed HTML, redirects,
+  cache hits during cooldown, parallel 429 suppression and switching off.
+  Live Archive availability is not claimed fixed; explicit HTTPS URLs still
+  require a future TLS bridge.
+- Release build passed. Isolated UI inspection showed the framebuffer visible
+  after touch release, inline text recognition, and the animated Sleeping asset.
