@@ -114,7 +114,7 @@ DEFAULT_CHECKS = ["boot", "fsck", "persist"]
 # the default tier because it needs a guest app built by
 # contrib/it-gles/build.sh (which needs the 3.1.3 SDK) and an sshd on the
 # image, neither of which a clean checkout has.
-OPT_IN_CHECKS = ["afc", "usbtcp", "wifi", "appinstall", "applaunch", "gles", "restart"]
+OPT_IN_CHECKS = ["afc", "usbtcp", "wifi", "appinstall", "applaunch", "gles", "respring", "restart"]
 ALL_CHECKS = DEFAULT_CHECKS + OPT_IN_CHECKS
 QUICK_CHECKS = ["boot", "afc"]
 
@@ -123,7 +123,7 @@ QUICK_CHECKS = ["boot", "afc"]
 # "current state" claim that it doesn't; that turned out not to hold, so it
 # SKIPs individually rather than being promised as an unconditional PASS.
 USB_DEPENDENT_CHECKS = {"afc", "usbtcp", "appinstall", "applaunch", "persist",
-                        "gles", "restart"}
+                        "gles", "respring", "restart"}
 # Checks that need a real .ipa.
 IPA_DEPENDENT_CHECKS = {"appinstall", "applaunch"}
 
@@ -882,6 +882,37 @@ def foreground_is(cfg, port, bundle_id):
     return p.returncode == 0 and p.stdout.strip() == "sblaunch: frontmost=" + bundle_id
 
 
+def check_respring(cfg, procs, dev, result):
+    """Restart SpringBoard in this boot, retaining installation pressure.
+
+    A cold restart clears session-only NAND mappings and can hide corruption.
+    Require a service response from the new SpringBoard; successful killall
+    and a still-lit old framebuffer are not recovery evidence.
+    """
+    port = prepare_launcher(cfg, procs, dev, result)
+    if port is None:
+        return False
+    p = guest_ssh(cfg, port, ["killall SpringBoard"], timeout=10)
+    if p.returncode != 0:
+        return result.set(False, "could not restart SpringBoard: %s" %
+                          (p.stdout + p.stderr).strip()[-200:])
+    deadline = time.monotonic() + 45
+    while time.monotonic() < deadline:
+        time.sleep(2)
+        p = guest_ssh(cfg, port,
+                      ["printf ':lock-status' > /tmp/sblaunch.id && /tmp/sblaunch"],
+                      timeout=min(8, max(1, deadline - time.monotonic())))
+        if p.returncode == 0 and p.stdout.strip().startswith("sblaunch: locked="):
+            return result.set(True, "SpringBoard service recovered in the same boot")
+    diagnostic = guest_ssh(cfg, port, [
+        "launchctl list; cat /var/mobile/Library/Logs/CrashReporter/LatestCrash-SpringBoard.plist"
+    ], timeout=15)
+    path = os.path.join(dev.dir, "respring-diagnostics.txt")
+    with open(path, "w") as f:
+        f.write(diagnostic.stdout + "\n" + diagnostic.stderr)
+    return result.set(False, "SpringBoard did not recover within 45s; see %s" % path)
+
+
 def check_applaunch(cfg, procs, dev, r):
     port = prepare_launcher(cfg, procs, dev, r)
     if port is None:
@@ -1538,6 +1569,10 @@ def main():
                     check_applaunch(cfg, procs, dev, results["applaunch"])
             elif "applaunch" in selected:
                 results["applaunch"].set(False, "install failed")
+
+        if "respring" in selected:
+            if not check_respring(cfg, procs, dev, results["respring"]):
+                return finish(results, procs, cfg)
 
         if "gles" in selected:
             check_gles(cfg, procs, dev, results["gles"])
