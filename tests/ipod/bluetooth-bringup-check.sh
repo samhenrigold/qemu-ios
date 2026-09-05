@@ -10,10 +10,9 @@
 # peripheral->memory channel on UART1's URXH and never reads the register
 # itself, so replies sat in the Rx FIFO forever.
 #
-# The check: boot with the Bluetooth HCI model on UART1, and assert the guest's
-# DMA channel residue moved. 0x800 -> 0x7f9 is exactly the seven bytes of one
-# HCI Command Complete, pulled out of the FIFO by the DMAC and written to guest
-# memory. If either bug comes back this reads 0x88000800 forever.
+# The check: boot with the Bluetooth HCI model on UART1 and observe the final
+# BCM Launch RAM request. Reaching it requires the guest to accept preceding
+# HCI replies through the Rx DMA path.
 #
 #     tests/ipod/bluetooth-bringup-check.sh [nand-image] [boots]
 #
@@ -22,8 +21,8 @@
 # guards are races, and they present as "Bluetooth worked yesterday and says
 # unavailable today, and app launches stopped animating with it".
 #
-# Passing this means the guest's Bluetooth stack comes all the way up, which is
-# what stops BluetoothManager timing out and what makes app launches animate.
+# Passing proves the firmware-download script reached BCM Launch RAM on each
+# boot. It does not prove BluetoothManager readiness or app-launch animation.
 set -u
 
 QEMU="${QEMU:-$(cd "$(dirname "$0")/../.." && pwd)/build/qemu-system-arm}"
@@ -48,17 +47,26 @@ fail=0
 prev=0
 for boot in $(seq 1 "$BOOTS"); do
     sleep 95
+    if ! kill -0 "$PID" 2>/dev/null; then
+        echo "boot $boot: FAILED -- emulator exited" >&2
+        fail=1
+        break
+    fi
     now=$(grep -c '0xfc4e' "$WORK/trace.log")
     if [ "$now" -gt "$prev" ]; then
-        echo "boot $boot: Bluetooth bring-up completed"
+        echo "boot $boot: BCM firmware Launch RAM command observed"
     else
         echo "boot $boot: FAILED -- no BCM Launch RAM this boot" >&2
         fail=1
     fi
     prev=$now
     if [ "$boot" -lt "$BOOTS" ]; then
-        python3 "$(dirname "$0")/../../contrib/ipod-touch-qmp.py" "$QMP" \
-            cmd system_reset >/dev/null 2>&1
+        if ! python3 "$(dirname "$0")/../../contrib/ipod-touch-qmp.py" "$QMP" \
+            cmd system_reset >/dev/null 2>&1; then
+            echo "boot $boot: FAILED -- QMP reset failed" >&2
+            fail=1
+            break
+        fi
     fi
 done
 kill "$PID" 2>/dev/null; PID=""
@@ -77,14 +85,14 @@ fi
 # every Write RAM chunk, then Launch RAM. Getting there exercises the entire
 # path both ways -- chardev -> Rx FIFO -> Rx DMA request -> DMAC -> guest memory
 # -> last request -> terminal count -> driver -> BlueTool -- so it is one grep
-# for the whole stack. Any of the four bugs back and the guest loops on 0x0c03.
+# for the firmware-download path. It does not establish stack readiness.
 if [ "$fail" = 0 ] && grep -q '0xfc4e' "$WORK/trace.log"; then
-    echo "PASS: Bluetooth bring-up completed on all $BOOTS boots"
+    echo "PASS: BCM firmware Launch RAM command observed on all $BOOTS boots"
     grep -o '\[BT\] cmd .*' "$WORK/trace.log" | sort -u
     exit 0
 fi
 
-echo "FAIL: Bluetooth bring-up did not complete -- no BCM Launch RAM." >&2
+echo "FAIL: Bluetooth firmware download/reset checks did not pass every boot." >&2
 if ! grep -q '0xfc18' "$WORK/trace.log"; then
     echo "      The guest never got past HCI_Reset, so it never accepted a" >&2
     echo "      reply: check the rxdmareq wiring, the UCON[1:0] DMA-mode" >&2
