@@ -88,3 +88,18 @@ changed from 4160 to 3964 mV after about three minutes and capacity changed from
 95 to 82 while IsCharging stayed true. Immediate lockdown battery queries can
 lag the IOPMPowerSource dictionary. Percentage acceptance must account for
 these native measurement/filtering intervals.
+
+## Recovery after probing an absent I2C slave
+
+With `IT_I2C_NAK=1`, unplugged operation exposed a controller bug: after an
+absent-address 0x29 probe set LASTBIT, `I2CDS=0xe6` was discarded. START therefore
+kept using stale data 0x52/address 0x29, and PMU accesses failed indefinitely
+(`e00002e9`). The data register now always stages writes even when the previous
+transfer NAKed; bus data delivery still respects NAK. A sanitizer regression
+replays the absent-device/PMU sequence. `IT_I2C_TRACE` records register accesses,
+latched address and active state for diagnosing future controller issues.
+
+`/tmp/it-blitz-spore-56813` passed boot with real absent-device NAKs, USB detach
+and reattach, power-button lock, Home wake and touch unlock, then guest-confirmed
+shutdown. Its auto-lock test did not engage because the inherited demo preference
+`SBAutoDimTime=-1` remained set; this is distinct from the now-fixed PMU bus wedge.

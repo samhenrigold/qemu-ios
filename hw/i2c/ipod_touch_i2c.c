@@ -23,6 +23,15 @@
 #include "hw/i2c/ipod_touch_i2c.h"
 #include "migration/vmstate.h"
 
+static bool i2c_trace(void)
+{
+    static int enabled = -1;
+    if (enabled < 0) {
+        enabled = getenv("IT_I2C_TRACE") != NULL;
+    }
+    return enabled;
+}
+
 /*
  * Address-phase acknowledge.
  *
@@ -159,9 +168,12 @@ static int s5l8900_i2c_receive(IPodTouchI2CState *s)
 
 static int s5l8900_i2c_send(IPodTouchI2CState *s, uint8_t data)
 {
+    /* The data register also stages the next START's address. A previous
+     * slave's NAK must not discard that write, or every subsequent transfer
+     * keeps targeting the missing slave (notably demo-card 0x29 -> PMU 0x73). */
+    s->data = data;
     if (!(s->status & S5L8900_IICSTAT_LASTBIT)) {
         s->status |= S5L8900_IICCON_ACKEN;
-        s->data = data;
         s->iicreg20 |= 0x100;
         i2c_send(s->bus, s->data);
     }
@@ -174,7 +186,12 @@ static uint64_t ipod_touch_i2c_read(void *opaque, hwaddr offset, unsigned size)
 {
     IPodTouchI2CState *s = (IPodTouchI2CState *)opaque;
 
-    //fprintf(stderr, "s5l8900_i2c_read(): offset = 0x%08x\n", offset);
+    if (i2c_trace()) {
+        fprintf(stderr, "[I2C] %s read %02x con=%02x stat=%02x data=%02x "
+                "active=%d addr=%02x flags=%04x\n", BUS(s->bus)->name,
+                (unsigned)offset, s->control, s->status, s->data,
+                s->active, s->cur_addr, s->iicreg20);
+    }
 
     switch (offset) {
     case I2CCON:
@@ -211,7 +228,12 @@ static void ipod_touch_i2c_write(void *opaque, hwaddr offset, uint64_t value, un
     IPodTouchI2CState *s = (IPodTouchI2CState *)opaque;
     int mode;
 
-    //printf("s5l8900_i2c_write (base %d): offset = 0x%08x, val = 0x%08x\n", s->base, offset, value);
+    if (i2c_trace()) {
+        fprintf(stderr, "[I2C] %s write %02x=%02x con=%02x stat=%02x data=%02x "
+                "active=%d addr=%02x flags=%04x\n", BUS(s->bus)->name,
+                (unsigned)offset, (unsigned)value, s->control, s->status,
+                s->data, s->active, s->cur_addr, s->iicreg20);
+    }
 
     qemu_irq_lower(s->irq);
 
