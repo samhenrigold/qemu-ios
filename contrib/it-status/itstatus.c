@@ -18,6 +18,12 @@ int main(void) {
     unsigned char (*string)(void *, char *, long, unsigned) = dlsym(cf, "CFStringGetCString");
     void (*release)(void *) = dlsym(cf, "CFRelease");
     if (!frontmost || !name || !string || !release) _exit(1);
+    unsigned (*port)(void) = dlsym(sbs, "SBSSpringBoardServerPort");
+    int (*lockStatus)(unsigned, unsigned char *, unsigned char *) = dlsym(sbs, "SBGetScreenLockStatus");
+    unsigned char locked = 0, passcode = 0;
+    if (port && lockStatus && !lockStatus(port(), &locked, &passcode) && locked) {
+        out("Lock Screen"); _exit(0);
+    }
     void *identifier = frontmost();
     if (!identifier) { out("Home Screen"); _exit(0); }
     void *title = name(identifier);
