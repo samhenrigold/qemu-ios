@@ -67,6 +67,10 @@ void qemu_ios_ui_vm_stopped(void);
 bool qemu_ios_ui_frame(const void **pixels, int *width, int *height,
                        uint64_t *serial);
 
+/* Stable copy into caller-owned memory; also works when no frame advanced.
+ * False leaves outputs untouched (no frame or insufficient capacity). */
+bool qemu_ios_ui_copy_frame(void *pixels, size_t capacity, int *width, int *height);
+
 void qemu_ios_ui_frame_size(int *width, int *height);
 
 /*
