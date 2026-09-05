@@ -122,3 +122,21 @@ voltage target and stopped auto charging, then completed native shutdown.
 The 100-percent fresh-voltage check reported BootCapacityEstimate 100 at 4199 mV;
 while charging the guest deliberately caps CurrentCapacity at 95 until charge
 completion. Runtime voltage changes retain the native measurement/filter delay.
+
+## Suspend-to-RAM handoff (investigation)
+
+Removing the demo preferences for both auto-dim and auto-lock allows actual
+system sleep after USB detach. In `/tmp/it-blitz-spore-60361`, 7E18 disables the
+LCD, USB, GPU and digitizer, logs `System Sleep` and `pmu go hib`, writes PMU
+`0x6f=0x80`, then changes `0x0a` from `0x10` to `0x0a`. This differs from native
+shutdown's `0x6f=0x90`; it must not terminate the emulator or discard RAM.
+
+The CPU ends at `c0061eb0`, an unconditional branch with IRQ/FIQ masked, after
+saving time and flushing caches. An ordinary PMU interrupt cannot wake it.
+The retained RAM vector at physical `0x08000000` is an ARM trampoline; its entry
+word at offset `0x24` changes from `0x08069000` (cold startup) to `0x08069008`
+(resume). Offset `0x28` retains the physical boot/context argument `0x087ad000`.
+The two entries select different continuations, rebuild CPU translation/control
+state and enter the kernel. A full machine reset would destroy this state by
+staging the normal boot chain again. CPU-only reentry through the retained
+vector is under investigation; no working native hibernate wake is claimed yet.
