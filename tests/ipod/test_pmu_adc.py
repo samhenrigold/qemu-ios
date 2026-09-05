@@ -78,9 +78,13 @@ int main(void) {
     assert(rd(&s,3)==0x40 && irq);assert(rd(&s,1)==8 && !irq);
     pcf50633_set_usb_cable(&s,true);assert(rd(&s,4)&8);assert(irq);
     assert(rd(&s,1)==8 && !irq);
+    assert(rd(&s,5)&6);
+    wr(&s,0x0a,8);assert(!(rd(&s,5)&6));
+    wr(&s,0x0a,0);assert(rd(&s,5)&6);
     pcf50633_set_usb_cable(&s,true);assert(!irq); /* no repeated edge */
     wr(&s,4,0xff); /* software cannot override the live cable input */
     pcf50633_set_usb_cable(&s,false);assert(!(rd(&s,4)&8) && irq);
+    assert(!(rd(&s,5)&6));
     wr(&s,0x4b,0x55);wr(&s,0x57,0xaa); /* these are not ADC status registers */
     assert(rd(&s,0x4b)==0x55 && rd(&s,0x57)==0xaa);
     irq=0;pcf50633_post_load(&s,2);assert(irq);
