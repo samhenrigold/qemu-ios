@@ -4,115 +4,71 @@
 #include "qemu/error-report.h"
 #include "qemu/log.h"
 
-/*
- * The NOR carries an nvram partition made of 16-byte atoms:
- *
- *     uint8_t  tag;
- *     uint8_t  checksum;   sum of the payload bytes, plus one
- *     uint16_t size;       payload size in 16-byte units
- *     char     name[12];
- *
- * The atom named "common" holds iBoot's environment as NUL-terminated
- * "key=value" strings, terminated by an empty string. boot-args lives there,
- * and is how the kernel gets io=0xffff and friends.
- */
-#define NVRAM_ATOM_HDR   16
-#define NVRAM_ATOM_UNIT  16
+#include <zlib.h>
 
-static uint8_t nvram_checksum(const uint8_t *payload, size_t len)
+/* CHRP partition lengths include their 16-byte header. Its checksum covers
+ * the header only; the containing Apple 8 KiB bank has a separate Adler-32.
+ * See IONVRAM and iBoot's nvram_load/load_bank_partitions. */
+#define NVRAM_BANK_SIZE 0x2000
+#define NVRAM_ATOM_HDR 16
+
+static uint8_t nvram_checksum(const uint8_t *hdr)
 {
-    uint8_t sum = 0;
-    for (size_t i = 0; i < len; i++) {
-        sum += payload[i];
-    }
-    return sum + 1;
+    unsigned sum = hdr[0];
+    for (unsigned i = 2; i < NVRAM_ATOM_HDR; i++) sum += hdr[i];
+    while (sum > 255) sum = (sum & 255) + (sum >> 8);
+    return sum;
 }
 
-/*
- * Rewrite the boot-args variable in the in-memory copy of the NOR. The image
- * on disk is never touched.
- *
- * BROKEN, do not rely on this yet. On the stock n72ap NOR the atom chain is
- *
- *   0x0fc000  "nvram"          size 2 units    (32 bytes)
- *   0x0fc020  "common"         size 128 units  (2048 bytes)
- *   0x0fc820  "APL,OSXPanic"                   <- inside common's declared span
- *
- * so the memset below, which clears all 2048 bytes the "common" header claims,
- * destroys the "APL,OSXPanic" atom that follows it. A machine started with
- * boot-args= then never reaches its serial banner: it sits in LLB with no
- * output, where the same NOR untouched gets to "Loading kernel cache".
- *
- * Fix by clamping the rewrite to the bytes actually used by the variable list
- * rather than the declared atom size, or by working out why "common" declares
- * a span that swallows its successor.
- */
 static void nor_set_boot_args(IPodTouchNORSPIState *s, gsize norlen)
 {
     static const char key[] = "boot-args=";
-
-    for (gsize off = 0; off + NVRAM_ATOM_HDR <= norlen; off += NVRAM_ATOM_UNIT) {
-        uint8_t *hdr = s->nor_data + off;
-        if (memcmp(hdr + 4, "common\0", 7) != 0) {
+    for (gsize off = 0; off + NVRAM_BANK_SIZE <= norlen; off += NVRAM_BANK_SIZE) {
+        uint8_t *bank = s->nor_data + off;
+        if (bank[0] != 0x5a || memcmp(bank + 4, "nvram\0", 6) ||
+            lduw_le_p(bank + 2) != 2 || bank[1] != nvram_checksum(bank) ||
+            ldl_le_p(bank + 16) != adler32(1, bank + 20, NVRAM_BANK_SIZE - 20)) {
             continue;
         }
+        for (size_t pos = 32; pos + NVRAM_ATOM_HDR <= NVRAM_BANK_SIZE;) {
+            uint8_t *hdr = bank + pos;
+            size_t total = (size_t)lduw_le_p(hdr + 2) * 16;
+            if (hdr[1] != nvram_checksum(hdr) || total < NVRAM_ATOM_HDR ||
+                total > NVRAM_BANK_SIZE - pos || hdr[0] == 0x7f) break;
+            pos += total;
+            if (memcmp(hdr + 4, "common\0", 7)) continue;
 
-        size_t len = (size_t)lduw_le_p(hdr + 2) * NVRAM_ATOM_UNIT;
-        if (len == 0 || off + NVRAM_ATOM_HDR + len > norlen) {
+            uint8_t *payload = hdr + NVRAM_ATOM_HDR;
+            size_t len = total - NVRAM_ATOM_HDR, i = 0;
+            g_autoptr(GByteArray) vars = g_byte_array_new();
+            while (i < len && payload[i]) {
+                size_t n = strnlen((char *)payload + i, len - i);
+                if (n == len - i) break;
+                if (n < sizeof(key) - 1 || memcmp(payload + i, key, sizeof(key) - 1)) {
+                    g_byte_array_append(vars, payload + i, n + 1);
+                }
+                i += n + 1;
+            }
+            if (i == len || payload[i]) {
+                error_report("malformed common NVRAM variable list");
+                break;
+            }
+            g_autofree char *entry = g_strconcat(key, s->boot_args, NULL);
+            g_byte_array_append(vars, (const uint8_t *)entry, strlen(entry) + 1);
+            g_byte_array_append(vars, (const uint8_t *)"", 1);
+            if (vars->len > len) {
+                error_report("boot-args does not fit in common NVRAM partition");
+                break;
+            }
+            memset(payload, 0, len);
+            memcpy(payload, vars->data, vars->len);
+            stl_le_p(bank + 16, adler32(1, bank + 20, NVRAM_BANK_SIZE - 20));
+            printf("[NVRAM] boot-args=%s\n", s->boot_args);
             break;
         }
-        uint8_t *payload = hdr + NVRAM_ATOM_HDR;
-
-        /* Copy out every variable except the one we are replacing, and note
-         * where the original NUL-terminated list ends. */
-        g_autoptr(GByteArray) vars = g_byte_array_new();
-        size_t list_end = 0;
-        for (size_t i = 0; i < len && payload[i]; ) {
-            size_t vlen = strnlen((char *)payload + i, len - i);
-            if (strncmp((char *)payload + i, key, strlen(key)) != 0) {
-                g_byte_array_append(vars, payload + i, vlen + 1);
-            }
-            i += vlen + 1;
-            list_end = i;
-        }
-
-        g_autofree char *entry = g_strconcat(key, s->boot_args, NULL);
-        g_byte_array_append(vars, (const guint8 *)entry, strlen(entry) + 1);
-        g_byte_array_append(vars, (const guint8 *)"", 1); /* list terminator */
-
-        /*
-         * The "common" atom declares 2048 bytes, but the following
-         * "APL,OSXPanic" atom physically sits INSIDE that declared span (e.g.
-         * at payload offset ~2040 on n72ap). Clearing the whole declared span
-         * corrupts OSXPanic and makes iBoot heap-panic on boot. So only rewrite
-         * the region the variable list actually uses -- the original entries
-         * plus the free (zero) padding that follows -- and never touch bytes
-         * from the next atom onward. Find that boundary by walking past the
-         * trailing zero padding to the first non-zero byte (the next atom).
-         */
-        size_t write_limit = list_end;
-        while (write_limit < len && payload[write_limit] == 0) {
-            write_limit++;
-        }
-
-        if (vars->len > write_limit) {
-            error_report("boot-args does not fit before the next nvram atom "
-                         "(%u bytes needed, %zu available)", vars->len,
-                         write_limit);
-            return;
-        }
-
-        memset(payload, 0, write_limit);
-        memcpy(payload, vars->data, vars->len);
-        hdr[1] = nvram_checksum(payload, len);
-
-        printf("[NVRAM] boot-args=%s\n", s->boot_args);
-        return;
     }
-
-    error_report("could not find the nvram \"common\" atom in the NOR image; "
-                 "boot-args not applied");
 }
+
 
 static void initialize_nor(IPodTouchNORSPIState *s)
 {
