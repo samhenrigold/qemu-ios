@@ -75,9 +75,15 @@ Simply invalidating the cache would instead break reads of the newly installed
 data; it is not a safe fix. The existing `FMSS_USEDSPARE=1` diagnostic still
 reproduced the crash and is not a remedy.
 
-**This corruption is not fixed.** The next storage change needs a coherent FTL
-allocation/mapping model for generated images (or a correctly populated physical
-image), so live base pages and newly allocated pages cannot share coordinates.
+**Update:** `a27930d426` corrects the known synthetic context's free list. It
+previously allocated VBNs 3..22 despite the identity map already using those
+blocks for system files. The corrected pool begins after the entire GPT
+volume (1794..1813 for the current image). Unknown/live contexts and physical
+images are untouched. Packed images now read their actual GPT capacity rather
+than falling back to 128000 pages. Sanitizer checks, a Coldplay install with
+three resprings, and initial Coldplay/Spore cycles preserve the system plist.
+A later repeated-install test still requests a guest reset; investigation is
+ongoing. See [plan progress](plan-progress.md).
 Do not paper over it with a Bluetooth patch, repeated respring attempts, or a
 claim that the GLES upload fix resolved it.
 

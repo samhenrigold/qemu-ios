@@ -53,6 +53,7 @@ class QMP:
         self.s.settimeout(timeout)
         self.f = self.s.makefile("rwb")
         self.shutdown_event = None
+        self.reset_count = 0
         try:
             self._read()  # greeting
             self.cmd("qmp_capabilities")
@@ -92,6 +93,8 @@ class QMP:
         msg = json.loads(line)
         if msg.get("event") == "SHUTDOWN" and self.shutdown_event is None:
             self.shutdown_event = msg
+        if msg.get("event") == "RESET":
+            self.reset_count += 1
         return msg
 
     def _read(self):

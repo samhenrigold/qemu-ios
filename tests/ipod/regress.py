@@ -892,16 +892,23 @@ def check_respring(cfg, procs, dev, result):
     port = prepare_launcher(cfg, procs, dev, result)
     if port is None:
         return False
+    dev.qmp.cmd("query-status")  # drain events from before this operation
+    resets = dev.qmp.reset_count
     p = guest_ssh(cfg, port, ["killall SpringBoard"], timeout=10)
     if p.returncode != 0:
         return result.set(False, "could not restart SpringBoard: %s" %
                           (p.stdout + p.stderr).strip()[-200:])
     deadline = time.monotonic() + 45
+    failure = "SpringBoard did not recover within 45s"
     while time.monotonic() < deadline:
         time.sleep(2)
         p = guest_ssh(cfg, port,
                       ["printf ':lock-status' > /tmp/sblaunch.id && /tmp/sblaunch"],
                       timeout=min(8, max(1, deadline - time.monotonic())))
+        dev.qmp.cmd("query-status")
+        if dev.qmp.reset_count != resets:
+            failure = "guest reset during SpringBoard restart"
+            break
         if p.returncode == 0 and p.stdout.strip().startswith("sblaunch: locked="):
             return result.set(True, "SpringBoard service recovered in the same boot")
     diagnostic = guest_ssh(cfg, port, [
@@ -909,8 +916,10 @@ def check_respring(cfg, procs, dev, result):
     ], timeout=15)
     path = os.path.join(dev.dir, "respring-diagnostics.txt")
     with open(path, "w") as f:
+        f.write("Last service probe: rc=%s\n%s\n%s\n" %
+                (p.returncode, p.stdout, p.stderr))
         f.write(diagnostic.stdout + "\n" + diagnostic.stderr)
-    return result.set(False, "SpringBoard did not recover within 45s; see %s" % path)
+    return result.set(False, "%s; see %s" % (failure, path))
 
 
 def check_applaunch(cfg, procs, dev, r):
