@@ -27,10 +27,24 @@ static bool dsi_direct_iboot(void)
     return on;
 }
 
+static void dsi_panel_read(IPodTouchMIPIDSIState *s, uint32_t header)
+{
+    /* 7E18 iBoot: generic read, one parameter, panel ID register B1.
+     * Reserve both words together so a full FIFO never exposes half a reply. */
+    if ((header & 0xffff) != 0xb114 || s->rx_count > 14) {
+        return;
+    }
+    unsigned tail = (s->rx_head + s->rx_count) % 16;
+    s->rx_fifo[tail] = DSIM_RSP_LONG_READ | (3 << 8);
+    s->rx_fifo[(tail + 1) % 16] = 0x00a1d13c;
+    s->rx_count += 2;
+    s->intsrc |= rDSIM_INTSRC_RxDatDone;
+}
+
 static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned size)
 {
     if (addr != 0x00000 && dsi_trace()) {
-        fprintf(stderr, "%s: read from location 0x%08lx\n", __func__, addr);
+        fprintf(stderr, "%s: read from location 0x%08" PRIx64 "\n", __func__, addr);
     }
 
     IPodTouchMIPIDSIState *s = (IPodTouchMIPIDSIState *)opaque;
@@ -63,21 +77,20 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
             return status;
         }
         case REG_INTSRC:
-            return rDSIM_INTSRC_RxDatDone;
-        case REG_RXFIFO:
-            if(!s->return_panel_id) {
-                s->return_panel_id = true;
-                // TODO this should be rewritten as a proper queue!
-                return DSIM_RSP_LONG_READ | (3 << 8); // the latter part indicates the length of the response (the panel ID)
-            } else {
-                s->return_panel_id = false;
-                return 0x00a1d13c;
+            return s->intsrc;
+        case REG_RXFIFO: {
+            if (!s->rx_count) {
+                return 0;
             }
-            
+            uint32_t word = s->rx_fifo[s->rx_head];
+            s->rx_head = (s->rx_head + 1) % 16;
+            s->rx_count--;
+            return word;
+        }
         case REG_FIFOCTRL:
             return rDSIM_FIFOCTRL_EmptyHSfr;
         default:
-            qemu_log_mask(LOG_UNIMP, "%s: read invalid location 0x%08lx.\n",
+            qemu_log_mask(LOG_UNIMP, "%s: read invalid location 0x%08" PRIx64 ".\n",
                           __func__, addr);
             break;
     }
@@ -88,16 +101,25 @@ static void ipod_touch_mipi_dsi_write(void *opaque, hwaddr addr, uint64_t val, u
 {
     IPodTouchMIPIDSIState *s = (IPodTouchMIPIDSIState *)opaque;
     if (dsi_trace()) {
-        fprintf(stderr, "%s: writing 0x%08lx to 0x%08lx\n", __func__, val, addr);
+        fprintf(stderr, "%s: writing 0x%08" PRIx64 " to 0x%08" PRIx64 "\n", __func__, val, addr);
     }
 
     switch(addr)
     {
         case REG_PKTHDR:
             s->pkthdr_reg = val;
+            dsi_panel_read(s, val);
             /* Sending a packet re-arms the command handshake bits. */
             if (dsi_direct_iboot()) {
                 s->cmd_pending = 0x230;
+            }
+            break;
+        case REG_INTSRC:
+            s->intsrc &= ~val;
+            break;
+        case 0x04: /* DSIM_SWRST */
+            if (val & 1) {
+                s->rx_head = s->rx_count = s->intsrc = 0;
             }
             break;
         case 0x14: /* DSIM_ESCMODE: escape-mode command trigger */
@@ -120,18 +142,7 @@ static const MemoryRegionOps mipi_dsi_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
-/*
- * Warm resets have to put the panel link back to its power-on state, or the
- * second boot brings the display up against leftovers from the first.
- *
- * return_panel_id is the worst of them: the panel ID is delivered as a
- * two-part response and this flag says which half comes next. If a reset lands
- * mid-sequence the next boot's first read gets the second half, the ID does not
- * match, and the panel is never brought up -- a headless boot.
- *
- * clkctrl matters too: the guest clears the HS clock request on its way down,
- * so without a reset the link starts the next boot already marked disabled.
- */
+/* Reset discards partially consumed replies and the old clock handshake. */
 static void ipod_touch_mipi_dsi_reset(DeviceState *dev)
 {
     IPodTouchMIPIDSIState *s = IPOD_TOUCH_MIPI_DSI(dev);
@@ -140,6 +151,7 @@ static void ipod_touch_mipi_dsi_reset(DeviceState *dev)
     s->clkctrl = 0;
     s->cmd_pending = 0;
     s->return_panel_id = false;
+    s->rx_head = s->rx_count = s->intsrc = 0;
 }
 
 static void ipod_touch_mipi_dsi_realize(DeviceState *dev, Error **errp)
@@ -160,15 +172,35 @@ static void ipod_touch_mipi_dsi_init(Object *obj)
     s->return_panel_id = 0;
 }
 
+static int dsi_post_load(void *opaque, int version_id)
+{
+    IPodTouchMIPIDSIState *s = opaque;
+    if (version_id == 1) {
+        /* The old model had an implicit reply on every other FIFO read. */
+        s->rx_head = s->rx_count = s->intsrc = 0;
+        if (s->return_panel_id) {
+            s->rx_fifo[0] = 0x00a1d13c;
+            s->rx_count = 1;
+            s->intsrc = rDSIM_INTSRC_RxDatDone;
+        }
+    }
+    return s->rx_head < 16 && s->rx_count <= 16 ? 0 : -EINVAL;
+}
+
 static const VMStateDescription vmstate_ipod_touch_mipi_dsi = {
     .name = "ipod_touch_mipi_dsi",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = dsi_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(pkthdr_reg, IPodTouchMIPIDSIState),
         VMSTATE_UINT32(clkctrl, IPodTouchMIPIDSIState),
         VMSTATE_UINT32(cmd_pending, IPodTouchMIPIDSIState),
         VMSTATE_BOOL(return_panel_id, IPodTouchMIPIDSIState),
+        VMSTATE_UINT32_ARRAY_V(rx_fifo, IPodTouchMIPIDSIState, 16, 2),
+        VMSTATE_UINT32_V(rx_head, IPodTouchMIPIDSIState, 2),
+        VMSTATE_UINT32_V(rx_count, IPodTouchMIPIDSIState, 2),
+        VMSTATE_UINT32_V(intsrc, IPodTouchMIPIDSIState, 2),
         VMSTATE_END_OF_LIST()
     }
 };

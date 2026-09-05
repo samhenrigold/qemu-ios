@@ -37,7 +37,11 @@ typedef struct IPodTouchMIPIDSIState
     uint32_t clkctrl;
     uint32_t cmd_pending;   /* S5L: command/escape status bits, set on a trigger
                              * write and self-clearing on the next STATUS read */
-    bool return_panel_id;
+    bool return_panel_id; /* legacy migration field */
+    uint32_t rx_fifo[16];
+    uint32_t rx_head;
+    uint32_t rx_count;
+    uint32_t intsrc;
 } IPodTouchMIPIDSIState;
 
 #endif

@@ -184,3 +184,14 @@ pre-stress bytes (`/tmp/it-nand-coldverify.log`). Read-only `fsck_hfs -n` also
 passed across the complete 1,835,008-block HFS volume, incorporating 497,220
 overlay pages (`/tmp/it-nand-fsckverify.log`). This closes the reproduced
 install/respring corruption and interrupt-starvation failures.
+
+## Request-driven panel responses
+
+The DSI receiver now queues the response to the observed 7E18 generic panel-ID
+read (`PKTHDR=0xb114`), instead of alternating header and payload for every FIFO
+read. The bounded queue preserves unread words, drops a whole reply when full,
+clears on controller/machine reset, and migrates queued state. Receive completion
+is latched and write-one-to-clear. Unit checks cover wraparound, full/empty,
+partial reset and restore. `/tmp/it-blitz-spore-56216` passed a fresh 7E18 boot,
+two `system_reset` boots with a lit home screen, and native shutdown (exit 0).
+Other panel read commands remain unimplemented; they do not invent an ID reply.
