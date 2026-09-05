@@ -428,25 +428,53 @@ struct ios_button {
     bool down;
 };
 
+static struct ios_button_hold {
+    QEMUTimer *release;
+    int64_t pressed_at;
+    IPodTouchButton button;
+} ios_button_holds[4];
+
+static void ios_button_release(void *opaque)
+{
+    struct ios_button_hold *hold = opaque;
+    ipod_touch_press_button(hold->button, false);
+}
+
 static void ios_button_bh(void *opaque)
 {
     struct ios_button *b = opaque;
-
+    IPodTouchButton button;
     switch (b->button) {
     case QEMU_IOS_BUTTON_HOME:
-        ipod_touch_press_button(IPOD_TOUCH_BUTTON_HOME, b->down);
+        button = IPOD_TOUCH_BUTTON_HOME;
         break;
     case QEMU_IOS_BUTTON_POWER:
-        ipod_touch_press_button(IPOD_TOUCH_BUTTON_POWER, b->down);
+        button = IPOD_TOUCH_BUTTON_POWER;
         break;
     case QEMU_IOS_BUTTON_VOLUME_UP:
-        ipod_touch_press_button(IPOD_TOUCH_BUTTON_VOLUP, b->down);
+        button = IPOD_TOUCH_BUTTON_VOLUP;
         break;
     case QEMU_IOS_BUTTON_VOLUME_DOWN:
-        ipod_touch_press_button(IPOD_TOUCH_BUTTON_VOLDOWN, b->down);
+        button = IPOD_TOUCH_BUTTON_VOLDOWN;
         break;
     default:
-        break;
+        g_free(b);
+        return;
+    }
+    struct ios_button_hold *hold = &ios_button_holds[b->button];
+    int64_t now = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+    if (!hold->release) {
+        hold->button = button;
+        hold->release = timer_new_ms(QEMU_CLOCK_VIRTUAL, ios_button_release, hold);
+    }
+    if (b->down) {
+        timer_del(hold->release);
+        hold->pressed_at = now;
+        ipod_touch_press_button(button, true);
+    } else {
+        /* Both host events can arrive in one BH batch under load. Give the
+         * guest's debounce handler time to observe the pressed pin. */
+        timer_mod(hold->release, MAX(now, hold->pressed_at + 100));
     }
     g_free(b);
 }
