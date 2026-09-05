@@ -129,3 +129,24 @@ Bluetooth peers and TV-out remain deferred as in the supplied plan. For
 guest/host communication, prefer the existing QMP and usbmux services with
 explicit readiness, operation results, and diagnostic evidence before adding
 another transport.
+
+### Interrupt-controller follow-up
+
+With the free pool corrected, longer install/respring stress still exposed a
+separate FMSS timeout. Command traces show completion pending until the driver's
+2-second timeout clears it; the VIC's FMSS source (54, second controller bit 22)
+remains disabled. Deferring completion alone did not fix this.
+
+The daisy-chain VIC acknowledgment path indexed `vect_priority[33]` because it
+never selected the active child vector before pushing its priority. A focused
+UBSan test reproduces that out-of-bounds access. End-of-interrupt also failed to
+recompute the child's pending vector, leaving the parent with a stale vector
+address. Both are corrected and covered by `tests/ipod/test_vic_daisy.py`,
+including nested parent interrupts, another pending child and a spurious ACK.
+The corrected controller boots and passes initial install/respring cycles;
+extended stress is still required before declaring the timeout fixed.
+
+Local failure evidence: `/tmp/it-blitz-spore-45728/device/qemu.log` records an FMSS
+completion at virtual time 140.549730 seconds, with pending still set when the
+wait times out at 142.549299 seconds. `/tmp/it-blitz-spore-46708/device/qemu.log`
+records the invalid child priority 33 and the final flash interrupt disable.
