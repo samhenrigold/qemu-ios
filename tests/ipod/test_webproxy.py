@@ -7,11 +7,38 @@ import socket
 import subprocess
 import tempfile
 import threading
+import gzip
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 class Origin(http.server.BaseHTTPRequestHandler):
+    archive_requests = 0
     def do_GET(self):
+        if self.path.startswith('/web/'):
+            Origin.archive_requests += 1
+        if self.path.endswith('/limited'):
+            self.send_response(429)
+            self.send_header('Retry-After', '120')
+            self.end_headers()
+            return
+        if self.path.endswith('/secure-redirect'):
+            self.send_response(302)
+            self.send_header('Location', 'https://example.invalid/secure-page')
+            self.end_headers()
+            return
+        if self.path.endswith('/secure-page'):
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html')
+            self.send_header('Content-Encoding', 'gzip')
+            self.end_headers()
+            self.wfile.write(gzip.compress(b'<a href="https://example.invalid/next">next</a>'))
+            return
+        if self.path.endswith('/binary'):
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.end_headers()
+            self.wfile.write(b'\0https://untouched\0')
+            return
         if self.path.startswith('/web/20090909id_/'):
             self.send_response(302)
             self.send_header('Location', self.path.replace('20090909id_', '20090910000000id_'))
@@ -90,11 +117,28 @@ with tempfile.TemporaryDirectory() as tmp:
     archived = request(b'GET http://example.invalid/page HTTP/1.0\r\nCookie: secret=value\r\nAuthorization: Basic secret\r\n\r\n')
     assert archived.count(b'HTTP/1.0') == 1 and b'200 Archive response' in archived, archived
     assert archived.endswith(b'ARCHIVED ORIGINAL PAGE') and b'Set-Cookie' not in archived, archived
+    cached_count = Origin.archive_requests
+    assert request(b'GET http://example.invalid/page HTTP/1.0\r\n\r\n') == archived
+    assert Origin.archive_requests == cached_count, 'Repeated pages must use the shared cache'
     assert b'405' in request(b'POST http://example.invalid/page HTTP/1.0\r\n\r\n')
     assert b'400' in request(b'GET http://name:password@example.invalid/page HTTP/1.0\r\n\r\n')
+    result = request(b'GET http://example.invalid/secure-redirect HTTP/1.0\r\n\r\n')
+    assert b'200 Archive response' in result and b'href="http://example.invalid/next"' in result, result
+    assert b'Content-Encoding' not in result and b'Content-Length: 46' in result, result
+    result = request(b'GET http://example.invalid/binary HTTP/1.0\r\n\r\n')
+    assert result.endswith(b'\0https://untouched\0'), result
+    result = request(b'GET http://example.invalid/limited HTTP/1.0\r\n\r\n')
+    assert b'429' in result and b'Retry-After: 120' in result and b'Light Touch has paused' in result, result
+    upstream_count = Origin.archive_requests
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: request(b'GET http://example.invalid/other HTTP/1.0\r\n\r\n'), range(8)))
+    assert all(b'429' in result for result in results)
+    assert Origin.archive_requests == upstream_count, 'Cooldown must cover every guestfwd process'
+    assert request(b'GET http://example.invalid/page HTTP/1.0\r\n\r\n') == archived
+    assert Origin.archive_requests == upstream_count, 'Cached pages remain available during cooldown'
     config.write_text('archive\ninvalid\n')
     assert b'503' in request(b'GET http://example.invalid/ HTTP/1.0\r\n\r\n')
     config.write_text('off\n')
-    assert b'503' in request(b'GET / HTTP/1.0\r\n\r\n')
+    get(None)  # Safari's stale proxy connection remains usable while configd switches off.
     origin.shutdown(); origin.server_close()
-print('PASS: concurrent HTTP, dechunking, binary POST, malformed framing, CONNECT half-close, upstream, built-in archive redirects/privacy and off')
+print('PASS: concurrent HTTP, dechunking, binary POST, malformed framing, CONNECT half-close, upstream, archive TLS redirects/text links/binary privacy/shared cooldown and off transition')
