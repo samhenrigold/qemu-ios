@@ -83,6 +83,7 @@ typedef struct IPodTouchFMSSState
     /* Allocation blocks the volume in the base image covers; 0 until read out
      * of the image's GPT on first use. See fmss_total_blocks(). */
     uint32_t total_blocks;
+    bool total_blocks_from_gpt;
 
     /*
      * Pages programmed since power-on, keyed by the *physical* (cs, page) the
