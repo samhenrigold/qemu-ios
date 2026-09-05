@@ -8,6 +8,8 @@
 #include "qemu/osdep.h"
 #include "hw/sysbus.h"
 #include "hw/irq.h"
+#include "hw/core/cpu.h"
+#include "qemu/timer.h"
 #include "hw/hw.h"
 #include "qapi/error.h"
 #include "hw/intc/pl192.h"
@@ -87,12 +89,12 @@ static uint32_t pl192_priority_sorter(PL192State *s)
         prio_irq[s->daisy_priority] = PL192_DAISY_IRQ;
     }
     for (i = PL192_INT_SOURCES - 1; i >= 0; i--) {
-        if (s->irq_status & (1 << i)) {
+        if (s->irq_status & (1u << i)) {
             prio_irq[s->vect_priority[i]] = i;
         }
     }
     for (i = 0; i < PL192_PRIO_LEVELS; i++) {
-        if ((s->sw_priority_mask & (1 << i)) &&
+        if ((s->sw_priority_mask & (1u << i)) &&
             prio_irq[i] <= PL192_DAISY_IRQ) {
             return prio_irq[i];
         }
@@ -185,9 +187,16 @@ static uint32_t pl192_irq_ack(PL192State *s)
     int is_daisy = (s->current_highest == PL192_DAISY_IRQ);
     uint32_t res = s->address;
 
+    if (s->current_highest == PL192_NO_IRQ) {
+        return res;
+    }
     s->current = s->current_highest;
     pl192_mask_priority(s);
     if (is_daisy) {
+        /* The parent acknowledges the selected child vector too. Leaving the
+         * child at NO_IRQ indexes vect_priority[33] and installs priority 33
+         * instead of the active interrupt's priority. */
+        s->daisy_callback->current = s->daisy_callback->current_highest;
         pl192_mask_priority(s->daisy_callback);
     }
     pl192_update(s);
@@ -202,6 +211,10 @@ static void pl192_irq_fin(PL192State *s)
     pl192_unmask_priority(s);
     if (is_daisy) {
         pl192_unmask_priority(s->daisy_callback);
+        /* Re-select the child vector before the parent uses its cached daisy
+         * address. Another pending source may have been priority-masked while
+         * the previous interrupt was active. */
+        pl192_update(s->daisy_callback);
     }
     pl192_update(s);
 
@@ -275,6 +288,16 @@ static void pl192_write(void *opaque, hwaddr offset, uint64_t value, unsigned si
 {
     PL192State *s = (PL192State *) opaque;
 
+    if ((offset == PL192_INTENABLE || offset == PL192_INTENCLEAR) &&
+        getenv("VIC_TRACE")) {
+        uint64_t pc = current_cpu ?
+            CPU_GET_CLASS(current_cpu)->get_pc(current_cpu) : 0;
+        fprintf(stderr, "VIC_CTL %s reg=%x val=%08x pc=%08" PRIx64
+                " raw=%x current=%u highest=%u priority=%u depth=%d time=%" PRId64 "\n",
+                memory_region_name(&s->iomem), (unsigned)offset, (unsigned)value,
+                pc, s->rawintr, s->current, s->current_highest, s->priority,
+                s->stack_i, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
     if (offset & 3) {
         hw_error("pl192: bad write offset (1) " HWADDR_FMT_plx "\n", offset);
     }
@@ -361,9 +384,9 @@ static void pl192_irq_handler(void *opaque, int irq, int level)
     PL192State *s = (PL192State *) opaque;
 
     if (level) {
-        s->rawintr |= 1 << irq;
+        s->rawintr |= 1u << irq;
     } else {
-        s->rawintr &= ~(1 << irq);
+        s->rawintr &= ~(1u << irq);
     }
     pl192_update(opaque);
 }
