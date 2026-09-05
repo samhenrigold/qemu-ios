@@ -82,3 +82,12 @@ LAN are deferred by explicit user request.
   Copy Screen and Finger Dots are also customizable. Copy Screen is Shift-Cmd-C.
   A native VisionKit fixture using the production view verified that the corner
   Stop Analyzing Image button removes the complete Live Text overlay.
+
+### TLS bridge acceptance checkpoint
+
+The reproducible `test_webproxy_tls_guest.py` passed on a fresh 7E18 overlay:
+untrusted SHA-1 RSA chain rejected; guest-local CA added using securityd's
+user-domain API; TLS 1.0/AES128-SHA HTTP 200; CA removed; chain rejected again.
+The helper needs the period-correct `modify-anchor-certificates` entitlement,
+not the modern prefixed name. Evidence: /tmp/it-proxy-tls-native-v4.log.
+Production CONNECT termination and automatic per-device CA management remain.
