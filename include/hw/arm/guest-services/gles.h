@@ -73,6 +73,32 @@ typedef struct __attribute__((packed)) {
  * sites; the full 171-slot map is in GATE1_slotmap.txt. Only the slots this
  * implementation actually handles are named here -- see SCOPE in gles-host.c.
  */
+#define GLES_SLOT_CLEAR_STENCIL             15
+#define GLES_SLOT_COLOR4UB                  43
+#define GLES_SLOT_CULL_FACE                 57
+#define GLES_SLOT_NORMAL3F                  182
+#define GLES_SLOT_POINT_SIZE                199
+#define GLES_SLOT_POLYGON_OFFSET            201
+#define GLES_SLOT_STENCIL_FUNC              254
+#define GLES_SLOT_STENCIL_OP                256
+#define GLES_SLOT_MULTI_TEX_COORD4F         369
+#define GLES_SLOT_SAMPLE_COVERAGE           459
+#define GLES_SLOT_ALPHA_FUNCX               761
+#define GLES_SLOT_CLEAR_COLORX              762
+#define GLES_SLOT_CLEAR_DEPTHX              764
+#define GLES_SLOT_COLOR4X                   767
+#define GLES_SLOT_DEPTH_RANGEF              768
+#define GLES_SLOT_DEPTH_RANGEX              769
+#define GLES_SLOT_FRUSTUMX                  773
+#define GLES_SLOT_LINE_WIDTHX               785
+#define GLES_SLOT_NORMAL3X                  790
+#define GLES_SLOT_ORTHOX                    792
+#define GLES_SLOT_POINT_SIZEX               793
+#define GLES_SLOT_POLYGON_OFFSETX           794
+#define GLES_SLOT_ROTATEX                   795
+#define GLES_SLOT_TRANSLATEX                801
+#define GLES_SLOT_MULTI_TEX_COORD4X         802
+#define GLES_SLOT_SAMPLE_COVERAGEX          803
 #define GLES_SLOT_COLOR_MASK            49
 #define GLES_SLOT_STENCIL_MASK          255
 #define GLES_SLOT_IS_RENDERBUFFER       665
