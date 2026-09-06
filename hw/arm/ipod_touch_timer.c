@@ -286,7 +286,7 @@ static int ipod_touch_timer_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_timer = {
     .name = "ipod_touch_timer",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .post_load = ipod_touch_timer_post_load,
     .fields = (const VMStateField[]) {
@@ -305,6 +305,9 @@ static const VMStateDescription vmstate_ipod_touch_timer = {
         VMSTATE_UINT64(next_planned_tick, IPodTouchTimerState),
         VMSTATE_UINT64(base_time, IPodTouchTimerState),
         VMSTATE_TIMER_PTR(st_timer, IPodTouchTimerState),
+        /* Reprogramming must use the same multiplier as the saved interval. */
+        VMSTATE_UINT32_EQUAL_V(dilation, IPodTouchTimerState, 2,
+                               "time-dilation differs from snapshot"),
         VMSTATE_END_OF_LIST()
     }
 };
