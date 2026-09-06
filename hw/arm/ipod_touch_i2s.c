@@ -337,6 +337,8 @@
  * ---------------------------------------------------------------------------
  */
 
+#include "qemu/osdep.h"
+#include "migration/vmstate.h"
 #include "hw/arm/ipod_touch_i2s.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
@@ -1430,9 +1432,82 @@ static void ipod_touch_i2s_init(Object *obj)
     s->pace_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, it_i2s_pace_cb, s);
 }
 
+static int i2s_post_load(void *opaque, int version_id)
+{
+    IPodTouchI2SState *s = opaque;
+    if (s->ring_head >= IT_I2S_RING_SIZE || s->ring_tail >= IT_I2S_RING_SIZE ||
+        s->ring_level > IT_I2S_RING_SIZE ||
+        ((s->ring_head | s->ring_tail | s->ring_level) & 3) ||
+        (s->ring_tail + s->ring_level) % IT_I2S_RING_SIZE != s->ring_head ||
+        !s->fifo_depth ||
+        s->pace_fraction >= 1000000000 ||
+        s->voice_rate < 8000 || s->voice_rate > 192000 ||
+        s->as.freq < 8000 || s->as.freq > 192000) {
+        return -EINVAL;
+    }
+    for (unsigned off = 0; off < s->ring_level; off += 4) {
+        unsigned rate = s->ring_format[((s->ring_tail + off) % IT_I2S_RING_SIZE) / 4] >> 9;
+        if (rate < 8000 || rate > 192000) return -EINVAL;
+    }
+    if (s->card_ok) {
+        struct audsettings as = s->as;
+        as.freq = s->voice_rate;
+        s->voice = AUD_open_out(&s->card, s->voice, "ipod-i2s.out", s,
+                               it_i2s_out_cb, &as);
+        if (!s->voice) return -EIO;
+        AUD_set_volume_out(s->voice, 0, 255, 255);
+        AUD_set_active_out(s->voice, s->active);
+    }
+    if (s->dmac) pl080_set_dma_request(s->dmac, s->dma_req_id, s->dma_req);
+    return 0;
+}
+
+static const VMStateDescription vmstate_ipod_touch_i2s = {
+    .name = TYPE_IPOD_TOUCH_I2S,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = i2s_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(enable, IPodTouchI2SState),
+        VMSTATE_UINT32(txcon, IPodTouchI2SState),
+        VMSTATE_UINT32(txcom, IPodTouchI2SState),
+        VMSTATE_UINT32(rxcon, IPodTouchI2SState),
+        VMSTATE_UINT32(rxcom, IPodTouchI2SState),
+        VMSTATE_UINT32(txfctl, IPodTouchI2SState),
+        VMSTATE_UINT32(clkdiv, IPodTouchI2SState),
+        VMSTATE_UINT32(voice_rate, IPodTouchI2SState),
+        VMSTATE_UINT32(ring_head, IPodTouchI2SState),
+        VMSTATE_UINT32(ring_tail, IPodTouchI2SState),
+        VMSTATE_UINT32(ring_level, IPodTouchI2SState),
+        VMSTATE_UINT32(fifo_bytes, IPodTouchI2SState),
+        VMSTATE_UINT32(fifo_depth, IPodTouchI2SState),
+        VMSTATE_UINT32(prebuffer, IPodTouchI2SState),
+        VMSTATE_UINT32(pace_debt, IPodTouchI2SState),
+        VMSTATE_UINT32(ready_ticks, IPodTouchI2SState),
+        VMSTATE_BOOL(active, IPodTouchI2SState),
+        VMSTATE_BOOL(running, IPodTouchI2SState),
+        VMSTATE_BOOL(dma_req, IPodTouchI2SState),
+        VMSTATE_BOOL(prefilled, IPodTouchI2SState),
+        VMSTATE_BOOL(pushed_since_tick, IPodTouchI2SState),
+        VMSTATE_INT64(prefill_start_ns, IPodTouchI2SState),
+        VMSTATE_INT64(pace_last_ns, IPodTouchI2SState),
+        VMSTATE_INT64(last_push_ns, IPodTouchI2SState),
+        VMSTATE_UINT64(pace_fraction, IPodTouchI2SState),
+        VMSTATE_UINT64(ready_irqs, IPodTouchI2SState),
+        VMSTATE_INT32(as.freq, IPodTouchI2SState),
+        VMSTATE_UINT8_ARRAY(ring, IPodTouchI2SState, IT_I2S_RING_SIZE),
+        VMSTATE_UINT32_ARRAY(ring_format, IPodTouchI2SState, IT_I2S_RING_SIZE / 4),
+        VMSTATE_TIMER_PTR(ready_timer, IPodTouchI2SState),
+        VMSTATE_TIMER_PTR(pace_timer, IPodTouchI2SState),
+        VMSTATE_CLOCK(lrclk, IPodTouchI2SState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static void ipod_touch_i2s_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+    dc->vmsd = &vmstate_ipod_touch_i2s;
     dc->realize = ipod_touch_i2s_realize;
     device_class_set_legacy_reset(dc, ipod_touch_i2s_reset);
 }
