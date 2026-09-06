@@ -399,27 +399,38 @@ class Device:
             log("%s: no QMP connection to confirm guest shutdown" % self.tag)
             return False
         try:
-            helper = os.path.join(ROOT, "contrib", "it-halt", "ithalt")
-            port, error = ensure_guest_ssh(self.cfg, self.procs, self)
-            if port is not None and os.path.exists(helper):
-                copied = guest_ssh(self.cfg, port, None, scp_from=helper,
-                                   scp_to="/tmp/ithalt")
-                if copied.returncode != 0:
-                    log("%s: could not stage shutdown helper: %s" % (self.tag, copied.stderr))
-                    return False
-                halt = guest_ssh(self.cfg, port, ["chmod 755 /tmp/ithalt && /tmp/ithalt"], timeout=30)
-                log("%s: halt request rc=%d %s" %
-                    (self.tag, halt.returncode, (halt.stdout + halt.stderr).strip()[-200:]))
+            if itqmp.agent_alive(self.qmp):
+                try:
+                    status, response = itqmp.agent(self.qmp, "halt", timeout=30)
+                    if status:
+                        raise RuntimeError("agent halt failed: %d %r" % (status, response))
+                except EOFError:
+                    # A guest shutdown can beat the RPC reply. The retained
+                    # PMU SHUTDOWN event below remains the acceptance gate.
+                    pass
                 timeout = 60
             else:
-                log("%s: gesture shutdown fallback (%s)" % (self.tag, error or "no ithalt"))
-                try:
-                    self.qmp.cmd("system_powerdown")
-                except EOFError:
-                    # An immediate shutdown may precede the command response;
-                    # the retained SHUTDOWN event must still prove its origin.
-                    pass
-                timeout = 180
+                helper = os.path.join(ROOT, "contrib", "it-halt", "ithalt")
+                port, error = ensure_guest_ssh(self.cfg, self.procs, self)
+                if port is not None and os.path.exists(helper):
+                    copied = guest_ssh(self.cfg, port, None, scp_from=helper,
+                                       scp_to="/tmp/ithalt")
+                    if copied.returncode != 0:
+                        log("%s: could not stage shutdown helper: %s" % (self.tag, copied.stderr))
+                        return False
+                    halt = guest_ssh(self.cfg, port, ["chmod 755 /tmp/ithalt && /tmp/ithalt"], timeout=30)
+                    log("%s: halt request rc=%d %s" %
+                        (self.tag, halt.returncode, (halt.stdout + halt.stderr).strip()[-200:]))
+                    timeout = 60
+                else:
+                    log("%s: gesture shutdown fallback (%s)" % (self.tag, error or "no ithalt"))
+                    try:
+                        self.qmp.cmd("system_powerdown")
+                    except EOFError:
+                        # An immediate shutdown may precede the command response;
+                        # the retained SHUTDOWN event must still prove its origin.
+                        pass
+                    timeout = 180
             self.qmp.wait_for_guest_shutdown(timeout)
             rc = self.qemu.wait(timeout=10)
             log("%s: guest-confirmed shutdown, qemu exit=%d" % (self.tag, rc))
