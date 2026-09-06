@@ -726,19 +726,19 @@ static void exynos4210_realize(DeviceState *socdev, Error **errp)
     /*** UARTs ***/
     uart[0] = exynos4210_uart_create(EXYNOS4210_UART0_BASE_ADDR,
                            EXYNOS4210_UART0_FIFO_SIZE, 0, serial_hd(0),
-                  s->irq_table[exynos4210_get_irq(EXYNOS4210_UART_INT_GRP, 0)]);
+                  s->irq_table[exynos4210_get_irq(EXYNOS4210_UART_INT_GRP, 0)], false);
 
     uart[1] = exynos4210_uart_create(EXYNOS4210_UART1_BASE_ADDR,
                            EXYNOS4210_UART1_FIFO_SIZE, 1, serial_hd(1),
-                  s->irq_table[exynos4210_get_irq(EXYNOS4210_UART_INT_GRP, 1)]);
+                  s->irq_table[exynos4210_get_irq(EXYNOS4210_UART_INT_GRP, 1)], false);
 
     uart[2] = exynos4210_uart_create(EXYNOS4210_UART2_BASE_ADDR,
                            EXYNOS4210_UART2_FIFO_SIZE, 2, serial_hd(2),
-                  s->irq_table[exynos4210_get_irq(EXYNOS4210_UART_INT_GRP, 2)]);
+                  s->irq_table[exynos4210_get_irq(EXYNOS4210_UART_INT_GRP, 2)], false);
 
     uart[3] = exynos4210_uart_create(EXYNOS4210_UART3_BASE_ADDR,
                            EXYNOS4210_UART3_FIFO_SIZE, 3, serial_hd(3),
-                  s->irq_table[exynos4210_get_irq(EXYNOS4210_UART_INT_GRP, 3)]);
+                  s->irq_table[exynos4210_get_irq(EXYNOS4210_UART_INT_GRP, 3)], false);
 
     /*** SD/MMC host controllers ***/
     for (n = 0; n < EXYNOS4210_SDHCI_NUMBER; n++) {

@@ -207,6 +207,7 @@ struct Exynos4210UartState {
     bool              rx_since_timeout;
 
     uint32_t channel;
+    bool s5l8720_irq;
 
 };
 
@@ -353,7 +354,7 @@ static void exynos4210_uart_update_irq(Exynos4210UartState *s)
                 UFSTAT_Tx_FIFO_COUNT_SHIFT;
 
         if (count <= exynos4210_uart_Tx_FIFO_trigger_level(s) &&
-            !getenv("IT_DIRECT_IBOOT")) {
+            !s->s5l8720_irq) {
             /*
              * S5L8720 Tx interrupt is edge-triggered on transmit, not level on
              * empty-FIFO. The 3.1.3 kernel's ISR drains its Tx ring and stops
@@ -385,7 +386,7 @@ static void exynos4210_uart_update_irq(Exynos4210UartState *s)
 
     /* S5L8720: surface the pending Tx/Rx interrupt in UTRSTAT so 3.1.3 iBoot's
      * UTRSTAT-based ISR can see and drain it. See UTRSTAT_S5L_* above. */
-    if (getenv("IT_DIRECT_IBOOT")) {
+    if (s->s5l8720_irq) {
         if (s->reg[I_(UINTP)] & UINTSP_TXD) {
             s->reg[I_(UTRSTAT)] |= UTRSTAT_S5L_Tx_INT;
         } else {
@@ -555,7 +556,7 @@ static void exynos4210_uart_write(void *opaque, hwaddr offset,
         /* S5L8720: writing UTRSTAT acknowledges the Tx/Rx interrupt. Clear the
          * corresponding pending source so the (exynos) UINTP line de-asserts,
          * ending the storm; the Tx source re-arms on the next UTXH write. */
-        if (getenv("IT_DIRECT_IBOOT")) {
+        if (s->s5l8720_irq) {
             if (val & UTRSTAT_S5L_Tx_INT) {
                 s->reg[I_(UINTSP)] &= ~UINTSP_TXD;
                 s->reg[I_(UINTP)]  &= ~UINTSP_TXD;
@@ -773,13 +774,14 @@ DeviceState *exynos4210_uart_create(hwaddr addr,
                                     int fifo_size,
                                     int channel,
                                     Chardev *chr,
-                                    qemu_irq irq)
+                                    qemu_irq irq, bool s5l8720_irq)
 {
     DeviceState  *dev;
     SysBusDevice *bus;
 
     dev = qdev_new(TYPE_EXYNOS4210_UART);
 
+    qdev_prop_set_bit(dev, "s5l8720-irq", s5l8720_irq);
     qdev_prop_set_chr(dev, "chardev", chr);
     qdev_prop_set_uint32(dev, "channel", channel);
     qdev_prop_set_uint32(dev, "rx-size", fifo_size);
@@ -826,6 +828,7 @@ static void exynos4210_uart_realize(DeviceState *dev, Error **errp)
 }
 
 static const Property exynos4210_uart_properties[] = {
+    DEFINE_PROP_BOOL("s5l8720-irq", Exynos4210UartState, s5l8720_irq, false),
     DEFINE_PROP_CHR("chardev", Exynos4210UartState, chr),
     DEFINE_PROP_UINT32("channel", Exynos4210UartState, channel, 0),
     DEFINE_PROP_UINT32("rx-size", Exynos4210UartState, rx.size, 16),

@@ -36,6 +36,7 @@ typedef struct IPodTouchFMSSState
 {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
+    bool direct_boot; /* Startup board compatibility policy. */
     qemu_irq irq;
 
     uint8_t *page_buffer;

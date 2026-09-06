@@ -124,6 +124,6 @@ DeviceState *exynos4210_uart_create(hwaddr addr,
                                     int fifo_size,
                                     int channel,
                                     Chardev *chr,
-                                    qemu_irq irq);
+                                    qemu_irq irq, bool s5l8720_irq);
 
 #endif /* EXYNOS4210_H */

@@ -849,14 +849,14 @@ static void patch_iboot_bluetooth_node(void)
  * (3.1.3 / 7E18) path, which sets its command line via IT_BOOT_ARGS instead.
  */
 
-static void patch_iboot_boot_args(void)
+static void patch_iboot_boot_args(IPodTouchFMSSState *s)
 {
     static const char boot_args[] =
         "kextlog=0xfff debug=0x8 cpus=1 rd=disk0s1 serial=1 pmu-debug=0x1 "
         "io=0xffff8fff debug-usb=0xffffffff amfi_allow_any_signature=1 -v "
         "zalloc_debug";
 
-    if (getenv("IT_DIRECT_IBOOT")) {
+    if (s->direct_boot) {
         return;
     }
 
@@ -931,7 +931,7 @@ static bool fmss_write_dma_read(uint64_t addr, void *data, size_t len)
 
 static void read_nand_pages(IPodTouchFMSSState *s)
 {
-    patch_iboot_boot_args();
+    patch_iboot_boot_args(s);
     patch_iboot_bluetooth_node();
 
     int page_out_buf_ind = 0;

@@ -30,6 +30,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSYSICState, IPOD_TOUCH_SYSIC)
 typedef struct IPodTouchSYSICState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
+    bool direct_boot; /* Startup board compatibility policy. */
     qemu_irq gpio_irqs[GPIO_NUMINTGROUPS];
     uint32_t power_id;
     uint32_t power_state;

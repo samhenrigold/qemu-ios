@@ -1087,3 +1087,21 @@ invalid ring bounds/accounting are still rejected.
 These close specific decode/audio continuation defects. Full app snapshots with
 live host GL contexts remain deliberately blocked; these tests do not establish
 unrestricted game snapshots or end-to-end active app playback restoration.
+
+## Direct boot startup configuration (2026-09-06)
+
+`direct-iboot=PATH` and optional `direct-llb=PATH` now configure boot-chain
+substitution before machine initialization. Explicit empty paths disable the
+corresponding legacy aliases; overlong paths and LLB without iBoot are rejected.
+Reset, audio auto-selection, FMSS boot-argument preservation, SYSIC epoch handling,
+DSI replies and UART interrupt compatibility all use the configured device policy.
+A host environment variable no longer changes unrelated Exynos UART devices.
+The remaining optional `IT_DIRECT_EPOCH` debug override is not migrated here.
+
+All 43 native startup cases pass, including actual UART policy, explicit disable,
+legacy precedence and runtime mutation rejection. Audio and DSI sanitizer checks
+pass. The native 7E18 firmware/agent test now supplies the explicit path; it passes
+with a deliberately missing conflicting legacy environment path, then confirms
+shutdown in 77.7 seconds (`/tmp/it-direct-config-guest.log`). CLI build passes.
+The regression option appender escapes commas in paths using QEMU's doubled-comma
+syntax. Remaining CLI launcher scripts outside this repository retain aliases.

@@ -23,13 +23,12 @@ typedef uint64_t hwaddr;
 #define LOG_UNIMP 1
 #define qemu_log_mask(...) ((void)0)
 static bool dsi_trace(void) { return false; }
-static bool dsi_direct_iboot(void) { return true; }
 '''
 tests=r'''
 #define RD(a) ipod_touch_mipi_dsi_read(&s,a,4)
 #define WR(a,v) ipod_touch_mipi_dsi_write(&s,a,v,4)
 int main(void) {
-    IPodTouchMIPIDSIState s={0};
+    IPodTouchMIPIDSIState s={.direct_boot=true};
     assert(!RD(REG_RXFIFO) && !RD(REG_INTSRC));
     WR(REG_PKTHDR,0x2905); assert(!s.rx_count);
     WR(REG_PKTHDR,0xb114); assert(s.rx_count==2);
