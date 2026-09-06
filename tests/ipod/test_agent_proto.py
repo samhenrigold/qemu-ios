@@ -115,6 +115,13 @@ int main(void) {
     assert(call(a,0x164,token,0,0,15003)==0);
     assert(ipod_agent_cancel(a,"cancelled-result"));
     result=ipod_agent_take_result(a);assert(!*result);g_free(result);
+    assert(ipod_agent_submit(a,"springboard uidump\n"));
+    assert(call(a,0x161,token,0,0,15003)>0);
+    assert(call(a,0x16a,token,0,0,15003)==0);
+    cookie=call(a,0x166,0,0,0,15003);assert(cookie>0);
+    assert(call(a,0x161,token,0,0,15003)==0);
+    assert(call(a,0x169,cookie,0,0,15003)==0);
+    assert(ipod_agent_cancel(a,"springboard"));
     ipod_agent_publish(a);
     IPodAgent *reader=ipod_agent_acquire();
     assert(reader==a);

@@ -272,7 +272,7 @@ static void pump_guest_to_host(void)
 }
 
 /*
- * Seconds to wait before the first tick. Nothing here runs inside SpringBoard,
+ * Seconds to wait before the first clipboard tick. Nothing here runs inside SpringBoard,
  * so this is not the launch hazard the keyboard agent had -- but pasteboardd is
  * launched on demand and there is no point waking it before there is a UI to
  * paste into.
@@ -283,24 +283,22 @@ static void pump_guest_to_host(void)
 
 int main(void)
 {
-    int i;
-    for (i = 0; i < STARTUP_DELAY; i++) {
-        usleep(1000000);
-    }
-
-    if (!objc_setup()) {
-        w("it_agent: could not resolve the ObjC runtime\n");
-        _exit(1);
-    }
-    w("it_agent: up\n");
-
+    unsigned clipboard_delay = STARTUP_DELAY * 4;
+    int clipboard_ready = 0;
+    int clipboard_attempted = 0;
+    w("it_agent: command service up\n");
     for (;;) {
+        /* File/command RPC needs no UIKit initialization. Start immediately so
+         * boot-time provisioning does not wait for the clipboard grace period. */
         agent_tick();
-        if (!pump_host_to_guest()) {
-            pump_guest_to_host();
+        if (clipboard_delay) clipboard_delay--;
+        else if (!clipboard_attempted) {
+            clipboard_attempted = 1;
+            clipboard_ready = objc_setup();
+            if (!clipboard_ready) w("it_agent: clipboard runtime unavailable\n");
         }
+        if (clipboard_ready && !pump_host_to_guest()) pump_guest_to_host();
         usleep(250000);
     }
-    _exit(0);
     return 0;
 }

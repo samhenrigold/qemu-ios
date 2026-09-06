@@ -231,7 +231,7 @@ int64_t ipod_agent_call(IPodAgent *a, unsigned op, uint64_t token,
     /* UI clients run in the target process, independently of the root daemon.
      * Cookies reject late replies; like root tokens, they are not credentials. */
     if (op >= 0x166 && op <= 0x169) {
-        if (!item || !item->ui_pid || now_ms >= item->ui_deadline) {
+        if (!item || !item->ui_cookie || now_ms >= item->ui_deadline) {
             result = op == 0x166 ? 0 : -1;
             goto out;
         }
@@ -248,10 +248,10 @@ int64_t ipod_agent_call(IPodAgent *a, unsigned op, uint64_t token,
         if (!a->claimed || token != a->token) {
             goto out;
         }
-        if (item && item->ui_pid && op != 0x161 && op != 0x165) {
+        if (item && item->ui_cookie && op != 0x161 && op != 0x165) {
             goto out;
         }
-        if (op == 0x16a && item && offset > 1) {
+        if (op == 0x16a && item && offset != 1) {
             item->ui_pid = offset;
             item->ui_cookie = (candidate_token ^ ++a->ui_sequence) & INT64_MAX;
             if (!item->ui_cookie) {
@@ -264,7 +264,7 @@ int64_t ipod_agent_call(IPodAgent *a, unsigned op, uint64_t token,
     }
     if (op == 0x161) {
         a->last_poll = now_ms;
-        if (item && item->ui_pid && now_ms >= item->ui_deadline) {
+        if (item && item->ui_cookie && now_ms >= item->ui_deadline) {
             item->status = -ETIMEDOUT;
             g_byte_array_set_size(item->response, 0);
             g_queue_push_tail(&a->done, g_queue_pop_head(&a->pending));
@@ -273,7 +273,7 @@ int64_t ipod_agent_call(IPodAgent *a, unsigned op, uint64_t token,
         if (item) {
             item->dispatched = true;
         }
-        result = item && !item->ui_pid ? item->request->len : 0;
+        result = item && !item->ui_cookie ? item->request->len : 0;
     } else if (op == 0x165) {
         result = time(NULL);
     } else if (item && op == 0x162 && length <= sizeof(chunk) &&

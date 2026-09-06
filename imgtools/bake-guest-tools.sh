@@ -13,6 +13,7 @@
 #         --script imgtools/bake-guest-tools.sh
 #     imgtools/setowner.py --nand <image>-baked \
 #         /usr/local/bin/it_agent:0:0:755 \
+#         /usr/lib/it_typein.dylib:0:0:755 \
 #         /System/Library/LaunchDaemons/com.qemu.it-agent.plist:0:0:644 \
 #         /usr/local/bin/sblaunch:0:0:755 \
 #         /usr/local/bin/sbdlicon:0:0:755 \
@@ -60,6 +61,25 @@ AGENT="$SRC/contrib/it-agent"
 [ -f "$AGENT/it_agent" ] || { echo "build contrib/it-agent first" >&2; exit 1; }
 cp "$AGENT/it_agent" "$MNT/usr/local/bin/it_agent"
 chmod 755 "$MNT/usr/local/bin/it_agent"
+cp "$AGENT/it_typein.dylib" "$MNT/usr/lib/it_typein.dylib"
+chmod 755 "$MNT/usr/lib/it_typein.dylib"
+python3 - "$MNT/System/Library/LaunchDaemons/com.apple.SpringBoard.plist" <<'PYJOB'
+import plistlib, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+data = path.read_bytes()
+job = plistlib.loads(data)
+assert job.get('Label') == 'com.apple.SpringBoard'
+env = job.setdefault('EnvironmentVariables', {})
+assert isinstance(env, dict)
+old = env.get('DYLD_INSERT_LIBRARIES', '')
+assert isinstance(old, str)
+libraries = [item for item in old.split(':') if item and item != '/usr/lib/it_kbd_agent.dylib']
+if '/usr/lib/it_typein.dylib' not in libraries:
+    libraries.append('/usr/lib/it_typein.dylib')
+env['DYLD_INSERT_LIBRARIES'] = ':'.join(libraries)
+path.write_bytes(plistlib.dumps(job, fmt=plistlib.FMT_BINARY if data.startswith(b'bplist') else plistlib.FMT_XML))
+PYJOB
 mkdir -p "$MNT/System/Library/LaunchDaemons"
 cp "$AGENT/com.qemu.it-agent.plist" "$MNT/System/Library/LaunchDaemons/com.qemu.it-agent.plist"
 chmod 644 "$MNT/System/Library/LaunchDaemons/com.qemu.it-agent.plist"
