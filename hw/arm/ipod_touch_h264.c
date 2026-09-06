@@ -65,20 +65,27 @@ static void h264_set_irq(IPodH264State *s, bool level)
     else qemu_irq_lower(s->irq);
 }
 
-static void h264_decoder_close(IPodH264State *s)
+static void h264_host_decoder_close(IPodH264State *s)
 {
 #ifdef IT_HAVE_AVCODEC
     avcodec_free_context(&s->codec);
     av_frame_free(&s->frame);
-    s->partial = false;
-    g_clear_pointer(&s->partial_slices, g_ptr_array_unref);
-    s->partial_bytes = 0;
 #endif
 #ifdef __APPLE__
     ipod_video_close(s->video);
     s->video = NULL;
     if (s->format) CFRelease(s->format);
     s->format = NULL;
+#endif
+}
+
+static void h264_decoder_close(IPodH264State *s)
+{
+    h264_host_decoder_close(s);
+#ifdef IT_HAVE_AVCODEC
+    s->partial = false;
+    g_clear_pointer(&s->partial_slices, g_ptr_array_unref);
+    s->partial_bytes = 0;
 #endif
 }
 
@@ -590,7 +597,8 @@ static bool h264_decode_software(IPodH264State *s)
     g_byte_array_append(job->rbsp, s->rbsp->data, s->rbsp->len);
     g_ptr_array_add(s->partial_slices, job);
     s->partial_bytes += retained;
-    if (!s->codec) {
+    bool recreate = !s->codec;
+    if (recreate) {
         const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_H264);
         if (!codec) goto fail;
         s->codec = avcodec_alloc_context3(codec);
@@ -604,7 +612,7 @@ static bool h264_decode_software(IPodH264State *s)
         if (av_opt_set_int(s->codec->priv_data, "enable_er", 1, 0) < 0 ||
             avcodec_open2(s->codec, codec, NULL) < 0) goto fail;
     }
-    if (!first || references.count != previous_count) {
+    if (recreate || !first || references.count != previous_count) {
         avcodec_flush_buffers(s->codec);
         av_frame_unref(s->frame);
         memcpy(s->partial_key, key, sizeof(key));
@@ -674,7 +682,7 @@ static bool h264_decode(IPodH264State *s)
 #ifdef IT_HAVE_AVCODEC
     /* CAVLC PCM blocks retain their original bit alignment after header
      * replacement. VideoToolbox cannot accept that alignment metadata. */
-    if (s->codec || !s->regs[0x1020 / 4]) return h264_decode_software(s);
+    if (s->partial || s->codec || !s->regs[0x1020 / 4]) return h264_decode_software(s);
 #endif
     if (h264_decode_native(s)) return true;
 #ifdef IT_HAVE_AVCODEC
@@ -811,21 +819,102 @@ static const VMStateInfo vmstate_h264_rbsp = {
     .name = "h264-rbsp", .get = h264_get_rbsp, .put = h264_put_rbsp,
 };
 
+#ifdef IT_HAVE_AVCODEC
+/* Retain guest slice inputs, never native decoder objects. The existing replay
+ * path rebuilds the decoder from these inputs and guest-owned reference planes. */
+static int h264_put_slices(QEMUFile *f, void *pv, size_t size,
+                           const VMStateField *field, JSONWriter *vmdesc)
+{
+    GPtrArray *slices = *(GPtrArray **)pv;
+    unsigned count = slices ? slices->len : 0;
+    if (count > 16384) return -E2BIG;
+    qemu_put_be32(f, count);
+    size_t total = 0;
+    for (unsigned i = 0; i < count; i++) {
+        H264SoftwareSlice *slice = slices->pdata[i];
+        total += sizeof(*slice) + slice->rbsp->len;
+        if (total > 64 * 1024 * 1024) return -E2BIG;
+        for (unsigned j = 0; j < G_N_ELEMENTS(slice->regs); j++) qemu_put_be32(f, slice->regs[j]);
+        for (unsigned j = 0; j < G_N_ELEMENTS(slice->weights); j++) qemu_put_be32(f, slice->weights[j]);
+        for (unsigned j = 0; j < G_N_ELEMENTS(slice->references); j++) qemu_put_be32(f, slice->references[j]);
+        qemu_put_be32(f, slice->bit);
+        int result = h264_put_rbsp(f, &slice->rbsp, 0, NULL, NULL);
+        if (result) return result;
+    }
+    return qemu_file_get_error(f);
+}
+
+static int h264_get_slices(QEMUFile *f, void *pv, size_t size,
+                           const VMStateField *field)
+{
+    unsigned count = qemu_get_be32(f);
+    if (count > 16384) return -EINVAL;
+    g_autoptr(GPtrArray) slices = g_ptr_array_new_with_free_func(h264_software_slice_free);
+    size_t total = 0;
+    for (unsigned i = 0; i < count; i++) {
+        H264SoftwareSlice *slice = g_new0(H264SoftwareSlice, 1);
+        slice->rbsp = g_byte_array_new();
+        g_ptr_array_add(slices, slice);
+        for (unsigned j = 0; j < G_N_ELEMENTS(slice->regs); j++) slice->regs[j] = qemu_get_be32(f);
+        for (unsigned j = 0; j < G_N_ELEMENTS(slice->weights); j++) slice->weights[j] = qemu_get_be32(f);
+        for (unsigned j = 0; j < G_N_ELEMENTS(slice->references); j++) {
+            slice->references[j] = qemu_get_be32(f);
+            if (slice->references[j] >= 16) return -EINVAL;
+        }
+        slice->bit = qemu_get_be32(f);
+        int result = h264_get_rbsp(f, &slice->rbsp, 0, NULL);
+        if (result) return result;
+        total += sizeof(*slice) + slice->rbsp->len;
+        if (total > 64 * 1024 * 1024 || slice->bit > slice->rbsp->len * 8) return -EINVAL;
+    }
+    if (qemu_file_get_error(f)) return qemu_file_get_error(f);
+    g_clear_pointer((GPtrArray **)pv, g_ptr_array_unref);
+    *(GPtrArray **)pv = g_steal_pointer(&slices);
+    return 0;
+}
+
+static const VMStateInfo vmstate_h264_slices = {
+    .name = "h264-slices", .get = h264_get_slices, .put = h264_put_slices,
+};
+#endif
+
+static int h264_pre_load(void *opaque)
+{
+    IPodH264State *s = opaque;
+    h264_decoder_close(s);
+#ifdef IT_HAVE_AVCODEC
+    s->partial_start = 0;
+    s->partial_reference_count = 0;
+    memset(s->partial_key, 0, sizeof(s->partial_key));
+    memset(s->partial_references, 0, sizeof(s->partial_references));
+#endif
+    return 0;
+}
+
 static int h264_post_load(void *opaque, int version_id)
 {
     IPodH264State *s = opaque;
     if (s->bit > s->rbsp->len * 8) return -EINVAL;
-    /* Host decode sessions and partial software pictures are recreated lazily.
-     * The guest's bit reader and registers must retain their exact position. */
-    h264_decoder_close(s);
+#ifdef IT_HAVE_AVCODEC
+    if (s->partial_reference_count > 16 || s->partial_start >= 16384 ||
+        (s->partial && (!s->partial_slices || !s->partial_slices->len)) ||
+        (!s->partial && s->partial_slices && s->partial_slices->len)) return -EINVAL;
+    s->partial_bytes = 0;
+    for (unsigned i = 0; s->partial_slices && i < s->partial_slices->len; i++) {
+        H264SoftwareSlice *slice = s->partial_slices->pdata[i];
+        s->partial_bytes += sizeof(*slice) + slice->rbsp->len;
+    }
+#endif
+    h264_host_decoder_close(s);
     h264_set_irq(s, s->irq_level);
     return 0;
 }
 
 static const VMStateDescription h264_vmstate = {
     .name = "ipod-h264",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .pre_load = h264_pre_load,
     .post_load = h264_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, IPodH264State, 0x4000 / 4),
@@ -833,6 +922,14 @@ static const VMStateDescription h264_vmstate = {
         VMSTATE_BOOL(exhausted, IPodH264State),
         VMSTATE_BOOL(irq_level, IPodH264State),
         VMSTATE_SINGLE(rbsp, IPodH264State, 1, vmstate_h264_rbsp, GByteArray *),
+#ifdef IT_HAVE_AVCODEC
+        VMSTATE_BOOL_V(partial, IPodH264State, 2),
+        VMSTATE_UINT32_V(partial_start, IPodH264State, 2),
+        VMSTATE_UINT32_ARRAY_V(partial_key, IPodH264State, 3, 2),
+        VMSTATE_UINT32_2DARRAY_V(partial_references, IPodH264State, 16, 2, 2),
+        VMSTATE_UINT32_V(partial_reference_count, IPodH264State, 2),
+        VMSTATE_SINGLE(partial_slices, IPodH264State, 2, vmstate_h264_slices, GPtrArray *),
+#endif
         VMSTATE_END_OF_LIST()
     },
 };

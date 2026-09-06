@@ -1437,7 +1437,9 @@ static int i2s_post_load(void *opaque, int version_id)
     IPodTouchI2SState *s = opaque;
     if (s->ring_head >= IT_I2S_RING_SIZE || s->ring_tail >= IT_I2S_RING_SIZE ||
         s->ring_level > IT_I2S_RING_SIZE ||
-        ((s->ring_head | s->ring_tail | s->ring_level) & 3) ||
+        /* The consumer drains complete frames, but DMA may stop after any
+         * byte of the next frame. Preserve that partial producer frame. */
+        (s->ring_tail & 3) ||
         (s->ring_tail + s->ring_level) % IT_I2S_RING_SIZE != s->ring_head ||
         !s->fifo_depth ||
         s->pace_fraction >= 1000000000 ||
