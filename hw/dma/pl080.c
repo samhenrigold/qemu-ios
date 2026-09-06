@@ -479,8 +479,10 @@ void pl080_set_dma_last_request(PL080State *s, int id)
             continue;   /* already finished by the normal path */
         }
 
-        done_ctrl = ch->ctrl & 0xfffff000;   /* remaining size := 0 */
-        ch->ctrl = done_ctrl;
+        /* LAST ends this packet, not every programmed transfer. Preserve
+         * residue so a short UART reply cannot expose the unwritten tail of
+         * the guest's receive buffer as data (PL080 TRM, DMACCxControl). */
+        done_ctrl = ch->ctrl;
         if (ch->lli) {
             ch->src = address_space_ldl_le(&s->downstream_as, ch->lli,
                                            MEMTXATTRS_UNSPECIFIED, NULL);
