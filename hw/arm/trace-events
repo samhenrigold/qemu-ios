@@ -88,3 +88,8 @@ ipod_touch_mpvd_write(uint64_t addr, uint32_t value, uint32_t pc, uint32_t lr) "
 
 # ipod_touch_clock.c
 ipod_touch_clock_write(uint64_t addr, uint32_t value) "offset 0x%" PRIx64 " value 0x%08x"
+
+# iPod NOR transaction investigation (disabled unless explicitly enabled)
+ipod_touch_spi_cs(unsigned controller, uint32_t pin) "controller %u pin 0x%08x"
+ipod_touch_gpio_write(uint64_t addr, uint32_t value) "offset 0x%" PRIx64 " value 0x%08x"
+ipod_touch_nor_command(uint32_t command) "command 0x%02x"

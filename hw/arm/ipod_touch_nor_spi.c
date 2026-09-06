@@ -1,5 +1,6 @@
 #include "hw/arm/ipod_touch_nor_spi.h"
 #include "migration/vmstate.h"
+#include "trace.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
@@ -112,6 +113,7 @@ static uint32_t ipod_touch_nor_spi_transfer(SSIPeripheral *dev, uint32_t value)
         // malloc'd both here and freed them only on the one completion path
         // that READ_DATA/ENABLE_WRITE/DISABLE_WRITE never reach -- a leak on
         // every such command, i.e. continuously during boot).
+        trace_ipod_touch_nor_command(value);
         s->cur_cmd = value;
         s->in_buf[0] = value;
         s->in_buf_size = 0;
