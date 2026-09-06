@@ -8,7 +8,7 @@ root = Path(__file__).resolve().parents[2]
 src = (root / 'hw/arm/gles-host.c').read_text()
 shim = (root / 'contrib/it-gles/mbxshim.c').read_text()
 slots = dict(re.findall(r'^(\d+) (\w+)$', (root / 'contrib/it-gles/slotmap.txt').read_text(), re.M))
-cases = src[src.index('    case GLES_SLOT_CLEAR_STENCIL:'):src.index('    case GLES_SLOT_GEN_RENDERBUFFERS:')]
+cases = src[src.index('    case GLES_SLOT_LOAD_MATRIXX:'):src.index('    case GLES_SLOT_GEN_RENDERBUFFERS:')]
 macros = dict(re.findall(r'#define (GLES_SLOT_\w+)\s+(\d+)', (root / 'include/hw/arm/guest-services/gles.h').read_text()))
 for macro in re.findall(r'case (GLES_SLOT_\w+):', cases):
     slot = macros[macro]
@@ -28,11 +28,17 @@ code = r'''
 typedef struct CPUState CPUState;
 #include "hw/arm/guest-services/gles.h"
 ''' + src[src.index('static float gles_x('):src.index('/* ------------------------------------------------------- buffer objects')] + r'''
+static int32_t guest_matrix[16];
+static int cpu_memory_rw_debug(CPUState *cpu, uint32_t addr, uint8_t *data, size_t n, int write) {
+    assert(!write && n == sizeof(guest_matrix));
+    if (addr != 0x1000) return -1;
+    memcpy(data, guest_matrix, n); return 0;
+}
 static GLuint drawable;
 static GLenum error;
 static int gles_is_drawable(GLuint name) { return name == drawable; }
 static int gles_reject(GLenum e) { error = e; return -1; }
-static int dispatch(unsigned slot, const uint32_t *a) { switch(slot) {
+static int dispatch(unsigned slot, const uint32_t *a) { CPUState *cpu = NULL; switch(slot) {
 ''' + cases + r'''
 default: assert(0); return -1; } }
 int main(void) {
@@ -76,6 +82,13 @@ int main(void) {
  a[0] = 0; a[1] = 2*65536; a[2] = 0; a[3] = 4*65536; a[4] = -65536; a[5] = 65536;
  glLoadIdentity(); dispatch(GLES_SLOT_ORTHOX, a); glGetFloatv(GL_MODELVIEW_MATRIX, matrix);
  assert(matrix[0] == 1 && matrix[5] == .5f && matrix[10] == -1);
+ for (unsigned j=0; j<16; j++) guest_matrix[j] = j % 5 == 0 ? 65536 : 0;
+ guest_matrix[12] = -32768; guest_matrix[13] = 16384;
+ a[0] = 0x1000; assert(!dispatch(GLES_SLOT_LOAD_MATRIXX, a));
+ assert(!dispatch(GLES_SLOT_MULT_MATRIXX, a)); glGetFloatv(GL_MODELVIEW_MATRIX, matrix);
+ assert(matrix[12] == -1 && matrix[13] == .5f);
+ a[0] = 0x2000; assert(dispatch(GLES_SLOT_LOAD_MATRIXX, a) == -1);
+ glGetFloatv(GL_MODELVIEW_MATRIX, matrix); assert(matrix[12] == -1);
  a[0] = GL_GREATER; a[1] = 32768; dispatch(GLES_SLOT_ALPHA_FUNCX, a);
  GLfloat alpha; glGetFloatv(GL_ALPHA_TEST_REF, &alpha); assert(fabsf(alpha-.5f) < .005f);
  a[0] = GL_ALWAYS; a[1] = 3; a[2] = 0x17; dispatch(GLES_SLOT_STENCIL_FUNC, a);

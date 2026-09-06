@@ -4305,11 +4305,13 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     }
 
     case GLES_SLOT_GET_INTEGERV:
+    case GLES_SLOT_GET_BOOLEANV:
     case GLES_SLOT_GET_FLOATV: {
         uint32_t pname = a[0];
         unsigned n = gles_query_count(pname);
-        union { GLint i[16]; GLfloat f[16]; } v = { 0 };
+        union { GLint i[16]; GLfloat f[16]; GLboolean b[16]; } v = { 0 };
         bool floating = slot == GLES_SLOT_GET_FLOATV;
+        bool boolean = slot == GLES_SLOT_GET_BOOLEANV;
         bool emulated = true;
 
         if (!a[1]) {
@@ -4319,6 +4321,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             return gles_reject(GL_INVALID_ENUM);
         }
         switch (pname) {
+        case GL_VERTEX_ARRAY: v.i[0] = gh.vertex.enabled; break;
+        case GL_COLOR_ARRAY: v.i[0] = gh.color.enabled; break;
+        case GL_NORMAL_ARRAY: v.i[0] = gh.normal.enabled; break;
+        case GL_TEXTURE_COORD_ARRAY:
+            v.i[0] = gh.texcoord[gh.client_active_unit].enabled; break;
         case GL_COMPRESSED_TEXTURE_FORMATS:
             memcpy(v.i, gles_compressed_formats, sizeof(gles_compressed_formats));
             break;
@@ -4365,7 +4372,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             break;
         default:
             emulated = false;
-            if (floating) {
+            if (boolean) {
+                glGetBooleanv(pname, v.b);
+            } else if (floating) {
                 glGetFloatv(pname, v.f);
             } else {
                 glGetIntegerv(pname, v.i);
@@ -4377,7 +4386,29 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                 v.f[i] = v.i[i];
             }
         }
-        cpu_memory_rw_debug(cpu, a[1], (uint8_t *)&v, n * sizeof(GLint), 1);
+        if (emulated && boolean) {
+            for (unsigned i = 0; i < n; i++) {
+                v.b[i] = v.i[i] != 0;
+            }
+        }
+        cpu_memory_rw_debug(cpu, a[1], (uint8_t *)&v,
+                            n * (boolean ? sizeof(GLboolean) : sizeof(GLint)), 1);
+        return 0;
+    }
+
+    case GLES_SLOT_GET_POINTERV: {
+        uint32_t ptr;
+        switch (a[0]) {
+        case GL_VERTEX_ARRAY_POINTER: ptr = gh.vertex.ptr; break;
+        case GL_COLOR_ARRAY_POINTER: ptr = gh.color.ptr; break;
+        case GL_NORMAL_ARRAY_POINTER: ptr = gh.normal.ptr; break;
+        case GL_TEXTURE_COORD_ARRAY_POINTER:
+            ptr = gh.texcoord[gh.client_active_unit].ptr; break;
+        default: return gles_reject(GL_INVALID_ENUM);
+        }
+        if (a[1]) {
+            cpu_memory_rw_debug(cpu, a[1], (uint8_t *)&ptr, sizeof(ptr), 1);
+        }
         return 0;
     }
 
@@ -4727,6 +4758,25 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
      * So the names are real host names and the calls are real host calls. Only
      * the drawable framebuffer is special-cased -- see gh.fbo_drawable.
      */
+    case GLES_SLOT_LOAD_MATRIXX:
+    case GLES_SLOT_MULT_MATRIXX: {
+        int32_t fixed[16];
+        GLfloat matrix[16];
+        if (!a[0] || cpu_memory_rw_debug(cpu, a[0], (uint8_t *)fixed,
+                                        sizeof(fixed), 0)) {
+            return -1;
+        }
+        for (unsigned i = 0; i < 16; i++) {
+            matrix[i] = gles_x(fixed[i]);
+        }
+        if (slot == GLES_SLOT_LOAD_MATRIXX) {
+            glLoadMatrixf(matrix);
+        } else {
+            glMultMatrixf(matrix);
+        }
+        return 0;
+    }
+
     /* Scalar ES1.1 state, including signed 16.16 entry points. */
     case GLES_SLOT_CLEAR_STENCIL:
         glClearStencil(a[0]);

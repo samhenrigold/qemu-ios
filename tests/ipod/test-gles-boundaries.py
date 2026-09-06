@@ -44,11 +44,13 @@ code = r'''
 #define GLES_SLOT_PIXEL_STOREI 3
 #define GLES_SLOT_READ_PIXELS 4
 #define GLES_SLOT_GET_ERROR 5
+#define GLES_SLOT_GET_BOOLEANV 6
+#define GLES_SLOT_GET_POINTERV 7
 typedef int CPUState;
 typedef struct { uint32_t name; } GLESBuffer;
 static struct {
     const GLESBuffer *array_buffer, *element_buffer;
-    struct { const GLESBuffer *vbo; } vertex, normal, color, texcoord[8];
+    struct { const GLESBuffer *vbo; uint32_t enabled, ptr; } vertex, normal, color, texcoord[8];
     unsigned client_active_unit;
     uint32_t pack_alignment, unpack_alignment, bound_framebuffer, bound_renderbuffer;
     GLenum error;
@@ -71,6 +73,11 @@ static void host_float(GLenum pname, GLfloat *v) {
                      pname == GL_MODELVIEW_MATRIX ? 16 : 1;
     for (unsigned i = 0; i < count; i++) v[i] = 100 + i;
 }
+static void host_boolean(GLenum pname, GLboolean *v) {
+    host_queries++;
+    unsigned count = pname == GL_COLOR_WRITEMASK ? 4 : 1;
+    for (unsigned i = 0; i < count; i++) v[i] = i % 2;
+}
 static void host_store(GLenum pname, GLint align) {
     assert(pname == GL_PACK_ALIGNMENT);
     assert(align == 1 || align == 2 || align == 4 || align == 8);
@@ -92,6 +99,7 @@ static int cpu_memory_rw_debug(CPUState *cpu, uint32_t addr, uint8_t *data, size
 }
 #define glGetIntegerv host_integer
 #define glGetFloatv host_float
+#define glGetBooleanv host_boolean
 #define glPixelStorei host_store
 #define glReadPixels host_read
 #define glGetError() GL_NO_ERROR
@@ -152,6 +160,21 @@ int main(void) {
     memcpy(&i, guest + 60, sizeof(i)); assert(i == 115);
     assert(dispatch(GLES_SLOT_GET_FLOATV, a) == 0 && copied == 64);
     memcpy(&f, guest + 60, sizeof(f)); assert(f == 115);
+    a[0] = GL_COLOR_WRITEMASK;
+    assert(dispatch(GLES_SLOT_GET_BOOLEANV, a) == 0 && copied == 4);
+    assert(!guest[0] && guest[1] && !guest[2] && guest[3]);
+    a[0] = GL_COMPRESSED_TEXTURE_FORMATS;
+    assert(dispatch(GLES_SLOT_GET_BOOLEANV, a) == 0 && copied == 14);
+    for (unsigned j = 0; j < copied; j++) assert(guest[j] == 1);
+    gh.texcoord[2].enabled = 1; gh.texcoord[2].ptr = 0xfeed1234; gh.client_active_unit = 2;
+    a[0] = GL_TEXTURE_COORD_ARRAY;
+    assert(dispatch(GLES_SLOT_GET_BOOLEANV, a) == 0 && copied == 1 && guest[0] == 1);
+    a[0] = GL_TEXTURE_COORD_ARRAY_POINTER;
+    assert(dispatch(GLES_SLOT_GET_POINTERV, a) == 0 && copied == 4);
+    uint32_t pointer; memcpy(&pointer, guest, 4); assert(pointer == 0xfeed1234);
+    a[0] = GL_VERTEX_ARRAY_POINTER;
+    assert(dispatch(GLES_SLOT_GET_POINTERV, a) == 0 && copied == 4);
+    memcpy(&pointer, guest, 4); assert(pointer == 0);
     unsigned before = host_queries;
     a[0] = 0xdeadbeef;
     assert(dispatch(GLES_SLOT_GET_FLOATV, a) == -1 && host_queries == before);

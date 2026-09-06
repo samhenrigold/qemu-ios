@@ -99,6 +99,10 @@ typedef struct __attribute__((packed)) {
 #define GLES_SLOT_TRANSLATEX                801
 #define GLES_SLOT_MULTI_TEX_COORD4X         802
 #define GLES_SLOT_SAMPLE_COVERAGEX          803
+#define GLES_SLOT_GET_BOOLEANV              99
+#define GLES_SLOT_GET_POINTERV              115
+#define GLES_SLOT_LOAD_MATRIXX              786
+#define GLES_SLOT_MULT_MATRIXX              789
 #define GLES_SLOT_COLOR_MASK            49
 #define GLES_SLOT_STENCIL_MASK          255
 #define GLES_SLOT_IS_RENDERBUFFER       665
