@@ -861,3 +861,13 @@ clear staging, and committing without staging returns EINVAL without replacing
 the previous clipboard. The native service probe covers unmapped and wrapping
 addresses, failed continuation/commit, preserved clipboard and subsequent valid
 transfer, followed by confirmed guest shutdown. No wire ABI change.
+
+## H.264 machine option (2026-09-06)
+
+`h264-decode=on|off` now selects the decoder device versus the legacy RAM-backed
+register window before machine initialization. Default remains off; explicit
+configuration overrides the deprecated presence-based `IT_H264_DECODE` alias.
+Light Touch now supplies `h264-decode=on` instead of setting that environment
+variable. Native configuration checks verify actual decoder creation, default,
+alias, explicit override and rejection of runtime mutation. The existing timer
+configuration matrix and watchdog check still pass; Light Touch Release builds.

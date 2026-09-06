@@ -327,6 +327,37 @@ static bool ipod_touch_bt_env_aliases(IPodTouchMachineState *nms, Error **errp)
     return true;
 }
 
+static void ipod_touch_get_h264_decode(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    bool value = IPOD_TOUCH_MACHINE(obj)->h264_decode;
+    visit_type_bool(v, name, &value, errp);
+}
+
+static void ipod_touch_set_h264_decode(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->cpu) {
+        error_setg(errp, "h264-decode must be set before the machine starts");
+        return;
+    }
+    bool value;
+    if (visit_type_bool(v, name, &value, errp)) {
+        nms->h264_decode = value;
+        nms->h264_decode_explicit = true;
+    }
+}
+
+static void ipod_touch_h264_env_alias(IPodTouchMachineState *nms)
+{
+    if (!nms->h264_decode_explicit && getenv("IT_H264_DECODE") != NULL) {
+        /* The old alias tests presence, even for an empty or "0" value. */
+        nms->h264_decode = true;
+        warn_report_once("IT_H264_DECODE is deprecated; use -M iPod-Touch,h264-decode=on");
+    }
+}
+
 static void ipod_touch_get_wdt_noreset(Object *obj, Visitor *v, const char *name,
                                void *opaque, Error **errp)
 {
@@ -1204,7 +1235,7 @@ static void ipod_touch_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     allocate_ram(sysmem, "framebuffer", FRAMEBUFFER_MEM_BASE, 0x400000);
     allocate_ram(sysmem, "edgeic", EDGEIC_MEM_BASE, 0x1000);
     sysbus_create_simple("ipodtouch.swi", SWI_MEM_BASE, NULL);
-    if (!getenv("IT_H264_DECODE")) {
+    if (!nms->h264_decode) {
         MemoryRegion *h264 = allocate_ram(sysmem, "h264", H264_MEM_BASE, 0x4000);
         install_ram_watch(sysmem, h264, H264_MEM_BASE, 0x4000);
     }
@@ -3002,6 +3033,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     ipod_touch_audio_env_alias(nms);
     ipod_touch_osk_env_alias(nms);
     ipod_touch_wdt_env_alias(nms);
+    ipod_touch_h264_env_alias(nms);
     ipod_touch_cpu_setup(machine, &sysmem, &cpu, &nsas);
 
     // setup clock
@@ -3194,7 +3226,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     it_realize_into_qom_tree(dev);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, s5l8900_get_irq(nms, 45));
 
-    if (getenv("IT_H264_DECODE")) {
+    if (nms->h264_decode) {
         sysbus_create_simple("ipodtouch.h264", H264_MEM_BASE, s5l8900_get_irq(nms, 35));
     }
 
@@ -3551,6 +3583,9 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_add(klass, "time-dilation", "uint32", ipod_touch_get_time_dilation,
                               ipod_touch_set_time_dilation, NULL, NULL);
     object_class_property_set_description(klass, "time-dilation", "Timer-4 interrupt interval multiplier (1..1000000)");
+    object_class_property_add(klass, "h264-decode", "bool", ipod_touch_get_h264_decode,
+                              ipod_touch_set_h264_decode, NULL, NULL);
+    object_class_property_set_description(klass, "h264-decode", "Enable hardware H.264 decoding instead of the legacy RAM register window");
     object_class_property_add(klass, "wdt-noreset", "bool", ipod_touch_get_wdt_noreset,
                               ipod_touch_set_wdt_noreset, NULL, NULL);
     object_class_property_set_description(klass, "wdt-noreset", "Suppress guest watchdog reset commands for debugging");
