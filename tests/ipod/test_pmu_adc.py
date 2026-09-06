@@ -10,10 +10,11 @@ header=(root/'include/hw/arm/ipod_touch_pcf50633_pmu.h').read_text()
 constants='\n'.join(re.findall(r'^#define PMU_.*$',header,re.M))
 state=re.search(r'typedef struct Pcf50633State \{.*?\n} Pcf50633State;',header,re.S).group()
 functions=[]
-for name in ('pmu_update_irq','pmu_latch_event','pmu_adc_complete','pmu_adc_command',
+for name in ('pmu_update_irq','pmu_latch_event','pmu_adc_complete',
              'pcf50633_adc_for_level','pcf50633_level_for_adc','pmu_charge_active',
-             'pcf50633_set_battery_adc','pcf50633_set_charging_mode',
-             'pcf50633_set_usb_cable','pcf50633_recv','pcf50633_guest_shutdown_confirmed',
+             'pmu_apply_battery_adc','pcf50633_update_battery','pcf50633_set_battery_adc',
+             'pcf50633_set_battery_level','pcf50633_set_battery_drain','pcf50633_set_charging_mode',
+             'pcf50633_set_usb_cable','pmu_adc_command','pcf50633_recv','pcf50633_guest_shutdown_confirmed',
              'pcf50633_guest_shutdown','pcf50633_send','pcf50633_reset','pcf50633_post_load','pcf50633_init'):
     match=re.search(r'^(?:static )?[^\n]*\b'+name+r'\([^)]*\)\s*\{.*?^}',source,re.M|re.S)
     assert match,name
@@ -25,6 +26,8 @@ prelude=r'''
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
+#include <errno.h>
 typedef struct {int unused;} I2CSlave;
 typedef struct {bool pending;int64_t deadline;} QEMUTimer;
 typedef int *qemu_irq;
@@ -34,6 +37,7 @@ static int init_irq;
 static QEMUTimer init_timer;
 static void qdev_init_gpio_out(void *object, qemu_irq *irq, int count) { *irq=&init_irq; }
 static QEMUTimer *timer_new_ns(int clock, void (*callback)(void *), void *opaque) { return &init_timer; }
+#define MAX(a,b) ((a)>(b)?(a):(b))
 #define MIN(a,b) ((a)<(b)?(a):(b))
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define PCF50633(s) ((Pcf50633State *)(s))
@@ -129,7 +133,37 @@ int main(void) {
     pcf50633_set_battery_adc(&s,870);assert(!(rd(&s,5)&6) && irq);rd(&s,3);
     pcf50633_set_charging_mode(&s,1);assert(rd(&s,5)&6);rd(&s,3);
     pcf50633_set_usb_cable(&s,false);assert(!(rd(&s,5)&6));
-    puts("PASS: D1759 ADC settling/conversion, ten-bit results, masks, cable events and reset");
+    /* Fractional drain uses virtual time and retains fractions across ADC polls. */
+    pcf50633_set_battery_level(&s,60);
+    pcf50633_set_usb_cable(&s,true);
+    pcf50633_set_charging_mode(&s,2);
+    pcf50633_set_battery_drain(&s,1);
+    now+=30000000000LL;pcf50633_update_battery(&s);
+    assert(fabs(s.drain_level-59.5)<1e-9);
+    now+=30000000000LL;pcf50633_update_battery(&s);
+    assert(fabs(s.drain_level-59)<1e-9 && s.adc_values[4]==pcf50633_adc_for_level(59));
+    pcf50633_update_battery(&s);assert(s.drain_level==59); /* Paused clock. */
+    pcf50633_set_charging_mode(&s,0);
+    now+=60000000000LL;pcf50633_update_battery(&s);assert(s.drain_level==59);
+    pcf50633_set_usb_cable(&s,false);
+    pcf50633_set_battery_drain(&s,0.5);
+    now+=120000000000LL;pcf50633_update_battery(&s);assert(s.drain_level==58);
+    pcf50633_set_battery_drain(&s,0);
+    now+=3600000000000LL;pcf50633_update_battery(&s);assert(s.drain_level==58);
+    now-=100;pcf50633_update_battery(&s);assert(s.drain_level==58);
+    pcf50633_set_battery_drain(&s,100);
+    now+=60000000000LL;pcf50633_update_battery(&s);
+    assert(!s.drain_level && s.adc_values[4]==pcf50633_adc_for_level(0));
+    pcf50633_set_battery_level(&s,100);pcf50633_set_usb_cable(&s,true);
+    now+=60000000000LL;pcf50633_update_battery(&s);assert(s.drain_level==100);
+    s.drain_rate=NAN;assert(pcf50633_post_load(&s,4)==-EINVAL);
+    s.drain_rate=0;s.drain_level=101;assert(pcf50633_post_load(&s,4)==-EINVAL);
+    assert(!pcf50633_post_load(&s,3) && s.drain_rate==0 && s.drain_level==100);
+    s.drain_rate=0.25;s.drain_level=55.125;
+    uint64_t saved_rate=s.drain_rate_bits,saved_level=s.drain_level_bits;
+    s.drain_rate=s.drain_level=0;s.drain_rate_bits=saved_rate;s.drain_level_bits=saved_level;
+    assert(!pcf50633_post_load(&s,4) && s.drain_rate==0.25 && s.drain_level==55.125);
+    puts("PASS: D1759 ADC settling/conversion, ten-bit results, masks, cable events, reset, fractional drain and migration");
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:

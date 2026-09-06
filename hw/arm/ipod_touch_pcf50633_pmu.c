@@ -1,3 +1,4 @@
+#include "qemu/osdep.h"
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "migration/vmstate.h"
 #include "hw/arm/ipod_touch_lcd.h"
@@ -99,7 +100,7 @@ static bool pmu_charge_active(Pcf50633State *s)
            (s->charging_mode == 1 || s->adc_values[4] < 870);
 }
 
-void pcf50633_set_battery_adc(Pcf50633State *s, unsigned counts)
+static void pmu_apply_battery_adc(Pcf50633State *s, unsigned counts)
 {
     bool was_charging = pmu_charge_active(s);
     s->adc_values[4] = MIN(counts, 1023);
@@ -108,8 +109,42 @@ void pcf50633_set_battery_adc(Pcf50633State *s, unsigned counts)
     }
 }
 
+/* Sample drain lazily on the guest's own ADC/status reads. Virtual time
+ * freezes while paused, and no extra periodic interrupt is needed. */
+void pcf50633_update_battery(Pcf50633State *s)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (s->drain_rate > 0 && now > s->drain_updated_ns &&
+        (!s->usb_cable || s->charging_mode == 2)) {
+        double elapsed = ((double)now - s->drain_updated_ns) / 60000000000.0;
+        s->drain_level = MAX(0.0, s->drain_level - s->drain_rate * elapsed);
+        pmu_apply_battery_adc(s, pcf50633_adc_for_level((unsigned)(s->drain_level + 0.5)));
+    }
+    s->drain_updated_ns = now;
+}
+
+void pcf50633_set_battery_adc(Pcf50633State *s, unsigned counts)
+{
+    pmu_apply_battery_adc(s, counts);
+    s->drain_level = pcf50633_level_for_adc(s->adc_values[4]);
+    s->drain_updated_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+}
+
+void pcf50633_set_battery_level(Pcf50633State *s, unsigned level)
+{
+    pcf50633_set_battery_adc(s, pcf50633_adc_for_level(level));
+    s->drain_level = MIN(level, 100);
+}
+
+void pcf50633_set_battery_drain(Pcf50633State *s, double rate)
+{
+    pcf50633_update_battery(s);
+    s->drain_rate = rate;
+}
+
 void pcf50633_set_charging_mode(Pcf50633State *s, unsigned mode)
 {
+    pcf50633_update_battery(s);
     if (s->charging_mode != mode) {
         s->charging_mode = mode;
         pmu_latch_event(s, PMU_EVENT_C_REG, 1 << 2);
@@ -133,6 +168,7 @@ static void pmu_adc_command(Pcf50633State *s, uint8_t command)
      * the driver's own timer. Signaling ADC completion there deadlocks its
      * wait for the timeout state. Only bit 4 starts the actual conversion. */
     if (command & 0x10) {
+        pcf50633_update_battery(s);
         s->adc_sample = s->adc_values[command & 15] & 1023;
         timer_mod(s->adc_timer,
                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000);
@@ -141,6 +177,7 @@ static void pmu_adc_command(Pcf50633State *s, uint8_t command)
 
 void pcf50633_set_usb_cable(Pcf50633State *s, bool attached)
 {
+    pcf50633_update_battery(s);
     if (s->usb_cable != attached) {
         s->usb_cable = attached;
         pmu_latch_event(s, PMU_EVENT_A_REG, PMU_PWRSRC_USB);
@@ -169,6 +206,7 @@ static int pcf50633_event(I2CSlave *i2c, enum i2c_event event)
 static uint8_t pcf50633_recv(I2CSlave *i2c)
 {
     Pcf50633State *s = PCF50633(i2c);
+    pcf50633_update_battery(s);
     uint8_t reg = s->curreg & 0xff;
     if (pmu_trace()) {
         fprintf(stderr, "Reading PMU register %d\n", reg);
@@ -365,13 +403,14 @@ static void pcf50633_init(Object *obj)
      * reads full scale; zero falsely identifies a dock with line-out audio. */
     s->adc_values[3] = 1023;
     s->adc_values[2] = 205;
-    s->adc_values[4] = 850;
+    pcf50633_set_battery_adc(s, 850);
     s->adc_values[6] = 512;
 }
 
 static void pcf50633_reset(DeviceState *dev)
 {
     Pcf50633State *s = PCF50633(dev);
+    pcf50633_update_battery(s);
     timer_del(s->adc_timer);
     /* The power-on transition consumes the standby command. Leaving 0x90
      * latched makes iBoot re-enter its charging/standby path after Power On. */
@@ -390,6 +429,15 @@ static void pcf50633_reset(DeviceState *dev)
 
 static int pcf50633_post_load(void *opaque, int version_id)
 {
+    Pcf50633State *s = opaque;
+    if (version_id < 4) {
+        s->drain_rate = 0;
+        s->drain_level = pcf50633_level_for_adc(s->adc_values[4]);
+        s->drain_updated_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    } else if (!isfinite(s->drain_rate) || s->drain_rate < 0 || s->drain_rate > 100 ||
+               !isfinite(s->drain_level) || s->drain_level < 0 || s->drain_level > 100) {
+        return -EINVAL;
+    }
     pmu_update_irq(opaque);
     return 0;
 }
@@ -404,7 +452,7 @@ static void pcf50633_finalize(Object *obj)
  * press outstanding restores with it still outstanding. */
 static const VMStateDescription vmstate_pcf50633 = {
     .name = "pcf50633",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 1,
     .post_load = pcf50633_post_load,
     .fields = (const VMStateField[]) {
@@ -421,6 +469,9 @@ static const VMStateDescription vmstate_pcf50633 = {
         VMSTATE_UINT16_V(adc_sample, Pcf50633State, 2),
         VMSTATE_TIMER_PTR_V(adc_timer, Pcf50633State, 2),
         VMSTATE_UINT8_V(charging_mode, Pcf50633State, 3),
+        VMSTATE_UINT64_V(drain_rate_bits, Pcf50633State, 4),
+        VMSTATE_UINT64_V(drain_level_bits, Pcf50633State, 4),
+        VMSTATE_INT64_V(drain_updated_ns, Pcf50633State, 4),
         VMSTATE_END_OF_LIST()
     }
 };

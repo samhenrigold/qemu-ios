@@ -48,6 +48,8 @@ void qemu_ios_ui_attitude(double pitch_deg, double roll_deg, int pose);
 
 /* Target capacity 0..100; charging 0 auto, 1 on, 2 off. Returns whether queued. */
 bool qemu_ios_ui_battery(int level, int charging);
+bool qemu_ios_ui_battery_config(int level, int charging, double drain);
+bool qemu_ios_ui_usb_connection(bool attached);
 
 /* Queue UTF-8 text for the guest pasteboard (machine property "pasteboard"). */
 void qemu_ios_ui_paste(const char *utf8);

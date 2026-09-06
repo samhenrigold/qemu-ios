@@ -5,7 +5,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../armv6-toolchain/armv6.sh"
 
 # -e __start: there is no crt1, so the binary supplies its own entry point.
-cc6 "$HERE/ithalt.c" "$HERE/ithalt.o"
-link6 -execute "$HERE/ithalt" "$HERE/ithalt.o" -e __start
-rm -f "$HERE/ithalt.o"
-file "$HERE/ithalt"
+for tool in ithalt itbattery; do
+    cc6 "$HERE/$tool.c" "$HERE/$tool.o"
+    link6 -execute "$HERE/$tool" "$HERE/$tool.o" -e __start
+    rm -f "$HERE/$tool.o"
+    file "$HERE/$tool"
+done

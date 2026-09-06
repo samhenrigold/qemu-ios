@@ -219,6 +219,7 @@ typedef struct {
     uint32_t accel_rate_hz;
     Pcf50633State *pmu_state;
     uint32_t battery_adc;
+    double battery_drain;
     uint8_t battery_charging;
 	Clock *sysclk;
 	char bootrom_path[1024];

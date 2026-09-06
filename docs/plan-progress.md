@@ -9,7 +9,7 @@ TV-out were explicitly deferred by that plan.
 | --- | --- | --- |
 | Generated NAND integrity and restart stability | Complete for the reproduced failures: free-pool bounds, FMSS completion, VIC fixes and paced TV-out IRQs | Twelve alternating Coldplay/Spore install/respring cycles; unchanged system file; guest shutdown; cold boot with both apps; full-volume read-only fsck passed |
 | PMU ADC and masked event IRQ | Complete | Ten-bit results, settling vs conversion, mask/read-to-clear and GPIO tests pass; real 7E18 boot, three lock/wake cycles and native shutdown pass |
-| Battery controls | Core and Light Touch level/charging controls implemented; automatic drain pending | 20/60 percent cold calibration, full-voltage estimate, runtime off/on/auto and native shutdown pass; preserve guest filtering delay |
+| Battery controls | Core and Light Touch level/charging/drain controls implemented | 20/60 percent cold calibration, full-voltage estimate, runtime off/on/auto and native shutdown pass; preserve guest filtering delay |
 | Headset/Mikey detection | Deferred at user request (2026-09-05) | Plug/unplug and headset button traces; correct guest routing |
 | Microphone/I2S RX | Deferred at user request (2026-09-05) | Deterministic input tone captured by the guest, then host microphone recording |
 | Native idle sleep/wake | Untethered manual/automatic lock and Home/Power wake verified without brightness override | Deeper suspend paths still need acceptance |
@@ -354,7 +354,7 @@ runtime bridge validates bounds/readiness and queues both changes on QEMU's
 thread. ASan/UBSan bridge and PMU ADC regressions pass. The actual AppKit editor
 was rendered at 5/15/80 percent and inspected for colors and unclipped labels.
 Guest capacity filtering remains intact; the UI explains the delayed estimate.
-Automatic battery drain and integration into a wider device-status pane remain
+Integration into a wider device-status pane remains
 open. Earlier native calibration/charging evidence still covers the underlying
 PMU properties; no new native guest acceptance is claimed for this UI wiring.
 
@@ -418,3 +418,20 @@ an isolated guest, verifies a black panel after 95 seconds, wakes with Power,
 checks agent recovery without reset or unexpected CLCD interrupts, and confirms
 PMU shutdown. `/tmp/it-auto-sleep-guest.log` passes. The default NAND retains
 its existing Never setting.
+
+### Automatic battery drain and USB control
+
+The PMU samples fractional percent-per-minute drain against virtual time, with
+zero disabling it. Pause and USB charging freeze drain. Native acceptance
+`test_battery_guest.py` passes target reduction, guest voltage 3917 → 3906 mV,
+pause freeze, USB charging freeze and guest-confirmed shutdown in 114 seconds:
+`/tmp/it-battery-drain-native-v5.log`. The guest's filtered capacity initially
+moves only 60 → 59; it is deliberately not overwritten by the host target.
+
+7E18 can defer voltage sampling with USB connected but charging forced off.
+The native test uses normal unplugged discharge. Light Touch therefore exposes
+virtual USB connection alongside level, charging and drain, with transfer guards
+and automatic reconnection before restart/Power On. Agent-based sync/shutdown
+remain available while USB is disconnected. Core/bridge sanitizer checks and
+the Release build pass; the production editor and controller checks cover
+fractional input, invalid rates, transfer guard and reconnect behavior.
