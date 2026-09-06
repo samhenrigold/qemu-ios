@@ -14,6 +14,8 @@
 #include "../it-gles/glapp.c"
 #undef main
 
+extern int dlclose(void *handle);
+
 static id_ owner, menu, output, field, stage, badge, audio, movie, connection;
 static id_ ticker;
 static void *gl;
@@ -215,6 +217,16 @@ static void play_audio(const char *name)
     int ok = CALL(int, (id_, SEL_))(audio, S("play"));
     report("%s audio %s%s%s", ok ? "RUNNING" : "FAIL", name, error ? ": " : "", error ? utf8(m0(error,S("localizedDescription"))) : "");
     if (ok) report("MANUAL: 6 seconds; left 440 Hz, right 880 Hz. Pause/resume and volume below.");
+    /* AudioServices.h (3.1.3): 'rout' is the current CFString audio route. */
+    void *toolbox = dlopen("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox", RTLD_NOW);
+    int (*get_property)(unsigned, unsigned *, void *) = toolbox ? dlsym(toolbox, "AudioSessionGetProperty") : 0;
+    if (get_property) {
+        id_ route = 0;
+        unsigned length = sizeof(route);
+        int status = get_property('rout', &length, &route);
+        report("INFO audio route: status=%d %s", status, route ? utf8(route) : "unknown");
+    }
+    if (toolbox) dlclose(toolbox);
 }
 
 static void audio_finished(id_ self, SEL_ cmd, id_ player, signed char ok)

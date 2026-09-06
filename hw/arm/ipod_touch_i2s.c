@@ -722,9 +722,9 @@ static void it_i2s_vlog(IPodTouchI2SState *s, const char *what,
     if (t0 == 0) {
         t0 = now;
     }
-    fprintf(f, "%10.6f %-10s %8d %8d  ring=%u fifo=%u run=%d act=%d\n",
+    fprintf(f, "%10.6f %-10s %8d %8d  ring=%u fifo=%u run=%d act=%d amp=%02x\n",
             (now - t0) / 1e9, what, a, b, s->ring_level, s->fifo_bytes,
-            s->running, s->active);
+            s->running, s->active, s->amplifier ? s->amplifier->control : 0);
     fflush(f);
 }
 

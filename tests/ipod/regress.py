@@ -1144,6 +1144,10 @@ def check_audio(cfg, procs, dev, r):
     ok, detail = unlock(cfg, port, dev)
     if not ok:
         return r.set(False, detail)
+    # Each run starts at row zero, even after prior app or audio checks.
+    stopped = guest_ssh(cfg, port, ["killall Harness"], timeout=10)
+    if stopped.returncode not in (0, 1):
+        return r.set(False, "could not reset the Harness menu")
     response = springboard(cfg, port, "com.qemuios.harness")
     if response.returncode:
         return r.set(False, "Harness launch failed: " + response.stderr[-200:])
@@ -1263,6 +1267,10 @@ def check_gles(cfg, procs, dev, r):
     ok, detail = unlock(cfg, port, dev)
     if not ok:
         return r.set(False, detail)
+    if harness:
+        stopped = guest_ssh(cfg, port, ["killall Harness"], timeout=10)
+        if stopped.returncode not in (0, 1):
+            return r.set(False, "could not reset the Harness menu")
     p = springboard(cfg, port, bundle_id)
     out = (p.stdout + p.stderr).strip()
     if p.returncode != 0:

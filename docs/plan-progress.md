@@ -185,5 +185,8 @@ This completes the TLS transport step; modern WebKit feature gaps remain.
   GLES, agent and stereo audio join the default tier. GLES uses the baked
   renderer unless `--stage-gles-shim` is requested, with a Harness fallback when
   GLTest is absent. Native GLES passed. The new audio check detects a real silent
-  host output despite nonzero raw I2S samples; amplifier/routing investigation
-  remains active. No audio PASS is claimed.
+  host output despite nonzero raw I2S samples. This was traced to dock-ID ADC
+  channel 3 falsely reporting a Line Out accessory. The open-input default now
+  selects Speaker and passes 5.99 seconds at 440/880 Hz, along with boot and
+  agent checks (`/tmp/it-regress-open-dock-native.log`). Snapshot audio restore
+  remains independently blocked by live GL state.
