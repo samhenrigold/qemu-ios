@@ -1,6 +1,7 @@
 #include "hw/arm/ipod_touch_mpvd.h"
 #include "hw/arm/ipod_video.h"
 #include "migration/vmstate.h"
+#include "migration/qemu-file.h"
 #include "hw/core/cpu.h"
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
@@ -29,6 +30,54 @@
  * guest DMA data and signals completion; decoded planes are presented by the
  * opt-in LCD compositor (see docs/ipod-media.md). Without the opt-in, only register backing is active.
  */
+
+/* Bound retained compressed inputs, not playback duration. Overflow prevents
+ * saving until the next I-VOP or reset; the live decoder continues unchanged. */
+#define MPVD_HISTORY_PACKETS 4096
+#define MPVD_HISTORY_BYTES (16 * 1024 * 1024)
+#define MPVD_PACKET_BYTES (4 * 1024 * 1024 + 128)
+
+static void mpvd_history_clear(IPodTouchMPVDState *s)
+{
+    g_clear_pointer(&s->packets, g_ptr_array_unref);
+    s->packet_bytes = 0;
+    s->replay_width = s->replay_height = s->replay_time_bits = 0;
+    s->history_unavailable = false;
+}
+
+static void mpvd_history_lost(IPodTouchMPVDState *s)
+{
+    mpvd_history_clear(s);
+    s->history_unavailable = true;
+}
+
+static int mpvd_packet_type(const uint8_t *data, size_t length)
+{
+    return length >= 5 && length <= MPVD_PACKET_BYTES &&
+           !memcmp(data, "\0\0\1\xb6", 4) ? data[4] >> 6 : -1;
+}
+
+static void mpvd_history_append(IPodTouchMPVDState *s, const uint8_t *data,
+                                size_t length, unsigned width, unsigned height,
+                                unsigned time_bits)
+{
+    int type = mpvd_packet_type(data, length);
+    if (type == 0) {
+        mpvd_history_clear(s);
+        s->packets = g_ptr_array_new_with_free_func((GDestroyNotify)g_bytes_unref);
+        s->replay_width = width;
+        s->replay_height = height;
+        s->replay_time_bits = time_bits;
+    }
+    if (s->history_unavailable || !s->packets || type < 0 || type > 1 ||
+        s->packets->len >= MPVD_HISTORY_PACKETS ||
+        length > MPVD_HISTORY_BYTES - s->packet_bytes) {
+        mpvd_history_lost(s);
+        return;
+    }
+    g_ptr_array_add(s->packets, g_bytes_new(data, length));
+    s->packet_bytes += length;
+}
 
 #ifdef __APPLE__
 typedef struct MPVDDecoder {
@@ -176,6 +225,17 @@ static bool mpvd_decode(IPodTouchMPVDState *s)
     if (!start || !mpvd_ram(start, end - start)) {
         return false;
     }
+    size_t length = end - start;
+    g_autofree uint8_t *data = g_malloc(length);
+    if (address_space_read(&address_space_memory, start,
+                           MEMTXATTRS_UNSPECIFIED, data, length) ||
+        mpvd_packet_type(data, length) != (ctrl & 3)) {
+        return false;
+    }
+    if (s->packets && (s->replay_width != width ||
+        s->replay_height != height || s->replay_time_bits != time_bits)) {
+        mpvd_history_clear(s);
+    }
     if (!d || d->width != width || d->height != height ||
         d->time_bits != time_bits) {
         mpvd_decoder_close(s);
@@ -193,14 +253,25 @@ static bool mpvd_decode(IPodTouchMPVDState *s)
             mpvd_decoder_close(s);
             return false;
         }
+        /* Rebuild native references only; replay must never touch guest DMA. */
+        for (unsigned i = 0; s->packets && i < s->packets->len; i++) {
+            size_t replay_length;
+            const uint8_t *replay = g_bytes_get_data(s->packets->pdata[i], &replay_length);
+            if (!ipod_video_frame(d->video, (uint8_t *)replay, replay_length, 0, 0)) {
+                mpvd_decoder_close(s);
+                mpvd_history_lost(s);
+                return false;
+            }
+        }
     }
-    size_t length = end - start;
-    g_autofree uint8_t *data = g_malloc(length);
-    if (address_space_read(&address_space_memory, start,
-                           MEMTXATTRS_UNSPECIFIED, data, length)) {
-        return false;
+    bool ok = ipod_video_frame(d->video, data, length, y, uv);
+    if (ok) {
+        mpvd_history_append(s, data, length, width, height, time_bits);
+    } else {
+        /* Native references may advance even when output DMA fails. */
+        mpvd_history_lost(s);
     }
-    return ipod_video_frame(d->video, data, length, y, uv);
+    return ok;
 }
 
 #else
@@ -274,6 +345,7 @@ static void ipod_touch_mpvd_reset(DeviceState *dev)
     IPodTouchMPVDState *s = IPOD_TOUCH_MPVD(dev);
 
     mpvd_decoder_close(s);
+    mpvd_history_clear(s);
     qemu_irq_lower(s->irq);
     memset(s->regs, 0, sizeof(s->regs));
 }
@@ -281,12 +353,73 @@ static void ipod_touch_mpvd_reset(DeviceState *dev)
 static void ipod_touch_mpvd_finalize(Object *obj)
 {
     mpvd_decoder_close(IPOD_TOUCH_MPVD(obj));
+    mpvd_history_clear(IPOD_TOUCH_MPVD(obj));
+}
+
+static int mpvd_put_packets(QEMUFile *f, void *pv, size_t size,
+                            const VMStateField *field, JSONWriter *vmdesc)
+{
+    GPtrArray *packets = *(GPtrArray **)pv;
+    unsigned count = packets ? packets->len : 0;
+    if (count > MPVD_HISTORY_PACKETS) return -E2BIG;
+    qemu_put_be32(f, count);
+    size_t total = 0;
+    for (unsigned i = 0; i < count; i++) {
+        size_t length;
+        const uint8_t *data = g_bytes_get_data(packets->pdata[i], &length);
+        if (mpvd_packet_type(data, length) != (i ? 1 : 0) ||
+            length > MPVD_HISTORY_BYTES - total) return -EINVAL;
+        total += length;
+        qemu_put_be32(f, length);
+        qemu_put_buffer(f, data, length);
+    }
+    return qemu_file_get_error(f);
+}
+
+static int mpvd_get_packets(QEMUFile *f, void *pv, size_t size,
+                            const VMStateField *field)
+{
+    unsigned count = qemu_get_be32(f);
+    if (count > MPVD_HISTORY_PACKETS) return -EINVAL;
+    g_autoptr(GPtrArray) packets = g_ptr_array_new_with_free_func((GDestroyNotify)g_bytes_unref);
+    size_t total = 0;
+    for (unsigned i = 0; i < count; i++) {
+        unsigned length = qemu_get_be32(f);
+        if (length < 5 || length > MPVD_PACKET_BYTES ||
+            length > MPVD_HISTORY_BYTES - total) return -EINVAL;
+        total += length;
+        g_autofree uint8_t *data = g_malloc(length);
+        if (qemu_get_buffer(f, data, length) != length) return -EIO;
+        if (mpvd_packet_type(data, length) != (i ? 1 : 0)) return -EINVAL;
+        g_ptr_array_add(packets, g_bytes_new_take(g_steal_pointer(&data), length));
+    }
+    if (qemu_file_get_error(f)) return qemu_file_get_error(f);
+    g_clear_pointer((GPtrArray **)pv, g_ptr_array_unref);
+    *(GPtrArray **)pv = g_steal_pointer(&packets);
+    return 0;
+}
+
+static const VMStateInfo vmstate_mpvd_packets = {
+    .name = "mpvd-packets", .get = mpvd_get_packets, .put = mpvd_put_packets,
+};
+
+static int mpvd_pre_load(void *opaque)
+{
+    IPodTouchMPVDState *s = opaque;
+    mpvd_decoder_close(s);
+    mpvd_history_clear(s);
+    return 0;
 }
 
 static int mpvd_pre_save(void *opaque)
 {
     IPodTouchMPVDState *s = opaque;
     s->saved_decode_enabled = s->decode_enabled;
+    if (s->decode_enabled && s->history_unavailable) {
+        error_report("MPVD reference history unavailable (limit: 4096 pictures/16 MiB); "
+                     "wait for an I-picture or reset before saving a snapshot");
+        return -ENOTSUP;
+    }
     return 0;
 }
 
@@ -295,19 +428,43 @@ static int mpvd_post_load(void *opaque, int version_id)
     IPodTouchMPVDState *s = opaque;
     if (version_id >= 2 && s->saved_decode_enabled != s->decode_enabled) return -EINVAL;
     mpvd_decoder_close(s);
+    unsigned count = s->packets ? s->packets->len : 0;
+    if (version_id >= 3) {
+        if (count) {
+            if (!s->decode_enabled || !s->replay_width || !s->replay_height ||
+                s->replay_width > 2048 || s->replay_height > 2048 ||
+                (s->replay_width % 16) || (s->replay_height % 16) ||
+                !s->replay_time_bits || s->replay_time_bits > 15) return -EINVAL;
+        } else if (s->replay_width || s->replay_height || s->replay_time_bits) {
+            return -EINVAL;
+        }
+    } else if (s->decode_enabled && s->regs[0x1000c / 4] == 0x0c) {
+        /* Old snapshots contain no reference pictures. They can resume at an
+         * I-picture, but must not produce a seemingly complete new snapshot. */
+        s->history_unavailable = true;
+    }
+    s->packet_bytes = 0;
+    for (unsigned i = 0; i < count; i++) {
+        s->packet_bytes += g_bytes_get_size(s->packets->pdata[i]);
+    }
     qemu_set_irq(s->irq, s->decode_enabled && s->regs[0] != 0);
     return 0;
 }
 
 static const VMStateDescription vmstate_ipod_touch_mpvd = {
     .name = "ipod_touch_mpvd",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
+    .pre_load = mpvd_pre_load,
     .pre_save = mpvd_pre_save,
     .post_load = mpvd_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, IPodTouchMPVDState, MPVD_REG_SIZE / 4),
         VMSTATE_BOOL_V(saved_decode_enabled, IPodTouchMPVDState, 2),
+        VMSTATE_UINT32_V(replay_width, IPodTouchMPVDState, 3),
+        VMSTATE_UINT32_V(replay_height, IPodTouchMPVDState, 3),
+        VMSTATE_UINT32_V(replay_time_bits, IPodTouchMPVDState, 3),
+        VMSTATE_SINGLE(packets, IPodTouchMPVDState, 3, vmstate_mpvd_packets, GPtrArray *),
         VMSTATE_END_OF_LIST()
     }
 };
