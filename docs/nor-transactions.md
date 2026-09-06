@@ -83,3 +83,26 @@ a host reset loses the kernel's unflushed cache; that is not a flash test.
 
 The checked-in native guest test passes through confirmed untethered shutdown
 with QEMU exit 0 in 55.2 seconds (`/tmp/it-nor-guest-final.log`).
+
+## Private persistent NOR
+
+`-M iPod-Touch,...,nor-rw=/path/to/private-nor.bin` selects an existing 1 MiB
+private copy. Without it, writes remain in memory. QEMU opens the copy as raw
+storage with exclusive write permissions; base-image aliases (including hard
+links), missing/wrong-sized files and concurrent writers are rejected. For CLI
+use, copy the selected NOR once before supplying `nor-rw`. Never use the base
+image itself. Light Touch creates the copy automatically as `nor.bin` inside
+its device overlay, preserving it across launches and removing it on factory
+erase alongside the NAND overlay.
+
+Program/erase writes use the block backend's durable write flag. Host I/O
+failure sets EPE, stops the VM and remains visible through Light Touch's storage
+failure status across reset. Snapshot restore synchronizes the saved flash on
+the first bus transaction, after incoming block backends activate.
+
+`test_nor_snapshot.py --persistent` covers migration, an in-flight page program,
+a fresh process, base preservation and rejected files/concurrent writers.
+`test_nor_guest.py --persistent` verifies native iOS NVRAM across reboot and a
+complete process restart; both guests shut down cleanly (82.5 seconds total,
+`/tmp/it-nor-persistent-guest.log`). Synchronous durable writes are appropriate
+for the small, infrequent NVRAM workload; NOR timing remains instantaneous.

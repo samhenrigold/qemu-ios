@@ -27,6 +27,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchNORSPIState, IPOD_TOUCH_NOR_SPI)
 typedef struct IPodTouchNORSPIState {
     SSIPeripheral ssidev;
     char *nor_path;
+    BlockBackend *blk;
+    bool restore_pending;
     const char *boot_args;
     uint32_t cur_cmd;
     uint8_t nor_data[NOR_FLASH_SIZE];
@@ -39,5 +41,8 @@ typedef struct IPodTouchNORSPIState {
     bool command_active;
     bool nor_initialized;
 } IPodTouchNORSPIState;
+
+bool ipod_touch_nor_io_failed(void);
+void ipod_touch_nor_spi_open_overlay(IPodTouchNORSPIState *s, const char *path, Error **errp);
 
 #endif
