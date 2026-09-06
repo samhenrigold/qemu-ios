@@ -48,7 +48,7 @@ LAN are deferred by explicit user request.
   Modern TLS termination remains a later phase.
 - Native screenshots, inline Live Text and video recording implemented. Real
   H.264 encode/decode tests cover colors, rotation margins, dimensions and timing;
-  a 68-second UI recording is playable. Guest audio recording remains pending.
+  a 68-second UI recording is playable. Guest audio recording is now verified below.
 - Finger dots are 44 AppKit points, soft white/gray with shadow and fast release
   fade, suppressed asleep/off. Their layers are siblings of the framebuffer to
   isolate opacity. Sleeping uses the user's Sleeping.caar animation.
@@ -435,3 +435,22 @@ and automatic reconnection before restart/Power On. Agent-based sync/shutdown
 remain available while USB is disconnected. Core/bridge sanitizer checks and
 the Release build pass; the production editor and controller checks cover
 fractional input, invalid rates, transfer guard and reconnect behavior.
+
+### Guest audio in screen recordings
+
+Light Touch records the QEMU output mixer directly as stereo AAC alongside H.264,
+without microphone capture. Generation-scoped bounded packets share a monotonic
+clock with video. Explicit zero PCM preserves idle and VM-pause gaps; timestamps
+alone let AAC collapse those gaps. Stop drains queued samples before finalizing.
+
+`test_recording_audio.py` passes sanitizers for packet boundaries, overflow,
+clock gaps, stale generations, double cleanup and post-stop draining. Light Touch
+`tests/check-recording-audio.py` verifies the production AAC/video writer.
+`tests/check-media-native.py --aac --recording` embeds the actual QEMU dylib and
+production movie writer, imports AAC through native Music, verifies 440/880 Hz
+stereo before/after a two-second silent VM pause, and confirms guest shutdown:
+`/tmp/ltm-recording-native-final.log`. Release build passes.
+
+Music's intermittent first Songs-tab exit is reproduced before volume input;
+volume buttons are not the cause. No CrashReporter output accompanies it. The
+playback acceptance relaunches Music and does not claim this exit is fixed.

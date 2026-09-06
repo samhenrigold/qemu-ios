@@ -6,6 +6,9 @@
  */
 
 #include "qemu/osdep.h"
+#include "audio/audio.h"
+#include "system/runstate.h"
+#include <pthread.h>
 #include "qemu-ios-ui.h"
 #include "qemu/main-loop.h"
 #include "block/aio.h"
@@ -502,4 +505,174 @@ const char *qemu_ios_build_id(void)
         g_once_init_leave(&ready, 1);
     }
     return identity[0] ? identity : NULL;
+}
+
+/* Guest output capture uses QEMU's mixer; it does not capture the host microphone. */
+#define RECORDING_AUDIO_BYTES 16384
+#define RECORDING_AUDIO_PACKETS 128
+static pthread_mutex_t recording_audio_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct {
+    uint64_t generation;
+    bool active, failed, anchored;
+    int64_t origin_us;
+    double next_seconds;
+    unsigned head, count;
+    struct { int size; double seconds; uint8_t bytes[RECORDING_AUDIO_BYTES]; }
+        packets[RECORDING_AUDIO_PACKETS];
+} recording_audio;
+/* Accessed only on the emulator thread, including audio cleanup. */
+static CaptureVoiceOut *recording_audio_voice;
+static void *recording_audio_context;
+static VMChangeStateEntry *recording_audio_vm_change;
+
+static void recording_audio_notify(void *opaque, audcnotification_e event)
+{
+    uint64_t generation = (uintptr_t)opaque;
+    pthread_mutex_lock(&recording_audio_lock);
+    if (generation == recording_audio.generation) recording_audio.anchored = false;
+    pthread_mutex_unlock(&recording_audio_lock);
+}
+
+static void recording_audio_vm_changed(void *opaque, bool running, RunState state)
+{
+    recording_audio_notify(opaque, AUD_CNOTIFY_DISABLE);
+}
+
+static void recording_audio_samples(void *opaque, const void *buffer, int size)
+{
+    uint64_t generation = (uintptr_t)opaque;
+    const uint8_t *bytes = buffer;
+    pthread_mutex_lock(&recording_audio_lock);
+    if (generation != recording_audio.generation || !recording_audio.active || recording_audio.failed) goto done;
+    if (size < 0 || size % 4) { recording_audio.failed = true; goto done; }
+    if (!size) goto done;
+    if (!recording_audio.anchored) {
+        /* The mixer callback has no device presentation timestamp. Anchor each
+         * active interval to its arrival, then preserve exact sample timing. */
+        double now = (g_get_monotonic_time() - recording_audio.origin_us) / 1000000.0;
+        recording_audio.next_seconds = MAX(recording_audio.next_seconds, MAX(0.0, now - size / 176400.0));
+        recording_audio.anchored = true;
+    }
+    while (size) {
+        if (recording_audio.count == RECORDING_AUDIO_PACKETS) {
+            recording_audio.failed = true; /* Stop, rather than silently losing audio. */
+            break;
+        }
+        unsigned slot = (recording_audio.head + recording_audio.count) % RECORDING_AUDIO_PACKETS;
+        int length = MIN(size, RECORDING_AUDIO_BYTES);
+        recording_audio.packets[slot].size = length;
+        recording_audio.packets[slot].seconds = recording_audio.next_seconds;
+        memcpy(recording_audio.packets[slot].bytes, bytes, length);
+        recording_audio.next_seconds += length / 176400.0;
+        recording_audio.count++;
+        bytes += length;
+        size -= length;
+    }
+done:
+    pthread_mutex_unlock(&recording_audio_lock);
+}
+
+static void recording_audio_destroy(void *opaque)
+{
+    uint64_t generation = (uintptr_t)opaque;
+    if (recording_audio_context != opaque) return;
+    recording_audio_context = NULL;
+    recording_audio_voice = NULL;
+    if (recording_audio_vm_change) qemu_del_vm_change_state_handler(recording_audio_vm_change);
+    recording_audio_vm_change = NULL;
+    pthread_mutex_lock(&recording_audio_lock);
+    if (generation == recording_audio.generation && recording_audio.active) recording_audio.failed = true;
+    pthread_mutex_unlock(&recording_audio_lock);
+}
+
+static void recording_audio_start_bh(void *opaque)
+{
+    uint64_t generation = *(uint64_t *)opaque;
+    g_free(opaque);
+    pthread_mutex_lock(&recording_audio_lock);
+    bool current = recording_audio.active && generation == recording_audio.generation;
+    pthread_mutex_unlock(&recording_audio_lock);
+    if (!current) return;
+    if (recording_audio_voice) AUD_del_capture(recording_audio_voice, recording_audio_context);
+    Error *err = NULL;
+    AudioState *audio = audio_get_default_audio_state(&err);
+    struct audsettings settings = { .freq = 44100, .nchannels = 2, .fmt = AUDIO_FORMAT_S16, .endianness = 0 };
+    struct audio_capture_ops ops = { recording_audio_notify, recording_audio_samples, recording_audio_destroy };
+    recording_audio_context = (void *)(uintptr_t)generation;
+    if (audio) recording_audio_voice = AUD_add_capture(audio, &settings, &ops, recording_audio_context);
+    if (recording_audio_voice) {
+        recording_audio_vm_change = qemu_add_vm_change_state_handler(recording_audio_vm_changed, recording_audio_context);
+    } else {
+        if (err) { error_report_err(err); }
+        recording_audio_destroy(recording_audio_context);
+    }
+}
+
+static void recording_audio_stop_bh(void *opaque)
+{
+    uint64_t generation = *(uint64_t *)opaque;
+    g_free(opaque);
+    pthread_mutex_lock(&recording_audio_lock);
+    bool current = generation == recording_audio.generation && !recording_audio.active;
+    pthread_mutex_unlock(&recording_audio_lock);
+    if (current && recording_audio_voice) AUD_del_capture(recording_audio_voice, recording_audio_context);
+}
+
+uint64_t qemu_ios_audio_capture_start(void)
+{
+    if (!qemu_ios_ui_ready()) return 0;
+    pthread_mutex_lock(&recording_audio_lock);
+    uint64_t generation = ++recording_audio.generation;
+    recording_audio.active = true;
+    recording_audio.failed = recording_audio.anchored = false;
+    recording_audio.head = recording_audio.count = 0;
+    recording_audio.next_seconds = 0;
+    recording_audio.origin_us = g_get_monotonic_time();
+    pthread_mutex_unlock(&recording_audio_lock);
+    uint64_t *request = g_new(uint64_t, 1);
+    *request = generation;
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), recording_audio_start_bh, request);
+    return generation;
+}
+
+int qemu_ios_audio_capture_read(uint64_t generation, void *buffer, int capacity, double *seconds)
+{
+    if (!buffer || capacity < RECORDING_AUDIO_BYTES || !seconds) return -1;
+    pthread_mutex_lock(&recording_audio_lock);
+    int size = 0;
+    *seconds = -1;
+    if (generation != recording_audio.generation || recording_audio.failed) size = -1;
+    else if (recording_audio.count) {
+        unsigned slot = recording_audio.head;
+        size = recording_audio.packets[slot].size;
+        memcpy(buffer, recording_audio.packets[slot].bytes, size);
+        *seconds = recording_audio.packets[slot].seconds;
+        recording_audio.head = (slot + 1) % RECORDING_AUDIO_PACKETS;
+        recording_audio.count--;
+    } else if (recording_audio.active && !recording_audio.anchored) {
+        *seconds = (g_get_monotonic_time() - recording_audio.origin_us) / 1000000.0;
+    }
+    pthread_mutex_unlock(&recording_audio_lock);
+    return size;
+}
+
+double qemu_ios_audio_capture_time(uint64_t generation)
+{
+    pthread_mutex_lock(&recording_audio_lock);
+    double seconds = generation == recording_audio.generation && recording_audio.active
+        ? (g_get_monotonic_time() - recording_audio.origin_us) / 1000000.0 : -1;
+    pthread_mutex_unlock(&recording_audio_lock);
+    return seconds;
+}
+
+void qemu_ios_audio_capture_stop(uint64_t generation)
+{
+    pthread_mutex_lock(&recording_audio_lock);
+    bool current = generation == recording_audio.generation && recording_audio.active;
+    if (current) recording_audio.active = false;
+    pthread_mutex_unlock(&recording_audio_lock);
+    if (!current || !qemu_ios_ui_ready()) return;
+    uint64_t *request = g_new(uint64_t, 1);
+    *request = generation;
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), recording_audio_stop_bh, request);
 }
