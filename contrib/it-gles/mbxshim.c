@@ -374,6 +374,14 @@ static int s_multiTexCoord4x(void *gc, unsigned a0, unsigned a1, unsigned a2, un
     { return (int)qc(802, gc, 5, A(a0, a1, a2, a3, a4)); }
 static int s_sampleCoveragex(void *gc, unsigned a0, unsigned a1)
     { return (int)qc(803, gc, 2, A(a0, a1)); }
+static int s_getBooleanv(void *gc, unsigned a0, unsigned a1)
+    { return (int)qc(99, gc, 2, A(a0, a1)); }
+static int s_getPointerv(void *gc, unsigned a0, unsigned a1)
+    { return (int)qc(115, gc, 2, A(a0, a1)); }
+static int s_loadMatrixx(void *gc, unsigned a0)
+    { if (!guest_fault_read(a0, 64)) return -1; return (int)qc(786, gc, 1, A(a0)); }
+static int s_multMatrixx(void *gc, unsigned a0)
+    { if (!guest_fault_read(a0, 64)) return -1; return (int)qc(789, gc, 1, A(a0)); }
 static int s_colorMask(void *gc, unsigned r, unsigned g, unsigned b, unsigned a)
     { return (int)qc(49, gc, 4, A(r, g, b, a)); }
 static int s_stencilMask(void *gc, unsigned mask)
@@ -625,6 +633,10 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
         table[801] = (void *)s_translatex;
         table[802] = (void *)s_multiTexCoord4x;
         table[803] = (void *)s_sampleCoveragex;
+        table[99] = (void *)s_getBooleanv;
+        table[115] = (void *)s_getPointerv;
+        table[786] = (void *)s_loadMatrixx;
+        table[789] = (void *)s_multMatrixx;
         table[49]  = (void *)s_colorMask;
         table[255] = (void *)s_stencilMask;
         table[665] = (void *)s_isRenderbuffer;
