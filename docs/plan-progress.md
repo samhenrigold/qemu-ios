@@ -929,3 +929,22 @@ commands, memory bounds and compatibility mode. Native 5F138 reaches Home
 shutdown (`/tmp/it-pke-mont-7e18.log`). Native migration preserves selectors,
 signs, high SRAM and preloaded modulus (`/tmp/it-pke-mont-snapshot.log`). PKE
 migration is version 2; old states lack required fields and are rejected.
+
+## AFC Files detail pane (2026-09-06)
+
+Light Touch's View > Files opens a native column browser inside the device pane;
+Files is also a customizable toolbar item. Imports reuse the existing chunked,
+byte-progress AFC upload. Different existing files are preserved. Exports use a
+private adjacent temporary file and atomic publication; failure/cancellation
+preserves the destination. Directory paths, file kinds and lengths are checked.
+Zero-byte files are supported. The shared uploader now checks cancellation at
+the publication boundary. Device changes invalidate pending directory and picker
+results; browser events cannot pass through to the guest screen.
+
+Native Swift/AFC checks pass binary and empty transfers, repeated imports,
+mismatched-file preservation, cancelled-export preservation and temporary-file
+cleanup, followed by guest-confirmed shutdown (`/tmp/ltm-files-native.log`).
+Native AppKit checks pass column navigation, stale replies and 200/320/700-point
+layout; the 320-point pane was visually inspected. Release build, deep strict
+signature and macOS 14 dependency closure pass. Packaged as
+`build-native14/Light Touch-b79bc98.app`; latest-app symlink updated.
