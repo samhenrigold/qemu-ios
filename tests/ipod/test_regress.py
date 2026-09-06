@@ -208,3 +208,17 @@ for event, exit_code, expected in ((host, 0, False), (guest, 0, True),
     assert dev.qmp is None and q.f.closed and q.s.fileno() == -1
     peer.close()
 print("QMP checks passed: retained guest shutdown, host signal rejection, EOF, timeout, and closed streams")
+
+with tempfile.TemporaryDirectory(prefix='qmp-frame-') as directory:
+    path = Path(directory)/'frame.ppm'
+    class FrameQMP:
+        def cmd(self, name, **args):
+            assert name == 'screendump'
+            Path(args['filename']).write_bytes(b'P6\n1 1\n255\n\x00\x7f\xff')
+    assert R.itqmp.shot_ppm(FrameQMP(), path, 14, timeout=0) == str(path)
+    try:
+        R.itqmp.shot_ppm(FrameQMP(), path, 100, timeout=0)
+        raise AssertionError('truncated framebuffer accepted')
+    except TimeoutError:
+        pass
+print('QMP raw framebuffer completeness checks passed')

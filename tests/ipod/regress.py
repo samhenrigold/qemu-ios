@@ -244,47 +244,9 @@ def to_png(ppm, png):
 # QMP
 # --------------------------------------------------------------------------
 
-class QMP(itqmp.QMP):
-    """One long-lived QMP connection, on the shared client.
+# One shared client: QMP services only one connection at a time.
+QMP = itqmp.QMP
 
-    QEMU's QMP listener accepts a single client at a time; a second connection
-    is accepted by the kernel and then never answered, which looks exactly like
-    a guest hang. Everything the harness does over QMP therefore goes through
-    one instance of this class, including the guest SHUTDOWN confirmation.
-
-    Only the two things imgtools/itqmp.py deliberately does differently are
-    overridden: it returns a *PNG* from shot() and the harness measures raw PPM
-    samples, and it has no socket read timeout while a wedged guest here must
-    fail the check rather than hang the suite.
-    """
-
-    def __init__(self, port, timeout=180):
-        itqmp.QMP.__init__(self, port, timeout=timeout)
-        self.s.settimeout(60)
-
-    def shot(self, path):
-        self.cmd("screendump", filename=path)
-        for _ in range(60):
-            if os.path.exists(path) and os.path.getsize(path) >= FRAME_BYTES:
-                break
-            time.sleep(0.1)
-        return path
-
-    def tap(self, x, y, hold=0.15):
-        itqmp.tap(self, x, y, hold=hold)
-
-    def swipe(self, x1, y1, x2, y2, steps=12, dwell=0.05):
-        """A slow multi-step drag. A two-point jump is below the digitizer's
-        report rate and SpringBoard's unlock recogniser never sees it move."""
-        itqmp.swipe(self, x1, y1, x2, y2, steps=steps, dt=dwell)
-
-    def home(self):
-        itqmp.button(self, "home")
-
-
-# --------------------------------------------------------------------------
-# process management - only ever our own PIDs
-# --------------------------------------------------------------------------
 
 class Procs:
     def __init__(self):
@@ -431,7 +393,7 @@ class Device:
         self.qemu = self.procs.spawn(argv, os.path.join(self.dir, "qemu.log"),
                                      env=boot_env(cfg))
         log("%s: qemu pid %d (qmp %d)" % (self.tag, self.qemu.pid, cfg.qmp_port))
-        self.qmp = QMP(cfg.qmp_port, timeout=180)
+        self.qmp = QMP(cfg.qmp_port, timeout=180, read_timeout=60)
 
     def alive(self):
         return self.qemu is not None and self.qemu.poll() is None
