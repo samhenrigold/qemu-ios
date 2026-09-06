@@ -39,37 +39,14 @@ static bool timer_trace(void)
     return on;
 }
 
-/*
- * IT_TIME_DILATION: stretch the guest's timer tick by this factor.
- *
- * Timer interrupts arrive on the HOST clock, but the guest executes at
- * whatever rate the emulator manages. Under an interpreter that is roughly a
- * tenth of real speed, so the guest receives ten times more interrupts per
- * unit of work than the hardware ever delivered, and drowns in exception entry
- * and exit -- which is exactly what the guest profile shows dominating a slow
- * UI. Stretching the tick trades correct wall-clock time for the guest getting
- * a sane number of interrupts per instruction executed: the clock runs slow,
- * but the device stops thrashing.
- */
-static uint64_t timer_dilation(void)
-{
-    static int64_t f = -1;
-    if (f < 0) {
-        const char *v = getenv("IT_TIME_DILATION");
-        f = v ? strtoll(v, NULL, 0) : 1;
-        if (f < 1) {
-            f = 1;
-        }
-    }
-    return (uint64_t)f;
-}
-
+/* Dilation scales timer-4 interrupt intervals, preserving the existing counter
+ * rate and default scheduling. It is bounded startup configuration. */
 static void s5l8900_st_update(IPodTouchTimerState *s)
 {
     s->freq_out = 1000000000 / 100;
     s->tick_interval = /* bcount1 * get_ticks / freq  + ((bcount2 * get_ticks / freq)*/
     muldiv64((s->bcount1 < 1000) ? 1000 : s->bcount1, NANOSECONDS_PER_SECOND, s->freq_out);
-    s->tick_interval *= timer_dilation();
+    s->tick_interval *= s->dilation;
     s->next_planned_tick = 0;
     if (timer_trace()) {
         fprintf(stderr, "[TIMER] update: bcount1=%u bcount2=%u freq_out=%u "
@@ -83,7 +60,8 @@ static void s5l8900_st_set_timer(IPodTouchTimerState *s)
 {
     uint64_t last = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->base_time;
 
-    s->next_planned_tick = last + (s->tick_interval - last % s->tick_interval);
+    s->next_planned_tick = MIN((uint64_t)INT64_MAX - s->base_time,
+                              last + (s->tick_interval - last % s->tick_interval));
     timer_mod(s->st_timer, s->next_planned_tick + s->base_time);
     s->last_tick = last;
 }
@@ -254,6 +232,7 @@ static void s5l8900_timer_init(Object *obj)
     sysbus_init_irq(sbd, &s->irq);
 
     s->base_time = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    s->dilation = 1;
     s->st_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, s5l8900_st_tick, s);
 }
 
@@ -292,10 +271,23 @@ static void ipod_touch_timer_reset(DeviceState *dev)
  * bookkeeping below is all in QEMU_CLOCK_VIRTUAL nanoseconds, which migration
  * carries too, so the guest's notion of elapsed time survives the restore.
  * sysclk is a Clock wired by the machine and is not per-snapshot state. */
+static int ipod_touch_timer_post_load(void *opaque, int version_id)
+{
+    IPodTouchTimerState *s = opaque;
+    uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (s->base_time > now || s->tick_interval > INT64_MAX ||
+        s->next_planned_tick > (uint64_t)INT64_MAX - s->base_time ||
+        ((s->status & TIMER_STATE_START) && !s->tick_interval)) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
 static const VMStateDescription vmstate_ipod_touch_timer = {
     .name = "ipod_touch_timer",
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = ipod_touch_timer_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(ticks_high, IPodTouchTimerState),
         VMSTATE_UINT32(ticks_low, IPodTouchTimerState),

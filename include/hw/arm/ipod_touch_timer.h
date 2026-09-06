@@ -19,6 +19,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchTimerState, IPOD_TOUCH_TIMER)
 #define TIMER_STATE_STOP 0
 #define TIMER_STATE_MANUALUPDATE 2
 #define NUM_TIMERS 7
+/* Bounds the largest guest count * 100 ns * dilation below INT64_MAX. */
+#define IT_TIMER_MAX_DILATION 1000000
 #define TIMER_4 0xA0
 #define TIMER_CONFIG 0 
 #define TIMER_STATE 0x4
@@ -41,6 +43,7 @@ typedef struct IPodTouchTimerState
     Clock *sysclk;
     uint32_t bcreload;
     uint32_t freq_out;
+    uint32_t dilation;
     uint64_t tick_interval;
     uint64_t last_tick;
     uint64_t next_planned_tick;
