@@ -1235,3 +1235,38 @@ bundle is `build-native14/Light Touch-60ff9e5197.app`; `Light Touch-latest.app`
 points to it. Bundled GLES/agent helper bytes match the built sources and the
 packed NAND checksum verifies. Existing canceled media source edits remain
 uncommitted and were not included in rebuilt guest helpers.
+
+### Settings/Contacts launch regression (2026-09-06)
+
+A disposable copy of the affected Light Touch overlay reproduced the missing
+launch zoom. BTServer logged malformed H4 packets and restarted; SpringBoard
+logged repeated BTSessionAttachWithRunLoop timeouts. Firmware download had
+succeeded, so the bring-up check now also requires subsequent BCM controller
+setup. Its firmware-only negative case fails.
+
+PL080 packet-end handling incorrectly zeroed the residual transfer count even
+when only seven of 2048 requested bytes had transferred. The 7E18 driver computes
+completed bytes by subtracting CTRL & 0xfff from descriptor length: query path
+c0750730–c07507b8 and completion path c07519f0–c0751a04. Preserving residue avoids
+reporting the unwritten buffer tail as received data. The production-function
+sanitizer test fails on the previous implementation and passes on the correction.
+The register semantics also match ARM DDI 0196G, section 3.3.11:
+https://documentation-service.arm.com/static/5e8e3c6488295d1e18d3a8c3
+
+Related UART receive-mode and FIFO-reset corrections synchronize DMA requests and
+cancel stale packet timeouts; bytes arriving with reception disabled wait until
+reception resumes. Those fixes alone did not eliminate the observed failure.
+Their sanitizer checks independently fail on the old implementations. A native
+CGL check also covers internal stencil clearing with guest writes disabled.
+
+With the DMA correction, captured Settings/Contacts launches include intermediate
+zoom frames; BluetoothManager getters complete in 0–1 ms on the affected overlay
+copy. Two additional quiet cold boots pass explicit non-null/latency checks,
+for three successful quiet boots after the DMA correction. Tests use device
+copies, not the user's active overlay. Temporary UART
+recorders are removed; traced successes were not treated as sufficient evidence
+because diagnostic output changes the timing of this intermittent failure.
+
+Release Xcode build, emulator dylib rebuild, packaging, and strict signature
+verification pass. The updated package is `build-native14/Light Touch-dma-recovery.app`;
+Xcode's development dylib is updated too. Canceled media edits remain untouched.
