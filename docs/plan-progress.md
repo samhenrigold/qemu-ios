@@ -238,3 +238,18 @@ an earlier assumption in the plan. The shared model currently retains the plan's
 raw-axis convention; physical face-up/steering acceptance remains open. See
 `docs/accelerometer-controls.md`. Controller inputs and the attitude indicator
 remain unfinished; the optional phone companion has not been built.
+
+### App regression controls use the agent
+
+Default app launch, lock/foreground queries, Harness reset and GLES diagnostics
+now use the guest agent when available; legacy fixtures retain the explicit SSH
+launcher, and shim staging still requests it. SpringBoard restart uses the same
+agent path with bounded read-only readiness retries. Submitted mutations never
+fall back to SSH. The launcher now prefers the current native build and honors
+`QEMU`; interrupted runs stop their owned child processes.
+
+The full eight-check default tier plus respring passed with `guest_ssh` replaced
+by a function that raises on every call: `/tmp/it-agent-control-native-v3.log`.
+This includes both guest-confirmed shutdowns, reboot persistence, full-volume
+fsck, GLES and 5.99 seconds of 440/880 Hz audio. Focused failure/fallback tests
+also pass. The updated, signed app is `build-native14/Light Touch-motion.app`.

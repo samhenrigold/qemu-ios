@@ -34,7 +34,7 @@ with patch.object(R.time, "sleep"):
         with patch.object(R, "springboard", return_value=reply(text, rc)):
             assert R.foreground_is(None, 22, "org.example.App") is expected
 
-    with patch.object(R, "prepare_launcher", return_value=22), \
+    with patch.object(R, "prepare_app_control", return_value=22), \
          patch.object(R, "ipa_bundle_id", return_value="org.example.App"), \
          patch.object(R, "unlock", return_value=(True, "unlocked")), \
          patch.object(R, "springboard", return_value=reply("launch accepted")), \
