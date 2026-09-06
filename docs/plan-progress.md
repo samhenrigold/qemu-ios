@@ -542,3 +542,13 @@ audio passed with `audio-hw=on` overriding `IT_AUDIO_HW=0`
 The unused app-side `IT_IMG3_SIG_ASIS` setting was removed, and boot-parity checks
 now understand the current verbose/kernel-console expression and reject obsolete
 switches. The rest of the configuration migration is pending.
+
+### App-ledger collection
+
+`regress.py --ledger DIRECTORY` now runs each IPA sequentially on a fresh guest,
+retains 5/20-second screenshots and 30-second launch verification, records the
+file SHA-256 and bundle ID, and atomically updates Markdown/JSON progress.
+Skipped/failed checks and changed input files cannot pass. Rendering, audio,
+input and networking stay unreviewed. A native Harness run passed; its initial
+menu screenshots were reviewed and retained in [the ledger](app-ledger.md).
+Broader game coverage and Legacy Store verdict presentation remain pending.
