@@ -37,3 +37,5 @@ void gles_host_set_allowed(bool allowed)
 void gles_host_reset(void)
 {
 }
+
+int gles_host_context_count(void) { return 0; }

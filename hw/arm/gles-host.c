@@ -32,6 +32,8 @@
  */
 
 #include "qemu/osdep.h"
+#include "migration/blocker.h"
+#include "qapi/error.h"
 #include "cpu.h"
 #include "hw/sysbus.h"
 #include "hw/arm/ipod_touch_2g.h"
@@ -436,6 +438,35 @@ typedef struct {
 
 /* Old guest engines retain their legacy context. New engines pass opaque
  * host handles, so every GC gets independent native GL and client-array state. */
+static int gles_live_contexts;
+static Error *gles_save_blocker;
+
+static bool gles_begin_context(void)
+{
+    if (!qatomic_read(&gles_live_contexts)) {
+        error_setg(&gles_save_blocker,
+                   "Live OpenGL ES state cannot be saved (including accelerated system UI)");
+        Error *error = NULL;
+        if (migrate_add_blocker_internal(&gles_save_blocker, &error)) {
+            error_free(error);
+            return false;
+        }
+    }
+    qatomic_inc(&gles_live_contexts);
+    return true;
+}
+
+static void gles_end_context(void)
+{
+    qatomic_dec(&gles_live_contexts);
+    if (!qatomic_read(&gles_live_contexts)) migrate_del_blocker(&gles_save_blocker);
+}
+
+int gles_host_context_count(void)
+{
+    return qatomic_read(&gles_live_contexts);
+}
+
 static GLESHost gh_legacy;
 static GLESHost *gh_current = &gh_legacy;
 #define gh (*gh_current)
@@ -709,7 +740,10 @@ static bool gles_host_init(void)
         return false;
     }
 
+    bool legacy = gh_current == &gh_legacy;
+    if (legacy && !gles_begin_context()) return false;
     if (!gles_platform_context_create()) {
+        if (legacy) gles_end_context();
         gh.failed = true;
         return false;
     }
@@ -769,6 +803,7 @@ static bool gles_host_init(void)
     if (glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT)
         != GL_FRAMEBUFFER_COMPLETE_EXT) {
         fprintf(stderr, "[gles] FBO incomplete\n");
+        if (legacy) gles_end_context();
         gh.failed = true;
         return false;
     }
@@ -814,6 +849,7 @@ static bool gles_host_init(void)
 
     gh.readback = g_malloc0((size_t)GLES_FB_WIDTH * GLES_FB_HEIGHT * 4);
     gh.inited = true;
+
 
     /* Microseconds, once, and it is the only thing standing between a broken
      * PVRTC decoder and a silently wrong picture. See pvrtc_selfcheck. */
@@ -4992,6 +5028,7 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
         if (argc != 1 || gles_handle == UINT32_MAX) return -1;
         GLESGroup *group = g_hash_table_lookup(gles_groups, GUINT_TO_POINTER(args[0]));
         if (!group) return -1;
+        if (!gles_begin_context()) return -1;
         GLESHost *state = g_new0(GLESHost, 1);
         state->group = group; group->refs++;
         state->buffers = group->buffers;
@@ -5006,6 +5043,7 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
         GLESHost *state = g_hash_table_lookup(gles_contexts, GUINT_TO_POINTER(ctx));
         if (!state) return -1;
         g_hash_table_remove(gles_contexts, GUINT_TO_POINTER(ctx));
+        gles_end_context();
         gles_context_free(state);
         return 0;
     }
@@ -5040,6 +5078,8 @@ void gles_host_reset(void)
         g_hash_table_remove_all(gles_groups);
     }
     gles_context_free(&gh_legacy);
+    qatomic_set(&gles_live_contexts, 0);
+    if (gles_save_blocker) migrate_del_blocker(&gles_save_blocker);
 #endif
 }
 

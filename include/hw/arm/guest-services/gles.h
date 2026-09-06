@@ -285,6 +285,7 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
                        uint32_t argc, const uint32_t *args);
 void gles_host_stats(uint64_t *draws, uint64_t *presents);
 void gles_host_reset(void);
+int gles_host_context_count(void);
 #endif
 
 #endif /* HW_ARM_GUEST_SERVICES_GLES_H */

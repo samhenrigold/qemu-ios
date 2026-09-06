@@ -1342,6 +1342,13 @@ static char *ipod_touch_get_agent_status(Object *obj, Error **errp)
                                      qemu_clock_get_ms(QEMU_CLOCK_REALTIME)));
 }
 
+static void ipod_touch_get_gles_contexts(Object *obj, Visitor *v, const char *name,
+                                         void *opaque, Error **errp)
+{
+    int64_t count = gles_host_context_count();
+    visit_type_int(v, name, &count, errp);
+}
+
 static void ipod_touch_instance_finalize(Object *obj)
 {
     ipod_agent_publish(NULL);
@@ -1356,6 +1363,7 @@ static void ipod_touch_instance_init(Object *obj)
     object_property_add_str(obj, "agent-cancel", NULL, ipod_touch_cancel_agent_request);
     object_property_add_str(obj, "agent-result", ipod_touch_get_agent_result, NULL);
     object_property_add_str(obj, "agent-status", ipod_touch_get_agent_status, NULL);
+    object_property_add(obj, "gles-contexts", "int", ipod_touch_get_gles_contexts, NULL, NULL, NULL);
 
     object_property_add_str(obj, "bootrom", ipod_touch_get_bootrom_path, ipod_touch_set_bootrom_path);
     object_property_set_description(obj, "bootrom", "Path to the S5L8720 bootrom binary");
