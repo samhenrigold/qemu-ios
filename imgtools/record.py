@@ -55,28 +55,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
-from itqmp import QMP
-
-
-def read_ppm(path):
-    """(w, h, rgb bytes) from a binary PPM."""
-    with open(path, "rb") as f:
-        data = f.read()
-    parts, i = [], 0
-    while len(parts) < 4:
-        while data[i:i + 1].isspace():
-            i += 1
-        if data[i:i + 1] == b"#":
-            while data[i:i + 1] != b"\n":
-                i += 1
-            continue
-        start = i
-        while not data[i:i + 1].isspace():
-            i += 1
-        parts.append(data[start:i])
-    i += 1
-    w, h = int(parts[1]), int(parts[2])
-    return w, h, data[i:i + w * h * 3]
+from itqmp import QMP, read_ppm
 
 
 def fit(pix, w, h, cw, ch):
@@ -195,4 +174,5 @@ def main():
              "" if (gain or 1.0) == 1.0 else "  [gain %.2f]" % gain))
 
 
-main()
+if __name__ == "__main__":
+    main()
