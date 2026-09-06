@@ -102,6 +102,7 @@
 /* ES has no double-precision entry points; the guest only ever had floats. */
 #define glOrtho(l, r, b, t, n, f)     glOrthof(l, r, b, t, n, f)
 #define glFrustum(l, r, b, t, n, f)   glFrustumf(l, r, b, t, n, f)
+#define glDepthRange(n, f)            glDepthRangef(n, f)
 #define glClearDepth(d)               glClearDepthf(d)
 
 /*
@@ -3206,6 +3207,11 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
 
 /* ----------------------------------------------------------------- dispatch */
 
+static float gles_x(uint32_t value)
+{
+    return (int32_t)value / 65536.0f;
+}
+
 static float gles_f(uint32_t bits)
 {
     union { uint32_t u; float f; } c = { .u = bits };
@@ -4721,6 +4727,86 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
      * So the names are real host names and the calls are real host calls. Only
      * the drawable framebuffer is special-cased -- see gh.fbo_drawable.
      */
+    /* Scalar ES1.1 state, including signed 16.16 entry points. */
+    case GLES_SLOT_CLEAR_STENCIL:
+        glClearStencil(a[0]);
+        return 0;
+    case GLES_SLOT_COLOR4UB:
+        glColor4ub(a[0], a[1], a[2], a[3]);
+        return 0;
+    case GLES_SLOT_CULL_FACE:
+        glCullFace(a[0]);
+        return 0;
+    case GLES_SLOT_NORMAL3F:
+        glNormal3f(gles_f(a[0]), gles_f(a[1]), gles_f(a[2]));
+        return 0;
+    case GLES_SLOT_POINT_SIZE:
+        glPointSize(gles_f(a[0]));
+        return 0;
+    case GLES_SLOT_POLYGON_OFFSET:
+        glPolygonOffset(gles_f(a[0]), gles_f(a[1]));
+        return 0;
+    case GLES_SLOT_STENCIL_FUNC:
+        glStencilFunc(a[0], a[1], a[2]);
+        return 0;
+    case GLES_SLOT_STENCIL_OP:
+        glStencilOp(a[0], a[1], a[2]);
+        return 0;
+    case GLES_SLOT_MULTI_TEX_COORD4F:
+        glMultiTexCoord4f(a[0], gles_f(a[1]), gles_f(a[2]), gles_f(a[3]), gles_f(a[4]));
+        return 0;
+    case GLES_SLOT_SAMPLE_COVERAGE:
+        glSampleCoverage(gles_f(a[0]), a[1]);
+        return 0;
+    case GLES_SLOT_ALPHA_FUNCX:
+        glAlphaFunc(a[0], gles_x(a[1]));
+        return 0;
+    case GLES_SLOT_CLEAR_COLORX:
+        glClearColor(gles_x(a[0]), gles_x(a[1]), gles_x(a[2]), gles_x(a[3]));
+        return 0;
+    case GLES_SLOT_CLEAR_DEPTHX:
+        glClearDepth(gles_x(a[0]));
+        return 0;
+    case GLES_SLOT_COLOR4X:
+        glColor4f(gles_x(a[0]), gles_x(a[1]), gles_x(a[2]), gles_x(a[3]));
+        return 0;
+    case GLES_SLOT_DEPTH_RANGEF:
+        glDepthRange(gles_f(a[0]), gles_f(a[1]));
+        return 0;
+    case GLES_SLOT_DEPTH_RANGEX:
+        glDepthRange(gles_x(a[0]), gles_x(a[1]));
+        return 0;
+    case GLES_SLOT_FRUSTUMX:
+        glFrustum(gles_x(a[0]), gles_x(a[1]), gles_x(a[2]), gles_x(a[3]), gles_x(a[4]), gles_x(a[5]));
+        return 0;
+    case GLES_SLOT_LINE_WIDTHX:
+        glLineWidth(gles_x(a[0]));
+        return 0;
+    case GLES_SLOT_NORMAL3X:
+        glNormal3f(gles_x(a[0]), gles_x(a[1]), gles_x(a[2]));
+        return 0;
+    case GLES_SLOT_ORTHOX:
+        glOrtho(gles_x(a[0]), gles_x(a[1]), gles_x(a[2]), gles_x(a[3]), gles_x(a[4]), gles_x(a[5]));
+        return 0;
+    case GLES_SLOT_POINT_SIZEX:
+        glPointSize(gles_x(a[0]));
+        return 0;
+    case GLES_SLOT_POLYGON_OFFSETX:
+        glPolygonOffset(gles_x(a[0]), gles_x(a[1]));
+        return 0;
+    case GLES_SLOT_ROTATEX:
+        glRotatef(gles_x(a[0]), gles_x(a[1]), gles_x(a[2]), gles_x(a[3]));
+        return 0;
+    case GLES_SLOT_TRANSLATEX:
+        glTranslatef(gles_x(a[0]), gles_x(a[1]), gles_x(a[2]));
+        return 0;
+    case GLES_SLOT_MULTI_TEX_COORD4X:
+        glMultiTexCoord4f(a[0], gles_x(a[1]), gles_x(a[2]), gles_x(a[3]), gles_x(a[4]));
+        return 0;
+    case GLES_SLOT_SAMPLE_COVERAGEX:
+        glSampleCoverage(gles_x(a[0]), a[1]);
+        return 0;
+
     /* Object predicates must distinguish generated names from bound objects. */
     case GLES_SLOT_IS_RENDERBUFFER:
         return glIsRenderbufferEXT(a[0]);

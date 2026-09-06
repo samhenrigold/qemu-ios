@@ -322,6 +322,58 @@ static int s_viewport(void *gc, unsigned x, unsigned y, unsigned wv, unsigned h)
 static int s_orthof(void *gc, unsigned l, unsigned r, unsigned b,
                     unsigned t, unsigned n, unsigned f)
     { return (int)qc(791, gc, 6, A(l, r, b, t, n, f)); }
+static int s_clearStencil(void *gc, unsigned a0)
+    { return (int)qc(15, gc, 1, A(a0)); }
+static int s_color4ub(void *gc, unsigned a0, unsigned a1, unsigned a2, unsigned a3)
+    { return (int)qc(43, gc, 4, A(a0, a1, a2, a3)); }
+static int s_cullFace(void *gc, unsigned a0)
+    { return (int)qc(57, gc, 1, A(a0)); }
+static int s_normal3f(void *gc, unsigned a0, unsigned a1, unsigned a2)
+    { return (int)qc(182, gc, 3, A(a0, a1, a2)); }
+static int s_pointSize(void *gc, unsigned a0)
+    { return (int)qc(199, gc, 1, A(a0)); }
+static int s_polygonOffset(void *gc, unsigned a0, unsigned a1)
+    { return (int)qc(201, gc, 2, A(a0, a1)); }
+static int s_stencilFunc(void *gc, unsigned a0, unsigned a1, unsigned a2)
+    { return (int)qc(254, gc, 3, A(a0, a1, a2)); }
+static int s_stencilOp(void *gc, unsigned a0, unsigned a1, unsigned a2)
+    { return (int)qc(256, gc, 3, A(a0, a1, a2)); }
+static int s_multiTexCoord4f(void *gc, unsigned a0, unsigned a1, unsigned a2, unsigned a3, unsigned a4)
+    { return (int)qc(369, gc, 5, A(a0, a1, a2, a3, a4)); }
+static int s_sampleCoverage(void *gc, unsigned a0, unsigned a1)
+    { return (int)qc(459, gc, 2, A(a0, a1)); }
+static int s_alphaFuncx(void *gc, unsigned a0, unsigned a1)
+    { return (int)qc(761, gc, 2, A(a0, a1)); }
+static int s_clearColorx(void *gc, unsigned a0, unsigned a1, unsigned a2, unsigned a3)
+    { return (int)qc(762, gc, 4, A(a0, a1, a2, a3)); }
+static int s_clearDepthx(void *gc, unsigned a0)
+    { return (int)qc(764, gc, 1, A(a0)); }
+static int s_color4x(void *gc, unsigned a0, unsigned a1, unsigned a2, unsigned a3)
+    { return (int)qc(767, gc, 4, A(a0, a1, a2, a3)); }
+static int s_depthRangef(void *gc, unsigned a0, unsigned a1)
+    { return (int)qc(768, gc, 2, A(a0, a1)); }
+static int s_depthRangex(void *gc, unsigned a0, unsigned a1)
+    { return (int)qc(769, gc, 2, A(a0, a1)); }
+static int s_frustumx(void *gc, unsigned a0, unsigned a1, unsigned a2, unsigned a3, unsigned a4, unsigned a5)
+    { return (int)qc(773, gc, 6, A(a0, a1, a2, a3, a4, a5)); }
+static int s_lineWidthx(void *gc, unsigned a0)
+    { return (int)qc(785, gc, 1, A(a0)); }
+static int s_normal3x(void *gc, unsigned a0, unsigned a1, unsigned a2)
+    { return (int)qc(790, gc, 3, A(a0, a1, a2)); }
+static int s_orthox(void *gc, unsigned a0, unsigned a1, unsigned a2, unsigned a3, unsigned a4, unsigned a5)
+    { return (int)qc(792, gc, 6, A(a0, a1, a2, a3, a4, a5)); }
+static int s_pointSizex(void *gc, unsigned a0)
+    { return (int)qc(793, gc, 1, A(a0)); }
+static int s_polygonOffsetx(void *gc, unsigned a0, unsigned a1)
+    { return (int)qc(794, gc, 2, A(a0, a1)); }
+static int s_rotatex(void *gc, unsigned a0, unsigned a1, unsigned a2, unsigned a3)
+    { return (int)qc(795, gc, 4, A(a0, a1, a2, a3)); }
+static int s_translatex(void *gc, unsigned a0, unsigned a1, unsigned a2)
+    { return (int)qc(801, gc, 3, A(a0, a1, a2)); }
+static int s_multiTexCoord4x(void *gc, unsigned a0, unsigned a1, unsigned a2, unsigned a3, unsigned a4)
+    { return (int)qc(802, gc, 5, A(a0, a1, a2, a3, a4)); }
+static int s_sampleCoveragex(void *gc, unsigned a0, unsigned a1)
+    { return (int)qc(803, gc, 2, A(a0, a1)); }
 static int s_colorMask(void *gc, unsigned r, unsigned g, unsigned b, unsigned a)
     { return (int)qc(49, gc, 4, A(r, g, b, a)); }
 static int s_stencilMask(void *gc, unsigned mask)
@@ -547,6 +599,32 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
         for (i = 0; i < GLES_N_SLOTS; i++) {
             table[i] = gles_default_table[i];
         }
+        table[15] = (void *)s_clearStencil;
+        table[43] = (void *)s_color4ub;
+        table[57] = (void *)s_cullFace;
+        table[182] = (void *)s_normal3f;
+        table[199] = (void *)s_pointSize;
+        table[201] = (void *)s_polygonOffset;
+        table[254] = (void *)s_stencilFunc;
+        table[256] = (void *)s_stencilOp;
+        table[369] = (void *)s_multiTexCoord4f;
+        table[459] = (void *)s_sampleCoverage;
+        table[761] = (void *)s_alphaFuncx;
+        table[762] = (void *)s_clearColorx;
+        table[764] = (void *)s_clearDepthx;
+        table[767] = (void *)s_color4x;
+        table[768] = (void *)s_depthRangef;
+        table[769] = (void *)s_depthRangex;
+        table[773] = (void *)s_frustumx;
+        table[785] = (void *)s_lineWidthx;
+        table[790] = (void *)s_normal3x;
+        table[792] = (void *)s_orthox;
+        table[793] = (void *)s_pointSizex;
+        table[794] = (void *)s_polygonOffsetx;
+        table[795] = (void *)s_rotatex;
+        table[801] = (void *)s_translatex;
+        table[802] = (void *)s_multiTexCoord4x;
+        table[803] = (void *)s_sampleCoveragex;
         table[49]  = (void *)s_colorMask;
         table[255] = (void *)s_stencilMask;
         table[665] = (void *)s_isRenderbuffer;
