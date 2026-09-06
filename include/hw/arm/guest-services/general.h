@@ -35,6 +35,9 @@
 extern int32_t guest_svcs_errno;
 #pragma GCC diagnostic pop
 
+/* Darwin guest errno, independent of the host operating system. */
+#define QC_ERR_ENOSYS 78
+
 typedef enum {
     // File Descriptors API
     QC_CLOSE = 0x100,
@@ -48,6 +51,7 @@ typedef enum {
     QC_LISTEN,
     QC_RECV,
     QC_SEND,
+    /* Reserved wire values; the unused host-file backend is retired. */
     QC_WRITE_FILE,
     QC_READ_FILE,
     QC_SIZE_FILE,
