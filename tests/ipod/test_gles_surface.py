@@ -57,8 +57,10 @@ static void wd(unsigned v) {}
 static void wx(unsigned v) {}
 #define CA_FOURCC_565L GLES_SURFACE_RGB565
 #define CA_FOURCC_BGRA GLES_SURFACE_BGRA32
+static unsigned abi_format = 0x34323076;
 static int abi_surface_fault_read(unsigned long base,unsigned stride,unsigned rows,unsigned bytes)
-{ assert((base==0x10000000 || base==0x10000100) && stride==2 && bytes==2 && rows<=2);return 1; }
+{ unsigned expected=abi_format==GLES_SURFACE_RGB555?4:2;
+  assert((base==0x10000000 || base==0x10000100) && stride==expected && bytes==expected && rows<=2);return 1; }
 #define A(...) (const unsigned[]){__VA_ARGS__}
 static unsigned abi_args[8], abi_locks, abi_finished, abi_signals;
 static int abi_signal_error;
@@ -69,11 +71,11 @@ static int p_IOSurfaceLock(void *s, unsigned mode, unsigned *seed)
 static int p_IOSurfaceUnlock(void *s, unsigned mode, unsigned *seed)
 { surface_arg(s); assert(mode==1); abi_locks--; return 0; }
 static void *p_IOSurfaceGetBaseAddress(void *s) { surface_arg(s); return (void *)0x10000000; }
-static unsigned p_IOSurfaceGetBytesPerRow(void *s) { surface_arg(s); return 2; }
+static unsigned p_IOSurfaceGetBytesPerRow(void *s) { surface_arg(s); return abi_format==GLES_SURFACE_RGB555?4:2; }
 static unsigned p_IOSurfaceGetWidth(void *s) { surface_arg(s); return 2; }
 static unsigned p_IOSurfaceGetHeight(void *s) { surface_arg(s); return 2; }
-static unsigned p_IOSurfaceGetPixelFormat(void *s) { surface_arg(s); return 0x34323076; }
-static unsigned p_IOSurfaceGetPlaneCount(void *s) { surface_arg(s); return 2; }
+static unsigned p_IOSurfaceGetPixelFormat(void *s) { surface_arg(s); return abi_format; }
+static unsigned p_IOSurfaceGetPlaneCount(void *s) { surface_arg(s); return abi_format==GLES_SURFACE_RGB555?0:2; }
 static void *p_IOSurfaceGetBaseAddressOfPlane(void *s, unsigned plane)
 { surface_arg(s); return (void *)(uintptr_t)(0x10000000 + plane * 256); }
 static unsigned p_IOSurfaceGetBytesPerRowOfPlane(void *s, unsigned plane)
@@ -104,6 +106,9 @@ int main(void)
     assert(GLESBindCoreSurface(NULL, 0x84f5, (void *)0x1234));
     assert(abi_args[0]==0x84f5 && abi_args[1]==0x10000000 && abi_args[6]==0x10000100);
     assert(!abi_locks);
+    abi_format=GLES_SURFACE_RGB555;
+    assert(GLESBindCoreSurface(NULL,0x84f5,(void *)0x1234));
+    assert(abi_args[2]==4 && abi_args[5]==GLES_SURFACE_RGB555 && !abi_args[6] && !abi_locks);
     assert(GLESBindCoreSurface(NULL, 0x84f5, NULL));
     assert(!abi_args[1] && !abi_locks);
     assert(GLESFinishTexture(NULL, 0x0de1));
