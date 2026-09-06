@@ -340,7 +340,6 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
     // Subsequent bytes are data written to the selected register, which
     // auto-increments for multi-byte writes.
     uint8_t reg = s->curreg & 0xff;
-    uint8_t prev = s->regs[reg];
     s->regs[reg] = data;
     s->cmd = data;
     if (pmu_trace()) {
@@ -371,17 +370,6 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
              */
             if (data == PMU_STANDBY_GO) {
                 s->shutdown_armed = false;
-                pcf50633_guest_shutdown();
-            }
-            break;
-
-        case PMU_PWRLATCH_REG:
-            // Guest-requested power off (see the note in the header). On real
-            // hardware the PMU drops the rails here and the SoC simply stops;
-            // with no model for it the guest sat forever in its "pmu waiting
-            // for stdby" spin and the machine had to be killed, which is what
-            // made a clean shutdown impossible to use.
-            if ((prev & PMU_PWRLATCH_ON) && !(data & PMU_PWRLATCH_ON)) {
                 pcf50633_guest_shutdown();
             }
             break;

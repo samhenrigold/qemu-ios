@@ -60,11 +60,15 @@ int main(void) {
     assert(!s.shutdown_armed);
     guest_shutdown_confirmed = false;
     memset(&s, 0, sizeof(s));
-    /* 2.1.1: only the falling edge of the power latch is a shutdown. */
-    write_reg(&s, PMU_PWRLATCH_REG, 0x7f);
-    write_reg(&s, PMU_PWRLATCH_REG, 0x5f);
+    /* 5F138 clears bit 6 during idle sleep too; wait for the final command. */
+    write_reg(&s, 0x10, 0x7f);
+    write_reg(&s, 0x10, 0x5f);
     assert(shutdowns == 1 && !pcf50633_guest_shutdown_confirmed());
-    write_reg(&s, PMU_PWRLATCH_REG, 0x3f);
+    write_reg(&s, 0x10, 0x3f);
+    assert(shutdowns == 1 && !pcf50633_guest_shutdown_confirmed());
+    write_reg(&s, PMU_STANDBY_CMD, 0x80);
+    assert(shutdowns == 1 && !pcf50633_guest_shutdown_confirmed());
+    write_reg(&s, PMU_STANDBY_CMD, PMU_STANDBY_GO);
     assert(shutdowns == 2 && pcf50633_guest_shutdown_confirmed());
     puts("PMU guest shutdown checks passed");
 }
