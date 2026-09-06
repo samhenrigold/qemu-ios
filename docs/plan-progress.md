@@ -650,3 +650,22 @@ fixtures and replacing a reproduced timer-order race in the queue test with
 explicit readiness gates (`cd6309d`). Evidence: `/tmp/ltm-app-events-check-v3.log`,
 `/tmp/ltm-device-notice-ui-final.log`, `/tmp/ltm-event-catalog-checks-v6.log`,
 `/tmp/ltm-device-notice-build-v3.log`.
+
+### Shared firmware constants and safe kernel patches (2026-09-06)
+
+Exact verified 5F138/7E18 banners now select a shared firmware table. A legacy
+MBX register read previously wrote 2.1.1 BCM4325/USB addresses even when the
+kernel was unrecognized; those writes and the legacy clock patch are now
+5F138-only. 7E18 keeps the modeled PMU RTC path. AMFI default addresses require
+a detected mapped kernel; unknown research builds require all three explicit
+address/slide overrides. FMSS's existing 5F138 boot-argument buffer is centralized.
+
+Production detector/patch tests pass ASan/UBSan, including partial/ambiguous
+banners, early retry, cache/reset, zero writes to unknown/7E18 through MBX,
+legacy 5F138 writes and AMFI override guards. Early boot/NVRAM/audio configuration
+checks pass. Native 7E18 with AMFI enabled reaches Settings, survives a legacy
+MBX read with all five clock/driver regions unchanged, answers the agent, and
+confirms guest shutdown in 87.9 seconds (`/tmp/it-firmware-native.log`). Its
+retained clock-function bytes confirm no legacy clock patch was present before
+the read. Native 5F138 boot, the firmware-selection property and other behavior
+properties remain pending; see `configuration.md`.

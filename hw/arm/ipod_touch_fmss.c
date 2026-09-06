@@ -1,3 +1,4 @@
+#include "hw/arm/ipod_touch_firmware.h"
 #include "hw/arm/ipod_touch_fmss.h"
 #include "hw/arm/ipod_touch_guard.h"
 #include "migration/vmstate.h"
@@ -837,12 +838,9 @@ static void patch_iboot_bluetooth_node(void)
  * 2.1.1's kernel command line.
  *
  * 5F138 iBoot builds its boot_args from a runtime buffer at PA 0x0FF2A584 and
- * hands the result to XNU. The NOR nvram path is not a substitute: 7E18 iBoot
- * heap-panics on any NOR boot-args (see nor_set_boot_args()), so the nvram
- * atom is deliberately left alone, and with no poke the kernel comes up with
- * an empty command line -- no rd=disk0s1, so it cannot find its root device,
- * resets, and iBoot restarts. That is a silent boot loop: the Apple logo stays
- * up, "Boot Failure Count" climbs, and no kernel serial output ever appears.
+ * hands the result to XNU. Without this legacy command line it cannot find
+ * rd=disk0s1 and restarts. Release 7E18 iBoot instead ignores NVRAM boot
+ * arguments; the machine supplies its version-checked early handoff separately.
  *
  * iBoot overwrites the buffer as it runs, hence the rewrite on every NAND read
  * rather than a once-only patch.
@@ -850,7 +848,6 @@ static void patch_iboot_bluetooth_node(void)
  * The address is 5F138-specific, so this is skipped on the direct-iBoot
  * (3.1.3 / 7E18) path, which sets its command line via IT_BOOT_ARGS instead.
  */
-#define IBOOT_5F138_BOOT_ARGS_PA  0x0ff2a584u
 
 static void patch_iboot_boot_args(void)
 {
@@ -863,7 +860,7 @@ static void patch_iboot_boot_args(void)
         return;
     }
 
-    cpu_physical_memory_write(IBOOT_5F138_BOOT_ARGS_PA, boot_args,
+    cpu_physical_memory_write(it_firmware_by_build("5F138")->iboot_boot_args_pa, boot_args,
                               strlen(boot_args));
 }
 
