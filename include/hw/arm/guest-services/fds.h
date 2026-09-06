@@ -32,17 +32,6 @@
 #include "sys/socket.h"
 #endif
 
-#define MAX_FD_COUNT (256)
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wredundant-decls"
-extern int32_t guest_svcs_errno;
-#pragma GCC diagnostic pop
-extern int32_t guest_svcs_fds[MAX_FD_COUNT];
-
-#define VERIFY_FD(s) \
-    if ((s < 0) || (s >= MAX_FD_COUNT) || (-1 == guest_svcs_fds[s])) return -1;
-
 typedef struct __attribute__((packed)) {
     int32_t fd;
 } qc_close_args_t;
@@ -55,11 +44,7 @@ typedef struct __attribute__((packed)) {
     };
 } qc_fcntl_args_t;
 
-#ifndef OUT_OF_TREE_BUILD
-int32_t qc_handle_close(CPUState *cpu, int32_t fd);
-int32_t qc_handle_fcntl_getfl(CPUState *cpu, int32_t fd);
-int32_t qc_handle_fcntl_setfl(CPUState *cpu, int32_t fd, int32_t flags);
-#else
+#ifdef OUT_OF_TREE_BUILD
 int qc_close(int fd);
 int qc_fcntl(int fd, int cmd, ...);
 #endif

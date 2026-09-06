@@ -39,6 +39,7 @@ extern int32_t guest_svcs_errno;
 #define QC_ERR_ENOSYS 78
 
 typedef enum {
+    /* Reserved wire values: the unused host FD/socket tunnel is retired. */
     // File Descriptors API
     QC_CLOSE = 0x100,
     QC_FCNTL,
@@ -136,7 +137,7 @@ typedef struct __attribute__((packed)) {
     // Request
     qemu_call_number_t call_number;
     union {
-        // File Descriptors API
+        // Reserved FD/socket argument layouts remain part of the wire ABI.
         qc_close_args_t close;
         qc_fcntl_args_t fcntl;
         // Socket API
