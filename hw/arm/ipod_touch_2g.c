@@ -19,6 +19,7 @@
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "target/arm/cpregs.h"
 #include "qemu/error-report.h"
+#include "qemu/cutils.h"
 #include "ui/input.h"
 #include "ui/clipboard.h"
 
@@ -218,6 +219,70 @@ static void install_ram_watch(MemoryRegion *top, MemoryRegion *backing,
     warn_report("ipod: RAM watch on %08llx+%llx (reads=%d writes=%d nz=%d) -- "
                 "a probe; it slows the guest",
                 base, size, w->log_reads, w->log_writes, w->nonzero_only);
+}
+
+static void ipod_touch_get_bt(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    bool value = IPOD_TOUCH_MACHINE(obj)->bt_enabled;
+    visit_type_bool(v, name, &value, errp);
+}
+
+static void ipod_touch_set_bt(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->cpu) {
+        error_setg(errp, "bt must be set before the machine starts");
+        return;
+    }
+    bool value;
+    if (visit_type_bool(v, name, &value, errp)) {
+        nms->bt_enabled = value;
+        nms->bt_enabled_explicit = true;
+    }
+}
+
+static void ipod_touch_get_bt_latency_us(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    uint32_t value = IPOD_TOUCH_MACHINE(obj)->bt_latency_us;
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void ipod_touch_set_bt_latency_us(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->cpu) {
+        error_setg(errp, "bt-latency-us must be set before the machine starts");
+        return;
+    }
+    uint32_t value;
+    if (visit_type_uint32(v, name, &value, errp)) {
+        nms->bt_latency_us = value;
+        nms->bt_latency_us_explicit = true;
+    }
+}
+
+static bool ipod_touch_bt_env_aliases(IPodTouchMachineState *nms, Error **errp)
+{
+    const char *enabled = getenv("IT_BT");
+    const char *latency = getenv("IT_BT_LATENCY_US");
+    if (enabled && !nms->bt_enabled_explicit) {
+        nms->bt_enabled = enabled[0] != '0';
+        warn_report_once("IT_BT is deprecated; use -M iPod-Touch,bt=on|off");
+    }
+    if (latency && !nms->bt_latency_us_explicit) {
+        uint64_t value;
+        if (qemu_strtou64(latency, NULL, 0, &value) || value > UINT32_MAX) {
+            error_setg(errp, "IT_BT_LATENCY_US must be an unsigned 32-bit microsecond value");
+            return false;
+        }
+        nms->bt_latency_us = value;
+        warn_report_once("IT_BT_LATENCY_US is deprecated; use -M iPod-Touch,bt-latency-us=");
+    }
+    return true;
 }
 
 static void ipod_touch_get_osk(Object *obj, Visitor *v, const char *name,
@@ -1524,6 +1589,8 @@ static void ipod_touch_instance_finalize(Object *obj)
 static void ipod_touch_instance_init(Object *obj)
 {
     IPOD_TOUCH_MACHINE(obj)->audio_hw = ON_OFF_AUTO_AUTO;
+    IPOD_TOUCH_MACHINE(obj)->bt_enabled = true;
+    IPOD_TOUCH_MACHINE(obj)->bt_latency_us = 2000;
     IPOD_TOUCH_MACHINE(obj)->agent = ipod_agent_new();
     ipod_agent_publish(IPOD_TOUCH_MACHINE(obj)->agent);
     object_property_add_str(obj, "agent-request", NULL, ipod_touch_set_agent_request);
@@ -2835,6 +2902,9 @@ static void ipod_touch_machine_init(MachineState *machine)
     AddressSpace *nsas;
     ARMCPU *cpu;
 
+    if (!ipod_touch_bt_env_aliases(nms, &error_fatal)) {
+        return;
+    }
     ipod_touch_audio_env_alias(nms);
     ipod_touch_osk_env_alias(nms);
     ipod_touch_cpu_setup(machine, &sysmem, &cpu, &nsas);
@@ -2936,7 +3006,7 @@ static void ipod_touch_machine_init(MachineState *machine)
      * once DMAC0 exists.
      */
     uart1_dev = exynos4210_uart_create(UART1_MEM_BASE, 256, 1,
-                                       it_bt_chardev(serial_hd(1)),
+                                       it_bt_chardev(serial_hd(1), nms->bt_enabled, nms->bt_latency_us),
                                        nms->irq[0][25]);
     if (!uart1_dev) {
         hw_error("Failed to create UART1 device!");
@@ -3370,6 +3440,12 @@ static void ipod_touch_machine_init(MachineState *machine)
 
 static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
 {
+    object_class_property_add(klass, "bt", "bool", ipod_touch_get_bt,
+                              ipod_touch_set_bt, NULL, NULL);
+    object_class_property_set_description(klass, "bt", "Emulated Bluetooth HCI controller (default on)");
+    object_class_property_add(klass, "bt-latency-us", "uint32", ipod_touch_get_bt_latency_us,
+                              ipod_touch_set_bt_latency_us, NULL, NULL);
+    object_class_property_set_description(klass, "bt-latency-us", "HCI reply delay in microseconds (default 2000)");
     object_class_property_add(klass, "osk", "bool", ipod_touch_get_osk,
                               ipod_touch_set_osk, NULL, NULL);
     object_class_property_set_description(klass, "osk",
