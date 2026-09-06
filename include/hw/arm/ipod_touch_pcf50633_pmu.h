@@ -85,43 +85,16 @@ typedef struct Pcf50633State {
 // press the PMU latches the EVENT_C bit and raises IRQ 0x61; iOS reads EVENT_A-C
 // (clearing them), decodes the bit to a specifier (regIdx*8+bit: hold=0x11,
 // menu=0x10), and the handler reads STAT reg 0x19 to confirm the button.
-// Power latch. Register 0x10 bit 6 is the "system power is on" latch: iBoot
-// sets it while still running from SRAM (the very first 0x10 write of any boot,
-// value 0x7f, from pc 0x2200227a), and it stays set for the whole life of the
-// machine. iOS clears it -- and only it, 0x7f -> 0x3f, a read-modify-write of
-// exactly this bit -- as the last register access of a clean shutdown, right
-// before the kernel prints "pmu waiting for stdby" and spins waiting for the
-// power rail to collapse. Nothing else in a whole boot-to-shutdown run touches
-// bit 6; the other traffic to 0x10 toggles bit 5 (0x7f <-> 0x5f).
-//
-// So this write is the guest's power-off request, and it is the point at which
-// the root volume has already been unmounted -- which is what makes a clean
-// shutdown flush HFS+'s in-memory catalog to flash.
-#define PMU_PWRLATCH_REG 0x10
-#define PMU_PWRLATCH_ON  (1 << 6)
-
 /*
- * Standby command. 3.1.3 does NOT power off by clearing the 0x10 latch the way
- * 2.1.1 does -- traced end to end on 7E18, its shutdown reads 0x10 as 0xe0 and
- * writes 0xe0 straight back, bit 6 untouched. What it does instead, as the very
- * last PMU access of the whole sequence, is write 0x90 here:
+ * Final power command. Native 7E18 shutdown writes 0x90 after sequencing
+ * regulators down and masking interrupts. It must work without host arming.
  *
- *   ... 0x50..0x5a (scratch saved)  0x30=00 0x31=00 (regulators down)
- *       0x1d=12  0x10 rmw (no change)  0x0a=18  0x33=00 0x34=80 0x31=00
- *       0x07=d1 0x08=ff 0x09=f0 (all interrupts masked)  0x61=00
- *       0x6f=90   <-- and then the guest never touches the PMU again
- *
- * 0x6f is written exactly once in a whole boot-to-shutdown run and never during
- * normal operation, so this write IS the "cut the rails now" request; on real
- * silicon the power simply goes at this point. Without a model for it the guest
- * sat in "pmu waiting for stdby" forever with the root volume still mounted --
- * which is the whole reason a clean shutdown has never worked on 3.1.3, and why
- * everything installed in a session could vanish with it.
- *
- * Native launchd shutdown emits this command without a host powerdown request.
- * A host-only arming flag incorrectly discarded that genuine hardware command.
- * The shutdown event proves the standby write; filesystem cleanliness must
- * still be verified independently by the persistence regression.
+ * 5F138 idle sleep clears register 0x10 bit 6 (0x7f -> 0x3f), then continues
+ * through regulator and wake-mask setup before writing 0x6f=0x80 and printing
+ * "pmu go hib". The earlier register-0x10 shutdown heuristic terminated this
+ * sleep sequence prematurely. Store those ordinary register writes; only the
+ * final standby command confirms shutdown. Filesystem cleanliness still needs
+ * separate persistence verification.
  */
 #define PMU_STANDBY_CMD  0x6f
 #define PMU_STANDBY_GO   0x90
