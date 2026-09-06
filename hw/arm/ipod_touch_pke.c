@@ -3,7 +3,6 @@
 #include "hw/arm/ipod_touch_sha1.h"
 #include "qemu/log.h"
 #include <openssl/bn.h>
-#include <openssl/bio.h>
 
 /*
  * Forging an img3 signature check.
@@ -53,50 +52,6 @@ static bool build_pkcs1_block(uint8_t *out, size_t len, const uint8_t hash[20])
     memcpy(out + len - tail, sha1_digestinfo, sizeof(sha1_digestinfo));
     memcpy(out + len - 20, hash, 20);
     return true;
-}
-
-static uint8_t *datahex(char* string) {
-
-    if(string == NULL) 
-       return NULL;
-
-    size_t slength = strlen(string);
-    if((slength % 2) != 0) // must be even
-       return NULL;
-
-    /*
-     * No guard on dlength: it is strlen(string)/2 of a NUL-terminated string
-     * this file produced with BN_bn2hex, so the allocation is by construction
-     * exactly as long as what is written into it. The guest influences the
-     * VALUE through the segments, but not the length relationship -- and the
-     * modexp result is bounded by the modulus, i.e. by segment_size, which
-     * START already rejects unless it is 128 or 256 bytes.
-     */
-    size_t dlength = slength / 2;
-
-    uint8_t *data = g_malloc0(dlength);
-
-    size_t index = 0;
-    while (index < slength) {
-        char c = string[index];
-        int value = 0;
-        if(c >= '0' && c <= '9')
-          value = (c - '0');
-        else if (c >= 'A' && c <= 'F') 
-          value = (10 + (c - 'A'));
-        else if (c >= 'a' && c <= 'f')
-          value = (10 + (c - 'a'));
-        else {
-          g_free(data);
-          return NULL;
-        }
-
-        data[(index/2)] += value << (((index + 1) % 2) * 4);
-
-        index++;
-    }
-
-    return data;
 }
 
 static uint64_t ipod_touch_pke_read(void *opaque, hwaddr offset, unsigned size)
@@ -156,131 +111,53 @@ static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, un
 
             if(s->num_started == 5) { // TODO this is arbitrary!
 
-                if (s->segment_size == 0 ||
-                    s->segment_size > sizeof(s->segments) / 2) {
+                if (s->segment_size != 128 && s->segment_size != 256) {
                     qemu_log_mask(LOG_GUEST_ERROR,
-                                  "[PKE] START with an unusable segment size "
-                                  "(%u); ignored\n", s->segment_size);
+                                  "[PKE] unsupported segment size %u; ignored\n",
+                                  s->segment_size);
                     break;
                 }
 
-
-                BIGNUM *mod_bn = BN_lebin2bn(s->segments, s->segment_size, NULL);
-                BIGNUM *base_bn = BN_lebin2bn(s->segments + s->segment_size, s->segment_size, NULL);
-                BIGNUM *exp_bn = BN_new();
-                BN_dec2bn(&exp_bn,"65537");
-                // BN_print(BIO_new_fp(stdout, BIO_NOCLOSE), exp_bn);
-                // printf("\n\n");
-
-                BIGNUM *res = BN_new();
+                uint8_t result[256], expected[256];
+                BIGNUM *mod = BN_lebin2bn(s->segments, s->segment_size, NULL);
+                BIGNUM *base = BN_lebin2bn(s->segments + s->segment_size,
+                                         s->segment_size, NULL);
+                BIGNUM *exponent = BN_new(), *recovered = BN_new();
                 BN_CTX *ctx = BN_CTX_new();
-                BN_mod_exp(res, base_bn, exp_bn, mod_bn, ctx);
-                // BN_print(BIO_new_fp(stdout, BIO_NOCLOSE), res);
-                // printf("\n\n");
-
-                char *bn_hex = BN_bn2hex(res);
-                /* g_autofree: the forge path below leaves this block with a
-                 * `break`, so the buffer was leaked once per signature check. */
-                g_autofree char *res_hex = (char *)datahex(bn_hex);
-                /*
-                 * res_hex is exactly strlen(bn_hex)/2 bytes and BN_bn2hex is
-                 * minimal-length, so on a FAILED verification it is shorter
-                 * than segment_size - 1 -- which is the length everything below
-                 * used to assume. datahex() also returns NULL outright for an
-                 * odd-length hex string. res_len is the only length that is
-                 * actually backed by an allocation.
-                 */
-                size_t res_len = res_hex ? strlen(bn_hex) / 2 : 0;
-
-                if (getenv("IT_PKE_DEBUG")) {
-                    printf("[PKE] modexp: result is %zu bytes (segment_size=%d)\n",
-                           strlen(bn_hex) / 2, s->segment_size);
-                    printf("[PKE]   mod : ");
-                    for (int i = 0; i < 8; i++) { printf("%02x", s->segments[i]); }
-                    printf("..");
-                    for (int i = s->segment_size - 8; i < s->segment_size; i++) {
-                        printf("%02x", s->segments[i]);
-                    }
-                    printf("\n[PKE]   base: ");
-                    for (int i = 0; i < 8; i++) {
-                        printf("%02x", s->segments[s->segment_size + i]);
-                    }
-                    printf("..");
-                    for (int i = s->segment_size - 8; i < s->segment_size; i++) {
-                        printf("%02x", s->segments[s->segment_size + i]);
-                    }
-                    printf("\n");
-                    printf("[PKE]   head: ");
-                    for (size_t i = 0; i < MIN((size_t)8, res_len); i++) {
-                        printf("%02x", (uint8_t)res_hex[i]);
-                    }
-                    printf("  tail: ");
-                    for (size_t i = (res_len > 24) ? res_len - 24 : 0;
-                         i < res_len; i++) {
-                        printf("%02x", (uint8_t)res_hex[i]);
-                    }
-                    printf("\n");
+                bool ok = mod && base && exponent && recovered && ctx &&
+                          !BN_is_zero(mod) && BN_set_word(exponent, 65537) &&
+                          BN_mod_exp(recovered, base, exponent, mod, ctx) &&
+                          BN_bn2binpad(recovered, result, s->segment_size) == s->segment_size;
+                BN_free(mod);
+                BN_free(base);
+                BN_free(exponent);
+                BN_free(recovered);
+                BN_CTX_free(ctx);
+                if (!ok) {
+                    qemu_log_mask(LOG_GUEST_ERROR, "[PKE] modular exponentiation failed\n");
+                    break;
                 }
 
-                /*
-                 * A well formed recovery is one byte shorter than the modulus
-                 * (the leading 0x00 of the PKCS#1 block) and starts 0x01 0xFF.
-                 * Anything else means the signature did not verify.
-                 */
-                /*
-                 * KNOWN BUG, DELIBERATELY NOT FIXED HERE -- needs a boot test.
-                 * res_hex is char*, signed on this target, so `res_hex[1] ==
-                 * 0xff` is a comparison of a value in [-128,127] against 255
-                 * and clang proves it always false. well_formed can therefore
-                 * NEVER be true, and this signature well-formedness check has
-                 * never once run. The fix is (uint8_t)res_hex[1] == 0xff.
-                 *
-                 * It is left alone because turning a check on that has never
-                 * executed is a behaviour change on the signature path, and
-                 * the "modexp only runs on the 5th START" hack in this file may
-                 * well be a compensation built on top of this being broken.
-                 * Change ONE variable: fix the cast, boot, see whether the
-                 * 5th-START behaviour changes, and only then touch the counter.
-                 */
-                bool well_formed = res_len >= 2 &&
-                                   (res_len == (size_t)s->segment_size - 1) &&
-                                   res_hex[0] == 0x01 && res_hex[1] == 0xff;
-
+                /* Validate the entire SHA1 DigestInfo/padding, using the
+                 * recovered digest. The old signed-char 0xff comparison was
+                 * always false, so even valid signatures were forged. */
+                bool well_formed = build_pkcs1_block(expected, s->segment_size,
+                                        result + s->segment_size - 20) &&
+                                   !memcmp(result, expected, s->segment_size);
                 if (!well_formed && forge_sigcheck_enabled()) {
                     uint8_t hash[20];
-                    g_autofree uint8_t *block = g_malloc0(s->segment_size);
-
-                    if (ipod_touch_sha1_last_hash(hash) &&
-                        build_pkcs1_block(block, s->segment_size, hash)) {
-                        /* SEG1 holds the value little endian. */
-                        for (int i = 0; i < s->segment_size; i++) {
-                            s->segments[s->segment_size + i] =
-                                block[s->segment_size - 1 - i];
-                        }
+                    if (ipod_touch_sha1_last_hash(hash)) {
+                        build_pkcs1_block(result, s->segment_size, hash);
                         if (getenv("IT_PKE_DEBUG")) {
-                            printf("[PKE]   forged a valid signature block\n");
+                            printf("[PKE] forged a signature block\n");
                         }
-                        break;
                     }
                 }
-
-                /*
-                 * Copy this into SEG1 - the hex conversion drops the leading
-                 * 0x00 bytes, so add one back and shift everything right one
-                 * place. The loop always ran segment_size - 1 (255 or 127)
-                 * iterations: on a SUCCESSFUL verification res_len is exactly
-                 * that and it closed, but on a failed one -- the normal case for
-                 * the 7E18 images, and the entire reason IT_FORGE_SIGCHECK
-                 * exists -- it read up to 255 bytes past a shorter heap
-                 * allocation and copied them into guest-visible segment memory.
-                 * Copy what exists and zero-fill the rest.
-                 */
-                size_t copy_n = MIN(res_len, (size_t)s->segment_size - 1);
-                for (size_t i = 0; i < (size_t)s->segment_size - 1; i++) {
-                    s->segments[2 * s->segment_size - 2 - i] =
-                        (i < copy_n) ? (uint8_t)res_hex[i] : 0x00;
+                /* Fixed-width conversion preserves leading zeros and short
+                 * results. SEG1 holds the same integer little-endian. */
+                for (size_t i = 0; i < s->segment_size; i++) {
+                    s->segments[s->segment_size + i] = result[s->segment_size - 1 - i];
                 }
-                s->segments[s->segment_size + s->segment_size - 1] = 0x0;
             }
             break;
         }
