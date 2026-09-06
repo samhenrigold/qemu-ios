@@ -98,3 +98,15 @@ dimensions/colors, completed and uncertain receipts, malformed input, and cold
 persistence with two guest-confirmed shutdowns. It captures album/grid/full-size
 screens. The current full-size image and album poster render correctly, but the
 grid thumbnail is blank; that rendering issue remains under investigation.
+
+Before confirming an import, the helper synchronously calls 7E18 ITSync's
+`ITDBPrepServerPostProcessRun(NULL, 1)`. The second argument selects
+`sendMessageAndReceiveReplyName:userInfo:` rather than the asynchronous send.
+This finishes native sorting/index work before the user opens Music.
+
+Without this step, Music's `SyncHelper` starts post-processing during launch
+and can exit as its sync phase ends. An isolated interposition trace identifies
+`-[SyncHelper _delayedTerminate]` at `0x57bc4`, calling UIKit's
+`terminateWithSuccess` with status 0. It is not a volume-button crash. The native
+Light Touch media test now requires Music to stay foreground through its first
+Songs tab and volume setup; it no longer relaunches Music to recover.
