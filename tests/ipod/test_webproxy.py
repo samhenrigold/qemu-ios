@@ -71,6 +71,25 @@ with tempfile.TemporaryDirectory() as tmp:
                     str(ROOT / 'contrib/it-webproxy/itwebproxy.c'), '-lcurl', '-o', str(exe)], check=True)
     config = tmp / 'configuration with spaces'
     config.write_text('direct\n')
+    # Parse authorities, never substring-match URLs or block parent domains.
+    check = tmp / 'retired.c'
+    check.write_text('#define main proxy_main\n#include "' +
+        str(ROOT / 'contrib/it-webproxy/itwebproxy.c') + '"\n#undef main\n' + r'''
+#include <assert.h>
+int main(void) {
+    assert(retired_url("http://API.OpenFeint.com.:80/request"));
+    assert(retired_url("https://gdata.youtube.com/feeds"));
+    assert(!retired_url("http://openfeint.com/"));
+    assert(!retired_url("http://api.openfeint.com.example.org/"));
+    assert(!retired_url("http://example.org/api.openfeint.com"));
+    assert(!retired_url("http://api.openfeint.com@example.org/"));
+    assert(!retired_url("http://[::1]/gdata.youtube.com"));
+    assert(!retired_url("not a URL"));
+}
+''')
+    subprocess.run(['cc', '-g', '-fsanitize=address,undefined', '-Wno-deprecated-declarations',
+                    str(check), '-lcurl', '-o', str(tmp/'retired')], check=True)
+    subprocess.run([str(tmp/'retired')], check=True)
     origin = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Origin)
     threading.Thread(target=origin.serve_forever, daemon=True).start()
     url = f'http://127.0.0.1:{origin.server_port}/test'
@@ -82,6 +101,9 @@ with tempfile.TemporaryDirectory() as tmp:
         result = request(f'GET {url} HTTP/1.1\r\nHost: ignored\r\n\r\n'.encode())
         assert result.endswith(b'\r\n\r\nhello'), result
         assert b'Transfer-Encoding' not in result and b'Connection: close' in result
+    for host in ['api.openfeint.com', 'GDATA.YOUTUBE.COM.']:
+        assert request(f'GET http://{host}/ HTTP/1.0\r\n\r\n'.encode()).startswith(b'HTTP/1.0 410 ')
+        assert request(f'CONNECT {host}:443 HTTP/1.0\r\n\r\n'.encode()).startswith(b'HTTP/1.0 410 ')
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(get, range(24)))
     result = request(f'POST {url} HTTP/1.0\r\nContent-Length: 4\r\n\r\n'.encode() + b'a\0bc')
@@ -114,6 +136,7 @@ with tempfile.TemporaryDirectory() as tmp:
                     f'-DARCHIVE_ORIGIN="http://127.0.0.1:{origin.server_port}"',
                     str(ROOT / 'contrib/it-webproxy/itwebproxy.c'), '-lcurl', '-o', str(exe)], check=True)
     config.write_text('archive\n20090909\n')
+    assert request(b'GET http://api.openfeint.com/ HTTP/1.0\r\n\r\n').endswith(b'ARCHIVED ORIGINAL PAGE')
     archived = request(b'GET http://example.invalid/page HTTP/1.0\r\nCookie: secret=value\r\nAuthorization: Basic secret\r\n\r\n')
     assert archived.count(b'HTTP/1.0') == 1 and b'200 Archive response' in archived, archived
     assert archived.endswith(b'ARCHIVED ORIGINAL PAGE') and b'Set-Cookie' not in archived, archived

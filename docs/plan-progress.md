@@ -504,3 +504,24 @@ Existing random-ID song imports are not retroactively indexed. Photo content
 identity remains pending because its receipts need to distinguish a saved photo
 from one subsequently deleted in Photos. Photo retry receipts retain their
 previous behavior; new photo uploads gain atomic publication only.
+
+### Recovery and Apps menu follow-through
+
+Light Touch session-tags staging files so a delayed startup sweep cannot remove
+new uploads. It also removes only recognized abandoned atomic media temporary
+files; canonical media, receipts and unknown files remain. Native Photos/AFC
+acceptance seeded old and current uploads, swept them, verified preservation,
+then checked the single saved photo and guest-confirmed shutdown
+(`/tmp/ltm-photo-cleanup-native.log`). The Apps menu shares the inspector's
+existing actions, using selected rows while context menus use clicked rows.
+Native menu checks cover selection, batches, cancellation and empty lists.
+
+### Retired-service fast failure
+
+Direct proxy mode returns HTTP 410 for exactly `api.openfeint.com` and
+`gdata.youtube.com`, including CONNECT, before contacting an origin. Dated,
+disabled and upstream modes bypass the policy. Host sanitizer tests cover
+authority parsing, lookalike domains and archive access; TLS regressions pass.
+Native NSURLConnection returned prompt HTTP 410 for both hosts after the normal
+HTTP fixture passed (`/tmp/it-proxy-retired-native.log`). This is a failure path,
+not service revival or a blanket advertising/analytics block.
