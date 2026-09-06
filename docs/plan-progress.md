@@ -181,4 +181,9 @@ This completes the TLS transport step; modern WebKit feature gaps remain.
   path. The default guest-agent check verifies readiness, ping, shell arithmetic
   and an exact 70 KiB binary round trip. Device-free checks reject operation
   failures and successful responses containing corrupt bytes. The remaining
-  Harness graphics/audio integration is in progress.
+  Harness graphics/audio integration is now implemented: app install/launch,
+  GLES, agent and stereo audio join the default tier. GLES uses the baked
+  renderer unless `--stage-gles-shim` is requested, with a Harness fallback when
+  GLTest is absent. Native GLES passed. The new audio check detects a real silent
+  host output despite nonzero raw I2S samples; amplifier/routing investigation
+  remains active. No audio PASS is claimed.

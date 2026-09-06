@@ -39,7 +39,7 @@ none of them is a smoke test: "did it boot?" would have missed all of them.
               they should.
 
 Usage:
-    tests/ipod/regress.py                    # default tier: boot, fsck, persist, agent
+    tests/ipod/regress.py                    # default tier: boot, fsck, persist, appinstall, applaunch, gles, agent, audio
     tests/ipod/regress.py --with-apps         # + afc, usbtcp, wifi, appinstall, applaunch
     tests/ipod/regress.py --quick            # boot + afc only, one boot
     tests/ipod/regress.py --checks boot,wifi # explicit selection, any tier
@@ -109,13 +109,9 @@ LIT_THRESHOLD = 8
 
 # Default tier: self-contained on a clean checkout, needs only a built qemu
 # and a base NAND image containing it_agent.
-DEFAULT_CHECKS = ["boot", "fsck", "persist", "agent"]
-# Opt-in tier, behind --with-apps: needs the out-of-tree usbmuxd fork and/or
-# the bundled Harness IPA. gles is here rather than in
-# the default tier because it needs a guest app built by
-# contrib/it-gles/build.sh (which needs the 3.1.3 SDK) and an sshd on the
-# image, neither of which a clean checkout has.
-OPT_IN_CHECKS = ["afc", "usbtcp", "wifi", "appinstall", "applaunch", "gles", "respring", "restart"]
+DEFAULT_CHECKS = ["boot", "fsck", "persist", "appinstall", "applaunch", "gles", "agent", "audio"]
+# Additional transport and restart checks remain opt-in.
+OPT_IN_CHECKS = ["afc", "usbtcp", "wifi", "respring", "restart"]
 ALL_CHECKS = DEFAULT_CHECKS + OPT_IN_CHECKS + ["serial-console", "webproxy"]
 QUICK_CHECKS = ["boot", "afc"]
 
@@ -124,7 +120,7 @@ QUICK_CHECKS = ["boot", "afc"]
 # "current state" claim that it doesn't; that turned out not to hold, so it
 # SKIPs individually rather than being promised as an unconditional PASS.
 USB_DEPENDENT_CHECKS = {"afc", "usbtcp", "appinstall", "applaunch", "persist",
-                        "gles", "respring", "restart", "webproxy"}
+                        "gles", "audio", "respring", "restart", "webproxy"}
 # Checks that need a real .ipa.
 IPA_DEPENDENT_CHECKS = {"appinstall", "applaunch"}
 
@@ -331,8 +327,9 @@ class Device:
 
     # -- lifecycle ---------------------------------------------------------
 
-    def start(self):
+    def start(self, audio_wav=None):
         cfg = self.cfg
+        self.audio_wav = audio_wav
         # usbmuxd is only needed by USB-side checks; on a run where all of
         # those are SKIPped (no usbmuxd binary), don't try to spawn one.
         if getattr(cfg, "usbmuxd_ok", True):
@@ -375,7 +372,7 @@ class Device:
         argv += ["-m", cfg.mem, "-display", "none",
                 # Headless runs stay silent: without this QEMU opens the host's
                 # CoreAudio device and plays guest sound out of the speakers.
-                "-audio", "driver=none",
+                "-audio", ("driver=wav,path=" + audio_wav if audio_wav else "driver=none"),
                 "-serial", "file:" + self.serial,
                 "-qmp", "tcp:127.0.0.1:%d,server=on,wait=off" % cfg.qmp_port]
         if cfg.wifi:
@@ -1135,6 +1132,74 @@ def check_agent(cfg, procs, dev, r):
         itqmp.agent(dev.qmp, "exec", "rm -f " + remote)
 
 
+def check_audio(cfg, procs, dev, r):
+    """Start the bundled stereo fixture; validate the finalized WAV after shutdown."""
+    port = prepare_launcher(cfg, procs, dev, r)
+    if port is None:
+        return False
+    if not app_is_installed(cfg, "com.qemuios.harness"):
+        install = run(["ideviceinstaller", "install", HARNESS_IPA], cfg, cfg.install_timeout)
+        if install.returncode or not app_is_installed(cfg, "com.qemuios.harness"):
+            return r.set(False, "Harness installation failed: " + install.stderr[-200:])
+    ok, detail = unlock(cfg, port, dev)
+    if not ok:
+        return r.set(False, detail)
+    response = springboard(cfg, port, "com.qemuios.harness")
+    if response.returncode:
+        return r.set(False, "Harness launch failed: " + response.stderr[-200:])
+    time.sleep(4)
+    if not foreground_is(cfg, port, "com.qemuios.harness"):
+        return r.set(False, "Harness is not the foreground app")
+    # Establish audible guest volume independently of saved NAND preferences.
+    for _ in range(16):
+        itqmp.button(dev.qmp, "volup", hold_ms=100)
+    time.sleep(2)
+    itqmp.move(dev.qmp, 160, 290)
+    dev.qmp.cmd("input-send-event", events=[{"type": "btn", "data": {"down": True, "button": "left"}}])
+    for step in range(1, 27):
+        itqmp.move(dev.qmp, 160, 290 - step * 5)
+        time.sleep(.05)
+    time.sleep(.5)
+    dev.qmp.cmd("input-send-event", events=[{"type": "btn", "data": {"down": False, "button": "left"}}])
+    time.sleep(.5)
+    dev.qmp.tap(160, 211)
+    time.sleep(.25)
+    to_png(dev.qmp.shot(os.path.join(dev.dir, "audio.ppm")), os.path.join(dev.dir, "audio.png"))
+    if itqmp.agent_alive(dev.qmp):
+        status, tree = itqmp.agent(dev.qmp, "uidump")
+        with open(os.path.join(dev.dir, "audio-ui.txt"), "wb") as output:
+            output.write(tree)
+        if status or b"RUNNING audio stereo.wav" not in tree:
+            return r.set(False, "Harness did not start stereo PCM; see audio-ui.txt")
+    time.sleep(8)
+    dev.qmp.tap(50, 39)  # Stop
+    dev.qmp.home()
+    log("  audio: playback requested; awaiting finalized host WAV")
+    return True
+
+
+def verify_audio(path, r):
+    import wave
+    import numpy as np
+    with wave.open(path, "rb") as recording:
+        if recording.getnchannels() != 2 or recording.getsampwidth() != 2:
+            return r.set(False, "expected stereo 16-bit PCM")
+        rate = recording.getframerate()
+        samples = np.frombuffer(recording.readframes(recording.getnframes()), dtype="<i2").reshape(-1, 2)
+    active = np.max(np.abs(samples.astype(np.int32)), axis=1) > 100
+    seconds = np.count_nonzero(active) / rate
+    if seconds < 4:
+        return r.set(False, "only %.2f seconds of non-silent audio" % seconds)
+    peaks = []
+    for channel, expected in enumerate((440, 880)):
+        spectrum = np.abs(np.fft.rfft(samples[:, channel]))
+        hz = (np.argmax(spectrum[1:]) + 1) * rate / len(samples)
+        peaks.append(hz)
+        if abs(hz - expected) > 5:
+            return r.set(False, "channel %d peak %.1f Hz; expected %d Hz" % (channel, hz, expected))
+    return r.set(True, "%.2f seconds; left %.1f Hz, right %.1f Hz" % (seconds, *peaks))
+
+
 def check_gles(cfg, procs, dev, r):
     """Prove the OpenGL ES HLE layer still renders, on the real panel.
 
@@ -1149,11 +1214,14 @@ def check_gles(cfg, procs, dev, r):
     app = os.path.join(GLES_DIR, "GLTest.app")
     shim = os.path.join(GLES_DIR, "MBXGLEngine")
     launcher = os.path.join(GLES_DIR, "sblaunch")
-    missing = [os.path.basename(p) for p in (app, shim, launcher)
-               if not os.path.exists(p)]
+    harness = not os.path.exists(app)
+    bundle_id = "com.qemuios.harness" if harness else GLES_BUNDLE_ID
+    prerequisites = [HARNESS_IPA if harness else app, launcher]
+    if getattr(cfg, "stage_gles_shim", False):
+        prerequisites.append(shim)
+    missing = [os.path.basename(path) for path in prerequisites if not os.path.exists(path)]
     if missing:
-        return r.skip("run contrib/it-gles/build.sh first (no %s)"
-                      % ", ".join(missing))
+        return r.skip("build the guest fixtures first (no %s)" % ", ".join(missing))
     port = prepare_launcher(cfg, procs, dev, r)
     if port is None:
         return False
@@ -1164,40 +1232,49 @@ def check_gles(cfg, procs, dev, r):
     # only sporadically -- measured 4 times out of 8 identical runs, with pokes
     # over 200s failing to force it. `ideviceinstaller install` is the path
     # this image was built to accept and it registers first time, every time.
-    if not install_gles_app(cfg, r):
+    if harness:
+        if not app_is_installed(cfg, bundle_id):
+            installed = run(["ideviceinstaller", "install", HARNESS_IPA], cfg, cfg.install_timeout)
+            if installed.returncode or not app_is_installed(cfg, bundle_id):
+                return r.set(False, "Harness installation failed")
+    elif not install_gles_app(cfg, r):
         return False
-    p = guest_ssh(cfg, port, None, timeout=300, scp_from=shim, scp_to="/tmp/MBXGLEngine")
-    if p.returncode != 0:
-        return r.set(False, "scp MBXGLEngine failed: %s" % p.stderr.strip()[-160:])
-    # The stock bundle is kept alongside ours so a later manual run can restore
-    # it; /System is why this goes over ssh and not AFC.
-    bundle = ("/System/Library/Frameworks/OpenGLES.framework/"
-              "MBXGLEngine.bundle")
-    p = guest_ssh(cfg, port, [
-        "set -e; "
-        "chmod 755 /tmp/sblaunch; "
-        "if [ ! -f {b}/MBXGLEngine.stock ]; then "
-        "cp {b}/MBXGLEngine {b}/MBXGLEngine.stock; fi; "
-        "cp /tmp/MBXGLEngine {b}/MBXGLEngine; chmod 755 {b}/MBXGLEngine; "
-        "printf %s {id} > /tmp/sblaunch.id".format(b=bundle,
-                                                   id=GLES_BUNDLE_ID)],
-        timeout=120)
-    if p.returncode != 0:
-        return r.set(False, "staging the shim failed: %s"
-                     % (p.stdout + p.stderr).strip()[-200:])
+    if getattr(cfg, "stage_gles_shim", False):
+        p = guest_ssh(cfg, port, None, timeout=300, scp_from=shim, scp_to="/tmp/MBXGLEngine")
+        if p.returncode != 0:
+            return r.set(False, "scp MBXGLEngine failed: %s" % p.stderr.strip()[-160:])
+        # The stock bundle is kept alongside ours so a later manual run can restore
+        # it; /System is why this goes over ssh and not AFC.
+        bundle = ("/System/Library/Frameworks/OpenGLES.framework/"
+                  "MBXGLEngine.bundle")
+        p = guest_ssh(cfg, port, [
+            "set -e; "
+            "chmod 755 /tmp/sblaunch; "
+            "if [ ! -f {b}/MBXGLEngine.stock ]; then "
+            "cp {b}/MBXGLEngine {b}/MBXGLEngine.stock; fi; "
+            "cp /tmp/MBXGLEngine {b}/MBXGLEngine; chmod 755 {b}/MBXGLEngine; "
+            "printf %s {id} > /tmp/sblaunch.id".format(b=bundle,
+                                                       id=GLES_BUNDLE_ID)],
+            timeout=120)
+        if p.returncode != 0:
+            return r.set(False, "staging the shim failed: %s"
+                         % (p.stdout + p.stderr).strip()[-200:])
 
     ok, detail = unlock(cfg, port, dev)
     if not ok:
         return r.set(False, detail)
-    p = springboard(cfg, port, GLES_BUNDLE_ID)
+    p = springboard(cfg, port, bundle_id)
     out = (p.stdout + p.stderr).strip()
     if p.returncode != 0:
         return r.set(False, "sblaunch refused: %s" % out[-200:])
     log("  gles: %s" % out)
 
+    if harness:
+        time.sleep(4)
+        dev.qmp.tap(150, 79)  # First menu row: deterministic GL scene
     time.sleep(GLES_SETTLE_S)
-    if not foreground_is(cfg, port, GLES_BUNDLE_ID):
-        return r.set(False, "GLTest is not the foreground app after launch")
+    if not foreground_is(cfg, port, bundle_id):
+        return r.set(False, "GLES fixture is not the foreground app after launch")
     a = dev.qmp.shot(os.path.join(dev.dir, "gles-a.ppm"))
     time.sleep(GLES_HOLD_S)
     b = dev.qmp.shot(os.path.join(dev.dir, "gles-b.ppm"))
@@ -1234,7 +1311,7 @@ def check_gles(cfg, procs, dev, r):
                                             % (n, names.get(n, "slot %d?" % n))
                                             for n in new)))
     if min(ma, ca) < GLES_QUAD_MIN:
-        return r.set(False, "GLTest's scene is not on the panel: magenta=%.3f "
+        return r.set(False, "GLES fixture scene is not on the panel: magenta=%.3f "
                             "cyan=%.3f of the frame, need >=%.3f of each "
                             "(lit=%d, so the screen is %s)"
                      % (ma, ca, GLES_QUAD_MIN, lit,
@@ -1245,7 +1322,7 @@ def check_gles(cfg, procs, dev, r):
                             "(magenta %.3f->%.3f, cyan %.3f->%.3f): the "
                             "renderer wedged after its first present"
                      % (GLES_HOLD_S, ma, mb, ca, cb))
-    return r.set(True, "GLTest rendering through the HLE layer: magenta=%.3f "
+    return r.set(True, "GLES fixture rendering through the HLE layer: magenta=%.3f "
                        "cyan=%.3f, held for %ds, lit=%d%s"
                  % (mb, cb, GLES_HOLD_S, lit,
                     "" if "unimplemented slot" in text
@@ -1431,10 +1508,10 @@ def report_prereqs(cfg):
         print("      needed for: %s" % needed_for)
     print("")
     if hard_missing:
-        print("default tier (boot, fsck, persist, agent) CANNOT run: "
+        print("default tier (boot, fsck, persist, appinstall, applaunch, gles, agent, audio) CANNOT run: "
               "missing qemu binary and/or base NAND")
     else:
-        print("default tier (boot, fsck, persist, agent) can run "
+        print("default tier (boot, fsck, persist, appinstall, applaunch, gles, agent, audio) can run "
               "(persist SKIPs without usbmuxd)")
         print("opt-in tier (--with-apps) checks needing usbmuxd/ipa will "
               "SKIP individually if those are still missing")
@@ -1467,6 +1544,8 @@ def main():
                     default=os.path.expanduser(
                         "~/Developer/usbmuxd-qemu/usbmuxd/src/usbmuxd"))
     ap.add_argument("--ipa", default=APP_IPA_DEFAULT)
+    ap.add_argument("--stage-gles-shim", action="store_true",
+                    help="replace the guest GLES shim in the disposable overlay")
     ap.add_argument("--out", default=None, help="run directory")
     ap.add_argument("--checks", default=None,
                     help="comma-separated subset, any tier (default: "
@@ -1589,6 +1668,16 @@ def main():
         elif c in IPA_DEPENDENT_CHECKS and not cfg.ipa_ok:
             results[c].skip("ipa not found: %s" % cfg.ipa)
             skipped.add(c)
+    if "audio" in selected and "audio" not in skipped:
+        if not os.path.exists(HARNESS_IPA):
+            results["audio"].skip("Harness.ipa not found: " + HARNESS_IPA)
+            skipped.add("audio")
+        else:
+            try:
+                import numpy
+            except ImportError:
+                results["audio"].skip("NumPy is required for the audio spectrum check")
+                skipped.add("audio")
     selected = [c for c in selected if c not in skipped]
     cfg.wifi = "wifi" in selected or "webproxy" in selected
     if "webproxy" in selected:
@@ -1609,7 +1698,7 @@ def main():
     try:
         # ---------------- first boot ----------------
         dev = Device(cfg, procs, "boot1")
-        dev.start()
+        dev.start(audio_wav=os.path.join(dev.dir, "audio.wav") if "audio" in selected else None)
         ok, detail, best = dev.wait_for_home(cfg.boot_timeout)
         results["boot"].set(ok, detail if ok else
                             "%s (best lit=%d, need >=%d)"
@@ -1654,12 +1743,16 @@ def main():
             if not check_respring(cfg, procs, dev, results["respring"]):
                 return finish(results, procs, cfg)
 
+        audio_ready = False
+        if "audio" in selected:
+            audio_ready = check_audio(cfg, procs, dev, results["audio"])
+
         if "agent" in selected:
             check_agent(cfg, procs, dev, results["agent"])
 
         if "gles" in selected:
             check_gles(cfg, procs, dev, results["gles"])
-            dev.qmp.home()              # leave GLTest so SpringBoard settles
+            dev.qmp.home()              # leave the graphics fixture
             time.sleep(5)
 
         if "restart" in selected:
@@ -1689,6 +1782,9 @@ def main():
             procs.stop(dev.qemu)
         procs.stop(dev.mux)
         time.sleep(3)
+
+        if "audio" in selected and audio_ready:
+            verify_audio(dev.audio_wav, results["audio"])
 
         # ---------------- second boot ----------------
         if needs_second_boot:
