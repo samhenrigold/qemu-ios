@@ -23,6 +23,7 @@ typedef struct IPodTouchMPVDState {
     MemoryRegion iomem;
     qemu_irq irq;
     void *decoder;
+    bool decode_enabled;
     uint32_t regs[MPVD_REG_SIZE / 4];
 } IPodTouchMPVDState;
 

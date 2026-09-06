@@ -193,7 +193,7 @@ must request full-range output when comparing raw samples.
 
 The kernel log names `AppleMPVDDriver`, not the separate H.264 aperture:
 "Was waiting for interrupt, but something unexpected happened." The default
-MPVD model is register backing only. `IT_MPVD_DECODE=1` enables the native
+MPVD model is register backing only. `-M iPod-Touch,mpvd-decode=on` enables the native
 MPEG-4 I/P prototype, with real DMA output and IRQ 45 completion.
 
 Enable QEMU's `-trace 'enable=ipod_touch_mpvd_*'` for register traffic.
@@ -836,3 +836,8 @@ writing destination pixels.
 The `scaler-decode` startup option defaults to off and cannot change after machine
 initialization. Explicit on/off overrides the deprecated presence-based
 `IT_SCALER_DECODE` alias (including its historical empty/`0` behavior).
+
+`mpvd-decode=on|off` is fixed at startup (default off). Explicit configuration
+wins over the deprecated presence-based `IT_MPVD_DECODE` alias. MMIO and restore
+use the device's configured mode rather than rereading process environment.
+Use matching hardware options when restoring a raw QEMU migration stream.

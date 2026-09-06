@@ -3,6 +3,7 @@
 #include "migration/vmstate.h"
 #include "hw/core/cpu.h"
 #include "hw/irq.h"
+#include "hw/qdev-properties.h"
 #include "target/arm/cpu.h"
 #include "trace.h"
 #include "exec/address-spaces.h"
@@ -24,7 +25,7 @@
  * driver's iomap of this window, offset 0x1c). That happens right after
  * "enabling idle sleep", so every boot died once the device went idle.
  *
- * IT_MPVD_DECODE enables an experimental native MPEG-4 I/P decoder. It consumes
+ * The mpvd-decode machine option enables an experimental native MPEG-4 I/P decoder. It consumes
  * guest DMA data and signals completion; decoded planes are presented by the
  * opt-in LCD compositor (see docs/ipod-media.md). Without the opt-in, only register backing is active.
  */
@@ -226,7 +227,7 @@ static void ipod_touch_mpvd_write(void *opaque, hwaddr addr, uint64_t val, unsig
     if (addr + 4 > MPVD_REG_SIZE) {
         return;
     }
-    if (getenv("IT_MPVD_DECODE") &&
+    if (s->decode_enabled &&
         (addr == 0 || addr == 0x10000 || addr == 0x50000 ||
          addr == 0x30100 || addr == 0x60000)) {
         s->regs[addr / 4] &= ~(uint32_t)val;
@@ -236,7 +237,7 @@ static void ipod_touch_mpvd_write(void *opaque, hwaddr addr, uint64_t val, unsig
     } else {
         s->regs[addr / 4] = (uint32_t)val;
     }
-    if (getenv("IT_MPVD_DECODE") && addr == 0x1000c && val == 0x0c) {
+    if (s->decode_enabled && addr == 0x1000c && val == 0x0c) {
         bool ok = mpvd_decode(s);
         s->regs[0] = 2;
         s->regs[0x10000 / 4] = ok ? 4 : 1;
@@ -286,7 +287,7 @@ static int mpvd_post_load(void *opaque, int version_id)
 {
     IPodTouchMPVDState *s = opaque;
     mpvd_decoder_close(s);
-    qemu_set_irq(s->irq, getenv("IT_MPVD_DECODE") && s->regs[0] != 0);
+    qemu_set_irq(s->irq, s->decode_enabled && s->regs[0] != 0);
     return 0;
 }
 
@@ -301,11 +302,16 @@ static const VMStateDescription vmstate_ipod_touch_mpvd = {
     }
 };
 
+static const Property mpvd_properties[] = {
+    DEFINE_PROP_BOOL("decode", IPodTouchMPVDState, decode_enabled, false),
+};
+
 static void ipod_touch_mpvd_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_ipod_touch_mpvd;
+    device_class_set_props(dc, mpvd_properties);
     device_class_set_legacy_reset(dc, ipod_touch_mpvd_reset);
 }
 

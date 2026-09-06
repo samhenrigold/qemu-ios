@@ -977,3 +977,17 @@ opcode, clears stale errors with successful ping calls, checks clipboard memory
 failure recovery, and fetches HTTP from a local fixture using native guest BSD
 sockets through SDIO/slirp. Confirmed shutdown passes in 28.5 seconds
 (`/tmp/it-retired-sockets-native.log`). CLI build passes.
+
+## MPVD startup configuration (2026-09-06)
+
+`mpvd-decode=on|off` now configures the device at startup (default off), with an
+explicit value overriding the deprecated presence-based `IT_MPVD_DECODE` alias.
+Register writes and interrupt restoration use the configured device flag rather
+than reading the host environment. Light Touch passes the option directly.
+
+All 22 native configuration cases pass. Native migration checks exercise both
+modes, decode-failure completion, IRQ assertion/acknowledgement and reset
+(`/tmp/it-mpvd-snapshot.log`). Boot and a 70 KiB guest-agent round trip pass with
+all three explicit video options enabled (`/tmp/it-mpvd-option-guest.log`). CLI,
+dylib and app builds pass. This changes mode selection, not codec capability;
+the documented MPEG-4 I/P restrictions remain.
