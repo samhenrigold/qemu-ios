@@ -927,9 +927,17 @@ def check_webproxy(cfg, procs, dev, result):
         enabled = True
         time.sleep(8)
         response = guest_ssh(cfg, port, ["/tmp/httpget http://example.invalid/fixture"], timeout=90)
-        result.set(response.returncode == 0 and "HTTP 200" in response.stdout and
-                   "LIGHTTOUCH_PROXY_NATIVE_PASS" in response.stdout,
-                   response.stdout.strip() or response.stderr[-200:])
+        if response.returncode or "HTTP 200" not in response.stdout or "LIGHTTOUCH_PROXY_NATIVE_PASS" not in response.stdout:
+            return result.set(False, response.stdout.strip() or response.stderr[-200:])
+        with open(cfg.web_proxy_config, "w") as f:
+            f.write("direct\n")
+        for host in ("api.openfeint.com", "gdata.youtube.com"):
+            started = time.monotonic()
+            response = guest_ssh(cfg, port, ["/tmp/httpget http://" + host + "/"], timeout=30)
+            elapsed = time.monotonic() - started
+            if response.returncode or "HTTP 410" not in response.stdout or elapsed >= 10:
+                return result.set(False, "retired service did not fail promptly: " + response.stdout.strip())
+        result.set(True, "native HTTP fixture and prompt retired-service HTTP 410 responses")
     finally:
         if enabled:
             restored = guest_ssh(cfg, port, ["/tmp/itproxy off"])

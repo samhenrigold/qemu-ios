@@ -37,6 +37,30 @@ static void fail(int code, const char *message)
     reply_printf(1, "HTTP/1.0 %d %s\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n%s\n", code, message, message);
     client_finish(); exit(1);
 }
+/* Exact retired API endpoints only; never block a vendor's whole domain.
+ * See README for retirement sources. Archive/off/upstream modes bypass this. */
+static bool retired_host(const char *host)
+{
+    static const char *const retired[] = { "api.openfeint.com", "gdata.youtube.com" };
+    size_t length = strlen(host);
+    if (length && host[length - 1] == '.') length--;
+    for (size_t i = 0; i < sizeof(retired) / sizeof(retired[0]); i++) {
+        if (length == strlen(retired[i]) && !strncasecmp(host, retired[i], length)) return true;
+    }
+    return false;
+}
+
+static bool retired_url(const char *target)
+{
+    CURLU *url = curl_url();
+    char *host = NULL;
+    bool retired = url && !curl_url_set(url, CURLUPART_URL, target, 0) &&
+        !curl_url_get(url, CURLUPART_HOST, &host, 0) && retired_host(host);
+    curl_free(host);
+    curl_url_cleanup(url);
+    return retired;
+}
+
 static bool sendall(int fd, const void *data, size_t n)
 {
     const char *p = data;
@@ -452,6 +476,8 @@ read_request:;
         if (length > 2 && hostname[0] == '[' && hostname[length - 1] == ']') {
             hostname[length - 1] = 0; hostname++;
         }
+        if (!strcmp(mode, "direct") && retired_host(hostname))
+            fail(410, "This online service has been retired");
 #ifdef HAVE_OPENSSL
         char ca_path[PATH_MAX];
         if (strcmp(mode, "off") && tls_path(ca_path, sizeof(ca_path), argv[1], ".ca.pem") && access(ca_path, F_OK) == 0) {
@@ -484,6 +510,8 @@ read_request:;
     }
     for (const char *p = method; *p; p++) if (!isupper((unsigned char)*p)) fail(400, "Invalid method");
     if (!tunnel[0] && strncmp(target, "http://", 7)) fail(400, "An absolute HTTP URL is required");
+    if (!strcmp(mode, "direct") && retired_url(target))
+        fail(410, "This online service has been retired");
     if (archive) {
         const char *authority = target + 7;
         const char *end = strchr(authority, '/');

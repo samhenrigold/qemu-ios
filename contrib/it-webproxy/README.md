@@ -59,6 +59,17 @@ explicitly rejected. Direct responses stream without a size cap.
 A legacy `upstream HOST PORT` mode remains for protocol fixtures and CLI users;
 it is not required by, or exposed in, the app.
 
+Direct mode returns HTTP 410 immediately for the exact retired API hosts
+`api.openfeint.com` and `gdata.youtube.com`, including CONNECT. It does not
+contact those hosts or claim their sign-in, achievements or video feeds work.
+Case and a DNS trailing dot are normalized; parent domains and unrelated hosts
+remain accessible. Archive, off and upstream modes bypass this policy.
+The endpoint and retirement references are the
+[OpenFeint SDK README](https://www.openfeint.com/developers/readme-openfeint-ios-sdk-2-12-5/),
+[OpenFeint shutdown announcement](https://www.openfeint.com/developers/openfeint-service-shutdown-and-gree-migration/),
+and [Google's YouTube API retirement notice](https://developers-jp.googleblog.com/2015/05/youtube-data-api-v2.html).
+Other advertising, analytics and game-service hosts are not presumed dead.
+
 `../it-proxy/itproxy on|off` applies the guest settings through SCPreferences.
 It backs up the six HTTP/HTTPS proxy keys per en0 service, preserves unrelated
 settings, commits and applies through configd, and restores the saved keys on
