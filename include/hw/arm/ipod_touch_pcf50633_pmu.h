@@ -64,6 +64,10 @@ typedef struct Pcf50633State {
     QEMUTimer *adc_timer;
     uint16_t adc_values[16];
     uint16_t adc_sample;
+    /* IEEE double bits migrate through the integer wire format. */
+    union { double drain_rate; uint64_t drain_rate_bits; }; /* Percent/minute. */
+    union { double drain_level; uint64_t drain_level_bits; };
+    int64_t drain_updated_ns;
     uint8_t charging_mode; /* 0 auto, 1 on, 2 off; external power still required */
 } Pcf50633State;
 
@@ -132,6 +136,9 @@ typedef struct Pcf50633State {
 void pcf50633_set_usb_cable(Pcf50633State *s, bool attached);
 unsigned pcf50633_adc_for_level(unsigned percent);
 unsigned pcf50633_level_for_adc(unsigned counts);
+void pcf50633_update_battery(Pcf50633State *s);
+void pcf50633_set_battery_level(Pcf50633State *s, unsigned level);
+void pcf50633_set_battery_drain(Pcf50633State *s, double rate);
 void pcf50633_set_battery_adc(Pcf50633State *s, unsigned counts);
 void pcf50633_set_charging_mode(Pcf50633State *s, unsigned mode);
 // Set/clear the live button STATE bits in reg 0x19.

@@ -11,11 +11,22 @@ code=r'''
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include <math.h>
 typedef int Object;
 typedef int Error;
 #define OBJECT(x) (x)
 #define g_new(type,n) ((type *)calloc(n,sizeof(type)))
 #define g_free free
+typedef double QNum;
+#define QOBJECT(x) (x)
+static double drain;
+static QNum *qnum_from_double(double value) { QNum *n=malloc(sizeof(*n));*n=value;return n; }
+static void qobject_unref(QNum *n) { free(n); }
+static void qmp_qom_set(const char *path,const char *name,QNum *value,Error **err)
+{ assert(!strcmp(path,"/machine") && !strcmp(name,"battery-drain"));drain=*value; }
+static bool attached;
+static void object_property_set_bool(Object *obj,const char *name,bool value,Error **err)
+{ assert(obj==(Object *)1 && !strcmp(name,"usb-attached"));attached=value; }
 static bool ready;
 static int level=-1,updates;
 static char charging[8];
@@ -35,6 +46,7 @@ static void error_free(Error *error) {}
 '''+functions+r'''
 int main(void) {
  assert(!qemu_ios_ui_battery(60,0) && !pending);
+ assert(!qemu_ios_ui_usb_connection(true));
  ready=true;
  assert(!qemu_ios_ui_battery(-1,0));assert(!qemu_ios_ui_battery(101,0));
  assert(!qemu_ios_ui_battery(60,-1));assert(!qemu_ios_ui_battery(60,3));
@@ -45,6 +57,14 @@ int main(void) {
   assert(pending);pending(argument);pending=NULL;
   assert(level==mode*50 && !strcmp(charging,modes[mode]));
  }
+ assert(!qemu_ios_ui_battery_config(60,0,NAN));
+ assert(!qemu_ios_ui_battery_config(60,0,-1));
+ assert(!qemu_ios_ui_battery_config(60,0,101));
+ assert(qemu_ios_ui_battery_config(60,2,0.5));
+ pending(argument);pending=NULL;assert(drain==0.5 && level==60);
+ assert(qemu_ios_ui_usb_connection(true));assert(!attached);
+ pending(argument);pending=NULL;assert(attached);
+ assert(qemu_ios_ui_usb_connection(false));pending(argument);pending=NULL;assert(!attached);
  puts("PASS: battery bridge readiness, bounds, queued delivery and charging modes");
 }
 '''

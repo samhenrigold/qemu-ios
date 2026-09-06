@@ -1187,6 +1187,7 @@ static void ipod_touch_get_battery_adc(Object *obj, Visitor *v, const char *name
                                       void *opaque, Error **errp)
 {
     IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->pmu_state) pcf50633_update_battery(nms->pmu_state);
     int64_t value = nms->pmu_state ? nms->pmu_state->adc_values[4] : nms->battery_adc;
     visit_type_int(v, name, &value, errp);
 }
@@ -1213,6 +1214,7 @@ static void ipod_touch_get_battery_level(Object *obj, Visitor *v, const char *na
                                         void *opaque, Error **errp)
 {
     IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->pmu_state) pcf50633_update_battery(nms->pmu_state);
     unsigned counts = nms->pmu_state ? nms->pmu_state->adc_values[4] : nms->battery_adc;
     int64_t value = pcf50633_level_for_adc(counts);
     visit_type_int(v, name, &value, errp);
@@ -1232,8 +1234,30 @@ static void ipod_touch_set_battery_level(Object *obj, Visitor *v, const char *na
     }
     nms->battery_adc = pcf50633_adc_for_level(value);
     if (nms->pmu_state) {
-        pcf50633_set_battery_adc(nms->pmu_state, nms->battery_adc);
+        pcf50633_set_battery_level(nms->pmu_state, value);
     }
+}
+
+static void ipod_touch_get_battery_drain(Object *obj, Visitor *v, const char *name,
+                                        void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    double value = nms->pmu_state ? nms->pmu_state->drain_rate : nms->battery_drain;
+    visit_type_number(v, name, &value, errp);
+}
+
+static void ipod_touch_set_battery_drain(Object *obj, Visitor *v, const char *name,
+                                        void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    double value;
+    if (!visit_type_number(v, name, &value, errp)) return;
+    if (!isfinite(value) || value < 0 || value > 100) {
+        error_setg(errp, "battery-drain must be between 0 and 100 percent per minute");
+        return;
+    }
+    nms->battery_drain = value;
+    if (nms->pmu_state) pcf50633_set_battery_drain(nms->pmu_state, value);
 }
 
 static char *ipod_touch_get_battery_charging(Object *obj, Error **errp)
@@ -1500,6 +1524,10 @@ static void ipod_touch_instance_init(Object *obj)
                         ipod_touch_set_battery_level, NULL, NULL);
     object_property_set_description(obj, "battery-level",
         "Battery voltage target (0-100 percent); guest sampling and filtering apply");
+    object_property_add(obj, "battery-drain", "number", ipod_touch_get_battery_drain,
+                        ipod_touch_set_battery_drain, NULL, NULL);
+    object_property_set_description(obj, "battery-drain",
+        "Percent per virtual minute while unplugged or charging is forced off; zero disables drain");
     object_property_add_str(obj, "battery-charging", ipod_touch_get_battery_charging,
                             ipod_touch_set_battery_charging);
     /* On by default: this gates the verified MBX MMU request/ack mirror
@@ -3076,7 +3104,8 @@ static void ipod_touch_machine_init(MachineState *machine)
     spi4_state->mt->pmu = PCF50633(pmu);
     PCF50633(pmu)->usb_cable = nms->usb_attached;
     nms->pmu_state = PCF50633(pmu);
-    nms->pmu_state->adc_values[4] = nms->battery_adc;
+    pcf50633_set_battery_adc(nms->pmu_state, nms->battery_adc);
+    pcf50633_set_battery_drain(nms->pmu_state, nms->battery_drain);
     nms->pmu_state->charging_mode = nms->battery_charging;
     qdev_connect_gpio_out(DEVICE(pmu), 0,
                          qdev_get_gpio_in(DEVICE(sysic_state), PMU_WAKE_IRQ));

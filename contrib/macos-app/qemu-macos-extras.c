@@ -296,7 +296,7 @@ void qemu_ios_ui_attitude(double pitch_deg, double roll_deg, int pose)
     aio_bh_schedule_oneshot(qemu_get_aio_context(), attitude_bh, input);
 }
 
-struct battery_input { int level, charging; };
+struct battery_input { int level, charging; double drain; };
 
 static void battery_bh(void *opaque)
 {
@@ -306,6 +306,11 @@ static void battery_bh(void *opaque)
     const char *modes[] = { "auto", "on", "off" };
     object_property_set_int(machine, "battery-level", input->level, &err);
     if (!err) object_property_set_str(machine, "battery-charging", modes[input->charging], &err);
+    if (!err) {
+        QNum *value = qnum_from_double(input->drain);
+        qmp_qom_set("/machine", "battery-drain", QOBJECT(value), &err);
+        qobject_unref(value);
+    }
     if (err) {
         fprintf(stderr, "[battery] %s\n", error_get_pretty(err));
         error_free(err);
@@ -313,12 +318,39 @@ static void battery_bh(void *opaque)
     g_free(input);
 }
 
+bool qemu_ios_ui_battery_config(int level, int charging, double drain)
+{
+    if (!qemu_ios_ui_ready() || level < 0 || level > 100 || charging < 0 || charging > 2 ||
+        !isfinite(drain) || drain < 0 || drain > 100) return false;
+    struct battery_input *input = g_new(struct battery_input, 1);
+    *input = (struct battery_input){ level, charging, drain };
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), battery_bh, input);
+    return true;
+}
+
 bool qemu_ios_ui_battery(int level, int charging)
 {
-    if (!qemu_ios_ui_ready() || level < 0 || level > 100 || charging < 0 || charging > 2) return false;
-    struct battery_input *input = g_new(struct battery_input, 1);
-    *input = (struct battery_input){ level, charging };
-    aio_bh_schedule_oneshot(qemu_get_aio_context(), battery_bh, input);
+    return qemu_ios_ui_battery_config(level, charging, 0);
+}
+
+static void usb_connection_bh(void *opaque)
+{
+    bool *attached = opaque;
+    Error *err = NULL;
+    object_property_set_bool(OBJECT(qdev_get_machine()), "usb-attached", *attached, &err);
+    if (err) {
+        fprintf(stderr, "[usb] %s\n", error_get_pretty(err));
+        error_free(err);
+    }
+    g_free(attached);
+}
+
+bool qemu_ios_ui_usb_connection(bool attached)
+{
+    if (!qemu_ios_ui_ready()) return false;
+    bool *value = g_new(bool, 1);
+    *value = attached;
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), usb_connection_bh, value);
     return true;
 }
 

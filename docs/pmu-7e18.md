@@ -163,3 +163,25 @@ right. Boot and the agent binary-transfer check pass in the same run:
 `/tmp/it-regress-open-dock-native.log`. The ADC regression checks the separate
 channel value, settling/conversion encoding and persistence across reset. This
 fix does not implement headset/microphone support or dock accessories.
+
+## Automatic drain
+
+`battery-drain=0..100` sets percent per emulated minute; zero (default) disables
+it. ADC/status reads and host target queries sample elapsed virtual time. No
+periodic timer or synthetic measurement interrupt is added. Pausing freezes
+drain; USB power freezes it unless `battery-charging=off`. This models discharge
+only, with the guest retaining its own voltage compensation and capacity filter.
+Fractional levels survive individual ADC polls and v4 migration. Older saved
+states restore with drain disabled. The macOS battery-config bridge queues all
+three controls on the emulator thread and retains the older two-argument ABI.
+
+`test_pmu_adc.py` exercises fractional drain, pause, cable/charging changes,
+bounds, old/current restore and malformed migration. `test_battery_bridge.py`
+checks input bounds and queued delivery. `test_battery_guest.py` uses an isolated
+native guest and reads IOPMPowerSource through the read-only `itbattery` helper.
+
+Native discharge acceptance passes at `/tmp/it-battery-drain-native-v5.log`.
+7E18 may defer ADC measurements indefinitely when externally powered but
+charging is forced off. Normal unplugged discharge samples voltage after about
+a minute. USB unplugging also changes its voltage compensation; tests account
+for that instead of equating the host target with the filtered guest estimate.
