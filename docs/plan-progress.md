@@ -16,8 +16,10 @@ TV-out were explicitly deferred by that plan.
 | Kernel serial console | Complete: explicit machine arguments, live console regression and Light Touch control build pass | Include the updated control in the final package verification |
 | Settings Wi-Fi join | Deferred at user request (2026-09-05) | Manual join without known-network seed or alert loop; DHCP and traffic |
 | Two-instance LAN | Deferred at user request (2026-09-05) | Separate identities, MACs and state; bidirectional traffic between guests |
-| Hardware shortcuts | FMSS completion and TV-out frame timing fixed; VIC daisy-chain defects fixed; DSI panel reply queue implemented | PKE, NOR persistence, FMSS erase, remaining LCD/TV-out status and AES matching review |
-| Light Touch integration | Original UI fixes committed | Package and verify the resulting hardware controls and readiness/recovery paths |
+| Hardware shortcuts | FMSS completion and TV-out frame timing fixed; VIC daisy-chain defects fixed; DSI panel reply queue implemented; NOR program/erase and private persistence verified | PKE, FMSS erase, remaining LCD/TV-out status, timers 0–3 and AES signature classification |
+| Light Touch integration | Original UI fixes, built-in proxy/TLS bridge, inline Live Text, capture, native logs/notices and private NOR storage packaged | Full status pane, AFC browser, broader accessibility and Help Book work |
+| Media imports | Music and Saved Photos native imports, content identity and recording audio verified | Artwork/playlists/Videos, old-import indexing and reconciliation with guest Photos deletions |
+| Configuration and firmware | Exact guarded 5F138/7E18 profiles; audio, keyboard, Bluetooth and watchdog options typed | Boot-chain, decode, audio/display/GLES options and remaining environment consumers |
 | Bluetooth peers / TV-out | Deferred per supplied plan | No implementation claimed |
 
 See [UI reliability](ipod-ui-reliability.md) for the original fixes and the
@@ -822,3 +824,20 @@ Four native paused machines verify defaults, alias precedence, runtime
 immutability, harmless normal kicks and actual reset/suppression behavior
 (`/tmp/it-wdt-native.log`). Timed watchdog expiry remains unmodeled pending
 verified clock/field semantics; this change does not invent a timeout.
+
+### Bounded timer dilation (2026-09-06)
+
+`time-dilation=1..1000000` replaces unchecked `strtoll` and interval
+multiplication in the timer device. Explicit startup configuration overrides
+`IT_TIME_DILATION`; malformed, zero, negative and overflowing aliases fail
+clearly. The default interrupt and counter rates are unchanged. The maximum
+guest count times the maximum factor stays below INT64_MAX, deadlines saturate
+at the clock limit, and restored active timers reject zero intervals, future
+bases and overflowing deadlines.
+
+Production arithmetic/state checks pass ASan/UBSan. Ten native QOM cases pass
+(`/tmp/it-time-dilation-native.log`), and an armed timer migrates after a brief
+boot (`/tmp/it-timer-migration2.log`; before GL initialization). Default native
+7E18 boot, guarded firmware-memory preservation, agent operations, Settings and
+confirmed shutdown pass in 69.0 seconds (`/tmp/it-timer-default-guest.log`).
+Timers 0–3 and the known counter/deadline clock mismatch remain separate work.

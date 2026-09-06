@@ -221,6 +221,48 @@ static void install_ram_watch(MemoryRegion *top, MemoryRegion *backing,
                 base, size, w->log_reads, w->log_writes, w->nonzero_only);
 }
 
+static void ipod_touch_get_time_dilation(Object *obj, Visitor *v, const char *name,
+                                          void *opaque, Error **errp)
+{
+    uint32_t value = IPOD_TOUCH_MACHINE(obj)->time_dilation;
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void ipod_touch_set_time_dilation(Object *obj, Visitor *v, const char *name,
+                                          void *opaque, Error **errp)
+{
+    IPodTouchMachineState *s = IPOD_TOUCH_MACHINE(obj);
+    if (s->cpu) {
+        error_setg(errp, "time-dilation must be set before the machine starts");
+        return;
+    }
+    uint32_t value;
+    if (!visit_type_uint32(v, name, &value, errp)) {
+        return;
+    }
+    if (value < 1 || value > IT_TIMER_MAX_DILATION) {
+        error_setg(errp, "time-dilation must be between 1 and %u", IT_TIMER_MAX_DILATION);
+        return;
+    }
+    s->time_dilation = value;
+    s->time_dilation_explicit = true;
+}
+
+static bool ipod_touch_time_env_alias(IPodTouchMachineState *s, Error **errp)
+{
+    const char *text = getenv("IT_TIME_DILATION");
+    if (text && !s->time_dilation_explicit) {
+        uint64_t value;
+        if (qemu_strtou64(text, NULL, 0, &value) || value < 1 || value > IT_TIMER_MAX_DILATION) {
+            error_setg(errp, "IT_TIME_DILATION must be between 1 and %u", IT_TIMER_MAX_DILATION);
+            return false;
+        }
+        s->time_dilation = value;
+        warn_report_once("IT_TIME_DILATION is deprecated; use -M iPod-Touch,time-dilation=");
+    }
+    return true;
+}
+
 static void ipod_touch_get_bt(Object *obj, Visitor *v, const char *name,
                                   void *opaque, Error **errp)
 {
@@ -1639,6 +1681,7 @@ static void ipod_touch_instance_init(Object *obj)
     IPOD_TOUCH_MACHINE(obj)->audio_hw = ON_OFF_AUTO_AUTO;
     IPOD_TOUCH_MACHINE(obj)->bt_enabled = true;
     IPOD_TOUCH_MACHINE(obj)->bt_latency_us = 2000;
+    IPOD_TOUCH_MACHINE(obj)->time_dilation = 1;
     IPOD_TOUCH_MACHINE(obj)->agent = ipod_agent_new();
     ipod_agent_publish(IPOD_TOUCH_MACHINE(obj)->agent);
     object_property_add_str(obj, "agent-request", NULL, ipod_touch_set_agent_request);
@@ -2952,7 +2995,8 @@ static void ipod_touch_machine_init(MachineState *machine)
     AddressSpace *nsas;
     ARMCPU *cpu;
 
-    if (!ipod_touch_bt_env_aliases(nms, &error_fatal)) {
+    if (!ipod_touch_time_env_alias(nms, &error_fatal) ||
+        !ipod_touch_bt_env_aliases(nms, &error_fatal)) {
         return;
     }
     ipod_touch_audio_env_alias(nms);
@@ -3005,6 +3049,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = qdev_new("ipodtouch.timer");
     IPodTouchTimerState *timer_state = IPOD_TOUCH_TIMER(dev);
     nms->timer1 = timer_state;
+    timer_state->dilation = nms->time_dilation;
     memory_region_add_subregion(sysmem, TIMER1_MEM_BASE, &timer_state->iomem);
     SysBusDevice *busdev = SYS_BUS_DEVICE(dev);
     sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, S5L8720_TIMER1_IRQ));
@@ -3503,6 +3548,9 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_add(klass, "bt-latency-us", "uint32", ipod_touch_get_bt_latency_us,
                               ipod_touch_set_bt_latency_us, NULL, NULL);
     object_class_property_set_description(klass, "bt-latency-us", "HCI reply delay in microseconds (default 2000)");
+    object_class_property_add(klass, "time-dilation", "uint32", ipod_touch_get_time_dilation,
+                              ipod_touch_set_time_dilation, NULL, NULL);
+    object_class_property_set_description(klass, "time-dilation", "Timer-4 interrupt interval multiplier (1..1000000)");
     object_class_property_add(klass, "wdt-noreset", "bool", ipod_touch_get_wdt_noreset,
                               ipod_touch_set_wdt_noreset, NULL, NULL);
     object_class_property_set_description(klass, "wdt-noreset", "Suppress guest watchdog reset commands for debugging");
