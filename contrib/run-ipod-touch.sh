@@ -222,8 +222,8 @@ while [ $# -gt 0 ]; do
                 export IT_BOOT_ARGS_DELAY_MS=1500
                 export IT_BOOT_ARGS_REPEAT=200
                 export IT_BOOT_ARGS_INTERVAL_MS=250
-                export IT_OSK=1 ;;
-    --keyboard) export IT_OSK=1 ;;
+                MACHOPTS="$MACHOPTS,osk=on" ;;
+    --keyboard) MACHOPTS="$MACHOPTS,osk=on" ;;
     --usb)      export IT_USB_TCP="${IT_USB_TCP:-127.0.0.1:1235}" ;;
     --trace-usb)   export IT_USB_TRACE=1 ;;
     --trace-audio) export IT_AMC_TRACE=1 IT_CODEC_TRACE=1 ;;

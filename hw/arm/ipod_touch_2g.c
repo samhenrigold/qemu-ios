@@ -220,6 +220,37 @@ static void install_ram_watch(MemoryRegion *top, MemoryRegion *backing,
                 base, size, w->log_reads, w->log_writes, w->nonzero_only);
 }
 
+static void ipod_touch_get_osk(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    bool value = IPOD_TOUCH_MACHINE(obj)->osk_enabled;
+    visit_type_bool(v, name, &value, errp);
+}
+
+static void ipod_touch_set_osk(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->cpu) {
+        error_setg(errp, "osk must be set before the machine starts");
+        return;
+    }
+    bool value;
+    if (visit_type_bool(v, name, &value, errp)) {
+        nms->osk_enabled = value;
+        nms->osk_explicit = true;
+    }
+}
+
+static void ipod_touch_osk_env_alias(IPodTouchMachineState *nms)
+{
+    if (!nms->osk_explicit && getenv("IT_OSK") != NULL) {
+        /* The old alias tests presence, even for an empty or "0" value. */
+        nms->osk_enabled = true;
+        warn_report_once("IT_OSK is deprecated; use -M iPod-Touch,osk=on");
+    }
+}
+
 /*
  * Audio hardware that the machine did not model until now (the CS42L58 codec
  * and the AMC). Both are real parts on this board, but neither was mapped
@@ -2805,6 +2836,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     ARMCPU *cpu;
 
     ipod_touch_audio_env_alias(nms);
+    ipod_touch_osk_env_alias(nms);
     ipod_touch_cpu_setup(machine, &sysmem, &cpu, &nsas);
 
     // setup clock
@@ -3326,7 +3358,6 @@ static void ipod_touch_machine_init(MachineState *machine)
      * ipod_touch_powerdown_tick). This is what gives the guest a chance to
      * unmount its filesystems before the machine stops.
      */
-    nms->osk_enabled = getenv("IT_OSK") != NULL;
     nms->osk_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                   ipod_touch_osk_tick, nms);
     nms->osk_phase = OSK_IDLE;
@@ -3339,6 +3370,10 @@ static void ipod_touch_machine_init(MachineState *machine)
 
 static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
 {
+    object_class_property_add(klass, "osk", "bool", ipod_touch_get_osk,
+                              ipod_touch_set_osk, NULL, NULL);
+    object_class_property_set_description(klass, "osk",
+        "Type host keys by tapping the legacy on-screen keyboard");
     object_class_property_add(klass, "audio-hw", "OnOffAuto", ipod_touch_get_audio_hw,
                               ipod_touch_set_audio_hw, NULL, NULL);
     object_class_property_set_description(klass, "audio-hw",
