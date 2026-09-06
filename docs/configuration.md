@@ -5,6 +5,10 @@ incremental; most existing `IT_*` variables still retain their documented behavi
 
 | Property | Values | Default | Legacy alias |
 | --- | --- | --- | --- |
+| `boot-args` | kernel command line, at most 255 bytes; empty disables injection | no override | `IT_BOOT_ARGS` |
+| `boot-args-delay-ms` | 0..3600000 virtual milliseconds | `2000` | `IT_BOOT_ARGS_DELAY_MS` |
+| `boot-args-repeat` | 0..1000000 writes; 0 still performs the initial write | `24` | `IT_BOOT_ARGS_REPEAT` |
+| `boot-args-interval-ms` | 1..3600000 virtual milliseconds | `500` | `IT_BOOT_ARGS_INTERVAL_MS` |
 | `bt` | `on`, `off` | `on` | `IT_BT`: leading `0` disables, otherwise enables |
 | `bt-latency-us` | unsigned 32-bit microseconds | `2000` | `IT_BT_LATENCY_US` |
 | `osk` | `on`, `off` | `off` | `IT_OSK`: any present value enables |
@@ -35,6 +39,29 @@ stored per controller and converted to nanoseconds without signed overflow;
 invalid, negative and oversized legacy values are rejected. These controls do
 not add Bluetooth peers. `test_bt_config.py` checks the real paused machine,
 including aliases, boundaries and runtime rejection.
+
+## Boot-argument scheduling
+
+`boot-args` and its three scheduling properties are fixed before machine startup.
+Explicit values override their environment aliases, including an explicitly empty
+`boot-args=` string. The command line is limited to the kernel buffer's 255 bytes;
+longer strings are rejected. An empty explicit command line disables command-line
+injection even when `IT_BOOT_ARGS` is set.
+
+The first timer write occurs after `boot-args-delay-ms`. Later writes use
+`boot-args-interval-ms`; an interval of zero is rejected to prevent a busy timer
+loop. `boot-args-repeat` counts successful writes, including the first. As before,
+zero still permits the initial write, and a pending AMFI task-port patch can keep
+the shared timer active beyond that count. The independent AMFI option is
+unchanged. Delays and intervals use guest virtual time, not wall-clock time.
+
+Legacy scheduling aliases are resolved once during startup with strict bounded
+integer parsing, and emit deprecation warnings. Explicit properties take priority
+even over malformed aliases. Reset reuses these resolved settings. The app's
+existing 1500 ms / 200 writes / 250 ms aliases remain compatible; the machine's
+defaults remain 2000 ms / 24 writes / 500 ms. The paused native matrix in
+`test_time_dilation_config.py` covers defaults, aliases, explicit precedence,
+boundaries, malformed input and runtime mutation rejection.
 
 ## Firmware profiles
 
