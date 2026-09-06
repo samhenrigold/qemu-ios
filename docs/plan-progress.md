@@ -888,3 +888,12 @@ checked states, keyboard preference/power gates, modifier routing, and battery
 popover apply/failure/reopen behavior. Release build passes. This is not a full
 accessibility audit; keyboard pointer navigation and the AFC detail browser
 remain open, as do the other active tracks above.
+
+Keyboard screen navigation is now implemented: disable typing and focus the
+screen from the View menu, use arrows to move its visible pointer, Space to hold
+a touch, or Shift-arrow to drag. Releases survive modifier/mode changes; focus,
+sleep and input-owner changes release the gesture. The pointer follows the
+existing display transform and does not alter the framebuffer or recordings.
+Production-handler checks cover bounds, repeat handling, multi-key drags,
+modifier isolation, disabled states and controller/keyboard handoff; Release
+build passes. Full VoiceOver inspection and native game acceptance remain open.
