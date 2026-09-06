@@ -14,7 +14,7 @@ for name in ('pmu_update_irq','pmu_latch_event','pmu_adc_complete','pmu_adc_comm
              'pcf50633_adc_for_level','pcf50633_level_for_adc','pmu_charge_active',
              'pcf50633_set_battery_adc','pcf50633_set_charging_mode',
              'pcf50633_set_usb_cable','pcf50633_recv','pcf50633_guest_shutdown_confirmed',
-             'pcf50633_guest_shutdown','pcf50633_send','pcf50633_reset','pcf50633_post_load'):
+             'pcf50633_guest_shutdown','pcf50633_send','pcf50633_reset','pcf50633_post_load','pcf50633_init'):
     match=re.search(r'^(?:static )?[^\n]*\b'+name+r'\([^)]*\)\s*\{.*?^}',source,re.M|re.S)
     assert match,name
     functions.append(match.group())
@@ -28,6 +28,12 @@ prelude=r'''
 typedef struct {int unused;} I2CSlave;
 typedef struct {bool pending;int64_t deadline;} QEMUTimer;
 typedef int *qemu_irq;
+typedef void Object;
+#define DEVICE(p) (p)
+static int init_irq;
+static QEMUTimer init_timer;
+static void qdev_init_gpio_out(void *object, qemu_irq *irq, int count) { *irq=&init_irq; }
+static QEMUTimer *timer_new_ns(int clock, void (*callback)(void *), void *opaque) { return &init_timer; }
 #define MIN(a,b) ((a)<(b)?(a):(b))
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define PCF50633(s) ((Pcf50633State *)(s))
@@ -58,6 +64,14 @@ static void advance(Pcf50633State *s) {
     s->adc_timer->pending=false;pmu_adc_complete(s);
 }
 int main(void) {
+    Pcf50633State initial={0};pcf50633_init(&initial);pcf50633_reset(&initial);
+    /* The dock ID has its own open-circuit input, independent of USB/battery. */
+    assert(initial.adc_values[3]==1023 && initial.adc_values[4]==850);
+    wr(&initial,0x40,0x23);assert(!init_timer.pending);
+    wr(&initial,0x40,0x13);advance(&initial);
+    assert(rd(&initial,0x41)==3 && rd(&initial,0x42)==255);
+    pcf50633_set_usb_cable(&initial,true);pcf50633_reset(&initial);
+    assert(initial.adc_values[3]==1023);
     int irq=0;QEMUTimer timer={0};Pcf50633State s={.irq=&irq,.adc_timer=&timer};
     pcf50633_reset(&s);
     wr(&s,0x40,0x23);assert(!timer.pending && !irq && !s.regs[2]);

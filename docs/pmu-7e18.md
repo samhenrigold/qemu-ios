@@ -147,3 +147,19 @@ an undefined kernel instruction at `c001be04`, with a saved CPSR of `0x113`,
 before the display returned. This narrows the missing work to resume CPU/device
 state rather than button interrupt delivery. The experimental reentry code was
 removed; it is not part of normal operation or the sound/menu app package.
+
+## Dock accessory ID and silent speaker regression
+
+The 7E18 device tree's `/dock/function-read_acc` is `<PMU phandle, 'pmuA', 3>`:
+accessory identification uses ADC channel 3. Leaving that input at zero caused
+AudioSessionGetProperty('rout') to report `LineOut` on an ordinary USB-connected
+emulator. Raw I2S contained PCM (peak 3277), but the LM48821 remained at control
+00 and the entire host WAV was silent. Volume-up presses did not change this.
+
+Channel 3 now defaults to 1023 for an open accessory-ID input. With that single
+change the same candidate NAND reports `Speaker`; the default Harness stereo
+check captures 5.99 seconds of non-silent audio with 440.0 Hz left and 880.0 Hz
+right. Boot and the agent binary-transfer check pass in the same run:
+`/tmp/it-regress-open-dock-native.log`. The ADC regression checks the separate
+channel value, settling/conversion encoding and persistence across reset. This
+fix does not implement headset/microphone support or dock accessories.

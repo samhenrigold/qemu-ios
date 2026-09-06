@@ -361,6 +361,9 @@ static void pcf50633_init(Object *obj)
     /* 7E18: channel 2 thermistor (about 10 kohm), channel 4 battery voltage
      * (2500 + counts * 2000 / 1024 mV), channel 6 USB charger identification.
      * Battery percentage calibration is a separate machine control. */
+    /* Dock function-read_acc selects channel 3. An open accessory-ID input
+     * reads full scale; zero falsely identifies a dock with line-out audio. */
+    s->adc_values[3] = 1023;
     s->adc_values[2] = 205;
     s->adc_values[4] = 850;
     s->adc_values[6] = 512;
