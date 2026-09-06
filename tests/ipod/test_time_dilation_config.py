@@ -17,7 +17,13 @@ parser.add_argument('--qemu', type=Path, default=ROOT / 'build-native14/qemu-bui
 parser.add_argument('--files', type=Path, default=ROOT.parent / 'qemu-ios-files')
 args = parser.parse_args()
 base_env = {k: v for k, v in os.environ.items() if not k.startswith('IT_')}
+iboot = str(args.files / 'ios3/iBoot.bin')
 cases = [
+    ('direct-default', {}, '', {'direct-iboot':'', 'direct-llb':''}),
+    ('direct-alias', {'IT_DIRECT_IBOOT':iboot}, '', {'direct-iboot':iboot}),
+    ('direct-explicit', {'IT_DIRECT_IBOOT':'/missing'}, ',direct-iboot='+iboot, {'direct-iboot':iboot}),
+    ('direct-empty', {'IT_DIRECT_IBOOT':'/missing'}, ',direct-iboot=', {'direct-iboot':''}),
+    ('direct-llb-alone', {}, ',direct-llb=/missing', None),
     ('forge-default', {}, '', {'forge-sigcheck':False}),
     ('forge-alias', {'IT_FORGE_SIGCHECK':'0'}, '', {'forge-sigcheck':True}),
     ('forge-on', {}, ',forge-sigcheck=on', {'forge-sigcheck':True}),
@@ -75,7 +81,7 @@ for label, overrides, options, expected in cases:
                     log.seek(0)
                     message = log.read()
                     assert ('IT_TIME_DILATION must be' in message or
-                            'time-dilation' in message or 'amc-mode' in message), message
+                            'time-dilation' in message or 'amc-mode' in message or 'direct-llb' in message), message
                 else:
                     deadline = time.monotonic() + 15
                     while not Path(sock).exists():
@@ -84,6 +90,12 @@ for label, overrides, options, expected in cases:
                     q = QMP(sock, timeout=10)
                     for prop, value in expected.items():
                         assert q.cmd('qom-get', path='/machine', property=prop) == value, label
+                        if prop == 'direct-iboot':
+                            devices=q.cmd('qom-list',path='/machine/unattached')
+                            uarts=[d for d in devices if 'exynos4210.uart' in d['type']]
+                            assert len(uarts)==4, devices
+                            for uart in uarts:
+                                assert q.cmd('qom-get',path='/machine/unattached/'+uart['name'],property='s5l8720-irq')==bool(value)
                         if prop == 'forge-sigcheck':
                             devices=q.cmd('qom-list',path='/machine/unattached')
                             device=next(d for d in devices if d['type']=='child<ipodtouch.pke>')

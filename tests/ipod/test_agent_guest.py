@@ -25,7 +25,7 @@ cfg = SimpleNamespace(out=out, files=f, base_nand=args.base_nand or f+'/nand-ult
     nor=f+'/ios3/nor_7E18.bin', overlay=out+'/overlay', qemu=args.qemu,
     usbmuxd=args.usbmuxd, usbmuxd_ok=True, usb_port=r.free_port(1520,1539),
     mux_port=r.free_port(27400,27419), qmp_port=r.free_port(28200,28219),
-    wifi=True, cpu=None, mem='128M', kernel_console=True,
+    wifi=True, cpu=None, mem='128M', kernel_console=True, direct_iboot=f+'/ios3/iBoot.bin',
     install_timeout=420, proxy_lo=28460, proxy_hi=28479)
 os.environ['PATH'] = str(ROOT.parent/'qemu-ios-deps12/bin') + ':' + os.environ['PATH']
 p = r.Procs()

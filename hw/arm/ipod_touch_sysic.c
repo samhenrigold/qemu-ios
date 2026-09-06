@@ -57,11 +57,11 @@ static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
              * the watchdog) unless the top byte equals the image epoch (4 on the
              * S5L8720 / iPod touch 2G). A normal boot gets that top byte latched
              * by the SecureROM before iBoot runs; when we substitute the boot
-             * chain (IT_DIRECT_IBOOT) the ROM never runs and iBoot's own
+             * chain (direct-iboot) the ROM never runs and iBoot's own
              * power-control writes here would clobber it, so synthesise the epoch
-             * top byte on read. Env-gated: a normal 2.1.1 boot is untouched.
+             * top byte on read. Configuration-gated: a normal 2.1.1 boot is untouched.
              */
-            if (getenv("IT_DIRECT_IBOOT")) {
+            if (s->direct_boot) {
                 uint32_t epoch = 4;
                 if (getenv("IT_DIRECT_EPOCH")) {
                     epoch = (uint32_t)strtoul(getenv("IT_DIRECT_EPOCH"), NULL, 0);

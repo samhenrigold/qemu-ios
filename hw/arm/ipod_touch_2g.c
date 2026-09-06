@@ -582,20 +582,77 @@ static void ipod_touch_osk_env_alias(IPodTouchMachineState *nms)
     }
 }
 
+static char *ipod_touch_get_direct_iboot(Object *obj, Error **errp)
+{
+    return g_strdup(IPOD_TOUCH_MACHINE(obj)->direct_iboot);
+}
+
+static void ipod_touch_set_direct_iboot(Object *obj, const char *value, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->cpu) {
+        error_setg(errp, "direct-iboot must be set before the machine starts");
+        return;
+    }
+    if (strlen(value) >= sizeof(nms->direct_iboot)) {
+        error_setg(errp, "direct-iboot path is too long");
+        return;
+    }
+    g_strlcpy(nms->direct_iboot, value, sizeof(nms->direct_iboot));
+    nms->direct_iboot_explicit = true;
+}
+
+static char *ipod_touch_get_direct_llb(Object *obj, Error **errp)
+{
+    return g_strdup(IPOD_TOUCH_MACHINE(obj)->direct_llb);
+}
+
+static void ipod_touch_set_direct_llb(Object *obj, const char *value, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->cpu) {
+        error_setg(errp, "direct-llb must be set before the machine starts");
+        return;
+    }
+    if (strlen(value) >= sizeof(nms->direct_llb)) {
+        error_setg(errp, "direct-llb path is too long");
+        return;
+    }
+    g_strlcpy(nms->direct_llb, value, sizeof(nms->direct_llb));
+    nms->direct_llb_explicit = true;
+}
+
+static void ipod_touch_direct_boot_env_aliases(IPodTouchMachineState *nms)
+{
+    const char *iboot = getenv("IT_DIRECT_IBOOT");
+    if (!nms->direct_iboot_explicit && iboot) {
+        ipod_touch_set_direct_iboot(OBJECT(nms), iboot, &error_fatal);
+        warn_report_once("IT_DIRECT_IBOOT is deprecated; use direct-iboot=PATH");
+    }
+    const char *llb = getenv("IT_DIRECT_LLB");
+    if (!nms->direct_llb_explicit && llb) {
+        ipod_touch_set_direct_llb(OBJECT(nms), llb, &error_fatal);
+        warn_report_once("IT_DIRECT_LLB is deprecated; use direct-llb=PATH");
+    }
+    if (nms->direct_llb[0] && !nms->direct_iboot[0]) {
+        error_setg(&error_fatal, "direct-llb requires direct-iboot");
+    }
+}
+
 /*
  * Audio hardware that the machine did not model until now (the CS42L58 codec
  * and the AMC). Both are real parts on this board, but neither was mapped
  * before, so switching them on changes what every guest sees. 2.1.1 works
  * today and must keep working, so they default to on only for the 3.1.3
  * configuration (which is the one that has the audio bugs, and which is
- * already identified everywhere else in this file by IT_DIRECT_IBOOT).
+ * selected by direct-iboot).
  * audio-hw=on forces them on (including under 2.1.1); off removes them.
  * Explicit machine options, including auto, override the legacy IT_AUDIO_HW
  * alias. Hardware topology cannot change after initialization.
  */
 static bool ipod_touch_audio_hw_enabled(IPodTouchMachineState *nms)
 {
-    return nms->audio_hw == ON_OFF_AUTO_AUTO ? getenv("IT_DIRECT_IBOOT") != NULL
+    return nms->audio_hw == ON_OFF_AUTO_AUTO ? nms->direct_iboot[0] != 0
         : nms->audio_hw == ON_OFF_AUTO_ON;
 }
 
@@ -1333,8 +1390,8 @@ static void ipod_touch_inject_boot_args(IPodTouchMachineState *nms)
 
 static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
 {
-    const char *iboot_path = getenv("IT_DIRECT_IBOOT");
-    const char *llb_path = getenv("IT_DIRECT_LLB");
+    const char *iboot_path = nms->direct_iboot[0] ? nms->direct_iboot : NULL;
+    const char *llb_path = nms->direct_llb[0] ? nms->direct_llb : NULL;
     size_t fsize;
 
     if (llb_path) {
@@ -1357,7 +1414,7 @@ static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
          * that top byte is a read-only fused value the SecureROM never writes;
          * the low bits are the POWER_ID power-control scratch. We skip the ROM,
          * so the SYSIC model synthesises the epoch top byte on read whenever
-         * IT_DIRECT_IBOOT is set -- see ipod_touch_sysic_read(). Nothing to do
+         * direct-iboot is configured -- see ipod_touch_sysic_read(). Nothing to do
          * here.
          */
 
@@ -1383,11 +1440,11 @@ static void ipod_touch_cpu_reset(void *opaque)
     cpu_reset(cs);
     ipod_touch_load_bootrom(nms);
 
-    if (getenv("IT_DIRECT_IBOOT")) {
+    if (nms->direct_iboot[0]) {
         /* Boot-chain substitution: enter the decrypted iBoot directly, skipping
          * the bootrom + LLB signature/personalisation checks. */
         ipod_touch_load_direct_boot(nms);
-        cpu_set_pc(CPU(cpu), getenv("IT_DIRECT_LLB") ? LLB_LOAD_BASE : IBOOT_MEM_BASE);
+        cpu_set_pc(CPU(cpu), nms->direct_llb[0] ? LLB_LOAD_BASE : IBOOT_MEM_BASE);
         return;
     }
 
@@ -3211,6 +3268,7 @@ static void ipod_touch_machine_init(MachineState *machine)
         !ipod_touch_bt_env_aliases(nms, &error_fatal)) {
         return;
     }
+    ipod_touch_direct_boot_env_aliases(nms);
     ipod_touch_audio_env_alias(nms);
     ipod_touch_osk_env_alias(nms);
     ipod_touch_wdt_env_alias(nms);
@@ -3279,6 +3337,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = qdev_new("ipodtouch.sysic");
     IPodTouchSYSICState *sysic_state = IPOD_TOUCH_SYSIC(dev);
     nms->sysic = sysic_state;
+    sysic_state->direct_boot = nms->direct_iboot[0] != 0;
     memory_region_add_subregion(sysmem, SYSIC_MEM_BASE, &sysic_state->iomem);
     busdev = SYS_BUS_DEVICE(dev);
     for(int grp = 0; grp < GPIO_NUMINTGROUPS_2; grp++) {
@@ -3309,7 +3368,7 @@ static void ipod_touch_machine_init(MachineState *machine)
         ipod_touch_sdio_setup_net(sdio_state);
     }
 
-    dev = exynos4210_uart_create(UART0_MEM_BASE, 256, 0, serial_hd(0), nms->irq[0][24]);
+    dev = exynos4210_uart_create(UART0_MEM_BASE, 256, 0, serial_hd(0), nms->irq[0][24], nms->direct_iboot[0] != 0);
     if (!dev) {
         hw_error("Failed to create UART0 device!");
     }
@@ -3321,22 +3380,22 @@ static void ipod_touch_machine_init(MachineState *machine)
      */
     uart1_dev = exynos4210_uart_create(UART1_MEM_BASE, 256, 1,
                                        it_bt_chardev(serial_hd(1), nms->bt_enabled, nms->bt_latency_us),
-                                       nms->irq[0][25]);
+                                       nms->irq[0][25], nms->direct_iboot[0] != 0);
     if (!uart1_dev) {
         hw_error("Failed to create UART1 device!");
     }
 
-    dev = exynos4210_uart_create(UART2_MEM_BASE, 256, 2, serial_hd(2), nms->irq[0][26]);
+    dev = exynos4210_uart_create(UART2_MEM_BASE, 256, 2, serial_hd(2), nms->irq[0][26], nms->direct_iboot[0] != 0);
     if (!dev) {
         hw_error("Failed to create UART0 device!");
     }
 
-    dev = exynos4210_uart_create(UART3_MEM_BASE, 256, 3, serial_hd(3), nms->irq[0][27]);
+    dev = exynos4210_uart_create(UART3_MEM_BASE, 256, 3, serial_hd(3), nms->irq[0][27], nms->direct_iboot[0] != 0);
     if (!dev) {
         hw_error("Failed to create UART0 device!");
     }
 
-    // dev = exynos4210_uart_create(UART4_MEM_BASE, 256, 4, serial_hd(4), nms->irq[0][28]);
+    // dev = exynos4210_uart_create(UART4_MEM_BASE, 256, 4, serial_hd(4), nms->irq[0][28], nms->direct_iboot[0] != 0);
     // if (!dev) {
     //     printf("Failed to create uart4 device!\n");
     //     abort();
@@ -3654,6 +3713,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     fmss_state->nand_path = nms->nand_path;
     fmss_state->nand_overlay = nms->nand_overlay[0] ? nms->nand_overlay : NULL;
     nms->fmss_state = fmss_state;
+    fmss_state->direct_boot = nms->direct_iboot[0] != 0;
     busdev = SYS_BUS_DEVICE(dev);
     memory_region_add_subregion(sysmem, FMSS_MEM_BASE, &fmss_state->iomem);
     sysbus_realize(busdev, &error_fatal);
@@ -3672,6 +3732,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = qdev_new("ipodtouch.mipidsi");
     IPodTouchMIPIDSIState *mipi_dsi_state = IPOD_TOUCH_MIPI_DSI(dev);
     nms->mipi_dsi_state = mipi_dsi_state;
+    mipi_dsi_state->direct_boot = nms->direct_iboot[0] != 0;
     memory_region_add_subregion(sysmem, MIPI_DSI_MEM_BASE, &mipi_dsi_state->iomem);
     /* Has to be realized, not just created: an unrealized device is never
      * parented into the QOM tree, so qemu_devices_reset() never reaches it and
@@ -3784,6 +3845,8 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "mpvd-decode", "Enable MPEG-4 Part 2 decoding instead of register-only MPVD");
     object_class_property_add_str(klass, "amc-mode", ipod_touch_get_amc_mode, ipod_touch_set_amc_mode);
     object_class_property_set_description(klass, "amc-mode", "AMC registers, handshake-only bring-up, or compressed audio decode");
+    object_class_property_add_str(klass, "direct-iboot", ipod_touch_get_direct_iboot, ipod_touch_set_direct_iboot);
+    object_class_property_add_str(klass, "direct-llb", ipod_touch_get_direct_llb, ipod_touch_set_direct_llb);
     object_class_property_add(klass, "forge-sigcheck", "bool", ipod_touch_get_forge_sigcheck,
                               ipod_touch_set_forge_sigcheck, NULL, NULL);
     object_class_property_set_description(klass, "forge-sigcheck", "Allow malformed boot signature recovery for unsigned-image compatibility");

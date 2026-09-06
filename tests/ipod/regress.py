@@ -346,10 +346,10 @@ class Device:
         if getattr(cfg, "kernel_console", False):
             machine += (",boot-args=amfi_allow_any_signature=1 "
                         "cs_enforcement_disable=1 serial=3 debug=0x8")
-        for option in ("audio_hw", "h264_decode", "scaler_decode", "mpvd_decode", "amc_mode", "lcd_planes"):
+        for option in ("audio_hw", "h264_decode", "scaler_decode", "mpvd_decode", "amc_mode", "lcd_planes", "direct_iboot", "direct_llb"):
             value = getattr(cfg, option, None)
             if value is not None:
-                machine += "," + option.replace("_", "-") + "=" + value
+                machine += "," + option.replace("_", "-") + "=" + value.replace(",", ",,")
         # The BCM4325 is attached only for the check that tests it. It is not
         # free: 3.1.3's driver associates and then keeps the SDIO bus busy, and
         # every other check pays for a radio it never looks at. run-ios3.sh

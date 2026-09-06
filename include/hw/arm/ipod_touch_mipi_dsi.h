@@ -32,6 +32,7 @@ typedef struct IPodTouchMIPIDSIState
 {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
+    bool direct_boot; /* Startup board compatibility policy. */
     qemu_irq irq;
     uint32_t pkthdr_reg;
     uint32_t clkctrl;
