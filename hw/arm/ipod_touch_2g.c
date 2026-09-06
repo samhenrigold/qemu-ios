@@ -695,16 +695,38 @@ static void ipod_touch_cpu_setup(MachineState *machine, MemoryRegion **sysmem, A
  * Re-staging it on every reset costs one file read per boot and makes the reset
  * vector mean what it says.
  */
+/* All boot-image callers share bounds/error handling: never jump into a
+ * missing image or spill an oversized image into the next hardware window. */
+static size_t ipod_touch_stage_boot_image(IPodTouchMachineState *nms,
+                                         const char *path, hwaddr base,
+                                         size_t capacity, Error **errp)
+{
+    g_autofree char *data = NULL;
+    g_autoptr(GError) error = NULL;
+    gsize size;
+
+    if (!g_file_get_contents(path, &data, &size, &error)) {
+        error_setg(errp, "Cannot read boot image '%s': %s", path, error->message);
+        return 0;
+    }
+    if (!size || size > capacity) {
+        error_setg(errp, "Boot image '%s' must contain 1..%zu bytes (got %zu)",
+                   path, capacity, size);
+        return 0;
+    }
+    if (address_space_write(nms->nsas, base, MEMTXATTRS_UNSPECIFIED,
+                            data, size) != MEMTX_OK) {
+        error_setg(errp, "Cannot stage boot image '%s' at 0x%" HWADDR_PRIx,
+                   path, base);
+        return 0;
+    }
+    return size;
+}
+
 static void ipod_touch_load_bootrom(IPodTouchMachineState *nms)
 {
-    uint8_t *file_data = NULL;
-    gsize fsize;
-
-    if (g_file_get_contents(nms->bootrom_path, (char **)&file_data, &fsize, NULL)) {
-        address_space_rw(nms->nsas, VROM_MEM_BASE, MEMTXATTRS_UNSPECIFIED,
-                         file_data, fsize, 1);
-        g_free(file_data);
-    }
+    ipod_touch_stage_boot_image(nms, nms->bootrom_path, VROM_MEM_BASE,
+                                0x20000, &error_fatal);
 }
 
 /*
@@ -1313,22 +1335,19 @@ static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
 {
     const char *iboot_path = getenv("IT_DIRECT_IBOOT");
     const char *llb_path = getenv("IT_DIRECT_LLB");
-    uint8_t *file_data = NULL;
-    gsize fsize;
+    size_t fsize;
 
-    if (llb_path && g_file_get_contents(llb_path, (char **)&file_data, &fsize, NULL)) {
-        address_space_rw(nms->nsas, LLB_LOAD_BASE, MEMTXATTRS_UNSPECIFIED,
-                         file_data, fsize, 1);
-        g_free(file_data);
-        file_data = NULL;
+    if (llb_path) {
+        fsize = ipod_touch_stage_boot_image(nms, llb_path, LLB_LOAD_BASE,
+                                            SRAM1_MEM_BASE - LLB_LOAD_BASE,
+                                            &error_fatal);
         fprintf(stderr, "[IT_DIRECT] staged LLB '%s' (%llu bytes) at 0x%08x\n",
                 llb_path, (unsigned long long)fsize, LLB_LOAD_BASE);
     }
 
-    if (iboot_path && g_file_get_contents(iboot_path, (char **)&file_data, &fsize, NULL)) {
-        address_space_rw(nms->nsas, IBOOT_MEM_BASE, MEMTXATTRS_UNSPECIFIED,
-                         file_data, fsize, 1);
-        g_free(file_data);
+    if (iboot_path) {
+        fsize = ipod_touch_stage_boot_image(nms, iboot_path, IBOOT_MEM_BASE,
+                                            0x100000, &error_fatal);
         fprintf(stderr, "[IT_DIRECT] staged iBoot '%s' (%llu bytes) at 0x%08x\n",
                 iboot_path, (unsigned long long)fsize, IBOOT_MEM_BASE);
         /*
