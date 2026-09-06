@@ -139,6 +139,40 @@ static void lcd_ft(const char *ev, uint32_t arg)
  */
 static int it_display_rotation_req;
 
+/* 7E18 AppleM2CLCD enables sources at +8 and acknowledges +0xc with W1C.
+ * Its idle path clears enable bit 0; a constant status of 1 and an interrupt
+ * driven by the last acknowledgement caused unexpected interrupts at 60 Hz. */
+static void lcd_update_irq(IPodTouchLCDState *s)
+{
+    qemu_set_irq(s->irq, (s->irq_status & s->irq_enable) != 0);
+}
+
+static void lcd_write_irq(IPodTouchLCDState *s, unsigned offset, uint32_t value)
+{
+    if (offset == 8) {
+        s->irq_enable = value;
+    } else {
+        s->render = value; /* Preserve the old snapshot wire field. */
+        s->irq_status &= ~value;
+    }
+    lcd_update_irq(s);
+}
+
+static void lcd_vblank_irq(IPodTouchLCDState *s)
+{
+    s->irq_status |= 1;
+    lcd_update_irq(s);
+}
+
+static void lcd_restore_irq(IPodTouchLCDState *s, int version)
+{
+    if (version < 3) {
+        s->irq_enable = version >= 2 ? s->plane_regs[2] : (s->render == 1);
+        s->irq_status = 0;
+    }
+    lcd_update_irq(s);
+}
+
 static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
 {
     // printf("%s: read from location 0x%08x\n", __func__, addr);
@@ -152,8 +186,10 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
             return 2;
         case 0x4:
             return s->lcd_con;
+        case 0x8:
+            return s->irq_enable;
         case 0xC:
-            return 0x1; //s->unknown1;
+            return s->irq_status;
         case 0x20:
             return s->w1_display_depth_info;
         case 0x24:
@@ -206,10 +242,9 @@ static void ipod_touch_lcd_write(void *opaque, hwaddr addr, uint64_t val, unsign
         case 0x4:
             s->lcd_con = val;
             break;
+        case 0x8:
         case 0xC:
-            s->render = val;
-            qemu_irq_lower(s->irq);
-	    // qemu_irq_raise(s->irq);
+            lcd_write_irq(s, addr, val);
             break;
         case 0x20:
             s->w1_display_depth_info = val;
@@ -908,50 +943,16 @@ static void refresh_timer_tick(void *opaque)
         lcd_ft("vsync", (uint32_t)(now - s->next_vsync));
     }
 
-    /*
-     * IT_LCD_VSYNC_TRACE: is the frame interrupt actually being delivered?
-     *
-     * The raise below is gated on render being EXACTLY 1. If the guest ever
-     * leaves any other value in that register the frame interrupt stops for as
-     * long as it stays there, and nothing says so -- the guest's display link
-     * simply never fires again and its redraw only happens when something else
-     * wakes the run loop, which is what a touch does. That is a very specific
-     * symptom, so count it rather than reason about it: how many ticks raised,
-     * how many were suppressed, and which values were in the register.
-     */
     if (lcd_vsync_trace()) {
-        static uint64_t raised, suppressed;
-        static uint32_t seen[8];
-        static unsigned n_seen;
-        unsigned i;
-
-        if (s->render == 0x1) {
-            raised++;
-        } else {
-            suppressed++;
-        }
-        for (i = 0; i < n_seen; i++) {
-            if (seen[i] == s->render) {
-                break;
-            }
-        }
-        if (i == n_seen && n_seen < ARRAY_SIZE(seen)) {
-            seen[n_seen++] = s->render;
-            fprintf(stderr, "[LCDV] render register now 0x%08x -- frame "
-                    "interrupt %s\n", (unsigned)s->render,
-                    s->render == 0x1 ? "RAISED each vsync" : "SUPPRESSED");
-        }
-        if (((raised + suppressed) % 300) == 0) {
-            fprintf(stderr, "[LCDV] vsync ticks: %" PRIu64 " raised, %" PRIu64
-                    " suppressed (render=0x%08x)\n",
-                    raised, suppressed, (unsigned)s->render);
+        static uint64_t enabled, masked;
+        if (s->irq_enable & 1) enabled++; else masked++;
+        if ((enabled + masked) % 300 == 0) {
+            fprintf(stderr, "[LCDV] vsync: %" PRIu64 " enabled, %" PRIu64
+                    " masked (enable=%08x pending=%08x)\n",
+                    enabled, masked, s->irq_enable, s->irq_status);
         }
     }
-
-    if (s->render == 0x1)
-	qemu_irq_raise(s->irq);
-    else if (s->render == 0xFF)
-	qemu_irq_lower(s->irq);
+    lcd_vblank_irq(s);
 
     /*
      * Latch the scanout base, as the panel does at vblank. Without this the
@@ -1010,6 +1011,8 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
     memset(s->plane_scanout, 0, sizeof(s->plane_scanout));
     s->lcd_con = 0;
     s->render = 0;
+    s->irq_enable = s->irq_status = 0;
+    lcd_update_irq(s);
     s->w1_display_resolution_info = 0;
     s->w1_framebuffer_base = 0;
     s->scanout_base = 0;
@@ -1092,6 +1095,7 @@ static void ipod_touch_lcd_init(Object *obj)
 static int ipod_touch_lcd_post_load(void *opaque, int version_id)
 {
     IPodTouchLCDState *s = opaque;
+    lcd_restore_irq(s, version_id);
     if (version_id < 2) {
         memset(s->plane_regs, 0, sizeof(s->plane_regs));
         memset(s->plane_scanout, 0, sizeof(s->plane_scanout));
@@ -1124,7 +1128,7 @@ static int ipod_touch_lcd_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_lcd = {
     .name = "ipod_touch_lcd",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = ipod_touch_lcd_post_load,
     .fields = (const VMStateField[]) {
@@ -1138,6 +1142,8 @@ static const VMStateDescription vmstate_ipod_touch_lcd = {
         VMSTATE_UINT32(w1_display_depth_info, IPodTouchLCDState),
         VMSTATE_UINT32(render, IPodTouchLCDState),
         VMSTATE_INT32(rotation, IPodTouchLCDState),
+        VMSTATE_UINT32_V(irq_enable, IPodTouchLCDState, 3),
+        VMSTATE_UINT32_V(irq_status, IPodTouchLCDState, 3),
         VMSTATE_END_OF_LIST()
     }
 };

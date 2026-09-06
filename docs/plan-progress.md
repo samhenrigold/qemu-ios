@@ -367,3 +367,21 @@ the actual built Harness IPA and passed: `/tmp/ltm-v4-app-regression.log`.
 The native harness now prefers v4, with v3/v2/legacy fallbacks. Media tests use
 v4 too. The battery-inclusive package `build-native14/Light Touch-battery.app`
 passes Release build, strict deep signature and macOS 14 dependency checks.
+
+### CLCD interrupt enable and pending status
+
+The 7E18 frame handler disables source bit 0 at register 0x08 when idle. The
+model ignored this register and treated an acknowledgement at 0x0c as permission
+to keep raising interrupts. It now models enable, pending and W1C independently,
+including migration compatibility. See `docs/ipod-clcd-irqs.md` for driver
+addresses and the hardware contract. Sanitizer IRQ and LCD compositor tests pass.
+
+The earlier 120-second untethered lock/wake run logged 787 unexpected CLCD
+interrupts; the corrected run logs zero. Locked/60-second/95-second screenshots
+are black, Home restores the lock screen, the guest agent answers, and shutdown
+is guest-confirmed: `/tmp/it-idle-wake-clcd-fixed.log`. This proves display
+blanking and wake after idle, not every deep-suspend or automatic-lock path.
+
+All ten native checks pass with the corrected model: boot, full-volume fsck,
+persistence, app install/launch, GLES colors, binary guest agent, stereo audio,
+SpringBoard restart and serial console: `/tmp/it-clcd-full-regression.log`.

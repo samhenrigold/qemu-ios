@@ -67,7 +67,9 @@ typedef struct IPodTouchLCDState
     uint32_t w1_hspan;
     uint32_t w1_display_depth_info;
 
-    uint32_t render;
+    uint32_t render; /* Legacy snapshot field: last write to IRQ status. */
+    uint32_t irq_enable;
+    uint32_t irq_status;
 
     /*
      * Display rotation currently applied to the host window, in degrees
