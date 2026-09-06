@@ -16,7 +16,7 @@
 #endif
 
 /* Experimental 7E18 M2H264 bit reader and native progressive I/P
- * reconstruction. IT_H264_DECODE must be explicitly enabled by the machine. */
+ * reconstruction. The machine h264-decode option must be explicitly enabled. */
 typedef struct IPodH264State {
     SysBusDevice parent_obj;
     MemoryRegion iomem;

@@ -18,10 +18,14 @@ parser.add_argument('--files', type=Path, default=ROOT.parent / 'qemu-ios-files'
 args = parser.parse_args()
 base_env = {k: v for k, v in os.environ.items() if not k.startswith('IT_')}
 cases = [
-    ('default', {}, '', (1,)),
-    ('alias', {'IT_TIME_DILATION':'0x2'}, '', (2,)),
-    ('explicit', {'IT_TIME_DILATION':'bad'}, ',time-dilation=3', (3,)),
-    ('maximum', {}, ',time-dilation=1000000', (1000000,)),
+    ('h264-default', {}, '', {'h264-decode':False}),
+    ('h264-alias', {'IT_H264_DECODE':'0'}, '', {'h264-decode':True}),
+    ('h264-on', {}, ',h264-decode=on', {'h264-decode':True}),
+    ('h264-off', {'IT_H264_DECODE':'1'}, ',h264-decode=off', {'h264-decode':False}),
+    ('default', {}, '', {'time-dilation':1}),
+    ('alias', {'IT_TIME_DILATION':'0x2'}, '', {'time-dilation':2}),
+    ('explicit', {'IT_TIME_DILATION':'bad'}, ',time-dilation=3', {'time-dilation':3}),
+    ('maximum', {}, ',time-dilation=1000000', {'time-dilation':1000000}),
     ('zero', {'IT_TIME_DILATION':'0'}, '', None),
     ('negative', {'IT_TIME_DILATION':'-1'}, '', None),
     ('overflow', {'IT_TIME_DILATION':'18446744073709551616'}, '', None),
@@ -54,8 +58,11 @@ for label, overrides, options, expected in cases:
                         assert child.poll() is None and time.monotonic() < deadline, label
                         time.sleep(.05)
                     q = QMP(sock, timeout=10)
-                    for prop, value in zip(('time-dilation',), expected):
+                    for prop, value in expected.items():
                         assert q.cmd('qom-get', path='/machine', property=prop) == value, label
+                        if prop == 'h264-decode':
+                            devices=q.cmd('qom-list',path='/machine/unattached')
+                            assert any(d['type']=='child<ipodtouch.h264>' for d in devices)==value, devices
                         try:
                             q.cmd('qom-set', path='/machine', property=prop, value=value)
                         except Exception as error:
