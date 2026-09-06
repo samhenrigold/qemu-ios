@@ -10,6 +10,11 @@
 #define TYPE_IPOD_TOUCH_NOR_SPI                "ipodtouch.norspi"
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchNORSPIState, IPOD_TOUCH_NOR_SPI)
 
+#define NOR_FLASH_SIZE (1u << 20)
+#define NOR_PAGE_SIZE 256
+#define NOR_ERASE_32K 0x52
+#define NOR_ERASE_64K 0xd8
+
 #define NOR_WRITE_TO_STATUS_REG 0x1
 #define NOR_WRITE_DATA_CMD 0x2
 #define NOR_READ_DATA_CMD  0x3
@@ -24,16 +29,14 @@ typedef struct IPodTouchNORSPIState {
     char *nor_path;
     const char *boot_args;
     uint32_t cur_cmd;
-    uint8_t in_buf[0x1000];
-    uint8_t out_buf[0x1000];
-    uint32_t in_buf_size;
-    uint32_t out_buf_size;
-    uint32_t in_buf_cur_ind;
-    uint32_t out_buf_cur_ind;
-    uint8_t *nor_data;
-    gsize nor_size;             /* fsize was discarded, so reads were unbounded */
+    uint8_t nor_data[NOR_FLASH_SIZE];
+    uint32_t nor_size;
     uint8_t write_enabled;
     uint32_t nor_read_ind;
+    uint8_t address_bytes, page_offset, stream_offset, status;
+    uint16_t data_count;
+    uint8_t page[NOR_PAGE_SIZE];
+    bool command_active;
     bool nor_initialized;
 } IPodTouchNORSPIState;
 

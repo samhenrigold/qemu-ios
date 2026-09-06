@@ -73,43 +73,118 @@ static void nor_set_boot_args(IPodTouchNORSPIState *s, gsize norlen)
 
 static void initialize_nor(IPodTouchNORSPIState *s)
 {
-    gsize fsize = 0;
-    GError *err = NULL;
+    gsize size = 0;
+    GError *error = NULL;
+    g_autofree char *data = NULL;
 
-    if (g_file_get_contents(s->nor_path, (char **)&s->nor_data, &fsize, &err)) {
-        s->nor_size = fsize;
-        s->nor_initialized = true;
-        if (s->boot_args && s->boot_args[0]) {
-            nor_set_boot_args(s, fsize);
-        }
+    memset(s->nor_data, 0xff, sizeof(s->nor_data));
+    s->nor_size = 0;
+    s->nor_initialized = true;
+    if (!g_file_get_contents(s->nor_path, &data, &size, &error) ||
+        size != NOR_FLASH_SIZE) {
+        error_report("NOR image \"%s\" must contain exactly %u bytes: %s; reads return 0xff",
+                     s->nor_path, NOR_FLASH_SIZE,
+                     error ? error->message : "incorrect image size");
+        g_clear_error(&error);
         return;
     }
-
-    /*
-     * This used to fail silently, leaving nor_data NULL for a read path that
-     * dereferences it unconditionally. Say so instead -- an unreadable NOR is
-     * a setup mistake, and the alternative is a segfault with no explanation.
-     */
-    error_report("NOR image \"%s\" could not be read: %s. NOR reads will "
-                 "return 0xff.", s->nor_path, err ? err->message : "unknown");
-    g_clear_error(&err);
-    s->nor_data = NULL;
-    s->nor_size = 0;
-    s->nor_initialized = true;      /* do not retry on every transfer */
+    memcpy(s->nor_data, data, size);
+    s->nor_size = size;
+    if (s->boot_args && s->boot_args[0]) {
+        nor_set_boot_args(s, size);
+    }
 }
+
+#define NOR_STATUS_EPE 0x20
+#define NOR_STATUS_SWP 0x0c
+#define NOR_STATUS_SPRL 0x80
 
 static void nor_reset_transaction(IPodTouchNORSPIState *s)
 {
     s->cur_cmd = 0;
-    s->in_buf_cur_ind = 0;
-    s->out_buf_cur_ind = 0;
-    s->in_buf_size = 0;
-    s->out_buf_size = 0;
+    s->command_active = false;
+    s->address_bytes = 0;
+    s->data_count = 0;
+    s->stream_offset = 0;
+    s->page_offset = 0;
+}
+
+static void nor_finish_transaction(IPodTouchNORSPIState *s)
+{
+    trace_ipod_touch_nor_finish(s->cur_cmd, s->nor_read_ind, s->address_bytes,
+                               s->data_count, s->write_enabled, s->status, s->page[0]);
+    if (!s->command_active) {
+        return;
+    }
+    if (s->cur_cmd == NOR_ENABLE_WRITE) {
+        s->write_enabled = 1;
+        return;
+    }
+    if (s->cur_cmd == NOR_DISABLE_WRITE) {
+        s->write_enabled = 0;
+        return;
+    }
+    if (!s->write_enabled) {
+        return;
+    }
+    if (s->cur_cmd == NOR_WRITE_TO_STATUS_REG) {
+        if (s->data_count) {
+            uint8_t value = s->page[0];
+            /* WP is deasserted. A locked SPRL must be cleared by a separate
+             * command before changing the global sector protection. */
+            if (!(s->status & NOR_STATUS_SPRL)) {
+                if ((value & 0x3c) == 0) {
+                    s->status &= ~NOR_STATUS_SWP;
+                } else if ((value & 0x3c) == 0x3c) {
+                    s->status |= NOR_STATUS_SWP;
+                }
+            }
+            s->status = (s->status & ~NOR_STATUS_SPRL) | (value & NOR_STATUS_SPRL);
+        }
+        s->write_enabled = 0;
+        return;
+    }
+    uint32_t length;
+    switch (s->cur_cmd) {
+    case NOR_WRITE_DATA_CMD: length = NOR_PAGE_SIZE; break;
+    case NOR_ERASE_BLOCK: length = 4096; break;
+    case NOR_ERASE_32K: length = 32768; break;
+    case NOR_ERASE_64K: length = 65536; break;
+    default: return;
+    }
+    s->write_enabled = 0;
+    if (s->address_bytes != 3 ||
+        (s->cur_cmd == NOR_WRITE_DATA_CMD && !s->data_count) ||
+        (s->status & NOR_STATUS_SWP)) {
+        return;
+    }
+    s->status &= ~NOR_STATUS_EPE;
+    if (!s->nor_initialized) {
+        initialize_nor(s);
+    }
+    if (s->nor_size != NOR_FLASH_SIZE) {
+        s->status |= NOR_STATUS_EPE;
+        return;
+    }
+    uint32_t start = s->nor_read_ind & ~(length - 1);
+    /* ponytail: operations complete synchronously at CS release; add a virtual
+     * busy timer when a guest requires programming/erase latency. */
+    if (s->cur_cmd == NOR_WRITE_DATA_CMD) {
+        for (unsigned i = 0; i < NOR_PAGE_SIZE; i++) {
+            s->nor_data[start + i] &= s->page[i];
+        }
+    } else {
+        memset(s->nor_data + start, 0xff, length);
+    }
 }
 
 static int ipod_touch_nor_spi_set_cs(SSIPeripheral *dev, bool level)
 {
-    nor_reset_transaction(IPOD_TOUCH_NOR_SPI(dev));
+    IPodTouchNORSPIState *s = IPOD_TOUCH_NOR_SPI(dev);
+    if (level) {
+        nor_finish_transaction(s);
+    }
+    nor_reset_transaction(s);
     return 0;
 }
 
@@ -118,162 +193,126 @@ static void ipod_touch_nor_spi_reset(DeviceState *dev)
     IPodTouchNORSPIState *s = IPOD_TOUCH_NOR_SPI(dev);
     nor_reset_transaction(s);
     s->write_enabled = 0;
+    s->status = NOR_STATUS_SWP;
 }
 
 static uint32_t ipod_touch_nor_spi_transfer(SSIPeripheral *dev, uint32_t value)
 {
     IPodTouchNORSPIState *s = IPOD_TOUCH_NOR_SPI(dev);
-
-    if(s->cur_cmd == 0) {
-        // this is a new command -> set it. in_buf/out_buf are fixed 0x1000-byte
-        // members, so nothing is allocated or freed per command (the old code
-        // malloc'd both here and freed them only on the one completion path
-        // that READ_DATA/ENABLE_WRITE/DISABLE_WRITE never reach -- a leak on
-        // every such command, i.e. continuously during boot).
+    value &= 0xff;
+    if (!s->command_active) {
         trace_ipod_touch_nor_command(value);
+        s->command_active = true;
         s->cur_cmd = value;
-        s->in_buf[0] = value;
-        s->in_buf_size = 0;
-        s->in_buf_cur_ind = 1;
-        s->out_buf_cur_ind = 0;
-
-        if(value == NOR_WRITE_TO_STATUS_REG) {
-            s->in_buf_size = 1;
-            s->out_buf_size = 1;
-            s->out_buf[0] = 0;
+        s->nor_read_ind = 0;
+        if (value == NOR_WRITE_DATA_CMD) {
+            memset(s->page, 0xff, sizeof(s->page));
         }
-        else if(value == NOR_GET_STATUS_CMD) {
-            s->in_buf_size = 1;
-            s->out_buf_size = 1;
-            s->out_buf[0] = 0;
-        }
-        else if(value == NOR_WRITE_DATA_CMD) {
-            s->in_buf_size = 4;
-            s->out_buf_size = 256;
-            for(int i = 0; i < 256; i++) { s->out_buf[i] = 0; }; // TODO we ignore this command for now
-        }
-        else if(value == NOR_READ_DATA_CMD) {
-            s->in_buf_size = 4;
-            s->out_buf_size = 4096;
-        }
-        else if(value == NOR_ERASE_BLOCK) {
-            s->in_buf_size = 1;
-            s->out_buf_size = 3;
-            for(int i = 0; i < 3; i++) { s->out_buf[i] = 0x0; } // TODO we ignore this command for now
-        }
-        else if(value == NOR_ENABLE_WRITE) {
-            s->write_enabled = 1;
-            s->cur_cmd = 0;
-        }
-        else if(value == NOR_DISABLE_WRITE) {
-            s->write_enabled = 0;
-            s->cur_cmd = 0;
-        }
-        else if(value == NOR_GET_JEDECID) {
-            s->in_buf_size = 1;
-            s->out_buf_size = 3;
-            s->out_buf[0] = 0x1F; // vendor: atmel, device: 0x02 -> AT25DF081A
-            s->out_buf[1] = 0x45;
-            s->out_buf[2] = 0x02;
-        }
-        else {
-            /*
-             * Nothing set in_buf_size/out_buf_size here, so the command ran on
-             * the *previous* command's lengths -- in bounds only because both
-             * buffers are 0x1000 and the largest size is 0x1000. Give it a
-             * defined one-byte answer so the transaction terminates and the
-             * buffers are freed on the completion path below.
-             */
-            printf("%s Unknown command 0x%02x!\n", __func__, value);
-            s->in_buf_size = 1;
-            s->out_buf_size = 1;
-            s->out_buf[0] = 0;
-        }
-
-        return 0x0;
+        return 0;
     }
-    else if(s->cur_cmd != 0 && s->in_buf_cur_ind < s->in_buf_size) {
-        // we're reading the command
-        s->in_buf[s->in_buf_cur_ind] = value;
-        s->in_buf_cur_ind++;
-
-        if(s->cur_cmd == NOR_GET_STATUS_CMD && s->in_buf_cur_ind == s->in_buf_size) {
-            s->out_buf[0] = 0x0;  // indicates that the NOR is ready
-        }
-        else if(s->cur_cmd == NOR_READ_DATA_CMD && s->in_buf_cur_ind == s->in_buf_size) {
-            if(!s->nor_initialized) { initialize_nor(s); }
-            s->nor_read_ind = (s->in_buf[1] << 16) | (s->in_buf[2] << 8) | s->in_buf[3];
-        }
-        return 0x0;
-    }
-    else {
-        uint8_t ret_val;
-        // otherwise, we're outputting the response
-        if(s->cur_cmd == NOR_READ_DATA_CMD) {
-            /*
-             * nor_read_ind is a guest-supplied 24-bit address and the read is
-             * a streaming one with no terminator, so it walks forward for as
-             * long as the guest keeps clocking. Without a length it indexed a
-             * heap buffer unbounded, and nor_data could be NULL outright if
-             * the image failed to load. 0xff is what an absent or erased NOR
-             * reads as, so it is the honest answer past the end.
-             */
-            uint8_t ret_val = 0xff;
-            if (s->nor_data && s->nor_read_ind < s->nor_size) {
-                ret_val = s->nor_data[s->nor_read_ind];
-            } else {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                              "[NOR] read past end of image (offset 0x%x, "
-                              "size 0x%zx)\n", s->nor_read_ind,
-                              (size_t)s->nor_size);
+    switch (s->cur_cmd) {
+    case NOR_READ_DATA_CMD:
+    case NOR_WRITE_DATA_CMD:
+    case NOR_ERASE_BLOCK:
+    case NOR_ERASE_32K:
+    case NOR_ERASE_64K:
+        if (s->address_bytes < 3) {
+            s->nor_read_ind = ((s->nor_read_ind << 8) | value) & (NOR_FLASH_SIZE - 1);
+            if (++s->address_bytes == 3) {
+                s->page_offset = s->nor_read_ind & (NOR_PAGE_SIZE - 1);
             }
-            s->nor_read_ind++;
-            return ret_val;
+            return 0;
         }
-        else {
-            ret_val = s->out_buf[s->out_buf_cur_ind];
-            s->out_buf_cur_ind++;
-
-            if(s->cur_cmd != 0 && (s->out_buf_cur_ind == s->out_buf_size)) {
-                // the command is done
-                s->cur_cmd = 0;
+        if (s->cur_cmd == NOR_READ_DATA_CMD) {
+            if (!s->nor_initialized) {
+                initialize_nor(s);
+            }
+            uint8_t result = s->nor_data[s->nor_read_ind];
+            s->nor_read_ind = (s->nor_read_ind + 1) & (NOR_FLASH_SIZE - 1);
+            return result;
+        }
+        if (s->cur_cmd == NOR_WRITE_DATA_CMD) {
+            /* The last byte clocked into each page-buffer position wins; only
+             * CS release ANDs that final buffer into the flash array. */
+            s->page[s->page_offset++] = value;
+            if (s->data_count < NOR_PAGE_SIZE) {
+                s->data_count++;
             }
         }
-        return ret_val;
+        return 0;
+    case NOR_WRITE_TO_STATUS_REG:
+        if (!s->data_count) {
+            s->page[0] = value;
+            s->data_count = 1;
+        }
+        return 0;
+    case NOR_GET_STATUS_CMD:
+        s->stream_offset ^= 1;
+        return s->stream_offset ? s->status | 0x10 | (s->write_enabled ? 2 : 0) : 0;
+    case NOR_GET_JEDECID: {
+        static const uint8_t id[] = {0x1f, 0x45, 0x02, 0x00};
+        return s->stream_offset < sizeof(id) ? id[s->stream_offset++] : 0xff;
+    }
+    default:
+        return 0xff;
     }
 }
 
 static void ipod_touch_nor_spi_realize(SSIPeripheral *d, Error **errp)
 {
     IPodTouchNORSPIState *s = IPOD_TOUCH_NOR_SPI(d);
-    s->nor_initialized = 0;
+    s->nor_initialized = false;
 }
 
-/*
- * nor_data is the NOR image, loaded from the same file by the destination's own
- * realize, so it is identical without being migrated -- but that also means a
- * guest WRITE to NOR made before the snapshot is lost on restore, since the
- * model keeps it only in that RAM copy. in_buf/out_buf hold a transaction in
- * flight; post_load rewinds to a clean command boundary rather than restoring
- * half a transfer.
- */
+static int ipod_touch_nor_spi_pre_save(void *opaque)
+{
+    IPodTouchNORSPIState *s = opaque;
+    if (!s->nor_initialized) {
+        initialize_nor(s);
+    }
+    return 0;
+}
+
 static int ipod_touch_nor_spi_post_load(void *opaque, int version_id)
 {
     IPodTouchNORSPIState *s = opaque;
-
-    nor_reset_transaction(s);
+    if (version_id < 2) {
+        initialize_nor(s);
+        nor_reset_transaction(s);
+        s->status = NOR_STATUS_SWP;
+        s->nor_read_ind = 0;
+    }
+    if (!s->nor_initialized || (s->status & ~(NOR_STATUS_SPRL | NOR_STATUS_SWP | NOR_STATUS_EPE)) ||
+        s->nor_read_ind >= NOR_FLASH_SIZE || s->cur_cmd > 0xff ||
+        s->address_bytes > 3 || s->data_count > NOR_PAGE_SIZE ||
+        s->stream_offset > 4 || s->write_enabled > 1 ||
+        (s->nor_size != 0 && s->nor_size != NOR_FLASH_SIZE)) {
+        return -EINVAL;
+    }
     return 0;
 }
 
 static const VMStateDescription vmstate_ipod_touch_nor_spi = {
     .name = "ipod_touch_nor_spi",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .pre_save = ipod_touch_nor_spi_pre_save,
     .post_load = ipod_touch_nor_spi_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_SSI_PERIPHERAL(ssidev, IPodTouchNORSPIState),
         VMSTATE_UINT8(write_enabled, IPodTouchNORSPIState),
         VMSTATE_UINT32(nor_read_ind, IPodTouchNORSPIState),
+        VMSTATE_UINT32_V(cur_cmd, IPodTouchNORSPIState, 2),
+        VMSTATE_UINT32_V(nor_size, IPodTouchNORSPIState, 2),
+        VMSTATE_UINT8_V(address_bytes, IPodTouchNORSPIState, 2),
+        VMSTATE_UINT8_V(page_offset, IPodTouchNORSPIState, 2),
+        VMSTATE_UINT8_V(stream_offset, IPodTouchNORSPIState, 2),
+        VMSTATE_UINT8_V(status, IPodTouchNORSPIState, 2),
+        VMSTATE_UINT16_V(data_count, IPodTouchNORSPIState, 2),
+        VMSTATE_BOOL_V(command_active, IPodTouchNORSPIState, 2),
+        VMSTATE_BOOL_V(nor_initialized, IPodTouchNORSPIState, 2),
+        VMSTATE_BUFFER_V(page, IPodTouchNORSPIState, 2),
+        VMSTATE_BUFFER_V(nor_data, IPodTouchNORSPIState, 2),
         VMSTATE_END_OF_LIST()
     }
 };
