@@ -876,3 +876,25 @@ advances the production TCG virtual clock; firmware is not booted.
 Explicit selection overrides the deprecated presence-based `IT_LCD_PLANES`
 alias. Register reads and composition use the device flag, not a process-wide
 cached environment value. Use matching configuration for raw snapshot restore.
+
+### MPVD snapshot reference replay
+
+MPVD VMState version 3 retains the compressed I/P pictures from the latest
+successful I-VOP and the width, height, and time-increment configuration. On
+restore, the native decoder is created lazily and replays these packets with
+zero DMA destinations before decoding the next guest job. Replay primes native
+references without rewriting guest planes or changing guest completion state.
+
+History is bounded to 4096 pictures and 16 MiB of compressed data. Exceeding
+either bound, or a native decode/output failure that makes references uncertain,
+keeps live playback running but rejects snapshot saves with an explicit error.
+The next successful I-picture or device reset makes snapshots available again.
+Older version 1/2 snapshots cannot reconstruct an active reference chain; their
+next successful I-picture establishes a new complete history. Saved/current
+MPVD decode mode compatibility remains enforced.
+
+`python3 tests/ipod/test_mpvd_replay.py` generates an MPEG-4 I/P clip using
+ffmpeg and compares uninterrupted versus restored native VideoToolbox pixels.
+It also checks zero guest writes during replay, both retention limits, recovery,
+and malformed packet/configuration state under ASan/UBSan. The separate
+`test_mpvd_snapshot.py` checks whole-device register/IRQ migration.

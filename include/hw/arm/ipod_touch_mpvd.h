@@ -25,6 +25,10 @@ typedef struct IPodTouchMPVDState {
     void *decoder;
     bool decode_enabled;
     bool saved_decode_enabled;
+    GPtrArray *packets;
+    uint32_t packet_bytes;
+    uint32_t replay_width, replay_height, replay_time_bits;
+    bool history_unavailable;
     uint32_t regs[MPVD_REG_SIZE / 4];
 } IPodTouchMPVDState;
 
