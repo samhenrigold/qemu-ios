@@ -725,3 +725,19 @@ Legacy hibernation inspection also confirms why ordinary button IRQs do not
 resume 5F138: the CPU remains at `0xc005fc90` (`b .`) with IRQ/FIQ masked after
 "pmu go hib". Modeling the hardware wake/resume sequence remains open; no kernel
 jump or fabricated resume has been added (`/tmp/it-firmware-5f138-sleep-regs.log`).
+
+### Bluetooth controller configuration (2026-09-06)
+
+The existing HCI controller now takes startup-only `bt` and `bt-latency-us`
+properties. Explicit values override `IT_BT` / `IT_BT_LATENCY_US`. Latency is
+per controller, with an unsigned 32-bit microsecond bound and safe nanosecond
+conversion; malformed, negative and overflowing aliases fail clearly instead
+of passing unchecked `strtoll` arithmetic into a timer. A user UART chardev
+still overrides the built-in HCI. Bluetooth peers remain deferred.
+
+`test_bt_config.py` passes nine native paused-machine cases for defaults,
+aliases, explicit precedence, bounds and runtime immutability. Existing audio,
+keyboard and firmware tests pass; CLI builds. One native 7E18 boot completes
+BCM firmware Launch RAM with a 2500-us configured delay
+(`/tmp/it-bt-config-bringup.log`). This is bring-up evidence, not peer readiness
+or a repeated-boot stability claim.

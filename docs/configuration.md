@@ -5,6 +5,8 @@ incremental; most existing `IT_*` variables still retain their documented behavi
 
 | Property | Values | Default | Legacy alias |
 | --- | --- | --- | --- |
+| `bt` | `on`, `off` | `on` | `IT_BT`: leading `0` disables, otherwise enables |
+| `bt-latency-us` | unsigned 32-bit microseconds | `2000` | `IT_BT_LATENCY_US` |
 | `osk` | `on`, `off` | `off` | `IT_OSK`: any present value enables |
 | `audio-hw` | `auto`, `on`, `off` | `auto`: CS42L58 and AMC present for direct iBoot, absent otherwise | `IT_AUDIO_HW`: leading `0` disables; any other value enables |
 
@@ -25,6 +27,14 @@ any `IT_OSK` value, and the option cannot change after startup. The launcher’s
 also passes its USB session through the existing `usb-tcp-addr` option rather
 than changing process-wide `IT_USB_TCP`. Agent text insertion is unchanged.
 `test_osk_config.py` checks alias presence, explicit precedence and immutability.
+
+The existing Bluetooth HCI controller uses `bt` and `bt-latency-us`. Both are
+startup-only, and explicit options override aliases. A user-supplied UART1
+chardev still takes precedence over the built-in controller. Reply delay is
+stored per controller and converted to nanoseconds without signed overflow;
+invalid, negative and oversized legacy values are rejected. These controls do
+not add Bluetooth peers. `test_bt_config.py` checks the real paused machine,
+including aliases, boundaries and runtime rejection.
 
 ## Firmware profiles
 

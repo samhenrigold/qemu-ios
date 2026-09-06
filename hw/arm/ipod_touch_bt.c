@@ -65,10 +65,11 @@ struct ItBtChardev {
      *    timeout then fired against a channel that had moved nothing, and it
      *    reset the port and started over -- forever.
      *
-     * IT_BT_LATENCY_US tunes it; the default is comfortably inside the 10 s
+     * The machine bt-latency-us option tunes it; the default is comfortably inside the 10 s
      * the guest allows per HCI_Reset and well clear of its setup path.
      */
     QEMUTimer *timer;
+    int64_t latency_ns;
 };
 typedef struct ItBtChardev ItBtChardev;
 
@@ -193,23 +194,12 @@ static bool bt_is_write_command(uint16_t opcode)
     }
 }
 
-/* Controller turnaround, in microseconds. */
-static int64_t bt_latency_ns(void)
-{
-    static int64_t ns = -1;
-    if (ns < 0) {
-        const char *v = getenv("IT_BT_LATENCY_US");
-        ns = (v ? strtoll(v, NULL, 0) : 2000) * 1000;
-    }
-    return ns;
-}
-
 static void bt_timer(void *opaque);
 
 static void bt_arm(ItBtChardev *bt)
 {
     timer_mod(bt->timer,
-              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + bt_latency_ns());
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + bt->latency_ns);
 }
 
 static void bt_flush(ItBtChardev *bt)
@@ -391,6 +381,7 @@ static void bt_chr_finalize(Object *obj)
 static void bt_chr_open(Chardev *chr, ChardevBackend *backend,
                         bool *be_opened, Error **errp)
 {
+    IT_BT_CHARDEV(chr)->latency_ns = 2000000;
     IT_BT_CHARDEV(chr)->timer =
         timer_new_ns(QEMU_CLOCK_VIRTUAL, bt_timer, chr);
     qemu_register_reset(bt_machine_reset, chr);
@@ -422,19 +413,19 @@ static void bt_register_types(void)
 
 type_init(bt_register_types)
 
-Chardev *it_bt_chardev(Chardev *user)
+Chardev *it_bt_chardev(Chardev *user, bool enabled, uint32_t latency_us)
 {
     /*
      * A chardev the user asked for on -serial wins, so UART1 can still be
-     * pointed at a socket to watch or replace the HCI. IT_BT=0 leaves the port
+     * pointed at a socket to watch or replace the HCI. bt=off leaves the port
      * bare, which is the pre-2026-08 behaviour and the way to bisect against
      * this model.
      */
-    const char *env = getenv("IT_BT");
-
-    if (user || (env && env[0] == '0')) {
+    if (user || !enabled) {
         return user;
     }
-    return qemu_chardev_new(NULL, TYPE_CHARDEV_IT_BT, NULL, NULL,
-                            &error_abort);
+    Chardev *chr = qemu_chardev_new(NULL, TYPE_CHARDEV_IT_BT, NULL, NULL,
+                                    &error_abort);
+    IT_BT_CHARDEV(chr)->latency_ns = (int64_t)latency_us * 1000;
+    return chr;
 }

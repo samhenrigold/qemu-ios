@@ -181,6 +181,9 @@ typedef struct {
 	MachineState parent;
     OnOffAuto audio_hw;
     bool audio_hw_explicit;
+    bool bt_enabled, bt_enabled_explicit;
+    uint32_t bt_latency_us;
+    bool bt_latency_us_explicit;
 	AddressSpace *nsas;
 	/* IT_BOOT_ARGS: repeated early writes of the kernel command line.
 	 * IT_AMFI_ALLOW_TASKPORT: one-shot patch of the AMFI task-port MAC hooks,
@@ -349,8 +352,8 @@ void ipod_touch_pb_guest_commit(IPodTouchMachineState *nms);
 /*
  * The Bluetooth HCI that lives on UART1 (hw/arm/ipod_touch_bt.c). Returns
  * `user` unchanged if the user pointed -serial at that port, so the HCI can be
- * watched or replaced from outside. IT_BT=0 disables the model entirely.
+ * watched or replaced from outside. bt=off disables the model entirely.
  */
-Chardev *it_bt_chardev(Chardev *user);
+Chardev *it_bt_chardev(Chardev *user, bool enabled, uint32_t latency_us);
 
 #endif
