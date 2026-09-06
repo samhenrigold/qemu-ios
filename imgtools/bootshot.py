@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Boot 3.1.3 and screendump every ~1.2 s from t=0, to catch the boot-logo stage."""
-import json, os, socket, subprocess, sys, time
+import json, os, shutil, socket, subprocess, sys, time
 
 S = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, "/Users/shg/Developer/qemu-ios/.claude/worktrees/consolidate/imgtools")
+sys.path.insert(0, S)
 import itdrive as it
 
 PORT = int(sys.argv[1])
@@ -11,13 +11,13 @@ TAG = sys.argv[2]
 DUR = float(sys.argv[3]) if len(sys.argv) > 3 else 70
 F = os.path.expanduser("~/Developer/qemu-ios-files")
 HERE = F + "/ios3"
-QEMU = "/Users/shg/Developer/qemu-ios/.claude/worktrees/consolidate/build/qemu-system-arm"
-NAND = os.environ.get("NAND", F + "/nand-7e18-final")
+QEMU = os.environ.get("QEMU", os.path.join(S, "..", "build", "qemu-system-arm"))
+NAND = os.environ.get("NAND", F + "/nand-ultimate")
 OUT = "%s/boot_%s" % (S, TAG)
 OVL = OUT + "/nandrw"
 os.makedirs(OVL, exist_ok=True)
 if os.environ.get("SEED_OVL"):
-    __import__("subprocess").call("cp -R %s/. %s" % (os.environ["SEED_OVL"], OVL), shell=True)
+    shutil.copytree(os.environ["SEED_OVL"], OVL, dirs_exist_ok=True)
 
 env = dict(os.environ)
 env.setdefault("IT_LCD_BRIGHT", "255")
@@ -33,7 +33,7 @@ for k, v in list(os.environ.items()):
 cmd = [QEMU, "-M",
        "iPod-Touch,bootrom=%s/bootrom_240_4,nand=%s,nor=%s,nandrw=%s"
        % (F, NAND, os.environ.get("NOR", HERE + "/nor_7E18.bin"), OVL),
-       "-cpu", "max", "-m", "2G", "-display", "none",
+       "-m", "128M", "-display", "none",
        "-serial", "file:" + OUT + "/serial.log",
        "-qmp", "tcp:127.0.0.1:%d,server=on,wait=off" % PORT]
 log = open(OUT + "/qemu.log", "wb")

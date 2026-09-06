@@ -208,7 +208,7 @@ while [ $# -gt 0 ]; do
     # NAND is only defaulted, not forced: the app stages whichever image it
     # actually shipped (build-app.sh --nand) and exports NAND, and clobbering
     # that pointed QEMU at a directory the app never unpacked.
-    --appsync)  NAND="${NAND:-$F/nand-appsync3}"
+    --appsync)  NAND="${NAND:-$F/nand-ultimate}"
                 OVL="$HERE/nandrw-appsync"
                 # One overlay per base image, still. The name above is kept
                 # verbatim for the default so existing devices keep their apps
