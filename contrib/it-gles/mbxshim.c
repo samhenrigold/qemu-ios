@@ -78,6 +78,7 @@ typedef struct __attribute__((packed)) {
  * surface plausibility check needs the pixel size before the drawable code
  * below gets to them; see the fourcc mapping at GLESBindView. */
 #define CA_FOURCC_BGRA 0x42475241
+#define CA_FOURCC_555L 0x4c353535
 #define CA_FOURCC_565L 0x4c353635
 
 extern long write(int, const void *, unsigned long);
@@ -799,7 +800,7 @@ static int surface_capture(ca_view_t *v, void *s)
      * measuring that against a hardcoded 4 bytes rejected it as garbage: the
      * app then rendered every frame into a framebuffer with no colour
      * attachment, which looks like a healthy draw count and a white screen. */
-    bpp = (format == CA_FOURCC_565L) ? 2 : 4;
+    bpp = (format == CA_FOURCC_565L || format == CA_FOURCC_555L) ? 2 : 4;
     if (!base || width == 0 || height == 0 ||
         width > 2048 || height > 2048 || stride < width * bpp ||
         stride > width * bpp + 4096) {
@@ -1015,7 +1016,7 @@ static int GLESBindCoreSurface(void *gc, unsigned target, void *surface)
         uv = (unsigned)p_IOSurfaceGetBaseAddressOfPlane(surface, 1);
         uvstride = p_IOSurfaceGetBytesPerRowOfPlane(surface, 1);
     }
-    unsigned rowbytes = format == CA_FOURCC_565L ? width * 2 : width * 4;
+    unsigned rowbytes = (format == CA_FOURCC_565L || format == CA_FOURCC_555L) ? width * 2 : width * 4;
     int readable = width && width <= 2048 && height && height <= 2048;
     if (format == 0x34323076 || format == 0x34323066) {
         readable = readable && uv && !(width & 1) && !(height & 1) &&
@@ -1023,10 +1024,19 @@ static int GLESBindCoreSurface(void *gc, unsigned target, void *surface)
             surface_fault_read(uv, uvstride, height / 2, width);
     } else {
         readable = readable && !uv &&
-            (format == CA_FOURCC_565L || format == CA_FOURCC_BGRA || format == 0x52474241) &&
+            (format == CA_FOURCC_565L || format == CA_FOURCC_555L || format == CA_FOURCC_BGRA || format == 0x52474241) &&
             surface_fault_read(base, stride, height, rowbytes);
     }
-    if (!readable) { p_IOSurfaceUnlock(surface, 1, 0); return 0; }
+    if (!readable) {
+        static unsigned rejected;
+        if (rejected++ < 8) {
+            w("[mbxshim] rejected texture surface format="); wx(format);
+            w(" size="); wd(width); w("x"); wd(height);
+            w(" stride="); wd(stride); w(" base="); wx(base); w("\n");
+        }
+        p_IOSurfaceUnlock(surface, 1, 0);
+        return 0;
+    }
     result = qc(GLES_OP_BIND_SURFACE, gc, 8,
                 A(target,base,stride,width,height,format,uv,uvstride)) == 0;
     p_IOSurfaceUnlock(surface, 1, 0);

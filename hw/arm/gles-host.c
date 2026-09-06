@@ -3401,7 +3401,7 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
 {
     unsigned target = a[0], w = a[3], h = a[4], fmt = a[5];
     bool nv12 = fmt == 0x34323076 || fmt == 0x34323066;
-    unsigned bpp = fmt == GLES_SURFACE_RGB565 ? 2 : 4;
+    unsigned bpp = (fmt == GLES_SURFACE_RGB565 || fmt == GLES_SURFACE_RGB555) ? 2 : 4;
     GLint texture = 0, unpack;
     static unsigned traced;
     if (getenv("IT_GLES_VERBOSE") && (nv12 || traced++ < 32)) {
@@ -3428,8 +3428,8 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
     }
     if (!w || !h || w > 2048 || h > 2048 ||
         (!nv12 && fmt != GLES_SURFACE_BGRA32 && fmt != GLES_SURFACE_RGBA32 &&
-         fmt != GLES_SURFACE_RGB565)) return -1;
-    pixels = g_malloc((size_t)w * h * bpp);
+         fmt != GLES_SURFACE_RGB565 && fmt != GLES_SURFACE_RGB555)) return -1;
+    pixels = g_malloc((size_t)w * h * 4);
     if (nv12) {
 #ifndef GLES_HOST_EAGL
         if ((w | h) & 1) return -1;
@@ -3443,7 +3443,17 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
     } else if (!gles_surface_read(cpu, a[1], a[2], h, w * bpp, pixels)) {
         return -1;
     }
-    if (bpp == 2) { glfmt = GL_RGB; type = GL_UNSIGNED_SHORT_5_6_5; }
+    if (fmt == GLES_SURFACE_RGB555) {
+        /* Expand backwards in place. L555 has no alpha, including when bit 15 is zero. */
+        for (size_t i = (size_t)w * h; i-- > 0;) {
+            unsigned value = pixels[i * 2] | (pixels[i * 2 + 1] << 8);
+            for (unsigned c = 0; c < 3; c++) {
+                unsigned component = (value >> (c * 5)) & 31;
+                pixels[i * 4 + c] = (component << 3) | (component >> 2);
+            }
+            pixels[i * 4 + 3] = 255;
+        }
+    } else if (bpp == 2) { glfmt = GL_RGB; type = GL_UNSIGNED_SHORT_5_6_5; }
     glGetIntegerv(GL_UNPACK_ALIGNMENT, &unpack);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(target, 0, GL_RGBA, w, h, 0, glfmt, type, pixels);
@@ -3468,16 +3478,25 @@ static int64_t gles_sync_surface(CPUState *cpu)
     GLESSurface *s = g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(texture));
     if (!s) return 0;
     if (s->format != GLES_SURFACE_BGRA32 && s->format != GLES_SURFACE_RGBA32 &&
-        s->format != GLES_SURFACE_RGB565) return -1;
-    unsigned bpp = s->format == GLES_SURFACE_RGB565 ? 2 : 4;
-    g_autofree uint8_t *pixels = g_malloc((size_t)s->width * s->height * bpp);
+        s->format != GLES_SURFACE_RGB565 && s->format != GLES_SURFACE_RGB555) return -1;
+    bool rgb555 = s->format == GLES_SURFACE_RGB555;
+    unsigned bpp = (s->format == GLES_SURFACE_RGB565 || rgb555) ? 2 : 4;
+    g_autofree uint8_t *pixels = g_malloc((size_t)s->width * s->height * 4);
     glGetIntegerv(GL_PACK_ALIGNMENT, &pack);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, s->width, s->height,
-        bpp == 2 ? GL_RGB : s->format == GLES_SURFACE_RGBA32 ? GL_RGBA : GL_BGRA,
-        bpp == 2 ? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_BYTE, pixels);
+        bpp == 2 && !rgb555 ? GL_RGB : s->format == GLES_SURFACE_RGBA32 ? GL_RGBA : GL_BGRA,
+        bpp == 2 && !rgb555 ? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_BYTE, pixels);
     glPixelStorei(GL_PACK_ALIGNMENT, pack);
     if (glGetError() != GL_NO_ERROR) return -1;
+    if (rgb555) {
+        for (size_t i = 0; i < (size_t)s->width * s->height; i++) {
+            unsigned value = (pixels[i * 4] >> 3) |
+                ((pixels[i * 4 + 1] >> 3) << 5) | ((pixels[i * 4 + 2] >> 3) << 10);
+            pixels[i * 2] = value;
+            pixels[i * 2 + 1] = value >> 8;
+        }
+    }
     for (unsigned row = 0; row < s->height; row++) {
         if (cpu_memory_rw_debug(cpu, s->base + row * s->stride,
                 pixels + (size_t)row * s->width * bpp, s->width * bpp, 1)) return -1;

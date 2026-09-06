@@ -18,7 +18,7 @@ for setting in ['IT_AMC_DECODE','IT_MPVD_DECODE','IT_H264_DECODE','IT_SCALER_DEC
     os.environ[setting] = '1'  # Use the same media hardware configuration as Light Touch.
 out = Path(tempfile.mkdtemp(prefix='it-photo-guest-'))
 cfg = SimpleNamespace(out=str(out),files=args.files,
-    base_nand=args.base_nand or args.files+'/nand-agent-v3',
+    base_nand=args.base_nand or args.files+'/nand-agent-v4',
     nor=args.files+'/ios3/nor_7E18.bin',overlay=str(out/'overlay'),
     qemu=str(ROOT/'build-native14/qemu-build/qemu-system-arm'),usbmuxd_ok=False,
     usb_port=r.free_port(1520,1539),qmp_port=r.free_port(28200,28219),
@@ -92,6 +92,10 @@ try:
     d.qmp.tap(140,91)
     time.sleep(5)
     r.to_png(d.qmp.shot(str(out/'grid.ppm')),str(out/'grid.png'))
+    with Image.open(out/'grid.png') as grid:
+        for point,channel in [((12,78),0),((40,78),1),((70,78),2)]:
+            pixel = grid.convert('RGB').getpixel(point)
+            assert pixel[channel] > 150 and all(pixel[c] < 90 for c in range(3) if c != channel),(point,pixel)
     d.qmp.tap(40,105)
     time.sleep(2)
     r.to_png(d.qmp.shot(str(out/'photo.ppm')),str(out/'photo.png'))

@@ -23,6 +23,7 @@ preamble = r'''
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define GLES_SURFACE_BGRA32 0x42475241
 #define GLES_SURFACE_RGBA32 0x52474241
+#define GLES_SURFACE_RGB555 0x4c353535
 #define GLES_SURFACE_RGB565 0x4c353635
 struct CPUState { int unused; };
 typedef struct CPUState CPUState;
@@ -50,6 +51,10 @@ swap_source = (root / 'contrib/it-gles/mbxshim.c').read_text()[swap_start:]
 swap_source = swap_source[:swap_source.index('\n}') + 2]
 abi = r'''
 #define GLES_OP_BIND_SURFACE 0x1003
+#define CA_FOURCC_555L GLES_SURFACE_RGB555
+static void w(const char *s) {}
+static void wd(unsigned v) {}
+static void wx(unsigned v) {}
 #define CA_FOURCC_565L GLES_SURFACE_RGB565
 #define CA_FOURCC_BGRA GLES_SURFACE_BGRA32
 static int abi_surface_fault_read(unsigned long base,unsigned stride,unsigned rows,unsigned bytes)
@@ -185,6 +190,24 @@ int main(void)
     glGetTexImage(GL_TEXTURE_RECTANGLE_ARB,0,GL_BGRA,GL_UNSIGNED_BYTE,got);
     for(int i=0;i<4;i++) assert(!memcmp(got+i*4,"\0\0\0\xff",4));
     a[3]=3;assert(gles_bind_surface(NULL,a)==-1);
+    /* Photos thumbnail rows use opaque RGB555, with padded guest rows. */
+    a[3]=4;a[4]=2;a[2]=10;a[5]=GLES_SURFACE_RGB555;a[6]=a[7]=0;
+    const uint16_t colors[]={0x7c00,0x03e0,0x001f,0xffff};
+    const uint8_t expected[]={0,0,255,255, 0,255,0,255, 255,0,0,255, 255,255,255,255};
+    memset(ram,0xa5,20);
+    for(int y=0;y<2;y++) memcpy(ram+y*10,colors,8);
+    assert(!gles_bind_surface(NULL,a));
+    glGetTexImage(GL_TEXTURE_RECTANGLE_ARB,0,GL_BGRA,GL_UNSIGNED_BYTE,got);
+    for(int y=0;y<2;y++) assert(!memcmp(got+y*16,expected,16));
+    glClearColor(1,0,1,0);glClear(GL_COLOR_BUFFER_BIT);assert(!gles_sync_surface(NULL));
+    for(int y=0;y<2;y++) {
+        for(int x=0;x<4;x++) assert(ram[y*10+x*2]==0x1f && ram[y*10+x*2+1]==0x7c);
+        assert(ram[y*10+8]==0xa5 && ram[y*10+9]==0xa5);
+    }
+    glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT,GL_COLOR_ATTACHMENT0_EXT,GL_TEXTURE_RECTANGLE_ARB,0,0);
+    memset(ram,0,20);assert(gles_refresh_surfaces(NULL));
+    glGetTexImage(GL_TEXTURE_RECTANGLE_ARB,0,GL_BGRA,GL_UNSIGNED_BYTE,got);
+    for(int i=0;i<8;i++) assert(!memcmp(got+i*4,"\0\0\0\xff",4));
     munmap(fault_pages,16384);
     g_hash_table_destroy(gh.surfaces);
     CGLSetCurrentContext(NULL);CGLDestroyContext(context);
