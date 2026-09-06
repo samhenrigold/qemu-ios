@@ -948,3 +948,17 @@ Native AppKit checks pass column navigation, stale replies and 200/320/700-point
 layout; the 320-point pane was visually inspected. Release build, deep strict
 signature and macOS 14 dependency closure pass. Packaged as
 `build-native14/Light Touch-b79bc98.app`; latest-app symlink updated.
+
+## Scaler startup configuration (2026-09-06)
+
+`scaler-decode=on|off` now selects the actual scaler versus its legacy register
+stub before machine initialization. Default stays off; explicit configuration
+overrides the deprecated presence-based `IT_SCALER_DECODE` alias. Light Touch
+passes the option directly. The regression harness now accepts explicit scaler
+and H.264 options, and Photos uses them instead of environment variables.
+
+All 18 native configuration cases pass, including actual device presence and
+runtime-mutation rejection. Scaler ASan/UBSan conversion/IRQ checks pass. Native
+Photos verifies thumbnail colors, import/retry, cold persistence and both
+confirmed shutdowns (`/tmp/it-scaler-option-photo.log`). CLI, dylib and app builds
+pass. AMC/MPVD and remaining display/GLES environment switches are still open.

@@ -277,7 +277,7 @@ NV12 into RGB565 (not packed YUV): input format `0`, output format `4`,
 switches at `c073118c` / `c073129c` establish 0=NV12, 4=L565, 6=BGRA.
 The scaler DeviceTree node has VIC interrupt `0x25`.
 
-`IT_SCALER_DECODE=1` replaces that stub with register backing, reset, completion
+`-M iPod-Touch,scaler-decode=on` replaces that stub with register backing, reset, completion
 mask/status/W1C, and the observed unscaled NV12-to-RGB path. It applies the
 programmed signed 12-bit matrix coefficients at `0x220..0x240` with 9 fractional
 bits. Source range selection uses control bit 9. Source/destination bounds are
@@ -832,3 +832,7 @@ all 180 offset-test frames exactly, followed by 180 exact constrained-intra
 replay frames. USB remains responsive and native PMU shutdown exits cleanly.
 The sanitizer check also rejects odd and out-of-range hardware offsets without
 writing destination pixels.
+
+The `scaler-decode` startup option defaults to off and cannot change after machine
+initialization. Explicit on/off overrides the deprecated presence-based
+`IT_SCALER_DECODE` alias (including its historical empty/`0` behavior).

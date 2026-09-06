@@ -18,6 +18,10 @@ parser.add_argument('--files', type=Path, default=ROOT.parent / 'qemu-ios-files'
 args = parser.parse_args()
 base_env = {k: v for k, v in os.environ.items() if not k.startswith('IT_')}
 cases = [
+    ('scaler-default', {}, '', {'scaler-decode':False}),
+    ('scaler-alias', {'IT_SCALER_DECODE':'0'}, '', {'scaler-decode':True}),
+    ('scaler-on', {}, ',scaler-decode=on', {'scaler-decode':True}),
+    ('scaler-off', {'IT_SCALER_DECODE':'1'}, ',scaler-decode=off', {'scaler-decode':False}),
     ('h264-default', {}, '', {'h264-decode':False}),
     ('h264-alias', {'IT_H264_DECODE':'0'}, '', {'h264-decode':True}),
     ('h264-on', {}, ',h264-decode=on', {'h264-decode':True}),
@@ -60,9 +64,9 @@ for label, overrides, options, expected in cases:
                     q = QMP(sock, timeout=10)
                     for prop, value in expected.items():
                         assert q.cmd('qom-get', path='/machine', property=prop) == value, label
-                        if prop == 'h264-decode':
+                        if prop in ('h264-decode','scaler-decode'):
                             devices=q.cmd('qom-list',path='/machine/unattached')
-                            assert any(d['type']=='child<ipodtouch.h264>' for d in devices)==value, devices
+                            assert any(d['type']==f"child<ipodtouch.{prop.removesuffix('-decode')}>" for d in devices)==value, devices
                         try:
                             q.cmd('qom-set', path='/machine', property=prop, value=value)
                         except Exception as error:

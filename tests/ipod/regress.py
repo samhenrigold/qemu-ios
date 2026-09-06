@@ -346,8 +346,10 @@ class Device:
         if getattr(cfg, "kernel_console", False):
             machine += (",boot-args=amfi_allow_any_signature=1 "
                         "cs_enforcement_disable=1 serial=3 debug=0x8")
-        if getattr(cfg, "audio_hw", None) is not None:
-            machine += ",audio-hw=" + cfg.audio_hw
+        for option in ("audio_hw", "h264_decode", "scaler_decode"):
+            value = getattr(cfg, option, None)
+            if value is not None:
+                machine += "," + option.replace("_", "-") + "=" + value
         # The BCM4325 is attached only for the check that tests it. It is not
         # free: 3.1.3's driver associates and then keeps the SDIO bus busy, and
         # every other check pays for a radio it never looks at. run-ios3.sh
@@ -1591,6 +1593,9 @@ def main():
                     help="-m (default 128M, what the device has)")
     ap.add_argument("--audio-hw", choices=("auto", "on", "off"), default=None,
                     help="explicit audio-hw machine option; overrides the legacy IT_AUDIO_HW alias")
+    for option in ("h264-decode", "scaler-decode"):
+        ap.add_argument("--" + option, choices=("on", "off"), default=None,
+                        help="explicit " + option + " startup option")
     ap.add_argument("--nor", default=None,
                     help="NOR image (default <files-dir>/ios3/nor_7E18.bin if "
                          "present, else <files-dir>/nor_n72ap.bin)")
