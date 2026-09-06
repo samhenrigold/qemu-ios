@@ -480,3 +480,27 @@ need not perform unfinished import work on its first launch. Three fresh-overlay
 native Swift/AFC/import/playback tests pass without the former recovery relaunch,
 including Songs, volume input, stereo playback and confirmed shutdown:
 `/tmp/ltm-music-postprocess-native.log` and `-v2.log`/`-v3.log`.
+
+### Capture and controls package acceptance
+
+The native recording test also passes after the Music lifecycle fix:
+`/tmp/ltm-music-recording-postprocess.log`. A 40-point attitude horizon now shows
+pitch/roll during tilt and provides an accessible Level action; native rendering
+and action checks pass. Help is a bundled, searchable native text window.
+
+### Content-based music import reconciliation
+
+New song imports derive their IDs from prepared content. Existing AFC files are
+compared byte-for-byte before reuse; a mismatch is rejected without changing the
+library file. New media uploads publish only after close/rename, so interrupted
+writes never truncate a canonical library file. Repeated raw AAC conversion now
+zeros only generated mvhd/tkhd/mdhd creation/modification timestamps; the audio
+payload is unchanged. Bounded container, conversion identity, native repeated
+import, mismatch rejection and stereo playback checks pass, as does native
+Photos after the shared upload change. Evidence: `/tmp/ltm-media-dedup-native-v2.log`,
+`/tmp/ltm-photo-atomic-native.log`, `/tmp/ltm-media-identity-check.log`.
+
+Existing random-ID song imports are not retroactively indexed. Photo content
+identity remains pending because its receipts need to distinguish a saved photo
+from one subsequently deleted in Photos. Photo retry receipts retain their
+previous behavior; new photo uploads gain atomic publication only.
