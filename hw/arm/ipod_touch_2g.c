@@ -1099,6 +1099,7 @@ static const char *ipod_touch_requested_boot_args(IPodTouchMachineState *nms)
 {
     /* Explicit machine options win over the legacy environment fallback,
      * for both the early handoff and subsequent AMFI argument refreshes. */
+    if (nms->boot_args_explicit && !nms->boot_args[0]) return NULL;
     return nms->boot_args[0] ? nms->boot_args : getenv("IT_BOOT_ARGS");
 }
 
@@ -1237,8 +1238,10 @@ static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
     nms->boot_args_writes = 0;
     nms->amfi_patched = false;
     nms->boot_args_scan_failed = false;
-    nms->boot_args_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
-                                        ipod_touch_set_boot_args_now, nms);
+    if (!nms->boot_args_timer) {
+        nms->boot_args_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                           ipod_touch_set_boot_args_now, nms);
+    }
     timer_mod(nms->boot_args_timer,
               qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + delay_ms);
     fprintf(stderr, "[IT_BOOT_ARGS] first write scheduled at T+%llu ms\n",
@@ -1556,7 +1559,16 @@ static char *ipod_touch_get_boot_args(Object *obj, Error **errp)
 static void ipod_touch_set_boot_args(Object *obj, const char *value, Error **errp)
 {
     IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->cpu) {
+        error_setg(errp, "boot-args must be set before the machine starts");
+        return;
+    }
+    if (strlen(value) >= BOOT_ARGS_CMDLINE_LEN) {
+        error_setg(errp, "boot-args exceeds the kernel's 255-byte command line");
+        return;
+    }
     g_strlcpy(nms->boot_args, value, sizeof(nms->boot_args));
+    nms->boot_args_explicit = true;
 }
 
 static char *ipod_touch_get_nand_path(Object *obj, Error **errp)
@@ -1978,19 +1990,10 @@ static void ipod_touch_instance_init(Object *obj)
         "Present a BCM4325 on the SDIO bus. Off by default: the dongle "
         "emulation is incomplete, so the driver attaches and then gets stuck");
 
-    /*
-     * Left empty on purpose. The FMSS poke that used to inject a default set
-     * of boot-args wrote them into a fixed address inside 5F138 iBoot's BSS
-     * and has been removed, so 2.1.1 now boots with an empty
-     * gBootArgs.commandLine unless boot-args= is passed. Seeding this property
-     * with the old default instead looked like it stopped the stock NOR from
-     * reaching its serial banner, so nor_set_boot_args() wants verifying
-     * before it takes over as the default path.
-     */
+    /* No default override: unconfigured boots retain firmware defaults. */
     object_property_add_str(obj, "boot-args", ipod_touch_get_boot_args, ipod_touch_set_boot_args);
     object_property_set_description(obj, "boot-args",
-        "Replace the boot-args variable in the NOR's nvram, in memory only. "
-        "Useful for kernel debug flags such as \"io=0xffff\"");
+        "Startup kernel command line (at most 255 bytes); empty disables injection");
 
     object_property_add_str(obj, "usb-tcp-addr", ipod_touch_get_usb_tcp_addr, ipod_touch_set_usb_tcp_addr);
     object_property_set_description(obj, "usb-tcp-addr",
