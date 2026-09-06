@@ -17,7 +17,8 @@ TV-out were explicitly deferred by that plan.
 | Settings Wi-Fi join | Deferred at user request (2026-09-05) | Manual join without known-network seed or alert loop; DHCP and traffic |
 | Two-instance LAN | Deferred at user request (2026-09-05) | Separate identities, MACs and state; bidirectional traffic between guests |
 | Hardware shortcuts | FMSS completion and TV-out frame timing fixed; VIC daisy-chain defects fixed; DSI panel reply queue implemented; NOR program/erase/private persistence and operand-driven PKE verified | PKE interrupt/timing, FMSS erase, remaining LCD/TV-out status, timers 0–3 and AES signature classification |
-| Light Touch integration | Original UI fixes, built-in proxy/TLS bridge, inline Live Text, capture, native logs/notices and private NOR storage packaged | Full status pane, AFC browser, broader accessibility and Help Book work |
+| Light Touch integration | Original UI fixes, built-in proxy/TLS bridge, inline Live Text, capture, native logs/notices, status pane, AFC browser and private NOR storage packaged | Broader accessibility; Help Book deferred at user request |
+| Help Book | Deferred at user request (2026-09-06) | Existing help window remains available |
 | Media imports | Music and Saved Photos native imports, content identity and recording audio verified | Artwork/playlists/Videos, old-import indexing and reconciliation with guest Photos deletions |
 | Configuration and firmware | Exact guarded 5F138/7E18 profiles; audio, keyboard, Bluetooth and watchdog options typed | Boot-chain, decode, audio/display/GLES options and remaining environment consumers |
 | Bluetooth peers / TV-out | Deferred per supplied plan | No implementation claimed |
@@ -1025,3 +1026,8 @@ All 34 native configuration cases pass. LCD compositor and IRQ sanitizer checks
 pass. Native Photos verifies thumbnail colors, native save, retry handling, cold
 persistence and both confirmed shutdowns (`/tmp/it-lcd-planes-mode-photo.log`).
 CLI, dylib and Light Touch Release builds pass.
+
+The signed package `build-native14/Light Touch-36fccf4ca5.app` includes these
+changes and passes macOS 14 deployment checks. `Light Touch-latest.app` points
+to it. The Help Book is deferred at the user's request; remaining active plan
+work retains its existing scope.
