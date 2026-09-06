@@ -487,7 +487,7 @@ static void exynos4210_uart_update_parameters(Exynos4210UartState *s)
 
 static void exynos4210_uart_rx_timeout_set(Exynos4210UartState *s)
 {
-    if (s->reg[I_(UCON)] & 0x80) {
+    if ((s->reg[I_(UCON)] & 3) && (s->reg[I_(UCON)] & 0x80)) {
         uint32_t timeout = ((s->reg[I_(UCON)] >> 12) & 0x0f) * s->wordtime;
 
         timer_mod(s->fifo_timeout_timer,
