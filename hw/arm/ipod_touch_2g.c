@@ -1,4 +1,5 @@
 #include "qemu/osdep.h"
+#include "hw/arm/ipod_touch_firmware.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qapi/qapi-visit-common.h"
@@ -619,9 +620,6 @@ static void ipod_touch_stage_ramdisk(IPodTouchMachineState *nms)
  * the expected prologue (push {r4-r7,lr}) is in place. Addresses/slide are env-
  * overridable for other builds. Gated on IT_AMFI_ALLOW_TASKPORT; 2.1.1 untouched.
  */
-#define AMFI_HOOK_SLIDE          0xB8000000u
-#define AMFI_GET_TASK_NAME_VA    0xC01AB2A0u
-#define AMFI_GET_TASK_VA         0xC01AB200u
 
 static bool it_amfi_patch_one(IPodTouchMachineState *nms, uint32_t va, uint32_t slide)
 {
@@ -646,16 +644,22 @@ static bool it_amfi_patch_one(IPodTouchMachineState *nms, uint32_t va, uint32_t 
 
 static void ipod_touch_amfi_patch_now(IPodTouchMachineState *nms)
 {
-    const char *slide_s = getenv("IT_AMFI_HOOK_SLIDE");
-    const char *gtn_s = getenv("IT_AMFI_GET_TASK_NAME_VA");
-    const char *gt_s = getenv("IT_AMFI_GET_TASK_VA");
-    uint32_t slide = slide_s ? (uint32_t)strtoul(slide_s, NULL, 0) : AMFI_HOOK_SLIDE;
-    uint32_t gtn = gtn_s ? (uint32_t)strtoul(gtn_s, NULL, 0) : AMFI_GET_TASK_NAME_VA;
-    uint32_t gt = gt_s ? (uint32_t)strtoul(gt_s, NULL, 0) : AMFI_GET_TASK_VA;
-
     if (!getenv("IT_AMFI_ALLOW_TASKPORT") || nms->amfi_patched) {
         return;
     }
+    const char *slide_s = getenv("IT_AMFI_HOOK_SLIDE");
+    const char *gtn_s = getenv("IT_AMFI_GET_TASK_NAME_VA");
+    const char *gt_s = getenv("IT_AMFI_GET_TASK_VA");
+    const ITFirmwareDesc *fw = it_firmware_loaded();
+    /* Other builds require all three explicit research overrides. Never use
+     * 7E18 function addresses just because a different kernel has a push. */
+    if ((!fw || !fw->amfi_get_task_va) && !(slide_s && gtn_s && gt_s)) {
+        return;
+    }
+    uint32_t slide = slide_s ? strtoul(slide_s, NULL, 0) : fw->amfi_slide;
+    uint32_t gtn = gtn_s ? strtoul(gtn_s, NULL, 0) : fw->amfi_get_task_name_va;
+    uint32_t gt = gt_s ? strtoul(gt_s, NULL, 0) : fw->amfi_get_task_va;
+
     if (it_amfi_patch_one(nms, gtn, slide) &&
         it_amfi_patch_one(nms, gt, slide)) {
         nms->amfi_patched = true;
@@ -1006,6 +1010,7 @@ static void ipod_touch_cpu_reset(void *opaque)
     ARMCPU *cpu = nms->cpu;
     CPUState *cs = CPU(cpu);
 
+    it_firmware_reset();
     ipod_agent_reset(nms->agent);
     gles_host_reset();
     cpu_reset(cs);

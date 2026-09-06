@@ -15,6 +15,7 @@ parser.add_argument('--qemu', default=str(ROOT/'build-native14/qemu-build/qemu-s
 parser.add_argument('--usbmuxd', default=str(ROOT/'build-native14/build/usbmuxd/src/usbmuxd'))
 parser.add_argument('--base-nand')
 parser.add_argument('--baked', action='store_true')
+parser.add_argument('--firmware', action='store_true', help='verify 7E18 profile and legacy MBX read isolation')
 parser.add_argument('--orientation', action='store_true', help='verify native UI rotation and respring recovery')
 parser.add_argument('--typing', action='store_true', help='verify injected Notes and Harness input')
 args = parser.parse_args()
@@ -68,6 +69,21 @@ try:
     assert agent('launch', 'com.apple.Preferences')[0] == 0
     time.sleep(2)
     status, data = agent('frontmost'); assert status == 0 and b'com.apple.Preferences' in data
+    if args.firmware:
+        regions=[(0x081953e0,6),(0x08324aa8,4),(0x08324a00,24),(0x08460000,200),(0x08460100,40)]
+        def memory(label):
+            data=[]
+            for index,(address,size) in enumerate(regions):
+                file=Path(out)/f'{label}-{index}.bin'
+                d.qmp.cmd('pmemsave',val=address,size=size,filename=str(file))
+                data.append(file.read_bytes())
+            return data
+        before=memory('before-mbx')
+        assert before[0] != bytes.fromhex('7fee3f0f7047'), '7E18 already received the legacy clock patch'
+        d.qmp.cmd('human-monitor-command',**{'command-line':'xp /1wx 0x3940000c'})
+        assert memory('after-mbx')==before, 'legacy MBX read modified the 7E18 kernel'
+        assert agent('ping')==(0,b'it_agent v1\n')
+        print('PASS: native 7E18 boot and legacy MBX read preserve kernel clock/driver memory',flush=True)
     if args.orientation:
         assert agent('orientation') == (0,b'0\n')
         import plistlib, zipfile
@@ -217,6 +233,11 @@ try:
         print('PASS: Notes and third-party UITextField Unicode, deletion, host keys and UI inspection', flush=True)
     print('PASS: native agent ping, root exec, binary stdin/files, status, clock, liveness', flush=True)
     assert d.powerdown(), 'guest shutdown not confirmed'
+    if args.firmware:
+        log=Path(d.dir,'qemu.log').read_text(errors='replace')
+        assert '[FIRMWARE] detected build 7E18' in log
+        if os.environ.get('IT_AMFI_ALLOW_TASKPORT'):
+            assert '[IT_AMFI_ALLOW_TASKPORT] patched' in log
 finally:
     if d.qmp: d.qmp.close()
     p.stop_all()
