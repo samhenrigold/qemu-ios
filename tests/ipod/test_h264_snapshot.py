@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Save halfway through a two-slice picture; restore and finish exact guest DMA."""
+"""Restore a partial video picture and partial I2S stereo frame in native QEMU."""
 from pathlib import Path
 import os, socket, subprocess, tempfile, time, sys
 ROOT = Path(__file__).resolve().parents[2]
@@ -11,8 +11,8 @@ with tempfile.TemporaryDirectory(prefix='it-h264-snapshot-') as temporary:
     for phase in range(2):
         qpath, tpath = str(out / f'qmp{phase}'), str(out / f'qtest{phase}')
         argv = [str(ROOT / 'build-native14/qemu-build/qemu-system-arm'), '-S', '-M',
-                f'iPod-Touch,bootrom={files}/bootrom_240_4,nand={files}/nand,nor={files}/nor_n72ap.bin,nandrw={out}/overlay,h264-decode=on',
-                '-m', '128M', '-display', 'none', '-serial', 'null', '-monitor', 'none',
+                f'iPod-Touch,bootrom={files}/bootrom_240_4,nand={files}/nand,nor={files}/nor_n72ap.bin,nandrw={out}/overlay,h264-decode=on,audio-hw=on',
+                '-m', '128M', '-audio', 'driver=none', '-display', 'none', '-serial', 'null', '-monitor', 'none',
                 '-qmp', f'unix:{qpath},server=on,wait=off', '-qtest', f'unix:{tpath},server=on,wait=off',
                 '-qtest-log', str(out / f'qtest{phase}.log')]
         if phase:
@@ -73,6 +73,7 @@ with tempfile.TemporaryDirectory(prefix='it-h264-snapshot-') as temporary:
                     memory(0x08004000, bytes([180]) * 4096 + bytes([128]) * 2048)
                     slice_job()
                     assert pixels() == b'\xa5' * 6144, 'partial picture published early'
+                    command('writew 0x3ca00010 0x1234')  # Half a stereo frame is valid saved state.
                     q.cmd('migrate', uri='file:' + str(out / 'snapshot'))
                     deadline = time.monotonic() + 30
                     while True:
@@ -84,12 +85,13 @@ with tempfile.TemporaryDirectory(prefix='it-h264-snapshot-') as temporary:
                         time.sleep(.1)
                 else:
                     assert pixels() == b'\xa5' * 6144
+                    command('writew 0x3ca00010 0x5678')
                     write(0x1038, 2)
                     write(0x100, 0x0605)
                     write(0x104, 0x0403)
                     slice_job()
                     assert pixels() == bytes([80]) * 2048 + bytes([180]) * 2048 + bytes([128]) * 2048
-                    print('PASS: native H264 mid-picture migration, replayed references and exact completed DMA', flush=True)
+                    print('PASS: native H264 mid-picture and I2S half-frame migration, replayed references and exact completed DMA', flush=True)
                 q.cmd('quit')
                 assert child.wait(timeout=10) == 0
             finally:
