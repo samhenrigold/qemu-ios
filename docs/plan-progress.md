@@ -962,3 +962,18 @@ runtime-mutation rejection. Scaler ASan/UBSan conversion/IRQ checks pass. Native
 Photos verifies thumbnail colors, import/retry, cold persistence and both
 confirmed shutdowns (`/tmp/it-scaler-option-photo.log`). CLI, dylib and app builds
 pass. AMC/MPVD and remaining display/GLES environment switches are still open.
+
+## Retired TCP tunnel (2026-09-06)
+
+The unused FD/socket cp15 handlers are removed along with their host descriptor
+table. These allowed blocking host accept/receive calls on the emulation thread
+and ignored guest-memory copy failures. The plan identifies them as dead, and
+repository/guest-tool caller searches found no active consumer. Reserved opcodes
+and packed argument layouts remain unchanged; requests return Darwin ENOSYS.
+Normal networking continues through the emulated SDIO interface and slirp.
+
+The expanded native service probe verifies all 12 retired opcodes and an unknown
+opcode, clears stale errors with successful ping calls, checks clipboard memory
+failure recovery, and fetches HTTP from a local fixture using native guest BSD
+sockets through SDIO/slirp. Confirmed shutdown passes in 28.5 seconds
+(`/tmp/it-retired-sockets-native.log`). CLI build passes.

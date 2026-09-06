@@ -104,63 +104,6 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
 
     guest_svcs_errno = 0;
     switch (qcall.call_number) {
-        // File Descriptors
-        case QC_CLOSE:
-            qcall.retval = qc_handle_close(cpu, qcall.args.close.fd);
-            break;
-        case QC_FCNTL:
-            switch (qcall.args.fcntl.cmd) {
-                case F_GETFL:
-                    qcall.retval = qc_handle_fcntl_getfl(
-                        cpu, qcall.args.fcntl.fd);
-                    break;
-                case F_SETFL:
-                    qcall.retval = qc_handle_fcntl_setfl(
-                        cpu, qcall.args.fcntl.fd, qcall.args.fcntl.flags);
-                    break;
-                default:
-                    guest_svcs_errno = EINVAL;
-                    qcall.retval = -1;
-            }
-            break;
-
-        // Socket API
-        case QC_SOCKET:
-            qcall.retval = qc_handle_socket(cpu, qcall.args.socket.domain,
-                                            qcall.args.socket.type,
-                                            qcall.args.socket.protocol);
-            break;
-        case QC_ACCEPT:
-            qcall.retval = qc_handle_accept(cpu, qcall.args.accept.socket,
-                                            qcall.args.accept.addr,
-                                            qcall.args.accept.addrlen);
-            break;
-        case QC_BIND:
-            qcall.retval = qc_handle_bind(cpu, qcall.args.bind.socket,
-                                          qcall.args.bind.addr,
-                                          qcall.args.bind.addrlen);
-            break;
-        case QC_CONNECT:
-            qcall.retval = qc_handle_connect(cpu, qcall.args.connect.socket,
-                                             qcall.args.connect.addr,
-                                             qcall.args.connect.addrlen);
-            break;
-        case QC_LISTEN:
-            qcall.retval = qc_handle_listen(cpu, qcall.args.listen.socket,
-                                            qcall.args.listen.backlog);
-            break;
-        case QC_RECV:
-            qcall.retval = qc_handle_recv(cpu, qcall.args.recv.socket,
-                                          qcall.args.recv.buffer,
-                                          qcall.args.recv.length,
-                                          qcall.args.recv.flags);
-            break;
-        case QC_SEND:
-            qcall.retval = qc_handle_send(cpu, qcall.args.send.socket,
-                                          qcall.args.send.buffer,
-                                          qcall.args.send.length,
-                                          qcall.args.send.flags);
-            break;
         case QC_GLES:
             qcall.retval = qc_handle_gles(cpu, &qcall.args.gles);
             break;

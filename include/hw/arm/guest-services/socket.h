@@ -32,13 +32,6 @@
 #include "sys/socket.h"
 #endif
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wredundant-decls"
-extern int32_t guest_svcs_errno;
-#pragma GCC diagnostic pop
-
-#define MAX_BUF_SIZE (4096)
-
 typedef struct __attribute__((packed)) {
     int32_t domain;
     int32_t type;
@@ -72,21 +65,7 @@ typedef struct __attribute__((packed)) {
     int32_t flags;
 } qc_recv_args_t, qc_send_args_t;
 
-#ifndef OUT_OF_TREE_BUILD
-int32_t qc_handle_socket(CPUState *cpu, int32_t domain, int32_t type,
-                         int32_t protocol);
-int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, uint32_t addr,
-                         uint32_t addrlen);
-int32_t qc_handle_bind(CPUState *cpu, int32_t sckt, uint32_t addr,
-                       socklen_t addrlen);
-int32_t qc_handle_connect(CPUState *cpu, int32_t sckt, uint32_t addr,
-                          socklen_t addrlen);
-int32_t qc_handle_listen(CPUState *cpu, int32_t sckt, int32_t backlog);
-int32_t qc_handle_recv(CPUState *cpu, int32_t sckt, uint32_t buffer,
-                       uint32_t length, int32_t flags);
-int32_t qc_handle_send(CPUState *cpu, int32_t sckt, uint32_t buffer,
-                       uint32_t length, int32_t flags);
-#else
+#ifdef OUT_OF_TREE_BUILD
 int qc_socket(int domain, int type, int protocol);
 int qc_accept(int sckt, struct sockaddr *addr, socklen_t *addrlen);
 int qc_bind(int sckt, const struct sockaddr *addr, socklen_t addrlen);
