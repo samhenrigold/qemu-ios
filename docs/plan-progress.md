@@ -356,3 +356,14 @@ Guest capacity filtering remains intact; the UI explains the delayed estimate.
 Automatic battery drain and integration into a wider device-status pane remain
 open. Earlier native calibration/charging evidence still covers the underlying
 PMU properties; no new native guest acceptance is claimed for this UI wiring.
+
+### Refreshed default-image regression
+
+NAND v4 passes boot, full-volume read-only fsck, clean-shutdown persistence,
+GLES color rendering, stereo 440/880 Hz audio, binary guest-agent transfers and
+SpringBoard restart: `/tmp/ltm-v4-full-regression.log`. That command had an
+incorrect IPA path and skipped install/launch; both checks were then run with
+the actual built Harness IPA and passed: `/tmp/ltm-v4-app-regression.log`.
+The native harness now prefers v4, with v3/v2/legacy fallbacks. Media tests use
+v4 too. The battery-inclusive package `build-native14/Light Touch-battery.app`
+passes Release build, strict deep signature and macOS 14 dependency checks.

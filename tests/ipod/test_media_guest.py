@@ -23,7 +23,7 @@ os.environ['PATH'] = str(ROOT.parent/'qemu-ios-deps12/bin') + ':' + os.environ['
 os.environ['IT_AMC_DECODE'] = '1'  # Match Light Touch, including compressed audio.
 out = Path(tempfile.mkdtemp(prefix='it-media-guest-'))
 cfg = SimpleNamespace(out=str(out), files=args.files,
-    base_nand=args.base_nand or args.files+'/nand-agent-v3',
+    base_nand=args.base_nand or args.files+'/nand-agent-v4',
     nor=args.files+'/ios3/nor_7E18.bin', overlay=str(out/'overlay'),
     qemu=str(ROOT/'build-native14/qemu-build/qemu-system-arm'),
     usbmuxd=str(ROOT/'build-native14/build/usbmuxd/src/usbmuxd'), usbmuxd_ok=True,
