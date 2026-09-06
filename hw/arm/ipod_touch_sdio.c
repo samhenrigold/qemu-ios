@@ -1,3 +1,6 @@
+#include "qemu/osdep.h"
+#include "migration/vmstate.h"
+#include "migration/qemu-file-types.h"
 #include "hw/arm/ipod_touch_sdio.h"
 #include "qemu/log.h"
 
@@ -1217,9 +1220,70 @@ static void ipod_touch_sdio_init(Object *obj)
     s->rx_fifo = g_queue_new();
 }
 
+#include "ipod-sdio-state.h"
+
+static const VMStateInfo vmstate_sdio_backplane = {
+    .name = "sdio-backplane", .get = sdio_get_backplane, .put = sdio_put_backplane,
+};
+static const VMStateInfo vmstate_sdio_frames = {
+    .name = "sdio-frames", .get = sdio_get_frames, .put = sdio_put_frames,
+};
+
+static int sdio_post_load(void *opaque, int version_id)
+{
+    IPodTouchSDIOState *s = opaque;
+    if ((s->cdc_hdrlen && s->cdc_hdrlen != 12 && s->cdc_hdrlen != 16) ||
+        (s->bdc_hdrlen && s->bdc_hdrlen != 4 && s->bdc_hdrlen != 6)) return -EINVAL;
+    qemu_set_irq(s->irq, s->irq_reg != 0);
+    return 0;
+}
+
+static const VMStateDescription vmstate_ipod_touch_sdio = {
+    .name = TYPE_IPOD_TOUCH_SDIO,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = sdio_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(cmd, IPodTouchSDIOState),
+        VMSTATE_UINT32(arg, IPodTouchSDIOState),
+        VMSTATE_UINT32(state, IPodTouchSDIOState),
+        VMSTATE_UINT32(stac, IPodTouchSDIOState),
+        VMSTATE_UINT32(csr, IPodTouchSDIOState),
+        VMSTATE_UINT32(resp0, IPodTouchSDIOState),
+        VMSTATE_UINT32(resp1, IPodTouchSDIOState),
+        VMSTATE_UINT32(resp2, IPodTouchSDIOState),
+        VMSTATE_UINT32(resp3, IPodTouchSDIOState),
+        VMSTATE_UINT32(irq_reg, IPodTouchSDIOState),
+        VMSTATE_UINT32(irq_pending, IPodTouchSDIOState),
+        VMSTATE_UINT32(irq_mask, IPodTouchSDIOState),
+        VMSTATE_UINT32(baddr, IPodTouchSDIOState),
+        VMSTATE_UINT32(blklen, IPodTouchSDIOState),
+        VMSTATE_UINT32(numblk, IPodTouchSDIOState),
+        VMSTATE_UINT32(sb_window, IPodTouchSDIOState),
+        VMSTATE_UINT32(cdc_hdrlen, IPodTouchSDIOState),
+        VMSTATE_UINT32(bdc_hdrlen, IPodTouchSDIOState),
+        VMSTATE_UINT8(tx_seq, IPodTouchSDIOState),
+        VMSTATE_UINT8(rx_seq, IPodTouchSDIOState),
+        VMSTATE_BOOL(card_present, IPodTouchSDIOState),
+        VMSTATE_BOOL(dongle_started, IPodTouchSDIOState),
+        VMSTATE_BOOL(associated, IPodTouchSDIOState),
+        VMSTATE_BOOL(func2_seen, IPodTouchSDIOState),
+        VMSTATE_BOOL(iscan_reported, IPodTouchSDIOState),
+        VMSTATE_UINT8_ARRAY(sdiod_regs, IPodTouchSDIOState, SDIOD_CORE_SIZE),
+        VMSTATE_UINT8_ARRAY(registers, IPodTouchSDIOState, 0x20000),
+        VMSTATE_TIMER_PTR(irq_timer, IPodTouchSDIOState),
+        VMSTATE_TIMER_PTR(scan_timer, IPodTouchSDIOState),
+        VMSTATE_TIMER_PTR(join_timer, IPodTouchSDIOState),
+        VMSTATE_SINGLE(backplane, IPodTouchSDIOState, 1, vmstate_sdio_backplane, GHashTable *),
+        VMSTATE_SINGLE(rx_fifo, IPodTouchSDIOState, 1, vmstate_sdio_frames, GQueue *),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static void ipod_touch_sdio_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+    dc->vmsd = &vmstate_ipod_touch_sdio;
 }
 
 static const TypeInfo ipod_touch_sdio_type_info = {
