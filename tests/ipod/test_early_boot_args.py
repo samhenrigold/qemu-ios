@@ -20,17 +20,18 @@ typedef uint64_t hwaddr;
 #define BOOT_ARGS_CMDLINE_LEN 256
 #define BOOT_ARGS_STAGING_BASE 0x220fff00
 #define MEMTXATTRS_UNSPECIFIED 0
-typedef struct {void*nsas;void*cpu;void*boot_args_timer;unsigned boot_args_writes;bool amfi_patched,boot_args_scan_failed,boot_args_explicit;char boot_args[256];} IPodTouchMachineState;
+typedef struct {void*nsas;void*cpu;void*boot_args_timer;unsigned boot_args_writes;uint32_t boot_args_delay_ms;bool amfi_patched,boot_args_scan_failed,boot_args_explicit;char boot_args[256];} IPodTouchMachineState;
 typedef IPodTouchMachineState Object;
 typedef int Error;
 #define IPOD_TOUCH_MACHINE(o) (o)
 #define error_setg(errp,...) (**(errp)=1)
 #define QEMU_CLOCK_VIRTUAL 0
 static unsigned allocations, schedules;
+static uint64_t expected_schedule=2123;
 static int timer;
 static void *timer_new_ms(int clock, void (*fn)(void*), void*opaque){allocations++;return &timer;}
 static uint64_t qemu_clock_get_ms(int clock){return 123;}
-static void timer_mod(void*t,uint64_t when){assert(t==&timer&&when==2123);schedules++;}
+static void timer_mod(void*t,uint64_t when){assert(t==&timer&&when==expected_schedule);schedules++;}
 static void ipod_touch_set_boot_args_now(void*p){}
 static const char *ipod_touch_requested_boot_args(IPodTouchMachineState*);
 static uint8_t image[0x27000],staging[256];
@@ -45,7 +46,7 @@ static uint32_t ldl_le_p(void*p){uint32_t x;memcpy(&x,p,4);return GUINT32_FROM_L
 static void stl_le_p(void*p,uint32_t x){x=GUINT32_TO_LE(x);memcpy(p,&x,4);}
 '''+s+r'''
 int main(void){
- IPodTouchMachineState machine={0};
+ IPodTouchMachineState machine={.boot_args_delay_ms=2000};
  const uint8_t signature[]={0x2c,0x4b,0x9b,0x46,0x1b,0x68,0x00,0x2b,0x03,0xd1,0x2a,0x48,0x06,0x1c,0x01,0x90,0x02,0xe0,0x29,0x4e,0x28,0x49,0x01,0x91};
  memcpy(image+0x11a72,signature,sizeof(signature));stl_le_p(image+0x11b28,0x0ff1dba0);
  unsetenv("IT_BOOT_ARGS");ipod_touch_inject_boot_args(&machine);assert(!writes);
@@ -74,6 +75,11 @@ int main(void){
  unsetenv("IT_BOOT_ARGS_DELAY_MS");
  ipod_touch_stage_boot_args(&machine);ipod_touch_stage_boot_args(&machine);
  assert(allocations==1&&schedules==2);
+ /* Resets use resolved startup settings, not later environment changes. */
+ setenv("IT_BOOT_ARGS_DELAY_MS","999999",1);
+ ipod_touch_stage_boot_args(&machine);assert(allocations==1&&schedules==3);
+ machine.boot_args_delay_ms=1500;expected_schedule=1623;
+ ipod_touch_stage_boot_args(&machine);assert(allocations==1&&schedules==4);
 }
 '''
 flags=shlex.split(subprocess.check_output(['pkg-config','--cflags','--libs','glib-2.0'],text=True))

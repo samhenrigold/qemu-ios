@@ -19,6 +19,30 @@ args = parser.parse_args()
 base_env = {k: v for k, v in os.environ.items() if not k.startswith('IT_')}
 iboot = str(args.files / 'ios3/iBoot.bin')
 cases = [
+    ('boot-timer-default', {}, '', {'boot-args-delay-ms':2000,'boot-args-repeat':24,'boot-args-interval-ms':500}),
+    ('boot-timer-aliases', {'IT_BOOT_ARGS_DELAY_MS':'1500','IT_BOOT_ARGS_REPEAT':'200','IT_BOOT_ARGS_INTERVAL_MS':'0xfa'}, '', {'boot-args-delay-ms':1500,'boot-args-repeat':200,'boot-args-interval-ms':250}),
+    ('boot-args-delay-ms-explicit', {'IT_BOOT_ARGS_DELAY_MS':'bad'}, ',boot-args-delay-ms=0', {'boot-args-delay-ms':0}),
+    ('boot-args-delay-ms-maximum', {}, ',boot-args-delay-ms=3600000', {'boot-args-delay-ms':3600000}),
+    ('boot-args-delay-ms-overflow', {}, ',boot-args-delay-ms=3600001', None),
+    ('boot-args-delay-ms-bad--1', {'IT_BOOT_ARGS_DELAY_MS':'-1'}, '', None),
+    ('boot-args-delay-ms-bad-', {'IT_BOOT_ARGS_DELAY_MS':''}, '', None),
+    ('boot-args-delay-ms-bad-100junk', {'IT_BOOT_ARGS_DELAY_MS':'100junk'}, '', None),
+    ('boot-args-delay-ms-bad-18446744073709551616', {'IT_BOOT_ARGS_DELAY_MS':'18446744073709551616'}, '', None),
+    ('boot-args-repeat-explicit', {'IT_BOOT_ARGS_REPEAT':'bad'}, ',boot-args-repeat=0', {'boot-args-repeat':0}),
+    ('boot-args-repeat-maximum', {}, ',boot-args-repeat=1000000', {'boot-args-repeat':1000000}),
+    ('boot-args-repeat-overflow', {}, ',boot-args-repeat=1000001', None),
+    ('boot-args-repeat-bad--1', {'IT_BOOT_ARGS_REPEAT':'-1'}, '', None),
+    ('boot-args-repeat-bad-', {'IT_BOOT_ARGS_REPEAT':''}, '', None),
+    ('boot-args-repeat-bad-100junk', {'IT_BOOT_ARGS_REPEAT':'100junk'}, '', None),
+    ('boot-args-repeat-bad-18446744073709551616', {'IT_BOOT_ARGS_REPEAT':'18446744073709551616'}, '', None),
+    ('boot-args-interval-ms-explicit', {'IT_BOOT_ARGS_INTERVAL_MS':'bad'}, ',boot-args-interval-ms=1', {'boot-args-interval-ms':1}),
+    ('boot-args-interval-ms-maximum', {}, ',boot-args-interval-ms=3600000', {'boot-args-interval-ms':3600000}),
+    ('boot-args-interval-ms-overflow', {}, ',boot-args-interval-ms=3600001', None),
+    ('boot-args-interval-ms-bad--1', {'IT_BOOT_ARGS_INTERVAL_MS':'-1'}, '', None),
+    ('boot-args-interval-ms-bad-', {'IT_BOOT_ARGS_INTERVAL_MS':''}, '', None),
+    ('boot-args-interval-ms-bad-100junk', {'IT_BOOT_ARGS_INTERVAL_MS':'100junk'}, '', None),
+    ('boot-args-interval-ms-bad-18446744073709551616', {'IT_BOOT_ARGS_INTERVAL_MS':'18446744073709551616'}, '', None),
+    ('boot-args-interval-ms-bad-0', {'IT_BOOT_ARGS_INTERVAL_MS':'0'}, '', None),
     ('boot-args-default', {}, '', {'boot-args':''}),
     ('boot-args-explicit', {'IT_BOOT_ARGS':'legacy'}, ',boot-args=-v serial=3', {'boot-args':'-v serial=3'}),
     ('boot-args-empty', {'IT_BOOT_ARGS':'legacy'}, ',boot-args=', {'boot-args':''}),
@@ -86,7 +110,7 @@ for label, overrides, options, expected in cases:
                     log.seek(0)
                     message = log.read()
                     assert ('IT_TIME_DILATION must be' in message or
-                            'time-dilation' in message or 'amc-mode' in message or 'direct-llb' in message or 'boot-args' in message), message
+                            'time-dilation' in message or 'amc-mode' in message or 'direct-llb' in message or 'boot-args' in message or 'IT_BOOT_ARGS_' in message), message
                 else:
                     deadline = time.monotonic() + 15
                     while not Path(sock).exists():

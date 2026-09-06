@@ -190,6 +190,9 @@ typedef struct {
 	 * ridden on the same timer. */
 	QEMUTimer *boot_args_timer;
 	unsigned boot_args_writes;
+    uint32_t boot_args_delay_ms, boot_args_repeat, boot_args_interval_ms;
+    bool boot_args_delay_ms_explicit, boot_args_repeat_explicit;
+    bool boot_args_interval_ms_explicit;
 	bool amfi_patched;
 	bool boot_args_scan_failed;	/* complain once, not every retry */
 	uint32_t boot_args_addr;	/* signature hit from an earlier tick; 0 = rescan */

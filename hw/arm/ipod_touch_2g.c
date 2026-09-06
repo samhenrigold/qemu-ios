@@ -263,6 +263,126 @@ static bool ipod_touch_time_env_alias(IPodTouchMachineState *s, Error **errp)
     return true;
 }
 
+static void ipod_touch_get_boot_args_delay_ms(Object *obj, Visitor *v,
+                                             const char *name, void *opaque,
+                                             Error **errp)
+{
+    uint32_t value = IPOD_TOUCH_MACHINE(obj)->boot_args_delay_ms;
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void ipod_touch_set_boot_args_delay_ms(Object *obj, Visitor *v,
+                                             const char *name, void *opaque,
+                                             Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->cpu) {
+        error_setg(errp, "boot-args-delay-ms must be set before the machine starts");
+        return;
+    }
+    uint32_t value;
+    if (!visit_type_uint32(v, name, &value, errp)) return;
+    if (value > 3600000) {
+        error_setg(errp, "boot-args-delay-ms must be between 0 and 3600000");
+        return;
+    }
+    nms->boot_args_delay_ms = value;
+    nms->boot_args_delay_ms_explicit = true;
+}
+
+static void ipod_touch_get_boot_args_repeat(Object *obj, Visitor *v,
+                                             const char *name, void *opaque,
+                                             Error **errp)
+{
+    uint32_t value = IPOD_TOUCH_MACHINE(obj)->boot_args_repeat;
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void ipod_touch_set_boot_args_repeat(Object *obj, Visitor *v,
+                                             const char *name, void *opaque,
+                                             Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->cpu) {
+        error_setg(errp, "boot-args-repeat must be set before the machine starts");
+        return;
+    }
+    uint32_t value;
+    if (!visit_type_uint32(v, name, &value, errp)) return;
+    if (value > 1000000) {
+        error_setg(errp, "boot-args-repeat must be between 0 and 1000000");
+        return;
+    }
+    nms->boot_args_repeat = value;
+    nms->boot_args_repeat_explicit = true;
+}
+
+static void ipod_touch_get_boot_args_interval_ms(Object *obj, Visitor *v,
+                                             const char *name, void *opaque,
+                                             Error **errp)
+{
+    uint32_t value = IPOD_TOUCH_MACHINE(obj)->boot_args_interval_ms;
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void ipod_touch_set_boot_args_interval_ms(Object *obj, Visitor *v,
+                                             const char *name, void *opaque,
+                                             Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->cpu) {
+        error_setg(errp, "boot-args-interval-ms must be set before the machine starts");
+        return;
+    }
+    uint32_t value;
+    if (!visit_type_uint32(v, name, &value, errp)) return;
+    if (value < 1 || value > 3600000) {
+        error_setg(errp, "boot-args-interval-ms must be between 1 and 3600000");
+        return;
+    }
+    nms->boot_args_interval_ms = value;
+    nms->boot_args_interval_ms_explicit = true;
+}
+
+static bool ipod_touch_boot_args_env_aliases(IPodTouchMachineState *nms,
+                                              Error **errp)
+{
+    const char *delay_ms = getenv("IT_BOOT_ARGS_DELAY_MS");
+    if (delay_ms && !nms->boot_args_delay_ms_explicit) {
+        uint64_t value;
+        if (qemu_strtou64(delay_ms, NULL, 0, &value) ||
+            value > 3600000) {
+            error_setg(errp, "IT_BOOT_ARGS_DELAY_MS must be between 0 and 3600000");
+            return false;
+        }
+        nms->boot_args_delay_ms = value;
+        warn_report_once("IT_BOOT_ARGS_DELAY_MS is deprecated; use -M iPod-Touch,boot-args-delay-ms=");
+    }
+    const char *repeat = getenv("IT_BOOT_ARGS_REPEAT");
+    if (repeat && !nms->boot_args_repeat_explicit) {
+        uint64_t value;
+        if (qemu_strtou64(repeat, NULL, 0, &value) ||
+            value > 1000000) {
+            error_setg(errp, "IT_BOOT_ARGS_REPEAT must be between 0 and 1000000");
+            return false;
+        }
+        nms->boot_args_repeat = value;
+        warn_report_once("IT_BOOT_ARGS_REPEAT is deprecated; use -M iPod-Touch,boot-args-repeat=");
+    }
+    const char *interval_ms = getenv("IT_BOOT_ARGS_INTERVAL_MS");
+    if (interval_ms && !nms->boot_args_interval_ms_explicit) {
+        uint64_t value;
+        if (qemu_strtou64(interval_ms, NULL, 0, &value) ||
+            value < 1 || value > 3600000) {
+            error_setg(errp, "IT_BOOT_ARGS_INTERVAL_MS must be between 1 and 3600000");
+            return false;
+        }
+        nms->boot_args_interval_ms = value;
+        warn_report_once("IT_BOOT_ARGS_INTERVAL_MS is deprecated; use -M iPod-Touch,boot-args-interval-ms=");
+    }
+    return true;
+}
+
 static void ipod_touch_get_bt(Object *obj, Visitor *v, const char *name,
                                   void *opaque, Error **errp)
 {
@@ -1200,7 +1320,7 @@ static void ipod_touch_set_boot_args_now(void *opaque)
      * amfi_allow_any_signature once in their init, which runs a few seconds
      * into boot -- and under -cpu max the virtual clock advances fast, so a
      * single late write can miss it. Re-arm across an early window (guided by
-     * IT_BOOT_ARGS_REPEAT / IT_BOOT_ARGS_INTERVAL_MS) so the string is present
+     * boot-args-repeat / boot-args-interval-ms) so the string is present
      * before any consumer reads it and stays present afterwards.
      */
     if (nms->boot_args_writes == 0) {
@@ -1211,25 +1331,20 @@ static void ipod_touch_set_boot_args_now(void *opaque)
 
 rearm:
     {
-        const char *rep_s = getenv("IT_BOOT_ARGS_REPEAT");
-        const char *iv_s = getenv("IT_BOOT_ARGS_INTERVAL_MS");
-        unsigned rep = rep_s ? (unsigned)strtoul(rep_s, NULL, 0) : 24;
-        uint64_t iv = iv_s ? strtoull(iv_s, NULL, 0) : 500;
         /* Keep re-arming while there is still work: the boot-args string needs
          * to be re-asserted a few times, and the AMFI patch waits for the
          * kernelcache to appear in DRAM. */
         bool amfi_pending = getenv("IT_AMFI_ALLOW_TASKPORT") && !nms->amfi_patched;
-        if (nms->boot_args_writes < rep || amfi_pending) {
+        if (nms->boot_args_writes < nms->boot_args_repeat || amfi_pending) {
             timer_mod(nms->boot_args_timer,
-                      qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + iv);
+                      qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + nms->boot_args_interval_ms);
         }
     }
 }
 
 static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
 {
-    const char *delay_s = getenv("IT_BOOT_ARGS_DELAY_MS");
-    uint64_t delay_ms = delay_s ? strtoull(delay_s, NULL, 0) : 2000;
+    uint32_t delay_ms = nms->boot_args_delay_ms;
 
     if (!ipod_touch_requested_boot_args(nms) && !getenv("IT_AMFI_ALLOW_TASKPORT")) {
         return;
@@ -1963,6 +2078,9 @@ static void ipod_touch_instance_init(Object *obj)
     IPOD_TOUCH_MACHINE(obj)->bt_enabled = true;
     IPOD_TOUCH_MACHINE(obj)->bt_latency_us = 2000;
     IPOD_TOUCH_MACHINE(obj)->time_dilation = 1;
+    IPOD_TOUCH_MACHINE(obj)->boot_args_delay_ms = 2000;
+    IPOD_TOUCH_MACHINE(obj)->boot_args_repeat = 24;
+    IPOD_TOUCH_MACHINE(obj)->boot_args_interval_ms = 500;
     IPOD_TOUCH_MACHINE(obj)->agent = ipod_agent_new();
     ipod_agent_publish(IPOD_TOUCH_MACHINE(obj)->agent);
     object_property_add_str(obj, "agent-request", NULL, ipod_touch_set_agent_request);
@@ -1994,6 +2112,22 @@ static void ipod_touch_instance_init(Object *obj)
     object_property_add_str(obj, "boot-args", ipod_touch_get_boot_args, ipod_touch_set_boot_args);
     object_property_set_description(obj, "boot-args",
         "Startup kernel command line (at most 255 bytes); empty disables injection");
+
+    object_property_add(obj, "boot-args-delay-ms", "uint32",
+                        ipod_touch_get_boot_args_delay_ms,
+                        ipod_touch_set_boot_args_delay_ms, NULL, NULL);
+    object_property_set_description(obj, "boot-args-delay-ms",
+        "Initial command-line write delay in virtual milliseconds (0..3600000; default 2000)");
+    object_property_add(obj, "boot-args-repeat", "uint32",
+                        ipod_touch_get_boot_args_repeat,
+                        ipod_touch_set_boot_args_repeat, NULL, NULL);
+    object_property_set_description(obj, "boot-args-repeat",
+        "Command-line write count (0..1000000; default 24; 0 still performs the initial write)");
+    object_property_add(obj, "boot-args-interval-ms", "uint32",
+                        ipod_touch_get_boot_args_interval_ms,
+                        ipod_touch_set_boot_args_interval_ms, NULL, NULL);
+    object_property_set_description(obj, "boot-args-interval-ms",
+        "Command-line retry interval in virtual milliseconds (1..3600000; default 500)");
 
     object_property_add_str(obj, "usb-tcp-addr", ipod_touch_get_usb_tcp_addr, ipod_touch_set_usb_tcp_addr);
     object_property_set_description(obj, "usb-tcp-addr",
@@ -3267,7 +3401,8 @@ static void ipod_touch_machine_init(MachineState *machine)
     AddressSpace *nsas;
     ARMCPU *cpu;
 
-    if (!ipod_touch_time_env_alias(nms, &error_fatal) ||
+    if (!ipod_touch_boot_args_env_aliases(nms, &error_fatal) ||
+        !ipod_touch_time_env_alias(nms, &error_fatal) ||
         !ipod_touch_bt_env_aliases(nms, &error_fatal)) {
         return;
     }
