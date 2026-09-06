@@ -1545,17 +1545,61 @@ static uint32_t pvrtc_twiddle(uint32_t bw, uint32_t bh, uint32_t bx, uint32_t by
     return twiddled | ((max_val >> shift) << (2 * shift));
 }
 
-/* 5-bit colour and 4-bit alpha, widened to 8 bits from a weighted sum whose
- * denominator is `den`. One rounding step, not two. */
+/* Expand the interpolated fixed-point channels by bit replication, not
+ * rounded division by 31/15. See Khronos Data Format, PVRTC1 reconstruction. */
 static inline int pvrtc_to8(int num, int den, int bits)
 {
-    int maxv = (1 << bits) - 1;
+    num >>= den == 32 ? 1 : 0;
+    return bits == 5 ? (num >> 1) + (num >> 6) : num + (num >> 4);
+}
 
-    return (num * 255 + den * maxv / 2) / (den * maxv);
+/* Read an explicitly stored 2bpp modulation sample. Neighbours may use a
+ * different mode, so decode the word that owns each sample independently. */
+static int pvrtc_2bpp_sample(const uint8_t *src, uint32_t bw, uint32_t bh,
+                            uint32_t x, uint32_t y)
+{
+    static const int weights[4] = { 0, 3, 5, 8 };
+    const uint8_t *word = src + (size_t)pvrtc_twiddle(bw, bh, x / 8, y / 4) * 8;
+    uint32_t bits = ldl_le_p(word);
+    uint32_t lx = x % 8, ly = y % 4;
+
+    if (!(ldl_le_p(word + 4) & 1)) {
+        return ((bits >> (8 * ly + lx)) & 1) * 8;
+    }
+    /* Mode selectors borrow the low bit of samples (0,0) and (4,2).
+     * Their remaining bit encodes an endpoint, rather than a middle weight. */
+    if (bits & 1) {
+        bits = (bits & ~(1u << 20)) | ((bits & (1u << 21)) >> 1);
+    }
+    bits = (bits & ~1u) | ((bits >> 1) & 1);
+    return weights[(bits >> (2 * (4 * ly + lx / 2))) & 3];
+}
+
+static int pvrtc_2bpp_modulation(const uint8_t *src, uint32_t bw, uint32_t bh,
+                                uint32_t x, uint32_t y)
+{
+    const uint8_t *word = src + (size_t)pvrtc_twiddle(bw, bh, x / 8, y / 4) * 8;
+    uint32_t bits = ldl_le_p(word);
+    int sum = 0, count = 0;
+
+    if (!(ldl_le_p(word + 4) & 1) || !((x ^ y) & 1)) {
+        return pvrtc_2bpp_sample(src, bw, bh, x, y);
+    }
+    if (!(bits & 1) || !(bits & (1u << 20))) {
+        sum += pvrtc_2bpp_sample(src, bw, bh, (x + bw * 8 - 1) % (bw * 8), y);
+        sum += pvrtc_2bpp_sample(src, bw, bh, (x + 1) % (bw * 8), y);
+        count += 2;
+    }
+    if (!(bits & 1) || (bits & (1u << 20))) {
+        sum += pvrtc_2bpp_sample(src, bw, bh, x, (y + bh * 4 - 1) % (bh * 4));
+        sum += pvrtc_2bpp_sample(src, bw, bh, x, (y + 1) % (bh * 4));
+        count += 2;
+    }
+    return (sum + count / 2) / count;
 }
 
 /*
- * Decode a PVRTC1 image to RGBA8. `bpp` is 2 or 4.
+ * Decode a PVRTC1 image to RGBA8. `bpp` is 2 or 4; RGB formats ignore alpha.
  *
  * The shape of the format: each 8-byte block holds two endpoint colours for a
  * 4x4 (4bpp) or 8x4 (2bpp) region plus per-texel modulation weights. The
@@ -1566,7 +1610,7 @@ static inline int pvrtc_to8(int num, int den, int bits)
  * lookup below is offset by half a block.
  */
 static void pvrtc_decode(const uint8_t *src, uint32_t w, uint32_t h, int bpp,
-                         uint8_t *dst)
+                         bool alpha, uint8_t *dst)
 {
     const uint32_t cw = (bpp == 2) ? 8 : 4, ch = 4;
     /*
@@ -1633,29 +1677,7 @@ static void pvrtc_decode(const uint8_t *src, uint32_t w, uint32_t h, int bpp,
                 mod = (mcolor & 1) ? mod1[(mbits >> (2 * (4 * ly + lx))) & 3]
                                    : mod0[(mbits >> (2 * (4 * ly + lx))) & 3];
             } else {
-                /*
-                 * ponytail: 2bpp local-modulation (the mode-1 encodings, where
-                 * half the texels carry explicit weights and the rest are
-                 * averaged from their neighbours) is NOT decoded -- those
-                 * blocks come out as the midpoint of the two endpoints. 2bpp is
-                 * absent from every title surveyed here, and the mode-0 path
-                 * below is the whole of the format that anything is known to
-                 * use. Implement the H/V/checkerboard cases if a title turns up
-                 * that needs them; the warning below says when.
-                 */
-                if (mcolor & 1) {
-                    static bool warned;
-
-                    if (!warned) {
-                        warned = true;
-                        fprintf(stderr, "[gles] PVRTC 2bpp local-modulation "
-                                "blocks are approximated (flat A/B midpoint) -- "
-                                "this texture will look soft\n");
-                    }
-                    mod = 4;
-                } else {
-                    mod = ((mbits >> (8 * ly + lx)) & 1) ? 8 : 0;
-                }
+                mod = pvrtc_2bpp_modulation(src, bw, bh, px, py);
             }
             if (mod > 10) {
                 punch = true;
@@ -1664,7 +1686,7 @@ static void pvrtc_decode(const uint8_t *src, uint32_t w, uint32_t h, int bpp,
             for (c = 0; c < 3; c++) {
                 out[c] = (a8[c] * (8 - mod) + b8[c] * mod) / 8;
             }
-            out[3] = punch ? 0 : (a8[3] * (8 - mod) + b8[3] * mod) / 8;
+            out[3] = !alpha ? 255 : punch ? 0 : (a8[3] * (8 - mod) + b8[3] * mod) / 8;
         }
     }
 }
@@ -1867,7 +1889,7 @@ static void pvrtc_selfcheck(void)
     }
     /* Words are laid out in twiddled order, so word i is block i by
      * construction: probe[k].block is the word index to expect. */
-    pvrtc_decode(src, 8, 8, 4, out);
+    pvrtc_decode(src, 8, 8, 4, true, out);
 
     for (i = 0; i < 4; i++) {
         const uint8_t *p = out + ((size_t)probes[i].y * 8 + probes[i].x) * 4;
@@ -4042,7 +4064,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             if (!dst) {
                 return -1;
             }
-            pvrtc_decode(src, w, h, bpp, dst);
+            pvrtc_decode(src, w, h, bpp,
+                         ifmt == PVRTC_RGBA_2BPP || ifmt == PVRTC_RGBA_4BPP, dst);
             gles_report_decode(ifmt, w, h, dst);
             glTexImage2D(target, level, GL_RGBA, w, h, 0, GL_RGBA,
                          GL_UNSIGNED_BYTE, dst);
