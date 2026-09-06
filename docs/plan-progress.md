@@ -1051,3 +1051,16 @@ Timer diagnostics now identify the correct A-D register windows (0x00, 0x20,
 control at 0x88 as timer D. The local Samsung timer register reference confirms
 the layout; production-handler checks verify one warning per unmodeled timer
 and no false warning for counter control. No timer behavior is invented.
+
+## Boot image staging failures (2026-09-06)
+
+Boot ROM, direct LLB and direct iBoot now share checked image staging. Missing,
+empty or oversized images produce a clear failure instead of continuing into
+uninitialized code or overwriting the next memory window. Guest memory write
+errors are checked too. Limits follow the mapped boot ROM/iBoot regions and
+the start of SRAM1 after LLB.
+
+`tests/ipod/test_boot_image.py` passes ASan/UBSan file/bounds/write-failure checks;
+`--native` passes six actual invalid-image startup cases. Native 7E18 firmware
+and agent acceptance, Settings launch and confirmed shutdown pass in 87.8 seconds
+(`/tmp/it-boot-image-guest.log`). CLI build passes.
