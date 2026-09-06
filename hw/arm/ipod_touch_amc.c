@@ -1,7 +1,7 @@
 /*
  * AMC -- the S5L8720's audio media codec ("amc,s5l8720x").
  *
- * IT_AMC_DECODE=1 enables HLE of the 7E18 AAC/HE-AAC/MP3/ALAC programs, with linked DMA,
+ * amc-mode=decode enables HLE of the 7E18 AAC/HE-AAC/MP3/ALAC programs, with linked DMA,
  * bounded decoding, real PCM output and completion ownership. See
  * docs/ipod-media.md for validation and the remaining limitations.
  * The register-only bring-up history below describes the original stubs.
@@ -118,6 +118,8 @@
  */
 
 #include "hw/arm/ipod_touch_amc.h"
+#include "hw/qdev-properties.h"
+#include "qapi/error.h"
 #include "hw/core/cpu.h"
 #include "exec/address-spaces.h"
 #include "qemu/error-report.h"
@@ -1015,21 +1017,14 @@ static void ipod_touch_amc_reset(DeviceState *dev)
     amc_decoder_close(s);
     timer_del(s->decode_timer);
     s->pending = 0;
-    s->codec_decode = getenv("IT_AMC_DECODE") != NULL ||
-                      getenv("IT_AMC_AAC") != NULL;
-#ifndef IT_HAVE_AVCODEC
-    if (s->codec_decode) {
-        warn_report("AMC: this build has no libavcodec support");
-        s->codec_decode = false;
-    }
-#endif
+    s->codec_decode = s->mode == AMC_MODE_DECODE;
     if (s->codec_decode) {
         timer_mod(s->decode_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000);
     }
     memset(s->regs, 0, sizeof(s->regs));
     memset(s->int_mask, 0, sizeof(s->int_mask));
     s->irq_armed = false;
-    s->state_handshake = s->codec_decode || getenv("IT_AMC_STATE") != NULL;
+    s->state_handshake = s->mode != AMC_MODE_REGISTERS;
     amc_update_irq(s);
 }
 
@@ -1057,6 +1052,10 @@ static int amc_post_load(void *opaque, int version_id)
 {
     IPodTouchAMCState *s = opaque;
     amc_decoder_close(s);
+    if (s->codec_decode != (s->mode == AMC_MODE_DECODE) ||
+        s->state_handshake != (s->mode != AMC_MODE_REGISTERS)) {
+        return -EINVAL;
+    }
 #ifndef IT_HAVE_AVCODEC
     if (s->codec_decode) {
         return -EINVAL;
@@ -1083,11 +1082,31 @@ static const VMStateDescription vmstate_ipod_touch_amc = {
     },
 };
 
+static const Property amc_properties[] = {
+    DEFINE_PROP_UINT8("mode", IPodTouchAMCState, mode, AMC_MODE_REGISTERS),
+};
+
+static void ipod_touch_amc_realize(DeviceState *dev, Error **errp)
+{
+    IPodTouchAMCState *s = IPOD_TOUCH_AMC(dev);
+    if (s->mode > AMC_MODE_DECODE) {
+        error_setg(errp, "AMC mode must be registers, handshake or decode");
+        return;
+    }
+#ifndef IT_HAVE_AVCODEC
+    if (s->mode == AMC_MODE_DECODE) {
+        error_setg(errp, "AMC decoding requires a build with libavcodec support");
+    }
+#endif
+}
+
 static void ipod_touch_amc_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_ipod_touch_amc;
+    dc->realize = ipod_touch_amc_realize;
+    device_class_set_props(dc, amc_properties);
     device_class_set_legacy_reset(dc, ipod_touch_amc_reset);
 }
 

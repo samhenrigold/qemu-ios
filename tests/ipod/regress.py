@@ -346,7 +346,7 @@ class Device:
         if getattr(cfg, "kernel_console", False):
             machine += (",boot-args=amfi_allow_any_signature=1 "
                         "cs_enforcement_disable=1 serial=3 debug=0x8")
-        for option in ("audio_hw", "h264_decode", "scaler_decode", "mpvd_decode"):
+        for option in ("audio_hw", "h264_decode", "scaler_decode", "mpvd_decode", "amc_mode"):
             value = getattr(cfg, option, None)
             if value is not None:
                 machine += "," + option.replace("_", "-") + "=" + value
@@ -1596,6 +1596,8 @@ def main():
     for option in ("h264-decode", "scaler-decode", "mpvd-decode"):
         ap.add_argument("--" + option, choices=("on", "off"), default=None,
                         help="explicit " + option + " startup option")
+    ap.add_argument("--amc-mode", choices=("registers", "handshake", "decode"), default=None,
+                    help="explicit AMC startup mode")
     ap.add_argument("--nor", default=None,
                     help="NOR image (default <files-dir>/ios3/nor_7E18.bin if "
                          "present, else <files-dir>/nor_n72ap.bin)")

@@ -991,3 +991,24 @@ modes, decode-failure completion, IRQ assertion/acknowledgement and reset
 all three explicit video options enabled (`/tmp/it-mpvd-option-guest.log`). CLI,
 dylib and app builds pass. This changes mode selection, not codec capability;
 the documented MPEG-4 I/P restrictions remain.
+
+## AMC startup modes (2026-09-06)
+
+`amc-mode=registers|handshake|decode` replaces reset-time environment reads.
+Explicit selection overrides all three legacy aliases; decode implies the
+handshake. AMC hardware remains controlled by the existing audio-hw option.
+Builds without libavcodec reject requested decoding rather than silently
+falling back. Incoming AMC state is checked against the configured mode.
+Light Touch requests decode directly.
+
+All 30 native configuration cases pass. AMC codec ASan/UBSan checks cover
+AAC-LC/HE-AAC/MP3/ALAC, PCM/backpressure, DMA bounds and restart. Nine native
+migration cases cover saved registers, reset behavior and incompatible-mode
+rejection. Native music acceptance imports two tracks, reconciles duplicates,
+checks MediaPlayer's count, records 12.19 seconds of 440/880 Hz stereo, and
+verifies cold persistence and both confirmed shutdowns
+(`/tmp/it-amc-mode-media.log`). CLI, dylib and app builds pass.
+
+Two test issues were corrected during acceptance: migration inspection must
+wait for incoming load completion, and ITSync may emit diagnostics before the
+final import acknowledgement. Database-count and byte/audio assertions remain.

@@ -16,7 +16,7 @@ game's `in.wav` after resampling (correlations 0.997 and 0.999 respectively).
 The movie's AAC track remained silent in those runs. Do not conflate the blocked
 movie launch with a broken PCM transport or call the AMC handshake a game-audio fix.
 
-`IT_AMC_DECODE=1` (also accepting the earlier `IT_AMC_AAC=1`) enables the
+`-M iPod-Touch,amc-mode=decode` enables the
 experimental AAC-LC/HE-AAC, MP3, and ALAC DMA decoder when built with
 libavcodec/libavutil. In `/tmp/it-blitz-spore-50955`, all 259 AAC frames were
 decoded from 12 guest DMA submissions. The I2S capture matches all 264,821
@@ -841,3 +841,13 @@ initialization. Explicit on/off overrides the deprecated presence-based
 wins over the deprecated presence-based `IT_MPVD_DECODE` alias. MMIO and restore
 use the device's configured mode rather than rereading process environment.
 Use matching hardware options when restoring a raw QEMU migration stream.
+
+`amc-mode=registers|handshake|decode` chooses AMC behavior at startup, defaulting
+to the historical register-only mode. Decode includes the handshake. Explicit
+mode selection overrides all legacy aliases; otherwise `IT_AMC_DECODE` or
+`IT_AMC_AAC` selects decode ahead of `IT_AMC_STATE` (handshake). Aliases retain
+their presence-based semantics and emit a deprecation warning. These modes
+require AMC hardware (`audio-hw=on`, or the existing auto-enabled boot path).
+A build without libavcodec rejects decode mode instead of silently disabling
+it. Restores reject an AMC mode incompatible with the saved handshake/decoder
+state; host codec contexts are still recreated lazily as before.

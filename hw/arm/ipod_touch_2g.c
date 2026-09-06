@@ -327,6 +327,44 @@ static bool ipod_touch_bt_env_aliases(IPodTouchMachineState *nms, Error **errp)
     return true;
 }
 
+static const char *const amc_mode_names[] = { "registers", "handshake", "decode" };
+
+static char *ipod_touch_get_amc_mode(Object *obj, Error **errp)
+{
+    return g_strdup(amc_mode_names[IPOD_TOUCH_MACHINE(obj)->amc_mode]);
+}
+
+static void ipod_touch_set_amc_mode(Object *obj, const char *value, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->cpu) {
+        error_setg(errp, "amc-mode must be set before the machine starts");
+        return;
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(amc_mode_names); i++) {
+        if (!strcmp(value, amc_mode_names[i])) {
+            nms->amc_mode = i;
+            nms->amc_mode_explicit = true;
+            return;
+        }
+    }
+    error_setg(errp, "amc-mode must be registers, handshake or decode");
+}
+
+static void ipod_touch_amc_env_alias(IPodTouchMachineState *nms)
+{
+    if (nms->amc_mode_explicit) {
+        return;
+    }
+    if (getenv("IT_AMC_DECODE") || getenv("IT_AMC_AAC")) {
+        nms->amc_mode = AMC_MODE_DECODE;
+        warn_report_once("IT_AMC_DECODE/IT_AMC_AAC are deprecated; use -M iPod-Touch,amc-mode=decode");
+    } else if (getenv("IT_AMC_STATE")) {
+        nms->amc_mode = AMC_MODE_HANDSHAKE;
+        warn_report_once("IT_AMC_STATE is deprecated; use -M iPod-Touch,amc-mode=handshake");
+    }
+}
+
 static void ipod_touch_get_h264_decode(Object *obj, Visitor *v, const char *name,
                                void *opaque, Error **errp)
 {
@@ -3098,6 +3136,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     ipod_touch_h264_env_alias(nms);
     ipod_touch_scaler_env_alias(nms);
     ipod_touch_mpvd_env_alias(nms);
+    ipod_touch_amc_env_alias(nms);
     ipod_touch_cpu_setup(machine, &sysmem, &cpu, &nsas);
 
     // setup clock
@@ -3518,6 +3557,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     /* AMC (audio media codec) -- see ipod_touch_audio_hw_enabled(). */
     if (ipod_touch_audio_hw_enabled(nms)) {
         dev = qdev_new(TYPE_IPOD_TOUCH_AMC);
+        qdev_prop_set_uint8(dev, "mode", nms->amc_mode);
         busdev = SYS_BUS_DEVICE(dev);
         sysbus_realize(busdev, &error_fatal);
         memory_region_add_subregion(sysmem, AMC_MEM_BASE,
@@ -3657,6 +3697,8 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_add(klass, "mpvd-decode", "bool", ipod_touch_get_mpvd_decode,
                               ipod_touch_set_mpvd_decode, NULL, NULL);
     object_class_property_set_description(klass, "mpvd-decode", "Enable MPEG-4 Part 2 decoding instead of register-only MPVD");
+    object_class_property_add_str(klass, "amc-mode", ipod_touch_get_amc_mode, ipod_touch_set_amc_mode);
+    object_class_property_set_description(klass, "amc-mode", "AMC registers, handshake-only bring-up, or compressed audio decode");
     object_class_property_add(klass, "wdt-noreset", "bool", ipod_touch_get_wdt_noreset,
                               ipod_touch_set_wdt_noreset, NULL, NULL);
     object_class_property_set_description(klass, "wdt-noreset", "Suppress guest watchdog reset commands for debugging");

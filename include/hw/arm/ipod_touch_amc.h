@@ -91,6 +91,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchAMCState, IPOD_TOUCH_AMC)
 #define AMC_INT_ACK         0xc48   /* W: acknowledge (value & 0x7fff) */
 #define AMC_INT_ACK_READ    0xc4c   /* R: reads the acknowledge latch  */
 
+enum { AMC_MODE_REGISTERS, AMC_MODE_HANDSHAKE, AMC_MODE_DECODE };
+
 typedef struct IPodTouchAMCState {
     SysBusDevice parent_obj;
 
@@ -102,6 +104,7 @@ typedef struct IPodTouchAMCState {
     bool irq_armed;
     bool state_handshake;
     bool codec_decode;
+    uint8_t mode; /* Startup configuration; checked against restored state. */
     uint32_t pending;
     void *decoder;
     QEMUTimer *decode_timer;
