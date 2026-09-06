@@ -10,6 +10,8 @@ source = (root / 'hw/arm/ipod_touch_h264.c').read_text()
 code = source[source.index('typedef struct IPodH264State'):source.index('static const MemoryRegionOps')]
 start = code.index('static bool h264_decode(')
 code = code[:start] + 'static bool h264_decode(IPodH264State *s) { return false; }\n' + code[code.index('static uint64_t h264_read', start):]
+code += source[source.index('static int h264_put_rbsp'):source.index('static const VMStateInfo vmstate_h264_rbsp')]
+code += source[source.index('static int h264_post_load'):source.index('static const VMStateDescription h264_vmstate')]
 prelude = r"""
 #include <glib.h>
 #include <stdint.h>
@@ -17,6 +19,21 @@ prelude = r"""
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
+#include <errno.h>
+typedef void VMStateField;
+typedef void JSONWriter;
+typedef struct { uint8_t bytes[256]; size_t size,pos; int error; } QEMUFile;
+static int qemu_file_get_error(QEMUFile *f) { return f->error; }
+static void qemu_put_buffer(QEMUFile *f,const uint8_t *p,size_t n) {
+ assert(n<=sizeof(f->bytes)-f->size);if(n)memcpy(f->bytes+f->size,p,n);f->size+=n;
+}
+static size_t qemu_get_buffer(QEMUFile *f,uint8_t *p,size_t n) {
+ if(n>f->size-f->pos){n=f->size-f->pos;f->error=-EIO;}
+ if(n)memcpy(p,f->bytes+f->pos,n);f->pos+=n;return n;
+}
+static void qemu_put_be32(QEMUFile *f,uint32_t n) { n=GUINT32_TO_BE(n);qemu_put_buffer(f,(void *)&n,4); }
+static uint32_t qemu_get_be32(QEMUFile *f) { uint32_t n=0;qemu_get_buffer(f,(void *)&n,4);return GUINT32_FROM_BE(n); }
+
 /* This check exercises the platform-independent MMIO path. Native session
  * lifetime and decoding are covered by test_h264_native.py. */
 #undef __APPLE__
@@ -98,8 +115,20 @@ int main(void) {
     h264_write(&s,0x1000,1,4);assert(irq && h264_read(&s,0x1074,4)==2);
     h264_write(&s,0x1074,2,4);assert(!h264_read(&s,0x1074,4));
     h264_write(&s,0x10c0,0,4);assert(!irq);
+    QEMUFile f={0};
+    g_byte_array_append(s.rbsp,nal,sizeof(nal));s.bit=17;s.irq_level=true;
+    assert(!h264_put_rbsp(&f,&s.rbsp,0,NULL,NULL));
+    g_byte_array_set_size(s.rbsp,0);
+    assert(!h264_get_rbsp(&f,&s.rbsp,0,NULL));
+    assert(s.rbsp->len==sizeof(nal)&&!memcmp(s.rbsp->data,nal,sizeof(nal)));
+    assert(!h264_post_load(&s,1)&&s.bit==17&&irq);
+    s.bit=sizeof(nal)*8+1;assert(h264_post_load(&s,1)==-EINVAL);
+    f=(QEMUFile){0};qemu_put_be32(&f,4*1024*1024+1);
+    assert(h264_get_rbsp(&f,&s.rbsp,0,NULL)==-EINVAL);
+    f=(QEMUFile){0};qemu_put_be32(&f,8);qemu_put_buffer(&f,nal,2);
+    assert(h264_get_rbsp(&f,&s.rbsp,0,NULL)==-EIO);
     g_byte_array_unref(s.rbsp);
-    puts("PASS: H.264 NAL/RBSP, consuming reads, padded lookahead, Exp-Golomb and DMA bounds");
+    puts("PASS: H.264 NAL/RBSP, consuming reads, padded lookahead, Exp-Golomb, DMA bounds and snapshot framing");
 }
 """
 with tempfile.TemporaryDirectory(prefix='h264-reader-') as directory:
