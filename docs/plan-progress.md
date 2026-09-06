@@ -12,7 +12,7 @@ TV-out were explicitly deferred by that plan.
 | Battery controls | Core and Light Touch level/charging controls implemented; automatic drain pending | 20/60 percent cold calibration, full-voltage estimate, runtime off/on/auto and native shutdown pass; preserve guest filtering delay |
 | Headset/Mikey detection | Deferred at user request (2026-09-05) | Plug/unplug and headset button traces; correct guest routing |
 | Microphone/I2S RX | Deferred at user request (2026-09-05) | Deterministic input tone captured by the guest, then host microphone recording |
-| Native idle sleep/wake | Untethered lock/95-second idle/Home wake verified without brightness override | Automatic lock, power-button wake and deeper suspend paths still need acceptance |
+| Native idle sleep/wake | Untethered manual/automatic lock and Home/Power wake verified without brightness override | Deeper suspend paths still need acceptance |
 | Kernel serial console | Complete: explicit machine arguments, live console regression and Light Touch control build pass | Include the updated control in the final package verification |
 | Settings Wi-Fi join | Deferred at user request (2026-09-05) | Manual join without known-network seed or alert loop; DHCP and traffic |
 | Two-instance LAN | Deferred at user request (2026-09-05) | Separate identities, MACs and state; bidirectional traffic between guests |
@@ -410,3 +410,11 @@ The one-song playback test uses the first row, without the Shuffle row present
 in the earlier two-song test. Music leaves the foreground during volume setup;
 no CrashReporter files were present, and relaunch/playback passes. That separate
 foreground transition remains unexplained and is not claimed fixed.
+
+### Automatic lock acceptance
+
+`test_sleep_guest.py --automatic` sets one-minute Auto-Lock through Settings in
+an isolated guest, verifies a black panel after 95 seconds, wakes with Power,
+checks agent recovery without reset or unexpected CLCD interrupts, and confirms
+PMU shutdown. `/tmp/it-auto-sleep-guest.log` passes. The default NAND retains
+its existing Never setting.
