@@ -794,3 +794,19 @@ miss the workaround entirely or suppress an additional operation. Left the
 behavior unchanged pending input/key or signature-level classification.
 Evidence: `/tmp/it-aes-legacy-trace.log` and its reported qemu.log; the legacy
 boot still reaches Home with the new NOR implementation.
+
+### Content-based photo imports (2026-09-06)
+
+Prepared baseline JPEG bytes now use the existing MediaIdentity SHA-256 UUID
+helper. Re-preparing the same content gets the same guest receipt while host
+work directories stay unique. A completed receipt removes a restaged JPEG.
+ImageIO preflight verifies identical IDs/bytes, orientation, alpha flattening,
+size limits and cancellation. The production Swift/AFC/native Photos test
+imports separately prepared copies into one library item and shuts down cleanly
+(`/tmp/ltm-photo-identity-native.log`, 58.9 seconds). The guest receipt/thumbnail
+check also passes through a cold restart (`/tmp/it-photo-receipt-cleanup.log`,
+91.8 seconds). Release builds pass.
+
+Old random-ID imports are not retroactively indexed. Receipts track successful
+imports, not later deletion inside guest Photos; bidirectional asset
+reconciliation remains open rather than silently replaying uncertain saves.
