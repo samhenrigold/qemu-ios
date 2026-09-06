@@ -8,6 +8,7 @@
 #define QEMU_MACOS_EXTRAS_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,6 +51,14 @@ void qemu_ios_ui_attitude(double pitch_deg, double roll_deg, int pose);
 bool qemu_ios_ui_battery(int level, int charging);
 bool qemu_ios_ui_battery_config(int level, int charging, double drain);
 bool qemu_ios_ui_usb_connection(bool attached);
+/* 44100 Hz stereo S16LE mixer packets; read needs 16384 bytes of capacity.
+ * A generation owns one recording. Empty read = 0; failed/expired = -1.
+ * Empty reads with seconds >= 0 mark silence through that capture time.
+ * Queued packets remain readable after stop, until the next generation. */
+uint64_t qemu_ios_audio_capture_start(void);
+int qemu_ios_audio_capture_read(uint64_t generation, void *buffer, int capacity, double *seconds);
+double qemu_ios_audio_capture_time(uint64_t generation);
+void qemu_ios_audio_capture_stop(uint64_t generation);
 
 /* Queue UTF-8 text for the guest pasteboard (machine property "pasteboard"). */
 void qemu_ios_ui_paste(const char *utf8);

@@ -82,6 +82,10 @@ _qemu_ios_ui_attitude
 _qemu_ios_ui_battery
 _qemu_ios_ui_battery_config
 _qemu_ios_ui_usb_connection
+_qemu_ios_audio_capture_start
+_qemu_ios_audio_capture_read
+_qemu_ios_audio_capture_time
+_qemu_ios_audio_capture_stop
 _qemu_ios_ui_paste
 _qemu_ios_agent_request
 _qemu_ios_agent_cancel
