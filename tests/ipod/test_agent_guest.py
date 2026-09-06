@@ -106,8 +106,15 @@ try:
         environment['DYLD_INSERT_LIBRARIES'] = ':'.join(dict.fromkeys(
             [library for library in libraries if library] + ['/usr/lib/it_typein.dylib']))
         checked('put', path + ' 644', plistlib.dumps(job, fmt=plistlib.FMT_BINARY))
+        preferences_path = '/var/mobile/Library/Preferences/com.apple.springboard.plist'
+        preferences = plistlib.loads(checked('get', preferences_path))
+        preferences.pop('SBDontLockEver', None)
+        checked('put', preferences_path + ' 600', plistlib.dumps(preferences, fmt=plistlib.FMT_BINARY))
+        checked('exec', 'chown 501:501 ' + preferences_path)
         checked('exec', 'launchctl unload ' + path + '; launchctl load ' + path)
         time.sleep(15)
+        unlocked, detail = r.unlock(cfg, port, d)
+        assert unlocked, detail
         checked('launch', 'com.apple.mobilenotes')
         time.sleep(4)
         assert b'NotesNavigationButton' in checked('uidump')
@@ -138,6 +145,28 @@ try:
         assert 'text: http://10.0.2.2:8000/caféz'.encode() in tree, tree
         Path(out, 'harness-ui.txt').write_bytes(tree)
         r.to_png(d.qmp.shot(out + '/harness.ppm'), out + '/harness.png')
+        r.itqmp.button(d.qmp, 'home', hold_ms=100)
+        time.sleep(2)
+        assert b'Home Screen' in checked('frontmost')
+        tree = checked('uidump')
+        assert tree, 'SpringBoard inspection returned no window'
+        r.itqmp.key(d.qmp, 'q')
+        time.sleep(1)
+        # Home from the first icon page opens Spotlight on native 3.1.3.
+        r.itqmp.button(d.qmp, 'home', hold_ms=100)
+        time.sleep(2)
+        tree = checked('uidump')
+        Path(out, 'spotlight-before.txt').write_bytes(tree)
+        checked('type', body=b'Agent spotlight')
+        tree = checked('uidump')
+        assert b'Agent spotlight' in tree and b'qAgent spotlight' not in tree, tree
+        Path(out, 'spotlight-ui.txt').write_bytes(tree)
+        r.itqmp.button(d.qmp, 'power', hold_ms=100)
+        time.sleep(2)
+        assert b'locked=1' in checked('lockstatus')
+        assert agent('type', body=b'must not type')[0] == -13
+        assert b'Lock Screen' in checked('frontmost')
+        print('PASS: foreground typing, Spotlight, unfocused key discard and locked input rejection', flush=True)
         print('PASS: Notes and third-party UITextField Unicode, deletion, host keys and UI inspection', flush=True)
     print('PASS: native agent ping, root exec, binary stdin/files, status, clock, liveness', flush=True)
 finally:

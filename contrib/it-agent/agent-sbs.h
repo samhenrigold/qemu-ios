@@ -1,5 +1,5 @@
 /* Period-correct SpringBoardServices ABI, shared by launch and status RPCs. */
-static int agent_sbs(const char *op, const char *args)
+static int agent_sbs_inner(const char *op, const char *args)
 {
     static void *cf, *sbs;
     if (!cf) cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", 2);
@@ -7,12 +7,25 @@ static int agent_sbs(const char *op, const char *args)
     if (!cf || !sbs) return -ENOSYS;
     void (*release)(void *) = dlsym(cf, "CFRelease");
     if (!release) return -ENOSYS;
+    unsigned (*port)(void) = dlsym(sbs, "SBSSpringBoardServerPort");
+    int (*lock)(unsigned, unsigned char *, unsigned char *) = dlsym(sbs, "SBGetScreenLockStatus");
+    unsigned char locked = 0, passcode = 0;
+    if (!port || !lock || lock(port(), &locked, &passcode)) return -EIO;
+    if (locked && (!strcmp(op, "type") || !strcmp(op, "backspace"))) return -EACCES;
+    if (locked && !strcmp(op, "frontmost")) {
+        const char *screen = "com.apple.springboard\nLock Screen\n";
+        ag_response_len = strlen(screen);
+        memcpy(ag_response, screen, ag_response_len);
+        return 0;
+    }
     if (!strcmp(op, "type") || !strcmp(op, "backspace") || !strcmp(op, "uidump")) {
         void *(*frontmost)(void) = dlsym(sbs, "SBSCopyFrontmostApplicationDisplayIdentifier");
         int (*process)(void *, int *) = dlsym(sbs, "SBSProcessIDForDisplayIdentifier");
         if (!frontmost || !process) return -ENOSYS;
-        void *identifier = frontmost();
-        if (!identifier) return -ENODEV;
+        void *identifier = locked ? 0 : frontmost();
+        /* Target zero names SpringBoard, which is not returned as a foreground
+         * application display identifier (Spotlight and the lock screen). */
+        if (!identifier) return qc(0x16a, 0, 0, 0) < 0 ? -EIO : 0;
         int pid = 0;
         int found = process(identifier, &pid);
         release(identifier);
@@ -55,5 +68,22 @@ static int agent_sbs(const char *op, const char *args)
     if (!identifier) return -EINVAL;
     int status = launch(identifier, 0);
     release(identifier);
+    return status;
+}
+
+static int agent_sbs(const char *op, const char *args)
+{
+    static void *objc, *foundation;
+    if (!objc) objc = dlopen("/usr/lib/libobjc.A.dylib", 2);
+    if (!foundation) foundation = dlopen("/System/Library/Frameworks/Foundation.framework/Foundation", 2);
+    if (!objc || !foundation) return -ENOSYS;
+    void *(*get)(const char *) = dlsym(objc, "objc_getClass");
+    void *(*selector)(const char *) = dlsym(objc, "sel_registerName");
+    void *(*send)(void *, void *) = dlsym(objc, "objc_msgSend");
+    if (!get || !selector || !send) return -ENOSYS;
+    void *pool = send(send(get("NSAutoreleasePool"), selector("alloc")), selector("init"));
+    if (!pool) return -ENOSYS;
+    int status = agent_sbs_inner(op, args);
+    send(pool, selector("release"));
     return status;
 }

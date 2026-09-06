@@ -32,8 +32,8 @@ request returns `-ECONNRESET`, never automatic replay. Host cancellation revokes
 the old session; its next poll kills the child group. Cancellation cannot undo an
 already executed command. Reset clears transient requests/results.
 
-The daemon waits 40 seconds before starting and corrects the guest wall clock
-when drift exceeds two seconds. It touches receive-buffer pages before host
+Command service starts immediately; only the clipboard waits 40 seconds for
+UIKit readiness. The agent corrects the guest wall clock when drift exceeds two seconds. It touches receive-buffer pages before host
 copies, because debug memory writes cannot fault in iOS demand-zero pages.
 
 Tests: `test_agent_proto.py` and `test_agent_ops.py` exercise production C under
@@ -50,4 +50,8 @@ check avoids polling SpringBoardServices while idle.
 
 Native acceptance covers Notes and an installed Harness UITextField:
 `python3 tests/ipod/test_agent_guest.py --typing`. Snapshot-load rekeying and
-existing-device rollout remain subsequent steps.
+existing-device rollout are covered by native acceptance and the app’s idempotent
+media upgrade. SBS focus queries run on a worker thread: synchronous queries on
+SpringBoard’s own main thread deadlock its service. UIKit mutations stay on the
+main run loop. SpringBoard uses route target zero for Spotlight and lock-screen
+inspection; locked input is rejected and unfocused physical keys are discarded.
