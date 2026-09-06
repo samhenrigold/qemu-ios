@@ -59,6 +59,12 @@ tools. A stored marker is checked at launch without overwriting it; to test
 persistence, write it, cleanly shut down/reboot, then verify it again.
 The clipboard check restores the previous pasteboard items.
 
+“Media library: count songs” queries `MPMediaQuery songsQuery` and reports the
+count and first title. A missing response is reported as an unavailable service,
+not as zero songs. On 7E18 the service is hosted by Music; start Music before
+running this check. `tests/ipod/test_media_guest.py` drives it with generated
+AAC/MP3 imports in a disposable overlay.
+
 The host check validates packaging, not runtime behavior:
 
 ```sh

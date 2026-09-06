@@ -268,3 +268,23 @@ shutdowns, persistence and full-volume fsck: `/tmp/it-nand-agent-v3-native.log`.
 The packaging script prefers v3 when available; an explicit LTM_NAND still wins.
 Existing devices retain their selected base and overlay via DeviceStateStorage;
 the refreshed base is for new devices or an explicitly requested factory reset.
+
+### Native music-library import foundation
+
+Track D's proposed legacy iTunesDB writer is superseded by measured 7E18
+behavior: Music uses SQLite, and its native MusicLibrary import service adds
+staged songs while maintaining its own indexes, locations and Purchased list.
+`contrib/it-media/itmedia` validates metadata/paths/firmware, runs as mobile,
+serializes imports and reconciles an already-imported location read-only.
+The identity query avoids private collation indexes created by Music.
+
+`tests/ipod/test_media_guest.py` passes two generated AAC/MP3 imports, duplicate
+recovery, malformed-input rejection, Harness MediaPlayer count, Music Songs and
+playback screenshots, 12.19 seconds of 440/880 Hz audio, cold persistence and a
+second duplicate check. Both shutdowns are guest-confirmed. Evidence:
+`/tmp/it-media-guest-native-v4.log`. Music's MIG service must be running before
+the third-party MediaPlayer query; an unavailable response is reported explicitly.
+
+Light Touch import/drop/progress integration, photos, artwork, additional
+playlists and video-library import remain unfinished. The helper preserves
+staged audio on ambiguous failure; retries must reuse the same staged location.

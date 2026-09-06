@@ -335,6 +335,19 @@ static void select_test(id_ self, SEL_ cmd, id_ sender)
     case 14:
         m1u(field,S("setKeyboardType:"),0); m0(field,S("becomeFirstResponder"));
         report("MANUAL input: edit top field, tap/scroll menu, use keyboard. Test labels are VoiceOver labels."); break;
+    case 21: {
+        id_ query = m0(C("MPMediaQuery"), S("songsQuery"));
+        id_ items = m0(query, S("items"));
+        if (!query || !items) {
+            report("MEDIA unavailable: music library service did not return items");
+            break;
+        }
+        unsigned count = CALL(unsigned,(id_,SEL_))(items,S("count"));
+        id_ first = count ? m1u(items,S("objectAtIndex:"),0) : 0;
+        const char *title = utf8(m1(first,S("valueForProperty:"),nsstr("title")));
+        report("MEDIA songs=%u first=%s",count,title ? title : "");
+        break;
+    }
     case 18:
         storage(1); memory_test();
         { id_ pb = m0(C("UIPasteboard"),S("generalPasteboard"));
@@ -370,9 +383,9 @@ static void launch(id_ self, SEL_ cmd, id_ app)
     m1u(field,S("setAutocapitalizationType:"),0); m1u(field,S("setReturnKeyType:"),9);
     m1(field,S("setDelegate:"),self);
     menu = view("UIScrollView",g_window,rect(0,60,320,255));
-    const char *titles[] = {"GL: rotating triangle", "Core Animation", "Write + verify 1 MiB", "Verify saved marker", "CPU + memory", "HTTP GET (top URL)", "Audio: stereo PCM", "Audio: AAC", "Audio: MP3", "Audio: ALAC", "Video: H.264", "Video: MPEG-4", "Tilt / accelerometer", "Touch + keyboard", "Audio pause/resume", "Volume 10%", "Volume 80%", "Run automatic checks", "Record manual PASS", "Record manual FAIL"};
+    const char *titles[] = {"GL: rotating triangle", "Core Animation", "Write + verify 1 MiB", "Verify saved marker", "CPU + memory", "HTTP GET (top URL)", "Audio: stereo PCM", "Audio: AAC", "Audio: MP3", "Audio: ALAC", "Video: H.264", "Video: MPEG-4", "Tilt / accelerometer", "Touch + keyboard", "Audio pause/resume", "Volume 10%", "Volume 80%", "Run automatic checks", "Record manual PASS", "Record manual FAIL", "Media library: count songs"};
     for (unsigned i=0;i<sizeof(titles)/sizeof(*titles);++i) button(menu,titles[i],i+1,rect(10, i*42,300,38));
-    CALL(void,(id_,SEL_,Size_))(menu,S("setContentSize:"),(Size_){320,840});
+    CALL(void,(id_,SEL_,Size_))(menu,S("setContentSize:"),(Size_){320,42 * sizeof(titles) / sizeof(*titles)});
     output = view("UITextView",g_window,rect(5,320,310,155));
     m1u(output,S("setEditable:"),0);
     m1(output,S("setFont:"),CALL(id_,(id_,SEL_,float))(C("UIFont"),S("systemFontOfSize:"),12.0f));
