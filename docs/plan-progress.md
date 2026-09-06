@@ -331,3 +331,15 @@ results back as RGB555 while preserving guest row padding. Native CGL sanitizer
 checks cover colors, bit-15 independence, writeback and sampled-memory refresh.
 An isolated 7E18 Photos run shows the red/green/blue thumbnail and white circle:
 `/tmp/it-photo-grid-rgb555.log`. The photo regression now asserts grid colors.
+
+### Light Touch Photos acceptance and refreshed package
+
+Photo preparation (orientation, size bounds, JPEG conversion, white alpha
+background and cancellation), real AFC upload, native save and duplicate receipt
+checks pass: `/tmp/ltm-photo-native-v2.log`. A separate refreshed default NAND v4
+passes component ownership/content validation and the full native Photos test,
+including visible grid colors and cold persistence: `/tmp/it-photo-guest-v4.log`.
+The Light Touch photo integration is committed as c5e40de. The separate
+`build-native14/Light Touch-photos.app` includes current emulator/guest components
+and NAND v4; Release build, deep strict signature and macOS 14 library closure
+checks pass. Existing device state remains preserved by the normal upgrade path.
