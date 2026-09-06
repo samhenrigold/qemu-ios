@@ -13,7 +13,9 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--files', default=str(ROOT.parent / 'qemu-ios-files'))
 parser.add_argument('--base-nand')
 parser.add_argument('--network', action='store_true')
+parser.add_argument('--usb', action='store_true')
 args = parser.parse_args()
+os.environ['PATH'] = str(ROOT.parent/'qemu-ios-deps12/bin') + ':' + os.environ['PATH']
 out = tempfile.mkdtemp(prefix='it-snapshot-guest-')
 f = args.files
 cfg = SimpleNamespace(out=out, files=f, base_nand=args.base_nand or f+'/nand-agent-v2',
@@ -68,6 +70,9 @@ try:
         binary = (ROOT/'contrib/it-proxy/httpget').read_bytes()
         assert r.itqmp.agent(d.qmp, 'put', '/tmp/snapshot-httpget 755', binary) == (0, b'')
         check_network(d.qmp)
+    if args.usb:
+        udid, detail = r.wait_for_device(cfg, timeout=120)
+        assert udid, detail
     d.qmp.cmd('stop')
     snapshot = out + '/state'
     d.qmp.cmd('migrate', uri='file:' + snapshot)
@@ -98,6 +103,10 @@ try:
     if args.network:
         check_network(d.qmp)
         print('PASS: HTTP 200 through guest Wi-Fi before and after restore', flush=True)
+    if args.usb:
+        udid, detail = r.wait_for_device(cfg, timeout=120)
+        assert udid, detail
+        print('PASS: USB re-enumeration and lockdown pairing after restore', flush=True)
     assert d.qmp.cmd('query-status')['running']
     r.to_png(d.qmp.shot(out+'/restored.ppm'), out+'/restored.png')
     print('PASS: home snapshot restore, guest agent rekey, file state and host clock', flush=True)

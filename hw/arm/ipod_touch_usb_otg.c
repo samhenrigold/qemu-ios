@@ -1101,7 +1101,16 @@ static const VMStateDescription vmstate_synopsys_usb_ep = {
  */
 static int synopsys_usb_post_load(void *opaque, int version_id)
 {
-    synopsys_usb_update_irq(opaque);
+    synopsys_usb_state *state = opaque;
+    /* The socket created by realize (or retained by an in-process load) has
+     * no relationship to the restored endpoint transaction. Re-enumerate. */
+    if (state->tcp_connected) {
+        tcp_usb_cleanup(&state->tcp_state);
+        state->tcp_connected = false;
+    }
+    timer_mod(state->tcp_retry_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + TCP_USB_RETRY_MS);
+    synopsys_usb_update_irq(state);
     return 0;
 }
 
