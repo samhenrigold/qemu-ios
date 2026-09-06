@@ -1221,3 +1221,17 @@ QEMU process and verifies the remaining six P-picture DMA outputs equal the
 uninterrupted source. Timer migration v2 rejects a different startup time-dilation
 value; native checks verify both mismatch directions and same-mode interval
 reprogramming after restore. Version 1 predates that compatibility field.
+
+### Focused integration package
+
+The combined guest acceptance passes boot, GLES fixture rendering (magenta/cyan
+0.498 each), agent ping/shell/70 KiB transfer, and 6.18 seconds of stereo
+440/880 Hz audio with zero failures (`/tmp/it-focused-final-acceptance`). The
+expanded startup matrix passes all 72 cases. Light Touch commit `c011bf5` uses
+explicit boot-argument/scheduling properties, retaining the app's existing values.
+
+Release Xcode build and self-contained package pass. The signed, deployment-checked
+bundle is `build-native14/Light Touch-60ff9e5197.app`; `Light Touch-latest.app`
+points to it. Bundled GLES/agent helper bytes match the built sources and the
+packed NAND checksum verifies. Existing canceled media source edits remain
+uncommitted and were not included in rebuilt guest helpers.
