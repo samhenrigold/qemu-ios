@@ -1143,3 +1143,17 @@ readable; they predate this mode check. `test_snapshot_modes.py` verifies both
 on/off configurations save and restore successfully to matching destinations,
 and all four mismatched destinations fail. Combined native H.264 partial-picture
 and I2S half-frame restoration also passes with the current full build.
+
+### Native SHA/PKE and AES acceptance
+
+The extended `test_pke_snapshot.py` now verifies the actual SHA-to-PKE path
+across separate QEMU processes: snapshot digest A, publish/use future digest B
+in the source, restore and recover A in the destination, then reset SHA and
+verify A is no longer available. Original PKE SRAM/modulus/sign checks remain.
+All pass (`/tmp/it-sha-pke-snapshot-native.log`).
+
+Fresh 5F138 AES tracing reached the Home screen, visually checked in the captured
+frame. All three preserved custom/in-place/128-byte operations and the fourth
+non-preserved operation retain the measured shapes (`/tmp/it-aes-shape-native.log`).
+The isolated trace fixture then cleans up its QEMU process; this run does not
+claim a guest-confirmed shutdown. The address-specific AES workaround remains.
