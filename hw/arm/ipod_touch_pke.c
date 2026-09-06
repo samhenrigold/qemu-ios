@@ -1,5 +1,6 @@
 #include "hw/arm/ipod_touch_pke.h"
 #include "migration/vmstate.h"
+#include "hw/qdev-properties.h"
 #include "hw/arm/ipod_touch_sha1.h"
 #include "qemu/log.h"
 #include <openssl/bn.h>
@@ -23,14 +24,9 @@
  * the GID key already gets: the emulated part vouches for the image instead of
  * checking it. When the recovered block is not well formed, synthesise the one
  * the caller is about to compare against, built from the last digest the SHA1
- * engine computed. Enabled with IT_FORGE_SIGCHECK=1; off by default, so the
+ * engine computed. Enabled with forge-sigcheck=on; off by default, so the
  * stock NOR keeps booting through the genuine verification path.
  */
-static bool forge_sigcheck_enabled(void)
-{
-    return getenv("IT_FORGE_SIGCHECK") != NULL;
-}
-
 /* ASN.1 DigestInfo prefix for SHA1, as it appears in a PKCS#1 v1.5 block. */
 static const uint8_t sha1_digestinfo[] = {
     0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e,
@@ -110,7 +106,7 @@ static void pke_execute(IPodTouchPKEState *s, uint32_t command)
     /* The known boot verifier exits Montgomery form from segment 2 into 1.
      * Keep its explicitly enabled unsigned-image compatibility at that final
      * conversion, never on intermediate products or a command counter. */
-    if (one && a == 2 && dest == 1 && forge_sigcheck_enabled()) {
+    if (one && a == 2 && dest == 1 && s->forge_sigcheck) {
         bool valid = build_pkcs1_block(expected, size, result + size - 20) &&
                      !memcmp(expected, result, size);
         uint8_t hash[20];
@@ -230,12 +226,17 @@ static const VMStateDescription vmstate_ipod_touch_pke = {
     }
 };
 
+static const Property pke_properties[] = {
+    DEFINE_PROP_BOOL("forge-sigcheck", IPodTouchPKEState, forge_sigcheck, false),
+};
+
 static void ipod_touch_pke_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     device_class_set_legacy_reset(dc, ipod_touch_pke_reset);
     dc->vmsd = &vmstate_ipod_touch_pke;
+    device_class_set_props(dc, pke_properties);
 }
 
 static const TypeInfo ipod_touch_pke_info = {

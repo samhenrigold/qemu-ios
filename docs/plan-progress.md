@@ -1031,3 +1031,17 @@ The signed package `build-native14/Light Touch-36fccf4ca5.app` includes these
 changes and passes macOS 14 deployment checks. `Light Touch-latest.app` points
 to it. The Help Book is deferred at the user's request; remaining active plan
 work retains its existing scope.
+
+## PKE compatibility startup policy (2026-09-06)
+
+`forge-sigcheck=on|off` is explicit startup-only machine configuration (default
+off). It overrides the deprecated presence-based `IT_FORGE_SIGCHECK` alias and
+configures the actual PKE device. Arithmetic no longer reads process environment
+on every final conversion; reset retains the configured policy. Valid recovered
+signatures remain intact, and only the existing malformed-signature compatibility
+path can substitute a block. This does not change PKE timing or IRQ behavior.
+
+Production arithmetic/policy ASan/UBSan checks pass, including disabled policy
+with the legacy environment present. All 38 native paused-machine configuration
+cases pass (`/tmp/it-forge-config.log`), checking actual device policy and runtime
+mutation rejection. CLI build passes. No new full guest boot is claimed here.

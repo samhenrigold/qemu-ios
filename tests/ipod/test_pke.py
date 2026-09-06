@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 root=Path(__file__).resolve().parents[2]
 s=(root/'hw/arm/ipod_touch_pke.c').read_text()
-a=s.index('static bool forge_sigcheck_enabled');b=s.index('static const MemoryRegionOps',a)
+a=s.index('static const uint8_t sha1_digestinfo');b=s.index('static const MemoryRegionOps',a)
 code=r'''
 #include <stdint.h>
 #include <stdbool.h>
@@ -18,7 +18,7 @@ code=r'''
 #include <errno.h>
 #include <openssl/bn.h>
 typedef uint64_t hwaddr;
-typedef struct {uint8_t segments[2048],modulus[256];uint32_t seg_size_reg,segment_size,modulus_size,key_len,seg_id,seg_sign;} IPodTouchPKEState;
+typedef struct {bool forge_sigcheck;uint8_t segments[2048],modulus[256];uint32_t seg_size_reg,segment_size,modulus_size,key_len,seg_id,seg_sign;} IPodTouchPKEState;
 #define REG_PKE_START 8
 #define REG_PKE_SEG_SIZE 0x14
 #define REG_PKE_SWRESET 0x24
@@ -50,7 +50,6 @@ static void exponentiate(IPodTouchPKEState *s,unsigned exponent, BIGNUM *mod) {
     BN_free(r);BN_CTX_free(ctx);
 }
 int main(void) {
-    unsetenv("IT_FORGE_SIGCHECK");
     for(unsigned length=64;length<=256;length*=2) {
         IPodTouchPKEState s={0};
         ipod_touch_pke_write(&s,REG_PKE_SEG_SIZE,length==64 ? 129:length==128 ? 65:1,4);
@@ -71,12 +70,13 @@ int main(void) {
         assert(BN_bin2bn(block,length,plain) && BN_mod_exp(signature,plain,d,n,ctx));
         assert(BN_bn2lebinpad(n,s.segments,length)==length);
         assert(BN_bn2lebinpad(signature,s.segments+length,length)==length);
-        setenv("IT_FORGE_SIGCHECK","1",1);exponentiate(&s,65537,n);
+        s.forge_sigcheck=true;exponentiate(&s,65537,n);
         for(unsigned i=0;i<length;i++)assert(s.segments[length+i]==block[length-1-i]);
         memset(s.segments+length,0,length);s.segments[length]=1;exponentiate(&s,65537,n);
         memset(hash,0xa5,20);assert(build_pkcs1_block(block,length,hash));
         for(unsigned i=0;i<length;i++)assert(s.segments[length+i]==block[length-1-i]);
-        unsetenv("IT_FORGE_SIGCHECK");
+        s.forge_sigcheck=false;
+        setenv("IT_FORGE_SIGCHECK","1",1); /* Runtime environment cannot change device policy. */
         for(unsigned exponent=0;exponent<=17;exponent++) {
             memset(s.segments+length,0,length);s.segments[length]=3;
             exponentiate(&s,exponent,n);

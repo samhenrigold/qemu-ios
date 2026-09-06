@@ -23,6 +23,7 @@ typedef struct IPodTouchPKEState {
     uint32_t modulus_size, key_len, seg_id, seg_sign;
     uint32_t seg_size_reg;
     uint32_t segment_size;
+    bool forge_sigcheck; /* Startup compatibility policy, not guest state. */
 } IPodTouchPKEState;
 
 #endif
