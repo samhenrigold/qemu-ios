@@ -1,5 +1,7 @@
 /* A bounded UIImageWriteToSavedPhotosAlbum client for 7E18. A persistent
- * receipt prevents replay when a previous process died during an async save. */
+ * receipt prevents replay when a previous process died during an async save.
+ * ponytail: receipts track imports, not guest Photos deletions; native asset
+ * identity is needed for bidirectional reconciliation. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +29,8 @@ static void fail(const char *reason) {
     _exit(1);
 }
 static void complete(void) {
+    /* A repeated content import may have staged the JPEG again. */
+    unlink(photo_path);
     puts("already-imported");
     fflush(stdout);
     _exit(0);

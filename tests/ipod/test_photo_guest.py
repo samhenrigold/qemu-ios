@@ -70,6 +70,7 @@ try:
                '/var/mobile/Media/LightTouch/pending && chown -R 501:501 /var/mobile/Media/LightTouch')
     rpc('put','/var/mobile/Media/LightTouch/photo/image.jpg 644',(out/'source.jpg').read_bytes())
     assert rpc('exec','/tmp/itphoto photo') == b'imported\n'
+    rpc('put','/var/mobile/Media/LightTouch/photo/image.jpg 644',(out/'source.jpg').read_bytes())
     assert rpc('exec','/tmp/itphoto photo') == b'already-imported\n'
     rpc('exec','test ! -e /var/mobile/Media/LightTouch/photo/image.jpg')
     rpc('put','/var/mobile/Media/LightTouch/bad/image.jpg 644',b'not a JPEG')

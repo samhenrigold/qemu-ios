@@ -110,3 +110,10 @@ and can exit as its sync phase ends. An isolated interposition trace identifies
 `terminateWithSuccess` with status 0. It is not a volume-button crash. The native
 Light Touch media test now requires Music to stay foreground through its first
 Songs tab and volume setup; it no longer relaunches Music to recover.
+
+Light Touch identifies newly prepared photos by the SHA-256-derived UUID of the
+baseline JPEG, using the same identity helper as music. Re-preparing unchanged
+content therefore reaches the same receipt rather than creating a duplicate.
+Completed retries remove a restaged JPEG. Existing random-ID imports are not
+retroactively indexed. Receipts track successful imports, not later deletions
+inside Photos; bidirectional asset reconciliation remains separate work.
