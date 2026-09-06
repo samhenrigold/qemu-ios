@@ -21,8 +21,8 @@
 # guards are races, and they present as "Bluetooth worked yesterday and says
 # unavailable today, and app launches stopped animating with it".
 #
-# Passing proves the firmware-download script reached BCM Launch RAM on each
-# boot. It does not prove BluetoothManager readiness or app-launch animation.
+# Passing requires firmware download and the subsequent BCM sleep-mode setup.
+# It does not prove BluetoothManager readiness or app-launch animation.
 set -u
 
 QEMU="${QEMU:-$(cd "$(dirname "$0")/../.." && pwd)/build/qemu-system-arm}"
@@ -45,6 +45,7 @@ IT_BT_TRACE=1 IT_DMAC_TRACE=1 \
 PID=$!
 fail=0
 prev=0
+prev_setup=0
 for boot in $(seq 1 "$BOOTS"); do
     sleep 95
     if ! kill -0 "$PID" 2>/dev/null; then
@@ -60,6 +61,12 @@ for boot in $(seq 1 "$BOOTS"); do
         fail=1
     fi
     prev=$now
+    setup=$(grep -c '0xfc27' "$WORK/trace.log")
+    if [ "$setup" -le "$prev_setup" ]; then
+        echo "boot $boot: FAILED -- controller setup did not reach sleep-mode configuration" >&2
+        fail=1
+    fi
+    prev_setup=$setup
     if [ "$boot" -lt "$BOOTS" ]; then
         if ! python3 "$(dirname "$0")/../../contrib/ipod-touch-qmp.py" "$QMP" \
             cmd system_reset >/dev/null 2>&1; then
@@ -87,12 +94,12 @@ fi
 # -> last request -> terminal count -> driver -> BlueTool -- so it is one grep
 # for the firmware-download path. It does not establish stack readiness.
 if [ "$fail" = 0 ] && grep -q '0xfc4e' "$WORK/trace.log"; then
-    echo "PASS: BCM firmware Launch RAM command observed on all $BOOTS boots"
+    echo "PASS: BCM firmware and controller setup observed on all $BOOTS boots"
     grep -o '\[BT\] cmd .*' "$WORK/trace.log" | sort -u
     exit 0
 fi
 
-echo "FAIL: Bluetooth firmware download/reset checks did not pass every boot." >&2
+echo "FAIL: Bluetooth firmware/controller setup/reset checks did not pass every boot." >&2
 if ! grep -q '0xfc18' "$WORK/trace.log"; then
     echo "      The guest never got past HCI_Reset, so it never accepted a" >&2
     echo "      reply: check the rxdmareq wiring, the UCON[1:0] DMA-mode" >&2
