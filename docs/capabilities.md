@@ -1,6 +1,6 @@
 # iPod touch 2G / iOS 3.1.3 status
 
-Updated 2026-09-05. This is the current project entry point; the reverse-engineering
+Updated 2026-09-06. This is the current project entry point; the reverse-engineering
 notes in `ipod2g-re` mostly describe **2.1.1 / 5F138**, not the current **3.1.3 /
 7E18** target. Do not reuse kernel addresses or the 2.1.1 USB gate patch on 3.1.3.
 
@@ -17,6 +17,24 @@ notes in `ipod2g-re` mostly describe **2.1.1 / 5F138**, not the current **3.1.3 
 
 The stock base images are read-only inputs. Guest writes belong in a separate
 `nandrw` overlay. Never reuse an overlay with a different base image.
+
+## Current host/guest interfaces
+
+The [guest agent](../contrib/it-agent/README.md) serves bounded cp15 RPCs for
+binary file transfers, commands, native app/lock state, clipboard, typing and
+foreground UI inspection. It has no guest-network listener. Cancellation and
+reset invalidate pending sessions; uncertain mutations are not automatically
+replayed. SSH remains a compatibility path for images without the agent.
+
+[Typed machine configuration](configuration.md) is being introduced incrementally.
+`audio-hw=auto|on|off` is the first migrated hardware-presence option; explicit
+values override its legacy environment alias. The remaining `IT_*` migration is
+unfinished. See machine help and the configuration document for tested semantics.
+
+The built-in HTTP proxy now supports live stock Weather search/forecasts, host
+TLS for old clients, and optional Internet Archive replay. Stocks has native
+synthetic quote/chart verification, not a live-data integration. See the
+[service protocol and limitations](stock-service-protocol.md).
 
 ## Work that had landed by August 12
 
@@ -166,10 +184,10 @@ machine still needs separate validation.
 - The filesystem's inferred erase spans multiple files. I/O errors stop the
   session; fully transactional recovery from interruption mid-erase would
   require block journaling. No claim of universal power-loss recovery is made.
-- Light Touch no longer offers resume-on-launch or snapshot menu commands;
-  launch starts a fresh boot. The underlying snapshot machinery remains, so
-  keep save/restore and snapshot/flash consistency coverage when changing
-  device migration state.
+- Light Touch no longer offers resume-on-launch. Explicit Save State Now and
+  Discard Saved State commands exist; live graphics/decoder state still has
+  documented snapshot restrictions. Keep save/restore and snapshot/flash
+  consistency coverage when changing device migration state.
 - Idle wake, self-reboot, debugger attach and remote-name DNS have historical
   open notes. Those 2.1.1 observations are not a current 3.1.3 failure list;
   reproduce each before changing hardware models.

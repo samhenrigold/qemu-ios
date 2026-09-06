@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Free enough space on the guest volume that iOS reports a non-zero "Available".
+"""Historical 2.1.1 500 MB image pruning. Do not use for current 3.1.3 image preparation.
+
+Free enough space on the guest volume that iOS reports a non-zero "Available".
 
 Settings > General > About shows `AmountDataAvailable` from lockdownd's
 `com.apple.disk_usage` domain, and lockdownd computes it as
