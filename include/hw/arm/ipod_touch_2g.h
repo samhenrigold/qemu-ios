@@ -4,6 +4,7 @@
 #include "exec/hwaddr.h"
 #include "hw/arm/ipod-agent.h"
 #include "hw/boards.h"
+#include "qapi/qapi-types-common.h"
 #include "hw/intc/pl192.h"
 #include "hw/arm/boot.h"
 #include "ui/console.h"
@@ -178,6 +179,8 @@ typedef struct {
 
 typedef struct {
 	MachineState parent;
+    OnOffAuto audio_hw;
+    bool audio_hw_explicit;
 	AddressSpace *nsas;
 	/* IT_BOOT_ARGS: repeated early writes of the kernel command line.
 	 * IT_AMFI_ALLOW_TASKPORT: one-shot patch of the AMFI task-port MAC hooks,

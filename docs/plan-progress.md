@@ -525,3 +525,20 @@ authority parsing, lookalike domains and archive access; TLS regressions pass.
 Native NSURLConnection returned prompt HTTP 410 for both hosts after the normal
 HTTP fixture passed (`/tmp/it-proxy-retired-native.log`). This is a failure path,
 not service revival or a blanket advertising/analytics block.
+
+### Native logs and first typed configuration option
+
+Light Touch's File → Device Logs displays bounded, off-main-thread tails of the
+current and rotated serial/kernel and USB logs. It supports Find, selection/copy,
+pause, rotation and close/reopen; native window checks and the Release build pass.
+App-event persistence and replacing informational alerts remain separate work.
+
+The first configuration migration is `audio-hw=auto|on|off`, listed by QEMU's
+machine help. Explicit options override `IT_AUDIO_HW`, including explicit auto;
+legacy defaults remain and runtime topology changes are rejected. Sanitizer and
+harness checks pass. Native boot/install/launch and 6.18 seconds of 440/880 Hz
+audio passed with `audio-hw=on` overriding `IT_AUDIO_HW=0`
+(`/tmp/it-audio-config-native.log`). See [configuration](configuration.md).
+The unused app-side `IT_IMG3_SIG_ASIS` setting was removed, and boot-parity checks
+now understand the current verbose/kernel-console expression and reject obsolete
+switches. The rest of the configuration migration is pending.
