@@ -20,6 +20,8 @@
 
 #include "qemu-main.h"
 
+#include <dlfcn.h>
+#include <mach-o/loader.h>
 #include <Carbon/Carbon.h>          /* kVK_* virtual keycodes */
 
 #include "qemu-macos-extras.h"
@@ -377,4 +379,34 @@ extern int gles_host_context_count(void);
 int qemu_ios_gles_contexts(void)
 {
     return qemu_ios_ui_ready() ? gles_host_context_count() : 0;
+}
+
+/* Identify the loaded image, not an on-disk dylib a developer may replace. */
+const char *qemu_ios_build_id(void)
+{
+    static char identity[33];
+    static gsize ready;
+    if (g_once_init_enter(&ready)) {
+        Dl_info info;
+        if (dladdr((void *)qemu_ios_build_id, &info) && info.dli_fbase) {
+            const struct mach_header_64 *header = info.dli_fbase;
+            if (header->magic == MH_MAGIC_64) {
+                const uint8_t *cursor = (const uint8_t *)(header + 1);
+                size_t remaining = header->sizeofcmds;
+                for (unsigned i = 0; i < header->ncmds && remaining >= sizeof(struct load_command); i++) {
+                    const struct load_command *command = (const void *)cursor;
+                    if (command->cmdsize < sizeof(*command) || command->cmdsize > remaining) break;
+                    if (command->cmd == LC_UUID && command->cmdsize >= sizeof(struct uuid_command)) {
+                        const struct uuid_command *uuid = (const void *)command;
+                        for (unsigned j = 0; j < 16; j++) snprintf(identity + j * 2, 3, "%02x", uuid->uuid[j]);
+                        break;
+                    }
+                    cursor += command->cmdsize;
+                    remaining -= command->cmdsize;
+                }
+            }
+        }
+        g_once_init_leave(&ready, 1);
+    }
+    return identity[0] ? identity : NULL;
 }
