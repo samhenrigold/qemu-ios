@@ -44,16 +44,19 @@ check is at `0xf67c`. XML attributes are read through `0xeb80`.
 City search uses query type `getlocationid`, child `phrase` and `language`.
 The response parser at `0x122ec` reads `response/result/list/item`, with **child
 text elements** `id`, `city`, `region`, `regionname`, `country`, `countryname`.
-This search response and arbitrary replacement IDs still need native acceptance.
+A native Add City test searched for `Q`, displayed `Fixture City, CA`, selected
+it and persisted the exact opaque ID `ltm:37.323,-122.032:Fixture`. This confirms
+that new search results need not use Yahoo IDs.
 
-Run `python3 tests/ipod/test_weather_protocol_guest.py` with the built emulator,
+Run `python3 tests/ipod/test_stock_services_guest.py` with the built emulator,
 proxy and sibling firmware/dependencies. It uses a fresh overlay and local HTTP
 fixture, saves a screenshot for forecast review, checks persisted city names,
-and requires guest-confirmed shutdown. It does not contact a weather provider.
+and requires guest-confirmed shutdown. Add `--stocks` to verify ten persisted
+synthetic quotes; screenshots retain chart rendering for review. It does not contact a weather provider.
 
 ## Stocks
 
-Captured query types (response schemas remain unverified):
+Captured query types:
 
 | Type | Children |
 | --- | --- |
@@ -67,9 +70,40 @@ Observed quote parts are `symbol,price,change,marketcap,status` and
 Some symbol list entries percent-encode the caret (e.g. `%5EDJI`), while other
 query types send `^DJI`. Do not substitute fabricated quotes for missing data.
 
+The quote response has now rendered synthetic prices and changes in a native
+guest (`/tmp/it-stocks-response-probe.log`):
+
+```xml
+<response><result><list count="1"><quote>
+  <symbol>AAPL</symbol><name>SYNTHETIC FIXTURE</name><sname>FIXTURE</sname>
+  <price>123.45</price><change>1.25</change><status>1</status>
+  <marketcap>1.2B</marketcap>
+</quote></list></result></response>
+```
+
+`StockUpdater parseData:` at `0x167e8` uses SAX parsing. Start/end callbacks
+at `0x1782c`/`0x17150` consume `response/result/list/quote`, and quote fields
+are child text. `list.count` is an attribute. Additional recognized fields are
+`name`, `sname`, `exchange`, `open`, `high`, `low`, `volume`, `marketcap`,
+`peratio`, `dividendyield`, `yearrange`, and `averagedailyvolume`.
+The consolidated native check also rendered a synthetic 60-point chart:
+
+```xml
+<response><result><list count="2">
+  <point timestamp="1788566400" close="100" volume="1000"/>
+  <point timestamp="1788652800" close="111" volume="1100"/>
+</list></result></response>
+```
+
+`list.count` must match point count. Point values are **attributes**: timestamp
+is Unix seconds, close is numeric price, volume is an unsigned quantity. The
+attribute parser is at `0x190d0`; the chart SAX start callback is at `0x191a0`.
+The fixture shows a repeating 100–111 sawtooth. News and symbol validation
+responses remain unverified, as do other chart intervals and metadata.
+
 ## Live provider work still required
 
-Weather needs city search/identity verification, bounded upstream fetching,
+Weather needs bounded upstream fetching,
 validated forecast/icon conversion, attribution, and failure handling before
 integration into direct proxy mode. Open-Meteo is a candidate, not an integrated
 dependency: its [free endpoint terms](https://open-meteo.com/en/terms) restrict

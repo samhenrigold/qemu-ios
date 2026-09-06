@@ -562,3 +562,10 @@ its screenshot and sanitized requests. [Protocol notes](stock-service-protocol.m
 record the strict six-forecast shape and Stocks' captured request types.
 Live provider integration and native city-search acceptance remain pending;
 no fabricated weather or quotes are served by the production proxy.
+
+Native city search now displays and saves an opaque replacement Weather ID.
+The consolidated `test_stock_services_guest.py --stocks` check verifies all ten
+persisted synthetic quotes, including price/change and market-cap conversion.
+Its 60-point synthetic chart rendered the expected sawtooth; both guests shut
+down cleanly (`/tmp/it-weather-search-native.log`, `/tmp/it-stocks-protocol-native.log`).
+This establishes protocol acceptance, not live Weather/Stocks revival.
