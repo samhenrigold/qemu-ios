@@ -358,6 +358,37 @@ static void ipod_touch_h264_env_alias(IPodTouchMachineState *nms)
     }
 }
 
+static void ipod_touch_get_mpvd_decode(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    bool value = IPOD_TOUCH_MACHINE(obj)->mpvd_decode;
+    visit_type_bool(v, name, &value, errp);
+}
+
+static void ipod_touch_set_mpvd_decode(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->cpu) {
+        error_setg(errp, "mpvd-decode must be set before the machine starts");
+        return;
+    }
+    bool value;
+    if (visit_type_bool(v, name, &value, errp)) {
+        nms->mpvd_decode = value;
+        nms->mpvd_decode_explicit = true;
+    }
+}
+
+static void ipod_touch_mpvd_env_alias(IPodTouchMachineState *nms)
+{
+    if (!nms->mpvd_decode_explicit && getenv("IT_MPVD_DECODE") != NULL) {
+        /* The old alias tests presence, even for an empty or "0" value. */
+        nms->mpvd_decode = true;
+        warn_report_once("IT_MPVD_DECODE is deprecated; use -M iPod-Touch,mpvd-decode=on");
+    }
+}
+
 static void ipod_touch_get_scaler_decode(Object *obj, Visitor *v, const char *name,
                                void *opaque, Error **errp)
 {
@@ -3066,6 +3097,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     ipod_touch_wdt_env_alias(nms);
     ipod_touch_h264_env_alias(nms);
     ipod_touch_scaler_env_alias(nms);
+    ipod_touch_mpvd_env_alias(nms);
     ipod_touch_cpu_setup(machine, &sysmem, &cpu, &nsas);
 
     // setup clock
@@ -3254,6 +3286,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     // back the MPVD register window so the power-state path does not fault
     dev = qdev_new("ipodtouch.mpvd");
     IPodTouchMPVDState *mpvd_state = IPOD_TOUCH_MPVD(dev);
+    qdev_prop_set_bit(dev, "decode", nms->mpvd_decode);
     memory_region_add_subregion(sysmem, MPVD_MEM_BASE, &mpvd_state->iomem);
     it_realize_into_qom_tree(dev);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, s5l8900_get_irq(nms, 45));
@@ -3621,6 +3654,9 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_add(klass, "scaler-decode", "bool", ipod_touch_get_scaler_decode,
                               ipod_touch_set_scaler_decode, NULL, NULL);
     object_class_property_set_description(klass, "scaler-decode", "Enable scaler color conversion instead of the legacy register stub");
+    object_class_property_add(klass, "mpvd-decode", "bool", ipod_touch_get_mpvd_decode,
+                              ipod_touch_set_mpvd_decode, NULL, NULL);
+    object_class_property_set_description(klass, "mpvd-decode", "Enable MPEG-4 Part 2 decoding instead of register-only MPVD");
     object_class_property_add(klass, "wdt-noreset", "bool", ipod_touch_get_wdt_noreset,
                               ipod_touch_set_wdt_noreset, NULL, NULL);
     object_class_property_set_description(klass, "wdt-noreset", "Suppress guest watchdog reset commands for debugging");

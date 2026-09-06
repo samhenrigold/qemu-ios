@@ -18,6 +18,10 @@ parser.add_argument('--files', type=Path, default=ROOT.parent / 'qemu-ios-files'
 args = parser.parse_args()
 base_env = {k: v for k, v in os.environ.items() if not k.startswith('IT_')}
 cases = [
+    ('mpvd-default', {}, '', {'mpvd-decode':False}),
+    ('mpvd-alias', {'IT_MPVD_DECODE':'0'}, '', {'mpvd-decode':True}),
+    ('mpvd-on', {}, ',mpvd-decode=on', {'mpvd-decode':True}),
+    ('mpvd-off', {'IT_MPVD_DECODE':'1'}, ',mpvd-decode=off', {'mpvd-decode':False}),
     ('scaler-default', {}, '', {'scaler-decode':False}),
     ('scaler-alias', {'IT_SCALER_DECODE':'0'}, '', {'scaler-decode':True}),
     ('scaler-on', {}, ',scaler-decode=on', {'scaler-decode':True}),
@@ -64,6 +68,11 @@ for label, overrides, options, expected in cases:
                     q = QMP(sock, timeout=10)
                     for prop, value in expected.items():
                         assert q.cmd('qom-get', path='/machine', property=prop) == value, label
+                        if prop == 'mpvd-decode':
+                            devices=q.cmd('qom-list',path='/machine/unattached')
+                            device=next(d for d in devices if d['type']=='child<ipodtouch.mpvd>')
+                            path='/machine/unattached/'+device['name']
+                            assert q.cmd('qom-get',path=path,property='decode')==value
                         if prop in ('h264-decode','scaler-decode'):
                             devices=q.cmd('qom-list',path='/machine/unattached')
                             assert any(d['type']==f"child<ipodtouch.{prop.removesuffix('-decode')}>" for d in devices)==value, devices
