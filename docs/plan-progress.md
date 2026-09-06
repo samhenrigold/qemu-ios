@@ -1180,3 +1180,22 @@ Explicit empty boot arguments now disable the environment alias, overlong comman
 lines fail rather than truncate, and runtime mutation is rejected. Reset reuses
 the patch timer instead of allocating another timer on every reset. The focused
 sanitizer check and all 48 native configuration cases pass.
+
+## GLES texture/light/material parameter APIs (2026-09-06)
+
+Implemented GetLightfv, GetMaterialfv, GetTexEnvfv/iv, GetTexParameterfv/iv,
+TexParameterf/fv/iv and TexEnviv through the host renderer and guest shim. Their
+ten slot offsets were checked directly against 7E18 shared-cache OpenGLES
+trampolines as well as the committed slot map. Shared vector cardinality now
+rejects unknown light/material pnames; texture queries validate ES1.1 targets
+and pnames before guest writes. Transfers use exactly 1, 3 or 4 words and reject
+32-bit address wrap. Integer texture-environment colors use native GL integer
+conversion rather than a float reinterpretation.
+
+`tests/ipod/test_gles_params.py` passes against actual CGL with ASan/UBSan:
+state round trips, scalar/vector canaries, invalid enums without memory writes,
+unreadable/undersized inputs and wrapping output pointers. Parameter rules follow
+the [Khronos ES1.1 reference](https://registry.khronos.org/OpenGL-Refpages/es1.1/xhtml/toc.html).
+Combined native CLI build and the armv6 guest build pass using the relocated
+legacy SDK. This establishes host dispatch and verified ABI wiring, not a new
+full-guest gameplay acceptance claim.

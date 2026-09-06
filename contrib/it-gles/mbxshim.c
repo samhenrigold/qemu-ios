@@ -312,6 +312,26 @@ static int s_texImage2D(void *gc, unsigned target, unsigned level, unsigned ifmt
     { guest_fault_read(pixels, texture_bytes(gc, wd_, ht, fmt, type));
       return (int)qc(301, gc, 9,
                      A(target, level, ifmt, wd_, ht, border, fmt, type, pixels)); }
+static int s_getLightfv(void *gc, unsigned target, unsigned pname, unsigned params)
+    { return (int)qc(105, gc, 3, A(target, pname, params)); }
+static int s_getMaterialfv(void *gc, unsigned target, unsigned pname, unsigned params)
+    { return (int)qc(110, gc, 3, A(target, pname, params)); }
+static int s_getTexEnvfv(void *gc, unsigned target, unsigned pname, unsigned params)
+    { return (int)qc(118, gc, 3, A(target, pname, params)); }
+static int s_getTexEnviv(void *gc, unsigned target, unsigned pname, unsigned params)
+    { return (int)qc(119, gc, 3, A(target, pname, params)); }
+static int s_getTexParameterfv(void *gc, unsigned target, unsigned pname, unsigned params)
+    { return (int)qc(126, gc, 3, A(target, pname, params)); }
+static int s_getTexParameteriv(void *gc, unsigned target, unsigned pname, unsigned params)
+    { return (int)qc(127, gc, 3, A(target, pname, params)); }
+static int s_texEnviv(void *gc, unsigned target, unsigned pname, unsigned params)
+    { return (int)qc(293, gc, 3, A(target, pname, params)); }
+static int s_texParameterf(void *gc, unsigned target, unsigned pname, unsigned params)
+    { return (int)qc(302, gc, 3, A(target, pname, params)); }
+static int s_texParameterfv(void *gc, unsigned target, unsigned pname, unsigned params)
+    { return (int)qc(303, gc, 3, A(target, pname, params)); }
+static int s_texParameteriv(void *gc, unsigned target, unsigned pname, unsigned params)
+    { return (int)qc(305, gc, 3, A(target, pname, params)); }
 static int s_texParameteri(void *gc, unsigned target, unsigned pname, unsigned p)
     { return (int)qc(304, gc, 3, A(target, pname, p)); }
 static int s_vertexPointer(void *gc, unsigned size, unsigned type,
@@ -671,6 +691,16 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
         table[174] = (void *)s_matrixMode;
         table[289] = (void *)s_texCoordPointer;
         table[301] = (void *)s_texImage2D;
+        table[105] = (void *)s_getLightfv;
+        table[110] = (void *)s_getMaterialfv;
+        table[118] = (void *)s_getTexEnvfv;
+        table[119] = (void *)s_getTexEnviv;
+        table[126] = (void *)s_getTexParameterfv;
+        table[127] = (void *)s_getTexParameteriv;
+        table[293] = (void *)s_texEnviv;
+        table[302] = (void *)s_texParameterf;
+        table[303] = (void *)s_texParameterfv;
+        table[305] = (void *)s_texParameteriv;
         table[304] = (void *)s_texParameteri;
         table[334] = (void *)s_vertexPointer;
         table[335] = (void *)s_viewport;
