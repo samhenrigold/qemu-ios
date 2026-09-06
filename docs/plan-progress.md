@@ -897,3 +897,20 @@ existing display transform and does not alter the framebuffer or recordings.
 Production-handler checks cover bounds, repeat handling, multi-key drags,
 modifier isolation, disabled states and controller/keyboard handoff; Release
 build passes. Full VoiceOver inspection and native game acceptance remain open.
+
+## PKE arithmetic and signature recovery (2026-09-06)
+
+Replaced the hex-string round trip with OpenSSL's fixed-width binary conversion.
+Short/zero modular-exponentiation results now retain their correct integer
+value in little-endian SEG1, and every BIGNUM/context is freed on success and
+failure. Invalid segment sizes and arithmetic failures leave operands intact.
+The always-false signed-byte padding comparison is replaced with validation of
+the complete SHA1 DigestInfo/padding. Explicit forge mode preserves valid
+recovered blocks and only substitutes malformed ones. The unresolved fifth-START
+sequencing workaround remains unchanged.
+
+`tests/ipod/test_pke.py` exercises production handlers with ASan/UBSan, generated
+1024/2048-bit RSA signatures, short/zero results, malformed sizes, valid block
+preservation and explicit forging. Native 5F138 reached Home after fifteen RSA
+runs; native 7E18 performed nine RSA runs and passed firmware/agent checks and
+confirmed shutdown. CLI build passes.
