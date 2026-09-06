@@ -782,3 +782,15 @@ overlay. Existing copies are preserved, malformed copies fail visibly, and
 factory erase/snapshot freshness already cover files in that directory. The
 storage check verifies preservation, independent base bytes and failed-copy
 cleanup; Release builds pass. No new user setup is required.
+
+### AES workaround audit (2026-09-06)
+
+The proposed G8 shape replacement is not supported by the current trace.
+Native 5F138 uses AESCustom (type 0), not AESUID (type 2), for the three
+address-suppressed 128-byte operations. It also performs a fourth in-place
+128-byte custom operation at 0x0ff290ac which is currently decrypted normally.
+Replacing the addresses with the proposed broad shape would therefore either
+miss the workaround entirely or suppress an additional operation. Left the
+behavior unchanged pending input/key or signature-level classification.
+Evidence: `/tmp/it-aes-legacy-trace.log` and its reported qemu.log; the legacy
+boot still reaches Home with the new NOR implementation.
