@@ -236,8 +236,12 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
             if (len > nms->pb_out_len - off) {
                 len = nms->pb_out_len - off;
             }
-            cpu_memory_rw_debug(cpu, qcall.args.pb.buffer_guest_ptr,
-                                (uint8_t *)nms->pb_out + off, len, 1);
+            if (agent_copy(cpu, qcall.args.pb.buffer_guest_ptr,
+                           (uint8_t *)nms->pb_out + off, len, true)) {
+                qcall.retval = -1;
+                guest_svcs_errno = EFAULT;
+                break;
+            }
             qcall.retval = len;
             break;
         }
@@ -277,12 +281,21 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
             }
             if (off != nms->pb_in_len || len > QC_PB_MAX_LEN ||
                 off + (size_t)len > QC_PB_MAX_LEN) {
+                g_clear_pointer(&nms->pb_in, g_free);
+                nms->pb_in_len = 0;
+                guest_svcs_errno = EINVAL;
                 qcall.retval = -1;
                 break;
             }
             nms->pb_in = g_realloc(nms->pb_in, off + len + 1);
-            cpu_memory_rw_debug(cpu, qcall.args.pb.buffer_guest_ptr,
-                                (uint8_t *)nms->pb_in + off, len, 0);
+            if (agent_copy(cpu, qcall.args.pb.buffer_guest_ptr,
+                           (uint8_t *)nms->pb_in + off, len, false)) {
+                g_clear_pointer(&nms->pb_in, g_free);
+                nms->pb_in_len = 0;
+                qcall.retval = -1;
+                guest_svcs_errno = EFAULT;
+                break;
+            }
             nms->pb_in_len = off + len;
             nms->pb_in[nms->pb_in_len] = '\0';
             qcall.retval = len;
@@ -290,6 +303,11 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
         }
         case QC_PB_COMMIT: {
             IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
+            if (!nms->pb_in) {
+                qcall.retval = -1;
+                guest_svcs_errno = EINVAL;
+                break;
+            }
             ipod_touch_pb_guest_commit(nms);
             qcall.retval = 0;
             break;

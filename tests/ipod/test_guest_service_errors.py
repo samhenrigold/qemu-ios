@@ -32,6 +32,20 @@ int main(void) {
   request.call=0x141;invoke(&request);
   if(request.retval!=0x6a17c0deLL || request.error!=0)_exit(2);
  }
+ /* The invalid continuation must discard all staging, not publish a prefix
+  * or uninitialized host bytes. A fresh item must still work afterwards. */
+ volatile Request pb={0};
+ unsigned *args=(unsigned *)(void *)pb.args;
+ const char text[]="service-check";
+ for(unsigned i=0;i<2;i++) {
+  pb.call=0x153;args[0]=(unsigned)text;args[1]=0;args[2]=sizeof(text)-1;
+  invoke(&pb);if(pb.retval!=sizeof(text)-1 || pb.error)_exit(3);
+  pb.call=0x154;invoke(&pb);if(pb.retval || pb.error)_exit(4);
+  pb.call=0x153;args[1]=0;invoke(&pb);if(pb.retval<0)_exit(5);
+  args[0]=i ? 0xfffffffe : 0;args[1]=sizeof(text)-1;args[2]=4;
+  invoke(&pb);if(pb.retval!=-1 || pb.error!=EFAULT)_exit(6);
+  pb.call=0x154;invoke(&pb);if(pb.retval!=-1 || pb.error!=EINVAL)_exit(7);
+ }
  const char message[]="PASS: retired file calls and unknown opcode return ENOSYS; next successful call clears error\n";
  write(1,message,sizeof(message)-1);
  _exit(0);
@@ -63,6 +77,8 @@ link6 -execute "$2/probe" "$2/probe.o"
         assert r.itqmp.agent(q,'put','/tmp/service-probe 755',(out/'probe').read_bytes())==(0,b'')
         status,output=r.itqmp.agent(q,'exec','/tmp/service-probe')
         assert status==0,(status,output)
+        assert q.cmd('qom-get',path='/machine',property='guest-pasteboard')=='service-check'
+        print('PASS: unmapped/wrapping clipboard buffers discard staging, preserve clipboard and allow recovery',flush=True)
         print(output.decode(),end='',flush=True)
         assert r.itqmp.agent(q,'ping')==(0,b'it_agent v1\n')
         assert device.powerdown()
