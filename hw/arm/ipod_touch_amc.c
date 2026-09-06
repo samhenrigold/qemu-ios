@@ -123,6 +123,7 @@
 #include "qemu/error-report.h"
 #include "cpu.h"
 #include "qemu/timer.h"
+#include "migration/vmstate.h"
 #ifdef IT_HAVE_AVCODEC
 #include <libavcodec/avcodec.h>
 #include <libavutil/mem.h>
@@ -1050,10 +1051,43 @@ static void ipod_touch_amc_finalize(Object *obj)
     amc_decoder_close(s);
 }
 
+/* Host decoder objects cannot survive a restore. Guest registers and DMA
+ * descriptors do: the next decode tick lazily opens a fresh decoder. */
+static int amc_post_load(void *opaque, int version_id)
+{
+    IPodTouchAMCState *s = opaque;
+    amc_decoder_close(s);
+#ifndef IT_HAVE_AVCODEC
+    if (s->codec_decode) {
+        return -EINVAL;
+    }
+#endif
+    amc_update_irq(s);
+    return 0;
+}
+
+static const VMStateDescription vmstate_ipod_touch_amc = {
+    .name = TYPE_IPOD_TOUCH_AMC,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = amc_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(regs, IPodTouchAMCState, AMC_MEM_SIZE / 4),
+        VMSTATE_UINT32_ARRAY(int_mask, IPodTouchAMCState, AMC_NUM_CONTROLLERS),
+        VMSTATE_BOOL(irq_armed, IPodTouchAMCState),
+        VMSTATE_BOOL(state_handshake, IPodTouchAMCState),
+        VMSTATE_BOOL(codec_decode, IPodTouchAMCState),
+        VMSTATE_UINT32(pending, IPodTouchAMCState),
+        VMSTATE_TIMER_PTR(decode_timer, IPodTouchAMCState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static void ipod_touch_amc_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
+    dc->vmsd = &vmstate_ipod_touch_amc;
     device_class_set_legacy_reset(dc, ipod_touch_amc_reset);
 }
 
