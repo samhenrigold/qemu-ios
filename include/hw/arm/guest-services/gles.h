@@ -73,6 +73,11 @@ typedef struct __attribute__((packed)) {
  * sites; the full 171-slot map is in GATE1_slotmap.txt. Only the slots this
  * implementation actually handles are named here -- see SCOPE in gles-host.c.
  */
+#define GLES_SLOT_COLOR_MASK            49
+#define GLES_SLOT_STENCIL_MASK          255
+#define GLES_SLOT_IS_RENDERBUFFER       665
+#define GLES_SLOT_IS_FRAMEBUFFER        671
+#define GLES_SLOT_GENERATE_MIPMAP        681
 #define GLES_SLOT_BIND_TEXTURE          5    /* 0x0024 */
 #define GLES_SLOT_CLEAR                 10   /* 0x0038 */
 #define GLES_SLOT_CLEAR_COLOR           12   /* 0x0040 */

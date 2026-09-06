@@ -322,6 +322,16 @@ static int s_viewport(void *gc, unsigned x, unsigned y, unsigned wv, unsigned h)
 static int s_orthof(void *gc, unsigned l, unsigned r, unsigned b,
                     unsigned t, unsigned n, unsigned f)
     { return (int)qc(791, gc, 6, A(l, r, b, t, n, f)); }
+static int s_colorMask(void *gc, unsigned r, unsigned g, unsigned b, unsigned a)
+    { return (int)qc(49, gc, 4, A(r, g, b, a)); }
+static int s_stencilMask(void *gc, unsigned mask)
+    { return (int)qc(255, gc, 1, A(mask)); }
+static int s_isRenderbuffer(void *gc, unsigned name)
+    { return (int)qc(665, gc, 1, A(name)); }
+static int s_isFramebuffer(void *gc, unsigned name)
+    { return (int)qc(671, gc, 1, A(name)); }
+static int s_generateMipmap(void *gc, unsigned target)
+    { return (int)qc(681, gc, 1, A(target)); }
 static int s_bindTexture(void *gc, unsigned target, unsigned tex)
     { return (int)qc(5, gc, 2, A(target, tex)); }
 
@@ -537,6 +547,11 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
         for (i = 0; i < GLES_N_SLOTS; i++) {
             table[i] = gles_default_table[i];
         }
+        table[49]  = (void *)s_colorMask;
+        table[255] = (void *)s_stencilMask;
+        table[665] = (void *)s_isRenderbuffer;
+        table[671] = (void *)s_isFramebuffer;
+        table[681] = (void *)s_generateMipmap;
         table[5]   = (void *)s_bindTexture;
         table[10]  = (void *)s_clear;
         table[12]  = (void *)s_clearColor;
