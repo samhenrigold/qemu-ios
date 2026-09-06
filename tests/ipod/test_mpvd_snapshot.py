@@ -21,6 +21,10 @@ with tempfile.TemporaryDirectory(prefix='it-mpvd-snapshot-') as tmp:
       assert child.poll() is None and time.monotonic()<deadline,(out/f'qemu{int(enabled)}-{phase}.log').read_text()
       time.sleep(.05)
      q=QMP(qpath,timeout=10);t=socket.socket(socket.AF_UNIX);t.settimeout(10);t.connect(tpath);f=t.makefile('rwb',buffering=0)
+     deadline=time.monotonic()+20
+     while q.cmd('query-status')['status']=='inmigrate':
+      assert time.monotonic()<deadline
+      time.sleep(.05)
      def cmd(text):
       f.write((text+'\n').encode());reply=f.readline().decode().strip();assert reply.startswith('OK'),reply;return reply
      def w(offset,value):cmd(f'writel {0x39600000+offset:#x} {value:#x}')
