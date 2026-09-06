@@ -41,7 +41,7 @@ class QMP:
     """Blocking QMP client. Accepts (host, port) or a single "host:port" /
     unix-socket-path target string (the shapes `it-poweroff.sh` needs)."""
 
-    def __init__(self, host, port=None, timeout=180):
+    def __init__(self, host, port=None, timeout=180, read_timeout=None):
         if port is None:
             if isinstance(host, int):
                 host, port = "127.0.0.1", host
@@ -59,9 +59,25 @@ class QMP:
         try:
             self._read()  # greeting
             self.cmd("qmp_capabilities")
+            if read_timeout is not None:
+                if read_timeout <= 0: raise ValueError("read_timeout must be positive")
+                self.s.settimeout(read_timeout)
         except BaseException:
             self.close()
             raise
+
+    def shot(self, path):
+        """Raw PPM for native checks; CLI shot() separately normalizes to PNG."""
+        return shot_ppm(self, path, W * H * 3)
+
+    def tap(self, x, y, hold=0.15):
+        tap(self, x, y, hold=hold)
+
+    def swipe(self, x1, y1, x2, y2, steps=12, dwell=0.05):
+        swipe(self, x1, y1, x2, y2, steps=steps, dt=dwell)
+
+    def home(self):
+        button(self, "home")
 
     @staticmethod
     def _connect_tcp(host, port, timeout):
@@ -350,6 +366,18 @@ def pinch(q, cx, cy, r0, r1, steps=24, dt=0.03, angle=0.0, settle=0.3):
 # ---------------------------------------------------------------------------
 
 
+def shot_ppm(q, path, min_bytes=1, timeout=6):
+    """Capture raw guest pixels and reject missing or incomplete output."""
+    q.cmd("screendump", filename=str(path))
+    deadline = time.monotonic() + timeout
+    while True:
+        if os.path.exists(path) and os.path.getsize(path) >= min_bytes:
+            return str(path)
+        if time.monotonic() >= deadline:
+            raise TimeoutError("incomplete guest screendump: %s" % path)
+        time.sleep(0.1)
+
+
 def shot(q, path):
     """screendump + normalise. Returns (path, max_sample, nonzero_fraction).
 
@@ -357,11 +385,7 @@ def shot(q, path):
     dump of a dim screen is faithful and illegible; normalize() rescales it.
     """
     ppm = path + ".ppm"
-    q.cmd("screendump", filename=ppm)
-    for _ in range(40):
-        if os.path.exists(ppm) and os.path.getsize(ppm) > 1000:
-            break
-        time.sleep(0.1)
+    shot_ppm(q, ppm, 1001)
     return normalize(ppm, path)
 
 
