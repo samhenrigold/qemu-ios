@@ -84,6 +84,11 @@ with tempfile.TemporaryDirectory(prefix="regress-test-") as work:
         text=True, capture_output=True, timeout=5)
     assert result.returncode == 1 and "QMP reset failed" in result.stderr, result
     assert "PASS:" not in result.stdout
+    # Firmware download alone must not pass a later controller setup failure.
+    result = subprocess.run(["bash", str(Path(__file__).with_name(
+        "bluetooth-bringup-check.sh")), "unused-image", "1"], env=env,
+        text=True, capture_output=True, timeout=5)
+    assert result.returncode == 1 and "controller setup did not reach" in result.stderr, result
 
 # A sparse volume must retain the alternate header beyond the old 128000 cap.
 with tempfile.TemporaryDirectory(prefix="fsck-test-") as work:
