@@ -126,6 +126,7 @@
 #include "cpu.h"
 #include "qemu/timer.h"
 #include "migration/vmstate.h"
+#include "migration/qemu-file.h"
 #ifdef IT_HAVE_AVCODEC
 #include <libavcodec/avcodec.h>
 #include <libavutil/mem.h>
@@ -152,6 +153,22 @@ typedef enum AMCProgram {
     AMC_UNKNOWN = -1, AMC_MP3, AMC_AAC, AMC_HEAAC, AMC_ALAC,
 } AMCProgram;
 
+#define AMC_REPLAY_MAX_BYTES (64u * 1024 * 1024)
+#define AMC_REPLAY_MAX_PACKETS 65536u
+#define AMC_REPLAY_MAX_FRAMES 262144u
+
+typedef struct AMCReplayPacket {
+    GBytes *bytes;
+    unsigned frames;
+} AMCReplayPacket;
+
+static void amc_replay_packet_free(void *opaque)
+{
+    AMCReplayPacket *packet = opaque;
+    g_bytes_unref(packet->bytes);
+    g_free(packet);
+}
+
 typedef struct AMCDecoder {
     AVCodecContext *codec;
     AVFrame *frame;
@@ -167,7 +184,53 @@ typedef struct AMCDecoder {
     unsigned channels;
     unsigned capacity;
     unsigned buffers;
+    enum AVCodecID codec_id;
+    uint8_t extra[64];
+    unsigned extra_size;
+    GPtrArray *history;
+    size_t history_bytes;
+    unsigned history_frames;
+    bool history_overflow;
 } AMCDecoder;
+
+static void amc_replay_forget(AMCDecoder *d)
+{
+    g_clear_pointer(&d->history, g_ptr_array_unref);
+    d->history_bytes = 0;
+    d->history_frames = 0;
+}
+
+/* A stream that exceeds the replay budget keeps playing, but cannot be saved
+ * faithfully until AMC_JOB_CMD starts a new stream. Never retain a partial
+ * history and silently restore an approximation of codec overlap/reservoir. */
+static void amc_replay_record(AMCDecoder *d, const uint8_t *data, size_t length)
+{
+    if (d->history_overflow) return;
+    if (length > AMC_REPLAY_MAX_BYTES - d->history_bytes ||
+        (d->history && d->history->len == AMC_REPLAY_MAX_PACKETS)) {
+        d->history_overflow = true;
+        amc_replay_forget(d);
+        return;
+    }
+    if (!d->history) d->history = g_ptr_array_new_with_free_func(amc_replay_packet_free);
+    AMCReplayPacket *packet = g_new0(AMCReplayPacket, 1);
+    packet->bytes = g_bytes_new(data, length);
+    g_ptr_array_add(d->history, packet);
+    d->history_bytes += length;
+}
+
+static void amc_replay_received(AMCDecoder *d)
+{
+    if (d->history_overflow || !d->history || !d->history->len) return;
+    if (d->history_frames == AMC_REPLAY_MAX_FRAMES) {
+        d->history_overflow = true;
+        amc_replay_forget(d);
+        return;
+    }
+    AMCReplayPacket *packet = g_ptr_array_index(d->history, d->history->len - 1);
+    packet->frames++;
+    d->history_frames++;
+}
 
 static AMCProgram amc_program(IPodTouchAMCState *s)
 {
@@ -218,6 +281,7 @@ static void amc_decoder_close(IPodTouchAMCState *s)
         av_frame_free(&d->frame);
         g_byte_array_unref(d->pcm);
         g_queue_clear(&d->output_sizes);
+        amc_replay_forget(d);
         g_free(d);
         s->decoder = NULL;
     }
@@ -241,6 +305,7 @@ static void amc_decode_fail(IPodTouchAMCState *s)
         s->decoder = d;
     }
     d->failed = true;
+    amc_replay_forget(d);
     d->input_pending = false;
     d->dma_pending = d->capacity != 0;
     avcodec_free_context(&d->codec);
@@ -419,6 +484,10 @@ static bool amc_decode_dma(IPodTouchAMCState *s, uint32_t head)
         if (avcodec_open2(d->codec, codec, NULL) < 0) {
             goto done;
         }
+        d->codec_id = codec_id;
+        d->extra_size = d->codec->extradata_size;
+        assert(d->extra_size <= sizeof(d->extra));
+        if (d->extra_size) memcpy(d->extra, d->codec->extradata, d->extra_size);
     }
     packet = av_packet_alloc();
     if (!packet || av_new_packet(packet, input->len) < 0) {
@@ -428,6 +497,7 @@ static bool amc_decode_dma(IPodTouchAMCState *s, uint32_t head)
     if (avcodec_send_packet(d->codec, packet) < 0) {
         goto done;
     }
+    amc_replay_record(d, input->data, input->len);
     d->input_pending = true;
     ok = true;
     AMCT("decode DMA consumed %u bytes", input->len);
@@ -450,6 +520,7 @@ static void amc_decode_drain(IPodTouchAMCState *s)
     int err = 0;
     while (d->pcm->len < 65536 &&
            (err = avcodec_receive_frame(d->codec, frame)) == 0) {
+        amc_replay_received(d);
         unsigned channels = frame->ch_layout.nb_channels;
         if ((frame->format != AV_SAMPLE_FMT_FLTP &&
              frame->format != AV_SAMPLE_FMT_S16P &&
@@ -547,6 +618,51 @@ static void amc_decode_publish(IPodTouchAMCState *s)
     s->pending |= 4;
     AMCT("decode output %u samples, remaining %zu", bytes / 2,
          d->pcm->len - d->cursor);
+}
+
+
+static bool amc_replay_restore(AMCDecoder *d)
+{
+    if (!d || d->failed) return true;
+    if (!d->history || !d->history->len || d->history_overflow ||
+        (d->codec_id != AV_CODEC_ID_AAC && d->codec_id != AV_CODEC_ID_MP3 &&
+         d->codec_id != AV_CODEC_ID_ALAC)) return false;
+    const AVCodec *codec = avcodec_find_decoder(d->codec_id);
+    d->codec = avcodec_alloc_context3(codec);
+    d->frame = av_frame_alloc();
+    if (!codec || !d->codec || !d->frame) return false;
+    d->codec->log_level_offset = amc_trace() ? 0 : AV_LOG_DEBUG - AV_LOG_ERROR;
+    if (d->extra_size) {
+        d->codec->extradata = av_mallocz(d->extra_size + AV_INPUT_BUFFER_PADDING_SIZE);
+        if (!d->codec->extradata) return false;
+        memcpy(d->codec->extradata, d->extra, d->extra_size);
+        d->codec->extradata_size = d->extra_size;
+    }
+    if (avcodec_open2(d->codec, codec, NULL) < 0) return false;
+    AVPacket *packet = av_packet_alloc();
+    bool ok = packet != NULL;
+    for (unsigned i = 0; ok && i < d->history->len; i++) {
+        AMCReplayPacket *saved = g_ptr_array_index(d->history, i);
+        size_t length;
+        const uint8_t *data = g_bytes_get_data(saved->bytes, &length);
+        ok = av_new_packet(packet, length) >= 0;
+        if (!ok) break;
+        memcpy(packet->data, data, length);
+        ok = avcodec_send_packet(d->codec, packet) >= 0;
+        av_packet_unref(packet);
+        for (unsigned n = 0; ok && n < saved->frames; n++) {
+            ok = avcodec_receive_frame(d->codec, d->frame) == 0;
+            av_frame_unref(d->frame);
+        }
+        /* Older packets were exhausted before the next send. The final
+         * packet may still have unread frames behind the PCM queue's bound. */
+        if (ok && (i + 1 < d->history->len || !d->input_pending)) {
+            ok = avcodec_receive_frame(d->codec, d->frame) == AVERROR(EAGAIN);
+            av_frame_unref(d->frame);
+        }
+    }
+    av_packet_free(&packet);
+    return ok;
 }
 
 #else
@@ -1046,12 +1162,139 @@ static void ipod_touch_amc_finalize(Object *obj)
     amc_decoder_close(s);
 }
 
-/* Host decoder objects cannot survive a restore. Guest registers and DMA
- * descriptors do: the next decode tick lazily opens a fresh decoder. */
+/* Stable wire state contains no AVCodecContext pointers. Replay restores its
+ * overlap/reservoir separately, without publishing duplicate guest output. */
+static int amc_put_decoder(QEMUFile *f, void *pv, size_t size,
+                           const VMStateField *field, JSONWriter *vmdesc)
+{
+#ifdef IT_HAVE_AVCODEC
+    AMCDecoder *d = *(AMCDecoder **)pv;
+    qemu_put_be32(f, d != NULL);
+    if (!d) return qemu_file_get_error(f);
+    if (d->history_overflow && !d->failed) return -E2BIG;
+    uint32_t values[] = {
+        d->input_pending | (d->dma_pending << 1) | (d->failed << 2) |
+            (d->error_reported << 3),
+        d->cursor, d->slot, d->rate, d->channels, d->capacity, d->buffers,
+        d->codec_id, d->extra_size, d->pcm->len,
+        g_queue_get_length(&d->output_sizes), d->history ? d->history->len : 0,
+    };
+    for (unsigned i = 0; i < ARRAY_SIZE(values); i++) qemu_put_be32(f, values[i]);
+    qemu_put_buffer(f, d->extra, d->extra_size);
+    qemu_put_buffer(f, d->pcm->data, d->pcm->len);
+    for (GList *item = d->output_sizes.head; item; item = item->next) {
+        qemu_put_be32(f, GPOINTER_TO_UINT(item->data));
+    }
+    for (unsigned i = 0; d->history && i < d->history->len; i++) {
+        AMCReplayPacket *packet = g_ptr_array_index(d->history, i);
+        size_t length;
+        const uint8_t *data = g_bytes_get_data(packet->bytes, &length);
+        qemu_put_be32(f, length);
+        qemu_put_be32(f, packet->frames);
+        qemu_put_buffer(f, data, length);
+    }
+#else
+    qemu_put_be32(f, 0);
+#endif
+    return qemu_file_get_error(f);
+}
+
+static int amc_get_decoder(QEMUFile *f, void *pv, size_t size,
+                           const VMStateField *field)
+{
+    uint32_t present = qemu_get_be32(f);
+    if (present > 1 || *(void **)pv) return -EINVAL;
+    if (!present) return qemu_file_get_error(f);
+#ifdef IT_HAVE_AVCODEC
+    uint32_t v[12];
+    for (unsigned i = 0; i < ARRAY_SIZE(v); i++) v[i] = qemu_get_be32(f);
+    if (qemu_file_get_error(f)) return qemu_file_get_error(f);
+    if (v[0] > 15 || ((v[0] & 8) && !(v[0] & 4)) ||
+        ((v[0] & 4) && (v[0] & 1)) || v[1] > v[9] || ((v[1] | v[9]) & 1) ||
+        (v[5] != 4096 && v[5] != 4608 && v[5] != 8192 && v[5] != 16384 &&
+         !(v[5] == 0 && (v[0] & 4))) ||
+        v[6] != (v[5] == 16384 ? 1 : 2) || v[2] >= v[6] ||
+        v[3] > 192000 || v[4] > 2 || v[8] > 64 ||
+        v[9] > 65536 + 16384 || v[10] > v[9] / 2 ||
+        v[11] > AMC_REPLAY_MAX_PACKETS ||
+        (!(v[0] & 4) && !v[11]) || ((v[0] & 4) && v[11])) return -EINVAL;
+    AMCDecoder *d = g_new0(AMCDecoder, 1);
+    IPodTouchAMCState cleanup = { .decoder = d };
+    int result = -EINVAL;
+    d->input_pending = v[0] & 1;
+    d->dma_pending = v[0] & 2;
+    d->failed = v[0] & 4;
+    d->error_reported = v[0] & 8;
+    d->cursor = v[1]; d->slot = v[2]; d->rate = v[3]; d->channels = v[4];
+    d->capacity = v[5]; d->buffers = v[6]; d->codec_id = v[7]; d->extra_size = v[8];
+    d->pcm = g_byte_array_sized_new(v[9]);
+    g_byte_array_set_size(d->pcm, v[9]);
+    if (qemu_get_buffer(f, d->extra, v[8]) != v[8] ||
+        qemu_get_buffer(f, d->pcm->data, v[9]) != v[9]) goto done;
+    size_t queued = 0;
+    for (unsigned i = 0; i < v[10]; i++) {
+        unsigned bytes = qemu_get_be32(f);
+        if (!bytes || (bytes & 1) || bytes > d->capacity || bytes > v[9] - queued) goto done;
+        queued += bytes;
+        g_queue_push_tail(&d->output_sizes, GUINT_TO_POINTER(bytes));
+    }
+    if (queued != d->pcm->len - d->cursor) goto done;
+    d->history = g_ptr_array_new_with_free_func(amc_replay_packet_free);
+    for (unsigned i = 0; i < v[11]; i++) {
+        uint32_t length = qemu_get_be32(f), frames = qemu_get_be32(f);
+        if (!length || length > 1024 * 1024 ||
+            length > AMC_REPLAY_MAX_BYTES - d->history_bytes ||
+            frames > AMC_REPLAY_MAX_FRAMES - d->history_frames) goto done;
+        g_autofree uint8_t *bytes = g_malloc(length);
+        if (qemu_get_buffer(f, bytes, length) != length) goto done;
+        AMCReplayPacket *packet = g_new0(AMCReplayPacket, 1);
+        packet->bytes = g_bytes_new_take(g_steal_pointer(&bytes), length);
+        packet->frames = frames;
+        g_ptr_array_add(d->history, packet);
+        d->history_bytes += length;
+        d->history_frames += frames;
+    }
+    result = qemu_file_get_error(f);
+    if (!result) {
+        *(void **)pv = d;
+        cleanup.decoder = NULL;
+    }
+done:
+    amc_decoder_close(&cleanup);
+    return result;
+#else
+    return -EINVAL;
+#endif
+}
+
+static const VMStateInfo vmstate_amc_decoder = {
+    .name = "amc-decoder", .get = amc_get_decoder, .put = amc_put_decoder,
+};
+
+static int amc_pre_save(void *opaque)
+{
+#ifdef IT_HAVE_AVCODEC
+    IPodTouchAMCState *s = opaque;
+    AMCDecoder *d = s->decoder;
+    if (d && d->history_overflow && !d->failed) {
+        error_report("AMC snapshot replay limit exceeded (64 MiB / 65536 packets / "
+                     "262144 frames); restart the audio stream before saving");
+        return -E2BIG;
+    }
+#endif
+    return 0;
+}
+
+static int amc_pre_load(void *opaque)
+{
+    amc_decoder_close(opaque);
+    return 0;
+}
+
+/* Recreate codec history without consuming or publishing restored guest PCM. */
 static int amc_post_load(void *opaque, int version_id)
 {
     IPodTouchAMCState *s = opaque;
-    amc_decoder_close(s);
     if (s->codec_decode != (s->mode == AMC_MODE_DECODE) ||
         s->state_handshake != (s->mode != AMC_MODE_REGISTERS)) {
         return -EINVAL;
@@ -1061,14 +1304,19 @@ static int amc_post_load(void *opaque, int version_id)
         return -EINVAL;
     }
 #endif
+#ifdef IT_HAVE_AVCODEC
+    if (!amc_replay_restore(s->decoder)) return -EINVAL;
+#endif
     amc_update_irq(s);
     return 0;
 }
 
 static const VMStateDescription vmstate_ipod_touch_amc = {
     .name = TYPE_IPOD_TOUCH_AMC,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .pre_save = amc_pre_save,
+    .pre_load = amc_pre_load,
     .post_load = amc_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, IPodTouchAMCState, AMC_MEM_SIZE / 4),
@@ -1078,6 +1326,7 @@ static const VMStateDescription vmstate_ipod_touch_amc = {
         VMSTATE_BOOL(codec_decode, IPodTouchAMCState),
         VMSTATE_UINT32(pending, IPodTouchAMCState),
         VMSTATE_TIMER_PTR(decode_timer, IPodTouchAMCState),
+        VMSTATE_SINGLE(decoder, IPodTouchAMCState, 2, vmstate_amc_decoder, void *),
         VMSTATE_END_OF_LIST()
     },
 };
