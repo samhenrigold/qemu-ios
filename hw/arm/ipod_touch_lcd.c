@@ -1086,9 +1086,17 @@ static void ipod_touch_lcd_init(Object *obj)
  * the destination's blank surface is diffed against a framebuffer it never
  * drew and most of the screen stays black.
  */
+static int ipod_touch_lcd_pre_save(void *opaque)
+{
+    IPodTouchLCDState *s = opaque;
+    s->saved_planes_enabled = s->planes_enabled;
+    return 0;
+}
+
 static int ipod_touch_lcd_post_load(void *opaque, int version_id)
 {
     IPodTouchLCDState *s = opaque;
+    if (version_id >= 4 && s->saved_planes_enabled != s->planes_enabled) return -EINVAL;
     lcd_restore_irq(s, version_id);
     if (version_id < 2) {
         memset(s->plane_regs, 0, sizeof(s->plane_regs));
@@ -1122,8 +1130,9 @@ static int ipod_touch_lcd_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_lcd = {
     .name = "ipod_touch_lcd",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 1,
+    .pre_save = ipod_touch_lcd_pre_save,
     .post_load = ipod_touch_lcd_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY_V(plane_regs, IPodTouchLCDState, 0x300 / 4, 2),
@@ -1138,6 +1147,7 @@ static const VMStateDescription vmstate_ipod_touch_lcd = {
         VMSTATE_INT32(rotation, IPodTouchLCDState),
         VMSTATE_UINT32_V(irq_enable, IPodTouchLCDState, 3),
         VMSTATE_UINT32_V(irq_status, IPodTouchLCDState, 3),
+        VMSTATE_BOOL_V(saved_planes_enabled, IPodTouchLCDState, 4),
         VMSTATE_END_OF_LIST()
     }
 };
