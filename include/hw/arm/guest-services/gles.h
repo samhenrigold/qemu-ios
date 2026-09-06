@@ -276,6 +276,7 @@ typedef struct __attribute__((packed)) {
 /* 16 bits per pixel, not 32. A CAEAGLLayer that asked for
  * kEAGLColorFormatRGB565 gets this, and every size in the present path has to
  * follow the format rather than assume four bytes. */
+#define GLES_SURFACE_RGB555 0x4c353535 /* L555: opaque little-endian RGB555 */
 #define GLES_SURFACE_RGB565             0x4c353635  /* 'L565' */
 
 #ifndef OUT_OF_TREE_BUILD

@@ -322,3 +322,12 @@ and uncertain receipts, malformed input, cold persistence and both shutdowns:
 hardware. The album poster and full-size photo render, but the grid thumbnail
 is blank. That issue remains open; the test does not claim grid rendering passes.
 Host photo preparation and UI integration are in progress, not yet packaged.
+
+### Photos RGB555 thumbnail rendering
+
+The blank grid was an unsupported L555 IOSurface, not missing thumbnail files.
+The bridge now imports little-endian RGB555 with opaque alpha and writes FBO
+results back as RGB555 while preserving guest row padding. Native CGL sanitizer
+checks cover colors, bit-15 independence, writeback and sampled-memory refresh.
+An isolated 7E18 Photos run shows the red/green/blue thumbnail and white circle:
+`/tmp/it-photo-grid-rgb555.log`. The photo regression now asserts grid colors.
