@@ -39,18 +39,16 @@ none of them is a smoke test: "did it boot?" would have missed all of them.
               they should.
 
 Usage:
-    tests/ipod/regress.py                    # default tier: boot, fsck, persist
+    tests/ipod/regress.py                    # default tier: boot, fsck, persist, agent
     tests/ipod/regress.py --with-apps         # + afc, usbtcp, wifi, appinstall, applaunch
     tests/ipod/regress.py --quick            # boot + afc only, one boot
     tests/ipod/regress.py --checks boot,wifi # explicit selection, any tier
     tests/ipod/regress.py --check-prereqs    # report missing artefacts, run nothing
 
-The default tier needs only a built qemu-system-arm and the base NAND image,
-so it is green on a clean checkout. afc, usbtcp, wifi, appinstall and
-applaunch are an opt-in tier behind --with-apps: appinstall/applaunch also
-need --ipa, and every USB-side check (afc, usbtcp, appinstall, applaunch,
-persist) needs the usbmuxd fork (--usbmuxd). A check whose inputs are absent
-is reported SKIP rather than FAIL and does not affect the exit code.
+The default tier needs a built qemu-system-arm and a NAND containing it_agent.
+USB-side checks need the usbmuxd fork (--usbmuxd); missing host tools cause an
+individual SKIP. A present image whose agent fails to start is a failure.
+App checks use the bundled Harness.ipa by default; --ipa selects another app.
 
 Exits non-zero if any selected check FAILs (SKIP and XFAIL do not count).
 
@@ -110,10 +108,10 @@ HOME_CONFIRM_S = 15
 LIT_THRESHOLD = 8
 
 # Default tier: self-contained on a clean checkout, needs only a built qemu
-# and the base NAND image.
-DEFAULT_CHECKS = ["boot", "fsck", "persist"]
+# and a base NAND image containing it_agent.
+DEFAULT_CHECKS = ["boot", "fsck", "persist", "agent"]
 # Opt-in tier, behind --with-apps: needs the out-of-tree usbmuxd fork and/or
-# a personal .ipa nobody but the maintainer has. gles is here rather than in
+# the bundled Harness IPA. gles is here rather than in
 # the default tier because it needs a guest app built by
 # contrib/it-gles/build.sh (which needs the 3.1.3 SDK) and an sshd on the
 # image, neither of which a clean checkout has.
@@ -155,8 +153,8 @@ GLES_HOLD_S = 6
 # app calls, it needs. Add a slot here only with a note saying why it is inert.
 GLES_ALLOWED_SLOTS = set()
 
-APP_IPA_DEFAULT = os.path.expanduser(
-    "~/Downloads/random apps/com.barackobama.Obama08-iOS2.0-(Clutch-2.0.4).ipa")
+HARNESS_IPA = os.path.join(ROOT, "contrib", "it-harness", "build", "Harness.ipa")
+APP_IPA_DEFAULT = HARNESS_IPA
 
 
 # --------------------------------------------------------------------------
@@ -1112,6 +1110,31 @@ def guest_ssh(cfg, port, argv, timeout=60, scp_from=None, scp_to=None):
         return subprocess.CompletedProcess(cmd, 124, "", "timed out")
 
 
+def check_agent(cfg, procs, dev, r):
+    """Exercise the production command tunnel without USB or SSH."""
+    deadline = time.monotonic() + 60
+    while not itqmp.agent_alive(dev.qmp):
+        if time.monotonic() >= deadline:
+            return r.set(False, "guest agent did not become ready within 60 seconds")
+        time.sleep(1)
+    remote = "/tmp/regress-agent-" + os.urandom(12).hex()
+    payload = os.urandom(70 * 1024)
+    try:
+        for op, args, body, expected in (
+            ("ping", "", b"", b"it_agent v1\n"),
+            ("exec", "echo $((6*7))", b"", b"42\n"),
+            ("put", remote + " 600", payload, b""),
+            ("get", remote, b"", payload),
+        ):
+            status, response = itqmp.agent(dev.qmp, op, args, body)
+            if status != 0 or response != expected:
+                return r.set(False, "agent %s failed: status=%d, response bytes=%d" %
+                             (op, status, len(response)))
+        return r.set(True, "ping, shell arithmetic and 70 KiB binary round trip")
+    finally:
+        itqmp.agent(dev.qmp, "exec", "rm -f " + remote)
+
+
 def check_gles(cfg, procs, dev, r):
     """Prove the OpenGL ES HLE layer still renders, on the real panel.
 
@@ -1390,6 +1413,9 @@ def report_prereqs(cfg):
          "afc, usbtcp, persist, appinstall, applaunch", False),
         ("ipa", cfg.ipa, "appinstall, applaunch (--ipa or place one at "
                          "the default path)", False),
+        ("Harness.ipa", HARNESS_IPA, "bundled test application", False),
+        ("it_agent", os.path.join(ROOT, "contrib", "it-agent", "it_agent"),
+         "agent (must also be installed in the guest NAND)", False),
         ("GLTest.app", os.path.join(GLES_DIR, "GLTest.app"),
          "gles (build it with contrib/it-gles/build.sh)", False),
         ("gles slotmap", os.path.join(GLES_DIR, "slotmap.txt"),
@@ -1405,10 +1431,10 @@ def report_prereqs(cfg):
         print("      needed for: %s" % needed_for)
     print("")
     if hard_missing:
-        print("default tier (boot, fsck, persist) CANNOT run: "
+        print("default tier (boot, fsck, persist, agent) CANNOT run: "
               "missing qemu binary and/or base NAND")
     else:
-        print("default tier (boot, fsck, persist) can run "
+        print("default tier (boot, fsck, persist, agent) can run "
               "(persist SKIPs without usbmuxd)")
         print("opt-in tier (--with-apps) checks needing usbmuxd/ipa will "
               "SKIP individually if those are still missing")
@@ -1627,6 +1653,9 @@ def main():
         if "respring" in selected:
             if not check_respring(cfg, procs, dev, results["respring"]):
                 return finish(results, procs, cfg)
+
+        if "agent" in selected:
+            check_agent(cfg, procs, dev, results["agent"])
 
         if "gles" in selected:
             check_gles(cfg, procs, dev, results["gles"])
