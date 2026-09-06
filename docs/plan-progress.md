@@ -343,3 +343,16 @@ The Light Touch photo integration is committed as c5e40de. The separate
 `build-native14/Light Touch-photos.app` includes current emulator/guest components
 and NAND v4; Release build, deep strict signature and macOS 14 library closure
 checks pass. Existing device state remains preserved by the normal upgrade path.
+
+### Light Touch battery controls
+
+Device > Battery exposes target capacity with a slider, percentage, Empty/Full
+labels and a capacity indicator, plus automatic/forced charging modes. Settings
+persist to boot arguments; unsupported older dylibs disable the control. The
+runtime bridge validates bounds/readiness and queues both changes on QEMU's
+thread. ASan/UBSan bridge and PMU ADC regressions pass. The actual AppKit editor
+was rendered at 5/15/80 percent and inspected for colors and unclipped labels.
+Guest capacity filtering remains intact; the UI explains the delayed estimate.
+Automatic battery drain and integration into a wider device-status pane remain
+open. Earlier native calibration/charging evidence still covers the underlying
+PMU properties; no new native guest acceptance is claimed for this UI wiring.

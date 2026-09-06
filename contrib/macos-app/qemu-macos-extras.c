@@ -296,6 +296,32 @@ void qemu_ios_ui_attitude(double pitch_deg, double roll_deg, int pose)
     aio_bh_schedule_oneshot(qemu_get_aio_context(), attitude_bh, input);
 }
 
+struct battery_input { int level, charging; };
+
+static void battery_bh(void *opaque)
+{
+    struct battery_input *input = opaque;
+    Object *machine = OBJECT(qdev_get_machine());
+    Error *err = NULL;
+    const char *modes[] = { "auto", "on", "off" };
+    object_property_set_int(machine, "battery-level", input->level, &err);
+    if (!err) object_property_set_str(machine, "battery-charging", modes[input->charging], &err);
+    if (err) {
+        fprintf(stderr, "[battery] %s\n", error_get_pretty(err));
+        error_free(err);
+    }
+    g_free(input);
+}
+
+bool qemu_ios_ui_battery(int level, int charging)
+{
+    if (!qemu_ios_ui_ready() || level < 0 || level > 100 || charging < 0 || charging > 2) return false;
+    struct battery_input *input = g_new(struct battery_input, 1);
+    *input = (struct battery_input){ level, charging };
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), battery_bh, input);
+    return true;
+}
+
 static void paste_bh(void *opaque)
 {
     char *text = opaque;
