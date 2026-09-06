@@ -3035,6 +3035,8 @@ static void ipod_touch_machine_init(MachineState *machine)
     spi0_state->nor->nor_path = nms->nor_path;
     spi0_state->nor->boot_args = nms->boot_args;
     nms->spi0_state = spi0_state;
+    qdev_connect_gpio_out(DEVICE(gpio_state), 0,
+        qdev_get_gpio_in_named(DEVICE(spi0_state->nor), SSI_GPIO_CS, 0));
 
     set_spi_base(1);
     dev = sysbus_create_simple("ipodtouch.spi", SPI1_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI1_IRQ));

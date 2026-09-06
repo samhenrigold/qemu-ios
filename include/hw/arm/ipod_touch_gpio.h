@@ -37,6 +37,7 @@ typedef struct IPodTouchGPIOState
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     uint32_t gpio_state[NUM_GPIO_PADS];
+    qemu_irq outputs[NUM_GPIO_PADS * 8];
 } IPodTouchGPIOState;
 
 bool gpio_is_on(uint32_t *state, uint32_t gpio);

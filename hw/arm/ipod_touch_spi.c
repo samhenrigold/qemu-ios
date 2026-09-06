@@ -71,12 +71,6 @@ static void apple_spi_update_irq(IPodTouchSPIState *s)
 static void apple_spi_update_cs(IPodTouchSPIState *s)
 {
     trace_ipod_touch_spi_cs(s->base, REG(s, R_PIN));
-    BusState *b = BUS(s->spi);
-    BusChild *kid = QTAILQ_FIRST(&b->children);
-    if (kid) {
-        // TODO GPIO not properly setup yet
-        //qemu_set_irq(qdev_get_gpio_in_named(kid->child, SSI_GPIO_CS, 0), (REG(s, R_PIN) & R_PIN_CS) != 0);
-    }
     /*
      * MEASURED, so that nobody spends another day on this TODO: R_PIN is not a
      * per-transaction chip select on this controller, and wiring it through
@@ -89,12 +83,9 @@ static void apple_spi_update_cs(IPodTouchSPIState *s)
      * read). It is a FIFO-refill artifact. The R_CTRL FIFO reset fires on the
      * same 16-byte cadence and is no better.
      *
-     * The generic SSI_GPIO_CS path is also unavailable: both peripherals here
-     * leave cs_polarity at SSI_CS_NONE, so ssi_peripheral_realize never
-     * registers the input GPIO and qdev_get_gpio_in_named would abort.
-     *
-     * Consequence, which the digitizer model has to live with: the peripherals
-     * frame commands purely by counting bytes, so a response whose length
+     * NOR chip select is GPIO pad 0 pin 0, wired separately by the machine.
+     * The digitizer still has SSI_CS_NONE and frames commands by counting
+     * bytes, so a response whose length
      * disagrees with what the guest clocks desynchronises them permanently.
      * See get_empty_frame() in ipod_touch_multitouch.c.
      */

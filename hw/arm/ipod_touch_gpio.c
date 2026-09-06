@@ -1,5 +1,6 @@
 #include "hw/arm/ipod_touch_gpio.h"
 #include "migration/vmstate.h"
+#include "hw/irq.h"
 #include "trace.h"
 
 /*
@@ -23,9 +24,18 @@ static void s5l8900_gpio_write(void *opaque, hwaddr addr, uint64_t value, unsign
     trace_ipod_touch_gpio_write(addr, value);
     IPodTouchGPIOState *s = (struct IPodTouchGPIOState *) opaque;
 
-    switch(addr) {
-      default:
-        break;
+    if (addr == 0x1e0) {
+        unsigned pad = (value >> 16) & 0xff;
+        unsigned pin = (value >> 8) & 0xff;
+        unsigned function = value & 0xff;
+        /* FSEL output-low/high. Other pin functions remain unmodeled. */
+        if (pad < NUM_GPIO_PADS && pin < 8 &&
+            (function == 0x0e || function == 0x0f)) {
+            bool high = function & 1;
+            s->gpio_state[pad] = (s->gpio_state[pad] & ~(1u << pin)) |
+                                 ((uint32_t)high << pin);
+            qemu_set_irq(s->outputs[pad * 8 + pin], high);
+        }
     }
 }
 
@@ -38,7 +48,7 @@ static uint64_t s5l8900_gpio_read(void *opaque, hwaddr addr, unsigned size)
 
     switch(addr) {
         case 0x4:
-            return 0;
+            return s->gpio_state[0];
         case 0x24 ... 0x184:
             return s->gpio_state[GPIOADDR2PAD(addr)];
         default:
@@ -80,6 +90,7 @@ static void s5l8900_gpio_init(Object *obj)
     DeviceState *dev = DEVICE(sbd);
     IPodTouchGPIOState *s = IPOD_TOUCH_GPIO(dev);
 
+    qdev_init_gpio_out(dev, s->outputs, ARRAY_SIZE(s->outputs));
     memory_region_init_io(&s->iomem, obj, &gpio_ops, s, "gpio", 0x1000);
 }
 
@@ -112,6 +123,14 @@ static void s5l8900_gpio_reset(DeviceState *dev)
     if (!getenv("IT_VOLBTN_LEGACY")) {
         gpio_set_on(s->gpio_state, GPIO_BUTTON_VOLUP);
         gpio_set_on(s->gpio_state, GPIO_BUTTON_VOLDOWN);
+    }
+    /* NOR chip select rests deasserted; its driver asserts pad 0 pin 0. */
+    s->gpio_state[0] |= 1;
+    for (unsigned pad = 0; pad < NUM_GPIO_PADS; pad++) {
+        for (unsigned pin = 0; pin < 8; pin++) {
+            qemu_set_irq(s->outputs[pad * 8 + pin],
+                         (s->gpio_state[pad] >> pin) & 1);
+        }
     }
 }
 

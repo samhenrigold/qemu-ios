@@ -98,14 +98,31 @@ static void initialize_nor(IPodTouchNORSPIState *s)
     s->nor_initialized = true;      /* do not retry on every transfer */
 }
 
+static void nor_reset_transaction(IPodTouchNORSPIState *s)
+{
+    s->cur_cmd = 0;
+    s->in_buf_cur_ind = 0;
+    s->out_buf_cur_ind = 0;
+    s->in_buf_size = 0;
+    s->out_buf_size = 0;
+}
+
+static int ipod_touch_nor_spi_set_cs(SSIPeripheral *dev, bool level)
+{
+    nor_reset_transaction(IPOD_TOUCH_NOR_SPI(dev));
+    return 0;
+}
+
+static void ipod_touch_nor_spi_reset(DeviceState *dev)
+{
+    IPodTouchNORSPIState *s = IPOD_TOUCH_NOR_SPI(dev);
+    nor_reset_transaction(s);
+    s->write_enabled = 0;
+}
+
 static uint32_t ipod_touch_nor_spi_transfer(SSIPeripheral *dev, uint32_t value)
 {
     IPodTouchNORSPIState *s = IPOD_TOUCH_NOR_SPI(dev);
-
-    if(s->cur_cmd == NOR_READ_DATA_CMD && s->in_buf_cur_ind == s->in_buf_size && value != 0xFF) {
-        // if we are currently reading from the NOR data and we receive a value that's not the sentinel, reset the current command.
-        s->cur_cmd = 0;
-    }
 
     if(s->cur_cmd == 0) {
         // this is a new command -> set it. in_buf/out_buf are fixed 0x1000-byte
@@ -244,11 +261,7 @@ static int ipod_touch_nor_spi_post_load(void *opaque, int version_id)
 {
     IPodTouchNORSPIState *s = opaque;
 
-    s->cur_cmd = 0;
-    s->in_buf_cur_ind = 0;
-    s->out_buf_cur_ind = 0;
-    s->in_buf_size = 0;
-    s->out_buf_size = 0;
+    nor_reset_transaction(s);
     return 0;
 }
 
@@ -270,9 +283,12 @@ static void ipod_touch_nor_spi_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_ipod_touch_nor_spi;
+    device_class_set_legacy_reset(dc, ipod_touch_nor_spi_reset);
     SSIPeripheralClass *k = SSI_PERIPHERAL_CLASS(klass);
     k->realize = ipod_touch_nor_spi_realize;
     k->transfer = ipod_touch_nor_spi_transfer;
+    k->set_cs = ipod_touch_nor_spi_set_cs;
+    k->cs_polarity = SSI_CS_LOW;
 }
 
 static const TypeInfo ipod_touch_nor_spi_type_info = {
