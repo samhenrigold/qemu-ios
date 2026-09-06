@@ -201,7 +201,8 @@ for event, exit_code, expected in ((host, 0, False), (guest, 0, True),
     q, peer = qmp_stream([event] if event else [])
     dev = SimpleNamespace(cfg=SimpleNamespace(), procs=None, tag='test', qmp=q,
                           qemu=SimpleNamespace(wait=lambda timeout: exit_code))
-    with patch.object(R, 'ensure_guest_ssh', return_value=(1234, None)), \
+    with patch.object(R.itqmp, 'agent_alive', return_value=False), \
+         patch.object(R, 'ensure_guest_ssh', return_value=(1234, None)), \
          patch.object(R, 'guest_ssh', return_value=SimpleNamespace(returncode=0, stdout='', stderr='')), \
          patch.object(R.os.path, 'exists', return_value=True), patch.object(R, 'log'):
         assert R.Device.powerdown(dev) is expected
@@ -245,3 +246,17 @@ for failure in (None, 'ping', 'exec', 'put', 'get'):
         assert R.check_agent(None, None, SimpleNamespace(qmp=object()), result) is (failure is None)
     assert calls[-1][0] == 'exec' and calls[-1][1].startswith('rm -f /tmp/regress-agent-')
 print('Agent regression detects command failures and binary corruption')
+
+# Agent halt still requires guest-originated shutdown and must never retry SSH.
+for event, expected in ((guest, True), (host, False)):
+    q, peer = qmp_stream([event])
+    dev = SimpleNamespace(cfg=SimpleNamespace(), procs=None, tag='agent halt', qmp=q,
+                          qemu=SimpleNamespace(wait=lambda timeout: 0))
+    with patch.object(R.itqmp, 'agent_alive', return_value=True), \
+         patch.object(R.itqmp, 'agent', return_value=(0, b'')) as call, \
+         patch.object(R, 'ensure_guest_ssh') as ssh, patch.object(R, 'log'):
+        assert R.Device.powerdown(dev) is expected
+        call.assert_called_once_with(q, 'halt', timeout=30)
+        ssh.assert_not_called()
+    peer.close()
+print('Agent shutdown requires a guest power-off event without SSH replay')
