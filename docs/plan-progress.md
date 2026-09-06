@@ -1012,3 +1012,16 @@ verifies cold persistence and both confirmed shutdowns
 Two test issues were corrected during acceptance: migration inspection must
 wait for incoming load completion, and ITSync may emit diagnostics before the
 final import acknowledgement. Database-count and byte/audio assertions remain.
+
+## LCD composition startup option (2026-09-06)
+
+`lcd-planes=on|off` replaces the process-wide cached environment switch with a
+per-device startup property. Explicit values override the deprecated
+`IT_LCD_PLANES` alias. Light Touch now passes all media decoder/compositor
+choices in its machine string. Photos acceptance uses those same explicit
+options without media environment flags.
+
+All 34 native configuration cases pass. LCD compositor and IRQ sanitizer checks
+pass. Native Photos verifies thumbnail colors, native save, retry handling, cold
+persistence and both confirmed shutdowns (`/tmp/it-lcd-planes-mode-photo.log`).
+CLI, dylib and Light Touch Release builds pass.

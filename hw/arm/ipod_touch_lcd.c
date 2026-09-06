@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_lcd.h"
+#include "hw/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "ui/pixel_ops.h"
 #include "ui/console.h"
@@ -54,13 +55,6 @@ static int lcd_ready_hack(void)
         on = getenv("IT_LCD_READY") ? 1 : 0;
     }
     return on;
-}
-
-static bool lcd_planes_enabled(void)
-{
-    static int enabled = -1;
-    if (enabled < 0) enabled = getenv("IT_LCD_PLANES") != NULL;
-    return enabled;
 }
 
 static int lcd_trace(void)
@@ -178,7 +172,7 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
     // printf("%s: read from location 0x%08x\n", __func__, addr);
 
     IPodTouchLCDState *s = (IPodTouchLCDState *)opaque;
-    if (lcd_planes_enabled() && !(addr & 3) && addr >= 0x10 &&
+    if (s->planes_enabled && !(addr & 3) && addr >= 0x10 &&
         addr < sizeof(s->plane_regs)) return s->plane_regs[addr / 4];
     switch(addr)
     {
@@ -680,7 +674,7 @@ static void lcd_refresh(void *opaque)
     }
 
     bool composed = false;
-    if (lcd_planes_enabled() && (lcd->plane_scanout[1] & 0x28)) {
+    if (lcd->planes_enabled && (lcd->plane_scanout[1] & 0x28)) {
         if (!lcd->rotbuf) lcd->rotbuf = g_malloc(LCD_FB_WIDTH * LCD_FB_HEIGHT * 4);
         composed = lcd_compose_planes(lcd->plane_scanout, lcd->rotbuf);
         if (!composed) {
@@ -1148,6 +1142,10 @@ static const VMStateDescription vmstate_ipod_touch_lcd = {
     }
 };
 
+static const Property lcd_properties[] = {
+    DEFINE_PROP_BOOL("planes", IPodTouchLCDState, planes_enabled, false),
+};
+
 static void ipod_touch_lcd_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -1155,6 +1153,7 @@ static void ipod_touch_lcd_class_init(ObjectClass *klass, void *data)
     dc->realize = ipod_touch_lcd_realize;
     device_class_set_legacy_reset(dc, ipod_touch_lcd_reset);
     dc->vmsd = &vmstate_ipod_touch_lcd;
+    device_class_set_props(dc, lcd_properties);
 }
 
 static const TypeInfo ipod_touch_lcd_info = {

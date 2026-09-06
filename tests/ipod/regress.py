@@ -346,7 +346,7 @@ class Device:
         if getattr(cfg, "kernel_console", False):
             machine += (",boot-args=amfi_allow_any_signature=1 "
                         "cs_enforcement_disable=1 serial=3 debug=0x8")
-        for option in ("audio_hw", "h264_decode", "scaler_decode", "mpvd_decode", "amc_mode"):
+        for option in ("audio_hw", "h264_decode", "scaler_decode", "mpvd_decode", "amc_mode", "lcd_planes"):
             value = getattr(cfg, option, None)
             if value is not None:
                 machine += "," + option.replace("_", "-") + "=" + value
@@ -1593,7 +1593,7 @@ def main():
                     help="-m (default 128M, what the device has)")
     ap.add_argument("--audio-hw", choices=("auto", "on", "off"), default=None,
                     help="explicit audio-hw machine option; overrides the legacy IT_AUDIO_HW alias")
-    for option in ("h264-decode", "scaler-decode", "mpvd-decode"):
+    for option in ("h264-decode", "scaler-decode", "mpvd-decode", "lcd-planes"):
         ap.add_argument("--" + option, choices=("on", "off"), default=None,
                         help="explicit " + option + " startup option")
     ap.add_argument("--amc-mode", choices=("registers", "handshake", "decode"), default=None,
