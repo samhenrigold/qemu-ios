@@ -552,3 +552,13 @@ Skipped/failed checks and changed input files cannot pass. Rendering, audio,
 input and networking stay unreviewed. A native Harness run passed; its initial
 menu screenshots were reviewed and retained in [the ledger](app-ledger.md).
 Broader game coverage and Legacy Store verdict presentation remain pending.
+
+### Stock-service protocol research
+
+A disposable 7E18 Weather guest accepted local synthetic XML, persisted both
+replacement city names, displayed the six-day forecast, and shut down cleanly
+(`/tmp/it-weather-protocol-native-v2.log`). The runnable protocol check retains
+its screenshot and sanitized requests. [Protocol notes](stock-service-protocol.md)
+record the strict six-forecast shape and Stocks' captured request types.
+Live provider integration and native city-search acceptance remain pending;
+no fabricated weather or quotes are served by the production proxy.
