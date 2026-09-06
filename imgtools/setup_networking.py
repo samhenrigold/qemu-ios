@@ -2,9 +2,11 @@
 """Enable a working network stack *with DNS* on a NAND COW clone.
 
 The BCM4325 WiFi model gets iOS onto the network at the transport layer - it
-takes a DHCP lease, ARPs, and moves TCP - but this particular 5F138 image needs
-two things in its filesystem before userspace (SpringBoard, Safari, CFNetwork)
-will actually use it. Both are applied here, offline, deterministically.
+takes a DHCP lease, ARPs, and moves TCP. Images missing the service/daemon
+configuration need the filesystem setup below before userspace (SpringBoard,
+Safari, CFNetwork) can use it. These changes are applied offline. The current
+prepared 7E18 image already includes networking; the resolver investigation
+below records the historical 5F138 setup, not a current 3.1.3 failure.
 
   1. A SystemConfiguration service. The image ships an EMPTY /var/preferences,
      so PreferencesMonitor has nothing to publish under Setup:/Network/Service,

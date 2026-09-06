@@ -587,3 +587,22 @@ persisted all three six-day forecasts, and shut down cleanly
 (`/tmp/it-weather-live-native-final-v2.log`). Stock Weather converts cached
 Fahrenheit data for Celsius display. Release app build and native Help checks
 pass. Stocks remains at synthetic protocol verification, without a live provider.
+
+### Package and tooling follow-through
+
+`build-native14/Light Touch-latest.app` now points to `Light Touch-45c117d.app`,
+with the live Weather helper and Help attribution. Deep signature verification
+and macOS 14 dependency-closure checks passed (`/tmp/ltm-weather-package-check.log`).
+
+Screenshot normalization, recording and the regression harness now share one
+bounded PPM reader. Truncated headers/comments fail instead of looping forever;
+malformed-input checks, existing regression checks and retained native frames pass.
+`bootshot.py` uses that reader, fresh overlays and owned-QEMU identity checks. It
+stops its disposable guest by default and requires `--keep-running` to retain it.
+A native eight-second run captured seven early boot frames and stopped; this is
+capture cleanup, not a clean-shutdown/storage acceptance test.
+
+AppSync documentation now describes the four 7E18 sites and entitlement
+preservation. The two 5F138-only patch tools and old 500 MB pruning recipe are
+marked historical. Networking notes distinguish the old resolver investigation
+from current 7E18 behavior; capabilities now link agent/configuration interfaces.

@@ -1,8 +1,19 @@
 # Networking on the emulated iPod touch 2G
 
-Where IP connectivity could come from, and what the hardware and the firmware
-actually allow. Written against iPhone OS 2.1.1 / build 5F138, the image this
-tree boots.
+## Current 3.1.3 / 7E18
+
+The prepared image auto-associates with the emulated BCM4325 network and uses
+slirp for DHCP, DNS and TCP. Native guest HTTP and HTTPS proxy checks now pass;
+the built-in proxy supplies host TLS and optional archived replay. See the
+[proxy implementation and checks](../contrib/it-webproxy/README.md),
+[current capabilities](capabilities.md) and [progress evidence](plan-progress.md).
+Settings-driven Wi-Fi joining and two-instance LAN remain explicitly deferred.
+
+## Historical 2.1.1 / 5F138 investigation
+
+The remaining sections describe the old image and its original networking
+bring-up. Its resolver and configuration failures are **not** the current 7E18
+failure list. Keep these details as protocol evidence when comparing firmware.
 
 ## Summary
 

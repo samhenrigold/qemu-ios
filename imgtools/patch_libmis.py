@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""AppSync-equivalent: force libmis.dylib's MISValidateSignature to return success.
+"""Historical 2.1.1 / 5F138 ONLY; 3.1.3 libmis is inside the shared cache. See README-appsync.md.
+
+AppSync-equivalent: force libmis.dylib's MISValidateSignature to return success.
 
 This is the low-risk form of "ship your own libmis". The install-time validation
 in MobileInstallation calls the IMPORTED symbol _MISValidateSignature, exported by

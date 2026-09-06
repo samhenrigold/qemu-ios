@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Enable USB `ideviceinstaller install` of decrypted apps (install AND launch).
+"""Historical 2.1.1 / 5F138 ONLY. For 3.1.3, see README-appsync.md.
+
+Enable USB `ideviceinstaller install` of decrypted apps (install AND launch).
 
 The AppSync-equivalent for the iPod Touch 2G emulator (iPhone OS 2.1.1), applied
 as deterministic offline binary patches to a NAND COW clone. Two independent
