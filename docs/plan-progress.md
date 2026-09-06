@@ -394,3 +394,19 @@ The repeatable `test_sleep_guest.py` passes explicit black-panel, Home-wake,
 no-reset, agent-recovery, no-unexpected-interrupt and clean-shutdown assertions:
 `/tmp/it-sleep-guest-final.log`. Photos import, visible grid colors and cold
 persistence also pass after the IRQ change: `/tmp/it-photos-clcd-regression.log`.
+
+### Raw AAC import
+
+Light Touch now accepts raw AAC and streams it through macOS audio codecs into
+an AAC-LC M4A before upload, without an external converter. Reads use the decoded
+frame count because AVAudioFile reports eofErr on a read beyond an ADTS file's
+end. Conversion bounds duration/output size and checks cancellation between
+buffers. Existing MP3/M4A/WAV copies remain byte-identical.
+
+Actual Swift preparation passes raw AAC plus the existing audio fixtures. Native
+AFC/import/duplicate reconciliation passes and Music plays 6.21 seconds with
+440/880 Hz channel peaks: `/tmp/ltm-aac-native-v3.log`. Release build passes.
+The one-song playback test uses the first row, without the Shuffle row present
+in the earlier two-song test. Music leaves the foreground during volume setup;
+no CrashReporter files were present, and relaunch/playback passes. That separate
+foreground transition remains unexplained and is not claimed fixed.
