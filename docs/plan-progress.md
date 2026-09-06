@@ -669,3 +669,20 @@ confirms guest shutdown in 87.9 seconds (`/tmp/it-firmware-native.log`). Its
 retained clock-function bytes confirm no legacy clock patch was present before
 the read. Native 5F138 boot, the firmware-selection property and other behavior
 properties remain pending; see `configuration.md`.
+
+
+### Legacy clock trampoline removal (2026-09-06)
+
+A fresh 5F138 boot exposed an undefined-instruction exception with the link
+register inside the MBX-injected clock entry. The injected MRC is a Thumb-2
+instruction; ARM1176 supports Thumb-1. Both kernels already have a modeled PMU
+RTC, so the trampoline and its unused profile addresses were removed. The
+compatibility cp15 clock register remains for old research kernels.
+
+The guarded-patch sanitizer test now asserts no write to the 5F138 clock entry.
+Native 5F138 reaches the Home screen with its original RTC path
+(`/tmp/it-firmware-5f138-rtc.log`, retained `frame-3.png` in
+`/var/folders/tp/360v5_ln3lxg5x66gf0rqc540000gn/T/it-5f138-boot-a5ni3ud5`).
+The earlier run stopped in the clock exception (`/tmp/it-firmware-5f138.log`).
+The newer run later closed QMP around the untethered idle transition; that
+separate behavior is not yet diagnosed or claimed stable.

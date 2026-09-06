@@ -51,8 +51,9 @@ int main(void){
  assert(!it_firmware_detect_kernel(ram,sizeof(ram)));
  load(current);bool patched=false;patch_kernel(&patched);assert(writes==0 && usb_patches==0);
  load(NULL);patched=false;patch_kernel(&patched);assert(writes==0 && usb_patches==0);
- load(old);patched=false;patch_kernel(&patched);assert(writes==5 && usb_patches==1 && addresses[0]==old->pegetgmttimeofday_pa);
- patch_kernel(&patched);assert(writes==5);
+ load(old);patched=false;patch_kernel(&patched);assert(writes==4 && usb_patches==1 && addresses[0]==0x08324aa8);
+ patch_kernel(&patched);assert(writes==4);
+ for(unsigned i=0;i<writes;i++)assert(addresses[i]!=0x0816b460);
  setenv("IT_AMFI_ALLOW_TASKPORT","1",1);
  IPodTouchMachineState machine={0};
  load(NULL);ipod_touch_amfi_patch_now(&machine);assert(!machine.amfi_patched && writes==0);

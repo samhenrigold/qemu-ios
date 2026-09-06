@@ -431,11 +431,8 @@ static void patch_kernel(bool *alreadypatched)
     if (!fw || !fw->legacy_kernel_patches) {
         return; /* The BCM4325 subroutine below is verified only on 5F138. */
     }
-    /* Legacy boot-time clock override. Both builds have a real emulated PMU
-     * RTC; 7E18 uses it directly and must not receive this old kernel patch. */
-    static const uint8_t gmt_patch[6] = {0x7f, 0xee, 0x3f, 0x0f, 0x70, 0x47};
-    cpu_physical_memory_write(fw->pegetgmttimeofday_pa, gmt_patch, sizeof(gmt_patch));
-
+    /* Both kernels use the modeled PMU RTC. The old Thumb-2 MRC clock
+     * trampoline faults on ARM1176 (Thumb-1), so leave that function intact. */
     patch_usb_function_gate();
 
     // Patch the loading of the AppleBCM4325 driver.
