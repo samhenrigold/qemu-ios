@@ -76,6 +76,9 @@
 
 /* Framebuffer objects are core in ES 1.1's OES form. Same tokens, same
  * arguments, different suffix. */
+#define glIsFramebufferEXT           glIsFramebufferOES
+#define glIsRenderbufferEXT          glIsRenderbufferOES
+#define glGenerateMipmapEXT          glGenerateMipmapOES
 #define glGenFramebuffersEXT          glGenFramebuffersOES
 #define glBindFramebufferEXT          glBindFramebufferOES
 #define glFramebufferTexture2DEXT     glFramebufferTexture2DOES
@@ -4695,6 +4698,25 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
      * So the names are real host names and the calls are real host calls. Only
      * the drawable framebuffer is special-cased -- see gh.fbo_drawable.
      */
+    /* Object predicates must distinguish generated names from bound objects. */
+    case GLES_SLOT_IS_RENDERBUFFER:
+        return glIsRenderbufferEXT(a[0]);
+    case GLES_SLOT_IS_FRAMEBUFFER:
+        /* Zero is the default drawable, not a framebuffer object. */
+        return a[0] && (gles_is_drawable(a[0]) || glIsFramebufferEXT(a[0]));
+    case GLES_SLOT_GENERATE_MIPMAP:
+        if (a[0] != GL_TEXTURE_2D) {
+            return gles_reject(GL_INVALID_ENUM);
+        }
+        glGenerateMipmapEXT(a[0]);
+        return 0;
+    case GLES_SLOT_COLOR_MASK:
+        glColorMask(a[0] != 0, a[1] != 0, a[2] != 0, a[3] != 0);
+        return 0;
+    case GLES_SLOT_STENCIL_MASK:
+        glStencilMask(a[0]);
+        return 0;
+
     case GLES_SLOT_GEN_RENDERBUFFERS:
     case GLES_SLOT_GEN_FRAMEBUFFERS: {   /* n, guest uint* */
         uint32_t n = a[0];
