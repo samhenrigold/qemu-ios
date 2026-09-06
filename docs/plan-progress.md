@@ -288,3 +288,22 @@ the third-party MediaPlayer query; an unavailable response is reported explicitl
 Light Touch import/drop/progress integration, photos, artwork, additional
 playlists and video-library import remain unfinished. The helper preserves
 staged audio on ambiguous failure; retries must reuse the same staged location.
+
+### Light Touch music import
+
+File > Sync Media and audio-file drops now prepare an immutable copy, read
+AVFoundation metadata, validate supported codecs/rates and queue AFC uploads
+with app installations. Progress uses the existing inspector rows; cancellation
+ends at the library commit boundary. The guest helper is included in packaging.
+
+Release build and focused preflight/upload checks pass. The native app-side
+test compiles the actual Swift preflight, DeviceServices, IMobileDevice and
+DeviceTools music methods; real AFC preserves the exact audio bytes, and the
+guest receives quoted/Unicode metadata unchanged apart from canonical Unicode
+normalization. Repeated commit of the same staged location leaves one song.
+Music's Songs screenshot and PMU-confirmed shutdown pass:
+`/tmp/ltm-media-native-v2.log`. The test uses a local adapter to the isolated
+guest agent; it does not claim interactive AppKit picker/drop acceptance.
+
+Photos, raw AAC transcoding, artwork, playlists, content deduplication across
+separate import jobs and recovery UI for uncertain imports remain open.
