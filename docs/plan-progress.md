@@ -217,3 +217,24 @@ Sanitizer checks cover cardinal and combined angles, one-g magnitude, invalid
 inputs and snapshot metadata. Native paused-QEMU checks cover startup arguments,
 live QOM updates, mounting signs and large raw-axis clamping:
 `/tmp/it-attitude-qmp-v2.log`. Light Touch inputs and sensor sampling remain next.
+
+### Light Touch motion inputs and sampled sensor
+
+Light Touch now has Upright/Flat poses, two-axis off-panel scroll tilt, Option-arrow
+keyboard tilt at three speeds, and Option-Space shake. Focus loss, sleep and key
+release return to rest; focused production-method tests cover those transitions,
+Live Text and guest-key isolation. Release build passes. Commits: Light Touch
+`60b06ef`, macOS bridge export `c9b118aea1`.
+
+The sensor samples on virtual-time boundaries (automatic 100/400 Hz or an explicit
+1..400 Hz override), adds bounded one-count noise, and applies a 200 ms three-axis
+shake. Native Harness acceptance passed callbacks and guest-confirmed shutdown
+(`/tmp/it-accel-guest-native-v4.log`); its requested 100 ms UIKit interval measured
+about 100.7 ms. Sanitizers cover rates, saturation, noise, shake and snapshot v3.
+QOM axis readback reports requested raw values, while I2C exposes sampled values.
+
+The guest revealed that 7E18 UIKit preserves raw X/Y signs and inverts Z, unlike
+an earlier assumption in the plan. The shared model currently retains the plan's
+raw-axis convention; physical face-up/steering acceptance remains open. See
+`docs/accelerometer-controls.md`. Controller inputs and the attitude indicator
+remain unfinished; the optional phone companion has not been built.

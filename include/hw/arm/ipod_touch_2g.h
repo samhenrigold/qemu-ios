@@ -216,6 +216,7 @@ typedef struct {
 	LIS302DLState *lis302dl_state;
     double accel_pitch, accel_roll;
     bool accel_flat;
+    uint32_t accel_rate_hz;
     Pcf50633State *pmu_state;
     uint32_t battery_adc;
     uint8_t battery_charging;

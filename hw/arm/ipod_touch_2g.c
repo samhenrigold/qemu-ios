@@ -1322,6 +1322,28 @@ static void ipod_touch_set_accel_pose(Object *obj, const char *value, Error **er
         nms->accel_pitch, nms->accel_roll, nms->accel_flat);
 }
 
+static void ipod_touch_get_accel_rate(Object *obj, Visitor *v, const char *name,
+                                     void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    int64_t value = nms->lis302dl_state ? nms->lis302dl_state->rate_hz : nms->accel_rate_hz;
+    visit_type_int(v, name, &value, errp);
+}
+
+static void ipod_touch_set_accel_rate(Object *obj, Visitor *v, const char *name,
+                                     void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    int64_t value;
+    if (!visit_type_int(v, name, &value, errp)) return;
+    if (value < 0 || value > 400) {
+        error_setg(errp, "accel-rate-hz must be 0 (automatic) or 1..400");
+        return;
+    }
+    nms->accel_rate_hz = value;
+    if (nms->lis302dl_state) nms->lis302dl_state->rate_hz = value;
+}
+
 static void ipod_touch_get_accel_orientation(Object *obj, Visitor *v, const char *name,
                                              void *opaque, Error **errp)
 {
@@ -1348,7 +1370,7 @@ static void ipod_touch_get_accel_axis(Object *obj, Visitor *v, const char *name,
 {
     LIS302DLState *s = IPOD_TOUCH_MACHINE(obj)->lis302dl_state;
     char axis = name[strlen(name) - 1];
-    int64_t value = s ? (axis == 'x' ? s->out_x : axis == 'y' ? s->out_y : s->out_z) : 0;
+    int64_t value = s ? (axis == 'x' ? s->base_x : axis == 'y' ? s->base_y : s->base_z) : 0;
     visit_type_int(v, name, &value, errp);
 }
 
@@ -1502,6 +1524,8 @@ static void ipod_touch_instance_init(Object *obj)
         "function never registers a driver. Firmware-build-specific (2.1.1 / 5F138)");
 
     /* Accelerometer (LIS302DL) host controls; see the getters/setters above. */
+    object_property_add(obj, "accel-rate-hz", "int", ipod_touch_get_accel_rate, ipod_touch_set_accel_rate, NULL, NULL);
+    object_property_set_description(obj, "accel-rate-hz", "Sample rate override, 1..400 Hz; 0 follows sensor DR (100/400 Hz)");
     object_property_add_str(obj, "accel-pose", ipod_touch_get_accel_pose, ipod_touch_set_accel_pose);
     object_property_add(obj, "accel-pitch", "number", ipod_touch_get_accel_angle, ipod_touch_set_accel_angle, NULL, NULL);
     object_property_add(obj, "accel-roll", "number", ipod_touch_get_accel_angle, ipod_touch_set_accel_angle, NULL, NULL);
@@ -3064,6 +3088,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     I2CSlave *accelerometer = i2c_slave_create_simple(i2c_state->bus, "lis302dl", 0x1D);
     nms->lis302dl_state = LIS302DL(accelerometer);
     lis302dl_apply_attitude(nms->lis302dl_state, nms->accel_pitch, nms->accel_roll, nms->accel_flat);
+    nms->lis302dl_state->rate_hz = nms->accel_rate_hz;
 
     /*
      * Simulated "demo card" / AppleTetheredDevice.  The N72AP DeviceTree has an

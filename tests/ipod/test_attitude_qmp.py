@@ -28,6 +28,13 @@ try:
     def vector():return tuple(get(axis) for axis in 'xyz')
     assert get('pose')=='flat' and get('pitch')==30 and get('roll')==30
     assert vector()==(-28,32,-48),vector()
+    assert get('rate-hz')==0
+    put('rate-hz',200);assert get('rate-hz')==200
+    for invalid in (-1,401,1<<40):
+        try:put('rate-hz',invalid)
+        except RuntimeError:pass
+        else:raise AssertionError('invalid sample rate accepted')
+    assert get('rate-hz')==200
     put('roll',0);assert vector()==(0,32,-55)
     put('pitch',90);assert vector()==(0,64,0)
     put('pose','upright');assert vector()==(0,0,-64)

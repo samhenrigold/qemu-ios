@@ -28,9 +28,9 @@ bool lis302dl_apply_attitude(LIS302DLState *s, double pitch, double roll, bool f
     s->pitch_mdeg = lround(pitch * 1000);
     s->roll_mdeg = lround(roll * 1000);
     s->flat_pose = flat;
-    s->base_x = s->out_x = vector[0];
-    s->base_y = s->out_y = vector[1];
-    s->base_z = s->out_z = vector[2];
+    s->base_x = vector[0];
+    s->base_y = vector[1];
+    s->base_z = vector[2];
     return true;
 }
 
@@ -47,36 +47,67 @@ void lis302dl_apply_orientation(LIS302DLState *s, uint32_t o)
     it_display_set_orientation(o);
     if (lis302dl_debug()) {
         printf("lis302dl: orientation=%u -> x=%d y=%d z=%d\n",
-               o, s->out_x, s->out_y, s->out_z);
+               o, s->base_x, s->base_y, s->base_z);
     }
 }
 
-static void lis302dl_shake_tick(void *opaque)
+/* Generate only on a guest sample boundary. Repeated reads within one period
+ * see the same triplet, regardless of the host input event rate. Lazy sampling
+ * avoids an always-running timer on a part whose interrupt pin is not modeled. */
+static void lis302dl_sample(LIS302DLState *s, int64_t now)
 {
-    LIS302DLState *s = opaque;
-    if (s->shake_ticks <= 0) {
-        /* settle back to the steady-state vector */
-        s->out_x = s->base_x;
-        s->out_y = s->base_y;
-        s->out_z = s->base_z;
-        return;
+    uint32_t rate = s->rate_hz ? s->rate_hz : (s->ctrl_reg1 & 0x80 ? 400 : 100);
+    int64_t period = 1000000000LL / rate;
+    if (s->last_sample_ns >= 0 && now >= s->last_sample_ns &&
+        now - s->last_sample_ns < period) return;
+    s->last_sample_ns = now;
+    int values[3] = { s->base_x, s->base_y, s->base_z };
+    int64_t elapsed = now - s->shake_start_ns;
+    if (s->shake_start_ns >= 0 && elapsed >= 0 && elapsed < 200000000) {
+        int impulse = (elapsed / 20000000) & 1 ? -127 : 127;
+        values[0] = impulse;
+        values[1] = -impulse;
+        values[2] = impulse / 2;
+    } else {
+        s->shake_start_ns = -1;
+        if (values[0] || values[1] || values[2]) {
+            for (int i = 0; i < 3; i++) {
+                /* Device-local PRNG: migration is reproducible and motion does
+                 * not consume guest entropy or depend on host wall time. */
+                uint32_t x = s->noise_state ? s->noise_state : 0x302d1;
+                x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+                s->noise_state = x;
+                values[i] += (int)(x % 3) - 1;
+            }
+        }
     }
-    /* alternating large impulse on top of the resting vector */
-    int8_t imp = (s->shake_ticks & 1) ? 0x7F : -0x7F;
-    s->out_x = imp;
-    s->out_y = (int8_t)(s->base_y + (imp >> 1));
-    s->out_z = s->base_z;
-    s->shake_ticks--;
-    timer_mod(s->shake_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 40);
+    s->out_x = CLAMP(values[0], -128, 127);
+    s->out_y = CLAMP(values[1], -128, 127);
+    s->out_z = CLAMP(values[2], -128, 127);
+}
+
+static void lis302dl_trace_poll(LIS302DLState *s, int64_t now)
+{
+    static int enabled = -1;
+    if (enabled < 0) enabled = getenv("IT_ACCEL_TRACE") != NULL;
+    if (!enabled) return;
+    if (s->trace_last_poll_ns >= 0 && now > s->trace_last_poll_ns) {
+        s->trace_poll_sum_ns += now - s->trace_last_poll_ns;
+        s->trace_polls++;
+    }
+    s->trace_last_poll_ns = now;
+    if (now - s->trace_last_report_ns >= 1000000000LL && s->trace_polls) {
+        fprintf(stderr, "[IT_ACCEL] OUT_X polls=%u mean_interval_ms=%.3f\n",
+                s->trace_polls, s->trace_poll_sum_ns / (s->trace_polls * 1000000.0));
+        s->trace_last_report_ns = now;
+        s->trace_poll_sum_ns = 0;
+        s->trace_polls = 0;
+    }
 }
 
 void lis302dl_shake(LIS302DLState *s)
 {
-    s->shake_ticks = 12;
-    timer_mod(s->shake_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 40);
-    if (lis302dl_debug()) {
-        printf("lis302dl: shake\n");
-    }
+    s->shake_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 }
 
 void lis302dl_set_axis_value(LIS302DLState *s, char axis, int v)
@@ -84,9 +115,9 @@ void lis302dl_set_axis_value(LIS302DLState *s, char axis, int v)
     if (v < -128) v = -128;
     if (v > 127) v = 127;
     switch (axis) {
-        case 'x': s->out_x = s->base_x = (int8_t)v; break;
-        case 'y': s->out_y = s->base_y = (int8_t)v; break;
-        case 'z': s->out_z = s->base_z = (int8_t)v; break;
+        case 'x': s->base_x = (int8_t)v; break;
+        case 'y': s->base_y = (int8_t)v; break;
+        case 'z': s->base_z = (int8_t)v; break;
         default: break;
     }
 }
@@ -106,6 +137,11 @@ static uint8_t lis302dl_recv(I2CSlave *i2c)
     LIS302DLState *s = LIS302DL(i2c);
     uint8_t ret;
 
+    if (s->cmd == ACCEL_OUT_X || s->cmd == ACCEL_OUT_Y || s->cmd == ACCEL_OUT_Z) {
+        int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        lis302dl_sample(s, now);
+        if (s->cmd == ACCEL_OUT_X) lis302dl_trace_poll(s, now);
+    }
     switch(s->cmd) {
         case ACCEL_WHOAMI:
             ret = ACCEL_WHOAMI_VALUE;
@@ -222,7 +258,8 @@ static void lis302dl_get_axis(Object *obj, Visitor *v, const char *name,
                               void *opaque, Error **errp)
 {
     LIS302DLState *s = LIS302DL(obj);
-    int8_t *axis = (name[0] == 'x') ? &s->out_x : (name[0] == 'y') ? &s->out_y : &s->out_z;
+    /* QOM reports the requested raw vector; I2C reports sampled sensor data. */
+    int8_t *axis = (name[0] == 'x') ? &s->base_x : (name[0] == 'y') ? &s->base_y : &s->base_z;
     int64_t val = *axis;
     visit_type_int(v, name, &val, errp);
 }
@@ -255,10 +292,11 @@ static void lis302dl_init(Object *obj)
 {
     LIS302DLState *s = LIS302DL(obj);
 
-    /* power-on default: resting flat in portrait so an OS that reads before
-     * a host sets orientation still sees a sane gravity vector */
+    /* Power-on default: upright in portrait. */
     lis302dl_apply_orientation(s, 1);
-    s->shake_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, lis302dl_shake_tick, s);
+    s->last_sample_ns = s->shake_start_ns = s->trace_last_poll_ns = -1;
+    s->noise_state = 0x302d1;
+    s->out_x = s->base_x; s->out_y = s->base_y; s->out_z = s->base_z;
 
     object_property_add(obj, "orientation", "int",
                         lis302dl_get_orientation, lis302dl_set_orientation, NULL, NULL);
@@ -279,19 +317,21 @@ static int lis302dl_post_load(void *opaque, int version)
     }
     if (s->pitch_mdeg < -180000 || s->pitch_mdeg > 180000 ||
         s->roll_mdeg < -180000 || s->roll_mdeg > 180000) return -EINVAL;
-    timer_del(s->shake_timer);
-    s->shake_ticks = 0;
+    if (version < 3) { s->rate_hz = 0; s->noise_state = 0x302d1; }
+    if (s->rate_hz > 400) return -EINVAL;
+    s->last_sample_ns = s->shake_start_ns = s->trace_last_poll_ns = -1;
+    s->trace_last_report_ns = s->trace_poll_sum_ns = s->trace_polls = 0;
     s->out_x = s->base_x;
     s->out_y = s->base_y;
     s->out_z = s->base_z;
     return 0;
 }
 
-/* shake_timer is transient host animation, not guest-visible state: a restore
+/* Shake is transient host input, not retained after restore: a restore
  * lands with the accelerometer at rest at its steady-state vector. */
 static const VMStateDescription vmstate_lis302dl = {
     .name = "lis302dl",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = lis302dl_post_load,
     .fields = (const VMStateField[]) {
@@ -311,6 +351,8 @@ static const VMStateDescription vmstate_lis302dl = {
         VMSTATE_INT32_V(pitch_mdeg, LIS302DLState, 2),
         VMSTATE_INT32_V(roll_mdeg, LIS302DLState, 2),
         VMSTATE_BOOL_V(flat_pose, LIS302DLState, 2),
+        VMSTATE_UINT32_V(rate_hz, LIS302DLState, 3),
+        VMSTATE_UINT32_V(noise_state, LIS302DLState, 3),
         VMSTATE_END_OF_LIST()
     }
 };

@@ -46,8 +46,12 @@ typedef struct LIS302DLState {
 	uint16_t ctrl_reg1;
 	uint16_t ctrl_reg2;
 	uint16_t ctrl_reg3;
-	QEMUTimer *shake_timer;
-	int shake_ticks;
+    uint32_t rate_hz;       /* zero: follow CTRL_REG1 DR (100/400 Hz) */
+    uint32_t noise_state;
+    int64_t last_sample_ns, shake_start_ns;
+    int64_t trace_last_poll_ns, trace_last_report_ns;
+    uint32_t trace_polls;
+    int64_t trace_poll_sum_ns;
 } LIS302DLState;
 
 /* Host-drivable controls, forwarded from the machine's QMP properties. */
