@@ -18,6 +18,14 @@ parser.add_argument('--files', type=Path, default=ROOT.parent / 'qemu-ios-files'
 args = parser.parse_args()
 base_env = {k: v for k, v in os.environ.items() if not k.startswith('IT_')}
 cases = [
+    ('amc-default', {}, ',audio-hw=on', {'amc-mode':'registers'}),
+    ('amc-state-alias', {'IT_AMC_STATE':'0'}, ',audio-hw=on', {'amc-mode':'handshake'}),
+    ('amc-aac-alias', {'IT_AMC_AAC':'0'}, ',audio-hw=on', {'amc-mode':'decode'}),
+    ('amc-decode-alias', {'IT_AMC_DECODE':'0','IT_AMC_STATE':'1'}, ',audio-hw=on', {'amc-mode':'decode'}),
+    ('amc-registers', {'IT_AMC_DECODE':'1','IT_AMC_STATE':'1'}, ',audio-hw=on,amc-mode=registers', {'amc-mode':'registers'}),
+    ('amc-handshake', {'IT_AMC_DECODE':'1'}, ',audio-hw=on,amc-mode=handshake', {'amc-mode':'handshake'}),
+    ('amc-decode', {}, ',audio-hw=on,amc-mode=decode', {'amc-mode':'decode'}),
+    ('amc-invalid', {}, ',amc-mode=invalid', None),
     ('mpvd-default', {}, '', {'mpvd-decode':False}),
     ('mpvd-alias', {'IT_MPVD_DECODE':'0'}, '', {'mpvd-decode':True}),
     ('mpvd-on', {}, ',mpvd-decode=on', {'mpvd-decode':True}),
@@ -59,7 +67,7 @@ for label, overrides, options, expected in cases:
                     log.seek(0)
                     message = log.read()
                     assert ('IT_TIME_DILATION must be' in message or
-                            'time-dilation' in message), message
+                            'time-dilation' in message or 'amc-mode' in message), message
                 else:
                     deadline = time.monotonic() + 15
                     while not Path(sock).exists():
@@ -68,6 +76,11 @@ for label, overrides, options, expected in cases:
                     q = QMP(sock, timeout=10)
                     for prop, value in expected.items():
                         assert q.cmd('qom-get', path='/machine', property=prop) == value, label
+                        if prop == 'amc-mode':
+                            devices=q.cmd('qom-list',path='/machine/unattached')
+                            device=next(d for d in devices if d['type']=='child<ipodtouch.amc>')
+                            path='/machine/unattached/'+device['name']
+                            assert q.cmd('qom-get',path=path,property='mode')==['registers','handshake','decode'].index(value)
                         if prop == 'mpvd-decode':
                             devices=q.cmd('qom-list',path='/machine/unattached')
                             device=next(d for d in devices if d['type']=='child<ipodtouch.mpvd>')

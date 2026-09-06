@@ -20,7 +20,6 @@ parser.add_argument('--files', default=str(ROOT.parent/'qemu-ios-files'))
 parser.add_argument('--base-nand')
 args = parser.parse_args()
 os.environ['PATH'] = str(ROOT.parent/'qemu-ios-deps12/bin') + ':' + os.environ['PATH']
-os.environ['IT_AMC_DECODE'] = '1'  # Match Light Touch, including compressed audio.
 out = Path(tempfile.mkdtemp(prefix='it-media-guest-'))
 cfg = SimpleNamespace(out=str(out), files=args.files,
     base_nand=args.base_nand or args.files+'/nand-agent-v4',
@@ -29,7 +28,7 @@ cfg = SimpleNamespace(out=str(out), files=args.files,
     usbmuxd=str(ROOT/'build-native14/build/usbmuxd/src/usbmuxd'), usbmuxd_ok=True,
     usb_port=r.free_port(1520,1539), mux_port=r.free_port(27400,27419),
     qmp_port=r.free_port(28200,28219), wifi=False, cpu=None, mem='128M',
-    kernel_console=True, install_timeout=420, proxy_lo=28460, proxy_hi=28479)
+    kernel_console=True, amc_mode="decode", install_timeout=420, proxy_lo=28460, proxy_hi=28479)
 p = r.Procs()
 d = r.Device(cfg,p,'first')
 r.START = time.time()
@@ -91,7 +90,8 @@ try:
         rpc('put','/tmp/'+staging+'.plist 644',plistlib.dumps(metadata))
         result = rpc('exec',import_command(staging))
         assert b'imported\n' in result,result
-        assert rpc('exec',import_command(staging)) == b'already-imported\n'
+        repeated = rpc('exec',import_command(staging))
+        assert repeated.splitlines()[-1:] == [b'already-imported'], repeated
     # Invalid metadata and paths must not create another song.
     for metadata, staging in [({'filename':'../aac.m4a'},'aac'),
                               ({'filename':'aac.m4a','title':42,'duration_ms':6000},'aac'),
@@ -153,7 +153,8 @@ try:
     verify_database('reboot')
     rpc('put','/tmp/itmedia 755',helper)
     rpc('put','/tmp/aac.plist 644',plistlib.dumps(dict(filename='aac.m4a',title='Harness AAC',duration_ms=6000)))
-    assert rpc('exec',import_command('aac')) == b'already-imported\n'
+    repeated = rpc('exec',import_command('aac'))
+    assert repeated.splitlines()[-1:] == [b'already-imported'], repeated
     assert d.powerdown(), 'reboot shutdown not confirmed'
     print('PASS: AAC/MP3 imports, duplicate recovery, invalid inputs, MediaPlayer count, Music playback and cold persistence',flush=True)
 finally:

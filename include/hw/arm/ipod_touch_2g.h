@@ -281,6 +281,8 @@ typedef struct {
     bool h264_decode, h264_decode_explicit;
     bool scaler_decode, scaler_decode_explicit;
     bool mpvd_decode, mpvd_decode_explicit;
+    uint8_t amc_mode;
+    bool amc_mode_explicit;
     uint32_t time_dilation;
     bool time_dilation_explicit;
 	QEMUTimer *osk_timer;
