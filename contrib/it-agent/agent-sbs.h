@@ -1,3 +1,6 @@
+#include <mach/mach.h>
+#include <mach/ndr.h>
+
 /* Period-correct SpringBoardServices ABI, shared by launch and status RPCs. */
 static int agent_sbs_inner(const char *op, const char *args)
 {
@@ -8,6 +11,47 @@ static int agent_sbs_inner(const char *op, const char *args)
     void (*release)(void *) = dlsym(cf, "CFRelease");
     if (!release) return -ENOSYS;
     unsigned (*port)(void) = dlsym(sbs, "SBSSpringBoardServerPort");
+    if (!port) return -ENOSYS;
+    if (!strcmp(op, "orientation")) {
+        int (*orientation)(unsigned, int *) = dlsym(sbs, "SBGetUIOrientation");
+        if (!orientation) return -ENOSYS;
+        int degrees = 0;
+        unsigned current = port(); // A respring replaces SpringBoard's server port.
+        if (!current) return -EIO;
+        /* 7E18 SBGetUIOrientation uses an unbounded mach_msg (options=3).
+         * Keep its verified MIG wire ABI, but own a reply port and bound both
+         * waits. Reject other firmware stubs instead of guessing their ABI. */
+        static const unsigned char signature[] = {0xf0,0xb5,0x03,0xaf,0x8f,0xb0,0x34,0x4b};
+        if (memcmp((void *)((uintptr_t)orientation & ~(uintptr_t)1), signature, sizeof(signature))) return -ENOSYS;
+        struct {
+            mach_msg_header_t header;
+            NDR_record_t ndr;
+            kern_return_t status;
+            int degrees;
+            mach_msg_trailer_t trailer;
+        } reply = {0};
+        mach_port_t receive = MACH_PORT_NULL;
+        if (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &receive)) return -EIO;
+        reply.header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND_ONCE);
+        reply.header.msgh_remote_port = current;
+        reply.header.msgh_local_port = receive;
+        reply.header.msgh_id = 0x1e8496;
+        kern_return_t result = mach_msg(&reply.header,
+            MACH_SEND_MSG | MACH_RCV_MSG | MACH_SEND_TIMEOUT | MACH_RCV_TIMEOUT,
+            sizeof(mach_msg_header_t), sizeof(reply), receive, 250, MACH_PORT_NULL);
+        mach_port_destroy(mach_task_self(), receive);
+        if (result) return result == MACH_RCV_TIMED_OUT || result == MACH_SEND_TIMED_OUT ? -ETIMEDOUT : -EIO;
+        if (reply.header.msgh_bits & MACH_MSGH_BITS_COMPLEX) {
+            mach_msg_destroy(&reply.header);
+            return -EIO;
+        }
+        if (reply.header.msgh_id != 0x1e8496 + 100 || reply.header.msgh_size != 40 ||
+            reply.ndr.int_rep != NDR_record.int_rep || reply.status) return -EIO;
+        degrees = reply.degrees;
+        if (degrees != 0 && degrees != 90 && degrees != 180 && degrees != -90) return -ERANGE;
+        ag_response_len = snprintf((char *)ag_response, AG_RESPONSE_MAX, "%d\n", degrees);
+        return 0;
+    }
     int (*lock)(unsigned, unsigned char *, unsigned char *) = dlsym(sbs, "SBGetScreenLockStatus");
     unsigned char locked = 0, passcode = 0;
     if (!port || !lock || lock(port(), &locked, &passcode)) return -EIO;
