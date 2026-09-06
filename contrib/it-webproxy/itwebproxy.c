@@ -27,6 +27,10 @@
 #endif
 #include <unistd.h>
 
+#ifdef HAVE_WEATHER
+int it_weather_response(const char *, const char *, const void *, size_t, void **, size_t *);
+#endif
+
 #define HEAD_MAX 65536
 #define BODY_MAX (8 * 1024 * 1024)
 static void client_finish(void);
@@ -549,6 +553,20 @@ read_request:;
         if (k <= 0) fail(400, "Incomplete body");
         read_bytes += k;
     }
+#ifdef HAVE_WEATHER
+    if (!strcmp(mode, "direct")) {
+        void *weather = NULL; size_t weather_length = 0;
+        int status = it_weather_response(target, method, body, body_length, &weather, &weather_length);
+        if (status) {
+            free(body); curl_slist_free_all(headers);
+            if (status != 200) fail(status, status == 422 ?
+                "Please remove this old Weather city and add it again" : "Weather service unavailable");
+            reply_printf(1, "HTTP/1.0 200 OK\r\nContent-Type: text/xml; charset=utf-8\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n", weather_length);
+            bool sent = sendall(1, weather, weather_length);
+            free(weather); client_finish(); return sent ? 0 : 1;
+        }
+    }
+#endif
     CURL *curl = curl_easy_init();
     if (!curl) fail(503, "HTTP unavailable");
     curl_easy_setopt(curl, CURLOPT_URL, target);

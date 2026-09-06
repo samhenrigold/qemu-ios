@@ -104,3 +104,29 @@ encrypted HTTP error framing, and rejection of untrusted upstream certificates.
 A native guest CONNECT run returned HTTP 200 from both https://example.com/ and
 https://www.nytimes.com/; evidence: /tmp/it-proxy-tls-bridge-native.log.
 Modern site JavaScript/CSS can still exceed iOS 3 WebKit's capabilities.
+
+## Weather
+
+Direct mode translates the stock 7E18 Weather gateway to Open-Meteo forecast
+and geocoding APIs. City searches return opaque location IDs; the two default
+Yahoo IDs (Cupertino/New York) also work. Other old IDs must be removed and
+searched again rather than assigned guessed coordinates. Archive/upstream/off
+modes retain their existing behavior. No separate helper installation is needed.
+
+Data attribution: [Open-Meteo](https://open-meteo.com/),
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+The bundled free API endpoint is for noncommercial use under the provider's
+[terms](https://open-meteo.com/en/terms); commercial distribution needs an
+appropriate provider arrangement. The stock Weather link opens Open-Meteo.
+Search results currently use English names. Missing/invalid provider values,
+unknown conditions or unavailable polar sunrise/sunset fail the update and
+preserve the guest's previous forecast. No fabricated weather is substituted.
+
+The moon icon uses a mean-cycle approximation, not a precise lunar ephemeris:
+[NASA new-moon reference](https://ntrs.nasa.gov/api/citations/19950008253/downloads/19950008253.pdf)
+and [USNO mean synodic month](https://aa.usno.navy.mil/downloads/c15_usb_online.pdf).
+
+`python3 tests/ipod/test_weather_adapter.py` checks actual Foundation parsing,
+coordinate identity, XML escaping, six-day forecast conversion, malformed
+requests, unsafe entities, and the compiled proxy's HTTP framing without a
+network. Live provider availability remains separate from these local checks.
