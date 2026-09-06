@@ -93,9 +93,11 @@ typedef struct Pcf50633State {
  * through regulator and wake-mask setup before writing 0x6f=0x80 and printing
  * "pmu go hib". The earlier register-0x10 shutdown heuristic terminated this
  * sleep sequence prematurely. Store those ordinary register writes; only the
- * final standby command confirms shutdown. Filesystem cleanliness still needs
+ * final power commands confirm shutdown. Filesystem cleanliness still needs
  * separate persistence verification.
  */
+#define PMU_SHUTDOWN_REG 0x0a
+#define PMU_SHUTDOWN_GO  0x01
 #define PMU_STANDBY_CMD  0x6f
 #define PMU_STANDBY_GO   0x90
 

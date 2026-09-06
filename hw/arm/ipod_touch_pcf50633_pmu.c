@@ -360,6 +360,15 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
             lcd_changebrightness(data);
 	    break;
 
+        case PMU_SHUTDOWN_REG:
+            /* Native 7E18 without USB power sets bit 0, then waits forever
+             * in AppleD1759PMU's "pmu go stdby" path (c05fba80-c05fbacc). */
+            if (data & PMU_SHUTDOWN_GO) {
+                s->shutdown_armed = false;
+                pcf50633_guest_shutdown();
+            }
+            break;
+
         case PMU_STANDBY_CMD:
             /*
              * The end of 3.1.3's shutdown: rails sequenced down, interrupts
@@ -403,6 +412,7 @@ static void pcf50633_reset(DeviceState *dev)
     /* The power-on transition consumes the standby command. Leaving 0x90
      * latched makes iBoot re-enter its charging/standby path after Power On. */
     s->regs[PMU_STANDBY_CMD] = 0;
+    s->regs[PMU_SHUTDOWN_REG] &= ~PMU_SHUTDOWN_GO;
     s->regs[PMU_ADC_CONTROL] = 0;
     s->adc_sample = 0;
     for (unsigned i = 0; i < 3; i++) {

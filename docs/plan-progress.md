@@ -741,3 +741,13 @@ keyboard and firmware tests pass; CLI builds. One native 7E18 boot completes
 BCM firmware Launch RAM with a 2500-us configured delay
 (`/tmp/it-bt-config-bringup.log`). This is bring-up evidence, not peer readiness
 or a repeated-boot stability claim.
+
+### Battery-powered native shutdown (2026-09-06)
+
+The NOR reboot test exposed a separate PMU omission. Untethered 7E18 prints
+"pmu go stdby", sets register 0x0a bit 0 and waits in AppleD1759PMU
+(c05fba80-c05fbacc); only the other power-off path was handled. Implemented
+that final command and clear its consumed bit on reset. Ordinary 0x0a=0x10 and
+legacy idle/hibernation writes do not request shutdown. Production handler and
+ADC/reset checks pass. Native NVRAM write, reboot, readback and untethered
+shutdown now pass in 55.2 seconds (`/tmp/it-nor-guest-final.log`).

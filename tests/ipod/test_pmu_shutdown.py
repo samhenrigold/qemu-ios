@@ -70,6 +70,11 @@ int main(void) {
     assert(shutdowns == 1 && !pcf50633_guest_shutdown_confirmed());
     write_reg(&s, PMU_STANDBY_CMD, PMU_STANDBY_GO);
     assert(shutdowns == 2 && pcf50633_guest_shutdown_confirmed());
+    guest_shutdown_confirmed = false;
+    write_reg(&s, PMU_SHUTDOWN_REG, 0x10);
+    assert(shutdowns == 2 && !pcf50633_guest_shutdown_confirmed());
+    write_reg(&s, PMU_SHUTDOWN_REG, 0x11);
+    assert(shutdowns == 3 && pcf50633_guest_shutdown_confirmed());
     puts("PMU guest shutdown checks passed");
 }
 '''
