@@ -569,3 +569,21 @@ persisted synthetic quotes, including price/change and market-cap conversion.
 Its 60-point synthetic chart rendered the expected sawtooth; both guests shut
 down cleanly (`/tmp/it-weather-search-native.log`, `/tmp/it-stocks-protocol-native.log`).
 This establishes protocol acceptance, not live Weather/Stocks revival.
+
+### Built-in live Weather
+
+Direct HTTP proxy mode now serves the stock Weather gateway from Open-Meteo:
+city search, the two default cities, new opaque IDs, current conditions and six
+forecast days. Native Foundation handles XML/JSON; requests and responses are
+bounded, host TLS is verified, and invalid/unknown data fails without invented
+weather. Existing unknown Yahoo IDs need removal/re-addition. The Weather link
+and Light Touch Help attribute the noncommercial free API. The moon icon uses a
+documented mean-cycle approximation; English search names and unavailable polar
+sunrise/sunset remain limitations. Archive/off/upstream behavior is unchanged.
+
+Sanitizer/parser/framing checks and HTTP/TLS regressions pass. A fresh native guest
+rendered live Fahrenheit forecasts, searched/added Cupertino, switched to Celsius,
+persisted all three six-day forecasts, and shut down cleanly
+(`/tmp/it-weather-live-native-final-v2.log`). Stock Weather converts cached
+Fahrenheit data for Celsius display. Release app build and native Help checks
+pass. Stocks remains at synthetic protocol verification, without a live provider.

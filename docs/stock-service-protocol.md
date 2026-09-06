@@ -101,13 +101,28 @@ attribute parser is at `0x190d0`; the chart SAX start callback is at `0x191a0`.
 The fixture shows a repeating 100–111 sawtooth. News and symbol validation
 responses remain unverified, as do other chart intervals and metadata.
 
-## Live provider work still required
+## Live integration status
 
-Weather needs bounded upstream fetching,
-validated forecast/icon conversion, attribution, and failure handling before
-integration into direct proxy mode. Open-Meteo is a candidate, not an integrated
-dependency: its [free endpoint terms](https://open-meteo.com/en/terms) restrict
-use to noncommercial applications and require attribution. Distribution needs
-an appropriate provider arrangement. Stocks still needs response-schema research
-and an appropriate financial-data provider. Archive mode should retain archived
-responses rather than quietly mix in present-day data.
+Direct proxy mode now translates Weather requests to Open-Meteo using native
+Foundation XML/JSON handling and verified host TLS. It supports the two default
+Yahoo IDs and newly searched cities. Other historical IDs return an error that
+asks the user to remove/re-add the city. Search names are currently English.
+Unknown/missing forecast values fail the update; previous guest data is retained.
+Polar sunrise/sunset values without a valid time remain unsupported.
+
+`python3 tests/ipod/test_stock_services_guest.py --live-weather` uses a fresh
+guest, captures the initial Fahrenheit screen, searches Cupertino, adds the new
+city, switches to Celsius and checks the display preference and persisted six-day
+forecasts for all cities. Stock Weather retains Fahrenheit data and converts
+it locally for Celsius display.
+Unlike the default fixture run, this explicitly contacts the provider and can
+fail when it is unavailable. Screenshots retain visual evidence separately.
+
+The bundled [Open-Meteo free endpoint](https://open-meteo.com/en/terms) is for
+noncommercial use with attribution. The Weather link and Light Touch Help credit
+the provider. Commercial distribution needs an appropriate provider arrangement.
+The moon icon uses a documented mean-cycle approximation. Forecast data and
+geocoding are live; archive mode retains archived responses.
+
+Stocks quote/chart protocols are verified with synthetic fixtures only. News,
+symbol validation and an appropriate live financial-data provider remain pending.
