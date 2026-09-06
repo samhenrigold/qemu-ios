@@ -517,6 +517,10 @@ static void exynos4210_uart_write(void *opaque, hwaddr offset,
         s->reg[I_(UFCON)] = val;
         if (val & UFCON_Rx_FIFO_RESET) {
             fifo_reset(&s->rx);
+            timer_del(s->fifo_timeout_timer);
+            s->rx_since_timeout = false;
+            s->reg[I_(UTRSTAT)] &= ~(UTRSTAT_Rx_BUFFER_DATA_READY |
+                                     UTRSTAT_Rx_TIMEOUT);
             s->reg[I_(UFCON)] &= ~UFCON_Rx_FIFO_RESET;
             trace_exynos_uart_rx_fifo_reset(s->channel);
         }
@@ -525,6 +529,7 @@ static void exynos4210_uart_write(void *opaque, hwaddr offset,
             s->reg[I_(UFCON)] &= ~UFCON_Tx_FIFO_RESET;
             trace_exynos_uart_tx_fifo_reset(s->channel);
         }
+        exynos4210_uart_update_dmabusy(s);
         break;
 
     case UTXH:
@@ -587,6 +592,16 @@ static void exynos4210_uart_write(void *opaque, hwaddr offset,
         exynos4210_uart_update_irq(s);
         break;
     case UCON:
+        s->reg[I_(offset)] = val;
+        /* A mode transition can expose buffered data to DMA, or stop its
+         * request. Do not leave the old level latched until the next byte. */
+        exynos4210_uart_update_dmabusy(s);
+        if (!(val & 3)) {
+            timer_del(s->fifo_timeout_timer);
+        } else if (s->rx_since_timeout) {
+            exynos4210_uart_rx_timeout_set(s);
+        }
+        break;
     case UMCON:
     default:
         s->reg[I_(offset)] = val;
