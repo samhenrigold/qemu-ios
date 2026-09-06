@@ -10,6 +10,9 @@ import tempfile
 root = Path(__file__).resolve().parents[2]
 source = (root/'hw/arm/ipod_touch_h264.c').read_text()
 code = source[source.index('typedef struct IPodH264State'):source.index('static const MemoryRegionOps')]
+code += source[source.index('static int h264_put_rbsp'):source.index('static const VMStateInfo vmstate_h264_rbsp')]
+code += source[source.index('static int h264_put_slices'):source.index('static const VMStateInfo vmstate_h264_slices')]
+code += source[source.index('static int h264_post_load'):source.index('static const VMStateDescription h264_vmstate')]
 prelude = r'''
 #undef __APPLE__
 #define IT_HAVE_AVCODEC 1
@@ -17,6 +20,20 @@ prelude = r'''
 #include <libavutil/opt.h>
 #include <glib.h>
 #include <assert.h>
+#include <errno.h>
+typedef int VMStateField;
+typedef int JSONWriter;
+typedef struct { GByteArray *bytes; unsigned offset; int error; } QEMUFile;
+static void qemu_put_buffer(QEMUFile *f, const uint8_t *bytes, size_t n) { g_byte_array_append(f->bytes, bytes, n); }
+static size_t qemu_get_buffer(QEMUFile *f, uint8_t *bytes, size_t n) {
+    size_t actual = MIN(n, f->bytes->len - f->offset);
+    memcpy(bytes, f->bytes->data + f->offset, actual); f->offset += actual;
+    if (actual != n) f->error = -EIO;
+    return actual;
+}
+static void qemu_put_be32(QEMUFile *f, uint32_t value) { value = GUINT32_TO_BE(value); qemu_put_buffer(f, (uint8_t *)&value, 4); }
+static uint32_t qemu_get_be32(QEMUFile *f) { uint32_t value=0; qemu_get_buffer(f, (uint8_t *)&value, 4); return GUINT32_FROM_BE(value); }
+static int qemu_file_get_error(QEMUFile *f) { return f->error; }
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -63,6 +80,7 @@ static void pcm_slice(IPodH264State *s, unsigned luma, bool leading_dc)
 }
 
 int main(void) {
+  for(unsigned restored=0;restored<2;restored++)
   for(unsigned variant=0;variant<28;variant++) {
     IPodH264State s={.rbsp=g_byte_array_new()};
     uint32_t *r=s.regs;
@@ -100,6 +118,16 @@ int main(void) {
     assert(h264_decode_software(&s) && s.partial);
     h264_write(&s,0x1004,0x0c,4);assert(s.partial && s.codec);
     for(unsigned i=0;i<6144;i++)assert(ram[i]==0xa5);
+    if (restored) {
+        QEMUFile f={.bytes=g_byte_array_new()};
+        assert(h264_put_slices(&f,&s.partial_slices,0,NULL,NULL)==0);
+        size_t saved_bytes=s.partial_bytes;
+        g_clear_pointer(&s.partial_slices,g_ptr_array_unref);
+        assert(h264_get_slices(&f,&s.partial_slices,0,NULL)==0);
+        assert(h264_post_load(&s,2)==0 && s.partial && !s.codec);
+        assert(s.partial_bytes==saved_bytes);
+        g_byte_array_unref(f.bytes);
+    }
     r[0x1038/4]=2;
     r[0x102c/4]=0;s.bit=0;
     g_byte_array_set_size(s.rbsp,0);
@@ -173,7 +201,18 @@ int main(void) {
     for(unsigned j=4096;j<6144;j++)assert(ram[j]==128);
     h264_decoder_close(&s);g_byte_array_unref(s.rbsp);
   }
-    puts("PASS: reference replay, mixed slices, all PCM alignments, constrained prediction, coverage, reset and memory bound");
+    /* Truncated and oversized migration data must not replace live slices. */
+    GPtrArray *saved=g_ptr_array_new_with_free_func(h264_software_slice_free);
+    for(unsigned malformed=0;malformed<3;malformed++) {
+        QEMUFile f={.bytes=g_byte_array_new()};
+        qemu_put_be32(&f,malformed==0 ? 16385 : malformed==1 ? 1 : 0);
+        if(malformed==2) f.bytes->len=2;
+        GPtrArray *original=saved;
+        assert(h264_get_slices(&f,&saved,0,NULL)<0 && saved==original);
+        g_byte_array_unref(f.bytes);
+    }
+    g_ptr_array_unref(saved);
+    puts("PASS: snapshot slice round trip, decoder recreation, malformed migration, reference replay, mixed slices, all PCM alignments, constrained prediction, coverage, reset and memory bound");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='h264-slices-') as tmp:

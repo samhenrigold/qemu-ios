@@ -1064,3 +1064,26 @@ the start of SRAM1 after LLB.
 `--native` passes six actual invalid-image startup cases. Native 7E18 firmware
 and agent acceptance, Settings launch and confirmed shutdown pass in 87.8 seconds
 (`/tmp/it-boot-image-guest.log`). CLI build passes.
+
+## Snapshot continuation fixes (2026-09-06)
+
+H.264 migration v2 retains unfinished software picture slices, reference mappings,
+and bit positions within bounded storage. Native decoder objects are discarded;
+the existing reference/slice replay path reconstructs them on continuation.
+Version 1 remains readable with no retained partial picture. Invalid or truncated
+slice payloads fail without replacing existing slice storage.
+
+The expanded `test_h264_slices.py` passes sanitizer checks across ordinary and
+restored partial pictures, mixed slices, reference changes, PCM alignments and
+malformed migration payloads. `test_h264_snapshot.py` saves after the first of two
+P slices in paused QEMU, restores in a new process and checks exact completed
+luma/chroma DMA bytes. CLI build and bit-reader checks pass.
+
+I2S snapshot validation now accepts a partially written producer frame while
+requiring the consumer to remain stereo-aligned. The existing audio-output check
+restores a half-frame, appends the missing channel, and verifies exact playback;
+invalid ring bounds/accounting are still rejected.
+
+These close specific decode/audio continuation defects. Full app snapshots with
+live host GL contexts remain deliberately blocked; these tests do not establish
+unrestricted game snapshots or end-to-end active app playback restoration.

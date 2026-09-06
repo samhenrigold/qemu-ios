@@ -15,6 +15,7 @@ code = r'''
 #include <string.h>
 #include <stdio.h>
 #include <limits.h>
+#include <errno.h>
 #define IT_I2S_RING_SIZE 32
 #define MIN(a,b) ((a)<(b)?(a):(b))
 #define CLAMP(x,a,b) ((x)<(a)?(a):((x)>(b)?(b):(x)))
@@ -26,7 +27,11 @@ struct audsettings { unsigned freq; };
 typedef struct {
     uint8_t ring[IT_I2S_RING_SIZE];
     uint32_t ring_format[IT_I2S_RING_SIZE/4];
-    unsigned ring_head, voice_rate, fifo_bytes;
+    unsigned ring_head, voice_rate, fifo_bytes, fifo_depth;
+    uint64_t pace_fraction;
+    void *dmac;
+    unsigned dma_req_id;
+    bool dma_req;
     uint64_t total_bytes, dropped, last_push_ns;
     bool pushed_since_tick, active, card_ok;
     struct audsettings as;
@@ -49,6 +54,7 @@ static void *AUD_open_out(void *card,void *voice,const char *name,void *opaque,
                          void (*cb)(void *,int),struct audsettings *as) { return opaque; }
 static void AUD_set_volume_out(void *voice,int mute,int left,int right) {}
 static void AUD_set_active_out(void *voice,int active) {}
+static void pl080_set_dma_request(void *dmac,unsigned id,bool request) {}
 #define warn_report(...) ((void)0)
 static uint16_t lduw_le_p(const uint8_t *p) { return p[0] | (p[1]<<8); }
 static void stw_le_p(uint8_t *p, uint16_t v) { p[0]=v; p[1]=v>>8; }
@@ -65,10 +71,11 @@ for name in ('lm48821_gain','lm48821_recv','lm48821_send','lm48821_reset'):
     code += re.search(r'^(?:static )?(?:double|uint8_t|int|void) '+name+r'\(.*?^}', amp, re.M|re.S).group()+'\n'
 for name in ('it_i2s_drain','it_i2s_update_voice','it_i2s_push'):
     code += re.search(r'^static void '+name+r'\([^;]*?\n\{.*?^}',i2s,re.M|re.S).group()+'\n'
+code += re.search(r'^static int i2s_post_load\(.*?^}', i2s, re.M|re.S).group()+'\n'
 code += r'''
 int main(void) {
     LM48821State amp={0};
-    IPodTouchI2SState s={.amplifier=&amp,.output_gain=1,.voice_rate=44100,.as={44100},.card_ok=true};
+    IPodTouchI2SState s={.amplifier=&amp,.output_gain=1,.voice_rate=44100,.as={44100},.card_ok=true,.fifo_depth=2048};
     assert(lm48821_gain(amp.control,0)==0 && lm48821_gain(amp.control,1)==0);
     assert(lm48821_send(&amp,0x9b)==0 && lm48821_recv(&amp)==0x9b);
     assert(lm48821_gain(amp.control,0)==1 && lm48821_gain(amp.control,1)==1);
@@ -88,6 +95,8 @@ int main(void) {
     it_i2s_drain(&s,64);
     assert(count==4 && s.ring_level==2 && s.ring_tail==4);
     assert((int16_t)lduw_le_p(played)==32767 && (int16_t)lduw_le_p(played+2)==-32768);
+    /* A saved half-frame is legal: restore then append its missing channel. */
+    assert(i2s_post_load(&s,1)==0);
     it_i2s_push(&s,samples+6,2);
     it_i2s_drain(&s,64);
     assert(count==8 && s.ring_level==0);
@@ -114,8 +123,13 @@ int main(void) {
     it_i2s_update_voice(&s);assert(s.voice_rate==44100);
     it_i2s_drain(&s,8);assert(count==8 && !s.ring_level);
     assert(!lduw_le_p(played+4) && !lduw_le_p(played+6));
+    /* Bounds, broken ring accounting and a misaligned consumer still fail. */
+    unsigned head=s.ring_head,tail=s.ring_tail,level=s.ring_level;
+    s.ring_tail=1;assert(i2s_post_load(&s,1)==-EINVAL);s.ring_tail=tail;
+    s.ring_head=IT_I2S_RING_SIZE;assert(i2s_post_load(&s,1)==-EINVAL);s.ring_head=head;
+    s.ring_level=1;assert(i2s_post_load(&s,1)==-EINVAL);s.ring_level=level;
     lm48821_reset(&amp);assert(lm48821_recv(&amp)==0);
-    puts("PASS: amplifier gain/mute/channel control, clipping, partial writes, wrap and queued rate/gain transitions");
+    puts("PASS: amplifier gain/mute/channel control, clipping, partial-frame restore, writes, wrap and queued rate/gain transitions");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='audio-volume-') as tmp:
