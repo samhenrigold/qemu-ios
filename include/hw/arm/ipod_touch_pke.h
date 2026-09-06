@@ -2,6 +2,7 @@
 #define HW_ARM_IPOD_TOUCH_PKE_H
 
 #include "qemu/osdep.h"
+#include "hw/arm/ipod_touch_sha1.h"
 #include "hw/platform-bus.h"
 #include "hw/hw.h"
 #include "exec/hwaddr.h"
@@ -18,6 +19,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchPKEState, IPOD_TOUCH_PKE)
 typedef struct IPodTouchPKEState {
 	SysBusDevice busdev;
     MemoryRegion iomem;
+    IPodTouchSHA1State *sha1; /* Wired by the owning machine, not snapshot state. */
     uint8_t segments[2048];
     uint8_t modulus[256];
     uint32_t modulus_size, key_len, seg_id, seg_sign;

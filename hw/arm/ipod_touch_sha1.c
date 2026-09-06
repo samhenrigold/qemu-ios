@@ -37,9 +37,6 @@ static const uint32_t sha1_iv[5] = {
     0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0
 };
 
-static uint8_t sha1_last_hash[20];
-static bool sha1_last_hash_valid;
-
 static bool sha1_trace(void)
 {
     static int on = -1;
@@ -49,12 +46,12 @@ static bool sha1_trace(void)
     return on;
 }
 
-bool ipod_touch_sha1_last_hash(uint8_t out[20])
+bool ipod_touch_sha1_last_hash(IPodTouchSHA1State *s, uint8_t out[20])
 {
-    if (!sha1_last_hash_valid) {
+    if (!s || !s->last_hash_valid) {
         return false;
     }
-    memcpy(out, sha1_last_hash, sizeof(sha1_last_hash));
+    memcpy(out, s->last_hash, sizeof(s->last_hash));
     return true;
 }
 
@@ -103,12 +100,12 @@ static void sha1_compress(uint32_t state[5], const uint8_t block[64])
 static void sha1_publish(IPodTouchSHA1State *s)
 {
     for (int i = 0; i < 5; i++) {
-        sha1_last_hash[i * 4 + 0] = s->state[i] >> 24;
-        sha1_last_hash[i * 4 + 1] = s->state[i] >> 16;
-        sha1_last_hash[i * 4 + 2] = s->state[i] >> 8;
-        sha1_last_hash[i * 4 + 3] = s->state[i];
+        s->last_hash[i * 4 + 0] = s->state[i] >> 24;
+        s->last_hash[i * 4 + 1] = s->state[i] >> 16;
+        s->last_hash[i * 4 + 2] = s->state[i] >> 8;
+        s->last_hash[i * 4 + 3] = s->state[i];
     }
-    sha1_last_hash_valid = true;
+    s->last_hash_valid = true;
 }
 
 /* Drop the completion interrupt; every acknowledge path funnels through here. */
@@ -124,6 +121,8 @@ static void sha1_clear_irq(IPodTouchSHA1State *s)
 
 static void sha1_reset(IPodTouchSHA1State *s)
 {
+    s->last_hash_valid = false;
+    memset(s->last_hash, 0, sizeof(s->last_hash));
 	s->config = 0;
 	s->memory_start = 0;
 	s->memory_mode = 0;
@@ -169,7 +168,7 @@ static void sha1_run(IPodTouchSHA1State *s)
     if (sha1_trace()) {
         printf("[SHA1] state=");
         for (int i = 0; i < 20; i++) {
-            printf("%02x", sha1_last_hash[i]);
+            printf("%02x", s->last_hash[i]);
         }
         printf("\n");
         fflush(stdout);
@@ -313,6 +312,8 @@ static void ipod_touch_sha1_reset(DeviceState *dev)
 {
     IPodTouchSHA1State *s = IPOD_TOUCH_SHA1(dev);
 
+    s->last_hash_valid = false;
+    memset(s->last_hash, 0, sizeof(s->last_hash));
     s->config = 0;
     s->memory_start = 0;
     s->memory_mode = 0;
@@ -331,9 +332,11 @@ static void ipod_touch_sha1_reset(DeviceState *dev)
  * snapshot time must resume from exactly the same intermediate value. */
 static const VMStateDescription vmstate_ipod_touch_sha1 = {
     .name = "ipod_touch_sha1",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_ARRAY(last_hash, IPodTouchSHA1State, 20),
+        VMSTATE_BOOL(last_hash_valid, IPodTouchSHA1State),
         VMSTATE_UINT32(config, IPodTouchSHA1State),
         VMSTATE_UINT32(memory_start, IPodTouchSHA1State),
         VMSTATE_UINT32(memory_mode, IPodTouchSHA1State),

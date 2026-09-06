@@ -3783,6 +3783,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = qdev_new("ipodtouch.pke");
     IPodTouchPKEState *pke_state = IPOD_TOUCH_PKE(dev);
     nms->pke_state = pke_state;
+    pke_state->sha1 = nms->sha1_state;
     qdev_prop_set_bit(dev, "forge-sigcheck", nms->forge_sigcheck);
     memory_region_add_subregion(sysmem, PKE_MEM_BASE, &pke_state->iomem);
     it_realize_into_qom_tree(dev);

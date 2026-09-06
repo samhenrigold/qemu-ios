@@ -27,6 +27,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSHA1State, IPOD_TOUCH_SHA1)
 typedef struct IPodTouchSHA1State {
 	SysBusDevice busdev;
     MemoryRegion iomem;
+    uint8_t last_hash[20];
+    bool last_hash_valid;
     uint32_t config;
     uint32_t memory_start;
     uint32_t memory_mode;
@@ -54,6 +56,6 @@ typedef struct IPodTouchSHA1State {
 /* Most recent chaining state produced by the SHA1 engine, big-endian. For a
  * message the guest pre-padded this is the finished digest. False if the
  * engine has not run. */
-bool ipod_touch_sha1_last_hash(uint8_t out[20]);
+bool ipod_touch_sha1_last_hash(IPodTouchSHA1State *s, uint8_t out[20]);
 
 #endif

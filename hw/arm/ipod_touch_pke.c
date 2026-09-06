@@ -110,7 +110,7 @@ static void pke_execute(IPodTouchPKEState *s, uint32_t command)
         bool valid = build_pkcs1_block(expected, size, result + size - 20) &&
                      !memcmp(expected, result, size);
         uint8_t hash[20];
-        if (!valid && ipod_touch_sha1_last_hash(hash)) {
+        if (!valid && ipod_touch_sha1_last_hash(s->sha1, hash)) {
             build_pkcs1_block(result, size, hash);
         }
     }
