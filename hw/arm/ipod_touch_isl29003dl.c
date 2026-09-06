@@ -1,11 +1,20 @@
 #include "hw/arm/ipod_touch_isl29003dl.h"
 #include "migration/vmstate.h"
 
+static bool lightsensor_trace(void)
+{
+    static int enabled = -1;
+    if (enabled < 0) enabled = getenv("IT_LIGHTSENSOR_TRACE") != NULL;
+    return enabled;
+}
+#define LIGHT_TRACE(...) do { if (lightsensor_trace()) { \
+    fprintf(stderr, __VA_ARGS__); } } while (0)
+
 static int isl29003dl_event(I2CSlave *i2c, enum i2c_event event)
 {
     ISL29003DLState *s = ISL29003DL(i2c);
    
-    printf("%s Got event %d\n", __func__, event);
+    LIGHT_TRACE("%s Got event %d\n", __func__, event);
 
     if (event == I2C_START_SEND)
 	s->ready = 1;
@@ -15,7 +24,7 @@ static int isl29003dl_event(I2CSlave *i2c, enum i2c_event event)
 static uint8_t isl29003dl_recv(I2CSlave *i2c)
 {
     ISL29003DLState *s = ISL29003DL(i2c);
-    printf("Reading lightsensor register %d\n", s->cmd);
+    LIGHT_TRACE("Reading lightsensor register %d\n", s->cmd);
 
     int res = 0;
 
@@ -34,7 +43,7 @@ static uint8_t isl29003dl_recv(I2CSlave *i2c)
 		break;
 	default:
 		res = 0;
-		printf("%s unknown register %d\n", __func__, s->cmd);
+		LIGHT_TRACE("%s unknown register %d\n", __func__, s->cmd);
     }
 
     s->cmd += 1;
@@ -49,7 +58,7 @@ static int isl29003dl_send(I2CSlave *i2c, uint8_t data)
     {
 	s->curreg = data;
 	s->ready = 0;
-	printf("%s Lightsensor ready\n", __func__);
+	LIGHT_TRACE("%s Lightsensor ready\n", __func__);
     }
     else
     {
@@ -66,10 +75,10 @@ static int isl29003dl_send(I2CSlave *i2c, uint8_t data)
 			}
 			break;
 		default:
-			printf("%s unknown register %d\n", __func__, s->curreg-1);
+			LIGHT_TRACE("%s unknown register %d\n", __func__, s->curreg-1);
 	}
     }
-    printf("Writing lightsensor data %d\n", s->cmd);
+    LIGHT_TRACE("Writing lightsensor data %d\n", s->cmd);
     return 0;
 }
 
