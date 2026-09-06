@@ -4,10 +4,13 @@ from pathlib import Path
 import subprocess,shlex,tempfile
 s=(Path(__file__).resolve().parents[2]/'hw/arm/ipod_touch_2g.c').read_text()
 a=s.index('static const char *ipod_touch_requested_boot_args(');helper=s[a:s.index('\n}',a)+2]
-a=s.index('static void ipod_touch_inject_boot_args(');s=helper+'\n'+s[a:s.index('\n}',a)+2]
+a=s.index('static void ipod_touch_set_boot_args(');setter=s[a:s.index('\n}',a)+2]
+a=s.index('static void ipod_touch_stage_boot_args(');stage=s[a:s.index('\n}',a)+2]
+a=s.index('static void ipod_touch_inject_boot_args(');s=stage+'\n'+setter+'\n'+helper+'\n'+s[a:s.index('\n}',a)+2]
 code=r'''
 #include <glib.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,7 +20,19 @@ typedef uint64_t hwaddr;
 #define BOOT_ARGS_CMDLINE_LEN 256
 #define BOOT_ARGS_STAGING_BASE 0x220fff00
 #define MEMTXATTRS_UNSPECIFIED 0
-typedef struct {void*nsas;char boot_args[256];} IPodTouchMachineState;
+typedef struct {void*nsas;void*cpu;void*boot_args_timer;unsigned boot_args_writes;bool amfi_patched,boot_args_scan_failed,boot_args_explicit;char boot_args[256];} IPodTouchMachineState;
+typedef IPodTouchMachineState Object;
+typedef int Error;
+#define IPOD_TOUCH_MACHINE(o) (o)
+#define error_setg(errp,...) (**(errp)=1)
+#define QEMU_CLOCK_VIRTUAL 0
+static unsigned allocations, schedules;
+static int timer;
+static void *timer_new_ms(int clock, void (*fn)(void*), void*opaque){allocations++;return &timer;}
+static uint64_t qemu_clock_get_ms(int clock){return 123;}
+static void timer_mod(void*t,uint64_t when){assert(t==&timer&&when==2123);schedules++;}
+static void ipod_touch_set_boot_args_now(void*p){}
+static const char *ipod_touch_requested_boot_args(IPodTouchMachineState*);
 static uint8_t image[0x27000],staging[256];
 static unsigned writes;
 static uint8_t*memory(hwaddr a,size_t n){
@@ -47,6 +62,18 @@ int main(void){
  unsetenv("IT_BOOT_ARGS");stl_le_p(image+0x11b28,0x0ff1dba0);
  ipod_touch_inject_boot_args(&machine);assert(writes==8);
  machine.boot_args[0]=0;assert(!ipod_touch_requested_boot_args(&machine));
+ int error=0;Error*ep=&error;
+ setenv("IT_BOOT_ARGS","legacy",1);
+ ipod_touch_set_boot_args(&machine,"",&ep);
+ assert(!error&&machine.boot_args_explicit&&!ipod_touch_requested_boot_args(&machine));
+ char exact[256];memset(exact,'x',255);exact[255]=0;
+ ipod_touch_set_boot_args(&machine,exact,&ep);assert(!error&&strlen(machine.boot_args)==255);
+ ipod_touch_set_boot_args(&machine,oversized,&ep);assert(error&&strlen(machine.boot_args)==255);error=0;
+ machine.cpu=&machine;ipod_touch_set_boot_args(&machine,"changed",&ep);
+ assert(error&&strlen(machine.boot_args)==255);
+ unsetenv("IT_BOOT_ARGS_DELAY_MS");
+ ipod_touch_stage_boot_args(&machine);ipod_touch_stage_boot_args(&machine);
+ assert(allocations==1&&schedules==2);
 }
 '''
 flags=shlex.split(subprocess.check_output(['pkg-config','--cflags','--libs','glib-2.0'],text=True))
@@ -54,4 +81,4 @@ with tempfile.TemporaryDirectory() as d:
  p=Path(d)/'check.c';p.write_text(code);exe=Path(d)/'check'
  subprocess.run(['clang','-fsanitize=address,undefined','-fno-sanitize-recover=all',str(p),'-o',str(exe),*flags],check=True)
  subprocess.run([str(exe)],check=True)
-print('PASS: early iBoot arguments, unknown firmware rejection, disabled path, bounded string')
+print('PASS: early iBoot arguments, unknown firmware rejection, disabled path, bounded string, explicit empty override and immutable startup arguments')

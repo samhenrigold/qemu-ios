@@ -233,6 +233,7 @@ typedef struct {
     char nor_rw_path[1024];
 	char nand_path[1024];
 	char nand_overlay[1024];  /* writable COW overlay dir; empty = writes discarded */
+	bool boot_args_explicit;
 	char boot_args[512];      /* replaces boot-args in the NOR's nvram, in memory only */
 
 	/* USB device-mode options; see ipod_touch_instance_init(). */

@@ -19,6 +19,11 @@ args = parser.parse_args()
 base_env = {k: v for k, v in os.environ.items() if not k.startswith('IT_')}
 iboot = str(args.files / 'ios3/iBoot.bin')
 cases = [
+    ('boot-args-default', {}, '', {'boot-args':''}),
+    ('boot-args-explicit', {'IT_BOOT_ARGS':'legacy'}, ',boot-args=-v serial=3', {'boot-args':'-v serial=3'}),
+    ('boot-args-empty', {'IT_BOOT_ARGS':'legacy'}, ',boot-args=', {'boot-args':''}),
+    ('boot-args-maximum', {}, ',boot-args='+'x'*255, {'boot-args':'x'*255}),
+    ('boot-args-overflow', {}, ',boot-args='+'x'*256, None),
     ('direct-default', {}, '', {'direct-iboot':'', 'direct-llb':''}),
     ('direct-alias', {'IT_DIRECT_IBOOT':iboot}, '', {'direct-iboot':iboot}),
     ('direct-explicit', {'IT_DIRECT_IBOOT':'/missing'}, ',direct-iboot='+iboot, {'direct-iboot':iboot}),
@@ -81,7 +86,7 @@ for label, overrides, options, expected in cases:
                     log.seek(0)
                     message = log.read()
                     assert ('IT_TIME_DILATION must be' in message or
-                            'time-dilation' in message or 'amc-mode' in message or 'direct-llb' in message), message
+                            'time-dilation' in message or 'amc-mode' in message or 'direct-llb' in message or 'boot-args' in message), message
                 else:
                     deadline = time.monotonic() + 15
                     while not Path(sock).exists():
