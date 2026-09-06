@@ -16,17 +16,11 @@
  * which is the whole reason this approach is viable -- there is no shader
  * translation anywhere in this file.
  *
- * SCOPE. This is deliberately not 178 entry points, and it is not a guess at
- * what a game might want either. The bring-up set was the smallest thing that
- * gets a triangle onto the panel end to end; it has since been extended by
- * exactly the entry points a real game imports -- `nm -u` on Cube Runner lists
- * 41 gl* symbols and no others, and all 41 are now handled. Everything else is
- * still a logged no-op, which is the right default: an unimplemented state
- * setter that silently does nothing costs a wrong pixel, while guessing at
- * semantics costs a debugging session.
- *
- * Notably absent from that list: textures. The game uploads none, so the
- * texture path here is still only exercised by the bring-up tests.
+ * Coverage includes fixed-function drawing, textures (including decoded PVRTC
+ * and palettes), framebuffer/buffer objects, lighting, material and state
+ * queries. Guest memory transfers are bounded by each operation's data shape.
+ * Unsupported dispatch slots report their use and return without guessing at
+ * hardware behavior; this is not a claim of complete OpenGL ES coverage.
  *
  * Copyright (c) 2026 the qemu-ios contributors.
  */
@@ -2395,24 +2389,24 @@ static void gles_unbind_arrays(uint32_t bound)
 
 /*
  * Read a small run of floats out of guest memory -- the argument of the *fv
- * setters (glLightfv, glMaterialfv, glFogfv) and of glMultMatrixf.
+ * setters and of glMultMatrixf; integer vectors have the same word size.
  *
- * Returns NULL if the guest pointer is unreadable, and the caller drops the
+ * Returns false if the guest pointer is unreadable, and the caller drops the
  * call rather than applying whatever was left in the buffer.
  */
-static const float *gles_fetch_floats(CPUState *cpu, uint32_t ptr, unsigned n,
-                                      float *out)
+static bool gles_fetch_params(CPUState *cpu, uint32_t ptr, unsigned n,
+                                      void *out)
 {
-    if (!ptr || !n) {
-        return NULL;
+    if (!ptr || !n || n > 16 || (uint64_t)ptr + n * 4 > UINT64_C(0x100000000)) {
+        return false;
     }
     if (cpu_memory_rw_debug(cpu, ptr, (uint8_t *)out, n * sizeof(float), 0)
         != 0) {
-        fprintf(stderr, "[gles] cannot read %u floats at guest 0x%08x\n",
+        fprintf(stderr, "[gles] cannot read %u parameters at guest 0x%08x\n",
                 n, ptr);
-        return NULL;
+        return false;
     }
-    return out;
+    return true;
 }
 
 /*
@@ -2430,8 +2424,12 @@ static unsigned gles_light_nparams(uint32_t pname)
         return 4;
     case GL_SPOT_DIRECTION:         /* 0x1204 */
         return 3;
-    default:
-        return 1;                   /* the scalar spot/attenuation parameters */
+    case GL_SPOT_EXPONENT:
+    case GL_SPOT_CUTOFF:
+    case GL_CONSTANT_ATTENUATION:
+    case GL_LINEAR_ATTENUATION:
+    case GL_QUADRATIC_ATTENUATION: return 1;
+    default: return 0;
     }
 }
 
@@ -2444,8 +2442,35 @@ static unsigned gles_material_nparams(uint32_t pname)
     case GL_EMISSION:               /* 0x1600 */
     case GL_AMBIENT_AND_DIFFUSE:    /* 0x1602 */
         return 4;
-    default:
-        return 1;                   /* GL_SHININESS */
+    case GL_SHININESS: return 1;
+    default: return 0;
+    }
+}
+
+static unsigned gles_texenv_nparams(uint32_t target, uint32_t pname)
+{
+    if (target != GL_TEXTURE_ENV) return 0;
+    switch (pname) {
+    case GL_TEXTURE_ENV_COLOR: return 4;
+    case GL_TEXTURE_ENV_MODE:
+    case GL_COMBINE_RGB: case GL_COMBINE_ALPHA:
+    case GL_SRC0_RGB: case GL_SRC1_RGB: case GL_SRC2_RGB:
+    case GL_SRC0_ALPHA: case GL_SRC1_ALPHA: case GL_SRC2_ALPHA:
+    case GL_OPERAND0_RGB: case GL_OPERAND1_RGB: case GL_OPERAND2_RGB:
+    case GL_OPERAND0_ALPHA: case GL_OPERAND1_ALPHA: case GL_OPERAND2_ALPHA:
+    case GL_RGB_SCALE: case GL_ALPHA_SCALE: return 1;
+    default: return 0;
+    }
+}
+
+static unsigned gles_texparam_nparams(uint32_t target, uint32_t pname)
+{
+    if (target != GL_TEXTURE_2D) return 0;
+    switch (pname) {
+    case GL_TEXTURE_MIN_FILTER: case GL_TEXTURE_MAG_FILTER:
+    case GL_TEXTURE_WRAP_S: case GL_TEXTURE_WRAP_T:
+    case GL_GENERATE_MIPMAP: return 1;
+    default: return 0;
     }
 }
 
@@ -4011,6 +4036,57 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         glBindTexture(a[0], a[1]);
         return 0;
 
+    case GLES_SLOT_GET_LIGHTFV:
+    case GLES_SLOT_GET_MATERIALFV:
+    case GLES_SLOT_GET_TEX_ENVFV:
+    case GLES_SLOT_GET_TEX_ENVIV:
+    case GLES_SLOT_GET_TEX_PARAMETERFV:
+    case GLES_SLOT_GET_TEX_PARAMETERIV: {
+        unsigned n;
+        union { GLfloat f[4]; GLint i[4]; } p = {0};
+        if (slot == GLES_SLOT_GET_LIGHTFV) {
+            n = a[0] >= GL_LIGHT0 && a[0] <= GL_LIGHT7 ? gles_light_nparams(a[1]) : 0;
+        } else if (slot == GLES_SLOT_GET_MATERIALFV) {
+            n = (a[0] == GL_FRONT || a[0] == GL_BACK) && a[1] != GL_AMBIENT_AND_DIFFUSE ?
+                gles_material_nparams(a[1]) : 0;
+        } else if (slot == GLES_SLOT_GET_TEX_ENVFV || slot == GLES_SLOT_GET_TEX_ENVIV) {
+            n = gles_texenv_nparams(a[0], a[1]);
+        } else {
+            n = gles_texparam_nparams(a[0], a[1]);
+        }
+        if (!n) return gles_reject(GL_INVALID_ENUM);
+        if (!a[2]) return 0;
+        if ((uint64_t)a[2] + n * 4 > UINT64_C(0x100000000)) return -1;
+        switch (slot) {
+        case GLES_SLOT_GET_LIGHTFV: glGetLightfv(a[0], a[1], p.f); break;
+        case GLES_SLOT_GET_MATERIALFV: glGetMaterialfv(a[0], a[1], p.f); break;
+        case GLES_SLOT_GET_TEX_ENVFV: glGetTexEnvfv(a[0], a[1], p.f); break;
+        case GLES_SLOT_GET_TEX_ENVIV: glGetTexEnviv(a[0], a[1], p.i); break;
+        case GLES_SLOT_GET_TEX_PARAMETERFV: glGetTexParameterfv(a[0], a[1], p.f); break;
+        case GLES_SLOT_GET_TEX_PARAMETERIV: glGetTexParameteriv(a[0], a[1], p.i); break;
+        }
+        return cpu_memory_rw_debug(cpu, a[2], (uint8_t *)&p, n * 4, 1) ? -1 : 0;
+    }
+
+    case GLES_SLOT_TEX_PARAMETERF:
+        if (!gles_texparam_nparams(a[0], a[1])) return gles_reject(GL_INVALID_ENUM);
+        glTexParameterf(a[0], a[1], gles_f(a[2]));
+        return 0;
+
+    case GLES_SLOT_TEX_PARAMETERFV:
+    case GLES_SLOT_TEX_PARAMETERIV:
+    case GLES_SLOT_TEX_ENVIV: {
+        union { GLfloat f[4]; GLint i[4]; } p = {0};
+        unsigned n = slot == GLES_SLOT_TEX_ENVIV ? gles_texenv_nparams(a[0], a[1]) :
+                                                 gles_texparam_nparams(a[0], a[1]);
+        if (!n) return gles_reject(GL_INVALID_ENUM);
+        if (!gles_fetch_params(cpu, a[2], n, &p)) return -1;
+        if (slot == GLES_SLOT_TEX_PARAMETERFV) glTexParameterfv(a[0], a[1], p.f);
+        else if (slot == GLES_SLOT_TEX_PARAMETERIV) glTexParameteriv(a[0], a[1], p.i);
+        else glTexEnviv(a[0], a[1], p.i);
+        return 0;
+    }
+
     case GLES_SLOT_TEX_PARAMETERI:              /* target, pname, param */
         glTexParameteri(a[0], a[1], a[2]);
         return 0;
@@ -4562,7 +4638,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     case GLES_SLOT_MULT_MATRIXF: {              /* const GLfloat m[16] */
         float m[16];
-        if (!gles_fetch_floats(cpu, a[0], 16, m)) {
+        if (!gles_fetch_params(cpu, a[0], 16, m)) {
             return -1;
         }
         glMultMatrixf(m);
@@ -4572,7 +4648,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     case GLES_SLOT_LOAD_MATRIXF: {              /* const GLfloat m[16] */
         float m[16];
         GLint mm = 0;
-        if (!gles_fetch_floats(cpu, a[0], 16, m)) {
+        if (!gles_fetch_params(cpu, a[0], 16, m)) {
             return -1;
         }
         /* Report the first PROJECTION load: an app that builds its own
@@ -4705,7 +4781,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     case GLES_SLOT_LIGHTFV: {                   /* light, pname, params */
         float p[4];
         unsigned n = gles_light_nparams(a[1]);
-        if (!gles_fetch_floats(cpu, a[2], n, p)) {
+        if (!n) return gles_reject(GL_INVALID_ENUM);
+        if (!gles_fetch_params(cpu, a[2], n, p)) {
             return -1;
         }
         glLightfv(a[0], a[1], p);
@@ -4715,7 +4792,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     case GLES_SLOT_MATERIALFV: {                /* face, pname, params */
         float p[4];
         unsigned n = gles_material_nparams(a[1]);
-        if (!gles_fetch_floats(cpu, a[2], n, p)) {
+        if (!n) return gles_reject(GL_INVALID_ENUM);
+        if (!gles_fetch_params(cpu, a[2], n, p)) {
             return -1;
         }
         glMaterialfv(a[0], a[1], p);
@@ -4744,9 +4822,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         /* GL_TEXTURE_ENV_COLOR is the only vector parameter here; every other
          * pname takes one float, and reading four for those would fault on a
          * guest pointer to a single float. */
-        unsigned n = (a[1] == GL_TEXTURE_ENV_COLOR) ? 4 : 1;
+        unsigned n = gles_texenv_nparams(a[0], a[1]);
+        if (!n) return gles_reject(GL_INVALID_ENUM);
 
-        if (!gles_fetch_floats(cpu, a[2], n, p)) {
+        if (!gles_fetch_params(cpu, a[2], n, p)) {
             return -1;
         }
         glTexEnvfv(a[0], a[1], p);
@@ -4812,7 +4891,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     case GLES_SLOT_FOGFV: {                     /* pname, params */
         float p[4];
         unsigned n = (a[0] == GL_FOG_COLOR) ? 4 : 1;
-        if (!gles_fetch_floats(cpu, a[1], n, p)) {
+        if (!gles_fetch_params(cpu, a[1], n, p)) {
             return -1;
         }
         glFogfv(a[0], p);

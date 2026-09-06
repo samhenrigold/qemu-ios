@@ -125,6 +125,16 @@ typedef struct __attribute__((packed)) {
 #define GLES_SLOT_MATRIX_MODE           174  /* 0x02c8 */
 #define GLES_SLOT_TEXCOORD_POINTER      289  /* 0x0494 */
 #define GLES_SLOT_TEX_IMAGE_2D          301  /* 0x04c4 */
+#define GLES_SLOT_GET_LIGHTFV             105
+#define GLES_SLOT_GET_MATERIALFV          110
+#define GLES_SLOT_GET_TEX_ENVFV           118
+#define GLES_SLOT_GET_TEX_ENVIV           119
+#define GLES_SLOT_GET_TEX_PARAMETERFV     126
+#define GLES_SLOT_GET_TEX_PARAMETERIV     127
+#define GLES_SLOT_TEX_ENVIV               293
+#define GLES_SLOT_TEX_PARAMETERF          302
+#define GLES_SLOT_TEX_PARAMETERFV         303
+#define GLES_SLOT_TEX_PARAMETERIV         305
 #define GLES_SLOT_TEX_PARAMETERI        304  /* 0x04d0 */
 #define GLES_SLOT_VERTEX_POINTER        334  /* 0x0548 */
 #define GLES_SLOT_VIEWPORT              335  /* 0x054c */
