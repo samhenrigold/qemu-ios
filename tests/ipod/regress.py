@@ -850,9 +850,40 @@ def prepare_launcher(cfg, procs, dev, r):
     return port
 
 
-def springboard(cfg, port, request):
+class AgentControl:
+    """A selected command session. Submitted RPCs are never replayed via SSH."""
+    def __init__(self, qmp):
+        self.qmp = qmp
+
+
+def prepare_app_control(cfg, procs, dev, result):
+    if itqmp.agent_alive(dev.qmp):
+        return AgentControl(dev.qmp)
+    return prepare_launcher(cfg, procs, dev, result)
+
+
+def control_exec(cfg, control, command, timeout=60):
+    if not isinstance(control, AgentControl):
+        return guest_ssh(cfg, control, [command], timeout=timeout)
+    status, data = itqmp.agent(control.qmp, "exec", command, timeout=timeout)
+    return subprocess.CompletedProcess(["agent", "exec", command], status,
+                                       data.decode("utf-8", "replace"), "")
+
+
+def springboard(cfg, port, request, timeout=60):
+    if isinstance(port, AgentControl):
+        op = {":frontmost": "frontmost", ":lock-status": "lockstatus"}.get(request, "launch")
+        status, data = itqmp.agent(port.qmp, op, request if op == "launch" else "", timeout=timeout)
+        text = data.decode("utf-8", "replace")
+        if status == 0:
+            if op == "frontmost":
+                lines = text.splitlines()
+                text = "sblaunch: frontmost=" + (lines[0] if lines else "")
+            elif op == "lockstatus":
+                text = "sblaunch: " + text
+        return subprocess.CompletedProcess(["agent", op, request], status, text, "")
     return guest_ssh(cfg, port, ["printf '%s' %s > /tmp/sblaunch.id && /tmp/sblaunch"
-                               % ("%s", shlex.quote(request))])
+                               % ("%s", shlex.quote(request))], timeout=timeout)
 
 
 def foreground_is(cfg, port, bundle_id):
@@ -929,12 +960,12 @@ def check_respring(cfg, procs, dev, result):
     Require a service response from the new SpringBoard; successful killall
     and a still-lit old framebuffer are not recovery evidence.
     """
-    port = prepare_launcher(cfg, procs, dev, result)
+    port = prepare_app_control(cfg, procs, dev, result)
     if port is None:
         return False
     dev.qmp.cmd("query-status")  # drain events from before this operation
     resets = dev.qmp.reset_count
-    p = guest_ssh(cfg, port, ["killall SpringBoard"], timeout=10)
+    p = control_exec(cfg, port, "killall SpringBoard", timeout=10)
     if p.returncode != 0:
         return result.set(False, "could not restart SpringBoard: %s" %
                           (p.stdout + p.stderr).strip()[-200:])
@@ -942,18 +973,21 @@ def check_respring(cfg, procs, dev, result):
     failure = "SpringBoard did not recover within 45s"
     while time.monotonic() < deadline:
         time.sleep(2)
-        p = guest_ssh(cfg, port,
-                      ["printf ':lock-status' > /tmp/sblaunch.id && /tmp/sblaunch"],
-                      timeout=min(8, max(1, deadline - time.monotonic())))
+        try:
+            p = springboard(cfg, port, ":lock-status",
+                            timeout=min(8, max(1, deadline - time.monotonic())))
+        except (TimeoutError, RuntimeError) as error:
+            # Read-only readiness probes may be retried while SBS restarts.
+            p = subprocess.CompletedProcess(["lockstatus"], 124, "", str(error))
         dev.qmp.cmd("query-status")
         if dev.qmp.reset_count != resets:
             failure = "guest reset during SpringBoard restart"
             break
         if p.returncode == 0 and p.stdout.strip().startswith("sblaunch: locked="):
             return result.set(True, "SpringBoard service recovered in the same boot")
-    diagnostic = guest_ssh(cfg, port, [
-        "launchctl list; cat /var/mobile/Library/Logs/CrashReporter/LatestCrash-SpringBoard.plist"
-    ], timeout=15)
+    diagnostic = control_exec(cfg, port,
+        "launchctl list; cat /var/mobile/Library/Logs/CrashReporter/LatestCrash-SpringBoard.plist",
+        timeout=15)
     path = os.path.join(dev.dir, "respring-diagnostics.txt")
     with open(path, "w") as f:
         f.write("Last service probe: rc=%s\n%s\n%s\n" %
@@ -963,7 +997,7 @@ def check_respring(cfg, procs, dev, result):
 
 
 def check_applaunch(cfg, procs, dev, r):
-    port = prepare_launcher(cfg, procs, dev, r)
+    port = prepare_app_control(cfg, procs, dev, r)
     if port is None:
         return False
     bundle_id = ipa_bundle_id(cfg.ipa)
@@ -1145,7 +1179,7 @@ def check_agent(cfg, procs, dev, r):
 
 def check_audio(cfg, procs, dev, r):
     """Start the bundled stereo fixture; validate the finalized WAV after shutdown."""
-    port = prepare_launcher(cfg, procs, dev, r)
+    port = prepare_app_control(cfg, procs, dev, r)
     if port is None:
         return False
     if not app_is_installed(cfg, "com.qemuios.harness"):
@@ -1156,7 +1190,7 @@ def check_audio(cfg, procs, dev, r):
     if not ok:
         return r.set(False, detail)
     # Each run starts at row zero, even after prior app or audio checks.
-    stopped = guest_ssh(cfg, port, ["killall Harness"], timeout=10)
+    stopped = control_exec(cfg, port, "killall Harness", timeout=10)
     if stopped.returncode not in (0, 1):
         return r.set(False, "could not reset the Harness menu")
     response = springboard(cfg, port, "com.qemuios.harness")
@@ -1231,13 +1265,13 @@ def check_gles(cfg, procs, dev, r):
     launcher = os.path.join(GLES_DIR, "sblaunch")
     harness = not os.path.exists(app)
     bundle_id = "com.qemuios.harness" if harness else GLES_BUNDLE_ID
-    prerequisites = [HARNESS_IPA if harness else app, launcher]
+    prerequisites = [HARNESS_IPA if harness else app]
     if getattr(cfg, "stage_gles_shim", False):
-        prerequisites.append(shim)
+        prerequisites.extend([shim, launcher])
     missing = [os.path.basename(path) for path in prerequisites if not os.path.exists(path)]
     if missing:
         return r.skip("build the guest fixtures first (no %s)" % ", ".join(missing))
-    port = prepare_launcher(cfg, procs, dev, r)
+    port = (prepare_launcher if getattr(cfg, "stage_gles_shim", False) else prepare_app_control)(cfg, procs, dev, r)
     if port is None:
         return False
 
@@ -1279,7 +1313,7 @@ def check_gles(cfg, procs, dev, r):
     if not ok:
         return r.set(False, detail)
     if harness:
-        stopped = guest_ssh(cfg, port, ["killall Harness"], timeout=10)
+        stopped = control_exec(cfg, port, "killall Harness", timeout=10)
         if stopped.returncode not in (0, 1):
             return r.set(False, "could not reset the Harness menu")
     p = springboard(cfg, port, bundle_id)
@@ -1318,7 +1352,7 @@ def check_gles(cfg, procs, dev, r):
                 text += f.read().decode("utf-8", "replace")
         except OSError:
             pass
-    text += guest_ssh(cfg, port, ["cat /var/log/syslog 2>/dev/null"],
+    text += control_exec(cfg, port, "cat /var/log/syslog 2>/dev/null",
                       timeout=60).stdout
     seen = set(int(n) for n in re.findall(r"unimplemented slot (\d+)", text))
     new = sorted(seen - GLES_ALLOWED_SLOTS)
@@ -1557,8 +1591,9 @@ def main():
     ap.add_argument("--nor", default=None,
                     help="NOR image (default <files-dir>/ios3/nor_7E18.bin if "
                          "present, else <files-dir>/nor_n72ap.bin)")
-    ap.add_argument("--qemu", default=os.path.join(ROOT, "build",
-                                                   "qemu-system-arm"))
+    native_qemu = os.path.join(ROOT, "build-native14", "qemu-build", "qemu-system-arm")
+    default_qemu = native_qemu if os.path.exists(native_qemu) else os.path.join(ROOT, "build", "qemu-system-arm")
+    ap.add_argument("--qemu", default=os.environ.get("QEMU", default_qemu))
     ap.add_argument("--usbmuxd",
                     default=os.path.expanduser(
                         "~/Developer/usbmuxd-qemu/usbmuxd/src/usbmuxd"))
@@ -1841,6 +1876,9 @@ def main():
         if "fsck" in selected:
             check_fsck(cfg, clean_stop, results["fsck"])
 
+    except KeyboardInterrupt:
+        procs.stop_all()
+        raise
     except Exception:
         # An exception is a harness failure, not a pass: print it, mark every
         # check that never produced a verdict as failed, and still tear down.

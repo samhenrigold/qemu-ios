@@ -12,7 +12,7 @@ def reply(text="", rc=0):
 
 
 with tempfile.TemporaryDirectory() as directory, \
-     patch.object(R, "prepare_launcher", return_value=22), \
+     patch.object(R, "prepare_app_control", return_value=22), \
      patch.object(R.time, "sleep"), patch.object(R, "log"):
     dev = SimpleNamespace(dir=directory, qmp=Mock(reset_count=0))
     result = R.Result("respring")

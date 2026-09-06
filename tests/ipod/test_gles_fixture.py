@@ -14,7 +14,7 @@ with tempfile.TemporaryDirectory() as directory:
     for signature, expected in (((.3, .3), True), ((0, 0), False)):
         result = R.Result('gles')
         with patch.object(R.os.path, 'exists', side_effect=lambda p: not str(p).endswith('GLTest.app')), \
-             patch.object(R, 'prepare_launcher', return_value=123), \
+             patch.object(R, 'prepare_app_control', return_value=123), \
              patch.object(R, 'app_is_installed', return_value=True), \
              patch.object(R, 'unlock', return_value=(True, '')), \
              patch.object(R, 'springboard', return_value=response) as launch, \
