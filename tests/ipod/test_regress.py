@@ -222,3 +222,26 @@ with tempfile.TemporaryDirectory(prefix='qmp-frame-') as directory:
     except TimeoutError:
         pass
 print('QMP raw framebuffer completeness checks passed')
+
+# Agent failures must fail the check, including a byte-corrupted successful get.
+assert set(R.DEFAULT_CHECKS) <= set(R.ALL_CHECKS)
+assert R.APP_IPA_DEFAULT == R.HARNESS_IPA
+for failure in (None, 'ping', 'exec', 'put', 'get'):
+    saved = {}
+    calls = []
+    def agent(q, op, args='', body=b''):
+        calls.append((op, args))
+        if op == 'exec' and args.startswith('rm -f '):
+            return 0, b''
+        if op == failure:
+            return (0, b'corrupt') if op == 'get' else (5, b'failed')
+        if op == 'put':
+            saved['body'] = body
+        return 0, {'ping': b'it_agent v1\n', 'exec': b'42\n',
+                   'put': b'', 'get': saved.get('body', b'') }[op]
+    result = R.Result('agent')
+    with patch.object(R.itqmp, 'agent_alive', return_value=True), \
+         patch.object(R.itqmp, 'agent', side_effect=agent), patch.object(R, 'log'):
+        assert R.check_agent(None, None, SimpleNamespace(qmp=object()), result) is (failure is None)
+    assert calls[-1][0] == 'exec' and calls[-1][1].startswith('rm -f /tmp/regress-agent-')
+print('Agent regression detects command failures and binary corruption')
