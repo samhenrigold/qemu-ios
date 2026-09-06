@@ -4,6 +4,7 @@
 #include "hw/arm/ipod_video.h"
 #include "exec/address-spaces.h"
 #include "migration/vmstate.h"
+#include "migration/qemu-file-types.h"
 #include "qemu/error-report.h"
 #include "qemu/bswap.h"
 #include "qemu/host-utils.h"
@@ -24,6 +25,7 @@ typedef struct IPodH264State {
     unsigned bit;
     bool exhausted;
     qemu_irq irq;
+    bool irq_level;
 #ifdef IT_HAVE_AVCODEC
     AVCodecContext *codec;
     AVFrame *frame;
@@ -55,6 +57,13 @@ static void h264_software_slice_free(gpointer opaque)
     g_free(slice);
 }
 #endif
+
+static void h264_set_irq(IPodH264State *s, bool level)
+{
+    s->irq_level = level;
+    if (level) qemu_irq_raise(s->irq);
+    else qemu_irq_lower(s->irq);
+}
 
 static void h264_decoder_close(IPodH264State *s)
 {
@@ -711,14 +720,14 @@ static void h264_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         if ((value & 0x7ff) == 0x7ff) h264_decoder_close(s);
         s->regs[addr / 4] = 0; /* software reset bits self-clear */
     } else if (addr == 0x10c0 && value == 0) {
-        qemu_irq_lower(s->irq);
+        h264_set_irq(s, false);
     } else if (addr == 0x1000 && value == 1) {
         bool ok = h264_decode(s);
         s->regs[0x1074 / 4] = ok ? 1 : 2;
         s->regs[0x1070 / 4] = ok ?
             ((s->regs[0x1034 / 4] - 1) << 16) | (s->regs[0x1030 / 4] - 1) : 0;
         s->regs[addr / 4] = 0;
-        qemu_irq_raise(s->irq);
+        h264_set_irq(s, true);
     } else if (addr == 0x1600 && (value & 0x801) == 0x801) {
         h264_nal(s);
     } else if (addr == 0x1078 && (value == 1 || value == 3)) {
@@ -759,7 +768,7 @@ static void h264_reset(DeviceState *dev)
     g_byte_array_set_size(s->rbsp, 0);
     s->bit = 0;
     s->exhausted = false;
-    qemu_irq_lower(s->irq);
+    h264_set_irq(s, false);
 }
 
 static void h264_init(Object *obj)
@@ -777,9 +786,55 @@ static void h264_finalize(Object *obj)
     g_byte_array_unref(((IPodH264State *)obj)->rbsp);
 }
 
+static int h264_put_rbsp(QEMUFile *f, void *pv, size_t size,
+                         const VMStateField *field, JSONWriter *vmdesc)
+{
+    GByteArray *bytes = *(GByteArray **)pv;
+    if (bytes->len > 4 * 1024 * 1024) return -E2BIG;
+    qemu_put_be32(f, bytes->len);
+    qemu_put_buffer(f, bytes->data, bytes->len);
+    return qemu_file_get_error(f);
+}
+
+static int h264_get_rbsp(QEMUFile *f, void *pv, size_t size,
+                         const VMStateField *field)
+{
+    GByteArray *bytes = *(GByteArray **)pv;
+    uint32_t len = qemu_get_be32(f);
+    if (len > 4 * 1024 * 1024) return -EINVAL;
+    g_byte_array_set_size(bytes, len);
+    if (qemu_get_buffer(f, bytes->data, len) != len) return -EIO;
+    return qemu_file_get_error(f);
+}
+
+static const VMStateInfo vmstate_h264_rbsp = {
+    .name = "h264-rbsp", .get = h264_get_rbsp, .put = h264_put_rbsp,
+};
+
+static int h264_post_load(void *opaque, int version_id)
+{
+    IPodH264State *s = opaque;
+    if (s->bit > s->rbsp->len * 8) return -EINVAL;
+    /* Host decode sessions and partial software pictures are recreated lazily.
+     * The guest's bit reader and registers must retain their exact position. */
+    h264_decoder_close(s);
+    h264_set_irq(s, s->irq_level);
+    return 0;
+}
+
 static const VMStateDescription h264_vmstate = {
     .name = "ipod-h264",
-    .unmigratable = true,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = h264_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(regs, IPodH264State, 0x4000 / 4),
+        VMSTATE_UINT32(bit, IPodH264State),
+        VMSTATE_BOOL(exhausted, IPodH264State),
+        VMSTATE_BOOL(irq_level, IPodH264State),
+        VMSTATE_SINGLE(rbsp, IPodH264State, 1, vmstate_h264_rbsp, GByteArray *),
+        VMSTATE_END_OF_LIST()
+    },
 };
 
 static void h264_class_init(ObjectClass *klass, void *data)
