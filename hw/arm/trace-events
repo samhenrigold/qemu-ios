@@ -93,3 +93,4 @@ ipod_touch_clock_write(uint64_t addr, uint32_t value) "offset 0x%" PRIx64 " valu
 ipod_touch_spi_cs(unsigned controller, uint32_t pin) "controller %u pin 0x%08x"
 ipod_touch_gpio_write(uint64_t addr, uint32_t value) "offset 0x%" PRIx64 " value 0x%08x"
 ipod_touch_nor_command(uint32_t command) "command 0x%02x"
+ipod_touch_nor_finish(uint32_t command, uint32_t address, unsigned address_bytes, unsigned data_bytes, unsigned wel, unsigned status, unsigned first) "command 0x%02x address 0x%06x address-bytes %u data-bytes %u wel %u status 0x%02x first 0x%02x"

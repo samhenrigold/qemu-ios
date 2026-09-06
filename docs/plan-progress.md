@@ -751,3 +751,17 @@ that final command and clear its consumed bit on reset. Ordinary 0x0a=0x10 and
 legacy idle/hibernation writes do not request shutdown. Production handler and
 ADC/reset checks pass. Native NVRAM write, reboot, readback and untethered
 shutdown now pass in 55.2 seconds (`/tmp/it-nor-guest-final.log`).
+
+### NOR programming, erase and snapshot state (2026-09-06)
+
+Replaced program/erase no-ops with GPIO-CS-committed page programming, flash
+AND semantics, page-buffer wrap, write-enable/status/global protection and
+4/32/64 KiB erase. The fixed 1 MiB array and in-flight transaction migrate in
+VMState v2, with bounds validation. Original NOR files remain untouched; writes
+survive reset in RAM. Cross-process disk overlay and busy timing remain open.
+
+ASan/UBSan command/protection/bounds checks and NVRAM partition checks pass.
+`test_nor_guest.py` verifies native 7E18 flush/reboot/readback and confirmed
+shutdown. `test_nor_snapshot.py` verifies flash and an unfinished page program
+across native migration before GL initialization. Logs:
+`/tmp/it-nor-guest-final.log`, `/tmp/it-nor-snapshot-final.log`.
