@@ -304,7 +304,7 @@ GL readback during the transition contains the movie's colors. Once fullscreen,
 7E18 switches to the CLCD video plane and leaves transparent controls in a
 separate RGB plane. The old LCD model ignored both planes.
 
-`IT_LCD_PLANES=1` enables the initial LCD compositor. Firmware provenance is
+`-M iPod-Touch,lcd-planes=on` enables the LCD compositor. Firmware provenance is
 AppleM2CLCD at `c05e3640..c05e3efc` in the 7E18 kernel:
 
 - `4[3]` enables NV12 video, `4[8]` selects limited-range luma; `4[4:5]`
@@ -851,3 +851,8 @@ require AMC hardware (`audio-hw=on`, or the existing auto-enabled boot path).
 A build without libavcodec rejects decode mode instead of silently disabling
 it. Restores reject an AMC mode incompatible with the saved handshake/decoder
 state; host codec contexts are still recreated lazily as before.
+
+`lcd-planes=on|off` configures each LCD device at startup, defaulting to off.
+Explicit selection overrides the deprecated presence-based `IT_LCD_PLANES`
+alias. Register reads and composition use the device flag, not a process-wide
+cached environment value. Use matching configuration for raw snapshot restore.

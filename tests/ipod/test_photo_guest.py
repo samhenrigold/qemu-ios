@@ -14,15 +14,13 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--files',default=str(ROOT.parent/'qemu-ios-files'))
 parser.add_argument('--base-nand')
 args = parser.parse_args()
-for setting in ['IT_AMC_DECODE','IT_MPVD_DECODE','IT_LCD_PLANES']:
-    os.environ[setting] = '1'  # Use the same media hardware configuration as Light Touch.
 out = Path(tempfile.mkdtemp(prefix='it-photo-guest-'))
 cfg = SimpleNamespace(out=str(out),files=args.files,
     base_nand=args.base_nand or args.files+'/nand-agent-v4',
     nor=args.files+'/ios3/nor_7E18.bin',overlay=str(out/'overlay'),
     qemu=str(ROOT/'build-native14/qemu-build/qemu-system-arm'),usbmuxd_ok=False,
     usb_port=r.free_port(1520,1539),qmp_port=r.free_port(28200,28219),
-    wifi=False,cpu=None,mem='128M',kernel_console=True,h264_decode="on",scaler_decode="on")
+    wifi=False,cpu=None,mem='128M',kernel_console=True,h264_decode="on",scaler_decode="on",mpvd_decode="on",amc_mode="decode",lcd_planes="on")
 image = Image.new('RGB',(640,480),'white')
 draw = ImageDraw.Draw(image)
 for x,color in [(0,(220,30,30)),(213,(30,210,30)),(426,(30,30,220))]:

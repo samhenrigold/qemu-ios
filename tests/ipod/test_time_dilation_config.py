@@ -18,6 +18,10 @@ parser.add_argument('--files', type=Path, default=ROOT.parent / 'qemu-ios-files'
 args = parser.parse_args()
 base_env = {k: v for k, v in os.environ.items() if not k.startswith('IT_')}
 cases = [
+    ('lcd-default', {}, '', {'lcd-planes':False}),
+    ('lcd-alias', {'IT_LCD_PLANES':'0'}, '', {'lcd-planes':True}),
+    ('lcd-on', {}, ',lcd-planes=on', {'lcd-planes':True}),
+    ('lcd-off', {'IT_LCD_PLANES':'1'}, ',lcd-planes=off', {'lcd-planes':False}),
     ('amc-default', {}, ',audio-hw=on', {'amc-mode':'registers'}),
     ('amc-state-alias', {'IT_AMC_STATE':'0'}, ',audio-hw=on', {'amc-mode':'handshake'}),
     ('amc-aac-alias', {'IT_AMC_AAC':'0'}, ',audio-hw=on', {'amc-mode':'decode'}),
@@ -76,6 +80,11 @@ for label, overrides, options, expected in cases:
                     q = QMP(sock, timeout=10)
                     for prop, value in expected.items():
                         assert q.cmd('qom-get', path='/machine', property=prop) == value, label
+                        if prop == 'lcd-planes':
+                            devices=q.cmd('qom-list',path='/machine/unattached')
+                            device=next(d for d in devices if d['type']=='child<ipodtouch.lcd>')
+                            path='/machine/unattached/'+device['name']
+                            assert q.cmd('qom-get',path=path,property='planes')==value
                         if prop == 'amc-mode':
                             devices=q.cmd('qom-list',path='/machine/unattached')
                             device=next(d for d in devices if d['type']=='child<ipodtouch.amc>')

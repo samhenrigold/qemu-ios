@@ -283,6 +283,7 @@ typedef struct {
     bool mpvd_decode, mpvd_decode_explicit;
     uint8_t amc_mode;
     bool amc_mode_explicit;
+    bool lcd_planes, lcd_planes_explicit;
     uint32_t time_dilation;
     bool time_dilation_explicit;
 	QEMUTimer *osk_timer;
