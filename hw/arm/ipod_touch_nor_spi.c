@@ -4,6 +4,9 @@
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
+#include "system/block-backend.h"
+#include "system/runstate.h"
+#include "qobject/qdict.h"
 
 #include <zlib.h>
 
@@ -80,19 +83,92 @@ static void initialize_nor(IPodTouchNORSPIState *s)
     memset(s->nor_data, 0xff, sizeof(s->nor_data));
     s->nor_size = 0;
     s->nor_initialized = true;
-    if (!g_file_get_contents(s->nor_path, &data, &size, &error) ||
-        size != NOR_FLASH_SIZE) {
-        error_report("NOR image \"%s\" must contain exactly %u bytes: %s; reads return 0xff",
-                     s->nor_path, NOR_FLASH_SIZE,
-                     error ? error->message : "incorrect image size");
-        g_clear_error(&error);
-        return;
+    if (s->blk) {
+        if (blk_pread(s->blk, 0, NOR_FLASH_SIZE, s->nor_data, 0) < 0) {
+            error_report("Could not read writable NOR copy");
+            memset(s->nor_data, 0xff, sizeof(s->nor_data));
+            return;
+        }
+        size = NOR_FLASH_SIZE;
+    } else {
+        if (!g_file_get_contents(s->nor_path, &data, &size, &error) ||
+            size != NOR_FLASH_SIZE) {
+            error_report("NOR image \"%s\" must contain exactly %u bytes: %s; reads return 0xff",
+                         s->nor_path, NOR_FLASH_SIZE,
+                         error ? error->message : "incorrect image size");
+            g_clear_error(&error);
+            return;
+        }
+        memcpy(s->nor_data, data, size);
     }
-    memcpy(s->nor_data, data, size);
     s->nor_size = size;
     if (s->boot_args && s->boot_args[0]) {
         nor_set_boot_args(s, size);
     }
+}
+
+void ipod_touch_nor_spi_open_overlay(IPodTouchNORSPIState *s, const char *path, Error **errp)
+{
+    struct stat base, writable;
+    if (stat(s->nor_path, &base) < 0 || stat(path, &writable) < 0) {
+        error_setg_errno(errp, errno, "NOR base and writable copy must exist");
+        return;
+    }
+    if (base.st_dev == writable.st_dev && base.st_ino == writable.st_ino) {
+        error_setg(errp, "nor-rw must be a private copy, not the base NOR image");
+        return;
+    }
+    if (!S_ISREG(writable.st_mode)) {
+        error_setg(errp, "Writable NOR must be a regular file");
+        return;
+    }
+    QDict *options = qdict_new();
+    qdict_put_str(options, "driver", "raw");
+    s->blk = blk_new_open(path, NULL, options, BDRV_O_RDWR | BDRV_O_NO_SHARE, errp);
+    if (!s->blk) {
+        return;
+    }
+    if (blk_attach_dev(s->blk, DEVICE(s)) < 0) {
+        error_setg(errp, "Could not attach writable NOR backend");
+        return;
+    }
+    if (blk_getlength(s->blk) != NOR_FLASH_SIZE) {
+        error_setg(errp, "Writable NOR must contain exactly %u bytes", NOR_FLASH_SIZE);
+        return;
+    }
+    initialize_nor(s);
+    if (s->nor_size != NOR_FLASH_SIZE) {
+        error_setg(errp, "Could not initialize writable NOR");
+    }
+}
+
+/* A failed host write remains fatal to this embedded session, across reset. */
+static bool nor_io_failed;
+
+bool ipod_touch_nor_io_failed(void)
+{
+    return qatomic_read(&nor_io_failed);
+}
+
+static int nor_persist(IPodTouchNORSPIState *s, uint32_t start, uint32_t length)
+{
+    if (!s->blk) {
+        return 0;
+    }
+    if (s->restore_pending) {
+        start = 0;
+        length = NOR_FLASH_SIZE;
+    }
+    int ret = blk_pwrite(s->blk, start, length, s->nor_data + start, BDRV_REQ_FUA);
+    if (ret < 0) {
+        qatomic_set(&nor_io_failed, true);
+        error_report("NOR persistence failed: %s", strerror(-ret));
+        qemu_system_vmstop_request(RUN_STATE_IO_ERROR);
+    }
+    if (ret == 0) {
+        s->restore_pending = false;
+    }
+    return ret;
 }
 
 #define NOR_STATUS_EPE 0x20
@@ -176,6 +252,9 @@ static void nor_finish_transaction(IPodTouchNORSPIState *s)
     } else {
         memset(s->nor_data + start, 0xff, length);
     }
+    if (nor_persist(s, start, length) < 0) {
+        s->status |= NOR_STATUS_EPE;
+    }
 }
 
 static int ipod_touch_nor_spi_set_cs(SSIPeripheral *dev, bool level)
@@ -199,6 +278,12 @@ static void ipod_touch_nor_spi_reset(DeviceState *dev)
 static uint32_t ipod_touch_nor_spi_transfer(SSIPeripheral *dev, uint32_t value)
 {
     IPodTouchNORSPIState *s = IPOD_TOUCH_NOR_SPI(dev);
+    /* Incoming block backends activate after post_load. Synchronize the saved
+     * flash before the first bus transaction, once activation has completed. */
+    if (s->restore_pending && nor_persist(s, 0, NOR_FLASH_SIZE) < 0) {
+        s->status |= NOR_STATUS_EPE;
+        return 0xff;
+    }
     value &= 0xff;
     if (!s->command_active) {
         trace_ipod_touch_nor_command(value);
@@ -289,6 +374,7 @@ static int ipod_touch_nor_spi_post_load(void *opaque, int version_id)
         (s->nor_size != 0 && s->nor_size != NOR_FLASH_SIZE)) {
         return -EINVAL;
     }
+    s->restore_pending = s->blk != NULL;
     return 0;
 }
 
@@ -330,11 +416,23 @@ static void ipod_touch_nor_spi_class_init(ObjectClass *klass, void *data)
     k->cs_polarity = SSI_CS_LOW;
 }
 
+static void ipod_touch_nor_spi_finalize(Object *obj)
+{
+    IPodTouchNORSPIState *s = IPOD_TOUCH_NOR_SPI(obj);
+    if (s->blk) {
+        if (blk_get_attached_dev(s->blk)) {
+            blk_detach_dev(s->blk, DEVICE(s));
+        }
+        blk_unref(s->blk);
+    }
+}
+
 static const TypeInfo ipod_touch_nor_spi_type_info = {
     .name = TYPE_IPOD_TOUCH_NOR_SPI,
     .parent = TYPE_SSI_PERIPHERAL,
     .instance_size = sizeof(IPodTouchNORSPIState),
     .class_init = ipod_touch_nor_spi_class_init,
+    .instance_finalize = ipod_touch_nor_spi_finalize,
 };
 
 static void ipod_touch_nor_spi_register_types(void)

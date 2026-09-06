@@ -1178,6 +1178,23 @@ static void ipod_touch_set_nor_path(Object *obj, const char *value, Error **errp
     g_strlcpy(nms->nor_path, value, sizeof(nms->nor_path));
 }
 
+static char *ipod_touch_get_nor_rw(Object *obj, Error **errp)
+{
+    return g_strdup(IPOD_TOUCH_MACHINE(obj)->nor_rw_path);
+}
+
+static void ipod_touch_set_nor_rw(Object *obj, const char *value, Error **errp)
+{
+    IPodTouchMachineState *s = IPOD_TOUCH_MACHINE(obj);
+    if (s->cpu) {
+        error_setg(errp, "nor-rw must be configured before the machine starts");
+    } else if (strlen(value) >= sizeof(s->nor_rw_path)) {
+        error_setg(errp, "nor-rw path is too long");
+    } else {
+        g_strlcpy(s->nor_rw_path, value, sizeof(s->nor_rw_path));
+    }
+}
+
 static bool ipod_touch_get_wifi(Object *obj, Error **errp)
 {
     return IPOD_TOUCH_MACHINE(obj)->wifi;
@@ -1604,6 +1621,8 @@ static void ipod_touch_instance_init(Object *obj)
 
 	object_property_add_str(obj, "nor", ipod_touch_get_nor_path, ipod_touch_set_nor_path);
     object_property_set_description(obj, "nor", "Path to the S5L8720 NOR image");
+    object_property_add_str(obj, "nor-rw", ipod_touch_get_nor_rw, ipod_touch_set_nor_rw);
+    object_property_set_description(obj, "nor-rw", "Existing private writable NOR copy; empty keeps writes in memory");
 
     object_property_add_str(obj, "nand", ipod_touch_get_nand_path, ipod_touch_set_nand_path);
     object_property_set_description(obj, "nand", "Path to the NAND files");
@@ -3034,6 +3053,9 @@ static void ipod_touch_machine_init(MachineState *machine)
     IPodTouchSPIState *spi0_state = IPOD_TOUCH_SPI(dev);
     spi0_state->nor->nor_path = nms->nor_path;
     spi0_state->nor->boot_args = nms->boot_args;
+    if (nms->nor_rw_path[0]) {
+        ipod_touch_nor_spi_open_overlay(spi0_state->nor, nms->nor_rw_path, &error_fatal);
+    }
     nms->spi0_state = spi0_state;
     qdev_connect_gpio_out(DEVICE(gpio_state), 0,
         qdev_get_gpio_in_named(DEVICE(spi0_state->nor), SSI_GPIO_CS, 0));

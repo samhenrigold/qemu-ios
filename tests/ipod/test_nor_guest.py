@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import argparse
 import os
 import subprocess
+import shutil
 import tempfile
 import time
 import regress as r
@@ -13,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--files', type=Path, default=ROOT.parent / 'qemu-ios-files')
 parser.add_argument('--qemu', type=Path, default=ROOT / 'build-native14/qemu-build/qemu-system-arm')
+parser.add_argument('--persistent', action='store_true')
 args = parser.parse_args()
 r.START = time.time()
 with tempfile.TemporaryDirectory(prefix='it-nor-guest-') as temporary:
@@ -34,7 +36,15 @@ link6 -execute "$2/reboot" "$2/reboot.o"
         nor=files+'/ios3/nor_7E18.bin', overlay=str(out/'overlay'), qemu=str(args.qemu),
         usbmuxd_ok=False, usb_port=r.free_port(1520,1539), qmp_port=r.free_port(28200,28219),
         wifi=False, cpu=None, mem='128M', kernel_console=True)
-    procs = r.Procs()
+    if args.persistent:
+        shutil.copyfile(cfg.nor, out/'nor.bin')
+    class Procs(r.Procs):
+        def spawn(self, argv, *rest, **kwargs):
+            if args.persistent and argv[0] == cfg.qemu:
+                argv = list(argv)
+                argv[argv.index('-M')+1] += ',nor-rw='+str(out/'nor.bin')
+            return super().spawn(argv, *rest, **kwargs)
+    procs = Procs()
     device = r.Device(cfg, procs, 'device')
     try:
         device.start()
@@ -64,7 +74,22 @@ link6 -execute "$2/reboot" "$2/reboot.o"
         result = r.itqmp.agent(q, 'exec', 'nvram ltm-nor-test')
         assert result == (0, b'ltm-nor-test\tpersisted\n'), result
         assert device.powerdown(), 'guest shutdown failed'
-        print('PASS: native NOR program/erase, reboot persistence and confirmed shutdown')
+        print('PASS: native NOR program/erase, reboot persistence and confirmed shutdown', flush=True)
+        if args.persistent:
+            device = r.Device(cfg, procs, 'fresh-process')
+            device.start()
+            ok, detail, _ = device.wait_for_home(180)
+            assert ok, detail
+            q = device.qmp
+            q.cmd('qom-set', path='/machine', property='usb-attached', value=False)
+            deadline = time.monotonic()+90
+            while not r.itqmp.agent_alive(q):
+                assert device.alive() and time.monotonic()<deadline
+                time.sleep(1)
+            result = r.itqmp.agent(q, 'exec', 'nvram ltm-nor-test')
+            assert result == (0, b'ltm-nor-test\tpersisted\n'), result
+            assert device.powerdown()
+            print('PASS: native NVRAM survives a fresh process', flush=True)
     finally:
         if device.qmp:
             device.qmp.close()

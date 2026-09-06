@@ -27,6 +27,7 @@
 void gles_host_set_allowed(bool allowed);
 uint64_t ipod_touch_fmss_icon_state_writes(void);
 bool ipod_touch_fmss_io_failed(void);
+bool ipod_touch_nor_io_failed(void);
 
 #include "qemu-ios-ui.h"
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
@@ -297,7 +298,7 @@ bool qemu_ios_ui_display_sleeping(void)
 
 bool qemu_ios_ui_storage_failed(void)
 {
-    return ipod_touch_fmss_io_failed();
+    return ipod_touch_fmss_io_failed() || ipod_touch_nor_io_failed();
 }
 
 void qemu_ios_ui_vm_stopped(void)

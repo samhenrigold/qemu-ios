@@ -23,6 +23,7 @@ code = r'''
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+typedef void BlockBackend;
 #define NUM_GPIO_PADS 16
 #define IPOD_TOUCH_GPIO(s) (s)
 #define IPOD_TOUCH_NOR_SPI(s) (s)
@@ -40,6 +41,20 @@ static void initialize_nor(IPodTouchNORSPIState*s) {
  memset(s->nor_data,0xff,sizeof(s->nor_data));s->nor_size=NOR_FLASH_SIZE;s->nor_initialized=true;
 }
 '''
+code += r'''
+#define BDRV_REQ_FUA 1
+#define RUN_STATE_IO_ERROR 1
+#define qatomic_set(p,v) (*(p)=(v))
+#define error_report(...) ((void)0)
+static bool nor_io_failed;
+static int persist_error, storage_stops, full_writes;
+static uint32_t persisted_start, persisted_length;
+static int blk_pwrite(void *blk,uint32_t start,uint32_t length,const void*data,int flags) {
+ assert(blk && flags==BDRV_REQ_FUA);persisted_start=start;persisted_length=length;if(length==NOR_FLASH_SIZE)full_writes++;return persist_error;
+}
+static void qemu_system_vmstop_request(int state) {assert(state==RUN_STATE_IO_ERROR);storage_stops++;}
+'''
+code += function(nor,'nor_persist')
 code += function(gpio,'s5l8900_gpio_write')
 for name in ['nor_reset_transaction','nor_finish_transaction','ipod_touch_nor_spi_set_cs',
              'ipod_touch_nor_spi_reset','ipod_touch_nor_spi_transfer','ipod_touch_nor_spi_post_load']:
@@ -87,6 +102,11 @@ int main(void) {
  assert(byte(NOR_GET_JEDECID)==0x40 && byte(NOR_ENABLE_WRITE)==0x10 && byte(0xff)==0x20);end();
  begin(NOR_GET_JEDECID);assert(byte(0xff)==0x1f && byte(0xff)==0x45 && byte(0xff)==0x02 && byte(0xff)==0 && byte(0xff)==0xff);end();
  begin(0);byte(NOR_ENABLE_WRITE);end();assert(!s.write_enabled);
+ s.blk=(void*)1;persist_error=-EIO;program(4,0);
+ assert((s.status & NOR_STATUS_EPE) && nor_io_failed && storage_stops==1);
+ persist_error=0;s.restore_pending=true;program(4,0);
+ assert(!(s.status & NOR_STATUS_EPE) && !s.restore_pending && nor_io_failed);
+ assert(full_writes==1 && persisted_start==0 && persisted_length==NOR_PAGE_SIZE);s.blk=NULL;
  s.nor_size=0;program(0,0);assert((s.status & NOR_STATUS_EPE) && s.nor_data[0]==0x10);s.nor_size=NOR_FLASH_SIZE;
  program(0,0);assert(!(s.status & NOR_STATUS_EPE) && s.nor_data[0]==0);
  assert(ipod_touch_nor_spi_post_load(&s,2)==0);

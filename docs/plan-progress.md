@@ -765,3 +765,20 @@ ASan/UBSan command/protection/bounds checks and NVRAM partition checks pass.
 shutdown. `test_nor_snapshot.py` verifies flash and an unfinished page program
 across native migration before GL initialization. Logs:
 `/tmp/it-nor-guest-final.log`, `/tmp/it-nor-snapshot-final.log`.
+
+### Persistent private NOR (2026-09-06)
+
+Added startup-only `nor-rw` for an existing private 1 MiB raw copy. QEMU's block
+backend owns write locking and durable writes. Base aliases, malformed/missing
+copies and concurrent writers fail at startup. Host write failure sets flash
+EPE, stops the machine and reaches Light Touch's persistent storage warning.
+Snapshot flash is synchronized after incoming backend activation, on first SPI
+activity. Native migration/fresh-process checks and injected I/O failure checks
+pass; native iOS NVRAM survives both reboot and a new process, with confirmed
+shutdown from both guests (`/tmp/it-nor-persistent-guest.log`, 82.5 seconds).
+
+Light Touch automatically creates an owner-writable copy inside its NAND
+overlay. Existing copies are preserved, malformed copies fail visibly, and
+factory erase/snapshot freshness already cover files in that directory. The
+storage check verifies preservation, independent base bytes and failed-copy
+cleanup; Release builds pass. No new user setup is required.
