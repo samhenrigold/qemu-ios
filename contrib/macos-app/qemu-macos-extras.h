@@ -43,6 +43,8 @@ void qemu_ios_ui_shake(void);
  * next orientation change.
  */
 void qemu_ios_ui_accel(int x, int y, int z);
+/* Degrees, right edge down / top edge away positive. pose: 0 upright, 1 flat. */
+void qemu_ios_ui_attitude(double pitch_deg, double roll_deg, int pose);
 
 /* Queue UTF-8 text for the guest pasteboard (machine property "pasteboard"). */
 void qemu_ios_ui_paste(const char *utf8);
