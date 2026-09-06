@@ -1105,3 +1105,18 @@ with a deliberately missing conflicting legacy environment path, then confirms
 shutdown in 77.7 seconds (`/tmp/it-direct-config-guest.log`). CLI build passes.
 The regression option appender escapes commas in paths using QEMU's doubled-comma
 syntax. Remaining CLI launcher scripts outside this repository retain aliases.
+
+## Narrowed AES boot compatibility (2026-09-06)
+
+The retained 5F138 AES trace identifies the three skipped writes as custom-key,
+in-place, 128-byte operations. They are not UID-key operations as the original
+plan proposed. A fourth operation of the same shape at 0x0ff290ac must decrypt,
+so replacing the address list with a broad shape rule would be incorrect.
+
+The existing three-address exception now additionally requires that measured
+shape. Unrelated AES transfers targeting those addresses publish their output
+instead of silently dropping it. `tests/ipod/test_aes.py` runs the production
+handler with ASan/UBSan and checks actual CBC plaintext for other sizes, sources,
+UID operations and the fourth custom-key operation. All pass. The address-based
+compatibility itself remains unresolved; fresh native acceptance is pending.
+Reference trace: `/tmp/it-aes-legacy-trace.log`, naming its retained output folder.

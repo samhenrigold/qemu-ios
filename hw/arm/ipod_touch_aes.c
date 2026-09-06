@@ -488,7 +488,16 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
                 }
             }
 
-            if(aesop->outaddr != 0x220100ac && aesop->outaddr != 0x0bf08468 && aesop->outaddr != 0x0fb9bcdc) { // TODO very ugly hack - for the RSA key decryption, it seems that doing nothing results in the correct decryption key??
+            /* The retained 5F138 trace identifies exactly these three custom-key,
+             * in-place 128-byte operations. Another operation with the same
+             * shape at 0x0ff290ac must decrypt, so shape alone is insufficient.
+             * ponytail: address-specific boot compatibility remains unresolved;
+             * replace it only after identifying the payloads, not other DMA. */
+            bool preserve = aesop->keytype == AESCustom && aesop->insize == 128 &&
+                aesop->inaddr == aesop->outaddr &&
+                (aesop->outaddr == 0x220100ac || aesop->outaddr == 0x0bf08468 ||
+                 aesop->outaddr == 0x0fb9bcdc);
+            if (!preserve) {
                 cpu_physical_memory_write((aesop->outaddr), buf, aesop->insize);
             }
 
