@@ -307,3 +307,18 @@ guest agent; it does not claim interactive AppKit picker/drop acceptance.
 
 Photos, raw AAC transcoding, artwork, playlists, content deduplication across
 separate import jobs and recovery UI for uncertain imports remain open.
+
+### Native Saved Photos foundation
+
+`itphoto` uses UIImageWriteToSavedPhotosAlbum after checking baseline JPEG
+dimensions/size. Its persistent pending/done receipt distinguishes a confirmed
+save from an uncertain outcome and prevents automatic duplicate replay. iOS
+creates the DCIM original, album poster and BTH/THM thumbnail files. Confirmed
+saves remove only the redundant staged copy.
+
+Native validation passes image colors/dimensions, thumbnail files, duplicate
+and uncertain receipts, malformed input, cold persistence and both shutdowns:
+`/tmp/it-photo-guest-native-v2.log`. This run matches Light Touch's enabled media
+hardware. The album poster and full-size photo render, but the grid thumbnail
+is blank. That issue remains open; the test does not claim grid rendering passes.
+Host photo preparation and UI integration are in progress, not yet packaged.

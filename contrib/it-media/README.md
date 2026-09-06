@@ -74,3 +74,27 @@ screens, verifies stereo tones in host audio, and checks persistence and retry
 reconciliation after a cold boot. Compressed decoding is enabled to match Light
 Touch. On 7E18 the third-party MediaPlayer query connects to Music's MIG service;
 the test starts Music before requesting the Harness count.
+
+## Saved Photos helper
+
+The same build script produces `itphoto`. Stage an upright, 8-bit baseline JPEG
+as `/var/mobile/Media/LightTouch/<staging-id>/image.jpg`, then run
+`/tmp/itphoto <staging-id>` as root or mobile. Input is limited to 16 MiB and
+2048 pixels on each side, checked before UIKit decodes it. Light Touch prepares
+this representation on the host. The helper uses the native
+`UIImageWriteToSavedPhotosAlbum` API and waits up to 40 seconds for its callback.
+iOS creates the DCIM original, poster image and BTH/THM thumbnails.
+
+Before saving, the helper durably writes a `pending` receipt. A successful
+callback changes it to `done` and removes the redundant staged JPEG; Photos
+owns the registered copy. A repeated completed request returns `already-imported`.
+A pending or malformed receipt refuses replay, because a killed process may
+have saved the photo without recording completion. It preserves the staged
+image for inspection. Do not delete receipts to force a retry without checking
+Saved Photos first. Different staging IDs are independent imports.
+
+`tests/ipod/test_photo_guest.py` checks registration, thumbnail files, original
+dimensions/colors, completed and uncertain receipts, malformed input, and cold
+persistence with two guest-confirmed shutdowns. It captures album/grid/full-size
+screens. The current full-size image and album poster render correctly, but the
+grid thumbnail is blank; that rendering issue remains under investigation.
