@@ -283,9 +283,17 @@ static void ipod_touch_mpvd_finalize(Object *obj)
     mpvd_decoder_close(IPOD_TOUCH_MPVD(obj));
 }
 
+static int mpvd_pre_save(void *opaque)
+{
+    IPodTouchMPVDState *s = opaque;
+    s->saved_decode_enabled = s->decode_enabled;
+    return 0;
+}
+
 static int mpvd_post_load(void *opaque, int version_id)
 {
     IPodTouchMPVDState *s = opaque;
+    if (version_id >= 2 && s->saved_decode_enabled != s->decode_enabled) return -EINVAL;
     mpvd_decoder_close(s);
     qemu_set_irq(s->irq, s->decode_enabled && s->regs[0] != 0);
     return 0;
@@ -293,11 +301,13 @@ static int mpvd_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_mpvd = {
     .name = "ipod_touch_mpvd",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .pre_save = mpvd_pre_save,
     .post_load = mpvd_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, IPodTouchMPVDState, MPVD_REG_SIZE / 4),
+        VMSTATE_BOOL_V(saved_decode_enabled, IPodTouchMPVDState, 2),
         VMSTATE_END_OF_LIST()
     }
 };

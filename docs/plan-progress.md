@@ -1134,3 +1134,12 @@ and is rejected instead of restoring a missing/stale digest.
 using the production-declared VMState fields, including rewind, fresh destination
 and invalid-state restores. PKE production arithmetic/compatibility checks pass
 with the updated API. Full native migration acceptance remains pending.
+
+### Snapshot mode compatibility
+
+MPVD migration v2 and LCD migration v4 record the source decoder/compositor
+startup mode and reject restore into the opposite mode. Older versions remain
+readable; they predate this mode check. `test_snapshot_modes.py` verifies both
+on/off configurations save and restore successfully to matching destinations,
+and all four mismatched destinations fail. Combined native H.264 partial-picture
+and I2S half-frame restoration also passes with the current full build.
