@@ -1,6 +1,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
+#include "qapi/qapi-visit-common.h"
 #include "hw/arm/boot.h"
 #include "exec/address-spaces.h"
 #include "hw/misc/unimp.h"
@@ -225,17 +226,46 @@ static void install_ram_watch(MemoryRegion *top, MemoryRegion *backing,
  * today and must keep working, so they default to on only for the 3.1.3
  * configuration (which is the one that has the audio bugs, and which is
  * already identified everywhere else in this file by IT_DIRECT_IBOOT).
- * "IT_AUDIO_HW=1" forces them on -- use that to try them under 2.1.1 -- and
- * "IT_AUDIO_HW=0" forces them off.
+ * audio-hw=on forces them on (including under 2.1.1); off removes them.
+ * Explicit machine options, including auto, override the legacy IT_AUDIO_HW
+ * alias. Hardware topology cannot change after initialization.
  */
-static bool ipod_touch_audio_hw_enabled(void)
+static bool ipod_touch_audio_hw_enabled(IPodTouchMachineState *nms)
+{
+    return nms->audio_hw == ON_OFF_AUTO_AUTO ? getenv("IT_DIRECT_IBOOT") != NULL
+        : nms->audio_hw == ON_OFF_AUTO_ON;
+}
+
+static void ipod_touch_get_audio_hw(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    OnOffAuto value = IPOD_TOUCH_MACHINE(obj)->audio_hw;
+    visit_type_OnOffAuto(v, name, &value, errp);
+}
+
+static void ipod_touch_set_audio_hw(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->cpu) {
+        error_setg(errp, "audio-hw must be set before the machine starts");
+        return;
+    }
+    OnOffAuto value;
+    if (visit_type_OnOffAuto(v, name, &value, errp)) {
+        nms->audio_hw = value;
+        nms->audio_hw_explicit = true;
+    }
+}
+
+static void ipod_touch_audio_env_alias(IPodTouchMachineState *nms)
 {
     const char *env = getenv("IT_AUDIO_HW");
-
-    if (env) {
-        return env[0] != '0';
+    if (env && !nms->audio_hw_explicit) {
+        /* Preserve the old alias's first-byte semantics, including empty=on. */
+        nms->audio_hw = env[0] == '0' ? ON_OFF_AUTO_OFF : ON_OFF_AUTO_ON;
+        warn_report_once("IT_AUDIO_HW is deprecated; use -M iPod-Touch,audio-hw=on|off|auto");
     }
-    return getenv("IT_DIRECT_IBOOT") != NULL;
 }
 
 /*
@@ -1471,6 +1501,7 @@ static void ipod_touch_instance_finalize(Object *obj)
 
 static void ipod_touch_instance_init(Object *obj)
 {
+    IPOD_TOUCH_MACHINE(obj)->audio_hw = ON_OFF_AUTO_AUTO;
     IPOD_TOUCH_MACHINE(obj)->agent = ipod_agent_new();
     ipod_agent_publish(IPOD_TOUCH_MACHINE(obj)->agent);
     object_property_add_str(obj, "agent-request", NULL, ipod_touch_set_agent_request);
@@ -2782,6 +2813,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     AddressSpace *nsas;
     ARMCPU *cpu;
 
+    ipod_touch_audio_env_alias(nms);
     ipod_touch_cpu_setup(machine, &sysmem, &cpu, &nsas);
 
     // setup clock
@@ -3131,7 +3163,7 @@ static void ipod_touch_machine_init(MachineState *machine)
 
     // init the audio codec (CS42L58, device tree /arm-io/i2c0/audio0) and the
     // LM48821 speaker amp (/arm-io/i2c0/spkr-amp)
-    if (ipod_touch_audio_hw_enabled()) {
+    if (ipod_touch_audio_hw_enabled(nms)) {
         I2CSlave *codec = i2c_slave_create_simple(i2c_state->bus, "cs42l58", 0x4A);
         I2CSlave *amp = i2c_slave_create_simple(i2c_state->bus, "lm48821", 0x76);
 
@@ -3192,7 +3224,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     I2CSlave *cd327mikey = i2c_slave_create_simple(i2c_state->bus, "cd3272mikey", 0x39);
 
     /* AMC (audio media codec) -- see ipod_touch_audio_hw_enabled(). */
-    if (ipod_touch_audio_hw_enabled()) {
+    if (ipod_touch_audio_hw_enabled(nms)) {
         dev = qdev_new(TYPE_IPOD_TOUCH_AMC);
         busdev = SYS_BUS_DEVICE(dev);
         sysbus_realize(busdev, &error_fatal);
@@ -3316,6 +3348,10 @@ static void ipod_touch_machine_init(MachineState *machine)
 
 static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
 {
+    object_class_property_add(klass, "audio-hw", "OnOffAuto", ipod_touch_get_audio_hw,
+                              ipod_touch_set_audio_hw, NULL, NULL);
+    object_class_property_set_description(klass, "audio-hw",
+        "CS42L58 codec and AMC hardware (auto: enabled for direct iBoot)");
     MachineClass *mc = MACHINE_CLASS(klass);
     mc->desc = "iPod Touch";
     mc->init = ipod_touch_machine_init;
