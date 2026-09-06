@@ -841,3 +841,16 @@ boot (`/tmp/it-timer-migration2.log`; before GL initialization). Default native
 7E18 boot, guarded firmware-memory preservation, agent operations, Settings and
 confirmed shutdown pass in 69.0 seconds (`/tmp/it-timer-default-guest.log`).
 Timers 0–3 and the known counter/deadline clock mismatch remain separate work.
+
+## Retired guest host-file services (2026-09-06)
+
+Removed the unused host-file backend: no caller ever registered its file slots,
+while guest read/write/size requests could abort QEMU. The three reserved wire
+opcodes and packed request layout remain unchanged; they and unknown opcodes now
+return Darwin ENOSYS. Each request starts with a cleared error field so a failed
+call cannot contaminate a later successful response.
+
+`python3 tests/ipod/test_guest_service_errors.py` builds an ARMv6 probe and boots a
+disposable 7E18 device. All three retired calls with invalid arguments and an
+unknown opcode returned ENOSYS; a GLES ping after each returned its magic value
+with zero error, and the guest then shut down cleanly. Native build passed.

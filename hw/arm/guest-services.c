@@ -102,6 +102,7 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
         return;
     }
 
+    guest_svcs_errno = 0;
     switch (qcall.call_number) {
         // File Descriptors
         case QC_CLOSE:
@@ -159,23 +160,6 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
                                           qcall.args.send.buffer,
                                           qcall.args.send.length,
                                           qcall.args.send.flags);
-            break;
-        case QC_WRITE_FILE:
-            qcall.retval = qc_handle_write_file(cpu,
-                                       qcall.args.write_file.buffer_guest_ptr,
-                                       qcall.args.write_file.length,
-                                       qcall.args.write_file.offset,
-                                       qcall.args.write_file.index);
-            break;
-        case QC_READ_FILE:
-            qcall.retval = qc_handle_read_file(cpu,
-                                       qcall.args.read_file.buffer_guest_ptr,
-                                       qcall.args.read_file.length,
-                                       qcall.args.read_file.offset,
-                                       qcall.args.read_file.index);
-            break;
-        case QC_SIZE_FILE:
-            qcall.retval = qc_handle_size_file(qcall.args.size_file.index);
             break;
         case QC_GLES:
             qcall.retval = qc_handle_gles(cpu, &qcall.args.gles);
@@ -311,7 +295,10 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
             break;
         }
         default:
-            // TODO: handle unknown call numbers
+            /* Retired host-file opcodes also arrive here. No host files were
+             * registered; their old handlers aborted on every guest request. */
+            qcall.retval = -1;
+            guest_svcs_errno = QC_ERR_ENOSYS;
             break;
     }
 

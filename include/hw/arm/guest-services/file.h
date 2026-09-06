@@ -50,15 +50,7 @@ typedef struct __attribute__((packed)) {
     uint64_t index;
 } qc_size_file_args_t;
 
-#ifndef OUT_OF_TREE_BUILD
-void qc_file_open(uint64_t index, const char *filename);
-
-int64_t qc_handle_write_file(CPUState *cpu, uint64_t buffer_guest_ptr,
-                             uint64_t length, uint64_t offset, uint64_t index);
-int64_t qc_handle_read_file(CPUState *cpu, uint64_t buffer_guest_ptr,
-                            uint64_t length, uint64_t offset, uint64_t index);
-int64_t qc_handle_size_file(uint64_t index);
-#else
+#ifdef OUT_OF_TREE_BUILD
 int64_t qc_write_file(void *buffer_guest_ptr, uint64_t length,
                       uint64_t offset, uint64_t index);
 int64_t qc_read_file(void *buffer_guest_ptr, uint64_t length,
