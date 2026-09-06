@@ -389,25 +389,41 @@ def shot(q, path):
     return normalize(ppm, path)
 
 
-def normalize(ppm, png):
-    with open(ppm, "rb") as f:
-        data = f.read()
-    # P6\n<w> <h>\n<maxval>\n<rgb...>
-    parts, idx = [], 0
-    while len(parts) < 4:
-        while data[idx:idx + 1].isspace():
-            idx += 1
-        if data[idx:idx + 1] == b"#":
-            while data[idx:idx + 1] != b"\n":
-                idx += 1
+def read_ppm(path):
+    """Read one complete 8-bit P6 frame; malformed/truncated headers never spin."""
+    with open(path, "rb") as source:
+        data = source.read()
+    tokens, offset = [], 0
+    while len(tokens) < 4:
+        while offset < len(data) and data[offset:offset + 1].isspace():
+            offset += 1
+        if data[offset:offset + 1] == b"#":
+            end = data.find(b"\n", offset)
+            if end < 0:
+                raise ValueError("unterminated PPM comment")
+            offset = end + 1
             continue
-        start = idx
-        while not data[idx:idx + 1].isspace():
-            idx += 1
-        parts.append(data[start:idx])
-    idx += 1
-    w, h = int(parts[1]), int(parts[2])
-    pix = bytearray(data[idx:idx + w * h * 3])
+        start = offset
+        while offset < len(data) and not data[offset:offset + 1].isspace() and data[offset:offset + 1] != b"#":
+            offset += 1
+        if start == offset:
+            raise ValueError("incomplete PPM header")
+        tokens.append(data[start:offset])
+    if tokens[0] != b"P6" or not all(token.isdigit() for token in tokens[1:]):
+        raise ValueError("invalid PPM header")
+    width, height, maximum = map(int, tokens[1:])
+    if width <= 0 or height <= 0 or not 1 <= maximum <= 255 or not data[offset:offset + 1].isspace():
+        raise ValueError("unsupported PPM dimensions/sample size")
+    # Consume only the header delimiter: whitespace or '#' can be a pixel byte.
+    offset += 2 if data[offset:offset + 2] == b"\r\n" else 1
+    pixels = data[offset:]
+    if len(pixels) != width * height * 3:
+        raise ValueError("incomplete or extra PPM raster")
+    return width, height, bytearray(pixels)
+
+
+def normalize(ppm, png):
+    w, h, pix = read_ppm(ppm)
     hi = max(pix) if pix else 0
     if 0 < hi < 255:
         scale = 255.0 / hi

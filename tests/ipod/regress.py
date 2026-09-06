@@ -185,25 +185,7 @@ def sha256_file(path):
     return h.hexdigest()
 
 
-def read_ppm(path):
-    """Return (width, height, bytearray of samples) for a binary PPM."""
-    with open(path, "rb") as f:
-        data = f.read()
-    parts, i = [], 0
-    while len(parts) < 4:
-        while data[i:i + 1].isspace():
-            i += 1
-        if data[i:i + 1] == b"#":
-            while data[i:i + 1] != b"\n":
-                i += 1
-            continue
-        start = i
-        while not data[i:i + 1].isspace():
-            i += 1
-        parts.append(data[start:i])
-    i += 1
-    w, h = int(parts[1]), int(parts[2])
-    return w, h, bytearray(data[i:i + w * h * 3])
+read_ppm = itqmp.read_ppm
 
 
 def lit_count(path):
