@@ -16,7 +16,7 @@ TV-out were explicitly deferred by that plan.
 | Kernel serial console | Complete: explicit machine arguments, live console regression and Light Touch control build pass | Include the updated control in the final package verification |
 | Settings Wi-Fi join | Deferred at user request (2026-09-05) | Manual join without known-network seed or alert loop; DHCP and traffic |
 | Two-instance LAN | Deferred at user request (2026-09-05) | Separate identities, MACs and state; bidirectional traffic between guests |
-| Hardware shortcuts | FMSS completion and TV-out frame timing fixed; VIC daisy-chain defects fixed; DSI panel reply queue implemented; NOR program/erase and private persistence verified | PKE, FMSS erase, remaining LCD/TV-out status, timers 0–3 and AES signature classification |
+| Hardware shortcuts | FMSS completion and TV-out frame timing fixed; VIC daisy-chain defects fixed; DSI panel reply queue implemented; NOR program/erase/private persistence and operand-driven PKE verified | PKE interrupt/timing, FMSS erase, remaining LCD/TV-out status, timers 0–3 and AES signature classification |
 | Light Touch integration | Original UI fixes, built-in proxy/TLS bridge, inline Live Text, capture, native logs/notices and private NOR storage packaged | Full status pane, AFC browser, broader accessibility and Help Book work |
 | Media imports | Music and Saved Photos native imports, content identity and recording audio verified | Artwork/playlists/Videos, old-import indexing and reconciliation with guest Photos deletions |
 | Configuration and firmware | Exact guarded 5F138/7E18 profiles; audio, keyboard, Bluetooth and watchdog options typed | Boot-chain, decode, audio/display/GLES options and remaining environment consumers |
@@ -914,3 +914,18 @@ sequencing workaround remains unchanged.
 preservation and explicit forging. Native 5F138 reached Home after fifteen RSA
 runs; native 7E18 performed nine RSA runs and passed firmware/agent checks and
 confirmed shutdown. CLI build passes.
+
+## Operand-driven PKE (2026-09-06)
+
+The next trace resolved the fifth-START workaround. PKE now performs the
+register-selected Montgomery products used by the actual boot verifier, with
+readable key length, full 2 KB operand SRAM, 64/128/256-byte segments, sign bits,
+A×1 mode and a separately preloaded modulus. There is no command counter or
+hard-coded public exponent. See [PKE protocol](ipod-pke.md).
+
+Production ASan/UBSan checks pass for RSA and arbitrary exponents, malformed
+commands, memory bounds and compatibility mode. Native 5F138 reaches Home
+(`/tmp/it-pke-mont-legacy.log`); 7E18 passes firmware/agent checks and confirmed
+shutdown (`/tmp/it-pke-mont-7e18.log`). Native migration preserves selectors,
+signs, high SRAM and preloaded modulus (`/tmp/it-pke-mont-snapshot.log`). PKE
+migration is version 2; old states lack required fields and are rejected.

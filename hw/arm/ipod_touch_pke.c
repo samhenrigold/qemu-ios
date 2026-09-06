@@ -8,7 +8,7 @@
  * Forging an img3 signature check.
  *
  * Every image the boot chain loads carries an RSA signature over its own
- * SHA1, and the bootrom and iBoot really do verify it: the modexp below
+ * SHA1, and the bootrom and iBoot really do verify it: the Montgomery operations below
  * recovers a PKCS#1 v1.5 block whose tail is the digest the SHA1 engine just
  * produced, and the caller compares the two.
  *
@@ -54,151 +54,134 @@ static bool build_pkcs1_block(uint8_t *out, size_t len, const uint8_t hash[20])
     return true;
 }
 
+/* Each START performs A * B / R modulo the loaded modulus. The firmware
+ * implements exponentiation by selecting operand segments between commands.
+ * The radix includes the hardware's extra 16 bits per precision lane. */
+static void pke_execute(IPodTouchPKEState *s, uint32_t command)
+{
+    if (!(command & 9)) { return; }
+    unsigned size = s->segment_size;
+    unsigned a = s->seg_id >> 24, b = s->seg_id >> 16 & 255;
+    unsigned m = s->seg_id >> 8 & 255, dest = s->seg_id & 255;
+    bool one = s->seg_size_reg & 2;
+    if ((size != 64 && size != 128 && size != 256) ||
+        a >= sizeof(s->segments) / size || dest >= sizeof(s->segments) / size ||
+        (!one && b >= sizeof(s->segments) / size) || m >= sizeof(s->segments) / size) {
+        qemu_log_mask(LOG_GUEST_ERROR, "[PKE] invalid segment selection\n");
+        return;
+    }
+    if (command & 8) {
+        memcpy(s->modulus, s->segments + m * size, size);
+        s->modulus_size = size;
+    }
+    if (!(command & 1)) {
+        return;
+    }
+    if (s->modulus_size != size) {
+        qemu_log_mask(LOG_GUEST_ERROR, "[PKE] modulus has not been loaded\n");
+        return;
+    }
+    uint8_t result[256], expected[256];
+    BIGNUM *mod = BN_lebin2bn(s->modulus, size, NULL);
+    BIGNUM *left = BN_lebin2bn(s->segments + a * size, size, NULL);
+    BIGNUM *right = one ? BN_new() : BN_lebin2bn(s->segments + b * size, size, NULL);
+    BIGNUM *radix = BN_new(), *inverse = BN_new(), *value = BN_new();
+    BN_CTX *ctx = BN_CTX_new();
+    unsigned bits = ((s->key_len & 3) + 1) * ((((s->key_len >> 3) & 15) + 1) * 32 + 16);
+    bool ok = mod && left && right && radix && inverse && value && ctx;
+    if (ok) {
+        if (s->seg_sign & (1u << a)) { BN_set_negative(left, 1); }
+        if (one) { ok = BN_one(right); }
+        else if (s->seg_sign & (1u << b)) { BN_set_negative(right, 1); }
+        /* ponytail: compute the radix inverse per operation; cache only if
+         * boot profiling shows a cost, and invalidate on modulus reload. */
+        ok = ok && BN_is_odd(mod) && !BN_is_one(mod) && BN_set_bit(radix, bits) &&
+             BN_mod_inverse(inverse, radix, mod, ctx) &&
+             BN_mod_mul(value, left, right, mod, ctx) &&
+             BN_mod_mul(value, value, inverse, mod, ctx) &&
+             BN_bn2binpad(value, result, size) == size;
+    }
+    BN_free(mod); BN_free(left); BN_free(right); BN_free(radix);
+    BN_free(inverse); BN_free(value); BN_CTX_free(ctx);
+    if (!ok) {
+        qemu_log_mask(LOG_GUEST_ERROR, "[PKE] Montgomery operation failed\n");
+        return;
+    }
+    /* The known boot verifier exits Montgomery form from segment 2 into 1.
+     * Keep its explicitly enabled unsigned-image compatibility at that final
+     * conversion, never on intermediate products or a command counter. */
+    if (one && a == 2 && dest == 1 && forge_sigcheck_enabled()) {
+        bool valid = build_pkcs1_block(expected, size, result + size - 20) &&
+                     !memcmp(expected, result, size);
+        uint8_t hash[20];
+        if (!valid && ipod_touch_sha1_last_hash(hash)) {
+            build_pkcs1_block(result, size, hash);
+        }
+    }
+    for (unsigned i = 0; i < size; i++) {
+        s->segments[dest * size + i] = result[size - 1 - i];
+    }
+    s->seg_sign &= ~(1u << dest); /* Canonical positive modular residue. */
+}
+
 static uint64_t ipod_touch_pke_read(void *opaque, hwaddr offset, unsigned size)
 {
-    IPodTouchPKEState *s = (IPodTouchPKEState *)opaque;
-
-    //printf("%s: offset 0x%08x\n", __FUNCTION__, offset);
-
-    switch(offset) {
-        case REG_PKE_SEG_SIZE:
-            return s->seg_size_reg;
-        /* +1023, not +1024: segments[] is 1024 bytes = 256 words, so an offset
-         * of exactly +1024 indexes word 256 -- four bytes past the array, into
-         * seg_size_reg. Inclusive range, so the last legal offset is +1023. */
-        case REG_PKE_SEG_START ... (REG_PKE_SEG_START + 1023):
-        {
-            uint32_t *res = (uint32_t *)s->segments;
-            return res[(offset - REG_PKE_SEG_START) / 4];
+    IPodTouchPKEState *s = opaque;
+    if (size && size <= 4 && offset >= REG_PKE_SEG_START &&
+        offset - REG_PKE_SEG_START <= sizeof(s->segments) - size) {
+        uint32_t value = 0;
+        for (unsigned i = 0; i < size; i++) {
+            value |= (uint32_t)s->segments[offset - REG_PKE_SEG_START + i] << (8 * i);
         }
-        default:
-            break;
+        return value;
     }
-
-    return 0;
+    switch (offset) {
+    case 0: return s->key_len;
+    case 0xc: return s->seg_id;
+    case 0x10: return s->seg_sign;
+    case REG_PKE_SEG_SIZE: return s->seg_size_reg;
+    default: return 0; /* Synchronous completion clears START. */
+    }
 }
 
 static void ipod_touch_pke_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
 {
-    IPodTouchPKEState *s = (IPodTouchPKEState *)opaque;
-
-    //printf("%s: offset 0x%08x value 0x%08x\n", __FUNCTION__, offset, value);
-
-    switch(offset) {
-        case 0x0:
-            if (getenv("IT_PKE_DEBUG")) { printf("[PKE] reset via reg 0x0\n"); }
-            s->num_started = 0;
-            break;
-        case 0x10:
-            break;
-        /* +1023, not +1024: segments[] is 1024 bytes = 256 words, so an offset
-         * of exactly +1024 indexes word 256 -- four bytes past the array, into
-         * seg_size_reg. Inclusive range, so the last legal offset is +1023. */
-        case REG_PKE_SEG_START ... (REG_PKE_SEG_START + 1023):
-        {
-            uint32_t *segments_cast = (uint32_t *)s->segments;
-            segments_cast[(offset - REG_PKE_SEG_START) / 4] = value;
-            break;
-        }
-        case REG_PKE_START:
-        {
-            s->num_started++;
-
-            if (getenv("IT_PKE_DEBUG")) {
-                printf("[PKE] START #%d (segment_size=%d)\n",
-                       s->num_started, s->segment_size);
-            }
-
-            if(s->num_started == 5) { // TODO this is arbitrary!
-
-                if (s->segment_size != 128 && s->segment_size != 256) {
-                    qemu_log_mask(LOG_GUEST_ERROR,
-                                  "[PKE] unsupported segment size %u; ignored\n",
-                                  s->segment_size);
-                    break;
-                }
-
-                uint8_t result[256], expected[256];
-                BIGNUM *mod = BN_lebin2bn(s->segments, s->segment_size, NULL);
-                BIGNUM *base = BN_lebin2bn(s->segments + s->segment_size,
-                                         s->segment_size, NULL);
-                BIGNUM *exponent = BN_new(), *recovered = BN_new();
-                BN_CTX *ctx = BN_CTX_new();
-                bool ok = mod && base && exponent && recovered && ctx &&
-                          !BN_is_zero(mod) && BN_set_word(exponent, 65537) &&
-                          BN_mod_exp(recovered, base, exponent, mod, ctx) &&
-                          BN_bn2binpad(recovered, result, s->segment_size) == s->segment_size;
-                BN_free(mod);
-                BN_free(base);
-                BN_free(exponent);
-                BN_free(recovered);
-                BN_CTX_free(ctx);
-                if (!ok) {
-                    qemu_log_mask(LOG_GUEST_ERROR, "[PKE] modular exponentiation failed\n");
-                    break;
-                }
-
-                /* Validate the entire SHA1 DigestInfo/padding, using the
-                 * recovered digest. The old signed-char 0xff comparison was
-                 * always false, so even valid signatures were forged. */
-                bool well_formed = build_pkcs1_block(expected, s->segment_size,
-                                        result + s->segment_size - 20) &&
-                                   !memcmp(result, expected, s->segment_size);
-                if (!well_formed && forge_sigcheck_enabled()) {
-                    uint8_t hash[20];
-                    if (ipod_touch_sha1_last_hash(hash)) {
-                        build_pkcs1_block(result, s->segment_size, hash);
-                        if (getenv("IT_PKE_DEBUG")) {
-                            printf("[PKE] forged a signature block\n");
-                        }
-                    }
-                }
-                /* Fixed-width conversion preserves leading zeros and short
-                 * results. SEG1 holds the same integer little-endian. */
-                for (size_t i = 0; i < s->segment_size; i++) {
-                    s->segments[s->segment_size + i] = result[s->segment_size - 1 - i];
-                }
-            }
-            break;
-        }
-        case REG_PKE_SEG_SIZE:
-            s->seg_size_reg = value;
-            uint32_t size_bit = (s->seg_size_reg >> 6);
-            if(size_bit == 0) { s->segment_size = 256; }
-            else if(size_bit == 1) { s->segment_size = 128; }
-            else {
-                /*
-                 * Only 0 and 1 are decoded, so any other encoding leaves
-                 * segment_size at whatever it was -- and that is ZERO after
-                 * reset. The copy-out loop at the end of START is
-                 * `for (i = 0; i < segment_size - 1; i++)`, unsigned, so a zero
-                 * there makes the bound 0xFFFFFFFF and the destination index
-                 * `segments[-2 - i]`: a backwards walk off the front of the
-                 * array, through the heap, for as long as it takes to crash.
-                 *
-                 * segment_size is deliberately NOT changed here. Measured: the
-                 * 3.1.3 boot chain writes SEG_SIZE = 0x81 (encoding 2) exactly
-                 * once per boot, so this is a live path, not a latent one, and
-                 * zeroing on it would have changed a value the boot signature
-                 * path already runs against. The bound is enforced where it is
-                 * actually unsafe -- at START, below -- which leaves every
-                 * reachable sequence bit-identical to before (verified by
-                 * diffing a full IT_PKE_DEBUG boot trace, 522 lines, against
-                 * the previous binary).
-                 */
-                qemu_log_mask(LOG_GUEST_ERROR,
-                              "[PKE] reserved segment size encoding %u "
-                              "(SEG_SIZE=0x%08x); size left at %u\n",
-                              size_bit, s->seg_size_reg, s->segment_size);
-            }
-            break;
-        case REG_PKE_SWRESET:
-            if (getenv("IT_PKE_DEBUG")) { printf("[PKE] SWRESET\n"); }
-            s->num_started = 0;
-            break;
-        default:
-            break;
+    IPodTouchPKEState *s = opaque;
+    if (getenv("IT_PKE_DEBUG") && offset < REG_PKE_SEG_START) {
+        printf("[PKE] write +0x%03x = 0x%08x\n", (unsigned)offset, (unsigned)value);
     }
+    if (size && size <= 4 && offset >= REG_PKE_SEG_START &&
+        offset - REG_PKE_SEG_START <= sizeof(s->segments) - size) {
+        for (unsigned i = 0; i < size; i++) {
+            s->segments[offset - REG_PKE_SEG_START + i] = value >> (8 * i);
+        }
+        return;
+    }
+    switch (offset) {
+    case 0: s->key_len = value; break;
+    case 0xc: s->seg_id = value; break;
+    case 0x10: s->seg_sign = value; break;
+    case REG_PKE_SEG_SIZE:
+        s->seg_size_reg = value;
+        s->segment_size = ((value >> 6) & 3) == 3 ? 0 : 256 >> ((value >> 6) & 3);
+        break;
+    case REG_PKE_START: pke_execute(s, value); break;
+    case REG_PKE_SWRESET:
+        s->modulus_size = 0;
+        s->seg_sign = 0;
+        break;
+    default: break;
+    }
+}
+
+static int pke_post_load(void *opaque, int version_id)
+{
+    IPodTouchPKEState *s = opaque;
+    if ((s->segment_size && s->segment_size != 64 && s->segment_size != 128 && s->segment_size != 256) ||
+        (s->modulus_size && s->modulus_size != 64 && s->modulus_size != 128 && s->modulus_size != 256)) {
+        return -EINVAL;
+    }
+    return 0;
 }
 
 static const MemoryRegionOps pke_ops = {
@@ -217,10 +200,7 @@ static void ipod_touch_pke_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
 }
 
-/* Stateless modexp engine: every field is loaded by the guest before a run,
- * so the reset values are simply zero. num_started in particular is the
- * counter behind the "modexp only runs on the 5th START" hack -- carried into
- * a second boot it would put the engine out of phase with the new iBoot. */
+/* Reset registers, operand SRAM and the preloaded modulus. */
 static void ipod_touch_pke_reset(DeviceState *dev)
 {
     IPodTouchPKEState *s = IPOD_TOUCH_PKE(dev);
@@ -228,18 +208,24 @@ static void ipod_touch_pke_reset(DeviceState *dev)
     memset(s->segments, 0, sizeof(s->segments));
     s->seg_size_reg = 0;
     s->segment_size = 0;
-    s->num_started = 0;
+    s->key_len = s->seg_id = s->seg_sign = s->modulus_size = 0;
+    memset(s->modulus, 0, sizeof(s->modulus));
 }
 
 static const VMStateDescription vmstate_ipod_touch_pke = {
     .name = "ipod_touch_pke",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
+    .post_load = pke_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT8_ARRAY(segments, IPodTouchPKEState, 1024),
+        VMSTATE_UINT8_ARRAY(segments, IPodTouchPKEState, 2048),
+        VMSTATE_UINT8_ARRAY(modulus, IPodTouchPKEState, 256),
+        VMSTATE_UINT32(modulus_size, IPodTouchPKEState),
+        VMSTATE_UINT32(key_len, IPodTouchPKEState),
+        VMSTATE_UINT32(seg_id, IPodTouchPKEState),
+        VMSTATE_UINT32(seg_sign, IPodTouchPKEState),
         VMSTATE_UINT32(seg_size_reg, IPodTouchPKEState),
         VMSTATE_UINT32(segment_size, IPodTouchPKEState),
-        VMSTATE_UINT8(num_started, IPodTouchPKEState),
         VMSTATE_END_OF_LIST()
     }
 };

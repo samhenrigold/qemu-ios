@@ -18,10 +18,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchPKEState, IPOD_TOUCH_PKE)
 typedef struct IPodTouchPKEState {
 	SysBusDevice busdev;
     MemoryRegion iomem;
-    uint8_t segments[1024];
+    uint8_t segments[2048];
+    uint8_t modulus[256];
+    uint32_t modulus_size, key_len, seg_id, seg_sign;
     uint32_t seg_size_reg;
     uint32_t segment_size;
-    uint8_t num_started;
 } IPodTouchPKEState;
 
 #endif
