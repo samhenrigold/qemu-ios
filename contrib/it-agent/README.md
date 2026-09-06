@@ -17,7 +17,7 @@ absent/alive/stale. The QMP helper exposes `agent(q, op, args, body)` and the CL
 
 Implemented: ping, exec (binary stdin and combined stdout/stderr), put (path and
 final octal mode, atomic rename), get (whole regular file), getrange (`offset length path`, binary output), settime, launch,
-frontmost (bundle id and localized name), lockstatus, kill (executable name),
+frontmost (bundle id and localized name), lockstatus, orientation (0/90/180/-90 degrees), kill (executable name),
 halt (launchd shutdown request; the host must still await PMU confirmation).
 Commands use a fixed guest PATH and C locale. Output is capped at 1 MiB,
 requests at 256 KiB, chunks at 1024 bytes, and outstanding requests at 16.
@@ -55,3 +55,18 @@ media upgrade. SBS focus queries run on a worker thread: synchronous queries on
 SpringBoard’s own main thread deadlock its service. UIKit mutations stay on the
 main run loop. SpringBoard uses route target zero for Spotlight and lock-screen
 inspection; locked input is rejected and unfocused physical keys are discarded.
+
+### Orientation polling
+
+Light Touch uses the native `orientation` request after media preparation, so
+current images do not need a persistent SSH/iproxy/itorient session. It reports
+SpringBoard's frontmost-app orientation, not accelerometer posture. The original
+7E18 `SBGetUIOrientation` stub has no timeout; this operation checks its first
+8 bytes, uses its verified request ID `0x1e8496` and 40-byte reply, and bounds
+send/receive waits to 250 ms each. A private reply port is destroyed on every
+path, including timeout. Other firmware stubs fail with ENOSYS rather than
+assuming this ABI. The host retries without changing orientation on failure.
+
+Run `python3 tests/ipod/test_agent_orientation.py` for the bounded ABI check;
+`test_agent_guest.py --orientation --base-nand .../nand-agent-v4` exercises a
+landscape Harness, Home, a stopped SpringBoard and respring on disposable media.

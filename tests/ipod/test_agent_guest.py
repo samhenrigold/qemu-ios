@@ -15,6 +15,7 @@ parser.add_argument('--qemu', default=str(ROOT/'build-native14/qemu-build/qemu-s
 parser.add_argument('--usbmuxd', default=str(ROOT/'build-native14/build/usbmuxd/src/usbmuxd'))
 parser.add_argument('--base-nand')
 parser.add_argument('--baked', action='store_true')
+parser.add_argument('--orientation', action='store_true', help='verify native UI rotation and respring recovery')
 parser.add_argument('--typing', action='store_true', help='verify injected Notes and Harness input')
 args = parser.parse_args()
 out = tempfile.mkdtemp(prefix='it-agent-guest-')
@@ -38,7 +39,7 @@ try:
     if not args.baked:
         result = r.guest_ssh(cfg, port, [], scp_from=str(ROOT/'contrib/it-agent/it_agent'), scp_to='/tmp/it_agent')
         assert result.returncode == 0, result
-        result = r.guest_ssh(cfg, port, ['launchctl unload /System/Library/LaunchDaemons/com.qemu.it-pbd.plist; chmod 755 /tmp/it_agent; /tmp/it_agent </dev/null >/tmp/it_agent.log 2>&1 &'])
+        result = r.guest_ssh(cfg, port, ['launchctl unload /System/Library/LaunchDaemons/com.qemu.it-pbd.plist; launchctl unload /System/Library/LaunchDaemons/com.qemu.it-agent.plist; chmod 755 /tmp/it_agent; /tmp/it_agent </dev/null >/tmp/it_agent.log 2>&1 &'])
         assert result.returncode == 0, result
     deadline = time.monotonic() + 80
     while not r.itqmp.agent_alive(d.qmp):
@@ -63,9 +64,55 @@ try:
     assert agent('exec', 'sleep 2; printf alive') == (0, b'alive')
     assert r.itqmp.agent_alive(d.qmp)
     assert agent('lockstatus')[0] == 0
+    ok, detail = r.unlock(cfg, port, d); assert ok, detail
     assert agent('launch', 'com.apple.Preferences')[0] == 0
     time.sleep(2)
     status, data = agent('frontmost'); assert status == 0 and b'com.apple.Preferences' in data
+    if args.orientation:
+        assert agent('orientation') == (0,b'0\n')
+        import plistlib, zipfile
+        landscape = Path(out)/'Landscape.ipa'
+        with zipfile.ZipFile(ROOT/'contrib/it-harness/build/Harness.ipa') as source, zipfile.ZipFile(landscape,'w') as target:
+            for item in source.infolist():
+                data=source.read(item)
+                if item.filename.endswith('/Info.plist'):
+                    info=plistlib.loads(data)
+                    info['UIInterfaceOrientation']='UIInterfaceOrientationLandscapeRight'
+                    data=plistlib.dumps(info)
+                target.writestr(item,data)
+        installed=r.run(['ideviceinstaller','install',str(landscape)],cfg,90)
+        assert installed.returncode==0,installed
+        assert agent('launch','com.qemuios.harness')[0]==0
+        time.sleep(3)
+        status,data=agent('frontmost');assert status==0 and b'com.qemuios.harness' in data,(status,data)
+        deadline=time.monotonic()+20
+        while True:
+            status,data=agent('orientation')
+            if status==0 and int(data) in (-90,90):break
+            if time.monotonic()>=deadline:
+                image=d.qmp.shot(str(Path(out)/'orientation-failed.ppm'));r.to_png(image,str(Path(out)/'orientation-failed.png'))
+                raise AssertionError((status,data))
+            time.sleep(0.5)
+        d.qmp.home()
+        deadline=time.monotonic()+15
+        while agent('orientation') != (0,b'0\n'):
+            assert time.monotonic()<deadline
+            time.sleep(0.5)
+        d.qmp.cmd('qom-set',path='/machine',property='accel-orientation',value=1)
+        import errno
+        assert agent('exec','killall -STOP SpringBoard')[0]==0
+        try:
+            assert agent('orientation')[0]==-errno.ETIMEDOUT
+            assert agent('ping')==(0,b'it_agent v1\n')
+        finally:
+            assert agent('exec','killall -CONT SpringBoard')[0]==0
+        assert agent('kill','SpringBoard')[0] == 0
+        time.sleep(10)
+        deadline=time.monotonic()+30
+        while agent('orientation') != (0,b'0\n'):
+            assert time.monotonic()<deadline
+            time.sleep(1)
+        print('PASS: native orientation follows landscape app, Home and a new SpringBoard server',flush=True)
     d.qmp.cmd("qom-set", path="/machine", property="pasteboard", value="Agent clipboard acceptance")
     deadline = time.monotonic() + 50
     while True:
@@ -169,6 +216,7 @@ try:
         print('PASS: foreground typing, Spotlight, unfocused key discard and locked input rejection', flush=True)
         print('PASS: Notes and third-party UITextField Unicode, deletion, host keys and UI inspection', flush=True)
     print('PASS: native agent ping, root exec, binary stdin/files, status, clock, liveness', flush=True)
+    assert d.powerdown(), 'guest shutdown not confirmed'
 finally:
     if d.qmp: d.qmp.close()
     p.stop_all()

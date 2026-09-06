@@ -2,7 +2,7 @@
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../armv6-toolchain/armv6.sh"
-cc6 "$HERE/it_agent.c" "$HERE/it_agent.o"
+cc6 "$HERE/it_agent.c" "$HERE/it_agent.o" -isystem "$(xcrun clang -print-resource-dir)/include"
 link6 -execute "$HERE/it_agent" "$HERE/it_agent.o"
 rm -f "$HERE/it_agent.o"
 

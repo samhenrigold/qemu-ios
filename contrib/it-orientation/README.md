@@ -23,21 +23,18 @@ One integer per line: `0`, `90`, `180` or `-90` — SpringBoard's degrees, which
 are the angle the *content* is rotated by, not the angle the device is turned.
 `LandscapeLeft` (home button on the right) is `90`. The host converts.
 
-## Deployment: none
+## Legacy fallback
 
-Nothing is baked into a NAND image and nothing is injected. LightTouchMac's
-`EmulatorController` streams the ~50 KB binary into `/tmp/itorient` over the ssh
-stdin of the session that then `exec`s it, so the same connection that installs
-it is the one that runs it, and a guest that never got it simply never rotates
-by itself.
+Current Light Touch uses the baked guest agent's bounded `orientation` RPC.
+Only an image without the agent uses this streamed SSH helper. No injection is
+needed. The source remains a reference for the 3.1.3 orientation semantics.
 
 ## Building
 
     ./build.sh          # needs ../armv6-toolchain
 
-## Status
+## Verification
 
-Builds clean to a valid armv6 Mach-O; the MIG stub's `(port, int *)` signature
-was read off the armv6 stub in the 3.1.3 dyld shared cache rather than guessed.
-**Not yet run on a guest** — that needs the emulator up with a landscape-only
-app to hand, which is a human at a window, not a headless check.
+The native agent replacement is covered by `tests/ipod/test_agent_guest.py
+--orientation`: a disposable landscape Harness reports landscape and Home
+returns to portrait. The older streaming helper is retained for legacy images.

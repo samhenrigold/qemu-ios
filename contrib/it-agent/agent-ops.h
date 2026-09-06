@@ -158,7 +158,7 @@ static void agent_dispatch(unsigned size)
         if (body_len > 65536) status = -EFBIG;
         else status = agent_sbs(op, args);
         if (!status) return; /* The target process commits the result. */
-    } else if (!strcmp(op, "launch") || !strcmp(op, "frontmost") || !strcmp(op, "lockstatus")) {
+    } else if (!strcmp(op, "launch") || !strcmp(op, "frontmost") || !strcmp(op, "lockstatus") || !strcmp(op, "orientation")) {
         status = agent_sbs(op, args);
     } else if (!strcmp(op, "halt")) {
         extern int reboot2(int, const char *);

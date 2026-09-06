@@ -606,3 +606,20 @@ AppSync documentation now describes the four 7E18 sites and entitlement
 preservation. The two 5F138-only patch tools and old 500 MB pruning recipe are
 marked historical. Networking notes distinguish the old resolver investigation
 from current 7E18 behavior; capabilities now link agent/configuration interfaces.
+
+### Native orientation polling (2026-09-06)
+
+Light Touch now uses the guest agent for orientation after media preparation;
+only images with no agent retain the streamed SSH helper. Polling preserves
+manual rotation, rejects stale boot callbacks, and pauses during sleep/install.
+The 7E18 MIG request is firmware-checked and bounds send/receive to 250 ms each,
+with a private reply port cleaned up on success and failure. App-name polling
+keeps its existing cancellable helper: the native SBS API is also unbounded.
+
+`test_agent_orientation.py` passes ASan/UBSan ABI, timeout, cleanup, firmware and
+invalid-result checks. `test_agent_guest.py --orientation` passes native
+landscape Harness → Home → stopped SpringBoard (ETIMEDOUT, then ping succeeds)
+→ respring → orientation, followed by guest-confirmed shutdown in 87 seconds
+(`/tmp/it-agent-orientation-native-final.log`). Light Touch's
+`tests/check-agent-transport.py` passes concurrent reply routing, binary exec,
+invalid orientation, absent/stale agent and cancellation; Release build passes.
