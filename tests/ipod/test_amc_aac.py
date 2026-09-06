@@ -25,6 +25,44 @@ begin = source.index('static const uint32_t amc_banks[]')
 mmio += '\n' + source[begin:source.index('\n}', begin)+2]
 mmio += '\n' + function('ipod_touch_amc_write(')
 mmio += '\n' + function('amc_decode_tick(')
+serialization = source[source.index('static int amc_put_decoder('):source.index('static const VMStateInfo vmstate_amc_decoder')]
+serialization += '\n' + function('amc_pre_save(')
+helpers = r'''
+static AMCDecoder *snapshot_decoder(AMCDecoder *d)
+{
+    QEMUFile wire = { .bytes = g_byte_array_new() };
+    AMCDecoder *copy = NULL;
+    assert(amc_put_decoder(&wire, &d, 0, NULL, NULL) == 0);
+    assert(amc_get_decoder(&wire, &copy, 0, NULL) == 0);
+    assert(wire.pos == wire.bytes->len);
+    assert(amc_replay_restore(copy));
+    g_byte_array_unref(wire.bytes);
+    return copy;
+}
+static GByteArray *finish_stream(IPodTouchAMCState *s)
+{
+    GByteArray *pcm = g_byte_array_new();
+    for (unsigned tick = 0; tick < 2000; tick++) {
+        AMCDecoder *d = s->decoder;
+        if (s->pending & 4) {
+            unsigned slot = (d->slot + d->buffers - 1) % d->buffers;
+            uint8_t *header = aperture + AMC_RESULT_OFFSET;
+            unsigned bytes = lduw_le_p(header + 0xc + slot * 4) * 2;
+            assert(lduw_le_p(header + 0xa + slot * 4) && bytes);
+            g_byte_array_append(pcm, header + 0x100 + slot * d->capacity, bytes);
+            stw_le_p(header + 0xa + slot * 4, 0);
+            s->pending &= ~4u;
+        }
+        if (s->pending & 0x40000) {
+            assert(!d->input_pending && !d->dma_pending && g_queue_is_empty(&d->output_sizes));
+            return pcm;
+        }
+        amc_decode_tick(s);
+    }
+    assert(0); return NULL;
+}
+'''
+
 prelude = r'''
 #include <glib.h>
 #include <libavcodec/avcodec.h>
@@ -35,6 +73,19 @@ prelude = r'''
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
+typedef struct { GByteArray *bytes; size_t pos; int error; } QEMUFile;
+typedef void VMStateField;
+typedef void JSONWriter;
+static void qemu_put_be32(QEMUFile *f, uint32_t v) { v = GUINT32_TO_BE(v); g_byte_array_append(f->bytes, (uint8_t *)&v, 4); }
+static void qemu_put_buffer(QEMUFile *f, const uint8_t *p, size_t n) { if(n) g_byte_array_append(f->bytes, p, n); }
+static size_t qemu_get_buffer(QEMUFile *f, uint8_t *p, size_t n) {
+ if (n > f->bytes->len-f->pos) { f->error = -EIO; return 0; }
+ if(n) memcpy(p, f->bytes->data+f->pos, n); f->pos += n; return n;
+}
+static uint32_t qemu_get_be32(QEMUFile *f) { uint32_t v=0; qemu_get_buffer(f, (uint8_t *)&v, 4); return GUINT32_FROM_BE(v); }
+static int qemu_file_get_error(QEMUFile *f) { return f->error; }
+#define error_report(...) fprintf(stderr, __VA_ARGS__)
 #define IT_HAVE_AVCODEC 1
 typedef uint64_t hwaddr;
 typedef struct {
@@ -79,6 +130,20 @@ static int address_space_write(void *as, hwaddr a, int attrs, const void *src, s
 }
 static void word(unsigned offset, uint32_t v) { v = GUINT32_TO_LE(v); memcpy(dram+offset,&v,4); }
 '''
+
+# Locally generated 733 Hz AAC-LC tone: ffmpeg sine, 44.1 kHz mono, 16 kb/s.
+tone_packets = [
+    bytes.fromhex('dc004c61766336332e312e3130310002909725ca66f7e39d7b7c6b85cb85c012121212134e9db49541d11b375c181912206366cd8303220606366e596552a5965965965978'),
+    bytes.fromhex('01288cdac95b256c95b295ffd7ff7f6be3fa7fe3ff7fae2ffafff87fefedd6bfb7fd3ff3f6e2c26eed23506a005186f440be04401950d13fca89fe460a1f250b8709b9d9576331811322267127b8c441e0377ca9a090909cb8'),
+    bytes.fromhex('0128eb8aea9e3bcaf1febfbfc79f69d386b56b0ffc36efbfbfba5a2f787401f1980cfee03ff003bee41ff8cc33fbc207c66038'),
+    bytes.fromhex('00f62b8942d5d37cfe7ffecff6fdfffcbf5fbcce7cd732558f917ca25ee752b2d481bef7fdaec34a2b445398c84ed7728f'),
+    bytes.fromhex('012e4b8aee3c64f1ebe7f4fbfc7dfda5ea5cbbb83e75f87db6c9d89597d85c3e7f38c61b6e127ce303ec413f3303fdb684fcf783fdb8'),
+    bytes.fromhex('01248db2c8db2343067ffdaffd7e389e3ffedffcdf102fd20f73e4072ced1a10457d97dfb1be22e76dbd05b3f63fbaedc8c4643d6630f76ce0'),
+    bytes.fromhex('011881b470'),
+]
+tone_code = 'static const unsigned tone_sizes[] = {' + ','.join(str(len(v)) for v in tone_packets) + '};\n'
+tone_code += 'static const uint8_t tone[] = {' + ','.join(str(v) for v in b''.join(tone_packets)) + '};\n'
+
 check = r'''
 int main(void) {
     IPodTouchAMCState s = {0};
@@ -125,6 +190,25 @@ int main(void) {
     /* A large compressed input stays in the codec until PCM consumers catch up. */
     for (unsigned i=0;i<1000;i++) memcpy(dram+0x1000+i*7,silence,7);
     word(4,7000u<<16); word(8,0x08001000);
+    assert(amc_decode_dma(&s,0x08000001));
+    unsigned saved_timer_starts = timer_starts;
+    bool saved_irq_level = irq_level;
+    d=s.decoder;
+    amc_decode_drain(&s); d->dma_pending = true;
+    memset(aperture+AMC_RESULT_OFFSET, 0, 0x12); s.pending = 0;
+    amc_decode_publish(&s);
+    assert(d->input_pending && d->cursor == 4096 && d->slot == 1 && s.pending == 4);
+    IPodTouchAMCState restored = s; restored.decoder = snapshot_decoder(d);
+    uint8_t *saved_aperture = g_memdup2(aperture, sizeof(aperture));
+    GByteArray *expected = finish_stream(&s);
+    memcpy(aperture, saved_aperture, sizeof(aperture)); g_free(saved_aperture);
+    GByteArray *actual = finish_stream(&restored);
+    assert(expected->len == 1000 * 4096 && actual->len == expected->len);
+    assert(!memcmp(expected->data, actual->data, expected->len));
+    assert(((AMCDecoder *)restored.decoder)->slot == d->slot);
+    g_byte_array_unref(expected); g_byte_array_unref(actual); amc_decoder_close(&restored);
+    amc_decoder_close(&s); s.pending = 0;
+    timer_starts = saved_timer_starts; irq_level = saved_irq_level;
     assert(amc_decode_dma(&s,0x08000001));
     d=s.decoder; unsigned frames=0;
     while(d->input_pending) {
@@ -292,13 +376,63 @@ int main(void) {
     }
     amc_decode_tick(&s);assert(!s.pending);
     amc_decoder_close(&s);
+    /* Replay prior non-silent packets to recover AAC overlap, then compare
+     * every sample of the following packets against uninterrupted decoding. */
+    memset(s.regs,0,sizeof(s.regs));
+    s.regs[0x940/4]=0x84006e00; s.regs[0x960/4]=0xc600b800;
+    s.regs[0x964/4]=0x848cba5d; s.regs[0x968/4]=0xc013f7fb;
+    stw_le_p(aperture+0x2ff00,7); stw_le_p(aperture+0x2ff06,4);
+    unsigned tone_offset = 0;
+    for (unsigned j=0; j<4; j++) {
+        memcpy(dram+0x1000,tone+tone_offset,tone_sizes[j]); tone_offset += tone_sizes[j];
+        word(4,tone_sizes[j]<<16); assert(amc_decode_dma(&s,0x08000001));
+        amc_decode_drain(&s); d=s.decoder; assert(!d->input_pending);
+        d->cursor=d->pcm->len; g_queue_clear(&d->output_sizes);
+    }
+    restored=s; restored.decoder=snapshot_decoder(d);
+    unsigned nonzero=0;
+    for (unsigned j=4; j<ARRAY_SIZE(tone_sizes); j++) {
+        memcpy(dram+0x1000,tone+tone_offset,tone_sizes[j]); tone_offset += tone_sizes[j];
+        word(4,tone_sizes[j]<<16); assert(amc_decode_dma(&s,0x08000001));
+        assert(amc_decode_dma(&restored,0x08000001));
+        amc_decode_drain(&s); amc_decode_drain(&restored);
+        d=s.decoder; AMCDecoder *r=restored.decoder;
+        assert(d->pcm->len && r->pcm->len==d->pcm->len);
+        assert(!memcmp(d->pcm->data,r->pcm->data,d->pcm->len));
+        for(unsigned k=0;k<d->pcm->len;k++) nonzero+=d->pcm->data[k]!=0;
+        d->cursor=d->pcm->len; r->cursor=r->pcm->len;
+        g_queue_clear(&d->output_sizes); g_queue_clear(&r->output_sizes);
+    }
+    assert(nonzero>100); amc_decoder_close(&restored); amc_decoder_close(&s);
+    /* Truncated/malformed replay blobs reject before publishing a decoder. */
+    QEMUFile bad={.bytes=g_byte_array_new()}; AMCDecoder *missing=NULL;
+    qemu_put_be32(&bad,2); assert(amc_get_decoder(&bad,&missing,0,NULL)==-EINVAL && !missing);
+    g_byte_array_set_size(bad.bytes,0); bad.pos=0; qemu_put_be32(&bad,1);
+    assert(amc_get_decoder(&bad,&missing,0,NULL)==-EIO && !missing);
+    g_byte_array_unref(bad.bytes);
+    /* Cap rejection must not stop decoding and stream reset must clear it. */
+    memcpy(dram+0x1000,silence,sizeof(silence)); word(4,sizeof(silence)<<16);
+    assert(amc_decode_dma(&s,0x08000001)); amc_decode_drain(&s);
+    d = s.decoder; d->history_bytes = AMC_REPLAY_MAX_BYTES;
+    amc_replay_record(d, silence, sizeof(silence));
+    assert(d->history_overflow && !d->history && amc_pre_save(&s) == -E2BIG);
+    assert(amc_decode_dma(&s,0x08000001)); amc_decode_drain(&s);
+    assert(!d->failed); amc_decoder_close(&s); assert(!amc_pre_save(&s));
+    AMCDecoder limit={.history=g_ptr_array_new()};
+    g_ptr_array_set_size(limit.history,AMC_REPLAY_MAX_PACKETS);
+    amc_replay_record(&limit,silence,sizeof(silence));
+    assert(limit.history_overflow && !limit.history);
+    memset(&limit,0,sizeof(limit)); amc_replay_record(&limit,silence,sizeof(silence));
+    limit.history_frames=AMC_REPLAY_MAX_FRAMES; amc_replay_received(&limit);
+    assert(limit.history_overflow && !limit.history);
+    puts("PASS: exact AMC replay, pending frames/PCM/slot/completion and bounded history");
     puts("PASS: AAC-LC/HE-AAC/MP3/ALAC, PCM layout/backpressure, DMA bounds and stream restart");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='amc-aac-') as directory:
     main = Path(directory) / 'check.c'
     exe = Path(directory) / 'check'
-    main.write_text(constants + "\n" + prelude + code + mmio + check)
+    main.write_text(constants + "\n" + prelude + code + mmio + serialization + helpers + tone_code + check)
     flags = shlex.split(subprocess.check_output(
         ['pkg-config', '--cflags', '--libs', 'glib-2.0', 'libavcodec', 'libavutil'], text=True))
     rpaths = [f'-Wl,-rpath,{flag[2:]}' for flag in flags if flag.startswith('-L')]

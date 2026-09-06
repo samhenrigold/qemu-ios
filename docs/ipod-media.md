@@ -850,7 +850,27 @@ their presence-based semantics and emit a deprecation warning. These modes
 require AMC hardware (`audio-hw=on`, or the existing auto-enabled boot path).
 A build without libavcodec rejects decode mode instead of silently disabling
 it. Restores reject an AMC mode incompatible with the saved handshake/decoder
-state; host codec contexts are still recreated lazily as before.
+state. Version-2 AMC snapshots preserve pending PCM, output-buffer ownership,
+DMA completion and compressed packets. Restore recreates the host codec by
+replaying its accepted packets without publishing duplicate guest output;
+unread frames inside the final packet remain pending. This preserves codec
+overlap/reservoir as well as the guest queue, rather than starting a fresh
+codec halfway through a stream.
+
+Replay is bounded to 64 MiB of compressed input, 65,536 packets and 262,144
+decoded frames per stream. Exceeding any bound leaves playback running but
+rejects saving that active stream with an explicit error; starting a new audio
+stream or resetting AMC clears the limit. Restoring a long history takes
+proportionally longer. Old version-1 snapshots lack this decoder history and
+cannot recover an in-flight decode. This does not remove the separate live-GL
+snapshot blocker.
+
+`test_amc_aac.py` compares uninterrupted/restored non-silent AAC samples and a
+1,000-frame DMA with unread codec frames, including PCM backpressure, alternating
+slots, final completion, malformed input and replay-limit behavior under
+ASan/UBSan. `test_amc_snapshot.py` exercises real VMState into a fresh process
+with a 64-frame DMA, plus mode mismatch rejection. Its disposable ARM idle loop
+advances the production TCG virtual clock; firmware is not booted.
 
 `lcd-planes=on|off` configures each LCD device at startup, defaulting to off.
 Explicit selection overrides the deprecated presence-based `IT_LCD_PLANES`
