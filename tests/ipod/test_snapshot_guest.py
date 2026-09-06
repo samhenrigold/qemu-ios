@@ -15,6 +15,7 @@ parser.add_argument('--base-nand')
 parser.add_argument('--network', action='store_true')
 parser.add_argument('--usb', action='store_true')
 parser.add_argument('--expect-gles-block', action='store_true')
+parser.add_argument('--audio', action='store_true')
 args = parser.parse_args()
 os.environ['PATH'] = str(ROOT.parent/'qemu-ios-deps12/bin') + ':' + os.environ['PATH']
 out = tempfile.mkdtemp(prefix='it-snapshot-guest-')
@@ -24,14 +25,18 @@ cfg = SimpleNamespace(out=out, files=f, base_nand=args.base_nand or f+'/nand-age
     qemu=str(ROOT/'build-native14/qemu-build/qemu-system-arm'),
     usbmuxd=str(ROOT/'build-native14/build/usbmuxd/src/usbmuxd'), usbmuxd_ok=True,
     usb_port=r.free_port(1520,1539), mux_port=r.free_port(27400,27419),
-    qmp_port=r.free_port(28200,28219), wifi=True, cpu=None, mem='128M', kernel_console=True)
+    qmp_port=r.free_port(28200,28219), wifi=True, cpu=None, mem='128M', kernel_console=True,
+    install_timeout=420, proxy_lo=28460, proxy_hi=28479)
 
 class SnapshotProcs(r.Procs):
     incoming = None
-    def spawn(self, argv, *args, **kwargs):
+    def spawn(self, argv, *rest, **kwargs):
+        if argv[0] == cfg.qemu and args.audio:
+            argv = list(argv)
+            argv[argv.index('-audio') + 1] = 'driver=wav,path=' + out + ('/after.wav' if self.incoming else '/before.wav')
         if argv[0] == cfg.qemu and self.incoming:
             argv = argv + ['-incoming', 'file:' + self.incoming, '-S']
-        return super().spawn(argv, *args, **kwargs)
+        return super().spawn(argv, *rest, **kwargs)
 
 server = None
 if args.network:
@@ -74,6 +79,30 @@ try:
     if args.usb:
         udid, detail = r.wait_for_device(cfg, timeout=120)
         assert udid, detail
+    if args.audio:
+        result = r.Result('audio launcher')
+        port = r.prepare_launcher(cfg, p, d, result)
+        assert port, result.detail
+        installed = r.run(['ideviceinstaller', 'install', str(ROOT/'contrib/it-harness/build/Harness.ipa')], cfg, 120)
+        assert installed.returncode == 0, installed
+        assert r.itqmp.agent(d.qmp, 'launch', 'com.qemuios.harness')[0] == 0
+        time.sleep(4)
+        # Move the seventh row into the menu viewport. Hold before releasing
+        # so momentum does not move the target after the controlled drag.
+        r.itqmp.move(d.qmp, 160, 290)
+        d.qmp.cmd('input-send-event', events=[{'type':'btn','data':{'down':True,'button':'left'}}])
+        for step in range(1, 27):
+            r.itqmp.move(d.qmp, 160, 290 - step * 5)
+            time.sleep(.05)
+        time.sleep(.5)
+        d.qmp.cmd('input-send-event', events=[{'type':'btn','data':{'down':False,'button':'left'}}])
+        time.sleep(.5)
+        r.to_png(d.qmp.shot(out+'/audio-menu.ppm'), out+'/audio-menu.png')
+        d.qmp.tap(160, 211)
+        time.sleep(.25)
+        status, tree = r.itqmp.agent(d.qmp, 'uidump')
+        Path(out+'/audio-ui.txt').write_bytes(tree)
+        assert status == 0 and b'RUNNING audio stereo.wav' in tree, (status, tree[-1500:])
     print('GLES contexts before save:', d.qmp.cmd('qom-get', path='/machine', property='gles-contexts'), flush=True)
     d.qmp.cmd('stop')
     snapshot = out + '/state'
@@ -120,6 +149,9 @@ try:
         udid, detail = r.wait_for_device(cfg, timeout=120)
         assert udid, detail
         print('PASS: USB re-enumeration and lockdown pairing after restore', flush=True)
+    if args.audio:
+        assert b'com.qemuios.harness' in r.itqmp.agent(d.qmp, 'frontmost')[1]
+        time.sleep(6)
     assert d.qmp.cmd('query-status')['running']
     r.to_png(d.qmp.shot(out+'/restored.ppm'), out+'/restored.png')
     print('PASS: home snapshot restore, guest agent rekey, file state and host clock', flush=True)
@@ -129,3 +161,19 @@ finally:
     if server:
         server.shutdown()
         server.server_close()
+
+if args.audio:
+    import wave
+    import numpy as np
+    with wave.open(out+'/after.wav', 'rb') as audio:
+        assert audio.getnchannels() == 2 and audio.getsampwidth() == 2
+        rate = audio.getframerate()
+        samples = np.frombuffer(audio.readframes(audio.getnframes()), dtype='<i2').reshape(-1, 2)
+    active = np.max(np.abs(samples.astype(np.int32)), axis=1) > 100
+    assert np.count_nonzero(active) >= 2 * rate, 'less than two seconds of restored audio'
+    for channel, expected in enumerate((440, 880)):
+        spectrum = np.abs(np.fft.rfft(samples[:, channel]))
+        peak = np.argmax(spectrum[1:]) + 1
+        hz = peak * rate / len(samples)
+        assert abs(hz - expected) < 2, (channel, hz)
+    print('PASS: restored stereo playback has left 440 Hz and right 880 Hz for at least two seconds', flush=True)
