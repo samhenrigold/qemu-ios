@@ -1581,7 +1581,7 @@ def main():
     ap.add_argument("--files-dir",
                     default=os.path.expanduser("~/Developer/qemu-ios-files"))
     ap.add_argument("--base-nand", default=None,
-                    help="base NAND image dir (prefers nand-agent-v2, then nand-ultimate)")
+                    help="base NAND image dir (prefers the newest nand-agent image, then nand-ultimate)")
     ap.add_argument("--cpu", default=None,
                     help="-cpu (default: the machine's own, arm1176). Do not "
                          "pass 'max': it NOPs the CP15 WFI XNU idles on, so "
@@ -1644,7 +1644,9 @@ def main():
     # minutes later rather than as the image mismatch it is. Whichever
     # firmware boot_env() and the NOR default choose, the NAND matches it.
     cfg.base_nand = cfg.base_nand or next(
-        (p for p in (os.path.join(cfg.files, "nand-agent-v2"),
+        (p for p in (os.path.join(cfg.files, "nand-agent-v4"),
+                     os.path.join(cfg.files, "nand-agent-v3"),
+                     os.path.join(cfg.files, "nand-agent-v2"),
                      os.path.join(cfg.files, "nand-ultimate"),
                      os.path.join(cfg.files, "nand-appsync3"),
                      os.path.join(cfg.files, "nand-canonical"))
