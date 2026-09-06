@@ -810,3 +810,15 @@ check also passes through a cold restart (`/tmp/it-photo-receipt-cleanup.log`,
 Old random-ID imports are not retroactively indexed. Receipts track successful
 imports, not later deletion inside guest Photos; bidirectional asset
 reconciliation remains open rather than silently replaying uncertain saves.
+
+### Watchdog debug configuration (2026-09-06)
+
+`wdt-noreset=on|off` is now startup-only machine configuration, propagated to
+the watchdog device instead of read from a process-global cached environment
+flag. Default remains off. Explicit values override the deprecated
+presence-based `IT_WDT_NORESET` alias (including empty/zero legacy values).
+Production setter sanitizer checks and the watchdog write-handler check pass.
+Four native paused machines verify defaults, alias precedence, runtime
+immutability, harmless normal kicks and actual reset/suppression behavior
+(`/tmp/it-wdt-native.log`). Timed watchdog expiry remains unmodeled pending
+verified clock/field semantics; this change does not invent a timeout.

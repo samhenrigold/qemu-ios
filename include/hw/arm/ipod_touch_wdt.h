@@ -19,6 +19,7 @@ typedef struct IPodTouchWDTState {
     MemoryRegion iomem;
     uint32_t ctrl;
     uint32_t cnt;
+    bool noreset;
 } IPodTouchWDTState;
 
 #endif

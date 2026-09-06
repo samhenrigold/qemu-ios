@@ -285,6 +285,37 @@ static bool ipod_touch_bt_env_aliases(IPodTouchMachineState *nms, Error **errp)
     return true;
 }
 
+static void ipod_touch_get_wdt_noreset(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    bool value = IPOD_TOUCH_MACHINE(obj)->wdt_noreset;
+    visit_type_bool(v, name, &value, errp);
+}
+
+static void ipod_touch_set_wdt_noreset(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->cpu) {
+        error_setg(errp, "wdt-noreset must be set before the machine starts");
+        return;
+    }
+    bool value;
+    if (visit_type_bool(v, name, &value, errp)) {
+        nms->wdt_noreset = value;
+        nms->wdt_noreset_explicit = true;
+    }
+}
+
+static void ipod_touch_wdt_env_alias(IPodTouchMachineState *nms)
+{
+    if (!nms->wdt_noreset_explicit && getenv("IT_WDT_NORESET") != NULL) {
+        /* The old alias tests presence, even for an empty or "0" value. */
+        nms->wdt_noreset = true;
+        warn_report_once("IT_WDT_NORESET is deprecated; use -M iPod-Touch,wdt-noreset=on");
+    }
+}
+
 static void ipod_touch_get_osk(Object *obj, Visitor *v, const char *name,
                                void *opaque, Error **errp)
 {
@@ -2926,6 +2957,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     }
     ipod_touch_audio_env_alias(nms);
     ipod_touch_osk_env_alias(nms);
+    ipod_touch_wdt_env_alias(nms);
     ipod_touch_cpu_setup(machine, &sysmem, &cpu, &nsas);
 
     // setup clock
@@ -3106,6 +3138,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     // init the watchdog timer (models reset so the guest can reboot itself)
     dev = qdev_new("ipodtouch.wdt");
     IPodTouchWDTState *wdt_state = IPOD_TOUCH_WDT(dev);
+    wdt_state->noreset = nms->wdt_noreset;
     memory_region_add_subregion(sysmem, WDT_MEM_BASE, &wdt_state->iomem);
     it_realize_into_qom_tree(dev);
 
@@ -3470,6 +3503,9 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_add(klass, "bt-latency-us", "uint32", ipod_touch_get_bt_latency_us,
                               ipod_touch_set_bt_latency_us, NULL, NULL);
     object_class_property_set_description(klass, "bt-latency-us", "HCI reply delay in microseconds (default 2000)");
+    object_class_property_add(klass, "wdt-noreset", "bool", ipod_touch_get_wdt_noreset,
+                              ipod_touch_set_wdt_noreset, NULL, NULL);
+    object_class_property_set_description(klass, "wdt-noreset", "Suppress guest watchdog reset commands for debugging");
     object_class_property_add(klass, "osk", "bool", ipod_touch_get_osk,
                               ipod_touch_set_osk, NULL, NULL);
     object_class_property_set_description(klass, "osk",
