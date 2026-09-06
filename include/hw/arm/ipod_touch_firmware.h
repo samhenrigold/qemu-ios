@@ -11,7 +11,6 @@
 typedef struct ITFirmwareDesc {
     const char *build;
     const char *kernel_banner;
-    uint32_t pegetgmttimeofday_pa;
     uint32_t iboot_boot_args_pa;
     uint32_t amfi_slide;
     uint32_t amfi_get_task_va;

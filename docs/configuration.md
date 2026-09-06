@@ -28,10 +28,12 @@ rejected.
 
 | Build | Boot-argument buffer | Clock function (physical) | AMFI task / task-name (virtual) |
 | --- | --- | --- | --- |
-| 5F138 | `0x0ff2a584` | `0x0816b460` | Not mapped |
+| 5F138 | `0x0ff2a584` | `0x0816b460` (native PMU RTC) | Not mapped |
 | 7E18 | Early iBoot handoff in the machine | `0x081953e0` (native PMU RTC, no MBX patch) | `0xc01ab200` / `0xc01ab2a0`, slide `0xb8000000` |
 
-The MBX-triggered clock/BCM4325/USB kernel modifications are 5F138-only. Unknown
+The MBX-triggered BCM4325/USB kernel modifications are 5F138-only. Both kernels
+retain their native PMU RTC code: the old clock trampoline used a Thumb-2 MRC
+instruction that faults on the ARM1176’s Thumb-1 execution path. Unknown
 kernels and 7E18 receive none of those hardcoded writes. The AMFI task-port
 patch uses detected 7E18 addresses, retaining its instruction check. Research
 builds without a mapped profile require all three explicit `IT_AMFI_HOOK_SLIDE`,
@@ -48,4 +50,7 @@ its anchor; it does not need another hardcoded address.
 ASan/UBSan. `test_agent_guest.py --firmware --base-nand .../nand-agent-v4` checks
 7E18 boot and verifies that a legacy MBX register read leaves five kernel regions
 unchanged. The 5F138 profile is checked against its local decrypted kernel banner
-and guarded patch test; a fresh native 5F138 boot remains unverified here.
+and guarded patch test. A fresh native 5F138 boot reaches the Home screen
+after removing that clock trampoline. Its later untethered idle transition
+closed QMP and remains under investigation; this is not a full 5F138 stability
+claim.
