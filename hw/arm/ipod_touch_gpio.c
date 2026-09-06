@@ -1,5 +1,6 @@
 #include "hw/arm/ipod_touch_gpio.h"
 #include "migration/vmstate.h"
+#include "trace.h"
 
 /*
  * IT_GPIO_READ_TRACE=1 logs every GPIO pad read. It was unconditional, one line
@@ -19,7 +20,7 @@ static bool gpio_trace(void)
 
 static void s5l8900_gpio_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 {
-    //fprintf(stderr, "%s: writing 0x%08x to 0x%08x\n", __func__, value, addr);
+    trace_ipod_touch_gpio_write(addr, value);
     IPodTouchGPIOState *s = (struct IPodTouchGPIOState *) opaque;
 
     switch(addr) {

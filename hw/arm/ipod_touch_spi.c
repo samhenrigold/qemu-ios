@@ -6,6 +6,7 @@
 
 #include "hw/arm/ipod_touch_spi.h"
 #include "migration/vmstate.h"
+#include "trace.h"
 
 static int apple_spi_word_size(IPodTouchSPIState *s)
 {
@@ -69,6 +70,7 @@ static void apple_spi_update_irq(IPodTouchSPIState *s)
 
 static void apple_spi_update_cs(IPodTouchSPIState *s)
 {
+    trace_ipod_touch_spi_cs(s->base, REG(s, R_PIN));
     BusState *b = BUS(s->spi);
     BusChild *kid = QTAILQ_FIRST(&b->children);
     if (kid) {
