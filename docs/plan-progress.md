@@ -623,3 +623,30 @@ landscape Harness → Home → stopped SpringBoard (ETIMEDOUT, then ping succeed
 (`/tmp/it-agent-orientation-native-final.log`). Light Touch's
 `tests/check-agent-transport.py` passes concurrent reply routing, binary exec,
 invalid orientation, absent/stale agent and cancellation; Release build passes.
+
+### App-event logs and persistent failure status (2026-09-06)
+
+Light Touch `dacd1af` records existing app events through a serial utility queue,
+with UTF-8 byte-bounded entries (32 KB), private files and two 1 MB generations.
+File → Device Logs and Export Diagnostics include app.log/app.log.1; export
+waits for queued events. Disk-write failure stops further file writes rather
+than spinning or growing logs. Unified logging still receives the events.
+
+Preparation, explicit state-save, erase, restore and Power Off failures use a
+native titlebar status bar with Show Logs and Dismiss. Notices survive relaunch;
+a successful retry clears only its own operation. Storage failures override
+other notices and cannot be dismissed while the storage latch is set. Restart,
+Erase and Discard confirmations remain decisions. This is not a complete device
+status/controls pane or a general alert rewrite.
+
+`check-app-events.py` passes concurrent append, format/literal-percent handling,
+UTF-8/combining-character bounds, permissions, rotation, write failures, persisted
+notice state, resolution and storage priority. `check-log-view.py` passes native
+visibility/layout at 360/640 points, Show Logs/Dismiss behavior, selection/pause
+and close/reopen. Screenshot capture was unavailable; these are native layout
+and control checks, not a claimed visual screenshot review. Release and Help
+checks pass. Full catalog/UI checks pass, after repairing stale AFC/rotation
+fixtures and replacing a reproduced timer-order race in the queue test with
+explicit readiness gates (`cd6309d`). Evidence: `/tmp/ltm-app-events-check-v3.log`,
+`/tmp/ltm-device-notice-ui-final.log`, `/tmp/ltm-event-catalog-checks-v6.log`,
+`/tmp/ltm-device-notice-build-v3.log`.
