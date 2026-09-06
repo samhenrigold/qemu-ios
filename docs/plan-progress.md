@@ -454,3 +454,29 @@ stereo before/after a two-second silent VM pause, and confirms guest shutdown:
 Music's intermittent first Songs-tab exit is reproduced before volume input;
 volume buttons are not the cause. No CrashReporter output accompanies it. The
 playback acceptance relaunches Music and does not claim this exit is fixed.
+
+### Settings, menus and controller input
+
+Light Touch now has a fixed-size Settings window for rotation, keyboard tilt
+speed, catalog URL, controller stick response and A-button coordinates. Resume
+on launch remains removed. Device menus expose the existing volume, pause,
+snapshot and power-off actions; rotation yields to text editors and saved-state
+discard confirms first. Dock actions reuse the same window controller.
+
+Controller input uses Apple's GameController framework on the existing display
+tick: left stick maps through a 0.1 deadzone to ±45 degrees, A holds a configured
+screen point, Menu sends Home and Options shakes. Native controller snapshots
+verify button edges, focus/sleep suppression, disconnection release and response
+curves; production touch tests verify release before mouse takeover. Keyboard
+motion, Settings and Release checks pass. Physical-controller/game acceptance
+is still pending. API reference: https://developer.apple.com/documentation/gamecontroller/gccontroller
+
+### Music's first-launch exit
+
+The guest trace caught `SyncHelper._delayedTerminate` calling
+`UIApplication.terminateWithSuccess`, status 0. The helper now completes native
+ITSync post-processing synchronously before reporting import success, so Music
+need not perform unfinished import work on its first launch. Three fresh-overlay
+native Swift/AFC/import/playback tests pass without the former recovery relaunch,
+including Songs, volume input, stereo playback and confirmed shutdown:
+`/tmp/ltm-music-postprocess-native.log` and `-v2.log`/`-v3.log`.

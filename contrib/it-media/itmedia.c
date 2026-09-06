@@ -190,6 +190,13 @@ int main(int argc, char **argv) {
         m0(getclass("MusicLibrary"),"flush");
         if (!existing(folder,filename)) fail("import not visible; retain staged audio for reconciliation");
     }
+    /* Finish native post-sync sorting/index work before Music is launched.
+     * Otherwise its SyncHelper starts that work itself and schedules a normal
+     * terminateWithSuccess when the sync phase ends (7E18: 0x57bc4). */
+    void *sync = dlopen("/System/Library/PrivateFrameworks/ITSync.framework/ITSync",RTLD_NOW);
+    int (*postprocess)(ID,int) = sync ? dlsym(sync,"ITDBPrepServerPostProcessRun") : NULL;
+    if (!postprocess || !postprocess(NULL,1))
+        fail("music post-processing did not finish; retain staging for reconciliation");
     puts(was_present ? "already-imported" : "imported");
     fflush(stdout);
     m0(pool,"drain");
