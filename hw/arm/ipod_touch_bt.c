@@ -28,6 +28,7 @@
 #include "qapi/error.h"
 #include "hw/sysbus.h"
 #include "system/reset.h"
+#include "migration/vmstate.h"
 #include "hw/arm/ipod_touch_2g.h"
 
 /* chardev_new() asserts on the prefix; every chardev type carries it. */
@@ -353,12 +354,47 @@ static void bt_machine_reset(void *opaque)
     timer_del(bt->timer);
 }
 
+static int bt_post_load(void *opaque, int version_id)
+{
+    ItBtChardev *bt = opaque;
+    if (bt->cmd_len > sizeof(bt->cmd) || bt->resp_head > bt->resp_tail ||
+        bt->resp_tail > sizeof(bt->resp)) return -EINVAL;
+    return 0;
+}
+
+static const VMStateDescription vmstate_it_bt = {
+    .name = "ipodtouch-bt-hci",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = bt_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_ARRAY(cmd, ItBtChardev, 260),
+        VMSTATE_UINT32(cmd_len, ItBtChardev),
+        VMSTATE_UINT8_ARRAY(resp, ItBtChardev, BT_RESP_MAX),
+        VMSTATE_UINT32(resp_head, ItBtChardev),
+        VMSTATE_UINT32(resp_tail, ItBtChardev),
+        VMSTATE_TIMER_PTR(timer, ItBtChardev),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static void bt_chr_finalize(Object *obj)
+{
+    ItBtChardev *bt = IT_BT_CHARDEV(obj);
+    if (bt->timer) {
+        vmstate_unregister(NULL, &vmstate_it_bt, bt);
+        qemu_unregister_reset(bt_machine_reset, bt);
+        timer_free(bt->timer);
+    }
+}
+
 static void bt_chr_open(Chardev *chr, ChardevBackend *backend,
                         bool *be_opened, Error **errp)
 {
     IT_BT_CHARDEV(chr)->timer =
         timer_new_ns(QEMU_CLOCK_VIRTUAL, bt_timer, chr);
     qemu_register_reset(bt_machine_reset, chr);
+    vmstate_register(NULL, 0, &vmstate_it_bt, chr);
     *be_opened = true;
 }
 
@@ -376,6 +412,7 @@ static const TypeInfo bt_chr_type_info = {
     .parent = TYPE_CHARDEV,
     .instance_size = sizeof(ItBtChardev),
     .class_init = bt_chr_class_init,
+    .instance_finalize = bt_chr_finalize,
 };
 
 static void bt_register_types(void)
