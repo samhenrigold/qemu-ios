@@ -1199,3 +1199,25 @@ the [Khronos ES1.1 reference](https://registry.khronos.org/OpenGL-Refpages/es1.1
 Combined native CLI build and the armv6 guest build pass using the relocated
 legacy SDK. This establishes host dispatch and verified ABI wiring, not a new
 full-guest gameplay acceptance claim.
+
+### GLES/PVRTC coverage and native migration acceptance
+
+The focused renderer work adds 45 entry points across framebuffer predicates,
+mipmap generation, write masks, scalar/fixed drawing state, boolean/pointer and
+matrix queries, and ten light/material/texture parameter operations. The guest
+7E18 dispatch ABI was checked against its retained trampolines. Native CGL
+sanitizer checks cover exact query/vector sizes, invalid enums and guest pointer
+bounds; unsupported entry points still require further coverage.
+
+PVRTC decoding now covers all 2/4-bpp interpolation modes, fixed-point color
+precision, mixed neighboring modes, RGB alpha policy and tiny mipmaps against
+20 PowerVR reference vectors. Upload checks cover exact padded or supported
+compact sizes, invalid parameters, full-image replacement and texture ownership.
+These checks pass under ASan/UBSan and native CGL; they do not establish correctness
+for every game or unsupported compressed subregion updates.
+
+`test_mpvd_snapshot.py` now also decodes two actual pictures, migrates to a fresh
+QEMU process and verifies the remaining six P-picture DMA outputs equal the
+uninterrupted source. Timer migration v2 rejects a different startup time-dilation
+value; native checks verify both mismatch directions and same-mode interval
+reprogramming after restore. Version 1 predates that compatibility field.
