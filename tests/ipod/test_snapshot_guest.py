@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Opt-in snapshot acceptance using an isolated overlay and owned processes."""
+import argparse
+import os
+from pathlib import Path
+import tempfile
+import time
+from types import SimpleNamespace
+import regress as r
+
+ROOT = Path(__file__).resolve().parents[2]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--files', default=str(ROOT.parent / 'qemu-ios-files'))
+parser.add_argument('--base-nand')
+args = parser.parse_args()
+out = tempfile.mkdtemp(prefix='it-snapshot-guest-')
+f = args.files
+cfg = SimpleNamespace(out=out, files=f, base_nand=args.base_nand or f+'/nand-agent-v2',
+    nor=f+'/ios3/nor_7E18.bin', overlay=out+'/overlay',
+    qemu=str(ROOT/'build-native14/qemu-build/qemu-system-arm'),
+    usbmuxd=str(ROOT/'build-native14/build/usbmuxd/src/usbmuxd'), usbmuxd_ok=True,
+    usb_port=r.free_port(1520,1539), mux_port=r.free_port(27400,27419),
+    qmp_port=r.free_port(28200,28219), wifi=True, cpu=None, mem='128M', kernel_console=True)
+
+class SnapshotProcs(r.Procs):
+    incoming = None
+    def spawn(self, argv, *args, **kwargs):
+        if argv[0] == cfg.qemu and self.incoming:
+            argv = argv + ['-incoming', 'file:' + self.incoming, '-S']
+        return super().spawn(argv, *args, **kwargs)
+
+p = SnapshotProcs()
+d = None
+r.START = time.time()
+print('OUTPUT', out, flush=True)
+try:
+    d = r.Device(cfg, p, 'before')
+    d.start()
+    ok, detail, _ = d.wait_for_home(240)
+    assert ok, detail
+    deadline = time.monotonic() + 90
+    while not r.itqmp.agent_alive(d.qmp):
+        assert time.monotonic() < deadline, 'agent did not start'
+        time.sleep(1)
+    assert r.itqmp.agent(d.qmp, 'ping') == (0, b'it_agent v1\n')
+    assert r.itqmp.agent(d.qmp, 'exec', 'printf snapshot-survived > /tmp/snapshot-marker') == (0, b'')
+    d.qmp.cmd('stop')
+    snapshot = out + '/state'
+    d.qmp.cmd('migrate', uri='file:' + snapshot)
+    deadline = time.monotonic() + 90
+    while True:
+        migration = d.qmp.cmd('query-migrate')
+        if migration['status'] == 'completed': break
+        assert migration['status'] not in ('failed', 'cancelled'), migration
+        assert time.monotonic() < deadline, migration
+        time.sleep(.25)
+    d.qmp.close()
+    d.qmp = None
+    p.stop_all()
+    time.sleep(2)
+    p = SnapshotProcs()
+    p.incoming = snapshot
+    d = r.Device(cfg, p, 'after')
+    d.start()
+    d.qmp.cmd('cont')
+    deadline = time.monotonic() + 30
+    while not r.itqmp.agent_alive(d.qmp):
+        assert time.monotonic() < deadline, 'restored agent did not rekey'
+        time.sleep(.25)
+    assert r.itqmp.agent(d.qmp, 'ping') == (0, b'it_agent v1\n')
+    assert r.itqmp.agent(d.qmp, 'get', '/tmp/snapshot-marker') == (0, b'snapshot-survived')
+    status, data = r.itqmp.agent(d.qmp, 'exec', 'date +%s')
+    assert status == 0 and abs(int(data) - time.time()) < 5, (status, data)
+    assert d.qmp.cmd('query-status')['running']
+    r.to_png(d.qmp.shot(out+'/restored.ppm'), out+'/restored.png')
+    print('PASS: home snapshot restore, guest agent rekey, file state and host clock', flush=True)
+finally:
+    if d and d.qmp: d.qmp.close()
+    p.stop_all()
