@@ -1536,7 +1536,7 @@ def main():
     ap.add_argument("--files-dir",
                     default=os.path.expanduser("~/Developer/qemu-ios-files"))
     ap.add_argument("--base-nand", default=None,
-                    help="base NAND image dir (default <files-dir>/nand-canonical)")
+                    help="base NAND image dir (prefers nand-agent-v2, then nand-ultimate)")
     ap.add_argument("--cpu", default=None,
                     help="-cpu (default: the machine's own, arm1176). Do not "
                          "pass 'max': it NOPs the CP15 WFI XNU idles on, so "
@@ -1598,7 +1598,9 @@ def main():
     # minutes later rather than as the image mismatch it is. Whichever
     # firmware boot_env() and the NOR default choose, the NAND matches it.
     cfg.base_nand = cfg.base_nand or next(
-        (p for p in (os.path.join(cfg.files, "nand-appsync3"),
+        (p for p in (os.path.join(cfg.files, "nand-agent-v2"),
+                     os.path.join(cfg.files, "nand-ultimate"),
+                     os.path.join(cfg.files, "nand-appsync3"),
                      os.path.join(cfg.files, "nand-canonical"))
          if os.path.exists(p)), os.path.join(cfg.files, "nand-canonical"))
     # The 3.1.3 NOR, if this checkout has one. 3.x iBoot unwraps the SHSH blob
