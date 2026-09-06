@@ -65,6 +65,7 @@ proof that a later installation failure has the same cause.
 
 import argparse
 import hashlib
+import json
 import os
 import plistlib
 import re
@@ -1017,7 +1018,15 @@ def check_applaunch(cfg, procs, dev, r):
     p = springboard(cfg, port, bundle_id)
     if p.returncode != 0:
         return r.set(False, "launch refused: %s" % (p.stdout + p.stderr).strip()[-200:])
-    time.sleep(30)
+    if getattr(cfg, "launch_stages", False):
+        started = time.monotonic()
+        for seconds in (5, 20):
+            time.sleep(max(0, started + seconds - time.monotonic()))
+            capture = dev.qmp.shot(os.path.join(dev.dir, "app-%ds.ppm" % seconds))
+            to_png(capture, os.path.join(dev.dir, "app-%ds.png" % seconds))
+        time.sleep(max(0, started + 30 - time.monotonic()))
+    else:
+        time.sleep(30)
     shot = dev.qmp.shot(os.path.join(dev.dir, "app.ppm"))
     to_png(shot, os.path.join(dev.dir, "app.png"))
     _hi, lit = lit_count(shot)
@@ -1610,6 +1619,10 @@ def main():
                     default=os.path.expanduser(
                         "~/Developer/usbmuxd-qemu/usbmuxd/src/usbmuxd"))
     ap.add_argument("--ipa", default=APP_IPA_DEFAULT)
+    ap.add_argument("--ledger", metavar="DIRECTORY",
+                    help="test each IPA in a directory on its own disposable guest and write a review ledger")
+    ap.add_argument("--launch-stages", action="store_true",
+                    help="save additional app screenshots 5 and 20 seconds after launch")
     ap.add_argument("--stage-gles-shim", action="store_true",
                     help="replace the guest GLES shim in the disposable overlay")
     ap.add_argument("--out", default=None, help="run directory")
@@ -1645,6 +1658,11 @@ def main():
                          "~512MB volume.img) if every selected check passed "
                          "or was skipped")
     cfg = ap.parse_args()
+    if cfg.ledger:
+        if cfg.checks or cfg.quick or cfg.with_apps or cfg.clean or cfg.check_prereqs:
+            ap.error("--ledger runs boot/install/launch checks and retains evidence; do not combine it with check selection or --clean")
+        from app_ledger import run_ledger
+        return run_ledger(cfg)
 
     cfg.files = os.path.expanduser(cfg.files_dir)
     # NAND, NOR and iBoot are one set and cannot be mixed: nand-canonical is a
@@ -1907,6 +1925,9 @@ def main():
 
 def finish(results, procs, cfg):
     procs.stop_all()
+    with open(os.path.join(cfg.out, "results.json"), "w") as f:
+        json.dump({name: {"ok": r.ok, "xfail": r.xfail, "detail": r.detail}
+                   for name, r in results.items()}, f, indent=2)
     print("")
     print("=" * 62)
     failed = 0
