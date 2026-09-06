@@ -15,6 +15,7 @@
 #         /usr/local/bin/it_agent:0:0:755 \
 #         /usr/lib/it_typein.dylib:0:0:755 \
 #         /System/Library/LaunchDaemons/com.qemu.it-agent.plist:0:0:644 \
+#         /System/Library/LaunchDaemons/com.apple.SpringBoard.plist:0:0:644 \
 #         /usr/local/bin/sblaunch:0:0:755 \
 #         /usr/local/bin/sbdlicon:0:0:755 \
 #         /System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine:0:0:755 \
@@ -72,6 +73,8 @@ job = plistlib.loads(data)
 assert job.get('Label') == 'com.apple.SpringBoard'
 env = job.setdefault('EnvironmentVariables', {})
 assert isinstance(env, dict)
+# Match Light Touch's existing-device graphics provisioning at first boot.
+env['CA_ENABLE_OGL'] = env['LK_ENABLE_OGL'] = '1'
 old = env.get('DYLD_INSERT_LIBRARIES', '')
 assert isinstance(old, str)
 libraries = [item for item in old.split(':') if item and item != '/usr/lib/it_kbd_agent.dylib']

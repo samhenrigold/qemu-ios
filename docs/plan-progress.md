@@ -253,3 +253,18 @@ by a function that raises on every call: `/tmp/it-agent-control-native-v3.log`.
 This includes both guest-confirmed shutdowns, reboot persistence, full-volume
 fsck, GLES and 5.99 seconds of 440/880 Hz audio. Focused failure/fallback tests
 also pass. The updated, signed app is `build-native14/Light Touch-motion.app`.
+
+### Refreshed default image
+
+`nand-agent-v3` is a separate copy of the agent candidate, refreshed with current
+MBX, launch helpers, command/typing agents and all five sound defaults. Baking
+now sets the same Core Animation environment as the app's upgrade path. A new
+HFS-catalog check validates exact helper bytes, guest ownership/modes, launch
+configuration and preferences (`test_baked_components.py`).
+
+The candidate passed the complete default tier plus respring with SSH disabled,
+including accelerated graphics, 6.36 seconds of stereo audio, both PMU-confirmed
+shutdowns, persistence and full-volume fsck: `/tmp/it-nand-agent-v3-native.log`.
+The packaging script prefers v3 when available; an explicit LTM_NAND still wins.
+Existing devices retain their selected base and overlay via DeviceStateStorage;
+the refreshed base is for new devices or an explicitly requested factory reset.
