@@ -1045,3 +1045,9 @@ Production arithmetic/policy ASan/UBSan checks pass, including disabled policy
 with the legacy environment present. All 38 native paused-machine configuration
 cases pass (`/tmp/it-forge-config.log`), checking actual device policy and runtime
 mutation rejection. CLI build passes. No new full guest boot is claimed here.
+
+Timer diagnostics now identify the correct A-D register windows (0x00, 0x20,
+0x40, 0x60). The prior range missed timer A and mislabeled the 64-bit counter
+control at 0x88 as timer D. The local Samsung timer register reference confirms
+the layout; production-handler checks verify one warning per unmodeled timer
+and no false warning for counter control. No timer behavior is invented.
