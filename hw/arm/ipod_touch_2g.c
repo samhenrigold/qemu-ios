@@ -396,6 +396,37 @@ static void ipod_touch_h264_env_alias(IPodTouchMachineState *nms)
     }
 }
 
+static void ipod_touch_get_forge_sigcheck(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    bool value = IPOD_TOUCH_MACHINE(obj)->forge_sigcheck;
+    visit_type_bool(v, name, &value, errp);
+}
+
+static void ipod_touch_set_forge_sigcheck(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->cpu) {
+        error_setg(errp, "forge-sigcheck must be set before the machine starts");
+        return;
+    }
+    bool value;
+    if (visit_type_bool(v, name, &value, errp)) {
+        nms->forge_sigcheck = value;
+        nms->forge_sigcheck_explicit = true;
+    }
+}
+
+static void ipod_touch_forge_sigcheck_env_alias(IPodTouchMachineState *nms)
+{
+    if (!nms->forge_sigcheck_explicit && getenv("IT_FORGE_SIGCHECK") != NULL) {
+        /* The old alias tests presence, even for an empty or "0" value. */
+        nms->forge_sigcheck = true;
+        warn_report_once("IT_FORGE_SIGCHECK is deprecated; use -M iPod-Touch,forge-sigcheck=on");
+    }
+}
+
 static void ipod_touch_get_lcd_planes(Object *obj, Visitor *v, const char *name,
                                void *opaque, Error **errp)
 {
@@ -3169,6 +3200,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     ipod_touch_mpvd_env_alias(nms);
     ipod_touch_amc_env_alias(nms);
     ipod_touch_lcd_planes_env_alias(nms);
+    ipod_touch_forge_sigcheck_env_alias(nms);
     ipod_touch_cpu_setup(machine, &sysmem, &cpu, &nsas);
 
     // setup clock
@@ -3671,6 +3703,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = qdev_new("ipodtouch.pke");
     IPodTouchPKEState *pke_state = IPOD_TOUCH_PKE(dev);
     nms->pke_state = pke_state;
+    qdev_prop_set_bit(dev, "forge-sigcheck", nms->forge_sigcheck);
     memory_region_add_subregion(sysmem, PKE_MEM_BASE, &pke_state->iomem);
     it_realize_into_qom_tree(dev);
 
@@ -3732,6 +3765,9 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "mpvd-decode", "Enable MPEG-4 Part 2 decoding instead of register-only MPVD");
     object_class_property_add_str(klass, "amc-mode", ipod_touch_get_amc_mode, ipod_touch_set_amc_mode);
     object_class_property_set_description(klass, "amc-mode", "AMC registers, handshake-only bring-up, or compressed audio decode");
+    object_class_property_add(klass, "forge-sigcheck", "bool", ipod_touch_get_forge_sigcheck,
+                              ipod_touch_set_forge_sigcheck, NULL, NULL);
+    object_class_property_set_description(klass, "forge-sigcheck", "Allow malformed boot signature recovery for unsigned-image compatibility");
     object_class_property_add(klass, "lcd-planes", "bool", ipod_touch_get_lcd_planes,
                               ipod_touch_set_lcd_planes, NULL, NULL);
     object_class_property_set_description(klass, "lcd-planes", "Enable LCD multi-plane composition");

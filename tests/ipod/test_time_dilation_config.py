@@ -18,6 +18,10 @@ parser.add_argument('--files', type=Path, default=ROOT.parent / 'qemu-ios-files'
 args = parser.parse_args()
 base_env = {k: v for k, v in os.environ.items() if not k.startswith('IT_')}
 cases = [
+    ('forge-default', {}, '', {'forge-sigcheck':False}),
+    ('forge-alias', {'IT_FORGE_SIGCHECK':'0'}, '', {'forge-sigcheck':True}),
+    ('forge-on', {}, ',forge-sigcheck=on', {'forge-sigcheck':True}),
+    ('forge-off', {'IT_FORGE_SIGCHECK':'1'}, ',forge-sigcheck=off', {'forge-sigcheck':False}),
     ('lcd-default', {}, '', {'lcd-planes':False}),
     ('lcd-alias', {'IT_LCD_PLANES':'0'}, '', {'lcd-planes':True}),
     ('lcd-on', {}, ',lcd-planes=on', {'lcd-planes':True}),
@@ -80,6 +84,11 @@ for label, overrides, options, expected in cases:
                     q = QMP(sock, timeout=10)
                     for prop, value in expected.items():
                         assert q.cmd('qom-get', path='/machine', property=prop) == value, label
+                        if prop == 'forge-sigcheck':
+                            devices=q.cmd('qom-list',path='/machine/unattached')
+                            device=next(d for d in devices if d['type']=='child<ipodtouch.pke>')
+                            path='/machine/unattached/'+device['name']
+                            assert q.cmd('qom-get',path=path,property='forge-sigcheck')==value
                         if prop == 'lcd-planes':
                             devices=q.cmd('qom-list',path='/machine/unattached')
                             device=next(d for d in devices if d['type']=='child<ipodtouch.lcd>')

@@ -29,10 +29,12 @@ Returning the correct key-length register is essential: the previous zero read
 changed the guest's number of precomputation iterations. The previous 1 KB SRAM
 also dropped the higher temporary operands.
 
-The explicit `IT_FORGE_SIGCHECK` compatibility mode remains scoped to the boot
+The explicit `forge-sigcheck=on` machine compatibility mode remains scoped to the boot
 verifier's final A×1 conversion from segment 2 into segment 1. It preserves valid
 SHA1 DigestInfo blocks and substitutes only malformed recoveries. It is not
-part of the arithmetic model and remains disabled by default.
+part of the arithmetic model and remains disabled by default. The deprecated
+`IT_FORGE_SIGCHECK` presence-based alias is read at startup only; an explicit
+machine value overrides it. The device retains this host policy across resets.
 
 Migration version 2 includes full SRAM, register selection, signs and the loaded
 modulus. Version 1 cannot represent those values and is rejected. Light Touch's
