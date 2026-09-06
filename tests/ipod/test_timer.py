@@ -41,6 +41,10 @@ int main(void) {
  s5l8900_st_update(&s);assert(s.tick_interval==100000);
  s.bcount1=10000;s.dilation=2;s5l8900_st_update(&s);assert(s.tick_interval==2000000);
  now=123;s5l8900_st_set_timer(&s);assert(deadline==2000000);
+ /* A restored interval survives a same-value guest reprogram. */
+ uint64_t restored_interval=s.tick_interval;
+ s5l8900_timer1_write(&s,TIMER_4+TIMER_CONFIG,0,4);
+ assert(s.tick_interval==restored_interval);
  s.bcount1=UINT32_MAX;s.dilation=IT_TIMER_MAX_DILATION;s5l8900_st_update(&s);
  assert(s.tick_interval==UINT64_C(429496729500000000) && s.tick_interval<INT64_MAX);
  now=INT64_MAX-10;s5l8900_st_set_timer(&s);assert(deadline==INT64_MAX);
