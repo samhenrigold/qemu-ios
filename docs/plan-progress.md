@@ -142,3 +142,43 @@ This completes the TLS transport step; modern WebKit feature gaps remain.
 - Command-agent review artifact: `build-native14/Light Touch-agent.app`, signed
   and verified, contains the validated agent-only NAND candidate. Typing rollout
   into the baked image and existing devices is the next step.
+
+### Guest agent rollout completed and snapshot work underway
+
+- Baked typing/command-agent launchd recovery passed, including Notes and Harness
+  Unicode, physical keys, Spotlight, discarded unfocused keys and locked input
+  rejection (`/tmp/it-agent-unlock-native.log`). SpringBoard focus IPC runs on a
+  worker; synchronous queries from its main thread deadlocked its own service.
+- Existing-device provisioning preserves launch configuration, replaces the old
+  clipboard job and starts command service immediately. A real isolated Light
+  Touch upgrade passed; the second launch reported media already current.
+  Release build and dispatcher/configuration checks passed. The old default
+  NAND remains intact; `nand-agent-v2` is the separately validated candidate.
+- Native snapshot restore confirms the agent reclaims its unsaved session and
+  corrects the guest clock. Added AMC, I2S and CS42L58 VMState in separate commits,
+  each with a home-screen save/restore check. Active audio playback acceptance
+  is still pending; a home-screen restore does not establish that result.
+- SDIO now saves sparse firmware memory and partially consumed queued frames,
+  in addition to registers, association and timers. Dropping those would lose
+  control replies and interrupt masks. Bounded serialization sanitizer checks
+  pass; fresh HTTP requests through guest Wi-Fi returned 200 before and after
+  restore (`/tmp/it-sdio-snapshot-native.log`). Wi-Fi restore is no longer XFAIL.
+- USB reconnection, Bluetooth UART state, H.264 bit-reader state and host video
+  decoder cleanup are committed. Native restore passed fresh USB pairing and
+  Wi-Fi HTTP requests. Saves with live host GL objects are refused; Light Touch
+  reports that reason and binds snapshots to the loaded emulator build and NAND.
+- Active audio restore remains unverified: the current graphics engine leaves
+  three live GL contexts in the software-compositor test image, and the save
+  guard correctly refuses it. Replacing the stale baked engine did not remove
+  this limitation (`/tmp/it-audio-snapshot-current-engine.log`). Active video
+  restore also needs acceptance; no full host GL serialization is implemented.
+  The user's removal of Resume on Launch supersedes the plan's default-resume
+  proposal; do not restore that menu feature.
+
+### Regression harness follow-through
+
+- The default IPA is now the repository's Harness.ipa, replacing a private app
+  path. The default guest-agent check verifies readiness, ping, shell arithmetic
+  and an exact 70 KiB binary round trip. Device-free checks reject operation
+  failures and successful responses containing corrupt bytes. The remaining
+  Harness graphics/audio integration is in progress.

@@ -849,6 +849,7 @@ static bool gles_host_init(void)
 
     gh.readback = g_malloc0((size_t)GLES_FB_WIDTH * GLES_FB_HEIGHT * 4);
     gh.inited = true;
+    if (getenv("IT_GLES_CONTEXT_TRACE")) fprintf(stderr, "[gles-context] initialized %p legacy=%d\n", (void *)gh_current, gh_current == &gh_legacy);
 
 
     /* Microseconds, once, and it is the only thing standing between a broken
@@ -5036,6 +5037,7 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
         state->rb_sized = group->rb_sized;
         uint32_t handle = ++gles_handle;
         g_hash_table_insert(gles_contexts, GUINT_TO_POINTER(handle), state);
+        if (getenv("IT_GLES_CONTEXT_TRACE")) fprintf(stderr, "[gles-context] created %08x %p\n", handle, (void *)state);
         return handle;
     }
     if (slot == GLES_OP_DELETE_CONTEXT) {
@@ -5044,6 +5046,7 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
         if (!state) return -1;
         g_hash_table_remove(gles_contexts, GUINT_TO_POINTER(ctx));
         gles_end_context();
+        if (getenv("IT_GLES_CONTEXT_TRACE")) fprintf(stderr, "[gles-context] deleted %08x %p initialized=%d\n", ctx, (void *)state, state->inited);
         gles_context_free(state);
         return 0;
     }
