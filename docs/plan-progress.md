@@ -1157,3 +1157,26 @@ frame. All three preserved custom/in-place/128-byte operations and the fourth
 non-preserved operation retain the measured shapes (`/tmp/it-aes-shape-native.log`).
 The isolated trace fixture then cleans up its QEMU process; this run does not
 claim a guest-confirmed shutdown. The address-specific AES workaround remains.
+
+## Decoder replay and boot arguments (2026-09-06)
+
+AMC migration v2 retains compressed packet history and received-frame counts,
+then rebuilds libavcodec without publishing duplicate PCM. Queued PCM, partially
+consumed codec output, buffer ownership and DMA completion survive restoration.
+The replay budget is 64 MiB, 65,536 packets or 262,144 decoded frames per stream;
+exceeding it leaves playback running but rejects saving until stream reset.
+
+MPVD migration v3 retains the latest I-picture and following P-pictures, rebuilding
+native references without guest DMA writes. Its limit is 4,096 pictures or 16 MiB;
+overflow or uncertain decoder state rejects saving until a successful I-picture
+or reset. Older snapshots cannot reconstruct references they never stored.
+Native codec sanitizer checks compare restored and uninterrupted decoded pixels.
+
+The combined CLI build passes fresh-process AMC continuation, H.264 partial-picture
+and I2S half-frame restoration, MPVD register/IRQ/reset restoration, and all four
+MPVD/LCD mode-mismatch rejection cases. The live-GL snapshot blocker remains.
+
+Explicit empty boot arguments now disable the environment alias, overlong command
+lines fail rather than truncate, and runtime mutation is rejected. Reset reuses
+the patch timer instead of allocating another timer on every reset. The focused
+sanitizer check and all 48 native configuration cases pass.

@@ -59,7 +59,9 @@ synthetic quote/chart verification, not a live-data integration. See the
 
 `-M 'iPod-Touch,...,boot-args=amfi_allow_any_signature=1 cs_enforcement_disable=1 serial=3 debug=0x8'`
 enables XNU serial output on 7E18. Explicit machine arguments take precedence over
-`IT_BOOT_ARGS`, including the version-checked early iBoot handoff. Add `-v` for
+`IT_BOOT_ARGS`, including the version-checked early iBoot handoff. An explicit
+empty value disables injection; values longer than 255 bytes and changes after
+startup are rejected. Add `-v` for
 verbose text on the panel; serial logging works without it. The earliest kernel
 banner precedes serial initialization, but driver startup and `BSD root:` are
 captured. `tests/ipod/regress.py --checks serial-console` verifies those outputs.
