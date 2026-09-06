@@ -871,3 +871,20 @@ Light Touch now supplies `h264-decode=on` instead of setting that environment
 variable. Native configuration checks verify actual decoder creation, default,
 alias, explicit override and rejection of runtime mutation. The existing timer
 configuration matrix and watchdog check still pass; Light Touch Release builds.
+
+## Inspector status and keyboard control (2026-09-06)
+
+Light Touch now shows device state, explicitly labelled battery target, proxy
+status and guest-agent connectivity above the app list, with an input checkbox
+and matching Device-menu command. Agent status reuses the existing health poll
+at one-second intervals. The keyboard gate rejects presses while disabled,
+sleeping or stopped, while permitting releases. Control-modified shortcuts,
+including VoiceOver chords, remain with macOS instead of triggering guest input
+or tilt. Battery configuration reuses its editor in a transient native popover;
+apply failures stay inline and are logged.
+
+Native checks cover 240/400-point status layout, accessibility text, enabled and
+checked states, keyboard preference/power gates, modifier routing, and battery
+popover apply/failure/reopen behavior. Release build passes. This is not a full
+accessibility audit; keyboard pointer navigation and the AFC detail browser
+remain open, as do the other active tracks above.
