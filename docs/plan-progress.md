@@ -190,3 +190,16 @@ This completes the TLS transport step; modern WebKit feature gaps remain.
   selects Speaker and passes 5.99 seconds at 440/880 Hz, along with boot and
   agent checks (`/tmp/it-regress-open-dock-native.log`). Snapshot audio restore
   remains independently blocked by live GL state.
+
+### Expanded default tier accepted
+
+The combined default run passed boot, full-volume fsck, clean-reboot persistence,
+Harness installation and foreground launch, GLES color/hold checks, the guest
+agent and 5.99 seconds of 440/880 Hz stereo audio. Both shutdowns were guest
+confirmed. Evidence: `/tmp/it-harness-full-default.log`.
+
+New ASan/UBSan tests decode production multitouch frames (empty, one-to-five
+contacts and sparse slots), both guest versions' SDIO event headers, and actual
+tcp_usb framing under fragmented reads/writes. The USB test replays five saved
+real-device AFC file vectors plus synthetic odd-sized transfers and NAK replies;
+it validates transport bytes, not a guest AFC server implementation.
