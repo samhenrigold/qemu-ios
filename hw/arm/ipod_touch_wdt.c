@@ -14,17 +14,6 @@ static bool wdt_trace(void)
     return on;
 }
 
-/* IT_WDT_NORESET: wedge at the reset site instead of resetting, for QMP. */
-static bool wdt_noreset(void)
-{
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_WDT_NORESET") != NULL;
-    }
-    return on;
-}
-
-
 /*
  * 7E18 AppleARMWatchDogTimer writes 0x001f4a00 to arm/kick the watchdog
  * (c056d364/c056d37c), zero to disable it, and exactly 0x00100000 to
@@ -66,7 +55,7 @@ static void ipod_touch_wdt_write(void *opaque, hwaddr addr, uint64_t val, unsign
                                 __func__, (uint32_t)val);
                     }
                 }
-                if (wdt_noreset()) {
+                if (s->noreset) {
                     /* Diagnostic: don't actually reset, so the machine wedges at
                      * the reset site and QMP can inspect it. */
                     break;

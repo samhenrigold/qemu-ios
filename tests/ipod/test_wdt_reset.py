@@ -14,15 +14,13 @@ code = r'''
 #include <stdint.h>
 #include <stdio.h>
 typedef uint64_t hwaddr;
-typedef struct { uint32_t ctrl, cnt; } IPodTouchWDTState;
+typedef struct { uint32_t ctrl, cnt; bool noreset; } IPodTouchWDTState;
 typedef struct { struct { uint32_t regs[16]; } env; } ARMCPU;
 #define ARM_CPU(p) ((ARMCPU *)(p))
 #define SHUTDOWN_CAUSE_GUEST_RESET 1
 static void *current_cpu;
 static int resets;
-static bool inhibited;
 static bool wdt_trace(void) { return false; }
-static bool wdt_noreset(void) { return inhibited; }
 static void qemu_system_reset_request(int cause) {
     assert(cause == SHUTDOWN_CAUSE_GUEST_RESET);
     resets++;
@@ -42,7 +40,7 @@ int main(void) {
     assert(s.cnt == 0x100000 && !resets);
     ipod_touch_wdt_write(&s, WDT_CTRL, 0x100000, 4);
     assert(resets == 1);
-    inhibited = true;
+    s.noreset = true;
     ipod_touch_wdt_write(&s, WDT_CTRL, 0x100000, 4);
     assert(resets == 1);
     puts("Watchdog reset command checks passed");

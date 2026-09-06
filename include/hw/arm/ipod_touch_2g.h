@@ -277,6 +277,7 @@ typedef struct {
 	 */
 	bool osk_enabled;
 	bool osk_explicit;
+    bool wdt_noreset, wdt_noreset_explicit;
 	QEMUTimer *osk_timer;
 	uint16_t osk_pending[64];   /* unichars waiting to be turned into taps */
 	unsigned osk_p_head, osk_p_tail;
