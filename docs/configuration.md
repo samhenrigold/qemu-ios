@@ -5,6 +5,7 @@ incremental; most existing `IT_*` variables still retain their documented behavi
 
 | Property | Values | Default | Legacy alias |
 | --- | --- | --- | --- |
+| `osk` | `on`, `off` | `off` | `IT_OSK`: any present value enables |
 | `audio-hw` | `auto`, `on`, `off` | `auto`: CS42L58 and AMC present for direct iBoot, absent otherwise | `IT_AUDIO_HW`: leading `0` disables; any other value enables |
 
 Use `-M iPod-Touch,audio-hw=on` to force audio hardware. An explicitly supplied
@@ -17,6 +18,13 @@ The regression harness accepts `--audio-hw auto|on|off`. Omitting it preserves
 the existing environment/default path. `tests/ipod/test_audio_config.py` checks
 default behavior, alias precedence, explicit auto, invalid values and rejection
 of changes after startup.
+
+The legacy on-screen-keyboard tapper uses `osk=on`. Explicit `osk=off` overrides
+any `IT_OSK` value, and the option cannot change after startup. The launcher’s
+`--keyboard` / `--appsync` flags and Light Touch now use this property. The app
+also passes its USB session through the existing `usb-tcp-addr` option rather
+than changing process-wide `IT_USB_TCP`. Agent text insertion is unchanged.
+`test_osk_config.py` checks alias presence, explicit precedence and immutability.
 
 ## Firmware profiles
 
@@ -51,6 +59,6 @@ ASan/UBSan. `test_agent_guest.py --firmware --base-nand .../nand-agent-v4` check
 7E18 boot and verifies that a legacy MBX register read leaves five kernel regions
 unchanged. The 5F138 profile is checked against its local decrypted kernel banner
 and guarded patch test. A fresh native 5F138 boot reaches the Home screen
-after removing that clock trampoline. Its later untethered idle transition
-closed QMP and remains under investigation; this is not a full 5F138 stability
-claim.
+after removing that clock trampoline. Its later untethered idle transition exposed a false PMU shutdown heuristic,
+which has been removed. Deeper hibernation wake and the legacy power-off gesture
+still need acceptance; this is not a full 5F138 stability claim.

@@ -266,12 +266,13 @@ typedef struct {
 
 	/*
 	 * On-screen-keyboard typist (see ipod_touch_osk_tick). Enabled with
-	 * IT_OSK=1. Instead of queueing unichars for a guest agent to insert,
+	 * osk=on (legacy IT_OSK). Instead of queueing unichars for a guest agent to insert,
 	 * each typed character is turned into taps on iOS's own on-screen
 	 * keyboard, so the text lands in whatever process is frontmost with no
 	 * guest code at all.
 	 */
 	bool osk_enabled;
+	bool osk_explicit;
 	QEMUTimer *osk_timer;
 	uint16_t osk_pending[64];   /* unichars waiting to be turned into taps */
 	unsigned osk_p_head, osk_p_tail;

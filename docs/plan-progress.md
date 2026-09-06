@@ -706,3 +706,22 @@ firmware patch checks also pass.
 Native 7E18 still passes firmware-memory preservation, agent operations, Settings
 launch and guest-confirmed shutdown with QEMU exit 0 in 87.9 seconds
 (`/tmp/it-pmu-no-latch-7e18.log`).
+
+### Keyboard and USB configuration consumers (2026-09-06)
+
+`osk=on|off` is now a typed, startup-only machine property. Explicit off wins
+over the presence-based legacy `IT_OSK` alias, including its old empty/zero
+semantics. The shell launcher's keyboard/AppSync flags use the property. Light
+Touch uses `osk` and the existing `usb-tcp-addr` for its USB session, removing
+two process-global environment mutations. Agent typing remains separate.
+
+The production option sanitizer check and existing audio-option check pass.
+Four paused native machines verify QOM registration, defaults, alias/explicit
+precedence, and rejection of runtime changes (`/tmp/it-osk-native.log`). The
+shell parses and the Light Touch Release build passes. The native 7E18 harness
+already uses `usb-tcp-addr`, including the shutdown check above.
+
+Legacy hibernation inspection also confirms why ordinary button IRQs do not
+resume 5F138: the CPU remains at `0xc005fc90` (`b .`) with IRQ/FIQ masked after
+"pmu go hib". Modeling the hardware wake/resume sequence remains open; no kernel
+jump or fabricated resume has been added (`/tmp/it-firmware-5f138-sleep-regs.log`).
