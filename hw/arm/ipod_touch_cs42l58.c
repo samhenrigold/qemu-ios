@@ -1,3 +1,5 @@
+#include "qemu/osdep.h"
+#include "migration/vmstate.h"
 #include "hw/arm/ipod_touch_cs42l58.h"
 
 /*
@@ -114,11 +116,27 @@ static void cs42l58_init(Object *obj)
     CS42L58(obj)->lrclk = qdev_init_clock_out(DEVICE(obj), "lrclk");
 }
 
+static const VMStateDescription vmstate_cs42l58 = {
+    .name = TYPE_CS42L58,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(i2c, CS42L58State),
+        VMSTATE_UINT32(cmd, CS42L58State),
+        VMSTATE_BOOL(have_cmd, CS42L58State),
+        VMSTATE_BOOL(autoinc, CS42L58State),
+        VMSTATE_UINT8_ARRAY(regs, CS42L58State, 128),
+        VMSTATE_CLOCK(lrclk, CS42L58State),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static void cs42l58_class_init(ObjectClass *klass, void *data)
 {
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
 
+    dc->vmsd = &vmstate_cs42l58;
     k->event = cs42l58_event;
     k->recv = cs42l58_recv;
     k->send = cs42l58_send;
