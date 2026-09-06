@@ -1120,3 +1120,17 @@ handler with ASan/UBSan and checks actual CBC plaintext for other sizes, sources
 UID operations and the fourth custom-key operation. All pass. The address-based
 compatibility itself remains unresolved; fresh native acceptance is pending.
 Reference trace: `/tmp/it-aes-legacy-trace.log`, naming its retained output folder.
+
+## SHA-to-PKE snapshot ownership (2026-09-06)
+
+The SHA helper's last published chaining digest and validity flag now belong to
+the SHA device instead of process-global storage. PKE reads its own machine's
+wired SHA device, so another device or discarded future run cannot supply the
+compatibility digest. Guest SHA reset and machine reset invalidate it. SHA
+VMState version 2 includes both fields; version 1 lacks sufficient information
+and is rejected instead of restoring a missing/stale digest.
+
+`test_sha1_snapshot.py` passes ASan/UBSan ownership, reset and transfer checks
+using the production-declared VMState fields, including rewind, fresh destination
+and invalid-state restores. PKE production arithmetic/compatibility checks pass
+with the updated API. Full native migration acceptance remains pending.

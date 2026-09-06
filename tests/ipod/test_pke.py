@@ -18,14 +18,14 @@ code=r'''
 #include <errno.h>
 #include <openssl/bn.h>
 typedef uint64_t hwaddr;
-typedef struct {bool forge_sigcheck;uint8_t segments[2048],modulus[256];uint32_t seg_size_reg,segment_size,modulus_size,key_len,seg_id,seg_sign;} IPodTouchPKEState;
+typedef struct {void *sha1;bool forge_sigcheck;uint8_t segments[2048],modulus[256];uint32_t seg_size_reg,segment_size,modulus_size,key_len,seg_id,seg_sign;} IPodTouchPKEState;
 #define REG_PKE_START 8
 #define REG_PKE_SEG_SIZE 0x14
 #define REG_PKE_SWRESET 0x24
 #define REG_PKE_SEG_START 0x800
 #define LOG_GUEST_ERROR 0
 #define qemu_log_mask(...) ((void)0)
-static bool ipod_touch_sha1_last_hash(uint8_t *hash) {memset(hash,0xa5,20);return true;}
+static bool ipod_touch_sha1_last_hash(void *sha1, uint8_t *hash) {memset(hash,0xa5,20);return true;}
 '''+s[a:b]+r'''
 static void op(IPodTouchPKEState *s, unsigned a, unsigned b, unsigned dest, bool one, bool load) {
     ipod_touch_pke_write(s,0xc,a<<24|b<<16|dest,4);
