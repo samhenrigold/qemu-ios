@@ -7,6 +7,9 @@ import tempfile
 root = Path(__file__).resolve().parents[2]
 source = (root / 'hw/arm/gles-host.c').read_text()
 helpers = source[source.index('static bool gles_surface_range('):source.index('static int64_t gles_host_call_1(')]
+pvrtc_types = source[source.rfind('typedef struct {', 0, source.index('} GLESPVRTCLevel;')):
+                     source.index('} GLESPVRTC;')+len('} GLESPVRTC;')]
+tracking = source[source.index('static GLESPVRTC *gles_pvrtc_texture('):source.index('static int64_t gles_generate_mipmap(')]
 preamble = r'''
 #define GL_SILENCE_DEPRECATION
 #include <OpenGL/OpenGL.h>
@@ -28,7 +31,10 @@ preamble = r'''
 struct CPUState { int unused; };
 typedef struct CPUState CPUState;
 typedef struct { uint32_t base, stride, width, height, format, uv, uvstride; } GLESSurface;
-static struct { GHashTable *surfaces; uint32_t bound_framebuffer; } gh;
+''' + pvrtc_types + r'''
+static struct { GHashTable *surfaces, *pvrtc; GLESPVRTC default_pvrtc; GLenum error; uint32_t bound_framebuffer; } gh;
+static int64_t gles_reject(GLenum e) {if(!gh.error)gh.error=e;return -1;}
+''' + tracking + r'''
 static uint8_t ram[0x100000];
 static int cpu_memory_rw_debug(CPUState *cpu, uint64_t a, uint8_t *p, size_t n, int write)
 {

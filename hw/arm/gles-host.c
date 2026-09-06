@@ -234,17 +234,27 @@ typedef struct {
 } GLESSurface;
 
 typedef struct {
+    uint32_t width, height, format;
+} GLESPVRTCLevel;
+
+typedef struct {
+    /* 4096 (our texture cap) down to 1. */
+    GLESPVRTCLevel levels[13];
+} GLESPVRTC;
+
+typedef struct {
 #ifndef GLES_HOST_EAGL
     CGLContextObj root;
 #endif
     unsigned refs;
-    GHashTable *buffers, *surfaces, *rb_sized;
+    GHashTable *buffers, *surfaces, *rb_sized, *pvrtc;
     uint32_t next_buffer_name;
 } GLESGroup;
 
 typedef struct {
     GLESGroup *group;
-    GHashTable *surfaces;
+    GHashTable *surfaces, *pvrtc;
+    GLESPVRTC default_pvrtc;
     bool inited;
     bool failed;
 #ifndef GLES_HOST_EAGL
@@ -1611,7 +1621,7 @@ static int pvrtc_2bpp_modulation(const uint8_t *src, uint32_t bw, uint32_t bh,
  * lookup below is offset by half a block.
  */
 static void pvrtc_decode(const uint8_t *src, uint32_t w, uint32_t h, int bpp,
-                         bool alpha, uint8_t *dst)
+                         bool alpha, bool padded, uint8_t *dst)
 {
     const uint32_t cw = (bpp == 2) ? 8 : 4, ch = 4;
     /*
@@ -1621,7 +1631,8 @@ static void pvrtc_decode(const uint8_t *src, uint32_t w, uint32_t h, int bpp,
      * fixed-function GL renders as solid white. That is exactly what a real
      * title's upload looked like before this clamp existed.
      */
-    const uint32_t bw = w / cw ? w / cw : 1, bh = h / ch ? h / ch : 1;
+    const uint32_t minimum = padded ? 2 : 1;
+    const uint32_t bw = MAX(w / cw, minimum), bh = MAX(h / ch, minimum);
     /* Modulation weight in eighths. The second table is the punch-through
      * mode; 14 is 4 with a flag meaning "and force alpha to zero". */
     static const int mod0[4] = { 0, 3, 5, 8 };
@@ -1890,7 +1901,7 @@ static void pvrtc_selfcheck(void)
     }
     /* Words are laid out in twiddled order, so word i is block i by
      * construction: probe[k].block is the word index to expect. */
-    pvrtc_decode(src, 8, 8, 4, true, out);
+    pvrtc_decode(src, 8, 8, 4, true, false, out);
 
     for (i = 0; i < 4; i++) {
         const uint8_t *p = out + ((size_t)probes[i].y * 8 + probes[i].x) * 4;
@@ -3376,6 +3387,116 @@ static void gles_trace_matrix_op(const char *op, uint32_t arg)
     }
 }
 
+/* The native texture contains decoded RGBA, so retain the original compressed
+ * format and dimensions for full-image replacement validation. Named textures
+ * share this metadata with their native sharegroup; texture zero is per context. */
+static GLESPVRTC *gles_pvrtc_texture(bool create)
+{
+    GLint name = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &name);
+    if (!name) {
+        return &gh.default_pvrtc;
+    }
+    if (!gh.pvrtc) {
+        if (!create) return NULL;
+        gh.pvrtc = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+    }
+    GLESPVRTC *texture = g_hash_table_lookup(gh.pvrtc, GUINT_TO_POINTER(name));
+    if (!texture && create) {
+        texture = g_new0(GLESPVRTC, 1);
+        g_hash_table_insert(gh.pvrtc, GUINT_TO_POINTER(name), texture);
+    }
+    return texture;
+}
+
+/* Preserve older GL errors while detecting whether this mutation succeeded. */
+static void gles_texture_begin(void)
+{
+    GLenum error;
+    while ((error = glGetError()) != GL_NO_ERROR) gles_reject(error);
+}
+
+static int64_t gles_texture_end(uint32_t target, uint32_t level,
+                                GLESPVRTCLevel image)
+{
+    GLenum error = glGetError();
+    if (error) return gles_reject(error);
+    if (target == GL_TEXTURE_2D && level < 13) {
+        GLESPVRTC *texture = gles_pvrtc_texture(image.format != 0);
+        if (texture) texture->levels[level] = image;
+    }
+    return 0;
+}
+
+static int64_t gles_generate_mipmap(uint32_t target)
+{
+    if (target != GL_TEXTURE_2D) return gles_reject(GL_INVALID_ENUM);
+    gles_texture_begin();
+    glGenerateMipmapEXT(target);
+    GLenum error = glGetError();
+    if (error) return gles_reject(error);
+    GLESPVRTC *texture = gles_pvrtc_texture(false);
+    if (texture && texture->levels[0].format) {
+        GLESPVRTCLevel image = texture->levels[0];
+        for (unsigned level = 1; level < 13; level++) {
+            if (image.width == 1 && image.height == 1) image = (GLESPVRTCLevel){0};
+            if (image.format) {
+                image.width = MAX(image.width / 2, 1u);
+                image.height = MAX(image.height / 2, 1u);
+            }
+            texture->levels[level] = image;
+        }
+    }
+    return 0;
+}
+
+static int64_t gles_pvrtc_upload(CPUState *cpu, uint32_t target, uint32_t level,
+                                uint32_t format, uint32_t w, uint32_t h,
+                                uint32_t border, uint32_t size, uint32_t data,
+                                bool replace)
+{
+    if (target != GL_TEXTURE_2D) return gles_reject(GL_INVALID_ENUM);
+    if (border || level >= 13 || !w || !h || w > (4096u >> level) || h > (4096u >> level)) {
+        return gles_reject(GL_INVALID_VALUE);
+    }
+    int bpp = (format == PVRTC_RGB_2BPP || format == PVRTC_RGBA_2BPP) ? 2 : 4;
+    size_t compact = pvrtc_size(w, h, bpp);
+    size_t standard = pvrtc_size(MAX(w, bpp == 2 ? 16u : 8u), MAX(h, 8u), bpp);
+    /* The MBX guest driver also sends compact one-word mip tails. Accept that
+     * exact legacy representation, not arbitrary trailing or missing bytes. */
+    if (!compact || (size != compact && size != standard)) {
+        return gles_reject(GL_INVALID_VALUE);
+    }
+    if (replace) {
+        GLESPVRTC *texture = gles_pvrtc_texture(false);
+        if (!texture || texture->levels[level].width != w ||
+            texture->levels[level].height != h || texture->levels[level].format != format) {
+            return gles_reject(GL_INVALID_OPERATION);
+        }
+    }
+    const uint8_t *src = data ? gles_fetch_texels(cpu, data, size, "PVRTC upload") : NULL;
+    if (data && !src) return gles_reject(GL_INVALID_OPERATION);
+    uint8_t *dst = gles_decode_buf((size_t)w * h * 4);
+    if (!dst) return gles_reject(GL_OUT_OF_MEMORY);
+    if (src) {
+        pvrtc_decode(src, w, h, bpp,
+                     format == PVRTC_RGBA_2BPP || format == PVRTC_RGBA_4BPP,
+                     size == standard, dst);
+    } else {
+        memset(dst, 0, (size_t)w * h * 4);
+    }
+    gles_report_decode(format, w, h, dst);
+    gles_texture_begin();
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    if (replace) {
+        glTexSubImage2D(target, level, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, dst);
+    } else {
+        GLenum internal = (format == PVRTC_RGB_2BPP || format == PVRTC_RGB_4BPP) ? GL_RGB : GL_RGBA;
+        glTexImage2D(target, level, internal, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, dst);
+    }
+    return gles_texture_end(target, level, (GLESPVRTCLevel){ w, h, format });
+}
+
 /* IOSurface-backed textures are aliases of guest memory. Upload on bind;
  * publish rendering before an FBO switch or flush makes it visible to CA. */
 static bool gles_surface_range(uint32_t base, uint32_t stride, unsigned rows,
@@ -3487,9 +3608,10 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
     } else if (bpp == 2) { glfmt = GL_RGB; type = GL_UNSIGNED_SHORT_5_6_5; }
     glGetIntegerv(GL_UNPACK_ALIGNMENT, &unpack);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    gles_texture_begin();
     glTexImage2D(target, 0, GL_RGBA, w, h, 0, glfmt, type, pixels);
     glPixelStorei(GL_UNPACK_ALIGNMENT, unpack);
-    if (glGetError() != GL_NO_ERROR) return -1;
+    if (gles_texture_end(target, 0, (GLESPVRTCLevel){0})) return -1;
     if (!gh.surfaces) gh.surfaces = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
     GLESSurface *surface = g_new(GLESSurface, 1);
     *surface = (GLESSurface){ a[1], a[2], w, h, fmt, a[6], a[7] };
@@ -3936,7 +4058,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         /* The staging buffer reproduces the guest's row padding verbatim, so
          * the host must unpack with the guest's alignment, not its own. */
         glPixelStorei(GL_UNPACK_ALIGNMENT, gles_unpack());
+        gles_texture_begin();
         glTexImage2D(target, level, ifmt, w, h, border, fmt, type, px);
+        if (gles_texture_end(target, level, (GLESPVRTCLevel){0})) return -1;
         /*
          * Keep the texture COMPLETE for whatever filter it ends up with.
          *
@@ -4039,6 +4163,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         uint32_t w = a[3], h = a[4], imgsz = a[6], data = a[7];
         const uint8_t *src;
 
+        if (gles_is_pvrtc(ifmt)) {
+            return gles_pvrtc_upload(cpu, target, level, ifmt, w, h, a[5], imgsz, data, false);
+        }
         if (!data || !imgsz) {
             return 0;
         }
@@ -4049,34 +4176,6 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         /* Decoded output is always tightly packed RGBA8, whatever the guest's
          * GL_UNPACK_ALIGNMENT says about its own compressed bytes. */
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
-        if (gles_is_pvrtc(ifmt)) {
-            int bpp = (ifmt == PVRTC_RGB_2BPP || ifmt == PVRTC_RGBA_2BPP) ? 2 : 4;
-            size_t want = pvrtc_size(w, h, bpp);
-            uint8_t *dst;
-
-            if (!want) {
-                fprintf(stderr, "[gles] PVRTC %dbpp: %ux%u is not a size the "
-                        "format can express; dropped\n", bpp, w, h);
-                return -1;
-            }
-            if (imgsz < want) {
-                fprintf(stderr, "[gles] PVRTC %dbpp %ux%u needs %zu bytes but "
-                        "only %u were supplied; dropped\n",
-                        bpp, w, h, want, imgsz);
-                return -1;
-            }
-            dst = gles_decode_buf((size_t)w * h * 4);
-            if (!dst) {
-                return -1;
-            }
-            pvrtc_decode(src, w, h, bpp,
-                         ifmt == PVRTC_RGBA_2BPP || ifmt == PVRTC_RGBA_4BPP, dst);
-            gles_report_decode(ifmt, w, h, dst);
-            glTexImage2D(target, level, GL_RGBA, w, h, 0, GL_RGBA,
-                         GL_UNSIGNED_BYTE, dst);
-            return 0;
-        }
 
         if (gles_is_paletted(ifmt)) {
             unsigned idx_bits, entry_bytes;
@@ -4118,8 +4217,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                 gles_palette_level(src, ptype, src + consumed, idx_bits,
                                    entry_bytes, lw, lh, dst);
                 gles_report_decode(ifmt, lw, lh, dst);
+                gles_texture_begin();
                 glTexImage2D(target, lv, GL_RGBA, lw, lh, 0, GL_RGBA,
                              GL_UNSIGNED_BYTE, dst);
+                if (gles_texture_end(target, lv, (GLESPVRTCLevel){0})) return -1;
                 consumed += idx_bytes;
             }
             return 0;
@@ -4143,23 +4244,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     }
 
     case GLES_SLOT_COMPRESSED_TEX_SUB_IMAGE_2D: {
-        /* target, level, xoffset, yoffset, width, height, format, imageSize,
-         * data -- nine arguments, spilled.
-         *
-         * ES 1.1 defines no compressed format that can be sub-imaged: PVRTC
-         * needs the whole surface because its endpoints interpolate ACROSS
-         * block boundaries, and the paletted formats carry their palette with
-         * the base level. So this is a call that has no correct partial
-         * implementation, and the honest answer is the one GL itself gives. */
-        static bool warned;
-
-        if (!warned) {
-            warned = true;
-            fprintf(stderr, "[gles] glCompressedTexSubImage2D(fmt=0x%x): no ES "
-                    "1.1 compressed format supports sub-image updates; "
-                    "dropped\n", a[6]);
-        }
-        return -1;
+        if (!gles_is_pvrtc(a[6])) return gles_reject(GL_INVALID_ENUM);
+        if (a[2] || a[3]) return gles_reject(GL_INVALID_OPERATION);
+        return gles_pvrtc_upload(cpu, a[0], a[1], a[6], a[4], a[5], 0, a[7], a[8], true);
     }
 
     case GLES_SLOT_DELETE_TEXTURES: {           /* n, guest uint* */
@@ -4180,6 +4267,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         if (gh.surfaces) {
             for (unsigned i = 0; i < n; i++) {
                 g_hash_table_remove(gh.surfaces, GUINT_TO_POINTER(ids[i]));
+            }
+        }
+        if (gh.pvrtc) {
+            for (unsigned i = 0; i < n; i++) {
+                g_hash_table_remove(gh.pvrtc, GUINT_TO_POINTER(ids[i]));
             }
         }
         glDeleteTextures(n, ids);
@@ -4639,8 +4731,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * This is how an app builds a texture out of what it just drew, and
          * dropping it left the texture with no storage at all -- which an FBO
          * it is attached to then reports as INCOMPLETE. */
+        gles_texture_begin();
         glCopyTexImage2D(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
-        return 0;
+        return gles_texture_end(a[0], a[1], (GLESPVRTCLevel){0});
 
     case GLES_SLOT_TEX_ENVF:                    /* target, pname, param */
         glTexEnvf(a[0], a[1], gles_f(a[2]));
@@ -4864,11 +4957,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         /* Zero is the default drawable, not a framebuffer object. */
         return a[0] && (gles_is_drawable(a[0]) || glIsFramebufferEXT(a[0]));
     case GLES_SLOT_GENERATE_MIPMAP:
-        if (a[0] != GL_TEXTURE_2D) {
-            return gles_reject(GL_INVALID_ENUM);
-        }
-        glGenerateMipmapEXT(a[0]);
-        return 0;
+        return gles_generate_mipmap(a[0]);
     case GLES_SLOT_COLOR_MASK:
         glColorMask(a[0] != 0, a[1] != 0, a[2] != 0, a[3] != 0);
         return 0;
@@ -5169,6 +5258,7 @@ static void gles_group_unref(GLESGroup *group)
     g_hash_table_destroy(group->buffers);
     g_hash_table_destroy(group->surfaces);
     g_hash_table_destroy(group->rb_sized);
+    g_hash_table_destroy(group->pvrtc);
     g_free(group);
 }
 
@@ -5201,6 +5291,7 @@ static void gles_context_free(GLESHost *state)
         if (state->buffers) g_hash_table_destroy(state->buffers);
         if (state->surfaces) g_hash_table_destroy(state->surfaces);
         if (state->rb_sized) g_hash_table_destroy(state->rb_sized);
+        if (state->pvrtc) g_hash_table_destroy(state->pvrtc);
     }
     if (gh_current == state) gh_current = &gh_legacy;
     if (state == &gh_legacy) memset(state, 0, sizeof(*state));
@@ -5221,6 +5312,7 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
         group->buffers = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, gles_buffer_destroy);
         group->surfaces = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
         group->rb_sized = g_hash_table_new(g_direct_hash, g_direct_equal);
+        group->pvrtc = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
         uint32_t handle = ++gles_handle;
         g_hash_table_insert(gles_groups, GUINT_TO_POINTER(handle), group);
         return handle;
@@ -5235,6 +5327,7 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
         state->buffers = group->buffers;
         state->surfaces = group->surfaces;
         state->rb_sized = group->rb_sized;
+        state->pvrtc = group->pvrtc;
         uint32_t handle = ++gles_handle;
         g_hash_table_insert(gles_contexts, GUINT_TO_POINTER(handle), state);
         if (getenv("IT_GLES_CONTEXT_TRACE")) fprintf(stderr, "[gles-context] created %08x %p\n", handle, (void *)state);

@@ -19,6 +19,7 @@ source = source[source.index('static void pvrtc_endpoints('):
                 source.index('/*\n * The paletted formats:')]
 harness = r'''
 #include <assert.h>
+#define MAX(a,b) ((a)>(b)?(a):(b))
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -37,7 +38,7 @@ int main(int argc, char **argv) {
     size_t length = pvrtc_size(w, h, bpp);
     uint8_t *src = malloc(length), *dst = malloc((size_t)w*h*4);
     assert(src && dst && fread(src,1,length,stdin)==length && getchar()==EOF);
-    pvrtc_decode(src, w, h, bpp, atoi(argv[4]), dst);
+    pvrtc_decode(src, w, h, bpp, atoi(argv[4]), false, dst);
     assert(fwrite(dst,1,(size_t)w*h*4,stdout)==(size_t)w*h*4);
     free(src);
     free(dst);

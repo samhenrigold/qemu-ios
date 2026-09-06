@@ -15,12 +15,16 @@ for macro in re.findall(r'case (GLES_SLOT_\w+):', cases):
     name = re.search(r'table\[' + slot + r'\]\s*= \(void \*\)(s_\w+)', shim)[1]
     assert slots[slot].lower().removesuffix('oes') == ('gl' + name[2:]).lower()
     assert re.search(name + r'\([^}]+qc\(' + slot + r',', shim)
+pvrtc_types = src[src.rfind('typedef struct {', 0, src.index('} GLESPVRTCLevel;')):
+                  src.index('} GLESPVRTC;')+len('} GLESPVRTC;')]
+mipmap = src[src.index('static int64_t gles_generate_mipmap('):src.index('static int64_t gles_pvrtc_upload(')]
 code = r'''
 #define GL_SILENCE_DEPRECATION
 #include <OpenGL/OpenGL.h>
 #include <OpenGL/gl.h>
 #include <OpenGL/glext.h>
 #include <assert.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <math.h>
@@ -38,6 +42,11 @@ static GLuint drawable;
 static GLenum error;
 static int gles_is_drawable(GLuint name) { return name == drawable; }
 static int gles_reject(GLenum e) { error = e; return -1; }
+''' + pvrtc_types + r'''
+#define MAX(a,b) ((a)>(b)?(a):(b))
+static GLESPVRTC *gles_pvrtc_texture(int create) {return NULL;}
+static void gles_texture_begin(void) {GLenum e=glGetError();if(e)gles_reject(e);}
+''' + mipmap + r'''
 static int dispatch(unsigned slot, const uint32_t *a) { CPUState *cpu = NULL; switch(slot) {
 ''' + cases + r'''
 default: assert(0); return -1; } }
