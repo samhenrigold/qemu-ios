@@ -34,6 +34,22 @@ header = r'''
 #define GLES_OP_NEW_CONTEXT 0x1006
 #define GLES_OP_DELETE_CONTEXT 0x1007
 '''
+policy = s[s.index('static int gles_live_contexts;'):s.index('static GLESHost gh_legacy;')]
+header += r'''
+typedef char Error;
+static bool migration_busy;
+#define qatomic_read g_atomic_int_get
+#define qatomic_inc g_atomic_int_inc
+#define qatomic_dec(p) g_atomic_int_add(p,-1)
+#define qatomic_set g_atomic_int_set
+static void error_setg(Error **e,const char *message) { *e=g_strdup(message); }
+static void error_free(Error *e) { g_free(e); }
+static int migrate_add_blocker_internal(Error **e,Error **error) {
+ if(!migration_busy)return 0;
+ g_clear_pointer(e,g_free);*error=g_strdup("busy");return -1;
+}
+static void migrate_del_blocker(Error **e) { g_clear_pointer(e,g_free); }
+'''
 state = r'''
 static GLESHost gh_legacy;
 static GLESHost *gh_current = &gh_legacy;
@@ -66,6 +82,7 @@ int main(void)
     uint32_t one=gles_context_operation(GLES_OP_NEW_CONTEXT,0,1,&group);
     uint32_t two=gles_context_operation(GLES_OP_NEW_CONTEXT,0,1,&group);
     assert(one!=two && one>=0x80000000);
+    assert(gles_host_context_count()==2 && gles_save_blocker);
     GLESHost *a=select_context(one);
     glEnable(GL_BLEND);a->vertex.enabled=1;
     GLuint texture;glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);
@@ -119,13 +136,20 @@ int main(void)
     three=gles_context_operation(GLES_OP_NEW_CONTEXT,0,1,&isolated);
     select_context(three);
     gles_host_reset();gles_host_reset();
+    assert(!gles_host_context_count() && !gles_save_blocker);
+    isolated=gles_context_operation(GLES_OP_NEW_SHAREGROUP,0,0,NULL);
+    migration_busy=true;
+    assert(gles_context_operation(GLES_OP_NEW_CONTEXT,0,1,&isolated)==-1);
+    assert(!gles_host_context_count() && !gles_save_blocker);
+    migration_busy=false;
+    gles_host_reset();
     g_hash_table_destroy(gles_contexts);g_hash_table_destroy(gles_groups);
     puts("PASS: native GL state isolation, shared textures and deleted buffers, independent groups and destruction order");
 }
 '''
 # State declarations precede the real functions; the selector uses those functions.
 declarations, selector = state.split('static GLESHost *select_context', 1)
-code = header + types + declarations + create + ''.join(function(n+'(') for n in ('gles_buffer_destroy', 'gles_buffer_bind', 'gles_buffer_intern', 'gles_buffer_forget')) + ops + sharegroup + 'static GLESHost *select_context' + selector + check
+code = header + types + policy + declarations + create + ''.join(function(n+'(') for n in ('gles_buffer_destroy', 'gles_buffer_bind', 'gles_buffer_intern', 'gles_buffer_forget')) + ops + sharegroup + 'static GLESHost *select_context' + selector + check
 with tempfile.TemporaryDirectory(prefix='it-gles-context-') as tmp:
     c=Path(tmp)/'check.c';exe=Path(tmp)/'check';c.write_text(code)
     flags=subprocess.check_output(['pkg-config','--cflags','--libs','glib-2.0'],text=True).split()

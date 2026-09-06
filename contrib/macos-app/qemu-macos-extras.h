@@ -58,6 +58,9 @@ void qemu_ios_agent_free_result(char *result);
 /* 0 absent/not running, 1 alive, 2 stale. */
 int qemu_ios_agent_status(void);
 
+/* Live host GL contexts cannot be included in a snapshot. */
+int qemu_ios_gles_contexts(void);
+
 /* Machine controls. */
 void qemu_ios_ui_pause(void);
 void qemu_ios_ui_resume(void);

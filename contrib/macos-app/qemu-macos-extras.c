@@ -371,3 +371,10 @@ void qemu_ios_agent_cancel(const char *id)
         ipod_agent_free(a);
     }
 }
+
+/* Atomic renderer count; safe while the main thread presents the device. */
+extern int gles_host_context_count(void);
+int qemu_ios_gles_contexts(void)
+{
+    return qemu_ios_ui_ready() ? gles_host_context_count() : 0;
+}

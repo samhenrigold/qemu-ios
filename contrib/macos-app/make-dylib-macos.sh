@@ -84,6 +84,7 @@ _qemu_ios_agent_cancel
 _qemu_ios_agent_result
 _qemu_ios_agent_free_result
 _qemu_ios_agent_status
+_qemu_ios_gles_contexts
 _qemu_ios_ui_pause
 _qemu_ios_ui_resume
 _qemu_ios_ui_reset

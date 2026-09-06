@@ -14,6 +14,7 @@ parser.add_argument('--files', default=str(ROOT.parent / 'qemu-ios-files'))
 parser.add_argument('--base-nand')
 parser.add_argument('--network', action='store_true')
 parser.add_argument('--usb', action='store_true')
+parser.add_argument('--expect-gles-block', action='store_true')
 args = parser.parse_args()
 os.environ['PATH'] = str(ROOT.parent/'qemu-ios-deps12/bin') + ':' + os.environ['PATH']
 out = tempfile.mkdtemp(prefix='it-snapshot-guest-')
@@ -73,8 +74,20 @@ try:
     if args.usb:
         udid, detail = r.wait_for_device(cfg, timeout=120)
         assert udid, detail
+    print('GLES contexts before save:', d.qmp.cmd('qom-get', path='/machine', property='gles-contexts'), flush=True)
     d.qmp.cmd('stop')
     snapshot = out + '/state'
+    if args.expect_gles_block:
+        try:
+            d.qmp.cmd('migrate', uri='file:' + snapshot)
+        except RuntimeError as error:
+            assert 'Live OpenGL ES state cannot be saved' in str(error), error
+        else:
+            raise AssertionError('unsafe GL snapshot was accepted')
+        d.qmp.cmd('cont')
+        assert r.itqmp.agent(d.qmp, 'ping') == (0, b'it_agent v1\n')
+        print('PASS: unsafe GL save refused; guest remains usable', flush=True)
+        raise SystemExit(0)
     d.qmp.cmd('migrate', uri='file:' + snapshot)
     deadline = time.monotonic() + 90
     while True:
