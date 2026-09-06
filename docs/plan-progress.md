@@ -854,3 +854,10 @@ call cannot contaminate a later successful response.
 disposable 7E18 device. All three retired calls with invalid arguments and an
 unknown opcode returned ENOSYS; a GLES ping after each returned its magic value
 with zero error, and the guest then shut down cleanly. Native build passed.
+
+Clipboard service copies now use the agent's existing checked guest-memory
+helper. Failed reads/writes return EFAULT; invalid or failed outgoing chunks
+clear staging, and committing without staging returns EINVAL without replacing
+the previous clipboard. The native service probe covers unmapped and wrapping
+addresses, failed continuation/commit, preserved clipboard and subsequent valid
+transfer, followed by confirmed guest shutdown. No wire ABI change.
