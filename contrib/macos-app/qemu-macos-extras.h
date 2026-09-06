@@ -60,6 +60,8 @@ int qemu_ios_agent_status(void);
 
 /* Live host GL contexts cannot be included in a snapshot. */
 int qemu_ios_gles_contexts(void);
+/* Loaded Mach-O UUID; NULL if unavailable. */
+const char *qemu_ios_build_id(void);
 
 /* Machine controls. */
 void qemu_ios_ui_pause(void);
