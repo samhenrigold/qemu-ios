@@ -358,6 +358,37 @@ static void ipod_touch_h264_env_alias(IPodTouchMachineState *nms)
     }
 }
 
+static void ipod_touch_get_scaler_decode(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    bool value = IPOD_TOUCH_MACHINE(obj)->scaler_decode;
+    visit_type_bool(v, name, &value, errp);
+}
+
+static void ipod_touch_set_scaler_decode(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (nms->cpu) {
+        error_setg(errp, "scaler-decode must be set before the machine starts");
+        return;
+    }
+    bool value;
+    if (visit_type_bool(v, name, &value, errp)) {
+        nms->scaler_decode = value;
+        nms->scaler_decode_explicit = true;
+    }
+}
+
+static void ipod_touch_scaler_env_alias(IPodTouchMachineState *nms)
+{
+    if (!nms->scaler_decode_explicit && getenv("IT_SCALER_DECODE") != NULL) {
+        /* The old alias tests presence, even for an empty or "0" value. */
+        nms->scaler_decode = true;
+        warn_report_once("IT_SCALER_DECODE is deprecated; use -M iPod-Touch,scaler-decode=on");
+    }
+}
+
 static void ipod_touch_get_wdt_noreset(Object *obj, Visitor *v, const char *name,
                                void *opaque, Error **errp)
 {
@@ -3034,6 +3065,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     ipod_touch_osk_env_alias(nms);
     ipod_touch_wdt_env_alias(nms);
     ipod_touch_h264_env_alias(nms);
+    ipod_touch_scaler_env_alias(nms);
     ipod_touch_cpu_setup(machine, &sysmem, &cpu, &nsas);
 
     // setup clock
@@ -3503,7 +3535,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     sysbus_realize(busdev, &error_fatal);
     sysbus_connect_irq(busdev, 0, s5l8900_get_irq(nms, S5L8720_LCD_IRQ));
 
-    if (getenv("IT_SCALER_DECODE")) {
+    if (nms->scaler_decode) {
         dev = qdev_new("ipodtouch.scaler");
         busdev = SYS_BUS_DEVICE(dev);
         sysbus_realize(busdev, &error_fatal);
@@ -3586,6 +3618,9 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_add(klass, "h264-decode", "bool", ipod_touch_get_h264_decode,
                               ipod_touch_set_h264_decode, NULL, NULL);
     object_class_property_set_description(klass, "h264-decode", "Enable hardware H.264 decoding instead of the legacy RAM register window");
+    object_class_property_add(klass, "scaler-decode", "bool", ipod_touch_get_scaler_decode,
+                              ipod_touch_set_scaler_decode, NULL, NULL);
+    object_class_property_set_description(klass, "scaler-decode", "Enable scaler color conversion instead of the legacy register stub");
     object_class_property_add(klass, "wdt-noreset", "bool", ipod_touch_get_wdt_noreset,
                               ipod_touch_set_wdt_noreset, NULL, NULL);
     object_class_property_set_description(klass, "wdt-noreset", "Suppress guest watchdog reset commands for debugging");

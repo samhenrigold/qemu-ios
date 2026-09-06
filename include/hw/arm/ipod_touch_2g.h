@@ -279,6 +279,7 @@ typedef struct {
 	bool osk_explicit;
     bool wdt_noreset, wdt_noreset_explicit;
     bool h264_decode, h264_decode_explicit;
+    bool scaler_decode, scaler_decode_explicit;
     uint32_t time_dilation;
     bool time_dilation_explicit;
 	QEMUTimer *osk_timer;
