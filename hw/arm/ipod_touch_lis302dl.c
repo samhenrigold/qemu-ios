@@ -3,6 +3,7 @@
 #include "hw/arm/ipod_touch_lcd.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
+#include "hw/arm/ipod-attitude.h"
 
 /* 1 g in LIS302DL output counts. The part is ±2 g full-scale over a signed
  * 8-bit register (18 mg/digit), so 1 g ~= 0x38. Any value with the right sign
@@ -18,35 +19,35 @@ static bool lis302dl_debug(void)
     return cached;
 }
 
-/* Map an orientation index to a steady-state gravity vector in the raw
- * accelerometer frame. Indices follow UIDeviceOrientation ordering. */
+bool lis302dl_apply_attitude(LIS302DLState *s, double pitch, double roll, bool flat)
+{
+    int8_t vector[3];
+    if (!ipod_attitude_vector(pitch, roll, flat, vector)) {
+        return false;
+    }
+    s->pitch_mdeg = lround(pitch * 1000);
+    s->roll_mdeg = lround(roll * 1000);
+    s->flat_pose = flat;
+    s->base_x = s->out_x = vector[0];
+    s->base_y = s->out_y = vector[1];
+    s->base_z = s->out_z = vector[2];
+    return true;
+}
+
+/* UIDeviceOrientation shares the same mounted attitude model. */
 void lis302dl_apply_orientation(LIS302DLState *s, uint32_t o)
 {
-    int8_t x = 0, y = 0, z = 0;
-    switch (o) {
-        case 1: /* portrait, home button at bottom */          x = 0;         y = -ACCEL_1G; z = 0;        break;
-        case 2: /* portrait upside down, home button at top */  x = 0;         y = ACCEL_1G;  z = 0;        break;
-        /*
-         * The part is mounted with its X axis opposite UIKit's, so the raw
-         * counts for the two landscape cases are the negatives of the UIKit
-         * gravity vector. Measured, not guessed: with x = +1g for orientation 3
-         * iOS rendered the landscape UI turned the *other* way (the window came
-         * out upside down), i.e. it read a LandscapeLeft request as
-         * LandscapeRight. Y is not inverted -- portrait comes out upright.
-         */
-        case 3: /* landscape left,  home button on the right */ x = -ACCEL_1G; y = 0;         z = 0;        break;
-        case 4: /* landscape right, home button on the left */  x = ACCEL_1G;  y = 0;         z = 0;        break;
-        case 5: /* face up */                                   x = 0;         y = 0;         z = -ACCEL_1G; break;
-        case 6: /* face down */                                 x = 0;         y = 0;         z = ACCEL_1G;  break;
-        default: /* 0 / unknown: leave flat-portrait default */ x = 0;         y = -ACCEL_1G; z = 0;        break;
-    }
+    double roll = 0;
+    bool flat = o == 5 || o == 6;
+    if (o == 2 || o == 6) roll = 180;
+    else if (o == 3) roll = 90;
+    else if (o == 4) roll = -90;
+    lis302dl_apply_attitude(s, 0, roll, flat);
     s->orientation = o;
-    s->base_x = x; s->base_y = y; s->base_z = z;
-    s->out_x = x; s->out_y = y; s->out_z = z;
-    /* turn the host window to match, so landscape gets a landscape window */
     it_display_set_orientation(o);
     if (lis302dl_debug()) {
-        printf("lis302dl: orientation=%u -> x=%d y=%d z=%d\n", o, x, y, z);
+        printf("lis302dl: orientation=%u -> x=%d y=%d z=%d\n",
+               o, s->out_x, s->out_y, s->out_z);
     }
 }
 
@@ -234,7 +235,7 @@ static void lis302dl_set_axis(Object *obj, Visitor *v, const char *name,
     if (!visit_type_int(v, name, &val, errp)) {
         return;
     }
-    lis302dl_set_axis_value(s, name[0], (int)val);
+    lis302dl_set_axis_value(s, name[0], (int)CLAMP(val, -128, 127));
 }
 
 static void lis302dl_set_shake(Object *obj, Visitor *v, const char *name,
@@ -267,12 +268,32 @@ static void lis302dl_init(Object *obj)
     object_property_add(obj, "shake", "bool", NULL, lis302dl_set_shake, NULL, NULL);
 }
 
+static int lis302dl_post_load(void *opaque, int version)
+{
+    LIS302DLState *s = opaque;
+    if (version < 2) {
+        s->pitch_mdeg = 0;
+        s->flat_pose = s->orientation == 5 || s->orientation == 6;
+        s->roll_mdeg = s->orientation == 2 || s->orientation == 6 ? 180000 :
+                      s->orientation == 3 ? 90000 : s->orientation == 4 ? -90000 : 0;
+    }
+    if (s->pitch_mdeg < -180000 || s->pitch_mdeg > 180000 ||
+        s->roll_mdeg < -180000 || s->roll_mdeg > 180000) return -EINVAL;
+    timer_del(s->shake_timer);
+    s->shake_ticks = 0;
+    s->out_x = s->base_x;
+    s->out_y = s->base_y;
+    s->out_z = s->base_z;
+    return 0;
+}
+
 /* shake_timer is transient host animation, not guest-visible state: a restore
  * lands with the accelerometer at rest at its steady-state vector. */
 static const VMStateDescription vmstate_lis302dl = {
     .name = "lis302dl",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = lis302dl_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(i2c, LIS302DLState),
         VMSTATE_UINT32(cmd, LIS302DLState),
@@ -287,6 +308,9 @@ static const VMStateDescription vmstate_lis302dl = {
         VMSTATE_UINT16(ctrl_reg1, LIS302DLState),
         VMSTATE_UINT16(ctrl_reg2, LIS302DLState),
         VMSTATE_UINT16(ctrl_reg3, LIS302DLState),
+        VMSTATE_INT32_V(pitch_mdeg, LIS302DLState, 2),
+        VMSTATE_INT32_V(roll_mdeg, LIS302DLState, 2),
+        VMSTATE_BOOL_V(flat_pose, LIS302DLState, 2),
         VMSTATE_END_OF_LIST()
     }
 };

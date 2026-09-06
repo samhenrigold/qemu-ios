@@ -40,6 +40,8 @@ typedef struct LIS302DLState {
 	int8_t base_x;         /* steady-state vector, restored after a shake */
 	int8_t base_y;
 	int8_t base_z;
+	int32_t pitch_mdeg, roll_mdeg;
+	bool flat_pose;
 	uint32_t orientation;  /* last orientation applied via QMP */
 	uint16_t ctrl_reg1;
 	uint16_t ctrl_reg2;
@@ -50,6 +52,7 @@ typedef struct LIS302DLState {
 
 /* Host-drivable controls, forwarded from the machine's QMP properties. */
 void lis302dl_apply_orientation(LIS302DLState *s, uint32_t o);
+bool lis302dl_apply_attitude(LIS302DLState *s, double pitch, double roll, bool flat);
 void lis302dl_shake(LIS302DLState *s);
 void lis302dl_set_axis_value(LIS302DLState *s, char axis, int v);
 

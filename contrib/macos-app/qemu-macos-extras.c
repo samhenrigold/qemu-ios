@@ -14,6 +14,9 @@
 #include "qapi/error.h"
 #include "qom/object.h"
 #include "hw/boards.h"
+#include "hw/arm/ipod-attitude.h"
+#include "qapi/qapi-commands-qom.h"
+#include "qobject/qnum.h"
 #include "qapi/qapi-commands-control.h"
 #include "qapi/qapi-commands-machine.h"
 #include "qapi/qapi-commands-misc.h"
@@ -259,6 +262,38 @@ void qemu_ios_ui_accel(int x, int y, int z)
     int *v = g_new(int, 3);
     v[0] = x; v[1] = y; v[2] = z;
     aio_bh_schedule_oneshot(qemu_get_aio_context(), accel_bh, v);
+}
+
+struct attitude_input { double pitch, roll; int pose; };
+
+static void attitude_bh(void *opaque)
+{
+    struct attitude_input *input = opaque;
+    Error *err = NULL;
+    Object *machine = OBJECT(qdev_get_machine());
+    object_property_set_str(machine, "accel-pose", input->pose ? "flat" : "upright", &err);
+    const char *names[] = { "accel-pitch", "accel-roll" };
+    double angles[] = { input->pitch, input->roll };
+    for (unsigned i = 0; i < 2 && !err; i++) {
+        QNum *value = qnum_from_double(angles[i]);
+        qmp_qom_set("/machine", names[i], QOBJECT(value), &err);
+        qobject_unref(value);
+    }
+    if (err) {
+        fprintf(stderr, "[attitude] %s\n", error_get_pretty(err));
+        error_free(err);
+    }
+    g_free(input);
+}
+
+void qemu_ios_ui_attitude(double pitch_deg, double roll_deg, int pose)
+{
+    int8_t vector[3];
+    if (!qemu_ios_ui_ready() || (pose != 0 && pose != 1) ||
+        !ipod_attitude_vector(pitch_deg, roll_deg, pose, vector)) return;
+    struct attitude_input *input = g_new(struct attitude_input, 1);
+    *input = (struct attitude_input){ pitch_deg, roll_deg, pose };
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), attitude_bh, input);
 }
 
 static void paste_bh(void *opaque)

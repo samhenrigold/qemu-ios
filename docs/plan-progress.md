@@ -203,3 +203,17 @@ contacts and sparse slots), both guest versions' SDIO event headers, and actual
 tcp_usb framing under fragmented reads/writes. The USB test replays five saved
 real-device AFC file vectors plus synthetic odd-sized transfers and NAK replies;
 it validates transport bytes, not a guest AFC server implementation.
+
+### Attitude model
+
+The accelerometer now has one mounted gravity calculation for pitch, roll and
+upright/flat poses. Machine properties accept startup and live values; discrete
+orientation commands share the same calculation, and raw axis overrides remain
+available. The macOS bridge exposes an attitude call. Snapshot v2 preserves the
+angles/pose, validates bounds, and restores a resting sensor after a transient
+shake; v1 snapshots recover attitude metadata from their orientation.
+
+Sanitizer checks cover cardinal and combined angles, one-g magnitude, invalid
+inputs and snapshot metadata. Native paused-QEMU checks cover startup arguments,
+live QOM updates, mounting signs and large raw-axis clamping:
+`/tmp/it-attitude-qmp-v2.log`. Light Touch inputs and sensor sampling remain next.

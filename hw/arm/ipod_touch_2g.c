@@ -1263,6 +1263,65 @@ static void ipod_touch_set_battery_charging(Object *obj, const char *value, Erro
     }
 }
 
+static double ipod_touch_accel_angle(IPodTouchMachineState *nms, bool pitch)
+{
+    if (nms->lis302dl_state) {
+        return (pitch ? nms->lis302dl_state->pitch_mdeg :
+                        nms->lis302dl_state->roll_mdeg) / 1000.0;
+    }
+    return pitch ? nms->accel_pitch : nms->accel_roll;
+}
+
+static bool ipod_touch_accel_flat(IPodTouchMachineState *nms)
+{
+    return nms->lis302dl_state ? nms->lis302dl_state->flat_pose : nms->accel_flat;
+}
+
+static void ipod_touch_get_accel_angle(Object *obj, Visitor *v, const char *name,
+                                      void *opaque, Error **errp)
+{
+    double value = ipod_touch_accel_angle(IPOD_TOUCH_MACHINE(obj), !strcmp(name, "accel-pitch"));
+    visit_type_number(v, name, &value, errp);
+}
+
+static void ipod_touch_set_accel_angle(Object *obj, Visitor *v, const char *name,
+                                      void *opaque, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    double value;
+    if (!visit_type_number(v, name, &value, errp)) return;
+    if (!isfinite(value) || value < -180 || value > 180) {
+        error_setg(errp, "%s must be finite and between -180 and 180 degrees", name);
+        return;
+    }
+    nms->accel_pitch = ipod_touch_accel_angle(nms, true);
+    nms->accel_roll = ipod_touch_accel_angle(nms, false);
+    nms->accel_flat = ipod_touch_accel_flat(nms);
+    if (!strcmp(name, "accel-pitch")) nms->accel_pitch = value;
+    else nms->accel_roll = value;
+    if (nms->lis302dl_state) lis302dl_apply_attitude(nms->lis302dl_state,
+        nms->accel_pitch, nms->accel_roll, nms->accel_flat);
+}
+
+static char *ipod_touch_get_accel_pose(Object *obj, Error **errp)
+{
+    return g_strdup(ipod_touch_accel_flat(IPOD_TOUCH_MACHINE(obj)) ? "flat" : "upright");
+}
+
+static void ipod_touch_set_accel_pose(Object *obj, const char *value, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (strcmp(value, "flat") && strcmp(value, "upright")) {
+        error_setg(errp, "accel-pose must be upright or flat");
+        return;
+    }
+    nms->accel_pitch = ipod_touch_accel_angle(nms, true);
+    nms->accel_roll = ipod_touch_accel_angle(nms, false);
+    nms->accel_flat = !strcmp(value, "flat");
+    if (nms->lis302dl_state) lis302dl_apply_attitude(nms->lis302dl_state,
+        nms->accel_pitch, nms->accel_roll, nms->accel_flat);
+}
+
 static void ipod_touch_get_accel_orientation(Object *obj, Visitor *v, const char *name,
                                              void *opaque, Error **errp)
 {
@@ -1284,6 +1343,15 @@ static void ipod_touch_set_accel_orientation(Object *obj, Visitor *v, const char
     }
 }
 
+static void ipod_touch_get_accel_axis(Object *obj, Visitor *v, const char *name,
+                                      void *opaque, Error **errp)
+{
+    LIS302DLState *s = IPOD_TOUCH_MACHINE(obj)->lis302dl_state;
+    char axis = name[strlen(name) - 1];
+    int64_t value = s ? (axis == 'x' ? s->out_x : axis == 'y' ? s->out_y : s->out_z) : 0;
+    visit_type_int(v, name, &value, errp);
+}
+
 static void ipod_touch_set_accel_axis(Object *obj, Visitor *v, const char *name,
                                       void *opaque, Error **errp)
 {
@@ -1294,7 +1362,7 @@ static void ipod_touch_set_accel_axis(Object *obj, Visitor *v, const char *name,
     }
     /* name is "accel-x" / "accel-y" / "accel-z" */
     if (nms->lis302dl_state) {
-        lis302dl_set_axis_value(nms->lis302dl_state, name[strlen(name) - 1], (int)val);
+        lis302dl_set_axis_value(nms->lis302dl_state, name[strlen(name) - 1], (int)CLAMP(val, -128, 127));
     }
 }
 
@@ -1434,15 +1502,18 @@ static void ipod_touch_instance_init(Object *obj)
         "function never registers a driver. Firmware-build-specific (2.1.1 / 5F138)");
 
     /* Accelerometer (LIS302DL) host controls; see the getters/setters above. */
+    object_property_add_str(obj, "accel-pose", ipod_touch_get_accel_pose, ipod_touch_set_accel_pose);
+    object_property_add(obj, "accel-pitch", "number", ipod_touch_get_accel_angle, ipod_touch_set_accel_angle, NULL, NULL);
+    object_property_add(obj, "accel-roll", "number", ipod_touch_get_accel_angle, ipod_touch_set_accel_angle, NULL, NULL);
     object_property_add(obj, "accel-orientation", "int",
                         ipod_touch_get_accel_orientation,
                         ipod_touch_set_accel_orientation, NULL, NULL);
     object_property_set_description(obj, "accel-orientation",
         "Set the reported device orientation: 1=portrait, 2=portrait-upside-down, "
         "3=landscape-home-right, 4=landscape-home-left, 5=face-up, 6=face-down");
-    object_property_add(obj, "accel-x", "int", NULL, ipod_touch_set_accel_axis, NULL, NULL);
-    object_property_add(obj, "accel-y", "int", NULL, ipod_touch_set_accel_axis, NULL, NULL);
-    object_property_add(obj, "accel-z", "int", NULL, ipod_touch_set_accel_axis, NULL, NULL);
+    object_property_add(obj, "accel-x", "int", ipod_touch_get_accel_axis, ipod_touch_set_accel_axis, NULL, NULL);
+    object_property_add(obj, "accel-y", "int", ipod_touch_get_accel_axis, ipod_touch_set_accel_axis, NULL, NULL);
+    object_property_add(obj, "accel-z", "int", ipod_touch_get_accel_axis, ipod_touch_set_accel_axis, NULL, NULL);
     object_property_add(obj, "accel-shake", "bool", NULL, ipod_touch_set_accel_shake, NULL, NULL);
 
     /*
@@ -2992,6 +3063,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     // can drive it, e.g.  qom-set path=/machine property=accel-orientation value=3
     I2CSlave *accelerometer = i2c_slave_create_simple(i2c_state->bus, "lis302dl", 0x1D);
     nms->lis302dl_state = LIS302DL(accelerometer);
+    lis302dl_apply_attitude(nms->lis302dl_state, nms->accel_pitch, nms->accel_roll, nms->accel_flat);
 
     /*
      * Simulated "demo card" / AppleTetheredDevice.  The N72AP DeviceTree has an
