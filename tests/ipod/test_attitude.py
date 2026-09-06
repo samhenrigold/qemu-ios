@@ -39,19 +39,19 @@ header=(root/'include/hw/arm/ipod_touch_lis302dl.h').read_text()
 state=re.search(r'typedef struct LIS302DLState \{.*?\n} LIS302DLState;',header,re.S).group()
 functions='\n'.join(re.search(r'^(?:static )?[^\n]*\b'+name+r'\([^;]*?\n\{.*?^}',source,re.M|re.S).group()
                     for name in ('lis302dl_apply_attitude','lis302dl_post_load'))
-extra = '#include <errno.h>\ntypedef int I2CSlave; typedef int QEMUTimer;\nstatic void timer_del(QEMUTimer *timer) { *timer=0; }\n' + state + '\n' + functions + '\n'
+extra = '#include <errno.h>\ntypedef int I2CSlave; typedef int QEMUTimer;\n' + state + '\n' + functions + '\n'
 code=code.replace('static void check(',extra+'static void check(')
-code=code.replace(' puts("PASS:',r''' int timer=1; LIS302DLState sensor={.shake_timer=&timer};
+code=code.replace(' puts("PASS:',r''' LIS302DLState sensor={0};
  assert(lis302dl_apply_attitude(&sensor,30,30,true));
  assert(sensor.pitch_mdeg==30000 && sensor.roll_mdeg==30000 && sensor.flat_pose);
  assert(sensor.base_x==-28 && sensor.base_y==32 && sensor.base_z==-48);
- assert(lis302dl_post_load(&sensor,2)==0 && !timer);
+ assert(lis302dl_post_load(&sensor,2)==0 && sensor.shake_start_ns == -1);
  sensor.pitch_mdeg=180001;assert(lis302dl_post_load(&sensor,2)==-EINVAL);
  sensor.orientation=3;sensor.base_x=-64;sensor.base_y=sensor.base_z=0;
- sensor.out_x=127;timer=1;
+ sensor.out_x=127;
  assert(!lis302dl_post_load(&sensor,1));
  assert(sensor.pitch_mdeg==0 && sensor.roll_mdeg==90000 && !sensor.flat_pose);
- assert(sensor.out_x==-64 && !timer && !sensor.shake_ticks);
+ assert(sensor.out_x==-64 && sensor.shake_start_ns == -1 && sensor.last_sample_ns == -1);
  puts("PASS:''')
 with tempfile.TemporaryDirectory() as directory:
     path=Path(directory)/'check.c';path.write_text(code)
