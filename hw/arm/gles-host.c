@@ -2095,17 +2095,19 @@ static void gles_check_fb_complete(void)
  * Labyrinth's white level, which enables GL_DEPTH_TEST, writes depth, and
  * clears colour only.
  *
- * glClear honours the depth mask and the scissor box, so both are stood down
- * for the clear and put back: an app that finished its frame with depth writes
- * masked off, or a scissor covering part of the screen, would otherwise leave
- * the stale depth exactly where it does the damage.
+ * glClear honours depth/stencil write masks and the scissor box. Override
+ * them for the clear and restore them afterwards, so guest masks cannot
+ * preserve stale depth or stencil into the next frame.
  */
 static void gles_frame_end(void)
 {
     GLboolean depth_mask = GL_TRUE;
+    GLint stencil_mask;
     GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
 
     glGetBooleanv(GL_DEPTH_WRITEMASK, &depth_mask);
+    glGetIntegerv(GL_STENCIL_WRITEMASK, &stencil_mask);
+    glStencilMask(~0u);
     if (!depth_mask) {
         glDepthMask(GL_TRUE);
     }
@@ -2113,6 +2115,7 @@ static void gles_frame_end(void)
         glDisable(GL_SCISSOR_TEST);
     }
     glClear(GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    glStencilMask((GLuint)stencil_mask);
     if (scissor) {
         glEnable(GL_SCISSOR_TEST);
     }
