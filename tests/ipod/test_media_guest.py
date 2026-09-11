@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in 7E18 music import, duplicate recovery, library query and playback.
+"""Opt-in 7E18 song/movie import, duplicate recovery, library query and music playback.
 
 Build contrib/it-media and contrib/it-harness first. Uses an isolated overlay;
 no user's live library is accessed. Requires the native USB tools and NumPy.
@@ -72,6 +72,9 @@ def verify_database(label):
         rows = db.execute('SELECT title,artist,album,total_time_ms FROM item WHERE is_song=1 ORDER BY title').fetchall()
     assert rows == [('Harness AAC','Light Touch','Fixture Album',6000.0),
                     ('Harness MP3','Light Touch','Fixture Album',6000.0)],rows
+    with sqlite3.connect(path) as db:
+        movie = db.execute("SELECT title,is_song,media_kind FROM item WHERE title='Harness Movie'").fetchall()
+    assert movie == [('Harness Movie',0,2)],movie
 
 try:
     helper = (ROOT/'contrib/it-media/itmedia').read_bytes()
@@ -92,6 +95,14 @@ try:
         assert b'imported\n' in result,result
         repeated = rpc('exec',import_command(staging))
         assert repeated.splitlines()[-1:] == [b'already-imported'], repeated
+    rpc('exec','mkdir -p /var/mobile/Media/LightTouch/movie && '
+               'chown 501:501 /var/mobile/Media/LightTouch/movie')
+    rpc('put','/var/mobile/Media/LightTouch/movie/video.mp4 644',
+        (ROOT/'contrib/it-harness/build/Payload/Harness.app/h264.mp4').read_bytes())
+    rpc('put','/tmp/movie.plist 644',plistlib.dumps(dict(filename='video.mp4',
+        title='Harness Movie',kind='feature-movie',duration_ms=6000)))
+    assert rpc('exec',import_command('movie')).splitlines()[-1:] == [b'imported']
+    assert rpc('exec',import_command('movie')).splitlines()[-1:] == [b'already-imported']
     # Invalid metadata and paths must not create another song.
     for metadata, staging in [({'filename':'../aac.m4a'},'aac'),
                               ({'filename':'aac.m4a','title':42,'duration_ms':6000},'aac'),
@@ -101,7 +112,7 @@ try:
         status, result = r.itqmp.agent(d.qmp,'exec','/tmp/itmedia /tmp/bad.plist '+staging)
         assert status != 0 and b'itmedia:' in result,(status,result)
     verify_database('imported')
-    print('PASS: two imports, duplicate recovery and invalid metadata rejection',flush=True)
+    print('PASS: two songs and one movie, duplicate recovery and invalid metadata rejection',flush=True)
     # 7E18 serves third-party MPMediaQuery requests from MobileMusicPlayer's
     # MIG service. Start Music before asking Harness to connect to that service.
     launch('com.apple.mobileipod')
@@ -145,7 +156,7 @@ try:
         active = np.max(np.abs(samples.astype(np.int32)),axis=1)>100
         seconds = np.count_nonzero(active)/recording.getframerate()
     assert seconds>10,('expected both six-second tracks',seconds)
-    # A cold boot must retain both songs and reconcile the same import again.
+    # A cold boot must retain the songs/movie and reconcile the same song again.
     cfg.usbmuxd_ok = False
     d = r.Device(cfg,p,'reboot')
     d.start()
@@ -156,7 +167,7 @@ try:
     repeated = rpc('exec',import_command('aac'))
     assert repeated.splitlines()[-1:] == [b'already-imported'], repeated
     assert d.powerdown(), 'reboot shutdown not confirmed'
-    print('PASS: AAC/MP3 imports, duplicate recovery, invalid inputs, MediaPlayer count, Music playback and cold persistence',flush=True)
+    print('PASS: AAC/MP3 and movie imports, duplicate recovery, invalid inputs, MediaPlayer song count, Music playback and cold persistence',flush=True)
 finally:
     if d.qmp:
         d.qmp.close()

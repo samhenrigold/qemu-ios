@@ -1,7 +1,6 @@
-/* A bounded UIImageWriteToSavedPhotosAlbum client for 7E18. A persistent
+/* A bounded native Saved Photos client for 7E18. A persistent
  * receipt prevents replay when a previous process died during an async save.
- * ponytail: receipts track imports, not guest Photos deletions; native asset
- * identity is needed for bidirectional reconciliation. */
+ * Native Photos supplies the saved DCIM path for deletion reconciliation. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,10 +12,11 @@
 #include <errno.h>
 
 #define ROOT "/var/mobile/Media/LightTouch"
+#define DCIM "/var/mobile/Media/DCIM"
 typedef void *ID;
 static ID (*getclass)(const char *), (*selector)(const char *);
 static void *send;
-static char photo_path[256], receipt_path[256];
+static char photo_path[256], receipt_path[256], saved_path[256];
 #define CALL(ret,args) ((ret (*)args)send)
 static ID m0(ID o, const char *s) { return CALL(ID,(ID,ID))(o,selector(s)); }
 static ID m1(ID o, const char *s, ID value) { return CALL(ID,(ID,ID,ID))(o,selector(s),value); }
@@ -48,13 +48,47 @@ static void directory(const char *path) {
     struct stat st;
     if (lstat(path,&st) || !S_ISDIR(st.st_mode)) fail("invalid staging directory");
 }
+/* Only native DCIM originals can be recorded. */
+static int asset_path(const char *path) {
+    const char *prefix = DCIM "/";
+    if (!path || strncmp(path,prefix,strlen(prefix))) return 0;
+    const char *folder = path + strlen(prefix), *slash = strchr(folder,'/');
+    if (!slash || slash-folder != 8 || strncmp(folder+3,"APPLE",5)) return 0;
+    for (int i=0; i<3; ++i) if (folder[i]<'0' || folder[i]>'9') return 0;
+    const char *name = slash+1;
+    if (strlen(name)!=12 || strncmp(name,"IMG_",4) || strcmp(name+8,".JPG")) return 0;
+    for (int i=4; i<8; ++i) if (name[i]<'0' || name[i]>'9') return 0;
+    return 1;
+}
+/* Check the directories as well as the original before reconciling deletion.
+ * A missing album is a deletion; a symlink or unreadable directory is not. */
+static int asset_exists(const char *path) {
+    if (!asset_path(path)) fail("invalid saved photo identity");
+    struct stat st;
+    if (lstat(DCIM,&st) || !S_ISDIR(st.st_mode)) fail("cannot inspect Photos directory");
+    char album[sizeof(DCIM)+9];
+    snprintf(album,sizeof(album),"%.*s",(int)(strrchr(path,'/')-path),path);
+    if (lstat(album,&st)) {
+        if (errno == ENOENT) return 0;
+        fail("cannot inspect saved photo album");
+    }
+    if (!S_ISDIR(st.st_mode)) fail("saved photo album is not a directory");
+    if (lstat(path,&st)) {
+        if (errno == ENOENT) return 0;
+        fail("cannot inspect saved photo");
+    }
+    if (!S_ISREG(st.st_mode)) fail("saved photo is not a regular file");
+    return 1;
+}
 static void receipt(int first) {
     int flags = O_WRONLY|O_NOFOLLOW|O_NONBLOCK|(first ? O_CREAT|O_EXCL : O_TRUNC);
     int fd = open(receipt_path,flags,0600);
     if (fd < 0) fail("cannot write import receipt; outcome may be unknown");
     struct stat st;
     if (fstat(fd,&st) || !S_ISREG(st.st_mode)) fail("invalid import receipt");
-    const char *text = first ? "pending\n" : "done\n";
+    char completed[272];
+    snprintf(completed,sizeof(completed),"done\n%s\n",saved_path);
+    const char *text = first ? "pending\n" : completed;
     size_t length = strlen(text), offset = 0;
     while (offset < length) {
         ssize_t count = write(fd,text+offset,length-offset);
@@ -93,11 +127,16 @@ static int jpeg_size(FILE *file) {
     }
 }
 static void saved(ID self, ID cmd, ID image, ID error, void *context) {
-    (void)self; (void)cmd; (void)image; (void)context;
+    (void)self; (void)cmd; (void)image;
     if (error) {
         const char *reason = utf8(m0(error,"localizedDescription"));
         fail(reason ? reason : "Photos did not confirm the save; outcome may be unknown");
     }
+    const char *path = context ? utf8((ID)context) : NULL;
+    if (!asset_path(path)) fail("Photos returned no valid asset identity; outcome may be unknown");
+    snprintf(saved_path,sizeof(saved_path),"%s",path);
+    if (!asset_exists(saved_path))
+        fail("Photos asset is not readable; outcome may be unknown");
     receipt(0);
     /* Photos now owns its own copy. A receipt is sufficient for later retries. */
     unlink(photo_path);
@@ -123,15 +162,21 @@ int main(int argc, char **argv) {
     if (lock < 0 || flock(lock,LOCK_EX|LOCK_NB)) fail("another photo import is running");
     int fd = open(receipt_path,O_RDONLY|O_NOFOLLOW|O_NONBLOCK);
     if (fd >= 0) {
-        char state[16];
+        char state[272];
         struct stat st;
         if (fstat(fd,&st) || !S_ISREG(st.st_mode)) fail("invalid import receipt");
         ssize_t count = read(fd,state,sizeof(state));
         close(fd);
-        if (count == 5 && !memcmp(state,"done\n",5)) complete();
-        fail("previous photo import has an uncertain outcome; inspect Saved Photos before importing again");
+        if (count == 5 && !memcmp(state,"done\n",5)) complete(); /* Legacy receipt: no asset identity. */
+        if (count <= 6 || count >= (ssize_t)sizeof(state) || memcmp(state,"done\n",5) || state[count-1]!='\n')
+            fail("previous photo import has an uncertain outcome; inspect Saved Photos before importing again");
+        state[count-1] = 0;
+        if (strlen(state+5) != (size_t)count-6 || !asset_path(state+5)) fail("invalid saved photo identity");
+        if (asset_exists(state+5)) complete();
+        /* Only a confirmed completed import whose original is gone may replay. */
+        if (unlink(receipt_path)) fail("cannot replace deleted photo receipt");
     }
-    if (errno != ENOENT) fail("cannot read import receipt");
+    else if (errno != ENOENT) fail("cannot read import receipt");
     fd = open(photo_path,O_RDONLY|O_NOFOLLOW|O_NONBLOCK);
     struct stat st;
     if (fd < 0 || fstat(fd,&st) || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 16*1024*1024)
@@ -156,9 +201,13 @@ int main(int argc, char **argv) {
                     string("/System/Library/CoreServices/SystemVersion.plist"));
     const char *build = utf8(m1(version,"objectForKey:",string("ProductBuildVersion")));
     if (!build || strcmp(build,"7E18")) fail("unsupported firmware; expected 7E18");
-    void *ui = dlopen("/System/Library/Frameworks/UIKit.framework/UIKit",RTLD_NOW);
-    void (*save)(ID,ID,ID,void *) = ui ? dlsym(ui,"UIImageWriteToSavedPhotosAlbum") : NULL;
-    if (!save) fail("cannot load the native photo-saving API");
+    if (!dlopen("/System/Library/Frameworks/UIKit.framework/UIKit",RTLD_NOW) ||
+        !dlopen("/System/Library/PrivateFrameworks/PhotoLibrary.framework/PhotoLibrary",RTLD_NOW))
+        fail("cannot load the native photo-saving API");
+    ID album = m0(getclass("PLCameraAlbum"),"sharedInstance");
+    const char *save = "addImage:withPreview:exifProperties:date:jpegData:notifyingTargetWithPath:selector:";
+    if (!album || !CALL(int,(ID,ID,ID))(album,selector("respondsToSelector:"),selector(save)))
+        fail("native photo identity API unavailable");
     ID cls = allocate(getclass("NSObject"),"LTPhotoSaver",0);
     if (!cls || !add_method(cls,selector("image:didFinishSavingWithError:contextInfo:"),saved,"v@:@@^v"))
         fail("cannot create photo callback");
@@ -166,8 +215,13 @@ int main(int argc, char **argv) {
     ID target = m0(m0(cls,"alloc"),"init");
     ID image = m1(getclass("UIImage"),"imageWithContentsOfFile:",string(photo_path));
     if (!target || !image) fail("UIKit could not decode the photo");
-    receipt(1);  /* Before submitting the mutation, including its async wait. */
-    save(image,target,selector("image:didFinishSavingWithError:contextInfo:"),NULL);
+    ID jpeg = m1(getclass("NSData"),"dataWithContentsOfFile:",string(photo_path));
+    if (!jpeg) fail("cannot read staged photo");
+    receipt(1);  /* After input preparation, before submitting the mutation. */
+    /* 7E18 retains the saved full-size path and passes it as contextInfo. */
+    if (!CALL(int,(ID,ID,ID,ID,ID,ID,ID,ID,ID))(album,selector(save),image,NULL,NULL,NULL,jpeg,
+            target,selector("image:didFinishSavingWithError:contextInfo:")))
+        fail("Photos declined the save; outcome may be unknown");
     ID deadline = CALL(ID,(ID,ID,double))(getclass("NSDate"),selector("dateWithTimeIntervalSinceNow:"),40.0);
     m1(m0(getclass("NSRunLoop"),"currentRunLoop"),"runUntilDate:",deadline);
     fail("photo save timed out; inspect Saved Photos before importing again");

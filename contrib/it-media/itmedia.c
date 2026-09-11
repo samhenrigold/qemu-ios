@@ -1,4 +1,4 @@
-/* Import a staged song through the 7E18 MusicLibrary service. The service owns
+/* Import staged music or video through the 7E18 MusicLibrary service. The service owns
  * all database mutations. SQLite below is read-only, for retry reconciliation.
  * There is no CRT in these ARMv6 executables; see armv6-toolchain/README.md. */
 #include <stdio.h>
@@ -68,7 +68,7 @@ static void regular_path(const char *path, int directory) {
         fail("staged file size is outside 1 byte..1 GiB");
 }
 
-/* Return 1 for an existing song at the exact immutable staged location.
+/* Return 1 for existing media at the exact immutable staged location.
  * Fail closed on a query error: an uncertain previous import must not replay. */
 static int existing(const char *folder, const char *filename) {
     sqlite3 *db = NULL;
@@ -84,7 +84,7 @@ static int existing(const char *folder, const char *filename) {
      * or let the old SQLite planner choose those indexes after a reboot. */
     const char *sql = "SELECT item.pid FROM item NOT INDEXED JOIN loc.location l ON l.item_pid=item.pid "
                       "JOIN loc.base_location b ON b.id=l.base_location_id "
-                      "WHERE b.path=? AND l.location=? AND item.is_song=1 LIMIT 1";
+                      "WHERE b.path=? AND l.location=? LIMIT 1";
     if (sql_prepare(db,sql,-1,&stmt,NULL) != SQLITE_OK ||
         sql_bind(stmt,1,folder,-1,SQLITE_TRANSIENT) != SQLITE_OK ||
         sql_bind(stmt,2,filename,-1,SQLITE_TRANSIENT) != SQLITE_OK)
@@ -128,9 +128,17 @@ int main(int argc, char **argv) {
     if (!is_class(filename_value,"NSString")) fail("filename must be a string");
     const char *filename = utf8(filename_value);
     if (!component(filename)) fail("invalid filename");
+    ID kind_value = field(input,"kind");
+    if (kind_value && !is_class(kind_value,"NSString")) fail("kind must be a string");
+    const char *kind = kind_value ? utf8(kind_value) : "song";
+    if (!kind || (strcmp(kind,"song") && strcmp(kind,"feature-movie")))
+        fail("kind must be song or feature-movie");
+    int movie = !strcmp(kind,"feature-movie");
     const char *extension = strrchr(filename,'.');
-    if (!extension || (strcmp(extension,".m4a") && strcmp(extension,".mp3") && strcmp(extension,".wav")))
-        fail("expected m4a, mp3 or wav audio");
+    if (!extension || (movie
+        ? (strcmp(extension,".m4v") && strcmp(extension,".mp4") && strcmp(extension,".mov"))
+        : (strcmp(extension,".m4a") && strcmp(extension,".mp3") && strcmp(extension,".wav"))))
+        fail("expected m4a/mp3/wav for song or m4v/mp4/mov for feature-movie");
     char folder[160], path[512];
     snprintf(folder,sizeof(folder),"LightTouch/%s",argv[2]);
     regular_path(MEDIA "LightTouch",1);
@@ -138,7 +146,7 @@ int main(int argc, char **argv) {
     regular_path(path,1);
     snprintf(path,sizeof(path),MEDIA "%s/%s",folder,filename);
     regular_path(path,0);
-    if (access(path,R_OK)) fail("staged audio is not readable by mobile");
+    if (access(path,R_OK)) fail("staged media is not readable by mobile");
 
     ID props = m0(getclass("NSMutableDictionary"),"dictionary");
     const char *source[] = {"title","artist","album","genre"};
@@ -148,7 +156,7 @@ int main(int argc, char **argv) {
         if (!value && i) continue;
         if (!is_class(value,"NSString")) fail("title/artist/album/genre must be strings");
         const char *text = utf8(value);
-        if (!text || strlen(text)>4096 || (!i && !*text)) fail("invalid or oversized song metadata");
+        if (!text || strlen(text)>4096 || (!i && !*text)) fail("invalid or oversized media metadata");
         set(props,target[i],value);
     }
     ID duration = field(input,"duration_ms");
@@ -156,7 +164,9 @@ int main(int argc, char **argv) {
     double ms = CALL(double,(ID,ID))(duration,selector("doubleValue"));
     if (!isfinite(ms) || ms <= 0 || ms > 86400000) fail("duration must be within one day");
     set(props,"duration",duration);
-    set(props,"kind",string("song"));
+    /* 7E18 ITMediaKindFromOTAMediaKindString maps feature-movie to kind 2
+     * and sets has_video. Let MusicLibrary populate every related field. */
+    set(props,"kind",string(kind));
     ID download = m0(getclass("NSMutableDictionary"),"dictionary");
     set(download,"mediaAssetFilename",filename_value);
     set(props,"com.apple.iTunesStore.downloadInfo",download);
@@ -185,10 +195,10 @@ int main(int argc, char **argv) {
     int was_present = existing(folder,filename);
     if (!was_present) {
         ID result = CALL(ID,(ID,ID,ID,ID))(library,selector(insert),string(folder),props);
-        if (!result) fail("MusicLibrary declined import; retain staged audio for reconciliation");
+        if (!result) fail("MusicLibrary declined import; retain staged media for reconciliation");
         m0(getclass("MusicLibrary"),"commitAllDeferredWork");
         m0(getclass("MusicLibrary"),"flush");
-        if (!existing(folder,filename)) fail("import not visible; retain staged audio for reconciliation");
+        if (!existing(folder,filename)) fail("import not visible; retain staged media for reconciliation");
     }
     /* Finish native post-sync sorting/index work before Music is launched.
      * Otherwise its SyncHelper starts that work itself and schedules a normal
