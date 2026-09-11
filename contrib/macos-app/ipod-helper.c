@@ -52,6 +52,16 @@ static int die(const char *fmt, ...)
     exit(1);
 }
 
+/* stdio can defer a disk-full error until its final buffered write. */
+static void finish_output(FILE *stream, const char *path)
+{
+    if (fclose(stream) != 0) {
+        int error = errno;
+        unlink(path);
+        die("cannot finish %s: %s", path, strerror(error));
+    }
+}
+
 static uint32_t rd32(const unsigned char *p)
 {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
@@ -110,7 +120,7 @@ static void write_page(struct sink *s, const unsigned char *buf)
         fclose(f);
         die("short write to %s", path);
     }
-    fclose(f);
+    finish_output(f, path);
     s->done++;
 }
 
@@ -380,7 +390,7 @@ static int ipa_chmod(const char *src, const char *dst, const char *member)
         fclose(f);
         die("short write to %s", dst);
     }
-    fclose(f);
+    finish_output(f, dst);
     free(buf);
     return 0;
 }
@@ -576,10 +586,18 @@ static int blob_pack(int argc, char **argv)
         memcpy(hdr, BLOB_MAGIC, 8);
         wr32(hdr + 8, (uint32_t)rawlen);
         wr32(hdr + 12, (uint32_t)clen);
-        fwrite(hdr, 1, 16, out);
+        if (fwrite(hdr, 1, 16, out) != 16) {
+            fclose(out);
+            unlink(argv[2]);
+            die("short write to %s", argv[2]);
+        }
     }
-    fwrite(comp, 1, clen, out);
-    fclose(out);
+    if (fwrite(comp, 1, clen, out) != clen) {
+        fclose(out);
+        unlink(argv[2]);
+        die("short write to %s", argv[2]);
+    }
+    finish_output(out, argv[2]);
     printf("packed %d file(s) -> %s\n", argc - 3, argv[2]);
     free(raw);
     free(comp);
@@ -641,7 +659,7 @@ static int blob_unpack(const char *in, const char *dir)
         if (!o || fwrite(raw + p, 1, len, o) != len) {
             die("cannot write %s", path);
         }
-        fclose(o);
+        finish_output(o, path);
         chmod(path, (mode_t)mode);
         p += len;
     }
