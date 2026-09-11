@@ -66,7 +66,10 @@ IPROXY_BIN="$(command -v iproxy)"
 # mktemp CREATES the file it names; appending .command means the script is
 # written somewhere else and the original is leaked on every use. Make the
 # directory instead and put the script inside it.
-CMD="$(mktemp -d -t itssh)/iPod touch.command"
+TERMINAL_WORK="$(mktemp -d -t itssh)" || exit 1
+CMD="$TERMINAL_WORK/iPod touch.command"
+# The launcher owns cleanup until Terminal has accepted the command file.
+trap 'rm -rf "$TERMINAL_WORK"' EXIT
 cat >"$CMD" <<EOF
 #!/bin/bash
 # disown first: otherwise job control prints "Terminated: 15" over the last
@@ -86,5 +89,11 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \\
 echo
 echo "[connection closed -- you can close this window]"
 EOF
-chmod 755 "$CMD"
-open -a Terminal "$CMD"
+[ "$?" -eq 0 ] || exit 1
+chmod 755 "$CMD" || exit 1
+if open -a Terminal "$CMD"; then
+    # The generated command's EXIT trap takes ownership from here.
+    trap - EXIT
+else
+    exit "$?"
+fi

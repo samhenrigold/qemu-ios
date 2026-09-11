@@ -307,14 +307,19 @@ static void archive_http_links(ArchiveReply *reply)
  * Check the complete date/URL key as well as the hash, so collisions only evict.
  * The shared gate covers reads and writes; no partial response is published. */
 #define CACHE_MAX (2 * 1024 * 1024)
-static int archive_cache(const char *config, const char *key)
+static bool archive_cache_path(const char *config, const char *key, char *path, size_t size)
 {
     uint64_t hash = 14695981039346656037ULL;
     for (const unsigned char *p = (const unsigned char *)key; *p; p++)
         hash = (hash ^ *p) * 1099511628211ULL;
+    int length = snprintf(path, size, "%s.archive-cache-%02x", config, (unsigned)(hash % 64));
+    return length >= 0 && (size_t)length < size;
+}
+static int archive_cache(const char *config, const char *key)
+{
     char path[PATH_MAX];
-    if (snprintf(path, sizeof(path), "%s.archive-cache-%02x", config, (unsigned)(hash % 64)) >= (int)sizeof(path)) return -1;
-    return open(path, O_RDWR | O_CREAT | O_NOFOLLOW, 0600);
+    if (!archive_cache_path(config, key, path, sizeof(path))) return -1;
+    return open(path, O_RDONLY | O_NOFOLLOW);
 }
 static bool archive_cached(int fd, const char *key)
 {
@@ -330,13 +335,29 @@ static bool archive_cached(int fd, const char *key)
     free(data);
     return hit;
 }
-static void archive_emit(int fd, ArchiveReply *reply, long status, bool head_only)
+static bool archive_emit(int fd, ArchiveReply *reply, long status, bool head_only)
 {
-    reply_printf(fd, "HTTP/1.0 %ld Archive response\r\n", status);
-    sendall(fd, reply->headers, reply->headers_len);
-    if (!head_only) reply_printf(fd, "Content-Length: %zu\r\n", reply->body_len);
-    reply_printf(fd, "Connection: close\r\n\r\n");
-    if (!head_only) sendall(fd, reply->body, reply->body_len);
+    return reply_printf(fd, "HTTP/1.0 %ld Archive response\r\n", status) >= 0 &&
+        sendall(fd, reply->headers, reply->headers_len) &&
+        (head_only || reply_printf(fd, "Content-Length: %zu\r\n", reply->body_len) >= 0) &&
+        reply_printf(fd, "Connection: close\r\n\r\n") >= 0 &&
+        (head_only || sendall(fd, reply->body, reply->body_len));
+}
+static bool archive_store(const char *config, const char *key, ArchiveReply *reply, long status)
+{
+    char path[PATH_MAX], temporary[PATH_MAX];
+    if (strlen(key) + reply->headers_len + reply->body_len + 256 >= CACHE_MAX ||
+        !archive_cache_path(config, key, path, sizeof(path)) ||
+        snprintf(temporary, sizeof(temporary), "%s.XXXXXX", path) >= (int)sizeof(temporary)) return false;
+    int fd = mkstemp(temporary);
+    if (fd < 0) return false;
+    /* Keep the previous slot intact until every byte and the close succeed.
+     * A failed optional cache write must not publish a truncated response. */
+    bool ok = reply_printf(fd, "%s\n", key) >= 0 && archive_emit(fd, reply, status, false);
+    if (close(fd)) ok = false;
+    if (ok && rename(temporary, path) == 0) return true;
+    unlink(temporary);
+    return false;
 }
 static void archived_request(const char *target, const char *date, bool head_only, const char *config)
 {
@@ -346,7 +367,9 @@ static void archived_request(const char *target, const char *date, bool head_onl
     snprintf(url, sizeof(url), "%s/web/%sid_/%s", ARCHIVE_ORIGIN, date, target);
     int gate = archive_gate(config);
     int cache = head_only ? -1 : archive_cache(config, url);
-    if (archive_cached(cache, url)) { client_finish(); exit(0); }
+    bool cached = archive_cached(cache, url);
+    if (cache >= 0) close(cache);
+    if (cached) { client_finish(); exit(0); }
     char cache_key[sizeof(url)];
     memcpy(cache_key, url, strlen(url) + 1);
     archive_wait(gate);
@@ -401,13 +424,7 @@ static void archived_request(const char *target, const char *date, bool head_onl
             continue;
         }
         archive_http_links(reply);
-        if (cache >= 0 && status == 200 &&
-            strlen(cache_key) + reply->headers_len + reply->body_len + 256 < CACHE_MAX &&
-            ftruncate(cache, 0) == 0 && lseek(cache, 0, SEEK_SET) == 0) {
-            reply_printf(cache, "%s\n", cache_key);
-            archive_emit(cache, reply, status, false);
-        }
-        if (cache >= 0) close(cache);
+        if (!head_only && status == 200) archive_store(config, cache_key, reply, status);
         flock(gate, LOCK_UN); close(gate);
         archive_emit(1, reply, status, head_only);
         curl_easy_cleanup(curl); free(reply->body); free(reply);
