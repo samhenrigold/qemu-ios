@@ -59,7 +59,7 @@ def check_files():
         for point,expected in [((80,80),(220,30,30)),((320,80),(30,210,30)),((560,80),(30,30,220))]:
             actual = saved.convert('RGB').getpixel(point)
             assert all(abs(a-b)<15 for a,b in zip(actual,expected)),(point,actual)
-    assert rpc('get','/var/mobile/Media/LightTouch/photo/.photo-receipt') == b'done\n'
+    assert rpc('get','/var/mobile/Media/LightTouch/photo/.photo-receipt') == b'done\n/var/mobile/Media/DCIM/100APPLE/IMG_0001.JPG\n'
 
 try:
     d.start()
