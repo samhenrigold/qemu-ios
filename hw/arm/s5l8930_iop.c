@@ -154,6 +154,7 @@ struct S5L8930IOPState {
     uint8_t nand_ce_mask;   /* CE slots populated on each bus */
     char *nand_dir;         /* page store directory; NULL = blank chip */
     uint8_t *chip[NAND_BUSES][NAND_CES];    /* mmap of bus<b>-ce<c>.pages */
+    int chip_fd[NAND_BUSES][NAND_CES];
     uint32_t page_stride;       /* store geometry: page + spare bytes */
     uint32_t store_page_bytes;
     uint32_t store_ppb;
@@ -279,7 +280,18 @@ static uint32_t nand_program_page(S5L8930IOPState *s, int bus, uint32_t ce,
                 bus, ce, page);
         return FMI_STATUS_OK;
     }
-    memcpy(p, data, MIN(len, s->page_stride));
+    {
+        uint32_t n = MIN(len, s->page_stride), i;
+
+        for (i = 0; i < n && data[i] == 0; i++) {
+        }
+        if (i == n && (!meta || !memcmp(meta, "\0\0\0\0\0\0\0\0\0\0", FMI_META_BYTES))) {
+            /* Would read back as a hole, i.e. blank. The FTL never does this. */
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: all-zero program of bus %d ce %u "
+                          "page 0x%x reads back blank\n", __func__, bus, ce, page);
+        }
+        memcpy(p, data, n);
+    }
     if (meta) {
         memcpy(p + s->store_page_bytes, meta, FMI_META_BYTES);
     }
@@ -301,7 +313,20 @@ static uint32_t nand_erase_block(S5L8930IOPState *s, int bus, uint32_t ce,
                 bus, ce, block);
         return FMI_STATUS_OK;
     }
-    memset(p, 0xff, (size_t)s->store_ppb * s->page_stride);
+    /* Erased = a hole (reads as zeros = blank); no disk space consumed. */
+    {
+        off_t off = (off_t)first * s->page_stride;
+        off_t blen = (off_t)s->store_ppb * s->page_stride;
+#ifdef F_PUNCHHOLE
+        struct fpunchhole fp = { .fp_offset = off, .fp_length = blen };
+
+        if (fcntl(s->chip_fd[bus][ce], F_PUNCHHOLE, &fp) == 0) {
+            return FMI_STATUS_OK;
+        }
+#endif
+        (void)off;
+        memset(p, 0, blen);
+    }
     return FMI_STATUS_OK;
 }
 
@@ -971,7 +996,7 @@ static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
             }
             s->chip[bus][ce] = mmap(NULL, size, PROT_READ | PROT_WRITE,
                                     MAP_SHARED, fd, 0);
-            close(fd);
+            s->chip_fd[bus][ce] = fd;
             if (s->chip[bus][ce] == MAP_FAILED) {
                 error_setg_errno(errp, errno, "cannot map %s", f);
                 return;
