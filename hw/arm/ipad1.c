@@ -175,6 +175,16 @@ static void ipad1_init(MachineState *machine)
     sysbus_mmio_map(sbd, 0, S5L8930_GPIO_BASE);
     sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_GPIO));
 
+    /*
+     * IOP: high-level emulation of the second core. No IRQ line: like the real
+     * firmware, the model raises the AP by writing VIC0's SOFTINT register.
+     */
+    dev = qdev_new(TYPE_S5L8930_IOP);
+    sbd = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(sbd, &error_fatal);
+    sysbus_mmio_map(sbd, 0, S5L8930_IOP_BASE);
+    sysbus_mmio_map(sbd, 1, S5L8930_IOP_VIC_BASE);
+
     /* Same Samsung UART as the S5L8720, including its interrupt scheme. */
     exynos4210_uart_create(S5L8930_UART_BASE(0), 256, 0, serial_hd(0),
                            ipad1_irq(s, S5L8930_IRQ_UART(0)), true);

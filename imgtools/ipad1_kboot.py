@@ -46,6 +46,14 @@ TRAILER = struct.Struct("<8sIIII")
 # memory frequency at 0; bus and peripheral are 100 MHz; fixed and timebase 24 MHz.
 CPU_HZ, MEM_HZ, BUS_HZ, PERIPH_HZ, FIXED_HZ, TIMEBASE_HZ, USBPHY_HZ = (
     0, 0, 100_000_000, 100_000_000, 24_000_000, 24_000_000, 24_000_000)
+# NAND geometry iBoot would have probed: the Samsung 0x7294D7EC part from the iBoot-817 K48 chip
+# table (4 CE x 0x1038 blocks x 128 pages x 8 KiB = 16 GB). Must agree with the IOP model's nand-id
+# and nand-ce-mask. Timings are placeholders the HLE ignores; ECC values are a guess.
+NAND = {"#ce": 4, "#die-ce": 1, "#ce-blocks": 0x1038, "#block-pages": 128, "#page-bytes": 8192,
+        "#spare-bytes": 0x1b4, "device-readid": 0x7294D7EC, "vendor-type": 0x100014, "#databus": 8,
+        "ecc-correctable": 16, "ecc-threshold": 8, "bbt-format": 0,
+        "read-cycle-ns": 25, "read-setup-ns": 10, "read-hold-ns": 10, "read-delay-ns": 20,
+        "read-valid-ns": 20, "write-cycle-ns": 25, "write-hold-ns": 10}
 CLOCKS = [PERIPH_HZ] * 55
 for idx, hz in {0: TIMEBASE_HZ, 5: CPU_HZ, 6: PERIPH_HZ, 27: MEM_HZ, 32: BUS_HZ, 33: FIXED_HZ}.items():
     CLOCKS[idx] = hz
@@ -122,6 +130,9 @@ def fill_dt(dt, memory_map):
         dt.set("cpus/cpu0", key, hz)
     dt.set("arm-io", "clock-frequencies", CLOCKS)
     dt.set("arm-io", "usbphy-frequency", USBPHY_HZ)
+    if "arm-io/flash-controller0/disk" in dt.props:  # absent from the selfcheck's synthetic DT
+        for key, value in NAND.items():
+            dt.set("arm-io/flash-controller0/disk", key, value)
     dt.set("pram", "reg", (PRAM_PA, PRAM_SIZE))
     dt.set("vram", "reg", (VRAM_PA, VRAM_SIZE))
     for i, (name, pa, size) in enumerate(memory_map):
