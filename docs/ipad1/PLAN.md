@@ -15,6 +15,7 @@ the evidence base for *mechanisms*; every *address* in them is 7B367 and is re-d
 | iBoot sig-check bypass "works the same, no new mechanism" | Unresolved (SHA1 semantics, security-policy word write site untraced). Moved off the critical path by booting the kernel directly first. |
 | GLI path has 17 entry points; MBX route covers graphics | 19 entry points; MBX route is **ES 1.1 only**. ES 2.0 needs its own GLI shim. |
 | M1 = iBoot console | M1 = **kernel on serial via direct kernel boot**. iBoot becomes a fidelity milestone. |
+| GPIO IC `0x800+4g` enables, `0x840+4g` disables (kernel-platform report §3) | Reversed: `0x800` **disables**, `0x840` **enables** (7B500 `disableVectorHard` 0xc0643a6c / `enableVector` 0xc0643aa4; agrees with openiBoot). The report's AppleS5L8930X addresses are 0x2000 low for 7B500. |
 | Kernelcache LZSS "ends 14 bytes short" | Root cause was img3 decryption: the last partial AES block is encrypted into the tag padding. Fixed in `tools/img3tool.py`; 7B500 kernelcache now passes Adler-32 (9,383,936 B). |
 
 ## 7B500 vs 7B367 (from `docs/ipad1/addresses-7B500.md`)
@@ -78,17 +79,27 @@ Success: launchd, then SpringBoard attempts, diffed against the HW-2 serial log.
 iPod machine. Self-format (`nand-enable-reformat=1` on a blank image) as the write-path stress test.
 
 **M4 — GPU-less home screen (≈3–4 weeks).** Display pipe 0 + CLCD + reused MIPI-DSIM; DART2 (identity first,
-or drop `iommu-parent`); IOMFB swap FIFO, VBL IRQ 0x2a; SGX node removed or fails fast; `CA_ENABLE_OGL=0`.
-Measure software CoreAnimation speed at 1024×768 early — if it's unusable, M6 moves up.
+or drop `iommu-parent`); IOMFB swap FIFO, VBL IRQ 0x2a; SGX node removed; SpringBoard env `CA_ENABLE_OGL=0`
+(a failed EAGL init is never cached, so leaving it on retries GLEngine loading repeatedly) and
+`MBX2D_PAGE_FLIP=0` (single page: the scaler-backed page copy has no CPU fallback, it is just skipped).
+CA's software renderer draws into the IOMFB surface; UIKit, not CA or the scaler, rotates to portrait.
+No scaler model needed. Measure software CoreAnimation speed at 1024×768 early — if it's unusable, M7
+moves up. Details: `userland-gl-display.md`.
 
 **M5 — Input, USB, sensors (≈3–4 weeks).** Zephyr2 multitouch on SPI1, DWC OTG + TCP-USB bridge + usbmuxd,
 LIS331DLH accelerometer, bq27545 gas gauge, buttons, orientation.
 
-**M6 — GLES 1.1 via mbxshim (≈2–3 weeks).** Patch the shared-cache `"AppleMBXDevice"` match to an
-always-present class, ship mbxshim as `MBXGLEngine.bundle`, verify 3.2.2's `GLESCreateGC` offsets.
+**M6 — GLES 1.1 via mbxshim (≈1–2 weeks).** mbxshim does not run unmodified: the dispatch table grew
+822 → 826 slots (3 inserted at 761–763, one new at 825). Set `N_SLOTS=826`, regenerate `slotmap.txt`, add 3
+to the 23 hard-coded indices ≥761. Still needs the `"AppleMBXDevice"` patch (cache 0x336bdb5c) and
+`MBXGLEngine.bundle`. ES1 only on 3.2 — CA stays in software. May be skipped in favour of M7.
 
-**M7 — GLES 2.0 (large, unestimated).** A 19-entry GLI engine shim with the 1652-slot dispatch, forwarded to
-the host executor. Needed for ES2 iPad apps and for accelerated CoreAnimation.
+**M7 — GLES 1.1 + 2.0 via a GLI shim.** Replace `GLEngine.bundle/GLEngine` (one rootfs file, no
+shared-cache patch): 12 of the 19 `gli*` entries are called; `gliGetVersion` returns 1 so no
+IOAcceleratorES service is needed. Fill the two 826-slot tables (`gli-dispatch-7B500.tsv`) the mbxshim
+way; ES2 core sits below slot 761 so the host wire numbering carries over. The accelerated pixel-format
+flag decides whether CA's own compositor also goes to host GL. Rejected alternative: forwarding at the
+~80-function `gld*` driver layer.
 
 **M8 — Boot-chain fidelity.** iBoot-817.29 via `direct-iboot`: full CDMA + AES/KBAG oracle, SHA1, PKE forge,
 H2FMI, NOR on SPI0; boot logo, recovery mode, DFU. Later: boot from the dumped SecureROM.
