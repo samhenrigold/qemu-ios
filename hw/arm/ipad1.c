@@ -25,6 +25,8 @@
 #include "hw/misc/unimp.h"
 #include "hw/sysbus.h"
 #include "hw/arm/exynos4210.h"
+#include "hw/arm/ipod_touch_mipi_dsi.h"
+#include "hw/i2c/i2c.h"
 #include "hw/arm/s5l8930.h"
 #include "hw/intc/pl192.h"
 #include "hw/qdev-properties.h"
@@ -42,6 +44,7 @@ struct IPad1MachineState {
     MemoryRegion sram;
     MemoryRegion cpu_debug;
     DeviceState *vic[S5L8930_VIC_COUNT];
+    DeviceState *gpio;
     char *kboot_path;
     char *nand_path;
 };
@@ -172,10 +175,51 @@ static void ipad1_init(MachineState *machine)
     sysbus_connect_irq(sbd, 1, ipad1_irq(s, S5L8930_IRQ_TIMER1));
 
     dev = qdev_new(TYPE_S5L8930_GPIO);
+    s->gpio = dev;
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_GPIO_BASE);
     sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_GPIO));
+
+    /* I2C0 carries the D1815 PMU; its interrupt is GPIO pin 0x0D, active low. */
+    dev = qdev_new(TYPE_S5L8930_I2C);
+    sbd = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(sbd, &error_fatal);
+    sysbus_mmio_map(sbd, 0, S5L8930_I2C_BASE(0));
+    sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_I2C(0)));
+    {
+        I2CBus *bus = I2C_BUS(qdev_get_child_bus(dev, "i2c"));
+        DeviceState *pmu = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_D1815, 0x74));
+        qdev_connect_gpio_out(pmu, 0,
+                              qemu_irq_invert(qdev_get_gpio_in(s->gpio, 0x0d)));
+    }
+    /* I2C2 (accelerometer, light sensor) is empty for now: transfers NACK. */
+    dev = qdev_new(TYPE_S5L8930_I2C);
+    sbd = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(sbd, &error_fatal);
+    sysbus_mmio_map(sbd, 0, S5L8930_I2C_BASE(2));
+    sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_I2C(2)));
+
+    /* Display pipe, CLCD, DART2, RGBOUT, TV-out; scanout starts at iBoot's FB. */
+    dev = qdev_new(TYPE_S5L8930_DISPLAY);
+    qdev_prop_set_uint64(dev, "fb-base", 0x4f700000);
+    sbd = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(sbd, &error_fatal);
+    sysbus_mmio_map(sbd, 0, S5L8930_DISP_PIPE0_BASE);
+    sysbus_mmio_map(sbd, 1, S5L8930_CLCD_BASE);
+    sysbus_mmio_map(sbd, 2, S5L8930_DART2_BASE);
+    sysbus_mmio_map(sbd, 3, S5L8930_RGBOUT_BASE);
+    sysbus_mmio_map(sbd, 4, S5L8930_TVOUT_BASE);
+    sysbus_mmio_map(sbd, 5, S5L8930_RGBOUT2_BASE);
+    sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_DISP_PIPE0));
+    sysbus_connect_irq(sbd, 1, ipad1_irq(s, S5L8930_IRQ_CLCD));
+
+    /* MIPI-DSIM: the same Samsung IP as the iPod's; reuse that model. */
+    dev = qdev_new(TYPE_IPOD_TOUCH_MIPI_DSI);
+    IPOD_TOUCH_MIPI_DSI(dev)->direct_boot = true;
+    memory_region_add_subregion(sysmem, S5L8930_DSIM_BASE,
+                                &IPOD_TOUCH_MIPI_DSI(dev)->iomem);
+    sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
 
     /*
      * IOP: high-level emulation of the second core. No IRQ line: like the real
