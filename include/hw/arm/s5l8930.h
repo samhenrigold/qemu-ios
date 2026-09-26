@@ -26,8 +26,13 @@
 #define S5L8930_GPIO_BASE        0xbfa00000
 #define S5L8930_GPIO_SIZE        0x1000
 #define S5L8930_CPU_DEBUG_BASE   0xbf701000
+#define S5L8930_IOP_BASE         0x86300000   /* AP-side IOP control block */
+#define S5L8930_IOP_SIZE         0x1000
+#define S5L8930_IOP_VIC_BASE     0xbf300000   /* the IOP's own 4 VICs, used as doorbells */
+#define S5L8930_IOP_VIC_SIZE     0x40000
 
 /* Interrupt numbers: VIC n owns 32n..32n+31 */
+#define S5L8930_IRQ_IOP          0x03          /* IOP -> AP doorbell */
 #define S5L8930_IRQ_TIMER1       0x05          /* second event timer, unused by the kernel */
 #define S5L8930_IRQ_TIMER0       0x06          /* event timer; the kernel routes it to FIQ */
 #define S5L8930_IRQ_UART(n)      (0x16 + (n))
@@ -47,5 +52,14 @@
  */
 #define TYPE_S5L8930_GPIO "s5l8930.gpio"
 #define S5L8930_GPIO_PINS        (0x16 * 8)    /* 22 ports x 8 pins */
+
+/*
+ * IOP (hw/arm/s5l8930_iop.c): high-level emulation of the second core's
+ * host-visible surface. MMIO 0 = control block (S5L8930_IOP_SIZE at
+ * S5L8930_IOP_BASE), MMIO 1 = the IOP-side VIC window (S5L8930_IOP_VIC_SIZE at
+ * S5L8930_IOP_VIC_BASE). sysbus IRQ 0 = S5L8930_IRQ_IOP. Reads and writes the
+ * message rings in guest DRAM through address_space_memory.
+ */
+#define TYPE_S5L8930_IOP "s5l8930.iop"
 
 #endif
