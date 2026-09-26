@@ -101,7 +101,8 @@ way; ES2 core sits below slot 761 so the host wire numbering carries over. The a
 flag decides whether CA's own compositor also goes to host GL. Rejected alternative: forwarding at the
 ~80-function `gld*` driver layer.
 
-**M8 — Boot-chain fidelity.** iBoot-817.29 via `direct-iboot`: full CDMA + AES/KBAG oracle, SHA1, PKE forge,
+**M8 — Boot-chain fidelity.** Note: iBoot sets `boot_args.version = ((CHIPID[0] >> 9) & 0x7f) + 1` and the
+kernel panics unless it's 2, so the ChipID model's power-epoch field must be 1 (iEmu's 0x31800587 gives 2). iBoot-817.29 via `direct-iboot`: full CDMA + AES/KBAG oracle, SHA1, PKE forge,
 H2FMI, NOR on SPI0; boot logo, recovery mode, DFU. Later: boot from the dumped SecureROM.
 
 **M9 — LightTouchMac device profiles.** The app assumes one machine (320×480, 128 MiB); add a per-device
