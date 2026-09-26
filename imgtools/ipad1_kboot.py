@@ -42,8 +42,10 @@ TRAILER = struct.Struct("<8sIIII")
 
 # ponytail: clocks are guesses (timebase = the kernel's own 24 MHz default); replace with HW-2's real
 # IODeviceTree values. clock-frequencies slots follow iBoot's clock_get_frequency (5ff10f80) indices.
+# Measured on a real iPad 1 running 7B500 (sysctl hw.*, 2026-09-26): iBoot leaves cpu and
+# memory frequency at 0; bus and peripheral are 100 MHz; fixed and timebase 24 MHz.
 CPU_HZ, MEM_HZ, BUS_HZ, PERIPH_HZ, FIXED_HZ, TIMEBASE_HZ, USBPHY_HZ = (
-    1_000_000_000, 200_000_000, 200_000_000, 100_000_000, 24_000_000, 24_000_000, 24_000_000)
+    0, 0, 100_000_000, 100_000_000, 24_000_000, 24_000_000, 24_000_000)
 CLOCKS = [PERIPH_HZ] * 55
 for idx, hz in {0: TIMEBASE_HZ, 5: CPU_HZ, 6: PERIPH_HZ, 27: MEM_HZ, 32: BUS_HZ, 33: FIXED_HZ}.items():
     CLOCKS[idx] = hz
