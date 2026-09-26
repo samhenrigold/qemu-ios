@@ -46,12 +46,13 @@ TRAILER = struct.Struct("<8sIIII")
 # memory frequency at 0; bus and peripheral are 100 MHz; fixed and timebase 24 MHz.
 CPU_HZ, MEM_HZ, BUS_HZ, PERIPH_HZ, FIXED_HZ, TIMEBASE_HZ, USBPHY_HZ = (
     0, 0, 100_000_000, 100_000_000, 24_000_000, 24_000_000, 24_000_000)
-# NAND geometry iBoot would have probed: the Samsung 0x7294D7EC part from the iBoot-817 K48 chip
-# table (4 CE x 0x1038 blocks x 128 pages x 8 KiB = 16 GB). Must agree with the IOP model's nand-id
-# and nand-ce-mask. Timings are placeholders the HLE ignores; ECC values are a guess.
-NAND = {"#ce": 4, "#die-ce": 1, "#ce-blocks": 0x1038, "#block-pages": 128, "#page-bytes": 8192,
-        "#spare-bytes": 0x1b4, "device-readid": 0x7294D7EC, "vendor-type": 0x100014, "#databus": 8,
-        "ecc-correctable": 16, "ecc-threshold": 8, "bbt-format": 1,
+# NAND geometry iBoot would have probed. The captured 16 GB iPad has eight Hynix 0xB614D5AD dies
+# (4 KiB pages, 128 B spare, 0x1000 blocks per CE, 2 buses x 4 CE): its /dev/rdisk0 sector count,
+# 3,925,449 x 4 KiB, matches the 7B500 YAFTL_Init formulas for that part only. bbt-format 3 is the
+# Hynix row of iBoot-817.29's chip table. Must agree with the IOP model's nand-id/nand-ce-mask.
+NAND = {"#ce": 8, "#die-ce": 1, "#ce-blocks": 0x1000, "#block-pages": 128, "#page-bytes": 4096,
+        "#spare-bytes": 0x80, "device-readid": 0xB614D5AD, "vendor-type": 0x100014, "#databus": 2,
+        "ecc-correctable": 8, "ecc-threshold": 8, "bbt-format": 3,
         "read-cycle-ns": 25, "read-setup-ns": 10, "read-hold-ns": 10, "read-delay-ns": 20,
         "read-valid-ns": 20, "write-cycle-ns": 25, "write-hold-ns": 10}
 CLOCKS = [PERIPH_HZ] * 55
@@ -130,6 +131,8 @@ def fill_dt(dt, memory_map):
         dt.set("cpus/cpu0", key, hz)
     dt.set("arm-io", "clock-frequencies", CLOCKS)
     dt.set("arm-io", "usbphy-frequency", USBPHY_HZ)
+    if "chip-revision" in dt.props["arm-io"]:  # absent from the selfcheck DT
+        dt.set("arm-io", "chip-revision", 0x11)  # measured on the real K48AP
     if "arm-io/flash-controller0/disk" in dt.props:  # absent from the selfcheck's synthetic DT
         for key, value in NAND.items():
             dt.set("arm-io/flash-controller0/disk", key, value)

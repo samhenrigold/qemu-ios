@@ -1,0 +1,52 @@
+# 7B500 iPad1 clocks and PMGR clock-gate indices — from the running system.
+# Frequencies: sysctl hw + device-tree properties. Gate indices: DT `clock-gates`.
+
+## Frequencies (measured live)
+# hw.tbfrequency  (timebase / timer tick)      = 24000000  Hz  (24 MHz)  [DT timebase-frequency 0x016E3600]
+# hw.busfrequency (peripheral/bus clock)        = 100000000 Hz  (100 MHz) [DT bus/peripheral-frequency 0x05F5E100]
+# root clock-frequency (K48AP node)             = 100000000 Hz  (100 MHz)
+# hw.cpufrequency                               = 0 (not reported by 3.2; A4 nominal ~1 GHz)
+# hw.l2cachesize = 524288 (512 KiB), hw.cachelinesize = 64, hw.pagesize = 4096, hw.ncpu = 1
+# memory-frequency DT property = 0 (not published)
+
+## Device -> PMGR clock-gate index (hex). Each device's `clock-gates` lists the
+## PMGR CLKCFG/gate register index(es) that clock it. Multiple = multiple gates.
+pmgr            0x77 0x78
+dart1           0x66
+dart2           0x6e
+sdio            0x30
+sha1            0x31
+ceata           0x34
+flash-controller0 0x35 0x37 0x36 0x38
+spi0            0x3c
+spi1            0x3d
+spi2            0x3e
+uart0           0x41
+uart1           0x42
+uart2           0x43
+uart3           0x44
+uart5           0x46
+uart6           0x47
+pke             0x4c
+i2c0            0x4d
+i2c2            0x4f
+pwm             0x50
+i2s0            0x72
+i2s1            0x73
+i2s2            0x74
+otgphyctrl      0x54
+usb-complex     0x55 0x56 0x57 0x58
+iop             0x5a
+vxd             0x5c
+sgx             0x5d
+venc            0x60
+jpeg            0x61 0x62
+isp             0x63 0x64 0x65
+scaler          0x6c 0x6d
+clcd            0x68
+mipi-dsim       0x69
+swi             0x7c 0x7d
+rgbout          0x6a
+tv-out          0x6b
+amc             0x71
+displayport     0x76

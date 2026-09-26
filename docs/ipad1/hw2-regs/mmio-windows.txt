@@ -1,0 +1,42 @@
+# 7B500 iPad1 MMIO windows — decoded from the running IORegistry device tree
+# Source: ioreg-full.txt (IORegistryEntryCreateCFProperties over IOService plane).
+# NOT read from MMIO (no kernel-task port on this JB); these are the DT `reg`
+# properties, i.e. the addresses iBoot/XNU program the hardware at. Read-only.
+
+## arm-io address mapping (from arm-io `ranges`, 2 entries: child, parent, size)
+#   child 0x00000000 -> parent 0x80000000, size 0x40000000   (peripherals)
+#   child 0x40000000 -> parent 0x40000000, size 0x40000000   (DRAM, identity)
+# => a peripheral child address 0x3Fxxxxxx is physical 0xBFxxxxxx (+0x80000000).
+#    child 0x05xxxxxx/0x08xxxxxx/0x09xxxxxx -> physical 0x85../0x88../0x89..
+
+## Peripheral register windows (physical = child + 0x80000000)
+# node         child-addr   size        physical base   note
+pmgr           0x3F100000   0x00006000  0xBF100000      PMGR main: clocks/gates/PLL/timer
+pmgr           0x05E00000   0x00001000  0x85E00000      PMGR sub-block
+pmgr           0x05F00000   0x00001000  0x85F00000      PMGR sub-block
+pmgr           0x08E00000   0x00001000  0x88E00000      PMGR sub-block
+pmgr           0x08F00000   0x00001000  0x88F00000      PMGR sub-block
+pmgr           0x09E00000   0x00001000  0x89E00000      PMGR sub-block
+pmgr           0x09F00000   0x00001000  0x89F00000      PMGR sub-block
+vic            0x3F200000   0x00040000  0xBF200000      VIC block (2 VICs at 0x1000 stride)
+gpio           0x3FA00000   0x00001000  0xBFA00000      GPIO
+cpu-debug-if   0x3F701000   0x00001000  0xBF701000      CPU debug interface
+# timer: the emulator's timer at 0xBF102000 falls inside the pmgr main window
+# (0xBF100000 + 0x2000); there is no separate `timer` DT node.
+
+## DRAM / framebuffer / persistent RAM (physical)
+# vram (framebuffer)   0x4F700000  size 0x008FC000  (top of the 256 MiB DRAM)
+# pram (persistent)    0x5FFFC000  size 0x00004000  <-- see mirror note below
+# DRAM base 0x40000000, 256 MiB (0x40000000-0x4FFFFFFF). hw.memsize=258998272 (usable).
+
+## RAM-mirror question (0x40000000 vs 0x50000000 vs 0xC0000000)
+# Cannot be *proven* from the running userland (no physical read; kernel_task
+# unavailable). But strong indirect evidence for the 0x50000000 mirror:
+#   - `pram` is declared at physical 0x5FFFC000, yet DRAM is only 256 MiB based
+#     at 0x40000000 (ends 0x4FFFFFFF). 0x5FFFC000 is real RAM only if
+#     0x50000000-0x5FFFFFFF aliases 0x40000000-0x4FFFFFFF; 0x5FFFC000 then maps
+#     to 0x4FFFC000, immediately above vram (0x4F700000..0x4FFFBFFF). Consistent
+#     with iBoot linking at 0x5FF00000 (per the plan).
+#   => 0x50000000 mirror: very likely YES.
+#   => 0xC0000000 mirror: no evidence either way from the device tree.
+# A definitive check needs a physical read (HW-1 iBEC `md`), which is off-limits here.

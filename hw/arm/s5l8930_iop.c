@@ -961,19 +961,22 @@ static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
         qobject_unref(obj);
         return;
     }
-    if (page_bytes != s->bytes_per_page[0] || spare_bytes != s->bytes_per_spare[0] ||
-        ppb != s->pages_per_block[0] || buses != NAND_BUSES ||
-        ce_per_bus != ctpop8(s->nand_ce_mask) || blocks <= 0 ||
+    /* The store defines the page geometry; the chip population must match the model. */
+    if (page_bytes <= 0 || spare_bytes < FMI_META_BYTES || ppb <= 0 || blocks <= 0 ||
+        buses != NAND_BUSES || ce_per_bus != ctpop8(s->nand_ce_mask) ||
         !id || g_ascii_strtoull(id, NULL, 16) != s->nand_id) {
-        error_setg(errp, "%s does not match the IOP model (%u+%u bytes x %u "
-                   "pages, %d buses x %d CE, id 0x%08x)", path,
-                   s->bytes_per_page[0], s->bytes_per_spare[0],
-                   s->pages_per_block[0], NAND_BUSES, ctpop8(s->nand_ce_mask),
-                   s->nand_id);
+        error_setg(errp, "%s does not match the IOP model (%d buses x %d CE, "
+                   "id 0x%08x) or has a bad page geometry", path, NAND_BUSES,
+                   ctpop8(s->nand_ce_mask), s->nand_id);
         qobject_unref(obj);
         return;
     }
     qobject_unref(obj);
+    for (bus = 0; bus < NAND_BUSES; bus++) {
+        s->bytes_per_page[bus] = page_bytes;
+        s->bytes_per_spare[bus] = spare_bytes;
+        s->pages_per_block[bus] = ppb;
+    }
     s->page_stride = page_bytes + spare_bytes;
     s->store_page_bytes = page_bytes;
     s->store_ppb = ppb;
@@ -1053,8 +1056,8 @@ static const VMStateDescription vmstate_s5l8930_iop = {
  * device-readid) must describe the same part.
  */
 static const Property s5l8930_iop_properties[] = {
-    DEFINE_PROP_UINT32("nand-id", S5L8930IOPState, nand_id, 0x7294d7ec),
-    DEFINE_PROP_UINT8("nand-ce-mask", S5L8930IOPState, nand_ce_mask, 0x3),
+    DEFINE_PROP_UINT32("nand-id", S5L8930IOPState, nand_id, 0xb614d5ad),
+    DEFINE_PROP_UINT8("nand-ce-mask", S5L8930IOPState, nand_ce_mask, 0xf),
     DEFINE_PROP_STRING("nand", S5L8930IOPState, nand_dir),
 };
 
