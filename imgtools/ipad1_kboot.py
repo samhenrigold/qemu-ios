@@ -51,7 +51,7 @@ CPU_HZ, MEM_HZ, BUS_HZ, PERIPH_HZ, FIXED_HZ, TIMEBASE_HZ, USBPHY_HZ = (
 # and nand-ce-mask. Timings are placeholders the HLE ignores; ECC values are a guess.
 NAND = {"#ce": 4, "#die-ce": 1, "#ce-blocks": 0x1038, "#block-pages": 128, "#page-bytes": 8192,
         "#spare-bytes": 0x1b4, "device-readid": 0x7294D7EC, "vendor-type": 0x100014, "#databus": 8,
-        "ecc-correctable": 16, "ecc-threshold": 8, "bbt-format": 0,
+        "ecc-correctable": 16, "ecc-threshold": 8, "bbt-format": 1,
         "read-cycle-ns": 25, "read-setup-ns": 10, "read-hold-ns": 10, "read-delay-ns": 20,
         "read-valid-ns": 20, "write-cycle-ns": 25, "write-hold-ns": 10}
 CLOCKS = [PERIPH_HZ] * 55
