@@ -1,0 +1,16 @@
+# Safe, well-known blocks first (iBEC already drives these).
+md 0xbf500000 16     # ChipID: production/epoch/CPRV/ECID/chip-id
+md 0xbf106000 8      # POWER_ID
+md 0xbf100000 32     # PMGR: PLLs + clock config (+0x40)
+md 0xbf101010 64     # PMGR gates (openiBoot numbering says 0..0x3f)
+md 0xbf102000 4      # timer (read twice to see it tick)
+md 0xbf102000 4
+md 0xbfa00000 64     # GPIO ports 0..
+md 0xbf200000 16     # VIC0
+# RAM mirroring: iBEC runs at 0x5ff00000. If 0x4ff00000 matches, DRAM repeats every 256 MiB.
+md 0x5ff00000 8
+md 0x4ff00000 8
+md 0x5f700000 4      # framebuffer (iBoot literal)
+md 0x4f700000 4
+# Riskier (may abort if unmapped; the iPad just reboots): 0xC mirror.
+md 0xcff00000 8
