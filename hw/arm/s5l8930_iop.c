@@ -11,9 +11,12 @@
  * against the 7B500 kexts (ARM7M __text c04d2000, IOPFMI __text c04e8000) and
  * the firmware blob (fw offsets below are into the 0x1b000-byte image).
  *
- * NAND is a blank chip: every page reads as erased. read/program/erase go
- * through nand_read_page()/nand_program_page()/nand_erase_block() so a
- * file-backed page store can replace them.
+ * NAND: with the "nand" property unset every page reads as erased. Set to a
+ * directory, it is a writable file-backed store: geometry.json plus one
+ * sparse file per chip select, bus<b>-ce<c>.pages, page index
+ * block * pages_per_block + page at a stride of page_bytes + spare_bytes,
+ * data then spare (the 10 meta bytes lead the spare). Holes (all-zero) read as 0xFF;
+ * an all-0xFF page is blank (status 2). Writes go straight to the mapping.
  */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
@@ -23,6 +26,11 @@
 #include "hw/arm/s5l8930.h"
 #include "exec/address-spaces.h"
 #include "migration/vmstate.h"
+#include "qapi/error.h"
+#include "qobject/qjson.h"
+#include "qobject/qdict.h"
+#include "qobject/qnum.h"
+#include <sys/mman.h>
 
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPState, S5L8930_IOP)
 
@@ -135,6 +143,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPState, S5L8930_IOP)
 #define SDIO_STATUS_UNKNOWN     2           /* fw 0x164c "unrecognised sdio opcode" */
 
 #define NAND_BUSES              2
+#define NAND_CES                8
 
 struct S5L8930IOPState {
     SysBusDevice parent_obj;
@@ -143,6 +152,12 @@ struct S5L8930IOPState {
 
     uint32_t nand_id;       /* the 4 ID bytes the kext compares, LE packed */
     uint8_t nand_ce_mask;   /* CE slots populated on each bus */
+    char *nand_dir;         /* page store directory; NULL = blank chip */
+    uint8_t *chip[NAND_BUSES][NAND_CES];    /* mmap of bus<b>-ce<c>.pages */
+    uint32_t page_stride;       /* store geometry: page + spare bytes */
+    uint32_t store_page_bytes;
+    uint32_t store_ppb;
+    uint32_t pages_per_ce;
 
     bool running;
     uint32_t fw_base;
@@ -193,30 +208,100 @@ static void iop_raise_ap_irq(void)
 
 /* ---- NAND ------------------------------------------------------------- */
 
-/*
- * ponytail: blank NAND. Replace these three with a file-backed page store;
- * everything above them only sees status codes and page buffers.
- */
+/* Mapped page, or NULL for the blank chip / an address off the part. */
+static uint8_t *nand_page(S5L8930IOPState *s, int bus, uint32_t ce,
+                          uint32_t page, bool *bad)
+{
+    *bad = ce >= NAND_CES || !(s->nand_ce_mask & (1u << ce)) ||
+           (s->nand_dir && page >= s->pages_per_ce);
+    if (*bad) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: bus %d ce %u page 0x%x off the part\n",
+                      __func__, bus, ce, page);
+        return NULL;
+    }
+    return s->nand_dir ? s->chip[bus][ce] + (size_t)page * s->page_stride : NULL;
+}
+
+/* data gets page + spare bytes, meta the leading FMI_META_BYTES of the spare. */
 static uint32_t nand_read_page(S5L8930IOPState *s, int bus, uint32_t ce,
                                uint32_t page, uint8_t *data, uint8_t *meta)
 {
-    memset(data, 0xff, s->bytes_per_page[bus] + s->bytes_per_spare[bus]);
+    uint32_t len = s->bytes_per_page[bus] + s->bytes_per_spare[bus];
+    bool bad;
+    uint8_t *p = nand_page(s, bus, ce, page, &bad);
+    uint32_t i;
+
+    memset(data, 0xff, MAX(len, s->page_stride));
     memset(meta, 0xff, FMI_META_BYTES);
+    if (bad) {
+        return FMI_STATUS_PARAM;
+    }
+    if (!p) {
+        return FMI_STATUS_BLANK;
+    }
+    len = s->page_stride;
+    /*
+     * An unwritten page is a hole in the sparse file and reads as zeros, but
+     * erased NAND reads as 0xFF. Treat an all-zero stride as blank too: a
+     * programmed page always carries non-zero FTL metadata in its spare.
+     */
+    for (i = 0; i < len && p[i] == 0; i++) {
+    }
+    if (i == len) {
+        return FMI_STATUS_BLANK;
+    }
+    memcpy(data, p, len);
+    memcpy(meta, p + s->store_page_bytes, FMI_META_BYTES);
+    for (i = 0; i < len; i++) {
+        if (data[i] != 0xff) {
+            return FMI_STATUS_OK;
+        }
+    }
     return FMI_STATUS_BLANK;
 }
 
+/*
+ * len bytes of data land at the page start (a raw write carries page + spare,
+ * a boot page 0x600 bytes); meta, if given, leads the spare.
+ */
 static uint32_t nand_program_page(S5L8930IOPState *s, int bus, uint32_t ce,
                                   uint32_t page, const uint8_t *data,
-                                  const uint8_t *meta)
+                                  uint32_t len, const uint8_t *meta)
 {
-    DPRINTF("program bus %d ce %u page 0x%x (dropped)\n", bus, ce, page);
+    bool bad;
+    uint8_t *p = nand_page(s, bus, ce, page, &bad);
+
+    if (bad) {
+        return FMI_STATUS_PARAM;
+    }
+    if (!p) {
+        DPRINTF("program bus %d ce %u page 0x%x (blank chip, dropped)\n",
+                bus, ce, page);
+        return FMI_STATUS_OK;
+    }
+    memcpy(p, data, MIN(len, s->page_stride));
+    if (meta) {
+        memcpy(p + s->store_page_bytes, meta, FMI_META_BYTES);
+    }
     return FMI_STATUS_OK;
 }
 
 static uint32_t nand_erase_block(S5L8930IOPState *s, int bus, uint32_t ce,
                                  uint32_t block)
 {
-    DPRINTF("erase bus %d ce %u block 0x%x (dropped)\n", bus, ce, block);
+    uint32_t first = block * s->store_ppb;
+    bool bad;
+    uint8_t *p = nand_page(s, bus, ce, first, &bad);
+
+    if (bad) {
+        return FMI_STATUS_PARAM;
+    }
+    if (!p) {
+        DPRINTF("erase bus %d ce %u block 0x%x (blank chip, dropped)\n",
+                bus, ce, block);
+        return FMI_STATUS_OK;
+    }
+    memset(p, 0xff, (size_t)s->store_ppb * s->page_stride);
     return FMI_STATUS_OK;
 }
 
@@ -298,6 +383,12 @@ static uint32_t fmi_set_config(S5L8930IOPState *s, int bus, uint8_t *cmd)
         qemu_log_mask(LOG_GUEST_ERROR, "%s: bad config bus %u page %u spare %u\n",
                       __func__, CMD_GET(cmd, 0x10), bpp, spare);
         return FMI_STATUS_PARAM;
+    }
+    /* The kext's first set_config is a generic 2048+64 x 1 pre-probe one. */
+    if (s->nand_dir && (bpp + spare != s->page_stride ||
+                        CMD_GET(cmd, 0x1c) != s->store_ppb)) {
+        DPRINTF("set_config bus %d: %u+%u x %u differs from the store\n",
+                bus, bpp, spare, CMD_GET(cmd, 0x1c));
     }
     s->bytes_per_page[bus] = bpp;
     s->bytes_per_spare[bus] = spare;
@@ -393,7 +484,7 @@ static uint32_t fmi_multi(S5L8930IOPState *s, int bus, uint8_t *cmd, bool write,
         if (write) {
             seg_copy(&data, page, s->bytes_per_page[bus], false);
             seg_copy(&metas, meta, FMI_META_BYTES, false);
-            nand_program_page(s, bus, ce, pg, page, meta);
+            nand_program_page(s, bus, ce, pg, page, s->bytes_per_page[bus], meta);
         } else {
             st = nand_read_page(s, bus, ce, pg, page, meta);
             blank += st == FMI_STATUS_BLANK;
@@ -453,7 +544,7 @@ static void iop_fmi_command(S5L8930IOPState *s, int bus, hwaddr item)
     g_autofree uint8_t *page = g_malloc(FMI_MAX_PAGE * 2);
     uint8_t meta[FMI_META_BYTES];
     uint8_t cmd[CMD_SIZE];
-    uint32_t op, st;
+    uint32_t op, st, len;
 
     iop_read(item, cmd, sizeof(cmd));
     op = CMD_GET(cmd, CMD_OPCODE);
@@ -479,13 +570,18 @@ static void iop_fmi_command(S5L8930IOPState *s, int bus, hwaddr item)
         iop_read(CMD_GET(cmd, 0x18), page, s->bytes_per_page[bus]);
         iop_read(CMD_GET(cmd, 0x1c), meta, FMI_META_BYTES);
         st = nand_program_page(s, bus, CMD_GET(cmd, 0x10), CMD_GET(cmd, 0x14),
-                               page, meta);
+                               page, s->bytes_per_page[bus], meta);
         break;
     case FMI_OP_WRITE_RAW:
-    case FMI_OP_WRITE_BOOTPAGE:
-        iop_read(CMD_GET(cmd, 0x18), page, s->bytes_per_page[bus]);
+        len = s->bytes_per_page[bus] + s->bytes_per_spare[bus];
+        iop_read(CMD_GET(cmd, 0x18), page, len);
         st = nand_program_page(s, bus, CMD_GET(cmd, 0x10), CMD_GET(cmd, 0x14),
-                               page, NULL);
+                               page, len, NULL);
+        break;
+    case FMI_OP_WRITE_BOOTPAGE:
+        iop_read(CMD_GET(cmd, 0x18), page, FMI_BOOTPAGE_BYTES);
+        st = nand_program_page(s, bus, CMD_GET(cmd, 0x10), CMD_GET(cmd, 0x14),
+                               page, FMI_BOOTPAGE_BYTES, NULL);
         break;
     case FMI_OP_READ_MULTIPLE:
         st = fmi_multi(s, bus, cmd, false, page, meta);
@@ -782,10 +878,120 @@ static void s5l8930_iop_reset(DeviceState *dev)
     }
 }
 
+static int64_t geometry_get(QDict *g, const char *key, Error **errp)
+{
+    QNum *n = qobject_to(QNum, qdict_get(g, key));
+    int64_t v;
+
+    if (!n || !qnum_get_try_int(n, &v)) {
+        if (!*errp) {
+            error_setg(errp, "geometry.json: missing integer \"%s\"", key);
+        }
+        return -1;
+    }
+    return v;
+}
+
+/* Open (creating sparse files as needed) the page store under "nand". */
+static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
+{
+    S5L8930IOPState *s = S5L8930_IOP(dev);
+    g_autofree char *path = NULL;
+    g_autofree char *json = NULL;
+    QObject *obj;
+    QDict *g;
+    Error *err = NULL;
+    const char *id;
+    int64_t page_bytes, spare_bytes, ppb, blocks, ce_per_bus, buses;
+    size_t size;
+    int bus, ce;
+
+    if (!s->nand_dir) {
+        return;
+    }
+    path = g_strdup_printf("%s/geometry.json", s->nand_dir);
+    if (!g_file_get_contents(path, &json, NULL, NULL)) {
+        error_setg(errp, "cannot read %s", path);
+        return;
+    }
+    obj = qobject_from_json(json, &err);
+    g = qobject_to(QDict, obj);
+    if (!g) {
+        if (!err) {
+            error_setg(&err, "not a JSON object");
+        }
+        error_propagate_prepend(errp, err, "%s: ", path);
+        qobject_unref(obj);
+        return;
+    }
+    page_bytes = geometry_get(g, "page_bytes", &err);
+    spare_bytes = geometry_get(g, "spare_bytes", &err);
+    ppb = geometry_get(g, "pages_per_block", &err);
+    blocks = geometry_get(g, "blocks_per_ce", &err);
+    ce_per_bus = geometry_get(g, "ce_per_bus", &err);
+    buses = geometry_get(g, "buses", &err);
+    id = qdict_get_try_str(g, "chip_id");
+    if (err) {
+        error_propagate(errp, err);
+        qobject_unref(obj);
+        return;
+    }
+    if (page_bytes != s->bytes_per_page[0] || spare_bytes != s->bytes_per_spare[0] ||
+        ppb != s->pages_per_block[0] || buses != NAND_BUSES ||
+        ce_per_bus != ctpop8(s->nand_ce_mask) || blocks <= 0 ||
+        !id || g_ascii_strtoull(id, NULL, 16) != s->nand_id) {
+        error_setg(errp, "%s does not match the IOP model (%u+%u bytes x %u "
+                   "pages, %d buses x %d CE, id 0x%08x)", path,
+                   s->bytes_per_page[0], s->bytes_per_spare[0],
+                   s->pages_per_block[0], NAND_BUSES, ctpop8(s->nand_ce_mask),
+                   s->nand_id);
+        qobject_unref(obj);
+        return;
+    }
+    qobject_unref(obj);
+    s->page_stride = page_bytes + spare_bytes;
+    s->store_page_bytes = page_bytes;
+    s->store_ppb = ppb;
+    s->pages_per_ce = blocks * ppb;
+    size = (size_t)s->pages_per_ce * s->page_stride;
+
+    for (bus = 0; bus < NAND_BUSES; bus++) {
+        for (ce = 0; ce < NAND_CES; ce++) {
+            g_autofree char *f = NULL;
+            int fd;
+
+            if (!(s->nand_ce_mask & (1u << ce))) {
+                continue;
+            }
+            f = g_strdup_printf("%s/bus%d-ce%d.pages", s->nand_dir, bus, ce);
+            fd = open(f, O_RDWR | O_CREAT, 0644);
+            if (fd < 0 || ftruncate(fd, size) < 0) {
+                error_setg_errno(errp, errno, "cannot open %s", f);
+                return;
+            }
+            s->chip[bus][ce] = mmap(NULL, size, PROT_READ | PROT_WRITE,
+                                    MAP_SHARED, fd, 0);
+            close(fd);
+            if (s->chip[bus][ce] == MAP_FAILED) {
+                error_setg_errno(errp, errno, "cannot map %s", f);
+                return;
+            }
+        }
+    }
+}
+
 static void s5l8930_iop_init(Object *obj)
 {
     S5L8930IOPState *s = S5L8930_IOP(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+    int i;
+
+    /* K48 part; realize validates the page store against these. */
+    for (i = 0; i < NAND_BUSES; i++) {
+        s->bytes_per_page[i] = 8192;
+        s->bytes_per_spare[i] = 0x1b4;
+        s->pages_per_block[i] = 128;
+    }
 
     memory_region_init_io(&s->ctrl_mr, obj, &iop_ctrl_ops, s,
                           TYPE_S5L8930_IOP, S5L8930_IOP_SIZE);
@@ -824,12 +1030,14 @@ static const VMStateDescription vmstate_s5l8930_iop = {
 static const Property s5l8930_iop_properties[] = {
     DEFINE_PROP_UINT32("nand-id", S5L8930IOPState, nand_id, 0x7294d7ec),
     DEFINE_PROP_UINT8("nand-ce-mask", S5L8930IOPState, nand_ce_mask, 0x3),
+    DEFINE_PROP_STRING("nand", S5L8930IOPState, nand_dir),
 };
 
 static void s5l8930_iop_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
+    dc->realize = s5l8930_iop_realize;
     dc->vmsd = &vmstate_s5l8930_iop;
     device_class_set_props(dc, s5l8930_iop_properties);
     device_class_set_legacy_reset(dc, s5l8930_iop_reset);

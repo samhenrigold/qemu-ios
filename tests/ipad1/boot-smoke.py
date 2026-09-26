@@ -22,6 +22,7 @@ MARKERS = [
     ("display", "AppleCLCD::start_hardware"),
     ("iop-firmware", "EmbeddedIOP firmware s5l8930x-RELEASE"),
     ("nand", "AppleS5L8920XIOPFMI"),
+    ("ftl", "[FTL:MSG] FPart Init"),
     ("rootdev", "Waiting for root device"),
     ("bsd", "BSD root:"),
     ("launchd", "launchd"),
@@ -34,6 +35,7 @@ def main():
     ap.add_argument("--kboot", default=f"{FILES}/k48-kboot.bin")
     ap.add_argument("--qemu", default=f"{ROOT}/build/qemu-system-arm")
     ap.add_argument("--args", help="rebuild the bundle with these boot-args first")
+    ap.add_argument("--nand", help="NAND page-store directory to attach")
     a = ap.parse_args()
 
     if a.args:
@@ -42,7 +44,8 @@ def main():
 
     with tempfile.TemporaryDirectory() as td:
         serial, qlog = f"{td}/serial.log", f"{td}/qemu.log"
-        cmd = [a.qemu, "-machine", f"ipad1,kboot={a.kboot}", "-display", "none",
+        machine = f"ipad1,kboot={a.kboot}" + (f",nand={a.nand}" if a.nand else "")
+        cmd = [a.qemu, "-machine", machine, "-display", "none",
                "-monitor", "none", "-serial", f"file:{serial}",
                "-d", "unimp,guest_errors", "-D", qlog]
         try:

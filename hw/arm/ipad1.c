@@ -27,6 +27,7 @@
 #include "hw/arm/exynos4210.h"
 #include "hw/arm/s5l8930.h"
 #include "hw/intc/pl192.h"
+#include "hw/qdev-properties.h"
 #include "system/reset.h"
 #include "system/system.h"
 #include "target/arm/cpu.h"
@@ -42,6 +43,7 @@ struct IPad1MachineState {
     MemoryRegion cpu_debug;
     DeviceState *vic[S5L8930_VIC_COUNT];
     char *kboot_path;
+    char *nand_path;
 };
 
 #define KBOOT_MAGIC "K48KBOOT"
@@ -180,6 +182,9 @@ static void ipad1_init(MachineState *machine)
      * firmware, the model raises the AP by writing VIC0's SOFTINT register.
      */
     dev = qdev_new(TYPE_S5L8930_IOP);
+    if (s->nand_path) {
+        qdev_prop_set_string(dev, "nand", s->nand_path);
+    }
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_IOP_BASE);
@@ -205,9 +210,23 @@ static void ipad1_set_kboot(Object *obj, const char *value, Error **errp)
     s->kboot_path = g_strdup(value);
 }
 
+static char *ipad1_get_nand(Object *obj, Error **errp)
+{
+    return g_strdup(IPAD1_MACHINE(obj)->nand_path);
+}
+
+static void ipad1_set_nand(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    g_free(s->nand_path);
+    s->nand_path = g_strdup(value);
+}
+
 static void ipad1_instance_finalize(Object *obj)
 {
     g_free(IPAD1_MACHINE(obj)->kboot_path);
+    g_free(IPAD1_MACHINE(obj)->nand_path);
 }
 
 static void ipad1_class_init(ObjectClass *klass, void *data)
@@ -224,6 +243,9 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
                                   ipad1_set_kboot);
     object_class_property_set_description(klass, "kboot",
         "K48KBOOT bundle from imgtools/ipad1_kboot.py (required)");
+    object_class_property_add_str(klass, "nand", ipad1_get_nand, ipad1_set_nand);
+    object_class_property_set_description(klass, "nand",
+        "NAND page-store directory (geometry.json + bus<b>-ce<c>.pages); blank chips if unset");
 }
 
 static const TypeInfo ipad1_machine_info = {
