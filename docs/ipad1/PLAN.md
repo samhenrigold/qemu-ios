@@ -47,7 +47,15 @@ The A4 bootrom has limera1n, so we always have pre-iBoot code execution. Tooling
   `irecovery -s`. Probes in `contrib/ipad1-hw/probes.txt`: ChipID, POWER_ID, PMGR PLL/clock/gate registers, timer,
   GPIO, VIC, and the DRAM mirrors. This is an interactive register oracle we can reuse whenever the
   emulator stalls on an unknown value.
-- **HW-2 (destructive):** powdersn0w restore to 3.2.2, jailbreak; capture: raw NAND dump (all banks, with
+- **HW-1 results (2026-09-26):** limera1n + pwned iBSS + md/mw iBEC work. Measured: ChipID
+  `31800387 80758000 00000000 00000000`, POWER_ID `01020001`. Reading PMGR `0xbf100000` from iBEC hangs
+  it, as does reading past a block's end; remaining registers are read from the running jailbroken iOS
+  instead (kernel-memory reader, `hw2/regs/`).
+- **HW-2 status:** the iPad already runs 3.2.2 (downgraded from 5.1.1, jailbroken, OpenSSH). Captured:
+  MBR (4 KiB sectors; system 0xAF @LBA 63, data 0xAE, tiny p3), the 1.34 GB system partition, p3, dmesg
+  tail, sysctl hw (bus/periph 100 MHz, timebase 24 MHz, cpu/mem 0), nvram. Treat as working data, not a
+  pristine reference (see memory note). Still to capture: raw NAND pages, IORegistry, early boot log.
+- **HW-2 (destructive, original plan):** powdersn0w restore to 3.2.2, jailbreak; capture: raw NAND dump (all banks, with
   spare/meta), the device tree and boot_args as the kernel receives them, verbose kernel log over serial
   (`serial=3 -v debug=...` via patched iBEC), IORegistry dump, syslog. These become the reference logs the
   emulator is diffed against.
