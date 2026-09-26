@@ -83,6 +83,11 @@ data-partition key 0x89B) — not the full descriptor engine. D1815 PMU + new I2
 panic). `debug-enabled` forced (DT + 7B500 kernel global) so AMFI honors its boot-args.
 Success: launchd, then SpringBoard attempts, diffed against the HW-2 serial log.
 
+**M2 status (2026-09-26):** IOP HLE done; the kernel self-formats a blank store with
+`nand-enable-reformat=1` and re-opens it on the next boot (VFL_Open/FTL_Open OK, "waiting for root
+device"). Remaining for M2: an FTL carrying the MBR + system partition (generator in progress), then the
+root mount and launchd.
+
 **M3 — Writes and persistence (≈2–3 weeks).** FMI program/erase opcodes; overlay persistence matching the
 iPod machine. Self-format (`nand-enable-reformat=1` on a blank image) as the write-path stress test.
 
