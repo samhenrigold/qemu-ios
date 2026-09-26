@@ -96,7 +96,7 @@ static const struct {
     { 0x08, 0xA000C322 }, { 0x0C, 0x00380960 },
     { 0x10, 0xA0010559 }, { 0x14, 0x00380960 },
     { 0x20, 0xA0008205 }, { 0x24, 0x00380960 },
-    { PMGR_POWER_ID, 0x02020001 },
+    { PMGR_POWER_ID, 0x01020001 },   /* measured on a real K48AP (epoch 1, board 2) */
 };
 
 static bool pmgr_modelled(hwaddr off)
