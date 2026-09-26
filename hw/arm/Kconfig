@@ -676,6 +676,11 @@ config ARMSSE
     select SSE_COUNTER
     select SSE_TIMER
 
+config IPAD1
+    bool
+    select PL192
+    select EXYNOS4
+
 config IPOD_TOUCH_2G
      bool
      select PL192
