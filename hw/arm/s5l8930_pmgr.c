@@ -86,7 +86,7 @@ struct S5L8930PMGRState {
  * without it. PLLs are iEmu's (APLL 1000 MHz, EPLL 1026 MHz, VPLL 48 MHz;
  * IEMU/s5l8930.c:388-398), except MPLL, which iEmu leaves off: 400 MHz here
  * (M=100 P=3 S=2), since the A4's memory clock comes from somewhere.
- * POWER_ID: epoch 2, board-id 2 (IEMU/s5l8930.c:132).
+ * POWER_ID: epoch 1, board-id 2, read from a real K48AP (iEmu had epoch 2).
  */
 static const struct {
     hwaddr off;
