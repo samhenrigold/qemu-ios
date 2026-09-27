@@ -22,8 +22,52 @@
  *     unhandled-slot warning until it grows one.
  */
 
+#ifndef GLI_NO_BATCH             /* -DGLI_NO_BATCH: one trap per call, for A/B timing */
+#define GLES_BATCH
+#endif
 #include "../it-gles/mbxshim.c"
 #include "gli_fwd.h"
+
+/*
+ * Command buffer. Each trap is a guest exception round trip, so a call that
+ * returns nothing and hands the host no guest pointer (gli_batchable, from gligen.py) is queued in its GC's buffer instead:
+ * [slot | argc << 16, args...]. The buffer goes to the host as one
+ * GLES_OP_BATCH trap when the same GC makes any other call -- a query, a
+ * pointer call, a draw, glFlush/glFinish, present, context teardown -- or when
+ * it fills. Deferring such calls is invisible to the guest: nothing it can
+ * observe happens between them and the next unbatchable call.
+ */
+#ifdef GLES_BATCH
+#define GLES_OP_BATCH   0x1009
+#define BATCH_WORDS     4096
+
+static void batch_flush(GuestGC *gc)
+{
+    unsigned n = gc->batch_len;
+
+    if (!n) return;
+    gc->batch_len = 0;
+    /* Direct trap: GLES_OP_BATCH is never batchable itself. */
+    qc(GLES_OP_BATCH, gc, 2, A((unsigned)(unsigned long)gc->batch, n));
+}
+
+static int gles_batch(unsigned slot, void *gcp, unsigned argc, const unsigned *args)
+{
+    GuestGC *gc = gcp;
+    unsigned i;
+
+    if (!gc || !gc->host) return 0;
+    if (slot >= sizeof(gli_batchable) || !gli_batchable[slot] || argc > 12) {
+        if (slot != GLES_OP_BATCH) batch_flush(gc);
+        return 0;
+    }
+    if (!gc->batch && !(gc->batch = calloc(BATCH_WORDS, sizeof(unsigned)))) return 0;
+    if (gc->batch_len + 1 + argc > BATCH_WORDS) batch_flush(gc);
+    gc->batch[gc->batch_len++] = slot | argc << 16;
+    for (i = 0; i < argc; i++) gc->batch[gc->batch_len++] = args[i];
+    return 1;
+}
+#endif
 
 /*
  * A slot nothing implements: report it once, by name, to the host log
