@@ -79,7 +79,8 @@ BASES = {"pristine": ("7B500/dec/rootfs.dmg", None, "pristine"),
 GLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/ipad1-gles")
 GLENGINE = "System/Library/Frameworks/OpenGLES.framework/GLEngine.bundle/GLEngine"
 GLES_APPS = ("GLTest.app", "GLTest2.app")
-# --ca-ogl: CoreAnimation composites through the GLI shim (accelerated pixel format)
+# GL CoreAnimation (the default; --no-ca-ogl opts out): CoreAnimation composites through the GLI shim
+# (accelerated pixel format), so the build installs the shim as GLEngine
 SB_ENV_CA_OGL = {"MBX2D_PAGE_FLIP": "0", "GLI_ACCELERATED": "1"}
 HIDBRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/ipad1-hidbridge")
 # AppSync: one dylib injected into installd (install gate) and SpringBoard (launch gate)
@@ -480,9 +481,10 @@ def build(a):
             import appsync_cachepatch
             cache = os.path.join(m.mnt, "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv7")
             print("      " + appsync_cachepatch.patch_cache(cache))
-        if a.gles:
+        apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))
+        if a.gles or a.ca_ogl:   # GL CoreAnimation composites through the GLI shim, so it needs the engine
             shutil.copy(os.path.join(GLES, "GLEngine"), os.path.join(m.mnt, GLENGINE))
-            apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))
+        if a.gles:
             for app in () if apps_stashed else GLES_APPS:
                 shutil.rmtree(os.path.join(m.mnt, "Applications", app), ignore_errors=True)
                 shutil.copytree(os.path.join(GLES, app), os.path.join(m.mnt, "Applications", app))
@@ -512,8 +514,8 @@ def build(a):
         bn.set_owner(system, [APPSYNC_REL], 0, 0)
     if a.web_proxy:
         bn.set_owner(system, ["usr/local", "usr/local/share", "usr/local/share/ltm", PAC_PATH], 0, 0)
-    if a.gles:   # ldid-signed: boot with amfi_allow_any_signature=1 cs_enforcement_disable=1
-        apps = [] if apps_stashed else GLES_APPS
+    if a.gles or a.ca_ogl:   # ldid-signed: boot with amfi_allow_any_signature=1 cs_enforcement_disable=1
+        apps = [] if apps_stashed or not a.gles else GLES_APPS
         bn.set_owner(system, [GLENGINE] + ["Applications/" + app for app in apps] +
                      ["Applications/%s/%s" % (app, f) for app in apps
                       for f in os.listdir(os.path.join(GLES, app))], 0, 0)
@@ -717,7 +719,8 @@ def main():
                    help="skip the en1 (USB Ethernet) DHCP network service")
     b.add_argument("--gles", action="store_true", help="install the GLI shim as GLEngine plus GLTest/GLTest2.app (run contrib/ipad1-gles/build.sh first)")
     b.add_argument("--page-flip", action="store_true", help="leave CoreAnimation's IOMFB page flipping on (no MBX2D_PAGE_FLIP=0)")
-    b.add_argument("--ca-ogl", action="store_true", help="let CoreAnimation composite through GL (no CA_ENABLE_OGL=0; GLI_ACCELERATED=1)")
+    b.add_argument("--no-ca-ogl", dest="ca_ogl", action="store_false",
+                   help="software CoreAnimation (CA_ENABLE_OGL=0) instead of the default GL compositing through the GLI shim")
     b.add_argument("--hidbridge", action="store_true", help="install the hardware-keyboard daemon (run contrib/ipad1-hidbridge/build.sh first)")
     b.add_argument("--appsync", action="store_true", help="install libappsync.dylib and inject it into installd (+ symbol-located shared-cache patch) (run contrib/appsync/build.sh first)")
     f = sub.add_parser("fetch")
