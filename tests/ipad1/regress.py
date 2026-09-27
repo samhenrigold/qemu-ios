@@ -67,9 +67,9 @@ class Boot:
     creates) is the machine's default; wifi=False turns it off. wav records the audio out."""
     n = 0
 
-    def __init__(self, cfg, tag, overlay=None, keyboard=False, usb=True, wifi=True, wav=None):
+    def __init__(self, cfg, tag, overlay=None, keyboard=False, usb=True, wifi=True, wav=None, extra=()):
         Boot.n += 1
-        self.cfg, self.tag, self.keyboard = cfg, tag, keyboard
+        self.cfg, self.tag, self.keyboard, self.extra = cfg, tag, keyboard, list(extra)
         self.usb, self.wifi, self.wav = usb, wifi, wav
         self.dir = os.path.join(cfg.out, tag)
         os.makedirs(self.dir, exist_ok=True)
@@ -102,6 +102,7 @@ class Boot:
             argv += ["-audio", "driver=wav,path=" + self.wav] if self.wav else []
             # A USB keyboard takes QMP keys ahead of the machine's button chords, so only boots that type get one.
             argv += ["-device", "usb-kbd,bus=usb-bus.0"] if self.keyboard else []
+            argv += self.extra
             self.qemu = self.procs.spawn(argv, os.path.join(self.dir, "qemu.log"))
             time.sleep(2)
         self.qmp = itqmp.QMP(self.sock, timeout=60)
