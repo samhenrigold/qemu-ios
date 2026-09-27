@@ -272,6 +272,94 @@ def icon_slot(b, bundle):
     return None
 
 
+def _syslog_has(path, needles, since=0):
+    """(matched_bool, new_size): scan the syslog from byte offset `since` for any needle."""
+    try:
+        with open(path, errors="replace") as f:
+            f.seek(since)
+            txt = f.read()
+        low = txt.lower()
+        return (any(n.lower() in low for n in needles if n), since + len(txt.encode("utf-8", "replace")))
+    except OSError:
+        return (False, since)
+
+
+def syslog_launch(b, rg, cfg, r, res, syslog, end):
+    """Launch verdict from idevicesyslog alone (no screendumps): navigate blind to the
+    app's icon (sbservices gives page/slot), tap, and decide from the app's own syslog
+    lines and crash reports. Screendumps are black under GL-CA, so pixels aren't used."""
+    bundle = r["bundle"]
+    appname = (r["name"] or "").replace(" ", "")
+    launch_needles = [bundle, bundle.split(".")[-1], appname]
+    serial = b.serial
+    # 1. wait until SpringBoard has the display up, read from SERIAL (idevicesyslog drops its
+    # lockdown link under load; the serial console is always captured). ApplePinotLCD enable
+    # means SpringBoard is rendering.
+    while time.time() < end:
+        hit, _ = _syslog_has(serial, ["_lcdEnable: enable: 1", "SpringBoard"])
+        if hit:
+            break
+        time.sleep(3)
+    else:
+        res["verdict"], res["note"] = "NO-BOOT", "display never came up on serial"
+        return res
+    time.sleep(8)
+    # 2. sbservices: exact page/slot of the new icon.
+    slot = icon_slot(b, bundle) or (2, 0, 0)
+    page, row, col = slot
+    res["note"] = "slot p%d r%d c%d" % slot
+    # 3. blind navigation (no frame feedback): unlock, page over, tap. Timed, but the
+    # verdict comes from syslog so a missed tap just reads as NO-LAUNCH (retryable).
+    b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO); time.sleep(3)
+    b.press("home"); time.sleep(1)                  # dismiss any install wiggle/help
+    for _ in range(page - 1):
+        b.drag(*NEXT_PAGE); time.sleep(3)
+    # fresh idevicesyslog right before the tap, so the capture is alive for the launch window
+    # even if the long-lived one dropped. It's a Boot.procs child (killed at b.stop()).
+    launchlog = os.path.join(b.dir, "launch-syslog.log")
+    b.procs.spawn(["idevicesyslog"], launchlog, env=b.env())
+    time.sleep(3)
+    b.tap(GRID(row, col))
+    # 4. watch syslog for the app process; bounded wait.
+    launched = False
+    deadline = min(end, time.time() + 45)
+    while time.time() < deadline:
+        launched, _ = _syslog_has(launchlog, launch_needles)
+        if launched:
+            break
+        time.sleep(2)
+    # also accept the long-lived capture in case the fresh one dropped
+    if not launched:
+        launched, _ = _syslog_has(syslog, launch_needles)
+    # 5. crash reports.
+    crashdir = os.path.join(b.dir, "crash")
+    os.makedirs(crashdir, exist_ok=True)
+    b.run(["idevicecrashreport", "-e", crashdir], timeout=90)
+    tokens = [t for t in (bundle.split(".")[-1].lower(), appname.lower()) if len(t) >= 3]
+    crashes = [f for _, _, fs in os.walk(crashdir) for f in fs
+               if f.lower().endswith((".crash", ".ips", ".plist"))
+               and not f.lower().startswith(("lockdownd", "baseband", "stacks"))
+               and any(t in f.lower() for t in tokens)]
+    try:
+        res["glishim"] = open(os.path.join(b.dir, "qemu.log"), errors="replace").read().count("[glishim] unimplemented")
+    except OSError:
+        pass
+    if crashes:
+        exc = ""
+        for dp, _, fs in os.walk(crashdir):
+            if crashes[0] in fs:
+                m = re.search(r"Exception Type:\s*(.+)", open(os.path.join(dp, crashes[0]), errors="replace").read())
+                exc = m.group(1).strip() if m else ""
+                break
+        res["verdict"] = "CRASH"
+        res["note"] = ("%s | %s" % (exc, crashes[0]))[:140] if exc else crashes[0][:120]
+    elif launched:
+        res["verdict"], res["note"] = "LAUNCH", "syslog: app process started (%s)" % res["note"]
+    else:
+        res["verdict"], res["note"] = "NO-LAUNCH", "no app syslog line, no crash (%s)" % res["note"]
+    return res
+
+
 def launch_one(rg, cfg, ipa, r, install_only=False):
     """Install + launch one IPA on a fresh overlay. Returns dict: verdict, note, shot, crash, glishim."""
     tag = re.sub(r"[^A-Za-z0-9_.-]", "_", r["bundle"] or os.path.basename(ipa))[:60]
@@ -302,9 +390,11 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         # syslog, to confirm the app process starts (not pixels alone)
         syslog = os.path.join(b.dir, "syslog.log")
         b.procs.spawn(["idevicesyslog"], syslog, env=b.env())
+        end = time.time() + cfg.boot_timeout - 30
+        if getattr(cfg, "syslog_only", False):
+            return syslog_launch(b, rg, cfg, r, res, syslog, end)
         # Event-driven navigation: wait on frame state, not fixed sleeps, so host load
         # doesn't matter. Overall bound = the qemu timeout.
-        end = time.time() + cfg.boot_timeout - 30
         # 1. wait for a lit, settled frame (the lock screen). snap() normalizes the backlight
         # and wakes the panel, so a dim/asleep lock screen is detected (raw picture() reads 0%).
         lock = wait_stable(b, rg, tag, min(end, time.time() + 240), want_lit=True)
@@ -411,7 +501,7 @@ def run_pass(a):
     cfg = argparse.Namespace(out=out, kboot=os.path.join(FILES, "7B500", "k48-kboot.bin"),
                              nand=nand, qemu=os.path.join(ROOT, "build", "qemu-system-arm"),
                              usbmuxd=os.path.expanduser("~/Developer/usbmuxd-qemu-ipad1-net/src/usbmuxd"),
-                             boot_timeout=a.boot_timeout, files=FILES)
+                             boot_timeout=a.boot_timeout, files=FILES, syslog_only=a.syslog_only)
     import json
     resdir = os.path.join(out, "results")
     os.makedirs(resdir, exist_ok=True)
@@ -508,6 +598,7 @@ def main():
     ap.add_argument("--boot-timeout", type=int, default=240)
     ap.add_argument("--jobs", type=int, default=1, help="run: apps in parallel (each its own overlay + ports)")
     ap.add_argument("--install-only", action="store_true", help="run: install + list only, no launch (deterministic)")
+    ap.add_argument("--syslog-only", action="store_true", help="run: launch, verdict from idevicesyslog + crash logs, no screendumps")
     ap.add_argument("--redo", action="store_true", help="run: re-test apps that already have a result")
     ap.add_argument("--selfcheck", action="store_true")
     a = ap.parse_args()
