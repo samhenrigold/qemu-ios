@@ -506,6 +506,10 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
             c->ctrl = (c->ctrl & ~ST_RUNNING) | ST_ABORTED;
         }
         if ((v & CTRL_GO) && !(v & CTRL_HOLD)) {
+            if (getenv("S5L8930_CDMA_TRACE")) {
+                fprintf(stderr, "[CDMA] go ch 0x%x ctrl 0x%x set 0x%x fifo 0x%x "
+                        "desc 0x%x\n", ch, v, c->settings, c->fifo, c->desc);
+            }
             cdma_run(s, ch);
         }
         break;
