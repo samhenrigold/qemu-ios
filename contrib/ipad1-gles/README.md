@@ -92,13 +92,15 @@ glishim sends it, the host logs `[gles] UNHANDLED slot` once and returns 0; `stu
 number, glishim logs `[glishim] unimplemented GL entry point NAME` once. Regenerate with
 `python3 gligen.py --coverage` after a host change.
 
-Summary: forwarded, host UNHANDLED: 80, guest (glishim answers): 1, host: 186, stub (no wire slot): 1.
+Summary: forwarded, host UNHANDLED: 58, guest (glishim answers): 1, host: 208, stub (no wire slot): 1.
 
-Gaps that matter most: ES1 fixed-function leftovers (glLightf/LightModel*, glPointParameter*,
-glClipPlane*, glLogicOp, the GL_FIXED getters), glCopyTexSubImage2D, glIsEnabled/glIsTexture/glIsBuffer,
-glBlendEquation(Separate)/glBlendFuncSeparate (ES2 core), buffer mapping (glMapBuffer returns a host
-pointer and cannot work as a plain forward), the APPLE fence family, and ES2 queries
-(glGetUniform*v, glGetVertexAttribfv, glGetShaderSource).
+Gaps that matter most: the GL_FIXED getters and the fixed-point light/material/texenv/fog/
+point-parameter setters (glLightx, glTexEnvx, glFogx, ...), buffer mapping (glMapBuffer returns a host
+pointer and cannot work as a plain forward), the APPLE fence family, ES2 queries (glGetUniform*v,
+glGetVertexAttribfv, glGetShaderSource), glIsBuffer and the palette-matrix OES extension. The ES 1.1
+gap fills from the iPod main line (point size array, DrawTex, blend separate/equation, glLightf/
+LightModel, glPointParameter, glClipPlanef, glLogicOp, glIsEnabled/glIsTexture, glCopyTexSubImage2D)
+reach the iPad through mbxshim.c's thunks, which gli_fill places at the 3.2 slots.
 
 | slot | entry point | ES1 | ES2 | status |
 |---|---|---|---|---|
@@ -113,7 +115,7 @@ pointer and cannot work as a plain forward), the APPLE fence family, and ES2 que
 | 49 | glColorMask | Y | Y | host |
 | 51 | glColorPointer | Y |  | host |
 | 54 | glCopyTexImage2D | Y | Y | host |
-| 56 | glCopyTexSubImage2D | Y | Y | forwarded, host UNHANDLED |
+| 56 | glCopyTexSubImage2D | Y | Y | host |
 | 57 | glCullFace | Y | Y | host |
 | 59 | glDeleteTextures | Y | Y | host |
 | 60 | glDepthFunc | Y | Y | host |
@@ -146,16 +148,16 @@ pointer and cannot work as a plain forward), the APPLE fence family, and ES2 que
 | 126 | glGetTexParameterfv | Y | Y | host |
 | 127 | glGetTexParameteriv | Y | Y | host |
 | 128 | glHint | Y | Y | host |
-| 143 | glIsEnabled | Y | Y | forwarded, host UNHANDLED |
-| 145 | glIsTexture | Y | Y | forwarded, host UNHANDLED |
-| 146 | glLightModelf | Y |  | forwarded, host UNHANDLED |
-| 147 | glLightModelfv | Y |  | forwarded, host UNHANDLED |
-| 150 | glLightf | Y |  | forwarded, host UNHANDLED |
+| 143 | glIsEnabled | Y | Y | host |
+| 145 | glIsTexture | Y | Y | host |
+| 146 | glLightModelf | Y |  | host |
+| 147 | glLightModelfv | Y |  | host |
+| 150 | glLightf | Y |  | host |
 | 151 | glLightfv | Y |  | host |
 | 155 | glLineWidth | Y | Y | host |
 | 157 | glLoadIdentity | Y |  | host |
 | 159 | glLoadMatrixf | Y |  | host |
-| 161 | glLogicOp | Y |  | forwarded, host UNHANDLED |
+| 161 | glLogicOp | Y |  | host |
 | 170 | glMaterialf | Y |  | host |
 | 171 | glMaterialfv | Y |  | host |
 | 174 | glMatrixMode | Y |  | host |
@@ -189,9 +191,9 @@ pointer and cannot work as a plain forward), the APPLE fence family, and ES2 que
 | 309 | glTranslatef | Y |  | host |
 | 334 | glVertexPointer | Y |  | host |
 | 335 | glViewport | Y | Y | host |
-| 336 | glBlendFuncSeparate | Y | Y | forwarded, host UNHANDLED |
+| 336 | glBlendFuncSeparate | Y | Y | host |
 | 337 | glBlendColor |  | Y | host |
-| 338 | glBlendEquation | Y | Y | forwarded, host UNHANDLED |
+| 338 | glBlendEquation | Y | Y | host |
 | 341 | glClientActiveTexture | Y |  | host |
 | 342 | glActiveTexture | Y | Y | host |
 | 369 | glMultiTexCoord4f | Y |  | host |
@@ -200,7 +202,7 @@ pointer and cannot work as a plain forward), the APPLE fence family, and ES2 que
 | 382 | glCompressedTexSubImage3D |  |  | forwarded, host UNHANDLED |
 | 383 | glCompressedTexSubImage2D | Y | Y | host |
 | 405 | glDrawRangeElements |  |  | forwarded, host UNHANDLED |
-| 458 | glBlendEquationSeparate | Y | Y | forwarded, host UNHANDLED |
+| 458 | glBlendEquationSeparate | Y | Y | host |
 | 459 | glSampleCoverage | Y | Y | host |
 | 463 | glGenFencesAPPLE | Y | Y | forwarded, host UNHANDLED |
 | 464 | glDeleteFencesAPPLE | Y | Y | forwarded, host UNHANDLED |
@@ -224,8 +226,8 @@ pointer and cannot work as a plain forward), the APPLE fence family, and ES2 que
 | 515 | glGetVertexAttribfv |  | Y | forwarded, host UNHANDLED |
 | 516 | glGetVertexAttribiv |  | Y | host |
 | 517 | glGetVertexAttribPointerv |  | Y | host |
-| 540 | glPointParameterf | Y |  | forwarded, host UNHANDLED |
-| 541 | glPointParameterfv | Y |  | forwarded, host UNHANDLED |
+| 540 | glPointParameterf | Y |  | host |
+| 541 | glPointParameterfv | Y |  | host |
 | 586 | glStencilOpSeparate |  | Y | host |
 | 591 | glDeleteShader |  |  | host |
 | 593 | glDetachShader |  | Y | host |
@@ -312,7 +314,7 @@ pointer and cannot work as a plain forward), the APPLE fence family, and ES2 que
 | 765 | glClearColorx | Y |  | host |
 | 766 | glClearDepthf | Y | Y | host |
 | 767 | glClearDepthx | Y |  | host |
-| 768 | glClipPlanef | Y |  | forwarded, host UNHANDLED |
+| 768 | glClipPlanef | Y |  | host |
 | 769 | glClipPlanex | Y |  | forwarded, host UNHANDLED |
 | 770 | glColor4x | Y |  | host |
 | 771 | glDepthRangef | Y | Y | host |
@@ -353,19 +355,19 @@ pointer and cannot work as a plain forward), the APPLE fence family, and ES2 que
 | 806 | glSampleCoveragex | Y |  | host |
 | 807 | glPointParameterx | Y |  | forwarded, host UNHANDLED |
 | 808 | glPointParameterxv | Y |  | forwarded, host UNHANDLED |
-| 809 | glPointSizePointerOES | Y |  | forwarded, host UNHANDLED |
+| 809 | glPointSizePointerOES | Y |  | host |
 | 810 | glCurrentPaletteMatrixOES | Y |  | forwarded, host UNHANDLED |
 | 811 | glLoadPaletteFromModelViewMatrixOES | Y |  | forwarded, host UNHANDLED |
 | 812 | glMatrixIndexPointerOES | Y |  | forwarded, host UNHANDLED |
 | 813 | glWeightPointerOES | Y |  | forwarded, host UNHANDLED |
-| 814 | glDrawTexsOES | Y |  | forwarded, host UNHANDLED |
-| 815 | glDrawTexiOES | Y |  | forwarded, host UNHANDLED |
-| 816 | glDrawTexxOES | Y |  | forwarded, host UNHANDLED |
-| 817 | glDrawTexsvOES | Y |  | forwarded, host UNHANDLED |
-| 818 | glDrawTexivOES | Y |  | forwarded, host UNHANDLED |
-| 819 | glDrawTexxvOES | Y |  | forwarded, host UNHANDLED |
-| 820 | glDrawTexfOES | Y |  | forwarded, host UNHANDLED |
-| 821 | glDrawTexfvOES | Y |  | forwarded, host UNHANDLED |
+| 814 | glDrawTexsOES | Y |  | host |
+| 815 | glDrawTexiOES | Y |  | host |
+| 816 | glDrawTexxOES | Y |  | host |
+| 817 | glDrawTexsvOES | Y |  | host |
+| 818 | glDrawTexivOES | Y |  | host |
+| 819 | glDrawTexxvOES | Y |  | host |
+| 820 | glDrawTexfOES | Y |  | host |
+| 821 | glDrawTexfvOES | Y |  | host |
 | 822 | glShaderBinary |  | Y | host |
 | 823 | glGetShaderPrecisionFormat |  | Y | host |
 | 824 | glReleaseShaderCompiler |  | Y | host |
