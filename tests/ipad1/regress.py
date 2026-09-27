@@ -12,7 +12,8 @@ host), up to five QEMUs at once host-wide (pgrep -x). While the host is busy, ru
   usbmux   ideviceinfo over the bridge answers ProductVersion 3.2.2, DeviceClass iPad
   afc      push and pull files at sizes that are not multiples of 512, SHA-256 identical
   persist  a file pushed over AFC survives a reboot on the same overlay (see check_persist)
-  net      the default network, Wi-Fi (BCM4329, wifi=on, QEMU slirp netdev): Safari, typed on the
+  wifi     the BCM4329 comes up, joins the model's open "qemu-ios" BSS and takes a DHCP lease (serial)
+  net      the default network, Wi-Fi (BCM4329 on the machine's slirp netdev): Safari, typed on the
            emulated USB keyboard, fetches a page from a host HTTP server at 10.0.2.2
   audio    tests/ipad1/audio-check.py: boot sound, unlock, lock, unlock correlate with the originals
   net-usb  (opt-in) the same fetch over USB Ethernet: en1, usbmuxd's slirp, it_ethlink in the image
@@ -44,7 +45,7 @@ Result, Procs, free_port, sha256_file, log = ipod.Result, ipod.Procs, ipod.free_
 
 FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1")
 USBMUXD = os.path.expanduser("~/Developer/usbmuxd-qemu-ipad1-net/src/usbmuxd")
-DEFAULT_CHECKS = ["boot", "usbmux", "afc", "persist", "net", "audio"]
+DEFAULT_CHECKS = ["boot", "usbmux", "afc", "persist", "wifi", "net", "audio"]
 PENDING = {"appinstall": "stock installd rejects apps not validly signed for this device",
            "applaunch": "needs appinstall", "gles": "needs appinstall (GLTest is ldid-signed)"}
 MAX_QEMUS = 5
@@ -62,11 +63,11 @@ launch_lock = threading.Lock()
 
 class Boot:
     """One QEMU on an overlay of the golden store, plus (usb=True) the usbmuxd bridge; without it the
-    machine's built-in USB host configures the device. wifi=True adds the BCM4329 on a slirp netdev,
-    wav records the audio out."""
+    machine's built-in USB host configures the device. Wi-Fi (the BCM4329 on a slirp netdev the machine
+    creates) is the machine's default; wifi=False turns it off. wav records the audio out."""
     n = 0
 
-    def __init__(self, cfg, tag, overlay=None, keyboard=False, usb=True, wifi=False, wav=None):
+    def __init__(self, cfg, tag, overlay=None, keyboard=False, usb=True, wifi=True, wav=None):
         Boot.n += 1
         self.cfg, self.tag, self.keyboard = cfg, tag, keyboard
         self.usb, self.wifi, self.wav = usb, wifi, wav
@@ -95,11 +96,9 @@ class Boot:
                 self.procs.spawn([cfg.usbmuxd, "-f", "-v", "-v", "-S", "127.0.0.1:%d" % self.mux_port,
                                   "-P", "NONE", "-C", os.path.join(self.dir, "conf")], self.muxlog, env=env)
                 machine += ",usb-tcp-addr=127.0.0.1:%d" % self.usb_port
-            argv = ["timeout", str(cfg.boot_timeout), cfg.qemu, "-machine", machine + (",wifi=on" if self.wifi else ""),
+            argv = ["timeout", str(cfg.boot_timeout), cfg.qemu, "-machine", machine + ("" if self.wifi else ",wifi=off"),
                     "-display", "none", "-monitor", "none", "-serial", "file:" + self.serial,
                     "-qmp", "unix:%s,server,nowait" % self.sock]
-            # slirp's defaults: 10.0.2.0/24, gateway 10.0.2.2 = host loopback, DHCP from .15
-            argv += ["-netdev", "user,id=wifi0"] if self.wifi else []
             argv += ["-audio", "driver=wav,path=" + self.wav] if self.wav else []
             # A USB keyboard takes QMP keys ahead of the machine's button chords, so only boots that type get one.
             argv += ["-device", "usb-kbd,bus=usb-bus.0"] if self.keyboard else []
@@ -354,12 +353,35 @@ def safari_fetch(cfg, r, tag, via, **kw):
 
 def check_net(cfg, r):
     """The default network: the BCM4329 on a QEMU slirp netdev (wifi=on), built-in USB host."""
-    safari_fetch(cfg, r, "net", "Wi-Fi en0 (QEMU slirp)", usb=False, wifi=True)
+    safari_fetch(cfg, r, "net", "Wi-Fi en0 (QEMU slirp)", usb=False)
 
 
 def check_net_usb(cfg, r):
     """Opt-in: USB Ethernet, en1 on usbmuxd's slirp (needs it_ethlink in the image)."""
-    safari_fetch(cfg, r, "net-usb", "USB Ethernet en1 (usbmuxd slirp)")
+    safari_fetch(cfg, r, "net-usb", "USB Ethernet en1 (usbmuxd slirp)", wifi=False)
+
+
+def check_wifi(cfg, r):
+    """Stock AppleBCMWLAN joins the model's open BSS and takes a lease (a4-guest; docs/ipad1/wifi.md)."""
+    b, detail = booted(cfg, "wifi", r, usb=False)
+    try:
+        if not detail:
+            return
+        t0, text = time.time(), ""
+        while time.time() - t0 < 120:
+            text = open(b.serial, errors="replace").read()
+            if "receivedIPv4Address(): Received IP Address" in text:
+                break
+            time.sleep(2)
+        joined = 'ssid[ 8] = "qemu-ios"' in text
+        leased = "Received IP Address" in text
+        fw = "BCM4329 revision B1" in text and "initFirmware(): successful initialization" in text
+        if joined and leased and fw:
+            r.set(True, "BCM4329 B1 up, joined qemu-ios, DHCP lease")
+        else:
+            r.set(False, "firmware=%s joined=%s lease=%s" % (fw, joined, leased))
+    finally:
+        b.stop()
 
 
 def check_audio(cfg, r):
@@ -386,7 +408,7 @@ def check_audio(cfg, r):
 
 
 CHECKS = {"boot": check_boot, "usbmux": check_usbmux, "afc": check_afc, "persist": check_persist,
-          "net": check_net, "net-usb": check_net_usb, "audio": check_audio}
+          "net": check_net, "net-usb": check_net_usb, "wifi": check_wifi, "audio": check_audio}
 
 
 def main():
