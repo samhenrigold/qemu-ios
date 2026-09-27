@@ -29,6 +29,7 @@ struct S5L8930LTC4099State {
     uint8_t reg;            /* current register, auto-incrementing */
     bool addressing;        /* next byte received is the register number */
     bool usb_present;       /* the cable: STAT bit 0x80 */
+    bool charging;          /* STAT charge state 1 when set */
 };
 
 static int ltc4099_event(I2CSlave *i2c, enum i2c_event event)
@@ -47,7 +48,7 @@ static uint8_t ltc4099_recv(I2CSlave *i2c)
     uint8_t reg = s->reg++ & 3;
 
     if (reg == 0) {
-        return s->usb_present ? LTC_STATUS_USB : 0;
+        return (s->usb_present ? LTC_STATUS_USB : 0) | (s->charging ? 1 : 0);
     }
     return s->regs[reg];
 }
@@ -68,6 +69,11 @@ static int ltc4099_send(I2CSlave *i2c, uint8_t data)
 void s5l8930_ltc4099_set_usb(DeviceState *dev, bool present)
 {
     S5L8930_LTC4099(dev)->usb_present = present;
+}
+
+void s5l8930_ltc4099_set_charging(DeviceState *dev, bool charging)
+{
+    S5L8930_LTC4099(dev)->charging = charging;
 }
 
 static void ltc4099_reset(DeviceState *dev)

@@ -3,7 +3,7 @@
 
     tests/ipad1/gl-drive.py --nand STORE --out DIR [--kboot K] [--seconds N] STEP...
 
-STEP is one of  sleep:S  shot:NAME  tap:X,Y  swipe:X1,Y1,X2,Y2  home  wait:TEXT
+STEP is one of  sleep:S  shot:NAME  tap:X,Y  swipe:X1,Y1,X2,Y2  home  button:NAME  key:QCODE  wait:TEXT
 (scanout pixels, 1024x768; wait:TEXT polls the serial log). The base store is
 never written: its changes go to DIR/overlay. Serial, QEMU stderr (the GLES
 host log) and NAME.png screendumps land in DIR.
@@ -69,6 +69,10 @@ def main():
                 itqmp.swipe(q, *nums, steps=20, dt=0.03)
             elif op == "home":
                 itqmp.button(q, "home")
+            elif op == "button":            # home, power, volup, voldown
+                itqmp.button(q, arg)
+            elif op == "key":               # a raw qcode (USB keyboard)
+                itqmp.key(q, arg)
             else:
                 raise SystemExit("bad step %r" % step)
         q.cmd("quit")
