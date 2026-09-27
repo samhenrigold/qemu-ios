@@ -287,6 +287,13 @@ typedef struct BCMSDIOChip {
     uint32_t sdiod_base;       /* the SDIO device core on the backplane */
     const char *vers1[4];      /* CISTPL_VERS_1 strings; none if [0] is NULL */
     uint8_t mac[6];            /* CISTPL_FUNCE type 4 */
+    /*
+     * Leave out function 0's common FUNCE. AppleBCMWLAN-2.60 reads every
+     * FUNCE body as {type, len, data} records looking for the MAC, and the
+     * common one (00 00 02 32) reads as a 50-byte record that isn't there.
+     */
+    bool no_common_funce;
+    const char *fw_version;    /* the "ver" iovar; NULL answers zeroes */
 } BCMSDIOChip;
 
 typedef struct IPodTouchSDIOState

@@ -10,8 +10,10 @@
  *
  * Boot input is a K48KBOOT bundle from imgtools/ipad1_kboot.py: a flat image of
  * physical memory (kernel, filled device tree, boot_args) followed by a 24-byte
- * trailer {char magic[8]; u32 load_pa, entry_pa, bootargs_pa, image_len}. We
- * copy it into DRAM on every reset and start the CPU at entry_pa in ARM state
+ * trailer {char magic[8]; u32 load_pa, entry_pa, bootargs_pa, image_len}.
+ * Between the image and the trailer sit optional segments {"K48SEG\0\0";
+ * u32 pa, len, flags; data unless flags bit 0 = zero-fill}: iBoot's boot-logo
+ * framebuffer. We copy it into DRAM on every reset and start the CPU at entry_pa in ARM state
  * with the MMU off and r0 = bootargs_pa, which is the state the kernel's
  * _start expects from iBoot.
  */
@@ -19,6 +21,9 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
+#include "qemu/config-file.h"
+#include "qemu/option.h"
+#include "net/net.h"
 #include "exec/address-spaces.h"
 #include "hw/boards.h"
 #include "hw/irq.h"
@@ -75,6 +80,7 @@ struct IPad1MachineState {
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
     bool kbd_cmd, kbd_shift;
+    bool btn_hold, btn_home;             /* button-hold/-home properties */
     int kbd_btn_held[Q_KEY_CODE__MAX];   /* qcode -> 1 + button pin */
     int mtt_x[MT_MAX_FINGERS], mtt_y[MT_MAX_FINGERS];  /* latched per slot */
     bool mtt_seen[MT_MAX_FINGERS];
@@ -95,6 +101,7 @@ static uint32_t s5l8930_usb_hwcfg[] = { 0, 0x7a8f60d0, 0x082000e8, 0x01f08024 };
 
 #define KBOOT_MAGIC "K48KBOOT"
 #define KBOOT_TRAILER_LEN 24
+#define KBOOT_SEGMENT_LEN 20
 
 static qemu_irq ipad1_irq(IPad1MachineState *s, int irq)
 {
@@ -186,6 +193,23 @@ static void ipad1_cpu_reset(void *opaque)
                             MEMTXATTRS_UNSPECIFIED, data, image_len) != MEMTX_OK) {
         error_report("ipad1: cannot stage kboot bundle at 0x%x", load_pa);
         exit(1);
+    }
+    for (gsize off = image_len; off + KBOOT_SEGMENT_LEN <= size - KBOOT_TRAILER_LEN;) {
+        const uint8_t *seg = (const uint8_t *)data + off;
+        uint32_t pa = ldl_le_p(seg + 8), len = ldl_le_p(seg + 12);
+        bool zero = ldl_le_p(seg + 16) & 1;
+
+        off += KBOOT_SEGMENT_LEN + (zero ? 0 : len);
+        if (memcmp(seg, "K48SEG\0\0", 8) != 0 || off > size - KBOOT_TRAILER_LEN) {
+            error_report("ipad1: malformed segment in kboot bundle");
+            exit(1);
+        }
+        if (zero) {
+            address_space_set(&address_space_memory, pa, 0, len, MEMTXATTRS_UNSPECIFIED);
+        } else {
+            address_space_write(&address_space_memory, pa, MEMTXATTRS_UNSPECIFIED,
+                                seg + KBOOT_SEGMENT_LEN, len);
+        }
     }
 
     /* cpu_reset leaves us in SVC mode, IRQ/FIQ masked, MMU and caches off. */
@@ -530,12 +554,27 @@ static void ipad1_init(MachineState *machine)
             .sdiod_base = 0x18011000,               /* where initDongle polls */
             .vers1 = { "", "", "s=B1", "P=K48 m=u80" },
             .mac = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 },  /* = DT */
+            .no_common_funce = true,
+            /* what the K48 image in wifiFirmwareLoader reports */
+            .fw_version = "wl0: Jul 21 2010 21:58:50 version 4.218.175.43",
         };
         IPodTouchSDIOState *card = IPOD_TOUCH_SDIO(qdev_new(TYPE_IPOD_TOUCH_SDIO));
 
         ipod_touch_sdio_set_chip(card, &bcm4329);
         card->card_present = true;
         sysbus_realize_and_unref(SYS_BUS_DEVICE(card), &error_fatal);
+        if (!qemu_find_netdev("wifi0")) {
+            /* Wi-Fi is the iPad's network: with no backend given, NAT it. */
+            QemuOpts *o = qemu_opts_parse_noisily(qemu_find_opts("netdev"),
+                                                  "type=user,id=wifi0", false);
+            Error *err = NULL;
+            if (o) {
+                netdev_add(o, &err);
+            }
+            if (err) {
+                warn_reportf_err(err, "Wi-Fi has no network: ");
+            }
+        }
         ipod_touch_sdio_setup_net(card);
 
         sdio = qdev_new(TYPE_S5L8930_SDIO);
@@ -715,6 +754,9 @@ static void ipad1_init(MachineState *machine)
                            qemu_chardev_new(NULL, TYPE_CHARDEV_S5L8930_HDQ,
                                             NULL, NULL, &error_abort),
                            ipad1_irq(s, S5L8930_IRQ_UART(5)), true);
+    /* UART3: the BCM4329's HCI link (uart3/bluetooth,n88); nothing answers yet. */
+    exynos4210_uart_create(S5L8930_UART_BASE(3), 256, 3, NULL,
+                           ipad1_irq(s, S5L8930_IRQ_UART(3)), true);
     ipad1_battery_update(s);
 
     qemu_register_reset(ipad1_cpu_reset, s);
@@ -972,6 +1014,7 @@ static void ipad1_set_wifi(Object *obj, bool value, Error **errp)
 static void ipad1_instance_init(Object *obj)
 {
     IPAD1_MACHINE(obj)->usb_cable = true;
+    IPAD1_MACHINE(obj)->wifi = true;
     guest_pb_init(&IPAD1_MACHINE(obj)->pb, obj, "ipad1");
     IPAD1_MACHINE(obj)->battery_level = 80;
 }
@@ -983,6 +1026,37 @@ static void ipad1_instance_finalize(Object *obj)
     g_free(IPAD1_MACHINE(obj)->nand_path);
     g_free(IPAD1_MACHINE(obj)->nand_overlay_path);
     g_free(IPAD1_MACHINE(obj)->nor_path);
+}
+
+/*
+ * Hold and Home as machine properties, for when a usb-kbd owns the host
+ * keyboard and the Cmd chords no longer reach ipad1_kbd_event:
+ *   qom-set path=/machine property=button-hold value=true   (then false)
+ */
+static bool ipad1_get_button_hold(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->btn_hold;
+}
+
+static void ipad1_set_button_hold(Object *obj, bool value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    s->btn_hold = value;
+    ipad1_set_button(s, S5L8930_GPIO_BTN_HOLD, value);
+}
+
+static bool ipad1_get_button_home(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->btn_home;
+}
+
+static void ipad1_set_button_home(Object *obj, bool value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    s->btn_home = value;
+    ipad1_set_button(s, S5L8930_GPIO_BTN_MENU, value);
 }
 
 static void ipad1_class_init(ObjectClass *klass, void *data)
@@ -1015,7 +1089,8 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
         "usbmuxd-qemu host bridge host:port (default port 1235); unset = IT_USB_TCP or no link");
     object_class_property_add_bool(klass, "wifi", ipad1_get_wifi, ipad1_set_wifi);
     object_class_property_set_description(klass, "wifi",
-        "Model the BCM4329 Wi-Fi card (frames to -netdev id=wifi0); off = no card");
+        "The BCM4329 Wi-Fi card, the iPad's network (default on). Frames go to "
+        "-netdev id=wifi0, or to user networking when none is given; off = no card");
     object_class_property_add_bool(klass, "usb-cable", ipad1_get_usb_cable,
                                    ipad1_set_usb_cable);
     object_class_property_set_description(klass, "usb-cable",
@@ -1035,6 +1110,14 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
                               ipad1_set_accel_angle, NULL, NULL);
     object_class_property_add_str(klass, "accel-pose", ipad1_get_accel_pose,
                                   ipad1_set_accel_pose);
+    object_class_property_add_bool(klass, "button-hold", ipad1_get_button_hold,
+                                   ipad1_set_button_hold);
+    object_class_property_set_description(klass, "button-hold",
+        "Hold/power button pressed; set true then false");
+    object_class_property_add_bool(klass, "button-home", ipad1_get_button_home,
+                                   ipad1_set_button_home);
+    object_class_property_set_description(klass, "button-home",
+        "Home button pressed; set true then false");
 }
 
 static const TypeInfo ipad1_machine_info = {

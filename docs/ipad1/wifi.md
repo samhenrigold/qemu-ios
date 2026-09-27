@@ -1,12 +1,20 @@
 # iPad 1 (7B500) Wi-Fi: BCM4329
 
-**Status: parked after stage 1 (2026-09-27, Sam).** `wifi` stays off by default. The work had
-already reached a working link (the next section) when it was parked. Pick it up from the
-cosmetics list there.
+**Status: default network (2026-09-27, Sam).** `-machine ipad1` has `wifi=on` unless `wifi=off` is
+given, and it creates `-netdev type=user,id=wifi0` itself when no `wifi0` netdev exists. The stock kernel
+and AppleBCMWLAN join the open BSS "qemu-ios" at about 36 s into boot with no seed, so nothing is needed
+on the host side.
+
+Soak on a golden clone: boot, Safari page, Home, sleep/wake, rotate both ways, 10 min idle then Safari
+reload, reboot (system_reset), rejoin, Safari again. All passed after one fix:
+
+- The card model had no reset. A rebooted guest found a card claiming its firmware was up, never finished
+  the download, and panicked after AppleBCMWLAN's 60 s watchdog. `ipodtouch.sdio` and `s5l8930.sdio`
+  now reset. This also applies to the iPod.
 
 ## Status (2026-09-27): works, stock stack, no guest changes
 
-`-machine ipad1,...,wifi=on -netdev user,id=wifi0` on a golden-pristine clone. The serial log:
+A golden-pristine clone (`wifi=on` was explicit at the time). The serial log:
 
 ```
 IOSDIOIoCardDevice::parseFn0CIS(): Device manufacturer ID 0x2d0, Product ID 0x4329   ProductInfo0 "s=B1"  ProductInfo1 "P=K48 m=u80"
@@ -38,13 +46,15 @@ How it's built (implementation notes):
   It's 0x18011000 on the 4329 and 0x18002000 on the 4325.
 - The dongle model detects CDC 16 / BDC 4 on 2.60 by itself.
 
-Known cosmetics:
+Former cosmetics, all fixed:
 
-- `parseFunctionExtension(): @2 - Error! No space for body of 0x02`. The function 1
-  CIS FUNCE is shorter than 2.60 wants. It's harmless.
-- `BCMWLAN Firmware Version:` is empty.
-- The Wi-Fi Networks pane draws black rectangles over its list under the
-  software CoreAnimation renderer.
+- `parseFunctionExtension(): @2 - Error! No space for body of 0x02`. AppleBCMWLAN-2.60 reads every
+  FUNCE body as {type, len, data} records, so the 4329's CIS leaves out function 0's common FUNCE
+  (`BCMSDIOChip.no_common_funce`).
+- `BCMWLAN Firmware Version:` was empty. It now answers the `ver` iovar:
+  `wl0: Jul 21 2010 21:58:50 version 4.218.175.43`.
+- The Wi-Fi Networks pane used to draw black rectangles. It now renders with "✓ qemu-ios"
+  (screens/wifi-networks.png), after the CoreAnimation texture fixes.
 
 The rest of this document is the feasibility study that preceded the work.
 

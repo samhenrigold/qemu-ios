@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  One-shot: halts the sealing boot cleanly and deletes itself (it_seal.c).
+  Only `ipad1_rootfs.py bake --seal` installs it.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.qemu.it-seal</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/it_seal</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/dev/console</string>
+</dict>
+</plist>

@@ -5,7 +5,7 @@
                           [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge] [--no-usb-net]
     ipad1_rootfs.py fetch [DIR]          copy /var/stash and /var/root/Library/Lockdown off the real iPad (ssh)
     ipad1_rootfs.py report DIR...        list the Mach-Os under DIR that carry no Apple signature
-    ipad1_rootfs.py bake DIR [--tools build/ipad1-guest]   install the pasteboard helper into DIR/system.img
+    ipad1_rootfs.py bake DIR [--tools build/ipad1-guest] [--seal]   install the guest helpers into DIR/system.img
     ipad1_rootfs.py --selfcheck
 
 `build` writes DIR/<base>/{system.img,data.img,unsigned-machos.txt}, then prints the ipad1_nand.py line:
@@ -47,7 +47,7 @@ unsigned-machos.txt: every Mach-O on the system volume and in the stash whose co
 blob (ldid ad-hoc: sshd, bash, apt, Cydia, Substrate) or none at all. Those are what
 `amfi_allow_any_signature=1` has to forgive at exec; Apple's own binaries carry a (possibly empty) CMS slot.
 
-`bake` installs the only guest tool this machine keeps (docs/ipad1/guest-services.md): it_pbd + its launchd job,
+`bake` installs this machine's guest helpers (docs/ipad1/guest-services.md): it_pbd and it_ethlink + their launchd jobs,
 root-owned via the catalog. Nothing else on either volume changes. Build it first with contrib/ipad1-guest/build.sh;
 it is ldid ad-hoc signed, so boot with amfi_allow_any_signature=1.
 """
@@ -98,8 +98,12 @@ USB_ETH_IF = {"Active": True, "BSD Name": "en1", "IOBuiltin": False, "IOInterfac
                              "AppleUSBEthernetDevice/IOEthernetInterface"}
 MOBILE_TOP = ("mobile", "ea")                # uid 501 on the real unit; everything else under /var is root
 # guest tool -> (install path on the system volume, mode); the job comes from contrib/it-pasteboard
-TOOLS = {"it_pbd": ("usr/local/bin/it_pbd", 0o755)}
-PBD_JOB = "System/Library/LaunchDaemons/com.qemu.it-pbd.plist"
+TOOLS = {"it_pbd": ("usr/local/bin/it_pbd", 0o755), "it_ethlink": ("usr/local/bin/it_ethlink", 0o755)}
+# launchd job, installed path -> source under contrib/
+JOBS = {"System/Library/LaunchDaemons/com.qemu.it-pbd.plist": "it-pasteboard/com.qemu.it-pbd.plist",
+        "System/Library/LaunchDaemons/com.qemu.it-ethlink.plist": "it-ethlink/com.qemu.it-ethlink.plist"}
+SEAL_TOOL = {"it_seal": ("usr/local/bin/it_seal", 0o755)}
+SEAL_JOB = {"System/Library/LaunchDaemons/com.qemu.it-seal.plist": "it-seal/com.qemu.it-seal.plist"}
 LC_MAIN, LC_VERSION_MIN_IPHONEOS = 0x80000028, 0x25
 MH_MAGIC, FAT_MAGIC, LC_CODE_SIGNATURE, CS_CMS = 0xFEEDFACE, 0xCAFEBABE, 0x1D, 0x10000
 
@@ -480,7 +484,11 @@ def build(a):
 
 def bake(a):
     system = os.path.join(a.dir, "system.img")
-    job = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/it-pasteboard/com.qemu.it-pbd.plist")
+    contrib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib")
+    TOOLS, JOBS = dict(globals()["TOOLS"]), dict(globals()["JOBS"])
+    if a.seal:      # one-shot clean halt for ipad1_seal.py; it deletes itself on that boot
+        TOOLS.update(SEAL_TOOL)
+        JOBS.update(SEAL_JOB)
     for name in TOOLS:
         with open(os.path.join(a.tools, name), "rb") as f:
             why = guest_tool_problem(f.read())
@@ -492,13 +500,14 @@ def bake(a):
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copyfile(os.path.join(a.tools, name), dst)
             os.chmod(dst, mode)
-        shutil.copyfile(job, os.path.join(m.mnt, PBD_JOB))
-        os.chmod(os.path.join(m.mnt, PBD_JOB), 0o644)
+        for rel, src in JOBS.items():
+            shutil.copyfile(os.path.join(contrib, src), os.path.join(m.mnt, rel))
+            os.chmod(os.path.join(m.mnt, rel), 0o644)
     # noowners mount: launchd ignores a job plist that is not root-owned
-    n = bn.set_owner(system, ["usr/local", "usr/local/bin", PBD_JOB] + [rel for rel, _ in TOOLS.values()], 0, 0)
+    n = bn.set_owner(system, ["usr/local", "usr/local/bin"] + list(JOBS) + [rel for rel, _ in TOOLS.values()], 0, 0)
     shutil.rmtree(os.path.join(a.dir, "mnt-system"), ignore_errors=True)
     print("baked %s + %s into %s (%d catalog records patched); rebuild the NAND store with ipad1_nand.py"
-          % (", ".join(TOOLS), os.path.basename(PBD_JOB), system, n))
+          % (", ".join(TOOLS), ", ".join(os.path.basename(j) for j in JOBS), system, n))
 
 
 def fetch(out):
@@ -611,6 +620,7 @@ def main():
     k = sub.add_parser("bake")
     k.add_argument("dir", help="a build output dir holding system.img and data.img")
     k.add_argument("--tools", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "../build/ipad1-guest"))
+    k.add_argument("--seal", action="store_true", help="also install it_seal, the one-shot clean halt ipad1_seal.py needs")
     a = ap.parse_args()
     selfcheck()
     if a.cmd == "build":

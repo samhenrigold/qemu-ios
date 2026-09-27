@@ -135,6 +135,11 @@ GLES_BUNDLE_ID = "com.qemuios.gltest"
 # alone could not tell them apart at all (the home screen lights *more*
 # sub-pixels than the GL frame does).
 GLES_QUAD_MIN = 0.05
+# And at most this much. The 240x360 view is 0.281 of the panel per colour;
+# 0.498 each (and a 270-row striped variant at 0.281) was the LCD model reading
+# CA's directly scanned-out GL surface as a full-panel framebuffer, which the
+# minimum alone passed.
+GLES_QUAD_MAX = 0.35
 UNLOCK_TRIES = 4
 # Seconds after launch before the first sample: the app has to get through
 # SpringBoard's launch animation and its first present.
@@ -1373,6 +1378,10 @@ def check_gles(cfg, procs, dev, r):
                      % (ma, ca, GLES_QUAD_MIN, lit,
                         "showing something else - SpringBoard, most likely"
                         if lit > 20000 else "dark"))
+    if max(ma, ca, mb, cb) > GLES_QUAD_MAX:
+        return r.set(False, "GLES frame covers more of the panel than the 240x360 "
+                            "view (magenta=%.3f cyan=%.3f, max %.3f): the scanout "
+                            "ignored the view geometry" % (mb, cb, GLES_QUAD_MAX))
     if min(mb, cb) < GLES_QUAD_MIN:
         return r.set(False, "the scene rendered and then vanished within %ds "
                             "(magenta %.3f->%.3f, cyan %.3f->%.3f): the "
@@ -1721,6 +1730,12 @@ def main():
     for path, what in ((cfg.qemu, "qemu binary"), (cfg.base_nand, "base NAND")):
         if not os.path.exists(path):
             sys.exit("missing %s: %s" % (what, path))
+    # Stock FFmpeg makes the H.264 checks fail in a way that looks like a
+    # code regression (tests/ipod/test_h264_snapshot "slice decode failed").
+    import ffmpeg_guard
+    why = ffmpeg_guard.check(cfg.qemu)
+    if why:
+        sys.exit(why)
 
     # usbmuxd and the .ipa are per-check inputs, not run-wide ones: a check
     # that needs one it doesn't have SKIPs instead of taking the whole run

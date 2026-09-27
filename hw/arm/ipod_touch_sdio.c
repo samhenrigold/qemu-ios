@@ -80,12 +80,14 @@ static void ipod_touch_sdio_build_cia(IPodTouchSDIOState *s)
         *cis++ = 0xff;
         *len = cis - len - 1;
     }
-    *cis++ = CIS_FUNCTION_EXTENSION;
-    *cis++ = 0x04;
-    *cis++ = 0x00;               /* extension type 0: common */
-    *cis++ = 0x00;               /* max block size 512 */
-    *cis++ = 0x02;
-    *cis++ = 0x32;               /* max transfer rate 25 MHz */
+    if (!chip->no_common_funce) {
+        *cis++ = CIS_FUNCTION_EXTENSION;
+        *cis++ = 0x04;
+        *cis++ = 0x00;           /* extension type 0: common */
+        *cis++ = 0x00;           /* max block size 512 */
+        *cis++ = 0x02;
+        *cis++ = 0x32;           /* max transfer rate 25 MHz */
+    }
 
     /*
      * AppleBCM4325 gets its MAC address from here. Its parser walks this chain
@@ -634,6 +636,10 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
         } else if (cmd == WLC_GET_VAR && g_str_equal(iovar, "iscanresults") &&
                    payload_len >= ISCAN_TOTAL) {
             fill_iscan_results(s, reply + hdrlen);
+        } else if (cmd == WLC_GET_VAR && g_str_equal(iovar, "ver") &&
+                   s->chip.fw_version && payload_len) {
+            /* initFirmware logs it as "BCMWLAN Firmware Version: %s". */
+            strncpy((char *)reply + hdrlen, s->chip.fw_version, payload_len - 1);
         } else if (cmd == WLC_GET_SSID && payload_len >= 4) {
             /* wlc_ssid_t: a length word then up to 32 bytes. */
             uint32_t n = MIN(strlen(FAKE_SSID), payload_len - 4);
@@ -948,7 +954,9 @@ void ipod_touch_sdio_set_chip(IPodTouchSDIOState *s, const BCMSDIOChip *chip)
 {
     uint8_t chipid[4];
 
-    s->chip = *chip;
+    if (chip != &s->chip) {
+        s->chip = *chip;
+    }
     stl_le_p(chipid, chip->chipid);
     backplane_write(s, CHIPCOMMON_BASE, chipid, sizeof(chipid));
     ipod_touch_sdio_build_cia(s);
@@ -1302,6 +1310,40 @@ static void ipod_touch_sdio_init(Object *obj)
     s->rx_fifo = g_queue_new();
 }
 
+/*
+ * A machine reset is a power cycle for the card: the dongle's RAM, the SDIO
+ * core and the SDPCM session go. Without this a rebooted guest finds a card
+ * that claims its firmware is already up, never completes a download, and
+ * AppleBCMWLAN panics after its 60 s watchdog.
+ */
+static void ipod_touch_sdio_reset(DeviceState *dev)
+{
+    IPodTouchSDIOState *s = IPOD_TOUCH_SDIO(dev);
+    SDPCMFrame *f;
+
+    s->cmd = s->arg = s->state = s->stac = s->csr = 0;
+    s->resp0 = s->resp1 = s->resp2 = s->resp3 = 0;
+    s->irq_reg = s->irq_pending = s->irq_mask = 0;
+    s->baddr = s->blklen = s->numblk = 0;
+    qemu_irq_lower(s->irq);
+    timer_del(s->irq_timer);
+    timer_del(s->scan_timer);
+    timer_del(s->join_timer);
+    while ((f = g_queue_pop_head(s->rx_fifo))) {
+        g_free(f->data);
+        g_free(f);
+    }
+    g_hash_table_remove_all(s->backplane);
+    s->sb_window = CHIPCOMMON_BASE;
+    s->fw_bytes = s->fw_bytes_logged = 0;
+    s->func2_seen = s->dongle_started = s->associated = s->iscan_reported = false;
+    s->tx_seq = s->rx_seq = 0;
+    s->cdc_hdrlen = s->bdc_hdrlen = 0;
+    memset(s->sdiod_regs, 0, sizeof(s->sdiod_regs));
+    memset(s->registers, 0, sizeof(s->registers));
+    ipod_touch_sdio_set_chip(s, &s->chip);
+}
+
 #include "ipod-sdio-state.h"
 
 static const VMStateInfo vmstate_sdio_backplane = {
@@ -1366,6 +1408,7 @@ static void ipod_touch_sdio_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->vmsd = &vmstate_ipod_touch_sdio;
+    device_class_set_legacy_reset(dc, ipod_touch_sdio_reset);
 }
 
 static const TypeInfo ipod_touch_sdio_type_info = {
