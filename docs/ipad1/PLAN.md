@@ -83,6 +83,11 @@ data-partition key 0x89B) — not the full descriptor engine. D1815 PMU + new I2
 panic). `debug-enabled` forced (DT + 7B500 kernel global) so AMFI honors its boot-args.
 Success: launchd, then SpringBoard attempts, diffed against the HW-2 serial log.
 
+**M4 DONE — home screen (2026-09-27, ba6cd0b812):** screens/2026-09-27-home-screen.png. Unlocked by a host
+drag through the real Zephyr2 → AppleMultitouchZ2SPI → SpringBoard path (portrait-native digitizer axis map,
+report ids 0xBF/0xAF, the K48 sensor profile from the real unit's IORegistry). iPod regression green.
+Next: persistence across reboots, app launch, multi-finger gestures, rotation, keyboard, network, app.
+
 **Activated lock screen (2026-09-27, 4d0eb1b54f):** screens/2026-09-27-lock-screen-activated.png — slide to
 unlock, clock, wallpaper, no baseband alert (real MACs + baseband unmatch fixed activation and the alert).
 The display switches off between short lit windows like a real idle lock screen, so screendumps need
