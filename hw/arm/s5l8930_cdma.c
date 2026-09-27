@@ -486,9 +486,19 @@ static bool cdma_paced_advance(S5L8930CDMAState *s, int ch, uint64_t upto)
         base += len;
         desc = le32_to_cpu(d[0]);
         if (le32_to_cpu(d[1]) & DESC_LAST) {
+            /* Finished: +0x14 names the next descriptor, so +0x10/+0x0C must
+             * describe it too, not the end of the last segment. A stop that
+             * lands between this completion and the driver's next go reads
+             * them and panics ("CDMA stop with MAR ... but command MA ...")
+             * unless MAR lies inside that next segment. */
             c->desc = desc;
             c->addr = addr + len;
             c->remain = 0;
+            if (dma_memory_read(&address_space_memory, desc, d, sizeof(d),
+                                MEMTXATTRS_UNSPECIFIED) == MEMTX_OK) {
+                c->addr = le32_to_cpu(d[2]);
+                c->remain = le32_to_cpu(d[3]);
+            }
             s->paced_sent[ch] = base;
             return true;
         }
