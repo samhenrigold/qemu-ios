@@ -42,7 +42,7 @@ int main(void)
     assert(front[766] == (void *)s_clearDepthf && front[301] == (void *)s_texImage2D);
     /* generated forwarders and overrides */
     assert(front[600] == (void *)g600 && front[117] == (void *)gli_getString);
-    assert(front[592] == (void *)gli_shaderSource && back[592] == front[592]);
+    assert(front[595] == (void *)gli_shaderSource && back[595] == front[595] && GLI_SLOT_glShaderSource == 595);
     /* new in 3.2 / not ES: log-once stubs */
     assert(front[761] == (void *)g761 && front[825] == (void *)g825 && front[0] == (void *)g0);
     for (int i = 0; i < GLI_N_SLOTS; i++) assert(front[i] && front[i] == back[i]);
