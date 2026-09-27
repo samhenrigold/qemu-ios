@@ -2,7 +2,7 @@
 """Userland images for the ipad1 machine: a patched copy of the 7B500 system partition plus a seeded data volume.
 
     ipad1_rootfs.py build [--base pristine|jailbroken] [--out DIR] [--data-size 2g] [--rootfs IMG]
-                          [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge] [--no-usb-net]
+                          [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge] [--web-proxy] [--no-usb-net]
     ipad1_rootfs.py fetch [DIR]          copy /var/stash and /var/root/Library/Lockdown off the real iPad (ssh)
     ipad1_rootfs.py report DIR...        list the Mach-Os under DIR that carry no Apple signature
     ipad1_rootfs.py bake DIR [--tools build/ipad1-guest] [--seal]   install the guest helpers into DIR/system.img
@@ -156,6 +156,32 @@ def usb_net_prefs(d):
     net.setdefault("Service", {})[USB_ETH_SERVICE] = {"__LINK__": "/NetworkServices/" + USB_ETH_SERVICE}
     order = net.setdefault("Global", {}).setdefault("IPv4", {}).setdefault("ServiceOrder", [])
     order[:] = [USB_ETH_SERVICE] + [o for o in order if o != USB_ETH_SERVICE]
+
+
+# Web proxy (the app's itwebproxy on slirp guestfwd 10.0.2.100:3128, as on the iPod). The Wi-Fi service
+# carries a PAC that falls back to DIRECT, so boots without the guestfwd still browse.
+WIFI_SERVICE = "4C54E7A1-0B5E-4D6B-9A1C-574946490000"
+PAC_PATH = "usr/local/share/ltm/proxy.pac"
+PAC = """function FindProxyForURL(url, host) {
+    if (isPlainHostName(host) || isInNet(host, "10.0.2.0", "255.255.255.0")) return "DIRECT";
+    return "PROXY 10.0.2.100:3128; DIRECT";
+}
+"""
+
+
+def wifi_proxy_prefs(d):
+    """preferences.plist: the AirPort service on en0 (the unit's own shape) with the proxy PAC."""
+    svc = d.setdefault("NetworkServices", {}).setdefault(WIFI_SERVICE, {
+        "Interface": {"DeviceName": "en0", "Hardware": "AirPort", "Type": "Ethernet", "UserDefinedName": "AirPort"},
+        "IPv4": {"ConfigMethod": "DHCP"}, "IPv6": {"ConfigMethod": "Automatic"}, "DNS": {}, "UserDefinedName": "AirPort"})
+    svc["Proxies"] = {"ExceptionsList": ["*.local", "169.254/16"], "FTPPassive": 1,
+                      "ProxyAutoConfigEnable": 1, "ProxyAutoConfigURLString": "file:///" + PAC_PATH}
+    cur = d.setdefault("CurrentSet", "/Sets/" + NET_SET).rsplit("/", 1)[1]
+    net = d.setdefault("Sets", {}).setdefault(cur, {"UserDefinedName": "Automatic"}).setdefault("Network", {})
+    net.setdefault("Service", {})[WIFI_SERVICE] = {"__LINK__": "/NetworkServices/" + WIFI_SERVICE}
+    net.setdefault("Interface", {}).setdefault("en0", {"AirPort": {"JoinMode": "Automatic"}})
+    order = net.setdefault("Global", {}).setdefault("IPv4", {}).setdefault("ServiceOrder", [])
+    order[:] = [WIFI_SERVICE] + [o for o in order if o != WIFI_SERVICE]
 
 
 def seed_plist(path, fn):
@@ -346,6 +372,10 @@ def build(a):
     with Mounted(system, os.path.join(a.out, "mnt-system")) as m:
         with open(os.path.join(m.mnt, "private/etc/fstab"), "w") as f:
             f.write(FSTAB_RO if a.ro_root else FSTAB)
+        if a.web_proxy:
+            os.makedirs(os.path.join(m.mnt, os.path.dirname(PAC_PATH)), exist_ok=True)
+            with open(os.path.join(m.mnt, PAC_PATH), "w") as f:
+                f.write(PAC)
         rewrite_plist(os.path.join(m.mnt, SB_JOB),
                       lambda d: springboard_env(d, SB_ENV_CA_OGL if a.ca_ogl else SB_ENV))
         if a.gles:
@@ -376,6 +406,8 @@ def build(a):
     if a.hidbridge:   # launchd skips jobs not owned by root; the noowners mount wrote the host uid
         bn.set_owner(system, ["usr/local", "usr/local/lib", "usr/local/lib/hidbridge.dylib",
                               "Library/LaunchDaemons/com.qemu.hidbridge.plist"], 0, 0)
+    if a.web_proxy:
+        bn.set_owner(system, ["usr/local", "usr/local/share", "usr/local/share/ltm", PAC_PATH], 0, 0)
     if a.gles:   # ldid-signed: boot with amfi_allow_any_signature=1 cs_enforcement_disable=1
         apps = [] if apps_stashed else GLES_APPS
         bn.set_owner(system, [GLENGINE] + ["Applications/" + app for app in apps] +
@@ -407,6 +439,9 @@ def build(a):
                 shutil.copytree(os.path.join(GLES, app), os.path.join(skeleton, "stash/Applications", app))
     if a.lockdown:
         shutil.copytree(a.lockdown, os.path.join(skeleton, "root/Library/Lockdown"), dirs_exist_ok=True)
+    if a.web_proxy:
+        seed_plist(os.path.join(skeleton, SC_DIR, "preferences.plist"), wifi_proxy_prefs)
+        print("      web proxy: en0 AirPort service, PAC /%s" % PAC_PATH)
     if a.usb_net:
         seed_plist(os.path.join(skeleton, SC_DIR, "NetworkInterfaces.plist"), usb_net_interfaces)
         seed_plist(os.path.join(skeleton, SC_DIR, "preferences.plist"), usb_net_prefs)
@@ -509,6 +544,15 @@ def selfcheck():
     assert [i["BSD Name"] for i in ifs["Interfaces"]] == ["en0", "en1"]
     plistlib.loads(plistlib.dumps(real)), plistlib.loads(plistlib.dumps(ifs))
 
+    wp = {}
+    usb_net_prefs(wp)
+    wifi_proxy_prefs(wp)
+    wifi_proxy_prefs(wp)                       # idempotent
+    wnet = wp["Sets"][NET_SET]["Network"]
+    assert wnet["Global"]["IPv4"]["ServiceOrder"] == [WIFI_SERVICE, USB_ETH_SERVICE]
+    assert wp["NetworkServices"][WIFI_SERVICE]["Proxies"]["ProxyAutoConfigURLString"] == "file:///" + PAC_PATH
+    assert "DIRECT" in PAC.split("PROXY 10.0.2.100:3128")[1]
+
     assert owner_for("mobile") == owner_for("mobile/Library/Preferences/a.plist") == owner_for("ea") == (501, 501)
     assert owner_for("stash/Applications") == owner_for("root/Library/Lockdown") == owner_for("mobileX") == (0, 0)
     assert FSTAB_RO.splitlines()[0] == "/dev/disk0s1 / hfs ro 0 1" and "s2s1" not in FSTAB
@@ -547,6 +591,7 @@ def main():
     b.add_argument("--lockdown", default=os.path.join(FILES, "hw2/lockdown"), help="fetch output for the Lockdown dir; 'none' to skip")
     b.add_argument("--disable", action="append", default=[], metavar="LABEL", help="launchd job to mark Disabled")
     b.add_argument("--ro-root", action="store_true", help="keep the stock read-only root")
+    b.add_argument("--web-proxy", action="store_true", help="en0 Wi-Fi service with the itwebproxy PAC")
     b.add_argument("--no-usb-net", dest="usb_net", action="store_false",
                    help="skip the en1 (USB Ethernet) DHCP network service")
     b.add_argument("--gles", action="store_true", help="install the GLI shim as GLEngine plus GLTest/GLTest2.app (run contrib/ipad1-gles/build.sh first)")
