@@ -25,7 +25,7 @@ Store format (directory, shared with the IOP model in hw/arm/s5l8930_iop.c)
                      "chip_id":"0xB614D5AD"}
     bus<b>-ce<c>.pages  one sparse file per physical chip select; page at a
                     fixed stride of page_bytes+spare_bytes, data first, then the
-                    spare (12-byte YaFTL/VFL meta in spare[0..12), rest 0xFF);
+                    spare (12-byte YaFTL/VFL meta in spare[0..12), rest 0x00);
                     page index = block*pages_per_block + page; file length =
                     blocks_per_ce*pages_per_block*stride; unwritten pages are
                     holes (read as zeros). Every written page has a non-zero
@@ -230,7 +230,7 @@ class Store:
         f.seek(ppage * self.stride)
         if not raw:
             meta = whiten(meta, ppage)
-        rec = data + meta.ljust(self.geo.spare_bytes, b"\xff")
+        rec = data + meta.ljust(self.geo.spare_bytes, b"\0")      # kext leaves spare[12..] = 0
         assert any(rec[self.geo.page_size:]), "spare must not be all zero (hole == blank)"
         f.write(rec)
         self.nrec += 1
