@@ -65,6 +65,11 @@ static int ltc4099_send(I2CSlave *i2c, uint8_t data)
     return 0;
 }
 
+void s5l8930_ltc4099_set_usb(DeviceState *dev, bool present)
+{
+    S5L8930_LTC4099(dev)->usb_present = present;
+}
+
 static void ltc4099_reset(DeviceState *dev)
 {
     S5L8930LTC4099State *s = S5L8930_LTC4099(dev);

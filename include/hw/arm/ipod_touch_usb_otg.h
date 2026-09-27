@@ -227,6 +227,7 @@ typedef struct synopsys_usb_state
 	uint32_t server_port;
 	tcp_usb_state_t tcp_state;
 	bool tcp_connected;
+	bool cable_attached;      /* no dialling while unplugged */
 	QEMUTimer *tcp_retry_timer;
 
 	uint32_t pcgcctl;
@@ -267,5 +268,8 @@ typedef struct synopsys_usb_state
 } synopsys_usb_state;
 
 DeviceState *ipod_touch_init_usb_otg(qemu_irq _irq, uint32_t _hwcfg[4]);
+/* Plug/unplug: unplugging drops the host link so usbmuxd reaps the device;
+ * plugging redials, and usbmuxd re-enumerates. */
+void synopsys_usb_set_cable(synopsys_usb_state *state, bool attached);
 
 #endif

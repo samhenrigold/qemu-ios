@@ -430,7 +430,8 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
  */
 static void synopsys_usb_tcp_start(synopsys_usb_state *_state)
 {
-	if (_state->tcp_connected && !tcp_usb_closed(&_state->tcp_state)) {
+	if (!_state->cable_attached ||
+	    (_state->tcp_connected && !tcp_usb_closed(&_state->tcp_state))) {
 		return;
 	}
 
@@ -1008,6 +1009,8 @@ static void s5l8900_usb_otg_init1(Object *obj)
     synopsys_usb_state *s = S5L8900USBOTG(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
+    s->cable_attached = true;
+
     /*
      * The region must cover the FIFO window at USB_FIFO_START (0x1000) as well
      * as the register block; it was previously sized 0x1000, so every FIFO
@@ -1047,6 +1050,17 @@ DeviceState *ipod_touch_init_usb_otg(qemu_irq _irq, uint32_t _hwcfg[4])
  * cable being replugged.
  */
 #define TCP_USB_RETRY_MS 3000
+
+void synopsys_usb_set_cable(synopsys_usb_state *state, bool attached)
+{
+    state->cable_attached = attached;
+    if (!attached && state->tcp_connected) {
+        tcp_usb_cleanup(&state->tcp_state);
+        state->tcp_connected = false;
+    } else if (attached) {
+        synopsys_usb_tcp_start(state);
+    }
+}
 
 static void synopsys_usb_tcp_retry_tick(void *opaque)
 {

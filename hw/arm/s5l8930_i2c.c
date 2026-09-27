@@ -227,6 +227,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930D1815State, S5L8930_D1815)
 #define PMU_EVENT_B_ADC     (1u << 5)   /* IRQ handler c066236a -> ADC done */
 #define PMU_EVENT_A_MENU    (1u << 0)   /* wake buttons: DT 'STAT' 0x180/0x181 */
 #define PMU_EVENT_A_HOLD    (1u << 1)   /* = event byte 0 bits 0/1 (c0661340) */
+#define PMU_EVENT_A_USB     (1u << 3)   /* cable edge; the power source re-reads usb_det */
+#define PMU_VEC_CHARGER0    0x28        /* DT charger0 interrupts: event F bit 0 */
 #define PMU_STATUS          0x07    /* A-E, power sources; STAT function */
 #define PMU_IRQ_MASK        0x0C    /* A-F; start writes FF 5F FF FF FF FF */
 #define PMU_OOC             0x12    /* bit0 = shutdown, spin after; bit1 = hibernate */
@@ -295,6 +297,23 @@ void s5l8930_d1815_button(DeviceState *dev, bool hold, bool down)
         s->regs[PMU_EVENT] |= hold ? PMU_EVENT_A_HOLD : PMU_EVENT_A_MENU;
         d1815_update_irq(s);
     }
+}
+
+/*
+ * A USB cable edge. The PMU is an interrupt controller for its DT children:
+ * vector v is event byte v >> 3, bit v & 7, masked by 0x0C + (v >> 3)
+ * (c0663534). charger0 (the LTC4099) has interrupts = 0x28, and its handler
+ * re-reads STAT and calls power_supply_change on the power source, which
+ * re-runs cable detection through usb_det; the level itself lives in the
+ * LTC4099 model. Event A bit 3 is the PMU's own "usb" event.
+ */
+void s5l8930_d1815_usb_cable_event(DeviceState *dev)
+{
+    S5L8930D1815State *s = S5L8930_D1815(dev);
+
+    s->regs[PMU_EVENT] |= PMU_EVENT_A_USB;
+    s->regs[PMU_EVENT + (PMU_VEC_CHARGER0 >> 3)] |= 1u << (PMU_VEC_CHARGER0 & 7);
+    d1815_update_irq(s);
 }
 
 static uint32_t d1815_rtc_count(S5L8930D1815State *s)
