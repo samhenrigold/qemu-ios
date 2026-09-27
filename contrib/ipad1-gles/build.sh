@@ -25,4 +25,22 @@ rm -f want.txt have.txt
 python3 gligen.py --check
 cc -w test_glishim.c -o test_glishim && ./test_glishim 2>/dev/null
 rm -f test_glishim
-file GLEngine
+
+# Test apps: contrib/it-gles/glapp.c as GLTest.app (ES1, cyan on magenta) and
+# GLTest2.app (-DGLAPP_ES2: blue on yellow). armv6 through contrib/armv6-toolchain,
+# whose mkold.py makes an executable 3.2's dyld accepts (no LC_MAIN).
+export ARMV6_SDK="$SDK"
+. ../armv6-toolchain/armv6.sh
+# Log to /dev/console: serial is the only place an app's stderr can be read.
+for v in GLTest:: GLTest2:-DGLAPP_ES2:2; do
+    IFS=: read -r name def suffix <<<"$v"
+    cc6 ../it-gles/glapp.c "$name.o" $def "-DGLAPP_LOG=\"/dev/console\""
+    link6 -execute "$name.bin" "$name.o"
+    rm -rf "$name.app" "$name.o" && mkdir "$name.app"
+    mv "$name.bin" "$name.app/$name"
+    sed -e "s/<string>GLTest<\/string>/<string>$name<\/string>/" \
+        -e "s/com.qemuios.gltest</com.qemuios.gltest$suffix</" \
+        ../it-gles/glapp-Info.plist >"$name.app/Info.plist"
+    ldid -S "$name.app/$name"
+done
+file GLEngine GLTest.app/GLTest GLTest2.app/GLTest2

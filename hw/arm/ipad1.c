@@ -43,6 +43,9 @@
 #include "system/reset.h"
 #include "system/system.h"
 #include "target/arm/cpu.h"
+#include "target/arm/cpregs.h"
+#include "hw/arm/guest-services/general.h"
+#include "hw/arm/guest-services/gles.h"
 #include "ui/console.h"
 #include "ui/input.h"
 
@@ -89,6 +92,41 @@ static qemu_irq ipad1_irq(IPad1MachineState *s, int irq)
  * the iPod machine's bootrom staging: iOS writes over the memory the bundle
  * occupies, so a reset that did not re-stage it would resume into junk.
  */
+/*
+ * The guest-services trap (mcr p15,3,Rn,c15,c15,0) the GLES shim uses, as on
+ * the iPod machine. Only the GLES calls: the iPod's other services (keyboard,
+ * pasteboard, agent) keep their state in IPodTouchMachineState.
+ */
+static void ipad1_qemu_call(CPUARMState *env, const ARMCPRegInfo *ri,
+                            uint64_t value)
+{
+    CPUState *cs = env_cpu(env);
+    qemu_call_t q;
+
+    if (cpu_memory_rw_debug(cs, value, (uint8_t *)&q, sizeof(q), 0)) {
+        return;
+    }
+    switch (q.call_number) {
+    case QC_GLES:
+        q.retval = qc_handle_gles(cs, &q.args.gles);
+        break;
+    case QC_GLES_PING:
+        q.retval = QC_GLES_PING_MAGIC;
+        break;
+    default:
+        return;
+    }
+    q.error = 0;
+    cpu_memory_rw_debug(cs, value, (uint8_t *)&q, sizeof(q), 1);
+}
+
+static const ARMCPRegInfo ipad1_cp_reginfo[] = {
+    { .name = "QEMU_CALL", .cp = 15, .opc1 = 3, .crn = 15, .crm = 15,
+      .opc2 = 0, .access = PL0_RW, .state = ARM_CP_STATE_AA32,
+      .type = ARM_CP_IO | ARM_CP_NO_RAW, .readfn = qemu_call_status,
+      .writefn = ipad1_qemu_call },
+};
+
 static void ipad1_cpu_reset(void *opaque)
 {
     IPad1MachineState *s = IPAD1_MACHINE(opaque);
@@ -99,6 +137,7 @@ static void ipad1_cpu_reset(void *opaque)
     const uint8_t *trailer;
     uint32_t load_pa, entry_pa, bootargs_pa, image_len;
 
+    gles_host_reset();
     cpu_reset(cs);
 
     if (!g_file_get_contents(s->kboot_path, &data, &size, &gerr)) {
@@ -313,6 +352,7 @@ static void ipad1_init(MachineState *machine)
     object_property_set_bool(cpuobj, "has_el3", false, NULL);
     object_property_set_bool(cpuobj, "has_el2", false, NULL);
     object_property_set_bool(cpuobj, "realized", true, &error_fatal);
+    define_arm_cp_regs(s->cpu, ipad1_cp_reginfo);
     object_unref(cpuobj);
 
     memory_region_init_ram(&s->dram, NULL, "ipad1.dram", S5L8930_DRAM_SIZE,

@@ -79,17 +79,17 @@ static int gli_shaderSource(void *gc, unsigned sh, unsigned count,
             guest_fault_read((unsigned long)s[i], n);
         }
     }
-    return (int)qc(592, gc, 4, A(sh, count, strs, lens));
+    return (int)qc(GLI_SLOT_glShaderSource, gc, 4, A(sh, count, strs, lens));
 }
 static int gli_bindAttribLocation(void *gc, unsigned p, unsigned idx, unsigned name)
     { guest_fault_read(name, slen((const char *)(unsigned long)name) + 1);
-      return (int)qc(527, gc, 3, A(p, idx, name)); }
+      return (int)qc(GLI_SLOT_glBindAttribLocation, gc, 3, A(p, idx, name)); }
 static int gli_getAttribLocation(void *gc, unsigned p, unsigned name)
     { guest_fault_read(name, slen((const char *)(unsigned long)name) + 1);
-      return (int)qc(529, gc, 2, A(p, name)); }
+      return (int)qc(GLI_SLOT_glGetAttribLocation, gc, 2, A(p, name)); }
 static int gli_getUniformLocation(void *gc, unsigned p, unsigned name)
     { guest_fault_read(name, slen((const char *)(unsigned long)name) + 1);
-      return (int)qc(623, gc, 2, A(p, name)); }
+      return (int)qc(GLI_SLOT_glGetUniformLocation, gc, 2, A(p, name)); }
 
 /* 826 slots in 3.2 numbering. Hand-written mbxshim thunks win, then the
  * generated forwarders, then the log-once stubs. */
@@ -103,17 +103,14 @@ static void gli_fill(void **front, void **back, void *const *mbx)
         if (old >= 0 && old < GLES_N_SLOTS && mbx[old] != gles_default_table[old])
             fn = mbx[old];
         front[i] = fn;
-        if (back) back[i] = fn;
     }
-    front[117] = (void *)gli_getString;
-    front[592] = (void *)gli_shaderSource;
-    front[527] = (void *)gli_bindAttribLocation;
-    front[529] = (void *)gli_getAttribLocation;
-    front[623] = (void *)gli_getUniformLocation;
-    if (back) {
-        back[117] = front[117]; back[592] = front[592]; back[527] = front[527];
-        back[529] = front[529]; back[623] = front[623];
-    }
+    front[GLI_SLOT_glGetString] = (void *)gli_getString;
+    front[GLI_SLOT_glShaderSource] = (void *)gli_shaderSource;
+    front[GLI_SLOT_glBindAttribLocation] = (void *)gli_bindAttribLocation;
+    front[GLI_SLOT_glGetAttribLocation] = (void *)gli_getAttribLocation;
+    front[GLI_SLOT_glGetUniformLocation] = (void *)gli_getUniformLocation;
+    if (back)
+        for (i = 0; i < GLI_N_SLOTS; i++) back[i] = front[i];
 }
 
 /* ------------------------------------------------------------ gli* ABI --- */
@@ -201,6 +198,18 @@ int gliCreateContext(void **out, GLIPixelFormat *pf, void *share,
     return 0;
 }
 
+/* IOSurfaceLookup's reference to each view's attached surface. It has to be
+ * held: the lookup can hand back a fresh object, and releasing it at once
+ * left v->ref dangling for the first present to lock. */
+static void *gli_owned[CA_MAX_VIEWS];
+
+static void gli_own(ca_view_t *v, void *surf)
+{
+    void **slot = &gli_owned[v - ca_views];
+    if (*slot && p_CFRelease) p_CFRelease(*slot);
+    *slot = surf;
+}
+
 /* EAGL owns the CA binding in the GLI path, so the view is forgotten, not
  * unbound, and the sharegroup goes with the context that created it. */
 int gliDestroyContext(void *ctx)
@@ -213,7 +222,7 @@ int gliDestroyContext(void *ctx)
     if (!gc) return 10014;
     sg = gc->sg;
     owns = gc->owns_sg;
-    if (v) v->drawable = 0;
+    if (v) { v->drawable = 0; gli_own(v, 0); }
     GLESDestroyGC(gc);
     if (owns) GLESDestroySharegroup(sg);
     return 0;
@@ -225,6 +234,7 @@ static int gli_attach_renderbuffer(GuestGC *gc, void *surf, unsigned wd_, unsign
 {
     ca_view_t *v = ca_view_for_gc(gc, 1);
     if (!v || !surface_capture(v, surf)) return 10014;
+    gli_own(v, surf);
     v->need_buffer = 0;
     return qc(GLES_OP_DRAWABLE_STORAGE, gc, 2, A(wd_, ht)) < 0 ? 10014 : 0;
 }
@@ -234,18 +244,26 @@ int gliSetInteger(void *gc, unsigned pname, const int *v)
     void *surf;
     int r;
 
+    static unsigned logged;
     if (!gc) return 10014;
+    if (logged++ < 16) {
+        w("[glishim] gliSetInteger "); wx(pname);
+        if (v) { w(" "); wx((unsigned)v[0]); w(" "); wx((unsigned)v[1]); }
+        w("\n");
+    }
     switch (pname) {
     case 0x38E:     /* attach IOSurface {id, target, ifmt, w, h, fmt, type, 0} */
         if (!v) return 10014;
         gli_iosurface_init();
         if (!p_IOSurfaceLookup || !(surf = p_IOSurfaceLookup((unsigned)v[0])))
             return 10014;
-        r = v[1] == GL_RENDERBUFFER
-            ? gli_attach_renderbuffer(gc, surf, (unsigned)v[3], (unsigned)v[4])
-            : GLESBindCoreSurface(gc, (unsigned)v[1], surf) ? 0 : 10014;
-        /* CA keeps the surface alive until it tells EAGL to destroy it (0x39B). */
-        if (p_CFRelease) p_CFRelease(surf);
+        if (v[1] == GL_RENDERBUFFER) {
+            r = gli_attach_renderbuffer(gc, surf, (unsigned)v[3], (unsigned)v[4]);
+            if (r && p_CFRelease) p_CFRelease(surf);
+            return r;
+        }
+        r = GLESBindCoreSurface(gc, (unsigned)v[1], surf) ? 0 : 10014;
+        if (p_CFRelease) p_CFRelease(surf);   /* the host copied what it needs */
         return r;
     case 0x39B: {   /* detach {id, target} */
         ca_view_t *view = ca_view_for_gc(gc, 0);
@@ -260,6 +278,7 @@ int gliSetInteger(void *gc, unsigned pname, const int *v)
             p_IOSurfaceGetID(view->ref) == (unsigned)v[0]) {
             view->ref = 0;
             view->base = 0;
+            gli_own(view, 0);
         }
         return 0;
     }
@@ -286,9 +305,11 @@ void gliBindViewES(void *gc, void *drawable, unsigned char retained, int a, int 
 {
     ca_view_t *v = ca_view_for_gc(gc, drawable != 0);
     (void)retained; (void)a; (void)b;
+    w("[glishim] gliBindViewES drawable="); wx((unsigned long)drawable); w("\n");
     if (!v) return;
     if (!drawable) {
         ca_view_t empty = {0};
+        gli_own(v, 0);
         *v = empty;
         return;
     }
@@ -297,6 +318,8 @@ void gliBindViewES(void *gc, void *drawable, unsigned char retained, int a, int 
 
 unsigned char gliPresentViewES(void *gc)
 {
+    static int logged;
+    if (!logged++) w("[glishim] gliPresentViewES\n");
     return GLESPresentView(gc, 0) != 0;
 }
 

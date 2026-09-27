@@ -67,6 +67,11 @@ SSHD = ("Library/LaunchDaemons/com.openssh.sshd.plist", "usr/sbin/sshd", "privat
 # base -> (system volume under FILES, /var/stash seed under FILES or None, store name suffix)
 BASES = {"pristine": ("7B500/dec/rootfs.dmg", None, "pristine"),
          "jailbroken": ("hw2/rdisk0s1-system.img", "hw2/stash", "jb")}
+GLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/ipad1-gles")
+GLENGINE = "System/Library/Frameworks/OpenGLES.framework/GLEngine.bundle/GLEngine"
+GLES_APPS = ("GLTest.app", "GLTest2.app")
+# --ca-ogl: CoreAnimation composites through the GLI shim (accelerated pixel format)
+SB_ENV_CA_OGL = {"MBX2D_PAGE_FLIP": "0", "GLI_ACCELERATED": "1"}
 HIDBRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/ipad1-hidbridge")
 MOBILE_TOP = ("mobile", "ea")                # uid 501 on the real unit; everything else under /var is root
 MH_MAGIC, FAT_MAGIC, LC_CODE_SIGNATURE, CS_CMS = 0xFEEDFACE, 0xCAFEBABE, 0x1D, 0x10000
@@ -102,9 +107,9 @@ def rewrite_plist(path, fn):
         f.write(new)
 
 
-def springboard_env(d):
+def springboard_env(d, env=SB_ENV):
     assert d.get("Label") == "com.apple.SpringBoard"
-    d.setdefault("EnvironmentVariables", {}).update(SB_ENV)
+    d.setdefault("EnvironmentVariables", {}).update(env)
     d["StandardOutPath"] = d["StandardErrorPath"] = "/dev/console"
 
 
@@ -268,7 +273,14 @@ def build(a):
     with Mounted(system, os.path.join(a.out, "mnt-system")) as m:
         with open(os.path.join(m.mnt, "private/etc/fstab"), "w") as f:
             f.write(FSTAB_RO if a.ro_root else FSTAB)
-        rewrite_plist(os.path.join(m.mnt, SB_JOB), springboard_env)
+        rewrite_plist(os.path.join(m.mnt, SB_JOB),
+                      lambda d: springboard_env(d, SB_ENV_CA_OGL if a.ca_ogl else SB_ENV))
+        if a.gles:
+            shutil.copy(os.path.join(GLES, "GLEngine"), os.path.join(m.mnt, GLENGINE))
+            apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))
+            for app in () if apps_stashed else GLES_APPS:
+                shutil.rmtree(os.path.join(m.mnt, "Applications", app), ignore_errors=True)
+                shutil.copytree(os.path.join(GLES, app), os.path.join(m.mnt, "Applications", app))
         for label in a.disable:
             hits = [os.path.join(m.mnt, d, label + ".plist") for d in DAEMON_DIRS if os.path.exists(os.path.join(m.mnt, d, label + ".plist"))]
             if not hits:
@@ -291,6 +303,11 @@ def build(a):
     if a.hidbridge:   # launchd skips jobs not owned by root; the noowners mount wrote the host uid
         bn.set_owner(system, ["usr/local", "usr/local/lib", "usr/local/lib/hidbridge.dylib",
                               "Library/LaunchDaemons/com.qemu.hidbridge.plist"], 0, 0)
+    if a.gles:   # ldid-signed: boot with amfi_allow_any_signature=1 cs_enforcement_disable=1
+        apps = [] if apps_stashed else GLES_APPS
+        bn.set_owner(system, [GLENGINE] + ["Applications/" + app for app in apps] +
+                     ["Applications/%s/%s" % (app, f) for app in apps
+                      for f in os.listdir(os.path.join(GLES, app))], 0, 0)
     if not os.path.isdir(os.path.join(skeleton, "mobile")):
         # the jailbroken volume's /private/var is just `db`: the skeleton mobile_obliterator copies lives
         # on the IPSW rootfs, so slice that out too (a private temp copy, never the user's mounts)
@@ -312,6 +329,9 @@ def build(a):
           " + " + a.stash if a.stash else "", " + " + a.lockdown if a.lockdown else ""))
     if a.stash:
         shutil.copytree(a.stash, os.path.join(skeleton, "stash"), symlinks=True)
+        if a.gles and apps_stashed:   # /Applications -> /private/var/stash/Applications
+            for app in GLES_APPS:
+                shutil.copytree(os.path.join(GLES, app), os.path.join(skeleton, "stash/Applications", app))
     if a.lockdown:
         shutil.copytree(a.lockdown, os.path.join(skeleton, "root/Library/Lockdown"), dirs_exist_ok=True)
     os.replace(make_hfs_image(data + ".dmg", parse_size(a.data_size)), data)
@@ -399,6 +419,8 @@ def main():
     b.add_argument("--lockdown", default=os.path.join(FILES, "hw2/lockdown"), help="fetch output for the Lockdown dir; 'none' to skip")
     b.add_argument("--disable", action="append", default=[], metavar="LABEL", help="launchd job to mark Disabled")
     b.add_argument("--ro-root", action="store_true", help="keep the stock read-only root")
+    b.add_argument("--gles", action="store_true", help="install the GLI shim as GLEngine plus GLTest/GLTest2.app (run contrib/ipad1-gles/build.sh first)")
+    b.add_argument("--ca-ogl", action="store_true", help="let CoreAnimation composite through GL (no CA_ENABLE_OGL=0; GLI_ACCELERATED=1)")
     b.add_argument("--hidbridge", action="store_true", help="install the hardware-keyboard daemon (run contrib/ipad1-hidbridge/build.sh first)")
     f = sub.add_parser("fetch")
     f.add_argument("dir", nargs="?", default=os.path.join(FILES, "hw2"))
