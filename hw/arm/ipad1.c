@@ -99,6 +99,7 @@ struct IPad1MachineState {
     int battery_mode;                    /* 0 auto (follow cable), 1 on, 2 off */
     double battery_drain;                /* accepted for the bridge; unused */
     QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
+    DeviceState *display;                /* its dart2 also serves the scaler */
     int pwroff_phase, pwroff_step, pwroff_orient;
     bool usb_charger;                    /* host grants high-power current */
     Chardev *gauge;
@@ -702,6 +703,7 @@ static void ipad1_init(MachineState *machine)
 
     /* Display pipe, CLCD, DART2, RGBOUT, TV-out; scanout starts at iBoot's FB. */
     dev = qdev_new(TYPE_S5L8930_DISPLAY);
+    s->display = dev;
     qdev_prop_set_uint64(dev, "fb-base", 0x4f700000);
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
@@ -922,6 +924,17 @@ static void ipad1_init(MachineState *machine)
      */
     set_spi_base(2);
     sysbus_create_simple(TYPE_IPOD_TOUCH_SPI, S5L8930_SPI_BASE(2), NULL);
+
+    /*
+     * M2 scaler/CSC: the iPod's (same scaler,s5l8720x driver). Absent, its
+     * reset (+0x10 |= 1, then poll for bit 0) never completed, and turning
+     * on Accessibility > Zoom, which puts the scaler on CA's display path,
+     * hung the UI in "M2Scaler waiting for device reset step 2".
+     */
+    ipod_scaler_set_iommu(sysbus_create_simple("ipodtouch.scaler",
+                                               S5L8930_SCALER_BASE,
+                                               ipad1_irq(s, S5L8930_IRQ_SCALER)),
+                          s5l8930_dart2_xlate, s->display, 2);
 
     /* SWI: backlight and DPSM core voltage; only the busy bit matters. */
     sysbus_create_simple("ipodtouch.swi", S5L8930_SWI_BASE, NULL);
