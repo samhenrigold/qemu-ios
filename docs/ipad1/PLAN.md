@@ -196,7 +196,11 @@ www.google.com and Maps draws live tiles (`screens/2026-09-27-net-*.png`). Three
 - host: usbmuxd-qemu `ipad1-net` selects configuration 4 (PTP + Apple Mobile Device + Apple USB Ethernet),
   sets the Ethernet interface to alt 1, bridges its bulk pair to libslirp; usbmux keeps working beside it.
 - guest prefs: `ipad1_rootfs.py` seeds an en1 DHCP service (vanilla: a plist, like a configured unit).
-- kernel: `ipad1_kboot.py --usb-eth-link`, off by default (stock kernel). This is the only kernel patch.
+- kernel: `ipad1_kboot.py` applies the USB Ethernet link patch by default (`--no-usb-eth-link` for a stock
+  kernel; the pre-patch bundle is kept as `7B500/k48-kboot-noethlink.bin`). This is the only kernel patch.
+  On by default is safe because it only fires when a host selects the Ethernet interface's alt setting 1,
+  which only usbmuxd-qemu's ipad1 branch does. The built-in USB host configures configuration 3 (no
+  Ethernet) and bridges without that branch never select it, so for them the kernel behaves as stock.
 
 Why a patch: AppleUSBEthernetDevice marks its link active, starts its output queue and arms the first
 bulk read only in `setProperties({"LinkStatus": 1})`. The only stock caller is configd's
