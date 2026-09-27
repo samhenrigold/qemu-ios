@@ -20,7 +20,9 @@ def linked_libavcodec(qemu):
     lib = next((l.split()[0] for l in out.splitlines()
                 if "libavcodec" in l and "compatibility version" in l), None)
     if lib and lib.startswith("@rpath/"):
+        here = os.path.dirname(os.path.realpath(qemu))
         for rpath in re.findall(r"^\s+path (\S+) \(offset", out, re.M):
+            rpath = rpath.replace("@loader_path", here).replace("@executable_path", here)
             cand = os.path.join(rpath, lib[len("@rpath/"):])
             if os.path.exists(cand):
                 return os.path.realpath(cand)
