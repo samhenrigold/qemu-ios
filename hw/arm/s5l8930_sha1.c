@@ -14,6 +14,10 @@
  *   +0xA0  data FIFO, written a word at a time by CDMA channel 4
  * Completion is signalled by the DMA channel, not by this block; the kext
  * never touches IRQ 0x25.
+ *
+ * iBoot (817.29 sha1 driver at 0x5ff090c4, register table 0x5ff296a8) feeds
+ * it by PIO instead: one block in +0x40..+0x7C, then start (bit 3 as above),
+ * polling bit 0 busy, which never shows since a block completes at once.
  */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
@@ -30,6 +34,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930SHA1State, S5L8930_SHA1)
 #define SHA1_MODE       0x10
 #define SHA1_HASH       0x20
 #define SHA1_FIFO       0xA0
+#define SHA1_DATA       0x40        /* PIO block, 16 words */
 
 #define CMD_START       (1u << 1)
 #define CMD_CONTINUE    (1u << 3)
@@ -41,6 +46,7 @@ struct S5L8930SHA1State {
     uint32_t h[5];
     uint8_t block[64];
     uint32_t fill;
+    uint64_t pio_words;     /* bitmap of the +0x40 words written */
 };
 
 static const uint32_t sha1_init[5] = {
@@ -118,10 +124,19 @@ static void sha1_write(void *opaque, hwaddr offset, uint64_t value,
                 memcpy(s->h, sha1_init, sizeof(s->h));
             }
             s->fill = 0;
+            if (s->pio_words == 0xffff) {
+                sha1_compress(s->h, s->block);
+            }
+            s->pio_words = 0;
         }
+        break;
+    case SHA1_DATA ... SHA1_DATA + 0x3C:
+        stl_le_p(s->block + offset - SHA1_DATA, v);
+        s->pio_words |= 1u << ((offset - SHA1_DATA) >> 2);
         break;
     case SHA1_RESET:
         s->cmd = s->mode = s->fill = 0;
+        s->pio_words = 0;
         memcpy(s->h, sha1_init, sizeof(s->h));
         break;
     case SHA1_MODE:
