@@ -14,3 +14,12 @@ bf106000: 01020001
 == md 0xbf200000 4
 == md 0x5ff00000 4
 == md 0x4ff00000 4
+== md 0xbf500000 1
+bf500000: 31800387
+== md 0x5ff00000 4
+5ff00000: ea00000e
+5ff00004: e59ff018
+5ff00008: e59ff018
+5ff0000c: e59ff018
+== md 0x4ff00000 4
+== md 0x4ff00000 4  -> no answer; iBEC hung (VA not mapped by iBEC; physical mirror still unknown)
