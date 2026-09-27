@@ -90,10 +90,14 @@ capture only; they are not patch locations in the preparation tool.
 
 The stock IPSW kernelcache reached root mount, launchd, and the activated lock
 screen through iBoot. [Home-screen capture](screens/iboot-home.png) shows the
-result after touch unlock (including the stock first-use icon-editing tip). The direct-kernel 90-second smoke check passed after the
-PMGR/GPIO changes. iPod boot, fsck, persistence, app installation, app launch,
-agent, and audio checks passed; GLES passed with the matching staged guest shim
-(the first run paired a new GLTest with an old base-store shim).
+result after touch unlock (including the stock first-use icon-editing tip).
+The direct-kernel smoke check passed after final integration. The complete
+8-check iPod regression passed with the matching staged GLES shim: boot, fsck,
+persistence, app installation, app launch, GLES, agent, and audio. That full run
+used integration commit `6f3ae6e7a7`; the subsequently integrated battery/UART
+work carries its own iPod boot/agent validation and was rechecked here for
+normal iPad direct boot, iBoot unlock/shutdown, and recovery.
+
 
 Clean cycles also reached the SpringBoard home screen after touch unlock,
 then powered off through the PMU. With the integrated battery/UART fixes, a
@@ -103,7 +107,7 @@ performance guarantee).
 
 The integrated `ipad1-app` battery/UART fixes remove iBoot's gas-gauge timeouts.
 Recovery mode reached its command prompt without the previously reported
-`usb-high-curren` stack panic during a bounded soak. USB restore and a
+`usb-high-curren` stack panic during a 90-second soak. USB restore and a
 SecureROM/DFU boot chain remain untested. The physical iPad was not modified.
 
 ## Saved local run
