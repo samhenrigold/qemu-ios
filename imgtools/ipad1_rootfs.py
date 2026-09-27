@@ -397,6 +397,11 @@ def build(a):
             os.chmod(dst, 0o644)
             for rel in APPSYNC_JOBS:
                 rewrite_plist(os.path.join(m.mnt, rel), dyld_insert)
+            # amfid-global half: force libmis MISValidateSignature to succeed in the shared cache
+            # (symbol-located), so amfid approves the ldid-signed dylib and decrypted apps.
+            import appsync_cachepatch
+            cache = os.path.join(m.mnt, "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv7")
+            print("      " + appsync_cachepatch.patch_cache(cache))
         if a.gles:
             shutil.copy(os.path.join(GLES, "GLEngine"), os.path.join(m.mnt, GLENGINE))
             apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))

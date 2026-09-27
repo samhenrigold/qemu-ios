@@ -87,16 +87,14 @@ static int as_MISValidateSignatureAndCopyInfo(void *path, void *options,
         // profile flag: installd checks it's present/true
         CFDictionarySetValue(d, kMISValidationInfoValidatedByProfile,
                              kCFBooleanTrue);
-        // signer cert: installd reads a subject summary off it
+        // signer cert: installd 3.2.2 stores this value and later calls
+        // SecCertificateCreateWithData() on it, i.e. it expects raw DER CFData,
+        // NOT a SecCertificateRef. Handing it a SecCertificate made installd call
+        // -[... length] on it and crash (unrecognized selector). So store CFData.
         CFDataRef der = CFDataCreate(kCFAllocatorDefault,
                                      kAppSyncCertDER, (CFIndex)kAppSyncCertDERLen);
         if (der) {
-            SecCertificateRef cert = SecCertificateCreateWithData(kCFAllocatorDefault, der);
-            if (cert) {
-                CFDictionarySetValue(d, kMISValidationInfoSignerCertificate,
-                                     (const void *)cert);
-                CFRelease((CFTypeRef)cert);
-            }
+            CFDictionarySetValue(d, kMISValidationInfoSignerCertificate, der);
             CFRelease((CFTypeRef)der);
         }
         *info = (CFDictionaryRef)d;   // ownership passes to caller (Copy semantics)
@@ -121,10 +119,18 @@ static int as_applicationSignatureState(id self, SEL _cmd) {
     return 2;
 }
 
+extern const char *getprogname(void);
+extern int strcmp(const char *, const char *);
+
 __attribute__((constructor))
 static void as_init(void) {
+    // Only touch the ObjC runtime in SpringBoard. In installd (a CoreFoundation
+    // daemon) calling objc_getClass from a dyld constructor can re-enter and
+    // wedge process init, so gate on the program name and do nothing there.
+    const char *p = getprogname();
+    if (!p || strcmp(p, "SpringBoard") != 0) return;
     Class c = objc_getClass("SBApplication");
-    if (!c) return;   // not SpringBoard; nothing to do
+    if (!c) return;
     SEL sel = sel_registerName("applicationSignatureState");
     Method m = class_getInstanceMethod(c, sel);
     if (m) {
