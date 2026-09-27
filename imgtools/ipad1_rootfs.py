@@ -385,7 +385,8 @@ def build(a):
             with open(os.path.join(m.mnt, PAC_PATH), "w") as f:
                 f.write(PAC)
         rewrite_plist(os.path.join(m.mnt, SB_JOB),
-                      lambda d: springboard_env(d, SB_ENV_CA_OGL if a.ca_ogl else SB_ENV))
+                      lambda d: springboard_env(d, {k: v for k, v in (SB_ENV_CA_OGL if a.ca_ogl else SB_ENV).items()
+                                                    if not (a.page_flip and k == "MBX2D_PAGE_FLIP")}))
         if a.gles:
             shutil.copy(os.path.join(GLES, "GLEngine"), os.path.join(m.mnt, GLENGINE))
             apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))
@@ -604,6 +605,7 @@ def main():
     b.add_argument("--no-usb-net", dest="usb_net", action="store_false",
                    help="skip the en1 (USB Ethernet) DHCP network service")
     b.add_argument("--gles", action="store_true", help="install the GLI shim as GLEngine plus GLTest/GLTest2.app (run contrib/ipad1-gles/build.sh first)")
+    b.add_argument("--page-flip", action="store_true", help="leave CoreAnimation's IOMFB page flipping on (no MBX2D_PAGE_FLIP=0)")
     b.add_argument("--ca-ogl", action="store_true", help="let CoreAnimation composite through GL (no CA_ENABLE_OGL=0; GLI_ACCELERATED=1)")
     b.add_argument("--hidbridge", action="store_true", help="install the hardware-keyboard daemon (run contrib/ipad1-hidbridge/build.sh first)")
     f = sub.add_parser("fetch")
