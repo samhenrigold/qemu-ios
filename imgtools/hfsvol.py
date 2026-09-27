@@ -139,7 +139,7 @@ class Fork:
         blks = self.blocks()
         out = bytearray()
         while length > 0:
-            i, o = divmod(offset, BLOCK)
+            i, o = divmod(offset, self.vol.block_size)
             if i >= len(blks):
                 break
             chunk = self.vol.read_block(blks[i])[o : o + length]
@@ -151,11 +151,11 @@ class Fork:
     def write(self, offset, data):
         blks = self.blocks()
         while data:
-            i, o = divmod(offset, BLOCK)
+            i, o = divmod(offset, self.vol.block_size)
             if i >= len(blks):
                 raise RuntimeError("write past end of fork")
             b = self.vol.read_block(blks[i])
-            n = min(len(data), BLOCK - o)
+            n = min(len(data), self.vol.block_size - o)
             b[o : o + n] = data[:n]
             self.vol.write_block(blks[i], b)
             data = data[n:]

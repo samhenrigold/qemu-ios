@@ -85,25 +85,25 @@ class FlatVolume(H.Volume):
         self.writable = writable
         self.dirty = set()
         self._cache = {}
+        self.block_size = BLOCK
         self.vh = self.read_block(0)[1024:1536]
         sig = struct.unpack_from(">2s", self.vh, 0)[0]
         if sig not in (b"H+", b"HX"):
             raise RuntimeError("no HFS+ volume header (got %r)" % sig)
         self.signature = sig
-        self.block_size = struct.unpack_from(">I", self.vh, 40)[0]
+        self.block_size = struct.unpack_from(">I", self.vh, 40)[0]   # 8192 on the 7B500 system volume
+        self._cache = {}
         self.total_blocks = struct.unpack_from(">I", self.vh, 44)[0]
         self.free_blocks = struct.unpack_from(">I", self.vh, 48)[0]
         self.file_count = struct.unpack_from(">I", self.vh, 32)[0]
         self.folder_count = struct.unpack_from(">I", self.vh, 36)[0]
-        if self.block_size != BLOCK:
-            raise RuntimeError("unexpected allocation block size %d" % self.block_size)
         self.catalog = H.Fork(self, self.vh, 272)
 
     def read_block(self, n):
         if n in self._cache:
             return self._cache[n]
-        self.f.seek(n * BLOCK)
-        d = bytearray(self.f.read(BLOCK).ljust(BLOCK, b"\x00"))
+        self.f.seek(n * self.block_size)
+        d = bytearray(self.f.read(self.block_size).ljust(self.block_size, b"\x00"))
         self._cache[n] = d
         return d
 
@@ -115,7 +115,7 @@ class FlatVolume(H.Volume):
 
     def flush(self):
         for n in sorted(self.dirty):
-            self.f.seek(n * BLOCK)
+            self.f.seek(n * self.block_size)
             self.f.write(bytes(self._cache[n]))
         self.f.flush()
         n = len(self.dirty)

@@ -53,6 +53,8 @@
 #define S5L8930_CPU_DEBUG_BASE   0xbf701000
 #define S5L8930_USB_PHY_BASE     0x86000000   /* otgphyctrl,s5l8930x */
 #define S5L8930_USB_OTG_BASE     0x86100000   /* Synopsys DWC OTG, device mode */
+#define S5L8930_USB_EHCI_BASE    0x86400000   /* usb-ehci,s5l8930x (host) */
+#define S5L8930_USB_OHCI0_BASE   0x86500000   /* usb-ohci,s5l8930x (host) */
 #define S5L8930_IOP_BASE         0x86300000   /* AP-side IOP control block */
 #define S5L8930_IOP_SIZE         0x1000
 #define S5L8930_IOP_VIC_BASE     0xbf300000   /* the IOP's own 4 VICs, used as doorbells */
@@ -61,6 +63,8 @@
 /* Interrupt numbers: VIC n owns 32n..32n+31 */
 #define S5L8930_IRQ_IOP          0x03          /* IOP -> AP doorbell */
 #define S5L8930_IRQ_USB_OTG      0x0d
+#define S5L8930_IRQ_USB_EHCI     0x0e
+#define S5L8930_IRQ_USB_OHCI0    0x0f
 #define S5L8930_IRQ_TIMER1       0x05          /* second event timer, unused by the kernel */
 #define S5L8930_IRQ_TIMER0       0x06          /* event timer; the kernel routes it to FIQ */
 #define S5L8930_IRQ_I2C(n)       (0x13 + (n))
