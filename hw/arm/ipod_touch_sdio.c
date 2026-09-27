@@ -43,8 +43,7 @@ static void put_cis_ptr(uint8_t *dst, uint32_t offset)
  */
 static void ipod_touch_sdio_build_cia(IPodTouchSDIOState *s)
 {
-    /* Matches wifiaddr in the stock n72ap NOR's nvram. */
-    static const uint8_t wlan_mac[6] = { 0x00, 0x23, 0x32, 0x6e, 0xaa, 0x10 };
+    const BCMSDIOChip *chip = &s->chip;
     uint8_t *r = s->registers;
 
     r[CCCR_REVISION] = 0x11;     /* CCCR 1.10, SDIO 1.10 */
@@ -57,10 +56,30 @@ static void ipod_touch_sdio_build_cia(IPodTouchSDIOState *s)
     uint8_t *cis = &r[CIS_COMMON_OFFSET];
     *cis++ = CIS_MANUFACTURER_ID;
     *cis++ = 0x04;
-    *cis++ = BCM4325_MANUFACTURER & 0xff;
-    *cis++ = (BCM4325_MANUFACTURER >> 8) & 0xff;
-    *cis++ = BCM4325_PRODUCT_ID & 0xff;
-    *cis++ = (BCM4325_PRODUCT_ID >> 8) & 0xff;
+    *cis++ = chip->manfid & 0xff;
+    *cis++ = (chip->manfid >> 8) & 0xff;
+    *cis++ = chip->prodid & 0xff;
+    *cis++ = (chip->prodid >> 8) & 0xff;
+    if (chip->vers1[0]) {
+        /*
+         * CISTPL_VERS_1: IOSDIOFamily publishes the strings as
+         * IOSDIOManufacturer, IOSDIOProduct, IOSDIOProductInfo0/1, and
+         * AppleBCMWLAN's IOSDIOStringContains picks the board personality
+         * from the last two.
+         */
+        uint8_t *len = &cis[1];
+        *cis++ = CIS_VERS_1;
+        cis++;
+        *cis++ = 0x01;           /* major */
+        *cis++ = 0x00;           /* minor */
+        for (unsigned i = 0; i < ARRAY_SIZE(chip->vers1) && chip->vers1[i]; i++) {
+            size_t n = strlen(chip->vers1[i]) + 1;
+            memcpy(cis, chip->vers1[i], n);
+            cis += n;
+        }
+        *cis++ = 0xff;
+        *len = cis - len - 1;
+    }
     *cis++ = CIS_FUNCTION_EXTENSION;
     *cis++ = 0x04;
     *cis++ = 0x00;               /* extension type 0: common */
@@ -80,7 +99,7 @@ static void ipod_touch_sdio_build_cia(IPodTouchSDIOState *s)
     *cis++ = 0x04;               /* extension type 4: MAC address */
     *cis++ = 0x06;               /* address length */
     for (unsigned i = 0; i < 6; i++) {
-        *cis++ = wlan_mac[i];
+        *cis++ = chip->mac[i];
     }
 
     *cis++ = CIS_END;
@@ -183,7 +202,7 @@ static void raise_irq_soon(IPodTouchSDIOState *s, uint32_t bits)
 static uint32_t sdpcm_reg_read(IPodTouchSDIOState *s, uint32_t off)
 {
     uint8_t buf[4];
-    backplane_read(s, SDPCM_CORE_BASE + off, buf, sizeof(buf));
+    backplane_read(s, s->chip.sdiod_base + off, buf, sizeof(buf));
     return ldl_le_p(buf);
 }
 
@@ -191,7 +210,7 @@ static void sdpcm_reg_write(IPodTouchSDIOState *s, uint32_t off, uint32_t val)
 {
     uint8_t buf[4];
     stl_le_p(buf, val);
-    backplane_write(s, SDPCM_CORE_BASE + off, buf, sizeof(buf));
+    backplane_write(s, s->chip.sdiod_base + off, buf, sizeof(buf));
 }
 
 static void sdpcm_raise(IPodTouchSDIOState *s, uint32_t intbits)
@@ -658,9 +677,9 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
 static void backplane_store(IPodTouchSDIOState *s, uint32_t sb_addr,
                             const uint8_t *buf, uint32_t len)
 {
-    bool in_core = sb_addr >= SDPCM_CORE_BASE &&
-                   sb_addr < SDPCM_CORE_BASE + SDPCM_CORE_SIZE;
-    uint32_t off = sb_addr - SDPCM_CORE_BASE;
+    bool in_core = sb_addr >= s->chip.sdiod_base &&
+                   sb_addr < s->chip.sdiod_base + SDPCM_CORE_SIZE;
+    uint32_t off = sb_addr - s->chip.sdiod_base;
 
     if (in_core && off == SDPCM_INTSTATUS && len >= 4) {
         /* Write one to clear. */
@@ -794,13 +813,12 @@ static NetClientInfo sdio_net_info = {
  */
 void ipod_touch_sdio_setup_net(IPodTouchSDIOState *s)
 {
-    static const uint8_t wlan_mac[6] = { 0x00, 0x23, 0x32, 0x6e, 0xaa, 0x10 };
     NetClientState *peer = qemu_find_netdev("wifi0");
 
     if (!peer) {
         return;
     }
-    memcpy(s->conf.macaddr.a, wlan_mac, sizeof(wlan_mac));
+    memcpy(s->conf.macaddr.a, s->chip.mac, sizeof(s->chip.mac));
     s->conf.peers.ncs[0] = peer;
     s->conf.peers.queues = 1;
     s->nic = qemu_new_nic(&sdio_net_info, &s->conf, TYPE_IPOD_TOUCH_SDIO,
@@ -876,7 +894,67 @@ static void trace_post_ready(IPodTouchSDIOState *s, const char *what,
            func, is_write ? "write" : "read", addr, len);
 }
 
-void sdio_exec_cmd(IPodTouchSDIOState *s)
+static void sdio_exec_cmd(IPodTouchSDIOState *s);
+
+/*
+ * Move a CMD53 payload between the card and guest memory: one contiguous
+ * buffer at baddr for the iPod's controller, or the scatter list an IOP
+ * command carries (ipod_touch_sdio_command).
+ */
+static void sdio_dma(IPodTouchSDIOState *s, uint8_t *buf, uint32_t len,
+                     bool to_guest)
+{
+    if (!s->sg) {
+        cpu_physical_memory_rw(s->baddr, buf, len, to_guest);
+        return;
+    }
+    for (unsigned i = 0; i < s->sg_count && len; i++) {
+        uint32_t n = MIN(len, s->sg[2 * i + 1]);
+        cpu_physical_memory_rw(s->sg[2 * i], buf, n, to_guest);
+        buf += n;
+        len -= n;
+    }
+    if (len) {
+        qemu_log_mask(LOG_GUEST_ERROR, "[SDIO] scatter list %u bytes short\n",
+                      len);
+    }
+}
+
+uint32_t ipod_touch_sdio_command(IPodTouchSDIOState *s, uint32_t cmd,
+                                 uint32_t arg, uint32_t blklen,
+                                 uint32_t numblk, const uint32_t *sg,
+                                 unsigned sg_count)
+{
+    s->cmd = cmd;
+    s->arg = arg;
+    s->blklen = blklen;
+    s->numblk = numblk;
+    s->sg = sg;
+    s->sg_count = sg_count;
+    s->resp0 = 0;
+    sdio_exec_cmd(s);
+    s->sg = NULL;
+    return s->resp0;
+}
+
+bool ipod_touch_sdio_card_irq(IPodTouchSDIOState *s)
+{
+    return s->dongle_started &&
+           (sdpcm_reg_read(s, SDPCM_INTSTATUS) &
+            sdpcm_reg_read(s, SDPCM_HOSTINTMASK));
+}
+
+void ipod_touch_sdio_set_chip(IPodTouchSDIOState *s, const BCMSDIOChip *chip)
+{
+    uint8_t chipid[4];
+
+    s->chip = *chip;
+    stl_le_p(chipid, chip->chipid);
+    backplane_write(s, CHIPCOMMON_BASE, chipid, sizeof(chipid));
+    ipod_touch_sdio_build_cia(s);
+}
+
+static void sdio_exec_cmd(IPodTouchSDIOState *s)
 {
     uint32_t cmd_type = s->cmd & 0x3f;
     uint32_t addr = (s->arg >> 9) & 0x1ffff;
@@ -988,7 +1066,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
         if(is_write) {
             if(func == 0x1) {
                 g_autofree uint8_t *buf = g_malloc(xfer_len);
-                cpu_physical_memory_read(s->baddr, buf, xfer_len);
+                sdio_dma(s, buf, xfer_len, false);
                 backplane_store(s, sb_addr, buf, xfer_len);
                 /* Enough of a heartbeat to tell a running firmware download
                  * apart from a wedged one, without tracing every access. */
@@ -1012,14 +1090,14 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                     trace_sdio("[SDIO] first SDPCM frame on function 2 (%u bytes)\n", xfer_len);
                 }
                 g_autofree uint8_t *buf = g_malloc0(xfer_len);
-                cpu_physical_memory_read(s->baddr, buf, xfer_len);
+                sdio_dma(s, buf, xfer_len, false);
                 sdpcm_receive(s, buf, xfer_len);
             }
         } else {
             if(func == 0x1) {
                 g_autofree uint8_t *buf = g_malloc(xfer_len);
                 backplane_read(s, sb_addr, buf, xfer_len);
-                cpu_physical_memory_write(s->baddr, buf, xfer_len);
+                sdio_dma(s, buf, xfer_len, true);
             }
             else if(func == 0x2) {
                 /* Hand up one queued frame, zero-padded to whatever the host
@@ -1068,7 +1146,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                  * a length of zero is a different thing entirely: the driver
                  * accepts it as a frame and hands the empty result to its
                  * command manager. */
-                cpu_physical_memory_write(s->baddr, buf, xfer_len);
+                sdio_dma(s, buf, xfer_len, true);
             }
             
         }
@@ -1201,13 +1279,17 @@ static void ipod_touch_sdio_init(Object *obj)
     IPodTouchSDIOState *s = IPOD_TOUCH_SDIO(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
+    /* The iPod touch 2G's BCM4325; the iPad swaps in its 4329. */
+    static const BCMSDIOChip bcm4325 = {
+        .manfid = BCM4325_MANUFACTURER, .prodid = BCM4325_PRODUCT_ID,
+        .chipid = CHIPCOMMON_CHIPID, .sdiod_base = SDPCM_CORE_BASE,
+        /* Matches wifiaddr in the stock n72ap NOR's nvram. */
+        .mac = { 0x00, 0x23, 0x32, 0x6e, 0xaa, 0x10 },
+    };
+
     s->backplane = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
     s->sb_window = CHIPCOMMON_BASE;
-    uint8_t chipid[4];
-    stl_le_p(chipid, CHIPCOMMON_CHIPID);
-    backplane_write(s, CHIPCOMMON_BASE, chipid, sizeof(chipid));
-
-    ipod_touch_sdio_build_cia(s);
+    ipod_touch_sdio_set_chip(s, &bcm4325);
 
     memory_region_init_io(&s->iomem, obj, &ipod_touch_sdio_ops, s, TYPE_IPOD_TOUCH_SDIO, 4096);
     sysbus_init_mmio(sbd, &s->iomem);

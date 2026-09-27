@@ -151,6 +151,7 @@ struct S5L8930IOPState {
     MemoryRegion ctrl_mr;
     MemoryRegion vic_mr;
 
+    DeviceState *sdio;      /* ring 3 goes here; NULL = no card */
     uint32_t nand_id;       /* the 4 ID bytes the kext compares, LE packed */
     uint8_t nand_ce_mask;   /* CE slots populated on each bus */
     char *nand_dir;         /* page store directory; NULL = blank chip */
@@ -695,6 +696,14 @@ static void iop_sdio_command(S5L8930IOPState *s, hwaddr item)
         iop_stl(item + CMD_STATUS, SDIO_STATUS_OK);
         return;
     }
+    if (s->sdio) {
+        uint8_t cmd[S5L8930_SDIO_CMD_SIZE];
+
+        iop_read(item, cmd, sizeof(cmd));
+        s5l8930_sdio_iop_command(s->sdio, cmd);
+        iop_write(item, cmd, sizeof(cmd));
+        return;
+    }
     qemu_log_mask(LOG_UNIMP, "%s: sdio opcode %u\n", __func__, op);
     iop_stl(item + CMD_STATUS, SDIO_STATUS_UNKNOWN);
 }
@@ -1172,6 +1181,7 @@ static const Property s5l8930_iop_properties[] = {
     DEFINE_PROP_UINT8("nand-ce-mask", S5L8930IOPState, nand_ce_mask, 0xf),
     DEFINE_PROP_STRING("nand", S5L8930IOPState, nand_dir),
     DEFINE_PROP_STRING("nand-overlay", S5L8930IOPState, overlay_dir),
+    DEFINE_PROP_LINK("sdio", S5L8930IOPState, sdio, TYPE_DEVICE, DeviceState *),
 };
 
 static void s5l8930_iop_class_init(ObjectClass *klass, void *data)

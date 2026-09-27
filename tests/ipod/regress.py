@@ -1704,7 +1704,9 @@ def main():
     if "boot" not in selected:
         selected.insert(0, "boot")
 
-    cfg.kernel_console = "serial-console" in selected
+    # wifi judges "link" from the kernel's "AirPort: Link Up on en0", which only
+    # reaches serial.log with the kernel console on (0c05f7b736 made it opt-in).
+    cfg.kernel_console = bool({"serial-console", "wifi"} & set(selected))
     cfg.out = cfg.out or os.path.join(
         os.environ.get("TMPDIR", "/tmp"),
         "itregress-%d-%d" % (os.getpid(), int(START)))
