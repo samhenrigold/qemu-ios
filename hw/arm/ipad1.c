@@ -35,6 +35,7 @@
 #include "hw/arm/ipod_touch_amc.h"
 #include "hw/arm/ipod_touch_lis302dl.h"
 #include "hw/arm/ipod_touch_cs42l58.h"
+#include "hw/arm/ipod_touch_cd3272_mikey.h"
 #include "chardev/char.h"
 #include "hw/i2c/i2c.h"
 #include "hw/arm/s5l8930.h"
@@ -437,6 +438,16 @@ static void ipad1_init(MachineState *machine)
          * the unimplemented window.
          */
         i2c_slave_create_simple(bus, TYPE_CS42L58, 0x4a);
+        /*
+         * CD3282 "Mikey" headset controller (i2c0/mikey). AppleCS42L61Audio
+         * resolves the codec's 'mikey' platform function during its power-up
+         * (c08213d4 -> c082273c) and waits until AppleCD3282Mikey provides
+         * it, so without this slave the codec never registers its "Codec"
+         * IOAudio2 device and mediaserverd fails every sound with '!dev'.
+         * The iPod's CD3272 model (all registers read 0: nothing plugged in)
+         * is enough for the driver to start.
+         */
+        i2c_slave_create_simple(bus, TYPE_CD3272MIKEY, 0x39);
     }
     /*
      * I2C2: LIS331DLH accelerometer and TSL2581 light sensor. AppleLIS331DLH
@@ -615,13 +626,25 @@ static void ipad1_init(MachineState *machine)
     sysbus_create_simple("ipodtouch.swi", S5L8930_SWI_BASE, NULL);
 
     /*
+     * I2S0-2. i2s0 carries the CS42L61 codec's PCM from CDMA channel 0x1a to
+     * the host audio backend; i2s1 (voice) and i2s2 (baseband) are register
+     * files whose FIFO data is dropped. The CDMA model paces all three.
+     */
+    for (i = 0; i < 3; i++) {
+        dev = qdev_new(TYPE_S5L8930_I2S);
+        qdev_prop_set_bit(dev, "audio-out", i == 0);
+        sbd = SYS_BUS_DEVICE(dev);
+        sysbus_realize_and_unref(sbd, &error_fatal);
+        sysbus_mmio_map(sbd, 0, S5L8930_I2S_BASE(i));
+    }
+
+    /*
      * AMC (audio media codec, amc,s5l8920x): the same AppleAMC_r2 kext family
      * the iPod's 3.1.3 drives, one hardware revision up ("AMC 2.1"). Reuse the
      * iPod model's register/interrupt handshake; its buffer aperture is the
      * 256 KiB at 0x84000000 that the machine already backs as SRAM. The third
-     * DT window (0x84300000, 0x5000) and the I2S blocks stay unimplemented:
-     * the I2S controllers start without touching a register, and the AMC's
-     * own start is not reached before the CDMA panic (docs/ipad1/PLAN.md).
+     * DT window (0x84300000, 0x5000) stays unimplemented; UI sounds and PCM
+     * playback never reach the AMC (it is the hardware decode transformer).
      */
     dev = qdev_new(TYPE_IPOD_TOUCH_AMC);
     qdev_prop_set_uint64(dev, "buf-base", S5L8930_SRAM_BASE);

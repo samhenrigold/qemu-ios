@@ -79,7 +79,8 @@ static void i2c_do_transfer(S5L8930I2CState *s, bool write)
     }
     i2c_end_transfer(s->bus);
     if (getenv("S5L8930_I2C_TRACE")) {
-        fprintf(stderr, "[I2C] %s addr 0x%02x sub 0x%02x len %u%s\n",
+        fprintf(stderr, "[I2C%d] %s addr 0x%02x sub 0x%02x len %u%s\n",
+                (int)((s->iomem.addr >> 20) & 0xf) - 2,
                 write ? "W" : "R", s->addr & 0x7f, s->subaddr & 0xff, n,
                 nak ? " NAK" : "");
     }
