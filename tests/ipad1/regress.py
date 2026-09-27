@@ -4,19 +4,20 @@
     tests/ipad1/regress.py                     # default tier
     tests/ipad1/regress.py --checks net,afc    # explicit selection
 
-Every check boots its own copy-on-write overlay of golden-pristine (the base is never written) with
-usbmuxd-qemu's ipad1 build as the USB host, up to three QEMUs at once host-wide (pgrep -x).
+Every check boots its own copy-on-write overlay of golden-pristine (the base is never written), with
+usbmuxd-qemu's ipad1 build as the USB host where the check talks USB (otherwise the machine's built-in
+host), up to three QEMUs at once host-wide (pgrep -x). While the host is busy, run checks one at a time.
 
-  boot     lock screen on the panel: lit and not a solid fill, held HOME_CONFIRM_S
+  boot     lock screen on the panel: lit and a picture (many colours), not a solid fill
   usbmux   ideviceinfo over the bridge answers ProductVersion 3.2.2, DeviceClass iPad
   afc      push and pull files at sizes that are not multiples of 512, SHA-256 identical
   persist  a file pushed over AFC survives a reboot on the same overlay (see check_persist)
-  net      USB Ethernet: Safari (typed on the emulated USB keyboard) fetches a page from a host HTTP
-           server at 10.0.2.2, which needs the en1 DHCP lease from usbmuxd's slirp and the link patch
-  audio, appinstall, applaunch, gles
-           not yet: audio waits for a4-periph's WAV check; stock installd rejects every app not
-           validly signed for the device (ApplicationVerificationFailed), so the app checks wait for
-           a legitimately installable app or apps baked into the image
+  net      the default network, Wi-Fi (BCM4329, wifi=on, QEMU slirp netdev): Safari, typed on the
+           emulated USB keyboard, fetches a page from a host HTTP server at 10.0.2.2
+  audio    tests/ipad1/audio-check.py: boot sound, unlock, lock, unlock correlate with the originals
+  net-usb  (opt-in) the same fetch over USB Ethernet: en1, usbmuxd's slirp, it_ethlink in the image
+  appinstall, applaunch, gles
+           SKIP: stock installd rejects apps not validly signed for this device
 
 Exits non-zero if any selected check FAILs.
 """
@@ -38,13 +39,13 @@ spec = importlib.util.spec_from_file_location("ipod_regress", os.path.join(ROOT,
 ipod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ipod)
 itqmp = ipod.itqmp
+itqmp.W, itqmp.H = 1024, 768   # scanout pixels, for itqmp.move/button users (audio-check)
 Result, Procs, free_port, sha256_file, log = ipod.Result, ipod.Procs, ipod.free_port, ipod.sha256_file, ipod.log
 
 FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1")
 USBMUXD = os.path.expanduser("~/Developer/usbmuxd-qemu-ipad1-net/src/usbmuxd")
-DEFAULT_CHECKS = ["boot", "usbmux", "afc", "persist", "net"]
-PENDING = {"audio": "waiting for a4-periph's WAV-correlation check",
-           "appinstall": "stock installd rejects apps not validly signed for this device",
+DEFAULT_CHECKS = ["boot", "usbmux", "afc", "persist", "net", "audio"]
+PENDING = {"appinstall": "stock installd rejects apps not validly signed for this device",
            "applaunch": "needs appinstall", "gles": "needs appinstall (GLTest is ldid-signed)"}
 MAX_QEMUS = 3
 # Scanout is 1024x768 with the portrait UI turned on it. The boot logo is a small Apple on black (a few %
@@ -60,12 +61,15 @@ launch_lock = threading.Lock()
 
 
 class Boot:
-    """One QEMU on an overlay of the golden store, plus its usbmuxd."""
+    """One QEMU on an overlay of the golden store, plus (usb=True) the usbmuxd bridge; without it the
+    machine's built-in USB host configures the device. wifi=True adds the BCM4329 on a slirp netdev,
+    wav records the audio out."""
     n = 0
 
-    def __init__(self, cfg, tag, overlay=None, keyboard=False):
+    def __init__(self, cfg, tag, overlay=None, keyboard=False, usb=True, wifi=False, wav=None):
         Boot.n += 1
         self.cfg, self.tag, self.keyboard = cfg, tag, keyboard
+        self.usb, self.wifi, self.wav = usb, wifi, wav
         self.dir = os.path.join(cfg.out, tag)
         os.makedirs(self.dir, exist_ok=True)
         self.overlay = overlay or os.path.join(self.dir, "overlay")
@@ -81,16 +85,22 @@ class Boot:
             while int(subprocess.run("pgrep -x qemu-system-arm | wc -l", shell=True, capture_output=True,
                                      text=True).stdout) >= MAX_QEMUS:
                 time.sleep(15)
-            self.usb_port = free_port(21300, 21399)
-            self.mux_port = free_port(27400, 27499)
-            env = dict(os.environ, USBMUXD_QEMU_ADDR="127.0.0.1:%d" % self.usb_port, USBMUXD_QEMU_DELAY="0")
-            os.makedirs(os.path.join(self.dir, "conf"), exist_ok=True)
-            self.procs.spawn([cfg.usbmuxd, "-f", "-v", "-v", "-S", "127.0.0.1:%d" % self.mux_port,
-                              "-P", "NONE", "-C", os.path.join(self.dir, "conf")], self.muxlog, env=env)
-            machine = "ipad1,kboot=%s,nand=%s,nand-overlay=%s,usb-tcp-addr=127.0.0.1:%d" % (
-                cfg.kboot, cfg.nand, self.overlay, self.usb_port)
-            argv = ["timeout", str(cfg.boot_timeout), cfg.qemu, "-machine", machine, "-display", "none",
-                    "-monitor", "none", "-serial", "file:" + self.serial, "-qmp", "unix:%s,server,nowait" % self.sock]
+            machine = "ipad1,kboot=%s,nand=%s,nand-overlay=%s" % (cfg.kboot, cfg.nand, self.overlay)
+            self.usb_port = self.mux_port = 0
+            if self.usb:
+                self.usb_port = free_port(21300, 21399)
+                self.mux_port = free_port(27400, 27499)
+                env = dict(os.environ, USBMUXD_QEMU_ADDR="127.0.0.1:%d" % self.usb_port, USBMUXD_QEMU_DELAY="0")
+                os.makedirs(os.path.join(self.dir, "conf"), exist_ok=True)
+                self.procs.spawn([cfg.usbmuxd, "-f", "-v", "-v", "-S", "127.0.0.1:%d" % self.mux_port,
+                                  "-P", "NONE", "-C", os.path.join(self.dir, "conf")], self.muxlog, env=env)
+                machine += ",usb-tcp-addr=127.0.0.1:%d" % self.usb_port
+            argv = ["timeout", str(cfg.boot_timeout), cfg.qemu, "-machine", machine + (",wifi=on" if self.wifi else ""),
+                    "-display", "none", "-monitor", "none", "-serial", "file:" + self.serial,
+                    "-qmp", "unix:%s,server,nowait" % self.sock]
+            # slirp's defaults: 10.0.2.0/24, gateway 10.0.2.2 = host loopback, DHCP from .15
+            argv += ["-netdev", "user,id=wifi0"] if self.wifi else []
+            argv += ["-audio", "driver=wav,path=" + self.wav] if self.wav else []
             # A USB keyboard takes QMP keys ahead of the machine's button chords, so only boots that type get one.
             argv += ["-device", "usb-kbd,bus=usb-bus.0"] if self.keyboard else []
             self.qemu = self.procs.spawn(argv, os.path.join(self.dir, "qemu.log"))
@@ -197,7 +207,7 @@ def booted(cfg, tag, r, **kw):
     if not ok:
         r.set(False, detail)
         return b, None
-    if not b.wait_mux():
+    if b.usb and not b.wait_mux():
         r.set(False, "lock screen but usbmux never attached")
         return b, None
     return b, detail
@@ -282,7 +292,9 @@ def check_persist(cfg, r):
         b2.stop()
 
 
-def check_net(cfg, r):
+def safari_fetch(cfg, r, tag, via, **kw):
+    """Safari, typed on the emulated USB keyboard, fetches a page from a host HTTP server at 10.0.2.2
+    (slirp's gateway, mapped to host loopback). via names the path for the report."""
     hits = []
     token = "regress-%d.html" % random.randrange(1 << 30)
 
@@ -301,7 +313,7 @@ def check_net(cfg, r):
 
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)   # slirp maps 10.0.2.2 to host loopback
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    b, detail = booted(cfg, "net", r, keyboard=True)
+    b, detail = booted(cfg, tag, r, keyboard=True, **kw)
     try:
         if not detail:
             return
@@ -321,19 +333,54 @@ def check_net(cfg, r):
         while not any(p == "/" + token for _, p in hits) and time.time() - t0 < 60:
             time.sleep(1)
         b.shot("safari")
-        mux = open(b.muxlog, errors="replace").read()
         if any(p == "/" + token for _, p in hits):
-            r.set(True, "guest fetched /%s over en1 (usbmuxd slirp)" % token)
+            r.set(True, "guest fetched /%s over %s" % (token, via))
         else:
-            r.set(False, "no GET from the guest in 60s; %s" % (
-                "USB Ethernet up" if "USB Ethernet up" in mux else "USB Ethernet never came up"))
+            why = ""
+            if b.usb:
+                mux = open(b.muxlog, errors="replace").read()
+                why = "; USB Ethernet %s" % ("up" if "USB Ethernet up" in mux else "never came up")
+            r.set(False, "no GET from the guest in 60s%s" % why)
     finally:
         b.stop()
         srv.shutdown()
 
 
+def check_net(cfg, r):
+    """The default network: the BCM4329 on a QEMU slirp netdev (wifi=on), built-in USB host."""
+    safari_fetch(cfg, r, "net", "Wi-Fi en0 (QEMU slirp)", usb=False, wifi=True)
+
+
+def check_net_usb(cfg, r):
+    """Opt-in: USB Ethernet, en1 on usbmuxd's slirp (needs it_ethlink in the image)."""
+    safari_fetch(cfg, r, "net-usb", "USB Ethernet en1 (usbmuxd slirp)")
+
+
+def check_audio(cfg, r):
+    """a4-periph's WAV correlation (tests/ipad1/audio-check.py): boot sound, unlock, lock, unlock."""
+    spec = importlib.util.spec_from_file_location("audio_check", os.path.join(HERE, "audio-check.py"))
+    ac = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ac)
+    wav = os.path.join(cfg.out, "audio", "out.wav")
+    b = Boot(cfg, "audio", usb=False, wav=wav)
+    b.start()
+    try:
+        ok, detail = b.wait_lock_screen()
+        if not ok:
+            return r.set(False, detail)
+        time.sleep(15)   # the boot sound comes ~35 s after SpringBoard starts
+        ac.play_sounds(b.qmp)
+        b.qmp.cmd("quit")
+        b.qemu.wait(timeout=30)                       # the WAV header is written at exit
+    finally:
+        b.stop()
+    ok = ac.judge(wav, b.serial, expect=ac.EXPECT)
+    r.set(ok, "%d sounds correlate >= 0.8 with the rootfs originals" % len(ac.EXPECT) if ok
+          else "WAV correlation failed (see audio/ and the judge output above)")
+
+
 CHECKS = {"boot": check_boot, "usbmux": check_usbmux, "afc": check_afc, "persist": check_persist,
-          "net": check_net}
+          "net": check_net, "net-usb": check_net_usb, "audio": check_audio}
 
 
 def main():
