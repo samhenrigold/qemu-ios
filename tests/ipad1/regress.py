@@ -393,6 +393,10 @@ def main():
     ap.add_argument("--boot-timeout", type=int, default=600, help="hard cap per QEMU, seconds")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
+    import ffmpeg_guard                     # imgtools; stock FFmpeg breaks iPod H.264
+    why = ffmpeg_guard.check(a.qemu)
+    if why:
+        sys.exit(why)
     ipod.START = time.time()
     a.out = a.out or tempfile.mkdtemp(prefix="ipad1regress-")
     selected = [c for c in a.checks.split(",") if c]

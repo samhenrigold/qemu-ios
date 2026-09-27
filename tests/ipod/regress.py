@@ -1721,6 +1721,12 @@ def main():
     for path, what in ((cfg.qemu, "qemu binary"), (cfg.base_nand, "base NAND")):
         if not os.path.exists(path):
             sys.exit("missing %s: %s" % (what, path))
+    # Stock FFmpeg makes the H.264 checks fail in a way that looks like a
+    # code regression (tests/ipod/test_h264_snapshot "slice decode failed").
+    import ffmpeg_guard
+    why = ffmpeg_guard.check(cfg.qemu)
+    if why:
+        sys.exit(why)
 
     # usbmuxd and the .ipa are per-check inputs, not run-wide ones: a check
     # that needs one it doesn't have SKIPs instead of taking the whole run
