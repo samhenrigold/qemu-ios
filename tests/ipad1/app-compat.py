@@ -184,6 +184,34 @@ def GRID(row, col):
     return (895 - 165 * row, 115 + 177 * col)
 
 
+def _flip(xy, flip):
+    """180-degree rotate a coordinate when the store booted in the opposite orientation."""
+    return (1024 - xy[0], 768 - xy[1]) if flip else (xy[0], xy[1])
+
+
+def _flip_icon(xy, flip):
+    """Like _flip but for a home-icon center: the grid isn't symmetric top/bottom (status bar
+    vs dock), so a pure 180 flip lands ~38px low on the label. Nudge back onto the glyph."""
+    return (1024 - xy[0], 768 - xy[1] - 38) if flip else (xy[0], xy[1])
+
+
+def detect_flip(b, rg):
+    """True if the store booted 180-rotated from the calibrated orientation. The status bar is a
+    thin dark strip on one short edge; calibrated = right edge, flipped = left edge. Compares the
+    mean brightness of the far-left vs far-right columns of a real (backlight-normalized) frame."""
+    png = os.path.join(b.dir, "orient.png")
+    try:
+        rg.itqmp.shot(b.qmp, png)                 # leaves png + png.ppm (raw)
+        w, h, pix = rg.itqmp.read_ppm(png + ".ppm")
+    except Exception:
+        return False
+    def band(x0, x1):
+        vals = [pix[(y * w + x) * 3] for y in range(0, h, 8) for x in range(x0, x1, 3)]
+        return sum(vals) / max(1, len(vals))
+    left, right = band(0, 24), band(w - 24, w)
+    return left < right                           # darker on the left => status bar left => flipped
+
+
 def _sample(rg, ppm, step=997):
     """Flat list of sampled pixel bytes from a ppm, or [] if unreadable."""
     try:
@@ -405,24 +433,32 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         slot = icon_slot(b, r["bundle"]) or (2, 0, 0)     # fall back to page-2 slot(0,0)
         page, row, col = slot
         res["note"] = "slot p%d r%d c%d" % slot
-        # 2. unlock: drag, wait for a settled frame, confirm it changed from the lock frame.
-        home = lock
-        for _ in range(5):
-            b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
-            home = wait_stable(b, rg, tag, min(end, time.time() + 30), want_lit=True)
-            if _framediff(lock, home):
+        # 2. unlock. Orientation isn't fixed, so try the slider flipped then unflipped; a real
+        # unlock is a BIG frame change (not a clock tick), so require a large diff. The flip that
+        # works is applied to every later tap.
+        home, flip, unlocked = lock, True, False
+        for fl in (True, False):
+            for _ in range(3):
+                b.drag(_flip(rg.UNLOCK_FROM, fl), _flip(rg.UNLOCK_TO, fl))
+                home = wait_stable(b, rg, tag, min(end, time.time() + 22), want_lit=True)
+                if _framediff(lock, home, thresh=25):
+                    flip, unlocked = fl, True
+                    break
+                b.press("home")
+            if unlocked:
                 break
-            b.press("home")
-        else:
+        if not unlocked:
             res["verdict"], res["note"] = "NO-LAUNCH", "could not unlock (%s)" % res["note"]
             return res
-        b.tap(DISMISS_EDIT)                         # dismiss the install help sheet if present
+        res["note"] += " flip=%d" % flip
+        b.tap(_flip(DISMISS_EDIT, flip))            # dismiss the install help sheet if present
         prev = wait_stable(b, rg, tag, min(end, time.time() + 20), want_lit=True)
         # 3. swipe to the app's page, one settled turn at a time.
+        pa, pb = (_flip(NEXT_PAGE[0], flip), _flip(NEXT_PAGE[1], flip))
         for hop in range(page - 1):
             turned = False
             for _ in range(5):
-                b.drag(*NEXT_PAGE)
+                b.drag(pa, pb)
                 nowf = wait_stable(b, rg, tag, min(end, time.time() + 20), want_lit=True)
                 if _framediff(prev, nowf):
                     turned, prev = True, nowf
@@ -432,7 +468,7 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
                 return res
         before = prev
         syslen = os.path.getsize(syslog) if os.path.exists(syslog) else 0
-        b.tap(GRID(row, col))
+        b.tap(_flip_icon(GRID(row, col), flip))
         after = wait_stable(b, rg, tag, min(end, time.time() + 40))   # settle on the app frame
         _, _, nz = rg.itqmp.shot(b.qmp, os.path.join(b.dir, "launch-" + tag + ".png"))
         res["shot"] = os.path.join(b.dir, "launch-" + tag + ".png")
