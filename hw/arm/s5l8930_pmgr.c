@@ -96,6 +96,52 @@ static const struct {
     { 0x08, 0xA000C322 }, { 0x0C, 0x00380960 },
     { 0x10, 0xA0010559 }, { 0x14, 0x00380960 },
     { 0x20, 0xA0008205 }, { 0x24, 0x00380960 },
+    /* Clock muxes/dividers reconstructed from the real K48 clock-frequencies
+     * property and iBoot's PMGR decoder. Zero divisors mean an unavailable
+     * clock; leaving all registers zero made iBoot publish a zero FMI clock. */
+    { 0x40, 0x00802000 },
+    { 0x44, 0x00000005 },
+    { 0x48, 0x2000000a },
+    { 0x4c, 0x20000001 },
+    { 0x50, 0x00000006 },
+    { 0x54, 0x2000000f },
+    { 0x5c, 0x20000013 },
+    { 0x60, 0x20000003 },
+    { 0x64, 0x00000000 },
+    { 0x68, 0x20000015 },
+    { 0x70, 0x00000002 },
+    { 0x74, 0x10000002 },
+    { 0x78, 0x00000005 },
+    { 0x80, 0x00000000 },
+    { 0x84, 0x2000000f },
+    { 0x88, 0x20000003 },
+    { 0x8c, 0x20000006 },
+    { 0x90, 0x30000001 },
+    { 0x94, 0x2000000f },
+    { 0x98, 0x00000000 },
+    { 0x9c, 0x00000000 },
+    { 0xa0, 0x00000000 },
+    { 0xa4, 0x10000000 },
+    { 0xa8, 0x30000000 },
+    { 0xac, 0x10000000 },
+    { 0xb0, 0x10000000 },
+    { 0xb4, 0x10000000 },
+    { 0xb8, 0x00000000 },
+    { 0xbc, 0x00000000 },
+    { 0xc4, 0x0000000c },
+    { 0xc8, 0x00000000 },
+    { 0xcc, 0x00000000 },
+    { 0xd0, 0x10000000 },
+    { 0xd4, 0x00000002 },
+    { 0xdc, 0x20000000 },
+    { 0xe0, 0x20000000 },
+    { 0xe4, 0x20000000 },
+    { 0xe8, 0x20000000 },
+    { 0xec, 0x20000000 },
+    { 0xf0, 0x00000002 },
+    { 0xf4, 0x00000002 },
+    { 0xf8, 0x00000002 },
+    { 0xfc, 0x00000000 },
     { PMGR_POWER_ID, 0x01020001 },   /* measured on a real K48AP (epoch 1, board 2) */
 };
 
@@ -298,7 +344,7 @@ static void s5l8930_pmgr_reset(DeviceState *dev)
      * enabled masks from these, and enabling a power gate panics unless its
      * clock gate already reads 0xF. */
     for (i = CLKCFG_START; i < CLKCFG_END; i += 4) {
-        s->regs[i / 4] = 0x80000000;
+        s->regs[i / 4] |= 0x80000000;
     }
     for (i = GATE_START; i < GATE_END; i += 4) {
         s->regs[i / 4] = 0xFF;

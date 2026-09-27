@@ -56,6 +56,7 @@
 #define S5L8930_CPU_DEBUG_BASE   0xbf701000
 #define S5L8930_USB_PHY_BASE     0x86000000   /* otgphyctrl,s5l8930x */
 #define S5L8930_USB_OTG_BASE     0x86100000   /* Synopsys DWC OTG, device mode */
+#define S5L8930_SCALER_BASE      0x89300000   /* scaler,s5l8930x|s5l8720x (M2 scaler/CSC) */
 #define S5L8930_USB_EHCI_BASE    0x86400000   /* usb-ehci,s5l8930x (host) */
 #define S5L8930_USB_OHCI0_BASE   0x86500000   /* usb-ohci,s5l8930x (host) */
 #define S5L8930_H2FMI_BASE       0x81200000   /* FMI0; FMI1 at +0x100000 */
@@ -69,6 +70,7 @@
 #define S5L8930_IRQ_IOP          0x03          /* IOP -> AP doorbell */
 #define S5L8930_IRQ_SDIO         0x26          /* SDHC: the Wi-Fi card interrupt */
 #define S5L8930_IRQ_USB_OTG      0x0d
+#define S5L8930_IRQ_SCALER       0x0b
 #define S5L8930_IRQ_USB_EHCI     0x0e
 #define S5L8930_IRQ_USB_OHCI0    0x0f
 #define S5L8930_IRQ_TIMER1       0x05          /* second event timer, unused by the kernel */
@@ -175,6 +177,9 @@ void s5l8930_ak8973_set_accel(DeviceState *dev, struct LIS302DLState *accel);
  * (UART5). Attach it as UART5's chardev.
  */
 #define TYPE_CHARDEV_S5L8930_HDQ "chardev-s5l8930-hdq-gauge"
+/* Battery the gauge reports: level 0..100 %, charging or discharging. Kept
+ * across guest resets. */
+void s5l8930_hdq_set_battery(Chardev *chr, int level, bool charging);
 
 /*
  * Display (hw/arm/s5l8930_display.c): DisplayPipe0 + CLCD + RGBOUT/TV-out
@@ -196,6 +201,13 @@ void s5l8930_ak8973_set_accel(DeviceState *dev, struct LIS302DLState *accel);
  * A device FIFO in [base, base+size) that paces the channels reading it: a
  * channel takes only avail() bytes, stays running, and resumes on kick().
  */
+/* dart2 translation of `va` for stream ID `sid`; -1 if unmapped. */
+hwaddr s5l8930_dart2_xlate(void *display, uint32_t va, unsigned sid);
+/* The iPod scaler model (hw/arm/ipod_touch_scaler.c) behind an IOMMU. */
+void ipod_scaler_set_iommu(DeviceState *scaler,
+                           hwaddr (*xlate)(void *opaque, uint32_t va, unsigned sid),
+                           void *opaque, unsigned sid);
+
 void s5l8930_cdma_set_source(DeviceState *dev, hwaddr base, hwaddr size,
                              uint32_t (*avail)(void *opaque, hwaddr addr),
                              void *opaque);

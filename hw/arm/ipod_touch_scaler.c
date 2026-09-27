@@ -14,7 +14,118 @@ typedef struct {
     MemoryRegion iomem;
     qemu_irq irq;
     uint32_t regs[0x1000 / 4];
+    /* iPad: buffers are dart2 IOVAs (DT mapper-scaler, stream 2). */
+    hwaddr (*xlate)(void *opaque, uint32_t va, unsigned sid);
+    void *xlate_opaque;
+    unsigned sid;
 } IPodScalerState;
+
+void ipod_scaler_set_iommu(DeviceState *dev,
+                           hwaddr (*xlate)(void *opaque, uint32_t va, unsigned sid),
+                           void *opaque, unsigned sid);
+void ipod_scaler_set_iommu(DeviceState *dev,
+                           hwaddr (*xlate)(void *opaque, uint32_t va, unsigned sid),
+                           void *opaque, unsigned sid)
+{
+    IPodScalerState *s = (IPodScalerState *)dev;
+
+    s->xlate = xlate;
+    s->xlate_opaque = opaque;
+    s->sid = sid;
+}
+
+static hwaddr scaler_pa(IPodScalerState *s, uint32_t va)
+{
+    return s->xlate ? s->xlate(s->xlate_opaque, va, s->sid) : va;
+}
+
+/* Write `len` bytes at a bus address (an IOVA behind the IOMMU), a page at a
+ * time. False if any page is unmapped. */
+static bool scaler_write_bus(IPodScalerState *s, uint32_t va, const void *buf,
+                             unsigned len)
+{
+    const uint8_t *p = buf;
+
+    while (len) {
+        unsigned n = MIN(len, 0x1000 - (va & 0xfff));
+        hwaddr pa = scaler_pa(s, va);
+
+        if (pa == (hwaddr)-1) {
+            return false;
+        }
+        cpu_physical_memory_write(pa, p, n);
+        va += n;
+        p += n;
+        len -= n;
+    }
+    return true;
+}
+
+/*
+ * 32-bit RGB to 32-bit RGB with scaling: what iPad Accessibility > Zoom asks
+ * for. CA renders the visible crop (683x512 at 1.5x) and the scaler blows it
+ * up onto the 1024x768 framebuffer. +0x10/+0x30 formats (low 3 bits 6 =
+ * 32 bpp, same layout both sides, so pixels are copied as they are), +0x14
+ * source, +0x24 source w << 16 | h, +0x34 destination, +0x3c destination
+ * stride in pixels, +0x40 destination w << 16 | h, +0x50/+0x54 x/y step in
+ * 16.16.
+ *
+ * The source as measured (7B500 Zoom, a one-shot dump of dart2 stream 2):
+ * rows of ALIGN(w, 64) pixels, packed, but reached through an IOVA range in
+ * which only the leading pages of every 64 KiB window are mapped (11 of 16
+ * for w = 683). Read back-to-back, the mapped pages hold exactly that packed
+ * image, so the source is gathered that way; +0x1c (0x0400_0400 here) is not
+ * what locates the rows.
+ * ponytail: layout inferred from one mode (Zoom, 32 bpp); nearest sampling
+ * where the hardware has polyphase taps at +0x70 on. Decode +0x1c and the
+ * mapping properly if another RGB client shows up.
+ */
+static bool scaler_rgb(IPodScalerState *s)
+{
+    uint32_t *r = s->regs;
+    unsigned sw = (r[0x24 / 4] >> 16) & 0x1fff, sh = r[0x24 / 4] & 0x1fff;
+    unsigned dw = (r[0x40 / 4] >> 16) & 0x1fff, dh = r[0x40 / 4] & 0x1fff;
+    unsigned ds = (r[0x3c / 4] & 0xffff) * 4, pitch = ROUND_UP(sw, 64);
+    uint32_t sx = r[0x50 / 4], sy = r[0x54 / 4];
+    size_t need, got = 0;
+
+    if ((r[0x10 / 4] & 7) != 6 || (r[0x30 / 4] & 7) != 6 || !sw || !sh ||
+        !dw || !dh || sw > 2048 || sh > 2048 || dw > 2048 || dh > 2048 ||
+        ds < dw * 4) {
+        return false;
+    }
+    sx = sx ? sx : ((uint64_t)sw << 16) / dw;
+    sy = sy ? sy : ((uint64_t)sh << 16) / dh;
+    need = (size_t)pitch * sh * 4;
+    g_autofree uint8_t *src = g_malloc(need);
+    /* Gather the mapped pages in IOVA order; give up after 4x the size. */
+    for (uint32_t va = r[0x14 / 4]; got < need && va - r[0x14 / 4] < need * 4;
+         va += 0x1000) {
+        hwaddr pa = scaler_pa(s, va);
+
+        if (pa != (hwaddr)-1) {
+            size_t n = MIN(0x1000, need - got);
+            cpu_physical_memory_read(pa, src + got, n);
+            got += n;
+        }
+    }
+    if (got < need) {
+        return false;
+    }
+    g_autofree uint32_t *row = g_new(uint32_t, dw);
+    for (unsigned y = 0; y < dh; y++) {
+        const uint32_t *line = (const uint32_t *)src +
+            (size_t)MIN(((uint64_t)y * sy) >> 16, sh - 1) * pitch;
+
+        for (unsigned x = 0; x < dw; x++) {
+            row[x] = line[MIN(((uint64_t)x * sx) >> 16, sw - 1)];
+        }
+        if (!scaler_write_bus(s, r[0x34 / 4] + y * ds, row, dw * 4)) {
+            return false;
+        }
+    }
+    return true;
+}
 
 static bool scaler_range(uint64_t base, unsigned stride, unsigned rows,
                          unsigned bytes)
@@ -96,7 +207,7 @@ static void scaler_write(void *opaque, hwaddr off, uint64_t value, unsigned size
     if (off == 4 && (value & 2)) {
         memset(s->regs, 0, sizeof(s->regs));
     } else if (off == 4 && (value & 1)) {
-        if (!scaler_convert(s)) error_report("scaler: unsupported or invalid transfer %08x -> %08x geometry %08x -> %08x",
+        if (!scaler_convert(s) && !scaler_rgb(s)) error_report("scaler: unsupported or invalid transfer %08x -> %08x geometry %08x -> %08x",
             s->regs[4], s->regs[12], s->regs[9], s->regs[16]);
         s->regs[1] &= ~1u;
         s->regs[3] |= 1;

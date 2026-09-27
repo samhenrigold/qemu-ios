@@ -14,7 +14,8 @@ parser.add_argument('--files', default=str(ROOT.parent / 'qemu-ios-files'))
 parser.add_argument('--base-nand')
 parser.add_argument('--network', action='store_true')
 parser.add_argument('--usb', action='store_true')
-parser.add_argument('--expect-gles-block', action='store_true')
+parser.add_argument('--gles', action='store_true',
+                    help='save and restore with the Harness GL scene running (live GL state)')
 parser.add_argument('--audio', action='store_true')
 args = parser.parse_args()
 os.environ['PATH'] = str(ROOT.parent/'qemu-ios-deps12/bin') + ':' + os.environ['PATH']
@@ -22,8 +23,11 @@ out = tempfile.mkdtemp(prefix='it-snapshot-guest-')
 f = args.files
 cfg = SimpleNamespace(out=out, files=f, base_nand=args.base_nand or f+'/nand-agent-v2',
     nor=f+'/ios3/nor_7E18.bin', overlay=out+'/overlay',
-    qemu=str(ROOT/'build-native14/qemu-build/qemu-system-arm'),
-    usbmuxd=str(ROOT/'build-native14/build/usbmuxd/src/usbmuxd'), usbmuxd_ok=True,
+    qemu=str(next((q for q in (ROOT/'build-native14/qemu-build/qemu-system-arm', ROOT/'build/qemu-system-arm')
+                   if q.exists()), ROOT/'build/qemu-system-arm')),
+    usbmuxd=str(next((u for u in (ROOT/'build-native14/build/usbmuxd/src/usbmuxd',
+                                  Path.home()/'Developer/usbmuxd-qemu/usbmuxd/src/usbmuxd') if u.exists()),
+                     ROOT/'build-native14/build/usbmuxd/src/usbmuxd')), usbmuxd_ok=True,
     usb_port=r.free_port(1520,1539), mux_port=r.free_port(27400,27419),
     qmp_port=r.free_port(28200,28219), wifi=True, cpu=None, mem='128M', kernel_console=True,
     install_timeout=420, proxy_lo=28460, proxy_hi=28479)
@@ -79,6 +83,20 @@ try:
     if args.usb:
         udid, detail = r.wait_for_device(cfg, timeout=120)
         assert udid, detail
+    if args.gles:
+        # The Harness GL scene: a cyan/magenta fixture with a rotating
+        # triangle, so a live context has textures, matrices and state to lose.
+        result = r.Result('gles launcher')
+        port = r.prepare_launcher(cfg, p, d, result)
+        assert port, result.detail
+        installed = r.run(['ideviceinstaller', 'install', str(ROOT/'contrib/it-harness/build/Harness.ipa')], cfg, 120)
+        assert installed.returncode == 0, installed
+        assert r.itqmp.agent(d.qmp, 'launch', 'com.qemuios.harness')[0] == 0
+        time.sleep(4)
+        d.qmp.tap(150, 79)
+        time.sleep(r.GLES_SETTLE_S)
+        gl_before = r.quad_signature(d.qmp.shot(out+'/gles-before.ppm'))[:2]
+        assert min(gl_before) >= r.GLES_QUAD_MIN, ('GL scene not up before save', gl_before)
     if args.audio:
         result = r.Result('audio launcher')
         port = r.prepare_launcher(cfg, p, d, result)
@@ -106,17 +124,6 @@ try:
     print('GLES contexts before save:', d.qmp.cmd('qom-get', path='/machine', property='gles-contexts'), flush=True)
     d.qmp.cmd('stop')
     snapshot = out + '/state'
-    if args.expect_gles_block:
-        try:
-            d.qmp.cmd('migrate', uri='file:' + snapshot)
-        except RuntimeError as error:
-            assert 'Live OpenGL ES state cannot be saved' in str(error), error
-        else:
-            raise AssertionError('unsafe GL snapshot was accepted')
-        d.qmp.cmd('cont')
-        assert r.itqmp.agent(d.qmp, 'ping') == (0, b'it_agent v1\n')
-        print('PASS: unsafe GL save refused; guest remains usable', flush=True)
-        raise SystemExit(0)
     d.qmp.cmd('migrate', uri='file:' + snapshot)
     deadline = time.monotonic() + 90
     while True:
@@ -152,6 +159,20 @@ try:
     if args.audio:
         assert b'com.qemuios.harness' in r.itqmp.agent(d.qmp, 'frontmost')[1]
         time.sleep(6)
+    if args.gles:
+        gles = d.qmp.cmd('qom-get', path='/machine', property='gles-contexts')
+        assert gles > 0, 'no GL context after restore'
+        time.sleep(2)
+        a_ppm, b_ppm = d.qmp.shot(out+'/gles-after-1.ppm'), None
+        time.sleep(1)
+        b_ppm = d.qmp.shot(out+'/gles-after-2.ppm')
+        gl_after = r.quad_signature(a_ppm)[:2]
+        assert all(abs(x - y) < 0.02 for x, y in zip(gl_before, gl_after)), (gl_before, gl_after)
+        # The triangle rotates every frame: two dumps a second apart differ
+        # only if the restored context keeps presenting.
+        assert open(a_ppm, 'rb').read() != open(b_ppm, 'rb').read(), 'GL frame frozen after restore'
+        print('PASS: GL scene restored (magenta/cyan %.3f/%.3f, was %.3f/%.3f) and still presenting'
+              % (gl_after + gl_before), flush=True)
     assert d.qmp.cmd('query-status')['running']
     r.to_png(d.qmp.shot(out+'/restored.ppm'), out+'/restored.png')
     print('PASS: home snapshot restore, guest agent rekey, file state and host clock', flush=True)
