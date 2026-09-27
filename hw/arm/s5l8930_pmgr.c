@@ -264,6 +264,9 @@ static void s5l8930_pmgr_write(void *opaque, hwaddr off, uint64_t val64,
         return;
     }
 
+    if (getenv("S5L8930_PMGR_TRACE") && off < GATE_START) {
+        fprintf(stderr, "[PMGR] W %04x <- %08x\n", (unsigned)off, val);
+    }
     if (off < PLL_END && !(off & 4)) {
         val &= ~PLL_CON0_UPDATE;
     } else if (off >= GATE_START && off < GATE_END) {

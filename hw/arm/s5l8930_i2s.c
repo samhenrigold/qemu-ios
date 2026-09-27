@@ -3,17 +3,15 @@
  * by 7B500 AppleS5L8900XI2SController / AppleARMIISAudio.
  *
  * Same register block the S5L8720's I2S has (hw/arm/ipod_touch_i2s.c): +0x00
- * enable, +0x04 TX config (0x03000081), +0x08 TX command (6 = run, 0 =
- * halt), +0x10 TX FIFO, +0x30/+0x34 RX, +0x3C, +0x40; the kernel also
- * writes +0x810. Everything is a plain register file except the TX FIFO.
+ * enable (bit 1 reads back "TX drained"), +0x04 TX config (0x03000081),
+ * +0x08 TX command (6 = run, 0 = halt), +0x10 TX FIFO, +0x30/+0x34 RX, +0x3C,
+ * +0x40; the kernel also writes +0x810. The rest is a plain register file.
  *
  * PCM arrives in the TX FIFO from CDMA channel 0x1a (i2s0) as 16-bit writes,
  * paced by the CDMA model at this block's frame rate (s5l8930_cdma.c), so the
- * FIFO just appends to a ring the audio backend drains. Stereo S16LE at
- * 44.1 kHz: the IOAudio2 device publishes "sample rate" 44100 and never
- * changes it for UI sounds.
- * ponytail: fixed rate; read the codec's clock setup when media at other
- * rates (48 kHz video, 8/16 kHz voice) must play at the right pitch.
+ * FIFO just appends to a ring the audio backend drains. Stereo S16LE at the
+ * port's frame rate, read from its PMGR NCO bit clock (s5l8930_i2s_rate())
+ * each time the TX side is started.
  *
  * Use `-audio driver=wav,path=out.wav` (or coreaudio): the card resolves
  * its backend from the default audiodev list, as the iPod's I2S does.
@@ -32,6 +30,8 @@
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930I2SState, S5L8930_I2S)
 
 #define I2S_REGS_SIZE   0x1000
+#define I2S_CTRL        0x00
+#define I2S_CTRL_TX_IDLE (1u << 1)
 #define I2S_TXCOM       0x08
 #define I2S_TXFIFO      0x10
 #define I2S_CMD_RUN     6
@@ -46,6 +46,8 @@ struct S5L8930I2SState {
 
     uint32_t regs[I2S_REGS_SIZE / 4];
     bool audio_out;                 /* property: this port reaches the host */
+    uint8_t port;                   /* property: i2s<port>, selects its NCO */
+    unsigned rate;                  /* the voice's current frame rate */
 
     uint8_t ring[I2S_RING];
     uint32_t head, tail, level;
@@ -84,10 +86,32 @@ static void i2s_out_cb(void *opaque, int free_bytes)
     }
 }
 
+static void i2s_set_rate(S5L8930I2SState *s, unsigned rate)
+{
+    struct audsettings as = {
+        .freq = rate, .nchannels = 2, .fmt = AUDIO_FORMAT_S16, .endianness = 0,
+    };
+
+    if (rate == s->rate) {
+        return;
+    }
+    s->voice = AUD_open_out(&s->card, s->voice, "s5l8930-i2s.out", s,
+                            i2s_out_cb, &as);
+    if (s->voice) {
+        AUD_set_volume_out(s->voice, 0, 255, 255);
+        s->rate = rate;
+    }
+}
+
 static uint64_t i2s_read(void *opaque, hwaddr offset, unsigned size)
 {
     S5L8930I2SState *s = opaque;
 
+    if (offset == I2S_CTRL) {
+        /* Bit 1: TX drained. The stop path (7B500 c086f5ae) writes 0x300 to
+         * +0x810 and spins on it; our FIFO never holds anything. */
+        return s->regs[0] | I2S_CTRL_TX_IDLE;
+    }
     return offset == I2S_TXFIFO ? 0 : s->regs[offset >> 2];
 }
 
@@ -104,6 +128,9 @@ static void i2s_write(void *opaque, hwaddr offset, uint64_t value,
     }
     s->regs[offset >> 2] = value;
     if (offset == I2S_TXCOM && s->voice) {
+        if (value == I2S_CMD_RUN) {
+            i2s_set_rate(s, s5l8930_i2s_rate(s->port));
+        }
         AUD_set_active_out(s->voice, value == I2S_CMD_RUN);
     }
 }
@@ -121,10 +148,6 @@ static const MemoryRegionOps i2s_ops = {
 static void s5l8930_i2s_realize(DeviceState *dev, Error **errp)
 {
     S5L8930I2SState *s = S5L8930_I2S(dev);
-    struct audsettings as = {
-        .freq = 44100, .nchannels = 2, .fmt = AUDIO_FORMAT_S16,
-        .endianness = 0,
-    };
 
     if (!s->audio_out) {
         return;
@@ -133,11 +156,7 @@ static void s5l8930_i2s_realize(DeviceState *dev, Error **errp)
         warn_report("s5l8930 i2s: no audio backend; output dropped");
         return;
     }
-    s->voice = AUD_open_out(&s->card, NULL, "s5l8930-i2s.out", s,
-                            i2s_out_cb, &as);
-    if (s->voice) {
-        AUD_set_volume_out(s->voice, 0, 255, 255);
-    }
+    i2s_set_rate(s, 44100);
 }
 
 static void s5l8930_i2s_reset(DeviceState *dev)
@@ -164,9 +183,9 @@ static int s5l8930_i2s_post_load(void *opaque, int version_id)
 {
     S5L8930I2SState *s = opaque;
 
-    if (s->voice) {
-        AUD_set_active_out(s->voice,
-                           s->regs[I2S_TXCOM >> 2] == I2S_CMD_RUN);
+    if (s->voice && s->regs[I2S_TXCOM >> 2] == I2S_CMD_RUN) {
+        i2s_set_rate(s, s5l8930_i2s_rate(s->port));
+        AUD_set_active_out(s->voice, 1);
     }
     return 0;
 }
@@ -185,6 +204,7 @@ static const VMStateDescription vmstate_s5l8930_i2s = {
 
 static const Property s5l8930_i2s_properties[] = {
     DEFINE_PROP_BOOL("audio-out", S5L8930I2SState, audio_out, false),
+    DEFINE_PROP_UINT8("port", S5L8930I2SState, port, 0),
 };
 
 static void s5l8930_i2s_class_init(ObjectClass *klass, void *data)
