@@ -22,7 +22,9 @@
  *     unhandled-slot warning until it grows one.
  */
 
+#ifndef GLI_NO_BATCH             /* -DGLI_NO_BATCH: one trap per call, for A/B timing */
 #define GLES_BATCH
+#endif
 #include "../it-gles/mbxshim.c"
 #include "gli_fwd.h"
 
@@ -36,6 +38,7 @@
  * it fills. Deferring such calls is invisible to the guest: nothing it can
  * observe happens between them and the next unbatchable call.
  */
+#ifdef GLES_BATCH
 #define GLES_OP_BATCH   0x1009
 #define BATCH_WORDS     4096
 
@@ -65,6 +68,7 @@ static int gles_batch(unsigned slot, void *gcp, unsigned argc, const unsigned *a
     for (i = 0; i < argc; i++) gc->batch[gc->batch_len++] = args[i];
     return 1;
 }
+#endif
 
 extern char *getenv(const char *);
 
