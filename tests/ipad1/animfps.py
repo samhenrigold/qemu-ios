@@ -7,18 +7,19 @@ Boots STORE on an overlay in OUT (the store is never written), unlocks, then run
 (search-page swipe and back, open+close Notes, open+close Calendar, twice) while a second thread
 screendumps back to back through the same QMP session. Reports frames/s WHILE ANIMATING: frame changes
 divided by the time inside runs of changes (gaps < 0.25 s), per-run counts, and totals. The distinct
-frames land in OUT/frames with times.json, so  scores them for
-tearing. Build the stores with  (docs/ipad1/userland-gl-display.md).
+frames land in OUT/frames with times.json, so `tearcheck.py --analyze OUT/frames` scores them
+for tearing. Build the stores with `ipad1_rootfs.py build --gles [--ca-ogl]` (docs/ipad1/userland-gl-display.md).
 """
 import hashlib, os, subprocess, sys, threading, time
-sys.path.insert(0, os.path.expanduser("~/Developer/qemu-ios-ipad1-guest/imgtools"))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(ROOT, "imgtools"))
 import itqmp
 itqmp.W, itqmp.H = 1024, 768
 store, out = sys.argv[1:3]
 os.makedirs(out, exist_ok=True)
 sock = "/tmp/a4g-anim-%d.qmp" % os.getpid()
 serial = out + "/serial.log"
-qemu = subprocess.Popen(["timeout", "500", os.path.expanduser("~/Developer/qemu-ios-ipad1-guest/build/qemu-system-arm"),
+qemu = subprocess.Popen(["timeout", "500", os.path.join(ROOT, "build/qemu-system-arm"),
     "-machine", "ipad1,kboot=%s,nand=%s,nand-overlay=%s/overlay" % (os.path.expanduser("~/Developer/qemu-ios-files/ipad1/7B500/k48-kboot.bin"), store, out),
     "-display", "none", "-monitor", "none", "-serial", "file:" + serial, "-qmp", "unix:%s,server,nowait" % sock],
     stdout=subprocess.DEVNULL, stderr=open(out + "/qemu.log", "w"))
