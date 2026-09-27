@@ -133,15 +133,16 @@ static void ipad1_cpu_reset(void *opaque)
 /*
  * Host mouse -> digitizer slot 0. QEMU's absolute coordinates are 0..0x7fff;
  * the digitizer wants 0..1 with y from the bottom (see set_finger()).
- * ponytail: same axis mapping as the iPod's portrait panel. If touches land
- * rotated once SpringBoard is up, this is the one place to swap/flip them.
+ * The panel scans out landscape (1024x768) with the portrait UI rotated; the
+ * digitizer is portrait-native. Found by trying all eight axis maps against
+ * slide-to-unlock: digitizer x = 1 - panel y, y-from-bottom = 1 - panel x.
  */
 static void ipad1_mouse_event(void *opaque, int x, int y, int z, int buttons)
 {
     IPodTouchMultitouchState *mt = opaque;
 
-    mt->touch_x = x / 32768.0f;
-    mt->touch_y = 1.0f - y / 32768.0f;
+    mt->touch_x = 1.0f - y / 32768.0f;
+    mt->touch_y = 1.0f - x / 32768.0f;
     if (buttons && !mt->touch_down) {
         ipod_touch_multitouch_on_touch(mt);
     } else if (!buttons && mt->touch_down) {
@@ -458,6 +459,7 @@ static void ipad1_init(MachineState *machine)
     dev = sysbus_create_simple(TYPE_IPOD_TOUCH_SPI, S5L8930_SPI_BASE(1),
                                ipad1_irq(s, S5L8930_IRQ_SPI(1)));
     s->mt = IPOD_TOUCH_SPI(dev)->mt;
+    s->mt->profile = &mt_profile_k48;
     /* Zephyr2 ATN -> GPIO 0x15; reset (0x204) and download (0x107) are ignored. */
     qdev_connect_gpio_out_named(DEVICE(s->mt), "atn", 0,
         qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(S5L8930_GPIO_MT_ATN)));
