@@ -89,7 +89,8 @@ capture only; they are not patch locations in the preparation tool.
 ## Validation
 
 The stock IPSW kernelcache reached root mount, launchd, and the activated lock
-screen through iBoot. The direct-kernel 90-second smoke check passed after the
+screen through iBoot. [Home-screen capture](screens/iboot-home.png) shows the
+result after touch unlock (including the stock first-use icon-editing tip). The direct-kernel 90-second smoke check passed after the
 PMGR/GPIO changes. iPod boot, fsck, persistence, app installation, app launch,
 agent, and audio checks passed; GLES passed with the matching staged guest shim
 (the first run paired a new GLTest with an old base-store shim).
