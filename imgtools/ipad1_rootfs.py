@@ -198,6 +198,17 @@ PAC = """function FindProxyForURL(url, host) {
 """
 
 
+# Wi-Fi location (docs/ipad1/location.md): locationd ignores the PAC and goes straight to Apple's
+# location server, which no longer answers iOS 3. Point its server preference at the same guestfwd
+# address over plain HTTP; itwebproxy answers /clls/wloc there with the host-set position.
+LOCATIOND_PREFS = "mobile/Library/Preferences/com.apple.locationd.plist"
+
+
+def locationd_prefs(d):
+    d["AppleLocationServer"] = "http://10.0.2.100:3128/clls/wloc"
+    d["AppleLocationServerRequiresCert"] = False
+
+
 def wifi_proxy_prefs(d):
     """preferences.plist: the AirPort service on en0 (the unit's own shape) with the proxy PAC."""
     svc = d.setdefault("NetworkServices", {}).setdefault(WIFI_SERVICE, {
@@ -539,7 +550,8 @@ def build(a):
         shutil.copytree(a.lockdown, os.path.join(skeleton, "root/Library/Lockdown"), dirs_exist_ok=True)
     if a.web_proxy:
         seed_plist(os.path.join(skeleton, SC_DIR, "preferences.plist"), wifi_proxy_prefs)
-        print("      web proxy: en0 AirPort service, PAC /%s" % PAC_PATH)
+        seed_plist(os.path.join(skeleton, LOCATIOND_PREFS), locationd_prefs)
+        print("      web proxy: en0 AirPort service, PAC /%s; locationd server via the proxy address" % PAC_PATH)
     if a.usb_net:
         seed_plist(os.path.join(skeleton, SC_DIR, "NetworkInterfaces.plist"), usb_net_interfaces)
         seed_plist(os.path.join(skeleton, SC_DIR, "preferences.plist"), usb_net_prefs)
