@@ -29,7 +29,7 @@
 #define DART_SIDS           4
 #define DART_SEGS           64
 
-#define DP_FLAGS            0x101c    /* (v & 0xf0) == 0x20 in the FIFO wait */
+#define DP_FLAGS            0x101c    /* the kernel spins WHILE (v & 0xf0) == 0x20: read idle */
 #define DP_IRQ_ENABLE       0x1028
 #define DP_IRQ_STATUS       0x102c    /* W1C */
 #define DP_SIZE             0x1030    /* w << 16 | h */
@@ -98,7 +98,7 @@ static uint64_t pipe_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (addr) {
     case DP_FLAGS:
-        return 0x20;
+        return 0;
     case DP_FIFO_COUNT:
         return 0;
     default:
