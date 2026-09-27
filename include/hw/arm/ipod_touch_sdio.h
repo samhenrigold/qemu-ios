@@ -32,6 +32,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define CIS_OFFSET 0xC8
 #define CIS_MANUFACTURER_ID 0x20
 #define CIS_FUNCTION_EXTENSION 0x22
+#define CIS_VERS_1 0x15
 #define CIS_END 0xFF
 
 /* The BCM4325 presents two I/O functions: 1 is the chip backplane, 2 carries
@@ -279,6 +280,22 @@ typedef struct SDPCMFrame
     uint32_t read_off;   /* how much of it the host has collected */
 } SDPCMFrame;
 
+/* What tells one Broadcom SDIO chip from another, as the driver sees it. */
+typedef struct BCMSDIOChip {
+    uint16_t manfid, prodid;   /* CISTPL_MANFID */
+    uint32_t chipid;           /* chipcommon ChipID: id | rev << 16 */
+    uint32_t sdiod_base;       /* the SDIO device core on the backplane */
+    const char *vers1[4];      /* CISTPL_VERS_1 strings; none if [0] is NULL */
+    uint8_t mac[6];            /* CISTPL_FUNCE type 4 */
+    /*
+     * Leave out function 0's common FUNCE. AppleBCMWLAN-2.60 reads every
+     * FUNCE body as {type, len, data} records looking for the MAC, and the
+     * common one (00 00 02 32) reads as a 50-byte record that isn't there.
+     */
+    bool no_common_funce;
+    const char *fw_version;    /* the "ver" iovar; NULL answers zeroes */
+} BCMSDIOChip;
+
 typedef struct IPodTouchSDIOState
 {
     SysBusDevice parent_obj;
@@ -332,6 +349,10 @@ typedef struct IPodTouchSDIOState
     unsigned tx_log;
     unsigned host_rx_log;
 
+    BCMSDIOChip chip;
+    const uint32_t *sg;    /* CMD53 scatter list {addr, len} while one runs */
+    unsigned sg_count;
+
     uint8_t sdiod_regs[SDIOD_CORE_SIZE];
     /*
      * CMD52/CMD53 carry a 17-bit register address ((arg >> 9) & 0x1ffff), and
@@ -347,5 +368,21 @@ typedef struct IPodTouchSDIOState
 } IPodTouchSDIOState;
 
 void ipod_touch_sdio_setup_net(IPodTouchSDIOState *s);
+
+/* Replace the default BCM4325 identity (before the guest looks). */
+void ipod_touch_sdio_set_chip(IPodTouchSDIOState *s, const BCMSDIOChip *chip);
+
+/*
+ * Run one SD command for a host other than the iPod's own controller: the
+ * CMD53 payload moves through sg ({addr, len} pairs, guest physical).
+ * Returns response word 0.
+ */
+uint32_t ipod_touch_sdio_command(IPodTouchSDIOState *s, uint32_t cmd,
+                                 uint32_t arg, uint32_t blklen,
+                                 uint32_t numblk, const uint32_t *sg,
+                                 unsigned sg_count);
+
+/* The card's interrupt line: the dongle has something for the host. */
+bool ipod_touch_sdio_card_irq(IPodTouchSDIOState *s);
 
 #endif

@@ -37,7 +37,10 @@
  *
  * A chain runs to completion inside the go write, so the guest never observes
  * the running state and the resume/abort handshakes degenerate to flag
- * bookkeeping. The UID key is a fixed made-up value (as on the iPod machine);
+ * bookkeeping. The exception is a channel whose device address is an I2S
+ * FIFO: AppleARMIISAudio queues the 16-page (64 KiB) IOAudio ring as one
+ * chain per go and expects it to take the ring's playing time, so that chain
+ * streams to the FIFO at the port's rate (stereo S16) in virtual time. The UID key is a fixed made-up value (as on the iPod machine);
  * GID operations are answered from a table of this build's img3 KBAGs.
  */
 #include "qemu/osdep.h"
@@ -51,6 +54,7 @@
 #include "hw/arm/s5l8930.h"
 #include "migration/vmstate.h"
 #include "system/dma.h"
+#include "qemu/timer.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930CDMAState, S5L8930_CDMA)
 
@@ -86,7 +90,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930CDMAState, S5L8930_CDMA)
 /*
  * 2: words 4-7 load the bound AES context's IV (iBoot's NAND reads, one per
  * page). The page store keeps NAND data decrypted (the IOP model ignores the
- * key too), so on a paced NAND channel the IV and the AES step are skipped.
+ * key too), so on a FIFO-fed NAND channel the IV and the AES step are skipped.
  */
 #define DESC_IV             0x2u
 #define DESC_LAST           0x100u
@@ -138,7 +142,19 @@ struct S5L8930CDMAState {
     hwaddr src_base, src_size;
     uint32_t (*src_avail)(void *opaque, hwaddr addr);
     void *src_opaque;
+    /* Audio channels (I2S FIFOs) play out in real time, not inside the go
+     * write; paced[] marks a chain in flight. */
+    bool paced[CDMA_CHANNELS];
+    int64_t paced_start[CDMA_CHANNELS];
+    uint32_t paced_desc[CDMA_CHANNELS];     /* chain head the go named */
+    uint64_t paced_sent[CDMA_CHANNELS];     /* bytes already in the FIFO */
+    uint32_t paced_bps[CDMA_CHANNELS];      /* bytes/s: 4 * port frame rate */
+    QEMUTimer *pace_timer;
 };
+
+/* i2s0-2 TX/RX FIFOs; stereo S16 at the port's rate (see s5l8930_i2s.c). */
+#define CDMA_PACED_LO       S5L8930_I2S_BASE(0)
+#define CDMA_PACED_HI       (S5L8930_I2S_BASE(2) + 0x1000)
 
 /* ---- AES filter ---- */
 
@@ -272,8 +288,9 @@ static bool aes_apply(S5L8930CDMAState *s, AESContext *c, uint8_t *buf,
 
 static bool cdma_is_memory(uint32_t addr);
 
-/* Reading a paced device FIFO (iBoot's NAND), not feeding the AES engine. */
-static bool cdma_paced(S5L8930CDMAState *s, CDMAChannel *c)
+/* Reading a device FIFO that fills as it goes (iBoot's NAND), not feeding
+ * the AES engine. Distinct from the time-paced audio channels below. */
+static bool cdma_fifo_fed(S5L8930CDMAState *s, CDMAChannel *c)
 {
     return s->src_avail && !cdma_is_memory(c->fifo) &&
            !(c->settings & SET_TO_DEVICE) &&
@@ -286,7 +303,7 @@ static void cdma_update_irq(S5L8930CDMAState *s, int ch)
     /* The AES-feeding channel's line is never acked by the driver: an
      * asserted level there re-enters the draining channel's handler after it
      * has finished and panics ("CDMA M2M unexpected interrupt"). */
-    if (CTRL_AES_CTX(s->ch[ch].ctrl) && !cdma_paced(s, &s->ch[ch])) {
+    if (CTRL_AES_CTX(s->ch[ch].ctrl) && !cdma_fifo_fed(s, &s->ch[ch])) {
         en = false;
     }
     qemu_set_irq(s->irq[ch], en && (s->ch[ch].ctrl & (ST_DONE | ST_ERROR)));
@@ -314,6 +331,21 @@ static uint32_t fifo_pop(S5L8930CDMAState *s, uint8_t *buf, uint32_t len)
  * written in settings-width units. Add a real M2M mode bit if a client's
  * settings word shows one.
  */
+/*
+ * A receive chain from a UART's URXH (+0x24) completes only as bytes arrive,
+ * and no UART feeds this model. Run instantly, it filled the ring with the
+ * empty register's zeros at CPU speed: BlueTool's HCI reader on UART3
+ * (channel 0xd) spun at 100% CPU and never let SpringBoard power off.
+ * ponytail: stays running forever; hook the UART's receive path in here
+ * when a device (the BCM4329) actually sends something.
+ */
+static bool cdma_waits_for_uart(const CDMAChannel *c)
+{
+    return !(c->settings & SET_TO_DEVICE) &&
+           c->fifo >= S5L8930_UART_BASE(0) && c->fifo < S5L8930_UART_BASE(6) &&
+           (c->fifo & 0xfffff) == 0x24;
+}
+
 static bool cdma_is_memory(uint32_t addr)
 {
     return addr >= S5L8930_DRAM_BASE &&
@@ -341,8 +373,8 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
     int ctx = CTRL_AES_CTX(c->ctrl);
     uint32_t dev = c->fifo;
     bool dev_mem = cdma_is_memory(dev);
-    bool paced = cdma_paced(s, c);
-    AESContext *aes = (ctx > 0 && ctx < AES_CONTEXTS && !paced) ?
+    bool fed = cdma_fifo_fed(s, c);
+    AESContext *aes = (ctx > 0 && ctx < AES_CONTEXTS && !fed) ?
                       &s->aes[ctx] : NULL;
     bool feeds = aes != NULL;                   /* memory -> AES engine */
     bool drains = !feeds && !c->fifo && !c->settings;   /* engine -> memory */
@@ -366,7 +398,7 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
         if ((flags & DESC_TYPE_MASK) == 0) {
             break;                              /* empty slot: chain ends */
         }
-        if ((flags & DESC_TYPE_MASK) == DESC_IV && paced) {
+        if ((flags & DESC_TYPE_MASK) == DESC_IV && fed) {
             /* iBoot's per-page IV for the NAND data key; see DESC_IV. */
             c->desc = le32_to_cpu(d[0]);
             continue;
@@ -381,7 +413,7 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
         }
         c->in_seg = false;
         len = c->remain;
-        if (paced) {
+        if (fed) {
             /* Take what the device has; stall (still running) for the rest. */
             uint32_t avail = s->src_avail(s->src_opaque, dev) & ~(width - 1);
             if (avail < len) {
@@ -393,7 +425,7 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
             g_autofree uint8_t *buf = g_malloc(len);
             bool ok = true;
 
-            if ((flags & DESC_AES) && !paced) {
+            if ((flags & DESC_AES) && !fed) {
                 aes = aes ? aes : aes_for_channel(s, ch);
                 if (!aes) {
                     error = 3;
@@ -428,7 +460,7 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
                 } else {
                     cdma_fifo_xfer(dev, width, buf, len, false);
                 }
-                if ((flags & DESC_AES) && !paced) {
+                if ((flags & DESC_AES) && !fed) {
                     ok = aes_apply(s, aes, buf, len,
                                    !resume && (flags & DESC_AES_RESTART));
                 }
@@ -462,6 +494,147 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
     cdma_update_irq(s, ch);
 }
 
+/*
+ * Audio channels (device address in an I2S block) play out in real time: the
+ * chain stays running and its data reaches the FIFO in CDMA_PACED_STEP_NS
+ * steps at the port's rate (stereo S16), so the IOAudio engine's period interrupt and
+ * position arrive when a real I2S would have consumed the ring.
+ */
+#define CDMA_PACED_STEP_NS  (10 * SCALE_MS)
+
+static bool cdma_is_paced(S5L8930CDMAState *s, int ch)
+{
+    return s->paced[ch];
+}
+
+/*
+ * Walk the chain from its head. Move bytes [sent, upto) to the FIFO, point
+ * +0x14/+0x10/+0x0C at the segment containing `upto` (AppleCDMA's stop path,
+ * c044d517, panics unless +0x10 lies inside the segment +0x14 names), and
+ * return true once `upto` has reached the end of the chain.
+ */
+static bool cdma_paced_advance(S5L8930CDMAState *s, int ch, uint64_t upto)
+{
+    CDMAChannel *c = &s->ch[ch];
+    uint32_t width = 1u << ((c->settings >> 2) & 3);
+    bool to_device = c->settings & SET_TO_DEVICE;
+    uint32_t desc = s->paced_desc[ch];
+    uint64_t base = 0;
+
+    for (int n = 0; n < 4096; n++) {
+        uint32_t d[4], len, addr;
+
+        if (dma_memory_read(&address_space_memory, desc, d, sizeof(d),
+                            MEMTXATTRS_UNSPECIFIED) != MEMTX_OK ||
+            (le32_to_cpu(d[1]) & DESC_TYPE_MASK) != DESC_DATA) {
+            return true;
+        }
+        len = le32_to_cpu(d[3]);
+        addr = le32_to_cpu(d[2]);
+        if (to_device && s->paced_sent[ch] < base + len && upto > base) {
+            uint32_t from = MAX(s->paced_sent[ch], base) - base;
+            uint32_t to = MIN(upto, base + len) - base;
+            g_autofree uint8_t *buf = g_malloc(to - from);
+
+            dma_memory_read(&address_space_memory, addr + from, buf, to - from,
+                            MEMTXATTRS_UNSPECIFIED);
+            cdma_fifo_xfer(c->fifo, width, buf, to - from, true);
+        }
+        if (upto < base + len) {
+            c->desc = desc;
+            c->addr = addr + (upto - base);
+            c->remain = base + len - upto;
+            s->paced_sent[ch] = upto;
+            return false;
+        }
+        base += len;
+        desc = le32_to_cpu(d[0]);
+        if (le32_to_cpu(d[1]) & DESC_LAST) {
+            /* Finished: +0x14 names the next descriptor, so +0x10/+0x0C must
+             * describe it too, not the end of the last segment. A stop that
+             * lands between this completion and the driver's next go reads
+             * them and panics ("CDMA stop with MAR ... but command MA ...")
+             * unless MAR lies inside that next segment. */
+            c->desc = desc;
+            c->addr = addr + len;
+            c->remain = 0;
+            if (dma_memory_read(&address_space_memory, desc, d, sizeof(d),
+                                MEMTXATTRS_UNSPECIFIED) == MEMTX_OK) {
+                c->addr = le32_to_cpu(d[2]);
+                c->remain = le32_to_cpu(d[3]);
+            }
+            s->paced_sent[ch] = base;
+            return true;
+        }
+    }
+    return true;
+}
+
+static uint64_t cdma_paced_pos(S5L8930CDMAState *s, int ch)
+{
+    int64_t elapsed = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->paced_start[ch];
+
+    /* Whole stereo S16 frames only: a stop mid-frame would leave the I2S
+     * stream a byte or two out of step for every later sound. */
+    return (MAX(0, elapsed) * (uint64_t)s->paced_bps[ch] /
+            NANOSECONDS_PER_SECOND) & ~3ull;
+}
+
+static void cdma_pace_arm(S5L8930CDMAState *s)
+{
+    for (int i = 0; i < CDMA_CHANNELS; i++) {
+        if (cdma_is_paced(s, i)) {
+            timer_mod(s->pace_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                     CDMA_PACED_STEP_NS);
+            return;
+        }
+    }
+    timer_del(s->pace_timer);
+}
+
+static void cdma_pace_tick(void *opaque)
+{
+    S5L8930CDMAState *s = opaque;
+
+    for (int i = 0; i < CDMA_CHANNELS; i++) {
+        if (cdma_is_paced(s, i) && cdma_paced_advance(s, i, cdma_paced_pos(s, i))) {
+            s->paced[i] = false;
+            s->ch[i].ctrl = (s->ch[i].ctrl & ~ST_RUNNING) | ST_DONE;
+            cdma_update_irq(s, i);
+        }
+    }
+    cdma_pace_arm(s);
+}
+
+/* Stop a paced chain where playback is, delivering what has played. */
+static bool cdma_paced_stop(S5L8930CDMAState *s, int ch)
+{
+    if (!cdma_is_paced(s, ch)) {
+        return false;
+    }
+    cdma_paced_advance(s, ch, cdma_paced_pos(s, ch));
+    s->paced[ch] = false;
+    cdma_pace_arm(s);
+    return true;
+}
+
+static bool cdma_start_paced(S5L8930CDMAState *s, int ch)
+{
+    CDMAChannel *c = &s->ch[ch];
+
+    if (c->fifo < CDMA_PACED_LO || c->fifo >= CDMA_PACED_HI) {
+        return false;
+    }
+    c->ctrl = (c->ctrl & ~ST_ERROR) | ST_RUNNING;
+    s->paced_desc[ch] = c->desc;
+    s->paced_sent[ch] = 0;
+    s->paced_bps[ch] = 4 * s5l8930_i2s_rate((c->fifo - CDMA_PACED_LO) >> 12);
+    s->paced_start[ch] = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    s->paced[ch] = true;
+    cdma_pace_arm(s);
+    return true;
+}
+
 static uint64_t cdma_read(void *opaque, hwaddr offset, unsigned size)
 {
     S5L8930CDMAState *s = opaque;
@@ -489,6 +662,9 @@ static uint64_t cdma_read(void *opaque, hwaddr offset, unsigned size)
         }
     } else if (ch < CDMA_CHANNELS) {
         CDMAChannel *c = &s->ch[ch];
+        if (cdma_is_paced(s, ch)) {
+            cdma_paced_advance(s, ch, cdma_paced_pos(s, ch));
+        }
         switch (reg) {
         case CH_CTRL:     return c->ctrl;
         case CH_SETTINGS: return c->settings;
@@ -538,6 +714,11 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
     }
 
     CDMAChannel *c = &s->ch[ch];
+    if (getenv("S5L8930_CDMA_TRACE") && c->fifo >= CDMA_PACED_LO &&
+        c->fifo < CDMA_PACED_HI) {
+        fprintf(stderr, "[CDMA] ch 0x%x W +%02x <- 0x%x (ctrl 0x%x paced %d)\n",
+                ch, (unsigned)reg, v, c->ctrl, s->paced[ch]);
+    }
     switch (reg) {
     case CH_CTRL:
         if (v & CTRL_RESET) {
@@ -545,6 +726,7 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
              * survive: the abort sequence (|=4, poll 0x200000, write 2,
              * |=0x18, c044d46c) then reads +0x14 to find the descriptor it
              * stopped at and derefs the ring entry it computes from it. */
+            cdma_paced_stop(s, ch);
             c->ctrl = c->settings = c->fifo = c->remain = c->error = 0;
             c->in_seg = false;
             break;
@@ -554,9 +736,25 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
         if (v & CTRL_ABORT) {
             c->ctrl = (c->ctrl & ~ST_RUNNING) | ST_ABORTED;
             c->in_seg = false;
+            cdma_paced_stop(s, ch);
         }
         if ((v & CTRL_GO) && !(v & CTRL_HOLD)) {
-            cdma_run(s, ch);
+            if (getenv("S5L8930_CDMA_TRACE")) {
+                fprintf(stderr, "[CDMA] go ch 0x%x ctrl 0x%x set 0x%x fifo 0x%x "
+                        "desc 0x%x\n", ch, v, c->settings, c->fifo, c->desc);
+            }
+            if (cdma_waits_for_uart(c)) {
+                uint32_t d[4];
+
+                /* Parked on the first segment: stopping it checks MAR/BC. */
+                dma_memory_read(&address_space_memory, c->desc, d, sizeof(d),
+                                MEMTXATTRS_UNSPECIFIED);
+                c->addr = le32_to_cpu(d[2]);
+                c->remain = le32_to_cpu(d[3]);
+                c->ctrl |= ST_RUNNING;
+            } else if (!cdma_start_paced(s, ch)) {
+                cdma_run(s, ch);
+            }
         }
         break;
     case CH_SETTINGS: c->settings = v; break;
@@ -593,7 +791,7 @@ void s5l8930_cdma_set_source(DeviceState *dev, hwaddr base, hwaddr size,
     s->src_opaque = opaque;
 }
 
-/* The paced device has more data: resume every channel stalled on it. */
+/* The FIFO-fed device has more data: resume every channel stalled on it. */
 void s5l8930_cdma_kick(DeviceState *dev)
 {
     S5L8930CDMAState *s = S5L8930_CDMA(dev);
@@ -678,6 +876,8 @@ static void s5l8930_cdma_reset(DeviceState *dev)
     g_free(s->fifo);
     s->fifo = NULL;
     s->fifo_len = 0;
+    memset(s->paced, 0, sizeof(s->paced));
+    timer_del(s->pace_timer);
     for (int i = 0; i < CDMA_CHANNELS; i++) {
         qemu_set_irq(s->irq[i], 0);
     }
@@ -697,6 +897,7 @@ static void s5l8930_cdma_init(Object *obj)
     for (int i = 0; i < CDMA_CHANNELS; i++) {
         sysbus_init_irq(sbd, &s->irq[i]);
     }
+    s->pace_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, cdma_pace_tick, s);
 }
 
 static const VMStateDescription vmstate_cdma_channel = {
@@ -730,7 +931,7 @@ static const VMStateDescription vmstate_aes_context = {
 
 static const VMStateDescription vmstate_s5l8930_cdma = {
     .name = "s5l8930.cdma",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(enabled, S5L8930CDMAState, 2),
@@ -740,6 +941,16 @@ static const VMStateDescription vmstate_s5l8930_cdma = {
                              vmstate_cdma_channel, CDMAChannel),
         VMSTATE_STRUCT_ARRAY(aes, S5L8930CDMAState, AES_CONTEXTS, 1,
                              vmstate_aes_context, AESContext),
+        VMSTATE_BOOL_ARRAY_V(paced, S5L8930CDMAState, CDMA_CHANNELS, 2),
+        VMSTATE_INT64_ARRAY_V(paced_start, S5L8930CDMAState,
+                              CDMA_CHANNELS, 2),
+        VMSTATE_UINT32_ARRAY_V(paced_desc, S5L8930CDMAState,
+                               CDMA_CHANNELS, 2),
+        VMSTATE_UINT64_ARRAY_V(paced_sent, S5L8930CDMAState,
+                               CDMA_CHANNELS, 2),
+        VMSTATE_UINT32_ARRAY_V(paced_bps, S5L8930CDMAState,
+                               CDMA_CHANNELS, 2),
+        VMSTATE_TIMER_PTR_V(pace_timer, S5L8930CDMAState, 2),
         VMSTATE_END_OF_LIST()
     }
 };

@@ -23,11 +23,13 @@
 #include "ui/input.h"
 #include "qapi/error.h"
 #include "hw/arm/ipod_touch_buttons.h"
+#include "hw/boards.h"
 
 void gles_host_set_allowed(bool allowed);
 uint64_t ipod_touch_fmss_icon_state_writes(void);
 bool ipod_touch_fmss_io_failed(void);
 bool ipod_touch_nor_io_failed(void);
+bool ipod_touch_mipi_dsi_panel_off(void);
 
 #include "qemu-ios-ui.h"
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
@@ -54,6 +56,8 @@ bool ipod_touch_nor_io_failed(void);
 
 /* Set once the console/display are attached, cleared when the main loop returns. */
 static int ios_vm_alive;
+/* Which machine is running, latched on the QEMU thread when the VM starts. */
+static int ios_is_ipad1;
 
 static struct {
     DisplayChangeListener dcl;
@@ -293,7 +297,9 @@ bool qemu_ios_ui_guest_shutdown_confirmed(void)
 
 bool qemu_ios_ui_display_sleeping(void)
 {
-    return lcd_backlight_is_off();
+    /* The iPad has no iPod LCD backlight; its panel is powered over DSI. */
+    return qatomic_read(&ios_is_ipad1) ? ipod_touch_mipi_dsi_panel_off()
+                                       : lcd_backlight_is_off();
 }
 
 bool qemu_ios_ui_storage_failed(void)
@@ -324,6 +330,8 @@ void qemu_ios_ui_vm_started(void)
     if (!ios.con) {
         return;
     }
+    qatomic_set(&ios_is_ipad1, object_dynamic_cast(qdev_get_machine(),
+                                                   MACHINE_TYPE_NAME("ipad1")) != NULL);
     for (i = 0; i < INPUT_EVENT_SLOTS_MAX; i++) {
         ios.slots[i].tracking_id = -1;
     }

@@ -52,8 +52,12 @@ const MTSensorProfile mt_profile_ipod = {
     .frame_height = MT_INTERNAL_SENSOR_SURFACE_HEIGHT,
 };
 
-/* ponytail: frame span = the full sensor surface, a guess; the iPod's is ~0.92
- * of its surface. Adjust here if touches land offset. */
+/*
+ * frame_* is the calibration knob. Measured with a Safari data: page that
+ * logs touch clientX/clientY: nine taps over the panel, a straight-line fit
+ * per axis, then solved for the frame values that put each tap on its target.
+ * Checked with sixteen more taps: every one within 1 px of its target.
+ */
 const MTSensorProfile mt_profile_k48 = {
     .family_id = 0x13,
     .rows = 40, .cols = 50,
@@ -63,7 +67,8 @@ const MTSensorProfile mt_profile_k48 = {
     .region_desc_len = 8,
     .region_param = { 0x00, 0x00, 0x09, 0x00, 0x64, 0x02 },
     .region_param_len = 6,
-    .frame_width = 14745, .frame_height = 19660,
+    .frame_x0 = -72, .frame_width = 14566,
+    .frame_y0 = 33, .frame_height = 19465,
 };
 
 static void prepare_interface_version_response(IPodTouchMultitouchState *s) {
@@ -749,8 +754,8 @@ static MTFrame *mt_build_frame(IPodTouchMultitouchState *s,
         fd[i].velX = mt_clamp_vel(diff_x * 1000 / dt);
         fd[i].velY = mt_clamp_vel(diff_y * 1000 / dt);
 
-        fd[i].x = (int)(f->x * s->profile->frame_width);
-        fd[i].y = (int)(f->y * s->profile->frame_height);
+        fd[i].x = s->profile->frame_x0 + (int)(f->x * s->profile->frame_width);
+        fd[i].y = s->profile->frame_y0 + (int)(f->y * s->profile->frame_height);
         /* A contact reports a real ellipse; a lifted one reports nothing. */
         fd[i].radius1 = contact ? 100 : 0;
         fd[i].radius2 = contact ? 660 : 0;
