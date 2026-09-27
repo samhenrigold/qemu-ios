@@ -193,6 +193,23 @@ def _sample(rg, ppm, step=997):
         return []
 
 
+def snap(b, rg, name, step=997):
+    """(normalized_nonzero, backlight-normalized sample). Uses itqmp.shot so a dim/asleep
+    panel is rescaled — regress Boot.picture() reads raw pixels and sees a lit screen as 0%."""
+    png = os.path.join(b.dir, name + ".png")
+    try:
+        _, hi, nz = rg.itqmp.shot(b.qmp, png)
+    except Exception:
+        return (0.0, [])
+    try:
+        _, _, pix = rg.itqmp.read_ppm(png + ".ppm")
+        s = pix[::step]
+        m = max(s) or 1
+        return (nz, [min(255, v * 255 // m) for v in s])   # per-frame normalized -> backlight-independent
+    except Exception:
+        return (nz, [])
+
+
 def _framediff(a, b, thresh=8):
     """True if two sampled frames differ meaningfully (mean abs byte diff > thresh)."""
     if not a or not b or len(a) != len(b):
@@ -205,14 +222,16 @@ def _lit(sample):
     return sum(1 for v in sample if v > 12) / max(1, len(sample))
 
 
-def wait_stable(b, rg, tag, deadline, want_lit=False, poll=1.5):
-    """Poll screendumps until two consecutive frames match (settled), event-driven so it
-    doesn't depend on host speed. If want_lit, also require the frame to be lit (past the
-    boot logo). Returns the settled sample, or the last one at the deadline."""
-    prev = _sample(rg, b.shot("w-" + tag))
+def wait_stable(b, rg, tag, deadline, want_lit=False):
+    """Poll (backlight-normalized) frames until two consecutive settle, event-driven so it
+    doesn't depend on host speed. If want_lit, wake the panel (home) and require a lit frame.
+    Returns the settled sample."""
+    nz, prev = snap(b, rg, "w-" + tag)
     while time.time() < deadline:
-        cur = _sample(rg, b.shot("w-" + tag))
-        if not _framediff(prev, cur) and (not want_lit or _lit(cur) > 0.30):
+        if want_lit and nz <= 0.30:
+            rg.itqmp.button(b.qmp, "home")     # wake a slept/booting panel
+        nz, cur = snap(b, rg, "w-" + tag)
+        if not _framediff(prev, cur) and (not want_lit or nz > 0.30):
             return cur
         prev = cur
     return prev
@@ -286,12 +305,12 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         # Event-driven navigation: wait on frame state, not fixed sleeps, so host load
         # doesn't matter. Overall bound = the qemu timeout.
         end = time.time() + cfg.boot_timeout - 30
-        # 1. lock screen: serial marker (SpringBoard reached it) + a settled lit frame.
-        ok, det = b.wait_lock_screen(timeout=max(30, end - time.time()))
-        if not ok:
-            res["verdict"], res["note"] = "NO-BOOT", "never reached lock screen (%s)" % det
+        # 1. wait for a lit, settled frame (the lock screen). snap() normalizes the backlight
+        # and wakes the panel, so a dim/asleep lock screen is detected (raw picture() reads 0%).
+        lock = wait_stable(b, rg, tag, min(end, time.time() + 240), want_lit=True)
+        if _lit(lock) <= 0.30:
+            res["verdict"], res["note"] = "NO-BOOT", "never reached a lit lock screen"
             return res
-        lock = wait_stable(b, rg, tag, min(end, time.time() + 60), want_lit=True)
         # sbservices only answers once SpringBoard is up (past the lock screen), so query
         # the icon layout now, not right after install.
         slot = icon_slot(b, r["bundle"]) or (2, 0, 0)     # fall back to page-2 slot(0,0)
@@ -325,10 +344,11 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         before = prev
         syslen = os.path.getsize(syslog) if os.path.exists(syslog) else 0
         b.tap(GRID(row, col))
-        after = wait_stable(b, rg, tag, min(end, time.time() + 30))   # settle on the app frame
-        res["shot"] = b.shot("launch-" + tag)
-        lit, detail = b.picture("launch-" + tag)
-        nonzero = _lit(after)
+        after = wait_stable(b, rg, tag, min(end, time.time() + 40))   # settle on the app frame
+        _, _, nz = rg.itqmp.shot(b.qmp, os.path.join(b.dir, "launch-" + tag + ".png"))
+        res["shot"] = os.path.join(b.dir, "launch-" + tag + ".png")
+        detail = "nz %.2f" % nz
+        nonzero = nz
         changed = _framediff(before, after)
         # did the app's process appear in syslog after the tap?
         newlog = ""
