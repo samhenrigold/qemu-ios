@@ -30,6 +30,10 @@
 #include "hw/arm/ipod_touch_usb_otg.h"
 #include "hw/arm/ipod_touch_usb_phys.h"
 #include "hw/arm/ipod_touch_spi.h"
+#include "hw/arm/ipod_touch_amc.h"
+#include "hw/arm/ipod_touch_lis302dl.h"
+#include "hw/arm/ipod_touch_cs42l58.h"
+#include "chardev/char.h"
 #include "hw/i2c/i2c.h"
 #include "hw/arm/s5l8930.h"
 #include "hw/intc/pl192.h"
@@ -300,13 +304,36 @@ static void ipad1_init(MachineState *machine)
                               qemu_irq_invert(qdev_get_gpio_in(s->gpio, 0x0d)));
         qdev_connect_gpio_out(xp, 0,
                               qemu_irq_invert(qdev_get_gpio_in(s->gpio, 0x11)));
+        /*
+         * CS42L61 codec (i2c0/audio0). AppleCS42L61Audio treats it as a plain
+         * MAP-addressed register file (0x01-0x6f, read back for its register
+         * dump) and never checks the chip ID, so the iPod's CS42L58 model
+         * fits unchanged. Its MCLK comes from the PWM block, which stays in
+         * the unimplemented window.
+         */
+        i2c_slave_create_simple(bus, TYPE_CS42L58, 0x4a);
     }
-    /* I2C2 (accelerometer, light sensor) is empty for now: transfers NACK. */
+    /*
+     * I2C2: LIS331DLH accelerometer and TSL2581 light sensor. AppleLIS331DLH
+     * (7B500 c0895000-c0895c00) probes WHO_AM_I without checking the value,
+     * writes CTRL_REG1-4 and INT1_CFG/THS/DURATION, and reads OUT_X/Y/Z as
+     * 16-bit bursts (sub-address | 0x80); the iPod LIS302DL model does all of
+     * that once told the part's WHO_AM_I. The DT interrupt pins (0x24/0x26,
+     * 0x25) are not driven: nothing before userland waits on them.
+     */
     dev = qdev_new(TYPE_S5L8930_I2C);
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_I2C_BASE(2));
     sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_I2C(2)));
+    {
+        I2CBus *bus = I2C_BUS(qdev_get_child_bus(dev, "i2c"));
+        I2CSlave *accel = i2c_slave_new(TYPE_LIS302DL, 0x19);
+
+        qdev_prop_set_uint8(DEVICE(accel), "whoami", 0x32);
+        i2c_slave_realize_and_unref(accel, bus, &error_fatal);
+        i2c_slave_create_simple(bus, TYPE_S5L8930_TSL2581, 0x39);
+    }
 
     /* Display pipe, CLCD, DART2, RGBOUT, TV-out; scanout starts at iBoot's FB. */
     dev = qdev_new(TYPE_S5L8930_DISPLAY);
@@ -342,6 +369,12 @@ static void ipad1_init(MachineState *machine)
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_IOP_BASE);
     sysbus_mmio_map(sbd, 1, S5L8930_IOP_VIC_BASE);
+
+    /* SHA-1 engine; CDMA channel 4 streams the data into its FIFO. */
+    dev = qdev_new(TYPE_S5L8930_SHA1);
+    sbd = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(sbd, &error_fatal);
+    sysbus_mmio_map(sbd, 0, S5L8930_SHA1_BASE);
 
     /* CDMA + AES filter; one interrupt line per channel. */
     dev = qdev_new(TYPE_S5L8930_CDMA);
@@ -397,9 +430,30 @@ static void ipad1_init(MachineState *machine)
     /* SWI: backlight and DPSM core voltage; only the busy bit matters. */
     sysbus_create_simple("ipodtouch.swi", S5L8930_SWI_BASE, NULL);
 
+    /*
+     * AMC (audio media codec, amc,s5l8920x): the same AppleAMC_r2 kext family
+     * the iPod's 3.1.3 drives, one hardware revision up ("AMC 2.1"). Reuse the
+     * iPod model's register/interrupt handshake; its buffer aperture is the
+     * 256 KiB at 0x84000000 that the machine already backs as SRAM. The third
+     * DT window (0x84300000, 0x5000) and the I2S blocks stay unimplemented:
+     * the I2S controllers start without touching a register, and the AMC's
+     * own start is not reached before the CDMA panic (docs/ipad1/PLAN.md).
+     */
+    dev = qdev_new(TYPE_IPOD_TOUCH_AMC);
+    qdev_prop_set_uint64(dev, "buf-base", S5L8930_SRAM_BASE);
+    sbd = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(sbd, &error_fatal);
+    sysbus_mmio_map(sbd, 0, S5L8930_AMC_BASE);
+    sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_AMC));
+
     /* Same Samsung UART as the S5L8720, including its interrupt scheme. */
     exynos4210_uart_create(S5L8930_UART_BASE(0), 256, 0, serial_hd(0),
                            ipad1_irq(s, S5L8930_IRQ_UART(0)), true);
+    /* UART5 is the bq27545 gas gauge's HDQ line (see s5l8930_hdq.c). */
+    exynos4210_uart_create(S5L8930_UART_BASE(5), 256, 5,
+                           qemu_chardev_new(NULL, TYPE_CHARDEV_S5L8930_HDQ,
+                                            NULL, NULL, &error_abort),
+                           ipad1_irq(s, S5L8930_IRQ_UART(5)), true);
 
     qemu_register_reset(ipad1_cpu_reset, s);
 }

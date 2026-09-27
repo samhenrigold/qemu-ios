@@ -105,6 +105,7 @@ typedef struct IPodTouchAMCState {
     bool state_handshake;
     bool codec_decode;
     uint8_t mode; /* Startup configuration; checked against restored state. */
+    uint64_t buf_base; /* buffer aperture: AMC_BUF_BASE on the iPod, 0x84000000 on the iPad */
     uint32_t pending;
     void *decoder;
     QEMUTimer *decode_timer;

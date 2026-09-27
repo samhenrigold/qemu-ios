@@ -78,6 +78,11 @@ static void i2c_do_transfer(S5L8930I2CState *s, bool write)
         s->rx_len = nak ? 0 : n;
     }
     i2c_end_transfer(s->bus);
+    if (getenv("S5L8930_I2C_TRACE")) {
+        fprintf(stderr, "[I2C] %s addr 0x%02x sub 0x%02x len %u%s\n",
+                write ? "W" : "R", s->addr & 0x7f, s->subaddr & 0xff, n,
+                nak ? " NAK" : "");
+    }
     s->tx_len = 0;
     s->status |= nak ? STATUS_ERROR : STATUS_DONE;
     i2c_update_irq(s);
@@ -591,11 +596,117 @@ static const TypeInfo s5l8930_tca6408_info = {
     .class_init    = tca6408_class_init,
 };
 
+/* ---- TAOS TSL2581 ambient light sensor (I2C2 0x39) ----
+ *
+ * 7B500 AppleTSL2581 (AppleEmbeddedLightSensor kext at c05e7000). Every
+ * access goes through c05ea488/c05ea4b4: the sub-address byte is
+ * 0x80 | reg (the part's COMMAND bit), so the register number is the low
+ * five bits. probe (c05eac68) reads reg 0 and only checks the transfer
+ * succeeded; handleStart writes CONTROL/TIMING/ANALOG and then checks the
+ * ALS_INT GPIO (0x405) is not stuck low, which the GPIO model's idle-high
+ * default satisfies. The lux curve comes from the DT (slopes/intercepts).
+ */
+
+OBJECT_DECLARE_SIMPLE_TYPE(S5L8930TSL2581State, S5L8930_TSL2581)
+
+#define TSL2581_ADDR    0x39
+#define TSL_ID          0x12    /* PARTNO[7:4] = 9 (TSL2581), REVNO 0 */
+#define TSL_DATA0       0x14    /* CH0 (visible + IR) low, high */
+#define TSL_DATA1       0x16    /* CH1 (IR) low, high */
+
+struct S5L8930TSL2581State {
+    I2CSlave i2c;
+    uint8_t regs[32];
+    uint8_t reg;
+    bool addressing;
+};
+
+static int tsl2581_event(I2CSlave *i2c, enum i2c_event event)
+{
+    S5L8930TSL2581State *s = S5L8930_TSL2581(i2c);
+
+    if (event == I2C_START_SEND) {
+        s->addressing = true;
+    }
+    return 0;
+}
+
+static uint8_t tsl2581_recv(I2CSlave *i2c)
+{
+    S5L8930TSL2581State *s = S5L8930_TSL2581(i2c);
+
+    return s->regs[s->reg++ & 0x1f];
+}
+
+static int tsl2581_send(I2CSlave *i2c, uint8_t data)
+{
+    S5L8930TSL2581State *s = S5L8930_TSL2581(i2c);
+    uint8_t reg;
+
+    if (s->addressing) {
+        s->addressing = false;
+        s->reg = data;
+        return 0;
+    }
+    reg = s->reg++ & 0x1f;
+    if (reg < TSL_ID) {
+        s->regs[reg] = data;    /* ID and the data registers are read-only */
+    }
+    return 0;
+}
+
+static void tsl2581_reset(DeviceState *dev)
+{
+    S5L8930TSL2581State *s = S5L8930_TSL2581(dev);
+
+    memset(s->regs, 0, sizeof(s->regs));
+    s->regs[TSL_ID] = 0x90;
+    /* ponytail: one fixed indoor reading (CH1/CH0 = 0.25, first curve
+     * segment). A QOM property when a host-side lux control is wanted. */
+    stw_le_p(&s->regs[TSL_DATA0], 1024);
+    stw_le_p(&s->regs[TSL_DATA1], 256);
+    s->reg = 0;
+    s->addressing = true;
+}
+
+static const VMStateDescription vmstate_s5l8930_tsl2581 = {
+    .name = TYPE_S5L8930_TSL2581,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(i2c, S5L8930TSL2581State),
+        VMSTATE_UINT8_ARRAY(regs, S5L8930TSL2581State, 32),
+        VMSTATE_UINT8(reg, S5L8930TSL2581State),
+        VMSTATE_BOOL(addressing, S5L8930TSL2581State),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static void tsl2581_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
+
+    dc->vmsd = &vmstate_s5l8930_tsl2581;
+    device_class_set_legacy_reset(dc, tsl2581_reset);
+    k->event = tsl2581_event;
+    k->recv = tsl2581_recv;
+    k->send = tsl2581_send;
+}
+
+static const TypeInfo s5l8930_tsl2581_info = {
+    .name          = TYPE_S5L8930_TSL2581,
+    .parent        = TYPE_I2C_SLAVE,
+    .instance_size = sizeof(S5L8930TSL2581State),
+    .class_init    = tsl2581_class_init,
+};
+
 static void s5l8930_i2c_register_types(void)
 {
     type_register_static(&s5l8930_i2c_info);
     type_register_static(&s5l8930_d1815_info);
     type_register_static(&s5l8930_tca6408_info);
+    type_register_static(&s5l8930_tsl2581_info);
 }
 
 type_init(s5l8930_i2c_register_types)
