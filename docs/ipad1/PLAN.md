@@ -243,10 +243,15 @@ resamples to it. 48 kHz media: Safari (USB Ethernet, USB keyboard) playing a 48 
 from a host HTTP server (Range requests needed, or the player shows a crossed-out play icon) lands in the
 44.1 kHz host WAV as 1000.00 Hz for 3.97 s of 4 s, i.e. right pitch and speed. A device-side switch to
 48 kHz (an app setting the preferred hardware rate) is still unobserved.
-Gap — microphone: capture is i2s0 RX on CDMA ch 0x1b (FIFO 0x84500438; RX command +0x34, RX FIFO +0x38).
-The paced CDMA only moves memory -> FIFO, and the I2S RX FIFO reads 0. To add: a QEMU `AUD_open_in` voice
-feeding an RX ring that +0x38 drains, and the device -> memory direction in `cdma_paced_advance`. Needs an
-app that records (3.2 has no Voice Memos) to prove it.
+Microphone (2026-09-27): i2s0 RX (+0x34 command, +0x38 FIFO) reads frames from a QEMU input voice (the
+Mac's microphone under `-audio coreaudio`) or, with the test-only `-global
+driver=s5l8930.i2s,property=tone-hz,value=N`, a synthetic stereo sine; CDMA ch 0x1b streams it into the
+guest's ring with the same pacing as playback. `tests/ipad1/mic-check.py` builds `contrib/ipad1-mictest`
+(an AudioQueue input recorder) into a scratch store and checks a 10 s recording in the guest: 1000.0 Hz from
+a 1000 Hz tone (440.0 from 440), 44025 frames/s, 0 discontinuities. Needed on the way: back-to-back chains keep
+one sample clock (a late go used to drop ~3% at every 64 KiB boundary) and 1 ms pacing steps (the HAL reads
+input up to 96 frames behind its clock; 10 ms steps left it reading stale frames every cycle). Shazam once
+golden-appsync works.
 
 ## Bluetooth: parked, BTServer disabled (2026-09-27)
 
