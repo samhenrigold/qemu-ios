@@ -407,6 +407,10 @@ static void ipad1_init(MachineState *machine)
 
         qdev_prop_set_uint8(DEVICE(accel), "whoami", 0x32);
         i2c_slave_realize_and_unref(accel, bus, &error_fatal);
+        /* Same name as the iPod machine: UIDeviceOrientation 0-6, e.g.
+         * qom-set path=/machine property=accel-orientation value=3 */
+        object_property_add_alias(OBJECT(machine), "accel-orientation",
+                                  OBJECT(accel), "orientation");
         i2c_slave_create_simple(bus, TYPE_S5L8930_TSL2581, 0x39);
     }
 
