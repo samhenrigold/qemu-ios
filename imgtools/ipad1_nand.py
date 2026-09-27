@@ -427,12 +427,19 @@ def parse_size(s):
 
 
 def make_hfs_image(path, size):
-    # bare (no partition map) case-sensitive journaled HFS+, like iOS's data volume
-    base = path[:-4] if path.endswith(".dmg") else path
-    subprocess.run(["hdiutil", "create", "-size", "%dk" % (size // 1024), "-layout", "NONE",
-                    "-fs", "Case-sensitive Journaled HFS+", "-volname", "Data", "-ov", base],
-                   check=True, capture_output=True)
-    return base + ".dmg"
+    """Bare (no partition map) case-sensitive journaled HFS+, like iOS's data volume, in a SPARSE raw
+    file: newfs_hfs writes only the volume's metadata, so a full-size (14.7 GB) data partition costs the
+    host a few tens of MB, and FilePages.written() lets the store skip the holes."""
+    with open(path, "wb") as f:
+        f.truncate(size // 4096 * 4096)
+    r = subprocess.run(["hdiutil", "attach", "-imagekey", "diskimage-class=CRawDiskImage", "-nomount", path],
+                       check=True, capture_output=True, text=True)
+    dev = r.stdout.split()[0]
+    try:
+        subprocess.run(["newfs_hfs", "-s", "-J", "-v", "Data", dev], check=True, capture_output=True)
+    finally:
+        subprocess.run(["hdiutil", "detach", dev], capture_output=True)
+    return path
 
 
 class FilePages:
@@ -441,6 +448,20 @@ class FilePages:
         self.size = os.fstat(self.f.fileno()).st_size
         self.page, self.patch = page, patch or {}
         self.pages = -(-self.size // page)
+
+    def written(self):
+        """Page numbers inside the file's data extents (SEEK_DATA/SEEK_HOLE): a sparse image's holes are
+        blocks nothing ever wrote, which HFS does not read before writing them, so they need no page."""
+        fd, off, out = self.f.fileno(), 0, []
+        while True:
+            try:
+                start = os.lseek(fd, off, os.SEEK_DATA)
+            except OSError:
+                break
+            end = os.lseek(fd, start, os.SEEK_HOLE)
+            out.extend(range(start // self.page, -(-end // self.page)))
+            off = end
+        return out
 
     def get(self, n):
         self.f.seek(n * self.page)
@@ -526,12 +547,15 @@ def build(a):
     if a.s3 and p3[2]:
         s3 = FilePages(a.s3, ps)
         segs.append((p3[1], min(p3[2], s3.pages), s3.get))
+    segs = [(lba, range(count), get) for lba, count, get in segs]
     if data:
-        segs.append((p2[1], data.pages, data.get))
-    total = sum(n for _, n, _ in segs)
+        written = data.written()
+        print("      data partition: %d pages, %d written (the rest are holes)" % (data.pages, len(written)))
+        segs.append((p2[1], written, data.get))
+    total = sum(len(ns) for _, ns, _ in segs)
     done = 0
-    for lba, count, get in segs:
-        for n in range(count):
+    for lba, pages, get in segs:
+        for n in pages:
             ftl.user(lba + n, get(n))
             done += 1
             if done % 50000 == 0:

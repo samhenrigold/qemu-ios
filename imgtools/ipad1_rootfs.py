@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Userland images for the ipad1 machine: a patched copy of the 7B500 system partition plus a seeded data volume.
 
-    ipad1_rootfs.py build [--base pristine|jailbroken] [--out DIR] [--data-size 2g] [--rootfs IMG]
+    ipad1_rootfs.py build [--base pristine|jailbroken] [--out DIR] [--data-size partition|SIZE] [--rootfs IMG]
                           [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge] [--no-web-proxy] [--no-usb-net]
     ipad1_rootfs.py fetch [DIR]          copy /var/stash and /var/root/Library/Lockdown off the real iPad (ssh)
     ipad1_rootfs.py report DIR...        list the Mach-Os under DIR that carry no Apple signature
@@ -79,7 +79,8 @@ BASES = {"pristine": ("7B500/dec/rootfs.dmg", None, "pristine"),
 GLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/ipad1-gles")
 GLENGINE = "System/Library/Frameworks/OpenGLES.framework/GLEngine.bundle/GLEngine"
 GLES_APPS = ("GLTest.app", "GLTest2.app")
-# --ca-ogl: CoreAnimation composites through the GLI shim (accelerated pixel format)
+# GL CoreAnimation (the default; --no-ca-ogl opts out): CoreAnimation composites through the GLI shim
+# (accelerated pixel format), so the build installs the shim as GLEngine
 SB_ENV_CA_OGL = {"MBX2D_PAGE_FLIP": "0", "GLI_ACCELERATED": "1"}
 HIDBRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/ipad1-hidbridge")
 # AppSync: one dylib injected into installd (install gate) and SpringBoard (launch gate)
@@ -196,6 +197,17 @@ PAC = """function FindProxyForURL(url, host) {
     return "PROXY 10.0.2.100:3128; DIRECT";
 }
 """
+
+
+# Wi-Fi location (docs/ipad1/location.md): locationd ignores the PAC and goes straight to Apple's
+# location server, which no longer answers iOS 3. Point its server preference at the same guestfwd
+# address over plain HTTP; itwebproxy answers /clls/wloc there with the host-set position.
+LOCATIOND_PREFS = "mobile/Library/Preferences/com.apple.locationd.plist"
+
+
+def locationd_prefs(d):
+    d["AppleLocationServer"] = "http://10.0.2.100:3128/clls/wloc"
+    d["AppleLocationServerRequiresCert"] = False
 
 
 def wifi_proxy_prefs(d):
@@ -432,7 +444,10 @@ def report(dirs, out=sys.stdout):
 def build(a):
     os.makedirs(a.out, exist_ok=True)
     system, data = os.path.join(a.out, "system.img"), os.path.join(a.out, "data.img")
-    p1 = mbr_parts(open(a.mbr, "rb").read(512))[0]
+    p1, p2 = mbr_parts(open(a.mbr, "rb").read(512))[:2]
+    # the unit's data partition fills the rest of the exported NAND (3,597,615 x 4 KiB = 14.7 GB, what a
+    # restore gives it); the image is sparse, so only what gets written costs the host anything
+    data_bytes = p2[2] * BLOCK if a.data_size == "partition" else parse_size(a.data_size)
     if p1[0] != 0xAF:
         raise SystemExit("%s: partition 1 is type %#x, not Apple_HFS" % (a.mbr, p1[0]))
 
@@ -477,9 +492,10 @@ def build(a):
             import appsync_cachepatch
             cache = os.path.join(m.mnt, "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv7")
             print("      " + appsync_cachepatch.patch_cache(cache))
-        if a.gles:
+        apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))
+        if a.gles or a.ca_ogl:   # GL CoreAnimation composites through the GLI shim, so it needs the engine
             shutil.copy(os.path.join(GLES, "GLEngine"), os.path.join(m.mnt, GLENGINE))
-            apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))
+        if a.gles:
             for app in () if apps_stashed else GLES_APPS:
                 shutil.rmtree(os.path.join(m.mnt, "Applications", app), ignore_errors=True)
                 shutil.copytree(os.path.join(GLES, app), os.path.join(m.mnt, "Applications", app))
@@ -509,8 +525,8 @@ def build(a):
         bn.set_owner(system, [APPSYNC_REL], 0, 0)
     if a.web_proxy:
         bn.set_owner(system, ["usr/local", "usr/local/share", "usr/local/share/ltm", PAC_PATH], 0, 0)
-    if a.gles:   # ldid-signed: boot with amfi_allow_any_signature=1 cs_enforcement_disable=1
-        apps = [] if apps_stashed else GLES_APPS
+    if a.gles or a.ca_ogl:   # ldid-signed: boot with amfi_allow_any_signature=1 cs_enforcement_disable=1
+        apps = [] if apps_stashed or not a.gles else GLES_APPS
         bn.set_owner(system, [GLENGINE] + ["Applications/" + app for app in apps] +
                      ["Applications/%s/%s" % (app, f) for app in apps
                       for f in os.listdir(os.path.join(GLES, app))], 0, 0)
@@ -533,7 +549,7 @@ def build(a):
     if stashed and not a.stash:
         raise SystemExit("this image stashes /usr/libexec into /private/var/stash; run `fetch` and pass --stash")
 
-    print("[3/4] data volume (%s) seeded from /private/var%s%s" % (a.data_size,
+    print("[3/4] data volume (%.1f GB, sparse) seeded from /private/var%s%s" % (data_bytes / 1e9,
           " + " + a.stash if a.stash else "", " + " + a.lockdown if a.lockdown else ""))
     if a.stash:
         shutil.copytree(a.stash, os.path.join(skeleton, "stash"), symlinks=True)
@@ -544,12 +560,13 @@ def build(a):
         shutil.copytree(a.lockdown, os.path.join(skeleton, "root/Library/Lockdown"), dirs_exist_ok=True)
     if a.web_proxy:
         seed_plist(os.path.join(skeleton, SC_DIR, "preferences.plist"), wifi_proxy_prefs)
-        print("      web proxy: en0 AirPort service, PAC /%s" % PAC_PATH)
+        seed_plist(os.path.join(skeleton, LOCATIOND_PREFS), locationd_prefs)
+        print("      web proxy: en0 AirPort service, PAC /%s; locationd server via the proxy address" % PAC_PATH)
     if a.usb_net:
         seed_plist(os.path.join(skeleton, SC_DIR, "NetworkInterfaces.plist"), usb_net_interfaces)
         seed_plist(os.path.join(skeleton, SC_DIR, "preferences.plist"), usb_net_prefs)
         print("      USB Ethernet: en1 DHCP service in /var/%s" % SC_DIR)
-    os.replace(make_hfs_image(data + ".dmg", parse_size(a.data_size)), data)
+    os.replace(make_hfs_image(data + ".dmg", data_bytes), data)
     by_owner = {}
     with Mounted(data, os.path.join(a.out, "mnt-data")) as m:
         shutil.copytree(skeleton, m.mnt, symlinks=True, dirs_exist_ok=True)
@@ -702,7 +719,8 @@ def main():
     b.add_argument("--pristine", default=os.path.join(FILES, "7B500/dec/rootfs.dmg"), help="IPSW rootfs, source of the /private/var skeleton")
     b.add_argument("--out", default=os.path.join(FILES, "userland"), help="images land in OUT/<base>/, the store in OUT/nand-<tag>")
     b.add_argument("--kernelcache", help="IPSW img3 kernelcache to install for real-iBoot fsboot")
-    b.add_argument("--data-size", default="2g")
+    b.add_argument("--data-size", default="partition",
+                   help="data volume size: 'partition' (the MBR's partition 2, as on the unit) or e.g. 2g")
     b.add_argument("--stash", help="fetch output for /var/stash (jailbroken default: hw2/stash); 'none' to skip")
     b.add_argument("--lockdown", default=os.path.join(FILES, "hw2/lockdown"), help="fetch output for the Lockdown dir; 'none' to skip")
     b.add_argument("--disable", action="append", default=[], metavar="LABEL", help="launchd job to mark Disabled")
@@ -711,9 +729,10 @@ def main():
                    help="skip the en0 Wi-Fi service with the itwebproxy PAC (proxy, else DIRECT)")
     b.add_argument("--no-usb-net", dest="usb_net", action="store_false",
                    help="skip the en1 (USB Ethernet) DHCP network service")
-    b.add_argument("--gles", action="store_true", help="install the GLI shim as GLEngine plus GLTest/GLTest2.app (run contrib/ipad1-gles/build.sh first)")
+    b.add_argument("--gles", action="store_true", help="also install the GLTest/GLTest2.app test apps (the GLI engine itself always goes in; run contrib/ipad1-gles/build.sh first)")
     b.add_argument("--page-flip", action="store_true", help="leave CoreAnimation's IOMFB page flipping on (no MBX2D_PAGE_FLIP=0)")
-    b.add_argument("--ca-ogl", action="store_true", help="let CoreAnimation composite through GL (no CA_ENABLE_OGL=0; GLI_ACCELERATED=1)")
+    b.add_argument("--no-ca-ogl", dest="ca_ogl", action="store_false",
+                   help="software CoreAnimation (CA_ENABLE_OGL=0) instead of the default GL compositing through the GLI shim")
     b.add_argument("--hidbridge", action="store_true", help="install the hardware-keyboard daemon (run contrib/ipad1-hidbridge/build.sh first)")
     b.add_argument("--appsync", action="store_true", help="install libappsync.dylib and inject it into installd (+ symbol-located shared-cache patch) (run contrib/appsync/build.sh first)")
     f = sub.add_parser("fetch")
