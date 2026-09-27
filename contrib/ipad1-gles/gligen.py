@@ -46,6 +46,19 @@ TAIL_ARGC = {
 }
 
 
+def batchable(name, proto, slot):
+    """A call the guest cannot tell apart from a deferred one: returns nothing, passes the host no
+    guest pointer, and does not draw (draws read client arrays from guest memory when they run) or sync."""
+    base = name.rstrip("*")
+    if "Draw" in base or base in ("glFlush", "glFinish") or "Fence" in base or "Get" in base or "Is" in base[:4]:
+        return False
+    if slot < 764:
+        return proto.startswith("void (") and "*" not in proto
+    # ES tail: no macOS prototype. The vector (…v, …vOES), pointer and matrix forms take pointers.
+    return not (base.endswith("v") or base.endswith("vOES") or "Pointer" in base or "Matrix" in base
+                or "ClipPlane" in base or base in ("glShaderBinary", "glReleaseShaderCompiler"))
+
+
 def load():
     """-> list of (slot, name, wire or None, argc or None) for every slot."""
     rows = []
@@ -64,7 +77,11 @@ def load():
             # "void (GLIContext, a, b)" -> 2
             argc = proto[proto.index("(") + 1:proto.rindex(")")].count(",")
         rows.append((slot, name, wire if wanted else None, argc))
+        BATCH[slot] = batchable(name, proto, slot)
     return rows
+
+
+BATCH = {}
 
 
 def check(rows):
@@ -80,6 +97,13 @@ def check(rows):
     assert by["glVertexAttribPointer"][2] is not None
     # New in 3.2: no wire number, so never forwarded.
     assert by["glFramebufferParameteriAPPLE"][2] is None
+    for n in ("glEnable", "glBlendFunc", "glBindTexture", "glUniform4f", "glViewport", "glTranslatef",
+              "glClearColor", "glUseProgram"):
+        assert BATCH[by[n][0]], n
+    for n in ("glDrawArrays", "glDrawElements", "glFlush", "glFinish", "glGetError", "glTexImage2D",
+              "glUniform4fv", "glVertexPointer", "glReadPixels", "glIsEnabled", "glLoadMatrixx",
+              "glGenTextures", "glCreateShader"):
+        assert not BATCH[by[n][0]], n
     for slot, name, wire, argc in rows:
         if wire is not None:
             assert argc is not None, "no argc for forwarded %s (%d)" % (name, slot)
@@ -161,6 +185,15 @@ out.append("")
 for slot, name, wire, argc in rows:
     if wire is not None:
         out.append("#define GLI_SLOT_%s %d" % (name, slot))
+out.append("")
+wires = {wire: slot for slot, name, wire, argc in rows if wire is not None}
+top = max(wires) + 1
+out.append("/* By WIRE number: calls glishim may queue (see gles_batch). */")
+out.append("static const unsigned char gli_batchable[%d] = {" % top)
+for i in range(0, top, 32):
+    out.append("    %s," % ",".join("1" if i + j in wires and BATCH[wires[i + j]] else "0"
+                                    for j in range(min(32, top - i))))
+out.append("};")
 out.append("")
 out.append("static void *const gli_fwd_table[GLI_N_SLOTS] = {")
 for i in range(0, N_SLOTS, 8):

@@ -509,6 +509,12 @@ static void s5l8930_display_reset(DeviceState *dev)
     if (s->fb_base) {
         r[DP_LAYERS / 4] = 0x100;
         r[(DP_UI_BASE(0) + DP_UI_ADDR) / 4] = s->fb_base;
+        /* Plain bytes per row. This was (4096 << 4) | 2, which the kernel
+         * adopted as a 64 KiB row: a 48 MiB default surface (0x3000000,
+         * too big for PurpleGfxMem, so a buffer instead) whose black fill
+         * at power-off (CA fill_iosurface, CGBlt_fillBytes) ran off its
+         * mapping. SpringBoard died with SIGBUS (KERN_PROTECTION_FAILURE)
+         * and never reached reboot2, so Hold -> slide never powered off. */
         r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4] = DEFAULT_WIDTH * 4 | 2;
         r[0x4060 / 4] = DEFAULT_WIDTH << 16 | DEFAULT_HEIGHT;
     }
