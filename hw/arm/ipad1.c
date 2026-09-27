@@ -28,6 +28,7 @@
 #include "hw/arm/ipod_touch_mipi_dsi.h"
 #include "hw/arm/ipod_touch_usb_otg.h"
 #include "hw/arm/ipod_touch_usb_phys.h"
+#include "hw/arm/ipod_touch_spi.h"
 #include "hw/i2c/i2c.h"
 #include "hw/arm/s5l8930.h"
 #include "hw/intc/pl192.h"
@@ -35,6 +36,8 @@
 #include "system/reset.h"
 #include "system/system.h"
 #include "target/arm/cpu.h"
+#include "ui/console.h"
+#include "ui/input.h"
 
 #define TYPE_IPAD1_MACHINE MACHINE_TYPE_NAME("ipad1")
 OBJECT_DECLARE_SIMPLE_TYPE(IPad1MachineState, IPAD1_MACHINE)
@@ -47,8 +50,12 @@ struct IPad1MachineState {
     MemoryRegion cpu_debug;
     DeviceState *vic[S5L8930_VIC_COUNT];
     DeviceState *gpio;
+    IPodTouchMultitouchState *mt;
     char *kboot_path;
     char *nand_path;
+    char *nor_path;
+    bool kbd_cmd, kbd_shift;
+    int kbd_btn_held[Q_KEY_CODE__MAX];   /* qcode -> 1 + button pin */
 };
 
 /* GHWCFG1-4 of the DWC OTG core; same synthesis as the S5L8720's. */
@@ -112,6 +119,79 @@ static void ipad1_cpu_reset(void *opaque)
     s->cpu->env.regs[0] = bootargs_pa;
     cpu_set_pc(cs, entry_pa);
 }
+
+/*
+ * Host mouse -> digitizer slot 0. QEMU's absolute coordinates are 0..0x7fff;
+ * the digitizer wants 0..1 with y from the bottom (see set_finger()).
+ * ponytail: same axis mapping as the iPod's portrait panel. If touches land
+ * rotated once SpringBoard is up, this is the one place to swap/flip them.
+ */
+static void ipad1_mouse_event(void *opaque, int x, int y, int z, int buttons)
+{
+    IPodTouchMultitouchState *mt = opaque;
+
+    mt->touch_x = x / 32768.0f;
+    mt->touch_y = 1.0f - y / 32768.0f;
+    if (buttons && !mt->touch_down) {
+        ipod_touch_multitouch_on_touch(mt);
+    } else if (!buttons && mt->touch_down) {
+        ipod_touch_multitouch_on_release(mt);
+    } else if (buttons) {
+        ipod_touch_multitouch_on_motion(mt);
+    }
+}
+
+/*
+ * Buttons are GPIO port 0 pins 0-4, active low, idle high in the GPIO model.
+ * Same host chords as the iPod machine: Cmd+L hold/power, Cmd+Shift+H
+ * home/menu, Cmd+- volume down, Cmd+= volume up. A key that pressed a
+ * button always releases it, even if Cmd went up first.
+ */
+static void ipad1_kbd_event(DeviceState *dev, QemuConsole *src, InputEvent *evt)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(qdev_get_machine());
+    int q = qemu_input_key_value_to_qcode(evt->u.key.data->key);
+    bool down = evt->u.key.data->down;
+    int pin = -1;
+
+    switch (q) {
+    case Q_KEY_CODE_META_L:
+    case Q_KEY_CODE_META_R:
+        s->kbd_cmd = down;
+        return;
+    case Q_KEY_CODE_SHIFT:
+    case Q_KEY_CODE_SHIFT_R:
+        s->kbd_shift = down;
+        return;
+    default:
+        break;
+    }
+    if (q < 0 || q >= Q_KEY_CODE__MAX) {
+        return;
+    }
+    if (!down && s->kbd_btn_held[q]) {
+        pin = s->kbd_btn_held[q] - 1;
+    } else if (down && s->kbd_cmd) {
+        switch (q) {
+        case Q_KEY_CODE_L:     pin = S5L8930_GPIO_BTN_HOLD; break;
+        case Q_KEY_CODE_H:     if (s->kbd_shift) pin = S5L8930_GPIO_BTN_MENU; break;
+        case Q_KEY_CODE_MINUS: pin = S5L8930_GPIO_BTN_VOLDOWN; break;
+        case Q_KEY_CODE_EQUAL: pin = S5L8930_GPIO_BTN_VOLUP; break;
+        default: break;
+        }
+    }
+    if (pin < 0) {
+        return;
+    }
+    s->kbd_btn_held[q] = down ? pin + 1 : 0;
+    qemu_set_irq(qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(pin)), !down);
+}
+
+static const QemuInputHandler ipad1_kbd_handler = {
+    .name  = "iPad Buttons",
+    .mask  = INPUT_EVENT_MASK_KEY,
+    .event = ipad1_kbd_event,
+};
 
 static void ipad1_init(MachineState *machine)
 {
@@ -269,6 +349,33 @@ static void ipad1_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     memory_region_add_subregion(sysmem, S5L8930_USB_OTG_BASE,
                                 &S5L8900USBOTG(dev)->iomem);
+    /*
+     * SPI: the K48 kernel drives these with the same AppleS5L8900X SPI kext
+     * as the iPod, so the iPod controller model is reused. It picks its
+     * peripheral from the global set_spi_base() index: 0 = NOR, 4 =
+     * multitouch. So the iPad's SPI1 is created as "spi4"; only the bus
+     * name and the peripheral choice come from that number.
+     */
+    set_spi_base(0);
+    dev = sysbus_create_simple(TYPE_IPOD_TOUCH_SPI, S5L8930_SPI_BASE(0),
+                               ipad1_irq(s, S5L8930_IRQ_SPI(0)));
+    IPOD_TOUCH_SPI(dev)->nor->nor_path = s->nor_path;
+    /* NOR chip select is GPIO 0x505 (function-spi_cs0), driven by the kernel. */
+    qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(S5L8930_GPIO_NOR_CS),
+        qdev_get_gpio_in_named(DEVICE(IPOD_TOUCH_SPI(dev)->nor), SSI_GPIO_CS, 0));
+
+    set_spi_base(4);
+    dev = sysbus_create_simple(TYPE_IPOD_TOUCH_SPI, S5L8930_SPI_BASE(1),
+                               ipad1_irq(s, S5L8930_IRQ_SPI(1)));
+    s->mt = IPOD_TOUCH_SPI(dev)->mt;
+    /* Zephyr2 ATN -> GPIO 0x15; reset (0x204) and download (0x107) are ignored. */
+    qdev_connect_gpio_out_named(DEVICE(s->mt), "atn", 0,
+        qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(S5L8930_GPIO_MT_ATN)));
+    qemu_add_mouse_event_handler(ipad1_mouse_event, s->mt, 1, "iPad Touchscreen");
+    qemu_input_handler_register(s->gpio, &ipad1_kbd_handler);
+
+    /* SWI: backlight and DPSM core voltage; only the busy bit matters. */
+    sysbus_create_simple("ipodtouch.swi", S5L8930_SWI_BASE, NULL);
 
     /* Same Samsung UART as the S5L8720, including its interrupt scheme. */
     exynos4210_uart_create(S5L8930_UART_BASE(0), 256, 0, serial_hd(0),
@@ -303,10 +410,24 @@ static void ipad1_set_nand(Object *obj, const char *value, Error **errp)
     s->nand_path = g_strdup(value);
 }
 
+static char *ipad1_get_nor(Object *obj, Error **errp)
+{
+    return g_strdup(IPAD1_MACHINE(obj)->nor_path);
+}
+
+static void ipad1_set_nor(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    g_free(s->nor_path);
+    s->nor_path = g_strdup(value);
+}
+
 static void ipad1_instance_finalize(Object *obj)
 {
     g_free(IPAD1_MACHINE(obj)->kboot_path);
     g_free(IPAD1_MACHINE(obj)->nand_path);
+    g_free(IPAD1_MACHINE(obj)->nor_path);
 }
 
 static void ipad1_class_init(ObjectClass *klass, void *data)
@@ -326,6 +447,9 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     object_class_property_add_str(klass, "nand", ipad1_get_nand, ipad1_set_nand);
     object_class_property_set_description(klass, "nand",
         "NAND page-store directory (geometry.json + bus<b>-ce<c>.pages); blank chips if unset");
+    object_class_property_add_str(klass, "nor", ipad1_get_nor, ipad1_set_nor);
+    object_class_property_set_description(klass, "nor",
+        "1 MiB SPI NOR image (nvram, syscfg); erased flash if unset");
 }
 
 static const TypeInfo ipad1_machine_info = {

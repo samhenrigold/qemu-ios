@@ -44,6 +44,7 @@ struct S5L8930GPIOState {
 
     MemoryRegion iomem;
     qemu_irq irq;
+    qemu_irq out[S5L8930_GPIO_PINS];
 
     uint32_t cfg[S5L8930_GPIO_PINS];
     uint32_t input[GPIO_GROUPS];      /* external pin levels, bit per pin */
@@ -156,8 +157,14 @@ static void s5l8930_gpio_write(void *opaque, hwaddr addr, uint64_t value,
     unsigned g = (addr & 0x3f) / 4;
 
     if (addr < S5L8930_GPIO_PINS * 4) {
-        s->cfg[addr / 4] = value & 0xffff;
-        s5l8930_gpio_latch_level(s, addr / 4);
+        unsigned pin = addr / 4, mode;
+
+        s->cfg[pin] = value & 0xffff;
+        mode = pin_mode(s, pin);
+        if (mode == GPIO_MODE_OUT || mode == GPIO_MODE_OUT_ALT) {
+            qemu_set_irq(s->out[pin], s->cfg[pin] & GPIO_CFG_DATA);
+        }
+        s5l8930_gpio_latch_level(s, pin);
         s5l8930_gpio_update(s);
         return;
     }
@@ -203,6 +210,7 @@ static void s5l8930_gpio_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
     qdev_init_gpio_in(DEVICE(obj), s5l8930_gpio_set_input, S5L8930_GPIO_PINS);
+    qdev_init_gpio_out(DEVICE(obj), s->out, S5L8930_GPIO_PINS);
 }
 
 /*
