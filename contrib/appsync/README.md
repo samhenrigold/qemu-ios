@@ -82,11 +82,17 @@ is `ldid -S` signed, so the store boots with the AMFI boot-args
 `nand-overlay`.
 
 ### iPod (3.1.3)
+On a copy of an image made with the old four-patch recipe (e.g. nand-agent-v4),
+with the stock 7E18 rootfs (`ios3/rootfs313.dmg`) mounted at `$STOCK`:
 ```
-qemu-ios-files/apps/patch-appsync.sh --dylib   # baker option: install libappsync.dylib instead of the 4 byte patches
+STOCK_ROOT=$STOCK imgtools/editimg.py --nand <copy> --blocks 1835008 \
+    --script contrib/appsync/patch-appsync-dylib.sh
+imgtools/setowner.py --nand <copy> /usr/lib/libappsync.dylib:0:0:644 \
+    /usr/libexec/installd:0:0:755 \
+    /System/Library/CoreServices/SpringBoard.app/SpringBoard:0:0:755
 ```
-The old four-patch recipe is kept alongside (`--dylib` opt-in) until the dylib
-route is the default.
+`STOCK_ROOT` puts back the Apple-signed installd and SpringBoard, so no byte
+patch remains besides the symbol-found cache patch.
 
 ## Verified
 
@@ -98,8 +104,10 @@ route is the default.
   `appsync-cuberunner-running.png` (the app runs in the iPhone-compat window; its
   3D content renders black only because GL compositing is off on this store —
   unrelated to AppSync).
-- iPod touch 2G / 3.1.3 (7E18): install + launch + full `tests/ipod/regress.py`
-  default tier — pending.
+- iPod touch 2G / 3.1.3 (7E18), 2026-09-27: `qemu-ios-files/nand-current.new`
+  (nand-agent-v4 + stock installd/SpringBoard + this dylib + current GLES shim)
+  passes all 8 default-tier `tests/ipod/regress.py` checks, and a Harness copy
+  with its code signature stripped (`ldid -r`) installs and launches.
 
 ## Out of scope
 
