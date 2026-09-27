@@ -549,13 +549,16 @@ def build(a):
                 shutil.copytree(os.path.join(GLES, app), os.path.join(skeleton, "stash/Applications", app))
     if a.lockdown:
         shutil.copytree(a.lockdown, os.path.join(skeleton, "root/Library/Lockdown"), dirs_exist_ok=True)
-    if a.web_proxy:
-        seed_plist(os.path.join(skeleton, SC_DIR, "preferences.plist"), wifi_proxy_prefs)
-        print("      web proxy: en0 AirPort service, PAC /%s" % PAC_PATH)
+    # USB Ethernet first, then the Wi-Fi service: each moves its service to the head of the ServiceOrder, and
+    # Wi-Fi (the default network, carrying the proxy PAC) must stay primary. With en1 first, a host running
+    # usbmuxd's ipad1 bridge made USB Ethernet the primary service and Safari bypassed the PAC (a4-touch).
     if a.usb_net:
         seed_plist(os.path.join(skeleton, SC_DIR, "NetworkInterfaces.plist"), usb_net_interfaces)
         seed_plist(os.path.join(skeleton, SC_DIR, "preferences.plist"), usb_net_prefs)
         print("      USB Ethernet: en1 DHCP service in /var/%s" % SC_DIR)
+    if a.web_proxy:
+        seed_plist(os.path.join(skeleton, SC_DIR, "preferences.plist"), wifi_proxy_prefs)
+        print("      web proxy: en0 AirPort service first, PAC /%s" % PAC_PATH)
     os.replace(make_hfs_image(data + ".dmg", data_bytes), data)
     by_owner = {}
     with Mounted(data, os.path.join(a.out, "mnt-data")) as m:
