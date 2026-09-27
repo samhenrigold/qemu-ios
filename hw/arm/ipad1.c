@@ -92,6 +92,7 @@ struct IPad1MachineState {
     GuestPasteboard pb;                  /* hw/arm/guest-pasteboard.c */
     /* App controls, same property names as the iPod machine. */
     LIS302DLState *accel;
+    DeviceState *compass;                /* AK8973; takes its pose from accel */
     double accel_pitch, accel_roll;      /* degrees, as the app sends them */
     bool accel_flat;
     double battery_level;                /* % */
@@ -608,10 +609,10 @@ static void ipad1_init(MachineState *machine)
          * of this build. qom-set /machine compass-heading N (degrees).
          */
         {
-            DeviceState *compass =
+            s->compass =
                 DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_AK8973, 0x1e));
             object_property_add_alias(OBJECT(machine), "compass-heading",
-                                      OBJECT(compass), "heading");
+                                      OBJECT(s->compass), "heading");
         }
         /*
          * CD3282 "Mikey" headset controller (i2c0/mikey). AppleCS42L61Audio
@@ -644,6 +645,7 @@ static void ipad1_init(MachineState *machine)
         qdev_prop_set_uint8(DEVICE(accel), "whoami", 0x32);
         i2c_slave_realize_and_unref(accel, bus, &error_fatal);
         s->accel = LIS302DL(accel);
+        s5l8930_ak8973_set_accel(s->compass, s->accel);
         /* Same names as the iPod machine: UIDeviceOrientation 0-6, e.g.
          * qom-set path=/machine property=accel-orientation value=3; raw
          * counts; a shake. accel-pitch/-roll/-pose are machine properties. */
