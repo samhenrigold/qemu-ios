@@ -222,14 +222,6 @@ static bool aes_apply(S5L8930CDMAState *s, AESContext *c, uint8_t *buf,
     bool encrypt = c->setup & AES_ENCRYPT;
     Error *err = NULL;
 
-    if (getenv("TMP_AES_TRACE")) {
-        const char *kind = (c->setup & AES_KEY_GID) ? "GID"
-                         : (c->setup & AES_KEY_CUSTOM) ? "custom"
-                         : (c->setup & AES_KEY_UID) ? "UID" : "def";
-        fprintf(stderr, "[[AES %s %scrypt len=%u %02x%02x%02x%02x]]\n", kind,
-                encrypt ? "en" : "de", len, buf[0], buf[1], buf[2], buf[3]);
-        fflush(stderr);
-    }
     if (len % 16) {
         return false;
     }
