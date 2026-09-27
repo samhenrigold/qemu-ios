@@ -13,10 +13,17 @@
  * port's frame rate, read from its PMGR NCO bit clock (s5l8930_i2s_rate())
  * each time the TX side is started.
  *
+ * Capture is the mirror image: CDMA channel 0x1b reads the RX FIFO (+0x38) at
+ * the same paced rate and the FIFO hands out bytes a QEMU input voice (the
+ * Mac's microphone under coreaudio) has queued, or silence. The test-only
+ * "tone-hz" property replaces the input with a synthetic stereo sine at the
+ * port's frame rate, so capture can be checked headless.
+ *
  * Use `-audio driver=wav,path=out.wav` (or coreaudio): the card resolves
  * its backend from the default audiodev list, as the iPod's I2S does.
  */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qapi/error.h"
@@ -34,7 +41,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930I2SState, S5L8930_I2S)
 #define I2S_CTRL_TX_IDLE (1u << 1)
 #define I2S_TXCOM       0x08
 #define I2S_TXFIFO      0x10
+#define I2S_RXCOM       0x34
+#define I2S_RXFIFO      0x38
 #define I2S_CMD_RUN     6
+#define TONE_AMPLITUDE  8000
 
 /* ~370 ms at 44.1 kHz stereo: absorbs host scheduling jitter only; the CDMA
  * pacing keeps the producer at the consumer's rate. */
@@ -45,16 +55,97 @@ struct S5L8930I2SState {
     MemoryRegion iomem;
 
     uint32_t regs[I2S_REGS_SIZE / 4];
-    bool audio_out;                 /* property: this port reaches the host */
+    bool audio_out;                 /* property: this port reaches the host (out and in) */
     uint8_t port;                   /* property: i2s<port>, selects its NCO */
     unsigned rate;                  /* the voice's current frame rate */
 
     uint8_t ring[I2S_RING];
     uint32_t head, tail, level;
 
+    /* capture: host input voice -> in_ring -> RX FIFO reads */
+    uint32_t tone_hz;               /* property, test-only: synthetic input */
+    uint8_t in_ring[I2S_RING];
+    uint32_t in_head, in_tail, in_level;
+    uint64_t tone_frame;            /* frames of the synthetic tone handed out */
+    unsigned in_rate;
+    uint8_t rx_frame[4];            /* the stereo S16 frame being read out */
+    unsigned rx_pos;                /* bytes of rx_frame already read */
+
     QEMUSoundCard card;
     SWVoiceOut *voice;
+    SWVoiceIn *voice_in;
 };
+
+static void i2s_in_cb(void *opaque, int avail)
+{
+    S5L8930I2SState *s = opaque;
+
+    while (avail > 0 && s->in_level < I2S_RING) {
+        uint32_t chunk = MIN(MIN((uint32_t)avail, I2S_RING - s->in_level),
+                             I2S_RING - s->in_head);
+        size_t got = AUD_read(s->voice_in, s->in_ring + s->in_head, chunk);
+
+        if (!got) {
+            break;
+        }
+        s->in_head = (s->in_head + got) % I2S_RING;
+        s->in_level += got;
+        avail -= got;
+    }
+}
+
+static void i2s_set_in_rate(S5L8930I2SState *s, unsigned rate)
+{
+    struct audsettings as = {
+        .freq = rate, .nchannels = 2, .fmt = AUDIO_FORMAT_S16, .endianness = 0,
+    };
+
+    if (rate == s->in_rate || s->tone_hz) {
+        s->in_rate = rate;
+        return;
+    }
+    s->voice_in = AUD_open_in(&s->card, s->voice_in, "s5l8930-i2s.in", s,
+                              i2s_in_cb, &as);
+    if (s->voice_in) {
+        s->in_rate = rate;
+    }
+}
+
+/* Next captured stereo S16 frame: the tone, the host's input, or silence. */
+static void i2s_next_frame(S5L8930I2SState *s)
+{
+    if (s->tone_hz) {
+        double t = (double)s->tone_frame++ / (s->in_rate ? s->in_rate : 44100);
+        int16_t v = TONE_AMPLITUDE * sin(2 * M_PI * s->tone_hz * t);
+
+        stw_le_p(s->rx_frame, v);
+        stw_le_p(s->rx_frame + 2, v);
+        return;
+    }
+    if (s->in_level < 4) {
+        memset(s->rx_frame, 0, 4);
+        return;
+    }
+    for (int i = 0; i < 4; i++) {
+        s->rx_frame[i] = s->in_ring[s->in_tail];
+        s->in_tail = (s->in_tail + 1) % I2S_RING;
+    }
+    s->in_level -= 4;
+}
+
+static uint64_t i2s_rx_read(S5L8930I2SState *s, unsigned size)
+{
+    uint64_t v = 0;
+
+    for (unsigned i = 0; i < size; i++) {
+        if (s->rx_pos == 0) {
+            i2s_next_frame(s);
+        }
+        v |= (uint64_t)s->rx_frame[s->rx_pos] << (8 * i);
+        s->rx_pos = (s->rx_pos + 1) % 4;
+    }
+    return v;
+}
 
 static void i2s_push(S5L8930I2SState *s, uint64_t value, unsigned size)
 {
@@ -115,6 +206,9 @@ static uint64_t i2s_read(void *opaque, hwaddr offset, unsigned size)
          * the lock screen from ~4 min to 32 s once fixed (a4-kbd). */
         return s->regs[0] | I2S_CTRL_TX_IDLE;
     }
+    if (offset == I2S_RXFIFO) {
+        return i2s_rx_read(s, size);
+    }
     return offset == I2S_TXFIFO ? 0 : s->regs[offset >> 2];
 }
 
@@ -130,6 +224,17 @@ static void i2s_write(void *opaque, hwaddr offset, uint64_t value,
         return;
     }
     s->regs[offset >> 2] = value;
+    if (offset == I2S_RXCOM && s->audio_out) {
+        bool run = value == I2S_CMD_RUN;
+
+        if (run) {
+            i2s_set_in_rate(s, s5l8930_i2s_rate(s->port));
+            s->rx_pos = 0;
+        }
+        if (s->voice_in) {
+            AUD_set_active_in(s->voice_in, run);
+        }
+    }
     if (offset == I2S_TXCOM && s->voice) {
         if (value == I2S_CMD_RUN) {
             i2s_set_rate(s, s5l8930_i2s_rate(s->port));
@@ -168,8 +273,14 @@ static void s5l8930_i2s_reset(DeviceState *dev)
 
     memset(s->regs, 0, sizeof(s->regs));
     s->head = s->tail = s->level = 0;
+    s->in_head = s->in_tail = s->in_level = 0;
+    s->tone_frame = 0;
+    s->rx_pos = 0;
     if (s->voice) {
         AUD_set_active_out(s->voice, 0);
+    }
+    if (s->voice_in) {
+        AUD_set_active_in(s->voice_in, 0);
     }
 }
 
@@ -208,6 +319,7 @@ static const VMStateDescription vmstate_s5l8930_i2s = {
 static const Property s5l8930_i2s_properties[] = {
     DEFINE_PROP_BOOL("audio-out", S5L8930I2SState, audio_out, false),
     DEFINE_PROP_UINT8("port", S5L8930I2SState, port, 0),
+    DEFINE_PROP_UINT32("tone-hz", S5L8930I2SState, tone_hz, 0),
 };
 
 static void s5l8930_i2s_class_init(ObjectClass *klass, void *data)
