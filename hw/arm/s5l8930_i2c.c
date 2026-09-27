@@ -19,6 +19,7 @@
 #include "hw/irq.h"
 #include "hw/i2c/i2c.h"
 #include "hw/arm/s5l8930.h"
+#include "hw/arm/ipod_touch_lis302dl.h"
 #include "migration/vmstate.h"
 #include "system/runstate.h"
 
@@ -783,13 +784,12 @@ static const TypeInfo s5l8930_tsl2581_info = {
  * unsigned byte centred on 128. The DAC offsets (0xE1-0xE3) are stored but
  * do not shift the output: the modelled field sits mid-range already.
  *
- * The field is the Earth's for a host-set heading (degrees clockwise from
- * magnetic north, the device's top edge) with the unit lying flat, screen
- * up: horizontal component along the top edge rotated by -heading, vertical
- * component into the screen.
- * ponytail: no tilt compensation against accel-orientation; the unit is
- * taken to be flat. Rotate the vertical term by the accel vector if Maps
- * ever needs the compass while the device is held upright.
+ * The field is the Earth's for a host-set heading: degrees clockwise from
+ * magnetic north of the way the device faces, i.e. its top edge, or its back
+ * when the top edge points up. The pose comes from the accelerometer model's
+ * gravity vector (its base attitude, in device axes, pointing down), because
+ * locationd tilt-compensates with it: a field computed for a flat unit reads
+ * as nonsense while the accelerometer says upright.
  */
 
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930AK8973State, S5L8930_AK8973)
@@ -809,20 +809,60 @@ struct S5L8930AK8973State {
     uint8_t reg;
     bool addressing;
     int32_t heading;        /* degrees, 0-359; QOM property, not guest state */
+    LIS302DLState *accel;   /* pose source; wired by the machine */
 };
 
 static void ak8973_measure(S5L8930AK8973State *s)
 {
-    double h = s->heading * M_PI / 180.0;
-    double x = -sin(h) * AK_H_COUNTS;
-    double y = cos(h) * AK_H_COUNTS;
-    double z = -AK_V_COUNTS;
+    double d[3] = { 0, 0, -1 };             /* down, device axes: flat by default */
+    double f[3], r[3], len, dot, h = s->heading * M_PI / 180.0;
+    int i;
 
+    if (s->accel) {
+        double g[3] = { s->accel->base_x, s->accel->base_y, s->accel->base_z };
+        len = sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+        if (len > 0) {
+            for (i = 0; i < 3; i++) {
+                d[i] = g[i] / len;
+            }
+        }
+    }
+    /* Facing: the top edge (+y) made horizontal, or the back (-z) when the
+     * top edge is (nearly) vertical. */
+    f[0] = 0; f[1] = 1; f[2] = 0;
+    if (fabs(d[1]) > 0.9) {
+        f[1] = 0; f[2] = -1;
+    }
+    dot = f[0] * d[0] + f[1] * d[1] + f[2] * d[2];
+    for (i = 0; i < 3; i++) {
+        f[i] -= dot * d[i];
+    }
+    len = sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+    for (i = 0; i < 3; i++) {
+        f[i] /= len;
+    }
+    /* r: 90 degrees clockwise of f seen from above, east when f is north */
+    r[0] = d[1] * f[2] - d[2] * f[1];
+    r[1] = d[2] * f[0] - d[0] * f[2];
+    r[2] = d[0] * f[1] - d[1] * f[0];
+
+    /*
+     * Sensor axes are the device's x and y and minus its z: found by
+     * holding the unit upright, where only z carries the heading (a flat
+     * unit reads the same either way) and north/south came out swapped.
+     */
     s->regs[AK_TMPS] = 0x80;                /* ~30 C by the kext's scale */
-    s->regs[AK_H1X] = 128 + lround(x);
-    s->regs[AK_H1X + 1] = 128 + lround(y);
-    s->regs[AK_H1X + 2] = 128 + lround(z);
+    for (i = 0; i < 3; i++) {
+        double north = cos(h) * f[i] - sin(h) * r[i];
+        double b = AK_H_COUNTS * north + AK_V_COUNTS * d[i];
+        s->regs[AK_H1X + i] = 128 + lround(i == 2 ? -b : b);
+    }
     s->regs[AK_ST] |= AK_ST_INT;
+}
+
+void s5l8930_ak8973_set_accel(DeviceState *dev, LIS302DLState *accel)
+{
+    S5L8930_AK8973(dev)->accel = accel;
 }
 
 static int ak8973_event(I2CSlave *i2c, enum i2c_event event)
