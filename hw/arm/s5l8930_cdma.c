@@ -307,6 +307,21 @@ static uint32_t fifo_pop(S5L8930CDMAState *s, uint8_t *buf, uint32_t len)
  * written in settings-width units. Add a real M2M mode bit if a client's
  * settings word shows one.
  */
+/*
+ * A receive chain from a UART's URXH (+0x24) completes only as bytes arrive,
+ * and no UART feeds this model. Run instantly, it filled the ring with the
+ * empty register's zeros at CPU speed: BlueTool's HCI reader on UART3
+ * (channel 0xd) spun at 100% CPU and never let SpringBoard power off.
+ * ponytail: stays running forever; hook the UART's receive path in here
+ * when a device (the BCM4329) actually sends something.
+ */
+static bool cdma_waits_for_uart(const CDMAChannel *c)
+{
+    return !(c->settings & SET_TO_DEVICE) &&
+           c->fifo >= S5L8930_UART_BASE(0) && c->fifo < S5L8930_UART_BASE(6) &&
+           (c->fifo & 0xfffff) == 0x24;
+}
+
 static bool cdma_is_memory(uint32_t addr)
 {
     return addr >= S5L8930_DRAM_BASE &&
@@ -486,9 +501,19 @@ static bool cdma_paced_advance(S5L8930CDMAState *s, int ch, uint64_t upto)
         base += len;
         desc = le32_to_cpu(d[0]);
         if (le32_to_cpu(d[1]) & DESC_LAST) {
+            /* Finished: +0x14 names the next descriptor, so +0x10/+0x0C must
+             * describe it too, not the end of the last segment. A stop that
+             * lands between this completion and the driver's next go reads
+             * them and panics ("CDMA stop with MAR ... but command MA ...")
+             * unless MAR lies inside that next segment. */
             c->desc = desc;
             c->addr = addr + len;
             c->remain = 0;
+            if (dma_memory_read(&address_space_memory, desc, d, sizeof(d),
+                                MEMTXATTRS_UNSPECIFIED) == MEMTX_OK) {
+                c->addr = le32_to_cpu(d[2]);
+                c->remain = le32_to_cpu(d[3]);
+            }
             s->paced_sent[ch] = base;
             return true;
         }
@@ -667,7 +692,16 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
                 fprintf(stderr, "[CDMA] go ch 0x%x ctrl 0x%x set 0x%x fifo 0x%x "
                         "desc 0x%x\n", ch, v, c->settings, c->fifo, c->desc);
             }
-            if (!cdma_start_paced(s, ch)) {
+            if (cdma_waits_for_uart(c)) {
+                uint32_t d[4];
+
+                /* Parked on the first segment: stopping it checks MAR/BC. */
+                dma_memory_read(&address_space_memory, c->desc, d, sizeof(d),
+                                MEMTXATTRS_UNSPECIFIED);
+                c->addr = le32_to_cpu(d[2]);
+                c->remain = le32_to_cpu(d[3]);
+                c->ctrl |= ST_RUNNING;
+            } else if (!cdma_start_paced(s, ch)) {
                 cdma_run(s, ch);
             }
         }

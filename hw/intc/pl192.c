@@ -447,7 +447,19 @@ static void pl192_reset(DeviceState *d)
  */
 static int pl192_post_load(void *opaque, int version_id)
 {
-    pl192_update(PL192(opaque));
+    PL192State *s = PL192(opaque);
+
+    /*
+     * daisy_callback (the child whose interrupt the parent is serving) is a
+     * pointer set when the child first raises, so it doesn't travel. A chain
+     * has one child per parent, so it is always this device: without it, a
+     * snapshot taken while the parent's current source was the daisy input
+     * crashed in pl192_irq_fin on the first acknowledge after restore.
+     */
+    if (s->daisy) {
+        s->daisy->daisy_callback = s;
+    }
+    pl192_update(s);
     return 0;
 }
 

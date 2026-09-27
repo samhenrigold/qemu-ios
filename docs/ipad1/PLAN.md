@@ -191,7 +191,15 @@ boot-args, or helpers/dylibs baked in by the image builder that find what they n
 name at runtime (IOKit properties, dlsym/interposing). No byte patches at hand-found offsets. That rules out
 the --usb-eth-link kernel patch long-term: it is being replaced by the it_ethlink helper (sets
 LinkStatus=1 through IOKit, as USBEthernetSharing does). AppSync on the iPad is an injected dylib that
-interposes MISValidateSignature, not an installd patch. Wi-Fi (BCM4329) is parked after stage 1 (2026-09-27).
+interposes MISValidateSignature, not an installd patch.
+
+## Network: Wi-Fi is the default, stock kernel (Sam, 2026-09-27)
+The ipad1 machine has `wifi=on` by default: an emulated BCM4329 behind the IOP SDIO ring
+(docs/ipad1/wifi.md), bridged to QEMU user networking (`type=user,id=wifi0` is created when no `wifi0`
+netdev is given). Stock AppleBCMWLAN joins the open BSS "qemu-ios" on its own, DHCPs, and Safari and the
+rest of the system use it, with no kernel patch and no guest helper. `wifi=off` opts out. USB Ethernet
+(below) remains as a secondary path: stock kernel plus the baked `it_ethlink` helper, with the
+`--usb-eth-link` kernel patch as an opt-in fallback (`7B500/k48-kboot-ethpatch.bin`).
 
 ## Keyboard / network decisions (2026-09-27, docs/ipad1/keyboard-and-network.md)
 1. Keyboard: USB keyboard via the Camera Connection Kit host path (EHCI + usb-kbd) — now; IOHID daemon as fallback.
@@ -204,8 +212,10 @@ www.google.com and Maps draws live tiles (`screens/2026-09-27-net-*.png`). Three
 - host: usbmuxd-qemu `ipad1-net` selects configuration 4 (PTP + Apple Mobile Device + Apple USB Ethernet),
   sets the Ethernet interface to alt 1, bridges its bulk pair to libslirp; usbmux keeps working beside it.
 - guest prefs: `ipad1_rootfs.py` seeds an en1 DHCP service (vanilla: a plist, like a configured unit).
-- kernel: `ipad1_kboot.py` applies the USB Ethernet link patch by default (`--no-usb-eth-link` for a stock
-  kernel; the pre-patch bundle is kept as `7B500/k48-kboot-noethlink.bin`). This is the only kernel patch.
+- guest: the baked `it_ethlink` helper raises the link through IOKit (LinkStatus 0 then 1 on each of the
+  service's interest messages), as USBEthernetSharing does on a tethering iPhone, and the kernel is stock
+  (guest-services.md). The byte patch described below stays in `ipad1_kboot.py` as an opt-in fallback
+  (`--usb-eth-link`).
   On by default is safe because it only fires when a host selects the Ethernet interface's alt setting 1,
   which only usbmuxd-qemu's ipad1 branch does. The built-in USB host configures configuration 3 (no
   Ethernet) and bridges without that branch never select it, so for them the kernel behaves as stock.
@@ -229,7 +239,10 @@ CDMA ch 0x1a (16 x 4 KiB IOAudio ring, streamed in 10 ms virtual-time steps) -> 
 0.86-0.92 against the rootfs files at 1.00x); `tests/ipad1/audio-check.py` checks boot/unlock/lock/unlock.
 Rate: the I2S frame rate is read from PMGR NCO n (+4 = 64 * fs, written by the NCOFrequency function when
 the device rate is set). The device stays at 44.1 kHz; every on-device sound is 11.025-44.1 kHz and the HAL
-resamples to it. A device switch to 48 kHz (an app setting the preferred hardware rate) is not proven yet.
+resamples to it. 48 kHz media: Safari (USB Ethernet, USB keyboard) playing a 48 kHz stereo 1 kHz tone WAV
+from a host HTTP server (Range requests needed, or the player shows a crossed-out play icon) lands in the
+44.1 kHz host WAV as 1000.00 Hz for 3.97 s of 4 s, i.e. right pitch and speed. A device-side switch to
+48 kHz (an app setting the preferred hardware rate) is still unobserved.
 Gap — microphone: capture is i2s0 RX on CDMA ch 0x1b (FIFO 0x84500438; RX command +0x34, RX FIFO +0x38).
 The paced CDMA only moves memory -> FIFO, and the I2S RX FIFO reads 0. To add: a QEMU `AUD_open_in` voice
 feeding an RX ring that +0x38 drains, and the device -> memory direction in `cdma_paced_advance`. Needs an
