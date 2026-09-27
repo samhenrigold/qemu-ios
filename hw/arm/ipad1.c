@@ -25,6 +25,7 @@
 #include "hw/misc/unimp.h"
 #include "hw/sysbus.h"
 #include "hw/arm/exynos4210.h"
+#include "hw/arm/ipod_touch_buttons.h"
 #include "hw/arm/ipod_touch_mipi_dsi.h"
 #include "hw/arm/ipod_touch_usb_otg.h"
 #include "hw/arm/ipod_touch_usb_phys.h"
@@ -185,6 +186,24 @@ static void ipad1_kbd_event(DeviceState *dev, QemuConsole *src, InputEvent *evt)
     }
     s->kbd_btn_held[q] = down ? pin + 1 : 0;
     qemu_set_irq(qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(pin)), !down);
+}
+
+/* The app bridge's buttons (contrib/ios-app), on the same pins as the chords. */
+void ipad1_press_button(IPodTouchButton button, bool down)
+{
+    static const int pins[] = {
+        [IPOD_TOUCH_BUTTON_HOME] = S5L8930_GPIO_BTN_MENU,
+        [IPOD_TOUCH_BUTTON_POWER] = S5L8930_GPIO_BTN_HOLD,
+        [IPOD_TOUCH_BUTTON_VOLUP] = S5L8930_GPIO_BTN_VOLUP,
+        [IPOD_TOUCH_BUTTON_VOLDOWN] = S5L8930_GPIO_BTN_VOLDOWN,
+    };
+    IPad1MachineState *s = (IPad1MachineState *)
+        object_dynamic_cast(OBJECT(qdev_get_machine()), TYPE_IPAD1_MACHINE);
+
+    if (!s || (unsigned)button >= ARRAY_SIZE(pins)) {
+        return;
+    }
+    qemu_set_irq(qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(pins[button])), !down);
 }
 
 static const QemuInputHandler ipad1_kbd_handler = {

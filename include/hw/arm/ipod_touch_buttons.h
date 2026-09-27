@@ -25,5 +25,7 @@ typedef enum {
  * that has gone to sleep cannot be woken any other way.
  */
 void ipod_touch_press_button(IPodTouchButton button, bool down);
+/* The iPad 1's buttons (GPIO pins), same contract; no-op on other machines. */
+void ipad1_press_button(IPodTouchButton button, bool down);
 
 #endif /* HW_ARM_IPOD_TOUCH_BUTTONS_H */

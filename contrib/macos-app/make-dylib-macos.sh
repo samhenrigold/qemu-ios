@@ -66,6 +66,7 @@ print(shlex.join(out))
 # Only what the app calls; everything else stays private.
 cat > macos-exports.syms <<'SYMS'
 _qemu_ios_main
+_qemu_ios_device_info
 _qemu_ios_ui_attach
 _qemu_ios_ui_frame
 _qemu_ios_ui_frame_size
