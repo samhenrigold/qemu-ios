@@ -200,7 +200,26 @@ static void rotate_bh(void *opaque)
     bool clockwise = (bool)(intptr_t)opaque;
     QemuConsole *con = con0();
     int arrow = clockwise ? Q_KEY_CODE_RIGHT : Q_KEY_CODE_LEFT;
+    Object *machine = OBJECT(qdev_get_machine());
 
+    /*
+     * The iPad has no rotate chord (and host keys may belong to its USB
+     * keyboard): step the accelerometer's UIDeviceOrientation instead, in
+     * the iPod's clockwise order portrait(1) -> landscape-right(4) ->
+     * upside-down(2) -> landscape-left(3).
+     */
+    if (object_dynamic_cast(machine, MACHINE_TYPE_NAME("ipad1"))) {
+        static const int cw[] = { [1] = 4, [4] = 2, [2] = 3, [3] = 1 };
+        static const int ccw[] = { [1] = 3, [3] = 2, [2] = 4, [4] = 1 };
+        int64_t o = object_property_get_int(machine, "accel-orientation", NULL);
+
+        if (o < 1 || o > 4) {
+            o = 1;
+        }
+        object_property_set_int(machine, "accel-orientation",
+                                clockwise ? cw[o] : ccw[o], NULL);
+        return;
+    }
     if (con) {
         qemu_input_event_send_key_qcode(con, Q_KEY_CODE_META_L, true);
         qemu_input_event_send_key_qcode(con, arrow, true);
