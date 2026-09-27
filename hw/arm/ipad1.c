@@ -510,6 +510,11 @@ static void ipad1_init(MachineState *machine)
          * counts; a shake. accel-pitch/-roll/-pose are machine properties. */
         object_property_add_alias(OBJECT(machine), "accel-orientation",
                                   OBJECT(accel), "orientation");
+        /* The sensor sits mirrored in X relative to the iPod's, so these
+         * vectors read as the other landscape: 3 draws Home-left
+         * (UIDeviceOrientationLandscapeRight), 4 Home-right. */
+        object_property_set_description(OBJECT(machine), "accel-orientation",
+            "accelerometer vector for UIDeviceOrientation 1-6 as on the iPod; on the iPad 3 and 4 are swapped");
         object_property_add_alias(OBJECT(machine), "accel-x", OBJECT(accel), "x");
         object_property_add_alias(OBJECT(machine), "accel-y", OBJECT(accel), "y");
         object_property_add_alias(OBJECT(machine), "accel-z", OBJECT(accel), "z");
