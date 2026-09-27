@@ -2,7 +2,7 @@
 """Userland images for the ipad1 machine: a patched copy of the 7B500 system partition plus a seeded data volume.
 
     ipad1_rootfs.py build [--base pristine|jailbroken] [--out DIR] [--data-size 2g] [--rootfs IMG]
-                          [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge] [--web-proxy] [--no-usb-net]
+                          [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge] [--no-web-proxy] [--no-usb-net]
     ipad1_rootfs.py fetch [DIR]          copy /var/stash and /var/root/Library/Lockdown off the real iPad (ssh)
     ipad1_rootfs.py report DIR...        list the Mach-Os under DIR that carry no Apple signature
     ipad1_rootfs.py bake DIR [--tools build/ipad1-guest] [--seal]   install the guest helpers into DIR/system.img
@@ -40,8 +40,8 @@ the service order, so configd brings USB Ethernet up against usbmuxd's slirp (10
 
 data.img = fresh journaled HFSX "Data" seeded like mobile_obliterator does (the system volume's own
 /private/var skeleton), plus /stash and /root/Library/Lockdown (activation record, device keys, pair
-records) from `fetch`. /var/mobile and /var/ea are 501:501, everything else 0:0, patched into the catalog
-offline because the host mount is noowners.
+records) from `fetch`. Owners are the source rootfs's own (/var/Keychains is _securityd's), patched into
+the catalog offline because the host mount is noowners; see var_owners().
 
 unsigned-machos.txt: every Mach-O on the system volume and in the stash whose code signature has no CMS
 blob (ldid ad-hoc: sshd, bash, apt, Cydia, Substrate) or none at all. Those are what
@@ -82,6 +82,11 @@ GLES_APPS = ("GLTest.app", "GLTest2.app")
 # --ca-ogl: CoreAnimation composites through the GLI shim (accelerated pixel format)
 SB_ENV_CA_OGL = {"MBX2D_PAGE_FLIP": "0", "GLI_ACCELERATED": "1"}
 HIDBRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/ipad1-hidbridge")
+# AppSync: one dylib injected into installd (install gate) and SpringBoard (launch gate)
+# via DYLD_INSERT_LIBRARIES. See contrib/appsync. Requires the AMFI boot-args (it is ldid-signed).
+APPSYNC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../build/appsync")
+APPSYNC_REL = "usr/lib/libappsync.dylib"
+APPSYNC_JOBS = ("System/Library/LaunchDaemons/com.apple.mobile.installd.plist",)
 # USB Ethernet (AppleUSBEthernetDevice, usbmuxd's slirp on the host side). Names and paths are the real
 # unit's NetworkInterfaces.plist: Wi-Fi keeps en0 even with no BCM4329 model, so USB is en1 as on hardware.
 SC_DIR = "preferences/SystemConfiguration"   # under /private/var (/Library/Preferences links here)
@@ -93,10 +98,18 @@ USB_ETH_IF = {"Active": True, "BSD Name": "en1", "IOBuiltin": False, "IOInterfac
                              "AppleUSBEthernetDevice/IOEthernetInterface"}
 MOBILE_TOP = ("mobile", "ea")                # uid 501 on the real unit; everything else under /var is root
 # guest tool -> (install path on the system volume, mode); the job comes from contrib/it-pasteboard
-TOOLS = {"it_pbd": ("usr/local/bin/it_pbd", 0o755), "it_ethlink": ("usr/local/bin/it_ethlink", 0o755)}
+TOOLS = {"it_pbd": ("usr/local/bin/it_pbd", 0o755), "it_ethlink": ("usr/local/bin/it_ethlink", 0o755),
+         "it_msmquiet.dylib": ("usr/local/lib/it_msmquiet.dylib", 0o755)}
+# Apple job that loads it_msmquiet (hides the USB "not supported" notice; contrib/it-msmquiet)
+MSM_JOB = "System/Library/LaunchDaemons/com.apple.mobile.storage_mounter.plist"
 # launchd job, installed path -> source under contrib/
 JOBS = {"System/Library/LaunchDaemons/com.qemu.it-pbd.plist": "it-pasteboard/com.qemu.it-pbd.plist",
         "System/Library/LaunchDaemons/com.qemu.it-ethlink.plist": "it-ethlink/com.qemu.it-ethlink.plist"}
+# Bluetooth has no controller model (UART3 is silent), so BTServer's retries left
+# BluetoothManager's blocking calls on SpringBoard's main thread: a ~1 s UI stall
+# every ~12 s. The job's own Disabled key (in place, Apple's owner kept) keeps it
+# unloaded; no binary changes. `bake --keep-bluetooth` leaves it on.
+BT_JOB = "System/Library/LaunchDaemons/com.apple.BTServer.plist"
 SEAL_TOOL = {"it_seal": ("usr/local/bin/it_seal", 0o755)}
 SEAL_JOB = {"System/Library/LaunchDaemons/com.qemu.it-seal.plist": "it-seal/com.qemu.it-seal.plist"}
 LC_MAIN, LC_VERSION_MIN_IPHONEOS = 0x80000028, 0x25
@@ -139,6 +152,11 @@ def springboard_env(d, env=SB_ENV):
     d["StandardOutPath"] = d["StandardErrorPath"] = "/dev/console"
 
 
+def msm_insert(d):
+    assert d.get("Label") == "com.apple.mobile.storage_mounter"
+    d.setdefault("EnvironmentVariables", {})["DYLD_INSERT_LIBRARIES"] = "/" + TOOLS["it_msmquiet.dylib"][0]
+
+
 def usb_net_interfaces(d):
     """NetworkInterfaces.plist: pin the USB Ethernet interface to en1."""
     ifs = [i for i in d.setdefault("Interfaces", []) if i.get("IOPathMatch") != USB_ETH_IF["IOPathMatch"]]
@@ -156,6 +174,15 @@ def usb_net_prefs(d):
     net.setdefault("Service", {})[USB_ETH_SERVICE] = {"__LINK__": "/NetworkServices/" + USB_ETH_SERVICE}
     order = net.setdefault("Global", {}).setdefault("IPv4", {}).setdefault("ServiceOrder", [])
     order[:] = [USB_ETH_SERVICE] + [o for o in order if o != USB_ETH_SERVICE]
+
+
+def dyld_insert(d, lib=("/" + APPSYNC_REL)):
+    """Append lib to DYLD_INSERT_LIBRARIES, keeping any existing entries (e.g. SpringBoard's env)."""
+    env = d.setdefault("EnvironmentVariables", {})
+    libs = [x for x in env.get("DYLD_INSERT_LIBRARIES", "").split(":") if x]
+    if lib not in libs:
+        libs.append(lib)
+    env["DYLD_INSERT_LIBRARIES"] = ":".join(libs)
 
 
 # Web proxy (the app's itwebproxy on slirp guestfwd 10.0.2.100:3128, as on the iPod). The Wi-Fi service
@@ -191,6 +218,30 @@ def seed_plist(path, fn):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
         f.write(edit_plist(plistlib.dumps({}), fn))
+
+
+def appsync_problem(path):
+    """None if path is a fat Mach-O with an armv7 slice and a code signature per slice, else why not."""
+    if not os.path.exists(path):
+        return "missing"
+    data = open(path, "rb").read()
+    if len(data) < 8 or struct.unpack_from(">I", data)[0] != FAT_MAGIC:
+        return "not a fat Mach-O (expected armv6+armv7)"
+    nfat = struct.unpack_from(">I", data, 4)[0]
+    have_v7 = False
+    for i in range(nfat):
+        cputype, sub, off, size, _ = struct.unpack_from(">iiIII", data, 8 + i * 20)
+        if (cputype, sub) == (12, 9):
+            have_v7 = True
+        slice_cmds, o = set(), off + 28
+        ncmds = struct.unpack_from("<I", data, off + 16)[0]
+        for _ in range(ncmds):
+            cmd, sz = struct.unpack_from("<II", data, o)
+            slice_cmds.add(cmd)
+            o += sz
+        if LC_CODE_SIGNATURE not in slice_cmds:
+            return "slice %d (cpu %d/%d) is not ldid-signed" % (i, cputype, sub)
+    return None if have_v7 else "no armv7 slice"
 
 
 def guest_tool_problem(data):
@@ -301,6 +352,30 @@ def grow_to_partition(img, blocks):
         f.write(avh)
 
 
+def var_owners(img):
+    """{path relative to /private/var: (uid, gid)} as the image's own catalog records them.
+
+    The data volume is seeded through a noowners mount, so every entry lands as the host uid and has to
+    be put back offline. Taking the owners from the source skeleton rather than a rule matters: securityd
+    runs as _securityd (64) and cannot create its keychain and trust store in a root-owned /var/Keychains,
+    which broke every keychain user (SecItemAdd -25291, profile root certificates, Mail/Wi-Fi passwords).
+    """
+    mnt = tempfile.mkdtemp(prefix="ipad1_owners.")
+    r = subprocess.run(["hdiutil", "attach", "-readonly", "-owners", "on", "-nobrowse", "-mountpoint", mnt, img],
+                       capture_output=True, text=True, check=True)
+    dev = r.stdout.split()[0]
+    try:
+        top, out = os.path.join(mnt, "private/var"), {}
+        for root, dnames, fnames in os.walk(top):
+            for n in dnames + fnames:
+                st = os.lstat(os.path.join(root, n))
+                out[os.path.relpath(os.path.join(root, n), top)] = (st.st_uid, st.st_gid)
+        return out
+    finally:
+        subprocess.run(["hdiutil", "detach", dev], capture_output=True)
+        os.rmdir(mnt)
+
+
 class Mounted:
     """attach a raw HFS image and mount it read-write at `mnt` (diskutil, no sudo: see editimg.py)."""
 
@@ -377,7 +452,24 @@ def build(a):
             with open(os.path.join(m.mnt, PAC_PATH), "w") as f:
                 f.write(PAC)
         rewrite_plist(os.path.join(m.mnt, SB_JOB),
-                      lambda d: springboard_env(d, SB_ENV_CA_OGL if a.ca_ogl else SB_ENV))
+                      lambda d: springboard_env(d, {k: v for k, v in (SB_ENV_CA_OGL if a.ca_ogl else SB_ENV).items()
+                                                    if not (a.page_flip and k == "MBX2D_PAGE_FLIP")}))
+        if a.appsync:
+            src = os.path.join(APPSYNC, "libappsync.dylib")
+            why = appsync_problem(src)
+            if why:
+                raise SystemExit("%s: %s (run contrib/appsync/build.sh)" % (src, why))
+            dst = os.path.join(m.mnt, APPSYNC_REL)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(src, dst)
+            os.chmod(dst, 0o644)
+            for rel in APPSYNC_JOBS:
+                rewrite_plist(os.path.join(m.mnt, rel), dyld_insert)
+            # amfid-global half: force libmis MISValidateSignature to succeed in the shared cache
+            # (symbol-located), so amfid approves the ldid-signed dylib and decrypted apps.
+            import appsync_cachepatch
+            cache = os.path.join(m.mnt, "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv7")
+            print("      " + appsync_cachepatch.patch_cache(cache))
         if a.gles:
             shutil.copy(os.path.join(GLES, "GLEngine"), os.path.join(m.mnt, GLENGINE))
             apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))
@@ -406,6 +498,8 @@ def build(a):
     if a.hidbridge:   # launchd skips jobs not owned by root; the noowners mount wrote the host uid
         bn.set_owner(system, ["usr/local", "usr/local/lib", "usr/local/lib/hidbridge.dylib",
                               "Library/LaunchDaemons/com.qemu.hidbridge.plist"], 0, 0)
+    if a.appsync:     # dyld refuses a DYLD_INSERT dylib not owned by root (noowners wrote the host uid)
+        bn.set_owner(system, [APPSYNC_REL], 0, 0)
     if a.web_proxy:
         bn.set_owner(system, ["usr/local", "usr/local/share", "usr/local/share/ltm", PAC_PATH], 0, 0)
     if a.gles:   # ldid-signed: boot with amfi_allow_any_signature=1 cs_enforcement_disable=1
@@ -413,6 +507,7 @@ def build(a):
         bn.set_owner(system, [GLENGINE] + ["Applications/" + app for app in apps] +
                      ["Applications/%s/%s" % (app, f) for app in apps
                       for f in os.listdir(os.path.join(GLES, app))], 0, 0)
+    owners = var_owners(system)
     if not os.path.isdir(os.path.join(skeleton, "mobile")):
         # the jailbroken volume's /private/var is just `db`: the skeleton mobile_obliterator copies lives
         # on the IPSW rootfs, so slice that out too (a private temp copy, never the user's mounts)
@@ -421,6 +516,7 @@ def build(a):
         extract_rootfs(a.pristine, pristine)
         with Mounted(pristine, os.path.join(a.out, "mnt-pristine")) as m:
             shutil.copytree(os.path.join(m.mnt, "private/var"), skeleton, symlinks=True, dirs_exist_ok=True)
+        owners.update(var_owners(pristine))
         os.unlink(pristine)
     print("      fstab %s root; SpringBoard env %s + stdio /dev/console%s" % ("ro" if a.ro_root else "rw", SB_ENV,
           "; disabled %s" % a.disable if a.disable else ""))
@@ -447,18 +543,19 @@ def build(a):
         seed_plist(os.path.join(skeleton, SC_DIR, "preferences.plist"), usb_net_prefs)
         print("      USB Ethernet: en1 DHCP service in /var/%s" % SC_DIR)
     os.replace(make_hfs_image(data + ".dmg", parse_size(a.data_size)), data)
-    mobile_paths, root_paths = [], []
+    by_owner = {}
     with Mounted(data, os.path.join(a.out, "mnt-data")) as m:
         shutil.copytree(skeleton, m.mnt, symlinks=True, dirs_exist_ok=True)
         for root, dnames, fnames in os.walk(m.mnt):
             dnames[:] = [d for d in dnames if d not in bn.JUNK]   # macOS droppings, removed at unmount
             for n in dnames + [f for f in fnames if f not in bn.JUNK]:
                 rel = os.path.relpath(os.path.join(root, n), m.mnt)
-                (mobile_paths if owner_for(rel) == (501, 501) else root_paths).append(rel)
+                by_owner.setdefault(owners.get(rel) or owner_for(rel), []).append(rel)
     shutil.rmtree(skeleton, ignore_errors=True)
     # the mount is noowners as an ordinary user, so everything landed as the host uid: fix the catalog offline
-    n = bn.set_owner(data, root_paths, 0, 0) + bn.set_owner(data, mobile_paths, 501, 501)
-    print("      %d paths -> 0:0, %d paths -> 501:501 (%d catalog records patched)" % (len(root_paths), len(mobile_paths), n))
+    n = sum(bn.set_owner(data, paths, uid, gid) for (uid, gid), paths in sorted(by_owner.items()))
+    print("      owners from the skeleton, else root / mobile by rule: %s (%d catalog records patched)"
+          % (", ".join("%d:%d x%d" % (u, g, len(p)) for (u, g), p in sorted(by_owner.items())), n))
     for d in ("mnt-system", "mnt-data", "mnt-pristine"):
         shutil.rmtree(os.path.join(a.out, d), ignore_errors=True)
 
@@ -487,8 +584,11 @@ def bake(a):
         for rel, src in JOBS.items():
             shutil.copyfile(os.path.join(contrib, src), os.path.join(m.mnt, rel))
             os.chmod(os.path.join(m.mnt, rel), 0o644)
+        rewrite_plist(os.path.join(m.mnt, MSM_JOB), msm_insert)
+        if not a.keep_bluetooth:
+            rewrite_plist(os.path.join(m.mnt, BT_JOB), lambda d: d.__setitem__("Disabled", True))
     # noowners mount: launchd ignores a job plist that is not root-owned
-    n = bn.set_owner(system, ["usr/local", "usr/local/bin"] + list(JOBS) + [rel for rel, _ in TOOLS.values()], 0, 0)
+    n = bn.set_owner(system, ["usr/local", "usr/local/bin", "usr/local/lib"] + list(JOBS) + [rel for rel, _ in TOOLS.values()], 0, 0)
     shutil.rmtree(os.path.join(a.dir, "mnt-system"), ignore_errors=True)
     print("baked %s + %s into %s (%d catalog records patched); rebuild the NAND store with ipad1_nand.py"
           % (", ".join(TOOLS), ", ".join(os.path.basename(j) for j in JOBS), system, n))
@@ -544,6 +644,14 @@ def selfcheck():
     assert [i["BSD Name"] for i in ifs["Interfaces"]] == ["en0", "en1"]
     plistlib.loads(plistlib.dumps(real)), plistlib.loads(plistlib.dumps(ifs))
 
+    # dyld_insert: appends without clobbering, idempotent
+    d = {"EnvironmentVariables": {"CA_ENABLE_OGL": "0"}}
+    dyld_insert(d); dyld_insert(d)
+    assert d["EnvironmentVariables"]["DYLD_INSERT_LIBRARIES"] == "/" + APPSYNC_REL
+    assert d["EnvironmentVariables"]["CA_ENABLE_OGL"] == "0"
+    d2 = {"EnvironmentVariables": {"DYLD_INSERT_LIBRARIES": "/usr/lib/other.dylib"}}
+    dyld_insert(d2)
+    assert d2["EnvironmentVariables"]["DYLD_INSERT_LIBRARIES"] == "/usr/lib/other.dylib:/" + APPSYNC_REL
     wp = {}
     usb_net_prefs(wp)
     wifi_proxy_prefs(wp)
@@ -591,12 +699,15 @@ def main():
     b.add_argument("--lockdown", default=os.path.join(FILES, "hw2/lockdown"), help="fetch output for the Lockdown dir; 'none' to skip")
     b.add_argument("--disable", action="append", default=[], metavar="LABEL", help="launchd job to mark Disabled")
     b.add_argument("--ro-root", action="store_true", help="keep the stock read-only root")
-    b.add_argument("--web-proxy", action="store_true", help="en0 Wi-Fi service with the itwebproxy PAC")
+    b.add_argument("--no-web-proxy", dest="web_proxy", action="store_false",
+                   help="skip the en0 Wi-Fi service with the itwebproxy PAC (proxy, else DIRECT)")
     b.add_argument("--no-usb-net", dest="usb_net", action="store_false",
                    help="skip the en1 (USB Ethernet) DHCP network service")
     b.add_argument("--gles", action="store_true", help="install the GLI shim as GLEngine plus GLTest/GLTest2.app (run contrib/ipad1-gles/build.sh first)")
+    b.add_argument("--page-flip", action="store_true", help="leave CoreAnimation's IOMFB page flipping on (no MBX2D_PAGE_FLIP=0)")
     b.add_argument("--ca-ogl", action="store_true", help="let CoreAnimation composite through GL (no CA_ENABLE_OGL=0; GLI_ACCELERATED=1)")
     b.add_argument("--hidbridge", action="store_true", help="install the hardware-keyboard daemon (run contrib/ipad1-hidbridge/build.sh first)")
+    b.add_argument("--appsync", action="store_true", help="install libappsync.dylib and inject it into installd (+ symbol-located shared-cache patch) (run contrib/appsync/build.sh first)")
     f = sub.add_parser("fetch")
     f.add_argument("dir", nargs="?", default=os.path.join(FILES, "hw2"))
     r = sub.add_parser("report")
@@ -604,6 +715,7 @@ def main():
     k = sub.add_parser("bake")
     k.add_argument("dir", help="a build output dir holding system.img and data.img")
     k.add_argument("--tools", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "../build/ipad1-guest"))
+    k.add_argument("--keep-bluetooth", action="store_true", help="leave com.apple.BTServer enabled (default: Disabled)")
     k.add_argument("--seal", action="store_true", help="also install it_seal, the one-shot clean halt ipad1_seal.py needs")
     a = ap.parse_args()
     selfcheck()

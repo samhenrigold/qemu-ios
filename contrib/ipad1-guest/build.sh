@@ -20,3 +20,11 @@ for src in it-pasteboard/it_pbd it-ethlink/it_ethlink it-seal/it_seal; do
     "${LDID:-ldid}" -S "$OUT/$t"
     file "$OUT/$t"
 done
+# it_msmquiet.dylib: DYLD_INSERT_LIBRARIES into MobileStorageMounter (see its source).
+# CF symbols bind flat at load time: the 3.2 SDK's CF stub won't link under modern ld64.
+cc6 "$HERE/../it-msmquiet/it_msmquiet.c" "$OUT/it_msmquiet.o"
+link6 -dylib "$OUT/it_msmquiet.dylib" "$OUT/it_msmquiet.o" -undefined dynamic_lookup \
+    -install_name /usr/local/lib/it_msmquiet.dylib
+rm -f "$OUT/it_msmquiet.o"
+"${LDID:-ldid}" -S "$OUT/it_msmquiet.dylib"
+file "$OUT/it_msmquiet.dylib"
