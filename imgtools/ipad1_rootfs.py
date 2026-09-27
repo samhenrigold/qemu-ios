@@ -309,6 +309,30 @@ def grow_to_partition(img, blocks):
         f.write(avh)
 
 
+def var_owners(img):
+    """{path relative to /private/var: (uid, gid)} as the image's own catalog records them.
+
+    The data volume is seeded through a noowners mount, so every entry lands as the host uid and has to
+    be put back offline. Taking the owners from the source skeleton rather than a rule matters: securityd
+    runs as _securityd (64) and cannot create its keychain and trust store in a root-owned /var/Keychains,
+    which broke every keychain user (SecItemAdd -25291, profile root certificates, Mail/Wi-Fi passwords).
+    """
+    mnt = tempfile.mkdtemp(prefix="ipad1_owners.")
+    r = subprocess.run(["hdiutil", "attach", "-readonly", "-owners", "on", "-nobrowse", "-mountpoint", mnt, img],
+                       capture_output=True, text=True, check=True)
+    dev = r.stdout.split()[0]
+    try:
+        top, out = os.path.join(mnt, "private/var"), {}
+        for root, dnames, fnames in os.walk(top):
+            for n in dnames + fnames:
+                st = os.lstat(os.path.join(root, n))
+                out[os.path.relpath(os.path.join(root, n), top)] = (st.st_uid, st.st_gid)
+        return out
+    finally:
+        subprocess.run(["hdiutil", "detach", dev], capture_output=True)
+        os.rmdir(mnt)
+
+
 class Mounted:
     """attach a raw HFS image and mount it read-write at `mnt` (diskutil, no sudo: see editimg.py)."""
 
@@ -422,6 +446,7 @@ def build(a):
         bn.set_owner(system, [GLENGINE] + ["Applications/" + app for app in apps] +
                      ["Applications/%s/%s" % (app, f) for app in apps
                       for f in os.listdir(os.path.join(GLES, app))], 0, 0)
+    owners = var_owners(system)
     if not os.path.isdir(os.path.join(skeleton, "mobile")):
         # the jailbroken volume's /private/var is just `db`: the skeleton mobile_obliterator copies lives
         # on the IPSW rootfs, so slice that out too (a private temp copy, never the user's mounts)
@@ -430,6 +455,7 @@ def build(a):
         extract_rootfs(a.pristine, pristine)
         with Mounted(pristine, os.path.join(a.out, "mnt-pristine")) as m:
             shutil.copytree(os.path.join(m.mnt, "private/var"), skeleton, symlinks=True, dirs_exist_ok=True)
+        owners.update(var_owners(pristine))
         os.unlink(pristine)
     print("      fstab %s root; SpringBoard env %s + stdio /dev/console%s" % ("ro" if a.ro_root else "rw", SB_ENV,
           "; disabled %s" % a.disable if a.disable else ""))
@@ -456,18 +482,19 @@ def build(a):
         seed_plist(os.path.join(skeleton, SC_DIR, "preferences.plist"), usb_net_prefs)
         print("      USB Ethernet: en1 DHCP service in /var/%s" % SC_DIR)
     os.replace(make_hfs_image(data + ".dmg", parse_size(a.data_size)), data)
-    mobile_paths, root_paths = [], []
+    by_owner = {}
     with Mounted(data, os.path.join(a.out, "mnt-data")) as m:
         shutil.copytree(skeleton, m.mnt, symlinks=True, dirs_exist_ok=True)
         for root, dnames, fnames in os.walk(m.mnt):
             dnames[:] = [d for d in dnames if d not in bn.JUNK]   # macOS droppings, removed at unmount
             for n in dnames + [f for f in fnames if f not in bn.JUNK]:
                 rel = os.path.relpath(os.path.join(root, n), m.mnt)
-                (mobile_paths if owner_for(rel) == (501, 501) else root_paths).append(rel)
+                by_owner.setdefault(owners.get(rel) or owner_for(rel), []).append(rel)
     shutil.rmtree(skeleton, ignore_errors=True)
     # the mount is noowners as an ordinary user, so everything landed as the host uid: fix the catalog offline
-    n = bn.set_owner(data, root_paths, 0, 0) + bn.set_owner(data, mobile_paths, 501, 501)
-    print("      %d paths -> 0:0, %d paths -> 501:501 (%d catalog records patched)" % (len(root_paths), len(mobile_paths), n))
+    n = sum(bn.set_owner(data, paths, uid, gid) for (uid, gid), paths in sorted(by_owner.items()))
+    print("      owners from the skeleton, else root / mobile by rule: %s (%d catalog records patched)"
+          % (", ".join("%d:%d x%d" % (u, g, len(p)) for (u, g), p in sorted(by_owner.items())), n))
     for d in ("mnt-system", "mnt-data", "mnt-pristine"):
         shutil.rmtree(os.path.join(a.out, d), ignore_errors=True)
 
