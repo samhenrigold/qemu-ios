@@ -445,6 +445,7 @@ typedef struct {
      * formats, and only at widths that are not already aligned.
      */
     uint32_t unpack_alignment;
+    uint32_t unpack_row_bytes;      /* GL_UNPACK_ROW_BYTES_APPLE, 0 = packed */
     uint32_t pack_alignment;
     GLenum error;
 
@@ -1230,6 +1231,21 @@ static uint32_t gles_bind_all_arrays(CPUState *cpu, uint32_t first,
  * override the format's component count -- 5_6_5 is GL_RGB but two bytes, not
  * three -- so type is checked second and wins.
  */
+/* Once per format/type pair: an upload refused for its format is otherwise
+ * only a black texture arbitrarily far from the cause. */
+static void gles_warn_format(const char *what, uint32_t fmt, uint32_t type)
+{
+    static uint32_t seen[16];
+    static unsigned n;
+    uint32_t key = fmt << 16 ^ type;
+
+    for (unsigned i = 0; i < n; i++) {
+        if (seen[i] == key) return;
+    }
+    if (n < ARRAY_SIZE(seen)) seen[n++] = key;
+    fprintf(stderr, "[gles] %s: unsupported format 0x%x type 0x%x\n", what, fmt, type);
+}
+
 static size_t gles_texel_bytes(uint32_t fmt, uint32_t type)
 {
     if (type == GL_UNSIGNED_SHORT_5_6_5) {
@@ -1238,6 +1254,9 @@ static size_t gles_texel_bytes(uint32_t fmt, uint32_t type)
     if (type == GL_UNSIGNED_SHORT_4_4_4_4 ||
         type == GL_UNSIGNED_SHORT_5_5_5_1) {
         return fmt == GL_RGBA ? 2 : 0;
+    }
+    if (type == 0x8367 && fmt == GL_BGRA) {    /* UNSIGNED_INT_8_8_8_8_REV */
+        return 4;
     }
     if (type != GL_UNSIGNED_BYTE) {
         return 0;
@@ -1270,6 +1289,36 @@ static uint32_t gles_unpack(void)
  * fails the read and drops the whole texture. Under-reading shears the image;
  * over-reading loses it entirely.
  */
+static size_t gles_image_bytes(uint32_t w, uint32_t h, size_t bpp,
+                               size_t align);
+
+/*
+ * Guest bytes of a w*h upload under the guest's unpack state, and the host
+ * GL_UNPACK_ROW_LENGTH that reproduces its row stride (0 = alignment rules).
+ * CoreAnimation uploads CGImage backing stores with the Apple row-bytes
+ * extension; ignoring it rejected the upload and left the texture black.
+ */
+static size_t gles_unpack_bytes(uint32_t w, uint32_t h, size_t bpp,
+                                GLint *row_length)
+{
+    uint32_t rb = gh.unpack_row_bytes;
+
+    *row_length = 0;
+    if (rb && w && h && bpp && rb % bpp == 0 && rb >= w * bpp &&
+        h <= GLES_MAX_TEX_BYTES / rb) {
+        *row_length = rb / bpp;
+        return (size_t)rb * (h - 1) + (size_t)w * bpp;
+    }
+    return gles_image_bytes(w, h, bpp, gles_unpack());
+}
+
+/* Host unpack state for an upload staged by gles_unpack_bytes. */
+static void gles_unpack_apply(GLint row_length)
+{
+    glPixelStorei(GL_UNPACK_ALIGNMENT, row_length ? 1 : gles_unpack());
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, row_length);
+}
+
 static size_t gles_image_bytes(uint32_t w, uint32_t h, size_t bpp,
                                size_t align)
 {
@@ -3751,7 +3800,30 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
     return 0;
 }
 
+/* IT_GLES_OBJ_STATS: host microseconds spent moving IOSurface pixels. */
+static int64_t gles_us_sync, gles_us_refresh, gles_us_call;
+static int gles_obj_stats = -1;
+
+static int64_t gles_sync_surface_1(CPUState *cpu);
+static bool gles_refresh_surfaces_1(CPUState *cpu);
+
 static int64_t gles_sync_surface(CPUState *cpu)
+{
+    int64_t t0 = gles_obj_stats > 0 ? g_get_monotonic_time() : 0, r;
+    r = gles_sync_surface_1(cpu);
+    if (t0) gles_us_sync += g_get_monotonic_time() - t0;
+    return r;
+}
+
+static bool gles_refresh_surfaces(CPUState *cpu)
+{
+    int64_t t0 = gles_obj_stats > 0 ? g_get_monotonic_time() : 0;
+    bool r = gles_refresh_surfaces_1(cpu);
+    if (t0) gles_us_refresh += g_get_monotonic_time() - t0;
+    return r;
+}
+
+static int64_t gles_sync_surface_1(CPUState *cpu)
 {
     GLint kind = 0, texture = 0, pack = 4;
     if (!gh.surfaces || !gh.bound_framebuffer) return 0;
@@ -3799,7 +3871,7 @@ static int64_t gles_sync_surface(CPUState *cpu)
 /* IOSurface storage is shared with guest DMA. A texture may be imported before
  * the scaler fills it; refresh sampled aliases at draw time. Never replace the
  * current render target with its older guest-memory copy. */
-static bool gles_refresh_surfaces(CPUState *cpu)
+static bool gles_refresh_surfaces_1(CPUState *cpu)
 {
     if (!gh.surfaces || !g_hash_table_size(gh.surfaces)) return true;
     GLint active, units = 0, kind = 0, attachment = 0;
@@ -4027,6 +4099,7 @@ static int64_t gles_es2_draw(CPUState *cpu, bool elements, const uint32_t *a)
     } else {
         glDrawArrays(mode, 0, count);            /* `first` applied by the fetch */
     }
+    gles_check_draw(elements ? "glDrawElements(ES2)" : "glDrawArrays(ES2)", mode, count);
     for (i = 0; i < GLES_MAX_ATTRIBS; i++) {
         if (bound & (1u << i)) {
             glDisableVertexAttribArray(i);
@@ -4644,11 +4717,13 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         uint32_t fmt = a[6], type = a[7], pixels = a[8];
         size_t bpp = gles_texel_bytes(fmt, type), n;
         const uint8_t *px = NULL;   /* borrowed: points into gh.txbuf */
+        GLint row_length;
 
         if (!bpp) {
+            gles_warn_format("glTexImage2D", fmt, type);
             return gles_reject(GL_INVALID_ENUM);
         }
-        n = gles_image_bytes(w, h, bpp, gles_unpack());
+        n = gles_unpack_bytes(w, h, bpp, &row_length);
         if (n > GLES_MAX_TEX_BYTES) {
             return gles_reject(GL_INVALID_VALUE);
         }
@@ -4678,9 +4753,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         }
         /* The staging buffer reproduces the guest's row padding verbatim, so
          * the host must unpack with the guest's alignment, not its own. */
-        glPixelStorei(GL_UNPACK_ALIGNMENT, gles_unpack());
+        gles_unpack_apply(pixels ? row_length : 0);
         gles_texture_begin();
-        glTexImage2D(target, level, ifmt, w, h, border, fmt, type, px);
+        glTexImage2D(target, level, ifmt == GL_BGRA ? GL_RGBA : ifmt, w, h,
+                     border, fmt, type, px);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
         if (gles_texture_end(target, level, (GLESPVRTCLevel){0})) return -1;
         /*
          * Keep the texture COMPLETE for whatever filter it ends up with.
@@ -4757,11 +4834,13 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         uint32_t w = a[4], h = a[5], fmt = a[6], type = a[7], pixels = a[8];
         size_t bpp = gles_texel_bytes(fmt, type), n;
         const uint8_t *px = NULL;   /* borrowed: points into gh.txbuf */
+        GLint row_length;
 
         if (!bpp) {
+            gles_warn_format("glTexSubImage2D", fmt, type);
             return gles_reject(GL_INVALID_ENUM);
         }
-        n = gles_image_bytes(w, h, bpp, gles_unpack());
+        n = gles_unpack_bytes(w, h, bpp, &row_length);
         if (n > GLES_MAX_TEX_BYTES) {
             return gles_reject(GL_INVALID_VALUE);
         }
@@ -4772,8 +4851,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         if (!px) {
             return -1;
         }
-        glPixelStorei(GL_UNPACK_ALIGNMENT, gles_unpack());
+        gles_unpack_apply(row_length);
         glTexSubImage2D(target, level, xoff, yoff, w, h, fmt, type, px);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
         return 0;
     }
 
@@ -5264,6 +5344,13 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * context whose alignment the intervening calls are free to change.
          * PACK and UNPACK are independent guest state.
          */
+        if (a[0] == 0x85B2) {           /* UNPACK_CLIENT_STORAGE_APPLE: a hint */
+            return 0;
+        }
+        if (a[0] == 0x8A16) {           /* UNPACK_ROW_BYTES_APPLE */
+            gh.unpack_row_bytes = a[1];
+            return 0;
+        }
         if (a[0] != GL_UNPACK_ALIGNMENT && a[0] != GL_PACK_ALIGNMENT) {
             return gles_reject(GL_INVALID_ENUM);
         }
@@ -6055,6 +6142,7 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
     gh.calls++;
     gles_cur_ctx = ctx;
     t0 = gles_t();
+    int64_t st0 = gles_obj_stats > 0 ? g_get_monotonic_time() : 0;
     if (gles_strict) {
         /*
          * Attribute GL errors to the call that RAISED them.
@@ -6105,9 +6193,55 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
         }
         if (budget > 0) {
             budget--;
-            fprintf(stderr, "[gles-call] %08x %4u(%u) %x %x %x %x -> %" PRId64 "\n",
-                    ctx, slot, argc, argc > 0 ? a[0] : 0, argc > 1 ? a[1] : 0,
-                    argc > 2 ? a[2] : 0, argc > 3 ? a[3] : 0, r);
+            fprintf(stderr, "[gles-call] %08x %4u(%u)", ctx, slot, argc);
+            for (uint32_t i = 0; i < MAX(argc, 4) && i < 10; i++) {
+                fprintf(stderr, " %x", i < argc ? a[i] : 0);
+            }
+            fprintf(stderr, " -> %" PRId64 "\n", r);
+        }
+    }
+    if (st0) gles_us_call += g_get_monotonic_time() - st0;
+    {
+        /*
+         * IT_GLES_OBJ_STATS=1: every 10 s of host time, the live counts of the
+         * GL objects the guest created (gen minus delete, all contexts) and the
+         * calls/draws/flushes since the last line. For soak tests: a count that
+         * only grows is a leak, a flush rate that stalls is a stuck compositor.
+         */
+        static int64_t tex, fbo, rb, buf, prog, next;
+        static uint64_t calls, draws, flushes;
+        if (gles_obj_stats < 0) gles_obj_stats = getenv("IT_GLES_OBJ_STATS") != NULL;
+        if (gles_obj_stats) {
+            int64_t now = g_get_monotonic_time();
+            calls++;
+            switch (slot) {
+            case 98:  tex += a[0]; break;           /* glGenTextures */
+            case 59:  tex -= a[0]; break;           /* glDeleteTextures */
+            case 674: fbo += a[0]; break;
+            case 673: fbo -= a[0]; break;
+            case 668: rb += a[0]; break;
+            case 667: rb -= a[0]; break;
+            case 644: buf += a[0]; break;
+            case 643: buf -= a[0]; break;
+            case 594: case 597: prog++; break;      /* create shader / program */
+            case 591: prog--; break;                /* delete shader or program */
+            case 65: case 67: draws++; break;
+            case 89: case 90: flushes++; break;
+            }
+            if (now >= next) {
+                if (next) {
+                    fprintf(stderr, "[gles-obj] live tex=%" PRId64 " fbo=%" PRId64
+                            " rb=%" PRId64 " buf=%" PRId64 " shader+prog=%" PRId64
+                            " | 10s: calls=%" PRIu64 " draws=%" PRIu64
+                            " flush=%" PRIu64 " call-ms=%" PRId64 " sync-ms=%" PRId64
+                            " refresh-ms=%" PRId64 "\n", tex, fbo, rb, buf, prog,
+                            calls, draws, flushes, gles_us_call / 1000,
+                            gles_us_sync / 1000, gles_us_refresh / 1000);
+                }
+                calls = draws = flushes = 0;
+                gles_us_call = gles_us_sync = gles_us_refresh = 0;
+                next = now + 10 * G_USEC_PER_SEC;
+            }
         }
     }
     gh.t_call += gles_t() - t0;
