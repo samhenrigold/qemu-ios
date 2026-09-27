@@ -257,8 +257,9 @@ guest's ring with the same pacing as playback. `tests/ipad1/mic-check.py` builds
 (an AudioQueue input recorder) into a scratch store and checks a 10 s recording in the guest: 1000.0 Hz from
 a 1000 Hz tone (440.0 from 440), 44025 frames/s, 0 discontinuities. Needed on the way: back-to-back chains keep
 one sample clock (a late go used to drop ~3% at every 64 KiB boundary) and 1 ms pacing steps (the HAL reads
-input up to 96 frames behind its clock; 10 ms steps left it reading stale frames every cycle). Shazam once
-golden-appsync works.
+input up to 96 frames behind its clock; 10 ms steps left it reading stale frames every cycle). Shazam 1.5.3 (installed on golden-appsync) records through it:
+"Listening..." with its level meter (screens/2026-09-27-shazam-listening.png) while CDMA 0x1b runs 64 KiB
+capture chains back to back (16384 frames each, 0.37-0.38 s apart).
 
 ## Bluetooth: parked, BTServer disabled (2026-09-27)
 

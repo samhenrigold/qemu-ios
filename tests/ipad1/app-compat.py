@@ -172,44 +172,16 @@ def selfcheck():
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1")
-# Portrait UI on the 1024x768 landscape scanout (measured in the AppSync proof runs).
-DISMISS_EDIT = (408, 470)        # "Dismiss" on the install's Edit-Home-Screen help sheet
-NEXT_PAGE = ((512, 680), (512, 150))     # swipe to the next home page (portrait right-to-left)
+# Upright portrait UI (interface 1) on the 1024x768 landscape scanout: portrait top is the panel's left edge.
+DISMISS_EDIT = (615, 297)        # "Dismiss" on the install's Edit-Home-Screen help sheet
+NEXT_PAGE = ((511, 87), (511, 617))      # swipe to the next home page (portrait right-to-left)
 LAUNCH_WAIT = 9
 
 
 def GRID(row, col):
     """(row,col) in the 4x5 portrait home grid -> panel coords on the 1024x768 scanout.
-    Calibrated to the stock 7B500 layout via sbservices: slot (0,0)=(895,115)."""
-    return (895 - 165 * row, 115 + 177 * col)
-
-
-def _flip(xy, flip):
-    """180-degree rotate a coordinate when the store booted in the opposite orientation."""
-    return (1024 - xy[0], 768 - xy[1]) if flip else (xy[0], xy[1])
-
-
-def _flip_icon(xy, flip):
-    """Like _flip but for a home-icon center: the grid isn't symmetric top/bottom (status bar
-    vs dock), so a pure 180 flip lands ~38px low on the label. Nudge back onto the glyph."""
-    return (1024 - xy[0], 768 - xy[1] - 38) if flip else (xy[0], xy[1])
-
-
-def detect_flip(b, rg):
-    """True if the store booted 180-rotated from the calibrated orientation. The status bar is a
-    thin dark strip on one short edge; calibrated = right edge, flipped = left edge. Compares the
-    mean brightness of the far-left vs far-right columns of a real (backlight-normalized) frame."""
-    png = os.path.join(b.dir, "orient.png")
-    try:
-        rg.itqmp.shot(b.qmp, png)                 # leaves png + png.ppm (raw)
-        w, h, pix = rg.itqmp.read_ppm(png + ".ppm")
-    except Exception:
-        return False
-    def band(x0, x1):
-        vals = [pix[(y * w + x) * 3] for y in range(0, h, 8) for x in range(x0, x1, 3)]
-        return sum(vals) / max(1, len(vals))
-    left, right = band(0, 24), band(w - 24, w)
-    return left < right                           # darker on the left => status bar left => flipped
+    Calibrated to the stock 7B500 layout via sbservices: slot (0,0)=(128,652)."""
+    return (128 + 165 * row, 652 - 177 * col)
 
 
 def _sample(rg, ppm, step=997):
@@ -422,39 +394,33 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
             return syslog_launch(b, rg, cfg, r, res, syslog, end)
         # Event-driven navigation: wait on frame state, not fixed sleeps, so host load
         # doesn't matter. Overall bound = the qemu timeout.
-        # 1. wait for a lit, settled frame (the lock screen). snap() normalizes the backlight
-        # and wakes the panel, so a dim/asleep lock screen is detected (raw picture() reads 0%).
-        lock = wait_stable(b, rg, tag, min(end, time.time() + 240), want_lit=True)
-        if _lit(lock) <= 0.30:
-            res["verdict"], res["note"] = "NO-BOOT", "never reached a lit lock screen"
+        # 1. lock screen: serial marker (SpringBoard reached it) + a settled lit frame.
+        ok, det = b.wait_lock_screen(timeout=max(30, end - time.time()))
+        if not ok:
+            res["verdict"], res["note"] = "NO-BOOT", "never reached lock screen (%s)" % det
             return res
         # sbservices only answers once SpringBoard is up (past the lock screen), so query
         # the icon layout now, not right after install.
         slot = icon_slot(b, r["bundle"]) or (2, 0, 0)     # fall back to page-2 slot(0,0)
         page, row, col = slot
         res["note"] = "slot p%d r%d c%d" % slot
-        # 2. unlock. Orientation isn't fixed, so try the slider flipped then unflipped; a real
-        # unlock is a BIG frame change (not a clock tick), so require a large diff. The flip that
-        # works is applied to every later tap.
-        home, flip, unlocked = lock, True, False
-        for fl in (True, False):
-            for _ in range(3):
-                b.drag(_flip(rg.UNLOCK_FROM, fl), _flip(rg.UNLOCK_TO, fl))
-                home = wait_stable(b, rg, tag, min(end, time.time() + 22), want_lit=True)
-                if _framediff(lock, home, thresh=25):
-                    flip, unlocked = fl, True
-                    break
-                b.press("home")
-            if unlocked:
+        # 2. unlock: a real unlock is a BIG frame change (not a clock tick).
+        lock = wait_stable(b, rg, tag, min(end, time.time() + 20), want_lit=True)
+        home, unlocked = lock, False
+        for _ in range(3):
+            b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
+            home = wait_stable(b, rg, tag, min(end, time.time() + 22), want_lit=True)
+            if _framediff(lock, home, thresh=25):
+                unlocked = True
                 break
+            b.press("home")
         if not unlocked:
             res["verdict"], res["note"] = "NO-LAUNCH", "could not unlock (%s)" % res["note"]
             return res
-        res["note"] += " flip=%d" % flip
-        b.tap(_flip(DISMISS_EDIT, flip))            # dismiss the install help sheet if present
+        b.tap(DISMISS_EDIT)                          # dismiss the install help sheet if present
         prev = wait_stable(b, rg, tag, min(end, time.time() + 20), want_lit=True)
         # 3. swipe to the app's page, one settled turn at a time.
-        pa, pb = (_flip(NEXT_PAGE[0], flip), _flip(NEXT_PAGE[1], flip))
+        pa, pb = NEXT_PAGE
         for hop in range(page - 1):
             turned = False
             for _ in range(5):
@@ -468,7 +434,7 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
                 return res
         before = prev
         syslen = os.path.getsize(syslog) if os.path.exists(syslog) else 0
-        b.tap(_flip_icon(GRID(row, col), flip))
+        b.tap(GRID(row, col))
         after = wait_stable(b, rg, tag, min(end, time.time() + 40))   # settle on the app frame
         _, _, nz = rg.itqmp.shot(b.qmp, os.path.join(b.dir, "launch-" + tag + ".png"))
         res["shot"] = os.path.join(b.dir, "launch-" + tag + ".png")

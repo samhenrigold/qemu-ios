@@ -170,15 +170,15 @@ class Rig:
 def scenario(rig):
     rig.button("button-home")                 # the checkpoint's lock screen may have blanked
     time.sleep(1.5)
-    rig.drag(64, 290, 64, 710)                 # slide to unlock (knob on the panel's left edge)
+    rig.drag(959, 477, 959, 57)                # slide to unlock (knob on the panel's right edge)
     time.sleep(3)
-    rig.tap(415, 385)                          # first-unlock "Edit Home Screen" tip: Dismiss
+    rig.tap(608, 382)                          # first-unlock "Edit Home Screen" tip: Dismiss
     time.sleep(1.5)
-    rig.drag(500, 600, 500, 150)               # page swipe (portrait x runs along panel y)
+    rig.drag(523, 167, 523, 617)               # page swipe (portrait x runs along panel y)
     time.sleep(2)
-    rig.drag(500, 150, 500, 600)               # and back
+    rig.drag(523, 617, 523, 167)               # and back
     time.sleep(2)
-    rig.tap(895, 470)                          # Notes
+    rig.tap(128, 297)                          # Notes
     time.sleep(4)
     rig.button("button-home")
     time.sleep(3)

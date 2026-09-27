@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Diagnostic: CommonCrypto known answers on the serial console (tests/ipad1/cctest.py). -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.qemu.it-cctest</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/it_cctest</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/dev/console</string>
+	<key>StandardErrorPath</key>
+	<string>/dev/console</string>
+</dict>
+</plist>

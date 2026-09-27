@@ -31,8 +31,8 @@ from tearcheck import Rig, read_ppm, W, H          # noqa: E402
 
 FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1")
 PROBE = 0.5
-KNOB = (slice(20, 110), slice(250, 720))            # panel x, y of the slider track
-ROWS = [(718, 150), (587, 150), (675, 150), (630, 150)]   # Settings: Safari, Photos, iPod, Video
+KNOB = (slice(913, 1003), slice(47, 517))           # panel x, y of the slider track
+ROWS = [(305, 617), (436, 617), (348, 617), (393, 617)]   # Settings: Safari, Photos, iPod, Video
 
 
 class Symbols:
@@ -146,13 +146,13 @@ def main():
                 rig.button("button-home")
                 time.sleep(0.5)
                 continue
-            rig.ev(64, 290); rig.ev(down=True); time.sleep(0.05)
-            for y in (330, 380, 430, 460):
-                rig.ev(64, y); time.sleep(0.03)
+            rig.ev(959, 477); rig.ev(down=True); time.sleep(0.05)
+            for y in (437, 387, 337, 307):
+                rig.ev(959, y); time.sleep(0.03)
             time.sleep(0.3)
             after = screen()
-            for y in (430, 380, 330, 290):
-                rig.ev(64, y); time.sleep(0.02)
+            for y in (337, 387, 437, 477):
+                rig.ev(959, y); time.sleep(0.02)
             rig.ev(down=False)
             moved = np.abs(after[KNOB[1], KNOB[0]].astype(int) - before[KNOB[1], KNOB[0]].astype(int)).mean()
             res.setdefault("probes", []).append([round(t, 2), round(float(moved), 1)])
@@ -170,11 +170,11 @@ def main():
         time.sleep(1)
         if not lit(screen()):
             rig.button("button-home"); time.sleep(1.5)
-        rig.drag(64, 290, 64, 710)
+        rig.drag(959, 477, 959, 57)
         time.sleep(3)
-        rig.tap(415, 385)                          # first-unlock tip
+        rig.tap(608, 382)                          # first-unlock tip
         time.sleep(1.5)
-        rig.tap(575, 118)                          # Settings
+        rig.tap(448, 649)                          # Settings
         time.sleep(8)
         from PIL import Image
         Image.fromarray(screen()).save(f"{a.out}/settings.png")
@@ -184,7 +184,7 @@ def main():
         lat = []
         for k in range(a.samples):
             x, y = ROWS[k % len(ROWS)]
-            region = (slice(x - 18, x + 18), slice(20, 280))
+            region = (slice(x - 18, x + 18), slice(487, 747))
             base = screen()[region[1], region[0]].astype(int)
             rig.ev(x, y)
             td0 = time.monotonic()
