@@ -220,6 +220,7 @@ static void ipad1_init(MachineState *machine)
     /* MIPI-DSIM: the same Samsung IP as the iPod's; reuse that model. */
     dev = qdev_new(TYPE_IPOD_TOUCH_MIPI_DSI);
     IPOD_TOUCH_MIPI_DSI(dev)->direct_boot = true;
+    qdev_prop_set_uint32(dev, "lanes", 4);      /* K48 DT #lanes */
     memory_region_add_subregion(sysmem, S5L8930_DSIM_BASE,
                                 &IPOD_TOUCH_MIPI_DSI(dev)->iomem);
     sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
