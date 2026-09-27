@@ -82,6 +82,19 @@ def main():
                 os.unlink(f"{a.out}/burst.ppm")
             elif op == "heading":           # compass heading, degrees
                 q.cmd("qom-set", path="/machine", property="compass-heading", value=int(arg))
+            elif op == "save":
+                # A checkpoint of the running guest in DIR (state + overlay), as
+                # boot-smoke.py --checkpoint-out writes one; the guest resumes.
+                import shutil
+                os.makedirs(arg, exist_ok=True)
+                q.cmd("stop")
+                q.cmd("migrate", uri=f"file:{arg}/state")
+                while q.cmd("query-migrate").get("status") not in ("completed", "failed"):
+                    time.sleep(0.2)
+                shutil.rmtree(f"{arg}/overlay", ignore_errors=True)
+                subprocess.run(["cp", "-cR", f"{a.out}/overlay", f"{arg}/overlay"], check=True)
+                q.cmd("screendump", filename=f"{arg}/saved.ppm")
+                q.cmd("cont")
             elif op == "hold":                  # press the Hold button for MS ms
                 q.cmd("qom-set", path="/machine", property="button-hold", value=True)
                 time.sleep(int(arg) / 1000)
