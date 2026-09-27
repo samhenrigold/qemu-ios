@@ -82,6 +82,11 @@ GLES_APPS = ("GLTest.app", "GLTest2.app")
 # --ca-ogl: CoreAnimation composites through the GLI shim (accelerated pixel format)
 SB_ENV_CA_OGL = {"MBX2D_PAGE_FLIP": "0", "GLI_ACCELERATED": "1"}
 HIDBRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/ipad1-hidbridge")
+# AppSync: one dylib injected into installd (install gate) and SpringBoard (launch gate)
+# via DYLD_INSERT_LIBRARIES. See contrib/appsync. Requires the AMFI boot-args (it is ldid-signed).
+APPSYNC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../build/appsync")
+APPSYNC_REL = "usr/lib/libappsync.dylib"
+APPSYNC_JOBS = ("System/Library/LaunchDaemons/com.apple.mobile.installd.plist",)
 # USB Ethernet (AppleUSBEthernetDevice, usbmuxd's slirp on the host side). Names and paths are the real
 # unit's NetworkInterfaces.plist: Wi-Fi keeps en0 even with no BCM4329 model, so USB is en1 as on hardware.
 SC_DIR = "preferences/SystemConfiguration"   # under /private/var (/Library/Preferences links here)
@@ -171,6 +176,15 @@ def usb_net_prefs(d):
     order[:] = [USB_ETH_SERVICE] + [o for o in order if o != USB_ETH_SERVICE]
 
 
+def dyld_insert(d, lib=("/" + APPSYNC_REL)):
+    """Append lib to DYLD_INSERT_LIBRARIES, keeping any existing entries (e.g. SpringBoard's env)."""
+    env = d.setdefault("EnvironmentVariables", {})
+    libs = [x for x in env.get("DYLD_INSERT_LIBRARIES", "").split(":") if x]
+    if lib not in libs:
+        libs.append(lib)
+    env["DYLD_INSERT_LIBRARIES"] = ":".join(libs)
+
+
 # Web proxy (the app's itwebproxy on slirp guestfwd 10.0.2.100:3128, as on the iPod). The Wi-Fi service
 # carries a PAC that falls back to DIRECT, so boots without the guestfwd still browse.
 WIFI_SERVICE = "4C54E7A1-0B5E-4D6B-9A1C-574946490000"
@@ -204,6 +218,30 @@ def seed_plist(path, fn):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
         f.write(edit_plist(plistlib.dumps({}), fn))
+
+
+def appsync_problem(path):
+    """None if path is a fat Mach-O with an armv7 slice and a code signature per slice, else why not."""
+    if not os.path.exists(path):
+        return "missing"
+    data = open(path, "rb").read()
+    if len(data) < 8 or struct.unpack_from(">I", data)[0] != FAT_MAGIC:
+        return "not a fat Mach-O (expected armv6+armv7)"
+    nfat = struct.unpack_from(">I", data, 4)[0]
+    have_v7 = False
+    for i in range(nfat):
+        cputype, sub, off, size, _ = struct.unpack_from(">iiIII", data, 8 + i * 20)
+        if (cputype, sub) == (12, 9):
+            have_v7 = True
+        slice_cmds, o = set(), off + 28
+        ncmds = struct.unpack_from("<I", data, off + 16)[0]
+        for _ in range(ncmds):
+            cmd, sz = struct.unpack_from("<II", data, o)
+            slice_cmds.add(cmd)
+            o += sz
+        if LC_CODE_SIGNATURE not in slice_cmds:
+            return "slice %d (cpu %d/%d) is not ldid-signed" % (i, cputype, sub)
+    return None if have_v7 else "no armv7 slice"
 
 
 def guest_tool_problem(data):
@@ -416,6 +454,22 @@ def build(a):
         rewrite_plist(os.path.join(m.mnt, SB_JOB),
                       lambda d: springboard_env(d, {k: v for k, v in (SB_ENV_CA_OGL if a.ca_ogl else SB_ENV).items()
                                                     if not (a.page_flip and k == "MBX2D_PAGE_FLIP")}))
+        if a.appsync:
+            src = os.path.join(APPSYNC, "libappsync.dylib")
+            why = appsync_problem(src)
+            if why:
+                raise SystemExit("%s: %s (run contrib/appsync/build.sh)" % (src, why))
+            dst = os.path.join(m.mnt, APPSYNC_REL)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(src, dst)
+            os.chmod(dst, 0o644)
+            for rel in APPSYNC_JOBS:
+                rewrite_plist(os.path.join(m.mnt, rel), dyld_insert)
+            # amfid-global half: force libmis MISValidateSignature to succeed in the shared cache
+            # (symbol-located), so amfid approves the ldid-signed dylib and decrypted apps.
+            import appsync_cachepatch
+            cache = os.path.join(m.mnt, "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv7")
+            print("      " + appsync_cachepatch.patch_cache(cache))
         if a.gles:
             shutil.copy(os.path.join(GLES, "GLEngine"), os.path.join(m.mnt, GLENGINE))
             apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))
@@ -444,6 +498,8 @@ def build(a):
     if a.hidbridge:   # launchd skips jobs not owned by root; the noowners mount wrote the host uid
         bn.set_owner(system, ["usr/local", "usr/local/lib", "usr/local/lib/hidbridge.dylib",
                               "Library/LaunchDaemons/com.qemu.hidbridge.plist"], 0, 0)
+    if a.appsync:     # dyld refuses a DYLD_INSERT dylib not owned by root (noowners wrote the host uid)
+        bn.set_owner(system, [APPSYNC_REL], 0, 0)
     if a.web_proxy:
         bn.set_owner(system, ["usr/local", "usr/local/share", "usr/local/share/ltm", PAC_PATH], 0, 0)
     if a.gles:   # ldid-signed: boot with amfi_allow_any_signature=1 cs_enforcement_disable=1
@@ -588,6 +644,14 @@ def selfcheck():
     assert [i["BSD Name"] for i in ifs["Interfaces"]] == ["en0", "en1"]
     plistlib.loads(plistlib.dumps(real)), plistlib.loads(plistlib.dumps(ifs))
 
+    # dyld_insert: appends without clobbering, idempotent
+    d = {"EnvironmentVariables": {"CA_ENABLE_OGL": "0"}}
+    dyld_insert(d); dyld_insert(d)
+    assert d["EnvironmentVariables"]["DYLD_INSERT_LIBRARIES"] == "/" + APPSYNC_REL
+    assert d["EnvironmentVariables"]["CA_ENABLE_OGL"] == "0"
+    d2 = {"EnvironmentVariables": {"DYLD_INSERT_LIBRARIES": "/usr/lib/other.dylib"}}
+    dyld_insert(d2)
+    assert d2["EnvironmentVariables"]["DYLD_INSERT_LIBRARIES"] == "/usr/lib/other.dylib:/" + APPSYNC_REL
     wp = {}
     usb_net_prefs(wp)
     wifi_proxy_prefs(wp)
@@ -643,6 +707,7 @@ def main():
     b.add_argument("--page-flip", action="store_true", help="leave CoreAnimation's IOMFB page flipping on (no MBX2D_PAGE_FLIP=0)")
     b.add_argument("--ca-ogl", action="store_true", help="let CoreAnimation composite through GL (no CA_ENABLE_OGL=0; GLI_ACCELERATED=1)")
     b.add_argument("--hidbridge", action="store_true", help="install the hardware-keyboard daemon (run contrib/ipad1-hidbridge/build.sh first)")
+    b.add_argument("--appsync", action="store_true", help="install libappsync.dylib and inject it into installd (+ symbol-located shared-cache patch) (run contrib/appsync/build.sh first)")
     f = sub.add_parser("fetch")
     f.add_argument("dir", nargs="?", default=os.path.join(FILES, "hw2"))
     r = sub.add_parser("report")
