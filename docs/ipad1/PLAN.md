@@ -83,6 +83,12 @@ data-partition key 0x89B) — not the full descriptor engine. D1815 PMU + new I2
 panic). `debug-enabled` forced (DT + 7B500 kernel global) so AMFI honors its boot-args.
 Success: launchd, then SpringBoard attempts, diffed against the HW-2 serial log.
 
+**GLES (2026-09-27, merged 83609cba9b):** ES 1.1 and 2.0 apps render through the GLI shim to the host executor
+(screens/2026-09-27-gles1-gltest.png, -gles2-gltest2.png). Open: accelerated CoreAnimation draws on the host but
+IOMFB swaps never complete (contrib/ipad1-gles/README.md); iPod GLES fixture coverage dropped 0.42→0.24 after
+the gles-host change (still passes; being checked). Battery ~80% (a3bd58585e). App: LightTouchMac ipad1 branch
+has overlay, usbmux, USB keyboard, upright panel, rotation. Net: guest en1 DHCP only; host bridge pending.
+
 **M3 DONE + rotation (2026-09-27):** copy-on-write NAND overlay (f8faca33e5: `nand-overlay=DIR`; base
 read-only; reset = delete overlay; changes survive unclean kill + reboot, fsck clean). Rotation through the
 accelerometer to all four orientations (screens/2026-09-27-rotate-*.png). Slide-to-power-off after a held
