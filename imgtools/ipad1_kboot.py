@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Build a direct-kernel boot image for the ipad1 machine: what iBoot-817.29 does before it jumps to xnu.
 
-    ipad1_kboot.py [--usb-eth-link] DEC_DIR OUT [BOOT_ARGS]
+    ipad1_kboot.py [--no-usb-eth-link] DEC_DIR OUT [BOOT_ARGS]
 
 DEC_DIR is ipad1_fw.py's output (kernelcache.mach, DeviceTree.bin). BOOT_ARGS defaults to DEFAULT_BOOT_ARGS.
-With no arguments only the self-check runs. --usb-eth-link applies USB_ETH_LINK (below), the one kernel patch.
+With no arguments only the self-check runs. USB_ETH_LINK (below), the one kernel patch, is applied unless
+--no-usb-eth-link; it is inert until a host selects the Ethernet interface's alt setting 1.
 
 OUT format (all little-endian): a flat image of physical memory, then a 24-byte trailer.
 
@@ -207,7 +208,7 @@ def patch(image, patches):
         image[o:o + len(new)] = new
 
 
-def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=False):
+def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=True):
     """Return (image bytes, load_pa, entry_pa, bootargs_pa)."""
     page = lambda n: (n + 0xFFF) & ~0xFFF
     pa = lambda va: va - VIRT_BASE + PHYS_BASE
@@ -249,7 +250,7 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=False)
     return bytes(image), PHYS_BASE, pa(macho_entry(m.data)), pa(args_va)
 
 
-def main(dec_dir, out, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=False):
+def main(dec_dir, out, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=True):
     dt_blob = open(os.path.join(dec_dir, "DeviceTree.bin"), "rb").read()
     image, load_pa, entry_pa, args_pa = build(os.path.join(dec_dir, "kernelcache.mach"), dt_blob, boot_args,
                                               usb_eth_link)
@@ -257,7 +258,7 @@ def main(dec_dir, out, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=False):
         f.write(image + TRAILER.pack(b"K48KBOOT", load_pa, entry_pa, args_pa, len(image)))
     top = struct.unpack_from("<I", image, args_pa - load_pa + 0x10)[0]
     print(f"load {load_pa:#x}+{len(image):#x} entry {entry_pa:#x} r0 {args_pa:#x} "
-          f"topOfKernelData {top:#x} boot-args [{boot_args}]" + (" +usb-eth-link" if usb_eth_link else ""))
+          f"topOfKernelData {top:#x} boot-args [{boot_args}]" + (" +usb-eth-link" if usb_eth_link else " (no usb-eth-link)"))
 
 
 def selfcheck():
@@ -296,7 +297,7 @@ def selfcheck():
     with tempfile.NamedTemporaryFile() as f:
         f.write(kernel)
         f.flush()
-        image, load, entry, r0 = build(f.name, dt_blob)
+        image, load, entry, r0 = build(f.name, dt_blob, usb_eth_link=False)
 
     assert (load, entry, r0) == (0x40000000, 0x40001040, 0x40006000)
     assert image[0x1000:0x1004] == b"\xce\xfa\xed\xfe" and image[0x3000:0x3010] == b"D" * 16
@@ -330,8 +331,8 @@ def selfcheck():
 
 if __name__ == "__main__":
     selfcheck()
-    argv = [a for a in sys.argv[1:] if a != "--usb-eth-link"]
+    argv = [a for a in sys.argv[1:] if a != "--no-usb-eth-link"]
     if len(argv) in (2, 3):
-        main(*argv, **({"usb_eth_link": True} if len(argv) < len(sys.argv) - 1 else {}))
+        main(*argv, usb_eth_link=len(argv) == len(sys.argv) - 1)
     elif argv:
         sys.exit(__doc__)
