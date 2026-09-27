@@ -100,7 +100,9 @@ static unsigned slen(const char *s) { unsigned n = 0; while (s && s[n]) n++; ret
 #define GLES_OP_NEW_CONTEXT 0x1006
 #define GLES_OP_DELETE_CONTEXT 0x1007
 
-typedef struct { unsigned host, unpack_alignment; } GuestGC;
+/* api and sg are glishim.c's (the GLEngine replacement, which #includes this
+ * file); the MBX path leaves them zero. */
+typedef struct { unsigned host, unpack_alignment, api, owns_sg; void *sg; } GuestGC;
 extern void *calloc(unsigned long, unsigned long);
 extern void free(void *);
 static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args);
@@ -162,11 +164,11 @@ static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args
  * entry point does so thousands of times a second, and a log line per call
  * would both drown the log and slow the guest enough to change what it does.
  */
-static unsigned char unimpl_seen[GLES_N_SLOTS];
+static unsigned char unimpl_seen[1024]; /* glishim numbers up to 826 */
 
 __attribute__((visibility("hidden"))) int gles_unimpl(unsigned slot)
 {
-    if (slot < GLES_N_SLOTS && !unimpl_seen[slot]) {
+    if (slot < sizeof(unimpl_seen) && !unimpl_seen[slot]) {
         unimpl_seen[slot] = 1;
         w("[mbxshim] unimplemented slot "); wd(slot); w("\n");
     }
