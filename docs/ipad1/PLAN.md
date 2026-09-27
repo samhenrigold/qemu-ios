@@ -83,6 +83,10 @@ data-partition key 0x89B) — not the full descriptor engine. D1815 PMU + new I2
 panic). `debug-enabled` forced (DT + 7B500 kernel global) so AMFI honors its boot-args.
 Success: launchd, then SpringBoard attempts, diffed against the HW-2 serial log.
 
+**M2 DONE (2026-09-27, 107d5406d2):** launchd runs: fsck, / and /private/var mounted, multitouch firmware
+downloaded (0x0146.bin, as on the real iPad), mDNSResponder and sandboxd start. Fixes on the way: CDMA IRQ
+numbering (0x30+n), SHA-1 engine. Next: SpringBoard on screen; baseband SPI2 (0x82200000) is polled.
+
 **M2 status (2026-09-27):** root filesystem mounts ("BSD root: disk0s1") from the generated pristine
 store; next panic is the first CDMA M2M transfer. The nondeterministic stall was the display pipe's
 DP_FLAGS reading 0x20 (fixed 8b54f07424).
