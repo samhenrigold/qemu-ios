@@ -75,13 +75,37 @@ def corr(seg, ref):
     return float(np.dot(s, ref) / (np.linalg.norm(s) * np.linalg.norm(ref) + 1e-9))
 
 
-def drive(sock, qemu):
-    while not os.path.exists(sock):
-        if qemu.poll() is not None:
-            raise SystemExit("qemu exited before QMP came up")
-        time.sleep(0.2)
-    q = itqmp.QMP(sock)
+def judge(wav, serial=None, expect=EXPECT):
+    """Check a WAV against `expect` [(label, rootfs sound file), ...] in order.
 
+    Prints one line per sound; returns True when the WAV is 44.1 kHz, holds at
+    least len(expect) sounds and each correlates >= MIN_CORR with its file at
+    1.00x, and (if given) the serial log has no kernel panic.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        cap, rate = load(wav)
+        spans = events(cap, rate)
+        ok = rate == 44100 and len(spans) >= len(expect)
+        print(f"WAV {rate} Hz, {len(cap) / rate:.1f} s of active output, {len(spans)} sounds")
+        for (name, path), span in zip(expect, spans):
+            seg = cap[max(0, span[0] - rate // 10):span[1] + rate // 10]
+            c = corr(seg, reference(path, td))
+            ok &= c >= MIN_CORR
+            print(f"  {'ok  ' if c >= MIN_CORR else 'FAIL'} {name:22s} {os.path.basename(path):14s} corr {c:.2f}")
+        if len(spans) < len(expect):
+            print(f"  FAIL expected {len(expect)} sounds")
+    if serial and "panic(" in open(serial, errors="replace").read():
+        print("  FAIL kernel panic on serial")
+        ok = False
+    return ok
+
+
+def play_sounds(q):
+    """Make stock SpringBoard play EXPECT[1:] (the boot sound comes by itself).
+
+    q is an itqmp.QMP on a machine booted >= 40 s ago (lock screen up, boot
+    sound done); takes about 25 s. itqmp.W/H must be 1024x768.
+    """
     def unlock():
         itqmp.button(q, "home")               # wake the idle-dimmed lock screen
         time.sleep(2)
@@ -93,11 +117,20 @@ def drive(sock, qemu):
         q.cmd("input-send-event", events=[{"type": "btn", "data": {"down": False, "button": "left"}}])
         time.sleep(6)
 
-    time.sleep(40)                            # SpringBoard up, boot sound done
     unlock()
     itqmp.button(q, "power")
     time.sleep(4)
     unlock()
+
+
+def drive(sock, qemu):
+    while not os.path.exists(sock):
+        if qemu.poll() is not None:
+            raise SystemExit("qemu exited before QMP came up")
+        time.sleep(0.2)
+    q = itqmp.QMP(sock)
+    time.sleep(40)                            # SpringBoard up, boot sound done
+    play_sounds(q)
     q.cmd("quit")
 
 
@@ -134,20 +167,7 @@ def main():
             for f in (wav, serial):
                 shutil.copy(f, a.keep)
 
-        cap, rate = load(wav)
-        spans = events(cap, rate)
-        ok = rate == 44100 and len(spans) >= len(EXPECT)
-        print(f"WAV {rate} Hz, {len(cap) / rate:.1f} s of active output, {len(spans)} sounds")
-        for (name, path), span in zip(EXPECT, spans):
-            seg = cap[max(0, span[0] - rate // 10):span[1] + rate // 10]
-            c = corr(seg, reference(path, td))
-            ok &= c >= MIN_CORR
-            print(f"  {'ok  ' if c >= MIN_CORR else 'FAIL'} {name:22s} {os.path.basename(path):14s} corr {c:.2f}")
-        if len(spans) < len(EXPECT):
-            print(f"  FAIL expected {len(EXPECT)} sounds")
-        if "panic(" in open(serial, errors="replace").read():
-            print("  FAIL kernel panic on serial")
-            ok = False
+        ok = judge(wav, serial)
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 
