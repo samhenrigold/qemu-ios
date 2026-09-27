@@ -86,7 +86,7 @@ HIDBRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib
 # via DYLD_INSERT_LIBRARIES. See contrib/appsync. Requires the AMFI boot-args (it is ldid-signed).
 APPSYNC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../build/appsync")
 APPSYNC_REL = "usr/lib/libappsync.dylib"
-APPSYNC_JOBS = ("System/Library/LaunchDaemons/com.apple.mobile.installd.plist", SB_JOB)
+APPSYNC_JOBS = ("System/Library/LaunchDaemons/com.apple.mobile.installd.plist",)
 # USB Ethernet (AppleUSBEthernetDevice, usbmuxd's slirp on the host side). Names and paths are the real
 # unit's NetworkInterfaces.plist: Wi-Fi keeps en0 even with no BCM4329 model, so USB is en1 as on hardware.
 SC_DIR = "preferences/SystemConfiguration"   # under /private/var (/Library/Preferences links here)
