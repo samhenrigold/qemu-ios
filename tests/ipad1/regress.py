@@ -6,7 +6,7 @@
 
 Every check boots its own copy-on-write overlay of golden-pristine (the base is never written), with
 usbmuxd-qemu's ipad1 build as the USB host where the check talks USB (otherwise the machine's built-in
-host), up to five QEMUs at once host-wide (pgrep -x). While the host is busy, run checks one at a time.
+host). Checks run in parallel, each on its own QEMU.
 
   boot     lock screen on the panel: lit and a picture (many colours), not a solid fill
   usbmux   ideviceinfo over the bridge answers ProductVersion 3.2.2, DeviceClass iPad
@@ -48,7 +48,6 @@ USBMUXD = os.path.expanduser("~/Developer/usbmuxd-qemu-ipad1-net/src/usbmuxd")
 DEFAULT_CHECKS = ["boot", "usbmux", "afc", "persist", "wifi", "net", "audio"]
 PENDING = {"appinstall": "stock installd rejects apps not validly signed for this device",
            "applaunch": "needs appinstall", "gles": "needs appinstall (GLTest is ldid-signed)"}
-MAX_QEMUS = 5
 # Scanout is 1024x768 with the portrait UI turned on it. The boot logo is a small Apple on black (a few %
 # lit); the lock screen is a full wallpaper (~99% lit, unlike the iPod's dark panel). A stalled panel's
 # solid fill is also fully lit, so the frame must also be a picture: many distinct colours.
@@ -58,12 +57,7 @@ UNLOCK_FROM, UNLOCK_TO = (64, 290), (64, 720)
 USB_ALERT_DISMISS = (475, 385)   # stock "The attached USB device is not supported." (the USB keyboard)
 SAFARI_ICON, SAFARI_ADDRESS = (64, 117), (968, 330)
 
-SLOT_WAIT_TRIES = 20   # x 15 s: give up and SKIP after 5 min rather than hang behind other boots
 launch_lock = threading.Lock()
-
-
-class NoSlot(Exception):
-    pass
 
 
 class Boot:
@@ -87,14 +81,7 @@ class Boot:
 
     def start(self):
         cfg = self.cfg
-        with launch_lock:       # the host-wide QEMU budget, checked and claimed atomically for our threads
-            for _ in range(SLOT_WAIT_TRIES + 1):
-                if int(subprocess.run("pgrep -x qemu-system-arm | wc -l", shell=True, capture_output=True,
-                                      text=True).stdout) < MAX_QEMUS:
-                    break
-                time.sleep(15)
-            else:
-                raise NoSlot("no QEMU slot free within %d s" % (SLOT_WAIT_TRIES * 15))
+        with launch_lock:       # free ports are claimed one boot at a time
             machine = "ipad1,kboot=%s,nand=%s,nand-overlay=%s" % (cfg.kboot, cfg.nand, self.overlay)
             self.usb_port = self.mux_port = 0
             if self.usb:
@@ -437,6 +424,7 @@ def main():
         sys.exit(why)
     ipod.START = time.time()
     a.out = a.out or tempfile.mkdtemp(prefix="ipad1regress-")
+    os.makedirs(a.out, exist_ok=True)
     selected = [c for c in a.checks.split(",") if c]
     results = {c: Result(c) for c in selected}
     runnable = []
@@ -447,13 +435,11 @@ def main():
             sys.exit("unknown check %s (known: %s)" % (c, ", ".join(list(CHECKS) + list(PENDING))))
         else:
             runnable.append(c)
-    with concurrent.futures.ThreadPoolExecutor(MAX_QEMUS) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max(1, len(runnable))) as pool:   # all checks at once
         futs = {pool.submit(CHECKS[c], a, results[c]): c for c in runnable}
         for f in concurrent.futures.as_completed(futs):
             try:
                 f.result()
-            except NoSlot as e:
-                results[futs[f]].skip(str(e))
             except Exception as e:
                 results[futs[f]].set(False, "harness error: %r" % e)
     print("=" * 62)
