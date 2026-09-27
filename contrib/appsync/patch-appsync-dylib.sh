@@ -29,6 +29,18 @@ LDID="${LDID:-/opt/homebrew/bin/ldid}"
 
 [ -f "$DYLIB" ] || { echo "missing $DYLIB (run contrib/appsync/build.sh)"; exit 1; }
 
+# 0. Optional: undo the old byte-patched AppSync. Images made by
+#    qemu-ios-files/apps/patch-appsync.sh carry an edited, re-signed installd and
+#    SpringBoard; STOCK_ROOT (a mounted stock rootfs of the same build) puts the
+#    Apple-signed originals back, so only the dylib + cache patch remain.
+if [ -n "${STOCK_ROOT:-}" ]; then
+    for f in usr/libexec/installd System/Library/CoreServices/SpringBoard.app/SpringBoard; do
+        cp "$STOCK_ROOT/$f" "$MNT/$f"
+        chmod 755 "$MNT/$f"
+        echo "restored stock /$f"
+    done
+fi
+
 # 1. shared-cache MISValidateSignature -> success, by symbol.
 python3 "$CACHEPATCH" "$MNT/System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv6" --patch
 
@@ -37,9 +49,15 @@ install -d "$MNT/usr/lib"
 cp "$DYLIB" "$MNT/usr/lib/libappsync.dylib"
 chmod 644 "$MNT/usr/lib/libappsync.dylib"
 
-python3 - "$MNT/System/Library/LaunchDaemons/com.apple.mobile.installd.plist" <<'PY'
-import sys, plistlib
-p = sys.argv[1]
+# installd's launchd job: com.apple.mobile.installd.plist on 3.2 (iPad),
+# com.apple.installd.plist on 3.1.3 (iPod). Inject into whichever exists.
+python3 - "$MNT/System/Library/LaunchDaemons" <<'PY'
+import sys, os, plistlib
+ld = sys.argv[1]
+cands = ["com.apple.mobile.installd.plist", "com.apple.installd.plist"]
+p = next((os.path.join(ld, c) for c in cands if os.path.exists(os.path.join(ld, c))), None)
+if not p:
+    sys.exit("no installd launchd plist in %s (tried %s)" % (ld, cands))
 with open(p, "rb") as f:
     data = f.read()
 d = plistlib.loads(data)
@@ -51,7 +69,7 @@ env["DYLD_INSERT_LIBRARIES"] = ":".join(libs)
 fmt = plistlib.FMT_BINARY if data[:6] == b"bplist" else plistlib.FMT_XML
 with open(p, "wb") as f:
     f.write(plistlib.dumps(d, fmt=fmt))
-print("installd DYLD_INSERT_LIBRARIES =", env["DYLD_INSERT_LIBRARIES"])
+print("installd (%s) DYLD_INSERT_LIBRARIES = %s" % (os.path.basename(p), env["DYLD_INSERT_LIBRARIES"]))
 PY
 
 # editimg.py runs setowner afterwards for files it knows; make ownership explicit
