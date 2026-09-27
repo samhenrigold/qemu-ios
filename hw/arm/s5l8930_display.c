@@ -64,6 +64,7 @@ typedef struct {
     uint32_t pkt_left;
     uint32_t pkt_off;
     uint32_t swap_id;
+    bool swap_pending;       /* a swap arrived since the last VBL */
     struct S5L8930DisplayState *dev;
 } DisplayPipe;
 
@@ -81,6 +82,19 @@ struct S5L8930DisplayState {
     uint32_t tvout[TVOUT_SIZE / 4];
     uint32_t dart[DART_WORDS];
     uint32_t ste[DART_SIDS][DART_SEGS];
+
+    /*
+     * The frame the panel shows, latched at the VBL that completes a swap.
+     * CoreAnimation renders into the layer's buffer in place (one page with
+     * MBX2D_PAGE_FLIP=0) and starts the next frame as soon as the swap
+     * completes, so reading the buffer live at host-refresh time caught it
+     * half drawn: torn frames and black bands during every animation. Host
+     * memory only; after a snapshot restore the next swap refills it.
+     */
+    uint8_t *front;
+    size_t front_size;
+    uint32_t front_key[4];   /* w, h, fmt, stride of the latched frame */
+    bool front_valid;
 };
 
 /* ---- DisplayPipe ------------------------------------------------------- */
@@ -105,12 +119,22 @@ static uint64_t pipe_read(void *opaque, hwaddr addr, unsigned size)
     }
 }
 
+static void pipe_fifo_write_word(DisplayPipe *p, uint32_t val);
+
 static void pipe_fifo_write(DisplayPipe *p, uint32_t val)
 {
     if (val & 0x80000000) {                     /* transaction header */
         p->swap_id = val & 0xffff;
         p->pkt_left = 0;
-    } else if (p->pkt_left == 0) {              /* packet header */
+        p->swap_pending = true;
+        return;
+    }
+    pipe_fifo_write_word(p, val);
+}
+
+static void pipe_fifo_write_word(DisplayPipe *p, uint32_t val)
+{
+    if (p->pkt_left == 0) {                     /* packet header */
         p->pkt_left = val >> 16;
         p->pkt_off = val & 0xffff;
     } else {                                    /* packet data */
@@ -153,12 +177,22 @@ static const MemoryRegionOps pipe_ops = {
     .impl.max_access_size = 4,
 };
 
+static void front_latch(S5L8930DisplayState *s);
+
 /* One frame: the queued swap completes and the VBL fires. */
 static void vbl_tick(void *opaque)
 {
     S5L8930DisplayState *s = opaque;
     uint32_t *r = s->pipe[0].regs;
 
+
+    /* Measured with tests/ipad1/tearcheck.py: latching here left 5.2% bad
+     * frames (6.6% on a rerun) against 10.4% for the live buffer, and 8.9%
+     * when latched as the swap's last FIFO word arrived. */
+    if (s->pipe[0].swap_pending) {
+        s->pipe[0].swap_pending = false;
+        front_latch(s);
+    }
     r[DP_SWAP_DONE / 4] = (r[DP_SWAP_DONE / 4] & ~0xffff) | s->pipe[0].swap_id;
     r[DP_IRQ_STATUS / 4] |= DP_IRQ_VBL | DP_IRQ_SWAP_DONE;
     pipe0_update_irq(s);
@@ -312,22 +346,87 @@ static void display_invalidate(void *opaque)
 {
 }
 
+/* The scanned-out UI layer, or false when the panel shows nothing. */
+static bool scanout_layer(S5L8930DisplayState *s, unsigned *w, unsigned *h,
+                          uint32_t *fmt, uint32_t *base, uint32_t *stride)
+{
+    uint32_t *r = s->pipe[0].regs;
+    int layer = (r[DP_LAYERS / 4] & 0x100) ? 0 : (r[DP_LAYERS / 4] & 0x200) ? 1 : -1;
+
+    *w = (r[DP_SIZE / 4] >> 16) & 0x7ff;
+    *h = r[DP_SIZE / 4] & 0x7ff;
+    if (!*w || !*h) {
+        *w = DEFAULT_WIDTH;
+        *h = DEFAULT_HEIGHT;
+    }
+    if (layer < 0) {
+        return false;
+    }
+    *base = r[(DP_UI_BASE(layer) + DP_UI_ADDR) / 4];
+    *fmt = (r[(DP_UI_BASE(layer) + DP_UI_FORMAT) / 4] >> 8) & 7;
+    /* Two encodings reach this register. The 7B500 swap path writes
+     * (bytes per row << 4) | 2, e.g. (4096 << 4) | 2 for 1024x768 BGRA. The
+     * iBoot framebuffer holds plain bytes per row: AppleDisplayPipe adopts it
+     * with `stride = reg & ~0x3f` (0xc058c42a), so seeding the swap encoding
+     * gave the boot surface 64 KiB rows. A <<4 value never undershoots a row. */
+    {
+        uint32_t v = r[(DP_UI_BASE(layer) + DP_UI_STRIDE) / 4] & ~0x3fu;
+        unsigned row = *w * (((*fmt) ? 2 : 4));
+        *stride = (v >> 4) >= row ? v >> 4 : v;
+    }
+    return *base != 0;
+}
+
+static void front_latch(S5L8930DisplayState *s)
+{
+    unsigned w, h;
+    uint32_t fmt, base, stride, bpp;
+    size_t need;
+    bool lit = scanout_layer(s, &w, &h, &fmt, &base, &stride);
+
+    if (getenv("IT_DISP_TRACE")) {
+        static unsigned n;
+        uint32_t *r = s->pipe[0].regs;
+        if (n++ < 200) {
+            fprintf(stderr, "[disp] swap %u: layers=%08x lit=%d %ux%u fmt=%u base=%08x "
+                    "stride=%u (raw %08x/%08x) ui0=%08x ui1=%08x\n", s->pipe[0].swap_id,
+                    r[DP_LAYERS / 4], lit, w, h, fmt, base, stride,
+                    r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4], r[(DP_UI_BASE(1) + DP_UI_STRIDE) / 4],
+                    r[(DP_UI_BASE(0) + DP_UI_ADDR) / 4], r[(DP_UI_BASE(1) + DP_UI_ADDR) / 4]);
+        }
+    }
+    if (!lit) {
+        s->front_valid = false;
+        return;
+    }
+    bpp = fmt ? 2 : 4;
+    need = (size_t)w * h * bpp;
+    if (need > s->front_size) {
+        s->front = g_realloc(s->front, need);
+        s->front_size = need;
+    }
+    for (unsigned y = 0; y < h; y++) {
+        fb_read(s, base + y * stride, s->front + (size_t)y * w * bpp, w * bpp);
+    }
+    s->front_key[0] = w;
+    s->front_key[1] = h;
+    s->front_key[2] = fmt;
+    s->front_key[3] = base;
+    s->front_valid = true;
+}
+
 /* ponytail: full redraw every host refresh (~30 Hz, 3 MiB), add dirty
  * tracking via framebuffer_update_display if it shows up in profiles. */
 static void display_update(void *opaque)
 {
     S5L8930DisplayState *s = opaque;
-    uint32_t *r = s->pipe[0].regs;
     DisplaySurface *surface;
-    unsigned w = (r[DP_SIZE / 4] >> 16) & 0x7ff, h = r[DP_SIZE / 4] & 0x7ff;
-    int layer = (r[DP_LAYERS / 4] & 0x100) ? 0 : (r[DP_LAYERS / 4] & 0x200) ? 1 : -1;
-    uint32_t fmt, base, stride, bpp;
+    unsigned w, h;
+    uint32_t fmt = 0, base = 0, stride = 0, bpp;
     g_autofree uint8_t *row = NULL;
+    bool lit = scanout_layer(s, &w, &h, &fmt, &base, &stride);
+    bool latched;
 
-    if (!w || !h) {
-        w = DEFAULT_WIDTH;
-        h = DEFAULT_HEIGHT;
-    }
     surface = qemu_console_surface(s->con);
     if (surface_width(surface) != w || surface_height(surface) != h) {
         qemu_console_resize(s->con, w, h);
@@ -337,17 +436,7 @@ static void display_update(void *opaque)
         return;
     }
 
-    if (layer >= 0) {
-        base = r[(DP_UI_BASE(layer) + DP_UI_ADDR) / 4];
-        fmt = (r[(DP_UI_BASE(layer) + DP_UI_FORMAT) / 4] >> 8) & 7;
-        /* Bytes per row live above bit 4: the 7B500 swap path writes
-         * (4096 << 4) | 2 for a 1024x768 BGRA surface. */
-        stride = (r[(DP_UI_BASE(layer) + DP_UI_STRIDE) / 4] & ~0x3fu) >> 4;
-        if (!base) {
-            layer = -1;
-        }
-    }
-    if (layer < 0) {
+    if (!lit) {
         /* No layer: the panel is off (ApplePinotLCD _lcdEnable 0), so black. */
         for (unsigned y = 0; y < h; y++) {
             memset(surface_data(surface) + y * surface_stride(surface), 0, w * 4);
@@ -356,16 +445,25 @@ static void display_update(void *opaque)
         return;
     }
 
+    /* The frame completed by the last swap, if it still describes this layer;
+     * the live buffer only before the first swap (iBoot, early boot). */
+    latched = s->front_valid && s->front_key[0] == w && s->front_key[1] == h &&
+              s->front_key[2] == fmt && s->front_key[3] == base;
     bpp = fmt ? 2 : 4;     /* 0 ARGB/BGRA, 2 ARGB4444, 4 RGB565 */
     row = g_malloc(w * 4);
     for (unsigned y = 0; y < h; y++) {
         uint32_t *d = (uint32_t *)(surface_data(surface) + y * surface_stride(surface));
+        const uint8_t *src = row;
 
-        fb_read(s, base + y * stride, row, w * bpp);
-        if (fmt == 0) {
-            memcpy(d, row, w * 4);
+        if (latched) {
+            src = s->front + (size_t)y * w * bpp;
         } else {
-            const uint16_t *p = (const uint16_t *)row;
+            fb_read(s, base + y * stride, row, w * bpp);
+        }
+        if (fmt == 0) {
+            memcpy(d, src, w * 4);
+        } else {
+            const uint16_t *p = (const uint16_t *)src;
             for (unsigned x = 0; x < w; x++) {
                 uint16_t v = le16_to_cpu(p[x]);
                 d[x] = fmt == 2
@@ -396,11 +494,13 @@ static void s5l8930_display_reset(DeviceState *dev)
     for (int i = 0; i < 2; i++) {
         memset(s->pipe[i].regs, 0, sizeof(s->pipe[i].regs));
         s->pipe[i].pkt_left = s->pipe[i].pkt_off = s->pipe[i].swap_id = 0;
+        s->pipe[i].swap_pending = false;
     }
     memset(s->clcd, 0, sizeof(s->clcd));
     memset(s->tvout, 0, sizeof(s->tvout));
     memset(s->dart, 0, sizeof(s->dart));
     memset(s->ste, 0, sizeof(s->ste));
+    s->front_valid = false;
 
     /* What iBoot leaves behind: UI0 live on a 1024x768 32bpp buffer. The
      * kernel adopts it from these registers, so without them there is no
@@ -409,7 +509,7 @@ static void s5l8930_display_reset(DeviceState *dev)
     if (s->fb_base) {
         r[DP_LAYERS / 4] = 0x100;
         r[(DP_UI_BASE(0) + DP_UI_ADDR) / 4] = s->fb_base;
-        r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4] = (DEFAULT_WIDTH * 4) << 4 | 2;
+        r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4] = DEFAULT_WIDTH * 4 | 2;
         r[0x4060 / 4] = DEFAULT_WIDTH << 16 | DEFAULT_HEIGHT;
     }
     pipe0_update_irq(s);
@@ -457,9 +557,31 @@ static void s5l8930_display_init(Object *obj)
 
 static int s5l8930_display_post_load(void *opaque, int version_id)
 {
+    /* The latched frame is host memory and was not saved: take it again
+     * from the restored guest RAM so the panel resumes on a whole frame. */
+    front_latch(opaque);
     pipe0_update_irq(opaque);
     return 0;
 }
+
+static bool display_pipe_swap_needed(void *opaque)
+{
+    return ((DisplayPipe *)opaque)->swap_pending;
+}
+
+/* A swap in flight when the state was saved: its VBL still owes the latch.
+ * A subsection, so saves taken with nothing pending stay loadable by older
+ * builds. */
+static const VMStateDescription vmstate_display_pipe_swap = {
+    .name = "s5l8930.display.pipe/swap",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = display_pipe_swap_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(swap_pending, DisplayPipe),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 static const VMStateDescription vmstate_display_pipe = {
     .name = "s5l8930.display.pipe",
@@ -471,6 +593,10 @@ static const VMStateDescription vmstate_display_pipe = {
         VMSTATE_UINT32(pkt_off, DisplayPipe),
         VMSTATE_UINT32(swap_id, DisplayPipe),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_display_pipe_swap,
+        NULL
     }
 };
 

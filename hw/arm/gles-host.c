@@ -177,6 +177,15 @@ void gles_eagl_iosurface_unlock(void);
  * 0..2, then one bit per texture unit. */
 #define GLES_TEXCOORD_BIT  3u
 
+#ifndef GL_POINT_SIZE_ARRAY_OES
+#define GL_POINT_SIZE_ARRAY_OES       0x8B9C
+#endif
+#ifndef GL_TEXTURE_CROP_RECT_OES
+#define GL_TEXTURE_CROP_RECT_OES      0x8B9D
+#endif
+static float gles_f(uint32_t bits);
+static float gles_x(uint32_t value);
+
 /* Guest vertex/texcoord array state. The guest hands us a pointer into its own
  * address space; nothing is read from it until a draw call, exactly as GL
  * specifies, so the guest is free to refill the buffer between calls. */
@@ -285,6 +294,9 @@ typedef struct {
     unsigned client_active_unit;    /* glClientActiveTexture, as an index */
     GLESArray color;
     GLESArray normal;
+    /* GL_POINT_SIZE_ARRAY_OES: per-point sizes for point sprites. Desktop GL
+     * has no such array, so the draw path emulates it (see GLES_SLOT_DRAW_ARRAYS). */
+    GLESArray pointsize;
 
     /* Scratch for glDrawElements' index list. */
     uint8_t *ibuf;
@@ -310,6 +322,8 @@ typedef struct {
     GHashTable *buffers;
     uint32_t next_buffer_name;
     GLESBuffer *array_buffer;
+    /* GL_TEXTURE_CROP_RECT_OES per texture name (int[4]), for glDrawTex*OES. */
+    GHashTable *crop;
     GLESBuffer *element_buffer;
 
     uint8_t *readback;  /* drawable_width * drawable_height * 4 */
@@ -867,6 +881,8 @@ static bool gles_host_init(void)
     gh.normal.client_state   = GL_NORMAL_ARRAY;
     /* glNormalPointer takes no size; the array is always 3 components. */
     gh.normal.size = 3;
+    gh.pointsize.client_state = GL_POINT_SIZE_ARRAY_OES;
+    gh.pointsize.size = 1;
 
     gh.drawable_width = GLES_FB_WIDTH;
     gh.drawable_height = GLES_FB_HEIGHT;
@@ -1191,6 +1207,145 @@ static unsigned gles_texcoord_mask(void)
         }
     }
     return m;
+}
+
+/*
+ * GL_POINT_SIZE_ARRAY_OES has no desktop counterpart, so a GL_POINTS draw with
+ * it enabled becomes one glPointSize + one-point glDrawArrays per point. The
+ * other arrays are already bound from element 0 for this draw, so the host
+ * index is i, not first + i. Particle systems are the only users and they are
+ * a few hundred points at most.
+ * ponytail: per-point draws; batch runs of equal size if a profile says so.
+ */
+static void gles_draw_sized_points(CPUState *cpu, uint32_t first,
+                                   uint32_t count)
+{
+    GLESArray *a = &gh.pointsize;
+    uint32_t stride = a->stride ? a->stride : 4;
+    size_t off = (size_t)stride * first, need = (size_t)stride * count;
+    const uint8_t *base;
+    GLfloat saved = 1.0f;
+    uint32_t i;
+
+    if ((!a->ptr && !a->vbo) || (a->type != GL_FLOAT && a->type != 0x140C)) {
+        glDrawArrays(GL_POINTS, 0, count);
+        return;
+    }
+    if (a->vbo) {
+        if (a->ptr + off + need > a->vbo->size) {
+            glDrawArrays(GL_POINTS, 0, count);
+            return;
+        }
+        base = a->vbo->data + a->ptr + off;
+    } else {
+        if (need > a->buf_size) {
+            a->buf = g_realloc(a->buf, need);
+            a->buf_size = need;
+        }
+        if (cpu_memory_rw_debug(cpu, a->ptr + (hwaddr)off, a->buf, need, 0)) {
+            glDrawArrays(GL_POINTS, 0, count);
+            return;
+        }
+        base = a->buf;
+    }
+    glGetFloatv(GL_POINT_SIZE, &saved);
+    for (i = 0; i < count; i++) {
+        uint32_t raw;
+        float s;
+
+        memcpy(&raw, base + (size_t)stride * i, 4);
+        s = a->type == GL_FLOAT ? gles_f(raw) : gles_x(raw);
+        glPointSize(s > 0 ? s : 1.0f);
+        glDrawArrays(GL_POINTS, i, 1);
+    }
+    glPointSize(saved);
+}
+
+/*
+ * OES_draw_texture: a screen-aligned rectangle at window coords (x, y), size
+ * (w, h), depth z in [0, 1], textured from each enabled unit's crop rect with
+ * no vertex transform at all. Desktop GL has nothing like it, so it is drawn
+ * as an immediate-mode quad under a temporary window-space ortho, with the
+ * guest's matrices, matrix mode, enables and active unit put back afterwards.
+ * A texture with no crop rect set uses its whole level 0.
+ * ponytail: immediate mode; a VBO path only matters if a game DrawTex-es
+ * thousands of sprites a frame.
+ */
+static void gles_draw_tex(float x, float y, float z, float w, float h)
+{
+#ifndef GLES_HOST_EAGL
+    GLint vp[4], mode = 0, active = 0;
+    float s0[GLES_MAX_TEXUNITS], s1[GLES_MAX_TEXUNITS];
+    float t0[GLES_MAX_TEXUNITS], t1[GLES_MAX_TEXUNITS];
+    bool on[GLES_MAX_TEXUNITS];
+    unsigned u;
+    float zn;
+
+    if (w == 0 || h == 0) return;
+    glGetIntegerv(GL_VIEWPORT, vp);
+    glGetIntegerv(GL_MATRIX_MODE, &mode);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+    for (u = 0; u < GLES_MAX_TEXUNITS; u++) {
+        GLint bound = 0, tw = 0, th = 0;
+        const GLint *rect;
+        glActiveTexture(GL_TEXTURE0 + u);
+        on[u] = glIsEnabled(GL_TEXTURE_2D);
+        if (!on[u]) continue;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &tw);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &th);
+        if (tw <= 0 || th <= 0) { on[u] = false; continue; }
+        rect = gh.crop ? g_hash_table_lookup(gh.crop, GUINT_TO_POINTER((guint)bound)) : NULL;
+        if (rect) {
+            s0[u] = (float)rect[0] / tw;  s1[u] = (float)(rect[0] + rect[2]) / tw;
+            t0[u] = (float)rect[1] / th;  t1[u] = (float)(rect[1] + rect[3]) / th;
+        } else {
+            s0[u] = 0; s1[u] = 1; t0[u] = 0; t1[u] = 1;
+        }
+    }
+    glActiveTexture(active);
+
+    /* glOrtho(near=-1, far=1) maps z_eye to -z_eye in NDC; window z in [0,1]
+     * wants NDC 2z-1. */
+    z = z < 0 ? 0 : z > 1 ? 1 : z;
+    zn = -(2.0f * z - 1.0f);
+
+    glPushAttrib(GL_ENABLE_BIT);
+    glDisable(GL_LIGHTING);
+    glDisable(GL_CULL_FACE);
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    glOrtho(vp[0], vp[0] + vp[2], vp[1], vp[1] + vp[3], -1, 1);
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+
+    glBegin(GL_QUADS);
+    {
+        const float xs[4] = { x, x + w, x + w, x };
+        const float ys[4] = { y, y, y + h, y + h };
+        unsigned v;
+        for (v = 0; v < 4; v++) {
+            for (u = 0; u < GLES_MAX_TEXUNITS; u++) {
+                if (!on[u]) continue;
+                glMultiTexCoord2f(GL_TEXTURE0 + u,
+                                  (v == 1 || v == 2) ? s1[u] : s0[u],
+                                  (v >= 2) ? t1[u] : t0[u]);
+            }
+            glVertex3f(xs[v], ys[v], zn);
+        }
+    }
+    glEnd();
+
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(mode);
+    glPopAttrib();
+#else
+    (void)x; (void)y; (void)z; (void)w; (void)h;
+#endif
 }
 
 static uint32_t gles_bind_all_arrays(CPUState *cpu, uint32_t first,
@@ -4481,6 +4636,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             break;
         case GL_COLOR_ARRAY:         gh.color.enabled = on;    break;
         case GL_NORMAL_ARRAY:        gh.normal.enabled = on;   break;
+        case GL_POINT_SIZE_ARRAY_OES: gh.pointsize.enabled = on; break;
         default: break;
         }
         return 0;
@@ -4499,6 +4655,13 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         gh.vertex.stride = a[2];
         gh.vertex.ptr = a[3];
         gles_buffer_bind(&gh.vertex.vbo, gh.array_buffer);
+        return 0;
+
+    case GLES_SLOT_POINT_SIZE_POINTER_OES:      /* type,stride,ptr */
+        gh.pointsize.type = a[0];
+        gh.pointsize.stride = a[1];
+        gh.pointsize.ptr = a[2];
+        gles_buffer_bind(&gh.pointsize.vbo, gh.array_buffer);
         return 0;
 
     case GLES_SLOT_TEXCOORD_POINTER:
@@ -4547,7 +4710,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             return -1;
         }
         /* We already applied `first` when fetching, so draw from 0. */
-        glDrawArrays(mode, 0, count);
+        if (mode == GL_POINTS && gh.pointsize.enabled) {
+            gles_draw_sized_points(cpu, first, count);
+        } else {
+            glDrawArrays(mode, 0, count);
+        }
         gles_check_draw("glDrawArrays", mode, count);
         gles_trace_draw("glDrawArrays", mode, count);
         gles_unbind_arrays(bound);
@@ -4697,6 +4864,20 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         union { GLfloat f[4]; GLint i[4]; } p = {0};
         unsigned n = slot == GLES_SLOT_TEX_ENVIV ? gles_texenv_nparams(a[0], a[1]) :
                                                  gles_texparam_nparams(a[0], a[1]);
+        if (slot != GLES_SLOT_TEX_ENVIV && a[0] == GL_TEXTURE_2D &&
+            a[1] == GL_TEXTURE_CROP_RECT_OES) {
+            /* Desktop GL has no crop rect; it lives here, keyed by the bound
+             * texture, until glDrawTex*OES reads it. */
+            GLint bound = 0;
+            GLint *rect = g_new0(GLint, 4);
+            if (!gles_fetch_params(cpu, a[2], 4, &p)) { g_free(rect); return -1; }
+            for (unsigned i = 0; i < 4; i++)
+                rect[i] = slot == GLES_SLOT_TEX_PARAMETERFV ? (GLint)p.f[i] : p.i[i];
+            glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+            if (!gh.crop) gh.crop = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+            g_hash_table_insert(gh.crop, GUINT_TO_POINTER((guint)bound), rect);
+            return 0;
+        }
         if (!n) return gles_reject(GL_INVALID_ENUM);
         if (!gles_fetch_params(cpu, a[2], n, &p)) return -1;
         if (slot == GLES_SLOT_TEX_PARAMETERFV) glTexParameterfv(a[0], a[1], p.f);
@@ -5418,6 +5599,98 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * Trading a no-op hint for a spurious error is a bad bargain.
          */
         return 0;
+
+    /* ---- one-to-one forwards (2026-09-27) ---- */
+    case GLES_SLOT_COPY_TEX_SUB_IMAGE_2D:       /* target,level,xoff,yoff,x,y,w,h */
+        glCopyTexSubImage2D(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
+        return 0;
+    case GLES_SLOT_IS_ENABLED:
+        return glIsEnabled(a[0]);
+    case GLES_SLOT_IS_TEXTURE:
+        return glIsTexture(a[0]);
+    case GLES_SLOT_LIGHT_MODELF:                /* pname, param */
+        glLightModelf(a[0], gles_f(a[1]));
+        return 0;
+    case GLES_SLOT_LIGHT_MODELFV: {             /* pname, params */
+        float p[4];
+        unsigned n = a[0] == GL_LIGHT_MODEL_AMBIENT ? 4 :
+                     a[0] == GL_LIGHT_MODEL_TWO_SIDE ? 1 : 0;
+        if (!n) return gles_reject(GL_INVALID_ENUM);
+        if (!gles_fetch_params(cpu, a[1], n, p)) return -1;
+        glLightModelfv(a[0], p);
+        return 0;
+    }
+    case GLES_SLOT_LIGHTF:                      /* light, pname, param */
+        glLightf(a[0], a[1], gles_f(a[2]));
+        return 0;
+    case GLES_SLOT_LOGIC_OP:
+        glLogicOp(a[0]);
+        return 0;
+    case GLES_SLOT_BLEND_FUNC_SEPARATE:         /* srcRGB,dstRGB,srcA,dstA */
+        glBlendFuncSeparate(a[0], a[1], a[2], a[3]);
+        return 0;
+    case GLES_SLOT_BLEND_EQUATION:
+        glBlendEquation(a[0]);
+        return 0;
+    case GLES_SLOT_BLEND_EQUATION_SEPARATE:     /* modeRGB, modeAlpha */
+        glBlendEquationSeparate(a[0], a[1]);
+        return 0;
+    case GLES_SLOT_POINT_PARAMETERF:            /* pname, param */
+        glPointParameterf(a[0], gles_f(a[1]));
+        return 0;
+    case GLES_SLOT_POINT_PARAMETERFV: {         /* pname, params */
+        float p[3];
+        unsigned n = a[0] == GL_POINT_DISTANCE_ATTENUATION ? 3 : 1;
+        if (!gles_fetch_params(cpu, a[1], n, p)) return -1;
+        glPointParameterfv(a[0], p);
+        return 0;
+    }
+    case GLES_SLOT_CLIP_PLANEF: {               /* plane, equation[4] */
+        float p[4];
+        double d[4];
+        if (!gles_fetch_params(cpu, a[1], 4, p)) return -1;
+        for (unsigned i = 0; i < 4; i++) d[i] = p[i];
+        glClipPlane(a[0], d);
+        return 0;
+    }
+
+    case GLES_SLOT_DRAW_TEXS_OES:               /* x,y,z,w,h as short/int/fixed/float */
+    case GLES_SLOT_DRAW_TEXI_OES:
+    case GLES_SLOT_DRAW_TEXX_OES:
+    case GLES_SLOT_DRAW_TEXF_OES: {
+        float v[5];
+        for (unsigned i = 0; i < 5; i++) {
+            v[i] = slot == GLES_SLOT_DRAW_TEXF_OES ? gles_f(a[i]) :
+                   slot == GLES_SLOT_DRAW_TEXX_OES ? gles_x(a[i]) :
+                   slot == GLES_SLOT_DRAW_TEXS_OES ? (float)(int16_t)a[i] :
+                                                     (float)(int32_t)a[i];
+        }
+        gles_draw_tex(v[0], v[1], v[2], v[3], v[4]);
+        gh.draws++;
+        return 0;
+    }
+    case GLES_SLOT_DRAW_TEXSV_OES:              /* pointer to 5 values */
+    case GLES_SLOT_DRAW_TEXIV_OES:
+    case GLES_SLOT_DRAW_TEXXV_OES:
+    case GLES_SLOT_DRAW_TEXFV_OES: {
+        float v[5];
+        if (slot == GLES_SLOT_DRAW_TEXSV_OES) {
+            int16_t sv[5];
+            if (!a[0] || cpu_memory_rw_debug(cpu, a[0], (uint8_t *)sv, sizeof sv, 0)) return -1;
+            for (unsigned i = 0; i < 5; i++) v[i] = sv[i];
+        } else {
+            uint32_t raw[5];
+            if (!a[0] || cpu_memory_rw_debug(cpu, a[0], (uint8_t *)raw, sizeof raw, 0)) return -1;
+            for (unsigned i = 0; i < 5; i++) {
+                v[i] = slot == GLES_SLOT_DRAW_TEXFV_OES ? gles_f(raw[i]) :
+                       slot == GLES_SLOT_DRAW_TEXXV_OES ? gles_x(raw[i]) :
+                                                          (float)(int32_t)raw[i];
+            }
+        }
+        gles_draw_tex(v[0], v[1], v[2], v[3], v[4]);
+        gh.draws++;
+        return 0;
+    }
 
     /* ---- lighting and fog ---- */
     case GLES_SLOT_LIGHTFV: {                   /* light, pname, params */
@@ -6176,8 +6449,10 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
                     if (n_seen < ARRAY_SIZE(seen)) {
                         seen[n_seen++] = (uint16_t)slot;
                     }
-                    fprintf(stderr, "[gles] slot %u raised GL error 0x%x\n",
-                            slot, e);
+                    fprintf(stderr, "[gles] slot %u raised GL error 0x%x "
+                            "(args 0x%x 0x%x 0x%x)\n", slot, e,
+                            argc > 0 ? a[0] : 0, argc > 1 ? a[1] : 0,
+                            argc > 2 ? a[2] : 0);
                 }
             }
         }

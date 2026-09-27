@@ -46,6 +46,11 @@ int main(void)
     /* new in 3.2 / not ES: log-once stubs */
     assert(front[761] == (void *)g761 && front[825] == (void *)g825 && front[0] == (void *)g0);
     for (int i = 0; i < GLI_N_SLOTS; i++) assert(front[i] && front[i] == back[i]);
+    /* iPod main-line ES1 fills reach the 3.2 slots (3.1.3 slot + 3) */
+    assert(front[820] == (void *)s_drawTexf && GLI_SLOT_glDrawTexfOES == 820);
+    /* a stub reports by name and returns 0 */
+    assert(((int (*)(void *))front[825])(0) == 0);
+    assert(!strcmp(gli_slot_names[825], "glFramebufferParameteriAPPLE"));
 
     assert(!strcmp(gli_getString(ctx, 0x1F02), "OpenGL ES 2.0"));
     assert(gliCreateContext(&ctx1, pf, root, front, back, 4) == 0);

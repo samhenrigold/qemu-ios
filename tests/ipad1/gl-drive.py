@@ -4,7 +4,7 @@
     tests/ipad1/gl-drive.py --nand STORE --out DIR [--kboot K] [--seconds N] STEP...
 
 STEP is one of  sleep:S  shot:NAME  tap:X,Y  swipe:X1,Y1,X2,Y2  home  button:NAME  key:QCODE  wait:TEXT
-                orient:N (accelerometer orientation)  pinch:CX,CY,R0,R1
+                orient:N (accelerometer orientation)  heading:DEG (compass)  pinch:CX,CY,R0,R1
                 burst:N (N back-to-back screendumps; prints distinct frames/s)
 (scanout pixels, 1024x768; wait:TEXT polls the serial log). The base store is
 never written: its changes go to DIR/overlay. Serial, QEMU stderr (the GLES
@@ -80,6 +80,8 @@ def main():
                 print("  burst: %d dumps in %.2fs, %d frame changes (%.1f/s)"
                       % (len(seen), dt, changes, changes / dt), flush=True)
                 os.unlink(f"{a.out}/burst.ppm")
+            elif op == "heading":           # compass heading, degrees
+                q.cmd("qom-set", path="/machine", property="compass-heading", value=int(arg))
             elif op == "orient":
                 q.cmd("qom-set", path="/machine", property="accel-orientation", value=int(arg))
             elif op == "pinch":
