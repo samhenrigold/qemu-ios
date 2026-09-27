@@ -35,6 +35,11 @@
 #define S5L8930_CDMA_SIZE        0x26000
 #define S5L8930_AES_BASE         0x87800000   /* CDMA AES filter contexts, ctx n at n<<12 */
 #define S5L8930_AES_SIZE         0x9000
+#define S5L8930_PWM_BASE         0x83500000   /* codec MCLK source; unmodelled */
+#define S5L8930_AMC_BASE         0x84100000   /* audio media codec registers */
+#define S5L8930_AMC_AUX_BASE     0x84300000   /* third AMC window, unmodelled */
+#define S5L8930_AMC_AUX_SIZE     0x5000
+#define S5L8930_I2S_BASE(n)      (0x84500400 + (n) * 0x1000)
 #define S5L8930_SWI_BASE         0xbf600000   /* backlight/core-voltage single-wire, same IP as the S5L8720's */
 #define S5L8930_PMGR_BASE        0xbf100000   /* clocks, gates, timer (+0x2000), POWER_ID (+0x6000) */
 #define S5L8930_PMGR_SIZE        0x8000
@@ -63,6 +68,7 @@
 #define S5L8930_IRQ_CLCD         0x29
 #define S5L8930_IRQ_DISP_PIPE0   0x2a
 #define S5L8930_IRQ_CDMA(ch)     (0x31 + (ch))
+#define S5L8930_IRQ_AMC          0x56          /* first of the AMC's 23 lines */
 #define S5L8930_IRQ_GPIO         0x74
 
 /*
@@ -110,6 +116,14 @@
 /* LTC4099 charger at 0x09 on i2c0 (hw/arm/s5l8930_ltc4099.c); its STAT byte
  * is where the USB arbitrator learns a cable is present (usb-present prop). */
 #define TYPE_S5L8930_LTC4099 "s5l8930.ltc4099"
+#define TYPE_S5L8930_TSL2581 "s5l8930.tsl2581"   /* ambient light sensor at 0x39 on i2c2 */
+
+/*
+ * bq27545 gas gauge (hw/arm/s5l8930_hdq.c): a chardev speaking HDQ-over-UART
+ * the way configd's AppleHDQGasGauge plugin bit-bangs it on /dev/tty.gas-gauge
+ * (UART5). Attach it as UART5's chardev.
+ */
+#define TYPE_CHARDEV_S5L8930_HDQ "chardev-s5l8930-hdq-gauge"
 
 /*
  * Display (hw/arm/s5l8930_display.c): DisplayPipe0 + CLCD + RGBOUT/TV-out

@@ -4,6 +4,7 @@
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "hw/arm/ipod-attitude.h"
+#include "hw/qdev-properties.h"
 
 /* 1 g in LIS302DL output counts. The part is ±2 g full-scale over a signed
  * 8-bit register (18 mg/digit), so 1 g ~= 0x38. Any value with the right sign
@@ -137,14 +138,18 @@ static uint8_t lis302dl_recv(I2CSlave *i2c)
     LIS302DLState *s = LIS302DL(i2c);
     uint8_t ret;
 
-    if (s->cmd == ACCEL_OUT_X || s->cmd == ACCEL_OUT_Y || s->cmd == ACCEL_OUT_Z) {
+    /* Bit 7 of the pointer is the auto-increment flag on both parts; the
+     * LIS331DLH driver sets it for its 16-bit OUT_X_L/H bursts. */
+    uint8_t reg = s->cmd & 0x7f;
+
+    if (reg == ACCEL_OUT_X || reg == ACCEL_OUT_Y || reg == ACCEL_OUT_Z) {
         int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         lis302dl_sample(s, now);
-        if (s->cmd == ACCEL_OUT_X) lis302dl_trace_poll(s, now);
+        if (reg == ACCEL_OUT_X) lis302dl_trace_poll(s, now);
     }
-    switch(s->cmd) {
+    switch(reg) {
         case ACCEL_WHOAMI:
-            ret = ACCEL_WHOAMI_VALUE;
+            ret = s->whoami;
             break;
         case ACCEL_STATUS:
             /* All axes have fresh data available (ZYXDA + per-axis DA), no
@@ -161,6 +166,17 @@ static uint8_t lis302dl_recv(I2CSlave *i2c)
          * acceleration whenever the sensor is not held in explicit power-down,
          * i.e. as long as CTRL_REG1 has ever been programmed non-zero.
          */
+        /*
+         * LIS331DLH: 12-bit left-justified 16-bit outputs, OUT_x_L at 0x28/
+         * 0x2A/0x2C and OUT_x_H at the LIS302DL's 8-bit addresses. A zero low
+         * byte makes the high byte the same 64-counts/g value; AppleLIS331DLH
+         * then does (v + 15) >> 4 and applies the DT orientation matrix.
+         */
+        case ACCEL_OUT_X - 1:
+        case ACCEL_OUT_Y - 1:
+        case ACCEL_OUT_Z - 1:
+            ret = 0;
+            break;
         case ACCEL_OUT_X:
             ret = (uint8_t)s->out_x;
             break;
@@ -181,13 +197,13 @@ static uint8_t lis302dl_recv(I2CSlave *i2c)
             break;
         default:
             if (lis302dl_debug()) {
-                printf("%s: unknown register 0x%02x\n", __func__, s->cmd);
+                printf("%s: unknown register 0x%02x\n", __func__, reg);
             }
             ret = 0;
             break;
     }
     if (lis302dl_debug()) {
-        printf("lis302dl: read reg 0x%02x -> 0x%02x\n", s->cmd, ret);
+        printf("lis302dl: read reg 0x%02x -> 0x%02x\n", reg, ret);
     }
     /* honor the multi-byte / auto-increment read the driver uses to slurp
      * OUT_X/Y/Z in one burst */
@@ -206,7 +222,7 @@ static int lis302dl_send(I2CSlave *i2c, uint8_t data)
     }
 
     /* a data byte written to the current register */
-    switch (s->cmd) {
+    switch (s->cmd & 0x7f) {
         case ACCEL_CTRL_REG1: s->ctrl_reg1 = data; break;
         case ACCEL_CTRL_REG2:
             /*
@@ -357,11 +373,16 @@ static const VMStateDescription vmstate_lis302dl = {
     }
 };
 
+static const Property lis302dl_properties[] = {
+    DEFINE_PROP_UINT8("whoami", LIS302DLState, whoami, ACCEL_WHOAMI_VALUE),
+};
+
 static void lis302dl_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_lis302dl;
+    device_class_set_props(dc, lis302dl_properties);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
 
     k->event = lis302dl_event;
