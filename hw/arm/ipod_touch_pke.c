@@ -111,9 +111,10 @@ static void pke_execute(IPodTouchPKEState *s, uint32_t command)
                      !memcmp(expected, result, size);
         uint8_t hash[20];
         if (s->vouch) {
+            if (getenv("TMP_FORGE")) fprintf(stderr,"[[PKE exit valid=%d rec=%02x%02x]]\n",valid,result[size-20],result[size-19]);
             if (s->vouch(s->vouch_opaque, result + size - 20, hash) &&
                 (!valid || memcmp(hash, result + size - 20, 20))) {
-                qemu_log_mask(LOG_UNIMP, "[PKE] forged signature digest "
+                if(getenv("TMP_FORGE"))fprintf(stderr,"[[FORGE %02x%02x -> %02x%02x]]\n",result[size-20],result[size-19],hash[0],hash[1]);qemu_log_mask(LOG_UNIMP, "[PKE] forged signature digest "
                               "%02x%02x.. -> %02x%02x..\n", result[size - 20],
                               result[size - 19], hash[0], hash[1]);
                 build_pkcs1_block(result, size, hash);
