@@ -102,7 +102,7 @@ static unsigned slen(const char *s) { unsigned n = 0; while (s && s[n]) n++; ret
 
 /* api and sg are glishim.c's (the GLEngine replacement, which #includes this
  * file); the MBX path leaves them zero. */
-typedef struct { unsigned host, unpack_alignment, api, owns_sg; void *sg; } GuestGC;
+typedef struct { unsigned host, unpack_alignment, api, owns_sg; void *sg; unsigned unpack_row_bytes; } GuestGC;
 extern void *calloc(unsigned long, unsigned long);
 extern void free(void *);
 static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args);
@@ -192,6 +192,7 @@ static unsigned texture_bytes(void *gc, unsigned width, unsigned height,
     unsigned bpp = 0;
     if (type == 0x8363 && format == 0x1907) bpp = 2; /* RGB565 */
     else if ((type == 0x8033 || type == 0x8034) && format == 0x1908) bpp = 2;
+    else if (type == 0x8367 && format == 0x80e1) bpp = 4;  /* BGRA 8_8_8_8_REV (CoreAnimation) */
     else if (type == 0x1401) {
         switch (format) {
         case 0x1908: case 0x80e1: bpp = 4; break;
@@ -204,6 +205,8 @@ static unsigned texture_bytes(void *gc, unsigned width, unsigned height,
     unsigned alignment = gc ? ((GuestGC *)gc)->unpack_alignment : 0;
     if (!alignment) alignment = 4;
     unsigned row = width * bpp, stride = (row + alignment - 1) & ~(alignment - 1);
+    unsigned row_bytes = gc ? ((GuestGC *)gc)->unpack_row_bytes : 0;
+    if (row_bytes >= row) stride = row_bytes;   /* GL_UNPACK_ROW_BYTES_APPLE */
     unsigned long long total = (unsigned long long)(height - 1) * stride + row;
     return total <= (64u << 20) ? (unsigned)total : 0;
 }
@@ -500,6 +503,8 @@ static int s_pixelStorei(void *gc, unsigned pname, unsigned param)
     {
         if (gc && pname == 0x0cf5 && (param == 1 || param == 2 || param == 4 || param == 8))
             ((GuestGC *)gc)->unpack_alignment = param;
+        if (gc && pname == 0x8a16)                  /* GL_UNPACK_ROW_BYTES_APPLE */
+            ((GuestGC *)gc)->unpack_row_bytes = param;
         return (int)qc(195, gc, 2, A(pname, param));
     }
 static int s_scissor(void *gc, unsigned x, unsigned y, unsigned wd_, unsigned ht)
