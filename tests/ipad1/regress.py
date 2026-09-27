@@ -58,7 +58,12 @@ UNLOCK_FROM, UNLOCK_TO = (64, 290), (64, 720)
 USB_ALERT_DISMISS = (475, 385)   # stock "The attached USB device is not supported." (the USB keyboard)
 SAFARI_ICON, SAFARI_ADDRESS = (64, 117), (968, 330)
 
+SLOT_WAIT_TRIES = 20   # x 15 s: give up and SKIP after 5 min rather than hang behind other boots
 launch_lock = threading.Lock()
+
+
+class NoSlot(Exception):
+    pass
 
 
 class Boot:
@@ -83,9 +88,13 @@ class Boot:
     def start(self):
         cfg = self.cfg
         with launch_lock:       # the host-wide QEMU budget, checked and claimed atomically for our threads
-            while int(subprocess.run("pgrep -x qemu-system-arm | wc -l", shell=True, capture_output=True,
-                                     text=True).stdout) >= MAX_QEMUS:
+            for _ in range(SLOT_WAIT_TRIES + 1):
+                if int(subprocess.run("pgrep -x qemu-system-arm | wc -l", shell=True, capture_output=True,
+                                      text=True).stdout) < MAX_QEMUS:
+                    break
                 time.sleep(15)
+            else:
+                raise NoSlot("no QEMU slot free within %d s" % (SLOT_WAIT_TRIES * 15))
             machine = "ipad1,kboot=%s,nand=%s,nand-overlay=%s" % (cfg.kboot, cfg.nand, self.overlay)
             self.usb_port = self.mux_port = 0
             if self.usb:
@@ -443,6 +452,8 @@ def main():
         for f in concurrent.futures.as_completed(futs):
             try:
                 f.result()
+            except NoSlot as e:
+                results[futs[f]].skip(str(e))
             except Exception as e:
                 results[futs[f]].set(False, "harness error: %r" % e)
     print("=" * 62)
