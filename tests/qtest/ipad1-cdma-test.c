@@ -60,6 +60,11 @@ static void test_m2m(void)
     g_assert_cmphex(qtest_readl(qts, CH_BASE + 0x14), ==, RING + 64);
 }
 
+/*
+ * The kernel's AES op: channel 1 (ctrl 0x188 = context 1) feeds the source
+ * through the engine, channel 2 (ctrl 0x88) drains the output; neither has a
+ * settings or FIFO address. Only channel 2 is expected to finish with done.
+ */
 static void test_aes(void)
 {
     /* AES-128-CBC decrypt of a zero block under a zero key and IV. */
@@ -69,17 +74,69 @@ static void test_aes(void)
     };
     uint8_t zero[16] = { 0 }, out[16];
     uint32_t ctx1 = AES_BASE + (1 << 12);
+    uint32_t ch1 = CDMA_BASE + (1 << 12), ch2 = CDMA_BASE + (2 << 12);
+    uint32_t st;
 
     qtest_memwrite(qts, SRC, zero, sizeof(zero));
     for (int i = 0; i < 4; i++) {
         qtest_writel(qts, ctx1 + 0x10 + 4 * i, 0);
         qtest_writel(qts, ctx1 + 0x20 + 4 * i, 0);
     }
-    /* channel 2, enable, 128-bit custom key, decrypt */
-    qtest_writel(qts, ctx1 + 0x00, (CH << 8) | 0x20000 | 0x100000);
+    /* channel 1, enable, 128-bit custom key, decrypt */
+    qtest_writel(qts, ctx1 + 0x00, (1 << 8) | 0x20000 | 0x100000);
     write_desc(qts, RING, RING + 32, 0x30103, SRC, 16);
-    run_chain(qts, RING);
+    write_desc(qts, RING + 0x1000, RING + 0x1020, 0x103, DST, 16);
+
+    qtest_writel(qts, CDMA_BASE + 0x00, (1 << 1) | (1 << 2));
+    for (int ch = 1; ch <= 2; ch++) {
+        uint32_t base = ch == 1 ? ch1 : ch2;
+        qtest_writel(qts, base + 0x00, 2);
+        qtest_writel(qts, base + 0x00, 0);
+        qtest_writel(qts, base + 0x14, ch == 1 ? RING : RING + 0x1000);
+        qtest_writel(qts, base + 0x00, ch == 1 ? 0x188 : 0x88);
+        qtest_writel(qts, base + 0x0c, 16);
+    }
+    qtest_writel(qts, ch1 + 0x00, 0x189);
+    qtest_writel(qts, ch2 + 0x00, 0x89);
+    st = qtest_readl(qts, ch2 + 0x00);
+    g_assert_cmphex(st & 0xC0000, ==, 0x80000);
+    qtest_writel(qts, ch2 + 0x00, st);                   /* ISR writes it back */
+    g_assert_cmphex(qtest_readl(qts, ch2 + 0x00), ==, 0x88);
     qtest_memread(qts, DST, out, sizeof(out));
+    g_assert_cmpmem(expect, sizeof(expect), out, sizeof(out));
+}
+
+/* SHA-1("abc") the kext's way: software-padded block streamed by ch 4. */
+static void test_sha1(void)
+{
+    static const uint8_t expect[20] = {
+        0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e,
+        0x25, 0x71, 0x78, 0x50, 0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d,
+    };
+    uint8_t block[64] = { 'a', 'b', 'c', 0x80 };
+    uint8_t out[20];
+    uint32_t sha1 = 0x80100000, ch4 = CDMA_BASE + (4 << 12);
+
+    block[63] = 24;                                      /* bit length */
+    qtest_memwrite(qts, SRC, block, sizeof(block));
+    write_desc(qts, RING, RING + 32, 0x103, SRC, 64);
+    qtest_writel(qts, sha1 + 0x04, 1);
+    qtest_writel(qts, sha1 + 0x10, 0);
+    qtest_writel(qts, sha1 + 0x00, 2);
+
+    qtest_writel(qts, CDMA_BASE + 0x00, 1 << 4);
+    qtest_writel(qts, ch4 + 0x00, 2);
+    qtest_writel(qts, ch4 + 0x04, 2 | (2 << 2) | (5 << 4) | (1 << 16));
+    qtest_writel(qts, ch4 + 0x08, sha1 + 0xa0);
+    qtest_writel(qts, ch4 + 0x14, RING);
+    qtest_writel(qts, ch4 + 0x00, 0x19);
+    g_assert_cmphex(qtest_readl(qts, ch4 + 0x00) & 0xC0000, ==, 0x80000);
+    for (int i = 0; i < 5; i++) {
+        uint32_t v = qtest_readl(qts, sha1 + 0x20 + 4 * i);
+        for (int j = 0; j < 4; j++) {           /* byte-swapped words */
+            out[4 * i + j] = v >> (8 * j);
+        }
+    }
     g_assert_cmpmem(expect, sizeof(expect), out, sizeof(out));
 }
 
@@ -103,6 +160,7 @@ int main(int argc, char **argv)
     qts = qtest_initf("-machine ipad1,kboot=%s", kboot);
     qtest_add_func("/ipad1/cdma/m2m", test_m2m);
     qtest_add_func("/ipad1/cdma/aes", test_aes);
+    qtest_add_func("/ipad1/cdma/sha1", test_sha1);
     ret = g_test_run();
     qtest_quit(qts);
     unlink(kboot);

@@ -28,6 +28,13 @@
  * 22 UID), +0x10 IV, +0x20 key. Context 0's word is the key-disable register
  * (bit n = key n is fused off; sticky).
  *
+ * AES data operations use two channels as a pipeline (7B500 CDMAAES via
+ * CDMAChannelM2M): channel 1, with the context number in ctrl bits 8-15 and
+ * no device address, feeds its descriptors through the context into the
+ * engine; channel 2, with neither, drains the engine's output into its own
+ * descriptors. Only the draining channel interrupts; the feeding channel's
+ * done bit is polled/reset by the driver, never acked.
+ *
  * A chain runs to completion inside the go write, so the guest never observes
  * the running state and the resume/abort handshakes degenerate to flag
  * bookkeeping. The UID key is a fixed made-up value (as on the iPod machine);
@@ -64,6 +71,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930CDMAState, S5L8930_CDMA)
 #define CTRL_ABORT          (1u << 2)
 #define CTRL_HOLD           (1u << 5)
 #define CTRL_CONFIG_MASK    0xFFF8u         /* bits the guest owns */
+#define CTRL_AES_CTX(ctrl)  (((ctrl) >> 8) & 0xFF)
 #define ST_RUNNING          (1u << 16)
 #define ST_ERROR            (1u << 18)
 #define ST_DONE             (1u << 19)
@@ -113,6 +121,9 @@ struct S5L8930CDMAState {
     uint32_t enabled[2];
     CDMAChannel ch[CDMA_CHANNELS];
     AESContext aes[AES_CONTEXTS];
+    /* engine output queue: filled by the feeding channel, drained by ch2 */
+    uint8_t *fifo;
+    uint32_t fifo_len;
     bool gid_warned;
 };
 
@@ -249,7 +260,29 @@ static bool aes_apply(S5L8930CDMAState *s, AESContext *c, uint8_t *buf,
 static void cdma_update_irq(S5L8930CDMAState *s, int ch)
 {
     bool en = s->enabled[ch >> 5] & (1u << (ch & 31));
+    /* The AES-feeding channel's line is never acked by the driver: an
+     * asserted level there re-enters the draining channel's handler after it
+     * has finished and panics ("CDMA M2M unexpected interrupt"). */
+    if (CTRL_AES_CTX(s->ch[ch].ctrl)) {
+        en = false;
+    }
     qemu_set_irq(s->irq[ch], en && (s->ch[ch].ctrl & (ST_DONE | ST_ERROR)));
+}
+
+static void fifo_push(S5L8930CDMAState *s, const uint8_t *buf, uint32_t len)
+{
+    s->fifo = g_realloc(s->fifo, s->fifo_len + len);
+    memcpy(s->fifo + s->fifo_len, buf, len);
+    s->fifo_len += len;
+}
+
+static uint32_t fifo_pop(S5L8930CDMAState *s, uint8_t *buf, uint32_t len)
+{
+    len = MIN(len, s->fifo_len);
+    memcpy(buf, s->fifo, len);
+    memmove(s->fifo, s->fifo + len, s->fifo_len - len);
+    s->fifo_len -= len;
+    return len;
 }
 
 /*
@@ -282,8 +315,11 @@ static void cdma_fifo_xfer(uint32_t fifo, uint32_t width, uint8_t *buf,
 static void cdma_run(S5L8930CDMAState *s, int ch)
 {
     CDMAChannel *c = &s->ch[ch];
-    AESContext *aes = NULL;
-    bool to_device = c->settings & SET_TO_DEVICE;
+    int ctx = CTRL_AES_CTX(c->ctrl);
+    AESContext *aes = (ctx > 0 && ctx < AES_CONTEXTS) ? &s->aes[ctx] : NULL;
+    bool feeds = aes != NULL;                   /* memory -> AES engine */
+    bool drains = !feeds && !c->fifo && !c->settings;   /* engine -> memory */
+    bool to_device = feeds || (c->settings & SET_TO_DEVICE);
     uint32_t width = 1u << ((c->settings >> 2) & 3);
     uint32_t dev = c->fifo;
     bool dev_mem = cdma_is_memory(dev);
@@ -327,7 +363,9 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
                 if (flags & DESC_AES) {
                     ok = aes_apply(s, aes, buf, len, flags & DESC_AES_RESTART);
                 }
-                if (dev_mem) {
+                if (feeds) {
+                    fifo_push(s, buf, len);
+                } else if (dev_mem) {
                     dma_memory_write(&address_space_memory, dev, buf, len,
                                      MEMTXATTRS_UNSPECIFIED);
                     dev += len;
@@ -335,7 +373,12 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
                     cdma_fifo_xfer(dev, width, buf, len, true);
                 }
             } else {
-                if (dev_mem) {
+                if (drains) {
+                    if (fifo_pop(s, buf, len) != len) {
+                        error = 5;              /* engine underrun */
+                        break;
+                    }
+                } else if (dev_mem) {
                     dma_memory_read(&address_space_memory, dev, buf, len,
                                     MEMTXATTRS_UNSPECIFIED);
                     dev += len;
@@ -450,8 +493,7 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
     switch (reg) {
     case CH_CTRL:
         if (v & CTRL_RESET) {
-            c->ctrl = 0;
-            c->remain = c->error = 0;
+            memset(c, 0, sizeof(*c));
             break;
         }
         c->ctrl = (c->ctrl & ~(CTRL_CONFIG_MASK | (v & ST_W1C))) |
@@ -555,6 +597,9 @@ static void s5l8930_cdma_reset(DeviceState *dev)
     memset(s->enabled, 0, sizeof(s->enabled));
     memset(s->ch, 0, sizeof(s->ch));
     memset(s->aes, 0, sizeof(s->aes));
+    g_free(s->fifo);
+    s->fifo = NULL;
+    s->fifo_len = 0;
     for (int i = 0; i < CDMA_CHANNELS; i++) {
         qemu_set_irq(s->irq[i], 0);
     }
@@ -611,6 +656,8 @@ static const VMStateDescription vmstate_s5l8930_cdma = {
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(enabled, S5L8930CDMAState, 2),
+        VMSTATE_UINT32(fifo_len, S5L8930CDMAState),
+        VMSTATE_VBUFFER_ALLOC_UINT32(fifo, S5L8930CDMAState, 0, NULL, fifo_len),
         VMSTATE_STRUCT_ARRAY(ch, S5L8930CDMAState, CDMA_CHANNELS, 1,
                              vmstate_cdma_channel, CDMAChannel),
         VMSTATE_STRUCT_ARRAY(aes, S5L8930CDMAState, AES_CONTEXTS, 1,
