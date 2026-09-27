@@ -66,6 +66,8 @@ struct IPad1MachineState {
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool kbd_cmd, kbd_shift;
     int kbd_btn_held[Q_KEY_CODE__MAX];   /* qcode -> 1 + button pin */
+    int mtt_x[MT_MAX_FINGERS], mtt_y[MT_MAX_FINGERS];  /* latched per slot */
+    bool mtt_seen[MT_MAX_FINGERS];
 };
 
 /* GHWCFG1-4 of the DWC OTG core; same synthesis as the S5L8720's. */
@@ -137,12 +139,17 @@ static void ipad1_cpu_reset(void *opaque)
  * digitizer is portrait-native. Found by trying all eight axis maps against
  * slide-to-unlock: digitizer x = 1 - panel y, y-from-bottom = 1 - panel x.
  */
+static void ipad1_map_touch(int x, int y, float *fx, float *fy)
+{
+    *fx = 1.0f - y / 32768.0f;
+    *fy = 1.0f - x / 32768.0f;
+}
+
 static void ipad1_mouse_event(void *opaque, int x, int y, int z, int buttons)
 {
     IPodTouchMultitouchState *mt = opaque;
 
-    mt->touch_x = 1.0f - y / 32768.0f;
-    mt->touch_y = 1.0f - x / 32768.0f;
+    ipad1_map_touch(x, y, &mt->touch_x, &mt->touch_y);
     if (buttons && !mt->touch_down) {
         ipod_touch_multitouch_on_touch(mt);
     } else if (!buttons && mt->touch_down) {
@@ -151,6 +158,56 @@ static void ipad1_mouse_event(void *opaque, int x, int y, int z, int buttons)
         ipod_touch_multitouch_on_motion(mt);
     }
 }
+
+/*
+ * Multi-touch from the host: QEMU's "mtt" events (QMP input-send-event), same
+ * two-phase protocol as the iPod panel (ipod_touch_lcd_mtt_event): DATA
+ * latches a slot's abs X/Y in panel coordinates, BEGIN/UPDATE/END commit it.
+ */
+static void ipad1_mtt_event(DeviceState *dev, QemuConsole *src, InputEvent *evt)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(qdev_get_machine());
+    InputMultiTouchEvent *mtt = evt->u.mtt.data;
+    int slot = mtt->slot;
+    float fx, fy;
+
+    if (slot < 0 || slot >= MT_MAX_FINGERS) {
+        return;
+    }
+    switch (mtt->type) {
+    case INPUT_MULTI_TOUCH_TYPE_DATA:
+        if (mtt->axis == INPUT_AXIS_X) {
+            s->mtt_x[slot] = mtt->value;
+        } else {
+            s->mtt_y[slot] = mtt->value;
+        }
+        s->mtt_seen[slot] = true;
+        return;
+    case INPUT_MULTI_TOUCH_TYPE_BEGIN:
+    case INPUT_MULTI_TOUCH_TYPE_UPDATE:
+    case INPUT_MULTI_TOUCH_TYPE_END:
+    case INPUT_MULTI_TOUCH_TYPE_CANCEL:
+        if (!s->mtt_seen[slot]) {
+            return;
+        }
+        ipad1_map_touch(s->mtt_x[slot], s->mtt_y[slot], &fx, &fy);
+        bool down = mtt->type == INPUT_MULTI_TOUCH_TYPE_BEGIN ||
+                    mtt->type == INPUT_MULTI_TOUCH_TYPE_UPDATE;
+        ipod_touch_multitouch_set_finger(s->mt, slot, fx, fy, down);
+        if (!down) {
+            s->mtt_seen[slot] = false;
+        }
+        return;
+    default:
+        return;
+    }
+}
+
+static const QemuInputHandler ipad1_mtt_handler = {
+    .name  = "iPad Multitouch",
+    .mask  = INPUT_EVENT_MASK_MTT,
+    .event = ipad1_mtt_event,
+};
 
 /* GPIO pin level for the awake path; Home/Hold also go to the PMU, which
  * is the wake source once the kernel has put the AP to sleep. */
@@ -465,6 +522,7 @@ static void ipad1_init(MachineState *machine)
         qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(S5L8930_GPIO_MT_ATN)));
     qemu_add_mouse_event_handler(ipad1_mouse_event, s->mt, 1, "iPad Touchscreen");
     qemu_input_handler_register(s->gpio, &ipad1_kbd_handler);
+    qemu_input_handler_register(s->gpio, &ipad1_mtt_handler);
 
     /*
      * SPI2 is the baseband link. The Wi-Fi iPad has the controller but no
