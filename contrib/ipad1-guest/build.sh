@@ -12,7 +12,7 @@ export GUEST_ARCH=armv7
 export ARMV6_SDK="${IPAD_SDK:-$HOME/Developer/qemu-ios-files/ipad1/sdk/x-iPhoneSDK3_2_2/Payload/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS3.2.sdk}"
 . "$HERE/../armv6-toolchain/armv6.sh"
 mkdir -p "$OUT"
-for src in it-pasteboard/it_pbd it-ethlink/it_ethlink; do
+for src in it-pasteboard/it_pbd it-ethlink/it_ethlink it-seal/it_seal; do
     t="${src##*/}"
     cc6 "$HERE/../$src.c" "$OUT/$t.o"
     link6 -execute "$OUT/$t" "$OUT/$t.o"
