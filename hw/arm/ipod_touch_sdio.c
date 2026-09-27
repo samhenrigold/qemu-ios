@@ -202,7 +202,7 @@ static void raise_irq_soon(IPodTouchSDIOState *s, uint32_t bits)
 static uint32_t sdpcm_reg_read(IPodTouchSDIOState *s, uint32_t off)
 {
     uint8_t buf[4];
-    backplane_read(s, SDPCM_CORE_BASE + off, buf, sizeof(buf));
+    backplane_read(s, s->chip.sdiod_base + off, buf, sizeof(buf));
     return ldl_le_p(buf);
 }
 
@@ -210,7 +210,7 @@ static void sdpcm_reg_write(IPodTouchSDIOState *s, uint32_t off, uint32_t val)
 {
     uint8_t buf[4];
     stl_le_p(buf, val);
-    backplane_write(s, SDPCM_CORE_BASE + off, buf, sizeof(buf));
+    backplane_write(s, s->chip.sdiod_base + off, buf, sizeof(buf));
 }
 
 static void sdpcm_raise(IPodTouchSDIOState *s, uint32_t intbits)
@@ -677,9 +677,9 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
 static void backplane_store(IPodTouchSDIOState *s, uint32_t sb_addr,
                             const uint8_t *buf, uint32_t len)
 {
-    bool in_core = sb_addr >= SDPCM_CORE_BASE &&
-                   sb_addr < SDPCM_CORE_BASE + SDPCM_CORE_SIZE;
-    uint32_t off = sb_addr - SDPCM_CORE_BASE;
+    bool in_core = sb_addr >= s->chip.sdiod_base &&
+                   sb_addr < s->chip.sdiod_base + SDPCM_CORE_SIZE;
+    uint32_t off = sb_addr - s->chip.sdiod_base;
 
     if (in_core && off == SDPCM_INTSTATUS && len >= 4) {
         /* Write one to clear. */
@@ -1282,7 +1282,7 @@ static void ipod_touch_sdio_init(Object *obj)
     /* The iPod touch 2G's BCM4325; the iPad swaps in its 4329. */
     static const BCMSDIOChip bcm4325 = {
         .manfid = BCM4325_MANUFACTURER, .prodid = BCM4325_PRODUCT_ID,
-        .chipid = CHIPCOMMON_CHIPID,
+        .chipid = CHIPCOMMON_CHIPID, .sdiod_base = SDPCM_CORE_BASE,
         /* Matches wifiaddr in the stock n72ap NOR's nvram. */
         .mac = { 0x00, 0x23, 0x32, 0x6e, 0xaa, 0x10 },
     };

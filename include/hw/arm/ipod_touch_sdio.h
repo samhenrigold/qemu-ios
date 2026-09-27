@@ -284,6 +284,7 @@ typedef struct SDPCMFrame
 typedef struct BCMSDIOChip {
     uint16_t manfid, prodid;   /* CISTPL_MANFID */
     uint32_t chipid;           /* chipcommon ChipID: id | rev << 16 */
+    uint32_t sdiod_base;       /* the SDIO device core on the backplane */
     const char *vers1[4];      /* CISTPL_VERS_1 strings; none if [0] is NULL */
     uint8_t mac[6];            /* CISTPL_FUNCE type 4 */
 } BCMSDIOChip;
