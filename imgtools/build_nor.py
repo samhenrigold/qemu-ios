@@ -137,32 +137,6 @@ def wrap_shsh(data, uid_key):
     return bytes(blob), False
 
 
-def add_ecid(data, ecid):
-    """Personalise an img3 for `ecid` as a TSS restore does: an ECID tag just
-    before SHSH, inside the signed area.
-
-    That changes the digest, so the stock signature no longer matches: only
-    for a machine that does not check it (ipad1 iboot-sigcheck=off). A
-    production-fused 3.x iBoot validates an unpersonalised image and then
-    refuses to use it, so the IPSW's all_flash copies need this.
-    """
-    hdr = struct.unpack("<4sIIII", data[:IMG3_HDR])
-    off = IMG3_HDR
-    while off + 12 <= len(data):
-        tag, total, _ = struct.unpack("<4sII", data[off:off + 12])
-        if tag[::-1] == b"SHSH":
-            break
-        if tag[::-1] == b"ECID" or total == 0:
-            raise ValueError("already personalised or malformed")
-        off += total
-    else:
-        raise ValueError("no SHSH tag")
-    ecid_tag = struct.pack("<4sIIQ", b"ECID"[::-1], 0x40, 8, ecid).ljust(0x40, b"\0")
-    out = bytearray(data[:off] + ecid_tag + data[off:])
-    struct.pack_into("<III", out, 4, hdr[1] + 0x40, hdr[2] + 0x40, hdr[3] + 0x40)
-    return bytes(out)
-
-
 def parse_img3(data):
     """Return (ident, full_size) for an img3 blob."""
     if data[:4] != IMG3_MAGIC:
@@ -208,7 +182,7 @@ def read_img2(nor):
 
 
 def build(base_path, all_flash, out_path, order, verbose=True,
-          uid_key=DEFAULT_UID_KEY, ecid=None):
+          uid_key=DEFAULT_UID_KEY):
     nor = bytearray(open(base_path, "rb").read())
     gran, start_hi, start_lo, _ = read_img2(nor)
     image_start = gran * (start_hi + start_lo)
@@ -224,8 +198,6 @@ def build(base_path, all_flash, out_path, order, verbose=True,
     off = image_start
     for ident in order:
         name, data = available[ident]
-        if ecid is not None:
-            data = add_ecid(data, ecid)
         wrapped = False
         if uid_key is not None:
             data, wrapped = wrap_shsh(data, uid_key)
@@ -315,9 +287,6 @@ def main():
     ap.add_argument("--k48", action="store_true",
                     help="iPad 1 (S5L8930) NOR: K48AP image order and the "
                          "emulated S5L8930 UID; implies --types/--uid-key")
-    ap.add_argument("--ecid", type=lambda v: int(v, 16),
-                    help="personalise each image for this ECID (hex); the "
-                         "signatures then only pass with iboot-sigcheck=off")
     args = ap.parse_args()
 
     if args.verify:
@@ -330,7 +299,7 @@ def main():
     if args.k48:
         types = K48_ORDER
         uid = None if args.no_wrap_shsh else S5L8930_UID_KEY
-    build(args.base, args.all_flash, args.out, types, uid_key=uid, ecid=args.ecid)
+    build(args.base, args.all_flash, args.out, types, uid_key=uid)
 
 
 if __name__ == "__main__":
