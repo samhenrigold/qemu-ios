@@ -23,6 +23,8 @@
 #include "hw/boards.h"
 #include "hw/irq.h"
 #include "hw/misc/unimp.h"
+#include "hw/usb/hcd-ehci.h"
+#include "hw/usb/hcd-ohci.h"
 #include "hw/sysbus.h"
 #include "hw/arm/exynos4210.h"
 #include "hw/arm/ipod_touch_buttons.h"
@@ -356,8 +358,6 @@ static void ipad1_init(MachineState *machine)
      * USB device mode: the same Synopsys DWC OTG core and PHY register layout
      * as the S5L8720 (gap-kernel-platform-mmio.md §6), so both iPod models are
      * reused unchanged. The host bridge dials IT_USB_TCP=host:port when set.
-     * The USB arbitrator's USB_CTL block (0xbf108000) is mapped but never
-     * touched on K48 (no hsic-enabled), so it stays in the unimp window.
      */
     dev = qdev_new(TYPE_IPOD_TOUCH_USB_PHYS);
     sbd = SYS_BUS_DEVICE(dev);
@@ -369,6 +369,28 @@ static void ipad1_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     memory_region_add_subregion(sysmem, S5L8930_USB_OTG_BASE,
                                 &S5L8900USBOTG(dev)->iomem);
+    /*
+     * USB host, next to device mode: the DT we build gives usb-complex
+     * "hsic-enabled", which makes AppleS5L8930XUSBArbitrator publish the host
+     * nubs (EHCI, OHCI0) at start and never tear them down on cable changes,
+     * so usbmux and a USB keyboard coexist (docs/ipad1/usb-keyboard.md).
+     * AppleUSBEHCIARM/AppleUSBOHCIARM are plain EHCI/OHCI; capabilities at +0.
+     * Its USB_CTL read-modify-writes (0xbf108000 bit 0 host, bit 2 HSIC)
+     * stay in the unimp window. Attach with -device usb-kbd,bus=ehci.0.
+     */
+    dev = qdev_new(TYPE_EXYNOS4210_EHCI);
+    sbd = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(sbd, &error_fatal);
+    sysbus_mmio_map(sbd, 0, S5L8930_USB_EHCI_BASE);
+    sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_USB_EHCI));
+
+    dev = qdev_new(TYPE_SYSBUS_OHCI);
+    qdev_prop_set_uint32(dev, "num-ports", 1);      /* DT rh-ports */
+    sbd = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(sbd, &error_fatal);
+    sysbus_mmio_map(sbd, 0, S5L8930_USB_OHCI0_BASE);
+    sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_USB_OHCI0));
+
     /*
      * SPI: the K48 kernel drives these with the same AppleS5L8900X SPI kext
      * as the iPod, so the iPod controller model is reused. It picks its
