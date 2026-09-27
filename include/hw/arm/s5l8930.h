@@ -175,6 +175,9 @@ void s5l8930_ak8973_set_accel(DeviceState *dev, struct LIS302DLState *accel);
  * (UART5). Attach it as UART5's chardev.
  */
 #define TYPE_CHARDEV_S5L8930_HDQ "chardev-s5l8930-hdq-gauge"
+/* Battery the gauge reports: level 0..100 %, charging or discharging. Kept
+ * across guest resets. */
+void s5l8930_hdq_set_battery(Chardev *chr, int level, bool charging);
 
 /*
  * Display (hw/arm/s5l8930_display.c): DisplayPipe0 + CLCD + RGBOUT/TV-out

@@ -293,9 +293,12 @@ Every milestone is checked against a real-iPad reference: serial logs (M1–M3),
 screenshots (M4+). `regress.py`-style harness per machine; the iPod machine's suite must stay green through
 every shared-model refactor.
 
-## Real iBoot (M8): stopped, out of scope (2026-09-27)
-iBoot-817.29 runs genuinely on the ipad1 machine up to the kernelcache: `iboot=` property, NOR images, H2FMI NAND
-(FIL/VFL/FTL, HFS mount), SHA-1/PKE/cert-chain all computed correctly. Completing the boot would need
-device-personalized boot images, and that line of work is not being pursued. The iPad boots via the direct-kernel
-path (stock kernel, Apple logo, lock screen in ~12 s). The iboot-sigcheck experiment stays unmerged on branch
-ipad1-iboot2 (176ce6bafc).
+## Real iBoot (M8): stock kernel boot (2026-09-27)
+
+The real iBoot-817.29 path now loads the stock IPSW kernelcache and NOR DeviceTree,
+mounts root, starts launchd, and reaches the activated lock screen. Preparation
+uses iBoot32Patcher's pattern-based signature/personalization and debug patches;
+this is not a verified secure boot. Reconstructed PMGR clock defaults and the
+Wi-Fi radio-presence GPIO complete the kernel handoff. Direct boot stays the
+default. See [iboot.md](iboot.md) for preparation, testing, and captured handoff
+comparison. The emulator-side `iboot-sigcheck` experiment is superseded.
