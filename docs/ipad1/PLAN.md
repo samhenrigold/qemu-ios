@@ -125,6 +125,20 @@ H2FMI, NOR on SPI0; boot logo, recovery mode, DFU. Later: boot from the dumped S
 **M9 — LightTouchMac device profiles.** The app assumes one machine (320×480, 128 MiB); add a per-device
 profile (machine, geometry, bezel, NAND set, GL shim).
 
+## Definition of done (Sam, 2026-09-27)
+
+Complete fidelity, no stone unturned, before any other device:
+- boots to SpringBoard; NAND persistence and overlays like the iPod machine
+- full multitouch and gestures (multi-finger, pinch, rotate) through the real Zephyr2 path
+- hardware keyboard via the iPad's own HID keyboard support (no simulated-touch typing)
+- networking: USB Ethernet (present on 3.2.x: AppleUSBEthernetDevice) and, if feasible, Wi-Fi (BCM4329 over IOP SDIO)
+- the guest services layer (agent, pasteboard, GLES bridge, status) ported to armv7/3.2.2
+- rotation (accelerometer-driven and host-commanded), buttons, sensors, battery, audio
+- USB/usbmux into LightTouchMac: app install, file access, the same features as the iPod
+- GLES 1.1 + 2.0 hardware acceleration via a GLI shim; accelerated CoreAnimation
+- LightTouchMac device profiles: the app runs the iPad with its own bezel, geometry and controls
+- boot through real iBoot (M8)
+
 ## Verification
 
 Every milestone is checked against a real-iPad reference: serial logs (M1–M3), IORegistry dumps (M2–M5),
