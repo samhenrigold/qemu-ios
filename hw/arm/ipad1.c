@@ -81,6 +81,7 @@ struct IPad1MachineState {
     char *nand_path;
     char *nand_overlay_path;
     char *nor_path;
+    char *die_id;                        /* ChipID words 2-3 of the unit, hex pair */
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
@@ -567,11 +568,21 @@ static void ipad1_init(MachineState *machine)
      */
     create_unimplemented_device("s5l8930.periph", 0x80000000, 0x40000000);
 
-    /* ChipID fuses, as read from a real K48AP (docs/ipad1/hw1-probes.log). */
+    /*
+     * ChipID fuses as a real K48AP reads them (docs/ipad1/hw1-probes.log):
+     * chip/revision words, then the unit's die-id. The die-id is per unit, so
+     * it comes from the die-id machine property ("0xWORD2:0xWORD3", runners
+     * take it from identity.json); zeros otherwise.
+     */
     {
-        static const uint32_t chipid[] = {
-            0x31800387, 0x80758000, 0x00000000, 0x00000000,
-        };
+        uint32_t chipid[] = { 0x31800387, 0x80758000, 0, 0 };
+
+        if (s->die_id && sscanf(s->die_id, "%" SCNx32 ":%" SCNx32,
+                                &chipid[2], &chipid[3]) != 2) {
+            error_report("ipad1: die-id must be \"0xWORD2:0xWORD3\", got \"%s\"",
+                         s->die_id);
+            exit(1);
+        }
         memory_region_init_rom(&s->chipid, NULL, "ipad1.chipid", 0x1000,
                                &error_fatal);
         memcpy(memory_region_get_ram_ptr(&s->chipid), chipid, sizeof(chipid));
@@ -1052,6 +1063,19 @@ static void ipad1_set_nand_overlay(Object *obj, const char *value, Error **errp)
     s->nand_overlay_path = g_strdup(value);
 }
 
+static char *ipad1_get_die_id(Object *obj, Error **errp)
+{
+    return g_strdup(IPAD1_MACHINE(obj)->die_id);
+}
+
+static void ipad1_set_die_id(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    g_free(s->die_id);
+    s->die_id = g_strdup(value);
+}
+
 static char *ipad1_get_nor(Object *obj, Error **errp)
 {
     return g_strdup(IPAD1_MACHINE(obj)->nor_path);
@@ -1301,6 +1325,7 @@ static void ipad1_instance_finalize(Object *obj)
     g_free(IPAD1_MACHINE(obj)->nand_path);
     g_free(IPAD1_MACHINE(obj)->nand_overlay_path);
     g_free(IPAD1_MACHINE(obj)->nor_path);
+    g_free(IPAD1_MACHINE(obj)->die_id);
 }
 
 /*
@@ -1359,6 +1384,9 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
                                   ipad1_set_nand_overlay);
     object_class_property_set_description(klass, "nand-overlay",
         "Copy-on-write directory for guest NAND writes; the nand store is then read-only");
+    object_class_property_add_str(klass, "die-id", ipad1_get_die_id, ipad1_set_die_id);
+    object_class_property_set_description(klass, "die-id",
+        "the unit's ChipID die-id words 2-3, \"0xWORD2:0xWORD3\" (identity.json); zeros if unset");
     object_class_property_add_str(klass, "nor", ipad1_get_nor, ipad1_set_nor);
     object_class_property_set_description(klass, "nor",
         "1 MiB SPI NOR image (nvram, syscfg); erased flash if unset");
