@@ -48,10 +48,14 @@ imgtools/ipad1_nand.py check FILES/userland/nand-pristine --mbr FILES/hw2/rdisk0
 (`build` prints the matching `ipad1_nand.py` line; the jailbroken store is `nand-jb`.)
 
 **golden-pristine** (the read-only store the app and tests clone) is the pristine store plus the guest
-helpers `it_pbd` (pasteboard) and `it_ethlink` (USB Ethernet link) (docs/ipad1/guest-services.md):
+helpers `it_pbd` (pasteboard) and `it_ethlink` (USB Ethernet link) (docs/ipad1/guest-services.md), and
+`it_msmquiet.dylib`, which `bake` loads into Apple's `com.apple.mobile.storage_mounter` job with
+`DYLD_INSERT_LIBRARIES`. It interposes `CFUserNotificationDisplayNotice` and drops only
+MobileStorageMounter's UNSUPPORTED_FAILURE notice ("The attached USB device is not supported."), which a
+usb-kbd raises on every boot and which, while up, keeps SpringBoard from locking (contrib/it-msmquiet):
 
 ```
-contrib/ipad1-guest/build.sh                            # -> build/ipad1-guest/{it_pbd,it_ethlink,it_seal}
+contrib/ipad1-guest/build.sh                            # -> build/ipad1-guest/{it_pbd,it_ethlink,it_seal,it_msmquiet.dylib}
 imgtools/ipad1_rootfs.py build --base pristine
 imgtools/ipad1_rootfs.py bake FILES/userland/pristine --seal   # helpers + their com.qemu.* jobs, root-owned
 imgtools/ipad1_nand.py build --mbr FILES/hw2/rdisk0-head4M.bin --system FILES/userland/pristine/system.img \
