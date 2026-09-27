@@ -318,6 +318,15 @@ typedef struct __attribute__((packed)) {
  * Old shims retain the panel-sized default. The request ABI is unchanged. */
 #define GLES_OP_DRAWABLE_STORAGE        (GLES_OP_BASE + 8)
 
+/*
+ * A command buffer of calls the guest queued (contrib/ipad1-gles/glishim.c):
+ * args[0] = its guest VA, args[1] = its length in 32-bit words. Each record is
+ * [slot | argc << 16, argc args], run in order as if it had trapped alone.
+ * Only calls that return nothing and pass no guest pointer are queued.
+ */
+#define GLES_OP_BATCH                   (GLES_OP_BASE + 9)
+#define GLES_BATCH_MAX_WORDS            4096
+
 /* Surface pixel formats, as IOSurfaceGetPixelFormat reports them (FourCC). */
 #define GLES_SURFACE_BGRA32             0x42475241  /* 'BGRA' */
 #define GLES_SURFACE_RGBA32             0x52474241  /* 'RGBA' */
