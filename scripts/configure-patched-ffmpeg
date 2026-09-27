@@ -1,0 +1,25 @@
+#!/bin/sh
+# Configure a build tree against the patched FFmpeg (contrib/ffmpeg/*.patch)
+# instead of Homebrew's. The iPod H.264 bridge needs h264-chunk-er.patch:
+# with stock FFmpeg, multi-slice pictures fail ("slice decode failed" in
+# tests/ipod/test_h264_snapshot.py) although the QEMU source is identical.
+#
+#   mkdir build && cd build && ../scripts/configure-patched-ffmpeg
+#
+# FFMPEG_PREFIX defaults to the prefix ~/Developer/qemu-ios/build-native14 was
+# built with. Only libavcodec/libavutil come from it; every other dependency
+# stays Homebrew's (its static glib/pcre2 do not link with this configuration).
+set -e
+FFMPEG_PREFIX=${FFMPEG_PREFIX:-$HOME/Developer/qemu-ios/build-native14/prefix}
+[ -f "$FFMPEG_PREFIX/lib/pkgconfig/libavcodec.pc" ] ||
+    { echo "no patched FFmpeg at $FFMPEG_PREFIX (set FFMPEG_PREFIX)" >&2; exit 1; }
+pc=$PWD/ffmpeg-pkgconfig
+mkdir -p "$pc"
+ln -sf "$FFMPEG_PREFIX/lib/pkgconfig/libavcodec.pc" "$FFMPEG_PREFIX/lib/pkgconfig/libavutil.pc" "$pc/"
+ssl=/opt/homebrew/opt/openssl@3
+PKG_CONFIG_PATH=$pc${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH} exec "$(dirname "$0")/../configure" \
+    --target-list=arm-softmmu --disable-sdl --disable-sdl-image --disable-capstone \
+    --disable-pie --disable-fuse \
+    "--extra-cflags=-I$ssl/include -mmacosx-version-min=12.0" \
+    "--extra-ldflags=-L$ssl/lib -lcrypto -mmacosx-version-min=12.0 -Wl,-rpath,$FFMPEG_PREFIX/lib" \
+    --python=/opt/homebrew/opt/python@3.12/libexec/bin/python3 "$@"
