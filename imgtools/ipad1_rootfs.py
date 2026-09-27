@@ -47,7 +47,7 @@ unsigned-machos.txt: every Mach-O on the system volume and in the stash whose co
 blob (ldid ad-hoc: sshd, bash, apt, Cydia, Substrate) or none at all. Those are what
 `amfi_allow_any_signature=1` has to forgive at exec; Apple's own binaries carry a (possibly empty) CMS slot.
 
-`bake` installs this machine's guest helpers (docs/ipad1/guest-services.md): it_pbd and it_ethlink + their launchd jobs,
+`bake` installs this machine's guest helpers (docs/ipad1/guest-services.md): it_pbd, it_ethlink and it_notip + their launchd jobs,
 root-owned via the catalog. Nothing else on either volume changes. Build it first with contrib/ipad1-guest/build.sh;
 it is ldid ad-hoc signed, so boot with amfi_allow_any_signature=1.
 """
@@ -82,6 +82,11 @@ GLES_APPS = ("GLTest.app", "GLTest2.app")
 # --ca-ogl: CoreAnimation composites through the GLI shim (accelerated pixel format)
 SB_ENV_CA_OGL = {"MBX2D_PAGE_FLIP": "0", "GLI_ACCELERATED": "1"}
 HIDBRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/ipad1-hidbridge")
+# AppSync: one dylib injected into installd (install gate) and SpringBoard (launch gate)
+# via DYLD_INSERT_LIBRARIES. See contrib/appsync. Requires the AMFI boot-args (it is ldid-signed).
+APPSYNC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../build/appsync")
+APPSYNC_REL = "usr/lib/libappsync.dylib"
+APPSYNC_JOBS = ("System/Library/LaunchDaemons/com.apple.mobile.installd.plist",)
 # USB Ethernet (AppleUSBEthernetDevice, usbmuxd's slirp on the host side). Names and paths are the real
 # unit's NetworkInterfaces.plist: Wi-Fi keeps en0 even with no BCM4329 model, so USB is en1 as on hardware.
 SC_DIR = "preferences/SystemConfiguration"   # under /private/var (/Library/Preferences links here)
@@ -94,12 +99,14 @@ USB_ETH_IF = {"Active": True, "BSD Name": "en1", "IOBuiltin": False, "IOInterfac
 MOBILE_TOP = ("mobile", "ea")                # uid 501 on the real unit; everything else under /var is root
 # guest tool -> (install path on the system volume, mode); the job comes from contrib/it-pasteboard
 TOOLS = {"it_pbd": ("usr/local/bin/it_pbd", 0o755), "it_ethlink": ("usr/local/bin/it_ethlink", 0o755),
+         "it_notip": ("usr/local/bin/it_notip", 0o755),
          "it_msmquiet.dylib": ("usr/local/lib/it_msmquiet.dylib", 0o755)}
 # Apple job that loads it_msmquiet (hides the USB "not supported" notice; contrib/it-msmquiet)
 MSM_JOB = "System/Library/LaunchDaemons/com.apple.mobile.storage_mounter.plist"
 # launchd job, installed path -> source under contrib/
 JOBS = {"System/Library/LaunchDaemons/com.qemu.it-pbd.plist": "it-pasteboard/com.qemu.it-pbd.plist",
-        "System/Library/LaunchDaemons/com.qemu.it-ethlink.plist": "it-ethlink/com.qemu.it-ethlink.plist"}
+        "System/Library/LaunchDaemons/com.qemu.it-ethlink.plist": "it-ethlink/com.qemu.it-ethlink.plist",
+        "System/Library/LaunchDaemons/com.qemu.it-notip.plist": "it-notip/com.qemu.it-notip.plist"}
 # Bluetooth has no controller model (UART3 is silent), so BTServer's retries left
 # BluetoothManager's blocking calls on SpringBoard's main thread: a ~1 s UI stall
 # every ~12 s. The job's own Disabled key (in place, Apple's owner kept) keeps it
@@ -171,6 +178,15 @@ def usb_net_prefs(d):
     order[:] = [USB_ETH_SERVICE] + [o for o in order if o != USB_ETH_SERVICE]
 
 
+def dyld_insert(d, lib=("/" + APPSYNC_REL)):
+    """Append lib to DYLD_INSERT_LIBRARIES, keeping any existing entries (e.g. SpringBoard's env)."""
+    env = d.setdefault("EnvironmentVariables", {})
+    libs = [x for x in env.get("DYLD_INSERT_LIBRARIES", "").split(":") if x]
+    if lib not in libs:
+        libs.append(lib)
+    env["DYLD_INSERT_LIBRARIES"] = ":".join(libs)
+
+
 # Web proxy (the app's itwebproxy on slirp guestfwd 10.0.2.100:3128, as on the iPod). The Wi-Fi service
 # carries a PAC that falls back to DIRECT, so boots without the guestfwd still browse.
 WIFI_SERVICE = "4C54E7A1-0B5E-4D6B-9A1C-574946490000"
@@ -204,6 +220,30 @@ def seed_plist(path, fn):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
         f.write(edit_plist(plistlib.dumps({}), fn))
+
+
+def appsync_problem(path):
+    """None if path is a fat Mach-O with an armv7 slice and a code signature per slice, else why not."""
+    if not os.path.exists(path):
+        return "missing"
+    data = open(path, "rb").read()
+    if len(data) < 8 or struct.unpack_from(">I", data)[0] != FAT_MAGIC:
+        return "not a fat Mach-O (expected armv6+armv7)"
+    nfat = struct.unpack_from(">I", data, 4)[0]
+    have_v7 = False
+    for i in range(nfat):
+        cputype, sub, off, size, _ = struct.unpack_from(">iiIII", data, 8 + i * 20)
+        if (cputype, sub) == (12, 9):
+            have_v7 = True
+        slice_cmds, o = set(), off + 28
+        ncmds = struct.unpack_from("<I", data, off + 16)[0]
+        for _ in range(ncmds):
+            cmd, sz = struct.unpack_from("<II", data, o)
+            slice_cmds.add(cmd)
+            o += sz
+        if LC_CODE_SIGNATURE not in slice_cmds:
+            return "slice %d (cpu %d/%d) is not ldid-signed" % (i, cputype, sub)
+    return None if have_v7 else "no armv7 slice"
 
 
 def guest_tool_problem(data):
@@ -407,6 +447,11 @@ def build(a):
     print("[2/4] editing the system volume")
     skeleton = tempfile.mkdtemp(prefix="ipad1_var.")
     with Mounted(system, os.path.join(a.out, "mnt-system")) as m:
+        if a.kernelcache:
+            destination = os.path.join(m.mnt, "System/Library/Caches/com.apple.kernelcaches/kernelcache")
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            shutil.copyfile(a.kernelcache, destination)
+            os.chmod(destination, 0o644)
         with open(os.path.join(m.mnt, "private/etc/fstab"), "w") as f:
             f.write(FSTAB_RO if a.ro_root else FSTAB)
         if a.web_proxy:
@@ -416,6 +461,22 @@ def build(a):
         rewrite_plist(os.path.join(m.mnt, SB_JOB),
                       lambda d: springboard_env(d, {k: v for k, v in (SB_ENV_CA_OGL if a.ca_ogl else SB_ENV).items()
                                                     if not (a.page_flip and k == "MBX2D_PAGE_FLIP")}))
+        if a.appsync:
+            src = os.path.join(APPSYNC, "libappsync.dylib")
+            why = appsync_problem(src)
+            if why:
+                raise SystemExit("%s: %s (run contrib/appsync/build.sh)" % (src, why))
+            dst = os.path.join(m.mnt, APPSYNC_REL)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(src, dst)
+            os.chmod(dst, 0o644)
+            for rel in APPSYNC_JOBS:
+                rewrite_plist(os.path.join(m.mnt, rel), dyld_insert)
+            # amfid-global half: force libmis MISValidateSignature to succeed in the shared cache
+            # (symbol-located), so amfid approves the ldid-signed dylib and decrypted apps.
+            import appsync_cachepatch
+            cache = os.path.join(m.mnt, "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv7")
+            print("      " + appsync_cachepatch.patch_cache(cache))
         if a.gles:
             shutil.copy(os.path.join(GLES, "GLEngine"), os.path.join(m.mnt, GLENGINE))
             apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))
@@ -444,6 +505,8 @@ def build(a):
     if a.hidbridge:   # launchd skips jobs not owned by root; the noowners mount wrote the host uid
         bn.set_owner(system, ["usr/local", "usr/local/lib", "usr/local/lib/hidbridge.dylib",
                               "Library/LaunchDaemons/com.qemu.hidbridge.plist"], 0, 0)
+    if a.appsync:     # dyld refuses a DYLD_INSERT dylib not owned by root (noowners wrote the host uid)
+        bn.set_owner(system, [APPSYNC_REL], 0, 0)
     if a.web_proxy:
         bn.set_owner(system, ["usr/local", "usr/local/share", "usr/local/share/ltm", PAC_PATH], 0, 0)
     if a.gles:   # ldid-signed: boot with amfi_allow_any_signature=1 cs_enforcement_disable=1
@@ -588,6 +651,14 @@ def selfcheck():
     assert [i["BSD Name"] for i in ifs["Interfaces"]] == ["en0", "en1"]
     plistlib.loads(plistlib.dumps(real)), plistlib.loads(plistlib.dumps(ifs))
 
+    # dyld_insert: appends without clobbering, idempotent
+    d = {"EnvironmentVariables": {"CA_ENABLE_OGL": "0"}}
+    dyld_insert(d); dyld_insert(d)
+    assert d["EnvironmentVariables"]["DYLD_INSERT_LIBRARIES"] == "/" + APPSYNC_REL
+    assert d["EnvironmentVariables"]["CA_ENABLE_OGL"] == "0"
+    d2 = {"EnvironmentVariables": {"DYLD_INSERT_LIBRARIES": "/usr/lib/other.dylib"}}
+    dyld_insert(d2)
+    assert d2["EnvironmentVariables"]["DYLD_INSERT_LIBRARIES"] == "/usr/lib/other.dylib:/" + APPSYNC_REL
     wp = {}
     usb_net_prefs(wp)
     wifi_proxy_prefs(wp)
@@ -630,6 +701,7 @@ def main():
     b.add_argument("--mbr", default=os.path.join(FILES, "hw2/rdisk0-head4M.bin"))
     b.add_argument("--pristine", default=os.path.join(FILES, "7B500/dec/rootfs.dmg"), help="IPSW rootfs, source of the /private/var skeleton")
     b.add_argument("--out", default=os.path.join(FILES, "userland"), help="images land in OUT/<base>/, the store in OUT/nand-<tag>")
+    b.add_argument("--kernelcache", help="IPSW img3 kernelcache to install for real-iBoot fsboot")
     b.add_argument("--data-size", default="2g")
     b.add_argument("--stash", help="fetch output for /var/stash (jailbroken default: hw2/stash); 'none' to skip")
     b.add_argument("--lockdown", default=os.path.join(FILES, "hw2/lockdown"), help="fetch output for the Lockdown dir; 'none' to skip")
@@ -643,6 +715,7 @@ def main():
     b.add_argument("--page-flip", action="store_true", help="leave CoreAnimation's IOMFB page flipping on (no MBX2D_PAGE_FLIP=0)")
     b.add_argument("--ca-ogl", action="store_true", help="let CoreAnimation composite through GL (no CA_ENABLE_OGL=0; GLI_ACCELERATED=1)")
     b.add_argument("--hidbridge", action="store_true", help="install the hardware-keyboard daemon (run contrib/ipad1-hidbridge/build.sh first)")
+    b.add_argument("--appsync", action="store_true", help="install libappsync.dylib and inject it into installd (+ symbol-located shared-cache patch) (run contrib/appsync/build.sh first)")
     f = sub.add_parser("fetch")
     f.add_argument("dir", nargs="?", default=os.path.join(FILES, "hw2"))
     r = sub.add_parser("report")

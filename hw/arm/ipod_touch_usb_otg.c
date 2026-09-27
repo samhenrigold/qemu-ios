@@ -1068,7 +1068,8 @@ enum {
 	HP_IDLE, HP_RESET, HP_ENUMDONE, HP_DEV_SETUP, HP_DEV_IN, HP_DEV_STATUS,
 	HP_ADDR_SETUP, HP_ADDR_STATUS, HP_CFG_HDR_SETUP, HP_CFG_HDR_IN,
 	HP_CFG_HDR_STATUS, HP_CFG_SETUP, HP_CFG_IN, HP_CFG_STATUS,
-	HP_SETCFG_SETUP, HP_SETCFG_STATUS, HP_STR0_SETUP, HP_STR0_IN, HP_STR0_STATUS,
+	HP_SETCFG_SETUP, HP_SETCFG_STATUS, HP_CHARGE_SETUP, HP_CHARGE_STATUS,
+	HP_STR0_SETUP, HP_STR0_IN, HP_STR0_STATUS,
 	HP_STRSER_SETUP, HP_STRSER_IN, HP_STRSER_STATUS, HP_POLL, HP_DONE,
 };
 #define HOST_POLL_MS      5
@@ -1167,6 +1168,15 @@ static void synopsys_host_tick(void *opaque)
 	case HP_SETCFG_SETUP:
 		r = synopsys_host_setup(s, 0x00, 9, s->host_cfg_value, 0, 0);
 		break;
+	case HP_CHARGE_SETUP:
+		/*
+		 * Apple's vendor power request, as a Mac's high-power port (or a
+		 * charging dock) sends it: 500 mA base plus 1600 mA extra. The iPad's
+		 * power source then reports "usb stack power 2100mA" and charges;
+		 * without it a configured iPad stays at 500 mA, "Not Charging".
+		 */
+		r = synopsys_host_setup(s, 0x40, 0x40, 500, 1600, 0);
+		break;
 	case HP_STR0_SETUP:
 		r = synopsys_host_setup(s, 0x80, 6, 0x0300, 0, 255);
 		s->host_got = 0; s->host_want = 255;
@@ -1228,6 +1238,7 @@ static void synopsys_host_tick(void *opaque)
 		break;
 	case HP_ADDR_STATUS:
 	case HP_SETCFG_STATUS:
+	case HP_CHARGE_STATUS:
 		r = synopsys_host_xfer(s, USB_DIR_IN, 0, 0, NULL);  /* IN status */
 		break;
 	default:
@@ -1283,6 +1294,10 @@ static void synopsys_host_tick(void *opaque)
 	case HP_SETCFG_STATUS:
 		printf("[USBHOST] built-in host: device configured (configuration value %d)\n",
 		       s->host_cfg_value);
+		if (!s->host_charge) {
+			synopsys_host_go(s, HP_STR0_SETUP, HOST_RETRY_MS);
+			return;
+		}
 		break;
 	case HP_STRSER_STATUS:
 		synopsys_host_go(s, HP_POLL, HOST_POLL_MS);
