@@ -53,6 +53,7 @@
 #define DART_ERROR_STATUS   0x10      /* W1C */
 
 #define VBL_PERIOD_NS       (NANOSECONDS_PER_SECOND / 60)
+#define QUIET_RELATCH_VBLS  15        /* ~250 ms without a swap */
 #define DEFAULT_WIDTH       1024
 #define DEFAULT_HEIGHT      768
 
@@ -95,6 +96,7 @@ struct S5L8930DisplayState {
     size_t front_size;
     uint32_t front_key[4];   /* w, h, fmt, stride of the latched frame */
     bool front_valid;
+    unsigned quiet_vbls;     /* VBLs since the last swap */
 };
 
 /* ---- DisplayPipe ------------------------------------------------------- */
@@ -191,6 +193,16 @@ static void vbl_tick(void *opaque)
      * when latched as the swap's last FIFO word arrived. */
     if (s->pipe[0].swap_pending) {
         s->pipe[0].swap_pending = false;
+        s->quiet_vbls = 0;
+        front_latch(s);
+    } else if (++s->quiet_vbls >= QUIET_RELATCH_VBLS) {
+        /*
+         * No swap for a quarter second, yet the buffer can still change:
+         * with Accessibility > Zoom on, CA stops swapping and the scaler
+         * writes each magnified frame straight into the scanned-out buffer.
+         * Real scanout reads memory live, so follow it: re-latch every VBL
+         * while no swaps come. Swapping clients are latched on their swaps.
+         */
         front_latch(s);
     }
     r[DP_SWAP_DONE / 4] = (r[DP_SWAP_DONE / 4] & ~0xffff) | s->pipe[0].swap_id;
@@ -307,9 +319,9 @@ static const MemoryRegionOps dart_ops = {
  * iBoot's untranslated framebuffer and the kernel's identity "transition
  * mapping" amount to. Returns -1 for an invalid PTE.
  */
-static hwaddr dart_xlate(S5L8930DisplayState *s, uint32_t va)
+static hwaddr dart_xlate_sid(S5L8930DisplayState *s, unsigned sid, uint32_t va)
 {
-    uint32_t ste = s->ste[0][(va >> 22) & 0x3f] & ~0xfffu;
+    uint32_t ste = s->ste[sid][(va >> 22) & 0x3f] & ~0xfffu;
     uint32_t pte;
 
     if (!ste) {
@@ -320,6 +332,17 @@ static hwaddr dart_xlate(S5L8930DisplayState *s, uint32_t va)
         qemu_log_mask(LOG_GUEST_ERROR, "dart2: invalid PTE 0x%08x for iova 0x%08x\n", pte, va);
     }
     return (pte & 1) ? ((pte & ~0xfffu) | (va & 0xfff)) : (hwaddr)-1;
+}
+
+static hwaddr dart_xlate(S5L8930DisplayState *s, uint32_t va)
+{
+    return dart_xlate_sid(s, 0, va);
+}
+
+/* dart2 for another client (DT dart-mapper reg: 1 RGBOUT, 2 scaler). */
+hwaddr s5l8930_dart2_xlate(void *display, uint32_t va, unsigned sid)
+{
+    return dart_xlate_sid(S5L8930_DISPLAY(display), sid < DART_SIDS ? sid : 0, va);
 }
 
 /* Read `len` bytes of framebuffer at IOVA `va`, page by page. */
