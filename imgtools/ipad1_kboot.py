@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Build a direct-kernel boot image for the ipad1 machine: what iBoot-817.29 does before it jumps to xnu.
 
-    ipad1_kboot.py DEC_DIR OUT [BOOT_ARGS]
+    ipad1_kboot.py [--usb-eth-link] DEC_DIR OUT [BOOT_ARGS]
 
 DEC_DIR is ipad1_fw.py's output (kernelcache.mach, DeviceTree.bin). BOOT_ARGS defaults to DEFAULT_BOOT_ARGS.
-With no arguments only the self-check runs.
+With no arguments only the self-check runs. --usb-eth-link applies USB_ETH_LINK (below), the one kernel patch.
 
 OUT format (all little-endian): a flat image of physical memory, then a 24-byte trailer.
 
@@ -42,6 +42,22 @@ FB_WIDTH, FB_HEIGHT, FB_DEPTH = 1024, 768, 32   # landscape panel; display-rotat
 # (contrib/ipad1-gles). Apple's own binaries are unaffected.
 DEFAULT_BOOT_ARGS = "-v serial=3 debug=0x8 amfi_allow_any_signature=1 cs_enforcement_disable=1"
 TRAILER = struct.Struct("<8sIIII")
+
+# The one kernel patch (PLAN.md "USB Ethernet link"). AppleUSBEthernetDevice (7B500 kext at 0xc02f8000)
+# only brings its link up in setProperties({"LinkStatus": 1}): setLinkStatus(active), start the output
+# queue, arm the first bulk read, tell the host. The only stock caller is configd's USBEthernetSharing
+# when MobileInternetSharing tethers, which a Wi-Fi iPad cannot (misd: no carrier provisioning, ENOTSUP),
+# so en1 stays link-down and IPConfiguration never DHCPs. The patch makes the host selecting alt setting
+# 1 do the same: the alt-1 path of message() (0xc02f92d8) ends in `mov r3,r5; blx ip` (its HostAttached
+# messageClients); that becomes a `bl` into a cave over an unused error string, which repeats the call,
+# rebuilds setProperties' frame (r8/sl saved at r7-0x14) and branches into its LinkStatus=1 body past the
+# already-set check (0xc02f9842, r2 = 1). setProperties' epilogue then returns to message()'s caller with 0.
+# ponytail: re-selecting alt 1 re-runs the body (queue start, read buffer) without the already-set check.
+USB_ETH_LINK = [  # (va, stock bytes, patched bytes)
+    (0xc02f9300, bytes.fromhex("2b46e047"), bytes.fromhex("01f044f9")),                  # bl cave
+    (0xc02fa58c, b"AppleUSBEthernetDevice::%s: ", bytes.fromhex(                          # "addAltSetting 0 failed"
+        "2b46e047" "a7f10c0d" "2de90005" "82b0" "0122" "fff751b9").ljust(28, b"\0")),
+]
 
 # ponytail: clocks are guesses (timebase = the kernel's own 24 MHz default); replace with HW-2's real
 # IODeviceTree values. clock-frequencies slots follow iBoot's clock_get_frequency (5ff10f80) indices.
@@ -183,7 +199,15 @@ def fill_dt(dt, memory_map):
         dt.set("chosen/memory-map", name, (pa, size))
 
 
-def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS):
+def patch(image, patches):
+    for va, stock, new in patches:
+        o = va - VIRT_BASE
+        if image[o:o + len(stock)] != stock:
+            raise SystemExit("kernel patch at %#x: expected %s, found %s" % (va, stock.hex(), image[o:o + len(stock)].hex()))
+        image[o:o + len(new)] = new
+
+
+def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=False):
     """Return (image bytes, load_pa, entry_pa, bootargs_pa)."""
     page = lambda n: (n + 0xFFF) & ~0xFFF
     pa = lambda va: va - VIRT_BASE + PHYS_BASE
@@ -206,6 +230,8 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS):
         n = min(filesize, vmsize)
         image[vmaddr - VIRT_BASE:vmaddr - VIRT_BASE + n] = m.data[fileoff:fileoff + n]
         memory_map.append((f"Kernel-{name}", pa(vmaddr), vmsize))
+    if usb_eth_link:
+        patch(image, USB_ETH_LINK)
     memory_map += [("DeviceTree", pa(dt_va), len(dt_blob)), ("BootArgs", pa(args_va), 0x1000)]
 
     fill_dt(dt, memory_map)
@@ -223,14 +249,15 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS):
     return bytes(image), PHYS_BASE, pa(macho_entry(m.data)), pa(args_va)
 
 
-def main(dec_dir, out, boot_args=DEFAULT_BOOT_ARGS):
+def main(dec_dir, out, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=False):
     dt_blob = open(os.path.join(dec_dir, "DeviceTree.bin"), "rb").read()
-    image, load_pa, entry_pa, args_pa = build(os.path.join(dec_dir, "kernelcache.mach"), dt_blob, boot_args)
+    image, load_pa, entry_pa, args_pa = build(os.path.join(dec_dir, "kernelcache.mach"), dt_blob, boot_args,
+                                              usb_eth_link)
     with open(out, "wb") as f:
         f.write(image + TRAILER.pack(b"K48KBOOT", load_pa, entry_pa, args_pa, len(image)))
     top = struct.unpack_from("<I", image, args_pa - load_pa + 0x10)[0]
     print(f"load {load_pa:#x}+{len(image):#x} entry {entry_pa:#x} r0 {args_pa:#x} "
-          f"topOfKernelData {top:#x} boot-args [{boot_args}]")
+          f"topOfKernelData {top:#x} boot-args [{boot_args}]" + (" +usb-eth-link" if usb_eth_link else ""))
 
 
 def selfcheck():
@@ -289,11 +316,22 @@ def selfcheck():
     assert "MemoryMapReserved-4" in dt.props["chosen/memory-map"]
     assert get("chosen", "chip-id") == (0x8930,) and get("cpus/cpu0", "timebase-frequency") == (24_000_000,)
     assert get("vram", "reg", "<II") == (0x4F700000, 0x8FC000) and get("pram", "reg", "<II") == (0x4FFFC000, 0x4000)
+    img = bytearray(0x303000)
+    for va, stock, _ in USB_ETH_LINK:
+        img[va - VIRT_BASE:va - VIRT_BASE + len(stock)] = stock
+    patch(img, USB_ETH_LINK)
+    assert all(img[va - VIRT_BASE:va - VIRT_BASE + len(new)] == new for va, _, new in USB_ETH_LINK)
+    try:
+        patch(img, USB_ETH_LINK)             # already patched: refuses rather than double-applying
+        assert False
+    except SystemExit:
+        pass
 
 
 if __name__ == "__main__":
     selfcheck()
-    if len(sys.argv) in (3, 4):
-        main(*sys.argv[1:])
-    elif len(sys.argv) != 1:
+    argv = [a for a in sys.argv[1:] if a != "--usb-eth-link"]
+    if len(argv) in (2, 3):
+        main(*argv, **({"usb_eth_link": True} if len(argv) < len(sys.argv) - 1 else {}))
+    elif argv:
         sys.exit(__doc__)
