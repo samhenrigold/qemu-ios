@@ -131,8 +131,9 @@ def main():
             sys.exit("boot A: %s" % (detail if not ok else "usbmux never attached"))
         a.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
         time.sleep(3)
-        a.tap(rg.USB_ALERT_DISMISS)
-        time.sleep(2)
+        for xy in (rg.USB_ALERT_DISMISS, rg.TIP_DISMISS):   # empty home-screen space when neither is up
+            a.tap(xy)
+            time.sleep(2)
         a.tap(rg.SAFARI_ICON)
         time.sleep(8)
         a.tap(rg.SAFARI_ADDRESS)
