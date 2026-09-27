@@ -201,6 +201,23 @@ def _framediff(a, b, thresh=8):
     return d > thresh
 
 
+def _lit(sample):
+    return sum(1 for v in sample if v > 12) / max(1, len(sample))
+
+
+def wait_stable(b, rg, tag, deadline, want_lit=False, poll=1.5):
+    """Poll screendumps until two consecutive frames match (settled), event-driven so it
+    doesn't depend on host speed. If want_lit, also require the frame to be lit (past the
+    boot logo). Returns the settled sample, or the last one at the deadline."""
+    prev = _sample(rg, b.shot("w-" + tag))
+    while time.time() < deadline:
+        cur = _sample(rg, b.shot("w-" + tag))
+        if not _framediff(prev, cur) and (not want_lit or _lit(cur) > 0.30):
+            return cur
+        prev = cur
+    return prev
+
+
 def _load_regress():
     spec = importlib.util.spec_from_file_location("ipad_regress", os.path.join(HERE, "regress.py"))
     m = importlib.util.module_from_spec(spec)
@@ -270,27 +287,34 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         # syslog, to confirm the app process starts (not pixels alone)
         syslog = os.path.join(b.dir, "syslog.log")
         b.procs.spawn(["idevicesyslog"], syslog, env=b.env())
-        # wait for the real lock screen (a lit picture) before touching — under parallel
-        # load the guest can still be on the boot logo well past install.
-        ok, det = b.wait_lock_screen(timeout=a.boot_timeout - 40)
+        # Event-driven navigation: wait on frame state, not fixed sleeps, so host load
+        # doesn't matter. Overall bound = the qemu timeout.
+        end = time.time() + a.boot_timeout - 30
+        # 1. lock screen: serial marker (SpringBoard reached it) + a settled lit frame.
+        ok, det = b.wait_lock_screen(timeout=max(30, end - time.time()))
         if not ok:
             res["verdict"], res["note"] = "NO-BOOT", "never reached lock screen (%s)" % det
             return res
-        cur = _sample(rg, b.shot("s0-" + tag))
-        for _ in range(4):
-            b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO); time.sleep(2)
-            nxt = _sample(rg, b.shot("s1-" + tag))
-            if _framediff(cur, nxt):
+        lock = wait_stable(b, rg, tag, min(end, time.time() + 60), want_lit=True)
+        # 2. unlock: drag, wait for a settled frame, confirm it changed from the lock frame.
+        home = lock
+        for _ in range(5):
+            b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
+            home = wait_stable(b, rg, tag, min(end, time.time() + 30), want_lit=True)
+            if _framediff(lock, home):
                 break
-            b.press("home"); time.sleep(1)
-        b.tap(DISMISS_EDIT); time.sleep(1)     # dismiss the install help sheet if present
-        # swipe to the app's page (page-1 swipes), verifying each turn
-        prev = _sample(rg, b.shot("p0-" + tag))
+            b.press("home")
+        else:
+            res["verdict"], res["note"] = "NO-LAUNCH", "could not unlock (%s)" % res["note"]
+            return res
+        b.tap(DISMISS_EDIT)                         # dismiss the install help sheet if present
+        prev = wait_stable(b, rg, tag, min(end, time.time() + 20), want_lit=True)
+        # 3. swipe to the app's page, one settled turn at a time.
         for hop in range(page - 1):
             turned = False
-            for _ in range(4):
-                b.drag(*NEXT_PAGE); time.sleep(2)
-                nowf = _sample(rg, b.shot("p%d-%s" % (hop + 1, tag)))
+            for _ in range(5):
+                b.drag(*NEXT_PAGE)
+                nowf = wait_stable(b, rg, tag, min(end, time.time() + 20), want_lit=True)
                 if _framediff(prev, nowf):
                     turned, prev = True, nowf
                     break
@@ -300,11 +324,10 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         before = prev
         syslen = os.path.getsize(syslog) if os.path.exists(syslog) else 0
         b.tap(GRID(row, col))
-        time.sleep(LAUNCH_WAIT)
+        after = wait_stable(b, rg, tag, min(end, time.time() + 30))   # settle on the app frame
+        res["shot"] = b.shot("launch-" + tag)
         lit, detail = b.picture("launch-" + tag)
-        res["shot"] = os.path.join(b.dir, "launch-" + tag + ".ppm")
-        after = _sample(rg, res["shot"])
-        nonzero = sum(1 for v in after if v > 12) / max(1, len(after))
+        nonzero = _lit(after)
         changed = _framediff(before, after)
         # did the app's process appear in syslog after the tap?
         newlog = ""
