@@ -4,6 +4,8 @@
     tests/ipad1/gl-drive.py --nand STORE --out DIR [--kboot K] [--seconds N] STEP...
 
 STEP is one of  sleep:S  shot:NAME  tap:X,Y  swipe:X1,Y1,X2,Y2  home  wait:TEXT
+                orient:N (accelerometer orientation)  pinch:CX,CY,R0,R1
+                burst:N (N back-to-back screendumps; prints distinct frames/s)
 (scanout pixels, 1024x768; wait:TEXT polls the serial log). The base store is
 never written: its changes go to DIR/overlay. Serial, QEMU stderr (the GLES
 host log) and NAME.png screendumps land in DIR.
@@ -48,7 +50,7 @@ def main():
         q = itqmp.QMP(sock)
         for step in a.steps:
             op, _, arg = step.partition(":")
-            nums = [int(v) for v in arg.split(",")] if op in ("tap", "swipe") else []
+            nums = [int(v) for v in arg.split(",")] if op in ("tap", "swipe", "pinch") else []
             print("[%4.0fs] %s" % (time.time() - t0, step), flush=True)
             if op == "sleep":
                 time.sleep(float(arg))
@@ -67,6 +69,21 @@ def main():
                 itqmp.tap(q, *nums)
             elif op == "swipe":
                 itqmp.swipe(q, *nums, steps=20, dt=0.03)
+            elif op == "burst":
+                import hashlib
+                seen, t1 = [], time.time()
+                for i in range(int(arg)):
+                    q.cmd("screendump", filename=f"{a.out}/burst.ppm")
+                    seen.append(hashlib.md5(open(f"{a.out}/burst.ppm", "rb").read()).hexdigest())
+                dt = time.time() - t1
+                changes = sum(1 for x, y in zip(seen, seen[1:]) if x != y)
+                print("  burst: %d dumps in %.2fs, %d frame changes (%.1f/s)"
+                      % (len(seen), dt, changes, changes / dt), flush=True)
+                os.unlink(f"{a.out}/burst.ppm")
+            elif op == "orient":
+                q.cmd("qom-set", path="/machine", property="accel-orientation", value=int(arg))
+            elif op == "pinch":
+                itqmp.pinch(q, *nums)
             elif op == "home":
                 itqmp.button(q, "home")
             else:
