@@ -58,6 +58,11 @@ bool qemu_ios_ui_compass(int heading_deg);
  * "usb-charger": the iPad charges); applies at the next USB enumeration.
  * false where the machine has no such control. */
 bool qemu_ios_ui_usb_charger(bool high_power);
+/* Set the accelerometer's orientation vector outright (machine
+ * "accel-orientation", 1-6), rather than stepping it like
+ * qemu_ios_ui_rotate: the machine itself moves it (the iPad's power-off
+ * gesture), so a relative step can land on the wrong side. */
+bool qemu_ios_ui_orientation(int value);
 /* 44100 Hz stereo S16LE mixer packets; read needs 16384 bytes of capacity.
  * A generation owns one recording. Empty read = 0; failed/expired = -1.
  * Empty reads with seconds >= 0 mark silence through that capture time.

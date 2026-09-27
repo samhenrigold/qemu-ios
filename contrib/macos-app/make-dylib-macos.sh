@@ -85,6 +85,7 @@ _qemu_ios_ui_battery_config
 _qemu_ios_ui_usb_connection
 _qemu_ios_ui_compass
 _qemu_ios_ui_usb_charger
+_qemu_ios_ui_orientation
 _qemu_ios_audio_capture_start
 _qemu_ios_audio_capture_read
 _qemu_ios_audio_capture_time
