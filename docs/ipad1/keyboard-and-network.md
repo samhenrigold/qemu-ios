@@ -86,6 +86,37 @@ do after their transport work.
   because BTServer uses it for BT keyboards on this exact build. It hasn't been
   run.
 
+### Implemented: `contrib/ipad1-hidbridge`
+
+- `hidbridge.c` builds with `build.sh` to `hidbridge.dylib` (armv7, `-marm`, ldid-signed). It is a
+  dylib, not an executable, because 3.2's dyld can't load LC_MAIN. Its constructor never returns.
+  `com.qemu.hidbridge.plist` runs `/bin/launchctl` with
+  `DYLD_INSERT_LIBRARIES=/usr/local/lib/hidbridge.dylib`, so launchctl's own `main` never runs. The
+  log goes to `/var/log/hidbridge.log`, and setting `HIDBRIDGE_TRACE=1` in the plist logs every report.
+- Images: `ipad1_rootfs.py build --hidbridge` installs both files, owned by root. The dylib is
+  ad-hoc signed, so boot with the AMFI boot-args.
+- Host: `hidkbd.py type TEXT` or `hidkbd.py keys <kVK codes>`. It goes through usbmuxd by default, or
+  `--tcp HOST:PORT` connects to a forwarded port. `MAC_TO_HID` in that file is the macOS
+  virtual-keycode to HID-usage table that the app should reuse.
+
+**Wire format.** The guest listens on TCP port **5213** and takes one client at a time. With usbmuxd,
+use `Connect` with `PortNumber` = htons(5213). The stream is a sequence of 8-byte USB HID boot-keyboard
+input reports with no header or framing:
+
+| byte | meaning |
+|---|---|
+| 0 | modifier bits: 0x01 LCtrl, 0x02 LShift, 0x04 LAlt, 0x08 LGUI (Cmd), 0x10-0x80 the right-hand ones |
+| 1 | reserved, 0 |
+| 2-7 | up to six pressed key usages (HID page 7), 0 = empty |
+
+Each report is the complete key state. To press a key, send a report that contains it; to release
+it, send one that doesn't. The guest sends nothing back. When the client disconnects, the guest
+injects an all-zero report, so no key stays stuck.
+
+**Verified on the real 7B500 iPad:** the device appears as IOHIDUserDevice, then IOHIDInterface, then
+AppleHIDKeyboardEventDriver, with SpringBoard's IOHIDEventServiceUserClient attached, and reports
+sent through macOS usbmuxd return kIOReturnSuccess.
+
 ### Fallback: QEMU's EHCI + `usb-kbd`
 
 Map `hcd-ehci-sysbus` at 0x86400000 (IRQ 0x0e), plus `hcd-ohci-sysbus`

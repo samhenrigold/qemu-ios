@@ -2,7 +2,7 @@
 """Userland images for the ipad1 machine: a patched copy of the 7B500 system partition plus a seeded data volume.
 
     ipad1_rootfs.py build [--base pristine|jailbroken] [--out DIR] [--data-size 2g] [--rootfs IMG]
-                          [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root]
+                          [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge]
     ipad1_rootfs.py fetch [DIR]          copy /var/stash and /var/root/Library/Lockdown off the real iPad (ssh)
     ipad1_rootfs.py report DIR...        list the Mach-Os under DIR that carry no Apple signature
     ipad1_rootfs.py --selfcheck
@@ -28,6 +28,8 @@ system.img edits, all through one read-write mount, no Mach-O touched:
                                              §1.3/§1.5), stdout/stderr -> /dev/console (crw--w--w- on the
                                              unit, so SpringBoard's stderr rides the serial console)
   --disable LABEL                            Disabled=true, looked up in /System/Library and /Library
+  --hidbridge                                contrib/ipad1-hidbridge: /usr/local/lib/hidbridge.dylib (ldid-signed,
+                                             needs the AMFI boot-args) + /Library/LaunchDaemons/com.qemu.hidbridge.plist
 The jailbreak's sshd job (/Library/LaunchDaemons/com.openssh.sshd.plist, inetd-style on port 22, host keys
 in /etc/ssh, wrapper in the stash) is kept as is and reported; it becomes useful once USB/network exists.
 
@@ -65,6 +67,7 @@ SSHD = ("Library/LaunchDaemons/com.openssh.sshd.plist", "usr/sbin/sshd", "privat
 # base -> (system volume under FILES, /var/stash seed under FILES or None, store name suffix)
 BASES = {"pristine": ("7B500/dec/rootfs.dmg", None, "pristine"),
          "jailbroken": ("hw2/rdisk0s1-system.img", "hw2/stash", "jb")}
+HIDBRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/ipad1-hidbridge")
 MOBILE_TOP = ("mobile", "ea")                # uid 501 on the real unit; everything else under /var is root
 MH_MAGIC, FAT_MAGIC, LC_CODE_SIGNATURE, CS_CMS = 0xFEEDFACE, 0xCAFEBABE, 0x1D, 0x10000
 
@@ -271,6 +274,11 @@ def build(a):
             if not hits:
                 raise SystemExit("no launchd job %s in %s" % (label, DAEMON_DIRS))
             rewrite_plist(hits[0], lambda d: d.__setitem__("Disabled", True))
+        if a.hidbridge:
+            os.makedirs(os.path.join(m.mnt, "usr/local/lib"), exist_ok=True)
+            os.makedirs(os.path.join(m.mnt, "Library/LaunchDaemons"), exist_ok=True)
+            shutil.copy(os.path.join(HIDBRIDGE, "hidbridge.dylib"), os.path.join(m.mnt, "usr/local/lib"))
+            shutil.copy(os.path.join(HIDBRIDGE, "com.qemu.hidbridge.plist"), os.path.join(m.mnt, "Library/LaunchDaemons"))
         stashed = os.path.islink(os.path.join(m.mnt, "usr/libexec"))
         sshd = all(os.path.exists(os.path.join(m.mnt, p)) for p in SSHD)
         with open(os.path.join(a.out, "unsigned-machos.txt"), "w") as rep:
@@ -280,6 +288,9 @@ def build(a):
         # /private/var skeleton for the data volume, taken while the volume is mounted
         shutil.rmtree(skeleton)
         shutil.copytree(os.path.join(m.mnt, "private/var"), skeleton, symlinks=True)
+    if a.hidbridge:   # launchd skips jobs not owned by root; the noowners mount wrote the host uid
+        bn.set_owner(system, ["usr/local", "usr/local/lib", "usr/local/lib/hidbridge.dylib",
+                              "Library/LaunchDaemons/com.qemu.hidbridge.plist"], 0, 0)
     if not os.path.isdir(os.path.join(skeleton, "mobile")):
         # the jailbroken volume's /private/var is just `db`: the skeleton mobile_obliterator copies lives
         # on the IPSW rootfs, so slice that out too (a private temp copy, never the user's mounts)
@@ -388,6 +399,7 @@ def main():
     b.add_argument("--lockdown", default=os.path.join(FILES, "hw2/lockdown"), help="fetch output for the Lockdown dir; 'none' to skip")
     b.add_argument("--disable", action="append", default=[], metavar="LABEL", help="launchd job to mark Disabled")
     b.add_argument("--ro-root", action="store_true", help="keep the stock read-only root")
+    b.add_argument("--hidbridge", action="store_true", help="install the hardware-keyboard daemon (run contrib/ipad1-hidbridge/build.sh first)")
     f = sub.add_parser("fetch")
     f.add_argument("dir", nargs="?", default=os.path.join(FILES, "hw2"))
     r = sub.add_parser("report")
