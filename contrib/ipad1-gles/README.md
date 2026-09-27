@@ -52,7 +52,7 @@ The iPad machine registers the guest-services trap for the GLES calls only
 | gliChoosePixelFormat / DestroyPixelFormat | returns one 0x34-byte node. flags 0x100 (accelerated) is set only if `GLI_ACCELERATED` is set in the environment. Default off: CA stays in software and apps still get contexts |
 | gliCreateContext | `share == NULL` creates a host sharegroup, which that context owns. Other contexts join the share context's sharegroup. api_bits 4 = ES1, 8 = ES2; if both are set, the share context's API is used |
 | gliDestroyContext | forgets the CA view (EAGL owns the binding) and deletes the host context; the owner also deletes the sharegroup |
-| gliSetInteger | 0x38E: attach IOSurface. For a renderbuffer it becomes the view surface and sets the host drawable size; for a texture it goes through `GLESBindCoreSurface`. 0x39B: detach. 0x2C1: swap notification (IOMFB selector 20). Anything else returns 0 |
+| gliSetInteger | 0x38E: attach IOSurface. For a renderbuffer it becomes the view surface and sets the host drawable size; for a texture it goes through `GLESBindCoreSurface`. 0x39B: detach. 0x2C1: swap notification (`IOMobileFramebufferSwapSignal` on the main display). Anything else returns 0 |
 | gliGetInteger | writes 0 |
 | gliBindViewES | records the drawable; NULL clears it |
 | gliPresentViewES | mbxshim `GLESPresentView`: render into the current surface, then `drawable->vt[4](d,1)`, then `vt[3]` next frame |
@@ -75,11 +75,11 @@ ldid-signed bundles. Boot with `amfi_allow_any_signature=1 cs_enforcement_disabl
   `docs/ipad1/screens/2026-09-27-gles1-gltest.png`, `...-gles2-gltest2.png`.
   Presents 300+/300+ ok, no unhandled slots.
 - Observed order: `gliBindViewES(drawable)` comes **before** the `0x38E` attach.
-- Accelerated CA (`--ca-ogl`): SpringBoard gets an ES2 context and draws the home
-  screen on the host into its IOSurface render target (read back into the guest on
-  every framebuffer unbind: non-black content), but the screen stays black. The IOMFB
-  swaps never complete (`IOMFB fCommandPool->getCommand(false) returned NULL` on
-  serial, display layer never enabled), and after ~68 frames CA deletes its target.
-  `-[EAGLContext swapNotification:...]` would send `gliSetInteger(0x2C1)` for an
-  accelerated pixel format, but it is never called. Unresolved: why CA's
-  `add_swap_token` path is not reached. Software CA stays the default.
+- Accelerated CA (`--ca-ogl`) works: SpringBoard composites the home screen and
+  both apps through the host GL (`docs/ipad1/screens/2026-09-27-ca-gl-home.png`,
+  `...-ca-gl-gles2.png`). CA renders into an IOSurface-backed texture, read back
+  into the guest when it unbinds the framebuffer; each IOMFB swap waits for a GPU
+  token that EAGL requests with `gliSetInteger(0x2C1, {fbID, txn, layer})`, and the
+  shim answers with `IOMobileFramebufferSwapSignal` on the main display. Without
+  that the swaps never complete (`IOMFB fCommandPool->getCommand(false) returned
+  NULL`) and the screen stays black. Software CA remains the image default.
