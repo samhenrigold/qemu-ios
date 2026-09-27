@@ -407,9 +407,10 @@ static void ipad1_init(MachineState *machine)
      * as the S5L8720 (gap-kernel-platform-mmio.md §6), so both iPod models are
      * reused unchanged. The host bridge (usbmuxd-qemu) is dialled from
      * usb-tcp-addr, or IT_USB_TCP=host:port when that is unset. Without a
-     * host the guest never gets configured, so the power source sees < 500 mA
-     * and lets the device deep-sleep a few minutes after SpringBoard; with
-     * one it behaves like an iPad on a Mac (charging, idle sleep disabled).
+     * host the guest would never be configured, the power source would see
+     * < 500 mA and let the device deep-sleep a few minutes after SpringBoard,
+     * so without a bridge the OTG's built-in host enumerates it; either way
+     * it behaves like an iPad on a Mac (charging, idle sleep disabled).
      * The USB arbitrator's USB_CTL block (0xbf108000) is mapped but never
      * touched on K48 (no hsic-enabled), so it stays in the unimp window.
      */
@@ -432,6 +433,9 @@ static void ipad1_init(MachineState *machine)
             ? g_strndup(s->usb_tcp_addr, colon - s->usb_tcp_addr)
             : g_strdup("127.0.0.1");
     }
+    /* No bridge: a built-in host enumerates and configures the device, which
+     * is what keeps an iPad on a Mac charging and out of deep sleep. */
+    s->usb_otg->builtin_host = !s->usb_otg->server_host && !getenv("IT_USB_TCP");
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     memory_region_add_subregion(sysmem, S5L8930_USB_OTG_BASE,
                                 &S5L8900USBOTG(dev)->iomem);
