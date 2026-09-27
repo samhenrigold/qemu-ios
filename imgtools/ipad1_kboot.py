@@ -34,7 +34,7 @@ Physical layout, mirroring iBoot's allocator (kernel VA 0xC0000000 = PA 0x400000
     vram              0x4F700000 + 0x8FC000 (iBoot writes the 0x5F700000 alias; same RAM through the mirror)
     pram              0x4FFFC000 + 0x4000   (iBoot writes 0x5FFFC000; ditto)
 """
-import os, struct, sys, tempfile
+import json, os, struct, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from macho import Macho
@@ -130,14 +130,43 @@ NAND = {"#ce": 8, "#die-ce": 1, "#ce-blocks": 0x1000, "#block-pages": 128, "#pag
         "ecc-correctable": 8, "ecc-threshold": 8, "bbt-format": 3,
         "read-cycle-ns": 25, "read-setup-ns": 10, "read-hold-ns": 10, "read-delay-ns": 20,
         "read-valid-ns": 20, "write-cycle-ns": 25, "write-hold-ns": 10}
-# Identity of the real iPad the captured activation record belongs to (ideviceinfo, 2026-09-26);
-# its ECID/die-id go into chosen below. Override for a different unit.
-IDENTITY = {"serial-number": "EMU000000000", "mlb-serial-number": "EMU0000000000",
-            "model-number": "MB292", "region-info": "LL/A"}
-# iBoot copies syscfg WMac/BMac into these DT slots; lockdownd's UniqueDeviceID on a 3.2 iPad is
-# SHA1(serial + "02:00:00:00:00:01" + "02:00:00:00:00:02") = <udid>... (verified against the captured
-# activation record's AccountToken), so both MACs must be the real unit's for the record to validate.
-MACS = {"arm-io/sdio": bytes.fromhex("020000000001"), "arm-io/uart3/bluetooth": bytes.fromhex("020000000002")}
+# The unit's identity, from FILES/identity.json (untracked, mode 600; never commit it): what iBoot
+# would put in the DT from the fuses and syscfg. lockdownd's UniqueDeviceID on a 3.2 iPad is
+# SHA1(serial + Wi-Fi MAC + Bluetooth MAC), so the captured activation record only validates with the
+# real unit's values. Without the file the image gets obviously synthetic ones.
+#   {"serial-number": "...", "mlb-serial-number": "...", "unique-chip-id": "0x<ECID>",
+#    "die-id": ["0x<word 2>", "0x<word 3>"], "wifi-mac": "aa:bb:cc:dd:ee:ff", "bt-mac": "..."}
+IDENTITY_FILE = os.path.expanduser("~/Developer/qemu-ios-files/ipad1/identity.json")
+PLACEHOLDER = {"serial-number": "EMU000000000", "mlb-serial-number": "EMU0000000000",
+               "unique-chip-id": "0x0000000001", "die-id": ["0x0", "0x0"],
+               "wifi-mac": "02:00:00:00:00:01", "bt-mac": "02:00:00:00:00:02"}
+MODEL = {"model-number": "MB292", "region-info": "LL/A"}
+
+
+def load_identity(path=IDENTITY_FILE):
+    """The unit identity from `path`, or PLACEHOLDER (with a warning) if it is absent."""
+    if not os.path.exists(path):
+        print(f"warning: {path} not found; using placeholder serial/ECID/MACs, so the captured "
+              "activation record will not validate", file=sys.stderr)
+        return dict(PLACEHOLDER)
+    with open(path) as f:
+        ident = json.load(f)
+    missing = set(PLACEHOLDER) - set(ident)
+    if missing:
+        raise SystemExit(f"{path}: missing {sorted(missing)}")
+    return ident
+
+
+def identity_dt(ident):
+    """(root props, chosen props, {node: local-mac-address}) for an identity dict."""
+    ecid = int(ident["unique-chip-id"], 16)
+    mac = lambda s: bytes.fromhex(s.replace(":", ""))
+    return ({"serial-number": ident["serial-number"], "mlb-serial-number": ident["mlb-serial-number"], **MODEL},
+            {"unique-chip-id": (ecid & 0xFFFFFFFF, ecid >> 32),
+             "die-id": tuple(int(w, 16) for w in ident["die-id"])},
+            {"arm-io/sdio": mac(ident["wifi-mac"]), "arm-io/uart3/bluetooth": mac(ident["bt-mac"])})
+
+
 CLOCKS = [PERIPH_HZ] * 55
 for idx, hz in {0: TIMEBASE_HZ, 5: CPU_HZ, 6: PERIPH_HZ, 27: MEM_HZ, 32: BUS_HZ, 33: FIXED_HZ}.items():
     CLOCKS[idx] = hz
@@ -206,14 +235,14 @@ def macho_entry(data):
     raise ValueError("no LC_UNIXTHREAD")
 
 
-def fill_dt(dt, memory_map):
-    for key, value in {"platform-name": "s5l8930x", **IDENTITY}.items():
+def fill_dt(dt, memory_map, ident):
+    root, chosen, macs = identity_dt(ident)
+    for key, value in {"platform-name": "s5l8930x", **root}.items():
         dt.set("", key, value)
     # debug-enabled is forced (a production iBoot writes 0) so AMFI and PE_i_can_has_debugger honour boot-args.
     for key, value in {"debug-enabled": 1, "production-cert": 1, "secure-boot": 1, "gid-aes-key": 1,
                        "uid-aes-key": 1, "system-trusted": 1, "board-id": 0x02, "chip-id": 0x8930,
-                       "unique-chip-id": (0x00000000, 0xed), "die-id": (0x00000000, 0x00000000),
-                       "firmware-version": "iBoot-817.29", "display-rotation": 0, "display-scale": 1,
+                       **chosen, "firmware-version": "iBoot-817.29", "display-rotation": 0, "display-scale": 1,
                        "root-matching": ROOT_MATCHING}.items():
         dt.set("chosen", key, value)
     for key, hz in {"clock-frequency": CPU_HZ, "memory-frequency": MEM_HZ, "bus-frequency": BUS_HZ,
@@ -226,7 +255,7 @@ def fill_dt(dt, memory_map):
     # CoreAnimation falls back to its software renderer (docs/ipad1/userland-gl-display.md).
     if "arm-io/sgx" in dt.props:
         dt.set("arm-io/sgx", "compatible", "none")
-    for path, mac in MACS.items():
+    for path, mac in macs.items():
         if path in dt.props:  # absent from the selfcheck DT
             dt.set(path, "local-mac-address", mac)
     if "arm-io/mipi-dsim/lcd" in dt.props:
@@ -263,7 +292,7 @@ def patch(image, patches):
         image[o:o + len(new)] = new
 
 
-def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=False):
+def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=False, ident=None):
     """Return (image bytes, load_pa, entry_pa, bootargs_pa)."""
     page = lambda n: (n + 0xFFF) & ~0xFFF
     pa = lambda va: va - VIRT_BASE + PHYS_BASE
@@ -290,7 +319,7 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=False)
         patch(image, USB_ETH_LINK)
     memory_map += [("DeviceTree", pa(dt_va), len(dt_blob)), ("BootArgs", pa(args_va), 0x1000)]
 
-    fill_dt(dt, memory_map)
+    fill_dt(dt, memory_map, ident if ident is not None else load_identity())
     image[dt_va - VIRT_BASE:dt_va - VIRT_BASE + len(dt.buf)] = dt.buf
 
     # boot_args rev 1 / version 2 (pe_identify_machine c01d1276 panics otherwise). Video depth word:
@@ -359,7 +388,7 @@ def selfcheck():
     with tempfile.NamedTemporaryFile() as f:
         f.write(kernel)
         f.flush()
-        image, load, entry, r0 = build(f.name, dt_blob, usb_eth_link=False)
+        image, load, entry, r0 = build(f.name, dt_blob, usb_eth_link=False, ident=PLACEHOLDER)
 
     assert (load, entry, r0) == (0x40000000, 0x40001040, 0x40006000)
     assert image[0x1000:0x1004] == b"\xce\xfa\xed\xfe" and image[0x3000:0x3010] == b"D" * 16
@@ -377,6 +406,8 @@ def selfcheck():
     assert dt.props["arm-io/usb-complex"]["hsic-enabled"][1] == 0 and "arm-io/usb-complex/usb-ehci" in dt.props
     assert get("chosen/memory-map", "BootArgs", "<II") == (0x40006000, 0x1000)
     assert "MemoryMapReserved-4" in dt.props["chosen/memory-map"]
+    assert get("chosen", "unique-chip-id", "<II") == (1, 0) and get("chosen", "die-id", "<II") == (0, 0)
+    assert identity_dt(PLACEHOLDER)[2]["arm-io/sdio"] == bytes.fromhex("020000000001")
     assert get("chosen", "chip-id") == (0x8930,) and get("cpus/cpu0", "timebase-frequency") == (24_000_000,)
     assert get("vram", "reg", "<II") == (0x4F700000, 0x8FC000) and get("pram", "reg", "<II") == (0x4FFFC000, 0x4000)
     img = bytearray(0x303000)

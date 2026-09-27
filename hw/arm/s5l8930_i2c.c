@@ -234,6 +234,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930D1815State, S5L8930_D1815)
 #define PMU_EVENT_A_USB     (1u << 3)   /* cable edge; the power source re-reads usb_det */
 #define PMU_VEC_CHARGER0    0x28        /* DT charger0 interrupts: event F bit 0 */
 #define PMU_STATUS          0x07    /* A-E, power sources; STAT function */
+#define PMU_STATUS_C        0x09    /* GPIO input levels, bit n = GPIO n+1 */
+#define PMU_GPIO6_BATT_SWI  (1u << 5)   /* DT event_name-gpio6 'battery' */
 #define PMU_IRQ_MASK        0x0C    /* A-F; start writes FF 5F FF FF FF FF */
 #define PMU_OOC             0x12    /* bit0 = shutdown, spin after; bit1 = hibernate */
 #define PMU_ADC_CTRL        0x30    /* mux | 0x10 start (mux 3 also 0x20) */
@@ -258,6 +260,15 @@ struct S5L8930D1815State {
     uint32_t rtc_latch;
     uint16_t vbat_mv;       /* what ADC mux 4 measures; 0 = the 3900 default */
 };
+
+/* The guest's own power-off write, latched for the app bridge
+ * (qemu_ios_ui_guest_shutdown_confirmed): the volume is unmounted by then. */
+static int d1815_shutdown_confirmed;
+
+bool s5l8930_d1815_guest_shutdown_confirmed(void)
+{
+    return qatomic_read(&d1815_shutdown_confirmed);
+}
 
 static void d1815_update_irq(S5L8930D1815State *s)
 {
@@ -398,6 +409,7 @@ static int d1815_send(I2CSlave *i2c, uint8_t data)
     reg = s->reg++;
     switch (reg) {
     case PMU_EVENT ... PMU_EVENT + PMU_EVENT_COUNT - 1:
+    case PMU_STATUS ... PMU_STATUS + 4:
     case PMU_RTC_COUNT ... PMU_RTC_COUNT + 3:
         return 0;                       /* read-only */
     case PMU_IRQ_MASK ... PMU_IRQ_MASK + PMU_EVENT_COUNT - 1:
@@ -407,6 +419,7 @@ static int d1815_send(I2CSlave *i2c, uint8_t data)
     case PMU_OOC:
         s->regs[reg] = data;
         if (data & 1) {
+            qatomic_set(&d1815_shutdown_confirmed, 1);
             qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
         }
         return 0;
@@ -440,6 +453,14 @@ static void d1815_reset(DeviceState *dev)
      * pending; no external power (status 0x07-0x0B = 0); the RTC offset at
      * 0x84 is 0 so the counter alone is the wall clock. */
     memset(&s->regs[PMU_IRQ_MASK], 0xff, PMU_EVENT_COUNT);
+    qatomic_set(&d1815_shutdown_confirmed, 0);
+    /*
+     * The battery's SWI line (uart5/gas-gauge function-battery_swi, PMU GPIO
+     * 6) idles high with a healthy pack. configd's AppleHDQGasGauge reads it
+     * from here before every transaction and, low, "issuing reset" forever
+     * without ever talking HDQ; found by bisecting this byte under 7B500.
+     */
+    s->regs[PMU_STATUS_C] = PMU_GPIO6_BATT_SWI;
     s->reg = 0;
     s->addressing = true;
     s->rtc_base = 0;

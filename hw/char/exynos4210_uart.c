@@ -229,9 +229,15 @@ static int fifo_elements_number(const Exynos4210UartFIFO *q)
     return q->sp - q->rp;
 }
 
+/*
+ * The ring keeps one slot free: sp == rp means empty, so a ring filled to
+ * `size` read back as empty. With 256-byte FIFOs that never happened; the
+ * iPad's 16-byte UART5 filled with every 16-symbol HDQ echo and lost it.
+ * (Keeps sp/rp/data as they were, so saved states still load.)
+ */
 static int fifo_empty_elements_number(const Exynos4210UartFIFO *q)
 {
-    return q->size - fifo_elements_number(q);
+    return q->size - 1 - fifo_elements_number(q);
 }
 
 static void fifo_reset(Exynos4210UartFIFO *q)
@@ -290,7 +296,9 @@ exynos4210_uart_Rx_FIFO_trigger_level(const Exynos4210UartState *s)
     reg = ((s->reg[I_(UFCON)] & UFCON_Rx_FIFO_TRIGGER_LEVEL) >>
             UFCON_Rx_FIFO_TRIGGER_LEVEL_SHIFT) + 1;
 
-    return exynos4210_uart_FIFO_trigger_level(s->channel, reg);
+    /* Never past what the FIFO holds, or the Rx interrupt can only come from
+     * the timeout path (UART5's 16-byte FIFO with UFCON trigger field 6). */
+    return MIN(exynos4210_uart_FIFO_trigger_level(s->channel, reg), s->rx.size - 1);
 }
 
 /*
@@ -611,7 +619,7 @@ static uint64_t exynos4210_uart_read(void *opaque, hwaddr offset,
         return res;
     case UFSTAT: /* Read Only */
         s->reg[I_(UFSTAT)] = fifo_elements_number(&s->rx) & 0xff;
-        if (fifo_empty_elements_number(&s->rx) == 0) {
+        if (fifo_elements_number(&s->rx) >= 256) {   /* never: holds size - 1 */
             s->reg[I_(UFSTAT)] |= UFSTAT_Rx_FIFO_FULL;
             s->reg[I_(UFSTAT)] &= ~0xff;
         }
