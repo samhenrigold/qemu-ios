@@ -117,65 +117,101 @@ static int launchctl(const char *verb, const char *job)
     return status;
 }
 
-/* As mobile: write every setting whose key the reader knows. */
-static void write_settings(void)
+/*
+ * As mobile: apply every setting whose key the reader knows. With write false,
+ * only compare. Returns a bit per job (index into jobs[]) whose settings are
+ * not yet what they should be.
+ */
+static unsigned apply(int write, const char *const *jobs, unsigned njobs)
 {
     void *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", 2);
     const void *(*str)(const void *, const char *, unsigned) = cf ? dlsym(cf, "CFStringCreateWithCString") : 0;
+    const void *(*get)(const void *, const void *) = cf ? dlsym(cf, "CFPreferencesCopyAppValue") : 0;
+    unsigned char (*equal)(const void *, const void *) = cf ? dlsym(cf, "CFEqual") : 0;
     void (*set)(const void *, const void *, const void *) = cf ? dlsym(cf, "CFPreferencesSetAppValue") : 0;
     unsigned char (*sync)(const void *) = cf ? dlsym(cf, "CFPreferencesAppSynchronize") : 0;
     const void **yes = cf ? dlsym(cf, "kCFBooleanTrue") : 0;
     const void **no = cf ? dlsym(cf, "kCFBooleanFalse") : 0;
-    unsigned i;
+    unsigned i, j, stale = 0;
 
-    if (!str || !set || !sync || !yes || !no) {
+    if (!str || !get || !equal || !set || !sync || !yes || !no) {
         say("CoreFoundation preferences API not found; changing nothing", "", "");
-        return;
+        return 0;
     }
     for (i = 0; i < sizeof(SETTINGS) / sizeof(SETTINGS[0]); i++) {
         const struct setting *s = &SETTINGS[i];
         const void *app = str(0, s->domain, 0x08000100);   /* kCFStringEncodingUTF8 */
+        const void *key = str(0, s->key, 0x08000100);
         const void *value = s->kind == TRUE ? *yes : s->kind == FALSE ? *no
                           : str(0, s->string, 0x08000100);
+        const void *current;
 
         if (!file_has(s->reader, s->key)) {
-            say(s->reader, " has no ", s->key);
+            if (write)
+                say(s->reader, " has no ", s->key);
             continue;
         }
-        set(str(0, s->key, 0x08000100), value, app);
-        say(s->key, sync(app) ? " set" : " not saved: CFPreferencesAppSynchronize failed", "");
+        current = get(key, app);
+        if (current && equal(current, value))
+            continue;
+        for (j = 0; j < njobs && jobs[j] != s->job; j++)
+            ;
+        stale |= 1u << j;           /* j == njobs: no job to restart */
+        if (write) {
+            set(key, value, app);
+            say(s->key, sync(app) ? " set" : " not saved: CFPreferencesAppSynchronize failed", "");
+        }
     }
+    return stale;
 }
 
-int main(void)
+/* Run apply() as mobile in a child; its result comes back as the exit code. */
+static unsigned as_mobile(int write, const char *const *jobs, unsigned njobs)
 {
-    const char *jobs[sizeof(SETTINGS) / sizeof(SETTINGS[0])];
-    unsigned i, j, n = 0;
-    int pid, status;
-
-    for (i = 0; i < sizeof(SETTINGS) / sizeof(SETTINGS[0]); i++) {
-        if (!SETTINGS[i].job || !file_has(SETTINGS[i].reader, SETTINGS[i].key))
-            continue;
-        for (j = 0; j < n && jobs[j] != SETTINGS[i].job; j++)
-            ;
-        if (j == n && launchctl("unload", SETTINGS[i].job) == 0)
-            jobs[n++] = SETTINGS[i].job;
-    }
-    pid = fork();
+    int pid = fork(), status = 0;
     if (pid == 0) {
         /* CFPreferences finds the user's preferences through HOME, which
          * is still root's in a child of a root job. */
         if (setgid(501) || setuid(501) || setenv("HOME", "/var/mobile", 1)) {   /* mobile */
             say("could not become mobile; changing nothing", "", "");
-            _exit(1);
+            _exit(0);
         }
-        write_settings();
+        _exit(apply(write, jobs, njobs));
+    }
+    if (pid < 0 || waitpid(pid, &status, 0) != pid)
+        return 0;
+    return (status >> 8) & 0xff;
+}
+
+/*
+ * Only a job whose settings actually change is unloaded around the write:
+ * restarting locationd on every boot is not free (it re-runs its startup and
+ * re-asks apps for permission), so a store that already carries the values
+ * is left alone.
+ */
+int main(void)
+{
+    const char *jobs[sizeof(SETTINGS) / sizeof(SETTINGS[0])];
+    unsigned i, j, n = 0, stale, stopped = 0;
+
+    for (i = 0; i < sizeof(SETTINGS) / sizeof(SETTINGS[0]); i++) {
+        for (j = 0; j < n && jobs[j] != SETTINGS[i].job; j++)
+            ;
+        if (SETTINGS[i].job && j == n)
+            jobs[n++] = SETTINGS[i].job;
+    }
+    stale = as_mobile(0, jobs, n);
+    if (!stale) {
+        say("preferences already set", "", "");
         _exit(0);
     }
-    if (pid > 0)
-        waitpid(pid, &status, 0);
     for (j = 0; j < n; j++)
-        say(jobs[j], launchctl("load", jobs[j]) == 0 ? " reloaded" : " reload failed", "");
+        if ((stale & (1u << j)) && launchctl("unload", jobs[j]) == 0)
+            stopped |= 1u << j;
+    as_mobile(1, jobs, n);
+    for (j = 0; j < n; j++)
+        if (stopped & (1u << j))
+            say(jobs[j], launchctl("load", jobs[j]) == 0 ? " reloaded" : " reload failed", "");
     _exit(0);
     return 0;
 }

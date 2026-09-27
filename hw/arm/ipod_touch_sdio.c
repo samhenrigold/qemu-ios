@@ -1,4 +1,5 @@
 #include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "migration/vmstate.h"
 #include "migration/qemu-file-types.h"
 #include "hw/arm/ipod_touch_sdio.h"
@@ -368,18 +369,19 @@ static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t event_type,
                frame, framelen);
 }
 
-/* The BSSID and SSID the model pretends to be associated with. */
-static const uint8_t fake_bssid[6] = { 0x02, 0x00, 0x5e, 0x10, 0x00, 0x01 };
+/* The BSSID and SSID the model pretends to be associated with. The BSSID is
+ * the "bssid" property (s->bssid); this is its default. */
+static const uint8_t default_bssid[6] = { 0x02, 0x00, 0x5e, 0x10, 0x00, 0x01 };
 #define FAKE_SSID "qemu-ios"
 
 /* Describe the network the model claims to be on, open and on channel 6. */
-static void fill_bss_info(uint8_t *bi)
+static void fill_bss_info(IPodTouchSDIOState *s, uint8_t *bi)
 {
     static const uint8_t rates[] = { 0x82, 0x84, 0x8b, 0x96 };
 
     stl_le_p(bi + BSS_INFO_OFF_VERSION, BSS_INFO_VERSION);
     stl_le_p(bi + BSS_INFO_OFF_LENGTH, BSS_INFO_TOTAL);
-    memcpy(bi + BSS_INFO_OFF_BSSID, fake_bssid, sizeof(fake_bssid));
+    memcpy(bi + BSS_INFO_OFF_BSSID, s->bssid, sizeof(s->bssid));
     stw_le_p(bi + BSS_INFO_OFF_BEACON, 100);
     stw_le_p(bi + BSS_INFO_OFF_CAPABILITY, BSS_CAP_ESS);   /* open: no privacy */
     bi[BSS_INFO_OFF_SSID_LEN] = strlen(FAKE_SSID);
@@ -434,7 +436,7 @@ static void fill_iscan_results(IPodTouchSDIOState *s, uint8_t *p)
     stl_le_p(p + ISCAN_OFF_BUFLEN, ISCAN_RESULTS_FIXED + BSS_INFO_TOTAL);
     stl_le_p(p + ISCAN_OFF_VERSION, BSS_INFO_VERSION);
     stl_le_p(p + ISCAN_OFF_COUNT, 1);
-    fill_bss_info(p + ISCAN_OFF_BSS);
+    fill_bss_info(s, p + ISCAN_OFF_BSS);
     trace_sdio("[SDIO] iscanresults: 1 BSS, scan complete\n");
 }
 
@@ -624,9 +626,9 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
         if (cmd == WLC_GET_BSS_INFO && payload_len >= 4 + BSS_INFO_TOTAL) {
             /* Four byte buffer length, then the structure itself. */
             stl_le_p(reply + hdrlen, BSS_INFO_TOTAL);
-            fill_bss_info(reply + hdrlen + 4);
-        } else if (cmd == WLC_GET_BSSID && payload_len >= sizeof(fake_bssid)) {
-            memcpy(reply + hdrlen, fake_bssid, sizeof(fake_bssid));
+            fill_bss_info(s, reply + hdrlen + 4);
+        } else if (cmd == WLC_GET_BSSID && payload_len >= sizeof(s->bssid)) {
+            memcpy(reply + hdrlen, s->bssid, sizeof(s->bssid));
         } else if (cmd == WLC_GET_RSSI && payload_len >= 4) {
             /* Polled to drive the status bar's signal bars; zero reads as no
              * signal, which is why the icon showed empty. */
@@ -1281,6 +1283,35 @@ static const MemoryRegionOps ipod_touch_sdio_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
+/*
+ * "bssid": the access point's BSSID, "aa:bb:cc:dd:ee:ff", settable at run
+ * time (qom-set). The host changes it with the Wi-Fi position it serves
+ * (docs/ipad1/location.md): locationd caches a position per BSSID, so a new
+ * position has to arrive as a new, unknown access point. Not migrated: it is
+ * host policy, and the host sets it again.
+ */
+static char *sdio_get_bssid(Object *obj, Error **errp)
+{
+    const uint8_t *b = IPOD_TOUCH_SDIO(obj)->bssid;
+    return g_strdup_printf("%02x:%02x:%02x:%02x:%02x:%02x",
+                           b[0], b[1], b[2], b[3], b[4], b[5]);
+}
+
+static void sdio_set_bssid(Object *obj, const char *value, Error **errp)
+{
+    unsigned b[6];
+    char tail;
+
+    if (sscanf(value, "%x:%x:%x:%x:%x:%x%c", &b[0], &b[1], &b[2], &b[3], &b[4],
+               &b[5], &tail) != 6 || (b[0] | b[1] | b[2] | b[3] | b[4] | b[5]) > 0xff) {
+        error_setg(errp, "bssid must be six hex octets separated by colons");
+        return;
+    }
+    for (int i = 0; i < 6; i++) {
+        IPOD_TOUCH_SDIO(obj)->bssid[i] = b[i];
+    }
+}
+
 static void ipod_touch_sdio_init(Object *obj)
 {
     DeviceState *dev = DEVICE(obj);
@@ -1297,6 +1328,8 @@ static void ipod_touch_sdio_init(Object *obj)
 
     s->backplane = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
     s->sb_window = CHIPCOMMON_BASE;
+    memcpy(s->bssid, default_bssid, sizeof(s->bssid));
+    object_property_add_str(obj, "bssid", sdio_get_bssid, sdio_set_bssid);
     ipod_touch_sdio_set_chip(s, &bcm4325);
 
     memory_region_init_io(&s->iomem, obj, &ipod_touch_sdio_ops, s, TYPE_IPOD_TOUCH_SDIO, 4096);
