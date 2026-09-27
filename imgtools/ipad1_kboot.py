@@ -72,14 +72,15 @@ ROOT_MATCHING = ("<dict><key>IOProviderClass</key><string>IOMedia</string><key>I
 
 
 class DeviceTree:
-    """Flattened Apple DT, edited in place. iBoot's DT reserves every slot it fills, so sizes never change."""
+    """Flattened Apple DT, edited in place. iBoot's DT reserves every slot it fills; add() is for the rest."""
 
     def __init__(self, blob):
-        self.buf, self.props = bytearray(blob), {}
+        self.buf, self.props, self.nodes = bytearray(blob), {}, {}
         end = self._node(0, None)
         assert end == len(blob), "trailing bytes after the device tree"
 
     def _node(self, off, parent):
+        node = off
         nprops, nchildren = struct.unpack_from("<II", self.buf, off)
         off, props = off + 8, {}
         for _ in range(nprops):
@@ -90,7 +91,7 @@ class DeviceTree:
         noff, nln = props["name"]
         name = bytes(self.buf[noff + 36:noff + 36 + nln]).split(b"\0", 1)[0].decode()
         path = "" if parent is None else f"{parent}/{name}".lstrip("/")
-        self.props[path] = props
+        self.props[path], self.nodes[path] = props, (node, off)
         for _ in range(nchildren):
             off = self._node(off, path)
         return off
@@ -105,6 +106,14 @@ class DeviceTree:
             value = struct.pack(f"<{len(value)}I", *value)
         assert len(value) <= ln, f"{path}:{prop} holds {ln} bytes, got {len(value)}"
         self.buf[off + 36:off + 36 + ln] = value.ljust(ln, b"\0")
+
+    def add(self, path, prop, value=b""):
+        """Append a property to a node; the blob grows, so lay memory out after the last add()."""
+        node, end = self.nodes[path]
+        rec = prop.encode().ljust(32, b"\0") + struct.pack("<I", len(value)) + value.ljust((len(value) + 3) & ~3, b"\0")
+        self.buf[end:end] = rec
+        struct.pack_into("<I", self.buf, node, struct.unpack_from("<I", self.buf, node)[0] + 1)
+        self.__init__(bytes(self.buf))
 
     def rename(self, path, old, new):
         off, ln = self.props[path].pop(old)
@@ -175,6 +184,12 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS):
     """Return (image bytes, load_pa, entry_pa, bootargs_pa)."""
     page = lambda n: (n + 0xFFF) & ~0xFFF
     pa = lambda va: va - VIRT_BASE + PHYS_BASE
+    dt = DeviceTree(dt_blob)
+    # Host nubs (EHCI, OHCI0) up at arbitrator start and kept across cable changes, next to device
+    # mode: AppleS5L8930XUSBArbitrator::handleStart c04826a8 (docs/ipad1/usb-keyboard.md).
+    if "arm-io/usb-complex" in dt.props:
+        dt.add("arm-io/usb-complex", "hsic-enabled")
+    dt_blob = bytes(dt.buf)
     m = Macho(kernel_path)
     segs = [s for s in m.segs if s[0] != "__PAGEZERO"]
     top = page(max(vmaddr + vmsize for _, vmaddr, vmsize, _, _, _ in segs))
@@ -190,7 +205,6 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS):
         memory_map.append((f"Kernel-{name}", pa(vmaddr), vmsize))
     memory_map += [("DeviceTree", pa(dt_va), len(dt_blob)), ("BootArgs", pa(args_va), 0x1000)]
 
-    dt = DeviceTree(dt_blob)
     fill_dt(dt, memory_map)
     image[dt_va - VIRT_BASE:dt_va - VIRT_BASE + len(dt.buf)] = dt.buf
 
@@ -235,7 +249,8 @@ def selfcheck():
         node([("name", b"cpus\0")], [node([("name", b"cpu0\0")] + [(k, z(4)) for k in
              ("clock-frequency", "memory-frequency", "bus-frequency", "peripheral-frequency",
               "fixed-frequency", "timebase-frequency")])]),
-        node([("name", b"arm-io\0"), ("clock-frequencies", z(256)), ("usbphy-frequency", z(4))]),
+        node([("name", b"arm-io\0"), ("clock-frequencies", z(256)), ("usbphy-frequency", z(4))],
+             [node([("name", b"usb-complex\0")], [node([("name", b"usb-ehci\0")])])]),
         node([("name", b"pram\0"), ("reg", z(8))]),
         node([("name", b"vram\0"), ("reg", z(8))]),
     ])
@@ -259,13 +274,14 @@ def selfcheck():
     rev, ver, vbase, pbase, memsize, tokd = struct.unpack_from("<HHIIII", image, r0 - load)
     assert (rev, ver, vbase, pbase, memsize, tokd) == (1, 2, 0xC0000000, 0x40000000, 0x0F700000, 0x40008000)
     dtp, dtlen = struct.unpack_from("<II", image, r0 - load + 0x30)
-    assert (dtp, dtlen) == (0xC0005000, len(dt_blob))
+    assert (dtp, dtlen) == (0xC0005000, len(dt_blob) + 36)   # + hsic-enabled
     assert image[r0 - load + 0x38:].split(b"\0", 1)[0] == DEFAULT_BOOT_ARGS.encode()
     assert struct.unpack_from("<I", image, r0 - load + 0x18)[0] == 0  # -v selects the text console
     dt = DeviceTree(image[dtp - 0xC0000000:dtp - 0xC0000000 + dtlen])
     get = lambda path, key, fmt="<I": struct.unpack_from(fmt, dt.buf, dt.props[path][key][0] + 36)
     assert get("chosen/memory-map", "Kernel-__TEXT", "<II") == (0x40001000, 0x2000)
-    assert get("chosen/memory-map", "DeviceTree", "<II") == (0x40005000, len(dt_blob))
+    assert get("chosen/memory-map", "DeviceTree", "<II") == (0x40005000, dtlen)
+    assert dt.props["arm-io/usb-complex"]["hsic-enabled"][1] == 0 and "arm-io/usb-complex/usb-ehci" in dt.props
     assert get("chosen/memory-map", "BootArgs", "<II") == (0x40006000, 0x1000)
     assert "MemoryMapReserved-4" in dt.props["chosen/memory-map"]
     assert get("chosen", "chip-id") == (0x8930,) and get("cpus/cpu0", "timebase-frequency") == (24_000_000,)
