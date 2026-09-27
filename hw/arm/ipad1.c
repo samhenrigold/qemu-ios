@@ -736,6 +736,9 @@ static void ipad1_init(MachineState *machine)
                            qemu_chardev_new(NULL, TYPE_CHARDEV_S5L8930_HDQ,
                                             NULL, NULL, &error_abort),
                            ipad1_irq(s, S5L8930_IRQ_UART(5)), true);
+    /* UART3: the BCM4329's HCI link (uart3/bluetooth,n88); nothing answers yet. */
+    exynos4210_uart_create(S5L8930_UART_BASE(3), 256, 3, NULL,
+                           ipad1_irq(s, S5L8930_IRQ_UART(3)), true);
     ipad1_battery_update(s);
 
     qemu_register_reset(ipad1_cpu_reset, s);
