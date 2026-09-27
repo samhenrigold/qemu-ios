@@ -5,7 +5,7 @@
                           [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge] [--no-usb-net]
     ipad1_rootfs.py fetch [DIR]          copy /var/stash and /var/root/Library/Lockdown off the real iPad (ssh)
     ipad1_rootfs.py report DIR...        list the Mach-Os under DIR that carry no Apple signature
-    ipad1_rootfs.py bake DIR [--tools build/ipad1-guest]   install the guest helpers into DIR/system.img
+    ipad1_rootfs.py bake DIR [--tools build/ipad1-guest] [--seal]   install the guest helpers into DIR/system.img
     ipad1_rootfs.py --selfcheck
 
 `build` writes DIR/<base>/{system.img,data.img,unsigned-machos.txt}, then prints the ipad1_nand.py line:
@@ -97,6 +97,8 @@ TOOLS = {"it_pbd": ("usr/local/bin/it_pbd", 0o755), "it_ethlink": ("usr/local/bi
 # launchd job, installed path -> source under contrib/
 JOBS = {"System/Library/LaunchDaemons/com.qemu.it-pbd.plist": "it-pasteboard/com.qemu.it-pbd.plist",
         "System/Library/LaunchDaemons/com.qemu.it-ethlink.plist": "it-ethlink/com.qemu.it-ethlink.plist"}
+SEAL_TOOL = {"it_seal": ("usr/local/bin/it_seal", 0o755)}
+SEAL_JOB = {"System/Library/LaunchDaemons/com.qemu.it-seal.plist": "it-seal/com.qemu.it-seal.plist"}
 LC_MAIN, LC_VERSION_MIN_IPHONEOS = 0x80000028, 0x25
 MH_MAGIC, FAT_MAGIC, LC_CODE_SIGNATURE, CS_CMS = 0xFEEDFACE, 0xCAFEBABE, 0x1D, 0x10000
 
@@ -432,6 +434,10 @@ def build(a):
 def bake(a):
     system = os.path.join(a.dir, "system.img")
     contrib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib")
+    TOOLS, JOBS = dict(globals()["TOOLS"]), dict(globals()["JOBS"])
+    if a.seal:      # one-shot clean halt for ipad1_seal.py; it deletes itself on that boot
+        TOOLS.update(SEAL_TOOL)
+        JOBS.update(SEAL_JOB)
     for name in TOOLS:
         with open(os.path.join(a.tools, name), "rb") as f:
             why = guest_tool_problem(f.read())
@@ -553,6 +559,7 @@ def main():
     k = sub.add_parser("bake")
     k.add_argument("dir", help="a build output dir holding system.img and data.img")
     k.add_argument("--tools", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "../build/ipad1-guest"))
+    k.add_argument("--seal", action="store_true", help="also install it_seal, the one-shot clean halt ipad1_seal.py needs")
     a = ap.parse_args()
     selfcheck()
     if a.cmd == "build":
