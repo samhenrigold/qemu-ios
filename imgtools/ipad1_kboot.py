@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Build a direct-kernel boot image for the ipad1 machine: what iBoot-817.29 does before it jumps to xnu.
 
-    ipad1_kboot.py [--no-usb-eth-link] DEC_DIR OUT [BOOT_ARGS]
+    ipad1_kboot.py [--usb-eth-link] DEC_DIR OUT [BOOT_ARGS]
 
 DEC_DIR is ipad1_fw.py's output (kernelcache.mach, DeviceTree.bin). BOOT_ARGS defaults to DEFAULT_BOOT_ARGS.
-With no arguments only the self-check runs. USB_ETH_LINK (below), the one kernel patch, is applied unless
---no-usb-eth-link; it is inert until a host selects the Ethernet interface's alt setting 1.
+With no arguments only the self-check runs. The kernel is stock: the USB Ethernet link is raised by the
+baked it_ethlink helper (contrib/it-ethlink). USB_ETH_LINK (below), the old 7B500-only kernel patch doing
+the same, is kept as a fallback behind --usb-eth-link; it is inert until a host selects alt setting 1.
 
 OUT format (all little-endian): a flat image of physical memory, then a 24-byte trailer.
 
@@ -208,7 +209,7 @@ def patch(image, patches):
         image[o:o + len(new)] = new
 
 
-def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=True):
+def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=False):
     """Return (image bytes, load_pa, entry_pa, bootargs_pa)."""
     page = lambda n: (n + 0xFFF) & ~0xFFF
     pa = lambda va: va - VIRT_BASE + PHYS_BASE
@@ -250,7 +251,7 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=True):
     return bytes(image), PHYS_BASE, pa(macho_entry(m.data)), pa(args_va)
 
 
-def main(dec_dir, out, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=True):
+def main(dec_dir, out, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=False):
     dt_blob = open(os.path.join(dec_dir, "DeviceTree.bin"), "rb").read()
     image, load_pa, entry_pa, args_pa = build(os.path.join(dec_dir, "kernelcache.mach"), dt_blob, boot_args,
                                               usb_eth_link)
@@ -331,8 +332,8 @@ def selfcheck():
 
 if __name__ == "__main__":
     selfcheck()
-    argv = [a for a in sys.argv[1:] if a != "--no-usb-eth-link"]
+    argv = [a for a in sys.argv[1:] if a != "--usb-eth-link"]
     if len(argv) in (2, 3):
-        main(*argv, usb_eth_link=len(argv) == len(sys.argv) - 1)
+        main(*argv, usb_eth_link=len(argv) < len(sys.argv) - 1)
     elif argv:
         sys.exit(__doc__)

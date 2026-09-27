@@ -47,20 +47,21 @@ imgtools/ipad1_nand.py check FILES/userland/nand-pristine --mbr FILES/hw2/rdisk0
 
 (`build` prints the matching `ipad1_nand.py` line; the jailbroken store is `nand-jb`.)
 
-**golden-pristine** (the read-only store the app and tests clone) is the pristine store plus the
-pasteboard helper (docs/ipad1/guest-services.md):
+**golden-pristine** (the read-only store the app and tests clone) is the pristine store plus the guest
+helpers `it_pbd` (pasteboard) and `it_ethlink` (USB Ethernet link) (docs/ipad1/guest-services.md):
 
 ```
-contrib/ipad1-guest/build.sh                            # -> build/ipad1-guest/it_pbd
+contrib/ipad1-guest/build.sh                            # -> build/ipad1-guest/{it_pbd,it_ethlink}
 imgtools/ipad1_rootfs.py build --base pristine
-imgtools/ipad1_rootfs.py bake FILES/userland/pristine   # it_pbd + com.qemu.it-pbd job, root-owned
+imgtools/ipad1_rootfs.py bake FILES/userland/pristine   # helpers + their com.qemu.* jobs, root-owned
 imgtools/ipad1_nand.py build --mbr FILES/hw2/rdisk0-head4M.bin --system FILES/userland/pristine/system.img \
                              --data FILES/userland/pristine/data.img --out FILES/userland/golden-pristine
 chmod -R a-w FILES/userland/golden-pristine
 ```
 
-it_pbd is ldid-signed, so it needs the AMFI boot-args, which are the default in `ipad1_kboot.py` and
-therefore in `7B500/k48-kboot.bin` (stock kernel, no patch). `7B500/k48-kboot-noamfi.bin` keeps the old
+The helpers are ldid-signed, so they need the AMFI boot-args. Those are the default in `ipad1_kboot.py`
+and therefore in `7B500/k48-kboot.bin`, which is a stock kernel with no patch (`--usb-eth-link` is the
+old fallback). `7B500/k48-kboot-noamfi.bin` keeps the old
 `-v serial=3 debug=0x8` bundle.
 `ipad1_rootfs.py --selfcheck` runs on every invocation: APM slicing, plist edits, owner rule, signature classifier.
 
