@@ -1,31 +1,41 @@
 #!/usr/bin/env python3
-"""Userland images for the ipad1 machine: a pristine 7B500 system volume plus a seeded data volume.
+"""Userland images for the ipad1 machine: a patched copy of the 7B500 system partition plus a seeded data volume.
 
-    ipad1_rootfs.py build [--rootfs rootfs.dmg] [--mbr rdisk0-head4M.bin] [--out DIR]
-                          [--data-size 1g] [--lockdown DIR|none] [--disable LABEL]... [--ro-root]
-    ipad1_rootfs.py fetch-lockdown [DIR]     copy /var/root/Library/Lockdown off the real iPad (ssh)
+    ipad1_rootfs.py build [--rootfs IMG] [--mbr rdisk0-head4M.bin] [--out DIR] [--data-size 2g]
+                          [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root]
+    ipad1_rootfs.py fetch [DIR]          copy /var/stash and /var/root/Library/Lockdown off the real iPad (ssh)
+    ipad1_rootfs.py report DIR...        list the Mach-Os under DIR that carry no Apple signature
     ipad1_rootfs.py --selfcheck
 
-`build` writes DIR/system.img and DIR/data.img, which go straight into
+`build` writes DIR/system.img, DIR/data.img and DIR/unsigned-machos.txt, then prints the ipad1_nand.py line:
 
     ipad1_nand.py build --mbr rdisk0-head4M.bin --system DIR/system.img --data DIR/data.img --out NAND
 
-Why not the captured hw2/rdisk0s1-system.img: that volume is the jailbroken unit's, with /Applications
-symlinked into /var/stash and a Cydia-era daemon set. The IPSW rootfs is what a restore lays down, and
-its catalog already carries Apple's uid/gid/modes, so nothing needs re-owning on the system side.
+The base is the captured, jailbroken 3.2.2 system partition (hw2/rdisk0s1-system.img; 8 KiB-block HFSX,
+exactly partition 1's 1280 MiB). It stashes /Applications, /usr/libexec, /usr/share, /usr/include,
+/usr/lib/pam, /Library/{Ringtones,Wallpaper} into /private/var/stash, so the data volume MUST carry the real
+unit's /var/stash (fetch) or launchd finds no lockdownd, installd, ... The IPSW rootfs.dmg is accepted too
+(--rootfs; it is sliced out of the UDIF/APM and grown to the partition), and needs no stash.
 
-system.img  = the IPSW's Apple_HFSX slice, grown to partition 1's size (327680 x 4 KiB, from the MBR),
-              with three edits made through a mount: /etc/fstab normalised to
-              "/dev/disk0s1 / rw" + "/dev/disk0s2 /private/var" (the emulator's data partition is plain
-              0xAF at disk0s2, see ipad1_nand.py; rw root is insurance for a failed data mount),
-              SpringBoard's launchd job gets CA_ENABLE_OGL=0 / MBX2D_PAGE_FLIP=0 (userland-gl-display.md
-              §1.3/§1.5: without them SpringBoard re-runs the whole EAGL/GLEngine probe every frame),
-              and any --disable label gets Disabled=true. No Mach-O is touched, so the boot needs no
-              code-signing boot-args.
-data.img    = a fresh journaled HFSX "Data" volume seeded the way mobile_obliterator seeds it: a copy of
-              the system volume's own /private/var skeleton. /var/mobile and /var/ea become 501:501,
-              everything else 0:0, matching the real iPad. With --lockdown, that directory (the real
-              unit's activation record, device keys and pair records) lands in /var/root/Library/Lockdown.
+system.img edits, all through one read-write mount, no Mach-O touched:
+  /private/etc/fstab                         "/dev/disk0s1 / rw" + "/dev/disk0s2 /private/var" (plain 0xAF
+                                             data partition, see ipad1_nand.py; rw root is insurance for a
+                                             failed data mount, --ro-root keeps the stock ro)
+  .../LaunchDaemons/com.apple.SpringBoard.plist  CA_ENABLE_OGL=0, MBX2D_PAGE_FLIP=0 (userland-gl-display.md
+                                             §1.3/§1.5), stdout/stderr -> /dev/console (crw--w--w- on the
+                                             unit, so SpringBoard's stderr rides the serial console)
+  --disable LABEL                            Disabled=true, looked up in /System/Library and /Library
+The jailbreak's sshd job (/Library/LaunchDaemons/com.openssh.sshd.plist, inetd-style on port 22, host keys
+in /etc/ssh, wrapper in the stash) is kept as is and reported; it becomes useful once USB/network exists.
+
+data.img = fresh journaled HFSX "Data" seeded like mobile_obliterator does (the system volume's own
+/private/var skeleton), plus /stash and /root/Library/Lockdown (activation record, device keys, pair
+records) from `fetch`. /var/mobile and /var/ea are 501:501, everything else 0:0, patched into the catalog
+offline because the host mount is noowners.
+
+unsigned-machos.txt: every Mach-O on the system volume and in the stash whose code signature has no CMS
+blob (ldid ad-hoc: sshd, bash, apt, Cydia, Substrate) or none at all. Those are what
+`amfi_allow_any_signature=1` has to forgive at exec; Apple's own binaries carry a (possibly empty) CMS slot.
 """
 import argparse
 import os
@@ -37,7 +47,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import build_nand as bn                      # resize(), set_owner(), volume_info(), run(), JUNK
+import build_nand as bn                      # attach(), set_owner(), run(), JUNK
 from ipad1_nand import make_hfs_image, mbr_parts, parse_size
 
 FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1")
@@ -45,9 +55,12 @@ IPAD_SSH = os.path.join(FILES, "ipad-ssh.sh")
 BLOCK = 4096
 FSTAB = "/dev/disk0s1 / hfs rw 0 1\n/dev/disk0s2 /private/var hfs rw,nosuid,nodev 0 2\n"
 FSTAB_RO = FSTAB.replace("/ hfs rw", "/ hfs ro", 1)
+DAEMON_DIRS = ("System/Library/LaunchDaemons", "Library/LaunchDaemons")
 SB_JOB = "System/Library/LaunchDaemons/com.apple.SpringBoard.plist"
 SB_ENV = {"CA_ENABLE_OGL": "0", "MBX2D_PAGE_FLIP": "0"}
+SSHD = ("Library/LaunchDaemons/com.openssh.sshd.plist", "usr/sbin/sshd", "private/etc/ssh/ssh_host_rsa_key")
 MOBILE_TOP = ("mobile", "ea")                # uid 501 on the real unit; everything else under /var is root
+MH_MAGIC, FAT_MAGIC, LC_CODE_SIGNATURE, CS_CMS = 0xFEEDFACE, 0xCAFEBABE, 0x1D, 0x10000
 
 
 # --- pure helpers (covered by --selfcheck) ------------------------------------------------------
@@ -83,8 +96,6 @@ def rewrite_plist(path, fn):
 def springboard_env(d):
     assert d.get("Label") == "com.apple.SpringBoard"
     d.setdefault("EnvironmentVariables", {}).update(SB_ENV)
-    # /dev/console is crw--w--w- on the real unit, so the mobile user can append: with serial=3 this
-    # puts SpringBoard's own stderr on the serial log next to the kernel's.
     d["StandardOutPath"] = d["StandardErrorPath"] = "/dev/console"
 
 
@@ -93,7 +104,7 @@ def owner_for(relpath):
 
 
 def hfs_info(img):
-    """(signature, allocation block size, total blocks, free blocks); the IPSW volume uses 8 KiB blocks."""
+    """(signature, allocation block size, total blocks, free blocks); both 7B500 volumes use 8 KiB blocks."""
     with open(img, "rb") as f:
         f.seek(1024)
         vh = f.read(512)
@@ -103,6 +114,37 @@ def hfs_info(img):
     return (sig.decode(),) + struct.unpack_from(">III", vh, 40)
 
 
+def signature_kind(data):
+    """None (not a Mach-O), 'none', 'adhoc' or 'apple'.
+
+    Apple's 7B500 binaries all carry a CMS slot (0x10000) in the SuperBlob, even when it is the 8-byte empty
+    one (launchd, mediaserverd); ldid -S output has CodeDirectory + empty requirements and no CMS slot.
+    That is the distinction AMFI_vnode_check_signature ends up making, so it is the one reported here.
+    """
+    if len(data) < 32:
+        return None
+    if struct.unpack_from(">I", data, 0)[0] == FAT_MAGIC:              # first arm slice of a fat file
+        for i in range(struct.unpack_from(">I", data, 4)[0]):
+            cpu, _, off, size = struct.unpack_from(">IIII", data, 8 + 20 * i)
+            if cpu == 12:
+                return signature_kind(data[off:off + size])
+        return None
+    if struct.unpack_from("<I", data, 0)[0] != MH_MAGIC:
+        return None
+    ncmds, off = struct.unpack_from("<I", data, 16)[0], 28
+    for _ in range(ncmds):
+        cmd, size = struct.unpack_from("<II", data, off)
+        if cmd == LC_CODE_SIGNATURE:
+            so, sn = struct.unpack_from("<II", data, off + 8)
+            blob = data[so:so + sn]
+            if len(blob) < 12 or struct.unpack_from(">I", blob, 0)[0] != 0xFADE0CC0:
+                return "none"
+            slots = [struct.unpack_from(">I", blob, 12 + 8 * i)[0] for i in range(struct.unpack_from(">I", blob, 8)[0])]
+            return "apple" if CS_CMS in slots else "adhoc"
+        off += size
+    return "none"
+
+
 # --- host plumbing ------------------------------------------------------------------------------
 
 def extract_rootfs(src, out):
@@ -110,7 +152,7 @@ def extract_rootfs(src, out):
     with open(src, "rb") as f:
         f.seek(1024)
         if f.read(2) in (b"H+", b"HX"):
-            print("      %s is already a bare HFS volume; copying" % os.path.basename(src))
+            print("      %s is a bare HFS volume; copying" % os.path.basename(src))
             shutil.copyfile(src, out)
             return
     work = tempfile.mkdtemp(prefix="ipad1_rootfs.")
@@ -127,6 +169,25 @@ def extract_rootfs(src, out):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def grow_to_partition(img, blocks):
+    """Grow the volume to `blocks` x 4 KiB. hdiutil grows the backing file itself (see build_nand.resize)
+    but with 8 KiB HFS blocks it stops one 4 KiB sector short, so pad the file and move the alternate
+    volume header to the new end - 1024, where fsck_hfs and the kernel look for it."""
+    want = blocks * BLOCK
+    if os.path.getsize(img) == want:
+        return
+    bn.run(["hdiutil", "resize", "-sectors", str(want // 512), "-imagekey", "diskimage-class=CRawDiskImage", img])
+    old = os.path.getsize(img)
+    if old > want:
+        raise SystemExit("resize overshot partition 1")
+    with open(img, "r+b") as f:
+        f.seek(old - 1024)
+        avh = f.read(512)
+        f.truncate(want)
+        f.seek(want - 1024)
+        f.write(avh)
+
+
 class Mounted:
     """attach a raw HFS image and mount it read-write at `mnt` (diskutil, no sudo: see editimg.py)."""
 
@@ -141,8 +202,7 @@ class Mounted:
 
     def __exit__(self, et, *_):
         for junk in bn.JUNK:
-            p = os.path.join(self.mnt, junk)
-            shutil.rmtree(p, ignore_errors=True)
+            shutil.rmtree(os.path.join(self.mnt, junk), ignore_errors=True)
         subprocess.run(["diskutil", "unmount", self.dev], capture_output=True)
         try:
             if et is None:
@@ -156,6 +216,29 @@ class Mounted:
             raise SystemExit("fsck_hfs is not happy with %s" % self.img)
 
 
+def walk_files(top):
+    for root, dnames, fnames in os.walk(top):
+        dnames[:] = [d for d in dnames if d not in bn.JUNK]
+        for n in fnames:
+            if n not in bn.JUNK:
+                yield os.path.join(root, n)
+
+
+def report(dirs, out=sys.stdout):
+    """Print (kind, path) for every non-Apple Mach-O under dirs; returns the count."""
+    n = 0
+    for top, prefix in dirs:
+        for p in walk_files(top):
+            if os.path.islink(p) or os.path.getsize(p) < 32 or os.path.getsize(p) > 64 << 20:
+                continue
+            with open(p, "rb") as f:
+                kind = signature_kind(f.read())
+            if kind in ("none", "adhoc"):
+                out.write("%-6s %s\n" % (kind, prefix + os.path.relpath(p, top)))
+                n += 1
+    return n
+
+
 def build(a):
     os.makedirs(a.out, exist_ok=True)
     system, data = os.path.join(a.out, "system.img"), os.path.join(a.out, "data.img")
@@ -166,68 +249,80 @@ def build(a):
     print("[1/4] system volume from %s" % a.rootfs)
     extract_rootfs(a.rootfs, system)
     sig, bs, total, free = hfs_info(system)
-    print("      %s %d x %d B blocks, %d free; growing to %d MiB (partition 1)" % (sig, total, bs, free, p1[2] * BLOCK >> 20))
+    print("      %s %d x %d B blocks, %d free; partition 1 is %d MiB" % (sig, total, bs, free, p1[2] * BLOCK >> 20))
     if total * bs > p1[2] * BLOCK:
-        raise SystemExit("volume already larger than partition 1")
-    # hdiutil grows the backing file itself (see build_nand.resize) but with 8 KiB blocks it stops one
-    # 4 KiB sector short of the partition. Pad the file and move the alternate volume header to the
-    # new end - 1024, where fsck_hfs and the kernel look for it; the stale copy is harmless.
-    bn.run(["hdiutil", "resize", "-sectors", str(p1[2] * BLOCK // 512), "-imagekey", "diskimage-class=CRawDiskImage", system])
-    old, new = os.path.getsize(system), p1[2] * BLOCK
-    if old > new:
-        raise SystemExit("resize overshot partition 1")
-    with open(system, "r+b") as f:
-        f.seek(old - 1024)
-        avh = f.read(512)
-        f.truncate(new)
-        f.seek(new - 1024)
-        f.write(avh)
+        raise SystemExit("volume larger than partition 1")
+    grow_to_partition(system, p1[2])
 
     print("[2/4] editing the system volume")
-    skeleton, mobile_paths, all_paths = tempfile.mkdtemp(prefix="ipad1_var."), [], []
+    skeleton = tempfile.mkdtemp(prefix="ipad1_var.")
     with Mounted(system, os.path.join(a.out, "mnt-system")) as m:
         with open(os.path.join(m.mnt, "private/etc/fstab"), "w") as f:
             f.write(FSTAB_RO if a.ro_root else FSTAB)
         rewrite_plist(os.path.join(m.mnt, SB_JOB), springboard_env)
         for label in a.disable:
-            rewrite_plist(os.path.join(m.mnt, "System/Library/LaunchDaemons", label + ".plist"),
-                          lambda d: d.__setitem__("Disabled", True))
+            hits = [os.path.join(m.mnt, d, label + ".plist") for d in DAEMON_DIRS if os.path.exists(os.path.join(m.mnt, d, label + ".plist"))]
+            if not hits:
+                raise SystemExit("no launchd job %s in %s" % (label, DAEMON_DIRS))
+            rewrite_plist(hits[0], lambda d: d.__setitem__("Disabled", True))
+        stashed = os.path.islink(os.path.join(m.mnt, "usr/libexec"))
+        sshd = all(os.path.exists(os.path.join(m.mnt, p)) for p in SSHD)
+        with open(os.path.join(a.out, "unsigned-machos.txt"), "w") as rep:
+            dirs = [(m.mnt, "/")] + ([(a.stash, "/private/var/stash/")] if a.stash else [])
+            unsigned = report(dirs, rep)
         # /private/var skeleton for the data volume, taken while the volume is mounted
         shutil.rmtree(skeleton)
         shutil.copytree(os.path.join(m.mnt, "private/var"), skeleton, symlinks=True)
-    print("      fstab %s root, SpringBoard env %s%s" % ("ro" if a.ro_root else "rw", SB_ENV,
-          ", disabled %s" % a.disable if a.disable else ""))
+    if not os.path.isdir(os.path.join(skeleton, "mobile")):
+        # the jailbroken volume's /private/var is just `db`: the skeleton mobile_obliterator copies lives
+        # on the IPSW rootfs, so slice that out too (a private temp copy, never the user's mounts)
+        print("      %s has no /private/var skeleton; taking it from %s" % (os.path.basename(a.rootfs), os.path.basename(a.pristine)))
+        pristine = os.path.join(a.out, "pristine.img")
+        extract_rootfs(a.pristine, pristine)
+        with Mounted(pristine, os.path.join(a.out, "mnt-pristine")) as m:
+            shutil.copytree(os.path.join(m.mnt, "private/var"), skeleton, symlinks=True, dirs_exist_ok=True)
+        os.unlink(pristine)
+    print("      fstab %s root; SpringBoard env %s + stdio /dev/console%s" % ("ro" if a.ro_root else "rw", SB_ENV,
+          "; disabled %s" % a.disable if a.disable else ""))
+    print("      sshd job: %s; %d non-Apple Mach-Os listed in unsigned-machos.txt (boot with amfi_allow_any_signature=1)"
+          % ("present (jailbreak OpenSSH, inetd-style port 22)" if sshd else "absent", unsigned))
+    if stashed and not a.stash:
+        raise SystemExit("this image stashes /usr/libexec into /private/var/stash; run `fetch` and pass --stash")
 
-    print("[3/4] data volume (%s) seeded from /private/var%s" % (a.data_size,
-          " + " + a.lockdown if a.lockdown else ""))
+    print("[3/4] data volume (%s) seeded from /private/var%s%s" % (a.data_size,
+          " + " + a.stash if a.stash else "", " + " + a.lockdown if a.lockdown else ""))
+    if a.stash:
+        shutil.copytree(a.stash, os.path.join(skeleton, "stash"), symlinks=True)
     if a.lockdown:
         shutil.copytree(a.lockdown, os.path.join(skeleton, "root/Library/Lockdown"), dirs_exist_ok=True)
     os.replace(make_hfs_image(data + ".dmg", parse_size(a.data_size)), data)
+    mobile_paths, root_paths = [], []
     with Mounted(data, os.path.join(a.out, "mnt-data")) as m:
         shutil.copytree(skeleton, m.mnt, symlinks=True, dirs_exist_ok=True)
         for root, dnames, fnames in os.walk(m.mnt):
             dnames[:] = [d for d in dnames if d not in bn.JUNK]   # macOS droppings, removed at unmount
             for n in dnames + [f for f in fnames if f not in bn.JUNK]:
                 rel = os.path.relpath(os.path.join(root, n), m.mnt)
-                (mobile_paths if owner_for(rel) == (501, 501) else all_paths).append(rel)
+                (mobile_paths if owner_for(rel) == (501, 501) else root_paths).append(rel)
     shutil.rmtree(skeleton, ignore_errors=True)
-    # the mount is noowners as an ordinary user, so everything landed uid 99/501: fix the catalog offline
-    n0 = bn.set_owner(data, all_paths, 0, 0)
-    n1 = bn.set_owner(data, mobile_paths, 501, 501)
-    print("      %d paths -> 0:0, %d paths -> 501:501 (%d catalog records patched)" % (len(all_paths), len(mobile_paths), n0 + n1))
-    for d in ("mnt-system", "mnt-data"):
+    # the mount is noowners as an ordinary user, so everything landed as the host uid: fix the catalog offline
+    n = bn.set_owner(data, root_paths, 0, 0) + bn.set_owner(data, mobile_paths, 501, 501)
+    print("      %d paths -> 0:0, %d paths -> 501:501 (%d catalog records patched)" % (len(root_paths), len(mobile_paths), n))
+    for d in ("mnt-system", "mnt-data", "mnt-pristine"):
         shutil.rmtree(os.path.join(a.out, d), ignore_errors=True)
 
     print("[4/4] done:\n    %s/ipad1_nand.py build --mbr %s --system %s --data %s --out %s/nand-userland"
           % (os.path.dirname(os.path.abspath(__file__)), a.mbr, system, data, a.out))
 
 
-def fetch_lockdown(out):
-    """Pull /var/root/Library/Lockdown (activation record, device keys, pair records) off the real iPad."""
-    os.makedirs(out, exist_ok=True)
-    subprocess.run("%s 'tar cf - -C /var/root/Library Lockdown' | tar xf - -C %s --strip-components 1"
-                   % (IPAD_SSH, out), shell=True, check=True)
-    print("fetched %s: %s" % (out, sorted(os.listdir(out))))
+def fetch(out):
+    """Pull /var/stash and /var/root/Library/Lockdown off the real iPad into out/stash and out/lockdown."""
+    for sub, parent, name in (("stash", "/var", "stash"), ("lockdown", "/var/root/Library", "Lockdown")):
+        d = os.path.join(out, sub)
+        os.makedirs(d, exist_ok=True)
+        subprocess.run("%s 'tar cf - -C %s %s' | tar xf - -C %s --strip-components 1"
+                       % (IPAD_SSH, parent, name, d), shell=True, check=True)
+        print("fetched %s: %s" % (d, sorted(os.listdir(d))))
 
 
 def selfcheck():
@@ -256,8 +351,17 @@ def selfcheck():
         pass
 
     assert owner_for("mobile") == owner_for("mobile/Library/Preferences/a.plist") == owner_for("ea") == (501, 501)
-    assert owner_for("root/Library/Lockdown") == owner_for("mobileX") == owner_for("db") == (0, 0)
+    assert owner_for("stash/Applications") == owner_for("root/Library/Lockdown") == owner_for("mobileX") == (0, 0)
     assert FSTAB_RO.splitlines()[0] == "/dev/disk0s1 / hfs ro 0 1" and "s2s1" not in FSTAB
+
+    def macho(slots):
+        blob = struct.pack(">III", 0xFADE0CC0, 12 + 8 * len(slots), len(slots)) + b"".join(struct.pack(">II", s, 0) for s in slots)
+        lc = struct.pack("<IIII", LC_CODE_SIGNATURE, 16, 28 + 16, len(blob))
+        return struct.pack("<7I", MH_MAGIC, 12, 9, 2, 1, len(lc), 0) + lc + blob
+    assert signature_kind(macho([0, 2, CS_CMS])) == "apple" and signature_kind(macho([0, 2])) == "adhoc"
+    assert signature_kind(struct.pack("<7I", MH_MAGIC, 12, 9, 2, 0, 0, 0) + bytes(8)) == "none"
+    fat = struct.pack(">II", FAT_MAGIC, 1) + struct.pack(">5I", 12, 9, 28, len(macho([0, 2])), 12) + macho([0, 2])
+    assert signature_kind(fat) == "adhoc" and signature_kind(b"#!/bin/sh\n" + bytes(40)) is None
 
 
 def main():
@@ -265,24 +369,32 @@ def main():
     ap.add_argument("--selfcheck", action="store_true")
     sub = ap.add_subparsers(dest="cmd")
     b = sub.add_parser("build")
-    b.add_argument("--rootfs", default=os.path.join(FILES, "7B500/dec/rootfs.dmg"), help="decrypted IPSW rootfs DMG, or a bare HFS image")
+    b.add_argument("--rootfs", default=os.path.join(FILES, "hw2/rdisk0s1-system.img"),
+                   help="captured system partition (default) or the decrypted IPSW rootfs DMG")
     b.add_argument("--mbr", default=os.path.join(FILES, "hw2/rdisk0-head4M.bin"))
+    b.add_argument("--pristine", default=os.path.join(FILES, "7B500/dec/rootfs.dmg"), help="IPSW rootfs, source of the /private/var skeleton")
     b.add_argument("--out", default=os.path.join(FILES, "userland"))
-    b.add_argument("--data-size", default="1g")
-    b.add_argument("--lockdown", default=os.path.join(FILES, "hw2/lockdown"), help="fetch-lockdown output; 'none' to skip")
+    b.add_argument("--data-size", default="2g")
+    b.add_argument("--stash", default=os.path.join(FILES, "hw2/stash"), help="fetch output for /var/stash; 'none' to skip")
+    b.add_argument("--lockdown", default=os.path.join(FILES, "hw2/lockdown"), help="fetch output for the Lockdown dir; 'none' to skip")
     b.add_argument("--disable", action="append", default=[], metavar="LABEL", help="launchd job to mark Disabled")
     b.add_argument("--ro-root", action="store_true", help="keep the stock read-only root")
-    f = sub.add_parser("fetch-lockdown")
-    f.add_argument("dir", nargs="?", default=os.path.join(FILES, "hw2/lockdown"))
+    f = sub.add_parser("fetch")
+    f.add_argument("dir", nargs="?", default=os.path.join(FILES, "hw2"))
+    r = sub.add_parser("report")
+    r.add_argument("dirs", nargs="+")
     a = ap.parse_args()
     selfcheck()
     if a.cmd == "build":
-        if a.lockdown == "none" or not os.path.isdir(a.lockdown):
-            print("      no lockdown seed at %s (run fetch-lockdown); activation state will be Unactivated" % a.lockdown)
-            a.lockdown = None
+        for opt in ("stash", "lockdown"):
+            if getattr(a, opt) == "none" or not os.path.isdir(getattr(a, opt)):
+                print("      no %s seed at %s (run `fetch`)" % (opt, getattr(a, opt)))
+                setattr(a, opt, None)
         build(a)
-    elif a.cmd == "fetch-lockdown":
-        fetch_lockdown(a.dir)
+    elif a.cmd == "fetch":
+        fetch(a.dir)
+    elif a.cmd == "report":
+        print("%d non-Apple Mach-Os" % report([(d, d.rstrip("/") + "/") for d in a.dirs]))
     elif not a.selfcheck:
         ap.print_help()
 

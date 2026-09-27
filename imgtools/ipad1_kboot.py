@@ -134,6 +134,10 @@ def fill_dt(dt, memory_map):
         dt.set("cpus/cpu0", key, hz)
     dt.set("arm-io", "clock-frequencies", CLOCKS)
     dt.set("arm-io", "usbphy-frequency", USBPHY_HZ)
+    # No SGX model yet: kill the IMGSGX535 match so it never waits on the GPU, and
+    # CoreAnimation falls back to its software renderer (docs/ipad1/userland-gl-display.md).
+    if "arm-io/sgx" in dt.props:
+        dt.set("arm-io/sgx", "compatible", "none")
     if "chip-revision" in dt.props["arm-io"]:  # absent from the selfcheck DT
         dt.set("arm-io", "chip-revision", 0x11)  # measured on the real K48AP
     if "arm-io/flash-controller0/disk" in dt.props:  # absent from the selfcheck's synthetic DT

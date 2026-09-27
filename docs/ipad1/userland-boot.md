@@ -1,120 +1,178 @@
-# iPad 1 / 7B500: userland boot recipe (root mount → launchd → SpringBoard)
+# iPad 1 / 7B500: first userland attempt (root mount → launchd → SpringBoard)
 
-What the emulator needs the moment the 7B500 kernel says `BSD root: disk0s1`, and where it comes from.
-Built by `imgtools/ipad1_rootfs.py`; consumed by `imgtools/ipad1_nand.py`. Everything lives under
-`~/Developer/qemu-ios-files/ipad1/` (not the repo): inputs in `7B500/dec` and `hw2/`, outputs in `userland/`.
+What the emulator needs the moment the kernel says `BSD root: disk0s1`, how it was built, and what to watch on
+serial. Built by `imgtools/ipad1_rootfs.py`, consumed by `imgtools/ipad1_nand.py`. Everything is under
+`~/Developer/qemu-ios-files/ipad1/` (`FILES` below); nothing here has been booted yet.
 
 ## Ready to boot (2026-09-26)
 
 ```
-userland/system.img        1280 MiB HFSX, pristine 7B500 rootfs + 2 edits (below)
-userland/data.img          1 GiB journaled HFSX "Data", /private/var skeleton + real activation record
-userland/nand-userland/    ipad1_nand.py store of MBR + system + data; `ipad1_nand.py check` all green
-hw2/lockdown/              /var/root/Library/Lockdown pulled off the real iPad (fetch-lockdown)
+FILES/userland/nand-userland/    ipad1_nand.py store: MBR + system.img + data.img; `check` all green (3.4 GiB)
+FILES/userland/system.img        the captured jailbroken 3.2.2 system partition, 1280 MiB HFSX, three edits
+FILES/userland/data.img          2 GiB journaled HFSX "Data": /var skeleton + /var/stash + Lockdown dir
+FILES/userland/unsigned-machos.txt   197 Mach-Os with no Apple signature (188 ldid ad-hoc, 9 unsigned)
+FILES/hw2/stash, FILES/hw2/lockdown  pulled off the real iPad by `ipad1_rootfs.py fetch`
 ```
 
-Boot it with the existing bundle and this store:
+### Boot-args for the first attempt
 
 ```
-tests/ipad1/boot-smoke.py --nand ~/Developer/qemu-ios-files/ipad1/userland/nand-userland --seconds 180
+-v serial=3 debug=0x8 amfi_allow_any_signature=1 cs_enforcement_disable=1
 ```
 
-`boot-smoke.py` already has the `bsd` (`BSD root:`) and `launchd` markers. The kernel bundle needs nothing new:
-`ipad1_kboot.py` names partition 1 in `root-matching`, forces `debug-enabled`, and the default boot-args
-`-v serial=3 debug=0x8` are enough because **no Mach-O on either volume is modified**: no
-`amfi_allow_any_signature` / `cs_enforcement_disable`, no `ldid -S`, no shared-cache patch.
+- `-v serial=3 debug=0x8`: `ipad1_kboot.DEFAULT_BOOT_ARGS`, kernel console on UART0.
+- `amfi_allow_any_signature=1 cs_enforcement_disable=1`: required with this system image. `sshd`, `bash`,
+  Cydia, Substrate and 180-odd GNU tools are `ldid -S` signed (CodeDirectory, no CMS blob), which
+  `AMFI_vnode_check_signature` (0xc03b0718) rejects unless `+0x68 allow_any_signature` is set; page hashes
+  are valid, so nothing needs re-signing. Both flags are read in `AMFI::start` only when
+  `PE_i_can_has_debugger()` is true, i.e. DT `chosen/debug-enabled != 0` — `ipad1_kboot.fill_dt` already forces
+  it to 1 (and the 7B500 global is VA 0xc02787b8 / PA 0x402787b8 if it ever needs the iPod-style DRAM poke).
+  `amfi_get_out_of_my_way=1` is the bigger hammer (skips validation entirely); not needed.
+- Not needed yet: `amfi_unrestrict_task_for_pid`, the `mac_proc_check_get_task{,_name}` patches
+  (0xc01d4614 / 0xc01d46ac; only for launching injected apps), `rd=` (root-matching names partition 1).
 
-To regenerate from scratch (about 5 s for the volumes, about 1 min for the store):
+Run it: `tests/ipad1/boot-smoke.py --nand FILES/userland/nand-userland --seconds 240 --args "<the line above>"`
+(`--args` rebuilds `k48-kboot.bin`; the `bsd` and `launchd` markers are already in the test).
+
+### Device-tree edit for the first attempt: drop `sgx`
+
+`ipad1_kboot.DeviceTree` cannot delete a node (iBoot-style in-place edit), so neutralise the match instead, in
+`fill_dt`:
+
+```python
+dt.set("arm-io/sgx", "compatible", "none")      # was 'sgx,s5l8930x\0sgx,s5l8920x' (26 bytes; "none" fits)
+```
+
+With no `compatible` match, `IMGSGX535` never loads, `IOAcceleratorES` is never published, and OpenGLES'
+`_eagl_init` falls through cleanly (userland-gl-display.md §1.5). Leave `vxd`/`venc` alone for now; they only
+matter for video. This edit is not made by the tools yet — it belongs in `ipad1_kboot.py`, which I did not touch.
+
+### Regenerate (about 15 s for the volumes, about 1 min for the store)
 
 ```
-imgtools/ipad1_rootfs.py fetch-lockdown          # once; needs the iPad on USB with iproxy 2323 -> 22
-imgtools/ipad1_rootfs.py build                   # -> userland/system.img, userland/data.img
-imgtools/ipad1_nand.py build --mbr hw2/rdisk0-head4M.bin --system userland/system.img \
-                             --data userland/data.img --out userland/nand-userland
-imgtools/ipad1_nand.py check userland/nand-userland --mbr hw2/rdisk0-head4M.bin --system userland/system.img
+imgtools/ipad1_rootfs.py fetch                       # once; iPad on USB, iproxy 2323 -> 22 (ipad-ssh.sh)
+imgtools/ipad1_rootfs.py build                       # -> FILES/userland/{system,data}.img, unsigned-machos.txt
+imgtools/ipad1_nand.py build --mbr FILES/hw2/rdisk0-head4M.bin --system FILES/userland/system.img \
+                             --data FILES/userland/data.img --out FILES/userland/nand-userland
+imgtools/ipad1_nand.py check FILES/userland/nand-userland --mbr FILES/hw2/rdisk0-head4M.bin --system FILES/userland/system.img
 ```
+
+`ipad1_rootfs.py --selfcheck` runs on every invocation (APM slicing, plist edits, owner rule, signature classifier).
 
 ## What is on the volumes and why
 
-**System volume = the IPSW rootfs, not the hw2 capture.** `hw2/rdisk0s1-system.img` is the jailbroken unit's
-volume: `/Applications -> /private/var/stash/Applications` (so with a fresh data partition there would be no
-Preferences.app, Safari, ...), Cydia-era daemons, fstab pointing at `disk0s2s1`. The decrypted
-`7B500/dec/rootfs.dmg` (`Wildcat7B500.K48OS`, Apple_HFSX slice of a UDIF+APM image, 8 KiB allocation
-blocks, 1000 MB) is what a restore lays down, and its catalog already carries Apple's uid/gid/modes. The tool
-slices it out of the APM, grows it to partition 1's 327680 × 4 KiB (the MBR is the authority), moves the
-alternate volume header to the new end, and mounts it once to make two edits:
+### system.img: the captured jailbroken partition, patched through a mount
 
-| file | edit | why |
+`hw2/rdisk0s1-system.img` is already exactly partition 1 (163840 × 8 KiB HFSX, 76925 blocks free), so no
+resize. It is a jailbroken volume: `/Applications`, `/usr/libexec`, `/usr/share`, `/usr/include`, `/usr/lib/pam`,
+`/Library/{Ringtones,Wallpaper}` are symlinks into `/private/var/stash`, `/private/var` itself holds only `db`,
+and `/Library/LaunchDaemons` has `com.openssh.sshd` and `com.saurik.Cydia.Startup`. Apple's
+`/System/Library/LaunchDaemons` set is byte-identical to the IPSW's (62 jobs; SpringBoard job included).
+
+| edit | value | why |
 |---|---|---|
-| `/private/etc/fstab` | `/dev/disk0s1 / hfs rw 0 1` + `/dev/disk0s2 /private/var hfs rw,nosuid,nodev 0 2` | stock is identical except `ro` root. `rw` is insurance: if the data mount fails, daemons still find a writable `/var` skeleton on the root volume instead of dying one by one. `--ro-root` keeps stock. `disk0s2` (not `disk0s2s1`) because `ipad1_nand.py` publishes the data partition as plain Apple_HFS 0xAF: no EncryptedMediaFilter, no `tprc` key block, no CDMA AES needed for the mount. |
-| `/System/Library/LaunchDaemons/com.apple.SpringBoard.plist` | `EnvironmentVariables` += `CA_ENABLE_OGL=0`, `MBX2D_PAGE_FLIP=0`; `StandardOutPath` = `StandardErrorPath` = `/dev/console` | `userland-gl-display.md` §1.3/§1.5: OpenGLES never caches a failed `_eagl_init`, so without `CA_ENABLE_OGL=0` SpringBoard re-runs dlopen(GLEngine) + IOAcceleratorES + AppleMBXDevice matching on every render; `MBX2D_PAGE_FLIP=0` leaves one IOMFB page so the scaler-backed page copy (no CPU fallback) is never attempted. `/dev/console` is `crw--w--w-` on the real unit, so the `mobile` user can append and SpringBoard's own stderr lands on the serial log next to the kernel's. |
+| `/private/etc/fstab` | `/dev/disk0s1 / hfs rw 0 1` / `/dev/disk0s2 /private/var hfs rw,nosuid,nodev 0 2` | captured fstab named `disk0s2s1` (the EncryptedMediaFilter subslice). `ipad1_nand.py` publishes the data partition as plain Apple_HFS 0xAF, so `disk0s2` mounts without the 0x89B AES key or a `tprc` block (`ipad1_nand.py` would also patch this in the page stream; the volume is now already right). `rw` root as on the captured unit; `--ro-root` for stock. |
+| `.../com.apple.SpringBoard.plist` | `EnvironmentVariables` += `CA_ENABLE_OGL=0`, `MBX2D_PAGE_FLIP=0`; `StandardOutPath`/`StandardErrorPath` = `/dev/console` | GL doc §1.3/§1.5: a failed `_eagl_init` is never cached, so without `CA_ENABLE_OGL=0` SpringBoard redoes dlopen(GLEngine) + IOAcceleratorES + AppleMBXDevice matching on every render; `MBX2D_PAGE_FLIP=0` leaves one IOMFB page so the scaler-only page copy is never attempted. `/dev/console` is `crw--w--w-` on the unit, so `mobile` can append and SpringBoard's stderr rides the serial console next to the kernel's. |
+| `--disable LABEL` | `Disabled=true` (searched in `/System/Library` and `/Library` LaunchDaemons) | none applied by default; see knobs. |
 
-Plists are rewritten in place (same catalog record, still uid 0) in their original binary format. Optional
-`--disable LABEL` sets `Disabled=true` on any other job; see "knobs" below.
+Plists are rewritten in place in their original (binary) format, so the catalog record and Apple's uid 0
+survive; nothing new is created on this volume and no Mach-O is modified.
 
-**Data volume = what `mobile_obliterator` would create.** A fresh journaled HFSX "Data" volume
-(`ipad1_nand.make_hfs_image`) seeded with a copy of the system volume's own `/private/var` skeleton (the
-40-odd directories the restore/obliterate path copies: `db/launchd.db`, `db/timezone/localtime`, `log/asl`,
-`mobile/Library/{Preferences,Caches,Keyboard,...}`, `mobile/Media/{DCIM,Photos}`, `run`, `tmp`, `msgs`,
-`root/Library/Preferences`), then `hw2/lockdown/` copied to `/var/root/Library/Lockdown`. Ownership matches the
-real iPad's `ls -ln /private/var`: `mobile/` and `ea/` are 501:501, everything else 0:0, patched into the
-catalog offline (`build_nand.set_owner`) because the host mount is `noowners`. 1 GiB is plenty; SpringBoard
-writes a few hundred KiB on first boot. `ipad1_nand.py` sizes partition 2 to whatever `data.img` is.
+**sshd**: `/Library/LaunchDaemons/com.openssh.sshd.plist` is kept: inetd-style (`Sockets` service `ssh`,
+`sshd -i`), `Program /usr/libexec/sshd-keygen-wrapper` (in the stash), host keys in `/etc/ssh` (regenerated
+2026-09-26 on the unit), root password `alpine`. It needs a network interface, i.e. M5's USB + usbmuxd/iproxy
+or an emulated NIC; until then launchd just holds the socket. No agent job was added: the guest agent needs
+armv7 Mach-Os built with the 3.2 SDK constraints in `hw2-regs/README-native-code-on-3.2.2.md` (dylib, `-marm`,
+no `LC_MAIN`) and a transport, both M5 work.
 
-## What to expect on serial, and what each stage depends on
+**MobileSubstrate** is active on this image through `/private/etc/launchd.conf`
+(`bsexec .. /usr/bin/cynject 1 .../SubstrateLauncher.dylib`), and `cynject` is known broken on the unit
+(memory note: `MSHookProcess() failed`). It will fail the same way in the emulator and is harmless; if it
+turns out to spin, `--disable com.saurik.Cydia.Startup` handles the Cydia job and `launchd.conf` can be
+emptied with one more line in `build()`.
 
-1. `BSD root: disk0s1, major 14, minor 1` — the kernel found the 0xAF partition 1 via `root-matching`
-   (already the case with the self-formatted store). Root is mounted read-only by the kernel; launchd remounts
-   per fstab.
-2. launchd (`/sbin/launchd`, launchd-258 era) starts, runs `fsck`/`mount` for fstab, then loads
-   `/System/Library/LaunchDaemons/*.plist` (62 jobs on 7B500). With `-v` its own console output is on serial.
-   **First userland dependency on the model:** `/dev/disk0s2` must exist and mount, i.e. the IOP/FTL read
-   path must serve LBAs 327789+ (the store has them; `check` verified the HFS header at partition 2).
-3. Early daemons: `configd`, `notifyd`, `syslogd`, `securityd`, `lockdownd`, `mediaserverd`, `wifiFirmwareLoader`,
-   `BTServer`, `CommCenter`, `locationd`, `installd`, `fairplayd.K48`, `securekeyvaultd.s5l8930x`... Ones that
-   talk to missing hardware crash or spin; `ThrottleInterval`/`KeepAlive` respawn them every 5–10 s, which is
-   noisy on serial but not fatal. There is no `getty` binary on 7B500 (`/etc/ttys` lists one, `/usr/libexec/getty`
-   does not exist), so a serial shell has to come from a custom daemon later, as on the iPod.
-4. `SpringBoard` (`UserName mobile`, KeepAlive). Its stderr is on serial via `/dev/console`. It needs
-   `com.apple.CARenderServer` to come up (its own Mach service), `AppleCLCD` matching for the CA display
-   (`H3CLCDDisplay::open`, so the display pipe + CLCD model from M4 must at least publish the service and
-   1024×768; until then SpringBoard logs the missing display and retries), and `IOHIDSystem`/`AppleM68Buttons`
-   for events (input is M5; SpringBoard runs without it).
-5. Activation: `lockdownd` reads `/var/root/Library/Lockdown/activation_records/pod_record.plist` and
-   `data_ark.plist` (`ActivationState = Activated` on the real unit). See open items: the record is bound to the
-   real unit's identity, so expect `Unactivated` and the "Connect to iTunes" screen until the emulator reports
-   the same serial/ECID/MACs. SpringBoard still runs either way.
+### data.img: what `mobile_obliterator` would create, plus the stash
+
+Fresh journaled HFSX "Data" (`ipad1_nand.make_hfs_image`), 2 GiB (the real p2 is 14 GB; any size ≤ that
+works, `ipad1_nand.py` sizes the partition to the image). Seeded with:
+
+1. `/private/var` skeleton from the IPSW rootfs (`7B500/dec/rootfs.dmg`, sliced out of its APM into a temp
+   image): `db/launchd.db`, `db/timezone/localtime`, `log/asl`, `mobile/Library/{Preferences,Caches,...}`,
+   `mobile/Media/{DCIM,Photos}`, `run`, `tmp`, `msgs`, `root/Library/Preferences`, ... The jailbroken volume's own
+   `/private/var/db` is layered on top.
+2. `/private/var/stash` from the real iPad (116 MB: `Applications` with the 17 stock apps + Cydia, `libexec`
+   with all 51 Apple daemons plus OpenSSH's and Substrate's helpers, `share`, `include`, `pam`, `Ringtones`,
+   `Wallpaper`).
+3. `/private/var/root/Library/Lockdown` from the real iPad: `activation_records/pod_record.plist`,
+   `data_ark.plist` (`ActivationState = Activated`), `device_{private,public}_key.pem`, three `pair_records`.
+
+Ownership as on the real unit (`ls -ln /private/var`): `mobile/`, `ea/` 501:501, everything else 0:0. The
+host mount is `noowners`, so the catalog is patched offline afterwards (`build_nand.set_owner`: 3562 records).
+
+### unsigned-machos.txt
+
+Classifier: Apple 7B500 binaries all carry a CMS slot (0x10000) in the signature SuperBlob, even an 8-byte
+empty one (`launchd`, `mediaserverd`); `ldid -S` output has CodeDirectory + empty requirements and no CMS
+slot. Result on this image: 188 `adhoc` (OpenSSH, bash, coreutils, gzip, tar, apt/dpkg, Cydia, Substrate,
+`MSUnrestrictProcess`, ...) and 9 `none` (7 `AppleMultitouchSPI*.kext/AppleMultitouch` plug-in blobs, which
+are firmware payloads not executables, `libgmalloc.dylib`, an `.o`). Everything in `/System/Library`,
+`/usr/lib`, `/sbin`, the stashed `libexec` daemons and the 17 stock apps is Apple-signed. So
+`amfi_allow_any_signature=1` covers exactly the jailbreak additions; a boot without it still reaches
+SpringBoard (all of launchd's Apple jobs exec) but `sshd`, `bash` and Cydia's startup fail with
+`AMFI: Invalid signature`.
+
+## Serial checklist, in order
+
+1. `BSD root: disk0s1, major 14, minor 1` — root found via `root-matching` (partition 1). Same as the
+   self-formatted store today.
+2. launchd banner / `launchd: ...` lines. It runs `fsck`+`mount -vat nonfs` for fstab: expect
+   `/dev/disk0s2` to be probed. **First model dependency:** the IOP/FTL read path must serve partition 2's
+   LBAs (327789–589932); `ipad1_nand.py check` confirmed the HFS header there. If `/private/var` fails to
+   mount, everything below still starts (rw root skeleton), but `/var/stash` is missing and `lockdownd`,
+   `installd`, ... are `No such file`: that symptom means "data partition", not "launchd".
+3. `com.apple.launchd` loading the 62 + 2 jobs. Watch for exec failures: `AMFI: Invalid signature but
+   permitting execution` (expected for sshd/bash with the boot-args), `Exited with exit code:` /
+   `Throttling respawn:` storms (5–10 s) from hardware-facing daemons: `wifiFirmwareLoader`, `BTServer`,
+   `CommCenter`, `locationd`, `mediaserverd`, `iapd`, `accessoryd`, `fairplayd.K48`, `securekeyvaultd.s5l8930x`.
+   Noisy, not fatal.
+4. `SpringBoard` stderr on the console (via `/dev/console`). Expect it to:
+   - come up as `mobile` with `HOME=/var/mobile` (skeleton is there),
+   - publish `com.apple.CARenderServer`, `PurpleSystemEventPort`, `com.apple.springboard.*`,
+   - look for `AppleCLCD` (`H3CLCDDisplay::open`): until M4's display pipe publishes it with 1024×768,
+     it logs no display and keeps running,
+   - not touch GLES (`CA_ENABLE_OGL=0`, no `sgx`).
+   A crash loop here (KeepAlive, `ThrottleInterval 5`) is the M2 exit signal to diff against the real
+   unit's log.
+5. `lockdownd`: activation state from `pod_record.plist`; see open items. `Unactivated` still shows the
+   lock screen once there is a display.
+6. `sshd`: nothing until a network exists; a `Sockets` bind failure line is expected without one.
 
 ## Knobs
 
-- `--disable LABEL` (repeatable): sets `Disabled=true` on a launchd job. Start stock and read the serial log
-  first; candidates once they are seen to spin are `com.apple.wifiFirmwareLoader`, `com.apple.BTServer`,
-  `com.apple.CommCenter` (iPad Wi-Fi has no baseband but the job exists), `com.apple.locationd`,
-  `com.apple.mediaserverd` (audio hardware), `com.apple.mobile.storage_mounter`.
-- `--ro-root`: stock read-only root.
-- `--data-size` (default `1g`), `--lockdown none` to build an unactivated data volume.
-- Further SpringBoard environment or launchd keys: edit `SB_ENV` / `springboard_env()` in `ipad1_rootfs.py` and
-  rebuild (5 s). Do not use `patch_launchd_env.py` here: it edits the iPod's page store in place and assumes a
-  single-block file; here the plist is rewritten through a real mount so it can grow.
-- Later Mach-O edits (a GLI shim at `GLEngine.bundle/GLEngine`, a guest agent in `/usr/local/bin`) go through
-  the same mount step: add them in `build()`, `ldid -S` them, list them for `set_owner(..., 0, 0)`, and add
-  `amfi_allow_any_signature=1 cs_enforcement_disable=1` to the kboot boot-args (`debug-enabled` is already
-  forced by `ipad1_kboot.py`, which is the 3.2-specific prerequisite for AMFI to honour them).
+- `--disable LABEL` (repeatable): candidates once seen spinning are the daemons in step 3 and
+  `com.saurik.Cydia.Startup`. Start stock and read the log first.
+- `--rootfs FILES/7B500/dec/rootfs.dmg --stash none`: the pristine IPSW volume instead (no jailbreak, no
+  sshd, nothing ad-hoc signed, `/Applications` real). Boots with the plain default boot-args.
+- `--data-size`, `--lockdown none`, `--ro-root`.
+- Later Mach-O additions (GLI shim at `GLEngine.bundle/GLEngine`, guest agent) go through the same mount in
+  `build()`: `ldid -S` them (preserve entitlements when replacing an Apple binary, see `README-appsync.md`),
+  list them for `set_owner(..., 0, 0)`; the boot-args above already cover them.
+- Do not use `patch_launchd_env.py` here; it edits the iPod's page store in place and assumes a single-block
+  plist.
 
-## Open items
+## Not determined / open
 
-- **Activation identity.** `pod_record.plist` carries an AccountToken bound to the device: `lockdownd` compares
-  it against the UDID, which on 3.x is SHA1(SerialNumber + ECID + WiFiAddress + BluetoothAddress). Known for
-  Sam's unit: serial `EMU000000000` (IOPlatformSerialNumber), Wi-Fi MAC `02:00:00:00:00:01`
-  (`local-mac-address`, also the tail of `platform-uuid` in nvram), platform UUID
-  `00000000-0000-1000-8000-020000000001`. Not yet captured: ECID (`unique-chip-id`; the IOKit dump walked the
-  IOService plane only) and the Bluetooth MAC. `ipad1_kboot.fill_dt` currently writes serial `QEMUIPAD1` and a
-  made-up `unique-chip-id`; switch those to the real values (and give the Wi-Fi model the real MAC) when
-  activation matters. The pair records in the same directory let a host `usbmuxd`/lockdown client talk without
-  re-pairing once USB exists (M5).
-- **SpringBoard stderr**: `/dev/console` redirect is untested on the emulator; if launchd refuses the path,
-  the fallback is `/var/log/springboard.log` on the data volume, read back with `ipad1_nand`'s LBA reader.
-- **`.GlobalPreferences.plist`** on the data volume is the empty stock one; language/region prompts (Setup) do
-  not exist on 3.2, so no first-run wizard blocks the home screen.
-- Nothing here has been booted yet. First serial log against a real-iPad boot log is the M2 exit criterion in
-  `PLAN.md`.
+- **Activation identity.** `pod_record.plist`'s AccountToken is bound to the unit; `lockdownd` checks it
+  against the UDID = SHA1(serial + ECID + Wi-Fi MAC + Bluetooth MAC) on 3.x. Known: serial `EMU000000000`,
+  Wi-Fi MAC `02:00:00:00:00:01` (`local-mac-address`, also the tail of nvram `platform-uuid`
+  `00000000-0000-1000-8000-020000000001`). Not captured: ECID (`unique-chip-id`; the IOKit dump walked the
+  IOService plane only) and the Bluetooth MAC. `ipad1_kboot.fill_dt` writes serial `QEMUIPAD1` and a made-up
+  ECID, so expect `Unactivated` until those are the real values.
+- **`/dev/console` redirect** is untested on this launchd; if it refuses, fall back to a file under `/var/log`
+  and read it back through the store.
+- **launchd and `/etc/ttys`**: there is no `getty` on 7B500, so no serial login shell exists regardless of
+  `ttys`; a shell needs sshd + network or a custom daemon (M5).
+- **Whether `mount -vat nonfs` retries** a data partition that appears late (IOP FMI init after launchd
+  starts) was not checked; if `/private/var` is missing in the log while the FTL is fine, look at ordering.
+- The 7 `AppleMultitouch` plug-in blobs and `libgmalloc.dylib` are flagged `none` by the classifier; they are
+  not executed at boot and were not investigated further.
