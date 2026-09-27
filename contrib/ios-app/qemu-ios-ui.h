@@ -31,6 +31,22 @@ extern "C" {
  */
 int qemu_ios_main(int argc, char **argv);
 
+/*
+ * What an app needs to know about a machine BEFORE it boots it: which -M name
+ * to pass, how big a window to open, which way up. Static per machine, so it
+ * is valid before qemu_ios_main() and needs no lock. Unknown name -> NULL.
+ */
+typedef struct {
+    const char *machine;        /* the -M name */
+    int screen_width;           /* framebuffer pixels at default_orientation */
+    int screen_height;
+    int screen_scale;           /* points per pixel */
+    int default_orientation;    /* 0 portrait, 1 landscape */
+    bool has_cellular;
+} QemuIosDeviceInfo;
+
+const QemuIosDeviceInfo *qemu_ios_device_info(const char *machine);
+
 /* Called on the QEMU thread whenever a new frame is ready. Do not block. */
 typedef void (*qemu_ios_frame_cb)(void *opaque);
 
