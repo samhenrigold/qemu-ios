@@ -63,6 +63,15 @@ extern const CFStringRef kMISValidationInfoSignerCertificate;
 // SecCertificateRef from DER; installd stores it under the signer key.
 typedef struct __SecCertificate *SecCertificateRef;
 extern SecCertificateRef SecCertificateCreateWithData(CFAllocatorRef, CFDataRef);
+extern CFStringRef SecCertificateCopySubjectSummary(SecCertificateRef);
+extern CFTypeRef CFRetain(CFTypeRef);
+extern CFStringRef CFStringCreateWithCString(CFAllocatorRef, const char *, unsigned int);
+extern void *dlsym(void *, const char *);
+#define RTLD_NEXT ((void *)-1L)
+
+extern const char *getprogname(void);
+extern int strcmp(const char *, const char *);
+static int in_installd(void) { const char *p = getprogname(); return p && !strcmp(p, "installd"); }
 
 // ---- libmis hooks ----------------------------------------------------------
 // Signatures match how installd calls them (2 args / 3 args). Args are ignored;
@@ -102,12 +111,39 @@ static int as_MISValidateSignatureAndCopyInfo(void *path, void *options,
     return 0;
 }
 
+// installd's verify_signer_identity calls SecCertificateCreateWithData on the
+// signer-cert data, then SecCertificateCopySubjectSummary. On this store that
+// SecCertificateCreateWithData returns NULL even for a valid Apple DER (the fresh
+// image has no working keychain/Security trust store), so installd reports
+// ApplicationVerificationFailed. Interpose both (symbols installd imports) so the
+// signer cert is accepted without depending on the Security stack. Only in
+// installd; elsewhere (SpringBoard) call through to the real functions.
+static SecCertificateRef as_SecCertificateCreateWithData(CFAllocatorRef a, CFDataRef d) {
+    if (in_installd()) {                 // return any CFRelease-able object; installd only
+        if (d) CFRetain((CFTypeRef)d);   // stores it, summarizes it, then CFReleases it
+        return (SecCertificateRef)d;
+    }
+    static SecCertificateRef (*real)(CFAllocatorRef, CFDataRef);
+    if (!real) real = (SecCertificateRef (*)(CFAllocatorRef, CFDataRef))dlsym(RTLD_NEXT, "SecCertificateCreateWithData");
+    return real ? real(a, d) : (SecCertificateRef)0;
+}
+
+static CFStringRef as_SecCertificateCopySubjectSummary(SecCertificateRef c) {
+    if (in_installd())
+        return CFStringCreateWithCString(kCFAllocatorDefault, "AppSync", 0x0600 /*kCFStringEncodingASCII*/);
+    static CFStringRef (*real)(SecCertificateRef);
+    if (!real) real = (CFStringRef (*)(SecCertificateRef))dlsym(RTLD_NEXT, "SecCertificateCopySubjectSummary");
+    return real ? real(c) : (CFStringRef)0;
+}
+
 // dyld interposition: replace/original pairs in __DATA,__interpose.
 typedef struct { const void *replacement; const void *original; } interpose_t;
 __attribute__((used)) static const interpose_t as_interposers[]
     __attribute__((section("__DATA,__interpose"))) = {
     { (const void *)as_MISValidateSignature,        (const void *)MISValidateSignature },
     { (const void *)as_MISValidateSignatureAndCopyInfo, (const void *)MISValidateSignatureAndCopyInfo },
+    { (const void *)as_SecCertificateCreateWithData,     (const void *)SecCertificateCreateWithData },
+    { (const void *)as_SecCertificateCopySubjectSummary, (const void *)SecCertificateCopySubjectSummary },
 };
 
 // ---- SpringBoard hook ------------------------------------------------------
@@ -118,9 +154,6 @@ static int as_applicationSignatureState(id self, SEL _cmd) {
     (void)self; (void)_cmd;
     return 2;
 }
-
-extern const char *getprogname(void);
-extern int strcmp(const char *, const char *);
 
 __attribute__((constructor))
 static void as_init(void) {
