@@ -250,6 +250,18 @@ static inline void nand_set_dirty(S5L8930IOPState *s, int bus, uint32_t ce,
 }
 
 /*
+ * Stamp the overlay file with the time of this write. Stores through the
+ * MAP_SHARED mapping reach the file but do not move its mtime, and the app
+ * pairs a RAM snapshot with the overlay by exactly that: an overlay newer
+ * than the snapshot means flash advanced after the save and the snapshot must
+ * not be restored over it (DeviceStateStorage.overlayIsNewer).
+ */
+static inline void nand_touch(S5L8930IOPState *s, int bus, uint32_t ce)
+{
+    futimens(s->ovl_fd[bus][ce], NULL);
+}
+
+/*
  * Where a page currently lives: the overlay once it has been programmed or
  * erased there, else the base store. NULL for the blank chip.
  */
@@ -339,6 +351,7 @@ static uint32_t nand_program_page(S5L8930IOPState *s, int bus, uint32_t ce,
     }
     if (s->overlay_dir) {
         nand_set_dirty(s, bus, ce, page);
+        nand_touch(s, bus, ce);
     }
     return FMI_STATUS_OK;
 }
@@ -361,6 +374,7 @@ static uint32_t nand_erase_block(S5L8930IOPState *s, int bus, uint32_t ce,
         for (i = 0; i < s->store_ppb; i++) {
             nand_set_dirty(s, bus, ce, first + i);
         }
+        nand_touch(s, bus, ce);
     }
     if (!p) {
         DPRINTF("erase bus %d ce %u block 0x%x (blank chip, dropped)\n",
