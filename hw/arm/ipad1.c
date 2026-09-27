@@ -56,10 +56,14 @@ struct IPad1MachineState {
     DeviceState *vic[S5L8930_VIC_COUNT];
     DeviceState *gpio;
     DeviceState *pmu;
+    DeviceState *ltc;                    /* charger: USB cable level */
+    synopsys_usb_state *usb_otg;
     IPodTouchMultitouchState *mt;
     char *kboot_path;
     char *nand_path;
     char *nor_path;
+    char *usb_tcp_addr;                  /* host bridge, empty = no link */
+    bool usb_cable;                      /* cable present; runtime qom-set */
     bool kbd_cmd, kbd_shift;
     int kbd_btn_held[Q_KEY_CODE__MAX];   /* qcode -> 1 + button pin */
 };
@@ -311,7 +315,8 @@ static void ipad1_init(MachineState *machine)
         DeviceState *pmu = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_D1815, 0x74));
         s->pmu = pmu;
         DeviceState *xp = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_TCA6408, 0x20));
-        i2c_slave_create_simple(bus, TYPE_S5L8930_LTC4099, 0x09);
+        s->ltc = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_LTC4099, 0x09));
+        s5l8930_ltc4099_set_usb(s->ltc, s->usb_cable);
         qdev_connect_gpio_out(pmu, 0,
                               qemu_irq_invert(qdev_get_gpio_in(s->gpio, 0x0d)));
         qdev_connect_gpio_out(xp, 0,
@@ -400,7 +405,11 @@ static void ipad1_init(MachineState *machine)
     /*
      * USB device mode: the same Synopsys DWC OTG core and PHY register layout
      * as the S5L8720 (gap-kernel-platform-mmio.md §6), so both iPod models are
-     * reused unchanged. The host bridge dials IT_USB_TCP=host:port when set.
+     * reused unchanged. The host bridge (usbmuxd-qemu) is dialled from
+     * usb-tcp-addr, or IT_USB_TCP=host:port when that is unset. Without a
+     * host the guest never gets configured, so the power source sees < 500 mA
+     * and lets the device deep-sleep a few minutes after SpringBoard; with
+     * one it behaves like an iPad on a Mac (charging, idle sleep disabled).
      * The USB arbitrator's USB_CTL block (0xbf108000) is mapped but never
      * touched on K48 (no hsic-enabled), so it stays in the unimp window.
      */
@@ -411,6 +420,18 @@ static void ipad1_init(MachineState *machine)
 
     dev = ipod_touch_init_usb_otg(ipad1_irq(s, S5L8930_IRQ_USB_OTG),
                                   s5l8930_usb_hwcfg);
+    s->usb_otg = S5L8900USBOTG(dev);
+    if (s->usb_tcp_addr && s->usb_tcp_addr[0]) {
+        char *colon = strrchr(s->usb_tcp_addr, ':');
+
+        s->usb_otg->server_port = colon ? atoi(colon + 1) : 0;
+        if (!s->usb_otg->server_port) {
+            s->usb_otg->server_port = 1235;
+        }
+        s->usb_otg->server_host = colon && colon > s->usb_tcp_addr
+            ? g_strndup(s->usb_tcp_addr, colon - s->usb_tcp_addr)
+            : g_strdup("127.0.0.1");
+    }
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     memory_region_add_subregion(sysmem, S5L8930_USB_OTG_BASE,
                                 &S5L8900USBOTG(dev)->iomem);
@@ -519,8 +540,50 @@ static void ipad1_set_nor(Object *obj, const char *value, Error **errp)
     s->nor_path = g_strdup(value);
 }
 
+static char *ipad1_get_usb_tcp_addr(Object *obj, Error **errp)
+{
+    return g_strdup(IPAD1_MACHINE(obj)->usb_tcp_addr);
+}
+
+static void ipad1_set_usb_tcp_addr(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    g_free(s->usb_tcp_addr);
+    s->usb_tcp_addr = g_strdup(value);
+}
+
+static bool ipad1_get_usb_cable(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->usb_cable;
+}
+
+/* Plug/unplug at any time (qom-set /machine usb-cable off): the charger's
+ * usb_det level flips and the PMU raises the cable event that makes the
+ * power source and the USB arbitrator re-evaluate. */
+static void ipad1_set_usb_cable(Object *obj, bool value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    if (s->usb_cable == value) {
+        return;
+    }
+    s->usb_cable = value;
+    if (s->ltc) {
+        s5l8930_ltc4099_set_usb(s->ltc, value);
+        synopsys_usb_set_cable(s->usb_otg, value);
+        s5l8930_d1815_usb_cable_event(s->pmu);
+    }
+}
+
+static void ipad1_instance_init(Object *obj)
+{
+    IPAD1_MACHINE(obj)->usb_cable = true;
+}
+
 static void ipad1_instance_finalize(Object *obj)
 {
+    g_free(IPAD1_MACHINE(obj)->usb_tcp_addr);
     g_free(IPAD1_MACHINE(obj)->kboot_path);
     g_free(IPAD1_MACHINE(obj)->nand_path);
     g_free(IPAD1_MACHINE(obj)->nor_path);
@@ -546,12 +609,21 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     object_class_property_add_str(klass, "nor", ipad1_get_nor, ipad1_set_nor);
     object_class_property_set_description(klass, "nor",
         "1 MiB SPI NOR image (nvram, syscfg); erased flash if unset");
+    object_class_property_add_str(klass, "usb-tcp-addr", ipad1_get_usb_tcp_addr,
+                                  ipad1_set_usb_tcp_addr);
+    object_class_property_set_description(klass, "usb-tcp-addr",
+        "usbmuxd-qemu host bridge host:port (default port 1235); unset = IT_USB_TCP or no link");
+    object_class_property_add_bool(klass, "usb-cable", ipad1_get_usb_cable,
+                                   ipad1_set_usb_cable);
+    object_class_property_set_description(klass, "usb-cable",
+        "USB cable present (default on); settable at runtime to plug/unplug");
 }
 
 static const TypeInfo ipad1_machine_info = {
     .name = TYPE_IPAD1_MACHINE,
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(IPad1MachineState),
+    .instance_init = ipad1_instance_init,
     .instance_finalize = ipad1_instance_finalize,
     .class_init = ipad1_class_init,
 };

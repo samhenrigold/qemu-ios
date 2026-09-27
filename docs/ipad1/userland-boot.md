@@ -164,3 +164,22 @@ classifier over any tree.
   checked; if `/private/var` is missing in the log while the FTL is fine, look at ordering.
 - The `AppleMultitouch` plug-in blobs and `libgmalloc.dylib` are flagged `none` by the classifier; not executed
   at boot, not investigated further.
+
+## USB: behave like an iPad on a Mac (no deep sleep)
+
+Without a USB host the guest is never configured, `AppleD1815PMUPowerSource` sees < 500 mA, leaves idle sleep
+enabled and a few minutes after SpringBoard the arbitrator logs "USB cable detached" (its power-state-0 path,
+not a cable read), then "System Sleep" / "pmu go hib". With the `usbmuxd-qemu` bridge the device enumerates
+(mux interface in configuration 2), gets its 500 mA, charges and stays awake, and `idevice_id -l` sees it:
+
+```
+~/Developer/usbmuxd-qemu/usbmuxd/src/usbmuxd -f -v -S 127.0.0.1:27015 -P NONE -C <conf dir>   # listens on 1235 for QEMU
+qemu-system-arm -machine ipad1,kboot=...,nand=...,usb-tcp-addr=127.0.0.1:1235 ...
+USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015 idevice_id -l
+```
+
+Machine properties: `usb-tcp-addr=host:port` (unset: `IT_USB_TCP` or no link) and `usb-cable=on|off`
+(default on). The cable can be pulled and replugged at runtime, `qom-set /machine usb-cable false` / `true`
+over QMP: the LTC4099's usb_det level flips, the PMU raises charger0's vector (event F bit 0) and the "usb"
+event, the power source logs `AppleUSBCableType Detached` / `USBHost`, the OTG drops or redials the bridge
+link so usbmuxd reaps and re-enumerates the device.
