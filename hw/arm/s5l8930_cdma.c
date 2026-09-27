@@ -123,6 +123,11 @@ typedef struct AESContext {
     uint32_t iv[4];
     uint32_t key[8];
     uint8_t chain[16];      /* running CBC IV */
+    /* Bytes of a block split across feeding segments (aes_feed). Always
+     * empty between guest accesses -- a chain runs inside its go write --
+     * so it is not migrated. */
+    uint8_t carry[16];
+    uint32_t carry_len;
 } AESContext;
 
 struct S5L8930CDMAState {
@@ -193,6 +198,47 @@ static const GidBlob *gid_lookup(const uint8_t *buf, uint32_t len)
         }
     }
     return NULL;
+}
+
+static bool aes_apply(S5L8930CDMAState *s, AESContext *c, uint8_t *buf,
+                      uint32_t len, bool restart);
+static void fifo_push(S5L8930CDMAState *s, const uint8_t *buf, uint32_t len);
+
+/*
+ * Feed a segment through the engine. The engine works on the stream, not per
+ * segment: IOAESAccelerator maps a user buffer page by page, so a buffer that
+ * is not 16-byte aligned arrives as segments like 4093 + 3 bytes, and one
+ * block straddles the page boundary. aes_apply() on each segment rejected
+ * those (len % 16), so every /dev/aes_0 request (CommonCrypto sends CBC of
+ * more than 64 blocks there) on a misaligned buffer that crossed a page came
+ * back wrong -- SecureTransport's large TLS records on the iPad, for one.
+ * Carry the partial block over; RESTART on the first segment reloads the IV.
+ * Checked by contrib/it-cctest + tests/ipad1/cctest.py (0 of 652 cases wrong).
+ */
+static bool aes_feed(S5L8930CDMAState *s, AESContext *c, const uint8_t *buf,
+                     uint32_t len, bool restart)
+{
+    g_autofree uint8_t *work = g_malloc(c->carry_len + len);
+    uint32_t n, whole;
+    bool ok = true;
+
+    if (restart) {
+        c->carry_len = 0;
+        for (int i = 0; i < 4; i++) {
+            stl_le_p(c->chain + 4 * i, c->iv[i]);
+        }
+    }
+    memcpy(work, c->carry, c->carry_len);
+    memcpy(work + c->carry_len, buf, len);
+    n = c->carry_len + len;
+    whole = n & ~15u;
+    if (whole) {
+        ok = aes_apply(s, c, work, whole, false);
+        fifo_push(s, work, whole);
+    }
+    c->carry_len = n - whole;
+    memcpy(c->carry, work + whole, c->carry_len);
+    return ok;
 }
 
 static AESContext *aes_for_channel(S5L8930CDMAState *s, int ch)
@@ -436,11 +482,15 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
             if (to_device) {
                 dma_memory_read(&address_space_memory, c->addr, buf, len,
                                 MEMTXATTRS_UNSPECIFIED);
-                if (flags & DESC_AES) {
+                if (feeds && (flags & DESC_AES)) {
+                    ok = aes_feed(s, aes, buf, len, flags & DESC_AES_RESTART);
+                } else if (flags & DESC_AES) {
                     ok = aes_apply(s, aes, buf, len, flags & DESC_AES_RESTART);
                 }
                 if (feeds) {
-                    fifo_push(s, buf, len);
+                    if (!(flags & DESC_AES)) {
+                        fifo_push(s, buf, len);
+                    }
                 } else if (dev_mem) {
                     dma_memory_write(&address_space_memory, dev, buf, len,
                                      MEMTXATTRS_UNSPECIFIED);

@@ -27,6 +27,12 @@ link6 -execute "$OUT/it_heading" "$OUT/it_heading.o"
 rm -f "$OUT/it_heading.o"
 "${LDID:-ldid}" -S "$OUT/it_heading"
 file "$OUT/it_heading"
+# it_cctest: CommonCrypto known answers on the guest CPU (contrib/it-cctest), not baked by default.
+cc6 "$HERE/../it-cctest/it_cctest.c" "$OUT/it_cctest.o"
+link6 -execute "$OUT/it_cctest" "$OUT/it_cctest.o"
+rm -f "$OUT/it_cctest.o"
+"${LDID:-ldid}" -S "$OUT/it_cctest"
+file "$OUT/it_cctest"
 # it_msmquiet.dylib: DYLD_INSERT_LIBRARIES into MobileStorageMounter (see its source).
 # CF symbols bind flat at load time: the 3.2 SDK's CF stub won't link under modern ld64.
 cc6 "$HERE/../it-msmquiet/it_msmquiet.c" "$OUT/it_msmquiet.o"
