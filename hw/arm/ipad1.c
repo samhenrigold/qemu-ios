@@ -83,6 +83,7 @@ struct IPad1MachineState {
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
+    bool iboot_sigcheck;                 /* false: the PKE vouches for img3s */
     bool kbd_cmd, kbd_shift;
     bool btn_hold, btn_home;             /* button-hold/-home properties */
     int kbd_btn_held[Q_KEY_CODE__MAX];   /* qcode -> 1 + button pin */
@@ -659,7 +660,18 @@ static void ipad1_init(MachineState *machine)
      * S5L8720's, so the iPod model is reused. Only iBoot uses it (img3
      * signatures); it computes exactly what it is asked.
      */
-    dev = qdev_new(TYPE_IPOD_TOUCH_PKE);
+    {
+        DeviceState *sha1 = dev;
+
+        dev = qdev_new(TYPE_IPOD_TOUCH_PKE);
+        IPOD_TOUCH_PKE(dev)->vouch = s5l8930_sha1_vouch;
+        IPOD_TOUCH_PKE(dev)->vouch_opaque = sha1;
+        qdev_prop_set_bit(dev, "forge-sigcheck", !s->iboot_sigcheck);
+        if (!s->iboot_sigcheck) {
+            warn_report("ipad1: iboot-sigcheck=off: img3 signatures are not "
+                        "checked (the PKE answers with the image's own digest)");
+        }
+    }
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     memory_region_add_subregion(sysmem, S5L8930_PKE_BASE,
                                 &IPOD_TOUCH_PKE(dev)->iomem);
@@ -1091,6 +1103,16 @@ static void ipad1_set_accel_pose(Object *obj, const char *value, Error **errp)
     ipad1_apply_attitude(s);
 }
 
+static bool ipad1_get_iboot_sigcheck(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->iboot_sigcheck;
+}
+
+static void ipad1_set_iboot_sigcheck(Object *obj, bool value, Error **errp)
+{
+    IPAD1_MACHINE(obj)->iboot_sigcheck = value;
+}
+
 static bool ipad1_get_wifi(Object *obj, Error **errp)
 {
     return IPAD1_MACHINE(obj)->wifi;
@@ -1105,6 +1127,7 @@ static void ipad1_instance_init(Object *obj)
 {
     IPAD1_MACHINE(obj)->usb_cable = true;
     IPAD1_MACHINE(obj)->wifi = true;
+    IPAD1_MACHINE(obj)->iboot_sigcheck = true;
     guest_pb_init(&IPAD1_MACHINE(obj)->pb, obj, "ipad1");
     IPAD1_MACHINE(obj)->battery_level = 80;
 }
@@ -1182,6 +1205,13 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
                                   ipad1_set_usb_tcp_addr);
     object_class_property_set_description(klass, "usb-tcp-addr",
         "usbmuxd-qemu host bridge host:port (default port 1235); unset = IT_USB_TCP or no link");
+    object_class_property_add_bool(klass, "iboot-sigcheck",
+                                   ipad1_get_iboot_sigcheck,
+                                   ipad1_set_iboot_sigcheck);
+    object_class_property_set_description(klass, "iboot-sigcheck",
+        "Real img3 signature checks under iboot= (default on). off = emulator "
+        "shortcut: the PKE returns the digest iBoot computed, so personalised "
+        "or unsigned images load");
     object_class_property_add_bool(klass, "wifi", ipad1_get_wifi, ipad1_set_wifi);
     object_class_property_set_description(klass, "wifi",
         "The BCM4329 Wi-Fi card, the iPad's network (default on). Frames go to "

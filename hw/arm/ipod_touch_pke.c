@@ -110,7 +110,15 @@ static void pke_execute(IPodTouchPKEState *s, uint32_t command)
         bool valid = build_pkcs1_block(expected, size, result + size - 20) &&
                      !memcmp(expected, result, size);
         uint8_t hash[20];
-        if (!valid && ipod_touch_sha1_last_hash(s->sha1, hash)) {
+        if (s->vouch) {
+            if (s->vouch(s->vouch_opaque, result + size - 20, hash) &&
+                (!valid || memcmp(hash, result + size - 20, 20))) {
+                qemu_log_mask(LOG_UNIMP, "[PKE] forged signature digest "
+                              "%02x%02x.. -> %02x%02x..\n", result[size - 20],
+                              result[size - 19], hash[0], hash[1]);
+                build_pkcs1_block(result, size, hash);
+            }
+        } else if (!valid && ipod_touch_sha1_last_hash(s->sha1, hash)) {
             build_pkcs1_block(result, size, hash);
         }
     }

@@ -36,6 +36,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930SHA1State, S5L8930_SHA1)
 #define SHA1_FIFO       0xA0
 #define SHA1_DATA       0x40        /* PIO block, 16 words */
 
+#define SHA1_DIGESTS    8
+
 #define CMD_START       (1u << 1)
 #define CMD_CONTINUE    (1u << 3)
 
@@ -47,6 +49,13 @@ struct S5L8930SHA1State {
     uint8_t block[64];
     uint32_t fill;
     uint64_t pio_words;     /* bitmap of the +0x40 words written */
+    /*
+     * Digests the guest has read back, newest last, for the PKE forge
+     * (iboot-sigcheck=off). Not migrated: only iBoot's img3 check uses it.
+     */
+    uint8_t digests[SHA1_DIGESTS][20];
+    bool claimed[SHA1_DIGESTS];
+    unsigned ndigests;
 };
 
 static const uint32_t sha1_init[5] = {
@@ -92,10 +101,67 @@ static void sha1_compress(uint32_t h[5], const uint8_t block[64])
     h[4] += e;
 }
 
+static void sha1_note_digest(S5L8930SHA1State *s)
+{
+    uint8_t d[20];
+
+    for (int i = 0; i < 5; i++) {
+        stl_be_p(d + 4 * i, s->h[i]);
+    }
+    if (s->ndigests && !memcmp(s->digests[s->ndigests - 1], d, 20)) {
+        return;
+    }
+    if (s->ndigests == SHA1_DIGESTS) {
+        s->ndigests--;
+        memmove(s->digests, s->digests + 1, sizeof(s->digests[0]) * s->ndigests);
+        memmove(s->claimed, s->claimed + 1, sizeof(s->claimed[0]) * s->ndigests);
+    }
+    memcpy(s->digests[s->ndigests], d, 20);
+    s->claimed[s->ndigests++] = false;
+}
+
+/*
+ * iBoot 817.29 hashes an img3's signed region first, then each certificate
+ * of its chain, and only then checks the RSA signatures, chain first and
+ * image last. So the digest an RSA result is compared against is the one it
+ * recovers when genuine, otherwise the newest digest no signature has matched
+ * yet (the image's, once the chain has claimed its own).
+ */
+bool s5l8930_sha1_vouch(void *opaque, const uint8_t recovered[20],
+                        uint8_t out[20])
+{
+    S5L8930SHA1State *s = S5L8930_SHA1(opaque);
+    int i, newest = -1;
+
+    for (i = s->ndigests - 1; i >= 0; i--) {
+        if (s->claimed[i]) {
+            continue;
+        }
+        if (newest < 0) {
+            newest = i;
+        }
+        if (!memcmp(s->digests[i], recovered, 20)) {
+            break;
+        }
+    }
+    if (i < 0) {
+        i = newest;
+    }
+    if (i < 0) {
+        return false;
+    }
+    s->claimed[i] = true;
+    memcpy(out, s->digests[i], 20);
+    return true;
+}
+
 static uint64_t sha1_read(void *opaque, hwaddr offset, unsigned size)
 {
     S5L8930SHA1State *s = opaque;
 
+    if (offset == SHA1_HASH) {
+        sha1_note_digest(s);
+    }
     switch (offset) {
     case SHA1_CMD:
         return s->cmd & ~CMD_START;
