@@ -40,7 +40,7 @@
  * bookkeeping. The exception is a channel whose device address is an I2S
  * FIFO: AppleARMIISAudio queues the 16-page (64 KiB) IOAudio ring as one
  * chain per go and expects it to take the ring's playing time, so that chain
- * streams to the FIFO at 44.1 kHz stereo S16 in virtual time. The UID key is a fixed made-up value (as on the iPod machine);
+ * streams to the FIFO at the port's rate (stereo S16) in virtual time. The UID key is a fixed made-up value (as on the iPod machine);
  * GID operations are answered from a table of this build's img3 KBAGs.
  */
 #include "qemu/osdep.h"
@@ -135,13 +135,13 @@ struct S5L8930CDMAState {
     int64_t paced_start[CDMA_CHANNELS];
     uint32_t paced_desc[CDMA_CHANNELS];     /* chain head the go named */
     uint64_t paced_sent[CDMA_CHANNELS];     /* bytes already in the FIFO */
+    uint32_t paced_bps[CDMA_CHANNELS];      /* bytes/s: 4 * port frame rate */
     QEMUTimer *pace_timer;
 };
 
-/* i2s0-2 TX/RX FIFOs; stereo S16 at 44.1 kHz (see s5l8930_i2s.c). */
+/* i2s0-2 TX/RX FIFOs; stereo S16 at the port's rate (see s5l8930_i2s.c). */
 #define CDMA_PACED_LO       S5L8930_I2S_BASE(0)
 #define CDMA_PACED_HI       (S5L8930_I2S_BASE(2) + 0x1000)
-#define CDMA_PACED_BPS      (44100 * 4)
 
 /* ---- AES filter ---- */
 
@@ -433,7 +433,7 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
 /*
  * Audio channels (device address in an I2S block) play out in real time: the
  * chain stays running and its data reaches the FIFO in CDMA_PACED_STEP_NS
- * steps at 44.1 kHz stereo S16, so the IOAudio engine's period interrupt and
+ * steps at the port's rate (stereo S16), so the IOAudio engine's period interrupt and
  * position arrive when a real I2S would have consumed the ring.
  */
 #define CDMA_PACED_STEP_NS  (10 * SCALE_MS)
@@ -500,7 +500,10 @@ static uint64_t cdma_paced_pos(S5L8930CDMAState *s, int ch)
 {
     int64_t elapsed = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->paced_start[ch];
 
-    return MAX(0, elapsed) * (uint64_t)CDMA_PACED_BPS / NANOSECONDS_PER_SECOND;
+    /* Whole stereo S16 frames only: a stop mid-frame would leave the I2S
+     * stream a byte or two out of step for every later sound. */
+    return (MAX(0, elapsed) * (uint64_t)s->paced_bps[ch] /
+            NANOSECONDS_PER_SECOND) & ~3ull;
 }
 
 static void cdma_pace_arm(S5L8930CDMAState *s)
@@ -530,13 +533,15 @@ static void cdma_pace_tick(void *opaque)
 }
 
 /* Stop a paced chain where playback is, delivering what has played. */
-static void cdma_paced_stop(S5L8930CDMAState *s, int ch)
+static bool cdma_paced_stop(S5L8930CDMAState *s, int ch)
 {
-    if (cdma_is_paced(s, ch)) {
-        cdma_paced_advance(s, ch, cdma_paced_pos(s, ch));
-        s->paced[ch] = false;
-        cdma_pace_arm(s);
+    if (!cdma_is_paced(s, ch)) {
+        return false;
     }
+    cdma_paced_advance(s, ch, cdma_paced_pos(s, ch));
+    s->paced[ch] = false;
+    cdma_pace_arm(s);
+    return true;
 }
 
 static bool cdma_start_paced(S5L8930CDMAState *s, int ch)
@@ -549,6 +554,7 @@ static bool cdma_start_paced(S5L8930CDMAState *s, int ch)
     c->ctrl = (c->ctrl & ~ST_ERROR) | ST_RUNNING;
     s->paced_desc[ch] = c->desc;
     s->paced_sent[ch] = 0;
+    s->paced_bps[ch] = 4 * s5l8930_i2s_rate((c->fifo - CDMA_PACED_LO) >> 12);
     s->paced_start[ch] = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->paced[ch] = true;
     cdma_pace_arm(s);
@@ -634,6 +640,11 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
     }
 
     CDMAChannel *c = &s->ch[ch];
+    if (getenv("S5L8930_CDMA_TRACE") && c->fifo >= CDMA_PACED_LO &&
+        c->fifo < CDMA_PACED_HI) {
+        fprintf(stderr, "[CDMA] ch 0x%x W +%02x <- 0x%x (ctrl 0x%x paced %d)\n",
+                ch, (unsigned)reg, v, c->ctrl, s->paced[ch]);
+    }
     switch (reg) {
     case CH_CTRL:
         if (v & CTRL_RESET) {
@@ -827,6 +838,8 @@ static const VMStateDescription vmstate_s5l8930_cdma = {
         VMSTATE_UINT32_ARRAY_V(paced_desc, S5L8930CDMAState,
                                CDMA_CHANNELS, 2),
         VMSTATE_UINT64_ARRAY_V(paced_sent, S5L8930CDMAState,
+                               CDMA_CHANNELS, 2),
+        VMSTATE_UINT32_ARRAY_V(paced_bps, S5L8930CDMAState,
                                CDMA_CHANNELS, 2),
         VMSTATE_TIMER_PTR_V(pace_timer, S5L8930CDMAState, 2),
         VMSTATE_END_OF_LIST()

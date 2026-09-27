@@ -50,6 +50,7 @@
 #include "hw/arm/guest-pasteboard.h"
 #include "ui/console.h"
 #include "ui/input.h"
+#include "qapi/visitor.h"
 
 #define TYPE_IPAD1_MACHINE MACHINE_TYPE_NAME("ipad1")
 OBJECT_DECLARE_SIMPLE_TYPE(IPad1MachineState, IPAD1_MACHINE)
@@ -72,12 +73,22 @@ struct IPad1MachineState {
     char *nor_path;
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
+    bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
     bool kbd_cmd, kbd_shift;
     int kbd_btn_held[Q_KEY_CODE__MAX];   /* qcode -> 1 + button pin */
     int mtt_x[MT_MAX_FINGERS], mtt_y[MT_MAX_FINGERS];  /* latched per slot */
     bool mtt_seen[MT_MAX_FINGERS];
     GuestPasteboard pb;                  /* hw/arm/guest-pasteboard.c */
+    /* App controls, same property names as the iPod machine. */
+    LIS302DLState *accel;
+    double accel_pitch, accel_roll;      /* degrees, as the app sends them */
+    bool accel_flat;
+    double battery_level;                /* % */
+    int battery_mode;                    /* 0 auto (follow cable), 1 on, 2 off */
+    double battery_drain;                /* accepted for the bridge; unused */
 };
+
+static const char *const ipad1_battery_modes[] = { "auto", "on", "off" };
 
 /* GHWCFG1-4 of the DWC OTG core; same synthesis as the S5L8720's. */
 static uint32_t s5l8930_usb_hwcfg[] = { 0, 0x7a8f60d0, 0x082000e8, 0x01f08024 };
@@ -339,6 +350,8 @@ static const QemuInputHandler ipad1_kbd_handler = {
     .event = ipad1_kbd_event,
 };
 
+static void ipad1_battery_update(IPad1MachineState *s);
+
 static void ipad1_init(MachineState *machine)
 {
     IPad1MachineState *s = IPAD1_MACHINE(machine);
@@ -468,10 +481,16 @@ static void ipad1_init(MachineState *machine)
 
         qdev_prop_set_uint8(DEVICE(accel), "whoami", 0x32);
         i2c_slave_realize_and_unref(accel, bus, &error_fatal);
-        /* Same name as the iPod machine: UIDeviceOrientation 0-6, e.g.
-         * qom-set path=/machine property=accel-orientation value=3 */
+        s->accel = LIS302DL(accel);
+        /* Same names as the iPod machine: UIDeviceOrientation 0-6, e.g.
+         * qom-set path=/machine property=accel-orientation value=3; raw
+         * counts; a shake. accel-pitch/-roll/-pose are machine properties. */
         object_property_add_alias(OBJECT(machine), "accel-orientation",
                                   OBJECT(accel), "orientation");
+        object_property_add_alias(OBJECT(machine), "accel-x", OBJECT(accel), "x");
+        object_property_add_alias(OBJECT(machine), "accel-y", OBJECT(accel), "y");
+        object_property_add_alias(OBJECT(machine), "accel-z", OBJECT(accel), "z");
+        object_property_add_alias(OBJECT(machine), "accel-shake", OBJECT(accel), "shake");
         i2c_slave_create_simple(bus, TYPE_S5L8930_TSL2581, 0x39);
     }
 
@@ -498,10 +517,44 @@ static void ipad1_init(MachineState *machine)
     sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
 
     /*
+     * Wi-Fi: the iPod's Broadcom dongle model, dressed as the unit's BCM4329
+     * (K48 USI board: the CIS strings pick AppleBCMWLAN's "K48 USI X17B"
+     * personality), behind the SDHC and the IOP's SDIO task. Frames go to
+     * -netdev ...,id=wifi0. docs/ipad1/wifi.md.
+     */
+    DeviceState *sdio = NULL;
+    if (s->wifi) {
+        static const BCMSDIOChip bcm4329 = {
+            .manfid = 0x02d0, .prodid = 0x4329,
+            .chipid = 0x00034329,                   /* rev 3 = B1 (c07a61d2) */
+            .sdiod_base = 0x18011000,               /* where initDongle polls */
+            .vers1 = { "", "", "s=B1", "P=K48 m=u80" },
+            .mac = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 },  /* = DT */
+        };
+        IPodTouchSDIOState *card = IPOD_TOUCH_SDIO(qdev_new(TYPE_IPOD_TOUCH_SDIO));
+
+        ipod_touch_sdio_set_chip(card, &bcm4329);
+        card->card_present = true;
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(card), &error_fatal);
+        ipod_touch_sdio_setup_net(card);
+
+        sdio = qdev_new(TYPE_S5L8930_SDIO);
+        object_property_set_link(OBJECT(sdio), "card", OBJECT(card), &error_fatal);
+        sbd = SYS_BUS_DEVICE(sdio);
+        sysbus_realize_and_unref(sbd, &error_fatal);
+        sysbus_mmio_map(sbd, 0, S5L8930_SDIO_BASE);
+        sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_SDIO));
+        sysbus_connect_irq(SYS_BUS_DEVICE(card), 0, qdev_get_gpio_in(sdio, 0));
+    }
+
+    /*
      * IOP: high-level emulation of the second core. No IRQ line: like the real
      * firmware, the model raises the AP by writing VIC0's SOFTINT register.
      */
     dev = qdev_new(TYPE_S5L8930_IOP);
+    if (sdio) {
+        object_property_set_link(OBJECT(dev), "sdio", OBJECT(sdio), &error_fatal);
+    }
     if (s->nand_path) {
         qdev_prop_set_string(dev, "nand", s->nand_path);
     }
@@ -633,6 +686,7 @@ static void ipad1_init(MachineState *machine)
     for (i = 0; i < 3; i++) {
         dev = qdev_new(TYPE_S5L8930_I2S);
         qdev_prop_set_bit(dev, "audio-out", i == 0);
+        qdev_prop_set_uint8(dev, "port", i);
         sbd = SYS_BUS_DEVICE(dev);
         sysbus_realize_and_unref(sbd, &error_fatal);
         sysbus_mmio_map(sbd, 0, S5L8930_I2S_BASE(i));
@@ -661,6 +715,7 @@ static void ipad1_init(MachineState *machine)
                            qemu_chardev_new(NULL, TYPE_CHARDEV_S5L8930_HDQ,
                                             NULL, NULL, &error_abort),
                            ipad1_irq(s, S5L8930_IRQ_UART(5)), true);
+    ipad1_battery_update(s);
 
     qemu_register_reset(ipad1_cpu_reset, s);
 }
@@ -751,12 +806,174 @@ static void ipad1_set_usb_cable(Object *obj, bool value, Error **errp)
         synopsys_usb_set_cable(s->usb_otg, value);
         s5l8930_d1815_usb_cable_event(s->pmu);
     }
+    ipad1_battery_update(s);
+}
+
+/*
+ * --- battery -------------------------------------------------------------
+ * SpringBoard's level comes from AppleD1815PMUPowerSource's reading of the
+ * battery voltage (PMU ADC mux 4), not the gas gauge, which configd never
+ * opens on 7B500; charging is the LTC4099's charge-state bits.
+ * Measured on 7B500: the level is sampled only at boot (it stayed put through
+ * level, charge-state and cable changes), so these are power-on settings
+ * (-M ipad1,battery-level=…) until the power source's polling trigger is
+ * found; 3.90 V showed 63% and 3.525 V 2%, hence 3.50 V + 6.35 mV per %.
+ * The charge-state bits are set but "Not Charging" still shows, so
+ * battery-charging has no visible effect yet.
+ */
+
+static bool ipad1_battery_charging(IPad1MachineState *s)
+{
+    return s->battery_mode == 1 || (s->battery_mode == 0 && s->usb_cable);
+}
+
+/* Push level and charge state to the PMU and charger. */
+static void ipad1_battery_update(IPad1MachineState *s)
+{
+    if (!s->pmu || !s->ltc) {
+        return;
+    }
+    s5l8930_d1815_set_vbat(s->pmu, 3500 + lround(s->battery_level * 6.35));
+    s5l8930_ltc4099_set_charging(s->ltc, ipad1_battery_charging(s));
+}
+
+static void ipad1_get_battery_level(Object *obj, Visitor *v, const char *name,
+                                    void *opaque, Error **errp)
+{
+    int64_t value = lround(IPAD1_MACHINE(obj)->battery_level);
+    visit_type_int(v, name, &value, errp);
+}
+
+static void ipad1_set_battery_level(Object *obj, Visitor *v, const char *name,
+                                    void *opaque, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+    int64_t value;
+
+    if (!visit_type_int(v, name, &value, errp)) {
+        return;
+    }
+    if (value < 0 || value > 100) {
+        error_setg(errp, "battery-level must be between 0 and 100");
+        return;
+    }
+    s->battery_level = value;
+    ipad1_battery_update(s);
+}
+
+static void ipad1_get_battery_drain(Object *obj, Visitor *v, const char *name,
+                                    void *opaque, Error **errp)
+{
+    visit_type_number(v, name, &IPAD1_MACHINE(obj)->battery_drain, errp);
+}
+
+static void ipad1_set_battery_drain(Object *obj, Visitor *v, const char *name,
+                                    void *opaque, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+    double value;
+
+    if (!visit_type_number(v, name, &value, errp)) {
+        return;
+    }
+    if (!isfinite(value) || value < 0 || value > 100) {
+        error_setg(errp, "battery-drain must be between 0 and 100 percent per minute");
+        return;
+    }
+    s->battery_drain = value;
+}
+
+static char *ipad1_get_battery_charging(Object *obj, Error **errp)
+{
+    return g_strdup(ipad1_battery_modes[IPAD1_MACHINE(obj)->battery_mode]);
+}
+
+static void ipad1_set_battery_charging(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    for (int i = 0; i < ARRAY_SIZE(ipad1_battery_modes); i++) {
+        if (!strcmp(value, ipad1_battery_modes[i])) {
+            s->battery_mode = i;
+            ipad1_battery_update(s);
+            return;
+        }
+    }
+    error_setg(errp, "battery-charging must be auto, on or off");
+}
+
+/* --- tilt --------------------------------------------------------------- */
+
+/*
+ * The app's attitude (see hw/arm/ipod-attitude.h). The iPad's accelerometer
+ * reads roll the opposite way round to the iPod's for the same turn of the
+ * device: turned clockwise it must report UIDeviceOrientation 3 (roll +90),
+ * where the app sends -90 (found by frame dumps, as for qemu_ios_ui_rotate).
+ * ponytail: pitch keeps the iPod's sign, unverified on the iPad.
+ */
+static void ipad1_apply_attitude(IPad1MachineState *s)
+{
+    lis302dl_apply_attitude(s->accel, s->accel_pitch, -s->accel_roll, s->accel_flat);
+}
+
+static void ipad1_get_accel_angle(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+    double value = !strcmp(name, "accel-pitch") ? s->accel_pitch : s->accel_roll;
+
+    visit_type_number(v, name, &value, errp);
+}
+
+static void ipad1_set_accel_angle(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+    double value;
+
+    if (!visit_type_number(v, name, &value, errp)) {
+        return;
+    }
+    if (!isfinite(value) || value < -180 || value > 180) {
+        error_setg(errp, "%s must be finite and between -180 and 180 degrees", name);
+        return;
+    }
+    *(!strcmp(name, "accel-pitch") ? &s->accel_pitch : &s->accel_roll) = value;
+    ipad1_apply_attitude(s);
+}
+
+static char *ipad1_get_accel_pose(Object *obj, Error **errp)
+{
+    return g_strdup(IPAD1_MACHINE(obj)->accel_flat ? "flat" : "upright");
+}
+
+static void ipad1_set_accel_pose(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    if (strcmp(value, "flat") && strcmp(value, "upright")) {
+        error_setg(errp, "accel-pose must be upright or flat");
+        return;
+    }
+    s->accel_flat = !strcmp(value, "flat");
+    ipad1_apply_attitude(s);
+}
+
+static bool ipad1_get_wifi(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->wifi;
+}
+
+static void ipad1_set_wifi(Object *obj, bool value, Error **errp)
+{
+    IPAD1_MACHINE(obj)->wifi = value;
 }
 
 static void ipad1_instance_init(Object *obj)
 {
     IPAD1_MACHINE(obj)->usb_cable = true;
     guest_pb_init(&IPAD1_MACHINE(obj)->pb, obj, "ipad1");
+    IPAD1_MACHINE(obj)->battery_level = 80;
 }
 
 static void ipad1_instance_finalize(Object *obj)
@@ -796,10 +1013,28 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
                                   ipad1_set_usb_tcp_addr);
     object_class_property_set_description(klass, "usb-tcp-addr",
         "usbmuxd-qemu host bridge host:port (default port 1235); unset = IT_USB_TCP or no link");
+    object_class_property_add_bool(klass, "wifi", ipad1_get_wifi, ipad1_set_wifi);
+    object_class_property_set_description(klass, "wifi",
+        "Model the BCM4329 Wi-Fi card (frames to -netdev id=wifi0); off = no card");
     object_class_property_add_bool(klass, "usb-cable", ipad1_get_usb_cable,
                                    ipad1_set_usb_cable);
     object_class_property_set_description(klass, "usb-cable",
         "USB cable present (default on); settable at runtime to plug/unplug");
+    /* The iPod machine's names, so the app bridge drives both unchanged. */
+    object_class_property_add_bool(klass, "usb-attached", ipad1_get_usb_cable,
+                                   ipad1_set_usb_cable);
+    object_class_property_add(klass, "battery-level", "int", ipad1_get_battery_level,
+                              ipad1_set_battery_level, NULL, NULL);
+    object_class_property_add(klass, "battery-drain", "number", ipad1_get_battery_drain,
+                              ipad1_set_battery_drain, NULL, NULL);
+    object_class_property_add_str(klass, "battery-charging", ipad1_get_battery_charging,
+                                  ipad1_set_battery_charging);
+    object_class_property_add(klass, "accel-pitch", "number", ipad1_get_accel_angle,
+                              ipad1_set_accel_angle, NULL, NULL);
+    object_class_property_add(klass, "accel-roll", "number", ipad1_get_accel_angle,
+                              ipad1_set_accel_angle, NULL, NULL);
+    object_class_property_add_str(klass, "accel-pose", ipad1_get_accel_pose,
+                                  ipad1_set_accel_pose);
 }
 
 static const TypeInfo ipad1_machine_info = {
