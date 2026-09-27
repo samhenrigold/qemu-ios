@@ -427,6 +427,16 @@ static void ipad1_init(MachineState *machine)
     qemu_add_mouse_event_handler(ipad1_mouse_event, s->mt, 1, "iPad Touchscreen");
     qemu_input_handler_register(s->gpio, &ipad1_kbd_handler);
 
+    /*
+     * SPI2 is the baseband link. The Wi-Fi iPad has the controller but no
+     * baseband, and the real unit's IORegistry still shows
+     * AppleS5L8920XBasebandSPIController/BasebandSPIDevice loaded on it, so
+     * model exactly that: a controller with nothing on the bus (reads return
+     * 0). Its DT interrupt is the SRDY GPIO, not a VIC line, so none is wired.
+     */
+    set_spi_base(2);
+    sysbus_create_simple(TYPE_IPOD_TOUCH_SPI, S5L8930_SPI_BASE(2), NULL);
+
     /* SWI: backlight and DPSM core voltage; only the busy bit matters. */
     sysbus_create_simple("ipodtouch.swi", S5L8930_SWI_BASE, NULL);
 
