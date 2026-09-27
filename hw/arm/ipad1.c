@@ -509,6 +509,7 @@ static void ipad1_init(MachineState *machine)
         static const BCMSDIOChip bcm4329 = {
             .manfid = 0x02d0, .prodid = 0x4329,
             .chipid = 0x00034329,                   /* rev 3 = B1 (c07a61d2) */
+            .sdiod_base = 0x18011000,               /* where initDongle polls */
             .vers1 = { "", "", "s=B1", "P=K48 m=u80" },
             .mac = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 },  /* = DT */
         };
