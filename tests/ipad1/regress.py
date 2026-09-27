@@ -437,6 +437,7 @@ def main():
         sys.exit(why)
     ipod.START = time.time()
     a.out = a.out or tempfile.mkdtemp(prefix="ipad1regress-")
+    os.makedirs(a.out, exist_ok=True)   # checks write into it before any boot creates it
     selected = [c for c in a.checks.split(",") if c]
     results = {c: Result(c) for c in selected}
     runnable = []
