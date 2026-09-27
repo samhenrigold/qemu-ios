@@ -15,7 +15,9 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 if [ "${1:-}" = "--regen-cert" ]; then
-    openssl req -x509 -newkey rsa:2048 -nodes -keyout /dev/null \
+    # SHA-1 / RSA-1024: iOS 3.2.2's SecCertificateCreateWithData rejects modern
+    # SHA-256/RSA-2048 DERs (installd logs "Could not create certificate from data").
+    openssl req -x509 -newkey rsa:1024 -sha1 -nodes -keyout /dev/null \
         -out /tmp/appsync.der -outform DER -days 36500 \
         -subj "/CN=LightTouch AppSync/O=LightTouch Emulator"
     python3 - "$HERE/appsync_cert.h" <<'PY'
