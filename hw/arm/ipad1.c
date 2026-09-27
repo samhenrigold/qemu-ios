@@ -21,6 +21,9 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
+#include "qemu/config-file.h"
+#include "qemu/option.h"
+#include "net/net.h"
 #include "exec/address-spaces.h"
 #include "hw/boards.h"
 #include "hw/irq.h"
@@ -551,12 +554,27 @@ static void ipad1_init(MachineState *machine)
             .sdiod_base = 0x18011000,               /* where initDongle polls */
             .vers1 = { "", "", "s=B1", "P=K48 m=u80" },
             .mac = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 },  /* = DT */
+            .no_common_funce = true,
+            /* what the K48 image in wifiFirmwareLoader reports */
+            .fw_version = "wl0: Jul 21 2010 21:58:50 version 4.218.175.43",
         };
         IPodTouchSDIOState *card = IPOD_TOUCH_SDIO(qdev_new(TYPE_IPOD_TOUCH_SDIO));
 
         ipod_touch_sdio_set_chip(card, &bcm4329);
         card->card_present = true;
         sysbus_realize_and_unref(SYS_BUS_DEVICE(card), &error_fatal);
+        if (!qemu_find_netdev("wifi0")) {
+            /* Wi-Fi is the iPad's network: with no backend given, NAT it. */
+            QemuOpts *o = qemu_opts_parse_noisily(qemu_find_opts("netdev"),
+                                                  "type=user,id=wifi0", false);
+            Error *err = NULL;
+            if (o) {
+                netdev_add(o, &err);
+            }
+            if (err) {
+                warn_reportf_err(err, "Wi-Fi has no network: ");
+            }
+        }
         ipod_touch_sdio_setup_net(card);
 
         sdio = qdev_new(TYPE_S5L8930_SDIO);
@@ -996,6 +1014,7 @@ static void ipad1_set_wifi(Object *obj, bool value, Error **errp)
 static void ipad1_instance_init(Object *obj)
 {
     IPAD1_MACHINE(obj)->usb_cable = true;
+    IPAD1_MACHINE(obj)->wifi = true;
     guest_pb_init(&IPAD1_MACHINE(obj)->pb, obj, "ipad1");
     IPAD1_MACHINE(obj)->battery_level = 80;
 }
@@ -1070,7 +1089,8 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
         "usbmuxd-qemu host bridge host:port (default port 1235); unset = IT_USB_TCP or no link");
     object_class_property_add_bool(klass, "wifi", ipad1_get_wifi, ipad1_set_wifi);
     object_class_property_set_description(klass, "wifi",
-        "Model the BCM4329 Wi-Fi card (frames to -netdev id=wifi0); off = no card");
+        "The BCM4329 Wi-Fi card, the iPad's network (default on). Frames go to "
+        "-netdev id=wifi0, or to user networking when none is given; off = no card");
     object_class_property_add_bool(klass, "usb-cable", ipad1_get_usb_cable,
                                    ipad1_set_usb_cable);
     object_class_property_set_description(klass, "usb-cable",
