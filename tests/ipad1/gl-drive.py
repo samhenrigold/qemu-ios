@@ -25,7 +25,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--nand", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--kboot", default=f"{FILES}/userland/gl/k48-kboot-amfi.bin")
+    ap.add_argument("--kboot", default=f"{FILES}/7B500/k48-kboot.bin")
     ap.add_argument("--qemu", default=f"{ROOT}/build/qemu-system-arm")
     ap.add_argument("--seconds", type=int, default=900)
     ap.add_argument("--qemu-arg", action="append", default=[], help="extra QEMU argument (repeatable)")

@@ -285,7 +285,7 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         b.procs.spawn(["idevicesyslog"], syslog, env=b.env())
         # Event-driven navigation: wait on frame state, not fixed sleeps, so host load
         # doesn't matter. Overall bound = the qemu timeout.
-        end = time.time() + a.boot_timeout - 30
+        end = time.time() + cfg.boot_timeout - 30
         # 1. lock screen: serial marker (SpringBoard reached it) + a settled lit frame.
         ok, det = b.wait_lock_screen(timeout=max(30, end - time.time()))
         if not ok:
