@@ -29,7 +29,8 @@ static bool mt_trace(void)
     return on;
 }
 #define MTT(fmt, ...) do { if (mt_trace()) { \
-    fprintf(stderr, "[MT] " fmt "\n", ##__VA_ARGS__); } } while (0)
+    fprintf(stderr, "[MT %.3f] " fmt "\n", \
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9, ##__VA_ARGS__); } } while (0)
 
 /* Saturate a computed finger velocity into the int16_t the frame carries. */
 static int16_t mt_clamp_vel(int64_t v)
@@ -38,6 +39,32 @@ static int16_t mt_clamp_vel(int64_t v)
     if (v < INT16_MIN) { return INT16_MIN; }
     return (int16_t)v;
 }
+
+const MTSensorProfile mt_profile_ipod = {
+    .family_id = MT_FAMILY_ID,
+    .rows = MT_SENSOR_ROWS, .cols = MT_SENSOR_COLUMNS,
+    .bcd_version = MT_BCD_VERSION,
+    .surface_width = MT_SENSOR_SURFACE_WIDTH,
+    .surface_height = MT_SENSOR_SURFACE_HEIGHT,
+    .region_desc = { MT_SENSOR_REGION_DESC }, .region_desc_len = 1,
+    .region_param = { MT_SENSOR_REGION_PARAM }, .region_param_len = 1,
+    .frame_width = MT_INTERNAL_SENSOR_SURFACE_WIDTH,
+    .frame_height = MT_INTERNAL_SENSOR_SURFACE_HEIGHT,
+};
+
+/* ponytail: frame span = the full sensor surface, a guess; the iPod's is ~0.92
+ * of its surface. Adjust here if touches land offset. */
+const MTSensorProfile mt_profile_k48 = {
+    .family_id = 0x13,
+    .rows = 40, .cols = 50,
+    .bcd_version = 0x146,
+    .surface_width = 14745, .surface_height = 19660,
+    .region_desc = { 0x01, 0x01, 0x00, 0x28, 0x01, 0x00, 0x1e, 0x00 },
+    .region_desc_len = 8,
+    .region_param = { 0x00, 0x00, 0x09, 0x00, 0x64, 0x02 },
+    .region_param_len = 6,
+    .frame_width = 14745, .frame_height = 19660,
+};
 
 static void prepare_interface_version_response(IPodTouchMultitouchState *s) {
     memset(s->out_buffer + 1, 0, 15);
@@ -92,13 +119,19 @@ static void prepare_report_info_response(IPodTouchMultitouchState *s, uint8_t re
         report_length = MT_REPORT_SENSOR_INFO_SIZE;
     }
     else if(report_id == MT_REPORT_SENSOR_REGION_DESC) {
-        report_length = MT_REPORT_SENSOR_REGION_DESC_SIZE;
+        report_length = s->profile->region_desc_len;
     }
     else if(report_id == MT_REPORT_SENSOR_REGION_PARAM) {
-        report_length = MT_REPORT_SENSOR_REGION_PARAM_SIZE;
+        report_length = s->profile->region_param_len;
     }
     else if(report_id == MT_REPORT_SENSOR_DIMENSIONS) {
         report_length = MT_REPORT_SENSOR_DIMENSIONS_SIZE;
+    }
+    else if(report_id == MT_REPORT_UNKNOWN_BF) {
+        report_length = MT_REPORT_UNKNOWN_BF_SIZE;
+    }
+    else if(report_id == MT_REPORT_UNKNOWN_AF) {
+        report_length = MT_REPORT_UNKNOWN_AF_SIZE;
     }
     else {
         /*
@@ -133,25 +166,27 @@ static void prepare_short_control_response(IPodTouchMultitouchState *s, uint8_t 
     memset(s->out_buffer + 1, 0, 15);
 
     if(report_id == MT_REPORT_FAMILY_ID) {
-        s->out_buffer[3] = MT_FAMILY_ID;
+        s->out_buffer[3] = s->profile->family_id;
     }
     else if(report_id == MT_REPORT_SENSOR_INFO) {
         s->out_buffer[3] = MT_ENDIANNESS;
-        s->out_buffer[4] = MT_SENSOR_ROWS;
-        s->out_buffer[5] = MT_SENSOR_COLUMNS;
-        s->out_buffer[6] = (MT_BCD_VERSION & 0xFF);
-        s->out_buffer[7] = (MT_BCD_VERSION >> 8) & 0xFF;
+        s->out_buffer[4] = s->profile->rows;
+        s->out_buffer[5] = s->profile->cols;
+        s->out_buffer[6] = (s->profile->bcd_version & 0xFF);
+        s->out_buffer[7] = (s->profile->bcd_version >> 8) & 0xFF;
     }
     else if(report_id == MT_REPORT_SENSOR_REGION_DESC) {
-        s->out_buffer[3] = MT_SENSOR_REGION_DESC;
+        memcpy(&s->out_buffer[3], s->profile->region_desc,
+               s->profile->region_desc_len);
     }
     else if(report_id == MT_REPORT_SENSOR_REGION_PARAM) {
-        s->out_buffer[3] = MT_SENSOR_REGION_PARAM;
+        memcpy(&s->out_buffer[3], s->profile->region_param,
+               s->profile->region_param_len);
     }
     else if(report_id == MT_REPORT_SENSOR_DIMENSIONS) {
         uint32_t *ob_int32 = (uint32_t *)&s->out_buffer[3];
-        ob_int32[0] = MT_SENSOR_SURFACE_WIDTH;
-        ob_int32[1] = MT_SENSOR_SURFACE_HEIGHT;
+        ob_int32[0] = s->profile->surface_width;
+        ob_int32[1] = s->profile->surface_height;
     }
     else {
         /*
@@ -468,12 +503,17 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
         s->buf_ind = 0;
     }
     else if(s->cur_cmd == MT_CMD_GET_REPORT_INFO && s->in_buffer_ind == 2) {
+        MTT("report info 0x%02x", s->in_buffer[1]);
         prepare_report_info_response(s, s->in_buffer[1]);
     }
     else if(s->cur_cmd == MT_CMD_SHORT_CONTROL_WRITE && s->in_buffer_ind == 16) {
         // TODO we should persist the report here!
+        MTT("short control write %02x %02x %02x %02x %02x %02x %02x %02x",
+            s->in_buffer[1], s->in_buffer[2], s->in_buffer[3], s->in_buffer[4],
+            s->in_buffer[5], s->in_buffer[6], s->in_buffer[7], s->in_buffer[8]);
     }
     else if(s->cur_cmd == MT_CMD_SHORT_CONTROL_READ && s->in_buffer_ind == 2) {
+        MTT("short control read 0x%02x", s->in_buffer[1]);
         prepare_short_control_response(s, s->in_buffer[1]);
     }
 
@@ -697,8 +737,8 @@ static MTFrame *mt_build_frame(IPodTouchMultitouchState *s,
          * timestamp. Sharing one prev_x/prev_y across fingers would report each
          * finger's speed as the distance to wherever a different finger was.
          */
-        diff_x = (int)((f->x - f->prev_x) * MT_INTERNAL_SENSOR_SURFACE_WIDTH);
-        diff_y = (int)((f->y - f->prev_y) * MT_INTERNAL_SENSOR_SURFACE_HEIGHT);
+        diff_x = (int)((f->x - f->prev_x) * s->profile->frame_width);
+        diff_y = (int)((f->y - f->prev_y) * s->profile->frame_height);
         /*
          * velX/velY are int16_t and the quotient is unbounded: a full-width
          * flick covered in a single frame computes into the hundreds of
@@ -709,8 +749,8 @@ static MTFrame *mt_build_frame(IPodTouchMultitouchState *s,
         fd[i].velX = mt_clamp_vel(diff_x * 1000 / dt);
         fd[i].velY = mt_clamp_vel(diff_y * 1000 / dt);
 
-        fd[i].x = (int)(f->x * MT_INTERNAL_SENSOR_SURFACE_WIDTH);
-        fd[i].y = (int)(f->y * MT_INTERNAL_SENSOR_SURFACE_HEIGHT);
+        fd[i].x = (int)(f->x * s->profile->frame_width);
+        fd[i].y = (int)(f->y * s->profile->frame_height);
         /* A contact reports a real ellipse; a lifted one reports nothing. */
         fd[i].radius1 = contact ? 100 : 0;
         fd[i].radius2 = contact ? 660 : 0;
@@ -1052,6 +1092,7 @@ static void ipod_touch_multitouch_realize(SSIPeripheral *d, Error **errp)
 {
     IPodTouchMultitouchState *s = IPOD_TOUCH_MULTITOUCH(d);
     qdev_init_gpio_out_named(DEVICE(d), &s->atn, "atn", 1);
+    s->profile = &mt_profile_ipod;
     memset(s->hbpp_atn_ack_response, 0, 2);
     s->touch_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, touch_timer_tick, s);
     s->touch_end_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, touch_end_timer_tick, s);

@@ -59,6 +59,10 @@ NAND = {"#ce": 8, "#die-ce": 1, "#ce-blocks": 0x1000, "#block-pages": 128, "#pag
 # its ECID/die-id go into chosen below. Override for a different unit.
 IDENTITY = {"serial-number": "EMU000000000", "mlb-serial-number": "EMU0000000000",
             "model-number": "MB292", "region-info": "LL/A"}
+# iBoot copies syscfg WMac/BMac into these DT slots; lockdownd's UniqueDeviceID on a 3.2 iPad is
+# SHA1(serial + "02:00:00:00:00:01" + "02:00:00:00:00:02") = <udid>... (verified against the captured
+# activation record's AccountToken), so both MACs must be the real unit's for the record to validate.
+MACS = {"arm-io/sdio": bytes.fromhex("020000000001"), "arm-io/uart3/bluetooth": bytes.fromhex("020000000002")}
 CLOCKS = [PERIPH_HZ] * 55
 for idx, hz in {0: TIMEBASE_HZ, 5: CPU_HZ, 6: PERIPH_HZ, 27: MEM_HZ, 32: BUS_HZ, 33: FIXED_HZ}.items():
     CLOCKS[idx] = hz
@@ -147,6 +151,9 @@ def fill_dt(dt, memory_map):
     # CoreAnimation falls back to its software renderer (docs/ipad1/userland-gl-display.md).
     if "arm-io/sgx" in dt.props:
         dt.set("arm-io/sgx", "compatible", "none")
+    for path, mac in MACS.items():
+        if path in dt.props:  # absent from the selfcheck DT
+            dt.set(path, "local-mac-address", mac)
     if "arm-io/mipi-dsim/lcd" in dt.props:
         # iBoot's pinot_init writes the panel's DCS 0xB1 reply here; ApplePinotLCD::start fails
         # on 0, AppleCLCD then never publishes, and CoreAnimation only finds AppleRGBOUT
@@ -154,6 +161,13 @@ def fill_dt(dt, memory_map):
         # id works: nothing looks it up. This is the reply the DSI model gives.
         for key in ("lcd-panel-id", "raw-panel-id"):
             dt.set("arm-io/mipi-dsim/lcd", key, 0x00A1D13C)
+    # The K48 DT ships an N82 baseband node; on a Wi-Fi iPad iBoot finds no radio ("Radio not
+    # detected.") and the real unit's IORegistry has no baseband node at all, so AppleBaseband never
+    # loads and CommCenter never reports a dead radio. The editor cannot delete a node, so unmatch
+    # and unname it instead. (spi2/uart2 stay: the real unit runs BasebandSPI/umts on them too.)
+    if "baseband" in dt.props:
+        for key, value in {"compatible": "none", "device_type": "none", "name": "nobb"}.items():
+            dt.set("baseband", key, value)
     if "chip-revision" in dt.props["arm-io"]:  # absent from the selfcheck DT
         dt.set("arm-io", "chip-revision", 0x11)  # measured on the real K48AP
     if "arm-io/flash-controller0/disk" in dt.props:  # absent from the selfcheck's synthetic DT
