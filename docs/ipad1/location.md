@@ -137,14 +137,17 @@ name (guestfwd only covers addresses inside 10.0.2.0/24, and slirp's DNS can't b
 overridden), so the TLS-bridge plan and a served settings.plist were both out.
 
 What works is the plain-HTTP route through a preference: locationd reads
-`AppleLocationServer` from its own domain and honours an `http://` URL with
-`AppleLocationServerRequiresCert` false. The store builder seeds
-`/var/mobile/Library/Preferences/com.apple.locationd.plist` (imgtools/ipad1_rootfs.py,
-alongside the Wi-Fi PAC) with `http://10.0.2.100:3128/clls/wloc`, the address the
-app's itwebproxy guestfwd already occupies. That is a baked guest preference,
-like the PAC, not guest code. itwebproxy answers `/clls/wloc` itself
-(`it_location_response`) **in every proxy mode, including off**, so location
-doesn't depend on the Proxy feature or any CA.
+`AppleLocationServer` from mobile's `com.apple.locationd` preferences and honours an
+`http://` URL with `AppleLocationServerRequiresCert` false. contrib/it-prefs
+(`it_prefs`, a one-shot boot job baked by `ipad1_rootfs.py bake`) sets both at run
+time through CFPreferences, as mobile, to `http://10.0.2.100:3128/clls/wloc`, the
+address the app's itwebproxy guestfwd already occupies; nothing is seeded into the
+image's plists. locationd is already running by then (root, OnDemand false), reads
+the URL once at start and rewrites its whole preferences file from memory (posting
+its `com.apple.locationd/Prefs` notification does not make it pick the URL up), so
+it_prefs unloads its job around the write and loads it again. itwebproxy answers
+`/clls/wloc` itself (`it_location_response`) **in every proxy mode, including off**,
+so location doesn't depend on the Proxy feature or any CA.
 
 Wire format, read off a captured request (7B500):
 
@@ -164,12 +167,14 @@ The position comes from `CONFIG.location` beside the proxy CONFIG
 replaceable at any time; Apple Park when absent. tests/ipad1/test_location.py
 checks the answer offline.
 
-Measured (gl-drive, pristine-based scratch store with the preference and the PAC):
+Measured (gl-drive, pristine-based scratch stores):
 
 - proxy mode `direct`, 51.50073,-0.12463: Maps' locate dot on Big Ben; the second
   tap engages compass mode and the map turns with `qom-set compass-heading`.
 - proxy mode `off`, 35.65858,139.74543: dot on Tokyo Tower, compass mode, map turns
   from heading 0 to 90 (screens/location-tokyo-proxy-off.png).
+- proxy mode `off`, 48.85837,2.29448, with the preference applied by it_prefs on a
+  baked pristine store (no seeded plists): dot on the Eiffel Tower.
 
 Known limits:
 
