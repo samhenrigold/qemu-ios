@@ -63,7 +63,7 @@ arm_ss.add(when: 'CONFIG_XEN', if_true: files(
   'xen-stubs.c',
   'xen-pvh.c',
 ))
-arm_ss.add(when: 'CONFIG_IPAD1', if_true: files('ipad1.c', 's5l8930_pmgr.c', 's5l8930_gpio.c', 's5l8930_iop.c', 's5l8930_i2c.c', 's5l8930_display.c', 's5l8930_cdma.c'))
+arm_ss.add(when: 'CONFIG_IPAD1', if_true: files('ipad1.c', 's5l8930_pmgr.c', 's5l8930_gpio.c', 's5l8930_iop.c', 's5l8930_i2c.c', 's5l8930_display.c', 's5l8930_cdma.c', 's5l8930_hdq.c'))
 # Synopsys DWC OTG device core, PHY register file and host TCP bridge: shared by the S5L8720 and S5L8930 machines.
 arm_ss.add(when: 'CONFIG_IPOD_TOUCH_USB', if_true: files('ipod_touch_usb_otg.c', 'ipod_touch_tcp_usb.c', 'ipod_touch_usb_phys.c'))
 arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: files('ipod_touch_2g.c', 'ipod_touch_firmware.c', 'ipod_touch_clock.c', 'ipod_touch_chipid.c', 'ipod_touch_gpio.c', 'guest-services.c', 'ipod-agent.c', 'guest-gles.c', 'ipod_touch_sysic.c', 'ipod_touch_timer.c', 'ipod_touch_spi.c', 'ipod_touch_nor_spi.c', 'ipod_touch_sha1.c', 'ipod_touch_aes.c', 'ipod_touch_pke.c', 'ipod_touch_pcf50633_pmu.c', 'ipod_touch_unknown1.c', 'ipod_touch_wdt.c', 'ipod_touch_mpvd.c', 'ipod_touch_h264.c', 'ipod_touch_scaler.c', 'ipod_touch_swi.c', 'ipod_video.c', 'ipod_touch_lcd.c', 'ipod_touch_mipi_dsi.c', 'ipod_touch_fmss.c', 'ipod_touch_mbx.c', 'ipod_touch_cd3272_mikey.c', 'ipod_touch_cs42l58.c', 'ipod_touch_amc.c', 'ipod_touch_i2s.c', 'ipod_touch_lm48821.c', 'ipod_touch_lis302dl.c', 'ipod_touch_tethered.c', 'ipod_touch_multitouch.c', 'ipod_touch_sdio.c', 'ipod_touch_tvout.c', 'ipod_touch_isl29003dl.c', 'ipod_touch_bt.c'))
