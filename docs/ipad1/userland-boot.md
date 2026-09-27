@@ -21,7 +21,7 @@ tests/ipad1/boot-smoke.py --nand-clone FILES/userland/golden-pristine --seconds 
 
 The `bsd` (`BSD root:`) and `launchd` markers already exist in the test. Kernel bundle prerequisites are all in
 `ipad1_kboot.py` now: `root-matching` names partition 1, `chosen/debug-enabled = 1`, the real unit's identity
-(serial `EMU000000000`, MLB, ECID `0x0000000001` = 1, die-id), and the `sgx` node disabled
+(serial, MLB, ECID and die-id from the untracked `identity.json`; see `ipad1_kboot.py`), and the `sgx` node disabled
 (9ed863257d).
 
 Why the AMFI flags on the jailbroken store only: `sshd`, `bash`, Cydia, Substrate and ~180 GNU tools are
@@ -201,7 +201,7 @@ classifier over any tree.
 
 - **Activation identity (resolved 2026-09-27).** `pod_record.plist`'s AccountToken binds `SerialNumber`,
   `ProductType` and `UniqueDeviceID` = `<unit UDID>`, which is exactly
-  `SHA1("EMU000000000" + "02:00:00:00:00:01" + "02:00:00:00:00:02")`: serial + Wi-Fi MAC + Bluetooth MAC,
+  `SHA1("<unit serial>" + "<unit Wi-Fi MAC>" + "<unit Bluetooth MAC>")`: serial + Wi-Fi MAC + Bluetooth MAC,
   lowercase, colon-separated, **no ECID/IMEI** on a Wi-Fi iPad (brute-forced over the orderings and formats;
   nothing else matched). iBoot puts the two MACs (syscfg `WMac`/`BMac`) into DT `arm-io/sdio` and
   `arm-io/uart3/bluetooth` `local-mac-address` (6 bytes each, zero in the IPSW DT; the real unit's IORegistry
