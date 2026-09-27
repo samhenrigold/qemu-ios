@@ -134,13 +134,13 @@ class Boot:
         """(ok, detail): lit, not solid, and still so HOME_CONFIRM_S later.
 
         The lock screen turns the panel off about 8 s after it appears, so the confirmation is short and
-        callers act right after. Boots without the USB keyboard press Home to wake a panel that went dark
-        before it was sampled (with the keyboard attached, QMP keys never reach the buttons)."""
+        callers act right after. Home (the button-home property, which works even while a USB keyboard
+        owns QMP keys) wakes a panel that went dark before it was sampled."""
         t0, detail, woke = time.time(), "never sampled", 0
         while time.time() - t0 < timeout and self.qemu.poll() is None:
-            if not self.keyboard and time.time() - t0 > 60 and time.time() - woke > 20 and \
+            if time.time() - t0 > 60 and time.time() - woke > 20 and \
                     "_lcdEnable: enable: 0" in open(self.serial, errors="replace").read():
-                itqmp.button(self.qmp, "home")
+                self.press("home")
                 woke = time.time()
                 time.sleep(1)
             ok, detail = self.picture()
@@ -160,6 +160,12 @@ class Boot:
                 return True
             time.sleep(2)
         return False
+
+    def press(self, button, hold=0.3):
+        """Hold or Home through the machine's button-* properties (a4-touch)."""
+        for v in (True, False):
+            self.qmp.cmd("qom-set", path="/machine", property="button-" + button, value=v)
+            time.sleep(hold if v else 0)
 
     def tap(self, xy):
         self.ev(*xy)
