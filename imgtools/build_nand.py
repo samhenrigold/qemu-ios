@@ -97,12 +97,7 @@ class FlatVolume(H.Volume):
         self.free_blocks = struct.unpack_from(">I", self.vh, 48)[0]
         self.file_count = struct.unpack_from(">I", self.vh, 32)[0]
         self.folder_count = struct.unpack_from(">I", self.vh, 36)[0]
-        k, rem = divmod(self.block_size, BLOCK)
-        if rem or not k:
-            raise RuntimeError("unexpected allocation block size %d" % self.block_size)
         self.catalog = H.Fork(self, self.vh, 272)
-        # 7B500's system volume uses 8 KiB allocation blocks: address them as runs of 4 KiB ones
-        self.catalog.extents = [(s * k, c * k) for s, c in self.catalog.extents]
 
     def read_block(self, n):
         if n in self._cache:

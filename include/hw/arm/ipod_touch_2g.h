@@ -3,6 +3,7 @@
 
 #include "exec/hwaddr.h"
 #include "hw/arm/ipod-agent.h"
+#include "hw/arm/guest-pasteboard.h"
 #include "hw/boards.h"
 #include "qapi/qapi-types-common.h"
 #include "hw/intc/pl192.h"
@@ -303,68 +304,9 @@ typedef struct {
 	bool osk_shifted;           /* shift key currently latched on the OSK */
 	bool osk_numeric;           /* the ".?123" page is showing */
 
-	/*
-	 * Host <-> guest pasteboard (see the QC_PB_* ops in guest-services.c and
-	 * contrib/it-pasteboard/it_pbd.c). This is the lossless counterpart to the
-	 * OSK typist above: instead of turning text into taps on iOS's own
-	 * keyboard, the text is handed to the guest's UIPasteboard and the user
-	 * taps Paste. Punctuation and symbols survive, because nothing about the
-	 * keyboard's page state is involved.
-	 *
-	 * pb_out is what the host has queued for the guest; the guest agent polls
-	 * for it, reads it out in chunks and acknowledges. pb_in is the staging
-	 * buffer the guest fills going the other way, published to the host
-	 * clipboard on commit and kept in pb_guest so it can be read back.
-	 */
-	char *pb_out;             /* text waiting for the guest, or NULL */
-	size_t pb_out_len;
-	char *pb_in;              /* partial text arriving from the guest */
-	size_t pb_in_len;
-	char *pb_guest;           /* last text the guest published, or NULL */
-	size_t pb_guest_len;
-	bool pb_peer_registered;
-
-	/*
-	 * Liveness. Without this, setting the pasteboard on an image that has no
-	 * guest agent in it looks exactly like success: the property takes the
-	 * text, nothing complains, and the text simply sits here forever. That is
-	 * not hypothetical -- it is how the whole feature was reported working
-	 * while being dead on every image the runner actually boots. So record
-	 * when the guest last polled, warn if a queued item is never collected,
-	 * and expose the answer through the "pasteboard-agent" property.
-	 */
-	int64_t pb_last_poll_ns;  /* 0 = the guest has never polled */
-	uint64_t pb_polls;
-	uint64_t pb_polls_at_set; /* pb_polls when the pending item was queued */
-	QEMUTimer *pb_warn_timer;
-
-	/*
-	 * Delivery. Liveness above answers "is an agent there"; this answers "did
-	 * my text reach it", which is a different question and the one people
-	 * actually ask. There was NO way to ask it: pb_out is cleared on ACK, so a
-	 * delivered item and an item never queued read identically ("" from the
-	 * "pasteboard" property), and "guest-pasteboard" cannot stand in for a
-	 * readback -- the agent deliberately records host text as already-seen so
-	 * it is never echoed back, so that property NEVER reflects what the host
-	 * sent. A whole investigation was spent on a working channel for want of
-	 * this. Kept here and reported through "pasteboard-status".
-	 */
-	char *pb_delivered;       /* last text the guest agent collected, or NULL */
-	size_t pb_delivered_len;
-	int64_t pb_delivered_ns;
-	uint64_t pb_deliveries;
+	GuestPasteboard pb;       /* hw/arm/guest-pasteboard.c */
     IPodAgent *agent;
 } IPodTouchMachineState;
-
-/*
- * Queue text for the guest's UIPasteboard. Replaces anything not yet collected
- * -- a clipboard has one item, and a stale one is worse than none. Safe to call
- * with the guest agent absent; the text simply sits there.
- */
-void ipod_touch_pb_set(IPodTouchMachineState *nms, const char *text);
-
-/* The guest finished sending an item: publish it to the host clipboard. */
-void ipod_touch_pb_guest_commit(IPodTouchMachineState *nms);
 
 /*
  * The Bluetooth HCI that lives on UART1 (hw/arm/ipod_touch_bt.c). Returns
