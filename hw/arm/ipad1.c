@@ -46,6 +46,7 @@
 #include "target/arm/cpregs.h"
 #include "hw/arm/guest-services/general.h"
 #include "hw/arm/guest-services/gles.h"
+#include "hw/arm/guest-pasteboard.h"
 #include "ui/console.h"
 #include "ui/input.h"
 
@@ -74,6 +75,7 @@ struct IPad1MachineState {
     int kbd_btn_held[Q_KEY_CODE__MAX];   /* qcode -> 1 + button pin */
     int mtt_x[MT_MAX_FINGERS], mtt_y[MT_MAX_FINGERS];  /* latched per slot */
     bool mtt_seen[MT_MAX_FINGERS];
+    GuestPasteboard pb;                  /* hw/arm/guest-pasteboard.c */
 };
 
 /* GHWCFG1-4 of the DWC OTG core; same synthesis as the S5L8720's. */
@@ -94,14 +96,17 @@ static qemu_irq ipad1_irq(IPad1MachineState *s, int irq)
  */
 /*
  * The guest-services trap (mcr p15,3,Rn,c15,c15,0) the GLES shim uses, as on
- * the iPod machine. Only the GLES calls: the iPod's other services (keyboard,
- * pasteboard, agent) keep their state in IPodTouchMachineState.
+ * the iPod machine. GLES and the pasteboard (it_pbd) only; the iPod's
+ * keyboard and agent services are replaced by stock USB services and hardware
+ * models here (docs/ipad1/guest-services.md).
  */
 static void ipad1_qemu_call(CPUARMState *env, const ARMCPRegInfo *ri,
                             uint64_t value)
 {
     CPUState *cs = env_cpu(env);
+    IPad1MachineState *s = IPAD1_MACHINE(qdev_get_machine());
     qemu_call_t q;
+    int32_t err = 0;
 
     if (cpu_memory_rw_debug(cs, value, (uint8_t *)&q, sizeof(q), 0)) {
         return;
@@ -114,9 +119,11 @@ static void ipad1_qemu_call(CPUARMState *env, const ARMCPRegInfo *ri,
         q.retval = QC_GLES_PING_MAGIC;
         break;
     default:
-        return;
+        if (!guest_pb_call(&s->pb, cs, &q, &err)) {
+            return;
+        }
     }
-    q.error = 0;
+    q.error = err;
     cpu_memory_rw_debug(cs, value, (uint8_t *)&q, sizeof(q), 1);
 }
 
@@ -726,6 +733,7 @@ static void ipad1_set_usb_cable(Object *obj, bool value, Error **errp)
 static void ipad1_instance_init(Object *obj)
 {
     IPAD1_MACHINE(obj)->usb_cable = true;
+    guest_pb_init(&IPAD1_MACHINE(obj)->pb, obj, "ipad1");
 }
 
 static void ipad1_instance_finalize(Object *obj)
