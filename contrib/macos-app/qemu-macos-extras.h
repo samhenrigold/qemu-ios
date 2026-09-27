@@ -51,6 +51,13 @@ void qemu_ios_ui_attitude(double pitch_deg, double roll_deg, int pose);
 bool qemu_ios_ui_battery(int level, int charging);
 bool qemu_ios_ui_battery_config(int level, int charging, double drain);
 bool qemu_ios_ui_usb_connection(bool attached);
+/* Magnetic heading 0..359 degrees for the compass (machine "compass-heading");
+ * false where the machine has none (the iPod). */
+bool qemu_ios_ui_compass(int heading_deg);
+/* Whether the USB host grants a high-power port's current (machine
+ * "usb-charger": the iPad charges); applies at the next USB enumeration.
+ * false where the machine has no such control. */
+bool qemu_ios_ui_usb_charger(bool high_power);
 /* 44100 Hz stereo S16LE mixer packets; read needs 16384 bytes of capacity.
  * A generation owns one recording. Empty read = 0; failed/expired = -1.
  * Empty reads with seconds >= 0 mark silence through that capture time.

@@ -377,6 +377,48 @@ bool qemu_ios_ui_usb_connection(bool attached)
     return true;
 }
 
+/* One machine property from its string form, set on the QEMU thread; false
+ * if the machine has no such property (e.g. the iPod has no compass). */
+struct machine_prop { const char *name; char *value; };
+
+static void machine_prop_bh(void *opaque)
+{
+    struct machine_prop *m = opaque;
+    Error *err = NULL;
+
+    object_property_parse(OBJECT(qdev_get_machine()), m->name, m->value, &err);
+    if (err) {
+        fprintf(stderr, "[%s] %s\n", m->name, error_get_pretty(err));
+        error_free(err);
+    }
+    g_free(m->value);
+    g_free(m);
+}
+
+static bool set_machine_prop(const char *name, char *value)
+{
+    if (!qemu_ios_ui_ready() ||
+        !object_property_find(OBJECT(qdev_get_machine()), name)) {
+        g_free(value);
+        return false;
+    }
+    struct machine_prop *m = g_new(struct machine_prop, 1);
+    *m = (struct machine_prop){ name, value };
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), machine_prop_bh, m);
+    return true;
+}
+
+bool qemu_ios_ui_compass(int heading_deg)
+{
+    return set_machine_prop("compass-heading",
+                            g_strdup_printf("%d", ((heading_deg % 360) + 360) % 360));
+}
+
+bool qemu_ios_ui_usb_charger(bool high_power)
+{
+    return set_machine_prop("usb-charger", g_strdup(high_power ? "on" : "off"));
+}
+
 static void paste_bh(void *opaque)
 {
     char *text = opaque;

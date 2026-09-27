@@ -261,6 +261,15 @@ struct S5L8930D1815State {
     uint16_t vbat_mv;       /* what ADC mux 4 measures; 0 = the 3900 default */
 };
 
+/* The guest's own power-off write, latched for the app bridge
+ * (qemu_ios_ui_guest_shutdown_confirmed): the volume is unmounted by then. */
+static int d1815_shutdown_confirmed;
+
+bool s5l8930_d1815_guest_shutdown_confirmed(void)
+{
+    return qatomic_read(&d1815_shutdown_confirmed);
+}
+
 static void d1815_update_irq(S5L8930D1815State *s)
 {
     int i, pending = 0;
@@ -410,6 +419,7 @@ static int d1815_send(I2CSlave *i2c, uint8_t data)
     case PMU_OOC:
         s->regs[reg] = data;
         if (data & 1) {
+            qatomic_set(&d1815_shutdown_confirmed, 1);
             qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
         }
         return 0;
@@ -443,6 +453,7 @@ static void d1815_reset(DeviceState *dev)
      * pending; no external power (status 0x07-0x0B = 0); the RTC offset at
      * 0x84 is 0 so the counter alone is the wall clock. */
     memset(&s->regs[PMU_IRQ_MASK], 0xff, PMU_EVENT_COUNT);
+    qatomic_set(&d1815_shutdown_confirmed, 0);
     /*
      * The battery's SWI line (uart5/gas-gauge function-battery_swi, PMU GPIO
      * 6) idles high with a healthy pack. configd's AppleHDQGasGauge reads it
