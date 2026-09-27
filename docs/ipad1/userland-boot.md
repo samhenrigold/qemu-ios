@@ -148,16 +148,14 @@ classifier over any tree.
 
 ## Not determined / open
 
-- **Activation identity.** `pod_record.plist`'s AccountToken is bound to the unit; `lockdownd` checks it
-  against the UDID = SHA1(serial + ECID + Wi-Fi MAC + Bluetooth MAC) on 3.x. All four are known now: serial
-  `EMU000000000`, ECID 1 (`0x0000000001`), Wi-Fi MAC `02:00:00:00:00:01` (`local-mac-address`,
-  also the tail of nvram `platform-uuid` `00000000-0000-1000-8000-020000000001`), Bluetooth MAC
-  `02:00:00:00:00:02`; die-id 2233827018196609712. kboot carries serial/MLB/ECID/die-id since 571f433ec3.
-  **The MACs are not placed anywhere yet — check where iOS 3.2 reads the Wi-Fi/BT addresses (NVRAM vs DT
-  vs the chip):** on this unit `local-mac-address` is a property on an IOService node (the IOKit dump), and
-  nvram has only `platform-uuid`; whether the DT `wlan`/`bluetooth` nodes carry them, or `lockdownd`'s
-  `WiFiAddress` comes from the Broadcom driver reading OTP, decides whether activation can validate before
-  M5's Wi-Fi/BT models exist. Until then expect `Unactivated`.
+- **Activation identity (resolved 2026-09-27).** `pod_record.plist`'s AccountToken binds `SerialNumber`,
+  `ProductType` and `UniqueDeviceID` = `<unit UDID>`, which is exactly
+  `SHA1("EMU000000000" + "02:00:00:00:00:01" + "02:00:00:00:00:02")`: serial + Wi-Fi MAC + Bluetooth MAC,
+  lowercase, colon-separated, **no ECID/IMEI** on a Wi-Fi iPad (brute-forced over the orderings and formats;
+  nothing else matched). iBoot puts the two MACs (syscfg `WMac`/`BMac`) into DT `arm-io/sdio` and
+  `arm-io/uart3/bluetooth` `local-mac-address` (6 bytes each, zero in the IPSW DT; the real unit's IORegistry
+  shows them on the `sdio` and `bluetooth` nubs), and `ipad1_kboot.MACS` now fills both. Serial/MLB/ECID/die-id
+  were already in kboot (571f433ec3). The data-volume records need no change.
 - **`/dev/console` redirect** is untested on this launchd; if it refuses, fall back to a file under `/var/log`
   and read it back through the store.
 - **No serial login shell** exists regardless of `/etc/ttys`: there is no `getty` on 7B500. A shell needs
