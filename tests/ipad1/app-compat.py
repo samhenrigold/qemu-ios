@@ -2,14 +2,19 @@
 """iPad 1 / 3.2.2 app-compatibility pass over a folder of IPAs.
 
     tests/ipad1/app-compat.py inventory [DIR] [--md docs/ipad1/app-compat.md]
+    tests/ipad1/app-compat.py run [DIR] [--only SUBSTR] [--limit N] [--nand STORE] [--out DIR]
     tests/ipad1/app-compat.py --selfcheck
 
 inventory: bundle id, name, MinimumOSVersion, UIDeviceFamily, arch and encryption state
 for every IPA under DIR (default ~/Downloads/ios3, recursive), plus the candidates that
-can run here (decrypted, MinimumOS <= 3.2). Read from the zip in place: no extraction,
-no host tools.
+can run here (decrypted, MinimumOS <= 3.2). Read from the zip in place: no extraction.
+
+run: for each candidate, boot a fresh overlay of golden-appsync, install it over the
+usbmuxd bridge, unlock, tap the new icon to launch, wait, screenshot, pull crash logs,
+and record PASS / CRASH / NO-LAUNCH plus any "[glishim] unimplemented" GL lines. Reuses
+tests/ipad1/regress.py's Boot. One QEMU per app; nothing runs in the background.
 """
-import argparse, os, plistlib, struct, sys, zipfile
+import argparse, importlib.util, os, plistlib, re, struct, sys, time, zipfile
 
 DEFAULT_DIR = os.path.expanduser("~/Downloads/ios3")
 MAX_OS = (3, 2)
@@ -163,15 +168,134 @@ def selfcheck():
     print("selfcheck OK")
 
 
+# ---- launch pass -----------------------------------------------------------
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1")
+# Portrait UI on the 1024x768 landscape scanout (measured in the AppSync proof runs).
+DISMISS_EDIT = (408, 470)        # "Dismiss" on the install's Edit-Home-Screen help sheet
+PAGE2_SWIPE = ((512, 680), (512, 150))   # page 1 -> page 2 (the freshly installed icon)
+NEW_ICON = (895, 115)            # first slot on page 2 = the just-installed app
+LAUNCH_WAIT = 9
+
+
+def _load_regress():
+    spec = importlib.util.spec_from_file_location("ipad_regress", os.path.join(HERE, "regress.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    m.ipod.START = time.time()   # ipod.log() reads this; normally set in ipod.main()
+    return m
+
+
+def launch_one(rg, cfg, ipa, r):
+    """Install + launch one IPA on a fresh overlay. Returns dict: verdict, note, shot, crash, glishim."""
+    tag = re.sub(r"[^A-Za-z0-9_.-]", "_", r["bundle"] or os.path.basename(ipa))[:60]
+    res = {"file": r["file"], "bundle": r["bundle"], "name": r["name"], "family": r["family"],
+           "verdict": "NO-BOOT", "note": "", "glishim": 0}
+    b = rg.Boot(cfg, tag, usb=True)
+    try:
+        b.start()
+        if not b.wait_mux():
+            res["note"] = "usbmux never came up"
+            return res
+        # install
+        ins = b.run(["ideviceinstaller", "install", ipa], timeout=200)
+        out = (ins.stdout or "") + (ins.stderr or "")
+        if "Complete" not in out and r["bundle"] not in (b.run(["ideviceinstaller", "list"], timeout=90).stdout or ""):
+            res["verdict"] = "INSTALL-FAIL"
+            res["note"] = out.strip().splitlines()[-1][:160] if out.strip() else "no installer output"
+            return res
+        # to the home screen, then launch the new icon
+        ok, _ = b.wait_lock_screen()
+        b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
+        time.sleep(2)
+        b.tap(DISMISS_EDIT)          # dismiss the install help sheet if present (harmless otherwise)
+        time.sleep(1)
+        b.drag(*PAGE2_SWIPE)
+        time.sleep(2)
+        b.tap(NEW_ICON)
+        time.sleep(LAUNCH_WAIT)
+        lit, detail = b.picture("launch-" + tag)
+        res["shot"] = os.path.join(b.dir, "launch-" + tag + ".ppm")
+        # crash logs
+        crashdir = os.path.join(b.dir, "crash")
+        os.makedirs(crashdir, exist_ok=True)
+        b.run(["idevicecrashreport", "-e", crashdir], timeout=90)
+        # match the app's own crash reports; ignore always-pulled system artifacts
+        # (lockdownd pairing plists, Baseband, Panics) and never match on an empty token.
+        tokens = [t for t in (r["bundle"].split(".")[-1].lower(), (r["name"] or "").replace(" ", "").lower()) if len(t) >= 3]
+        crashes = [f for _, _, fs in os.walk(crashdir) for f in fs
+                   if f.lower().endswith((".crash", ".ips", ".plist"))
+                   and not f.lower().startswith(("lockdownd", "baseband", "stacks"))
+                   and any(t in f.lower() for t in tokens)]
+        # GL gaps from the host log
+        try:
+            qlog = open(os.path.join(b.dir, "qemu.log"), errors="replace").read()
+            res["glishim"] = qlog.count("[glishim] unimplemented")
+        except OSError:
+            pass
+        if crashes:
+            res["verdict"], res["note"] = "CRASH", crashes[0][:120]
+        elif lit:
+            res["verdict"], res["note"] = "LAUNCH", detail
+        else:
+            res["verdict"], res["note"] = "NO-LAUNCH", "screen not lit after tap (%s)" % detail
+    finally:
+        b.stop()
+    return res
+
+
+def run_pass(a):
+    rg = _load_regress()
+    rg.itqmp.W, rg.itqmp.H = 1024, 768
+    nand = os.path.realpath(a.nand or os.path.join(FILES, "userland", "golden-appsync"))
+    out = a.out or os.path.join(FILES, "app-compat")
+    os.makedirs(out, exist_ok=True)
+    cfg = argparse.Namespace(out=out, kboot=os.path.join(FILES, "7B500", "k48-kboot.bin"),
+                             nand=nand, qemu=os.path.join(ROOT, "build", "qemu-system-arm"),
+                             usbmuxd=os.path.expanduser("~/Developer/usbmuxd-qemu-ipad1-net/src/usbmuxd"),
+                             boot_timeout=a.boot_timeout, files=FILES)
+    cands = [r for r in scan(a.dir) if is_candidate(r)]
+    if a.only:
+        cands = [r for r in cands if a.only.lower() in (r["file"] + r["bundle"] + r["name"]).lower()]
+    if a.limit:
+        cands = cands[:a.limit]
+    print("running %d app(s) on %s" % (len(cands), nand))
+    results = []
+    for r in cands:
+        ipa = None
+        for dp, _, fs in os.walk(a.dir):
+            if r["file"] in fs:
+                ipa = os.path.join(dp, r["file"]); break
+        res = launch_one(rg, cfg, ipa, r)
+        print("  %-10s %-30s %s" % (res["verdict"], res["bundle"], res["note"]))
+        results.append(res)
+    md = os.path.join(ROOT, "docs/ipad1/app-compat-results.md")
+    with open(md, "w") as f:
+        f.write("# iPad 1 / 3.2.2 app-launch results\n\nStore: `%s`. %d apps.\n\n" % (nand, len(results)))
+        f.write("| verdict | app | bundle | family | GL gaps | note |\n|---|---|---|---|---|---|\n")
+        for r in results:
+            f.write("| %s | %s | `%s` | %s | %d | %s |\n" % (
+                r["verdict"], r["name"] or r["file"], r["bundle"], r["family"], r.get("glishim", 0), r["note"]))
+    print("wrote", md)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", nargs="?", default="inventory", choices=["inventory"])
+    ap.add_argument("cmd", nargs="?", default="inventory", choices=["inventory", "run"])
     ap.add_argument("dir", nargs="?", default=DEFAULT_DIR)
     ap.add_argument("--md")
+    ap.add_argument("--only", help="run: substring filter on file/bundle/name")
+    ap.add_argument("--limit", type=int, help="run: cap number of apps")
+    ap.add_argument("--nand", help="run: NAND store (default golden-appsync)")
+    ap.add_argument("--out", help="run: output dir")
+    ap.add_argument("--boot-timeout", type=int, default=240)
     ap.add_argument("--selfcheck", action="store_true")
     a = ap.parse_args()
     if a.selfcheck:
         return selfcheck()
+    if a.cmd == "run":
+        return run_pass(a)
     rows = scan(a.dir)
     cand = [r for r in rows if is_candidate(r)]
     enc = [r for r in rows if r["encrypted"]]
