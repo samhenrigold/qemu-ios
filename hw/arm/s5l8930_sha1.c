@@ -116,6 +116,7 @@ static void sha1_note_digest(S5L8930SHA1State *s)
         memmove(s->digests, s->digests + 1, sizeof(s->digests[0]) * s->ndigests);
         memmove(s->claimed, s->claimed + 1, sizeof(s->claimed[0]) * s->ndigests);
     }
+    if (getenv("TMP_FORGE")) fprintf(stderr,"[[SHA %02x%02x]]\n",d[0],d[1]);
     memcpy(s->digests[s->ndigests], d, 20);
     s->claimed[s->ndigests++] = false;
 }
