@@ -8,7 +8,7 @@ serial. Built by `imgtools/ipad1_rootfs.py`, consumed by `imgtools/ipad1_nand.py
 
 | store | base | boot-args | when |
 |---|---|---|---|
-| `FILES/userland/nand-pristine` | IPSW `rootfs.dmg` (`Wildcat7B500.K48OS`), nothing jailbroken | `-v serial=3 debug=0x8` (kboot default) | **first boot target** |
+| `FILES/userland/nand-pristine` | IPSW `rootfs.dmg` (`Wildcat7B500.K48OS`), nothing jailbroken | `-v serial=3 debug=0x8` (kboot default until 2026-09-27; the default now adds the AMFI pair) | **first boot target** |
 | `FILES/userland/nand-jb` | captured jailbroken partition + real `/var/stash` | `-v serial=3 debug=0x8 amfi_allow_any_signature=1 cs_enforcement_disable=1` | when sshd/bash/Cydia are wanted (needs a network first) |
 
 Both pass `ipad1_nand.py check` (3.4 GiB each; MBR from the unit, system at LBA 63, data at LBA 327789 as
@@ -46,6 +46,38 @@ imgtools/ipad1_nand.py check FILES/userland/nand-pristine --mbr FILES/hw2/rdisk0
 ```
 
 (`build` prints the matching `ipad1_nand.py` line; the jailbroken store is `nand-jb`.)
+
+**golden-pristine** (the read-only store the app and tests clone) is the pristine store plus the guest
+helpers `it_pbd` (pasteboard) and `it_ethlink` (USB Ethernet link) (docs/ipad1/guest-services.md):
+
+```
+contrib/ipad1-guest/build.sh                            # -> build/ipad1-guest/{it_pbd,it_ethlink,it_seal}
+imgtools/ipad1_rootfs.py build --base pristine
+imgtools/ipad1_rootfs.py bake FILES/userland/pristine --seal   # helpers + their com.qemu.* jobs, root-owned
+imgtools/ipad1_nand.py build --mbr FILES/hw2/rdisk0-head4M.bin --system FILES/userland/pristine/system.img \
+                             --data FILES/userland/pristine/data.img --out FILES/userland/golden-pristine.new
+imgtools/ipad1_seal.py FILES/userland/golden-pristine.new      # one clean halt, then checks the FTL context
+chmod -R a-w FILES/userland/golden-pristine.new
+mv FILES/userland/golden-pristine FILES/userland/golden-pristine.old
+mv FILES/userland/golden-pristine.new FILES/userland/golden-pristine
+tests/ipad1/boot-smoke.py --checkpoint-out FILES/userland/checkpoint-lock   # every golden rebuild invalidates it
+```
+
+**Seal.** A store fresh from `ipad1_nand.py` has no YAFTL context, so every boot logs `CXT is not
+valid . Performing full NAND R/O restore` and rescans the NAND for about 13 s. The FTL writes a context
+when the kernel halts cleanly. The stock power-off (the "slide to power off" slider) never finishes on
+this machine, because it waits on Bluetooth. So `bake --seal` adds `it_seal`, a one-shot launchd job:
+40 s into the sealing boot it deletes its own plist and binary, syncs and calls `reboot(RB_HALT)`, and
+QEMU exits on the PMU power-off write. `ipad1_seal.py` runs that boot in place, then boots the store again
+with a throwaway overlay and requires `FTL_Open` with no rescan. Sealed golden-pristine (2026-09-27):
+`FTL_Open` at 2 s, launchd at 2.4 s, lit lock screen at 12.3 s (it was 32 s). The seal is lost as soon
+as a store is killed rather than halted, which is why golden stays read-only and everything boots it
+through a clone or an overlay.
+
+The helpers are ldid-signed, so they need the AMFI boot-args. Those are the default in `ipad1_kboot.py`
+and therefore in `7B500/k48-kboot.bin`, which is a stock kernel with no patch (`--usb-eth-link` is the
+old fallback). `7B500/k48-kboot-noamfi.bin` keeps the old
+`-v serial=3 debug=0x8` bundle.
 `ipad1_rootfs.py --selfcheck` runs on every invocation: APM slicing, plist edits, owner rule, signature classifier.
 
 ## What is on the volumes and why
