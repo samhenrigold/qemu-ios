@@ -5,6 +5,7 @@
                           [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root]
     ipad1_rootfs.py fetch [DIR]          copy /var/stash and /var/root/Library/Lockdown off the real iPad (ssh)
     ipad1_rootfs.py report DIR...        list the Mach-Os under DIR that carry no Apple signature
+    ipad1_rootfs.py bake DIR [--tools build/ipad1-guest]   install the armv7 guest tools into DIR/{system,data}.img
     ipad1_rootfs.py --selfcheck
 
 `build` writes DIR/<base>/{system.img,data.img,unsigned-machos.txt}, then prints the ipad1_nand.py line:
@@ -39,6 +40,11 @@ offline because the host mount is noowners.
 unsigned-machos.txt: every Mach-O on the system volume and in the stash whose code signature has no CMS
 blob (ldid ad-hoc: sshd, bash, apt, Cydia, Substrate) or none at all. Those are what
 `amfi_allow_any_signature=1` has to forgive at exec; Apple's own binaries carry a (possibly empty) CMS slot.
+
+`bake` = imgtools/bake-guest-tools.sh for this machine (docs/ipad1/guest-services.md): it_agent + its launchd
+job, sblaunch, sbdlicon, sbunlock into /usr/local/bin, it_typein.dylib into SpringBoard's DYLD_INSERT_LIBRARIES,
+the AFC marker on the data volume, then root (marker: mobile) ownership patched into both catalogs. Build the
+tools first with contrib/ipad1-guest/build.sh; they are ldid ad-hoc signed, so boot with amfi_allow_any_signature=1.
 """
 import argparse
 import os
@@ -66,6 +72,14 @@ SSHD = ("Library/LaunchDaemons/com.openssh.sshd.plist", "usr/sbin/sshd", "privat
 BASES = {"pristine": ("7B500/dec/rootfs.dmg", None, "pristine"),
          "jailbroken": ("hw2/rdisk0s1-system.img", "hw2/stash", "jb")}
 MOBILE_TOP = ("mobile", "ea")                # uid 501 on the real unit; everything else under /var is root
+# guest tool -> (install path on the system volume, mode); the agent job comes from contrib/it-agent
+TOOLS = {"it_agent": ("usr/local/bin/it_agent", 0o755), "sblaunch": ("usr/local/bin/sblaunch", 0o755),
+         "sbdlicon": ("usr/local/bin/sbdlicon", 0o755), "sbunlock": ("usr/local/bin/sbunlock", 0o755),
+         "it_typein.dylib": ("usr/lib/it_typein.dylib", 0o755)}
+AGENT_JOB = "System/Library/LaunchDaemons/com.qemu.it-agent.plist"
+TYPEIN = "/usr/lib/it_typein.dylib"
+MARKERS = {"mobile/Media/.lt-guest-tools-v1": "v1\n", "mobile/Media/.lt-guest-tools-v2": "v2\n"}
+LC_MAIN, LC_VERSION_MIN_IPHONEOS = 0x80000028, 0x25
 MH_MAGIC, FAT_MAGIC, LC_CODE_SIGNATURE, CS_CMS = 0xFEEDFACE, 0xCAFEBABE, 0x1D, 0x10000
 
 
@@ -103,6 +117,33 @@ def springboard_env(d):
     assert d.get("Label") == "com.apple.SpringBoard"
     d.setdefault("EnvironmentVariables", {}).update(SB_ENV)
     d["StandardOutPath"] = d["StandardErrorPath"] = "/dev/console"
+
+
+def typein_env(d):
+    """Add it_typein.dylib to SpringBoard's inserted libraries (UIKit apps inherit it); drop the retired kbd agent."""
+    assert d.get("Label") == "com.apple.SpringBoard"
+    env = d.setdefault("EnvironmentVariables", {})
+    libs = [x for x in env.get("DYLD_INSERT_LIBRARIES", "").split(":") if x and x not in (TYPEIN, "/usr/lib/it_kbd_agent.dylib")]
+    env["DYLD_INSERT_LIBRARIES"] = ":".join(libs + [TYPEIN])
+
+
+def guest_tool_problem(data):
+    """None if data is a thin armv7 Mach-O 3.2 dyld will take (no LC_MAIN, no LC_VERSION_MIN, signed), else why not."""
+    if len(data) < 28 or struct.unpack_from("<I", data)[0] != MH_MAGIC:
+        return "not a thin 32-bit Mach-O"
+    cputype, sub, _, ncmds = struct.unpack_from("<iiII", data, 4)
+    if (cputype, sub) != (12, 9):
+        return "cpu %d/%d, not armv7" % (cputype, sub)
+    cmds, off = set(), 28
+    for _ in range(ncmds):
+        cmd, size = struct.unpack_from("<II", data, off)
+        cmds.add(cmd)
+        off += size
+    if cmds & {LC_MAIN, LC_VERSION_MIN_IPHONEOS}:
+        return "carries LC_MAIN/LC_VERSION_MIN (not run through mkold.py)"
+    if LC_CODE_SIGNATURE not in cmds:
+        return "unsigned (ldid -S)"
+    return None
 
 
 def owner_for(relpath):
@@ -323,6 +364,37 @@ def build(a):
           % (os.path.dirname(os.path.abspath(__file__)), a.mbr, system, data, os.path.dirname(a.out), a.tag))
 
 
+def bake(a):
+    system, data = os.path.join(a.dir, "system.img"), os.path.join(a.dir, "data.img")
+    agent_job = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/it-agent/com.qemu.it-agent.plist")
+    for name in TOOLS:
+        with open(os.path.join(a.tools, name), "rb") as f:
+            why = guest_tool_problem(f.read())
+        if why:
+            raise SystemExit("%s/%s: %s (run contrib/ipad1-guest/build.sh)" % (a.tools, name, why))
+    with Mounted(system, os.path.join(a.dir, "mnt-system")) as m:
+        for name, (rel, mode) in TOOLS.items():
+            dst = os.path.join(m.mnt, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(os.path.join(a.tools, name), dst)
+            os.chmod(dst, mode)
+        shutil.copyfile(agent_job, os.path.join(m.mnt, AGENT_JOB))
+        os.chmod(os.path.join(m.mnt, AGENT_JOB), 0o644)
+        rewrite_plist(os.path.join(m.mnt, SB_JOB), typein_env)
+    with Mounted(data, os.path.join(a.dir, "mnt-data")) as m:
+        for rel, text in MARKERS.items():
+            os.makedirs(os.path.dirname(os.path.join(m.mnt, rel)), exist_ok=True)
+            with open(os.path.join(m.mnt, rel), "w") as f:
+                f.write(text)
+    # noowners mounts: everything written above is the host uid until the catalogs say otherwise
+    root = ["usr/local", "usr/local/bin", AGENT_JOB] + [rel for rel, _ in TOOLS.values()]
+    n = bn.set_owner(system, root, 0, 0) + bn.set_owner(data, ["mobile/Media"] + list(MARKERS), 501, 501)
+    for d in ("mnt-system", "mnt-data"):
+        shutil.rmtree(os.path.join(a.dir, d), ignore_errors=True)
+    print("baked %s + %s into %s (%d catalog records patched); rebuild the NAND store with ipad1_nand.py"
+          % (", ".join(TOOLS), os.path.basename(AGENT_JOB), a.dir, n))
+
+
 def fetch(out):
     """Pull /var/stash and /var/root/Library/Lockdown off the real iPad into out/stash and out/lockdown."""
     for sub, parent, name in (("stash", "/var", "stash"), ("lockdown", "/var/root/Library", "Lockdown")):
@@ -371,6 +443,20 @@ def selfcheck():
     fat = struct.pack(">II", FAT_MAGIC, 1) + struct.pack(">5I", 12, 9, 28, len(macho([0, 2])), 12) + macho([0, 2])
     assert signature_kind(fat) == "adhoc" and signature_kind(b"#!/bin/sh\n" + bytes(40)) is None
 
+    def tool(cmds, sub=9):
+        lcs = b"".join(struct.pack("<II", c, 8) for c in cmds)
+        return struct.pack("<7I", MH_MAGIC, 12, sub, 2, len(cmds), len(lcs), 0) + lcs
+    assert guest_tool_problem(tool([LC_CODE_SIGNATURE])) is None
+    assert "armv7" in guest_tool_problem(tool([LC_CODE_SIGNATURE], sub=6))
+    assert "LC_MAIN" in guest_tool_problem(tool([LC_MAIN, LC_CODE_SIGNATURE]))
+    assert "unsigned" in guest_tool_problem(tool([]))
+    job = {"Label": "com.apple.SpringBoard", "EnvironmentVariables": {"DYLD_INSERT_LIBRARIES": "/a.dylib:/usr/lib/it_kbd_agent.dylib:" + TYPEIN}}
+    typein_env(job)
+    assert job["EnvironmentVariables"]["DYLD_INSERT_LIBRARIES"] == "/a.dylib:" + TYPEIN
+    job = {"Label": "com.apple.SpringBoard"}
+    typein_env(job)
+    assert job["EnvironmentVariables"]["DYLD_INSERT_LIBRARIES"] == TYPEIN
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -392,6 +478,9 @@ def main():
     f.add_argument("dir", nargs="?", default=os.path.join(FILES, "hw2"))
     r = sub.add_parser("report")
     r.add_argument("dirs", nargs="+")
+    k = sub.add_parser("bake")
+    k.add_argument("dir", help="a build output dir holding system.img and data.img")
+    k.add_argument("--tools", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "../build/ipad1-guest"))
     a = ap.parse_args()
     selfcheck()
     if a.cmd == "build":
@@ -404,6 +493,8 @@ def main():
                 print("      no %s seed at %s (run `fetch`)" % (opt, getattr(a, opt)))
                 setattr(a, opt, None)
         build(a)
+    elif a.cmd == "bake":
+        bake(a)
     elif a.cmd == "fetch":
         fetch(a.dir)
     elif a.cmd == "report":

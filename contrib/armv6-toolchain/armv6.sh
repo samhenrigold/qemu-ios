@@ -10,8 +10,14 @@
 #
 #   cc6   <src> <obj> [compiler flags...]
 #   link6 -bundle|-dylib|-execute <out> <objs/flags...>
+#
+# GUEST_ARCH=armv7 retargets the same pipeline at the iPad 1 (Cortex-A8, iOS
+# 3.2.2): real armv7 code, no subtype round-trip, cpusubtype 9. Point ARMV6_SDK
+# at the 3.2 SDK then. mkold.py's LC_MAIN->LC_UNIXTHREAD rewrite is what lets
+# these be executables at all on 3.2 dyld (docs/ipad1/guest-services.md).
 set -eu
 
+GUEST_ARCH="${GUEST_ARCH:-armv6}"
 ARMV6_SDK="${ARMV6_SDK:-/Users/shg/Downloads/OldSDK/iPhoneOS3.1.3.sdk}"
 ARMV6_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -20,7 +26,7 @@ cc6() {
     # Thumb-2, which the ARM1176 cannot execute. armv6 also keeps movw/movt out
     # of the output; constants go through the literal pool instead.
     rm -f "$2"
-    if ! xcrun clang -target armv6-apple-ios5.0 -marm -O1 -fno-stack-protector \
+    if ! xcrun clang -target $GUEST_ARCH-apple-ios5.0 -marm -O1 -fno-stack-protector \
         -fno-builtin -nostdinc -isystem "$ARMV6_SDK/usr/include" "${@:3}" \
         -c "$1" -o "$2" >"$2.cclog" 2>&1; then
         cat "$2.cclog" >&2
@@ -31,7 +37,7 @@ cc6() {
     rm -f "$2.cclog"
     # ld rejects -arch armv6 outright, so present the object as armv7 and put
     # the subtype back after linking.
-    python3 "$ARMV6_HERE/subtype.py" "$2" 9 >/dev/null
+    [ "$GUEST_ARCH" = armv7 ] || python3 "$ARMV6_HERE/subtype.py" "$2" 9 >/dev/null
 }
 
 link6() {
@@ -57,7 +63,7 @@ link6() {
     fi
     grep -v "built for 'unknown'" "$out.ldlog" >&2 || true
     rm -f "$out.ldlog"
-    python3 "$ARMV6_HERE/mkold.py" "$out"
+    python3 "$ARMV6_HERE/mkold.py" "$out" --subtype "$([ "$GUEST_ARCH" = armv7 ] && echo 9 || echo 6)"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
