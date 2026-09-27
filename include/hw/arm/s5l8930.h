@@ -152,6 +152,13 @@ void s5l8930_ltc4099_set_usb(DeviceState *dev, bool present);
  * synchronously inside the channel's go write.
  */
 #define TYPE_S5L8930_CDMA "s5l8930.cdma"
+
+/*
+ * I2S controller (hw/arm/s5l8930_i2s.c). One MMIO region (0x1000) at
+ * S5L8930_I2S_BASE(n); "audio-out" routes its TX FIFO to the
+ * host audio backend (i2s0, the CS42L61 codec port).
+ */
+#define TYPE_S5L8930_I2S "s5l8930.i2s"
 #define S5L8930_CDMA_CHANNELS    0x26
 
 /*
