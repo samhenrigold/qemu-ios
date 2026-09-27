@@ -139,6 +139,12 @@ Complete fidelity, no stone unturned, before any other device:
 - LightTouchMac device profiles: the app runs the iPad with its own bezel, geometry and controls
 - boot through real iBoot (M8)
 
+## Keyboard / network decisions (2026-09-27, docs/ipad1/keyboard-and-network.md)
+1. Keyboard: guest IOHIDUserDevice daemon fed HID reports over usbmux (real OS keyboard path) — now.
+   Fidelity follow-up: emulated Bluetooth HID keyboard through ipod_touch_bt.c.
+2. USB Ethernet: the device's own Apple USB Ethernet configuration bridged to libslirp — now.
+3. Wi-Fi: fake BCM4329 behind the IOP SDIO ring — last item; until then SDIO answers "no card".
+
 ## Verification
 
 Every milestone is checked against a real-iPad reference: serial logs (M1–M3), IORegistry dumps (M2–M5),
