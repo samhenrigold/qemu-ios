@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Userland images for the ipad1 machine: a patched copy of the 7B500 system partition plus a seeded data volume.
 
-    ipad1_rootfs.py build [--base pristine|jailbroken] [--out DIR] [--data-size 2g] [--rootfs IMG]
+    ipad1_rootfs.py build [--base pristine|jailbroken] [--out DIR] [--data-size partition|SIZE] [--rootfs IMG]
                           [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge] [--no-web-proxy] [--no-usb-net]
     ipad1_rootfs.py fetch [DIR]          copy /var/stash and /var/root/Library/Lockdown off the real iPad (ssh)
     ipad1_rootfs.py report DIR...        list the Mach-Os under DIR that carry no Apple signature
@@ -432,7 +432,10 @@ def report(dirs, out=sys.stdout):
 def build(a):
     os.makedirs(a.out, exist_ok=True)
     system, data = os.path.join(a.out, "system.img"), os.path.join(a.out, "data.img")
-    p1 = mbr_parts(open(a.mbr, "rb").read(512))[0]
+    p1, p2 = mbr_parts(open(a.mbr, "rb").read(512))[:2]
+    # the unit's data partition fills the rest of the exported NAND (3,597,615 x 4 KiB = 14.7 GB, what a
+    # restore gives it); the image is sparse, so only what gets written costs the host anything
+    data_bytes = p2[2] * BLOCK if a.data_size == "partition" else parse_size(a.data_size)
     if p1[0] != 0xAF:
         raise SystemExit("%s: partition 1 is type %#x, not Apple_HFS" % (a.mbr, p1[0]))
 
@@ -533,7 +536,7 @@ def build(a):
     if stashed and not a.stash:
         raise SystemExit("this image stashes /usr/libexec into /private/var/stash; run `fetch` and pass --stash")
 
-    print("[3/4] data volume (%s) seeded from /private/var%s%s" % (a.data_size,
+    print("[3/4] data volume (%.1f GB, sparse) seeded from /private/var%s%s" % (data_bytes / 1e9,
           " + " + a.stash if a.stash else "", " + " + a.lockdown if a.lockdown else ""))
     if a.stash:
         shutil.copytree(a.stash, os.path.join(skeleton, "stash"), symlinks=True)
@@ -549,7 +552,7 @@ def build(a):
         seed_plist(os.path.join(skeleton, SC_DIR, "NetworkInterfaces.plist"), usb_net_interfaces)
         seed_plist(os.path.join(skeleton, SC_DIR, "preferences.plist"), usb_net_prefs)
         print("      USB Ethernet: en1 DHCP service in /var/%s" % SC_DIR)
-    os.replace(make_hfs_image(data + ".dmg", parse_size(a.data_size)), data)
+    os.replace(make_hfs_image(data + ".dmg", data_bytes), data)
     by_owner = {}
     with Mounted(data, os.path.join(a.out, "mnt-data")) as m:
         shutil.copytree(skeleton, m.mnt, symlinks=True, dirs_exist_ok=True)
@@ -702,7 +705,8 @@ def main():
     b.add_argument("--pristine", default=os.path.join(FILES, "7B500/dec/rootfs.dmg"), help="IPSW rootfs, source of the /private/var skeleton")
     b.add_argument("--out", default=os.path.join(FILES, "userland"), help="images land in OUT/<base>/, the store in OUT/nand-<tag>")
     b.add_argument("--kernelcache", help="IPSW img3 kernelcache to install for real-iBoot fsboot")
-    b.add_argument("--data-size", default="2g")
+    b.add_argument("--data-size", default="partition",
+                   help="data volume size: 'partition' (the MBR's partition 2, as on the unit) or e.g. 2g")
     b.add_argument("--stash", help="fetch output for /var/stash (jailbroken default: hw2/stash); 'none' to skip")
     b.add_argument("--lockdown", default=os.path.join(FILES, "hw2/lockdown"), help="fetch output for the Lockdown dir; 'none' to skip")
     b.add_argument("--disable", action="append", default=[], metavar="LABEL", help="launchd job to mark Disabled")
