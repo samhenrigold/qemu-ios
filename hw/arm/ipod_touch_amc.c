@@ -370,7 +370,7 @@ static bool amc_decode_dma(IPodTouchAMCState *s, uint32_t head)
         uint8_t config[12];
         static const unsigned rates[] = { 96000, 88200, 64000, 48000, 44100,
             32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350 };
-        if (address_space_read(&address_space_memory, AMC_BUF_BASE + 0x2ff00,
+        if (address_space_read(&address_space_memory, s->buf_base + 0x2ff00,
             MEMTXATTRS_UNSPECIFIED, config, sizeof(config))) {
             goto done;
         }
@@ -568,7 +568,7 @@ static void amc_decode_publish(IPodTouchAMCState *s)
 {
     AMCDecoder *d = s->decoder;
     uint8_t header[0x12];
-    const hwaddr base = AMC_BUF_BASE + AMC_RESULT_OFFSET;
+    const hwaddr base = s->buf_base + AMC_RESULT_OFFSET;
     bool failed = d && d->failed && g_queue_is_empty(&d->output_sizes);
     unsigned bytes = failed ? d->capacity :
         d ? GPOINTER_TO_UINT(g_queue_peek_head(&d->output_sizes)) : 0;
@@ -589,7 +589,7 @@ static void amc_decode_publish(IPodTouchAMCState *s)
          * (c0609c58). Supply silence, never stale PCM, for that failed frame. */
         stw_le_p(error, 1);
         stw_le_p(error + 2, 100);
-        address_space_write(&address_space_memory, AMC_BUF_BASE + 0x2ff28,
+        address_space_write(&address_space_memory, s->buf_base + 0x2ff28,
                             MEMTXATTRS_UNSPECIFIED, error, sizeof(error));
         g_byte_array_set_size(d->pcm, bytes);
         memset(d->pcm->data, 0, bytes);
@@ -680,7 +680,7 @@ static void amc_decode_drain(IPodTouchAMCState *s) {}
 
 static void amc_write_result_block(IPodTouchAMCState *s)
 {
-    hwaddr base = AMC_BUF_BASE + AMC_RESULT_OFFSET;
+    hwaddr base = s->buf_base + AMC_RESULT_OFFSET;
     uint16_t capacity = AMC_SELFTEST_SAMPLES;
     uint16_t buffers = 2;
     uint16_t back = 0;
@@ -1104,9 +1104,9 @@ static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val,
             s->pending = 0;
             AMC_REG(0x100) = 0;
             address_space_write(&address_space_memory,
-                AMC_BUF_BASE + AMC_RESULT_OFFSET, MEMTXATTRS_UNSPECIFIED,
+                s->buf_base + AMC_RESULT_OFFSET, MEMTXATTRS_UNSPECIFIED,
                 clear, sizeof(clear));
-            address_space_write(&address_space_memory, AMC_BUF_BASE + 0x2ff28,
+            address_space_write(&address_space_memory, s->buf_base + 0x2ff28,
                 MEMTXATTRS_UNSPECIFIED, clear, 4);
             /* A new stream must not inherit a failure or DMA descriptor
              * from the previous stream. */
@@ -1333,6 +1333,7 @@ static const VMStateDescription vmstate_ipod_touch_amc = {
 
 static const Property amc_properties[] = {
     DEFINE_PROP_UINT8("mode", IPodTouchAMCState, mode, AMC_MODE_REGISTERS),
+    DEFINE_PROP_UINT64("buf-base", IPodTouchAMCState, buf_base, AMC_BUF_BASE),
 };
 
 static void ipod_touch_amc_realize(DeviceState *dev, Error **errp)
