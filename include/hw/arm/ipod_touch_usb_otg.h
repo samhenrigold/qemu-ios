@@ -227,7 +227,25 @@ typedef struct synopsys_usb_state
 	uint32_t server_port;
 	tcp_usb_state_t tcp_state;
 	bool tcp_connected;
+	bool cable_attached;      /* no dialling while unplugged */
 	QEMUTimer *tcp_retry_timer;
+
+	/* Built-in host (no bridge configured): enumerates and configures the
+	 * device so iOS sees a configured 500 mA USB host. See synopsys_host_*. */
+	bool builtin_host;
+	QEMUTimer *host_timer;
+	int host_phase;
+	int host_cfg;            /* configuration index being fetched */
+	int host_cfg_value;      /* bConfigurationValue to select */
+	int host_ncfg;
+	int host_ep_in;          /* mux bulk IN endpoint to keep polling */
+	int host_ep_out;
+	bool host_greeted;       /* mux version request sent */
+	int host_iserial;
+	int host_got;            /* bytes of the current IN so far */
+	int host_want;
+	int64_t host_deadline;
+	uint8_t host_buf[1024];
 
 	uint32_t pcgcctl;
 
@@ -267,5 +285,9 @@ typedef struct synopsys_usb_state
 } synopsys_usb_state;
 
 DeviceState *ipod_touch_init_usb_otg(qemu_irq _irq, uint32_t _hwcfg[4]);
+/* Plug/unplug: unplugging drops the host link so usbmuxd reaps the device;
+ * plugging redials, and usbmuxd re-enumerates. */
+void synopsys_usb_set_cable(synopsys_usb_state *state, bool attached);
+void synopsys_usb_host_rearm(synopsys_usb_state *state, int64_t delay_ms);
 
 #endif

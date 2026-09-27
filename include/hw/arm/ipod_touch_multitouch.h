@@ -52,14 +52,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchMultitouchState, IPOD_TOUCH_MULTITOUCH)
 #define MT_REPORT_SENSOR_REGION_DESC  0xD0
 #define MT_REPORT_SENSOR_REGION_PARAM 0xA1
 #define MT_REPORT_SENSOR_DIMENSIONS   0xD9
+/* Written by userland on K48 at SpringBoard start (0xBF 4 bytes, then 0xAF
+ * 1 byte); a zero-length report info fails the set with 0xE00002E8. */
+#define MT_REPORT_UNKNOWN_BF          0xBF
+#define MT_REPORT_UNKNOWN_AF          0xAF
 
 // report sizes
 #define MT_REPORT_UNKNOWN1_SIZE            0x1
 #define MT_REPORT_FAMILY_ID_SIZE           0x1
 #define MT_REPORT_SENSOR_INFO_SIZE         0x5
-#define MT_REPORT_SENSOR_REGION_DESC_SIZE  0x1
-#define MT_REPORT_SENSOR_REGION_PARAM_SIZE 0x1
 #define MT_REPORT_SENSOR_DIMENSIONS_SIZE   0x8
+#define MT_REPORT_UNKNOWN_BF_SIZE          0x4
+#define MT_REPORT_UNKNOWN_AF_SIZE          0x1
 
 #define MT_CMD_HBPP_DATA_PACKET      0x30
 #define MT_CMD_GET_CMD_STATUS        0xE1
@@ -222,6 +226,23 @@ typedef struct MTFingerState {
     float prev_x, prev_y;/* where this finger was in the last frame WE SENT   */
 } MTFingerState;
 
+/*
+ * What the panel reports about itself (the 0xD1/D3/D0/A1/D9 reports) and the
+ * span of finger x/y in its frames. The iPad's values are the real K48's
+ * IORegistry (FILES/ipad1/hw2/regs/ioreg-full.txt).
+ */
+typedef struct MTSensorProfile {
+    uint8_t family_id;
+    uint8_t rows, cols;
+    uint16_t bcd_version;
+    uint32_t surface_width, surface_height;
+    uint8_t region_desc[8], region_desc_len;
+    uint8_t region_param[8], region_param_len;
+    int frame_width, frame_height;
+} MTSensorProfile;
+
+extern const MTSensorProfile mt_profile_ipod, mt_profile_k48;
+
 typedef struct IPodTouchMultitouchState {
     SSIPeripheral ssidev;
     uint8_t cur_cmd;
@@ -250,6 +271,7 @@ typedef struct IPodTouchMultitouchState {
     qemu_irq atn;                 /* otherwise: "atn" GPIO out, pulsed low per frame */
     IPodTouchGPIOState *gpio_state;
     void *pmu;   // Pcf50633State* — D1759 PMU, raises the wake-button interrupt
+    const struct MTSensorProfile *profile;   /* NULL until realize: iPod */
 
     MTFingerState fingers[MT_MAX_FINGERS];
 
