@@ -20,7 +20,6 @@
  */
 #include "qemu/osdep.h"
 #include "qemu/timer.h"
-#define DEBUG_S5L8930_IOP 1
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/bswap.h"
@@ -206,23 +205,18 @@ static inline void iop_write(hwaddr addr, const void *buf, hwaddr len)
  */
 static void iop_irq_expire(void *opaque)
 {
-    DPRINTF("raise AP irq: VIC0 irqstatus=0x%08x raw=0x%08x enable=0x%08x softint=0x%08x\n",
-            iop_ldl(S5L8930_VIC_BASE(0)), iop_ldl(S5L8930_VIC_BASE(0) + 8),
-            iop_ldl(S5L8930_VIC_BASE(0) + 0x10), iop_ldl(S5L8930_VIC_BASE(0) + 0x18));
     iop_stl(S5L8930_VIC_BASE(S5L8930_IRQ_IOP / 32) + VIC_SOFTINT,
             1u << (S5L8930_IRQ_IOP % 32));
-    DPRINTF("  after: irqstatus=0x%08x softint=0x%08x\n",
-            iop_ldl(S5L8930_VIC_BASE(0)), iop_ldl(S5L8930_VIC_BASE(0) + 0x18));
 }
 
 /*
- * Deferred a little: the answer must not interrupt the AP in the middle of
- * the store that rang the doorbell, as it would if raised synchronously.
+ * Deferred by about a real IOP's round trip, so the answer never interrupts
+ * the AP in the middle of the store that rang the doorbell.
  */
 static void iop_raise_ap_irq(S5L8930IOPState *s)
 {
     timer_mod(s->irq_timer,
-              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 2 * SCALE_MS);
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100 * SCALE_US);
 }
 
 /* ---- NAND ------------------------------------------------------------- */
@@ -738,16 +732,11 @@ static void iop_doorbell(S5L8930IOPState *s)
         qemu_log_mask(LOG_GUEST_ERROR, "%s: doorbell while stopped\n", __func__);
         return;
     }
-    DPRINTF("doorbell: VIC0 irqstatus=0x%08x softint=0x%08x\n",
-            iop_ldl(S5L8930_VIC_BASE(0)), iop_ldl(S5L8930_VIC_BASE(0) + 0x18));
     for (i = 0; i < ARRAY_SIZE(served); i++) {
         int h = served[i];
         hwaddr ring = iop_ldl(cfg + FW_CFG_RING(h));
         uint32_t n = iop_ldl(cfg + FW_CFG_COUNT(h));
 
-        DPRINTF("doorbell: ring %d at 0x%" HWADDR_PRIx " n=%u rx=%u w0=0x%08x\n",
-                h, ring, n, s->ring_rx[h],
-                ring ? iop_ldl(ring + s->ring_rx[h] * RING_ENTRY_SIZE) : 0);
         if (!ring || n == 0) {
             continue;
         }
