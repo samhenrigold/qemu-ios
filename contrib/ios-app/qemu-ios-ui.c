@@ -336,6 +336,21 @@ void qemu_ios_ui_vm_started(void)
 
 /* --- app thread -------------------------------------------------------- */
 
+const QemuIosDeviceInfo *qemu_ios_device_info(const char *machine)
+{
+    static const QemuIosDeviceInfo devices[] = {
+        { "iPod-Touch", 320, 480, 1, 0, false },
+        { "ipad1", 1024, 768, 1, 1, false },     /* s5l8930_display scans out 1024x768 */
+    };
+
+    for (size_t i = 0; machine && i < ARRAY_SIZE(devices); i++) {
+        if (!strcmp(devices[i].machine, machine)) {
+            return &devices[i];
+        }
+    }
+    return NULL;
+}
+
 void qemu_ios_ui_attach(qemu_ios_frame_cb cb, void *opaque)
 {
     ios_init_frame_lock();
@@ -470,7 +485,9 @@ static struct ios_button_hold {
 static void ios_button_release(void *opaque)
 {
     struct ios_button_hold *hold = opaque;
+    /* Each is a no-op unless its machine is the one running. */
     ipod_touch_press_button(hold->button, false);
+    ipad1_press_button(hold->button, false);
 }
 
 static void ios_button_bh(void *opaque)
@@ -504,6 +521,7 @@ static void ios_button_bh(void *opaque)
         timer_del(hold->release);
         hold->pressed_at = now;
         ipod_touch_press_button(button, true);
+        ipad1_press_button(button, true);
     } else {
         /* Both host events can arrive in one BH batch under load. Give the
          * guest's debounce handler time to observe the pressed pin. */
