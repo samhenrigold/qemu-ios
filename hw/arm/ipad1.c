@@ -345,9 +345,12 @@ static void ipad1_set_button(IPad1MachineState *s, int pin, bool down)
 enum { PWROFF_IDLE, PWROFF_HOME, PWROFF_WAKE, PWROFF_HOLD, PWROFF_SETTLE, PWROFF_DRAG,
        PWROFF_WATCH };
 #define PWROFF_WATCH_MS     25000   /* from the request: warn if still running */
-#define PWROFF_KNOB_X       950
-#define PWROFF_KNOB_Y       290
-#define PWROFF_TRACK_END_Y  720
+/* Panel coordinates with the UI upright portrait (orientation 1): the
+ * portrait UI sits turned into the landscape panel, top along its left edge,
+ * so the knob is near x 74 and slides from y 478 towards 48. */
+#define PWROFF_KNOB_X       74
+#define PWROFF_KNOB_Y       478
+#define PWROFF_TRACK_END_Y  48
 #define PWROFF_DRAG_STEPS   24
 
 static void ipad1_pwroff_arm(IPad1MachineState *s, int ms)
@@ -665,19 +668,24 @@ static void ipad1_init(MachineState *machine)
         I2CSlave *accel = i2c_slave_new(TYPE_LIS302DL, 0x19);
 
         qdev_prop_set_uint8(DEVICE(accel), "whoami", 0x32);
+        /* On the iPad the LIS331 sits turned 180 degrees about X relative to
+         * the iPod's mounting: the iPod vectors read with Y (and Z) negated.
+         * Without this, "portrait" (1) read as upside down (SpringBoard's
+         * interface orientation 2) and portrait-only iPhone apps drew
+         * upside down; checked against springboardservices: upright reads 1
+         * and a clockwise turn 4, then 2, then 3, as on hardware. */
+        qdev_prop_set_bit(DEVICE(accel), "mount-flipped", true);
         i2c_slave_realize_and_unref(accel, bus, &error_fatal);
         s->accel = LIS302DL(accel);
+        lis302dl_apply_orientation(s->accel, 1);   /* init ran before mount-flipped */
         s5l8930_ak8973_set_accel(s->compass, s->accel);
         /* Same names as the iPod machine: UIDeviceOrientation 0-6, e.g.
          * qom-set path=/machine property=accel-orientation value=3; raw
          * counts; a shake. accel-pitch/-roll/-pose are machine properties. */
         object_property_add_alias(OBJECT(machine), "accel-orientation",
                                   OBJECT(accel), "orientation");
-        /* The sensor sits mirrored in X relative to the iPod's, so these
-         * vectors read as the other landscape: 3 draws Home-left
-         * (UIDeviceOrientationLandscapeRight), 4 Home-right. */
         object_property_set_description(OBJECT(machine), "accel-orientation",
-            "accelerometer vector for UIDeviceOrientation 1-6 as on the iPod; on the iPad 3 and 4 are swapped");
+            "UIDeviceOrientation 1-6 (1 portrait, 2 upside down, 3 landscape left = Home right, 4 landscape right = Home left)");
         object_property_add_alias(OBJECT(machine), "accel-x", OBJECT(accel), "x");
         object_property_add_alias(OBJECT(machine), "accel-y", OBJECT(accel), "y");
         object_property_add_alias(OBJECT(machine), "accel-z", OBJECT(accel), "z");
@@ -1192,15 +1200,13 @@ static void ipad1_set_battery_charging(Object *obj, const char *value, Error **e
 /* --- tilt --------------------------------------------------------------- */
 
 /*
- * The app's attitude (see hw/arm/ipod-attitude.h). The iPad's accelerometer
- * reads roll the opposite way round to the iPod's for the same turn of the
- * device: turned clockwise it must report UIDeviceOrientation 3 (roll +90),
- * where the app sends -90 (found by frame dumps, as for qemu_ios_ui_rotate).
- * ponytail: pitch keeps the iPod's sign, unverified on the iPad.
+ * The app's attitude (see hw/arm/ipod-attitude.h), in the device's frame;
+ * the sensor's flipped mounting is applied by the LIS331 model itself.
+ * ponytail: pitch and the flat pose are unverified on the iPad.
  */
 static void ipad1_apply_attitude(IPad1MachineState *s)
 {
-    lis302dl_apply_attitude(s->accel, s->accel_pitch, -s->accel_roll, s->accel_flat);
+    lis302dl_apply_attitude(s->accel, s->accel_pitch, s->accel_roll, s->accel_flat);
 }
 
 static void ipad1_get_accel_angle(Object *obj, Visitor *v, const char *name,

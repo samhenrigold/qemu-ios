@@ -208,14 +208,13 @@ static void rotate_bh(void *opaque)
 
     /*
      * The iPad has no rotate chord (and host keys may belong to its USB
-     * keyboard): step the accelerometer's orientation instead. Order found
-     * by screenshot: with the device turned clockwise (the app's shell at
-     * 90 degrees) SpringBoard draws upright only for value 3, so clockwise is
-     * 1 -> 3 -> 2 -> 4 -> 1.
+     * keyboard): step the accelerometer's UIDeviceOrientation instead.
+     * Turning the device clockwise from portrait puts Home on the left
+     * (LandscapeRight, 4), then upside down (2), then Home right (3).
      */
     if (object_dynamic_cast(machine, MACHINE_TYPE_NAME("ipad1"))) {
-        static const int cw[] = { [1] = 3, [3] = 2, [2] = 4, [4] = 1 };
-        static const int ccw[] = { [1] = 4, [4] = 2, [2] = 3, [3] = 1 };
+        static const int cw[] = { [1] = 4, [4] = 2, [2] = 3, [3] = 1 };
+        static const int ccw[] = { [1] = 3, [3] = 2, [2] = 4, [4] = 1 };
         int64_t o = object_property_get_int(machine, "accel-orientation", NULL);
 
         if (o < 1 || o > 4) {
