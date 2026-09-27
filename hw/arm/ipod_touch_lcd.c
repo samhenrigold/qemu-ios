@@ -695,9 +695,18 @@ static void lcd_refresh(void *opaque)
     }
 
     bool composed = false;
-    if (lcd->planes_enabled && lcd_needs_plane_composition(lcd->plane_scanout)) {
+    /*
+     * Composition follows the programmed plane registers whether or not
+     * lcd-planes (which gates their readback) is on. CoreAnimation scans an
+     * opaque GL layer out directly -- a 240x360 surface at (40,60) on one
+     * plane, its UI on the other -- and reading that as one full-panel
+     * 320-wide framebuffer showed striped garbage over 270 or 480 rows,
+     * depending on what followed the surface in memory.
+     */
+    const uint32_t *planes = lcd->plane_scanout;
+    if (lcd_needs_plane_composition(planes)) {
         if (!lcd->rotbuf) lcd->rotbuf = g_malloc(LCD_FB_WIDTH * LCD_FB_HEIGHT * 4);
-        composed = lcd_compose_planes(lcd->plane_scanout, lcd->rotbuf);
+        composed = lcd_compose_planes(planes, lcd->rotbuf);
         if (!composed) {
             static bool warned;
             if (!warned) { warned = true; fprintf(stderr, "[LCD] unsupported plane configuration\n"); }
