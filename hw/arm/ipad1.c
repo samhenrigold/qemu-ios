@@ -686,6 +686,7 @@ static void ipad1_init(MachineState *machine)
     for (i = 0; i < 3; i++) {
         dev = qdev_new(TYPE_S5L8930_I2S);
         qdev_prop_set_bit(dev, "audio-out", i == 0);
+        qdev_prop_set_uint8(dev, "port", i);
         sbd = SYS_BUS_DEVICE(dev);
         sysbus_realize_and_unref(sbd, &error_fatal);
         sysbus_mmio_map(sbd, 0, S5L8930_I2S_BASE(i));
