@@ -518,6 +518,18 @@ static void ipad1_init(MachineState *machine)
          */
         i2c_slave_create_simple(bus, TYPE_CS42L58, 0x4a);
         /*
+         * AK8973 magnetometer (DT i2c0/compass, 0x1e). The DT also lists a
+         * compass1 at the same address on i2c2 for the other board build;
+         * with nothing there its probe fails its reset check, as on a unit
+         * of this build. qom-set /machine compass-heading N (degrees).
+         */
+        {
+            DeviceState *compass =
+                DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_AK8973, 0x1e));
+            object_property_add_alias(OBJECT(machine), "compass-heading",
+                                      OBJECT(compass), "heading");
+        }
+        /*
          * CD3282 "Mikey" headset controller (i2c0/mikey). AppleCS42L61Audio
          * resolves the codec's 'mikey' platform function during its power-up
          * (c08213d4 -> c082273c) and waits until AppleCD3282Mikey provides
