@@ -2,7 +2,7 @@
 """Userland images for the ipad1 machine: a patched copy of the 7B500 system partition plus a seeded data volume.
 
     ipad1_rootfs.py build [--base pristine|jailbroken] [--out DIR] [--data-size 2g] [--rootfs IMG]
-                          [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge]
+                          [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge] [--no-usb-net]
     ipad1_rootfs.py fetch [DIR]          copy /var/stash and /var/root/Library/Lockdown off the real iPad (ssh)
     ipad1_rootfs.py report DIR...        list the Mach-Os under DIR that carry no Apple signature
     ipad1_rootfs.py --selfcheck
@@ -32,6 +32,10 @@ system.img edits, all through one read-write mount, no Mach-O touched:
                                              needs the AMFI boot-args) + /Library/LaunchDaemons/com.qemu.hidbridge.plist
 The jailbreak's sshd job (/Library/LaunchDaemons/com.openssh.sshd.plist, inetd-style on port 22, host keys
 in /etc/ssh, wrapper in the stash) is kept as is and reported; it becomes useful once USB/network exists.
+
+data.img also gets /preferences/SystemConfiguration/{NetworkInterfaces,preferences}.plist (skip with
+--no-usb-net): en1 pinned to the AppleUSBEthernetDevice path, as on the unit, with a DHCP service first in
+the service order, so configd brings USB Ethernet up against usbmuxd's slirp (10.0.2.0/24).
 
 data.img = fresh journaled HFSX "Data" seeded like mobile_obliterator does (the system volume's own
 /private/var skeleton), plus /stash and /root/Library/Lockdown (activation record, device keys, pair
@@ -68,6 +72,15 @@ SSHD = ("Library/LaunchDaemons/com.openssh.sshd.plist", "usr/sbin/sshd", "privat
 BASES = {"pristine": ("7B500/dec/rootfs.dmg", None, "pristine"),
          "jailbroken": ("hw2/rdisk0s1-system.img", "hw2/stash", "jb")}
 HIDBRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/ipad1-hidbridge")
+# USB Ethernet (AppleUSBEthernetDevice, usbmuxd's slirp on the host side). Names and paths are the real
+# unit's NetworkInterfaces.plist: Wi-Fi keeps en0 even with no BCM4329 model, so USB is en1 as on hardware.
+SC_DIR = "preferences/SystemConfiguration"   # under /private/var (/Library/Preferences links here)
+USB_ETH_SERVICE, NET_SET = "4C54E7A1-0B5E-4D6B-9A1C-5553424E4554", "4C54E7A1-0B5E-4D6B-9A1C-534554000001"
+USB_ETH_IF = {"Active": True, "BSD Name": "en1", "IOBuiltin": False, "IOInterfaceType": 6, "IOInterfaceUnit": 1,
+              "IOMACAddress": bytes.fromhex("0a0bad0babe0"), "SCNetworkInterfaceType": "Ethernet",
+              "IOPathMatch": "IOService:/AppleARMPE/arm-io@BFC00000/AppleS5L8930XIO/usb-complex@3F108000/"
+                             "AppleS5L8930XUSBArbitrator/usb-device/AppleSynopsysOTGDevice/IOUSBDeviceInterface@5/"
+                             "AppleUSBEthernetDevice/IOEthernetInterface"}
 MOBILE_TOP = ("mobile", "ea")                # uid 501 on the real unit; everything else under /var is root
 MH_MAGIC, FAT_MAGIC, LC_CODE_SIGNATURE, CS_CMS = 0xFEEDFACE, 0xCAFEBABE, 0x1D, 0x10000
 
@@ -106,6 +119,34 @@ def springboard_env(d):
     assert d.get("Label") == "com.apple.SpringBoard"
     d.setdefault("EnvironmentVariables", {}).update(SB_ENV)
     d["StandardOutPath"] = d["StandardErrorPath"] = "/dev/console"
+
+
+def usb_net_interfaces(d):
+    """NetworkInterfaces.plist: pin the USB Ethernet interface to en1."""
+    ifs = [i for i in d.setdefault("Interfaces", []) if i.get("IOPathMatch") != USB_ETH_IF["IOPathMatch"]]
+    d["Interfaces"] = sorted(ifs + [dict(USB_ETH_IF)], key=lambda i: i["IOInterfaceUnit"])
+
+
+def usb_net_prefs(d):
+    """preferences.plist: a DHCP service on en1, first in the current set's service order. configd only
+    brings up interfaces that have a service, and 3.2 creates none for a non-builtin Ethernet by itself."""
+    d.setdefault("NetworkServices", {})[USB_ETH_SERVICE] = {
+        "Interface": {"DeviceName": "en1", "Hardware": "Ethernet", "Type": "Ethernet", "UserDefinedName": "USB Ethernet"},
+        "IPv4": {"ConfigMethod": "DHCP"}, "DNS": {}, "UserDefinedName": "USB Ethernet"}
+    cur = d.setdefault("CurrentSet", "/Sets/" + NET_SET).rsplit("/", 1)[1]
+    net = d.setdefault("Sets", {}).setdefault(cur, {"UserDefinedName": "Automatic"}).setdefault("Network", {})
+    net.setdefault("Service", {})[USB_ETH_SERVICE] = {"__LINK__": "/NetworkServices/" + USB_ETH_SERVICE}
+    order = net.setdefault("Global", {}).setdefault("IPv4", {}).setdefault("ServiceOrder", [])
+    order[:] = [USB_ETH_SERVICE] + [o for o in order if o != USB_ETH_SERVICE]
+
+
+def seed_plist(path, fn):
+    """Edit the plist at path in place, or create it (XML, as configd writes) from an empty dict."""
+    if os.path.exists(path):
+        return rewrite_plist(path, fn)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(edit_plist(plistlib.dumps({}), fn))
 
 
 def owner_for(relpath):
@@ -314,6 +355,10 @@ def build(a):
         shutil.copytree(a.stash, os.path.join(skeleton, "stash"), symlinks=True)
     if a.lockdown:
         shutil.copytree(a.lockdown, os.path.join(skeleton, "root/Library/Lockdown"), dirs_exist_ok=True)
+    if a.usb_net:
+        seed_plist(os.path.join(skeleton, SC_DIR, "NetworkInterfaces.plist"), usb_net_interfaces)
+        seed_plist(os.path.join(skeleton, SC_DIR, "preferences.plist"), usb_net_prefs)
+        print("      USB Ethernet: en1 DHCP service in /var/%s" % SC_DIR)
     os.replace(make_hfs_image(data + ".dmg", parse_size(a.data_size)), data)
     mobile_paths, root_paths = [], []
     with Mounted(data, os.path.join(a.out, "mnt-data")) as m:
@@ -369,6 +414,21 @@ def selfcheck():
     except AssertionError:
         pass
 
+    real = {"CurrentSet": "/Sets/S", "NetworkServices": {"W": {"Interface": {"DeviceName": "en0"}}},
+            "Sets": {"S": {"Network": {"Global": {"IPv4": {"ServiceOrder": ["W"]}}, "Service": {"W": {}}}}}}
+    usb_net_prefs(real)
+    usb_net_prefs(real)                      # idempotent
+    net = real["Sets"]["S"]["Network"]
+    assert net["Global"]["IPv4"]["ServiceOrder"] == [USB_ETH_SERVICE, "W"] and "W" in net["Service"]
+    assert real["NetworkServices"][USB_ETH_SERVICE]["Interface"]["DeviceName"] == "en1"
+    fresh = {}
+    usb_net_prefs(fresh)
+    assert fresh["Sets"][NET_SET]["Network"]["Service"][USB_ETH_SERVICE]["__LINK__"].endswith(USB_ETH_SERVICE)
+    ifs = {"Interfaces": [{"BSD Name": "en0", "IOInterfaceUnit": 0, "IOPathMatch": "wifi"}, dict(USB_ETH_IF)]}
+    usb_net_interfaces(ifs)
+    assert [i["BSD Name"] for i in ifs["Interfaces"]] == ["en0", "en1"]
+    plistlib.loads(plistlib.dumps(real)), plistlib.loads(plistlib.dumps(ifs))
+
     assert owner_for("mobile") == owner_for("mobile/Library/Preferences/a.plist") == owner_for("ea") == (501, 501)
     assert owner_for("stash/Applications") == owner_for("root/Library/Lockdown") == owner_for("mobileX") == (0, 0)
     assert FSTAB_RO.splitlines()[0] == "/dev/disk0s1 / hfs ro 0 1" and "s2s1" not in FSTAB
@@ -399,6 +459,8 @@ def main():
     b.add_argument("--lockdown", default=os.path.join(FILES, "hw2/lockdown"), help="fetch output for the Lockdown dir; 'none' to skip")
     b.add_argument("--disable", action="append", default=[], metavar="LABEL", help="launchd job to mark Disabled")
     b.add_argument("--ro-root", action="store_true", help="keep the stock read-only root")
+    b.add_argument("--no-usb-net", dest="usb_net", action="store_false",
+                   help="skip the en1 (USB Ethernet) DHCP network service")
     b.add_argument("--hidbridge", action="store_true", help="install the hardware-keyboard daemon (run contrib/ipad1-hidbridge/build.sh first)")
     f = sub.add_parser("fetch")
     f.add_argument("dir", nargs="?", default=os.path.join(FILES, "hw2"))
