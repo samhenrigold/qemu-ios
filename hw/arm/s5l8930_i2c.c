@@ -253,6 +253,7 @@ struct S5L8930D1815State {
     bool addressing;        /* next byte received is the register number */
     int64_t rtc_base;       /* counter = host epoch + rtc_base */
     uint32_t rtc_latch;
+    uint16_t vbat_mv;       /* what ADC mux 4 measures; 0 = the 3900 default */
 };
 
 static void d1815_update_irq(S5L8930D1815State *s)
@@ -280,7 +281,8 @@ static void d1815_adc_done(void *opaque)
      * stays mid-scale; S5L8930_ADC="mux:val,..." overrides for experiments.
      */
     unsigned mux = s->regs[PMU_ADC_CTRL] & 0xf;
-    uint16_t v = mux == PMU_ADC_MUX_VBAT ? 0xb33 : 0x800;
+    unsigned mv = s->vbat_mv ? s->vbat_mv : 3900;
+    uint16_t v = mux == PMU_ADC_MUX_VBAT ? MIN((mv - 2500) * 4096 / 2000, 0xfff) : 0x800;
     const char *ov = getenv("S5L8930_ADC");
 
     for (const char *p = ov; p && *p; p = strchr(p, ',') ? strchr(p, ',') + 1 : "") {
@@ -328,6 +330,11 @@ void s5l8930_d1815_button(DeviceState *dev, bool hold, bool down)
  * re-runs cable detection through usb_det; the level itself lives in the
  * LTC4099 model. Event A bit 3 is the PMU's own "usb" event.
  */
+void s5l8930_d1815_set_vbat(DeviceState *dev, unsigned mv)
+{
+    S5L8930_D1815(dev)->vbat_mv = MAX(mv, 2500);
+}
+
 void s5l8930_d1815_usb_cable_event(DeviceState *dev)
 {
     S5L8930D1815State *s = S5L8930_D1815(dev);
