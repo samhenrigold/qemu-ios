@@ -30,6 +30,7 @@ uint64_t ipod_touch_fmss_icon_state_writes(void);
 bool ipod_touch_fmss_io_failed(void);
 bool ipod_touch_nor_io_failed(void);
 bool ipod_touch_mipi_dsi_panel_off(void);
+bool s5l8930_d1815_guest_shutdown_confirmed(void);
 
 #include "qemu-ios-ui.h"
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
@@ -292,7 +293,8 @@ bool qemu_ios_ui_ready(void)
 
 bool qemu_ios_ui_guest_shutdown_confirmed(void)
 {
-    return pcf50633_guest_shutdown_confirmed();
+    return qatomic_read(&ios_is_ipad1) ? s5l8930_d1815_guest_shutdown_confirmed()
+                                       : pcf50633_guest_shutdown_confirmed();
 }
 
 bool qemu_ios_ui_display_sleeping(void)
