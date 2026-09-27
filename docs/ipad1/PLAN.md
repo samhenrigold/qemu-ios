@@ -83,6 +83,19 @@ data-partition key 0x89B) — not the full descriptor engine. D1815 PMU + new I2
 panic). `debug-enabled` forced (DT + 7B500 kernel global) so AMFI honors its boot-args.
 Success: launchd, then SpringBoard attempts, diffed against the HW-2 serial log.
 
+**Activated lock screen (2026-09-27, 4d0eb1b54f):** screens/2026-09-27-lock-screen-activated.png — slide to
+unlock, clock, wallpaper, no baseband alert (real MACs + baseband unmatch fixed activation and the alert).
+The display switches off between short lit windows like a real idle lock screen, so screendumps need
+timing or a wake. Open: Home via the machine chord doesn't wake the display; battery shows red / Not
+Charging although USB is attached.
+
+**Sleep (2026-09-27, 6bffc067e6):** SpringBoard comes up then the device auto-locks and deep-sleeps
+("USB cable detached" → "System Sleep" → "pmu go hib"). Next: cable present like a Mac-attached iPad;
+PMU wake on buttons; BT UART has no chip ("bluetooth: Software Overflow").
+
+**SpringBoard draws (2026-09-27, 5eae009b6d):** screens/2026-09-27-first-springboard.png — "Connect to
+iTunes" plus the no-baseband alert. Next: baseband presented as on a Wi-Fi iPad; activation.
+
 **M2 DONE (2026-09-27, 107d5406d2):** launchd runs: fsck, / and /private/var mounted, multitouch firmware
 downloaded (0x0146.bin, as on the real iPad), mDNSResponder and sandboxd start. Fixes on the way: CDMA IRQ
 numbering (0x30+n), SHA-1 engine. Next: SpringBoard on screen; baseband SPI2 (0x82200000) is polled.

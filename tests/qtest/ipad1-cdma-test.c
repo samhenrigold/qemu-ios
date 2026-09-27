@@ -58,6 +58,14 @@ static void test_m2m(void)
     g_assert_cmpmem(in, sizeof(in), out, sizeof(out));
     /* Current descriptor advanced past the last one. */
     g_assert_cmphex(qtest_readl(qts, CH_BASE + 0x14), ==, RING + 64);
+
+    /* AppleCDMA's abort sequence (c044d46c) must leave that pointer intact. */
+    qtest_writel(qts, CH_BASE + 0x00, qtest_readl(qts, CH_BASE + 0x00) | 4);
+    g_assert_cmphex(qtest_readl(qts, CH_BASE + 0x00) & 0x200000, ==, 0x200000);
+    qtest_writel(qts, CH_BASE + 0x00, 2);
+    qtest_writel(qts, CH_BASE + 0x00, qtest_readl(qts, CH_BASE + 0x00) | 0x18);
+    g_assert_cmphex(qtest_readl(qts, CH_BASE + 0x00) & 0x3F0000, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, CH_BASE + 0x14), ==, RING + 64);
 }
 
 /*
