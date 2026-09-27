@@ -107,6 +107,9 @@
 #define TYPE_S5L8930_I2C "s5l8930.i2c"
 #define TYPE_S5L8930_D1815 "s5l8930.d1815"
 #define TYPE_S5L8930_TCA6408 "s5l8930.tca6408"   /* GPIO expander at 0x20 on i2c0 */
+/* LTC4099 charger at 0x09 on i2c0 (hw/arm/s5l8930_ltc4099.c); its STAT byte
+ * is where the USB arbitrator learns a cable is present (usb-present prop). */
+#define TYPE_S5L8930_LTC4099 "s5l8930.ltc4099"
 
 /*
  * Display (hw/arm/s5l8930_display.c): DisplayPipe0 + CLCD + RGBOUT/TV-out
