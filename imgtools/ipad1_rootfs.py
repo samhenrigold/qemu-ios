@@ -40,8 +40,8 @@ the service order, so configd brings USB Ethernet up against usbmuxd's slirp (10
 
 data.img = fresh journaled HFSX "Data" seeded like mobile_obliterator does (the system volume's own
 /private/var skeleton), plus /stash and /root/Library/Lockdown (activation record, device keys, pair
-records) from `fetch`. /var/mobile and /var/ea are 501:501, everything else 0:0, patched into the catalog
-offline because the host mount is noowners.
+records) from `fetch`. Owners are the source rootfs's own (/var/Keychains is _securityd's), patched into
+the catalog offline because the host mount is noowners; see var_owners().
 
 unsigned-machos.txt: every Mach-O on the system volume and in the stash whose code signature has no CMS
 blob (ldid ad-hoc: sshd, bash, apt, Cydia, Substrate) or none at all. Those are what
