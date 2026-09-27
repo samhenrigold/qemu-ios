@@ -239,6 +239,34 @@ static int gli_attach_renderbuffer(GuestGC *gc, void *surf, unsigned wd_, unsign
     return qc(GLES_OP_DRAWABLE_STORAGE, gc, 2, A(wd_, ht)) < 0 ? 10014 : 0;
 }
 
+/*
+ * CoreAnimation's GL compositor queues each IOMFB swap to wait for a token the
+ * GPU driver sends once the frame is rendered; with no token the swaps never
+ * complete and the display stays off. EAGL hands us the framebuffer's
+ * IOMobileFramebufferGetID, not a connection, so signal the main display the
+ * way EAGL does for a non-accelerated context (IOMobileFramebufferSwapSignal,
+ * selector 20 on the framebuffer's connection). The iPad has one display.
+ */
+static int gli_swap_signal(void *gc, unsigned txn, unsigned layer)
+{
+    static int (*get_main)(void **);
+    static int (*signal)(void *, unsigned, unsigned);
+    static void *fb;
+
+    if (!signal) {
+        void *h = dlopen("/System/Library/PrivateFrameworks/IOMobileFramebuffer.framework/"
+                         "IOMobileFramebuffer", RTLD_NOW);
+        if (h) {
+            get_main = dlsym(h, "IOMobileFramebufferGetMainDisplay");
+            signal = dlsym(h, "IOMobileFramebufferSwapSignal");
+        }
+    }
+    if (!fb && get_main) get_main(&fb);
+    if (!fb || !signal) return 10015;
+    qc(89, gc, 0, A(0));        /* glFinish: the frame is in the surface first */
+    return signal(fb, txn, layer) ? 10014 : 0;
+}
+
 int gliSetInteger(void *gc, unsigned pname, const int *v)
 {
     void *surf;
@@ -282,10 +310,9 @@ int gliSetInteger(void *gc, unsigned pname, const int *v)
         }
         return 0;
     }
-    case 0x2C1:     /* swap notification {framebuffer, transaction, layer} */
+    case 0x2C1:     /* swap notification {framebuffer ID, transaction, layer} */
         if (!v) return 10014;
-        return GLESSwapNotification(gc, (unsigned)v[0], (unsigned)v[1],
-                                    (unsigned)v[2]) ? 0 : 10014;
+        return gli_swap_signal(gc, (unsigned)v[1], (unsigned)v[2]);
     default:        /* 0x399 flip, 0x3E3 legacy flag, 0x7AA profiler, app params */
         return 0;
     }
