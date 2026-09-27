@@ -55,7 +55,7 @@ LIT_MIN_FRACTION, MIN_COLOURS, HOME_CONFIRM_S = 0.5, 64, 2
 # Panel coordinates (the UI is portrait, rotated onto the landscape scanout).
 UNLOCK_FROM, UNLOCK_TO = (64, 290), (64, 720)
 USB_ALERT_DISMISS = (475, 385)   # stock "The attached USB device is not supported." (the USB keyboard)
-TIP_DISMISS = (420, 384)         # "Edit Home Screen" tip: it_notip suppresses it; kept for older images
+TIP_DISMISS = (420, 384)         # "Edit Home Screen" tip: it_prefs suppresses it; kept for older images
 SAFARI_ICON, SAFARI_ADDRESS = (64, 117), (968, 330)
 
 launch_lock = threading.Lock()

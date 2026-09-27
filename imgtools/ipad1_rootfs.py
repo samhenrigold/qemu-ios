@@ -47,7 +47,7 @@ unsigned-machos.txt: every Mach-O on the system volume and in the stash whose co
 blob (ldid ad-hoc: sshd, bash, apt, Cydia, Substrate) or none at all. Those are what
 `amfi_allow_any_signature=1` has to forgive at exec; Apple's own binaries carry a (possibly empty) CMS slot.
 
-`bake` installs this machine's guest helpers (docs/ipad1/guest-services.md): it_pbd, it_ethlink and it_notip + their launchd jobs,
+`bake` installs this machine's guest helpers (docs/ipad1/guest-services.md): it_pbd, it_ethlink and it_prefs + their launchd jobs,
 root-owned via the catalog. Nothing else on either volume changes. Build it first with contrib/ipad1-guest/build.sh;
 it is ldid ad-hoc signed, so boot with amfi_allow_any_signature=1.
 """
@@ -99,14 +99,16 @@ USB_ETH_IF = {"Active": True, "BSD Name": "en1", "IOBuiltin": False, "IOInterfac
 MOBILE_TOP = ("mobile", "ea")                # uid 501 on the real unit; everything else under /var is root
 # guest tool -> (install path on the system volume, mode); the job comes from contrib/it-pasteboard
 TOOLS = {"it_pbd": ("usr/local/bin/it_pbd", 0o755), "it_ethlink": ("usr/local/bin/it_ethlink", 0o755),
-         "it_notip": ("usr/local/bin/it_notip", 0o755),
+         "it_prefs": ("usr/local/bin/it_prefs", 0o755),
          "it_msmquiet.dylib": ("usr/local/lib/it_msmquiet.dylib", 0o755)}
 # Apple job that loads it_msmquiet (hides the USB "not supported" notice; contrib/it-msmquiet)
 MSM_JOB = "System/Library/LaunchDaemons/com.apple.mobile.storage_mounter.plist"
 # launchd job, installed path -> source under contrib/
 JOBS = {"System/Library/LaunchDaemons/com.qemu.it-pbd.plist": "it-pasteboard/com.qemu.it-pbd.plist",
         "System/Library/LaunchDaemons/com.qemu.it-ethlink.plist": "it-ethlink/com.qemu.it-ethlink.plist",
-        "System/Library/LaunchDaemons/com.qemu.it-notip.plist": "it-notip/com.qemu.it-notip.plist"}
+        "System/Library/LaunchDaemons/com.qemu.it-prefs.plist": "it-prefs/com.qemu.it-prefs.plist"}
+# earlier helpers' files, removed when an image is baked again (it_notip became it_prefs)
+RETIRED = ["usr/local/bin/it_notip", "System/Library/LaunchDaemons/com.qemu.it-notip.plist"]
 # Bluetooth has no controller model (UART3 is silent), so BTServer's retries left
 # BluetoothManager's blocking calls on SpringBoard's main thread: a ~1 s UI stall
 # every ~12 s. The job's own Disabled key (in place, Apple's owner kept) keeps it
@@ -196,17 +198,6 @@ PAC = """function FindProxyForURL(url, host) {
     return "PROXY 10.0.2.100:3128; DIRECT";
 }
 """
-
-
-# Wi-Fi location (docs/ipad1/location.md): locationd ignores the PAC and goes straight to Apple's
-# location server, which no longer answers iOS 3. Point its server preference at the same guestfwd
-# address over plain HTTP; itwebproxy answers /clls/wloc there with the host-set position.
-LOCATIOND_PREFS = "mobile/Library/Preferences/com.apple.locationd.plist"
-
-
-def locationd_prefs(d):
-    d["AppleLocationServer"] = "http://10.0.2.100:3128/clls/wloc"
-    d["AppleLocationServerRequiresCert"] = False
 
 
 def wifi_proxy_prefs(d):
@@ -558,8 +549,7 @@ def build(a):
         shutil.copytree(a.lockdown, os.path.join(skeleton, "root/Library/Lockdown"), dirs_exist_ok=True)
     if a.web_proxy:
         seed_plist(os.path.join(skeleton, SC_DIR, "preferences.plist"), wifi_proxy_prefs)
-        seed_plist(os.path.join(skeleton, LOCATIOND_PREFS), locationd_prefs)
-        print("      web proxy: en0 AirPort service, PAC /%s; locationd server via the proxy address" % PAC_PATH)
+        print("      web proxy: en0 AirPort service, PAC /%s" % PAC_PATH)
     if a.usb_net:
         seed_plist(os.path.join(skeleton, SC_DIR, "NetworkInterfaces.plist"), usb_net_interfaces)
         seed_plist(os.path.join(skeleton, SC_DIR, "preferences.plist"), usb_net_prefs)
@@ -598,6 +588,9 @@ def bake(a):
         if why:
             raise SystemExit("%s/%s: %s (run contrib/ipad1-guest/build.sh)" % (a.tools, name, why))
     with Mounted(system, os.path.join(a.dir, "mnt-system")) as m:
+        for rel in RETIRED:
+            if os.path.lexists(os.path.join(m.mnt, rel)):
+                os.unlink(os.path.join(m.mnt, rel))
         for name, (rel, mode) in TOOLS.items():
             dst = os.path.join(m.mnt, rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
