@@ -50,6 +50,8 @@
 
 #define BQ_FLAG_DSG     (1u << 0)
 #define BQ_FLAG_BAT_DET (1u << 3)
+#define BQ_FLAG_CHG     (1u << 8)   /* (fast) charging allowed */
+#define BQ_FLAG_FC      (1u << 9)   /* full charge */
 
 #define CNTL_DEVICE_TYPE 0x0001
 #define CNTL_FW_VERSION  0x0002
@@ -64,6 +66,9 @@ struct HdqGaugeChardev {
 
     uint8_t resp[HDQ_RESP_MAX];
     unsigned resp_head, resp_tail;
+
+    int level;              /* %, as the machine last set it */
+    bool charging;
 };
 typedef struct HdqGaugeChardev HdqGaugeChardev;
 
@@ -77,6 +82,7 @@ static void hdq_flush(HdqGaugeChardev *g)
     while (g->resp_head < g->resp_tail) {
         int can = qemu_chr_be_can_write(chr);
         int have = g->resp_tail - g->resp_head;
+
 
         if (can <= 0) {
             return;
@@ -161,8 +167,47 @@ static void hdq_chr_accept_input(Chardev *chr)
     hdq_flush(HDQ_GAUGE_CHARDEV(chr));
 }
 
-/* ponytail: one healthy 80% battery; per-field QOM knobs when LightTouchMac
- * grows a battery control. 6500 mAh is the K48 DesignCapacity from ioreg. */
+#define BQ_CAPACITY_MAH 6500     /* K48 DesignCapacity from ioreg */
+#define BQ_CURRENT_MA   300
+
+/*
+ * The registers that follow the level and charge state; configd's gauge
+ * plugin polls them and publishes them on IOPMPowerSource, which is what the
+ * status bar shows. ponytail: voltage is a line from 3.5 V empty to 4.2 V
+ * full and the current a fixed 300 mA either way; model a discharge curve if
+ * a guest ever keys off voltage rather than capacity.
+ */
+static void hdq_apply_battery(HdqGaugeChardev *g)
+{
+    int rm = BQ_CAPACITY_MAH * g->level / 100;
+    uint16_t flags = BQ_FLAG_BAT_DET;
+
+    if (g->charging) {
+        flags |= BQ_FLAG_CHG | (g->level >= 100 ? BQ_FLAG_FC : 0);
+    } else {
+        flags |= BQ_FLAG_DSG;
+    }
+    stw_le_p(&g->regs[BQ_VOLT], 3500 + 7 * g->level);
+    stw_le_p(&g->regs[BQ_FLAGS], flags);
+    stw_le_p(&g->regs[BQ_NAC], rm);
+    stw_le_p(&g->regs[BQ_FAC], rm);
+    stw_le_p(&g->regs[BQ_RM], rm);
+    stw_le_p(&g->regs[BQ_AI], (uint16_t)(g->charging ? BQ_CURRENT_MA : -BQ_CURRENT_MA));
+    stw_le_p(&g->regs[BQ_TTE], g->charging ? 0xffff : rm * 60 / BQ_CURRENT_MA);
+    stw_le_p(&g->regs[BQ_TTF], g->charging ? (BQ_CAPACITY_MAH - rm) * 60 / BQ_CURRENT_MA : 0xffff);
+    stw_le_p(&g->regs[BQ_SOC], g->level);
+}
+
+void s5l8930_hdq_set_battery(Chardev *chr, int level, bool charging)
+{
+    HdqGaugeChardev *g = HDQ_GAUGE_CHARDEV(chr);
+
+    g->level = MIN(MAX(level, 0), 100);
+    g->charging = charging;
+    hdq_apply_battery(g);
+}
+
+/* A healthy battery at whatever level the machine last set (80% at power-on). */
 static void hdq_reset(void *opaque)
 {
     HdqGaugeChardev *g = opaque;
@@ -170,19 +215,11 @@ static void hdq_reset(void *opaque)
     timer_del(g->timer);
     memset(g->regs, 0, sizeof(g->regs));
     stw_le_p(&g->regs[BQ_TEMP], 2981);
-    stw_le_p(&g->regs[BQ_VOLT], 3900);
-    stw_le_p(&g->regs[BQ_FLAGS], BQ_FLAG_DSG | BQ_FLAG_BAT_DET);
-    stw_le_p(&g->regs[BQ_NAC], 5200);
-    stw_le_p(&g->regs[BQ_FAC], 5200);
-    stw_le_p(&g->regs[BQ_RM], 5200);
-    stw_le_p(&g->regs[BQ_FCC], 6500);
-    stw_le_p(&g->regs[BQ_AI], (uint16_t)-300);
-    stw_le_p(&g->regs[BQ_TTE], 1040);
-    stw_le_p(&g->regs[BQ_TTF], 0xffff);
+    stw_le_p(&g->regs[BQ_FCC], BQ_CAPACITY_MAH);
     stw_le_p(&g->regs[BQ_SOH], 100);
     stw_le_p(&g->regs[BQ_CC], 10);
-    stw_le_p(&g->regs[BQ_SOC], 80);
-    stw_le_p(&g->regs[BQ_DCAP], 6500);
+    stw_le_p(&g->regs[BQ_DCAP], BQ_CAPACITY_MAH);
+    hdq_apply_battery(g);
     g->bits = g->nbits = 0;
     g->resp_head = g->resp_tail = 0;
 }
@@ -193,6 +230,7 @@ static void hdq_chr_open(Chardev *chr, ChardevBackend *backend,
     HdqGaugeChardev *g = HDQ_GAUGE_CHARDEV(chr);
 
     g->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, hdq_timer, chr);
+    g->level = 80;
     qemu_register_reset(hdq_reset, g);
     hdq_reset(g);
     *be_opened = true;
