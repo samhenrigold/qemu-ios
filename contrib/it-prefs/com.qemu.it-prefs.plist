@@ -1,21 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Marks SpringBoard's first-run "Edit Home Screen" tip as shown (it_notip.c): a
-  one-shot run as mobile, whose com.apple.springboard preferences it writes.
+  Applies this machine's guest preferences (it_prefs.c): a one-shot run as
+  root that writes mobile's preferences (com.apple.springboard, com.apple.locationd),
+  unloading and reloading locationd around its own.
   Root-owned in /System/Library/LaunchDaemons, or launchd ignores it; baked by
   imgtools/ipad1_rootfs.py bake.
 -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.qemu.it-notip</string>
+	<string>com.qemu.it-prefs</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/usr/local/bin/it_notip</string>
+		<string>/usr/local/bin/it_prefs</string>
 	</array>
-	<key>UserName</key>
-	<string>mobile</string>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>LaunchOnlyOnce</key>
