@@ -47,6 +47,7 @@ typedef struct LIS302DLState {
 	uint16_t ctrl_reg2;
 	uint16_t ctrl_reg3;
     uint32_t rate_hz;       /* zero: follow CTRL_REG1 DR (100/400 Hz) */
+    uint8_t whoami;         /* 0x3B LIS302DL (default), 0x32 LIS331DLH */
     uint32_t noise_state;
     int64_t last_sample_ns, shake_start_ns;
     int64_t trace_last_poll_ns, trace_last_report_ns;

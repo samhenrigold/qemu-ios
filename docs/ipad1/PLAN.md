@@ -83,6 +83,10 @@ data-partition key 0x89B) — not the full descriptor engine. D1815 PMU + new I2
 panic). `debug-enabled` forced (DT + 7B500 kernel global) so AMFI honors its boot-args.
 Success: launchd, then SpringBoard attempts, diffed against the HW-2 serial log.
 
+**M2 DONE (2026-09-27, 107d5406d2):** launchd runs: fsck, / and /private/var mounted, multitouch firmware
+downloaded (0x0146.bin, as on the real iPad), mDNSResponder and sandboxd start. Fixes on the way: CDMA IRQ
+numbering (0x30+n), SHA-1 engine. Next: SpringBoard on screen; baseband SPI2 (0x82200000) is polled.
+
 **M2 status (2026-09-27):** root filesystem mounts ("BSD root: disk0s1") from the generated pristine
 store; next panic is the first CDMA M2M transfer. The nondeterministic stall was the display pipe's
 DP_FLAGS reading 0x20 (fixed 8b54f07424).
@@ -138,6 +142,24 @@ Complete fidelity, no stone unturned, before any other device:
 - GLES 1.1 + 2.0 hardware acceleration via a GLI shim; accelerated CoreAnimation
 - LightTouchMac device profiles: the app runs the iPad with its own bezel, geometry and controls
 - boot through real iBoot (M8)
+
+## Principle: vanilla guest (Sam, 2026-09-27)
+The iPod needed guest services because its USB was limited. The iPad on 3.2.2 doesn't: prefer faithful
+hardware models plus Apple's own services over USB (USB Ethernet, lockdown/AFC/installation_proxy,
+syslog_relay, crash reports, DDI ScreenShotr). Guest code only where unavoidable: the GLEngine shim
+(until an SGX model) and possibly a pasteboard helper. Keyboard target: a USB keyboard through the Camera
+Connection Kit host path (stock USB HID); open question whether the kernel runs host (EHCI) and device
+(usbmux) together, else a CCK plug/unplug mode switch. The IOHIDUserDevice daemon is only a fallback.
+
+## Keyboard / network decisions (2026-09-27, docs/ipad1/keyboard-and-network.md)
+1. Keyboard: USB keyboard via the Camera Connection Kit host path (EHCI + usb-kbd) — now; IOHID daemon as fallback.
+2. USB Ethernet: the device's own Apple USB Ethernet configuration bridged to libslirp — now.
+3. Wi-Fi: fake BCM4329 behind the IOP SDIO ring — last item; until then SDIO answers "no card".
+
+## After SpringBoard: app compatibility (Sam, 2026-09-27)
+Once SpringBoard and installs work, test apps from Legacy Store (https://legacystore.app) and the IPA collection in ~/Downloads/ios3:
+install each, launch, exercise touch/keyboard/rotation/GL, and record a compatibility table
+(works / degraded / fails + cause) in docs/ipad1/app-compat.md. Failures feed back as bugs.
 
 ## Verification
 
