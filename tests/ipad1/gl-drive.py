@@ -4,7 +4,8 @@
     tests/ipad1/gl-drive.py --nand STORE --out DIR [--kboot K] [--seconds N] STEP...
 
 STEP is one of  sleep:S  shot:NAME  tap:X,Y  swipe:X1,Y1,X2,Y2  home  button:NAME  key:QCODE  wait:TEXT
-                orient:N (accelerometer orientation)  heading:DEG (compass)  pinch:CX,CY,R0,R1
+                orient:N (accelerometer orientation)  heading:DEG (compass)
+                qom:PROP=VALUE (string machine property)  write:PATH=TEXT (atomic file write)  pinch:CX,CY,R0,R1
                 burst:N (N back-to-back screendumps; prints distinct frames/s)
 (scanout pixels, 1024x768; wait:TEXT polls the serial log). The base store is
 never written: its changes go to DIR/overlay. Serial, QEMU stderr (the GLES
@@ -80,6 +81,14 @@ def main():
                 print("  burst: %d dumps in %.2fs, %d frame changes (%.1f/s)"
                       % (len(seen), dt, changes, changes / dt), flush=True)
                 os.unlink(f"{a.out}/burst.ppm")
+            elif op == "qom":               # qom:PROP=VALUE on /machine (string)
+                prop, _, value = arg.partition("=")
+                q.cmd("qom-set", path="/machine", property=prop, value=value)
+            elif op == "write":             # write:PATH=TEXT, e.g. the proxy's .location file
+                path, _, text = arg.partition("=")
+                with open(path + ".tmp", "w") as f:
+                    f.write(text + "\n")
+                os.replace(path + ".tmp", path)
             elif op == "heading":           # compass heading, degrees
                 q.cmd("qom-set", path="/machine", property="compass-heading", value=int(arg))
             elif op == "save":
