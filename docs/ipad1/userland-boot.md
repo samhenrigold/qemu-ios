@@ -55,16 +55,24 @@ MobileStorageMounter's UNSUPPORTED_FAILURE notice ("The attached USB device is n
 usb-kbd raises on every boot and which, while up, keeps SpringBoard from locking (contrib/it-msmquiet):
 
 ```
-contrib/ipad1-guest/build.sh                            # -> build/ipad1-guest/{it_pbd,it_ethlink,it_seal,it_msmquiet.dylib}
-imgtools/ipad1_rootfs.py build --base pristine
-imgtools/ipad1_rootfs.py bake FILES/userland/pristine --seal   # helpers + their com.qemu.* jobs, root-owned; BTServer Disabled
-imgtools/ipad1_nand.py build --mbr FILES/hw2/rdisk0-head4M.bin --system FILES/userland/pristine/system.img \
-                             --data FILES/userland/pristine/data.img --out FILES/userland/golden-pristine.new
+contrib/ipad1-guest/build.sh                            # -> build/ipad1-guest/{it_pbd,it_ethlink,it_notip,it_seal,it_msmquiet.dylib}
+contrib/ipad1-gles/build.sh                             # the GLI shim: GL CoreAnimation is the default
+imgtools/ipad1_rootfs.py build --base pristine --out W  # W: a private dir; FILES/userland/pristine is shared
+imgtools/ipad1_rootfs.py bake W/pristine --seal         # helpers + their com.qemu.* jobs, root-owned; BTServer Disabled
+imgtools/ipad1_nand.py build --mbr FILES/hw2/rdisk0-head4M.bin --system W/pristine/system.img \
+                             --data W/pristine/data.img --out FILES/userland/golden-pristine.new
 imgtools/ipad1_seal.py FILES/userland/golden-pristine.new      # one clean halt, then checks the FTL context
 chmod -R a-w FILES/userland/golden-pristine.new
-mv FILES/userland/golden-pristine FILES/userland/golden-pristine.old
+mv FILES/userland/golden-pristine FILES/userland/golden-pristine.old   # keep one .old only
 mv FILES/userland/golden-pristine.new FILES/userland/golden-pristine
-tests/ipad1/boot-smoke.py --checkpoint-out FILES/userland/checkpoint-lock   # every golden rebuild invalidates it
+```
+
+**golden-pristine-swca** is the same recipe with `build --no-ca-ogl` (software CoreAnimation), sealed and
+read-only next to it. GL state cannot be migrated, so **checkpoint-lock is built from it**, and tools that
+restore checkpoints (`boot-smoke.py --from-checkpoint`, snapshot-check) run software CA:
+
+```
+tests/ipad1/boot-smoke.py --nand-overlay FILES/userland/golden-pristine-swca --checkpoint-out FILES/userland/checkpoint-lock
 ```
 
 **Seal.** A store fresh from `ipad1_nand.py` has no YAFTL context, so every boot logs `CXT is not
@@ -105,7 +113,7 @@ their binary format so the catalog record and uid 0 survive:
 | edit | value | why |
 |---|---|---|
 | `/private/etc/fstab` | `/dev/disk0s1 / hfs rw 0 1` / `/dev/disk0s2 /private/var hfs rw,nosuid,nodev 0 2` | pristine said `ro` root + `disk0s2`; captured said `rw` + `disk0s2s1` (the EncryptedMediaFilter subslice). `ipad1_nand.py` publishes the data partition as plain 0xAF, so `disk0s2` mounts with no 0x89B key or `tprc` block. `rw` root is insurance for a failed data mount (`--ro-root` for stock). |
-| `.../com.apple.SpringBoard.plist` | `EnvironmentVariables` += `CA_ENABLE_OGL=0`, `MBX2D_PAGE_FLIP=0`; `StandardOutPath`/`StandardErrorPath` = `/dev/console` | GL doc §1.3/§1.5: a failed `_eagl_init` is never cached, so without `CA_ENABLE_OGL=0` SpringBoard redoes dlopen(GLEngine) + IOAcceleratorES + AppleMBXDevice matching on every render; `MBX2D_PAGE_FLIP=0` leaves one IOMFB page so the scaler-only page copy is never attempted. `/dev/console` is `crw--w--w-` on the unit, so `mobile` can append and SpringBoard's stderr rides the serial console. |
+| `.../com.apple.SpringBoard.plist` | `EnvironmentVariables` += `GLI_ACCELERATED=1`, `MBX2D_PAGE_FLIP=0` (GL CoreAnimation, the default, with the GLI shim as GLEngine; `--no-ca-ogl`: `CA_ENABLE_OGL=0` instead); `StandardOutPath`/`StandardErrorPath` = `/dev/console` | GL doc §1.3/§1.5: a failed `_eagl_init` is never cached, so without `CA_ENABLE_OGL=0` SpringBoard redoes dlopen(GLEngine) + IOAcceleratorES + AppleMBXDevice matching on every render; `MBX2D_PAGE_FLIP=0` leaves one IOMFB page so the scaler-only page copy is never attempted. `/dev/console` is `crw--w--w-` on the unit, so `mobile` can append and SpringBoard's stderr rides the serial console. |
 | `--disable LABEL` | `Disabled=true` (searched in `/System/Library` and `/Library` LaunchDaemons) | none applied by default; see knobs. |
 
 **sshd (jailbroken only)**: `/Library/LaunchDaemons/com.openssh.sshd.plist` is kept as is: inetd-style
