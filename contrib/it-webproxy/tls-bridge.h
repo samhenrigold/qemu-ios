@@ -126,11 +126,6 @@ static SSL_CTX *tls_server_context(const char *config, const char *host)
     ctx = SSL_CTX_new(TLS_server_method());
     if (!ctx) goto done;
     SSL_CTX_set_security_level(ctx, 0); /* Legacy guest side only. */
-    /* Mitigation: iOS 3.2 on the emulated iPad drops a TLS connection when a
-     * record spans more than one TCP segment (MSS 1460); iPod 3.1.3 and real
-     * iPads do not, so the root cause is still open (see the ipad1 notes).
-     * 1 KiB records always fit one segment. */
-    SSL_CTX_set_max_send_fragment(ctx, 1024);
     if (!SSL_CTX_set_min_proto_version(ctx, TLS1_VERSION) ||
         !SSL_CTX_set_cipher_list(ctx, "AES128-SHA:AES256-SHA") ||
         !SSL_CTX_use_certificate(ctx, cert) || !SSL_CTX_use_PrivateKey(ctx, key)) {
