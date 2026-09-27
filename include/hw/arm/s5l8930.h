@@ -114,10 +114,15 @@
  */
 #define TYPE_S5L8930_I2C "s5l8930.i2c"
 #define TYPE_S5L8930_D1815 "s5l8930.d1815"
+/* Home (hold=false) / Hold (true) press or release; a press latches the
+ * PMU wake event and raises its IRQ line. */
+void s5l8930_d1815_button(DeviceState *dev, bool hold, bool down);
+void s5l8930_d1815_usb_cable_event(DeviceState *dev);
 #define TYPE_S5L8930_TCA6408 "s5l8930.tca6408"   /* GPIO expander at 0x20 on i2c0 */
 /* LTC4099 charger at 0x09 on i2c0 (hw/arm/s5l8930_ltc4099.c); its STAT byte
  * is where the USB arbitrator learns a cable is present (usb-present prop). */
 #define TYPE_S5L8930_LTC4099 "s5l8930.ltc4099"
+void s5l8930_ltc4099_set_usb(DeviceState *dev, bool present);
 #define TYPE_S5L8930_TSL2581 "s5l8930.tsl2581"   /* ambient light sensor at 0x39 on i2c2 */
 
 /*

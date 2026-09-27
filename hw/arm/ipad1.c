@@ -55,12 +55,19 @@ struct IPad1MachineState {
     MemoryRegion cpu_debug;
     DeviceState *vic[S5L8930_VIC_COUNT];
     DeviceState *gpio;
+    DeviceState *pmu;
+    DeviceState *ltc;                    /* charger: USB cable level */
+    synopsys_usb_state *usb_otg;
     IPodTouchMultitouchState *mt;
     char *kboot_path;
     char *nand_path;
     char *nor_path;
+    char *usb_tcp_addr;                  /* host bridge, empty = no link */
+    bool usb_cable;                      /* cable present; runtime qom-set */
     bool kbd_cmd, kbd_shift;
     int kbd_btn_held[Q_KEY_CODE__MAX];   /* qcode -> 1 + button pin */
+    int mtt_x[MT_MAX_FINGERS], mtt_y[MT_MAX_FINGERS];  /* latched per slot */
+    bool mtt_seen[MT_MAX_FINGERS];
 };
 
 /* GHWCFG1-4 of the DWC OTG core; same synthesis as the S5L8720's. */
@@ -128,21 +135,87 @@ static void ipad1_cpu_reset(void *opaque)
 /*
  * Host mouse -> digitizer slot 0. QEMU's absolute coordinates are 0..0x7fff;
  * the digitizer wants 0..1 with y from the bottom (see set_finger()).
- * ponytail: same axis mapping as the iPod's portrait panel. If touches land
- * rotated once SpringBoard is up, this is the one place to swap/flip them.
+ * The panel scans out landscape (1024x768) with the portrait UI rotated; the
+ * digitizer is portrait-native. Found by trying all eight axis maps against
+ * slide-to-unlock: digitizer x = 1 - panel y, y-from-bottom = 1 - panel x.
  */
+static void ipad1_map_touch(int x, int y, float *fx, float *fy)
+{
+    *fx = 1.0f - y / 32768.0f;
+    *fy = 1.0f - x / 32768.0f;
+}
+
 static void ipad1_mouse_event(void *opaque, int x, int y, int z, int buttons)
 {
     IPodTouchMultitouchState *mt = opaque;
 
-    mt->touch_x = x / 32768.0f;
-    mt->touch_y = 1.0f - y / 32768.0f;
+    ipad1_map_touch(x, y, &mt->touch_x, &mt->touch_y);
     if (buttons && !mt->touch_down) {
         ipod_touch_multitouch_on_touch(mt);
     } else if (!buttons && mt->touch_down) {
         ipod_touch_multitouch_on_release(mt);
     } else if (buttons) {
         ipod_touch_multitouch_on_motion(mt);
+    }
+}
+
+/*
+ * Multi-touch from the host: QEMU's "mtt" events (QMP input-send-event), same
+ * two-phase protocol as the iPod panel (ipod_touch_lcd_mtt_event): DATA
+ * latches a slot's abs X/Y in panel coordinates, BEGIN/UPDATE/END commit it.
+ */
+static void ipad1_mtt_event(DeviceState *dev, QemuConsole *src, InputEvent *evt)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(qdev_get_machine());
+    InputMultiTouchEvent *mtt = evt->u.mtt.data;
+    int slot = mtt->slot;
+    float fx, fy;
+
+    if (slot < 0 || slot >= MT_MAX_FINGERS) {
+        return;
+    }
+    switch (mtt->type) {
+    case INPUT_MULTI_TOUCH_TYPE_DATA:
+        if (mtt->axis == INPUT_AXIS_X) {
+            s->mtt_x[slot] = mtt->value;
+        } else {
+            s->mtt_y[slot] = mtt->value;
+        }
+        s->mtt_seen[slot] = true;
+        return;
+    case INPUT_MULTI_TOUCH_TYPE_BEGIN:
+    case INPUT_MULTI_TOUCH_TYPE_UPDATE:
+    case INPUT_MULTI_TOUCH_TYPE_END:
+    case INPUT_MULTI_TOUCH_TYPE_CANCEL:
+        if (!s->mtt_seen[slot]) {
+            return;
+        }
+        ipad1_map_touch(s->mtt_x[slot], s->mtt_y[slot], &fx, &fy);
+        bool down = mtt->type == INPUT_MULTI_TOUCH_TYPE_BEGIN ||
+                    mtt->type == INPUT_MULTI_TOUCH_TYPE_UPDATE;
+        ipod_touch_multitouch_set_finger(s->mt, slot, fx, fy, down);
+        if (!down) {
+            s->mtt_seen[slot] = false;
+        }
+        return;
+    default:
+        return;
+    }
+}
+
+static const QemuInputHandler ipad1_mtt_handler = {
+    .name  = "iPad Multitouch",
+    .mask  = INPUT_EVENT_MASK_MTT,
+    .event = ipad1_mtt_event,
+};
+
+/* GPIO pin level for the awake path; Home/Hold also go to the PMU, which
+ * is the wake source once the kernel has put the AP to sleep. */
+static void ipad1_set_button(IPad1MachineState *s, int pin, bool down)
+{
+    qemu_set_irq(qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(pin)), !down);
+    if (pin == S5L8930_GPIO_BTN_HOLD || pin == S5L8930_GPIO_BTN_MENU) {
+        s5l8930_d1815_button(s->pmu, pin == S5L8930_GPIO_BTN_HOLD, down);
     }
 }
 
@@ -189,7 +262,7 @@ static void ipad1_kbd_event(DeviceState *dev, QemuConsole *src, InputEvent *evt)
         return;
     }
     s->kbd_btn_held[q] = down ? pin + 1 : 0;
-    qemu_set_irq(qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(pin)), !down);
+    ipad1_set_button(s, pin, down);
 }
 
 /* The app bridge's buttons (contrib/ios-app), on the same pins as the chords. */
@@ -207,7 +280,7 @@ void ipad1_press_button(IPodTouchButton button, bool down)
     if (!s || (unsigned)button >= ARRAY_SIZE(pins)) {
         return;
     }
-    qemu_set_irq(qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(pins[button])), !down);
+    ipad1_set_button(s, pins[button], down);
 }
 
 static const QemuInputHandler ipad1_kbd_handler = {
@@ -298,8 +371,10 @@ static void ipad1_init(MachineState *machine)
     {
         I2CBus *bus = I2C_BUS(qdev_get_child_bus(dev, "i2c"));
         DeviceState *pmu = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_D1815, 0x74));
+        s->pmu = pmu;
         DeviceState *xp = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_TCA6408, 0x20));
-        i2c_slave_create_simple(bus, TYPE_S5L8930_LTC4099, 0x09);
+        s->ltc = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_LTC4099, 0x09));
+        s5l8930_ltc4099_set_usb(s->ltc, s->usb_cable);
         qdev_connect_gpio_out(pmu, 0,
                               qemu_irq_invert(qdev_get_gpio_in(s->gpio, 0x0d)));
         qdev_connect_gpio_out(xp, 0,
@@ -388,7 +463,12 @@ static void ipad1_init(MachineState *machine)
     /*
      * USB device mode: the same Synopsys DWC OTG core and PHY register layout
      * as the S5L8720 (gap-kernel-platform-mmio.md §6), so both iPod models are
-     * reused unchanged. The host bridge dials IT_USB_TCP=host:port when set.
+     * reused unchanged. The host bridge (usbmuxd-qemu) is dialled from
+     * usb-tcp-addr, or IT_USB_TCP=host:port when that is unset. Without a
+     * host the guest would never be configured, the power source would see
+     * < 500 mA and let the device deep-sleep a few minutes after SpringBoard,
+     * so without a bridge the OTG's built-in host enumerates it; either way
+     * it behaves like an iPad on a Mac (charging, idle sleep disabled).
      * The USB arbitrator's USB_CTL block (0xbf108000) is mapped but never
      * touched on K48 (no hsic-enabled), so it stays in the unimp window.
      */
@@ -399,6 +479,21 @@ static void ipad1_init(MachineState *machine)
 
     dev = ipod_touch_init_usb_otg(ipad1_irq(s, S5L8930_IRQ_USB_OTG),
                                   s5l8930_usb_hwcfg);
+    s->usb_otg = S5L8900USBOTG(dev);
+    if (s->usb_tcp_addr && s->usb_tcp_addr[0]) {
+        char *colon = strrchr(s->usb_tcp_addr, ':');
+
+        s->usb_otg->server_port = colon ? atoi(colon + 1) : 0;
+        if (!s->usb_otg->server_port) {
+            s->usb_otg->server_port = 1235;
+        }
+        s->usb_otg->server_host = colon && colon > s->usb_tcp_addr
+            ? g_strndup(s->usb_tcp_addr, colon - s->usb_tcp_addr)
+            : g_strdup("127.0.0.1");
+    }
+    /* No bridge: a built-in host enumerates and configures the device, which
+     * is what keeps an iPad on a Mac charging and out of deep sleep. */
+    s->usb_otg->builtin_host = !s->usb_otg->server_host && !getenv("IT_USB_TCP");
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     memory_region_add_subregion(sysmem, S5L8930_USB_OTG_BASE,
                                 &S5L8900USBOTG(dev)->iomem);
@@ -421,11 +516,23 @@ static void ipad1_init(MachineState *machine)
     dev = sysbus_create_simple(TYPE_IPOD_TOUCH_SPI, S5L8930_SPI_BASE(1),
                                ipad1_irq(s, S5L8930_IRQ_SPI(1)));
     s->mt = IPOD_TOUCH_SPI(dev)->mt;
+    s->mt->profile = &mt_profile_k48;
     /* Zephyr2 ATN -> GPIO 0x15; reset (0x204) and download (0x107) are ignored. */
     qdev_connect_gpio_out_named(DEVICE(s->mt), "atn", 0,
         qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(S5L8930_GPIO_MT_ATN)));
     qemu_add_mouse_event_handler(ipad1_mouse_event, s->mt, 1, "iPad Touchscreen");
     qemu_input_handler_register(s->gpio, &ipad1_kbd_handler);
+    qemu_input_handler_register(s->gpio, &ipad1_mtt_handler);
+
+    /*
+     * SPI2 is the baseband link. The Wi-Fi iPad has the controller but no
+     * baseband, and the real unit's IORegistry still shows
+     * AppleS5L8920XBasebandSPIController/BasebandSPIDevice loaded on it, so
+     * model exactly that: a controller with nothing on the bus (reads return
+     * 0). Its DT interrupt is the SRDY GPIO, not a VIC line, so none is wired.
+     */
+    set_spi_base(2);
+    sysbus_create_simple(TYPE_IPOD_TOUCH_SPI, S5L8930_SPI_BASE(2), NULL);
 
     /* SWI: backlight and DPSM core voltage; only the busy bit matters. */
     sysbus_create_simple("ipodtouch.swi", S5L8930_SWI_BASE, NULL);
@@ -497,8 +604,50 @@ static void ipad1_set_nor(Object *obj, const char *value, Error **errp)
     s->nor_path = g_strdup(value);
 }
 
+static char *ipad1_get_usb_tcp_addr(Object *obj, Error **errp)
+{
+    return g_strdup(IPAD1_MACHINE(obj)->usb_tcp_addr);
+}
+
+static void ipad1_set_usb_tcp_addr(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    g_free(s->usb_tcp_addr);
+    s->usb_tcp_addr = g_strdup(value);
+}
+
+static bool ipad1_get_usb_cable(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->usb_cable;
+}
+
+/* Plug/unplug at any time (qom-set /machine usb-cable off): the charger's
+ * usb_det level flips and the PMU raises the cable event that makes the
+ * power source and the USB arbitrator re-evaluate. */
+static void ipad1_set_usb_cable(Object *obj, bool value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    if (s->usb_cable == value) {
+        return;
+    }
+    s->usb_cable = value;
+    if (s->ltc) {
+        s5l8930_ltc4099_set_usb(s->ltc, value);
+        synopsys_usb_set_cable(s->usb_otg, value);
+        s5l8930_d1815_usb_cable_event(s->pmu);
+    }
+}
+
+static void ipad1_instance_init(Object *obj)
+{
+    IPAD1_MACHINE(obj)->usb_cable = true;
+}
+
 static void ipad1_instance_finalize(Object *obj)
 {
+    g_free(IPAD1_MACHINE(obj)->usb_tcp_addr);
     g_free(IPAD1_MACHINE(obj)->kboot_path);
     g_free(IPAD1_MACHINE(obj)->nand_path);
     g_free(IPAD1_MACHINE(obj)->nor_path);
@@ -524,12 +673,21 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     object_class_property_add_str(klass, "nor", ipad1_get_nor, ipad1_set_nor);
     object_class_property_set_description(klass, "nor",
         "1 MiB SPI NOR image (nvram, syscfg); erased flash if unset");
+    object_class_property_add_str(klass, "usb-tcp-addr", ipad1_get_usb_tcp_addr,
+                                  ipad1_set_usb_tcp_addr);
+    object_class_property_set_description(klass, "usb-tcp-addr",
+        "usbmuxd-qemu host bridge host:port (default port 1235); unset = IT_USB_TCP or no link");
+    object_class_property_add_bool(klass, "usb-cable", ipad1_get_usb_cable,
+                                   ipad1_set_usb_cable);
+    object_class_property_set_description(klass, "usb-cable",
+        "USB cable present (default on); settable at runtime to plug/unplug");
 }
 
 static const TypeInfo ipad1_machine_info = {
     .name = TYPE_IPAD1_MACHINE,
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(IPad1MachineState),
+    .instance_init = ipad1_instance_init,
     .instance_finalize = ipad1_instance_finalize,
     .class_init = ipad1_class_init,
 };

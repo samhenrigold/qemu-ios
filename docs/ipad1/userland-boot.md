@@ -148,16 +148,14 @@ classifier over any tree.
 
 ## Not determined / open
 
-- **Activation identity.** `pod_record.plist`'s AccountToken is bound to the unit; `lockdownd` checks it
-  against the UDID = SHA1(serial + ECID + Wi-Fi MAC + Bluetooth MAC) on 3.x. All four are known now: serial
-  `EMU000000000`, ECID 1 (`0x0000000001`), Wi-Fi MAC `02:00:00:00:00:01` (`local-mac-address`,
-  also the tail of nvram `platform-uuid` `00000000-0000-1000-8000-020000000001`), Bluetooth MAC
-  `02:00:00:00:00:02`; die-id 2233827018196609712. kboot carries serial/MLB/ECID/die-id since 571f433ec3.
-  **The MACs are not placed anywhere yet — check where iOS 3.2 reads the Wi-Fi/BT addresses (NVRAM vs DT
-  vs the chip):** on this unit `local-mac-address` is a property on an IOService node (the IOKit dump), and
-  nvram has only `platform-uuid`; whether the DT `wlan`/`bluetooth` nodes carry them, or `lockdownd`'s
-  `WiFiAddress` comes from the Broadcom driver reading OTP, decides whether activation can validate before
-  M5's Wi-Fi/BT models exist. Until then expect `Unactivated`.
+- **Activation identity (resolved 2026-09-27).** `pod_record.plist`'s AccountToken binds `SerialNumber`,
+  `ProductType` and `UniqueDeviceID` = `<unit UDID>`, which is exactly
+  `SHA1("EMU000000000" + "02:00:00:00:00:01" + "02:00:00:00:00:02")`: serial + Wi-Fi MAC + Bluetooth MAC,
+  lowercase, colon-separated, **no ECID/IMEI** on a Wi-Fi iPad (brute-forced over the orderings and formats;
+  nothing else matched). iBoot puts the two MACs (syscfg `WMac`/`BMac`) into DT `arm-io/sdio` and
+  `arm-io/uart3/bluetooth` `local-mac-address` (6 bytes each, zero in the IPSW DT; the real unit's IORegistry
+  shows them on the `sdio` and `bluetooth` nubs), and `ipad1_kboot.MACS` now fills both. Serial/MLB/ECID/die-id
+  were already in kboot (571f433ec3). The data-volume records need no change.
 - **`/dev/console` redirect** is untested on this launchd; if it refuses, fall back to a file under `/var/log`
   and read it back through the store.
 - **No serial login shell** exists regardless of `/etc/ttys`: there is no `getty` on 7B500. A shell needs
@@ -166,3 +164,30 @@ classifier over any tree.
   checked; if `/private/var` is missing in the log while the FTL is fine, look at ordering.
 - The `AppleMultitouch` plug-in blobs and `libgmalloc.dylib` are flagged `none` by the classifier; not executed
   at boot, not investigated further.
+
+## USB: behave like an iPad on a Mac (no deep sleep)
+
+iOS only reports external power and disables idle sleep once a USB host has *configured* the device:
+`AppleD1815PMUPowerSource` wants >= 500 mA from `function-usb_500_100`, which AppleSynopsysOTGDevice reports
+after SET_CONFIGURATION. An unconfigured guest therefore deep-slept a few minutes after SpringBoard (the
+arbitrator's power-state-0 path logs "USB cable detached", then "System Sleep" / "pmu go hib"). Two ways to
+be configured:
+
+- **No bridge (default):** the OTG model's built-in host (`hw/arm/ipod_touch_usb_otg.c`, `synopsys_host_*`)
+  does what usbmuxd-qemu does — reset, enumdone, descriptors, SET_ADDRESS, SET_CONFIGURATION of the
+  configuration with the AppleUSBMux interface, the string reads, the mux version request, then polls the
+  bulk IN pipe — so the guest charges and stays awake; nothing is connected on the host side.
+- **usbmuxd-qemu bridge:** real enumeration plus lockdown/usbmux (`idevice_id -l` sees it):
+
+```
+~/Developer/usbmuxd-qemu/usbmuxd/src/usbmuxd -f -v -S 127.0.0.1:27015 -P NONE -C <conf dir>   # listens on 1235 for QEMU
+qemu-system-arm -machine ipad1,kboot=...,nand=...,usb-tcp-addr=127.0.0.1:1235 ...
+USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015 idevice_id -l
+```
+
+Machine properties: `usb-tcp-addr=host:port` (unset: `IT_USB_TCP`, else the built-in host) and
+`usb-cable=on|off` (default on). The cable can be pulled and replugged at runtime with
+`qom-set /machine usb-cable false` / `true` over QMP: the LTC4099's usb_det level flips, the PMU raises
+charger0's vector (event F bit 0) and the "usb" event, the power source logs `AppleUSBCableType Detached` /
+`USBHost`, and the OTG drops or redials the bridge link (usbmuxd reaps and re-enumerates) or restarts the
+built-in host.
