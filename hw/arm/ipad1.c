@@ -99,7 +99,7 @@ struct IPad1MachineState {
     int battery_mode;                    /* 0 auto (follow cable), 1 on, 2 off */
     double battery_drain;                /* accepted for the bridge; unused */
     QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
-    int pwroff_phase, pwroff_step;
+    int pwroff_phase, pwroff_step, pwroff_orient;
     bool usb_charger;                    /* host grants high-power current */
     Chardev *gauge;
 };
@@ -337,18 +337,29 @@ static void ipad1_set_button(IPad1MachineState *s, int pin, bool down)
  * (ipod_touch_powerdown_req): the one clean shutdown path unmounts the
  * volumes, closes the FTL and ends in the PMU standby write, where QEMU exits.
  * Home first (wakes the panel, or quits a foreground app), hold the hold
- * button until SpringBoard raises "slide to power off", then drag its knob:
- * panel x 950, from y 290 down the track. All on QEMU_CLOCK_VIRTUAL, since
+ * button until SpringBoard raises "slide to power off", then drag its knob
+ * along its track. All on QEMU_CLOCK_VIRTUAL, since
  * SpringBoard's hold threshold is guest time. One sequence at a time; the
  * phase goes back to idle afterwards so a repeat request works.
  */
 enum { PWROFF_IDLE, PWROFF_HOME, PWROFF_WAKE, PWROFF_HOLD, PWROFF_SETTLE, PWROFF_DRAG,
        PWROFF_WATCH };
 #define PWROFF_WATCH_MS     25000   /* from the request: warn if still running */
-#define PWROFF_KNOB_X       950
-#define PWROFF_KNOB_Y       290
-#define PWROFF_TRACK_END_Y  720
 #define PWROFF_DRAG_STEPS   24
+#define PWROFF_DRAG_LEN     430     /* knob to past the track's end */
+
+/*
+ * Where the knob sits on the landscape panel, and which way the track runs,
+ * per interface orientation (UIDeviceOrientation 1-4): the sheet is at the
+ * top of the UI, which the panel shows rotated. Measured off screendumps of
+ * the sheet; 2 and 4 are 1 and 3 turned half way round.
+ */
+static const struct { int x, y, dx, dy; } pwroff_knob[5] = {
+    [1] = { 950, 290,  0,  1 },     /* portrait: knob top, track down the panel */
+    [2] = {  73, 477,  0, -1 },     /* upside down */
+    [3] = { 418,  69,  1,  0 },     /* landscape, home button right */
+    [4] = { 605, 698, -1,  0 },     /* landscape, home button left */
+};
 
 static void ipad1_pwroff_arm(IPad1MachineState *s, int ms)
 {
@@ -364,7 +375,7 @@ static void ipad1_pwroff_touch(IPad1MachineState *s, int px, int py, bool down)
 static void ipad1_pwroff_tick(void *opaque)
 {
     IPad1MachineState *s = opaque;
-    int y;
+    int o = s->pwroff_orient, d;
 
     switch (s->pwroff_phase) {
     case PWROFF_HOME:
@@ -383,15 +394,16 @@ static void ipad1_pwroff_tick(void *opaque)
         ipad1_pwroff_arm(s, 1500);          /* the sheet slides in */
         break;
     case PWROFF_SETTLE:
-        ipad1_pwroff_touch(s, PWROFF_KNOB_X, PWROFF_KNOB_Y, true);
+        ipad1_pwroff_touch(s, pwroff_knob[o].x, pwroff_knob[o].y, true);
         s->pwroff_phase = PWROFF_DRAG;
         s->pwroff_step = 0;
         ipad1_pwroff_arm(s, 80);
         break;
     case PWROFF_DRAG:
-        y = PWROFF_KNOB_Y + (PWROFF_TRACK_END_Y - PWROFF_KNOB_Y) *
-            ++s->pwroff_step / PWROFF_DRAG_STEPS;
-        ipad1_pwroff_touch(s, PWROFF_KNOB_X, y, s->pwroff_step < PWROFF_DRAG_STEPS);
+        d = PWROFF_DRAG_LEN * ++s->pwroff_step / PWROFF_DRAG_STEPS;
+        ipad1_pwroff_touch(s, pwroff_knob[o].x + pwroff_knob[o].dx * d,
+                           pwroff_knob[o].y + pwroff_knob[o].dy * d,
+                           s->pwroff_step < PWROFF_DRAG_STEPS);
         if (s->pwroff_step < PWROFF_DRAG_STEPS) {
             ipad1_pwroff_arm(s, 80);
         } else {
@@ -418,13 +430,16 @@ static void ipad1_powerdown_req(Notifier *n, void *opaque)
         return;
     }
     /*
-     * Upright portrait first: the sheet and its knob follow the UI rotation,
-     * so in landscape (accel-orientation 3/4) or upside down the drag missed
-     * the knob. The device is about to power off, so moving it upright is
-     * harmless; the Home press and its 2 s give SpringBoard time to rotate.
+     * The sheet follows the interface orientation, which follows the
+     * accelerometer: aim for it there instead of turning the device upright
+     * (that visibly flipped the UI to portrait on quit).
+     * ponytail: the last accel-orientation set; face up/down (5/6), 0, or a
+     * pitch/roll attitude fall back to portrait. Track the UI's own
+     * orientation if an app pins one that disagrees with the device.
      */
-    if (s->accel) {
-        lis302dl_apply_orientation(s->accel, 1);
+    s->pwroff_orient = 1;
+    if (s->accel && s->accel->orientation >= 1 && s->accel->orientation <= 4) {
+        s->pwroff_orient = s->accel->orientation;
     }
     ipad1_set_button(s, S5L8930_GPIO_BTN_MENU, true);
     s->pwroff_phase = PWROFF_HOME;
