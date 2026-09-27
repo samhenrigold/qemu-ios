@@ -303,6 +303,28 @@ static uint32_t nand_read_page(S5L8930IOPState *s, int bus, uint32_t ce,
     return FMI_STATUS_BLANK;
 }
 
+/* The store as raw flash, for the H2FMI model (iBoot's direct NAND path). */
+bool s5l8930_iop_nand_read(DeviceState *dev, int bus, uint32_t ce,
+                           uint32_t page, uint8_t *buf, uint32_t *stride)
+{
+    S5L8930IOPState *s = S5L8930_IOP(dev);
+    uint8_t meta[FMI_META_BYTES];
+
+    *stride = s->nand_dir ? s->page_stride : 0;
+    return bus < NAND_BUSES &&
+           nand_read_page(s, bus, ce, page, buf, meta) == FMI_STATUS_OK;
+}
+
+void s5l8930_iop_nand_info(DeviceState *dev, uint32_t *id, uint8_t *ce_mask,
+                           uint32_t *page_bytes)
+{
+    S5L8930IOPState *s = S5L8930_IOP(dev);
+
+    *id = s->nand_id;
+    *ce_mask = s->nand_ce_mask;
+    *page_bytes = s->nand_dir ? s->store_page_bytes : 0;
+}
+
 /*
  * len bytes of data land at the page start (a raw write carries page + spare,
  * a boot page 0x600 bytes); meta, if given, leads the spare.

@@ -33,6 +33,7 @@
 #define S5L8930_RGBOUT2_BASE     0x89600000
 #define S5L8930_DART2_BASE       0x89d00000   /* IOMMU in front of the display pipe */
 #define S5L8930_DART2_SIZE       0x2000
+#define S5L8930_PKE_BASE         0x83100000   /* RSA engine; operand SRAM at +0x800 */
 #define S5L8930_SHA1_BASE        0x80100000   /* SHA-1 engine; data FIFO at +0xA0 via CDMA ch 4 */
 #define S5L8930_SHA1_SIZE        0x1000
 #define S5L8930_CDMA_BASE        0x87000000   /* shared DMA engine, channel n at n<<12 */
@@ -57,6 +58,7 @@
 #define S5L8930_USB_OTG_BASE     0x86100000   /* Synopsys DWC OTG, device mode */
 #define S5L8930_USB_EHCI_BASE    0x86400000   /* usb-ehci,s5l8930x (host) */
 #define S5L8930_USB_OHCI0_BASE   0x86500000   /* usb-ohci,s5l8930x (host) */
+#define S5L8930_H2FMI_BASE       0x81200000   /* FMI0; FMI1 at +0x100000 */
 #define S5L8930_SDIO_BASE        0x80000000   /* SDHC, standard SDHCI registers */
 #define S5L8930_IOP_BASE         0x86300000   /* AP-side IOP control block */
 #define S5L8930_IOP_SIZE         0x1000
@@ -71,6 +73,7 @@
 #define S5L8930_IRQ_USB_OHCI0    0x0f
 #define S5L8930_IRQ_TIMER1       0x05          /* second event timer, unused by the kernel */
 #define S5L8930_IRQ_TIMER0       0x06          /* event timer; the kernel routes it to FIQ */
+#define S5L8930_IRQ_FMI(n)       (0x22 + (n))
 #define S5L8930_IRQ_I2C(n)       (0x13 + (n))
 #define S5L8930_IRQ_SPI(n)       (0x1d + (n))
 #define S5L8930_IRQ_UART(n)      (0x16 + (n))
@@ -113,6 +116,20 @@
  * message rings in guest DRAM through address_space_memory.
  */
 #define TYPE_S5L8930_IOP "s5l8930.iop"
+/* Raw access to the IOP's NAND page store for the H2FMI model: one page
+ * (data then spare, *stride bytes) into buf; false = blank or no store. */
+bool s5l8930_iop_nand_read(DeviceState *dev, int bus, uint32_t ce,
+                           uint32_t page, uint8_t *buf, uint32_t *stride);
+void s5l8930_iop_nand_info(DeviceState *dev, uint32_t *id, uint8_t *ce_mask,
+                           uint32_t *page_bytes);
+
+/*
+ * H2FMI (hw/arm/s5l8930_h2fmi.c): the NAND interfaces iBoot drives directly.
+ * MMIO n = FMI n's 1 MiB window at S5L8930_H2FMI_BASE + n MiB (FMI, FMC at
+ * +0x40000, ECC at +0x80000); sysbus IRQ n = S5L8930_IRQ_FMI(n). Links:
+ * "iop" (page store), "cdma" (FIFO-fed reads).
+ */
+#define TYPE_S5L8930_H2FMI "s5l8930.h2fmi"
 
 /*
  * SDIO (hw/arm/s5l8930_sdio.c): the SDHC interrupt registers (MMIO 0 at
@@ -170,6 +187,14 @@ void s5l8930_ltc4099_set_charging(DeviceState *dev, bool charging);
  * synchronously inside the channel's go write.
  */
 #define TYPE_S5L8930_CDMA "s5l8930.cdma"
+/*
+ * A device FIFO in [base, base+size) that paces the channels reading it: a
+ * channel takes only avail() bytes, stays running, and resumes on kick().
+ */
+void s5l8930_cdma_set_source(DeviceState *dev, hwaddr base, hwaddr size,
+                             uint32_t (*avail)(void *opaque, hwaddr addr),
+                             void *opaque);
+void s5l8930_cdma_kick(DeviceState *dev);
 
 /*
  * I2S controller (hw/arm/s5l8930_i2s.c). One MMIO region (0x1000) at
