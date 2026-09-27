@@ -33,6 +33,7 @@
 #include "hw/arm/ipod_touch_usb_phys.h"
 #include "hw/arm/ipod_touch_spi.h"
 #include "hw/arm/ipod_touch_amc.h"
+#include "hw/arm/ipod_touch_pke.h"
 #include "hw/arm/ipod_touch_lis302dl.h"
 #include "hw/arm/ipod_touch_cs42l58.h"
 #include "chardev/char.h"
@@ -357,7 +358,7 @@ static void ipad1_init(MachineState *machine)
     IPad1MachineState *s = IPAD1_MACHINE(machine);
     MemoryRegion *sysmem = get_system_memory();
     Object *cpuobj;
-    DeviceState *dev;
+    DeviceState *dev, *iop;
     SysBusDevice *sbd;
     int i;
 
@@ -525,6 +526,7 @@ static void ipad1_init(MachineState *machine)
      * firmware, the model raises the AP by writing VIC0's SOFTINT register.
      */
     dev = qdev_new(TYPE_S5L8930_IOP);
+    iop = dev;
     if (s->nand_path) {
         qdev_prop_set_string(dev, "nand", s->nand_path);
     }
@@ -542,6 +544,16 @@ static void ipad1_init(MachineState *machine)
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_SHA1_BASE);
 
+    /*
+     * PKE (RSA) at 0x83100000: the same engine and driver shape as the
+     * S5L8720's, so the iPod model is reused. Only iBoot uses it (img3
+     * signatures); it computes exactly what it is asked.
+     */
+    dev = qdev_new(TYPE_IPOD_TOUCH_PKE);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    memory_region_add_subregion(sysmem, S5L8930_PKE_BASE,
+                                &IPOD_TOUCH_PKE(dev)->iomem);
+
     /* CDMA + AES filter; one interrupt line per channel. */
     dev = qdev_new(TYPE_S5L8930_CDMA);
     sbd = SYS_BUS_DEVICE(dev);
@@ -550,6 +562,21 @@ static void ipad1_init(MachineState *machine)
     sysbus_mmio_map(sbd, 1, S5L8930_AES_BASE);
     for (i = 0; i < S5L8930_CDMA_CHANNELS; i++) {
         sysbus_connect_irq(sbd, i, ipad1_irq(s, S5L8930_IRQ_CDMA(i)));
+    }
+
+    /* H2FMI: iBoot's own NAND path, reading the IOP's page store. */
+    {
+        DeviceState *cdma = dev;
+
+        dev = qdev_new(TYPE_S5L8930_H2FMI);
+        object_property_set_link(OBJECT(dev), "iop", OBJECT(iop), &error_abort);
+        object_property_set_link(OBJECT(dev), "cdma", OBJECT(cdma), &error_abort);
+        sbd = SYS_BUS_DEVICE(dev);
+        sysbus_realize_and_unref(sbd, &error_fatal);
+        for (i = 0; i < 2; i++) {
+            sysbus_mmio_map(sbd, i, S5L8930_H2FMI_BASE + i * 0x100000);
+            sysbus_connect_irq(sbd, i, ipad1_irq(s, S5L8930_IRQ_FMI(i)));
+        }
     }
     /*
      * USB device mode: the same Synopsys DWC OTG core and PHY register layout
