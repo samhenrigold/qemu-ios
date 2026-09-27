@@ -55,6 +55,7 @@ struct IPad1MachineState {
     MemoryRegion cpu_debug;
     DeviceState *vic[S5L8930_VIC_COUNT];
     DeviceState *gpio;
+    DeviceState *pmu;
     IPodTouchMultitouchState *mt;
     char *kboot_path;
     char *nand_path;
@@ -146,6 +147,16 @@ static void ipad1_mouse_event(void *opaque, int x, int y, int z, int buttons)
     }
 }
 
+/* GPIO pin level for the awake path; Home/Hold also go to the PMU, which
+ * is the wake source once the kernel has put the AP to sleep. */
+static void ipad1_set_button(IPad1MachineState *s, int pin, bool down)
+{
+    qemu_set_irq(qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(pin)), !down);
+    if (pin == S5L8930_GPIO_BTN_HOLD || pin == S5L8930_GPIO_BTN_MENU) {
+        s5l8930_d1815_button(s->pmu, pin == S5L8930_GPIO_BTN_HOLD, down);
+    }
+}
+
 /*
  * Buttons are GPIO port 0 pins 0-4, active low, idle high in the GPIO model.
  * Same host chords as the iPod machine: Cmd+L hold/power, Cmd+Shift+H
@@ -189,7 +200,7 @@ static void ipad1_kbd_event(DeviceState *dev, QemuConsole *src, InputEvent *evt)
         return;
     }
     s->kbd_btn_held[q] = down ? pin + 1 : 0;
-    qemu_set_irq(qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(pin)), !down);
+    ipad1_set_button(s, pin, down);
 }
 
 /* The app bridge's buttons (contrib/ios-app), on the same pins as the chords. */
@@ -207,7 +218,7 @@ void ipad1_press_button(IPodTouchButton button, bool down)
     if (!s || (unsigned)button >= ARRAY_SIZE(pins)) {
         return;
     }
-    qemu_set_irq(qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(pins[button])), !down);
+    ipad1_set_button(s, pins[button], down);
 }
 
 static const QemuInputHandler ipad1_kbd_handler = {
@@ -298,6 +309,7 @@ static void ipad1_init(MachineState *machine)
     {
         I2CBus *bus = I2C_BUS(qdev_get_child_bus(dev, "i2c"));
         DeviceState *pmu = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_D1815, 0x74));
+        s->pmu = pmu;
         DeviceState *xp = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_TCA6408, 0x20));
         i2c_slave_create_simple(bus, TYPE_S5L8930_LTC4099, 0x09);
         qdev_connect_gpio_out(pmu, 0,
