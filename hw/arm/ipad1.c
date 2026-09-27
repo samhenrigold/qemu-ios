@@ -28,6 +28,7 @@
 #include "hw/boards.h"
 #include "hw/irq.h"
 #include "hw/misc/unimp.h"
+#include "system/runstate.h"
 #include "hw/usb/hcd-ehci.h"
 #include "hw/usb/hcd-ohci.h"
 #include "hw/sysbus.h"
@@ -96,6 +97,8 @@ struct IPad1MachineState {
     double battery_level;                /* % */
     int battery_mode;                    /* 0 auto (follow cable), 1 on, 2 off */
     double battery_drain;                /* accepted for the bridge; unused */
+    QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
+    int pwroff_phase, pwroff_step;
 };
 
 static const char *const ipad1_battery_modes[] = { "auto", "on", "off" };
@@ -325,6 +328,87 @@ static void ipad1_set_button(IPad1MachineState *s, int pin, bool down)
         s5l8930_d1815_button(s->pmu, pin == S5L8930_GPIO_BTN_HOLD, down);
     }
 }
+
+/*
+ * QMP system_powerdown -> the user's power-off gesture, as on the iPod machine
+ * (ipod_touch_powerdown_req): the one clean shutdown path unmounts the
+ * volumes, closes the FTL and ends in the PMU standby write, where QEMU exits.
+ * Home first (wakes the panel, or quits a foreground app), hold the hold
+ * button until SpringBoard raises "slide to power off", then drag its knob:
+ * panel x 950, from y 290 down the track. All on QEMU_CLOCK_VIRTUAL, since
+ * SpringBoard's hold threshold is guest time. One sequence at a time; the
+ * phase goes back to idle afterwards so a repeat request works.
+ */
+enum { PWROFF_IDLE, PWROFF_HOME, PWROFF_WAKE, PWROFF_HOLD, PWROFF_SETTLE, PWROFF_DRAG };
+#define PWROFF_KNOB_X       950
+#define PWROFF_KNOB_Y       290
+#define PWROFF_TRACK_END_Y  720
+#define PWROFF_DRAG_STEPS   24
+
+static void ipad1_pwroff_arm(IPad1MachineState *s, int ms)
+{
+    timer_mod(s->pwroff_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + (int64_t)ms * SCALE_MS);
+}
+
+static void ipad1_pwroff_touch(IPad1MachineState *s, int px, int py, bool down)
+{
+    ipad1_mouse_event(s->mt, px * 32767 / 1023, py * 32767 / 767, 0, down);
+}
+
+static void ipad1_pwroff_tick(void *opaque)
+{
+    IPad1MachineState *s = opaque;
+    int y;
+
+    switch (s->pwroff_phase) {
+    case PWROFF_HOME:
+        ipad1_set_button(s, S5L8930_GPIO_BTN_MENU, false);
+        s->pwroff_phase = PWROFF_WAKE;
+        ipad1_pwroff_arm(s, 2000);          /* panel on / app gone */
+        break;
+    case PWROFF_WAKE:
+        ipad1_set_button(s, S5L8930_GPIO_BTN_HOLD, true);
+        s->pwroff_phase = PWROFF_HOLD;
+        ipad1_pwroff_arm(s, 3500);          /* > SpringBoard's hold threshold */
+        break;
+    case PWROFF_HOLD:
+        ipad1_set_button(s, S5L8930_GPIO_BTN_HOLD, false);
+        s->pwroff_phase = PWROFF_SETTLE;
+        ipad1_pwroff_arm(s, 1500);          /* the sheet slides in */
+        break;
+    case PWROFF_SETTLE:
+        ipad1_pwroff_touch(s, PWROFF_KNOB_X, PWROFF_KNOB_Y, true);
+        s->pwroff_phase = PWROFF_DRAG;
+        s->pwroff_step = 0;
+        ipad1_pwroff_arm(s, 80);
+        break;
+    case PWROFF_DRAG:
+        y = PWROFF_KNOB_Y + (PWROFF_TRACK_END_Y - PWROFF_KNOB_Y) *
+            ++s->pwroff_step / PWROFF_DRAG_STEPS;
+        ipad1_pwroff_touch(s, PWROFF_KNOB_X, y, s->pwroff_step < PWROFF_DRAG_STEPS);
+        if (s->pwroff_step < PWROFF_DRAG_STEPS) {
+            ipad1_pwroff_arm(s, 80);
+        } else {
+            s->pwroff_phase = PWROFF_IDLE;  /* now the guest halts */
+        }
+        break;
+    }
+}
+
+static void ipad1_powerdown_req(Notifier *n, void *opaque)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(qdev_get_machine());
+
+    if (s->pwroff_phase != PWROFF_IDLE) {
+        return;
+    }
+    ipad1_set_button(s, S5L8930_GPIO_BTN_MENU, true);
+    s->pwroff_phase = PWROFF_HOME;
+    ipad1_pwroff_arm(s, 300);
+}
+
+static Notifier ipad1_powerdown_notifier = { .notify = ipad1_powerdown_req };
 
 /*
  * Buttons are GPIO port 0 pins 0-4, active low, idle high in the GPIO model.
@@ -848,6 +932,8 @@ static void ipad1_init(MachineState *machine)
                            ipad1_irq(s, S5L8930_IRQ_UART(3)), true);
     ipad1_battery_update(s);
 
+    s->pwroff_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ipad1_pwroff_tick, s);
+    qemu_register_powerdown_notifier(&ipad1_powerdown_notifier);
     qemu_register_reset(ipad1_cpu_reset, s);
 }
 
