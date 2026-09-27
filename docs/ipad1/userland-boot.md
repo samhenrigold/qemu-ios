@@ -167,10 +167,17 @@ classifier over any tree.
 
 ## USB: behave like an iPad on a Mac (no deep sleep)
 
-Without a USB host the guest is never configured, `AppleD1815PMUPowerSource` sees < 500 mA, leaves idle sleep
-enabled and a few minutes after SpringBoard the arbitrator logs "USB cable detached" (its power-state-0 path,
-not a cable read), then "System Sleep" / "pmu go hib". With the `usbmuxd-qemu` bridge the device enumerates
-(mux interface in configuration 2), gets its 500 mA, charges and stays awake, and `idevice_id -l` sees it:
+iOS only reports external power and disables idle sleep once a USB host has *configured* the device:
+`AppleD1815PMUPowerSource` wants >= 500 mA from `function-usb_500_100`, which AppleSynopsysOTGDevice reports
+after SET_CONFIGURATION. An unconfigured guest therefore deep-slept a few minutes after SpringBoard (the
+arbitrator's power-state-0 path logs "USB cable detached", then "System Sleep" / "pmu go hib"). Two ways to
+be configured:
+
+- **No bridge (default):** the OTG model's built-in host (`hw/arm/ipod_touch_usb_otg.c`, `synopsys_host_*`)
+  does what usbmuxd-qemu does — reset, enumdone, descriptors, SET_ADDRESS, SET_CONFIGURATION of the
+  configuration with the AppleUSBMux interface, the string reads, the mux version request, then polls the
+  bulk IN pipe — so the guest charges and stays awake; nothing is connected on the host side.
+- **usbmuxd-qemu bridge:** real enumeration plus lockdown/usbmux (`idevice_id -l` sees it):
 
 ```
 ~/Developer/usbmuxd-qemu/usbmuxd/src/usbmuxd -f -v -S 127.0.0.1:27015 -P NONE -C <conf dir>   # listens on 1235 for QEMU
@@ -178,8 +185,9 @@ qemu-system-arm -machine ipad1,kboot=...,nand=...,usb-tcp-addr=127.0.0.1:1235 ..
 USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015 idevice_id -l
 ```
 
-Machine properties: `usb-tcp-addr=host:port` (unset: `IT_USB_TCP` or no link) and `usb-cable=on|off`
-(default on). The cable can be pulled and replugged at runtime, `qom-set /machine usb-cable false` / `true`
-over QMP: the LTC4099's usb_det level flips, the PMU raises charger0's vector (event F bit 0) and the "usb"
-event, the power source logs `AppleUSBCableType Detached` / `USBHost`, the OTG drops or redials the bridge
-link so usbmuxd reaps and re-enumerates the device.
+Machine properties: `usb-tcp-addr=host:port` (unset: `IT_USB_TCP`, else the built-in host) and
+`usb-cable=on|off` (default on). The cable can be pulled and replugged at runtime with
+`qom-set /machine usb-cable false` / `true` over QMP: the LTC4099's usb_det level flips, the PMU raises
+charger0's vector (event F bit 0) and the "usb" event, the power source logs `AppleUSBCableType Detached` /
+`USBHost`, and the OTG drops or redials the bridge link (usbmuxd reaps and re-enumerates) or restarts the
+built-in host.

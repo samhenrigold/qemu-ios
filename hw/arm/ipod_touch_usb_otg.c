@@ -786,6 +786,7 @@ static void synopsys_usb_write(void *opaque, hwaddr _addr, uint64_t _val, unsign
 			 * not connected yet.
 			 */
 			synopsys_usb_tcp_start(state);
+			synopsys_usb_host_rearm(state, 2000);
 
 			state->grstctl &= ~GRSTCTL_CORESOFTRESET;
 			state->grstctl |= GRSTCTL_AHBIDLE;
@@ -1051,6 +1052,262 @@ DeviceState *ipod_touch_init_usb_otg(qemu_irq _irq, uint32_t _hwcfg[4])
  */
 #define TCP_USB_RETRY_MS 3000
 
+/*
+ * Built-in host, used when no host bridge is configured. iOS only reports
+ * "external power" and disables idle sleep once a host has configured the
+ * device (AppleD1815PMUPowerSource wants >= 500 mA from the usb_500_100
+ * function, which AppleSynopsysOTGDevice reports after SET_CONFIGURATION);
+ * without one the iPad deep-sleeps a few minutes after SpringBoard. This
+ * plays the part usbmuxd-qemu's usb-qemu.c plays: reset, enumdone, device
+ * descriptor, SET_ADDRESS 1, configuration descriptors, then SET_CONFIGURATION
+ * of the configuration carrying the AppleUSBMux interface (255/254/2), else
+ * the last one. It issues one transaction per tick through the same entry
+ * point as the bridge and treats NAK as "try again in a millisecond".
+ */
+enum {
+	HP_IDLE, HP_RESET, HP_ENUMDONE, HP_DEV_SETUP, HP_DEV_IN, HP_DEV_STATUS,
+	HP_ADDR_SETUP, HP_ADDR_STATUS, HP_CFG_HDR_SETUP, HP_CFG_HDR_IN,
+	HP_CFG_HDR_STATUS, HP_CFG_SETUP, HP_CFG_IN, HP_CFG_STATUS,
+	HP_SETCFG_SETUP, HP_SETCFG_STATUS, HP_STR0_SETUP, HP_STR0_IN, HP_STR0_STATUS,
+	HP_STRSER_SETUP, HP_STRSER_IN, HP_STRSER_STATUS, HP_POLL, HP_DONE,
+};
+#define HOST_POLL_MS      5
+
+#define HOST_RETRY_MS     1
+#define HOST_TIMEOUT_MS   4000
+#define HOST_RESTART_MS   3000
+
+static int synopsys_host_xfer(synopsys_usb_state *s, uint8_t ep, uint8_t flags,
+                              int len, void *buf)
+{
+	tcp_usb_header_t hdr = { .addr = 0, .ep = ep, .flags = flags, .length = len };
+
+	return synopsys_usb_tcp_callback(NULL, s, &hdr, buf);
+}
+
+static int synopsys_host_setup(synopsys_usb_state *s, uint8_t type, uint8_t req,
+                               uint16_t val, uint16_t idx, uint16_t len)
+{
+	uint8_t setup[8] = { type, req, val, val >> 8, idx, idx >> 8, len, len >> 8 };
+
+	return synopsys_host_xfer(s, 0, tcp_usb_setup, 8, setup);
+}
+
+/* Configuration with the mux interface (255/254/2), else the last one; the
+ * interface's bulk IN endpoint is what a host keeps polling afterwards. */
+static bool synopsys_host_cfg_has_mux(synopsys_usb_state *s, const uint8_t *d, int n)
+{
+	bool in_mux = false, found = false;
+
+	for (int i = 0; i + 1 < n && d[i] >= 2; i += d[i]) {
+		if (d[i + 1] == 4 && i + 8 < n) {
+			in_mux = d[i + 5] == 255 && d[i + 6] == 254 && d[i + 7] == 2;
+			found |= in_mux;
+		} else if (d[i + 1] == 5 && i + 3 < n && in_mux) {
+			if (d[i + 2] & USB_DIR_IN) {
+				s->host_ep_in = d[i + 2];
+			} else {
+				s->host_ep_out = d[i + 2];
+			}
+		}
+	}
+	return found;
+}
+
+static void synopsys_host_go(synopsys_usb_state *s, int phase, int64_t ms)
+{
+	s->host_phase = phase;
+	s->host_deadline = qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + HOST_TIMEOUT_MS;
+	timer_mod(s->host_timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + ms);
+}
+
+static void synopsys_host_tick(void *opaque)
+{
+	synopsys_usb_state *s = opaque;
+	int64_t now = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+	int r;
+
+	if (!s->builtin_host || !s->cable_attached || s->host_phase == HP_IDLE ||
+	    s->host_phase == HP_DONE) {
+		return;
+	}
+	if (now > s->host_deadline) {
+		if (synopsys_usb_trace_enabled())
+			fprintf(stderr, "[USBHOST] phase %d timed out; restarting\n", s->host_phase);
+		synopsys_host_go(s, HP_RESET, HOST_RESTART_MS);
+		return;
+	}
+
+	switch (s->host_phase) {
+	case HP_RESET:
+		s->host_greeted = false;
+		s->host_ep_in = s->host_ep_out = 0;
+		synopsys_host_xfer(s, 0, tcp_usb_reset, 0, NULL);
+		synopsys_host_go(s, HP_ENUMDONE, 500);
+		return;
+	case HP_ENUMDONE:
+		synopsys_host_xfer(s, 0, tcp_usb_enumdone, 0, NULL);
+		synopsys_host_go(s, HP_DEV_SETUP, 500);
+		return;
+	case HP_DEV_SETUP:
+		r = synopsys_host_setup(s, 0x80, 6, 0x0100, 0, 18);
+		s->host_got = 0; s->host_want = 18;
+		break;
+	case HP_CFG_HDR_SETUP:
+		r = synopsys_host_setup(s, 0x80, 6, 0x0200 | s->host_cfg, 0, 9);
+		s->host_got = 0; s->host_want = 9;
+		break;
+	case HP_CFG_SETUP:
+		r = synopsys_host_setup(s, 0x80, 6, 0x0200 | s->host_cfg, 0, s->host_want);
+		s->host_got = 0;
+		break;
+	case HP_ADDR_SETUP:
+		r = synopsys_host_setup(s, 0x00, 5, 1, 0, 0);
+		break;
+	case HP_SETCFG_SETUP:
+		r = synopsys_host_setup(s, 0x00, 9, s->host_cfg_value, 0, 0);
+		break;
+	case HP_STR0_SETUP:
+		r = synopsys_host_setup(s, 0x80, 6, 0x0300, 0, 255);
+		s->host_got = 0; s->host_want = 255;
+		break;
+	case HP_STRSER_SETUP:
+		r = synopsys_host_setup(s, 0x80, 6, 0x0300 | s->host_iserial, 0x0409, 255);
+		s->host_got = 0; s->host_want = 255;
+		break;
+	case HP_POLL:
+		/*
+		 * usbmuxd opens with a mux version request (v0 header: protocol 0,
+		 * length 20; then major 2, minor 0, padding; all big-endian) and then
+		 * never stops polling the bulk IN pipe. AppleUSBDeviceMux restarts the
+		 * stack (core soft reset, interface deactivated) a few seconds after
+		 * activation if the host stays silent, so do both; the reply and
+		 * anything else the guest sends have no reader here and are dropped.
+		 */
+		if (!s->host_greeted) {
+			static const uint8_t version_req[20] = {
+				0, 0, 0, 0,  0, 0, 0, 20,  0, 0, 0, 2,  0, 0, 0, 0,  0, 0, 0, 0
+			};
+			uint8_t pkt[20];
+
+			memcpy(pkt, version_req, sizeof(pkt));
+			if (synopsys_host_xfer(s, s->host_ep_out ? s->host_ep_out : 0x02, 0,
+			                       sizeof(pkt), pkt) >= 0) {
+				s->host_greeted = true;
+			}
+		}
+		synopsys_host_xfer(s, s->host_ep_in ? s->host_ep_in : 0x81, 0,
+		                   sizeof(s->host_buf), s->host_buf);
+		s->host_deadline = now + HOST_TIMEOUT_MS;
+		timer_mod(s->host_timer, now + HOST_POLL_MS);
+		return;
+	case HP_DEV_IN:
+	case HP_CFG_HDR_IN:
+	case HP_CFG_IN:
+	case HP_STR0_IN:
+	case HP_STRSER_IN:
+		r = synopsys_host_xfer(s, USB_DIR_IN, 0, s->host_want - s->host_got,
+		                       s->host_buf + s->host_got);
+		if (r > 0) {
+			s->host_got += r;
+			if (s->host_got < s->host_want && r == 64) {
+				timer_mod(s->host_timer, now + HOST_RETRY_MS);
+				return;                       /* more chunks to come */
+			}
+		}
+		if (r == USB_RET_STALL && s->host_phase >= HP_STR0_IN) {
+			r = 0;                            /* strings are optional */
+		}
+		break;
+	case HP_DEV_STATUS:
+	case HP_CFG_HDR_STATUS:
+	case HP_CFG_STATUS:
+	case HP_STR0_STATUS:
+	case HP_STRSER_STATUS:
+		r = synopsys_host_xfer(s, 0, 0, 0, NULL);          /* OUT status */
+		break;
+	case HP_ADDR_STATUS:
+	case HP_SETCFG_STATUS:
+		r = synopsys_host_xfer(s, USB_DIR_IN, 0, 0, NULL);  /* IN status */
+		break;
+	default:
+		return;
+	}
+
+	if (r == USB_RET_NAK) {
+		timer_mod(s->host_timer, now + HOST_RETRY_MS);
+		return;
+	}
+	if (r < 0) {
+		if (synopsys_usb_trace_enabled())
+			fprintf(stderr, "[USBHOST] phase %d failed (%d); restarting\n", s->host_phase, r);
+		synopsys_host_go(s, HP_RESET, HOST_RESTART_MS);
+		return;
+	}
+
+	/* Transaction accepted: advance. */
+	switch (s->host_phase) {
+	case HP_DEV_IN:
+		if (s->host_got < 18 || s->host_buf[1] != 1) {
+			synopsys_host_go(s, HP_RESET, HOST_RESTART_MS);
+			return;
+		}
+		s->host_ncfg = s->host_buf[17];
+		s->host_iserial = s->host_buf[16];
+		s->host_cfg = 0;
+		s->host_cfg_value = -1;
+		break;
+	case HP_CFG_HDR_IN:
+		s->host_want = s->host_buf[2] | (s->host_buf[3] << 8);
+		if (s->host_got < 9 || s->host_want < 9 || s->host_want > sizeof(s->host_buf)) {
+			synopsys_host_go(s, HP_RESET, HOST_RESTART_MS);
+			return;
+		}
+		break;
+	case HP_CFG_IN:
+		if (s->host_cfg_value < 0 || synopsys_host_cfg_has_mux(s, s->host_buf, s->host_got)) {
+			s->host_cfg_value = s->host_buf[5];
+		}
+		break;
+	case HP_CFG_STATUS:
+		if (++s->host_cfg < s->host_ncfg &&
+		    !synopsys_host_cfg_has_mux(s, s->host_buf, s->host_got)) {
+			synopsys_host_go(s, HP_CFG_HDR_SETUP, HOST_RETRY_MS);
+			return;
+		}
+		break;
+	case HP_ADDR_STATUS:
+		/* Let the guest program DCFG before the next SETUP, as usbmuxd does. */
+		synopsys_host_go(s, HP_CFG_HDR_SETUP, 100);
+		return;
+	case HP_SETCFG_STATUS:
+		printf("[USBHOST] built-in host: device configured (configuration value %d)\n",
+		       s->host_cfg_value);
+		break;
+	case HP_STRSER_STATUS:
+		synopsys_host_go(s, HP_POLL, HOST_POLL_MS);
+		return;
+	default:
+		break;
+	}
+	synopsys_host_go(s, s->host_phase + 1, HOST_RETRY_MS);
+}
+
+/* (Re)start enumeration after delay_ms: at realize, after a core soft reset
+ * (the guest re-arms on every cable event) and on cable attach. */
+void synopsys_usb_host_rearm(synopsys_usb_state *state, int64_t delay_ms)
+{
+	if (!state->builtin_host || !state->host_timer) {
+		return;
+	}
+	if (!state->cable_attached) {
+		state->host_phase = HP_IDLE;
+		timer_del(state->host_timer);
+		return;
+	}
+	synopsys_host_go(state, HP_RESET, delay_ms);
+}
+
 void synopsys_usb_set_cable(synopsys_usb_state *state, bool attached)
 {
     state->cable_attached = attached;
@@ -1060,6 +1317,7 @@ void synopsys_usb_set_cable(synopsys_usb_state *state, bool attached)
     } else if (attached) {
         synopsys_usb_tcp_start(state);
     }
+    synopsys_usb_host_rearm(state, 2000);
 }
 
 static void synopsys_usb_tcp_retry_tick(void *opaque)
@@ -1084,6 +1342,8 @@ static void s5l8900_usb_otg_realize(DeviceState *dev, Error **errp)
                                           synopsys_usb_tcp_retry_tick, state);
     timer_mod(state->tcp_retry_timer,
               qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + TCP_USB_RETRY_MS);
+    state->host_timer = timer_new_ms(QEMU_CLOCK_REALTIME, synopsys_host_tick, state);
+    synopsys_usb_host_rearm(state, 2000);
 }
 
 static const VMStateDescription vmstate_synopsys_usb_ep = {
