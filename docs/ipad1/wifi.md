@@ -20,7 +20,7 @@ A golden-pristine clone (`wifi=on` was explicit at the time). The serial log:
 IOSDIOIoCardDevice::parseFn0CIS(): Device manufacturer ID 0x2d0, Product ID 0x4329   ProductInfo0 "s=B1"  ProductInfo1 "P=K48 m=u80"
 AppleBCMWLANChipManager::withDriver(): BCM4329 revision B1
 AppleBCMWLAN::initFirmware(): successful initialization
-AppleBCMWLAN: Ethernet address 02:00:00:00:00:01
+AppleBCMWLAN: Ethernet address <unit Wi-Fi MAC>
 AirPort: Enabled AppleBCMWLAN (link 1, sys 0, user 1)
 AppleBCMWLAN Joined BSS: ... BSSID = 02:00:5e:10:00:01, rssi = -45, channel = 6, ssid[ 8] = "qemu-ios"
 AppleBCMWLANNetManager::receivedIPv4Address(): Received IP Address
@@ -130,7 +130,7 @@ AppleBCMWLAN (Broadcom 802.11 Driver, AppleBCMWLAN-2.60)
   - No `function-power_enable`. The kext looks for one and logs if it's missing.
     Nothing on the unit suggests that's fatal.
   - `local-mac-address` is **empty in the IPSW DT and filled by iBoot** from syscfg.
-    The unit's value is `02:00:00:00:00:01`. Without it the driver stops with
+    The unit's value is `<unit Wi-Fi MAC>`. Without it the driver stops with
     "Unit isn't properly provisioned (no WiFi MAC Address)!", so `ipad1_kboot.py`
     has to fill it in (a fake locally-administered MAC is fine).
   - `wireless-board-snum` is also iBoot-filled (`J5024U3A9YXA` on the unit) and
@@ -148,7 +148,7 @@ IOSDIOIoCardDevice  IOSDIOProductInfo0 = "s=B1"  IOSDIOProductInfo1 = "P=K48 m=u
 AppleBCMWLAN        personality "K48 USI X17B - 4329 B1"   vendor-id = "USI"
                     NVRAM File = bcm94329OLYMPICX17UB.txt
                     STA Firmware = 4329b1/sdio-ag-cdc-full11n-reclaim-roml-wme-nocis.bin
-                    IOMACAddress = 020000000001   CountryCode = XZ2   SDIOClockLimit = 51.3 MHz
+                    IOMACAddress = <unit Wi-Fi MAC>  CountryCode = XZ2   SDIOClockLimit = 51.3 MHz
 IO80211Interface    en0, SSID "<home SSID>", ch 6, 2.4 GHz
 ```
 
