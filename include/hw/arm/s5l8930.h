@@ -8,6 +8,8 @@
 #define HW_ARM_S5L8930_H
 
 #include "hw/sysbus.h"
+#include "hw/arm/ipod_touch_sdio.h"
+#include "exec/address-spaces.h"
 
 /* Memory */
 #define S5L8930_DRAM_BASE        0x40000000
@@ -57,6 +59,7 @@
 #define S5L8930_USB_EHCI_BASE    0x86400000   /* usb-ehci,s5l8930x (host) */
 #define S5L8930_USB_OHCI0_BASE   0x86500000   /* usb-ohci,s5l8930x (host) */
 #define S5L8930_H2FMI_BASE       0x81200000   /* FMI0; FMI1 at +0x100000 */
+#define S5L8930_SDIO_BASE        0x80000000   /* SDHC, standard SDHCI registers */
 #define S5L8930_IOP_BASE         0x86300000   /* AP-side IOP control block */
 #define S5L8930_IOP_SIZE         0x1000
 #define S5L8930_IOP_VIC_BASE     0xbf300000   /* the IOP's own 4 VICs, used as doorbells */
@@ -64,6 +67,7 @@
 
 /* Interrupt numbers: VIC n owns 32n..32n+31 */
 #define S5L8930_IRQ_IOP          0x03          /* IOP -> AP doorbell */
+#define S5L8930_IRQ_SDIO         0x26          /* SDHC: the Wi-Fi card interrupt */
 #define S5L8930_IRQ_USB_OTG      0x0d
 #define S5L8930_IRQ_USB_EHCI     0x0e
 #define S5L8930_IRQ_USB_OHCI0    0x0f
@@ -123,9 +127,19 @@ void s5l8930_iop_nand_info(DeviceState *dev, uint32_t *id, uint8_t *ce_mask,
  * H2FMI (hw/arm/s5l8930_h2fmi.c): the NAND interfaces iBoot drives directly.
  * MMIO n = FMI n's 1 MiB window at S5L8930_H2FMI_BASE + n MiB (FMI, FMC at
  * +0x40000, ECC at +0x80000); sysbus IRQ n = S5L8930_IRQ_FMI(n). Links:
- * "iop" (page store), "cdma" (paced FIFO reads).
+ * "iop" (page store), "cdma" (FIFO-fed reads).
  */
 #define TYPE_S5L8930_H2FMI "s5l8930.h2fmi"
+
+/*
+ * SDIO (hw/arm/s5l8930_sdio.c): the SDHC interrupt registers (MMIO 0 at
+ * S5L8930_SDIO_BASE, sysbus IRQ 0 = S5L8930_IRQ_SDIO) and the IOP ring-3
+ * commands, run against the "card" link (an ipodtouch.sdio dongle). GPIO in 0
+ * is the card's interrupt output. The IOP's "sdio" link forwards ring 3 here.
+ */
+#define TYPE_S5L8930_SDIO "s5l8930.sdio"
+#define S5L8930_SDIO_CMD_SIZE 0x200
+void s5l8930_sdio_iop_command(DeviceState *dev, uint8_t *cmd);
 
 /*
  * I2C controller (hw/arm/s5l8930_i2c.c): the newer FIFO-style block the
@@ -139,11 +153,15 @@ void s5l8930_iop_nand_info(DeviceState *dev, uint32_t *id, uint8_t *ce_mask,
  * PMU wake event and raises its IRQ line. */
 void s5l8930_d1815_button(DeviceState *dev, bool hold, bool down);
 void s5l8930_d1815_usb_cable_event(DeviceState *dev);
+/* Battery voltage the PMU ADC reports (mux 4); the level SpringBoard shows. */
+void s5l8930_d1815_set_vbat(DeviceState *dev, unsigned mv);
 #define TYPE_S5L8930_TCA6408 "s5l8930.tca6408"   /* GPIO expander at 0x20 on i2c0 */
 /* LTC4099 charger at 0x09 on i2c0 (hw/arm/s5l8930_ltc4099.c); its STAT byte
  * is where the USB arbitrator learns a cable is present (usb-present prop). */
 #define TYPE_S5L8930_LTC4099 "s5l8930.ltc4099"
 void s5l8930_ltc4099_set_usb(DeviceState *dev, bool present);
+/* STAT charge-state bits (secondary_charge_status): charging or not. */
+void s5l8930_ltc4099_set_charging(DeviceState *dev, bool charging);
 #define TYPE_S5L8930_TSL2581 "s5l8930.tsl2581"   /* ambient light sensor at 0x39 on i2c2 */
 
 /*
@@ -177,6 +195,29 @@ void s5l8930_cdma_set_source(DeviceState *dev, hwaddr base, hwaddr size,
                              uint32_t (*avail)(void *opaque, hwaddr addr),
                              void *opaque);
 void s5l8930_cdma_kick(DeviceState *dev);
+
+/*
+ * I2S controller (hw/arm/s5l8930_i2s.c). One MMIO region (0x1000) at
+ * S5L8930_I2S_BASE(n); "audio-out" routes its TX FIFO to the
+ * host audio backend (i2s0, the CS42L61 codec port).
+ */
+#define TYPE_S5L8930_I2S "s5l8930.i2s"
+
+/*
+ * Frame rate of I2S port n. Its bit clock is PMGR NCO n (0xbf100100 +
+ * 0x10 n): AppleS5L8930XPerformanceControllerFunctionNCOFrequency writes
+ * +4 = 64 * fs (0x002b1100 for 44.1 kHz, c0645046) when AppleARMIISAudio
+ * sets the device rate. 44.1 kHz until the kernel has programmed it.
+ */
+#define S5L8930_NCO_BCLK(n)      (S5L8930_PMGR_BASE + 0x104 + 0x10 * (n))
+static inline unsigned s5l8930_i2s_rate(unsigned port)
+{
+    uint32_t bclk = address_space_ldl_le(&address_space_memory,
+                                         S5L8930_NCO_BCLK(port),
+                                         MEMTXATTRS_UNSPECIFIED, NULL);
+
+    return bclk >= 64 * 8000 && bclk <= 64 * 192000 ? bclk / 64 : 44100;
+}
 #define S5L8930_CDMA_CHANNELS    0x26
 
 /*

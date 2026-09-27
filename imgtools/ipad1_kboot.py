@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
 """Build a direct-kernel boot image for the ipad1 machine: what iBoot-817.29 does before it jumps to xnu.
 
-    ipad1_kboot.py DEC_DIR OUT [BOOT_ARGS]
+    ipad1_kboot.py [--usb-eth-link] DEC_DIR OUT [BOOT_ARGS]
 
 DEC_DIR is ipad1_fw.py's output (kernelcache.mach, DeviceTree.bin). BOOT_ARGS defaults to DEFAULT_BOOT_ARGS.
-With no arguments only the self-check runs.
+With no arguments only the self-check runs. The kernel is stock: the USB Ethernet link is raised by the
+baked it_ethlink helper (contrib/it-ethlink). USB_ETH_LINK (below), the old 7B500-only kernel patch doing
+the same, is kept as a fallback behind --usb-eth-link; it is inert until a host selects alt setting 1.
 
-OUT format (all little-endian): a flat image of physical memory, then a 24-byte trailer.
+OUT format (all little-endian): a flat image of physical memory, extra segments, then a 24-byte trailer.
 
     [0, image_len)      bytes to place at physical load_pa (0x40000000, DRAM base)
+    segments            char magic[8] = "K48SEG\0\0"; u32 pa, len, flags; then len bytes unless
+                        flags bit 0 (zero-fill). Used for the boot-logo framebuffer; loaders that
+                        predate them skip to the trailer and just boot without the logo.
     trailer:  char magic[8] = "K48KBOOT"; u32 load_pa; u32 entry_pa; u32 bootargs_pa; u32 image_len
+
+Boot logo: iBoot draws the IPSW's AppleLogo (an "iBootIm" image) centred on a black framebuffer and the
+kernel keeps it on screen until SpringBoard draws, unless boot-args carry -v. DEC_DIR/AppleLogo.bin, when
+present, is drawn the same way into vram, turned to the panel's orientation.
 
 Loader contract: 256 MiB DRAM at 0x40000000. Copy the image (or the whole file; the trailer then lands in
 padding nothing uses) to load_pa, then start the CPU at entry_pa in ARM state, SVC mode, IRQ/FIQ masked,
@@ -37,8 +46,74 @@ VRAM_PA, PRAM_PA = PHYS_BASE + MEM_SIZE, PHYS_BASE + DRAM_SIZE - PRAM_SIZE
 FB_WIDTH, FB_HEIGHT, FB_DEPTH = 1024, 768, 32   # landscape panel; display-rotation=0 in the K48 DT
 # serial bit 0 moves the console to UART0 (arm_init c005d5fe); debug=0x8 is DB_KPRT, which PE_init_kprintf
 # (c01d1dce) needs before kprintf reaches the UART. No rd=: root-matching below names partition 1.
-DEFAULT_BOOT_ARGS = "-v serial=3 debug=0x8"
+# The AMFI pair lets the ldid-signed guest tools run on a stock kernel (AMFI::start honours them because
+# kboot forces debug-enabled): it_pbd (pasteboard, docs/ipad1/guest-services.md) and the GLES shim
+# (contrib/ipad1-gles). Apple's own binaries are unaffected.
+# No -v: like a stock boot the screen shows iBoot's Apple logo, not the text console; serial=3 still
+# sends the kernel log to UART0.
+DEFAULT_BOOT_ARGS = "serial=3 debug=0x8 amfi_allow_any_signature=1 cs_enforcement_disable=1"
 TRAILER = struct.Struct("<8sIIII")
+SEGMENT = struct.Struct("<8sIII")
+
+
+def lzss(src):
+    """Apple's LZSS (4 KiB window, 18-byte matches), as iBootIm and kernelcaches use."""
+    window, pos, out, i, flags = bytearray(4096), 4096 - 18, bytearray(), 0, 0
+    while i < len(src):
+        flags >>= 1
+        if not flags & 0x100:
+            flags, i = src[i] | 0xFF00, i + 1
+            if i >= len(src):
+                break
+        if flags & 1:
+            at, n, literal, i = 0, 1, src[i], i + 1
+        elif i + 1 < len(src):
+            at, n, literal, i = src[i] | (src[i + 1] & 0xF0) << 4, (src[i + 1] & 0xF) + 3, None, i + 2
+        else:
+            break
+        for k in range(n):       # byte by byte: a match may overlap what it is writing
+            c = literal if literal is not None else window[(at + k) & 0xFFF]
+            out.append(c)
+            window[pos], pos = c, (pos + 1) & 0xFFF
+    return bytes(out)
+
+
+def logo_segments(blob, fb_pa):
+    """Framebuffer segments that put an iBootIm logo where iBoot puts it: centred on black.
+
+    iBootIm: "iBootIm\0", adler32, "lzss", format tag (only "grey" here: grey + inverted alpha,
+    composited over black), u16 width, height; LZSS data at 0x40. The panel scans out landscape and
+    portrait UI arrives turned a quarter clockwise into it, so the logo is turned the same way."""
+    assert blob[:8] == b"iBootIm\0" and blob[12:16] == b"sszl", "not an LZSS iBootIm"
+    assert blob[16:20] == b"yerg", "only the grey iBootIm format is handled"
+    w, h = struct.unpack_from("<HH", blob, 20)
+    px = lzss(blob[0x40:])
+    assert len(px) >= w * h * 2, "short iBootIm"
+    x0, y0, stride = (FB_WIDTH - h) // 2, (FB_HEIGHT - w) // 2, FB_WIDTH * 4
+    rows = bytearray(stride * w)
+    for ly in range(h):
+        for lx in range(w):
+            grey, clear = px[(ly * w + lx) * 2], px[(ly * w + lx) * 2 + 1]
+            v = grey * (255 - clear) // 255
+            struct.pack_into("<I", rows, lx * stride + (x0 + h - 1 - ly) * 4, 0xFF000000 | v * 0x010101)
+    return [(fb_pa, stride * FB_HEIGHT, None), (fb_pa + y0 * stride, len(rows), bytes(rows))]
+
+
+# The one kernel patch (PLAN.md "USB Ethernet link"). AppleUSBEthernetDevice (7B500 kext at 0xc02f8000)
+# only brings its link up in setProperties({"LinkStatus": 1}): setLinkStatus(active), start the output
+# queue, arm the first bulk read, tell the host. The only stock caller is configd's USBEthernetSharing
+# when MobileInternetSharing tethers, which a Wi-Fi iPad cannot (misd: no carrier provisioning, ENOTSUP),
+# so en1 stays link-down and IPConfiguration never DHCPs. The patch makes the host selecting alt setting
+# 1 do the same: the alt-1 path of message() (0xc02f92d8) ends in `mov r3,r5; blx ip` (its HostAttached
+# messageClients); that becomes a `bl` into a cave over an unused error string, which repeats the call,
+# rebuilds setProperties' frame (r8/sl saved at r7-0x14) and branches into its LinkStatus=1 body past the
+# already-set check (0xc02f9842, r2 = 1). setProperties' epilogue then returns to message()'s caller with 0.
+# ponytail: re-selecting alt 1 re-runs the body (queue start, read buffer) without the already-set check.
+USB_ETH_LINK = [  # (va, stock bytes, patched bytes)
+    (0xc02f9300, bytes.fromhex("2b46e047"), bytes.fromhex("01f044f9")),                  # bl cave
+    (0xc02fa58c, b"AppleUSBEthernetDevice::%s: ", bytes.fromhex(                          # "addAltSetting 0 failed"
+        "2b46e047" "a7f10c0d" "2de90005" "82b0" "0122" "fff751b9").ljust(28, b"\0")),
+]
 
 # ponytail: clocks are guesses (timebase = the kernel's own 24 MHz default); replace with HW-2's real
 # IODeviceTree values. clock-frequencies slots follow iBoot's clock_get_frequency (5ff10f80) indices.
@@ -180,7 +255,15 @@ def fill_dt(dt, memory_map):
         dt.set("chosen/memory-map", name, (pa, size))
 
 
-def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS):
+def patch(image, patches):
+    for va, stock, new in patches:
+        o = va - VIRT_BASE
+        if image[o:o + len(stock)] != stock:
+            raise SystemExit("kernel patch at %#x: expected %s, found %s" % (va, stock.hex(), image[o:o + len(stock)].hex()))
+        image[o:o + len(new)] = new
+
+
+def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=False):
     """Return (image bytes, load_pa, entry_pa, bootargs_pa)."""
     page = lambda n: (n + 0xFFF) & ~0xFFF
     pa = lambda va: va - VIRT_BASE + PHYS_BASE
@@ -203,6 +286,8 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS):
         n = min(filesize, vmsize)
         image[vmaddr - VIRT_BASE:vmaddr - VIRT_BASE + n] = m.data[fileoff:fileoff + n]
         memory_map.append((f"Kernel-{name}", pa(vmaddr), vmsize))
+    if usb_eth_link:
+        patch(image, USB_ETH_LINK)
     memory_map += [("DeviceTree", pa(dt_va), len(dt_blob)), ("BootArgs", pa(args_va), 0x1000)]
 
     fill_dt(dt, memory_map)
@@ -220,14 +305,22 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS):
     return bytes(image), PHYS_BASE, pa(macho_entry(m.data)), pa(args_va)
 
 
-def main(dec_dir, out, boot_args=DEFAULT_BOOT_ARGS):
+def pack_segments(segments):
+    return b"".join(SEGMENT.pack(b"K48SEG\0\0", pa, n, data is None) + (data or b"")
+                    for pa, n, data in segments)
+
+
+def main(dec_dir, out, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=False):
     dt_blob = open(os.path.join(dec_dir, "DeviceTree.bin"), "rb").read()
-    image, load_pa, entry_pa, args_pa = build(os.path.join(dec_dir, "kernelcache.mach"), dt_blob, boot_args)
+    image, load_pa, entry_pa, args_pa = build(os.path.join(dec_dir, "kernelcache.mach"), dt_blob, boot_args,
+                                              usb_eth_link)
+    logo = os.path.join(dec_dir, "AppleLogo.bin")
+    segments = logo_segments(open(logo, "rb").read(), VRAM_PA) if os.path.exists(logo) else []
     with open(out, "wb") as f:
-        f.write(image + TRAILER.pack(b"K48KBOOT", load_pa, entry_pa, args_pa, len(image)))
+        f.write(image + pack_segments(segments) + TRAILER.pack(b"K48KBOOT", load_pa, entry_pa, args_pa, len(image)))
     top = struct.unpack_from("<I", image, args_pa - load_pa + 0x10)[0]
     print(f"load {load_pa:#x}+{len(image):#x} entry {entry_pa:#x} r0 {args_pa:#x} "
-          f"topOfKernelData {top:#x} boot-args [{boot_args}]")
+          f"topOfKernelData {top:#x} boot-args [{boot_args}]" + (" +usb-eth-link" if usb_eth_link else " (no usb-eth-link)"))
 
 
 def selfcheck():
@@ -266,7 +359,7 @@ def selfcheck():
     with tempfile.NamedTemporaryFile() as f:
         f.write(kernel)
         f.flush()
-        image, load, entry, r0 = build(f.name, dt_blob)
+        image, load, entry, r0 = build(f.name, dt_blob, usb_eth_link=False)
 
     assert (load, entry, r0) == (0x40000000, 0x40001040, 0x40006000)
     assert image[0x1000:0x1004] == b"\xce\xfa\xed\xfe" and image[0x3000:0x3010] == b"D" * 16
@@ -276,7 +369,7 @@ def selfcheck():
     dtp, dtlen = struct.unpack_from("<II", image, r0 - load + 0x30)
     assert (dtp, dtlen) == (0xC0005000, len(dt_blob) + 36)   # + hsic-enabled
     assert image[r0 - load + 0x38:].split(b"\0", 1)[0] == DEFAULT_BOOT_ARGS.encode()
-    assert struct.unpack_from("<I", image, r0 - load + 0x18)[0] == 0  # -v selects the text console
+    assert struct.unpack_from("<I", image, r0 - load + 0x18)[0] == 1  # no -v: graphics (the logo) stays up
     dt = DeviceTree(image[dtp - 0xC0000000:dtp - 0xC0000000 + dtlen])
     get = lambda path, key, fmt="<I": struct.unpack_from(fmt, dt.buf, dt.props[path][key][0] + 36)
     assert get("chosen/memory-map", "Kernel-__TEXT", "<II") == (0x40001000, 0x2000)
@@ -286,11 +379,37 @@ def selfcheck():
     assert "MemoryMapReserved-4" in dt.props["chosen/memory-map"]
     assert get("chosen", "chip-id") == (0x8930,) and get("cpus/cpu0", "timebase-frequency") == (24_000_000,)
     assert get("vram", "reg", "<II") == (0x4F700000, 0x8FC000) and get("pram", "reg", "<II") == (0x4FFFC000, 0x4000)
+    img = bytearray(0x303000)
+    for va, stock, _ in USB_ETH_LINK:
+        img[va - VIRT_BASE:va - VIRT_BASE + len(stock)] = stock
+    patch(img, USB_ETH_LINK)
+    assert all(img[va - VIRT_BASE:va - VIRT_BASE + len(new)] == new for va, _, new in USB_ETH_LINK)
+    try:
+        patch(img, USB_ETH_LINK)             # already patched: refuses rather than double-applying
+        assert False
+    except SystemExit:
+        pass
+
+    # Logo: a 2x1 iBootIm, left pixel opaque white, right transparent; all-literal LZSS stream.
+    raw = bytes([255, 0, 255, 255])
+    blob = (b"iBootIm\0" + bytes(4) + b"sszl" + b"yerg" + struct.pack("<HH", 2, 1)).ljust(0x40, b"\0")
+    blob += bytes([0xFF]) + raw
+    assert lzss(blob[0x40:]) == raw
+    # an overlapping match: literal "ab", then 6 bytes from 2 back -> "abababab"
+    assert lzss(bytes([0b011, ord("a"), ord("b"), 0xEE, 0xF3])) == b"abababab"
+    (fb, fb_len, zero), (pa, n, rows) = logo_segments(blob, 0x4F700000)
+    assert (fb, fb_len, zero) == (0x4F700000, 1024 * 768 * 4, None) and n == 1024 * 4 * 2
+    # turned a quarter clockwise: the logo's left column becomes its (single-row) top, at x0 + h - 1
+    x0, y0 = (1024 - 1) // 2, (768 - 2) // 2
+    assert pa == 0x4F700000 + y0 * 4096
+    assert struct.unpack_from("<I", rows, x0 * 4)[0] == 0xFFFFFFFF      # row 0 <- logo x 0 (white)
+    assert struct.unpack_from("<I", rows, 4096 + x0 * 4)[0] == 0xFF000000   # row 1 <- logo x 1 (clear)
 
 
 if __name__ == "__main__":
     selfcheck()
-    if len(sys.argv) in (3, 4):
-        main(*sys.argv[1:])
-    elif len(sys.argv) != 1:
+    argv = [a for a in sys.argv[1:] if a != "--usb-eth-link"]
+    if len(argv) in (2, 3):
+        main(*argv, usb_eth_link=len(argv) < len(sys.argv) - 1)
+    elif argv:
         sys.exit(__doc__)

@@ -5,6 +5,7 @@
                           [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge] [--no-usb-net]
     ipad1_rootfs.py fetch [DIR]          copy /var/stash and /var/root/Library/Lockdown off the real iPad (ssh)
     ipad1_rootfs.py report DIR...        list the Mach-Os under DIR that carry no Apple signature
+    ipad1_rootfs.py bake DIR [--tools build/ipad1-guest] [--seal]   install the guest helpers into DIR/system.img
     ipad1_rootfs.py --selfcheck
 
 `build` writes DIR/<base>/{system.img,data.img,unsigned-machos.txt}, then prints the ipad1_nand.py line:
@@ -45,6 +46,10 @@ offline because the host mount is noowners.
 unsigned-machos.txt: every Mach-O on the system volume and in the stash whose code signature has no CMS
 blob (ldid ad-hoc: sshd, bash, apt, Cydia, Substrate) or none at all. Those are what
 `amfi_allow_any_signature=1` has to forgive at exec; Apple's own binaries carry a (possibly empty) CMS slot.
+
+`bake` installs this machine's guest helpers (docs/ipad1/guest-services.md): it_pbd and it_ethlink + their launchd jobs,
+root-owned via the catalog. Nothing else on either volume changes. Build it first with contrib/ipad1-guest/build.sh;
+it is ldid ad-hoc signed, so boot with amfi_allow_any_signature=1.
 """
 import argparse
 import os
@@ -87,6 +92,14 @@ USB_ETH_IF = {"Active": True, "BSD Name": "en1", "IOBuiltin": False, "IOInterfac
                              "AppleS5L8930XUSBArbitrator/usb-device/AppleSynopsysOTGDevice/IOUSBDeviceInterface@5/"
                              "AppleUSBEthernetDevice/IOEthernetInterface"}
 MOBILE_TOP = ("mobile", "ea")                # uid 501 on the real unit; everything else under /var is root
+# guest tool -> (install path on the system volume, mode); the job comes from contrib/it-pasteboard
+TOOLS = {"it_pbd": ("usr/local/bin/it_pbd", 0o755), "it_ethlink": ("usr/local/bin/it_ethlink", 0o755)}
+# launchd job, installed path -> source under contrib/
+JOBS = {"System/Library/LaunchDaemons/com.qemu.it-pbd.plist": "it-pasteboard/com.qemu.it-pbd.plist",
+        "System/Library/LaunchDaemons/com.qemu.it-ethlink.plist": "it-ethlink/com.qemu.it-ethlink.plist"}
+SEAL_TOOL = {"it_seal": ("usr/local/bin/it_seal", 0o755)}
+SEAL_JOB = {"System/Library/LaunchDaemons/com.qemu.it-seal.plist": "it-seal/com.qemu.it-seal.plist"}
+LC_MAIN, LC_VERSION_MIN_IPHONEOS = 0x80000028, 0x25
 MH_MAGIC, FAT_MAGIC, LC_CODE_SIGNATURE, CS_CMS = 0xFEEDFACE, 0xCAFEBABE, 0x1D, 0x10000
 
 
@@ -152,6 +165,25 @@ def seed_plist(path, fn):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
         f.write(edit_plist(plistlib.dumps({}), fn))
+
+
+def guest_tool_problem(data):
+    """None if data is a thin armv7 Mach-O 3.2 dyld will take (no LC_MAIN, no LC_VERSION_MIN, signed), else why not."""
+    if len(data) < 28 or struct.unpack_from("<I", data)[0] != MH_MAGIC:
+        return "not a thin 32-bit Mach-O"
+    cputype, sub, _, ncmds = struct.unpack_from("<iiII", data, 4)
+    if (cputype, sub) != (12, 9):
+        return "cpu %d/%d, not armv7" % (cputype, sub)
+    cmds, off = set(), 28
+    for _ in range(ncmds):
+        cmd, size = struct.unpack_from("<II", data, off)
+        cmds.add(cmd)
+        off += size
+    if cmds & {LC_MAIN, LC_VERSION_MIN_IPHONEOS}:
+        return "carries LC_MAIN/LC_VERSION_MIN (not run through mkold.py)"
+    if LC_CODE_SIGNATURE not in cmds:
+        return "unsigned (ldid -S)"
+    return None
 
 
 def owner_for(relpath):
@@ -399,6 +431,34 @@ def build(a):
           % (os.path.dirname(os.path.abspath(__file__)), a.mbr, system, data, os.path.dirname(a.out), a.tag))
 
 
+def bake(a):
+    system = os.path.join(a.dir, "system.img")
+    contrib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib")
+    TOOLS, JOBS = dict(globals()["TOOLS"]), dict(globals()["JOBS"])
+    if a.seal:      # one-shot clean halt for ipad1_seal.py; it deletes itself on that boot
+        TOOLS.update(SEAL_TOOL)
+        JOBS.update(SEAL_JOB)
+    for name in TOOLS:
+        with open(os.path.join(a.tools, name), "rb") as f:
+            why = guest_tool_problem(f.read())
+        if why:
+            raise SystemExit("%s/%s: %s (run contrib/ipad1-guest/build.sh)" % (a.tools, name, why))
+    with Mounted(system, os.path.join(a.dir, "mnt-system")) as m:
+        for name, (rel, mode) in TOOLS.items():
+            dst = os.path.join(m.mnt, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(os.path.join(a.tools, name), dst)
+            os.chmod(dst, mode)
+        for rel, src in JOBS.items():
+            shutil.copyfile(os.path.join(contrib, src), os.path.join(m.mnt, rel))
+            os.chmod(os.path.join(m.mnt, rel), 0o644)
+    # noowners mount: launchd ignores a job plist that is not root-owned
+    n = bn.set_owner(system, ["usr/local", "usr/local/bin"] + list(JOBS) + [rel for rel, _ in TOOLS.values()], 0, 0)
+    shutil.rmtree(os.path.join(a.dir, "mnt-system"), ignore_errors=True)
+    print("baked %s + %s into %s (%d catalog records patched); rebuild the NAND store with ipad1_nand.py"
+          % (", ".join(TOOLS), ", ".join(os.path.basename(j) for j in JOBS), system, n))
+
+
 def fetch(out):
     """Pull /var/stash and /var/root/Library/Lockdown off the real iPad into out/stash and out/lockdown."""
     for sub, parent, name in (("stash", "/var", "stash"), ("lockdown", "/var/root/Library", "Lockdown")):
@@ -462,6 +522,14 @@ def selfcheck():
     fat = struct.pack(">II", FAT_MAGIC, 1) + struct.pack(">5I", 12, 9, 28, len(macho([0, 2])), 12) + macho([0, 2])
     assert signature_kind(fat) == "adhoc" and signature_kind(b"#!/bin/sh\n" + bytes(40)) is None
 
+    def tool(cmds, sub=9):
+        lcs = b"".join(struct.pack("<II", c, 8) for c in cmds)
+        return struct.pack("<7I", MH_MAGIC, 12, sub, 2, len(cmds), len(lcs), 0) + lcs
+    assert guest_tool_problem(tool([LC_CODE_SIGNATURE])) is None
+    assert "armv7" in guest_tool_problem(tool([LC_CODE_SIGNATURE], sub=6))
+    assert "LC_MAIN" in guest_tool_problem(tool([LC_MAIN, LC_CODE_SIGNATURE]))
+    assert "unsigned" in guest_tool_problem(tool([]))
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -488,6 +556,10 @@ def main():
     f.add_argument("dir", nargs="?", default=os.path.join(FILES, "hw2"))
     r = sub.add_parser("report")
     r.add_argument("dirs", nargs="+")
+    k = sub.add_parser("bake")
+    k.add_argument("dir", help="a build output dir holding system.img and data.img")
+    k.add_argument("--tools", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "../build/ipad1-guest"))
+    k.add_argument("--seal", action="store_true", help="also install it_seal, the one-shot clean halt ipad1_seal.py needs")
     a = ap.parse_args()
     selfcheck()
     if a.cmd == "build":
@@ -500,6 +572,8 @@ def main():
                 print("      no %s seed at %s (run `fetch`)" % (opt, getattr(a, opt)))
                 setattr(a, opt, None)
         build(a)
+    elif a.cmd == "bake":
+        bake(a)
     elif a.cmd == "fetch":
         fetch(a.dir)
     elif a.cmd == "report":
