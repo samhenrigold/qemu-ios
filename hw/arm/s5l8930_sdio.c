@@ -200,6 +200,14 @@ static void s5l8930_sdio_realize(DeviceState *dev, Error **errp)
     }
 }
 
+static void s5l8930_sdio_reset(DeviceState *dev)
+{
+    S5L8930SDIOState *s = S5L8930_SDIO(dev);
+
+    memset(s->regs, 0, sizeof(s->regs));
+    qemu_irq_lower(s->irq);
+}
+
 static const VMStateDescription vmstate_s5l8930_sdio = {
     .name = TYPE_S5L8930_SDIO,
     .version_id = 1,
@@ -221,6 +229,7 @@ static void s5l8930_sdio_class_init(ObjectClass *klass, void *data)
 
     dc->realize = s5l8930_sdio_realize;
     dc->vmsd = &vmstate_s5l8930_sdio;
+    device_class_set_legacy_reset(dc, s5l8930_sdio_reset);
     device_class_set_props(dc, s5l8930_sdio_props);
 }
 

@@ -191,7 +191,15 @@ boot-args, or helpers/dylibs baked in by the image builder that find what they n
 name at runtime (IOKit properties, dlsym/interposing). No byte patches at hand-found offsets. That rules out
 the --usb-eth-link kernel patch long-term: it is being replaced by the it_ethlink helper (sets
 LinkStatus=1 through IOKit, as USBEthernetSharing does). AppSync on the iPad is an injected dylib that
-interposes MISValidateSignature, not an installd patch. Wi-Fi (BCM4329) is parked after stage 1 (2026-09-27).
+interposes MISValidateSignature, not an installd patch.
+
+## Network: Wi-Fi is the default, stock kernel (Sam, 2026-09-27)
+The ipad1 machine has `wifi=on` by default: an emulated BCM4329 behind the IOP SDIO ring
+(docs/ipad1/wifi.md), bridged to QEMU user networking (`type=user,id=wifi0` is created when no `wifi0`
+netdev is given). Stock AppleBCMWLAN joins the open BSS "qemu-ios" on its own, DHCPs, and Safari and the
+rest of the system use it, with no kernel patch and no guest helper. `wifi=off` opts out. USB Ethernet
+(below) remains as a secondary path: stock kernel plus the baked `it_ethlink` helper, with the
+`--usb-eth-link` kernel patch as an opt-in fallback (`7B500/k48-kboot-ethpatch.bin`).
 
 ## Keyboard / network decisions (2026-09-27, docs/ipad1/keyboard-and-network.md)
 1. Keyboard: USB keyboard via the Camera Connection Kit host path (EHCI + usb-kbd) — now; IOHID daemon as fallback.
