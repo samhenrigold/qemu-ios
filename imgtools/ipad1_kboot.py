@@ -34,7 +34,7 @@ VIRT_BASE, PHYS_BASE, DRAM_SIZE = 0xC0000000, 0x40000000, 0x10000000
 PRAM_SIZE, VRAM_SIZE = 0x4000, 0x900000 - 0x4000
 MEM_SIZE = DRAM_SIZE - PRAM_SIZE - VRAM_SIZE
 VRAM_PA, PRAM_PA = PHYS_BASE + MEM_SIZE, PHYS_BASE + DRAM_SIZE - PRAM_SIZE
-FB_WIDTH, FB_HEIGHT, FB_DEPTH = 768, 1024, 32
+FB_WIDTH, FB_HEIGHT, FB_DEPTH = 1024, 768, 32   # landscape panel; display-rotation=0 in the K48 DT
 # serial bit 0 moves the console to UART0 (arm_init c005d5fe); debug=0x8 is DB_KPRT, which PE_init_kprintf
 # (c01d1dce) needs before kprintf reaches the UART. No rd=: root-matching below names partition 1.
 DEFAULT_BOOT_ARGS = "-v serial=3 debug=0x8"
@@ -138,6 +138,13 @@ def fill_dt(dt, memory_map):
     # CoreAnimation falls back to its software renderer (docs/ipad1/userland-gl-display.md).
     if "arm-io/sgx" in dt.props:
         dt.set("arm-io/sgx", "compatible", "none")
+    if "arm-io/mipi-dsim/lcd" in dt.props:
+        # iBoot's pinot_init writes the panel's DCS 0xB1 reply here; ApplePinotLCD::start fails
+        # on 0, AppleCLCD then never publishes, and CoreAnimation only finds AppleRGBOUT
+        # (SpringBoard died in its status bar with a 240-wide TV-out screen). Any nonzero
+        # id works: nothing looks it up. This is the reply the DSI model gives.
+        for key in ("lcd-panel-id", "raw-panel-id"):
+            dt.set("arm-io/mipi-dsim/lcd", key, 0x00A1D13C)
     if "chip-revision" in dt.props["arm-io"]:  # absent from the selfcheck DT
         dt.set("arm-io", "chip-revision", 0x11)  # measured on the real K48AP
     if "arm-io/flash-controller0/disk" in dt.props:  # absent from the selfcheck's synthetic DT

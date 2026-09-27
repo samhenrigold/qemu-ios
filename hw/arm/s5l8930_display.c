@@ -37,7 +37,6 @@
 #define DP_FIFO_PORT        0x103c
 #define DP_FIFO_COUNT       0x1044    /* polled to 0 */
 #define DP_SWAP_DONE        0x1048    /* low 16 bits: last completed swap ID */
-#define DP_UNDERRUN_COLOR   0x2064
 #define DP_UI_BASE(l)       (0x4000 + (l) * 0x1000)
 #define DP_UI_FORMAT        0x40
 #define DP_UI_ADDR          0x44
@@ -341,18 +340,17 @@ static void display_update(void *opaque)
     if (layer >= 0) {
         base = r[(DP_UI_BASE(layer) + DP_UI_ADDR) / 4];
         fmt = (r[(DP_UI_BASE(layer) + DP_UI_FORMAT) / 4] >> 8) & 7;
-        stride = r[(DP_UI_BASE(layer) + DP_UI_STRIDE) / 4] & ~0x3fu;
+        /* Bytes per row live above bit 4: the 7B500 swap path writes
+         * (4096 << 4) | 2 for a 1024x768 BGRA surface. */
+        stride = (r[(DP_UI_BASE(layer) + DP_UI_STRIDE) / 4] & ~0x3fu) >> 4;
         if (!base) {
             layer = -1;
         }
     }
     if (layer < 0) {
-        uint32_t fill = r[DP_UNDERRUN_COLOR / 4] & 0xffffff;
+        /* No layer: the panel is off (ApplePinotLCD _lcdEnable 0), so black. */
         for (unsigned y = 0; y < h; y++) {
-            uint32_t *d = (uint32_t *)(surface_data(surface) + y * surface_stride(surface));
-            for (unsigned x = 0; x < w; x++) {
-                d[x] = fill;
-            }
+            memset(surface_data(surface) + y * surface_stride(surface), 0, w * 4);
         }
         dpy_gfx_update(s->con, 0, 0, w, h);
         return;
@@ -411,7 +409,7 @@ static void s5l8930_display_reset(DeviceState *dev)
     if (s->fb_base) {
         r[DP_LAYERS / 4] = 0x100;
         r[(DP_UI_BASE(0) + DP_UI_ADDR) / 4] = s->fb_base;
-        r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4] = (DEFAULT_WIDTH * 4) | 2;
+        r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4] = (DEFAULT_WIDTH * 4) << 4 | 2;
         r[0x4060 / 4] = DEFAULT_WIDTH << 16 | DEFAULT_HEIGHT;
     }
     pipe0_update_irq(s);
