@@ -234,6 +234,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930D1815State, S5L8930_D1815)
 #define PMU_OOC             0x12    /* bit0 = shutdown, spin after; bit1 = hibernate */
 #define PMU_ADC_CTRL        0x30    /* mux | 0x10 start (mux 3 also 0x20) */
 #define PMU_ADC_START       (1u << 4)
+#define PMU_ADC_MUX_VBAT    4
 #define PMU_ADC_RES         0x31    /* 12-bit: (r[0] & 0xF) | r[1] << 4 */
 #define PMU_RTC_PRELOAD     0x46    /* 4 bytes, latched into the counter... */
 #define PMU_RTC_CTRL        0x4A    /* ...by writing 0x41 here */
@@ -268,9 +269,28 @@ static void d1815_update_irq(S5L8930D1815State *s)
 static void d1815_adc_done(void *opaque)
 {
     S5L8930D1815State *s = opaque;
-    /* ponytail: one mid-scale value for every mux; per-channel table when a
-     * client (battery voltage, thermistor, accessory ID) proves to care. */
-    uint16_t v = 0x800;
+    /*
+     * Mux 4 is the battery voltage: AppleD1815PMUPowerSource reads it for
+     * BootVoltage/AppleRawBatteryVoltage (c0664a60, c06653b8) as
+     * mV = 2500 + adc * 2000 / 4096 and estimates the boot capacity from it.
+     * Mid-scale (3500 mV) is a nearly flat cell, which SpringBoard drew as a
+     * red battery. 0xB33 = 3900 mV, a resting Li-ion around 80%.
+     * ponytail: every other mux (2 thermistor, 3, 6 accessory ID, 10-14)
+     * stays mid-scale; S5L8930_ADC="mux:val,..." overrides for experiments.
+     */
+    unsigned mux = s->regs[PMU_ADC_CTRL] & 0xf;
+    uint16_t v = mux == PMU_ADC_MUX_VBAT ? 0xb33 : 0x800;
+    const char *ov = getenv("S5L8930_ADC");
+
+    for (const char *p = ov; p && *p; p = strchr(p, ',') ? strchr(p, ',') + 1 : "") {
+        unsigned m, val;
+        if (sscanf(p, "%x:%x", &m, &val) == 2 && m == mux) {
+            v = val;
+        }
+    }
+    if (getenv("S5L8930_I2C_TRACE")) {
+        fprintf(stderr, "[ADC] mux %u -> 0x%03x\n", mux, v);
+    }
 
     s->regs[PMU_ADC_RES] = v & 0xf;
     s->regs[PMU_ADC_RES + 1] = v >> 4;

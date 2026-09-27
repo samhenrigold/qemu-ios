@@ -133,6 +133,10 @@ static int hdq_chr_write(Chardev *chr, const uint8_t *buf, int len)
     int i;
 
     for (i = 0; i < len; i++) {
+        if (getenv("S5L8930_HDQ_TRACE")) {
+            fprintf(stderr, "[HDQ] tx 0x%02x nbits %u bits 0x%04x\n",
+                    buf[i], g->nbits, g->bits);
+        }
         hdq_queue(g, buf[i]);                    /* the wire echo */
         g->bits |= (buf[i] > 0xf8) << g->nbits;
         g->nbits++;
