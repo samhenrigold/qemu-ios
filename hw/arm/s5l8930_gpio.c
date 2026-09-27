@@ -214,7 +214,7 @@ static void s5l8930_gpio_init(Object *obj)
 }
 
 /*
- * Every pin idles high. The DT's interrupt users all want that: buttons
+ * Interrupt inputs idle high. The DT's interrupt users all want that: buttons
  * (pins 0-4, polarity 0 = active low, both edges), the PMU (0x0d) and
  * TCA6408 (0x11) as level-low, multitouch (0x15) as falling edge. Configs
  * reset to plain input (setPinMode mode 0 = 0x200) with no interrupt mode;
@@ -223,11 +223,15 @@ static void s5l8930_gpio_init(Object *obj)
 static void s5l8930_gpio_reset(DeviceState *dev)
 {
     S5L8930GPIOState *s = S5L8930_GPIO(dev);
+    unsigned radio = S5L8930_GPIO_PIN(0x607);
 
     for (unsigned pin = 0; pin < S5L8930_GPIO_PINS; pin++) {
         s->cfg[pin] = 0x200;
     }
     memset(s->input, 0xff, sizeof(s->input));
+    /* K48 Wi-Fi: radio-presence input GPIO 0x607 is low. iBoot probes
+     * this before pinging the radio and marking its DT node AAPL,ignore. */
+    s->input[radio / 32] &= ~(1u << (radio % 32));
     memset(s->enabled, 0, sizeof(s->enabled));
     memset(s->status, 0, sizeof(s->status));
     qemu_irq_lower(s->irq);

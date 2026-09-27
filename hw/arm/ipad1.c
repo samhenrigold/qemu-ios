@@ -100,6 +100,8 @@ struct IPad1MachineState {
     double battery_drain;                /* accepted for the bridge; unused */
     QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
     int pwroff_phase, pwroff_step;
+    bool usb_charger;                    /* host grants high-power current */
+    Chardev *gauge;
 };
 
 static const char *const ipad1_battery_modes[] = { "auto", "on", "off" };
@@ -340,7 +342,9 @@ static void ipad1_set_button(IPad1MachineState *s, int pin, bool down)
  * SpringBoard's hold threshold is guest time. One sequence at a time; the
  * phase goes back to idle afterwards so a repeat request works.
  */
-enum { PWROFF_IDLE, PWROFF_HOME, PWROFF_WAKE, PWROFF_HOLD, PWROFF_SETTLE, PWROFF_DRAG };
+enum { PWROFF_IDLE, PWROFF_HOME, PWROFF_WAKE, PWROFF_HOLD, PWROFF_SETTLE, PWROFF_DRAG,
+       PWROFF_WATCH };
+#define PWROFF_WATCH_MS     25000   /* from the request: warn if still running */
 #define PWROFF_KNOB_X       950
 #define PWROFF_KNOB_Y       290
 #define PWROFF_TRACK_END_Y  720
@@ -391,8 +395,17 @@ static void ipad1_pwroff_tick(void *opaque)
         if (s->pwroff_step < PWROFF_DRAG_STEPS) {
             ipad1_pwroff_arm(s, 80);
         } else {
-            s->pwroff_phase = PWROFF_IDLE;  /* now the guest halts */
+            /* Now the guest halts: QEMU exits on the PMU standby write. */
+            s->pwroff_phase = PWROFF_WATCH;
+            ipad1_pwroff_arm(s, PWROFF_WATCH_MS - 7300 - 80 * PWROFF_DRAG_STEPS);
         }
+        break;
+    case PWROFF_WATCH:
+        /* Still here: the gesture missed or the guest is stuck. Say so, and
+         * accept another request; the caller decides whether to hard-stop. */
+        warn_report("ipad1: system_powerdown: the guest has not halted %d s "
+                    "after the request", PWROFF_WATCH_MS / 1000);
+        s->pwroff_phase = PWROFF_IDLE;
         break;
     }
 }
@@ -401,8 +414,17 @@ static void ipad1_powerdown_req(Notifier *n, void *opaque)
 {
     IPad1MachineState *s = IPAD1_MACHINE(qdev_get_machine());
 
-    if (s->pwroff_phase != PWROFF_IDLE) {
+    if (s->pwroff_phase != PWROFF_IDLE && s->pwroff_phase != PWROFF_WATCH) {
         return;
+    }
+    /*
+     * Upright portrait first: the sheet and its knob follow the UI rotation,
+     * so in landscape (accel-orientation 3/4) or upside down the drag missed
+     * the knob. The device is about to power off, so moving it upright is
+     * harmless; the Home press and its 2 s give SpringBoard time to rotate.
+     */
+    if (s->accel) {
+        lis302dl_apply_orientation(s->accel, 1);
     }
     ipad1_set_button(s, S5L8930_GPIO_BTN_MENU, true);
     s->pwroff_phase = PWROFF_HOME;
@@ -651,6 +673,11 @@ static void ipad1_init(MachineState *machine)
          * counts; a shake. accel-pitch/-roll/-pose are machine properties. */
         object_property_add_alias(OBJECT(machine), "accel-orientation",
                                   OBJECT(accel), "orientation");
+        /* The sensor sits mirrored in X relative to the iPod's, so these
+         * vectors read as the other landscape: 3 draws Home-left
+         * (UIDeviceOrientationLandscapeRight), 4 Home-right. */
+        object_property_set_description(OBJECT(machine), "accel-orientation",
+            "accelerometer vector for UIDeviceOrientation 1-6 as on the iPod; on the iPad 3 and 4 are swapped");
         object_property_add_alias(OBJECT(machine), "accel-x", OBJECT(accel), "x");
         object_property_add_alias(OBJECT(machine), "accel-y", OBJECT(accel), "y");
         object_property_add_alias(OBJECT(machine), "accel-z", OBJECT(accel), "z");
@@ -818,6 +845,7 @@ static void ipad1_init(MachineState *machine)
     /* No bridge: a built-in host enumerates and configures the device, which
      * is what keeps an iPad on a Mac charging and out of deep sleep. */
     s->usb_otg->builtin_host = !s->usb_otg->server_host && !getenv("IT_USB_TCP");
+    s->usb_otg->host_charge = s->usb_charger;
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     memory_region_add_subregion(sysmem, S5L8930_USB_OTG_BASE,
                                 &S5L8900USBOTG(dev)->iomem);
@@ -924,10 +952,15 @@ static void ipad1_init(MachineState *machine)
         exynos4210_uart_create(S5L8930_UART_BASE(i), 256, i, serial_hd(i),
                                ipad1_irq(s, S5L8930_IRQ_UART(i)), true);
     }
-    /* UART5 is the bq27545 gas gauge's HDQ line (see s5l8930_hdq.c). */
-    exynos4210_uart_create(S5L8930_UART_BASE(5), 256, 5,
-                           qemu_chardev_new(NULL, TYPE_CHARDEV_S5L8930_HDQ,
-                                            NULL, NULL, &error_abort),
+    /*
+     * UART5 is the bq27545 gas gauge's HDQ line (see s5l8930_hdq.c). A 16-byte
+     * FIFO like the silicon: AppleS5L8900XSerial reads the Rx count as
+     * UFSTAT[3:0] | full(bit 8) << 4 (c068bafa), so a deeper FIFO's count in
+     * [7:0] reads as empty once it passes 15 and the echoes were never read.
+     */
+    s->gauge = qemu_chardev_new(NULL, TYPE_CHARDEV_S5L8930_HDQ, NULL, NULL,
+                                &error_abort);
+    exynos4210_uart_create(S5L8930_UART_BASE(5), 16, 5, s->gauge,
                            ipad1_irq(s, S5L8930_IRQ_UART(5)), true);
     /* UART3: the BCM4329's HCI link (uart3/bluetooth,n88); nothing answers yet. */
     exynos4210_uart_create(S5L8930_UART_BASE(3), 256, 3, NULL,
@@ -1043,30 +1076,52 @@ static void ipad1_set_usb_cable(Object *obj, bool value, Error **errp)
 
 /*
  * --- battery -------------------------------------------------------------
- * SpringBoard's level comes from AppleD1815PMUPowerSource's reading of the
- * battery voltage (PMU ADC mux 4), not the gas gauge, which configd never
- * opens on 7B500; charging is the LTC4099's charge-state bits.
- * Measured on 7B500: the level is sampled only at boot (it stayed put through
- * level, charge-state and cable changes), so these are power-on settings
- * (-M ipad1,battery-level=…) until the power source's polling trigger is
- * found; 3.90 V showed 63% and 3.525 V 2%, hence 3.50 V + 6.35 mV per %.
- * The charge-state bits are set but "Not Charging" still shows, so
- * battery-charging has no visible effect yet.
+ * What the status bar shows is IOPMPowerSource as configd's AppleHDQGasGauge
+ * fills it from the bq27545 over HDQ (s5l8930_hdq.c), polled while running;
+ * AppleD1815PMUPowerSource's boot estimate from the PMU battery voltage
+ * (ADC mux 4: 3.90 V showed 63%, 3.525 V 2%, hence 3.50 V + 6.35 mV per %)
+ * only covers the seconds before the plugin starts. So level and charge
+ * state go to all three: gauge, PMU voltage, LTC4099 charge bits.
+ *
+ * Charging, as on hardware: configured at 500 mA an iPad 1 reads "Not
+ * Charging"; it charges once the host grants more with Apple's vendor power
+ * request (0x40/0x40, 500 + 1600 mA), as a Mac's high-power port does, and
+ * AppleD1815PMUPowerSource logs "usb stack power 2100mA". usb-charger (default
+ * on) makes the built-in host send it; a usbmuxd bridge sends it or not
+ * itself. The gauge's charge state follows usb-charger; battery-charging
+ * on/off overrides that.
  */
-
 static bool ipad1_battery_charging(IPad1MachineState *s)
 {
-    return s->battery_mode == 1 || (s->battery_mode == 0 && s->usb_cable);
+    return s->battery_mode == 1 ||
+           (s->battery_mode == 0 && s->usb_cable && s->usb_charger);
 }
 
-/* Push level and charge state to the PMU and charger. */
 static void ipad1_battery_update(IPad1MachineState *s)
 {
-    if (!s->pmu || !s->ltc) {
+    if (!s->pmu || !s->ltc || !s->gauge) {
         return;
     }
     s5l8930_d1815_set_vbat(s->pmu, 3500 + lround(s->battery_level * 6.35));
     s5l8930_ltc4099_set_charging(s->ltc, ipad1_battery_charging(s));
+    s5l8930_hdq_set_battery(s->gauge, lround(s->battery_level), ipad1_battery_charging(s));
+}
+
+static bool ipad1_get_usb_charger(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->usb_charger;
+}
+
+/* Takes effect for the built-in host at its next enumeration (cable replug). */
+static void ipad1_set_usb_charger(Object *obj, bool value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    s->usb_charger = value;
+    if (s->usb_otg) {
+        s->usb_otg->host_charge = value;
+    }
+    ipad1_battery_update(s);
 }
 
 static void ipad1_get_battery_level(Object *obj, Visitor *v, const char *name,
@@ -1207,6 +1262,7 @@ static void ipad1_instance_init(Object *obj)
     IPAD1_MACHINE(obj)->wifi = true;
     guest_pb_init(&IPAD1_MACHINE(obj)->pb, obj, "ipad1");
     IPAD1_MACHINE(obj)->battery_level = 80;
+    IPAD1_MACHINE(obj)->usb_charger = true;
 }
 
 static void ipad1_instance_finalize(Object *obj)
@@ -1293,6 +1349,10 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     /* The iPod machine's names, so the app bridge drives both unchanged. */
     object_class_property_add_bool(klass, "usb-attached", ipad1_get_usb_cable,
                                    ipad1_set_usb_cable);
+    object_class_property_add_bool(klass, "usb-charger", ipad1_get_usb_charger,
+                                   ipad1_set_usb_charger);
+    object_class_property_set_description(klass, "usb-charger",
+        "the built-in USB host grants a high-power port's 2.1 A, so the iPad charges (default on); off = 500 mA, \"Not Charging\"");
     object_class_property_add(klass, "battery-level", "int", ipad1_get_battery_level,
                               ipad1_set_battery_level, NULL, NULL);
     object_class_property_add(klass, "battery-drain", "number", ipad1_get_battery_drain,

@@ -233,6 +233,7 @@ typedef struct synopsys_usb_state
 	/* Built-in host (no bridge configured): enumerates and configures the
 	 * device so iOS sees a configured 500 mA USB host. See synopsys_host_*. */
 	bool builtin_host;
+	bool host_charge;       /* built-in host grants a high-power port's current */
 	QEMUTimer *host_timer;
 	int host_phase;
 	int host_cfg;            /* configuration index being fetched */

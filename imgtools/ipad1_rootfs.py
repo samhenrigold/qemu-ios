@@ -458,6 +458,11 @@ def build(a):
     print("[2/4] editing the system volume")
     skeleton = tempfile.mkdtemp(prefix="ipad1_var.")
     with Mounted(system, os.path.join(a.out, "mnt-system")) as m:
+        if a.kernelcache:
+            destination = os.path.join(m.mnt, "System/Library/Caches/com.apple.kernelcaches/kernelcache")
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            shutil.copyfile(a.kernelcache, destination)
+            os.chmod(destination, 0o644)
         with open(os.path.join(m.mnt, "private/etc/fstab"), "w") as f:
             f.write(FSTAB_RO if a.ro_root else FSTAB)
         if a.web_proxy:
@@ -708,6 +713,7 @@ def main():
     b.add_argument("--mbr", default=os.path.join(FILES, "hw2/rdisk0-head4M.bin"))
     b.add_argument("--pristine", default=os.path.join(FILES, "7B500/dec/rootfs.dmg"), help="IPSW rootfs, source of the /private/var skeleton")
     b.add_argument("--out", default=os.path.join(FILES, "userland"), help="images land in OUT/<base>/, the store in OUT/nand-<tag>")
+    b.add_argument("--kernelcache", help="IPSW img3 kernelcache to install for real-iBoot fsboot")
     b.add_argument("--data-size", default="2g")
     b.add_argument("--stash", help="fetch output for /var/stash (jailbroken default: hw2/stash); 'none' to skip")
     b.add_argument("--lockdown", default=os.path.join(FILES, "hw2/lockdown"), help="fetch output for the Lockdown dir; 'none' to skip")
