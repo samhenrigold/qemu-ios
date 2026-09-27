@@ -25,6 +25,22 @@
 #include "../it-gles/mbxshim.c"
 #include "gli_fwd.h"
 
+/*
+ * A slot nothing implements: report it once, by name, to the host log
+ * (mbxshim's w() goes to fd 2 and through GLES_OP_LOG to QEMU's stderr), so
+ * an app that renders wrong names the entry point it lost. Returns 0.
+ */
+static int gli_unimpl(unsigned slot)
+{
+    static unsigned char seen[GLI_N_SLOTS];
+    if (slot < GLI_N_SLOTS && !seen[slot]) {
+        seen[slot] = 1;
+        w("[glishim] unimplemented GL entry point "); w(gli_slot_names[slot]);
+        w(" (dispatch slot "); wd(slot); w(")\n");
+    }
+    return 0;
+}
+
 extern char *getenv(const char *);
 
 #define GL_RENDERBUFFER 0x8D41

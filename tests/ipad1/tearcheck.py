@@ -175,18 +175,47 @@ def scenario(rig):
     time.sleep(3)
 
 
+def cold_boot(a):
+    """--boot STORE: stores that cannot be checkpointed (live host GL state,
+    i.e. accelerated CoreAnimation) boot from scratch on a fresh overlay and
+    run the scenario once SpringBoard is up."""
+    import tempfile
+    td = tempfile.mkdtemp(prefix="tc-", dir="/tmp")
+    qmp_path = f"{td}/qmp"
+    child = subprocess.Popen([a.qemu, "-machine",
+                              f"ipad1,kboot={FILES}/7B500/k48-kboot.bin,nand={a.boot},nand-overlay={td}/overlay",
+                              "-display", "none", "-monitor", "none", "-serial", f"file:{td}/serial.log",
+                              "-qmp", f"unix:{qmp_path},server=on,wait=off"],
+                             stdout=subprocess.DEVNULL, stderr=open(f"{td}/stderr", "w"),
+                             start_new_session=True)
+    while not os.path.exists(qmp_path):
+        if child.poll() is not None:
+            raise SystemExit(open(f"{td}/stderr").read())
+        time.sleep(0.1)
+    from itqmp import QMP
+    # SpringBoard's lock screen is up well within 150 s (the timing
+    # tests/ipad1/gl-drive.py uses); the scenario's Home press wakes it.
+    q = QMP(qmp_path, timeout=30)
+    time.sleep(150)
+    q.close()
+    return child.pid, qmp_path
+
+
 def capture(a):
     os.makedirs(a.out, exist_ok=True)
     for p in glob.glob(f"{a.out}/*"):
         os.unlink(p)
     a.out = os.path.abspath(a.out)
-    boot = subprocess.run([sys.executable, f"{ROOT}/tests/ipad1/boot-smoke.py", "--from-checkpoint",
-                           a.checkpoint, "--keep", "--qemu", a.qemu, "--seconds", "120"],
-                          capture_output=True, text=True)
-    m = re.search(r"QEMU pid (\d+) left running; QMP at (\S+)", boot.stdout)
-    if not m:
-        raise SystemExit("checkpoint restore failed:\n" + boot.stdout + boot.stderr)
-    pid, qmp_path = int(m.group(1)), m.group(2)
+    if a.boot:
+        pid, qmp_path = cold_boot(a)
+    else:
+        boot = subprocess.run([sys.executable, f"{ROOT}/tests/ipad1/boot-smoke.py", "--from-checkpoint",
+                               a.checkpoint, "--keep", "--qemu", a.qemu, "--seconds", "120"],
+                              capture_output=True, text=True)
+        m = re.search(r"QEMU pid (\d+) left running; QMP at (\S+)", boot.stdout)
+        if not m:
+            raise SystemExit("checkpoint restore failed:\n" + boot.stdout + boot.stderr)
+        pid, qmp_path = int(m.group(1)), m.group(2)
     rig = Rig(qmp_path)
     times, stop = [], threading.Event()
 
@@ -229,6 +258,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--qemu", default=f"{ROOT}/build/qemu-system-arm")
     ap.add_argument("--checkpoint", default=f"{FILES}/userland/checkpoint-lock")
+    ap.add_argument("--boot", metavar="STORE", help="cold-boot STORE (read-only base, fresh overlay) instead of restoring a checkpoint")
     ap.add_argument("--out", default="/tmp/tearcheck")
     ap.add_argument("--fps", type=float, default=60, help="sample rate (the app refreshes at ~60 Hz)")
     ap.add_argument("--analyze", metavar="DIR", help="score an existing capture only")
