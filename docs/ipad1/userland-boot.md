@@ -48,12 +48,16 @@ imgtools/ipad1_nand.py check FILES/userland/nand-pristine --mbr FILES/hw2/rdisk0
 (`build` prints the matching `ipad1_nand.py` line; the jailbroken store is `nand-jb`.)
 
 **golden-pristine** (the read-only store the app and tests clone) is the pristine store plus the guest
-helpers `it_pbd` (pasteboard) and `it_ethlink` (USB Ethernet link) (docs/ipad1/guest-services.md):
+helpers `it_pbd` (pasteboard) and `it_ethlink` (USB Ethernet link) (docs/ipad1/guest-services.md), and
+`it_msmquiet.dylib`, which `bake` loads into Apple's `com.apple.mobile.storage_mounter` job with
+`DYLD_INSERT_LIBRARIES`. It interposes `CFUserNotificationDisplayNotice` and drops only
+MobileStorageMounter's UNSUPPORTED_FAILURE notice ("The attached USB device is not supported."), which a
+usb-kbd raises on every boot and which, while up, keeps SpringBoard from locking (contrib/it-msmquiet):
 
 ```
-contrib/ipad1-guest/build.sh                            # -> build/ipad1-guest/{it_pbd,it_ethlink,it_seal}
+contrib/ipad1-guest/build.sh                            # -> build/ipad1-guest/{it_pbd,it_ethlink,it_seal,it_msmquiet.dylib}
 imgtools/ipad1_rootfs.py build --base pristine
-imgtools/ipad1_rootfs.py bake FILES/userland/pristine --seal   # helpers + their com.qemu.* jobs, root-owned
+imgtools/ipad1_rootfs.py bake FILES/userland/pristine --seal   # helpers + their com.qemu.* jobs, root-owned; BTServer Disabled
 imgtools/ipad1_nand.py build --mbr FILES/hw2/rdisk0-head4M.bin --system FILES/userland/pristine/system.img \
                              --data FILES/userland/pristine/data.img --out FILES/userland/golden-pristine.new
 imgtools/ipad1_seal.py FILES/userland/golden-pristine.new      # one clean halt, then checks the FTL context
@@ -130,9 +134,11 @@ Fresh journaled HFSX "Data" (`ipad1_nand.make_hfs_image`), 2 GiB (real p2 is 14 
 3. `/private/var/root/Library/Lockdown` from the real iPad: `activation_records/pod_record.plist`,
    `data_ark.plist` (`ActivationState = Activated`), `device_{private,public}_key.pem`, three `pair_records`.
 
-Ownership as on the unit (`ls -ln /private/var`): `mobile/`, `ea/` 501:501, everything else 0:0. The host
-mount is `noowners`, so the catalog is patched offline afterwards (`build_nand.set_owner`; 64 records
-pristine, 3562 jailbroken).
+Ownership is the source rootfs's own (`hdiutil attach -owners on` of its `/private/var`): `mobile/`,
+`ea/` 501:501, `Keychains/` 64:0 (`_securityd`), `empty/` 0:3, `run/` 0:1, the rest 0:0; seeded extras
+(stash, Lockdown, preferences) fall back to root, or mobile under `mobile/`. The host mount is `noowners`,
+so the catalog is patched offline afterwards (`build_nand.set_owner`; 67 records pristine, 3564
+jailbroken). A root-owned `Keychains/` broke every keychain user: securityd cannot create its database.
 
 ### unsigned-machos.txt
 

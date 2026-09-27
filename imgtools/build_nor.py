@@ -94,8 +94,24 @@ def _aes_cbc(key, data, encrypt):
     return op.update(data) + op.finalize()
 
 
+# The UID the emulated S5L8930 (iPad 1) reports: cdma_uid_key in
+# hw/arm/s5l8930_cdma.c, an AES-256 key.
+S5L8930_UID_KEY = b"K48AP-UID-S5L8930-iPad1-7B500-01"
+
+# The IMG2 image walk in the order the K48AP 3.2.2 restore manifest lists it.
+K48_ORDER = ["illb", "ibot", "dtre", "logo", "recm", "nsrv", "bat0", "bat1",
+             "glyC", "glyP", "chg0", "chg1", "batF"]
+
+
 def shsh_wrap_key(uid_key):
-    """The key iBoot derives from the device UID to unwrap a flash SHSH."""
+    """The key iBoot derives from the device UID to unwrap a flash SHSH.
+
+    S5L8720 (7E18 @0x0ff110a6): AES-128 decrypt of SHSH_KDF_CONST with the
+    UID. S5L8930 (817.29 @0x5ff0d308, AES setup 0x30100): AES encrypt with
+    the 256-bit UID; the first 16 bytes are the AES-128 wrapping key.
+    """
+    if len(uid_key) == 32:
+        return _aes_cbc(uid_key, SHSH_KDF_CONST, encrypt=True)
     return _aes_cbc(uid_key, SHSH_KDF_CONST, encrypt=False)
 
 
@@ -268,6 +284,9 @@ def main():
                     help="device UID key (32 hex digits) to wrap each SHSH for")
     ap.add_argument("--no-wrap-shsh", action="store_true",
                     help="leave the SHSH tags in plaintext; 2.x iBoot wants this")
+    ap.add_argument("--k48", action="store_true",
+                    help="iPad 1 (S5L8930) NOR: K48AP image order and the "
+                         "emulated S5L8930 UID; implies --types/--uid-key")
     args = ap.parse_args()
 
     if args.verify:
@@ -276,7 +295,11 @@ def main():
     if not (args.base and args.all_flash and args.out):
         ap.error("--base, --all-flash and --out are all required")
     uid = None if args.no_wrap_shsh else bytes.fromhex(args.uid_key)
-    build(args.base, args.all_flash, args.out, args.types.split(","), uid_key=uid)
+    types = args.types.split(",")
+    if args.k48:
+        types = K48_ORDER
+        uid = None if args.no_wrap_shsh else S5L8930_UID_KEY
+    build(args.base, args.all_flash, args.out, types, uid_key=uid)
 
 
 if __name__ == "__main__":
