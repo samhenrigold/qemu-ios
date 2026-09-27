@@ -364,9 +364,21 @@ static bool scanout_layer(S5L8930DisplayState *s, unsigned *w, unsigned *h,
     }
     *base = r[(DP_UI_BASE(layer) + DP_UI_ADDR) / 4];
     *fmt = (r[(DP_UI_BASE(layer) + DP_UI_FORMAT) / 4] >> 8) & 7;
-    /* Bytes per row live above bit 4: the 7B500 swap path writes
-     * (4096 << 4) | 2 for a 1024x768 BGRA surface. */
-    *stride = (r[(DP_UI_BASE(layer) + DP_UI_STRIDE) / 4] & ~0x3fu) >> 4;
+    /*
+     * Two encodings meet in +0x48 (low 6 bits are flags). The kernel's swap
+     * path programs bytes per row << 4: (4096 << 4) | 2 for a 1024x768
+     * BGRA surface. AppleDisplayPipe::start_hardware (c058c424) instead
+     * reads +0x48 & ~0x3f as plain bytes per row for the default surface
+     * it builds from what iBoot left, so the reset value is plain (see
+     * s5l8930_display_reset). No UI row is wider than 2048 x 4 bytes, so
+     * anything bigger is the shifted form.
+     * ponytail: value-range heuristic; replace with the real field layout
+     * if a register dump from the unit ever shows iBoot's value.
+     */
+    *stride = r[(DP_UI_BASE(layer) + DP_UI_STRIDE) / 4] & ~0x3fu;
+    if (*stride > 2048 * 4) {
+        *stride >>= 4;
+    }
     return *base != 0;
 }
 
@@ -490,7 +502,13 @@ static void s5l8930_display_reset(DeviceState *dev)
     if (s->fb_base) {
         r[DP_LAYERS / 4] = 0x100;
         r[(DP_UI_BASE(0) + DP_UI_ADDR) / 4] = s->fb_base;
-        r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4] = (DEFAULT_WIDTH * 4) << 4 | 2;
+        /* Plain bytes per row. This was (4096 << 4) | 2, which the kernel
+         * adopted as a 64 KiB row: a 48 MiB default surface (0x3000000,
+         * too big for PurpleGfxMem, so a buffer instead) whose black fill
+         * at power-off (CA fill_iosurface, CGBlt_fillBytes) ran off its
+         * mapping. SpringBoard died with SIGBUS (KERN_PROTECTION_FAILURE)
+         * and never reached reboot2, so Hold -> slide never powered off. */
+        r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4] = DEFAULT_WIDTH * 4 | 2;
         r[0x4060 / 4] = DEFAULT_WIDTH << 16 | DEFAULT_HEIGHT;
     }
     pipe0_update_irq(s);
