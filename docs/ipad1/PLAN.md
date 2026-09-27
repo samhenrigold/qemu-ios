@@ -231,7 +231,10 @@ CDMA ch 0x1a (16 x 4 KiB IOAudio ring, streamed in 10 ms virtual-time steps) -> 
 0.86-0.92 against the rootfs files at 1.00x); `tests/ipad1/audio-check.py` checks boot/unlock/lock/unlock.
 Rate: the I2S frame rate is read from PMGR NCO n (+4 = 64 * fs, written by the NCOFrequency function when
 the device rate is set). The device stays at 44.1 kHz; every on-device sound is 11.025-44.1 kHz and the HAL
-resamples to it. A device switch to 48 kHz (an app setting the preferred hardware rate) is not proven yet.
+resamples to it. 48 kHz media: Safari (USB Ethernet, USB keyboard) playing a 48 kHz stereo 1 kHz tone WAV
+from a host HTTP server (Range requests needed, or the player shows a crossed-out play icon) lands in the
+44.1 kHz host WAV as 1000.00 Hz for 3.97 s of 4 s, i.e. right pitch and speed. A device-side switch to
+48 kHz (an app setting the preferred hardware rate) is still unobserved.
 Gap — microphone: capture is i2s0 RX on CDMA ch 0x1b (FIFO 0x84500438; RX command +0x34, RX FIFO +0x38).
 The paced CDMA only moves memory -> FIFO, and the I2S RX FIFO reads 0. To add: a QEMU `AUD_open_in` voice
 feeding an RX ring that +0x38 drains, and the device -> memory direction in `cdma_paced_advance`. Needs an
