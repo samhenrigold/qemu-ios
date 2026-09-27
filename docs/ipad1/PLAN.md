@@ -83,6 +83,11 @@ data-partition key 0x89B) — not the full descriptor engine. D1815 PMU + new I2
 panic). `debug-enabled` forced (DT + 7B500 kernel global) so AMFI honors its boot-args.
 Success: launchd, then SpringBoard attempts, diffed against the HW-2 serial log.
 
+**M3 DONE + rotation (2026-09-27):** copy-on-write NAND overlay (f8faca33e5: `nand-overlay=DIR`; base
+read-only; reset = delete overlay; changes survive unclean kill + reboot, fsck clean). Rotation through the
+accelerometer to all four orientations (screens/2026-09-27-rotate-*.png). Slide-to-power-off after a held
+Hold (02ac1db7e4).
+
 **Input (2026-09-27):** apps launch by tap and Home returns (screens/2026-09-27-app-*.png); host multi-touch
 via QEMU mtt events drives Maps pan/pinch (9ec85b1f05); host-settable orientation (01c883227b); USB
 keyboard on the CCK host path types into Notes with usbmux still up (merged, docs/ipad1/usb-keyboard.md).
