@@ -30,6 +30,10 @@
 #define S5L8930_RGBOUT2_BASE     0x89600000
 #define S5L8930_DART2_BASE       0x89d00000   /* IOMMU in front of the display pipe */
 #define S5L8930_DART2_SIZE       0x2000
+#define S5L8930_CDMA_BASE        0x87000000   /* shared DMA engine, channel n at n<<12 */
+#define S5L8930_CDMA_SIZE        0x26000
+#define S5L8930_AES_BASE         0x87800000   /* CDMA AES filter contexts, ctx n at n<<12 */
+#define S5L8930_AES_SIZE         0x9000
 #define S5L8930_PMGR_BASE        0xbf100000   /* clocks, gates, timer (+0x2000), POWER_ID (+0x6000) */
 #define S5L8930_PMGR_SIZE        0x8000
 #define S5L8930_VIC_BASE(n)      (0xbf200000 + (n) * 0x10000)
@@ -52,6 +56,7 @@
 #define S5L8930_IRQ_DSIM         0x28
 #define S5L8930_IRQ_CLCD         0x29
 #define S5L8930_IRQ_DISP_PIPE0   0x2a
+#define S5L8930_IRQ_CDMA(ch)     (0x31 + (ch))
 #define S5L8930_IRQ_GPIO         0x74
 
 /*
@@ -95,5 +100,15 @@
  * sysbus IRQ 0 = pipe (S5L8930_IRQ_DISP_PIPE0), 1 = CLCD.
  */
 #define TYPE_S5L8930_DISPLAY "s5l8930.display"
+
+/*
+ * CDMA + AES filter (hw/arm/s5l8930_cdma.c). MMIO 0 = channel block
+ * (S5L8930_CDMA_SIZE at S5L8930_CDMA_BASE), MMIO 1 = AES contexts
+ * (S5L8930_AES_SIZE at S5L8930_AES_BASE); sysbus IRQ n = channel n
+ * (S5L8930_IRQ_CDMA(n)), n < S5L8930_CDMA_CHANNELS. Chains complete
+ * synchronously inside the channel's go write.
+ */
+#define TYPE_S5L8930_CDMA "s5l8930.cdma"
+#define S5L8930_CDMA_CHANNELS    0x26
 
 #endif

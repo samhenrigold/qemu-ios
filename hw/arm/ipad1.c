@@ -237,6 +237,16 @@ static void ipad1_init(MachineState *machine)
     sysbus_mmio_map(sbd, 0, S5L8930_IOP_BASE);
     sysbus_mmio_map(sbd, 1, S5L8930_IOP_VIC_BASE);
 
+    /* CDMA + AES filter; one interrupt line per channel. */
+    dev = qdev_new(TYPE_S5L8930_CDMA);
+    sbd = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(sbd, &error_fatal);
+    sysbus_mmio_map(sbd, 0, S5L8930_CDMA_BASE);
+    sysbus_mmio_map(sbd, 1, S5L8930_AES_BASE);
+    for (i = 0; i < S5L8930_CDMA_CHANNELS; i++) {
+        sysbus_connect_irq(sbd, i, ipad1_irq(s, S5L8930_IRQ_CDMA(i)));
+    }
+
     /* Same Samsung UART as the S5L8720, including its interrupt scheme. */
     exynos4210_uart_create(S5L8930_UART_BASE(0), 256, 0, serial_hd(0),
                            ipad1_irq(s, S5L8930_IRQ_UART(0)), true);
