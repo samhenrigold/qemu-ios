@@ -55,8 +55,10 @@ def main():
                     lit = True
                     print(f'{elapsed:6.1f}s lock screen lit ({bright} bright samples)', flush=True)
                     if a.unlock:
-                        itqmp.swipe(q, 64, 290, 64, 710, steps=30, dt=0.03)
-                        time.sleep(3)
+                        itqmp.button(q, 'home')
+                        time.sleep(2)
+                        itqmp.swipe(q, 66, 287, 66, 700, steps=40, dt=0.03)
+                        time.sleep(6)
                         q.cmd('screendump', filename=str((a.out / 'unlocked.ppm').resolve()))
                     break
                 next_shot += 1
@@ -67,6 +69,13 @@ def main():
             raise RuntimeError('did not reach launchd through iBoot')
         print('PASS: iBoot loaded the kernel and device tree; root mounted, launchd started, and the lock screen lit.')
         print('Inspect screen captures to verify SpringBoard.')
+        q.cmd('system_powerdown')
+        deadline = time.monotonic() + 45
+        while p.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.5)
+        if p.poll() is None or p.returncode != 0:
+            raise RuntimeError('guest did not shut down cleanly; see serial.log')
+        print('PASS: guest shut down cleanly; overlay is ready for the next boot.')
     finally:
         if q:
             q.close()
