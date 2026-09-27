@@ -93,7 +93,10 @@ USB_ETH_IF = {"Active": True, "BSD Name": "en1", "IOBuiltin": False, "IOInterfac
                              "AppleUSBEthernetDevice/IOEthernetInterface"}
 MOBILE_TOP = ("mobile", "ea")                # uid 501 on the real unit; everything else under /var is root
 # guest tool -> (install path on the system volume, mode); the job comes from contrib/it-pasteboard
-TOOLS = {"it_pbd": ("usr/local/bin/it_pbd", 0o755), "it_ethlink": ("usr/local/bin/it_ethlink", 0o755)}
+TOOLS = {"it_pbd": ("usr/local/bin/it_pbd", 0o755), "it_ethlink": ("usr/local/bin/it_ethlink", 0o755),
+         "it_msmquiet.dylib": ("usr/local/lib/it_msmquiet.dylib", 0o755)}
+# Apple job that loads it_msmquiet (hides the USB "not supported" notice; contrib/it-msmquiet)
+MSM_JOB = "System/Library/LaunchDaemons/com.apple.mobile.storage_mounter.plist"
 # launchd job, installed path -> source under contrib/
 JOBS = {"System/Library/LaunchDaemons/com.qemu.it-pbd.plist": "it-pasteboard/com.qemu.it-pbd.plist",
         "System/Library/LaunchDaemons/com.qemu.it-ethlink.plist": "it-ethlink/com.qemu.it-ethlink.plist"}
@@ -137,6 +140,11 @@ def springboard_env(d, env=SB_ENV):
     assert d.get("Label") == "com.apple.SpringBoard"
     d.setdefault("EnvironmentVariables", {}).update(env)
     d["StandardOutPath"] = d["StandardErrorPath"] = "/dev/console"
+
+
+def msm_insert(d):
+    assert d.get("Label") == "com.apple.mobile.storage_mounter"
+    d.setdefault("EnvironmentVariables", {})["DYLD_INSERT_LIBRARIES"] = "/" + TOOLS["it_msmquiet.dylib"][0]
 
 
 def usb_net_interfaces(d):
@@ -452,8 +460,9 @@ def bake(a):
         for rel, src in JOBS.items():
             shutil.copyfile(os.path.join(contrib, src), os.path.join(m.mnt, rel))
             os.chmod(os.path.join(m.mnt, rel), 0o644)
+        rewrite_plist(os.path.join(m.mnt, MSM_JOB), msm_insert)
     # noowners mount: launchd ignores a job plist that is not root-owned
-    n = bn.set_owner(system, ["usr/local", "usr/local/bin"] + list(JOBS) + [rel for rel, _ in TOOLS.values()], 0, 0)
+    n = bn.set_owner(system, ["usr/local", "usr/local/bin", "usr/local/lib"] + list(JOBS) + [rel for rel, _ in TOOLS.values()], 0, 0)
     shutil.rmtree(os.path.join(a.dir, "mnt-system"), ignore_errors=True)
     print("baked %s + %s into %s (%d catalog records patched); rebuild the NAND store with ipad1_nand.py"
           % (", ".join(TOOLS), ", ".join(os.path.basename(j) for j in JOBS), system, n))
