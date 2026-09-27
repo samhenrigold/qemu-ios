@@ -20,12 +20,6 @@ typedef struct IPodTouchPKEState {
 	SysBusDevice busdev;
     MemoryRegion iomem;
     IPodTouchSHA1State *sha1; /* Wired by the owning machine, not snapshot state. */
-    /*
-     * Or, for another SoC's SHA1 engine: given the digest a signature
-     * recovered, the one the caller will compare it with.
-     */
-    bool (*vouch)(void *opaque, const uint8_t recovered[20], uint8_t out[20]);
-    void *vouch_opaque;
     uint8_t segments[2048];
     uint8_t modulus[256];
     uint32_t modulus_size, key_len, seg_id, seg_sign;

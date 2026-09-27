@@ -227,10 +227,5 @@ static inline unsigned s5l8930_i2s_rate(unsigned port)
  * No interrupt line: the kext completes on the CDMA channel, not IRQ 0x25.
  */
 #define TYPE_S5L8930_SHA1 "s5l8930.sha1"
-/*
- * The digest an RSA signature check is about to be compared against, given
- * the one the signature recovered (iboot-sigcheck=off; see the definition).
- */
-bool s5l8930_sha1_vouch(void *sha1, const uint8_t recovered[20], uint8_t out[20]);
 
 #endif
