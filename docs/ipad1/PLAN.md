@@ -185,6 +185,14 @@ syslog_relay, crash reports, DDI ScreenShotr). Guest code only where unavoidable
 Connection Kit host path (stock USB HID); open question whether the kernel runs host (EHCI) and device
 (usbmux) together, else a CCK plug/unplug mode switch. The IOHIDUserDevice daemon is only a fallback.
 
+## Principle: IPSW-agnostic guest changes (Sam, 2026-09-27)
+When this fans out to many iOS versions, no version may need hand work. So guest changes are only:
+boot-args, or helpers/dylibs baked in by the image builder that find what they need by stable API or symbol
+name at runtime (IOKit properties, dlsym/interposing). No byte patches at hand-found offsets. That rules out
+the --usb-eth-link kernel patch long-term: it is being replaced by the it_ethlink helper (sets
+LinkStatus=1 through IOKit, as USBEthernetSharing does). AppSync on the iPad is an injected dylib that
+interposes MISValidateSignature, not an installd patch. Wi-Fi (BCM4329) is parked after stage 1 (2026-09-27).
+
 ## Keyboard / network decisions (2026-09-27, docs/ipad1/keyboard-and-network.md)
 1. Keyboard: USB keyboard via the Camera Connection Kit host path (EHCI + usb-kbd) — now; IOHID daemon as fallback.
 2. USB Ethernet: the device's own Apple USB Ethernet configuration bridged to libslirp — now.
