@@ -24,8 +24,8 @@ Slots are filled in this order of priority:
 2. **Glishim overrides:**
    - `glGetString` (117) answers "OpenGL ES 2.0" / "OpenGL ES GLSL ES 1.00" for ES2
      contexts.
-   - `glShaderSource` (592), `glBindAttribLocation` (527), `glGetAttribLocation` (529) and
-     `glGetUniformLocation` (623) load the pages holding their strings before the host
+   - `glShaderSource` (595), `glBindAttribLocation` (630), `glGetAttribLocation` (632) and
+     `glGetUniformLocation` (625) load the pages holding their strings before the host
      reads them.
 3. **Generated forwarders** for every slot that OpenGLES exports or that the real
    GLEngine fills for ES1 or ES2: 271 in total. Each sends its arguments as 32-bit words
@@ -35,9 +35,13 @@ Slots are filled in this order of priority:
    three slots new in 3.2 (761 VertexAttribDivisor, 762/763 Draw*Instanced) and 825
    `glFramebufferParameteriAPPLE`, none of which has a wire number.
 
-**Host gap:** `gles-host.c` implements the ES1 subset only. The ES2 forwarders
-(shaders, programs, uniforms, vertex attribs, …) reach its once-per-slot `UNHANDLED`
-warning and return 0 until it has an ES2 executor.
+**Host side:** `gles-host.c` runs the ES2 slots on its desktop GL 2.1 context
+(`gles_es2_call`/`gles_es2_draw`): shaders and programs pass through, with ES GLSL 1.00
+fed to GLSL 1.20 minus `#version` and `precision`; attribute arrays are fetched from
+guest memory at draw time like the ES1 client arrays; the ES2-only `glGet` names are
+answered. Not done: `glGetUniform*v`, `glGetShaderSource`, `glShaderBinary`.
+The iPad machine registers the guest-services trap for the GLES calls only
+(`ipad1_qemu_call` in `hw/arm/ipad1.c`).
 
 ## gli* entry points
 
@@ -54,9 +58,28 @@ warning and return 0 until it has an ES2 executor.
 | gliPresentViewES | mbxshim `GLESPresentView`: render into the current surface, then `drawable->vt[4](d,1)`, then `vt[3]` next frame |
 | QueryRendererInfo, DestroyRendererInfo, AttachDrawable(WithOptions), SwapBuffers, Get/Set/CopyAttributes | stubs (OpenGLES 3.2.2 never calls them). Each returns 10015, except DestroyRendererInfo, which returns 0 |
 
-## Unverified (no emulated userland yet)
+## Test apps and images
 
-- The ES1/ES2 choice when api_bits has both 4 and 8 set.
-- Whether EAGL expects real values from `gliGetInteger`.
-- The order of `0x38E` relative to `gliBindViewES` for the second and later
-  `renderbufferStorage:fromDrawable:`.
+`build.sh` also builds `GLTest.app` (ES1: cyan quad on magenta) and `GLTest2.app`
+(ES2 shader: blue quad on yellow) from `contrib/it-gles/glapp.c`; both log to
+`/dev/console`, i.e. the serial log. `imgtools/ipad1_rootfs.py build --gles` installs
+the engine and the apps, `--ca-ogl` additionally lets SpringBoard's CoreAnimation
+composite through GL (drops `CA_ENABLE_OGL=0`, sets `GLI_ACCELERATED=1`). The apps
+only get icons on the **jailbroken** base; the pristine installd/SpringBoard hide
+ldid-signed bundles. Boot with `amfi_allow_any_signature=1 cs_enforcement_disable=1`.
+`tests/ipad1/gl-drive.py` boots a store on an overlay and scripts taps and screendumps.
+
+## Results (2026-09-27)
+
+- ES1 and ES2 apps render and CA composites them (software CA):
+  `docs/ipad1/screens/2026-09-27-gles1-gltest.png`, `...-gles2-gltest2.png`.
+  Presents 300+/300+ ok, no unhandled slots.
+- Observed order: `gliBindViewES(drawable)` comes **before** the `0x38E` attach.
+- Accelerated CA (`--ca-ogl`): SpringBoard gets an ES2 context and draws the home
+  screen on the host into its IOSurface render target (read back into the guest on
+  every framebuffer unbind: non-black content), but the screen stays black. The IOMFB
+  swaps never complete (`IOMFB fCommandPool->getCommand(false) returned NULL` on
+  serial, display layer never enabled), and after ~68 frames CA deletes its target.
+  `-[EAGLContext swapNotification:...]` would send `gliSetInteger(0x2C1)` for an
+  accelerated pixel format, but it is never called. Unresolved: why CA's
+  `add_swap_token` path is not reached. Software CA stays the default.

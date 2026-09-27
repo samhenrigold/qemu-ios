@@ -105,6 +105,11 @@ for slot, name, wire, argc in rows:
     out.append("static int g%d(void *gc%s) /* %s */ { return (int)qc(%d, gc, %d, A(%s)); }"
                % (slot, params, name, wire, argc, args))
 out.append("")
+# Slot numbers by name, so glishim.c's overrides cannot name the wrong slot.
+for slot, name, wire, argc in rows:
+    if wire is not None:
+        out.append("#define GLI_SLOT_%s %d" % (name, slot))
+out.append("")
 out.append("static void *const gli_fwd_table[GLI_N_SLOTS] = {")
 for i in range(0, N_SLOTS, 8):
     out.append("    %s," % ", ".join("(void *)g%d" % j for j in range(i, min(i + 8, N_SLOTS))))
