@@ -154,8 +154,12 @@ struct S5L8930IOPState {
     uint32_t nand_id;       /* the 4 ID bytes the kext compares, LE packed */
     uint8_t nand_ce_mask;   /* CE slots populated on each bus */
     char *nand_dir;         /* page store directory; NULL = blank chip */
+    char *overlay_dir;      /* copy-on-write overlay; base is then read-only */
     uint8_t *chip[NAND_BUSES][NAND_CES];    /* mmap of bus<b>-ce<c>.pages */
     int chip_fd[NAND_BUSES][NAND_CES];
+    uint8_t *ovl[NAND_BUSES][NAND_CES];     /* overlay pages, same layout */
+    int ovl_fd[NAND_BUSES][NAND_CES];
+    uint8_t *dirty[NAND_BUSES][NAND_CES];   /* 1 bit/page: overlay is authoritative */
     uint32_t page_stride;       /* store geometry: page + spare bytes */
     uint32_t store_page_bytes;
     uint32_t store_ppb;
@@ -221,18 +225,43 @@ static void iop_raise_ap_irq(S5L8930IOPState *s)
 
 /* ---- NAND ------------------------------------------------------------- */
 
-/* Mapped page, or NULL for the blank chip / an address off the part. */
-static uint8_t *nand_page(S5L8930IOPState *s, int bus, uint32_t ce,
-                          uint32_t page, bool *bad)
+static bool nand_addr_bad(S5L8930IOPState *s, int bus, uint32_t ce, uint32_t page)
 {
-    *bad = ce >= NAND_CES || !(s->nand_ce_mask & (1u << ce)) ||
-           (s->nand_dir && page >= s->pages_per_ce);
-    if (*bad) {
+    bool bad = ce >= NAND_CES || !(s->nand_ce_mask & (1u << ce)) ||
+               (s->nand_dir && page >= s->pages_per_ce);
+
+    if (bad) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: bus %d ce %u page 0x%x off the part\n",
                       __func__, bus, ce, page);
+    }
+    return bad;
+}
+
+static inline bool nand_dirty(S5L8930IOPState *s, int bus, uint32_t ce, uint32_t page)
+{
+    return s->overlay_dir && (s->dirty[bus][ce][page >> 3] & (1u << (page & 7)));
+}
+
+static inline void nand_set_dirty(S5L8930IOPState *s, int bus, uint32_t ce,
+                                  uint32_t page)
+{
+    s->dirty[bus][ce][page >> 3] |= 1u << (page & 7);
+}
+
+/*
+ * Where a page currently lives: the overlay once it has been programmed or
+ * erased there, else the base store. NULL for the blank chip.
+ */
+static uint8_t *nand_page(S5L8930IOPState *s, int bus, uint32_t ce,
+                          uint32_t page, bool for_write)
+{
+    if (!s->nand_dir) {
         return NULL;
     }
-    return s->nand_dir ? s->chip[bus][ce] + (size_t)page * s->page_stride : NULL;
+    if (s->overlay_dir && (for_write || nand_dirty(s, bus, ce, page))) {
+        return s->ovl[bus][ce] + (size_t)page * s->page_stride;
+    }
+    return s->chip[bus][ce] + (size_t)page * s->page_stride;
 }
 
 /* data gets page + spare bytes, meta the leading FMI_META_BYTES of the spare. */
@@ -240,15 +269,15 @@ static uint32_t nand_read_page(S5L8930IOPState *s, int bus, uint32_t ce,
                                uint32_t page, uint8_t *data, uint8_t *meta)
 {
     uint32_t len = s->bytes_per_page[bus] + s->bytes_per_spare[bus];
-    bool bad;
-    uint8_t *p = nand_page(s, bus, ce, page, &bad);
+    uint8_t *p;
     uint32_t i;
 
     memset(data, 0xff, MAX(len, s->page_stride));
     memset(meta, 0xff, FMI_META_BYTES);
-    if (bad) {
+    if (nand_addr_bad(s, bus, ce, page)) {
         return FMI_STATUS_PARAM;
     }
+    p = nand_page(s, bus, ce, page, false);
     if (!p) {
         return FMI_STATUS_BLANK;
     }
@@ -281,12 +310,12 @@ static uint32_t nand_program_page(S5L8930IOPState *s, int bus, uint32_t ce,
                                   uint32_t page, const uint8_t *data,
                                   uint32_t len, const uint8_t *meta)
 {
-    bool bad;
-    uint8_t *p = nand_page(s, bus, ce, page, &bad);
+    uint8_t *p;
 
-    if (bad) {
+    if (nand_addr_bad(s, bus, ce, page)) {
         return FMI_STATUS_PARAM;
     }
+    p = nand_page(s, bus, ce, page, true);
     if (!p) {
         DPRINTF("program bus %d ce %u page 0x%x (blank chip, dropped)\n",
                 bus, ce, page);
@@ -307,6 +336,9 @@ static uint32_t nand_program_page(S5L8930IOPState *s, int bus, uint32_t ce,
     if (meta) {
         memcpy(p + s->store_page_bytes, meta, FMI_META_BYTES);
     }
+    if (s->overlay_dir) {
+        nand_set_dirty(s, bus, ce, page);
+    }
     return FMI_STATUS_OK;
 }
 
@@ -314,11 +346,20 @@ static uint32_t nand_erase_block(S5L8930IOPState *s, int bus, uint32_t ce,
                                  uint32_t block)
 {
     uint32_t first = block * s->store_ppb;
-    bool bad;
-    uint8_t *p = nand_page(s, bus, ce, first, &bad);
+    uint8_t *p;
+    int fd;
 
-    if (bad) {
+    if (nand_addr_bad(s, bus, ce, first)) {
         return FMI_STATUS_PARAM;
+    }
+    p = nand_page(s, bus, ce, first, true);
+    fd = s->overlay_dir ? s->ovl_fd[bus][ce] : s->chip_fd[bus][ce];
+    if (s->overlay_dir) {
+        uint32_t i;
+
+        for (i = 0; i < s->store_ppb; i++) {
+            nand_set_dirty(s, bus, ce, first + i);
+        }
     }
     if (!p) {
         DPRINTF("erase bus %d ce %u block 0x%x (blank chip, dropped)\n",
@@ -332,7 +373,7 @@ static uint32_t nand_erase_block(S5L8930IOPState *s, int bus, uint32_t ce,
 #ifdef F_PUNCHHOLE
         struct fpunchhole fp = { .fp_offset = off, .fp_length = blen };
 
-        if (fcntl(s->chip_fd[bus][ce], F_PUNCHHOLE, &fp) == 0) {
+        if (fcntl(fd, F_PUNCHHOLE, &fp) == 0) {
             return FMI_STATUS_OK;
         }
 #endif
@@ -946,7 +987,33 @@ static int64_t geometry_get(QDict *g, const char *key, Error **errp)
     return v;
 }
 
-/* Open (creating sparse files as needed) the page store under "nand". */
+/* mmap a store file, creating it sparse at the full size when writable. */
+static bool nand_map_file(const char *path, size_t size, bool writable,
+                          uint8_t **map, int *fdp, Error **errp)
+{
+    int fd = open(path, writable ? O_RDWR | O_CREAT : O_RDONLY, 0644);
+
+    if (fd < 0 || (writable && ftruncate(fd, size) < 0)) {
+        error_setg_errno(errp, errno, "cannot open %s", path);
+        return false;
+    }
+    *map = mmap(NULL, size, writable ? PROT_READ | PROT_WRITE : PROT_READ,
+                writable ? MAP_SHARED : MAP_PRIVATE, fd, 0);
+    if (*map == MAP_FAILED) {
+        error_setg_errno(errp, errno, "cannot map %s", path);
+        close(fd);
+        return false;
+    }
+    *fdp = fd;
+    return true;
+}
+
+/*
+ * Open the page store under "nand"; with "nand-overlay" the base is mapped
+ * read-only and every program/erase lands in the overlay directory (same
+ * file layout plus a bus<b>-ce<c>.dirty bitmap of the pages it owns). A
+ * device reset is "delete the overlay", a snapshot is "copy it".
+ */
 static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
 {
     S5L8930IOPState *s = S5L8930_IOP(dev);
@@ -958,9 +1025,16 @@ static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
     const char *id;
     int64_t page_bytes, spare_bytes, ppb, blocks, ce_per_bus, buses;
     size_t size;
-    int bus, ce;
+    int bus, ce, dfd;
 
     if (!s->nand_dir) {
+        if (s->overlay_dir) {
+            error_setg(errp, "nand-overlay needs a base nand store");
+        }
+        return;
+    }
+    if (s->overlay_dir && g_mkdir_with_parents(s->overlay_dir, 0755) < 0) {
+        error_setg_errno(errp, errno, "cannot create %s", s->overlay_dir);
         return;
     }
     path = g_strdup_printf("%s/geometry.json", s->nand_dir);
@@ -1015,24 +1089,31 @@ static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
     for (bus = 0; bus < NAND_BUSES; bus++) {
         for (ce = 0; ce < NAND_CES; ce++) {
             g_autofree char *f = NULL;
-            int fd;
 
             if (!(s->nand_ce_mask & (1u << ce))) {
                 continue;
             }
             f = g_strdup_printf("%s/bus%d-ce%d.pages", s->nand_dir, bus, ce);
-            fd = open(f, O_RDWR | O_CREAT, 0644);
-            if (fd < 0 || ftruncate(fd, size) < 0) {
-                error_setg_errno(errp, errno, "cannot open %s", f);
+            if (!nand_map_file(f, size, !s->overlay_dir, &s->chip[bus][ce],
+                               &s->chip_fd[bus][ce], errp)) {
                 return;
             }
-            s->chip[bus][ce] = mmap(NULL, size, PROT_READ | PROT_WRITE,
-                                    MAP_SHARED, fd, 0);
-            s->chip_fd[bus][ce] = fd;
-            if (s->chip[bus][ce] == MAP_FAILED) {
-                error_setg_errno(errp, errno, "cannot map %s", f);
+            if (!s->overlay_dir) {
+                continue;
+            }
+            g_free(f);
+            f = g_strdup_printf("%s/bus%d-ce%d.pages", s->overlay_dir, bus, ce);
+            if (!nand_map_file(f, size, true, &s->ovl[bus][ce],
+                               &s->ovl_fd[bus][ce], errp)) {
                 return;
             }
+            g_free(f);
+            f = g_strdup_printf("%s/bus%d-ce%d.dirty", s->overlay_dir, bus, ce);
+            if (!nand_map_file(f, s->pages_per_ce / 8, true, &s->dirty[bus][ce],
+                               &dfd, errp)) {
+                return;
+            }
+            close(dfd);
         }
     }
 }
@@ -1090,6 +1171,7 @@ static const Property s5l8930_iop_properties[] = {
     DEFINE_PROP_UINT32("nand-id", S5L8930IOPState, nand_id, 0xb614d5ad),
     DEFINE_PROP_UINT8("nand-ce-mask", S5L8930IOPState, nand_ce_mask, 0xf),
     DEFINE_PROP_STRING("nand", S5L8930IOPState, nand_dir),
+    DEFINE_PROP_STRING("nand-overlay", S5L8930IOPState, overlay_dir),
 };
 
 static void s5l8930_iop_class_init(ObjectClass *klass, void *data)
