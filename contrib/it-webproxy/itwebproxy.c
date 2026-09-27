@@ -19,6 +19,7 @@
 #include <time.h>
 #include <limits.h>
 #include <stdint.h>
+#include <math.h>
 #include <sys/stat.h>
 #include <stdarg.h>
 #include <unistd.h>
@@ -433,6 +434,176 @@ static void archived_request(const char *target, const char *date, bool head_onl
     fail(502, "The archive returned too many redirects");
 }
 
+/* Wi-Fi location for iOS 3.2's locationd (docs/ipad1/location.md).
+ *
+ * locationd POSTs the BSSIDs it can see to Apple's location server
+ * (AppleLocationServer, default https://iphone-services.apple.com/clls/wloc)
+ * and gets a position per BSSID back. That server no longer speaks to iOS 3,
+ * so this answers it: every BSSID in the request is placed at the host-set
+ * position, which the guest's own Wi-Fi location code then turns into a fix.
+ *
+ * Wire format (PBRequester, ProtocolBuffer.framework 3.2; captured from 7B500):
+ *   request:  u16 version=1, three u16-length strings (locale, app id, OS
+ *             build), then per sub-request u32 type=1, u32 length, protobuf
+ *             ALSLocationRequest { 1: cell tower, 2: ALSWirelessAP {1: macID} }
+ *   response: u16 version=1 (readResponsePreamble), u32 type=1, u32 length,
+ *             protobuf ALSLocationResponse { 2: ALSWirelessAP {1: macID,
+ *             2: ALSLocation {1: latitude, 2: longitude, 3: accuracy}} },
+ *             latitude/longitude as int64 degrees x 1e8, accuracy in metres.
+ * Integers are big-endian.
+ *
+ * The position comes from CONFIG.location beside the proxy CONFIG, "LAT LON"
+ * in degrees, optionally followed by an accuracy in metres; the file may be
+ * replaced atomically while the guest runs. Without it: Apple Park.
+ */
+
+#define DEFAULT_LAT      37.33490
+#define DEFAULT_LON    -122.00898
+#define DEFAULT_ACCURACY 30
+#define MAX_APS          64
+
+typedef struct { const uint8_t *p, *end; } Cursor;
+
+static int be16(Cursor *c, unsigned *out)
+{
+    if (c->end - c->p < 2) return 0;
+    *out = (unsigned)c->p[0] << 8 | c->p[1]; c->p += 2; return 1;
+}
+static int be32(Cursor *c, uint32_t *out)
+{
+    if (c->end - c->p < 4) return 0;
+    *out = (uint32_t)c->p[0] << 24 | (uint32_t)c->p[1] << 16 | (uint32_t)c->p[2] << 8 | c->p[3];
+    c->p += 4; return 1;
+}
+static int varint(Cursor *c, uint64_t *out)
+{
+    uint64_t v = 0;
+    for (int shift = 0; shift < 64 && c->p < c->end; shift += 7) {
+        uint8_t b = *c->p++;
+        v |= (uint64_t)(b & 0x7f) << shift;
+        if (!(b & 0x80)) { *out = v; return 1; }
+    }
+    return 0;
+}
+/* Next field; LEN fields come back as a sub-cursor in *sub. */
+static int field(Cursor *c, unsigned *number, Cursor *sub)
+{
+    uint64_t key, v;
+    if (c->p >= c->end || !varint(c, &key)) return 0;
+    *number = (unsigned)(key >> 3);
+    switch (key & 7) {
+    case 0: return varint(c, &v);
+    case 1: if (c->end - c->p < 8) return 0; c->p += 8; return 1;
+    case 5: if (c->end - c->p < 4) return 0; c->p += 4; return 1;
+    case 2:
+        if (!varint(c, &v) || v > (uint64_t)(c->end - c->p)) return 0;
+        sub->p = c->p; sub->end = c->p + v; c->p += v; return 1;
+    default: return 0;
+    }
+}
+
+typedef struct { uint8_t *data; size_t length, capacity; } Buffer;
+
+static int put(Buffer *b, const void *data, size_t n)
+{
+    if (b->length + n > b->capacity) {
+        size_t cap = (b->length + n) * 2;
+        uint8_t *grown = realloc(b->data, cap);
+        if (!grown) return 0;
+        b->data = grown; b->capacity = cap;
+    }
+    memcpy(b->data + b->length, data, n); b->length += n; return 1;
+}
+static int put_varint(Buffer *b, uint64_t v)
+{
+    uint8_t out[10]; int n = 0;
+    do { out[n] = v & 0x7f; v >>= 7; if (v) out[n] |= 0x80; n++; } while (v);
+    return put(b, out, n);
+}
+static int put_len(Buffer *b, unsigned number, const void *data, size_t n)
+{
+    return put_varint(b, (uint64_t)number << 3 | 2) && put_varint(b, n) && put(b, data, n);
+}
+static int put_int(Buffer *b, unsigned number, int64_t v)
+{
+    return put_varint(b, (uint64_t)number << 3) && put_varint(b, (uint64_t)v);
+}
+
+static void position(const char *config, double *lat, double *lon, double *accuracy)
+{
+    char path[4096];
+    *lat = DEFAULT_LAT; *lon = DEFAULT_LON; *accuracy = DEFAULT_ACCURACY;
+    if (snprintf(path, sizeof(path), "%s.location", config) >= (int)sizeof(path)) return;
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    double a, b, c;
+    int n = fscanf(f, "%lf %lf %lf", &a, &b, &c);
+    fclose(f);
+    if (n >= 2 && isfinite(a) && isfinite(b) && fabs(a) <= 90 && fabs(b) <= 180) {
+        *lat = a; *lon = b;
+        if (n == 3 && isfinite(c) && c > 0 && c < 100000) *accuracy = c;
+    }
+}
+
+/* 0: not a location request. 200: *out and *out_length hold the response body
+ * (caller frees). 400: malformed request. */
+static int it_location_response(const char *target, const char *method, const void *body,
+                         size_t body_length, const char *config, void **out, size_t *out_length)
+{
+    const char *path = strstr(target, "://");
+    path = path ? strchr(path + 3, '/') : target;
+    if (!path || strcmp(path, "/clls/wloc") || strcmp(method, "POST")) return 0;
+
+    Cursor c = { body, (const uint8_t *)body + body_length };
+    unsigned version, length;
+    uint32_t type, size;
+    if (!be16(&c, &version) || version != 1) return 400;
+    for (int i = 0; i < 3; i++) {           /* locale, application id, OS build */
+        if (!be16(&c, &length) || length > (unsigned)(c.end - c.p)) return 400;
+        c.p += length;
+    }
+    if (!be32(&c, &type) || !be32(&c, &size) || size > (uint32_t)(c.end - c.p)) return 400;
+
+    Cursor request = { c.p, c.p + size }, ap = {0}, sub = {0};
+    const uint8_t *macs[MAX_APS]; size_t mac_lengths[MAX_APS]; int count = 0;
+    unsigned number, inner;
+    while (request.p < request.end) {
+        if (!field(&request, &number, &ap)) return 400;
+        if (number != 2 || !ap.p) { ap.p = NULL; continue; }
+        while (ap.p < ap.end) {
+            sub.p = NULL;
+            if (!field(&ap, &inner, &sub)) return 400;
+            if (inner == 1 && sub.p && count < MAX_APS) {
+                macs[count] = sub.p; mac_lengths[count] = sub.end - sub.p; count++;
+            }
+        }
+        ap.p = NULL;
+    }
+
+    double lat, lon, accuracy;
+    position(config, &lat, &lon, &accuracy);
+    Buffer message = {0}, response = {0};
+    int ok = 1;
+    for (int i = 0; i < count && ok; i++) {
+        Buffer where = {0}, entry = {0};
+        ok = put_int(&where, 1, (int64_t)llround(lat * 1e8)) &&
+             put_int(&where, 2, (int64_t)llround(lon * 1e8)) &&
+             put_int(&where, 3, (int64_t)llround(accuracy)) &&
+             put_len(&entry, 1, macs[i], mac_lengths[i]) &&
+             put_len(&entry, 2, where.data, where.length) &&
+             put_len(&message, 2, entry.data, entry.length);
+        free(where.data); free(entry.data);
+    }
+    uint8_t head[10] = { 0, 1, type >> 24, type >> 16, type >> 8, type,
+                         message.length >> 24, message.length >> 16, message.length >> 8, message.length };
+    ok = ok && put(&response, head, sizeof(head)) &&
+         (!message.length || put(&response, message.data, message.length));
+    free(message.data);
+    if (!ok) { free(response.data); return 400; }
+    *out = response.data; *out_length = response.length;
+    return 200;
+}
+
 int main(int argc, char **argv)
 {
     /* libslirp's command transport merges stderr into the guest socket.
@@ -520,7 +691,12 @@ read_request:;
         if (sendall(1, ok, sizeof(ok) - 1)) relay(fd);
         close(fd); return 0;
     }
-    if (archive && strcmp(method, "GET") && strcmp(method, "HEAD"))
+    /* iOS 3.2 locationd pointed straight at the proxy's address (its
+     * AppleLocationServer preference, docs/ipad1/location.md) sends an
+     * origin-form request. It is answered locally in every mode: location is
+     * not browsing, and the preference is baked into the guest either way. */
+    bool local_location = !tunnel[0] && !strcmp(target, "/clls/wloc");
+    if (archive && !local_location && strcmp(method, "GET") && strcmp(method, "HEAD"))
         fail(405, "Archive browsing supports HTTP GET and HEAD");
     if (tunnel[0]) {
         if (target[0] != '/') fail(400, "TLS request needs an origin-form path");
@@ -530,10 +706,11 @@ read_request:;
         strcpy(target, absolute);
     }
     for (const char *p = method; *p; p++) if (!isupper((unsigned char)*p)) fail(400, "Invalid method");
+    if (local_location) strcpy(target, "http://iphone-services.apple.com/clls/wloc");
     if (!tunnel[0] && strncmp(target, "http://", 7)) fail(400, "An absolute HTTP URL is required");
     if (!strcmp(mode, "direct") && retired_url(target))
         fail(410, "This online service has been retired");
-    if (archive) {
+    if (archive && !local_location) {
         const char *authority = target + 7;
         const char *end = strchr(authority, '/');
         const char *at = strchr(authority, '@');
@@ -569,6 +746,17 @@ read_request:;
         if (k < 0 && (errno == EINTR || errno == EAGAIN)) continue;
         if (k <= 0) fail(400, "Incomplete body");
         read_bytes += k;
+    }
+    if (local_location || !strcmp(mode, "direct")) {
+        void *location = NULL; size_t location_length = 0;
+        int status = it_location_response(target, method, body, body_length, argv[1], &location, &location_length);
+        if (status) {
+            free(body); curl_slist_free_all(headers);
+            if (status != 200) fail(status, "Invalid location request");
+            reply_printf(1, "HTTP/1.0 200 OK\r\nContent-Type: application/x-protobuf\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n", location_length);
+            bool sent = sendall(1, location, location_length);
+            free(location); client_finish(); return sent ? 0 : 1;
+        }
     }
 #ifdef HAVE_WEATHER
     if (!strcmp(mode, "direct")) {

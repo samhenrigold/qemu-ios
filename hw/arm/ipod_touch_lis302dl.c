@@ -30,8 +30,10 @@ bool lis302dl_apply_attitude(LIS302DLState *s, double pitch, double roll, bool f
     s->roll_mdeg = lround(roll * 1000);
     s->flat_pose = flat;
     s->base_x = vector[0];
-    s->base_y = vector[1];
-    s->base_z = vector[2];
+    /* The attitude is the device's; the sensor may sit turned 180 degrees
+     * about X on the board (the iPad 1), which reads Y and Z negated. */
+    s->base_y = s->mount_flipped ? -vector[1] : vector[1];
+    s->base_z = s->mount_flipped ? -vector[2] : vector[2];
     return true;
 }
 
@@ -375,6 +377,7 @@ static const VMStateDescription vmstate_lis302dl = {
 
 static const Property lis302dl_properties[] = {
     DEFINE_PROP_UINT8("whoami", LIS302DLState, whoami, ACCEL_WHOAMI_VALUE),
+    DEFINE_PROP_BOOL("mount-flipped", LIS302DLState, mount_flipped, false),
 };
 
 static void lis302dl_class_init(ObjectClass *klass, void *data)

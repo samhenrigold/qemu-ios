@@ -53,6 +53,7 @@
 #define DART_ERROR_STATUS   0x10      /* W1C */
 
 #define VBL_PERIOD_NS       (NANOSECONDS_PER_SECOND / 60)
+#define QUIET_RELATCH_VBLS  15        /* ~250 ms without a swap */
 #define DEFAULT_WIDTH       1024
 #define DEFAULT_HEIGHT      768
 
@@ -95,6 +96,7 @@ struct S5L8930DisplayState {
     size_t front_size;
     uint32_t front_key[4];   /* w, h, fmt, stride of the latched frame */
     bool front_valid;
+    unsigned quiet_vbls;     /* VBLs since the last swap */
 };
 
 /* ---- DisplayPipe ------------------------------------------------------- */
@@ -191,6 +193,16 @@ static void vbl_tick(void *opaque)
      * when latched as the swap's last FIFO word arrived. */
     if (s->pipe[0].swap_pending) {
         s->pipe[0].swap_pending = false;
+        s->quiet_vbls = 0;
+        front_latch(s);
+    } else if (++s->quiet_vbls >= QUIET_RELATCH_VBLS) {
+        /*
+         * No swap for a quarter second, yet the buffer can still change:
+         * with Accessibility > Zoom on, CA stops swapping and the scaler
+         * writes each magnified frame straight into the scanned-out buffer.
+         * Real scanout reads memory live, so follow it: re-latch every VBL
+         * while no swaps come. Swapping clients are latched on their swaps.
+         */
         front_latch(s);
     }
     r[DP_SWAP_DONE / 4] = (r[DP_SWAP_DONE / 4] & ~0xffff) | s->pipe[0].swap_id;
@@ -307,9 +319,9 @@ static const MemoryRegionOps dart_ops = {
  * iBoot's untranslated framebuffer and the kernel's identity "transition
  * mapping" amount to. Returns -1 for an invalid PTE.
  */
-static hwaddr dart_xlate(S5L8930DisplayState *s, uint32_t va)
+static hwaddr dart_xlate_sid(S5L8930DisplayState *s, unsigned sid, uint32_t va)
 {
-    uint32_t ste = s->ste[0][(va >> 22) & 0x3f] & ~0xfffu;
+    uint32_t ste = s->ste[sid][(va >> 22) & 0x3f] & ~0xfffu;
     uint32_t pte;
 
     if (!ste) {
@@ -320,6 +332,17 @@ static hwaddr dart_xlate(S5L8930DisplayState *s, uint32_t va)
         qemu_log_mask(LOG_GUEST_ERROR, "dart2: invalid PTE 0x%08x for iova 0x%08x\n", pte, va);
     }
     return (pte & 1) ? ((pte & ~0xfffu) | (va & 0xfff)) : (hwaddr)-1;
+}
+
+static hwaddr dart_xlate(S5L8930DisplayState *s, uint32_t va)
+{
+    return dart_xlate_sid(s, 0, va);
+}
+
+/* dart2 for another client (DT dart-mapper reg: 1 RGBOUT, 2 scaler). */
+hwaddr s5l8930_dart2_xlate(void *display, uint32_t va, unsigned sid)
+{
+    return dart_xlate_sid(S5L8930_DISPLAY(display), sid < DART_SIDS ? sid : 0, va);
 }
 
 /* Read `len` bytes of framebuffer at IOVA `va`, page by page. */
@@ -346,12 +369,10 @@ static void display_invalidate(void *opaque)
 {
 }
 
-/* The scanned-out UI layer, or false when the panel shows nothing. */
-static bool scanout_layer(S5L8930DisplayState *s, unsigned *w, unsigned *h,
-                          uint32_t *fmt, uint32_t *base, uint32_t *stride)
+/* Panel size: +0x1030, or the default before the kernel programs it. */
+static void panel_size(S5L8930DisplayState *s, unsigned *w, unsigned *h)
 {
     uint32_t *r = s->pipe[0].regs;
-    int layer = (r[DP_LAYERS / 4] & 0x100) ? 0 : (r[DP_LAYERS / 4] & 0x200) ? 1 : -1;
 
     *w = (r[DP_SIZE / 4] >> 16) & 0x7ff;
     *h = r[DP_SIZE / 4] & 0x7ff;
@@ -359,7 +380,15 @@ static bool scanout_layer(S5L8930DisplayState *s, unsigned *w, unsigned *h,
         *w = DEFAULT_WIDTH;
         *h = DEFAULT_HEIGHT;
     }
-    if (layer < 0) {
+}
+
+/* UI layer `layer`'s scanout parameters, or false if it is off or unset. */
+static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w,
+                          uint32_t *fmt, uint32_t *base, uint32_t *stride)
+{
+    uint32_t *r = s->pipe[0].regs;
+
+    if (!(r[DP_LAYERS / 4] & (0x100 << layer))) {
         return false;
     }
     *base = r[(DP_UI_BASE(layer) + DP_UI_ADDR) / 4];
@@ -371,48 +400,123 @@ static bool scanout_layer(S5L8930DisplayState *s, unsigned *w, unsigned *h,
      * gave the boot surface 64 KiB rows. A <<4 value never undershoots a row. */
     {
         uint32_t v = r[(DP_UI_BASE(layer) + DP_UI_STRIDE) / 4] & ~0x3fu;
-        unsigned row = *w * (((*fmt) ? 2 : 4));
+        unsigned row = w * (((*fmt) ? 2 : 4));
         *stride = (v >> 4) >= row ? v >> 4 : v;
     }
     return *base != 0;
 }
 
+/* One row of a layer as XRGB/ARGB8888 (0 ARGB/BGRA, 2 ARGB4444, 4 RGB565). */
+static void layer_row(S5L8930DisplayState *s, uint32_t fmt, uint32_t base,
+                      uint32_t stride, unsigned y, unsigned w, uint32_t *d)
+{
+    if (fmt == 0) {
+        fb_read(s, base + y * stride, (uint8_t *)d, w * 4);
+        return;
+    }
+    g_autofree uint16_t *p = g_new(uint16_t, w);
+    fb_read(s, base + y * stride, (uint8_t *)p, w * 2);
+    for (unsigned x = 0; x < w; x++) {
+        uint16_t v = le16_to_cpu(p[x]);
+        d[x] = fmt == 2
+            ? ((uint32_t)(v & 0xf000) << 16 | (uint32_t)(v & 0xf000) << 12 |
+               (v & 0xf00) << 12 | (v & 0xf00) << 8 |
+               (v & 0x0f0) << 8 | (v & 0x0f0) << 4 |
+               (v & 0x00f) << 4 | (v & 0x00f))
+            : (0xff000000u | (v & 0xf800) << 8 | (v & 0xe000) << 3 |
+               (v & 0x07e0) << 5 | (v & 0x0600) >> 1 |
+               (v & 0x001f) << 3 | (v & 0x001c) >> 2);
+    }
+}
+
+/*
+ * The panel image: UI0, then UI1 over it. With GPU CoreAnimation both are on
+ * (0x1038 = 0x300): UI0 keeps the boot surface and CA double-buffers the
+ * whole screen in UI1 (0x603000 / 0x904000), each with its own base, stride
+ * and format and a size of +0x60 (w << 16 | h) that is the full panel. UI1 is
+ * blended source-over with its alpha (premultiplied, as CA renders); an
+ * opaque UI1 simply replaces UI0. Software CA uses UI0 alone.
+ * ponytail: full-panel UI1 at 0,0, the only placement CA uses; add +0x50
+ * (position) and +0x60 (size) clipping if a partial overlay ever shows up.
+ */
+static bool compose(S5L8930DisplayState *s, unsigned w, unsigned h, uint32_t *out,
+                    uint32_t key[4])
+{
+    uint32_t fmt[2], base[2] = { 0, 0 }, stride[2];
+    bool on[2];
+    g_autofree uint32_t *top = NULL;
+
+    for (int l = 0; l < 2; l++) {
+        on[l] = scanout_layer(s, l, w, &fmt[l], &base[l], &stride[l]);
+    }
+    if (key) {
+        key[0] = w << 16 | h;
+        key[1] = (on[0] ? 1 : 0) | (on[1] ? 2 : 0);
+        key[2] = on[0] ? base[0] : 0;
+        key[3] = on[1] ? base[1] : 0;
+    }
+    if (!on[0] && !on[1]) {
+        return false;
+    }
+    if (!out) {
+        return true;
+    }
+    if (on[1]) {
+        top = g_new(uint32_t, w);
+    }
+    for (unsigned y = 0; y < h; y++) {
+        uint32_t *d = out + (size_t)y * w;
+
+        if (on[0]) {
+            layer_row(s, fmt[0], base[0], stride[0], y, w, d);
+        } else {
+            memset(d, 0, w * 4);
+        }
+        if (!on[1]) {
+            continue;
+        }
+        layer_row(s, fmt[1], base[1], stride[1], y, w, top);
+        for (unsigned x = 0; x < w; x++) {
+            uint32_t t = top[x], a = t >> 24;
+
+            if (a == 0xff || !on[0]) {
+                d[x] = t;
+            } else if (a) {
+                uint32_t b = d[x], ia = 255 - a, o = 0xff000000u;
+                for (int sh = 0; sh < 24; sh += 8) {
+                    uint32_t c = ((t >> sh) & 0xff) + (((b >> sh) & 0xff) * ia + 127) / 255;
+                    o |= MIN(c, 255u) << sh;
+                }
+                d[x] = o;
+            }
+        }
+    }
+    return true;
+}
+
 static void front_latch(S5L8930DisplayState *s)
 {
     unsigned w, h;
-    uint32_t fmt, base, stride, bpp;
     size_t need;
-    bool lit = scanout_layer(s, &w, &h, &fmt, &base, &stride);
 
+    panel_size(s, &w, &h);
     if (getenv("IT_DISP_TRACE")) {
         static unsigned n;
         uint32_t *r = s->pipe[0].regs;
         if (n++ < 200) {
-            fprintf(stderr, "[disp] swap %u: layers=%08x lit=%d %ux%u fmt=%u base=%08x "
-                    "stride=%u (raw %08x/%08x) ui0=%08x ui1=%08x\n", s->pipe[0].swap_id,
-                    r[DP_LAYERS / 4], lit, w, h, fmt, base, stride,
+            fprintf(stderr, "[disp] swap %u: layers=%08x %ux%u "
+                    "(raw %08x/%08x) ui0=%08x ui1=%08x\n", s->pipe[0].swap_id,
+                    r[DP_LAYERS / 4], w, h,
                     r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4], r[(DP_UI_BASE(1) + DP_UI_STRIDE) / 4],
                     r[(DP_UI_BASE(0) + DP_UI_ADDR) / 4], r[(DP_UI_BASE(1) + DP_UI_ADDR) / 4]);
         }
     }
-    if (!lit) {
-        s->front_valid = false;
-        return;
-    }
-    bpp = fmt ? 2 : 4;
-    need = (size_t)w * h * bpp;
+    need = (size_t)w * h * 4;
     if (need > s->front_size) {
         s->front = g_realloc(s->front, need);
         s->front_size = need;
     }
-    for (unsigned y = 0; y < h; y++) {
-        fb_read(s, base + y * stride, s->front + (size_t)y * w * bpp, w * bpp);
-    }
-    s->front_key[0] = w;
-    s->front_key[1] = h;
-    s->front_key[2] = fmt;
-    s->front_key[3] = base;
-    s->front_valid = true;
+    s->front_valid = compose(s, w, h, (uint32_t *)s->front, s->front_key);
 }
 
 /* ponytail: full redraw every host refresh (~30 Hz, 3 MiB), add dirty
@@ -422,11 +526,12 @@ static void display_update(void *opaque)
     S5L8930DisplayState *s = opaque;
     DisplaySurface *surface;
     unsigned w, h;
-    uint32_t fmt = 0, base = 0, stride = 0, bpp;
-    g_autofree uint8_t *row = NULL;
-    bool lit = scanout_layer(s, &w, &h, &fmt, &base, &stride);
-    bool latched;
+    uint32_t key[4];
+    g_autofree uint32_t *live = NULL;
+    const uint32_t *img;
+    bool lit;
 
+    panel_size(s, &w, &h);
     surface = qemu_console_surface(s->con);
     if (surface_width(surface) != w || surface_height(surface) != h) {
         qemu_console_resize(s->con, w, h);
@@ -436,44 +541,25 @@ static void display_update(void *opaque)
         return;
     }
 
-    if (!lit) {
-        /* No layer: the panel is off (ApplePinotLCD _lcdEnable 0), so black. */
-        for (unsigned y = 0; y < h; y++) {
-            memset(surface_data(surface) + y * surface_stride(surface), 0, w * 4);
-        }
-        dpy_gfx_update(s->con, 0, 0, w, h);
-        return;
+    /* The frame completed by the last swap, if it still describes these
+     * layers; the live buffers only before the first swap (iBoot, early boot). */
+    lit = compose(s, w, h, NULL, key);
+    if (lit && s->front_valid && !memcmp(key, s->front_key, sizeof(key))) {
+        img = (const uint32_t *)s->front;
+    } else if (lit) {
+        live = g_new(uint32_t, (size_t)w * h);
+        compose(s, w, h, live, NULL);
+        img = live;
+    } else {
+        img = NULL;     /* no layer: the panel is off (ApplePinotLCD _lcdEnable 0) */
     }
-
-    /* The frame completed by the last swap, if it still describes this layer;
-     * the live buffer only before the first swap (iBoot, early boot). */
-    latched = s->front_valid && s->front_key[0] == w && s->front_key[1] == h &&
-              s->front_key[2] == fmt && s->front_key[3] == base;
-    bpp = fmt ? 2 : 4;     /* 0 ARGB/BGRA, 2 ARGB4444, 4 RGB565 */
-    row = g_malloc(w * 4);
     for (unsigned y = 0; y < h; y++) {
-        uint32_t *d = (uint32_t *)(surface_data(surface) + y * surface_stride(surface));
-        const uint8_t *src = row;
+        uint8_t *d = surface_data(surface) + y * surface_stride(surface);
 
-        if (latched) {
-            src = s->front + (size_t)y * w * bpp;
+        if (img) {
+            memcpy(d, img + (size_t)y * w, w * 4);
         } else {
-            fb_read(s, base + y * stride, row, w * bpp);
-        }
-        if (fmt == 0) {
-            memcpy(d, src, w * 4);
-        } else {
-            const uint16_t *p = (const uint16_t *)src;
-            for (unsigned x = 0; x < w; x++) {
-                uint16_t v = le16_to_cpu(p[x]);
-                d[x] = fmt == 2
-                    ? ((v & 0xf00) << 12 | (v & 0xf00) << 8 |
-                       (v & 0x0f0) << 8 | (v & 0x0f0) << 4 |
-                       (v & 0x00f) << 4 | (v & 0x00f))
-                    : ((v & 0xf800) << 8 | (v & 0xe000) << 3 |
-                       (v & 0x07e0) << 5 | (v & 0x0600) >> 1 |
-                       (v & 0x001f) << 3 | (v & 0x001c) >> 2);
-            }
+            memset(d, 0, w * 4);
         }
     }
     dpy_gfx_update(s->con, 0, 0, w, h);
@@ -509,6 +595,12 @@ static void s5l8930_display_reset(DeviceState *dev)
     if (s->fb_base) {
         r[DP_LAYERS / 4] = 0x100;
         r[(DP_UI_BASE(0) + DP_UI_ADDR) / 4] = s->fb_base;
+        /* Plain bytes per row. This was (4096 << 4) | 2, which the kernel
+         * adopted as a 64 KiB row: a 48 MiB default surface (0x3000000,
+         * too big for PurpleGfxMem, so a buffer instead) whose black fill
+         * at power-off (CA fill_iosurface, CGBlt_fillBytes) ran off its
+         * mapping. SpringBoard died with SIGBUS (KERN_PROTECTION_FAILURE)
+         * and never reached reboot2, so Hold -> slide never powered off. */
         r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4] = DEFAULT_WIDTH * 4 | 2;
         r[0x4060 / 4] = DEFAULT_WIDTH << 16 | DEFAULT_HEIGHT;
     }

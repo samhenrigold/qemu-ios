@@ -8,5 +8,5 @@ DRAM             = 256 MiB @ 0x40000000  (hw.memsize/physmem = 258998272 usable)
 L2 cache         = 512 KiB, cacheline 64, page 4096
 timebase freq    = 24 MHz    (hw.tbfrequency)
 bus/periph freq  = 100 MHz   (hw.busfrequency)
-IOPlatformSerialNumber = EMU000000000  (device-specific; from Sam's unit)
+IOPlatformSerialNumber = <unit serial>  (device-specific; the real value lives in identity.json)
 # Full property dump: ioreg-full.txt (285 IORegistry entries).

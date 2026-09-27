@@ -48,7 +48,7 @@ The A4 bootrom has limera1n, so we always have pre-iBoot code execution. Tooling
   GPIO, VIC, and the DRAM mirrors. This is an interactive register oracle we can reuse whenever the
   emulator stalls on an unknown value.
 - **HW-1 results (2026-09-26):** limera1n + pwned iBSS + md/mw iBEC work. Measured: ChipID
-  `31800387 80758000 00000000 00000000`, POWER_ID `01020001`. Reading PMGR `0xbf100000` from iBEC hangs
+  `31800387 80758000 <unit die-id word 2> <unit die-id word 3>`, POWER_ID `01020001`. Reading PMGR `0xbf100000` from iBEC hangs
   it, as does reading past a block's end; remaining registers are read from the running jailbroken iOS
   instead (kernel-memory reader, `hw2/regs/`).
 - **HW-2 status:** the iPad already runs 3.2.2 (downgraded from 5.1.1, jailbroken, OpenSSH). Captured:
@@ -82,6 +82,13 @@ page-directory NAND store seeded from the HW-2 dump. CDMA: only the AES path the
 data-partition key 0x89B) — not the full descriptor engine. D1815 PMU + new I2C controller (enough to not
 panic). `debug-enabled` forced (DT + 7B500 kernel global) so AMFI honors its boot-args.
 Success: launchd, then SpringBoard attempts, diffed against the HW-2 serial log.
+
+**GL CoreAnimation is the default (2026-09-27, 6e2cae87fd):** golden-pristine and golden-appsync are built
+with GL CA (`ipad1_rootfs.py --no-ca-ogl` for software CA) and the GLI engine is always installed. animfps on
+golden-pristine: 48 fps while animating (software CA: ~28). **Snapshots work with GL** since acc5e8e9d7
+(gles-host-snapshot: live GL state saves and restores), so checkpoint-lock comes from GL-CA golden-pristine
+again (regenerated at the next golden rebuild); golden-pristine-swca remains the software-CA store.
+snapshot-check passes on the GL golden; `tearcheck.py --boot STORE` measures a store without a checkpoint.
 
 **GLES (2026-09-27, merged 83609cba9b):** ES 1.1 and 2.0 apps render through the GLI shim to the host executor
 (screens/2026-09-27-gles1-gltest.png, -gles2-gltest2.png). Open: accelerated CoreAnimation draws on the host but
@@ -293,9 +300,12 @@ Every milestone is checked against a real-iPad reference: serial logs (M1–M3),
 screenshots (M4+). `regress.py`-style harness per machine; the iPod machine's suite must stay green through
 every shared-model refactor.
 
-## Real iBoot (M8): stopped, out of scope (2026-09-27)
-iBoot-817.29 runs genuinely on the ipad1 machine up to the kernelcache: `iboot=` property, NOR images, H2FMI NAND
-(FIL/VFL/FTL, HFS mount), SHA-1/PKE/cert-chain all computed correctly. Completing the boot would need
-device-personalized boot images, and that line of work is not being pursued. The iPad boots via the direct-kernel
-path (stock kernel, Apple logo, lock screen in ~12 s). The iboot-sigcheck experiment stays unmerged on branch
-ipad1-iboot2 (176ce6bafc).
+## Real iBoot (M8): stock kernel boot (2026-09-27)
+
+The real iBoot-817.29 path now loads the stock IPSW kernelcache and NOR DeviceTree,
+mounts root, starts launchd, and reaches the activated lock screen. Preparation
+uses iBoot32Patcher's pattern-based signature/personalization and debug patches;
+this is not a verified secure boot. Reconstructed PMGR clock defaults and the
+Wi-Fi radio-presence GPIO complete the kernel handoff. Direct boot stays the
+default. See [iboot.md](iboot.md) for preparation, testing, and captured handoff
+comparison. The emulator-side `iboot-sigcheck` experiment is superseded.
