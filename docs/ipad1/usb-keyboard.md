@@ -124,8 +124,25 @@ supported." Dismiss it, open Notes, tap the note body, and type through QEMU. Th
 note, and no on-screen keyboard appears: "Hello from a USB keyboard!" is visible in the note in a
 screendump.
 
-The alert is stock 3.2 behaviour for this device and was left alone. It is probably iapd/SpringBoard
-not finding an authenticated CCK accessory; the keyboard works regardless.
+**The alert comes from MobileStorageMounter, not the kernel.** It is `UNSUPPORTED_FAILURE` in
+`/System/Library/CoreServices/MobileStorageMounter.app` (launchd job
+`com.apple.mobile.storage_mounter`).
+- The mounter registers `IOServiceAddMatchingNotification(IOServiceFirstMatch,
+  IOServiceMatching("IOUSBInterface"))` with no further filter (0x3358).
+- For each batch of new interfaces, the callback (0x2e0c) reads `bInterfaceClass`, `bInterfaceSubClass`
+  and `bInterfaceProtocol`. It treats class 1 (audio), class 8 (mass storage) and 6/1/1 (PTP camera)
+  as supported. If the batch held at least one interface and none of them was supported, it raises
+  the alert (0x1828).
+- A HID keyboard (3/1/1) always trips it. That matches what CCK keyboard users reported on a real
+  3.2 iPad: dismiss the alert and the keyboard works. It isn't caused by the root hubs, the port, or
+  anything else in our model.
+
+Every way to suppress it is non-stock:
+- Put a fake audio, storage or PTP interface in the same notification batch as the keyboard.
+- Patch or disable the mounter job. Disabling it also loses CCK photo import.
+
+So a stock boot with a USB keyboard shows this alert once per attach, as a real iPad does, and it is
+left as is. If the app wants it gone, it can auto-tap Dismiss after attaching the keyboard.
 
 Harness notes:
 - `usb-kbd` activates itself as the head keyboard handler, so while it is attached, host keys go
