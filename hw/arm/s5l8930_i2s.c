@@ -109,7 +109,10 @@ static uint64_t i2s_read(void *opaque, hwaddr offset, unsigned size)
 
     if (offset == I2S_CTRL) {
         /* Bit 1: TX drained. The stop path (7B500 c086f5ae) writes 0x300 to
-         * +0x810 and spins on it; our FIFO never holds anything. */
+         * +0x810 and spins on it; our FIFO never holds anything. The power-down
+         * path (c086f524: +0x00 |= 0x20, spin until bit 1) waits on the same bit;
+         * unanswered, it pinned a CPU from the first audio idle and took boot to
+         * the lock screen from ~4 min to 32 s once fixed (a4-kbd). */
         return s->regs[0] | I2S_CTRL_TX_IDLE;
     }
     return offset == I2S_TXFIFO ? 0 : s->regs[offset >> 2];
