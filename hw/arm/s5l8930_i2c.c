@@ -427,10 +427,175 @@ static const TypeInfo s5l8930_d1815_info = {
     .class_init        = d1815_class_init,
 };
 
+/* ---- TI TCA6408 8-bit GPIO expander (I2C0 0x20) ----
+ *
+ * 7B500 AppleTCA6408GPIOIC (kext at c063c000): readReg c063d5c8 / writeReg
+ * c063d610; start() reads 0x03 and writes it (configuration), writes 0x01
+ * (output) on pin changes, and interruptAction reads 0x00 (input), XORs it
+ * against the last value and dispatches per pin. Nothing is validated.
+ * Pins (ref-a4-board.md §3): 0 bt_reset, 1 wlan/sdio reset, 2 bluetooth,
+ * 3 wlan, 4 baseband, 5 firewire. INT: asserted (level 1 here) from an
+ * input change until the input port is read, as the datasheet has it.
+ */
+
+#ifndef TYPE_S5L8930_TCA6408   /* until it moves into s5l8930.h */
+#define TYPE_S5L8930_TCA6408 "s5l8930.tca6408"
+#endif
+
+OBJECT_DECLARE_SIMPLE_TYPE(S5L8930TCA6408State, S5L8930_TCA6408)
+
+#define TCA6408_ADDR    0x20
+#define TCA_INPUT       0
+#define TCA_OUTPUT      1
+#define TCA_POLARITY    2
+#define TCA_CONFIG      3   /* 1 = input */
+
+struct S5L8930TCA6408State {
+    I2CSlave i2c;
+    qemu_irq irq;
+
+    uint8_t regs[4];
+    uint8_t pins;           /* external levels driven on the qdev inputs */
+    uint8_t reg;
+    bool addressing;
+    bool pending;
+};
+
+/* Input port: external level on input pins, the output latch on outputs,
+ * then polarity inversion. */
+static uint8_t tca6408_input(S5L8930TCA6408State *s)
+{
+    uint8_t cfg = s->regs[TCA_CONFIG];
+
+    return ((s->pins & cfg) | (s->regs[TCA_OUTPUT] & ~cfg)) ^
+           s->regs[TCA_POLARITY];
+}
+
+static void tca6408_set_pin(void *opaque, int n, int level)
+{
+    S5L8930TCA6408State *s = opaque;
+    uint8_t before = tca6408_input(s);
+
+    s->pins = deposit32(s->pins, n, 1, level != 0);
+    if (tca6408_input(s) != before) {
+        s->pending = true;
+        qemu_set_irq(s->irq, 1);
+    }
+}
+
+static int tca6408_event(I2CSlave *i2c, enum i2c_event event)
+{
+    S5L8930TCA6408State *s = S5L8930_TCA6408(i2c);
+
+    if (event == I2C_START_SEND) {
+        s->addressing = true;
+    }
+    return 0;
+}
+
+static uint8_t tca6408_recv(I2CSlave *i2c)
+{
+    S5L8930TCA6408State *s = S5L8930_TCA6408(i2c);
+    uint8_t reg = s->reg++ & 3;
+
+    if (reg == TCA_INPUT) {
+        s->pending = false;
+        qemu_set_irq(s->irq, 0);
+        return tca6408_input(s);
+    }
+    return s->regs[reg];
+}
+
+static int tca6408_send(I2CSlave *i2c, uint8_t data)
+{
+    S5L8930TCA6408State *s = S5L8930_TCA6408(i2c);
+    uint8_t reg;
+
+    if (s->addressing) {
+        s->addressing = false;
+        s->reg = data;
+        return 0;
+    }
+    reg = s->reg++ & 3;
+    if (reg != TCA_INPUT) {
+        s->regs[reg] = data;
+    }
+    return 0;
+}
+
+static void tca6408_reset(DeviceState *dev)
+{
+    S5L8930TCA6408State *s = S5L8930_TCA6408(dev);
+
+    s->regs[TCA_INPUT] = 0;
+    s->regs[TCA_OUTPUT] = 0xff;
+    s->regs[TCA_POLARITY] = 0;
+    s->regs[TCA_CONFIG] = 0xff;
+    s->pins = 0xff;
+    s->reg = 0;
+    s->addressing = true;
+    s->pending = false;
+    qemu_set_irq(s->irq, 0);
+}
+
+static void tca6408_init(Object *obj)
+{
+    S5L8930TCA6408State *s = S5L8930_TCA6408(obj);
+
+    I2C_SLAVE(obj)->address = TCA6408_ADDR;
+    qdev_init_gpio_out(DEVICE(obj), &s->irq, 1);
+    qdev_init_gpio_in(DEVICE(obj), tca6408_set_pin, 8);
+}
+
+static int tca6408_post_load(void *opaque, int version_id)
+{
+    S5L8930TCA6408State *s = opaque;
+
+    qemu_set_irq(s->irq, s->pending);
+    return 0;
+}
+
+static const VMStateDescription vmstate_s5l8930_tca6408 = {
+    .name = TYPE_S5L8930_TCA6408,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = tca6408_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(i2c, S5L8930TCA6408State),
+        VMSTATE_UINT8_ARRAY(regs, S5L8930TCA6408State, 4),
+        VMSTATE_UINT8(pins, S5L8930TCA6408State),
+        VMSTATE_UINT8(reg, S5L8930TCA6408State),
+        VMSTATE_BOOL(addressing, S5L8930TCA6408State),
+        VMSTATE_BOOL(pending, S5L8930TCA6408State),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static void tca6408_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
+
+    dc->vmsd = &vmstate_s5l8930_tca6408;
+    device_class_set_legacy_reset(dc, tca6408_reset);
+    k->event = tca6408_event;
+    k->recv = tca6408_recv;
+    k->send = tca6408_send;
+}
+
+static const TypeInfo s5l8930_tca6408_info = {
+    .name          = TYPE_S5L8930_TCA6408,
+    .parent        = TYPE_I2C_SLAVE,
+    .instance_size = sizeof(S5L8930TCA6408State),
+    .instance_init = tca6408_init,
+    .class_init    = tca6408_class_init,
+};
+
 static void s5l8930_i2c_register_types(void)
 {
     type_register_static(&s5l8930_i2c_info);
     type_register_static(&s5l8930_d1815_info);
+    type_register_static(&s5l8930_tca6408_info);
 }
 
 type_init(s5l8930_i2c_register_types)
