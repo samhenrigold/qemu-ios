@@ -291,27 +291,26 @@ def syslog_launch(b, rg, cfg, r, res, syslog, end):
     bundle = r["bundle"]
     appname = (r["name"] or "").replace(" ", "")
     launch_needles = [bundle, bundle.split(".")[-1], appname]
-    serial = b.serial
-    # 1. wait until SpringBoard has the display up, read from SERIAL (idevicesyslog drops its
-    # lockdown link under load; the serial console is always captured). ApplePinotLCD enable
-    # means SpringBoard is rendering.
+    # 1. SpringBoard readiness gate WITHOUT pixels: springboardservices only answers once
+    # SpringBoard is up, and it returns the icon layout, so poll it until the new app appears.
+    slot = None
     while time.time() < end:
-        hit, _ = _syslog_has(serial, ["_lcdEnable: enable: 1", "SpringBoard"])
-        if hit:
+        slot = icon_slot(b, bundle)
+        if slot:
             break
-        time.sleep(3)
-    else:
-        res["verdict"], res["note"] = "NO-BOOT", "display never came up on serial"
+        time.sleep(8)
+    if not slot:
+        res["verdict"], res["note"] = "NO-BOOT", "SpringBoard/springboardservices never listed the app"
         return res
-    time.sleep(8)
-    # 2. sbservices: exact page/slot of the new icon.
-    slot = icon_slot(b, bundle) or (2, 0, 0)
     page, row, col = slot
     res["note"] = "slot p%d r%d c%d" % slot
-    # 3. blind navigation (no frame feedback): unlock, page over, tap. Timed, but the
-    # verdict comes from syslog so a missed tap just reads as NO-LAUNCH (retryable).
-    b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO); time.sleep(3)
-    b.press("home"); time.sleep(1)                  # dismiss any install wiggle/help
+    time.sleep(5)
+    # 3. blind navigation (no frame feedback): unlock, dismiss the install help sheet, page
+    # over, tap. Timed; verdict comes from syslog so a missed tap just reads as NO-LAUNCH.
+    b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO); time.sleep(2)
+    b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO); time.sleep(2)   # twice, in case the first didn't take
+    b.tap(DISMISS_EDIT); time.sleep(1)              # "Dismiss" on the post-install Edit-Home sheet
+    b.press("home"); time.sleep(2)                  # exit any wiggle mode, back to page 1
     for _ in range(page - 1):
         b.drag(*NEXT_PAGE); time.sleep(3)
     # fresh idevicesyslog right before the tap, so the capture is alive for the launch window
