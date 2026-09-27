@@ -370,6 +370,12 @@ static void ipad1_init(MachineState *machine)
     sysbus_mmio_map(sbd, 0, S5L8930_IOP_BASE);
     sysbus_mmio_map(sbd, 1, S5L8930_IOP_VIC_BASE);
 
+    /* SHA-1 engine; CDMA channel 4 streams the data into its FIFO. */
+    dev = qdev_new(TYPE_S5L8930_SHA1);
+    sbd = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(sbd, &error_fatal);
+    sysbus_mmio_map(sbd, 0, S5L8930_SHA1_BASE);
+
     /* CDMA + AES filter; one interrupt line per channel. */
     dev = qdev_new(TYPE_S5L8930_CDMA);
     sbd = SYS_BUS_DEVICE(dev);

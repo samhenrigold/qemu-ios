@@ -31,6 +31,8 @@
 #define S5L8930_RGBOUT2_BASE     0x89600000
 #define S5L8930_DART2_BASE       0x89d00000   /* IOMMU in front of the display pipe */
 #define S5L8930_DART2_SIZE       0x2000
+#define S5L8930_SHA1_BASE        0x80100000   /* SHA-1 engine; data FIFO at +0xA0 via CDMA ch 4 */
+#define S5L8930_SHA1_SIZE        0x1000
 #define S5L8930_CDMA_BASE        0x87000000   /* shared DMA engine, channel n at n<<12 */
 #define S5L8930_CDMA_SIZE        0x26000
 #define S5L8930_AES_BASE         0x87800000   /* CDMA AES filter contexts, ctx n at n<<12 */
@@ -142,5 +144,11 @@
  */
 #define TYPE_S5L8930_CDMA "s5l8930.cdma"
 #define S5L8930_CDMA_CHANNELS    0x26
+
+/*
+ * SHA-1 engine (hw/arm/s5l8930_sha1.c): one MMIO region of S5L8930_SHA1_SIZE.
+ * No interrupt line: the kext completes on the CDMA channel, not IRQ 0x25.
+ */
+#define TYPE_S5L8930_SHA1 "s5l8930.sha1"
 
 #endif
