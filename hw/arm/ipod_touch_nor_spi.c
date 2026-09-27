@@ -91,6 +91,9 @@ static void initialize_nor(IPodTouchNORSPIState *s)
         }
         size = NOR_FLASH_SIZE;
     } else {
+        if (!s->nor_path) {
+            return;   /* no image: blank (erased) flash */
+        }
         if (!g_file_get_contents(s->nor_path, &data, &size, &error) ||
             size != NOR_FLASH_SIZE) {
             error_report("NOR image \"%s\" must contain exactly %u bytes: %s; reads return 0xff",
