@@ -10,8 +10,10 @@
  *
  * Boot input is a K48KBOOT bundle from imgtools/ipad1_kboot.py: a flat image of
  * physical memory (kernel, filled device tree, boot_args) followed by a 24-byte
- * trailer {char magic[8]; u32 load_pa, entry_pa, bootargs_pa, image_len}. We
- * copy it into DRAM on every reset and start the CPU at entry_pa in ARM state
+ * trailer {char magic[8]; u32 load_pa, entry_pa, bootargs_pa, image_len}.
+ * Between the image and the trailer sit optional segments {"K48SEG\0\0";
+ * u32 pa, len, flags; data unless flags bit 0 = zero-fill}: iBoot's boot-logo
+ * framebuffer. We copy it into DRAM on every reset and start the CPU at entry_pa in ARM state
  * with the MMU off and r0 = bootargs_pa, which is the state the kernel's
  * _start expects from iBoot.
  */
@@ -96,6 +98,7 @@ static uint32_t s5l8930_usb_hwcfg[] = { 0, 0x7a8f60d0, 0x082000e8, 0x01f08024 };
 
 #define KBOOT_MAGIC "K48KBOOT"
 #define KBOOT_TRAILER_LEN 24
+#define KBOOT_SEGMENT_LEN 20
 
 static qemu_irq ipad1_irq(IPad1MachineState *s, int irq)
 {
@@ -187,6 +190,23 @@ static void ipad1_cpu_reset(void *opaque)
                             MEMTXATTRS_UNSPECIFIED, data, image_len) != MEMTX_OK) {
         error_report("ipad1: cannot stage kboot bundle at 0x%x", load_pa);
         exit(1);
+    }
+    for (gsize off = image_len; off + KBOOT_SEGMENT_LEN <= size - KBOOT_TRAILER_LEN;) {
+        const uint8_t *seg = (const uint8_t *)data + off;
+        uint32_t pa = ldl_le_p(seg + 8), len = ldl_le_p(seg + 12);
+        bool zero = ldl_le_p(seg + 16) & 1;
+
+        off += KBOOT_SEGMENT_LEN + (zero ? 0 : len);
+        if (memcmp(seg, "K48SEG\0\0", 8) != 0 || off > size - KBOOT_TRAILER_LEN) {
+            error_report("ipad1: malformed segment in kboot bundle");
+            exit(1);
+        }
+        if (zero) {
+            address_space_set(&address_space_memory, pa, 0, len, MEMTXATTRS_UNSPECIFIED);
+        } else {
+            address_space_write(&address_space_memory, pa, MEMTXATTRS_UNSPECIFIED,
+                                seg + KBOOT_SEGMENT_LEN, len);
+        }
     }
 
     /* cpu_reset leaves us in SVC mode, IRQ/FIQ masked, MMU and caches off. */
