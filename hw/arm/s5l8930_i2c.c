@@ -11,6 +11,8 @@
  * so the FIFO is just two byte arrays; nothing is clocked.
  */
 #include "qemu/osdep.h"
+#include "qapi/visitor.h"
+#include <math.h>
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
@@ -771,12 +773,168 @@ static const TypeInfo s5l8930_tsl2581_info = {
     .class_init    = tsl2581_class_init,
 };
 
+/* ---- AKM AK8973 3-axis magnetometer (I2C0 0x1E, "compass,akm8973s") ----
+ *
+ * 7B500 AppleAKM8973S (AppleEmbeddedCompass kext at c050c000). probe
+ * (c050dfc2): MS1 (0xE0) = 2 (EEPROM access), ST (0xC0) bit1 must read 0,
+ * EHXGA..EHZGA (0x66-0x68), MS1 = 3 (power down), then the gains are copied
+ * into HXGA..HZGA (0xE4-0xE6). A reading (c050e368): MS1 = 0, wait for ST
+ * bit0 (data ready), then TMPS (0xC1) and H1X..H1Z (0xC2-0xC4), each an
+ * unsigned byte centred on 128. The DAC offsets (0xE1-0xE3) are stored but
+ * do not shift the output: the modelled field sits mid-range already.
+ *
+ * The field is the Earth's for a host-set heading (degrees clockwise from
+ * magnetic north, the device's top edge) with the unit lying flat, screen
+ * up: horizontal component along the top edge rotated by -heading, vertical
+ * component into the screen.
+ * ponytail: no tilt compensation against accel-orientation; the unit is
+ * taken to be flat. Rotate the vertical term by the accel vector if Maps
+ * ever needs the compass while the device is held upright.
+ */
+
+OBJECT_DECLARE_SIMPLE_TYPE(S5L8930AK8973State, S5L8930_AK8973)
+
+#define AK_ST       0xc0
+#define AK_TMPS     0xc1
+#define AK_H1X      0xc2
+#define AK_MS1      0xe0
+#define AK_ST_INT   (1u << 0)
+#define AK_MS1_MEASURE  0
+#define AK_H_COUNTS     24.0    /* ~24 uT horizontal at ~1 uT/LSB */
+#define AK_V_COUNTS     40.0    /* ~40 uT vertical (inclination ~60 deg) */
+
+struct S5L8930AK8973State {
+    I2CSlave i2c;
+    uint8_t regs[256];
+    uint8_t reg;
+    bool addressing;
+    int32_t heading;        /* degrees, 0-359; QOM property, not guest state */
+};
+
+static void ak8973_measure(S5L8930AK8973State *s)
+{
+    double h = s->heading * M_PI / 180.0;
+    double x = -sin(h) * AK_H_COUNTS;
+    double y = cos(h) * AK_H_COUNTS;
+    double z = -AK_V_COUNTS;
+
+    s->regs[AK_TMPS] = 0x80;                /* ~30 C by the kext's scale */
+    s->regs[AK_H1X] = 128 + lround(x);
+    s->regs[AK_H1X + 1] = 128 + lround(y);
+    s->regs[AK_H1X + 2] = 128 + lround(z);
+    s->regs[AK_ST] |= AK_ST_INT;
+}
+
+static int ak8973_event(I2CSlave *i2c, enum i2c_event event)
+{
+    S5L8930AK8973State *s = S5L8930_AK8973(i2c);
+
+    if (event == I2C_START_SEND) {
+        s->addressing = true;
+    }
+    return 0;
+}
+
+static uint8_t ak8973_recv(I2CSlave *i2c)
+{
+    S5L8930AK8973State *s = S5L8930_AK8973(i2c);
+    uint8_t v = s->regs[s->reg];
+
+    if (s->reg == AK_H1X + 2) {
+        s->regs[AK_ST] &= ~AK_ST_INT;       /* data read out */
+    }
+    s->reg++;
+    return v;
+}
+
+static int ak8973_send(I2CSlave *i2c, uint8_t data)
+{
+    S5L8930AK8973State *s = S5L8930_AK8973(i2c);
+    uint8_t reg;
+
+    if (s->addressing) {
+        s->addressing = false;
+        s->reg = data;
+        return 0;
+    }
+    reg = s->reg++;
+    if (reg >= AK_MS1) {
+        s->regs[reg] = data;
+        if (reg == AK_MS1 && data == AK_MS1_MEASURE) {
+            ak8973_measure(s);
+        }
+    }
+    return 0;
+}
+
+static void ak8973_reset(DeviceState *dev)
+{
+    S5L8930AK8973State *s = S5L8930_AK8973(dev);
+
+    memset(s->regs, 0, sizeof(s->regs));
+    s->regs[AK_MS1] = 3;                    /* power-down */
+    s->reg = 0;
+    s->addressing = true;
+}
+
+static const VMStateDescription vmstate_s5l8930_ak8973 = {
+    .name = TYPE_S5L8930_AK8973,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(i2c, S5L8930AK8973State),
+        VMSTATE_UINT8_ARRAY(regs, S5L8930AK8973State, 256),
+        VMSTATE_UINT8(reg, S5L8930AK8973State),
+        VMSTATE_BOOL(addressing, S5L8930AK8973State),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/* Settable at run time (qom-set), unlike a static qdev property. */
+static void ak8973_get_heading(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    visit_type_int32(v, name, &S5L8930_AK8973(obj)->heading, errp);
+}
+
+static void ak8973_set_heading(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    int32_t deg;
+
+    if (visit_type_int32(v, name, &deg, errp)) {
+        S5L8930_AK8973(obj)->heading = ((deg % 360) + 360) % 360;
+    }
+}
+
+static void ak8973_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
+
+    dc->vmsd = &vmstate_s5l8930_ak8973;
+    device_class_set_legacy_reset(dc, ak8973_reset);
+    object_class_property_add(klass, "heading", "int32", ak8973_get_heading,
+                              ak8973_set_heading, NULL, NULL);
+    k->event = ak8973_event;
+    k->recv = ak8973_recv;
+    k->send = ak8973_send;
+}
+
+static const TypeInfo s5l8930_ak8973_info = {
+    .name          = TYPE_S5L8930_AK8973,
+    .parent        = TYPE_I2C_SLAVE,
+    .instance_size = sizeof(S5L8930AK8973State),
+    .class_init    = ak8973_class_init,
+};
+
 static void s5l8930_i2c_register_types(void)
 {
     type_register_static(&s5l8930_i2c_info);
     type_register_static(&s5l8930_d1815_info);
     type_register_static(&s5l8930_tca6408_info);
     type_register_static(&s5l8930_tsl2581_info);
+    type_register_static(&s5l8930_ak8973_info);
 }
 
 type_init(s5l8930_i2c_register_types)

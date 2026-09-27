@@ -83,3 +83,290 @@ ldid-signed bundles. Boot with `amfi_allow_any_signature=1 cs_enforcement_disabl
   shim answers with `IOMobileFramebufferSwapSignal` on the main display. Without
   that the swaps never complete (`IOMFB fCommandPool->getCommand(false) returned
   NULL`) and the screen stays black. Software CA remains the image default.
+
+## Coverage (generated)
+
+Every entry point OpenGLES 3.2.2 exports, what the real GLEngine fills it for (ES1/ES2 columns),
+and what happens to it here. `host` = executed by `hw/arm/gles-host.c`; `forwarded, host UNHANDLED` =
+glishim sends it, the host logs `[gles] UNHANDLED slot` once and returns 0; `stub` = no host wire
+number, glishim logs `[glishim] unimplemented GL entry point NAME` once. Regenerate with
+`python3 gligen.py --coverage` after a host change.
+
+Summary: forwarded, host UNHANDLED: 80, guest (glishim answers): 1, host: 186, stub (no wire slot): 1.
+
+Gaps that matter most: ES1 fixed-function leftovers (glLightf/LightModel*, glPointParameter*,
+glClipPlane*, glLogicOp, the GL_FIXED getters), glCopyTexSubImage2D, glIsEnabled/glIsTexture/glIsBuffer,
+glBlendEquation(Separate)/glBlendFuncSeparate (ES2 core), buffer mapping (glMapBuffer returns a host
+pointer and cannot work as a plain forward), the APPLE fence family, and ES2 queries
+(glGetUniform*v, glGetVertexAttribfv, glGetShaderSource).
+
+| slot | entry point | ES1 | ES2 | status |
+|---|---|---|---|---|
+| 1 | glAlphaFunc | Y |  | host |
+| 5 | glBindTexture | Y | Y | host |
+| 7 | glBlendFunc | Y | Y | host |
+| 10 | glClear | Y | Y | host |
+| 12 | glClearColor | Y | Y | host |
+| 15 | glClearStencil | Y | Y | host |
+| 37 | glColor4f | Y |  | host |
+| 43 | glColor4ub | Y |  | host |
+| 49 | glColorMask | Y | Y | host |
+| 51 | glColorPointer | Y |  | host |
+| 54 | glCopyTexImage2D | Y | Y | host |
+| 56 | glCopyTexSubImage2D | Y | Y | forwarded, host UNHANDLED |
+| 57 | glCullFace | Y | Y | host |
+| 59 | glDeleteTextures | Y | Y | host |
+| 60 | glDepthFunc | Y | Y | host |
+| 61 | glDepthMask | Y | Y | host |
+| 63 | glDisable | Y | Y | host |
+| 64 | glDisableClientState | Y |  | host |
+| 65 | glDrawArrays | Y | Y | host |
+| 67 | glDrawElements | Y | Y | host |
+| 72 | glEnable | Y | Y | host |
+| 73 | glEnableClientState | Y |  | host |
+| 89 | glFinish | Y | Y | host |
+| 90 | glFlush | Y | Y | host |
+| 91 | glFogf | Y |  | host |
+| 92 | glFogfv | Y |  | host |
+| 95 | glFrontFace | Y | Y | host |
+| 98 | glGenTextures | Y | Y | host |
+| 99 | glGetBooleanv | Y | Y | host |
+| 102 | glGetError | Y | Y | host |
+| 103 | glGetFloatv | Y | Y | host |
+| 104 | glGetIntegerv | Y | Y | host |
+| 105 | glGetLightfv | Y |  | host |
+| 110 | glGetMaterialfv | Y |  | host |
+| 115 | glGetPointerv | Y |  | host |
+| 117 | glGetString | Y | Y | guest (glishim answers) |
+| 118 | glGetTexEnvfv | Y |  | host |
+| 119 | glGetTexEnviv | Y |  | host |
+| 123 | glGetTexImage | Y | Y | forwarded, host UNHANDLED |
+| 124 | glGetTexLevelParameterfv |  |  | forwarded, host UNHANDLED |
+| 125 | glGetTexLevelParameteriv | Y | Y | forwarded, host UNHANDLED |
+| 126 | glGetTexParameterfv | Y | Y | host |
+| 127 | glGetTexParameteriv | Y | Y | host |
+| 128 | glHint | Y | Y | host |
+| 143 | glIsEnabled | Y | Y | forwarded, host UNHANDLED |
+| 145 | glIsTexture | Y | Y | forwarded, host UNHANDLED |
+| 146 | glLightModelf | Y |  | forwarded, host UNHANDLED |
+| 147 | glLightModelfv | Y |  | forwarded, host UNHANDLED |
+| 150 | glLightf | Y |  | forwarded, host UNHANDLED |
+| 151 | glLightfv | Y |  | host |
+| 155 | glLineWidth | Y | Y | host |
+| 157 | glLoadIdentity | Y |  | host |
+| 159 | glLoadMatrixf | Y |  | host |
+| 161 | glLogicOp | Y |  | forwarded, host UNHANDLED |
+| 170 | glMaterialf | Y |  | host |
+| 171 | glMaterialfv | Y |  | host |
+| 174 | glMatrixMode | Y |  | host |
+| 176 | glMultMatrixf | Y |  | host |
+| 182 | glNormal3f | Y |  | host |
+| 188 | glNormalPointer | Y |  | host |
+| 195 | glPixelStorei | Y | Y | host |
+| 199 | glPointSize | Y |  | host |
+| 201 | glPolygonOffset | Y | Y | host |
+| 205 | glPopMatrix | Y |  | host |
+| 210 | glPushMatrix | Y |  | host |
+| 237 | glReadPixels | Y | Y | host |
+| 248 | glRotatef | Y |  | host |
+| 250 | glScalef | Y |  | host |
+| 251 | glScissor | Y | Y | host |
+| 253 | glShadeModel | Y |  | host |
+| 254 | glStencilFunc | Y | Y | host |
+| 255 | glStencilMask | Y | Y | host |
+| 256 | glStencilOp | Y | Y | host |
+| 289 | glTexCoordPointer | Y |  | host |
+| 290 | glTexEnvf | Y |  | host |
+| 291 | glTexEnvfv | Y |  | host |
+| 292 | glTexEnvi | Y |  | host |
+| 293 | glTexEnviv | Y |  | host |
+| 301 | glTexImage2D | Y | Y | host |
+| 302 | glTexParameterf | Y | Y | host |
+| 303 | glTexParameterfv | Y | Y | host |
+| 304 | glTexParameteri | Y | Y | host |
+| 305 | glTexParameteriv | Y | Y | host |
+| 307 | glTexSubImage2D | Y | Y | host |
+| 309 | glTranslatef | Y |  | host |
+| 334 | glVertexPointer | Y |  | host |
+| 335 | glViewport | Y | Y | host |
+| 336 | glBlendFuncSeparate | Y | Y | forwarded, host UNHANDLED |
+| 337 | glBlendColor |  | Y | host |
+| 338 | glBlendEquation | Y | Y | forwarded, host UNHANDLED |
+| 341 | glClientActiveTexture | Y |  | host |
+| 342 | glActiveTexture | Y | Y | host |
+| 369 | glMultiTexCoord4f | Y |  | host |
+| 379 | glCompressedTexImage3D |  |  | forwarded, host UNHANDLED |
+| 380 | glCompressedTexImage2D | Y | Y | host |
+| 382 | glCompressedTexSubImage3D |  |  | forwarded, host UNHANDLED |
+| 383 | glCompressedTexSubImage2D | Y | Y | host |
+| 405 | glDrawRangeElements |  |  | forwarded, host UNHANDLED |
+| 458 | glBlendEquationSeparate | Y | Y | forwarded, host UNHANDLED |
+| 459 | glSampleCoverage | Y | Y | host |
+| 463 | glGenFencesAPPLE | Y | Y | forwarded, host UNHANDLED |
+| 464 | glDeleteFencesAPPLE | Y | Y | forwarded, host UNHANDLED |
+| 465 | glSetFenceAPPLE | Y | Y | forwarded, host UNHANDLED |
+| 466 | glIsFenceAPPLE | Y | Y | forwarded, host UNHANDLED |
+| 467 | glTestFenceAPPLE | Y | Y | forwarded, host UNHANDLED |
+| 468 | glFinishFenceAPPLE | Y | Y | forwarded, host UNHANDLED |
+| 469 | glTestObjectAPPLE | Y | Y | forwarded, host UNHANDLED |
+| 470 | glFinishObjectAPPLE | Y | Y | forwarded, host UNHANDLED |
+| 476 | glVertexAttrib1f |  | Y | host |
+| 479 | glVertexAttrib2f |  | Y | host |
+| 482 | glVertexAttrib3f |  | Y | host |
+| 485 | glVertexAttrib4f |  | Y | host |
+| 489 | glVertexAttrib1fv |  | Y | host |
+| 492 | glVertexAttrib2fv |  | Y | host |
+| 495 | glVertexAttrib3fv |  | Y | host |
+| 503 | glVertexAttrib4fv |  | Y | host |
+| 511 | glVertexAttribPointer |  | Y | host |
+| 512 | glEnableVertexAttribArray |  | Y | host |
+| 513 | glDisableVertexAttribArray |  | Y | host |
+| 515 | glGetVertexAttribfv |  | Y | forwarded, host UNHANDLED |
+| 516 | glGetVertexAttribiv |  | Y | host |
+| 517 | glGetVertexAttribPointerv |  | Y | host |
+| 540 | glPointParameterf | Y |  | forwarded, host UNHANDLED |
+| 541 | glPointParameterfv | Y |  | forwarded, host UNHANDLED |
+| 586 | glStencilOpSeparate |  | Y | host |
+| 591 | glDeleteShader |  |  | host |
+| 593 | glDetachShader |  | Y | host |
+| 594 | glCreateShader |  | Y | host |
+| 595 | glShaderSource |  | Y | host |
+| 596 | glCompileShader |  | Y | host |
+| 597 | glCreateProgram |  | Y | host |
+| 598 | glAttachShader |  | Y | host |
+| 599 | glLinkProgram |  | Y | host |
+| 600 | glUseProgram |  | Y | host |
+| 601 | glValidateProgram |  | Y | host |
+| 602 | glUniform1f |  | Y | host |
+| 603 | glUniform2f |  | Y | host |
+| 604 | glUniform3f |  | Y | host |
+| 605 | glUniform4f |  | Y | host |
+| 606 | glUniform1i |  | Y | host |
+| 607 | glUniform2i |  | Y | host |
+| 608 | glUniform3i |  | Y | host |
+| 609 | glUniform4i |  | Y | host |
+| 610 | glUniform1fv |  | Y | host |
+| 611 | glUniform2fv |  | Y | host |
+| 612 | glUniform3fv |  | Y | host |
+| 613 | glUniform4fv |  | Y | host |
+| 614 | glUniform1iv |  | Y | host |
+| 615 | glUniform2iv |  | Y | host |
+| 616 | glUniform3iv |  | Y | host |
+| 617 | glUniform4iv |  | Y | host |
+| 618 | glUniformMatrix2fv |  | Y | host |
+| 619 | glUniformMatrix3fv |  | Y | host |
+| 620 | glUniformMatrix4fv |  | Y | host |
+| 625 | glGetUniformLocation |  | Y | host |
+| 626 | glGetActiveUniform |  | Y | host |
+| 627 | glGetUniformfv |  | Y | forwarded, host UNHANDLED |
+| 628 | glGetUniformiv |  | Y | forwarded, host UNHANDLED |
+| 629 | glGetShaderSource |  | Y | forwarded, host UNHANDLED |
+| 630 | glBindAttribLocation |  | Y | host |
+| 631 | glGetActiveAttrib |  | Y | host |
+| 632 | glGetAttribLocation |  | Y | host |
+| 634 | glGenQueries |  |  | forwarded, host UNHANDLED |
+| 635 | glDeleteQueries |  |  | forwarded, host UNHANDLED |
+| 636 | glIsQuery |  |  | forwarded, host UNHANDLED |
+| 637 | glBeginQuery |  |  | forwarded, host UNHANDLED |
+| 638 | glEndQuery |  |  | forwarded, host UNHANDLED |
+| 639 | glGetQueryiv |  |  | forwarded, host UNHANDLED |
+| 640 | glGetQueryObjectiv |  |  | forwarded, host UNHANDLED |
+| 641 | glGetQueryObjectuiv |  |  | forwarded, host UNHANDLED |
+| 642 | glBindBuffer | Y | Y | host |
+| 643 | glDeleteBuffers | Y | Y | host |
+| 644 | glGenBuffers | Y | Y | host |
+| 645 | glIsBuffer | Y | Y | forwarded, host UNHANDLED |
+| 646 | glBufferData | Y | Y | host |
+| 647 | glBufferSubData | Y | Y | host |
+| 648 | glGetBufferSubData |  |  | forwarded, host UNHANDLED |
+| 649 | glMapBuffer | Y | Y | forwarded, host UNHANDLED |
+| 650 | glUnmapBuffer | Y | Y | forwarded, host UNHANDLED |
+| 651 | glGetBufferParameteriv | Y | Y | forwarded, host UNHANDLED |
+| 652 | glGetBufferPointerv | Y | Y | forwarded, host UNHANDLED |
+| 655 | glIsShader |  | Y | host |
+| 656 | glIsProgram |  | Y | host |
+| 657 | glGetShaderiv |  | Y | host |
+| 658 | glGetProgramiv |  | Y | host |
+| 659 | glGetShaderInfoLog |  | Y | host |
+| 660 | glGetProgramInfoLog |  | Y | host |
+| 661 | glStencilFuncSeparate |  | Y | host |
+| 662 | glStencilMaskSeparate |  | Y | host |
+| 665 | glIsRenderbuffer | Y | Y | host |
+| 666 | glBindRenderbuffer | Y | Y | host |
+| 667 | glDeleteRenderbuffers | Y | Y | host |
+| 668 | glGenRenderbuffers | Y | Y | host |
+| 669 | glRenderbufferStorage | Y | Y | host |
+| 670 | glGetRenderbufferParameteriv | Y | Y | host |
+| 671 | glIsFramebuffer | Y | Y | host |
+| 672 | glBindFramebuffer | Y | Y | host |
+| 673 | glDeleteFramebuffers | Y | Y | host |
+| 674 | glGenFramebuffers | Y | Y | host |
+| 675 | glCheckFramebufferStatus | Y | Y | host |
+| 677 | glFramebufferTexture2D | Y | Y | host |
+| 678 | glFramebufferTexture3D |  |  | forwarded, host UNHANDLED |
+| 679 | glFramebufferRenderbuffer | Y | Y | host |
+| 680 | glGetFramebufferAttachmentParameteriv | Y | Y | host |
+| 681 | glGenerateMipmap | Y | Y | host |
+| 759 | glGetAttachedShaders |  | Y | host |
+| 764 | glAlphaFuncx | Y |  | host |
+| 765 | glClearColorx | Y |  | host |
+| 766 | glClearDepthf | Y | Y | host |
+| 767 | glClearDepthx | Y |  | host |
+| 768 | glClipPlanef | Y |  | forwarded, host UNHANDLED |
+| 769 | glClipPlanex | Y |  | forwarded, host UNHANDLED |
+| 770 | glColor4x | Y |  | host |
+| 771 | glDepthRangef | Y | Y | host |
+| 772 | glDepthRangex | Y |  | host |
+| 773 | glFogx | Y |  | forwarded, host UNHANDLED |
+| 774 | glFogxv | Y |  | forwarded, host UNHANDLED |
+| 775 | glFrustumf | Y |  | host |
+| 776 | glFrustumx | Y |  | host |
+| 777 | glGetClipPlanef | Y |  | forwarded, host UNHANDLED |
+| 778 | glGetClipPlanex | Y |  | forwarded, host UNHANDLED |
+| 779 | glGetFixedv | Y |  | forwarded, host UNHANDLED |
+| 780 | glGetLightxv | Y |  | forwarded, host UNHANDLED |
+| 781 | glGetMaterialxv | Y |  | forwarded, host UNHANDLED |
+| 782 | glGetTexEnvxv | Y |  | forwarded, host UNHANDLED |
+| 783 | glGetTexParameterxv | Y |  | forwarded, host UNHANDLED |
+| 784 | glLightModelx | Y |  | forwarded, host UNHANDLED |
+| 785 | glLightModelxv | Y |  | forwarded, host UNHANDLED |
+| 786 | glLightx | Y |  | forwarded, host UNHANDLED |
+| 787 | glLightxv | Y |  | forwarded, host UNHANDLED |
+| 788 | glLineWidthx | Y |  | host |
+| 789 | glLoadMatrixx | Y |  | host |
+| 790 | glMaterialx | Y |  | forwarded, host UNHANDLED |
+| 791 | glMaterialxv | Y |  | forwarded, host UNHANDLED |
+| 792 | glMultMatrixx | Y |  | host |
+| 793 | glNormal3x | Y |  | host |
+| 794 | glOrthof | Y |  | host |
+| 795 | glOrthox | Y |  | host |
+| 796 | glPointSizex | Y |  | host |
+| 797 | glPolygonOffsetx | Y |  | host |
+| 798 | glRotatex | Y |  | host |
+| 799 | glScalex | Y |  | host |
+| 800 | glTexEnvx | Y |  | forwarded, host UNHANDLED |
+| 801 | glTexEnvxv | Y |  | forwarded, host UNHANDLED |
+| 802 | glTexParameterx | Y |  | host |
+| 803 | glTexParameterxv | Y |  | forwarded, host UNHANDLED |
+| 804 | glTranslatex | Y |  | host |
+| 805 | glMultiTexCoord4x | Y |  | host |
+| 806 | glSampleCoveragex | Y |  | host |
+| 807 | glPointParameterx | Y |  | forwarded, host UNHANDLED |
+| 808 | glPointParameterxv | Y |  | forwarded, host UNHANDLED |
+| 809 | glPointSizePointerOES | Y |  | forwarded, host UNHANDLED |
+| 810 | glCurrentPaletteMatrixOES | Y |  | forwarded, host UNHANDLED |
+| 811 | glLoadPaletteFromModelViewMatrixOES | Y |  | forwarded, host UNHANDLED |
+| 812 | glMatrixIndexPointerOES | Y |  | forwarded, host UNHANDLED |
+| 813 | glWeightPointerOES | Y |  | forwarded, host UNHANDLED |
+| 814 | glDrawTexsOES | Y |  | forwarded, host UNHANDLED |
+| 815 | glDrawTexiOES | Y |  | forwarded, host UNHANDLED |
+| 816 | glDrawTexxOES | Y |  | forwarded, host UNHANDLED |
+| 817 | glDrawTexsvOES | Y |  | forwarded, host UNHANDLED |
+| 818 | glDrawTexivOES | Y |  | forwarded, host UNHANDLED |
+| 819 | glDrawTexxvOES | Y |  | forwarded, host UNHANDLED |
+| 820 | glDrawTexfOES | Y |  | forwarded, host UNHANDLED |
+| 821 | glDrawTexfvOES | Y |  | forwarded, host UNHANDLED |
+| 822 | glShaderBinary |  | Y | host |
+| 823 | glGetShaderPrecisionFormat |  | Y | host |
+| 824 | glReleaseShaderCompiler |  | Y | host |
+| 825 | glFramebufferParameteriAPPLE | Y | Y | stub (no wire slot) |
