@@ -82,6 +82,10 @@ def main():
                 os.unlink(f"{a.out}/burst.ppm")
             elif op == "heading":           # compass heading, degrees
                 q.cmd("qom-set", path="/machine", property="compass-heading", value=int(arg))
+            elif op == "hold":                  # press the Hold button for MS ms
+                q.cmd("qom-set", path="/machine", property="button-hold", value=True)
+                time.sleep(int(arg) / 1000)
+                q.cmd("qom-set", path="/machine", property="button-hold", value=False)
             elif op == "orient":
                 q.cmd("qom-set", path="/machine", property="accel-orientation", value=int(arg))
             elif op == "pinch":
