@@ -109,10 +109,10 @@ def play_sounds(q):
     def unlock():
         itqmp.button(q, "home")               # wake the idle-dimmed lock screen
         time.sleep(2)
-        itqmp.move(q, 66, 287)                # slide-to-unlock knob, scanout pixels
+        itqmp.move(q, 957, 480)               # slide-to-unlock knob, scanout pixels (upright portrait)
         q.cmd("input-send-event", events=[{"type": "btn", "data": {"down": True, "button": "left"}}])
         for i in range(1, 41):
-            itqmp.move(q, 66, 287 + (700 - 287) * i // 40)
+            itqmp.move(q, 957, 480 - (480 - 67) * i // 40)
             time.sleep(0.03)
         q.cmd("input-send-event", events=[{"type": "btn", "data": {"down": False, "button": "left"}}])
         time.sleep(6)
