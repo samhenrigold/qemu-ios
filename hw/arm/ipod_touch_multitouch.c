@@ -762,6 +762,13 @@ static MTFrame *mt_build_frame(IPodTouchMultitouchState *s,
 }
 
 static void ipod_touch_multitouch_inform_frame_ready(IPodTouchMultitouchState *s) {
+    if (!s->sysic) {
+        /* Active-low ATN into a GPIO controller (iPad: pin 0x15). */
+        MTT("frame ready -> pulse atn");
+        qemu_irq_lower(s->atn);
+        qemu_irq_raise(s->atn);
+        return;
+    }
     MTT("frame ready -> raise gpio3 bit13");
     s->sysic->gpio_int_status[3] |= (1 << 13); // the multitouch interrupt bit is in group 3 (32 interrupts per group), and the 13th of the 3th group
     qemu_irq_raise(s->sysic->gpio_irqs[3]);
@@ -1044,6 +1051,7 @@ static void touch_end_timer_tick(void *opaque)
 static void ipod_touch_multitouch_realize(SSIPeripheral *d, Error **errp)
 {
     IPodTouchMultitouchState *s = IPOD_TOUCH_MULTITOUCH(d);
+    qdev_init_gpio_out_named(DEVICE(d), &s->atn, "atn", 1);
     memset(s->hbpp_atn_ack_response, 0, 2);
     s->touch_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, touch_timer_tick, s);
     s->touch_end_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, touch_end_timer_tick, s);

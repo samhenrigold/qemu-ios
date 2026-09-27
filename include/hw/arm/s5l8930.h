@@ -17,6 +17,7 @@
 #define S5L8930_KERNEL_VIRT_BASE 0xc0000000
 
 /* Peripherals */
+#define S5L8930_SPI_BASE(n)      (0x82000000 + (n) * 0x100000)   /* spi0 NOR, spi1 multitouch */
 #define S5L8930_UART_BASE(n)     (0x82500000 + (n) * 0x100000)
 #define S5L8930_I2C_BASE(n)      (0x83200000 + (n) * 0x100000)   /* i2c0, i2c2 on K48 */
 #define S5L8930_I2C_SIZE         0x1000
@@ -30,6 +31,7 @@
 #define S5L8930_RGBOUT2_BASE     0x89600000
 #define S5L8930_DART2_BASE       0x89d00000   /* IOMMU in front of the display pipe */
 #define S5L8930_DART2_SIZE       0x2000
+#define S5L8930_SWI_BASE         0xbf600000   /* backlight/core-voltage single-wire, same IP as the S5L8720's */
 #define S5L8930_PMGR_BASE        0xbf100000   /* clocks, gates, timer (+0x2000), POWER_ID (+0x6000) */
 #define S5L8930_PMGR_SIZE        0x8000
 #define S5L8930_VIC_BASE(n)      (0xbf200000 + (n) * 0x10000)
@@ -48,6 +50,7 @@
 #define S5L8930_IRQ_TIMER1       0x05          /* second event timer, unused by the kernel */
 #define S5L8930_IRQ_TIMER0       0x06          /* event timer; the kernel routes it to FIQ */
 #define S5L8930_IRQ_I2C(n)       (0x13 + (n))
+#define S5L8930_IRQ_SPI(n)       (0x1d + (n))
 #define S5L8930_IRQ_UART(n)      (0x16 + (n))
 #define S5L8930_IRQ_DSIM         0x28
 #define S5L8930_IRQ_CLCD         0x29
@@ -68,6 +71,15 @@
  */
 #define TYPE_S5L8930_GPIO "s5l8930.gpio"
 #define S5L8930_GPIO_PINS        (0x16 * 8)    /* 22 ports x 8 pins */
+/* DT pin ids are 0xPPB (port, bit); qdev GPIO outputs 0..PINS-1 follow
+ * pins the guest drives as outputs (NOR chip select, panel reset, ...). */
+#define S5L8930_GPIO_PIN(dt)     (((dt) >> 8) * 8 + ((dt) & 0xff))
+#define S5L8930_GPIO_BTN_MENU    0x000
+#define S5L8930_GPIO_BTN_HOLD    0x001
+#define S5L8930_GPIO_BTN_VOLUP   0x002
+#define S5L8930_GPIO_BTN_VOLDOWN 0x003
+#define S5L8930_GPIO_NOR_CS      0x505
+#define S5L8930_GPIO_MT_ATN      0x205         /* == pin 0x15 */
 
 /*
  * IOP (hw/arm/s5l8930_iop.c): high-level emulation of the second core's
