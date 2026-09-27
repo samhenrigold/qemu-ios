@@ -83,6 +83,10 @@ data-partition key 0x89B) — not the full descriptor engine. D1815 PMU + new I2
 panic). `debug-enabled` forced (DT + 7B500 kernel global) so AMFI honors its boot-args.
 Success: launchd, then SpringBoard attempts, diffed against the HW-2 serial log.
 
+**Sleep (2026-09-27, 6bffc067e6):** SpringBoard comes up then the device auto-locks and deep-sleeps
+("USB cable detached" → "System Sleep" → "pmu go hib"). Next: cable present like a Mac-attached iPad;
+PMU wake on buttons; BT UART has no chip ("bluetooth: Software Overflow").
+
 **SpringBoard draws (2026-09-27, 5eae009b6d):** screens/2026-09-27-first-springboard.png — "Connect to
 iTunes" plus the no-baseband alert. Next: baseband presented as on a Wi-Fi iPad; activation.
 
