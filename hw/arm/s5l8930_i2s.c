@@ -32,6 +32,9 @@
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930I2SState, S5L8930_I2S)
 
 #define I2S_REGS_SIZE   0x1000
+#define I2S_CTRL        0x00
+#define I2S_CTRL_STOPPED    (1u << 1)
+#define I2S_CTRL_STOP       (1u << 5)
 #define I2S_TXCOM       0x08
 #define I2S_TXFIFO      0x10
 #define I2S_CMD_RUN     6
@@ -88,7 +91,20 @@ static uint64_t i2s_read(void *opaque, hwaddr offset, unsigned size)
 {
     S5L8930I2SState *s = opaque;
 
-    return offset == I2S_TXFIFO ? 0 : s->regs[offset >> 2];
+    if (offset == I2S_TXFIFO) {
+        return 0;
+    }
+    /*
+     * +0x00 bit 5 asks the block to stop and bit 1 acknowledges it. The
+     * controller's power-down (c086f524: TX/RX halt, +0x00 |= 0x20, then
+     * spin until +0x00 & 2) is the only reader of +0x00. As a plain register
+     * the ack never came, and that kernel thread spun at 100% CPU from the
+     * first audio idle (~45 s) for the rest of the boot.
+     */
+    if (offset == I2S_CTRL && (s->regs[0] & I2S_CTRL_STOP)) {
+        return s->regs[0] | I2S_CTRL_STOPPED;
+    }
+    return s->regs[offset >> 2];
 }
 
 static void i2s_write(void *opaque, hwaddr offset, uint64_t value,
