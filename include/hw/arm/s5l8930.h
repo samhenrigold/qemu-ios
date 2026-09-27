@@ -67,7 +67,7 @@
 #define S5L8930_IRQ_DSIM         0x28
 #define S5L8930_IRQ_CLCD         0x29
 #define S5L8930_IRQ_DISP_PIPE0   0x2a
-#define S5L8930_IRQ_CDMA(ch)     (0x31 + (ch))
+#define S5L8930_IRQ_CDMA(ch)     (0x30 + (ch))   /* DT lists channels 1.. from 0x31 */
 #define S5L8930_IRQ_AMC          0x56          /* first of the AMC's 23 lines */
 #define S5L8930_IRQ_GPIO         0x74
 
