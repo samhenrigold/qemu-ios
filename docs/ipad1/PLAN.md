@@ -83,6 +83,12 @@ data-partition key 0x89B) — not the full descriptor engine. D1815 PMU + new I2
 panic). `debug-enabled` forced (DT + 7B500 kernel global) so AMFI honors its boot-args.
 Success: launchd, then SpringBoard attempts, diffed against the HW-2 serial log.
 
+**Activated lock screen (2026-09-27, 4d0eb1b54f):** screens/2026-09-27-lock-screen-activated.png — slide to
+unlock, clock, wallpaper, no baseband alert (real MACs + baseband unmatch fixed activation and the alert).
+The display switches off between short lit windows like a real idle lock screen, so screendumps need
+timing or a wake. Open: Home via the machine chord doesn't wake the display; battery shows red / Not
+Charging although USB is attached.
+
 **Sleep (2026-09-27, 6bffc067e6):** SpringBoard comes up then the device auto-locks and deep-sleeps
 ("USB cable detached" → "System Sleep" → "pmu go hib"). Next: cable present like a Mac-attached iPad;
 PMU wake on buttons; BT UART has no chip ("bluetooth: Software Overflow").
