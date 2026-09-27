@@ -139,6 +139,13 @@ Complete fidelity, no stone unturned, before any other device:
 - LightTouchMac device profiles: the app runs the iPad with its own bezel, geometry and controls
 - boot through real iBoot (M8)
 
+## Principle: vanilla guest (Sam, 2026-09-27)
+The iPod needed guest services because its USB was limited. The iPad on 3.2.2 doesn't: prefer faithful
+hardware models plus Apple's own services over USB (USB Ethernet, lockdown/AFC/installation_proxy,
+syslog_relay, crash reports, DDI ScreenShotr). Guest code only where unavoidable: the GLEngine shim
+(until an SGX model) and possibly a pasteboard helper. Keyboard target: emulated Bluetooth HID keyboard
+(stock iOS code); the IOHIDUserDevice daemon is a stopgap.
+
 ## Keyboard / network decisions (2026-09-27, docs/ipad1/keyboard-and-network.md)
 1. Keyboard: guest IOHIDUserDevice daemon fed HID reports over usbmux (real OS keyboard path) — now.
    Fidelity follow-up: emulated Bluetooth HID keyboard through ipod_touch_bt.c.
