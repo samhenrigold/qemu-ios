@@ -256,15 +256,16 @@ static uint32_t exynos4210_uart_FIFO_trigger_level(uint32_t channel,
         break;
     case 1:
     case 4:
+    default:
+        /* S5L8930 UART5 (the iPad's HDQ gas-gauge line) lands here. A level
+         * of 0 made "count >= level" true with an empty FIFO, so the Rx
+         * interrupt could never be acknowledged: an IRQ storm that starved
+         * userland (7B500 booted to launchd and SpringBoard never ran). */
         level = reg * 8;
         break;
     case 2:
     case 3:
         level = reg * 2;
-        break;
-    default:
-        level = 0;
-        trace_exynos_uart_channel_error(channel);
         break;
     }
     return level;
