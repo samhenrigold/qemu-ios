@@ -1,15 +1,17 @@
 // Print SpringBoard's icon layout as an XML plist on stdout (pages -> icons with
 // bundle ids, in on-screen order), via lockdown's stock springboardservices.
+// "sbicons set" instead reads an XML icon state on stdin and applies it.
 //
 //   cc -o sbicons sbicons.c $(pkg-config --cflags --libs libimobiledevice-1.0)
-//   USBMUXD_SOCKET_ADDRESS=127.0.0.1:PORT ./sbicons
+//   USBMUXD_SOCKET_ADDRESS=127.0.0.1:PORT ./sbicons [set]
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <libimobiledevice/libimobiledevice.h>
 #include <libimobiledevice/lockdown.h>
 #include <libimobiledevice/sbservices.h>
 
-int main(void)
+int main(int argc, char **argv)
 {
     idevice_t dev = NULL;
     lockdownd_client_t ld = NULL;
@@ -28,6 +30,14 @@ int main(void)
         goto out;
     if (sbservices_client_new(dev, svc, &sb) != SBSERVICES_E_SUCCESS)
         goto out;
+    if (argc > 1 && !strcmp(argv[1], "set")) {
+        static char buf[1 << 20];
+        size_t n = fread(buf, 1, sizeof buf, stdin);
+        plist_from_xml(buf, (uint32_t)n, &state);
+        if (state && sbservices_set_icon_state(sb, state) == SBSERVICES_E_SUCCESS)
+            rc = 0;
+        goto out;
+    }
     if (sbservices_get_icon_state(sb, &state, NULL) != SBSERVICES_E_SUCCESS || !state)
         goto out;
     plist_to_xml(state, &xml, &len);
