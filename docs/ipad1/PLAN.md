@@ -83,6 +83,9 @@ data-partition key 0x89B) — not the full descriptor engine. D1815 PMU + new I2
 panic). `debug-enabled` forced (DT + 7B500 kernel global) so AMFI honors its boot-args.
 Success: launchd, then SpringBoard attempts, diffed against the HW-2 serial log.
 
+**SpringBoard draws (2026-09-27, 5eae009b6d):** screens/2026-09-27-first-springboard.png — "Connect to
+iTunes" plus the no-baseband alert. Next: baseband presented as on a Wi-Fi iPad; activation.
+
 **M2 DONE (2026-09-27, 107d5406d2):** launchd runs: fsck, / and /private/var mounted, multitouch firmware
 downloaded (0x0146.bin, as on the real iPad), mDNSResponder and sandboxd start. Fixes on the way: CDMA IRQ
 numbering (0x30+n), SHA-1 engine. Next: SpringBoard on screen; baseband SPI2 (0x82200000) is polled.
