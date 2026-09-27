@@ -125,3 +125,61 @@ honours an http:// AppleLocationServer), or install the CA unconditionally
 (guest injection). I'd build option 1 (proxy-on) first and measure whether
 `RequiresCert=false` + http:// endpoint also works, which would remove the
 proxy-on dependency. Flagging before building, per your instruction.
+
+
+## What was built (and what the capture showed)
+
+A slirp capture settled the open question: **locationd ignores the Wi-Fi
+service's PAC** and connects straight to `iphone-services.apple.com:443` (and
+fetches `configuration.apple.com/.../WMM.dat` over plain HTTP, also direct).
+With stock slirp there is no host-side way to intercept a direct connection by
+name (guestfwd only covers addresses inside 10.0.2.0/24, and slirp's DNS can't be
+overridden), so the TLS-bridge plan and a served settings.plist were both out.
+
+What works is the plain-HTTP route through a preference: locationd reads
+`AppleLocationServer` from its own domain and honours an `http://` URL with
+`AppleLocationServerRequiresCert` false. The store builder seeds
+`/var/mobile/Library/Preferences/com.apple.locationd.plist` (imgtools/ipad1_rootfs.py,
+alongside the Wi-Fi PAC) with `http://10.0.2.100:3128/clls/wloc`, the address the
+app's itwebproxy guestfwd already occupies. That is a baked guest preference,
+like the PAC, not guest code. itwebproxy answers `/clls/wloc` itself
+(`it_location_response`) **in every proxy mode, including off**, so location
+doesn't depend on the Proxy feature or any CA.
+
+Wire format, read off a captured request (7B500):
+
+    request  u16 1 | u16 len "en_US" | u16 0 "" | u16 len "3.2.2.7B500"
+             | u32 type 1 | u32 len | ALSLocationRequest
+               { 1: cell tower {..}, 2: ALSWirelessAP { 1: macID "2:0:5e:10:0:1" },
+                 3: 0, 4: 0 }
+    response u16 1 | u32 type 1 | u32 len | ALSLocationResponse
+               { 2: ALSWirelessAP { 1: macID, 2: ALSLocation
+                   { 1: lat*1e8, 2: lon*1e8, 3: accuracy m } } }
+
+(big-endian framing; the response preamble is PBRequester readResponsePreamble /
+tryReadResponseData in ProtocolBuffer.framework.)
+
+The position comes from `CONFIG.location` beside the proxy CONFIG
+(`web-proxy.conf.location` in the app's state directory): `LAT LON [ACCURACY]`,
+replaceable at any time; Apple Park when absent. tests/ipad1/test_location.py
+checks the answer offline.
+
+Measured (gl-drive, pristine-based scratch store with the preference and the PAC):
+
+- proxy mode `direct`, 51.50073,-0.12463: Maps' locate dot on Big Ben; the second
+  tap engages compass mode and the map turns with `qom-set compass-heading`.
+- proxy mode `off`, 35.65858,139.74543: dot on Tokyo Tower, compass mode, map turns
+  from heading 0 to 90 (screens/location-tokyo-proxy-off.png).
+
+Known limits:
+
+- **locationd caches a position per BSSID** (its wifis database) and only asks
+  about unknown access points, so changing CONFIG.location while a guest runs does
+  not move an already-placed dot; a fresh boot on a fresh overlay does. The fix is
+  host-side too: give the fake AP a BSSID derived from the configured position (the
+  SDIO Wi-Fi model), so a new position is a new, unknown AP. Not done yet.
+- Compass mode shows the "Compass Interference" figure-8 prompt: the heading is
+  right but locationd never considers the magnetometer calibrated (headingAccuracy
+  -1), because a field that never changes with the pose looks uncalibrated. Not done.
+- The app has to create `web-proxy.conf.location` (a Device > Location control);
+  until then the default position is used.

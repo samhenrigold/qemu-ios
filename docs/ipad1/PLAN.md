@@ -83,6 +83,14 @@ data-partition key 0x89B) — not the full descriptor engine. D1815 PMU + new I2
 panic). `debug-enabled` forced (DT + 7B500 kernel global) so AMFI honors its boot-args.
 Success: launchd, then SpringBoard attempts, diffed against the HW-2 serial log.
 
+**GL CoreAnimation is the default (2026-09-27, 6e2cae87fd):** golden-pristine and golden-appsync are built
+with GL CA (`ipad1_rootfs.py --no-ca-ogl` for software CA) and the GLI engine is always installed. animfps on
+golden-pristine: 48 fps while animating (software CA: ~28). **Snapshots:** live GL state blocks saving until
+the GL save work (phases 2-3, gles-host-snapshot) lands, so checkpoint-lock is now taken from
+`golden-pristine-swca` (the same recipe with `--no-ca-ogl`; its checkpoint.json names the base), and
+snapshot-check/tearcheck-from-checkpoint must use that store (`--nand`/`--checkpoint`) until then.
+`tearcheck.py --boot STORE` measures GL stores without a checkpoint.
+
 **GLES (2026-09-27, merged 83609cba9b):** ES 1.1 and 2.0 apps render through the GLI shim to the host executor
 (screens/2026-09-27-gles1-gltest.png, -gles2-gltest2.png). Open: accelerated CoreAnimation draws on the host but
 IOMFB swaps never complete (contrib/ipad1-gles/README.md); iPod GLES fixture coverage dropped 0.42→0.24 after
