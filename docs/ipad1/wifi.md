@@ -1,5 +1,9 @@
 # iPad 1 (7B500) Wi-Fi: BCM4329
 
+**Status: parked after stage 1 (2026-09-27, Sam).** `wifi` stays off by default. The work had
+already reached a working link (the next section) when it was parked. Pick it up from the
+cosmetics list there.
+
 ## Status (2026-09-27): works, stock stack, no guest changes
 
 `-machine ipad1,...,wifi=on -netdev user,id=wifi0` on a golden-pristine clone. The serial log:
