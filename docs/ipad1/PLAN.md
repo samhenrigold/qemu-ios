@@ -190,6 +190,26 @@ Connection Kit host path (stock USB HID); open question whether the kernel runs 
 2. USB Ethernet: the device's own Apple USB Ethernet configuration bridged to libslirp — now.
 3. Wi-Fi: fake BCM4329 behind the IOP SDIO ring — last item; until then SDIO answers "no card".
 
+## USB Ethernet link: the one kernel patch (2026-09-27)
+USB Ethernet works end to end: en1 takes a DHCP lease from usbmuxd's slirp (10.0.2.0/24), Safari loads
+www.google.com and Maps draws live tiles (`screens/2026-09-27-net-*.png`). Three parts:
+- host: usbmuxd-qemu `ipad1-net` selects configuration 4 (PTP + Apple Mobile Device + Apple USB Ethernet),
+  sets the Ethernet interface to alt 1, bridges its bulk pair to libslirp; usbmux keeps working beside it.
+- guest prefs: `ipad1_rootfs.py` seeds an en1 DHCP service (vanilla: a plist, like a configured unit).
+- kernel: `ipad1_kboot.py --usb-eth-link`, off by default (stock kernel). This is the only kernel patch.
+
+Why a patch: AppleUSBEthernetDevice marks its link active, starts its output queue and arms the first
+bulk read only in `setProperties({"LinkStatus": 1})`. The only stock caller is configd's
+USBEthernetSharing, and only while MobileInternetSharing tethers; a Wi-Fi iPad has no carrier
+provisioning (misd State 1020, ENOTSUP), so en1 stays `Link Active: FALSE` and IPConfiguration never
+DHCPs. Nothing the host sends over USB can raise the link (alt 0 only lowers it). The patch (2 sites, 24
+bytes, byte-checked) makes the host's SET_INTERFACE alt 1 run that same LinkStatus=1 path; details and
+addresses in `USB_ETH_LINK` in `imgtools/ipad1_kboot.py`.
+
+Not covered yet: the real-iBoot boot path, which loads the signed kernelcache from NAND, so kboot's patch
+never applies there. Open decision: have the machine apply the same bytes at runtime for that path.
+Full-fidelity alternative for later: Wi-Fi (BCM4329), which the stock stack brings up by itself.
+
 ## After SpringBoard: app compatibility (Sam, 2026-09-27)
 Once SpringBoard and installs work, test apps from Legacy Store (https://legacystore.app) and the IPA collection in ~/Downloads/ios3:
 install each, launch, exercise touch/keyboard/rotation/GL, and record a compatibility table
