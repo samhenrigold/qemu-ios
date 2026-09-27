@@ -6,7 +6,7 @@
 
 Every check boots its own copy-on-write overlay of golden-pristine (the base is never written), with
 usbmuxd-qemu's ipad1 build as the USB host where the check talks USB (otherwise the machine's built-in
-host), up to three QEMUs at once host-wide (pgrep -x). While the host is busy, run checks one at a time.
+host), up to five QEMUs at once host-wide (pgrep -x). While the host is busy, run checks one at a time.
 
   boot     lock screen on the panel: lit and a picture (many colours), not a solid fill
   usbmux   ideviceinfo over the bridge answers ProductVersion 3.2.2, DeviceClass iPad
@@ -47,7 +47,7 @@ USBMUXD = os.path.expanduser("~/Developer/usbmuxd-qemu-ipad1-net/src/usbmuxd")
 DEFAULT_CHECKS = ["boot", "usbmux", "afc", "persist", "net", "audio"]
 PENDING = {"appinstall": "stock installd rejects apps not validly signed for this device",
            "applaunch": "needs appinstall", "gles": "needs appinstall (GLTest is ldid-signed)"}
-MAX_QEMUS = 3
+MAX_QEMUS = 5
 # Scanout is 1024x768 with the portrait UI turned on it. The boot logo is a small Apple on black (a few %
 # lit); the lock screen is a full wallpaper (~99% lit, unlike the iPod's dark panel). A stalled panel's
 # solid fill is also fully lit, so the frame must also be a picture: many distinct colours.
