@@ -4064,7 +4064,11 @@ static bool gles_refresh_surfaces_1(CPUState *cpu)
         glActiveTexture(GL_TEXTURE0 + unit);
         for (unsigned t = 0; t < ARRAY_SIZE(targets); t++) {
             GLint name = 0;
-            if (!glIsEnabled(targets[t])) continue;
+            /* ES1 samples only enabled targets; an ES 2.0 program samples
+             * whatever is bound (no glEnable), so every bound surface counts.
+             * Checking the enable under ES 2.0 left CoreAnimation's in-place
+             * IOSurface updates (the slide-to-unlock shimmer) un-refreshed. */
+            if (!gh.program && !glIsEnabled(targets[t])) continue;
             glGetIntegerv(bindings[t], &name);
             if (!name || name == attachment) continue;
             GLESSurface *surface = g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(name));
