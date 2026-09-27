@@ -729,7 +729,7 @@ def main():
                    help="skip the en0 Wi-Fi service with the itwebproxy PAC (proxy, else DIRECT)")
     b.add_argument("--no-usb-net", dest="usb_net", action="store_false",
                    help="skip the en1 (USB Ethernet) DHCP network service")
-    b.add_argument("--gles", action="store_true", help="install the GLI shim as GLEngine plus GLTest/GLTest2.app (run contrib/ipad1-gles/build.sh first)")
+    b.add_argument("--gles", action="store_true", help="also install the GLTest/GLTest2.app test apps (the GLI engine itself always goes in; run contrib/ipad1-gles/build.sh first)")
     b.add_argument("--page-flip", action="store_true", help="leave CoreAnimation's IOMFB page flipping on (no MBX2D_PAGE_FLIP=0)")
     b.add_argument("--no-ca-ogl", dest="ca_ogl", action="store_false",
                    help="software CoreAnimation (CA_ENABLE_OGL=0) instead of the default GL compositing through the GLI shim")
