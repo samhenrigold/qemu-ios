@@ -57,7 +57,7 @@ usb-kbd raises on every boot and which, while up, keeps SpringBoard from locking
 ```
 contrib/ipad1-guest/build.sh                            # -> build/ipad1-guest/{it_pbd,it_ethlink,it_seal,it_msmquiet.dylib}
 imgtools/ipad1_rootfs.py build --base pristine
-imgtools/ipad1_rootfs.py bake FILES/userland/pristine --seal   # helpers + their com.qemu.* jobs, root-owned
+imgtools/ipad1_rootfs.py bake FILES/userland/pristine --seal   # helpers + their com.qemu.* jobs, root-owned; BTServer Disabled
 imgtools/ipad1_nand.py build --mbr FILES/hw2/rdisk0-head4M.bin --system FILES/userland/pristine/system.img \
                              --data FILES/userland/pristine/data.img --out FILES/userland/golden-pristine.new
 imgtools/ipad1_seal.py FILES/userland/golden-pristine.new      # one clean halt, then checks the FTL context

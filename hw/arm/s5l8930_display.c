@@ -364,9 +364,16 @@ static bool scanout_layer(S5L8930DisplayState *s, unsigned *w, unsigned *h,
     }
     *base = r[(DP_UI_BASE(layer) + DP_UI_ADDR) / 4];
     *fmt = (r[(DP_UI_BASE(layer) + DP_UI_FORMAT) / 4] >> 8) & 7;
-    /* Bytes per row live above bit 4: the 7B500 swap path writes
-     * (4096 << 4) | 2 for a 1024x768 BGRA surface. */
-    *stride = (r[(DP_UI_BASE(layer) + DP_UI_STRIDE) / 4] & ~0x3fu) >> 4;
+    /* Two encodings reach this register. The 7B500 swap path writes
+     * (bytes per row << 4) | 2, e.g. (4096 << 4) | 2 for 1024x768 BGRA. The
+     * iBoot framebuffer holds plain bytes per row: AppleDisplayPipe adopts it
+     * with `stride = reg & ~0x3f` (0xc058c42a), so seeding the swap encoding
+     * gave the boot surface 64 KiB rows. A <<4 value never undershoots a row. */
+    {
+        uint32_t v = r[(DP_UI_BASE(layer) + DP_UI_STRIDE) / 4] & ~0x3fu;
+        unsigned row = *w * (((*fmt) ? 2 : 4));
+        *stride = (v >> 4) >= row ? v >> 4 : v;
+    }
     return *base != 0;
 }
 
@@ -375,8 +382,20 @@ static void front_latch(S5L8930DisplayState *s)
     unsigned w, h;
     uint32_t fmt, base, stride, bpp;
     size_t need;
+    bool lit = scanout_layer(s, &w, &h, &fmt, &base, &stride);
 
-    if (!scanout_layer(s, &w, &h, &fmt, &base, &stride)) {
+    if (getenv("IT_DISP_TRACE")) {
+        static unsigned n;
+        uint32_t *r = s->pipe[0].regs;
+        if (n++ < 200) {
+            fprintf(stderr, "[disp] swap %u: layers=%08x lit=%d %ux%u fmt=%u base=%08x "
+                    "stride=%u (raw %08x/%08x) ui0=%08x ui1=%08x\n", s->pipe[0].swap_id,
+                    r[DP_LAYERS / 4], lit, w, h, fmt, base, stride,
+                    r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4], r[(DP_UI_BASE(1) + DP_UI_STRIDE) / 4],
+                    r[(DP_UI_BASE(0) + DP_UI_ADDR) / 4], r[(DP_UI_BASE(1) + DP_UI_ADDR) / 4]);
+        }
+    }
+    if (!lit) {
         s->front_valid = false;
         return;
     }
@@ -490,7 +509,7 @@ static void s5l8930_display_reset(DeviceState *dev)
     if (s->fb_base) {
         r[DP_LAYERS / 4] = 0x100;
         r[(DP_UI_BASE(0) + DP_UI_ADDR) / 4] = s->fb_base;
-        r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4] = (DEFAULT_WIDTH * 4) << 4 | 2;
+        r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4] = DEFAULT_WIDTH * 4 | 2;
         r[0x4060 / 4] = DEFAULT_WIDTH << 16 | DEFAULT_HEIGHT;
     }
     pipe0_update_irq(s);
@@ -538,9 +557,31 @@ static void s5l8930_display_init(Object *obj)
 
 static int s5l8930_display_post_load(void *opaque, int version_id)
 {
+    /* The latched frame is host memory and was not saved: take it again
+     * from the restored guest RAM so the panel resumes on a whole frame. */
+    front_latch(opaque);
     pipe0_update_irq(opaque);
     return 0;
 }
+
+static bool display_pipe_swap_needed(void *opaque)
+{
+    return ((DisplayPipe *)opaque)->swap_pending;
+}
+
+/* A swap in flight when the state was saved: its VBL still owes the latch.
+ * A subsection, so saves taken with nothing pending stay loadable by older
+ * builds. */
+static const VMStateDescription vmstate_display_pipe_swap = {
+    .name = "s5l8930.display.pipe/swap",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = display_pipe_swap_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(swap_pending, DisplayPipe),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 static const VMStateDescription vmstate_display_pipe = {
     .name = "s5l8930.display.pipe",
@@ -552,6 +593,10 @@ static const VMStateDescription vmstate_display_pipe = {
         VMSTATE_UINT32(pkt_off, DisplayPipe),
         VMSTATE_UINT32(swap_id, DisplayPipe),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_display_pipe_swap,
+        NULL
     }
 };
 
