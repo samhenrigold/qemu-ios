@@ -76,24 +76,35 @@ imgtools/ipad1_nand.py build ...              # rebuild the store
 - `build_nand.set_owner` now handles the 7B500 system volume's 8 KiB
   allocation blocks.
 
-## Host side for the ipad1 machine (pasteboard only)
+## Host side (done)
 
-**Do not boot a baked image until items 1 to 3 below exist.** Unregistered, the
-`mcr p15, 3, rX, c15, c15, 0` UNDEFs, and `it_pbd` crash-loops under
-KeepAlive. That is harmless to the rest of the system, but it fills the log.
+- `hw/arm/guest-pasteboard.c` / `include/hw/arm/guest-pasteboard.h` hold what
+  used to be the iPod machine's `pb_*` state and code: the `GuestPasteboard`
+  struct, the `QC_PB_*` handler (`guest_pb_call`), the host clipboard peer,
+  the no-agent warning timer and the four properties (`pasteboard`,
+  `guest-pasteboard`, `pasteboard-agent`, `pasteboard-status`). Both machines
+  embed one and call `guest_pb_init` from instance_init. The iPod's
+  `guest-services.c` routes `QC_PB_*` there; behaviour and property text are
+  unchanged.
+- ipad1 already registered `QEMU_CALL` for the GLES shim (`ipad1_qemu_call`);
+  its dispatch now also answers `QC_PB_*`. Everything else stays unanswered.
+- LightTouchMac needs no change: its Paste Text to Guest command sets the
+  machine's `pasteboard` property (`qemu_ios_ui_paste`), and guest copies reach
+  the Mac clipboard through the QEMU clipboard peer, as on the iPod.
 
-1. **Register the channel.** In `hw/arm/ipad1.c`, register the `QEMU_CALL`
-   cp15 register on the Cortex-A8, with the same ARMCPRegInfo as
-   `ipod_touch_2g.c`: opc1 3, crn 15, crm 15, opc2 0, `PL0_RW`, `ARM_CP_IO`,
-   AA32, `qemu_call`.
-2. **Move the pasteboard state out of the iPod machine.** In
-   `guest-services.c`, move the `pb_*` fields out of `IPodTouchMachineState`
-   into a small struct both machines embed. Pass it through `ri->opaque`.
-3. **Trim the ipad1 dispatch to the pasteboard.** On ipad1 the dispatch should
-   answer only `QC_PB_*` (the agent, keyboard and GLES cases return
-   `QC_ERR_ENOSYS`). Add `guest-services.c` to `CONFIG_IPAD1`.
-4. **Add the machine properties.** Give the ipad1 machine the `pasteboard` and
-   `pasteboard-status` properties the frontend already uses.
+### Round trip (2026-09-27)
+
+A store built from `userland/pristine` (the golden-pristine inputs) plus
+`bake`, booted with `amfi_allow_any_signature=1 cs_enforcement_disable=1`.
+`AMFI: Invalid signature but permitting execution` is it_pbd starting.
+
+1. `pasteboard-agent` → `alive: 1267 polls`.
+2. `qom-set pasteboard "Hello iPad, from the host! #1 (a-b) $5"`, then
+   `pasteboard-status` → `delivered: 38 bytes`.
+3. In Notes, the Paste callout appeared and pasting inserted the exact text,
+   punctuation included.
+4. Typing `Qwer` on the on-screen keyboard, then double-tap and Copy, gave
+   `guest-pasteboard` → `Qwer`.
 
 Everything else in the table is USB (usbmuxd → lockdownd) or a hardware model,
 and needs no channel.
