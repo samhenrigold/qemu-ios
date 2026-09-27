@@ -33,6 +33,7 @@ typedef struct IPodTouchMIPIDSIState
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     bool direct_boot; /* Startup board compatibility policy. */
+    uint32_t lanes;   /* data lanes: 2 on the iPod, 4 on K48 */
     qemu_irq irq;
     uint32_t pkthdr_reg;
     uint32_t clkctrl;

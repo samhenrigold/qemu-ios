@@ -283,6 +283,9 @@ static hwaddr dart_xlate(S5L8930DisplayState *s, uint32_t va)
         return va;
     }
     pte = ldl_le_phys(&address_space_memory, ste + ((va >> 12) & 0x3ff) * 4);
+    if (!(pte & 1)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "dart2: invalid PTE 0x%08x for iova 0x%08x\n", pte, va);
+    }
     return (pte & 1) ? ((pte & ~0xfffu) | (va & 0xfff)) : (hwaddr)-1;
 }
 

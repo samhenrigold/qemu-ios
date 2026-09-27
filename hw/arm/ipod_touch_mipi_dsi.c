@@ -1,6 +1,7 @@
 #include "hw/arm/ipod_touch_mipi_dsi.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
+#include "hw/qdev-properties.h"
 
 /* Cache opt-in tracing; direct-boot compatibility is per-device startup state. */
 static bool dsi_trace(void)
@@ -10,6 +11,17 @@ static bool dsi_trace(void)
         on = getenv("IT_DSI_TRACE") != NULL;
     }
     return on;
+}
+
+static uint32_t dsi_lane_mask(IPodTouchMIPIDSIState *s)
+{
+    return (1u << MIN(s->lanes, 4)) - 1;
+}
+
+/* Escape/FIFO command handshake bits: per-lane ULPS (bits 4-7) + bit 9. */
+static uint32_t dsi_cmd_bits(IPodTouchMIPIDSIState *s)
+{
+    return (dsi_lane_mask(s) << 4) | 0x200;
 }
 
 static void dsi_panel_read(IPodTouchMIPIDSIState *s, uint32_t header)
@@ -43,7 +55,9 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
             // bring-up but made shutdown spin forever, wedging the kernel
             // mid-power-down -- which is why the display never came back from
             // idle sleep, and why the reboot path never reached the watchdog.
-            uint32_t status = 0x103 | ((s->clkctrl & rDSIM_CLKCTRL_TxRequestHsClk)
+            /* bits 0-3: per-lane stop state, one per configured lane */
+            uint32_t status = dsi_lane_mask(s) | 0x100 |
+                              ((s->clkctrl & rDSIM_CLKCTRL_TxRequestHsClk)
                                 ? rDSIM_STATUS_TxReadyHsClk : 0);
             /*
              * 3.1.3's iBoot mipi_dsim_init() walks a sequence of "write a DSIM
@@ -96,7 +110,7 @@ static void ipod_touch_mipi_dsi_write(void *opaque, hwaddr addr, uint64_t val, u
             dsi_panel_read(s, val);
             /* Sending a packet re-arms the command handshake bits. */
             if (s->direct_boot) {
-                s->cmd_pending = 0x230;
+                s->cmd_pending = dsi_cmd_bits(s);
             }
             break;
         case REG_INTSRC:
@@ -109,7 +123,7 @@ static void ipod_touch_mipi_dsi_write(void *opaque, hwaddr addr, uint64_t val, u
             break;
         case 0x14: /* DSIM_ESCMODE: escape-mode command trigger */
             if (s->direct_boot) {
-                s->cmd_pending = 0x230;
+                s->cmd_pending = dsi_cmd_bits(s);
             }
             break;
         case REG_CLKCTRL:
@@ -190,9 +204,15 @@ static const VMStateDescription vmstate_ipod_touch_mipi_dsi = {
     }
 };
 
+static const Property ipod_touch_mipi_dsi_properties[] = {
+    DEFINE_PROP_UINT32("lanes", IPodTouchMIPIDSIState, lanes, 2),
+};
+
 static void ipod_touch_mipi_dsi_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+
+    device_class_set_props(dc, ipod_touch_mipi_dsi_properties);
 
     dc->realize = ipod_touch_mipi_dsi_realize;
     device_class_set_legacy_reset(dc, ipod_touch_mipi_dsi_reset);
