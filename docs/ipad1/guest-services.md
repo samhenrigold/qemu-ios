@@ -1,100 +1,99 @@
-# Guest services on the iPad 1 (iOS 3.2.2, armv7)
+# Guest services on the iPad 1 (iOS 3.2.2)
 
-The iPod guest tools, rebuilt for the ipad1 machine. Nothing here has run on an
-emulated iPad yet (it does not reach userland); everything below was built and
-checked offline.
+Policy: keep the guest as close to stock as possible. The iPod needed a guest
+agent because its USB was limited. The iPad on 3.2.2 has USB Ethernet and the
+full set of lockdown services, and the emulator models the touch screen,
+accelerometer, PMU shutdown and (planned) a Bluetooth keyboard. Every iPod
+guest tool was put into one of three buckets:
 
-```
-contrib/ipad1-guest/build.sh                 # -> build/ipad1-guest/, ldid-signed
-imgtools/ipad1_rootfs.py build ...           # as before
-imgtools/ipad1_rootfs.py bake OUT/pristine   # installs the tools into system.img + data.img
-imgtools/ipad1_nand.py build ...             # rebuild the store from the baked images
-```
+- **(a)** replaced by a stock iOS service over USB
+- **(b)** replaced by a hardware model
+- **(c)** stays in the guest
 
-**Do not boot a baked image until the host side below exists.** `it_typein.dylib`
-is inserted into SpringBoard and issues the cp15 call; on the ipad1 machine that
-coprocessor register is not registered, so the `mcr` UNDEFs and SpringBoard dies
-with SIGILL in a loop (and `it_agent` crash-loops under KeepAlive).
+Only the (c) items are built.
 
-## Guest tools
+Service availability was checked against the 7B500 system volume
+(`/System/Library/Lockdown/Services.plist`) and the 3.2.2 DeveloperDiskImage
+(`/Library/Lockdown/ServiceAgents`). The host reaches all of them through usbmuxd
+and lockdownd (libimobiledevice, as LightTouchMac already does for the iPod).
 
-| Tool | 3.2.2 | Baked | Notes |
+## The mapping
+
+| iPod tool / agent op | Bucket | iPad replacement | How LightTouchMac reaches it |
 |---|---|---|---|
-| `it_agent` (it-agent) | yes | `/usr/local/bin`, `com.qemu.it-agent` job | exec/put/get/launch/frontmost/lockstatus/orientation/kill/halt + clipboard; signed with the SpringBoard launch entitlement |
-| `it_typein.dylib` (it-agent) | yes | `/usr/lib`, SpringBoard `DYLD_INSERT_LIBRARIES` | host keyboard text + `uidump` |
-| `sblaunch` (it-gles) | yes | `/usr/local/bin` | entitlement-signed |
-| `sbdlicon`, `sbunlock` (it-instprogress) | yes | `/usr/local/bin` | |
-| `itstatus`, `itorient`, `ithalt`, `itbattery` | yes | no | legacy ssh fallbacks the agent replaced; not baked on the iPod either |
-| `MBXGLEngine`, gles tests (it-gles) | **iPod-only** | no | PowerVR MBX engine replacement; the iPad is SGX (see userland-gl-display.md) |
-| `it_kbd_agent`, `it_pbd` | superseded | no | replaced by `it_typein` / `it_agent`; the iPod bake retires them too |
-| `isprogress.dylib` | not built | no | `contrib/it-instprogress/isprogress.c:265` does not compile at HEAD (comment block broken) — for the iPod too |
-| it-proxy, it-webproxy, it-media, it-audio | not ported | no | outside the guest-services layer |
+| `it_agent put`/`get`/`getrange` | a | `com.apple.afc` (media jail); `com.apple.mobile.house_arrest` (app containers) | `afc_*`, `house_arrest_*` |
+| `it_agent exec` | dropped | nothing stock; the only real users were install and debugging, both covered below | — (ssh on the jailbroken base for development only) |
+| app install, `sbdlicon` placeholder, `isprogress` | a | `com.apple.mobile.installation_proxy` (its status callbacks carry `PercentComplete`) | `instproxy_install` with a status callback; the progress bar comes from the host |
+| `sblaunch` / `it_agent launch`, `kill` | a | DDI `com.apple.debugserver` (+ `.applist`), after `com.apple.mobile.mobile_image_mounter` mounts the 3.2.2 DDI | the Xcode path: mount the DDI, then gdb-remote `A`/`k` (idevicedebug) |
+| `itstatus` / `frontmost`, `lockstatus` | dropped | no stock query. The host already knows what it launched, and the lock state follows from the screen and the modelled lock button | — |
+| `itorient` / `orientation` | a | `com.apple.springboardservices` `getInterfaceOrientation` (in 3.2.2's springboardservicesrelay, absent on the iPod's 3.1.3) | `sbservices_get_interface_orientation` |
+| screenshots (iPod read the framebuffer) | a (or host framebuffer) | DDI `com.apple.mobile.screenshotr` | `screenshotr_take_screenshot`; the display model's framebuffer is cheaper and needs no DDI |
+| logs | a | `com.apple.syslog_relay`, `com.apple.crashreportcopymobile` | `syslog_relay_*`, `afc` on the crash-report service |
+| `settime` | b | PMU RTC model, seeded from host time | machine property / RTC model |
+| `ithalt` / `halt` | b | PMU shutdown model; the guest powers off through the stock power-button hold and slide (touch model). `mobile_diagnostics_relay` on 3.2.2 only answers `GasGauge`, with no Shutdown/Restart | GPIO button + touch injection; wait for the PMU power-off |
+| `itbattery` | a/b | gas-gauge/PMU model; readable back through lockdown's battery domain and `diagnostics_relay` `GasGauge` | `lockdownd_get_value(domain "com.apple.mobile.battery")` |
+| `sbunlock` | b | touch model: the host performs the slide-to-unlock gesture | touch injection |
+| `it_typein.dylib`, `it_kbd_agent` (text input) | b | Bluetooth keyboard model (planned). The on-screen keyboard through touch works now | HID events |
+| accelerometer / shake | b | accelerometer model | machine properties |
+| **pasteboard** (`it_pbd`, `it_agent` clipboard) | **c** | see below | cp15 channel `QC_PB_*` |
+| GLES engine shim | c | built separately (userland-gl-gaps) | — |
+| `MBXGLEngine` | iPod-only | PowerVR MBX; the iPad is SGX | — |
 
-## What changed from the iPod version
+## Why the pasteboard stays in the guest
 
-- **Toolchain.** `contrib/armv6-toolchain/armv6.sh` takes `GUEST_ARCH=armv7`:
-  real armv7 code (`-target armv7-apple-ios5.0 -marm`), no armv6 subtype round
-  trip, `mkold.py --subtype 9`, linked against the 3.2 SDK's fat libSystem stub.
-  Sources are unchanged; they already `dlopen` everything and never link a
-  framework.
-- **Executables, not only dylibs.** hw2-regs/README-native-code-on-3.2.2.md
-  says 3.2 dyld rejects modern executables because of `LC_MAIN`. `mkold.py`
-  already rewrites `LC_MAIN` into the `LC_UNIXTHREAD` a 2010 linker emitted and
-  drops `LC_VERSION_MIN`/`LC_BUILD_VERSION`, which is what let the same tools run
-  on 3.1.3. `-marm` covers that README's other trap (even `__mod_init_func`
-  pointers). **Unverified on 3.2.2 hardware**; the cheapest proof is copying
-  `build/ipad1-guest/itstatus` to the real unit and running it over ssh.
-- **Signing.** Every output is `ldid -S` (it_agent and sblaunch with
-  `it-gles/sblaunch-entitlements.xml`). Ad-hoc signatures need
-  `amfi_allow_any_signature=1` even on the pristine base, which otherwise needs
-  no AMFI boot-args.
-- **Bake.** `ipad1_rootfs.py bake` replaces `bake-guest-tools.sh` + `editimg.py`
-  + `setowner.py`: one mount of each raw image, then uid/gid patched in the
-  catalog (`build_nand.set_owner`, which now handles 7B500's 8 KiB allocation
-  blocks). Tools 0:0 and 0755, the job 0:0 0644, the AFC markers
-  (`/var/mobile/Media/.lt-guest-tools-v{1,2}`) 501:501 on the data volume.
-  Each tool is checked (armv7, no `LC_MAIN`/`LC_VERSION_MIN`, signed) before
-  anything is written.
-- **Dropped from the iPod bake:** `CA_ENABLE_OGL=1`/`LK_ENABLE_OGL=1` (the ipad1
-  image deliberately sets `CA_ENABLE_OGL=0`), the MBX engine, the Sounds
-  defaults and `SBDontLockEver` cleanup (iPod image history).
+pasteboardd holds the live pasteboard and UIPasteboard is its only client, so
+something in the guest has to call UIPasteboard. I checked every way a stock
+service might reach it:
 
-## Host side needed on the ipad1 machine
+- **Lockdown services:** no binary behind a `Services.plist` entry references
+  the pasteboard (strings search over each ProgramArguments[0]).
+- **MobileSync / SyncAgent:** syncs Calendars, Contacts, Bookmarks and Notes
+  only. There is no clipboard data class.
+- **DDI 3.2.2:** the only pasteboard strings are in Shark's Mac-side nibs.
+  debugserver could in principle force a UIPasteboard call inside an attached
+  app, but that means stopping a foreground app for every clipboard sync.
 
-1. **Register the channel on the Cortex-A8** in `hw/arm/ipad1.c`: the same
-   `QEMU_CALL` ARMCPRegInfo as `ipod_touch_2g.c` (cp15, opc1 3, crn 15, crm 15,
-   opc2 0, `PL0_RW`, `ARM_CP_IO`, `ARM_CP_STATE_AA32`, `qemu_call` /
-   `qemu_call_status`), via `define_arm_cp_regs(s->cpu, ...)` after the CPU is
-   created. Guest encoding: `mcr p15, 3, rX, c15, c15, 0` with a pointer to a
-   `qemu_call_t`.
-2. **Detach `guest-services.c` from the iPod machine.** Every service case
-   casts `qdev_get_machine()` to `IPodTouchMachineState` for `agent`, the
-   keyboard ring (`kbd_ring/head/tail`) and the pasteboard fields. Move those
-   into a small shared struct both machines embed and hand it to `qemu_call`
-   through `ri->opaque`. `QC_GLES` should return `QC_ERR_ENOSYS` on ipad1 (MBX
-   engine), not link `guest-gles.c`.
-3. **meson:** add `guest-services.c` and `ipod-agent.c` to `CONFIG_IPAD1`.
-4. **QOM properties** on the ipad1 machine, mirroring the iPod's so
-   `imgtools/itqmp.py agent ...` and the frontend work unchanged:
-   `agent-request`, `agent-result`, `agent-cancel`, `agent-status`,
-   `pasteboard`/`pasteboard-status`, the keyboard-text property, and
-   `ipod_agent_publish`/`ipod_agent_reset` on machine init/reset.
-5. **Halt:** the agent's `halt` op only calls `reboot2(RB_HALT)`. The host must
-   still see a power-off from the iPad's PMU model before it treats the guest
-   as down, as on the iPod.
+The guest side is therefore `it_pbd`, the older clipboard-only daemon, not
+`it_agent`. It has no exec, file or UI routes: it only polls the host
+clipboard and publishes guest pasteboard changes, as `public.utf8-plain-text`.
+It is installed as a root launchd job and leaves SpringBoard untouched: no
+`DYLD_INSERT_LIBRARIES`, no environment changes.
 
-Unchanged and expected to carry over: `agent_copy` walks the current guest page
-tables through `cpu_memory_rw_debug` (single core, `qemu_get_cpu(0)`), and the
-agent already pre-touches its receive pages because debug writes cannot fault in
-demand-zero pages.
+## Build and bake
 
-## Offline checks run
+```
+contrib/ipad1-guest/build.sh                  # build/ipad1-guest/it_pbd, armv7, ldid -S
+imgtools/ipad1_rootfs.py bake OUT/pristine    # /usr/local/bin/it_pbd + com.qemu.it-pbd job, root:wheel via the catalog
+imgtools/ipad1_nand.py build ...              # rebuild the store
+```
 
-- `contrib/ipad1-guest/build.sh`: all nine outputs are thin `arm_v7`, zero
-  `LC_MAIN`/`LC_VERSION_MIN`, `LC_CODE_SIGNATURE` present, `mcr p15, #3, rX,
-  c15, c15, #0` present in it_agent and it_typein.
-- `ipad1_rootfs.py --selfcheck` covers the tool check and the
-  `DYLD_INSERT_LIBRARIES` edit.
-- `bake` on a clone of `userland/pristine`: fsck clean, owners/modes read back
-  from the catalog as listed above, SpringBoard env
-  `CA_ENABLE_OGL=0, MBX2D_PAGE_FLIP=0, DYLD_INSERT_LIBRARIES=/usr/lib/it_typein.dylib`.
+- `contrib/armv6-toolchain/armv6.sh` takes `GUEST_ARCH=armv7` (the 3.2 SDK,
+  cpusubtype 9, `-marm`). `mkold.py` turns `LC_MAIN` into `LC_UNIXTHREAD`, so
+  this is a plain executable, not the dylib-in-`sleep` workaround from
+  hw2-regs/README-native-code-on-3.2.2.md. That has not yet been proven on 3.2.2
+  hardware.
+- The ad-hoc signature needs `amfi_allow_any_signature=1`.
+- `build_nand.set_owner` now handles the 7B500 system volume's 8 KiB
+  allocation blocks.
+
+## Host side for the ipad1 machine (pasteboard only)
+
+**Do not boot a baked image until items 1 to 3 below exist.** Unregistered, the
+`mcr p15, 3, rX, c15, c15, 0` UNDEFs, and `it_pbd` crash-loops under
+KeepAlive. That is harmless to the rest of the system, but it fills the log.
+
+1. **Register the channel.** In `hw/arm/ipad1.c`, register the `QEMU_CALL`
+   cp15 register on the Cortex-A8, with the same ARMCPRegInfo as
+   `ipod_touch_2g.c`: opc1 3, crn 15, crm 15, opc2 0, `PL0_RW`, `ARM_CP_IO`,
+   AA32, `qemu_call`.
+2. **Move the pasteboard state out of the iPod machine.** In
+   `guest-services.c`, move the `pb_*` fields out of `IPodTouchMachineState`
+   into a small struct both machines embed. Pass it through `ri->opaque`.
+3. **Trim the ipad1 dispatch to the pasteboard.** On ipad1 the dispatch should
+   answer only `QC_PB_*` (the agent, keyboard and GLES cases return
+   `QC_ERR_ENOSYS`). Add `guest-services.c` to `CONFIG_IPAD1`.
+4. **Add the machine properties.** Give the ipad1 machine the `pasteboard` and
+   `pasteboard-status` properties the frontend already uses.
+
+Everything else in the table is USB (usbmuxd → lockdownd) or a hardware model,
+and needs no channel.
