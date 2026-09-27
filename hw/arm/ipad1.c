@@ -63,6 +63,7 @@ struct IPad1MachineState {
     IPodTouchMultitouchState *mt;
     char *kboot_path;
     char *nand_path;
+    char *nand_overlay_path;
     char *nor_path;
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
@@ -446,6 +447,9 @@ static void ipad1_init(MachineState *machine)
     if (s->nand_path) {
         qdev_prop_set_string(dev, "nand", s->nand_path);
     }
+    if (s->nand_overlay_path) {
+        qdev_prop_set_string(dev, "nand-overlay", s->nand_overlay_path);
+    }
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_IOP_BASE);
@@ -617,6 +621,19 @@ static void ipad1_set_nand(Object *obj, const char *value, Error **errp)
     s->nand_path = g_strdup(value);
 }
 
+static char *ipad1_get_nand_overlay(Object *obj, Error **errp)
+{
+    return g_strdup(IPAD1_MACHINE(obj)->nand_overlay_path);
+}
+
+static void ipad1_set_nand_overlay(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    g_free(s->nand_overlay_path);
+    s->nand_overlay_path = g_strdup(value);
+}
+
 static char *ipad1_get_nor(Object *obj, Error **errp)
 {
     return g_strdup(IPAD1_MACHINE(obj)->nor_path);
@@ -676,6 +693,7 @@ static void ipad1_instance_finalize(Object *obj)
     g_free(IPAD1_MACHINE(obj)->usb_tcp_addr);
     g_free(IPAD1_MACHINE(obj)->kboot_path);
     g_free(IPAD1_MACHINE(obj)->nand_path);
+    g_free(IPAD1_MACHINE(obj)->nand_overlay_path);
     g_free(IPAD1_MACHINE(obj)->nor_path);
 }
 
@@ -696,6 +714,10 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     object_class_property_add_str(klass, "nand", ipad1_get_nand, ipad1_set_nand);
     object_class_property_set_description(klass, "nand",
         "NAND page-store directory (geometry.json + bus<b>-ce<c>.pages); blank chips if unset");
+    object_class_property_add_str(klass, "nand-overlay", ipad1_get_nand_overlay,
+                                  ipad1_set_nand_overlay);
+    object_class_property_set_description(klass, "nand-overlay",
+        "Copy-on-write directory for guest NAND writes; the nand store is then read-only");
     object_class_property_add_str(klass, "nor", ipad1_get_nor, ipad1_set_nor);
     object_class_property_set_description(klass, "nor",
         "1 MiB SPI NOR image (nvram, syscfg); erased flash if unset");
