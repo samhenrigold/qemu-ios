@@ -280,10 +280,6 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
             res["verdict"] = "PASS-INSTALL" if listed else "INSTALL-FAIL"
             res["note"] = "installed and listed" if listed else "installer said Complete but not in list"
             return res
-        # deterministic launch: sbservices gives the exact page/slot of the new icon.
-        slot = icon_slot(b, r["bundle"]) or (2, 0, 0)     # fall back to page-2 slot(0,0)
-        page, row, col = slot
-        res["note"] = "slot p%d r%d c%d" % slot
         # syslog, to confirm the app process starts (not pixels alone)
         syslog = os.path.join(b.dir, "syslog.log")
         b.procs.spawn(["idevicesyslog"], syslog, env=b.env())
@@ -296,6 +292,11 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
             res["verdict"], res["note"] = "NO-BOOT", "never reached lock screen (%s)" % det
             return res
         lock = wait_stable(b, rg, tag, min(end, time.time() + 60), want_lit=True)
+        # sbservices only answers once SpringBoard is up (past the lock screen), so query
+        # the icon layout now, not right after install.
+        slot = icon_slot(b, r["bundle"]) or (2, 0, 0)     # fall back to page-2 slot(0,0)
+        page, row, col = slot
+        res["note"] = "slot p%d r%d c%d" % slot
         # 2. unlock: drag, wait for a settled frame, confirm it changed from the lock frame.
         home = lock
         for _ in range(5):
