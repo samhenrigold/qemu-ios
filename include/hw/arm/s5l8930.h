@@ -8,6 +8,7 @@
 #define HW_ARM_S5L8930_H
 
 #include "hw/sysbus.h"
+#include "hw/arm/ipod_touch_sdio.h"
 
 /* Memory */
 #define S5L8930_DRAM_BASE        0x40000000
@@ -55,6 +56,7 @@
 #define S5L8930_USB_OTG_BASE     0x86100000   /* Synopsys DWC OTG, device mode */
 #define S5L8930_USB_EHCI_BASE    0x86400000   /* usb-ehci,s5l8930x (host) */
 #define S5L8930_USB_OHCI0_BASE   0x86500000   /* usb-ohci,s5l8930x (host) */
+#define S5L8930_SDIO_BASE        0x80000000   /* SDHC, standard SDHCI registers */
 #define S5L8930_IOP_BASE         0x86300000   /* AP-side IOP control block */
 #define S5L8930_IOP_SIZE         0x1000
 #define S5L8930_IOP_VIC_BASE     0xbf300000   /* the IOP's own 4 VICs, used as doorbells */
@@ -62,6 +64,7 @@
 
 /* Interrupt numbers: VIC n owns 32n..32n+31 */
 #define S5L8930_IRQ_IOP          0x03          /* IOP -> AP doorbell */
+#define S5L8930_IRQ_SDIO         0x26          /* SDHC: the Wi-Fi card interrupt */
 #define S5L8930_IRQ_USB_OTG      0x0d
 #define S5L8930_IRQ_USB_EHCI     0x0e
 #define S5L8930_IRQ_USB_OHCI0    0x0f
@@ -109,6 +112,16 @@
  * message rings in guest DRAM through address_space_memory.
  */
 #define TYPE_S5L8930_IOP "s5l8930.iop"
+
+/*
+ * SDIO (hw/arm/s5l8930_sdio.c): the SDHC interrupt registers (MMIO 0 at
+ * S5L8930_SDIO_BASE, sysbus IRQ 0 = S5L8930_IRQ_SDIO) and the IOP ring-3
+ * commands, run against the "card" link (an ipodtouch.sdio dongle). GPIO in 0
+ * is the card's interrupt output. The IOP's "sdio" link forwards ring 3 here.
+ */
+#define TYPE_S5L8930_SDIO "s5l8930.sdio"
+#define S5L8930_SDIO_CMD_SIZE 0x200
+void s5l8930_sdio_iop_command(DeviceState *dev, uint8_t *cmd);
 
 /*
  * I2C controller (hw/arm/s5l8930_i2c.c): the newer FIFO-style block the
