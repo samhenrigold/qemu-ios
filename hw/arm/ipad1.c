@@ -28,6 +28,7 @@
 #include "hw/boards.h"
 #include "hw/irq.h"
 #include "hw/misc/unimp.h"
+#include "system/runstate.h"
 #include "hw/usb/hcd-ehci.h"
 #include "hw/usb/hcd-ohci.h"
 #include "hw/sysbus.h"
@@ -80,6 +81,7 @@ struct IPad1MachineState {
     char *nand_path;
     char *nand_overlay_path;
     char *nor_path;
+    char *die_id;                        /* ChipID words 2-3 of the unit, hex pair */
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
@@ -91,11 +93,17 @@ struct IPad1MachineState {
     GuestPasteboard pb;                  /* hw/arm/guest-pasteboard.c */
     /* App controls, same property names as the iPod machine. */
     LIS302DLState *accel;
+    DeviceState *compass;                /* AK8973; takes its pose from accel */
     double accel_pitch, accel_roll;      /* degrees, as the app sends them */
     bool accel_flat;
     double battery_level;                /* % */
     int battery_mode;                    /* 0 auto (follow cable), 1 on, 2 off */
     double battery_drain;                /* accepted for the bridge; unused */
+    QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
+    DeviceState *display;                /* its dart2 also serves the scaler */
+    int pwroff_phase, pwroff_step, pwroff_orient;
+    bool usb_charger;                    /* host grants high-power current */
+    Chardev *gauge;
 };
 
 static const char *const ipad1_battery_modes[] = { "auto", "on", "off" };
@@ -327,6 +335,124 @@ static void ipad1_set_button(IPad1MachineState *s, int pin, bool down)
 }
 
 /*
+ * QMP system_powerdown -> the user's power-off gesture, as on the iPod machine
+ * (ipod_touch_powerdown_req): the one clean shutdown path unmounts the
+ * volumes, closes the FTL and ends in the PMU standby write, where QEMU exits.
+ * Home first (wakes the panel, or quits a foreground app), hold the hold
+ * button until SpringBoard raises "slide to power off", then drag its knob
+ * along its track. All on QEMU_CLOCK_VIRTUAL, since
+ * SpringBoard's hold threshold is guest time. One sequence at a time; the
+ * phase goes back to idle afterwards so a repeat request works.
+ */
+enum { PWROFF_IDLE, PWROFF_HOME, PWROFF_WAKE, PWROFF_HOLD, PWROFF_SETTLE, PWROFF_DRAG,
+       PWROFF_WATCH };
+#define PWROFF_WATCH_MS     25000   /* from the request: warn if still running */
+#define PWROFF_DRAG_STEPS   24
+#define PWROFF_DRAG_LEN     430     /* knob to past the track's end */
+
+/*
+ * Where the knob sits on the landscape panel, and which way the track runs,
+ * per interface orientation (UIDeviceOrientation 1-4): the sheet is at the
+ * top of the UI, which the panel shows rotated. Measured off screendumps of
+ * the sheet; 2 and 4 are 1 and 3 turned half way round.
+ */
+static const struct { int x, y, dx, dy; } pwroff_knob[5] = {
+    /* With the LIS331 mounted flipped (eb5d4e5c58) accel-orientation is
+     * UIDeviceOrientation, so portrait and upside down swap places here. */
+    [1] = {  73, 477,  0, -1 },     /* portrait: track runs up the panel */
+    [2] = { 950, 290,  0,  1 },     /* upside down */
+    [3] = { 418,  69,  1,  0 },     /* landscape, home button right */
+    [4] = { 605, 698, -1,  0 },     /* landscape, home button left */
+};
+
+static void ipad1_pwroff_arm(IPad1MachineState *s, int ms)
+{
+    timer_mod(s->pwroff_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + (int64_t)ms * SCALE_MS);
+}
+
+static void ipad1_pwroff_touch(IPad1MachineState *s, int px, int py, bool down)
+{
+    ipad1_mouse_event(s->mt, px * 32767 / 1023, py * 32767 / 767, 0, down);
+}
+
+static void ipad1_pwroff_tick(void *opaque)
+{
+    IPad1MachineState *s = opaque;
+    int o = s->pwroff_orient, d;
+
+    switch (s->pwroff_phase) {
+    case PWROFF_HOME:
+        ipad1_set_button(s, S5L8930_GPIO_BTN_MENU, false);
+        s->pwroff_phase = PWROFF_WAKE;
+        ipad1_pwroff_arm(s, 2000);          /* panel on / app gone */
+        break;
+    case PWROFF_WAKE:
+        ipad1_set_button(s, S5L8930_GPIO_BTN_HOLD, true);
+        s->pwroff_phase = PWROFF_HOLD;
+        ipad1_pwroff_arm(s, 3500);          /* > SpringBoard's hold threshold */
+        break;
+    case PWROFF_HOLD:
+        ipad1_set_button(s, S5L8930_GPIO_BTN_HOLD, false);
+        s->pwroff_phase = PWROFF_SETTLE;
+        ipad1_pwroff_arm(s, 1500);          /* the sheet slides in */
+        break;
+    case PWROFF_SETTLE:
+        ipad1_pwroff_touch(s, pwroff_knob[o].x, pwroff_knob[o].y, true);
+        s->pwroff_phase = PWROFF_DRAG;
+        s->pwroff_step = 0;
+        ipad1_pwroff_arm(s, 80);
+        break;
+    case PWROFF_DRAG:
+        d = PWROFF_DRAG_LEN * ++s->pwroff_step / PWROFF_DRAG_STEPS;
+        ipad1_pwroff_touch(s, pwroff_knob[o].x + pwroff_knob[o].dx * d,
+                           pwroff_knob[o].y + pwroff_knob[o].dy * d,
+                           s->pwroff_step < PWROFF_DRAG_STEPS);
+        if (s->pwroff_step < PWROFF_DRAG_STEPS) {
+            ipad1_pwroff_arm(s, 80);
+        } else {
+            /* Now the guest halts: QEMU exits on the PMU standby write. */
+            s->pwroff_phase = PWROFF_WATCH;
+            ipad1_pwroff_arm(s, PWROFF_WATCH_MS - 7300 - 80 * PWROFF_DRAG_STEPS);
+        }
+        break;
+    case PWROFF_WATCH:
+        /* Still here: the gesture missed or the guest is stuck. Say so, and
+         * accept another request; the caller decides whether to hard-stop. */
+        warn_report("ipad1: system_powerdown: the guest has not halted %d s "
+                    "after the request", PWROFF_WATCH_MS / 1000);
+        s->pwroff_phase = PWROFF_IDLE;
+        break;
+    }
+}
+
+static void ipad1_powerdown_req(Notifier *n, void *opaque)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(qdev_get_machine());
+
+    if (s->pwroff_phase != PWROFF_IDLE && s->pwroff_phase != PWROFF_WATCH) {
+        return;
+    }
+    /*
+     * The sheet follows the interface orientation, which follows the
+     * accelerometer: aim for it there instead of turning the device upright
+     * (that visibly flipped the UI to portrait on quit).
+     * ponytail: the last accel-orientation set; face up/down (5/6), 0, or a
+     * pitch/roll attitude fall back to portrait. Track the UI's own
+     * orientation if an app pins one that disagrees with the device.
+     */
+    s->pwroff_orient = 1;
+    if (s->accel && s->accel->orientation >= 1 && s->accel->orientation <= 4) {
+        s->pwroff_orient = s->accel->orientation;
+    }
+    ipad1_set_button(s, S5L8930_GPIO_BTN_MENU, true);
+    s->pwroff_phase = PWROFF_HOME;
+    ipad1_pwroff_arm(s, 300);
+}
+
+static Notifier ipad1_powerdown_notifier = { .notify = ipad1_powerdown_req };
+
+/*
  * Buttons are GPIO port 0 pins 0-4, active low, idle high in the GPIO model.
  * Same host chords as the iPod machine: Cmd+L hold/power, Cmd+Shift+H
  * home/menu, Cmd+- volume down, Cmd+= volume up. A key that pressed a
@@ -444,11 +570,21 @@ static void ipad1_init(MachineState *machine)
      */
     create_unimplemented_device("s5l8930.periph", 0x80000000, 0x40000000);
 
-    /* ChipID fuses, as read from a real K48AP (docs/ipad1/hw1-probes.log). */
+    /*
+     * ChipID fuses as a real K48AP reads them (docs/ipad1/hw1-probes.log):
+     * chip/revision words, then the unit's die-id. The die-id is per unit, so
+     * it comes from the die-id machine property ("0xWORD2:0xWORD3", runners
+     * take it from identity.json); zeros otherwise.
+     */
     {
-        static const uint32_t chipid[] = {
-            0x31800387, 0x80758000, 0x00000000, 0x00000000,
-        };
+        uint32_t chipid[] = { 0x31800387, 0x80758000, 0, 0 };
+
+        if (s->die_id && sscanf(s->die_id, "%" SCNx32 ":%" SCNx32,
+                                &chipid[2], &chipid[3]) != 2) {
+            error_report("ipad1: die-id must be \"0xWORD2:0xWORD3\", got \"%s\"",
+                         s->die_id);
+            exit(1);
+        }
         memory_region_init_rom(&s->chipid, NULL, "ipad1.chipid", 0x1000,
                                &error_fatal);
         memcpy(memory_region_get_ram_ptr(&s->chipid), chipid, sizeof(chipid));
@@ -524,10 +660,10 @@ static void ipad1_init(MachineState *machine)
          * of this build. qom-set /machine compass-heading N (degrees).
          */
         {
-            DeviceState *compass =
+            s->compass =
                 DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_AK8973, 0x1e));
             object_property_add_alias(OBJECT(machine), "compass-heading",
-                                      OBJECT(compass), "heading");
+                                      OBJECT(s->compass), "heading");
         }
         /*
          * CD3282 "Mikey" headset controller (i2c0/mikey). AppleCS42L61Audio
@@ -558,13 +694,24 @@ static void ipad1_init(MachineState *machine)
         I2CSlave *accel = i2c_slave_new(TYPE_LIS302DL, 0x19);
 
         qdev_prop_set_uint8(DEVICE(accel), "whoami", 0x32);
+        /* On the iPad the LIS331 sits turned 180 degrees about X relative to
+         * the iPod's mounting: the iPod vectors read with Y (and Z) negated.
+         * Without this, "portrait" (1) read as upside down (SpringBoard's
+         * interface orientation 2) and portrait-only iPhone apps drew
+         * upside down; checked against springboardservices: upright reads 1
+         * and a clockwise turn 4, then 2, then 3, as on hardware. */
+        qdev_prop_set_bit(DEVICE(accel), "mount-flipped", true);
         i2c_slave_realize_and_unref(accel, bus, &error_fatal);
         s->accel = LIS302DL(accel);
+        lis302dl_apply_orientation(s->accel, 1);   /* init ran before mount-flipped */
+        s5l8930_ak8973_set_accel(s->compass, s->accel);
         /* Same names as the iPod machine: UIDeviceOrientation 0-6, e.g.
          * qom-set path=/machine property=accel-orientation value=3; raw
          * counts; a shake. accel-pitch/-roll/-pose are machine properties. */
         object_property_add_alias(OBJECT(machine), "accel-orientation",
                                   OBJECT(accel), "orientation");
+        object_property_set_description(OBJECT(machine), "accel-orientation",
+            "UIDeviceOrientation 1-6 (1 portrait, 2 upside down, 3 landscape left = Home right, 4 landscape right = Home left)");
         object_property_add_alias(OBJECT(machine), "accel-x", OBJECT(accel), "x");
         object_property_add_alias(OBJECT(machine), "accel-y", OBJECT(accel), "y");
         object_property_add_alias(OBJECT(machine), "accel-z", OBJECT(accel), "z");
@@ -574,6 +721,7 @@ static void ipad1_init(MachineState *machine)
 
     /* Display pipe, CLCD, DART2, RGBOUT, TV-out; scanout starts at iBoot's FB. */
     dev = qdev_new(TYPE_S5L8930_DISPLAY);
+    s->display = dev;
     qdev_prop_set_uint64(dev, "fb-base", 0x4f700000);
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
@@ -732,6 +880,7 @@ static void ipad1_init(MachineState *machine)
     /* No bridge: a built-in host enumerates and configures the device, which
      * is what keeps an iPad on a Mac charging and out of deep sleep. */
     s->usb_otg->builtin_host = !s->usb_otg->server_host && !getenv("IT_USB_TCP");
+    s->usb_otg->host_charge = s->usb_charger;
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     memory_region_add_subregion(sysmem, S5L8930_USB_OTG_BASE,
                                 &S5L8900USBOTG(dev)->iomem);
@@ -794,6 +943,17 @@ static void ipad1_init(MachineState *machine)
     set_spi_base(2);
     sysbus_create_simple(TYPE_IPOD_TOUCH_SPI, S5L8930_SPI_BASE(2), NULL);
 
+    /*
+     * M2 scaler/CSC: the iPod's (same scaler,s5l8720x driver). Absent, its
+     * reset (+0x10 |= 1, then poll for bit 0) never completed, and turning
+     * on Accessibility > Zoom, which puts the scaler on CA's display path,
+     * hung the UI in "M2Scaler waiting for device reset step 2".
+     */
+    ipod_scaler_set_iommu(sysbus_create_simple("ipodtouch.scaler",
+                                               S5L8930_SCALER_BASE,
+                                               ipad1_irq(s, S5L8930_IRQ_SCALER)),
+                          s5l8930_dart2_xlate, s->display, 2);
+
     /* SWI: backlight and DPSM core voltage; only the busy bit matters. */
     sysbus_create_simple("ipodtouch.swi", S5L8930_SWI_BASE, NULL);
 
@@ -838,16 +998,23 @@ static void ipad1_init(MachineState *machine)
         exynos4210_uart_create(S5L8930_UART_BASE(i), 256, i, serial_hd(i),
                                ipad1_irq(s, S5L8930_IRQ_UART(i)), true);
     }
-    /* UART5 is the bq27545 gas gauge's HDQ line (see s5l8930_hdq.c). */
-    exynos4210_uart_create(S5L8930_UART_BASE(5), 256, 5,
-                           qemu_chardev_new(NULL, TYPE_CHARDEV_S5L8930_HDQ,
-                                            NULL, NULL, &error_abort),
+    /*
+     * UART5 is the bq27545 gas gauge's HDQ line (see s5l8930_hdq.c). A 16-byte
+     * FIFO like the silicon: AppleS5L8900XSerial reads the Rx count as
+     * UFSTAT[3:0] | full(bit 8) << 4 (c068bafa), so a deeper FIFO's count in
+     * [7:0] reads as empty once it passes 15 and the echoes were never read.
+     */
+    s->gauge = qemu_chardev_new(NULL, TYPE_CHARDEV_S5L8930_HDQ, NULL, NULL,
+                                &error_abort);
+    exynos4210_uart_create(S5L8930_UART_BASE(5), 16, 5, s->gauge,
                            ipad1_irq(s, S5L8930_IRQ_UART(5)), true);
     /* UART3: the BCM4329's HCI link (uart3/bluetooth,n88); nothing answers yet. */
     exynos4210_uart_create(S5L8930_UART_BASE(3), 256, 3, NULL,
                            ipad1_irq(s, S5L8930_IRQ_UART(3)), true);
     ipad1_battery_update(s);
 
+    s->pwroff_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ipad1_pwroff_tick, s);
+    qemu_register_powerdown_notifier(&ipad1_powerdown_notifier);
     qemu_register_reset(ipad1_cpu_reset, s);
 }
 
@@ -903,6 +1070,19 @@ static void ipad1_set_nand_overlay(Object *obj, const char *value, Error **errp)
     s->nand_overlay_path = g_strdup(value);
 }
 
+static char *ipad1_get_die_id(Object *obj, Error **errp)
+{
+    return g_strdup(IPAD1_MACHINE(obj)->die_id);
+}
+
+static void ipad1_set_die_id(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    g_free(s->die_id);
+    s->die_id = g_strdup(value);
+}
+
 static char *ipad1_get_nor(Object *obj, Error **errp)
 {
     return g_strdup(IPAD1_MACHINE(obj)->nor_path);
@@ -955,30 +1135,52 @@ static void ipad1_set_usb_cable(Object *obj, bool value, Error **errp)
 
 /*
  * --- battery -------------------------------------------------------------
- * SpringBoard's level comes from AppleD1815PMUPowerSource's reading of the
- * battery voltage (PMU ADC mux 4), not the gas gauge, which configd never
- * opens on 7B500; charging is the LTC4099's charge-state bits.
- * Measured on 7B500: the level is sampled only at boot (it stayed put through
- * level, charge-state and cable changes), so these are power-on settings
- * (-M ipad1,battery-level=…) until the power source's polling trigger is
- * found; 3.90 V showed 63% and 3.525 V 2%, hence 3.50 V + 6.35 mV per %.
- * The charge-state bits are set but "Not Charging" still shows, so
- * battery-charging has no visible effect yet.
+ * What the status bar shows is IOPMPowerSource as configd's AppleHDQGasGauge
+ * fills it from the bq27545 over HDQ (s5l8930_hdq.c), polled while running;
+ * AppleD1815PMUPowerSource's boot estimate from the PMU battery voltage
+ * (ADC mux 4: 3.90 V showed 63%, 3.525 V 2%, hence 3.50 V + 6.35 mV per %)
+ * only covers the seconds before the plugin starts. So level and charge
+ * state go to all three: gauge, PMU voltage, LTC4099 charge bits.
+ *
+ * Charging, as on hardware: configured at 500 mA an iPad 1 reads "Not
+ * Charging"; it charges once the host grants more with Apple's vendor power
+ * request (0x40/0x40, 500 + 1600 mA), as a Mac's high-power port does, and
+ * AppleD1815PMUPowerSource logs "usb stack power 2100mA". usb-charger (default
+ * on) makes the built-in host send it; a usbmuxd bridge sends it or not
+ * itself. The gauge's charge state follows usb-charger; battery-charging
+ * on/off overrides that.
  */
-
 static bool ipad1_battery_charging(IPad1MachineState *s)
 {
-    return s->battery_mode == 1 || (s->battery_mode == 0 && s->usb_cable);
+    return s->battery_mode == 1 ||
+           (s->battery_mode == 0 && s->usb_cable && s->usb_charger);
 }
 
-/* Push level and charge state to the PMU and charger. */
 static void ipad1_battery_update(IPad1MachineState *s)
 {
-    if (!s->pmu || !s->ltc) {
+    if (!s->pmu || !s->ltc || !s->gauge) {
         return;
     }
     s5l8930_d1815_set_vbat(s->pmu, 3500 + lround(s->battery_level * 6.35));
     s5l8930_ltc4099_set_charging(s->ltc, ipad1_battery_charging(s));
+    s5l8930_hdq_set_battery(s->gauge, lround(s->battery_level), ipad1_battery_charging(s));
+}
+
+static bool ipad1_get_usb_charger(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->usb_charger;
+}
+
+/* Takes effect for the built-in host at its next enumeration (cable replug). */
+static void ipad1_set_usb_charger(Object *obj, bool value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    s->usb_charger = value;
+    if (s->usb_otg) {
+        s->usb_otg->host_charge = value;
+    }
+    ipad1_battery_update(s);
 }
 
 static void ipad1_get_battery_level(Object *obj, Visitor *v, const char *name,
@@ -1049,15 +1251,13 @@ static void ipad1_set_battery_charging(Object *obj, const char *value, Error **e
 /* --- tilt --------------------------------------------------------------- */
 
 /*
- * The app's attitude (see hw/arm/ipod-attitude.h). The iPad's accelerometer
- * reads roll the opposite way round to the iPod's for the same turn of the
- * device: turned clockwise it must report UIDeviceOrientation 3 (roll +90),
- * where the app sends -90 (found by frame dumps, as for qemu_ios_ui_rotate).
- * ponytail: pitch keeps the iPod's sign, unverified on the iPad.
+ * The app's attitude (see hw/arm/ipod-attitude.h), in the device's frame;
+ * the sensor's flipped mounting is applied by the LIS331 model itself.
+ * ponytail: pitch and the flat pose are unverified on the iPad.
  */
 static void ipad1_apply_attitude(IPad1MachineState *s)
 {
-    lis302dl_apply_attitude(s->accel, s->accel_pitch, -s->accel_roll, s->accel_flat);
+    lis302dl_apply_attitude(s->accel, s->accel_pitch, s->accel_roll, s->accel_flat);
 }
 
 static void ipad1_get_accel_angle(Object *obj, Visitor *v, const char *name,
@@ -1119,6 +1319,7 @@ static void ipad1_instance_init(Object *obj)
     IPAD1_MACHINE(obj)->wifi = true;
     guest_pb_init(&IPAD1_MACHINE(obj)->pb, obj, "ipad1");
     IPAD1_MACHINE(obj)->battery_level = 80;
+    IPAD1_MACHINE(obj)->usb_charger = true;
 }
 
 static void ipad1_instance_finalize(Object *obj)
@@ -1129,6 +1330,7 @@ static void ipad1_instance_finalize(Object *obj)
     g_free(IPAD1_MACHINE(obj)->nand_path);
     g_free(IPAD1_MACHINE(obj)->nand_overlay_path);
     g_free(IPAD1_MACHINE(obj)->nor_path);
+    g_free(IPAD1_MACHINE(obj)->die_id);
 }
 
 /*
@@ -1187,6 +1389,9 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
                                   ipad1_set_nand_overlay);
     object_class_property_set_description(klass, "nand-overlay",
         "Copy-on-write directory for guest NAND writes; the nand store is then read-only");
+    object_class_property_add_str(klass, "die-id", ipad1_get_die_id, ipad1_set_die_id);
+    object_class_property_set_description(klass, "die-id",
+        "the unit's ChipID die-id words 2-3, \"0xWORD2:0xWORD3\" (identity.json); zeros if unset");
     object_class_property_add_str(klass, "nor", ipad1_get_nor, ipad1_set_nor);
     object_class_property_set_description(klass, "nor",
         "1 MiB SPI NOR image (nvram, syscfg); erased flash if unset");
@@ -1205,6 +1410,10 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     /* The iPod machine's names, so the app bridge drives both unchanged. */
     object_class_property_add_bool(klass, "usb-attached", ipad1_get_usb_cable,
                                    ipad1_set_usb_cable);
+    object_class_property_add_bool(klass, "usb-charger", ipad1_get_usb_charger,
+                                   ipad1_set_usb_charger);
+    object_class_property_set_description(klass, "usb-charger",
+        "the built-in USB host grants a high-power port's 2.1 A, so the iPad charges (default on); off = 500 mA, \"Not Charging\"");
     object_class_property_add(klass, "battery-level", "int", ipad1_get_battery_level,
                               ipad1_set_battery_level, NULL, NULL);
     object_class_property_add(klass, "battery-drain", "number", ipad1_get_battery_drain,

@@ -12,9 +12,11 @@ publishes at its refresh, so what tears here tears in the app.
 
 Scoring, per captured frame i against its neighbours i-1 and i+1, row by row
 (panel rows are framebuffer rows, the order the guest writes memory in):
-  torn     a band of >= BAND rows equal to frame i-1 only AND a band of
-           >= BAND rows equal to frame i+1 only: the frame is half one
-           state and half the next.
+  torn     bands of >= BAND rows equal to frame i-1 only, and bands of
+           >= BAND rows equal to frame i+1 only, on opposite sides of one
+           row: the frame is one state above it and the next below.
+           Interleaved bands are content moving across rows (the page
+           swipe, rotated onto the landscape panel), not a tear.
   black    every pixel zero while both neighbours have content.
   partial  a band of >= BLACK_BAND fully black rows where both neighbours
            have content in those rows.
@@ -62,7 +64,14 @@ def score(frames):
         r = {"i": i, "kind": []}
         only_prev = [x for x in runs(eq_prev & ~eq_next) if x[1] >= BAND]
         only_next = [x for x in runs(eq_next & ~eq_prev) if x[1] >= BAND]
-        if only_prev and only_next:
+        # A tear is one frame above a row and the next below it (the guest
+        # writes rows in order). Bands that interleave are motion across
+        # rows (the rotated home-screen page swipe moves icons down the
+        # panel's rows), not a tear.
+        split = only_prev and only_next and (
+            max(y + n for y, n in only_prev) <= min(y for y, n in only_next) or
+            max(y + n for y, n in only_next) <= min(y for y, n in only_prev))
+        if split:
             r["kind"].append("torn")
             r["bands"] = only_prev + only_next
             r["severity"] = min(max(x[1] for x in only_prev), max(x[1] for x in only_next))
@@ -182,6 +191,7 @@ def cold_boot(a):
     import tempfile
     td = tempfile.mkdtemp(prefix="tc-", dir="/tmp")
     qmp_path = f"{td}/qmp"
+    os.mkdir(f"{td}/overlay")          # the IOP won't create the overlay directory itself
     child = subprocess.Popen([a.qemu, "-machine",
                               f"ipad1,kboot={FILES}/7B500/k48-kboot.bin,nand={a.boot},nand-overlay={td}/overlay",
                               "-display", "none", "-monitor", "none", "-serial", f"file:{td}/serial.log",

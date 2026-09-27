@@ -173,6 +173,10 @@ static const int mac_to_qkeycode_map[] = {
     [kVK_End] = Q_KEY_CODE_END,
     [kVK_ForwardDelete] = Q_KEY_CODE_DELETE,
     [kVK_Escape] = Q_KEY_CODE_ESC,
+    /* Modifiers the app forwards from flagsChanged. Command and Control stay
+     * unmapped: those combinations belong to the menu bar. */
+    [kVK_Shift] = Q_KEY_CODE_SHIFT, [kVK_RightShift] = Q_KEY_CODE_SHIFT_R,
+    [kVK_Option] = Q_KEY_CODE_ALT, [kVK_RightOption] = Q_KEY_CODE_ALT_R,
 };
 
 void qemu_ios_ui_key_mac(int mac_keycode, bool down)
@@ -204,14 +208,13 @@ static void rotate_bh(void *opaque)
 
     /*
      * The iPad has no rotate chord (and host keys may belong to its USB
-     * keyboard): step the accelerometer's orientation instead. Order found
-     * by screenshot: with the device turned clockwise (the app's shell at
-     * 90 degrees) SpringBoard draws upright only for value 3, so clockwise is
-     * 1 -> 3 -> 2 -> 4 -> 1.
+     * keyboard): step the accelerometer's UIDeviceOrientation instead.
+     * Turning the device clockwise from portrait puts Home on the left
+     * (LandscapeRight, 4), then upside down (2), then Home right (3).
      */
     if (object_dynamic_cast(machine, MACHINE_TYPE_NAME("ipad1"))) {
-        static const int cw[] = { [1] = 3, [3] = 2, [2] = 4, [4] = 1 };
-        static const int ccw[] = { [1] = 4, [4] = 2, [2] = 3, [3] = 1 };
+        static const int cw[] = { [1] = 4, [4] = 2, [2] = 3, [3] = 1 };
+        static const int ccw[] = { [1] = 3, [3] = 2, [2] = 4, [4] = 1 };
         int64_t o = object_property_get_int(machine, "accel-orientation", NULL);
 
         if (o < 1 || o > 4) {
@@ -375,6 +378,53 @@ bool qemu_ios_ui_usb_connection(bool attached)
     *value = attached;
     aio_bh_schedule_oneshot(qemu_get_aio_context(), usb_connection_bh, value);
     return true;
+}
+
+/* One machine property from its string form, set on the QEMU thread; false
+ * if the machine has no such property (e.g. the iPod has no compass). */
+struct machine_prop { const char *name; char *value; };
+
+static void machine_prop_bh(void *opaque)
+{
+    struct machine_prop *m = opaque;
+    Error *err = NULL;
+
+    object_property_parse(OBJECT(qdev_get_machine()), m->name, m->value, &err);
+    if (err) {
+        fprintf(stderr, "[%s] %s\n", m->name, error_get_pretty(err));
+        error_free(err);
+    }
+    g_free(m->value);
+    g_free(m);
+}
+
+static bool set_machine_prop(const char *name, char *value)
+{
+    if (!qemu_ios_ui_ready() ||
+        !object_property_find(OBJECT(qdev_get_machine()), name)) {
+        g_free(value);
+        return false;
+    }
+    struct machine_prop *m = g_new(struct machine_prop, 1);
+    *m = (struct machine_prop){ name, value };
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), machine_prop_bh, m);
+    return true;
+}
+
+bool qemu_ios_ui_compass(int heading_deg)
+{
+    return set_machine_prop("compass-heading",
+                            g_strdup_printf("%d", ((heading_deg % 360) + 360) % 360));
+}
+
+bool qemu_ios_ui_orientation(int value)
+{
+    return set_machine_prop("accel-orientation", g_strdup_printf("%d", value));
+}
+
+bool qemu_ios_ui_usb_charger(bool high_power)
+{
+    return set_machine_prop("usb-charger", g_strdup(high_power ? "on" : "off"));
 }
 
 static void paste_bh(void *opaque)
