@@ -173,6 +173,10 @@ static const int mac_to_qkeycode_map[] = {
     [kVK_End] = Q_KEY_CODE_END,
     [kVK_ForwardDelete] = Q_KEY_CODE_DELETE,
     [kVK_Escape] = Q_KEY_CODE_ESC,
+    /* Modifiers the app forwards from flagsChanged. Command and Control stay
+     * unmapped: those combinations belong to the menu bar. */
+    [kVK_Shift] = Q_KEY_CODE_SHIFT, [kVK_RightShift] = Q_KEY_CODE_SHIFT_R,
+    [kVK_Option] = Q_KEY_CODE_ALT, [kVK_RightOption] = Q_KEY_CODE_ALT_R,
 };
 
 void qemu_ios_ui_key_mac(int mac_keycode, bool down)
