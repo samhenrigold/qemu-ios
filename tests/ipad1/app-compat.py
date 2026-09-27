@@ -201,6 +201,23 @@ def _framediff(a, b, thresh=8):
     return d > thresh
 
 
+def _lit(sample):
+    return sum(1 for v in sample if v > 12) / max(1, len(sample))
+
+
+def wait_stable(b, rg, tag, deadline, want_lit=False, poll=1.5):
+    """Poll screendumps until two consecutive frames match (settled), event-driven so it
+    doesn't depend on host speed. If want_lit, also require the frame to be lit (past the
+    boot logo). Returns the settled sample, or the last one at the deadline."""
+    prev = _sample(rg, b.shot("w-" + tag))
+    while time.time() < deadline:
+        cur = _sample(rg, b.shot("w-" + tag))
+        if not _framediff(prev, cur) and (not want_lit or _lit(cur) > 0.30):
+            return cur
+        prev = cur
+    return prev
+
+
 def _load_regress():
     spec = importlib.util.spec_from_file_location("ipad_regress", os.path.join(HERE, "regress.py"))
     m = importlib.util.module_from_spec(spec)
@@ -263,30 +280,42 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
             res["verdict"] = "PASS-INSTALL" if listed else "INSTALL-FAIL"
             res["note"] = "installed and listed" if listed else "installer said Complete but not in list"
             return res
-        # deterministic launch: sbservices gives the exact page/slot of the new icon.
-        slot = icon_slot(b, r["bundle"]) or (2, 0, 0)     # fall back to page-2 slot(0,0)
-        page, row, col = slot
-        res["note"] = "slot p%d r%d c%d" % slot
         # syslog, to confirm the app process starts (not pixels alone)
         syslog = os.path.join(b.dir, "syslog.log")
         b.procs.spawn(["idevicesyslog"], syslog, env=b.env())
-        # unlock, retrying until the frame leaves the lock screen
-        b.wait_lock_screen(timeout=150)
-        cur = _sample(rg, b.shot("s0-" + tag))
-        for _ in range(4):
-            b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO); time.sleep(2)
-            nxt = _sample(rg, b.shot("s1-" + tag))
-            if _framediff(cur, nxt):
+        # Event-driven navigation: wait on frame state, not fixed sleeps, so host load
+        # doesn't matter. Overall bound = the qemu timeout.
+        end = time.time() + a.boot_timeout - 30
+        # 1. lock screen: serial marker (SpringBoard reached it) + a settled lit frame.
+        ok, det = b.wait_lock_screen(timeout=max(30, end - time.time()))
+        if not ok:
+            res["verdict"], res["note"] = "NO-BOOT", "never reached lock screen (%s)" % det
+            return res
+        lock = wait_stable(b, rg, tag, min(end, time.time() + 60), want_lit=True)
+        # sbservices only answers once SpringBoard is up (past the lock screen), so query
+        # the icon layout now, not right after install.
+        slot = icon_slot(b, r["bundle"]) or (2, 0, 0)     # fall back to page-2 slot(0,0)
+        page, row, col = slot
+        res["note"] = "slot p%d r%d c%d" % slot
+        # 2. unlock: drag, wait for a settled frame, confirm it changed from the lock frame.
+        home = lock
+        for _ in range(5):
+            b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
+            home = wait_stable(b, rg, tag, min(end, time.time() + 30), want_lit=True)
+            if _framediff(lock, home):
                 break
-            b.press("home"); time.sleep(1)
-        b.tap(DISMISS_EDIT); time.sleep(1)     # dismiss the install help sheet if present
-        # swipe to the app's page (page-1 swipes), verifying each turn
-        prev = _sample(rg, b.shot("p0-" + tag))
+            b.press("home")
+        else:
+            res["verdict"], res["note"] = "NO-LAUNCH", "could not unlock (%s)" % res["note"]
+            return res
+        b.tap(DISMISS_EDIT)                         # dismiss the install help sheet if present
+        prev = wait_stable(b, rg, tag, min(end, time.time() + 20), want_lit=True)
+        # 3. swipe to the app's page, one settled turn at a time.
         for hop in range(page - 1):
             turned = False
-            for _ in range(4):
-                b.drag(*NEXT_PAGE); time.sleep(2)
-                nowf = _sample(rg, b.shot("p%d-%s" % (hop + 1, tag)))
+            for _ in range(5):
+                b.drag(*NEXT_PAGE)
+                nowf = wait_stable(b, rg, tag, min(end, time.time() + 20), want_lit=True)
                 if _framediff(prev, nowf):
                     turned, prev = True, nowf
                     break
@@ -296,11 +325,10 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         before = prev
         syslen = os.path.getsize(syslog) if os.path.exists(syslog) else 0
         b.tap(GRID(row, col))
-        time.sleep(LAUNCH_WAIT)
+        after = wait_stable(b, rg, tag, min(end, time.time() + 30))   # settle on the app frame
+        res["shot"] = b.shot("launch-" + tag)
         lit, detail = b.picture("launch-" + tag)
-        res["shot"] = os.path.join(b.dir, "launch-" + tag + ".ppm")
-        after = _sample(rg, res["shot"])
-        nonzero = sum(1 for v in after if v > 12) / max(1, len(after))
+        nonzero = _lit(after)
         changed = _framediff(before, after)
         # did the app's process appear in syslog after the tap?
         newlog = ""
@@ -329,7 +357,16 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         except OSError:
             pass
         if crashes:
-            res["verdict"], res["note"] = "CRASH", crashes[0][:120]
+            # pull the exception type out of the report so crashes group by cause
+            exc = ""
+            for dp, _, fs in os.walk(crashdir):
+                if crashes[0] in fs:
+                    txt = open(os.path.join(dp, crashes[0]), errors="replace").read()
+                    m = re.search(r"Exception Type:\s*(.+)", txt) or re.search(r"Exception Codes:\s*(.+)", txt)
+                    exc = m.group(1).strip() if m else ""
+                    break
+            res["verdict"] = "CRASH"
+            res["note"] = ("%s | %s" % (exc, crashes[0]))[:140] if exc else crashes[0][:120]
         elif changed and launched_log:
             res["verdict"], res["note"] = "LAUNCH", "%s; syslog confirms" % detail
         elif changed:
@@ -387,21 +424,56 @@ def run_pass(a):
             list(ex.map(one, cands))
     # aggregate every per-app result recorded so far (batches accumulate)
     allres = [json.load(open(os.path.join(resdir, f))) for f in sorted(os.listdir(resdir)) if f.endswith(".json")]
-    md = os.path.join(ROOT, "docs/ipad1/app-compat-results.md")
-    order = {"PASS-INSTALL": 0, "LAUNCH": 0, "CRASH": 1, "NO-LAUNCH": 2, "NAV-FAIL": 3, "INSTALL-FAIL": 4, "NO-BOOT": 5}
-    allres.sort(key=lambda r: (order.get(r["verdict"], 9), r.get("bundle", "")))
+    body = _results_md(allres, nand)
+    open(os.path.join(out, "results.md"), "w").write(body)   # always beside the results
+    default_out = os.path.join(FILES, "app-compat")
+    if os.path.realpath(out) == os.path.realpath(default_out):   # only the canonical pass writes docs/
+        open(os.path.join(ROOT, "docs/ipad1/app-compat-results.md"), "w").write(body)
+        print("wrote docs/ipad1/app-compat-results.md")
     counts = {}
     for r in allres:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
-    with open(md, "w") as f:
-        f.write("# iPad 1 / 3.2.2 app-compat results\n\nStore: `%s`. %d apps tested.\n\n" % (nand, len(allres)))
-        f.write("Verdicts: " + ", ".join("%s %d" % (k, v) for k, v in sorted(counts.items())) + "\n\n")
-        f.write("| verdict | app | bundle | family | GL gaps | note |\n|---|---|---|---|---|---|\n")
-        for r in allres:
-            f.write("| %s | %s | `%s` | %s | %d | %s |\n" % (
-                r["verdict"], r.get("name") or r.get("file", ""), r.get("bundle", ""),
-                r.get("family", ""), r.get("glishim", 0), r.get("note", "")))
-    print("wrote %s (%d total: %s)" % (md, len(allres), counts))
+    print("%d total: %s" % (len(allres), counts))
+
+
+def _results_md(allres, nand):
+    order = {"PASS-INSTALL": 0, "LAUNCH": 0, "CRASH": 1, "NO-LAUNCH": 2, "NAV-FAIL": 3, "INSTALL-FAIL": 4, "NO-BOOT": 5}
+    allres = sorted(allres, key=lambda r: (order.get(r["verdict"], 9), r.get("bundle", "")))
+    counts = {}
+    for r in allres:
+        counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
+    out = ["# iPad 1 / 3.2.2 app-compat results", "",
+           "Store: `%s`. %d apps tested." % (nand, len(allres)), "",
+           "Verdicts: " + ", ".join("%s %d" % (k, v) for k, v in sorted(counts.items())), ""]
+    # failure backlog grouped by cause (the fix list)
+    crashes = [r for r in allres if r["verdict"] == "CRASH"]
+    nolaunch = [r for r in allres if r["verdict"] == "NO-LAUNCH"]
+    glgaps = [r for r in allres if r.get("glishim", 0) > 0 and r["verdict"] in ("LAUNCH", "NO-LAUNCH", "CRASH")]
+    if crashes or nolaunch or glgaps:
+        out += ["## Failure backlog (by cause)", ""]
+    if glgaps:
+        out += ["### GL: unimplemented entry points (need glishim work)", ""]
+        for r in sorted(glgaps, key=lambda r: -r.get("glishim", 0)):
+            out.append("- %s (`%s`): %d [glishim] unimplemented, verdict %s" % (
+                r.get("name") or r["file"], r["bundle"], r["glishim"], r["verdict"]))
+        out.append("")
+    if crashes:
+        out += ["### Crashes", ""]
+        for r in crashes:
+            out.append("- %s (`%s`): %s" % (r.get("name") or r["file"], r["bundle"], r.get("note", "")))
+        out.append("")
+    if nolaunch:
+        out += ["### No launch (installed, did not come to foreground)", ""]
+        for r in nolaunch:
+            out.append("- %s (`%s`): %s" % (r.get("name") or r["file"], r["bundle"], r.get("note", "")))
+        out.append("")
+    out += ["## All results", "",
+            "| verdict | app | bundle | family | GL gaps | note |", "|---|---|---|---|---|---|"]
+    for r in allres:
+        out.append("| %s | %s | `%s` | %s | %d | %s |" % (
+            r["verdict"], r.get("name") or r.get("file", ""), r.get("bundle", ""),
+            r.get("family", ""), r.get("glishim", 0), r.get("note", "")))
+    return "\n".join(out) + "\n"
 
 
 def main():
