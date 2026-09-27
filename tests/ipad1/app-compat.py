@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""iPad 1 / 3.2.2 app-compatibility pass over a folder of IPAs.
+
+    tests/ipad1/app-compat.py inventory [DIR] [--md docs/ipad1/app-compat.md]
+    tests/ipad1/app-compat.py --selfcheck
+
+inventory: bundle id, name, MinimumOSVersion, UIDeviceFamily, arch and encryption state
+for every IPA under DIR (default ~/Downloads/ios3, recursive), plus the candidates that
+can run here (decrypted, MinimumOS <= 3.2). Read from the zip in place: no extraction,
+no host tools.
+"""
+import argparse, os, plistlib, struct, sys, zipfile
+
+DEFAULT_DIR = os.path.expanduser("~/Downloads/ios3")
+MAX_OS = (3, 2)
+CPU = {(12, 6): "armv6", (12, 9): "armv7", (12, 0): "arm", (12, 11): "armv7s"}
+FAMILY = {1: "iPhone", 2: "iPad"}
+
+
+def slices(b):
+    """[(arch, encrypted_bool)] for a thin or fat 32-bit Mach-O blob."""
+    if len(b) < 8:
+        return []
+    magic = struct.unpack_from(">I", b)[0]
+    if magic == 0xCAFEBABE:                       # fat, big-endian table
+        out = []
+        for i in range(struct.unpack_from(">I", b, 4)[0]):
+            ct, st, off, size, _ = struct.unpack_from(">iiIII", b, 8 + 20 * i)
+            out += _thin(b[off:off + size])
+        return out
+    return _thin(b)
+
+
+def _thin(b):
+    if len(b) < 28:
+        return []
+    magic = struct.unpack_from("<I", b)[0]
+    le = magic in (0xFEEDFACE, 0xFEEDFACF)
+    if not le:
+        return []
+    ct, st, _, ncmds = struct.unpack_from("<iiII", b, 4)
+    arch = CPU.get((ct, st & 0xFF), "cpu%d/%d" % (ct, st & 0xFF))
+    enc, off = False, 28 if magic == 0xFEEDFACE else 32
+    for _ in range(ncmds):
+        cmd, sz = struct.unpack_from("<II", b, off)
+        if cmd == 0x21:                           # LC_ENCRYPTION_INFO: cryptid at +12
+            enc = struct.unpack_from("<I", b, off + 16)[0] != 0
+        off += sz
+    return [(arch, enc)]
+
+
+def parse_version(v):
+    """'3.1.3' -> (3,1,3); best-effort, missing -> (99,)."""
+    if not v:
+        return (99,)
+    parts = []
+    for p in str(v).split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            break
+    return tuple(parts) or (99,)
+
+
+def inspect(path):
+    """Read one IPA: {bundle,name,minos,family,archs,encrypted,error}."""
+    r = {"file": os.path.basename(path), "bundle": "", "name": "", "minos": "",
+         "family": "", "archs": [], "encrypted": None, "error": ""}
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+            # .../Payload/Foo.app/Info.plist, the shallowest one
+            infos = sorted((n for n in names if n.endswith(".app/Info.plist")
+                            and n.count("/") == 2), key=len)
+            if not infos:
+                infos = sorted(n for n in names if n.endswith(".app/Info.plist"))
+            if not infos:
+                r["error"] = "no Info.plist"
+                return r
+            info = infos[0]
+            appdir = info[:-len("Info.plist")]
+            d = plistlib.loads(z.read(info))
+            r["bundle"] = d.get("CFBundleIdentifier", "")
+            r["name"] = d.get("CFBundleDisplayName") or d.get("CFBundleName", "")
+            r["minos"] = d.get("MinimumOSVersion") or d.get("LSMinimumSystemVersion", "")
+            fam = d.get("UIDeviceFamily")
+            if isinstance(fam, list):
+                r["family"] = "+".join(FAMILY.get(int(f), str(f)) for f in fam)
+            elif fam is not None:
+                r["family"] = FAMILY.get(int(fam), str(fam))
+            else:
+                r["family"] = "iPhone"            # pre-3.2 default (no key)
+            exe = d.get("CFBundleExecutable")
+            if exe:
+                try:
+                    sl = slices(z.read(appdir + exe))
+                    r["archs"] = [a for a, _ in sl]
+                    r["encrypted"] = any(e for _, e in sl) if sl else None
+                except KeyError:
+                    r["error"] = "exe not in zip"
+    except Exception as e:                         # noqa: BLE001 - report, never crash the sweep
+        r["error"] = "%s: %s" % (type(e).__name__, e)
+    return r
+
+
+def is_candidate(r):
+    """Decrypted and MinimumOS <= 3.2 and has an arm slice."""
+    return (r["encrypted"] is False and not r["error"]
+            and parse_version(r["minos"]) <= MAX_OS
+            and any(a.startswith("arm") for a in r["archs"]))
+
+
+def scan(root):
+    rows = []
+    for dirpath, _, files in os.walk(root):
+        for f in sorted(files):
+            if f.lower().endswith(".ipa"):
+                rows.append(inspect(os.path.join(dirpath, f)))
+    rows.sort(key=lambda r: r["file"].lower())
+    return rows
+
+
+def to_md(rows, root):
+    cand = [r for r in rows if is_candidate(r)]
+    enc = [r for r in rows if r["encrypted"]]
+    err = [r for r in rows if r["error"]]
+    out = ["# iPad 1 / 3.2.2 app-compatibility inventory", "",
+           "Source: `%s` (%d IPAs). Generated by `tests/ipad1/app-compat.py inventory`." % (root, len(rows)),
+           "",
+           "- **%d candidates** (decrypted, MinimumOS <= 3.2, arm slice) — installable/launchable here." % len(cand),
+           "- %d still FairPlay-encrypted (out of scope until decrypted)." % len(enc),
+           "- %d unreadable / no Info.plist." % len(err),
+           "",
+           "## Candidates", "",
+           "| app | bundle id | min OS | family | arch |", "|---|---|---|---|---|"]
+    for r in cand:
+        out.append("| %s | `%s` | %s | %s | %s |" % (
+            r["name"] or r["file"], r["bundle"], r["minos"] or "-", r["family"], ",".join(r["archs"]) or "-"))
+    out += ["", "## All IPAs", "",
+            "| file | name | bundle id | min OS | family | arch | enc | note |",
+            "|---|---|---|---|---|---|---|---|"]
+    for r in rows:
+        enc_s = "-" if r["encrypted"] is None else ("yes" if r["encrypted"] else "no")
+        out.append("| %s | %s | `%s` | %s | %s | %s | %s | %s |" % (
+            r["file"], r["name"], r["bundle"], r["minos"] or "-", r["family"] or "-",
+            ",".join(r["archs"]) or "-", enc_s, r["error"] or ""))
+    return "\n".join(out) + "\n"
+
+
+def selfcheck():
+    assert parse_version("3.1.3") == (3, 1, 3)
+    assert parse_version("3.2") == (3, 2) and parse_version("3.2") <= MAX_OS
+    assert parse_version("4.0") > MAX_OS and parse_version("") > MAX_OS
+    # a minimal thin armv6 Mach-O with an unencrypted LC_ENCRYPTION_INFO
+    hdr = struct.pack("<IiiIIII", 0xFEEDFACE, 12, 6, 2, 1, 20 + 20, 0)
+    lc = struct.pack("<IIIIII", 0x21, 20, 0, 0, 0, 0)   # cmd,size,cryptoff,cryptsize,cryptid=0,pad
+    assert slices(hdr + lc) == [("armv6", False)]
+    lc_enc = struct.pack("<IIIIII", 0x21, 20, 0, 0, 1, 0)
+    assert slices(hdr + lc_enc) == [("armv6", True)]
+    assert is_candidate({"encrypted": False, "error": "", "minos": "3.1", "archs": ["armv6"]})
+    assert not is_candidate({"encrypted": True, "error": "", "minos": "3.1", "archs": ["armv6"]})
+    assert not is_candidate({"encrypted": False, "error": "", "minos": "4.0", "archs": ["armv7"]})
+    print("selfcheck OK")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("cmd", nargs="?", default="inventory", choices=["inventory"])
+    ap.add_argument("dir", nargs="?", default=DEFAULT_DIR)
+    ap.add_argument("--md")
+    ap.add_argument("--selfcheck", action="store_true")
+    a = ap.parse_args()
+    if a.selfcheck:
+        return selfcheck()
+    rows = scan(a.dir)
+    cand = [r for r in rows if is_candidate(r)]
+    enc = [r for r in rows if r["encrypted"]]
+    err = [r for r in rows if r["error"]]
+    print("%d IPAs: %d candidates, %d encrypted, %d unreadable" % (len(rows), len(cand), len(enc), len(err)))
+    for r in cand:
+        print("  candidate %-40s %-32s minOS %s %s %s" % (
+            r["file"][:40], r["bundle"], r["minos"] or "-", r["family"], ",".join(r["archs"])))
+    if a.md:
+        os.makedirs(os.path.dirname(a.md), exist_ok=True)
+        open(a.md, "w").write(to_md(rows, a.dir))
+        print("wrote", a.md)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
