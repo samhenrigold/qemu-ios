@@ -418,6 +418,11 @@ bool qemu_ios_ui_compass(int heading_deg)
                             g_strdup_printf("%d", ((heading_deg % 360) + 360) % 360));
 }
 
+bool qemu_ios_ui_orientation(int value)
+{
+    return set_machine_prop("accel-orientation", g_strdup_printf("%d", value));
+}
+
 bool qemu_ios_ui_usb_charger(bool high_power)
 {
     return set_machine_prop("usb-charger", g_strdup(high_power ? "on" : "off"));
