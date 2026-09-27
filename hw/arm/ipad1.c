@@ -23,6 +23,8 @@
 #include "hw/boards.h"
 #include "hw/irq.h"
 #include "hw/misc/unimp.h"
+#include "hw/usb/hcd-ehci.h"
+#include "hw/usb/hcd-ohci.h"
 #include "hw/sysbus.h"
 #include "hw/arm/exynos4210.h"
 #include "hw/arm/ipod_touch_buttons.h"
@@ -61,6 +63,7 @@ struct IPad1MachineState {
     IPodTouchMultitouchState *mt;
     char *kboot_path;
     char *nand_path;
+    char *nand_overlay_path;
     char *nor_path;
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
@@ -407,6 +410,10 @@ static void ipad1_init(MachineState *machine)
 
         qdev_prop_set_uint8(DEVICE(accel), "whoami", 0x32);
         i2c_slave_realize_and_unref(accel, bus, &error_fatal);
+        /* Same name as the iPod machine: UIDeviceOrientation 0-6, e.g.
+         * qom-set path=/machine property=accel-orientation value=3 */
+        object_property_add_alias(OBJECT(machine), "accel-orientation",
+                                  OBJECT(accel), "orientation");
         i2c_slave_create_simple(bus, TYPE_S5L8930_TSL2581, 0x39);
     }
 
@@ -440,6 +447,9 @@ static void ipad1_init(MachineState *machine)
     if (s->nand_path) {
         qdev_prop_set_string(dev, "nand", s->nand_path);
     }
+    if (s->nand_overlay_path) {
+        qdev_prop_set_string(dev, "nand-overlay", s->nand_overlay_path);
+    }
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_IOP_BASE);
@@ -469,8 +479,6 @@ static void ipad1_init(MachineState *machine)
      * < 500 mA and let the device deep-sleep a few minutes after SpringBoard,
      * so without a bridge the OTG's built-in host enumerates it; either way
      * it behaves like an iPad on a Mac (charging, idle sleep disabled).
-     * The USB arbitrator's USB_CTL block (0xbf108000) is mapped but never
-     * touched on K48 (no hsic-enabled), so it stays in the unimp window.
      */
     dev = qdev_new(TYPE_IPOD_TOUCH_USB_PHYS);
     sbd = SYS_BUS_DEVICE(dev);
@@ -497,6 +505,28 @@ static void ipad1_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     memory_region_add_subregion(sysmem, S5L8930_USB_OTG_BASE,
                                 &S5L8900USBOTG(dev)->iomem);
+    /*
+     * USB host, next to device mode: the DT we build gives usb-complex
+     * "hsic-enabled", which makes AppleS5L8930XUSBArbitrator publish the host
+     * nubs (EHCI, OHCI0) at start and never tear them down on cable changes,
+     * so usbmux and a USB keyboard coexist (docs/ipad1/usb-keyboard.md).
+     * AppleUSBEHCIARM/AppleUSBOHCIARM are plain EHCI/OHCI; capabilities at +0.
+     * Its USB_CTL read-modify-writes (0xbf108000 bit 0 host, bit 2 HSIC)
+     * stay in the unimp window. Attach with -device usb-kbd,bus=ehci.0.
+     */
+    dev = qdev_new(TYPE_EXYNOS4210_EHCI);
+    sbd = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(sbd, &error_fatal);
+    sysbus_mmio_map(sbd, 0, S5L8930_USB_EHCI_BASE);
+    sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_USB_EHCI));
+
+    dev = qdev_new(TYPE_SYSBUS_OHCI);
+    qdev_prop_set_uint32(dev, "num-ports", 1);      /* DT rh-ports */
+    sbd = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(sbd, &error_fatal);
+    sysbus_mmio_map(sbd, 0, S5L8930_USB_OHCI0_BASE);
+    sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_USB_OHCI0));
+
     /*
      * SPI: the K48 kernel drives these with the same AppleS5L8900X SPI kext
      * as the iPod, so the iPod controller model is reused. It picks its
@@ -591,6 +621,19 @@ static void ipad1_set_nand(Object *obj, const char *value, Error **errp)
     s->nand_path = g_strdup(value);
 }
 
+static char *ipad1_get_nand_overlay(Object *obj, Error **errp)
+{
+    return g_strdup(IPAD1_MACHINE(obj)->nand_overlay_path);
+}
+
+static void ipad1_set_nand_overlay(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    g_free(s->nand_overlay_path);
+    s->nand_overlay_path = g_strdup(value);
+}
+
 static char *ipad1_get_nor(Object *obj, Error **errp)
 {
     return g_strdup(IPAD1_MACHINE(obj)->nor_path);
@@ -650,6 +693,7 @@ static void ipad1_instance_finalize(Object *obj)
     g_free(IPAD1_MACHINE(obj)->usb_tcp_addr);
     g_free(IPAD1_MACHINE(obj)->kboot_path);
     g_free(IPAD1_MACHINE(obj)->nand_path);
+    g_free(IPAD1_MACHINE(obj)->nand_overlay_path);
     g_free(IPAD1_MACHINE(obj)->nor_path);
 }
 
@@ -670,6 +714,10 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     object_class_property_add_str(klass, "nand", ipad1_get_nand, ipad1_set_nand);
     object_class_property_set_description(klass, "nand",
         "NAND page-store directory (geometry.json + bus<b>-ce<c>.pages); blank chips if unset");
+    object_class_property_add_str(klass, "nand-overlay", ipad1_get_nand_overlay,
+                                  ipad1_set_nand_overlay);
+    object_class_property_set_description(klass, "nand-overlay",
+        "Copy-on-write directory for guest NAND writes; the nand store is then read-only");
     object_class_property_add_str(klass, "nor", ipad1_get_nor, ipad1_set_nor);
     object_class_property_set_description(klass, "nor",
         "1 MiB SPI NOR image (nvram, syscfg); erased flash if unset");
