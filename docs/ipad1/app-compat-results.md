@@ -4,6 +4,8 @@ Store: `/Users/shg/Developer/qemu-ios-files/ipad1/userland/golden-appsync`. 49 a
 
 Verdicts: INSTALL-FAIL 1, PASS-INSTALL 48
 
+## All results
+
 | verdict | app | bundle | family | GL gaps | note |
 |---|---|---|---|---|---|
 | PASS-INSTALL | Cube Runner | `com.andyqua.CubeRunner` | iPhone | 0 | installed and listed |
