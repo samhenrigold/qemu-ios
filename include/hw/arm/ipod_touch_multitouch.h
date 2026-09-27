@@ -238,7 +238,8 @@ typedef struct MTSensorProfile {
     uint32_t surface_width, surface_height;
     uint8_t region_desc[8], region_desc_len;
     uint8_t region_param[8], region_param_len;
-    int frame_width, frame_height;
+    int frame_x0, frame_y0;             /* frame value at 0.0 */
+    int frame_width, frame_height;      /* span from 0.0 to 1.0 */
 } MTSensorProfile;
 
 extern const MTSensorProfile mt_profile_ipod, mt_profile_k48;
