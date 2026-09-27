@@ -106,7 +106,38 @@ it's kept only as the answer to "can it be done like hardware".
   QEMU's `usb-kbd` exposes a high-speed descriptor set, so it attaches to the EHCI root port
   directly without an OHCI companion.
 
-Open risks (checked by the boot test):
-- `AppleUSBEHCIARM`/`AppleUSBOHCIARM` register or clock pokes outside the EHCI/OHCI specs.
-- The machine's own button key handler (`L`, `Shift+H`, `-`, `=`) competes with `usb-kbd` for host keys.
+## Boot test (2026-09-27, merged ipad1 ba6cd0b812, golden-pristine clone)
+
+`-machine ipad1,kboot=<rebuilt> -device usb-kbd,bus=usb-bus.0`. `usb-bus.0` is the EHCI bus, and
+`info usb` shows the keyboard at 480 Mb/s. Serial shows:
+
+- `AppleS5L8930XUSBArbitrator::handleStart : hsic-enabled`, then two `_publishNubs : nub published`.
+- The EHCI and OHCI root hubs start (`AppleUSBHub ... USB Generic Hub @ 1 (0x1000000)` and `(0x2000000)`).
+- The keyboard enumerates: `USB HID Interface #0 of device QEMU USB Keyboard @ 2`.
+- The device side still comes up after that: `cableType: USBHost`, then `Connected to a USB Host`,
+  then `AppleSynopsysOTGDevice::start`. All four configurations register, including `AppleUSBMux`,
+  and the built-in host configures configuration 3 ("PTP + Apple Mobile Device"). This run did not
+  include a usbmuxd bridge, so the lockdown round trip over the bridge was not exercised.
+
+SpringBoard reaches the home screen with the stock alert "The attached USB device is not
+supported." Dismiss it, open Notes, tap the note body, and type through QEMU. The text lands in the
+note, and no on-screen keyboard appears: "Hello from a USB keyboard!" is visible in the note in a
+screendump.
+
+The alert is stock 3.2 behaviour for this device and was left alone. It is probably iapd/SpringBoard
+not finding an authenticated CCK accessory; the keyboard works regardless.
+
+Harness notes:
+- `usb-kbd` activates itself as the head keyboard handler, so while it is attached, host keys go
+  to it and not to the machine's button handler (L / Shift+H / - / =). Drive the buttons some other
+  way, such as the GPIO/QMP path, when a keyboard is attached.
+- Touch is an absolute handler. HMP `mouse_move` is relative and never reaches it, so use QMP
+  `input-send-event` with `abs` x/y (0..32767 over the 1024x768 scanout) and a `btn` event.
+- QMP `input-send-event` with a `device` argument aborts QEMU under `-display none`
+  (`qemu-fixed-text-console.device` not found). Leave `device` out.
+
+Regression on this branch: `tests/ipod/regress.py` default tier: boot, fsck, persist and agent
+PASS; appinstall, applaunch, gles and audio SKIP because Harness.ipa is not built in this worktree.
+
+Remaining notes:
 - The fallback remains `contrib/ipad1-hidbridge` (keyboard-and-network.md §1).
