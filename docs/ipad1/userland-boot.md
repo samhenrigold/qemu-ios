@@ -134,9 +134,11 @@ Fresh journaled HFSX "Data" (`ipad1_nand.make_hfs_image`), 2 GiB (real p2 is 14 
 3. `/private/var/root/Library/Lockdown` from the real iPad: `activation_records/pod_record.plist`,
    `data_ark.plist` (`ActivationState = Activated`), `device_{private,public}_key.pem`, three `pair_records`.
 
-Ownership as on the unit (`ls -ln /private/var`): `mobile/`, `ea/` 501:501, everything else 0:0. The host
-mount is `noowners`, so the catalog is patched offline afterwards (`build_nand.set_owner`; 64 records
-pristine, 3562 jailbroken).
+Ownership is the source rootfs's own (`hdiutil attach -owners on` of its `/private/var`): `mobile/`,
+`ea/` 501:501, `Keychains/` 64:0 (`_securityd`), `empty/` 0:3, `run/` 0:1, the rest 0:0; seeded extras
+(stash, Lockdown, preferences) fall back to root, or mobile under `mobile/`. The host mount is `noowners`,
+so the catalog is patched offline afterwards (`build_nand.set_owner`; 67 records pristine, 3564
+jailbroken). A root-owned `Keychains/` broke every keychain user: securityd cannot create its database.
 
 ### unsigned-machos.txt
 
