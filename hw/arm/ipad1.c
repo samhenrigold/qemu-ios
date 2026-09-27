@@ -73,6 +73,7 @@ struct IPad1MachineState {
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool kbd_cmd, kbd_shift;
+    bool btn_hold, btn_home;             /* button-hold/-home properties */
     int kbd_btn_held[Q_KEY_CODE__MAX];   /* qcode -> 1 + button pin */
     int mtt_x[MT_MAX_FINGERS], mtt_y[MT_MAX_FINGERS];  /* latched per slot */
     bool mtt_seen[MT_MAX_FINGERS];
@@ -768,6 +769,37 @@ static void ipad1_instance_finalize(Object *obj)
     g_free(IPAD1_MACHINE(obj)->nor_path);
 }
 
+/*
+ * Hold and Home as machine properties, for when a usb-kbd owns the host
+ * keyboard and the Cmd chords no longer reach ipad1_kbd_event:
+ *   qom-set path=/machine property=button-hold value=true   (then false)
+ */
+static bool ipad1_get_button_hold(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->btn_hold;
+}
+
+static void ipad1_set_button_hold(Object *obj, bool value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    s->btn_hold = value;
+    ipad1_set_button(s, S5L8930_GPIO_BTN_HOLD, value);
+}
+
+static bool ipad1_get_button_home(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->btn_home;
+}
+
+static void ipad1_set_button_home(Object *obj, bool value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    s->btn_home = value;
+    ipad1_set_button(s, S5L8930_GPIO_BTN_MENU, value);
+}
+
 static void ipad1_class_init(ObjectClass *klass, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(klass);
@@ -800,6 +832,14 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
                                    ipad1_set_usb_cable);
     object_class_property_set_description(klass, "usb-cable",
         "USB cable present (default on); settable at runtime to plug/unplug");
+    object_class_property_add_bool(klass, "button-hold", ipad1_get_button_hold,
+                                   ipad1_set_button_hold);
+    object_class_property_set_description(klass, "button-hold",
+        "Hold/power button pressed; set true then false");
+    object_class_property_add_bool(klass, "button-home", ipad1_get_button_home,
+                                   ipad1_set_button_home);
+    object_class_property_set_description(klass, "button-home",
+        "Home button pressed; set true then false");
 }
 
 static const TypeInfo ipad1_machine_info = {
