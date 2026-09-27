@@ -47,7 +47,7 @@ unsigned-machos.txt: every Mach-O on the system volume and in the stash whose co
 blob (ldid ad-hoc: sshd, bash, apt, Cydia, Substrate) or none at all. Those are what
 `amfi_allow_any_signature=1` has to forgive at exec; Apple's own binaries carry a (possibly empty) CMS slot.
 
-`bake` installs this machine's guest helpers (docs/ipad1/guest-services.md): it_pbd and it_ethlink + their launchd jobs,
+`bake` installs this machine's guest helpers (docs/ipad1/guest-services.md): it_pbd, it_ethlink and it_notip + their launchd jobs,
 root-owned via the catalog. Nothing else on either volume changes. Build it first with contrib/ipad1-guest/build.sh;
 it is ldid ad-hoc signed, so boot with amfi_allow_any_signature=1.
 """
@@ -99,12 +99,14 @@ USB_ETH_IF = {"Active": True, "BSD Name": "en1", "IOBuiltin": False, "IOInterfac
 MOBILE_TOP = ("mobile", "ea")                # uid 501 on the real unit; everything else under /var is root
 # guest tool -> (install path on the system volume, mode); the job comes from contrib/it-pasteboard
 TOOLS = {"it_pbd": ("usr/local/bin/it_pbd", 0o755), "it_ethlink": ("usr/local/bin/it_ethlink", 0o755),
+         "it_notip": ("usr/local/bin/it_notip", 0o755),
          "it_msmquiet.dylib": ("usr/local/lib/it_msmquiet.dylib", 0o755)}
 # Apple job that loads it_msmquiet (hides the USB "not supported" notice; contrib/it-msmquiet)
 MSM_JOB = "System/Library/LaunchDaemons/com.apple.mobile.storage_mounter.plist"
 # launchd job, installed path -> source under contrib/
 JOBS = {"System/Library/LaunchDaemons/com.qemu.it-pbd.plist": "it-pasteboard/com.qemu.it-pbd.plist",
-        "System/Library/LaunchDaemons/com.qemu.it-ethlink.plist": "it-ethlink/com.qemu.it-ethlink.plist"}
+        "System/Library/LaunchDaemons/com.qemu.it-ethlink.plist": "it-ethlink/com.qemu.it-ethlink.plist",
+        "System/Library/LaunchDaemons/com.qemu.it-notip.plist": "it-notip/com.qemu.it-notip.plist"}
 # Bluetooth has no controller model (UART3 is silent), so BTServer's retries left
 # BluetoothManager's blocking calls on SpringBoard's main thread: a ~1 s UI stall
 # every ~12 s. The job's own Disabled key (in place, Apple's owner kept) keeps it
