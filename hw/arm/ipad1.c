@@ -342,7 +342,9 @@ static void ipad1_set_button(IPad1MachineState *s, int pin, bool down)
  * SpringBoard's hold threshold is guest time. One sequence at a time; the
  * phase goes back to idle afterwards so a repeat request works.
  */
-enum { PWROFF_IDLE, PWROFF_HOME, PWROFF_WAKE, PWROFF_HOLD, PWROFF_SETTLE, PWROFF_DRAG };
+enum { PWROFF_IDLE, PWROFF_HOME, PWROFF_WAKE, PWROFF_HOLD, PWROFF_SETTLE, PWROFF_DRAG,
+       PWROFF_WATCH };
+#define PWROFF_WATCH_MS     25000   /* from the request: warn if still running */
 #define PWROFF_KNOB_X       950
 #define PWROFF_KNOB_Y       290
 #define PWROFF_TRACK_END_Y  720
@@ -393,8 +395,17 @@ static void ipad1_pwroff_tick(void *opaque)
         if (s->pwroff_step < PWROFF_DRAG_STEPS) {
             ipad1_pwroff_arm(s, 80);
         } else {
-            s->pwroff_phase = PWROFF_IDLE;  /* now the guest halts */
+            /* Now the guest halts: QEMU exits on the PMU standby write. */
+            s->pwroff_phase = PWROFF_WATCH;
+            ipad1_pwroff_arm(s, PWROFF_WATCH_MS - 7300 - 80 * PWROFF_DRAG_STEPS);
         }
+        break;
+    case PWROFF_WATCH:
+        /* Still here: the gesture missed or the guest is stuck. Say so, and
+         * accept another request; the caller decides whether to hard-stop. */
+        warn_report("ipad1: system_powerdown: the guest has not halted %d s "
+                    "after the request", PWROFF_WATCH_MS / 1000);
+        s->pwroff_phase = PWROFF_IDLE;
         break;
     }
 }
@@ -403,8 +414,17 @@ static void ipad1_powerdown_req(Notifier *n, void *opaque)
 {
     IPad1MachineState *s = IPAD1_MACHINE(qdev_get_machine());
 
-    if (s->pwroff_phase != PWROFF_IDLE) {
+    if (s->pwroff_phase != PWROFF_IDLE && s->pwroff_phase != PWROFF_WATCH) {
         return;
+    }
+    /*
+     * Upright portrait first: the sheet and its knob follow the UI rotation,
+     * so in landscape (accel-orientation 3/4) or upside down the drag missed
+     * the knob. The device is about to power off, so moving it upright is
+     * harmless; the Home press and its 2 s give SpringBoard time to rotate.
+     */
+    if (s->accel) {
+        lis302dl_apply_orientation(s->accel, 1);
     }
     ipad1_set_button(s, S5L8930_GPIO_BTN_MENU, true);
     s->pwroff_phase = PWROFF_HOME;
