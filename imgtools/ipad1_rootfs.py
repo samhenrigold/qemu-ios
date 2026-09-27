@@ -2,7 +2,7 @@
 """Userland images for the ipad1 machine: a patched copy of the 7B500 system partition plus a seeded data volume.
 
     ipad1_rootfs.py build [--base pristine|jailbroken] [--out DIR] [--data-size 2g] [--rootfs IMG]
-                          [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge] [--web-proxy] [--no-usb-net]
+                          [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge] [--no-web-proxy] [--no-usb-net]
     ipad1_rootfs.py fetch [DIR]          copy /var/stash and /var/root/Library/Lockdown off the real iPad (ssh)
     ipad1_rootfs.py report DIR...        list the Mach-Os under DIR that carry no Apple signature
     ipad1_rootfs.py bake DIR [--tools build/ipad1-guest] [--seal]   install the guest helpers into DIR/system.img
@@ -628,7 +628,8 @@ def main():
     b.add_argument("--lockdown", default=os.path.join(FILES, "hw2/lockdown"), help="fetch output for the Lockdown dir; 'none' to skip")
     b.add_argument("--disable", action="append", default=[], metavar="LABEL", help="launchd job to mark Disabled")
     b.add_argument("--ro-root", action="store_true", help="keep the stock read-only root")
-    b.add_argument("--web-proxy", action="store_true", help="en0 Wi-Fi service with the itwebproxy PAC")
+    b.add_argument("--no-web-proxy", dest="web_proxy", action="store_false",
+                   help="skip the en0 Wi-Fi service with the itwebproxy PAC (proxy, else DIRECT)")
     b.add_argument("--no-usb-net", dest="usb_net", action="store_false",
                    help="skip the en1 (USB Ethernet) DHCP network service")
     b.add_argument("--gles", action="store_true", help="install the GLI shim as GLEngine plus GLTest/GLTest2.app (run contrib/ipad1-gles/build.sh first)")
