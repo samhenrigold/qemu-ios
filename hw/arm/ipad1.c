@@ -81,6 +81,7 @@ struct IPad1MachineState {
     char *nand_path;
     char *nand_overlay_path;
     char *nor_path;
+    char *die_id;                        /* ChipID words 2-3 of the unit, hex pair */
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
@@ -99,7 +100,8 @@ struct IPad1MachineState {
     int battery_mode;                    /* 0 auto (follow cable), 1 on, 2 off */
     double battery_drain;                /* accepted for the bridge; unused */
     QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
-    int pwroff_phase, pwroff_step;
+    DeviceState *display;                /* its dart2 also serves the scaler */
+    int pwroff_phase, pwroff_step, pwroff_orient;
     bool usb_charger;                    /* host grants high-power current */
     Chardev *gauge;
 };
@@ -337,21 +339,31 @@ static void ipad1_set_button(IPad1MachineState *s, int pin, bool down)
  * (ipod_touch_powerdown_req): the one clean shutdown path unmounts the
  * volumes, closes the FTL and ends in the PMU standby write, where QEMU exits.
  * Home first (wakes the panel, or quits a foreground app), hold the hold
- * button until SpringBoard raises "slide to power off", then drag its knob:
- * panel x 950, from y 290 down the track. All on QEMU_CLOCK_VIRTUAL, since
+ * button until SpringBoard raises "slide to power off", then drag its knob
+ * along its track. All on QEMU_CLOCK_VIRTUAL, since
  * SpringBoard's hold threshold is guest time. One sequence at a time; the
  * phase goes back to idle afterwards so a repeat request works.
  */
 enum { PWROFF_IDLE, PWROFF_HOME, PWROFF_WAKE, PWROFF_HOLD, PWROFF_SETTLE, PWROFF_DRAG,
        PWROFF_WATCH };
 #define PWROFF_WATCH_MS     25000   /* from the request: warn if still running */
-/* Panel coordinates with the UI upright portrait (orientation 1): the
- * portrait UI sits turned into the landscape panel, top along its left edge,
- * so the knob is near x 74 and slides from y 478 towards 48. */
-#define PWROFF_KNOB_X       74
-#define PWROFF_KNOB_Y       478
-#define PWROFF_TRACK_END_Y  48
 #define PWROFF_DRAG_STEPS   24
+#define PWROFF_DRAG_LEN     430     /* knob to past the track's end */
+
+/*
+ * Where the knob sits on the landscape panel, and which way the track runs,
+ * per interface orientation (UIDeviceOrientation 1-4): the sheet is at the
+ * top of the UI, which the panel shows rotated. Measured off screendumps of
+ * the sheet; 2 and 4 are 1 and 3 turned half way round.
+ */
+static const struct { int x, y, dx, dy; } pwroff_knob[5] = {
+    /* With the LIS331 mounted flipped (eb5d4e5c58) accel-orientation is
+     * UIDeviceOrientation, so portrait and upside down swap places here. */
+    [1] = {  73, 477,  0, -1 },     /* portrait: track runs up the panel */
+    [2] = { 950, 290,  0,  1 },     /* upside down */
+    [3] = { 418,  69,  1,  0 },     /* landscape, home button right */
+    [4] = { 605, 698, -1,  0 },     /* landscape, home button left */
+};
 
 static void ipad1_pwroff_arm(IPad1MachineState *s, int ms)
 {
@@ -367,7 +379,7 @@ static void ipad1_pwroff_touch(IPad1MachineState *s, int px, int py, bool down)
 static void ipad1_pwroff_tick(void *opaque)
 {
     IPad1MachineState *s = opaque;
-    int y;
+    int o = s->pwroff_orient, d;
 
     switch (s->pwroff_phase) {
     case PWROFF_HOME:
@@ -386,15 +398,16 @@ static void ipad1_pwroff_tick(void *opaque)
         ipad1_pwroff_arm(s, 1500);          /* the sheet slides in */
         break;
     case PWROFF_SETTLE:
-        ipad1_pwroff_touch(s, PWROFF_KNOB_X, PWROFF_KNOB_Y, true);
+        ipad1_pwroff_touch(s, pwroff_knob[o].x, pwroff_knob[o].y, true);
         s->pwroff_phase = PWROFF_DRAG;
         s->pwroff_step = 0;
         ipad1_pwroff_arm(s, 80);
         break;
     case PWROFF_DRAG:
-        y = PWROFF_KNOB_Y + (PWROFF_TRACK_END_Y - PWROFF_KNOB_Y) *
-            ++s->pwroff_step / PWROFF_DRAG_STEPS;
-        ipad1_pwroff_touch(s, PWROFF_KNOB_X, y, s->pwroff_step < PWROFF_DRAG_STEPS);
+        d = PWROFF_DRAG_LEN * ++s->pwroff_step / PWROFF_DRAG_STEPS;
+        ipad1_pwroff_touch(s, pwroff_knob[o].x + pwroff_knob[o].dx * d,
+                           pwroff_knob[o].y + pwroff_knob[o].dy * d,
+                           s->pwroff_step < PWROFF_DRAG_STEPS);
         if (s->pwroff_step < PWROFF_DRAG_STEPS) {
             ipad1_pwroff_arm(s, 80);
         } else {
@@ -421,13 +434,16 @@ static void ipad1_powerdown_req(Notifier *n, void *opaque)
         return;
     }
     /*
-     * Upright portrait first: the sheet and its knob follow the UI rotation,
-     * so in landscape (accel-orientation 3/4) or upside down the drag missed
-     * the knob. The device is about to power off, so moving it upright is
-     * harmless; the Home press and its 2 s give SpringBoard time to rotate.
+     * The sheet follows the interface orientation, which follows the
+     * accelerometer: aim for it there instead of turning the device upright
+     * (that visibly flipped the UI to portrait on quit).
+     * ponytail: the last accel-orientation set; face up/down (5/6), 0, or a
+     * pitch/roll attitude fall back to portrait. Track the UI's own
+     * orientation if an app pins one that disagrees with the device.
      */
-    if (s->accel) {
-        lis302dl_apply_orientation(s->accel, 1);
+    s->pwroff_orient = 1;
+    if (s->accel && s->accel->orientation >= 1 && s->accel->orientation <= 4) {
+        s->pwroff_orient = s->accel->orientation;
     }
     ipad1_set_button(s, S5L8930_GPIO_BTN_MENU, true);
     s->pwroff_phase = PWROFF_HOME;
@@ -554,11 +570,21 @@ static void ipad1_init(MachineState *machine)
      */
     create_unimplemented_device("s5l8930.periph", 0x80000000, 0x40000000);
 
-    /* ChipID fuses, as read from a real K48AP (docs/ipad1/hw1-probes.log). */
+    /*
+     * ChipID fuses as a real K48AP reads them (docs/ipad1/hw1-probes.log):
+     * chip/revision words, then the unit's die-id. The die-id is per unit, so
+     * it comes from the die-id machine property ("0xWORD2:0xWORD3", runners
+     * take it from identity.json); zeros otherwise.
+     */
     {
-        static const uint32_t chipid[] = {
-            0x31800387, 0x80758000, 0x00000000, 0x00000000,
-        };
+        uint32_t chipid[] = { 0x31800387, 0x80758000, 0, 0 };
+
+        if (s->die_id && sscanf(s->die_id, "%" SCNx32 ":%" SCNx32,
+                                &chipid[2], &chipid[3]) != 2) {
+            error_report("ipad1: die-id must be \"0xWORD2:0xWORD3\", got \"%s\"",
+                         s->die_id);
+            exit(1);
+        }
         memory_region_init_rom(&s->chipid, NULL, "ipad1.chipid", 0x1000,
                                &error_fatal);
         memcpy(memory_region_get_ram_ptr(&s->chipid), chipid, sizeof(chipid));
@@ -695,6 +721,7 @@ static void ipad1_init(MachineState *machine)
 
     /* Display pipe, CLCD, DART2, RGBOUT, TV-out; scanout starts at iBoot's FB. */
     dev = qdev_new(TYPE_S5L8930_DISPLAY);
+    s->display = dev;
     qdev_prop_set_uint64(dev, "fb-base", 0x4f700000);
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
@@ -916,6 +943,17 @@ static void ipad1_init(MachineState *machine)
     set_spi_base(2);
     sysbus_create_simple(TYPE_IPOD_TOUCH_SPI, S5L8930_SPI_BASE(2), NULL);
 
+    /*
+     * M2 scaler/CSC: the iPod's (same scaler,s5l8720x driver). Absent, its
+     * reset (+0x10 |= 1, then poll for bit 0) never completed, and turning
+     * on Accessibility > Zoom, which puts the scaler on CA's display path,
+     * hung the UI in "M2Scaler waiting for device reset step 2".
+     */
+    ipod_scaler_set_iommu(sysbus_create_simple("ipodtouch.scaler",
+                                               S5L8930_SCALER_BASE,
+                                               ipad1_irq(s, S5L8930_IRQ_SCALER)),
+                          s5l8930_dart2_xlate, s->display, 2);
+
     /* SWI: backlight and DPSM core voltage; only the busy bit matters. */
     sysbus_create_simple("ipodtouch.swi", S5L8930_SWI_BASE, NULL);
 
@@ -1030,6 +1068,19 @@ static void ipad1_set_nand_overlay(Object *obj, const char *value, Error **errp)
 
     g_free(s->nand_overlay_path);
     s->nand_overlay_path = g_strdup(value);
+}
+
+static char *ipad1_get_die_id(Object *obj, Error **errp)
+{
+    return g_strdup(IPAD1_MACHINE(obj)->die_id);
+}
+
+static void ipad1_set_die_id(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    g_free(s->die_id);
+    s->die_id = g_strdup(value);
 }
 
 static char *ipad1_get_nor(Object *obj, Error **errp)
@@ -1279,6 +1330,7 @@ static void ipad1_instance_finalize(Object *obj)
     g_free(IPAD1_MACHINE(obj)->nand_path);
     g_free(IPAD1_MACHINE(obj)->nand_overlay_path);
     g_free(IPAD1_MACHINE(obj)->nor_path);
+    g_free(IPAD1_MACHINE(obj)->die_id);
 }
 
 /*
@@ -1337,6 +1389,9 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
                                   ipad1_set_nand_overlay);
     object_class_property_set_description(klass, "nand-overlay",
         "Copy-on-write directory for guest NAND writes; the nand store is then read-only");
+    object_class_property_add_str(klass, "die-id", ipad1_get_die_id, ipad1_set_die_id);
+    object_class_property_set_description(klass, "die-id",
+        "the unit's ChipID die-id words 2-3, \"0xWORD2:0xWORD3\" (identity.json); zeros if unset");
     object_class_property_add_str(klass, "nor", ipad1_get_nor, ipad1_set_nor);
     object_class_property_set_description(klass, "nor",
         "1 MiB SPI NOR image (nvram, syscfg); erased flash if unset");
