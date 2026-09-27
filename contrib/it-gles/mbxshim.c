@@ -102,7 +102,10 @@ static unsigned slen(const char *s) { unsigned n = 0; while (s && s[n]) n++; ret
 
 /* api and sg are glishim.c's (the GLEngine replacement, which #includes this
  * file); the MBX path leaves them zero. */
-typedef struct { unsigned host, unpack_alignment, api, owns_sg; void *sg; unsigned unpack_row_bytes; } GuestGC;
+typedef struct {
+    unsigned host, unpack_alignment, api, owns_sg; void *sg; unsigned unpack_row_bytes;
+    unsigned *batch, batch_len;   /* glishim's command buffer (GLES_BATCH); unused on the MBX path */
+} GuestGC;
 extern void *calloc(unsigned long, unsigned long);
 extern void free(void *);
 static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args);
@@ -132,9 +135,18 @@ static void wx(unsigned long v)
     w("0x"); w(p);
 }
 
+#ifdef GLES_BATCH
+/* glishim.c: queue the call in gc's command buffer and return 1, or flush that
+ * buffer and return 0 so the call traps on its own. */
+static int gles_batch(unsigned slot, void *gc, unsigned argc, const unsigned *args);
+#endif
+
 static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args)
 {
     volatile qemu_call_t q;
+#ifdef GLES_BATCH
+    if (gles_batch(slot, gc, argc, args)) return 0;
+#endif
     unsigned i;
     unsigned spill[16]; /* separate storage for concurrently issuing GCs */
 

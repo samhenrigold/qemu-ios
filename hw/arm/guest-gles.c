@@ -42,8 +42,41 @@ static uint64_t gles_slot_calls[GLES_MAX_SLOTS];
 static uint64_t gles_total_calls;
 static uint64_t gles_bad_slots;
 
+/* GLES_OP_BATCH: run a guest command buffer, one record per queued call. */
+static int64_t gles_run_batch(CPUState *cpu, qc_gles_args_t *a)
+{
+    static uint32_t buf[GLES_BATCH_MAX_WORDS];
+    uint32_t n = a->args[1], i = 0;
+
+    if (a->argc != 2 || n > GLES_BATCH_MAX_WORDS ||
+        cpu_memory_rw_debug(cpu, a->args[0], (uint8_t *)buf, n * 4, 0) != 0) {
+        gles_bad_slots++;
+        return -1;
+    }
+    while (i < n) {
+        uint32_t slot = buf[i] & 0xffff, argc = buf[i] >> 16;
+        uint32_t args[GLES_MAX_ARGS] = { 0 };
+
+        if (argc > GLES_MAX_ARGS || argc > n - i - 1 || slot >= GLES_OP_BASE) {
+            gles_bad_slots++;
+            return -1;
+        }
+        memcpy(args, &buf[i + 1], argc * sizeof(uint32_t));
+        gles_slot_calls[slot]++;
+        gles_total_calls++;
+        if (!gles_null_render()) {
+            gles_host_call(cpu, slot, a->ctx, argc, args);
+        }
+        i += 1 + argc;
+    }
+    return 0;
+}
+
 int64_t qc_handle_gles(CPUState *cpu, qc_gles_args_t *a)
 {
+    if (a->slot == GLES_OP_BATCH) {
+        return gles_run_batch(cpu, a);
+    }
     if (a->slot >= GLES_MAX_SLOTS) {
         gles_bad_slots++;
         return -1;
