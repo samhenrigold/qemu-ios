@@ -179,6 +179,23 @@ NEW_ICON = (895, 115)            # first slot on page 2 = the just-installed app
 LAUNCH_WAIT = 9
 
 
+def _sample(rg, ppm, step=997):
+    """Flat list of sampled pixel bytes from a ppm, or [] if unreadable."""
+    try:
+        _, _, pix = rg.itqmp.read_ppm(ppm)
+        return list(pix[::step])
+    except Exception:
+        return []
+
+
+def _framediff(a, b, thresh=8):
+    """True if two sampled frames differ meaningfully (mean abs byte diff > thresh)."""
+    if not a or not b or len(a) != len(b):
+        return True
+    d = sum(abs(x - y) for x, y in zip(a, b)) / len(a)
+    return d > thresh
+
+
 def _load_regress():
     spec = importlib.util.spec_from_file_location("ipad_regress", os.path.join(HERE, "regress.py"))
     m = importlib.util.module_from_spec(spec)
@@ -187,7 +204,7 @@ def _load_regress():
     return m
 
 
-def launch_one(rg, cfg, ipa, r):
+def launch_one(rg, cfg, ipa, r, install_only=False):
     """Install + launch one IPA on a fresh overlay. Returns dict: verdict, note, shot, crash, glishim."""
     tag = re.sub(r"[^A-Za-z0-9_.-]", "_", r["bundle"] or os.path.basename(ipa))[:60]
     res = {"file": r["file"], "bundle": r["bundle"], "name": r["name"], "family": r["family"],
@@ -201,22 +218,52 @@ def launch_one(rg, cfg, ipa, r):
         # install
         ins = b.run(["ideviceinstaller", "install", ipa], timeout=200)
         out = (ins.stdout or "") + (ins.stderr or "")
-        if "Complete" not in out and r["bundle"] not in (b.run(["ideviceinstaller", "list"], timeout=90).stdout or ""):
+        listed = r["bundle"] in (b.run(["ideviceinstaller", "list"], timeout=90).stdout or "")
+        try:
+            res["glishim"] = open(os.path.join(b.dir, "qemu.log"), errors="replace").read().count("[glishim] unimplemented")
+        except OSError:
+            pass
+        if "Complete" not in out and not listed:
             res["verdict"] = "INSTALL-FAIL"
             res["note"] = out.strip().splitlines()[-1][:160] if out.strip() else "no installer output"
             return res
-        # to the home screen, then launch the new icon
-        ok, _ = b.wait_lock_screen()
-        b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
-        time.sleep(2)
-        b.tap(DISMISS_EDIT)          # dismiss the install help sheet if present (harmless otherwise)
-        time.sleep(1)
-        b.drag(*PAGE2_SWIPE)
-        time.sleep(2)
+        if install_only:             # deterministic: install + list, no flaky touch
+            res["verdict"] = "PASS-INSTALL" if listed else "INSTALL-FAIL"
+            res["note"] = "installed and listed" if listed else "installer said Complete but not in list"
+            return res
+        # to the home screen, then launch the new icon. Touch on this store is flaky,
+        # so verify each step by frame change and retry (no guest agent on ipad1).
+        b.wait_lock_screen()
+        cur = _sample(rg, b.shot("s0-" + tag))
+        for _ in range(4):           # unlock until the frame leaves the lock screen
+            b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO); time.sleep(2)
+            nxt = _sample(rg, b.shot("s1-" + tag))
+            if _framediff(cur, nxt):
+                break
+            b.press("home"); time.sleep(1)
+        b.tap(DISMISS_EDIT); time.sleep(1)     # dismiss the install help sheet if present
+        page1 = _sample(rg, b.shot("page1-" + tag))
+        reached = False
+        for _ in range(4):           # swipe to page 2 (the new icon) until the page changes
+            b.drag(*PAGE2_SWIPE); time.sleep(2)
+            page2 = _sample(rg, b.shot("iconpage-" + tag))
+            if _framediff(page1, page2):
+                reached = True
+                break
+        if not reached:              # never left page 1 — don't mis-tap a stock icon
+            res["verdict"], res["note"] = "NAV-FAIL", "could not reach the new app's page"
+            return res
+        before = page2
         b.tap(NEW_ICON)
         time.sleep(LAUNCH_WAIT)
         lit, detail = b.picture("launch-" + tag)
         res["shot"] = os.path.join(b.dir, "launch-" + tag + ".ppm")
+        after = _sample(rg, res["shot"])
+        # LAUNCH = the frame changed from the icon page (an app is frontmost, incl. the
+        # black-bordered 2x compat window). A near-identical frame = tap bounced back to
+        # the home screen. A dark frame = nothing came up / panel slept.
+        nonzero = sum(1 for v in after if v > 12) / max(1, len(after))
+        changed = _framediff(before, after)
         # crash logs
         crashdir = os.path.join(b.dir, "crash")
         os.makedirs(crashdir, exist_ok=True)
@@ -236,10 +283,12 @@ def launch_one(rg, cfg, ipa, r):
             pass
         if crashes:
             res["verdict"], res["note"] = "CRASH", crashes[0][:120]
-        elif lit:
-            res["verdict"], res["note"] = "LAUNCH", detail
+        elif nonzero < 0.02:
+            res["verdict"], res["note"] = "NO-LAUNCH", "screen dark after tap (%s)" % detail
+        elif not changed:
+            res["verdict"], res["note"] = "NO-LAUNCH", "frame unchanged from icon page (bounced?)"
         else:
-            res["verdict"], res["note"] = "NO-LAUNCH", "screen not lit after tap (%s)" % detail
+            res["verdict"], res["note"] = "LAUNCH", detail
     finally:
         b.stop()
     return res
@@ -267,7 +316,7 @@ def run_pass(a):
         for dp, _, fs in os.walk(a.dir):
             if r["file"] in fs:
                 ipa = os.path.join(dp, r["file"]); break
-        res = launch_one(rg, cfg, ipa, r)
+        res = launch_one(rg, cfg, ipa, r, install_only=a.install_only)
         print("  %-10s %-30s %s" % (res["verdict"], res["bundle"], res["note"]))
         results.append(res)
     md = os.path.join(ROOT, "docs/ipad1/app-compat-results.md")
@@ -290,6 +339,7 @@ def main():
     ap.add_argument("--nand", help="run: NAND store (default golden-appsync)")
     ap.add_argument("--out", help="run: output dir")
     ap.add_argument("--boot-timeout", type=int, default=240)
+    ap.add_argument("--install-only", action="store_true", help="run: install + list only, no launch (deterministic)")
     ap.add_argument("--selfcheck", action="store_true")
     a = ap.parse_args()
     if a.selfcheck:
