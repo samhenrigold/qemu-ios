@@ -26,6 +26,8 @@
 #include "hw/sysbus.h"
 #include "hw/arm/exynos4210.h"
 #include "hw/arm/ipod_touch_mipi_dsi.h"
+#include "hw/arm/ipod_touch_usb_otg.h"
+#include "hw/arm/ipod_touch_usb_phys.h"
 #include "hw/i2c/i2c.h"
 #include "hw/arm/s5l8930.h"
 #include "hw/intc/pl192.h"
@@ -48,6 +50,9 @@ struct IPad1MachineState {
     char *kboot_path;
     char *nand_path;
 };
+
+/* GHWCFG1-4 of the DWC OTG core; same synthesis as the S5L8720's. */
+static uint32_t s5l8930_usb_hwcfg[] = { 0, 0x7a8f60d0, 0x082000e8, 0x01f08024 };
 
 #define KBOOT_MAGIC "K48KBOOT"
 #define KBOOT_TRAILER_LEN 24
@@ -247,6 +252,23 @@ static void ipad1_init(MachineState *machine)
     for (i = 0; i < S5L8930_CDMA_CHANNELS; i++) {
         sysbus_connect_irq(sbd, i, ipad1_irq(s, S5L8930_IRQ_CDMA(i)));
     }
+    /*
+     * USB device mode: the same Synopsys DWC OTG core and PHY register layout
+     * as the S5L8720 (gap-kernel-platform-mmio.md §6), so both iPod models are
+     * reused unchanged. The host bridge dials IT_USB_TCP=host:port when set.
+     * The USB arbitrator's USB_CTL block (0xbf108000) is mapped but never
+     * touched on K48 (no hsic-enabled), so it stays in the unimp window.
+     */
+    dev = qdev_new(TYPE_IPOD_TOUCH_USB_PHYS);
+    sbd = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(sbd, &error_fatal);
+    sysbus_mmio_map(sbd, 0, S5L8930_USB_PHY_BASE);
+
+    dev = ipod_touch_init_usb_otg(ipad1_irq(s, S5L8930_IRQ_USB_OTG),
+                                  s5l8930_usb_hwcfg);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    memory_region_add_subregion(sysmem, S5L8930_USB_OTG_BASE,
+                                &S5L8900USBOTG(dev)->iomem);
 
     /* Same Samsung UART as the S5L8720, including its interrupt scheme. */
     exynos4210_uart_create(S5L8930_UART_BASE(0), 256, 0, serial_hd(0),
