@@ -270,8 +270,12 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         # syslog, to confirm the app process starts (not pixels alone)
         syslog = os.path.join(b.dir, "syslog.log")
         b.procs.spawn(["idevicesyslog"], syslog, env=b.env())
-        # unlock, retrying until the frame leaves the lock screen
-        b.wait_lock_screen(timeout=150)
+        # wait for the real lock screen (a lit picture) before touching — under parallel
+        # load the guest can still be on the boot logo well past install.
+        ok, det = b.wait_lock_screen(timeout=a.boot_timeout - 40)
+        if not ok:
+            res["verdict"], res["note"] = "NO-BOOT", "never reached lock screen (%s)" % det
+            return res
         cur = _sample(rg, b.shot("s0-" + tag))
         for _ in range(4):
             b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO); time.sleep(2)
