@@ -356,7 +356,16 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         except OSError:
             pass
         if crashes:
-            res["verdict"], res["note"] = "CRASH", crashes[0][:120]
+            # pull the exception type out of the report so crashes group by cause
+            exc = ""
+            for dp, _, fs in os.walk(crashdir):
+                if crashes[0] in fs:
+                    txt = open(os.path.join(dp, crashes[0]), errors="replace").read()
+                    m = re.search(r"Exception Type:\s*(.+)", txt) or re.search(r"Exception Codes:\s*(.+)", txt)
+                    exc = m.group(1).strip() if m else ""
+                    break
+            res["verdict"] = "CRASH"
+            res["note"] = ("%s | %s" % (exc, crashes[0]))[:140] if exc else crashes[0][:120]
         elif changed and launched_log:
             res["verdict"], res["note"] = "LAUNCH", "%s; syslog confirms" % detail
         elif changed:
@@ -414,21 +423,56 @@ def run_pass(a):
             list(ex.map(one, cands))
     # aggregate every per-app result recorded so far (batches accumulate)
     allres = [json.load(open(os.path.join(resdir, f))) for f in sorted(os.listdir(resdir)) if f.endswith(".json")]
-    md = os.path.join(ROOT, "docs/ipad1/app-compat-results.md")
-    order = {"PASS-INSTALL": 0, "LAUNCH": 0, "CRASH": 1, "NO-LAUNCH": 2, "NAV-FAIL": 3, "INSTALL-FAIL": 4, "NO-BOOT": 5}
-    allres.sort(key=lambda r: (order.get(r["verdict"], 9), r.get("bundle", "")))
+    body = _results_md(allres, nand)
+    open(os.path.join(out, "results.md"), "w").write(body)   # always beside the results
+    default_out = os.path.join(FILES, "app-compat")
+    if os.path.realpath(out) == os.path.realpath(default_out):   # only the canonical pass writes docs/
+        open(os.path.join(ROOT, "docs/ipad1/app-compat-results.md"), "w").write(body)
+        print("wrote docs/ipad1/app-compat-results.md")
     counts = {}
     for r in allres:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
-    with open(md, "w") as f:
-        f.write("# iPad 1 / 3.2.2 app-compat results\n\nStore: `%s`. %d apps tested.\n\n" % (nand, len(allres)))
-        f.write("Verdicts: " + ", ".join("%s %d" % (k, v) for k, v in sorted(counts.items())) + "\n\n")
-        f.write("| verdict | app | bundle | family | GL gaps | note |\n|---|---|---|---|---|---|\n")
-        for r in allres:
-            f.write("| %s | %s | `%s` | %s | %d | %s |\n" % (
-                r["verdict"], r.get("name") or r.get("file", ""), r.get("bundle", ""),
-                r.get("family", ""), r.get("glishim", 0), r.get("note", "")))
-    print("wrote %s (%d total: %s)" % (md, len(allres), counts))
+    print("%d total: %s" % (len(allres), counts))
+
+
+def _results_md(allres, nand):
+    order = {"PASS-INSTALL": 0, "LAUNCH": 0, "CRASH": 1, "NO-LAUNCH": 2, "NAV-FAIL": 3, "INSTALL-FAIL": 4, "NO-BOOT": 5}
+    allres = sorted(allres, key=lambda r: (order.get(r["verdict"], 9), r.get("bundle", "")))
+    counts = {}
+    for r in allres:
+        counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
+    out = ["# iPad 1 / 3.2.2 app-compat results", "",
+           "Store: `%s`. %d apps tested." % (nand, len(allres)), "",
+           "Verdicts: " + ", ".join("%s %d" % (k, v) for k, v in sorted(counts.items())), ""]
+    # failure backlog grouped by cause (the fix list)
+    crashes = [r for r in allres if r["verdict"] == "CRASH"]
+    nolaunch = [r for r in allres if r["verdict"] == "NO-LAUNCH"]
+    glgaps = [r for r in allres if r.get("glishim", 0) > 0 and r["verdict"] in ("LAUNCH", "NO-LAUNCH", "CRASH")]
+    if crashes or nolaunch or glgaps:
+        out += ["## Failure backlog (by cause)", ""]
+    if glgaps:
+        out += ["### GL: unimplemented entry points (need glishim work)", ""]
+        for r in sorted(glgaps, key=lambda r: -r.get("glishim", 0)):
+            out.append("- %s (`%s`): %d [glishim] unimplemented, verdict %s" % (
+                r.get("name") or r["file"], r["bundle"], r["glishim"], r["verdict"]))
+        out.append("")
+    if crashes:
+        out += ["### Crashes", ""]
+        for r in crashes:
+            out.append("- %s (`%s`): %s" % (r.get("name") or r["file"], r["bundle"], r.get("note", "")))
+        out.append("")
+    if nolaunch:
+        out += ["### No launch (installed, did not come to foreground)", ""]
+        for r in nolaunch:
+            out.append("- %s (`%s`): %s" % (r.get("name") or r["file"], r["bundle"], r.get("note", "")))
+        out.append("")
+    out += ["## All results", "",
+            "| verdict | app | bundle | family | GL gaps | note |", "|---|---|---|---|---|---|"]
+    for r in allres:
+        out.append("| %s | %s | `%s` | %s | %d | %s |" % (
+            r["verdict"], r.get("name") or r.get("file", ""), r.get("bundle", ""),
+            r.get("family", ""), r.get("glishim", 0), r.get("note", "")))
+    return "\n".join(out) + "\n"
 
 
 def main():
