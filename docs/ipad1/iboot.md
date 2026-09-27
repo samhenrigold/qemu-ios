@@ -95,15 +95,16 @@ PMGR/GPIO changes. iPod boot, fsck, persistence, app installation, app launch,
 agent, and audio checks passed; GLES passed with the matching staged guest shim
 (the first run paired a new GLTest with an old base-store shim).
 
-A clean cycle also reached the SpringBoard home screen after touch unlock,
-then powered off through the PMU. A second boot on the same overlay mounted
-root at 11.6 seconds, started launchd at 12.6 seconds, and lit the lock screen
-at 25.7 seconds (host wall time, not a performance guarantee).
+Clean cycles also reached the SpringBoard home screen after touch unlock,
+then powered off through the PMU. With the integrated battery/UART fixes, a
+subsequent boot on the same overlay mounted root at 4.5 seconds, started launchd
+at 5.5 seconds, and lit the lock screen at 22.6 seconds (host wall time, not a
+performance guarantee).
 
-Battery-gauge reads during iBoot still time out; normal boot proceeds. Recovery
-mode needs separate USB/charger validation. This change does not claim to fix
-the previously reported `usb-high-curren` task stack overflow or implement a
-SecureROM/DFU exploit. The physical iPad was not modified.
+The integrated `ipad1-app` battery/UART fixes remove iBoot's gas-gauge timeouts.
+Recovery mode reached its command prompt without the previously reported
+`usb-high-curren` stack panic during a bounded soak. USB restore and a
+SecureROM/DFU boot chain remain untested. The physical iPad was not modified.
 
 ## Saved local run
 
