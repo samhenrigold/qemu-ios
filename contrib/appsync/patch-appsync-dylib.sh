@@ -37,9 +37,15 @@ install -d "$MNT/usr/lib"
 cp "$DYLIB" "$MNT/usr/lib/libappsync.dylib"
 chmod 644 "$MNT/usr/lib/libappsync.dylib"
 
-python3 - "$MNT/System/Library/LaunchDaemons/com.apple.mobile.installd.plist" <<'PY'
-import sys, plistlib
-p = sys.argv[1]
+# installd's launchd job: com.apple.mobile.installd.plist on 3.2 (iPad),
+# com.apple.installd.plist on 3.1.3 (iPod). Inject into whichever exists.
+python3 - "$MNT/System/Library/LaunchDaemons" <<'PY'
+import sys, os, plistlib
+ld = sys.argv[1]
+cands = ["com.apple.mobile.installd.plist", "com.apple.installd.plist"]
+p = next((os.path.join(ld, c) for c in cands if os.path.exists(os.path.join(ld, c))), None)
+if not p:
+    sys.exit("no installd launchd plist in %s (tried %s)" % (ld, cands))
 with open(p, "rb") as f:
     data = f.read()
 d = plistlib.loads(data)
@@ -51,7 +57,7 @@ env["DYLD_INSERT_LIBRARIES"] = ":".join(libs)
 fmt = plistlib.FMT_BINARY if data[:6] == b"bplist" else plistlib.FMT_XML
 with open(p, "wb") as f:
     f.write(plistlib.dumps(d, fmt=fmt))
-print("installd DYLD_INSERT_LIBRARIES =", env["DYLD_INSERT_LIBRARIES"])
+print("installd (%s) DYLD_INSERT_LIBRARIES = %s" % (os.path.basename(p), env["DYLD_INSERT_LIBRARIES"]))
 PY
 
 # editimg.py runs setowner afterwards for files it knows; make ownership explicit
