@@ -121,8 +121,13 @@ covers the Cydia job; `launchd.conf` can be emptied with one more line in `build
 
 ### data.img: what `mobile_obliterator` would create
 
-Fresh journaled HFSX "Data" (`ipad1_nand.make_hfs_image`), 2 GiB (real p2 is 14 GB; any size ≤ that works,
-`ipad1_nand.py` sizes the partition to the image). Seeded with:
+Fresh journaled HFSX "Data" (`ipad1_nand.make_hfs_image`), by default the size of the unit's partition 2
+(3,597,615 x 4 KiB = 14.7 GB, what a restore gives it; `--data-size 2g` etc. still works, and
+`ipad1_nand.py` sizes the partition to the image). The image is a sparse raw file formatted by
+`newfs_hfs`, so only metadata is allocated (~38 MB), and `ipad1_nand.py` writes only its data extents
+(SEEK_DATA/SEEK_HOLE) into the store, which is 1.4 GB instead of 3.4 GB. The holes are blocks nothing
+ever wrote; HFS never reads a free block before writing it. Settings and lockdown report
+TotalDataCapacity 14,735,831,040 (TotalDiskCapacity 16.08 GB), as on the unit. Seeded with:
 
 1. `/private/var` skeleton from the IPSW rootfs (for the jailbroken base it is sliced into a private temp
    image, since that volume's own `/private/var` is just `db`): `db/launchd.db`, `db/timezone/localtime`,
