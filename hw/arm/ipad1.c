@@ -72,6 +72,7 @@ struct IPad1MachineState {
     char *nor_path;
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
+    bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
     bool kbd_cmd, kbd_shift;
     int kbd_btn_held[Q_KEY_CODE__MAX];   /* qcode -> 1 + button pin */
     int mtt_x[MT_MAX_FINGERS], mtt_y[MT_MAX_FINGERS];  /* latched per slot */
@@ -498,10 +499,44 @@ static void ipad1_init(MachineState *machine)
     sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
 
     /*
+     * Wi-Fi: the iPod's Broadcom dongle model, dressed as the unit's BCM4329
+     * (K48 USI board: the CIS strings pick AppleBCMWLAN's "K48 USI X17B"
+     * personality), behind the SDHC and the IOP's SDIO task. Frames go to
+     * -netdev ...,id=wifi0. docs/ipad1/wifi.md.
+     */
+    DeviceState *sdio = NULL;
+    if (s->wifi) {
+        static const BCMSDIOChip bcm4329 = {
+            .manfid = 0x02d0, .prodid = 0x4329,
+            .chipid = 0x00034329,                   /* rev 3 = B1 (c07a61d2) */
+            .sdiod_base = 0x18011000,               /* where initDongle polls */
+            .vers1 = { "", "", "s=B1", "P=K48 m=u80" },
+            .mac = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 },  /* = DT */
+        };
+        IPodTouchSDIOState *card = IPOD_TOUCH_SDIO(qdev_new(TYPE_IPOD_TOUCH_SDIO));
+
+        ipod_touch_sdio_set_chip(card, &bcm4329);
+        card->card_present = true;
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(card), &error_fatal);
+        ipod_touch_sdio_setup_net(card);
+
+        sdio = qdev_new(TYPE_S5L8930_SDIO);
+        object_property_set_link(OBJECT(sdio), "card", OBJECT(card), &error_fatal);
+        sbd = SYS_BUS_DEVICE(sdio);
+        sysbus_realize_and_unref(sbd, &error_fatal);
+        sysbus_mmio_map(sbd, 0, S5L8930_SDIO_BASE);
+        sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_SDIO));
+        sysbus_connect_irq(SYS_BUS_DEVICE(card), 0, qdev_get_gpio_in(sdio, 0));
+    }
+
+    /*
      * IOP: high-level emulation of the second core. No IRQ line: like the real
      * firmware, the model raises the AP by writing VIC0's SOFTINT register.
      */
     dev = qdev_new(TYPE_S5L8930_IOP);
+    if (sdio) {
+        object_property_set_link(OBJECT(dev), "sdio", OBJECT(sdio), &error_fatal);
+    }
     if (s->nand_path) {
         qdev_prop_set_string(dev, "nand", s->nand_path);
     }
@@ -753,6 +788,16 @@ static void ipad1_set_usb_cable(Object *obj, bool value, Error **errp)
     }
 }
 
+static bool ipad1_get_wifi(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->wifi;
+}
+
+static void ipad1_set_wifi(Object *obj, bool value, Error **errp)
+{
+    IPAD1_MACHINE(obj)->wifi = value;
+}
+
 static void ipad1_instance_init(Object *obj)
 {
     IPAD1_MACHINE(obj)->usb_cable = true;
@@ -796,6 +841,9 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
                                   ipad1_set_usb_tcp_addr);
     object_class_property_set_description(klass, "usb-tcp-addr",
         "usbmuxd-qemu host bridge host:port (default port 1235); unset = IT_USB_TCP or no link");
+    object_class_property_add_bool(klass, "wifi", ipad1_get_wifi, ipad1_set_wifi);
+    object_class_property_set_description(klass, "wifi",
+        "Model the BCM4329 Wi-Fi card (frames to -netdev id=wifi0); off = no card");
     object_class_property_add_bool(klass, "usb-cable", ipad1_get_usb_cable,
                                    ipad1_set_usb_cable);
     object_class_property_set_description(klass, "usb-cable",

@@ -1,4 +1,48 @@
-# iPad 1 (7B500) Wi-Fi: BCM4329 feasibility
+# iPad 1 (7B500) Wi-Fi: BCM4329
+
+## Status (2026-09-27): works, stock stack, no guest changes
+
+`-machine ipad1,...,wifi=on -netdev user,id=wifi0` on a golden-pristine clone. The serial log:
+
+```
+IOSDIOIoCardDevice::parseFn0CIS(): Device manufacturer ID 0x2d0, Product ID 0x4329   ProductInfo0 "s=B1"  ProductInfo1 "P=K48 m=u80"
+AppleBCMWLANChipManager::withDriver(): BCM4329 revision B1
+AppleBCMWLAN::initFirmware(): successful initialization
+AppleBCMWLAN: Ethernet address 02:00:00:00:00:01
+AirPort: Enabled AppleBCMWLAN (link 1, sys 0, user 1)
+AppleBCMWLAN Joined BSS: ... BSSID = 02:00:5e:10:00:01, rssi = -45, channel = 6, ssid[ 8] = "qemu-ios"
+AppleBCMWLANNetManager::receivedIPv4Address(): Received IP Address
+```
+
+What the screen showed:
+
+- The status bar has the Wi-Fi icon, and Settings lists Wi-Fi as "qemu-ios"
+  (screens/wifi-settings.png).
+- Safari loaded a page served on the host at `http://10.0.2.2:8765/` over the
+  emulated link (screens/wifi-safari.png).
+- A 90 s screen-off, then wake and reload, fetched the page again. There were no
+  deepsleep errors and no timeouts.
+
+How it's built (implementation notes):
+
+- `hw/arm/s5l8930_sdio.c` handles IOP ring 3 (ops 2 to 7) and the SDHCI
+  card-interrupt registers, as §1 describes.
+- The card is the iPod's `ipodtouch.sdio` dongle model with a `BCMSDIOChip`
+  identity: MANFID 0x2d0/0x4329, the VERS_1 strings, ChipID 0x00034329 (rev 3 =
+  B1) and the unit's MAC.
+- The only protocol difference that mattered was the SDIO device core address.
+  It's 0x18011000 on the 4329 and 0x18002000 on the 4325.
+- The dongle model detects CDC 16 / BDC 4 on 2.60 by itself.
+
+Known cosmetics:
+
+- `parseFunctionExtension(): @2 - Error! No space for body of 0x02`. The function 1
+  CIS FUNCE is shorter than 2.60 wants. It's harmless.
+- `BCMWLAN Firmware Version:` is empty.
+- The Wi-Fi Networks pane draws black rectangles over its list under the
+  software CoreAnimation renderer.
+
+The rest of this document is the feasibility study that preceded the work.
 
 The question is whether the stock 3.2.2 Wi-Fi stack can run unpatched against an
 emulated BCM4329, and at what cost. It is research only; nothing is implemented yet.
