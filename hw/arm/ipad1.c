@@ -56,6 +56,8 @@ struct IPad1MachineState {
     MachineState parent;
     ARMCPU *cpu;
     MemoryRegion dram;
+    MemoryRegion dram_hi;                /* DRAM mirror at 0x50000000 (iBoot) */
+    MemoryRegion chipid;
     MemoryRegion sram;
     MemoryRegion cpu_debug;
     DeviceState *vic[S5L8930_VIC_COUNT];
@@ -65,6 +67,7 @@ struct IPad1MachineState {
     synopsys_usb_state *usb_otg;
     IPodTouchMultitouchState *mt;
     char *kboot_path;
+    char *iboot_path;
     char *nand_path;
     char *nand_overlay_path;
     char *nor_path;
@@ -81,6 +84,7 @@ static uint32_t s5l8930_usb_hwcfg[] = { 0, 0x7a8f60d0, 0x082000e8, 0x01f08024 };
 
 #define KBOOT_MAGIC "K48KBOOT"
 #define KBOOT_TRAILER_LEN 24
+#define IPAD1_IBOOT_BASE 0x5ff00000     /* iBoot-817.29 link address */
 
 static qemu_irq ipad1_irq(IPad1MachineState *s, int irq)
 {
@@ -139,6 +143,23 @@ static void ipad1_cpu_reset(void *opaque)
 
     gles_host_reset();
     cpu_reset(cs);
+
+    /*
+     * iboot=: a decrypted iBoot image, entered at its link address the way
+     * LLB hands off (r0-r3 = 0, privileged ARM, MMU off). iBoot rebuilds its
+     * own MMU, stacks and BSS, so nothing else needs staging.
+     */
+    if (s->iboot_path) {
+        if (!g_file_get_contents(s->iboot_path, &data, &size, &gerr)) {
+            error_report("ipad1: cannot read iBoot '%s': %s",
+                         s->iboot_path, gerr->message);
+            exit(1);
+        }
+        address_space_write(&address_space_memory, IPAD1_IBOOT_BASE,
+                            MEMTXATTRS_UNSPECIFIED, data, size);
+        cpu_set_pc(cs, IPAD1_IBOOT_BASE);
+        return;
+    }
 
     if (!g_file_get_contents(s->kboot_path, &data, &size, &gerr)) {
         error_report("ipad1: cannot read kboot bundle '%s': %s",
@@ -340,7 +361,7 @@ static void ipad1_init(MachineState *machine)
     SysBusDevice *sbd;
     int i;
 
-    if (!s->kboot_path) {
+    if (!s->kboot_path && !s->iboot_path) {
         error_report("ipad1: the 'kboot' machine property is required "
                      "(-machine ipad1,kboot=/path/to/k48-kboot.bin)");
         exit(1);
@@ -358,6 +379,15 @@ static void ipad1_init(MachineState *machine)
     memory_region_init_ram(&s->dram, NULL, "ipad1.dram", S5L8930_DRAM_SIZE,
                            &error_fatal);
     memory_region_add_subregion(sysmem, S5L8930_DRAM_BASE, &s->dram);
+    /*
+     * iBoot is linked at 0x5ff00000 and puts its framebuffer at 0x5f700000,
+     * i.e. DRAM seen through a second window 256 MiB up. Not yet confirmed on
+     * hardware (an iBEC read of 0x4ff00000 hung), but iBoot needs it.
+     */
+    memory_region_init_alias(&s->dram_hi, NULL, "ipad1.dram-hi", &s->dram, 0,
+                             S5L8930_DRAM_SIZE);
+    memory_region_add_subregion(sysmem, S5L8930_DRAM_BASE + S5L8930_DRAM_SIZE,
+                                &s->dram_hi);
     memory_region_init_ram(&s->sram, NULL, "ipad1.sram", S5L8930_SRAM_SIZE,
                            &error_fatal);
     memory_region_add_subregion(sysmem, S5L8930_SRAM_BASE, &s->sram);
@@ -367,6 +397,17 @@ static void ipad1_init(MachineState *machine)
      * added below sit on top of this at higher priority.
      */
     create_unimplemented_device("s5l8930.periph", 0x80000000, 0x40000000);
+
+    /* ChipID fuses, as read from a real K48AP (docs/ipad1/hw1-probes.log). */
+    {
+        static const uint32_t chipid[] = {
+            0x31800387, 0x80758000, 0x00000000, 0x00000000,
+        };
+        memory_region_init_rom(&s->chipid, NULL, "ipad1.chipid", 0x1000,
+                               &error_fatal);
+        memcpy(memory_region_get_ram_ptr(&s->chipid), chipid, sizeof(chipid));
+        memory_region_add_subregion(sysmem, S5L8930_CHIPID_BASE, &s->chipid);
+    }
 
     /* The kernel maps the cpu-debug-interface but never writes it at boot. */
     memory_region_init_ram(&s->cpu_debug, NULL, "ipad1.cpu-debug", 0x1000,
@@ -626,6 +667,11 @@ static void ipad1_init(MachineState *machine)
     /* Same Samsung UART as the S5L8720, including its interrupt scheme. */
     exynos4210_uart_create(S5L8930_UART_BASE(0), 256, 0, serial_hd(0),
                            ipad1_irq(s, S5L8930_IRQ_UART(0)), true);
+    /* UART1-4: iBoot sets them all up; the kernel's DT has them too. */
+    for (i = 1; i < 5; i++) {
+        exynos4210_uart_create(S5L8930_UART_BASE(i), 256, i, serial_hd(i),
+                               ipad1_irq(s, S5L8930_IRQ_UART(i)), true);
+    }
     /* UART5 is the bq27545 gas gauge's HDQ line (see s5l8930_hdq.c). */
     exynos4210_uart_create(S5L8930_UART_BASE(5), 256, 5,
                            qemu_chardev_new(NULL, TYPE_CHARDEV_S5L8930_HDQ,
@@ -646,6 +692,19 @@ static void ipad1_set_kboot(Object *obj, const char *value, Error **errp)
 
     g_free(s->kboot_path);
     s->kboot_path = g_strdup(value);
+}
+
+static char *ipad1_get_iboot(Object *obj, Error **errp)
+{
+    return g_strdup(IPAD1_MACHINE(obj)->iboot_path);
+}
+
+static void ipad1_set_iboot(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    g_free(s->iboot_path);
+    s->iboot_path = g_strdup(value);
 }
 
 static char *ipad1_get_nand(Object *obj, Error **errp)
@@ -732,6 +791,7 @@ static void ipad1_instance_finalize(Object *obj)
 {
     g_free(IPAD1_MACHINE(obj)->usb_tcp_addr);
     g_free(IPAD1_MACHINE(obj)->kboot_path);
+    g_free(IPAD1_MACHINE(obj)->iboot_path);
     g_free(IPAD1_MACHINE(obj)->nand_path);
     g_free(IPAD1_MACHINE(obj)->nand_overlay_path);
     g_free(IPAD1_MACHINE(obj)->nor_path);
@@ -750,7 +810,11 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     object_class_property_add_str(klass, "kboot", ipad1_get_kboot,
                                   ipad1_set_kboot);
     object_class_property_set_description(klass, "kboot",
-        "K48KBOOT bundle from imgtools/ipad1_kboot.py (required)");
+        "K48KBOOT bundle from imgtools/ipad1_kboot.py (this or iboot required)");
+    object_class_property_add_str(klass, "iboot", ipad1_get_iboot,
+                                  ipad1_set_iboot);
+    object_class_property_set_description(klass, "iboot",
+        "decrypted iBoot image, entered at 0x5ff00000 instead of kboot");
     object_class_property_add_str(klass, "nand", ipad1_get_nand, ipad1_set_nand);
     object_class_property_set_description(klass, "nand",
         "NAND page-store directory (geometry.json + bus<b>-ce<c>.pages); blank chips if unset");
