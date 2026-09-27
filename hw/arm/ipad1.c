@@ -196,6 +196,7 @@ static void ipad1_init(MachineState *machine)
         I2CBus *bus = I2C_BUS(qdev_get_child_bus(dev, "i2c"));
         DeviceState *pmu = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_D1815, 0x74));
         DeviceState *xp = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_TCA6408, 0x20));
+        i2c_slave_create_simple(bus, TYPE_S5L8930_LTC4099, 0x09);
         qdev_connect_gpio_out(pmu, 0,
                               qemu_irq_invert(qdev_get_gpio_in(s->gpio, 0x0d)));
         qdev_connect_gpio_out(xp, 0,
