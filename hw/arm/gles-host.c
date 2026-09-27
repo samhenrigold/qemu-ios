@@ -27,6 +27,7 @@
 
 #include "qemu/osdep.h"
 #include "migration/blocker.h"
+#include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "cpu.h"
 #include "hw/sysbus.h"
@@ -255,6 +256,7 @@ typedef struct {
     uint32_t next_buffer_name;
     GHashTable *glsl;           /* guest shader/program id -> host id */
     uint32_t glsl_next;
+    GHashTable *uloc;           /* guest program id -> uniform location map */
 } GLESGroup;
 
 typedef struct {
@@ -473,6 +475,7 @@ typedef struct {
     GLuint program;             /* guest id; nonzero = ES 2.0 draws */
     GHashTable *glsl;           /* shader/program names, without a group */
     uint32_t glsl_next;
+    GHashTable *uloc;
 } GLESHost;
 
 /* Old guest engines retain their legacy context. New engines pass opaque
@@ -482,6 +485,9 @@ static Error *gles_save_blocker;
 
 static bool gles_begin_context(void)
 {
+#ifdef GLES_HOST_EAGL
+    /* The CGL backend saves live GL state (gles-host-snapshot.c.inc); the
+     * iOS-host EAGL backend cannot yet. */
     if (!qatomic_read(&gles_live_contexts)) {
         error_setg(&gles_save_blocker,
                    "Live OpenGL ES state cannot be saved (including accelerated system UI)");
@@ -491,6 +497,7 @@ static bool gles_begin_context(void)
             return false;
         }
     }
+#endif
     qatomic_inc(&gles_live_contexts);
     return true;
 }
@@ -4360,6 +4367,52 @@ static uint32_t gles_glsl_guest(GLuint host)
     return 0;
 }
 
+/*
+ * Uniform locations. The guest caches them, and a program relinked on
+ * restore may number its uniforms differently, so a restore records, per
+ * program, guest location -> host location wherever they differ. Empty (the
+ * identity) for a program that was never restored.
+ */
+static GHashTable **gles_uloc_table(void)
+{
+    return gh.group ? &gh.group->uloc : &gh.uloc;
+}
+
+static GHashTable *gles_uloc_map(uint32_t program, bool create)
+{
+    GHashTable **t = gles_uloc_table();
+    GHashTable *m = *t ? g_hash_table_lookup(*t, GUINT_TO_POINTER(program)) : NULL;
+    if (!m && create && program) {
+        if (!*t) *t = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
+                                            (GDestroyNotify)g_hash_table_destroy);
+        m = g_hash_table_new(g_direct_hash, g_direct_equal);
+        g_hash_table_insert(*t, GUINT_TO_POINTER(program), m);
+    }
+    return m;
+}
+
+/* Keys and values are location + 1, so location 0 and -1 both fit. */
+static GLint gles_uloc_host(uint32_t program, GLint loc)
+{
+    GHashTable *m = gles_uloc_map(program, false);
+    gpointer v;
+    if (!m || !g_hash_table_lookup_extended(m, GINT_TO_POINTER(loc + 1), NULL, &v)) return loc;
+    return GPOINTER_TO_INT(v) - 1;
+}
+
+static GLint gles_uloc_guest(uint32_t program, GLint host)
+{
+    GHashTable *m = gles_uloc_map(program, false);
+    GHashTableIter it;
+    gpointer k, v;
+    if (!m || host < 0) return host;
+    g_hash_table_iter_init(&it, m);
+    while (g_hash_table_iter_next(&it, &k, &v)) {
+        if (GPOINTER_TO_INT(v) - 1 == host) return GPOINTER_TO_INT(k) - 1;
+    }
+    return host;
+}
+
 /* The ES 2.0 slots. False means "not an ES 2.0 slot", for the caller's
  * unhandled-slot warning. */
 static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
@@ -4382,6 +4435,9 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
     case 600:
         a[0] = gles_glsl_host(ga[0]);
         gh.program = a[0] ? ga[0] : 0;
+        break;
+    case 602 ... 620:                           /* location of the current program */
+        a[0] = gles_uloc_host(gh.program, (GLint)ga[0]);
         break;
     }
 
@@ -4441,6 +4497,7 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
         if (!a[0]) break;
         if (glIsProgram(a[0])) glDeleteProgram(a[0]); else glDeleteShader(a[0]);
         g_hash_table_remove(*t, GUINT_TO_POINTER(ga[0]));
+        if (*gles_uloc_table()) g_hash_table_remove(*gles_uloc_table(), GUINT_TO_POINTER(ga[0]));
         break;
     }
     case 593: glDetachShader(a[0], a[1]); break;
@@ -4477,6 +4534,9 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
     case 598: glAttachShader(a[0], a[1]); break;
     case 599: {
         GLint ok = 0;
+        if (*gles_uloc_table()) {   /* a fresh link: the guest queries anew */
+            g_hash_table_remove(*gles_uloc_table(), GUINT_TO_POINTER(ga[0]));
+        }
         glLinkProgram(a[0]);
         glGetProgramiv(a[0], GL_LINK_STATUS, &ok);
         if (!ok) {
@@ -4522,7 +4582,7 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
     }
     case 625: case 632: {                       /* program, name */
         g_autofree char *name = gles_es2_string(cpu, a[1], -1);
-        *r = slot == 625 ? glGetUniformLocation(a[0], name)
+        *r = slot == 625 ? gles_uloc_guest(ga[0], glGetUniformLocation(a[0], name))
                          : glGetAttribLocation(a[0], name);
         break;
     }
@@ -6338,12 +6398,13 @@ static void gles_group_unref(GLESGroup *group)
     g_hash_table_destroy(group->rb_sized);
     g_hash_table_destroy(group->pvrtc);
     if (group->glsl) g_hash_table_destroy(group->glsl);
+    if (group->uloc) g_hash_table_destroy(group->uloc);
     g_free(group);
 }
 
 static void gles_context_free(GLESHost *state)
 {
-    GLESArray *arrays[] = { &state->vertex, &state->color, &state->normal };
+    GLESArray *arrays[] = { &state->vertex, &state->color, &state->normal, &state->pointsize };
     for (unsigned i = 0; i < ARRAY_SIZE(arrays); i++) {
         gles_buffer_destroy(arrays[i]->vbo);
         g_free(arrays[i]->buf); g_free(arrays[i]->fbuf);
@@ -6362,6 +6423,7 @@ static void gles_context_free(GLESHost *state)
     g_free(state->decbuf); g_free(state->readback);
     if (state->fbo_drawable) g_hash_table_destroy(state->fbo_drawable);
     if (state->glsl) g_hash_table_destroy(state->glsl);
+    if (state->uloc) g_hash_table_destroy(state->uloc);
     if (state->cgl) {
         CGLSetCurrentContext(state->cgl);
         glDeleteFramebuffersEXT(1, &state->fbo);
@@ -6437,14 +6499,15 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
     }
     return -1;
 }
-#endif
 
-void gles_host_reset(void)
+static void gles_drop_all(void);
+#include "gles-host-snapshot.c.inc"
+
+/* A guest reboot cannot send destruction calls for its old processes.
+ * Drop every native context and DMA alias before the new kernel runs.
+ * Keep handles monotonic so a stale request cannot name a new context. */
+static void gles_drop_all(void)
 {
-#ifndef GLES_HOST_EAGL
-    /* A guest reboot cannot send destruction calls for its old processes.
-     * Drop every native context and DMA alias before the new kernel runs.
-     * Keep handles monotonic so a stale request cannot name a new context. */
     if (gles_contexts) {
         GHashTableIter it;
         gpointer value;
@@ -6460,6 +6523,14 @@ void gles_host_reset(void)
     gles_context_free(&gh_legacy);
     qatomic_set(&gles_live_contexts, 0);
     if (gles_save_blocker) migrate_del_blocker(&gles_save_blocker);
+}
+#endif
+
+void gles_host_reset(void)
+{
+#ifndef GLES_HOST_EAGL
+    gles_snapshot_register();
+    gles_drop_all();
 #endif
 }
 
