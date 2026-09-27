@@ -172,16 +172,16 @@ def selfcheck():
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1")
-# Portrait UI on the 1024x768 landscape scanout (measured in the AppSync proof runs).
-DISMISS_EDIT = (408, 470)        # "Dismiss" on the install's Edit-Home-Screen help sheet
-NEXT_PAGE = ((512, 680), (512, 150))     # swipe to the next home page (portrait right-to-left)
+# Upright portrait UI (interface 1) on the 1024x768 landscape scanout: portrait top is the panel's left edge.
+DISMISS_EDIT = (615, 297)        # "Dismiss" on the install's Edit-Home-Screen help sheet
+NEXT_PAGE = ((511, 87), (511, 617))      # swipe to the next home page (portrait right-to-left)
 LAUNCH_WAIT = 9
 
 
 def GRID(row, col):
     """(row,col) in the 4x5 portrait home grid -> panel coords on the 1024x768 scanout.
-    Calibrated to the stock 7B500 layout via sbservices: slot (0,0)=(895,115)."""
-    return (895 - 165 * row, 115 + 177 * col)
+    Calibrated to the stock 7B500 layout via sbservices: slot (0,0)=(128,652)."""
+    return (128 + 165 * row, 652 - 177 * col)
 
 
 def _sample(rg, ppm, step=997):

@@ -52,10 +52,11 @@ PENDING = {"appinstall": "stock installd rejects apps not validly signed for thi
 # lit); the lock screen is a full wallpaper (~99% lit, unlike the iPod's dark panel). A stalled panel's
 # solid fill is also fully lit, so the frame must also be a picture: many distinct colours.
 LIT_MIN_FRACTION, MIN_COLOURS, HOME_CONFIRM_S = 0.5, 64, 2
-# Panel coordinates (the UI is portrait, rotated onto the landscape scanout).
-UNLOCK_FROM, UNLOCK_TO = (64, 290), (64, 720)
-USB_ALERT_DISMISS = (475, 385)   # stock "The attached USB device is not supported." (the USB keyboard)
-SAFARI_ICON, SAFARI_ADDRESS = (64, 117), (968, 330)
+# Panel coordinates of the upright portrait UI (interface 1, the default accel-orientation): the portrait
+# top (status bar) is the panel's left edge, portrait left its bottom edge.
+UNLOCK_FROM, UNLOCK_TO = (959, 477), (959, 47)
+USB_ALERT_DISMISS = (548, 382)   # stock "The attached USB device is not supported." (the USB keyboard)
+SAFARI_ICON, SAFARI_ADDRESS = (959, 650), (55, 437)
 
 launch_lock = threading.Lock()
 
