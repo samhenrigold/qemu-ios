@@ -55,6 +55,10 @@ NAND = {"#ce": 8, "#die-ce": 1, "#ce-blocks": 0x1000, "#block-pages": 128, "#pag
         "ecc-correctable": 8, "ecc-threshold": 8, "bbt-format": 3,
         "read-cycle-ns": 25, "read-setup-ns": 10, "read-hold-ns": 10, "read-delay-ns": 20,
         "read-valid-ns": 20, "write-cycle-ns": 25, "write-hold-ns": 10}
+# Identity of the real iPad the captured activation record belongs to (ideviceinfo, 2026-09-26);
+# its ECID/die-id go into chosen below. Override for a different unit.
+IDENTITY = {"serial-number": "EMU000000000", "mlb-serial-number": "EMU0000000000",
+            "model-number": "MB292", "region-info": "LL/A"}
 CLOCKS = [PERIPH_HZ] * 55
 for idx, hz in {0: TIMEBASE_HZ, 5: CPU_HZ, 6: PERIPH_HZ, 27: MEM_HZ, 32: BUS_HZ, 33: FIXED_HZ}.items():
     CLOCKS[idx] = hz
@@ -115,13 +119,12 @@ def macho_entry(data):
 
 
 def fill_dt(dt, memory_map):
-    for key, value in {"platform-name": "s5l8930x", "model-number": "MB292", "region-info": "LL/A",
-                       "serial-number": "QEMUIPAD1"}.items():
+    for key, value in {"platform-name": "s5l8930x", **IDENTITY}.items():
         dt.set("", key, value)
     # debug-enabled is forced (a production iBoot writes 0) so AMFI and PE_i_can_has_debugger honour boot-args.
     for key, value in {"debug-enabled": 1, "production-cert": 1, "secure-boot": 1, "gid-aes-key": 1,
                        "uid-aes-key": 1, "system-trusted": 1, "board-id": 0x02, "chip-id": 0x8930,
-                       "unique-chip-id": (0x1D2A3B4C, 0x000000E8), "die-id": (0x1D2A3B4C, 0x000000E8),
+                       "unique-chip-id": (0x00000000, 0xed), "die-id": (0x00000000, 0x00000000),
                        "firmware-version": "iBoot-817.29", "display-rotation": 0, "display-scale": 1,
                        "root-matching": ROOT_MATCHING}.items():
         dt.set("chosen", key, value)
@@ -198,7 +201,7 @@ def selfcheck():
 
     z = lambda n: bytes(n)
     dt_blob = node([("name", b"device-tree\0")] + [(k, z(32)) for k in
-                   ("platform-name", "model-number", "region-info", "serial-number")], [
+                   ("platform-name", "model-number", "region-info", "serial-number", "mlb-serial-number")], [
         node([("name", b"chosen\0"), ("firmware-version", z(256)), ("root-matching", z(256)),
               ("unique-chip-id", z(8)), ("die-id", z(8))] + [(k, z(4)) for k in
              ("debug-enabled", "production-cert", "secure-boot", "gid-aes-key", "uid-aes-key", "system-trusted",

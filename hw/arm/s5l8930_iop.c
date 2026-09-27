@@ -19,6 +19,7 @@
  * an all-0xFF page is blank (status 2). Writes go straight to the mapping.
  */
 #include "qemu/osdep.h"
+#define DEBUG_S5L8930_IOP 1
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/bswap.h"
@@ -26,6 +27,7 @@
 #include "hw/arm/s5l8930.h"
 #include "exec/address-spaces.h"
 #include "migration/vmstate.h"
+#include "qemu/timer.h"
 #include "qapi/error.h"
 #include "qobject/qjson.h"
 #include "qobject/qdict.h"
@@ -160,6 +162,7 @@ struct S5L8930IOPState {
     uint32_t store_ppb;
     uint32_t pages_per_ce;
 
+    QEMUTimer *irq_timer;
     bool running;
     uint32_t fw_base;
     uint32_t fw_size;
@@ -201,10 +204,25 @@ static inline void iop_write(hwaddr addr, const void *buf, hwaddr len)
  * (AppleARMPL192VIC c04d0e6, ipid-mask 0xf). A level on a VIC input line
  * would never be cleared, so do exactly what the firmware does.
  */
-static void iop_raise_ap_irq(void)
+static void iop_irq_expire(void *opaque)
 {
+    DPRINTF("raise AP irq: VIC0 irqstatus=0x%08x raw=0x%08x enable=0x%08x softint=0x%08x\n",
+            iop_ldl(S5L8930_VIC_BASE(0)), iop_ldl(S5L8930_VIC_BASE(0) + 8),
+            iop_ldl(S5L8930_VIC_BASE(0) + 0x10), iop_ldl(S5L8930_VIC_BASE(0) + 0x18));
     iop_stl(S5L8930_VIC_BASE(S5L8930_IRQ_IOP / 32) + VIC_SOFTINT,
             1u << (S5L8930_IRQ_IOP % 32));
+    DPRINTF("  after: irqstatus=0x%08x softint=0x%08x\n",
+            iop_ldl(S5L8930_VIC_BASE(0)), iop_ldl(S5L8930_VIC_BASE(0) + 0x18));
+}
+
+/*
+ * Deferred a little: the answer must not interrupt the AP in the middle of
+ * the store that rang the doorbell, as it would if raised synchronously.
+ */
+static void iop_raise_ap_irq(S5L8930IOPState *s)
+{
+    timer_mod(s->irq_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 2 * SCALE_MS);
 }
 
 /* ---- NAND ------------------------------------------------------------- */
@@ -519,6 +537,9 @@ static uint32_t fmi_multi(S5L8930IOPState *s, int bus, uint8_t *cmd, bool write,
         }
     }
     st = write ? FMI_STATUS_OK : fmi_multi_status(n, blank, uecc);
+    DPRINTF("%s %u pages bus %d first ce %u page 0x%x: blank %u -> 0x%x\n",
+            write ? "write" : "read", n, bus, iop_ldl(ces), iop_ldl(pages),
+            blank, st);
     CMD_SET(cmd, 0x5c, n);
     CMD_SET(cmd, 0x60, st);
     CMD_SET(cmd, 0x70, 0xffffffff);
@@ -717,11 +738,16 @@ static void iop_doorbell(S5L8930IOPState *s)
         qemu_log_mask(LOG_GUEST_ERROR, "%s: doorbell while stopped\n", __func__);
         return;
     }
+    DPRINTF("doorbell: VIC0 irqstatus=0x%08x softint=0x%08x\n",
+            iop_ldl(S5L8930_VIC_BASE(0)), iop_ldl(S5L8930_VIC_BASE(0) + 0x18));
     for (i = 0; i < ARRAY_SIZE(served); i++) {
         int h = served[i];
         hwaddr ring = iop_ldl(cfg + FW_CFG_RING(h));
         uint32_t n = iop_ldl(cfg + FW_CFG_COUNT(h));
 
+        DPRINTF("doorbell: ring %d at 0x%" HWADDR_PRIx " n=%u rx=%u w0=0x%08x\n",
+                h, ring, n, s->ring_rx[h],
+                ring ? iop_ldl(ring + s->ring_rx[h] * RING_ENTRY_SIZE) : 0);
         if (!ring || n == 0) {
             continue;
         }
@@ -733,7 +759,7 @@ static void iop_doorbell(S5L8930IOPState *s)
         any |= iop_walk_ring(s, h, ring, n);
     }
     if (any) {
-        iop_raise_ap_irq();
+        iop_raise_ap_irq(s);
     }
 }
 
@@ -865,6 +891,19 @@ static void iop_vic_write(void *opaque, hwaddr offset, uint64_t value,
             /* Panic-diagnostic NMI; the panic variables read as clean. */
             s->vic_softint[0] &= ~IOP_IRQ_NMI;
             DPRINTF("NMI\n");
+#ifdef DEBUG_S5L8930_IOP
+            {
+                hwaddr cfg = s->fw_base + FW_CONFIG;
+                hwaddr ring = iop_ldl(cfg + FW_CFG_RING(0));
+                uint32_t n = iop_ldl(cfg + FW_CFG_COUNT(0)), i;
+
+                for (i = 0; i < n && i < 8; i++) {
+                    uint32_t w0 = iop_ldl(ring + i * RING_ENTRY_SIZE);
+                    DPRINTF("  ring0[%u] w0=0x%08x msg={0x%08x,0x%08x}\n", i, w0,
+                            iop_ldl(RING_ITEM(w0)), iop_ldl(RING_ITEM(w0) + 4));
+                }
+            }
+#endif
         }
         break;
     case VIC_SOFTINTCLEAR:
@@ -891,6 +930,7 @@ static void s5l8930_iop_reset(DeviceState *dev)
     S5L8930IOPState *s = S5L8930_IOP(dev);
     int i;
 
+    timer_del(s->irq_timer);
     s->running = false;
     s->fw_base = s->fw_size = s->self_addr = 0;
     memset(s->vic_softint, 0, sizeof(s->vic_softint));
@@ -1021,6 +1061,7 @@ static void s5l8930_iop_init(Object *obj)
         s->pages_per_block[i] = 128;
     }
 
+    s->irq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, iop_irq_expire, s);
     memory_region_init_io(&s->ctrl_mr, obj, &iop_ctrl_ops, s,
                           TYPE_S5L8930_IOP, S5L8930_IOP_SIZE);
     sysbus_init_mmio(sbd, &s->ctrl_mr);
@@ -1034,6 +1075,7 @@ static const VMStateDescription vmstate_s5l8930_iop = {
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
+        VMSTATE_TIMER_PTR(irq_timer, S5L8930IOPState),
         VMSTATE_BOOL(running, S5L8930IOPState),
         VMSTATE_UINT32(fw_base, S5L8930IOPState),
         VMSTATE_UINT32(fw_size, S5L8930IOPState),
