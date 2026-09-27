@@ -59,11 +59,38 @@ clipboard and publishes guest pasteboard changes, as `public.utf8-plain-text`.
 It is installed as a root launchd job and leaves SpringBoard untouched: no
 `DYLD_INSERT_LIBRARIES`, no environment changes.
 
+## it_ethlink: the USB Ethernet link (2026-09-27)
+
+`AppleUSBEthernetDevice` starts its output queue and arms its first bulk read only in
+`setProperties({"LinkStatus": 1})`. On a tethering iPhone, configd's USBEthernetSharing makes that
+call. A Wi-Fi iPad has no tethering, so en1 stays down even when usbmuxd bridges it.
+`contrib/it-ethlink/it_ethlink.c` is a root launchd daemon that does what USBEthernetSharing would, with
+stable IOKit API only:
+
+1. It matches the `AppleUSBEthernetDevice` service.
+2. It registers for its `IOGeneralInterest` messages.
+3. On every message it calls `IORegistryEntrySetCFProperty(svc, "LinkStatus", 0)`, then the same with
+   `1`. The host's switch to alt setting 1 arrives as one of these messages (0xe3ff8201 on 7B500).
+   With alt 0 the kext only records the value, so the kick after alt 1 is the one that starts the
+   queue.
+
+It needs no entitlement or privilege beyond running as root: both calls return 0, and the kext logs
+`AppleUSBEthernetDevice::setProperties: Link Status - 1`. It writes its own log to `/dev/console`
+(serial). A property-driven variant, which waits for `HostAttached` to become true, does not work:
+the property appears only after alt 1, and it reads false.
+
+This replaces the 7B500-only kernel patch. `ipad1_kboot.py --usb-eth-link` keeps the patch as a
+fallback, and the default bundle is a stock kernel. Proof, with the regenerated stock
+`7B500/k48-kboot.bin` and the re-baked golden-pristine, using a4-net's
+`tests/ipad1/regress.py --checks boot,net`: both PASS ("guest fetched /regress-….html over en1
+(usbmuxd slirp)"), and Safari renders the page (screens/ethlink-safari.png). The patched bundle is kept
+as `7B500/k48-kboot-ethpatch.bin`, and the previous golden as `userland/golden-pristine.old-ethpatch`.
+
 ## Build and bake
 
 ```
-contrib/ipad1-guest/build.sh                  # build/ipad1-guest/it_pbd, armv7, ldid -S
-imgtools/ipad1_rootfs.py bake OUT/pristine    # /usr/local/bin/it_pbd + com.qemu.it-pbd job, root:wheel via the catalog
+contrib/ipad1-guest/build.sh                  # build/ipad1-guest/{it_pbd,it_ethlink}, armv7, ldid -S
+imgtools/ipad1_rootfs.py bake OUT/pristine    # both into /usr/local/bin + their com.qemu.* jobs, root:wheel via the catalog
 imgtools/ipad1_nand.py build ...              # rebuild the store
 ```
 
