@@ -153,7 +153,7 @@ Connection Kit host path (stock USB HID); open question whether the kernel runs 
 3. Wi-Fi: fake BCM4329 behind the IOP SDIO ring — last item; until then SDIO answers "no card".
 
 ## After SpringBoard: app compatibility (Sam, 2026-09-27)
-Once SpringBoard and installs work, test apps from Legacy Store (and the IPA collection in ~/Downloads/ios3):
+Once SpringBoard and installs work, test apps from Legacy Store (https://legacystore.app) and the IPA collection in ~/Downloads/ios3:
 install each, launch, exercise touch/keyboard/rotation/GL, and record a compatibility table
 (works / degraded / fails + cause) in docs/ipad1/app-compat.md. Failures feed back as bugs.
 
