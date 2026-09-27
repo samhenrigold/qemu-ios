@@ -8,7 +8,7 @@ serial. Built by `imgtools/ipad1_rootfs.py`, consumed by `imgtools/ipad1_nand.py
 
 | store | base | boot-args | when |
 |---|---|---|---|
-| `FILES/userland/nand-pristine` | IPSW `rootfs.dmg` (`Wildcat7B500.K48OS`), nothing jailbroken | `-v serial=3 debug=0x8` (kboot default) | **first boot target** |
+| `FILES/userland/nand-pristine` | IPSW `rootfs.dmg` (`Wildcat7B500.K48OS`), nothing jailbroken | `-v serial=3 debug=0x8` (kboot default until 2026-09-27; the default now adds the AMFI pair) | **first boot target** |
 | `FILES/userland/nand-jb` | captured jailbroken partition + real `/var/stash` | `-v serial=3 debug=0x8 amfi_allow_any_signature=1 cs_enforcement_disable=1` | when sshd/bash/Cydia are wanted (needs a network first) |
 
 Both pass `ipad1_nand.py check` (3.4 GiB each; MBR from the unit, system at LBA 63, data at LBA 327789 as
@@ -46,6 +46,22 @@ imgtools/ipad1_nand.py check FILES/userland/nand-pristine --mbr FILES/hw2/rdisk0
 ```
 
 (`build` prints the matching `ipad1_nand.py` line; the jailbroken store is `nand-jb`.)
+
+**golden-pristine** (the read-only store the app and tests clone) is the pristine store plus the
+pasteboard helper (docs/ipad1/guest-services.md):
+
+```
+contrib/ipad1-guest/build.sh                            # -> build/ipad1-guest/it_pbd
+imgtools/ipad1_rootfs.py build --base pristine
+imgtools/ipad1_rootfs.py bake FILES/userland/pristine   # it_pbd + com.qemu.it-pbd job, root-owned
+imgtools/ipad1_nand.py build --mbr FILES/hw2/rdisk0-head4M.bin --system FILES/userland/pristine/system.img \
+                             --data FILES/userland/pristine/data.img --out FILES/userland/golden-pristine
+chmod -R a-w FILES/userland/golden-pristine
+```
+
+it_pbd is ldid-signed, so it needs the AMFI boot-args, which are the default in `ipad1_kboot.py` and
+therefore in `7B500/k48-kboot.bin` (stock kernel, no patch). `7B500/k48-kboot-noamfi.bin` keeps the old
+`-v serial=3 debug=0x8` bundle.
 `ipad1_rootfs.py --selfcheck` runs on every invocation: APM slicing, plist edits, owner rule, signature classifier.
 
 ## What is on the volumes and why

@@ -37,7 +37,10 @@ VRAM_PA, PRAM_PA = PHYS_BASE + MEM_SIZE, PHYS_BASE + DRAM_SIZE - PRAM_SIZE
 FB_WIDTH, FB_HEIGHT, FB_DEPTH = 1024, 768, 32   # landscape panel; display-rotation=0 in the K48 DT
 # serial bit 0 moves the console to UART0 (arm_init c005d5fe); debug=0x8 is DB_KPRT, which PE_init_kprintf
 # (c01d1dce) needs before kprintf reaches the UART. No rd=: root-matching below names partition 1.
-DEFAULT_BOOT_ARGS = "-v serial=3 debug=0x8"
+# The AMFI pair lets the ldid-signed guest tools run on a stock kernel (AMFI::start honours them because
+# kboot forces debug-enabled): it_pbd (pasteboard, docs/ipad1/guest-services.md) and the GLES shim
+# (contrib/ipad1-gles). Apple's own binaries are unaffected.
+DEFAULT_BOOT_ARGS = "-v serial=3 debug=0x8 amfi_allow_any_signature=1 cs_enforcement_disable=1"
 TRAILER = struct.Struct("<8sIIII")
 
 # ponytail: clocks are guesses (timebase = the kernel's own 24 MHz default); replace with HW-2's real
