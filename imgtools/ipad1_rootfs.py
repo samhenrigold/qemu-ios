@@ -2,7 +2,7 @@
 """Userland images for the ipad1 machine: a patched copy of the 7B500 system partition plus a seeded data volume.
 
     ipad1_rootfs.py build [--base pristine|jailbroken] [--out DIR] [--data-size 2g] [--rootfs IMG]
-                          [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge] [--web-proxy] [--no-usb-net]
+                          [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge] [--no-web-proxy] [--no-usb-net]
     ipad1_rootfs.py fetch [DIR]          copy /var/stash and /var/root/Library/Lockdown off the real iPad (ssh)
     ipad1_rootfs.py report DIR...        list the Mach-Os under DIR that carry no Apple signature
     ipad1_rootfs.py bake DIR [--tools build/ipad1-guest] [--seal]   install the guest helpers into DIR/system.img
@@ -100,6 +100,11 @@ MSM_JOB = "System/Library/LaunchDaemons/com.apple.mobile.storage_mounter.plist"
 # launchd job, installed path -> source under contrib/
 JOBS = {"System/Library/LaunchDaemons/com.qemu.it-pbd.plist": "it-pasteboard/com.qemu.it-pbd.plist",
         "System/Library/LaunchDaemons/com.qemu.it-ethlink.plist": "it-ethlink/com.qemu.it-ethlink.plist"}
+# Bluetooth has no controller model (UART3 is silent), so BTServer's retries left
+# BluetoothManager's blocking calls on SpringBoard's main thread: a ~1 s UI stall
+# every ~12 s. The job's own Disabled key (in place, Apple's owner kept) keeps it
+# unloaded; no binary changes. `bake --keep-bluetooth` leaves it on.
+BT_JOB = "System/Library/LaunchDaemons/com.apple.BTServer.plist"
 SEAL_TOOL = {"it_seal": ("usr/local/bin/it_seal", 0o755)}
 SEAL_JOB = {"System/Library/LaunchDaemons/com.qemu.it-seal.plist": "it-seal/com.qemu.it-seal.plist"}
 LC_MAIN, LC_VERSION_MIN_IPHONEOS = 0x80000028, 0x25
@@ -524,6 +529,8 @@ def bake(a):
             shutil.copyfile(os.path.join(contrib, src), os.path.join(m.mnt, rel))
             os.chmod(os.path.join(m.mnt, rel), 0o644)
         rewrite_plist(os.path.join(m.mnt, MSM_JOB), msm_insert)
+        if not a.keep_bluetooth:
+            rewrite_plist(os.path.join(m.mnt, BT_JOB), lambda d: d.__setitem__("Disabled", True))
     # noowners mount: launchd ignores a job plist that is not root-owned
     n = bn.set_owner(system, ["usr/local", "usr/local/bin", "usr/local/lib"] + list(JOBS) + [rel for rel, _ in TOOLS.values()], 0, 0)
     shutil.rmtree(os.path.join(a.dir, "mnt-system"), ignore_errors=True)
@@ -628,7 +635,8 @@ def main():
     b.add_argument("--lockdown", default=os.path.join(FILES, "hw2/lockdown"), help="fetch output for the Lockdown dir; 'none' to skip")
     b.add_argument("--disable", action="append", default=[], metavar="LABEL", help="launchd job to mark Disabled")
     b.add_argument("--ro-root", action="store_true", help="keep the stock read-only root")
-    b.add_argument("--web-proxy", action="store_true", help="en0 Wi-Fi service with the itwebproxy PAC")
+    b.add_argument("--no-web-proxy", dest="web_proxy", action="store_false",
+                   help="skip the en0 Wi-Fi service with the itwebproxy PAC (proxy, else DIRECT)")
     b.add_argument("--no-usb-net", dest="usb_net", action="store_false",
                    help="skip the en1 (USB Ethernet) DHCP network service")
     b.add_argument("--gles", action="store_true", help="install the GLI shim as GLEngine plus GLTest/GLTest2.app (run contrib/ipad1-gles/build.sh first)")
@@ -642,6 +650,7 @@ def main():
     k = sub.add_parser("bake")
     k.add_argument("dir", help="a build output dir holding system.img and data.img")
     k.add_argument("--tools", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "../build/ipad1-guest"))
+    k.add_argument("--keep-bluetooth", action="store_true", help="leave com.apple.BTServer enabled (default: Disabled)")
     k.add_argument("--seal", action="store_true", help="also install it_seal, the one-shot clean halt ipad1_seal.py needs")
     a = ap.parse_args()
     selfcheck()

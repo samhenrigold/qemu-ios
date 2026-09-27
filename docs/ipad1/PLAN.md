@@ -243,10 +243,44 @@ resamples to it. 48 kHz media: Safari (USB Ethernet, USB keyboard) playing a 48 
 from a host HTTP server (Range requests needed, or the player shows a crossed-out play icon) lands in the
 44.1 kHz host WAV as 1000.00 Hz for 3.97 s of 4 s, i.e. right pitch and speed. A device-side switch to
 48 kHz (an app setting the preferred hardware rate) is still unobserved.
-Gap — microphone: capture is i2s0 RX on CDMA ch 0x1b (FIFO 0x84500438; RX command +0x34, RX FIFO +0x38).
-The paced CDMA only moves memory -> FIFO, and the I2S RX FIFO reads 0. To add: a QEMU `AUD_open_in` voice
-feeding an RX ring that +0x38 drains, and the device -> memory direction in `cdma_paced_advance`. Needs an
-app that records (3.2 has no Voice Memos) to prove it.
+Microphone (2026-09-27): i2s0 RX (+0x34 command, +0x38 FIFO) reads frames from a QEMU input voice (the
+Mac's microphone under `-audio coreaudio`) or, with the test-only `-global
+driver=s5l8930.i2s,property=tone-hz,value=N`, a synthetic stereo sine; CDMA ch 0x1b streams it into the
+guest's ring with the same pacing as playback. `tests/ipad1/mic-check.py` builds `contrib/ipad1-mictest`
+(an AudioQueue input recorder) into a scratch store and checks a 10 s recording in the guest: 1000.0 Hz from
+a 1000 Hz tone (440.0 from 440), 44025 frames/s, 0 discontinuities. Needed on the way: back-to-back chains keep
+one sample clock (a late go used to drop ~3% at every 64 KiB boundary) and 1 ms pacing steps (the HAL reads
+input up to 96 frames behind its clock; 10 ms steps left it reading stale frames every cycle). Shazam once
+golden-appsync works.
+
+## Bluetooth: parked, BTServer disabled (2026-09-27)
+
+Bluetooth has no controller model. UART3 (BCM4329 HCI) is a silent Samsung UART, and its CDMA
+receive chains park instead of reading zeros (36d1915323). BTServer's retries then cost SpringBoard
+a ~1 s stall about every 12 s. That's BluetoothManager blocking on BTServer: respcheck measured
+1.07-1.19 s taps at a ~12 s period. With BTServer unloaded on nand-jb, every tap took 191 ms
+(control: 790 ms on every tap). Hiding the DT node (uart3/bluetooth compatible=none) does not help.
+So `ipad1_rootfs.py bake` sets `Disabled` in `com.apple.BTServer.plist` by default
+(`--keep-bluetooth` to skip). With it, respcheck shows 16/16 taps at 178-201 ms and Settings >
+General shows Bluetooth greyed as **Unavailable** (screens/settings-bluetooth-unavailable.png).
+Sam: no Bluetooth is fine.
+
+Parked work, for whoever wants a real controller. In the ipad1-kbd worktree, `git stash@{0}` and
+`stash@{1}` hold it, with debug prints still in:
+- UART3 on `it_bt_chardev()` (ipod_touch_bt.c).
+- The UART's Rx DMA request (exynos4210_uart sysbus irq 2) wired to a CDMA "uart-rx" GPIO. It pulls
+  bytes into a parked chain on channel 0xc.
+- A pause/resume model. AppleCDMA's append/position query (c044d7e4) does `ctrl |= 0x24`
+  (hold + abort, CDMA v2), polls until `(ctrl & 0x230000) != 0x10000`, reads +0x0C/+0x10/+0x14,
+  then writes the saved ctrl back (state bits = running, no go) to resume.
+
+That gets HCI Reset and the 0xfc18 baud reply through. The next Rx-timeout harvest panics in
+AppleOnboardSerial (`command->headCount <= byteCount`, byteCount - headCount = -2034). The v2 byte
+count at c044d94a is `ring[idx(+0x14)].w5 - BC + ([cdma+0x54] + Σ ring[i].len for i = idx(+0x14) ..
+[cdma+0x48]-1)`, where ring entries are {next, flags 0x303, addr, len, cmd*, 0, 1, 0}, so w5 is 0.
+The sum is 2048 on the first harvest and 0 on the next, so the model's +0x14 has to track how the
+driver advances [cdma+0x48]/[cdma+0x54] on completion. Decode those, then retest. Reporting +0x14
+as the prefetched next descriptor instead avoids the panic but breaks the first count.
 
 ## After SpringBoard: app compatibility (Sam, 2026-09-27)
 Once SpringBoard and installs work, test apps from Legacy Store (https://legacystore.app) and the IPA collection in ~/Downloads/ios3:
@@ -258,3 +292,10 @@ install each, launch, exercise touch/keyboard/rotation/GL, and record a compatib
 Every milestone is checked against a real-iPad reference: serial logs (M1–M3), IORegistry dumps (M2–M5),
 screenshots (M4+). `regress.py`-style harness per machine; the iPod machine's suite must stay green through
 every shared-model refactor.
+
+## Real iBoot (M8): stopped, out of scope (2026-09-27)
+iBoot-817.29 runs genuinely on the ipad1 machine up to the kernelcache: `iboot=` property, NOR images, H2FMI NAND
+(FIL/VFL/FTL, HFS mount), SHA-1/PKE/cert-chain all computed correctly. Completing the boot would need
+device-personalized boot images, and that line of work is not being pursued. The iPad boots via the direct-kernel
+path (stock kernel, Apple logo, lock screen in ~12 s). The iboot-sigcheck experiment stays unmerged on branch
+ipad1-iboot2 (176ce6bafc).

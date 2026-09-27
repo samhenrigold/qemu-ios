@@ -29,9 +29,8 @@
 #include "gli_fwd.h"
 
 /*
- * Command buffer. One trap per GL call is what made accelerated CA slower than
- * software CA, so a call that returns nothing and hands the host no guest
- * pointer (gli_batchable, from gligen.py) is queued in its GC's buffer instead:
+ * Command buffer. Each trap is a guest exception round trip, so a call that
+ * returns nothing and hands the host no guest pointer (gli_batchable, from gligen.py) is queued in its GC's buffer instead:
  * [slot | argc << 16, args...]. The buffer goes to the host as one
  * GLES_OP_BATCH trap when the same GC makes any other call -- a query, a
  * pointer call, a draw, glFlush/glFinish, present, context teardown -- or when
@@ -69,6 +68,22 @@ static int gles_batch(unsigned slot, void *gcp, unsigned argc, const unsigned *a
     return 1;
 }
 #endif
+
+/*
+ * A slot nothing implements: report it once, by name, to the host log
+ * (mbxshim's w() goes to fd 2 and through GLES_OP_LOG to QEMU's stderr), so
+ * an app that renders wrong names the entry point it lost. Returns 0.
+ */
+static int gli_unimpl(unsigned slot)
+{
+    static unsigned char seen[GLI_N_SLOTS];
+    if (slot < GLI_N_SLOTS && !seen[slot]) {
+        seen[slot] = 1;
+        w("[glishim] unimplemented GL entry point "); w(gli_slot_names[slot]);
+        w(" (dispatch slot "); wd(slot); w(")\n");
+    }
+    return 0;
+}
 
 extern char *getenv(const char *);
 
