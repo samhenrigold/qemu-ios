@@ -55,7 +55,7 @@ MobileStorageMounter's UNSUPPORTED_FAILURE notice ("The attached USB device is n
 usb-kbd raises on every boot and which, while up, keeps SpringBoard from locking (contrib/it-msmquiet):
 
 ```
-contrib/ipad1-guest/build.sh                            # -> build/ipad1-guest/{it_pbd,it_ethlink,it_notip,it_seal,it_msmquiet.dylib}
+contrib/ipad1-guest/build.sh                            # -> build/ipad1-guest/{it_pbd,it_ethlink,it_prefs,it_seal,it_msmquiet.dylib}
 contrib/ipad1-gles/build.sh                             # the GLI shim: GL CoreAnimation is the default
 imgtools/ipad1_rootfs.py build --base pristine --out W  # W: a private dir; FILES/userland/pristine is shared
 imgtools/ipad1_rootfs.py bake W/pristine --seal         # helpers + their com.qemu.* jobs, root-owned; BTServer Disabled
@@ -68,11 +68,12 @@ mv FILES/userland/golden-pristine.new FILES/userland/golden-pristine
 ```
 
 **golden-pristine-swca** is the same recipe with `build --no-ca-ogl` (software CoreAnimation), sealed and
-read-only next to it. GL state cannot be migrated, so **checkpoint-lock is built from it**, and tools that
-restore checkpoints (`boot-smoke.py --from-checkpoint`, snapshot-check) run software CA:
+read-only next to it, for anything that wants software CA. GL state migrates now (gles-host saves and
+restores live GL state), so **checkpoint-lock is built from golden-pristine** (GL CA), and
+`boot-smoke.py --from-checkpoint` and snapshot-check run on GL CA like everything else:
 
 ```
-tests/ipad1/boot-smoke.py --nand-overlay FILES/userland/golden-pristine-swca --checkpoint-out FILES/userland/checkpoint-lock
+tests/ipad1/boot-smoke.py --checkpoint-out FILES/userland/checkpoint-lock   # every golden rebuild invalidates it
 ```
 
 **Seal.** A store fresh from `ipad1_nand.py` has no YAFTL context, so every boot logs `CXT is not
