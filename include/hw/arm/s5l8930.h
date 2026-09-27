@@ -165,6 +165,9 @@ void s5l8930_ltc4099_set_charging(DeviceState *dev, bool charging);
 #define TYPE_S5L8930_TSL2581 "s5l8930.tsl2581"   /* ambient light sensor at 0x39 on i2c2 */
 /* AK8973 magnetometer at 0x1e on i2c0; "heading" (degrees) sets the field. */
 #define TYPE_S5L8930_AK8973 "s5l8930.ak8973"
+/* The accelerometer whose gravity vector gives the compass its pose. */
+struct LIS302DLState;
+void s5l8930_ak8973_set_accel(DeviceState *dev, struct LIS302DLState *accel);
 
 /*
  * bq27545 gas gauge (hw/arm/s5l8930_hdq.c): a chardev speaking HDQ-over-UART
