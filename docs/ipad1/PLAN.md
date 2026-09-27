@@ -143,12 +143,12 @@ Complete fidelity, no stone unturned, before any other device:
 The iPod needed guest services because its USB was limited. The iPad on 3.2.2 doesn't: prefer faithful
 hardware models plus Apple's own services over USB (USB Ethernet, lockdown/AFC/installation_proxy,
 syslog_relay, crash reports, DDI ScreenShotr). Guest code only where unavoidable: the GLEngine shim
-(until an SGX model) and possibly a pasteboard helper. Keyboard target: emulated Bluetooth HID keyboard
-(stock iOS code); the IOHIDUserDevice daemon is a stopgap.
+(until an SGX model) and possibly a pasteboard helper. Keyboard target: a USB keyboard through the Camera
+Connection Kit host path (stock USB HID); open question whether the kernel runs host (EHCI) and device
+(usbmux) together, else a CCK plug/unplug mode switch. The IOHIDUserDevice daemon is only a fallback.
 
 ## Keyboard / network decisions (2026-09-27, docs/ipad1/keyboard-and-network.md)
-1. Keyboard: guest IOHIDUserDevice daemon fed HID reports over usbmux (real OS keyboard path) — now.
-   Fidelity follow-up: emulated Bluetooth HID keyboard through ipod_touch_bt.c.
+1. Keyboard: USB keyboard via the Camera Connection Kit host path (EHCI + usb-kbd) — now; IOHID daemon as fallback.
 2. USB Ethernet: the device's own Apple USB Ethernet configuration bridged to libslirp — now.
 3. Wi-Fi: fake BCM4329 behind the IOP SDIO ring — last item; until then SDIO answers "no card".
 
