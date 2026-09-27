@@ -493,7 +493,11 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
     switch (reg) {
     case CH_CTRL:
         if (v & CTRL_RESET) {
-            memset(c, 0, sizeof(*c));
+            /* Configuration goes, but the descriptor and address pointers
+             * survive: the abort sequence (|=4, poll 0x200000, write 2,
+             * |=0x18, c044d46c) then reads +0x14 to find the descriptor it
+             * stopped at and derefs the ring entry it computes from it. */
+            c->ctrl = c->settings = c->fifo = c->remain = c->error = 0;
             break;
         }
         c->ctrl = (c->ctrl & ~(CTRL_CONFIG_MASK | (v & ST_W1C))) |
