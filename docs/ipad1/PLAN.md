@@ -185,10 +185,57 @@ syslog_relay, crash reports, DDI ScreenShotr). Guest code only where unavoidable
 Connection Kit host path (stock USB HID); open question whether the kernel runs host (EHCI) and device
 (usbmux) together, else a CCK plug/unplug mode switch. The IOHIDUserDevice daemon is only a fallback.
 
+## Principle: IPSW-agnostic guest changes (Sam, 2026-09-27)
+When this fans out to many iOS versions, no version may need hand work. So guest changes are only:
+boot-args, or helpers/dylibs baked in by the image builder that find what they need by stable API or symbol
+name at runtime (IOKit properties, dlsym/interposing). No byte patches at hand-found offsets. That rules out
+the --usb-eth-link kernel patch long-term: it is being replaced by the it_ethlink helper (sets
+LinkStatus=1 through IOKit, as USBEthernetSharing does). AppSync on the iPad is an injected dylib that
+interposes MISValidateSignature, not an installd patch. Wi-Fi (BCM4329) is parked after stage 1 (2026-09-27).
+
 ## Keyboard / network decisions (2026-09-27, docs/ipad1/keyboard-and-network.md)
 1. Keyboard: USB keyboard via the Camera Connection Kit host path (EHCI + usb-kbd) — now; IOHID daemon as fallback.
 2. USB Ethernet: the device's own Apple USB Ethernet configuration bridged to libslirp — now.
 3. Wi-Fi: fake BCM4329 behind the IOP SDIO ring — last item; until then SDIO answers "no card".
+
+## USB Ethernet link: the one kernel patch (2026-09-27)
+USB Ethernet works end to end: en1 takes a DHCP lease from usbmuxd's slirp (10.0.2.0/24), Safari loads
+www.google.com and Maps draws live tiles (`screens/2026-09-27-net-*.png`). Three parts:
+- host: usbmuxd-qemu `ipad1-net` selects configuration 4 (PTP + Apple Mobile Device + Apple USB Ethernet),
+  sets the Ethernet interface to alt 1, bridges its bulk pair to libslirp; usbmux keeps working beside it.
+- guest prefs: `ipad1_rootfs.py` seeds an en1 DHCP service (vanilla: a plist, like a configured unit).
+- guest: the baked `it_ethlink` helper raises the link through IOKit (LinkStatus 0 then 1 on each of the
+  service's interest messages), as USBEthernetSharing does on a tethering iPhone, and the kernel is stock
+  (guest-services.md). The byte patch described below stays in `ipad1_kboot.py` as an opt-in fallback
+  (`--usb-eth-link`).
+  On by default is safe because it only fires when a host selects the Ethernet interface's alt setting 1,
+  which only usbmuxd-qemu's ipad1 branch does. The built-in USB host configures configuration 3 (no
+  Ethernet) and bridges without that branch never select it, so for them the kernel behaves as stock.
+
+Why a patch: AppleUSBEthernetDevice marks its link active, starts its output queue and arms the first
+bulk read only in `setProperties({"LinkStatus": 1})`. The only stock caller is configd's
+USBEthernetSharing, and only while MobileInternetSharing tethers; a Wi-Fi iPad has no carrier
+provisioning (misd State 1020, ENOTSUP), so en1 stays `Link Active: FALSE` and IPConfiguration never
+DHCPs. Nothing the host sends over USB can raise the link (alt 0 only lowers it). The patch (2 sites, 24
+bytes, byte-checked) makes the host's SET_INTERFACE alt 1 run that same LinkStatus=1 path; details and
+addresses in `USB_ETH_LINK` in `imgtools/ipad1_kboot.py`.
+
+Not covered yet: the real-iBoot boot path, which loads the signed kernelcache from NAND, so kboot's patch
+never applies there. Open decision: have the machine apply the same bytes at runtime for that path.
+Full-fidelity alternative for later: Wi-Fi (BCM4329), which the stock stack brings up by itself.
+
+## Audio (2026-09-27)
+Out works: CS42L61 + Mikey (i2c0 0x39; the codec waits for its 'mikey' function) -> AppleARMIISAudio ->
+CDMA ch 0x1a (16 x 4 KiB IOAudio ring, streamed in 10 ms virtual-time steps) -> i2s0 FIFO ->
+`-audio driver=wav|coreaudio`. Boot, lock, unlock and Notes keyboard clicks land in the WAV (correlation
+0.86-0.92 against the rootfs files at 1.00x); `tests/ipad1/audio-check.py` checks boot/unlock/lock/unlock.
+Rate: the I2S frame rate is read from PMGR NCO n (+4 = 64 * fs, written by the NCOFrequency function when
+the device rate is set). The device stays at 44.1 kHz; every on-device sound is 11.025-44.1 kHz and the HAL
+resamples to it. A device switch to 48 kHz (an app setting the preferred hardware rate) is not proven yet.
+Gap — microphone: capture is i2s0 RX on CDMA ch 0x1b (FIFO 0x84500438; RX command +0x34, RX FIFO +0x38).
+The paced CDMA only moves memory -> FIFO, and the I2S RX FIFO reads 0. To add: a QEMU `AUD_open_in` voice
+feeding an RX ring that +0x38 drains, and the device -> memory direction in `cdma_paced_advance`. Needs an
+app that records (3.2 has no Voice Memos) to prove it.
 
 ## After SpringBoard: app compatibility (Sam, 2026-09-27)
 Once SpringBoard and installs work, test apps from Legacy Store (https://legacystore.app) and the IPA collection in ~/Downloads/ios3:

@@ -96,6 +96,33 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
     return 0;
 }
 
+/*
+ * Panel power as the guest last commanded it over DCS: display off / sleep in
+ * (0x28/0x10) vs display on / sleep out (0x29/0x11), as short writes with no
+ * or one parameter (data types 0x05/0x15). The iPad's ApplePinotLCD turns the
+ * panel off this way when it sleeps; the app bridge reads it as "sleeping".
+ */
+static int dsi_panel_off;
+
+bool ipod_touch_mipi_dsi_panel_off(void)
+{
+    return qatomic_read(&dsi_panel_off);
+}
+
+static void dsi_note_dcs(uint32_t header)
+{
+    unsigned type = header & 0x3f, cmd = (header >> 8) & 0xff;
+
+    if (type != 0x05 && type != 0x15) {
+        return;
+    }
+    if (cmd == 0x28 || cmd == 0x10) {
+        qatomic_set(&dsi_panel_off, 1);
+    } else if (cmd == 0x29 || cmd == 0x11) {
+        qatomic_set(&dsi_panel_off, 0);
+    }
+}
+
 static void ipod_touch_mipi_dsi_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     IPodTouchMIPIDSIState *s = (IPodTouchMIPIDSIState *)opaque;
@@ -108,6 +135,7 @@ static void ipod_touch_mipi_dsi_write(void *opaque, hwaddr addr, uint64_t val, u
         case REG_PKTHDR:
             s->pkthdr_reg = val;
             dsi_panel_read(s, val);
+            dsi_note_dcs(val);
             /* Sending a packet re-arms the command handshake bits. */
             if (s->direct_boot) {
                 s->cmd_pending = dsi_cmd_bits(s);
