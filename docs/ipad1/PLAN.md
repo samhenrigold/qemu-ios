@@ -248,6 +248,35 @@ The paced CDMA only moves memory -> FIFO, and the I2S RX FIFO reads 0. To add: a
 feeding an RX ring that +0x38 drains, and the device -> memory direction in `cdma_paced_advance`. Needs an
 app that records (3.2 has no Voice Memos) to prove it.
 
+## Bluetooth: parked, BTServer disabled (2026-09-27)
+
+Bluetooth has no controller model. UART3 (BCM4329 HCI) is a silent Samsung UART, and its CDMA
+receive chains park instead of reading zeros (36d1915323). BTServer's retries then cost SpringBoard
+a ~1 s stall about every 12 s. That's BluetoothManager blocking on BTServer: respcheck measured
+1.07-1.19 s taps at a ~12 s period. With BTServer unloaded on nand-jb, every tap took 191 ms
+(control: 790 ms on every tap). Hiding the DT node (uart3/bluetooth compatible=none) does not help.
+So `ipad1_rootfs.py bake` sets `Disabled` in `com.apple.BTServer.plist` by default
+(`--keep-bluetooth` to skip). With it, respcheck shows 16/16 taps at 178-201 ms and Settings >
+General shows Bluetooth greyed as **Unavailable** (screens/settings-bluetooth-unavailable.png).
+Sam: no Bluetooth is fine.
+
+Parked work, for whoever wants a real controller. In the ipad1-kbd worktree, `git stash@{0}` and
+`stash@{1}` hold it, with debug prints still in:
+- UART3 on `it_bt_chardev()` (ipod_touch_bt.c).
+- The UART's Rx DMA request (exynos4210_uart sysbus irq 2) wired to a CDMA "uart-rx" GPIO. It pulls
+  bytes into a parked chain on channel 0xc.
+- A pause/resume model. AppleCDMA's append/position query (c044d7e4) does `ctrl |= 0x24`
+  (hold + abort, CDMA v2), polls until `(ctrl & 0x230000) != 0x10000`, reads +0x0C/+0x10/+0x14,
+  then writes the saved ctrl back (state bits = running, no go) to resume.
+
+That gets HCI Reset and the 0xfc18 baud reply through. The next Rx-timeout harvest panics in
+AppleOnboardSerial (`command->headCount <= byteCount`, byteCount - headCount = -2034). The v2 byte
+count at c044d94a is `ring[idx(+0x14)].w5 - BC + ([cdma+0x54] + Σ ring[i].len for i = idx(+0x14) ..
+[cdma+0x48]-1)`, where ring entries are {next, flags 0x303, addr, len, cmd*, 0, 1, 0}, so w5 is 0.
+The sum is 2048 on the first harvest and 0 on the next, so the model's +0x14 has to track how the
+driver advances [cdma+0x48]/[cdma+0x54] on completion. Decode those, then retest. Reporting +0x14
+as the prefetched next descriptor instead avoids the panic but breaks the first count.
+
 ## After SpringBoard: app compatibility (Sam, 2026-09-27)
 Once SpringBoard and installs work, test apps from Legacy Store (https://legacystore.app) and the IPA collection in ~/Downloads/ios3:
 install each, launch, exercise touch/keyboard/rotation/GL, and record a compatibility table
