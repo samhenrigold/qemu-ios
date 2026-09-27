@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 """Userland images for the ipad1 machine: a patched copy of the 7B500 system partition plus a seeded data volume.
 
-    ipad1_rootfs.py build [--rootfs IMG] [--mbr rdisk0-head4M.bin] [--out DIR] [--data-size 2g]
+    ipad1_rootfs.py build [--base pristine|jailbroken] [--out DIR] [--data-size 2g] [--rootfs IMG]
                           [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root]
     ipad1_rootfs.py fetch [DIR]          copy /var/stash and /var/root/Library/Lockdown off the real iPad (ssh)
     ipad1_rootfs.py report DIR...        list the Mach-Os under DIR that carry no Apple signature
     ipad1_rootfs.py --selfcheck
 
-`build` writes DIR/system.img, DIR/data.img and DIR/unsigned-machos.txt, then prints the ipad1_nand.py line:
+`build` writes DIR/<base>/{system.img,data.img,unsigned-machos.txt}, then prints the ipad1_nand.py line:
 
-    ipad1_nand.py build --mbr rdisk0-head4M.bin --system DIR/system.img --data DIR/data.img --out NAND
+    ipad1_nand.py build --mbr rdisk0-head4M.bin --system DIR/<base>/system.img --data DIR/<base>/data.img \
+                        --out DIR/nand-{pristine|jb}
 
-The base is the captured, jailbroken 3.2.2 system partition (hw2/rdisk0s1-system.img; 8 KiB-block HFSX,
-exactly partition 1's 1280 MiB). It stashes /Applications, /usr/libexec, /usr/share, /usr/include,
-/usr/lib/pam, /Library/{Ringtones,Wallpaper} into /private/var/stash, so the data volume MUST carry the real
-unit's /var/stash (fetch) or launchd finds no lockdownd, installd, ... The IPSW rootfs.dmg is accepted too
-(--rootfs; it is sliced out of the UDIF/APM and grown to the partition), and needs no stash.
+Two bases. `pristine` (default, first boot target): the IPSW rootfs.dmg, sliced out of its UDIF/APM and
+grown to partition 1 (1280 MiB from the MBR); nothing on it is jailbroken, so no AMFI boot-args are needed.
+`jailbroken`: the captured 3.2.2 system partition (hw2/rdisk0s1-system.img, already partition-sized), which
+stashes /Applications, /usr/libexec, /usr/share, /usr/include, /usr/lib/pam, /Library/{Ringtones,Wallpaper}
+into /private/var/stash, so its data volume carries the real unit's /var/stash (fetch) or launchd finds no
+lockdownd, installd, ...; its OpenSSH, bash, Cydia, Substrate are ldid-signed and need
+amfi_allow_any_signature=1.
 
 system.img edits, all through one read-write mount, no Mach-O touched:
   /private/etc/fstab                         "/dev/disk0s1 / rw" + "/dev/disk0s2 /private/var" (plain 0xAF
@@ -59,6 +62,9 @@ DAEMON_DIRS = ("System/Library/LaunchDaemons", "Library/LaunchDaemons")
 SB_JOB = "System/Library/LaunchDaemons/com.apple.SpringBoard.plist"
 SB_ENV = {"CA_ENABLE_OGL": "0", "MBX2D_PAGE_FLIP": "0"}
 SSHD = ("Library/LaunchDaemons/com.openssh.sshd.plist", "usr/sbin/sshd", "private/etc/ssh/ssh_host_rsa_key")
+# base -> (system volume under FILES, /var/stash seed under FILES or None, store name suffix)
+BASES = {"pristine": ("7B500/dec/rootfs.dmg", None, "pristine"),
+         "jailbroken": ("hw2/rdisk0s1-system.img", "hw2/stash", "jb")}
 MOBILE_TOP = ("mobile", "ea")                # uid 501 on the real unit; everything else under /var is root
 MH_MAGIC, FAT_MAGIC, LC_CODE_SIGNATURE, CS_CMS = 0xFEEDFACE, 0xCAFEBABE, 0x1D, 0x10000
 
@@ -269,7 +275,8 @@ def build(a):
         sshd = all(os.path.exists(os.path.join(m.mnt, p)) for p in SSHD)
         with open(os.path.join(a.out, "unsigned-machos.txt"), "w") as rep:
             dirs = [(m.mnt, "/")] + ([(a.stash, "/private/var/stash/")] if a.stash else [])
-            unsigned = report(dirs, rep)
+            report(dirs, rep)
+        adhoc = sum(1 for l in open(os.path.join(a.out, "unsigned-machos.txt")) if l.startswith("adhoc"))
         # /private/var skeleton for the data volume, taken while the volume is mounted
         shutil.rmtree(skeleton)
         shutil.copytree(os.path.join(m.mnt, "private/var"), skeleton, symlinks=True)
@@ -284,8 +291,9 @@ def build(a):
         os.unlink(pristine)
     print("      fstab %s root; SpringBoard env %s + stdio /dev/console%s" % ("ro" if a.ro_root else "rw", SB_ENV,
           "; disabled %s" % a.disable if a.disable else ""))
-    print("      sshd job: %s; %d non-Apple Mach-Os listed in unsigned-machos.txt (boot with amfi_allow_any_signature=1)"
-          % ("present (jailbreak OpenSSH, inetd-style port 22)" if sshd else "absent", unsigned))
+    print("      sshd job: %s; %d ad-hoc signed Mach-Os in unsigned-machos.txt%s"
+          % ("present (jailbreak OpenSSH, inetd-style port 22)" if sshd else "absent", adhoc,
+             " (boot with amfi_allow_any_signature=1 cs_enforcement_disable=1)" if adhoc else ""))
     if stashed and not a.stash:
         raise SystemExit("this image stashes /usr/libexec into /private/var/stash; run `fetch` and pass --stash")
 
@@ -311,8 +319,8 @@ def build(a):
     for d in ("mnt-system", "mnt-data", "mnt-pristine"):
         shutil.rmtree(os.path.join(a.out, d), ignore_errors=True)
 
-    print("[4/4] done:\n    %s/ipad1_nand.py build --mbr %s --system %s --data %s --out %s/nand-userland"
-          % (os.path.dirname(os.path.abspath(__file__)), a.mbr, system, data, a.out))
+    print("[4/4] done:\n    %s/ipad1_nand.py build --mbr %s --system %s --data %s --out %s/nand-%s"
+          % (os.path.dirname(os.path.abspath(__file__)), a.mbr, system, data, os.path.dirname(a.out), a.tag))
 
 
 def fetch(out):
@@ -369,13 +377,14 @@ def main():
     ap.add_argument("--selfcheck", action="store_true")
     sub = ap.add_subparsers(dest="cmd")
     b = sub.add_parser("build")
-    b.add_argument("--rootfs", default=os.path.join(FILES, "hw2/rdisk0s1-system.img"),
-                   help="captured system partition (default) or the decrypted IPSW rootfs DMG")
+    b.add_argument("--base", choices=BASES, default="pristine",
+                   help="pristine = IPSW rootfs.dmg, no stash, no AMFI flags needed; jailbroken = the capture + /var/stash")
+    b.add_argument("--rootfs", help="override the base's system volume (bare HFS image or IPSW rootfs DMG)")
     b.add_argument("--mbr", default=os.path.join(FILES, "hw2/rdisk0-head4M.bin"))
     b.add_argument("--pristine", default=os.path.join(FILES, "7B500/dec/rootfs.dmg"), help="IPSW rootfs, source of the /private/var skeleton")
-    b.add_argument("--out", default=os.path.join(FILES, "userland"))
+    b.add_argument("--out", default=os.path.join(FILES, "userland"), help="images land in OUT/<base>/, the store in OUT/nand-<tag>")
     b.add_argument("--data-size", default="2g")
-    b.add_argument("--stash", default=os.path.join(FILES, "hw2/stash"), help="fetch output for /var/stash; 'none' to skip")
+    b.add_argument("--stash", help="fetch output for /var/stash (jailbroken default: hw2/stash); 'none' to skip")
     b.add_argument("--lockdown", default=os.path.join(FILES, "hw2/lockdown"), help="fetch output for the Lockdown dir; 'none' to skip")
     b.add_argument("--disable", action="append", default=[], metavar="LABEL", help="launchd job to mark Disabled")
     b.add_argument("--ro-root", action="store_true", help="keep the stock read-only root")
@@ -386,6 +395,10 @@ def main():
     a = ap.parse_args()
     selfcheck()
     if a.cmd == "build":
+        rootfs, stash, a.tag = BASES[a.base]
+        a.rootfs = a.rootfs or os.path.join(FILES, rootfs)
+        a.stash = a.stash or (os.path.join(FILES, stash) if stash else "none")
+        a.out = os.path.join(a.out, a.base)
         for opt in ("stash", "lockdown"):
             if getattr(a, opt) == "none" or not os.path.isdir(getattr(a, opt)):
                 print("      no %s seed at %s (run `fetch`)" % (opt, getattr(a, opt)))
