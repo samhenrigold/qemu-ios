@@ -35,7 +35,8 @@ def main():
     ap.add_argument("--kboot", default=f"{FILES}/k48-kboot.bin")
     ap.add_argument("--qemu", default=f"{ROOT}/build/qemu-system-arm")
     ap.add_argument("--args", help="rebuild the bundle with these boot-args first")
-    ap.add_argument("--nand", help="NAND page-store directory to attach")
+    ap.add_argument("--nand", help="NAND page-store directory to attach (booted in place: it gets written)")
+    ap.add_argument("--nand-clone", help="NAND store to APFS-clone into a temp dir and boot (the original is untouched)")
     a = ap.parse_args()
 
     if a.args:
@@ -44,6 +45,10 @@ def main():
 
     with tempfile.TemporaryDirectory() as td:
         serial, qlog = f"{td}/serial.log", f"{td}/qemu.log"
+        if a.nand_clone:
+            a.nand = f"{td}/nand"
+            subprocess.run(["cp", "-cR", a.nand_clone, a.nand], check=True)  # APFS clone: instant, copy-on-write
+            subprocess.run(["chmod", "-R", "u+w", a.nand], check=True)
         machine = f"ipad1,kboot={a.kboot}" + (f",nand={a.nand}" if a.nand else "")
         cmd = [a.qemu, "-machine", machine, "-display", "none",
                "-monitor", "none", "-serial", f"file:{serial}",

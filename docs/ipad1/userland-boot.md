@@ -16,7 +16,7 @@ plain Apple_HFS 0xAF). Their inputs sit next to them: `FILES/userland/{pristine,
 `data.img`, `unsigned-machos.txt`.
 
 ```
-tests/ipad1/boot-smoke.py --nand FILES/userland/nand-pristine --seconds 240
+tests/ipad1/boot-smoke.py --nand-clone FILES/userland/golden-pristine --seconds 240   # golden is read-only; the IOP mmaps the store MAP_SHARED, so never boot it in place
 ```
 
 The `bsd` (`BSD root:`) and `launchd` markers already exist in the test. Kernel bundle prerequisites are all in
