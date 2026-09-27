@@ -19,6 +19,7 @@
  * an all-0xFF page is blank (status 2). Writes go straight to the mapping.
  */
 #include "qemu/osdep.h"
+#include "qemu/timer.h"
 #define DEBUG_S5L8930_IOP 1
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -27,7 +28,6 @@
 #include "hw/arm/s5l8930.h"
 #include "exec/address-spaces.h"
 #include "migration/vmstate.h"
-#include "qemu/timer.h"
 #include "qapi/error.h"
 #include "qobject/qjson.h"
 #include "qobject/qdict.h"
@@ -37,7 +37,7 @@
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPState, S5L8930_IOP)
 
 #ifdef DEBUG_S5L8930_IOP
-#define DPRINTF(fmt, ...) fprintf(stderr, "s5l8930_iop: " fmt, ## __VA_ARGS__)
+#define DPRINTF(fmt, ...) fprintf(stderr, "s5l8930_iop[%8.3f]: " fmt, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9, ## __VA_ARGS__)
 #else
 #define DPRINTF(fmt, ...) do { } while (0)
 #endif
