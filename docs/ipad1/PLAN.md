@@ -83,6 +83,10 @@ data-partition key 0x89B) — not the full descriptor engine. D1815 PMU + new I2
 panic). `debug-enabled` forced (DT + 7B500 kernel global) so AMFI honors its boot-args.
 Success: launchd, then SpringBoard attempts, diffed against the HW-2 serial log.
 
+**M2 status (2026-09-27):** root filesystem mounts ("BSD root: disk0s1") from the generated pristine
+store; next panic is the first CDMA M2M transfer. The nondeterministic stall was the display pipe's
+DP_FLAGS reading 0x20 (fixed 8b54f07424).
+
 **M2 status (2026-09-26):** IOP HLE done; the kernel self-formats a blank store with
 `nand-enable-reformat=1` and re-opens it on the next boot (VFL_Open/FTL_Open OK, "waiting for root
 device"). Remaining for M2: an FTL carrying the MBR + system partition (generator in progress), then the
