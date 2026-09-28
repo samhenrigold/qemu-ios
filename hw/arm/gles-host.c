@@ -1084,10 +1084,11 @@ static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
         }
         {
             uint64_t t0 = gles_t();
-            int rc = cpu_memory_rw_debug(cpu, a->ptr + (hwaddr)off,
+            int rc = gles_guest_rw(cpu, a->ptr + (hwaddr)off,
                                          a->buf, need, 0);
             gh.t_fetch += gles_t() - t0;
             if (rc != 0) {
+                if (!gles_guest_fault_pending())    /* else it is reissued */
                 fprintf(stderr, "[gles] failed to read %zu bytes of array data "
                         "at guest 0x%08x\n", need, a->ptr);
                 return false;
@@ -1253,8 +1254,10 @@ static void gles_draw_sized_points(CPUState *cpu, uint32_t first,
             a->buf = g_realloc(a->buf, need);
             a->buf_size = need;
         }
-        if (cpu_memory_rw_debug(cpu, a->ptr + (hwaddr)off, a->buf, need, 0)) {
-            glDrawArrays(GL_POINTS, 0, count);
+        if (gles_guest_rw(cpu, a->ptr + (hwaddr)off, a->buf, need, 0)) {
+            if (!gles_guest_fault_pending()) {
+                glDrawArrays(GL_POINTS, 0, count);
+            }
             return;
         }
         base = a->buf;
@@ -1389,6 +1392,9 @@ static uint32_t gles_bind_all_arrays(CPUState *cpu, uint32_t first,
         }
     }
     glClientActiveTexture(GL_TEXTURE0 + gh.client_active_unit);
+    if (gles_guest_fault_pending()) {
+        bound &= ~1u;       /* an array page is being faulted in: no draw yet */
+    }
     return bound;
 }
 
@@ -2234,7 +2240,8 @@ static const uint8_t *gles_fetch_texels(CPUState *cpu, uint32_t pixels,
         gh.txbuf = g_realloc(gh.txbuf, n);
         gh.txbuf_size = n;
     }
-    if (cpu_memory_rw_debug(cpu, pixels, gh.txbuf, n, 0) != 0) {
+    if (gles_guest_rw(cpu, pixels, gh.txbuf, n, 0) != 0) {
+        if (!gles_guest_fault_pending())
         fprintf(stderr, "[gles] %s: cannot read %zu bytes at guest 0x%08x\n",
                 who, n, pixels);
         return NULL;
@@ -2643,8 +2650,9 @@ static bool gles_fetch_params(CPUState *cpu, uint32_t ptr, unsigned n,
     if (!ptr || !n || n > 16 || (uint64_t)ptr + n * 4 > UINT64_C(0x100000000)) {
         return false;
     }
-    if (cpu_memory_rw_debug(cpu, ptr, (uint8_t *)out, n * sizeof(float), 0)
+    if (gles_guest_rw(cpu, ptr, (uint8_t *)out, n * sizeof(float), 0)
         != 0) {
+        if (!gles_guest_fault_pending())
         fprintf(stderr, "[gles] cannot read %u parameters at guest 0x%08x\n",
                 n, ptr);
         return false;
@@ -3367,7 +3375,7 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
                 /* GL's origin is bottom-left, the surface's is top-left. */
                 const uint8_t *src = frame + (size_t)(rh - 1 - y) * fstride;
 
-                if (cpu_memory_rw_debug(cpu, base + (hwaddr)y * stride,
+                if (gles_guest_rw(cpu, base + (hwaddr)y * stride,
                                         (void *)src, rw * 4, 1) != 0) {
                     fprintf(stderr, "[gles] present-surface: write failed at "
                             "row %u (guest 0x%08x)\n", y, base + y * stride);
@@ -3408,7 +3416,7 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
                     p16[i] = 0xF800;              /* RGB565 red */
                 }
                 for (y = 0; y < rh; y++) {
-                    cpu_memory_rw_debug(cpu, base + (hwaddr)y * stride,
+                    gles_guest_rw(cpu, base + (hwaddr)y * stride,
                                         (uint8_t *)p16 + (size_t)y * rw * 2,
                                         rw * 2, 1);
                 }
@@ -3471,7 +3479,7 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
              * already in the destination's layout. */
             uint8_t *src = gh.readback + (size_t)(rh - 1 - y) * rw * bpp;
 
-            if (cpu_memory_rw_debug(cpu, base + (hwaddr)y * stride,
+            if (gles_guest_rw(cpu, base + (hwaddr)y * stride,
                                     src, rw * bpp, 1) != 0) {
                 fprintf(stderr, "[gles] present-surface: write failed at row %u "
                         "(guest 0x%08x)\n", y, base + y * stride);
@@ -3858,7 +3866,7 @@ static bool gles_surface_read(CPUState *cpu, uint32_t base, uint32_t stride,
 {
     if (!gles_surface_range(base, stride, rows, rowbytes)) return false;
     for (unsigned row = 0; row < rows; row++) {
-        if (cpu_memory_rw_debug(cpu, base + row * stride,
+        if (gles_guest_rw(cpu, base + row * stride,
                                 dst + (size_t)row * rowbytes, rowbytes, 0)) {
             return false;
         }
@@ -4028,7 +4036,7 @@ static int64_t gles_sync_surface_1(CPUState *cpu)
                                    texture, s->base, s->width, s->height, sum);
     }
     for (unsigned row = 0; row < s->height; row++) {
-        if (cpu_memory_rw_debug(cpu, s->base + row * s->stride,
+        if (gles_guest_rw(cpu, s->base + row * s->stride,
                 pixels + (size_t)row * s->width * bpp, s->width * bpp, 1)) return -1;
     }
     return 0;
@@ -4103,7 +4111,7 @@ static char *gles_es2_string(CPUState *cpu, uint32_t ptr, int32_t len)
     uint8_t c;
 
     while (ptr && s->len < GLES_MAX_STRING && (len < 0 || s->len < (size_t)len)) {
-        if (cpu_memory_rw_debug(cpu, ptr + s->len, &c, 1, 0) != 0 ||
+        if (gles_guest_rw(cpu, ptr + s->len, &c, 1, 0) != 0 ||
             (len < 0 && !c)) {
             break;
         }
@@ -4147,7 +4155,7 @@ static char *gles_es2_glsl(const char *src)
 
 static bool gles_es2_write(CPUState *cpu, uint32_t ptr, const void *data, size_t n)
 {
-    return ptr && cpu_memory_rw_debug(cpu, ptr, (uint8_t *)data, n, 1) == 0;
+    return ptr && gles_guest_rw(cpu, ptr, (uint8_t *)data, n, 1) == 0;
 }
 
 /* Guest array of `n` 32-bit values; NULL if unreadable or absurd. */
@@ -4159,7 +4167,7 @@ static void *gles_es2_fetch(CPUState *cpu, uint32_t ptr, uint32_t n)
         return NULL;
     }
     buf = g_malloc(n * 4);
-    if (cpu_memory_rw_debug(cpu, ptr, buf, n * 4, 0) != 0) {
+    if (gles_guest_rw(cpu, ptr, buf, n * 4, 0) != 0) {
         g_free(buf);
         return NULL;
     }
@@ -4192,7 +4200,7 @@ static bool gles_es2_bind_attr(CPUState *cpu, unsigned i, uint32_t first,
             a->buf = g_realloc(a->buf, need);
             a->buf_size = need;
         }
-        if (cpu_memory_rw_debug(cpu, a->ptr + (hwaddr)off, a->buf, need, 0)) {
+        if (gles_guest_rw(cpu, a->ptr + (hwaddr)off, a->buf, need, 0)) {
             return false;
         }
         base = a->buf;
@@ -4242,7 +4250,7 @@ static int64_t gles_es2_draw(CPUState *cpu, bool elements, const uint32_t *a)
                 gh.ibuf = g_realloc(gh.ibuf, need);
                 gh.ibuf_size = need;
             }
-            if (!iptr || cpu_memory_rw_debug(cpu, iptr, gh.ibuf, need, 0)) {
+            if (!iptr || gles_guest_rw(cpu, iptr, gh.ibuf, need, 0)) {
                 return -1;
             }
             idx = gh.ibuf;
@@ -4264,7 +4272,9 @@ static int64_t gles_es2_draw(CPUState *cpu, bool elements, const uint32_t *a)
             bound |= 1u << i;
         }
     }
-    if (elements) {
+    if (gles_guest_fault_pending()) {
+        /* an attribute page is being faulted in: the call is reissued */
+    } else if (elements) {
         glDrawElements(mode, count, isz == 1 ? GL_UNSIGNED_BYTE : GL_UNSIGNED_SHORT, idx);
     } else {
         glDrawArrays(mode, 0, count);            /* `first` applied by the fetch */
@@ -4679,7 +4689,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         if (n > sizeof(buf) - 1) {
             n = sizeof(buf) - 1;
         }
-        if (cpu_memory_rw_debug(cpu, a[0], (uint8_t *)buf, n, 0) != 0) {
+        if (gles_guest_rw(cpu, a[0], (uint8_t *)buf, n, 0) != 0) {
             return -1;
         }
         buf[n] = 0;
@@ -4905,7 +4915,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                 gh.ibuf = g_realloc(gh.ibuf, need);
                 gh.ibuf_size = need;
             }
-            if (cpu_memory_rw_debug(cpu, iptr, gh.ibuf, need, 0) != 0) {
+            if (gles_guest_rw(cpu, iptr, gh.ibuf, need, 0) != 0) {
+                if (!gles_guest_fault_pending())
                 fprintf(stderr, "[gles] glDrawElements: cannot read %zu index "
                         "bytes at guest 0x%08x\n", need, iptr);
                 return -1;
@@ -4955,7 +4966,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         }
         ids = g_new0(GLuint, n ? n : 1);
         glGenTextures(n, ids);
-        cpu_memory_rw_debug(cpu, a[1], (uint8_t *)ids, n * sizeof(GLuint), 1);
+        gles_guest_rw(cpu, a[1], (uint8_t *)ids, n * sizeof(GLuint), 1);
         return 0;
     }
 
@@ -4992,7 +5003,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         case GLES_SLOT_GET_TEX_PARAMETERFV: glGetTexParameterfv(a[0], a[1], p.f); break;
         case GLES_SLOT_GET_TEX_PARAMETERIV: glGetTexParameteriv(a[0], a[1], p.i); break;
         }
-        return cpu_memory_rw_debug(cpu, a[2], (uint8_t *)&p, n * 4, 1) ? -1 : 0;
+        return gles_guest_rw(cpu, a[2], (uint8_t *)&p, n * 4, 1) ? -1 : 0;
     }
 
     case GLES_SLOT_TEX_PARAMETERF:
@@ -5284,7 +5295,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             return -1;
         }
         ids = g_new0(GLuint, n);
-        if (cpu_memory_rw_debug(cpu, a[1], (uint8_t *)ids,
+        if (gles_guest_rw(cpu, a[1], (uint8_t *)ids,
                                 n * sizeof(GLuint), 0) != 0) {
             return -1;
         }
@@ -5331,7 +5342,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             gles_buffer_intern(ids[i]);
         }
         if (a[1] && n) {
-            cpu_memory_rw_debug(cpu, a[1], (uint8_t *)ids,
+            gles_guest_rw(cpu, a[1], (uint8_t *)ids,
                                 n * sizeof(uint32_t), 1);
         }
         return 0;
@@ -5349,7 +5360,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             return -1;
         }
         ids = g_new0(uint32_t, n);
-        if (cpu_memory_rw_debug(cpu, a[1], (uint8_t *)ids,
+        if (gles_guest_rw(cpu, a[1], (uint8_t *)ids,
                                 n * sizeof(uint32_t), 0) != 0) {
             return -1;
         }
@@ -5387,7 +5398,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * before filling gets degenerate geometry rather than whatever the
          * allocator handed back. */
         if (a[2] && n) {
-            if (cpu_memory_rw_debug(cpu, a[2], b->data, n, 0) != 0) {
+            if (gles_guest_rw(cpu, a[2], b->data, n, 0) != 0) {
+                if (!gles_guest_fault_pending())
                 fprintf(stderr, "[gles] glBufferData: cannot read %zu bytes at "
                         "guest 0x%08x\n", n, a[2]);
                 memset(b->data, 0, n);
@@ -5412,7 +5424,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             return -1;
         }
         if (!a[3] ||
-            cpu_memory_rw_debug(cpu, a[3], b->data + off, n, 0) != 0) {
+            gles_guest_rw(cpu, a[3], b->data + off, n, 0) != 0) {
+            if (!gles_guest_fault_pending())
             fprintf(stderr, "[gles] glBufferSubData: cannot read %zu bytes at "
                     "guest 0x%08x\n", n, a[3]);
             return -1;
@@ -5517,7 +5530,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                 v.b[i] = v.i[i] != 0;
             }
         }
-        cpu_memory_rw_debug(cpu, a[1], (uint8_t *)&v,
+        gles_guest_rw(cpu, a[1], (uint8_t *)&v,
                             n * (boolean ? sizeof(GLboolean) : sizeof(GLint)), 1);
         return 0;
     }
@@ -5533,7 +5546,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         default: return gles_reject(GL_INVALID_ENUM);
         }
         if (a[1]) {
-            cpu_memory_rw_debug(cpu, a[1], (uint8_t *)&ptr, sizeof(ptr), 1);
+            gles_guest_rw(cpu, a[1], (uint8_t *)&ptr, sizeof(ptr), 1);
         }
         return 0;
     }
@@ -5818,11 +5831,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         float v[5];
         if (slot == GLES_SLOT_DRAW_TEXSV_OES) {
             int16_t sv[5];
-            if (!a[0] || cpu_memory_rw_debug(cpu, a[0], (uint8_t *)sv, sizeof sv, 0)) return -1;
+            if (!a[0] || gles_guest_rw(cpu, a[0], (uint8_t *)sv, sizeof sv, 0)) return -1;
             for (unsigned i = 0; i < 5; i++) v[i] = sv[i];
         } else {
             uint32_t raw[5];
-            if (!a[0] || cpu_memory_rw_debug(cpu, a[0], (uint8_t *)raw, sizeof raw, 0)) return -1;
+            if (!a[0] || gles_guest_rw(cpu, a[0], (uint8_t *)raw, sizeof raw, 0)) return -1;
             for (unsigned i = 0; i < 5; i++) {
                 v[i] = slot == GLES_SLOT_DRAW_TEXFV_OES ? gles_f(raw[i]) :
                        slot == GLES_SLOT_DRAW_TEXXV_OES ? gles_x(raw[i]) :
@@ -5937,7 +5950,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         memset(gh.txbuf, 0, n);
         glPixelStorei(GL_PACK_ALIGNMENT, (GLint)align);
         glReadPixels(x, y, w, h, fmt, type, gh.txbuf);
-        cpu_memory_rw_debug(cpu, dst, gh.txbuf, n, 1);
+        gles_guest_rw(cpu, dst, gh.txbuf, n, 1);
         return 0;
     }
 
@@ -5991,7 +6004,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     case GLES_SLOT_MULT_MATRIXX: {
         int32_t fixed[16];
         GLfloat matrix[16];
-        if (!a[0] || cpu_memory_rw_debug(cpu, a[0], (uint8_t *)fixed,
+        if (!a[0] || gles_guest_rw(cpu, a[0], (uint8_t *)fixed,
                                         sizeof(fixed), 0)) {
             return -1;
         }
@@ -6116,7 +6129,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             glGenFramebuffersEXT(n, ids);
         }
         if (a[1] && n) {
-            cpu_memory_rw_debug(cpu, a[1], (uint8_t *)ids,
+            gles_guest_rw(cpu, a[1], (uint8_t *)ids,
                                 n * sizeof(GLuint), 1);
         }
         return 0;
@@ -6269,7 +6282,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             return 0;
         }
         ids = g_new0(GLuint, n);
-        cpu_memory_rw_debug(cpu, a[1], (uint8_t *)ids, n * sizeof(GLuint), 0);
+        gles_guest_rw(cpu, a[1], (uint8_t *)ids, n * sizeof(GLuint), 0);
         if (slot == GLES_SLOT_DELETE_RENDERBUFFERS) {
             for (i = 0; i < n; i++) {
                 g_hash_table_remove(gh.rb_sized, GUINT_TO_POINTER(ids[i]));
@@ -6330,7 +6343,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             }
         }
         if (a[2]) {
-            cpu_memory_rw_debug(cpu, a[2], (uint8_t *)&v, sizeof(v), 1);
+            gles_guest_rw(cpu, a[2], (uint8_t *)&v, sizeof(v), 1);
         }
         return 0;
     }
@@ -6338,7 +6351,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     case GLES_SLOT_GET_FB_ATTACH_PARAM: { /* target, attach, pname, int* */
         uint32_t v = gh.bound_renderbuffer;
         if (a[3]) {
-            cpu_memory_rw_debug(cpu, a[3], (uint8_t *)&v, sizeof(v), 1);
+            gles_guest_rw(cpu, a[3], (uint8_t *)&v, sizeof(v), 1);
         }
         return 0;
     }

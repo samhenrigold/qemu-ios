@@ -163,7 +163,8 @@ static void ipad1_qemu_call(CPUARMState *env, const ARMCPRegInfo *ri,
 static const ARMCPRegInfo ipad1_cp_reginfo[] = {
     { .name = "QEMU_CALL", .cp = 15, .opc1 = 3, .crn = 15, .crm = 15,
       .opc2 = 0, .access = PL0_RW, .state = ARM_CP_STATE_AA32,
-      .type = ARM_CP_IO | ARM_CP_NO_RAW, .readfn = qemu_call_status,
+      .type = ARM_CP_IO | ARM_CP_NO_RAW | ARM_CP_RAISES_EXC, /* gles_guest_rw */
+      .readfn = qemu_call_status,
       .writefn = ipad1_qemu_call },
 };
 

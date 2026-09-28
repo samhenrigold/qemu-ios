@@ -52,6 +52,14 @@ answered. Not done: `glGetUniform*v`, `glGetShaderSource`, `glShaderBinary`.
 The iPad machine registers the guest-services trap for the GLES calls only
 (`ipad1_qemu_call` in `hw/arm/ipad1.c`).
 
+**Guest pointers:** every host access behind a pointer a GL call passes (client arrays, indices, texels,
+buffer data, parameter arrays, glGet*/glGen*/glReadPixels outputs) goes through `gles_guest_rw`
+(`hw/arm/guest-gles.c`). Inside an unbatched call it probes each page through the caller's MMU; a page
+that would fault (never touched, copy-on-write, read-only for a store) fails the call, no draw is issued,
+and the fault is raised as a data abort on the trapping `mcr` (`ARM_CP_RAISES_EXC`), so the kernel pages
+it in and the call is reissued, as the CPU loads a real GL would do. A static const vertex table works
+without the shim touching it. The shim's page touches (uploads, strings, present) stay as a prefetch.
+
 ## gli* entry points
 
 | entry | behaviour |
@@ -65,7 +73,7 @@ The iPad machine registers the guest-services trap for the GLES calls only
 | gliSetInteger | 0x38E: attach IOSurface. For a renderbuffer it becomes the view surface and sets the host drawable size; for a texture it goes through `GLESBindCoreSurface`. 0x39B: detach. 0x2C1: swap notification (`IOMobileFramebufferSwapSignal` on the main display). Anything else returns 0 |
 | gliGetInteger | writes 0 |
 | gliBindViewES | returns nonzero on success (4.x EAGL returns it from `renderbufferStorage:fromDrawable:`). 3.2.x: records the drawable. 4.x: binds CA's drawable as the stock engine does (bind with a create/destroy/preflight block, first nextBuffer, 0x38E attach as GL_RENDERBUFFER). NULL unbinds the old one (`vt[2]`) and clears it, so a rebuilt framebuffer can bind the layer again |
-| gliPresentViewES | takes the frame's buffer and touches its pages (the host's debug write cannot fault them in), then mbxshim `GLESPresentView`: render into the current surface, then `drawable->vt[4](d,1)`, then `vt[3]` next frame |
+| gliPresentViewES | takes the frame's buffer and touches its pages (saves the host a fault round trip per page), then mbxshim `GLESPresentView`: render into the current surface, then `drawable->vt[4](d,1)`, then `vt[3]` next frame |
 | QueryRendererInfo, DestroyRendererInfo, AttachDrawable(WithOptions), SwapBuffers, Get/Set/CopyAttributes | stubs (OpenGLES 3.2.2 never calls them). Each returns 10015, except DestroyRendererInfo, which returns 0 |
 
 ## Test apps and images

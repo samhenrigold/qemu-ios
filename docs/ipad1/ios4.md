@@ -165,7 +165,13 @@ NAND store + `nor-rw` before the seal, and both outputs then travel with the dev
   into the rootfs): waits for `/dev/disk0s2` and `AppleEffaceableStorage`, selector 3 (isFormatted) then 4
   (format) then 3 again, `mount_hfs /dev/disk0s2 /mnt2` (as restored does), `MKBKeyBagCreateSystem(NULL,
   "/mnt2")` found with dlsym, checks `/mnt2/keybags/systembag.kb` (1335 bytes), unmounts and
-  `reboot(RB_HALT)`. The ramdisk has no `IOKit.framework/IOKit` top-level link, only `Versions/A/IOKit`.
+  `reboot(RB_HALT | RB_QUICK)`. The ramdisk has no `IOKit.framework/IOKit` top-level link, only `Versions/A/IOKit`.
+  RB_QUICK (2026-09-28): a plain RB_HALT SIGTERMs every process first, and once the
+  ramdisk's launchd saw its job die, started its own `reboot(RB_AUTOBOOT)` alongside the halt, and the
+  two shutdowns panicked ("ARM7M: timed out waiting for workloop to process completed command") instead
+  of halting, so the one-shot waited out its 300 s. 50 runs with RB_QUICK (20 of them concurrent) halted
+  cleanly; the race was never reproduced live, so `ipad1_keybag.py` also stops a boot at `panic(` and
+  retries it (3 attempts) from a clone of the store and NOR, logging the reason.
   Serial: `it_keybag: effaceable open 0 isFormatted 0 -> 0`, `format 0`, `MKBKeyBagCreateSystem -> 0`, then
   `it_keybag: effaceable formatted, system keybag created; halting`, about 4 s after power-on.
 - `ipad1_keybag.py` requires that line, a clean halt, and a changed `nor.bin` (the lockers: ~8 KiB of
@@ -259,9 +265,9 @@ loaded):
   engine binds CA's drawable itself: `drawable->bind(fourcc, block)` with a 4-entry block (create,
   destroy and a new `preflight`), the first `nextBuffer`, then its own `gliSetInteger(0x38E)` attach as
   GL_RENDERBUFFER. glishim does the same (`gli_bind_view4`).
-- A buffer CA has just allocated may have no pages mapped, and the host writes frames with a debug write
-  that cannot fault them in (`present-surface: write failed at row 0`): the shim touches each page of
-  the frame's buffer before presenting.
+- A buffer CA has just allocated may have no pages mapped (`present-surface: write failed at row 0`
+  before the host faulted pages in): the shim touches each page of the frame's buffer before presenting,
+  which now only saves the host a fault round trip per page.
 - CA puts an EAGL layer's surface in its own IOMFB layer (UI0) under a full-screen UI1, with a
   destination rectangle: +0x54 origin, +0x60 source size, +0x64 far corner (`x << 16 | y`). The display
   model (`s5l8930_display.c`) assumed full-panel layers at 0,0 and now honours the rectangle.
@@ -278,9 +284,17 @@ panel (293 presents/s, one distinct capture): 3.2.x CA does not update a remote 
 this way; GLTest.app is the 3.x fixture.
 
 Not done: fps and tearing of SpringBoard's own animations on 4.x (animfps/tearcheck script an unlock and
-app launches, which need activation). The host still reads client arrays with debug reads, so a vertex
-array in a page the guest never touched fails to draw (`failed to read ... array data`); the fixture keeps
-its arrays on the stack.
+app launches, which need activation).
+
+**Untouched guest pages (2026-09-28).** A client array, index list or output pointer in a page the guest
+never touched (a static const table in `__TEXT`, untouched `__DATA`/`__bss`, fresh heap) used to fail the
+host's debug access: the draw dropped its geometry (`failed to read ... array data`, `cannot read N index
+bytes`) and a glGen* name written there was lost. The host now probes each page through the caller's
+MMU and, if one would fault, raises that fault as a data abort on the trapping mcr, so the kernel pages it
+in and the call is reissued (`gles_guest_rw` in `hw/arm/guest-gles.c`); stores probe for write access, so
+copy-on-write and modified-bit tracking see them too. The fixture now draws from static tables alone in
+their pages and writes a texture name into an untouched `__bss` page: readback PASS on 8C148 and 7B500
+(before: magenta where the cyan quad goes, name 0).
 
 ## What is done (2026-09-27, earlier session)
 

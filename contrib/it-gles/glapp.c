@@ -235,9 +235,12 @@ static unsigned es2_program(void *h)
     return prog;
 }
 
+/* Alone in a page nothing else touches, so the draw is its first access and
+ * the host has to fault it in (a static table used to draw nothing). */
+static const float quad[1024] __attribute__((aligned(4096))) = { -1, -1,  0, -1,  -1, 1,  0, 1 };
+
 static void draw_frame(void)
 {
-    static const float quad[8] = { -1, -1,  0, -1,  -1, 1,  0, 1 };
 
     p_glBindFramebufferOES(GL_FRAMEBUFFER_OES, g_fb);
     p_glViewport(0, 0, VIEW_W, VIEW_H);
@@ -249,16 +252,19 @@ static void draw_frame(void)
     p_glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 #else
+/* A quad over the left half, in a magenta field. Both colours are ones no
+ * part of the iOS UI produces, so a screenshot cannot be read two ways. It is
+ * alone in a page nothing else touches, so the draw is its first access and
+ * the host has to fault it in (a static table used to draw nothing). */
+static const float quad[1024] __attribute__((aligned(4096))) = {
+    0.0f,           0.0f,
+    VIEW_W / 2.0f,  0.0f,
+    0.0f,           (float)VIEW_H,
+    VIEW_W / 2.0f,  (float)VIEW_H,
+};
+
 static void draw_frame(void)
 {
-    /* A quad over the left half, in a magenta field. Both colours are ones no
-     * part of the iOS UI produces, so a screenshot cannot be read two ways. */
-    static const float quad[8] = {
-        0.0f,           0.0f,
-        VIEW_W / 2.0f,  0.0f,
-        0.0f,           (float)VIEW_H,
-        VIEW_W / 2.0f,  (float)VIEW_H,
-    };
 
     p_glBindFramebufferOES(GL_FRAMEBUFFER_OES, g_fb);
     p_glViewport(0, 0, VIEW_W, VIEW_H);
