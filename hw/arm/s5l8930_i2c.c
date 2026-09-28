@@ -1,7 +1,7 @@
 /*
  * S5L8930 ("A4") I2C controller and the Dialog D1815 PMU that hangs off i2c0.
  *
- * Controller contract: docs/ipad1/research/gap-kernel-platform-mmio.md §4.2,
+ * Controller contract: docs/research/gap-kernel-platform-mmio.md §4.2,
  * re-checked against the 7B500 AppleS5L8920XI2CController (enable c06377b4,
  * transfer c063792c, interruptFilter c0637888). PMU register traffic: §4.1,
  * re-checked against 7B500 AppleD1815PMU (start c0662a60, IRQ c06622ec,

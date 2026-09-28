@@ -1,3 +1,5 @@
+> Status: research, superseded by `hw/arm/s5l8930_iop.c` (the IOP HLE).
+
 ## 1. IOP ISA and execution model
 
 **Verdict: ARMv4 (ARM7TDMI-class, "ARM7M" = ARM7 with long-multiply), ARM state only, no MMU, no cache-CP15, vector table at 0.**

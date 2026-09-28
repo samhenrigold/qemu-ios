@@ -1,3 +1,5 @@
+> Status: research, superseded by the manifest pipeline (`imgtools/device.py`, `../ipod/from-ipsw.md`) and `../ipad1/iboot.md`; the seal step it describes is `imgtools/ipad1_seal.py`.
+
 # iPad 1 / 7B500: first userland attempt (root mount → launchd → SpringBoard)
 
 What the emulator needs the moment the kernel says `BSD root: disk0s1`, how it was built, and what to watch on

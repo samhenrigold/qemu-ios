@@ -1,3 +1,5 @@
+> Status: research, superseded by `hw/arm/ipod_touch_amc.c`, `ipod_touch_mpvd.c`, `ipod_touch_h264.c` and the media paragraph of `../capabilities.md`.
+
 # Media investigation, 7E18 (2026-09-04)
 
 Spore's intro is MPEG-4 Part 2 video, 480×320, with AAC audio. Its game music

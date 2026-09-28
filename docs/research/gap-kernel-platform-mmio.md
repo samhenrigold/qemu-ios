@@ -1,3 +1,5 @@
+> Status: research, superseded by `hw/arm/s5l8930_*.c`, `include/hw/arm/s5l8930.h` and `../ipad1/addresses-7B500.md`.
+
 # iOS 3.2 (7B367) kernel-side MMIO contract for K48AP/S5L8930 — from disassembly of `$SP/dec/kernelcache.k48.mach`
 
 Method: carved every prelinked kext (load addr/size from `__PRELINK_INFO`), wrapped as ELF, `llvm-objdump --triple=thumbv7` (kernel osfmk/arm low-level code at 0xc005a000-0xc0068000 is ARM mode, disassembled with `--triple=armv7`). Derived listings live in `$SP/kx/<kext>.dis` (VAs = kernel VAs); tools `$SP/kx/{carve,mmio,vcall,kstr,rng}.py`. All addresses below are kernel VAs in the 7B367 kernelcache unless noted. `SP` = `/tmp/claude-0/-home-user/2fb4038f-ca86-59b7-95f7-7e88ca8c44ec/scratchpad`. `DT` = `$SP/dec/dt.txt` (arm-io `ranges` maps child 0x0..0x3FFFFFFF → 0x80000000, so DT `reg 0x3f100000` = phys 0xBF100000, `0x07000000` = 0x87000000; dt.txt:102).

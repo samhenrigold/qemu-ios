@@ -292,7 +292,7 @@ nand-current.new. 538 differing rows, every one in these classes:
 - iPad `tests/ipad1/fresh-device.sh manifests/ipad1-7B500.json` (through the refactored builder), before and after
   the change: lock PASS, no FTL rescan, clean power-off in 14.4 s. The boot step fails on "screen lit: never"
   because without an activation hook the device sits at "Connect to iTunes" and cannot be unlocked
-  (userland-boot.md: "Without an activation hook the device stops at Connect to iTunes").
+  (docs/research/userland-boot.md: "Without an activation hook the device stops at Connect to iTunes").
 
 ## Boot-chain fidelity verification (2026-09-28)
 

@@ -1,7 +1,7 @@
 /*
  * iPad 1 (K48AP): Apple S5L8930 "A4", Cortex-A8, 256 MiB.
  *
- * Milestone 1 of docs/ipad1/PLAN.md: enter the iOS 3.2.2 (7B500) kernel
+ * Milestone 1 of docs/archive/ipad1-PLAN.md: enter the iOS 3.2.2 (7B500) kernel
  * directly, with no bootrom or iBoot, and get its console on UART0. Only the
  * devices the kernel's platform expert needs are modelled. Every other
  * peripheral address falls into an unimplemented-device window that logs the

@@ -63,7 +63,7 @@ The NAND system volume must contain the original IPSW **img3** kernelcache at
 `/System/Library/Caches/com.apple.kernelcaches/kernelcache`. Add
 `--kernelcache /path/to/ipsw/kernelcache.release.k48` to the existing
 `ipad1_rootfs.py build` command. Then bake and seal the store using the normal
-[rootfs workflow](userland-boot.md). Do not rebuild the shared golden store;
+[rootfs workflow](../research/userland-boot.md). Do not rebuild the shared golden store;
 prepare a separate store for iBoot. The one-time sealing boot deliberately
 halts before displaying the lock screen.
 
