@@ -104,7 +104,8 @@ def logo_segments(blob, fb_pa):
 
     iBootIm: "iBootIm\0", adler32, "lzss", format tag (only "grey" here: grey + inverted alpha,
     composited over black), u16 width, height; LZSS data at 0x40. The panel scans out landscape and
-    portrait UI arrives turned a quarter clockwise into it, so the logo is turned the same way."""
+    portrait UI arrives turned a quarter counter-clockwise into it (its top along the panel's left edge; the
+    app turns the panel a quarter clockwise to stand it up), so the logo is turned the same way."""
     assert blob[:8] == b"iBootIm\0" and blob[12:16] == b"sszl", "not an LZSS iBootIm"
     assert blob[16:20] == b"yerg", "only the grey iBootIm format is handled"
     w, h = struct.unpack_from("<HH", blob, 20)
@@ -116,7 +117,7 @@ def logo_segments(blob, fb_pa):
         for lx in range(w):
             grey, clear = px[(ly * w + lx) * 2], px[(ly * w + lx) * 2 + 1]
             v = grey * (255 - clear) // 255
-            struct.pack_into("<I", rows, lx * stride + (x0 + h - 1 - ly) * 4, 0xFF000000 | v * 0x010101)
+            struct.pack_into("<I", rows, (w - 1 - lx) * stride + (x0 + ly) * 4, 0xFF000000 | v * 0x010101)
     return [(fb_pa, stride * FB_HEIGHT, None), (fb_pa + y0 * stride, len(rows), bytes(rows))]
 
 
@@ -485,11 +486,11 @@ def selfcheck():
     assert lzss(bytes([0b011, ord("a"), ord("b"), 0xEE, 0xF3])) == b"abababab"
     (fb, fb_len, zero), (pa, n, rows) = logo_segments(blob, 0x4F700000)
     assert (fb, fb_len, zero) == (0x4F700000, 1024 * 768 * 4, None) and n == 1024 * 4 * 2
-    # turned a quarter clockwise: the logo's left column becomes its (single-row) top, at x0 + h - 1
+    # turned a quarter counter-clockwise: the logo's top row becomes its left column, its left end the bottom
     x0, y0 = (1024 - 1) // 2, (768 - 2) // 2
     assert pa == 0x4F700000 + y0 * 4096
-    assert struct.unpack_from("<I", rows, x0 * 4)[0] == 0xFFFFFFFF      # row 0 <- logo x 0 (white)
-    assert struct.unpack_from("<I", rows, 4096 + x0 * 4)[0] == 0xFF000000   # row 1 <- logo x 1 (clear)
+    assert struct.unpack_from("<I", rows, x0 * 4)[0] == 0xFF000000      # row 0 <- logo x 1 (clear)
+    assert struct.unpack_from("<I", rows, 4096 + x0 * 4)[0] == 0xFFFFFFFF   # row 1 <- logo x 0 (white)
 
 
 if __name__ == "__main__":
