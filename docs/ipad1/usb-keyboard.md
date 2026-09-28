@@ -137,12 +137,37 @@ screendump.
   3.2 iPad: dismiss the alert and the keyboard works. It isn't caused by the root hubs, the port, or
   anything else in our model.
 
-Every way to suppress it is non-stock:
-- Put a fake audio, storage or PTP interface in the same notification batch as the keyboard.
-- Patch or disable the mounter job. Disabling it also loses CCK photo import.
+**Suppressed through guest services since package serial 3 (2026-09-28).** It is not fidelity, it is
+a stock quirk that also keeps the iPad from ever auto-locking, so it goes. `it_msmquiet.dylib`
+(contrib/it-msmquiet), one armv7 binary for every iOS, is loaded into the mounter's own job (`bake`
+adds `DYLD_INSERT_LIBRARIES` to `com.apple.mobile.storage_mounter.plist`, the same generic step for
+every build; the package delivers the dylib as the hook `/usr/local/lib/it_msmquiet.dylib`) and drops
+that one notice at its source by dyld interposing, identified at run time by the text the mounter's own
+bundle localises the notice's key to, in whatever language is set. The versions differ and the shim
+adapts without a table:
+- 3.2 / 3.2.2 raise it with `CFUserNotificationDisplayNotice` and one key, `UNSUPPORTED_FAILURE`
+  ("The attached USB device is not supported.", button `DISMISS`).
+- 4.2.1 builds a `CFUserNotificationCreate` alert from `UNSUPPORTED_FAILURE_TITLE` / `_BODY` ("Cannot
+  Use Device" / "The connected USB device is not supported.", button `BUTTON_LABEL`) and keeps it to
+  `CFUserNotificationCancel` on detach. The title is also the power-hungry notice's, so the body decides.
+  A NULL from Create is a path the mounter handles (it logs "Could not create user notification" and
+  carries on; the detach path checks for NULL before cancelling; disassembly at 0x37d6-0x38a2, 0x2e64).
+- The shim logs `it_msmquiet: hid the USB "not supported" notice` on the console; every other notice
+  (mount, verification, power-hungry, camera import) goes through untouched.
+- It ships in the k48 families only. The iPod has no USB host and no such job, and its armv6 package is
+  unchanged.
 
-So a stock boot with a USB keyboard shows this alert once per attach, as a real iPad does, and it is
-left as is. If the app wants it gone, it can auto-tap Dismiss after attaching the keyboard.
+Ruled out: dismissing it from SpringBoard (the iPad injects nothing into SpringBoard, and the alert
+would still flash before a dismiss); stopping the mounter job (on 4.2.1 the same daemon mounts developer
+disk images, `DiskImageType Developer`, and CCK storage); a preference (neither binary imports
+CFPreferences; 4.2.1's "Platform is configured for camera import" gate is an IORegistry property and
+would drop CCK import too). Rollback: `serial 0` puts the seed package's shim back.
+
+Upgrading an existing device: its mounter has already loaded the old shim when it_boot replaces the
+hook, so the hook resprings (`respring` in mkpkg.py), which drops the alert SpringBoard already holds;
+from the next boot the mounter starts with the new shim. tests/ipad1/regress.py's boot check asserts the
+result instead of tapping the alert away: unlock with the keyboard, a lit home screen 10 s later, the
+shim's console line (or the package installed this boot), and the panel going dark on auto-lock.
 
 Harness notes:
 - `usb-kbd` activates itself as the head keyboard handler, so while it is attached, host keys go
