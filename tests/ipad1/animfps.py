@@ -2,6 +2,7 @@
 """Frames per second while CoreAnimation animates, for comparing software and GL CA.
 
     tests/ipad1/animfps.py STORE OUT
+    tests/ipad1/animfps.py DEVICE OUT     # an ipad1_device.py device dir: its nand, kboot.bin, die-id
 
 Boots STORE on an overlay in OUT (the store is never written), unlocks, then runs a fixed scenario
 (search-page swipe and back, open+close Notes, open+close Calendar, twice) while a second thread
@@ -19,8 +20,14 @@ store, out = sys.argv[1:3]
 os.makedirs(out, exist_ok=True)
 sock = "/tmp/a4g-anim-%d.qmp" % os.getpid()
 serial = out + "/serial.log"
-qemu = subprocess.Popen(["timeout", "500", os.path.join(ROOT, "build/qemu-system-arm"),
-    "-machine", "ipad1,kboot=%s,nand=%s,nand-overlay=%s/overlay" % (os.path.expanduser("~/Developer/qemu-ios-files/ipad1/7B500/k48-kboot.bin"), store, out),
+machine = "ipad1,kboot=%s,nand=%s,nand-overlay=%s/overlay" % (os.path.expanduser("~/Developer/qemu-ios-files/ipad1/7B500/k48-kboot.bin"), store, out)
+if os.path.exists(os.path.join(store, "device.lock.json")):
+    import json
+    lock = json.load(open(os.path.join(store, "device.lock.json")))
+    machine = "ipad1,kboot=%s/kboot.bin,nand=%s/nand,nand-overlay=%s/overlay,die-id=%s" % (
+        store, store, out, lock["identity"]["die_id"])
+qemu = subprocess.Popen(["timeout", "500", os.environ.get("QEMU", os.path.join(ROOT, "build/qemu-system-arm")),
+    "-machine", machine,
     "-display", "none", "-monitor", "none", "-serial", "file:" + serial, "-qmp", "unix:%s,server,nowait" % sock],
     stdout=subprocess.DEVNULL, stderr=open(out + "/qemu.log", "w"))
 try:
