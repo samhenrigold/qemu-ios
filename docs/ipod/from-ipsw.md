@@ -21,7 +21,7 @@ tests/ipod/regress.py --qemu build/qemu-system-arm --device OUT --checks boot
 |---|---|---|---|
 | 3.1.3 7E18 | complete | SpringBoard up, GL CA through the shim, "Connect to iTunes" (lit, see below) | activation |
 | 4.2.1 8C148 | complete (NOR, NAND, GLES check, AppSync, gid-blobs) | iBoot-931.71.16 runs and reads the NOR; `[NAND] findNandInfo: No NAND Detected`, recovery mode | 4.x NAND identification |
-| 2.1.1 5F138 | complete (no shared cache: no AppSync, no GLES shim) | nothing on serial (bootrom → LLB → iBoot stops) | LLB rejects the IPSW iBoot |
+| 2.1.1 5F138 | complete (no shared cache: no AppSync, no GLES shim) | generated NOR reaches iBoot, kernel and userland | logo stall under investigation |
 
 ### P1, 7E18: activation
 
@@ -67,12 +67,20 @@ Activation will block after that, as on 7E18.
 name, `ipad1_fw.components`), the final partial AES block of 2.x img3 left in plaintext (detected from the
 kernelcache's Adler-32 and applied to every component), NAND epoch 1, SHSH not wrapped, no direct iBoot
 (2.x boots bootrom → NOR LLB), no shared cache (AppSync off in the manifest: 2.x's libmis patch is a fixed
-offset, `patch_libmis.py`, so it is not used), firmware's own libncurses kept. With the synthesized NOR, the
-serial port stays silent. With the old 2.1.1 NOR dump in its place (diagnostic only), iBoot-385.22 and xnu-1228.7.27
-run and the boot stalls at the logo (lit=9852). The two NORs' LLBs are identical, so the difference is in what LLB
-loads. build_nor.py already notes that the dump's iBoot differs from the IPSW's only in its RSA signature
-(personalised). Next: compare the dump's iBoot/SysCfg/nvram with the synthesized ones one region at a time.
-Estimate: a day for the NOR, unknown for the logo stall.
+offset, `patch_libmis.py`, so it is not used), firmware's own libncurses kept. The generated NOR must wrap **only iBoot's SHSH** under the emulated
+UID. LLB unwraps that signature, while 2.x iBoot verifies its other NOR images
+raw. The previous all-or-nothing `--no-wrap-shsh` setting was wrong.
+`--wrap-shsh-types ibot` now expresses this mixed layout, and the board builder
+selects it for 2.x. The lock records `wrap_shsh_types`; the older `wrap_shsh`
+boolean denotes the all-images convention.
+
+Measured: the old generated NOR differs from the working dump's image area
+only at iBoot's 128-byte SHSH. Wrapping that SHSH reproduces the dump's image
+area exactly. With signature forging disabled, gdb reaches the stock iBoot
+entry through SecureROM and LLB; serial then reaches xnu-1228.7.27 and userland.
+The remaining screen stall at lit=9852 is independent of NOR validation.
+`tests/ipod/test_nor_wrapping.py` checks mixed/all/no wrapping and preservation
+of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 
 ## Inventory: what the shipping image (nand-current.new) depends on, and where each comes from now
 

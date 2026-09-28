@@ -42,16 +42,16 @@ pack them the way a restore would: wrap each SHSH under the UID key of the
 device this NOR is for.  That is what makes iBoot load and draw the Apple logo
 by itself, and load the device tree, with no patching of iBoot at all.
 
-2.x iBoot has no such step (every SHSH in a stock 2.1.1 NOR dump is plaintext
-and verifies raw), so use --no-wrap-shsh when building a 2.x image.
+2.x iBoot has no such step for the images it loads, but its LLB unwraps the
+iBoot signature. Use --wrap-shsh-types ibot for that format. Wrapping this one
+signature reproduces the stock 2.1.1 NOR image area byte for byte.
 
 Shipped IPSW img3 files are not granularity-aligned, so packing an image means:
 pad it with zeros up to the next granularity boundary and rewrite fullSize (and
 only fullSize) to the padded size.  sizeNoPack and sigCheckArea are left alone,
 which keeps the signature blob's coverage intact.  This rule reproduces 9 of the
-10 images in the stock 5F138 NOR byte for byte; the tenth, iBoot, differs only
-in its 128-byte RSA signature because the stock dump came off a device that was
-restored with a personalized iBoot.
+10 images in the stock 5F138 NOR byte for byte before wrapping; the tenth,
+iBoot, becomes identical after UID wrapping its 128-byte RSA signature.
 
 Usage:
     build_nor.py --base nor_n72ap.bin \\
@@ -247,7 +247,7 @@ def all_flash_order(all_flash):
 
 
 def build(base_path, all_flash, out_path, order, verbose=True,
-          uid_key=DEFAULT_UID_KEY, base=None):
+          uid_key=DEFAULT_UID_KEY, base=None, wrap_types=None):
     nor = bytearray(base if base is not None else open(base_path, "rb").read())
     gran, start_hi, start_lo, _ = read_img2(nor)
     image_start = gran * (start_hi + start_lo)
@@ -260,11 +260,16 @@ def build(base_path, all_flash, out_path, order, verbose=True,
     # Wipe the old image area, keeping SysCfg below it and nvram above it.
     nor[image_start:NVRAM_OFF] = b"\x00" * (NVRAM_OFF - image_start)
 
+    if wrap_types is not None and set(wrap_types) - set(order):
+        raise SystemExit("SHSH wrap types must belong to the selected image set")
+    if wrap_types and uid_key is None:
+        raise SystemExit("SHSH wrap types require a UID key")
+
     off = image_start
     for ident in order:
         name, data = available[ident]
         wrapped = False
-        if uid_key is not None:
+        if uid_key is not None and (wrap_types is None or ident in wrap_types):
             data, wrapped = wrap_shsh(data, uid_key)
             if not wrapped:
                 # FATAL, deliberately. A NOR whose images carry plaintext SHSH
@@ -348,8 +353,11 @@ def main():
                     help="instead of building, walk a NOR image as LLB would")
     ap.add_argument("--uid-key", default=DEFAULT_UID_KEY.hex(),
                     help="device UID key (32 hex digits) to wrap each SHSH for")
-    ap.add_argument("--no-wrap-shsh", action="store_true",
-                    help="leave the SHSH tags in plaintext; 2.x iBoot wants this")
+    wrapping = ap.add_mutually_exclusive_group()
+    wrapping.add_argument("--no-wrap-shsh", action="store_true",
+                          help="leave every SHSH tag in plaintext")
+    wrapping.add_argument("--wrap-shsh-types",
+                          help="wrap only these comma-separated image types (2.x: ibot)")
     ap.add_argument("--k48", action="store_true",
                     help="iPad 1 (S5L8930) NOR: K48AP image order and the "
                          "emulated S5L8930 UID; implies --types/--uid-key")
@@ -366,7 +374,8 @@ def main():
         types = K48_ORDER
         uid = None if args.no_wrap_shsh else S5L8930_UID_KEY
     base = synth_base(json.load(open(args.identity))) if args.identity else None
-    build(args.base, args.all_flash, args.out, types, uid_key=uid, base=base)
+    build(args.base, args.all_flash, args.out, types, uid_key=uid, base=base,
+          wrap_types=args.wrap_shsh_types.split(",") if args.wrap_shsh_types is not None else None)
 
 
 if __name__ == "__main__":
