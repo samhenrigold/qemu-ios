@@ -1,42 +1,15 @@
 #!/usr/bin/env python3
 """Native surface import/writeback check; macOS media and OpenGL access required."""
-from pathlib import Path
-import subprocess
-import tempfile
+from gles_harness import root, src as source, function, PRELUDE, build_and_run
 
-root = Path(__file__).resolve().parents[2]
-source = (root / 'hw/arm/gles-host.c').read_text()
-helpers = source[source.index('static bool gles_surface_range('):source.index('static int64_t gles_host_call_1(')]
-pvrtc_types = source[source.rfind('typedef struct {', 0, source.index('} GLESPVRTCLevel;')):
-                     source.index('} GLESPVRTC;')+len('} GLESPVRTC;')]
+# The IOSurface import/sync/refresh block, which ends where the ES 2.0 section begins.
+helpers = source[source.index('static bool gles_surface_range('):source.rfind('\n/*', 0, source.index(' ES 2.0 ---'))]
 tracking = source[source.index('static GLESPVRTC *gles_pvrtc_texture('):source.index('static int64_t gles_generate_mipmap(')]
-preamble = r'''
-#define GL_SILENCE_DEPRECATION
-#include <OpenGL/OpenGL.h>
-#include <OpenGL/gl.h>
-#include <OpenGL/glext.h>
-#include <VideoToolbox/VideoToolbox.h>
-#include <glib.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <assert.h>
-#include <string.h>
+preamble = PRELUDE + r'''
 #include <sys/mman.h>
-#define GLES_MAX_TEXUNITS 8
-#define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
-#define GLES_SURFACE_BGRA32 0x42475241
-#define GLES_SURFACE_RGBA32 0x52474241
-#define GLES_SURFACE_RGB555 0x4c353535
-#define GLES_SURFACE_RGB565 0x4c353635
-struct CPUState { int unused; };
-typedef struct CPUState CPUState;
-typedef struct { uint32_t base, stride, width, height, format, uv, uvstride; } GLESSurface;
-''' + pvrtc_types + r'''
-static struct { GHashTable *surfaces, *pvrtc; GLESPVRTC default_pvrtc; GLenum error; uint32_t bound_framebuffer; } gh;
-static int64_t gles_reject(GLenum e) {if(!gh.error)gh.error=e;return -1;}
-''' + tracking + r'''
+''' + function('gles_reject(') + tracking + r'''
 static uint8_t ram[0x100000];
-static int cpu_memory_rw_debug(CPUState *cpu, uint64_t a, uint8_t *p, size_t n, int write)
+int gles_guest_rw(CPUState *cpu, vaddr a, void *p, size_t n, bool write)
 {
     if (a < 0x10000000 || a + n > 0x10000000 + sizeof(ram)) return -1;
     if (write) memcpy(ram + (a - 0x10000000), p, n);
@@ -56,7 +29,6 @@ swap_start = (root / 'contrib/it-gles/mbxshim.c').read_text().index('static int 
 swap_source = (root / 'contrib/it-gles/mbxshim.c').read_text()[swap_start:]
 swap_source = swap_source[:swap_source.index('\n}') + 2]
 abi = r'''
-#define GLES_OP_BIND_SURFACE 0x1003
 #define CA_FOURCC_555L GLES_SURFACE_RGB555
 static void w(const char *s) {}
 static void wd(unsigned v) {}
@@ -219,17 +191,18 @@ int main(void)
     memset(ram,0,20);assert(gles_refresh_surfaces(NULL));
     glGetTexImage(GL_TEXTURE_RECTANGLE_ARB,0,GL_BGRA,GL_UNSIGNED_BYTE,got);
     for(int i=0;i<8;i++) assert(!memcmp(got+i*4,"\0\0\0\xff",4));
+    /* ES1 refreshes only enabled targets; a bound ES 2.0 program samples without glEnable. */
+    glDisable(GL_TEXTURE_RECTANGLE_ARB);for(int y=0;y<2;y++) memcpy(ram+y*10,colors,8);
+    assert(gles_refresh_surfaces(NULL));
+    glGetTexImage(GL_TEXTURE_RECTANGLE_ARB,0,GL_BGRA,GL_UNSIGNED_BYTE,got);
+    for(int i=0;i<8;i++) assert(!memcmp(got+i*4,"\0\0\0\xff",4));
+    gh.program=1;assert(gles_refresh_surfaces(NULL));gh.program=0;
+    glGetTexImage(GL_TEXTURE_RECTANGLE_ARB,0,GL_BGRA,GL_UNSIGNED_BYTE,got);
+    for(int y=0;y<2;y++) assert(!memcmp(got+y*16,expected,16));
     munmap(fault_pages,16384);
     g_hash_table_destroy(gh.surfaces);
     CGLSetCurrentContext(NULL);CGLDestroyContext(context);
-    puts("PASS: IOSurface page faults and ABI, native textured draw, NV12 ranges, FBO writeback and bounds");
+    puts("PASS: IOSurface page faults and ABI, native textured draw, NV12 ranges, FBO writeback, ES 2.0 refresh and bounds");
 }
 '''
-with tempfile.TemporaryDirectory(prefix='it-gles-surface-') as tmp:
-    c = Path(tmp) / 'check.c'; exe = Path(tmp) / 'check'
-    c.write_text(preamble + helpers + abi + shim + finish_source + swap_source + check)
-    flags = subprocess.check_output(['pkg-config', '--cflags', '--libs', 'glib-2.0'], text=True).split()
-    subprocess.run(['clang', '-g', '-Wno-pointer-to-int-cast', '-Wno-pointer-bool-conversion', '-fsanitize=address,undefined', '-fno-sanitize-recover=all', str(c), '-o', str(exe),
-        *flags, '-framework', 'OpenGL', '-framework', 'VideoToolbox', '-framework', 'CoreVideo',
-        '-framework', 'CoreFoundation', '-framework', 'CoreMedia'], check=True)
-    subprocess.run([str(exe)], check=True)
+build_and_run(preamble + helpers + abi + shim + finish_source + swap_source + check, 'it-gles-surface-')
