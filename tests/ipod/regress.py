@@ -362,6 +362,8 @@ class Device:
         # free: 3.1.3's driver associates and then keeps the SDIO bus busy, and
         # every other check pays for a radio it never looks at. run-ios3.sh
         # makes the same split (--net is separate from --appsync).
+        for key, value in sorted(getattr(cfg, "device_machine", {}).items()):
+            machine += "," + key + "=" + str(value).replace(",", ",,")
         argv = [cfg.qemu, "-M", machine + (",wifi=on" if cfg.wifi else "")]
         argv += ["-cpu", cfg.cpu] if cfg.cpu else []
         argv += ["-m", cfg.mem, "-display", "none",
@@ -1737,11 +1739,16 @@ def main():
         return run_ledger(cfg)
 
     cfg.files = os.path.expanduser(cfg.files_dir)
+    cfg.device_machine = {}
     if cfg.device:
         for attr, name in (("base_nand", "nand"), ("nor", "nor.bin"), ("direct_iboot", "iBoot.bin"),
                            ("gid_blobs", "gid-blobs.bin")):
             if getattr(cfg, attr) is None and os.path.exists(os.path.join(cfg.device, name)):
                 setattr(cfg, attr, os.path.join(cfg.device, name))
+        # machine options the device was made for (device.lock.json "machine", e.g. aes-uid=engine)
+        lock = os.path.join(cfg.device, "device.lock.json")
+        if os.path.exists(lock):
+            cfg.device_machine = json.load(open(lock)).get("machine") or {}
     # NAND, NOR and iBoot are one set and cannot be mixed: nand-canonical is a
     # 2.1.1 image, and against 3.1.3's iBoot its FTL will not even open --
     # "NAND initialisation failed due to format mismatch", "root filesystem

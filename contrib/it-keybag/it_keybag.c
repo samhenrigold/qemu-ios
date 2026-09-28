@@ -29,9 +29,14 @@ extern int unmount(const char *, int);
 
 #define RB_HALT 0x08
 #define RB_QUICK 0x400          /* skip proc_shutdown; caches are still synced */
+/* The iPad's data volume is disk0s2; the iPod's generated NAND is one volume, disk0s1, with the data
+ * directory at /private/var (contrib/it-keybag/build-ipod.sh overrides these). */
+#ifndef DATA_DEV
 #define DATA_DEV "/dev/disk0s2"
 #define DATA_MNT "/mnt2"
-#define KEYBAG DATA_MNT "/keybags/systembag.kb"
+#define DATA_DIR DATA_MNT
+#endif
+#define KEYBAG DATA_DIR "/keybags/systembag.kb"
 
 static FILE *con;
 
@@ -104,7 +109,7 @@ int main(void)
         halt("FAILED: mount_hfs " DATA_DEV " " DATA_MNT);
         return 1;
     }
-    int r = Create(NULL, DATA_MNT);
+    int r = Create(NULL, DATA_DIR);
     int ok = !r && !stat(KEYBAG, &st) && st.st_size > 0;
     fprintf(con, "it_keybag: MKBKeyBagCreateSystem -> %d, %s %lld bytes\n", r, KEYBAG,
             ok ? (long long)st.st_size : -1LL);

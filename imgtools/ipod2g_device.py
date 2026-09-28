@@ -210,6 +210,22 @@ def build(ctx):
     guest_package = baked.pop("guest_package")
     derived.update(baked)
 
+    # 4.x data protection: effaceable storage (in NOR) + the system keybag (on the volume), made the way a
+    # restore makes them, from the IPSW's own restore ramdisk booted as a SecureRoot (ipod2g_keybag.py).
+    # It runs, and the device then boots, with aes-uid=engine: the legacy UID path cannot hold a keybag.
+    machine = {}
+    if opt.get("data_protection"):
+        from ipad1_fw import components
+        helper = os.path.join(ROOT, "build/ipod-guest/it_keybag")
+        if not os.path.exists(helper):
+            raise SystemExit("data_protection: build %s first (contrib/it-keybag/build-ipod.sh)" % helper)
+        ramdisk = components(z)["UpdateRamDisk"][:-4] + "-ramdisk.dmg"
+        step("data protection: restore-ramdisk keybag one-shot",
+             [sys.executable, f"{HERE}/ipod2g_keybag.py", out, "--dec", dec, "--ramdisk", ramdisk,
+              "--helper", helper, "--qemu", os.path.abspath(ctx.a.qemu)])
+        machine["aes-uid"] = "engine"
+        derived["keybag_ramdisk"] = ramdisk
+
     pages = sorted(os.path.join(d, n) for d in ("cs0", "cs1", "cs2", "cs3") for n in os.listdir(os.path.join(nand, d)))
     listing = hashlib.sha256()
     for p in pages:
@@ -220,6 +236,8 @@ def build(ctx):
         tools["contrib/it-gles/MBXGLEngine"] = sha(os.path.join(ROOT, "contrib/it-gles/MBXGLEngine"))
     if opt.get("appsync"):
         tools["build/appsync/libappsync.dylib"] = sha(os.path.join(ROOT, "build/appsync/libappsync.dylib"))
+    if opt.get("data_protection"):
+        tools["build/ipod-guest/it_keybag"] = sha(os.path.join(ROOT, "build/ipod-guest/it_keybag"))
     return {
         "ship": [nand, nor, gid] + ([iboot_out] if derived["direct_iboot"] else []),
         "built": tools,
@@ -229,7 +247,8 @@ def build(ctx):
         "outputs": {"nand": {"path": nand, "pages": len(pages), "listing_sha256": listing.hexdigest()},
                     "nor": {"path": nor, "sha256": sha(nor)}, "iboot": {"path": iboot_out, "sha256": sha(iboot_out)} if derived["direct_iboot"] else None,
                     "gid_blobs": {"path": gid, "sha256": sha(gid)}},
-        "lock": {"derived": derived, "guest_package": guest_package},
+        # machine options the device must boot with (regress.py --device applies them)
+        "lock": {"derived": derived, "guest_package": guest_package, "machine": machine},
     }
 
 
