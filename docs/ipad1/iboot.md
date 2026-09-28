@@ -2,7 +2,37 @@
 
 The `ipad1` machine can boot the stock 7B500 kernelcache through iBoot-817.29,
 including NOR DeviceTree loading, NAND filesystem lookup, decompression, and the
-ARM kernel handoff. Direct kernel boot remains the default.
+ARM kernel handoff. `device.py` / `ipad1_device.py` now build and seal through
+real iBoot by default. Test runners select a device directory with `--device`;
+`--kboot` remains an explicit bring-up fallback.
+
+A fresh device contains `iBoot.bin`, `nor.bin`, `gid-blobs.bin`, and `nand/`.
+The key file is generated from that IPSW and its catalog key page; the emulator
+has no compiled 7B500 key table. A4 records contain a 48-byte KBAG followed by its 48-byte IV/key plaintext
+(96 bytes per record). Both production and development KBAGs are extracted
+explicitly: each wraps the same DATA encryption key under a different GID.
+
+```sh
+python3 imgtools/device.py create manifests/ipad1-7B500.json /path/to/device \
+  --iboot-patcher /path/to/iBoot32Patcher
+python3 tests/ipad1/regress.py --device /path/to/device
+```
+
+`IBOOT32PATCHER` or a patcher on PATH can supply the builder dependency.
+The full regression needs an activated fixture; a device built without an
+activation hook displays Connect to iTunes. `tests/ipad1/fresh-device.sh`
+checks two clean boots of either kind. Test defaults point to
+`~/Developer/qemu-ios-files/ipad1/repro/default-iboot`; create it explicitly or
+pass `--device`. Older direct-kernel NAND stores lack the IMG3 kernelcache and
+must be rebuilt before using this default.
+
+The generated NOR DeviceTree enables HSIC for the emulated USB keyboard, as
+the former direct-kernel DeviceTree did. This is board configuration data,
+re-encrypted with the selected catalog key.
+
+The 4.x data-protection preparation still explicitly boots its helper ramdisk
+with `kboot`; normal sealing and runtime boots use iBoot. This is not yet a
+stock USB restore pipeline.
 
 This path uses **pattern-patched iBoot**, not verified secure boot. The stock
 IPSW images are unpersonalized, and the captured device kernelcache's signature
@@ -39,13 +69,18 @@ halts before displaying the lock screen.
 
 ```sh
 build/qemu-system-arm \
-  -machine ipad1,iboot=/path/to/prepared/iBoot.bin,nor=/path/to/prepared/nor.bin,nand=/path/to/nand,nand-overlay=/path/to/overlay \
+  -machine ipad1,iboot=/path/to/device/iBoot.bin,nor=/path/to/device/nor.bin,gid-blobs=/path/to/device/gid-blobs.bin,die-id=WORD2:WORD3,nand=/path/to/device/nand,nand-overlay=/path/to/overlay \
   -serial stdio
 
 python3 tests/ipad1/iboot-check.py \
   --iboot /path/to/prepared/iBoot.bin --nor /path/to/prepared/nor.bin \
+  --gid-blobs /path/to/device/gid-blobs.bin --die-id WORD2:WORD3 \
   --nand /path/to/nand --out /tmp/k48-check --unlock
 ```
+
+Take WORD2:WORD3 from the device identity.json `die-id` pair; a zero identity
+is rejected by iBoot. Use a private writable `nor-rw=` copy for persistent
+NVRAM and 4.x effaceable storage.
 
 The check captures the lock screen and optional unlock, then requests a clean
 shutdown. Reuse the same output directory to verify a persistent second boot.
@@ -118,3 +153,83 @@ firmware and NOR, `nand/` is an independent base, and `check/overlay/` is the
 persistent guest state. `run.sh` launches that configuration; use the guest's
 power-off slider before closing the emulator. These proprietary firmware and
 NAND files are local artifacts and are not committed to the repository.
+
+## SecureROM capture, September 28
+
+A RAM-only limera1n/DFU exec read captured the physical iPad's 64 KiB ROM.
+SHA-256: `4f34652a238a57ae0018b6e66c20a240cdbee8b4cca59a99407d09f83ea8082d`,
+matching ipwndfu's A4 reference. The local artifact is
+`~/Developer/qemu-ios-files/ipad1/securerom/SecureROM-574.4-RELEASE.dump`.
+No flash was written. A preceding iBEC probe at address zero hung its console;
+the successful ROM-stage read used the ROM alias `0xbf000000`, copied into the
+DFU upload buffer by the ROM's own memmove. Firmware remains untracked.
+
+## SecureROM, DFU and recovery USB
+
+`-machine ipad1,bootrom=ROM` maps a supplied 64 KiB ROM at reset address zero
+and its A4 alias. It is mutually exclusive with `iboot=` and `kboot=`. GPIO
+board straps now yield the measured K48 POWER_ID (`0x01020001`); the DRAM
+controller provides register readback and immediate DLL calibration completion.
+The latter represents ideal RAM timing, not an analogue DRAM timing simulation.
+
+Production fuse values remain the default. For the unpersonalized development
+certificates shipped in IPSWs, `development-fuses=on` selects the engineering
+production/ECID fuse policy. The stock ROM verifies the certificate and image,
+then decrypts with the catalog mapping of its selected development KBAG. This
+is an explicit different security configuration, not a claim that retail fuses
+accept an unpersonalized restore. Synthetic identity ECID and chip revision
+now agree with what the ROM derives from the die-ID words.
+
+On macOS the [libirecovery transport adapter](../../contrib/libirecovery-qemu/README.md)
+connects unmodified host executables to emulated USB. It is a private replacement
+transport library, not a native physical USB device. Build it, then run:
+
+```sh
+python3 tests/ipad1/restore-smoke.py \
+  --device ~/Developer/qemu-ios-files/ipad1/repro/default-iboot \
+  --rom ~/Developer/qemu-ios-files/ipad1/securerom/SecureROM-574.4-RELEASE.dump \
+  --ipsw ~/Downloads/ipad1-ios32-feasibility/iPad1,1_3.2.2_7B500_Restore.ipsw \
+  --libirecovery /tmp/libirecovery-qemu
+```
+
+The test starts isolated recovery and usbmux sockets, selects only the synthetic
+ECID, and invokes stock `idevicerestore -c -z`. `-c` disables TSS personalization
+and invokes the host tool's legacy limera1n flow; no custom firmware is supplied.
+A separate stock `irecovery -f` test also boots the unmodified iBSS directly,
+without that exploit flow. For 7B500 the restore path uses iBSS as its recovery
+loader; this firmware does not require a separate iBEC handoff.
+
+Validated: real ROM DFU (`05ac:1227`), stock iBSS recovery (`05ac:1281`), restore
+ramdisk/DeviceTree/kernel upload, USB handoff to usbmuxd, and successful
+`idevicerestore -z` termination after detecting restore mode. The ROM and
+firmware files are supplied locally and are never repository artifacts.
+
+`--erase` extends this test to a disposable APFS clone of the device NAND and a
+private NOR with boot images erased (identity/NVRAM retained). It never restores
+the selected source device in place. Logs and the disposable flash remain in
+`--out` for inspection. Without `--out`, the test creates a temporary directory.
+
+The 7B500 erase test also completed: stock `restored` created partitions and
+filesystems, ASR transferred and verified the system image, firmware/NOR was
+flashed, the NAND epoch was finalized, and the host reported **Restore Finished**.
+This is stronger than the restore-mode smoke test, but is not a verified stock
+SpringBoard boot. The restored NOR retained `auto-boot=false`; stock `irecovery
+-n` on the disposable target changed that, after which ROM → LLB → iBoot loaded
+the restored kernel. That follow-up remained at the Apple logo during a 55-second
+observation and did not complete the powerdown check. The ordinary prepared
+iBoot device continues to use the guest preparation/shims described above.
+
+Validation artifacts from September 28 (local, not committed):
+
+- `ipad1-stock-erase-final/restore.log`: full successful 7B500 erase restore.
+- `ipad1-restore-smoke-final/restore.log`: final runner/adapter restore-mode pass.
+- `ipad1-default-final-boots/`: two clean boots of the final default device.
+- `ipad1-post-rom-regress/`: boot, USB, AFC, persistence and Wi-Fi pass; browser
+  timed out during concurrent restore, then passed in `ipad1-post-rom-net/`.
+- `ipad1-post-rom-audio/`: all four waveforms correlate above 0.8. Additional
+  sound segments exposed the checker's positional matching; it now finds each
+  required sound in order without reusing events. A fresh capture in
+  `ipad1-audio-final/` passes all four checks (correlations 0.86–0.92).
+
+These directories are under `/private/tmp`. Earlier fresh builds also completed
+for 3.2/7B367 and 4.2.1/8C148. USB restore validation here is **7B500 only**.

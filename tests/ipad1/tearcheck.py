@@ -192,8 +192,9 @@ def cold_boot(a):
     td = tempfile.mkdtemp(prefix="tc-", dir="/tmp")
     qmp_path = f"{td}/qmp"
     os.mkdir(f"{td}/overlay")          # the IOP won't create the overlay directory itself
+    import ipad1_boot
     child = subprocess.Popen([a.qemu, "-machine",
-                              f"ipad1,kboot={FILES}/7B500/k48-kboot.bin,nand={a.boot},nand-overlay={td}/overlay",
+                              f"ipad1,{ipad1_boot.boot_options(a, td)},nand={a.boot},nand-overlay={td}/overlay",
                               "-display", "none", "-audio", "driver=none", "-monitor", "none", "-serial", f"file:{td}/serial.log",
                               "-qmp", f"unix:{qmp_path},server=on,wait=off"],
                              stdout=subprocess.DEVNULL, stderr=open(f"{td}/stderr", "w"),
@@ -266,6 +267,8 @@ def capture(a):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    import ipad1_boot
+    ipad1_boot.add_arguments(ap)
     ap.add_argument("--qemu", default=f"{ROOT}/build/qemu-system-arm")
     ap.add_argument("--checkpoint", default=f"{FILES}/userland/checkpoint-lock")
     ap.add_argument("--boot", metavar="STORE", help="cold-boot STORE (read-only base, fresh overlay) instead of restoring a checkpoint")

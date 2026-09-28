@@ -141,7 +141,8 @@ def wait_migration(q, deadline):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seconds", type=int, default=45)
-    ap.add_argument("--kboot", default=f"{FILES}/k48-kboot.bin")
+    import ipad1_boot
+    ipad1_boot.add_arguments(ap)
     ap.add_argument("--qemu", default=f"{ROOT}/build/qemu-system-arm")
     ap.add_argument("--args", help="rebuild the bundle with these boot-args first")
     ap.add_argument("--nand", help="NAND page-store directory to attach (booted in place: it gets written)")
@@ -163,15 +164,22 @@ def main():
     ap.add_argument("--no-rescan", action="store_true", help=f"fail on '{RESCAN}'")
     a = ap.parse_args()
 
+    if a.args and not a.kboot:
+        ap.error("--args rebuilds a direct-kernel bundle; specify --kboot")
     if a.args:
         subprocess.run([sys.executable, f"{ROOT}/imgtools/ipad1_kboot.py",
                         f"{FILES}/dec", a.kboot, a.args], check=True)
     meta = {}
     if a.from_checkpoint:
         meta = json.load(open(f"{a.from_checkpoint}/checkpoint.json"))
-        a.kboot, a.nand_overlay = meta["kboot"], meta["base"]
+        a.kboot, a.nand_overlay = meta.get("kboot"), meta["base"]
+        for key, value in meta.get("boot", {}).items():
+            setattr(a, key, value)
     elif a.checkpoint_out:
-        a.nand_overlay = a.nand_overlay or GOLDEN
+        a.nand_overlay = a.nand_overlay or (GOLDEN if a.kboot else os.path.join(a.device, "nand"))
+
+    if not a.kboot and not (a.nand or a.nand_clone or a.nand_overlay):
+        a.nand_overlay = os.path.join(a.device, "nand")
 
     td = tempfile.mkdtemp(prefix="ipad1-", dir="/tmp")      # short: unix socket paths cap at 104 bytes
     serial, qlog, qmp_path = f"{td}/serial.log", f"{td}/qemu.log", f"{td}/qmp"
@@ -179,7 +187,7 @@ def main():
         a.nand = f"{td}/nand"
         subprocess.run(["cp", "-cR", a.nand_clone, a.nand], check=True)  # APFS clone: instant, copy-on-write
         subprocess.run(["chmod", "-R", "u+w", a.nand], check=True)
-    machine = f"ipad1,kboot={a.kboot}"
+    machine = "ipad1," + ipad1_boot.boot_options(a)
     if a.nand_overlay:
         overlay = os.path.abspath(a.overlay) if a.overlay else f"{td}/overlay"
         if a.overlay:
@@ -253,7 +261,8 @@ def main():
             dst = f"{a.checkpoint_out}/overlay"
             shutil.rmtree(dst, ignore_errors=True)
             subprocess.run(["cp", "-cR", overlay, dst], check=True)   # CPUs stopped: the mmaps are quiescent
-            json.dump({"kboot": os.path.abspath(a.kboot), "base": os.path.abspath(a.nand_overlay),
+            json.dump({"kboot": os.path.abspath(a.kboot) if a.kboot else None, "base": os.path.abspath(a.nand_overlay),
+                       "boot": {k: getattr(a, k) for k in ("device", "iboot", "bootrom", "development_fuses", "nor", "gid_blobs", "die_id", "nor_rw")},
                        "qemu": os.path.abspath(a.qemu), "saved": time.strftime("%Y-%m-%d %H:%M:%S")},
                       open(f"{a.checkpoint_out}/checkpoint.json", "w"), indent=1)
             print(f"checkpoint saved to {a.checkpoint_out} ({os.path.getsize(state) >> 20} MiB state)")

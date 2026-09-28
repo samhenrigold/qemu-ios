@@ -87,13 +87,14 @@ def frame_diff(a, b):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--nand", default=os.path.join(rg.FILES, "userland/golden-pristine"))
-    ap.add_argument("--kboot", default=os.path.join(rg.FILES, "7B500/k48-kboot.bin"))
+    ap.add_argument("--nand", help="override the selected device NAND")
+    rg.ipad1_boot.add_arguments(ap)
     ap.add_argument("--qemu", default=os.path.join(rg.ROOT, "build/qemu-system-arm"))
     ap.add_argument("--usbmuxd", default=rg.USBMUXD)
     ap.add_argument("--boot-timeout", type=int, default=900)
     ap.add_argument("--out", default=None)
     cfg = ap.parse_args()
+    cfg.nand = cfg.nand or os.path.join(cfg.device, "nand")
     rg.ipod.START = time.time()
     cfg.out = cfg.out or tempfile.mkdtemp(prefix="ipad1snap-")
     snap, snap2 = os.path.join(cfg.out, "snap"), os.path.join(cfg.out, "snap2")
