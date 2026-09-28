@@ -712,6 +712,28 @@ static void pvrtc_selfcheck(void);
  * render target (EAGL always renders into an FBO) but is what an app binds to
  * mean "back to the screen".
  */
+/*
+ * Host-private GL objects (the drawable's FBO, colour texture and depth
+ * buffer) take names from a range no guest glGen* reaches, so the guest's
+ * first glGenTextures still returns 1, as on the device. Bobby Carrot binds
+ * its textures by load order from 1 without reading the generated names; with
+ * our colour texture holding name 1 every sprite drew with its neighbour's
+ * texture and the backdrop sampled the render target itself (issue 12).
+ * Legacy GL, and ES, create an object on first bind, so a probed name is as
+ * good as a generated one; the snapshot scan covers this range too.
+ */
+#define GLES_PRIVATE_NAME 0x40000000u
+
+static GLuint gles_private_name(GLboolean (*in_use)(GLuint))
+{
+    GLuint name = GLES_PRIVATE_NAME;
+
+    while (in_use(name)) {
+        name++;
+    }
+    return name;
+}
+
 static bool gles_is_drawable(uint32_t name)
 {
     return !name || g_hash_table_contains(gh.fbo_drawable,
@@ -797,10 +819,10 @@ static bool gles_host_init(void)
     if (!gh.rb_sized) gh.rb_sized = g_hash_table_new(g_direct_hash, g_direct_equal);
     gh.fbo_drawable = g_hash_table_new(g_direct_hash, g_direct_equal);
 
-    glGenFramebuffersEXT(1, &gh.fbo);
+    gh.fbo = gles_private_name(glIsFramebufferEXT);
     glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gh.fbo);
 
-    glGenTextures(1, &gh.tex);
+    gh.tex = gles_private_name(glIsTexture);
     glBindTexture(GL_TEXTURE_2D, gh.tex);
     /*
      * Storage for the colour attachment, from one of two places. An IOSurface
@@ -819,7 +841,7 @@ static bool gles_host_init(void)
     glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
                               GL_TEXTURE_2D, gh.tex, 0);
 
-    glGenRenderbuffersEXT(1, &gh.depth);
+    gh.depth = gles_private_name(glIsRenderbufferEXT);
     glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, gh.depth);
     glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_DEPTH_COMPONENT16,
                              GLES_FB_WIDTH, GLES_FB_HEIGHT);
@@ -1998,9 +2020,10 @@ static void gles_palette_entry(const uint8_t *e, uint32_t type, uint8_t out[4])
     default:
         break;
     }
-    /* The 16-bit entries are big-endian in the compressed-paletted spec: the
-     * data is a byte stream, not host shorts. */
-    v = ((unsigned)e[0] << 8) | e[1];
+    /* 16-bit entries are the app's native (little-endian) shorts, as Mesa
+     * and the device read them. Big-endian made Wolfenstein RPG's
+     * PALETTE8_RGB5_A1 walls noise with random alpha (issue 15). */
+    v = e[0] | ((unsigned)e[1] << 8);
     if (type == GL_UNSIGNED_SHORT_5_6_5) {
         out[0] = (v >> 11) * 255 / 31;
         out[1] = ((v >> 5) & 0x3f) * 255 / 63;
@@ -3807,16 +3830,16 @@ static int64_t gles_drawable_storage(uint32_t width, uint32_t height)
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
     glGetIntegerv(GL_RENDERBUFFER_BINDING_EXT, &renderbuffer);
     glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &framebuffer);
-    glGenTextures(1, &color);
+    color = gles_private_name(glIsTexture);
     glBindTexture(GL_TEXTURE_2D, color);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height,
                  0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glGenRenderbuffersEXT(1, &depth);
+    depth = gles_private_name(glIsRenderbufferEXT);
     glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, depth);
     glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_DEPTH_COMPONENT16, width, height);
-    glGenFramebuffersEXT(1, &fbo);
+    fbo = gles_private_name(glIsFramebufferEXT);
     glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, fbo);
     glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
                               GL_TEXTURE_2D, color, 0);
