@@ -61,6 +61,9 @@ UNLOCK_FROM, UNLOCK_TO = (959, 477), (959, 47)
 USB_ALERT_DISMISS = (548, 382)   # stock "The attached USB device is not supported." (the USB keyboard)
 SAFARI_ICON, SAFARI_ADDRESS = (959, 650), (55, 437)
 
+sys.path.insert(0, os.path.join(ROOT, "imgtools"))
+import ipad1_boot
+
 launch_lock = threading.Lock()
 
 
@@ -91,7 +94,8 @@ class Boot:
     def start(self):
         cfg = self.cfg
         with launch_lock:       # free ports are claimed one boot at a time
-            machine = "ipad1,kboot=%s,nand=%s,nand-overlay=%s" % (cfg.kboot, cfg.nand, self.overlay)
+            machine = "ipad1,%s,nand=%s,nand-overlay=%s" % (
+                ipad1_boot.boot_options(cfg, self.overlay), cfg.nand, self.overlay)
             self.usb_port = self.mux_port = 0
             if self.usb:
                 self.usb_port = free_port(21300, 21399)
@@ -420,14 +424,15 @@ CHECKS = {"boot": check_boot, "usbmux": check_usbmux, "afc": check_afc, "persist
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--checks", default=",".join(DEFAULT_CHECKS))
-    ap.add_argument("--nand", default=os.path.join(FILES, "userland/golden-pristine"))
-    ap.add_argument("--kboot", default=os.path.join(FILES, "7B500/k48-kboot.bin"))
+    ap.add_argument("--nand", help="override the selected device NAND")
+    ipad1_boot.add_arguments(ap)
     ap.add_argument("--qemu", default=os.path.join(ROOT, "build/qemu-system-arm"))
     ap.add_argument("--usbmuxd", default=USBMUXD)
     ap.add_argument("--boot-timeout", type=int, default=600, help="hard cap per QEMU, seconds")
     ap.add_argument("--out", default=None)
     ap.add_argument("--product-version", help="usbmux's expected ProductVersion (default: NAND/../device.lock.json, else 3.2.2)")
     a = ap.parse_args()
+    a.nand = a.nand or os.path.join(a.device, "nand")
     lock = os.path.join(os.path.dirname(os.path.abspath(a.nand)), "device.lock.json")
     a.product_version = a.product_version or (
         json.load(open(lock)).get("product_version", "3.2.2") if os.path.exists(lock) else "3.2.2")

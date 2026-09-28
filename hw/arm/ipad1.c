@@ -69,6 +69,8 @@ struct IPad1MachineState {
     MemoryRegion dram_hi;                /* DRAM mirror at 0x50000000 (iBoot) */
     MemoryRegion chipid;
     MemoryRegion sram;
+    MemoryRegion bootrom;
+    MemoryRegion bootrom_alias;
     MemoryRegion cpu_debug;
     DeviceState *vic[S5L8930_VIC_COUNT];
     DeviceState *gpio;
@@ -78,6 +80,9 @@ struct IPad1MachineState {
     IPodTouchMultitouchState *mt;
     char *kboot_path;
     char *iboot_path;
+    char *bootrom_path;
+    bool development_fuses;
+    char *gid_blobs_path;
     char *nand_path;
     char *nand_overlay_path;
     char *nor_path;
@@ -180,6 +185,11 @@ static void ipad1_cpu_reset(void *opaque)
 
     gles_host_reset();
     cpu_reset(cs);
+
+    if (s->bootrom_path) {
+        cpu_set_pc(cs, 0);
+        return;
+    }
 
     /*
      * iboot=: a decrypted iBoot image, entered at its link address the way
@@ -535,9 +545,8 @@ static void ipad1_init(MachineState *machine)
     SysBusDevice *sbd;
     int i;
 
-    if (!s->kboot_path && !s->iboot_path) {
-        error_report("ipad1: the 'kboot' machine property is required "
-                     "(-machine ipad1,kboot=/path/to/k48-kboot.bin)");
+    if (!!s->kboot_path + !!s->iboot_path + !!s->bootrom_path != 1) {
+        error_report("ipad1: specify exactly one of iboot=, bootrom=, or kboot=");
         exit(1);
     }
 
@@ -572,6 +581,28 @@ static void ipad1_init(MachineState *machine)
      */
     create_unimplemented_device("s5l8930.periph", 0x80000000, 0x40000000);
 
+    if (s->bootrom_path) {
+        g_autofree char *rom = NULL;
+        gsize size;
+        g_autoptr(GError) error = NULL;
+
+        if (!g_file_get_contents(s->bootrom_path, &rom, &size, &error)) {
+            error_report("ipad1: cannot read SecureROM: %s", error->message);
+            exit(1);
+        }
+        if (size != 0x10000) {
+            error_report("ipad1: A4 SecureROM must be exactly 65536 bytes");
+            exit(1);
+        }
+        memory_region_init_rom(&s->bootrom, NULL, "ipad1.bootrom",
+                               size, &error_fatal);
+        memcpy(memory_region_get_ram_ptr(&s->bootrom), rom, size);
+        memory_region_add_subregion(sysmem, 0, &s->bootrom);
+        memory_region_init_alias(&s->bootrom_alias, NULL,
+                                 "ipad1.bootrom-alias", &s->bootrom, 0, size);
+        memory_region_add_subregion(sysmem, 0xbf000000, &s->bootrom_alias);
+    }
+
     /*
      * ChipID fuses as a real K48AP reads them (docs/ipad1/hw1-probes.log):
      * chip/revision words, then the unit's die-id. The die-id is per unit, so
@@ -580,6 +611,13 @@ static void ipad1_init(MachineState *machine)
      */
     {
         uint32_t chipid[] = { 0x31800387, 0x80758000, 0, 0 };
+
+        if (s->development_fuses) {
+            /* Engineering security policy: development GID/certificates,
+             * no per-device ECID personalization requirement. The ROM still
+             * verifies the certificate and image signatures itself. */
+            chipid[0] &= ~((1u << 0) | (1u << 7));
+        }
 
         if (s->die_id && sscanf(s->die_id, "%" SCNx32 ":%" SCNx32,
                                 &chipid[2], &chipid[3]) != 2) {
@@ -615,6 +653,8 @@ static void ipad1_init(MachineState *machine)
                                     &PL192(s->vic[i])->iomem);
         PL192(s->vic[i])->daisy = PL192(s->vic[i - 1]);
     }
+
+    sysbus_create_simple("s5l8930.dmc", 0xbf800000, NULL);
 
     dev = qdev_new(TYPE_S5L8930_PMGR);
     sbd = SYS_BUS_DEVICE(dev);
@@ -831,6 +871,9 @@ static void ipad1_init(MachineState *machine)
 
     /* CDMA + AES filter; one interrupt line per channel. */
     dev = qdev_new(TYPE_S5L8930_CDMA);
+    if (s->gid_blobs_path) {
+        qdev_prop_set_string(dev, "gid-blobs", s->gid_blobs_path);
+    }
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_CDMA_BASE);
@@ -1053,6 +1096,32 @@ static void ipad1_set_iboot(Object *obj, const char *value, Error **errp)
 
     g_free(s->iboot_path);
     s->iboot_path = g_strdup(value);
+}
+
+static char *ipad1_get_bootrom(Object *obj, Error **errp)
+{
+    return g_strdup(IPAD1_MACHINE(obj)->bootrom_path);
+}
+
+static void ipad1_set_bootrom(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    g_free(s->bootrom_path);
+    s->bootrom_path = g_strdup(value);
+}
+
+static char *ipad1_get_gid_blobs(Object *obj, Error **errp)
+{
+    return g_strdup(IPAD1_MACHINE(obj)->gid_blobs_path);
+}
+
+static void ipad1_set_gid_blobs(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    g_free(s->gid_blobs_path);
+    s->gid_blobs_path = g_strdup(value);
 }
 
 static char *ipad1_get_nand(Object *obj, Error **errp)
@@ -1327,6 +1396,16 @@ static void ipad1_set_accel_pose(Object *obj, const char *value, Error **errp)
     ipad1_apply_attitude(s);
 }
 
+static bool ipad1_get_development_fuses(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->development_fuses;
+}
+
+static void ipad1_set_development_fuses(Object *obj, bool value, Error **errp)
+{
+    IPAD1_MACHINE(obj)->development_fuses = value;
+}
+
 static bool ipad1_get_wifi(Object *obj, Error **errp)
 {
     return IPAD1_MACHINE(obj)->wifi;
@@ -1351,6 +1430,8 @@ static void ipad1_instance_finalize(Object *obj)
     g_free(IPAD1_MACHINE(obj)->usb_tcp_addr);
     g_free(IPAD1_MACHINE(obj)->kboot_path);
     g_free(IPAD1_MACHINE(obj)->iboot_path);
+    g_free(IPAD1_MACHINE(obj)->bootrom_path);
+    g_free(IPAD1_MACHINE(obj)->gid_blobs_path);
     g_free(IPAD1_MACHINE(obj)->nand_path);
     g_free(IPAD1_MACHINE(obj)->nand_overlay_path);
     g_free(IPAD1_MACHINE(obj)->nor_path);
@@ -1403,6 +1484,14 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
                                   ipad1_set_kboot);
     object_class_property_set_description(klass, "kboot",
         "K48KBOOT bundle from imgtools/ipad1_kboot.py (this or iboot required)");
+    object_class_property_add_str(klass, "gid-blobs", ipad1_get_gid_blobs,
+                                  ipad1_set_gid_blobs);
+    object_class_property_set_description(klass, "gid-blobs",
+        "Per-IPSW AES-256 KBAG || IV-key records (96 bytes each)");
+    object_class_property_add_str(klass, "bootrom", ipad1_get_bootrom,
+                                  ipad1_set_bootrom);
+    object_class_property_set_description(klass, "bootrom",
+        "A4 SecureROM dump (65536 bytes), entered at reset");
     object_class_property_add_str(klass, "iboot", ipad1_get_iboot,
                                   ipad1_set_iboot);
     object_class_property_set_description(klass, "iboot",
@@ -1427,6 +1516,11 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
                                   ipad1_set_usb_tcp_addr);
     object_class_property_set_description(klass, "usb-tcp-addr",
         "usbmuxd-qemu host bridge host:port (default port 1235); unset = IT_USB_TCP or no link");
+    object_class_property_add_bool(klass, "development-fuses",
+                                  ipad1_get_development_fuses,
+                                  ipad1_set_development_fuses);
+    object_class_property_set_description(klass, "development-fuses",
+        "engineering production/ECID fuse policy for unpersonalized IPSW images (default off)");
     object_class_property_add_bool(klass, "wifi", ipad1_get_wifi, ipad1_set_wifi);
     object_class_property_set_description(klass, "wifi",
         "The BCM4329 Wi-Fi card, the iPad's network (default on). Frames go to "

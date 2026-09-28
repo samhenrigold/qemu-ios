@@ -61,7 +61,7 @@ def main():
     subprocess.run(["cp", "-cR", a.store, pre], check=True)     # APFS clone: the retry's starting point
     for attempt in range(1, ATTEMPTS + 1):
         log = serial if attempt == 1 else f"{serial}.{attempt}"
-        exited, t, text = boot(a.qemu, kboot, extra, log, lambda s: "panic(" in s, a.timeout)
+        exited, t, text = boot(a.qemu, f"kboot={kboot}", extra, log, lambda s: "panic(" in s, a.timeout)
         for line in text.splitlines():
             if line.startswith("it_keybag:"):
                 print(line)

@@ -79,18 +79,20 @@ def lit(frame):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--qemu", default=f"{ROOT}/build/qemu-system-arm")
-    ap.add_argument("--kboot", default=f"{FILES}/7B500/k48-kboot.bin")
-    ap.add_argument("--base", default=f"{FILES}/userland/golden-pristine")
+    import ipad1_boot
+    ipad1_boot.add_arguments(ap)
+    ap.add_argument("--base", help="override selected device NAND")
     ap.add_argument("--out", default="/tmp/respcheck")
     ap.add_argument("--samples", type=int, default=8, help="Settings row taps to time")
     ap.add_argument("--first-probe-delay", type=float, default=0.0,
                     help="wait this long after the lock screen lights before the first probe")
     a = ap.parse_args()
+    a.base = a.base or os.path.join(a.device, "nand")
     os.makedirs(a.out, exist_ok=True)
     td = tempfile.mkdtemp(prefix="resp-", dir="/tmp")
     qmp = f"{td}/qmp"
     os.mkdir(f"{td}/overlay")
-    child = subprocess.Popen([a.qemu, "-machine", f"ipad1,kboot={a.kboot},nand={a.base},nand-overlay={td}/overlay",
+    child = subprocess.Popen([a.qemu, "-machine", f"ipad1,{ipad1_boot.boot_options(a)},nand={a.base},nand-overlay={td}/overlay",
                               "-display", "none", "-audio", "driver=none", "-monitor", "none", "-qmp", f"unix:{qmp},server=on,wait=off",
                               "-serial", f"file:{a.out}/serial.log"],
                              stdout=subprocess.DEVNULL, stderr=open(f"{a.out}/stderr", "w"))
