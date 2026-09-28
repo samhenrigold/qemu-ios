@@ -5,8 +5,6 @@ import subprocess, tempfile
 root=Path(__file__).resolve().parents[2]
 mbx=(root/'hw/arm/ipod_touch_mbx.c').read_text()
 patch=mbx[mbx.index('static void patch_kernel('):mbx.index('static uint64_t ipod_touch_mbx2_read(')]
-board=(root/'hw/arm/ipod_touch_2g.c').read_text()
-amfi=board[board.index('static bool it_amfi_patch_one('):board.index('static const char *ipod_touch_requested_boot_args(')]
 source=r'''
 #include "qemu/osdep.h"
 #include "hw/arm/ipod_touch_firmware.h"
@@ -22,14 +20,7 @@ static void cpu_physical_memory_write(uint64_t address,const void *data,uint64_t
 }
 static uint32_t reverse_byte_order(uint32_t value){return __builtin_bswap32(value);}
 static void patch_usb_function_gate(void){usb_patches++;}
-#define MEMTXATTRS_UNSPECIFIED 0
-static void address_space_rw(void *space,uint64_t address,int attrs,void *data,unsigned size,int write){
- assert(size==4);
- if(write)cpu_physical_memory_write(address,data,size);
- else memcpy(data,"\xf0\xb5\0\0",4); // A matching push alone is not a firmware ID.
-}
-typedef struct{void *nsas;bool amfi_patched;} IPodTouchMachineState;
-'''+patch+amfi+r'''
+'''+patch+r'''
 static void load(const ITFirmwareDesc *fw){
  memset(ram,0,sizeof(ram));
  if(fw)memcpy(ram+32,fw->kernel_banner,strlen(fw->kernel_banner)+1);
@@ -54,17 +45,7 @@ int main(void){
  load(old);patched=false;patch_kernel(&patched);assert(writes==4 && usb_patches==1 && addresses[0]==0x08324aa8);
  patch_kernel(&patched);assert(writes==4);
  for(unsigned i=0;i<writes;i++)assert(addresses[i]!=0x0816b460);
- setenv("IT_AMFI_ALLOW_TASKPORT","1",1);
- IPodTouchMachineState machine={0};
- load(NULL);ipod_touch_amfi_patch_now(&machine);assert(!machine.amfi_patched && writes==0);
- load(old);ipod_touch_amfi_patch_now(&machine);assert(!machine.amfi_patched && writes==0);
- load(current);ipod_touch_amfi_patch_now(&machine);
- assert(machine.amfi_patched && writes==2 && addresses[0]==0x081ab2a0 && addresses[1]==0x081ab200);
- load(NULL);machine.amfi_patched=false;
- setenv("IT_AMFI_HOOK_SLIDE","0xb8000000",1);ipod_touch_amfi_patch_now(&machine);assert(writes==0);
- setenv("IT_AMFI_GET_TASK_NAME_VA","0xc0100000",1);setenv("IT_AMFI_GET_TASK_VA","0xc0200000",1);
- ipod_touch_amfi_patch_now(&machine);assert(machine.amfi_patched && writes==2);
- puts("PASS: exact/ambiguous/truncated firmware, retry/cache/reset, MBX patch isolation and AMFI profile/override guards");
+ puts("PASS: exact/ambiguous/truncated firmware, retry/cache/reset, MBX patch isolation");
 }
 '''
 with tempfile.TemporaryDirectory() as temp:

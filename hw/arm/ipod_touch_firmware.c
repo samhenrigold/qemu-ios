@@ -13,9 +13,6 @@ static const ITFirmwareDesc profiles[] = {
     }, {
         .build = "7E18",
         .kernel_banner = "Darwin Kernel Version 10.0.0d3: Fri Dec 18 01:31:23 PST 2009; root:xnu-1357.5.30~6/RELEASE_ARM_S5L8720X",
-        .amfi_slide = 0xb8000000u,
-        .amfi_get_task_va = 0xc01ab200u,
-        .amfi_get_task_name_va = 0xc01ab2a0u,
     },
 };
 

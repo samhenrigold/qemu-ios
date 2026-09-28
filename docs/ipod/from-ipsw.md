@@ -102,8 +102,9 @@ Estimate: a day for the NOR, unknown for the logo stall.
 - `ipod_touch_inject_boot_args` (hw/arm/ipod_touch_2g.c:1511) checks 24 bytes of 7E18 iBoot and skips
   otherwise ("unknown iBoot; early argument injection skipped", seen on 8C148); the late boot-args write
   finds `boot_args` by signature on any build.
-- IT_INJECT_LOGO (7E18 VAs) and IT_AMFI_ALLOW_TASKPORT (firmware profile, 7E18 only)
-  are opt-in env knobs, off on the default path.
+- IT_INJECT_LOGO (7E18 VAs) remains an opt-in diagnostic, off on the default path.
+- The research-only IT_AMFI_ALLOW_TASKPORT kernel patch and its address overrides
+  have been removed; guest integration uses the existing boot-args and AppSync path.
 - 5F138 `iboot_boot_args_pa` (fmss) applies only without direct iBoot.
 - The BCM4325 model's Wi-Fi MAC is a fixed value from the original unit (hw/arm/ipod_touch_sdio.c:307, :1326),
   so it does not follow the synthetic identity's `wifiaddr`. A `wifi-mac` machine option would fix that
