@@ -91,8 +91,10 @@ tests/gate.sh --fresh    # full + both fresh-device.sh: run when imgtools/, mani
 One line per check (PASS, FAIL, SKIP with the reason, XFAIL for a check the script lists as known failing
 on today's tree, XPASS once it passes again); non-zero exit only on FAIL; every log under the printed
 directory. Unit checks that launch the emulator, or take a NAND or a movie on the command line, are SKIP in
-every tier and are run by hand. The suites keep their own input defaults; `QEMU=` overrides the emulator
-(default `build/qemu-system-arm`). The table below is what each tier is made of.
+every tier and are run by hand. The suites keep their own input defaults, except that the iPod suite runs with
+`--stage-gles-shim` (the gate judges this tree's host and guest shim together, not the shipping image's older
+baked shim); `QEMU=` overrides the emulator (default `build/qemu-system-arm`). The table below is what each
+tier is made of.
 
 Every headless boot passes `-audio driver=none`. The harnesses pick their own ports, write only their
 own overlays, and signal only processes they started.

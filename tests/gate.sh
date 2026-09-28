@@ -91,7 +91,10 @@ suite() {   # NAME CMD...
 }
 if [ "$TIER" != --quick ]; then
     if [ -x "$QEMU" ]; then
-        suite "tests/ipod/run-regression.sh" tests/ipod/run-regression.sh --qemu "$QEMU" --out "$OUT/ipod-regress"
+        # --stage-gles-shim: the gles check runs this tree's guest shim against this tree's host, the pair
+        # the gate is judging. The shipping image's baked shim is older (its gles verdict is the image's,
+        # not the tree's) and is replaced at the main-merge image swap (docs/ipod/nand-current-new-verification.md).
+        suite "tests/ipod/run-regression.sh" tests/ipod/run-regression.sh --qemu "$QEMU" --stage-gles-shim --out "$OUT/ipod-regress"
         suite "tests/ipad1/regress.py" python3 tests/ipad1/regress.py --qemu "$QEMU" --out "$OUT/ipad1-regress"
     else
         skip "tests/ipod/run-regression.sh" "no emulator at $QEMU: build it or set QEMU="
