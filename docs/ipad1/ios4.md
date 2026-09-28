@@ -4,11 +4,14 @@ Probe of 2026-09-27: `manifests/ipad1-8C148.json` (IPSW sha1 `8717b3bedc925b5875
 rendered from `api.ipsw.me/v4/keys/ipsw/iPad1,1/8C148` in the 7B367 keys-file format) through
 `imgtools/ipad1_device.py create`. There was no iPad 4.0; 4.2.1 is the first 4.x.
 
-**Reached M2**: the stock 4.2.1 kernel boots on the ipad1 machine, the FTL opens the pipeline's NAND store,
-`BSD root: disk0s1`, launchd starts, fsck passes and both volumes mount (`/dev/disk0s2 on /private/var (hfs,
-local, nodev, nosuid, journaled)`, the plain 0xAF data partition). **Blocked before M3** by data protection:
-`keybagd` finds no system keybag, logs `FATAL KEYBAG ERROR: kb_load` / `REBOOTING INTO RESTORE MODE` and
-reboots. With keybagd disabled the boot stays up, but SpringBoard never draws (details below).
+**Reached M4 (2026-09-28)**: `ipad1_device.py create manifests/ipad1-8C148.json` makes a device that boots
+to a lit "Connect to iTunes" screen (SpringBoard, 12-19 s), powers off cleanly through the slider and boots
+lit again on the same overlay with its keybag and effaceable NOR intact (`tests/ipad1/fresh-device.sh
+manifests/ipad1-8C148.json`, no activation hook: 4.x activation is out of scope). Three layers had to go, in
+order: the system keybag (the restore-ramdisk one-shot below), a kernel panic in the accelerometer
+driver, and AppleCLCD refusing a panel iBoot had not programmed; plus the UI orientation. See "Past the
+keybag". Before that the probe had reached M2 and was blocked by data protection (`keybagd`: `FATAL
+KEYBAG ERROR: kb_load` / `REBOOTING INTO RESTORE MODE`).
 
 Components: kernel `xnu-1504.58.28~3/RELEASE_ARM_S5L8930X` (Darwin 10.4.0), iBoot and IOP firmware
 `iBoot-931.71.16`, AppleS5L8920X-257.21, rootfs `038-0018-002.dmg` (HFSX, 101511 x 8 KiB = 831 MB; fits the
@@ -142,7 +145,62 @@ The system keybag it creates lands on the data volume (`/private/var/keybags/sys
 NAND store, and the effaceable lockers land in NOR. So the one-shot must run against the device's *writable*
 NAND store + `nor-rw` before the seal, and both outputs then travel with the device (`nand/` + `nor.bin`).
 
-## What is done (2026-09-27, this session)
+## The one-shot, as built (2026-09-28)
+
+`create` for a manifest with `options.writable_nor` (4.x) runs, between the NAND store and the seal:
+`imgtools/ipad1_keybag.py nand/ nor.bin --dec DEC --ramdisk <Update identity RestoreRamDisk>`.
+
+- **kboot RAM-disk mode** (`ipad1_kboot.py --ramdisk DMG`): the raw-HFS ramdisk sits in DRAM right after
+  the kernel (below `topOfKernelData`, so the VM never reuses it), `chosen/memory-map` gets `RAMDisk (pa,
+  len)`, boot-args gain `rd=md0`, and `chosen/root-matching` is left empty: xnu reads the `RAMDisk` entry
+  only when root-matching does not match, then roots on `md0`. Kernelcache and DeviceTree are the stock
+  ones: in this IPSW `RestoreKernelCache`/`RestoreDeviceTree` are the same files as the normal-boot ones,
+  and that DeviceTree's `secure-root-prefix = 'md'` makes `md0` a SecureRoot while `disk0s1` never is. No
+  kernel bytes are patched, no signatures forged; 3.x and normal boots take the unchanged path.
+- **The ramdisk copy**: a private copy of `038-0024-002-ramdisk.dmg`, grown by 1 MiB (the stock one is
+  100% full), gets `it_keybag` as `/usr/local/bin/restored_external`: the ramdisk's `/etc/rc.boot` execs
+  the first of `restored_external`, `restored_update`, `restored`, `ramrod` that exists, so this is the
+  place iBoot's restore boot hands control to the restore daemon.
+- **`it_keybag`** (`contrib/it-keybag`, built and ldid-signed by `contrib/ipad1-guest/build.sh`, not baked
+  into the rootfs): waits for `/dev/disk0s2` and `AppleEffaceableStorage`, selector 3 (isFormatted) then 4
+  (format) then 3 again, `mount_hfs /dev/disk0s2 /mnt2` (as restored does), `MKBKeyBagCreateSystem(NULL,
+  "/mnt2")` found with dlsym, checks `/mnt2/keybags/systembag.kb` (1335 bytes), unmounts and
+  `reboot(RB_HALT)`. The ramdisk has no `IOKit.framework/IOKit` top-level link, only `Versions/A/IOKit`.
+  Serial: `it_keybag: effaceable open 0 isFormatted 0 -> 0`, `format 0`, `MKBKeyBagCreateSystem -> 0`, then
+  `it_keybag: effaceable formatted, system keybag created; halting`, about 4 s after power-on.
+- `ipad1_keybag.py` requires that line, a clean halt, and a changed `nor.bin` (the lockers: ~8 KiB of
+  non-`ff`); the device lock records the ramdisk under `inputs.restore_ramdisk`. The normal sealing boot
+  follows unchanged (`it_seal`, 54 s).
+
+## Past the keybag (2026-09-28)
+
+With the keybag in place keybagd, lockdownd and SpringBoard all run; three more things stood between
+that and a lit screen.
+
+1. **Accelerometer panic** as soon as userland enabled the sensor: `AppleLIS331DLH::enableAccelerometer -
+   Boot bit did not return to zero in 500 msecs`. The LIS331DLH keeps BOOT in CTRL_REG2 bit 7 (the
+   LIS302DL's is bit 6, which is all the shared model cleared). `ipod_touch_lis302dl.c` now clears the bit
+   the part's WHO_AM_I says (0x32: bit 7). 3.2.2's driver never polls it.
+2. **No LCD framebuffer**: `AppleCLCD::start_hardware` stopped after the Pinot line and never logged
+   `Added framebuffer device: AppleCLCD` (only AppleRGBOUT did), so CoreAnimation had no main display and
+   the Apple logo stayed up. The 4.x driver (8C148 `0x809d7e42`) reads CLCD `+0x58` and silently returns
+   false unless both its fields are nonzero: the vertical timing iBoot programs. iBoot-931 fills CLCD
+   `0x00/0x04/0x14/0x18/0x54-0x60` from its `display-timing` table entry `k48` (`0x5ff2b028`: 1024x768,
+   68.4 MHz, h 133/133/135, v 10/10/12, 18 bpp; code `0x5ff01e0e-0x5ff01eaa`). The display model's reset
+   now leaves those values, as it already did the pipe registers iBoot leaves.
+3. **UI orientation**: with CLCD up, 4.2.1 drew a *landscape* UI for the attitude 3.2.2 (checked on the
+   real unit) reads as portrait, a quarter turn off for every accel-orientation, so the power-off knob was
+   not where the gesture aimed. 4.x lays the UI out by the chosen `display-rotation` (iBoot:
+   its video rotation byte x 90, iBoot-931 `0x5ff0ffda`; MobileGestalt `main-screen-orientation`); 3.2.2
+   ignores it. Tried all: 0 is a quarter off, 90 upside down, 270 matches 3.2.2 in all four orientations,
+   so kboot now sets 270 and the existing unlock/power-off coordinates hold for 4.x. 3.x gates unchanged.
+   Open: kboot's own boot logo is turned the opposite way (top at the panel's right, the UI's top is at
+   its left); cosmetic, not changed.
+
+Measured on a fresh device (manifest defaults, no hook): lit 12.5-18.7 s after power-on, slider power-off
+17.7 s to QEMU exit 0, boot 2 without an FTL rescan.
+
+## What is done (2026-09-27, earlier session)
 
 `nor-rw` on the ipad1 machine (`hw/arm/ipad1.c`): a private writable 1 MiB NOR copy whose guest writes (the
 effaceable region) persist across boots, mirroring the iPod machine's option. `ipod_touch_nor_spi_open_overlay`
@@ -163,12 +221,13 @@ activation hook), and the iPod regression — see the commit.
 |---|---|
 | ~~NOR persistence on the ipad1 machine (`nor-rw`) and a per-device `nor.bin` through the pipeline~~ **DONE this session** (the app still needs to pass its own private writable `nor.bin` copy as `nor-rw=`; see below) | — |
 | Trust gate: what the `+0x1f8` virtual reads. ~~Gated on this.~~ **DONE 2026-09-27** — it is the DeviceTree `secure-root-prefix='md'` property + root-device match (`SecureRoot` IOResource from AppleARMPlatform), not the img3 chain. Route 1 confirmed viable, no kernel patching. Evidence above. | — |
-| Restore-ramdisk one-shot, now unblocked. Concrete plan: (1) **kboot**: teach `ipad1_kboot.build` an optional RAM-disk mode — add a segment carrying the raw-HFS ramdisk at a chosen PA in DRAM, a `chosen/memory-map` `RAMDisk` entry `(pa,len)` for it, boot-args `rd=md0` (root selects `md0`), and keep the restore DeviceTree's `secure-root-prefix='md'` (do NOT overwrite it in `fill_dt`; the normal-boot DT has no such prefix so 3.x/normal boots are unaffected). Restore kernelcache+ramdisk+DeviceTree come from the BuildManifest's Update/Restore identity via `ipad1_fw.py`. (2) **guest helper** (built like the others, ldid-signed, AMFI boot-args already on): call the two stable symbols `format_effaceable_storage`-equivalent (AppleEffaceableStorage user client sels 3/4) + `_MKBKeyBagCreateSystem(NULL, dataMount)`; mount the data volume, write `/private/var/keybags/systembag.kb`, `it_seal`-style `reboot(RB_HALT)`. (3) **pipeline**: `ipad1_device.py create` runs this one-shot boot against the device's *writable* NAND + `nor-rw` before the normal boot+seal; verify effaceable formatted + `systembag.kb` present; version-gated by manifest (`options.writable_nor`/a `restore_keybag` flag). | 1-2 days |
+| ~~Restore-ramdisk one-shot~~ **DONE 2026-09-28** (see "The one-shot, as built"). The plan was: (1) **kboot**: teach `ipad1_kboot.build` an optional RAM-disk mode — add a segment carrying the raw-HFS ramdisk at a chosen PA in DRAM, a `chosen/memory-map` `RAMDisk` entry `(pa,len)` for it, boot-args `rd=md0` (root selects `md0`), and keep the restore DeviceTree's `secure-root-prefix='md'` (do NOT overwrite it in `fill_dt`; the normal-boot DT has no such prefix so 3.x/normal boots are unaffected). Restore kernelcache+ramdisk+DeviceTree come from the BuildManifest's Update/Restore identity via `ipad1_fw.py`. (2) **guest helper** (built like the others, ldid-signed, AMFI boot-args already on): call the two stable symbols `format_effaceable_storage`-equivalent (AppleEffaceableStorage user client sels 3/4) + `_MKBKeyBagCreateSystem(NULL, dataMount)`; mount the data volume, write `/private/var/keybags/systembag.kb`, `it_seal`-style `reboot(RB_HALT)`. (3) **pipeline**: `ipad1_device.py create` runs this one-shot boot against the device's *writable* NAND + `nor-rw` before the normal boot+seal; verify effaceable formatted + `systembag.kb` present; version-gated by manifest (`options.writable_nor`/a `restore_keybag` flag). | — |
 | GLI shim for 4.2.1: 15 new dispatch slots (13 inserted after slot 764: `draw_elements_base_vertex` ... `sample_maski`, then `discard_framebuffer_EXT` and `resolve_multisample_framebuffer_APPLE`); a per-firmware TSV for `gligen.py` and a check of the new entry points | 0.5-1 day |
 | Activation: the opt-in hook refused 4.2.1's lockdownd (it fails closed; exit 1, file unchanged) | the hook owner's call |
-| Unlock / power-off coordinates on 4.x SpringBoard | unverified (no UI yet) |
+| ~~Unlock / power-off coordinates on 4.x SpringBoard~~ **DONE 2026-09-28**: power-off verified (display-rotation 270); unlock untested (no activated 4.x device) | — |
 
 Scratch artefacts (untracked): `~/Developer/qemu-ios-files/ipad1/repro-8C148/` (decrypted firmware,
 extracted IOP images `iopfw-{7B500,8C148}.bin`, probe boots `p1`-`p7`, the diagnostic `diag/it_ps.c` and the
 keybag experiment `diag/it_kb.c`; `re/kc.py` — the kernelcache VA↔file/xref/disasm helper used to resolve
-the trust gate above).
+the trust gate above; its source is gone, `re/kc2.py` replaces it), `bin/pwrprobe.py` (orientation and
+power-off sheet probes) and `bin/kboot_rot.py` (the display-rotation experiment).

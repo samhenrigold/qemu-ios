@@ -7,9 +7,10 @@ A thin driver over the existing CLIs, in the golden recipe's order (docs/ipad1/u
 verify the IPSW (sha1, Restore.plist ProductType/ProductBuildVersion/BoardConfig) -> ipad1_fw.py into a
 cache keyed by the IPSW's sha1 -> identity.json (synthetic, from the seed; mode 600) -> kboot.bin ->
 MBR (ipad1_nand.py mbr) -> ipad1_rootfs.py build (no Lockdown, no stash) + bake --seal (+ the manifest's
-opt-in activation hook) -> ipad1_nand.py build -> ipad1_seal.py -> chmod -R a-w -> device.lock.json.
+opt-in activation hook) -> ipad1_nand.py build -> [4.x: ipad1_keybag.py, the restore-ramdisk data-protection
+one-shot] -> ipad1_seal.py -> chmod -R a-w -> device.lock.json.
 
-OUTDIR gets kboot.bin and nand/ (what the app consumes), identity.json, device.lock.json (resolved hashes,
+OUTDIR gets kboot.bin and nand/ (what the app consumes), nor.bin when the manifest sets writable_nor, identity.json, device.lock.json (resolved hashes,
 build, tool git rev, UDID, every input path) and create.log. --seed / --activation-hook override the
 manifest's identity.seed / activation.hook for this device and are recorded in the lock.
 Nothing here reads the real unit's dumps (hw2/) or its identity.json.
@@ -20,6 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from ipad1_kboot import synth_identity
+from ipad1_fw import components
 
 CACHE = os.path.expanduser("~/Developer/qemu-ios-files/ipad1/repro/cache")
 GEOMETRY = {"16g": "k48-16g"}
@@ -106,9 +108,16 @@ def create(a):
     # the system-keybag wrapping key) per device. Blank (erased) unless the manifest
     # opts in; 3.x needs none. The sealing boot's effaceable writes persist into it.
     nor = os.path.join(out, "nor.bin") if opt.get("writable_nor") else None
+    ramdisk = None
     if nor:
         with open(nor, "wb") as f:
             f.write(b"\xff" * (1 << 20))
+        # 4.x data protection: effaceable storage + the system keybag, made the way a restore makes
+        # them, from the IPSW's own (Update) restore ramdisk booted as a SecureRoot (docs/ipad1/ios4.md)
+        ramdisk = components(zipfile.ZipFile(ipsw))["UpdateRamDisk"][:-4] + "-ramdisk.dmg"
+        step("data protection: restore-ramdisk keybag one-shot",
+             [sys.executable, f"{HERE}/ipad1_keybag.py", nand, nor, "--dec", dec, "--ramdisk", ramdisk,
+              "--identity", ident_path, "--die-id", die_id, "--qemu", a.qemu])
     seal_argv = [sys.executable, f"{HERE}/ipad1_seal.py", nand, "--qemu", a.qemu, "--kboot", kboot, "--die-id", die_id]
     if nor:
         seal_argv += ["--nor-rw", nor]
@@ -131,7 +140,8 @@ def create(a):
                  "qemu_sha256": sha(a.qemu), "built": built},
         "inputs": {"ipsw": {"path": ipsw, "sha1": got}, "keys": {"path": keys, "sha256": sha(keys)},
                    "decrypted": dec, "rootfs": rootfs, "kernelcache": os.path.join(dec, "kernelcache.mach"),
-                   "devicetree": os.path.join(dec, "DeviceTree.bin"), "mbr": {"path": mbr, "sha256": sha(mbr)},
+                   "devicetree": os.path.join(dec, "DeviceTree.bin"),
+                   "restore_ramdisk": os.path.join(dec, ramdisk) if ramdisk else None, "mbr": {"path": mbr, "sha256": sha(mbr)},
                    "identity": ident_path,
                    "guest_tools": tools, "lockdown": None, "stash": None,
                    "activation_hook": {"path": hook, "sha256": sha(hook)} if hook else None},
