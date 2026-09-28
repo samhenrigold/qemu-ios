@@ -23,12 +23,12 @@ bake() adds the guest side, all of it located at build or run time (no offsets):
                                  (else the stock engine and software CoreAnimation)
   contrib/appsync/patch-appsync-dylib.sh  MISValidateSignature -> success in the shared cache, found by symbol;
                                  libappsync.dylib DYLD_INSERTed into installd (options.appsync)
-  shell package                  /bin/sh (bash) and the tools it_agent's exec runs, from the Cydia bootstrap
-                                 tarballs the manifest pins (imgtools/ipod2g-shell.txt); with options.ssh also
-                                 OpenSSH + a /Library/LaunchDaemons job and host keys made for this device
+  install_web_proxy()            the iPad's proxy PAC and the en0 Wi-Fi service that uses it (options.web_proxy)
+No shell, sshd or third-party binary is installed: guest services are stock lockdown services plus it_agent
+(docs/ipod/guest-services-plan.md). Only our own helpers above are added.
 Every file the bake creates is given its owner in the catalog afterwards (the host mount is noowners).
 """
-import hashlib, json, os, plistlib, re, shutil, struct, subprocess, sys, tarfile, tempfile, zipfile
+import hashlib, json, os, plistlib, re, shutil, struct, subprocess, sys, zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -39,35 +39,8 @@ from ipad1_kboot import synth_identity, udid
 CACHE = os.path.expanduser("~/Developer/qemu-ios-files/ipod-ipsw/cache")
 KC_PREFIX = b"/System/Library/Caches/com.apple.kernelcaches/"
 GLI_REF = os.path.join(ROOT, "docs/ipod/gli-dispatch-7E18.tsv")
-SHELL_LIST = os.path.join(HERE, "ipod2g-shell.txt")
 DYLD_CACHE = "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv6"
-SSHD_JOB = "Library/LaunchDaemons/com.openssh.sshd.plist"
 WEB_PROXY_PAC = "usr/local/share/ltm/proxy.pac"   # ipad1_rootfs.PAC_PATH
-SSHD_CONFIG = """Port 22
-Protocol 2
-HostKey /etc/ssh/ssh_host_rsa_key
-HostKey /etc/ssh/ssh_host_ecdsa_key
-UsePrivilegeSeparation no
-PermitRootLogin yes
-PasswordAuthentication yes
-PubkeyAuthentication yes
-PermitEmptyPasswords no
-ChallengeResponseAuthentication no
-UsePAM no
-StrictModes no
-UseDNS no
-GSSAPIAuthentication no
-KerberosAuthentication no
-PrintMotd no
-PrintLastLog no
-TCPKeepAlive yes
-LoginGraceTime 300
-MaxAuthTries 10
-PidFile /var/run/sshd.pid
-LogLevel DEBUG3
-Subsystem sftp /usr/libexec/sftp-server
-AcceptEnv LANG LC_*
-"""
 # Paths bake-guest-tools.sh creates (it documents the setowner step); owner, relative to the volume.
 GUEST_TOOL_OWNERS = [
     ("0 0", "usr/local"), ("0 0", "usr/local/bin"), ("0 0", "usr/local/bin/it_agent"),
@@ -79,6 +52,7 @@ GUEST_TOOL_OWNERS = [
     ("501 501", "private/var/mobile/Library/Preferences/com.apple.preferences.sounds.plist"),
     ("501 501", "private/var/mobile/Media/.lt-guest-tools-v1"),
     ("501 501", "private/var/mobile/Media/.lt-guest-tools-v2"),
+    ("501 501", "private/var/mobile/Media/.lt-guest-tools-v3"),
 ]
 
 
@@ -210,11 +184,10 @@ def build(ctx):
     zip_member(z, kc_member, kc)
 
     # the bake, run by build_nand.py inside the mounted volume
-    packages = {k: os.path.expanduser(v["path"]) for k, v in (m.get("packages") or {}).items()}
-    for k, v in (m.get("packages") or {}).items():
-        if sha(packages[k]) != v["sha256"]:
-            raise SystemExit("package %s: %s does not have the pinned sha256" % (k, packages[k]))
-    cfg = {"options": opt, "guest_tools_supported": major >= 3, "packages": packages, "owners": os.path.join(work, "owners.txt"),
+    if m.get("packages") or opt.get("shell") or opt.get("ssh"):
+        raise SystemExit("manifest asks for tool packages / a shell / ssh: iPod images carry no shell any more "
+                         "(docs/ipod/guest-services-plan.md); remove packages and options.shell/ssh")
+    cfg = {"options": opt, "guest_tools_supported": major >= 3, "owners": os.path.join(work, "owners.txt"),
            "report": os.path.join(work, "bake.json"), "activation_hook": ctx.hook}
     json.dump(cfg, open(os.path.join(work, "bake-config.json"), "w"))
     script = os.path.join(work, "bake.sh")
@@ -244,7 +217,6 @@ def build(ctx):
         "built": tools,
         "inputs": {"rootfs": os.path.join(dec, "rootfs.dmg"), "kernelcache": kc_member,
                    "iboot": os.path.join(dec, "iBoot.bin"), "all_flash": prefix,
-                   "packages": {k: {"path": p, "sha256": sha(p)} for k, p in packages.items()},
                    "lockdown": None},
         "outputs": {"nand": {"path": nand, "pages": len(pages), "listing_sha256": listing.hexdigest()},
                     "nor": {"path": nor, "sha256": sha(nor)}, "iboot": {"path": iboot_out, "sha256": sha(iboot_out)} if derived["direct_iboot"] else None,
@@ -254,58 +226,6 @@ def build(ctx):
 
 
 # --- bake: runs inside the mounted volume --------------------------------------------------------
-
-def install_shell(mnt, packages, ssh, owners):
-    """The listed files from the pinned tarballs; with ssh also the host keys, config and launchd job."""
-    want = {}
-    for line in open(SHELL_LIST):
-        tarball, rel = line.split()
-        if ssh or tarball == "freeze":
-            want.setdefault(tarball, set()).add(rel)
-    for tarball, rels in want.items():
-        with tarfile.open(packages[tarball]) as t:
-            members = {os.path.normpath(i.name): i for i in t.getmembers()}
-            for rel in sorted(rels):
-                info = members.get(rel)
-                if info is None or not (info.isfile() or info.issym() or info.islnk()):
-                    raise SystemExit("%s has no file %s" % (packages[tarball], rel))
-                dst = os.path.join(mnt, rel)
-                parent = os.path.dirname(rel)
-                while parent and not os.path.isdir(os.path.join(mnt, parent)):
-                    owners.append(("0 0", parent))
-                    parent = os.path.dirname(parent)
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                if os.path.lexists(dst):
-                    print("keeping the firmware's own /%s" % rel)   # 2.x ships libncurses itself
-                    continue
-                if info.issym():
-                    os.symlink(info.linkname, dst)
-                else:
-                    with t.extractfile(info) as s, open(dst, "wb") as d:
-                        shutil.copyfileobj(s, d)
-                    os.chmod(dst, info.mode & 0o7777)
-                owners.append(("0 0", rel))
-    if not ssh:
-        return
-    etc = os.path.join(mnt, "private/etc/ssh")
-    os.makedirs(etc)
-    owners.append(("0 0", "private/etc/ssh"))
-    open(os.path.join(etc, "sshd_config"), "w").write(SSHD_CONFIG)
-    owners.append(("0 0", "private/etc/ssh/sshd_config"))
-    for kind in ("rsa", "ecdsa"):
-        key = os.path.join(etc, "ssh_host_%s_key" % kind)
-        subprocess.run(["ssh-keygen", "-q", "-t", kind, "-N", "", "-m", "PEM", "-f", key], check=True)
-        os.chmod(key, 0o600)
-        owners += [("0 0", "private/etc/ssh/ssh_host_%s_key" % kind), ("0 0", "private/etc/ssh/ssh_host_%s_key.pub" % kind)]
-    job = {"Label": "com.openssh.sshd", "ProgramArguments": ["/usr/sbin/sshd", "-D", "-e"], "RunAtLoad": True,
-           "KeepAlive": True, "StandardOutPath": "/var/log/sshd.log", "StandardErrorPath": "/var/log/sshd.log"}
-    path = os.path.join(mnt, SSHD_JOB)
-    if not os.path.isdir(os.path.dirname(path)):
-        os.makedirs(os.path.dirname(path))
-        owners.append(("0 0", os.path.dirname(SSHD_JOB)))
-    plistlib.dump(job, open(path, "wb"))
-    owners.append(("0 0", SSHD_JOB))
-
 
 def install_web_proxy(mnt, owners):
     """The iPad's proxy routing (imgtools/ipad1_rootfs.py): the PAC file, and configd's preferences with the
@@ -341,9 +261,6 @@ def bake(mnt, config):
         sys.stdout.write(r.stdout)
         report["appsync"] = [l for l in r.stdout.splitlines() if "MISValidateSignature" in l or "DYLD_INSERT" in l]
         owners.append(("0 0", "usr/lib/libappsync.dylib"))
-    if opt.get("shell", True):
-        install_shell(mnt, cfg["packages"], opt.get("ssh", True), owners)
-        report["shell"] = "ssh" if opt.get("ssh", True) else "shell only"
     if opt.get("web_proxy", True):
         install_web_proxy(mnt, owners)
         report["web_proxy"] = "PAC /%s on the en0 Wi-Fi service" % WEB_PROXY_PAC
