@@ -12,7 +12,7 @@ incremental; most existing `IT_*` variables still retain their documented behavi
 | `bt` | `on`, `off` | `on` | `IT_BT`: leading `0` disables, otherwise enables |
 | `bt-latency-us` | unsigned 32-bit microseconds | `2000` | `IT_BT_LATENCY_US` |
 | `osk` | `on`, `off` | `off` | `IT_OSK`: any present value enables |
-| `audio-hw` | `auto`, `on`, `off` | `auto`: CS42L58 and AMC present for direct iBoot, absent otherwise | `IT_AUDIO_HW`: leading `0` disables; any other value enables |
+| `audio-hw` | `auto`, `on`, `off` | `auto`: CS42L58, amp, I2S0 and AMC present on every boot (2.1.1 panics without them) | `IT_AUDIO_HW`: leading `0` disables; any other value enables |
 
 Use `-M iPod-Touch,audio-hw=on` to force audio hardware. An explicitly supplied
 property, including `auto`, wins over the environment alias. The alias remains
