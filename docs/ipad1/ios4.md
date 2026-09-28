@@ -30,7 +30,7 @@ Components: kernel `xnu-1504.58.28~3/RELEASE_ARM_S5L8930X` (Darwin 10.4.0), iBoo
 | data partition | plain 0xAF + fstab patch | the IPSW fstab already says `/dev/disk0s2`; the unprotected HFSX volume mounts journaled | unchanged. No EncryptedMediaFilter / content-protection mount is needed to mount it |
 | launchd jobs used by rootfs/bake | | SpringBoard, BTServer, storage_mounter, lockdownd, installd: same paths | unchanged |
 | AppSync `MISValidateSignature` | | found by symbol in the 4.2.1 shared cache (VA 0x3075d924) | unchanged (`appsync_cachepatch`) |
-| GLI dispatch ABI | 826 slots | 841 slots | `gli_abi_problem` refuses GL CA, as designed; the manifest says `ca_ogl: false` |
+| GLI dispatch ABI | 826 slots | 841 slots | a TSV per layout (`contrib/ipad1-gles/glitsv.py` derives it from the shared cache), one `GLEngine-<BUILD>` per TSV; `gli_engine` picks by the cache's `__GLIFunctionDispatchRec` @encode. See "GL CoreAnimation on 4.2.1" |
 
 Checked equal rather than derived: the NAND chip ID path, `NANDDRIVERSIGN`, whitening, the MBR, the
 unimplemented-register profile (DART1 at 0x88d00000 is polled on 3.2.2 too). Guest helpers built against
@@ -200,6 +200,88 @@ that and a lit screen.
 Measured on a fresh device (manifest defaults, no hook): lit 12.5-18.7 s after power-on, slider power-off
 17.7 s to QEMU exit 0, boot 2 without an FTL rescan.
 
+## GL CoreAnimation on 4.2.1 (2026-09-28)
+
+`manifests/ipad1-8C148.json` now says `ca_ogl: true`: SpringBoard composites through the GLI shim and
+host GL, and the "Connect to iTunes" screen is drawn that way (lit 12.7 / 15.6 s on a fresh device,
+clean power-offs). What 4.x added, and what the shim does about it:
+
+**The blocker, and the plugin contract.** 4.x EAGL makes a sharegroup only through libGFXShared:
+`-[EAGLSharegroup loadGLIPlugin:]` (for each pixel format with the accelerated bit 0x100) calls
+`gfxCreateSharedState(&pf->renderer, 1)`, which looks up a plugin by `renderer & 0xffff00` and a device
+by `renderer & ~0xff` and calls the plugin's `gldCreateShared(&slot, device mask, 4)`; no plugin, no
+context. 3.2.2's libGFXShared has the same API and discovery, but its EAGL never calls it (only the stock
+GLEngine did), so replacing GLEngine sufficed there. libGFXShared (read from the 8C148 cache,
+`_gfxPluginConnectAll`) registers plugins two ways, both by name, nothing hand-found:
+- IOKit: for each service EAGL passes to `gliInitializeLibrary` (it matches `IOAcceleratorES`), the
+  service's `IOGLESBundleName` names `/System/Library/Extensions/<name>.bundle/<name>`. That is how the
+  real plugin, `IMGSGX535GLDriver.bundle` (in the shared cache; `gldGetVersion` 3.1.0, renderer 0x7000),
+  is found. It opens the SGX IOAccelerator's user client in `gldInitializeLibrary`, i.e. it needs the SGX
+  kernel driver and hardware.
+- Resources: when the IOSurface callbacks are set (EAGL passes one, the engine the other), every
+  `GLRendererFloat*` entry of `$GL_RESOURCES` or OpenGLES.framework's resources directory is loaded as
+  `<dir>/<name>.bundle/<name>` and gets one device (Apple's software-float slot on the Mac).
+Per plugin: `dlopen`, `gldInitializeLibrary(svcs, 0, mask, flush, bind, init)`, then `gldGetVersion`
+must return nonzero with 3, 1, 0 and a renderer with only bits 8-15 set; the plugin ID is that `| 0x20000`
+and its first device `| 1 << 24`; then all 79 `gld*` names in libGFXShared's table must `dlsym`, or the
+plugin is dropped. The stock GLEngine calls `gfxInitializeLibrary` + `gfxPluginConnectAll` from its
+`gliInitializeLibrary` and takes pixel formats from each plugin's `gldChoosePixelFormat`.
+
+**Design: a gld plugin shim on the resources path (chosen).** `contrib/ipad1-gles/gldshim.c`, installed
+as `OpenGLES.framework/GLRendererFloatQEMU.bundle/GLRendererFloatQEMU` by `ipad1_rootfs.py build` when
+the firmware's OpenGLES imports `gfxCreateSharedState`: version 3.1.0, the SGX's renderer 0x7000, a
+`gldCreateShared` that allocates a token, and stubs for the rest (nothing but the shared-state
+bookkeeping calls them: the GL itself stays in glishim). The shim's `gliInitializeLibrary` does what the
+stock one does (`gfxInitializeLibrary` with EAGL's arguments, then `gfxPluginConnectAll`), checks
+registration with `gfxGetPluginWithDriverID`/`gfxGetDeviceWithDeviceID`, and its pixel formats carry
+device 0x01027000 and the accelerated bit. All found by symbol; libGFXShared's 79 names are read from the
+firmware at build time and the build fails if gldshim lacks one. Fails closed: 3.2.x never loads
+libGFXShared (the lookups fail, nothing changes); a 4.x with no registered device logs why and leaves
+pixel formats unaccelerated (no GL context, CA in software). Rejected: an emulated SGX IOAccelerator for
+the real plugin. Its interface is the SGX user client and command streams, far larger than 6 functions.
+
+**Loading the shim over a cached GLEngine.** 4.2.1 ships GLEngine in the shared cache and iOS dyld matches
+cached images by path only (`findInSharedCacheImage`, 0x2fe01604), so a file at that path is never read.
+dyld has Apple's switch for this: when `/System/Library/Caches/com.apple.dyld/enable-dylibs-to-override-cache`
+exists (checked once at launch into `sDylibsOverrideCache`), `loadPhase5` tries the file on disk before
+the cache. The build creates that empty file when the cache holds GLEngine, and fails if this dyld lacks
+the string. This replaced the earlier one-byte edit of the cached path. No environment setting reaches it
+(OpenGLES builds the path from the `com.apple.opengles` bundle; `DYLD_SHARED_REGION=avoid` would drop the
+whole cache, and 4.2.1 has no standalone dylibs), and a `DYLD_INSERT_LIBRARIES` interposer on `dlopen`
+would have to be in every GL process's environment. Every other cached image has no file on disk, so it
+still comes from the cache.
+
+**What else changed in 4.x EAGL**, handled in glishim (3.2.x paths unchanged, keyed on libGFXShared being
+loaded):
+- `gliCreateContextWithShared` (all contexts of an EAGL sharegroup; the pixel format EAGL embeds keys
+  the group).
+- `-renderbufferStorage:fromDrawable:` now only calls `gliBindViewES`, and returns its result. The stock
+  engine binds CA's drawable itself: `drawable->bind(fourcc, block)` with a 4-entry block (create,
+  destroy and a new `preflight`), the first `nextBuffer`, then its own `gliSetInteger(0x38E)` attach as
+  GL_RENDERBUFFER. glishim does the same (`gli_bind_view4`).
+- A buffer CA has just allocated may have no pages mapped, and the host writes frames with a debug write
+  that cannot fault them in (`present-surface: write failed at row 0`): the shim touches each page of
+  the frame's buffer before presenting.
+- CA puts an EAGL layer's surface in its own IOMFB layer (UI0) under a full-screen UI1, with a
+  destination rectangle: +0x54 origin, +0x60 source size, +0x64 far corner (`x << 16 | y`). The display
+  model (`s5l8930_display.c`) assumed full-panel layers at 0,0 and now honours the rectangle.
+
+**The GL check without activation.** Apps can't be launched from an unactivated home screen, so
+`contrib/it-gltest/it_gltest.c` is a launchd job (`ipad1_device.py create ... --gl-test`, recorded as
+`gl_test` in the lock) that puts a CAEAGLLayer on its own remote CAContext, ordered above everything,
+and draws a magenta / cyan / yellow ES 1.1 scene with a moving blue band. `tests/ipad1/gltest.py DEVICE`
+checks the fixture's glReadPixels probes, the colour fractions of two screendumps (the iPod GLES check's
+method), the fixture's present rate and tearcheck's score. On 8C148: readback PASS, magenta 0.071 /
+cyan 0.153 / yellow 0.076 (layer 0.076 / 0.153 / 0.076), presents 61.5 fps (vsync), 0 torn, black or
+partial frames in 92 captured changes. On 7B500 it passes too, but only its first frame reaches the
+panel (293 presents/s, one distinct capture): 3.2.x CA does not update a remote context's EAGL layer
+this way; GLTest.app is the 3.x fixture.
+
+Not done: fps and tearing of SpringBoard's own animations on 4.x (animfps/tearcheck script an unlock and
+app launches, which need activation). The host still reads client arrays with debug reads, so a vertex
+array in a page the guest never touched fails to draw (`failed to read ... array data`); the fixture keeps
+its arrays on the stack.
+
 ## What is done (2026-09-27, earlier session)
 
 `nor-rw` on the ipad1 machine (`hw/arm/ipad1.c`): a private writable 1 MiB NOR copy whose guest writes (the
@@ -222,7 +304,7 @@ activation hook), and the iPod regression — see the commit.
 | ~~NOR persistence on the ipad1 machine (`nor-rw`) and a per-device `nor.bin` through the pipeline~~ **DONE this session** (the app still needs to pass its own private writable `nor.bin` copy as `nor-rw=`; see below) | — |
 | Trust gate: what the `+0x1f8` virtual reads. ~~Gated on this.~~ **DONE 2026-09-27** — it is the DeviceTree `secure-root-prefix='md'` property + root-device match (`SecureRoot` IOResource from AppleARMPlatform), not the img3 chain. Route 1 confirmed viable, no kernel patching. Evidence above. | — |
 | ~~Restore-ramdisk one-shot~~ **DONE 2026-09-28** (see "The one-shot, as built"). The plan was: (1) **kboot**: teach `ipad1_kboot.build` an optional RAM-disk mode — add a segment carrying the raw-HFS ramdisk at a chosen PA in DRAM, a `chosen/memory-map` `RAMDisk` entry `(pa,len)` for it, boot-args `rd=md0` (root selects `md0`), and keep the restore DeviceTree's `secure-root-prefix='md'` (do NOT overwrite it in `fill_dt`; the normal-boot DT has no such prefix so 3.x/normal boots are unaffected). Restore kernelcache+ramdisk+DeviceTree come from the BuildManifest's Update/Restore identity via `ipad1_fw.py`. (2) **guest helper** (built like the others, ldid-signed, AMFI boot-args already on): call the two stable symbols `format_effaceable_storage`-equivalent (AppleEffaceableStorage user client sels 3/4) + `_MKBKeyBagCreateSystem(NULL, dataMount)`; mount the data volume, write `/private/var/keybags/systembag.kb`, `it_seal`-style `reboot(RB_HALT)`. (3) **pipeline**: `ipad1_device.py create` runs this one-shot boot against the device's *writable* NAND + `nor-rw` before the normal boot+seal; verify effaceable formatted + `systembag.kb` present; version-gated by manifest (`options.writable_nor`/a `restore_keybag` flag). | — |
-| GLI shim for 4.2.1: 15 new dispatch slots (13 inserted after slot 764: `draw_elements_base_vertex` ... `sample_maski`, then `discard_framebuffer_EXT` and `resolve_multisample_framebuffer_APPLE`); a per-firmware TSV for `gligen.py` and a check of the new entry points | 0.5-1 day |
+| ~~GLI shim for 4.2.1~~ **DONE 2026-09-28**: GL CoreAnimation is the 8C148 default (below) | — |
 | Activation: the opt-in hook refused 4.2.1's lockdownd (it fails closed; exit 1, file unchanged) | the hook owner's call |
 | ~~Unlock / power-off coordinates on 4.x SpringBoard~~ **DONE 2026-09-28**: power-off verified (display-rotation 270); unlock untested (no activated 4.x device) | — |
 

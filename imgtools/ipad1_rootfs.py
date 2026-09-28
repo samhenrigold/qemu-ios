@@ -85,15 +85,112 @@ GLES_APPS = ("GLTest.app", "GLTest2.app")
 # GL CoreAnimation (the default; --no-ca-ogl opts out): CoreAnimation composites through the GLI shim
 # (accelerated pixel format), so the build installs the shim as GLEngine
 SB_ENV_CA_OGL = {"MBX2D_PAGE_FLIP": "0", "GLI_ACCELERATED": "1"}
-# The shim's dispatch table (contrib/ipad1-gles/gligen.py) is generated from this TSV; a firmware whose
-# OpenGLES @encode of __GLIFunctionDispatchRec names other fields, or orders them otherwise, needs its own.
+# The shim's dispatch table (contrib/ipad1-gles/gligen.py) is generated from a TSV per dispatch layout,
+# docs/ipad1/gli-dispatch-<BUILD>.tsv -> contrib/ipad1-gles/GLEngine-<BUILD>; the firmware's OpenGLES @encode
+# of __GLIFunctionDispatchRec picks one (7B500's also fits 7B367). A new layout needs its own TSV
+# (contrib/ipad1-gles/glitsv.py derives one from the shared cache).
 GLI_TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../docs/ipad1/gli-dispatch-7B500.tsv")
+GLI_TSVS = sorted(os.path.join(os.path.dirname(GLI_TSV), n) for n in os.listdir(os.path.dirname(GLI_TSV))
+                  if re.fullmatch(r"gli-dispatch-\w+\.tsv", n))
 DYLD_CACHE = "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv7"
 
 
-def gli_abi_problem(cache_path, tsv=GLI_TSV):
+def gli_engine(cache_path):
+    """(the GLEngine-<BUILD> whose TSV matches this shared cache, None), else (None, why for each TSV)."""
+    data, whys = open(cache_path, "rb").read(), []
+    for tsv in GLI_TSVS:
+        why = gli_abi_problem(cache_path, tsv, data)
+        if why is None:
+            return os.path.join(GLES, "GLEngine-" + os.path.basename(tsv)[len("gli-dispatch-"):-4]), None
+        whys.append(why)
+    return None, "; ".join(whys)
+
+
+DYLD_OVERRIDE = "System/Library/Caches/com.apple.dyld/enable-dylibs-to-override-cache"
+GLD_BUNDLE = "GLRendererFloatQEMU.bundle"
+GLD_REL = "System/Library/Frameworks/OpenGLES.framework/%s/GLRendererFloatQEMU" % GLD_BUNDLE
+
+
+def cache_images(data):
+    """{path: (mach_header file offset, va->file offset)} for a dyld_v1 shared cache."""
+    if data[:7] != b"dyld_v1":
+        return {}
+    moff, mcount, ioff, icount = struct.unpack_from("<4I", data, 0x10)
+    maps = [struct.unpack_from("<QQQ", data, moff + 32 * i) for i in range(mcount)]
+    f = lambda va: next(fo + va - a for a, sz, fo in maps if a <= va < a + sz)
+    out = {}
+    for i in range(icount):
+        va, _, _, p = struct.unpack_from("<QQQI", data, ioff + 32 * i)
+        out[data[p:data.index(b"\0", p)].decode()] = (f(va), f)
+    return out
+
+
+def image_strings(data, img, section=None):
+    """The cached image's symbol names, or with section (e.g. "__cstring") that section's C strings."""
+    mh, f = img
+    ncmds, off, out = struct.unpack_from("<I", data, mh + 16)[0], mh + 28, []
+    for _ in range(ncmds):
+        cmd, size = struct.unpack_from("<II", data, off)
+        if cmd == 2 and not section:                          # LC_SYMTAB: cache file offsets
+            symoff, nsyms, stroff = struct.unpack_from("<III", data, off + 8)
+            for k in range(nsyms):
+                x = stroff + struct.unpack_from("<I", data, symoff + 12 * k)[0]
+                out.append(data[x:data.index(b"\0", x)].decode("latin1"))
+        if cmd == 1 and section:                              # LC_SEGMENT
+            for k in range(struct.unpack_from("<I", data, off + 48)[0]):
+                so = off + 56 + 68 * k
+                if data[so:so + 16].rstrip(b"\0").decode() == section:
+                    addr, sz = struct.unpack_from("<II", data, so + 32)
+                    out += [x.decode("latin1") for x in data[f(addr):f(addr) + sz].split(b"\0") if x]
+        off += size
+    return out
+
+
+def gli_uncache(mnt, rel=GLENGINE):
+    """Let dlopen reach the GLI shim on disk. 4.x ships GLEngine inside the shared cache, and iOS dyld
+    matches a cached image by path alone, so the shim installed over it would never load (3.2.x has no
+    cached GLEngine: nothing to do). dyld's own switch fixes that: when
+    /System/Library/Caches/com.apple.dyld/enable-dylibs-to-override-cache exists, loadPhase5 tries the
+    file on disk before the cache (sDylibsOverrideCache), so the installed shim wins and the other cached
+    images, which have no file on disk, still come from the cache. The cache itself is not edited. Fails
+    closed if this dyld has no such switch. Returns a one-line status."""
+    data = open(os.path.join(mnt, DYLD_CACHE), "rb").read()
+    if "/" + rel not in cache_images(data):
+        return "no cached GLEngine"
+    if b"/" + DYLD_OVERRIDE.encode() + b"\0" not in open(os.path.join(mnt, "usr/lib/dyld"), "rb").read():
+        raise SystemExit("GLEngine is in the shared cache and this dyld has no %s switch: the GLI shim "
+                         "cannot load (build with --no-ca-ogl)" % os.path.basename(DYLD_OVERRIDE))
+    d = os.path.dirname(os.path.join(mnt, DYLD_OVERRIDE))
+    mode = os.stat(d).st_mode
+    os.chmod(d, mode | 0o200)                  # the stock directory is r-x
+    open(os.path.join(mnt, DYLD_OVERRIDE), "wb").close()
+    os.chmod(d, mode)
+    return "cached GLEngine overridden by the file (%s)" % os.path.basename(DYLD_OVERRIDE)
+
+
+def gld_problem(cache_path, plugin=os.path.join(GLES, GLD_BUNDLE, "GLRendererFloatQEMU")):
+    """(needed, why): needed if this firmware's EAGL takes a libGFXShared shared state (4.x:
+    OpenGLES imports gfxCreateSharedState), which needs a gld plugin; why is None when gldshim exports
+    every gld* entry point libGFXShared dlsyms."""
+    data = open(cache_path, "rb").read()
+    imgs = cache_images(data)
+    ogl = imgs.get("/System/Library/Frameworks/OpenGLES.framework/OpenGLES")
+    if not ogl or "_gfxCreateSharedState" not in image_strings(data, ogl):
+        return False, None
+    gfx = imgs.get("/System/Library/Frameworks/OpenGLES.framework/libGFXShared.dylib")
+    if not gfx:
+        return True, "OpenGLES imports gfxCreateSharedState but the cache has no libGFXShared"
+    want = [n for n in image_strings(data, gfx, "__cstring") if re.fullmatch(r"gld[A-Z]\w+", n)]
+    if not os.path.exists(plugin):
+        return True, "%s missing (run contrib/ipad1-gles/build.sh)" % plugin
+    have = open(plugin, "rb").read()
+    lost = [n for n in want if b"\0_" + n.encode() + b"\0" not in have]
+    return True, ("gldshim lacks %s" % ", ".join(lost)) if lost or not want else None
+
+
+def gli_abi_problem(cache_path, tsv=GLI_TSV, data=None):
     """None if the shared cache's __GLIFunctionDispatchRec fields are the TSV's dispatch_field column, in order."""
-    enc = re.search(rb"\{__GLIFunctionDispatchRec=[^}]*\}", open(cache_path, "rb").read())
+    enc = re.search(rb"\{__GLIFunctionDispatchRec=[^}]*\}", data if data is not None else open(cache_path, "rb").read())
     if not enc:
         return "no __GLIFunctionDispatchRec @encode in %s" % cache_path
     have = [f.decode() for f in re.findall(rb'"([^"]+)"', enc[0])]
@@ -137,6 +234,8 @@ RETIRED = ["usr/local/bin/it_notip", "System/Library/LaunchDaemons/com.qemu.it-n
 BT_JOB = "System/Library/LaunchDaemons/com.apple.BTServer.plist"
 SEAL_TOOL = {"it_seal": ("usr/local/bin/it_seal", 0o755)}
 SEAL_JOB = {"System/Library/LaunchDaemons/com.qemu.it-seal.plist": "it-seal/com.qemu.it-seal.plist"}
+GLTEST_TOOL = {"it_gltest": ("usr/local/bin/it_gltest", 0o755)}   # tests/ipad1/gltest.py's fixture
+GLTEST_JOB = {"System/Library/LaunchDaemons/com.qemu.it-gltest.plist": "it-gltest/com.qemu.it-gltest.plist"}
 LC_MAIN, LC_VERSION_MIN_IPHONEOS = 0x80000028, 0x25
 MH_MAGIC, FAT_MAGIC, LC_CODE_SIGNATURE, CS_CMS = 0xFEEDFACE, 0xCAFEBABE, 0x1D, 0x10000
 
@@ -519,11 +618,25 @@ def build(a):
             cache = os.path.join(m.mnt, DYLD_CACHE)
             print("      " + appsync_cachepatch.patch_cache(cache))
         apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))
+        gli_owned = []                     # files the GL install adds, root-owned below
         if a.gles or a.ca_ogl:   # GL CoreAnimation composites through the GLI shim, so it needs the engine
-            why = gli_abi_problem(os.path.join(m.mnt, DYLD_CACHE))
+            engine, why = gli_engine(os.path.join(m.mnt, DYLD_CACHE))
             if why:
                 raise SystemExit("GLI shim does not fit this firmware: %s (build with --no-ca-ogl)" % why)
-            shutil.copy(os.path.join(GLES, "GLEngine"), os.path.join(m.mnt, GLENGINE))
+            if not os.path.exists(engine):
+                raise SystemExit("%s missing (run contrib/ipad1-gles/build.sh)" % engine)
+            gld, why = gld_problem(os.path.join(m.mnt, DYLD_CACHE))
+            if why:
+                raise SystemExit("gld plugin does not fit this firmware: %s (build with --no-ca-ogl)" % why)
+            status = gli_uncache(m.mnt)
+            print("      GLI engine %s%s; %s" % (os.path.basename(engine), " + gld plugin %s" % GLD_BUNDLE if gld else "",
+                                               status))
+            gli_owned += [DYLD_OVERRIDE] if "overridden" in status else []
+            gli_owned += [os.path.dirname(GLD_REL), GLD_REL] if gld else []
+            shutil.copy(engine, os.path.join(m.mnt, GLENGINE))
+            if gld:
+                os.makedirs(os.path.join(m.mnt, os.path.dirname(GLD_REL)), exist_ok=True)
+                shutil.copy(os.path.join(GLES, GLD_BUNDLE, os.path.basename(GLD_REL)), os.path.join(m.mnt, GLD_REL))
         if a.gles:
             for app in () if apps_stashed else GLES_APPS:
                 shutil.rmtree(os.path.join(m.mnt, "Applications", app), ignore_errors=True)
@@ -556,7 +669,7 @@ def build(a):
         bn.set_owner(system, ["usr/local", "usr/local/share", "usr/local/share/ltm", PAC_PATH], 0, 0)
     if a.gles or a.ca_ogl:   # ldid-signed: boot with amfi_allow_any_signature=1 cs_enforcement_disable=1
         apps = [] if apps_stashed or not a.gles else GLES_APPS
-        bn.set_owner(system, [GLENGINE] + ["Applications/" + app for app in apps] +
+        bn.set_owner(system, [GLENGINE] + gli_owned + ["Applications/" + app for app in apps] +
                      ["Applications/%s/%s" % (app, f) for app in apps
                       for f in os.listdir(os.path.join(GLES, app))], 0, 0)
     owners = var_owners(system)
@@ -625,6 +738,9 @@ def bake(a):
     if a.seal:      # one-shot clean halt for ipad1_seal.py; it deletes itself on that boot
         TOOLS.update(SEAL_TOOL)
         JOBS.update(SEAL_JOB)
+    if a.gl_test:   # the GL fixture job (contrib/it-gltest), for tests/ipad1/gltest.py
+        TOOLS.update(GLTEST_TOOL)
+        JOBS.update(GLTEST_JOB)
     for name in TOOLS:
         with open(os.path.join(a.tools, name), "rb") as f:
             why = guest_tool_problem(f.read())
@@ -706,6 +822,28 @@ def selfcheck():
         t.write(b"X")
         t.flush()
         assert "slot 0" in gli_abi_problem(t.name)
+    assert GLI_TSV in GLI_TSVS and all(os.path.basename(p).startswith("gli-dispatch-") for p in GLI_TSVS)
+    with tempfile.TemporaryDirectory() as mnt:   # the cached-GLEngine override: only with GLEngine cached
+        def cache(*paths):
+            img = bytearray(b"dyld_v1   armv7\0" + struct.pack("<4I", 0x40, 1, 0x60, len(paths))).ljust(0x40, b"\0")
+            img += struct.pack("<QQQ", 0, 0x1000, 0).ljust(32, b"\0")
+            names = b"".join(p.encode() + b"\0" for p in paths)
+            for i, p in enumerate(paths):
+                img += struct.pack("<QQQI", 0, 0, 0, 0x100 + len(b"".join(q.encode() + b"\0" for q in paths[:i]))).ljust(32, b"\0")
+            os.makedirs(os.path.join(mnt, os.path.dirname(DYLD_CACHE)), exist_ok=True)
+            open(os.path.join(mnt, DYLD_CACHE), "wb").write(bytes(img.ljust(0x100, b"\0")) + names)
+        os.makedirs(os.path.join(mnt, "usr/lib"))
+        open(os.path.join(mnt, "usr/lib/dyld"), "wb").write(b"x\0/%s\0" % DYLD_OVERRIDE.encode())
+        cache("/usr/lib/libz.dylib")
+        assert gli_uncache(mnt) == "no cached GLEngine" and not os.path.exists(os.path.join(mnt, DYLD_OVERRIDE))
+        cache("/usr/lib/libz.dylib", "/" + GLENGINE)
+        assert "overridden" in gli_uncache(mnt) and os.path.getsize(os.path.join(mnt, DYLD_OVERRIDE)) == 0
+        open(os.path.join(mnt, "usr/lib/dyld"), "wb").write(b"no switch")
+        try:
+            gli_uncache(mnt)
+            assert False, "a dyld without the override switch must fail the build"
+        except SystemExit:
+            pass
 
     job = {"Label": "com.apple.SpringBoard", "EnvironmentVariables": {"X": "1"}, "KeepAlive": True}
     out = edit_plist(plistlib.dumps(job, fmt=plistlib.FMT_BINARY), springboard_env)
@@ -811,6 +949,7 @@ def main():
     k.add_argument("--tools", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "../build/ipad1-guest"))
     k.add_argument("--keep-bluetooth", action="store_true", help="leave com.apple.BTServer enabled (default: Disabled)")
     k.add_argument("--seal", action="store_true", help="also install it_seal, the one-shot clean halt ipad1_seal.py needs")
+    k.add_argument("--gl-test", action="store_true", help="also install it_gltest, the GL fixture job tests/ipad1/gltest.py reads")
     k.add_argument("--activation-hook", metavar="SCRIPT", help="opt-in: run SCRIPT on /usr/libexec/lockdownd (then re-signed ad hoc)")
     a = ap.parse_args()
     selfcheck()

@@ -41,6 +41,9 @@
 #define DP_UI_FORMAT        0x40
 #define DP_UI_ADDR          0x44
 #define DP_UI_STRIDE        0x48
+#define DP_UI_DST_ORIGIN    0x54      /* x << 16 | y on the panel */
+#define DP_UI_SRC_SIZE      0x60      /* w << 16 | h of the source buffer */
+#define DP_UI_DST_END       0x64      /* x1 << 16 | y1, the destination's far corner */
 
 #define DP_IRQ_VBL          0x001
 #define DP_IRQ_SWAP_DONE    0x100
@@ -382,28 +385,50 @@ static void panel_size(S5L8930DisplayState *s, unsigned *w, unsigned *h)
     }
 }
 
+/* A UI layer's scanout: its buffer and where it lands on the panel. */
+typedef struct {
+    uint32_t fmt, base, stride;
+    unsigned sw, sh;                 /* source size */
+    unsigned x0, y0, x1, y1;         /* destination rectangle, clipped to the panel */
+} UILayer;
+
 /* UI layer `layer`'s scanout parameters, or false if it is off or unset. */
-static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w,
-                          uint32_t *fmt, uint32_t *base, uint32_t *stride)
+static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigned h,
+                          UILayer *u)
 {
-    uint32_t *r = s->pipe[0].regs;
+    uint32_t *r = s->pipe[0].regs, *ui = r + DP_UI_BASE(layer) / 4;
+    uint32_t org = ui[DP_UI_DST_ORIGIN / 4], sz = ui[DP_UI_SRC_SIZE / 4];
+    uint32_t end = ui[DP_UI_DST_END / 4];
 
     if (!(r[DP_LAYERS / 4] & (0x100 << layer))) {
         return false;
     }
-    *base = r[(DP_UI_BASE(layer) + DP_UI_ADDR) / 4];
-    *fmt = (r[(DP_UI_BASE(layer) + DP_UI_FORMAT) / 4] >> 8) & 7;
+    u->base = ui[DP_UI_ADDR / 4];
+    u->fmt = (ui[DP_UI_FORMAT / 4] >> 8) & 7;
+    /* Size and placement. A full-panel layer (and the boot surface, which
+     * leaves them 0) covers the panel at 0,0; 4.x CA also places partial
+     * layers, e.g. an EAGL surface as an overlay under its UI. */
+    u->sw = sz ? sz >> 16 : w;
+    u->sh = sz ? sz & 0xffff : h;
+    u->x0 = org >> 16;
+    u->y0 = org & 0xffff;
+    u->x1 = MIN(end ? end >> 16 : u->x0 + u->sw, w);
+    u->y1 = MIN(end ? end & 0xffff : u->y0 + u->sh, h);
+    if (!u->sw || !u->sh || u->x0 >= u->x1 || u->y0 >= u->y1) {
+        return false;
+    }
     /* Two encodings reach this register. The 7B500 swap path writes
      * (bytes per row << 4) | 2, e.g. (4096 << 4) | 2 for 1024x768 BGRA. The
      * iBoot framebuffer holds plain bytes per row: AppleDisplayPipe adopts it
      * with `stride = reg & ~0x3f` (0xc058c42a), so seeding the swap encoding
-     * gave the boot surface 64 KiB rows. A <<4 value never undershoots a row. */
+     * gave the boot surface 64 KiB rows. A <<4 value never undershoots a row
+     * (of the layer's own width: an overlay is narrower than the panel). */
     {
-        uint32_t v = r[(DP_UI_BASE(layer) + DP_UI_STRIDE) / 4] & ~0x3fu;
-        unsigned row = w * (((*fmt) ? 2 : 4));
-        *stride = (v >> 4) >= row ? v >> 4 : v;
+        uint32_t v = ui[DP_UI_STRIDE / 4] & ~0x3fu;
+        unsigned row = u->sw * (u->fmt ? 2 : 4);
+        u->stride = (v >> 4) >= row ? v >> 4 : v;
     }
-    return *base != 0;
+    return u->base != 0;
 }
 
 /* One row of a layer as XRGB/ARGB8888 (0 ARGB/BGRA, 2 ARGB4444, 4 RGB565). */
@@ -433,27 +458,28 @@ static void layer_row(S5L8930DisplayState *s, uint32_t fmt, uint32_t base,
  * The panel image: UI0, then UI1 over it. With GPU CoreAnimation both are on
  * (0x1038 = 0x300): UI0 keeps the boot surface and CA double-buffers the
  * whole screen in UI1 (0x603000 / 0x904000), each with its own base, stride
- * and format and a size of +0x60 (w << 16 | h) that is the full panel. UI1 is
- * blended source-over with its alpha (premultiplied, as CA renders); an
- * opaque UI1 simply replaces UI0. Software CA uses UI0 alone.
- * ponytail: full-panel UI1 at 0,0, the only placement CA uses; add +0x50
- * (position) and +0x60 (size) clipping if a partial overlay ever shows up.
+ * and format. UI1 is blended source-over with its alpha (premultiplied, as CA
+ * renders); an opaque UI1 simply replaces UI0. Software CA uses UI0 alone.
+ * Each layer covers its destination rectangle (+0x54 origin .. +0x64 far
+ * corner) with its source (+0x60 size), nearest-neighbour if the two differ,
+ * and is transparent outside it. 4.x CA puts an EAGL layer's surface in UI0
+ * that way, under a full-panel UI1 that is clear where the layer shows.
  */
 static bool compose(S5L8930DisplayState *s, unsigned w, unsigned h, uint32_t *out,
                     uint32_t key[4])
 {
-    uint32_t fmt[2], base[2] = { 0, 0 }, stride[2];
+    UILayer u[2];
     bool on[2];
-    g_autofree uint32_t *top = NULL;
+    g_autofree uint32_t *row = NULL;
 
     for (int l = 0; l < 2; l++) {
-        on[l] = scanout_layer(s, l, w, &fmt[l], &base[l], &stride[l]);
+        on[l] = scanout_layer(s, l, w, h, &u[l]);
     }
     if (key) {
         key[0] = w << 16 | h;
         key[1] = (on[0] ? 1 : 0) | (on[1] ? 2 : 0);
-        key[2] = on[0] ? base[0] : 0;
-        key[3] = on[1] ? base[1] : 0;
+        key[2] = on[0] ? u[0].base : 0;
+        key[3] = on[1] ? u[1].base : 0;
     }
     if (!on[0] && !on[1]) {
         return false;
@@ -461,39 +487,40 @@ static bool compose(S5L8930DisplayState *s, unsigned w, unsigned h, uint32_t *ou
     if (!out) {
         return true;
     }
-    if (on[1]) {
-        top = g_new(uint32_t, w);
-    }
+    row = g_new(uint32_t, MAX(MAX(on[0] ? u[0].sw : 0, on[1] ? u[1].sw : 0), w));
     for (unsigned y = 0; y < h; y++) {
         uint32_t *d = out + (size_t)y * w;
 
-        if (on[0]) {
-            layer_row(s, fmt[0], base[0], stride[0], y, w, d);
-        } else {
-            memset(d, 0, w * 4);
-        }
-        if (!on[1]) {
-            continue;
-        }
-        layer_row(s, fmt[1], base[1], stride[1], y, w, top);
-        for (unsigned x = 0; x < w; x++) {
-            uint32_t t = top[x], a = t >> 24;
+        memset(d, 0, w * 4);
+        for (int l = 0; l < 2; l++) {
+            UILayer *L = &u[l];
+            unsigned dw = L->x1 - L->x0, sy;
 
-            if (a == 0xff || !on[0]) {
-                d[x] = t;
-            } else if (a) {
-                uint32_t b = d[x], ia = 255 - a, o = 0xff000000u;
-                for (int sh = 0; sh < 24; sh += 8) {
-                    uint32_t c = ((t >> sh) & 0xff) + (((b >> sh) & 0xff) * ia + 127) / 255;
-                    o |= MIN(c, 255u) << sh;
+            if (!on[l] || y < L->y0 || y >= L->y1) {
+                continue;
+            }
+            sy = (unsigned)((uint64_t)(y - L->y0) * L->sh / (L->y1 - L->y0));
+            layer_row(s, L->fmt, L->base, L->stride, sy, L->sw, row);
+            for (unsigned x = L->x0; x < L->x1; x++) {
+                unsigned sx = L->sw == dw ? x - L->x0
+                            : (unsigned)((uint64_t)(x - L->x0) * L->sw / dw);
+                uint32_t t = row[sx], a = t >> 24;
+
+                if (l == 0 || a == 0xff || !on[0]) {
+                    d[x] = t;
+                } else if (a) {
+                    uint32_t b = d[x], ia = 255 - a, o = 0xff000000u;
+                    for (int sh = 0; sh < 24; sh += 8) {
+                        uint32_t c = ((t >> sh) & 0xff) + (((b >> sh) & 0xff) * ia + 127) / 255;
+                        o |= MIN(c, 255u) << sh;
+                    }
+                    d[x] = o;
                 }
-                d[x] = o;
             }
         }
     }
     return true;
 }
-
 static void front_latch(S5L8930DisplayState *s)
 {
     unsigned w, h;
