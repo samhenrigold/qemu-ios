@@ -215,6 +215,11 @@ typedef struct _synopsys_usb_ep_state
 	hwaddr dma_address;
 	hwaddr dma_buffer;
 
+	/* OUT: the last transaction ended on a max-packet boundary; the next
+	 * arm gets the ZLP a real host sends. Not migrated: it lives for one
+	 * re-arm. */
+	bool zlp_pending;
+
 } synopsys_usb_ep_state;
 
 typedef struct synopsys_usb_state

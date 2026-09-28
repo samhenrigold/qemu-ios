@@ -314,6 +314,23 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 		if (eps->control & USB_EPCON_STALL) {
 			eps->control &= ~USB_EPCON_STALL;
 			ret = USB_RET_STALL;
+		} else if (ep && eps->zlp_pending && !(_hdr->flags & tcp_usb_setup)) {
+			/*
+			 * The previous transaction was a whole host write that ended on
+			 * a max-packet boundary. On a real bus the host follows it with a
+			 * zero-length packet (usbmuxd does, for length % wMaxPacketSize
+			 * == 0), and iOS 4's mux relies on it: without one it reads the
+			 * next transfer as the same message ("expected 16384 bytes,
+			 * received 32768", "message was too large (65536 bytes)", then a
+			 * TCP RST). Deliver it on the next arm and NAK this transaction,
+			 * which the host retries.
+			 */
+			if (eps->control & USB_EPCON_ENABLE) {
+				eps->control &= ~USB_EPCON_ENABLE;
+				eps->interrupt_status |= USB_EPINT_XferCompl;
+				eps->zlp_pending = false;
+			}
+			ret = USB_RET_NAK;
 		} else if (eps->control & USB_EPCON_ENABLE) {
 			eps->control &= ~USB_EPCON_ENABLE;
 
@@ -396,6 +413,8 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 				eps->interrupt_status |= USB_EPINT_SetUp;
 			} else {
 				eps->interrupt_status |= USB_EPINT_XferCompl;
+				uint32_t mps = eps->control & USB_EPCON_MPS_MASK;
+				eps->zlp_pending = ep && mps && amtDone && amtDone % mps == 0;
 			}
 
 			eps->tx_size = (eps->tx_size & ~DEPTSIZ_XFERSIZ_MASK)
@@ -850,6 +869,16 @@ static void synopsys_usb_write(void *opaque, hwaddr _addr, uint64_t _val, unsign
 			state->gintsts |= GINTMSK_GOUTNAKEFF;
 			_val &=~ DCTL_SGOUTNAK;
 		}
+
+		/* The NAK-effective interrupts stay up while the global NAK is in
+		 * effect and drop when the driver clears it: iOS 4's driver writes
+		 * CGNPINNAK/CGOUTNAK and polls GINTSTS for that (3.x's clears them
+		 * in GINTSTS, which still works). */
+		if(_val & DCTL_CGNPINNAK)
+			state->gintsts &=~ GINTMSK_GINNAKEFF;
+		if(_val & DCTL_CGOUTNAK)
+			state->gintsts &=~ GINTMSK_GOUTNAKEFF;
+		_val &=~ (DCTL_CGNPINNAK | DCTL_CGOUTNAK);
 
 		state->dctl = _val;
 		synopsys_usb_update_irq(state);
