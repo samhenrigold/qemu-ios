@@ -89,11 +89,24 @@ def judge(wav, serial=None, expect=EXPECT):
         spans = events(cap, rate)
         ok = rate == 44100 and len(spans) >= len(expect)
         print(f"WAV {rate} Hz, {len(cap) / rate:.1f} s of active output, {len(spans)} sounds")
-        for (name, path), span in zip(expect, spans):
-            seg = cap[max(0, span[0] - rate // 10):span[1] + rate // 10]
-            c = corr(seg, reference(path, td))
-            ok &= c >= MIN_CORR
-            print(f"  {'ok  ' if c >= MIN_CORR else 'FAIL'} {name:22s} {os.path.basename(path):14s} corr {c:.2f}")
+        next_span = 0
+        for name, path in expect:
+            ref = reference(path, td)
+            best, found = 0.0, None
+            # SpringBoard may emit additional sounds during a drag. Require
+            # each expected waveform, in order, without treating every sound
+            # boundary as the next test action. Never reuse a matched event.
+            for i in range(next_span, len(spans)):
+                lo, hi = spans[i]
+                c = corr(cap[max(0, lo - rate // 10):hi + rate // 10], ref)
+                best = max(best, c)
+                if c >= MIN_CORR:
+                    found = i
+                    break
+            ok &= found is not None
+            if found is not None:
+                next_span = found + 1
+            print(f"  {'ok  ' if found is not None else 'FAIL'} {name:22s} {os.path.basename(path):14s} corr {best:.2f}")
         if len(spans) < len(expect):
             print(f"  FAIL expected {len(expect)} sounds")
     if serial and "panic(" in open(serial, errors="replace").read():
@@ -139,11 +152,13 @@ def drive(sock, qemu):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--nand", default=f"{FILES}/userland/golden-pristine")
-    ap.add_argument("--kboot", default=f"{FILES}/7B500/k48-kboot.bin")
+    ap.add_argument("--nand", help="override selected device NAND")
+    import ipad1_boot
+    ipad1_boot.add_arguments(ap)
     ap.add_argument("--qemu", default=f"{ROOT}/build/qemu-system-arm")
     ap.add_argument("--keep", help="copy the WAV and serial log here")
     a = ap.parse_args()
+    a.nand = a.nand or os.path.join(a.device, "nand")
 
     with tempfile.TemporaryDirectory() as td:
         nand = os.path.join(td, "nand")
@@ -152,7 +167,7 @@ def main():
         wav, serial = os.path.join(td, "out.wav"), os.path.join(td, "serial.log")
         sock = f"/tmp/ipad1-audio-{os.getpid()}.qmp"                      # sun_path < 104
         qemu = subprocess.Popen(
-            ["timeout", "200", a.qemu, "-machine", f"ipad1,kboot={a.kboot},nand={nand}",
+            ["timeout", "200", a.qemu, "-machine", f"ipad1,{ipad1_boot.boot_options(a)},nand={nand}",
              "-display", "none", "-monitor", "none", "-serial", f"file:{serial}",
              "-qmp", f"unix:{sock},server,nowait", "-audio", f"driver=wav,path={wav}"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

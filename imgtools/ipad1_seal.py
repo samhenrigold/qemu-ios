@@ -22,9 +22,9 @@ def ftl_open(text): return FTL_OPEN_RE.search(text.replace("\n", "")) is not Non
 HALTING = "it_seal: halting"
 
 
-def boot(qemu, kboot, machine_extra, serial, stop, timeout):
+def boot(qemu, boot_options, machine_extra, serial, stop, timeout):
     """Run QEMU until it exits or stop(serial text) is true; returns (exited, seconds, text)."""
-    cmd = [qemu, "-machine", f"ipad1,kboot={kboot},{machine_extra}", "-display", "none", "-audio", "driver=none",
+    cmd = [qemu, "-machine", f"ipad1,{boot_options},{machine_extra}", "-display", "none", "-audio", "driver=none",
            "-monitor", "none", "-serial", f"file:{serial}"]
     t0 = time.monotonic()
     p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -48,24 +48,30 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("store")
     ap.add_argument("--qemu", default=f"{ROOT}/build/qemu-system-arm")
-    ap.add_argument("--kboot", default=f"{FILES}/k48-kboot.bin")
+    boot_group = ap.add_mutually_exclusive_group(required=True)
+    boot_group.add_argument("--kboot", help="explicit direct-kernel bring-up fallback")
+    boot_group.add_argument("--iboot")
+    ap.add_argument("--gid-blobs")
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--die-id", help="machine die-id, as in the kboot bundle's identity")
     ap.add_argument("--nor-rw", help="private writable NOR copy; the sealing boot's effaceable writes persist here")
     a = ap.parse_args()
+    if a.iboot and not (a.gid_blobs and a.nor_rw):
+        ap.error("--iboot needs --gid-blobs and --nor-rw")
+    boot_options = f"iboot={a.iboot},gid-blobs={a.gid_blobs}" if a.iboot else f"kboot={a.kboot}"
     store = os.path.abspath(a.store)
     die = f",die-id={a.die_id}" if a.die_id else ""
     if a.nor_rw:
         die += f",nor-rw={os.path.abspath(a.nor_rw)}"
     td = tempfile.mkdtemp(prefix="ipad1-seal-")
     try:
-        exited, t, text = boot(a.qemu, a.kboot, f"nand={store}{die}", f"{td}/seal.log", None, a.timeout)
+        exited, t, text = boot(a.qemu, boot_options, f"nand={store}{die}", f"{td}/seal.log", None, a.timeout)
         if not exited or HALTING not in text:
             sys.exit(f"seal boot: {'no clean halt' if not exited else 'QEMU exited without it_seal'} after "
                      f"{t:.0f}s (was the system.img baked with --seal?); serial in {td}/seal.log")
         print(f"sealing boot halted cleanly after {t:.0f}s")
         os.mkdir(f"{td}/overlay")
-        _, t, text = boot(a.qemu, a.kboot, f"nand={store},nand-overlay={td}/overlay{die}", f"{td}/check.log",
+        _, t, text = boot(a.qemu, boot_options, f"nand={store},nand-overlay={td}/overlay{die}", f"{td}/check.log",
                           ftl_open, 120)
         if not ftl_open(text) or RESCAN in text:
             sys.exit(f"check boot: {'still rescans' if RESCAN in text else 'no FTL_Open'}; serial in {td}/check.log")

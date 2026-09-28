@@ -26,18 +26,20 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--nand", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--kboot", default=f"{FILES}/7B500/k48-kboot.bin")
+    import ipad1_boot
+    ipad1_boot.add_arguments(ap)
     ap.add_argument("--qemu", default=f"{ROOT}/build/qemu-system-arm")
     ap.add_argument("--seconds", type=int, default=900)
     ap.add_argument("--qemu-arg", action="append", default=[], help="extra QEMU argument (repeatable)")
     ap.add_argument("steps", nargs="*")
     a = ap.parse_args()
+    a.nand = a.nand or os.path.join(a.device, "nand")
     os.makedirs(a.out, exist_ok=True)
     sock, serial = f"/tmp/ipad1-gl-{os.getpid()}.qmp", f"{a.out}/serial.log"   # sun_path < 104
     for p in (sock,):
         if os.path.exists(p):
             os.unlink(p)
-    machine = f"ipad1,kboot={a.kboot},nand={a.nand},nand-overlay={a.out}/overlay"
+    machine = f"ipad1,{ipad1_boot.boot_options(a)},nand={a.nand},nand-overlay={a.out}/overlay"
     qemu = subprocess.Popen(["timeout", str(a.seconds), a.qemu, "-machine", machine,
                              "-display", "none", "-audio", "driver=none", "-monitor", "none",
                              "-serial", f"file:{serial}", "-qmp", f"unix:{sock},server,nowait"] + a.qemu_arg,
