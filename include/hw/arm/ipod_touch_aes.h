@@ -12,6 +12,8 @@
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchAESState, IPOD_TOUCH_AES)
 
 #define key_uid ((uint8_t[]){0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF})
+/* Stand-in for the fused GID key on non-KBAG operations with aes-uid=engine (ipod_touch_aes.c). */
+#define key_gid_standin ((uint8_t[]){0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10, 0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10})
 
 #define AES_128_CBC_BLOCK_SIZE 64
 #define AES_CONTROL 0x0
@@ -87,5 +89,6 @@ typedef struct IPodTouchAESState
 } IPodTouchAESState;
 
 bool ipod_touch_aes_set_gid_blobs(const uint8_t *data, size_t size);
+void ipod_touch_aes_set_uid_engine(bool on);
 
 #endif

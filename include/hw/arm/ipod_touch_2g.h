@@ -291,6 +291,7 @@ typedef struct {
     bool forge_sigcheck, forge_sigcheck_explicit;
     char direct_iboot[PATH_MAX], direct_llb[PATH_MAX];
     char gid_blobs[PATH_MAX];
+    bool aes_uid_engine;             /* aes-uid=engine; see ipod_touch_aes.c AES_GO */
     bool direct_iboot_explicit, direct_llb_explicit;
     uint32_t time_dilation;
     bool time_dilation_explicit;

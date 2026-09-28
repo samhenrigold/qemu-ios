@@ -390,6 +390,15 @@ static const ITGidBlob it_gid_blobs[] = {
 static ITGidBlob *it_gid_extra;
 static size_t it_gid_extra_count;
 
+/* aes-uid machine option; see AES_GO. Off (legacy) keeps existing images'
+ * keychains, whose keys were derived by the legacy path, readable. */
+static bool it_aes_uid_engine;
+
+void ipod_touch_aes_set_uid_engine(bool on)
+{
+    it_aes_uid_engine = on;
+}
+
 bool ipod_touch_aes_set_gid_blobs(const uint8_t *data, size_t size)
 {
     if (!size || size % (2 * IT_AES_GID_BLOB_SIZE)) {
@@ -582,13 +591,31 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
 
     switch(offset) {
         case AES_GO:
+            /*
+             * aes-uid=engine: UID operations, and GID operations shorter than
+             * a KBAG (the 4.x kernel derives key 0x837 from a 16-byte seed),
+             * run through the engine like a custom key -- input at 0x28, output
+             * at 0x20, KEYLEN's direction -- with a fixed stand-in for the fused
+             * key. The 4.x keybag needs that: the legacy path below leaves the
+             * kernel's output buffer untouched, so 0x835/0x89B derive as zeros
+             * and AppleKeyStore cannot open the system keybag
+             * (kb_deserialize=e00002c9). KBAG-sized GID operations stay table
+             * lookups either way.
+             */
+            if (it_aes_uid_engine && (aesop->keytype == AESUID ||
+                (aesop->keytype == AESGID && aesop->insize < IT_AES_GID_BLOB_SIZE))) {
+                memcpy((uint8_t *)aesop->custkey + 16,
+                       aesop->keytype == AESUID ? key_uid : key_gid_standin, 16);
+                aes_custom_go(aesop, value);
+                break;
+            }
             if (aesop->keytype == AESCustom) {
                 aes_custom_go(aesop, value);
                 break;
             }
             /*
-             * UID and GID: the original single-shot model, unchanged on
-             * purpose. It reads 0x20 and writes 0x28 (the kernel's output
+             * UID and GID with aes-uid=legacy (the default): the original
+             * single-shot model, unchanged on purpose. It reads 0x20 and writes 0x28 (the kernel's output
              * and input segments) and always decrypts, so the kernel's UID
              * encrypts (the 0x835/0x89B derivations at boot) come out as
              * whatever the output buffer held. Keys derived that way
