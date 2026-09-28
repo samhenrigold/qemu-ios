@@ -167,6 +167,27 @@ def agent_alive(q):
     return q.cmd("qom-get", path="/machine", property="agent-status") == "alive"
 
 
+def gles_rejects(q):
+    """{name: count}: every refusal the GL bridge has made so far (the machine's gles-rejects
+    property: a surface format, a texture format/type, a dispatch slot...); {} on a build without it."""
+    try:
+        text = q.cmd("qom-get", path="/machine", property="gles-rejects")
+    except RuntimeError:
+        return {}
+    return {name: int(count) for name, _, count in (l.partition("\t") for l in text.splitlines()) if count}
+
+
+def magenta_fraction(ppm, step=1):
+    """Fraction of a screendump's pixels that are magenta, against the frame's own maximum (the
+    backlight scales pixels). gles-debug=on paints what the GL bridge refused that colour, and
+    nothing in the iOS UI is that colour; the GLTest fixtures are, so not for their screens."""
+    _, _, pix = read_ppm(ppm)
+    hi = max(pix) or 1
+    lo, up = 0.3 * hi, 0.7 * hi
+    n = sum(1 for i in range(0, len(pix) - 2, 3 * step) if pix[i] >= up and pix[i + 2] >= up and pix[i + 1] <= lo)
+    return n / max(1, len(pix) // (3 * step))
+
+
 def agent(q, op, args="", body=b"", timeout=65):
     """One local RPC; returns (exit_status, binary_output).
 

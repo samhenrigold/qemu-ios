@@ -9,7 +9,9 @@ Every check boots its own copy-on-write overlay of golden-pristine (the base is 
 usbmuxd-qemu's ipad1 build as the USB host where the check talks USB (otherwise the machine's built-in
 host). Checks run in parallel, each on its own QEMU.
 
-  boot     lock screen on the panel: lit and a picture (many colours), not a solid fill
+  boot     lock screen on the panel: lit and a picture (many colours), not a solid fill; the GL bridge
+           (CoreAnimation's compositor) refused nothing getting there (gles-rejects), painted nothing magenta
+  gles     the same across the home screen, a page swipe and Safari; plus gltest.py's fixture on a --gl-test device
   usbmux   ideviceinfo over the bridge answers ProductVersion (the store's device.lock.json, else
            3.2.2), DeviceClass iPad
   afc      push and pull files at sizes that are not multiples of 512, SHA-256 identical
@@ -20,7 +22,7 @@ host). Checks run in parallel, each on its own QEMU.
   audio    tests/ipad1/audio-check.py: boot sound, unlock, lock, unlock correlate with the originals
   net-usb  (opt-in) the same fetch over USB Ethernet: en1, usbmuxd's slirp, it_ethlink in the image
   shadow   (opt-in) Safari's Bookmarks popover casts a soft drop shadow (an A008 surface), not a solid box
-  appinstall, applaunch, gles
+  appinstall, applaunch
            SKIP: stock installd rejects apps not validly signed for this device
 
 Exits non-zero if any selected check FAILs.
@@ -50,9 +52,9 @@ Result, Procs, free_port, sha256_file, log = ipod.Result, ipod.Procs, ipod.free_
 
 FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1")
 USBMUXD = os.path.expanduser("~/Developer/usbmuxd-qemu-ipad1-net/src/usbmuxd")
-DEFAULT_CHECKS = ["boot", "usbmux", "afc", "persist", "wifi", "net", "audio"]
+DEFAULT_CHECKS = ["boot", "gles", "usbmux", "afc", "persist", "wifi", "net", "audio"]
 PENDING = {"appinstall": "stock installd rejects apps not validly signed for this device",
-           "applaunch": "needs appinstall", "gles": "needs appinstall (GLTest is ldid-signed)"}
+           "applaunch": "needs appinstall"}
 # Scanout is 1024x768 with the portrait UI turned on it. The boot logo is a small Apple on black (a few %
 # lit); the lock screen is a full wallpaper (~99% lit, unlike the iPod's dark panel). A stalled panel's
 # solid fill is also fully lit, so the frame must also be a picture: many distinct colours.
@@ -108,6 +110,8 @@ class Boot:
                 self.procs.spawn([cfg.usbmuxd, "-f", "-v", "-v", "-S", "127.0.0.1:%d" % self.mux_port,
                                   "-P", "NONE", "-C", os.path.join(self.dir, "conf")], self.muxlog, env=env)
                 machine += ",usb-tcp-addr=127.0.0.1:%d" % self.usb_port
+            # What the GL bridge refuses is painted magenta and counted (gl_clean below).
+            machine += ",gles-debug=on"
             argv = ["timeout", str(cfg.boot_timeout), cfg.qemu, "-machine", machine + ("" if self.wifi else ",wifi=off"),
                     "-display", "none", "-monitor", "none", "-serial", "file:" + self.serial,
                     "-qmp", "unix:%s,server,nowait" % self.sock]
@@ -233,11 +237,62 @@ def booted(cfg, tag, r, **kw):
     return b, detail
 
 
+MAGENTA_MAX = 0.001     # of the frame: gles-debug's paint is a layer's worth, never a stray pixel
+
+
+def gl_clean(b, r, detail, shots=()):
+    """Pass r only if the GL bridge refused nothing since boot (itqmp.gles_rejects: host and shim
+    counters) and none of the screendumps carries gles-debug's magenta paint. CoreAnimation is the
+    bridge's biggest client on the iPad, so every screen a check reaches is a GL coverage test."""
+    rejects = itqmp.gles_rejects(b.qmp)
+    magenta = max([itqmp.magenta_fraction(s, step=4) for s in shots] or [0.0])
+    if rejects:
+        r.set(False, "%s; the GL bridge refused %d thing(s): %s" % (
+            detail, len(rejects), ", ".join("%s x%d" % kv for kv in sorted(rejects.items()))))
+    elif magenta > MAGENTA_MAX:
+        r.set(False, "%s; gles-debug painted %.2f%% of a screen magenta (a refusal the counters missed)" % (
+            detail, magenta * 100))
+    else:
+        r.set(True, "%s; GL bridge refused nothing" % detail)
+    return r.ok
+
+
 def check_boot(cfg, r):
     b, detail = booted(cfg, "boot", r)
     try:
         if detail:
-            r.set(True, detail)
+            gl_clean(b, r, detail, [b.shot("boot-gl")])
+    finally:
+        b.stop()
+
+
+def check_gles(cfg, r):
+    """The GL bridge under SpringBoard's own compositor: lock screen, home screen, a page swipe, Safari;
+    nothing refused, nothing painted magenta. With a --gl-test device, tests/ipad1/gltest.py's fixture
+    scene as well (its readback, colour census and counters)."""
+    lock = os.path.join(os.path.dirname(os.path.abspath(cfg.nand)), "device.lock.json")
+    if os.path.exists(lock) and json.load(open(lock)).get("gl_test"):
+        p = subprocess.run([sys.executable, os.path.join(HERE, "gltest.py"), os.path.dirname(os.path.abspath(cfg.nand)),
+                            "--qemu", cfg.qemu, "--out", os.path.join(cfg.out, "gltest")], capture_output=True, text=True)
+        tail = (p.stdout.strip().splitlines() or [""])[-1]
+        if p.returncode:
+            return r.set(False, "gltest.py: %s" % (tail or p.stderr.strip()[-200:]))
+    b, detail = booted(cfg, "gles", r, keyboard=True)
+    try:
+        if not detail:
+            return
+        b.drag(UNLOCK_FROM, UNLOCK_TO)
+        dismiss_usb_alert(b)
+        shots = [b.shot("home")]
+        b.drag((511, 87), (511, 617))        # next home page (portrait right-to-left)
+        time.sleep(2)
+        shots.append(b.shot("home2"))
+        b.press("home")
+        time.sleep(2)
+        b.tap(SAFARI_ICON)
+        time.sleep(8)
+        shots.append(b.shot("safari"))
+        gl_clean(b, r, "lock, home, page 2, Safari", shots)
     finally:
         b.stop()
 
@@ -440,16 +495,21 @@ def check_shadow(cfg, r):
         time.sleep(8)
         b.tap(SAFARI_BOOKMARKS)
         time.sleep(3)
-        w, h, pix = itqmp.read_ppm(b.shot("popover"))
+        shot = b.shot("popover")
+        w, h, pix = itqmp.read_ppm(shot)
         at = lambda xy: min(pix[(xy[1] * w + xy[0]) * 3:(xy[1] * w + xy[0]) * 3 + 3])
         clear, edge = at(SHADOW_CLEAR), at(SHADOW_EDGE)
-        r.set(clear >= 230 and edge < clear, "popover shadow: %d past its reach (>= 230), %d at the edge" % (clear, edge))
+        detail = "popover shadow: %d past its reach (>= 230), %d at the edge" % (clear, edge)
+        if clear >= 230 and edge < clear:
+            gl_clean(b, r, detail, [shot])
+        else:
+            r.set(False, detail)
     finally:
         b.stop()
 
 
-CHECKS = {"boot": check_boot, "shadow": check_shadow, "usbmux": check_usbmux, "afc": check_afc, "persist": check_persist,
-          "net": check_net, "net-usb": check_net_usb, "wifi": check_wifi, "audio": check_audio}
+CHECKS = {"boot": check_boot, "gles": check_gles, "shadow": check_shadow, "usbmux": check_usbmux, "afc": check_afc,
+          "persist": check_persist, "net": check_net, "net-usb": check_net_usb, "wifi": check_wifi, "audio": check_audio}
 
 
 def device_args(a):

@@ -97,8 +97,10 @@ static void gles_guest_fault_in(CPUState *cpu)
     } else if (++gf.repeats > 4) {
         /* The kernel resolved it but the probe still fails: give up on
          * this call (it fails as it always did) rather than loop. */
-        fprintf(stderr, "[gles] guest page 0x%08" PRIx64 " still not "
-                "accessible after 4 faults; call dropped\n", (uint64_t)gf.va);
+        if (gles_host_refuse("guest-read:fault-dropped")) {
+            fprintf(stderr, "[gles] guest page 0x%08" PRIx64 " still not "
+                    "accessible after 4 faults; call dropped\n", (uint64_t)gf.va);
+        }
         gf.repeats = 0;
         return;
     }
@@ -138,6 +140,7 @@ static int64_t gles_run_batch(CPUState *cpu, qc_gles_args_t *a)
     if (a->argc != 2 || n > GLES_BATCH_MAX_WORDS ||
         cpu_memory_rw_debug(cpu, a->args[0], (uint8_t *)buf, n * 4, 0) != 0) {
         gles_bad_slots++;
+        gles_host_refuse("bad-call:batch");
         return -1;
     }
     while (i < n) {
@@ -146,6 +149,7 @@ static int64_t gles_run_batch(CPUState *cpu, qc_gles_args_t *a)
 
         if (argc > GLES_MAX_ARGS || argc > n - i - 1 || slot >= GLES_OP_BASE) {
             gles_bad_slots++;
+            gles_host_refuse("bad-call:batch-record");
             return -1;
         }
         memcpy(args, &buf[i + 1], argc * sizeof(uint32_t));
@@ -166,6 +170,7 @@ int64_t qc_handle_gles(CPUState *cpu, qc_gles_args_t *a)
     }
     if (a->slot >= GLES_MAX_SLOTS) {
         gles_bad_slots++;
+        gles_host_refuse("bad-call:slot");
         return -1;
     }
 
@@ -189,9 +194,8 @@ int64_t qc_handle_gles(CPUState *cpu, qc_gles_args_t *a)
     uint32_t argc = a->argc;
 
     if (argc > GLES_MAX_ARGS) {
-        fprintf(stderr, "[gles] slot %u: argc %u out of range\n",
-                a->slot, argc);
         gles_bad_slots++;
+        gles_host_refuse("bad-call:argc:%u", a->slot);
         return -1;
     }
     memset(args, 0, sizeof(args));
@@ -200,16 +204,14 @@ int64_t qc_handle_gles(CPUState *cpu, qc_gles_args_t *a)
         memcpy(args, a->args, argc * sizeof(uint32_t));
     } else {
         if (!a->spill) {
-            fprintf(stderr, "[gles] slot %u: argc %u but no spill pointer\n",
-                    a->slot, argc);
+            gles_host_refuse("bad-call:no-spill:%u", a->slot);
             gf.armed = false;
             return -1;
         }
         if (gles_guest_rw(cpu, a->spill, args, argc * sizeof(uint32_t),
                           false) != 0) {
             if (!gf.pending) {
-                fprintf(stderr, "[gles] slot %u: cannot read %u spilled args "
-                        "at guest 0x%08x\n", a->slot, argc, a->spill);
+                gles_host_refuse("guest-read:spill:%u", a->slot);
             }
             gles_guest_fault_in(cpu);
             return -1;

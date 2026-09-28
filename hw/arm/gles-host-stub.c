@@ -10,12 +10,9 @@
 
 #include "qemu/osdep.h"
 #include "cpu.h"
+#include "hw/arm/guest-services/gles.h"
 
-int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
-                       uint32_t argc, const uint32_t *a);
-void gles_host_stats(uint64_t *draws, uint64_t *presents);
 void gles_host_set_allowed(bool allowed);
-void gles_host_reset(void);
 
 int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
                        uint32_t argc, const uint32_t *a)
@@ -39,3 +36,8 @@ void gles_host_reset(void)
 }
 
 int gles_host_context_count(void) { return 0; }
+
+/* No bridge, so nothing is ever refused by it. */
+bool gles_host_refuse(const char *fmt, ...) { return false; }
+char *gles_host_rejects(void) { return g_strdup(""); }
+void gles_host_set_debug(bool on) { }

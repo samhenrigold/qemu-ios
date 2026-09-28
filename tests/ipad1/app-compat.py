@@ -378,10 +378,8 @@ def syslog_launch(b, rg, cfg, r, res, syslog, end):
                if f.lower().endswith((".crash", ".ips", ".plist"))
                and not f.lower().startswith(("lockdownd", "baseband", "stacks"))
                and any(t in f.lower() for t in tokens)]
-    try:
-        res["glishim"] = open(os.path.join(b.dir, "qemu.log"), errors="replace").read().count("[glishim] unimplemented")
-    except OSError:
-        pass
+    res["rejects"] = rg.itqmp.gles_rejects(b.qmp)
+    res["glishim"] = len(res["rejects"])
     if crashes:
         exc = ""
         for dp, _, fs in os.walk(crashdir):
@@ -511,11 +509,13 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
                    if f.lower().endswith((".crash", ".ips", ".plist"))
                    and not f.lower().startswith(("lockdownd", "baseband", "stacks"))
                    and any(t in f.lower() for t in tokens)]
-        # GL gaps from the host log
+        # GL gaps: everything the bridge refused since boot (host and shim counters), and how much
+        # of the launch screen gles-debug painted magenta for them.
+        res["rejects"] = rg.itqmp.gles_rejects(b.qmp)
+        res["glishim"] = len(res["rejects"])
         try:
-            qlog = open(os.path.join(b.dir, "qemu.log"), errors="replace").read()
-            res["glishim"] = qlog.count("[glishim] unimplemented")
-        except OSError:
+            res["magenta"] = round(rg.itqmp.magenta_fraction(res["shot"] + ".ppm", step=4), 4)
+        except Exception:
             pass
         if crashes:
             # pull the exception type out of the report so crashes group by cause
@@ -620,15 +620,27 @@ def _results_md(allres, nand):
     # failure backlog grouped by cause (the fix list)
     crashes = [r for r in allres if r["verdict"] == "CRASH"]
     nolaunch = [r for r in allres if r["verdict"] == "NO-LAUNCH"]
-    glgaps = [r for r in allres if r.get("glishim", 0) > 0 and r["verdict"] in ("LAUNCH", "NO-LAUNCH", "CRASH")]
+    glgaps = [r for r in allres if (r.get("rejects") or r.get("glishim", 0)) and r["verdict"] in ("LAUNCH", "NO-LAUNCH", "CRASH")]
     if crashes or nolaunch or glgaps:
         out += ["## Failure backlog (by cause)", ""]
     if glgaps:
-        out += ["### GL: unimplemented entry points (need glishim work)", ""]
-        for r in sorted(glgaps, key=lambda r: -r.get("glishim", 0)):
-            out.append("- %s (`%s`): %d [glishim] unimplemented, verdict %s" % (
-                r.get("name") or r["file"], r["bundle"], r["glishim"], r["verdict"]))
+        out += ["### GL: what the bridge refused (gles-rejects, host and shim), by app", ""]
+        for r in sorted(glgaps, key=lambda r: -len(r.get("rejects") or {}) or -r.get("glishim", 0)):
+            rejects = r.get("rejects") or {}
+            out.append("- %s (`%s`), verdict %s%s: %s" % (
+                r.get("name") or r["file"], r["bundle"], r["verdict"],
+                ", %.1f%% magenta" % (100 * r["magenta"]) if r.get("magenta") else "",
+                ", ".join("%s x%d" % kv for kv in sorted(rejects.items())) or "%d [glishim] unimplemented" % r.get("glishim", 0)))
         out.append("")
+        by_name = {}
+        for r in glgaps:
+            for name in (r.get("rejects") or {}):
+                by_name.setdefault(name, []).append(r.get("name") or r["file"])
+        if by_name:
+            out += ["### GL: refusals, by name (the fix list)", ""]
+            for name, apps in sorted(by_name.items(), key=lambda kv: -len(kv[1])):
+                out.append("- `%s`: %d app(s): %s" % (name, len(apps), ", ".join(sorted(apps))))
+            out.append("")
     if crashes:
         out += ["### Crashes", ""]
         for r in crashes:
@@ -640,11 +652,11 @@ def _results_md(allres, nand):
             out.append("- %s (`%s`): %s" % (r.get("name") or r["file"], r["bundle"], r.get("note", "")))
         out.append("")
     out += ["## All results", "",
-            "| verdict | app | bundle | family | GL gaps | note |", "|---|---|---|---|---|---|"]
+            "| verdict | app | bundle | family | GL refusals | note |", "|---|---|---|---|---|---|"]
     for r in allres:
-        out.append("| %s | %s | `%s` | %s | %d | %s |" % (
+        out.append("| %s | %s | `%s` | %s | %s | %s |" % (
             r["verdict"], r.get("name") or r.get("file", ""), r.get("bundle", ""),
-            r.get("family", ""), r.get("glishim", 0), r.get("note", "")))
+            r.get("family", ""), ", ".join(sorted(r.get("rejects") or {})) or r.get("glishim", 0), r.get("note", "")))
     return "\n".join(out) + "\n"
 
 

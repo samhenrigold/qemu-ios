@@ -364,6 +364,9 @@ class Device:
         # makes the same split (--net is separate from --appsync).
         for key, value in sorted(getattr(cfg, "device_machine", {}).items()):
             machine += "," + key + "=" + str(value).replace(",", ",,")
+        # What the GL bridge refuses is painted magenta and counted (itqmp.gles_rejects); the
+        # gles check fails on any count, so a refused format is caught here, not by a viewer.
+        machine += ",gles-debug=on"
         argv = [cfg.qemu, "-M", machine + (",wifi=on" if cfg.wifi else "")]
         argv += ["-cpu", cfg.cpu] if cfg.cpu else []
         argv += ["-m", cfg.mem, "-display", "none",
@@ -1431,6 +1434,13 @@ def check_gles(cfg, procs, dev, r):
                      % (len(new), ", ".join("%d (%s)"
                                             % (n, names.get(n, "slot %d?" % n))
                                             for n in new)))
+    # The bridge's own count of everything it refused since boot, host and shim sides both:
+    # a surface or texture format, a pname, a slot. Any of them is a rendering the app did
+    # not get, whether or not the fixture's own scene survived it.
+    rejects = itqmp.gles_rejects(dev.qmp)
+    if rejects:
+        return r.set(False, "the GL bridge refused %d thing(s) since boot: %s"
+                     % (len(rejects), ", ".join("%s x%d" % kv for kv in sorted(rejects.items()))))
     if min(ma, ca) < GLES_QUAD_MIN:
         return r.set(False, "GLES fixture scene is not on the panel: magenta=%.3f "
                             "cyan=%.3f of the frame, need >=%.3f of each "
