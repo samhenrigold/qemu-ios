@@ -11,7 +11,6 @@
 typedef struct ITFirmwareDesc {
     const char *build;
     const char *kernel_banner;
-    bool legacy_kernel_patches;
 } ITFirmwareDesc;
 
 const ITFirmwareDesc *it_firmware_by_build(const char *build);

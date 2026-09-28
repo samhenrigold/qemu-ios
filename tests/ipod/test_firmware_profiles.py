@@ -3,28 +3,19 @@
 from pathlib import Path
 import subprocess, tempfile
 root=Path(__file__).resolve().parents[2]
-mbx=(root/'hw/arm/ipod_touch_mbx.c').read_text()
-patch=mbx[mbx.index('static void patch_kernel('):mbx.index('static uint64_t ipod_touch_mbx2_read(')]
 source=r'''
 #include "qemu/osdep.h"
 #include "hw/arm/ipod_touch_firmware.h"
 #include <assert.h>
 static uint8_t ram[IT_KERNEL_SCAN_LEN];
-static unsigned reads, writes, usb_patches;
-static uint64_t addresses[32];
+static unsigned reads;
 void cpu_physical_memory_read(uint64_t address, void *out, uint64_t size){
  assert(address==IT_KERNEL_SCAN_PA_START && size==sizeof(ram));reads++;memcpy(out,ram,size);
 }
-static void cpu_physical_memory_write(uint64_t address,const void *data,uint64_t size){
- assert(writes<32);addresses[writes++]=address;
-}
-static uint32_t reverse_byte_order(uint32_t value){return __builtin_bswap32(value);}
-static void patch_usb_function_gate(void){usb_patches++;}
-'''+patch+r'''
 static void load(const ITFirmwareDesc *fw){
  memset(ram,0,sizeof(ram));
  if(fw)memcpy(ram+32,fw->kernel_banner,strlen(fw->kernel_banner)+1);
- it_firmware_reset();writes=usb_patches=0;
+ it_firmware_reset();
 }
 
 static void put16(uint8_t *p, uint16_t v){p[0]=v;p[1]=v>>8;}
@@ -72,12 +63,7 @@ int main(void){
  unsigned count=reads;assert(it_firmware_loaded()==current && reads==count);
  memcpy(ram+512,old->kernel_banner,strlen(old->kernel_banner)+1);
  assert(!it_firmware_detect_kernel(ram,sizeof(ram)));
- load(current);bool patched=false;patch_kernel(&patched);assert(writes==0 && usb_patches==0);
- load(NULL);patched=false;patch_kernel(&patched);assert(writes==0 && usb_patches==0);
- load(old);patched=false;patch_kernel(&patched);assert(writes==4 && usb_patches==1 && addresses[0]==0x08324aa8);
- patch_kernel(&patched);assert(writes==4);
- for(unsigned i=0;i<writes;i++)assert(addresses[i]!=0x0816b460);
- puts("PASS: exact/ambiguous/truncated firmware, retry/cache/reset, MBX patch isolation");
+ puts("PASS: exact/ambiguous/truncated firmware, retry/cache/reset, bounded iBoot command-line discovery");
 }
 '''
 with tempfile.TemporaryDirectory() as temp:

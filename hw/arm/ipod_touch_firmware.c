@@ -8,7 +8,6 @@ static const ITFirmwareDesc profiles[] = {
     {
         .build = "5F138",
         .kernel_banner = "Darwin Kernel Version 9.4.1: Sun Aug 10 21:25:25 PDT 2008; root:xnu-1228.7.27~12/RELEASE_ARM_S5L8720X",
-        .legacy_kernel_patches = true,
     }, {
         .build = "7E18",
         .kernel_banner = "Darwin Kernel Version 10.0.0d3: Fri Dec 18 01:31:23 PST 2009; root:xnu-1357.5.30~6/RELEASE_ARM_S5L8720X",
