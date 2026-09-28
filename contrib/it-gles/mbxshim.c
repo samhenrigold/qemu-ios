@@ -22,7 +22,8 @@
  *
  *   - GLESGetEGLInterface is three instructions: return &table. The table is
  *     nine function pointers, then pairs of {const char *extension, u32 bit}.
- *     The framework never indexes past the ninth pointer.
+ *     3.1.3's framework never indexes past the ninth pointer; 4.2.1's (8C148)
+ *     reads two more, Set/GetProperty (see GLESSetProperty).
  *
  *   - GLESCreateGC(sharegroup, X+0x10, X+0xCE8, X+0xC) is called from
  *     -[EAGLContext initWithAPI:properties:] on a 6592-byte calloc'd block X.
@@ -45,7 +46,13 @@
  *     the function from ctx+(0x10+slot*4), load the GC from ctx+0xC, tail-call.
  *     So arg0 of every entry point is the GC, and we own every table entry.
  *
- * Build with contrib/armv6-toolchain.
+ *   - 4.2.1 (8C148) keeps this whole contract with an 841-slot table
+ *     (GLESCreateGC(sharegroup, X+0x10, X+0xD34, X+0xC)). The slot layout is
+ *     the firmware's __GLIFunctionDispatchRec, generated per firmware (see
+ *     GLESCreateGCLayout); MBXGLEngine lives in 4.x's shared cache, so the
+ *     builder also creates dyld's enable-dylibs-to-override-cache switch.
+ *
+ * Build with contrib/it-gles/build.sh (contrib/armv6-toolchain).
  */
 
 #include "gles_stubs.h"
@@ -1456,40 +1463,126 @@ static int GLESPresentView(void *gc, void *view)
     return 1;
 }
 
-/* EAGL passes the framebuffer's IOConnect port, transaction and layer.
- * Stock MBX queues these behind rendering; the software path signals selector
- * 20 directly (IOMobileFramebufferSwapSignal, 7E18 0x332e8e9c). */
+/* EAGL passes IOMobileFramebufferGetID of the framebuffer, the transaction
+ * and the layer. Stock MBX queues these behind rendering; the software path
+ * signals selector 20 directly (IOMobileFramebufferSwapSignal, 7E18
+ * 0x332e8e9c). On 3.x that ID is the framebuffer's IOConnect port. On 4.x it
+ * is not a port (8C148: 0x80b98000), the call fails, CA's swap never
+ * completes and SpringBoard stays on the boot logo until the watchdog kills
+ * it; so, as glishim does, signal the main display the way EAGL does itself. */
 static int GLESSwapNotification(void *gc, unsigned connection,
                                 unsigned transaction, unsigned layer)
 {
     static int (*signal_swap)(unsigned, unsigned, const unsigned long long *,
                               unsigned, unsigned long long *, unsigned *);
+    static int (*get_main)(void **);
+    static int (*fb_signal)(void *, unsigned, unsigned);
+    static void *fb;
     if (!signal_swap) {
         void *io = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
         if (io) signal_swap = dlsym(io, "IOConnectCallScalarMethod");
     }
     if (!signal_swap || qc(89, gc, 0, A(0)) != 0) return 0;
     unsigned long long args[] = { transaction, layer };
-    return signal_swap(connection, 20, args, 2, 0, 0) == 0;
+    if (signal_swap(connection, 20, args, 2, 0, 0) == 0) return 1;
+    if (!fb_signal) {
+        w("[mbxshim] swap: framebuffer ID "); wx(connection);
+        w(" is no connection (4.x); signalling the main display\n");
+        void *h = dlopen("/System/Library/PrivateFrameworks/IOMobileFramebuffer.framework/"
+                         "IOMobileFramebuffer", RTLD_NOW);
+        if (h) {
+            get_main = dlsym(h, "IOMobileFramebufferGetMainDisplay");
+            fb_signal = dlsym(h, "IOMobileFramebufferSwapSignal");
+        }
+    }
+    if (!fb && get_main) get_main(&fb);
+    return fb && fb_signal && fb_signal(fb, transaction, layer) == 0;
 }
 
+/*
+ * 4.x EAGL: -[EAGLContext setParameter:to:] and getParameter:to: call these
+ * (+0x24, +0x28; 8C148 OpenGLES 0x34ff6f90 / 0x34ff702c) with the GC, the
+ * parameter and a pointer to its value, and treat 0 as failure. The stock
+ * 8C148 engine accepts every Set (it keeps three of them for its own
+ * rendering) and answers Get only for its own names; neither changes what the
+ * host draws, so Set accepts and Get declines. 3.x EAGL never reads past +0x20.
+ */
+static int GLESSetProperty(void *gc, unsigned pname, const int *v)
+{
+    static unsigned logged;
+    (void)gc;
+    if (logged++ < 16) { w("[mbxshim] GLESSetProperty "); wx(pname); if (v) { w(" "); wx((unsigned)*v); } w("\n"); }
+    return 1;
+}
+
+static int GLESGetProperty(void *gc, unsigned pname, int *v)
+{
+    static unsigned logged;
+    (void)gc; (void)v;
+    if (logged++ < 16) { w("[mbxshim] GLESGetProperty "); wx(pname); w("\n"); }
+    return 0;
+}
 
 /*
- * The table GLESGetEGLInterface hands back: nine function pointers, then
- * {extension string, bit} pairs. The framework never indexes past the ninth
- * pointer, so the extension list only has to be well-formed and terminated.
+ * The dispatch table is the firmware's, not 3.1.3's: gli_fwd.h (gligen.py from
+ * docs/ipod/gli-dispatch-<BUILD>.tsv, one MBXGLEngine-<BUILD> per layout) says
+ * how many slots it has and which 3.1.3 slot each one is. GLESCreateGC fills a
+ * 3.1.3-numbered table, and each of this firmware's slots takes its entry:
+ * a hand-written thunk above, or the 3.1.3 slot's log-once stub. A slot with no
+ * 3.1.3 equivalent gets gli_fwd.h's stub. So on 7E18 (every slot its own 3.1.3
+ * slot) the table is exactly GLESCreateGC's. Without gli_fwd.h (a recipe that
+ * does not run gligen.py) this builds the 7E18 engine as before.
+ */
+#if !defined(GLISHIM) && __has_include("gli_fwd.h")
+static int gli_unimpl(unsigned slot);
+#include "gli_fwd.h"
+
+static int gli_unimpl(unsigned slot)
+{
+    static unsigned char seen[GLI_N_SLOTS];
+    if (slot < GLI_N_SLOTS && !seen[slot]) {
+        seen[slot] = 1;
+        w("[mbxshim] unimplemented GL entry point "); w(gli_slot_names[slot]);
+        w(" (dispatch slot "); wd(slot); w(", none in 3.1.3)\n");
+    }
+    return 0;
+}
+
+static int GLESCreateGCLayout(void *sharegroup, void **table, void *x_end, void **gc_out)
+{
+    void *mbx[GLES_N_SLOTS];
+    unsigned i;
+
+    if (!GLESCreateGC(sharegroup, table ? mbx : 0, x_end, gc_out)) return 0;
+    for (i = 0; table && i < GLI_N_SLOTS; i++) {
+        int old = gli_slot313[i];
+        table[i] = old >= 0 && old < GLES_N_SLOTS ? mbx[old] : gli_fwd_table[i];
+    }
+    return 1;
+}
+#define GLES_CREATE_GC GLESCreateGCLayout
+#else
+#define GLES_CREATE_GC GLESCreateGC
+#endif
+
+/*
+ * The table GLESGetEGLInterface hands back: eleven function pointers (3.x
+ * EAGL reads nine), then {extension string, bit} pairs, which only the stock
+ * engine itself reads, so the list only has to be well-formed and terminated.
  */
 static void *const gles_egl_interface[] = {
     /* +0x00 */ (void *)GLESCreateSharegroup,
     /* +0x04 */ (void *)GLESDestroySharegroup,
-    /* +0x08 */ (void *)GLESCreateGC,
+    /* +0x08 */ (void *)GLES_CREATE_GC,
     /* +0x0c */ (void *)GLESDestroyGC,
     /* +0x10 */ (void *)GLESBindCoreSurface,
     /* +0x14 */ (void *)GLESBindView,
     /* +0x18 */ (void *)GLESFinishTexture,
     /* +0x1c */ (void *)GLESPresentView,
     /* +0x20 */ (void *)GLESSwapNotification,
-    /* +0x24 onward: extension pairs. Empty list, null-terminated. */
+    /* +0x24 */ (void *)GLESSetProperty,
+    /* +0x28 */ (void *)GLESGetProperty,
+    /* +0x2c onward: extension pairs. Empty list, null-terminated. */
     (void *)0, (void *)0,
 };
 

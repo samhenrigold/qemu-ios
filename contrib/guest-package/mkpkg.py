@@ -52,7 +52,7 @@ FAMILIES = {
     "n72-ios2": {"arch": "armv6", "boards": ["n72ap"], "builds": ["5F138"], "stub": True},
     "n72-ios3": {"arch": "armv6", "boards": ["n72ap"], "builds": ["7E18"], "bin": IPOD_BIN,
                  "jobs": ["contrib/it-agent/com.qemu.it-agent.plist"],
-                 "hooks": [("contrib/it-gles/MBXGLEngine", MBX, "7E18", True),
+                 "hooks": [("contrib/it-gles/MBXGLEngine-7E18", MBX, "7E18", True),
                            ("contrib/it-agent/it_typein.dylib", "/usr/lib/it_typein.dylib", None, True),
                            ("build/appsync/libappsync.dylib", "/usr/lib/libappsync.dylib", None, False)]},
     "n72-ios4": {"arch": "armv6", "boards": ["n72ap"], "builds": ["8C148"], "stub": True},
