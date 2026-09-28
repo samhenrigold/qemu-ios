@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Opt-in native iOS 3 TLS acceptance; fresh overlay, loopback server, no internet.
-Requires built itproxy/httpget/ittrust helpers, QEMU, usbmuxd and OpenSSL 3.
+Requires built itproxy/httpget/ittrust helpers, contrib/it-webproxy/itwebproxy
+(build.sh; without it the guestfwd has no helper and every fetch fails -1200),
+QEMU, usbmuxd and OpenSSL 3.
 The temporary CA is trusted only inside this disposable guest, then removed.
 """
 import argparse
@@ -56,8 +58,13 @@ try:
  (tls/'leaf.ext').write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=IP:10.0.2.100\n')
  ssl('x509','-req','-sha1','-in','leaf.csr','-CA','ca.pem','-CAkey','ca.key','-CAcreateserial','-out','leaf.pem','-days','2','-extfile','leaf.ext')
  ssl('x509','-in','ca.pem','-outform','DER','-out','ca.der')
+ # 342 KB in default 16 KiB records: multi-segment TCP and multi-page crypto
+ # buffers (the A4 AES straddle bug broke exactly this on the iPad).
+ big=b''.join(b'line %06d of the big TLS body, padding padding padding\n'%i for i in range(6000))
+ (tls/'big.txt').write_bytes(big)
+ os.chdir(tls)                                   # s_server -WWW serves its cwd
  tlsport=r.free_port(28600,28619)
- server=p.spawn([openssl,'s_server','-accept',f'127.0.0.1:{tlsport}','-cert',str(tls/'leaf.pem'),'-key',str(tls/'leaf.key'),'-tls1','-cipher','AES128-SHA:@SECLEVEL=0','-www'],str(tls/'server.log'))
+ server=p.spawn([openssl,'s_server','-accept',f'127.0.0.1:{tlsport}','-cert',str(tls/'leaf.pem'),'-key',str(tls/'leaf.key'),'-tls1','-cipher','AES128-SHA:@SECLEVEL=0','-WWW'],str(tls/'server.log'))
  routing.write_text(f'upstream\n127.0.0.1\n{tlsport}\n')
  for src,dest in [(str(ROOT/'contrib/it-proxy/httpget'),'/tmp/it-http'),(str(ROOT/'contrib/it-proxy/ittrust'),'/tmp/ittrust'),(str(tls/'ca.der'),'/tmp/it-ca.der')]:
   result=r.guest_ssh(cfg,port,[],scp_from=src,scp_to=dest);assert result.returncode==0,result
@@ -69,11 +76,14 @@ try:
  result=r.guest_ssh(cfg,port,['/tmp/ittrust add /tmp/it-ca.der']);assert result.returncode==0,result
  result=r.guest_ssh(cfg,port,['/tmp/it-http https://10.0.2.100:3128/'])
  print('TRUSTED',result.returncode,result.stdout[:1400],flush=True);assert result.returncode==0 and 'HTTP 200' in result.stdout,result
+ result=r.guest_ssh(cfg,port,['/tmp/it-http https://10.0.2.100:3128/big.txt'],timeout=120)
+ body=result.stdout.split('\n',1)[1].encode() if '\n' in result.stdout else b''
+ print('BIG',result.returncode,len(body),flush=True);assert result.returncode==0 and body==big,(result.returncode,len(body))
  result=r.guest_ssh(cfg,port,['/tmp/ittrust remove /tmp/it-ca.der']);print('REMOVE CA',result.returncode,result.stdout,flush=True);assert result.returncode==0,result
  result=r.guest_ssh(cfg,port,['/tmp/ittrust remove /tmp/it-ca.der']);assert result.returncode==0,result
  result=r.guest_ssh(cfg,port,['/tmp/it-http https://10.0.2.100:3128/'])
  print('REMOVED',result.returncode,result.stdout[:700],flush=True);assert result.returncode!=0,result
- print('PASS native TLS1.0 AES128-SHA with guest-local CA trust and revocation',flush=True)
+ print('PASS native TLS1.0 AES128-SHA, a 342 KB body, guest-local CA trust and revocation',flush=True)
 
 finally:
  if d.qmp:d.qmp.close()
