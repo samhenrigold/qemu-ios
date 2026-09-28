@@ -11,12 +11,14 @@ Step 1 boots STORE in place and waits for the guest to halt (QEMU exits on the P
 Step 2 boots it again read-only, with a throwaway overlay so STORE stays sealed, and requires FTL_Open
 without the rescan. Then chmod -R a-w STORE (docs/ipad1/userland-boot.md).
 """
-import argparse, os, shutil, subprocess, sys, tempfile, time
+import re, argparse, os, shutil, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1/7B500")
 RESCAN = "CXT is not valid"
-FTL_OPEN = "[FTL:MSG] FTL_Open"
+# Matched with newlines removed: other kernel messages interleave with this line on the serial log.
+FTL_OPEN_RE = re.compile(r"FTL_Open\s*\[OK\]")
+def ftl_open(text): return FTL_OPEN_RE.search(text.replace("\n", "")) is not None
 HALTING = "it_seal: halting"
 
 
@@ -70,11 +72,11 @@ def main():
         print(f"sealing boot halted cleanly after {t:.0f}s")
         os.mkdir(f"{td}/overlay")
         _, t, text = boot(a.qemu, boot_options, f"nand={store},nand-overlay={td}/overlay{die}", f"{td}/check.log",
-                          lambda s: FTL_OPEN in s, 120)
-        if FTL_OPEN not in text or RESCAN in text:
+                          ftl_open, 120)
+        if not ftl_open(text) or RESCAN in text:
             sys.exit(f"check boot: {'still rescans' if RESCAN in text else 'no FTL_Open'}; serial in {td}/check.log")
         print(f"check boot: valid FTL context, FTL_Open after {t:.1f}s")
-        print(next(l for l in text.splitlines() if FTL_OPEN in l))
+        print(next((l for l in text.splitlines() if "FTL_Open" in l), "FTL_Open [OK]"))
     except SystemExit:
         raise
     shutil.rmtree(td, ignore_errors=True)
