@@ -211,11 +211,18 @@ def dyld_insert(d, lib=("/" + APPSYNC_REL)):
 
 
 # Web proxy (the app's itwebproxy on slirp guestfwd 10.0.2.100:3128, as on the iPod). The Wi-Fi service
-# carries a PAC that falls back to DIRECT, so boots without the guestfwd still browse.
+# carries a PAC. 3.2.2's Safari does NOT honour the "; DIRECT" fallback: with no guestfwd at .100 a
+# proxied URL just fails, so plain host names and private/link-local/loopback IP literals go DIRECT
+# (slirp reaches the LAN itself). IP literals are tested first because isInNet on a host name does a
+# DNS lookup.
 WIFI_SERVICE = "4C54E7A1-0B5E-4D6B-9A1C-574946490000"
 PAC_PATH = "usr/local/share/ltm/proxy.pac"
 PAC = """function FindProxyForURL(url, host) {
-    if (isPlainHostName(host) || isInNet(host, "10.0.2.0", "255.255.255.0")) return "DIRECT";
+    if (isPlainHostName(host)) return "DIRECT";
+    if (/^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(host) &&
+        (isInNet(host, "10.0.0.0", "255.0.0.0") || isInNet(host, "172.16.0.0", "255.240.0.0") ||
+         isInNet(host, "192.168.0.0", "255.255.0.0") || isInNet(host, "169.254.0.0", "255.255.0.0") ||
+         isInNet(host, "127.0.0.0", "255.0.0.0"))) return "DIRECT";
     return "PROXY 10.0.2.100:3128; DIRECT";
 }
 """
