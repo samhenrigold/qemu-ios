@@ -1004,9 +1004,17 @@ def check_applaunch(cfg, procs, dev, r):
     ok, detail = unlock(cfg, port, dev)
     if not ok:
         return r.set(False, detail)
+    syslog = syslog_proc = None
+    if getattr(cfg, "launch_stages", False) and shutil.which("idevicesyslog"):
+        # Started right before the launch (as the iPad's app-compat does) so
+        # the capture is alive for the launch window.
+        syslog = os.path.join(dev.dir, "launch-syslog.txt")
+        syslog_proc = procs.spawn(["idevicesyslog"], syslog, env=mux_env(cfg))
+        time.sleep(3)
     p = springboard(cfg, port, bundle_id)
     if p.returncode != 0:
-        return r.set(False, "launch refused: %s" % (p.stdout + p.stderr).strip()[-200:])
+        return r.set(False, "launch refused: %s%s" % ((p.stdout + p.stderr).strip()[-200:],
+                                                     launch_reason(syslog, procs, syslog_proc)))
     if getattr(cfg, "launch_stages", False):
         started = time.monotonic()
         for seconds in (5, 20):
@@ -1041,10 +1049,43 @@ def check_applaunch(cfg, procs, dev, r):
             except Exception as error:  # noqa: BLE001 - evidence never decides the verdict
                 log("evidence %s: %s" % (name, error))
     if not front:
-        return r.set(False, "%s is not the foreground app after launch" % bundle_id)
+        return r.set(False, "%s is not the foreground app after launch%s"
+                     % (bundle_id, launch_reason(syslog, procs, syslog_proc)))
     if lit < 20000:
         return r.set(False, "%s is foreground but screen is dark (lit=%d)" % (bundle_id, lit))
     return r.set(True, "%s verified foreground, lit=%d" % (bundle_id, lit))
+
+
+# Why a launch did not stick, as the guest says it (evidence for the detail
+# text only). Each was a real cause in the 2026-09-27 app pass.
+LAUNCH_REASONS = (
+    r"posix_spawn\(.*\.app/[^\"]*\", \.\.\.\): .*",     # e.g. no exec bit in the IPA
+    r"Unknown application display identifier .*",   # SpringBoard never loaded the bundle
+    r"SpringBoard expects an application bundle .*",
+    r"Symbol not found: \S+",
+    r"exited abnormally with (?:signal|exit status) \d+(?:: .*)?",
+    r"Terminating app due to uncaught exception .*",
+)
+
+
+def launch_reason(path, procs, proc):
+    if not path:
+        return ""
+    time.sleep(2)
+    procs.stop(proc)
+    try:
+        with open(path, errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return ""
+    found = []
+    for pattern in LAUNCH_REASONS:
+        m = re.search(pattern, text)
+        if m:
+            text_ = re.sub(r"/var/mobile/Applications/[^/]+/", "", m.group(0))[:120]
+            if text_ not in found:
+                found.append(text_)
+    return (" (syslog: %s)" % "; ".join(found)) if found else ""
 
 
 def quad_signature(path):
@@ -1368,14 +1409,11 @@ def check_gles(cfg, procs, dev, r):
     mb, cb, yb = quad_signature(b)
     _hi, lit = lit_count(b)
 
-    # Slot scan. The shim writes to fd 2, which for a SpringBoard-launched app
-    # goes nowhere addressable on a stock image: measured on 3.1.3, there is no
-    # /var/log/syslog and nothing reaches the QEMU or serial log either. So an
-    # empty scan is *reported* in the verdict rather than passed over in
-    # silence, and the assertion above is what actually carries the check.
-    # ponytail: no log source for the slot trace on 3.1.3; if this needs to
-    # become a real gate, have mbxshim write the line to a file under /tmp and
-    # cat it back here, or route gles_unimpl through a guest-services call.
+    # Slot scan. mbxshim's w() also sends every line to the host through
+    # GLES_OP_LOG, so "[mbxshim] unimplemented slot N" lands in qemu.log (fd 2
+    # of a SpringBoard-launched app goes nowhere on 3.1.3). The verdict says
+    # whether the shim's log reached the host at all, so a silent scan is
+    # never mistaken for a clean one.
     text = dev.serial_text()
     for extra in (os.path.join(dev.dir, "qemu.log"),):
         try:
@@ -1417,8 +1455,8 @@ def check_gles(cfg, procs, dev, r):
     return r.set(True, "GLES fixture rendering through the HLE layer: magenta=%.3f "
                        "cyan=%.3f yellow=%.3f, held for %ds, lit=%d%s"
                  % (mb, cb, yb, GLES_HOLD_S, lit,
-                    "" if "unimplemented slot" in text
-                    else " (no log source carried the slot trace)"))
+                    "; shim log reached the host, no unimplemented slot" if "[mbxshim]" in text
+                    else " (no shim log reached the host, so the slot scan saw nothing)"))
 
 
 def check_persist(cfg, dev2, marker_src, remote, r, event="clean shutdown + reboot"):
