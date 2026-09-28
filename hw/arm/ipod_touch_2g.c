@@ -3628,6 +3628,8 @@ static void ipod_touch_machine_init(MachineState *machine)
     nms->aes_state = aes_state;
     memory_region_add_subregion(sysmem, AES_MEM_BASE, &aes_state->iomem);
     it_realize_into_qom_tree(dev);
+    /* The device tree's aes node: interrupts = 0x27. */
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, s5l8900_get_irq(nms, S5L8720_AES_IRQ));
 
     // init PKE engine
     dev = qdev_new("ipodtouch.pke");
