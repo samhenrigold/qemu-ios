@@ -926,6 +926,7 @@ static bool fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
  * time the guest reads a page. A reset reloads that RAM, so the latch has to be
  * re-armed from ipod_touch_fmss_reset() or the second boot runs unpatched. */
 static bool iboot_bt_patched;
+static uint32_t iboot_command_line;
 
 static void patch_iboot_bluetooth_node(void)
 {
@@ -958,21 +959,9 @@ static void patch_iboot_bluetooth_node(void)
     printf("[IBOOT] bluetooth node string not found in iBoot; not patching\n");
 }
 
-/*
- * 2.1.1's kernel command line.
- *
- * 5F138 iBoot builds its boot_args from a runtime buffer at PA 0x0FF2A584 and
- * hands the result to XNU. Without this legacy command line it cannot find
- * rd=disk0s1 and restarts. Release 7E18 iBoot instead ignores NVRAM boot
- * arguments; the machine supplies its version-checked early handoff separately.
- *
- * iBoot overwrites the buffer as it runs, hence the rewrite on every NAND read
- * rather than a once-only patch.
- *
- * The address is 5F138-specific, so this is skipped on the direct-iBoot
- * (3.1.3 / 7E18) path, which sets its command line via IT_BOOT_ARGS instead.
- */
-
+/* Legacy boot-argument data injection. Discover the buffer from the loaded
+ * iBoot's literal references, rather than assuming a particular build's BSS.
+ * Keep the existing NAND-read timing: iBoot rewrites this buffer during load. */
 static void patch_iboot_boot_args(IPodTouchFMSSState *s)
 {
     static const char boot_args[] =
@@ -984,8 +973,21 @@ static void patch_iboot_boot_args(IPodTouchFMSSState *s)
         return;
     }
 
-    cpu_physical_memory_write(it_firmware_by_build("5F138")->iboot_boot_args_pa, boot_args,
-                              strlen(boot_args));
+    if (!iboot_command_line) {
+        g_autofree uint8_t *image = g_try_malloc(IBOOT_SCAN_LEN);
+        if (!image) {
+            return;
+        }
+        cpu_physical_memory_read(IBOOT_SCAN_PA_START, image, IBOOT_SCAN_LEN);
+        iboot_command_line = it_firmware_find_iboot_command_line(
+            image, IBOOT_SCAN_LEN, IBOOT_SCAN_PA_START);
+        if (!iboot_command_line) {
+            return;
+        }
+        printf("[IBOOT] discovered command-line buffer at PA 0x%08x\n",
+               iboot_command_line);
+    }
+    cpu_physical_memory_write(iboot_command_line, boot_args, sizeof(boot_args));
 }
 
 /*
@@ -1496,6 +1498,7 @@ static void ipod_touch_fmss_reset(DeviceState *dev)
     memset(s->page_buffer, 0, NAND_BYTES_PER_PAGE);
     memset(s->page_spare_buffer, 0, NAND_BYTES_PER_SPARE);
     iboot_bt_patched = false;
+    iboot_command_line = 0;
     if (s->irq) {
         qemu_irq_lower(s->irq);
     }

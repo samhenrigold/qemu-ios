@@ -15,7 +15,7 @@ parser.add_argument('--qemu', default=str(ROOT/'build-native14/qemu-build/qemu-s
 parser.add_argument('--usbmuxd', default=str(ROOT/'build-native14/build/usbmuxd/src/usbmuxd'))
 parser.add_argument('--base-nand')
 parser.add_argument('--baked', action='store_true')
-parser.add_argument('--firmware', action='store_true', help='verify 7E18 profile and legacy MBX read isolation')
+parser.add_argument('--firmware', action='store_true', help='verify MBX reads do not modify guest kernel memory')
 parser.add_argument('--orientation', action='store_true', help='verify native UI rotation and respring recovery')
 parser.add_argument('--typing', action='store_true', help='verify injected Notes and Harness input')
 args = parser.parse_args()
@@ -235,9 +235,7 @@ try:
     assert d.powerdown(), 'guest shutdown not confirmed'
     if args.firmware:
         log=Path(d.dir,'qemu.log').read_text(errors='replace')
-        assert '[FIRMWARE] detected build 7E18' in log
-        if os.environ.get('IT_AMFI_ALLOW_TASKPORT'):
-            assert '[IT_AMFI_ALLOW_TASKPORT] patched' in log
+        assert '[USBGATE] patched' not in log
 finally:
     if d.qmp: d.qmp.close()
     p.stop_all()

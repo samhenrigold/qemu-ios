@@ -39,7 +39,7 @@ def main():
             os.unlink(p)
     machine = f"ipad1,kboot={a.kboot},nand={a.nand},nand-overlay={a.out}/overlay"
     qemu = subprocess.Popen(["timeout", str(a.seconds), a.qemu, "-machine", machine,
-                             "-display", "none", "-monitor", "none",
+                             "-display", "none", "-audio", "driver=none", "-monitor", "none",
                              "-serial", f"file:{serial}", "-qmp", f"unix:{sock},server,nowait"] + a.qemu_arg,
                             stdout=subprocess.DEVNULL, stderr=open(f"{a.out}/qemu.log", "w"))
     t0 = time.time()
