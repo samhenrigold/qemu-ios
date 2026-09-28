@@ -3,7 +3,7 @@
 
     tests/ipad1/regress.py                     # default tier
     tests/ipad1/regress.py --checks net,afc    # explicit selection
-    tests/ipad1/regress.py --device DIR        # an ipad1_device.py device dir (nand, kboot.bin, die-id, nor.bin)
+    tests/ipad1/regress.py --device DIR        # an ipad1_device.py device dir (booted through its iBoot, NOR and catalog keys)
 
 Every check boots its own copy-on-write overlay of golden-pristine (the base is never written), with
 usbmuxd-qemu's ipad1 build as the USB host where the check talks USB (otherwise the machine's built-in
@@ -63,6 +63,9 @@ USB_ALERT_DISMISS = (548, 382)   # stock "The attached USB device is not support
 USB_ALERT_DISMISS_4 = (565, 382)  # 4.x "Cannot Use Device" OK, which comes up a few seconds after unlock
 SAFARI_ICON, SAFARI_ADDRESS = (959, 650), (55, 437)
 
+sys.path.insert(0, os.path.join(ROOT, "imgtools"))
+import ipad1_boot
+
 launch_lock = threading.Lock()
 
 
@@ -81,7 +84,6 @@ class Boot:
         # A default overlay is a fresh device: drop one a previous run left under the same out dir,
         # or a rerun boots the old run's NAND (an app "installed" twice is an upgrade). Callers that
         # mean to reuse state (persist, snapshots) pass overlay= explicitly.
-        self.fresh = overlay is None
         if overlay is None:
             shutil.rmtree(os.path.join(self.dir, "overlay"), ignore_errors=True)
         self.overlay = overlay or os.path.join(self.dir, "overlay")
@@ -94,15 +96,8 @@ class Boot:
     def start(self):
         cfg = self.cfg
         with launch_lock:       # free ports are claimed one boot at a time
-            machine = "ipad1,kboot=%s,nand=%s,nand-overlay=%s" % (cfg.kboot, cfg.nand, self.overlay)
-            if cfg.die_id:
-                machine += ",die-id=" + cfg.die_id
-            if cfg.nor:   # 4.x: a private writable NOR copy next to the overlay (the keybag's effaceable)
-                nor = os.path.join(os.path.dirname(self.overlay), "nor.bin")
-                if not os.path.exists(nor) or self.fresh:
-                    shutil.copyfile(cfg.nor, nor)
-                    os.chmod(nor, 0o644)
-                machine += ",nor-rw=" + nor
+            machine = "ipad1,%s,nand=%s,nand-overlay=%s" % (   # a writable NOR copy lives in the overlay dir
+                ipad1_boot.boot_options(cfg, self.overlay), cfg.nand, self.overlay)
             self.usb_port = self.mux_port = 0
             if self.usb:
                 self.usb_port = free_port(21300, 21399)
@@ -430,12 +425,9 @@ CHECKS = {"boot": check_boot, "usbmux": check_usbmux, "afc": check_afc, "persist
 
 
 def device_args(a):
-    """--device DIR -> nand, kboot, die_id, nor; product_version from the store's device.lock.json."""
-    a.die_id = a.nor = None
-    if a.device:
-        a.nand, a.kboot = os.path.join(a.device, "nand"), os.path.join(a.device, "kboot.bin")
-        a.die_id = json.load(open(os.path.join(a.device, "device.lock.json")))["identity"]["die_id"]
-        a.nor = os.path.join(a.device, "nor.bin") if os.path.exists(os.path.join(a.device, "nor.bin")) else None
+    """--nand defaults to the --device's; product_version from the store's device.lock.json.
+    Boot images (iBoot, NOR, catalog keys, die-id, or an explicit --kboot) come from ipad1_boot."""
+    a.nand = a.nand or os.path.join(a.device, "nand")
     lock = os.path.join(os.path.dirname(os.path.abspath(a.nand)), "device.lock.json")
     a.product_version = getattr(a, "product_version", None) or (
         json.load(open(lock)).get("product_version", "3.2.2") if os.path.exists(lock) else "3.2.2")
@@ -452,9 +444,8 @@ def dismiss_usb_alert(b):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--checks", default=",".join(DEFAULT_CHECKS))
-    ap.add_argument("--device", help="an ipad1_device.py device dir: sets --nand, --kboot, its die-id and NOR")
-    ap.add_argument("--nand", default=os.path.join(FILES, "userland/golden-pristine"))
-    ap.add_argument("--kboot", default=os.path.join(FILES, "7B500/k48-kboot.bin"))
+    ap.add_argument("--nand", help="override the selected device NAND")
+    ipad1_boot.add_arguments(ap)
     ap.add_argument("--qemu", default=os.path.join(ROOT, "build/qemu-system-arm"))
     ap.add_argument("--usbmuxd", default=USBMUXD)
     ap.add_argument("--boot-timeout", type=int, default=600, help="hard cap per QEMU, seconds")

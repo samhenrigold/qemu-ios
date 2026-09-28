@@ -131,6 +131,8 @@ def main():
     c.add_argument("--seed", help="override the manifest's identity.seed")
     c.add_argument("--activation-hook", metavar="SCRIPT", help="override the manifest's activation.hook")
     c.add_argument("--qemu", default=os.path.join(ROOT, "build/qemu-system-arm"))
+    c.add_argument("--iboot-patcher", default=os.environ.get("IBOOT32PATCHER", "iBoot32Patcher"),
+                   help="k48ap: path to iBoot32Patcher (or set IBOOT32PATCHER)")
     c.add_argument("--gl-test", action="store_true", help="k48ap: bake the GL fixture job (tests/ipad1/gltest.py); a test device")
     c.add_argument("--keep-work", action="store_true", help="keep work/ (volumes and intermediate files)")
     create(ap.parse_args())

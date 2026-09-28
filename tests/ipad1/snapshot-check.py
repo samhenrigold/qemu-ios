@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Live snapshot round trip for the ipad1 machine: save mid-use, quit, resume, and keep using it.
 
-    tests/ipad1/snapshot-check.py [--out DIR] [--nand STORE] [--kboot K] [--qemu Q] [--device DIR]
+    tests/ipad1/snapshot-check.py [--out DIR] [--device DIR] [--nand STORE] [--kboot K] [--qemu Q]
 
 Boot A (golden overlay, usbmuxd bridge, USB keyboard, Wi-Fi): unlock, Safari fetches page 1 from a host
 HTTP server. Wi-Fi's slirp carries the app's web proxy forward, 10.0.2.100:3128 (here to the test's
@@ -56,10 +56,7 @@ def save(boot, snap):
     st = boot.qmp.cmd("query-migrate").get("status")
     if st != "completed":
         sys.exit("save: migration %s" % st)
-    subprocess.run(["cp", "-cR", boot.overlay, os.path.join(snap, "overlay")], check=True)
-    nor = os.path.join(os.path.dirname(boot.overlay), "nor.bin")
-    if boot.cfg.nor:   # 4.x: the effaceable NOR is flash too, paired with the overlay
-        shutil.copyfile(nor, os.path.join(snap, "nor.bin"))
+    subprocess.run(["cp", "-cR", boot.overlay, os.path.join(snap, "overlay")], check=True)   # + its private nor.bin
     log("saved %s: %d MiB state + overlay" % (snap, os.path.getsize(os.path.join(snap, "state")) >> 20))
     return shot
 
@@ -90,13 +87,12 @@ def frame_diff(a, b):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--nand", default=os.path.join(rg.FILES, "userland/golden-pristine"))
-    ap.add_argument("--kboot", default=os.path.join(rg.FILES, "7B500/k48-kboot.bin"))
+    ap.add_argument("--nand", help="override the selected device NAND")
+    rg.ipad1_boot.add_arguments(ap)
     ap.add_argument("--qemu", default=os.path.join(rg.ROOT, "build/qemu-system-arm"))
     ap.add_argument("--usbmuxd", default=rg.USBMUXD)
     ap.add_argument("--boot-timeout", type=int, default=900)
     ap.add_argument("--out", default=None)
-    ap.add_argument("--device", help="an ipad1_device.py device dir (regress.py --device)")
     cfg = ap.parse_args()
     rg.device_args(cfg)
     rg.ipod.START = time.time()

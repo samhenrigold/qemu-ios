@@ -223,15 +223,23 @@ static void s5l8930_gpio_init(Object *obj)
 static void s5l8930_gpio_reset(DeviceState *dev)
 {
     S5L8930GPIOState *s = S5L8930_GPIO(dev);
-    unsigned radio = S5L8930_GPIO_PIN(0x607);
+    static const unsigned low_inputs[] = {
+        0x607, /* K48 Wi-Fi: no radio */
+        0x502, 0x504, /* board straps: 0x503 high -> board ID 2 */
+        0x202, 0x301, 0x304, 0x305, /* board revision 0 */
+    };
 
     for (unsigned pin = 0; pin < S5L8930_GPIO_PINS; pin++) {
         s->cfg[pin] = 0x200;
     }
     memset(s->input, 0xff, sizeof(s->input));
-    /* K48 Wi-Fi: radio-presence input GPIO 0x607 is low. iBoot probes
-     * this before pinging the radio and marking its DT node AAPL,ignore. */
-    s->input[radio / 32] &= ~(1u << (radio % 32));
+    /* SecureROM samples these straps to construct POWER_ID. The board/revision
+     * match the real K48's 0x01020001; all-high inputs selected an unsupported
+     * board and restarted the ROM before DFU could enumerate. */
+    for (unsigned i = 0; i < ARRAY_SIZE(low_inputs); i++) {
+        unsigned pin = S5L8930_GPIO_PIN(low_inputs[i]);
+        s->input[pin / 32] &= ~(1u << (pin % 32));
+    }
     memset(s->enabled, 0, sizeof(s->enabled));
     memset(s->status, 0, sizeof(s->status));
     qemu_irq_lower(s->irq);

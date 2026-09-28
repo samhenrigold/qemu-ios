@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import zlib
 
-from build_nor import build, K48_ORDER, S5L8930_UID_KEY
+from build_nor import build, all_flash_order, S5L8930_UID_KEY
 from ipad1_kboot import DEFAULT_BOOT_ARGS, IDENTITY_FILE, load_identity, identity_dt
 
 
@@ -85,9 +85,9 @@ def prepare(iboot, all_flash, patcher, out, identity, boot_args):
     with tempfile.TemporaryDirectory(prefix='ipad1-nor-') as tmp:
         base = Path(tmp) / 'base.bin'
         base.write_bytes(nor_base(identity, boot_args))
-        build(str(base), str(all_flash), str(out / 'nor.bin'), K48_ORDER,
+        build(str(base), str(all_flash), str(out / 'nor.bin'), all_flash_order(str(all_flash)),
               uid_key=S5L8930_UID_KEY)
-    (out / 'identity.json').write_text(json.dumps(identity, indent=2) + '\n')
+    (out / 'nor-identity.json').write_text(json.dumps(identity, indent=2) + '\n')
     print(f'Prepared {patched} and {out / "nor.bin"}; image signatures are bypassed.')
 
 

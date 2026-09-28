@@ -39,10 +39,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--hz", type=int, default=1000)
     ap.add_argument("--qemu", default=os.path.join(ROOT, "build/qemu-system-arm"))
-    ap.add_argument("--kboot", default=f"{FILES}/7B500/k48-kboot.bin")   # carries the AMFI boot-args
-    ap.add_argument("--base", default=f"{FILES}/userland/pristine")
+    import ipad1_boot
+    ipad1_boot.add_arguments(ap)   # carries the AMFI boot-args
+    ap.add_argument("--base", help="override selected device NAND")
     ap.add_argument("--keep", help="keep the scratch store and serial log here")
     a = ap.parse_args()
+    a.nand = a.nand or os.path.join(a.device, "nand")
 
     tool = os.path.join(ROOT, "build/ipad1-mictest/it_mictest")
     subprocess.run([os.path.join(ROOT, "contrib/ipad1-mictest/build.sh")], check=True,
@@ -73,7 +75,7 @@ def main():
                        check=True, stdout=subprocess.DEVNULL, timeout=500)
         serial = os.path.join(work, "serial.log")
         subprocess.run(["timeout", "150", a.qemu, "-machine",
-                        f"ipad1,kboot={a.kboot},nand={nand},nand-overlay={work}/overlay",
+                        f"ipad1,{ipad1_boot.boot_options(a)},nand={nand},nand-overlay={work}/overlay",
                         "-display", "none", "-monitor", "none", "-serial", f"file:{serial}",
                         "-audio", "driver=none",
                         "-global", f"driver=s5l8930.i2s,property=tone-hz,value={a.hz}"],
