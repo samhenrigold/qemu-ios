@@ -25,7 +25,8 @@ none of them is a smoke test: "did it boot?" would have missed all of them.
               in the installed list.
   applaunch   Launch the installed IPA's bundle ID through SpringBoard, then
               verify that exact foreground app and a lit screen. Requires
-              appinstall, guest SSH, and built contrib/it-gles/sblaunch.
+              appinstall and the guest agent (no SSH, no shell: every guest
+              action is a lockdown service or an agent v2 op).
   persist     A file written over AFC survives a *clean* shutdown and a reboot on
               the same overlay, byte-identical. HFS+ holds catalog updates in
               memory, so killing QEMU loses the directory entry while keeping the
@@ -404,27 +405,14 @@ class Device:
                     pass
                 timeout = 60
             else:
-                helper = os.path.join(ROOT, "contrib", "it-halt", "ithalt")
-                port, error = ensure_guest_ssh(self.cfg, self.procs, self)
-                if port is not None and os.path.exists(helper):
-                    copied = guest_ssh(self.cfg, port, None, scp_from=helper,
-                                       scp_to="/tmp/ithalt")
-                    if copied.returncode != 0:
-                        log("%s: could not stage shutdown helper: %s" % (self.tag, copied.stderr))
-                        return False
-                    halt = guest_ssh(self.cfg, port, ["chmod 755 /tmp/ithalt && /tmp/ithalt"], timeout=30)
-                    log("%s: halt request rc=%d %s" %
-                        (self.tag, halt.returncode, (halt.stdout + halt.stderr).strip()[-200:]))
-                    timeout = 60
-                else:
-                    log("%s: gesture shutdown fallback (%s)" % (self.tag, error or "no ithalt"))
-                    try:
-                        self.qmp.cmd("system_powerdown")
-                    except EOFError:
-                        # An immediate shutdown may precede the command response;
-                        # the retained SHUTDOWN event must still prove its origin.
-                        pass
-                    timeout = 180
+                log("%s: no agent; gesture shutdown" % self.tag)
+                try:
+                    self.qmp.cmd("system_powerdown")
+                except EOFError:
+                    # An immediate shutdown may precede the command response;
+                    # the retained SHUTDOWN event must still prove its origin.
+                    pass
+                timeout = 180
             self.qmp.wait_for_guest_shutdown(timeout)
             rc = self.qemu.wait(timeout=10)
             log("%s: guest-confirmed shutdown, qemu exit=%d" % (self.tag, rc))
@@ -806,85 +794,104 @@ def check_appinstall(cfg, procs, dev, r):
                  % (p.returncode, bundle_id, listed, out[-300:]))
 
 
-def ensure_guest_ssh(cfg, procs, dev):
-    """Return (forwarded port, error), reusing this boot's SSH session."""
-    if getattr(dev, "ssh_port", None) is not None:
-        return dev.ssh_port, None
-    if not shutil.which("iproxy") or not shutil.which("ssh"):
-        return None, "iproxy/ssh not on PATH"
-    port = free_port(cfg.proxy_lo, cfg.proxy_hi)
-    cfg.askpass = os.path.join(cfg.out, "askpass")
-    with open(cfg.askpass, "w") as f:
-        f.write("#!/bin/sh\nprintf '%s\\n' %s\n" % ("%s", shlex.quote(
-            os.environ.get("DEVICE_PASSWORD", "alpine"))))
-    os.chmod(cfg.askpass, 0o700)
-    procs.spawn(["iproxy", str(port), "22"],
-                os.path.join(dev.dir, "iproxy-launch.log"), env=mux_env(cfg))
-    time.sleep(2)
-    probe = guest_ssh(cfg, port, ["true"], timeout=40)
-    if probe.returncode != 0:
-        return None, "no ssh on guest: %s" % probe.stderr.strip()[-120:]
-    dev.ssh_port = port
-    return port, None
+AGENT_BINARY = os.path.join(ROOT, "contrib", "it-agent", "it_agent")
 
 
-def prepare_launcher(cfg, procs, dev, r):
-    launcher = os.path.join(GLES_DIR, "sblaunch")
-    if not os.path.exists(launcher):
-        r.skip("requires built contrib/it-gles/sblaunch")
+def agent_ping(qmp, timeout=10):
+    """The agent's hello line ('it_agent v1'/'it_agent v2'), or None while none answers."""
+    try:
+        status, hello = itqmp.agent(qmp, "ping", timeout=timeout)
+    except (TimeoutError, EOFError, OSError):
         return None
-    port, error = ensure_guest_ssh(cfg, procs, dev)
-    if port is None:
-        r.skip(error)
-        return None
-    if getattr(dev, "launcher_ready", False):
-        return port
-    p = guest_ssh(cfg, port, None, timeout=300, scp_from=launcher, scp_to="/tmp/sblaunch")
-    if p.returncode != 0:
-        r.set(False, "scp sblaunch failed: %s" % p.stderr.strip()[-160:])
-        return None
-    p = guest_ssh(cfg, port, ["chmod 755 /tmp/sblaunch"])
-    if p.returncode != 0:
-        r.set(False, "could not make sblaunch executable")
-        return None
-    dev.launcher_ready = True
-    return port
+    return hello.split(b"\n", 1)[0].decode("ascii", "replace") if status == 0 else None
+
+
+def ensure_agent(qmp, timeout=90):
+    """(True, version) once a v2 agent (spawn, sync, chown, unlink, dlicon) answers, else (False, why).
+
+    A v1 agent (every image baked before the no-shell work) is upgraded in this boot's
+    overlay to this tree's build: `put` the binary, then have launchd restart the job.
+    v1 has no `spawn`, so that one restart goes through v1's `exec`; every v1 image
+    carries freeze's /bin/sh, and nothing after the upgrade uses a shell."""
+    deadline = time.monotonic() + timeout
+    while not itqmp.agent_alive(qmp):
+        if time.monotonic() >= deadline:
+            return False, "guest agent did not become ready within %ds" % timeout
+        time.sleep(1)
+    hello = agent_ping(qmp)
+    if hello == "it_agent v1":
+        if not os.path.exists(AGENT_BINARY):
+            return False, "the image's agent is v1; build contrib/it-agent to upgrade it"
+        with open(AGENT_BINARY, "rb") as f:
+            status, _ = itqmp.agent(qmp, "put", "/usr/local/bin/it_agent 755", f.read())
+        if status:
+            return False, "could not upgrade the v1 agent: put status %d" % status
+        try:
+            itqmp.agent(qmp, "exec", "launchctl stop com.qemu.it-agent", timeout=15)
+        except (TimeoutError, EOFError):
+            pass  # the daemon that would answer is the one being stopped
+        log("  agent: v1 upgraded to this tree's build, waiting for launchd to restart it")
+        deadline = time.monotonic() + 60
+        while (hello := agent_ping(qmp, timeout=5)) != "it_agent v2":
+            if time.monotonic() >= deadline:
+                return False, "upgraded agent did not answer within 60s (last: %s)" % hello
+            time.sleep(2)
+    if hello != "it_agent v2":
+        return False, "unexpected agent hello: %r" % hello
+    return True, hello
 
 
 class AgentControl:
-    """A selected command session. Submitted RPCs are never replayed via SSH."""
+    """This boot's agent session (v2). Submitted RPCs are never replayed."""
     def __init__(self, qmp):
         self.qmp = qmp
 
 
 def prepare_app_control(cfg, procs, dev, result):
-    if itqmp.agent_alive(dev.qmp):
-        return AgentControl(dev.qmp)
-    return prepare_launcher(cfg, procs, dev, result)
+    ok, detail = ensure_agent(dev.qmp)
+    if not ok:
+        result.set(False, detail)
+        return None
+    return AgentControl(dev.qmp)
 
 
-def control_exec(cfg, control, command, timeout=60):
-    if not isinstance(control, AgentControl):
-        return guest_ssh(cfg, control, [command], timeout=timeout)
-    status, data = itqmp.agent(control.qmp, "exec", command, timeout=timeout)
-    return subprocess.CompletedProcess(["agent", "exec", command], status,
+def spawn(control, argv, timeout=60):
+    status, data = itqmp.spawn(control.qmp, argv, timeout=timeout)
+    return subprocess.CompletedProcess(["agent", "spawn"] + list(argv), status,
                                        data.decode("utf-8", "replace"), "")
 
 
+def guest_file(control, path, timeout=60):
+    """A guest file's bytes over the agent, or b'' if it cannot be read."""
+    status, data = itqmp.agent(control.qmp, "get", path, timeout=timeout)
+    return data if status == 0 else b""
+
+
+def stop_app(control, bundle_id):
+    """Stop a SpringBoard-launched app through launchd (its UIKitApplication:<id>[...] job).
+    Returns the CompletedProcess of the last launchctl call (status 0 also when it was not running)."""
+    listing = spawn(control, ["/bin/launchctl", "list"])
+    if listing.returncode:
+        return listing
+    labels = re.findall(r"\tUIKitApplication:%s\[[^\]\s]*\]" % re.escape(bundle_id), listing.stdout)
+    for label in labels:
+        listing = spawn(control, ["/bin/launchctl", "stop", label.strip()])
+        if listing.returncode:
+            return listing
+    return listing
+
+
 def springboard(cfg, port, request, timeout=60):
-    if isinstance(port, AgentControl):
-        op = {":frontmost": "frontmost", ":lock-status": "lockstatus"}.get(request, "launch")
-        status, data = itqmp.agent(port.qmp, op, request if op == "launch" else "", timeout=timeout)
-        text = data.decode("utf-8", "replace")
-        if status == 0:
-            if op == "frontmost":
-                lines = text.splitlines()
-                text = "sblaunch: frontmost=" + (lines[0] if lines else "")
-            elif op == "lockstatus":
-                text = "sblaunch: " + text
-        return subprocess.CompletedProcess(["agent", op, request], status, text, "")
-    return guest_ssh(cfg, port, ["printf '%s' %s > /tmp/sblaunch.id && /tmp/sblaunch"
-                               % ("%s", shlex.quote(request))], timeout=timeout)
+    op = {":frontmost": "frontmost", ":lock-status": "lockstatus"}.get(request, "launch")
+    status, data = itqmp.agent(port.qmp, op, request if op == "launch" else "", timeout=timeout)
+    text = data.decode("utf-8", "replace")
+    if status == 0:
+        if op == "frontmost":
+            lines = text.splitlines()
+            text = "sblaunch: frontmost=" + (lines[0] if lines else "")
+        elif op == "lockstatus":
+            text = "sblaunch: " + text
+    return subprocess.CompletedProcess(["agent", op, request], status, text, "")
 
 
 def foreground_is(cfg, port, bundle_id):
@@ -892,17 +899,24 @@ def foreground_is(cfg, port, bundle_id):
     return p.returncode == 0 and p.stdout.strip() == "sblaunch: frontmost=" + bundle_id
 
 
+PROXY_PAC = "/usr/local/share/ltm/proxy.pac"   # imgtools/ipad1_rootfs.PAC_PATH, baked by ipod2g_device
+
+
 def check_webproxy(cfg, procs, dev, result):
-    """Native NSURLConnection must reach the host without resolving the origin."""
+    """Native NSURLConnection reaches the host through the image's baked PAC
+    (Wi-Fi service -> PROXY 10.0.2.100:3128, the itwebproxy guestfwd) without
+    resolving the origin. No guest proxy settings are changed at run time."""
     import http.server
     import threading
-    helpers = [os.path.join(ROOT, "contrib", "it-proxy", name)
-               for name in ("itproxy", "httpget")]
-    if not all(os.path.exists(p) for p in helpers):
-        return result.skip("requires built contrib/it-proxy helpers")
-    port, error = ensure_guest_ssh(cfg, procs, dev)
-    if port is None:
-        return result.set(False, error)
+    helper = os.path.join(ROOT, "contrib", "it-proxy", "httpget")
+    if not os.path.exists(helper):
+        return result.skip("requires built contrib/it-proxy/httpget")
+    ok, detail = ensure_agent(dev.qmp)
+    if not ok:
+        return result.set(False, detail)
+    control = AgentControl(dev.qmp)
+    if itqmp.agent(dev.qmp, "get", PROXY_PAC)[0] != 0:
+        return result.skip("image has no baked proxy PAC (%s); build it with imgtools/ipod2g_device.py" % PROXY_PAC)
     class Fixture(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
@@ -913,37 +927,32 @@ def check_webproxy(cfg, procs, dev, result):
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    enabled = False
+    remote = "/tmp/regress-httpget"
     try:
-        for helper in helpers:
-            copied = guest_ssh(cfg, port, None, scp_from=helper,
-                               scp_to="/tmp/" + os.path.basename(helper))
-            if copied.returncode:
-                return result.set(False, "could not stage proxy test helper")
+        with open(helper, "rb") as f:
+            if itqmp.agent(dev.qmp, "put", remote + " 755", f.read())[0]:
+                return result.set(False, "could not stage the proxy test helper")
         with open(cfg.web_proxy_config, "w") as f:
             f.write("upstream\n127.0.0.1\n%d\n" % server.server_port)
-        changed = guest_ssh(cfg, port, ["chmod 755 /tmp/itproxy /tmp/httpget && /tmp/itproxy on"])
-        if changed.returncode:
-            return result.set(False, "guest proxy configuration failed: " + changed.stderr[-200:])
-        enabled = True
-        time.sleep(8)
-        response = guest_ssh(cfg, port, ["/tmp/httpget http://example.invalid/fixture"], timeout=90)
+        # The first fetch after association can race DHCP; retry the fixture only.
+        for attempt in range(6):
+            response = spawn(control, [remote, "http://example.invalid/fixture"], timeout=90)
+            if response.returncode == 0:
+                break
+            time.sleep(10)
         if response.returncode or "HTTP 200" not in response.stdout or "LIGHTTOUCH_PROXY_NATIVE_PASS" not in response.stdout:
-            return result.set(False, response.stdout.strip() or response.stderr[-200:])
+            return result.set(False, response.stdout.strip()[-300:])
         with open(cfg.web_proxy_config, "w") as f:
             f.write("direct\n")
         for host in ("api.openfeint.com", "gdata.youtube.com"):
             started = time.monotonic()
-            response = guest_ssh(cfg, port, ["/tmp/httpget http://" + host + "/"], timeout=30)
+            response = spawn(control, [remote, "http://" + host + "/"], timeout=30)
             elapsed = time.monotonic() - started
             if response.returncode or "HTTP 410" not in response.stdout or elapsed >= 10:
                 return result.set(False, "retired service did not fail promptly: " + response.stdout.strip())
-        result.set(True, "native HTTP fixture and prompt retired-service HTTP 410 responses")
+        result.set(True, "baked PAC: native HTTP fixture and prompt retired-service HTTP 410 responses")
     finally:
-        if enabled:
-            restored = guest_ssh(cfg, port, ["/tmp/itproxy off"])
-            if restored.returncode:
-                result.set(False, "failed to restore guest proxy preferences")
+        itqmp.agent(dev.qmp, "unlink", remote)
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
@@ -966,15 +975,16 @@ def check_respring(cfg, procs, dev, result):
     """Restart SpringBoard in this boot, retaining installation pressure.
 
     A cold restart clears session-only NAND mappings and can hide corruption.
-    Require a service response from the new SpringBoard; successful killall
-    and a still-lit old framebuffer are not recovery evidence.
+    Require a service response from the new SpringBoard; a successful stop
+    and a still-lit old framebuffer are not recovery evidence. launchd's
+    KeepAlive relaunches the job, so no shell or killall is involved.
     """
     port = prepare_app_control(cfg, procs, dev, result)
     if port is None:
         return False
     dev.qmp.cmd("query-status")  # drain events from before this operation
     resets = dev.qmp.reset_count
-    p = control_exec(cfg, port, "killall SpringBoard", timeout=10)
+    p = spawn(port, ["/bin/launchctl", "stop", "com.apple.SpringBoard"], timeout=10)
     if p.returncode != 0:
         return result.set(False, "could not restart SpringBoard: %s" %
                           (p.stdout + p.stderr).strip()[-200:])
@@ -994,14 +1004,13 @@ def check_respring(cfg, procs, dev, result):
             break
         if p.returncode == 0 and p.stdout.strip().startswith("sblaunch: locked="):
             return result.set(True, "SpringBoard service recovered in the same boot")
-    diagnostic = control_exec(cfg, port,
-        "launchctl list; cat /var/mobile/Library/Logs/CrashReporter/LatestCrash-SpringBoard.plist",
-        timeout=15)
+    diagnostic = spawn(port, ["/bin/launchctl", "list"], timeout=15)
+    crash = guest_file(port, "/var/mobile/Library/Logs/CrashReporter/LatestCrash-SpringBoard.plist", timeout=15)
     path = os.path.join(dev.dir, "respring-diagnostics.txt")
     with open(path, "w") as f:
         f.write("Last service probe: rc=%s\n%s\n%s\n" %
                 (p.returncode, p.stdout, p.stderr))
-        f.write(diagnostic.stdout + "\n" + diagnostic.stderr)
+        f.write(diagnostic.stdout + "\n" + crash.decode("utf-8", "replace"))
     return result.set(False, "%s; see %s" % (failure, path))
 
 
@@ -1038,23 +1047,19 @@ def check_applaunch(cfg, procs, dev, r):
     _hi, lit = lit_count(shot)
     front = foreground_is(cfg, port, bundle_id)
     if getattr(cfg, "launch_stages", False):
-        # Evidence only, never part of the verdict: crash reports and the
-        # installd registry (SignerIdentity/ProfileValidated per app) and
-        # SpringBoard's prefs.
-        for name, command in (
-                ("crashlogs.txt", "cd /var/mobile/Library/Logs/CrashReporter && ls -la && "
-                 "for f in *.plist *.crash; do [ -f \"$f\" ] && echo \"=== $f\" && cat \"$f\"; done"),
-                ("installation.plist",
-                 "cat /var/mobile/Library/Caches/com.apple.mobile.installation.plist"),
+        # Evidence only, never part of the verdict: crash reports (stock
+        # crashreportcopymobile), the installd registry (SignerIdentity/
+        # ProfileValidated per app) and SpringBoard's prefs.
+        crashes = os.path.join(dev.dir, "crashlogs")
+        os.makedirs(crashes, exist_ok=True)
+        run(["idevicecrashreport", "-k", "-e", crashes], cfg, 120)
+        for name, path in (
+                ("installation.plist", "/var/mobile/Library/Caches/com.apple.mobile.installation.plist"),
                 ("springboard.plist",       # SBTrustedCodeSigningIdentities
-                 "cat /var/mobile/Library/Preferences/com.apple.springboard.plist")):
+                 "/var/mobile/Library/Preferences/com.apple.springboard.plist")):
             try:
-                if isinstance(port, AgentControl):
-                    data = itqmp.agent(port.qmp, "exec", command, timeout=60)[1]
-                else:
-                    data = guest_ssh(cfg, port, [command], timeout=60).stdout.encode()
                 with open(os.path.join(dev.dir, name), "wb") as f:
-                    f.write(data)
+                    f.write(guest_file(port, path))
             except Exception as error:  # noqa: BLE001 - evidence never decides the verdict
                 log("evidence %s: %s" % (name, error))
     if not front:
@@ -1155,6 +1160,19 @@ def install_gles_app(cfg, r):
     return True
 
 
+def dismiss_reorder_tip(control, dev):
+    """A new device's first unlock raises SpringBoard's modal "Edit Home Screen" tip
+    (SBDidShowReorderText unset); it would cover every later frame. Stock behaviour,
+    so dismiss it the way a user does rather than baking the preference."""
+    for _ in range(3):
+        status, tree = itqmp.agent(control.qmp, "uidump", timeout=20)
+        if status or b"text: Edit Home Screen" not in tree:
+            return
+        log("  dismissing SpringBoard's first-unlock Edit Home Screen tip")
+        dev.qmp.tap(160, 332)
+        time.sleep(2)
+
+
 def unlock(cfg, port, dev, tries=UNLOCK_TRIES):
     """Swipe only after SpringBoard confirms that the screen is locked.
 
@@ -1169,6 +1187,7 @@ def unlock(cfg, port, dev, tries=UNLOCK_TRIES):
         if p.returncode != 0 or status is None:
             return False, "SpringBoard lock status unavailable: %s" % (p.stdout + p.stderr).strip()[-160:]
         if status[1] == "0":
+            dismiss_reorder_tip(port, dev)
             return True, "SpringBoard reports unlocked"
         if status[2] == "1":
             return False, "device has a passcode; unlock manually"
@@ -1201,61 +1220,29 @@ def slot_names():
     return names
 
 
-def guest_ssh(cfg, port, argv, timeout=60, scp_from=None, scp_to=None):
-    """One ssh/scp to the guest through an already-running iproxy.
-
-    Password auth cannot read from a pipe, so the password goes through
-    SSH_ASKPASS exactly as imgtools/install-ipa.sh does.
-    """
-    # Reuse the installer's multiplexing pattern: short-lived SSH connections
-    # can race teardown in the old guest stack. Keep the Unix path below 104B.
-    if not hasattr(cfg, "ssh_control"):
-        cfg.ssh_control = tempfile.TemporaryDirectory(prefix="itssh-", dir="/tmp")
-    opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=30",
-            "-o", "ControlPath=" + os.path.join(cfg.ssh_control.name, "%C"),
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR",
-            "-o", "PreferredAuthentications=password",
-            "-o", "ConnectTimeout=10"]
-    env = dict(os.environ)
-    env.update(SSH_ASKPASS=cfg.askpass, SSH_ASKPASS_REQUIRE="force",
-               DISPLAY=os.environ.get("DISPLAY", ":0"))
-    if scp_from:
-        cmd = ["scp", "-O", "-r"] + opts + ["-P", str(port), scp_from,
-                                            "root@127.0.0.1:" + scp_to]
-    else:
-        cmd = ["ssh"] + opts + ["-p", str(port), "root@127.0.0.1"] + argv
-    try:
-        return subprocess.run(cmd, env=env, timeout=timeout,
-                              capture_output=True, text=True)
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(cmd, 124, "", "timed out")
-
-
 def check_agent(cfg, procs, dev, r):
-    """Exercise the production command tunnel without USB or SSH."""
-    deadline = time.monotonic() + 60
-    while not itqmp.agent_alive(dev.qmp):
-        if time.monotonic() >= deadline:
-            return r.set(False, "guest agent did not become ready within 60 seconds")
-        time.sleep(1)
+    """Exercise the production command tunnel without USB, SSH or a shell."""
+    ok, detail = ensure_agent(dev.qmp)
+    if not ok:
+        return r.set(False, detail)
     remote = "/tmp/regress-agent-" + os.urandom(12).hex()
     payload = os.urandom(70 * 1024)
     try:
-        for op, args, body, expected in (
-            ("ping", "", b"", b"it_agent v1\n"),
-            ("exec", "echo $((6*7))", b"", b"42\n"),
-            ("put", remote + " 600", payload, b""),
-            ("get", remote, b"", payload),
+        for op, args, body, check in (
+            ("ping", "", b"", lambda b: b.startswith(b"it_agent v2\nops ") and b" spawn " in b),
+            ("spawn", "", b"/bin/launchctl\0list\0", lambda b: b"\tcom.qemu.it-agent\n" in b),
+            ("put", remote + " 600", payload, lambda b: b == b""),
+            ("chown", "501 501 " + remote, b"", lambda b: b == b""),
+            ("get", remote, b"", lambda b: b == payload),
+            ("sync", "", b"", lambda b: b == b""),
         ):
             status, response = itqmp.agent(dev.qmp, op, args, body)
-            if status != 0 or response != expected:
+            if status != 0 or not check(response):
                 return r.set(False, "agent %s failed: status=%d, response bytes=%d" %
                              (op, status, len(response)))
-        return r.set(True, "ping, shell arithmetic and 70 KiB binary round trip")
+        return r.set(True, "v2 ping, shell-free spawn, 70 KiB binary round trip, chown, sync")
     finally:
-        itqmp.agent(dev.qmp, "exec", "rm -f " + remote)
+        itqmp.agent(dev.qmp, "unlink", remote)
 
 
 def check_audio(cfg, procs, dev, r):
@@ -1271,9 +1258,9 @@ def check_audio(cfg, procs, dev, r):
     if not ok:
         return r.set(False, detail)
     # Each run starts at row zero, even after prior app or audio checks.
-    stopped = control_exec(cfg, port, "killall Harness", timeout=10)
-    if stopped.returncode not in (0, 1):
-        return r.set(False, "could not reset the Harness menu")
+    stopped = stop_app(port, "com.qemuios.harness")
+    if stopped.returncode:
+        return r.set(False, "could not reset the Harness menu: " + stopped.stdout[-200:])
     response = springboard(cfg, port, "com.qemuios.harness")
     if response.returncode:
         return r.set(False, "Harness launch failed: " + response.stderr[-200:])
@@ -1343,16 +1330,15 @@ def check_gles(cfg, procs, dev, r):
     """
     app = os.path.join(GLES_DIR, "GLTest.app")
     shim = os.path.join(GLES_DIR, "MBXGLEngine")
-    launcher = os.path.join(GLES_DIR, "sblaunch")
     harness = not os.path.exists(app)
     bundle_id = "com.qemuios.harness" if harness else GLES_BUNDLE_ID
     prerequisites = [HARNESS_IPA if harness else app]
     if getattr(cfg, "stage_gles_shim", False):
-        prerequisites.extend([shim, launcher])
+        prerequisites.append(shim)
     missing = [os.path.basename(path) for path in prerequisites if not os.path.exists(path)]
     if missing:
         return r.skip("build the guest fixtures first (no %s)" % ", ".join(missing))
-    port = (prepare_launcher if getattr(cfg, "stage_gles_shim", False) else prepare_app_control)(cfg, procs, dev, r)
+    port = prepare_app_control(cfg, procs, dev, r)
     if port is None:
         return False
 
@@ -1370,37 +1356,29 @@ def check_gles(cfg, procs, dev, r):
     elif not install_gles_app(cfg, r):
         return False
     if getattr(cfg, "stage_gles_shim", False):
-        p = guest_ssh(cfg, port, None, timeout=300, scp_from=shim, scp_to="/tmp/MBXGLEngine")
-        if p.returncode != 0:
-            return r.set(False, "scp MBXGLEngine failed: %s" % p.stderr.strip()[-160:])
-        # The stock bundle is kept alongside ours so a later manual run can restore
-        # it; /System is why this goes over ssh and not AFC.
-        bundle = ("/System/Library/Frameworks/OpenGLES.framework/"
-                  "MBXGLEngine.bundle")
-        p = guest_ssh(cfg, port, [
-            "set -e; "
-            "chmod 755 /tmp/sblaunch; "
-            "if [ ! -f {b}/MBXGLEngine.stock ]; then "
-            "cp {b}/MBXGLEngine {b}/MBXGLEngine.stock; fi; "
-            "cp /tmp/MBXGLEngine {b}/MBXGLEngine; chmod 755 {b}/MBXGLEngine; "
-            "printf %s {id} > /tmp/sblaunch.id".format(b=bundle,
-                                                       id=GLES_BUNDLE_ID)],
-            timeout=120)
-        if p.returncode != 0:
-            return r.set(False, "staging the shim failed: %s"
-                         % (p.stdout + p.stderr).strip()[-200:])
+        # The stock engine is kept alongside ours so a later manual run can
+        # restore it. /System is why this goes through the root agent, not AFC.
+        engine = "/System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine"
+        if itqmp.agent(port.qmp, "get", engine + ".stock")[0] != 0:
+            status, stock = itqmp.agent(port.qmp, "get", engine)
+            if status or itqmp.agent(port.qmp, "put", engine + ".stock 755", stock)[0]:
+                return r.set(False, "could not keep the stock MBXGLEngine (status %d)" % status)
+        with open(shim, "rb") as f:
+            status, _ = itqmp.agent(port.qmp, "put", engine + " 755", f.read())
+        if status:
+            return r.set(False, "staging the shim failed: status %d" % status)
 
     ok, detail = unlock(cfg, port, dev)
     if not ok:
         return r.set(False, detail)
     if harness:
-        stopped = control_exec(cfg, port, "killall Harness", timeout=10)
-        if stopped.returncode not in (0, 1):
-            return r.set(False, "could not reset the Harness menu")
+        stopped = stop_app(port, "com.qemuios.harness")
+        if stopped.returncode:
+            return r.set(False, "could not reset the Harness menu: " + stopped.stdout[-200:])
     p = springboard(cfg, port, bundle_id)
     out = (p.stdout + p.stderr).strip()
     if p.returncode != 0:
-        return r.set(False, "sblaunch refused: %s" % out[-200:])
+        return r.set(False, "launch refused: %s" % out[-200:])
     log("  gles: %s" % out)
 
     if harness:
@@ -1430,8 +1408,7 @@ def check_gles(cfg, procs, dev, r):
                 text += f.read().decode("utf-8", "replace")
         except OSError:
             pass
-    text += control_exec(cfg, port, "cat /var/log/syslog 2>/dev/null",
-                      timeout=60).stdout
+    text += guest_file(port, "/var/log/syslog").decode("utf-8", "replace")
     seen = set(int(n) for n in re.findall(r"unimplemented slot (\d+)", text))
     new = sorted(seen - GLES_ALLOWED_SLOTS)
     names = slot_names()
@@ -1495,16 +1472,16 @@ def check_persist(cfg, dev2, marker_src, remote, r, event="clean shutdown + rebo
 
 def check_restart(cfg, procs, dev, result):
     """Reset the running machine after writes, preserving its overlay in-process."""
-    port, error = ensure_guest_ssh(cfg, procs, dev)
-    if port is None:
-        return result.set(False, error)
+    ok, detail = ensure_agent(dev.qmp)
+    if not ok:
+        return result.set(False, detail)
     src = os.path.join(dev.dir, "restart-marker.bin")
     remote = "/regress_restart.bin"
     with open(src, "wb") as f:
         # Cross the old 512-page write-script limit and end on a partial page.
         f.write(os.urandom(4 * 1024 * 1024 + 65535))
     put = afc(cfg, ["put -f %s %s" % (src, remote)])
-    if put.returncode or guest_ssh(cfg, port, ["sync"]).returncode:
+    if put.returncode or itqmp.agent(dev.qmp, "sync")[0]:
         return result.set(False, "could not write and sync restart marker")
     dev.qmp.cmd("system_reset")
     ok, detail, _ = dev.wait_for_home(cfg.boot_timeout)

@@ -206,10 +206,7 @@ for event, exit_code, expected in ((host, 0, False), (guest, 0, True),
     q, peer = qmp_stream([event] if event else [])
     dev = SimpleNamespace(cfg=SimpleNamespace(), procs=None, tag='test', qmp=q,
                           qemu=SimpleNamespace(wait=lambda timeout: exit_code))
-    with patch.object(R.itqmp, 'agent_alive', return_value=False), \
-         patch.object(R, 'ensure_guest_ssh', return_value=(1234, None)), \
-         patch.object(R, 'guest_ssh', return_value=SimpleNamespace(returncode=0, stdout='', stderr='')), \
-         patch.object(R.os.path, 'exists', return_value=True), patch.object(R, 'log'):
+    with patch.object(R.itqmp, 'agent_alive', return_value=False), patch.object(R, 'log'):
         assert R.Device.powerdown(dev) is expected
     assert dev.qmp is None and q.f.closed and q.s.fileno() == -1
     peer.close()
@@ -232,24 +229,43 @@ print('QMP raw framebuffer completeness checks passed')
 # Agent failures must fail the check, including a byte-corrupted successful get.
 assert set(R.DEFAULT_CHECKS) <= set(R.ALL_CHECKS)
 assert R.APP_IPA_DEFAULT == R.HARNESS_IPA
-for failure in (None, 'ping', 'exec', 'put', 'get'):
+for failure in (None, 'ping', 'spawn', 'put', 'chown', 'get', 'sync'):
     saved = {}
     calls = []
-    def agent(q, op, args='', body=b''):
+    def agent(q, op, args='', body=b'', timeout=65):
         calls.append((op, args))
-        if op == 'exec' and args.startswith('rm -f '):
+        if op == 'unlink':
             return 0, b''
         if op == failure:
             return (0, b'corrupt') if op == 'get' else (5, b'failed')
         if op == 'put':
             saved['body'] = body
-        return 0, {'ping': b'it_agent v1\n', 'exec': b'42\n',
-                   'put': b'', 'get': saved.get('body', b'') }[op]
+        return 0, {'ping': b'it_agent v2\nops ping spawn sync\n',
+                   'spawn': b'PID\tStatus\tLabel\n9\t-\tcom.qemu.it-agent\n',
+                   'put': b'', 'chown': b'', 'sync': b'', 'get': saved.get('body', b'')}[op]
     result = R.Result('agent')
-    with patch.object(R.itqmp, 'agent_alive', return_value=True), \
+    with patch.object(R, 'ensure_agent', return_value=(True, 'it_agent v2')), \
          patch.object(R.itqmp, 'agent', side_effect=agent), patch.object(R, 'log'):
         assert R.check_agent(None, None, SimpleNamespace(qmp=object()), result) is (failure is None)
-    assert calls[-1][0] == 'exec' and calls[-1][1].startswith('rm -f /tmp/regress-agent-')
+    assert calls[-1][0] == 'unlink' and calls[-1][1].startswith('/tmp/regress-agent-')
+    assert not any(op == 'exec' for op, _ in calls)
+
+# A v1 agent is upgraded in place (put + launchd restart), then must answer v2.
+for answers, expected in (([b'it_agent v1\n', b'it_agent v2\nops spawn\n'], True),
+                          ([b'it_agent v2\nops spawn\n'], True), ([b'something else\n'], False)):
+    seen = []
+    replies = iter(answers)
+    def agent(q, op, args='', body=b'', timeout=65):
+        seen.append(op)
+        return (0, next(replies)) if op == 'ping' else (0, b'')
+    with patch.object(R.itqmp, 'agent_alive', return_value=True), \
+         patch.object(R.itqmp, 'agent', side_effect=agent), \
+         patch.object(R.time, 'sleep'), patch.object(R, 'log'):
+        assert R.ensure_agent(object())[0] is expected
+    if answers[0].startswith(b'it_agent v1'):
+        assert seen[:3] == ['ping', 'put', 'exec'], seen
+    else:
+        assert 'put' not in seen and 'exec' not in seen
 print('Agent regression detects command failures and binary corruption')
 
 # Agent halt still requires guest-originated shutdown and must never retry SSH.
@@ -259,9 +275,8 @@ for event, expected in ((guest, True), (host, False)):
                           qemu=SimpleNamespace(wait=lambda timeout: 0))
     with patch.object(R.itqmp, 'agent_alive', return_value=True), \
          patch.object(R.itqmp, 'agent', return_value=(0, b'')) as call, \
-         patch.object(R, 'ensure_guest_ssh') as ssh, patch.object(R, 'log'):
+         patch.object(R, 'log'):
         assert R.Device.powerdown(dev) is expected
         call.assert_called_once_with(q, 'halt', timeout=30)
-        ssh.assert_not_called()
     peer.close()
-print('Agent shutdown requires a guest power-off event without SSH replay')
+print('Agent shutdown requires a guest power-off event')
