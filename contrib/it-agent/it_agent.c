@@ -286,11 +286,17 @@ int main(void)
     unsigned clipboard_delay = STARTUP_DELAY * 4;
     int clipboard_ready = 0;
     int clipboard_attempted = 0;
+    unsigned ticks = 0;
     w("it_agent: command service up\n");
     for (;;) {
         /* File/command RPC needs no UIKit initialization. Start immediately so
          * boot-time provisioning does not wait for the clipboard grace period. */
         agent_tick();
+        /* The app's Stop is a hard halt (pause, flush the host's files, quit), never a guest
+         * shutdown, and the kernel's own writeback is ~30 s: flush every 5 s so what was
+         * written 5+ s before a Stop survives it. ponytail: fixed period; nothing to do when
+         * clean, make it adaptive only if flash wear or pauses ever show up. */
+        if (++ticks % 20 == 0) sync();
         if (clipboard_delay) clipboard_delay--;
         else if (!clipboard_attempted) {
             clipboard_attempted = 1;
