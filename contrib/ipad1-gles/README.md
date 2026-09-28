@@ -1,4 +1,4 @@
-# ipad1-gles — GLI engine for iOS 3.2.2 (iPad1,1, 7B500)
+# ipad1-gles — GLI engine for the iPad 1 (iOS 3.2 / 3.2.2, and 4.2.1)
 
 Replaces `/System/Library/Frameworks/OpenGLES.framework/GLEngine.bundle/GLEngine`.
 It forwards ES 1.1 and ES 2.0 calls to the host GL executor (`hw/arm/gles-host.c`)
@@ -6,12 +6,21 @@ over mbxshim's guest-services channel (`mcr p15,3,…,c15,c15,0`, `QC_GLES`). Th
 described in `docs/ipad1/userland-gl-display.md` §3. Keep the `sgx` node out of the
 device tree.
 
-    ./build.sh      # -> GLEngine (armv7 MH_BUNDLE, -marm, ldid -S) + offline checks
+    ./build.sh      # -> GLEngine-<BUILD> per dispatch TSV, GLRendererFloatQEMU.bundle, test apps, checks
+
+One engine per dispatch layout: `docs/ipad1/gli-dispatch-<BUILD>.tsv` (7B500's also serves 7B367;
+8C148 has 841 slots), generated from a firmware's shared cache by `glitsv.py CACHE BUILD OUT.tsv`
+(`--verify CACHE TSV` checks one). `imgtools/ipad1_rootfs.py build` installs the engine whose TSV matches
+the firmware's `__GLIFunctionDispatchRec`. On 4.x it also installs the gld plugin and dyld's
+`enable-dylibs-to-override-cache` switch (GLEngine is in the 4.x shared cache). The 4.x contract and
+design are in `docs/ipad1/ios4.md`, "GL CoreAnimation on 4.2.1".
 
 | file | role |
 |---|---|
 | `glishim.c` | the 19 `gli*` entry points; `#include`s `../it-gles/mbxshim.c` for the host-call code, ES1 handlers, CA present, IOSurface binding and swap notification |
-| `gligen.py` | `docs/ipad1/gli-dispatch-7B500.tsv` → `gli_fwd.h` (826 slots); `--check` self-test |
+| `gligen.py` | `docs/ipad1/gli-dispatch-<BUILD>.tsv` (`--tsv`) → `gli_fwd.h`; `--check` self-test |
+| `glitsv.py` | a firmware's dispatch TSV from its shared cache (slots from the @encode, exports from the trampolines, the rest carried from 7B500's by field name) |
+| `gldshim.c` | 4.x only: the gld plugin libGFXShared needs before EAGL makes a context (`GLRendererFloatQEMU.bundle`) |
 | `test_glishim.c` | host-native self-check: signatures (compile-time), all 826 slots filled, remap, lifetimes |
 
 ## Dispatch table (826 slots, front and back tables filled identically)
@@ -47,15 +56,16 @@ The iPad machine registers the guest-services trap for the GLES calls only
 
 | entry | behaviour |
 |---|---|
-| gliInitializeLibrary / TerminateLibrary | no-op, so no IOAcceleratorES service is needed |
+| gliInitializeLibrary / TerminateLibrary | 3.2.x: no-op. 4.x (libGFXShared loaded by OpenGLES): `gfxInitializeLibrary` + `gfxPluginConnectAll` as the stock engine, then checks gldshim's device 0x01027000 is registered |
 | gliGetVersion | 2, 3, 0x20000; returns 1 so EAGL keeps the engine loaded |
-| gliChoosePixelFormat / DestroyPixelFormat | returns one 0x34-byte node. flags 0x100 (accelerated) is set only if `GLI_ACCELERATED` is set in the environment. Default off: CA stays in software and apps still get contexts |
+| gliChoosePixelFormat / DestroyPixelFormat | returns one 0x34-byte node. flags 0x100 (accelerated) is set if `GLI_ACCELERATED` is set in the environment (3.2.x: default off, CA stays in software and apps still get contexts) or gldshim is registered (4.x EAGL loads only accelerated formats); the renderer is then gldshim's device |
+| gliCreateContextWithShared | 4.x: every context of an EAGL sharegroup; contexts with the same pixel format pointer share one host sharegroup, freed with the last |
 | gliCreateContext | `share == NULL` creates a host sharegroup, which that context owns. Other contexts join the share context's sharegroup. api_bits 4 = ES1, 8 = ES2; if both are set, the share context's API is used |
 | gliDestroyContext | forgets the CA view (EAGL owns the binding) and deletes the host context; the owner also deletes the sharegroup |
 | gliSetInteger | 0x38E: attach IOSurface. For a renderbuffer it becomes the view surface and sets the host drawable size; for a texture it goes through `GLESBindCoreSurface`. 0x39B: detach. 0x2C1: swap notification (`IOMobileFramebufferSwapSignal` on the main display). Anything else returns 0 |
 | gliGetInteger | writes 0 |
-| gliBindViewES | records the drawable; NULL unbinds the old one (`vt[2]`, as stock `_gliBindViewES` does) and clears it, so a rebuilt framebuffer can bind the layer again |
-| gliPresentViewES | mbxshim `GLESPresentView`: render into the current surface, then `drawable->vt[4](d,1)`, then `vt[3]` next frame |
+| gliBindViewES | returns nonzero on success (4.x EAGL returns it from `renderbufferStorage:fromDrawable:`). 3.2.x: records the drawable. 4.x: binds CA's drawable as the stock engine does (bind with a create/destroy/preflight block, first nextBuffer, 0x38E attach as GL_RENDERBUFFER). NULL unbinds the old one (`vt[2]`) and clears it, so a rebuilt framebuffer can bind the layer again |
+| gliPresentViewES | takes the frame's buffer and touches its pages (the host's debug write cannot fault them in), then mbxshim `GLESPresentView`: render into the current surface, then `drawable->vt[4](d,1)`, then `vt[3]` next frame |
 | QueryRendererInfo, DestroyRendererInfo, AttachDrawable(WithOptions), SwapBuffers, Get/Set/CopyAttributes | stubs (OpenGLES 3.2.2 never calls them). Each returns 10015, except DestroyRendererInfo, which returns 0 |
 
 ## Test apps and images
@@ -68,6 +78,13 @@ composite through GL (drops `CA_ENABLE_OGL=0`, sets `GLI_ACCELERATED=1`). The ap
 only get icons on the **jailbroken** base; the pristine installd/SpringBoard hide
 ldid-signed bundles. Boot with `amfi_allow_any_signature=1 cs_enforcement_disable=1`.
 `tests/ipad1/gl-drive.py` boots a store on an overlay and scripts taps and screendumps.
+
+## Results, 4.2.1 (2026-09-28)
+
+GL CA is the 8C148 default: the "Connect to iTunes" screen composites through the host GL. The fixture
+job `contrib/it-gltest` (baked by `ipad1_device.py create --gl-test`, read by `tests/ipad1/gltest.py`)
+checks GL without an app launch: readback PASS, colour fractions within 7% of the layer's, 61.5 presents
+per second, no torn frames.
 
 ## Results (2026-09-27)
 
