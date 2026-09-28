@@ -20,7 +20,7 @@ tests/ipod/regress.py --qemu build/qemu-system-arm --device OUT --checks boot
 | build | pipeline | furthest point | blocker |
 |---|---|---|---|
 | 3.1.3 7E18 | complete | SpringBoard up, GL CA through the shim, "Connect to iTunes" (lit, see below) | activation |
-| 4.2.1 8C148 | complete (NOR, NAND, GLES check, AppSync, gid-blobs) | iBoot finds the NAND, opens VFL/FTL, loads xnu-1504.58.28; the kernel starts its drivers and waits for the root IOMedia (Apple logo) | the kernel's NAND stack issues no page reads |
+| 4.2.1 8C148 | complete (NOR, NAND, GLES check, AppSync, gid-blobs, activation hook) | root mounted through AppleNANDLegacyFTL, launchd runs its daemons; keybagd finds no system keybag and reboots into restore mode (iBoot recovery screen) | data protection: system keybag + formatted effaceable NOR |
 | 2.1.1 5F138 | complete (no AppSync, GLES shim or modern guest helpers) | SecureROM → LLB → iBoot → kernel → stock SpringBoard, Connect to iTunes | activation; optional helpers need a 2.x-compatible build |
 
 ### P1, 7E18: activation
@@ -103,10 +103,35 @@ writer, 0x0ff086b8, computes the same). The generator wrote zeros; 3.1.3 never c
 The kernel is based at VA 0x80000000 (3.x: 0xC0000000), and iBoot builds boot_args at 0x08825000, past
 the late boot-args scan's first 8 MiB. The scan accepts either base and covers 16 MiB
 (hw/arm/ipod_touch_2g.c `boot_args_signature`); `imgtools/klog.py` reads the msgbuf with either base.
-The early command line now reaches it too (see "Remaining emulator compatibility behavior"), so
-AMFI's flags and the serial console are in effect; `klog.py` reads the msgbuf either way. The kernel starts every driver, including `AppleS5L8720XFMSS::start: sequences
-allocated: AppleS5L8720xFMSSScripts-9`, then waits forever for `IOMedia` Partition ID 1 with the Apple logo
-up. Its NAND stack prints nothing and starts one program (0x087cc250) and no page reads.
+The early command line reaches it too (see "Remaining emulator compatibility behavior"), so AMFI's
+flags and the serial console are in effect; without it amfid rejected every re-signed binary
+(`verify_code_directory returned 0x10004005`).
+
+The kernel's NAND stack never read a page: `AppleS5L8720XFMSS` ran its reset program and then slept in
+`IOSleep(10)` (0x807c4218) before READ ID, and never woke (lldb over the gdbstub: the breakpoint after the
+sleep is never hit). xnu-1504 arms timer 4 with START|MANUALUPDATE (0x80068078: `a8 = count; a4 = 3`) and,
+after its FIQ (0x80068024), programs a new deadline only if it is sooner than the running period. The
+timer model treated MANUALUPDATE as one-shot, so after one expiry nothing fired again. MANUALUPDATE only
+latches the buffer; the timer reloads (hw/arm/ipod_touch_timer.c). With that: `[FTL:MSG] VFL_Open/FTL_Open
+[OK]`, `Got boot device = ... AppleNANDLegacyFTL/IOFlashBlockDevice/... Untitled 1@1`, `BSD root: disk0s1`,
+launchd.
+
+#### Data protection (the current blocker)
+
+keybagd's own log, persisted on the data volume: `validateSecureFile: Unable to load
+/private/var//keybags/systembag.kb` → `FATAL KEYBAG ERROR: kb_load` → `Rebooting...` about 27 s in, into
+restore mode, so the next boot stops at iBoot's recovery screen. This is the iPad's blocker
+(docs/ipad1/ios4.md), and the storage is the same kind: the 4.2.1 DT's `nor-flash/effaceable` is
+`effaceable,nor`, so the lockers live in NOR, the keybag on the data volume.
+
+Proposed iPod equivalent of the iPad one-shot (not built): at `create` for 4.x, boot once against the
+device's writable NAND and a writable NOR (`nor-rw`), with the 8C148 restore ramdisk as `md0` and its
+restore DeviceTree (its `secure-root-prefix` = `md` is what lets AppleEffaceableStorage format), run
+`contrib/it-keybag` as the ramdisk's `restored_external` (effaceable sel 3/4, `MKBKeyBagCreateSystem(NULL,
+"/mnt2")`, halt), and keep the resulting `nor.bin` and NAND with the device, as `ipad1_keybag.py` does.
+Unlike the iPad (kboot hands the kernel its ramdisk), the iPod boots through iBoot, so the new part is
+getting iBoot to boot a staged ramdisk with the restore DT; the helper and pipeline carry over. Estimate:
+1-3 days.
 
 ### P3, 5F138: LLB → iBoot
 
