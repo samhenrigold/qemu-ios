@@ -86,6 +86,15 @@ void qemu_ios_agent_free_result(char *result);
 /* 0 absent/not running, 1 alive, 2 stale. */
 int qemu_ios_agent_status(void);
 
+/* it_boot's last QC_PKG_REPORT since the guest last reset: the serial now
+ * current and its result code (contrib/it-boot/it_boot.c R_*; negative = an
+ * install failed and the previous package kept running). false = no report
+ * yet (no loader, or no offer this boot). */
+bool qemu_ios_guest_package_report(int64_t *serial, int32_t *result);
+/* The GL shim's wire protocol from QC_GLES_HELLO, and its package serial;
+ * 0 (today's wire) when no hello arrived since the guest last reset. */
+int32_t qemu_ios_gles_protocol(int64_t *serial);
+
 /* Live host GL contexts cannot be included in a snapshot. */
 int qemu_ios_gles_contexts(void);
 /* Loaded Mach-O UUID; NULL if unavailable. */

@@ -160,6 +160,14 @@ void qemu_call(CPUARMState *env, const struct ARMCPRegInfo *ri, uint64_t value)
             guest_svcs_errno = qcall.retval < 0 ? EINVAL : 0;
             break;
         }
+        case QC_GLES_HELLO:
+        case QC_PKG_OFFER:
+        case QC_PKG_READ:
+        case QC_PKG_REPORT: {
+            IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(qdev_get_machine());
+            guest_pkg_call(&nms->pkg, cpu, &qcall, &guest_svcs_errno);
+            break;
+        }
         case QC_PB_POLL:
         case QC_PB_READ:
         case QC_PB_ACK:

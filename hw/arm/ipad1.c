@@ -55,6 +55,7 @@
 #include "hw/arm/guest-services/general.h"
 #include "hw/arm/guest-services/gles.h"
 #include "hw/arm/guest-pasteboard.h"
+#include "hw/arm/guest-package.h"
 #include "ui/console.h"
 #include "ui/input.h"
 #include "qapi/visitor.h"
@@ -92,6 +93,7 @@ struct IPad1MachineState {
     int mtt_x[MT_MAX_FINGERS], mtt_y[MT_MAX_FINGERS];  /* latched per slot */
     bool mtt_seen[MT_MAX_FINGERS];
     GuestPasteboard pb;                  /* hw/arm/guest-pasteboard.c */
+    GuestPackage pkg;                    /* hw/arm/guest-package.c */
     /* App controls, same property names as the iPod machine. */
     LIS302DLState *accel;
     DeviceState *compass;                /* AK8973; takes its pose from accel */
@@ -129,7 +131,8 @@ static qemu_irq ipad1_irq(IPad1MachineState *s, int irq)
  */
 /*
  * The guest-services trap (mcr p15,3,Rn,c15,c15,0) the GLES shim uses, as on
- * the iPod machine. GLES and the pasteboard (it_pbd) only; the iPod's
+ * the iPod machine. GLES, the pasteboard (it_pbd) and guest packages
+ * (it_boot, hw/arm/guest-package.c) only; the iPod's
  * keyboard and agent services are replaced by stock USB services and hardware
  * models here (docs/ipad1/guest-services.md).
  */
@@ -152,7 +155,8 @@ static void ipad1_qemu_call(CPUARMState *env, const ARMCPRegInfo *ri,
         q.retval = QC_GLES_PING_MAGIC;
         break;
     default:
-        if (!guest_pb_call(&s->pb, cs, &q, &err)) {
+        if (!guest_pb_call(&s->pb, cs, &q, &err) &&
+            !guest_pkg_call(&s->pkg, cs, &q, &err)) {
             return;
         }
     }
@@ -179,6 +183,7 @@ static void ipad1_cpu_reset(void *opaque)
     uint32_t load_pa, entry_pa, bootargs_pa, image_len;
 
     gles_host_reset();
+    guest_pkg_reset(&s->pkg);
     cpu_reset(cs);
 
     /*
@@ -1342,6 +1347,7 @@ static void ipad1_instance_init(Object *obj)
     IPAD1_MACHINE(obj)->usb_cable = true;
     IPAD1_MACHINE(obj)->wifi = true;
     guest_pb_init(&IPAD1_MACHINE(obj)->pb, obj, "ipad1");
+    guest_pkg_init(&IPAD1_MACHINE(obj)->pkg, obj);
     IPAD1_MACHINE(obj)->battery_level = 80;
     IPAD1_MACHINE(obj)->usb_charger = true;
 }

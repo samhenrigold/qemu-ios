@@ -547,6 +547,28 @@ int qemu_ios_gles_contexts(void)
     return qemu_ios_ui_ready() ? gles_host_context_count() : 0;
 }
 
+/* hw/arm/guest-package.c; its own lock, so no BQL or ready check needed. */
+extern bool guest_pkg_last_report(int64_t *serial, int32_t *result);
+extern int32_t guest_pkg_gles_protocol(int64_t *serial);
+bool qemu_ios_guest_package_report(int64_t *serial, int32_t *result)
+{
+    int64_t s;
+    int32_t r;
+    bool have = guest_pkg_last_report(&s, &r);
+    if (serial) {
+        *serial = s;
+    }
+    if (result) {
+        *result = r;
+    }
+    return have;
+}
+
+int32_t qemu_ios_gles_protocol(int64_t *serial)
+{
+    return guest_pkg_gles_protocol(serial);
+}
+
 /* Identify the loaded image, not an on-disk dylib a developer may replace. */
 const char *qemu_ios_build_id(void)
 {

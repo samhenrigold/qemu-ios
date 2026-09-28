@@ -1296,6 +1296,7 @@ static void ipod_touch_cpu_reset(void *opaque)
 
     it_firmware_reset();
     ipod_agent_reset(nms->agent);
+    guest_pkg_reset(&nms->pkg);
     gles_host_reset();
     cpu_reset(cs);
     ipod_touch_load_bootrom(nms);
@@ -1923,6 +1924,7 @@ static void ipod_touch_instance_init(Object *obj)
     object_property_add(obj, "accel-shake", "bool", NULL, ipod_touch_set_accel_shake, NULL, NULL);
 
     guest_pb_init(&IPOD_TOUCH_MACHINE(obj)->pb, obj, "ipod-touch");
+    guest_pkg_init(&IPOD_TOUCH_MACHINE(obj)->pkg, obj);
 }
 
 static inline qemu_irq s5l8900_get_irq(IPodTouchMachineState *s, int n)
