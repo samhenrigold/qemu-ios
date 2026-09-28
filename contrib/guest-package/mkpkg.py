@@ -42,8 +42,10 @@ IPOD_BIN = {"it_agent": "contrib/it-agent/it_agent", "itmedia": "contrib/it-medi
             "itproxy": "contrib/it-proxy/itproxy", "itstatus": "contrib/it-status/itstatus",
             "ithalt": "contrib/it-halt/ithalt", "itorient": "contrib/it-orientation/itorient",
             "sbdlicon": "contrib/it-instprogress/sbdlicon", "sblaunch": "contrib/it-gles/sblaunch"}
-IPAD_BIN = {n: "build/ipad1-guest/" + n for n in ("it_pbd", "it_ethlink", "it_prefs")}
-IPAD_JOBS = ["contrib/it-pasteboard/com.qemu.it-pbd.plist", "contrib/it-ethlink/com.qemu.it-ethlink.plist",
+# it_agent (armv7, contrib/ipad1-guest/build.sh) replaces it_pbd from serial 2: the same pasteboard, plus the
+# foreground app, lock state, launch and sync that no stock service answers. Two pasteboard daemons would race.
+IPAD_BIN = {n: "build/ipad1-guest/" + n for n in ("it_agent", "it_ethlink", "it_prefs")}
+IPAD_JOBS = ["contrib/it-agent/com.qemu.it-agent.plist", "contrib/it-ethlink/com.qemu.it-ethlink.plist",
              "contrib/it-prefs/com.qemu.it-prefs.plist"]
 IPAD_HOOKS = [("build/ipad1-guest/it_msmquiet.dylib", "/usr/local/lib/it_msmquiet.dylib", None, False),
               ("build/appsync/libappsync.dylib", "/usr/lib/libappsync.dylib", None, False)]
