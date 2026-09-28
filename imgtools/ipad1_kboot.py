@@ -52,6 +52,18 @@ FB_WIDTH, FB_HEIGHT, FB_DEPTH = 1024, 768, 32   # landscape panel; display-rotat
 # No -v: like a stock boot the screen shows iBoot's Apple logo, not the text console; serial=3 still
 # sends the kernel log to UART0.
 DEFAULT_BOOT_ARGS = "serial=3 debug=0x8 amfi_allow_any_signature=1 cs_enforcement_disable=1"
+# chosen/firmware-version is the iBoot that booted the kernel: the IPSW's own (7B367 817.28, 7B500 817.29).
+IBOOT_VERSION = "iBoot-817.29"
+
+
+def iboot_version(dec_dir):
+    """The "iBoot-N.N" tag out of DEC_DIR/iBoot.bin (decrypted), else IBOOT_VERSION."""
+    import re
+    path = os.path.join(dec_dir, "iBoot.bin")
+    m = re.search(rb"iBoot-\d+(?:\.\d+)*", open(path, "rb").read()) if os.path.exists(path) else None
+    return m[0].decode() if m else IBOOT_VERSION
+
+
 TRAILER = struct.Struct("<8sIIII")
 SEGMENT = struct.Struct("<8sIII")
 
@@ -245,14 +257,14 @@ def macho_entry(data):
     raise ValueError("no LC_UNIXTHREAD")
 
 
-def fill_dt(dt, memory_map, ident):
+def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION):
     root, chosen, macs = identity_dt(ident)
     for key, value in {"platform-name": "s5l8930x", **root}.items():
         dt.set("", key, value)
     # debug-enabled is forced (a production iBoot writes 0) so AMFI and PE_i_can_has_debugger honour boot-args.
     for key, value in {"debug-enabled": 1, "production-cert": 1, "secure-boot": 1, "gid-aes-key": 1,
                        "uid-aes-key": 1, "system-trusted": 1, "board-id": 0x02, "chip-id": 0x8930,
-                       **chosen, "firmware-version": "iBoot-817.29", "display-rotation": 0, "display-scale": 1,
+                       **chosen, "firmware-version": iboot, "display-rotation": 0, "display-scale": 1,
                        "root-matching": ROOT_MATCHING}.items():
         dt.set("chosen", key, value)
     for key, hz in {"clock-frequency": CPU_HZ, "memory-frequency": MEM_HZ, "bus-frequency": BUS_HZ,
@@ -294,7 +306,7 @@ def fill_dt(dt, memory_map, ident):
         dt.set("chosen/memory-map", name, (pa, size))
 
 
-def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, ident=None):
+def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, ident=None, iboot=IBOOT_VERSION):
     """Return (image bytes, load_pa, entry_pa, bootargs_pa)."""
     page = lambda n: (n + 0xFFF) & ~0xFFF
     pa = lambda va: va - VIRT_BASE + PHYS_BASE
@@ -319,7 +331,7 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, ident=None):
         memory_map.append((f"Kernel-{name}", pa(vmaddr), vmsize))
     memory_map += [("DeviceTree", pa(dt_va), len(dt_blob)), ("BootArgs", pa(args_va), 0x1000)]
 
-    fill_dt(dt, memory_map, ident if ident is not None else load_identity())
+    fill_dt(dt, memory_map, ident if ident is not None else load_identity(), iboot)
     image[dt_va - VIRT_BASE:dt_va - VIRT_BASE + len(dt.buf)] = dt.buf
 
     # boot_args rev 1 / version 2 (pe_identify_machine c01d1276 panics otherwise). Video depth word:
@@ -342,7 +354,7 @@ def pack_segments(segments):
 def main(dec_dir, out, boot_args=DEFAULT_BOOT_ARGS, identity=IDENTITY_FILE):
     dt_blob = open(os.path.join(dec_dir, "DeviceTree.bin"), "rb").read()
     image, load_pa, entry_pa, args_pa = build(os.path.join(dec_dir, "kernelcache.mach"), dt_blob, boot_args,
-                                              load_identity(identity))
+                                              load_identity(identity), iboot_version(dec_dir))
     logo = os.path.join(dec_dir, "AppleLogo.bin")
     segments = logo_segments(open(logo, "rb").read(), VRAM_PA) if os.path.exists(logo) else []
     with open(out, "wb") as f:

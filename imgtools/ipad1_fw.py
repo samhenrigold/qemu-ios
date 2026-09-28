@@ -4,11 +4,12 @@
     ipad1_fw.py IPSW KEYS OUTDIR
 
 KEYS is a theiphonewiki/theapplewiki key page saved as text ("Name\\nfile\\nIV: ..\\nKey: ..").
+Component paths come from the IPSW's BuildManifest.plist; KEYS only supplies IV/Key per file name.
 Writes OUTDIR/{iBSS,iBEC,iBoot,LLB,DeviceTree,AppleLogo}.bin, kernelcache.mach (Adler-32 checked),
 DeviceTree.txt, rootfs.dmg (vfdecrypt'd; mount with hdiutil) and the two ramdisk .dmg files.
 Needs openssl on PATH and cc (vfdecrypt.c is built on first use).
 """
-import os, re, struct, subprocess, sys, zipfile, zlib
+import os, plistlib, re, struct, subprocess, sys, zipfile, zlib
 
 
 def img3_tags(data):
@@ -100,36 +101,57 @@ def vfdecrypt(src, dst, key_hex):
     subprocess.run([tool, src, dst, key_hex], check=True)
 
 
+# Output name -> BuildManifest component; paths come from the IPSW's own manifest (Erase identity).
+COMPONENTS = {"iBSS": "iBSS", "iBEC": "iBEC", "iBoot": "iBoot", "LLB": "LLB", "DeviceTree": "DeviceTree",
+              "AppleLogo": "AppleLogo", "Kernelcache": "KernelCache"}
+
+
+def components(z):
+    """{component: IPSW path} from BuildManifest.plist's first (Customer Erase) identity, plus the
+    Update identity's RestoreRamDisk as "UpdateRamDisk"."""
+    ids = plistlib.loads(z.read("BuildManifest.plist"))["BuildIdentities"]
+    comp = {k: v["Info"]["Path"] for k, v in ids[0]["Manifest"].items() if "Path" in v.get("Info", {})}
+    for bi in ids[1:]:
+        if bi["Info"].get("RestoreBehavior") == "Update":
+            comp["UpdateRamDisk"] = bi["Manifest"]["RestoreRamDisk"]["Info"]["Path"]
+    return comp
+
+
 def main(ipsw, keysfile, out):
     text = open(keysfile).read()
     keys = {m[2]: (bytes.fromhex(m[3]), bytes.fromhex(m[4]))
             for m in re.finditer(r"\n([^\n]+)\n(\S+)\nIV: (\w+)\nKey: (\w+)", text)}
-    rootfs = re.search(r"Root Filesystem\n(\S+)\nKey: (\w+)", text)
     os.makedirs(out, exist_ok=True)
     z = zipfile.ZipFile(ipsw)
-    by_base = {os.path.basename(n): n for n in z.namelist()}
-    names = {"iBSS": "iBSS.k48ap.RELEASE.dfu", "iBEC": "iBEC.k48ap.RELEASE.dfu",
-             "iBoot": "iBoot.k48ap.RELEASE.img3", "LLB": "LLB.k48ap.RELEASE.img3",
-             "DeviceTree": "DeviceTree.k48ap.img3", "AppleLogo": "applelogo.s5l8930x.img3",
-             "Kernelcache": "kernelcache.release.k48"}
-    for name, fname in names.items():
-        iv, key = keys[fname]
-        payload = img3_decrypt(z.read(by_base[fname]), iv, key)
+    comp = components(z)
+
+    def key(path):
+        if os.path.basename(path) not in keys:
+            raise SystemExit("%s: no IV/Key for %s (BuildManifest names it)" % (keysfile, os.path.basename(path)))
+        return keys[os.path.basename(path)]
+
+    for name, c in COMPONENTS.items():
+        payload = img3_decrypt(z.read(comp[c]), *key(comp[c]))
         if name == "Kernelcache":
             open(f"{out}/kernelcache.mach", "wb").write(complzss(payload))
         else:
             open(f"{out}/{name}.bin", "wb").write(payload)
         if name == "DeviceTree":
             open(f"{out}/DeviceTree.txt", "w").write(dt_dump(payload))
-        print("ok", name)
-    for fname, (iv, key) in keys.items():
-        if fname.endswith(".dmg"):
-            open(f"{out}/{fname[:-4]}-ramdisk.dmg", "wb").write(img3_decrypt(z.read(fname), iv, key))
-            print("ok", fname)
-    z.extract(rootfs[1], out)
-    vfdecrypt(f"{out}/{rootfs[1]}", f"{out}/rootfs.dmg", rootfs[2])
-    os.remove(f"{out}/{rootfs[1]}")
-    print("ok rootfs.dmg")
+        print("ok", name, comp[c])
+    for c in ("RestoreRamDisk", "UpdateRamDisk"):
+        if c in comp:
+            fname = comp[c]
+            open(f"{out}/{fname[:-4]}-ramdisk.dmg", "wb").write(img3_decrypt(z.read(fname), *key(fname)))
+            print("ok", c, fname)
+    osimg = comp["OS"]
+    rootfs = re.search(r"\n%s\nKey: (\w+)" % re.escape(osimg), text)
+    if not rootfs:
+        raise SystemExit("%s: no Key for the root filesystem %s" % (keysfile, osimg))
+    z.extract(osimg, out)
+    vfdecrypt(f"{out}/{osimg}", f"{out}/rootfs.dmg", rootfs[1])
+    os.remove(f"{out}/{osimg}")
+    print("ok rootfs.dmg", osimg)
 
 
 def selfcheck():
