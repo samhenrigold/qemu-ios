@@ -63,7 +63,8 @@ static int write_all(int fd, const void *bytes, unsigned len)
     return 0;
 }
 
-static int agent_exec(char *command, const char *body, unsigned len)
+/* Start argv[0] (an absolute path) with body as stdin. No shell is involved. */
+static int agent_start(char *const argv[], const char *body, unsigned len)
 {
     char tmp[] = "/tmp/it-agent-stdin.XXXXXX";
     int input = mkstemp(tmp), fds[2], error;
@@ -85,10 +86,9 @@ static int agent_exec(char *command, const char *body, unsigned len)
     posix_spawnattr_init(&attr);
     posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
     posix_spawnattr_setpgroup(&attr, 0);
-    char *argv[] = { "/bin/sh", "-c", command, 0 };
     char *environment[] = { "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                             "HOME=/var/root", "LANG=C", "LC_ALL=C", 0 };
-    error = posix_spawn(&ag_child, "/bin/sh", &actions, &attr, argv, environment);
+    error = posix_spawn(&ag_child, argv[0], &actions, &attr, argv, environment);
     posix_spawn_file_actions_destroy(&actions);
     posix_spawnattr_destroy(&attr);
     close(input); close(fds[1]);
@@ -96,6 +96,29 @@ static int agent_exec(char *command, const char *body, unsigned len)
     ag_output = fds[0];
     ag_ticks = 0; ag_reaped = 0; ag_child_status = 0;
     return 0;
+}
+
+static int agent_exec(char *command, const char *body, unsigned len)
+{
+    char *argv[] = { "/bin/sh", "-c", command, 0 };
+    return agent_start(argv, body, len);
+}
+
+/* `spawn`: body is argv as NUL-terminated strings (argv[0] absolute), stdin is
+ * /dev/null. Needs no /bin/sh, so it runs on a stock rootfs. */
+static int agent_spawn(char *body, unsigned len)
+{
+    enum { MAXARGS = 64 };
+    char *argv[MAXARGS + 1];
+    unsigned n = 0, off = 0;
+    if (!len || body[len - 1] || body[0] != '/') return EINVAL;
+    while (off < len) {
+        if (n == MAXARGS) return E2BIG;
+        argv[n++] = body + off;
+        off += strlen(body + off) + 1;
+    }
+    argv[n] = 0;
+    return agent_start(argv, "", 0);
 }
 
 static void agent_child_tick(void)
@@ -154,6 +177,12 @@ static void agent_dispatch(unsigned size)
         status = agent_exec(args, body, body_len);
         if (!status) return;
         status = -status;
+    } else if (!strcmp(op, "spawn")) {
+        status = agent_spawn((char *)body, body_len);
+        if (!status) return;
+        status = -status;
+    } else if (!strcmp(op, "sync")) {
+        sync();
     } else if (!strcmp(op, "type") || !strcmp(op, "backspace") || !strcmp(op, "uidump")) {
         if (body_len > 65536) status = -EFBIG;
         else status = agent_sbs(op, args);
