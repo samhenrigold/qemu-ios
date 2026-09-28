@@ -245,7 +245,9 @@ def gl_clean(b, r, detail, shots=()):
     counters) and none of the screendumps carries gles-debug's magenta paint. CoreAnimation is the
     bridge's biggest client on the iPad, so every screen a check reaches is a GL coverage test."""
     rejects = itqmp.gles_rejects(b.qmp)
-    magenta = max([itqmp.magenta_fraction(s, step=4) for s in shots] or [0.0])
+    # A --gl-test device composites it_gltest's magenta/cyan/yellow scene over SpringBoard from 12 s
+    # into every boot, so its screens cannot be read for gles-debug's paint; the counters still can.
+    magenta = 0.0 if getattr(b.cfg, "gl_test", False) else max([itqmp.magenta_fraction(s, step=4) for s in shots] or [0.0])
     if rejects:
         r.set(False, "%s; the GL bridge refused %d thing(s): %s" % (
             detail, len(rejects), ", ".join("%s x%d" % kv for kv in sorted(rejects.items()))))
@@ -270,13 +272,14 @@ def check_gles(cfg, r):
     """The GL bridge under SpringBoard's own compositor: lock screen, home screen, a page swipe, Safari;
     nothing refused, nothing painted magenta. With a --gl-test device, tests/ipad1/gltest.py's fixture
     scene as well (its readback, colour census and counters)."""
-    lock = os.path.join(os.path.dirname(os.path.abspath(cfg.nand)), "device.lock.json")
-    if os.path.exists(lock) and json.load(open(lock)).get("gl_test"):
+    if getattr(cfg, "gl_test", False):
+        # The fixture job covers SpringBoard's screens from 12 s into every boot, so on such a
+        # device the fixture IS the gles leg: its readback and colour census, and the counters.
         p = subprocess.run([sys.executable, os.path.join(HERE, "gltest.py"), os.path.dirname(os.path.abspath(cfg.nand)),
                             "--qemu", cfg.qemu, "--out", os.path.join(cfg.out, "gltest")], capture_output=True, text=True)
-        tail = (p.stdout.strip().splitlines() or [""])[-1]
-        if p.returncode:
-            return r.set(False, "gltest.py: %s" % (tail or p.stderr.strip()[-200:]))
+        lines = p.stdout.strip().splitlines()
+        summary = "; ".join(l.strip() for l in lines if any(k in l for k in ('"readback"', '"rejects"', 'present fps')))
+        return r.set(p.returncode == 0, "gltest.py %s: %s" % ((lines or ["(no output)"])[-1], summary or p.stderr.strip()[-200:]))
     b, detail = booted(cfg, "gles", r, keyboard=True)
     try:
         if not detail:
@@ -517,8 +520,9 @@ def device_args(a):
     Boot images (iBoot, NOR, catalog keys, die-id, or an explicit --kboot) come from ipad1_boot."""
     a.nand = a.nand or os.path.join(a.device, "nand")
     lock = os.path.join(os.path.dirname(os.path.abspath(a.nand)), "device.lock.json")
-    a.product_version = getattr(a, "product_version", None) or (
-        json.load(open(lock)).get("product_version", "3.2.2") if os.path.exists(lock) else "3.2.2")
+    lockd = json.load(open(lock)) if os.path.exists(lock) else {}
+    a.product_version = getattr(a, "product_version", None) or lockd.get("product_version", "3.2.2")
+    a.gl_test = bool(lockd.get("gl_test"))      # it_gltest's scene sits over SpringBoard's screens
 
 
 def dismiss_usb_alert(b):
