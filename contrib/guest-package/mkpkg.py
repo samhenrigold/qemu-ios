@@ -20,6 +20,7 @@ archive it recognises and rejects the unsigned guest Mach-Os inside, sees neithe
 """
 import hashlib
 import json
+import re
 import os
 import plistlib
 import shutil
@@ -52,24 +53,33 @@ IPAD_JOBS = ["contrib/it-agent/com.qemu.it-agent.plist", "contrib/it-ethlink/com
 IPAD_HOOKS = [("build/ipad1-guest/it_msmquiet.dylib", "/usr/local/lib/it_msmquiet.dylib", None, False),
               ("build/appsync/libappsync.dylib", "/usr/lib/libappsync.dylib", None, False)]
 # hooks: (source, stock target, gli dispatch id or None, respring)
+# builds: exact ids or "<major>*" for every build of that iOS major (2.x = 5*, 3.x = 7*, 4.x = 8*), so a new point
+# release needs no row here (LightTouchMac docs/matrix.md). Hooks keyed by gli id still drop at seed/offer when
+# the build's dispatch table is another.
 FAMILIES = {
-    "n72-ios2": {"arch": "armv6", "boards": ["n72ap"], "builds": ["5F138"], "stub": True},
-    "n72-ios3": {"arch": "armv6", "boards": ["n72ap"], "builds": ["7E18"], "bin": IPOD_BIN,
+    "n72-ios2": {"arch": "armv6", "boards": ["n72ap"], "builds": ["5*"], "stub": True},
+    "n72-ios3": {"arch": "armv6", "boards": ["n72ap"], "builds": ["7*"], "bin": IPOD_BIN,
                  "jobs": ["contrib/it-agent/com.qemu.it-agent.plist"],
                  "hooks": [("contrib/it-gles/MBXGLEngine-7E18", MBX, "7E18", True),
                            ("contrib/it-agent/it_typein.dylib", "/usr/lib/it_typein.dylib", None, True),
                            ("build/appsync/libappsync.dylib", "/usr/lib/libappsync.dylib", None, False)]},
-    "n72-ios4": {"arch": "armv6", "boards": ["n72ap"], "builds": ["8C148"], "stub": True},
-    "k48-ios3": {"arch": "armv7", "boards": ["k48ap"], "builds": ["7B367", "7B500"], "bin": IPAD_BIN,
+    "n72-ios4": {"arch": "armv6", "boards": ["n72ap"], "builds": ["8*"], "stub": True},
+    "k48-ios3": {"arch": "armv7", "boards": ["k48ap"], "builds": ["7*"], "bin": IPAD_BIN,
                  "jobs": IPAD_JOBS,
                  "hooks": [("contrib/ipad1-gles/GLEngine-7B500", GLENGINE, "7B500", True)] + IPAD_HOOKS},
-    "k48-ios4": {"arch": "armv7", "boards": ["k48ap"], "builds": ["8C148"], "bin": IPAD_BIN, "jobs": IPAD_JOBS,
+    "k48-ios4": {"arch": "armv7", "boards": ["k48ap"], "builds": ["8*"], "bin": IPAD_BIN, "jobs": IPAD_JOBS,
                  "hooks": [("contrib/ipad1-gles/GLEngine-8C148", GLENGINE, "8C148", True),
                            ("contrib/ipad1-gles/GLRendererFloatQEMU.bundle/GLRendererFloatQEMU", GLD, "8C148",
                             True)] + IPAD_HOOKS},
 }
 # 2.x dyld refuses LC_DYLD_INFO_ONLY; everything the loader runs on it must be legacy-linked
-LEGACY_BUILDS = ("5F138",)
+LEGACY_BUILDS = ("5*",)
+
+
+def build_matches(builds, build):
+    """requires.builds membership: an exact id, or "<major>*" matching the build's leading number."""
+    major = re.match(r"\d+", build).group(0)
+    return any(b == build or (b.endswith("*") and b[:-1] == major) for b in builds)
 
 MH_MAGIC, FAT_MAGIC = 0xFEEDFACE, 0xCAFEBABE
 LC_MAIN, LC_VERSION_MIN_IPHONEOS, LC_CODE_SIGNATURE, LC_DYLD_INFO_ONLY = 0x80000028, 0x25, 0x1D, 0x80000022
@@ -121,7 +131,7 @@ def rewrite_job(data):
 
 def assemble(src, out, family, spec, serial, version):
     """OUT/<family>/ with its payloads and manifest.json; returns the manifest."""
-    arch, legacy = spec["arch"], any(b in LEGACY_BUILDS for b in spec["builds"])
+    arch, legacy = spec["arch"], any(b in LEGACY_BUILDS or build_matches(LEGACY_BUILDS, b) for b in spec["builds"])
     pkg = os.path.join(out, family)
     shutil.rmtree(pkg, ignore_errors=True)
     os.makedirs(pkg)
@@ -237,7 +247,7 @@ def offer_text(manifest, build, good=(), bad=()):
 def offer(pkg, out, build, good=(), bad=()):
     """Compose the directory guest-package= serves: `offer` plus the payloads at their package paths."""
     manifest = json.load(open(os.path.join(pkg, "manifest.json")))
-    if build not in manifest["requires"]["builds"]:
+    if not build_matches(manifest["requires"]["builds"], build):
         raise SystemExit("%s is for %s, not %s" % (manifest["family"], manifest["requires"]["builds"], build))
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out)
@@ -267,7 +277,7 @@ def seed(mnt, itpack, gli=None):
     entries = dict(read_pack(itpack))
     build = plistlib.load(open(os.path.join(mnt, SYSTEM_VERSION), "rb"))["ProductBuildVersion"]
     fams = [n[:-len("/manifest.json")] for n in entries if n.endswith("/manifest.json")
-            and build in json.loads(entries[n])["requires"]["builds"]]
+            and build_matches(json.loads(entries[n])["requires"]["builds"], build)]
     if len(fams) != 1:
         raise SystemExit("%s: %d packages for build %s" % (itpack, len(fams), build))
     family = fams[0]
