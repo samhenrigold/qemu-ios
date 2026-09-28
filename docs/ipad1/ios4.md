@@ -326,8 +326,9 @@ What 4.2.1 needed, beyond the pipeline:
   nubs for the DT's `hsic-enabled` only when the boot-arg `enable-hsic` is 1 (kboot passes it; 3.x ignores
   it). `_publishNubs` gives the host side `AAPL,power-supply` 50, and IOUSBFamily refuses QEMU's 100 mA
   keyboard ("not enough power available"); `usb-kbd,max-power=20` (a new property) presents a low-power
-  one. 4.2.1 then raises "Cannot Use Device / The connected USB device is not supported", OK at
-  (565,382) a few seconds after unlock, and the keyboard types.
+  one. 4.2.1 then raises "Cannot Use Device / The connected USB device is not supported" a few seconds
+  after unlock (a `CFUserNotificationCreate` alert, unlike 3.2.x's `DisplayNotice`; guest package serial 3's
+  it_msmquiet drops both, docs/ipad1/usb-keyboard.md), and the keyboard types.
 - **Tests**, version-detected from the device lock: the Wi-Fi lease line (`receivedIPv4Address():
   Received address ...`), the alert above, the unlock sound (4.x plays `UISounds/unlock.caf`, the same
   file 7B500 ships), Settings' icon (445,470; Game Center has 3.2.2's spot). `regress.py`,
