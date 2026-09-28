@@ -25,7 +25,8 @@ padding nothing uses) to load_pa, then start the CPU at entry_pa in ARM state, S
 MMU and caches off, r0 = bootargs_pa, other registers 0. The kernel builds its first page table at
 topOfKernelData (boot_args+0x10, 16 KiB aligned, just past the image) and zeroes 0x9000 bytes there.
 
-Physical layout, mirroring iBoot's allocator (kernel VA 0xC0000000 = PA 0x40000000):
+Physical layout, mirroring iBoot's allocator (kernel VA base = PA 0x40000000; the base is the kernel's own
+link base, 0xC0000000 on 3.x and 0x80000000 on 4.x):
     kernel segments   PA = vmaddr - 0x80000000 (filesize copied, the rest of vmsize zeroed)
     DeviceTree        next page after the highest segment end
     BootArgs          next page after the DT (one page; the struct is 0x138 bytes)
@@ -39,7 +40,7 @@ import hashlib, json, os, struct, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from macho import Macho
 
-VIRT_BASE, PHYS_BASE, DRAM_SIZE = 0xC0000000, 0x40000000, 0x10000000
+PHYS_BASE, DRAM_SIZE = 0x40000000, 0x10000000
 PRAM_SIZE, VRAM_SIZE = 0x4000, 0x900000 - 0x4000
 MEM_SIZE = DRAM_SIZE - PRAM_SIZE - VRAM_SIZE
 VRAM_PA, PRAM_PA = PHYS_BASE + MEM_SIZE, PHYS_BASE + DRAM_SIZE - PRAM_SIZE
@@ -125,7 +126,14 @@ NAND = {"#ce": 8, "#die-ce": 1, "#ce-blocks": 0x1000, "#block-pages": 128, "#pag
         "#spare-bytes": 0x80, "device-readid": 0xB614D5AD, "vendor-type": 0x100014, "#databus": 2,
         "ecc-correctable": 8, "ecc-threshold": 8, "bbt-format": 3,
         "read-cycle-ns": 25, "read-setup-ns": 10, "read-hold-ns": 10, "read-delay-ns": 20,
-        "read-valid-ns": 20, "write-cycle-ns": 25, "write-hold-ns": 10}
+        "read-valid-ns": 20, "write-cycle-ns": 25, "write-hold-ns": 10,
+        # iBoot-931 (4.x) DTs replace the *-ns timings with *-clks (unused by the IOP model, left 0) and add
+        # the FMI meta layout, which 4.x's IOPFMI hands to the firmware in set_config (3.x's firmware
+        # hard-coded it): 10 bytes of meta DMA per page, in YaFTL's 12-byte struct (4.x yaFTL panics "meta
+        # struct size (12) not equal to bytes per metadata" otherwise). The PPN props (cau-bits, blocks-cau,
+        # ...) stay 0: iBoot-931 fills them only when ppn-device = 1 (iBoot 0x5ff077fc), and this is raw NAND.
+        "meta-per-logical-page": 12, "valid-meta-per-logical-page": 10, "logical-page-size": 4096,
+        "ppn-device": 0}
 # The unit's identity, from FILES/identity.json (untracked, mode 600; never commit it): what iBoot
 # would put in the DT from the fuses and syscfg. lockdownd's UniqueDeviceID on a 3.2 iPad is
 # SHA1(serial + Wi-Fi MAC + Bluetooth MAC), so the captured activation record only validates with the
@@ -297,8 +305,10 @@ def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION):
     if "chip-revision" in dt.props["arm-io"]:  # absent from the selfcheck DT
         dt.set("arm-io", "chip-revision", 0x11)  # measured on the real K48AP
     if "arm-io/flash-controller0/disk" in dt.props:  # absent from the selfcheck's synthetic DT
+        disk = dt.props["arm-io/flash-controller0/disk"]
         for key, value in NAND.items():
-            dt.set("arm-io/flash-controller0/disk", key, value)
+            if key in disk:   # iBoot-931 (4.x) DTs drop the *-ns timings
+                dt.set("arm-io/flash-controller0/disk", key, value)
     dt.set("pram", "reg", (PRAM_PA, PRAM_SIZE))
     dt.set("vram", "reg", (VRAM_PA, VRAM_SIZE))
     for i, (name, pa, size) in enumerate(memory_map):
@@ -309,40 +319,42 @@ def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION):
 def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, ident=None, iboot=IBOOT_VERSION):
     """Return (image bytes, load_pa, entry_pa, bootargs_pa)."""
     page = lambda n: (n + 0xFFF) & ~0xFFF
-    pa = lambda va: va - VIRT_BASE + PHYS_BASE
+    m = Macho(kernel_path)
+    segs = [s for s in m.segs if s[0] != "__PAGEZERO"]
+    # gVirtBase is the kernel's own link base: 3.x links at 0xC0000000, 4.x at 0x80000000
+    vbase = min(vmaddr for _, vmaddr, _, _, _, _ in segs) & 0xF0000000
+    pa = lambda va: va - vbase + PHYS_BASE
     dt = DeviceTree(dt_blob)
     # Host nubs (EHCI, OHCI0) up at arbitrator start and kept across cable changes, next to device
     # mode: AppleS5L8930XUSBArbitrator::handleStart c04826a8 (docs/ipad1/usb-keyboard.md).
     if "arm-io/usb-complex" in dt.props:
         dt.add("arm-io/usb-complex", "hsic-enabled")
     dt_blob = bytes(dt.buf)
-    m = Macho(kernel_path)
-    segs = [s for s in m.segs if s[0] != "__PAGEZERO"]
     top = page(max(vmaddr + vmsize for _, vmaddr, vmsize, _, _, _ in segs))
     dt_va, args_va = top, top + page(len(dt_blob))
     end_va = args_va + 0x1000
     top_of_kernel = pa((end_va + 0x3FFF) & ~0x3FFF)
 
-    image = bytearray(end_va - VIRT_BASE)
+    image = bytearray(end_va - vbase)
     memory_map = []
     for name, vmaddr, vmsize, fileoff, filesize, _ in segs:
         n = min(filesize, vmsize)
-        image[vmaddr - VIRT_BASE:vmaddr - VIRT_BASE + n] = m.data[fileoff:fileoff + n]
+        image[vmaddr - vbase:vmaddr - vbase + n] = m.data[fileoff:fileoff + n]
         memory_map.append((f"Kernel-{name}", pa(vmaddr), vmsize))
     memory_map += [("DeviceTree", pa(dt_va), len(dt_blob)), ("BootArgs", pa(args_va), 0x1000)]
 
     fill_dt(dt, memory_map, ident if ident is not None else load_identity(), iboot)
-    image[dt_va - VIRT_BASE:dt_va - VIRT_BASE + len(dt.buf)] = dt.buf
+    image[dt_va - vbase:dt_va - vbase + len(dt.buf)] = dt.buf
 
     # boot_args rev 1 / version 2 (pe_identify_machine c01d1276 panics otherwise). Video depth word:
     # byte0 depth, byte1 rotation/90, byte2 scale-1. v_display 0 = text console, as iBoot sets for -v/-s.
     verbose = any(a in ("-v", "-s") for a in boot_args.split())
     cmdline = boot_args.encode()
     assert len(cmdline) < 256, "boot-args longer than BOOT_LINE_LENGTH"
-    args = struct.pack("<HHIIII6IIII256s", 1, 2, VIRT_BASE, PHYS_BASE, MEM_SIZE, top_of_kernel,
+    args = struct.pack("<HHIIII6IIII256s", 1, 2, vbase, PHYS_BASE, MEM_SIZE, top_of_kernel,
                        VRAM_PA, 0 if verbose else 1, FB_WIDTH * FB_DEPTH // 8, FB_WIDTH, FB_HEIGHT, FB_DEPTH,
                        0, dt_va, len(dt_blob), cmdline)
-    image[args_va - VIRT_BASE:args_va - VIRT_BASE + len(args)] = args
+    image[args_va - vbase:args_va - vbase + len(args)] = args
     return bytes(image), PHYS_BASE, pa(macho_entry(m.data)), pa(args_va)
 
 
@@ -392,15 +404,20 @@ def selfcheck():
     def seg(name, vmaddr, vmsize, fileoff, filesize):
         return struct.pack("<II16s8I", 1, 56, name.encode(), vmaddr, vmsize, fileoff, filesize, 7, 7, 0, 0)
 
-    thread = struct.pack("<IIII16I", 5, 16 + 64, 1, 16, *([0] * 15), 0xC0001040)
-    cmds = seg("__TEXT", 0xC0001000, 0x2000, 0, 0x2000) + seg("__DATA", 0xC0003000, 0x1800, 0x2000, 0x10) + thread
-    kernel = bytearray(0x2010)
-    kernel[:28 + len(cmds)] = struct.pack("<7I", 0xFEEDFACE, 12, 9, 2, 3, len(cmds), 0) + cmds
-    kernel[0x2000:0x2010] = b"D" * 16
-    with tempfile.NamedTemporaryFile() as f:
-        f.write(kernel)
-        f.flush()
-        image, load, entry, r0 = build(f.name, dt_blob, ident=PLACEHOLDER)
+    def kernel_at(base):   # 3.x kernels link at 0xC0000000, 4.x at 0x80000000
+        thread = struct.pack("<IIII16I", 5, 16 + 64, 1, 16, *([0] * 15), base + 0x1040)
+        cmds = seg("__TEXT", base + 0x1000, 0x2000, 0, 0x2000) + seg("__DATA", base + 0x3000, 0x1800, 0x2000, 0x10) + thread
+        kernel = bytearray(0x2010)
+        kernel[:28 + len(cmds)] = struct.pack("<7I", 0xFEEDFACE, 12, 9, 2, 3, len(cmds), 0) + cmds
+        kernel[0x2000:0x2010] = b"D" * 16
+        with tempfile.NamedTemporaryFile() as f:
+            f.write(kernel)
+            f.flush()
+            return build(f.name, dt_blob, ident=PLACEHOLDER)
+
+    image4, _, entry4, r4 = kernel_at(0x80000000)
+    assert (entry4, r4) == (0x40001040, 0x40006000) and struct.unpack_from("<I", image4, r4 - 0x40000000 + 4)[0] == 0x80000000
+    image, load, entry, r0 = kernel_at(0xC0000000)
 
     assert (load, entry, r0) == (0x40000000, 0x40001040, 0x40006000)
     assert image[0x1000:0x1004] == b"\xce\xfa\xed\xfe" and image[0x3000:0x3010] == b"D" * 16
