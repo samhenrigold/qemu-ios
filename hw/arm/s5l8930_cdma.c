@@ -1,7 +1,7 @@
 /*
  * S5L8930 ("A4") CDMA: the shared descriptor DMA engine and its AES filter.
  *
- * Contract: docs/ipad1/research/gap-kernel-platform-mmio.md §5 and
+ * Contract: docs/research/gap-kernel-platform-mmio.md §5 and
  * ref-a4-soc.md §1.10, re-checked against the 7B500 AppleCDMA kext
  * (start c044c2e8, channel set/clear c044c02c, _startChannel c044d590,
  * startChannel/resume c044d7e4, abort c044d46c, interrupt c044d74c,

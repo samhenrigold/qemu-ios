@@ -1,3 +1,5 @@
+> Archived 2026-09-28: the plan for iPod guest services without SSH; P1–P5 are built (LightTouchMac `docs/STATUS.md`, "Guest tools without SSH" and "Guest-package bootstrap"; `../../contrib/it-agent/README.md`; LightTouchMac `docs/guest-package-bootstrap.md`).
+
 # iPod touch 2G guest services without SSH: inventory, feasibility, plan
 
 Goal: the emulated iPod (iPhone OS 3.1.3 7E18 today, 4.2.1 8C148 and 2.x later) should follow the

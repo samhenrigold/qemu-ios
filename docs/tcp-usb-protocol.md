@@ -8,7 +8,7 @@ repositories, and both are expected to track this document:
 | Side | Implementation |
 | --- | --- |
 | Device | `hw/arm/ipod_touch_tcp_usb.c`, `hw/arm/ipod_touch_usb_otg.c` (this repo) |
-| Host | `src/usb-qemu.c` in [samhenrigold/usbmuxd](https://github.com/samhenrigold/usbmuxd), branch `qemu-backend` |
+| Host | `src/usb-qemu.c` in [samhenrigold/usbmuxd](https://github.com/samhenrigold/usbmuxd), branch `qemu-zlp` |
 
 The transport carries USB device-mode traffic over a TCP socket so that
 `libimobiledevice` tooling can reach the emulated device. It originated on the

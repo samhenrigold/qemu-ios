@@ -73,7 +73,7 @@ things:
 - whatever the newer AppleBCMWLAN-2.60 driver does differently from the iPod's
   `AppleBCM4325`
 
-The earlier "3-6 weeks, don't build it" estimate in keyboard-and-network.md §3
+The earlier "3-6 weeks, don't build it" estimate in ../research/keyboard-and-network.md §3
 assumed no reference implementation. There is one, a few files over.
 
 ## 1. How 7B500 reaches the chip
@@ -93,7 +93,7 @@ AppleBCMWLAN (Broadcom 802.11 Driver, AppleBCMWLAN-2.60)
   - Its strings name the operations: `initIOPState`, `resetController`,
     `resetCard`, `setClockRate`, `setBusWidth`, `sendCommand`,
     `sendDMACommand` / `startDMA`, and `freeIOPState`.
-  - IOP firmware task 0x1524 (research/gap-iop-mailbox-protocol.md §3) has
+  - IOP firmware task 0x1524 (../research/gap-iop-mailbox-protocol.md §3) has
     opcodes 1 to 7:
     - 1: ping
     - 4: init
@@ -137,7 +137,7 @@ AppleBCMWLAN (Broadcom 802.11 Driver, AppleBCMWLAN-2.60)
     probably cosmetic.
 - **Host-wake:** no separate GPIO. Card interrupts come in-band through the SDHC.
   (Bluetooth is the same BCM4329 combo chip on UART3 with its own `bt_reset`/`bt_wake`,
-  and is independent of this. See bt-keyboard.md.)
+  and is independent of this. See ../research/bt-keyboard.md.)
 
 ## 2. What the driver matches and uploads
 

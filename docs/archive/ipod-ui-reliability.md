@@ -1,3 +1,5 @@
+> Archived 2026-09-28: the September 5 continuation record. Superseded by LightTouchMac `docs/STATUS.md`.
+
 # Light Touch / emulator continuation — September 5, 2026
 
 This records the interrupted UI/reliability workstream and reconciles it with

@@ -1,3 +1,5 @@
+> Status: research, superseded by `../../contrib/ipad1-gles/README.md` (the GLI shim as built).
+
 # iPad1,1 iOS 3.2.2 (7B500): userland GL and display paths, resolved by symbol
 
 Scope: the four questions left open by `gap-display-stack-kernel.md` §3–§5 and `web-sgx.md` §1.4/§2.

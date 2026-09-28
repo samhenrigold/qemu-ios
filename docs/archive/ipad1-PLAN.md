@@ -1,3 +1,5 @@
+> Archived 2026-09-28: the iPad 1 milestone plan and log (M1–M8, all done). Its principles live on in `../ipad1/README.md`; status is LightTouchMac `docs/STATUS.md`.
+
 # iPad 1 (K48AP / S5L8930 "A4") on iOS 3.2.2 (7B500): plan
 
 Supersedes `~/Downloads/ipad1-ios32-feasibility/plan/plan.md` (7B367). The research reports there remain
@@ -146,7 +148,7 @@ or drop `iommu-parent`); IOMFB swap FIFO, VBL IRQ 0x2a; SGX node removed; Spring
 `MBX2D_PAGE_FLIP=0` (single page: the scaler-backed page copy has no CPU fallback, it is just skipped).
 CA's software renderer draws into the IOMFB surface; UIKit, not CA or the scaler, rotates to portrait.
 No scaler model needed. Measure software CoreAnimation speed at 1024×768 early — if it's unusable, M7
-moves up. Details: `userland-gl-display.md`.
+moves up. Details: `../research/userland-gl-display.md`.
 
 **M5 — Input, USB, sensors (≈3–4 weeks).** Zephyr2 multitouch on SPI1, DWC OTG + TCP-USB bridge + usbmuxd,
 LIS331DLH accelerometer, bq27545 gas gauge, buttons, orientation.
@@ -208,7 +210,7 @@ rest of the system use it, with no kernel patch and no guest helper. `wifi=off` 
 (below) remains as a secondary path: stock kernel plus the baked `it_ethlink` helper, (the old
 `--usb-eth-link` kernel patch is deleted; `7B500/k48-kboot-ethpatch.bin` is the last bundle built with it).
 
-## Keyboard / network decisions (2026-09-27, docs/ipad1/keyboard-and-network.md)
+## Keyboard / network decisions (2026-09-27, docs/research/keyboard-and-network.md)
 1. Keyboard: USB keyboard via the Camera Connection Kit host path (EHCI + usb-kbd) — now; IOHID daemon as fallback.
 2. USB Ethernet: the device's own Apple USB Ethernet configuration bridged to libslirp — now.
 3. Wi-Fi: fake BCM4329 behind the IOP SDIO ring — last item; until then SDIO answers "no card".
@@ -307,5 +309,5 @@ mounts root, starts launchd, and reaches the activated lock screen. Preparation
 uses iBoot32Patcher's pattern-based signature/personalization and debug patches;
 this is not a verified secure boot. Reconstructed PMGR clock defaults and the
 Wi-Fi radio-presence GPIO complete the kernel handoff. Direct boot stays the
-default. See [iboot.md](iboot.md) for preparation, testing, and captured handoff
+default. See [iboot.md](../ipad1/iboot.md) for preparation, testing, and captured handoff
 comparison. The emulator-side `iboot-sigcheck` experiment is superseded.

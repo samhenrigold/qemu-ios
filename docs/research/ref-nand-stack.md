@@ -1,3 +1,5 @@
+> Status: research, superseded by `hw/arm/s5l8930_h2fmi.c` and `imgtools/ipad1_nand.py`.
+
 # A4 (iPad1,1 / K48AP / iOS 3.2 7B367) NAND stack — findings for a synthetic-NAND generator and an H2FMI model
 
 Scratch artefacts produced (all under the scratchpad, nothing in any repo): `scratchpad/fw/7B367_keys.json` (api.ipsw.me keys), `scratchpad/fw/dec/{DeviceTree.k48ap.bin, iBoot.k48ap.bin, LLB.k48ap.bin, kernelcache.lzss, kernelcache.bin}` (decrypted with openssl; kernelcache LZSS-decompressed, 9,375,730 B, Mach-O), `scratchpad/fw/dec/img3dec.py`, `scratchpad/fw/dec/dtparse.py`.

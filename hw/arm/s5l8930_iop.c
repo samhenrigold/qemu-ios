@@ -7,7 +7,7 @@
  * message rings in guest DRAM that AppleS5L8920XARM7M and AppleS5L8920XIOPFMI
  * drive through it.
  *
- * Protocol: docs/ipad1/research/gap-iop-mailbox-protocol.md §2-§3, checked
+ * Protocol: docs/research/gap-iop-mailbox-protocol.md §2-§3, checked
  * against the 7B500 kexts (ARM7M __text c04d2000, IOPFMI __text c04e8000) and
  * the firmware blob (fw offsets below are into the 0x1b000-byte image).
  *

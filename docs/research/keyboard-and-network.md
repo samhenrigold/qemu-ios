@@ -1,3 +1,5 @@
+> Status: research, superseded by `../ipad1/usb-keyboard.md` and `../ipad1/wifi.md` (both shipped; this file predates any of it running).
+
 # iPad 1 (7B500): hardware keyboard, USB Ethernet, Wi-Fi
 
 This is read-only research. Nothing here has run in QEMU yet. Sources:

@@ -130,7 +130,7 @@ Firmware blob base **0xc074e000** (7B367: 0xc074c000, +0x2000). All structural c
 | ConfigurationOffset/HeapBaseOffset/HeapRequired/MessageChannelSize props | present | **present** (kext strings c074d478/48c/4ac/4cc) | find() |
 
 ⇒ the entire IOP mailbox/FMI HLE spec (config @0xf018, rings, opcodes 1–12, cache/window block) from
-`gap-iop-mailbox-protocol.md` transfers verbatim; only relocate the blob base and expect "iBoot-817.29".
+`../research/gap-iop-mailbox-protocol.md` transfers verbatim; only relocate the blob base and expect "iBoot-817.29".
 
 ## 4. NAND kernel paths
 
@@ -150,7 +150,7 @@ Firmware blob base **0xc074e000** (7B367: 0xc074c000, +0x2000). All structural c
 
 The boot-arg → format-flag decision logic (bit0 = format-allowed from `nand-enable-reformat`, `nand-wipe`
 → flags|=3, `nand-force-restore` → |=0x80) is intact — all three strings present and PC-literal-referenced
-inside `AppleNANDFTL::start`. The offline-generator field spec in `gap-nand-genesis-decision.md` §7
+inside `AppleNANDFTL::start`. The offline-generator field spec in `../research/gap-nand-genesis-decision.md` §7
 (DEVICEINFOBBT/NANDDRIVERSIGN/VSVFL/YaFTL layout) depends on chip geometry + `metadata-whitening`/
 `default-ftl-version` DT props, both unchanged (§7), so it transfers — only rebake NANDDRIVERSIGN's
 version[] with the 7B500 Darwin string (§2).

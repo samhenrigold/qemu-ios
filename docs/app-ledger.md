@@ -2,7 +2,7 @@
 
 A successful launch is not proof of correct rendering, audio, gameplay or network
 services. Reviews are scoped to the tested copy and behavior. The older
-[compatibility survey](app-compatibility.md) remains historical static analysis.
+[compatibility survey](archive/app-compatibility.md) remains historical static analysis.
 
 | App / copy | Runs | Renders | Audio | Input needs | Network needs | Blocker | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |

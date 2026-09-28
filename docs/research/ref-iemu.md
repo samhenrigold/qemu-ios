@@ -1,3 +1,5 @@
+> Status: research, superseded by `hw/arm/ipad1.c` (what was taken from iEmu is in the models).
+
 # Audit: cmw's iEmu S5L8930 / ipad1g machine (and winocm's QEMU-s5l89xx-port)
 
 ## 0. Provenance and scope facts

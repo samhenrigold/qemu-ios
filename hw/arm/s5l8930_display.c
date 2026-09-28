@@ -2,7 +2,7 @@
  * S5L8930 display: DisplayPipe0 (+ the RGBOUT pipe1 twin), CLCD timing
  * generators, dart2 and a QEMU console scanning out the UI layer.
  *
- * Register contract: docs/ipad1/research/gap-display-stack-kernel.md §1.
+ * Register contract: docs/research/gap-display-stack-kernel.md §1.
  * The pipe is a RAM register file with three special things: the parameter
  * FIFO port (0x103c: header 0x8000_0000|nwords<<16|swapID, then packets of
  * count<<16|reg followed by `count` data words), the frame interrupt

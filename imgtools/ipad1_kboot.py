@@ -161,7 +161,7 @@ SERIAL_CHARS = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"   # no I or O, as Apple seri
 
 def udid(ident):
     """lockdownd's UniqueDeviceID on a Wi-Fi iPad 1: SHA1(serial + Wi-Fi MAC + Bluetooth MAC), MACs lowercase
-    and colon-separated (docs/ipad1/userland-boot.md, "Activation identity")."""
+    and colon-separated (docs/research/userland-boot.md, "Activation identity")."""
     return hashlib.sha1((ident["serial-number"] + ident["wifi-mac"].lower() + ident["bt-mac"].lower()).encode()).hexdigest()
 
 
@@ -302,7 +302,7 @@ def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION, root_matching=ROOT_MATCH
     dt.set("arm-io", "clock-frequencies", CLOCKS)
     dt.set("arm-io", "usbphy-frequency", USBPHY_HZ)
     # No SGX model yet: kill the IMGSGX535 match so it never waits on the GPU, and
-    # CoreAnimation falls back to its software renderer (docs/ipad1/userland-gl-display.md).
+    # CoreAnimation falls back to its software renderer (docs/research/userland-gl-display.md).
     if "arm-io/sgx" in dt.props:
         dt.set("arm-io/sgx", "compatible", "none")
     for path, mac in macs.items():

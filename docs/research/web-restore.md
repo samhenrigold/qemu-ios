@@ -1,3 +1,5 @@
+> Status: research, superseded by `../ipad1/iboot.md` and `tests/ipad1/restore-smoke.py` (stock restore over emulated USB works).
+
 I have gathered enough concrete evidence. Let me compile the report as my final answer without further low-level binary carving.
 
 # Feasibility: Producing iPad 1 (iOS 3.2 / 7B367) NAND by running Apple's own restore inside the emulator

@@ -1,3 +1,5 @@
+> Status: research, superseded by `hw/arm/ipad1.c` and `../../ipad1/addresses-7B500.md` (the register values it collected are in the models).
+
 # kmem — userland kernel/physical reader for the 7B500 iPad (status)
 
 Goal: read SoC registers / physical memory from the running jailbroken iPad 1

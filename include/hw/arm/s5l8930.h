@@ -2,7 +2,7 @@
  * Apple S5L8930 ("A4") SoC, as used by the iPad 1 (K48AP) machine.
  *
  * Addresses: 7B500 K48AP device tree (arm-io maps child offsets at 0x80000000).
- * Kernel-side register contracts: docs/ipad1/research/gap-kernel-platform-mmio.md.
+ * Kernel-side register contracts: docs/research/gap-kernel-platform-mmio.md.
  */
 #ifndef HW_ARM_S5L8930_H
 #define HW_ARM_S5L8930_H

@@ -1,3 +1,5 @@
+> Status: research, superseded by `imgtools/ipad1_nand.py` and `hw/arm/s5l8930_h2fmi.c` (the generated store and the FMI model).
+
 # iPad1,1 / iOS 3.2 (7B367) NAND: kernel format/restore paths vs. offline generator — findings
 
 All kernel facts below come from disassembly of `$SP/dec/kernelcache.k48.mach` (prelinked kexts; no symbols). Kext load addresses (from `__PRELINK_INFO`): `AppleNANDFTL` text `c07ee000` (file 0x7b7000), cstrings `c080cc88`; `IOFlashStorage` text `c04dd000`; `AppleS5L8920XIOPFMI` text `c04e7000`; `EncryptedBlockStorage` text `c04d9000`; `AppleS5L8920XARM7M` text `c04d1000`; `IOP_S5L8930X_firmware` `c074a000`. Nothing was written to any repo; ramdisk files were parsed in memory (the ramdisk is HFS+ with decmpfs-compressed files — `com.apple.decmpfs` xattr types 3 (inline zlib) and 4 (resource-fork chunked zlib); that is why earlier extractions gave 0-byte files).

@@ -105,7 +105,7 @@ imgtools/ipad1_nand.py build ...              # rebuild the store
 - `contrib/armv6-toolchain/armv6.sh` takes `GUEST_ARCH=armv7` (the 3.2 SDK,
   cpusubtype 9, `-marm`). `mkold.py` turns `LC_MAIN` into `LC_UNIXTHREAD`, so
   this is a plain executable, not the dylib-in-`sleep` workaround from
-  hw2-regs/README-native-code-on-3.2.2.md. That has not yet been proven on 3.2.2
+  ../research/hw2-regs/README-native-code-on-3.2.2.md. That has not yet been proven on 3.2.2
   hardware.
 - The ad-hoc signature needs `amfi_allow_any_signature=1`.
 - `build_nand.set_owner` now handles the 7B500 system volume's 8 KiB
