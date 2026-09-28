@@ -67,6 +67,7 @@ def main():
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out + "/frames")
     import ipad1_boot
+    a.device = dev          # boot DEVICE's own iBoot, NOR and catalog keys, not ipad1_boot's default device
     machine = "ipad1,%s,nand=%s/nand,nand-overlay=%s/overlay" % (
         ipad1_boot.boot_options(a, out), dev, out)
     sock, serial = "/tmp/ipad1-gltest-%d.qmp" % os.getpid(), out + "/serial.log"
