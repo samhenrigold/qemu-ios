@@ -118,6 +118,13 @@ build, and where it now comes from:
 | GLI dispatch ABI | `ipad1_rootfs.gli_abi_problem`: the shared cache's `__GLIFunctionDispatchRec` @encode must list `gli-dispatch-7B500.tsv`'s fields in order, else the build refuses GL CA (7B367: identical, 826 slots; its GLEngine differs from 7B500's only in LC_UUID and the signature) |
 | expected ProductVersion (regress `usbmux`) | Restore.plist, recorded as `device.lock.json` product_version |
 | system partition size | not in the firmware: restored_external takes `SystemPartitionSize` from the restore host, so it stays the manifest's `system_mib` |
+| kernel link base (virtBase, VA->PA) | the kernelcache's lowest segment (3.x 0xC0000000, 4.x 0x80000000; `ipad1_kboot.build`) |
+| DT NAND props | kboot sets only those the IPSW DT has (4.x drops the `*-ns` timings, adds the FMI meta layout) |
+| IOP firmware `cnfg` block, bss | read from the loaded image (`s5l8930_iop.c` `iop_config`, header fw[0x318]/[0x31c]) |
+| IOPFMI command ABI (v1 / v2) | the loaded image (v2 carries `h2fmi_iop_read_chip_ids`); docs/ipad1/ios4.md |
+
+The third firmware, `manifests/ipad1-8C148.json` (iOS 4.2.1), goes through the same pipeline to launchd with
+both volumes mounted and stops at the system keybag: docs/ipad1/ios4.md.
 
 Checked equal on both builds rather than derived: DeviceTree layout (only phandles and function pointers
 differ), rootfs size (127995 × 8 KiB), NAND/FTL (sealed, no rescan), IOP firmware protocol and the
