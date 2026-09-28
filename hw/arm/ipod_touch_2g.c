@@ -1046,12 +1046,23 @@ static void ipod_touch_stage_ramdisk(IPodTouchMachineState *nms)
  * lands in a wide window and needs no guest code patching.
  *
  * boot_args is built by iBoot at a fixed DRAM location for a given image; we
- * find it by signature (rev==1, virtBase==0xC0000000, physBase==0x08000000)
- * rather than hardcode the address, and overwrite CommandLine at +0x38.
+ * find it by signature (rev==1, virtBase==0xC0000000 on 2.x/3.x or 0x80000000
+ * on 4.x, physBase==0x08000000) rather than hardcode the address, and
+ * overwrite CommandLine at +0x38. 4.2.1 iBoot builds it at 0x08825000, past
+ * the first 8 MiB, so the scan covers 16 MiB.
  * IT_BOOT_ARGS_ADDR overrides the struct address; IT_BOOT_ARGS_DELAY_MS the
  * timer. Gated entirely on IT_BOOT_ARGS; 2.1.1 is untouched.
  */
 #define BOOT_ARGS_CMDLINE_OFF   0x38
+#define BOOT_ARGS_SCAN_LEN      0x01000000
+
+static bool boot_args_signature(const uint8_t *p)
+{
+    uint32_t virt = ldl_le_p(p + 4);
+    return (ldl_le_p(p) & 0xFFFF) == 1 &&
+           (virt == 0xC0000000 || virt == 0x80000000) &&
+           ldl_le_p(p + 8) == 0x08000000;
+}
 #define BOOT_ARGS_CMDLINE_LEN   256
 #define BOOT_ARGS_STAGING_BASE  0x220fff00
 
@@ -1082,11 +1093,10 @@ static void ipod_touch_set_boot_args_now(void *opaque)
         /* Found on an earlier tick; boot_args does not move once the kernel
          * has built it. Re-verify the signature so a reboot (which rebuilds
          * DRAM) falls back to a fresh scan instead of scribbling blindly. */
-        uint32_t sig[3] = { 0, 0, 0 };
+        uint8_t sig[12] = { 0 };
         address_space_rw(nms->nsas, nms->boot_args_addr, MEMTXATTRS_UNSPECIFIED,
-                         (uint8_t *)sig, sizeof(sig), 0);
-        if ((sig[0] & 0xFFFF) == 1 && sig[1] == 0xC0000000 &&
-            sig[2] == 0x08000000) {
+                         sig, sizeof(sig), 0);
+        if (boot_args_signature(sig)) {
             ba = nms->boot_args_addr;
         } else {
             nms->boot_args_addr = 0;
@@ -1106,15 +1116,13 @@ static void ipod_touch_set_boot_args_now(void *opaque)
          */
         uint8_t window[0x10000];
         uint32_t base;
-        for (base = 0x08000000; base < 0x08000000 + 0x00800000 && !ba;
+        for (base = 0x08000000; base < 0x08000000 + BOOT_ARGS_SCAN_LEN && !ba;
              base += sizeof(window) - 8) {
             uint32_t off;
             address_space_rw(nms->nsas, base, MEMTXATTRS_UNSPECIFIED,
                              window, sizeof(window), 0);
             for (off = 0; off + 12 <= sizeof(window); off += 4) {
-                if ((ldl_le_p(window + off) & 0xFFFF) == 1 &&
-                    ldl_le_p(window + off + 4) == 0xC0000000 &&
-                    ldl_le_p(window + off + 8) == 0x08000000) {
+                if (boot_args_signature(window + off)) {
                     ba = base + off;
                     nms->boot_args_addr = ba;
                     break;

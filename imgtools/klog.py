@@ -30,8 +30,8 @@ from itqmp import QMP, pmemsave as _pmemsave
 
 RAM_BASE = 0x08000000
 RAM_SIZE = 128 * 1024 * 1024
-# The kernel is mapped at 0xc0000000 over physical 0x08000000.
-VA_TO_PHYS = 0xB8000000
+# The kernel is mapped over physical 0x08000000 at 0xc0000000 (2.x/3.x) or 0x80000000 (4.x).
+KERNEL_BASES = (0xC0000000, 0x80000000)
 MSGBUF_MAGIC = 0x063061
 
 
@@ -52,8 +52,9 @@ def find_msgbuf(ram):
         if i < 0:
             return None
         size, bufx, bufr, bufc = struct.unpack("<4I", ram[i + 4:i + 20])
-        if 0x1000 <= size <= 0x100000 and bufc > VA_TO_PHYS:
-            return size, bufx, bufc - VA_TO_PHYS - RAM_BASE
+        base = next((b for b in KERNEL_BASES if b <= bufc < b + RAM_SIZE), None)
+        if 0x1000 <= size <= 0x100000 and base is not None:
+            return size, bufx, bufc - base
         i += 4
 
 
