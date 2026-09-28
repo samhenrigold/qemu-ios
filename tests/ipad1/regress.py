@@ -10,8 +10,9 @@ usbmuxd-qemu's ipad1 build as the USB host where the check talks USB (otherwise 
 host). Checks run in parallel, each on its own QEMU.
 
   boot     lock screen on the panel: lit and a picture (many colours), not a solid fill; then, unlocked with
-           the USB keyboard attached, no stock "USB device not supported" alert and the iPad auto-locks
-           (--guest-package DIR: it_boot must also report, and the boot logs the serial it settled on)
+           the USB keyboard attached, no stock "USB device not supported" alert and Hold locks the panel
+           (--guest-package DIR: it_boot must report the offered serial; a package installed this boot
+           means one more boot on the same overlay, the first one's mounter ran the old shim)
   usbmux   ideviceinfo over the bridge answers ProductVersion (the store's device.lock.json, else
            3.2.2), DeviceClass iPad
   afc      push and pull files at sizes that are not multiples of 512, SHA-256 identical
@@ -33,7 +34,6 @@ import http.server
 import json
 import importlib.util
 import os
-import plistlib
 import random
 import shutil
 import subprocess
@@ -68,8 +68,7 @@ SAFARI_ICON, SAFARI_ADDRESS = (959, 650), (55, 437)
 # 4.2.1 a few seconds after unlock), and while it is up SpringBoard never auto-locks. The guest package's
 # it_msmquiet shim drops it inside the mounter and says so on the console (docs/ipad1/usb-keyboard.md).
 MSM_QUIET = 'it_msmquiet: hid the USB "not supported" notice'
-SB_PREFS = "/var/mobile/Library/Preferences/com.apple.springboard.plist"
-AUTO_LOCK_S = 30            # SBAutoLockTime the boot check sets; the alert used to keep the panel lit for ever
+LOCK_S = 8                  # Hold -> panel off, at most; with the alert up it lit again at once
 DARK_MAX_FRACTION = 0.05    # the scanout with the panel off
 
 sys.path.insert(0, os.path.join(ROOT, "imgtools"))
@@ -258,55 +257,53 @@ def booted(cfg, tag, r, **kw):
 
 
 def check_boot(cfg, r):
-    """Lock screen, then unlocked with the USB keyboard attached: no stock USB alert, and the iPad auto-locks."""
+    """Lock screen, then unlocked with the USB keyboard attached: no stock USB alert, and Hold locks the panel."""
     b, detail = booted(cfg, "boot", r, keyboard=True)
     try:
         if not detail:
             return
-        b.drag(UNLOCK_FROM, UNLOCK_TO)   # at once: the lock screen dims about 8 s after it appears
-        time.sleep(10)                   # 4.2.1's alert would be up by now
-        ok, home = b.picture("home")
-        if not ok:
-            return r.set(False, "unlock failed: %s 10 s after the slide" % home)
-        installed, pkg = False, ""
+        pkg = ""
         if cfg.guest_package:
+            offered = [l.split()[1] for l in open(os.path.join(cfg.guest_package, "offer")) if l.startswith("serial ")][0]
             status = b.guest_package_status(timeout=60)
             if not status.startswith("report "):
                 return r.set(False, "%s, but no it_boot report: %s" % (detail, status))
             serial, result = status.split()[1:3]
-            installed = result != "0"   # this boot moved to the offer: the mounter still ran the seed's shim
-            pkg = "; loader reports serial %s (%s)" % (serial, "installed this boot" if installed else "unchanged")
-        hid = MSM_QUIET in open(b.serial, errors="replace").read()
-        if not hid and not installed:
-            return r.set(False, "the mounter never reported hiding the USB alert (see boot/home.ppm)")
-        why = "shim hid the USB alert" if hid else "seed shim replaced (respring)"
-        # Auto-lock, which the alert used to prevent: a fresh iPad's own setting is minutes away, so ask for
-        # AUTO_LOCK_S through the agent (mobile's SpringBoard prefs, read at a respring), unlock again, and the
-        # panel must go dark. The respring comes after the alert check above: it would also drop a stock alert.
-        if not itqmp.agent_alive(b.qmp):
-            return r.set(True, "%s; unlocked, %s; auto-lock not checked (no it_agent: package serial < 2)%s" % (detail, why, pkg))
-        status, body = itqmp.agent(b.qmp, "get", SB_PREFS)
-        prefs = plistlib.loads(body) if status == 0 else {}
-        prefs["SBAutoLockTime"] = AUTO_LOCK_S
-        for op, args, data in (("put", SB_PREFS + " 644", plistlib.dumps(prefs, fmt=plistlib.FMT_BINARY)),
-                               ("chown", "501 501 " + SB_PREFS, b""),
-                               ("spawn", "", b"/bin/launchctl\0stop\0com.apple.SpringBoard\0")):
-            status, body = itqmp.agent(b.qmp, op, args, data)
-            if status:
-                return r.set(False, "agent %s failed: %d %r" % (op, status, body[:80]))
-        time.sleep(20)
-        b.press("home")                  # wakes the relaunched SpringBoard's lock screen if it dimmed already
-        ok, again = b.wait_lock_screen(120)
+            if serial != offered:
+                return r.set(False, "%s, but the loader did not take serial %s: %s" % (detail, offered, status))
+            pkg = "; loader reports serial %s" % serial
+            if result in ("1", "2"):
+                # This boot moved to the offer, but the mounter had loaded the previous package's shim before
+                # it_boot replaced it (a respring does not drop the alert it let through): boot again.
+                b.stop()
+                b, detail = booted(cfg, "boot2", r, keyboard=True, overlay=b.overlay)
+                if not detail:
+                    return
+                pkg = "; loader installed serial %s, boot 2 %s" % (serial, b.guest_package_status(timeout=60).split(" (")[0])
+        for attempt in range(2):
+            b.drag(UNLOCK_FROM, UNLOCK_TO)   # at once: the lock screen dims about 8 s after it appears
+            time.sleep(10)                   # 4.2.1's alert would be up by now
+            ok, home = b.picture("home")
+            if ok:
+                break
+            b.press("home")                  # a slide the dimmed panel swallowed: wake it and slide again
+            b.wait_lock_screen(60)
         if not ok:
-            return r.set(False, "no lock screen after the respring: %s" % again)
-        b.drag(UNLOCK_FROM, UNLOCK_TO)
-        t0 = time.time()
-        while time.time() - t0 < AUTO_LOCK_S + 60 and b.lit("dark") > DARK_MAX_FRACTION:
-            time.sleep(5)
+            return r.set(False, "unlock failed: %s 10 s after the slide" % home)
+        if MSM_QUIET not in open(b.serial, errors="replace").read():
+            return r.set(False, "the mounter never reported hiding the USB alert (see %s/home.ppm)" % os.path.basename(b.dir))
+        # The lock button, which the alert used to defeat (Hold blanked the panel and it lit again at once).
+        b.press("hold")
+        t0, lit = time.time(), 1.0
+        while time.time() - t0 < LOCK_S and lit > DARK_MAX_FRACTION:
+            time.sleep(1)
+            lit = b.lit("dark")
+        if lit > DARK_MAX_FRACTION:
+            return r.set(False, "Hold did not lock: panel still lit (%.0f%%) %d s later (the USB alert?)" % (lit * 100, LOCK_S))
+        time.sleep(3)   # ... and it stays dark: the alert used to relight it at once
         if b.lit("dark") > DARK_MAX_FRACTION:
-            return r.set(False, "still lit %d s after unlock with a %d s auto-lock" % (time.time() - t0, AUTO_LOCK_S))
-        r.set(True, "%s; unlocked, %s, auto-locked %d s after unlock (set to %d s)%s" % (
-            detail, why, time.time() - t0, AUTO_LOCK_S, pkg))
+            return r.set(False, "Hold locked the panel but it lit again within 3 s (the USB alert?)")
+        r.set(True, "%s; unlocked, shim hid the USB alert, Hold locked the panel in %d s%s" % (detail, time.time() - t0, pkg))
     finally:
         b.stop()
 
