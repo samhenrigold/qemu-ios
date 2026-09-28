@@ -279,6 +279,8 @@ def main():
             except subprocess.TimeoutExpired:
                 powered_off = False
                 print("system_powerdown: QEMU still running after 45s")
+                if a.shot:
+                    save_shot(q, os.path.abspath(a.shot)[:-4] + "-stuck.png")
         if a.from_checkpoint and a.keep and screen_at is not None:
             print(f"QEMU pid {child.pid} left running; QMP at {qmp_path}")
             q.close()

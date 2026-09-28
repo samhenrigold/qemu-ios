@@ -3,6 +3,7 @@
 
     tests/ipad1/regress.py                     # default tier
     tests/ipad1/regress.py --checks net,afc    # explicit selection
+    tests/ipad1/regress.py --device DIR        # an ipad1_device.py device dir (nand, kboot.bin, die-id, nor.bin)
 
 Every check boots its own copy-on-write overlay of golden-pristine (the base is never written), with
 usbmuxd-qemu's ipad1 build as the USB host where the check talks USB (otherwise the machine's built-in
@@ -59,6 +60,7 @@ LIT_MIN_FRACTION, MIN_COLOURS, HOME_CONFIRM_S = 0.5, 64, 2
 # top (status bar) is the panel's left edge, portrait left its bottom edge.
 UNLOCK_FROM, UNLOCK_TO = (959, 477), (959, 47)
 USB_ALERT_DISMISS = (548, 382)   # stock "The attached USB device is not supported." (the USB keyboard)
+USB_ALERT_DISMISS_4 = (565, 382)  # 4.x "Cannot Use Device" OK, which comes up a few seconds after unlock
 SAFARI_ICON, SAFARI_ADDRESS = (959, 650), (55, 437)
 
 launch_lock = threading.Lock()
@@ -79,6 +81,7 @@ class Boot:
         # A default overlay is a fresh device: drop one a previous run left under the same out dir,
         # or a rerun boots the old run's NAND (an app "installed" twice is an upgrade). Callers that
         # mean to reuse state (persist, snapshots) pass overlay= explicitly.
+        self.fresh = overlay is None
         if overlay is None:
             shutil.rmtree(os.path.join(self.dir, "overlay"), ignore_errors=True)
         self.overlay = overlay or os.path.join(self.dir, "overlay")
@@ -92,6 +95,14 @@ class Boot:
         cfg = self.cfg
         with launch_lock:       # free ports are claimed one boot at a time
             machine = "ipad1,kboot=%s,nand=%s,nand-overlay=%s" % (cfg.kboot, cfg.nand, self.overlay)
+            if cfg.die_id:
+                machine += ",die-id=" + cfg.die_id
+            if cfg.nor:   # 4.x: a private writable NOR copy next to the overlay (the keybag's effaceable)
+                nor = os.path.join(os.path.dirname(self.overlay), "nor.bin")
+                if not os.path.exists(nor) or self.fresh:
+                    shutil.copyfile(cfg.nor, nor)
+                    os.chmod(nor, 0o644)
+                machine += ",nor-rw=" + nor
             self.usb_port = self.mux_port = 0
             if self.usb:
                 self.usb_port = free_port(21300, 21399)
@@ -106,7 +117,9 @@ class Boot:
                     "-qmp", "unix:%s,server,nowait" % self.sock]
             argv += ["-audio", "driver=wav,path=" + self.wav] if self.wav else ["-audio", "driver=none"]
             # A USB keyboard takes QMP keys ahead of the machine's button chords, so only boots that type get one.
-            argv += ["-device", "usb-kbd,bus=usb-bus.0"] if self.keyboard else []
+            # max-power=20: 4.x gives the dock port's host side a small budget (the arbitrator's
+            # AAPL,power-supply) and refuses the default 100 mA keyboard; 3.x never checks.
+            argv += ["-device", "usb-kbd,bus=usb-bus.0,max-power=20"] if self.keyboard else []
             argv += self.extra
             self.qemu = self.procs.spawn(argv, os.path.join(self.dir, "qemu.log"))
             time.sleep(2)
@@ -329,9 +342,7 @@ def safari_fetch(cfg, r, tag, via, **kw):
         if not detail:
             return
         b.drag(UNLOCK_FROM, UNLOCK_TO)
-        time.sleep(3)
-        b.tap(USB_ALERT_DISMISS)   # stock USB-device alert on images without it_msmquiet; else empty space
-        time.sleep(2)
+        dismiss_usb_alert(b)
         b.tap(SAFARI_ICON)
         time.sleep(8)
         b.tap(SAFARI_ADDRESS)
@@ -376,11 +387,11 @@ def check_wifi(cfg, r):
         t0, text = time.time(), ""
         while time.time() - t0 < 120:
             text = open(b.serial, errors="replace").read()
-            if "receivedIPv4Address(): Received IP Address" in text:
+            if "receivedIPv4Address(): Received" in text:   # 3.2.2 "... IP Address", 4.2.1 "... address A.B.C.D"
                 break
             time.sleep(2)
         joined = 'ssid[ 8] = "qemu-ios"' in text
-        leased = "Received IP Address" in text
+        leased = "receivedIPv4Address(): Received" in text
         fw = "BCM4329 revision B1" in text and "initFirmware(): successful initialization" in text
         if joined and leased and fw:
             r.set(True, "BCM4329 B1 up, joined qemu-ios, DHCP lease")
@@ -408,8 +419,9 @@ def check_audio(cfg, r):
         b.qemu.wait(timeout=30)                       # the WAV header is written at exit
     finally:
         b.stop()
-    ok = ac.judge(wav, b.serial, expect=ac.EXPECT)
-    r.set(ok, "%d sounds correlate >= 0.8 with the rootfs originals" % len(ac.EXPECT) if ok
+    expect = ac.EXPECT_4 if cfg.product_version.startswith("4.") else ac.EXPECT
+    ok = ac.judge(wav, b.serial, expect=expect)
+    r.set(ok, "%d sounds correlate >= 0.8 with the rootfs originals" % len(expect) if ok
           else "WAV correlation failed (see audio/ and the judge output above)")
 
 
@@ -417,9 +429,30 @@ CHECKS = {"boot": check_boot, "usbmux": check_usbmux, "afc": check_afc, "persist
           "net": check_net, "net-usb": check_net_usb, "wifi": check_wifi, "audio": check_audio}
 
 
+def device_args(a):
+    """--device DIR -> nand, kboot, die_id, nor; product_version from the store's device.lock.json."""
+    a.die_id = a.nor = None
+    if a.device:
+        a.nand, a.kboot = os.path.join(a.device, "nand"), os.path.join(a.device, "kboot.bin")
+        a.die_id = json.load(open(os.path.join(a.device, "device.lock.json")))["identity"]["die_id"]
+        a.nor = os.path.join(a.device, "nor.bin") if os.path.exists(os.path.join(a.device, "nor.bin")) else None
+    lock = os.path.join(os.path.dirname(os.path.abspath(a.nand)), "device.lock.json")
+    a.product_version = getattr(a, "product_version", None) or (
+        json.load(open(lock)).get("product_version", "3.2.2") if os.path.exists(lock) else "3.2.2")
+
+
+def dismiss_usb_alert(b):
+    """Unlocked with a USB keyboard attached: close the stock not-supported alert (or tap empty space)."""
+    v4 = b.cfg.product_version.startswith("4.")
+    time.sleep(8 if v4 else 3)
+    b.tap(USB_ALERT_DISMISS_4 if v4 else USB_ALERT_DISMISS)
+    time.sleep(2)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--checks", default=",".join(DEFAULT_CHECKS))
+    ap.add_argument("--device", help="an ipad1_device.py device dir: sets --nand, --kboot, its die-id and NOR")
     ap.add_argument("--nand", default=os.path.join(FILES, "userland/golden-pristine"))
     ap.add_argument("--kboot", default=os.path.join(FILES, "7B500/k48-kboot.bin"))
     ap.add_argument("--qemu", default=os.path.join(ROOT, "build/qemu-system-arm"))
@@ -428,9 +461,7 @@ def main():
     ap.add_argument("--out", default=None)
     ap.add_argument("--product-version", help="usbmux's expected ProductVersion (default: NAND/../device.lock.json, else 3.2.2)")
     a = ap.parse_args()
-    lock = os.path.join(os.path.dirname(os.path.abspath(a.nand)), "device.lock.json")
-    a.product_version = a.product_version or (
-        json.load(open(lock)).get("product_version", "3.2.2") if os.path.exists(lock) else "3.2.2")
+    device_args(a)
     import ffmpeg_guard                     # imgtools; stock FFmpeg breaks iPod H.264
     why = ffmpeg_guard.check(a.qemu)
     if why:

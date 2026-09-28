@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Live snapshot round trip for the ipad1 machine: save mid-use, quit, resume, and keep using it.
 
-    tests/ipad1/snapshot-check.py [--out DIR] [--nand STORE] [--kboot K] [--qemu Q]
+    tests/ipad1/snapshot-check.py [--out DIR] [--nand STORE] [--kboot K] [--qemu Q] [--device DIR]
 
 Boot A (golden overlay, usbmuxd bridge, USB keyboard, Wi-Fi): unlock, Safari fetches page 1 from a host
 HTTP server. Wi-Fi's slirp carries the app's web proxy forward, 10.0.2.100:3128 (here to the test's
@@ -57,12 +57,15 @@ def save(boot, snap):
     if st != "completed":
         sys.exit("save: migration %s" % st)
     subprocess.run(["cp", "-cR", boot.overlay, os.path.join(snap, "overlay")], check=True)
+    nor = os.path.join(os.path.dirname(boot.overlay), "nor.bin")
+    if boot.cfg.nor:   # 4.x: the effaceable NOR is flash too, paired with the overlay
+        shutil.copyfile(nor, os.path.join(snap, "nor.bin"))
     log("saved %s: %d MiB state + overlay" % (snap, os.path.getsize(os.path.join(snap, "state")) >> 20))
     return shot
 
 
-def resume(cfg, tag, snap, extra):
-    b = rg.Boot(cfg, tag, keyboard=True, overlay=os.path.join(snap, "overlay"),
+def resume(cfg, tag, snap, extra, wav=None):
+    b = rg.Boot(cfg, tag, keyboard=True, overlay=os.path.join(snap, "overlay"), wav=wav,
                 extra=extra + ["-incoming", "file:" + os.path.join(snap, "state")])
     b.start()
     t0 = time.time()
@@ -93,7 +96,9 @@ def main():
     ap.add_argument("--usbmuxd", default=rg.USBMUXD)
     ap.add_argument("--boot-timeout", type=int, default=900)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--device", help="an ipad1_device.py device dir (regress.py --device)")
     cfg = ap.parse_args()
+    rg.device_args(cfg)
     rg.ipod.START = time.time()
     cfg.out = cfg.out or tempfile.mkdtemp(prefix="ipad1snap-")
     snap, snap2 = os.path.join(cfg.out, "snap"), os.path.join(cfg.out, "snap2")
@@ -135,10 +140,7 @@ def main():
         if not ok or not a.wait_mux():
             sys.exit("boot A: %s" % (detail if not ok else "usbmux never attached"))
         a.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
-        time.sleep(3)
-        for xy in (rg.USB_ALERT_DISMISS,):   # stock USB-device alert on images without it_msmquiet
-            a.tap(xy)
-            time.sleep(2)
+        rg.dismiss_usb_alert(a)
         a.tap(rg.SAFARI_ICON)
         time.sleep(8)
         a.tap(rg.SAFARI_ADDRESS)
@@ -174,7 +176,7 @@ def main():
         mux = b.wait_mux(timeout=120)
         info = b.run(["ideviceinfo", "-k", "ProductVersion"], timeout=60) if mux else None
         pv = info.stdout.strip() if info else ""
-        results["usbmux"] = (pv == "3.2.2", "new usbmuxd: %s" % (("ProductVersion %s" % pv) if mux else "never attached"))
+        results["usbmux"] = (pv == cfg.product_version, "new usbmuxd: %s" % (("ProductVersion %s" % pv) if mux else "never attached"))
 
         # Mid-sound save: Hold starts the lock sound; stop the machine while it plays.
         b.press("hold", hold=0.2)
@@ -192,7 +194,7 @@ def main():
     wav = os.path.join(cfg.out, "C.wav")
     c = None
     try:
-        c = resume(cfg, "C", snap2, wifi + ["-audio", "driver=wav,path=" + wav])
+        c = resume(cfg, "C", snap2, wifi, wav=wav)   # Boot's own -audio (it defaults to driver=none)
         time.sleep(5)
         # audio-check's play_sounds, but through the button-* properties: the USB keyboard in the
         # saved machine owns QMP keys, so key-chord buttons would type instead.
@@ -216,7 +218,7 @@ def main():
     spans = ac.events(cap, rate)[-3:]          # a leftover tail of the saved lock sound may come first
     with tempfile.TemporaryDirectory() as td:
         corrs = [ac.corr(cap[max(0, s0 - rate // 10):s1 + rate // 10], ac.reference(path, td))
-                 for (s0, s1), (_, path) in zip(spans, ac.EXPECT[1:])]
+                 for (s0, s1), (_, path) in zip(spans, (ac.EXPECT_4 if cfg.product_version.startswith("4.") else ac.EXPECT)[1:])]
     results["audio"] = (len(corrs) == 3 and min(corrs) >= ac.MIN_CORR,
                         "unlock/lock/unlock after a mid-sound resume, corr %s" % " ".join("%.2f" % x for x in corrs))
 
