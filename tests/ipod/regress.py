@@ -293,7 +293,9 @@ def boot_env(cfg):
         "IT_BOOT_ARGS_REPEAT": "200",
         "IT_BOOT_ARGS_INTERVAL_MS": "250",
     }
-    if os.path.exists(iboot):
+    # A device.py device says for itself whether it boots iBoot directly (it ships iBoot.bin, 3.x+)
+    # or through the bootrom and its NOR's LLB (2.x): never fall back to the 7E18 iBoot for it.
+    if os.path.exists(iboot) and not getattr(cfg, "device", None):
         defaults["IT_DIRECT_IBOOT"] = iboot
     for k, v in defaults.items():
         env.setdefault(k, v)
@@ -351,7 +353,7 @@ class Device:
         if getattr(cfg, "kernel_console", False):
             machine += (",boot-args=amfi_allow_any_signature=1 "
                         "cs_enforcement_disable=1 serial=3 debug=0x8")
-        for option in ("audio_hw", "h264_decode", "scaler_decode", "mpvd_decode", "amc_mode", "lcd_planes", "direct_iboot", "direct_llb"):
+        for option in ("audio_hw", "h264_decode", "scaler_decode", "mpvd_decode", "amc_mode", "lcd_planes", "direct_iboot", "direct_llb", "gid_blobs"):
             value = getattr(cfg, option, None)
             if value is not None:
                 machine += "," + option.replace("_", "-") + "=" + value.replace(",", ",,")
@@ -1675,6 +1677,15 @@ def main():
     ap.add_argument("--nor", default=None,
                     help="NOR image (default <files-dir>/ios3/nor_7E18.bin if "
                          "present, else <files-dir>/nor_n72ap.bin)")
+    ap.add_argument("--direct-iboot", default=None, metavar="IBOOT",
+                    help="decrypted iBoot for the machine's direct-iboot option (default "
+                         "<files-dir>/ios3/iBoot.bin via IT_DIRECT_IBOOT); a device made by "
+                         "imgtools/device.py ships its own iBoot.bin")
+    ap.add_argument("--gid-blobs", default=None, metavar="FILE",
+                    help="the machine's gid-blobs table (a device.py device's gid-blobs.bin)")
+    ap.add_argument("--device", default=None, metavar="DIR",
+                    help="a device made by imgtools/device.py: its nand/, nor.bin, iBoot.bin and "
+                         "gid-blobs.bin (explicit options win)")
     native_qemu = os.path.join(ROOT, "build-native14", "qemu-build", "qemu-system-arm")
     default_qemu = native_qemu if os.path.exists(native_qemu) else os.path.join(ROOT, "build", "qemu-system-arm")
     ap.add_argument("--qemu", default=os.environ.get("QEMU", default_qemu))
@@ -1728,6 +1739,11 @@ def main():
         return run_ledger(cfg)
 
     cfg.files = os.path.expanduser(cfg.files_dir)
+    if cfg.device:
+        for attr, name in (("base_nand", "nand"), ("nor", "nor.bin"), ("direct_iboot", "iBoot.bin"),
+                           ("gid_blobs", "gid-blobs.bin")):
+            if getattr(cfg, attr) is None and os.path.exists(os.path.join(cfg.device, name)):
+                setattr(cfg, attr, os.path.join(cfg.device, name))
     # NAND, NOR and iBoot are one set and cannot be mixed: nand-canonical is a
     # 2.1.1 image, and against 3.1.3's iBoot its FTL will not even open --
     # "NAND initialisation failed due to format mismatch", "root filesystem
