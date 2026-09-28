@@ -11,7 +11,7 @@ with tempfile.TemporaryDirectory() as directory:
     dev = SimpleNamespace(dir=directory, qmp=Mock(), serial_text=lambda: '')
     dev.qmp.shot.return_value = 'frame.ppm'
     response = SimpleNamespace(returncode=0, stdout='', stderr='')
-    for signature, expected in (((.3, .3), True), ((0, 0), False)):
+    for signature, expected in (((.3, .3, 0), True), ((0, 0, 0), False)):
         result = R.Result('gles')
         with patch.object(R.os.path, 'exists', side_effect=lambda p: not str(p).endswith('GLTest.app')), \
              patch.object(R, 'prepare_app_control', return_value=123), \
