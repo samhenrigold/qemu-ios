@@ -51,6 +51,7 @@
 #include "crypto/cipher.h"
 #include "hw/irq.h"
 #include "hw/sysbus.h"
+#include "hw/qdev-properties.h"
 #include "hw/arm/s5l8930.h"
 #include "migration/vmstate.h"
 #include "system/dma.h"
@@ -143,6 +144,9 @@ struct S5L8930CDMAState {
     uint8_t *fifo;
     uint32_t fifo_len;
     bool gid_warned;
+    char *gid_path;
+    uint8_t *gid_data;
+    size_t gid_size;
     /* a device FIFO that paces its channel (s5l8930_cdma_set_source) */
     hwaddr src_base, src_size;
     uint32_t (*src_avail)(void *opaque, hwaddr addr);
@@ -171,30 +175,19 @@ static const uint8_t cdma_uid_key[32] = {
     0x37, 0x42, 0x35, 0x30, 0x30, 0x2d, 0x30, 0x31,
 };
 
-/*
- * GID stand-in, the iPod machine's approach: the boot chain only ever runs
- * the GID key over an img3's KBAG (IV || 256-bit key, 48 bytes), and those
- * plaintexts are published per build. Ciphertexts read from the 7B500 IPSW.
- */
+/* Per-IPSW GID stand-in: 96-byte records, encrypted KBAG followed by
+ * plaintext IV || AES-256 key. Immutable machine configuration, not VM state. */
 #define GID_BLOB_SIZE 48
-typedef struct GidBlob {
-    const char *name;
-    uint8_t kbag[GID_BLOB_SIZE];
-    uint8_t plain[GID_BLOB_SIZE];
-} GidBlob;
 
-static const GidBlob gid_blobs[] = {
-#include "s5l8930_cdma_kbags.inc"
-};
-
-static const GidBlob *gid_lookup(const uint8_t *buf, uint32_t len)
+static const uint8_t *gid_lookup(S5L8930CDMAState *s,
+                                 const uint8_t *buf, uint32_t len)
 {
-    if (len < GID_BLOB_SIZE) {
+    if (len != GID_BLOB_SIZE) {
         return NULL;
     }
-    for (size_t i = 0; i < ARRAY_SIZE(gid_blobs); i++) {
-        if (memcmp(gid_blobs[i].kbag, buf, GID_BLOB_SIZE) == 0) {
-            return &gid_blobs[i];
+    for (size_t i = 0; i < s->gid_size; i += 2 * GID_BLOB_SIZE) {
+        if (!memcmp(s->gid_data + i, buf, GID_BLOB_SIZE)) {
+            return s->gid_data + i + GID_BLOB_SIZE;
         }
     }
     return NULL;
@@ -284,9 +277,9 @@ static bool aes_apply(S5L8930CDMAState *s, AESContext *c, uint8_t *buf,
         key = keybuf;
         algo = algos[AES_KEYLEN(c->setup)];
     } else if (c->setup & AES_KEY_GID) {
-        const GidBlob *b = encrypt ? NULL : gid_lookup(buf, len);
+        const uint8_t *b = encrypt ? NULL : gid_lookup(s, buf, len);
         if (b) {
-            memcpy(buf, b->plain, GID_BLOB_SIZE);
+            memcpy(buf, b, GID_BLOB_SIZE);
             if (len > GID_BLOB_SIZE) {
                 memset(buf + GID_BLOB_SIZE, 0, len - GID_BLOB_SIZE);
             }
@@ -295,7 +288,7 @@ static bool aes_apply(S5L8930CDMAState *s, AESContext *c, uint8_t *buf,
         if (!s->gid_warned) {
             s->gid_warned = true;
             warn_report("s5l8930.cdma: GID %scrypt of %u bytes not in the "
-                        "KBAG table; using a stand-in key",
+                        "gid-blobs file; supply this IPSW's keys with gid-blobs=",
                         encrypt ? "en" : "de", len);
         }
         key = cdma_uid_key;
@@ -1033,12 +1026,45 @@ static const VMStateDescription vmstate_s5l8930_cdma = {
     }
 };
 
+static void s5l8930_cdma_realize(DeviceState *dev, Error **errp)
+{
+    S5L8930CDMAState *s = S5L8930_CDMA(dev);
+    g_autoptr(GError) error = NULL;
+
+    if (!s->gid_path) {
+        return;
+    }
+    if (!g_file_get_contents(s->gid_path, (char **)&s->gid_data,
+                             &s->gid_size, &error)) {
+        error_setg(errp, "gid-blobs: %s", error->message);
+        return;
+    }
+    if (!s->gid_size || s->gid_size % (2 * GID_BLOB_SIZE)) {
+        error_setg(errp, "gid-blobs: expected nonempty 96-byte KBAG || IV-key records");
+    }
+}
+
+static void s5l8930_cdma_finalize(Object *obj)
+{
+    S5L8930CDMAState *s = S5L8930_CDMA(obj);
+
+    g_free(s->gid_data);
+    timer_free(s->pace_timer);
+    g_free(s->fifo);
+}
+
+static const Property s5l8930_cdma_properties[] = {
+    DEFINE_PROP_STRING("gid-blobs", S5L8930CDMAState, gid_path),
+};
+
 static void s5l8930_cdma_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     device_class_set_legacy_reset(dc, s5l8930_cdma_reset);
     dc->vmsd = &vmstate_s5l8930_cdma;
+    dc->realize = s5l8930_cdma_realize;
+    device_class_set_props(dc, s5l8930_cdma_properties);
 }
 
 static const TypeInfo s5l8930_cdma_info = {
@@ -1046,6 +1072,7 @@ static const TypeInfo s5l8930_cdma_info = {
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(S5L8930CDMAState),
     .instance_init = s5l8930_cdma_init,
+    .instance_finalize = s5l8930_cdma_finalize,
     .class_init = s5l8930_cdma_class_init,
 };
 

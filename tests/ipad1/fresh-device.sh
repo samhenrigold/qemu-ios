@@ -36,7 +36,7 @@ def walk(v):
     elif isinstance(v, str):
         paths.append(v)
 walk(lock["inputs"])
-bad = [p for p in paths if "/hw2/" in p or (p.endswith("identity.json") and p != os.path.join(dev, "identity.json"))]
+bad = [p for p in paths if "/hw2/" in p or (p.endswith("identity.json") and os.path.realpath(p) != os.path.realpath(os.path.join(dev, "identity.json")))]
 assert not bad, "lock inputs reference unit data: %s" % bad
 assert lock["inputs"]["lockdown"] is None and lock["inputs"]["stash"] is None
 print(lock["identity"]["die_id"], "activated" if lock["inputs"]["activation_hook"] else "itunes")
@@ -74,7 +74,7 @@ if [ -f "$DEV/nor.bin" ]; then
 fi
 
 for n in 1 2; do
-    flags=(--nand-overlay "$DEV/nand" --overlay "$OUT/overlay" --kboot "$DEV/kboot.bin"
+    flags=(--nand-overlay "$DEV/nand" --overlay "$OUT/overlay" --device "$DEV"
            --die-id "$DIE_ID" ${NOR_FLAGS[@]+"${NOR_FLAGS[@]}"} ${PKG_FLAGS[@]+"${PKG_FLAGS[@]}"} "${SCREEN_FLAGS[@]}" --shot "$OUT/boot$n.png" --powerdown --no-rescan --seconds 240)
     if timeout 300 python3 "$ROOT/tests/ipad1/boot-smoke.py" "${flags[@]}" > "$OUT/boot$n.txt" 2>&1; then
         echo "PASS boot $n: $WHAT, clean power-off; look at $OUT/boot$n.png"
