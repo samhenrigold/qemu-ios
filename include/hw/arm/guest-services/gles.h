@@ -361,6 +361,13 @@ typedef struct __attribute__((packed)) {
 #define GLES_SURFACE_RGB565             0x4c353635  /* 'L565' */
 /* 8 bits of alpha per pixel: CoreAnimation's shadow masks (a popover's, a layer's shadowPath). */
 #define GLES_SURFACE_A8                 0x41303038  /* 'A008' */
+/* The rest of what QuartzCore and IOSurface name (immediates in every firmware from 5F138
+ * to 8C148): 8-bit luminance, the two packed 16-bit RGBA orders and the 32-bit orders. */
+#define GLES_SURFACE_L8                 0x4c303038  /* 'L008' */
+#define GLES_SURFACE_RGBA4444           0x34343434  /* '4444' */
+#define GLES_SURFACE_RGBA5551           0x31353535  /* '1555' */
+#define GLES_SURFACE_ARGB32             0x41524742  /* 'ARGB' */
+#define GLES_SURFACE_ABGR32             0x41424752  /* 'ABGR' */
 
 #ifndef OUT_OF_TREE_BUILD
 int64_t qc_handle_gles(CPUState *cpu, qc_gles_args_t *a);
@@ -373,6 +380,16 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
 void gles_host_stats(uint64_t *draws, uint64_t *presents);
 void gles_host_reset(void);
 int gles_host_context_count(void);
+/* Every refusal the bridge makes, by name ("surface:A008", "teximage:0x1906/0x8033",
+ * "slot:807"), counted per call and logged once; a guest shim reports its own through
+ * GLES_OP_LOG as "[gles-reject] NAME COUNT". True the first time a name is seen, so the
+ * caller can add detail to the log. */
+bool gles_host_refuse(const char *fmt, ...) G_GNUC_PRINTF(1, 2);
+/* "NAME\tCOUNT\n" per name, sorted: the machine's gles-rejects property. Caller frees. */
+char *gles_host_rejects(void);
+/* gles-debug=on: a refused texture or surface samples magenta and a refused draw paints
+ * the viewport magenta, so a screenshot shows the gap; off, the least-bad fallback stays. */
+void gles_host_set_debug(bool on);
 #endif
 
 #endif /* HW_ARM_GUEST_SERVICES_GLES_H */

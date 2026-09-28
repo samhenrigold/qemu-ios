@@ -68,7 +68,7 @@ def main():
     os.makedirs(out + "/frames")
     import ipad1_boot
     a.device = dev          # boot DEVICE's own iBoot, NOR and catalog keys, not ipad1_boot's default device
-    machine = "ipad1,%s,nand=%s/nand,nand-overlay=%s/overlay" % (
+    machine = "ipad1,%s,nand=%s/nand,nand-overlay=%s/overlay,gles-debug=on" % (
         ipad1_boot.boot_options(a, out), dev, out)
     sock, serial = "/tmp/ipad1-gltest-%d.qmp" % os.getpid(), out + "/serial.log"
     itqmp.W, itqmp.H = 1024, 768
@@ -123,6 +123,10 @@ def main():
         tc = subprocess.run([sys.executable, os.path.join(HERE, "tearcheck.py"), "--analyze", out + "/frames"],
                             capture_output=True, text=True)
         results["tearcheck"] = (tc.stdout.strip().splitlines() or ["(no output)"])[-3:]
+        # Everything the bridge refused since boot, host and shim sides (the fixture's scene is
+        # magenta itself, so the counters are the signal here, not gles-debug's paint).
+        results["rejects"] = itqmp.gles_rejects(q)
+        ok &= not results["rejects"]
     finally:
         if q:
             try:
