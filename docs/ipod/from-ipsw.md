@@ -103,8 +103,8 @@ writer, 0x0ff086b8, computes the same). The generator wrote zeros; 3.1.3 never c
 The kernel is based at VA 0x80000000 (3.x: 0xC0000000), and iBoot builds boot_args at 0x08825000, past
 the late boot-args scan's first 8 MiB. The scan accepts either base and covers 16 MiB
 (hw/arm/ipod_touch_2g.c `boot_args_signature`); `imgtools/klog.py` reads the msgbuf with either base.
-The early literal redirect does not recognise this iBoot, so there is no kernel serial console; read the
-log with `klog.py`. The kernel starts every driver, including `AppleS5L8720XFMSS::start: sequences
+The early command line now reaches it too (see "Remaining emulator compatibility behavior"), so
+AMFI's flags and the serial console are in effect; `klog.py` reads the msgbuf either way. The kernel starts every driver, including `AppleS5L8720XFMSS::start: sequences
 allocated: AppleS5L8720xFMSSScripts-9`, then waits forever for `IOMedia` Partition ID 1 with the Apple logo
 up. Its NAND stack prints nothing and starts one program (0x087cc250) and no page reads.
 
@@ -154,9 +154,11 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 
 ### Remaining emulator compatibility behavior
 
-- `ipod_touch_inject_boot_args` (hw/arm/ipod_touch_2g.c:1511) locates a unique 24-byte handoff pattern, decodes its empty-string literal, and skips
-  otherwise ("unknown iBoot; early argument injection skipped", seen on 8C148); the late boot-args write
-  finds `boot_args` by signature on any build.
+- `ipod_touch_inject_boot_args` (hw/arm/ipod_touch_2g.c) finds iBoot's restore command line
+  (`rd=md0 nand-enable-reformat=1 -progress`), its single literal, and redirects the empty-string
+  normal-boot literal in the word before it, only if Thumb code loads that word (7E18 0x0ff11b28,
+  8C148 0x0ff0a190); anything else is skipped ("unknown iBoot"). The late boot-args write
+  finds `boot_args` by signature (kernel base 0xC0000000 or 0x80000000) on any build.
 - The obsolete fixed-address logo thunk is removed along with the DeviceTree thunk.
 - The research-only IT_AMFI_ALLOW_TASKPORT kernel patch and its address overrides
   have been removed; guest integration uses the existing boot-args and AppSync path.
