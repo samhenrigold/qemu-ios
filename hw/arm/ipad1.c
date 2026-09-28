@@ -763,6 +763,9 @@ static void ipad1_init(MachineState *machine)
         IPodTouchSDIOState *card = IPOD_TOUCH_SDIO(qdev_new(TYPE_IPOD_TOUCH_SDIO));
 
         ipod_touch_sdio_set_chip(card, &bcm4329);
+        /* qom-set /machine wifi-bssid aa:bb:..: a new access point for
+         * locationd, which caches a position per BSSID (location.md). */
+        object_property_add_alias(OBJECT(machine), "wifi-bssid", OBJECT(card), "bssid");
         card->card_present = true;
         sysbus_realize_and_unref(SYS_BUS_DEVICE(card), &error_fatal);
         if (!qemu_find_netdev("wifi0")) {

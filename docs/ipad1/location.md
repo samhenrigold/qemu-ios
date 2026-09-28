@@ -145,7 +145,8 @@ address the app's itwebproxy guestfwd already occupies; nothing is seeded into t
 image's plists. locationd is already running by then (root, OnDemand false), reads
 the URL once at start and rewrites its whole preferences file from memory (posting
 its `com.apple.locationd/Prefs` notification does not make it pick the URL up), so
-it_prefs unloads its job around the write and loads it again. itwebproxy answers
+it_prefs unloads its job around the write and loads it again (it also restarts it
+once Wi-Fi is up; see the boot race below). itwebproxy answers
 `/clls/wloc` itself (`it_location_response`) **in every proxy mode, including off**,
 so location doesn't depend on the Proxy feature or any CA.
 
@@ -180,9 +181,25 @@ Known limits:
 
 - **locationd caches a position per BSSID** (its wifis database) and only asks
   about unknown access points, so changing CONFIG.location while a guest runs does
-  not move an already-placed dot; a fresh boot on a fresh overlay does. The fix is
-  host-side too: give the fake AP a BSSID derived from the configured position (the
-  SDIO Wi-Fi model), so a new position is a new, unknown AP. Not done yet.
+  not move an already-placed dot. The SDIO model's BSSID is the `bssid` property
+  (`qom-set /machine wifi-bssid 02:00:5e:10:12:34`, migrated when not the default):
+  set a new one with a new position and locationd sees a new, unknown AP (tested:
+  a changed BSSID triggers a fresh `/clls/wloc` request). The app doesn't drive it yet.
+- **Boot race, fixed (it_prefs).** locationd starts at boot, before configd powers
+  the BCM4329, and on a fast sealed boot it usually never scans for Wi-Fi at all
+  that session (an SDIO trace shows zero `iscan` requests on the failing boots, 18 on
+  the good ones), so Maps said "Your location could not be determined" on most
+  boots. Restarting locationd was not the cause: with it_prefs changed to leave
+  locationd alone, 12 of 22 sealed-store boots still failed. it_prefs now waits for
+  en0 to get an address, then restarts locationd once (writing any stale setting
+  while it is down) and logs `... com.apple.locationd.plist reloaded (Wi-Fi up)`.
+  With that: 4/4 fresh clones and 5/5 consecutive boots of one overlay located.
+- **The permission prompt shows on the first two uses**, then no more (measured on
+  one overlay: boots 1 and 2 prompt, 3-5 don't). locationd keeps client
+  authorisation in memory and writes `clients-b.plist` only when it exits cleanly
+  ("IoManager Shutdown Sync"); QEMU is killed, never shut down, so that file is
+  never written (a 0-byte `.temp` is all that lands) and only the `KnownClients`
+  key in its preferences survives. A clean guest shutdown would keep it.
 - Compass mode shows the "Compass Interference" figure-8 prompt: the heading is
   right but locationd never considers the magnetometer calibrated (headingAccuracy
   -1), because a field that never changes with the pose looks uncalibrated. Not done.
