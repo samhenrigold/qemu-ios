@@ -26,6 +26,7 @@
 #ifndef GLI_NO_BATCH             /* -DGLI_NO_BATCH: one trap per call, for A/B timing */
 #define GLES_BATCH
 #endif
+#define GLISHIM                  /* mbxshim.c: the host-call code and handlers only, not its MBX table */
 #include "../it-gles/mbxshim.c"
 #include "gli_fwd.h"
 

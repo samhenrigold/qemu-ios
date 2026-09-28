@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Generate gli_fwd.h for glishim.c from a firmware's docs/ipad1/gli-dispatch-<BUILD>.tsv.
+"""Generate gli_fwd.h for glishim.c (iPad) or mbxshim.c (iPod) from a firmware's
+docs/ipad1/ or docs/ipod/gli-dispatch-<BUILD>.tsv.
 
-One entry per dispatch slot (826 on 3.2.x, 841 on 4.2.1). A slot OpenGLES exports a trampoline
+One entry per dispatch slot (822 on 3.1.3, 826 on 3.2.x, 841 on 4.2.1). A slot OpenGLES exports a trampoline
 for, or that the real GLEngine fills for ES1 or ES2, gets a forwarder that
 sends its arguments to the host under the 3.1.3 WIRE slot number (the TSV's
 slot_3.1.3 column; the host decoder keys on those). Every other slot, and any
@@ -104,8 +105,11 @@ def check(rows):
     # ES2 core sits below 761 with identical numbering.
     assert by["glUseProgram"][2] == 600 and by["glUniformMatrix2fv"][3] == 4
     assert by["glVertexAttribPointer"][2] is not None
-    # New in 3.2: no wire number, so never forwarded.
-    assert by["glFramebufferParameteriAPPLE"][2] is None
+    # New in 3.2: no wire number, so never forwarded. 3.1.3 (the wire layout): every slot is its own.
+    if N_SLOTS > 822:
+        assert by["glFramebufferParameteriAPPLE"][2] is None
+    else:
+        assert SLOT313 == list(range(N_SLOTS))
     for n in ("glEnable", "glBlendFunc", "glBindTexture", "glUniform4f", "glViewport", "glTranslatef",
               "glClearColor", "glUseProgram"):
         assert BATCH[by[n][0]], n

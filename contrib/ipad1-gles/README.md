@@ -13,7 +13,9 @@ One engine per dispatch layout: `docs/ipad1/gli-dispatch-<BUILD>.tsv` (7B500's a
 (`--verify CACHE TSV` checks one). `imgtools/ipad1_rootfs.py build` installs the engine whose TSV matches
 the firmware's `__GLIFunctionDispatchRec`. On 4.x it also installs the gld plugin and dyld's
 `enable-dylibs-to-override-cache` switch (GLEngine is in the 4.x shared cache). The 4.x contract and
-design are in `docs/ipad1/ios4.md`, "GL CoreAnimation on 4.2.1".
+design are in `docs/ipad1/ios4.md`, "GL CoreAnimation on 4.2.1". The iPod's MBX shim uses the same two
+generators (`docs/ipod/gli-dispatch-<BUILD>.tsv` -> `contrib/it-gles/MBXGLEngine-<BUILD>`; `docs/ipod/from-ipsw.md`,
+"8C148: GL").
 
 | file | role |
 |---|---|

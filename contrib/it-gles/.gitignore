@@ -11,3 +11,5 @@ sblaunch
 GLTest
 MBXGLEngine
 GLTest.app/
+MBXGLEngine-*
+gli_fwd.h
