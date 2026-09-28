@@ -34,6 +34,12 @@ link6 -execute "$OUT/it_cctest" "$OUT/it_cctest.o"
 rm -f "$OUT/it_cctest.o"
 "${LDID:-ldid}" -S "$OUT/it_cctest"
 file "$OUT/it_cctest"
+# it_gltest: the GL fixture job (contrib/it-gltest), baked only by `bake --gl-test`.
+cc6 "$HERE/../it-gltest/it_gltest.c" "$OUT/it_gltest.o"
+link6 -execute "$OUT/it_gltest" "$OUT/it_gltest.o"
+rm -f "$OUT/it_gltest.o"
+"${LDID:-ldid}" -S "$OUT/it_gltest"
+file "$OUT/it_gltest"
 # it_msmquiet.dylib: DYLD_INSERT_LIBRARIES into MobileStorageMounter (see its source).
 # CF symbols bind flat at load time: the 3.2 SDK's CF stub won't link under modern ld64.
 cc6 "$HERE/../it-msmquiet/it_msmquiet.c" "$OUT/it_msmquiet.o"

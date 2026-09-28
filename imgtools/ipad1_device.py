@@ -97,7 +97,7 @@ def create(a):
     vols, tools = os.path.join(work, "pristine"), os.path.join(ROOT, "build/ipad1-guest")
     step("bake --seal" + (" + activation hook" if hook else ""),
          [sys.executable, f"{HERE}/ipad1_rootfs.py", "bake", vols, "--tools", tools, "--seal"]
-         + (["--activation-hook", hook] if hook else []))
+         + (["--activation-hook", hook] if hook else []) + (["--gl-test"] if a.gl_test else []))
     nand = os.path.join(out, "nand")
     step("NAND store", [sys.executable, f"{HERE}/ipad1_nand.py", "build", "--geometry", geometry, "--mbr", mbr,
                         "--kernelcache", os.path.join(dec, "kernelcache.mach"), "--system", f"{vols}/system.img",
@@ -130,7 +130,10 @@ def create(a):
                            capture_output=True, text=True).stdout.strip()
     baked = sorted(os.listdir(tools))
     built = {"guest tools": {n: sha(os.path.join(tools, n)) for n in baked},
-             "GLEngine": sha(os.path.join(ROOT, "contrib/ipad1-gles/GLEngine")) if opt.get("ca_ogl", True) else None,
+             "GLEngine": {n: sha(os.path.join(ROOT, "contrib/ipad1-gles", n)) for n in sorted(os.listdir(
+                 os.path.join(ROOT, "contrib/ipad1-gles"))) if n.startswith("GLEngine-")} if opt.get("ca_ogl", True) else None,
+             "gld plugin": sha(os.path.join(ROOT, "contrib/ipad1-gles/GLRendererFloatQEMU.bundle/GLRendererFloatQEMU"))
+             if opt.get("ca_ogl", True) else None,
              "libappsync.dylib": sha(os.path.join(ROOT, "build/appsync/libappsync.dylib")) if opt.get("appsync") else None}
     lock = {
         "format": 1, "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -145,6 +148,7 @@ def create(a):
                    "identity": ident_path,
                    "guest_tools": tools, "lockdown": None, "stash": None,
                    "activation_hook": {"path": hook, "sha256": sha(hook)} if hook else None},
+        "gl_test": a.gl_test,
         "identity": {"seed": seed, "udid": ident["udid"], "die_id": die_id, "sha256": sha(ident_path)},
         "outputs": {"kboot": {"path": kboot, "sha256": sha(kboot)},
                     "nand": {"path": nand, "files": {n: sha(os.path.join(nand, n)) for n in sorted(os.listdir(nand))}},
@@ -166,6 +170,7 @@ def main():
     c.add_argument("--seed", help="override the manifest's identity.seed")
     c.add_argument("--activation-hook", metavar="SCRIPT", help="override the manifest's activation.hook")
     c.add_argument("--qemu", default=os.path.join(ROOT, "build/qemu-system-arm"))
+    c.add_argument("--gl-test", action="store_true", help="bake the GL fixture job (tests/ipad1/gltest.py); a test device")
     c.add_argument("--keep-work", action="store_true", help="keep work/ (volumes, MBR, an unsealed store clone)")
     a = ap.parse_args()
     create(a)

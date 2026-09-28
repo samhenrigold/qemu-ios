@@ -8,7 +8,8 @@
  * the marshalling, the hand-written ES1 thunks, and the CoreAnimation drawable
  * handling are all mbxshim.c, included below. The ABI is in
  * docs/ipad1/userland-gl-display.md section 3; the slot table is
- * docs/ipad1/gli-dispatch-7B500.tsv, turned into gli_fwd.h by gligen.py.
+ * docs/ipad1/gli-dispatch-<BUILD>.tsv, turned into gli_fwd.h by gligen.py
+ * (one GLEngine-<BUILD> per dispatch layout; 7B500's also serves 7B367).
  *
  * What differs from the MBX path:
  *   - 826 dispatch slots, not 822. 3.2 inserted three at 761, so the 3.1.3
@@ -151,14 +152,14 @@ static int gli_getUniformLocation(void *gc, unsigned p, unsigned name)
     { guest_fault_read(name, slen((const char *)(unsigned long)name) + 1);
       return (int)qc(GLI_SLOT_glGetUniformLocation, gc, 2, A(p, name)); }
 
-/* 826 slots in 3.2 numbering. Hand-written mbxshim thunks win, then the
- * generated forwarders, then the log-once stubs. */
+/* GLI_N_SLOTS slots in this firmware's numbering. Hand-written mbxshim thunks
+ * (3.1.3 numbering, gli_slot313) win, then the generated forwarders, then the
+ * log-once stubs. */
 static void gli_fill(void **front, void **back, void *const *mbx)
 {
     unsigned i;
     for (i = 0; i < GLI_N_SLOTS; i++) {
-        /* 3.1.3 slot i >= 761 is 3.2 slot i + 3; 761..763 are new. */
-        int old = i < 761 ? (int)i : i < 764 ? -1 : (int)i - 3;
+        int old = gli_slot313[i];
         void *fn = gli_fwd_table[i];
         if (old >= 0 && old < GLES_N_SLOTS && mbx[old] != gles_default_table[old])
             fn = mbx[old];
@@ -175,11 +176,50 @@ static void gli_fill(void **front, void **back, void *const *mbx)
 
 /* ------------------------------------------------------------ gli* ABI --- */
 
+/*
+ * 4.x: EAGL creates a sharegroup only through libGFXShared's
+ * gfxCreateSharedState, which needs a registered gld plugin and device for the
+ * pixel format's renderer ID. The stock GLEngine registers them here, passing
+ * EAGL's arguments on to gfxInitializeLibrary with its IOSurface callback
+ * inserted, then gfxPluginConnectAll; so does this one, and
+ * gfxPluginConnectAll finds gldshim (GLRendererFloatQEMU.bundle, see
+ * gldshim.c). 3.2.x's OpenGLES never loads libGFXShared, so the lookups fail
+ * there and nothing changes. gli_device is gldshim's device ID, 0 until it is
+ * registered: then pixel formats stay unaccelerated and 4.x EAGL makes no
+ * context (CA stays in software), and the log says why.
+ */
+#ifndef RTLD_DEFAULT
+#define RTLD_DEFAULT ((void *)-2)
+#endif
+#define GLD_RENDERER 0x7000                             /* gldshim.c's */
+#define GLD_DEVICE (1u << 24 | 0x20000 | GLD_RENDERER)  /* libGFXShared: first device of that plugin */
+static unsigned gli_device;
+static int gli_eagl4;                   /* 4.x EAGL: libGFXShared loaded */
+static void *gli_no_surface(void) { return 0; }
+
 void gliInitializeLibrary(const void *svcs, unsigned z, unsigned n, void *cb,
                           void *u, void *io, void *init)
 {
-    (void)svcs; (void)z; (void)n; (void)cb; (void)u; (void)io; (void)init;
+    void (*init_lib)(const void *, unsigned, unsigned, void *, void *, void *, void *) =
+        dlsym(RTLD_DEFAULT, "gfxInitializeLibrary");
+    void (*connect)(void) = dlsym(RTLD_DEFAULT, "gfxPluginConnectAll");
+    void *(*plugin)(unsigned) = dlsym(RTLD_DEFAULT, "gfxGetPluginWithDriverID");
+    void *(*device)(unsigned) = dlsym(RTLD_DEFAULT, "gfxGetDeviceWithDeviceID");
+    (void)u;
     w("[glishim] gliInitializeLibrary\n");
+    if (!init_lib) return;                   /* 3.2.x */
+    gli_eagl4 = 1;
+    if (!connect || !plugin || !device) {
+        w("[glishim] libGFXShared lacks gfxPluginConnectAll/gfxGet*WithID: no GL\n");
+        return;
+    }
+    init_lib(svcs, z, n, cb, (void *)gli_no_surface, io, init);
+    connect();
+    if (plugin(GLD_DEVICE & 0xffff00) && device(GLD_DEVICE & ~0xffu)) {
+        gli_device = GLD_DEVICE;
+        w("[glishim] gld plugin registered, device "); wx(GLD_DEVICE); w("\n");
+    } else
+        w("[glishim] libGFXShared registered no gldshim device (GLRendererFloatQEMU.bundle missing?): no GL\n");
 }
 
 void gliTerminateLibrary(void) {}
@@ -206,8 +246,9 @@ int gliChoosePixelFormat(GLIPixelFormat **out, const int *attribs)
     if (!out) return 10014;
     GLIPixelFormat *pf = calloc(1, sizeof(*pf));
     if (!pf) return 10014;
-    pf->renderer = 0x20000 | 0x2000;
-    pf->flags = getenv("GLI_ACCELERATED") ? GLI_PF_ACCELERATED : 0;
+    pf->renderer = gli_device ? gli_device : 0x20000 | 0x2000;
+    /* 4.x EAGL only loads accelerated formats */
+    pf->flags = gli_device || getenv("GLI_ACCELERATED") ? GLI_PF_ACCELERATED : 0;
     *out = pf;
     return 0;
 }
@@ -226,21 +267,19 @@ int gliDestroyRendererInfo(void) { return 0; }
  * with share == that one. So a NULL share makes a host sharegroup, and every
  * context created against it joins that group. api_bits: 4 = ES1, 8 = ES2.
  */
-int gliCreateContext(void **out, GLIPixelFormat *pf, void *share,
-                     void **front, void **back, unsigned api_bits)
+/* A context on host sharegroup sg (a new one if 0; then owns = 1). api_bits 4
+ * = ES1, 8 = ES2; if both or neither, the sharegroup's other contexts' API. */
+static int gli_new_context(void **out, void *sg, int owns, int api_else,
+                           void **front, void **back, unsigned api_bits)
 {
     void *mbx[GLES_N_SLOTS];
-    GuestGC *sg = share ? ((GuestGC *)share)->sg : 0;
     GuestGC *gc = 0;
-    int owns = 0;
-    (void)pf;
 
     if (!out || !front) return 10014;
     if (!sg) {
         void *p = 0;
         if (!GLESCreateSharegroup(&p)) return 10015;
         sg = p;
-        owns = 1;
     }
     if (!GLESCreateGC(sg, mbx, 0, (void **)&gc)) {
         if (owns) GLESDestroySharegroup(sg);
@@ -249,13 +288,63 @@ int gliCreateContext(void **out, GLIPixelFormat *pf, void *share,
     gc->sg = sg;
     gc->owns_sg = owns;
     gc->api = (api_bits & 8) && !(api_bits & 4) ? 2
-            : (api_bits & 4) && !(api_bits & 8) ? 1
-            : share ? ((GuestGC *)share)->api : 1;
+            : (api_bits & 4) && !(api_bits & 8) ? 1 : api_else;
     gli_fill(front, back, mbx);
     *out = gc;
     w("[glishim] gliCreateContext api="); wd(gc->api);
-    w(share ? " shared\n" : " root\n");
     return 0;
+}
+
+int gliCreateContext(void **out, GLIPixelFormat *pf, void *share,
+                     void **front, void **back, unsigned api_bits)
+{
+    GuestGC *sh = share;
+    int r = gli_new_context(out, sh ? sh->sg : 0, !sh, sh ? sh->api : 1, front, back, api_bits);
+    (void)pf;
+    if (!r) w(share ? " shared\n" : " root\n");
+    return r;
+}
+
+/*
+ * 4.x's EAGL creates every context of a GLI sharegroup through this one:
+ * pf is the pixel format EAGLSharegroup embeds (_EAGLSharegroupPrivate + 0xc),
+ * so its address identifies the group; shared is its gfxCreateSharedState
+ * object, libGFXShared state this engine never sets up. The group's contexts
+ * share one host sharegroup, released with the last of them (owns_sg = 2).
+ */
+#define GLI_GROUPS 16
+static struct { const void *key; void *sg; int refs, api; } gli_groups[GLI_GROUPS];
+
+int gliCreateContextWithShared(void **out, GLIPixelFormat *pf, void *shared,
+                               void **front, void **back, unsigned api_bits)
+{
+    int i, free_ = -1, r;
+    (void)shared;
+    for (i = 0; i < GLI_GROUPS; i++) {
+        if (gli_groups[i].refs && gli_groups[i].key == pf) break;
+        if (!gli_groups[i].refs && free_ < 0) free_ = i;
+    }
+    if (i == GLI_GROUPS && (i = free_) < 0) return 10015;
+    r = gli_new_context(out, gli_groups[i].refs ? gli_groups[i].sg : 0, 2,
+                        gli_groups[i].refs ? gli_groups[i].api : 1, front, back, api_bits);
+    if (r) return r;
+    if (!gli_groups[i].refs) {
+        gli_groups[i].key = pf;
+        gli_groups[i].sg = ((GuestGC *)*out)->sg;
+        gli_groups[i].api = ((GuestGC *)*out)->api;
+    }
+    gli_groups[i].refs++;
+    w(gli_groups[i].refs > 1 ? " group, shared\n" : " group, root\n");
+    return 0;
+}
+
+/* Drop one context's hold on its group; nonzero when it was the last. */
+static int gli_group_put(void *sg)
+{
+    for (int i = 0; i < GLI_GROUPS; i++)
+        if (gli_groups[i].refs && gli_groups[i].sg == sg)
+            return --gli_groups[i].refs == 0;
+    return 1;
 }
 
 /* IOSurfaceLookup's reference to each view's attached surface. It has to be
@@ -284,7 +373,7 @@ int gliDestroyContext(void *ctx)
     owns = gc->owns_sg;
     if (v) { v->drawable = 0; gli_own(v, 0); }
     GLESDestroyGC(gc);
-    if (owns) GLESDestroySharegroup(sg);
+    if (owns == 1 || (owns == 2 && gli_group_put(sg))) GLESDestroySharegroup(sg);
     return 0;
 }
 
@@ -334,7 +423,7 @@ int gliSetInteger(void *gc, unsigned pname, const int *v)
 
     static unsigned logged;
     if (!gc) return 10014;
-    if (logged++ < 16) {
+    if (logged++ < 64) {
         w("[glishim] gliSetInteger "); wx(pname);
         if (v) { w(" "); wx((unsigned)v[0]); w(" "); wx((unsigned)v[1]); }
         w("\n");
@@ -395,27 +484,101 @@ int gliGetInteger(void *gc, unsigned pname, int *v)
  * then binds the layer again; CA refuses that bind while the layer still
  * belongs to the old binding, so an app that rebuilds its framebuffer (Super
  * Monkey Ball, on its rotate to landscape) got NO and presented nowhere. */
-void gliBindViewES(void *gc, void *drawable, unsigned char retained, int a, int b)
+/*
+ * 4.x's EAGL leaves the drawable to the engine: -renderbufferStorage:fromDrawable:
+ * only calls gliBindViewES, and the stock engine binds CA's drawable itself
+ * (drawable->bind(fourcc, block), the first nextBuffer, then its own 0x38E
+ * attach of that surface as GL_RENDERBUFFER), as mbxshim's GLESBindView does
+ * for 3.1.3. The 4.x block has a third callback, preflight(ctx, a, b, c),
+ * which the stock engine answers with gliGetInteger(0x25B, {a, b, c})[0]; we
+ * leave a as it is. 3.2.x's EAGL did all of this before calling here.
+ */
+static unsigned gli_preflight(void *ctx, unsigned a, unsigned b, unsigned c)
+{
+    (void)ctx; (void)b; (void)c;
+    return a;
+}
+
+static int gli_bind_view4(void *gc, void *drawable, unsigned ifmt)
+{
+    void **vt = drawable;
+    ca_view_t *v = ca_view_for_gc(gc, 1);
+    int rgb565 = ifmt == GL_RGB565_OES, a[9];
+    unsigned flags = 0, t;
+    void *s;
+
+    if (!v) return 0;
+    ca_detach_view(v);
+    v->gc = gc;
+    v->block[0] = v->block;             /* createBuffer's arg0: finds this view */
+    v->block[1] = (void *)ca_create_buffer;
+    v->block[2] = (void *)ca_destroy_buffer;
+    v->block[3] = (void *)gli_preflight;
+    v->block[4] = v->block[6] = v->block[7] = 0;
+    v->block[5] = gc;
+    if (!((ca_bind_fn)vt[1])(drawable, rgb565 ? CA_FOURCC_565L : CA_FOURCC_BGRA, v->block)) {
+        w("[glishim] drawable->bind failed\n");
+        return 0;
+    }
+    v->drawable = drawable;
+    if (*(int *)drawable > 1) flags = ((unsigned (*)(void *))vt[6])(drawable) & ~8u;
+    if (!(s = ((ca_next_fn)vt[3])(drawable))) {
+        ((ca_unbind_fn)vt[2])(drawable);
+        v->drawable = 0;
+        w("[glishim] drawable->nextBuffer gave no surface\n");
+        return 0;
+    }
+    gli_iosurface_init();
+    if (!p_IOSurfaceGetID || !p_IOSurfaceGetWidth || !p_IOSurfaceGetHeight) return 0;
+    a[0] = (int)p_IOSurfaceGetID(s);
+    a[1] = GL_RENDERBUFFER;
+    a[2] = (int)ifmt;
+    a[3] = (int)p_IOSurfaceGetWidth(s);
+    a[4] = (int)p_IOSurfaceGetHeight(s);
+    if (flags & 4) { t = a[3]; a[3] = a[4]; a[4] = (int)t; }
+    a[5] = rgb565 ? 0x1907 : 0x80E1;    /* GL_RGB / GL_BGRA */
+    a[6] = rgb565 ? 0x8363 : 0x8367;    /* 5_6_5 / 8_8_8_8_REV */
+    a[7] = 0;
+    a[8] = (int)flags;
+    w("[glishim] bound CA drawable, surface "); wd((unsigned)a[3]); w("x"); wd((unsigned)a[4]); w("\n");
+    return gliSetInteger(gc, 0x38E, a) == 0;
+}
+
+/* Nonzero on success: 4.x EAGL returns it from -renderbufferStorage:fromDrawable:. */
+int gliBindViewES(void *gc, void *drawable, unsigned char retained, int a, int b)
 {
     ca_view_t *v = ca_view_for_gc(gc, drawable != 0);
-    (void)retained; (void)a; (void)b;
+    (void)retained; (void)b;
     w("[glishim] gliBindViewES drawable="); wx((unsigned long)drawable); w("\n");
-    if (!v) return;
+    if (!v) return !drawable;
     if (!drawable) {
         ca_view_t empty = {0};
         void **vt = v->drawable;
         if (vt && vt[2]) ((ca_unbind_fn)vt[2])(vt);
         gli_own(v, 0);
         *v = empty;
-        return;
+        return 1;
     }
+    if (gli_eagl4) return gli_bind_view4(gc, drawable, (unsigned)a);
     v->drawable = drawable;
+    return 1;
 }
 
 unsigned char gliPresentViewES(void *gc)
 {
     static int logged;
+    ca_view_t *v = ca_view_for_gc(gc, 0);
     if (!logged++) w("[glishim] gliPresentViewES\n");
+    /* The host writes the frame with a debug write, which cannot fault pages
+     * in, and a buffer CA has just allocated may have none mapped yet. Take
+     * this frame's buffer now and touch every page of it (GLESPresentView then
+     * finds it already taken). */
+    if (v && ca_next_buffer(v) && v->base) {
+        volatile unsigned char *p = (volatile unsigned char *)(unsigned long)v->base;
+        unsigned i, n = v->stride * v->height;
+        for (i = 0; i < n; i += 4096) p[i] = p[i];
+        if (n) p[n - 1] = p[n - 1];
+    }
     return GLESPresentView(gc, 0) != 0;
 }
 
