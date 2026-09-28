@@ -1342,7 +1342,7 @@ def check_gles(cfg, procs, dev, r):
     samples, plus a scan of the shim's own unimplemented-slot log.
     """
     app = os.path.join(GLES_DIR, "GLTest.app")
-    shim = os.path.join(GLES_DIR, "MBXGLEngine")
+    shim = os.path.join(GLES_DIR, "MBXGLEngine-%s" % cfg.gli if getattr(cfg, "gli", None) else "MBXGLEngine")
     harness = not os.path.exists(app)
     bundle_id = "com.qemuios.harness" if harness else GLES_BUNDLE_ID
     prerequisites = [HARNESS_IPA if harness else app]
@@ -1748,7 +1748,9 @@ def main():
         # machine options the device was made for (device.lock.json "machine", e.g. aes-uid=engine)
         lock = os.path.join(cfg.device, "device.lock.json")
         if os.path.exists(lock):
-            cfg.device_machine = json.load(open(lock)).get("machine") or {}
+            lockd = json.load(open(lock))
+            cfg.device_machine = lockd.get("machine") or {}
+            cfg.gli = (lockd.get("derived") or {}).get("gli")     # --stage-gles-shim: that layout's engine
     # NAND, NOR and iBoot are one set and cannot be mixed: nand-canonical is a
     # 2.1.1 image, and against 3.1.3's iBoot its FTL will not even open --
     # "NAND initialisation failed due to format mismatch", "root filesystem
