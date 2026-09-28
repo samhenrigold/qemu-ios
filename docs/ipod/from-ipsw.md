@@ -20,7 +20,7 @@ tests/ipod/regress.py --qemu build/qemu-system-arm --device OUT --checks boot
 | build | pipeline | furthest point | blocker |
 |---|---|---|---|
 | 3.1.3 7E18 | complete | SpringBoard up, GL CA through the shim, "Connect to iTunes" (lit, see below) | activation |
-| 4.2.1 8C148 | complete (NOR, NAND, GLES check, AppSync, gid-blobs) | iBoot-931.71.16 runs and reads the NOR; `[NAND] findNandInfo: No NAND Detected`, recovery mode | 4.x NAND identification |
+| 4.2.1 8C148 | complete (NOR, NAND, GLES check, AppSync, gid-blobs, activation hook) | root mounted through AppleNANDLegacyFTL, launchd runs its daemons; keybagd finds no system keybag and reboots into restore mode (iBoot recovery screen) | data protection: system keybag + formatted effaceable NOR |
 | 2.1.1 5F138 | complete (no AppSync, GLES shim or modern guest helpers) | SecureROM → LLB → iBoot → kernel → stock SpringBoard, Connect to iTunes | activation; optional helpers need a 2.x-compatible build |
 
 ### P1, 7E18: activation
@@ -55,11 +55,83 @@ exited on 4.2.1's first NOR image. The new `gid-blobs=FILE` machine option (the 
 synthetic serial and stops at `[NAND] findNandInfo:291 No NAND Detected` / `[FIL:INF] could not find NAND
 config in the new NAND tables` → `root filesystem mount failed` → recovery. The emulated chip ID 0xb614d5ad is
 still in 4.2.1 iBoot's table (0x250e4), but the entries have a new layout (id, 0, geometry... instead of
-id, 0x100000ff, ...). A quick trial of 8-byte `{id, 0}` records per CE in `write_chip_info`
-(hw/arm/ipod_touch_fmss.c:97) changed nothing; that trial was reverted. Next step: trace 4.2.1 iBoot's
-ReadID/findNandInfo over the gdbstub to see what it reads and compares. Estimate: half a day to 2 days, then the kernel's
-own FIL/FTL (xnu-1504 has the 4.x whimory) may need the same, plus whatever else the 4.x kernel touches.
-Activation will block after that, as on 7E18.
+id, 0x100000ff, ...). The chip ID is not the problem; the emulated controller was (below). Activation will block after the
+kernel, as on 7E18.
+
+#### How iBoot probes the NAND (traced: disassembly of both decrypted iBoots + the gdbstub under lldb)
+
+FMSS is a programmable sequencer in front of the FMC NAND controller. The driver writes a program's
+address to 0xC04, the program's inputs to the 0xDxx variables, and starts it with CSCTRL (0xC00) bit 0;
+completion is CSIRQ (0xC0C) bit 0. `ResetAndReadId` (8C148 iBoot 0x0ff0d198, 7E18 0x0ff14e08) runs the
+reset program (8C148 0x25988, 7E18 0x25258: FMCTRL0 all-CE, FMCMD 0xff), then sets D08 = ID buffer,
+D0C = 8 chip enables and runs READ ID (8C148 0x25a60, 7E18 0x25330). READ ID, per CE: FMCTRL0 (0x0) =
+CE bit (bits 1..8) | 0x77001, FMCMD (0x8) = 0x90, one address byte 0 (FMANUM 0x2c, FMADDR0 0xc), FMDNUM
+(0x30) = N-1 data bytes, poll 0x40 bit 1, then store FMDATA to the buffer.
+
+| | 3.1.3 iBoot-636.66.33 | 4.2.1 iBoot-931.71.16 |
+|---|---|---|
+| ID bytes per CE (FMDNUM) | 5 (4), one word from 0x60 | 8 (7), words from 0x60 and 0x64 |
+| record stride, CEs | 4 bytes x 8 | 8 bytes x 8 (buffer 0x80, 16 records) |
+| between D08 write and start | cache flush | `memset(buf, 0, 0x80)`, cache invalidate |
+| page-read program | 0x254a0 | 0x25be8, identical (0x10d0 bytes) |
+| VFL context checksum | verifier is a stub (`return 1`, 0x0ff086b4) | verified (0x0ff1bba2) |
+
+Program instructions are two words, `op<<24 | a<<16 | b`, `imm`: 00 end, 01 `fmc[b]=imm`, 02 `fmc[b]=r[a]`,
+04 `r[a]=reg[b]&imm` (FMC or 0xDxx), 05 `r[a]=imm`, 07 wait for FMC event a, 0b/0c/0d/13 `r[a]=r[b]` or/add/sub/shl
+`imm`, 0e/17 branch to byte offset `imm` if `r[a]` != 0 / == 0, 11 `mem32[r[b]]=r[a]`.
+
+4.2.1's `findNandInfo` (0x0ff025e8) takes the 16 records; a record is a chip unless it is all 0x00 or all
+0xff (0x0ff022b0), all present chips must match (0x0ff0228c compares 4 bytes, a zero byte on either side
+is a wildcard), then it looks the ID up in the new table (stride 0x1c). No valid record: `No NAND Detected`.
+
+Root cause: the model DMAed four 4-byte IDs at the moment the CPU wrote D08. 4.2.1 zeroes the buffer
+after that write, so it saw no chip at all (which is also why the 8-byte-record trial changed nothing).
+Fix (hw/arm/ipod_touch_fmss.c `fmss_run_script`): run the guest's program at start, with FMCMD 0x90
+returning the selected CE's ID from FMDATA; each build's own program lays out its own records. The flash
+is four Hynix dies, ID `ad d5 14 b6` (0xb614d5ad, in both builds' tables), CE 4..7 unpopulated (0). An
+opcode outside the decoded set stops the program (LOG_UNIMP); the page read/write path is still the
+CPU-side model. Result: `[FIL:INF] Found chip id 0xb614d5ad on CS 0..3`.
+
+Next, `[VFL:ERR] CHECK_VFL_CXT_CHECK_SUM_NO_ASSERT(0) failed`: the VFL context carries the word sum
++ 0xaabbccdd at +0x7f8 and the word xor ^ 0xaabbccdd at +0x7fc over its first 0x7f8 bytes (3.1.3's
+writer, 0x0ff086b8, computes the same). The generator wrote zeros; 3.1.3 never checked. Fixed in
+`imgtools/ipod2g_nand.py` `vfl_page`. Then: `VSVFL Register`, `VFL_Open [OK]`, `FTL_Open [OK]`,
+`HFSInitPartition`, `Loading kernel cache`, xnu-1504.58.28 runs.
+
+#### The 4.2.1 kernel
+
+The kernel is based at VA 0x80000000 (3.x: 0xC0000000), and iBoot builds boot_args at 0x08825000, past
+the late boot-args scan's first 8 MiB. The scan accepts either base and covers 16 MiB
+(hw/arm/ipod_touch_2g.c `boot_args_signature`); `imgtools/klog.py` reads the msgbuf with either base.
+The early command line reaches it too (see "Remaining emulator compatibility behavior"), so AMFI's
+flags and the serial console are in effect; without it amfid rejected every re-signed binary
+(`verify_code_directory returned 0x10004005`).
+
+The kernel's NAND stack never read a page: `AppleS5L8720XFMSS` ran its reset program and then slept in
+`IOSleep(10)` (0x807c4218) before READ ID, and never woke (lldb over the gdbstub: the breakpoint after the
+sleep is never hit). xnu-1504 arms timer 4 with START|MANUALUPDATE (0x80068078: `a8 = count; a4 = 3`) and,
+after its FIQ (0x80068024), programs a new deadline only if it is sooner than the running period. The
+timer model treated MANUALUPDATE as one-shot, so after one expiry nothing fired again. MANUALUPDATE only
+latches the buffer; the timer reloads (hw/arm/ipod_touch_timer.c). With that: `[FTL:MSG] VFL_Open/FTL_Open
+[OK]`, `Got boot device = ... AppleNANDLegacyFTL/IOFlashBlockDevice/... Untitled 1@1`, `BSD root: disk0s1`,
+launchd.
+
+#### Data protection (the current blocker)
+
+keybagd's own log, persisted on the data volume: `validateSecureFile: Unable to load
+/private/var//keybags/systembag.kb` → `FATAL KEYBAG ERROR: kb_load` → `Rebooting...` about 27 s in, into
+restore mode, so the next boot stops at iBoot's recovery screen. This is the iPad's blocker
+(docs/ipad1/ios4.md), and the storage is the same kind: the 4.2.1 DT's `nor-flash/effaceable` is
+`effaceable,nor`, so the lockers live in NOR, the keybag on the data volume.
+
+Proposed iPod equivalent of the iPad one-shot (not built): at `create` for 4.x, boot once against the
+device's writable NAND and a writable NOR (`nor-rw`), with the 8C148 restore ramdisk as `md0` and its
+restore DeviceTree (its `secure-root-prefix` = `md` is what lets AppleEffaceableStorage format), run
+`contrib/it-keybag` as the ramdisk's `restored_external` (effaceable sel 3/4, `MKBKeyBagCreateSystem(NULL,
+"/mnt2")`, halt), and keep the resulting `nor.bin` and NAND with the device, as `ipad1_keybag.py` does.
+Unlike the iPad (kboot hands the kernel its ramdisk), the iPod boots through iBoot, so the new part is
+getting iBoot to boot a staged ramdisk with the restore DT; the helper and pipeline carry over. Estimate:
+1-3 days.
 
 ### P3, 5F138: LLB → iBoot
 
@@ -108,9 +180,11 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 
 ### Remaining emulator compatibility behavior
 
-- `ipod_touch_inject_boot_args` (hw/arm/ipod_touch_2g.c:1511) locates a unique 24-byte handoff pattern, decodes its empty-string literal, and skips
-  otherwise ("unknown iBoot; early argument injection skipped", seen on 8C148); the late boot-args write
-  finds `boot_args` by signature on any build.
+- `ipod_touch_inject_boot_args` (hw/arm/ipod_touch_2g.c) finds iBoot's restore command line
+  (`rd=md0 nand-enable-reformat=1 -progress`), its single literal, and redirects the empty-string
+  normal-boot literal in the word before it, only if Thumb code loads that word (7E18 0x0ff11b28,
+  8C148 0x0ff0a190); anything else is skipped ("unknown iBoot"). The late boot-args write
+  finds `boot_args` by signature (kernel base 0xC0000000 or 0x80000000) on any build.
 - The obsolete fixed-address logo thunk is removed along with the DeviceTree thunk.
 - The research-only IT_AMFI_ALLOW_TASKPORT kernel patch and its address overrides
   have been removed; guest integration uses the existing boot-args and AppSync path.

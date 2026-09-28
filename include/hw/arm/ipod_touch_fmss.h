@@ -21,6 +21,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchFMSSState, IPOD_TOUCH_FMSS)
 #define NAND_PAGES_PER_BLOCK 128
 
 #define FMSS__FMCTRL1             0x4
+#define FMSS__CS_SCRIPT           0xC04
 #define FMSS__CS_IRQ              0xC0C
 #define FMSS__CS_IRQMASK          0xC10
 #define FMSS__CS_BUF_RST_OK       0xC64
@@ -45,6 +46,7 @@ typedef struct IPodTouchFMSSState
     uint32_t reg_cs_irq_bit;
     uint32_t reg_cs_ctrl;
     uint32_t reg_cs_irq_mask;
+    uint32_t reg_cs_script;   /* guest PA of the sequencer program (0xC04) */
     QEMUTimer *completion_timer;
     uint32_t reg_cinfo_target_addr;
     uint32_t reg_pages_in_addr;

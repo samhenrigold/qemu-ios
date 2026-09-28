@@ -74,10 +74,15 @@ static void s5l8900_st_tick(void *opaque)
         //fprintf(stderr, "%s: Raising irq\n", __func__);
         qemu_irq_raise(s->irq);
 
-        /* schedule next interrupt */
-        if(!(s->status & TIMER_STATE_MANUALUPDATE)) {
-            s5l8900_st_set_timer(s);
-        }
+        /*
+         * The timer reloads from its count buffer and keeps interrupting until
+         * the guest re-arms or stops it. MANUALUPDATE (bit 1) only latches the
+         * buffer at START; it is not a one-shot mode. xnu-1504 (4.2.1) arms
+         * with START|MANUALUPDATE and, after the FIQ, arms again only for a
+         * deadline sooner than the running period: as a one-shot the timer went
+         * quiet and no timed sleep ever woke (the FMSS driver's IOSleep(10)).
+         */
+        s5l8900_st_set_timer(s);
     } else {
         s->next_planned_tick = 0;
         s->last_tick = 0;

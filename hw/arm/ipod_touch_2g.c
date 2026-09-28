@@ -1046,12 +1046,23 @@ static void ipod_touch_stage_ramdisk(IPodTouchMachineState *nms)
  * lands in a wide window and needs no guest code patching.
  *
  * boot_args is built by iBoot at a fixed DRAM location for a given image; we
- * find it by signature (rev==1, virtBase==0xC0000000, physBase==0x08000000)
- * rather than hardcode the address, and overwrite CommandLine at +0x38.
+ * find it by signature (rev==1, virtBase==0xC0000000 on 2.x/3.x or 0x80000000
+ * on 4.x, physBase==0x08000000) rather than hardcode the address, and
+ * overwrite CommandLine at +0x38. 4.2.1 iBoot builds it at 0x08825000, past
+ * the first 8 MiB, so the scan covers 16 MiB.
  * IT_BOOT_ARGS_ADDR overrides the struct address; IT_BOOT_ARGS_DELAY_MS the
  * timer. Gated entirely on IT_BOOT_ARGS; 2.1.1 is untouched.
  */
 #define BOOT_ARGS_CMDLINE_OFF   0x38
+#define BOOT_ARGS_SCAN_LEN      0x01000000
+
+static bool boot_args_signature(const uint8_t *p)
+{
+    uint32_t virt = ldl_le_p(p + 4);
+    return (ldl_le_p(p) & 0xFFFF) == 1 &&
+           (virt == 0xC0000000 || virt == 0x80000000) &&
+           ldl_le_p(p + 8) == 0x08000000;
+}
 #define BOOT_ARGS_CMDLINE_LEN   256
 #define BOOT_ARGS_STAGING_BASE  0x220fff00
 
@@ -1082,11 +1093,10 @@ static void ipod_touch_set_boot_args_now(void *opaque)
         /* Found on an earlier tick; boot_args does not move once the kernel
          * has built it. Re-verify the signature so a reboot (which rebuilds
          * DRAM) falls back to a fresh scan instead of scribbling blindly. */
-        uint32_t sig[3] = { 0, 0, 0 };
+        uint8_t sig[12] = { 0 };
         address_space_rw(nms->nsas, nms->boot_args_addr, MEMTXATTRS_UNSPECIFIED,
-                         (uint8_t *)sig, sizeof(sig), 0);
-        if ((sig[0] & 0xFFFF) == 1 && sig[1] == 0xC0000000 &&
-            sig[2] == 0x08000000) {
+                         sig, sizeof(sig), 0);
+        if (boot_args_signature(sig)) {
             ba = nms->boot_args_addr;
         } else {
             nms->boot_args_addr = 0;
@@ -1106,15 +1116,13 @@ static void ipod_touch_set_boot_args_now(void *opaque)
          */
         uint8_t window[0x10000];
         uint32_t base;
-        for (base = 0x08000000; base < 0x08000000 + 0x00800000 && !ba;
+        for (base = 0x08000000; base < 0x08000000 + BOOT_ARGS_SCAN_LEN && !ba;
              base += sizeof(window) - 8) {
             uint32_t off;
             address_space_rw(nms->nsas, base, MEMTXATTRS_UNSPECIFIED,
                              window, sizeof(window), 0);
             for (off = 0; off + 12 <= sizeof(window); off += 4) {
-                if ((ldl_le_p(window + off) & 0xFFFF) == 1 &&
-                    ldl_le_p(window + off + 4) == 0xC0000000 &&
-                    ldl_le_p(window + off + 8) == 0x08000000) {
+                if (boot_args_signature(window + off)) {
                     ba = base + off;
                     nms->boot_args_addr = ba;
                     break;
@@ -1198,18 +1206,22 @@ static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
 static void ipod_touch_inject_boot_args(IPodTouchMachineState *nms, size_t image_size)
 {
     const char *args = ipod_touch_requested_boot_args(nms);
-    /* Release 7E18 iBoot deliberately ignores NVRAM boot-args. Redirect its
-     * normal-boot empty-string literal, before it constructs XNU's arguments.
-     * The late AMFI timer is too late for PE_init_platform's verbose flag. */
-    static const uint8_t expected[] = {
-        0x2c,0x4b,0x9b,0x46,0x1b,0x68,0x00,0x2b,0x03,0xd1,0x2a,0x48,
-        0x06,0x1c,0x01,0x90,0x02,0xe0,0x29,0x4e,0x28,0x49,0x01,0x91
-    };
+    /*
+     * Release iBoot ignores NVRAM boot-args: it hands XNU an empty string on a
+     * normal boot and "rd=md0 nand-enable-reformat=1 -progress" in restore
+     * mode, each through a literal. Both 7E18 and 8C148 keep the normal-boot
+     * literal in the word before the restore one (7E18 0x11b28/0x11b2c,
+     * 8C148 0xa190/0xa194). So find the restore string, its one literal, and
+     * redirect the empty-string literal before it -- provided Thumb code
+     * really loads that word. The late AMFI timer is too late for
+     * PE_init_platform's verbose flag and for AMFI's own flags.
+     */
+    static const char restore[] = "rd=md0 nand-enable-reformat=1 -progress";
     uint8_t literal[4], command[BOOT_ARGS_CMDLINE_LEN] = {0};
-    size_t found = 0;
+    size_t found = 0, rs = 0;
     const hwaddr staging = BOOT_ARGS_STAGING_BASE; /* final 256 bytes of LLB SRAM */
 
-    if (!args || image_size < sizeof(expected) || image_size > 0x100000) {
+    if (!args || image_size < sizeof(restore) + 8 || image_size > 0x100000) {
         return;
     }
     g_autofree uint8_t *image = g_try_malloc(image_size);
@@ -1218,26 +1230,38 @@ static void ipod_touch_inject_boot_args(IPodTouchMachineState *nms, size_t image
     }
     address_space_read(nms->nsas, IBOOT_MEM_BASE, MEMTXATTRS_UNSPECIFIED,
                        image, image_size);
-    for (size_t i = 0; i + sizeof(expected) <= image_size; i += 2) {
-        if (memcmp(image + i, expected, sizeof(expected))) {
-            continue;
+    for (size_t i = 0; i + sizeof(restore) <= image_size; i++) {
+        if (!memcmp(image + i, restore, sizeof(restore))) {
+            if (rs) {
+                rs = 0;
+                break;
+            }
+            rs = i;
         }
-        /* Decode the Thumb LDR r0 literal in the verified normal-boot arm.
-         * Its target must be an empty string inside this loaded image. */
-        size_t slot = ((i + 10 + 4) & ~(size_t)3) + image[i + 10] * 4;
-        if (slot > image_size - 4) {
-            continue;
-        }
-        uint32_t string = ldl_le_p(image + slot);
-        if (string < IBOOT_MEM_BASE || string - IBOOT_MEM_BASE >= image_size ||
-            image[string - IBOOT_MEM_BASE] != 0) {
+    }
+    for (size_t i = 4; rs && i + 4 <= image_size; i += 4) {
+        if (ldl_le_p(image + i) != IBOOT_MEM_BASE + rs) {
             continue;
         }
         if (found) {
             fprintf(stderr, "[IT_BOOT_ARGS] ambiguous iBoot handoff; early argument injection skipped\n");
             return;
         }
-        found = slot;
+        found = i - 4;
+    }
+    if (found) {
+        uint32_t string = ldl_le_p(image + found);
+        bool loaded = false;
+        for (size_t i = 0; i + 2 <= found && !loaded; i += 2) {
+            uint16_t hw = image[i] | image[i + 1] << 8;   /* ldr rN, [pc, #imm] */
+            loaded = (hw & 0xf800) == 0x4800 &&
+                     ((i + 4) & ~(size_t)3) + (hw & 0xff) * 4 == found;
+        }
+        if (!loaded || string < IBOOT_MEM_BASE ||
+            string - IBOOT_MEM_BASE >= image_size ||
+            image[string - IBOOT_MEM_BASE] != 0) {
+            found = 0;
+        }
     }
     if (!found) {
         fprintf(stderr, "[IT_BOOT_ARGS] unknown iBoot; early argument injection skipped\n");
@@ -1248,7 +1272,8 @@ static void ipod_touch_inject_boot_args(IPodTouchMachineState *nms, size_t image
     stl_le_p(literal, staging);
     address_space_write(nms->nsas, IBOOT_MEM_BASE + found,
                         MEMTXATTRS_UNSPECIFIED, literal, sizeof(literal));
-    fprintf(stderr, "[IT_BOOT_ARGS] staged early 7E18 command line\n");
+    fprintf(stderr, "[IT_BOOT_ARGS] staged early command line (iBoot literal 0x%08x)\n",
+            (unsigned)(IBOOT_MEM_BASE + found));
 }
 
 static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
