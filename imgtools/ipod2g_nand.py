@@ -11,7 +11,8 @@ so they are regular and are rebuilt here:
   eb0 p0 cs0         blank page, spare[9] = 0x43
   eb0/eb1 map pages  the FTL's logical->virtual block map, identity + 1 (LBN n -> VBN n+1), 2048 u16 per page,
                      striped like the volume but over erase blocks 0/1 (FTL_MAP_PAGES pages, see map_page())
-  eb1 VFL context    every other page of erase block 1 up to page 135 on every chip-select (vfl_page())
+  eb1 VFL context    every other page of erase block 1 up to page 135 on every chip-select (vfl_page()),
+                     checksummed as the VFL writes it (4.x iBoot verifies it, 3.x does not)
   cs3 p255           the FTL context: 20-VBN free pool 3..22 (the emulator moves it outside the volume at run
                      time, ipod_touch_fmss.c fmss_fix_generated_free_pool), per-block tables, the log line
   eb2 p256 cs0..2    device LBA 0..2: protective MBR, GPT header, one Apple_HFS entry sized to the volume
@@ -60,7 +61,15 @@ def vfl_page(cs, first):
     w[877], w[878], w[1018] = 0x14, 0x10, 2
     if first:
         w[1024], w[1028] = 1, 0x8000
-    return u16s(w)
+    page = bytearray(u16s(w))
+    # The VFL writer's checksum over the 0x7f8-byte context (3.1.3 iBoot 0x0ff086b8): the word sum and
+    # word xor, each keyed with 0xaabbccdd. 3.1.3 iBoot's verifier is a stub; 4.2.1's checks it.
+    body = struct.unpack_from("<510I", page)
+    xor = 0
+    for v in body:
+        xor ^= v
+    struct.pack_into("<II", page, 0x7F8, (sum(body) + 0xAABBCCDD) & 0xFFFFFFFF, xor ^ 0xAABBCCDD)
+    return bytes(page)
 
 
 def ftl_context():
@@ -158,6 +167,12 @@ def selfcheck():
     hdr = p[(1, 256)]
     assert binascii.crc32(hdr[:0x10] + b"\0" * 4 + hdr[0x14:0x5C]) & 0xFFFFFFFF == struct.unpack_from("<I", hdr, 0x10)[0]
     assert struct.unpack_from("<Q", p[(2, 256)], 0x28)[0] == 128013
+    v = p[(0, PPB)]
+    body = struct.unpack_from("<510I", v)
+    x = 0
+    for w in body:
+        x ^= w
+    assert struct.unpack_from("<II", v, 0x7F8) == ((sum(body) + 0xAABBCCDD) & 0xFFFFFFFF, x ^ 0xAABBCCDD)
 
 
 if __name__ == "__main__":

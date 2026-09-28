@@ -47,7 +47,7 @@ typedef struct {
     GHashTable *phys_pages, *erased_blocks, *overlay_pages;
     uint32_t reg_cs_irq_bit, reg_cinfo_target_addr, reg_csgenrc;
     int irq, completion_timer;
-    uint32_t reg_cs_ctrl, reg_cs_irq_mask;
+    uint32_t reg_cs_ctrl, reg_cs_irq_mask, reg_cs_script;
     uint32_t reg_cs_buf_addr, reg_pages_in_addr, reg_num_pages;
     uint32_t reg_pages_out_addr, reg_page_spare_out_addr;
     uint8_t page_buffer[4096], page_spare_buffer[64];
@@ -55,6 +55,7 @@ typedef struct {
 typedef IPodTouchFMSSState DeviceState;
 #define IPOD_TOUCH_FMSS(s) (s)
 static bool iboot_bt_patched;
+static uint32_t iboot_command_line;
 static void qemu_irq_lower(int irq) {}
 static void timer_del(int timer) {}
 static uint8_t memory[65536];

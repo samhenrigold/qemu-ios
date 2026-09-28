@@ -92,10 +92,134 @@ static uint8_t find_bit_index(uint8_t num) {
     return index;
 }
 
-static void write_chip_info(IPodTouchFMSSState *s)
+/*
+ * The FMSS sequencer.
+ *
+ * FMSS is a small programmable engine in front of the FMC NAND controller.
+ * The driver points 0xC04 at a program of two-word instructions, sets the
+ * 0xDxx variables the program reads, and starts it through CSCTRL. Both
+ * 3.1.3's and 4.2.1's iBoot read the chip IDs this way (ResetAndReadId:
+ * D08 = buffer, D0C = number of chip enables, then run the READ ID program);
+ * the programs are in the images (7E18 iBoot 0x25330, 8C148 iBoot 0x25a60).
+ *
+ * The ID used to be DMAed at the moment the CPU wrote D08. Real hardware
+ * writes it when the program runs, and 4.2.1 zeroes the buffer between the
+ * two, so it saw no chip ("[NAND] findNandInfo: No NAND Detected"). 4.2.1's
+ * program also reads 8 ID bytes per CE (FMDNUM 7, two words from 0x60/0x64)
+ * where 3.1.3 reads 5 (FMDNUM 4, one word). Running the program gives each
+ * build its own layout.
+ *
+ * Instruction: word0 = op << 24 | a << 16 | b, word1 = imm. r[] are the
+ * sequencer's registers, FMC registers are offsets below 0xC00.
+ *   00 end                      01 fmc[b] = imm
+ *   02 fmc[b] = r[a]            04 r[a] = reg[b] & imm (FMC or 0xDxx)
+ *   05 r[a] = imm               07 wait for FMC event a (instant here)
+ *   0b r[a] = r[b] | imm        0c r[a] = r[b] + imm
+ *   0d r[a] = r[b] - imm        13 r[a] = r[b] << imm
+ *   0e if r[a] != 0 goto imm    17 if r[a] == 0 goto imm (byte offsets)
+ *   11 mem32[r[b]] = r[a]
+ * Decoded from the two READ ID programs and the reset program; anything else
+ * stops the program (logged under LOG_UNIMP), leaving the CPU-side page
+ * read/write model below to do the work, as before.
+ *
+ * FMC: FMCTRL0 (0x0) bits 1..8 select the chip enable, FMCMD (0x8) 0x90 is
+ * READ ID and makes FMDATA 0x60/0x64 return the selected chip's ID bytes.
+ * The flash is four Hynix dies (ID ad d5 14 b6, 0xb614d5ad, which both
+ * builds' tables know); CE 4..7 are unpopulated and read 0.
+ */
+#define FMSS_CHIP_ID      0xb614d5adu
+#define FMSS_CHIPS        4
+#define FMSS_SCRIPT_STEPS 100000
+
+static uint32_t fmss_var_read(IPodTouchFMSSState *s, uint32_t reg, bool *ok)
 {
-    uint32_t chipid[] = { 0xb614d5ad, 0xb614d5ad, 0xb614d5ad, 0xb614d5ad };
-    cpu_physical_memory_write(s->reg_cinfo_target_addr, &chipid, 0x10);
+    switch (reg) {
+    case FMSS_CINFO_TARGET_ADDR:   return s->reg_cinfo_target_addr;
+    case FMSS_PAGES_IN_ADDR:       return s->reg_pages_in_addr;
+    case FMSS_CS_BUF_ADDR:         return s->reg_cs_buf_addr;
+    case FMSS_PAGE_SPARE_OUT_ADDR: return s->reg_page_spare_out_addr;
+    case FMSS_PAGES_OUT_ADDR:      return s->reg_pages_out_addr;
+    case FMSS_CSGENRC:             return s->reg_csgenrc;
+    }
+    *ok = false;
+    return 0;
+}
+
+static void fmss_run_script(IPodTouchFMSSState *s)
+{
+    uint32_t r[32] = { 0 }, fmc[0x100 / 4] = { 0 };
+    uint32_t pc = 0, cmd = 0;
+
+    if (!s->reg_cs_script) {
+        return;
+    }
+    for (int step = 0; step < FMSS_SCRIPT_STEPS; step++) {
+        uint32_t insn[2];
+        cpu_physical_memory_read(s->reg_cs_script + pc, insn, sizeof(insn));
+        uint32_t op = insn[0] >> 24, a = (insn[0] >> 16) & 0x1f;
+        uint32_t b = insn[0] & 0xffff, imm = insn[1];
+        bool ok = true;
+        pc += 8;
+
+        switch (op) {
+        case 0x00:
+            return;
+        case 0x01:
+        case 0x02:
+            if (b < 0xc00) {
+                uint32_t v = op == 1 ? imm : r[a];
+                if (b < sizeof(fmc)) {
+                    fmc[b / 4] = v;
+                }
+                if (b == 0x8) {
+                    cmd = v;
+                }
+            }
+            /* 0xCxx writes (IRQ clear/mask, program length) stay with the
+             * CPU-side model; the CPU sets the same values itself. */
+            break;
+        case 0x04: {
+            uint32_t v = 0;
+            if (b >= 0xd00) {
+                v = fmss_var_read(s, b, &ok);
+            } else if (b == 0x60 || b == 0x64) {
+                unsigned sel = (fmc[0] >> 1) & 0xff;
+                unsigned ce = ctz32(sel);
+                if (cmd == 0x90 && sel == (1u << ce) && ce < FMSS_CHIPS) {
+                    v = b == 0x60 ? FMSS_CHIP_ID : 0;
+                }
+            } else if (b == 0x40) {
+                v = fmc[0x40 / 4] & ~2u;    /* bit 1: transfer busy, done at once */
+            } else if (b < sizeof(fmc)) {
+                v = fmc[b / 4];
+            }
+            r[a] = v & imm;
+            break;
+        }
+        case 0x05: r[a] = imm; break;
+        case 0x07: break;
+        case 0x0b: r[a] = r[b & 0x1f] | imm; break;
+        case 0x0c: r[a] = r[b & 0x1f] + imm; break;
+        case 0x0d: r[a] = r[b & 0x1f] - imm; break;
+        case 0x13: r[a] = r[b & 0x1f] << (imm & 31); break;
+        case 0x0e: if (r[a]) { pc = imm; } break;
+        case 0x17: if (!r[a]) { pc = imm; } break;
+        case 0x11:
+            cpu_physical_memory_write(r[b & 0x1f], &r[a], 4);
+            break;
+        default:
+            ok = false;
+            break;
+        }
+        if (!ok) {
+            qemu_log_mask(LOG_UNIMP, "[fmss] program 0x%08x: op %08x %08x at +0x%x "
+                          "not modelled; stopped\n", s->reg_cs_script,
+                          insn[0], insn[1], pc - 8);
+            return;
+        }
+    }
+    qemu_log_mask(LOG_GUEST_ERROR, "[fmss] program 0x%08x did not end\n",
+                  s->reg_cs_script);
 }
 
 /*
@@ -1227,6 +1351,7 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
         case 0xC00:
             s->reg_cs_ctrl = val;
             if (val & 1) {
+                fmss_run_script(s);
                 timer_mod(s->completion_timer,
                           qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000);
             } else {
@@ -1242,9 +1367,11 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
             s->reg_cs_irq_mask = val;
             fmss_update_irq(s);
             break;
+        case FMSS__CS_SCRIPT:
+            s->reg_cs_script = val;
+            break;
         case FMSS_CINFO_TARGET_ADDR:
             s->reg_cinfo_target_addr = val;
-            write_chip_info(s);
             break;
         case FMSS_PAGES_IN_ADDR:
             s->reg_pages_in_addr = val;
@@ -1360,6 +1487,7 @@ static void ipod_touch_fmss_reset(DeviceState *dev)
     s->reg_cs_ctrl = 0;
     s->reg_cs_irq_mask = 1;
     timer_del(s->completion_timer);
+    s->reg_cs_script = 0;
     s->reg_cinfo_target_addr = 0;
     s->reg_pages_in_addr = 0;
     s->reg_cs_buf_addr = 0;
@@ -1404,7 +1532,7 @@ static int fmss_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_fmss = {
     .name = "ipod_touch_fmss",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = fmss_post_load,
     .fields = (const VMStateField[]) {
@@ -1420,6 +1548,7 @@ static const VMStateDescription vmstate_ipod_touch_fmss = {
         VMSTATE_UINT32_V(reg_cs_ctrl, IPodTouchFMSSState, 2),
         VMSTATE_UINT32_V(reg_cs_irq_mask, IPodTouchFMSSState, 2),
         VMSTATE_TIMER_PTR_V(completion_timer, IPodTouchFMSSState, 2),
+        VMSTATE_UINT32_V(reg_cs_script, IPodTouchFMSSState, 3),
         VMSTATE_END_OF_LIST()
     }
 };
