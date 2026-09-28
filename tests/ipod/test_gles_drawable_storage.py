@@ -50,6 +50,7 @@ static int cpu_memory_rw_debug(CPUState *cpu,uint64_t address,uint8_t *p,size_t 
  if(write)memcpy(ram+(address-RAM_BASE),p,n);else memcpy(p,ram+(address-RAM_BASE),n);
  return 0;
 }
+static int gles_guest_rw(CPUState *cpu,uint64_t va,void *buf,size_t n,bool write){return cpu_memory_rw_debug(cpu,va,buf,n,write);}
 static int64_t gles_reject(GLenum error) {if(!gh.error)gh.error=error;return -1;}
 static GLuint gles_host_fbo(uint32_t name) {return name?name:gh.fbo;}
 static int gles_swizzle;
