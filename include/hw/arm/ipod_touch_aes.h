@@ -33,6 +33,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchAESState, IPOD_TOUCH_AES)
 #define AES_KEYSIZE 0x20
 #define AES_IVSIZE 0x10
 
+/* Names above are openiBoot's. What 3.1.3's AppleS5L8900XAES actually does
+ * with them (kernel disassembly, docs/ipod/backport-from-ipad1.md):
+ *   0x18 total bytes        0x28/0x2c input segment (gather) addr/len
+ *   0x10 IRQ enable (7)     0x20/0x24 output segment (scatter) addr/len
+ *   0x0c status, W1C: 1 done, 2 wants an output segment, 4 wants input
+ *   0x04 GO: 1 start, 3 continue after new segments
+ *   0x14 bit 0: encrypt */
+#define AES_IRQEN AES_UNKREG1
+#define AES_ST_DONE     1
+#define AES_ST_NEED_OUT 2
+#define AES_ST_NEED_IN  4
+
 typedef enum AESKeyType {
     AESCustom = 0,
     AESGID = 1,
@@ -49,12 +61,14 @@ typedef struct IPodTouchAESState
 {
     SysBusDevice busdev;
     MemoryRegion iomem;
+    qemu_irq irq;
     AES_KEY decryptKey;
 	uint32_t ivec[4];
 	uint32_t insize;
 	uint32_t inaddr;
 	uint32_t outsize;
 	uint32_t outaddr;
+	uint32_t auxsize;
 	uint32_t auxaddr;
 	uint32_t keytype;
 	uint32_t status;
@@ -64,6 +78,12 @@ typedef struct IPodTouchAESState
 	uint32_t operation;
 	uint32_t keylen;
 	uint32_t custkey[8];
+	/* A custom-key stream in flight between segment interrupts. */
+	uint32_t remaining;       /* bytes of the total not yet ciphered */
+	uint8_t chain_iv[16];
+	uint8_t in_blk[16], out_blk[16];
+	uint32_t in_fill, out_left;
+	bool streaming;
 } IPodTouchAESState;
 
 #endif

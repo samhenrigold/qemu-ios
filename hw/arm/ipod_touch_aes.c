@@ -1,5 +1,7 @@
 #include "hw/arm/ipod_touch_aes.h"
 #include "hw/arm/ipod_touch_guard.h"
+#include "hw/irq.h"
+#include "hw/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/error-report.h"
 
@@ -396,12 +398,147 @@ static uint64_t ipod_touch_aes_read(void *opaque, hwaddr offset, unsigned size)
     switch(offset) {
         case AES_STATUS:
             return aesop->status;
+        case AES_OUTADDR:
+            return aesop->outaddr;
+        case AES_AUXSIZE:
+            return aesop->auxsize;
       default:
             //fprintf(stderr, "%s: UNMAPPED AES_ADDR @ offset 0x%08x\n", __FUNCTION__, offset);
             break;
     }
 
     return 0;
+}
+
+static void aes_update_irq(IPodTouchAESState *s)
+{
+    qemu_set_irq(s->irq, (s->status & s->unkreg1 & 7) != 0);
+}
+
+/* Custom-key key schedule and chaining IV from the registers. The kernel
+ * places a 128/192/256-bit key at the END of the 8-word key bank. */
+static void aes_custom_load(IPodTouchAESState *s)
+{
+    static const unsigned bits[4] = { 128, 192, 256, 128 };
+    unsigned kb = bits[(s->operation >> 4) & 3];
+    const uint8_t *key = (const uint8_t *)s->custkey + 32 - kb / 8;
+
+    if (s->operation & 1) {
+        AES_set_encrypt_key(key, kb, &s->decryptKey);
+    } else {
+        AES_set_decrypt_key(key, kb, &s->decryptKey);
+    }
+}
+
+/*
+ * Custom-key operation, as 3.1.3's AppleS5L8900XAES drives it: a stream of
+ * 0x18 bytes read from input segments (0x28/0x2c) and written to output
+ * segments (0x20/0x24). A buffer spanning pages comes as several segments,
+ * each asked for with a status bit + IRQ 0x27 and resumed with GO=3, and a
+ * block may straddle two of them (as on the A4, 4852551a77). Single-segment
+ * requests (the kernel's polled path, iBoot) finish inside this write.
+ * Before this, the model decrypted 0x20 into 0x28 whatever KEYLEN said:
+ * CommonCrypto's hardware path (> 64 blocks, aligned) returned wrong bytes,
+ * overwrote the caller's input, and a buffer over one page hung its caller
+ * waiting for an interrupt that never came.
+ */
+static void aes_custom_go(IPodTouchAESState *s, uint32_t go)
+{
+    /* The retained 5F138 trace identifies exactly these three custom-key,
+     * in-place 128-byte operations. Another operation with the same
+     * shape at 0x0ff290ac must decrypt, so shape alone is insufficient.
+     * ponytail: address-specific boot compatibility remains unresolved;
+     * replace it only after identifying the payloads, not other DMA. */
+    bool preserve = s->insize == 128 && s->inaddr == s->outaddr &&
+        (s->outaddr == 0x220100ac || s->outaddr == 0x0bf08468 ||
+         s->outaddr == 0x0fb9bcdc);
+    bool enc = s->operation & 1;
+    /* Without the segment interrupt enabled nobody can supply another
+     * segment (iBoot; the kernel's polled path, which only takes requests
+     * contiguous end to end), so the first segment holds everything. */
+    bool segmented = s->unkreg1 & (AES_ST_NEED_IN | AES_ST_NEED_OUT);
+    uint32_t in_addr = s->outaddr, in_len = segmented ? s->auxsize : s->insize;
+    uint32_t out_addr = s->inaddr, out_len = segmented ? s->outsize : s->insize;
+
+    if (go == 1 || !s->streaming) {
+        aes_custom_load(s);
+        memcpy(s->chain_iv, s->ivec, 16);
+        s->remaining = s->insize;
+        s->in_fill = s->out_left = 0;
+        s->streaming = true;
+    }
+    s->status = 0;
+    for (;;) {
+        if (s->out_left) {                          /* flush a straddling block */
+            uint32_t n = MIN(s->out_left, out_len);
+            if (!n) {
+                s->status = AES_ST_NEED_OUT;
+                break;
+            }
+            if (!preserve) {
+                cpu_physical_memory_write(out_addr, s->out_blk + 16 - s->out_left, n);
+            }
+            out_addr += n; out_len -= n; s->out_left -= n;
+            continue;
+        }
+        if (s->remaining < 16) {
+            /* Real hardware leaves a trailing partial block alone. */
+            if (s->remaining && s->in_fill == 0 && in_len && out_len && !preserve) {
+                uint32_t n = MIN(s->remaining, MIN(in_len, out_len));
+                uint8_t tail[16];
+                cpu_physical_memory_read(in_addr, tail, n);
+                if (in_addr != out_addr) {
+                    cpu_physical_memory_write(out_addr, tail, n);
+                }
+            }
+            s->status = 0xf;                        /* done; the legacy value */
+            break;
+        }
+        if (s->in_fill == 0 && in_len >= 16 && out_len >= 16) {  /* bulk */
+            uint32_t n = MIN(s->remaining, MIN(in_len, out_len)) & ~15u;
+            uint8_t *buf = g_malloc(n);
+            cpu_physical_memory_read(in_addr, buf, n);
+            AES_cbc_encrypt(buf, buf, n, &s->decryptKey, s->chain_iv,
+                            enc ? AES_ENCRYPT : AES_DECRYPT);
+            if (!preserve) {
+                cpu_physical_memory_write(out_addr, buf, n);
+            }
+            g_free(buf);
+            in_addr += n; in_len -= n; out_addr += n; out_len -= n;
+            s->remaining -= n;
+            continue;
+        }
+        if (s->in_fill < 16) {                      /* gather a straddling block */
+            uint32_t n = MIN(16 - s->in_fill, in_len);
+            if (!n) {
+                s->status = AES_ST_NEED_IN | (out_len ? 0 : AES_ST_NEED_OUT);
+                break;
+            }
+            cpu_physical_memory_read(in_addr, s->in_blk + s->in_fill, n);
+            in_addr += n; in_len -= n; s->in_fill += n;
+            continue;
+        }
+        AES_cbc_encrypt(s->in_blk, s->out_blk, 16, &s->decryptKey, s->chain_iv,
+                        enc ? AES_ENCRYPT : AES_DECRYPT);
+        s->in_fill = 0;
+        s->out_left = 16;
+        s->remaining -= 16;
+    }
+    /* Leave the registers where the engine stopped; the ISR replaces
+     * whichever segment ran out. */
+    s->outaddr = in_addr; s->auxsize = in_len;
+    s->inaddr = out_addr; s->outsize = out_len;
+    if (s->status == 0xf) {
+        s->streaming = false;
+        s->outsize = s->insize;
+        memset(s->custkey, 0, sizeof(s->custkey));
+        memset(s->ivec, 0, sizeof(s->ivec));
+    }
+    if (it_aes_debug()) {
+        fprintf(stderr, "ipodtouch.aes: custom %s go=%u status=0x%x left=%u\n",
+                enc ? "enc" : "dec", go, s->status, s->remaining);
+    }
+    aes_update_irq(s);
 }
 
 static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
@@ -415,6 +552,19 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
 
     switch(offset) {
         case AES_GO:
+            if (aesop->keytype == AESCustom) {
+                aes_custom_go(aesop, value);
+                break;
+            }
+            /*
+             * UID and GID: the original single-shot model, unchanged on
+             * purpose. It reads 0x20 and writes 0x28 (the kernel's output
+             * and input segments) and always decrypts, so the kernel's UID
+             * encrypts (the 0x835/0x89B derivations at boot) come out as
+             * whatever the output buffer held. Keys derived that way
+             * protect keychain items already on existing images; making
+             * them "correct" would lock those items out.
+             */
             inbuf = (uint8_t *)g_malloc(aesop->insize);
             cpu_physical_memory_read((aesop->inaddr), inbuf, aesop->insize);
 
@@ -524,6 +674,32 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
         case AES_OUTADDR:
             aesop->outaddr = value;
             break;
+        case AES_AUXSIZE:
+            aesop->auxsize = value;
+            break;
+        case AES_UNKREG0:
+            /* The driver pulses this (1 then 0) before every request: a
+             * reset. Status must not survive it, or enabling the IRQ for a
+             * segmented request fires the previous polled request's done
+             * bit into an ISR that has no request yet (kernel abort,
+             * NULL+0x20). */
+            aesop->unkreg0 = value;
+            if (value & 1) {
+                aesop->status = 0;
+                aesop->streaming = false;
+                aes_update_irq(aesop);
+            }
+            break;
+        case AES_IRQEN:
+            aesop->unkreg1 = value;
+            aes_update_irq(aesop);
+            break;
+        case AES_STATUS:
+            if (aesop->streaming || aesop->unkreg1) {
+                aesop->status &= ~value;      /* the ISR acks what it handled */
+                aes_update_irq(aesop);
+            }
+            break;
         case AES_TYPE:
             aesop->keytype = value;
             break;
@@ -559,6 +735,7 @@ static void ipod_touch_aes_init(Object *obj)
 
     memory_region_init_io(&s->iomem, obj, &aes_ops, s, "aes", 0x100);
     sysbus_init_mmio(sbd, &s->iomem);
+    sysbus_init_irq(sbd, &s->irq);
 
     memset(&s->custkey, 0, 8 * sizeof(uint32_t));
     memset(&s->ivec, 0, 4 * sizeof(uint32_t));
@@ -586,7 +763,44 @@ static void ipod_touch_aes_reset(DeviceState *dev)
     s->unkreg1 = 0;
     s->operation = 0;
     s->keylen = 0;
+    s->auxsize = 0;
+    s->streaming = false;
+    s->remaining = s->in_fill = s->out_left = 0;
 }
+
+static int aes_post_load(void *opaque, int version_id)
+{
+    IPodTouchAESState *s = opaque;
+    if (s->streaming) {
+        aes_custom_load(s);             /* the schedule is derived state */
+    }
+    return 0;
+}
+
+static bool aes_stream_needed(void *opaque)
+{
+    IPodTouchAESState *s = opaque;
+    return s->streaming || s->auxsize;
+}
+
+/* A segmented request waiting in the ISR's window between two segments. */
+static const VMStateDescription vmstate_aes_stream = {
+    .name = "ipod_touch_aes/stream",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = aes_stream_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(auxsize, IPodTouchAESState),
+        VMSTATE_UINT32(remaining, IPodTouchAESState),
+        VMSTATE_UINT8_ARRAY(chain_iv, IPodTouchAESState, 16),
+        VMSTATE_UINT8_ARRAY(in_blk, IPodTouchAESState, 16),
+        VMSTATE_UINT8_ARRAY(out_blk, IPodTouchAESState, 16),
+        VMSTATE_UINT32(in_fill, IPodTouchAESState),
+        VMSTATE_UINT32(out_left, IPodTouchAESState),
+        VMSTATE_BOOL(streaming, IPodTouchAESState),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 /* decryptKey is an expanded key schedule derived from custkey/keytype and is
  * rebuilt on the next key load, so only the guest-visible registers travel. */
@@ -594,6 +808,7 @@ static const VMStateDescription vmstate_ipod_touch_aes = {
     .name = "ipod_touch_aes",
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = aes_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(ivec, IPodTouchAESState, 4),
         VMSTATE_UINT32(insize, IPodTouchAESState),
@@ -610,7 +825,11 @@ static const VMStateDescription vmstate_ipod_touch_aes = {
         VMSTATE_UINT32(keylen, IPodTouchAESState),
         VMSTATE_UINT32_ARRAY(custkey, IPodTouchAESState, 8),
         VMSTATE_END_OF_LIST()
-    }
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_aes_stream,
+        NULL
+    },
 };
 
 static void ipod_touch_aes_class_init(ObjectClass *klass, void *data)
