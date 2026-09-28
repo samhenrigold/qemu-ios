@@ -1,3 +1,5 @@
+> Status: research, superseded by `../ipad1/iboot.md` (the real iBoot chain boots).
+
 I have the full boot path. Compiling the report now.
 
 # iPad 1 (K48AP / S5L8930) iOS 3.2 iBoot-817.28 — Boot-Path Spec for an Emulator

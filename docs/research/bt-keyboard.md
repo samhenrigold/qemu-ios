@@ -1,6 +1,8 @@
+> Status: research, superseded by `../ipad1/usb-keyboard.md` (Bluetooth dropped 2026-09-26).
+
 # iPad 1 (7B500): emulated Bluetooth HID keyboard, scoping
 
-**Status: dropped (2026-09-26).** The target keyboard is USB via the CCK host path; see usb-keyboard.md.
+**Status: dropped (2026-09-26).** The target keyboard is USB via the CCK host path; see ../ipad1/usb-keyboard.md.
 
 This is research only; nothing here has been built. The goal is a hardware keyboard that uses only stock
 iOS code: BlueTool, BTServer, and the kernel UART/DMA drivers, all unmodified. The emulator plays both

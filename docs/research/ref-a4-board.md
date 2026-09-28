@@ -1,3 +1,5 @@
+> Status: research, superseded by `hw/arm/ipad1.c` and `../ipad1/addresses-7B500.md`.
+
 # iPad 1G (K48AP / S5L8930) board-level device inventory — as seen by openiBoot, the decrypted 7B367 DeviceTree, iBoot-817.28 strings, and iEmu
 
 Scratch artifacts produced (read-only elsewhere): `/tmp/claude-0/-home-user/2fb4038f-ca86-59b7-95f7-7e88ca8c44ec/scratchpad/dec/` — `DeviceTree.k48ap.bin` (decrypted), `dt.txt` (parsed dump, 1085 lines), `iBoot.k48ap.bin` + `iboot.str`, `LLB.k48ap.bin`, `dtdump.py`, `img3data.py`. Keys from https://api.ipsw.me/v4/keys/ipsw/iPad1,1/7B367 (DeviceTree iv `0e3fdb2c…`, key `2b5a6118…`; iBoot iv `36e1bcd0…`, key `1e3a1ca2…`). Note: DT "reg" addresses are relative to `arm-io` `ranges = 0x0→0x80000000 (0x40000000), 0x40000000→0x40000000` (dt.txt:102), so DT `0x09000000` = phys `0x89000000`, `0x3f200000` = `0xBF200000`.

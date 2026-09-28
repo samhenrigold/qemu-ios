@@ -36,7 +36,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchAESState, IPOD_TOUCH_AES)
 #define AES_IVSIZE 0x10
 
 /* Names above are openiBoot's. What 3.1.3's AppleS5L8900XAES actually does
- * with them (kernel disassembly, docs/ipod/backport-from-ipad1.md):
+ * with them (kernel disassembly, docs/archive/backport-from-ipad1.md):
  *   0x18 total bytes        0x28/0x2c input segment (gather) addr/len
  *   0x10 IRQ enable (7)     0x20/0x24 output segment (scatter) addr/len
  *   0x0c status, W1C: 1 done, 2 wants an output segment, 4 wants input

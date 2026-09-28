@@ -9,7 +9,7 @@ the store logs "CXT is not valid . Performing full NAND R/O restore" and rescans
 
 Step 1 boots STORE in place and waits for the guest to halt (QEMU exits on the PMU power-off write).
 Step 2 boots it again read-only, with a throwaway overlay so STORE stays sealed, and requires FTL_Open
-without the rescan. Then chmod -R a-w STORE (docs/ipad1/userland-boot.md).
+without the rescan. Then chmod -R a-w STORE (docs/research/userland-boot.md).
 """
 import re, argparse, os, shutil, subprocess, sys, tempfile, time
 

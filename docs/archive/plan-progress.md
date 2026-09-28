@@ -1,3 +1,5 @@
+> Archived 2026-09-28: the September 2026 plan tracker. Superseded by LightTouchMac `docs/STATUS.md`.
+
 # Emulator and Light Touch plan progress
 
 The workstream follows the supplied hardware-fidelity plan, with reproducible
@@ -239,7 +241,7 @@ QOM axis readback reports requested raw values, while I2C exposes sampled values
 The guest revealed that 7E18 UIKit preserves raw X/Y signs and inverts Z, unlike
 an earlier assumption in the plan. The shared model currently retains the plan's
 raw-axis convention; physical face-up/steering acceptance remains open. See
-`docs/accelerometer-controls.md`. Controller inputs and the attitude indicator
+LightTouchMac `docs/accelerometer-controls.md`. Controller inputs and the attitude indicator
 remain unfinished; the optional phone companion has not been built.
 
 ### App regression controls use the agent
@@ -377,7 +379,7 @@ passes Release build, strict deep signature and macOS 14 dependency checks.
 The 7E18 frame handler disables source bit 0 at register 0x08 when idle. The
 model ignored this register and treated an acknowledgement at 0x0c as permission
 to keep raising interrupts. It now models enable, pending and W1C independently,
-including migration compatibility. See `docs/ipod-clcd-irqs.md` for driver
+including migration compatibility. See `docs/ipod/ipod-clcd-irqs.md` for driver
 addresses and the hardware contract. Sanitizer IRQ and LCD compositor tests pass.
 
 The earlier 120-second untethered lock/wake run logged 787 unexpected CLCD
@@ -541,7 +543,7 @@ machine help. Explicit options override `IT_AUDIO_HW`, including explicit auto;
 legacy defaults remain and runtime topology changes are rejected. Sanitizer and
 harness checks pass. Native boot/install/launch and 6.18 seconds of 440/880 Hz
 audio passed with `audio-hw=on` overriding `IT_AUDIO_HW=0`
-(`/tmp/it-audio-config-native.log`). See [configuration](configuration.md).
+(`/tmp/it-audio-config-native.log`). See [configuration](../configuration.md).
 The unused app-side `IT_IMG3_SIG_ASIS` setting was removed, and boot-parity checks
 now understand the current verbose/kernel-console expression and reject obsolete
 switches. The rest of the configuration migration is pending.
@@ -553,7 +555,7 @@ retains 5/20-second screenshots and 30-second launch verification, records the
 file SHA-256 and bundle ID, and atomically updates Markdown/JSON progress.
 Skipped/failed checks and changed input files cannot pass. Rendering, audio,
 input and networking stay unreviewed. A native Harness run passed; its initial
-menu screenshots were reviewed and retained in [the ledger](app-ledger.md).
+menu screenshots were reviewed and retained in [the ledger](../app-ledger.md).
 Broader game coverage and Legacy Store verdict presentation remain pending.
 
 ### Stock-service protocol research
@@ -561,7 +563,7 @@ Broader game coverage and Legacy Store verdict presentation remain pending.
 A disposable 7E18 Weather guest accepted local synthetic XML, persisted both
 replacement city names, displayed the six-day forecast, and shut down cleanly
 (`/tmp/it-weather-protocol-native-v2.log`). The runnable protocol check retains
-its screenshot and sanitized requests. [Protocol notes](stock-service-protocol.md)
+its screenshot and sanitized requests. [Protocol notes](../stock-service-protocol.md)
 record the strict six-forecast shape and Stocks' captured request types.
 Live provider integration and native city-search acceptance remain pending;
 no fabricated weather or quotes are served by the production proxy.
@@ -922,7 +924,7 @@ The next trace resolved the fifth-START workaround. PKE now performs the
 register-selected Montgomery products used by the actual boot verifier, with
 readable key length, full 2 KB operand SRAM, 64/128/256-byte segments, sign bits,
 A×1 mode and a separately preloaded modulus. There is no command counter or
-hard-coded public exponent. See [PKE protocol](ipod-pke.md).
+hard-coded public exponent. See [PKE protocol](../ipod/ipod-pke.md).
 
 Production ASan/UBSan checks pass for RSA and arbitrary exponents, malformed
 commands, memory bounds and compatibility mode. Native 5F138 reaches Home

@@ -3,7 +3,7 @@
  *
  * amc-mode=decode enables HLE of the 7E18 AAC/HE-AAC/MP3/ALAC programs, with linked DMA,
  * bounded decoding, real PCM output and completion ownership. See
- * docs/ipod-media.md for validation and the remaining limitations.
+ * docs/research/ipod-media.md for validation and the remaining limitations.
  * The register-only bring-up history below describes the original stubs.
  *
  * Device tree: /device-tree/arm-io/amc,

@@ -1,3 +1,5 @@
+> Status: research, superseded by `hw/arm/ipad1.c` and `../ipad1/addresses-7B500.md`.
+
 # iPad 1 (K48AP / iPad1,1) hardware inventory and iOS 3.2 (7B367) driver-stack expectations
 
 Scratchpad root below = `/tmp/claude-0/-home-user/2fb4038f-ca86-59b7-95f7-7e88ca8c44ec/scratchpad`. Note: a previous step already decrypted the IPSW into `scratchpad/dec/` and `scratchpad/fw/7B367-dec/` (device tree dump `dec/dt.txt`, decompressed kernelcache `dec/kernelcache.k48.mach`, kext matching table `fw/7B367-dec/kexts.txt`, IOKit class list `fw/7B367-dec/classnames.txt`, iBoot strings `dec/iboot.str`, rootfs `fw/7B367-dec/rootfs.hfsx`, dyld cache). Most facts below come from those primary sources rather than the web, which is far more reliable than teardown press.

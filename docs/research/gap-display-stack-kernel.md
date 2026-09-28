@@ -1,3 +1,5 @@
+> Status: research, superseded by `hw/arm/s5l8930_display.c` (the display pipe model built from it).
+
 # iPad1,1 / iOS 3.2 (7B367) kernel+userland display contract — gap-fill report
 
 Sources: carved kext disassemblies under `$SP/kx/*.dis` (SP=`/tmp/claude-0/-home-user/2fb4038f-ca86-59b7-95f7-7e88ca8c44ec/scratchpad`), kernelcache `$SP/dec/kernelcache.k48.mach` (prelink load addrs from `__PRELINK_INFO`), DT dump `$SP/dec/dt.txt`, dyld cache `$SP/fw/7B367-dec/dyld_shared_cache_armv7`, iBoot `$SP/bootchain/iboot.dis`, openiBoot `/home/user/iDroid-Project/openiBoot/plat-a4/clcd.c`. All kext/user addresses are kernel VAs / cache VAs as noted. "vt[0xNNN]" = vtable slot byte offset.

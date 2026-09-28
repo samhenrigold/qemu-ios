@@ -1,3 +1,5 @@
+> Status: research, superseded by `../../contrib/ipad1-gles/README.md` (the GLI shim; no SGX model).
+
 # SGX535 / GPU stack research for iPad1,1 iOS 3.2 (7B367) — findings
 
 All firmware facts below were read out of the decrypted 7B367 images in the scratchpad (`/tmp/claude-0/-home-user/2fb4038f-ca86-59b7-95f7-7e88ca8c44ec/scratchpad/`, abbreviated `$SP`), using public keys from `https://api.ipsw.me/v4/keys/ipsw/iPad1,1/7B367`. Nothing under `/home/user/*` was modified.

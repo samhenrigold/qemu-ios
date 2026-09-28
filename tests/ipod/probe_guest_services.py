@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Feasibility probe for docs/ipod/guest-services-plan.md. Uses no SSH.
+"""Feasibility probe for docs/archive/guest-services-plan.md. Uses no SSH.
 
 One headless boot of a 3.1.3 image on a throwaway overlay (the base is never
 written), then:
