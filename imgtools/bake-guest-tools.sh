@@ -42,18 +42,20 @@ FRAMEWORK="$MNT/System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle"
 
 # 1. The GL engine replacement, stock preserved. Without it a GL app drives the
 #    unemulated PowerVR MBX and wedges the whole device on first launch.
-#    IT_GLES_SHIM=0 (imgtools/ipod2g_device.py, when the firmware's GL dispatch
-#    table is not the one the shim is built for) keeps the stock engine and
-#    software CoreAnimation instead of guessing.
+#    IT_GLES_ENGINE is the MBXGLEngine-<BUILD> for this firmware's dispatch
+#    table (imgtools/ipod2g_device.py); IT_GLES_SHIM=0 (no table fits) keeps
+#    the stock engine and software CoreAnimation instead of guessing.
 OGL=1
 if [ "${IT_GLES_SHIM:-1}" = 0 ]; then
     OGL=0
     echo "GLES shim skipped: stock MBXGLEngine, software CoreAnimation"
 else
-[ -f "$GLES/MBXGLEngine" ] || { echo "no $GLES/MBXGLEngine (run contrib/it-gles/build.sh)" >&2; exit 1; }
+ENGINE="${IT_GLES_ENGINE:-$GLES/MBXGLEngine}"
+[ -f "$ENGINE" ] || { echo "no $ENGINE (run contrib/it-gles/build.sh)" >&2; exit 1; }
 mkdir -p "$FRAMEWORK"
+# 4.x has no stock file to keep: its MBXGLEngine is in the shared cache
 [ -f "$FRAMEWORK/MBXGLEngine.stock" ] || cp -n "$FRAMEWORK/MBXGLEngine" "$FRAMEWORK/MBXGLEngine.stock" 2>/dev/null || true
-cp "$GLES/MBXGLEngine" "$FRAMEWORK/MBXGLEngine"
+cp "$ENGINE" "$FRAMEWORK/MBXGLEngine"
 chmod 755 "$FRAMEWORK/MBXGLEngine"
 fi
 

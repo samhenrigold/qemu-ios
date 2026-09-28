@@ -154,26 +154,26 @@ def image_strings(data, img, section=None):
     return out
 
 
-def gli_uncache(mnt, rel=GLENGINE):
-    """Let dlopen reach the GLI shim on disk. 4.x ships GLEngine inside the shared cache, and iOS dyld
+def gli_uncache(mnt, rel=GLENGINE, cache=DYLD_CACHE):
+    """Let dlopen reach the GLI shim (or the iPod's MBX shim, rel/cache given) on disk. 4.x ships GLEngine inside the shared cache, and iOS dyld
     matches a cached image by path alone, so the shim installed over it would never load (3.2.x has no
     cached GLEngine: nothing to do). dyld's own switch fixes that: when
     /System/Library/Caches/com.apple.dyld/enable-dylibs-to-override-cache exists, loadPhase5 tries the
     file on disk before the cache (sDylibsOverrideCache), so the installed shim wins and the other cached
     images, which have no file on disk, still come from the cache. The cache itself is not edited. Fails
     closed if this dyld has no such switch. Returns a one-line status."""
-    data = open(os.path.join(mnt, DYLD_CACHE), "rb").read()
+    data = open(os.path.join(mnt, cache), "rb").read()
     if "/" + rel not in cache_images(data):
-        return "no cached GLEngine"
+        return "no cached %s" % os.path.basename(rel)
     if b"/" + DYLD_OVERRIDE.encode() + b"\0" not in open(os.path.join(mnt, "usr/lib/dyld"), "rb").read():
-        raise SystemExit("GLEngine is in the shared cache and this dyld has no %s switch: the GLI shim "
-                         "cannot load (build with --no-ca-ogl)" % os.path.basename(DYLD_OVERRIDE))
+        raise SystemExit("%s is in the shared cache and this dyld has no %s switch: the GL shim "
+                         "cannot load (build without GL)" % (os.path.basename(rel), os.path.basename(DYLD_OVERRIDE)))
     d = os.path.dirname(os.path.join(mnt, DYLD_OVERRIDE))
     mode = os.stat(d).st_mode
     os.chmod(d, mode | 0o200)                  # the stock directory is r-x
     open(os.path.join(mnt, DYLD_OVERRIDE), "wb").close()
     os.chmod(d, mode)
-    return "cached GLEngine overridden by the file (%s)" % os.path.basename(DYLD_OVERRIDE)
+    return "cached %s overridden by the file (%s)" % (os.path.basename(rel), os.path.basename(DYLD_OVERRIDE))
 
 
 def gld_problem(cache_path, plugin=os.path.join(GLES, GLD_BUNDLE, "GLRendererFloatQEMU")):
