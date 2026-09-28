@@ -282,6 +282,7 @@ tethering on a device Apple never shipped it for. Not recommended.
 | phase | work | effort | exit check |
 |---|---|---|---|
 | P0 (this branch) | inventory, service probe, `spawn`/`sync` prototype, host tests | done | §3 |
+| **status** | P1, P3, P4, P5 done on ipod-noshell: agent v2 ops in contrib/it-agent/README.md; PAC baked + MCInstall CA (test_webproxy_tls_guest.py); builder without freeze/OpenSSH/OpenSSL, marker v3; regress without SSH, all 8 checks green on nand-current and on a fresh no-shell 7E18 | | |
 | P1 agent protocol | land `spawn`/`sync`; add `chown`, `unlink`, `dlicon`; delete `kill`; keep `exec` only until P4 | 1.5-2 d | test_agent_ops.py, test_agent_guest.py with no SSH bootstrap |
 | P2 app, typed calls | replace every row of §1a with the map: GuestFileSnapshot → `get`; upgrades → `put`/`chown` + `spawn launchctl`; frontmost/launch/lockstatus; dlicon; media commit via `spawn`; `sync`; respring; recovery. Delete the SSH branch of `guestRun`, runOrientationWatch and the itstatus/sblaunch/ithalt/itorient staging. Hide Terminal when the image has no shell | 2-3 d | check-media-components.py, check-app-launch.py, a manual pass by Sam |
 | P3 proxy and trust as on the iPad | PAC in the image's Wi-Fi service at build time; MCInstall profile through `lockdown-mcinstall`. Verify ManagedConfiguration-313.17 accepts it | 1 d | regress `webproxy` |
