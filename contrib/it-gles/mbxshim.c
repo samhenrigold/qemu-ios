@@ -88,6 +88,7 @@ typedef struct __attribute__((packed)) {
 #define CA_FOURCC_BGRA 0x42475241
 #define CA_FOURCC_555L 0x4c353535
 #define CA_FOURCC_565L 0x4c353635
+#define CA_FOURCC_A008 0x41303038   /* 8-bit alpha: CoreAnimation's shadow masks */
 
 extern long write(int, const void *, unsigned long);
 
@@ -1262,7 +1263,8 @@ static int GLESBindCoreSurface(void *gc, unsigned target, void *surface)
         uv = (unsigned)p_IOSurfaceGetBaseAddressOfPlane(surface, 1);
         uvstride = p_IOSurfaceGetBytesPerRowOfPlane(surface, 1);
     }
-    unsigned rowbytes = (format == CA_FOURCC_565L || format == CA_FOURCC_555L) ? width * 2 : width * 4;
+    unsigned rowbytes = format == CA_FOURCC_A008 ? width :
+        (format == CA_FOURCC_565L || format == CA_FOURCC_555L) ? width * 2 : width * 4;
     int readable = width && width <= 2048 && height && height <= 2048;
     if (format == 0x34323076 || format == 0x34323066) {
         readable = readable && uv && !(width & 1) && !(height & 1) &&
@@ -1270,7 +1272,8 @@ static int GLESBindCoreSurface(void *gc, unsigned target, void *surface)
             surface_fault_read(uv, uvstride, height / 2, width);
     } else {
         readable = readable && !uv &&
-            (format == CA_FOURCC_565L || format == CA_FOURCC_555L || format == CA_FOURCC_BGRA || format == 0x52474241) &&
+            (format == CA_FOURCC_565L || format == CA_FOURCC_555L || format == CA_FOURCC_BGRA || format == 0x52474241 ||
+             format == CA_FOURCC_A008) &&
             surface_fault_read(base, stride, height, rowbytes);
     }
     if (!readable) {
