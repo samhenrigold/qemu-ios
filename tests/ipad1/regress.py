@@ -28,6 +28,7 @@ import http.server
 import importlib.util
 import os
 import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -73,6 +74,11 @@ class Boot:
         self.usb, self.wifi, self.wav = usb, wifi, wav
         self.dir = os.path.join(cfg.out, tag)
         os.makedirs(self.dir, exist_ok=True)
+        # A default overlay is a fresh device: drop one a previous run left under the same out dir,
+        # or a rerun boots the old run's NAND (an app "installed" twice is an upgrade). Callers that
+        # mean to reuse state (persist, snapshots) pass overlay= explicitly.
+        if overlay is None:
+            shutil.rmtree(os.path.join(self.dir, "overlay"), ignore_errors=True)
         self.overlay = overlay or os.path.join(self.dir, "overlay")
         self.procs = Procs()
         self.sock = "/tmp/ipad1rg-%d-%d.qmp" % (os.getpid(), Boot.n)   # sun_path < 104
