@@ -8,7 +8,7 @@ After device.py has verified the IPSW, decrypted it into CACHE and written ident
 
   nor.bin   build_nor.py --identity: IMG2 + SysCfg (Mod#, Regn, SrNm, Batt) + nvram (btaddr, wifiaddr) made
             from the identity, the IPSW's all_flash images packed after it, each SHSH wrapped for the emulated
-            UID when the firmware's iBoot unwraps (ProductVersion >= 3; 2.x iBoot verifies them raw)
+            UID for 3.x+; on 2.x only iBoot is wrapped (its LLB unwraps it)
   iBoot.bin the IPSW's iBoot, decrypted (the machine's direct-iboot)
   gid-blobs.bin  KBAG || IV-key for each img3 the keys page covers (the machine's gid-blobs: the emulated AES
             engine has no GID key, so it answers a KBAG from this table)
@@ -185,9 +185,10 @@ def build(ctx):
     import build_nor
     shipped = build_nor.all_flash_order(af)
     derived["nor_images"] = [t for t in build_nor.DEFAULT_ORDER if t in shipped]
+    derived["wrap_shsh_types"] = derived["nor_images"] if major >= 3 else ["ibot"]
     step("nor.bin", [sys.executable, f"{HERE}/build_nor.py", "--identity", ctx.ident_path, "--all-flash", af,
                      "--types", ",".join(derived["nor_images"]), "--out", nor]
-         + ([] if derived["wrap_shsh"] else ["--no-wrap-shsh"]))
+         + ([] if derived["wrap_shsh"] else ["--wrap-shsh-types", "ibot"]))
     blobs, derived["gid_blobs"] = gid_blobs(z, [n for n in z.namelist() if n.startswith(prefix) and n.endswith(".img3")]
                                             + [kc_member], os.path.expanduser(m["keys"]))
     gid = os.path.join(out, "gid-blobs.bin")
