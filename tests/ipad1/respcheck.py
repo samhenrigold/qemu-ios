@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """iPad 1 responsiveness: lock-screen-to-touch gap and touch-to-photon latency.
 
-    tests/ipad1/respcheck.py [--qemu build/qemu-system-arm] [--out DIR]
+    tests/ipad1/respcheck.py [--qemu build/qemu-system-arm] [--out DIR] [--device DIR]
 
 Cold-boots golden-pristine through a fresh copy-on-write overlay, then:
   1. Polls the screen until the lock screen is lit, and from then on probes
@@ -85,19 +85,30 @@ def main():
     ap.add_argument("--samples", type=int, default=8, help="Settings row taps to time")
     ap.add_argument("--first-probe-delay", type=float, default=0.0,
                     help="wait this long after the lock screen lights before the first probe")
+    ap.add_argument("--device", help="an ipad1_device.py device dir: its nand, kboot.bin, die-id and NOR")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     td = tempfile.mkdtemp(prefix="resp-", dir="/tmp")
     qmp = f"{td}/qmp"
     os.mkdir(f"{td}/overlay")
-    child = subprocess.Popen([a.qemu, "-machine", f"ipad1,kboot={a.kboot},nand={a.base},nand-overlay={td}/overlay",
+    machine, v4 = f"ipad1,kboot={a.kboot},nand={a.base},nand-overlay={td}/overlay", False
+    if a.device:
+        lock = json.load(open(f"{a.device}/device.lock.json"))
+        v4 = lock["product_version"].startswith("4.")
+        machine = (f"ipad1,kboot={a.device}/kboot.bin,nand={a.device}/nand,nand-overlay={td}/overlay,"
+                   f"die-id={lock['identity']['die_id']}")
+        if os.path.exists(f"{a.device}/nor.bin"):
+            subprocess.run(["cp", f"{a.device}/nor.bin", f"{td}/nor.bin"], check=True)
+            os.chmod(f"{td}/nor.bin", 0o644)
+            machine += f",nor-rw={td}/nor.bin"
+    child = subprocess.Popen([a.qemu, "-machine", machine,
                               "-display", "none", "-audio", "driver=none", "-monitor", "none", "-qmp", f"unix:{qmp},server=on,wait=off",
                               "-serial", f"file:{a.out}/serial.log"],
                              stdout=subprocess.DEVNULL, stderr=open(f"{a.out}/stderr", "w"))
     t0 = time.monotonic()
     while not os.path.exists(qmp):
         time.sleep(0.05)
-    rig, syms = Rig(qmp), Symbols()
+    rig, syms = Rig(qmp), (None if v4 else Symbols())   # the symbol tables are 7B500's
     samples, stop = [], threading.Event()
     frame_path = f"{td}/f.ppm"
 
@@ -115,7 +126,7 @@ def main():
             time.sleep(0.05)
 
     def histogram(lo, hi, n=12):
-        names = [syms.name(pc, k) for t, pc, k in samples if lo <= t < hi]
+        names = [syms.name(pc, k) if syms else ("kernel" if k else "user") for t, pc, k in samples if lo <= t < hi]
         tally = {}
         for x in names:
             tally[x] = tally.get(x, 0) + 1
@@ -174,7 +185,7 @@ def main():
         time.sleep(3)
         rig.tap(608, 382)                          # first-unlock tip
         time.sleep(1.5)
-        rig.tap(448, 649)                          # Settings
+        rig.tap(*((445, 470) if v4 else (448, 649)))   # Settings (4.x's third row holds Game Center)
         time.sleep(8)
         from PIL import Image
         Image.fromarray(screen()).save(f"{a.out}/settings.png")

@@ -283,8 +283,7 @@ partial frames in 92 captured changes. On 7B500 it passes too, but only its firs
 panel (293 presents/s, one distinct capture): 3.2.x CA does not update a remote context's EAGL layer
 this way; GLTest.app is the 3.x fixture.
 
-Not done: fps and tearing of SpringBoard's own animations on 4.x (animfps/tearcheck script an unlock and
-app launches, which need activation).
+Fps and tearing of SpringBoard's own animations on 4.x: see "End to end, activated" below.
 
 **Untouched guest pages (2026-09-28).** A client array, index list or output pointer in a page the guest
 never touched (a static const table in `__TEXT`, untouched `__DATA`/`__bss`, fresh heap) used to fail the
@@ -295,6 +294,56 @@ in and the call is reissued (`gles_guest_rw` in `hw/arm/guest-gles.c`); stores p
 copy-on-write and modified-bit tracking see them too. The fixture now draws from static tables alone in
 their pages and writes a texture name into an untouched `__bss` page: readback PASS on 8C148 and 7B500
 (before: magenta where the cyan quad goes, name 0).
+
+## End to end, activated (2026-09-28)
+
+With the user's 4.2.1 activation tool (`create --activation-hook`, a black box here) the whole list was
+run against fresh 8C148 devices from `manifests/ipad1-8C148.json`, GL CoreAnimation on. Scratch outputs:
+`~/Developer/qemu-ios-files/ipad1/repro-8C148/` (`acc3`, `dev3`, `ui`, `rb1`, `set1`, `perf`, `apps`).
+
+| item | result |
+|---|---|
+| acceptance (`fresh-device.sh ... -- --activation-hook`) | PASS: both boots lit (the wallpapered lock screen, ~148,700 lit samples against boot-smoke's 20,000 threshold, which stands), unlocked with one drag, home screen, power-off to QEMU exit 0 in 15.6 / 16.5 s, no FTL rescan; boot 2 activated on the same overlay, so the keybag held. GL CA live: `[glishim] gld plugin registered, device 0x1027000`, `gliCreateContext api=2 group, root`, 0x38e attaches of CA surfaces |
+| unlock, Home, power-off in 4 orientations | PASS with 3.2.2's coordinates (display-rotation 270): unlock (959,477)->(959,47); the power-off sheet and a clean exit in accel-orientations 1-4 (16-19 s); Home leaves Safari. 4.x differences are elsewhere (below) |
+| regress.py (`--device`) | 7/7: boot, usbmux (ProductVersion 4.2.1), afc (sha256 at 1 B-256 KiB), persist, wifi, net (Safari over Wi-Fi), audio |
+| snapshot-check (`--device`) | 6/6, GL CA live across save/restore: screen 0.0% diff, touch + keyboard + Wi-Fi fetch after resume, usbmux, no panic, mid-sound audio 0.90/0.89/0.90 |
+| tearcheck (`--boot DEVICE`) | 53.8 fps capture, 2 torn of 251 changed (0.8%), 0 black/partial (3.2.2 today: 53.4 fps, 1.5%) |
+| respcheck (`--device`) | lock lit 14.0 s, knob tracks 1.9 s later; tap-to-highlight median 214.5 ms (216/225/214/215/214/515/214/204; 3.2.2 ~210) |
+| animfps (fixed, below) | 44.9 frames/s while animating on 8C148, 41.5 on a fresh 7B500 device, same scenario |
+| settings | time right (UTC; the zone is the fresh device's Pacific default, the app syncs it), About: 4.2.1 (8C148), 13.7 GB capacity, Wi-Fi and Bluetooth addresses; battery 83% charging ("83% Charged" on the lock screen); Wi-Fi icon and `qemu-ios` in Settings; Bluetooth "Unavailable" (BTServer off, as on 3.2.2's images); upright portrait after a reboot from landscape, landscape lock screen when the accelerometer says so at boot; Safari loads https://example.com through the web proxy (itwebproxy direct, TLS bridge) with the lock icon |
+| app pass | 44 works, 2 with issues, 5 crash, 1 won't install of 52 (docs/ipad1/app-compat.md, 4.2.1 table). DoodleJump 3.7 works; KP by Bing's repack still fails installd |
+| multitasking | PASS: a double Home (0.15 s presses, 0.2 s apart) raises the switcher bar with Safari; tapping it resumes Safari (2/2). Presses 0.1 s long do nothing; a 0.1 s gap reads as two presses (Spotlight) |
+
+What 4.2.1 needed, beyond the pipeline:
+- **USB device side** (`hw/arm/ipod_touch_usb_otg.c`): the driver clears the global IN/OUT NAK with
+  DCTL.CGNPINNAK/CGOUTNAK and polls GINTSTS for GINNakEff/GOUTNakEff to drop (`DWCUSB_GINT_GINNAKEFF did
+  not clear in time`, usbmux never attached); the model now drops them. AppleUSBDeviceMux relies on the
+  ZLP a host sends after a bulk OUT write that ends on a max-packet boundary (usbmuxd does, for
+  `length % wMaxPacketSize == 0`); the transfer-per-transaction transport had none, so the next transfer
+  was read as the same message (`expected 16384 bytes, received 32768`, `message was too large (65536
+  bytes)`, TCP RST): AFC past 16 KiB failed. The model delivers that ZLP on the next arm.
+- **USB keyboard**: 4.x's `AppleS5L8930XUSBArbitrator::handleStart` (0x80525788) publishes the host
+  nubs for the DT's `hsic-enabled` only when the boot-arg `enable-hsic` is 1 (kboot passes it; 3.x ignores
+  it). `_publishNubs` gives the host side `AAPL,power-supply` 50, and IOUSBFamily refuses QEMU's 100 mA
+  keyboard ("not enough power available"); `usb-kbd,max-power=20` (a new property) presents a low-power
+  one. 4.2.1 then raises "Cannot Use Device / The connected USB device is not supported", OK at
+  (565,382) a few seconds after unlock, and the keyboard types.
+- **Tests**, version-detected from the device lock: the Wi-Fi lease line (`receivedIPv4Address():
+  Received address ...`), the alert above, the unlock sound (4.x plays `UISounds/unlock.caf`, the same
+  file 7B500 ships), Settings' icon (445,470; Game Center has 3.2.2's spot). `regress.py`,
+  `snapshot-check.py`, `respcheck.py`, `app-compat.py` take `--device DIR`, `tearcheck.py --boot DIR`,
+  with a private NOR copy beside each overlay (paired with it in snapshots). animfps's swipe predated the
+  upright-portrait UI and never unlocked (it measured the lock-screen shimmer); it now unlocks with
+  regress.py's slider and taps Notes/Calendar, which sit at the same place on both versions.
+- Screendumps of the scenario scripts: tearcheck's and animfps's page swipe lands on the Spotlight page
+  on both versions (one app page), so their numbers include its caret blink.
+
+Open:
+- The power-off gesture from a *lock screen* hung 2 of 37 tries (QEMU still running 45 s later), with
+  software CA and with GL; 0 of 20+ from the home screen. Not reproduced since; boot-smoke now saves a
+  `-stuck.png` when it happens.
+- glishim lacks `glDiscardFramebufferEXT` (slot 838 of the 841-slot layout; Bejeweled calls it). It is a
+  hint, so a no-op is correct.
 
 ## What is done (2026-09-27, earlier session)
 
@@ -319,8 +368,10 @@ activation hook), and the iPod regression — see the commit.
 | Trust gate: what the `+0x1f8` virtual reads. ~~Gated on this.~~ **DONE 2026-09-27** — it is the DeviceTree `secure-root-prefix='md'` property + root-device match (`SecureRoot` IOResource from AppleARMPlatform), not the img3 chain. Route 1 confirmed viable, no kernel patching. Evidence above. | — |
 | ~~Restore-ramdisk one-shot~~ **DONE 2026-09-28** (see "The one-shot, as built"). The plan was: (1) **kboot**: teach `ipad1_kboot.build` an optional RAM-disk mode — add a segment carrying the raw-HFS ramdisk at a chosen PA in DRAM, a `chosen/memory-map` `RAMDisk` entry `(pa,len)` for it, boot-args `rd=md0` (root selects `md0`), and keep the restore DeviceTree's `secure-root-prefix='md'` (do NOT overwrite it in `fill_dt`; the normal-boot DT has no such prefix so 3.x/normal boots are unaffected). Restore kernelcache+ramdisk+DeviceTree come from the BuildManifest's Update/Restore identity via `ipad1_fw.py`. (2) **guest helper** (built like the others, ldid-signed, AMFI boot-args already on): call the two stable symbols `format_effaceable_storage`-equivalent (AppleEffaceableStorage user client sels 3/4) + `_MKBKeyBagCreateSystem(NULL, dataMount)`; mount the data volume, write `/private/var/keybags/systembag.kb`, `it_seal`-style `reboot(RB_HALT)`. (3) **pipeline**: `ipad1_device.py create` runs this one-shot boot against the device's *writable* NAND + `nor-rw` before the normal boot+seal; verify effaceable formatted + `systembag.kb` present; version-gated by manifest (`options.writable_nor`/a `restore_keybag` flag). | — |
 | ~~GLI shim for 4.2.1~~ **DONE 2026-09-28**: GL CoreAnimation is the 8C148 default (below) | — |
-| Activation: the opt-in hook refused 4.2.1's lockdownd (it fails closed; exit 1, file unchanged) | the hook owner's call |
-| ~~Unlock / power-off coordinates on 4.x SpringBoard~~ **DONE 2026-09-28**: power-off verified (display-rotation 270); unlock untested (no activated 4.x device) | — |
+| ~~Activation~~ the user's own 4.2.1 tool, passed as `--activation-hook` | — |
+| ~~Unlock / power-off coordinates on 4.x SpringBoard~~ **DONE 2026-09-28**: unlock, Home and power-off in all four orientations verified on an activated device | — |
+| ~~End-to-end validation with GL CA~~ **DONE 2026-09-28** ("End to end, activated") | — |
+| Lock-screen power-off hang (2/37), glDiscardFramebufferEXT | open |
 
 Scratch artefacts (untracked): `~/Developer/qemu-ios-files/ipad1/repro-8C148/` (decrypted firmware,
 extracted IOP images `iopfw-{7B500,8C148}.bin`, probe boots `p1`-`p7`, the diagnostic `diag/it_ps.c` and the

@@ -26,6 +26,11 @@ if os.path.exists(os.path.join(store, "device.lock.json")):
     lock = json.load(open(os.path.join(store, "device.lock.json")))
     machine = "ipad1,kboot=%s/kboot.bin,nand=%s/nand,nand-overlay=%s/overlay,die-id=%s" % (
         store, store, out, lock["identity"]["die_id"])
+    if os.path.exists(os.path.join(store, "nor.bin")):   # 4.x: the keybag's effaceable NOR, a private copy
+        import shutil
+        shutil.copyfile(os.path.join(store, "nor.bin"), out + "/nor.bin")
+        os.chmod(out + "/nor.bin", 0o644)
+        machine += ",nor-rw=%s/nor.bin" % out
 qemu = subprocess.Popen(["timeout", "500", os.environ.get("QEMU", os.path.join(ROOT, "build/qemu-system-arm")),
     "-machine", machine,
     "-display", "none", "-audio", "driver=none", "-monitor", "none", "-serial", "file:" + serial, "-qmp", "unix:%s,server,nowait" % sock],
@@ -34,12 +39,25 @@ try:
     while not os.path.exists(sock): time.sleep(0.2)
     q = itqmp.QMP(sock)
     t0 = time.time()
-    while "_lcdEnable: enable: 0" not in open(serial, errors="replace").read():
+    def lit():   # the lock screen's wallpaper: far over the boot logo (tests/ipad1/boot-smoke.py's LIT)
+        q.cmd("screendump", filename=out + "/l.ppm")
+        d = open(out + "/l.ppm", "rb").read()
+        return sum(1 for b in d[len(d) // 20::13] if b > 60) > 20000
+    while not lit():
         if time.time() - t0 > 300: sys.exit("no lock screen")
         time.sleep(2)
-    itqmp.button(q, "home"); time.sleep(2)
-    itqmp.swipe(q, 64, 290, 64, 720, steps=20, dt=0.03); time.sleep(4)
-    itqmp.tap(q, 415, 385); time.sleep(3)          # first-boot "Edit Home Screen" dialog
+    time.sleep(3)
+    # Panel coordinates of the upright portrait UI (tests/ipad1/regress.py): portrait top is the panel's left
+    # edge. Notes and Calendar sit at the same place on 3.2.2 and 4.2.1's home screens.
+    itqmp.button(q, "home"); time.sleep(2)         # wake a lock screen that dimmed
+    itqmp.move(q, 959, 477)                        # slide to unlock, resting before the release
+    q.cmd("input-send-event", events=[{"type": "btn", "data": {"down": True, "button": "left"}}])
+    for i in range(1, 31):
+        itqmp.move(q, 959, 477 - (477 - 47) * i // 30); time.sleep(0.03)
+    time.sleep(0.3)
+    q.cmd("input-send-event", events=[{"type": "btn", "data": {"down": False, "button": "left"}}])
+    time.sleep(4)
+    itqmp.tap(q, 608, 382); time.sleep(3)          # 3.2.2's first-unlock "Edit Home Screen" tip; 4.x: empty space
     lock, raw = threading.Lock(), q.cmd             # one QMP session, shared by input and the dumper
     def locked(*a, **k):
         with lock:
@@ -59,11 +77,11 @@ try:
         json.dump([t for t, _ in samples], open(out + "/frames/times.json", "w"))
     th = threading.Thread(target=dumper); th.start()
     for _ in range(2):
-        itqmp.swipe(q, 500, 700, 500, 100, steps=15, dt=0.02); time.sleep(2.5)   # to the search page and back
-        itqmp.swipe(q, 500, 100, 500, 700, steps=15, dt=0.02); time.sleep(2.5)
-        itqmp.tap(q, 895, 470); time.sleep(4)                                     # Notes
+        itqmp.swipe(q, 523, 167, 523, 617, steps=15, dt=0.02); time.sleep(2.5)   # to the search page
+        itqmp.button(q, "home"); time.sleep(2.5)                                  # and back
+        itqmp.tap(q, 128, 297); time.sleep(4)                                     # Notes
         itqmp.button(q, "home"); time.sleep(3)
-        itqmp.tap(q, 895, 118); time.sleep(4)                                     # Calendar
+        itqmp.tap(q, 128, 650); time.sleep(4)                                     # Calendar
         itqmp.button(q, "home"); time.sleep(3)
     stop[0] = True; th.join()
     ch = [samples[i][0] for i in range(1, len(samples)) if samples[i][1] != samples[i - 1][1]]
