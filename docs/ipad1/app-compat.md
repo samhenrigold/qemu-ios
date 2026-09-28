@@ -13,7 +13,7 @@ installed through AppSync on its own overlay of a private clone of `golden-appsy
 CoreAnimation, ipad1-appsync @ this commit's build), launched from the home screen, watched
 for ~30 s (frame + 20 s later frame), syslog and crash reports pulled.
 
-**40 works, 4 launches with issues, 4 crash, 1 won't install.**  Since then Super Monkey Ball works (41 works, 3 with issues).
+**40 works, 4 launches with issues, 4 crash, 1 won't install.**  Since then Super Monkey Ball and SpinningiPhoneApp work (42 works, 2 with issues).
 
 All four crashes are app/OS mismatches, not emulator bugs: three dyld "Symbol not found"
 (APIs 3.2.2 doesn't ship) and one internal build calling a private AVCapture selector. No run
@@ -39,10 +39,14 @@ Emulator-side findings:
   engine's `_gliBindViewES(NULL)` unbinds the old drawable (`vt[2]`); the shim only forgot it, so CA
   refused the second bind, the method returned NO, and every present went to the invisible panel blit.
   The shim now unbinds too. Title screen: `screens/2026-09-27-supermonkeyball-gl.png`.
-- SpinningiPhoneApp is a different problem. It never rebuilds its framebuffer, presents to CA every
-  frame, and the shim call trace is identical with and without the fix. Its phone screen quad is
-  sometimes black and sometimes shows the wallpaper. Lead: `glTexImage2D` on cube face 0x8516
-  raises GL_INVALID_ENUM on the host.
+- **SpinningiPhoneApp: black chrome and logo. FIXED (gl-cubemap).** A different problem: it is an
+  ES 2.0 app whose metal reflects a cube map. It uploads six faces with `glTexImage2D`, then calls
+  `glGenerateMipmap(GL_TEXTURE_CUBE_MAP)` under `GL_LINEAR_MIPMAP_LINEAR`. The host capped
+  `GL_TEXTURE_MAX_LEVEL` on the face target, which raised GL_INVALID_ENUM (the 0x8516 line), and it
+  refused cube-map mipmaps, so the cube stayed incomplete. Metal then logged
+  `GLD_TEXTURE_INDEX_CUBE_MAP is unloadable` and sampled zero: the Apple logo and screen bezel came out
+  black. The screen quad's clownfish lock screen is the app's own texture and was always right. Test:
+  `tests/ipod/test_gles_cubemap.py`.
 - Every boot, SpringBoard included, logs one host-driver line `UNSUPPORTED (log once): POSSIBLE
   ISSUE: unit 0 GLD_TEXTURE_INDEX_2D is unloadable ... using zero texture`, plus about 14
   `[gles] texture ... mean=0` uploads. This is baseline noise, not per-app.
@@ -85,6 +89,7 @@ harness pins the new icon into page 1's first free cell via springboardservices
 | SearchPerfTest 1.0 | `com.apple.SearchPerfTest` | iPhone | works | UI up | [png](screens/app-compat/com.apple.SearchPerfTest.png) |
 | Shazam | `com.shazam.Shazam` | iPhone | works | welcome screen (needs the post-install settle, see below) | [png](screens/app-compat/com.shazam.Shazam.png) |
 | SimpleApp 1.0 | `com.apple.SimpleApp` | iPhone | works | UI up | [png](screens/app-compat/com.apple.SimpleApp.png) |
+| SpinningiPhoneApp | `com.yourcompany.SpinningiPhoneApp` | iPhone | works | GL demo spins; cube-map reflections on the logo and bezel | [png](screens/app-compat/com.yourcompany.SpinningiPhoneApp.png) |
 | Starbucks | `com.starbucks.mystarbucks` | iPhone | works | UI up | [png](screens/app-compat/com.starbucks.mystarbucks.png) |
 | Tap Tap | `com.tapulous.TapTap` | iPhone | works | welcome / Push-Notifications alert (no APNS here, expected) | [png](screens/app-compat/com.tapulous.TapTap.png) |
 | Tap Tap | `com.tapulous.taptapboost` | iPhone | works | welcome / Push-Notifications alert (no APNS here, expected) | [png](screens/app-compat/com.tapulous.taptapboost.png) |
@@ -97,7 +102,6 @@ harness pins the new icon into page 1's first free cell via springboardservices
 | ExitStrategy | `com.jwegventures.exitstrategy` | iPhone | launches-with-issues | Tutorial nav bar draws, body stays black (nz 0.02) 30 s later | [png](screens/app-compat/com.jwegventures.exitstrategy.png) |
 | Justin Bieber | `com.tapulous.justinbieber` | iPhone | launches-with-issues | stays on the title backdrop 30 s later; menu never appears | [png](screens/app-compat/com.tapulous.justinbieber.png) |
 | Monkey Ball | `com.ooi.supermonkeyball` | iPhone | works | GL title screen, landscape 1x window (was blank white before the gliBindViewES unbind fix) | [png](screens/2026-09-27-supermonkeyball-gl.png) |
-| SpinningiPhoneApp | `com.yourcompany.SpinningiPhoneApp` | iPhone | launches-with-issues | GL demo runs (model rotates between frames) but renders nearly black | [png](screens/app-compat/com.yourcompany.SpinningiPhoneApp.png) |
 | DoodleJump | `com.yourcompany.DoodleJump` | iPhone | crashes | dyld: Symbol not found _UIApplicationWillEnterForegroundNotification (3.7 needs iOS 4 despite MinimumOS 3.1) |  |
 | FigCam | `com.apple.FigCam` | iPhone | crashes | uncaught NSInvalidArgumentException: -[AVCapture setDisableRemoteImplementation:] unrecognized (internal build, private SPI not in 3.2.2) |  |
 | Key Recorder | `com.apple.kbtester` | iPhone | crashes | dyld: Symbol not found _OBJC_CLASS_$_UIKeyboardRecorderEncoder in UIKit (internal build) |  |
