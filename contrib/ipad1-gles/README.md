@@ -54,7 +54,7 @@ The iPad machine registers the guest-services trap for the GLES calls only
 | gliDestroyContext | forgets the CA view (EAGL owns the binding) and deletes the host context; the owner also deletes the sharegroup |
 | gliSetInteger | 0x38E: attach IOSurface. For a renderbuffer it becomes the view surface and sets the host drawable size; for a texture it goes through `GLESBindCoreSurface`. 0x39B: detach. 0x2C1: swap notification (`IOMobileFramebufferSwapSignal` on the main display). Anything else returns 0 |
 | gliGetInteger | writes 0 |
-| gliBindViewES | records the drawable; NULL clears it |
+| gliBindViewES | records the drawable; NULL unbinds the old one (`vt[2]`, as stock `_gliBindViewES` does) and clears it, so a rebuilt framebuffer can bind the layer again |
 | gliPresentViewES | mbxshim `GLESPresentView`: render into the current surface, then `drawable->vt[4](d,1)`, then `vt[3]` next frame |
 | QueryRendererInfo, DestroyRendererInfo, AttachDrawable(WithOptions), SwapBuffers, Get/Set/CopyAttributes | stubs (OpenGLES 3.2.2 never calls them). Each returns 10015, except DestroyRendererInfo, which returns 0 |
 
