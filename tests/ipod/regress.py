@@ -1019,7 +1019,28 @@ def check_applaunch(cfg, procs, dev, r):
     shot = dev.qmp.shot(os.path.join(dev.dir, "app.ppm"))
     to_png(shot, os.path.join(dev.dir, "app.png"))
     _hi, lit = lit_count(shot)
-    if not foreground_is(cfg, port, bundle_id):
+    front = foreground_is(cfg, port, bundle_id)
+    if getattr(cfg, "launch_stages", False):
+        # Evidence only, never part of the verdict: crash reports and the
+        # installd registry (SignerIdentity/ProfileValidated per app) and
+        # SpringBoard's prefs.
+        for name, command in (
+                ("crashlogs.txt", "cd /var/mobile/Library/Logs/CrashReporter && ls -la && "
+                 "for f in *.plist *.crash; do [ -f \"$f\" ] && echo \"=== $f\" && cat \"$f\"; done"),
+                ("installation.plist",
+                 "cat /var/mobile/Library/Caches/com.apple.mobile.installation.plist"),
+                ("springboard.plist",       # SBTrustedCodeSigningIdentities
+                 "cat /var/mobile/Library/Preferences/com.apple.springboard.plist")):
+            try:
+                if isinstance(port, AgentControl):
+                    data = itqmp.agent(port.qmp, "exec", command, timeout=60)[1]
+                else:
+                    data = guest_ssh(cfg, port, [command], timeout=60).stdout.encode()
+                with open(os.path.join(dev.dir, name), "wb") as f:
+                    f.write(data)
+            except Exception as error:  # noqa: BLE001 - evidence never decides the verdict
+                log("evidence %s: %s" % (name, error))
+    if not front:
         return r.set(False, "%s is not the foreground app after launch" % bundle_id)
     if lit < 20000:
         return r.set(False, "%s is foreground but screen is dark (lit=%d)" % (bundle_id, lit))
