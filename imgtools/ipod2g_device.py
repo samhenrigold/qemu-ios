@@ -25,6 +25,9 @@ bake() adds the guest side, all of it located at build or run time (no offsets):
                                  enable-dylibs-to-override-cache switch is created too (ipad1_rootfs.gli_uncache)
   contrib/appsync/patch-appsync-dylib.sh  MISValidateSignature -> success in the shared cache, found by symbol;
                                  libappsync.dylib DYLD_INSERTed into installd (options.appsync)
+  it_prefs                       build/ipod-guest/it_prefs (contrib/it-prefs/build-ipod.sh) + com.qemu.it-prefs, the
+                                 iPad's one-shot: as mobile, through CFPreferences, SBDidShowReorderText = true if
+                                 SpringBoard's binary names that key (no first-run "Edit Home Screen" tip)
   install_web_proxy()            the iPad's proxy PAC and the en0 Wi-Fi service that uses it (options.web_proxy)
   mkpkg.seed()                   the guest-package loader (/usr/local/bin/it_boot + its job) and the seed package
                                  from --guest-package (default build/guest-package/armv6.itpack): pkgs/<serial>,
@@ -51,6 +54,9 @@ MBX = "System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngi
 DYLD_CACHE = "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv6"
 WEB_PROXY_PAC = "usr/local/share/ltm/proxy.pac"   # ipad1_rootfs.PAC_PATH
 GUEST_PACKAGE = os.path.join(ROOT, "build/guest-package/armv6.itpack")
+# the iPad's it_prefs, SpringBoard tip only (contrib/it-prefs/build-ipod.sh): built file -> (volume path, mode)
+PREFS = {"build/ipod-guest/it_prefs": ("usr/local/bin/it_prefs", 0o755),
+         "contrib/it-prefs/com.qemu.it-prefs.plist": ("System/Library/LaunchDaemons/com.qemu.it-prefs.plist", 0o644)}
 # Paths bake-guest-tools.sh creates (it documents the setowner step); owner, relative to the volume.
 GUEST_TOOL_OWNERS = [
     ("0 0", "usr/local"), ("0 0", "usr/local/bin"), ("0 0", "usr/local/bin/it_agent"),
@@ -190,6 +196,8 @@ def build(ctx):
     if m.get("packages") or opt.get("shell") or opt.get("ssh"):
         raise SystemExit("manifest asks for tool packages / a shell / ssh: iPod images carry no shell any more "
                          "(docs/ipod/guest-services-plan.md); remove packages and options.shell/ssh")
+    if major >= 3 and not os.path.exists(os.path.join(ROOT, "build/ipod-guest/it_prefs")):
+        raise SystemExit("build/ipod-guest/it_prefs missing (run contrib/it-prefs/build-ipod.sh)")
     cfg = {"options": opt, "guest_tools_supported": major >= 3, "owners": os.path.join(work, "owners.txt"),
            "report": os.path.join(work, "bake.json"), "activation_hook": ctx.hook, "activation_hook_args": ctx.hook_args,
            "guest_package": os.path.abspath(ctx.a.guest_package or GUEST_PACKAGE)}
@@ -228,7 +236,8 @@ def build(ctx):
     for p in pages:
         listing.update(("%s %s\n" % (p, sha(os.path.join(nand, p)))).encode())
     tools = {n: sha(os.path.join(ROOT, n)) for n in ("contrib/it-agent/it_agent", "contrib/it-agent/it_typein.dylib",
-                                                     "contrib/it-gles/sblaunch", "contrib/it-instprogress/sbdlicon")} if cfg["guest_tools_supported"] else {}
+                                                     "contrib/it-gles/sblaunch", "contrib/it-instprogress/sbdlicon")
+             + tuple(PREFS)} if cfg["guest_tools_supported"] else {}
     if baked.get("gli"):
         engine = "contrib/it-gles/MBXGLEngine-" + baked["gli"]
         tools[engine] = sha(os.path.join(ROOT, engine))
@@ -294,6 +303,12 @@ def bake(mnt, config):
         sys.stdout.write(r.stdout)
         report["appsync"] = [l for l in r.stdout.splitlines() if "MISValidateSignature" in l or "DYLD_INSERT" in l]
         owners.append(("0 0", "usr/lib/libappsync.dylib"))
+    if supported:
+        for src, (rel, mode) in PREFS.items():
+            shutil.copyfile(os.path.join(ROOT, src), os.path.join(mnt, rel))
+            os.chmod(os.path.join(mnt, rel), mode)
+            owners.append(("0 0", rel))
+        report["prefs"] = "it_prefs: SBDidShowReorderText at first boot"
     if opt.get("web_proxy", True):
         install_web_proxy(mnt, owners)
         report["web_proxy"] = "PAC /%s on the en0 Wi-Fi service" % WEB_PROXY_PAC

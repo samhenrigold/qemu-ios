@@ -4,8 +4,8 @@
   Applies this machine's guest preferences (it_prefs.c): a one-shot run as
   root that writes mobile's preferences (com.apple.springboard, com.apple.locationd),
   unloading and reloading locationd around its own.
-  Root-owned in /System/Library/LaunchDaemons, or launchd ignores it; baked by
-  imgtools/ipad1_rootfs.py bake.
+  Root-owned in /System/Library/LaunchDaemons, or launchd ignores it; the iPad's
+  seed package carries it, imgtools/ipod2g_device.py bakes it for the iPod.
 -->
 <plist version="1.0">
 <dict>
