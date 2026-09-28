@@ -25,7 +25,7 @@ and lockdownd (libimobiledevice, as LightTouchMac already does for the iPod).
 | `it_agent exec` | dropped | nothing stock; the only real users were install and debugging, both covered below | — (ssh on the jailbroken base for development only) |
 | app install, `sbdlicon` placeholder, `isprogress` | a | `com.apple.mobile.installation_proxy` (its status callbacks carry `PercentComplete`) | `instproxy_install` with a status callback; the progress bar comes from the host |
 | `sblaunch` / `it_agent launch`, `kill` | a | DDI `com.apple.debugserver` (+ `.applist`), after `com.apple.mobile.mobile_image_mounter` mounts the 3.2.2 DDI | the Xcode path: mount the DDI, then gdb-remote `A`/`k` (idevicedebug) |
-| `itstatus` / `frontmost`, `lockstatus` | dropped | no stock query. The host already knows what it launched, and the lock state follows from the screen and the modelled lock button | — |
+| `itstatus` / `frontmost`, `lockstatus` | **c** (2026-09-28) | no stock query answers the foreground app, and the window title needs it (the user taps icons; the host does not know what runs) | `it_agent` `frontmost`/`lockstatus` over the cp15 `QC_AG_*` channel, as on the iPod |
 | `itorient` / `orientation` | a | `com.apple.springboardservices` `getInterfaceOrientation` (in 3.2.2's springboardservicesrelay, absent on the iPod's 3.1.3) | `sbservices_get_interface_orientation` |
 | screenshots (iPod read the framebuffer) | a (or host framebuffer) | DDI `com.apple.mobile.screenshotr` | `screenshotr_take_screenshot`; the display model's framebuffer is cheaper and needs no DDI |
 | logs | a | `com.apple.syslog_relay`, `com.apple.crashreportcopymobile` | `syslog_relay_*`, `afc` on the crash-report service |
@@ -58,6 +58,14 @@ The guest side is therefore `it_pbd`, the older clipboard-only daemon, not
 clipboard and publishes guest pasteboard changes, as `public.utf8-plain-text`.
 It is installed as a root launchd job and leaves SpringBoard untouched: no
 `DYLD_INSERT_LIBRARIES`, no environment changes.
+
+**Since guest package serial 2 (2026-09-28)** the iPad runs `it_agent` instead: the window title needs
+the foreground app, which no stock service reports (the table above). The agent carries the same
+pasteboard bridge (`QC_PB_*`), so `it_pbd` is dropped from the k48 packages; two pasteboard daemons would
+race. The ipad1 machine routes `QC_AG_*`/`QC_UI_*` to `hw/arm/ipod-agent.c` like the iPod machine. The
+agent is built for armv7 by `contrib/ipad1-guest/build.sh`. Checked on 7B500 and 8C148: `ping`,
+`frontmost` (Home Screen, then Safari), `lockstatus`, the pasteboard handoff (`pasteboard-status`
+"delivered ... (agent: alive)"); `dlicon` answers 0 but SpringBoard shows no placeholder on 3.2/4.2.
 
 ## it_ethlink: the USB Ethernet link (2026-09-27)
 

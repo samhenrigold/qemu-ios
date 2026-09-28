@@ -21,6 +21,13 @@ for src in it-pasteboard/it_pbd it-ethlink/it_ethlink it-seal/it_seal it-prefs/i
     "${LDID:-ldid}" -S "$OUT/$t"
     file "$OUT/$t"
 done
+# it_agent: the iPod's guest agent (foreground app, lock state, launch, sync, the pasteboard), as
+# contrib/it-agent/build.sh builds it: clang's own stdarg.h, and SpringBoardServices' entitlements.
+cc6 "$HERE/../it-agent/it_agent.c" "$OUT/it_agent.o" -isystem "$(xcrun clang -print-resource-dir)/include"
+link6 -execute "$OUT/it_agent" "$OUT/it_agent.o"
+rm -f "$OUT/it_agent.o"
+"${LDID:-ldid}" -S"$HERE/../it-gles/sblaunch-entitlements.xml" "$OUT/it_agent"
+file "$OUT/it_agent"
 # it_heading: the compass probe (contrib/it-heading), not baked by default.
 # -D_FORTIFY_SOURCE=0: 3.2's libSystem has no __vsnprintf_chk.
 cc6 "$HERE/../it-heading/it_heading.c" "$OUT/it_heading.o" -D_FORTIFY_SOURCE=0
