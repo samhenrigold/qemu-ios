@@ -266,6 +266,11 @@ def main():
         # and back to a package still on disk without fetching it
         dev.offer("ltpkg 1\nbuild 7E18\nserial 11\n")
         assert dev.boot() == 2 and dev.current() == 11 and dev.hook(MBX) == b"shim v11"
+        # a verdict for the package being switched to counts at once
+        dev.offer("ltpkg 1\nbuild 7E18\nserial 0\n")
+        assert dev.boot() == 2 and dev.current() == 10
+        dev.offer("ltpkg 1\nbuild 7E18\nserial 11\n", [("good", 11)])
+        assert dev.boot() == 2 and dev.current() == 11 and "tries 0" in dev.state() and "good 11" in dev.state()
 
         # a hook target the seed never had .baked: created from the stock file on first override
         dev = case()
