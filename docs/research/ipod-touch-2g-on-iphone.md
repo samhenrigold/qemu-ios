@@ -1,3 +1,5 @@
+> Status: research (feasibility study, 2026-08-03); nothing was built from it.
+
 # Running this emulator on an iPhone
 
 Feasibility study, 2026-08-03. **Verdict: viable.** No code was written for it;

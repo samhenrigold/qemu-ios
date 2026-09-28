@@ -1,3 +1,5 @@
+> Status: research, superseded by `../ipad1/guest-services.md` (the AppSync interposer dylib).
+
 Now the report.
 
 # iPad1,1 / iOS 3.2 (7B367) unsigned-code feasibility — enforcement chain, gatekeepers, and recommended plan

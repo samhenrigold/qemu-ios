@@ -35,7 +35,7 @@ bake() adds the guest side, all of it located at build or run time (no offsets):
                                  shim); the package's jobs (com.qemu.it-agent) are removed from LaunchDaemons, as
                                  it_boot loads them. The lock's guest_package records it.
 No shell, sshd or third-party binary is installed: guest services are stock lockdown services plus it_agent
-(docs/ipod/guest-services-plan.md). Only our own helpers above are added.
+(docs/archive/guest-services-plan.md). Only our own helpers above are added.
 Every file the bake creates is given its owner in the catalog afterwards (the host mount is noowners).
 """
 import hashlib, json, os, plistlib, re, shutil, struct, subprocess, sys, zipfile
@@ -195,7 +195,7 @@ def build(ctx):
     # the bake, run by build_nand.py inside the mounted volume
     if m.get("packages") or opt.get("shell") or opt.get("ssh"):
         raise SystemExit("manifest asks for tool packages / a shell / ssh: iPod images carry no shell any more "
-                         "(docs/ipod/guest-services-plan.md); remove packages and options.shell/ssh")
+                         "(docs/archive/guest-services-plan.md); remove packages and options.shell/ssh")
     if major >= 3 and not os.path.exists(os.path.join(ROOT, "build/ipod-guest/it_prefs")):
         raise SystemExit("build/ipod-guest/it_prefs missing (run contrib/it-prefs/build-ipod.sh)")
     cfg = {"options": opt, "guest_tools_supported": major >= 3, "owners": os.path.join(work, "owners.txt"),

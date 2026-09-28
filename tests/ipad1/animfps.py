@@ -9,7 +9,7 @@ Boots STORE on an overlay in OUT (the store is never written), unlocks, then run
 screendumps back to back through the same QMP session. Reports frames/s WHILE ANIMATING: frame changes
 divided by the time inside runs of changes (gaps < 0.25 s), per-run counts, and totals. The distinct
 frames land in OUT/frames with times.json, so `tearcheck.py --analyze OUT/frames` scores them
-for tearing. Build the stores with `ipad1_rootfs.py build --gles [--ca-ogl]` (docs/ipad1/userland-gl-display.md).
+for tearing. Build the stores with `ipad1_rootfs.py build --gles [--ca-ogl]` (docs/research/userland-gl-display.md).
 """
 import hashlib, os, subprocess, sys, threading, time
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

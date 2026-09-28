@@ -5,7 +5,7 @@
  * pmgr node is both device_type "timer" (pe_arm_init_timer) and
  * AppleS5L8930XPerformanceController's register window.
  *
- * Register contract: docs/ipad1/research/gap-kernel-platform-mmio.md §1.1-1.3.
+ * Register contract: docs/research/gap-kernel-platform-mmio.md §1.1-1.3.
  * Nothing here decodes clock frequencies; the kernel takes those from the DT.
  * The PLL/clock-config values only have to satisfy the kernel's polls.
  */

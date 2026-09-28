@@ -1,3 +1,5 @@
+> Archived 2026-09-28: the iPod backport plan; the backport is done (LightTouchMac `docs/STATUS.md`, "iPod touch 2G emulation" and "Guest tools without SSH").
+
 # Backporting the iPad 1 line to the iPod touch 2G (3.1.3 / 7E18)
 
 Branch `ipod-backport`, forked from `ipad1` at 7d1446fd5c. `git log ipad1 ^ipod_touch_2g` has ~360

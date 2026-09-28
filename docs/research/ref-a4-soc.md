@@ -1,3 +1,5 @@
+> Status: research, superseded by `hw/arm/ipad1.c`, `hw/arm/s5l8930_*.c` and `../ipad1/addresses-7B500.md`.
+
 ## S5L8930 (A4) SoC map from openiBoot `plat-a4` — cross-checked with iEmu `hw/s5l8930.h`
 
 Source roots: `OIB` = `/home/user/iDroid-Project/openiBoot`, `IEMU` = `/home/user/teknogeek/iemu/hw` (danzatt/QEMU-s5l89xx-port `hw/s5l8930.{c,h}` are byte-identical to iEmu: `diff -q` empty). Build config: `OIB/plat-a4/SConscript:5` defines `ARM_A8, CONFIG_A4`; `OIB/plat-a4/iPad1G.SConscript:15` defines `CONFIG_IPAD_1G`, `MACH_ID=3593`, and adds module `nor-spi`; platform is built with `MALLOC_NO_WDT` (no watchdog driver in plat-a4).
