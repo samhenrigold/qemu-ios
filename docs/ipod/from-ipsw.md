@@ -1,7 +1,7 @@
 # iPod touch 2G from a stock IPSW (manifest → device)
 
 `imgtools/device.py create MANIFEST OUT` builds a device from declared inputs only: a sha1-pinned IPSW, its
-keys page, a seed for a synthetic identity, and (iPod only) three sha256-pinned tool tarballs. It is the same
+keys page and a seed for a synthetic identity; no third-party tarballs (the iPod no longer gets a shell). It is the same
 orchestrator, manifest format and `device.lock.json` as the iPad (`ipad1_device.py` is now the k48ap board
 module; its CLI is unchanged). The iPod board is `imgtools/ipod2g_device.py`.
 
@@ -102,7 +102,8 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 | sound defaults | set-sound-defaults.py | same |
 | AppSync | cache MISValidateSignature (by symbol) + libappsync in installd | same script, contrib/appsync/patch-appsync-dylib.sh |
 | GLES shim | MBXGLEngine shim, CA_ENABLE_OGL=1, MBX2D/auto off | same, gated by the @encode check against docs/ipod/gli-dispatch-7E18.tsv (:116); refusal → stock engine + software CA |
-| shell + ssh | Cydia bootstrap files copied as uid 99, stock modes clobbered by `chmod 755`, sshd by overwriting ReportCrash.SafetyNet, host keys shared by every copy | files listed in imgtools/ipod2g-shell.txt taken from the three pinned tarballs, root-owned, tar modes, `/Library/LaunchDaemons/com.openssh.sshd.plist`, host keys generated per device |
+| shell + ssh | Cydia bootstrap files copied as uid 99, stock modes clobbered by `chmod 755`, sshd by overwriting ReportCrash.SafetyNet, host keys shared by every copy | **none**: no freeze, OpenSSH or OpenSSL; guest services are stock lockdown services plus it_agent v2 (docs/ipod/guest-services-plan.md), marker `.lt-guest-tools-v3` |
+| web proxy / CA trust | itproxy/ittrust run over SSH | the iPad's PAC baked into the en0 Wi-Fi service (`ipod2g_device.install_web_proxy`); CA by a MCInstall profile at run time |
 | byte patches | none left on the default path: installd/SpringBoard are stock | none; see "emulator-side per-version code" |
 
 ### Remaining emulator compatibility behavior
@@ -139,6 +140,8 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 | volume size, Mod#, Regn | manifest (`volume_blocks`, `model_number`, `region_info`) |
 
 ## Fresh 7E18 image vs nand-current.new (tests/ipod/nand_manifest.py)
+
+(Measured before the builder dropped the shell package; the shell and sshd rows below no longer apply.)
 
 Method: `nand_manifest.py --img` (new: a flat volume) on the builder's volume and on `dumpvol.py` of
 nand-current.new. 538 differing rows, every one in these classes:
