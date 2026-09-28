@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The guest-package loader (it_boot.c): once per boot, and again on
+  `launchctl start com.qemu.it-boot`. Baked root-owned into
+  /System/Library/LaunchDaemons with the loader in /usr/local/bin.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.qemu.it-boot</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/it_boot</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/dev/console</string>
+</dict>
+</plist>
