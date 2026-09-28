@@ -110,11 +110,17 @@ an `int16_t`.
 
 **The host must never split one logical OUT packet across transactions.** In the
 host->device direction this transport is *transfer-oriented*, not
-packet-oriented: there are no ZLPs, so an OUT transaction that happens to be a
-multiple of the endpoint's max packet size has no way to signal that it is the
-end. One OUT transaction therefore means one complete transfer, and the device
+packet-oriented. One OUT transaction means one complete transfer, and the device
 retires the endpoint after each one. A continuation lands in a transfer the guest
 already considers finished.
+
+**A zero-length OUT transaction is a ZLP.** It completes the guest's armed
+transfer with 0 bytes (and is NAKed like any OUT until one is armed). The device
+never invents one: the host sends it exactly when a real host would, i.e. when
+its software asks (libusb's `LIBUSB_TRANSFER_ADD_ZERO_PACKET`, or usbmuxd's
+explicit ZLP after a write whose length is a multiple of the bulk endpoint's
+`wMaxPacketSize`). iOS 4's mux needs that ZLP to find the end of a message;
+libirecovery's recovery uploads do not send one, and iBoot does not expect it.
 
 **The device accepts at most the guest's currently armed transfer size.** If an
 OUT transaction exceeds it the excess is truncated; the device logs this via
