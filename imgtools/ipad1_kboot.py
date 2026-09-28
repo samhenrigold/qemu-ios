@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Build a direct-kernel boot image for the ipad1 machine: what iBoot-817.29 does before it jumps to xnu.
 
-    ipad1_kboot.py [--usb-eth-link] DEC_DIR OUT [BOOT_ARGS]
+    ipad1_kboot.py [--identity FILE] DEC_DIR OUT [BOOT_ARGS]
+    ipad1_kboot.py --synth-identity SEED OUT.json    a synthetic identity (see synth_identity)
 
 DEC_DIR is ipad1_fw.py's output (kernelcache.mach, DeviceTree.bin). BOOT_ARGS defaults to DEFAULT_BOOT_ARGS.
-With no arguments only the self-check runs. The kernel is stock: the USB Ethernet link is raised by the
-baked it_ethlink helper (contrib/it-ethlink). USB_ETH_LINK (below), the old 7B500-only kernel patch doing
-the same, is kept as a fallback behind --usb-eth-link; it is inert until a host selects alt setting 1.
+--identity defaults to IDENTITY_FILE. With no arguments only the self-check runs. The kernel is stock: the
+USB Ethernet link is raised by the baked it_ethlink helper (contrib/it-ethlink).
 
 OUT format (all little-endian): a flat image of physical memory, extra segments, then a 24-byte trailer.
 
@@ -34,7 +34,7 @@ Physical layout, mirroring iBoot's allocator (kernel VA 0xC0000000 = PA 0x400000
     vram              0x4F700000 + 0x8FC000 (iBoot writes the 0x5F700000 alias; same RAM through the mirror)
     pram              0x4FFFC000 + 0x4000   (iBoot writes 0x5FFFC000; ditto)
 """
-import json, os, struct, sys, tempfile
+import hashlib, json, os, struct, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from macho import Macho
@@ -99,22 +99,6 @@ def logo_segments(blob, fb_pa):
     return [(fb_pa, stride * FB_HEIGHT, None), (fb_pa + y0 * stride, len(rows), bytes(rows))]
 
 
-# The one kernel patch (PLAN.md "USB Ethernet link"). AppleUSBEthernetDevice (7B500 kext at 0xc02f8000)
-# only brings its link up in setProperties({"LinkStatus": 1}): setLinkStatus(active), start the output
-# queue, arm the first bulk read, tell the host. The only stock caller is configd's USBEthernetSharing
-# when MobileInternetSharing tethers, which a Wi-Fi iPad cannot (misd: no carrier provisioning, ENOTSUP),
-# so en1 stays link-down and IPConfiguration never DHCPs. The patch makes the host selecting alt setting
-# 1 do the same: the alt-1 path of message() (0xc02f92d8) ends in `mov r3,r5; blx ip` (its HostAttached
-# messageClients); that becomes a `bl` into a cave over an unused error string, which repeats the call,
-# rebuilds setProperties' frame (r8/sl saved at r7-0x14) and branches into its LinkStatus=1 body past the
-# already-set check (0xc02f9842, r2 = 1). setProperties' epilogue then returns to message()'s caller with 0.
-# ponytail: re-selecting alt 1 re-runs the body (queue start, read buffer) without the already-set check.
-USB_ETH_LINK = [  # (va, stock bytes, patched bytes)
-    (0xc02f9300, bytes.fromhex("2b46e047"), bytes.fromhex("01f044f9")),                  # bl cave
-    (0xc02fa58c, b"AppleUSBEthernetDevice::%s: ", bytes.fromhex(                          # "addAltSetting 0 failed"
-        "2b46e047" "a7f10c0d" "2de90005" "82b0" "0122" "fff751b9").ljust(28, b"\0")),
-]
-
 # ponytail: clocks are guesses (timebase = the kernel's own 24 MHz default); replace with HW-2's real
 # IODeviceTree values. clock-frequencies slots follow iBoot's clock_get_frequency (5ff10f80) indices.
 # Measured on a real iPad 1 running 7B500 (sysctl hw.*, 2026-09-26): iBoot leaves cpu and
@@ -141,6 +125,31 @@ PLACEHOLDER = {"serial-number": "EMU000000000", "mlb-serial-number": "EMU0000000
                "unique-chip-id": "0x0000000001", "die-id": ["0x0", "0x0"],
                "wifi-mac": "02:00:00:00:00:01", "bt-mac": "02:00:00:00:00:02"}
 MODEL = {"model-number": "MB292", "region-info": "LL/A"}
+# Wi-Fi iPad 1 model numbers by storage (the only NAND geometry modelled is 16 GB).
+MODELS = {"16g": "MB292"}
+SERIAL_CHARS = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"   # no I or O, as Apple serials
+
+
+def udid(ident):
+    """lockdownd's UniqueDeviceID on a Wi-Fi iPad 1: SHA1(serial + Wi-Fi MAC + Bluetooth MAC), MACs lowercase
+    and colon-separated (docs/ipad1/userland-boot.md, "Activation identity")."""
+    return hashlib.sha1((ident["serial-number"] + ident["wifi-mac"].lower() + ident["bt-mac"].lower()).encode()).hexdigest()
+
+
+def synth_identity(seed, storage="16g"):
+    """A made-up but well-formed unit identity, a pure function of `seed`: 11-character serial, 13-character
+    MLB, 40-bit ECID, two die-id words, a locally administered Wi-Fi MAC (02:...) and Bluetooth = Wi-Fi + 1."""
+    h = hashlib.sha256(seed.encode()).digest()
+    chars = lambda b, n: "".join(SERIAL_CHARS[x % len(SERIAL_CHARS)] for x in b[:n])
+    wifi = bytes([0x02]) + h[28:32] + bytes([h[27] & 0xFE])        # even last byte: BT = +1 never carries
+    bt = wifi[:5] + bytes([wifi[5] + 1])
+    ident = {"serial-number": chars(h[0:], 11), "mlb-serial-number": chars(h[11:], 13),
+             "unique-chip-id": "0x%010x" % (int.from_bytes(h[20:25], "big") | 1),
+             "die-id": ["0x%08x" % int.from_bytes(h[25:27] + h[0:2], "big"), "0x%08x" % int.from_bytes(h[2:6], "big")],
+             "wifi-mac": wifi.hex(":"), "bt-mac": bt.hex(":"),
+             "model-number": MODELS[storage], "region-info": MODEL["region-info"], "seed": seed}
+    ident["udid"] = udid(ident)
+    return ident
 
 
 def load_identity(path=IDENTITY_FILE):
@@ -161,7 +170,8 @@ def identity_dt(ident):
     """(root props, chosen props, {node: local-mac-address}) for an identity dict."""
     ecid = int(ident["unique-chip-id"], 16)
     mac = lambda s: bytes.fromhex(s.replace(":", ""))
-    return ({"serial-number": ident["serial-number"], "mlb-serial-number": ident["mlb-serial-number"], **MODEL},
+    model = {k: ident.get(k, v) for k, v in MODEL.items()}
+    return ({"serial-number": ident["serial-number"], "mlb-serial-number": ident["mlb-serial-number"], **model},
             {"unique-chip-id": (ecid & 0xFFFFFFFF, ecid >> 32),
              "die-id": tuple(int(w, 16) for w in ident["die-id"])},
             {"arm-io/sdio": mac(ident["wifi-mac"]), "arm-io/uart3/bluetooth": mac(ident["bt-mac"])})
@@ -284,15 +294,7 @@ def fill_dt(dt, memory_map, ident):
         dt.set("chosen/memory-map", name, (pa, size))
 
 
-def patch(image, patches):
-    for va, stock, new in patches:
-        o = va - VIRT_BASE
-        if image[o:o + len(stock)] != stock:
-            raise SystemExit("kernel patch at %#x: expected %s, found %s" % (va, stock.hex(), image[o:o + len(stock)].hex()))
-        image[o:o + len(new)] = new
-
-
-def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=False, ident=None):
+def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, ident=None):
     """Return (image bytes, load_pa, entry_pa, bootargs_pa)."""
     page = lambda n: (n + 0xFFF) & ~0xFFF
     pa = lambda va: va - VIRT_BASE + PHYS_BASE
@@ -315,8 +317,6 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=False,
         n = min(filesize, vmsize)
         image[vmaddr - VIRT_BASE:vmaddr - VIRT_BASE + n] = m.data[fileoff:fileoff + n]
         memory_map.append((f"Kernel-{name}", pa(vmaddr), vmsize))
-    if usb_eth_link:
-        patch(image, USB_ETH_LINK)
     memory_map += [("DeviceTree", pa(dt_va), len(dt_blob)), ("BootArgs", pa(args_va), 0x1000)]
 
     fill_dt(dt, memory_map, ident if ident is not None else load_identity())
@@ -339,17 +339,17 @@ def pack_segments(segments):
                     for pa, n, data in segments)
 
 
-def main(dec_dir, out, boot_args=DEFAULT_BOOT_ARGS, usb_eth_link=False):
+def main(dec_dir, out, boot_args=DEFAULT_BOOT_ARGS, identity=IDENTITY_FILE):
     dt_blob = open(os.path.join(dec_dir, "DeviceTree.bin"), "rb").read()
     image, load_pa, entry_pa, args_pa = build(os.path.join(dec_dir, "kernelcache.mach"), dt_blob, boot_args,
-                                              usb_eth_link)
+                                              load_identity(identity))
     logo = os.path.join(dec_dir, "AppleLogo.bin")
     segments = logo_segments(open(logo, "rb").read(), VRAM_PA) if os.path.exists(logo) else []
     with open(out, "wb") as f:
         f.write(image + pack_segments(segments) + TRAILER.pack(b"K48KBOOT", load_pa, entry_pa, args_pa, len(image)))
     top = struct.unpack_from("<I", image, args_pa - load_pa + 0x10)[0]
     print(f"load {load_pa:#x}+{len(image):#x} entry {entry_pa:#x} r0 {args_pa:#x} "
-          f"topOfKernelData {top:#x} boot-args [{boot_args}]" + (" +usb-eth-link" if usb_eth_link else " (no usb-eth-link)"))
+          f"topOfKernelData {top:#x} boot-args [{boot_args}]")
 
 
 def selfcheck():
@@ -388,7 +388,7 @@ def selfcheck():
     with tempfile.NamedTemporaryFile() as f:
         f.write(kernel)
         f.flush()
-        image, load, entry, r0 = build(f.name, dt_blob, usb_eth_link=False, ident=PLACEHOLDER)
+        image, load, entry, r0 = build(f.name, dt_blob, ident=PLACEHOLDER)
 
     assert (load, entry, r0) == (0x40000000, 0x40001040, 0x40006000)
     assert image[0x1000:0x1004] == b"\xce\xfa\xed\xfe" and image[0x3000:0x3010] == b"D" * 16
@@ -410,16 +410,11 @@ def selfcheck():
     assert identity_dt(PLACEHOLDER)[2]["arm-io/sdio"] == bytes.fromhex("020000000001")
     assert get("chosen", "chip-id") == (0x8930,) and get("cpus/cpu0", "timebase-frequency") == (24_000_000,)
     assert get("vram", "reg", "<II") == (0x4F700000, 0x8FC000) and get("pram", "reg", "<II") == (0x4FFFC000, 0x4000)
-    img = bytearray(0x303000)
-    for va, stock, _ in USB_ETH_LINK:
-        img[va - VIRT_BASE:va - VIRT_BASE + len(stock)] = stock
-    patch(img, USB_ETH_LINK)
-    assert all(img[va - VIRT_BASE:va - VIRT_BASE + len(new)] == new for va, _, new in USB_ETH_LINK)
-    try:
-        patch(img, USB_ETH_LINK)             # already patched: refuses rather than double-applying
-        assert False
-    except SystemExit:
-        pass
+    a, b = synth_identity("x"), synth_identity("y")
+    assert a == synth_identity("x") and a["udid"] != b["udid"] and len(a["serial-number"]) == 11
+    assert int(a["bt-mac"].replace(":", ""), 16) == int(a["wifi-mac"].replace(":", ""), 16) + 1
+    assert a["wifi-mac"].startswith("02:") and int(a["unique-chip-id"], 16) < 1 << 40
+    assert identity_dt(a)[0]["model-number"] == "MB292"
 
     # Logo: a 2x1 iBootIm, left pixel opaque white, right transparent; all-literal LZSS stream.
     raw = bytes([255, 0, 255, 255])
@@ -439,8 +434,16 @@ def selfcheck():
 
 if __name__ == "__main__":
     selfcheck()
-    argv = [a for a in sys.argv[1:] if a != "--usb-eth-link"]
+    argv = sys.argv[1:]
+    if argv[:1] == ["--synth-identity"] and len(argv) == 3:
+        fd = os.open(argv[2], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(synth_identity(argv[1]), f, indent=1)
+        sys.exit()
+    identity = IDENTITY_FILE
+    if argv[:1] == ["--identity"] and len(argv) > 1:
+        identity, argv = argv[1], argv[2:]
     if len(argv) in (2, 3):
-        main(*argv, usb_eth_link=len(argv) < len(sys.argv) - 1)
+        main(*argv, identity=identity)
     elif argv:
         sys.exit(__doc__)

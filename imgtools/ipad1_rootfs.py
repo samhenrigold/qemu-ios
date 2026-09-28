@@ -5,12 +5,13 @@
                           [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge] [--no-web-proxy] [--no-usb-net]
     ipad1_rootfs.py fetch [DIR]          copy /var/stash and /var/root/Library/Lockdown off the real iPad (ssh)
     ipad1_rootfs.py report DIR...        list the Mach-Os under DIR that carry no Apple signature
-    ipad1_rootfs.py bake DIR [--tools build/ipad1-guest] [--seal]   install the guest helpers into DIR/system.img
+    ipad1_rootfs.py bake DIR [--tools build/ipad1-guest] [--seal] [--activation-hook SCRIPT]
+                                         install the guest helpers into DIR/system.img
     ipad1_rootfs.py --selfcheck
 
 `build` writes DIR/<base>/{system.img,data.img,unsigned-machos.txt}, then prints the ipad1_nand.py line:
 
-    ipad1_nand.py build --mbr rdisk0-head4M.bin --system DIR/<base>/system.img --data DIR/<base>/data.img \
+    ipad1_nand.py build --mbr MBR --kernelcache KERNELCACHE --system DIR/<base>/system.img --data DIR/<base>/data.img \
                         --out DIR/nand-{pristine|jb}
 
 Two bases. `pristine` (default, first boot target): the IPSW rootfs.dmg, sliced out of its UDIF/APM and
@@ -59,6 +60,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_nand as bn                      # attach(), set_owner(), run(), JUNK
@@ -396,15 +398,23 @@ class Mounted:
     def __exit__(self, et, *_):
         for junk in bn.JUNK:
             shutil.rmtree(os.path.join(self.mnt, junk), ignore_errors=True)
-        subprocess.run(["diskutil", "unmount", self.dev], capture_output=True)
+        # a busy volume (Spotlight, fseventsd) refuses the unmount; fsck of a still-mounted volume then
+        # reports bogus damage (seen once: "Incorrect folder count"), so retry and never fsck it mounted
+        for _ in range(20):
+            unmounted = subprocess.run(["diskutil", "unmount", self.dev], capture_output=True).returncode == 0
+            if unmounted:
+                break
+            time.sleep(0.5)
         try:
-            if et is None:
+            if et is None and unmounted:
                 r = subprocess.run(["fsck_hfs", "-fn", self.dev], capture_output=True, text=True)  # -f: journaled data volume
                 self.ok = "appears to be OK" in r.stdout
                 if not self.ok:
                     sys.stdout.write(r.stdout[-600:])
         finally:
             subprocess.run(["hdiutil", "detach", self.dev], capture_output=True)
+        if et is None and not unmounted:
+            raise SystemExit("could not unmount %s (%s)" % (self.mnt, self.dev))
         if et is None and not self.ok:
             raise SystemExit("fsck_hfs is not happy with %s" % self.img)
 
@@ -576,7 +586,7 @@ def build(a):
     for d in ("mnt-system", "mnt-data", "mnt-pristine"):
         shutil.rmtree(os.path.join(a.out, d), ignore_errors=True)
 
-    print("[4/4] done:\n    %s/ipad1_nand.py build --mbr %s --system %s --data %s --out %s/nand-%s"
+    print("[4/4] done:\n    %s/ipad1_nand.py build --mbr %s --kernelcache KERNELCACHE --system %s --data %s --out %s/nand-%s"
           % (os.path.dirname(os.path.abspath(__file__)), a.mbr, system, data, os.path.dirname(a.out), a.tag))
 
 
@@ -607,11 +617,34 @@ def bake(a):
         rewrite_plist(os.path.join(m.mnt, MSM_JOB), msm_insert)
         if not a.keep_bluetooth:
             rewrite_plist(os.path.join(m.mnt, BT_JOB), lambda d: d.__setitem__("Disabled", True))
+        if a.activation_hook:
+            activation_hook(a.activation_hook, os.path.join(m.mnt, LOCKDOWND))
     # noowners mount: launchd ignores a job plist that is not root-owned
-    n = bn.set_owner(system, ["usr/local", "usr/local/bin", "usr/local/lib"] + list(JOBS) + [rel for rel, _ in TOOLS.values()], 0, 0)
+    n = bn.set_owner(system, ["usr/local", "usr/local/bin", "usr/local/lib"] + list(JOBS) + [rel for rel, _ in TOOLS.values()]
+                     + ([LOCKDOWND] if a.activation_hook else []), 0, 0)
     shutil.rmtree(os.path.join(a.dir, "mnt-system"), ignore_errors=True)
     print("baked %s + %s into %s (%d catalog records patched); rebuild the NAND store with ipad1_nand.py"
           % (", ".join(TOOLS), ", ".join(os.path.basename(j) for j in JOBS), system, n))
+
+
+LOCKDOWND = "usr/libexec/lockdownd"
+
+
+def activation_hook(hook, target):
+    """Opt-in: run the user's activation hook (`hook FILE`, edits FILE in place) on a copy of lockdownd, then
+    ad-hoc sign the result with lockdownd's own entitlements and write it back (0755; owner fixed by bake)."""
+    with tempfile.TemporaryDirectory(prefix="ipad1_hook.") as td:
+        work, ents = os.path.join(td, "lockdownd"), os.path.join(td, "entitlements.plist")
+        shutil.copyfile(target, work)
+        before = open(work, "rb").read()
+        with open(ents, "wb") as f:
+            subprocess.run(["ldid", "-e", work], stdout=f, check=True)
+        subprocess.run(([sys.executable] if hook.endswith(".py") else []) + [hook, work], check=True)
+        if open(work, "rb").read() == before:
+            raise SystemExit("activation hook %s left lockdownd unchanged" % hook)
+        subprocess.run(["ldid", "-S" + ents if os.path.getsize(ents) else "-S", work], check=True)
+        shutil.copyfile(work, target)
+        os.chmod(target, 0o755)
 
 
 def fetch(out):
@@ -740,6 +773,7 @@ def main():
     k.add_argument("--tools", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "../build/ipad1-guest"))
     k.add_argument("--keep-bluetooth", action="store_true", help="leave com.apple.BTServer enabled (default: Disabled)")
     k.add_argument("--seal", action="store_true", help="also install it_seal, the one-shot clean halt ipad1_seal.py needs")
+    k.add_argument("--activation-hook", metavar="SCRIPT", help="opt-in: run SCRIPT on /usr/libexec/lockdownd (then re-signed ad hoc)")
     a = ap.parse_args()
     selfcheck()
     if a.cmd == "build":
