@@ -31,6 +31,8 @@
 #include "qobject/qjson.h"
 #include "qobject/qdict.h"
 #include "qobject/qnum.h"
+#include "system/runstate.h"
+#include "qemu/error-report.h"
 #include <sys/mman.h>
 
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPState, S5L8930_IOP)
@@ -1144,6 +1146,36 @@ static bool nand_map_file(const char *path, size_t size, bool writable,
 }
 
 /*
+ * Stores through the MAP_SHARED maps sit in the host page cache until the
+ * kernel writes them back. Every VM stop (the app's Stop, which pauses and
+ * then quits; a snapshot; the guest's own power-off) pushes them to disk, so a
+ * hard halt loses only what a power cut would, like the iPod's fsync'd pages.
+ */
+static void iop_vm_state(void *opaque, bool running, RunState state)
+{
+    S5L8930IOPState *s = opaque;
+    size_t size = (size_t)s->pages_per_ce * s->page_stride;
+    int64_t t0 = g_get_monotonic_time();
+
+    if (running) {
+        return;
+    }
+    for (int bus = 0; bus < NAND_BUSES; bus++) {
+        for (int ce = 0; ce < NAND_CES; ce++) {
+            uint8_t *pages = s->overlay_dir ? s->ovl[bus][ce] : s->chip[bus][ce];
+            if (pages && msync(pages, size, MS_SYNC) < 0) {
+                error_report("s5l8930-iop: msync bus%d-ce%d: %s", bus, ce, strerror(errno));
+            }
+            if (s->dirty[bus][ce] && msync(s->dirty[bus][ce], s->pages_per_ce / 8, MS_SYNC) < 0) {
+                error_report("s5l8930-iop: msync bus%d-ce%d.dirty: %s", bus, ce, strerror(errno));
+            }
+        }
+    }
+    info_report("s5l8930-iop: NAND synced on stop in %" PRId64 " ms",
+                (g_get_monotonic_time() - t0) / 1000);
+}
+
+/*
  * Open the page store under "nand"; with "nand-overlay" the base is mapped
  * read-only and every program/erase lands in the overlay directory (same
  * file layout plus a bus<b>-ce<c>.dirty bitmap of the pages it owns). A
@@ -1251,6 +1283,7 @@ static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
             close(dfd);
         }
     }
+    qemu_add_vm_change_state_handler(iop_vm_state, s);
 }
 
 static void s5l8930_iop_init(Object *obj)
