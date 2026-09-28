@@ -957,115 +957,6 @@ static void ipod_touch_load_bootrom(IPodTouchMachineState *nms)
 #define LLB_LOAD_BASE 0x22000000
 
 /*
- * IT_INJECT_DT: 3.1.3 device-tree bring-up (Option B3).
- *
- * The 7E18 iBoot loads and decrypts the kernelcache from HFS, but then fails to
- * load the device tree: its load_and_set_device_tree() (VA 0x0ff0f498) calls
- * image_load() (VA 0x0ff1998c) on the NOR 'dtre' image, which is rejected at
- * signature validation before any GID decrypt is attempted -- and a global
- * security-state change (forge/demote) to permit it breaks the kernelcache.
- *
- * Instead we hand iBoot an already-decrypted device tree. load_and_set_device_tree
- * (VA 0x0ff0f498) sets its DT-address global (g_dt_addr @ 0x0ff27560) to
- * 0x0BF00000 and its DT-size global (g_dt_size @ 0x0ff27564) to the enumerated
- * image size *before* the image_load() call; on image_load() success it returns
- * those to the caller, which then dt_deserialize()s the blob at g_dt_addr into
- * iBoot's node list (the list UpdateDeviceTree/AllocateMemoryRange walk).
- *
- * iBoot zeroes DRAM (both the insecure 0x08000000 and secure 0x0B000000 banks)
- * during early init, so a device tree dropped at 0x0BF00000 at reset is gone long
- * before the DT load. But the "llb"/SRAM region at 0x22000000 is NOT cleared (it
- * is where the SecureROM/LLB run on real hardware) and iBoot keeps it mapped. So
- * we stage the decrypted serialized device tree at 0x22000000 and rewrite the
- * failing image_load() call site (VA 0x0ff0f4da) into a 16-byte thunk that copies
- * the blob into place right when the DT is loaded (after the kernelcache
- * decompress that would otherwise clobber it):
- *
- *     movs r0,#0xbf ; lsls r0,r0,#20      ; r0 = 0x0BF00000 (dst = g_dt_addr)
- *     movs r1,#0x22 ; lsls r1,r1,#24      ; r1 = 0x22000000 (src = staging)
- *     ldr  r2,[r5]                        ; r2 = g_dt_size  (len, already set)
- *     blx  0x0ff1b474                     ; iBoot memcpy(dst, src, len)
- *     b    0x0ff0f4ea                     ; fall into the success/out-param path
- *
- * memcpy preserves r4/r5/r6/r8, so the function's success tail returns g_dt_addr
- * and g_dt_size to the caller exactly as a real image_load would. This touches
- * ONLY the dtre path; the kernelcache still validates and decrypts normally, and
- * a global security-state change (forge/demote) -- which breaks the kernelcache --
- * is avoided. Gated entirely behind IT_INJECT_DT; 2.1.1 is untouched.
- */
-#define DT_STAGING_BASE     0x22000000   /* uncleared SRAM/"llb" region */
-#define IBOOT_DT_LOAD_PATCH 0xf4da       /* VA offset of the `bl image_load` */
-
-/*
- * IT_INJECT_LOGO: the boot Apple logo, which iBoot never manages to draw.
- *
- * The screen is black for the whole of iBoot's life on every 3.1.3 boot. It is
- * not a display problem: iBoot brings the panel up (pinot_init is clean), the
- * scanout base is programmed, and the backlight is high. It fails one step
- * earlier, and for exactly the same reason the device tree did.
- *
- * do_boot_ui() is inlined into main at 0x0ff00b4c and matches the published
- * iBoot source line for line:
- *
- *   0x0ff00b52  bl 0x0ff12b14   paint_set_bgcolor(0,0,0)
- *   0x0ff00b58  bl 0x0ff13298   paint_set_picture(0)
- *   0x0ff00b5c  ldr r0,='logo'  (the only 'logo' literal in the image)
- *   0x0ff00b5e  bl 0x0ff13498   paint_set_picture_for_tag(IMAGE_TYPE_LOGO)
- *   0x0ff00b62  bl 0x0ff12cf2   paint_update_image()
- *
- * paint_set_picture_for_tag is just paint_set_picture(image_find(tag)), and
- * image_find succeeds -- the 'logo' img3 is in the NOR image list, which is
- * what the "type logo offset 0x495c0" line in the boot log reports. The load
- * happens inside paint_set_picture:
- *
- *   0x0ff132f8  add r2,sp,#0x24         ; r2 = &address slot
- *   0x0ff132fc  add r3,sp,#0x20         ; r3 = &length slot
- *   0x0ff132fe  bl  0x0ff1998c          ; image_load(handle, 0, &addr, &len)
- *   0x0ff13302  cmp r0,#0
- *   0x0ff13304  bge 0x0ff13308          ; success
- *   0x0ff13306  b   0x0ff13452          ; failure: return, no picture set
- *
- * Measured over the gdbstub: that image_load returns **-1**. It is the same
- * image_load that rejects the dtre, failing personalised-signature validation
- * before any GID decrypt is attempted -- confirmed by the AES engine, which
- * performs exactly one GID operation in a whole boot ("7E18 kernelcache") and
- * never one for the logo. Unlike the device tree, a failed picture load is
- * silent: do_boot_ui simply paints its black background and boots on.
- *
- * So do for the logo what IT_INJECT_DT does for the device tree: hand iBoot the
- * already-decrypted image and skip the validation it cannot pass. The call site
- * is retargeted to a thunk that fills in the two out-parameters and returns 0.
- * On the success path iBoot itself checks the blob, so the staged file must be
- * a real decrypted iBootIm container ("iBootIm\0", 'lzss', 'argb' or 'grey');
- * iBoot decompresses and blits it. imgtools/extract_bootlogo.py produces one.
- *
- * Only this one call site is touched, so the kernelcache still validates and
- * decrypts normally -- unlike IT_FORGE_SIGCHECK, which is global and breaks it
- * ("Kernelcache image not valid" -> recovery mode).
- */
-/*
- * Where the blob and the thunk can actually live, both learned the hard way:
- *
- * - iBoot ZEROES its own region above the loaded image during early init, so
- *   anything staged at reset into 0x0FF8xxxx is gone by the time do_boot_ui
- *   runs (measured: the thunk read back as 0x0000 halfwords and the CPU walked
- *   through them). The "llb"/SRAM region is the one place that survives, which
- *   is exactly why IT_INJECT_DT stages there; the device tree is still intact
- *   at 0x22000000 at logo time. Put the image there, clear of the DT.
- *
- * - The thunk cannot go there too: a Thumb BL only reaches +/-16 MB and
- *   0x22000000 is ~318 MB from the call site. It has to live inside the loaded
- *   iBoot image, which is not zeroed. do_recoverymode_ui (the 'recm' UI at
- *   0x0ff00cfe) is dead code in a normal boot -- nothing calls it unless iBoot
- *   enters recovery -- so the thunk goes there. If a future change ever needs
- *   recovery mode's UI with IT_INJECT_LOGO set, move this.
- */
-#define LOGO_STAGING_BASE      0x22040000 /* llb/SRAM region, survives; DT is
-                                           * ~35 KB at 0x22000000            */
-#define LOGO_THUNK_BASE        0x0FF00D00 /* dead do_recoverymode_ui code    */
-#define IBOOT_LOGO_LOAD_PATCH  0x132fe    /* VA offset of the `bl image_load` */
-
-/*
  * Top of the "insecure" DRAM bank (0x08000000 + 0x3000000). Measured to be
  * zeroed by iBoot and then left untouched through kernel load, and it is inside
  * the kernel's static map (required, see ipod_touch_stage_ramdisk).
@@ -1164,84 +1055,6 @@ static void ipod_touch_stage_ramdisk(IPodTouchMachineState *nms)
 #define BOOT_ARGS_CMDLINE_LEN   256
 #define BOOT_ARGS_STAGING_BASE  0x220fff00
 
-/*
- * IT_AMFI_ALLOW_TASKPORT: let SpringBoard launch ad-hoc/invalidly-signed apps.
- *
- * amfi_allow_any_signature forgives code-page validation at exec, so a decrypted
- * (Clutch) app *runs* -- but it does not confer platform-binary status. When
- * SpringBoard spawns an app it then reaches for the child's task port to wire up
- * the app before resuming it (task_name_for_pid -> mac_proc_check_get_task_name);
- * AMFI's policy hook grants that only for a validly-signed binary, so for a
- * decrypted app SpringBoard logs "Failed to spawn ...: Unable to obtain a task
- * name port right ... (os/kern) failure" and kills it (exit 1). No AMFI
- * enforcement-disable boot-arg relaxes this path (amfi_allow_any_signature /
- * cs_enforcement_disable / amfi_get_out_of_my_way / amfi_unrestrict_task_for_pid
- * were all tried; the failure is identical), and get-task-allow on the target
- * does not help either.
- *
- * The single kernel choke points are the MAC framework's
- *   mac_proc_check_get_task_name (VA 0xc01ab2a0) and
- *   mac_proc_check_get_task      (VA 0xc01ab200)
- * which task_name_for_pid / task_for_pid consult; a zero return means "allowed".
- * We patch each prologue to `movs r0,#0 ; bx lr` so every task-port request is
- * granted, exactly as it is for a platform binary. This is the userspace-signing
- * analog of amfi_allow_any_signature and, like IT_BOOT_ARGS, it lives entirely in
- * the emulator -- no image edits, and it applies to any app however it arrived
- * (offline injection or over-the-wire install). The kernelcache is decrypted in
- * DRAM (VA->phys slide 0xB8000000: VA 0xC0000000 == phys 0x08000000), so the
- * code bytes are patchable from the host once the kernel image is present; we
- * ride the same early repeated timer as the boot-args write and only patch once
- * the expected prologue (push {r4-r7,lr}) is in place. Addresses/slide are env-
- * overridable for other builds. Gated on IT_AMFI_ALLOW_TASKPORT; 2.1.1 untouched.
- */
-
-static bool it_amfi_patch_one(IPodTouchMachineState *nms, uint32_t va, uint32_t slide)
-{
-    static const uint8_t stub[4] = { 0x00, 0x20, 0x70, 0x47 }; /* movs r0,#0; bx lr */
-    uint32_t pa = va - slide;
-    uint8_t cur[4];
-
-    address_space_rw(nms->nsas, pa, MEMTXATTRS_UNSPECIFIED, cur, sizeof(cur), 0);
-    if (cur[0] == stub[0] && cur[1] == stub[1] &&
-        cur[2] == stub[2] && cur[3] == stub[3]) {
-        return true; /* already patched */
-    }
-    /* Expected Thumb prologue "push {r4,r5,r6,r7,lr}" == 0xB5F0. Only patch the
-     * real function, never mid-decrypt garbage. */
-    if (!(cur[0] == 0xF0 && cur[1] == 0xB5)) {
-        return false;
-    }
-    address_space_rw(nms->nsas, pa, MEMTXATTRS_UNSPECIFIED, (void *)stub,
-                     sizeof(stub), 1);
-    return true;
-}
-
-static void ipod_touch_amfi_patch_now(IPodTouchMachineState *nms)
-{
-    if (!getenv("IT_AMFI_ALLOW_TASKPORT") || nms->amfi_patched) {
-        return;
-    }
-    const char *slide_s = getenv("IT_AMFI_HOOK_SLIDE");
-    const char *gtn_s = getenv("IT_AMFI_GET_TASK_NAME_VA");
-    const char *gt_s = getenv("IT_AMFI_GET_TASK_VA");
-    const ITFirmwareDesc *fw = it_firmware_loaded();
-    /* Other builds require all three explicit research overrides. Never use
-     * 7E18 function addresses just because a different kernel has a push. */
-    if ((!fw || !fw->amfi_get_task_va) && !(slide_s && gtn_s && gt_s)) {
-        return;
-    }
-    uint32_t slide = slide_s ? strtoul(slide_s, NULL, 0) : fw->amfi_slide;
-    uint32_t gtn = gtn_s ? strtoul(gtn_s, NULL, 0) : fw->amfi_get_task_name_va;
-    uint32_t gt = gt_s ? strtoul(gt_s, NULL, 0) : fw->amfi_get_task_va;
-
-    if (it_amfi_patch_one(nms, gtn, slide) &&
-        it_amfi_patch_one(nms, gt, slide)) {
-        nms->amfi_patched = true;
-        fprintf(stderr, "[IT_AMFI_ALLOW_TASKPORT] patched mac_proc_check_get_task"
-                "{,_name} (0x%08x, 0x%08x) to allow\n", gt, gtn);
-    }
-}
-
 static const char *ipod_touch_requested_boot_args(IPodTouchMachineState *nms)
 {
     /* Explicit machine options win over the legacy environment fallback,
@@ -1258,9 +1071,6 @@ static void ipod_touch_set_boot_args_now(void *opaque)
     uint32_t ba = 0;
     uint8_t buf[BOOT_ARGS_CMDLINE_LEN];
     size_t n;
-
-    /* AMFI task-port patch rides this same early repeated timer. */
-    ipod_touch_amfi_patch_now(nms);
 
     if (!args) {
         goto rearm;
@@ -1358,11 +1168,7 @@ static void ipod_touch_set_boot_args_now(void *opaque)
 
 rearm:
     {
-        /* Keep re-arming while there is still work: the boot-args string needs
-         * to be re-asserted a few times, and the AMFI patch waits for the
-         * kernelcache to appear in DRAM. */
-        bool amfi_pending = getenv("IT_AMFI_ALLOW_TASKPORT") && !nms->amfi_patched;
-        if (nms->boot_args_writes < nms->boot_args_repeat || amfi_pending) {
+        if (nms->boot_args_writes < nms->boot_args_repeat) {
             timer_mod(nms->boot_args_timer,
                       qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + nms->boot_args_interval_ms);
         }
@@ -1373,12 +1179,11 @@ static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
 {
     uint32_t delay_ms = nms->boot_args_delay_ms;
 
-    if (!ipod_touch_requested_boot_args(nms) && !getenv("IT_AMFI_ALLOW_TASKPORT")) {
+    if (!ipod_touch_requested_boot_args(nms)) {
         return;
     }
 
     nms->boot_args_writes = 0;
-    nms->amfi_patched = false;
     nms->boot_args_scan_failed = false;
     if (!nms->boot_args_timer) {
         nms->boot_args_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
@@ -1390,120 +1195,7 @@ static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
             (unsigned long long)delay_ms);
 }
 
-static void ipod_touch_inject_device_tree(IPodTouchMachineState *nms)
-{
-    const char *dt_path = getenv("IT_INJECT_DT");
-    uint8_t *dt_data = NULL;
-    gsize dt_size;
-    /* 16-byte thunk (see comment above): memcpy(0x0BF00000, 0x22000000, g_dt_size)
-     * then branch to the success path. */
-    static const uint8_t patch[16] = {
-        0xbf, 0x20, 0x00, 0x05,   /* movs r0,#0xbf ; lsls r0,r0,#20  */
-        0x22, 0x21, 0x09, 0x06,   /* movs r1,#0x22 ; lsls r1,r1,#24  */
-        0x2a, 0x68,               /* ldr  r2,[r5]                    */
-        0x0b, 0xf0, 0xc6, 0xef,   /* blx  0x0ff1b474 (memcpy)        */
-        0xff, 0xe7,               /* b    0x0ff0f4ea                 */
-    };
-
-    if (!dt_path) {
-        return;
-    }
-
-    if (!g_file_get_contents(dt_path, (char **)&dt_data, &dt_size, NULL)) {
-        fprintf(stderr, "[IT_INJECT_DT] could not read '%s'\n", dt_path);
-        return;
-    }
-
-    address_space_rw(nms->nsas, DT_STAGING_BASE, MEMTXATTRS_UNSPECIFIED,
-                     dt_data, dt_size, 1);
-    g_free(dt_data);
-
-    address_space_rw(nms->nsas, IBOOT_MEM_BASE + IBOOT_DT_LOAD_PATCH,
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)patch, sizeof(patch), 1);
-
-    fprintf(stderr, "[IT_INJECT_DT] staged device tree '%s' (%llu bytes) at "
-            "0x%08x and patched iBoot dtre image_load\n",
-            dt_path, (unsigned long long)dt_size, DT_STAGING_BASE);
-}
-
-/* Encode a Thumb-2 BL from `src` to `dst` into the two halfwords it occupies. */
-static void thumb_bl(uint32_t src, uint32_t dst, uint8_t out[4])
-{
-    int32_t off = (int32_t)(dst - (src + 4));
-    uint32_t imm = ((uint32_t)off) >> 1;
-    uint32_t s = (off < 0) ? 1 : 0;
-    uint32_t i1 = (imm >> 22) & 1, i2 = (imm >> 21) & 1;
-    uint32_t j1 = (~i1 & 1) ^ s, j2 = (~i2 & 1) ^ s;
-    uint32_t hw1 = 0xF000 | (s << 10) | ((imm >> 11) & 0x3FF);
-    uint32_t hw2 = 0xD000 | (j1 << 13) | (j2 << 11) | (imm & 0x7FF);
-
-    out[0] = hw1 & 0xFF; out[1] = hw1 >> 8;
-    out[2] = hw2 & 0xFF; out[3] = hw2 >> 8;
-}
-
-static void ipod_touch_inject_boot_logo(IPodTouchMachineState *nms)
-{
-    const char *logo_path = getenv("IT_INJECT_LOGO");
-    uint8_t *logo = NULL;
-    gsize logo_size;
-    uint8_t bl[4];
-    /*
-     * The thunk. At the call site r2 = &address slot and r3 = &length slot, so
-     * it only has to fill both in and report success:
-     *
-     *   ldr r0,[pc,#8] ; str r0,[r2]   *addr = LOGO_STAGING_BASE
-     *   ldr r0,[pc,#8] ; str r0,[r3]   *len  = <size>
-     *   movs r0,#0     ; bx lr         return 0, iBoot takes the success path
-     */
-    uint8_t thunk[20] = {
-        0x02, 0x48,               /* ldr  r0,[pc,#8]  */
-        0x10, 0x60,               /* str  r0,[r2]     */
-        0x02, 0x48,               /* ldr  r0,[pc,#8]  */
-        0x18, 0x60,               /* str  r0,[r3]     */
-        0x00, 0x20,               /* movs r0,#0       */
-        0x70, 0x47,               /* bx   lr          */
-        0x00, 0x00, 0x00, 0x00,   /* .word staging base */
-        0x00, 0x00, 0x00, 0x00,   /* .word length       */
-    };
-
-    if (!logo_path) {
-        return;
-    }
-
-    if (!g_file_get_contents(logo_path, (char **)&logo, &logo_size, NULL)) {
-        fprintf(stderr, "[IT_INJECT_LOGO] could not read '%s'\n", logo_path);
-        return;
-    }
-
-    if (logo_size < 0x14 || logo_size > BOOT_ARGS_STAGING_BASE - LOGO_STAGING_BASE ||
-        memcmp(logo, "iBootIm\0", 8) != 0) {
-        fprintf(stderr, "[IT_INJECT_LOGO] '%s' is not a decrypted iBootIm "
-                "container; iBoot would reject it. Use "
-                "imgtools/extract_bootlogo.py\n", logo_path);
-        g_free(logo);
-        return;
-    }
-
-    address_space_rw(nms->nsas, LOGO_STAGING_BASE, MEMTXATTRS_UNSPECIFIED,
-                     logo, logo_size, 1);
-
-    stl_le_p(thunk + 12, LOGO_STAGING_BASE);
-    stl_le_p(thunk + 16, (uint32_t)logo_size);
-    address_space_rw(nms->nsas, LOGO_THUNK_BASE, MEMTXATTRS_UNSPECIFIED,
-                     thunk, sizeof(thunk), 1);
-
-    thumb_bl(IBOOT_MEM_BASE + IBOOT_LOGO_LOAD_PATCH, LOGO_THUNK_BASE, bl);
-    address_space_rw(nms->nsas, IBOOT_MEM_BASE + IBOOT_LOGO_LOAD_PATCH,
-                     MEMTXATTRS_UNSPECIFIED, bl, sizeof(bl), 1);
-
-    fprintf(stderr, "[IT_INJECT_LOGO] staged boot logo '%s' (%llu bytes) at "
-            "0x%08x and retargeted iBoot's logo image_load to 0x%08x\n",
-            logo_path, (unsigned long long)logo_size, LOGO_STAGING_BASE,
-            LOGO_THUNK_BASE);
-    g_free(logo);
-}
-
-static void ipod_touch_inject_boot_args(IPodTouchMachineState *nms)
+static void ipod_touch_inject_boot_args(IPodTouchMachineState *nms, size_t image_size)
 {
     const char *args = ipod_touch_requested_boot_args(nms);
     /* Release 7E18 iBoot deliberately ignores NVRAM boot-args. Redirect its
@@ -1513,22 +1205,48 @@ static void ipod_touch_inject_boot_args(IPodTouchMachineState *nms)
         0x2c,0x4b,0x9b,0x46,0x1b,0x68,0x00,0x2b,0x03,0xd1,0x2a,0x48,
         0x06,0x1c,0x01,0x90,0x02,0xe0,0x29,0x4e,0x28,0x49,0x01,0x91
     };
-    uint8_t code[sizeof(expected)], literal[4], command[BOOT_ARGS_CMDLINE_LEN] = {0};
+    uint8_t literal[4], command[BOOT_ARGS_CMDLINE_LEN] = {0};
+    size_t found = 0;
     const hwaddr staging = BOOT_ARGS_STAGING_BASE; /* final 256 bytes of LLB SRAM */
 
-    if (!args) return;
-    address_space_read(nms->nsas, IBOOT_MEM_BASE + 0x11a72,
-                       MEMTXATTRS_UNSPECIFIED, code, sizeof(code));
-    address_space_read(nms->nsas, IBOOT_MEM_BASE + 0x11b28,
-                       MEMTXATTRS_UNSPECIFIED, literal, sizeof(literal));
-    if (memcmp(code, expected, sizeof(code)) || ldl_le_p(literal) != 0x0ff1dba0) {
+    if (!args || image_size < sizeof(expected) || image_size > 0x100000) {
+        return;
+    }
+    g_autofree uint8_t *image = g_try_malloc(image_size);
+    if (!image) {
+        return;
+    }
+    address_space_read(nms->nsas, IBOOT_MEM_BASE, MEMTXATTRS_UNSPECIFIED,
+                       image, image_size);
+    for (size_t i = 0; i + sizeof(expected) <= image_size; i += 2) {
+        if (memcmp(image + i, expected, sizeof(expected))) {
+            continue;
+        }
+        /* Decode the Thumb LDR r0 literal in the verified normal-boot arm.
+         * Its target must be an empty string inside this loaded image. */
+        size_t slot = ((i + 10 + 4) & ~(size_t)3) + image[i + 10] * 4;
+        if (slot > image_size - 4) {
+            continue;
+        }
+        uint32_t string = ldl_le_p(image + slot);
+        if (string < IBOOT_MEM_BASE || string - IBOOT_MEM_BASE >= image_size ||
+            image[string - IBOOT_MEM_BASE] != 0) {
+            continue;
+        }
+        if (found) {
+            fprintf(stderr, "[IT_BOOT_ARGS] ambiguous iBoot handoff; early argument injection skipped\n");
+            return;
+        }
+        found = slot;
+    }
+    if (!found) {
         fprintf(stderr, "[IT_BOOT_ARGS] unknown iBoot; early argument injection skipped\n");
         return;
     }
     g_strlcpy((char *)command, args, sizeof(command));
     address_space_write(nms->nsas, staging, MEMTXATTRS_UNSPECIFIED, command, sizeof(command));
     stl_le_p(literal, staging);
-    address_space_write(nms->nsas, IBOOT_MEM_BASE + 0x11b28,
+    address_space_write(nms->nsas, IBOOT_MEM_BASE + found,
                         MEMTXATTRS_UNSPECIFIED, literal, sizeof(literal));
     fprintf(stderr, "[IT_BOOT_ARGS] staged early 7E18 command line\n");
 }
@@ -1563,11 +1281,8 @@ static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
          * here.
          */
 
-        /* Hand iBoot a pre-decrypted device tree (3.1.3 bring-up). Must run
-         * after the iBoot image is staged so the code patch lands on top of it. */
-        ipod_touch_inject_device_tree(nms);
-        ipod_touch_inject_boot_logo(nms);
-        ipod_touch_inject_boot_args(nms);
+        /* Optional bring-up helpers run after staging the iBoot image. */
+        ipod_touch_inject_boot_args(nms, fsize);
         ipod_touch_stage_ramdisk(nms);
         ipod_touch_stage_boot_args(nms);
     }
@@ -1594,7 +1309,6 @@ static void ipod_touch_cpu_reset(void *opaque)
     }
 
     //env->regs[0] = nms->kbootargs_pa;
-    //cpu_set_pc(CPU(cpu), 0xc00607ec);
     cpu_set_pc(CPU(cpu), VROM_MEM_BASE);
     //env->regs[0] = 0x9000000;
     //cpu_set_pc(CPU(cpu), LLB_BASE + 0x100);
@@ -1792,7 +1506,9 @@ static bool ipod_touch_get_usb_patch_mux_gate(Object *obj, Error **errp)
 
 static void ipod_touch_set_usb_patch_mux_gate(Object *obj, bool value, Error **errp)
 {
-    IPOD_TOUCH_MACHINE(obj)->usb_patch_mux_gate = value;
+    if (value) {
+        error_setg(errp, "usb-patch-mux-gate is retired: guest kernel patching is unsupported");
+    }
 }
 
 static bool ipod_touch_get_mbx_irq(Object *obj, Error **errp)
@@ -2187,8 +1903,7 @@ static void ipod_touch_instance_init(Object *obj)
     object_property_add_bool(obj, "usb-patch-mux-gate", ipod_touch_get_usb_patch_mux_gate,
                              ipod_touch_set_usb_patch_mux_gate);
     object_property_set_description(obj, "usb-patch-mux-gate",
-        "Patch the kernel so the USB stack goes on bus even though the PTP interface "
-        "function never registers a driver. Firmware-build-specific (2.1.1 / 5F138)");
+        "Retired guest-kernel patch option; only off is accepted");
 
     /* Accelerometer (LIS302DL) host controls; see the getters/setters above. */
     object_property_add(obj, "accel-rate-hz", "int", ipod_touch_get_accel_rate, ipod_touch_set_accel_rate, NULL, NULL);
@@ -3248,7 +2963,9 @@ static void ipod_touch_machine_init(MachineState *machine)
         ipod_touch_sdio_setup_net(sdio_state);
     }
 
-    dev = exynos4210_uart_create(UART0_MEM_BASE, 256, 0, serial_hd(0), nms->irq[0][24], nms->direct_iboot[0] != 0);
+    /* UART interrupt semantics belong to the SoC, not the boot strategy.
+     * Both SecureROM and direct-iBoot guests acknowledge S5L UTRSTAT bits. */
+    dev = exynos4210_uart_create(UART0_MEM_BASE, 256, 0, serial_hd(0), nms->irq[0][24], true);
     if (!dev) {
         hw_error("Failed to create UART0 device!");
     }
@@ -3260,17 +2977,17 @@ static void ipod_touch_machine_init(MachineState *machine)
      */
     uart1_dev = exynos4210_uart_create(UART1_MEM_BASE, 256, 1,
                                        it_bt_chardev(serial_hd(1), nms->bt_enabled, nms->bt_latency_us),
-                                       nms->irq[0][25], nms->direct_iboot[0] != 0);
+                                       nms->irq[0][25], true);
     if (!uart1_dev) {
         hw_error("Failed to create UART1 device!");
     }
 
-    dev = exynos4210_uart_create(UART2_MEM_BASE, 256, 2, serial_hd(2), nms->irq[0][26], nms->direct_iboot[0] != 0);
+    dev = exynos4210_uart_create(UART2_MEM_BASE, 256, 2, serial_hd(2), nms->irq[0][26], true);
     if (!dev) {
         hw_error("Failed to create UART0 device!");
     }
 
-    dev = exynos4210_uart_create(UART3_MEM_BASE, 256, 3, serial_hd(3), nms->irq[0][27], nms->direct_iboot[0] != 0);
+    dev = exynos4210_uart_create(UART3_MEM_BASE, 256, 3, serial_hd(3), nms->irq[0][27], true);
     if (!dev) {
         hw_error("Failed to create UART0 device!");
     }
@@ -3491,7 +3208,6 @@ static void ipod_touch_machine_init(MachineState *machine)
     nms->pmu_state->charging_mode = nms->battery_charging;
     qdev_connect_gpio_out(DEVICE(pmu), 0,
                          qdev_get_gpio_in(DEVICE(sysic_state), PMU_WAKE_IRQ));
-    ipod_touch_mbx_set_patch_usb_gate(nms->usb_patch_mux_gate);
 
     // init the accelerometer. Keep the handle so the machine's QMP properties
     // (accel-orientation / accel-x/y/z / accel-shake, added in instance_init)

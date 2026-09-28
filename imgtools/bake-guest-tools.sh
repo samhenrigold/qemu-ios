@@ -56,6 +56,10 @@ cp "$GLES/MBXGLEngine" "$FRAMEWORK/MBXGLEngine"
 chmod 755 "$FRAMEWORK/MBXGLEngine"
 fi
 
+# Helpers linked with LC_DYLD_INFO_ONLY cannot load on 2.x dyld. The board
+# builder disables their installation and injection for that firmware family.
+TOOLS="${IT_GUEST_TOOLS:-1}"
+if [ "$TOOLS" = 1 ]; then
 # 2. The launcher (SBSLaunchApplicationWithIdentifier) and the placeholder-icon
 #    helper, both of which otherwise have to be scp'd and chmod'd per install.
 mkdir -p "$MNT/usr/local/bin"
@@ -73,7 +77,8 @@ cp "$AGENT/it_agent" "$MNT/usr/local/bin/it_agent"
 chmod 755 "$MNT/usr/local/bin/it_agent"
 cp "$AGENT/it_typein.dylib" "$MNT/usr/lib/it_typein.dylib"
 chmod 755 "$MNT/usr/lib/it_typein.dylib"
-python3 - "$MNT/System/Library/LaunchDaemons/com.apple.SpringBoard.plist" "$OGL" <<'PYJOB'
+fi
+python3 - "$MNT/System/Library/LaunchDaemons/com.apple.SpringBoard.plist" "$OGL" "$TOOLS" <<'PYJOB'
 import plistlib, sys
 from pathlib import Path
 path = Path(sys.argv[1])
@@ -90,15 +95,21 @@ env['CA_AUTO_ENABLE_OGL'] = env['LK_AUTO_ENABLE_OGL'] = '0'
 env['CA_ENABLE_MBX2D'] = env['LK_ENABLE_MBX2D'] = '0'
 old = env.get('DYLD_INSERT_LIBRARIES', '')
 assert isinstance(old, str)
-libraries = [item for item in old.split(':') if item and item != '/usr/lib/it_kbd_agent.dylib']
-if '/usr/lib/it_typein.dylib' not in libraries:
+libraries = [item for item in old.split(':') if item and item not in
+             ('/usr/lib/it_kbd_agent.dylib', '/usr/lib/it_typein.dylib')]
+if sys.argv[3] == '1':
     libraries.append('/usr/lib/it_typein.dylib')
-env['DYLD_INSERT_LIBRARIES'] = ':'.join(libraries)
+if libraries:
+    env['DYLD_INSERT_LIBRARIES'] = ':'.join(libraries)
+else:
+    env.pop('DYLD_INSERT_LIBRARIES', None)
 path.write_bytes(plistlib.dumps(job, fmt=plistlib.FMT_BINARY if data.startswith(b'bplist') else plistlib.FMT_XML))
 PYJOB
+if [ "$TOOLS" = 1 ]; then
 mkdir -p "$MNT/System/Library/LaunchDaemons"
 cp "$AGENT/com.qemu.it-agent.plist" "$MNT/System/Library/LaunchDaemons/com.qemu.it-agent.plist"
 chmod 644 "$MNT/System/Library/LaunchDaemons/com.qemu.it-agent.plist"
+fi
 rm -f "$MNT/System/Library/LaunchDaemons/com.qemu.it-pbd.plist"
 
 # Old AppSync images disabled even an explicit press of the lock button.
@@ -111,6 +122,14 @@ fi
 
 # New-device Sounds defaults, including the Calendar Alerts sound path.
 python3 "$SRC/imgtools/set-sound-defaults.py" --root "$MNT"
+
+if [ "$TOOLS" != 1 ]; then
+    rm -f "$MNT/System/Library/LaunchDaemons/com.qemu.it-agent.plist" \
+          "$MNT/var/mobile/Media/.lt-guest-tools-v1" \
+          "$MNT/var/mobile/Media/.lt-guest-tools-v2"
+    echo "baked: software CoreAnimation; guest helpers omitted (unsupported dyld)"
+    exit 0
+fi
 
 # 3. The marker, inside the AFC jail (/var/mobile/Media) so the host app can
 #    stat it over AFC — no ssh — and take the fully in-process install path.
