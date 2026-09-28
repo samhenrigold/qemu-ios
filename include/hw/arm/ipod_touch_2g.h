@@ -4,6 +4,7 @@
 #include "exec/hwaddr.h"
 #include "hw/arm/ipod-agent.h"
 #include "hw/arm/guest-pasteboard.h"
+#include "hw/arm/guest-package.h"
 #include "hw/boards.h"
 #include "qapi/qapi-types-common.h"
 #include "hw/intc/pl192.h"
@@ -304,6 +305,7 @@ typedef struct {
 	bool osk_numeric;           /* the ".?123" page is showing */
 
 	GuestPasteboard pb;       /* hw/arm/guest-pasteboard.c */
+	GuestPackage pkg;         /* hw/arm/guest-package.c */
     IPodAgent *agent;
 } IPodTouchMachineState;
 
