@@ -15,6 +15,9 @@
  *       pointed at the itwebproxy guestfwd address over plain HTTP, it gets a
  *       position from the host.
  *
+ * Once Wi-Fi (en0) has an address it also restarts locationd, which otherwise
+ * starts before Wi-Fi is powered and then never scans (see main()).
+ *
  * IPSW-agnostic: each key name is confirmed in the binary that reads it first;
  * if an IPSW does not carry it, the job logs that and leaves that key alone.
  *
@@ -34,6 +37,9 @@ extern int waitpid(int, int *, int);
 extern int setgid(unsigned);
 extern int setuid(unsigned);
 extern int setenv(const char *, const char *, int);
+extern int socket(int, int, int);
+extern int ioctl(int, unsigned long, ...);
+extern unsigned sleep(unsigned);
 
 #define SPRINGBOARD "/System/Library/CoreServices/SpringBoard.app/SpringBoard"
 #define LOCATIOND   "/usr/libexec/locationd"
@@ -64,6 +70,13 @@ static long len(const char *s)
     while (*p)
         p++;
     return p - s;
+}
+
+static int streq(const char *a, const char *b)
+{
+    while (*a && *a == *b)
+        a++, b++;
+    return *a == *b;
 }
 
 static void say(const char *a, const char *b, const char *c)
@@ -117,65 +130,130 @@ static int launchctl(const char *verb, const char *job)
     return status;
 }
 
-/* As mobile: write every setting whose key the reader knows. */
-static void write_settings(void)
+/*
+ * As mobile: apply every setting whose key the reader knows. With write false,
+ * only compare. Returns a bit per job (index into jobs[]) whose settings are
+ * not yet what they should be.
+ */
+static unsigned apply(int write, const char *const *jobs, unsigned njobs)
 {
     void *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", 2);
     const void *(*str)(const void *, const char *, unsigned) = cf ? dlsym(cf, "CFStringCreateWithCString") : 0;
+    const void *(*get)(const void *, const void *) = cf ? dlsym(cf, "CFPreferencesCopyAppValue") : 0;
+    unsigned char (*equal)(const void *, const void *) = cf ? dlsym(cf, "CFEqual") : 0;
     void (*set)(const void *, const void *, const void *) = cf ? dlsym(cf, "CFPreferencesSetAppValue") : 0;
     unsigned char (*sync)(const void *) = cf ? dlsym(cf, "CFPreferencesAppSynchronize") : 0;
     const void **yes = cf ? dlsym(cf, "kCFBooleanTrue") : 0;
     const void **no = cf ? dlsym(cf, "kCFBooleanFalse") : 0;
-    unsigned i;
+    unsigned i, j, stale = 0;
 
-    if (!str || !set || !sync || !yes || !no) {
+    if (!str || !get || !equal || !set || !sync || !yes || !no) {
         say("CoreFoundation preferences API not found; changing nothing", "", "");
-        return;
+        return 0;
     }
     for (i = 0; i < sizeof(SETTINGS) / sizeof(SETTINGS[0]); i++) {
         const struct setting *s = &SETTINGS[i];
         const void *app = str(0, s->domain, 0x08000100);   /* kCFStringEncodingUTF8 */
+        const void *key = str(0, s->key, 0x08000100);
         const void *value = s->kind == TRUE ? *yes : s->kind == FALSE ? *no
                           : str(0, s->string, 0x08000100);
+        const void *current;
 
         if (!file_has(s->reader, s->key)) {
-            say(s->reader, " has no ", s->key);
+            if (write)
+                say(s->reader, " has no ", s->key);
             continue;
         }
-        set(str(0, s->key, 0x08000100), value, app);
-        say(s->key, sync(app) ? " set" : " not saved: CFPreferencesAppSynchronize failed", "");
+        current = get(key, app);
+        if (current && equal(current, value))
+            continue;
+        for (j = 0; j < njobs && jobs[j] != s->job; j++)
+            ;
+        stale |= 1u << j;           /* j == njobs: no job to restart */
+        if (write) {
+            set(key, value, app);
+            say(s->key, sync(app) ? " set" : " not saved: CFPreferencesAppSynchronize failed", "");
+        }
     }
+    return stale;
 }
 
-int main(void)
+/* Run apply() as mobile in a child; its result comes back as the exit code. */
+static unsigned as_mobile(int write, const char *const *jobs, unsigned njobs)
 {
-    const char *jobs[sizeof(SETTINGS) / sizeof(SETTINGS[0])];
-    unsigned i, j, n = 0;
-    int pid, status;
-
-    for (i = 0; i < sizeof(SETTINGS) / sizeof(SETTINGS[0]); i++) {
-        if (!SETTINGS[i].job || !file_has(SETTINGS[i].reader, SETTINGS[i].key))
-            continue;
-        for (j = 0; j < n && jobs[j] != SETTINGS[i].job; j++)
-            ;
-        if (j == n && launchctl("unload", SETTINGS[i].job) == 0)
-            jobs[n++] = SETTINGS[i].job;
-    }
-    pid = fork();
+    int pid = fork(), status = 0;
     if (pid == 0) {
         /* CFPreferences finds the user's preferences through HOME, which
          * is still root's in a child of a root job. */
         if (setgid(501) || setuid(501) || setenv("HOME", "/var/mobile", 1)) {   /* mobile */
             say("could not become mobile; changing nothing", "", "");
-            _exit(1);
+            _exit(0);
         }
-        write_settings();
-        _exit(0);
+        _exit(apply(write, jobs, njobs));
     }
-    if (pid > 0)
-        waitpid(pid, &status, 0);
+    if (pid < 0 || waitpid(pid, &status, 0) != pid)
+        return 0;
+    return (status >> 8) & 0xff;
+}
+
+/* Wait up to secs seconds for en0 (Wi-Fi) to have an IPv4 address; 1 if it did. */
+static int wifi_up(unsigned secs)
+{
+    struct { char name[16]; unsigned char addr[16]; } ifr = { "en0" };
+    int fd = socket(2, 2, 0);   /* AF_INET, SOCK_DGRAM */
+
+    while (fd >= 0) {
+        if (ioctl(fd, 0xc0206921UL, &ifr) == 0) {   /* SIOCGIFADDR */
+            close(fd);
+            return 1;
+        }
+        if (!secs--)
+            break;
+        sleep(1);
+    }
+    if (fd >= 0)
+        close(fd);
+    return 0;
+}
+
+/*
+ * locationd only scans for Wi-Fi if Wi-Fi was powered when it started. It
+ * starts at boot, before configd powers the BCM4329 up, and on a fast
+ * (sealed) boot it usually loses that race: no scan all session, so Maps gets
+ * "Your location could not be determined" (docs/ipad1/location.md). So once
+ * en0 has an address, locationd is restarted, and any setting that has to
+ * change is written while it is down. Other jobs are restarted only when one
+ * of their settings changes.
+ */
+int main(void)
+{
+    const char *jobs[sizeof(SETTINGS) / sizeof(SETTINGS[0])];
+    unsigned i, j, n = 0, stale, stopped = 0, locationd = 0;
+
+    for (i = 0; i < sizeof(SETTINGS) / sizeof(SETTINGS[0]); i++) {
+        for (j = 0; j < n && jobs[j] != SETTINGS[i].job; j++)
+            ;
+        if (SETTINGS[i].job && j == n)
+            jobs[n++] = SETTINGS[i].job;
+    }
+    for (j = 0; j < n && !streq(jobs[j], LOCATIOND_JOB); j++)
+        ;
+    if (j < n && wifi_up(120))
+        locationd = 1u << j;
+    stale = as_mobile(0, jobs, n);
+    if (!stale)
+        say("preferences already set", "", "");
+    if (!(stale | locationd))
+        _exit(0);
     for (j = 0; j < n; j++)
-        say(jobs[j], launchctl("load", jobs[j]) == 0 ? " reloaded" : " reload failed", "");
+        if (((stale | locationd) & (1u << j)) && launchctl("unload", jobs[j]) == 0)
+            stopped |= 1u << j;
+    if (stale)
+        as_mobile(1, jobs, n);
+    for (j = 0; j < n; j++)
+        if (stopped & (1u << j))
+            say(jobs[j], launchctl("load", jobs[j]) == 0 ? " reloaded" : " reload failed",
+                locationd & (1u << j) ? " (Wi-Fi up)" : "");
     _exit(0);
     return 0;
 }
