@@ -592,6 +592,20 @@ static void s5l8930_display_reset(DeviceState *dev)
      * kernel adopts it from these registers, so without them there is no
      * console framebuffer. */
     r[DP_SIZE / 4] = DEFAULT_WIDTH << 16 | DEFAULT_HEIGHT;
+    /*
+     * And the CLCD timing iBoot programs from its "k48" display-timing entry
+     * (iBoot-931 5ff01e0e-5ff01eaa, table 5ff2b028: 1024x768, 68.4 MHz,
+     * h 133/133/135, v 10/10/12, 18 bpp): fields are value - 1. 4.x's
+     * AppleCLCD::start_hardware (8C148 809d7e42) refuses a panel whose
+     * vertical timing word 0x58 is zero and never registers a framebuffer.
+     */
+    s->clcd[0][0x00 / 4] = 0x4;
+    s->clcd[0][0x04 / 4] = 0x3;
+    s->clcd[0][0x14 / 4] = 0x81110001;          /* 0x80000001 | 0x1110000: <= 18 bpp */
+    s->clcd[0][0x18 / 4] = 0x20408;
+    s->clcd[0][0x58 / 4] = 9 << 16 | 9 << 8 | 11;
+    s->clcd[0][0x5c / 4] = 132 << 16 | 132 << 8 | 134;
+    s->clcd[0][0x60 / 4] = (DEFAULT_WIDTH - 1) << 16 | (DEFAULT_HEIGHT - 1);
     if (s->fb_base) {
         r[DP_LAYERS / 4] = 0x100;
         r[(DP_UI_BASE(0) + DP_UI_ADDR) / 4] = s->fb_base;
