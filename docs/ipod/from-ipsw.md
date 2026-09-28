@@ -113,7 +113,9 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 - IT_INJECT_LOGO (7E18 VAs) remains an opt-in diagnostic, off on the default path.
 - The research-only IT_AMFI_ALLOW_TASKPORT kernel patch and its address overrides
   have been removed; guest integration uses the existing boot-args and AppSync path.
-- 5F138 `iboot_boot_args_pa` (fmss) applies only without direct iBoot.
+- The legacy command-line data write (without direct iBoot) discovers its buffer
+  from iBoot's own literal references to `gBootArgs.commandLine = [%s]`; absent,
+  ambiguous and out-of-range matches cause no write. No fixed build address remains.
 - The BCM4325 model's Wi-Fi MAC is a fixed value from the original unit (hw/arm/ipod_touch_sdio.c:307, :1326),
   so it does not follow the synthetic identity's `wifiaddr`. A `wifi-mac` machine option would fix that
   (a model change; not done).
@@ -186,3 +188,12 @@ Validation after removal: `scripts/ccninja -C build qemu-system-arm` succeeds;
 all eight default regression checks pass across `/private/tmp/ipod-bootchain-regress-dt`
 and `...-dt-apps` (the second run supplies initially missing guest fixtures).
 GLES uses `--stage-gles-shim` for the shipping NAND's older shim.
+
+The S5L UART acknowledgement mode now applies to every boot strategy. Previously
+it was selected only for direct iBoot; SecureROM boots used Exynos acknowledgement
+semantics and 2.1.1 spun in AppleS5L8900XSerial's ISR. Before/after gdb samples
+move from that handler to the CPU idle loop. All eight 7E18 regression checks
+pass after the UART change (`/private/tmp/ipod-bootchain-regress-uart`) and after
+command-line discovery (`/private/tmp/ipod-bootchain-regress-args`). The discovered
+5F138 command-line buffer is 0x0ff2a584, matching the traced iBoot literal.
+Finder tests exercise relocation, ambiguity, truncation and address bounds.
