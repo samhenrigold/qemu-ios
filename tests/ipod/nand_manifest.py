@@ -2,6 +2,7 @@
 """Full-volume manifest of an iPod NAND image, for diffing two images.
 
     nand_manifest.py --nand <page dir> --mnt <read-only mount of the same volume> > m.tsv
+    nand_manifest.py --img <flat HFS image> --mnt <read-only mount of it> > m.tsv
 
 Owner/group/mode/dates come from the HFS+ catalog itself (hfsvol, read-only) because a
 host mount is `noowners` and reports every file as the mounting user. Content hashes
@@ -19,8 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../
 import hfsvol  # noqa: E402
 
 
-def records(nand):
-    vol = hfsvol.Volume(nand, writable=False)
+def records(vol):
     bt = hfsvol.BTree(vol.catalog)
     for _n, buf in bt.leaf_nodes():
         for rec in bt.records(buf):
@@ -53,10 +53,17 @@ def sha(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--nand", required=True)
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--nand")
+    src.add_argument("--img")
     ap.add_argument("--mnt", required=True)
     a = ap.parse_args()
-    recs = list(records(a.nand))
+    if a.img:
+        from build_nand import FlatVolume
+        vol = FlatVolume(a.img)
+    else:
+        vol = hfsvol.Volume(a.nand, writable=False)
+    recs = list(records(vol))
     names = {r[2]: (r[0], r[1]) for r in recs}
 
     def path(cnid):
