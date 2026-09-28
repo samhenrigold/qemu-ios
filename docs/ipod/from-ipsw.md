@@ -21,7 +21,7 @@ tests/ipod/regress.py --qemu build/qemu-system-arm --device OUT --checks boot
 |---|---|---|---|
 | 3.1.3 7E18 | complete | SpringBoard up, GL CA through the shim, "Connect to iTunes" (lit, see below) | activation |
 | 4.2.1 8C148 | complete (NOR, NAND, GLES check, AppSync, gid-blobs) | iBoot-931.71.16 runs and reads the NOR; `[NAND] findNandInfo: No NAND Detected`, recovery mode | 4.x NAND identification |
-| 2.1.1 5F138 | complete (no shared cache: no AppSync, no GLES shim) | generated NOR reaches iBoot, kernel and userland | logo stall under investigation |
+| 2.1.1 5F138 | complete (no AppSync, GLES shim or modern guest helpers) | SecureROM → LLB → iBoot → kernel → stock SpringBoard, Connect to iTunes | activation; optional helpers need a 2.x-compatible build |
 
 ### P1, 7E18: activation
 
@@ -197,3 +197,32 @@ pass after the UART change (`/private/tmp/ipod-bootchain-regress-uart`) and afte
 command-line discovery (`/private/tmp/ipod-bootchain-regress-args`). The discovered
 5F138 command-line buffer is 0x0ff2a584, matching the traced iBoot literal.
 Finder tests exercise relocation, ambiguity, truncation and address bounds.
+
+### 2.1.1 userland and MBX result
+
+The remaining logo stall was caused by injecting a modern helper into
+SpringBoard: 2.x dyld rejects `LC_DYLD_INFO_ONLY` (0x80000022). The same error
+appears repeatedly in `/var/log/it_agent.log`. Omitting the helper injection
+lets stock SpringBoard draw the activation screen. MBX initializes successfully;
+no new GPU completion workaround was necessary.
+
+The MBX register-read side effects that rewrote the USB function gate and
+BCM4325 kernel code are removed. `usb-patch-mux-gate=on` now fails explicitly;
+`off` remains accepted. The retired migration byte remains reserved, preserving
+the v1 stream layout. Native snapshot round-trip and all eight 7E18 regression
+checks pass (`/private/tmp/ipod-bootchain-regress-mbx`). A 5F138 gdb check confirms
+the formerly overwritten BCM4325 instructions match the stock kernelcache.
+
+Fresh manifest builds of 5F138 and 7E18 both succeed. 2.x omits the incompatible
+helper binaries, launch job, injection and capability markers; the preparation
+report records this limitation. Software CoreAnimation and stock MBXGLEngine
+remain enabled. 7E18 keeps its existing helper integration. Baked-component
+checks validate both branches, including ownership and launch settings.
+
+The fresh 5F138 framebuffer settles at the stock Connect to iTunes screen by
+15 seconds and is unchanged at 20, 25 and 30 seconds. Screenshot:
+`/private/tmp/ipod-bootchain-5f138/fresh-30.png`; PPM SHA256
+`2dcf07734d263e220243be8c49925c1c20aeb1cbcbce54868924f3a40d8d4278`.
+This proves UI boot, not activation or a passing home-screen regression tier.
+7E18 still uses direct iBoot; SecureROM boot for every firmware, 4.2.1 NAND
+identification, and DFU/restore are not claimed by this work.
