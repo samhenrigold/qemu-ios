@@ -20,8 +20,9 @@ tests/ipad1/boot-smoke.py --nand-clone FILES/userland/golden-pristine --seconds 
 ```
 
 The `bsd` (`BSD root:`) and `launchd` markers already exist in the test. Kernel bundle prerequisites are all in
-`ipad1_kboot.py` now: `root-matching` names partition 1, `chosen/debug-enabled = 1`, the real unit's identity
-(serial, MLB, ECID and die-id from the untracked `identity.json`; see `ipad1_kboot.py`), and the `sgx` node disabled
+`ipad1_kboot.py` now: `root-matching` names partition 1, `chosen/debug-enabled = 1`, the unit's identity
+(serial, MLB, ECID and die-id from an `identity.json`, the real unit's untracked one by default or a
+synthetic one from `ipad1_kboot.synth_identity`; see `ipad1_kboot.py --identity`), and the `sgx` node disabled
 (9ed863257d).
 
 Why the AMFI flags on the jailbroken store only: `sshd`, `bash`, Cydia, Substrate and ~180 GNU tools are
@@ -40,7 +41,7 @@ for launching injected apps), `rd=`.
 imgtools/ipad1_rootfs.py fetch                          # once: FILES/hw2/stash (116 MB), FILES/hw2/lockdown; iPad on USB
 imgtools/ipad1_rootfs.py build --base pristine          # -> FILES/userland/pristine/{system,data}.img
 imgtools/ipad1_rootfs.py build --base jailbroken        # -> FILES/userland/jailbroken/...
-imgtools/ipad1_nand.py build --mbr FILES/hw2/rdisk0-head4M.bin --system FILES/userland/pristine/system.img \
+imgtools/ipad1_nand.py build --mbr FILES/hw2/rdisk0-head4M.bin --kernelcache FILES/7B500/dec/kernelcache.mach --system FILES/userland/pristine/system.img \
                              --data FILES/userland/pristine/data.img --out FILES/userland/nand-pristine
 imgtools/ipad1_nand.py check FILES/userland/nand-pristine --mbr FILES/hw2/rdisk0-head4M.bin --system FILES/userland/pristine/system.img
 ```
@@ -59,7 +60,7 @@ contrib/ipad1-guest/build.sh                            # -> build/ipad1-guest/{
 contrib/ipad1-gles/build.sh                             # the GLI shim: GL CoreAnimation is the default
 imgtools/ipad1_rootfs.py build --base pristine --out W  # W: a private dir; FILES/userland/pristine is shared
 imgtools/ipad1_rootfs.py bake W/pristine --seal         # helpers + their com.qemu.* jobs, root-owned; BTServer Disabled
-imgtools/ipad1_nand.py build --mbr FILES/hw2/rdisk0-head4M.bin --system W/pristine/system.img \
+imgtools/ipad1_nand.py build --mbr FILES/hw2/rdisk0-head4M.bin --kernelcache FILES/7B500/dec/kernelcache.mach --system W/pristine/system.img \
                              --data W/pristine/data.img --out FILES/userland/golden-pristine.new
 imgtools/ipad1_seal.py FILES/userland/golden-pristine.new      # one clean halt, then checks the FTL context
 chmod -R a-w FILES/userland/golden-pristine.new
@@ -88,10 +89,21 @@ as a store is killed rather than halted, which is why golden stays read-only and
 through a clone or an overlay.
 
 The helpers are ldid-signed, so they need the AMFI boot-args. Those are the default in `ipad1_kboot.py`
-and therefore in `7B500/k48-kboot.bin`, which is a stock kernel with no patch (`--usb-eth-link` is the
-old fallback). `7B500/k48-kboot-noamfi.bin` keeps the old
+and therefore in `7B500/k48-kboot.bin`, which is a stock kernel with no patch. `7B500/k48-kboot-noamfi.bin` keeps the old
 `-v serial=3 debug=0x8` bundle.
 `ipad1_rootfs.py --selfcheck` runs on every invocation: APM slicing, plist edits, owner rule, signature classifier.
+
+## A fresh device from a stock IPSW (no unit data)
+
+`imgtools/ipad1_device.py create manifests/ipad1-7B500.json OUT` runs the recipe above from declared inputs
+only: the IPSW (sha1-pinned), its keys page, and a seed for a synthetic identity (`ipad1_kboot.synth_identity`;
+`OUT/identity.json`, mode 600). The MBR comes from `ipad1_nand.py mbr` (byte-identical to the unit's sector 0 for
+16 GB / 1280 MiB), the data volume has no Lockdown dir and no stash, and `OUT/device.lock.json` records every
+input and output hash. Without an activation hook the device stops at "Connect to iTunes"; the manifest's
+opt-in `"activation": {"hook": SCRIPT}` (or `create --activation-hook SCRIPT`) runs a user-supplied script on
+`/usr/libexec/lockdownd` during `bake`, re-signed ad hoc with its entitlements. `tests/ipad1/fresh-device.sh`
+creates one and boots it twice on one overlay (unlock, screenshot, clean `system_powerdown`, no FTL rescan).
+Pass the device's die-id (`device.lock.json` identity.die_id) as the `die-id` machine property.
 
 ## What is on the volumes and why
 
