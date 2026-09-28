@@ -22,7 +22,7 @@
 # TO INSTALL AND RUN APPS -- two commands, IN THIS ORDER. --appsync starts
 # usbmuxd itself, before QEMU, because QEMU dials OUT to it and gives up for the
 # rest of the boot if nothing is listening. Full walkthrough in
-# docs/ipod-touch-2g-setup.md:
+# docs/ipod/ipod-touch-2g-setup.md:
 #
 #     run-ipod-touch.sh --appsync              # start this first, wait for the UI
 #     imgtools/install-ipa.sh some.ipa

@@ -22,7 +22,7 @@ Use a prepared emulator with the GLES bridge installed. This app opens OpenGLES
 dynamically, like GLTest, so the command-line installer's linked-framework scan
 does not install the bridge automatically. The normal LightTouch package supplies
 the bridge. Standalone media decoding requires the switches documented in
-`docs/ipod-media.md`; unavailable device functions should produce failures or
+`docs/research/ipod-media.md`; unavailable device functions should produce failures or
 missing output, not be assumed supported because the app installed.
 
 The scrollable menu provides:
