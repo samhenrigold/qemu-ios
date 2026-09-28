@@ -2014,9 +2014,10 @@ static void gles_palette_entry(const uint8_t *e, uint32_t type, uint8_t out[4])
     default:
         break;
     }
-    /* The 16-bit entries are big-endian in the compressed-paletted spec: the
-     * data is a byte stream, not host shorts. */
-    v = ((unsigned)e[0] << 8) | e[1];
+    /* 16-bit entries are the app's native (little-endian) shorts, as Mesa
+     * and the device read them. Big-endian made Wolfenstein RPG's
+     * PALETTE8_RGB5_A1 walls noise with random alpha (issue 15). */
+    v = e[0] | ((unsigned)e[1] << 8);
     if (type == GL_UNSIGNED_SHORT_5_6_5) {
         out[0] = (v >> 11) * 255 / 31;
         out[1] = ((v >> 5) & 0x3f) * 255 / 63;
