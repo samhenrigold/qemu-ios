@@ -341,3 +341,15 @@ after a run of `AppleCS42L58Audio: I2C register read/write failed ... device err
 4` (write translation fault, fsr 0x808) at pc 0xc05f6eac, lr 0xc05f6abc, in a mediaserverd thread, then
 `Debugger message: Fatal Exception` and a wait for KDP. The same image under aes-uid=legacy panics at the
 same pc, so the AES mode is not the cause. Not investigated further.
+
+Root cause (f2ec3285e4): `audio-hw=auto` added the CS42L58, amp, I2S0 and AMC only for direct iBoot, so the
+SecureROM 5F138 boot had none of them. The codec NAKed at 0x4A (the I2C trace shows IICSTAT 0xd1). The panic
+came from the same missing hardware and was not a codec error path. pc 0xc05f6eac is
+`AppleS5L8900XI2SController`'s register write (`str r2, [r3, r1]`, base `[this+0x78]` = 0xea5dd000, the
+i2s0 mapping it logged at start). lr 0xc05f6abc is its configure routine, writing register 0 with
+`config[0] | 1`. The write reached an unmapped 0x3CA00000 and took an external abort (fsr 0x808, FS=0b01000;
+not a translation fault). It fires when USB power reaches 500 mA and mediaserverd plays the charging sound.
+`auto` now means present. With the parts present, 5F138 sends the same first 40 codec accesses as 7E18 (chip
+ID 0xe0 at register 01, then 00/33/32 power-up, 03-0f, 1a-1d); later accesses differ only in volume values.
+Two boots of the hook build and one without the hook: no I2C failures, no panic, and the same Connect to
+iTunes frame at 300 s (charging icon, PPM SHA256 `511cc57f…f562` in all three).
