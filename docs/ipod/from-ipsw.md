@@ -381,3 +381,24 @@ not a translation fault). It fires when USB power reaches 500 mA and mediaserver
 ID 0xe0 at register 01, then 00/33/32 power-up, 03-0f, 1a-1d); later accesses differ only in volume values.
 Two boots of the hook build and one without the hook: no I2C failures, no panic, and the same Connect to
 iTunes frame at 300 s (charging icon, PPM SHA256 `511cc57f…f562` in all three).
+
+### 2.1.1 home screen: lockdownd's brick state (2026-09-28)
+
+With the updated activation hook (`strategy: ipod-no-record-initializer`), lockdownd reports Activated and
+SpringBoard logs `lockdown says the device is: [Activated], state is 3`, but the screen still shows the
+Connect to iTunes view. That view is SpringBoard's own `Activate.png`, composited into its three scanout
+buffers with the status bar above it. It is not stale framebuffer contents, and MBX and the LCD are fine.
+Under gdb, `-[SBAwayView updateInterface]` gets YES from `-[SBLockdownManager brickedDevice]`, and
+`-[SBAwayView setLockoutUIVisible:mode:]` creates `SBActivationView` with mode 1.
+
+`brickedDevice` is lockdown's `BrickState`. On first boot lockdownd sets it (`_set_brick_state: Enabling the
+brick state`). `determine_activation_state` clears it only when `is_phone` (DeviceClass == iPhone) is true.
+On an iPod, only `toggle_brick_state` clears it, and only when a paired host sets `TimeIntervalSince1970`
+or `iTunesHasConnected` (the `verify_set` path of lockdownd's set_value handler). iTunes does this on
+connect. This is host-protocol behaviour, so the emulator needs no change.
+
+Measured: `idevicepair pair` then `idevicedate -c` logs `toggle_brick_state: Disabling the brick state (time
+interval)`. On the same boot, a home press and unlock swipe reach the home screen (first-run Edit Home Screen
+tip; Dismiss works). The cleared state persists: the next boot goes lock screen -> home with no host action.
+The host has to set the time once per fresh device, for example next to the app's existing TimeZone set
+over lockdown.
