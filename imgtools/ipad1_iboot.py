@@ -16,7 +16,7 @@ import tempfile
 import zlib
 
 from build_nor import build, K48_ORDER, S5L8930_UID_KEY
-from ipad1_kboot import DEFAULT_BOOT_ARGS, IDENTITY, MACS
+from ipad1_kboot import DEFAULT_BOOT_ARGS, IDENTITY_FILE, load_identity, identity_dt
 
 
 def chrp_header(signature, name, size):
@@ -97,13 +97,11 @@ def main():
     ap.add_argument('--all-flash', required=True, type=Path)
     ap.add_argument('--patcher', required=True, type=Path)
     ap.add_argument('--out', required=True, type=Path)
-    ap.add_argument('--identity', type=Path, help='JSON overrides for the existing K48 test identity')
+    ap.add_argument('--identity', type=Path, default=Path(IDENTITY_FILE), help='identity.json (ipad1_kboot.py)')
     ap.add_argument('--boot-args', default=DEFAULT_BOOT_ARGS)
     a = ap.parse_args()
-    identity = {**IDENTITY, 'wifi-address': MACS['arm-io/sdio'].hex(':'),
-                'bluetooth-address': MACS['arm-io/uart3/bluetooth'].hex(':')}
-    if a.identity:
-        identity.update(json.loads(a.identity.read_text()))
+    ident = load_identity(str(a.identity))
+    identity = {**identity_dt(ident)[0], 'wifi-address': ident['wifi-mac'], 'bluetooth-address': ident['bt-mac']}
     prepare(a.iboot, a.all_flash, a.patcher, a.out, identity, a.boot_args)
 
 

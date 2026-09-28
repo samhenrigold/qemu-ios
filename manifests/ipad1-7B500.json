@@ -1,0 +1,15 @@
+{
+ "format": 1,
+ "board": "k48ap",
+ "product_type": "iPad1,1",
+ "build": "7B500",
+ "storage": "16g",
+ "ipsw": {"path": "~/Downloads/ipad1-ios32-feasibility/iPad1,1_3.2.2_7B500_Restore.ipsw",
+          "sha1": "68b613f78581d36eab96aa5a007001dff142baa3"},
+ "keys": "~/Downloads/ipad1-ios32-feasibility/iPad1,1_3.2.2_7B500_keys",
+ "identity": {"seed": "ipad1-7B500-default"},
+ "system_mib": 1280,
+ "data_size": "partition",
+ "options": {"ca_ogl": true, "appsync": true, "web_proxy": true, "usb_net": true},
+ "activation": {"hook": null}
+}

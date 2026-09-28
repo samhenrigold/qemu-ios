@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Seal a freshly built ipad1 NAND store: one clean shutdown, so every later boot finds a valid FTL context.
 
-    ipad1_seal.py STORE [--qemu build/qemu-system-arm] [--kboot FILES/7B500/k48-kboot.bin]
+    ipad1_seal.py STORE [--qemu build/qemu-system-arm] [--kboot FILES/7B500/k48-kboot.bin] [--die-id 0xW2:0xW3]
 
 STORE must come from a system.img baked with `ipad1_rootfs.py bake --seal`. Its it_seal job halts the
 first boot cleanly (reboot(2): sync, unmount, FTL close) and deletes itself. Without that, every boot of
@@ -48,17 +48,19 @@ def main():
     ap.add_argument("--qemu", default=f"{ROOT}/build/qemu-system-arm")
     ap.add_argument("--kboot", default=f"{FILES}/k48-kboot.bin")
     ap.add_argument("--timeout", type=int, default=300)
+    ap.add_argument("--die-id", help="machine die-id, as in the kboot bundle's identity")
     a = ap.parse_args()
     store = os.path.abspath(a.store)
+    die = f",die-id={a.die_id}" if a.die_id else ""
     td = tempfile.mkdtemp(prefix="ipad1-seal-")
     try:
-        exited, t, text = boot(a.qemu, a.kboot, f"nand={store}", f"{td}/seal.log", None, a.timeout)
+        exited, t, text = boot(a.qemu, a.kboot, f"nand={store}{die}", f"{td}/seal.log", None, a.timeout)
         if not exited or HALTING not in text:
             sys.exit(f"seal boot: {'no clean halt' if not exited else 'QEMU exited without it_seal'} after "
                      f"{t:.0f}s (was the system.img baked with --seal?); serial in {td}/seal.log")
         print(f"sealing boot halted cleanly after {t:.0f}s")
         os.mkdir(f"{td}/overlay")
-        _, t, text = boot(a.qemu, a.kboot, f"nand={store},nand-overlay={td}/overlay", f"{td}/check.log",
+        _, t, text = boot(a.qemu, a.kboot, f"nand={store},nand-overlay={td}/overlay{die}", f"{td}/check.log",
                           lambda s: FTL_OPEN in s, 120)
         if FTL_OPEN not in text or RESCAN in text:
             sys.exit(f"check boot: {'still rescans' if RESCAN in text else 'no FTL_Open'}; serial in {td}/check.log")

@@ -205,8 +205,8 @@ The ipad1 machine has `wifi=on` by default: an emulated BCM4329 behind the IOP S
 (docs/ipad1/wifi.md), bridged to QEMU user networking (`type=user,id=wifi0` is created when no `wifi0`
 netdev is given). Stock AppleBCMWLAN joins the open BSS "qemu-ios" on its own, DHCPs, and Safari and the
 rest of the system use it, with no kernel patch and no guest helper. `wifi=off` opts out. USB Ethernet
-(below) remains as a secondary path: stock kernel plus the baked `it_ethlink` helper, with the
-`--usb-eth-link` kernel patch as an opt-in fallback (`7B500/k48-kboot-ethpatch.bin`).
+(below) remains as a secondary path: stock kernel plus the baked `it_ethlink` helper, (the old
+`--usb-eth-link` kernel patch is deleted; `7B500/k48-kboot-ethpatch.bin` is the last bundle built with it).
 
 ## Keyboard / network decisions (2026-09-27, docs/ipad1/keyboard-and-network.md)
 1. Keyboard: USB keyboard via the Camera Connection Kit host path (EHCI + usb-kbd) — now; IOHID daemon as fallback.
@@ -221,8 +221,7 @@ www.google.com and Maps draws live tiles (`screens/2026-09-27-net-*.png`). Three
 - guest prefs: `ipad1_rootfs.py` seeds an en1 DHCP service (vanilla: a plist, like a configured unit).
 - guest: the baked `it_ethlink` helper raises the link through IOKit (LinkStatus 0 then 1 on each of the
   service's interest messages), as USBEthernetSharing does on a tethering iPhone, and the kernel is stock
-  (guest-services.md). The byte patch described below stays in `ipad1_kboot.py` as an opt-in fallback
-  (`--usb-eth-link`).
+  (guest-services.md). The byte patch described below was deleted from `ipad1_kboot.py`.
   On by default is safe because it only fires when a host selects the Ethernet interface's alt setting 1,
   which only usbmuxd-qemu's ipad1 branch does. The built-in USB host configures configuration 3 (no
   Ethernet) and bridges without that branch never select it, so for them the kernel behaves as stock.
@@ -233,7 +232,7 @@ USBEthernetSharing, and only while MobileInternetSharing tethers; a Wi-Fi iPad h
 provisioning (misd State 1020, ENOTSUP), so en1 stays `Link Active: FALSE` and IPConfiguration never
 DHCPs. Nothing the host sends over USB can raise the link (alt 0 only lowers it). The patch (2 sites, 24
 bytes, byte-checked) makes the host's SET_INTERFACE alt 1 run that same LinkStatus=1 path; details and
-addresses in `USB_ETH_LINK` in `imgtools/ipad1_kboot.py`.
+addresses were in `USB_ETH_LINK` in `imgtools/ipad1_kboot.py` (see git history).
 
 Not covered yet: the real-iBoot boot path, which loads the signed kernelcache from NAND, so kboot's patch
 never applies there. Open decision: have the machine apply the same bytes at runtime for that path.
