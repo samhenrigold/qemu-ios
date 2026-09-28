@@ -144,8 +144,12 @@ untouched output buffer, zeros, and whatever AppleKeyStore wrapped cannot be unw
 KEYLEN's direction) with a fixed stand-in key, and GID operations shorter than a KBAG (the restore kernel
 derives key 0x837 from a 16-byte seed, `345a2d6c5050d058...`; unknown, and fatal before) the same way with
 a stand-in GID key. KBAG lookups are unchanged. The default stays `legacy`, because existing 3.x images'
-keychain items were encrypted under the legacy keys. Devices whose data is made under the engine record
-it in `device.lock.json` (`"machine": {"aes-uid": "engine"}`), and `regress.py --device` applies it.
+keychain items were encrypted under the legacy keys. Every device `imgtools/device.py` makes for the iPod
+(5F138, 7E18, 8C148) boots with the engine, data protection or not, and records it in `device.lock.json`
+(`"machine": {"aes-uid": "engine"}`); `regress.py --device` applies it. nand-current and devices adopted
+from it have no such lock and keep `legacy`. A fresh 7E18 with the activation hook passes all eight default
+checks this way, and a generic-password keychain item added in one boot reads back after a clean
+shutdown and reboot.
 
 ### P3, 5F138: LLB → iBoot
 
@@ -327,3 +331,13 @@ unique verified handoff and decodes its literal; no code or empty-string address
 is fixed in the machine. Its tests cover relocated and ambiguous handoffs.
 
 Final acceptance: all eight default 7E18 regression checks PASS, including\nclean shutdown/reboot persistence and fsck, in\n`/private/tmp/ipod-bootchain-regress-final` (252 seconds). The working branch is\n`ipod-bootchain`; changes are intentionally not merged into `ipad1` or `main`.\nFMSS edits are confined to discovering/resetting the boot-argument data buffer;\nNAND identification, geometry and controller behavior are untouched.
+
+### 2.1.1 with the activation hook (2026-09-28)
+
+`device.py create manifests/ipod2g-5F138.json OUT --activation-hook .../lt-activation
+--activation-hook-arg=--experimental-legacy` builds (hook applied, daemon re-signed, aes-uid=engine). The
+boot does not reach home: the screen stays at Connect to iTunes (lit about 35600), and the kernel panics
+after a run of `AppleCS42L58Audio: I2C register read/write failed ... device error` lines: `kernel abort type
+4` (write translation fault, fsr 0x808) at pc 0xc05f6eac, lr 0xc05f6abc, in a mediaserverd thread, then
+`Debugger message: Fatal Exception` and a wait for KDP. The same image under aes-uid=legacy panics at the
+same pc, so the AES mode is not the cause. Not investigated further.

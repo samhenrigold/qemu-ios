@@ -69,7 +69,7 @@ def create(a):
         raise SystemExit("%s exists and is not empty" % out)
     os.makedirs(out, exist_ok=True)
     ctx = Context(a, m, out)
-    ctx.hook, ctx.ipsw = hook, ipsw
+    ctx.hook, ctx.hook_args, ctx.ipsw = hook, a.activation_hook_arg, ipsw
 
     ctx.say("verify %s" % ipsw)
     got = sha(ipsw, "sha1")
@@ -111,7 +111,8 @@ def create(a):
                  "qemu_sha256": sha(a.qemu), "built": res["built"]},
         "inputs": dict({"ipsw": {"path": ipsw, "sha1": got}, "keys": {"path": keys, "sha256": sha(keys)},
                         "decrypted": dec, "identity": ctx.ident_path,
-                        "activation_hook": {"path": hook, "sha256": sha(hook)} if hook else None}, **res["inputs"]),
+                        "activation_hook": {"path": hook, "sha256": sha(hook), "args": a.activation_hook_arg}
+                                           if hook else None}, **res["inputs"]),
         "identity": dict({"seed": seed, "udid": ident["udid"], "sha256": sha(ctx.ident_path)}, **res.get("identity", {})),
         "outputs": res["outputs"],
     }
@@ -131,6 +132,8 @@ def main():
     c.add_argument("outdir")
     c.add_argument("--seed", help="override the manifest's identity.seed")
     c.add_argument("--activation-hook", metavar="SCRIPT", help="override the manifest's activation.hook")
+    c.add_argument("--activation-hook-arg", metavar="ARG", action="append", default=[],
+                   help="n72ap: pass ARG to the hook before the file (repeatable), e.g. an opt-in the hook asks for")
     c.add_argument("--qemu", default=os.path.join(ROOT, "build/qemu-system-arm"))
     c.add_argument("--iboot-patcher", default=os.environ.get("IBOOT32PATCHER", "iBoot32Patcher"),
                    help="k48ap: path to iBoot32Patcher (or set IBOOT32PATCHER)")

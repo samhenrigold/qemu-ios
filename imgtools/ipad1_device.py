@@ -36,6 +36,8 @@ def build(ctx):
     """Firmware + catalog keys -> volumes -> NAND -> iBoot sealing boot."""
     m, out, work, dec, opt, step = ctx.m, ctx.out, ctx.work, ctx.dec, ctx.opt, ctx.step
     ident, hook, a = ctx.ident, ctx.hook, ctx.a
+    if ctx.hook_args:
+        raise SystemExit("--activation-hook-arg is iPod-only (n72ap)")
     die_id = ":".join(ident["die-id"])
     mbr = os.path.join(work, "mbr.bin")
     with zipfile.ZipFile(ctx.ipsw) as z:
