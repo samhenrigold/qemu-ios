@@ -362,6 +362,9 @@ typedef struct __attribute__((packed)) {
 
 #ifndef OUT_OF_TREE_BUILD
 int64_t qc_handle_gles(CPUState *cpu, qc_gles_args_t *a);
+/* Guest-pointer access for the GL host: faults untouched pages in (guest-gles.c). */
+int gles_guest_rw(CPUState *cpu, vaddr va, void *buf, size_t len, bool write);
+bool gles_guest_fault_pending(void);
 void qc_gles_dump_stats(void);
 int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
                        uint32_t argc, const uint32_t *args);
