@@ -15,7 +15,6 @@ typedef struct IPodTouchMBXState {
     MemoryRegion iomem2;
     uint64_t addr;
     bool mmu_written;   /* has the guest ever driven MBX_MMU_CTRL_REG? */
-    bool alreadypatched;
 
     /* irq_enabled (the mbx-irq machine option, default on) gates the verified
      * MMU request/ack mirror in ipod_touch_mbx1_read. */
@@ -34,6 +33,5 @@ typedef struct IPodTouchMBXState {
     QEMUTimer *complete_timer;
 } IPodTouchMBXState;
 
-void ipod_touch_mbx_set_patch_usb_gate(bool enabled);
 
 #endif
