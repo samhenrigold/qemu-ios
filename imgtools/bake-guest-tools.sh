@@ -21,7 +21,8 @@
 #         /System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine:0:0:755 \
 #         /private/var/mobile/Library/Preferences/com.apple.mobilemail.plist:501:501:600 \
 #         /private/var/mobile/Library/Preferences/com.apple.springboard.plist:501:501:600 \
-#         /private/var/mobile/Library/Preferences/com.apple.preferences.sounds.plist:501:501:600
+#         /private/var/mobile/Library/Preferences/com.apple.preferences.sounds.plist:501:501:600 \
+#         /private/var/mobile/Media/.lt-guest-tools-v3:501:501:644
 #
 # --blocks is the volume size: 1835008 for the 7 GiB images, 128000 for 500 MB.
 #
@@ -126,7 +127,8 @@ python3 "$SRC/imgtools/set-sound-defaults.py" --root "$MNT"
 if [ "$TOOLS" != 1 ]; then
     rm -f "$MNT/System/Library/LaunchDaemons/com.qemu.it-agent.plist" \
           "$MNT/var/mobile/Media/.lt-guest-tools-v1" \
-          "$MNT/var/mobile/Media/.lt-guest-tools-v2"
+          "$MNT/var/mobile/Media/.lt-guest-tools-v2" \
+          "$MNT/var/mobile/Media/.lt-guest-tools-v3"
     echo "baked: software CoreAnimation; guest helpers omitted (unsupported dyld)"
     exit 0
 fi
@@ -137,6 +139,9 @@ mkdir -p "$MNT/var/mobile/Media"
 echo "v1" > "$MNT/var/mobile/Media/.lt-guest-tools-v1"
 # Keep v1 for older frontends; v2 additionally guarantees the agent job.
 echo "v2" > "$MNT/var/mobile/Media/.lt-guest-tools-v2"
+# v3: the agent is v2 (spawn, sync, chown, unlink, dlicon), so every guest service
+# works without a shell; imgtools/ipod2g_device.py images carry none.
+echo "v3" > "$MNT/var/mobile/Media/.lt-guest-tools-v3"
 
-echo "baked: $([ "$OGL" = 1 ] && echo MBXGLEngine || echo 'stock MBXGLEngine (software CA)'), sblaunch$([ -f "$INST/sbdlicon" ] && echo ', sbdlicon'), it_agent, marker .lt-guest-tools-v2"
+echo "baked: $([ "$OGL" = 1 ] && echo MBXGLEngine || echo 'stock MBXGLEngine (software CA)'), sblaunch$([ -f "$INST/sbdlicon" ] && echo ', sbdlicon'), it_agent, marker .lt-guest-tools-v3"
 echo "NEXT: run imgtools/setowner.py (see header) or the tools stay uid 99 and will not run"

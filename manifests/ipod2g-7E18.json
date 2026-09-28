@@ -11,14 +11,6 @@
  "model_number": "MB528",
  "region_info": "LL/A",
  "volume_blocks": 1835008,
- "packages": {
-  "freeze": {"path": "~/Downloads/Legacy-iOS-Kit_complete_v25.09.01/resources/jailbreak/freeze.tar.gz",
-             "sha256": "15ed578226ffe74371ff7c3d2665a99f181c5597ed1aee5d95a9ef5da17a836f"},
-  "openssh": {"path": "~/Downloads/Legacy-iOS-Kit_complete_v25.09.01/resources/jailbreak/openssh.tar.gz",
-              "sha256": "96d7ecd8b71cfafe3e722cebc5a635b0484544fa1d453cbda98c35a4f091b293"},
-  "openssl": {"path": "~/Downloads/Legacy-iOS-Kit_complete_v25.09.01/resources/jailbreak/openssl.tar.gz",
-              "sha256": "7b1c997fb9b320d7de401130e6fd37884807d5dcb6ceeca2b391c94b6a4e4d32"}
- },
- "options": {"gles_shim": true, "appsync": true, "shell": true, "ssh": true},
+ "options": {"gles_shim": true, "appsync": true, "web_proxy": true},
  "activation": {"hook": null}
 }

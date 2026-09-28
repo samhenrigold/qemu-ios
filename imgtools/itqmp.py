@@ -210,6 +210,11 @@ def agent(q, op, args="", body=b"", timeout=65):
 
 
 
+def spawn(q, argv, timeout=65):
+    """Agent v2 `spawn`: run argv (argv[0] absolute) with no shell; (exit_status, stdout+stderr)."""
+    return agent(q, "spawn", "", b"".join(a.encode() + b"\0" for a in argv), timeout)
+
+
 # ---------------------------------------------------------------------------
 # Touch: single contact (tap/swipe) via the legacy absolute mouse handler.
 # ---------------------------------------------------------------------------
