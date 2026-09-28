@@ -35,6 +35,8 @@ def build(ctx):
     """kboot.bin -> MBR -> system + data volumes -> bake --seal (+ hook) -> NAND store -> seal."""
     m, out, work, dec, opt, step = ctx.m, ctx.out, ctx.work, ctx.dec, ctx.opt, ctx.step
     ident, hook, a = ctx.ident, ctx.hook, ctx.a
+    if ctx.hook_args:
+        raise SystemExit("--activation-hook-arg is iPod-only (n72ap)")
     die_id = ":".join(ident["die-id"])
     kboot, mbr = os.path.join(out, "kboot.bin"), os.path.join(work, "mbr.bin")
     step("kboot.bin", [sys.executable, f"{HERE}/ipad1_kboot.py", "--identity", ctx.ident_path, dec, kboot])
