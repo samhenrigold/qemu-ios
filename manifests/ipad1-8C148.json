@@ -10,6 +10,6 @@
  "identity": {"seed": "ipad1-8C148-default"},
  "system_mib": 1280,
  "data_size": "partition",
- "options": {"ca_ogl": false, "appsync": false, "web_proxy": true, "usb_net": true},
+ "options": {"ca_ogl": false, "appsync": false, "web_proxy": true, "usb_net": true, "writable_nor": true},
  "activation": {"hook": null}
 }

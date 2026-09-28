@@ -102,8 +102,18 @@ def create(a):
                         "--data", f"{vols}/data.img", "--out", nand])
     if a.keep_work:
         subprocess.run(["cp", "-cR", nand, os.path.join(work, "nand-unsealed")], check=True)
-    step("seal", [sys.executable, f"{HERE}/ipad1_seal.py", nand, "--qemu", a.qemu, "--kboot", kboot, "--die-id", die_id])
-    subprocess.run(["chmod", "-R", "a-w", nand, kboot], check=True)
+    # A writable NOR carries the effaceable region (data-protection: format, lockers,
+    # the system-keybag wrapping key) per device. Blank (erased) unless the manifest
+    # opts in; 3.x needs none. The sealing boot's effaceable writes persist into it.
+    nor = os.path.join(out, "nor.bin") if opt.get("writable_nor") else None
+    if nor:
+        with open(nor, "wb") as f:
+            f.write(b"\xff" * (1 << 20))
+    seal_argv = [sys.executable, f"{HERE}/ipad1_seal.py", nand, "--qemu", a.qemu, "--kboot", kboot, "--die-id", die_id]
+    if nor:
+        seal_argv += ["--nor-rw", nor]
+    step("seal", seal_argv)
+    subprocess.run(["chmod", "-R", "a-w", nand, kboot] + ([nor] if nor else []), check=True)
 
     print("[%5.0fs] device.lock.json" % (time.monotonic() - t0), flush=True)
     rev = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
@@ -127,7 +137,8 @@ def create(a):
                    "activation_hook": {"path": hook, "sha256": sha(hook)} if hook else None},
         "identity": {"seed": seed, "udid": ident["udid"], "die_id": die_id, "sha256": sha(ident_path)},
         "outputs": {"kboot": {"path": kboot, "sha256": sha(kboot)},
-                    "nand": {"path": nand, "files": {n: sha(os.path.join(nand, n)) for n in sorted(os.listdir(nand))}}},
+                    "nand": {"path": nand, "files": {n: sha(os.path.join(nand, n)) for n in sorted(os.listdir(nand))}},
+                    "nor": {"path": nor, "sha256": sha(nor)} if nor else None},
     }
     with open(os.path.join(out, "device.lock.json"), "w") as f:
         json.dump(lock, f, indent=1)
