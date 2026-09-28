@@ -3667,7 +3667,8 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
 
                 if (gles_guest_rw(cpu, base + (hwaddr)y * stride,
                                         (void *)src, rw * 4, 1) != 0) {
-                    if (gles_refuse("present:write")) {
+                    /* a page being faulted in reissues the whole present: not a refusal */
+                    if (!gles_guest_fault_pending() && gles_refuse("present:write")) {
                         fprintf(stderr, "[gles] present-surface: write failed at "
                                 "row %u (guest 0x%08x)\n", y, base + y * stride);
                     }
@@ -3773,7 +3774,7 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
 
             if (gles_guest_rw(cpu, base + (hwaddr)y * stride,
                                     src, rw * bpp, 1) != 0) {
-                if (gles_refuse("present:write")) {
+                if (!gles_guest_fault_pending() && gles_refuse("present:write")) {
                     fprintf(stderr, "[gles] present-surface: write failed at row %u "
                             "(guest 0x%08x)\n", y, base + y * stride);
                 }
@@ -4302,8 +4303,10 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
         if (!gles_surface_read(cpu, a[1], a[2], h, w, planes) ||
             !gles_surface_read(cpu, a[6], a[7], h / 2, w, planes + (size_t)w * h) ||
             !gles_surface_nv12(w, h, fmt, planes, pixels)) {
-            gles_refuse("surface:read:%s", gles_fourcc(fmt, fourcc));
-            gles_debug_texture(target);
+            if (!gles_guest_fault_pending()) {
+                gles_refuse("surface:read:%s", gles_fourcc(fmt, fourcc));
+                gles_debug_texture(target);
+            }
             return -1;
         }
 #else
@@ -4312,8 +4315,10 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
         return -1;
 #endif
     } else if (!gles_surface_read(cpu, a[1], a[2], h, w * bpp, pixels)) {
-        gles_refuse("surface:read:%s", gles_fourcc(fmt, fourcc));
-        gles_debug_texture(target);
+        if (!gles_guest_fault_pending()) {      /* else the bind is reissued once the page is in */
+            gles_refuse("surface:read:%s", gles_fourcc(fmt, fourcc));
+            gles_debug_texture(target);
+        }
         return -1;
     }
     switch (fmt) {
