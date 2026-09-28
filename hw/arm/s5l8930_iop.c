@@ -67,11 +67,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPState, S5L8930_IOP)
 #define IOP_IRQ_NMI         (1u << 2)   /* _arm7mSendNMI (c04d23d4) */
 #define IOP_IRQ_DOORBELL    (1u << 3)   /* arm7mSendInterrupt (c04d2418) */
 
-/* Firmware image layout (constants published by the firmware kext). */
-#define FW_CONFIG           0xf018      /* ConfigurationOffset */
+/*
+ * Firmware image layout. The 'cnfg' block and the bss move with every
+ * firmware build (7B500: cnfg 0xf018, bss 0xf160-0x1b000; 8C148/iBoot-931:
+ * 0x15018, 0x15160-0x22000), so both are read from the image the kext loaded:
+ * the bss bounds from its header words, the block by scanning for its magic.
+ */
 #define FW_CONFIG_MAGIC     0x636e6667  /* 'cnfg' */
-#define FW_BSS_START        0xf160      /* fw[0x318]; start() zeroes bss */
-#define FW_BSS_END          0x1b000     /* fw[0x31c]; PanicString etc. live here */
+#define FW_HDR_BSS_START    0x318       /* start() zeroes [fw[0x318], fw[0x31c]) */
+#define FW_HDR_BSS_END      0x31c
+#define FW_MAX_SIZE         0x100000    /* scans stop here (images are 0x1b000-0x22000) */
 #define FW_CFG_MSGBUF       0x8
 #define FW_CFG_RING(h)      (0xc + 8 * (h))
 #define FW_CFG_COUNT(h)     (0x10 + 8 * (h))
@@ -122,6 +127,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPState, S5L8930_IOP)
 #define FMI_OP_WRITE_BOOTPAGE   10
 #define FMI_OP_READ_BOOTPAGE    11
 #define FMI_OP_ERASE_MULTIPLE   12
+#define FMI_OP_READ_CHIP_IDS    20          /* v2 only: IDs moved out of op 2 */
+
+/*
+ * Two command ABIs. v1 (EmbeddedIOP iBoot-817, iOS 3.2): arguments from
+ * +0x10. v2 (iBoot-931, iOS 4.2; the firmware that has h2fmi_iop_read_chip_ids
+ * and PPN support): every argument moves up one word (+0x14), CE numbers are
+ * u16, op 2 only resets and op 20 returns the IDs, and the multi-page and
+ * erase outputs are laid out anew; CE arrays are u16 too (fw 8C148 0x2230 / 0x264c / 0x26c4).
+ * iop_config picks the ABI from the loaded image, with the 'cnfg' block.
+ */
+#define FMI_V2_MARKER           "h2fmi_iop_read_chip_ids"
 
 /* Status codes as _fmiTranslateResult (c04e8ef0) understands them. */
 #define FMI_STATUS_OK           1
@@ -171,6 +187,8 @@ struct S5L8930IOPState {
     uint32_t fw_base;
     uint32_t fw_size;
     uint32_t self_addr;
+    uint32_t fw_config;     /* 'cnfg' address; 0 = not found yet (not migrated: rescanned) */
+    uint32_t fmi_arg;       /* FMI argument shift: 0 = v1, 4 = v2; set with fw_config */
     uint32_t vic_softint[IOP_VIC_COUNT];
     uint32_t vic_regs[IOP_VIC_COUNT][IOP_VIC_REGS / 4];
     uint32_t ring_rx[IOP_MAX_ENDPOINTS];
@@ -423,6 +441,9 @@ static uint32_t nand_erase_block(S5L8930IOPState *s, int bus, uint32_t ce,
 /* ---- FMI ------------------------------------------------------------- */
 
 #define CMD_GET(cmd, off)       ldl_le_p((cmd) + (off))
+/* An FMI argument, v1 offset in, as the loaded firmware's ABI has it. */
+#define ARG(off)                ldl_le_p(cmd + (off) + s->fmi_arg)
+#define ARG_CE(off)             (ARG(off) & (s->fmi_arg ? 0xffff : 0xffffffff))
 #define CMD_SET(cmd, off, val)  stl_le_p((cmd) + (off), (val))
 
 /*
@@ -490,26 +511,35 @@ static uint32_t fmi_multi_status(uint32_t n, uint32_t blank, uint32_t uecc)
 /* h2fmi_iop_set_config (fw 0x2628); the kext fills it at c04e90a0. */
 static uint32_t fmi_set_config(S5L8930IOPState *s, int bus, uint8_t *cmd)
 {
-    uint32_t bpp = CMD_GET(cmd, 0x24);
-    uint32_t spare = CMD_GET(cmd, 0x28);
+    uint32_t bpp = ARG(0x24);
+    uint32_t spare = ARG(0x28);
 
-    if (CMD_GET(cmd, 0x10) != bus || bpp == 0 || bpp > FMI_MAX_PAGE ||
+    if (ARG(0x10) != bus || bpp == 0 || bpp > FMI_MAX_PAGE ||
         spare > FMI_MAX_PAGE) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: bad config bus %u page %u spare %u\n",
-                      __func__, CMD_GET(cmd, 0x10), bpp, spare);
+                      __func__, ARG(0x10), bpp, spare);
         return FMI_STATUS_PARAM;
     }
     /* The kext's first set_config is a generic 2048+64 x 1 pre-probe one. */
     if (s->nand_dir && (bpp + spare != s->page_stride ||
-                        CMD_GET(cmd, 0x1c) != s->store_ppb)) {
+                        ARG(0x1c) != s->store_ppb)) {
         DPRINTF("set_config bus %d: %u+%u x %u differs from the store\n",
-                bus, bpp, spare, CMD_GET(cmd, 0x1c));
+                bus, bpp, spare, ARG(0x1c));
+    }
+    /*
+     * v2 passes the meta layout (+0x50 valid bytes, the per-page DMA; +0x54
+     * total, YaFTL's struct) where v1's firmware hard-coded 10 bytes. Only
+     * the DMA size matters here; the pre-probe config sends 0.
+     */
+    if (s->fmi_arg && CMD_GET(cmd, 0x50) && CMD_GET(cmd, 0x50) != FMI_META_BYTES) {
+        qemu_log_mask(LOG_UNIMP, "%s: bus %d wants %u meta bytes per page, model moves %d\n",
+                      __func__, bus, CMD_GET(cmd, 0x50), FMI_META_BYTES);
     }
     s->bytes_per_page[bus] = bpp;
     s->bytes_per_spare[bus] = spare;
-    s->pages_per_block[bus] = CMD_GET(cmd, 0x1c);
+    s->pages_per_block[bus] = ARG(0x1c);
     DPRINTF("set_config bus %d: %u CEs (mask 0x%x), %u pages/block, %u+%u bytes\n",
-            bus, CMD_GET(cmd, 0x14), CMD_GET(cmd, 0x18),
+            bus, ARG(0x14), ARG(0x18),
             s->pages_per_block[bus], bpp, spare);
     return FMI_STATUS_OK;
 }
@@ -530,7 +560,7 @@ static uint32_t fmi_reset_everything(S5L8930IOPState *s, int bus, uint8_t *cmd)
             ids[ce * FMI_ID_BYTES + 4] = 0x54;
         }
     }
-    iop_write(CMD_GET(cmd, 0x10), ids, sizeof(ids));
+    iop_write(ARG(0x10), ids, sizeof(ids));
     return FMI_STATUS_OK;
 }
 
@@ -538,11 +568,10 @@ static uint32_t fmi_reset_everything(S5L8930IOPState *s, int bus, uint8_t *cmd)
 static uint32_t fmi_read_single(S5L8930IOPState *s, int bus, uint8_t *cmd,
                                 uint8_t *page, uint8_t *meta)
 {
-    uint32_t st = nand_read_page(s, bus, CMD_GET(cmd, 0x10), CMD_GET(cmd, 0x14),
-                                 page, meta);
+    uint32_t st = nand_read_page(s, bus, ARG_CE(0x10), ARG(0x14), page, meta);
 
-    iop_write(CMD_GET(cmd, 0x18), page, s->bytes_per_page[bus]);
-    iop_write(CMD_GET(cmd, 0x1c), meta, FMI_META_BYTES);
+    iop_write(ARG(0x18), page, s->bytes_per_page[bus]);
+    iop_write(ARG(0x1c), meta, FMI_META_BYTES);
     return st;
 }
 
@@ -550,8 +579,8 @@ static uint32_t fmi_read_single(S5L8930IOPState *s, int bus, uint8_t *cmd,
 static uint32_t fmi_read_raw(S5L8930IOPState *s, int bus, uint8_t *cmd,
                              uint8_t *page, uint8_t *meta)
 {
-    nand_read_page(s, bus, CMD_GET(cmd, 0x10), CMD_GET(cmd, 0x14), page, meta);
-    iop_write(CMD_GET(cmd, 0x18), page,
+    nand_read_page(s, bus, ARG_CE(0x10), ARG(0x14), page, meta);
+    iop_write(ARG(0x18), page,
               s->bytes_per_page[bus] + s->bytes_per_spare[bus]);
     return FMI_STATUS_OK;
 }
@@ -560,17 +589,16 @@ static uint32_t fmi_read_raw(S5L8930IOPState *s, int bus, uint8_t *cmd,
 static uint32_t fmi_read_bootpage(S5L8930IOPState *s, int bus, uint8_t *cmd,
                                   uint8_t *page, uint8_t *meta)
 {
-    uint32_t st = nand_read_page(s, bus, CMD_GET(cmd, 0x10), CMD_GET(cmd, 0x14),
-                                 page, meta);
+    uint32_t st = nand_read_page(s, bus, ARG_CE(0x10), ARG(0x14), page, meta);
 
-    iop_write(CMD_GET(cmd, 0x18), page,
+    iop_write(ARG(0x18), page,
               MIN(FMI_BOOTPAGE_BYTES, s->bytes_per_page[bus]));
     return st;
 }
 
 /*
  * h2fmi_iop_read_multiple / write_multiple (fw 0x1f94 / 0x1c30, kext
- * c04eb510): +0x10 count, +0x14 CE array, +0x18 page array, +0x1c/+0x20
+ * c04eb510; v1 offsets, v2 adds 4): +0x10 count, +0x14 CE array, +0x18 page array, +0x1c/+0x20
  * data segment list and byte length, +0x24/+0x28 meta segment list and
  * length, +0x30 AES (ignored). Outputs: +0x5c pages completed, +0x60 final
  * status, +0x70/+0x74 failing CE/index (-1 = none).
@@ -578,23 +606,26 @@ static uint32_t fmi_read_bootpage(S5L8930IOPState *s, int bus, uint8_t *cmd,
 static uint32_t fmi_multi(S5L8930IOPState *s, int bus, uint8_t *cmd, bool write,
                           uint8_t *page, uint8_t *meta)
 {
-    uint32_t n = CMD_GET(cmd, 0x10);
-    hwaddr ces = CMD_GET(cmd, 0x14), pages = CMD_GET(cmd, 0x18);
+    uint32_t n = ARG(0x10);
+    hwaddr ces = ARG(0x14), pages = ARG(0x18);
     uint32_t blank = 0, uecc = 0, st;
     SegCursor data, metas;
     uint32_t i;
 
     if (n == 0 || n > FMI_MAX_MULTI || !ces || !pages ||
-        !CMD_GET(cmd, 0x1c) || !CMD_GET(cmd, 0x24)) {
+        !ARG(0x1c) || !ARG(0x24)) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: bad multi-page command (%u pages)\n",
                       __func__, n);
         return FMI_STATUS_PARAM;
     }
-    seg_cursor_init(&data, CMD_GET(cmd, 0x1c), CMD_GET(cmd, 0x20));
-    seg_cursor_init(&metas, CMD_GET(cmd, 0x24), CMD_GET(cmd, 0x28));
+    seg_cursor_init(&data, ARG(0x1c), ARG(0x20));
+    seg_cursor_init(&metas, ARG(0x24), ARG(0x28));
 
     for (i = 0; i < n; i++) {
-        uint32_t ce = iop_ldl(ces + 4 * i), pg = iop_ldl(pages + 4 * i);
+        /* v2 CE arrays are u16 (fw 8C148 0x4444: ldrh [ce_array, i << 1]) */
+        uint32_t ce = s->fmi_arg ? lduw_le_phys(&address_space_memory, ces + 2 * i)
+                                 : iop_ldl(ces + 4 * i);
+        uint32_t pg = iop_ldl(pages + 4 * i);
 
         if (write) {
             seg_copy(&data, page, s->bytes_per_page[bus], false);
@@ -612,20 +643,26 @@ static uint32_t fmi_multi(S5L8930IOPState *s, int bus, uint8_t *cmd, bool write,
     DPRINTF("%s %u pages bus %d first ce %u page 0x%x: blank %u -> 0x%x\n",
             write ? "write" : "read", n, bus, iop_ldl(ces), iop_ldl(pages),
             blank, st);
-    CMD_SET(cmd, 0x5c, n);
-    CMD_SET(cmd, 0x60, st);
-    CMD_SET(cmd, 0x70, 0xffffffff);
-    CMD_SET(cmd, 0x74, 0xffffffff);
+    if (s->fmi_arg) {           /* v2: +0x60 count, +0x64 status, +0x6c failing */
+        CMD_SET(cmd, 0x60, n);
+        CMD_SET(cmd, 0x64, st);
+        CMD_SET(cmd, 0x6c, 0xffffffff);
+    } else {
+        CMD_SET(cmd, 0x5c, n);
+        CMD_SET(cmd, 0x60, st);
+        CMD_SET(cmd, 0x70, 0xffffffff);
+        CMD_SET(cmd, 0x74, 0xffffffff);
+    }
     return st;
 }
 
 /* Erase single (fw 0x240c): +0x10 ce, +0x14 block; out +0x18 count, +0x20 status word. */
 static uint32_t fmi_erase_single(S5L8930IOPState *s, int bus, uint8_t *cmd)
 {
-    uint32_t st = nand_erase_block(s, bus, CMD_GET(cmd, 0x10), CMD_GET(cmd, 0x14));
+    uint32_t st = nand_erase_block(s, bus, ARG_CE(0x10), ARG(0x14));
 
-    CMD_SET(cmd, 0x18, 1);
-    CMD_SET(cmd, 0x20, st == FMI_STATUS_OK ? 0 : FMI_STATUS_UECC);
+    CMD_SET(cmd, 0x18 + s->fmi_arg, 1);
+    CMD_SET(cmd, 0x20 + s->fmi_arg, st == FMI_STATUS_OK ? 0 : FMI_STATUS_UECC);
     return st;
 }
 
@@ -639,6 +676,23 @@ static uint32_t fmi_erase_multiple(S5L8930IOPState *s, int bus, uint8_t *cmd)
     uint32_t n = CMD_GET(cmd, 0x10), ring = CMD_GET(cmd, 0xa0);
     uint32_t ring_bytes = CMD_GET(cmd, 0xa4), st = FMI_STATUS_OK;
     uint32_t i;
+
+    if (s->fmi_arg) {
+        /* v2 (fw 0x26c4): +0x14 count, +0x18 16 u16 CEs, +0x38 16 u32 blocks; out +0x78 done, +0x84 failing */
+        n = ARG(0x10);
+        if (n > 16) {
+            return FMI_STATUS_PARAM;
+        }
+        for (i = 0; i < n; i++) {
+            if (nand_erase_block(s, bus, lduw_le_p(cmd + 0x18 + 2 * i),
+                                 CMD_GET(cmd, 0x38 + 4 * i)) != FMI_STATUS_OK) {
+                st = FMI_STATUS_UECC;
+            }
+        }
+        CMD_SET(cmd, 0x78, n);
+        CMD_SET(cmd, 0x84, 0xffffffff);
+        return st;
+    }
 
     if (n > 16 || !ring || ring_bytes < 4 || ring_bytes > CMD_SIZE) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: bad erase-multiple (%u blocks)\n",
@@ -672,8 +726,11 @@ static void iop_fmi_command(S5L8930IOPState *s, int bus, hwaddr item)
     case FMI_OP_SET_CONFIG:
         st = fmi_set_config(s, bus, cmd);
         break;
-    case FMI_OP_RESET_EVERYTHING:
-        st = fmi_reset_everything(s, bus, cmd);
+    case FMI_OP_RESET_EVERYTHING:   /* v2: reset only; the IDs are op 20's */
+        st = s->fmi_arg ? FMI_STATUS_OK : fmi_reset_everything(s, bus, cmd);
+        break;
+    case FMI_OP_READ_CHIP_IDS:
+        st = s->fmi_arg ? fmi_reset_everything(s, bus, cmd) : FMI_STATUS_PARAM;
         break;
     case FMI_OP_ERASE_SINGLE:
         st = fmi_erase_single(s, bus, cmd);
@@ -685,20 +742,19 @@ static void iop_fmi_command(S5L8930IOPState *s, int bus, hwaddr item)
         st = fmi_read_raw(s, bus, cmd, page, meta);
         break;
     case FMI_OP_WRITE_SINGLE:
-        iop_read(CMD_GET(cmd, 0x18), page, s->bytes_per_page[bus]);
-        iop_read(CMD_GET(cmd, 0x1c), meta, FMI_META_BYTES);
-        st = nand_program_page(s, bus, CMD_GET(cmd, 0x10), CMD_GET(cmd, 0x14),
+        iop_read(ARG(0x18), page, s->bytes_per_page[bus]);
+        iop_read(ARG(0x1c), meta, FMI_META_BYTES);
+        st = nand_program_page(s, bus, ARG_CE(0x10), ARG(0x14),
                                page, s->bytes_per_page[bus], meta);
         break;
     case FMI_OP_WRITE_RAW:
         len = s->bytes_per_page[bus] + s->bytes_per_spare[bus];
-        iop_read(CMD_GET(cmd, 0x18), page, len);
-        st = nand_program_page(s, bus, CMD_GET(cmd, 0x10), CMD_GET(cmd, 0x14),
-                               page, len, NULL);
+        iop_read(ARG(0x18), page, len);
+        st = nand_program_page(s, bus, ARG_CE(0x10), ARG(0x14), page, len, NULL);
         break;
     case FMI_OP_WRITE_BOOTPAGE:
-        iop_read(CMD_GET(cmd, 0x18), page, FMI_BOOTPAGE_BYTES);
-        st = nand_program_page(s, bus, CMD_GET(cmd, 0x10), CMD_GET(cmd, 0x14),
+        iop_read(ARG(0x18), page, FMI_BOOTPAGE_BYTES);
+        st = nand_program_page(s, bus, ARG_CE(0x10), ARG(0x14),
                                page, FMI_BOOTPAGE_BYTES, NULL);
         break;
     case FMI_OP_READ_MULTIPLE:
@@ -771,6 +827,33 @@ static void iop_control_message(S5L8930IOPState *s, hwaddr item)
 
 /* ---- rings ------------------------------------------------------------- */
 
+/* Whether the loaded firmware speaks FMI v2 (see FMI_V2_MARKER). */
+static bool iop_fmi_v2(S5L8930IOPState *s)
+{
+    uint32_t len = MIN(s->fw_size, FW_MAX_SIZE);
+    g_autofree uint8_t *img = g_malloc(len);
+
+    iop_read(s->fw_base, img, len);
+    return memmem(img, len, FMI_V2_MARKER, strlen(FMI_V2_MARKER)) != NULL;
+}
+
+/* The firmware's 'cnfg' block (ring table, message buffer), found once per load. */
+static hwaddr iop_config(S5L8930IOPState *s)
+{
+    uint32_t off;
+
+    if (!s->fw_config) {
+        s->fmi_arg = iop_fmi_v2(s) ? 4 : 0;
+        for (off = 0; off + 4 <= MIN(s->fw_size, FW_MAX_SIZE); off += 4) {
+            if (iop_ldl(s->fw_base + off) == FW_CONFIG_MAGIC) {
+                s->fw_config = s->fw_base + off;
+                break;
+            }
+        }
+    }
+    return s->fw_config;
+}
+
 static bool iop_walk_ring(S5L8930IOPState *s, int h, hwaddr ring, uint32_t n)
 {
     bool any = false;
@@ -810,12 +893,16 @@ static bool iop_walk_ring(S5L8930IOPState *s, int h, hwaddr ring, uint32_t n)
 static void iop_doorbell(S5L8930IOPState *s)
 {
     static const int served[] = { RING_CONTROL, RING_SDIO, RING_FMI0, RING_FMI1 };
-    hwaddr cfg = s->fw_base + FW_CONFIG;
+    hwaddr cfg = iop_config(s);
     bool any = false;
     int i;
 
     if (!s->running) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: doorbell while stopped\n", __func__);
+        return;
+    }
+    if (!cfg) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: no 'cnfg' block in the firmware\n", __func__);
         return;
     }
     for (i = 0; i < ARRAY_SIZE(served); i++) {
@@ -841,21 +928,23 @@ static void iop_doorbell(S5L8930IOPState *s)
 /* CTRL = 1: what the firmware's start() does that the AP can see. */
 static void iop_run(S5L8930IOPState *s)
 {
-    g_autofree uint8_t *zero = g_malloc0(FW_BSS_END - FW_BSS_START);
-    uint32_t magic = iop_ldl(s->fw_base + FW_CONFIG);
+    uint32_t bss = iop_ldl(s->fw_base + FW_HDR_BSS_START);
+    uint32_t end = iop_ldl(s->fw_base + FW_HDR_BSS_END);
 
-    if (magic != FW_CONFIG_MAGIC) {
+    s->fw_config = 0;
+    if (!iop_config(s) || bss >= end || end > s->fw_size) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: no 'cnfg' block at firmware base 0x%08x\n",
-                      __func__, s->fw_base);
+                      "%s: no 'cnfg' block / bss [0x%x, 0x%x) in firmware at 0x%08x+0x%x\n",
+                      __func__, bss, end, s->fw_base, s->fw_size);
     } else {
         /* bss (PanicString, PanicFunction, PanicLog...) reads as clean. */
-        iop_write(s->fw_base + FW_BSS_START, zero, FW_BSS_END - FW_BSS_START);
+        g_autofree uint8_t *zero = g_malloc0(end - bss);
+        iop_write(s->fw_base + bss, zero, end - bss);
     }
     memset(s->ring_rx, 0, sizeof(s->ring_rx));
     s->running = true;
     DPRINTF("run: firmware at 0x%08x size 0x%x, message buffer 0x%08x\n",
-            s->fw_base, s->fw_size, iop_ldl(s->fw_base + FW_CONFIG + FW_CFG_MSGBUF));
+            s->fw_base, s->fw_size, iop_ldl(s->fw_config + FW_CFG_MSGBUF));
 }
 
 /* ---- MMIO -------------------------------------------------------------- */
@@ -903,6 +992,7 @@ static void iop_ctrl_write(void *opaque, hwaddr offset, uint64_t value,
         break;
     case IOP_FW_BASE:
         s->fw_base = value;
+        s->fw_config = 0;
         break;
     case IOP_FW_SIZE:
         s->fw_size = value;
@@ -968,7 +1058,7 @@ static void iop_vic_write(void *opaque, hwaddr offset, uint64_t value,
             DPRINTF("NMI\n");
 #ifdef DEBUG_S5L8930_IOP
             {
-                hwaddr cfg = s->fw_base + FW_CONFIG;
+                hwaddr cfg = iop_config(s);
                 hwaddr ring = iop_ldl(cfg + FW_CFG_RING(0));
                 uint32_t n = iop_ldl(cfg + FW_CFG_COUNT(0)), i;
 
@@ -1007,7 +1097,7 @@ static void s5l8930_iop_reset(DeviceState *dev)
 
     timer_del(s->irq_timer);
     s->running = false;
-    s->fw_base = s->fw_size = s->self_addr = 0;
+    s->fw_base = s->fw_size = s->self_addr = s->fw_config = 0;
     memset(s->vic_softint, 0, sizeof(s->vic_softint));
     memset(s->vic_regs, 0, sizeof(s->vic_regs));
     memset(s->ring_rx, 0, sizeof(s->ring_rx));
