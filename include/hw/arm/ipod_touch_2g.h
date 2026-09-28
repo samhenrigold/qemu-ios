@@ -292,6 +292,7 @@ typedef struct {
     bool lcd_planes, lcd_planes_explicit;
     bool forge_sigcheck, forge_sigcheck_explicit;
     char direct_iboot[PATH_MAX], direct_llb[PATH_MAX];
+    char gid_blobs[PATH_MAX];
     bool direct_iboot_explicit, direct_llb_explicit;
     uint32_t time_dilation;
     bool time_dilation_explicit;

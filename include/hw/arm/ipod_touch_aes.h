@@ -86,4 +86,6 @@ typedef struct IPodTouchAESState
 	bool streaming;
 } IPodTouchAESState;
 
+bool ipod_touch_aes_set_gid_blobs(const uint8_t *data, size_t size);
+
 #endif

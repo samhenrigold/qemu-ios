@@ -722,6 +722,33 @@ static void ipod_touch_set_direct_iboot(Object *obj, const char *value, Error **
     nms->direct_iboot_explicit = true;
 }
 
+static char *ipod_touch_get_gid_blobs(Object *obj, Error **errp)
+{
+    return g_strdup(IPOD_TOUCH_MACHINE(obj)->gid_blobs);
+}
+
+static void ipod_touch_set_gid_blobs(Object *obj, const char *value, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+
+    if (strlen(value) >= sizeof(nms->gid_blobs)) {
+        error_setg(errp, "gid-blobs path is too long");
+        return;
+    }
+    g_autofree char *data = NULL;
+    g_autoptr(GError) error = NULL;
+    gsize size;
+    if (!g_file_get_contents(value, &data, &size, &error)) {
+        error_setg(errp, "gid-blobs: cannot read '%s': %s", value, error->message);
+        return;
+    }
+    if (!ipod_touch_aes_set_gid_blobs((const uint8_t *)data, size)) {
+        error_setg(errp, "gid-blobs: '%s' is not a list of 64-byte KBAG || IV-key records", value);
+        return;
+    }
+    g_strlcpy(nms->gid_blobs, value, sizeof(nms->gid_blobs));
+}
+
 static char *ipod_touch_get_direct_llb(Object *obj, Error **errp)
 {
     return g_strdup(IPOD_TOUCH_MACHINE(obj)->direct_llb);
@@ -3700,6 +3727,9 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "amc-mode", "AMC registers, handshake-only bring-up, or compressed audio decode");
     object_class_property_add_str(klass, "direct-iboot", ipod_touch_get_direct_iboot, ipod_touch_set_direct_iboot);
     object_class_property_add_str(klass, "direct-llb", ipod_touch_get_direct_llb, ipod_touch_set_direct_llb);
+    object_class_property_add_str(klass, "gid-blobs", ipod_touch_get_gid_blobs, ipod_touch_set_gid_blobs);
+    object_class_property_set_description(klass, "gid-blobs",
+        "File of 64-byte KBAG || IV-key records extending the AES engine's GID table");
     object_class_property_add(klass, "forge-sigcheck", "bool", ipod_touch_get_forge_sigcheck,
                               ipod_touch_set_forge_sigcheck, NULL, NULL);
     object_class_property_set_description(klass, "forge-sigcheck", "Allow malformed boot signature recovery for unsigned-image compatibility");
