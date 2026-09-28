@@ -60,7 +60,7 @@ static void gles_frame_end(void) {}
 static void gles_note_scene(void) {}
 static void gles_note_frame_gap(void) {}
 static void gles_report_progress(void) {}
-''' + function('gles_texture_begin(') + function('gles_drawable_storage(') + function('gles_present_to_surface(') + r'''
+''' + s[s.index('#define GLES_PRIVATE_NAME'):s.index('static bool gles_is_drawable(')] + function('gles_texture_begin(') + function('gles_drawable_storage(') + function('gles_present_to_surface(') + r'''
 static GLint dimension(GLenum pname)
 {
  uint32_t a[]={GL_RENDERBUFFER_EXT,pname,RAM_BASE};
@@ -150,6 +150,10 @@ int main(void)
  glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,gh.fbo);gh.bound_framebuffer=0;
  assert(!gles_drawable_storage(480,320));
  GLint value;glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT,&value);assert(value==gh.fbo);
+ /* Host-private objects stay out of the guest's name range: an app that
+    binds its first texture as 1 must not get the render target (issue 12). */
+ assert(gh.tex>=GLES_PRIVATE_NAME && gh.depth>=GLES_PRIVATE_NAME && gh.fbo>=GLES_PRIVATE_NAME);
+ {GLuint next;glGenTextures(1,&next);assert(next<GLES_PRIVATE_NAME);glDeleteTextures(1,&next);}
  assert(glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT)==GL_FRAMEBUFFER_COMPLETE_EXT);
  assert(gles_present_to_surface(NULL,RAM_BASE,320*4,320,480,GLES_SURFACE_BGRA32)<0);
  glDeleteTextures(1,&gh.tex);glDeleteRenderbuffersEXT(1,&gh.depth);glDeleteFramebuffersEXT(1,&gh.fbo);
