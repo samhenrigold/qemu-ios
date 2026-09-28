@@ -116,7 +116,7 @@ def create(a):
     lock = {
         "format": 1, "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "manifest": {"path": os.path.abspath(a.manifest), "sha256": sha(a.manifest), "content": m},
-        "build": m["build"], "product_type": m["product_type"], "board": m["board"], "storage": m["storage"],
+        "build": m["build"], "product_version": restore["ProductVersion"], "product_type": m["product_type"], "board": m["board"], "storage": m["storage"],
         "tool": {"repo": ROOT, "git_rev": rev + ("-dirty" if dirty else ""), "qemu": os.path.abspath(a.qemu),
                  "qemu_sha256": sha(a.qemu), "built": built},
         "inputs": {"ipsw": {"path": ipsw, "sha1": got}, "keys": {"path": keys, "sha256": sha(keys)},
