@@ -19,6 +19,7 @@ host). Checks run in parallel, each on its own QEMU.
            emulated USB keyboard, fetches a page from a host HTTP server at 10.0.2.2
   audio    tests/ipad1/audio-check.py: boot sound, unlock, lock, unlock correlate with the originals
   net-usb  (opt-in) the same fetch over USB Ethernet: en1, usbmuxd's slirp, it_ethlink in the image
+  shadow   (opt-in) Safari's Bookmarks popover casts a soft drop shadow (an A008 surface), not a solid box
   appinstall, applaunch, gles
            SKIP: stock installd rejects apps not validly signed for this device
 
@@ -420,7 +421,34 @@ def check_audio(cfg, r):
           else "WAV correlation failed (see audio/ and the judge output above)")
 
 
-CHECKS = {"boot": check_boot, "usbmux": check_usbmux, "afc": check_afc, "persist": check_persist,
+SAFARI_BOOKMARKS = (57, 605)
+# The Bookmarks popover spans panel x 88..488, y 425..768. Its drop shadow is CoreAnimation's A008 (8-bit
+# alpha) surface; a bridge that refuses it samples the zero texture and paints a solid ~50% box over x 0..560,
+# y 357..768 instead. Outside the box's reach of the soft shadow: white; hugging the popover edge: shaded.
+SHADOW_CLEAR, SHADOW_EDGE = (530, 380), (492, 600)
+
+
+def check_shadow(cfg, r):
+    """(opt-in) Safari's Bookmarks popover casts a soft shadow, not a solid box (GL CA's A8 surfaces)."""
+    b, detail = booted(cfg, "shadow", r, keyboard=True)
+    try:
+        if not detail:
+            return
+        b.drag(UNLOCK_FROM, UNLOCK_TO)
+        dismiss_usb_alert(b)
+        b.tap(SAFARI_ICON)
+        time.sleep(8)
+        b.tap(SAFARI_BOOKMARKS)
+        time.sleep(3)
+        w, h, pix = itqmp.read_ppm(b.shot("popover"))
+        at = lambda xy: min(pix[(xy[1] * w + xy[0]) * 3:(xy[1] * w + xy[0]) * 3 + 3])
+        clear, edge = at(SHADOW_CLEAR), at(SHADOW_EDGE)
+        r.set(clear >= 230 and edge < clear, "popover shadow: %d past its reach (>= 230), %d at the edge" % (clear, edge))
+    finally:
+        b.stop()
+
+
+CHECKS = {"boot": check_boot, "shadow": check_shadow, "usbmux": check_usbmux, "afc": check_afc, "persist": check_persist,
           "net": check_net, "net-usb": check_net_usb, "wifi": check_wifi, "audio": check_audio}
 
 

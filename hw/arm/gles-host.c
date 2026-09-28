@@ -3942,7 +3942,8 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
 {
     unsigned target = a[0], w = a[3], h = a[4], fmt = a[5];
     bool nv12 = fmt == 0x34323076 || fmt == 0x34323066;
-    unsigned bpp = (fmt == GLES_SURFACE_RGB565 || fmt == GLES_SURFACE_RGB555) ? 2 : 4;
+    unsigned bpp = fmt == GLES_SURFACE_A8 ? 1 :
+        (fmt == GLES_SURFACE_RGB565 || fmt == GLES_SURFACE_RGB555) ? 2 : 4;
     GLint texture = 0, unpack;
     static unsigned traced;
     if (getenv("IT_GLES_VERBOSE") && (nv12 || traced++ < 32)) {
@@ -3969,7 +3970,7 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
     }
     if (!w || !h || w > 2048 || h > 2048 ||
         (!nv12 && fmt != GLES_SURFACE_BGRA32 && fmt != GLES_SURFACE_RGBA32 &&
-         fmt != GLES_SURFACE_RGB565 && fmt != GLES_SURFACE_RGB555)) return -1;
+         fmt != GLES_SURFACE_RGB565 && fmt != GLES_SURFACE_RGB555 && fmt != GLES_SURFACE_A8)) return -1;
     pixels = g_malloc((size_t)w * h * 4);
     if (nv12) {
 #ifndef GLES_HOST_EAGL
@@ -3995,6 +3996,9 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
             pixels[i * 4 + 3] = 255;
         }
     } else if (bpp == 2) { glfmt = GL_RGB; type = GL_UNSIGNED_SHORT_5_6_5; }
+    /* Sampled as (0, 0, 0, a), as the SGX samples an A8 surface. Refusing it left the
+     * zero texture (opaque black), so a shadow drew as a solid translucent box. */
+    else if (bpp == 1) glfmt = GL_ALPHA;
     glGetIntegerv(GL_UNPACK_ALIGNMENT, &unpack);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     gles_texture_begin();

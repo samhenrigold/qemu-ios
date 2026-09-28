@@ -359,6 +359,8 @@ typedef struct __attribute__((packed)) {
  * follow the format rather than assume four bytes. */
 #define GLES_SURFACE_RGB555 0x4c353535 /* L555: opaque little-endian RGB555 */
 #define GLES_SURFACE_RGB565             0x4c353635  /* 'L565' */
+/* 8 bits of alpha per pixel: CoreAnimation's shadow masks (a popover's, a layer's shadowPath). */
+#define GLES_SURFACE_A8                 0x41303038  /* 'A008' */
 
 #ifndef OUT_OF_TREE_BUILD
 int64_t qc_handle_gles(CPUState *cpu, qc_gles_args_t *a);
