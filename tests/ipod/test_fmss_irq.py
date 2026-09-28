@@ -28,7 +28,7 @@ typedef uint64_t hwaddr;
 typedef struct { int64_t deadline; bool pending; } QEMUTimer;
 typedef struct {
     int irq;
-    uint32_t reg_cs_ctrl, reg_cs_irq_bit, reg_cs_irq_mask;
+    uint32_t reg_cs_ctrl, reg_cs_irq_bit, reg_cs_irq_mask, reg_cs_script;
     uint32_t reg_cinfo_target_addr, reg_pages_in_addr, reg_cs_buf_addr;
     uint32_t reg_num_pages, reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc;
     QEMUTimer *completion_timer;
@@ -41,7 +41,8 @@ static int64_t qemu_clock_get_ns(int clock) { return now; }
 static void timer_mod(QEMUTimer *t, int64_t when) { t->deadline=when; t->pending=true; }
 static void timer_del(QEMUTimer *t) { t->pending=false; }
 static bool fmss_trace_on(void) { return false; }
-static void write_chip_info(IPodTouchFMSSState *s) {}
+static int scripts_run;
+static void fmss_run_script(IPodTouchFMSSState *s) { scripts_run++; }
 static void read_nand_pages(IPodTouchFMSSState *s) {}
 static void write_nand_pages(IPodTouchFMSSState *s) {}
 static unsigned fmss_total_blocks(IPodTouchFMSSState *s) { return 2048; }
@@ -59,8 +60,9 @@ static void advance(IPodTouchFMSSState *s) {
 int main(void) {
     QEMUTimer timer={0};
     IPodTouchFMSSState s={.completion_timer=&timer,.reg_cs_irq_mask=1};
+    write_reg(&s,0xc04,0x1000); assert(s.reg_cs_script==0x1000 && !scripts_run);
     write_reg(&s,0xc00,0xffb5); /* iBoot polls completion. */
-    assert(!level && !s.reg_cs_irq_bit && timer.pending);
+    assert(!level && !s.reg_cs_irq_bit && timer.pending && scripts_run==1);
     advance(&s); assert(!level && s.reg_cs_irq_bit==1);
     write_reg(&s,0xc0c,4); assert(s.reg_cs_irq_bit==1); /* W1C independent bits */
     write_reg(&s,0xc0c,1); assert(!s.reg_cs_irq_bit);
