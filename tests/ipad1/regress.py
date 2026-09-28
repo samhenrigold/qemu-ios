@@ -104,7 +104,7 @@ class Boot:
             argv = ["timeout", str(cfg.boot_timeout), cfg.qemu, "-machine", machine + ("" if self.wifi else ",wifi=off"),
                     "-display", "none", "-monitor", "none", "-serial", "file:" + self.serial,
                     "-qmp", "unix:%s,server,nowait" % self.sock]
-            argv += ["-audio", "driver=wav,path=" + self.wav] if self.wav else []
+            argv += ["-audio", "driver=wav,path=" + self.wav] if self.wav else ["-audio", "driver=none"]
             # A USB keyboard takes QMP keys ahead of the machine's button chords, so only boots that type get one.
             argv += ["-device", "usb-kbd,bus=usb-bus.0"] if self.keyboard else []
             argv += self.extra

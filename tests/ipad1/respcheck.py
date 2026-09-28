@@ -91,7 +91,7 @@ def main():
     qmp = f"{td}/qmp"
     os.mkdir(f"{td}/overlay")
     child = subprocess.Popen([a.qemu, "-machine", f"ipad1,kboot={a.kboot},nand={a.base},nand-overlay={td}/overlay",
-                              "-display", "none", "-monitor", "none", "-qmp", f"unix:{qmp},server=on,wait=off",
+                              "-display", "none", "-audio", "driver=none", "-monitor", "none", "-qmp", f"unix:{qmp},server=on,wait=off",
                               "-serial", f"file:{a.out}/serial.log"],
                              stdout=subprocess.DEVNULL, stderr=open(f"{a.out}/stderr", "w"))
     t0 = time.monotonic()

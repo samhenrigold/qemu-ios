@@ -22,7 +22,7 @@ HALTING = "it_seal: halting"
 
 def boot(qemu, kboot, machine_extra, serial, stop, timeout):
     """Run QEMU until it exits or stop(serial text) is true; returns (exited, seconds, text)."""
-    cmd = [qemu, "-machine", f"ipad1,kboot={kboot},{machine_extra}", "-display", "none",
+    cmd = [qemu, "-machine", f"ipad1,kboot={kboot},{machine_extra}", "-display", "none", "-audio", "driver=none",
            "-monitor", "none", "-serial", f"file:{serial}"]
     t0 = time.monotonic()
     p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
