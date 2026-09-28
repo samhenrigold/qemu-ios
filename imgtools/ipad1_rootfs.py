@@ -55,6 +55,7 @@ it is ldid ad-hoc signed, so boot with amfi_allow_any_signature=1.
 import argparse
 import os
 import plistlib
+import re
 import shutil
 import struct
 import subprocess
@@ -84,6 +85,23 @@ GLES_APPS = ("GLTest.app", "GLTest2.app")
 # GL CoreAnimation (the default; --no-ca-ogl opts out): CoreAnimation composites through the GLI shim
 # (accelerated pixel format), so the build installs the shim as GLEngine
 SB_ENV_CA_OGL = {"MBX2D_PAGE_FLIP": "0", "GLI_ACCELERATED": "1"}
+# The shim's dispatch table (contrib/ipad1-gles/gligen.py) is generated from this TSV; a firmware whose
+# OpenGLES @encode of __GLIFunctionDispatchRec names other fields, or orders them otherwise, needs its own.
+GLI_TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../docs/ipad1/gli-dispatch-7B500.tsv")
+DYLD_CACHE = "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv7"
+
+
+def gli_abi_problem(cache_path, tsv=GLI_TSV):
+    """None if the shared cache's __GLIFunctionDispatchRec fields are the TSV's dispatch_field column, in order."""
+    enc = re.search(rb"\{__GLIFunctionDispatchRec=[^}]*\}", open(cache_path, "rb").read())
+    if not enc:
+        return "no __GLIFunctionDispatchRec @encode in %s" % cache_path
+    have = [f.decode() for f in re.findall(rb'"([^"]+)"', enc[0])]
+    want = [l.split("\t")[3] for l in open(tsv) if l[:1].isdigit()]
+    if have != want:
+        diff = next((i for i, (h, w) in enumerate(zip(have, want)) if h != w), min(len(have), len(want)))
+        return "dispatch table differs from %s at slot %d (%d vs %d slots)" % (os.path.basename(tsv), diff, len(have), len(want))
+    return None
 HIDBRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/ipad1-hidbridge")
 # AppSync: one dylib injected into installd (install gate) and SpringBoard (launch gate)
 # via DYLD_INSERT_LIBRARIES. See contrib/appsync. Requires the AMFI boot-args (it is ldid-signed).
@@ -491,10 +509,13 @@ def build(a):
             # amfid-global half: force libmis MISValidateSignature to succeed in the shared cache
             # (symbol-located), so amfid approves the ldid-signed dylib and decrypted apps.
             import appsync_cachepatch
-            cache = os.path.join(m.mnt, "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv7")
+            cache = os.path.join(m.mnt, DYLD_CACHE)
             print("      " + appsync_cachepatch.patch_cache(cache))
         apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))
         if a.gles or a.ca_ogl:   # GL CoreAnimation composites through the GLI shim, so it needs the engine
+            why = gli_abi_problem(os.path.join(m.mnt, DYLD_CACHE))
+            if why:
+                raise SystemExit("GLI shim does not fit this firmware: %s (build with --no-ca-ogl)" % why)
             shutil.copy(os.path.join(GLES, "GLEngine"), os.path.join(m.mnt, GLENGINE))
         if a.gles:
             for app in () if apps_stashed else GLES_APPS:
@@ -542,7 +563,7 @@ def build(a):
             shutil.copytree(os.path.join(m.mnt, "private/var"), skeleton, symlinks=True, dirs_exist_ok=True)
         owners.update(var_owners(pristine))
         os.unlink(pristine)
-    print("      fstab %s root; SpringBoard env %s + stdio /dev/console%s" % ("ro" if a.ro_root else "rw", SB_ENV,
+    print("      fstab %s root; SpringBoard env %s + stdio /dev/console%s" % ("ro" if a.ro_root else "rw", SB_ENV_CA_OGL if a.ca_ogl else SB_ENV,
           "; disabled %s" % a.disable if a.disable else ""))
     print("      sshd job: %s; %d ad-hoc signed Mach-Os in unsigned-machos.txt%s"
           % ("present (jailbreak OpenSSH, inetd-style port 22)" if sshd else "absent", adhoc,
@@ -668,6 +689,16 @@ def selfcheck():
         struct.pack_into(">I", apm, e + 12, count)
         apm[e + 48:e + 48 + len(typ)] = typ
     assert apm_hfs_slice(bytes(apm)) == (64 * 512, 1000 * 512)
+
+    with tempfile.NamedTemporaryFile() as t:   # the GLI ABI gate: a table that is not the TSV's is refused
+        want = [l.split("\t")[3] for l in open(GLI_TSV) if l[:1].isdigit()]
+        t.write(b"{__GLIFunctionDispatchRec=" + b"".join(b'"%s"^?' % f.encode() for f in want) + b"}")
+        t.flush()
+        assert gli_abi_problem(t.name) is None
+        t.seek(len(b'{__GLIFunctionDispatchRec="'))
+        t.write(b"X")
+        t.flush()
+        assert "slot 0" in gli_abi_problem(t.name)
 
     job = {"Label": "com.apple.SpringBoard", "EnvironmentVariables": {"X": "1"}, "KeepAlive": True}
     out = edit_plist(plistlib.dumps(job, fmt=plistlib.FMT_BINARY), springboard_env)
