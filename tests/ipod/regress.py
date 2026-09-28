@@ -1409,14 +1409,11 @@ def check_gles(cfg, procs, dev, r):
     mb, cb, yb = quad_signature(b)
     _hi, lit = lit_count(b)
 
-    # Slot scan. The shim writes to fd 2, which for a SpringBoard-launched app
-    # goes nowhere addressable on a stock image: measured on 3.1.3, there is no
-    # /var/log/syslog and nothing reaches the QEMU or serial log either. So an
-    # empty scan is *reported* in the verdict rather than passed over in
-    # silence, and the assertion above is what actually carries the check.
-    # ponytail: no log source for the slot trace on 3.1.3; if this needs to
-    # become a real gate, have mbxshim write the line to a file under /tmp and
-    # cat it back here, or route gles_unimpl through a guest-services call.
+    # Slot scan. mbxshim's w() also sends every line to the host through
+    # GLES_OP_LOG, so "[mbxshim] unimplemented slot N" lands in qemu.log (fd 2
+    # of a SpringBoard-launched app goes nowhere on 3.1.3). The verdict says
+    # whether the shim's log reached the host at all, so a silent scan is
+    # never mistaken for a clean one.
     text = dev.serial_text()
     for extra in (os.path.join(dev.dir, "qemu.log"),):
         try:
@@ -1458,8 +1455,8 @@ def check_gles(cfg, procs, dev, r):
     return r.set(True, "GLES fixture rendering through the HLE layer: magenta=%.3f "
                        "cyan=%.3f yellow=%.3f, held for %ds, lit=%d%s"
                  % (mb, cb, yb, GLES_HOLD_S, lit,
-                    "" if "unimplemented slot" in text
-                    else " (no log source carried the slot trace)"))
+                    "; shim log reached the host, no unimplemented slot" if "[mbxshim]" in text
+                    else " (no shim log reached the host, so the slot scan saw nothing)"))
 
 
 def check_persist(cfg, dev2, marker_src, remote, r, event="clean shutdown + reboot"):
