@@ -4,8 +4,9 @@ from pathlib import Path
 import subprocess,tempfile
 root=Path(__file__).resolve().parents[2]
 s=(root/'contrib/it-gles/mbxshim.c').read_text()
+gc=s[s.rindex('typedef struct {',0,s.index('} GuestGC;')):s.index('} GuestGC;')+10]
 a=s.index('static int guest_fault_read(');b=s.index('/* ------------------------------------------------------- implemented slots',a)
-s=s[a:b]
+s=gc+'\n'+s[a:b]
 check=r'''
 #include <assert.h>
 #include <stdint.h>
@@ -13,7 +14,6 @@ check=r'''
 #include <sys/mman.h>
 #include <unistd.h>
 #include <string.h>
-typedef struct {unsigned host,unpack_alignment;} GuestGC;
 '''+s+r'''
 static unsigned faults;
 static size_t page;
@@ -27,6 +27,7 @@ int main(void){
  gc.unpack_alignment=1;assert(texture_bytes(&gc,3,2,0x1907,0x1401)==18);
  gc.unpack_alignment=8;assert(texture_bytes(&gc,3,2,0x1907,0x1401)==25);
  gc.unpack_alignment=4;assert(texture_bytes(&gc,3,2,0x1908,0x8033)==14);
+ gc.unpack_row_bytes=20;assert(texture_bytes(&gc,3,2,0x1907,0x1401)==29);gc.unpack_row_bytes=0;
  assert(!texture_bytes(&gc,~0u,2,0x1908,0x1401));
  assert(!texture_bytes(&gc,1,~0u,0x1908,0x1401));
  assert(!texture_bytes(&gc,1,1,0x1907,0x8033));
