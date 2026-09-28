@@ -194,7 +194,7 @@ def build(ctx):
         raise SystemExit("manifest asks for tool packages / a shell / ssh: iPod images carry no shell any more "
                          "(docs/ipod/guest-services-plan.md); remove packages and options.shell/ssh")
     cfg = {"options": opt, "guest_tools_supported": major >= 3, "owners": os.path.join(work, "owners.txt"),
-           "report": os.path.join(work, "bake.json"), "activation_hook": ctx.hook,
+           "report": os.path.join(work, "bake.json"), "activation_hook": ctx.hook, "activation_hook_args": ctx.hook_args,
            "guest_package": os.path.abspath(ctx.a.guest_package or GUEST_PACKAGE)}
     json.dump(cfg, open(os.path.join(work, "bake-config.json"), "w"))
     script = os.path.join(work, "bake.sh")
@@ -212,8 +212,9 @@ def build(ctx):
 
     # 4.x data protection: effaceable storage (in NOR) + the system keybag (on the volume), made the way a
     # restore makes them, from the IPSW's own restore ramdisk booted as a SecureRoot (ipod2g_keybag.py).
-    # It runs, and the device then boots, with aes-uid=engine: the legacy UID path cannot hold a keybag.
-    machine = {}
+    # Every device made here boots with aes-uid=engine (the one-shot below needs it: the legacy UID path cannot
+    # hold a keybag); legacy stays the machine default only for existing images, whose keychains depend on it.
+    machine = {"aes-uid": "engine"}
     if opt.get("data_protection"):
         from ipad1_fw import components
         helper = os.path.join(ROOT, "build/ipod-guest/it_keybag")
@@ -223,7 +224,6 @@ def build(ctx):
         step("data protection: restore-ramdisk keybag one-shot",
              [sys.executable, f"{HERE}/ipod2g_keybag.py", out, "--dec", dec, "--ramdisk", ramdisk,
               "--helper", helper, "--qemu", os.path.abspath(ctx.a.qemu)])
-        machine["aes-uid"] = "engine"
         derived["keybag_ramdisk"] = ramdisk
 
     pages = sorted(os.path.join(d, n) for d in ("cs0", "cs1", "cs2", "cs3") for n in os.listdir(os.path.join(nand, d)))
@@ -292,7 +292,7 @@ def bake(mnt, config):
         report["web_proxy"] = "PAC /%s on the en0 Wi-Fi service" % WEB_PROXY_PAC
     if cfg.get("activation_hook"):
         from ipad1_rootfs import activation_hook, LOCKDOWND
-        activation_hook(cfg["activation_hook"], os.path.join(mnt, LOCKDOWND))
+        activation_hook(cfg["activation_hook"], os.path.join(mnt, LOCKDOWND), cfg["activation_hook_args"])
         owners.append(("0 0", LOCKDOWND))
         report["activation"] = "activation hook applied and daemon re-signed"
     sys.path.insert(0, os.path.join(ROOT, "contrib/guest-package"))

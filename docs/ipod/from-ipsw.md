@@ -144,8 +144,12 @@ untouched output buffer, zeros, and whatever AppleKeyStore wrapped cannot be unw
 KEYLEN's direction) with a fixed stand-in key, and GID operations shorter than a KBAG (the restore kernel
 derives key 0x837 from a 16-byte seed, `345a2d6c5050d058...`; unknown, and fatal before) the same way with
 a stand-in GID key. KBAG lookups are unchanged. The default stays `legacy`, because existing 3.x images'
-keychain items were encrypted under the legacy keys. Devices whose data is made under the engine record
-it in `device.lock.json` (`"machine": {"aes-uid": "engine"}`), and `regress.py --device` applies it.
+keychain items were encrypted under the legacy keys. Every device `imgtools/device.py` makes for the iPod
+(5F138, 7E18, 8C148) boots with the engine, data protection or not, and records it in `device.lock.json`
+(`"machine": {"aes-uid": "engine"}`); `regress.py --device` applies it. nand-current and devices adopted
+from it have no such lock and keep `legacy`. A fresh 7E18 with the activation hook passes all eight default
+checks this way, and a generic-password keychain item added in one boot reads back after a clean
+shutdown and reboot.
 
 ### P3, 5F138: LLB → iBoot
 
