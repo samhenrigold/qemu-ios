@@ -13,7 +13,7 @@ installed through AppSync on its own overlay of a private clone of `golden-appsy
 CoreAnimation, ipad1-appsync @ this commit's build), launched from the home screen, watched
 for ~30 s (frame + 20 s later frame), syslog and crash reports pulled.
 
-**40 works, 4 launches with issues, 4 crash, 1 won't install.**
+**40 works, 4 launches with issues, 4 crash, 1 won't install.**  Since then Super Monkey Ball works (41 works, 3 with issues).
 
 All four crashes are app/OS mismatches, not emulator bugs: three dyld "Symbol not found"
 (APIs 3.2.2 doesn't ship) and one internal build calling a private AVCapture selector. No run
@@ -27,10 +27,16 @@ Emulator-side findings:
   `Shazam.app/Shazam`, 542848 bytes). Shazam failed 3/3 this way and 365XWords 1/2. With 60 s
   between install and tap, everything launched. Probably installd/SpringBoard post-install work
   running slowly under emulation. The harness now waits (`INSTALL_SETTLE`).
-- **Super Monkey Ball: blank GL surface.** It rotates the UI to landscape and then shows a white
-  480x320 window for 30+ s. The host log has 43 `[gles] texture` uploads, most with non-zero
-  means, so content is loaded but never shown. Worth a look from the GL side (landscape EAGL
-  layer present?). SpinningiPhoneApp (GL) renders nearly black, which may be the same problem.
+- **Super Monkey Ball: blank GL surface. FIXED (ipad1-gl).** It rebuilds its framebuffer on the
+  rotate to landscape: `glDeleteRenderbuffers`, then `renderbufferStorage:fromDrawable:` again. EAGL
+  starts that with `gliBindViewES(gc, NULL)` and then binds the layer through CA's `vt[1]`. The stock
+  engine's `_gliBindViewES(NULL)` unbinds the old drawable (`vt[2]`); the shim only forgot it, so CA
+  refused the second bind, the method returned NO, and every present went to the invisible panel blit.
+  The shim now unbinds too. Title screen: `screens/2026-09-27-supermonkeyball-gl.png`.
+- SpinningiPhoneApp is a different problem. It never rebuilds its framebuffer, presents to CA every
+  frame, and the shim call trace is identical with and without the fix. Its phone screen quad is
+  sometimes black and sometimes shows the wallpaper. Lead: `glTexImage2D` on cube face 0x8516
+  raises GL_INVALID_ENUM on the host.
 - Every boot, SpringBoard included, logs one host-driver line `UNSUPPORTED (log once): POSSIBLE
   ISSUE: unit 0 GLD_TEXTURE_INDEX_2D is unloadable ... using zero texture`, plus about 14
   `[gles] texture ... mean=0` uploads. This is baseline noise, not per-app.
@@ -84,7 +90,7 @@ harness pins the new icon into page 1's first free cell via springboardservices
 | Yelp | `com.yelp.yelpiphone` | iPhone | works | welcome screen; location permission prompt | [png](screens/app-compat/com.yelp.yelpiphone.png) |
 | ExitStrategy | `com.jwegventures.exitstrategy` | iPhone | launches-with-issues | Tutorial nav bar draws, body stays black (nz 0.02) 30 s later | [png](screens/app-compat/com.jwegventures.exitstrategy.png) |
 | Justin Bieber | `com.tapulous.justinbieber` | iPhone | launches-with-issues | stays on the title backdrop 30 s later; menu never appears | [png](screens/app-compat/com.tapulous.justinbieber.png) |
-| Monkey Ball | `com.ooi.supermonkeyball` | iPhone | launches-with-issues | turns the UI landscape, then a blank white 480x320 GL window for 30+ s; textures upload (43, most non-zero), nothing visible | [png](screens/app-compat/com.ooi.supermonkeyball.png) |
+| Monkey Ball | `com.ooi.supermonkeyball` | iPhone | works | GL title screen, landscape 1x window (was blank white before the gliBindViewES unbind fix) | [png](screens/2026-09-27-supermonkeyball-gl.png) |
 | SpinningiPhoneApp | `com.yourcompany.SpinningiPhoneApp` | iPhone | launches-with-issues | GL demo runs (model rotates between frames) but renders nearly black | [png](screens/app-compat/com.yourcompany.SpinningiPhoneApp.png) |
 | DoodleJump | `com.yourcompany.DoodleJump` | iPhone | crashes | dyld: Symbol not found _UIApplicationWillEnterForegroundNotification (3.7 needs iOS 4 despite MinimumOS 3.1) |  |
 | FigCam | `com.apple.FigCam` | iPhone | crashes | uncaught NSInvalidArgumentException: -[AVCapture setDisableRemoteImplementation:] unrecognized (internal build, private SPI not in 3.2.2) |  |
