@@ -30,10 +30,11 @@ for source,target,mode in (
  ('contrib/it-instprogress/sbdlicon','/usr/local/bin/sbdlicon',0o755),
  ('contrib/it-agent/it_agent','/usr/local/bin/it_agent',0o755),
  ('contrib/it-agent/it_typein.dylib','/usr/lib/it_typein.dylib',0o755),
- ('contrib/it-agent/com.qemu.it-agent.plist','/System/Library/LaunchDaemons/com.qemu.it-agent.plist',0o644),
+ ('build/it-boot/armv6/it_boot','/usr/local/bin/it_boot',0o755),
+ ('contrib/it-boot/com.qemu.it-boot.plist','/System/Library/LaunchDaemons/com.qemu.it-boot.plist',0o644),
 ):
  if args.without_guest_tools:
-  if source.endswith('/MBXGLEngine'):
+  if source.endswith('/MBXGLEngine') or '/it-boot/' in source:  # the loader is baked on every build
    continue
   try:setowner.resolve(index,target)
   except SystemExit:continue
@@ -55,9 +56,13 @@ for version in (1,2):
   except SystemExit:pass
   else:raise AssertionError('unsupported helper capability advertised: '+path)
  else:assert read(path,501,501,0o644)==('v%d\n'%version).encode()
-try:setowner.resolve(index,'/System/Library/LaunchDaemons/com.qemu.it-pbd.plist')
-except SystemExit:pass
-else:raise AssertionError('legacy clipboard daemon remains')
+for job in ('com.qemu.it-pbd.plist','com.qemu.it-agent.plist'):  # legacy clipboard daemon; the agent is the seed package's
+ try:setowner.resolve(index,'/System/Library/LaunchDaemons/'+job)
+ except SystemExit:pass
+ else:raise AssertionError('baked job remains: '+job)
+if not args.without_guest_tools:
+ seed=read('/usr/local/lighttouch/state',mode=0o644).decode().split()
+ assert seed[0]=='seed' and b'job ' in read('/usr/local/lighttouch/pkgs/%s/offer'%seed[1],mode=0o644),seed
 spec=importlib.util.spec_from_file_location('sound_defaults',root/'imgtools/set-sound-defaults.py')
 sounds=importlib.util.module_from_spec(spec);spec.loader.exec_module(sounds)
 for name,expected in sounds.DEFAULTS.items():

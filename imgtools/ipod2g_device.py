@@ -24,6 +24,11 @@ bake() adds the guest side, all of it located at build or run time (no offsets):
   contrib/appsync/patch-appsync-dylib.sh  MISValidateSignature -> success in the shared cache, found by symbol;
                                  libappsync.dylib DYLD_INSERTed into installd (options.appsync)
   install_web_proxy()            the iPad's proxy PAC and the en0 Wi-Fi service that uses it (options.web_proxy)
+  mkpkg.seed()                   the guest-package loader (/usr/local/bin/it_boot + its job) and the seed package
+                                 from --guest-package (default build/guest-package/armv6.itpack): pkgs/<serial>,
+                                 current, state, the kept hook targets + .baked copies (MBXGLEngine only with the
+                                 shim); the package's jobs (com.qemu.it-agent) are removed from LaunchDaemons, as
+                                 it_boot loads them. The lock's guest_package records it.
 No shell, sshd or third-party binary is installed: guest services are stock lockdown services plus it_agent
 (docs/ipod/guest-services-plan.md). Only our own helpers above are added.
 Every file the bake creates is given its owner in the catalog afterwards (the host mount is noowners).
@@ -41,6 +46,7 @@ KC_PREFIX = b"/System/Library/Caches/com.apple.kernelcaches/"
 GLI_REF = os.path.join(ROOT, "docs/ipod/gli-dispatch-7E18.tsv")
 DYLD_CACHE = "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv6"
 WEB_PROXY_PAC = "usr/local/share/ltm/proxy.pac"   # ipad1_rootfs.PAC_PATH
+GUEST_PACKAGE = os.path.join(ROOT, "build/guest-package/armv6.itpack")
 # Paths bake-guest-tools.sh creates (it documents the setowner step); owner, relative to the volume.
 GUEST_TOOL_OWNERS = [
     ("0 0", "usr/local"), ("0 0", "usr/local/bin"), ("0 0", "usr/local/bin/it_agent"),
@@ -188,7 +194,8 @@ def build(ctx):
         raise SystemExit("manifest asks for tool packages / a shell / ssh: iPod images carry no shell any more "
                          "(docs/ipod/guest-services-plan.md); remove packages and options.shell/ssh")
     cfg = {"options": opt, "guest_tools_supported": major >= 3, "owners": os.path.join(work, "owners.txt"),
-           "report": os.path.join(work, "bake.json"), "activation_hook": ctx.hook}
+           "report": os.path.join(work, "bake.json"), "activation_hook": ctx.hook,
+           "guest_package": os.path.abspath(ctx.a.guest_package or GUEST_PACKAGE)}
     json.dump(cfg, open(os.path.join(work, "bake-config.json"), "w"))
     script = os.path.join(work, "bake.sh")
     open(script, "w").write('exec "%s" "%s" bake "$MNT" "%s"\n' % (sys.executable, os.path.abspath(__file__),
@@ -200,6 +207,7 @@ def build(ctx):
           "--script", script, "--owners", cfg["owners"], "--workdir", os.path.join(work, "nand-build"),
           "--out", nand])
     baked = json.load(open(cfg["report"]))
+    guest_package = baked.pop("guest_package")
     derived.update(baked)
 
     pages = sorted(os.path.join(d, n) for d in ("cs0", "cs1", "cs2", "cs3") for n in os.listdir(os.path.join(nand, d)))
@@ -221,7 +229,7 @@ def build(ctx):
         "outputs": {"nand": {"path": nand, "pages": len(pages), "listing_sha256": listing.hexdigest()},
                     "nor": {"path": nor, "sha256": sha(nor)}, "iboot": {"path": iboot_out, "sha256": sha(iboot_out)} if derived["direct_iboot"] else None,
                     "gid_blobs": {"path": gid, "sha256": sha(gid)}},
-        "lock": {"derived": derived},
+        "lock": {"derived": derived, "guest_package": guest_package},
     }
 
 
@@ -253,7 +261,6 @@ def bake(mnt, config):
     env = dict(os.environ, MNT=mnt, IT_GLES_SHIM="1" if problem is None else "0",
                IT_GUEST_TOOLS="1" if supported else "0")
     subprocess.run(["/bin/sh", os.path.join(HERE, "bake-guest-tools.sh")], env=env, check=True)
-    owners += [(o, p) for o, p in GUEST_TOOL_OWNERS if os.path.lexists(os.path.join(mnt, p))]
     if opt.get("appsync"):
         env["APPSYNC_DYLIB"] = os.path.join(ROOT, "build/appsync/libappsync.dylib")
         r = subprocess.run(["/bin/sh", os.path.join(ROOT, "contrib/appsync/patch-appsync-dylib.sh")], env=env,
@@ -269,6 +276,12 @@ def bake(mnt, config):
         activation_hook(cfg["activation_hook"], os.path.join(mnt, LOCKDOWND))
         owners.append(("0 0", LOCKDOWND))
         report["activation"] = "activation hook applied and daemon re-signed"
+    sys.path.insert(0, os.path.join(ROOT, "contrib/guest-package"))
+    import mkpkg
+    gli = os.path.basename(GLI_REF)[len("gli-dispatch-"):-len(".tsv")] if problem is None else None
+    seeded, report["guest_package"] = mkpkg.seed(mnt, cfg["guest_package"], gli)
+    owners += [("0 0", p) for p in seeded]
+    owners += [(o, p) for o, p in GUEST_TOOL_OWNERS if os.path.lexists(os.path.join(mnt, p))]
     with open(cfg["owners"], "w") as f:
         f.writelines("%s %s\n" % (o, p) for o, p in owners)
     json.dump(report, open(cfg["report"], "w"))

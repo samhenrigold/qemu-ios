@@ -6,12 +6,13 @@
 
 After device.py verifies and decrypts the IPSW, build() generates catalog GID
 records, iBoot and NOR, then installs the original IMG3 kernelcache in the system
-volume. Both sealing and subsequent boots use real iBoot. OUTDIR contains
-iBoot.bin, nor.bin, gid-blobs.bin, nand/, identity.json and device.lock.json.
+volume, and bakes the guest-package loader and seed (--guest-package, default
+build/guest-package/armv7.itpack, recorded as the lock's guest_package). Both
+sealing and subsequent boots use real iBoot. OUTDIR contains iBoot.bin, nor.bin, gid-blobs.bin, nand/, identity.json and device.lock.json.
 The existing 4.x keybag preparation still uses an explicit direct-ramdisk boot.
 Nothing here reads the real unit's dumps (hw2/) or its identity.json.
 """
-import os, subprocess, sys, zipfile
+import json, os, subprocess, sys, zipfile
 from pathlib import Path
 from ipad1_gid import gid_blobs, host_usb_devicetree
 
@@ -20,6 +21,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from ipad1_kboot import synth_identity
 from ipad1_fw import components
+from ipad1_rootfs import GUEST_PACKAGE
 from device import sha
 
 CACHE = os.path.expanduser("~/Developer/qemu-ios-files/ipad1/repro/cache")
@@ -67,9 +69,11 @@ def build(ctx):
          + ([] if opt.get("ca_ogl", True) else ["--no-ca-ogl"]) + (["--appsync"] if opt.get("appsync") else [])
          + ([] if opt.get("web_proxy", True) else ["--no-web-proxy"]) + ([] if opt.get("usb_net", True) else ["--no-usb-net"]))
     vols, tools = os.path.join(work, "pristine"), os.path.join(ROOT, "build/ipad1-guest")
-    step("bake --seal" + (" + activation hook" if hook else ""),
-         [sys.executable, f"{HERE}/ipad1_rootfs.py", "bake", vols, "--tools", tools, "--seal"]
+    itpack = os.path.abspath(a.guest_package or GUEST_PACKAGE)
+    step("bake --seal + guest-package seed" + (" + activation hook" if hook else ""),
+         [sys.executable, f"{HERE}/ipad1_rootfs.py", "bake", vols, "--tools", tools, "--guest-package", itpack, "--seal"]
          + (["--activation-hook", hook] if hook else []) + (["--gl-test"] if a.gl_test else []))
+    guest_package = json.load(open(os.path.join(vols, "guest-package.json")))
     nand = os.path.join(out, "nand")
     step("NAND store", [sys.executable, f"{HERE}/ipad1_nand.py", "build", "--geometry", geometry, "--mbr", mbr,
                         "--kernelcache", os.path.join(dec, "kernelcache.mach"), "--system", f"{vols}/system.img",
@@ -104,7 +108,7 @@ def build(ctx):
                    "restore_ramdisk": os.path.join(dec, ramdisk) if ramdisk else None, "mbr": {"path": mbr, "sha256": sha(mbr)},
                    "guest_tools": tools, "lockdown": None, "stash": None},
         "identity": {"die_id": die_id},
-        "lock": {"gl_test": a.gl_test, "boot_strategy": "iboot",
+        "lock": {"gl_test": a.gl_test, "guest_package": guest_package, "boot_strategy": "iboot",
                  "gid_components": key_names, "iboot_signature_checks": "pattern-patched"},
         "outputs": {"iboot": {"path": iboot, "sha256": sha(iboot)},
                     "gid_blobs": {"path": gid, "sha256": sha(gid)},

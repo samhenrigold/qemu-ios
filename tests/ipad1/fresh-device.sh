@@ -9,6 +9,8 @@
 #    (QEMU exit 0 within 45 s). A device made without an activation hook stops at "Connect to iTunes":
 #    then lit means that screen and there is nothing to unlock.
 # 4. boot 2 on the same overlay: the same; no rescan now also means boot 1's power-off closed the FTL
+# With a guest_package in the lock, both boots serve the seed's package as the offer and also need
+# it_boot's report and a host paste through the package's it_pbd (boot-smoke.py --guest-package).
 # Pass/fail is per step; whether a PNG shows the home screen or "Connect to iTunes" needs a look
 # (brightness alone cannot tell them apart).
 set -euo pipefail
@@ -45,6 +47,24 @@ if [ "$SCREEN" = activated ]; then SCREEN_FLAGS=(--unlock); WHAT="lit, unlocked"
 else SCREEN_FLAGS=(--lit 2500); WHAT="lit (Connect to iTunes)"; fi
 echo "PASS lock: inputs name no hw2/ dump and only $DEV/identity.json"
 
+# this boot's offer: the seed's own package again (so it_boot stays and reports it)
+PKG_FLAGS=()
+if OFFER=$(python3 - "$DEV" "$OUT" "$ROOT" <<'PY'
+import json, os, sys
+dev, out, root = sys.argv[1:]
+sys.path.insert(0, os.path.join(root, "contrib/guest-package"))
+import mkpkg
+lock = json.load(open(os.path.join(dev, "device.lock.json")))
+g = lock.get("guest_package") or sys.exit(1)
+mkpkg.unpack(g["itpack"]["path"], os.path.join(out, "itpack"))
+mkpkg.offer(os.path.join(out, "itpack", g["family"]), os.path.join(out, "offer"), lock["build"])
+print(os.path.join(out, "offer"))
+PY
+); then
+    PKG_FLAGS=(--guest-package "$OFFER")
+    echo "PASS guest package: seed offered from $OFFER"
+fi
+
 # The sealed nor.bin is read-only; boot both times on one private writable copy so
 # the effaceable region (and the system keybag it protects) persists across boots.
 NOR_FLAGS=()
@@ -55,7 +75,7 @@ fi
 
 for n in 1 2; do
     flags=(--nand-overlay "$DEV/nand" --overlay "$OUT/overlay" --device "$DEV"
-           --die-id "$DIE_ID" ${NOR_FLAGS[@]+"${NOR_FLAGS[@]}"} "${SCREEN_FLAGS[@]}" --shot "$OUT/boot$n.png" --powerdown --no-rescan --seconds 240)
+           --die-id "$DIE_ID" ${NOR_FLAGS[@]+"${NOR_FLAGS[@]}"} ${PKG_FLAGS[@]+"${PKG_FLAGS[@]}"} "${SCREEN_FLAGS[@]}" --shot "$OUT/boot$n.png" --powerdown --no-rescan --seconds 240)
     if timeout 300 python3 "$ROOT/tests/ipad1/boot-smoke.py" "${flags[@]}" > "$OUT/boot$n.txt" 2>&1; then
         echo "PASS boot $n: $WHAT, clean power-off; look at $OUT/boot$n.png"
     else
