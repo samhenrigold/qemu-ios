@@ -276,6 +276,8 @@ def icon_slot(b, bundle):
 def pin_to_page1(b, bundle):
     """Move bundle's icon into the first free cell of home page 1 via springboardservices
     set_icon_state, so launching needs no page swipe. Returns (1, row, col) or None."""
+    if not os.path.exists(SBICONS):
+        return None
     p = b.run([SBICONS], timeout=45)
     if p.returncode != 0 or not p.stdout:
         return None
