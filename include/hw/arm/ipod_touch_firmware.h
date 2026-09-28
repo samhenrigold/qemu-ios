@@ -11,11 +11,6 @@
 typedef struct ITFirmwareDesc {
     const char *build;
     const char *kernel_banner;
-    uint32_t iboot_boot_args_pa;
-    uint32_t amfi_slide;
-    uint32_t amfi_get_task_va;
-    uint32_t amfi_get_task_name_va;
-    bool legacy_kernel_patches;
 } ITFirmwareDesc;
 
 const ITFirmwareDesc *it_firmware_by_build(const char *build);
@@ -23,5 +18,7 @@ const ITFirmwareDesc *it_firmware_detect_kernel(const uint8_t *image, size_t siz
 /* Positive results are cached until CPU reset; an early empty RAM scan retries. */
 const ITFirmwareDesc *it_firmware_loaded(void);
 void it_firmware_reset(void);
+uint32_t it_firmware_find_iboot_command_line(const uint8_t *image, size_t size,
+                                           uint32_t base);
 
 #endif
