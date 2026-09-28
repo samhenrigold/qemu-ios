@@ -83,6 +83,29 @@ int main(void)
     gles_debug_texture(GL_TEXTURE_2D);
     glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, got);
     assert(!memcmp(got, "\xff\0\xff\xff", 4) && glGetError() == GL_NO_ERROR);
+    /* and every newly accepted texture type is a real desktop upload: one texel each, read back as RGBA8 */
+    {
+        struct { GLenum fmt, type; uint8_t in[16]; uint8_t want[4]; } up[] = {
+            { GL_BGRA, GL_UNSIGNED_SHORT_4_4_4_4_REV, {0x0f, 0xf0}, {0, 0, 0xff, 0xff} },   /* 0xf00f, REV: low nibble is B=f, top is A=f */
+            { GL_BGRA, GL_UNSIGNED_SHORT_1_5_5_5_REV, {0x1f, 0x80}, {0, 0, 0xff, 0xff} },   /* 0x801f, REV: low 5 bits B=1f, bit 15 A=1 */
+            { GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, {0x11, 0x22, 0x33, 0x44}, {0x44, 0x33, 0x22, 0x11} },
+            { GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, {0x11, 0x22, 0x33, 0x44}, {0x33, 0x22, 0x11, 0x44} },
+            { GL_LUMINANCE_ALPHA, GLES_HALF_FLOAT_OES, {0x00, 0x3c, 0x00, 0x38}, {0xff, 0xff, 0xff, 0x80} },  /* 1.0h, 0.5h */
+            { GL_RGB, GL_FLOAT, {0,0,0x80,0x3f, 0,0,0,0x3f, 0,0,0,0}, {0xff, 0x80, 0, 0xff} },            /* 1.0f, 0.5f, 0 */
+        };
+        for (unsigned u = 0; u < sizeof(up) / sizeof(up[0]); u++) {
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, up[u].fmt, gles_host_type(up[u].type), up[u].in);
+            assert(glGetError() == GL_NO_ERROR);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, got);
+            for (unsigned c = 0; c < 4; c++) assert(abs((int)got[c] - up[u].want[c]) <= 1);
+        }
+        uint16_t depth = 0x8000; uint8_t d8[4];
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, 1, 1, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, &depth);
+        assert(glGetError() == GL_NO_ERROR);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_BYTE, d8);
+        assert(d8[0] == 0x80);
+    }
     puts("PASS: refusal counters, shim report lines, fourcc, format tables, magenta paint");
     return 0;
 }
