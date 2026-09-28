@@ -14,7 +14,7 @@ usbmuxd bridge, unlock, tap the new icon to launch, wait, screenshot, pull crash
 and record PASS / CRASH / NO-LAUNCH plus any "[glishim] unimplemented" GL lines. Reuses
 tests/ipad1/regress.py's Boot. One QEMU per app; nothing runs in the background.
 """
-import argparse, importlib.util, os, plistlib, re, struct, sys, time, zipfile
+import argparse, importlib.util, os, plistlib, re, struct, subprocess, sys, time, zipfile
 
 DEFAULT_DIR = os.path.expanduser("~/Downloads/ios3")
 MAX_OS = (3, 2)
@@ -70,7 +70,7 @@ def parse_version(v):
 def inspect(path):
     """Read one IPA: {bundle,name,minos,family,archs,encrypted,error}."""
     r = {"file": os.path.basename(path), "bundle": "", "name": "", "minos": "",
-         "family": "", "archs": [], "encrypted": None, "error": ""}
+         "family": "", "archs": [], "encrypted": None, "error": "", "exe": ""}
     try:
         with zipfile.ZipFile(path) as z:
             names = z.namelist()
@@ -95,7 +95,7 @@ def inspect(path):
                 r["family"] = FAMILY.get(int(fam), str(fam))
             else:
                 r["family"] = "iPhone"            # pre-3.2 default (no key)
-            exe = d.get("CFBundleExecutable")
+            exe = r["exe"] = d.get("CFBundleExecutable", "")
             if exe:
                 try:
                     sl = slices(z.read(appdir + exe))
@@ -176,6 +176,7 @@ FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1")
 DISMISS_EDIT = (615, 297)        # "Dismiss" on the install's Edit-Home-Screen help sheet
 NEXT_PAGE = ((511, 87), (511, 617))      # swipe to the next home page (portrait right-to-left)
 LAUNCH_WAIT = 9
+INSTALL_SETTLE = 60           # s between install and launch tap (see launch_one)
 
 
 def GRID(row, col):
@@ -193,6 +194,23 @@ def _sample(rg, ppm, step=997):
         return []
 
 
+def snap(b, rg, name, step=997):
+    """(normalized_nonzero, backlight-normalized sample). Uses itqmp.shot so a dim/asleep
+    panel is rescaled — regress Boot.picture() reads raw pixels and sees a lit screen as 0%."""
+    png = os.path.join(b.dir, name + ".png")
+    try:
+        _, hi, nz = rg.itqmp.shot(b.qmp, png)
+    except Exception:
+        return (0.0, [])
+    try:
+        _, _, pix = rg.itqmp.read_ppm(png + ".ppm")
+        s = pix[::step]
+        m = max(s) or 1
+        return (nz, [min(255, v * 255 // m) for v in s])   # per-frame normalized -> backlight-independent
+    except Exception:
+        return (nz, [])
+
+
 def _framediff(a, b, thresh=8):
     """True if two sampled frames differ meaningfully (mean abs byte diff > thresh)."""
     if not a or not b or len(a) != len(b):
@@ -205,14 +223,16 @@ def _lit(sample):
     return sum(1 for v in sample if v > 12) / max(1, len(sample))
 
 
-def wait_stable(b, rg, tag, deadline, want_lit=False, poll=1.5):
-    """Poll screendumps until two consecutive frames match (settled), event-driven so it
-    doesn't depend on host speed. If want_lit, also require the frame to be lit (past the
-    boot logo). Returns the settled sample, or the last one at the deadline."""
-    prev = _sample(rg, b.shot("w-" + tag))
+def wait_stable(b, rg, tag, deadline, want_lit=False):
+    """Poll (backlight-normalized) frames until two consecutive settle, event-driven so it
+    doesn't depend on host speed. If want_lit, wake the panel (home) and require a lit frame.
+    Returns the settled sample."""
+    nz, prev = snap(b, rg, "w-" + tag)
     while time.time() < deadline:
-        cur = _sample(rg, b.shot("w-" + tag))
-        if not _framediff(prev, cur) and (not want_lit or _lit(cur) > 0.30):
+        if want_lit and nz <= 0.30:
+            rg.itqmp.button(b.qmp, "home")     # wake a slept/booting panel
+        nz, cur = snap(b, rg, "w-" + tag)
+        if not _framediff(prev, cur) and (not want_lit or nz > 0.30):
             return cur
         prev = cur
     return prev
@@ -253,6 +273,131 @@ def icon_slot(b, bundle):
     return None
 
 
+def pin_to_page1(b, bundle):
+    """Move bundle's icon into the first free cell of home page 1 via springboardservices
+    set_icon_state, so launching needs no page swipe. Returns (1, row, col) or None."""
+    p = b.run([SBICONS], timeout=45)
+    if p.returncode != 0 or not p.stdout:
+        return None
+    try:
+        state = plistlib.loads(p.stdout.encode())
+    except Exception:
+        return None
+    open(os.path.join(b.dir, "iconstate.plist"), "w").write(p.stdout)
+    cell = None
+    for page in state[1:]:
+        for row in page:
+            for i, c in enumerate(row):
+                if isinstance(c, dict) and bundle in (c.get("displayIdentifier"), c.get("bundleIdentifier")):
+                    cell, row[i] = c, False
+    if cell is None:
+        return None
+    page1 = state[1]
+    for r in range(5):                     # 5 rows x 4 cols on the portrait iPad home screen
+        if r == len(page1):
+            page1.append([])
+        row = page1[r]
+        for c in range(4):
+            if c == len(row):
+                row.append(False)
+            if row[c] is False:
+                row[c] = cell
+                q = subprocess.run([SBICONS, "set"], input=plistlib.dumps(state), env=b.env(),
+                                   capture_output=True, timeout=45)
+                if q.returncode != 0:
+                    return None
+                time.sleep(2)
+                return icon_slot(b, bundle) if icon_slot(b, bundle) == (1, r, c) else None
+    return None
+
+
+def _syslog_has(path, needles, since=0):
+    """(matched_bool, new_size): scan the syslog from byte offset `since` for any needle."""
+    try:
+        with open(path, errors="replace") as f:
+            f.seek(since)
+            txt = f.read()
+        low = txt.lower()
+        return (any(n.lower() in low for n in needles if n), since + len(txt.encode("utf-8", "replace")))
+    except OSError:
+        return (False, since)
+
+
+def syslog_launch(b, rg, cfg, r, res, syslog, end):
+    """Launch verdict from idevicesyslog alone (no screendumps): navigate blind to the
+    app's icon (sbservices gives page/slot), tap, and decide from the app's own syslog
+    lines and crash reports. Screendumps are black under GL-CA, so pixels aren't used."""
+    bundle = r["bundle"]
+    appname = (r["name"] or "").replace(" ", "")
+    launch_needles = [bundle, bundle.split(".")[-1], appname]
+    # 1. SpringBoard readiness gate WITHOUT pixels: springboardservices only answers once
+    # SpringBoard is up, and it returns the icon layout, so poll it until the new app appears.
+    slot = None
+    while time.time() < end:
+        slot = icon_slot(b, bundle)
+        if slot:
+            break
+        time.sleep(8)
+    if not slot:
+        res["verdict"], res["note"] = "NO-BOOT", "SpringBoard/springboardservices never listed the app"
+        return res
+    page, row, col = slot
+    res["note"] = "slot p%d r%d c%d" % slot
+    time.sleep(5)
+    # 3. blind navigation (no frame feedback): unlock, dismiss the install help sheet, page
+    # over, tap. Timed; verdict comes from syslog so a missed tap just reads as NO-LAUNCH.
+    b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO); time.sleep(2)
+    b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO); time.sleep(2)   # twice, in case the first didn't take
+    b.tap(DISMISS_EDIT); time.sleep(1)              # "Dismiss" on the post-install Edit-Home sheet
+    b.press("home"); time.sleep(2)                  # exit any wiggle mode, back to page 1
+    for _ in range(page - 1):
+        b.drag(*NEXT_PAGE); time.sleep(3)
+    # fresh idevicesyslog right before the tap, so the capture is alive for the launch window
+    # even if the long-lived one dropped. It's a Boot.procs child (killed at b.stop()).
+    launchlog = os.path.join(b.dir, "launch-syslog.log")
+    b.procs.spawn(["idevicesyslog"], launchlog, env=b.env())
+    time.sleep(3)
+    b.tap(GRID(row, col))
+    # 4. watch syslog for the app process; bounded wait.
+    launched = False
+    deadline = min(end, time.time() + 45)
+    while time.time() < deadline:
+        launched, _ = _syslog_has(launchlog, launch_needles)
+        if launched:
+            break
+        time.sleep(2)
+    # also accept the long-lived capture in case the fresh one dropped
+    if not launched:
+        launched, _ = _syslog_has(syslog, launch_needles)
+    # 5. crash reports.
+    crashdir = os.path.join(b.dir, "crash")
+    os.makedirs(crashdir, exist_ok=True)
+    b.run(["idevicecrashreport", "-e", crashdir], timeout=90)
+    tokens = [t for t in (bundle.split(".")[-1].lower(), appname.lower()) if len(t) >= 3]
+    crashes = [f for _, _, fs in os.walk(crashdir) for f in fs
+               if f.lower().endswith((".crash", ".ips", ".plist"))
+               and not f.lower().startswith(("lockdownd", "baseband", "stacks"))
+               and any(t in f.lower() for t in tokens)]
+    try:
+        res["glishim"] = open(os.path.join(b.dir, "qemu.log"), errors="replace").read().count("[glishim] unimplemented")
+    except OSError:
+        pass
+    if crashes:
+        exc = ""
+        for dp, _, fs in os.walk(crashdir):
+            if crashes[0] in fs:
+                m = re.search(r"Exception Type:\s*(.+)", open(os.path.join(dp, crashes[0]), errors="replace").read())
+                exc = m.group(1).strip() if m else ""
+                break
+        res["verdict"] = "CRASH"
+        res["note"] = ("%s | %s" % (exc, crashes[0]))[:140] if exc else crashes[0][:120]
+    elif launched:
+        res["verdict"], res["note"] = "LAUNCH", "syslog: app process started (%s)" % res["note"]
+    else:
+        res["verdict"], res["note"] = "NO-LAUNCH", "no app syslog line, no crash (%s)" % res["note"]
+    return res
+
+
 def launch_one(rg, cfg, ipa, r, install_only=False):
     """Install + launch one IPA on a fresh overlay. Returns dict: verdict, note, shot, crash, glishim."""
     tag = re.sub(r"[^A-Za-z0-9_.-]", "_", r["bundle"] or os.path.basename(ipa))[:60]
@@ -268,6 +413,7 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         ins = b.run(["ideviceinstaller", "install", ipa], timeout=200)
         out = (ins.stdout or "") + (ins.stderr or "")
         listed = r["bundle"] in (b.run(["ideviceinstaller", "list"], timeout=90).stdout or "")
+        installed_at = time.time()
         try:
             res["glishim"] = open(os.path.join(b.dir, "qemu.log"), errors="replace").read().count("[glishim] unimplemented")
         except OSError:
@@ -283,38 +429,45 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         # syslog, to confirm the app process starts (not pixels alone)
         syslog = os.path.join(b.dir, "syslog.log")
         b.procs.spawn(["idevicesyslog"], syslog, env=b.env())
+        end = time.time() + cfg.boot_timeout - 30
+        if getattr(cfg, "syslog_only", False):
+            return syslog_launch(b, rg, cfg, r, res, syslog, end)
         # Event-driven navigation: wait on frame state, not fixed sleeps, so host load
         # doesn't matter. Overall bound = the qemu timeout.
-        end = time.time() + cfg.boot_timeout - 30
         # 1. lock screen: serial marker (SpringBoard reached it) + a settled lit frame.
         ok, det = b.wait_lock_screen(timeout=max(30, end - time.time()))
         if not ok:
             res["verdict"], res["note"] = "NO-BOOT", "never reached lock screen (%s)" % det
             return res
-        lock = wait_stable(b, rg, tag, min(end, time.time() + 60), want_lit=True)
         # sbservices only answers once SpringBoard is up (past the lock screen), so query
         # the icon layout now, not right after install.
-        slot = icon_slot(b, r["bundle"]) or (2, 0, 0)     # fall back to page-2 slot(0,0)
+        # ponytail: fixed settle. Tapped too soon after install, SpringBoard says the bundle "does not
+        # have an executable path" and never launches it (Shazam 3/3, 365XWords once); 60 s cured it.
+        # Poll for launchability instead if this grows.
+        time.sleep(max(0, INSTALL_SETTLE - (time.time() - installed_at)))
+        slot = pin_to_page1(b, r["bundle"]) or icon_slot(b, r["bundle"]) or (2, 0, 0)
         page, row, col = slot
         res["note"] = "slot p%d r%d c%d" % slot
-        # 2. unlock: drag, wait for a settled frame, confirm it changed from the lock frame.
-        home = lock
-        for _ in range(5):
+        # 2. unlock. Lock and home share the wallpaper, so the frame change is small; retry the
+        # drag only if the frame is essentially unchanged. Never press Home here: on page 1 it
+        # opens Spotlight, and a stray slider drag on the home screen pages left.
+        lock = wait_stable(b, rg, tag, min(end, time.time() + 20), want_lit=True)
+        for _ in range(2):
             b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
-            home = wait_stable(b, rg, tag, min(end, time.time() + 30), want_lit=True)
-            if _framediff(lock, home):
+            home = wait_stable(b, rg, tag, min(end, time.time() + 22), want_lit=True)
+            if _framediff(lock, home, thresh=3):
                 break
-            b.press("home")
         else:
             res["verdict"], res["note"] = "NO-LAUNCH", "could not unlock (%s)" % res["note"]
             return res
-        b.tap(DISMISS_EDIT)                         # dismiss the install help sheet if present
+        b.tap(DISMISS_EDIT)                          # dismiss the install help sheet if present
         prev = wait_stable(b, rg, tag, min(end, time.time() + 20), want_lit=True)
         # 3. swipe to the app's page, one settled turn at a time.
+        pa, pb = NEXT_PAGE
         for hop in range(page - 1):
             turned = False
             for _ in range(5):
-                b.drag(*NEXT_PAGE)
+                b.drag(pa, pb)
                 nowf = wait_stable(b, rg, tag, min(end, time.time() + 20), want_lit=True)
                 if _framediff(prev, nowf):
                     turned, prev = True, nowf
@@ -325,11 +478,17 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         before = prev
         syslen = os.path.getsize(syslog) if os.path.exists(syslog) else 0
         b.tap(GRID(row, col))
-        after = wait_stable(b, rg, tag, min(end, time.time() + 30))   # settle on the app frame
-        res["shot"] = b.shot("launch-" + tag)
-        lit, detail = b.picture("launch-" + tag)
-        nonzero = _lit(after)
+        time.sleep(LAUNCH_WAIT)                    # past the zoom-in, else home reads as "settled"
+        after = wait_stable(b, rg, tag, min(end, time.time() + 40))   # settle on the app frame
+        _, _, nz = rg.itqmp.shot(b.qmp, os.path.join(b.dir, "launch-" + tag + ".png"))
+        res["shot"] = os.path.join(b.dir, "launch-" + tag + ".png")
+        nonzero = nz
         changed = _framediff(before, after)
+        # stays up? 20 s later the frame must not be back on the home screen
+        time.sleep(20)
+        _, later = snap(b, rg, "later-" + tag)
+        home_again = changed and not _framediff(before, later)
+        detail = "%s, nz %.2f%s" % (res["note"], nz, ", back on home 20s later" if home_again else "")
         # did the app's process appear in syslog after the tap?
         newlog = ""
         try:
@@ -338,14 +497,21 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         except OSError:
             pass
         appname = (r["name"] or "").replace(" ", "")
-        launched_log = any(t and t in newlog for t in (r["bundle"], r["bundle"].split(".")[-1], appname))
+        # the app's own process ("Name[pid]") or launchd's job for it; SpringBoard's failure lines
+        # also name the bundle, so a bare bundle-id match is not a launch
+        launched_log = any(re.search(re.escape(t) + r"\[\d+\]", newlog, re.I)
+                           for t in (r["bundle"].split(".")[-1], appname, r.get("exe")) if len(t or "") >= 3)
+        m = re.search(r"[^\n]*(exited abnormally|exited voluntarily|failed to launch|timed out|does not have an executable path|Unable to send activation)[^\n]*", newlog)
+        if m:
+            res["sb"] = m.group(0).strip()[-160:]
         # crash logs
         crashdir = os.path.join(b.dir, "crash")
         os.makedirs(crashdir, exist_ok=True)
         b.run(["idevicecrashreport", "-e", crashdir], timeout=90)
         # match the app's own crash reports; ignore always-pulled system artifacts
         # (lockdownd pairing plists, Baseband, Panics) and never match on an empty token.
-        tokens = [t for t in (r["bundle"].split(".")[-1].lower(), (r["name"] or "").replace(" ", "").lower()) if len(t) >= 3]
+        tokens = [t for t in (r["bundle"].split(".")[-1].lower(), (r["name"] or "").replace(" ", "").lower(),
+                              (r.get("exe") or "").lower()) if len(t) >= 3]
         crashes = [f for _, _, fs in os.walk(crashdir) for f in fs
                    if f.lower().endswith((".crash", ".ips", ".plist"))
                    and not f.lower().startswith(("lockdownd", "baseband", "stacks"))
@@ -364,9 +530,15 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
                     txt = open(os.path.join(dp, crashes[0]), errors="replace").read()
                     m = re.search(r"Exception Type:\s*(.+)", txt) or re.search(r"Exception Codes:\s*(.+)", txt)
                     exc = m.group(1).strip() if m else ""
+                    m = re.search(r"Symbol not found:\s*(\S+)", txt) or re.search(r"reason: '([^']+)'", newlog)
+                    exc += (" | " + m.group(0).strip()) if m else ""
                     break
             res["verdict"] = "CRASH"
-            res["note"] = ("%s | %s" % (exc, crashes[0]))[:140] if exc else crashes[0][:120]
+            res["note"] = ("%s | %s" % (exc, crashes[0]))[:200] if exc else crashes[0][:120]
+        elif "abnormally" in res.get("sb", ""):
+            res["verdict"], res["note"] = "CRASH", res["sb"]
+        elif home_again:
+            res["verdict"], res["note"] = "EXITED", "%s; %s" % (detail, res.get("sb", "no SpringBoard exit line"))
         elif changed and launched_log:
             res["verdict"], res["note"] = "LAUNCH", "%s; syslog confirms" % detail
         elif changed:
@@ -374,9 +546,9 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         elif launched_log:
             res["verdict"], res["note"] = "LAUNCH", "syslog confirms; frame unchanged"
         elif nonzero < 0.02:
-            res["verdict"], res["note"] = "NO-LAUNCH", "screen dark after tap"
+            res["verdict"], res["note"] = "NO-LAUNCH", "screen dark after tap (%s)" % detail
         else:
-            res["verdict"], res["note"] = "NO-LAUNCH", "no frame change, no syslog line"
+            res["verdict"], res["note"] = "NO-LAUNCH", "no frame change, no syslog line (%s)" % detail
     finally:
         b.stop()
     return res
@@ -391,13 +563,15 @@ def run_pass(a):
     cfg = argparse.Namespace(out=out, kboot=os.path.join(FILES, "7B500", "k48-kboot.bin"),
                              nand=nand, qemu=os.path.join(ROOT, "build", "qemu-system-arm"),
                              usbmuxd=os.path.expanduser("~/Developer/usbmuxd-qemu-ipad1-net/src/usbmuxd"),
-                             boot_timeout=a.boot_timeout, files=FILES)
+                             boot_timeout=a.boot_timeout, files=FILES, syslog_only=a.syslog_only)
     import json
     resdir = os.path.join(out, "results")
     os.makedirs(resdir, exist_ok=True)
     cands = [r for r in scan(a.dir) if is_candidate(r)]
     if a.only:
         cands = [r for r in cands if a.only.lower() in (r["file"] + r["bundle"] + r["name"]).lower()]
+    # one run per bundle id (duplicate IPAs share a result file and would race in parallel)
+    cands = list({r["bundle"]: r for r in reversed(cands)}.values())[::-1]
     # skip already-tested BEFORE applying --limit, so each batch takes the next N untested
     cands = [r for r in cands if a.redo or not os.path.exists(
         os.path.join(resdir, re.sub(r"[^A-Za-z0-9_.-]", "_", r["bundle"] or r["file"])[:60] + ".json"))]
@@ -437,7 +611,7 @@ def run_pass(a):
 
 
 def _results_md(allres, nand):
-    order = {"PASS-INSTALL": 0, "LAUNCH": 0, "CRASH": 1, "NO-LAUNCH": 2, "NAV-FAIL": 3, "INSTALL-FAIL": 4, "NO-BOOT": 5}
+    order = {"PASS-INSTALL": 0, "LAUNCH": 0, "CRASH": 1, "EXITED": 1, "NO-LAUNCH": 2, "NAV-FAIL": 3, "INSTALL-FAIL": 4, "NO-BOOT": 5}
     allres = sorted(allres, key=lambda r: (order.get(r["verdict"], 9), r.get("bundle", "")))
     counts = {}
     for r in allres:
@@ -488,6 +662,7 @@ def main():
     ap.add_argument("--boot-timeout", type=int, default=240)
     ap.add_argument("--jobs", type=int, default=1, help="run: apps in parallel (each its own overlay + ports)")
     ap.add_argument("--install-only", action="store_true", help="run: install + list only, no launch (deterministic)")
+    ap.add_argument("--syslog-only", action="store_true", help="run: launch, verdict from idevicesyslog + crash logs, no screendumps")
     ap.add_argument("--redo", action="store_true", help="run: re-test apps that already have a result")
     ap.add_argument("--selfcheck", action="store_true")
     a = ap.parse_args()
