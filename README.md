@@ -80,6 +80,20 @@ ninja -C build qemu-system-arm
 
 ## Gates
 
+One command, three tiers:
+
+```sh
+tests/gate.sh --quick    # host only, about a minute: every host-side unit check, in parallel
+tests/gate.sh --full     # quick + the iPod and iPad regression suites (default tiers), one after the other
+tests/gate.sh --fresh    # full + both fresh-device.sh: run when imgtools/, manifests/ or contrib/ change
+```
+
+One line per check (PASS, FAIL, SKIP with the reason, XFAIL for a check the script lists as known failing
+on today's tree, XPASS once it passes again); non-zero exit only on FAIL; every log under the printed
+directory. Unit checks that launch the emulator, or take a NAND or a movie on the command line, are SKIP in
+every tier and are run by hand. The suites keep their own input defaults; `QEMU=` overrides the emulator
+(default `build/qemu-system-arm`). The table below is what each tier is made of.
+
 Every headless boot passes `-audio driver=none`. The harnesses pick their own ports, write only their
 own overlays, and signal only processes they started.
 
@@ -91,8 +105,8 @@ own overlays, and signal only processes they started.
 | `python3 tests/ipod/test_*.py`, `tests/ipad1/test_*.py`, `tests/guest-package/test_*.py` | Host-only unit checks, one file at a time (about 120 under `tests/ipod`); the GLES boundary and guest-package checks compile the real C under ASan/UBSan | No emulator for most; a few `*_guest.py` boot one |
 | `tests/ipad1/boot-smoke.py`, `restore-smoke.py`, `iboot-check.py`, `app-compat.py`, `audio-check.py`, `mic-check.py`, `snapshot-check.py` | Single-purpose iPad drivers: how far a boot got, a stock restore ramdisk through SecureROM and emulated DFU/recovery USB, a boot through iBoot, the app-compatibility pass, audio out and in, a live snapshot round trip | Per docstring |
 
-A single `tests/gate.sh --quick|--full` is planned (LightTouchMac `docs/sweep/PLAN.md`, E3); until then
-run the rows above. `tests/ipod/test_regress.py` has one test whose mock is behind (STATUS.md, Debts).
+The known-failing list at the top of `tests/gate.sh` names each unit check whose C slice or harness mock has
+fallen behind the tree, with the reason; delete a line there once its check passes again.
 
 ## Documentation
 

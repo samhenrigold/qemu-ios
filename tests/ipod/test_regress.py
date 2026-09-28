@@ -244,28 +244,45 @@ for failure in (None, 'ping', 'spawn', 'put', 'chown', 'get', 'sync'):
                    'spawn': b'PID\tStatus\tLabel\n9\t-\tcom.qemu.it-agent\n',
                    'put': b'', 'chown': b'', 'sync': b'', 'get': saved.get('body', b'')}[op]
     result = R.Result('agent')
+    cfg = SimpleNamespace(guest_package=None)
+    dev = SimpleNamespace(qmp=object(), guest_package_status=lambda: 'unavailable (no machine)')
     with patch.object(R, 'ensure_agent', return_value=(True, 'it_agent v2')), \
          patch.object(R.itqmp, 'agent', side_effect=agent), patch.object(R, 'log'):
-        assert R.check_agent(None, None, SimpleNamespace(qmp=object()), result) is (failure is None)
+        assert R.check_agent(cfg, None, dev, result) is (failure is None)
     assert calls[-1][0] == 'unlink' and calls[-1][1].startswith('/tmp/regress-agent-')
     assert not any(op == 'exec' for op, _ in calls)
 
-# A v1 agent is upgraded in place (put + launchd restart), then must answer v2.
-for answers, expected in (([b'it_agent v1\n', b'it_agent v2\nops spawn\n'], True),
-                          ([b'it_agent v2\nops spawn\n'], True), ([b'something else\n'], False)):
-    seen = []
-    replies = iter(answers)
-    def agent(q, op, args='', body=b'', timeout=65):
-        seen.append(op)
-        return (0, next(replies)) if op == 'ping' else (0, b'')
-    with patch.object(R.itqmp, 'agent_alive', return_value=True), \
-         patch.object(R.itqmp, 'agent', side_effect=agent), \
-         patch.object(R.time, 'sleep'), patch.object(R, 'log'):
-        assert R.ensure_agent(object())[0] is expected
-    if answers[0].startswith(b'it_agent v1'):
-        assert seen[:3] == ['ping', 'put', 'exec'], seen
-    else:
-        assert 'put' not in seen and 'exec' not in seen
+# With a package offered, a healthy agent still fails the check until it_boot has reported.
+failure = None
+for status, expected in (('unavailable (no it_boot)', False), ('report serial=2 result=0', True)):
+    result = R.Result('agent')
+    dev = SimpleNamespace(qmp=object(), guest_package_status=lambda: status)
+    with patch.object(R, 'ensure_agent', return_value=(True, 'it_agent v2')), \
+         patch.object(R.itqmp, 'agent', side_effect=agent), patch.object(R, 'log'):
+        assert R.check_agent(SimpleNamespace(guest_package='/offer'), None, dev, result) is expected
+
+# A v1 agent is upgraded in place (put of this tree's build + launchd restart), then must answer v2.
+with tempfile.NamedTemporaryFile(prefix='it_agent-') as binary:
+    binary.write(b'agent bytes')
+    binary.flush()
+    for answers, expected in (([b'it_agent v1\n', b'it_agent v2\nops spawn\n'], True),
+                              ([b'it_agent v2\nops spawn\n'], True), ([b'something else\n'], False)):
+        seen = []
+        replies = iter(answers)
+        def agent(q, op, args='', body=b'', timeout=65):
+            seen.append(op)
+            if op == 'put':
+                assert body == b'agent bytes'
+            return (0, next(replies)) if op == 'ping' else (0, b'')
+        with patch.object(R.itqmp, 'agent_alive', return_value=True), \
+             patch.object(R.itqmp, 'agent', side_effect=agent), \
+             patch.object(R, 'AGENT_BINARY', binary.name), \
+             patch.object(R.time, 'sleep'), patch.object(R, 'log'):
+            assert R.ensure_agent(object())[0] is expected
+        if answers[0].startswith(b'it_agent v1'):
+            assert seen[:3] == ['ping', 'put', 'exec'], seen
+        else:
+            assert 'put' not in seen and 'exec' not in seen
 print('Agent regression detects command failures and binary corruption')
 
 # Agent halt still requires guest-originated shutdown and must never retry SSH.
