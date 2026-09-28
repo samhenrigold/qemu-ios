@@ -314,23 +314,6 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 		if (eps->control & USB_EPCON_STALL) {
 			eps->control &= ~USB_EPCON_STALL;
 			ret = USB_RET_STALL;
-		} else if (ep && eps->zlp_pending && !(_hdr->flags & tcp_usb_setup)) {
-			/*
-			 * The previous transaction was a whole host write that ended on
-			 * a max-packet boundary. On a real bus the host follows it with a
-			 * zero-length packet (usbmuxd does, for length % wMaxPacketSize
-			 * == 0), and iOS 4's mux relies on it: without one it reads the
-			 * next transfer as the same message ("expected 16384 bytes,
-			 * received 32768", "message was too large (65536 bytes)", then a
-			 * TCP RST). Deliver it on the next arm and NAK this transaction,
-			 * which the host retries.
-			 */
-			if (eps->control & USB_EPCON_ENABLE) {
-				eps->control &= ~USB_EPCON_ENABLE;
-				eps->interrupt_status |= USB_EPINT_XferCompl;
-				eps->zlp_pending = false;
-			}
-			ret = USB_RET_NAK;
 		} else if (eps->control & USB_EPCON_ENABLE) {
 			eps->control &= ~USB_EPCON_ENABLE;
 
@@ -387,9 +370,11 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 			/*
 			 * One host transaction is one complete transfer, so it always
 			 * retires the endpoint. That is right for this transport - it is
-			 * transfer-oriented, not packet-oriented, and there are no ZLPs to
-			 * terminate a transfer that happens to be a multiple of the max
-			 * packet size.
+			 * transfer-oriented, not packet-oriented. A zero-length transaction
+			 * is the host's ZLP and completes an armed transfer with 0 bytes;
+			 * the host sends one only when its software asks (usbmuxd does
+			 * after a max-packet-multiple write, which iOS 4's mux needs to
+			 * find the end of a message; libirecovery's uploads do not).
 			 *
 			 * The corollary is a real constraint on the host: it must never
 			 * split one logical packet across transactions, because the second
@@ -413,8 +398,6 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 				eps->interrupt_status |= USB_EPINT_SetUp;
 			} else {
 				eps->interrupt_status |= USB_EPINT_XferCompl;
-				uint32_t mps = eps->control & USB_EPCON_MPS_MASK;
-				eps->zlp_pending = ep && mps && amtDone && amtDone % mps == 0;
 			}
 
 			eps->tx_size = (eps->tx_size & ~DEPTSIZ_XFERSIZ_MASK)
