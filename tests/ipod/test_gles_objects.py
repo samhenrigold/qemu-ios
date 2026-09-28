@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 """Actual dispatch against CGL: object lifetime, mip pixels and write masks."""
-from pathlib import Path
 import re
-import subprocess
-import tempfile
-root = Path(__file__).resolve().parents[2]
-src = (root / 'hw/arm/gles-host.c').read_text()
+from gles_harness import root, src, function, PRELUDE, build_and_run
 shim = (root / 'contrib/it-gles/mbxshim.c').read_text()
 slots = dict(re.findall(r'^(\d+) (\w+)$', (root / 'contrib/it-gles/slotmap.txt').read_text(), re.M))
 cases = src[src.index('    case GLES_SLOT_LOAD_MATRIXX:'):src.index('    case GLES_SLOT_GEN_RENDERBUFFERS:')]
@@ -15,36 +11,17 @@ for macro in re.findall(r'case (GLES_SLOT_\w+):', cases):
     name = re.search(r'table\[' + slot + r'\]\s*= \(void \*\)(s_\w+)', shim)[1]
     assert slots[slot].lower().removesuffix('oes') == ('gl' + name[2:]).lower()
     assert re.search(name + r'\([^}]+qc\(' + slot + r',', shim)
-pvrtc_types = src[src.rfind('typedef struct {', 0, src.index('} GLESPVRTCLevel;')):
-                  src.index('} GLESPVRTC;')+len('} GLESPVRTC;')]
 mipmap = src[src.index('static int64_t gles_generate_mipmap('):src.index('static int64_t gles_pvrtc_upload(')]
-code = r'''
-#define GL_SILENCE_DEPRECATION
-#include <OpenGL/OpenGL.h>
-#include <OpenGL/gl.h>
-#include <OpenGL/glext.h>
-#include <assert.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stddef.h>
-#include <math.h>
-#include <string.h>
-typedef struct CPUState CPUState;
-#include "hw/arm/guest-services/gles.h"
-''' + src[src.index('static float gles_x('):src.index('/* ------------------------------------------------------- buffer objects')] + r'''
+code = PRELUDE + function('gles_x(uint32_t value)\n{') + function('gles_f(uint32_t bits)\n{') + function('gles_reject(') + r'''
 static int32_t guest_matrix[16];
-static int cpu_memory_rw_debug(CPUState *cpu, uint32_t addr, uint8_t *data, size_t n, int write) {
+int gles_guest_rw(CPUState *cpu, vaddr addr, void *data, size_t n, bool write) {
     assert(!write && n == sizeof(guest_matrix));
     if (addr != 0x1000) return -1;
     memcpy(data, guest_matrix, n); return 0;
 }
 static GLuint drawable;
-static GLenum error;
-static int gles_is_drawable(GLuint name) { return name == drawable; }
-static int gles_reject(GLenum e) { error = e; return -1; }
-''' + pvrtc_types + r'''
-#define MAX(a,b) ((a)>(b)?(a):(b))
-static GLESPVRTC *gles_pvrtc_texture(int create) {return NULL;}
+static bool gles_is_drawable(uint32_t name) { return name == drawable; }
+static GLESPVRTC *gles_pvrtc_texture(bool create) {return NULL;}
 static void gles_texture_begin(void) {GLenum e=glGetError();if(e)gles_reject(e);}
 ''' + mipmap + r'''
 static int dispatch(unsigned slot, const uint32_t *a) { CPUState *cpu = NULL; switch(slot) {
@@ -80,7 +57,7 @@ int main(void) {
  GLint width; glGetTexLevelParameteriv(GL_TEXTURE_2D, 2, GL_TEXTURE_WIDTH, &width); assert(width == 1);
  uint8_t pixel[4]; glGetTexImage(GL_TEXTURE_2D, 2, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
  for (unsigned i=0; i<4; i++) assert(pixel[i] == 99);
- a[0] = GL_TEXTURE_3D; assert(dispatch(GLES_SLOT_GENERATE_MIPMAP, a) == -1 && error == GL_INVALID_ENUM);
+ a[0] = GL_TEXTURE_3D; assert(dispatch(GLES_SLOT_GENERATE_MIPMAP, a) == -1 && gh.error == GL_INVALID_ENUM);
  a[0] = (uint32_t)-32768; a[1] = 16384; a[2] = 65536; a[3] = 32768;
  dispatch(GLES_SLOT_COLOR4X, a);
  GLfloat color[4]; glGetFloatv(GL_CURRENT_COLOR, color);
@@ -110,10 +87,5 @@ int main(void) {
  CGLSetCurrentContext(NULL); CGLDestroyContext(ctx);
 }
 '''
-with tempfile.TemporaryDirectory() as d:
-    path = Path(d) / 'check.c'; path.write_text(code)
-    exe = Path(d) / 'check'
-    subprocess.run(['clang', '-fsanitize=address,undefined', '-I' + str(root / 'include'),
-                    str(path), '-framework', 'OpenGL', '-o', str(exe)], check=True)
-    subprocess.run([str(exe)], check=True)
+build_and_run(code, 'it-gles-objects-')
 print('PASS: native object lifetime, drawable predicate, mipmap pixels, masks, fixed-point state/transforms and slot wiring')

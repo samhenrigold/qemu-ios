@@ -1,39 +1,14 @@
 #!/usr/bin/env python3
 """Exercise native context isolation and sharegroup lifetime from the real bridge."""
-from pathlib import Path
-import subprocess
-import tempfile
-root = Path(__file__).resolve().parents[2]
-s = (root / 'hw/arm/gles-host.c').read_text()
-def function(name):
-    a = s.index('static ', s.index(name) - 50)
-    # Locate declarations by the actual function name, then its preceding line.
-    a = s.rfind('\nstatic ', 0, s.index(name)) + 1
-    return s[a:s.index('\n}', s.index(name)) + 2]
-types = s[s.index('typedef struct {'):s.index('} GLESHost;') + len('} GLESHost;')]
+from gles_harness import root, src as s, function, PRELUDE, build_and_run
 a = s.rindex('static bool gles_platform_context_create(')
 create = s[a:s.index('\n}', a) + 2]
 a = s.index('static GHashTable *gles_contexts, *gles_groups;')
-ops = s[a:s.index('\n#endif', a)]
+# Snapshot save/restore is out of scope here; only its registration hook is stubbed.
+ops = s[a:s.index('\n#endif', a)].replace('#include "gles-host-snapshot.c.inc"', 'static void gles_snapshot_register(void) {}')
 a = s.index('void gles_host_reset(void)')
 ops += s[a:s.index('\n}', a) + 2]
-header = r'''
-#define GL_SILENCE_DEPRECATION
-#include <OpenGL/OpenGL.h>
-#include <OpenGL/gl.h>
-#include <OpenGL/glext.h>
-#include <glib.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <assert.h>
-#include <stdio.h>
-#define GLES_MAX_TEXUNITS 8
-#define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
-#define GLES_OP_NEW_SHAREGROUP 0x1004
-#define GLES_OP_DELETE_SHAREGROUP 0x1005
-#define GLES_OP_NEW_CONTEXT 0x1006
-#define GLES_OP_DELETE_CONTEXT 0x1007
-'''
+header = PRELUDE
 policy = s[s.index('static int gles_live_contexts;'):s.index('static GLESHost gh_legacy;')]
 header += r'''
 typedef char Error;
@@ -51,9 +26,6 @@ static int migrate_add_blocker_internal(Error **e,Error **error) {
 static void migrate_del_blocker(Error **e) { g_clear_pointer(e,g_free); }
 '''
 state = r'''
-static GLESHost gh_legacy;
-static GLESHost *gh_current = &gh_legacy;
-#define gh (*gh_current)
 static GLESHost *select_context(unsigned id)
 {
     GLESHost *s=g_hash_table_lookup(gles_contexts,GUINT_TO_POINTER(id));assert(s);
@@ -67,7 +39,7 @@ shim = (root / 'contrib/it-gles/mbxshim.c').read_text()
 start = shim.index('static int GLESCreateSharegroup(')
 end = shim.index('\n}', shim.index('static int GLESDestroySharegroup', start)) + 2
 sharegroup = r''' 
-typedef struct { unsigned host; } GuestGC;
+''' + shim[shim.rindex('typedef struct {', 0, shim.index('} GuestGC;')):shim.index('} GuestGC;') + 10] + r'''
 #define A(...) ((unsigned[]){__VA_ARGS__})
 static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args)
 { return gles_context_operation(slot,gc?((GuestGC*)gc)->host:0,argc,args); }
@@ -82,7 +54,8 @@ int main(void)
     uint32_t one=gles_context_operation(GLES_OP_NEW_CONTEXT,0,1,&group);
     uint32_t two=gles_context_operation(GLES_OP_NEW_CONTEXT,0,1,&group);
     assert(one!=two && one>=0x80000000);
-    assert(gles_host_context_count()==2 && gles_save_blocker);
+    /* CGL state is saved with the snapshot (acc5e8e9d7): no migration blocker. */
+    assert(gles_host_context_count()==2 && !gles_save_blocker);
     GLESHost *a=select_context(one);
     glEnable(GL_BLEND);a->vertex.enabled=1;
     GLuint texture;glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);
@@ -139,8 +112,8 @@ int main(void)
     assert(!gles_host_context_count() && !gles_save_blocker);
     isolated=gles_context_operation(GLES_OP_NEW_SHAREGROUP,0,0,NULL);
     migration_busy=true;
-    assert(gles_context_operation(GLES_OP_NEW_CONTEXT,0,1,&isolated)==-1);
-    assert(!gles_host_context_count() && !gles_save_blocker);
+    assert(gles_context_operation(GLES_OP_NEW_CONTEXT,0,1,&isolated)>=0x80000000);
+    assert(gles_host_context_count()==1 && !gles_save_blocker);
     migration_busy=false;
     gles_host_reset();
     g_hash_table_destroy(gles_contexts);g_hash_table_destroy(gles_groups);
@@ -149,9 +122,5 @@ int main(void)
 '''
 # State declarations precede the real functions; the selector uses those functions.
 declarations, selector = state.split('static GLESHost *select_context', 1)
-code = header + types + policy + declarations + create + ''.join(function(n+'(') for n in ('gles_buffer_destroy', 'gles_buffer_bind', 'gles_buffer_intern', 'gles_buffer_forget')) + ops + sharegroup + 'static GLESHost *select_context' + selector + check
-with tempfile.TemporaryDirectory(prefix='it-gles-context-') as tmp:
-    c=Path(tmp)/'check.c';exe=Path(tmp)/'check';c.write_text(code)
-    flags=subprocess.check_output(['pkg-config','--cflags','--libs','glib-2.0'],text=True).split()
-    subprocess.run(['clang','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all',str(c),'-o',str(exe),*flags,'-framework','OpenGL'],check=True)
-    subprocess.run([str(exe)],check=True)
+code = header + policy + declarations + create + ''.join(function(n+'(') for n in ('gles_buffer_destroy', 'gles_buffer_bind', 'gles_buffer_intern', 'gles_buffer_forget')) + ops + sharegroup + 'static GLESHost *select_context' + selector + check
+build_and_run(code, 'it-gles-context-')
