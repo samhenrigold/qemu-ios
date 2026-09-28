@@ -192,8 +192,16 @@ def cold_boot(a):
     td = tempfile.mkdtemp(prefix="tc-", dir="/tmp")
     qmp_path = f"{td}/qmp"
     os.mkdir(f"{td}/overlay")          # the IOP won't create the overlay directory itself
-    child = subprocess.Popen([a.qemu, "-machine",
-                              f"ipad1,kboot={FILES}/7B500/k48-kboot.bin,nand={a.boot},nand-overlay={td}/overlay",
+    machine = f"ipad1,kboot={FILES}/7B500/k48-kboot.bin,nand={a.boot},nand-overlay={td}/overlay"
+    if os.path.exists(f"{a.boot}/device.lock.json"):   # an ipad1_device.py device dir (4.x: + its NOR)
+        lock = json.load(open(f"{a.boot}/device.lock.json"))
+        machine = (f"ipad1,kboot={a.boot}/kboot.bin,nand={a.boot}/nand,nand-overlay={td}/overlay,"
+                   f"die-id={lock['identity']['die_id']}")
+        if os.path.exists(f"{a.boot}/nor.bin"):
+            subprocess.run(["cp", f"{a.boot}/nor.bin", f"{td}/nor.bin"], check=True)
+            os.chmod(f"{td}/nor.bin", 0o644)
+            machine += f",nor-rw={td}/nor.bin"
+    child = subprocess.Popen([a.qemu, "-machine", machine,
                               "-display", "none", "-audio", "driver=none", "-monitor", "none", "-serial", f"file:{td}/serial.log",
                               "-qmp", f"unix:{qmp_path},server=on,wait=off"],
                              stdout=subprocess.DEVNULL, stderr=open(f"{td}/stderr", "w"),
@@ -268,7 +276,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--qemu", default=f"{ROOT}/build/qemu-system-arm")
     ap.add_argument("--checkpoint", default=f"{FILES}/userland/checkpoint-lock")
-    ap.add_argument("--boot", metavar="STORE", help="cold-boot STORE (read-only base, fresh overlay) instead of restoring a checkpoint")
+    ap.add_argument("--boot", metavar="STORE", help="cold-boot STORE or an ipad1_device.py device dir (read-only base, fresh overlay) instead of restoring a checkpoint")
     ap.add_argument("--out", default="/tmp/tearcheck")
     ap.add_argument("--fps", type=float, default=60, help="sample rate (the app refreshes at ~60 Hz)")
     ap.add_argument("--analyze", metavar="DIR", help="score an existing capture only")
