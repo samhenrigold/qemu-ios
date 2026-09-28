@@ -213,7 +213,7 @@ def build(ctx):
     for k, v in (m.get("packages") or {}).items():
         if sha(packages[k]) != v["sha256"]:
             raise SystemExit("package %s: %s does not have the pinned sha256" % (k, packages[k]))
-    cfg = {"options": opt, "packages": packages, "owners": os.path.join(work, "owners.txt"),
+    cfg = {"options": opt, "guest_tools_supported": major >= 3, "packages": packages, "owners": os.path.join(work, "owners.txt"),
            "report": os.path.join(work, "bake.json")}
     json.dump(cfg, open(os.path.join(work, "bake-config.json"), "w"))
     script = os.path.join(work, "bake.sh")
@@ -233,7 +233,7 @@ def build(ctx):
     for p in pages:
         listing.update(("%s %s\n" % (p, sha(os.path.join(nand, p)))).encode())
     tools = {n: sha(os.path.join(ROOT, n)) for n in ("contrib/it-agent/it_agent", "contrib/it-agent/it_typein.dylib",
-                                                     "contrib/it-gles/sblaunch", "contrib/it-instprogress/sbdlicon")}
+                                                     "contrib/it-gles/sblaunch", "contrib/it-instprogress/sbdlicon")} if cfg["guest_tools_supported"] else {}
     if baked["gles"] == "shim":
         tools["contrib/it-gles/MBXGLEngine"] = sha(os.path.join(ROOT, "contrib/it-gles/MBXGLEngine"))
     if opt.get("appsync"):
@@ -311,7 +311,10 @@ def bake(mnt, config):
     opt, owners, report = cfg["options"], [], {}
     problem = gli_abi_problem(os.path.join(mnt, DYLD_CACHE)) if opt.get("gles_shim", True) else "options.gles_shim off"
     report["gles"] = "shim" if problem is None else "stock engine, software CA: " + problem
-    env = dict(os.environ, MNT=mnt, IT_GLES_SHIM="1" if problem is None else "0")
+    supported = cfg["guest_tools_supported"]
+    report["guest_tools"] = "installed" if supported else "omitted: current helpers require iOS 3+ dyld"
+    env = dict(os.environ, MNT=mnt, IT_GLES_SHIM="1" if problem is None else "0",
+               IT_GUEST_TOOLS="1" if supported else "0")
     subprocess.run(["/bin/sh", os.path.join(HERE, "bake-guest-tools.sh")], env=env, check=True)
     owners += [(o, p) for o, p in GUEST_TOOL_OWNERS if os.path.lexists(os.path.join(mnt, p))]
     if opt.get("appsync"):
