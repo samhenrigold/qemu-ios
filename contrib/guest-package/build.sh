@@ -21,7 +21,7 @@ COMPONENTS="it-gles it-agent it-instprogress it-media it-proxy it-status it-halt
             ipad1-guest ipad1-gles appsync it-boot"
 # ipad1-guest also compiles these sources; it-gles/it-boot/ipad1-gles read their neighbours
 for c in armv6-toolchain $COMPONENTS it-pasteboard it-ethlink it-seal it-prefs it-keybag it-heading \
-         it-cctest it-gltest it-msmquiet; do
+         it-cctest it-gltest it-msmquiet guest-package; do   # guest-package: it-boot's test imports mkpkg
     cp -R "$SRC/contrib/$c" "$OUT/src/contrib/"
 done
 cp "$SRC"/docs/ipad1/gli-dispatch-*.tsv "$OUT/src/docs/ipad1/"

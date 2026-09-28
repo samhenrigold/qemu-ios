@@ -9,7 +9,10 @@ Every check boots its own copy-on-write overlay of golden-pristine (the base is 
 usbmuxd-qemu's ipad1 build as the USB host where the check talks USB (otherwise the machine's built-in
 host). Checks run in parallel, each on its own QEMU.
 
-  boot     lock screen on the panel: lit and a picture (many colours), not a solid fill
+  boot     lock screen on the panel: lit and a picture (many colours), not a solid fill; then, unlocked with
+           the USB keyboard attached, no stock "USB device not supported" alert and Hold locks the panel
+           (--guest-package DIR: it_boot must report the offered serial; a package installed this boot
+           means one more boot on the same overlay, the first one's mounter ran the old shim)
   usbmux   ideviceinfo over the bridge answers ProductVersion (the store's device.lock.json, else
            3.2.2), DeviceClass iPad
   afc      push and pull files at sizes that are not multiples of 512, SHA-256 identical
@@ -60,9 +63,13 @@ LIT_MIN_FRACTION, MIN_COLOURS, HOME_CONFIRM_S = 0.5, 64, 2
 # Panel coordinates of the upright portrait UI (interface 1, the default accel-orientation): the portrait
 # top (status bar) is the panel's left edge, portrait left its bottom edge.
 UNLOCK_FROM, UNLOCK_TO = (959, 477), (959, 47)
-USB_ALERT_DISMISS = (548, 382)   # stock "The attached USB device is not supported." (the USB keyboard)
-USB_ALERT_DISMISS_4 = (565, 382)  # 4.x "Cannot Use Device" OK, which comes up a few seconds after unlock
 SAFARI_ICON, SAFARI_ADDRESS = (959, 650), (55, 437)
+# The USB keyboard trips MobileStorageMounter's stock "not supported" alert on every boot (3.2.x at once,
+# 4.2.1 a few seconds after unlock), and while it is up SpringBoard never auto-locks. The guest package's
+# it_msmquiet shim drops it inside the mounter and says so on the console (docs/ipad1/usb-keyboard.md).
+MSM_QUIET = 'it_msmquiet: hid the USB "not supported" notice'
+LOCK_S = 8                  # Hold -> panel off, at most; with the alert up it lit again at once
+DARK_MAX_FRACTION = 0.05    # the scanout with the panel off
 
 sys.path.insert(0, os.path.join(ROOT, "imgtools"))
 import ipad1_boot
@@ -108,6 +115,8 @@ class Boot:
                 self.procs.spawn([cfg.usbmuxd, "-f", "-v", "-v", "-S", "127.0.0.1:%d" % self.mux_port,
                                   "-P", "NONE", "-C", os.path.join(self.dir, "conf")], self.muxlog, env=env)
                 machine += ",usb-tcp-addr=127.0.0.1:%d" % self.usb_port
+            if getattr(cfg, "guest_package", None):
+                machine += ",guest-package=" + cfg.guest_package
             argv = ["timeout", str(cfg.boot_timeout), cfg.qemu, "-machine", machine + ("" if self.wifi else ",wifi=off"),
                     "-display", "none", "-monitor", "none", "-serial", "file:" + self.serial,
                     "-qmp", "unix:%s,server,nowait" % self.sock]
@@ -143,6 +152,20 @@ class Boot:
         lit = sum(1 for v in pix[::7] if v > ipod.LIT_THRESHOLD) / len(pix[::7])
         colours = len({bytes(pix[i:i + 3]) for i in range(0, len(pix) - 2, 3 * 97)})
         return lit >= LIT_MIN_FRACTION and colours >= MIN_COLOURS, "lit %.0f%%, %d colours" % (lit * 100, colours)
+
+    def lit(self, name="screen"):
+        """Fraction of lit samples: ~1 on the lock or home screen, ~0 with the panel off."""
+        w, h, pix = itqmp.read_ppm(self.shot(name))
+        return sum(1 for v in pix[::7] if v > ipod.LIT_THRESHOLD) / len(pix[::7])
+
+    def guest_package_status(self, timeout=0):
+        """The machine's guest-package-status: "report SERIAL RESULT (N this boot) ..." once it_boot has run."""
+        t0 = time.time()
+        while True:
+            status = self.qmp.cmd("qom-get", path="/machine", property="guest-package-status")
+            if status.startswith("report ") or time.time() - t0 >= timeout:
+                return status
+            time.sleep(2)
 
     def wait_lock_screen(self, timeout=300):
         """(ok, detail): lit, not solid, and still so HOME_CONFIRM_S later.
@@ -234,10 +257,53 @@ def booted(cfg, tag, r, **kw):
 
 
 def check_boot(cfg, r):
-    b, detail = booted(cfg, "boot", r)
+    """Lock screen, then unlocked with the USB keyboard attached: no stock USB alert, and Hold locks the panel."""
+    b, detail = booted(cfg, "boot", r, keyboard=True)
     try:
-        if detail:
-            r.set(True, detail)
+        if not detail:
+            return
+        pkg = ""
+        if cfg.guest_package:
+            offered = [l.split()[1] for l in open(os.path.join(cfg.guest_package, "offer")) if l.startswith("serial ")][0]
+            status = b.guest_package_status(timeout=60)
+            if not status.startswith("report "):
+                return r.set(False, "%s, but no it_boot report: %s" % (detail, status))
+            serial, result = status.split()[1:3]
+            if serial != offered:
+                return r.set(False, "%s, but the loader did not take serial %s: %s" % (detail, offered, status))
+            pkg = "; loader reports serial %s" % serial
+            if result in ("1", "2"):
+                # This boot moved to the offer, but the mounter had loaded the previous package's shim before
+                # it_boot replaced it (a respring does not drop the alert it let through): boot again.
+                b.stop()
+                b, detail = booted(cfg, "boot2", r, keyboard=True, overlay=b.overlay)
+                if not detail:
+                    return
+                pkg = "; loader installed serial %s, boot 2 %s" % (serial, b.guest_package_status(timeout=60).split(" (")[0])
+        for attempt in range(2):
+            b.drag(UNLOCK_FROM, UNLOCK_TO)   # at once: the lock screen dims about 8 s after it appears
+            time.sleep(10)                   # 4.2.1's alert would be up by now
+            ok, home = b.picture("home")
+            if ok:
+                break
+            b.press("home")                  # a slide the dimmed panel swallowed: wake it and slide again
+            b.wait_lock_screen(60)
+        if not ok:
+            return r.set(False, "unlock failed: %s 10 s after the slide" % home)
+        if MSM_QUIET not in open(b.serial, errors="replace").read():
+            return r.set(False, "the mounter never reported hiding the USB alert (see %s/home.ppm)" % os.path.basename(b.dir))
+        # The lock button, which the alert used to defeat (Hold blanked the panel and it lit again at once).
+        b.press("hold")
+        t0, lit = time.time(), 1.0
+        while time.time() - t0 < LOCK_S and lit > DARK_MAX_FRACTION:
+            time.sleep(1)
+            lit = b.lit("dark")
+        if lit > DARK_MAX_FRACTION:
+            return r.set(False, "Hold did not lock: panel still lit (%.0f%%) %d s later (the USB alert?)" % (lit * 100, LOCK_S))
+        time.sleep(3)   # ... and it stays dark: the alert used to relight it at once
+        if b.lit("dark") > DARK_MAX_FRACTION:
+            return r.set(False, "Hold locked the panel but it lit again within 3 s (the USB alert?)")
+        r.set(True, "%s; unlocked, shim hid the USB alert, Hold locked the panel in %d s%s" % (detail, time.time() - t0, pkg))
     finally:
         b.stop()
 
@@ -338,7 +404,7 @@ def safari_fetch(cfg, r, tag, via, **kw):
         if not detail:
             return
         b.drag(UNLOCK_FROM, UNLOCK_TO)
-        dismiss_usb_alert(b)
+        time.sleep(2)
         b.tap(SAFARI_ICON)
         time.sleep(8)
         b.tap(SAFARI_ADDRESS)
@@ -435,7 +501,7 @@ def check_shadow(cfg, r):
         if not detail:
             return
         b.drag(UNLOCK_FROM, UNLOCK_TO)
-        dismiss_usb_alert(b)
+        time.sleep(2)
         b.tap(SAFARI_ICON)
         time.sleep(8)
         b.tap(SAFARI_BOOKMARKS)
@@ -461,14 +527,6 @@ def device_args(a):
         json.load(open(lock)).get("product_version", "3.2.2") if os.path.exists(lock) else "3.2.2")
 
 
-def dismiss_usb_alert(b):
-    """Unlocked with a USB keyboard attached: close the stock not-supported alert (or tap empty space)."""
-    v4 = b.cfg.product_version.startswith("4.")
-    time.sleep(8 if v4 else 3)
-    b.tap(USB_ALERT_DISMISS_4 if v4 else USB_ALERT_DISMISS)
-    time.sleep(2)
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--checks", default=",".join(DEFAULT_CHECKS))
@@ -479,6 +537,8 @@ def main():
     ap.add_argument("--boot-timeout", type=int, default=600, help="hard cap per QEMU, seconds")
     ap.add_argument("--out", default=None)
     ap.add_argument("--product-version", help="usbmux's expected ProductVersion (default: NAND/../device.lock.json, else 3.2.2)")
+    ap.add_argument("--guest-package", metavar="DIR", help="the machine's guest-package offer directory "
+                    "(contrib/guest-package/mkpkg.py offer); boot then also wants it_boot's report")
     a = ap.parse_args()
     device_args(a)
     import ffmpeg_guard                     # imgtools; stock FFmpeg breaks iPod H.264
