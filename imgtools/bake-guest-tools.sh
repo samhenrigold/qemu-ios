@@ -41,11 +41,20 @@ FRAMEWORK="$MNT/System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle"
 
 # 1. The GL engine replacement, stock preserved. Without it a GL app drives the
 #    unemulated PowerVR MBX and wedges the whole device on first launch.
+#    IT_GLES_SHIM=0 (imgtools/ipod2g_device.py, when the firmware's GL dispatch
+#    table is not the one the shim is built for) keeps the stock engine and
+#    software CoreAnimation instead of guessing.
+OGL=1
+if [ "${IT_GLES_SHIM:-1}" = 0 ]; then
+    OGL=0
+    echo "GLES shim skipped: stock MBXGLEngine, software CoreAnimation"
+else
 [ -f "$GLES/MBXGLEngine" ] || { echo "no $GLES/MBXGLEngine (run contrib/it-gles/build.sh)" >&2; exit 1; }
 mkdir -p "$FRAMEWORK"
 [ -f "$FRAMEWORK/MBXGLEngine.stock" ] || cp -n "$FRAMEWORK/MBXGLEngine" "$FRAMEWORK/MBXGLEngine.stock" 2>/dev/null || true
 cp "$GLES/MBXGLEngine" "$FRAMEWORK/MBXGLEngine"
 chmod 755 "$FRAMEWORK/MBXGLEngine"
+fi
 
 # 2. The launcher (SBSLaunchApplicationWithIdentifier) and the placeholder-icon
 #    helper, both of which otherwise have to be scp'd and chmod'd per install.
@@ -64,7 +73,7 @@ cp "$AGENT/it_agent" "$MNT/usr/local/bin/it_agent"
 chmod 755 "$MNT/usr/local/bin/it_agent"
 cp "$AGENT/it_typein.dylib" "$MNT/usr/lib/it_typein.dylib"
 chmod 755 "$MNT/usr/lib/it_typein.dylib"
-python3 - "$MNT/System/Library/LaunchDaemons/com.apple.SpringBoard.plist" <<'PYJOB'
+python3 - "$MNT/System/Library/LaunchDaemons/com.apple.SpringBoard.plist" "$OGL" <<'PYJOB'
 import plistlib, sys
 from pathlib import Path
 path = Path(sys.argv[1])
@@ -73,8 +82,12 @@ job = plistlib.loads(data)
 assert job.get('Label') == 'com.apple.SpringBoard'
 env = job.setdefault('EnvironmentVariables', {})
 assert isinstance(env, dict)
-# Match Light Touch's existing-device graphics provisioning at first boot.
-env['CA_ENABLE_OGL'] = env['LK_ENABLE_OGL'] = '1'
+# Match Light Touch's existing-device graphics provisioning at first boot: GL
+# CoreAnimation through the shim (or software with IT_GLES_SHIM=0), never the
+# unemulated MBX 2D path, no auto-detection.
+env['CA_ENABLE_OGL'] = env['LK_ENABLE_OGL'] = sys.argv[2]
+env['CA_AUTO_ENABLE_OGL'] = env['LK_AUTO_ENABLE_OGL'] = '0'
+env['CA_ENABLE_MBX2D'] = env['LK_ENABLE_MBX2D'] = '0'
 old = env.get('DYLD_INSERT_LIBRARIES', '')
 assert isinstance(old, str)
 libraries = [item for item in old.split(':') if item and item != '/usr/lib/it_kbd_agent.dylib']
@@ -106,5 +119,5 @@ echo "v1" > "$MNT/var/mobile/Media/.lt-guest-tools-v1"
 # Keep v1 for older frontends; v2 additionally guarantees the agent job.
 echo "v2" > "$MNT/var/mobile/Media/.lt-guest-tools-v2"
 
-echo "baked: MBXGLEngine, sblaunch$([ -f "$INST/sbdlicon" ] && echo ', sbdlicon'), it_agent, marker .lt-guest-tools-v2"
+echo "baked: $([ "$OGL" = 1 ] && echo MBXGLEngine || echo 'stock MBXGLEngine (software CA)'), sblaunch$([ -f "$INST/sbdlicon" ] && echo ', sbdlicon'), it_agent, marker .lt-guest-tools-v2"
 echo "NEXT: run imgtools/setowner.py (see header) or the tools stay uid 99 and will not run"

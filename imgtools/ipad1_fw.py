@@ -33,9 +33,13 @@ def aes_cbc(buf, iv, key, decrypt=True):
                           input=buf, capture_output=True, check=True).stdout
 
 
-def img3_decrypt(data, iv, key):
+def img3_decrypt(data, iv, key, plain_tail=False):
     off, dlen = img3_tags(data)["DATA"]
-    # The final partial block is encrypted into the tag's padding, not left in plaintext.
+    if plain_tail:
+        # 2.x: the final partial block is left in plaintext
+        n = dlen & ~15
+        return aes_cbc(data[off + 12:off + 12 + n], iv, key) + data[off + 12 + n:off + 12 + dlen]
+    # 3.x+: the final partial block is encrypted into the tag's padding, not left in plaintext.
     n = (dlen + 15) & ~15
     return aes_cbc(data[off + 12:off + 12 + n], iv, key)[:dlen]
 
@@ -108,7 +112,21 @@ COMPONENTS = {"iBSS": "iBSS", "iBEC": "iBEC", "iBoot": "iBoot", "LLB": "LLB", "D
 
 def components(z):
     """{component: IPSW path} from BuildManifest.plist's first (Customer Erase) identity, plus the
-    Update identity's RestoreRamDisk as "UpdateRamDisk"."""
+    Update identity's RestoreRamDisk as "UpdateRamDisk". 2.x IPSWs have no BuildManifest: Restore.plist
+    names the kernelcache, rootfs and ramdisks, and the all_flash/dfu file names are the board's."""
+    if "BuildManifest.plist" not in z.namelist():
+        r = plistlib.loads(z.read("Restore.plist"))
+        board, plat = r["DeviceMap"][0]["BoardConfig"], r["DeviceMap"][0]["Platform"]
+        af = "Firmware/all_flash/all_flash.%s.production/" % board
+        comp = {"iBSS": "Firmware/dfu/iBSS.%s.RELEASE.dfu" % board, "iBEC": "Firmware/dfu/iBEC.%s.RELEASE.dfu" % board,
+                "iBoot": af + "iBoot.%s.RELEASE.img3" % board, "LLB": af + "LLB.%s.RELEASE.img3" % board,
+                "DeviceTree": af + "DeviceTree.%s.img3" % board, "AppleLogo": af + "applelogo.%s.img3" % plat,
+                "KernelCache": r["KernelCachesByPlatform"][plat]["Release"], "OS": r["SystemRestoreImages"]["User"],
+                "RestoreRamDisk": r["RestoreRamDisks"]["User"], "UpdateRamDisk": r["RestoreRamDisks"]["Update"]}
+        missing = [v for v in comp.values() if v not in z.namelist()]
+        if missing:
+            raise SystemExit("no BuildManifest.plist, and Restore.plist-derived paths are missing: %s" % missing)
+        return comp
     ids = plistlib.loads(z.read("BuildManifest.plist"))["BuildIdentities"]
     comp = {k: v["Info"]["Path"] for k, v in ids[0]["Manifest"].items() if "Path" in v.get("Info", {})}
     for bi in ids[1:]:
@@ -130,8 +148,16 @@ def main(ipsw, keysfile, out):
             raise SystemExit("%s: no IV/Key for %s (BuildManifest names it)" % (keysfile, os.path.basename(path)))
         return keys[os.path.basename(path)]
 
+    # Which tail convention this firmware uses, from the one component with a checksum: the kernelcache.
+    kc = z.read(comp["KernelCache"])
+    plain_tail = False
+    try:
+        complzss(img3_decrypt(kc, *key(comp["KernelCache"])))
+    except AssertionError:
+        plain_tail = True
+        print("final partial AES block is plaintext (2.x img3)")
     for name, c in COMPONENTS.items():
-        payload = img3_decrypt(z.read(comp[c]), *key(comp[c]))
+        payload = img3_decrypt(z.read(comp[c]), *key(comp[c]), plain_tail=plain_tail)
         if name == "Kernelcache":
             open(f"{out}/kernelcache.mach", "wb").write(complzss(payload))
         else:
@@ -142,7 +168,7 @@ def main(ipsw, keysfile, out):
     for c in ("RestoreRamDisk", "UpdateRamDisk"):
         if c in comp:
             fname = comp[c]
-            open(f"{out}/{fname[:-4]}-ramdisk.dmg", "wb").write(img3_decrypt(z.read(fname), *key(fname)))
+            open(f"{out}/{fname[:-4]}-ramdisk.dmg", "wb").write(img3_decrypt(z.read(fname), *key(fname), plain_tail=plain_tail))
             print("ok", c, fname)
     osimg = comp["OS"]
     rootfs = re.search(r"\n%s\nKey: (\w+)" % re.escape(osimg), text)

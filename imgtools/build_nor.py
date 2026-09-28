@@ -57,10 +57,18 @@ Usage:
     build_nor.py --base nor_n72ap.bin \\
                  --all-flash .../all_flash.n72ap.production \\
                  --out nor_n72ap_7E18.bin
+    build_nor.py --identity identity.json --all-flash ... --out nor.bin
+
+--identity builds the regions outside the image area from scratch instead of copying them from a dump:
+the IMG2 superblock, a SysCfg block with Mod#, Regn, SrNm and Batt from the identity (model-number,
+region-info, serial-number, battery-serial), and an nvram bank whose "common" partition carries
+debug-uarts=1 and the identity's btaddr/wifiaddr (iBoot copies those into the device tree). With the
+unit's own values it reproduces the dumped 7E18 NOR byte for byte.
 """
 
 import argparse
 import glob
+import json
 import os
 import struct
 import sys
@@ -181,9 +189,66 @@ def read_img2(nor):
     return gran, start_hi, start_lo, span
 
 
+SYSCFG_OFF = 0x4000
+NVRAM_BANK = 0x2000
+
+
+def chrp_header(sig, length, name):
+    """A CHRP nvram partition header: signature, checksum, length in 16-byte units, 12-byte name."""
+    h = bytearray(struct.pack("<BBH12s", sig, 0, length // 16, name))
+    s = 0
+    for b in h[:1] + h[2:]:
+        s += b
+        s = (s & 0xFF) + 1 if s > 0xFF else s
+    h[1] = s
+    return bytes(h)
+
+
+def nvram_bank(common):
+    """One 8 KiB nvram bank as iBoot writes it: the "nvram" wrapper (adler32 of the rest, generation),
+    "common" (NUL-separated key=value), an empty "APL,OSXPanic" and the free-space partition."""
+    bank = bytearray(NVRAM_BANK)
+    bank[0:16] = chrp_header(0x5A, 0x20, b"nvram")
+    struct.pack_into("<I", bank, 0x14, 0x10)
+    body = b"".join(b"%s=%s\0" % (k.encode(), v.encode()) for k, v in common)
+    if len(body) > 0x800 - 16:
+        raise SystemExit("nvram common partition overflows")
+    bank[0x20:0x30] = chrp_header(0x70, 0x800, b"common")
+    bank[0x30:0x30 + len(body)] = body
+    bank[0x820:0x830] = chrp_header(0xA1, 0x810, b"APL,OSXPanic")
+    bank[0x1030:0x1040] = chrp_header(0x7F, NVRAM_BANK - 0x1030, b"w" * 12)
+    struct.pack_into("<I", bank, 0x10, zlib.adler32(bytes(bank[0x14:])))
+    return bytes(bank)
+
+
+def synth_base(ident):
+    """IMG2 superblock, SysCfg and nvram for `ident`, with an empty image area (build() fills it)."""
+    nor = bytearray(0x100000)
+    struct.pack_into("<4sIII", nor, 0, IMG2_MAGIC, 0x40, 0, 0x200)
+    struct.pack_into("<4sIIIII", nor, SYSCFG_OFF, b"gfCS", 0xC8, 0x2000, 0x00010001, 0, 4)
+    for i, (tag, key) in enumerate((("Mod#", "model-number"), ("Regn", "region-info"),
+                                    ("SrNm", "serial-number"), ("Batt", "battery-serial"))):
+        value = ident[key].encode()
+        if len(value) > 16:
+            raise SystemExit("%s: %r is longer than a SysCfg value" % (key, ident[key]))
+        o = SYSCFG_OFF + 0x18 + i * 0x14
+        nor[o:o + 20] = tag.encode()[::-1] + value.ljust(16, b"\0")
+    mac = lambda k: ident[k].upper()
+    nor[NVRAM_OFF:NVRAM_OFF + NVRAM_BANK] = nvram_bank(
+        [("debug-uarts", "1"), ("btaddr", mac("bt-mac")), ("wifiaddr", mac("wifi-mac"))])
+    struct.pack_into("<I", nor, 0x30, zlib.crc32(bytes(nor[:0x30])) & 0xFFFFFFFF)
+    return bytes(nor)
+
+
+def all_flash_order(all_flash):
+    """The img3 types in the order the IPSW's all_flash manifest lists them (LLB first)."""
+    names = open(os.path.join(all_flash, "manifest")).read().split()
+    return [parse_img3(open(os.path.join(all_flash, n), "rb").read(0x14))[0] for n in names]
+
+
 def build(base_path, all_flash, out_path, order, verbose=True,
-          uid_key=DEFAULT_UID_KEY):
-    nor = bytearray(open(base_path, "rb").read())
+          uid_key=DEFAULT_UID_KEY, base=None):
+    nor = bytearray(base if base is not None else open(base_path, "rb").read())
     gran, start_hi, start_lo, _ = read_img2(nor)
     image_start = gran * (start_hi + start_lo)
 
@@ -274,6 +339,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base", help="NOR image to take IMG2/SysCfg/nvram from")
+    ap.add_argument("--identity", help="identity.json to synthesize IMG2/SysCfg/nvram from (instead of --base)")
     ap.add_argument("--all-flash", help="IPSW all_flash.n72ap.production directory")
     ap.add_argument("--out", help="output NOR image")
     ap.add_argument("--types", default=",".join(DEFAULT_ORDER),
@@ -292,14 +358,15 @@ def main():
     if args.verify:
         verify(args.verify)
         return
-    if not (args.base and args.all_flash and args.out):
-        ap.error("--base, --all-flash and --out are all required")
+    if not ((args.base or args.identity) and args.all_flash and args.out):
+        ap.error("--base or --identity, --all-flash and --out are all required")
     uid = None if args.no_wrap_shsh else bytes.fromhex(args.uid_key)
     types = args.types.split(",")
     if args.k48:
         types = K48_ORDER
         uid = None if args.no_wrap_shsh else S5L8930_UID_KEY
-    build(args.base, args.all_flash, args.out, types, uid_key=uid)
+    base = synth_base(json.load(open(args.identity))) if args.identity else None
+    build(args.base, args.all_flash, args.out, types, uid_key=uid, base=base)
 
 
 if __name__ == "__main__":
