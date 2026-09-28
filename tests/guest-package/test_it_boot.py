@@ -9,7 +9,9 @@ Reports and launchctl calls are appended to files for the checks.
 """
 from pathlib import Path
 import hashlib
+import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -331,8 +333,52 @@ def main():
         rc = dev.boot()
         assert rc == -2 and dev.current() == 11, (rc, dev.state())         # -ENOENT: nothing to revert to
 
+        # the preparers' seed (mkpkg.seed): it_boot takes it as is, nothing to change, no respring
+        sys.path.insert(0, str(root / "contrib/guest-package"))
+        import mkpkg
+        dev = Device.__new__(Device)
+        dev.d, dev.exe = tmp / "seed", exe
+        vol = dev.d / "sys"
+        (vol / "System/Library/CoreServices").mkdir(parents=True)
+        (vol / "System/Library/LaunchDaemons").mkdir()
+        (vol / "System/Library/CoreServices/SystemVersion.plist").write_bytes(
+            mkpkg.plistlib.dumps({"ProductBuildVersion": "7E18"}))
+        dev.rel("sys" + MBX).parent.mkdir(parents=True)
+        dev.rel("sys" + MBX).write_bytes(b"stock mbx")
+        payload = (("bin/it_agent", "755", b"agent"), ("jobs/j.plist", "644", b"<j/>"),
+                   ("hooks/MBXGLEngine", "755", b"shim"), ("hooks/it_typein.dylib", "755", b"t"))
+        manifest = {"serial": 7, "version": "7.0", "requires": {"builds": ["7E18"]}, "jobs": ["jobs/j.plist"],
+                    "files": [{"name": n, "mode": md, "size": len(b), "sha256": hashlib.sha256(b).hexdigest()}
+                              for n, md, b in payload],
+                    "hooks": [{"file": "hooks/MBXGLEngine", "target": MBX, "gli": "7E18", "respring": True},
+                              {"file": "hooks/it_typein.dylib", "target": TYPEIN, "gli": None, "respring": True}]}
+        mkpkg.pack([("f/manifest.json", json.dumps(manifest).encode())] + [("f/" + n, b) for n, _, b in payload]
+                   + [("loader/it_boot", b"loader"), ("loader/com.qemu.it-boot.plist", b"<plist/>"),
+                      ("g/manifest.json", json.dumps(dict(manifest, requires={"builds": ["8C148"]})).encode())],
+                   str(tmp / "t.itpack"))
+        (vol / "System/Library/LaunchDaemons/j.plist").write_bytes(b"baked job")
+        made, rec = mkpkg.seed(str(vol), str(tmp / "t.itpack"), gli=None)
+        assert rec["seed"] == 7 and rec["family"] == "f" and rec["hooks"] == [] and rec["jobs"] == ["j.plist"]
+        assert not os.path.lexists(vol / "System/Library/LaunchDaemons/j.plist")    # the package's job
+        assert dev.hook(MBX) == b"stock mbx"      # no shim installed: no GL hook; typein's target is absent
+        assert "hooks/MBXGLEngine" not in (vol / "usr/local/lighttouch/pkgs/7/offer").read_text()
+        shutil.rmtree(vol / "usr")
+        (vol / "System/Library/LaunchDaemons/com.qemu.it-boot.plist").unlink()
+        dev.rel("sys" + TYPEIN).parent.mkdir(parents=True)
+        dev.rel("sys" + TYPEIN).write_bytes(b"old typein")
+        made, rec = mkpkg.seed(str(vol), str(tmp / "t.itpack"), gli="7E18")
+        assert rec["hooks"] == [MBX, TYPEIN] and "usr/local/lighttouch/current" in made
+        assert dev.hook(MBX) == dev.hook(MBX + ".baked") == b"shim" and dev.hook(TYPEIN + ".baked") == b"t"
+        assert (vol / "usr/local/bin/it_boot").read_bytes() == b"loader"
+        os.symlink("sys/usr/local/lighttouch", dev.d / "root")
+        dev.offer((vol / "usr/local/lighttouch/pkgs/7/offer").read_text())
+        assert dev.boot() == 0 and dev.current() == 7 and "hook" not in dev.stderr, dev.stderr
+        assert dev.launchctl() == ["load %s/root/pkgs/7/jobs/j.plist" % dev.d], dev.launchctl()
+        assert dev.reports()[0][:2] == ["7", "0"] and "seed 7" in dev.reports()[0][2]
+        assert dev.boot(silent=1) == 0 and dev.launchctl() == ["load %s/root/pkgs/7/jobs/j.plist" % dev.d]
+
     print("PASS: silent host, install, good/bad verdicts, no-verdict retries, safe mode, .baked hooks, "
-          "bad hash, size-only fallback, torn installs, wrong build, malformed offers")
+          "bad hash, size-only fallback, torn installs, wrong build, malformed offers, the preparers' seed")
 
 
 if __name__ == "__main__":

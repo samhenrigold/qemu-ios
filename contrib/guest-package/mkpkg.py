@@ -245,6 +245,69 @@ def offer(pkg, out, build, good=(), bad=()):
         f.write(offer_text(manifest, build, good, bad))
 
 
+SEED_ROOT = "usr/local/lighttouch"
+LOADER = ("usr/local/bin/it_boot", "System/Library/LaunchDaemons/com.qemu.it-boot.plist")
+SYSTEM_VERSION = "System/Library/CoreServices/SystemVersion.plist"
+
+
+def seed(mnt, itpack, gli=None):
+    """Bake the loader and the seed package into the system volume mounted at mnt (the preparers, P4).
+
+    The package is the itpack's family for the volume's ProductBuildVersion. It lands as it_boot
+    would install it (pkgs/<serial>/ with its `offer` record, `current` -> it, `state` "seed N").
+    A hook is kept only if its target is on the volume and its gli id is None or `gli` (the shim
+    the preparer installed; None: no shim); then target and <target>.baked get the package's
+    bytes, so the first boot has nothing to change and no respring. Baked launchd jobs the package
+    provides are removed: it_boot loads them. Returns (volume-relative paths written, all to be
+    root-owned; the lock's guest_package record). FirmwareKit's GuestPackage.seed is the Swift port."""
+    entries = dict(read_pack(itpack))
+    build = plistlib.load(open(os.path.join(mnt, SYSTEM_VERSION), "rb"))["ProductBuildVersion"]
+    fams = [n[:-len("/manifest.json")] for n in entries if n.endswith("/manifest.json")
+            and build in json.loads(entries[n])["requires"]["builds"]]
+    if len(fams) != 1:
+        raise SystemExit("%s: %d packages for build %s" % (itpack, len(fams), build))
+    family = fams[0]
+    m = json.loads(entries[family + "/manifest.json"])
+    hooks = [h for h in m["hooks"] if h["gli"] in (None, gli) and os.path.exists(os.path.join(mnt, h["target"][1:]))]
+    dropped = {h["file"] for h in m["hooks"]} - {h["file"] for h in hooks}
+    m = dict(m, hooks=hooks, files=[f for f in m["files"] if f["name"] not in dropped])
+    made = []
+
+    def put(rel, data, mode):
+        missing, parent = [], os.path.dirname(rel)
+        while parent and not os.path.isdir(os.path.join(mnt, parent)):
+            missing.insert(0, parent)
+            parent = os.path.dirname(parent)
+        for d in missing:
+            os.mkdir(os.path.join(mnt, d))
+        with open(os.path.join(mnt, rel), "wb") as f:     # in place: an existing file keeps its catalog record
+            f.write(data)
+        os.chmod(os.path.join(mnt, rel), mode)
+        made.extend(missing + [rel])
+
+    put(LOADER[0], entries["loader/it_boot"], 0o755)
+    put(LOADER[1], entries["loader/com.qemu.it-boot.plist"], 0o644)
+    pkg = "%s/pkgs/%d" % (SEED_ROOT, m["serial"])
+    for f in m["files"]:
+        put(pkg + "/" + f["name"], entries[family + "/" + f["name"]], int(f["mode"], 8))
+    put(pkg + "/offer", offer_text(m, build).encode(), 0o644)
+    os.symlink("pkgs/%d" % m["serial"], os.path.join(mnt, SEED_ROOT, "current"))
+    put(SEED_ROOT + "/state", b"seed %d\n" % m["serial"], 0o644)
+    made.append(SEED_ROOT + "/current")
+    mode = {f["name"]: int(f["mode"], 8) for f in m["files"]}
+    for h in hooks:
+        for rel in (h["target"][1:], h["target"][1:] + ".baked"):
+            put(rel, entries[family + "/" + h["file"]], mode[h["file"]])
+    for j in m["jobs"]:
+        rel = "System/Library/LaunchDaemons/" + os.path.basename(j)
+        if os.path.lexists(os.path.join(mnt, rel)):
+            os.unlink(os.path.join(mnt, rel))
+    record = {"family": family, "seed": m["serial"], "version": m["version"], "gli": gli,
+              "itpack": {"path": os.path.abspath(itpack), "sha256": sha256(open(itpack, "rb").read())},
+              "hooks": [h["target"] for h in hooks], "jobs": [os.path.basename(j) for j in m["jobs"]]}
+    return made, record
+
+
 def build(src, out):
     version = dict(l.split(None, 1) for l in open(os.path.join(HERE, "VERSION")).read().splitlines() if l.strip())
     serial, ver = int(version["serial"]), version["version"].strip()

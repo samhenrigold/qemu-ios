@@ -5,7 +5,7 @@
                           [--stash DIR|none] [--lockdown DIR|none] [--disable LABEL]... [--ro-root] [--hidbridge] [--no-web-proxy] [--no-usb-net]
     ipad1_rootfs.py fetch [DIR]          copy /var/stash and /var/root/Library/Lockdown off the real iPad (ssh)
     ipad1_rootfs.py report DIR...        list the Mach-Os under DIR that carry no Apple signature
-    ipad1_rootfs.py bake DIR [--tools build/ipad1-guest] [--seal] [--activation-hook SCRIPT]
+    ipad1_rootfs.py bake DIR [--tools build/ipad1-guest] [--guest-package ITPACK] [--seal] [--activation-hook SCRIPT]
                                          install the guest helpers into DIR/system.img
     ipad1_rootfs.py --selfcheck
 
@@ -48,11 +48,17 @@ unsigned-machos.txt: every Mach-O on the system volume and in the stash whose co
 blob (ldid ad-hoc: sshd, bash, apt, Cydia, Substrate) or none at all. Those are what
 `amfi_allow_any_signature=1` has to forgive at exec; Apple's own binaries carry a (possibly empty) CMS slot.
 
-`bake` installs this machine's guest helpers (docs/ipad1/guest-services.md): it_pbd, it_ethlink and it_prefs + their launchd jobs,
-root-owned via the catalog. Nothing else on either volume changes. Build it first with contrib/ipad1-guest/build.sh;
-it is ldid ad-hoc signed, so boot with amfi_allow_any_signature=1.
+`bake` installs this machine's guest helpers (docs/ipad1/guest-services.md): it_pbd, it_ethlink, it_prefs,
+it_msmquiet, root-owned via the catalog, and the guest-package loader + seed package (contrib/guest-package
+mkpkg.seed, from the armv7.itpack contrib/guest-package/build.sh makes): /usr/local/bin/it_boot and its job,
+/usr/local/lighttouch/{pkgs/<serial>,current,state}, the hook targets the package keeps (the GL shim only if
+this image has it) with their .baked copies. The helpers' launchd jobs come from the package, loaded by it_boot,
+so none is baked into LaunchDaemons. DIR/guest-package.json records the seed for the lock. Nothing else on
+either volume changes. Build the tools first with contrib/ipad1-guest/build.sh; they are ldid ad-hoc signed,
+so boot with amfi_allow_any_signature=1.
 """
 import argparse
+import json
 import os
 import plistlib
 import re
@@ -66,6 +72,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_nand as bn                      # attach(), set_owner(), run(), JUNK
 from ipad1_nand import make_hfs_image, mbr_parts, parse_size
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/guest-package"))
+import mkpkg                                 # seed(): the loader + seed package
 
 FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1")
 IPAD_SSH = os.path.join(FILES, "ipad-ssh.sh")
@@ -221,10 +229,10 @@ TOOLS = {"it_pbd": ("usr/local/bin/it_pbd", 0o755), "it_ethlink": ("usr/local/bi
          "it_msmquiet.dylib": ("usr/local/lib/it_msmquiet.dylib", 0o755)}
 # Apple job that loads it_msmquiet (hides the USB "not supported" notice; contrib/it-msmquiet)
 MSM_JOB = "System/Library/LaunchDaemons/com.apple.mobile.storage_mounter.plist"
-# launchd job, installed path -> source under contrib/
-JOBS = {"System/Library/LaunchDaemons/com.qemu.it-pbd.plist": "it-pasteboard/com.qemu.it-pbd.plist",
-        "System/Library/LaunchDaemons/com.qemu.it-ethlink.plist": "it-ethlink/com.qemu.it-ethlink.plist",
-        "System/Library/LaunchDaemons/com.qemu.it-prefs.plist": "it-prefs/com.qemu.it-prefs.plist"}
+# launchd job, installed path -> source under contrib/. The helpers' own jobs (it-pbd, it-ethlink,
+# it-prefs) are the seed package's, loaded by it_boot; only the one-shots below are baked.
+JOBS = {}
+GUEST_PACKAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../build/guest-package/armv7.itpack")
 # earlier helpers' files, removed when an image is baked again (it_notip became it_prefs)
 RETIRED = ["usr/local/bin/it_notip", "System/Library/LaunchDaemons/com.qemu.it-notip.plist"]
 # Bluetooth has no controller model (UART3 is silent), so BTServer's retries left
@@ -763,12 +771,20 @@ def bake(a):
             rewrite_plist(os.path.join(m.mnt, BT_JOB), lambda d: d.__setitem__("Disabled", True))
         if a.activation_hook:
             activation_hook(a.activation_hook, os.path.join(m.mnt, LOCKDOWND))
+        # the GLI shim this image carries (build installs it unless --no-ca-ogl): the one GL hook the seed keeps
+        engine, _ = gli_engine(os.path.join(m.mnt, DYLD_CACHE))
+        with open(os.path.join(m.mnt, GLENGINE), "rb") as f:
+            gli = os.path.basename(engine)[len("GLEngine-"):] if engine and f.read() == open(engine, "rb").read() else None
+        seeded, record = mkpkg.seed(m.mnt, a.guest_package, gli)
+    with open(os.path.join(a.dir, "guest-package.json"), "w") as f:
+        json.dump(record, f, indent=1)
     # noowners mount: launchd ignores a job plist that is not root-owned
     n = bn.set_owner(system, ["usr/local", "usr/local/bin", "usr/local/lib"] + list(JOBS) + [rel for rel, _ in TOOLS.values()]
-                     + ([LOCKDOWND] if a.activation_hook else []), 0, 0)
+                     + ([LOCKDOWND] if a.activation_hook else []) + seeded, 0, 0)
     shutil.rmtree(os.path.join(a.dir, "mnt-system"), ignore_errors=True)
-    print("baked %s + %s into %s (%d catalog records patched); rebuild the NAND store with ipad1_nand.py"
-          % (", ".join(TOOLS), ", ".join(os.path.basename(j) for j in JOBS), system, n))
+    print("baked %s + %s + it_boot, seed package %s serial %d (hooks %s) into %s (%d catalog records patched); "
+          "rebuild the NAND store with ipad1_nand.py" % (", ".join(TOOLS), ", ".join(os.path.basename(j) for j in JOBS),
+                                                        record["family"], record["seed"], record["hooks"], system, n))
 
 
 LOCKDOWND = "usr/libexec/lockdownd"
@@ -947,6 +963,8 @@ def main():
     k = sub.add_parser("bake")
     k.add_argument("dir", help="a build output dir holding system.img and data.img")
     k.add_argument("--tools", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "../build/ipad1-guest"))
+    k.add_argument("--guest-package", default=GUEST_PACKAGE, metavar="ITPACK",
+                   help="the armv7 .itpack whose package for this build is baked as the seed (contrib/guest-package/build.sh)")
     k.add_argument("--keep-bluetooth", action="store_true", help="leave com.apple.BTServer enabled (default: Disabled)")
     k.add_argument("--seal", action="store_true", help="also install it_seal, the one-shot clean halt ipad1_seal.py needs")
     k.add_argument("--gl-test", action="store_true", help="also install it_gltest, the GL fixture job tests/ipad1/gltest.py reads")
