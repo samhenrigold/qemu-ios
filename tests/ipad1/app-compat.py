@@ -3,6 +3,7 @@
 
     tests/ipad1/app-compat.py inventory [DIR] [--md docs/ipad1/app-compat.md]
     tests/ipad1/app-compat.py run [DIR] [--only SUBSTR] [--limit N] [--nand STORE] [--out DIR]
+    tests/ipad1/app-compat.py run [DIR] --device DEVICE ...   # an ipad1_device.py device dir (4.x: appsync on)
     tests/ipad1/app-compat.py --selfcheck
 
 inventory: bundle id, name, MinimumOSVersion, UIDeviceFamily, arch and encryption state
@@ -108,10 +109,10 @@ def inspect(path):
     return r
 
 
-def is_candidate(r):
-    """Decrypted and MinimumOS <= 3.2 and has an arm slice."""
+def is_candidate(r, max_os=MAX_OS):
+    """Decrypted and MinimumOS <= max_os (3.2, or the device's iOS) and has an arm slice."""
     return (r["encrypted"] is False and not r["error"]
-            and parse_version(r["minos"]) <= MAX_OS
+            and parse_version(r["minos"]) <= max_os
             and any(a.startswith("arm") for a in r["archs"]))
 
 
@@ -557,11 +558,15 @@ def run_pass(a):
     cfg = argparse.Namespace(out=out, kboot=os.path.join(FILES, "7B500", "k48-kboot.bin"),
                              nand=nand, qemu=os.path.join(ROOT, "build", "qemu-system-arm"),
                              usbmuxd=os.path.expanduser("~/Developer/usbmuxd-qemu-ipad1-net/src/usbmuxd"),
-                             boot_timeout=a.boot_timeout, files=FILES, syslog_only=a.syslog_only)
+                             boot_timeout=a.boot_timeout, files=FILES, syslog_only=a.syslog_only,
+                             device=a.device, product_version=None)
+    rg.device_args(cfg)          # --device: its nand, kboot, die-id, NOR and iOS version
+    nand = cfg.nand
+    max_os = parse_version(cfg.product_version)[:2]
     import json
     resdir = os.path.join(out, "results")
     os.makedirs(resdir, exist_ok=True)
-    cands = [r for r in scan(a.dir) if is_candidate(r)]
+    cands = [r for r in scan(a.dir) if is_candidate(r, max_os)]
     if a.only:
         cands = [r for r in cands if a.only.lower() in (r["file"] + r["bundle"] + r["name"]).lower()]
     # one run per bundle id (duplicate IPAs share a result file and would race in parallel)
@@ -610,7 +615,7 @@ def _results_md(allres, nand):
     counts = {}
     for r in allres:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
-    out = ["# iPad 1 / 3.2.2 app-compat results", "",
+    out = ["# iPad 1 app-compat results", "",
            "Store: `%s`. %d apps tested." % (nand, len(allres)), "",
            "Verdicts: " + ", ".join("%s %d" % (k, v) for k, v in sorted(counts.items())), ""]
     # failure backlog grouped by cause (the fix list)
@@ -652,6 +657,7 @@ def main():
     ap.add_argument("--only", help="run: substring filter on file/bundle/name")
     ap.add_argument("--limit", type=int, help="run: cap number of apps")
     ap.add_argument("--nand", help="run: NAND store (default golden-appsync)")
+    ap.add_argument("--device", help="run: an ipad1_device.py device dir instead of --nand")
     ap.add_argument("--out", help="run: output dir")
     ap.add_argument("--boot-timeout", type=int, default=240)
     ap.add_argument("--jobs", type=int, default=1, help="run: apps in parallel (each its own overlay + ports)")
