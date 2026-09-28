@@ -790,8 +790,8 @@ def bake(a):
 LOCKDOWND = "usr/libexec/lockdownd"
 
 
-def activation_hook(hook, target):
-    """Opt-in: run the user's activation hook (`hook FILE`, edits FILE in place) on a copy of lockdownd, then
+def activation_hook(hook, target, args=()):
+    """Opt-in: run the user's activation hook (`hook [ARGS] FILE`, edits FILE in place) on a copy of lockdownd, then
     ad-hoc sign the result with lockdownd's own entitlements and write it back (0755; owner fixed by bake)."""
     with tempfile.TemporaryDirectory(prefix="ipad1_hook.") as td:
         work, ents = os.path.join(td, "lockdownd"), os.path.join(td, "entitlements.plist")
@@ -799,7 +799,7 @@ def activation_hook(hook, target):
         before = open(work, "rb").read()
         with open(ents, "wb") as f:
             subprocess.run(["ldid", "-e", work], stdout=f, check=True)
-        subprocess.run(([sys.executable] if hook.endswith(".py") else []) + [hook, work], check=True)
+        subprocess.run(([sys.executable] if hook.endswith(".py") else []) + [hook, *args, work], check=True)
         if open(work, "rb").read() == before:
             raise SystemExit("activation hook %s left lockdownd unchanged" % hook)
         subprocess.run(["ldid", "-S" + ents if os.path.getsize(ents) else "-S", work], check=True)
