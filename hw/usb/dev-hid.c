@@ -43,6 +43,13 @@ struct USBHIDState {
     uint32_t usb_version;
     char *display;
     uint32_t head;
+    /* max-power (mA, 0: the descriptor's 100): per-device copies of the
+     * descriptors with that bMaxPower. iOS 4 on the iPad budgets 50 mA for
+     * the camera-connector port and refuses a 100 mA keyboard. */
+    uint32_t max_power;
+    USBDesc desc;
+    USBDescDevice dev_full, dev_high;
+    USBDescConfig conf_full, conf_high;
 };
 
 #define TYPE_USB_HID "usb-hid"
@@ -715,6 +722,26 @@ static void usb_hid_initfn(USBDevice *dev, int kind,
                    us->usb_version);
         return;
     }
+    if (us->max_power) {
+        if (us->max_power > 500) {
+            error_setg(errp, "max-power %u mA is over USB 2.0's 500", us->max_power);
+            return;
+        }
+        us->desc = *dev->usb_desc;
+        us->dev_full = *us->desc.full;
+        us->conf_full = us->dev_full.confs[0];
+        us->conf_full.bMaxPower = DIV_ROUND_UP(us->max_power, 2);
+        us->dev_full.confs = &us->conf_full;
+        us->desc.full = &us->dev_full;
+        if (us->desc.high) {
+            us->dev_high = *us->desc.high;
+            us->conf_high = us->dev_high.confs[0];
+            us->conf_high.bMaxPower = us->conf_full.bMaxPower;
+            us->dev_high.confs = &us->conf_high;
+            us->desc.high = &us->dev_high;
+        }
+        dev->usb_desc = &us->desc;
+    }
 
     usb_desc_create_serial(dev);
     usb_desc_init(dev);
@@ -842,6 +869,7 @@ static const TypeInfo usb_mouse_info = {
 static const Property usb_keyboard_properties[] = {
         DEFINE_PROP_UINT32("usb_version", USBHIDState, usb_version, 2),
         DEFINE_PROP_STRING("display", USBHIDState, display),
+        DEFINE_PROP_UINT32("max-power", USBHIDState, max_power, 0),
 };
 
 static void usb_keyboard_class_initfn(ObjectClass *klass, void *data)
