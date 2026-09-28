@@ -65,7 +65,7 @@ Activation will block after that, as on 7E18.
 
 2.1.1 needed pipeline fixes, all derived: no BuildManifest (component paths from Restore.plist and the board
 name, `ipad1_fw.components`), the final partial AES block of 2.x img3 left in plaintext (detected from the
-kernelcache's Adler-32 and applied to every component), NAND epoch 1, SHSH not wrapped, no direct iBoot
+kernelcache's Adler-32 and applied to every component), NAND epoch 1, only iBoot SHSH wrapped, no direct iBoot
 (2.x boots bootrom → NOR LLB), no shared cache (AppSync off in the manifest: 2.x's libmis patch is a fixed
 offset, `patch_libmis.py`, so it is not used), firmware's own libncurses kept. The generated NOR must wrap **only iBoot's SHSH** under the emulated
 UID. LLB unwraps that signature, while 2.x iBoot verifies its other NOR images
@@ -105,12 +105,12 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 | shell + ssh | Cydia bootstrap files copied as uid 99, stock modes clobbered by `chmod 755`, sshd by overwriting ReportCrash.SafetyNet, host keys shared by every copy | files listed in imgtools/ipod2g-shell.txt taken from the three pinned tarballs, root-owned, tar modes, `/Library/LaunchDaemons/com.openssh.sshd.plist`, host keys generated per device |
 | byte patches | none left on the default path: installd/SpringBoard are stock | none; see "emulator-side per-version code" |
 
-### Emulator-side per-version code (left as is, all fail closed)
+### Remaining emulator compatibility behavior
 
-- `ipod_touch_inject_boot_args` (hw/arm/ipod_touch_2g.c:1511) checks 24 bytes of 7E18 iBoot and skips
+- `ipod_touch_inject_boot_args` (hw/arm/ipod_touch_2g.c:1511) locates a unique 24-byte handoff pattern, decodes its empty-string literal, and skips
   otherwise ("unknown iBoot; early argument injection skipped", seen on 8C148); the late boot-args write
   finds `boot_args` by signature on any build.
-- IT_INJECT_LOGO (7E18 VAs) remains an opt-in diagnostic, off on the default path.
+- The obsolete fixed-address logo thunk is removed along with the DeviceTree thunk.
 - The research-only IT_AMFI_ALLOW_TASKPORT kernel patch and its address overrides
   have been removed; guest integration uses the existing boot-args and AppSync path.
 - The legacy command-line data write (without direct iBoot) discovers its buffer
@@ -128,7 +128,8 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 | img3 tail convention | kernelcache Adler-32 (2.x plaintext tail, 3.x+ encrypted) |
 | GID KBAG plaintexts | the IPSW's KBAG tags + the keys page → gid-blobs.bin |
 | NAND epoch (NANDDRIVERSIGN) | Restore.plist DeviceMap SCEP |
-| SHSH wrap, direct iBoot | ProductVersion major ≥ 3 |
+| SHSH wrap | all images for 3.x+; only iBoot for 2.x (LLB unwrap) |
+| direct iBoot | ProductVersion major ≥ 3 |
 | NOR image set | stock order ∩ all_flash/manifest |
 | kernelcache path in the volume | the decrypted iBoot's `/System/Library/Caches/com.apple.kernelcaches/...` string |
 | kernelcache member | BuildManifest KernelCache / Restore.plist KernelCachesByPlatform |
@@ -226,3 +227,12 @@ The fresh 5F138 framebuffer settles at the stock Connect to iTunes screen by
 This proves UI boot, not activation or a passing home-screen regression tier.
 7E18 still uses direct iBoot; SecureROM boot for every firmware, 4.2.1 NAND
 identification, and DFU/restore are not claimed by this work.
+
+The final iBoot cleanup also removes the unused logo-injection thunk. On a
+fresh 7E18 manifest build, gdb observes both the stock logo and DeviceTree
+`image_load` calls returning 0 with `forge-sigcheck` disabled and the generated
+GID table supplied. Early argument injection now scans the loaded image for a
+unique verified handoff and decodes its literal; no code or empty-string address
+is fixed in the machine. Its tests cover relocated and ambiguous handoffs.
+
+Final acceptance: all eight default 7E18 regression checks PASS, including\nclean shutdown/reboot persistence and fsck, in\n`/private/tmp/ipod-bootchain-regress-final` (252 seconds). The working branch is\n`ipod-bootchain`; changes are intentionally not merged into `ipad1` or `main`.\nFMSS edits are confined to discovering/resetting the boot-argument data buffer;\nNAND identification, geometry and controller behavior are untouched.

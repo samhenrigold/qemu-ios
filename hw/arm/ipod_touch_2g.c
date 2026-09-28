@@ -957,76 +957,6 @@ static void ipod_touch_load_bootrom(IPodTouchMachineState *nms)
 #define LLB_LOAD_BASE 0x22000000
 
 /*
- * IT_INJECT_LOGO: historical boot-logo experiment.
- * Correct UID-wrapped NOR signatures now let stock iBoot load both logo and
- * DeviceTree (imgtools/build_nor.py). The diagnosis below predates that fix.
- *
- * The screen is black for the whole of iBoot's life on every 3.1.3 boot. It is
- * not a display problem: iBoot brings the panel up (pinot_init is clean), the
- * scanout base is programmed, and the backlight is high. It fails one step
- * earlier, and for exactly the same reason the device tree did.
- *
- * do_boot_ui() is inlined into main at 0x0ff00b4c and matches the published
- * iBoot source line for line:
- *
- *   0x0ff00b52  bl 0x0ff12b14   paint_set_bgcolor(0,0,0)
- *   0x0ff00b58  bl 0x0ff13298   paint_set_picture(0)
- *   0x0ff00b5c  ldr r0,='logo'  (the only 'logo' literal in the image)
- *   0x0ff00b5e  bl 0x0ff13498   paint_set_picture_for_tag(IMAGE_TYPE_LOGO)
- *   0x0ff00b62  bl 0x0ff12cf2   paint_update_image()
- *
- * paint_set_picture_for_tag is just paint_set_picture(image_find(tag)), and
- * image_find succeeds -- the 'logo' img3 is in the NOR image list, which is
- * what the "type logo offset 0x495c0" line in the boot log reports. The load
- * happens inside paint_set_picture:
- *
- *   0x0ff132f8  add r2,sp,#0x24         ; r2 = &address slot
- *   0x0ff132fc  add r3,sp,#0x20         ; r3 = &length slot
- *   0x0ff132fe  bl  0x0ff1998c          ; image_load(handle, 0, &addr, &len)
- *   0x0ff13302  cmp r0,#0
- *   0x0ff13304  bge 0x0ff13308          ; success
- *   0x0ff13306  b   0x0ff13452          ; failure: return, no picture set
- *
- * Measured over the gdbstub: that image_load returns **-1**. It is the same
- * image_load that rejects the dtre, failing personalised-signature validation
- * before any GID decrypt is attempted -- confirmed by the AES engine, which
- * performs exactly one GID operation in a whole boot ("7E18 kernelcache") and
- * never one for the logo. Unlike the device tree, a failed picture load is
- * silent: do_boot_ui simply paints its black background and boots on.
- *
- * Historical logo injection experiment: hand iBoot the
- * already-decrypted image and skip the validation it cannot pass. The call site
- * is retargeted to a thunk that fills in the two out-parameters and returns 0.
- * On the success path iBoot itself checks the blob, so the staged file must be
- * a real decrypted iBootIm container ("iBootIm\0", 'lzss', 'argb' or 'grey');
- * iBoot decompresses and blits it. imgtools/extract_bootlogo.py produces one.
- *
- * Only this one call site is touched, so the kernelcache still validates and
- * decrypts normally -- unlike IT_FORGE_SIGCHECK, which is global and breaks it
- * ("Kernelcache image not valid" -> recovery mode).
- */
-/*
- * Where the blob and the thunk can actually live, both learned the hard way:
- *
- * - iBoot ZEROES its own region above the loaded image during early init, so
- *   anything staged at reset into 0x0FF8xxxx is gone by the time do_boot_ui
- *   runs (measured: the thunk read back as 0x0000 halfwords and the CPU walked
- *   through them). The "llb"/SRAM region is the one place that survives, which
- *   was also used by the retired device-tree injection experiment.
- *
- * - The thunk cannot go there too: a Thumb BL only reaches +/-16 MB and
- *   0x22000000 is ~318 MB from the call site. It has to live inside the loaded
- *   iBoot image, which is not zeroed. do_recoverymode_ui (the 'recm' UI at
- *   0x0ff00cfe) is dead code in a normal boot -- nothing calls it unless iBoot
- *   enters recovery -- so the thunk goes there. If a future change ever needs
- *   recovery mode's UI with IT_INJECT_LOGO set, move this.
- */
-#define LOGO_STAGING_BASE      0x22040000 /* llb/SRAM region, survives; DT is
-                                           * ~35 KB at 0x22000000            */
-#define LOGO_THUNK_BASE        0x0FF00D00 /* dead do_recoverymode_ui code    */
-#define IBOOT_LOGO_LOAD_PATCH  0x132fe    /* VA offset of the `bl image_load` */
-
-/*
  * Top of the "insecure" DRAM bank (0x08000000 + 0x3000000). Measured to be
  * zeroed by iBoot and then left untouched through kernel load, and it is inside
  * the kernel's static map (required, see ipod_touch_stage_ramdisk).
@@ -1265,84 +1195,7 @@ static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
             (unsigned long long)delay_ms);
 }
 
-/* Encode a Thumb-2 BL from `src` to `dst` into the two halfwords it occupies. */
-static void thumb_bl(uint32_t src, uint32_t dst, uint8_t out[4])
-{
-    int32_t off = (int32_t)(dst - (src + 4));
-    uint32_t imm = ((uint32_t)off) >> 1;
-    uint32_t s = (off < 0) ? 1 : 0;
-    uint32_t i1 = (imm >> 22) & 1, i2 = (imm >> 21) & 1;
-    uint32_t j1 = (~i1 & 1) ^ s, j2 = (~i2 & 1) ^ s;
-    uint32_t hw1 = 0xF000 | (s << 10) | ((imm >> 11) & 0x3FF);
-    uint32_t hw2 = 0xD000 | (j1 << 13) | (j2 << 11) | (imm & 0x7FF);
-
-    out[0] = hw1 & 0xFF; out[1] = hw1 >> 8;
-    out[2] = hw2 & 0xFF; out[3] = hw2 >> 8;
-}
-
-static void ipod_touch_inject_boot_logo(IPodTouchMachineState *nms)
-{
-    const char *logo_path = getenv("IT_INJECT_LOGO");
-    uint8_t *logo = NULL;
-    gsize logo_size;
-    uint8_t bl[4];
-    /*
-     * The thunk. At the call site r2 = &address slot and r3 = &length slot, so
-     * it only has to fill both in and report success:
-     *
-     *   ldr r0,[pc,#8] ; str r0,[r2]   *addr = LOGO_STAGING_BASE
-     *   ldr r0,[pc,#8] ; str r0,[r3]   *len  = <size>
-     *   movs r0,#0     ; bx lr         return 0, iBoot takes the success path
-     */
-    uint8_t thunk[20] = {
-        0x02, 0x48,               /* ldr  r0,[pc,#8]  */
-        0x10, 0x60,               /* str  r0,[r2]     */
-        0x02, 0x48,               /* ldr  r0,[pc,#8]  */
-        0x18, 0x60,               /* str  r0,[r3]     */
-        0x00, 0x20,               /* movs r0,#0       */
-        0x70, 0x47,               /* bx   lr          */
-        0x00, 0x00, 0x00, 0x00,   /* .word staging base */
-        0x00, 0x00, 0x00, 0x00,   /* .word length       */
-    };
-
-    if (!logo_path) {
-        return;
-    }
-
-    if (!g_file_get_contents(logo_path, (char **)&logo, &logo_size, NULL)) {
-        fprintf(stderr, "[IT_INJECT_LOGO] could not read '%s'\n", logo_path);
-        return;
-    }
-
-    if (logo_size < 0x14 || logo_size > BOOT_ARGS_STAGING_BASE - LOGO_STAGING_BASE ||
-        memcmp(logo, "iBootIm\0", 8) != 0) {
-        fprintf(stderr, "[IT_INJECT_LOGO] '%s' is not a decrypted iBootIm "
-                "container; iBoot would reject it. Use "
-                "imgtools/extract_bootlogo.py\n", logo_path);
-        g_free(logo);
-        return;
-    }
-
-    address_space_rw(nms->nsas, LOGO_STAGING_BASE, MEMTXATTRS_UNSPECIFIED,
-                     logo, logo_size, 1);
-
-    stl_le_p(thunk + 12, LOGO_STAGING_BASE);
-    stl_le_p(thunk + 16, (uint32_t)logo_size);
-    address_space_rw(nms->nsas, LOGO_THUNK_BASE, MEMTXATTRS_UNSPECIFIED,
-                     thunk, sizeof(thunk), 1);
-
-    thumb_bl(IBOOT_MEM_BASE + IBOOT_LOGO_LOAD_PATCH, LOGO_THUNK_BASE, bl);
-    address_space_rw(nms->nsas, IBOOT_MEM_BASE + IBOOT_LOGO_LOAD_PATCH,
-                     MEMTXATTRS_UNSPECIFIED, bl, sizeof(bl), 1);
-
-    fprintf(stderr, "[IT_INJECT_LOGO] staged boot logo '%s' (%llu bytes) at "
-            "0x%08x and retargeted iBoot's logo image_load to 0x%08x\n",
-            logo_path, (unsigned long long)logo_size, LOGO_STAGING_BASE,
-            LOGO_THUNK_BASE);
-    g_free(logo);
-}
-
-static void ipod_touch_inject_boot_args(IPodTouchMachineState *nms)
+static void ipod_touch_inject_boot_args(IPodTouchMachineState *nms, size_t image_size)
 {
     const char *args = ipod_touch_requested_boot_args(nms);
     /* Release 7E18 iBoot deliberately ignores NVRAM boot-args. Redirect its
@@ -1352,22 +1205,48 @@ static void ipod_touch_inject_boot_args(IPodTouchMachineState *nms)
         0x2c,0x4b,0x9b,0x46,0x1b,0x68,0x00,0x2b,0x03,0xd1,0x2a,0x48,
         0x06,0x1c,0x01,0x90,0x02,0xe0,0x29,0x4e,0x28,0x49,0x01,0x91
     };
-    uint8_t code[sizeof(expected)], literal[4], command[BOOT_ARGS_CMDLINE_LEN] = {0};
+    uint8_t literal[4], command[BOOT_ARGS_CMDLINE_LEN] = {0};
+    size_t found = 0;
     const hwaddr staging = BOOT_ARGS_STAGING_BASE; /* final 256 bytes of LLB SRAM */
 
-    if (!args) return;
-    address_space_read(nms->nsas, IBOOT_MEM_BASE + 0x11a72,
-                       MEMTXATTRS_UNSPECIFIED, code, sizeof(code));
-    address_space_read(nms->nsas, IBOOT_MEM_BASE + 0x11b28,
-                       MEMTXATTRS_UNSPECIFIED, literal, sizeof(literal));
-    if (memcmp(code, expected, sizeof(code)) || ldl_le_p(literal) != 0x0ff1dba0) {
+    if (!args || image_size < sizeof(expected) || image_size > 0x100000) {
+        return;
+    }
+    g_autofree uint8_t *image = g_try_malloc(image_size);
+    if (!image) {
+        return;
+    }
+    address_space_read(nms->nsas, IBOOT_MEM_BASE, MEMTXATTRS_UNSPECIFIED,
+                       image, image_size);
+    for (size_t i = 0; i + sizeof(expected) <= image_size; i += 2) {
+        if (memcmp(image + i, expected, sizeof(expected))) {
+            continue;
+        }
+        /* Decode the Thumb LDR r0 literal in the verified normal-boot arm.
+         * Its target must be an empty string inside this loaded image. */
+        size_t slot = ((i + 10 + 4) & ~(size_t)3) + image[i + 10] * 4;
+        if (slot > image_size - 4) {
+            continue;
+        }
+        uint32_t string = ldl_le_p(image + slot);
+        if (string < IBOOT_MEM_BASE || string - IBOOT_MEM_BASE >= image_size ||
+            image[string - IBOOT_MEM_BASE] != 0) {
+            continue;
+        }
+        if (found) {
+            fprintf(stderr, "[IT_BOOT_ARGS] ambiguous iBoot handoff; early argument injection skipped\n");
+            return;
+        }
+        found = slot;
+    }
+    if (!found) {
         fprintf(stderr, "[IT_BOOT_ARGS] unknown iBoot; early argument injection skipped\n");
         return;
     }
     g_strlcpy((char *)command, args, sizeof(command));
     address_space_write(nms->nsas, staging, MEMTXATTRS_UNSPECIFIED, command, sizeof(command));
     stl_le_p(literal, staging);
-    address_space_write(nms->nsas, IBOOT_MEM_BASE + 0x11b28,
+    address_space_write(nms->nsas, IBOOT_MEM_BASE + found,
                         MEMTXATTRS_UNSPECIFIED, literal, sizeof(literal));
     fprintf(stderr, "[IT_BOOT_ARGS] staged early 7E18 command line\n");
 }
@@ -1403,8 +1282,7 @@ static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
          */
 
         /* Optional bring-up helpers run after staging the iBoot image. */
-        ipod_touch_inject_boot_logo(nms);
-        ipod_touch_inject_boot_args(nms);
+        ipod_touch_inject_boot_args(nms, fsize);
         ipod_touch_stage_ramdisk(nms);
         ipod_touch_stage_boot_args(nms);
     }
@@ -1431,7 +1309,6 @@ static void ipod_touch_cpu_reset(void *opaque)
     }
 
     //env->regs[0] = nms->kbootargs_pa;
-    //cpu_set_pc(CPU(cpu), 0xc00607ec);
     cpu_set_pc(CPU(cpu), VROM_MEM_BASE);
     //env->regs[0] = 0x9000000;
     //cpu_set_pc(CPU(cpu), LLB_BASE + 0x100);
