@@ -6,7 +6,8 @@
 # 1. imgtools/ipad1_device.py create MANIFEST OUT/device (skipped if OUT/device/device.lock.json exists)
 # 2. device.lock.json names no hw2/ dump and no identity.json but the device's own
 # 3. boot 1: no FTL rescan (the store is sealed), lit lock screen, unlock, OUT/boot1.png, clean power-off
-#    (QEMU exit 0 within 45 s)
+#    (QEMU exit 0 within 45 s). A device made without an activation hook stops at "Connect to iTunes":
+#    then lit means that screen and there is nothing to unlock.
 # 4. boot 2 on the same overlay: the same; no rescan now also means boot 1's power-off closed the FTL
 # Pass/fail is per step; whether a PNG shows the home screen or "Connect to iTunes" needs a look
 # (brightness alone cannot tell them apart).
@@ -36,9 +37,12 @@ walk(lock["inputs"])
 bad = [p for p in paths if "/hw2/" in p or (p.endswith("identity.json") and p != os.path.join(dev, "identity.json"))]
 assert not bad, "lock inputs reference unit data: %s" % bad
 assert lock["inputs"]["lockdown"] is None and lock["inputs"]["stash"] is None
-print(lock["identity"]["die_id"])
+print(lock["identity"]["die_id"], "activated" if lock["inputs"]["activation_hook"] else "itunes")
 EOF
 )
+read -r DIE_ID SCREEN <<<"$DIE_ID"
+if [ "$SCREEN" = activated ]; then SCREEN_FLAGS=(--unlock); WHAT="lit, unlocked"
+else SCREEN_FLAGS=(--lit 2500); WHAT="lit (Connect to iTunes)"; fi
 echo "PASS lock: inputs name no hw2/ dump and only $DEV/identity.json"
 
 # The sealed nor.bin is read-only; boot both times on one private writable copy so
@@ -51,9 +55,9 @@ fi
 
 for n in 1 2; do
     flags=(--nand-overlay "$DEV/nand" --overlay "$OUT/overlay" --kboot "$DEV/kboot.bin"
-           --die-id "$DIE_ID" ${NOR_FLAGS[@]+"${NOR_FLAGS[@]}"} --unlock --shot "$OUT/boot$n.png" --powerdown --no-rescan --seconds 240)
+           --die-id "$DIE_ID" ${NOR_FLAGS[@]+"${NOR_FLAGS[@]}"} "${SCREEN_FLAGS[@]}" --shot "$OUT/boot$n.png" --powerdown --no-rescan --seconds 240)
     if timeout 300 python3 "$ROOT/tests/ipad1/boot-smoke.py" "${flags[@]}" > "$OUT/boot$n.txt" 2>&1; then
-        echo "PASS boot $n: lit, unlocked, clean power-off; look at $OUT/boot$n.png"
+        echo "PASS boot $n: $WHAT, clean power-off; look at $OUT/boot$n.png"
     else
         echo "FAIL boot $n: see $OUT/boot$n.txt"; cat "$OUT/boot$n.txt"; exit 1
     fi
