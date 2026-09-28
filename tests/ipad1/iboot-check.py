@@ -28,7 +28,7 @@ def main():
     if len(str(sock.resolve())) > 100:
         ap.error('--out path is too long for a Unix socket')
     machine = f'ipad1,iboot={a.iboot},nor={a.nor},nand={a.nand},nand-overlay={a.out}/overlay'
-    p = subprocess.Popen([a.qemu, '-machine', machine, '-display', 'none', '-monitor', 'none',
+    p = subprocess.Popen([a.qemu, '-machine', machine, '-display', 'none', '-audio', 'driver=none', '-monitor', 'none',
                           '-serial', f'file:{serial}', '-qmp', f'unix:{sock},server=on,wait=off'],
                          stdout=subprocess.DEVNULL, stderr=open(a.out / 'qemu.log', 'w'))
     start, next_shot, q = time.monotonic(), 15, None

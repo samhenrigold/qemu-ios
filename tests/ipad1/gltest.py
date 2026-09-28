@@ -75,7 +75,7 @@ def main():
     sock, serial = "/tmp/ipad1-gltest-%d.qmp" % os.getpid(), out + "/serial.log"
     itqmp.W, itqmp.H = 1024, 768
     q = None
-    p = subprocess.Popen(["timeout", "180", a.qemu, "-machine", machine, "-display", "none", "-monitor", "none",
+    p = subprocess.Popen(["timeout", "180", a.qemu, "-machine", machine, "-display", "none", "-audio", "driver=none", "-monitor", "none",
                           "-serial", "file:" + serial, "-qmp", "unix:%s,server,nowait" % sock],
                          stdout=subprocess.DEVNULL, stderr=open(out + "/qemu.log", "w"), stdin=subprocess.DEVNULL)
     results, ok = {}, True

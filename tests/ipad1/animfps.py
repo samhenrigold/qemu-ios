@@ -28,7 +28,7 @@ if os.path.exists(os.path.join(store, "device.lock.json")):
         store, store, out, lock["identity"]["die_id"])
 qemu = subprocess.Popen(["timeout", "500", os.environ.get("QEMU", os.path.join(ROOT, "build/qemu-system-arm")),
     "-machine", machine,
-    "-display", "none", "-monitor", "none", "-serial", "file:" + serial, "-qmp", "unix:%s,server,nowait" % sock],
+    "-display", "none", "-audio", "driver=none", "-monitor", "none", "-serial", "file:" + serial, "-qmp", "unix:%s,server,nowait" % sock],
     stdout=subprocess.DEVNULL, stderr=open(out + "/qemu.log", "w"))
 try:
     while not os.path.exists(sock): time.sleep(0.2)
