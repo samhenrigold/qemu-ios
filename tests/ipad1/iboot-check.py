@@ -18,6 +18,8 @@ def main():
     ap.add_argument('--qemu', default=str(ROOT / 'build/qemu-system-arm'))
     ap.add_argument('--iboot', required=True)
     ap.add_argument('--nor', required=True)
+    ap.add_argument('--gid-blobs', required=True)
+    ap.add_argument('--die-id', required=True)
     ap.add_argument('--nand', required=True)
     ap.add_argument('--out', required=True, type=Path)
     ap.add_argument('--seconds', type=int, default=180)
@@ -27,7 +29,7 @@ def main():
     serial, sock = a.out / 'serial.log', a.out / 'qmp'
     if len(str(sock.resolve())) > 100:
         ap.error('--out path is too long for a Unix socket')
-    machine = f'ipad1,iboot={a.iboot},nor={a.nor},nand={a.nand},nand-overlay={a.out}/overlay'
+    machine = f'ipad1,iboot={a.iboot},nor={a.nor},die-id={a.die_id},gid-blobs={a.gid_blobs},nand={a.nand},nand-overlay={a.out}/overlay'
     p = subprocess.Popen([a.qemu, '-machine', machine, '-display', 'none', '-audio', 'driver=none', '-monitor', 'none',
                           '-serial', f'file:{serial}', '-qmp', f'unix:{sock},server=on,wait=off'],
                          stdout=subprocess.DEVNULL, stderr=open(a.out / 'qemu.log', 'w'))
@@ -57,7 +59,7 @@ def main():
                     if a.unlock:
                         itqmp.button(q, 'home')
                         time.sleep(2)
-                        itqmp.swipe(q, 66, 287, 66, 700, steps=40, dt=0.03)
+                        itqmp.swipe(q, 959, 477, 959, 47, steps=40, dt=0.03)
                         time.sleep(6)
                         q.cmd('screendump', filename=str((a.out / 'unlocked.ppm').resolve()))
                     break

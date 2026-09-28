@@ -552,16 +552,15 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
 def run_pass(a):
     rg = _load_regress()
     rg.itqmp.W, rg.itqmp.H = 1024, 768
-    nand = os.path.realpath(a.nand or os.path.join(FILES, "userland", "golden-appsync"))
     out = a.out or os.path.join(FILES, "app-compat")
     os.makedirs(out, exist_ok=True)
-    cfg = argparse.Namespace(out=out, kboot=os.path.join(FILES, "7B500", "k48-kboot.bin"),
-                             nand=nand, qemu=os.path.join(ROOT, "build", "qemu-system-arm"),
+    cfg = argparse.Namespace(out=out, device=a.device, kboot=None,
+                             nand=a.nand, qemu=os.path.join(ROOT, "build", "qemu-system-arm"),
                              usbmuxd=os.path.expanduser("~/Developer/usbmuxd-qemu-ipad1-net/src/usbmuxd"),
                              boot_timeout=a.boot_timeout, files=FILES, syslog_only=a.syslog_only,
-                             device=a.device, product_version=None)
-    rg.device_args(cfg)          # --device: its nand, kboot, die-id, NOR and iOS version
-    nand = cfg.nand
+                             product_version=None)
+    rg.device_args(cfg)          # --nand defaults to the device's; its iOS version
+    nand = cfg.nand = os.path.realpath(cfg.nand)
     max_os = parse_version(cfg.product_version)[:2]
     import json
     resdir = os.path.join(out, "results")
@@ -656,8 +655,9 @@ def main():
     ap.add_argument("--md")
     ap.add_argument("--only", help="run: substring filter on file/bundle/name")
     ap.add_argument("--limit", type=int, help="run: cap number of apps")
-    ap.add_argument("--nand", help="run: NAND store (default golden-appsync)")
-    ap.add_argument("--device", help="run: an ipad1_device.py device dir instead of --nand")
+    ap.add_argument("--device", default=os.path.join(FILES, "repro/default-iboot"),
+                    help="run: an ipad1_device.py device dir (4.x: appsync on)")
+    ap.add_argument("--nand", help="run: override device NAND store")
     ap.add_argument("--out", help="run: output dir")
     ap.add_argument("--boot-timeout", type=int, default=240)
     ap.add_argument("--jobs", type=int, default=1, help="run: apps in parallel (each its own overlay + ports)")

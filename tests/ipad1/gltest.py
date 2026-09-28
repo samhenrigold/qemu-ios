@@ -66,12 +66,9 @@ def main():
     out = a.out or tempfile.mkdtemp(prefix="gltest.", dir=os.path.expanduser("~/Developer/qemu-ios-files/ipad1/repro"))
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out + "/frames")
-    machine = "ipad1,kboot=%s/kboot.bin,nand=%s/nand,nand-overlay=%s/overlay,die-id=%s" % (
-        dev, dev, out, lock["identity"]["die_id"])
-    if os.path.exists(dev + "/nor.bin"):
-        shutil.copy(dev + "/nor.bin", out + "/nor.bin")
-        os.chmod(out + "/nor.bin", 0o644)
-        machine += ",nor-rw=%s/nor.bin" % out
+    import ipad1_boot
+    machine = "ipad1,%s,nand=%s/nand,nand-overlay=%s/overlay" % (
+        ipad1_boot.boot_options(a, out), dev, out)
     sock, serial = "/tmp/ipad1-gltest-%d.qmp" % os.getpid(), out + "/serial.log"
     itqmp.W, itqmp.H = 1024, 768
     q = None

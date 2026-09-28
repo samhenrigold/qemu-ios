@@ -176,6 +176,13 @@ def synth_identity(seed, storage="16g"):
              "die-id": ["0x%08x" % int.from_bytes(h[25:27] + h[0:2], "big"), "0x%08x" % int.from_bytes(h[2:6], "big")],
              "wifi-mac": wifi.hex(":"), "bt-mac": bt.hex(":"),
              "model-number": MODELS[storage], "region-info": MODEL["region-info"], "seed": seed}
+    # SecureROM constructs ECID from CHIPID words 2/3, and CPRV from bits
+    # 10..15 of word 3. Keep revision 0x11 and make the advertised identity
+    # agree with the ROM rather than choosing unrelated fuse words.
+    ecid = int(ident["unique-chip-id"], 16)
+    word2 = ((ecid >> 21) & 0x1fffff) | (((ecid >> 16) & 31) << 21) | (((ecid >> 2) & 63) << 26)
+    word3 = (int(ident["die-id"][1], 16) & 0xffff0000) | 0x2400 | (((ecid >> 8) & 255) << 2) | (ecid & 3)
+    ident["die-id"] = [f"0x{word2:08x}", f"0x{word3:08x}"]
     ident["udid"] = udid(ident)
     return ident
 
