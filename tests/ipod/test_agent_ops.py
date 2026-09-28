@@ -51,7 +51,14 @@ int main(void) {
     request("8 exec yes x\n","",0);assert(result_status==-EFBIG && !ag_child && ag_output==-1);
     request("9 exec sleep 60\n","",0);assert(result_status==-ETIMEDOUT && !ag_child && ag_output==-1);
     request("10 ping\n","",0);assert(!result_status && result_len==12);
-    puts("PASS: binary commands/files, stderr/status, permissions, overflow, timeout and recovery");
+    static const char argv[]="/bin/echo\0one two\0$HOME;x";
+    request("11 spawn\n",argv,sizeof(argv));
+    assert(!result_status && result_len==16 && !memcmp(result,"one two $HOME;x\n",16));
+    request("12 spawn\n","echo",5);assert(result_status==-EINVAL);
+    request("13 spawn\n","/bin/echo",9);assert(result_status==-EINVAL);
+    request("14 spawn\n","/nonexistent",13);assert(result_status==-ENOENT);
+    request("15 sync\n","",0);assert(!result_status && !result_len);
+    puts("PASS: binary commands/files, stderr/status, permissions, overflow, timeout, recovery, shell-free spawn and sync");
 }
 '''
 with tempfile.TemporaryDirectory() as d:
