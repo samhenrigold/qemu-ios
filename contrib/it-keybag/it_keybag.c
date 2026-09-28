@@ -28,6 +28,7 @@ extern int reboot(int);
 extern int unmount(const char *, int);
 
 #define RB_HALT 0x08
+#define RB_QUICK 0x400          /* skip proc_shutdown; caches are still synced */
 #define DATA_DEV "/dev/disk0s2"
 #define DATA_MNT "/mnt2"
 #define KEYBAG DATA_MNT "/keybags/systembag.kb"
@@ -39,7 +40,12 @@ static void halt(const char *result)
     fprintf(con, "it_keybag: %s; halting\n", result);
     fflush(con);
     sync();
-    reboot(RB_HALT);
+    /* RB_QUICK: a plain RB_HALT first SIGTERMs every process; the ramdisk's
+     * launchd then saw its job die and raced us with its own
+     * reboot(RB_AUTOBOOT), and the two shutdowns ended in an IOP panic
+     * ("ARM7M: timed out waiting for workloop") instead of a halt. The data
+     * volume is already unmounted, so nothing needs a graceful exit. */
+    reboot(RB_HALT | RB_QUICK);
 }
 
 int main(void)
