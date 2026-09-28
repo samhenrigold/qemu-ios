@@ -381,11 +381,41 @@ static const ITGidBlob it_gid_blobs[] = {
       } },
 };
 
+/*
+ * More blobs from the gid-blobs=FILE machine option: 64-byte records, KBAG
+ * ciphertext then IV || key, written by imgtools/ipod2g_device.py from the
+ * IPSW's own img3 KBAGs and the build's key page. That is how a firmware with
+ * no entry above boots without a table edit; an unknown KBAG stays fatal.
+ */
+static ITGidBlob *it_gid_extra;
+static size_t it_gid_extra_count;
+
+bool ipod_touch_aes_set_gid_blobs(const uint8_t *data, size_t size)
+{
+    if (!size || size % (2 * IT_AES_GID_BLOB_SIZE)) {
+        return false;
+    }
+    g_free(it_gid_extra);
+    it_gid_extra_count = size / (2 * IT_AES_GID_BLOB_SIZE);
+    it_gid_extra = g_malloc(it_gid_extra_count * sizeof(ITGidBlob));
+    for (size_t i = 0; i < it_gid_extra_count; i++) {
+        it_gid_extra[i].name = "gid-blobs";
+        memcpy(it_gid_extra[i].kbag, data + i * 2 * IT_AES_GID_BLOB_SIZE, IT_AES_GID_BLOB_SIZE);
+        memcpy(it_gid_extra[i].plain, data + (i * 2 + 1) * IT_AES_GID_BLOB_SIZE, IT_AES_GID_BLOB_SIZE);
+    }
+    return true;
+}
+
 static const ITGidBlob *it_gid_lookup(const uint8_t *kbag)
 {
     for (size_t i = 0; i < ARRAY_SIZE(it_gid_blobs); i++) {
         if (memcmp(it_gid_blobs[i].kbag, kbag, IT_AES_GID_BLOB_SIZE) == 0) {
             return &it_gid_blobs[i];
+        }
+    }
+    for (size_t i = 0; i < it_gid_extra_count; i++) {
+        if (memcmp(it_gid_extra[i].kbag, kbag, IT_AES_GID_BLOB_SIZE) == 0) {
+            return &it_gid_extra[i];
         }
     }
     return NULL;
@@ -608,8 +638,8 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
                                  "(%u bytes at 0x%08x): %s", aesop->insize,
                                  aesop->inaddr, hex);
                     error_report("This firmware image is not in the built-in GID "
-                                 "blob table; add its KBAG ciphertext and IV||key "
-                                 "to it_gid_blobs[] in hw/arm/ipod_touch_aes.c.");
+                                 "blob table or the gid-blobs file; a device made "
+                                 "by imgtools/device.py ships gid-blobs.bin.");
                     exit(1);
                 }
 
