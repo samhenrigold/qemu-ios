@@ -21,7 +21,7 @@ tests/ipod/regress.py --qemu build/qemu-system-arm --device OUT --checks boot
 |---|---|---|---|
 | 3.1.3 7E18 | complete | SpringBoard up, GL CA through the shim, "Connect to iTunes" (lit, see below) | activation |
 | 4.2.1 8C148 | complete (NOR, NAND, GLES check, AppSync, gid-blobs) | iBoot-931.71.16 runs and reads the NOR; `[NAND] findNandInfo: No NAND Detected`, recovery mode | 4.x NAND identification |
-| 2.1.1 5F138 | complete (no shared cache: no AppSync, no GLES shim) | nothing on serial (bootrom → LLB → iBoot stops) | LLB rejects the IPSW iBoot |
+| 2.1.1 5F138 | complete (no AppSync, GLES shim or modern guest helpers) | SecureROM → LLB → iBoot → kernel → stock SpringBoard, Connect to iTunes | activation; optional helpers need a 2.x-compatible build |
 
 ### P1, 7E18: activation
 
@@ -65,14 +65,22 @@ Activation will block after that, as on 7E18.
 
 2.1.1 needed pipeline fixes, all derived: no BuildManifest (component paths from Restore.plist and the board
 name, `ipad1_fw.components`), the final partial AES block of 2.x img3 left in plaintext (detected from the
-kernelcache's Adler-32 and applied to every component), NAND epoch 1, SHSH not wrapped, no direct iBoot
+kernelcache's Adler-32 and applied to every component), NAND epoch 1, only iBoot SHSH wrapped, no direct iBoot
 (2.x boots bootrom → NOR LLB), no shared cache (AppSync off in the manifest: 2.x's libmis patch is a fixed
-offset, `patch_libmis.py`, so it is not used), firmware's own libncurses kept. With the synthesized NOR, the
-serial port stays silent. With the old 2.1.1 NOR dump in its place (diagnostic only), iBoot-385.22 and xnu-1228.7.27
-run and the boot stalls at the logo (lit=9852). The two NORs' LLBs are identical, so the difference is in what LLB
-loads. build_nor.py already notes that the dump's iBoot differs from the IPSW's only in its RSA signature
-(personalised). Next: compare the dump's iBoot/SysCfg/nvram with the synthesized ones one region at a time.
-Estimate: a day for the NOR, unknown for the logo stall.
+offset, `patch_libmis.py`, so it is not used), firmware's own libncurses kept. The generated NOR must wrap **only iBoot's SHSH** under the emulated
+UID. LLB unwraps that signature, while 2.x iBoot verifies its other NOR images
+raw. The previous all-or-nothing `--no-wrap-shsh` setting was wrong.
+`--wrap-shsh-types ibot` now expresses this mixed layout, and the board builder
+selects it for 2.x. The lock records `wrap_shsh_types`; the older `wrap_shsh`
+boolean denotes the all-images convention.
+
+Measured: the old generated NOR differs from the working dump's image area
+only at iBoot's 128-byte SHSH. Wrapping that SHSH reproduces the dump's image
+area exactly. With signature forging disabled, gdb reaches the stock iBoot
+entry through SecureROM and LLB; serial then reaches xnu-1228.7.27 and userland.
+The remaining screen stall at lit=9852 is independent of NOR validation.
+`tests/ipod/test_nor_wrapping.py` checks mixed/all/no wrapping and preservation
+of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 
 ## Inventory: what the shipping image (nand-current.new) depends on, and where each comes from now
 
@@ -97,14 +105,17 @@ Estimate: a day for the NOR, unknown for the logo stall.
 | shell + ssh | Cydia bootstrap files copied as uid 99, stock modes clobbered by `chmod 755`, sshd by overwriting ReportCrash.SafetyNet, host keys shared by every copy | files listed in imgtools/ipod2g-shell.txt taken from the three pinned tarballs, root-owned, tar modes, `/Library/LaunchDaemons/com.openssh.sshd.plist`, host keys generated per device |
 | byte patches | none left on the default path: installd/SpringBoard are stock | none; see "emulator-side per-version code" |
 
-### Emulator-side per-version code (left as is, all fail closed)
+### Remaining emulator compatibility behavior
 
-- `ipod_touch_inject_boot_args` (hw/arm/ipod_touch_2g.c:1511) checks 24 bytes of 7E18 iBoot and skips
+- `ipod_touch_inject_boot_args` (hw/arm/ipod_touch_2g.c:1511) locates a unique 24-byte handoff pattern, decodes its empty-string literal, and skips
   otherwise ("unknown iBoot; early argument injection skipped", seen on 8C148); the late boot-args write
   finds `boot_args` by signature on any build.
-- IT_INJECT_DT / IT_INJECT_LOGO (7E18 VAs, :988, :1057) and IT_AMFI_ALLOW_TASKPORT (firmware profile, 7E18 only)
-  are opt-in env knobs, off on the default path.
-- 5F138 `iboot_boot_args_pa` (fmss) applies only without direct iBoot.
+- The obsolete fixed-address logo thunk is removed along with the DeviceTree thunk.
+- The research-only IT_AMFI_ALLOW_TASKPORT kernel patch and its address overrides
+  have been removed; guest integration uses the existing boot-args and AppSync path.
+- The legacy command-line data write (without direct iBoot) discovers its buffer
+  from iBoot's own literal references to `gBootArgs.commandLine = [%s]`; absent,
+  ambiguous and out-of-range matches cause no write. No fixed build address remains.
 - The BCM4325 model's Wi-Fi MAC is a fixed value from the original unit (hw/arm/ipod_touch_sdio.c:307, :1326),
   so it does not follow the synthetic identity's `wifiaddr`. A `wifi-mac` machine option would fix that
   (a model change; not done).
@@ -117,7 +128,8 @@ Estimate: a day for the NOR, unknown for the logo stall.
 | img3 tail convention | kernelcache Adler-32 (2.x plaintext tail, 3.x+ encrypted) |
 | GID KBAG plaintexts | the IPSW's KBAG tags + the keys page → gid-blobs.bin |
 | NAND epoch (NANDDRIVERSIGN) | Restore.plist DeviceMap SCEP |
-| SHSH wrap, direct iBoot | ProductVersion major ≥ 3 |
+| SHSH wrap | all images for 3.x+; only iBoot for 2.x (LLB unwrap) |
+| direct iBoot | ProductVersion major ≥ 3 |
 | NOR image set | stock order ∩ all_flash/manifest |
 | kernelcache path in the volume | the decrypted iBoot's `/System/Library/Caches/com.apple.kernelcaches/...` string |
 | kernelcache member | BuildManifest KernelCache / Restore.plist KernelCachesByPlatform |
@@ -158,3 +170,69 @@ nand-current.new. 538 differing rows, every one in these classes:
   the change: lock PASS, no FTL rescan, clean power-off in 14.4 s. The boot step fails on "screen lit: never"
   because without an activation hook the device sits at "Connect to iTunes" and cannot be unlocked
   (userland-boot.md: "Without an activation hook the device stops at Connect to iTunes").
+
+## Boot-chain fidelity verification (2026-09-28)
+
+The old DeviceTree injection thunk is removed. Its comment described a failure
+before `build_nor.py` wrapped NOR SHSH signatures with the emulated UID-derived
+key. No PKE or AES behavior change is needed for the generated 7E18 NOR.
+
+Verified over the gdbstub using stock `7E18-a/iBoot.bin` and `nor.bin`, with
+all inherited `IT_*` variables removed, no injection and no signature forging:
+`image_load` at the DeviceTree call returns r0=0; iBoot's output globals contain
+address 0x0bf00000 and length 0x894c (35,148 bytes). The call-site bytes remain
+`0af057fa002803da002323602b600ce0`. These addresses are diagnostic observations
+for this exact build, not emulator constants. The NOR builder's UID wrapping is
+the prerequisite; raw IPSW SHSH bytes in flash are not the restored NOR format.
+
+Validation after removal: `scripts/ccninja -C build qemu-system-arm` succeeds;
+all eight default regression checks pass across `/private/tmp/ipod-bootchain-regress-dt`
+and `...-dt-apps` (the second run supplies initially missing guest fixtures).
+GLES uses `--stage-gles-shim` for the shipping NAND's older shim.
+
+The S5L UART acknowledgement mode now applies to every boot strategy. Previously
+it was selected only for direct iBoot; SecureROM boots used Exynos acknowledgement
+semantics and 2.1.1 spun in AppleS5L8900XSerial's ISR. Before/after gdb samples
+move from that handler to the CPU idle loop. All eight 7E18 regression checks
+pass after the UART change (`/private/tmp/ipod-bootchain-regress-uart`) and after
+command-line discovery (`/private/tmp/ipod-bootchain-regress-args`). The discovered
+5F138 command-line buffer is 0x0ff2a584, matching the traced iBoot literal.
+Finder tests exercise relocation, ambiguity, truncation and address bounds.
+
+### 2.1.1 userland and MBX result
+
+The remaining logo stall was caused by injecting a modern helper into
+SpringBoard: 2.x dyld rejects `LC_DYLD_INFO_ONLY` (0x80000022). The same error
+appears repeatedly in `/var/log/it_agent.log`. Omitting the helper injection
+lets stock SpringBoard draw the activation screen. MBX initializes successfully;
+no new GPU completion workaround was necessary.
+
+The MBX register-read side effects that rewrote the USB function gate and
+BCM4325 kernel code are removed. `usb-patch-mux-gate=on` now fails explicitly;
+`off` remains accepted. The retired migration byte remains reserved, preserving
+the v1 stream layout. Native snapshot round-trip and all eight 7E18 regression
+checks pass (`/private/tmp/ipod-bootchain-regress-mbx`). A 5F138 gdb check confirms
+the formerly overwritten BCM4325 instructions match the stock kernelcache.
+
+Fresh manifest builds of 5F138 and 7E18 both succeed. 2.x omits the incompatible
+helper binaries, launch job, injection and capability markers; the preparation
+report records this limitation. Software CoreAnimation and stock MBXGLEngine
+remain enabled. 7E18 keeps its existing helper integration. Baked-component
+checks validate both branches, including ownership and launch settings.
+
+The fresh 5F138 framebuffer settles at the stock Connect to iTunes screen by
+15 seconds and is unchanged at 20, 25 and 30 seconds. Screenshot:
+`/private/tmp/ipod-bootchain-5f138/fresh-30.png`; PPM SHA256
+`2dcf07734d263e220243be8c49925c1c20aeb1cbcbce54868924f3a40d8d4278`.
+This proves UI boot, not activation or a passing home-screen regression tier.
+7E18 still uses direct iBoot; SecureROM boot for every firmware, 4.2.1 NAND
+identification, and DFU/restore are not claimed by this work.
+
+The final iBoot cleanup also removes the unused logo-injection thunk. On a
+fresh 7E18 manifest build, gdb observes both the stock logo and DeviceTree
+`image_load` calls returning 0 with `forge-sigcheck` disabled and the generated
+GID table supplied. Early argument injection now scans the loaded image for a
+unique verified handoff and decodes its literal; no code or empty-string address
+is fixed in the machine. Its tests cover relocated and ambiguous handoffs.
+
+Final acceptance: all eight default 7E18 regression checks PASS, including\nclean shutdown/reboot persistence and fsck, in\n`/private/tmp/ipod-bootchain-regress-final` (252 seconds). The working branch is\n`ipod-bootchain`; changes are intentionally not merged into `ipad1` or `main`.\nFMSS edits are confined to discovering/resetting the boot-argument data buffer;\nNAND identification, geometry and controller behavior are untouched.

@@ -8,7 +8,7 @@ After device.py has verified the IPSW, decrypted it into CACHE and written ident
 
   nor.bin   build_nor.py --identity: IMG2 + SysCfg (Mod#, Regn, SrNm, Batt) + nvram (btaddr, wifiaddr) made
             from the identity, the IPSW's all_flash images packed after it, each SHSH wrapped for the emulated
-            UID when the firmware's iBoot unwraps (ProductVersion >= 3; 2.x iBoot verifies them raw)
+            UID for 3.x+; on 2.x only iBoot is wrapped (its LLB unwraps it)
   iBoot.bin the IPSW's iBoot, decrypted (the machine's direct-iboot)
   gid-blobs.bin  KBAG || IV-key for each img3 the keys page covers (the machine's gid-blobs: the emulated AES
             engine has no GID key, so it answers a KBAG from this table)
@@ -185,9 +185,10 @@ def build(ctx):
     import build_nor
     shipped = build_nor.all_flash_order(af)
     derived["nor_images"] = [t for t in build_nor.DEFAULT_ORDER if t in shipped]
+    derived["wrap_shsh_types"] = derived["nor_images"] if major >= 3 else ["ibot"]
     step("nor.bin", [sys.executable, f"{HERE}/build_nor.py", "--identity", ctx.ident_path, "--all-flash", af,
                      "--types", ",".join(derived["nor_images"]), "--out", nor]
-         + ([] if derived["wrap_shsh"] else ["--no-wrap-shsh"]))
+         + ([] if derived["wrap_shsh"] else ["--wrap-shsh-types", "ibot"]))
     blobs, derived["gid_blobs"] = gid_blobs(z, [n for n in z.namelist() if n.startswith(prefix) and n.endswith(".img3")]
                                             + [kc_member], os.path.expanduser(m["keys"]))
     gid = os.path.join(out, "gid-blobs.bin")
@@ -212,7 +213,7 @@ def build(ctx):
     for k, v in (m.get("packages") or {}).items():
         if sha(packages[k]) != v["sha256"]:
             raise SystemExit("package %s: %s does not have the pinned sha256" % (k, packages[k]))
-    cfg = {"options": opt, "packages": packages, "owners": os.path.join(work, "owners.txt"),
+    cfg = {"options": opt, "guest_tools_supported": major >= 3, "packages": packages, "owners": os.path.join(work, "owners.txt"),
            "report": os.path.join(work, "bake.json")}
     json.dump(cfg, open(os.path.join(work, "bake-config.json"), "w"))
     script = os.path.join(work, "bake.sh")
@@ -232,7 +233,7 @@ def build(ctx):
     for p in pages:
         listing.update(("%s %s\n" % (p, sha(os.path.join(nand, p)))).encode())
     tools = {n: sha(os.path.join(ROOT, n)) for n in ("contrib/it-agent/it_agent", "contrib/it-agent/it_typein.dylib",
-                                                     "contrib/it-gles/sblaunch", "contrib/it-instprogress/sbdlicon")}
+                                                     "contrib/it-gles/sblaunch", "contrib/it-instprogress/sbdlicon")} if cfg["guest_tools_supported"] else {}
     if baked["gles"] == "shim":
         tools["contrib/it-gles/MBXGLEngine"] = sha(os.path.join(ROOT, "contrib/it-gles/MBXGLEngine"))
     if opt.get("appsync"):
@@ -310,7 +311,10 @@ def bake(mnt, config):
     opt, owners, report = cfg["options"], [], {}
     problem = gli_abi_problem(os.path.join(mnt, DYLD_CACHE)) if opt.get("gles_shim", True) else "options.gles_shim off"
     report["gles"] = "shim" if problem is None else "stock engine, software CA: " + problem
-    env = dict(os.environ, MNT=mnt, IT_GLES_SHIM="1" if problem is None else "0")
+    supported = cfg["guest_tools_supported"]
+    report["guest_tools"] = "installed" if supported else "omitted: current helpers require iOS 3+ dyld"
+    env = dict(os.environ, MNT=mnt, IT_GLES_SHIM="1" if problem is None else "0",
+               IT_GUEST_TOOLS="1" if supported else "0")
     subprocess.run(["/bin/sh", os.path.join(HERE, "bake-guest-tools.sh")], env=env, check=True)
     owners += [(o, p) for o, p in GUEST_TOOL_OWNERS if os.path.lexists(os.path.join(mnt, p))]
     if opt.get("appsync"):
