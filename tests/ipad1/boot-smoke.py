@@ -195,7 +195,7 @@ def main():
         machine += f",die-id={a.die_id}"
     if a.nor_rw:
         machine += f",nor-rw={a.nor_rw}"
-    cmd = [a.qemu, "-machine", machine, "-display", "none", "-monitor", "none",
+    cmd = [a.qemu, "-machine", machine, "-display", "none", "-audio", "driver=none", "-monitor", "none",
            "-qmp", f"unix:{qmp_path},server=on,wait=off", "-serial", f"file:{serial}",
            "-d", "unimp,guest_errors", "-D", qlog]
     if a.from_checkpoint:

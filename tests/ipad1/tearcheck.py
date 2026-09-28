@@ -194,7 +194,7 @@ def cold_boot(a):
     os.mkdir(f"{td}/overlay")          # the IOP won't create the overlay directory itself
     child = subprocess.Popen([a.qemu, "-machine",
                               f"ipad1,kboot={FILES}/7B500/k48-kboot.bin,nand={a.boot},nand-overlay={td}/overlay",
-                              "-display", "none", "-monitor", "none", "-serial", f"file:{td}/serial.log",
+                              "-display", "none", "-audio", "driver=none", "-monitor", "none", "-serial", f"file:{td}/serial.log",
                               "-qmp", f"unix:{qmp_path},server=on,wait=off"],
                              stdout=subprocess.DEVNULL, stderr=open(f"{td}/stderr", "w"),
                              start_new_session=True)
