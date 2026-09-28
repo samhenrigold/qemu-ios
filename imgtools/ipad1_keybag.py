@@ -9,6 +9,8 @@ A private copy of the ramdisk gets it_keybag (contrib/it-keybag) as /usr/local/b
 first thing its rc.boot runs; kboot boots it as md0 with the stock restore kernelcache and DeviceTree,
 whose secure-root-prefix 'md' makes the root a SecureRoot. it_keybag formats effaceable (lands in NOR),
 creates /private/var/keybags/systembag.kb (lands in STORE) and halts. STORE and NOR are written in place.
+A boot that panics or does not halt is retried (up to ATTEMPTS) from a copy of STORE and NOR taken
+before the first, with the reason and the panic line logged.
 """
 import argparse, os, shutil, subprocess, sys, tempfile
 
@@ -23,6 +25,7 @@ from ipad1_seal import boot
 DONE = "it_keybag: effaceable formatted, system keybag created"
 HELPER = "usr/local/bin/restored_external"
 ROOM = 1 << 20          # free space for the helper; the stock ramdisk is 100% full
+ATTEMPTS = 3
 
 
 def ramdisk_with_helper(src, helper, out):
@@ -54,13 +57,25 @@ def main():
     ipad1_kboot.main(a.dec, kboot, identity=a.identity, ramdisk=rd)
     nor = open(a.nor, "rb").read()
     extra = f"nand={os.path.abspath(a.store)},nor-rw={os.path.abspath(a.nor)}" + (f",die-id={a.die_id}" if a.die_id else "")
-    exited, t, text = boot(a.qemu, kboot, extra, serial, None, a.timeout)
-    for line in text.splitlines():
-        if line.startswith("it_keybag:"):
-            print(line)
-    if not exited or DONE not in text:
-        sys.exit(f"keybag boot: {'no halt' if not exited else 'halted without ' + repr(DONE)} after {t:.0f}s; "
-                 f"serial in {serial}")
+    pre = f"{td}/store.pre"
+    subprocess.run(["cp", "-cR", a.store, pre], check=True)     # APFS clone: the retry's starting point
+    for attempt in range(1, ATTEMPTS + 1):
+        log = serial if attempt == 1 else f"{serial}.{attempt}"
+        exited, t, text = boot(a.qemu, kboot, extra, log, lambda s: "panic(" in s, a.timeout)
+        for line in text.splitlines():
+            if line.startswith("it_keybag:"):
+                print(line)
+        if exited and DONE in text:
+            break
+        why = next((l[l.index("panic("):][:160] for l in text.splitlines() if "panic(" in l),
+                   "no halt" if not exited else "halted without " + repr(DONE))
+        print(f"keybag boot attempt {attempt}/{ATTEMPTS} failed after {t:.0f}s: {why}; serial in {log}", flush=True)
+        if attempt == ATTEMPTS:
+            sys.exit(f"keybag boot: {why}; serial in {log}")
+        shutil.rmtree(a.store)
+        subprocess.run(["cp", "-cR", pre, a.store], check=True)
+        with open(a.nor, "wb") as f:
+            f.write(nor)
     if open(a.nor, "rb").read() == nor:
         sys.exit(f"keybag boot: {a.nor} unchanged, effaceable was not written; serial in {serial}")
     print(f"keybag boot halted cleanly after {t:.0f}s")

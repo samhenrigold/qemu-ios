@@ -165,7 +165,13 @@ NAND store + `nor-rw` before the seal, and both outputs then travel with the dev
   into the rootfs): waits for `/dev/disk0s2` and `AppleEffaceableStorage`, selector 3 (isFormatted) then 4
   (format) then 3 again, `mount_hfs /dev/disk0s2 /mnt2` (as restored does), `MKBKeyBagCreateSystem(NULL,
   "/mnt2")` found with dlsym, checks `/mnt2/keybags/systembag.kb` (1335 bytes), unmounts and
-  `reboot(RB_HALT)`. The ramdisk has no `IOKit.framework/IOKit` top-level link, only `Versions/A/IOKit`.
+  `reboot(RB_HALT | RB_QUICK)`. The ramdisk has no `IOKit.framework/IOKit` top-level link, only `Versions/A/IOKit`.
+  RB_QUICK (2026-09-28): a plain RB_HALT SIGTERMs every process first, and once the
+  ramdisk's launchd saw its job die, started its own `reboot(RB_AUTOBOOT)` alongside the halt, and the
+  two shutdowns panicked ("ARM7M: timed out waiting for workloop to process completed command") instead
+  of halting, so the one-shot waited out its 300 s. 50 runs with RB_QUICK (20 of them concurrent) halted
+  cleanly; the race was never reproduced live, so `ipad1_keybag.py` also stops a boot at `panic(` and
+  retries it (3 attempts) from a clone of the store and NOR, logging the reason.
   Serial: `it_keybag: effaceable open 0 isFormatted 0 -> 0`, `format 0`, `MKBKeyBagCreateSystem -> 0`, then
   `it_keybag: effaceable formatted, system keybag created; halting`, about 4 s after power-on.
 - `ipad1_keybag.py` requires that line, a clean halt, and a changed `nor.bin` (the lockers: ~8 KiB of
