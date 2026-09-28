@@ -42,6 +42,7 @@ GLI_REF = os.path.join(ROOT, "docs/ipod/gli-dispatch-7E18.tsv")
 SHELL_LIST = os.path.join(HERE, "ipod2g-shell.txt")
 DYLD_CACHE = "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv6"
 SSHD_JOB = "Library/LaunchDaemons/com.openssh.sshd.plist"
+WEB_PROXY_PAC = "usr/local/share/ltm/proxy.pac"   # ipad1_rootfs.PAC_PATH
 SSHD_CONFIG = """Port 22
 Protocol 2
 HostKey /etc/ssh/ssh_host_rsa_key
@@ -306,6 +307,22 @@ def install_shell(mnt, packages, ssh, owners):
     owners.append(("0 0", SSHD_JOB))
 
 
+def install_web_proxy(mnt, owners):
+    """The iPad's proxy routing (imgtools/ipad1_rootfs.py): the PAC file, and configd's preferences with the
+    en0 Wi-Fi service pointing at it (itwebproxy on the 10.0.2.100:3128 guestfwd; private IPs DIRECT).
+    Nothing runs in the guest to set it, and proxy on/off is the host's itwebproxy mode."""
+    from ipad1_rootfs import PAC, PAC_PATH, SC_DIR, seed_plist, wifi_proxy_prefs
+    for rel in ("usr/local", "usr/local/share", "usr/local/share/ltm", "private/var/" + SC_DIR):
+        if not os.path.isdir(os.path.join(mnt, rel)):
+            os.makedirs(os.path.join(mnt, rel))
+            owners.append(("0 0", rel))
+    with open(os.path.join(mnt, PAC_PATH), "w") as f:
+        f.write(PAC)
+    prefs = "private/var/%s/preferences.plist" % SC_DIR
+    seed_plist(os.path.join(mnt, prefs), wifi_proxy_prefs)
+    owners += [("0 0", PAC_PATH), ("0 0", prefs)]
+
+
 def bake(mnt, config):
     cfg = json.load(open(config))
     opt, owners, report = cfg["options"], [], {}
@@ -327,6 +344,9 @@ def bake(mnt, config):
     if opt.get("shell", True):
         install_shell(mnt, cfg["packages"], opt.get("ssh", True), owners)
         report["shell"] = "ssh" if opt.get("ssh", True) else "shell only"
+    if opt.get("web_proxy", True):
+        install_web_proxy(mnt, owners)
+        report["web_proxy"] = "PAC /%s on the en0 Wi-Fi service" % WEB_PROXY_PAC
     if cfg.get("activation_hook"):
         from ipad1_rootfs import activation_hook, LOCKDOWND
         activation_hook(cfg["activation_hook"], os.path.join(mnt, LOCKDOWND))
