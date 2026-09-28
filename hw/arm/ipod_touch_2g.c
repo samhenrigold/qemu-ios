@@ -749,6 +749,23 @@ static void ipod_touch_set_gid_blobs(Object *obj, const char *value, Error **err
     g_strlcpy(nms->gid_blobs, value, sizeof(nms->gid_blobs));
 }
 
+static char *ipod_touch_get_aes_uid(Object *obj, Error **errp)
+{
+    return g_strdup(IPOD_TOUCH_MACHINE(obj)->aes_uid_engine ? "engine" : "legacy");
+}
+
+static void ipod_touch_set_aes_uid(Object *obj, const char *value, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+
+    if (strcmp(value, "engine") && strcmp(value, "legacy")) {
+        error_setg(errp, "aes-uid must be 'engine' or 'legacy'");
+        return;
+    }
+    nms->aes_uid_engine = !strcmp(value, "engine");
+    ipod_touch_aes_set_uid_engine(nms->aes_uid_engine);
+}
+
 static char *ipod_touch_get_direct_llb(Object *obj, Error **errp)
 {
     return g_strdup(IPOD_TOUCH_MACHINE(obj)->direct_llb);
@@ -3470,6 +3487,11 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "amc-mode", "AMC registers, handshake-only bring-up, or compressed audio decode");
     object_class_property_add_str(klass, "direct-iboot", ipod_touch_get_direct_iboot, ipod_touch_set_direct_iboot);
     object_class_property_add_str(klass, "direct-llb", ipod_touch_get_direct_llb, ipod_touch_set_direct_llb);
+    object_class_property_add_str(klass, "aes-uid", ipod_touch_get_aes_uid, ipod_touch_set_aes_uid);
+    object_class_property_set_description(klass, "aes-uid",
+        "UID (and non-KBAG GID) AES operations: 'legacy' (default; keeps keys existing images "
+        "were made with) or 'engine' (processed like the hardware, with a stand-in key; 4.x "
+        "data protection needs it)");
     object_class_property_add_str(klass, "gid-blobs", ipod_touch_get_gid_blobs, ipod_touch_set_gid_blobs);
     object_class_property_set_description(klass, "gid-blobs",
         "File of 64-byte KBAG || IV-key records extending the AES engine's GID table");
