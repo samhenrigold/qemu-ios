@@ -1629,7 +1629,9 @@ static bool ipod_touch_get_usb_patch_mux_gate(Object *obj, Error **errp)
 
 static void ipod_touch_set_usb_patch_mux_gate(Object *obj, bool value, Error **errp)
 {
-    IPOD_TOUCH_MACHINE(obj)->usb_patch_mux_gate = value;
+    if (value) {
+        error_setg(errp, "usb-patch-mux-gate is retired: guest kernel patching is unsupported");
+    }
 }
 
 static bool ipod_touch_get_mbx_irq(Object *obj, Error **errp)
@@ -2024,8 +2026,7 @@ static void ipod_touch_instance_init(Object *obj)
     object_property_add_bool(obj, "usb-patch-mux-gate", ipod_touch_get_usb_patch_mux_gate,
                              ipod_touch_set_usb_patch_mux_gate);
     object_property_set_description(obj, "usb-patch-mux-gate",
-        "Patch the kernel so the USB stack goes on bus even though the PTP interface "
-        "function never registers a driver. Firmware-build-specific (2.1.1 / 5F138)");
+        "Retired guest-kernel patch option; only off is accepted");
 
     /* Accelerometer (LIS302DL) host controls; see the getters/setters above. */
     object_property_add(obj, "accel-rate-hz", "int", ipod_touch_get_accel_rate, ipod_touch_set_accel_rate, NULL, NULL);
@@ -3330,7 +3331,6 @@ static void ipod_touch_machine_init(MachineState *machine)
     nms->pmu_state->charging_mode = nms->battery_charging;
     qdev_connect_gpio_out(DEVICE(pmu), 0,
                          qdev_get_gpio_in(DEVICE(sysic_state), PMU_WAKE_IRQ));
-    ipod_touch_mbx_set_patch_usb_gate(nms->usb_patch_mux_gate);
 
     // init the accelerometer. Keep the handle so the machine's QMP properties
     // (accel-orientation / accel-x/y/z / accel-shake, added in instance_init)

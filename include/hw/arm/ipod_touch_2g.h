@@ -187,9 +187,7 @@ typedef struct {
     uint32_t bt_latency_us;
     bool bt_latency_us_explicit;
 	AddressSpace *nsas;
-	/* IT_BOOT_ARGS: repeated early writes of the kernel command line.
-	 * IT_AMFI_ALLOW_TASKPORT: one-shot patch of the AMFI task-port MAC hooks,
-	 * ridden on the same timer. */
+	/* IT_BOOT_ARGS: repeated early writes of the kernel command line. */
 	QEMUTimer *boot_args_timer;
 	unsigned boot_args_writes;
     uint32_t boot_args_delay_ms, boot_args_repeat, boot_args_interval_ms;
@@ -244,7 +242,7 @@ typedef struct {
 	char usb_tcp_addr[256];   /* host:port of the host bridge, empty = disabled */
 	bool usb_attached;        /* assert PMU USB cable presence */
 	bool mbx_irq;             /* wire the MBX completion interrupt */
-	bool usb_patch_mux_gate;  /* patch past the unregistered PTP interface function */
+	bool usb_patch_mux_gate;  /* retired option, always false */
 	bool wifi;                /* present a BCM4325 on the SDIO bus */
 	IT2G_CPREG_VAR_DEF(REG0);
 	IT2G_CPREG_VAR_DEF(REG1);
