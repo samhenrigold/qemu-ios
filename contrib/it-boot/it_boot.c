@@ -635,6 +635,11 @@ static int flip(long serial)
 
 /* --- pulling --------------------------------------------------------------------- */
 
+/*
+ * The host copies into guest memory by virtual address and fails on a page
+ * the process has not touched yet (bss is mapped on first write), so every
+ * window is written before it is handed over.
+ */
 static int pull_offer(char *text, size_t cap)
 {
     int64_t total = qc(QC_PKG_OFFER, NULL, 0, 0, 0);
@@ -646,6 +651,7 @@ static int pull_offer(char *text, size_t cap)
     }
     for (int64_t off = 0; off < total;) {
         uint32_t want = total - off > WINDOW ? WINDOW : (uint32_t)(total - off);
+        memset(text + off, 0, want);
         int64_t n = qc(QC_PKG_OFFER, text + off, (uint32_t)off, want, 0);
         if (n <= 0 || n > want) {
             return -EIO;
@@ -675,6 +681,7 @@ static int fetch(const struct entry *e, const char *dst, time_t deadline)
     }
     for (unsigned long off = 0; !rc && off < e->size;) {
         uint32_t want = e->size - off > WINDOW ? WINDOW : (uint32_t)(e->size - off);
+        memset(buf, 0, want);
         int64_t n = qc(QC_PKG_READ, buf, (uint32_t)off, want, e->idx);
         if (n <= 0 || n > want) {
             rc = -EIO;
@@ -947,6 +954,10 @@ int it_boot_run(void)
                     result = fresh ? R_INSTALLED : R_SWITCHED;
                 }
             }
+        }
+        if (in_list(o.good, o.ngood, cur) && cur >= 0) {   /* judged before we switched to it */
+            st.good = cur;
+            st.tries = 0;
         }
         /* a package the host never judged gets MAX_TRIES boots */
         if (!verdict && cur >= 0 && cur != st.seed && cur != st.good) {
