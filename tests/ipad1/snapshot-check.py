@@ -4,8 +4,11 @@
     tests/ipad1/snapshot-check.py [--out DIR] [--nand STORE] [--kboot K] [--qemu Q]
 
 Boot A (golden overlay, usbmuxd bridge, USB keyboard, Wi-Fi): unlock, Safari fetches page 1 from a host
-HTTP server. Wi-Fi's slirp is on 10.0.3.0/24 so the fetch (to 10.0.3.2) can only cross Wi-Fi: the
-bridge's USB Ethernet is up too, on usbmuxd's own 10.0.2.0/24. Stop, migrate to DIR/state, copy the overlay beside it (the app's pairing:
+HTTP server. Wi-Fi's slirp carries the app's web proxy forward, 10.0.2.100:3128 (here to the test's
+server, which also answers the page's own 10.0.2.50:80). The bridge's USB Ethernet is up too, on
+usbmuxd's own 10.0.2.0/24, so Wi-Fi is on 10.0.2.0/25: the longer prefix routes .50 and .100 over Wi-Fi
+whichever service is primary, and only Wi-Fi's slirp answers them, so a hit crossed Wi-Fi whether the
+image's PAC sends it DIRECT or through the proxy. Stop, migrate to DIR/state, copy the overlay beside it (the app's pairing:
 RAM in the stream, flash in the overlay, captured with the vCPU stopped), quit.
 
 Boot B: a new usbmuxd, the copied overlay, -incoming DIR/state, cont. Then:
@@ -29,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("ipad1_regress", os.path.join(HERE, "regress.py"))
@@ -98,7 +102,7 @@ def main():
 
     class H(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            hits.append(self.path)
+            hits.append(urllib.parse.urlsplit(self.path).path)   # absolute URL when it came via the proxy
             body = ("<html><body style='font-size:48px'><h1>%s</h1></body></html>" % self.path).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
@@ -122,7 +126,8 @@ def main():
         return path in hits
 
     results = {}
-    wifi = ["-netdev", "user,id=wifi0,net=10.0.3.0/24"]
+    fwd = "-cmd:nc 127.0.0.1 %d" % port
+    wifi = ["-netdev", "user,id=wifi0,net=10.0.2.0/25,dhcpstart=10.0.2.80,guestfwd=tcp:10.0.2.100:3128%s,guestfwd=tcp:10.0.2.50:80%s" % (fwd, fwd)]
     a = rg.Boot(cfg, "A", keyboard=True, extra=wifi)
     try:
         a.start()
@@ -138,7 +143,7 @@ def main():
         time.sleep(8)
         a.tap(rg.SAFARI_ADDRESS)
         time.sleep(5)
-        a.type("10.0.3.2:%d%s" % (port, page1))
+        a.type("10.0.2.50" + page1)
         a.qmp.cmd("send-key", keys=[{"type": "qcode", "data": "ret"}])
         if not fetched(page1):
             sys.exit("boot A: Safari never fetched page 1")
@@ -160,7 +165,7 @@ def main():
 
         b.tap(rg.SAFARI_ADDRESS)
         time.sleep(4)
-        b.type("10.0.3.2:%d%s" % (port, page2))
+        b.type("10.0.2.50" + page2)
         b.qmp.cmd("send-key", keys=[{"type": "qcode", "data": "ret"}])
         results["touch"] = (fetched(page2), "tap + USB keyboard + Wi-Fi fetch of page 2 after resume")
         time.sleep(4)
