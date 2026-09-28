@@ -20,7 +20,7 @@ typedef uint64_t hwaddr;
 #define BOOT_ARGS_CMDLINE_LEN 256
 #define BOOT_ARGS_STAGING_BASE 0x220fff00
 #define MEMTXATTRS_UNSPECIFIED 0
-typedef struct {void*nsas;void*cpu;void*boot_args_timer;unsigned boot_args_writes;uint32_t boot_args_delay_ms;bool amfi_patched,boot_args_scan_failed,boot_args_explicit;char boot_args[256];} IPodTouchMachineState;
+typedef struct {void*nsas;void*cpu;void*boot_args_timer;unsigned boot_args_writes;uint32_t boot_args_delay_ms;bool boot_args_scan_failed,boot_args_explicit;char boot_args[256];} IPodTouchMachineState;
 typedef IPodTouchMachineState Object;
 typedef int Error;
 #define IPOD_TOUCH_MACHINE(o) (o)
