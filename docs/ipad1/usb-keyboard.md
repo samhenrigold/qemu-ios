@@ -164,10 +164,14 @@ CFPreferences; 4.2.1's "Platform is configured for camera import" gate is an IOR
 would drop CCK import too). Rollback: `serial 0` puts the seed package's shim back.
 
 Upgrading an existing device: its mounter has already loaded the old shim when it_boot replaces the
-hook, so the hook resprings (`respring` in mkpkg.py), which drops the alert SpringBoard already holds;
-from the next boot the mounter starts with the new shim. tests/ipad1/regress.py's boot check asserts the
-result instead of tapping the alert away: unlock with the keyboard, a lit home screen 10 s later, the
-shim's console line (or the package installed this boot), and the panel going dark on auto-lock.
+hook, so a 4.2.1 device shows the alert once more on that boot (a respring does not help: the notice
+is already queued to SpringBoard and survives its restart; tested); from the next boot the mounter
+starts with the new shim. A device prepared with serial 3 or later never shows it. tests/ipad1/regress.py's
+boot check asserts the result instead of tapping the alert away: with `--guest-package` the loader must
+take the offered serial (and a package installed this boot means one more boot on the same overlay),
+then unlock with the keyboard, a lit home screen 10 s later, the shim's console line, and Hold turning
+the panel off and keeping it off (with the alert up, Hold blanked the panel and SpringBoard lit it again
+at once: `_lcdEnable: enable: 0` then `enable: 1`).
 
 Harness notes:
 - `usb-kbd` activates itself as the head keyboard handler, so while it is attached, host keys go
