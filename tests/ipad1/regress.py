@@ -9,7 +9,8 @@ usbmuxd-qemu's ipad1 build as the USB host where the check talks USB (otherwise 
 host). Checks run in parallel, each on its own QEMU.
 
   boot     lock screen on the panel: lit and a picture (many colours), not a solid fill
-  usbmux   ideviceinfo over the bridge answers ProductVersion 3.2.2, DeviceClass iPad
+  usbmux   ideviceinfo over the bridge answers ProductVersion (the store's device.lock.json, else
+           3.2.2), DeviceClass iPad
   afc      push and pull files at sizes that are not multiples of 512, SHA-256 identical
   persist  a file pushed over AFC survives a reboot on the same overlay (see check_persist)
   wifi     the BCM4329 comes up, joins the model's open "qemu-ios" BSS and takes a DHCP lease (serial)
@@ -25,6 +26,7 @@ Exits non-zero if any selected check FAILs.
 import argparse
 import concurrent.futures
 import http.server
+import json
 import importlib.util
 import os
 import random
@@ -238,7 +240,7 @@ def check_usbmux(cfg, r):
             return
         v = b.run(["ideviceinfo", "-k", "ProductVersion"]).stdout.strip()
         c = b.run(["ideviceinfo", "-k", "DeviceClass"]).stdout.strip()
-        r.set(v == "3.2.2" and c == "iPad", "ProductVersion %r, DeviceClass %r" % (v, c))
+        r.set(v == cfg.product_version and c == "iPad", "ProductVersion %r, DeviceClass %r" % (v, c))
     finally:
         b.stop()
 
@@ -424,7 +426,11 @@ def main():
     ap.add_argument("--usbmuxd", default=USBMUXD)
     ap.add_argument("--boot-timeout", type=int, default=600, help="hard cap per QEMU, seconds")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--product-version", help="usbmux's expected ProductVersion (default: NAND/../device.lock.json, else 3.2.2)")
     a = ap.parse_args()
+    lock = os.path.join(os.path.dirname(os.path.abspath(a.nand)), "device.lock.json")
+    a.product_version = a.product_version or (
+        json.load(open(lock)).get("product_version", "3.2.2") if os.path.exists(lock) else "3.2.2")
     import ffmpeg_guard                     # imgtools; stock FFmpeg breaks iPod H.264
     why = ffmpeg_guard.check(a.qemu)
     if why:

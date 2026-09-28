@@ -105,6 +105,25 @@ opt-in `"activation": {"hook": SCRIPT}` (or `create --activation-hook SCRIPT`) r
 creates one and boots it twice on one overlay (unlock, screenshot, clean `system_powerdown`, no FTL rescan).
 Pass the device's die-id (`device.lock.json` identity.die_id) as the `die-id` machine property.
 
+A second firmware, `manifests/ipad1-7B367.json` (iOS 3.2, xnu-1504.2.27, iBoot-817.28), goes through the same
+pipeline and reaches the home screen twice (the activation hook accepted its lockdownd). What differs per
+build, and where it now comes from:
+
+| per-build value | derived from |
+|---|---|
+| component file names (iBSS … KernelCache, rootfs `018-xxxx.dmg`, ramdisks) | BuildManifest.plist (Erase identity; Update identity's RestoreRamDisk) in `ipad1_fw.py`; the keys page only supplies IV/Key per file name |
+| `chosen/firmware-version` | the `iBoot-N.N` tag in the IPSW's decrypted iBoot (`ipad1_kboot.iboot_version`) |
+| NANDDRIVERSIGN kernel version | the kernelcache's `Darwin Kernel Version` string (already) |
+| MISValidateSignature (AppSync) | symbol lookup in the shared cache (already) |
+| GLI dispatch ABI | `ipad1_rootfs.gli_abi_problem`: the shared cache's `__GLIFunctionDispatchRec` @encode must list `gli-dispatch-7B500.tsv`'s fields in order, else the build refuses GL CA (7B367: identical, 826 slots; its GLEngine differs from 7B500's only in LC_UUID and the signature) |
+| expected ProductVersion (regress `usbmux`) | Restore.plist, recorded as `device.lock.json` product_version |
+| system partition size | not in the firmware: restored_external takes `SystemPartitionSize` from the restore host, so it stays the manifest's `system_mib` |
+
+Checked equal on both builds rather than derived: DeviceTree layout (only phandles and function pointers
+differ), rootfs size (127995 × 8 KiB), NAND/FTL (sealed, no rescan), IOP firmware protocol and the
+unimplemented-register profile of a boot, unlock/power-off input. Still 7B500-only: `hw/arm/s5l8930_cdma_kbags.inc`
+(GID stand-in KBAG plaintexts, used only by the real-iBoot path) and the `jailbroken` base (the unit's dumps).
+
 ## What is on the volumes and why
 
 ### system.img
