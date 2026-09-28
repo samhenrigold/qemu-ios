@@ -804,20 +804,25 @@ static void ipod_touch_direct_boot_env_aliases(IPodTouchMachineState *nms)
 }
 
 /*
- * Audio hardware that the machine did not model until now (the CS42L58 codec
- * and the AMC). Both are real parts on this board, but neither was mapped
- * before, so switching them on changes what every guest sees. 2.1.1 works
- * today and must keep working, so they default to on only for the 3.1.3
- * configuration (which is the one that has the audio bugs, and which is
- * selected by direct-iboot).
- * audio-hw=on forces them on (including under 2.1.1); off removes them.
+ * Audio hardware: the CS42L58 codec on i2c0 at 0x4A, the LM48821 amp, I2S0
+ * and the AMC. Every N72AP has them, so every boot gets them unless
+ * audio-hw=off removes them (for bisecting).
+ *
+ * auto used to mean "only with direct-iboot", which kept them away from the
+ * 2.1.1 SecureROM boot. The 5F138 kernel then got NAKs on every codec access
+ * ("AppleCS42L58Audio: I2C register ... failed: device error"). When USB power
+ * made mediaserverd play the charging sound, AppleS5L8900XI2SController wrote
+ * I2S0's register 0 at 0x3CA00000. Nothing was mapped there, so the write took
+ * an external abort (fsr 0x808), and the kernel panicked with "Fatal
+ * Exception" at pc 0xc05f6eac. With the parts present, 5F138 runs the same
+ * init sequence as 3.1.3 (chip ID 0xe0 at register 01, then the power and
+ * volume registers) and neither failure happens.
  * Explicit machine options, including auto, override the legacy IT_AUDIO_HW
  * alias. Hardware topology cannot change after initialization.
  */
 static bool ipod_touch_audio_hw_enabled(IPodTouchMachineState *nms)
 {
-    return nms->audio_hw == ON_OFF_AUTO_AUTO ? nms->direct_iboot[0] != 0
-        : nms->audio_hw == ON_OFF_AUTO_ON;
+    return nms->audio_hw != ON_OFF_AUTO_OFF;
 }
 
 static void ipod_touch_get_audio_hw(Object *obj, Visitor *v, const char *name,
@@ -3511,7 +3516,7 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_add(klass, "audio-hw", "OnOffAuto", ipod_touch_get_audio_hw,
                               ipod_touch_set_audio_hw, NULL, NULL);
     object_class_property_set_description(klass, "audio-hw",
-        "CS42L58 codec and AMC hardware (auto: enabled for direct iBoot)");
+        "CS42L58 codec and AMC hardware (auto: present, as on the board)");
     MachineClass *mc = MACHINE_CLASS(klass);
     mc->desc = "iPod Touch";
     mc->init = ipod_touch_machine_init;

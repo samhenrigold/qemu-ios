@@ -308,8 +308,8 @@ export IT_BOOT_ARGS_DELAY_MS="${IT_BOOT_ARGS_DELAY_MS:-1500}"
 export IT_BOOT_ARGS_REPEAT="${IT_BOOT_ARGS_REPEAT:-200}"
 export IT_BOOT_ARGS_INTERVAL_MS="${IT_BOOT_ARGS_INTERVAL_MS:-250}"
 
-# The audio hardware (AMC, CS42L58 codec, I2S0, speaker amp) turns itself on
-# with IT_DIRECT_IBOOT, so 3.1.3 gets it and 2.1.1 does not. IT_AUDIO_HW=0
+# The audio hardware (AMC, CS42L58 codec, I2S0, speaker amp) is present on
+# every boot, as on the board. IT_AUDIO_HW=0
 # forces it off if you ever need to bisect against it.
 
 [ "$APPSYNC" = 1 ] && ensure_usbmuxd
