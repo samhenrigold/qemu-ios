@@ -465,6 +465,13 @@ class Device:
                     "flat colour, so this is iBoot/recovery, not a boot"
                     % (self.tag, time.time() - START, lit))
                 continue
+            if n >= 2 and lit < HOME_LIT_MIN:
+                self.qmp.home()
+                time.sleep(1)
+                self.qmp.swipe(30, 450, 290, 450, steps=40, dwell=0.04)
+                time.sleep(2)
+                self.qmp.shot(shot)
+                hi, lit = lit_count(shot)
             best = max(best, lit)
             if n % 3 == 0 or lit > HOME_LIT_MIN // 2:
                 log("%s: t+%.0fs max=%d lit=%d"

@@ -214,7 +214,7 @@ def build(ctx):
         if sha(packages[k]) != v["sha256"]:
             raise SystemExit("package %s: %s does not have the pinned sha256" % (k, packages[k]))
     cfg = {"options": opt, "guest_tools_supported": major >= 3, "packages": packages, "owners": os.path.join(work, "owners.txt"),
-           "report": os.path.join(work, "bake.json")}
+           "report": os.path.join(work, "bake.json"), "activation_hook": ctx.hook}
     json.dump(cfg, open(os.path.join(work, "bake-config.json"), "w"))
     script = os.path.join(work, "bake.sh")
     open(script, "w").write('exec "%s" "%s" bake "$MNT" "%s"\n' % (sys.executable, os.path.abspath(__file__),
@@ -327,6 +327,11 @@ def bake(mnt, config):
     if opt.get("shell", True):
         install_shell(mnt, cfg["packages"], opt.get("ssh", True), owners)
         report["shell"] = "ssh" if opt.get("ssh", True) else "shell only"
+    if cfg.get("activation_hook"):
+        from ipad1_rootfs import activation_hook, LOCKDOWND
+        activation_hook(cfg["activation_hook"], os.path.join(mnt, LOCKDOWND))
+        owners.append(("0 0", LOCKDOWND))
+        report["activation"] = "activation hook applied and daemon re-signed"
     with open(cfg["owners"], "w") as f:
         f.writelines("%s %s\n" % (o, p) for o, p in owners)
     json.dump(report, open(cfg["report"], "w"))
