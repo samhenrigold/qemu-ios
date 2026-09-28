@@ -2737,9 +2737,17 @@ static unsigned gles_texenv_nparams(uint32_t target, uint32_t pname)
     }
 }
 
+/* The object a glTexImage2D target names: a cube face is a level of the cube
+ * map, and texture parameters only exist on the cube map itself. */
+static GLenum gles_texture_object(uint32_t target)
+{
+    return target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X &&
+           target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z ? GL_TEXTURE_CUBE_MAP : target;
+}
+
 static unsigned gles_texparam_nparams(uint32_t target, uint32_t pname)
 {
-    if (target != GL_TEXTURE_2D) return 0;
+    if (target != GL_TEXTURE_2D && target != GL_TEXTURE_CUBE_MAP) return 0;
     switch (pname) {
     case GL_TEXTURE_MIN_FILTER: case GL_TEXTURE_MAG_FILTER:
     case GL_TEXTURE_WRAP_S: case GL_TEXTURE_WRAP_T:
@@ -3739,11 +3747,14 @@ static int64_t gles_texture_end(uint32_t target, uint32_t level,
 
 static int64_t gles_generate_mipmap(uint32_t target)
 {
-    if (target != GL_TEXTURE_2D) return gles_reject(GL_INVALID_ENUM);
+    if (target != GL_TEXTURE_2D && target != GL_TEXTURE_CUBE_MAP) {
+        return gles_reject(GL_INVALID_ENUM);
+    }
     gles_texture_begin();
     glGenerateMipmapEXT(target);
     GLenum error = glGetError();
     if (error) return gles_reject(error);
+    if (target != GL_TEXTURE_2D) return 0;
     GLESPVRTC *texture = gles_pvrtc_texture(false);
     if (texture && texture->levels[0].format) {
         GLESPVRTCLevel image = texture->levels[0];
@@ -5132,13 +5143,21 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * texture complete by definition, whatever the filter asks for, without
          * inventing mip data the guest never uploaded. Levels arrive in
          * increasing order, so raising the cap as they come is enough.
+         *
+         * A cube face is not a texture object: the cap goes on the cube map,
+         * or desktop GL raises GL_INVALID_ENUM and the cube stays incomplete
+         * (SpinningiPhoneApp's reflection map sampled as zero). Six faces
+         * share that cap, so only a face's level 0 on a fresh cube (still at
+         * GL's default of 1000) resets it; face-major mip uploads keep theirs.
          */
         {
+            GLenum object = gles_texture_object(target);
             GLint cap = 0;
 
-            glGetTexParameteriv(target, GL_TEXTURE_MAX_LEVEL, &cap);
-            if ((GLint)level > cap || level == 0) {
-                glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, (GLint)level);
+            glGetTexParameteriv(object, GL_TEXTURE_MAX_LEVEL, &cap);
+            if ((GLint)level > cap ||
+                (level == 0 && (object == GL_TEXTURE_2D || cap == 1000))) {
+                glTexParameteri(object, GL_TEXTURE_MAX_LEVEL, (GLint)level);
             }
         }
         /*
@@ -5147,7 +5166,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * pass with it when the draw multiplies by it, and nothing else in the
          * log distinguishes "sampled black" from "drew nothing".
          */
-        if (level == 0) {
+        if (level == 0 && target == GL_TEXTURE_2D) {
             GLint name = 0, minf = 0;
 
             glGetIntegerv(GL_TEXTURE_BINDING_2D, &name);
