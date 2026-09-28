@@ -22,7 +22,9 @@
  * if an IPSW does not carry it, the job logs that and leaves that key alone.
  *
  * Plain C with CoreFoundation dlopen'd, like it_ethlink; built by
- * contrib/ipad1-guest/build.sh, baked by imgtools/ipad1_rootfs.py bake.
+ * contrib/ipad1-guest/build.sh (the iPad's seed package), and for the iPod by
+ * build-ipod.sh with IT_PREFS_TIP_ONLY (the SpringBoard key only), baked by
+ * imgtools/ipod2g_device.py bake.
  */
 extern long write(int, const void *, unsigned long);
 extern long read(int, void *, unsigned long);
@@ -58,10 +60,12 @@ static const struct setting {
     const char *job;
 } SETTINGS[] = {
     { "com.apple.springboard", "SBDidShowReorderText", SPRINGBOARD, TRUE },
+#ifndef IT_PREFS_TIP_ONLY   /* the iPod (build-ipod.sh): only the tip; no Wi-Fi location there */
     { "com.apple.locationd", "AppleLocationServer", LOCATIOND, STRING,
       "http://10.0.2.100:3128/clls/wloc", LOCATIOND_JOB },
     { "com.apple.locationd", "AppleLocationServerRequiresCert", LOCATIOND, FALSE,
       0, LOCATIOND_JOB },
+#endif
 };
 
 static long len(const char *s)
