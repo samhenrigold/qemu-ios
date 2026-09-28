@@ -81,6 +81,7 @@ struct IPad1MachineState {
     char *nand_path;
     char *nand_overlay_path;
     char *nor_path;
+    char *nor_rw_path;                   /* private writable NOR copy (effaceable persists); empty = in-memory */
     char *die_id;                        /* ChipID words 2-3 of the unit, hex pair */
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
@@ -920,6 +921,12 @@ static void ipad1_init(MachineState *machine)
     dev = sysbus_create_simple(TYPE_IPOD_TOUCH_SPI, S5L8930_SPI_BASE(0),
                                ipad1_irq(s, S5L8930_IRQ_SPI(0)));
     IPOD_TOUCH_SPI(dev)->nor->nor_path = s->nor_path;
+    if (s->nor_rw_path && s->nor_rw_path[0]) {
+        /* Guest NOR writes (the effaceable region: format, lockers, keybag key)
+         * persist to this private copy across boots; base nor= is optional. */
+        ipod_touch_nor_spi_open_overlay(IPOD_TOUCH_SPI(dev)->nor, s->nor_rw_path,
+                                        &error_fatal);
+    }
     /* NOR chip select is GPIO 0x505 (function-spi_cs0), driven by the kernel. */
     qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(S5L8930_GPIO_NOR_CS),
         qdev_get_gpio_in_named(DEVICE(IPOD_TOUCH_SPI(dev)->nor), SSI_GPIO_CS, 0));
@@ -1097,6 +1104,19 @@ static void ipad1_set_nor(Object *obj, const char *value, Error **errp)
 
     g_free(s->nor_path);
     s->nor_path = g_strdup(value);
+}
+
+static char *ipad1_get_nor_rw(Object *obj, Error **errp)
+{
+    return g_strdup(IPAD1_MACHINE(obj)->nor_rw_path);
+}
+
+static void ipad1_set_nor_rw(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    g_free(s->nor_rw_path);
+    s->nor_rw_path = g_strdup(value);
 }
 
 static char *ipad1_get_usb_tcp_addr(Object *obj, Error **errp)
@@ -1333,6 +1353,7 @@ static void ipad1_instance_finalize(Object *obj)
     g_free(IPAD1_MACHINE(obj)->nand_path);
     g_free(IPAD1_MACHINE(obj)->nand_overlay_path);
     g_free(IPAD1_MACHINE(obj)->nor_path);
+    g_free(IPAD1_MACHINE(obj)->nor_rw_path);
     g_free(IPAD1_MACHINE(obj)->die_id);
 }
 
@@ -1398,6 +1419,9 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     object_class_property_add_str(klass, "nor", ipad1_get_nor, ipad1_set_nor);
     object_class_property_set_description(klass, "nor",
         "1 MiB SPI NOR image (nvram, syscfg); erased flash if unset");
+    object_class_property_add_str(klass, "nor-rw", ipad1_get_nor_rw, ipad1_set_nor_rw);
+    object_class_property_set_description(klass, "nor-rw",
+        "1 MiB private writable NOR copy; guest writes (effaceable) persist here across boots");
     object_class_property_add_str(klass, "usb-tcp-addr", ipad1_get_usb_tcp_addr,
                                   ipad1_set_usb_tcp_addr);
     object_class_property_set_description(klass, "usb-tcp-addr",

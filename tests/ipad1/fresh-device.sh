@@ -41,9 +41,17 @@ EOF
 )
 echo "PASS lock: inputs name no hw2/ dump and only $DEV/identity.json"
 
+# The sealed nor.bin is read-only; boot both times on one private writable copy so
+# the effaceable region (and the system keybag it protects) persists across boots.
+NOR_FLAGS=()
+if [ -f "$DEV/nor.bin" ]; then
+    cp "$DEV/nor.bin" "$OUT/nor.bin"; chmod u+w "$OUT/nor.bin"
+    NOR_FLAGS=(--nor-rw "$OUT/nor.bin")
+fi
+
 for n in 1 2; do
     flags=(--nand-overlay "$DEV/nand" --overlay "$OUT/overlay" --kboot "$DEV/kboot.bin"
-           --die-id "$DIE_ID" --unlock --shot "$OUT/boot$n.png" --powerdown --no-rescan --seconds 240)
+           --die-id "$DIE_ID" ${NOR_FLAGS[@]+"${NOR_FLAGS[@]}"} --unlock --shot "$OUT/boot$n.png" --powerdown --no-rescan --seconds 240)
     if timeout 300 python3 "$ROOT/tests/ipad1/boot-smoke.py" "${flags[@]}" > "$OUT/boot$n.txt" 2>&1; then
         echo "PASS boot $n: lit, unlocked, clean power-off; look at $OUT/boot$n.png"
     else
