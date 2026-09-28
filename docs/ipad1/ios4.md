@@ -259,9 +259,9 @@ loaded):
   engine binds CA's drawable itself: `drawable->bind(fourcc, block)` with a 4-entry block (create,
   destroy and a new `preflight`), the first `nextBuffer`, then its own `gliSetInteger(0x38E)` attach as
   GL_RENDERBUFFER. glishim does the same (`gli_bind_view4`).
-- A buffer CA has just allocated may have no pages mapped, and the host writes frames with a debug write
-  that cannot fault them in (`present-surface: write failed at row 0`): the shim touches each page of
-  the frame's buffer before presenting.
+- A buffer CA has just allocated may have no pages mapped (`present-surface: write failed at row 0`
+  before the host faulted pages in): the shim touches each page of the frame's buffer before presenting,
+  which now only saves the host a fault round trip per page.
 - CA puts an EAGL layer's surface in its own IOMFB layer (UI0) under a full-screen UI1, with a
   destination rectangle: +0x54 origin, +0x60 source size, +0x64 far corner (`x << 16 | y`). The display
   model (`s5l8930_display.c`) assumed full-panel layers at 0,0 and now honours the rectangle.
@@ -278,9 +278,17 @@ panel (293 presents/s, one distinct capture): 3.2.x CA does not update a remote 
 this way; GLTest.app is the 3.x fixture.
 
 Not done: fps and tearing of SpringBoard's own animations on 4.x (animfps/tearcheck script an unlock and
-app launches, which need activation). The host still reads client arrays with debug reads, so a vertex
-array in a page the guest never touched fails to draw (`failed to read ... array data`); the fixture keeps
-its arrays on the stack.
+app launches, which need activation).
+
+**Untouched guest pages (2026-09-28).** A client array, index list or output pointer in a page the guest
+never touched (a static const table in `__TEXT`, untouched `__DATA`/`__bss`, fresh heap) used to fail the
+host's debug access: the draw dropped its geometry (`failed to read ... array data`, `cannot read N index
+bytes`) and a glGen* name written there was lost. The host now probes each page through the caller's
+MMU and, if one would fault, raises that fault as a data abort on the trapping mcr, so the kernel pages it
+in and the call is reissued (`gles_guest_rw` in `hw/arm/guest-gles.c`); stores probe for write access, so
+copy-on-write and modified-bit tracking see them too. The fixture now draws from static tables alone in
+their pages and writes a texture name into an untouched `__bss` page: readback PASS on 8C148 and 7B500
+(before: magenta where the cyan quad goes, name 0).
 
 ## What is done (2026-09-27, earlier session)
 

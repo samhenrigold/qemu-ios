@@ -7,7 +7,12 @@
  *
  * The scene, in a 400x600 layer at (100,100): magenta field, cyan left half
  * (a vertex-array quad), yellow lower-right quarter (a scissored clear). None
- * of the three colours appears in the iOS UI. Before the first present it
+ * of the three colours appears in the iOS UI. The quad's vertices and indices
+ * are static tables, each alone in a page nothing else touches (vertices in
+ * __DATA, indices in __TEXT), so the host has to fault them in the way the
+ * GPU's reads would: a static table used to draw nothing. glGenTextures writes
+ * its name into an untouched __bss page the same way (logged, and part of the
+ * readback verdict). Before the first present it
  * reads four pixels back with glReadPixels and logs them, so the serial log
  * says whether the host drew the scene even if compositing fails:
  *   it_gltest: readback cyan magenta yellow cyan -> PASS
@@ -63,12 +68,14 @@ static int classify(const unsigned char *p)
     return r && b && lg ? 0 : g && b && lr ? 1 : r && g && lb ? 2 : 3;
 }
 
+/* Each fills its own page: the draw is the first access to either. */
+static float quad[1024] __attribute__((aligned(4096))) = { 0, 0, LW / 2, 0, 0, LH, LW / 2, LH };
+static const unsigned short quad_idx[2048] __attribute__((aligned(4096))) = { 0, 1, 2, 3 };
+static unsigned gen_ids[1024] __attribute__((aligned(4096)));
+
 int main(void)
 {
     static const char *const names[] = { "magenta", "cyan", "yellow", "other" };
-    /* On the stack, not const: the host reads client arrays straight from guest
-     * memory and cannot fault in a page the guest never touched. */
-    float quad[8] = { 0, 0, LW / 2, 0, 0, LH, LW / 2, LH };
     /* (x, y) in GL window coordinates, origin bottom-left: expected colour */
     static const int probe[4][3] = { { 50, 500, 1 }, { 350, 500, 0 }, { 350, 100, 2 }, { 50, 100, 1 } };
     unsigned rb = 0, fb = 0, frame;
@@ -103,7 +110,8 @@ int main(void)
     G(glGenRenderbuffersOES); G(glBindRenderbufferOES); G(glGenFramebuffersOES); G(glBindFramebufferOES);
     G(glFramebufferRenderbufferOES); G(glCheckFramebufferStatusOES); G(glViewport); G(glClearColor);
     G(glClear); G(glEnable); G(glDisable); G(glScissor); G(glMatrixMode); G(glLoadIdentity); G(glOrthof);
-    G(glColor4f); G(glEnableClientState); G(glVertexPointer); G(glDrawArrays); G(glReadPixels); G(glFinish);
+    G(glColor4f); G(glEnableClientState); G(glVertexPointer); G(glDrawElements); G(glReadPixels); G(glFinish);
+    G(glGenTextures);
     GLCALL(glGenRenderbuffersOES, void (*)(int, unsigned *), 1, &rb);
     GLCALL(glBindRenderbufferOES, void (*)(unsigned, unsigned), 0x8D41, rb);
     if (!((int (*)(id_, id_, unsigned, id_))p_send)(eagl, S("renderbufferStorage:fromDrawable:"), 0x8D41, layer))
@@ -112,6 +120,10 @@ int main(void)
     GLCALL(glBindFramebufferOES, void (*)(unsigned, unsigned), 0x8D40, fb);
     GLCALL(glFramebufferRenderbufferOES, void (*)(unsigned, unsigned, unsigned, unsigned), 0x8D40, 0x8CE0, 0x8D41, rb);
     if (GLCALL(glCheckFramebufferStatusOES, unsigned (*)(unsigned), 0x8D40) != 0x8CD5) die("framebuffer incomplete");
+
+    GLCALL(glGenTextures, void (*)(int, unsigned *), 1, gen_ids);
+    w("it_gltest: glGenTextures into an untouched page -> "); wd(gen_ids[0]); w("\n");
+    ok &= gen_ids[0] != 0;
 
     extern long time(long *);
     long t_end = time(0) + RUN_S;
@@ -127,7 +139,7 @@ int main(void)
         GLCALL(glColor4f, void (*)(float, float, float, float), 0, 1, 1, 1);
         GLCALL(glEnableClientState, void (*)(unsigned), 0x8074);
         GLCALL(glVertexPointer, void (*)(int, unsigned, int, const void *), 2, 0x1406, 0, quad);
-        GLCALL(glDrawArrays, void (*)(unsigned, int, int), 5, 0, 4);
+        GLCALL(glDrawElements, void (*)(unsigned, int, unsigned, const void *), 5, 4, 0x1403, quad_idx);
         GLCALL(glEnable, void (*)(unsigned), 0x0C11);                 /* GL_SCISSOR_TEST */
         GLCALL(glScissor, void (*)(int, int, int, int), LW / 2, 0, LW / 2, LH / 2);
         GLCALL(glClearColor, void (*)(float, float, float, float), 1, 1, 0, 1);
