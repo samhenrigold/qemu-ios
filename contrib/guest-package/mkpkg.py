@@ -47,7 +47,9 @@ IPOD_BIN = {"it_agent": "contrib/it-agent/it_agent", "itmedia": "contrib/it-medi
 IPAD_BIN = {n: "build/ipad1-guest/" + n for n in ("it_agent", "it_ethlink", "it_prefs")}
 IPAD_JOBS = ["contrib/it-agent/com.qemu.it-agent.plist", "contrib/it-ethlink/com.qemu.it-ethlink.plist",
              "contrib/it-prefs/com.qemu.it-prefs.plist"]
-IPAD_HOOKS = [("build/ipad1-guest/it_msmquiet.dylib", "/usr/local/lib/it_msmquiet.dylib", None, False),
+# it_msmquiet resprings: the mounter has already loaded the previous shim when the hook changes, and a respring
+# drops the USB alert SpringBoard already holds; the next boot's mounter starts with the new shim.
+IPAD_HOOKS = [("build/ipad1-guest/it_msmquiet.dylib", "/usr/local/lib/it_msmquiet.dylib", None, True),
               ("build/appsync/libappsync.dylib", "/usr/lib/libappsync.dylib", None, False)]
 # hooks: (source, stock target, gli dispatch id or None, respring)
 FAMILIES = {
