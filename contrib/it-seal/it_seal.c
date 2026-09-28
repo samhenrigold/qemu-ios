@@ -7,7 +7,7 @@
  * never completes on ipad1 because it waits on Bluetooth. So `ipad1_rootfs.py
  * bake --seal` installs this job for the one sealing boot (imgtools/ipad1_seal.py):
  * it lets the boot settle, deletes itself, and halts through reboot(2), which
- * syncs, unmounts and closes the FTL. docs/ipad1/userland-boot.md.
+ * syncs, unmounts and closes the FTL. docs/research/userland-boot.md.
  */
 
 extern unsigned int sleep(unsigned int);
