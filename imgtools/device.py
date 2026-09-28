@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Create an emulated device from a manifest of declared inputs: a stock IPSW, its keys page and a seed.
 
-    device.py create MANIFEST OUTDIR [--seed S] [--activation-hook SCRIPT] [--qemu PATH] [--gl-test] [--keep-work]
+    device.py create MANIFEST OUTDIR [--seed S] [--activation-hook SCRIPT] [--qemu PATH] [--guest-package ITPACK]
+                     [--gl-test] [--keep-work]
 
 One manifest format, one lock file, every board (manifests/*.json). The shared part, here: verify the IPSW
 (sha1, Restore.plist ProductType/ProductBuildVersion/BoardConfig), decrypt it once with ipad1_fw.py into a
@@ -131,6 +132,8 @@ def main():
     c.add_argument("--seed", help="override the manifest's identity.seed")
     c.add_argument("--activation-hook", metavar="SCRIPT", help="override the manifest's activation.hook")
     c.add_argument("--qemu", default=os.path.join(ROOT, "build/qemu-system-arm"))
+    c.add_argument("--guest-package", metavar="ITPACK", help="the arch's .itpack to bake the loader and seed package "
+                   "from (default build/guest-package/<arch>.itpack, contrib/guest-package/build.sh)")
     c.add_argument("--gl-test", action="store_true", help="k48ap: bake the GL fixture job (tests/ipad1/gltest.py); a test device")
     c.add_argument("--keep-work", action="store_true", help="keep work/ (volumes and intermediate files)")
     create(ap.parse_args())
