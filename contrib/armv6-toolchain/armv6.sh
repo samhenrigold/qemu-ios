@@ -15,6 +15,9 @@
 # 3.2.2): real armv7 code, no subtype round-trip, cpusubtype 9. Point ARMV6_SDK
 # at the 3.2 SDK then. mkold.py's LC_MAIN->LC_UNIXTHREAD rewrite is what lets
 # these be executables at all on 3.2 dyld (docs/ipad1/guest-services.md).
+#
+# LEGACY_LINK=1 makes link6 emit what 2.x dyld takes as well: a non-PIE link
+# whose LC_DYLD_INFO_ONLY mkold.py --legacy proves redundant and drops.
 set -eu
 
 GUEST_ARCH="${GUEST_ARCH:-armv6}"
@@ -52,7 +55,9 @@ link6() {
     # and surfaced it as a confusing "no such file" from mkold.py two steps
     # later. A failed link must fail here.
     rm -f "$out"
-    if ! xcrun ld -arch armv7 "$kind" -platform_version ios 9.0 9.0 \
+    legacy=()
+    [ "${LEGACY_LINK:-0}" = 1 ] && legacy=(-no_pie)
+    if ! xcrun ld -arch armv7 "$kind" ${legacy[@]+"${legacy[@]}"} -platform_version ios 9.0 9.0 \
             -no_function_starts -no_data_in_code_info -no_uuid \
             -syslibroot "$ARMV6_SDK" -L"$ARMV6_SDK/usr/lib" -lSystem \
             "$@" -o "$out" 2>"$out.ldlog"; then
@@ -63,7 +68,8 @@ link6() {
     fi
     grep -v "built for 'unknown'" "$out.ldlog" >&2 || true
     rm -f "$out.ldlog"
-    python3 "$ARMV6_HERE/mkold.py" "$out" --subtype "$([ "$GUEST_ARCH" = armv7 ] && echo 9 || echo 6)"
+    python3 "$ARMV6_HERE/mkold.py" "$out" --subtype "$([ "$GUEST_ARCH" = armv7 ] && echo 9 || echo 6)" \
+        $([ "${LEGACY_LINK:-0}" = 1 ] && echo --legacy)
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
