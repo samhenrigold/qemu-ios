@@ -270,7 +270,6 @@ static void ipod_touch_mbx_complete(void *opaque)
 
 static uint64_t ipod_touch_mbx2_read(void *opaque, hwaddr addr, unsigned size)
 {
-    IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
     uint32_t val = 0;
 
     switch(addr)

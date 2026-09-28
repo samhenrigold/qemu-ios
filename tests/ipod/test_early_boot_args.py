@@ -49,19 +49,31 @@ int main(void){
  IPodTouchMachineState machine={.boot_args_delay_ms=2000};
  const uint8_t signature[]={0x2c,0x4b,0x9b,0x46,0x1b,0x68,0x00,0x2b,0x03,0xd1,0x2a,0x48,0x06,0x1c,0x01,0x90,0x02,0xe0,0x29,0x4e,0x28,0x49,0x01,0x91};
  memcpy(image+0x11a72,signature,sizeof(signature));stl_le_p(image+0x11b28,0x0ff1dba0);
- unsetenv("IT_BOOT_ARGS");ipod_touch_inject_boot_args(&machine);assert(!writes);
- setenv("IT_BOOT_ARGS","-v",1);ipod_touch_inject_boot_args(&machine);
+ unsetenv("IT_BOOT_ARGS");ipod_touch_inject_boot_args(&machine,sizeof(image));assert(!writes);
+ setenv("IT_BOOT_ARGS","-v",1);ipod_touch_inject_boot_args(&machine,sizeof(image));
  assert(writes==2&&!strcmp((char*)staging,"-v"));assert(ldl_le_p(image+0x11b28)==BOOT_ARGS_STAGING_BASE);
- stl_le_p(image+0x11b28,0x0ff1dba0);image[0x11a72]^=1;ipod_touch_inject_boot_args(&machine);assert(writes==2);
+ stl_le_p(image+0x11b28,0x0ff1dba0);image[0x11a72]^=1;ipod_touch_inject_boot_args(&machine,sizeof(image));assert(writes==2);
  image[0x11a72]^=1;char oversized[512];memset(oversized,'x',511);oversized[511]=0;setenv("IT_BOOT_ARGS",oversized,1);
- ipod_touch_inject_boot_args(&machine);assert(writes==4&&staging[255]==0&&strlen((char*)staging)==255);
+ ipod_touch_inject_boot_args(&machine,sizeof(image));assert(writes==4&&staging[255]==0&&strlen((char*)staging)==255);
  stl_le_p(image+0x11b28,0x0ff1dba0);
  strcpy(machine.boot_args,"serial=3 debug=0x8");
- ipod_touch_inject_boot_args(&machine);
+ ipod_touch_inject_boot_args(&machine,sizeof(image));
  assert(writes==6&&!strcmp((char*)staging,machine.boot_args));
  assert(ipod_touch_requested_boot_args(&machine)==machine.boot_args);
  unsetenv("IT_BOOT_ARGS");stl_le_p(image+0x11b28,0x0ff1dba0);
- ipod_touch_inject_boot_args(&machine);assert(writes==8);
+ ipod_touch_inject_boot_args(&machine,sizeof(image));assert(writes==8);
+ /* Relocation must follow literal references, never the old code offset. */
+ memset(image,0,sizeof(image));memcpy(image+0x202,signature,sizeof(signature));
+ stl_le_p(image+0x2b8,IBOOT_MEM_BASE+0x1000);
+ ipod_touch_inject_boot_args(&machine,sizeof(image));assert(writes==10);
+ assert(ldl_le_p(image+0x2b8)==BOOT_ARGS_STAGING_BASE);
+ /* Two valid handoffs are ambiguous; neither may be changed. */
+ stl_le_p(image+0x2b8,IBOOT_MEM_BASE+0x1000);
+ memcpy(image+0x402,signature,sizeof(signature));stl_le_p(image+0x4b8,IBOOT_MEM_BASE+0x1000);
+ ipod_touch_inject_boot_args(&machine,sizeof(image));assert(writes==10);
+ memset(image+0x402,0,sizeof(signature));stl_le_p(image+0x2b8,IBOOT_MEM_BASE+sizeof(image));
+ ipod_touch_inject_boot_args(&machine,sizeof(image));assert(writes==10);
+ ipod_touch_inject_boot_args(&machine,8);assert(writes==10);
  machine.boot_args[0]=0;assert(!ipod_touch_requested_boot_args(&machine));
  int error=0;Error*ep=&error;
  setenv("IT_BOOT_ARGS","legacy",1);

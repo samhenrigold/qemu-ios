@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exact kernel profiles and production patch guards, with no guest required."""
+"""Kernel identification and bounded iBoot command-line discovery, with no guest required."""
 from pathlib import Path
 import subprocess, tempfile
 root=Path(__file__).resolve().parents[2]
