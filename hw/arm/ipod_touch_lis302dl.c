@@ -236,9 +236,12 @@ static int lis302dl_send(I2CSlave *i2c, uint8_t data)
              *    to zero in 500 msecs. That is wrong."
              * Echoing the write back kept the bit set forever, so 3.1.3 panicked
              * as soon as SpringBoard brought the accelerometer up. Complete the
-             * reboot immediately and clear the bit.
+             * reboot immediately and clear the bit. The LIS331DLH (WHO_AM_I
+             * 0x32, the iPad) keeps BOOT in bit 7 instead; 4.x's AppleLIS331DLH
+             * polls it the same way and panics likewise.
              */
-            s->ctrl_reg2 = data & ~ACCEL_CTRL_REG2_BOOT;
+            s->ctrl_reg2 = data & ~(s->whoami == ACCEL_WHOAMI_LIS331DLH ?
+                                    ACCEL_CTRL_REG2_BOOT_LIS331 : ACCEL_CTRL_REG2_BOOT);
             break;
         case ACCEL_CTRL_REG3: s->ctrl_reg3 = data; break;
         default:

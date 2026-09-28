@@ -5,7 +5,7 @@
                               [--nand DIR | --nand-clone DIR | --nand-overlay BASE]
                               [--checkpoint-out DIR] [--from-checkpoint DIR]
                               [--overlay DIR] [--die-id 0xW2:0xW3] [--unlock] [--shot FILE.png]
-                              [--powerdown] [--no-rescan]
+                              [--powerdown] [--no-rescan] [--serial-out FILE] [--lit N]
 
 Exit 0 if the serial log reaches the furthest expected marker, 1 otherwise. Always
 prints the last marker reached with the wall time it first appeared, the panic string
@@ -53,6 +53,7 @@ MARKERS = [
     ("launchd", "launchd"),
 ]
 LIT = 20000      # lit samples in a screendump: the boot logo is well under, the lock screen far over
+LIT_ITUNES = 2500   # "Connect to iTunes" is mostly black (~4900); the boot logo ~730
 RESCAN = "CXT is not valid"
 # Panel coordinates of the upright portrait UI's unlock slider (tests/ipad1/regress.py)
 UNLOCK_FROM, UNLOCK_TO = (959, 477), (959, 47)
@@ -155,6 +156,9 @@ def main():
     ap.add_argument("--unlock", action="store_true", help="drag the unlock slider once the lock screen is lit")
     ap.add_argument("--shot", metavar="FILE", help="save the last screen as PNG")
     ap.add_argument("--powerdown", action="store_true", help="system_powerdown; QEMU must exit 0 within 45 s")
+    ap.add_argument("--lit", type=int, default=LIT,
+                    help=f"lit threshold (default {LIT}, a lock screen; {LIT_ITUNES} for 'Connect to iTunes')")
+    ap.add_argument("--serial-out", metavar="FILE", help="keep the serial log as FILE")
     ap.add_argument("--no-rescan", action="store_true", help=f"fail on '{RESCAN}'")
     a = ap.parse_args()
 
@@ -228,7 +232,7 @@ def main():
                     seen[name] = t
             if want_screen and t >= next_shot:
                 next_shot = t + 3
-                if lit(q, f"{td}/s.ppm") > LIT:
+                if lit(q, f"{td}/s.ppm") > a.lit:
                     screen_at = t
                     break
             elif not want_screen and MARKERS[-1][0] in seen:
@@ -287,6 +291,8 @@ def main():
                 child.kill()
                 child.wait()
     unimp = open(qlog, errors="replace").read() if os.path.exists(qlog) else ""
+    if a.serial_out and os.path.exists(serial):
+        shutil.copyfile(serial, a.serial_out)
     if not a.keep:
         shutil.rmtree(td, ignore_errors=True)
 

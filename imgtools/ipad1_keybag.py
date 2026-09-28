@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""The 4.x data-protection one-shot: boot the IPSW's restore ramdisk once to format effaceable storage and
+create the system keybag on a new device's NAND store + writable NOR (docs/ipad1/ios4.md).
+
+    ipad1_keybag.py STORE NOR --dec DEC --ramdisk NAME [--identity FILE] [--die-id 0xW2:0xW3] [--qemu PATH]
+
+DEC is ipad1_fw.py's output; NAME its decrypted restore ramdisk (raw HFS+, e.g. 038-0024-002-ramdisk.dmg).
+A private copy of the ramdisk gets it_keybag (contrib/it-keybag) as /usr/local/bin/restored_external, the
+first thing its rc.boot runs; kboot boots it as md0 with the stock restore kernelcache and DeviceTree,
+whose secure-root-prefix 'md' makes the root a SecureRoot. it_keybag formats effaceable (lands in NOR),
+creates /private/var/keybags/systembag.kb (lands in STORE) and halts. STORE and NOR are written in place.
+"""
+import argparse, os, shutil, subprocess, sys, tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+import build_nand as bn
+import ipad1_kboot
+from ipad1_rootfs import BLOCK, Mounted, grow_to_partition
+from ipad1_seal import boot
+
+DONE = "it_keybag: effaceable formatted, system keybag created"
+HELPER = "usr/local/bin/restored_external"
+ROOM = 1 << 20          # free space for the helper; the stock ramdisk is 100% full
+
+
+def ramdisk_with_helper(src, helper, out):
+    shutil.copyfile(src, out)
+    grow_to_partition(out, (os.path.getsize(out) + ROOM + BLOCK - 1) // BLOCK)
+    with Mounted(out, out + ".mnt") as m:
+        dst = os.path.join(m.mnt, HELPER)
+        shutil.copyfile(helper, dst)
+        os.chmod(dst, 0o755)
+    bn.set_owner(out, [HELPER], 0, 0)
+    os.rmdir(out + ".mnt")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("store")
+    ap.add_argument("nor")
+    ap.add_argument("--dec", required=True)
+    ap.add_argument("--ramdisk", required=True, help="decrypted restore ramdisk file name in DEC")
+    ap.add_argument("--identity", default=ipad1_kboot.IDENTITY_FILE)
+    ap.add_argument("--die-id")
+    ap.add_argument("--helper", default=os.path.join(ROOT, "build/ipad1-guest/it_keybag"))
+    ap.add_argument("--qemu", default=os.path.join(ROOT, "build/qemu-system-arm"))
+    ap.add_argument("--timeout", type=int, default=300)
+    a = ap.parse_args()
+    td = tempfile.mkdtemp(prefix="ipad1-keybag-")
+    rd, kboot, serial = f"{td}/ramdisk.dmg", f"{td}/kboot-restore.bin", f"{td}/keybag.log"
+    ramdisk_with_helper(os.path.join(a.dec, a.ramdisk), a.helper, rd)
+    ipad1_kboot.main(a.dec, kboot, identity=a.identity, ramdisk=rd)
+    nor = open(a.nor, "rb").read()
+    extra = f"nand={os.path.abspath(a.store)},nor-rw={os.path.abspath(a.nor)}" + (f",die-id={a.die_id}" if a.die_id else "")
+    exited, t, text = boot(a.qemu, kboot, extra, serial, None, a.timeout)
+    for line in text.splitlines():
+        if line.startswith("it_keybag:"):
+            print(line)
+    if not exited or DONE not in text:
+        sys.exit(f"keybag boot: {'no halt' if not exited else 'halted without ' + repr(DONE)} after {t:.0f}s; "
+                 f"serial in {serial}")
+    if open(a.nor, "rb").read() == nor:
+        sys.exit(f"keybag boot: {a.nor} unchanged, effaceable was not written; serial in {serial}")
+    print(f"keybag boot halted cleanly after {t:.0f}s")
+    shutil.rmtree(td, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()

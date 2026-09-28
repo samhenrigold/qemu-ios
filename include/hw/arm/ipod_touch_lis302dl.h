@@ -25,6 +25,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(LIS302DLState, LIS302DL)
 /* CTRL_REG1 per-axis enable bits (public ST LIS302DL datasheet). */
 /* CTRL_REG2 bit 6: reboot the part's memory content. Self-clearing. */
 #define ACCEL_CTRL_REG2_BOOT 0x40
+/* LIS331DLH (ST datasheet): WHO_AM_I 0x32, CTRL_REG2 BOOT is bit 7. */
+#define ACCEL_WHOAMI_LIS331DLH 0x32
+#define ACCEL_CTRL_REG2_BOOT_LIS331 0x80
 
 #define ACCEL_CTRL_REG1_XEN 0x01
 #define ACCEL_CTRL_REG1_YEN 0x02

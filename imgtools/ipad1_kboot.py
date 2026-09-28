@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Build a direct-kernel boot image for the ipad1 machine: what iBoot-817.29 does before it jumps to xnu.
 
-    ipad1_kboot.py [--identity FILE] DEC_DIR OUT [BOOT_ARGS]
+    ipad1_kboot.py [--identity FILE] [--ramdisk DMG] DEC_DIR OUT [BOOT_ARGS]
     ipad1_kboot.py --synth-identity SEED OUT.json    a synthetic identity (see synth_identity)
 
 DEC_DIR is ipad1_fw.py's output (kernelcache.mach, DeviceTree.bin). BOOT_ARGS defaults to DEFAULT_BOOT_ARGS.
---identity defaults to IDENTITY_FILE. With no arguments only the self-check runs. The kernel is stock: the
+--identity defaults to IDENTITY_FILE. With no arguments only the self-check runs.
+--ramdisk DMG boots a raw-HFS RAM disk as root, the way iBoot boots a restore: the image sits in DRAM
+between the kernel and the DeviceTree, chosen/memory-map gets a RAMDisk (pa, len) entry, boot-args gain
+rd=md0 and chosen/root-matching is left empty (xnu reads RAMDisk only when root-matching does not match).
+The DeviceTree's own secure-root-prefix ('md' on 4.x) is untouched, so the md0 root is a SecureRoot. The kernel is stock: the
 USB Ethernet link is raised by the baked it_ethlink helper (contrib/it-ethlink).
 
 OUT format (all little-endian): a flat image of physical memory, extra segments, then a 24-byte trailer.
@@ -28,7 +32,8 @@ topOfKernelData (boot_args+0x10, 16 KiB aligned, just past the image) and zeroes
 Physical layout, mirroring iBoot's allocator (kernel VA base = PA 0x40000000; the base is the kernel's own
 link base, 0xC0000000 on 3.x and 0x80000000 on 4.x):
     kernel segments   PA = vmaddr - 0x80000000 (filesize copied, the rest of vmsize zeroed)
-    DeviceTree        next page after the highest segment end
+    RAMDisk           (--ramdisk only) next page after the highest segment end
+    DeviceTree        next page after that
     BootArgs          next page after the DT (one page; the struct is 0x138 bytes)
     topOfKernelData   end of BootArgs rounded up to 16 KiB
     memSize           0x0F700000: DRAM less pram (0x4000) and vram (0x8FC000), as iBoot computes it
@@ -265,15 +270,19 @@ def macho_entry(data):
     raise ValueError("no LC_UNIXTHREAD")
 
 
-def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION):
+def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION, root_matching=ROOT_MATCHING):
     root, chosen, macs = identity_dt(ident)
     for key, value in {"platform-name": "s5l8930x", **root}.items():
         dt.set("", key, value)
     # debug-enabled is forced (a production iBoot writes 0) so AMFI and PE_i_can_has_debugger honour boot-args.
+    # display-rotation (iBoot: its video rotation byte x 90) is the panel's turn against the portrait UI.
+    # 3.2.x ignores it; 4.x (MobileGestalt main-screen-orientation) lays the UI out by it, and only 270
+    # makes 4.2.1 turn the UI for each accelerometer attitude exactly as 3.2.2 does on the real unit
+    # (0 drew a landscape UI when held upright; 90 drew it upside down). docs/ipad1/ios4.md.
     for key, value in {"debug-enabled": 1, "production-cert": 1, "secure-boot": 1, "gid-aes-key": 1,
                        "uid-aes-key": 1, "system-trusted": 1, "board-id": 0x02, "chip-id": 0x8930,
-                       **chosen, "firmware-version": iboot, "display-rotation": 0, "display-scale": 1,
-                       "root-matching": ROOT_MATCHING}.items():
+                       **chosen, "firmware-version": iboot, "display-rotation": 270, "display-scale": 1,
+                       "root-matching": root_matching}.items():
         dt.set("chosen", key, value)
     for key, hz in {"clock-frequency": CPU_HZ, "memory-frequency": MEM_HZ, "bus-frequency": BUS_HZ,
                     "peripheral-frequency": PERIPH_HZ, "fixed-frequency": FIXED_HZ,
@@ -316,8 +325,8 @@ def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION):
         dt.set("chosen/memory-map", name, (pa, size))
 
 
-def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, ident=None, iboot=IBOOT_VERSION):
-    """Return (image bytes, load_pa, entry_pa, bootargs_pa)."""
+def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, ident=None, iboot=IBOOT_VERSION, ramdisk=None):
+    """Return (image bytes, load_pa, entry_pa, bootargs_pa). ramdisk: raw-HFS bytes to boot as md0."""
     page = lambda n: (n + 0xFFF) & ~0xFFF
     m = Macho(kernel_path)
     segs = [s for s in m.segs if s[0] != "__PAGEZERO"]
@@ -331,6 +340,10 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, ident=None, iboot=I
         dt.add("arm-io/usb-complex", "hsic-enabled")
     dt_blob = bytes(dt.buf)
     top = page(max(vmaddr + vmsize for _, vmaddr, vmsize, _, _, _ in segs))
+    rd_va = top
+    if ramdisk is not None:
+        top += page(len(ramdisk))
+        boot_args += " rd=md0"
     dt_va, args_va = top, top + page(len(dt_blob))
     end_va = args_va + 0x1000
     top_of_kernel = pa((end_va + 0x3FFF) & ~0x3FFF)
@@ -341,9 +354,13 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, ident=None, iboot=I
         n = min(filesize, vmsize)
         image[vmaddr - vbase:vmaddr - vbase + n] = m.data[fileoff:fileoff + n]
         memory_map.append((f"Kernel-{name}", pa(vmaddr), vmsize))
+    if ramdisk is not None:
+        image[rd_va - vbase:rd_va - vbase + len(ramdisk)] = ramdisk
+        memory_map.append(("RAMDisk", pa(rd_va), len(ramdisk)))
     memory_map += [("DeviceTree", pa(dt_va), len(dt_blob)), ("BootArgs", pa(args_va), 0x1000)]
 
-    fill_dt(dt, memory_map, ident if ident is not None else load_identity(), iboot)
+    fill_dt(dt, memory_map, ident if ident is not None else load_identity(), iboot,
+            ROOT_MATCHING if ramdisk is None else "")
     image[dt_va - vbase:dt_va - vbase + len(dt.buf)] = dt.buf
 
     # boot_args rev 1 / version 2 (pe_identify_machine c01d1276 panics otherwise). Video depth word:
@@ -363,15 +380,17 @@ def pack_segments(segments):
                     for pa, n, data in segments)
 
 
-def main(dec_dir, out, boot_args=DEFAULT_BOOT_ARGS, identity=IDENTITY_FILE):
+def main(dec_dir, out, boot_args=DEFAULT_BOOT_ARGS, identity=IDENTITY_FILE, ramdisk=None):
     dt_blob = open(os.path.join(dec_dir, "DeviceTree.bin"), "rb").read()
     image, load_pa, entry_pa, args_pa = build(os.path.join(dec_dir, "kernelcache.mach"), dt_blob, boot_args,
-                                              load_identity(identity), iboot_version(dec_dir))
+                                              load_identity(identity), iboot_version(dec_dir),
+                                              open(ramdisk, "rb").read() if ramdisk else None)
     logo = os.path.join(dec_dir, "AppleLogo.bin")
     segments = logo_segments(open(logo, "rb").read(), VRAM_PA) if os.path.exists(logo) else []
     with open(out, "wb") as f:
         f.write(image + pack_segments(segments) + TRAILER.pack(b"K48KBOOT", load_pa, entry_pa, args_pa, len(image)))
     top = struct.unpack_from("<I", image, args_pa - load_pa + 0x10)[0]
+    boot_args += " rd=md0" if ramdisk else ""
     print(f"load {load_pa:#x}+{len(image):#x} entry {entry_pa:#x} r0 {args_pa:#x} "
           f"topOfKernelData {top:#x} boot-args [{boot_args}]")
 
@@ -404,7 +423,7 @@ def selfcheck():
     def seg(name, vmaddr, vmsize, fileoff, filesize):
         return struct.pack("<II16s8I", 1, 56, name.encode(), vmaddr, vmsize, fileoff, filesize, 7, 7, 0, 0)
 
-    def kernel_at(base):   # 3.x kernels link at 0xC0000000, 4.x at 0x80000000
+    def kernel_at(base, ramdisk=None):   # 3.x kernels link at 0xC0000000, 4.x at 0x80000000
         thread = struct.pack("<IIII16I", 5, 16 + 64, 1, 16, *([0] * 15), base + 0x1040)
         cmds = seg("__TEXT", base + 0x1000, 0x2000, 0, 0x2000) + seg("__DATA", base + 0x3000, 0x1800, 0x2000, 0x10) + thread
         kernel = bytearray(0x2010)
@@ -413,9 +432,18 @@ def selfcheck():
         with tempfile.NamedTemporaryFile() as f:
             f.write(kernel)
             f.flush()
-            return build(f.name, dt_blob, ident=PLACEHOLDER)
+            return build(f.name, dt_blob, ident=PLACEHOLDER, ramdisk=ramdisk)
 
     image4, _, entry4, r4 = kernel_at(0x80000000)
+    # RAM-disk mode: the disk sits after the kernel (0x80004800 -> page 0x80005000), DT follows it
+    rd = b"H+" * 0x900
+    imgr, _, _, rr = kernel_at(0x80000000, rd)
+    assert imgr[0x5000:0x5000 + len(rd)] == rd and rr == 0x40008000
+    assert imgr[rr - 0x40000000 + 0x38:].split(b"\0", 1)[0] == (DEFAULT_BOOT_ARGS + " rd=md0").encode()
+    dtr = DeviceTree(imgr[0x7000:0x7000 + len(dt_blob) + 36])
+    getr = lambda path, key, fmt="<I": struct.unpack_from(fmt, dtr.buf, dtr.props[path][key][0] + 36)
+    assert getr("chosen/memory-map", "RAMDisk", "<II") == (0x40005000, len(rd))
+    assert bytes(dtr.buf[dtr.props["chosen"]["root-matching"][0] + 36:][:4]) == bytes(4)
     assert (entry4, r4) == (0x40001040, 0x40006000) and struct.unpack_from("<I", image4, r4 - 0x40000000 + 4)[0] == 0x80000000
     image, load, entry, r0 = kernel_at(0xC0000000)
 
@@ -469,10 +497,14 @@ if __name__ == "__main__":
         with os.fdopen(fd, "w") as f:
             json.dump(synth_identity(argv[1]), f, indent=1)
         sys.exit()
-    identity = IDENTITY_FILE
-    if argv[:1] == ["--identity"] and len(argv) > 1:
-        identity, argv = argv[1], argv[2:]
+    identity, ramdisk = IDENTITY_FILE, None
+    while argv[:1] in (["--identity"], ["--ramdisk"]) and len(argv) > 1:
+        if argv[0] == "--identity":
+            identity = argv[1]
+        else:
+            ramdisk = argv[1]
+        argv = argv[2:]
     if len(argv) in (2, 3):
-        main(*argv, identity=identity)
+        main(*argv, identity=identity, ramdisk=ramdisk)
     elif argv:
         sys.exit(__doc__)
