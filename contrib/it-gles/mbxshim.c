@@ -189,8 +189,9 @@ __attribute__((visibility("hidden"))) int gles_unimpl(unsigned slot)
     return 0;
 }
 
-/* Host debug reads cannot page in guest memory. Touch upload pages here,
- * where a normal ARM load lets the guest VM resolve zero-fill/file mappings. */
+/* Touch upload pages before the call. The host faults an untouched page in
+ * itself (gles_guest_rw raises the abort and the call is reissued), but that
+ * is a trap round trip per page; a normal ARM load here is cheaper. */
 static int guest_fault_read(unsigned long base, unsigned bytes)
 {
     if (!base || !bytes || bytes > 64u * 1024 * 1024 || base > ~0UL - bytes) return 0;
@@ -1210,8 +1211,8 @@ static void ca_detach_view(ca_view_t *v)
     *v = empty;
 }
 
-/* A mapped IOSurface can still contain demand-paged memory. The host's debug
- * memory reader cannot fault guest pages in as the real GPU's pinning does. */
+/* A mapped IOSurface can still contain demand-paged memory. Touch it first,
+ * as for uploads: cheaper than the host faulting it in page by page. */
 static int surface_fault_read(unsigned long base, unsigned stride, unsigned rows,
                                unsigned bytes)
 {

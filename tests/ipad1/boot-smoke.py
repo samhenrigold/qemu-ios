@@ -5,7 +5,7 @@
                               [--nand DIR | --nand-clone DIR | --nand-overlay BASE]
                               [--checkpoint-out DIR] [--from-checkpoint DIR]
                               [--overlay DIR] [--die-id 0xW2:0xW3] [--unlock] [--shot FILE.png]
-                              [--powerdown] [--no-rescan] [--serial-out FILE] [--lit N]
+                              [--powerdown] [--no-rescan] [--serial-out FILE] [--stderr-out FILE] [--lit N]
 
 Exit 0 if the serial log reaches the furthest expected marker, 1 otherwise. Always
 prints the last marker reached with the wall time it first appeared, the panic string
@@ -159,6 +159,7 @@ def main():
     ap.add_argument("--lit", type=int, default=LIT,
                     help=f"lit threshold (default {LIT}, a lock screen; {LIT_ITUNES} for 'Connect to iTunes')")
     ap.add_argument("--serial-out", metavar="FILE", help="keep the serial log as FILE")
+    ap.add_argument("--stderr-out", metavar="FILE", help="keep QEMU's stderr (the [gles] host log) as FILE")
     ap.add_argument("--no-rescan", action="store_true", help=f"fail on '{RESCAN}'")
     a = ap.parse_args()
 
@@ -293,6 +294,8 @@ def main():
     unimp = open(qlog, errors="replace").read() if os.path.exists(qlog) else ""
     if a.serial_out and os.path.exists(serial):
         shutil.copyfile(serial, a.serial_out)
+    if a.stderr_out and os.path.exists(f"{td}/stderr"):
+        shutil.copyfile(f"{td}/stderr", a.stderr_out)
     if not a.keep:
         shutil.rmtree(td, ignore_errors=True)
 

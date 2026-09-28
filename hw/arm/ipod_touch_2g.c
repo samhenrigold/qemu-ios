@@ -52,7 +52,7 @@
         .access = PL0_RW,        \
         .resetvalue = 0,         \
         .state = ARM_CP_STATE_AA32, \
-        .type = ARM_CP_IO,       \
+        .type = ARM_CP_IO | ARM_CP_RAISES_EXC, /* gles_guest_rw */ \
         .fieldoffset = offsetof(IPodTouchMachineState, IT2G_CPREG_VAR_NAME(QEMU_CALL)) \
                        - offsetof(ARMCPU, env), \
         .readfn = qemu_call_status, \
