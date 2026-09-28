@@ -2,13 +2,14 @@
 """Production AES DMA must not drop unrelated writes at legacy boot addresses,
 and custom-key requests must encrypt/decrypt a stream split into segments the
 way 3.1.3's AppleS5L8900XAES feeds them (IRQ 0x27, GO=3), blocks straddling
-segment boundaries included."""
+segment boundaries included. With aes-uid=engine, UID and short GID
+operations run through the engine with stand-in keys."""
 from pathlib import Path
 import re, shlex, subprocess, tempfile
 root=Path(__file__).resolve().parents[2]
 source=(root/'hw/arm/ipod_touch_aes.c').read_text()
 header=(root/'include/hw/arm/ipod_touch_aes.h').read_text()
-constants='\n'.join(re.findall(r'^#define (?:AES_|key_uid).*$',header,re.M))
+constants='\n'.join(re.findall(r'^#define (?:AES_|key_uid|key_gid_standin).*$',header,re.M))
 state=re.search(r'typedef struct IPodTouchAESState.*?} IPodTouchAESState;',header,re.S)[0]
 enum=re.search(r'typedef enum AESKeyType.*?} AESKeyType;',header,re.S)[0]
 production=source[source.index('#define IT_AES_MAX_XFER'):source.index('static const MemoryRegionOps aes_ops')]
@@ -92,6 +93,23 @@ static void segmented(void) {
  flat=NULL;
  puts("PASS: segmented custom-key encrypt/decrypt matches OpenSSL across straddling blocks");
 }
+/* aes-uid=engine: a UID (or short GID) encrypt as the 4.x kernel issues it -- seed at 0x28, result at
+   0x20 -- comes out as AES with the stand-in key, where the legacy path left the output untouched. */
+static void engine(void) {
+ static uint8_t mem[0x1000];
+ const uint8_t seed[16]={1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
+ for(int t=0;t<2;t++){
+  uint8_t ref[16];AES_KEY k;
+  AES_set_encrypt_key(t?key_gid_standin:key_uid,128,&k);AES_encrypt(seed,ref,&k);
+  memset(mem,0,sizeof(mem));memcpy(mem+0x100,seed,16);flat=mem;
+  ipod_touch_aes_set_uid_engine(true);
+  IPodTouchAESState s={.keytype=t?AESGID:AESUID,.operation=0xf,.insize=16,.outaddr=0x100,.inaddr=0x200};
+  ipod_touch_aes_write(&s,AES_GO,1,4);
+  assert(!memcmp(mem+0x200,ref,16)&&!memcmp(mem+0x100,seed,16)&&s.status==15);
+  ipod_touch_aes_set_uid_engine(false);flat=NULL;
+ }
+ puts("PASS: aes-uid=engine UID and short-GID operations match OpenSSL with the stand-in keys");
+}
 int main(void) {
  segmented();
  unsigned addresses[]={0x220100ac,0x0bf08468,0x0fb9bcdc};
@@ -102,6 +120,7 @@ int main(void) {
   check(addresses[i],AESUID,128,true,false);
  }
  check(0x0ff290ac,AESCustom,128,true,false);
+ engine();
  puts("PASS: three narrowly preserved boot payloads; unrelated size, source, UID and fourth custom operation decrypt correctly");
 }
 '''
