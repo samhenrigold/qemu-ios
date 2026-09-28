@@ -59,6 +59,7 @@
 #define S5L8720_TVOUT_SDO_IRQ 0x1E
 #define S5L8720_TVOUT_VSYNC_IRQ 0x26
 #define S5L8720_SHA1_IRQ 0x28
+#define S5L8720_AES_IRQ 0x27
 #define S5L8720_AMC_IRQ 0x12
 /* i2s0 interrupts=0x2c but interrupt-parent is the GPIO IC, so this is a
  * GPIO interrupt number: group 0x2c/32 = 1, bit 0x2c%32 = 12. */
