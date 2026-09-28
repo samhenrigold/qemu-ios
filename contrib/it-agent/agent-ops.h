@@ -157,6 +157,9 @@ static void agent_child_tick(void)
 
 #include "agent-sbs.h"
 
+#define AG_HELLO "it_agent v2\nops ping exec spawn sync put get getrange chown unlink settime " \
+    "launch frontmost lockstatus orientation dlicon halt type backspace uidump\n"
+
 static void agent_dispatch(unsigned size)
 {
     char *nl = memchr(ag_request, '\n', size);
@@ -172,7 +175,9 @@ static void agent_dispatch(unsigned size)
     unsigned body_len = size - (body - ag_request);
     int status = 0;
     if (!strcmp(op, "ping")) {
-        memcpy(ag_response, "it_agent v1\n", 12); ag_response_len = 12;
+        /* Line 1 is the version; line 2 lists the ops (v1 agents send line 1 only). */
+        ag_response_len = strlen(AG_HELLO);
+        memcpy(ag_response, AG_HELLO, ag_response_len);
     } else if (!strcmp(op, "exec")) {
         status = agent_exec(args, body, body_len);
         if (!status) return;
@@ -192,23 +197,21 @@ static void agent_dispatch(unsigned size)
     } else if (!strcmp(op, "halt")) {
         extern int reboot2(int, const char *);
         if (reboot2(8, 0)) status = -errno;
-    } else if (!strcmp(op, "kill")) {
-        /* Quote a single executable name; never interpolate it as shell code. */
-        char command[4096];
-        unsigned n = 0;
-        const char *prefix = "killall '";
-        if (!*args || *args == '-' || strlen(args) > 512) status = -EINVAL;
-        else {
-            memcpy(command, prefix, strlen(prefix)); n = strlen(prefix);
-            for (const char *p = args; *p; p++) {
-                if (*p == 39) { memcpy(command + n, "'\\''", 4); n += 4; }
-                else command[n++] = *p;
-            }
-            command[n++] = 39; command[n] = 0;
-            status = agent_exec(command, body, body_len);
-            if (!status) return;
-            status = -status;
-        }
+    } else if (!strcmp(op, "chown")) {
+        char *end;
+        errno = 0;
+        long uid = strtol(args, &end, 10), gid = -1;
+        if (!errno && end != args && *end == ' ') {
+            char *path = end + 1;
+            gid = strtol(path, &end, 10);
+            if (errno || end == path || *end != ' ' || !end[1] || uid < 0 || gid < 0) status = -EINVAL;
+            else if (lchown(end + 1, uid, gid)) status = -errno;
+        } else status = -EINVAL;
+    } else if (!strcmp(op, "unlink")) {
+        if (!*args) status = -EINVAL;
+        else if (unlink(args)) status = -errno;
+    } else if (!strcmp(op, "dlicon")) {
+        status = agent_sbs(op, args);
     } else if (!strcmp(op, "settime")) {
         char *end;
         errno = 0;

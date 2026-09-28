@@ -844,6 +844,53 @@ def prepare_launcher(cfg, procs, dev, r):
     return port
 
 
+AGENT_BINARY = os.path.join(ROOT, "contrib", "it-agent", "it_agent")
+
+
+def agent_ping(qmp, timeout=10):
+    """The agent's hello line ('it_agent v1'/'it_agent v2'), or None while none answers."""
+    try:
+        status, hello = itqmp.agent(qmp, "ping", timeout=timeout)
+    except (TimeoutError, EOFError, OSError):
+        return None
+    return hello.split(b"\n", 1)[0].decode("ascii", "replace") if status == 0 else None
+
+
+def ensure_agent(qmp, timeout=90):
+    """(True, version) once a v2 agent (spawn, sync, chown, unlink, dlicon) answers, else (False, why).
+
+    A v1 agent (every image baked before the no-shell work) is upgraded in this boot's
+    overlay to this tree's build: `put` the binary, then have launchd restart the job.
+    v1 has no `spawn`, so that one restart goes through v1's `exec`; every v1 image
+    carries freeze's /bin/sh, and nothing after the upgrade uses a shell."""
+    deadline = time.monotonic() + timeout
+    while not itqmp.agent_alive(qmp):
+        if time.monotonic() >= deadline:
+            return False, "guest agent did not become ready within %ds" % timeout
+        time.sleep(1)
+    hello = agent_ping(qmp)
+    if hello == "it_agent v1":
+        if not os.path.exists(AGENT_BINARY):
+            return False, "the image's agent is v1; build contrib/it-agent to upgrade it"
+        with open(AGENT_BINARY, "rb") as f:
+            status, _ = itqmp.agent(qmp, "put", "/usr/local/bin/it_agent 755", f.read())
+        if status:
+            return False, "could not upgrade the v1 agent: put status %d" % status
+        try:
+            itqmp.agent(qmp, "exec", "launchctl stop com.qemu.it-agent", timeout=15)
+        except (TimeoutError, EOFError):
+            pass  # the daemon that would answer is the one being stopped
+        log("  agent: v1 upgraded to this tree's build, waiting for launchd to restart it")
+        deadline = time.monotonic() + 60
+        while (hello := agent_ping(qmp, timeout=5)) != "it_agent v2":
+            if time.monotonic() >= deadline:
+                return False, "upgraded agent did not answer within 60s (last: %s)" % hello
+            time.sleep(2)
+    if hello != "it_agent v2":
+        return False, "unexpected agent hello: %r" % hello
+    return True, hello
+
+
 class AgentControl:
     """A selected command session. Submitted RPCs are never replayed via SSH."""
     def __init__(self, qmp):
