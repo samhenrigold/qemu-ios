@@ -56,6 +56,8 @@
 #include "hw/arm/guest-services/gles.h"
 #include "hw/arm/guest-pasteboard.h"
 #include "hw/arm/guest-package.h"
+#include "hw/arm/ipod-agent.h"
+#include "qemu/guest-random.h"
 #include "ui/console.h"
 #include "ui/input.h"
 #include "qapi/visitor.h"
@@ -99,6 +101,7 @@ struct IPad1MachineState {
     bool mtt_seen[MT_MAX_FINGERS];
     GuestPasteboard pb;                  /* hw/arm/guest-pasteboard.c */
     GuestPackage pkg;                    /* hw/arm/guest-package.c */
+    IPodAgent *agent;                    /* hw/arm/ipod-agent.c: it_agent, as on the iPod */
     /* App controls, same property names as the iPod machine. */
     LIS302DLState *accel;
     DeviceState *compass;                /* AK8973; takes its pose from accel */
@@ -136,11 +139,21 @@ static qemu_irq ipad1_irq(IPad1MachineState *s, int irq)
  */
 /*
  * The guest-services trap (mcr p15,3,Rn,c15,c15,0) the GLES shim uses, as on
- * the iPod machine. GLES, the pasteboard (it_pbd) and guest packages
- * (it_boot, hw/arm/guest-package.c) only; the iPod's
- * keyboard and agent services are replaced by stock USB services and hardware
- * models here (docs/ipad1/guest-services.md).
+ * the iPod machine. GLES, the pasteboard, guest packages (it_boot,
+ * hw/arm/guest-package.c) and the guest agent (it_agent: the foreground app,
+ * lock state, launch, sync; no stock service answers those); the iPod's
+ * keyboard services are replaced by the USB keyboard here
+ * (docs/ipad1/guest-services.md).
  */
+static int ipad1_agent_copy(void *opaque, uint32_t address, uint8_t *data,
+                            size_t length, bool write)
+{
+    if (length && length - 1 > UINT32_MAX - address) {
+        return -1;
+    }
+    return cpu_memory_rw_debug(opaque, address, data, length, write);
+}
+
 static void ipad1_qemu_call(CPUARMState *env, const ARMCPRegInfo *ri,
                             uint64_t value)
 {
@@ -159,6 +172,29 @@ static void ipad1_qemu_call(CPUARMState *env, const ARMCPRegInfo *ri,
     case QC_GLES_PING:
         q.retval = QC_GLES_PING_MAGIC;
         break;
+    case QC_AG_HELLO:
+    case QC_AG_POLL:
+    case QC_AG_READ:
+    case QC_AG_WRITE:
+    case QC_AG_DONE:
+    case QC_AG_HOSTTIME:
+    case QC_UI_POLL:
+    case QC_UI_READ:
+    case QC_UI_WRITE:
+    case QC_UI_DONE:
+    case QC_AG_UI_ROUTE: {
+        uint64_t candidate = 0;
+        if (q.call_number == QC_AG_HELLO || q.call_number == QC_AG_UI_ROUTE) {
+            qemu_guest_getrandom_nofail(&candidate, sizeof(candidate));
+        }
+        q.retval = ipod_agent_call(s->agent, q.call_number, q.args.ag.token,
+                                   q.args.ag.buffer_guest_ptr, q.args.ag.offset,
+                                   q.args.ag.length,
+                                   qemu_clock_get_ms(QEMU_CLOCK_REALTIME),
+                                   candidate, ipad1_agent_copy, cs);
+        err = q.retval < 0 ? EINVAL : 0;
+        break;
+    }
     default:
         if (!guest_pb_call(&s->pb, cs, &q, &err) &&
             !guest_pkg_call(&s->pkg, cs, &q, &err)) {
@@ -189,6 +225,7 @@ static void ipad1_cpu_reset(void *opaque)
 
     gles_host_reset();
     guest_pkg_reset(&s->pkg);
+    ipod_agent_reset(s->agent);
     cpu_reset(cs);
 
     if (s->bootrom_path) {
@@ -1421,18 +1458,50 @@ static void ipad1_set_wifi(Object *obj, bool value, Error **errp)
     IPAD1_MACHINE(obj)->wifi = value;
 }
 
+/* The iPod machine's agent properties (tests drive the agent over QMP with these). */
+static void ipad1_set_agent_request(Object *obj, const char *value, Error **errp)
+{
+    if (!ipod_agent_submit(IPAD1_MACHINE(obj)->agent, value)) {
+        error_setg(errp, "Invalid, duplicate, or full agent request queue");
+    }
+}
+
+static void ipad1_cancel_agent_request(Object *obj, const char *value, Error **errp)
+{
+    ipod_agent_cancel(IPAD1_MACHINE(obj)->agent, value);
+}
+
+static char *ipad1_get_agent_result(Object *obj, Error **errp)
+{
+    return ipod_agent_take_result(IPAD1_MACHINE(obj)->agent);
+}
+
+static char *ipad1_get_agent_status(Object *obj, Error **errp)
+{
+    return g_strdup(ipod_agent_status(IPAD1_MACHINE(obj)->agent,
+                                      qemu_clock_get_ms(QEMU_CLOCK_REALTIME)));
+}
+
 static void ipad1_instance_init(Object *obj)
 {
     IPAD1_MACHINE(obj)->usb_cable = true;
     IPAD1_MACHINE(obj)->wifi = true;
     guest_pb_init(&IPAD1_MACHINE(obj)->pb, obj, "ipad1");
     guest_pkg_init(&IPAD1_MACHINE(obj)->pkg, obj);
+    IPAD1_MACHINE(obj)->agent = ipod_agent_new();
+    ipod_agent_publish(IPAD1_MACHINE(obj)->agent);
+    object_property_add_str(obj, "agent-request", NULL, ipad1_set_agent_request);
+    object_property_add_str(obj, "agent-cancel", NULL, ipad1_cancel_agent_request);
+    object_property_add_str(obj, "agent-result", ipad1_get_agent_result, NULL);
+    object_property_add_str(obj, "agent-status", ipad1_get_agent_status, NULL);
     IPAD1_MACHINE(obj)->battery_level = 80;
     IPAD1_MACHINE(obj)->usb_charger = true;
 }
 
 static void ipad1_instance_finalize(Object *obj)
 {
+    ipod_agent_publish(NULL);
+    ipod_agent_free(IPAD1_MACHINE(obj)->agent);
     g_free(IPAD1_MACHINE(obj)->usb_tcp_addr);
     g_free(IPAD1_MACHINE(obj)->kboot_path);
     g_free(IPAD1_MACHINE(obj)->iboot_path);
