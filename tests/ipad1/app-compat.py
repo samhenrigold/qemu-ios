@@ -176,7 +176,6 @@ FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1")
 DISMISS_EDIT = (615, 297)        # "Dismiss" on the install's Edit-Home-Screen help sheet
 NEXT_PAGE = ((511, 87), (511, 617))      # swipe to the next home page (portrait right-to-left)
 LAUNCH_WAIT = 9
-INSTALL_SETTLE = 60           # s between install and launch tap (see launch_one)
 
 
 def GRID(row, col):
@@ -413,7 +412,6 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         ins = b.run(["ideviceinstaller", "install", ipa], timeout=200)
         out = (ins.stdout or "") + (ins.stderr or "")
         listed = r["bundle"] in (b.run(["ideviceinstaller", "list"], timeout=90).stdout or "")
-        installed_at = time.time()
         try:
             res["glishim"] = open(os.path.join(b.dir, "qemu.log"), errors="replace").read().count("[glishim] unimplemented")
         except OSError:
@@ -441,10 +439,6 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
             return res
         # sbservices only answers once SpringBoard is up (past the lock screen), so query
         # the icon layout now, not right after install.
-        # ponytail: fixed settle. Tapped too soon after install, SpringBoard says the bundle "does not
-        # have an executable path" and never launches it (Shazam 3/3, 365XWords once); 60 s cured it.
-        # Poll for launchability instead if this grows.
-        time.sleep(max(0, INSTALL_SETTLE - (time.time() - installed_at)))
         slot = pin_to_page1(b, r["bundle"]) or icon_slot(b, r["bundle"]) or (2, 0, 0)
         page, row, col = slot
         res["note"] = "slot p%d r%d c%d" % slot

@@ -20,13 +20,19 @@ All four crashes are app/OS mismatches, not emulator bugs: three dyld "Symbol no
 logged a `[glishim] unimplemented` slot.
 
 Emulator-side findings:
-- **Install-to-launch race.** Tapping a fresh install within ~20 s gets SpringBoard
-  `The 'Shazam' bundle at /private/var/mobile/Applications/.../Shazam.app does not have an
-  executable path` followed by `Unable to send activation event ... (ipc/send) invalid destination
-  port`, and the app never starts. The executable is on disk (house_arrest shows
-  `Shazam.app/Shazam`, 542848 bytes). Shazam failed 3/3 this way and 365XWords 1/2. With 60 s
-  between install and tap, everything launched. Probably installd/SpringBoard post-install work
-  running slowly under emulation. The harness now waits (`INSTALL_SETTLE`).
+- **"Install-to-launch race" was a reinstall, not a race.** The failing runs (Shazam, 365XWords)
+  were reruns into an existing out dir, and `Boot` reused that dir's NAND overlay, so the app was
+  already installed and the second `ideviceinstaller install` was an upgrade. SpringBoard 3.2
+  (`-[SBApplicationController loadApplications]`) keeps an app's old `SBApplication` when
+  `stat(<container>/X.app).st_mtime` still equals its recorded modification date. installd keeps
+  the IPA's archive mtimes and reuses the container on upgrade, so reinstalling the same IPA keeps
+  the old object. Its bundle then has no executable (`The 'Shazam' bundle at ... does not have an
+  executable path`, then `Unable to send activation event ... invalid destination port`) until
+  SpringBoard restarts. Waiting does not fix it. Reproduced 5/5 in one session. Installing the
+  same app with different archive mtimes launches, and uninstalling before the install launches
+  3/3. Fresh installs launch when tapped 1-3 s after `Install: Complete` (0 failures in 60+). The
+  fix is in `Boot` (a default overlay starts empty), and the harness no longer waits after install.
+  This is stock iOS behaviour, so a real iPad should do the same.
 - **Super Monkey Ball: blank GL surface.** It rotates the UI to landscape and then shows a white
   480x320 window for 30+ s. The host log has 43 `[gles] texture` uploads, most with non-zero
   means, so content is loaded but never shown. Worth a look from the GL side (landscape EAGL
