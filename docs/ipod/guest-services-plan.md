@@ -227,15 +227,80 @@ The guest run (same probe):
   it_typein today uses UIKeyboardImpl in-process, and the machine can also tap the on-screen
   keyboard (`osk` property).
 
-**Recommendation (3.1.3):**
+**Recommendation (3.1.3), after the P6 spike (below):** keep it_typein (bulk `insertText:`, one-key
+`addInputString:`). It is invasive but proven. Out-of-process key events reach the app's keyboard
+and are then dropped by the stock layout, so they cannot replace it. Where the agent is absent,
+on-screen-keyboard taps stay the zero-guest-code fallback: faithful, but layout-bound and slow.
 
-1. Spike (1-2 days): an agent op `key <keycode> <chars> <down>` builds a GSEvent key record and
-   `GSSendEvent`s it to the frontmost app's purple port, out of process. If UIKit's
-   `handleKeyEvent:` consumes it, this deletes it_typein.dylib and the DYLD_INSERT_LIBRARIES edit
-   to com.apple.SpringBoard.plist. Only the agent remains.
-2. Otherwise keep it_typein as it is (bulk `insertText:`, one-key path). It is invasive but proven.
-3. Where the agent is absent, on-screen-keyboard taps are the zero-guest-code fallback: faithful,
-   but layout-bound and slow.
+### P6 spike: out-of-process key events on 7E18 (result: does not work)
+
+Prototype: agent op `keys [interval_ms]` in `contrib/it-agent/agent-keys.h` (body = UTF-8 text,
+one event per UTF-16 unit, `\n` = Return, `\b` = Delete, at most 5 s of pacing per request, reply
+= keys sent). Host check `tests/ipod/test_agent_keys.py`; guest probe `tests/ipod/probe_keys.py`
+(overlay of `nand-current.new`, base untouched).
+
+**The event path (7E18 shared cache; addresses are VAs in `dyld_shared_cache_armv6`):**
+
+- GraphicsServices has no public key-event constructor on 3.1.3 (no `GSEventCreateKeyEvent`,
+  `GSEventSendKeyEvent` or `GSKeyboard*`; iPad 3.2.2 has all of them plus
+  `GSEventSetHardwareKeyboardAttached`). What exists is `_GSCreateSyntheticKeyEvent(unichar, up,
+  repeat)` (0x3434f890) and `_GSPostSyntheticKeyEvent(CFString, up, repeat)` (0x34350278, which
+  posts to the caller's *own* application port). They build a 0x3e-byte record: the 0x34-byte
+  GSEventRecord header (type at 0, timestamp at 0x1c, infoSize = 10 at 0x30) plus key info: keyCode
+  u16 at 0x34, charactersIgnoringModifiers u16 at 0x36, character u16 at 0x38, characterSet at
+  0x3a, repeat u8 at 0x3c. Type is 10 (down) or 11 (up).
+- `GSSendEvent(record, port)` (0x3434de44 → 0x3434dd18) sends a Mach message with id 0x7b,
+  `COPY_SEND` to `port`, the record at +0x18, size aligned to 0x58, and stamps the timestamp. The
+  receiver's `CreateWithMachMessage` (0x3434f2d4) takes any id other than 0x1f4 with size > 0x4b
+  and overwrites senderPID from the audit trailer. Every app registers its purple port in bootstrap
+  under its bundle identifier (`GSEventInitialize` → `GetIdentifierCString` →
+  `GSRegisterPurpleNamedPort`), so a root daemon reaches it with `bootstrap_look_up`. SpringBoard
+  answers as `com.apple.springboard`.
+- UIKit: `_UIApplicationHandleEvent` → `-[UIApplication sendEvent:]` →
+  `handleEvent:withNewEvent:` (0x3205480c). Its switch has **no case for 10/11** (types 10, 11
+  and 12 fall through to `return 1`). The only key case is **13, kGSEventSimulatorKeyDown**
+  (0x32056068) → `[[UIKeyboardImpl sharedInstance] handleHardwareKeyDownFromSimulator:event]`, which
+  forwards to `m_layout` when a keyboard is up. Only `UIKeyboardLayoutRoman` implements it (0x32202cdc:
+  0x7f → `deleteAction`, `\r` → Return, otherwise `sendStringAction:forKey:` with
+  `GSEventCopyCharacters`, i.e. the character at 0x38). The base `UIKeyboardLayout` version is a bare
+  `bx lr` (0x321efbf8).
+- On 7E18 every stock keyboard is `UIKeyboardLayoutStar` (`UIKeyboardInputModeUsesKBStar` is a
+  hard-coded input-mode table), which subclasses `UIKeyboardLayout`, not Roman. **So the last hop is
+  a no-op.** iPad 3.2.2 instead has `-[UIApplication handleKeyEvent:]`, `-[UIKeyboardImpl
+  handleKeyEvent:]`, hardware-keyboard mode and `GSKeyboardTranslateKey`: a real type-10/11 path
+  that 3.1.3 lacks.
+
+**Runtime evidence** (`probe_keys.py`, two runs, before and after merging `ipad1` f555749efe; same results). QEMU gdbstub
+breakpoints (one extra diagnostic boot) show each `keys` event in Notes going
+`PurpleEventCallback` (size 0x58) → `_UIApplicationHandleEvent` (type 13) → `sendEvent:` →
+`handleEvent:withNewEvent:` (type 13) → case 13 → `-[UIKeyboardImpl handleHardwareKeyDownFromSimulator:]`
+with `m_layout` = a `UIKeyboardLayoutStar` (superclass `UIKeyboardLayout`), and
+`-[UIKeyboardLayoutRoman handleHardwareKeyDownFromSimulator:]` never hit.
+
+| context | keys sent / queued | text that arrived |
+|---|---|---|
+| Notes, new note (keyboard up), 32 keys incl. é ✓ and 2 Deletes | 32/32 (1.3 s) | none (screenshot, uidump, notes.db) |
+| Notes, 151 keys at 30 ms/key | 151/151 (5.3 s incl. RPC) | none |
+| Notes, 150 keys unpaced | 150/150 (0.25 s, no send timeouts) | none |
+| Safari address field (native UITextField, URL keyboard) | 29/29 | none, page never requested |
+| Safari web text and password fields | not reached (the URL never loaded) | n/a: same case-13 → layout path |
+| Spotlight (SpringBoard, `com.apple.springboard` port) | 5/5 | none |
+| locked | -EACCES | n/a |
+
+Transport, throughput and routing all work: no Mach send ever timed out (the port queue drains
+faster than 600 keys/s), and the right app received every event. Nothing consumes them.
+
+**Why not work around it:** the missing piece is one method on `UIKeyboardLayoutStar`. Adding it
+(or any other consumer) needs code inside every UIKit app, which is exactly what it_typein already
+is. There is no stock setting that selects the Roman layouts, and GSEvent types 10/11 have no
+consumer. The only other text-bearing event, type 200 (`_processScriptEvent:`), loads a scripting
+bundle that the stock rootfs does not have.
+
+**Design, if it is revisited:** on 4.2.1, the IOHIDUserDevice keyboard below is the stock path. The
+`keys` op's routing (frontmost display id → bootstrap purple port, bounded send, lock check) could
+carry 4.x type-10/11 records to `-[UIApplication handleKeyEvent:]` if that path turns out to need no
+hardware-keyboard attach. That is unverified, and it would still be a synthetic source where the HID
+route is not.
 
 ### 4.2.1 on iPod2,1: a stock HID keyboard path exists, but no USB host
 
@@ -287,11 +352,11 @@ tethering on a device Apple never shipped it for. Not recommended.
 | P3 proxy and trust as on the iPad | PAC in the image's Wi-Fi service at build time; MCInstall profile through `lockdown-mcinstall`. Verify ManagedConfiguration-313.17 accepts it | 1 d | regress `webproxy` |
 | P4 image without a shell | IPSW builder stops consuming ipod2g-shell.txt (freeze, OpenSSH, OpenSSL) and the sshd job; bake it_agent, it_typein, the GL shim, markers, sound defaults; marker v3 = "agent, no shell"; split `guestShell` into hasAgent/hasShell in the app | 0.5-1 d | nand_manifest.py diff (only the shell package gone) |
 | P5 CI without SSH | regress.py and friends: lockstatus/launch/respring via the agent, crash logs via crashreportcopymobile, unlock via `lockstatus` + the swipe | 1-2 d | full `regress.py`, all checks green on a no-shell image |
-| P6 3.1.3 text input | GSEvent `key` spike (§4). If it works, drop it_typein and the SpringBoard.plist edit | 1-2 d | test_agent_guest.py `--typing` passes without the dylib |
+| P6 3.1.3 text input | GSEvent `keys` spike (§4): **done, does not work** (events reach UIKeyboardImpl, the stock Star layout drops them). Keep it_typein | done | `probe_keys.py`, §4 |
 | P7 4.2.1 | after 8C148 boots: re-verify each SBS ABI (orientation moves to stock springboardservices, halt/restart to diagnostics_relay); IOHIDUserDevice keyboard; Wi-Fi check | 3-5 d | same probe on 8C148 |
 | P8 2.x (5F138) | after it boots: agent SBS ABIs; gesture power-off; the service set is smaller (no diagnostics) | 2-3 d | same probe |
 
-Total for 3.1.3 feature parity without a shell: **about 6-9 working days (P1-P5)**, plus 1-2 for P6.
+Total for 3.1.3 feature parity without a shell: **about 6-9 working days (P1-P5)**, P6 is done (negative).
 
 ### What stays guest-side, and why
 
@@ -304,7 +369,8 @@ Total for 3.1.3 feature parity without a shell: **about 6-9 working days (P1-P5)
   and PhotoLibrary, for which no stock host-side service exists on 3.x (iTunes wrote a hashed
   iTunesDB). They stay separate processes so a framework crash cannot take the agent down.
 - **The MBXGLEngine shim**: the MBX GPU is not modelled.
-- **it_typein on 3.1.3**, unless P6 succeeds: there is no stock keyboard path.
+- **it_typein on 3.1.3**: there is no stock keyboard path, and P6 showed that out-of-process key
+  events are dropped by the stock layout.
 - Everything else (installs, logs, crash reports, icons, time zone, screenshots, power, networking)
   is stock services or hardware models.
 
@@ -317,3 +383,6 @@ Total for 3.1.3 feature parity without a shell: **about 6-9 working days (P1-P5)
 - Userland: `LC_ALL=C grep -c -a -F <symbol> dyld_shared_cache_armv6`, and `strings` on SpringBoard
   and BTServer.
 - Runtime: `tests/ipod/probe_guest_services.py`.
+- P6: `timeout 570 python3 tests/ipod/probe_keys.py --out DIR` (screenshots, uidump, notes.db).
+  The breakpoint trace used QEMU's `-gdb` stub with Z0 breakpoints at the addresses in §4 (the
+  shared cache is mapped at the same VA in every process); step over each hit before continuing.
