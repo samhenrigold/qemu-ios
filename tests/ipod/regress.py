@@ -1160,6 +1160,19 @@ def install_gles_app(cfg, r):
     return True
 
 
+def dismiss_reorder_tip(control, dev):
+    """A new device's first unlock raises SpringBoard's modal "Edit Home Screen" tip
+    (SBDidShowReorderText unset); it would cover every later frame. Stock behaviour,
+    so dismiss it the way a user does rather than baking the preference."""
+    for _ in range(3):
+        status, tree = itqmp.agent(control.qmp, "uidump", timeout=20)
+        if status or b"text: Edit Home Screen" not in tree:
+            return
+        log("  dismissing SpringBoard's first-unlock Edit Home Screen tip")
+        dev.qmp.tap(160, 332)
+        time.sleep(2)
+
+
 def unlock(cfg, port, dev, tries=UNLOCK_TRIES):
     """Swipe only after SpringBoard confirms that the screen is locked.
 
@@ -1174,6 +1187,7 @@ def unlock(cfg, port, dev, tries=UNLOCK_TRIES):
         if p.returncode != 0 or status is None:
             return False, "SpringBoard lock status unavailable: %s" % (p.stdout + p.stderr).strip()[-160:]
         if status[1] == "0":
+            dismiss_reorder_tip(port, dev)
             return True, "SpringBoard reports unlocked"
         if status[2] == "1":
             return False, "device has a passcode; unlock manually"
