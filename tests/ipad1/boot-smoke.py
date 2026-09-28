@@ -151,6 +151,7 @@ def main():
     ap.add_argument("--keep", action="store_true", help="with --from-checkpoint: leave QEMU running")
     ap.add_argument("--overlay", metavar="DIR", help="with --nand-overlay: persistent overlay DIR (kept)")
     ap.add_argument("--die-id", help="machine die-id (the device's identity.json)")
+    ap.add_argument("--nor-rw", help="private writable NOR copy (effaceable persists across boots)")
     ap.add_argument("--unlock", action="store_true", help="drag the unlock slider once the lock screen is lit")
     ap.add_argument("--shot", metavar="FILE", help="save the last screen as PNG")
     ap.add_argument("--powerdown", action="store_true", help="system_powerdown; QEMU must exit 0 within 45 s")
@@ -187,6 +188,8 @@ def main():
         machine += f",nand={a.nand}"
     if a.die_id:
         machine += f",die-id={a.die_id}"
+    if a.nor_rw:
+        machine += f",nor-rw={a.nor_rw}"
     cmd = [a.qemu, "-machine", machine, "-display", "none", "-monitor", "none",
            "-qmp", f"unix:{qmp_path},server=on,wait=off", "-serial", f"file:{serial}",
            "-d", "unimp,guest_errors", "-D", qlog]

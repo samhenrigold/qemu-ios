@@ -49,9 +49,12 @@ def main():
     ap.add_argument("--kboot", default=f"{FILES}/k48-kboot.bin")
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--die-id", help="machine die-id, as in the kboot bundle's identity")
+    ap.add_argument("--nor-rw", help="private writable NOR copy; the sealing boot's effaceable writes persist here")
     a = ap.parse_args()
     store = os.path.abspath(a.store)
     die = f",die-id={a.die_id}" if a.die_id else ""
+    if a.nor_rw:
+        die += f",nor-rw={os.path.abspath(a.nor_rw)}"
     td = tempfile.mkdtemp(prefix="ipad1-seal-")
     try:
         exited, t, text = boot(a.qemu, a.kboot, f"nand={store}{die}", f"{td}/seal.log", None, a.timeout)

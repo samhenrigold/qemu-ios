@@ -79,13 +79,62 @@ diagnostic job):
 So an unprotected data volume *mounts*, but 4.x userland will not come up without a system keybag, and the
 keybag needs formatted effaceable storage that persists across boots.
 
+## Approach chosen: the IPSW restore ramdisk as the trusted root (2026-09-27)
+
+Two routes reach a formatted effaceable region + a system keybag. Evaluated, and picked the first:
+
+1. **Restore-ramdisk one-shot (chosen).** At `create` time, boot the IPSW's own restore ramdisk
+   (`038-0024-002-ramdisk.dmg`, already decrypted; kernelcache + ramdisk from the Update identity of the
+   BuildManifest) once against the device's writable NAND store and `nor-rw`, run the data-protection step
+   restored/asr does (format effaceable, `MKBKeyBagCreateSystem`), then seal. This is literally what Apple's
+   restore does; it matches Sam's rule ("take the IPSW and know what to do with it", no per-version crypto);
+   the working code lives in the ramdisk, so nothing here reimplements key wrapping.
+
+2. **Offline effaceable + keybag (rejected).** Write the `AppleEffaceableNOR` on-flash format (clones, locker
+   headers, Adler) and a valid `/private/var/keybags/systembag.kb` offline. Rejected: the system keybag is a
+   `BAG1` blob whose class keys are wrapped by a device secret held in an effaceable locker (EMF/Dkey),
+   itself under the hardware UID key (0x835). Producing it offline means reimplementing MobileKeyBag +
+   AppleKeyStore key wrapping *and* the effaceable locker format — real, fragile crypto that duplicates what
+   the ramdisk already does, and, even "derived", is far from the IPSW-agnostic rule.
+
+**The pivotal unknown for route 1** is the trusted-root gate. The refusal comes from
+`AppleEffaceableStorageUserClient::externalMethod` (thumb `0x80335f7c` in this kernelcache): it computes one
+root-trust byte via a virtual on the `AppleEffaceableStorage` provider (vtable slot `+0x1f8`) and selector 4
+(format) branches to `"format attempt from untrusted root"` (string `0x80337a88`, xref `0x80336258`) when it
+is false; `isFormatted` (selector 3) and the locker selectors gate on the same byte. On a normal disk boot it
+is false — the previous agent's `it_kb` confirmed the refusal. On a real restore, iBoot boots the ramdisk in
+restore mode and that state reaches the kernel; we boot direct-kernel (no iBoot), so the **first task of the
+one-shot is to confirm empirically whether a restore-ramdisk boot presents a trusted root**, and if the trust
+virtual reads a DT property / boot-arg (as restore mode sets), set it for that one boot only — legitimately,
+it *is* a restore boot. If instead it requires the secure-boot img3 chain we bypass, reassess (that would push
+route 1 toward the multi-day mark and reopen route 2). Next concrete step: disassemble the `+0x1f8` trust
+virtual and identify what it reads.
+
+The system keybag it creates lands on the data volume (`/private/var/keybags/systembag.kb`), i.e. inside the
+NAND store, and the effaceable lockers land in NOR. So the one-shot must run against the device's *writable*
+NAND store + `nor-rw` before the seal, and both outputs then travel with the device (`nand/` + `nor.bin`).
+
+## What is done (2026-09-27, this session)
+
+`nor-rw` on the ipad1 machine (`hw/arm/ipad1.c`): a private writable 1 MiB NOR copy whose guest writes (the
+effaceable region) persist across boots, mirroring the iPod machine's option. `ipod_touch_nor_spi_open_overlay`
+(shared with the iPod) was relaxed to allow a standalone writable NOR with no read-only `nor=` base, since the
+iPad ships a blank effaceable NOR. Threaded a per-device `nor.bin` through `ipad1_device.py` (created blank and
+sealed in when the manifest sets `options.writable_nor`; recorded in `device.lock.json`), `ipad1_seal.py`
+(`--nor-rw`, so the sealing boot's effaceable writes persist), `boot-smoke.py` (`--nor-rw`) and
+`fresh-device.sh` (boots both times on one private writable copy, so the effaceable/keybag survives the
+power-off → reboot). 3.x manifests do not set `writable_nor`, so their pipeline is byte-identical to before
+(a blank writable NOR reads all-`0xff`, exactly like unset flash, and 3.x never touches effaceable-in-NOR).
+The `8C148` manifest sets `writable_nor: true` in readiness; it still cannot boot to a lit screen until the
+keybag one-shot exists. Gates green after the change: `fresh-device.sh` for 7B500 and 7B367 (both with the
+activation hook), and the iPod regression — see the commit.
+
 ## What is left
 
 | item | estimate |
 |---|---|
-| Formatted effaceable storage: either write the AppleEffaceableNOR on-flash format (clones, locker headers) offline into a per-device NOR image, or run the format from a trusted root once (e.g. boot the IPSW restore ramdisk with a one-shot helper) | 1-2 days |
-| NOR persistence on the ipad1 machine (`nor-rw`, as the iPod machine has) and a per-device `nor.bin` through `ipad1_device.py`, `ipad1_seal.py`, `fresh-device.sh` and the app | 0.5-1 day |
-| System keybag at first boot: a one-shot guest job calling `MKBKeyBagCreateSystem(NULL, "/private/var")` while keybagd is held off (launchd honours `/var/db/launchd.db/com.apple.launchd/overrides.plist`, which the data volume can carry), then re-enabling it; then check securityd, lockdownd, DataMigrator and SpringBoard unblock | 0.5 day, plus whatever the next layer is |
+| ~~NOR persistence on the ipad1 machine (`nor-rw`) and a per-device `nor.bin` through the pipeline~~ **DONE this session** (the app still needs to pass its own private writable `nor.bin` copy as `nor-rw=`; see below) | — |
+| Restore-ramdisk one-shot: a kboot bundle booting `038-0024-002-ramdisk.dmg` as `rd=md0` with the restore DeviceTree, then the DP step (format effaceable + `MKBKeyBagCreateSystem`), run against the device's writable NAND + `nor-rw` before the seal. **Gated on** confirming the trust virtual (`+0x1f8`) permits the format from a ramdisk boot | 1-2 days (more if trust needs the img3 chain) |
 | GLI shim for 4.2.1: 15 new dispatch slots (13 inserted after slot 764: `draw_elements_base_vertex` ... `sample_maski`, then `discard_framebuffer_EXT` and `resolve_multisample_framebuffer_APPLE`); a per-firmware TSV for `gligen.py` and a check of the new entry points | 0.5-1 day |
 | Activation: the opt-in hook refused 4.2.1's lockdownd (it fails closed; exit 1, file unchanged) | the hook owner's call |
 | Unlock / power-off coordinates on 4.x SpringBoard | unverified (no UI yet) |
