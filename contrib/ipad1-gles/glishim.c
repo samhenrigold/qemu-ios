@@ -387,7 +387,14 @@ int gliGetInteger(void *gc, unsigned pname, int *v)
 
 /* NULL releases the view. Otherwise EAGL has already bound the drawable and
  * attached its first surface (0x38E); later frames' surfaces come from
- * drawable->nextBuffer inside GLESPresentView, as on the MBX path. */
+ * drawable->nextBuffer inside GLESPresentView, as on the MBX path.
+ *
+ * NULL also UNBINDS the old drawable (vt[2]), as the stock engine does
+ * (_gliBindViewES 0xe6d02: NULL with a view on the bound framebuffer calls
+ * [view+8]). renderbufferStorage:fromDrawable: starts with BindView(NULL) and
+ * then binds the layer again; CA refuses that bind while the layer still
+ * belongs to the old binding, so an app that rebuilds its framebuffer (Super
+ * Monkey Ball, on its rotate to landscape) got NO and presented nowhere. */
 void gliBindViewES(void *gc, void *drawable, unsigned char retained, int a, int b)
 {
     ca_view_t *v = ca_view_for_gc(gc, drawable != 0);
@@ -396,6 +403,8 @@ void gliBindViewES(void *gc, void *drawable, unsigned char retained, int a, int 
     if (!v) return;
     if (!drawable) {
         ca_view_t empty = {0};
+        void **vt = v->drawable;
+        if (vt && vt[2]) ((ca_unbind_fn)vt[2])(vt);
         gli_own(v, 0);
         *v = empty;
         return;
