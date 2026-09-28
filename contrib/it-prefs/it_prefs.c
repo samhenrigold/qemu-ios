@@ -15,6 +15,9 @@
  *       pointed at the itwebproxy guestfwd address over plain HTTP, it gets a
  *       position from the host.
  *
+ * Once Wi-Fi (en0) has an address it also restarts locationd, which otherwise
+ * starts before Wi-Fi is powered and then never scans (see main()).
+ *
  * IPSW-agnostic: each key name is confirmed in the binary that reads it first;
  * if an IPSW does not carry it, the job logs that and leaves that key alone.
  *
@@ -34,6 +37,9 @@ extern int waitpid(int, int *, int);
 extern int setgid(unsigned);
 extern int setuid(unsigned);
 extern int setenv(const char *, const char *, int);
+extern int socket(int, int, int);
+extern int ioctl(int, unsigned long, ...);
+extern unsigned sleep(unsigned);
 
 #define SPRINGBOARD "/System/Library/CoreServices/SpringBoard.app/SpringBoard"
 #define LOCATIOND   "/usr/libexec/locationd"
@@ -64,6 +70,13 @@ static long len(const char *s)
     while (*p)
         p++;
     return p - s;
+}
+
+static int streq(const char *a, const char *b)
+{
+    while (*a && *a == *b)
+        a++, b++;
+    return *a == *b;
 }
 
 static void say(const char *a, const char *b, const char *c)
@@ -183,16 +196,39 @@ static unsigned as_mobile(int write, const char *const *jobs, unsigned njobs)
     return (status >> 8) & 0xff;
 }
 
+/* Wait up to secs seconds for en0 (Wi-Fi) to have an IPv4 address; 1 if it did. */
+static int wifi_up(unsigned secs)
+{
+    struct { char name[16]; unsigned char addr[16]; } ifr = { "en0" };
+    int fd = socket(2, 2, 0);   /* AF_INET, SOCK_DGRAM */
+
+    while (fd >= 0) {
+        if (ioctl(fd, 0xc0206921UL, &ifr) == 0) {   /* SIOCGIFADDR */
+            close(fd);
+            return 1;
+        }
+        if (!secs--)
+            break;
+        sleep(1);
+    }
+    if (fd >= 0)
+        close(fd);
+    return 0;
+}
+
 /*
- * Only a job whose settings actually change is unloaded around the write:
- * restarting locationd on every boot is not free (it re-runs its startup and
- * re-asks apps for permission), so a store that already carries the values
- * is left alone.
+ * locationd only scans for Wi-Fi if Wi-Fi was powered when it started. It
+ * starts at boot, before configd powers the BCM4329 up, and on a fast
+ * (sealed) boot it usually loses that race: no scan all session, so Maps gets
+ * "Your location could not be determined" (docs/ipad1/location.md). So once
+ * en0 has an address, locationd is restarted, and any setting that has to
+ * change is written while it is down. Other jobs are restarted only when one
+ * of their settings changes.
  */
 int main(void)
 {
     const char *jobs[sizeof(SETTINGS) / sizeof(SETTINGS[0])];
-    unsigned i, j, n = 0, stale, stopped = 0;
+    unsigned i, j, n = 0, stale, stopped = 0, locationd = 0;
 
     for (i = 0; i < sizeof(SETTINGS) / sizeof(SETTINGS[0]); i++) {
         for (j = 0; j < n && jobs[j] != SETTINGS[i].job; j++)
@@ -200,18 +236,24 @@ int main(void)
         if (SETTINGS[i].job && j == n)
             jobs[n++] = SETTINGS[i].job;
     }
+    for (j = 0; j < n && !streq(jobs[j], LOCATIOND_JOB); j++)
+        ;
+    if (j < n && wifi_up(120))
+        locationd = 1u << j;
     stale = as_mobile(0, jobs, n);
-    if (!stale) {
+    if (!stale)
         say("preferences already set", "", "");
+    if (!(stale | locationd))
         _exit(0);
-    }
     for (j = 0; j < n; j++)
-        if ((stale & (1u << j)) && launchctl("unload", jobs[j]) == 0)
+        if (((stale | locationd) & (1u << j)) && launchctl("unload", jobs[j]) == 0)
             stopped |= 1u << j;
-    as_mobile(1, jobs, n);
+    if (stale)
+        as_mobile(1, jobs, n);
     for (j = 0; j < n; j++)
         if (stopped & (1u << j))
-            say(jobs[j], launchctl("load", jobs[j]) == 0 ? " reloaded" : " reload failed", "");
+            say(jobs[j], launchctl("load", jobs[j]) == 0 ? " reloaded" : " reload failed",
+                locationd & (1u << j) ? " (Wi-Fi up)" : "");
     _exit(0);
     return 0;
 }

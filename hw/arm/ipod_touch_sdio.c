@@ -1287,8 +1287,8 @@ static const MemoryRegionOps ipod_touch_sdio_ops = {
  * "bssid": the access point's BSSID, "aa:bb:cc:dd:ee:ff", settable at run
  * time (qom-set). The host changes it with the Wi-Fi position it serves
  * (docs/ipad1/location.md): locationd caches a position per BSSID, so a new
- * position has to arrive as a new, unknown access point. Not migrated: it is
- * host policy, and the host sets it again.
+ * position has to arrive as a new, unknown access point. Migrated (subsection,
+ * only when not the default) so a restored guest stays on the AP it joined.
  */
 static char *sdio_get_bssid(Object *obj, Error **errp)
 {
@@ -1395,6 +1395,22 @@ static int sdio_post_load(void *opaque, int version_id)
     return 0;
 }
 
+static bool sdio_bssid_needed(void *opaque)
+{
+    return memcmp(((IPodTouchSDIOState *)opaque)->bssid, default_bssid, sizeof(default_bssid));
+}
+
+static const VMStateDescription vmstate_sdio_bssid = {
+    .name = TYPE_IPOD_TOUCH_SDIO "/bssid",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sdio_bssid_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_ARRAY(bssid, IPodTouchSDIOState, 6),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_ipod_touch_sdio = {
     .name = TYPE_IPOD_TOUCH_SDIO,
     .version_id = 1,
@@ -1434,6 +1450,10 @@ static const VMStateDescription vmstate_ipod_touch_sdio = {
         VMSTATE_SINGLE(backplane, IPodTouchSDIOState, 1, vmstate_sdio_backplane, GHashTable *),
         VMSTATE_SINGLE(rx_fifo, IPodTouchSDIOState, 1, vmstate_sdio_frames, GQueue *),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sdio_bssid,
+        NULL
     },
 };
 
