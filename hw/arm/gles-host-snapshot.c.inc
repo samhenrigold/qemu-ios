@@ -470,6 +470,16 @@ static GLESBuffer *snap_buffer(GHashTable *t, uint32_t name)
     return b;
 }
 
+/* Probe the dense guest names from 1, then the host-private range. */
+static bool snap_scan(GLuint *name, GLuint *gap)
+{
+    if (*gap >= SNAP_SCAN_GAP && *name < GLES_PRIVATE_NAME) {
+        *name = GLES_PRIVATE_NAME;
+        *gap = 0;
+    }
+    return *gap < SNAP_SCAN_GAP;
+}
+
 static void snap_put_textures(SnapW *w)
 {
     GByteArray *body = g_byte_array_new();
@@ -477,7 +487,7 @@ static void snap_put_textures(SnapW *w)
     uint32_t count = 0;
     GLint unpack = 4;
 
-    for (GLuint name = 1, gap = 0; gap < SNAP_SCAN_GAP; name++) {
+    for (GLuint name = 1, gap = 0; snap_scan(&name, &gap); name++) {
         GLenum target = GL_TEXTURE_2D;
         if (!glIsTexture(name)) { gap++; continue; }
         gap = 0;
@@ -580,7 +590,7 @@ static void snap_put_renderbuffers(SnapW *w)
     GByteArray *body = g_byte_array_new();
     SnapW bw = { body };
     uint32_t count = 0;
-    for (GLuint name = 1, gap = 0; gap < SNAP_SCAN_GAP; name++) {
+    for (GLuint name = 1, gap = 0; snap_scan(&name, &gap); name++) {
         GLint wd = 0, ht = 0, ifmt = 0;
         if (!glIsRenderbufferEXT(name)) { gap++; continue; }
         gap = 0;
@@ -621,7 +631,7 @@ static void snap_put_framebuffers(SnapW *w)
     GByteArray *body = g_byte_array_new();
     SnapW fw = { body };
     uint32_t count = 0;
-    for (GLuint name = 1, gap = 0; gap < SNAP_SCAN_GAP; name++) {
+    for (GLuint name = 1, gap = 0; snap_scan(&name, &gap); name++) {
         if (!glIsFramebufferEXT(name)) { gap++; continue; }
         gap = 0;
         count++;
