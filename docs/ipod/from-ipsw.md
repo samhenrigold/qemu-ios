@@ -102,7 +102,7 @@ Estimate: a day for the NOR, unknown for the logo stall.
 - `ipod_touch_inject_boot_args` (hw/arm/ipod_touch_2g.c:1511) checks 24 bytes of 7E18 iBoot and skips
   otherwise ("unknown iBoot; early argument injection skipped", seen on 8C148); the late boot-args write
   finds `boot_args` by signature on any build.
-- IT_INJECT_DT / IT_INJECT_LOGO (7E18 VAs, :988, :1057) and IT_AMFI_ALLOW_TASKPORT (firmware profile, 7E18 only)
+- IT_INJECT_LOGO (7E18 VAs) and IT_AMFI_ALLOW_TASKPORT (firmware profile, 7E18 only)
   are opt-in env knobs, off on the default path.
 - 5F138 `iboot_boot_args_pa` (fmss) applies only without direct iBoot.
 - The BCM4325 model's Wi-Fi MAC is a fixed value from the original unit (hw/arm/ipod_touch_sdio.c:307, :1326),
@@ -158,3 +158,22 @@ nand-current.new. 538 differing rows, every one in these classes:
   the change: lock PASS, no FTL rescan, clean power-off in 14.4 s. The boot step fails on "screen lit: never"
   because without an activation hook the device sits at "Connect to iTunes" and cannot be unlocked
   (userland-boot.md: "Without an activation hook the device stops at Connect to iTunes").
+
+## Boot-chain fidelity verification (2026-09-28)
+
+The old DeviceTree injection thunk is removed. Its comment described a failure
+before `build_nor.py` wrapped NOR SHSH signatures with the emulated UID-derived
+key. No PKE or AES behavior change is needed for the generated 7E18 NOR.
+
+Verified over the gdbstub using stock `7E18-a/iBoot.bin` and `nor.bin`, with
+all inherited `IT_*` variables removed, no injection and no signature forging:
+`image_load` at the DeviceTree call returns r0=0; iBoot's output globals contain
+address 0x0bf00000 and length 0x894c (35,148 bytes). The call-site bytes remain
+`0af057fa002803da002323602b600ce0`. These addresses are diagnostic observations
+for this exact build, not emulator constants. The NOR builder's UID wrapping is
+the prerequisite; raw IPSW SHSH bytes in flash are not the restored NOR format.
+
+Validation after removal: `scripts/ccninja -C build qemu-system-arm` succeeds;
+all eight default regression checks pass across `/private/tmp/ipod-bootchain-regress-dt`
+and `...-dt-apps` (the second run supplies initially missing guest fixtures).
+GLES uses `--stage-gles-shim` for the shipping NAND's older shim.
