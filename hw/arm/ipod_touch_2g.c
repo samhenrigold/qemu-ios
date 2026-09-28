@@ -3085,7 +3085,9 @@ static void ipod_touch_machine_init(MachineState *machine)
         ipod_touch_sdio_setup_net(sdio_state);
     }
 
-    dev = exynos4210_uart_create(UART0_MEM_BASE, 256, 0, serial_hd(0), nms->irq[0][24], nms->direct_iboot[0] != 0);
+    /* UART interrupt semantics belong to the SoC, not the boot strategy.
+     * Both SecureROM and direct-iBoot guests acknowledge S5L UTRSTAT bits. */
+    dev = exynos4210_uart_create(UART0_MEM_BASE, 256, 0, serial_hd(0), nms->irq[0][24], true);
     if (!dev) {
         hw_error("Failed to create UART0 device!");
     }
@@ -3097,17 +3099,17 @@ static void ipod_touch_machine_init(MachineState *machine)
      */
     uart1_dev = exynos4210_uart_create(UART1_MEM_BASE, 256, 1,
                                        it_bt_chardev(serial_hd(1), nms->bt_enabled, nms->bt_latency_us),
-                                       nms->irq[0][25], nms->direct_iboot[0] != 0);
+                                       nms->irq[0][25], true);
     if (!uart1_dev) {
         hw_error("Failed to create UART1 device!");
     }
 
-    dev = exynos4210_uart_create(UART2_MEM_BASE, 256, 2, serial_hd(2), nms->irq[0][26], nms->direct_iboot[0] != 0);
+    dev = exynos4210_uart_create(UART2_MEM_BASE, 256, 2, serial_hd(2), nms->irq[0][26], true);
     if (!dev) {
         hw_error("Failed to create UART0 device!");
     }
 
-    dev = exynos4210_uart_create(UART3_MEM_BASE, 256, 3, serial_hd(3), nms->irq[0][27], nms->direct_iboot[0] != 0);
+    dev = exynos4210_uart_create(UART3_MEM_BASE, 256, 3, serial_hd(3), nms->irq[0][27], true);
     if (!dev) {
         hw_error("Failed to create UART0 device!");
     }
