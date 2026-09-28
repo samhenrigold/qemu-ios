@@ -354,7 +354,7 @@ class Device:
         if getattr(cfg, "kernel_console", False):
             machine += (",boot-args=amfi_allow_any_signature=1 "
                         "cs_enforcement_disable=1 serial=3 debug=0x8")
-        for option in ("audio_hw", "h264_decode", "scaler_decode", "mpvd_decode", "amc_mode", "lcd_planes", "direct_iboot", "direct_llb", "gid_blobs"):
+        for option in ("audio_hw", "h264_decode", "scaler_decode", "mpvd_decode", "amc_mode", "lcd_planes", "direct_iboot", "direct_llb", "gid_blobs", "guest_package"):
             value = getattr(cfg, option, None)
             if value is not None:
                 machine += "," + option.replace("_", "-") + "=" + value.replace(",", ",,")
@@ -476,8 +476,15 @@ class Device:
                         % (self.tag, lit, lit2))
                     continue
                 to_png(shot, os.path.join(self.dir, "home.png"))
+                log("%s: guest-package-status: %s" % (self.tag, self.guest_package_status()))
                 return True, "lit=%d, held for %ds" % (lit2, HOME_CONFIRM_S), best
         return False, "timed out after %ds" % timeout, best
+
+    def guest_package_status(self):
+        try:
+            return self.qmp.cmd("qom-get", path="/machine", property="guest-package-status")
+        except Exception as e:
+            return "unavailable (%s)" % e
 
     def serial_text(self):
         try:
@@ -1240,7 +1247,11 @@ def check_agent(cfg, procs, dev, r):
             if status != 0 or not check(response):
                 return r.set(False, "agent %s failed: status=%d, response bytes=%d" %
                              (op, status, len(response)))
-        return r.set(True, "v2 ping, shell-free spawn, 70 KiB binary round trip, chown, sync")
+        status = dev.guest_package_status()
+        if cfg.guest_package and not status.startswith("report "):
+            return r.set(False, "agent fine, but no it_boot report: %s" % status)
+        return r.set(True, "v2 ping, shell-free spawn, 70 KiB binary round trip, chown, sync; "
+                           "guest package: %s" % status)
     finally:
         itqmp.agent(dev.qmp, "unlink", remote)
 
@@ -1667,6 +1678,9 @@ def main():
                          "imgtools/device.py ships its own iBoot.bin")
     ap.add_argument("--gid-blobs", default=None, metavar="FILE",
                     help="the machine's gid-blobs table (a device.py device's gid-blobs.bin)")
+    ap.add_argument("--guest-package", default=None, metavar="DIR",
+                    help="the machine's guest-package offer directory (contrib/guest-package/mkpkg.py "
+                         "offer); the agent check then also wants it_boot's report")
     ap.add_argument("--device", default=None, metavar="DIR",
                     help="a device made by imgtools/device.py: its nand/, nor.bin, iBoot.bin and "
                          "gid-blobs.bin (explicit options win)")

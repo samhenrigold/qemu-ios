@@ -29,6 +29,9 @@ Device checks (tests/ipad1/fresh-device.sh):
                   Brightness cannot tell home from "Connect to iTunes": look at it.
   --powerdown     then QMP system_powerdown; pass only if QEMU exits 0 within 45 s
   --no-rescan     fail if the FTL logged "CXT is not valid" (the store was not shut down cleanly)
+  --guest-package DIR  serve DIR as this boot's guest-package offer (mkpkg.py offer); once the screen is up,
+                  pass only if it_boot reported (guest-package-status) and the package's it_pbd delivers
+                  a host paste (pasteboard-status)
 """
 import argparse, collections, json, os, re, shutil, subprocess, sys, tempfile, time
 
@@ -138,6 +141,23 @@ def wait_migration(q, deadline):
         time.sleep(0.1)
 
 
+def guest_package_check(q, timeout=60):
+    """it_boot reported this boot, and the package's it_pbd takes a host paste."""
+    deadline = time.monotonic() + timeout
+    get = lambda prop: q.cmd("qom-get", path="/machine", property=prop)
+    while not (status := get("guest-package-status")).startswith("report ") and time.monotonic() < deadline:
+        time.sleep(2)
+    print(f"guest-package-status: {status}")
+    while "alive" not in (agent := get("pasteboard-agent")) and time.monotonic() < deadline:
+        time.sleep(2)
+    text = "guest-package check %d" % os.getpid()
+    q.cmd("qom-set", path="/machine", property="pasteboard", value=text)
+    while "delivered" not in (pb := get("pasteboard-status")) and time.monotonic() < deadline:
+        time.sleep(1)
+    print(f"pasteboard-agent: {agent}; pasteboard-status: {pb}")
+    return status.startswith("report ") and "alive" in agent and "delivered" in pb
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seconds", type=int, default=45)
@@ -160,6 +180,7 @@ def main():
                     help=f"lit threshold (default {LIT}, a lock screen; {LIT_ITUNES} for 'Connect to iTunes')")
     ap.add_argument("--serial-out", metavar="FILE", help="keep the serial log as FILE")
     ap.add_argument("--stderr-out", metavar="FILE", help="keep QEMU's stderr (the [gles] host log) as FILE")
+    ap.add_argument("--guest-package", metavar="DIR", help="offer directory; check it_boot's report and it_pbd")
     ap.add_argument("--no-rescan", action="store_true", help=f"fail on '{RESCAN}'")
     a = ap.parse_args()
 
@@ -195,6 +216,8 @@ def main():
         machine += f",die-id={a.die_id}"
     if a.nor_rw:
         machine += f",nor-rw={a.nor_rw}"
+    if a.guest_package:
+        machine += ",guest-package=" + os.path.abspath(a.guest_package).replace(",", ",,")
     cmd = [a.qemu, "-machine", machine, "-display", "none", "-audio", "driver=none", "-monitor", "none",
            "-qmp", f"unix:{qmp_path},server=on,wait=off", "-serial", f"file:{serial}",
            "-d", "unimp,guest_errors", "-D", qlog]
@@ -207,7 +230,7 @@ def main():
                              start_new_session=a.keep)     # --keep: outlive this script's process group
     q, seen, text, screen_at, ended = None, {}, "", None, None
     want_screen = bool(a.checkpoint_out or a.from_checkpoint or a.unlock or a.shot or a.powerdown)
-    powered_off = unlocked = None
+    powered_off = unlocked = packaged = None
     try:
         while not os.path.exists(qmp_path):
             if child.poll() is not None:
@@ -269,6 +292,8 @@ def main():
                 time.sleep(3)
             save_shot(q, os.path.abspath(a.shot))
             print(f"screen saved to {a.shot}")
+        if a.guest_package and screen_at is not None:
+            packaged = guest_package_check(q)
         if a.powerdown and child.poll() is None:
             t1 = time.monotonic()
             q.cmd("system_powerdown")
@@ -319,7 +344,8 @@ def main():
     rescan = RESCAN in text
     if a.no_rescan:
         print(f"  FTL rescan: {'YES (unclean store)' if rescan else 'no'}")
-    bad = (a.no_rescan and rescan) or (a.powerdown and not powered_off) or (a.unlock and not unlocked)
+    bad = (a.no_rescan and rescan) or (a.powerdown and not powered_off) or (a.unlock and not unlocked) \
+        or (a.guest_package and not packaged)
     if want_screen:
         return 0 if screen_at is not None and not bad else 1
     return 0 if last == MARKERS[-1][0] and not bad else 1
