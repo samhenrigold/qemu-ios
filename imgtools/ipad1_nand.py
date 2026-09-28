@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Offline NAND image generator for the iPad 1 (K48AP) / iOS 3.2.2 (7B500) kernel.
 
-    ipad1_nand.py build --geometry k48-16g --mbr rdisk0-head4M.bin \
+    ipad1_nand.py mbr [--geometry k48-16g] [--system-mib 1280] OUT     (see make_mbr)
+    ipad1_nand.py build --geometry k48-16g --mbr mbr.bin --kernelcache kernelcache.mach \
                         --system rdisk0s1-system.img [--s3 rdisk0s3.bin] \
                         [--data SIZE|IMAGE|none] --out FILE-or-DIR
     ipad1_nand.py check DIR [--mbr FILE] [--system IMG]
@@ -74,11 +75,19 @@ ERASED_META = b"\xff" * META
 
 # NANDDRIVERSIGN: nSig = '0'+PE_nand_epoch(1) | 0x43313100 (c07f3cfe), flags 5
 # (c07f3f14; +0x10000 only when formatting with DT whitening), then up to 0xff
-# bytes of the kernel version string (c07f3f2a), never validated by the reader.
+# bytes of the kernel version string (c07f3f2a), never validated by the reader;
+# `build` takes it from the kernelcache (kernel_version()).
 NSIG = 0x43313131
 SIG_FLAGS = 0x00010005
-KERNEL_VERSION = (b"Darwin Kernel Version 10.3.1: Wed Aug  4 19:08:04 PDT 2010; "
-                  b"root:xnu-1504.2.60~1/RELEASE_ARM_S5L8930X")   # 0xc0214690
+
+
+def kernel_version(kernelcache):
+    """The "Darwin Kernel Version ..." string (7B500: 0xc0214690) out of a decrypted kernelcache."""
+    data = open(kernelcache, "rb").read()
+    at = data.find(b"Darwin Kernel Version ")
+    if at < 0:
+        raise SystemExit("%s: no Darwin Kernel Version string" % kernelcache)
+    return data[at:data.index(b"\0", at)][:0xff]
 
 # YaFTL SpareData.type (yaftl_common.h; 7B500 c080486e / c0803d62 / c0803664)
 T_INDEX, T_CLOSED, T_USER, T_CXT, T_VFL = 0x4, 0x8, 0x10, 0x20, 0x80
@@ -317,7 +326,7 @@ def vfl_checksum(c):
     return bytes(c)
 
 
-def write_metadata(st, geo):
+def write_metadata(st, geo, kernel_ver):
     for cs in range(geo.num_cs):
         cands = geo.cand[cs]
         pg = special_page(geo, b"DEVICEINFOBBT", 4, cands, bbt_bitmap(geo, cs))
@@ -328,7 +337,7 @@ def write_metadata(st, geo):
         meta = struct.pack("<I", 0xFFFFFFFF) + b"\xff" * 4 + b"\x00\x80\xff\xff"   # c07fc85a..c07fc874
         for p in range(8):                                   # 8 identical copies, block 1 pages 0-7
             st.write(cs, geo.ppage(geo.vfl_blocks[0], p), ctx.ljust(geo.page_size, b"\0"), meta)
-    sig = special_page(geo, b"NANDDRIVERSIGN", 0, [0] * 8, struct.pack("<II", NSIG, SIG_FLAGS) + KERNEL_VERSION.ljust(0x100, b"\0"))
+    sig = special_page(geo, b"NANDDRIVERSIGN", 0, [0] * 8, struct.pack("<II", NSIG, SIG_FLAGS) + kernel_ver.ljust(0x100, b"\0"))
     for p in range(geo.pages_per_block):
         st.write(0, geo.ppage(geo.cand[0][4], p), *sig, raw=True)
 
@@ -401,6 +410,23 @@ class FTLWriter:
 # --- inputs ------------------------------------------------------------------
 
 MBR_ENTRY = struct.Struct("<BBHBBHII")    # status, chs, type, chs, lba, count (chs squeezed)
+
+
+def make_mbr(geo, system_mib):
+    """The logical disk's head as a 7B500 restore leaves it on a K48, up to partition 1 (LBA 63): sector 0 is only
+    the table (no boot code), the rest zero. p1 Apple_HFS system at 63, p3 an 8-sector 0xAF stub one sector past
+    its end, p2 0xAE data 45 sectors after p3's start, to 45 sectors before the exported end. Start CHS is
+    01 01 00 for LBA 63, FE FF FF past the CHS limit, end CHS always FE FF FF.
+    ponytail: the gaps (1, 37 and the trailing 45) are measured on one 16 GB unit, not derived."""
+    ps, n = geo.page_size, system_mib * (1 << 20) // geo.page_size
+    head = bytearray(63 * ps)
+    p3 = 63 + n + 1
+    for i, (typ, lba, cnt) in enumerate([(0xAF, 63, n), (0xAE, p3 + 45, geo.exported_pages - (p3 + 45) - 45),
+                                         (0xAF, p3, 8)]):
+        chs = bytes.fromhex("010100" if lba == 63 else "feffff")
+        head[0x1be + 16 * i:0x1ce + 16 * i] = b"\0" + chs + bytes([typ]) + b"\xfe\xff\xff" + struct.pack("<II", lba, cnt)
+    head[510:512] = b"\x55\xaa"
+    return bytes(head)
 
 
 def mbr_parts(mbr):
@@ -539,7 +565,7 @@ def build(a):
         raise SystemExit("partition 2 ends at %d > exported %d sectors" % (p2[1] + p2[2], geo.exported_pages))
 
     st = Store(out, geo, create=True)
-    write_metadata(st, geo)
+    write_metadata(st, geo, kernel_version(a.kernelcache) if a.kernelcache else a.kernel_version)
     ftl = FTLWriter(st, geo)
     # LPN == 4 KiB LBA. Segments in ascending LBA order:
     segs = [(0, min(p1[1], len(head) // ps), lambda n: bytes(head[n * ps:(n + 1) * ps]))]
@@ -736,7 +762,8 @@ def selfcheck():
         paths[name] = os.path.join(work, name)
         open(paths[name], "wb").write(blob)
     out = build(argparse.Namespace(geometry="selfcheck", mbr=paths["mbr"], system=paths["system.img"],
-                                   s3=None, data=paths["data.img"], out=os.path.join(work, "nand"), force=True))
+                                   s3=None, data=paths["data.img"], out=os.path.join(work, "nand"), force=True,
+                                   kernelcache=None, kernel_version=b"Darwin Kernel Version selfcheck"))
     good = check(out, mbr=paths["mbr"], system=paths["system.img"])
     # the fstab rewrite must have landed
     geo = Geo(name="selfcheck", **GEOMETRIES["selfcheck"])
@@ -752,6 +779,13 @@ def selfcheck():
     good &= ftl_page is not None and b"/dev/disk0s2   /private/var" in ftl_page
     print("fstab patched:", ftl_page is not None and b"/dev/disk0s2   /private/var" in ftl_page)
     shutil.rmtree(work, ignore_errors=True)
+    # make_mbr reproduces the 16 GB unit's sector 0 (checked byte for byte against its rdisk0 dump)
+    head = make_mbr(Geo(name="k48-16g", **GEOMETRIES["k48-16g"]), 1280)
+    unit = bytes.fromhex("00010100affeffff3f00000000000500" "00feffffaefeffff6d0005002fe53600"
+                         "00feffffaffeffff4000050008000000")
+    mbr_ok = head[0x1be:0x1ee] == unit and head[510:512] == b"\x55\xaa" and not any(head[:0x1be] + head[0x1ee:510] + head[512:])
+    print("make_mbr matches the unit's sector 0:", mbr_ok)
+    good &= mbr_ok
     print("selfcheck", "passed" if good else "FAILED")
     return good
 
@@ -763,12 +797,17 @@ def main():
     b = sub.add_parser("build")
     b.add_argument("--geometry", default="k48-16g", choices=[k for k in GEOMETRIES if k != "selfcheck"])
     b.add_argument("--oracle", default=None, help=argparse.SUPPRESS)
-    b.add_argument("--mbr", required=True, help="first sectors of the logical device (rdisk0-head4M.bin)")
+    b.add_argument("--mbr", required=True, help="first sectors of the logical device (`mbr` output)")
+    b.add_argument("--kernelcache", required=True, help="decrypted kernelcache (ipad1_fw.py), for NANDDRIVERSIGN's version string")
     b.add_argument("--system", required=True, help="raw system partition image (rdisk0s1)")
     b.add_argument("--s3", default=None, help="raw partition 3 image (rdisk0s3.bin), optional")
     b.add_argument("--data", default="1g", help="data partition: SIZE (fresh HFS+ via hdiutil), IMAGE, or none")
     b.add_argument("--out", required=True)
     b.add_argument("--force", action="store_true")
+    m = sub.add_parser("mbr")
+    m.add_argument("--geometry", default="k48-16g", choices=[k for k in GEOMETRIES if k != "selfcheck"])
+    m.add_argument("--system-mib", type=int, default=1280)
+    m.add_argument("out")
     c = sub.add_parser("check")
     c.add_argument("dir")
     c.add_argument("--mbr")
@@ -778,6 +817,9 @@ def main():
         sys.exit(0 if selfcheck() else 1)
     if a.cmd == "build":
         build(a)
+    elif a.cmd == "mbr":
+        with open(a.out, "wb") as f:
+            f.write(make_mbr(Geo(name=a.geometry, **GEOMETRIES[a.geometry]), a.system_mib))
     elif a.cmd == "check":
         sys.exit(0 if check(a.dir, a.mbr, a.system) else 1)
     else:
