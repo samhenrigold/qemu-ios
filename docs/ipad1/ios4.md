@@ -97,18 +97,46 @@ Two routes reach a formatted effaceable region + a system keybag. Evaluated, and
    AppleKeyStore key wrapping *and* the effaceable locker format — real, fragile crypto that duplicates what
    the ramdisk already does, and, even "derived", is far from the IPSW-agnostic rule.
 
-**The pivotal unknown for route 1** is the trusted-root gate. The refusal comes from
-`AppleEffaceableStorageUserClient::externalMethod` (thumb `0x80335f7c` in this kernelcache): it computes one
-root-trust byte via a virtual on the `AppleEffaceableStorage` provider (vtable slot `+0x1f8`) and selector 4
-(format) branches to `"format attempt from untrusted root"` (string `0x80337a88`, xref `0x80336258`) when it
-is false; `isFormatted` (selector 3) and the locker selectors gate on the same byte. On a normal disk boot it
-is false — the previous agent's `it_kb` confirmed the refusal. On a real restore, iBoot boots the ramdisk in
-restore mode and that state reaches the kernel; we boot direct-kernel (no iBoot), so the **first task of the
-one-shot is to confirm empirically whether a restore-ramdisk boot presents a trusted root**, and if the trust
-virtual reads a DT property / boot-arg (as restore mode sets), set it for that one boot only — legitimately,
-it *is* a restore boot. If instead it requires the secure-boot img3 chain we bypass, reassess (that would push
-route 1 toward the multi-day mark and reopen route 2). Next concrete step: disassemble the `+0x1f8` trust
-virtual and identify what it reads.
+### The trusted-root gate: RESOLVED — it is DeviceTree state, not a signature check (2026-09-27)
+
+The refusal comes from `AppleEffaceableStorageUserClient::externalMethod` (thumb `0x80335f7c`): it fetches a
+trust byte and selector 4 (format) branches to `"format attempt from untrusted root"` (string `0x80337a88`)
+when it is false; `isFormatted` (3) and the locker selectors gate on the same byte. Disassembled the whole
+chain — **the byte comes from a DeviceTree property, not from any in-kernel img3/signature verification.**
+Full evidence, decisive: the emulator can present this legitimately for a restore-ramdisk boot.
+
+Trust chain, bottom-up:
+
+- `externalMethod` 0x80335fa4-fd8: `r0 = this->provider [this+0x78]`; calls a provider virtual (vtable
+  `+0x1d8`) to get an object X; loads `X.vtable[+0x1f8]` (the trust virtual) and calls it with `r1` = the
+  literal string **`"SecureRoot"`** (`0x80337980`) and `r2` = `&trustByte` at `[sp+0x13]`. So the gate is
+  simply "is the `SecureRoot` IOResource present?". `"root"` (`0x8033793c`) nearby is only the calling
+  proc name in the log line, not the gate.
+- `SecureRoot` is an **IOResource published by `com.apple.driver.AppleARMPlatform`** (owner-mapped via
+  `__PRELINK_INFO`). Consumers that gate on it: `AppleEffaceableStorage`, `IOFlashStorage`,
+  `IOStorageFamily`, `AppleKeyStore` — each carries its own `"SecureRoot"` string copy.
+- AppleARMPlatform's boot-device init (0x802d7ac4) reads, via `IORegistryEntry::getProperty` (vtable
+  `+0x9c`) on the boot node, the DeviceTree property **`secure-root-prefix`** (`0x802dfafc`), plus
+  `no-rtc` / `no-suspend`. It stores the prefix and sets the trust-state bytes `[this+0x96..0x9c]`. The
+  publisher (0x802d7820-0x802d79b4) publishes `SecureRoot` when the **booted root device's name matches
+  that prefix** (again the `+0x1f8` virtual, same match callback).
+- The IPSW's **restore DeviceTree already ships `secure-root-prefix = 'md'`** (top level; `DeviceTree.txt`
+  line 6). `'md'` = the `md0` RAM-disk device (`md%d` in the kernel; the `RAMDisk` memory-map string is the
+  consumer). On a normal boot root is `disk0s1` (NAND) — no `md` prefix match → `SecureRoot` unpublished →
+  format refused. On a restore boot root is `md0` → match → `SecureRoot` published → format allowed.
+
+**Decision: route 1 is viable and needs no kernel patching or signature forging.** To present a trusted
+root for the one-shot we do exactly what iBoot does for a genuine restore: boot the restore kernelcache with
+the **restore DeviceTree** (which carries `secure-root-prefix = 'md'`), load the raw-HFS restore ramdisk as
+the `md0` RAM disk, and select it as root. That is faithful restore-boot state, not a bypass.
+
+The restore recipe, straight from the ramdisk (`038-0024-002-ramdisk.dmg`, raw HFS+ `H+`@0x400, mounts
+clean): `usr/local/bin/restored_update` links `MobileKeyBag.framework` and does, in order,
+`format_effaceable_storage` (open `AppleEffaceableStorage` user client → `isFormatted` sel 3, else `format`
+sel 4; strings `"effaceable storage formatted successfully"` / `"...is formatted, nothing to do"`) then
+**`MKBKeyBagCreateSystem`** (stable export `_MKBKeyBagCreateSystem` @0x23a0 in
+`System/Library/PrivateFrameworks/MobileKeyBag.framework/MobileKeyBag`). The guest one-shot helper calls the
+same two stable symbols — no reimplemented crypto.
 
 The system keybag it creates lands on the data volume (`/private/var/keybags/systembag.kb`), i.e. inside the
 NAND store, and the effaceable lockers land in NOR. So the one-shot must run against the device's *writable*
@@ -134,11 +162,13 @@ activation hook), and the iPod regression — see the commit.
 | item | estimate |
 |---|---|
 | ~~NOR persistence on the ipad1 machine (`nor-rw`) and a per-device `nor.bin` through the pipeline~~ **DONE this session** (the app still needs to pass its own private writable `nor.bin` copy as `nor-rw=`; see below) | — |
-| Restore-ramdisk one-shot: a kboot bundle booting `038-0024-002-ramdisk.dmg` as `rd=md0` with the restore DeviceTree, then the DP step (format effaceable + `MKBKeyBagCreateSystem`), run against the device's writable NAND + `nor-rw` before the seal. **Gated on** confirming the trust virtual (`+0x1f8`) permits the format from a ramdisk boot | 1-2 days (more if trust needs the img3 chain) |
+| Trust gate: what the `+0x1f8` virtual reads. ~~Gated on this.~~ **DONE 2026-09-27** — it is the DeviceTree `secure-root-prefix='md'` property + root-device match (`SecureRoot` IOResource from AppleARMPlatform), not the img3 chain. Route 1 confirmed viable, no kernel patching. Evidence above. | — |
+| Restore-ramdisk one-shot, now unblocked. Concrete plan: (1) **kboot**: teach `ipad1_kboot.build` an optional RAM-disk mode — add a segment carrying the raw-HFS ramdisk at a chosen PA in DRAM, a `chosen/memory-map` `RAMDisk` entry `(pa,len)` for it, boot-args `rd=md0` (root selects `md0`), and keep the restore DeviceTree's `secure-root-prefix='md'` (do NOT overwrite it in `fill_dt`; the normal-boot DT has no such prefix so 3.x/normal boots are unaffected). Restore kernelcache+ramdisk+DeviceTree come from the BuildManifest's Update/Restore identity via `ipad1_fw.py`. (2) **guest helper** (built like the others, ldid-signed, AMFI boot-args already on): call the two stable symbols `format_effaceable_storage`-equivalent (AppleEffaceableStorage user client sels 3/4) + `_MKBKeyBagCreateSystem(NULL, dataMount)`; mount the data volume, write `/private/var/keybags/systembag.kb`, `it_seal`-style `reboot(RB_HALT)`. (3) **pipeline**: `ipad1_device.py create` runs this one-shot boot against the device's *writable* NAND + `nor-rw` before the normal boot+seal; verify effaceable formatted + `systembag.kb` present; version-gated by manifest (`options.writable_nor`/a `restore_keybag` flag). | 1-2 days |
 | GLI shim for 4.2.1: 15 new dispatch slots (13 inserted after slot 764: `draw_elements_base_vertex` ... `sample_maski`, then `discard_framebuffer_EXT` and `resolve_multisample_framebuffer_APPLE`); a per-firmware TSV for `gligen.py` and a check of the new entry points | 0.5-1 day |
 | Activation: the opt-in hook refused 4.2.1's lockdownd (it fails closed; exit 1, file unchanged) | the hook owner's call |
 | Unlock / power-off coordinates on 4.x SpringBoard | unverified (no UI yet) |
 
 Scratch artefacts (untracked): `~/Developer/qemu-ios-files/ipad1/repro-8C148/` (decrypted firmware,
 extracted IOP images `iopfw-{7B500,8C148}.bin`, probe boots `p1`-`p7`, the diagnostic `diag/it_ps.c` and the
-keybag experiment `diag/it_kb.c`).
+keybag experiment `diag/it_kb.c`; `re/kc.py` — the kernelcache VA↔file/xref/disasm helper used to resolve
+the trust gate above).
