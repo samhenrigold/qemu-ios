@@ -57,7 +57,10 @@ FB_WIDTH, FB_HEIGHT, FB_DEPTH = 1024, 768, 32   # landscape panel; display-rotat
 # (contrib/ipad1-gles). Apple's own binaries are unaffected.
 # No -v: like a stock boot the screen shows iBoot's Apple logo, not the text console; serial=3 still
 # sends the kernel log to UART0.
-DEFAULT_BOOT_ARGS = "serial=3 debug=0x8 amfi_allow_any_signature=1 cs_enforcement_disable=1"
+# enable-hsic=1: 4.x's AppleS5L8930XUSBArbitrator::handleStart (8C148 0x80525788) publishes the host nubs
+# for the DT's hsic-enabled (below) only when this boot-arg is 1, so without it no USB keyboard; 3.x reads
+# only the property and ignores the argument.
+DEFAULT_BOOT_ARGS = "serial=3 debug=0x8 amfi_allow_any_signature=1 cs_enforcement_disable=1 enable-hsic=1"
 # chosen/firmware-version is the iBoot that booted the kernel: the IPSW's own (7B367 817.28, 7B500 817.29).
 IBOOT_VERSION = "iBoot-817.29"
 

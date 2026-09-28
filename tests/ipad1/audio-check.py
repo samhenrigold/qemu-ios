@@ -34,6 +34,8 @@ EXPECT = [
     ("lock (Hold)", f"{ROOTFS}/CoreServices/SpringBoard.app/lock.aiff"),
     ("unlock again", f"{ROOTFS}/CoreServices/SpringBoard.app/unlock.aiff"),
 ]
+# 4.x SpringBoard plays UISounds/unlock.caf on unlock (the same file ships in 7B500's rootfs)
+EXPECT_4 = [(n, f"{ROOTFS}/Audio/UISounds/unlock.caf" if n.startswith("unlock") else f) for n, f in EXPECT]
 MIN_CORR = 0.8
 LEVEL = 150          # |sample| above this is sound
 
@@ -114,6 +116,7 @@ def play_sounds(q):
         for i in range(1, 41):
             itqmp.move(q, 957, 480 - (480 - 67) * i // 40)
             time.sleep(0.03)
+        time.sleep(0.3)   # rest at the end: 4.x reads a release while still moving as a flick back
         q.cmd("input-send-event", events=[{"type": "btn", "data": {"down": False, "button": "left"}}])
         time.sleep(6)
 
