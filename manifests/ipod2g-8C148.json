@@ -11,6 +11,6 @@
  "model_number": "MB528",
  "region_info": "LL/A",
  "volume_blocks": 1835008,
- "options": {"gles_shim": true, "appsync": true, "web_proxy": true},
+ "options": {"gles_shim": true, "appsync": true, "web_proxy": true, "data_protection": true},
  "activation": {"hook": null}
 }

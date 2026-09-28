@@ -20,7 +20,7 @@ tests/ipod/regress.py --qemu build/qemu-system-arm --device OUT --checks boot
 | build | pipeline | furthest point | blocker |
 |---|---|---|---|
 | 3.1.3 7E18 | complete | SpringBoard up, GL CA through the shim, "Connect to iTunes" (lit, see below) | activation |
-| 4.2.1 8C148 | complete (NOR, NAND, GLES check, AppSync, gid-blobs, activation hook) | root mounted through AppleNANDLegacyFTL, launchd runs its daemons; keybagd finds no system keybag and reboots into restore mode (iBoot recovery screen) | data protection: system keybag + formatted effaceable NOR |
+| 4.2.1 8C148 | complete (NOR, NAND, GLES check, AppSync, gid-blobs, activation hook, data protection) | home screen (`regress.py --device ... --checks boot` PASS, lit=284232, software CoreAnimation) | GLES shim ABI (841 slots) |
 | 2.1.1 5F138 | complete (no AppSync, GLES shim or modern guest helpers) | SecureROM → LLB → iBoot → kernel → stock SpringBoard, Connect to iTunes | activation; optional helpers need a 2.x-compatible build |
 
 ### P1, 7E18: activation
@@ -116,22 +116,36 @@ latches the buffer; the timer reloads (hw/arm/ipod_touch_timer.c). With that: `[
 [OK]`, `Got boot device = ... AppleNANDLegacyFTL/IOFlashBlockDevice/... Untitled 1@1`, `BSD root: disk0s1`,
 launchd.
 
-#### Data protection (the current blocker)
+#### Data protection
 
-keybagd's own log, persisted on the data volume: `validateSecureFile: Unable to load
+keybagd's own log, persisted on the data volume, showed the blocker: `validateSecureFile: Unable to load
 /private/var//keybags/systembag.kb` → `FATAL KEYBAG ERROR: kb_load` → `Rebooting...` about 27 s in, into
-restore mode, so the next boot stops at iBoot's recovery screen. This is the iPad's blocker
-(docs/ipad1/ios4.md), and the storage is the same kind: the 4.2.1 DT's `nor-flash/effaceable` is
-`effaceable,nor`, so the lockers live in NOR, the keybag on the data volume.
+restore mode, so the next boot stopped at iBoot's recovery screen. Same as the iPad (docs/ipad1/ios4.md);
+the 4.2.1 DT's `nor-flash/effaceable` is `effaceable,nor`, so the lockers live in NOR.
 
-Proposed iPod equivalent of the iPad one-shot (not built): at `create` for 4.x, boot once against the
-device's writable NAND and a writable NOR (`nor-rw`), with the 8C148 restore ramdisk as `md0` and its
-restore DeviceTree (its `secure-root-prefix` = `md` is what lets AppleEffaceableStorage format), run
-`contrib/it-keybag` as the ramdisk's `restored_external` (effaceable sel 3/4, `MKBKeyBagCreateSystem(NULL,
-"/mnt2")`, halt), and keep the resulting `nor.bin` and NAND with the device, as `ipad1_keybag.py` does.
-Unlike the iPad (kboot hands the kernel its ramdisk), the iPod boots through iBoot, so the new part is
-getting iBoot to boot a staged ramdisk with the restore DT; the helper and pipeline carry over. Estimate:
-1-3 days.
+**The one-shot** (`imgtools/ipod2g_keybag.py`, run by `ipod2g_device.py` for manifests with
+`options.data_protection`, i.e. 8C148). As on the iPad, the IPSW's own (Update) restore ramdisk, a private
+copy with `it_keybag` (contrib/it-keybag, armv6 build `build-ipod.sh`: the iPod volume is one, disk0s1,
+data at `/private/var`) as `restored_external`, boots as `md0` so the root is a SecureRoot (the normal
+4.2.1 DT already carries `secure-root-prefix = md`). The difference is the handoff: everything iBoot loads
+is a signed img3 (its `boot-ramdisk` NVRAM path loads type `rdsk` to 0x0c000000 and validates it), so a
+modified ramdisk cannot come through iBoot. iBoot boots the device normally with `rd=md0` in its command
+line; at the kernel's entry (LC_UNIXTHREAD pc, MMU off) a gdbstub breakpoint adds what iBoot's restore
+path adds: the ramdisk at topOfKernelData, a `RAMDisk` (pa, len) entry in a spare `MemoryMapReserved`
+slot of chosen/memory-map, an empty chosen/root-matching, topOfKernelData moved past it. `it_keybag`
+formats effaceable (nor-rw) and creates `/private/var/keybags/systembag.kb` (1335 bytes); the overlay's
+pages (at their logical homes) are folded into `nand/` and the written NOR becomes `nor.bin`. About 40 s.
+
+**AES.** The keybag made that way failed to open on the next boot (`kb_deserialize=e00002c9`). The AES
+model's single-shot UID path never writes a result where the kernel reads it (it reads the kernel's output
+buffer at 0x20 and writes into its input at 0x28), so the UID-derived keys 0x835/0x89B come out as the
+untouched output buffer, zeros, and whatever AppleKeyStore wrapped cannot be unwrapped. The machine option
+`aes-uid=engine` runs UID operations through the engine like a custom key (input 0x28, output 0x20,
+KEYLEN's direction) with a fixed stand-in key, and GID operations shorter than a KBAG (the restore kernel
+derives key 0x837 from a 16-byte seed, `345a2d6c5050d058...`; unknown, and fatal before) the same way with
+a stand-in GID key. KBAG lookups are unchanged. The default stays `legacy`, because existing 3.x images'
+keychain items were encrypted under the legacy keys. Devices whose data is made under the engine record
+it in `device.lock.json` (`"machine": {"aes-uid": "engine"}`), and `regress.py --device` applies it.
 
 ### P3, 5F138: LLB → iBoot
 
