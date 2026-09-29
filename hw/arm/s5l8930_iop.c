@@ -11,6 +11,13 @@
  * against the 7B500 kexts (ARM7M __text c04d2000, IOPFMI __text c04e8000) and
  * the firmware blob (fw offsets below are into the 0x1b000-byte image).
  *
+ * With iop-core=on (the default) the uploaded firmware runs on the IOP core
+ * (s5l8930_iop_core.c) and this device keeps the AP-side control block, the
+ * NAND page store the H2FMI serves, and the ring trace (IOP_RING_TRACE); the
+ * HLE below answers the rings only with iop-core=off, for the iBoot-817/931
+ * firmwares (v1/v2 ABIs, iOS 3.2-4.2). EmbeddedIOP-20+ (iOS 4.3 on) is the
+ * core's alone: the v3 table instrument that stood in for it is retired.
+ *
  * NAND: with the "nand" property unset every page reads as erased. Set to a
  * directory, it is a writable file-backed store: geometry.json plus one
  * sparse file per chip select, bus<b>-ce<c>.pages, page index
@@ -83,9 +90,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPState, S5L8930_IOP)
 /*
  * Ring table: {addr, count} per endpoint. iBoot-817/931 firmware (v1/v2 FMI ABI)
  * puts it at +0xc; EmbeddedIOP-20/33 firmware (iOS 4.3+) has a word at +0xc (0)
- * and the table at +0x10, with IOP-window addresses (s5l8930_iop_pa). The
- * layout is probed once per load (iop_config). H-class instrument: delete with
- * the IOP core.
+ * and the table at +0x10, with IOP-window addresses (s5l8930_iop_pa), 64-byte
+ * ring entries and FMI arguments one word further up (iop_layout). The HLE does
+ * not serve that layout (the IOP core does); the ring trace reads it.
  */
 #define FW_CFG_RING(s, h)   ((s)->cfg_rings + 8 * (h))
 #define FW_CFG_COUNT(s, h)  ((s)->cfg_rings + 4 + 8 * (h))
@@ -117,7 +124,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPState, S5L8930_IOP)
 #define CTRL_OP_RSUM        0x7273756d  /* 'rsum' */
 #define CTRL_OP_SPND        0x73706e64  /* 'spnd' */
 #define CTRL_OP_TTIN        0x7474696e  /* 'ttin': console character */
-#define CTRL_DONE           0x646f6e65  /* 'done': EmbeddedIOP-20+ writes it over the opcode */
+#define CTRL_DONE           0x646f6e65  /* 'done': EmbeddedIOP-20+'s AP workloop writes it over the opcode */
 
 /*
  * FMI/SDIO commands: 512 bytes, u32 opcode at +0, u32 status at +8
@@ -827,6 +834,17 @@ static void iop_fmi_command(S5L8930IOPState *s, int bus, hwaddr item)
  */
 static hwaddr iop_config(S5L8930IOPState *s);
 
+/* Which 'cnfg' layout the loaded firmware has (see FW_CFG_RING): +0xc is ring 0's address on
+ * the old layout and 0 on EmbeddedIOP-20+'s. Read per doorbell: the kext fills the table after
+ * the firmware is loaded. */
+static void iop_layout(S5L8930IOPState *s, hwaddr cfg)
+{
+    s->cfg_rings = (iop_ldl(cfg + 0xc) == 0 && iop_ldl(cfg + 0x10) != 0) ? 0x10 : 0xc;
+    if (s->cfg_rings == 0x10) {
+        s->fmi_arg = 8;
+    }
+}
+
 static void iop_trace_fmi(S5L8930IOPState *s, int bus, hwaddr item)
 {
     uint8_t cmd[CMD_SIZE];
@@ -908,8 +926,7 @@ void s5l8930_iop_trace_rings(DeviceState *dev)
             fprintf(stderr, "ring trace: firmware at 0x%08x, cnfg at 0x%08" HWADDR_PRIx "\n", s->fw_base, cfg);
         }
     }
-    s->cfg_rings = (iop_ldl(cfg + 0xc) == 0 && iop_ldl(cfg + 0x10) != 0) ? 0x10 : 0xc;
-    s->fmi_arg = s->cfg_rings == 0x10 ? 8 : s->fmi_arg;
+    iop_layout(s, cfg);
     {   /* the control ring: a returned message the AP has not yet marked 'done' */
         static uint32_t pending0[IOP_MAX_RING];     /* opcode reported, until the AP's 'done' */
         hwaddr ring = iop_ldl(cfg + FW_CFG_RING(s, RING_CONTROL));
@@ -1019,13 +1036,6 @@ static void iop_control_message(S5L8930IOPState *s, hwaddr item)
         break;
     }
     iop_stl(item + 4, st);
-    /* EmbeddedIOP-20 (iOS 4.3) firmware also overwrites the opcode with 'done':
-     * that kernel's _sendControlMessageGated initialises status to -1, and a
-     * status without 'done' is a "partially completed command" that ends in
-     * the "timed out waiting for workloop" panic (seen at 4.3's shutdown). */
-    if (s->fmi_arg == 8) {
-        iop_stl(item, CTRL_DONE);
-    }
 }
 
 /* ---- rings ------------------------------------------------------------- */
@@ -1097,16 +1107,21 @@ static void iop_doorbell(S5L8930IOPState *s)
 {
     static const int served[] = { RING_CONTROL, RING_SDIO, RING_FMI0, RING_FMI1 };
     hwaddr cfg = iop_config(s);
-    /* +0xc is ring 0's address on the old layout and 0 on EmbeddedIOP-20+'s (probed per
-     * doorbell: the kext fills the table after the firmware is loaded). */
-    if (cfg) {
-        s->cfg_rings = (iop_ldl(cfg + 0xc) == 0 && iop_ldl(cfg + 0x10) != 0) ? 0x10 : 0xc;
-        if (s->cfg_rings == 0x10) {
-            s->fmi_arg = 8;     /* v3 (EmbeddedIOP-20+): arguments one word further up than v2; 64-byte ring entries */
-        }
-    }
     bool any = false;
     int i;
+
+    if (cfg) {
+        iop_layout(s, cfg);
+    }
+    if (cfg && s->cfg_rings == 0x10) {
+        static bool said;
+        if (!said) {
+            said = true;
+            warn_report("s5l8930-iop: EmbeddedIOP-20+ firmware (iOS 4.3 on) runs on the IOP core "
+                        "(iop-core=on); the HLE serves iBoot-817/931 firmware only");
+        }
+        return;
+    }
 
     if (!s->running) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: doorbell while stopped\n", __func__);
