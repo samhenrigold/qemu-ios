@@ -1611,7 +1611,10 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
 
     mc->desc = "iPad 1 (K48AP, S5L8930)";
     mc->init = ipad1_init;
-    mc->max_cpus = 2;                    /* the AP plus the IOP core (iop-core=on) */
+    /* The AP plus the IOP core (iop-core=on): TCG sizes its contexts from smp, and the
+     * board creates both CPUs itself, so 2 by default costs nothing when the core is off. */
+    mc->max_cpus = 2;
+    mc->default_cpus = 2;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a8");
     mc->default_ram_size = S5L8930_DRAM_SIZE;
 

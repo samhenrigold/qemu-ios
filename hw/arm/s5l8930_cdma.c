@@ -348,6 +348,9 @@ static void cdma_update_irq(S5L8930CDMAState *s, int ch)
         (!s->ch[ch].fifo || cdma_is_memory(s->ch[ch].fifo))) {
         en = false;     /* memory-to-memory only: a device-FIFO channel's context is an inline filter */
     }
+    if (ch >= 5 && ch <= 8) {
+        qemu_log_mask(LOG_TRACE, "cdma ch %d irq %d (en %d ctrl 0x%x)\n", ch, en && (s->ch[ch].ctrl & (ST_DONE | ST_ERROR)), en, s->ch[ch].ctrl);
+    }
     qemu_set_irq(s->irq[ch], en && (s->ch[ch].ctrl & (ST_DONE | ST_ERROR)));
 }
 
@@ -570,6 +573,7 @@ void s5l8930_cdma_sink_done(DeviceState *dev, uint32_t fifo_base, uint32_t size)
 
         if (s->sink_pending[ch] && !c->in_seg && c->fifo >= fifo_base && c->fifo < fifo_base + size) {
             s->sink_pending[ch] = false;
+            qemu_log_mask(LOG_TRACE, "cdma ch %d sink done\n", ch);
             c->ctrl = (c->ctrl & ~ST_RUNNING) | ST_DONE;
             cdma_update_irq(s, ch);
         }
@@ -854,6 +858,9 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
             cdma_paced_stop(s, ch);
         }
         if ((v & CTRL_GO) && !(v & CTRL_HOLD)) {
+            if (ch >= 5 && ch <= 8) {
+                qemu_log_mask(LOG_TRACE, "cdma ch %d go ctrl 0x%x set 0x%x fifo 0x%x\n", ch, (uint32_t)v, c->settings, c->fifo);
+            }
             if (getenv("S5L8930_CDMA_TRACE")) {
                 fprintf(stderr, "[CDMA] %.4f go ch 0x%x ctrl 0x%x set 0x%x fifo 0x%x "
                         "desc 0x%x\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
