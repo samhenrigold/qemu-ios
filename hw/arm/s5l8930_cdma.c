@@ -475,7 +475,11 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
             g_autofree uint8_t *buf = g_malloc(len);
             bool ok = true;
 
-            if ((flags & DESC_AES) && !fed) {
+            /* dev_fifo covers fed: a device-FIFO channel's context filters
+             * inline, both ways, and the store is in the clear (see above). */
+            bool crypt = (flags & DESC_AES) && !dev_fifo;
+
+            if (crypt) {
                 aes = aes ? aes : aes_for_channel(s, ch);
                 if (!aes) {
                     error = 3;
@@ -487,7 +491,7 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
                                 MEMTXATTRS_UNSPECIFIED);
                 if (feeds && (flags & DESC_AES)) {
                     ok = aes_feed(s, aes, buf, len, flags & DESC_AES_RESTART);
-                } else if (flags & DESC_AES) {
+                } else if (crypt) {
                     ok = aes_apply(s, aes, buf, len, flags & DESC_AES_RESTART);
                 }
                 if (feeds) {
@@ -514,7 +518,7 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
                 } else {
                     cdma_fifo_xfer(dev, width, buf, len, false);
                 }
-                if ((flags & DESC_AES) && !fed) {
+                if (crypt) {
                     ok = aes_apply(s, aes, buf, len,
                                    !resume && (flags & DESC_AES_RESTART));
                 }

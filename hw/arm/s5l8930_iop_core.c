@@ -54,6 +54,38 @@ struct S5L8930IOPCoreState {
     ARMCPU *cpu;
     DeviceState *vic[IOP_VIC_COUNT];
     uint32_t fw_base, fw_size;
+    DeviceState *iop;           /* the AP-side IOP block (ring trace) */
+    MemoryRegion ap_vic_tap;    /* the IOP's view of AP VIC0: SOFTINT = IOP->AP doorbell */
+};
+
+void s5l8930_iop_core_set_iop(DeviceState *dev, DeviceState *iop)
+{
+    S5L8930_IOP_CORE(dev)->iop = iop;
+}
+
+static uint64_t ap_vic_tap_read(void *opaque, hwaddr off, unsigned size)
+{
+    return address_space_ldl_le(&address_space_memory, S5L8930_VIC_BASE(0) + off,
+                                MEMTXATTRS_UNSPECIFIED, NULL);
+}
+
+static void ap_vic_tap_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
+{
+    S5L8930IOPCoreState *s = opaque;
+
+    if (off == 0x18 && s->iop) {        /* SOFTINT: the firmware has answered something */
+        s5l8930_iop_trace_rings(s->iop);
+    }
+    address_space_stl_le(&address_space_memory, S5L8930_VIC_BASE(0) + off, val,
+                         MEMTXATTRS_UNSPECIFIED, NULL);
+}
+
+static const MemoryRegionOps ap_vic_tap_ops = {
+    .read = ap_vic_tap_read,
+    .write = ap_vic_tap_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
 };
 
 /* cp15 the firmware touches that QEMU's arm946 lacks: reads once at boot (IDs,
@@ -138,6 +170,8 @@ static void s5l8930_iop_core_realize(DeviceState *dev, Error **errp)
     memory_region_init_alias(&s->periph, OBJECT(s), "iop.periph", s->sysmem, IOP_PERIPH_BASE,
                              IOP_PERIPH_SIZE);
     memory_region_add_subregion(&s->mem, IOP_PERIPH_BASE, &s->periph);
+    memory_region_init_io(&s->ap_vic_tap, OBJECT(s), &ap_vic_tap_ops, s, "iop.ap-vic0", 0x1000);
+    memory_region_add_subregion_overlap(&s->mem, S5L8930_VIC_BASE(0), &s->ap_vic_tap, 1);
 
     cpuobj = object_new(ARM_CPU_TYPE_NAME("arm946"));
     object_property_set_link(cpuobj, "memory", OBJECT(&s->mem), &error_abort);
