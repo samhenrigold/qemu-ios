@@ -3,20 +3,20 @@
 split, the ADC start-bit and mux-6 cable classification.
 
 Recent iPad fixes this pins:
-  - 0x7b = 0x0b is AppleD1815PMU's restart. With iBoot's boot-flags (0x8F)
-    stay-off pattern set (& 0xd0 == 0x90 or 0x10) it is a power-off (shutdown +
-    guest_shutdown_confirmed), otherwise a reboot (reset request). (smoke #28/#39)
+  - 0x7b = 0x0b is AppleD1815PMU's restart: always a reset request. With the
+    OS's boot reason (0x8F) set to iBoot's stay-off pattern (& 0xd0 == 0x90 or
+    0x10) the halt is confirmed at that restart (iBoot then waits, screen off;
+    tests/ipad1/test_pmu_scratch.py pins the bank surviving it). (smoke #28/#39)
   - An ADC conversion clears its start bit (0x30 bit4) when done; iBoot polls it.
   - mux 6 is the dock D+/D- the charger biased: with a host's pull-downs it
     reads 0 mV (USBHost), otherwise mid-scale 0x800 (a brick, "Detached").
     mV = adc * 5000 / 4096. (4.3.x cable detection, smoke #35)
 
-Mutation (named, must fail this test): in d1815_send's PMU_SYS_CTRL case, drop
-the boot-flags guard so restart always reboots, i.e. replace
-    if (data == PMU_SYS_RESTART && PMU_BOOT_FLAGS_OFF(s->regs[PMU_BOOT_FLAGS])) {
+Mutation (named, must fail this test): in d1815_send's PMU_SYS_CTRL case, replace
+    if (d1815_halt_reason(s)) {
 with
     if (0) {
-so a stay-off restart reboots instead of powering off.
+so a stay-off restart is never confirmed as the halt.
 """
 from pathlib import Path
 import re
@@ -29,7 +29,7 @@ constants = '\n'.join(re.findall(r'^#define (?:PMU_\w+|D1815_ADDR).*$', source, 
 state = re.search(r'struct S5L8930D1815State \{.*?\n\};', source, re.S).group()
 
 funcs = []
-for name in ('d1815_update_irq', 'd1815_adc_done', 's5l8930_d1815_button',
+for name in ('d1815_halt_reason', 'd1815_update_irq', 'd1815_adc_done', 's5l8930_d1815_button',
              's5l8930_d1815_set_usb_host', 's5l8930_d1815_set_vbat',
              's5l8930_d1815_usb_cable_event', 'd1815_rtc_count', 'd1815_recv',
              'd1815_send', 'd1815_reset', 's5l8930_d1815_guest_shutdown_confirmed',
@@ -126,21 +126,21 @@ int main(void) {
 
     /* --- restart with no stay-off flag is a reboot --- */
     assert(!resets && !shutdowns);
-    s.regs[PMU_BOOT_FLAGS] = 0x00;
+    s.regs[PMU_BOOT_REASON] = 0x00;
     wr(&s, PMU_SYS_CTRL, PMU_SYS_RESTART);                   /* 0x7b <- 0x0b */
     assert(resets == 1 && shutdowns == 0 && !s5l8930_d1815_guest_shutdown_confirmed());
 
-    /* --- restart with iBoot's stay-off flag is a power-off, not a reboot --- */
-    s.regs[PMU_BOOT_FLAGS] = 0x90;                           /* & 0xd0 == 0x90 */
+    /* --- restart with iBoot's stay-off reason: still a restart, and the halt is confirmed --- */
+    s.regs[PMU_BOOT_REASON] = 0x90;                          /* & 0xd0 == 0x90 */
     wr(&s, PMU_SYS_CTRL, PMU_SYS_RESTART);
-    assert(shutdowns == 1 && resets == 1);                   /* no new reboot */
+    assert(resets == 2 && shutdowns == 0);                   /* iBoot runs its power-off wait */
     assert(s5l8930_d1815_guest_shutdown_confirmed());
 
     /* A non-restart write to 0x7b just stores, no reboot/shutdown. */
     wr(&s, PMU_SYS_CTRL, 0x0f);
-    assert(resets == 1 && shutdowns == 1);
+    assert(resets == 2 && shutdowns == 0);
 
-    puts("PASS: D1815 restart/power-off split on boot flags, ADC start-bit clear, mux-6 cable classification");
+    puts("PASS: D1815 restart confirms a stay-off halt, ADC start-bit clear, mux-6 cable classification");
 }
 '''
 
