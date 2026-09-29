@@ -64,6 +64,8 @@ def main():
         nor[0x8000:0xfc000] = b'\xff' * (0xfc000 - 0x8000)
         (out / 'nor.bin').write_bytes(nor)
         machine += f',nand={out / "nand"},nor-rw={out / "nor.bin"}'
+    if os.environ.get('IPAD1_MACHINE_EXTRA'):   # e.g. iop-core=off, as boot-smoke.py takes it
+        machine += ',' + os.environ['IPAD1_MACHINE_EXTRA']
     processes, logs = [], []
 
     def start(command, log, env=None):

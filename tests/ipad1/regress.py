@@ -119,6 +119,8 @@ class Boot:
                 machine += ",usb-tcp-addr=127.0.0.1:%d" % self.usb_port
             if getattr(cfg, "guest_package", None):
                 machine += ",guest-package=" + cfg.guest_package
+            if os.environ.get("IPAD1_MACHINE_EXTRA"):   # e.g. iop-core=off, as boot-smoke.py takes it
+                machine += "," + os.environ["IPAD1_MACHINE_EXTRA"]
             # What the GL bridge refuses is painted magenta and counted (gl_clean below).
             machine += ",gles-debug=on"
             argv = ["timeout", str(cfg.boot_timeout), cfg.qemu, "-machine", machine + ("" if self.wifi else ",wifi=off"),
