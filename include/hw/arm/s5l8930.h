@@ -77,6 +77,8 @@
 qemu_irq s5l8930_iop_core_irq(DeviceState *dev, int irq);
 void s5l8930_iop_core_run(DeviceState *dev, uint32_t fw_base, uint32_t fw_size);
 void s5l8930_iop_core_stop(DeviceState *dev);
+void s5l8930_iop_core_set_iop(DeviceState *dev, DeviceState *iop);
+void s5l8930_iop_trace_rings(DeviceState *iop);
 
 static inline hwaddr s5l8930_iop_pa(hwaddr a)
 {

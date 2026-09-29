@@ -818,6 +818,102 @@ static void iop_fmi_command(S5L8930IOPState *s, int bus, hwaddr item)
     iop_write(item, cmd, sizeof(cmd));
 }
 
+/*
+ * Ring-boundary trace for the IOP core (env IOP_RING_TRACE): at every IOP->AP
+ * interrupt, each FMI command the firmware has just handed back is decoded
+ * and, for reads, the bytes that landed in the kernel's segments are compared
+ * with the store (the chip the H2FMI model serves for that CE). Instrument
+ * only; the HLE never calls it.
+ */
+static hwaddr iop_config(S5L8930IOPState *s);
+
+static void iop_trace_fmi(S5L8930IOPState *s, int bus, hwaddr item)
+{
+    uint8_t cmd[CMD_SIZE];
+    uint32_t op, st;
+
+    iop_read(item, cmd, sizeof(cmd));
+    op = CMD_GET(cmd, CMD_OPCODE);
+    st = CMD_GET(cmd, CMD_STATUS);
+    if (op == FMI_OP_READ_MULTIPLE || op == FMI_OP_WRITE_MULTIPLE) {
+        uint32_t n = ARG(0x10), i, bad = 0;
+        hwaddr ces = ARG(0x14), pages = ARG(0x18);
+        SegCursor data, metas;
+        g_autofree uint8_t *got = g_malloc(FMI_MAX_PAGE);
+        g_autofree uint8_t *want = g_malloc(FMI_MAX_PAGE * 2);
+        uint8_t gm[FMI_META_BYTES], wm[FMI_META_BYTES];
+
+        qemu_log("ring fmi%d op %u n %u st 0x%x out %08x %08x %08x %08x item 0x%" HWADDR_PRIx "\n",
+                 bus, op, n, st, CMD_GET(cmd, 0x64), CMD_GET(cmd, 0x68), CMD_GET(cmd, 0x6c),
+                 CMD_GET(cmd, 0x70), item);
+        if (n > FMI_MAX_MULTI || !s->nand_dir) {
+            return;
+        }
+        seg_cursor_init(&data, ARG(0x1c), ARG(0x20));
+        seg_cursor_init(&metas, ARG(0x24), ARG(0x28));
+        for (i = 0; i < n; i++) {
+            uint32_t ce = lduw_le_phys(&address_space_memory, s5l8930_iop_pa(ces + 2 * i));
+            uint32_t pg = iop_ldl(pages + 4 * i);
+            int cs = (ce & 7) * NAND_BUSES + bus;   /* as s5l8930_h2fmi.c maps a chip */
+            int sb = cs / ctpop8(s->nand_ce_mask), sc = cs % ctpop8(s->nand_ce_mask);
+            uint32_t wst = nand_read_page(s, sb, sc, pg, want, wm);
+            bool dbad, mbad;
+
+            seg_copy(&data, got, s->store_page_bytes, false);
+            seg_copy(&metas, gm, FMI_META_BYTES, false);
+            dbad = memcmp(got, want, s->store_page_bytes) != 0;
+            mbad = memcmp(gm, wm, FMI_META_BYTES) != 0;
+            qemu_log(" %s ce %u pg 0x%x store %d/%d st %u meta %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%s%s\n",
+                     op == FMI_OP_READ_MULTIPLE ? "rd" : "wr", ce, pg, sb, sc, wst,
+                     gm[0], gm[1], gm[2], gm[3], gm[4], gm[5], gm[6], gm[7], gm[8], gm[9],
+                     dbad ? " DATA-DIFF" : "", mbad ? " META-DIFF" : "");
+            if (dbad && bad < 2) {
+                uint32_t k;
+                for (k = 0; k < s->store_page_bytes && got[k] == want[k]; k++) {
+                }
+                qemu_log("  first diff at 0x%x: got %02x%02x%02x%02x want %02x%02x%02x%02x; segs %08x+%x %08x+%x\n", k,
+                         got[k], got[k + 1], got[k + 2], got[k + 3], want[k], want[k + 1], want[k + 2], want[k + 3],
+                         iop_ldl(ARG(0x1c)), iop_ldl(ARG(0x1c) + 4), iop_ldl(ARG(0x1c) + 8), iop_ldl(ARG(0x1c) + 12));
+            }
+            bad += dbad || mbad;
+        }
+        if (bad) {
+            qemu_log("ring fmi%d: %u of %u pages differ\n", bus, bad, n);
+        }
+        return;
+    }
+    qemu_log("ring fmi%d op %u st 0x%x args %08x %08x %08x %08x %08x %08x\n", bus, op, st,
+             ARG(0x10), ARG(0x14), ARG(0x18), ARG(0x1c), ARG(0x20), ARG(0x24));
+}
+
+void s5l8930_iop_trace_rings(DeviceState *dev)
+{
+    static int8_t seen[2][IOP_MAX_RING];
+    S5L8930IOPState *s = S5L8930_IOP(dev);
+    hwaddr cfg = iop_config(s);
+    int h;
+
+    if (!cfg || !getenv("IOP_RING_TRACE")) {
+        return;
+    }
+    s->cfg_rings = (iop_ldl(cfg + 0xc) == 0 && iop_ldl(cfg + 0x10) != 0) ? 0x10 : 0xc;
+    s->fmi_arg = s->cfg_rings == 0x10 ? 8 : s->fmi_arg;
+    for (h = RING_FMI0; h <= RING_FMI1; h++) {
+        hwaddr ring = iop_ldl(cfg + FW_CFG_RING(s, h));
+        uint32_t n = iop_ldl(cfg + FW_CFG_COUNT(s, h)), i;
+
+        for (i = 0; ring && i < MIN(n, IOP_MAX_RING); i++) {
+            uint32_t w0 = iop_ldl(ring + i * RING_ENTRY(s));
+            bool done = (w0 & 1) == RING_OWNER_AP && RING_ITEM(w0);
+
+            if (done && !seen[h - RING_FMI0][i]) {
+                iop_trace_fmi(s, h - RING_FMI0, RING_ITEM(w0));
+            }
+            seen[h - RING_FMI0][i] = done;
+        }
+    }
+}
+
 /* ---- SDIO, control ------------------------------------------------------ */
 
 static void iop_sdio_command(S5L8930IOPState *s, hwaddr item)
@@ -1052,6 +1148,7 @@ static void iop_ctrl_write(void *opaque, hwaddr offset, uint64_t value,
         switch (value) {
         case IOP_CTRL_RUN:
             if (s->core) {
+                s5l8930_iop_core_set_iop(s->core, DEVICE(s));
                 s5l8930_iop_core_run(s->core, s->fw_base, s->fw_size);
                 s->running = true;
             } else {
