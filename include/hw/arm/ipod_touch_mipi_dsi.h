@@ -20,6 +20,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchMIPIDSIState, IPOD_TOUCH_MIPI_DSI)
 
 #define DSIM_RSP_LONG_READ 0x1A
 #define rDSIM_FIFOCTRL_EmptyHSfr 0x400000
+#define rDSIM_STATUS_StopStateClk 0x100   /* clock lane in LP stop state (no HS clock) */
 #define rDSIM_STATUS_TxReadyHsClk 0x400
 #define rDSIM_INTSRC_RxDatDone    0x00040000
 
