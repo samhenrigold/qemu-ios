@@ -205,6 +205,8 @@ struct S5L8930IOPState {
     uint32_t vic_softint[IOP_VIC_COUNT];
     uint32_t vic_regs[IOP_VIC_COUNT][IOP_VIC_REGS / 4];
     uint32_t ring_rx[IOP_MAX_ENDPOINTS];
+    DeviceState *core;      /* link: run the firmware on a real second core instead of this HLE */
+    uint32_t ctrl_regs[0x40 / 4];  /* +0x00-0x3f: the IOP's own cache controls (RAM, read back) */
     /* Geometry per bus, from FMI set_config; defaults are the K48 part. */
     uint32_t bytes_per_page[NAND_BUSES];
     uint32_t bytes_per_spare[NAND_BUSES];
@@ -312,6 +314,7 @@ static uint8_t *nand_page(S5L8930IOPState *s, int bus, uint32_t ce,
 static uint32_t nand_read_page(S5L8930IOPState *s, int bus, uint32_t ce,
                                uint32_t page, uint8_t *data, uint8_t *meta)
 {
+    qemu_log_mask(LOG_TRACE, "pageread %d %u %u\n", bus, ce, page);
     uint32_t len = s->bytes_per_page[bus] + s->bytes_per_spare[bus];
     uint8_t *p;
     uint32_t i;
@@ -356,6 +359,24 @@ bool s5l8930_iop_nand_read(DeviceState *dev, int bus, uint32_t ce,
     *stride = s->nand_dir ? s->page_stride : 0;
     return bus < NAND_BUSES &&
            nand_read_page(s, bus, ce, page, buf, meta) == FMI_STATUS_OK;
+}
+
+static uint32_t nand_program_page(S5L8930IOPState *s, int bus, uint32_t ce, uint32_t page,
+                                  const uint8_t *data, uint32_t len, const uint8_t *meta);
+static uint32_t nand_erase_block(S5L8930IOPState *s, int bus, uint32_t ce, uint32_t block);
+
+uint32_t s5l8930_iop_nand_program(DeviceState *dev, int bus, uint32_t ce, uint32_t page,
+                                  const uint8_t *data, uint32_t len, const uint8_t *meta)
+{
+    return nand_program_page(S5L8930_IOP(dev), bus, ce, page, data, len, meta);
+}
+
+/* Erase the block holding page `page` (the row the chip was given). */
+uint32_t s5l8930_iop_nand_erase(DeviceState *dev, int bus, uint32_t ce, uint32_t page)
+{
+    S5L8930IOPState *s = S5L8930_IOP(dev);
+
+    return nand_erase_block(s, bus, ce, s->store_ppb ? page / s->store_ppb : 0);
 }
 
 void s5l8930_iop_nand_info(DeviceState *dev, uint32_t *id, uint8_t *ce_mask,
@@ -655,7 +676,10 @@ static uint32_t fmi_multi(S5L8930IOPState *s, int bus, uint8_t *cmd, bool write,
             st = nand_read_page(s, bus, ce, pg, page, meta);
             blank += st == FMI_STATUS_BLANK;
             uecc += st == FMI_STATUS_UECC;
+            qemu_log_mask(LOG_TRACE, "kdata %d %u %u %02x%02x%02x%02x%02x%02x%02x%02x\n", bus, ce, pg, page[0], page[1], page[2], page[3], page[4], page[5], page[6], page[7]);
             seg_copy(&data, page, s->bytes_per_page[bus], true);
+            qemu_log_mask(LOG_TRACE, "kmeta %d %u %u %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x st %u\n", bus, ce, pg,
+                          meta[0], meta[1], meta[2], meta[3], meta[4], meta[5], meta[6], meta[7], meta[8], meta[9], st);
             seg_copy(&metas, meta, FMI_META_BYTES, true);
         }
     }
@@ -1013,6 +1037,8 @@ static uint64_t iop_ctrl_read(void *opaque, hwaddr offset, unsigned size)
         return s->fw_size;
     case IOP_SELF:
         return s->self_addr;
+    case 0x00 ... 0x3c:
+        return s->ctrl_regs[offset / 4];
     default:
         qemu_log_mask(LOG_UNIMP, "%s: unmodelled read 0x%04" HWADDR_PRIx "\n",
                       __func__, offset);
@@ -1029,10 +1055,18 @@ static void iop_ctrl_write(void *opaque, hwaddr offset, uint64_t value,
     case IOP_CTRL:
         switch (value) {
         case IOP_CTRL_RUN:
-            iop_run(s);
+            if (s->core) {
+                s5l8930_iop_core_run(s->core, s->fw_base, s->fw_size);
+                s->running = true;
+            } else {
+                iop_run(s);
+            }
             break;
         case IOP_CTRL_STOP:
         case IOP_CTRL_HALT:
+            if (s->core && s->running) {
+                s5l8930_iop_core_stop(s->core);
+            }
             s->running = false;
             break;
         default:
@@ -1050,6 +1084,11 @@ static void iop_ctrl_write(void *opaque, hwaddr offset, uint64_t value,
         break;
     case IOP_SELF:
         s->self_addr = value;
+        break;
+    case 0x00 ... 0x3c:
+        s->ctrl_regs[offset / 4] = value;
+        qemu_log_mask(LOG_UNIMP, "%s: cache control 0x%04" HWADDR_PRIx " <- 0x%08" PRIx64 "\n",
+                      __func__, offset, value);
         break;
     default:
         qemu_log_mask(LOG_UNIMP, "%s: unmodelled write 0x%04" HWADDR_PRIx
@@ -1401,6 +1440,7 @@ static const Property s5l8930_iop_properties[] = {
     DEFINE_PROP_STRING("nand", S5L8930IOPState, nand_dir),
     DEFINE_PROP_STRING("nand-overlay", S5L8930IOPState, overlay_dir),
     DEFINE_PROP_LINK("sdio", S5L8930IOPState, sdio, TYPE_DEVICE, DeviceState *),
+    DEFINE_PROP_LINK("core", S5L8930IOPState, core, TYPE_DEVICE, DeviceState *),
 };
 
 static void s5l8930_iop_class_init(ObjectClass *klass, void *data)
