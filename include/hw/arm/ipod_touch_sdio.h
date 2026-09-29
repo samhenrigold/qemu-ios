@@ -91,7 +91,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 
 /* Where the window points out of reset: the chipcommon core. */
 #define CHIPCOMMON_BASE     0x18000000
-#define CHIPCOMMON_CHIPID   0x00050000  /* the driver reads this as revision D0 */
+/*
+ * chipcommon ChipID: chip number in bits 0-15, revision in 16-19. The real
+ * BCM4325 answers 0x4325 there; revision 5 is the D0 silicon both drivers
+ * accept (AppleBCMWLANChipManager::withDriver, 8C148 0x80779998: 0x4325 with
+ * rev 5 -> "BCMWLAN revision D0", 6 -> D1). The old value had the chip number
+ * zero: 3.1.3 only checked the revision, 4.2.1 checks the number first and
+ * gave up with "Unknown/Unsupported chip ID: 0x0" and never downloaded firmware.
+ */
+#define CHIPCOMMON_CHIPID   0x00054325
 #define CHIPCOMMON_CORECTL  0x18000634  /* poked just before the core is started */
 
 /*
