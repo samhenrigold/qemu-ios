@@ -65,6 +65,11 @@ p.ue(0)
 p.ue(0)
 p.ue(0)
 p.put(4, 3)
+parser = argparse.ArgumentParser(description='Generate a Baseline PCM movie and independently known NV12 pixels.')
+parser.add_argument('output', type=Path)
+parser.add_argument('--audio', type=Path, help='Optional movie supplying the audio track')
+parser.add_argument('--single-slice', action='store_true', help='one slice per picture (native decoder fixture)')
+args = parser.parse_args()
 stream = bytearray(s.nal() + p.nal())
 expected = bytearray()
 for frame in range(180):
@@ -73,7 +78,7 @@ for frame in range(180):
     U = bytes([80 + frame % 80]) * 1024
     V = bytes([160 - frame % 80]) * 1024
     expected += Y + b''.join((bytes([u, v]) for u, v in zip(U, V)))
-    for first in (0, 8):
+    for first in ((0,) if args.single_slice else (0, 8)):
         b = Bits()
         b.put(101 if idr else 65, 8)
         b.ue(first)
@@ -87,7 +92,7 @@ for frame in range(180):
         b.put(0, 2 if idr else 1)
         b.ue(0)
         b.ue(1)
-        for mb in range(first, first + 8):
+        for mb in range(first, 16 if args.single_slice else first + 8):
             if not idr:
                 b.ue(0)
             b.ue(25 if idr else 30)
@@ -102,10 +107,6 @@ for frame in range(180):
                     for value in plane[(y // 2 + row) * 32 + x // 2:(y // 2 + row) * 32 + x // 2 + 8]:
                         b.put(value, 8)
         stream += b.nal()
-parser = argparse.ArgumentParser(description='Generate a Baseline PCM movie and independently known NV12 pixels.')
-parser.add_argument('output', type=Path)
-parser.add_argument('--audio', type=Path, help='Optional movie supplying the audio track')
-args = parser.parse_args()
 output = args.output.resolve()
 with tempfile.TemporaryDirectory(prefix='h264-pcm-') as tmp:
     raw = Path(tmp) / 'input.h264'
@@ -119,4 +120,4 @@ with tempfile.TemporaryDirectory(prefix='h264-pcm-') as tmp:
     subprocess.run(['ffmpeg', '-v', 'error', '-i', str(output), '-pix_fmt', 'nv12', '-f', 'rawvideo', str(decoded)], check=True)
     assert decoded.read_bytes() == expected
 output.with_suffix('.nv12').write_bytes(expected)
-print('PASS: 180 two-slice I_PCM/P_PCM pictures match independent raw pixels')
+print('PASS: 180 %s I_PCM/P_PCM pictures match independent raw pixels' % ('single-slice' if args.single_slice else 'two-slice'))

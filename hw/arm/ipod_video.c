@@ -78,6 +78,20 @@ IPodVideoDecoder *ipod_video_create(CMVideoFormatDescriptionRef format, OSType p
     return d;
 }
 
+bool ipod_video_set_format(IPodVideoDecoder *d, CMVideoFormatDescriptionRef format)
+{
+    if (CFEqual(d->format, format)) {
+        return true;
+    }
+    /* In-band parameter-set changes (same geometry) do not need a new session. */
+    if (!VTDecompressionSessionCanAcceptFormatDescription(d->session, format)) {
+        return false;
+    }
+    CFRelease(d->format);
+    d->format = (CMVideoFormatDescriptionRef)CFRetain(format);
+    return true;
+}
+
 bool ipod_video_frame(IPodVideoDecoder *d, uint8_t *data, size_t length,
                       uint32_t y, uint32_t uv)
 {
