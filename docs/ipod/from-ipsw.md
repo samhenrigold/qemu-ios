@@ -226,11 +226,21 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 
 ### Remaining emulator compatibility behavior
 
-- `ipod_touch_inject_boot_args` (hw/arm/ipod_touch_2g.c) finds iBoot's restore command line
-  (`rd=md0 nand-enable-reformat=1 -progress`), its single literal, and redirects the empty-string
-  normal-boot literal in the word before it, only if Thumb code loads that word (7E18 0x0ff11b28,
-  8C148 0x0ff0a190); anything else is skipped ("unknown iBoot"). The late boot-args write
-  finds `boot_args` by signature (kernel base 0xC0000000 or 0x80000000) on any build.
+- hw/arm/it_iboot.c (board-agnostic; the iPod machine calls it after staging iBoot) finds by
+  pattern, in any iPod touch 2G iBoot (2.1.1 .. 4.2.1, pinned by tests/ipod/test_iboot_literals.py):
+  the normal-boot command-line literal it redirects at the staged `boot-args` string (the restore
+  command line `rd=md0 nand-enable-reformat=1 -progress`, its single literal, the word before it,
+  which Thumb code must load; else "unknown iBoot", nothing written); the build's security epoch
+  (the floor its epoch helper applies to the chip ID fuse field: 1/2 on 2.x, 3 on iBoot-596 = 3.0,
+  4 from iBoot-636 on), which the SYSIC model returns in POWER_ID[31:24] in place of the LLB's
+  latch, so miu_init's "Epoch Mismatch" panic no longer keys on one build; and the 2.x
+  gBootArgs.commandLine buffer for the NAND-boot data write. The late boot-args write finds
+  `boot_args` by signature (kernel base 0xC0000000 or 0x80000000) on any build.
+- 3.0 (7A341): the baked helpers (it_agent, it_typein DYLD_INSERTed into SpringBoard, sblaunch, it_prefs)
+  are linked for the 3.1+ dyld; 3.0's refuses LC_DYLD_INFO_ONLY like 2.x, so `ipod2g_device.py` omits them
+  below 3.1 (stock SpringBoard, no guest package) until a legacy-linked set exists. 3.0 has no dyld shared
+  cache (it arrived with 3.1), so `options.appsync` must be off (`patch-appsync-dylib.sh` patches the cache;
+  3.0 would need `patch_libmis.py` on libmis.dylib itself) and the GLES shim is skipped (stock engine).
 - The obsolete fixed-address logo thunk is removed along with the DeviceTree thunk.
 - The research-only IT_AMFI_ALLOW_TASKPORT kernel patch and its address overrides
   have been removed; guest integration uses the existing boot-args and AppSync path.

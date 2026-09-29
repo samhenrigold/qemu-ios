@@ -37,10 +37,8 @@ trap 'rm -rf "$WORK"; [ -n "${PID:-}" ] && kill "$PID" 2>/dev/null' EXIT
 
 IT_LCD_BRIGHT=255 IT_DIRECT_IBOOT="$F/ios3/iBoot.bin" \
 IT_TVOUT_READY=1 \
-IT_BOOT_ARGS="amfi_allow_any_signature=1 cs_enforcement_disable=1" \
-IT_BOOT_ARGS_DELAY_MS=1500 IT_BOOT_ARGS_REPEAT=200 IT_BOOT_ARGS_INTERVAL_MS=250 \
 IT_BT_TRACE=1 IT_DMAC_TRACE=1 \
-"$QEMU" -M "iPod-Touch,bootrom=$F/bootrom_240_4,nand=$NAND,nor=$F/ios3/nor_7E18.bin,nandrw=$WORK/ovl" \
+"$QEMU" -M "iPod-Touch,bootrom=$F/bootrom_240_4,nand=$NAND,nor=$F/ios3/nor_7E18.bin,nandrw=$WORK/ovl,boot-args=amfi_allow_any_signature=1 cs_enforcement_disable=1,boot-args-delay-ms=1500,boot-args-repeat=200,boot-args-interval-ms=250" \
     -m 128M -display none -serial file:"$WORK/serial.log" \
     -qmp tcp:127.0.0.1:"$QMP",server=on,wait=off \
     >"$WORK/trace.log" 2>&1 &

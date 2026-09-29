@@ -289,10 +289,6 @@ def boot_env(cfg):
     defaults = {
         "IT_LCD_BRIGHT": "255",
         "IT_TVOUT_READY": "1",
-        "IT_BOOT_ARGS": "amfi_allow_any_signature=1 cs_enforcement_disable=1",
-        "IT_BOOT_ARGS_DELAY_MS": "1500",
-        "IT_BOOT_ARGS_REPEAT": "200",
-        "IT_BOOT_ARGS_INTERVAL_MS": "250",
     }
     # A device.py device says for itself whether it boots iBoot directly (it ships iBoot.bin, 3.x+)
     # or through the bootrom and its NOR's LLB (2.x): never fall back to the 7E18 iBoot for it.
@@ -351,9 +347,13 @@ class Device:
                    "nandrw=%s,usb-attached=on,usb-tcp-addr=127.0.0.1:%d"
                    % (cfg.files, cfg.base_nand, cfg.nor, cfg.overlay,
                       cfg.usb_port))
+        # The kernel command line is a machine property (the emulator reads no IT_BOOT_ARGS*
+        # environment): amfi_allow_any_signature so re-signed App Store binaries exec, written
+        # early through iBoot's literal and re-written on a timer until AMFI has latched it.
+        machine += ",boot-args=amfi_allow_any_signature=1 cs_enforcement_disable=1"
         if getattr(cfg, "kernel_console", False):
-            machine += (",boot-args=amfi_allow_any_signature=1 "
-                        "cs_enforcement_disable=1 serial=3 debug=0x8")
+            machine += " serial=3 debug=0x8"
+        machine += ",boot-args-delay-ms=1500,boot-args-repeat=200,boot-args-interval-ms=250"
         for option in ("audio_hw", "h264_decode", "scaler_decode", "mpvd_decode", "amc_mode", "lcd_planes", "direct_iboot", "direct_llb", "gid_blobs", "guest_package"):
             value = getattr(cfg, option, None)
             if value is not None:
