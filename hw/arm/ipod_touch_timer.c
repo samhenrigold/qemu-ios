@@ -44,7 +44,7 @@ static bool timer_trace(void)
  * rate and default scheduling. It is bounded startup configuration. */
 static void s5l8900_st_update(IPodTouchTimerState *s)
 {
-    s->freq_out = 1000000000 / 100;
+    s->freq_out = s->freq_hz ? s->freq_hz : 1000000000 / 100;
     s->tick_interval = /* bcount1 * get_ticks / freq  + ((bcount2 * get_ticks / freq)*/
     muldiv64((s->bcount1 < 1000) ? 1000 : s->bcount1, NANOSECONDS_PER_SECOND, s->freq_out);
     s->tick_interval *= s->dilation;
@@ -116,6 +116,9 @@ static void s5l8900_timer1_write(void *opaque, hwaddr addr, uint64_t value, unsi
             s->irqstat = value;
             return;
         case TIMER_4 + TIMER_CONFIG:
+            if (s->first_config_hook) {
+                s->first_config_hook(s->first_config_opaque);
+            }
             s5l8900_st_update(s);
             s->config = value;
             break;
@@ -330,6 +333,9 @@ static const VMStateDescription vmstate_ipod_touch_timer = {
 
 static const Property ipod_touch_timer_properties[] = {
     DEFINE_PROP_UINT32("irqlatch", IPodTouchTimerState, irqlatch, TIMER_IRQLATCH),
+    /* Rate timer 4 counts down at. 0 keeps the S5L8720 model's 10 MHz; the
+     * S5L8900 kernel (xnu-933) loads 120000 for its 10 ms tick, i.e. 12 MHz. */
+    DEFINE_PROP_UINT32("freq-hz", IPodTouchTimerState, freq_hz, 0),
 };
 
 static void s5l8900_timer_class_init(ObjectClass *klass, void *data)

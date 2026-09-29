@@ -45,6 +45,12 @@ typedef struct IPodTouchTimerState
     uint32_t freq_out;
     uint32_t dilation;
     uint32_t irqlatch;     /* "irqlatch" property */
+    uint32_t freq_hz;      /* "freq-hz" property: timer-4 count rate, 0 = 10 MHz */
+    /* Board hook run at every timer-4 CONFIG write. On the S5L8900 iBoot
+     * writes it once at start and the kernel once at rtclock init, i.e. after
+     * iBoot has left the device tree in RAM and before IOKit reads it. */
+    void (*first_config_hook)(void *opaque);
+    void *first_config_opaque;
     uint64_t tick_interval;
     uint64_t last_tick;
     uint64_t next_planned_tick;

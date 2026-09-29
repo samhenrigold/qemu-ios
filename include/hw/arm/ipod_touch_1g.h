@@ -135,6 +135,8 @@ typedef struct IPodTouch1GMachineState {
     char *nand_path;
     char *nand_overlay;
     uint32_t tvout_workaround;
+    bool usb_wrangler_quirk;
+    bool usb_wrangler_quirk_done;
 
     bool kbd_cmd, kbd_shift;
 } IPodTouch1GMachineState;

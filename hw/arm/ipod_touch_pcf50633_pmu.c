@@ -1,6 +1,7 @@
 #include "qemu/osdep.h"
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "migration/vmstate.h"
+#include "hw/qdev-properties.h"
 #include "hw/arm/ipod_touch_lcd.h"
 #include "hw/core/cpu.h"
 #include "target/arm/cpu.h"
@@ -349,8 +350,19 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
         pmu_trace_access("write", reg, data);
     }
 
+    if (reg == s->shutdown_reg) {
+        /* Native 7E18 without USB power sets bit 0, then waits forever
+         * in AppleD1759PMU's "pmu go stdby" path (c05fba80-c05fbacc). */
+        if (data & PMU_SHUTDOWN_GO) {
+            s->shutdown_armed = false;
+            pcf50633_guest_shutdown();
+        }
+        s->curreg = (s->curreg + 1) & 0xff;
+        return 0;
+    }
+
     switch(reg) {
-        case PMU_IRQ_MASK_A ... PMU_IRQ_MASK_A + 2:
+        case PMU_IRQ_MASK_A ... PMU_IRQ_MASK_A + 3:
             pmu_update_irq(s);
             break;
         case PMU_ADC_CONTROL:
@@ -359,15 +371,6 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
         case PMU_DSBL1:
             lcd_changebrightness(data);
 	    break;
-
-        case PMU_SHUTDOWN_REG:
-            /* Native 7E18 without USB power sets bit 0, then waits forever
-             * in AppleD1759PMU's "pmu go stdby" path (c05fba80-c05fbacc). */
-            if (data & PMU_SHUTDOWN_GO) {
-                s->shutdown_armed = false;
-                pcf50633_guest_shutdown();
-            }
-            break;
 
         case PMU_STANDBY_CMD:
             /*
@@ -474,11 +477,20 @@ static const VMStateDescription vmstate_pcf50633 = {
     }
 };
 
+static const Property pcf50633_properties[] = {
+    /* Register whose bit 0 is "go to standby". 0x0a is where 2.x/3.x's
+     * AppleD1759PMU writes it; iPhone OS 1.x's ApplePCF50635PMU uses 0x0a as
+     * its fourth interrupt mask (writes 0xff there at start) and the
+     * datasheet's OOCSHDWN at 0x0c for standby. */
+    DEFINE_PROP_UINT8("shutdown-reg", Pcf50633State, shutdown_reg, PMU_SHUTDOWN_REG),
+};
+
 static void pcf50633_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_pcf50633;
+    device_class_set_props(dc, pcf50633_properties);
     device_class_set_legacy_reset(dc, pcf50633_reset);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
 
