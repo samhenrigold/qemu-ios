@@ -157,7 +157,7 @@ static void agent_child_tick(void)
 
 #include "agent-sbs.h"
 
-#define AG_HELLO "it_agent v2\nops ping exec spawn sync put get getrange chown unlink settime " \
+#define AG_HELLO "it_agent v3\nops ping exec spawn sync put putpart get getrange chown unlink settime " \
     "launch frontmost lockstatus orientation dlicon halt type backspace uidump\n"
 
 static void agent_dispatch(unsigned size)
@@ -277,6 +277,41 @@ static void agent_dispatch(unsigned size)
                     if (!status && rename(tmp, args)) status = -errno;
                     if (status) unlink(tmp);
                 }
+            }
+        }
+    } else if (!strcmp(op, "putpart")) {
+        /* `offset final mode path`: a put too big for one request, in order.
+         * Chunks append to path.it-agent-part (offset 0 starts it, any other
+         * offset must equal its size); the final one fchmods, fsyncs and renames
+         * it over path. Any failure discards the part: resend from 0. v3 */
+        char *end, *path = 0, tmp[4096];
+        long long offset;
+        long final = -1, permissions = -1;
+        errno = 0;
+        offset = strtoll(args, &end, 10);
+        if (!errno && end != args && *end == ' ' && offset >= 0) {
+            char *p = end + 1;
+            final = strtol(p, &end, 10);
+            if (end != p && *end == ' ') {
+                p = end + 1;
+                permissions = strtol(p, &end, 8);
+                if (end != p && *end == ' ' && end[1]) path = end + 1;
+            }
+        }
+        if (!path || errno || (final != 0 && final != 1) || permissions < 0 || permissions > 0777 ||
+            snprintf(tmp, sizeof(tmp), "%s.it-agent-part", path) >= sizeof(tmp)) status = -EINVAL;
+        else {
+            int fd = open(tmp, O_WRONLY | O_NOFOLLOW | (offset ? 0 : O_CREAT | O_TRUNC), 0600);
+            struct stat st;
+            if (fd < 0) status = -errno;
+            else {
+                if (fstat(fd, &st)) status = -errno;
+                else if (!S_ISREG(st.st_mode) || st.st_size != offset) status = -EINVAL;
+                else if (lseek(fd, offset, SEEK_SET) < 0 || write_all(fd, body, body_len) ||
+                         (final && (fchmod(fd, permissions) || fsync(fd)))) status = -errno;
+                if (close(fd) && !status) status = -errno;
+                if (!status && final && rename(tmp, path)) status = -errno;
+                if (status) unlink(tmp);
             }
         }
     } else status = -ENOSYS;

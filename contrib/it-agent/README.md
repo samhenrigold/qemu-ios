@@ -15,9 +15,9 @@ base64 body in QOM's `agent-request` string. `agent-result` returns
 absent/alive/stale. The QMP helper exposes `agent(q, op, args, body)` and the CLI
 `python3 imgtools/itqmp.py PORT agent ping`.
 
-`ping` answers `it_agent v2\nops <space-separated op list>\n`; a v1 agent answers
-only `it_agent v1\n` and returns -ENOSYS (-78) for every op it lacks, so a host
-detects capabilities from the ping reply. Statuses are 0, a child's exit status,
+`ping` answers `it_agent v3\nops <space-separated op list>\n` (v2 the same without
+`putpart`); a v1 agent answers only `it_agent v1\n` and returns -ENOSYS (-78) for
+every op it lacks, so a host detects capabilities from the ping reply. Statuses are 0, a child's exit status,
 or a negative errno.
 
 | op | args | body | reply | notes |
@@ -26,6 +26,7 @@ or a negative errno.
 | spawn | | argv as NUL-terminated strings, argv[0] absolute | child's stdout+stderr, status = exit status (128+signal) | no shell; stdin is empty. v2 |
 | sync | | | | sync(2). v2 |
 | put | `path mode` (octal, last word) | file bytes | | mkstemp beside path, fchmod, fsync, rename (atomic); root-owned |
+| putpart | `offset final mode path` | file bytes from offset | | a put over one request: chunks append to `path.it-agent-part` in order (offset 0 starts it, else it must equal the part's size, or -EINVAL); `final` 1 fchmods, fsyncs and renames it over path (atomic). Any failure discards the part. v3 |
 | get | `path` | | file bytes | regular files up to 1 MiB, no symlinks; -ENOENT if absent |
 | getrange | `offset length path` | | bytes | |
 | chown | `uid gid path` | | | lchown(2); run after put for mobile-owned files. v2 |
@@ -47,6 +48,10 @@ stop com.qemu.it-agent`: the reply is -ECONNRESET and the new binary claims the
 channel about 11 s later.
 Commands use a fixed guest PATH and C locale. Output is capped at 1 MiB,
 requests at 256 KiB, chunks at 1024 bytes, and outstanding requests at 16.
+Files of any size still move: `itqmp.agent` sends a put over one request as
+`putpart` chunks (raising a clear error on a v2 agent, whose limit it would exceed)
+and reads a get the agent refuses with -EFBIG back by `getrange`. The QOM setter
+reports an over-limit request as such, not as a queue error.
 Execution runs in a child process group with a roughly 60-second tick budget.
 The daemon keeps polling and servicing clipboard during child execution.
 

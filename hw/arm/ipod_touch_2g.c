@@ -1733,8 +1733,9 @@ static void ipod_touch_set_accel_shake(Object *obj, Visitor *v, const char *name
 
 static void ipod_touch_set_agent_request(Object *obj, const char *value, Error **errp)
 {
-    if (!ipod_agent_submit(IPOD_TOUCH_MACHINE(obj)->agent, value)) {
-        error_setg(errp, "Invalid, duplicate, or full agent request queue");
+    int error = ipod_agent_submit(IPOD_TOUCH_MACHINE(obj)->agent, value);
+    if (error) {
+        error_setg(errp, "%s", ipod_agent_submit_error(error));
     }
 }
 

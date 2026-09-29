@@ -493,7 +493,7 @@ bool qemu_ios_agent_request(const char *request)
         return false;
     }
     IPodAgent *a = ipod_agent_acquire();
-    bool accepted = a && ipod_agent_submit(a, request);
+    bool accepted = a && !ipod_agent_submit(a, request);
     ipod_agent_free(a);
     return accepted;
 }

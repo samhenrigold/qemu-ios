@@ -16,8 +16,11 @@ IPodAgent *ipod_agent_acquire(void);
 IPodAgent *ipod_agent_new(void);
 void ipod_agent_free(IPodAgent *a);
 void ipod_agent_reset(IPodAgent *a);
-/* Request is an ASCII id/op header, newline, and base64 body. */
-bool ipod_agent_submit(IPodAgent *a, const char *request);
+/* Request is an ASCII id/op header, newline, and base64 body. 0, or -EINVAL
+ * (malformed), -EFBIG (over IT_AGENT_REQUEST_MAX: v3 agents take large files
+ * as `putpart` chunks), -EBUSY (duplicate id or full queue). */
+int ipod_agent_submit(IPodAgent *a, const char *request);
+const char *ipod_agent_submit_error(int error);
 bool ipod_agent_cancel(IPodAgent *a, const char *id);
 /* Owned result string; empty when none. */
 char *ipod_agent_take_result(IPodAgent *a);

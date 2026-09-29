@@ -261,12 +261,13 @@ for status, expected in (('unavailable (no it_boot)', False), ('report serial=2 
          patch.object(R.itqmp, 'agent', side_effect=agent), patch.object(R, 'log'):
         assert R.check_agent(SimpleNamespace(guest_package='/offer'), None, dev, result) is expected
 
-# A v1 agent is upgraded in place (put of this tree's build + launchd restart), then must answer v2.
+# A v1/v2 agent is upgraded in place (put of this tree's build + launchd restart), then must answer v3.
 with tempfile.NamedTemporaryFile(prefix='it_agent-') as binary:
     binary.write(b'agent bytes')
     binary.flush()
-    for answers, expected in (([b'it_agent v1\n', b'it_agent v2\nops spawn\n'], True),
-                              ([b'it_agent v2\nops spawn\n'], True), ([b'something else\n'], False)):
+    for answers, expected, restart in (([b'it_agent v1\n', b'it_agent v3\nops spawn\n'], True, 'exec'),
+                                       ([b'it_agent v2\nops spawn\n', b'it_agent v3\nops spawn\n'], True, 'spawn'),
+                                       ([b'it_agent v3\nops spawn\n'], True, None), ([b'something else\n'], False, None)):
         seen = []
         replies = iter(answers)
         def agent(q, op, args='', body=b'', timeout=65):
@@ -279,10 +280,15 @@ with tempfile.NamedTemporaryFile(prefix='it_agent-') as binary:
              patch.object(R, 'AGENT_BINARY', binary.name), \
              patch.object(R.time, 'sleep'), patch.object(R, 'log'):
             assert R.ensure_agent(object())[0] is expected
-        if answers[0].startswith(b'it_agent v1'):
-            assert seen[:3] == ['ping', 'put', 'exec'], seen
+        if restart:
+            assert seen[:3] == ['ping', 'put', restart], seen
         else:
             assert 'put' not in seen and 'exec' not in seen
+# Without a built binary a v2 agent is kept as is.
+with patch.object(R.itqmp, 'agent_alive', return_value=True), \
+     patch.object(R.itqmp, 'agent', return_value=(0, b'it_agent v2\nops spawn\n')), \
+     patch.object(R, 'AGENT_BINARY', '/nonexistent/it_agent'):
+    assert R.ensure_agent(object()) == (True, 'it_agent v2')
 print('Agent regression detects command failures and binary corruption')
 
 # Agent halt still requires guest-originated shutdown and must never retry SSH.

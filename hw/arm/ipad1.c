@@ -1511,8 +1511,9 @@ static char *ipad1_get_gles_rejects(Object *obj, Error **errp)
 /* The iPod machine's agent properties (tests drive the agent over QMP with these). */
 static void ipad1_set_agent_request(Object *obj, const char *value, Error **errp)
 {
-    if (!ipod_agent_submit(IPAD1_MACHINE(obj)->agent, value)) {
-        error_setg(errp, "Invalid, duplicate, or full agent request queue");
+    int error = ipod_agent_submit(IPAD1_MACHINE(obj)->agent, value);
+    if (error) {
+        error_setg(errp, "%s", ipod_agent_submit_error(error));
     }
 }
 
