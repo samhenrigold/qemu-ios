@@ -4,9 +4,9 @@
 /*
  * S5L8900 FMC: the iPod touch 1G's raw NAND controller (eight 2048+64-byte
  * page banks behind one FIFO), fed page lists by the ADM. Ported from
- * devos50's ipod_touch_nand.c; the page store is the FMSS one -- a base
- * directory of bank<N>/<page>.page files plus an optional copy-on-write
- * overlay directory that guest programs land in.
+ * devos50's ipod_touch_nand.c; the page store is a base directory of
+ * bank<N>/<page>.page files plus an optional page-level copy-on-write overlay
+ * directory that guest programs land in (no erase inference, see fmc.c).
  */
 
 #include "qemu/osdep.h"
@@ -16,7 +16,6 @@
 #define FMC_NUM_BANKS 8
 #define FMC_BYTES_PER_PAGE 2048
 #define FMC_BYTES_PER_SPARE 64
-#define FMC_PAGES_PER_BLOCK 128   /* qemu-ios-generate-nand: PAGES_PER_BLOCK */
 
 #define FMC_CHIP_ID 0xA514D3AD
 

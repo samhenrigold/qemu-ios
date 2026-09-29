@@ -118,6 +118,24 @@ static void adm_run_command(S5L8900ADMState *s)
         uint32_t page = adm_read_be32(s, cmdblk + ADM_CMD_PAGES);
         s5l8900_fmc_set_bank(fmc, bank);
         s5l8900_fmc_buffer_page(fmc, page);
+        /*
+         * The page's new spare -- the FTL's 12 bytes of metadata -- sits in
+         * the data3 section, where reads report it; the rest of the spare is
+         * the ECC the real controller computes, which nothing here checks.
+         * devos50's model (and this one until now) programmed the page with
+         * the spare it had just loaded, so a rewritten page came back with
+         * its previous logical number and lockdownd got EIO on its own files.
+         */
+        memset(fmc->page_spare_buffer, 0, FMC_BYTES_PER_SPARE);
+        address_space_read(&s->downstream_as, s->data3_sec_addr, MEMTXATTRS_UNSPECIFIED,
+                           fmc->page_spare_buffer, 0xC);
+        if (getenv("IT_FMC_TRACE")) {
+            fprintf(stderr, "[adm] write bank %u page %u spare", bank, page);
+            for (int i = 0; i < 0xC; i++) {
+                fprintf(stderr, " %02x", fmc->page_spare_buffer[i]);
+            }
+            fprintf(stderr, "\n");
+        }
         fmc->fmdnum = FMC_BYTES_PER_PAGE;
         fmc->is_writing = true;
         break;
