@@ -44,8 +44,10 @@ and the argument count. Slots are filled in this order of priority:
    (`gles-rejects` `slot:<id>`).
 4. **Log-once stubs returning 0** for the rest: rows with no known prototype (by name,
    `shim:unimpl:<glName>`) and fields the table lacks (by slot, `shim:unimpl:field:<field>`).
-`gles-debug=on` (or `IT_GLES_VERBOSE`) makes the shim log the whole discovered table
-(`[gli] slot N field name id`) and cross-check it against the exported trampolines.
+`IT_GLES_VERBOSE` makes the shim log the whole discovered table (`[gli] slot N field name id`);
+under it or `gles-debug=on` the shim also cross-checks the table against the exported trampolines
+(one line). The full dump is thousands of log traps inside the first context's creation, which is
+enough to make 4.x CoreAnimation decline a layer's first buffers, so it is not tied to gles-debug.
 
 **Host side:** `gles-host.c` runs the ES2 slots on its desktop GL 2.1 context
 (`gles_es2_call`/`gles_es2_draw`): shaders and programs pass through, with ES GLSL 1.00

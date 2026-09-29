@@ -15,13 +15,13 @@
 
 #ifndef GUEST_PKG_CORE_ONLY
 #include "hw/arm/guest-services/gles.h"
-/* The hello's reply asks the shim to log its dispatch layout under gles-debug or IT_GLES_VERBOSE. */
-static bool guest_pkg_gles_verbose(void)
+/* The hello's reply: log the whole layout under IT_GLES_VERBOSE, cross-check it under gles-debug. */
+static int64_t guest_pkg_gles_flags(void)
 {
-    return gles_host_debug() || getenv("IT_GLES_VERBOSE");
+    return (getenv("IT_GLES_VERBOSE") ? GLES_HELLO_VERBOSE : 0) | (gles_host_debug() ? GLES_HELLO_DEBUG : 0);
 }
 #else
-static bool guest_pkg_gles_verbose(void) { return false; }
+static int64_t guest_pkg_gles_flags(void) { return 0; }
 #endif
 
 /* One machine per process; the app's helper reads this from its own thread. */
@@ -199,7 +199,7 @@ int64_t guest_pkg_op(GuestPackage *p, unsigned op, uint64_t token,
                     offset != GUEST_GLES_PROTO ? " -- PROTOCOL MISMATCH" :
                     token != GLES_NAMES_VERSION ? " -- the shim was built from another table" : "");
         }
-        return GUEST_GLES_PROTO | (guest_pkg_gles_verbose() ? GLES_HELLO_VERBOSE : 0);
+        return GUEST_GLES_PROTO | guest_pkg_gles_flags();
     }
     }
     return -1;

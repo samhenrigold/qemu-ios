@@ -336,7 +336,8 @@ static unsigned gles_layout_from_exports(unsigned nslots, int check)
 
 #define QC_GLES_HELLO 0x142
 #define GLES_HELLO_PROTO 1            /* the name-keyed wire (guest-package.h GUEST_GLES_PROTO) */
-#define GLES_HELLO_VERBOSE 0x100      /* in the reply: the host wants the table logged */
+#define GLES_HELLO_VERBOSE 0x100      /* in the reply: IT_GLES_VERBOSE, log the whole table (a trap per line) */
+#define GLES_HELLO_DEBUG 0x200        /* gles-debug: cross-check the layout against the exports, one line */
 
 /* Tell the host which wire this shim speaks and which name table it was built from; the reply
  * says the host's protocol and whether it wants the layout logged (gles-debug / IT_GLES_VERBOSE). */
@@ -388,14 +389,18 @@ static unsigned gles_discover(unsigned nslots)
             w("[gles] unknown dispatch field "); w(gli.field[i]); w(" at slot "); wd(i); w("\n");
         }
     }
+    /* The table dump is thousands of log traps inside the first context's creation, which is
+     * enough to make 4.x CoreAnimation decline the first buffers of a layer bound right after;
+     * so it is asked for by IT_GLES_VERBOSE alone, and gles-debug gets the one-line cross-check. */
     if (hello > 0 && (hello & GLES_HELLO_VERBOSE)) {
         for (i = 0; i < gli.n; i++) {
             w("[gli] slot "); wd(i); w(" "); w(gli.field[i] ? gli.field[i] : "?");
             if (gli.fn[i] >= 0) { w(" "); w(gles_fns[gli.fn[i]].name); w(" id "); wd(gles_fns[gli.fn[i]].id); }
             w("\n");
         }
-        if (gles_streq(gli.how, "encode")) gles_layout_from_exports(gli.n, 1);
     }
+    if (hello > 0 && (hello & (GLES_HELLO_VERBOSE | GLES_HELLO_DEBUG)) && gles_streq(gli.how, "encode"))
+        gles_layout_from_exports(gli.n, 1);
     return gli.n;
 }
 
