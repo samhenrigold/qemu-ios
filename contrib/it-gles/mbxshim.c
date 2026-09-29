@@ -1117,23 +1117,41 @@ extern void *dlsym(void *, const char *);
 extern void *malloc_zone_from_ptr(const void *);
 extern unsigned long malloc_size(const void *);
 
+/* 3.x+ surfaces are IOSurfaces; 1.x/2.x have CoreSurface.framework instead, whose
+ * CoreSurfaceBuffer* calls are the same set under another prefix (only GetPixelFormat is
+ * GetPixelFormatType there, and its Lock takes no seed). Whichever the firmware has. */
+static void *surface_sym(const char *prefix, const char *name)
+{
+    char full[64];
+    unsigned i = 0, k = 0;
+    while (prefix[k] && i < sizeof full - 1) full[i++] = prefix[k++];
+    for (k = 0; name[k] && i < sizeof full - 1;) full[i++] = name[k++];
+    full[i] = 0;
+    return dlsym(iosurf, full);
+}
+
 static void iosurface_init(void)
 {
+    const char *pre = "IOSurface";
     if (iosurf) return;
     iosurf = dlopen("/System/Library/PrivateFrameworks/IOSurface.framework/IOSurface",
                     RTLD_NOW);
-    if (!iosurf) { w("[mbxshim] IOSurface.framework not available\n"); return; }
-    p_IOSurfaceGetBaseAddress = dlsym(iosurf, "IOSurfaceGetBaseAddress");
-    p_IOSurfaceGetBytesPerRow = dlsym(iosurf, "IOSurfaceGetBytesPerRow");
-    p_IOSurfaceGetWidth       = dlsym(iosurf, "IOSurfaceGetWidth");
-    p_IOSurfaceGetHeight      = dlsym(iosurf, "IOSurfaceGetHeight");
-    p_IOSurfaceGetPixelFormat = dlsym(iosurf, "IOSurfaceGetPixelFormat");
-    p_IOSurfaceGetPlaneCount = dlsym(iosurf, "IOSurfaceGetPlaneCount");
-    p_IOSurfaceGetBaseAddressOfPlane = dlsym(iosurf, "IOSurfaceGetBaseAddressOfPlane");
-    p_IOSurfaceGetBytesPerRowOfPlane = dlsym(iosurf, "IOSurfaceGetBytesPerRowOfPlane");
-    p_IOSurfaceLock           = dlsym(iosurf, "IOSurfaceLock");
-    p_IOSurfaceUnlock         = dlsym(iosurf, "IOSurfaceUnlock");
-    p_IOSurfaceGetTypeID      = dlsym(iosurf, "IOSurfaceGetTypeID");
+    if (!iosurf) {
+        pre = "CoreSurfaceBuffer";
+        iosurf = dlopen("/System/Library/PrivateFrameworks/CoreSurface.framework/CoreSurface", RTLD_NOW);
+    }
+    if (!iosurf) { w("[mbxshim] neither IOSurface nor CoreSurface is available\n"); return; }
+    p_IOSurfaceGetBaseAddress = surface_sym(pre, "GetBaseAddress");
+    p_IOSurfaceGetBytesPerRow = surface_sym(pre, "GetBytesPerRow");
+    p_IOSurfaceGetWidth       = surface_sym(pre, "GetWidth");
+    p_IOSurfaceGetHeight      = surface_sym(pre, "GetHeight");
+    p_IOSurfaceGetPixelFormat = surface_sym(pre, pre[0] == 'I' ? "GetPixelFormat" : "GetPixelFormatType");
+    p_IOSurfaceGetPlaneCount = surface_sym(pre, "GetPlaneCount");
+    p_IOSurfaceGetBaseAddressOfPlane = surface_sym(pre, "GetBaseAddressOfPlane");
+    p_IOSurfaceGetBytesPerRowOfPlane = surface_sym(pre, "GetBytesPerRowOfPlane");
+    p_IOSurfaceLock           = surface_sym(pre, "Lock");
+    p_IOSurfaceUnlock         = surface_sym(pre, "Unlock");
+    p_IOSurfaceGetTypeID      = surface_sym(pre, "GetTypeID");
     {
         void *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/"
                           "CoreFoundation", RTLD_NOW);
