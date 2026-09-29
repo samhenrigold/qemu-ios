@@ -324,11 +324,16 @@ def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION, root_matching=ROOT_MATCH
             dt.set("baseband", key, value)
     if "chip-revision" in dt.props["arm-io"]:  # absent from the selfcheck DT
         dt.set("arm-io", "chip-revision", 0x11)  # measured on the real K48AP
-    if "arm-io/flash-controller0/disk" in dt.props:  # absent from the selfcheck's synthetic DT
-        disk = dt.props["arm-io/flash-controller0/disk"]
-        for key, value in NAND.items():
-            if key in disk:   # iBoot-931 (4.x) DTs drop the *-ns timings
-                dt.set("arm-io/flash-controller0/disk", key, value)
+    # iBoot-1219 (5.x) DTs carry the geometry on flash-controller0 itself as well, plus ce-bitmap: the
+    # populated CEs numbered across the buses (bus b's at 8b + n), which AppleIOPFMI-49 reads before its
+    # first command (_fmiInitVirtToPhysMap loops forever on an empty one). Fill whichever node has the key.
+    ces = NAND["#ce"] // NAND["#databus"]
+    fill = dict(NAND, **{"ce-bitmap": sum(((1 << ces) - 1) << (8 * b) for b in range(NAND["#databus"]))})
+    for node in ("arm-io/flash-controller0", "arm-io/flash-controller0/disk"):
+        if node in dt.props:  # absent from the selfcheck's synthetic DT
+            for key, value in fill.items():
+                if key in dt.props[node]:   # iBoot-931 (4.x) DTs drop the *-ns timings
+                    dt.set(node, key, value)
     dt.set("pram", "reg", (PRAM_PA, PRAM_SIZE))
     dt.set("vram", "reg", (VRAM_PA, VRAM_SIZE))
     for i, (name, pa, size) in enumerate(memory_map):
