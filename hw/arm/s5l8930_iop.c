@@ -833,17 +833,8 @@ static void iop_control_message(S5L8930IOPState *s, hwaddr item)
     case CTRL_OP_TTIN:
         break;
     case CTRL_OP_SLEP:
-        /* The firmware answers first, runs the sleep hooks, then halts.
-         * Instrument (class H): EmbeddedIOP-20's AP side keeps its diagnostic
-         * watchdog armed across the shutdown sleep and pings the IOP; with the
-         * HLE halted the ping's send fails (kIOReturnNoResources) and the
-         * kernel panics "IOP watchdog: unexpected diagnostic state"
-         * (EmbeddedIOP.cpp:929, seen at iPad 4.3's shutdown). The v3 layout
-         * therefore stays awake; what the real firmware does between 'slep'
-         * and the PMU cut is the IOP core's to answer. */
-        if (s->fmi_arg != 8) {
-            s->running = false;
-        }
+        /* The firmware answers first, runs the sleep hooks, then halts. */
+        s->running = false;
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: unrecognised host opcode 0x%08x\n",
