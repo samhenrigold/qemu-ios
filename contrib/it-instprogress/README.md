@@ -15,7 +15,9 @@ install, the same slot before and after. No injection and no entitlement.
 object that arrives from `itunesstored` over a launchd-owned Mach service, and
 the only ways in are in-process. The bar is drawn but stays empty and the label
 is SpringBoard's own "Waiting…", which is what iOS 3 really shows — so nothing
-here is faked. The rest of this file is the evidence and the routes left.
+here is faked. The rest of this file is the evidence and the routes left. The
+half-built `isprogress.c` dylib, the `probe_insert.c` probe and `sbunlock` were
+deleted (they are in git history); only `sbdlicon` is built and shipped.
 
 ## Using it
 
@@ -167,11 +169,6 @@ cannot outlive the running SpringBoard; and `addDownloadingIconForDisplayIdentif
 is idempotent per display identifier, so keying the id on the bundle id means
 dropping the same `.ipa` twice reuses one icon instead of stacking them.
 
-`sbunlock` is here because headless verification needs a way past the lock
-screen that is not synthesised touch: it calls
-`SBApplicationRequestedDeviceUnlock`. Note it raises the passcode keypad even
-with no passcode set — tap Cancel, then slide.
-
 ## The two routes left for real progress, and which to take
 
 Both require code inside a process that holds the notification server's receive
@@ -192,7 +189,7 @@ launchd restarts `itunesstored` and the UI is unharmed.
 
 Route 1 is the one to build, and **the question it turns on is now answered
 rather than assumed**: `DYLD_INSERT_LIBRARIES` from that plist still works on
-3.1.3. `probe_insert.c` is a dylib whose only content is a constructor that
+3.1.3. `probe_insert.c` (since deleted; git history) was a dylib whose only content is a constructor that
 writes its pid to a file. Put it at `/usr/lib/it-probe-insert.dylib`, add
 
     EnvironmentVariables = { DYLD_INSERT_LIBRARIES =

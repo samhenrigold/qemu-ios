@@ -44,9 +44,9 @@ Sam's iPad 1 is available with no restrictions (wipe, downgrade, jailbreak), plu
 The A4 bootrom has limera1n, so we always have pre-iBoot code execution. Tooling: Legacy-iOS-Kit
 (limera1n, powdersn0w downgrade to 3.x, iBoot32Patcher, xpwntool).
 
-- **HW-1 (non-destructive, ready):** `contrib/ipad1-hw/` — limera1n → signature-patched 7B500 iBSS → iBEC with two
+- **HW-1 (non-destructive, ready):** `docs/research/ipad1-hw/` — limera1n → signature-patched 7B500 iBSS → iBEC with two
   new console commands, `md <addr> [n]` and `mw <addr> <val>` (replacing `bgcolor` and `go`), read back over
-  `irecovery -s`. Probes in `contrib/ipad1-hw/probes.txt`: ChipID, POWER_ID, PMGR PLL/clock/gate registers, timer,
+  `irecovery -s`. Probes in `docs/research/ipad1-hw/probes.txt`: ChipID, POWER_ID, PMGR PLL/clock/gate registers, timer,
   GPIO, VIC, and the DRAM mirrors. This is an interactive register oracle we can reuse whenever the
   emulator stalls on an unknown value.
 - **HW-1 results (2026-09-26):** limera1n + pwned iBSS + md/mw iBEC work. Measured: ChipID

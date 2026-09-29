@@ -186,4 +186,4 @@ Regression on this branch: `tests/ipod/regress.py` default tier: boot, fsck, per
 PASS; appinstall, applaunch, gles and audio SKIP because Harness.ipa is not built in this worktree.
 
 Remaining notes:
-- The fallback remains `contrib/ipad1-hidbridge` (keyboard-and-network.md §1).
+- The old guest fallback, `contrib/ipad1-hidbridge` (keyboard-and-network.md §1), was deleted once this landed; it is in git history (6195ffab76).

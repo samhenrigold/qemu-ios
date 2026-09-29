@@ -327,9 +327,8 @@ LINKS_GLES=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # Our MBXGLEngine.bundle replacement, built by contrib/it-gles/build.sh. It is
 # not committed -- it is an armv6 Mach-O bundle produced from committed source.
-# IT_GUEST_TOOLS is where the app unpacks the guest binaries it ships (see
-# stage-and-run.sh). Run from a source tree there is no such directory and the
-# repo copies are used instead, so both work.
+# IT_GUEST_TOOLS: a directory of prebuilt guest binaries (the retired app
+# bundle's stage-and-run.sh set it). Unset, the repo copies are used.
 SHIM="${SHIM:-${IT_GUEST_TOOLS:-$REPO/contrib/it-gles}/MBXGLEngine}"
 [ -f "$SHIM" ] || SHIM="$REPO/contrib/it-gles/MBXGLEngine"
 

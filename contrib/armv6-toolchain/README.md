@@ -1,6 +1,6 @@
 # Building armv6 Mach-O for the guest, without a Snow Leopard box
 
-`contrib/it-kbd-agent/build.sh` documents the state of the art here as: keep a
+The retired `contrib/it-kbd-agent/build.sh` documented the state of the art here as: keep a
 Mac OS X 10.6.8 machine with Xcode 4.2 around, and `ssh` to it. That works, but
 it makes every guest-side binary in this project depend on a second computer.
 
