@@ -22,6 +22,7 @@ tests/ipod/regress.py --qemu build/qemu-system-arm --device OUT --checks boot
 | 3.1.3 7E18 | complete | SpringBoard up, GL CA through the shim, "Connect to iTunes" (lit, see below) | activation |
 | 4.2.1 8C148 | complete (NOR, NAND, GLES check, AppSync, gid-blobs, activation hook, data protection) | home screen, GL CoreAnimation through the shim (`regress.py --device ... --checks boot,gles` PASS; see "8C148: GL") | none for GL |
 | 2.1.1 5F138 | complete (activation hook; the guest package's OpenGLES hook, the GL front end; AppSync; no modern guest helpers) | home screen once a host sets the time (brick state), GL CoreAnimation through the front end (`regress.py --device ... --checks boot,gles` PASS; see "2.x: CoreAnimation through the GL front end") | ad-hoc app install + launch verified with the legacy AppSync helper |
+| 3.0 7A341 | complete (the legacy-linked engine MBXGLEngine-30, the n72-ios30 package, installd AppSync; no modern guest helpers) | home screen once a host sets the time (brick state, every boot), app GL through the engine (`regress.py --device ... --checks boot,gles` PASS; see "3.0: GL through the legacy-linked engine") | no helpers yet (smoke #10) |
 | 2.2 5G77a, 2.2.1 5H11a | complete (as 2.1.1; the NOR wraps every image but the LLB) | home screen through LightTouchMac's pipeline (matrix, 2026-09-29) | the hold button (below) |
 
 ### P1, 7E18: activation
@@ -273,7 +274,7 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 | pasteboard | it_pbd binary present, job retired | not installed (the agent owns the clipboard) |
 | sound defaults | set-sound-defaults.py | same |
 | AppSync | cache MISValidateSignature (by symbol) + libappsync in installd | same script, contrib/appsync/patch-appsync-dylib.sh |
-| GLES shim | MBXGLEngine shim, CA_ENABLE_OGL=1, MBX2D/auto off | same, the one `contrib/it-gles/MBXGLEngine`, which reads the firmware's dispatch layout at load (`ipod2g_device.gli_engine` only logs what it will find); 1.x/2.x (no engine bundle) → the guest package's OpenGLES hook (`contrib/it-gles/gles2x.c`, the same core) and CA_ENABLE_OGL=1, only when the stock binary's exports match `opengles-2x.exports` (`ipod2g_device.gles2x_front_end`) |
+| GLES shim | MBXGLEngine shim, CA_ENABLE_OGL=1, MBX2D/auto off | same, the one `contrib/it-gles/MBXGLEngine`, which reads the firmware's dispatch layout at load (`ipod2g_device.gli_engine` only logs what it will find); 3.0 (the bundle a plain file, legacy dyld) → the same source legacy-linked, `MBXGLEngine-30`; 1.x/2.x (no engine bundle) → the guest package's OpenGLES hook (`contrib/it-gles/gles2x.c`, the same core) and CA_ENABLE_OGL=1, only when the stock binary's exports match `opengles-2x.exports` (`ipod2g_device.gles2x_front_end`) |
 | shell + ssh | Cydia bootstrap files copied as uid 99, stock modes clobbered by `chmod 755`, sshd by overwriting ReportCrash.SafetyNet, host keys shared by every copy | **none**: no freeze, OpenSSH or OpenSSL; guest services are stock lockdown services plus it_agent v2 (docs/ipod/guest-services-plan.md), marker `.lt-guest-tools-v3` |
 | web proxy / CA trust | itproxy/ittrust run over SSH | the iPad's PAC baked into the en0 Wi-Fi service (`ipod2g_device.install_web_proxy`); CA by a MCInstall profile at run time |
 | byte patches | none left on the default path: installd/SpringBoard are stock | none; see "emulator-side per-version code" |
@@ -292,9 +293,9 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
   `boot_args` by signature (kernel base 0xC0000000 or 0x80000000) on any build.
 - 3.0 (7A341): the baked helpers (it_agent, it_typein DYLD_INSERTed into SpringBoard, sblaunch, it_prefs)
   are linked for the 3.1+ dyld; 3.0's refuses LC_DYLD_INFO_ONLY like 2.x, so `ipod2g_device.py` omits them
-  below 3.1 (stock SpringBoard, no guest package) until a legacy-linked set exists. 3.0 has no dyld shared
-  cache (it arrived with 3.1), so `options.appsync` must be off (`patch-appsync-dylib.sh` patches the cache;
-  3.0 would need a symbol-located patch of libmis.dylib itself) and the GLES shim is skipped (stock engine).
+  below 3.1 (stock SpringBoard) until a legacy-linked set exists. 3.0 has no dyld shared cache (it arrived
+  with 3.1): AppSync is the installd injection alone (contrib/appsync), and the GL engine is a plain file,
+  which gets the legacy-linked shim (see "3.0: GL through the legacy-linked engine").
 - The obsolete fixed-address logo thunk is removed along with the DeviceTree thunk.
 - The research-only IT_AMFI_ALLOW_TASKPORT kernel patch and its address overrides
   have been removed; guest integration uses the existing boot-args and AppSync path.
@@ -628,6 +629,44 @@ the LCD change reverted the same leg fails (Safari never reaches the panel).
 
 Not done: apps' own GL (the App Store starts at 2.x); a 1.x build other than 3A101a (the list and the hook are
 per major, `3*`/`4*`).
+
+### 3.0: GL through the legacy-linked engine (2026-09-29)
+
+3.0 (7A341) is not a 2.x-style firmware for GL: it already has 3.1's split, a stock OpenGLES front
+(EAGL, `__GLIFunctionDispatchRec` @encode with 821 slots, all named by gles-names.h; 298 exports) over
+`OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine`, which exports `GLESGetEGLInterface` like 3.1.3's. What
+it lacks is 3.1's dyld: no shared cache (the engine is a plain file on the volume) and no
+LC_DYLD_INFO_ONLY. So the fix is the engine, not a front end: `contrib/it-gles/build.sh` also builds
+`MBXGLEngine-30`, mbxshim.c unchanged under `LEGACY_LINK=1` (classic relocations, r9 reserved), and
+`ipod2g_device.gli_engine` picks it when the volume has the engine bundle but no cache. OpenGLES, EAGL and
+QuartzCore stay stock. The guest package has a family for it, `n72-ios30` (builds `7A341`: the legacy
+loader and the engine hook, no helpers), so `n72-ios3` lists the 3.1.x builds by id (the iPod's 3.x
+series is closed); family by dyld capability, not by major.
+
+What it took, found on the device:
+
+- **Sign it.** An unsigned engine hung every boot on the Apple logo with the boot spinner: 3.0's
+  SpringBoard creates two GL contexts at every boot, CA_ENABLE_OGL=0 included, so the engine maps into a
+  signed process, which is killed at the unsigned library's first page, and launchd respawns it forever.
+  Signed (`ldid -S`, as MBXGLEngine), the same image reaches the home screen. mkpkg now refuses an
+  unsigned MBXGLEngine hook (`macho_problem(signed=True)`), and tests/ipod/test_gli_engine.py checks the
+  built file.
+- **The brick state is 2.x's.** A fresh 3.0 shows "Connect to iTunes" until a paired host sets the time,
+  at every boot; `regress.py` now does the 2.x time set below 3.1 (`device_version`), not only on 2.x.
+
+SpringBoard's GL on 3.0 is then 3.1.3's, the same log line for line on a boot (7E18-a and 7A341: one
+`GLESGetEGLInterface`, two `GLESCreateGC`, a dozen offscreen draws): the display itself composites as on
+3.1.3. An app's EAGL goes through the engine: Labyrinth 2 Lite (Legacy Store ipa 257098, min OS 3.0,
+installed with the installd AppSync, launched by tapping its icon) renders its menu and the 3D maze
+(`GLESBindView`, `present tally: ok=3600 failed=0`), where the stock engine left its window blank. One
+host refusal in the app, `matrix-stack:glPushMatrix`, not SpringBoard's.
+
+Gates: `regress.py --device <7A341> --checks boot,gles` PASS 3 of 3 (the 2.x leg's criteria with the
+engine's marker, since 3.0 has no agent to launch GLTest: one hello, SpringBoard's GL contexts, live
+host contexts, no refusals, the frames following a swipe, a Safari launch and the close); the second
+boot after a guest-confirmed shutdown lit in 9 of 9 (6 `boot,persist`, 3 with Labyrinth run in boot 1).
+
+Not done: helpers on 3.0 (it_agent and friends are still modern-linked, smoke #10), so no GLTest leg.
 
 ### Early AppSync (2026-09-29)
 

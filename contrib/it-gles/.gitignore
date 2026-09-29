@@ -6,6 +6,7 @@ gles_stubs.h
 sblaunch
 GLTest
 MBXGLEngine
+MBXGLEngine-30
 GLTest.app/
 OpenGLES-2x
 OpenGLES-1x

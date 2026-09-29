@@ -482,9 +482,9 @@ class Device:
                     "flat colour, so this is iBoot/recovery, not a boot"
                     % (self.tag, time.time() - START, lit))
                 continue
-            if n >= 2 and lit < self.cfg.home_lit_min and (self.cfg.device_major or 3) <= 2 \
+            if n >= 2 and lit < self.cfg.home_lit_min and (self.cfg.device_version or (3, 1)) < (3, 1) \
                     and not getattr(self, "time_set", False) and getattr(self.cfg, "usbmuxd_ok", True):
-                # 2.x lockdownd keeps an iPod "bricked" (Connect to iTunes) until a paired host sets
+                # 2.x/3.0 lockdownd keeps an iPod "bricked" (Connect to iTunes) until a paired host sets
                 # the time, as iTunes does on connect (docs/ipod/from-ipsw.md, "lockdownd's brick
                 # state"); SpringBoard shows the lock screen at its next wake from sleep.
                 udid, why = wait_for_device(self.cfg, timeout=300)
@@ -1379,7 +1379,7 @@ def verify_audio(path, r):
 
 
 def check_gles_front_end(cfg, dev, r):
-    """1.x/2.x: SpringBoard's own compositing is the fixture (no app installs there yet).
+    """1.x/2.x and 3.0 (no agent to launch GLTest): SpringBoard's own GL is the fixture.
 
     The device's lock says the OpenGLES hook went in and the bake set CA_ENABLE_OGL=1 (1.x:
     LK_ENABLE_OGL=1, imgtools/ipod1g_device.py), so every frame since the home screen came up was
@@ -1394,7 +1394,10 @@ def check_gles_front_end(cfg, dev, r):
     def hellos():
         with open(log_path, "rb") as f:
             text = f.read().decode("utf-8", "replace")
-        return text.count("dispatch layout from export names"), "[gles] egl: first pixmap surface" in text
+        # 3.0: the engine (MBXGLEngine-30), whose SpringBoard GL is 3.1.3's: its GL contexts and their
+        # offscreen draws, the display itself composited as on 3.1.3
+        mark = "[mbxshim] GLESCreateGC" if cfg.gles_engine == "MBXGLEngine" else "[gles] egl: first pixmap surface"
+        return text.count("[gles] dispatch layout from "), mark in text
 
     shots = []
     dev.qmp.tap(160, 326)   # 2.x raises the first-unlock Edit Home Screen tip late: its Dismiss (empty home otherwise)
@@ -1417,7 +1420,9 @@ def check_gles_front_end(cfg, dev, r):
         return r.set(False, "the front end said hello %d times: SpringBoard %s (%s)"
                      % (n, "never loaded it" if not n else "restarted", lits))
     if not pixmap:
-        return r.set(False, "CoreAnimation made no pixmap surface: it composites in software (%s)" % lits)
+        return r.set(False, "CoreAnimation made no %s: no GL through the %s (%s)" % (
+            "GL context" if cfg.gles_engine == "MBXGLEngine" else "pixmap surface",
+            "engine" if cfg.gles_engine == "MBXGLEngine" else "front end", lits))
     if contexts < 1:
         return r.set(False, "no live host GL context (%s)" % lits)
     if rejects:
@@ -1428,8 +1433,9 @@ def check_gles_front_end(cfg, dev, r):
     if abs(shots[-1][1] - shots[0][1]) > shots[0][1] // 20:
         # the panel still shows Safari (1.x: the iPod LCD once lost the GL write-back's dirty pages)
         return r.set(False, "the close did not reach the panel: %s" % lits)
-    return r.set(True, "SpringBoard composites through the GL front end: one hello, CA's pixmap surfaces, "
-                       "%d host context(s), no refusals; %s" % (contexts, lits))
+    return r.set(True, "SpringBoard's GL through the %s: one hello, CA's %s, %d host context(s), no refusals; %s"
+                 % ("legacy-linked engine" if cfg.gles_engine == "MBXGLEngine" else "GL front end",
+                    "GL contexts" if cfg.gles_engine == "MBXGLEngine" else "pixmap surfaces", contexts, lits))
 
 
 def check_gles(cfg, procs, dev, r):
@@ -1851,8 +1857,9 @@ def main():
 
     cfg.files = os.path.expanduser(cfg.files_dir)
     cfg.device_machine = {}
-    cfg.device_major = None         # the device's iOS major, from its lock (None: nand-current, 3.x)
-    cfg.gles_front_end = False      # 1.x/2.x: the guest package's OpenGLES hook, CA through GL
+    cfg.device_version = None       # the device's iOS (major, minor), from its lock (None: nand-current, 3.1.3)
+    cfg.gles_front_end = False      # 1.x/2.x/3.0: SpringBoard's GL is the gles leg (check_gles_front_end)
+    cfg.gles_engine = None          # the lock's derived.gles_engine: OpenGLES (front end) or MBXGLEngine
     cfg.board = "n72ap"             # n45ap: an iPod touch 1G device (imgtools/ipod1g_device.py)
     cfg.home_lit_min = HOME_LIT_MIN
     if cfg.device:
@@ -1865,8 +1872,13 @@ def main():
         if os.path.exists(lock):
             lockd = json.load(open(lock))
             cfg.device_machine = lockd.get("machine") or {}
-            cfg.device_major = int(lockd.get("product_version", "0").split(".")[0]) or None
-            cfg.gles_front_end = (lockd.get("derived") or {}).get("gles_engine") == "OpenGLES"
+            cfg.device_version = tuple(int(x) for x in lockd.get("product_version", "0").split(".")[:2])
+            cfg.device_version = cfg.device_version if cfg.device_version[0] else None
+            derived = lockd.get("derived") or {}
+            cfg.gles_engine = derived.get("gles_engine")
+            # no agent to install and launch GLTest (1.x/2.x, 3.0): SpringBoard's own compositing is the leg
+            cfg.gles_front_end = derived.get("gles_engine") == "OpenGLES" or (
+                derived.get("gles_engine") == "MBXGLEngine" and str(derived.get("guest_tools")).startswith("omitted"))
             cfg.board = lockd.get("board", cfg.board)
     if cfg.board == "n45ap":
         # 1.1's home screen is icons on black (~135k lit sub-pixels; the Apple logo far fewer), and
