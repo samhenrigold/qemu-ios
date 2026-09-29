@@ -35,6 +35,13 @@ static void pmu_trace_access(const char *what, uint8_t reg, uint8_t val)
             what, reg, val, pc, lr);
 }
 
+/* What the panel gets: the WLED level, only while its rail is enabled. */
+static void pmu_update_backlight(Pcf50633State *s)
+{
+    lcd_changebrightness(s->regs[PMU_LDO_ENABLE] & PMU_LDO_BACKLIGHT
+                         ? s->regs[PMU_DSBL1] : 0);
+}
+
 static void pmu_update_irq(Pcf50633State *s)
 {
     uint8_t pending = 0;
@@ -357,8 +364,9 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
             pmu_adc_command(s, data);
             break;
         case PMU_DSBL1:
-            lcd_changebrightness(data);
-	    break;
+        case PMU_LDO_ENABLE:
+            pmu_update_backlight(s);
+            break;
 
         case PMU_SHUTDOWN_REG:
             /* Native 7E18 without USB power sets bit 0, then waits forever
@@ -414,6 +422,9 @@ static void pcf50633_reset(DeviceState *dev)
     s->regs[PMU_STANDBY_CMD] = 0;
     s->regs[PMU_SHUTDOWN_REG] &= ~PMU_SHUTDOWN_GO;
     s->regs[PMU_ADC_CONTROL] = 0;
+    /* The backlight rail is on out of reset (iBoot lights its logo without
+     * touching 0x10); the level is whatever the guest programs. */
+    s->regs[PMU_LDO_ENABLE] |= PMU_LDO_BACKLIGHT;
     s->adc_sample = 0;
     for (unsigned i = 0; i < 3; i++) {
         s->regs[PMU_EVENT_A_REG + i] = 0;
