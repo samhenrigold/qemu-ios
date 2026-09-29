@@ -278,8 +278,14 @@ def seed(mnt, itpack, gli=None):
     build = plistlib.load(open(os.path.join(mnt, SYSTEM_VERSION), "rb"))["ProductBuildVersion"]
     fams = [n[:-len("/manifest.json")] for n in entries if n.endswith("/manifest.json")
             and build_matches(json.loads(entries[n])["requires"]["builds"], build)]
-    if len(fams) != 1:
+    if len(fams) > 1:
         raise SystemExit("%s: %d packages for build %s" % (itpack, len(fams), build))
+    if not fams:
+        # No family covers this build (a build newer than the itpack): the volume gets no loader and
+        # no helpers, and stays stock. The lock records family None so the gap is visible.
+        return [], {"family": None, "seed": None, "version": None, "gli": gli,
+                    "itpack": {"path": os.path.abspath(itpack), "sha256": sha256(open(itpack, "rb").read())},
+                    "hooks": [], "jobs": []}
     family = fams[0]
     m = json.loads(entries[family + "/manifest.json"])
     hooks = [h for h in m["hooks"] if h["gli"] in (None, gli) and os.path.exists(os.path.join(mnt, h["target"][1:]))]

@@ -13,6 +13,8 @@ host). Checks run in parallel, each on its own QEMU.
            the USB keyboard attached, no stock "USB device not supported" alert and Hold locks the panel
            (--guest-package DIR: it_boot must report the offered serial; a package installed this boot
            means one more boot on the same overlay, the first one's mounter ran the old shim)
+           and the GL bridge refused nothing on the way (gles-rejects), nothing painted magenta
+
   usbmux   ideviceinfo over the bridge answers ProductVersion (the store's device.lock.json, else
            3.2.2), DeviceClass iPad
   afc      push and pull files at sizes that are not multiples of 512, SHA-256 identical
@@ -23,7 +25,7 @@ host). Checks run in parallel, each on its own QEMU.
   audio    tests/ipad1/audio-check.py: boot sound, unlock, lock, unlock correlate with the originals
   net-usb  (opt-in) the same fetch over USB Ethernet: en1, usbmuxd's slirp, it_ethlink in the image
   shadow   (opt-in) Safari's Bookmarks popover casts a soft drop shadow (an A008 surface), not a solid box
-  appinstall, applaunch, gles
+  appinstall, applaunch
            SKIP: stock installd rejects apps not validly signed for this device
 
 Exits non-zero if any selected check FAILs.
@@ -53,9 +55,9 @@ Result, Procs, free_port, sha256_file, log = ipod.Result, ipod.Procs, ipod.free_
 
 FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1")
 USBMUXD = os.path.expanduser("~/Developer/usbmuxd-qemu-ipad1-net/src/usbmuxd")
-DEFAULT_CHECKS = ["boot", "usbmux", "afc", "persist", "wifi", "net", "audio"]
+DEFAULT_CHECKS = ["boot", "gles", "usbmux", "afc", "persist", "wifi", "net", "audio"]
 PENDING = {"appinstall": "stock installd rejects apps not validly signed for this device",
-           "applaunch": "needs appinstall", "gles": "needs appinstall (GLTest is ldid-signed)"}
+           "applaunch": "needs appinstall"}
 # Scanout is 1024x768 with the portrait UI turned on it. The boot logo is a small Apple on black (a few %
 # lit); the lock screen is a full wallpaper (~99% lit, unlike the iPod's dark panel). A stalled panel's
 # solid fill is also fully lit, so the frame must also be a picture: many distinct colours.
@@ -117,6 +119,8 @@ class Boot:
                 machine += ",usb-tcp-addr=127.0.0.1:%d" % self.usb_port
             if getattr(cfg, "guest_package", None):
                 machine += ",guest-package=" + cfg.guest_package
+            # What the GL bridge refuses is painted magenta and counted (gl_clean below).
+            machine += ",gles-debug=on"
             argv = ["timeout", str(cfg.boot_timeout), cfg.qemu, "-machine", machine + ("" if self.wifi else ",wifi=off"),
                     "-display", "none", "-monitor", "none", "-serial", "file:" + self.serial,
                     "-qmp", "unix:%s,server,nowait" % self.sock]
@@ -256,6 +260,28 @@ def booted(cfg, tag, r, **kw):
     return b, detail
 
 
+MAGENTA_MAX = 0.001     # of the frame: gles-debug's paint is a layer's worth, never a stray pixel
+
+
+def gl_clean(b, r, detail, shots=()):
+    """Pass r only if the GL bridge refused nothing since boot (itqmp.gles_rejects: host and shim
+    counters) and none of the screendumps carries gles-debug's magenta paint. CoreAnimation is the
+    bridge's biggest client on the iPad, so every screen a check reaches is a GL coverage test."""
+    rejects = itqmp.gles_rejects(b.qmp)
+    # A --gl-test device composites it_gltest's magenta/cyan/yellow scene over SpringBoard from 12 s
+    # into every boot, so its screens cannot be read for gles-debug's paint; the counters still can.
+    magenta = 0.0 if getattr(b.cfg, "gl_test", False) else max([itqmp.magenta_fraction(s, step=4) for s in shots] or [0.0])
+    if rejects:
+        r.set(False, "%s; the GL bridge refused %d thing(s): %s" % (
+            detail, len(rejects), ", ".join("%s x%d" % kv for kv in sorted(rejects.items()))))
+    elif magenta > MAGENTA_MAX:
+        r.set(False, "%s; gles-debug painted %.2f%% of a screen magenta (a refusal the counters missed)" % (
+            detail, magenta * 100))
+    else:
+        r.set(True, "%s; GL bridge refused nothing" % detail)
+    return r.ok
+
+
 def check_boot(cfg, r):
     """Lock screen, then unlocked with the USB keyboard attached: no stock USB alert, and Hold locks the panel."""
     b, detail = booted(cfg, "boot", r, keyboard=True)
@@ -303,7 +329,39 @@ def check_boot(cfg, r):
         time.sleep(3)   # ... and it stays dark: the alert used to relight it at once
         if b.lit("dark") > DARK_MAX_FRACTION:
             return r.set(False, "Hold locked the panel but it lit again within 3 s (the USB alert?)")
-        r.set(True, "%s; unlocked, shim hid the USB alert, Hold locked the panel in %d s%s" % (detail, time.time() - t0, pkg))
+        gl_clean(b, r, "%s; unlocked, shim hid the USB alert, Hold locked the panel in %d s%s" % (detail, time.time() - t0, pkg), [b.shot("boot-gl")])
+    finally:
+        b.stop()
+
+
+def check_gles(cfg, r):
+    """The GL bridge under SpringBoard's own compositor: lock screen, home screen, a page swipe, Safari;
+    nothing refused, nothing painted magenta. With a --gl-test device, tests/ipad1/gltest.py's fixture
+    scene as well (its readback, colour census and counters)."""
+    if getattr(cfg, "gl_test", False):
+        # The fixture job covers SpringBoard's screens from 12 s into every boot, so on such a
+        # device the fixture IS the gles leg: its readback and colour census, and the counters.
+        p = subprocess.run([sys.executable, os.path.join(HERE, "gltest.py"), os.path.dirname(os.path.abspath(cfg.nand)),
+                            "--qemu", cfg.qemu, "--out", os.path.join(cfg.out, "gltest")], capture_output=True, text=True)
+        lines = p.stdout.strip().splitlines()
+        summary = "; ".join(l.strip() for l in lines if any(k in l for k in ('"readback"', '"rejects"', 'present fps')))
+        return r.set(p.returncode == 0, "gltest.py %s: %s" % ((lines or ["(no output)"])[-1], summary or p.stderr.strip()[-200:]))
+    b, detail = booted(cfg, "gles", r, keyboard=True)
+    try:
+        if not detail:
+            return
+        b.drag(UNLOCK_FROM, UNLOCK_TO)
+        time.sleep(10)                   # the mounter's shim hides the USB alert; let it settle
+        shots = [b.shot("home")]
+        b.drag((511, 87), (511, 617))        # next home page (portrait right-to-left)
+        time.sleep(2)
+        shots.append(b.shot("home2"))
+        b.press("home")
+        time.sleep(2)
+        b.tap(SAFARI_ICON)
+        time.sleep(8)
+        shots.append(b.shot("safari"))
+        gl_clean(b, r, "lock, home, page 2, Safari", shots)
     finally:
         b.stop()
 
@@ -506,16 +564,21 @@ def check_shadow(cfg, r):
         time.sleep(8)
         b.tap(SAFARI_BOOKMARKS)
         time.sleep(3)
-        w, h, pix = itqmp.read_ppm(b.shot("popover"))
+        shot = b.shot("popover")
+        w, h, pix = itqmp.read_ppm(shot)
         at = lambda xy: min(pix[(xy[1] * w + xy[0]) * 3:(xy[1] * w + xy[0]) * 3 + 3])
         clear, edge = at(SHADOW_CLEAR), at(SHADOW_EDGE)
-        r.set(clear >= 230 and edge < clear, "popover shadow: %d past its reach (>= 230), %d at the edge" % (clear, edge))
+        detail = "popover shadow: %d past its reach (>= 230), %d at the edge" % (clear, edge)
+        if clear >= 230 and edge < clear:
+            gl_clean(b, r, detail, [shot])
+        else:
+            r.set(False, detail)
     finally:
         b.stop()
 
 
-CHECKS = {"boot": check_boot, "shadow": check_shadow, "usbmux": check_usbmux, "afc": check_afc, "persist": check_persist,
-          "net": check_net, "net-usb": check_net_usb, "wifi": check_wifi, "audio": check_audio}
+CHECKS = {"boot": check_boot, "gles": check_gles, "shadow": check_shadow, "usbmux": check_usbmux, "afc": check_afc,
+          "persist": check_persist, "net": check_net, "net-usb": check_net_usb, "wifi": check_wifi, "audio": check_audio}
 
 
 def device_args(a):
@@ -523,8 +586,9 @@ def device_args(a):
     Boot images (iBoot, NOR, catalog keys, die-id, or an explicit --kboot) come from ipad1_boot."""
     a.nand = a.nand or os.path.join(a.device, "nand")
     lock = os.path.join(os.path.dirname(os.path.abspath(a.nand)), "device.lock.json")
-    a.product_version = getattr(a, "product_version", None) or (
-        json.load(open(lock)).get("product_version", "3.2.2") if os.path.exists(lock) else "3.2.2")
+    lockd = json.load(open(lock)) if os.path.exists(lock) else {}
+    a.product_version = getattr(a, "product_version", None) or lockd.get("product_version", "3.2.2")
+    a.gl_test = bool(lockd.get("gl_test"))      # it_gltest's scene sits over SpringBoard's screens
 
 
 def main():
