@@ -385,6 +385,10 @@ static inline const char *gles_id_name(uint32_t id)
 #define GLES_SURFACE_RGBA5551           0x31353535  /* '1555' */
 #define GLES_SURFACE_ARGB32             0x41524742  /* 'ARGB' */
 #define GLES_SURFACE_ABGR32             0x41424752  /* 'ABGR' */
+/* Two 8-bit channels, luminance then alpha (CoreVideo's '2C08'): 5.x CoreAnimation's text
+ * layers (the home screen's icon labels), on IOSurfaces it gives no pixel format; glishim
+ * names them from the attach's GL_LUMINANCE_ALPHA / GL_UNSIGNED_BYTE. */
+#define GLES_SURFACE_LA88               0x32433038  /* '2C08' */
 
 #ifndef OUT_OF_TREE_BUILD
 int64_t qc_handle_gles(CPUState *cpu, qc_gles_args_t *a);

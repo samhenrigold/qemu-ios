@@ -174,6 +174,7 @@ static void gli_fill(void **front, void **back)
 #ifndef RTLD_DEFAULT
 #define RTLD_DEFAULT ((void *)-2)
 #endif
+#include "gfx_gen.h"
 #define GLD_RENDERER 0x7000                             /* gldshim.c's */
 #define GLD_DEVICE (1u << 24 | 0x20000 | GLD_RENDERER)  /* libGFXShared: first device of that plugin */
 static unsigned gli_device;
@@ -188,7 +189,6 @@ void gliInitializeLibrary(const void *svcs, unsigned z, unsigned n, void *cb,
     void (*connect)(void) = dlsym(RTLD_DEFAULT, "gfxPluginConnectAll");
     void *(*plugin)(unsigned) = dlsym(RTLD_DEFAULT, "gfxGetPluginWithDriverID");
     void *(*device)(unsigned) = dlsym(RTLD_DEFAULT, "gfxGetDeviceWithDeviceID");
-    (void)u;
     w("[glishim] gliInitializeLibrary\n");
     if (!init_lib) return;                   /* 3.2.x */
     gli_eagl4 = 1;
@@ -196,7 +196,17 @@ void gliInitializeLibrary(const void *svcs, unsigned z, unsigned n, void *cb,
         w("[glishim] libGFXShared lacks gfxPluginConnectAll/gfxGet*WithID: no GL\n");
         return;
     }
-    init_lib(svcs, z, n, cb, (void *)gli_no_surface, io, init);
+    /* 5.x EAGL passes (svcs, z, n, io, flags) and the engine supplies both
+     * IOSurface callbacks; 4.x passes its own callback and the engine adds one.
+     * 5.x EAGL's flags are 0x40000000 (eagl_init(0)); libGFXShared scans
+     * OpenGLES's resources for GLRendererFloat* plugins only with bit 31, and
+     * gldshim is one: the stock engine never needs that, its SGX plugin comes
+     * from the IOAccelerator. */
+    if (gfx_generation() == 5)
+        init_lib(svcs, z, n, (void *)gli_no_surface, (void *)gli_no_surface, cb,
+                 (void *)((unsigned long)u | 0x80000000ul));
+    else
+        init_lib(svcs, z, n, cb, (void *)gli_no_surface, io, init);
     connect();
     if (plugin(GLD_DEVICE & 0xffff00) && device(GLD_DEVICE & ~0xffu)) {
         gli_device = GLD_DEVICE;
@@ -398,6 +408,32 @@ static int gli_swap_signal(void *gc, unsigned txn, unsigned layer)
     return signal(fb, txn, layer) ? 10014 : 0;
 }
 
+/*
+ * 5.x's CoreAnimation makes some layer IOSurfaces with no pixel format (IOSurfaceGetPixelFormat
+ * 0: the home screen's icon labels) and describes them only in the attach, {id, target,
+ * internal format, w, h, format, type, plane}, as glTexImage2D would; the SGX driver lays the
+ * texture out from those. The host takes a fourcc, so name the layout they give.
+ */
+static unsigned gli_gl_fourcc(const int *v)
+{
+    unsigned fmt = (unsigned)v[5], type = (unsigned)v[6];
+    int ub = type == 0x1401;                          /* GL_UNSIGNED_BYTE */
+    if (fmt == 0x80E1 && (ub || type == 0x8367)) return 0x42475241;   /* GL_BGRA: 'BGRA' */
+    if (fmt == 0x1908 && ub) return 0x52474241;                       /* GL_RGBA: 'RGBA' */
+    if (fmt == 0x1906 && ub) return 0x41303038;                       /* GL_ALPHA: 'A008' */
+    if (fmt == 0x1909 && ub) return 0x4c303038;                       /* GL_LUMINANCE: 'L008' */
+    if (fmt == 0x190A && ub) return 0x32433038;                       /* GL_LUMINANCE_ALPHA: '2C08' */
+    if (fmt == 0x1907 && type == 0x8363) return 0x4c353635;           /* GL_RGB 5_6_5: 'L565' */
+    {
+        static unsigned logged;
+        if (logged++ < 8) {
+            w("[glishim] 0x38e: no fourcc for GL format "); wx(fmt); w(" type "); wx(type);
+            w(" ifmt "); wx((unsigned)v[2]); w("\n");
+        }
+    }
+    return 0;
+}
+
 int gliSetInteger(void *gc, unsigned pname, const int *v)
 {
     void *surf;
@@ -421,7 +457,7 @@ int gliSetInteger(void *gc, unsigned pname, const int *v)
             if (r && p_CFRelease) p_CFRelease(surf);
             return r;
         }
-        r = GLESBindCoreSurface(gc, (unsigned)v[1], surf) ? 0 : 10014;
+        r = GLESBindCoreSurfaceAs(gc, (unsigned)v[1], surf, gli_gl_fourcc(v)) ? 0 : 10014;
         if (p_CFRelease) p_CFRelease(surf);   /* the host copied what it needs */
         return r;
     case 0x39B: {   /* detach {id, target} */
