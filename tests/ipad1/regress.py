@@ -83,6 +83,9 @@ DARK_MAX_FRACTION = 0.05    # the scanout with the panel off
 
 sys.path.insert(0, os.path.join(ROOT, "imgtools"))
 import ipad1_boot
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+import framecheck  # noqa: E402  (the audit's frame-reference check)
+GLES_REFS = os.path.join(ROOT, "tests", "gles-refs")
 
 launch_lock = threading.Lock()
 
@@ -281,14 +284,28 @@ def gl_clean(b, r, detail, shots=()):
     # A --gl-test device composites it_gltest's magenta/cyan/yellow scene over SpringBoard from 12 s
     # into every boot, so its screens cannot be read for gles-debug's paint; the counters still can.
     magenta = 0.0 if getattr(b.cfg, "gl_test", False) else max([itqmp.magenta_fraction(s, step=4) for s in shots] or [0.0])
+    # Frame reference (audit gap #1): "refused nothing, no magenta" is liveness -- the audit
+    # showed it passes a red/blue swap and a stale surface (section 1). Diff each screen we can
+    # pin (home/screen/lock) against its committed reference, clock band masked. A --gl-test
+    # device composites a scene over SpringBoard, so its frames are not the plain reference.
+    bad = None
+    if not getattr(b.cfg, "gl_test", False):
+        for s in shots:
+            name = os.path.splitext(os.path.basename(s))[0]
+            ref = os.path.join(GLES_REFS, "ipad-%s.png" % name)
+            if os.path.exists(ref) and not framecheck.verdict(s, ref)["ok"]:
+                bad = (name, framecheck.verdict(s, ref)["why"])
+                break
     if rejects:
         r.set(False, "%s; the GL bridge refused %d thing(s): %s" % (
             detail, len(rejects), ", ".join("%s x%d" % kv for kv in sorted(rejects.items()))))
     elif magenta > MAGENTA_MAX:
         r.set(False, "%s; gles-debug painted %.2f%% of a screen magenta (a refusal the counters missed)" % (
             detail, magenta * 100))
+    elif bad:
+        r.set(False, "%s; the %s frame is not the reference picture: %s" % (detail, bad[0], bad[1]))
     else:
-        r.set(True, "%s; GL bridge refused nothing" % detail)
+        r.set(True, "%s; GL bridge refused nothing, frames match the reference" % detail)
     return r.ok
 
 
