@@ -5,6 +5,7 @@ Use PKG_CONFIG_PATH pointing to the native package's patched FFmpeg prefix.
 """
 from pathlib import Path
 import shlex
+import os
 import subprocess
 import tempfile
 root = Path(__file__).resolve().parents[2]
@@ -215,6 +216,9 @@ int main(void) {
     puts("PASS: snapshot slice round trip, decoder recreation, malformed migration, reference replay, mixed slices, all PCM alignments, constrained prediction, coverage, reset and memory bound");
 }
 '''
+# Stock FFmpeg lacks the cavlc_pcm_bit_offset option; use the patched build like tests/gate.sh does.
+pc=root/'build/ffmpeg-pkgconfig'
+if pc.is_dir(): os.environ['PKG_CONFIG_PATH']=os.pathsep.join(filter(None,[str(pc),os.environ.get('PKG_CONFIG_PATH')]))
 with tempfile.TemporaryDirectory(prefix='h264-slices-') as tmp:
     c,exe=Path(tmp)/'check.c',Path(tmp)/'check';c.write_text(prelude+code+check)
     flags=shlex.split(subprocess.check_output(['pkg-config','--cflags','--libs','glib-2.0','libavcodec','libavutil'],text=True))
