@@ -348,9 +348,6 @@ static void cdma_update_irq(S5L8930CDMAState *s, int ch)
         (!s->ch[ch].fifo || cdma_is_memory(s->ch[ch].fifo))) {
         en = false;     /* memory-to-memory only: a device-FIFO channel's context is an inline filter */
     }
-    if (ch >= 5 && ch <= 8) {
-        qemu_log_mask(LOG_TRACE, "cdma ch %d irq %d (en %d ctrl 0x%x)\n", ch, en && (s->ch[ch].ctrl & (ST_DONE | ST_ERROR)), en, s->ch[ch].ctrl);
-    }
     qemu_set_irq(s->irq[ch], en && (s->ch[ch].ctrl & (ST_DONE | ST_ERROR)));
 }
 
@@ -469,7 +466,6 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
                     dev >= s->src_base && dev - s->src_base < s->src_size)) {
             /* Take what the device has (or has room for); stall (still running) for the rest. */
             uint32_t avail = s->src_avail(s->src_opaque, dev, to_device) & ~(width - 1);
-            qemu_log_mask(LOG_TRACE, "cdma ch %d %s 0x%x: seg len %u avail %u remain %u\n", ch, to_device ? "into" : "fed from", dev, len, avail, c->remain);
             if (avail < len) {
                 len = avail;
                 c->in_seg = true;
@@ -522,14 +518,6 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
                     ok = aes_apply(s, aes, buf, len,
                                    !resume && (flags & DESC_AES_RESTART));
                 }
-                if (fed && len == 4096) {
-                    qemu_log_mask(LOG_TRACE, "cdata ch %d %02x%02x%02x%02x%02x%02x%02x%02x\n", ch,
-                                  buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
-                }
-                if (fed && len == 10) {
-                    qemu_log_mask(LOG_TRACE, "cmeta ch %d %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n", ch,
-                                  buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9]);
-                }
                 dma_memory_write(&address_space_memory, c->addr, buf, len,
                                  MEMTXATTRS_UNSPECIFIED);
             }
@@ -581,7 +569,6 @@ void s5l8930_cdma_sink_done(DeviceState *dev, uint32_t fifo_base, uint32_t size)
 
         if (s->sink_pending[ch] && !c->in_seg && c->fifo >= fifo_base && c->fifo < fifo_base + size) {
             s->sink_pending[ch] = false;
-            qemu_log_mask(LOG_TRACE, "cdma ch %d sink done\n", ch);
             c->ctrl = (c->ctrl & ~ST_RUNNING) | ST_DONE;
             cdma_update_irq(s, ch);
         }
@@ -784,9 +771,6 @@ static uint64_t cdma_read(void *opaque, hwaddr offset, unsigned size)
         }
         switch (reg) {
         case CH_CTRL:
-            if (ch >= 5 && ch <= 8) {
-                qemu_log_mask(LOG_TRACE, "cdma ch %d ctrl read 0x%x\n", ch, c->ctrl);
-            }
             return c->ctrl;
         case CH_SETTINGS: return c->settings;
         case CH_FIFO:     return c->fifo;
@@ -866,9 +850,6 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
             cdma_paced_stop(s, ch);
         }
         if ((v & CTRL_GO) && !(v & CTRL_HOLD)) {
-            if (ch >= 5 && ch <= 8) {
-                qemu_log_mask(LOG_TRACE, "cdma ch %d go ctrl 0x%x set 0x%x fifo 0x%x\n", ch, (uint32_t)v, c->settings, c->fifo);
-            }
             if (getenv("S5L8930_CDMA_TRACE")) {
                 fprintf(stderr, "[CDMA] %.4f go ch 0x%x ctrl 0x%x set 0x%x fifo 0x%x "
                         "desc 0x%x\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
