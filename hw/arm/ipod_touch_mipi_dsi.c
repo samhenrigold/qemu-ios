@@ -55,10 +55,16 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
             // bring-up but made shutdown spin forever, wedging the kernel
             // mid-power-down -- which is why the display never came back from
             // idle sleep, and why the reboot path never reached the watchdog.
-            /* bits 0-3: per-lane stop state, one per configured lane */
-            uint32_t status = dsi_lane_mask(s) | 0x100 |
+            /* bits 0-3: per-lane stop state, one per configured lane. Bit 8
+             * (StopStateClk) is the clock lane idling in LP mode, the
+             * complement of the HS clock request: iOS 4.3's DSI driver
+             * (AppleS5L8720X-91) snapshots STATUS at start and takes
+             * StopStateClk set as "interface not enabled", so pinning it made
+             * the panel's first display-off a "redundant disable request"
+             * panic. */
+            uint32_t status = dsi_lane_mask(s) |
                               ((s->clkctrl & rDSIM_CLKCTRL_TxRequestHsClk)
-                                ? rDSIM_STATUS_TxReadyHsClk : 0);
+                                ? rDSIM_STATUS_TxReadyHsClk : rDSIM_STATUS_StopStateClk);
             /*
              * 3.1.3's iBoot mipi_dsim_init() walks a sequence of "write a DSIM
              * command register, then spin until STATUS shows the command
