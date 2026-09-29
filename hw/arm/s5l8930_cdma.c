@@ -114,8 +114,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930CDMAState, S5L8930_CDMA)
 
 typedef struct CDMAChannel {
     uint32_t ctrl, settings, fifo, remain, addr, desc, error;
-    /* stalled inside the segment at desc; addr/remain live. Not migrated:
-     * only iBoot's NAND reads stall, never anything a snapshot catches. */
+    /* stalled inside the segment at desc; addr/remain live (migrated through
+     * S5L8930CDMAState.in_seg_mig: the IOP firmware's NAND chains stall any time) */
     bool in_seg;
 } CDMAChannel;
 
@@ -155,6 +155,7 @@ struct S5L8930CDMAState {
      * write; paced[] marks a chain in flight. */
     bool paced[CDMA_CHANNELS];
     bool sink_pending[CDMA_CHANNELS];       /* to-device chain in a device FIFO, done when it drains */
+    bool in_seg_mig[CDMA_CHANNELS];         /* ch[].in_seg on the wire (vmstate 4) */
     int64_t paced_start[CDMA_CHANNELS];
     int64_t paced_end[CDMA_CHANNELS];       /* when the last chain's final byte played */
     uint32_t paced_desc[CDMA_CHANNELS];     /* chain head the go named */
@@ -1043,10 +1044,42 @@ static const VMStateDescription vmstate_aes_context = {
     }
 };
 
+static int cdma_pre_save(void *opaque)
+{
+    S5L8930CDMAState *s = opaque;
+
+    for (int ch = 0; ch < CDMA_CHANNELS; ch++) {
+        s->in_seg_mig[ch] = s->ch[ch].in_seg;
+    }
+    return 0;
+}
+
+static int cdma_pre_load(void *opaque)
+{
+    S5L8930CDMAState *s = opaque;
+
+    memset(s->in_seg_mig, 0, sizeof(s->in_seg_mig));     /* older streams: nothing stalled */
+    memset(s->sink_pending, 0, sizeof(s->sink_pending));
+    return 0;
+}
+
+static int cdma_post_load(void *opaque, int version_id)
+{
+    S5L8930CDMAState *s = opaque;
+
+    for (int ch = 0; ch < CDMA_CHANNELS; ch++) {
+        s->ch[ch].in_seg = s->in_seg_mig[ch];
+    }
+    return 0;
+}
+
 static const VMStateDescription vmstate_s5l8930_cdma = {
     .name = "s5l8930.cdma",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 1,
+    .pre_save = cdma_pre_save,
+    .pre_load = cdma_pre_load,
+    .post_load = cdma_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(enabled, S5L8930CDMAState, 2),
         VMSTATE_UINT32(fifo_len, S5L8930CDMAState),
@@ -1067,6 +1100,9 @@ static const VMStateDescription vmstate_s5l8930_cdma = {
         VMSTATE_UINT32_ARRAY_V(paced_bps, S5L8930CDMAState,
                                CDMA_CHANNELS, 2),
         VMSTATE_TIMER_PTR_V(pace_timer, S5L8930CDMAState, 2),
+        /* 4: the IOP core's chains, mid-transfer between its instructions */
+        VMSTATE_BOOL_ARRAY_V(sink_pending, S5L8930CDMAState, CDMA_CHANNELS, 4),
+        VMSTATE_BOOL_ARRAY_V(in_seg_mig, S5L8930CDMAState, CDMA_CHANNELS, 4),
         VMSTATE_END_OF_LIST()
     }
 };

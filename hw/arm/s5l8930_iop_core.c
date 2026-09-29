@@ -32,6 +32,7 @@
 #include "exec/memory.h"
 #include "hw/arm/s5l8930.h"
 #include "system/reset.h"
+#include "migration/vmstate.h"
 
 #define TYPE_S5L8930_IOP_CORE "s5l8930.iop-core"
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPCoreState, S5L8930_IOP_CORE)
@@ -246,6 +247,49 @@ static void s5l8930_iop_core_realize(DeviceState *dev, Error **errp)
     }
 }
 
+/* The CPU and the VICs migrate themselves; the firmware's place at address 0 is this device's. */
+static int iop_core_pre_load(void *opaque)
+{
+    S5L8930IOPCoreState *s = opaque;
+
+    if (s->fw_mapped) {
+        memory_region_del_subregion(&s->mem, &s->fw);
+        object_unparent(OBJECT(&s->fw));
+        s->fw_mapped = false;
+    }
+    return 0;
+}
+
+static int iop_core_post_load(void *opaque, int version_id)
+{
+    S5L8930IOPCoreState *s = opaque;
+
+    if (s->fw_mapped) {
+        if (s->fw_base < S5L8930_DRAM_BASE ||
+            (uint64_t)s->fw_base + s->fw_size > S5L8930_DRAM_BASE + S5L8930_DRAM_SIZE) {
+            return -EINVAL;
+        }
+        memory_region_init_alias(&s->fw, OBJECT(s), "iop.fw", s->dram,
+                                 s->fw_base - S5L8930_DRAM_BASE, s->fw_size);
+        memory_region_add_subregion_overlap(&s->mem, 0, &s->fw, 1);
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_iop_core = {
+    .name = TYPE_S5L8930_IOP_CORE,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .pre_load = iop_core_pre_load,
+    .post_load = iop_core_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(fw_mapped, S5L8930IOPCoreState),
+        VMSTATE_UINT32(fw_base, S5L8930IOPCoreState),
+        VMSTATE_UINT32(fw_size, S5L8930IOPCoreState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const Property s5l8930_iop_core_properties[] = {
     DEFINE_PROP_LINK("dram", S5L8930IOPCoreState, dram, TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_LINK("sysmem", S5L8930IOPCoreState, sysmem, TYPE_MEMORY_REGION, MemoryRegion *),
@@ -256,6 +300,7 @@ static void s5l8930_iop_core_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = s5l8930_iop_core_realize;
+    dc->vmsd = &vmstate_iop_core;
     device_class_set_props(dc, s5l8930_iop_core_properties);
     dc->user_creatable = false;
 }
