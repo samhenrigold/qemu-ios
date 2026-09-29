@@ -5,12 +5,14 @@ Built with use from agentic coding products.
 This is a fork of [devos50/qemu-ios](https://github.com/devos50/qemu-ios) that emulates two legacy
 Apple devices well enough to run their stock iOS to the home screen, install and run App Store apps of
 the era (including OpenGL ES games through a host GL bridge), talk to `libimobiledevice` over an
-emulated USB link, and persist guest writes across reboots:
+emulated USB link, and persist guest writes across reboots -- and a third, the iPod touch 1G, as far as
+its home screen:
 
 | Machine | Device | SoC | Models | Firmwares reached |
 |---|---|---|---|---|
 | `-M iPod-Touch` | iPod touch 2G (n72ap) | S5L8720 | `hw/arm/ipod_touch_2g.c`, `hw/arm/ipod_touch_*.c` | iOS 3.1.3 (7E18), 4.2.1 (8C148); 2.1.1 (5F138) with the host setting the clock |
 | `-M ipad1` | iPad 1 (k48ap) | S5L8930 (A4) | `hw/arm/ipad1.c`, `hw/arm/s5l8930_*.c`, `include/hw/arm/s5l8930.h` | iOS 3.2 (7B367), 3.2.2 (7B500), 4.2.1 (8C148), through the real iBoot chain |
+| `-M iPod-Touch-1G` | iPod touch 1G (n45ap) | S5L8900 | `hw/arm/ipod_touch_1g.c`, `hw/arm/s5l8900_*.c`, the `ipod_touch_*.c` models with `s5l8900`/variant properties; `docs/ipod1g/README.md` | iPhone OS 1.1 (3A101a) to the home screen with touch, through the real bootrom and iBoot-204 (devos50's public n45ap assets; milestone 0, no app or USB work yet) |
 
 Shared between the boards: the host GL executor (`hw/arm/gles-host*.c`), the guest-service hypercalls
 (`hw/arm/guest-services.c`, `guest-gles.c`, `guest-pasteboard.c`, `guest-package.c`) and the typed guest
@@ -31,7 +33,7 @@ repository.
 
 | Path | What |
 |---|---|
-| `hw/arm/`, `include/hw/arm/` | The two machines and their peripherals, plus the shared host pieces above |
+| `hw/arm/`, `include/hw/arm/` | The three machines and their peripherals, plus the shared host pieces above |
 | `contrib/it-*` | Guest helpers for the iPod (armv6, built with `contrib/armv6-toolchain`): `it-agent` (the guest agent), `it-gles` (MBX GL shim), `it-boot` (guest-package loader), `it-pasteboard`, `it-media`, `it-webproxy`, `it-keybag`, `it-seal`, … each with its own README |
 | `contrib/ipad1-gles`, `contrib/ipad1-guest`, `contrib/appsync` | iPad-side helpers: the GLI shim for ES 1.1/2.0; `ipad1-guest/build.sh` builds `it_pbd` (pasteboard bridge) and `it_ethlink` (raises the USB Ethernet link) for armv7 from the shared sources; the AppSync interposer dylib |
 | `contrib/guest-package` | `mkpkg.py` and `VERSION`: the versioned guest-tools package format the loader installs at boot |

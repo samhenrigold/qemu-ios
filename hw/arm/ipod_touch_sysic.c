@@ -43,31 +43,7 @@ static void sysic_gpio_irq_input(void *opaque, int pin, int level)
     sysic_update_gpio_irq(s, group);
 }
 
-/* IT_SYSIC_TRACE=1: every power-controller access with a host timestamp
- * (the GPIO interrupt block has its own IT_GPIO_TRACE). Cached like the
- * others; this sits on the guest's polling path. */
-static bool sysic_trace(void)
-{
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_SYSIC_TRACE") != NULL;
-    }
-    return on;
-}
-
-static uint64_t ipod_touch_sysic_read_reg(void *opaque, hwaddr addr, unsigned size);
-
 static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
-{
-    uint64_t v = ipod_touch_sysic_read_reg(opaque, addr, size);
-    if (sysic_trace() && addr < GPIO_INTLEVEL) {
-        fprintf(stderr, "[SYSIC %.3f] R 0x%03x -> 0x%08x\n",
-                g_get_monotonic_time() / 1e6, (unsigned)addr, (unsigned)v);
-    }
-    return v;
-}
-
-static uint64_t ipod_touch_sysic_read_reg(void *opaque, hwaddr addr, unsigned size)
 {
     IPodTouchSYSICState *s = (IPodTouchSYSICState *) opaque;
 
@@ -131,11 +107,6 @@ static uint64_t ipod_touch_sysic_read_reg(void *opaque, hwaddr addr, unsigned si
 static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     IPodTouchSYSICState *s = (IPodTouchSYSICState *) opaque;
-
-    if (sysic_trace() && addr < GPIO_INTLEVEL) {
-        fprintf(stderr, "[SYSIC %.3f] W 0x%03x <- 0x%08x\n",
-                g_get_monotonic_time() / 1e6, (unsigned)addr, (unsigned)val);
-    }
 
     switch (addr) {
         case POWER_ID:

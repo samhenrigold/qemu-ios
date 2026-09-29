@@ -136,6 +136,32 @@ static int it_display_rotation_req;
 /* 7E18 AppleM2CLCD enables sources at +8 and acknowledges +0xc with W1C.
  * Its idle path clears enable bit 0; a constant status of 1 and an interrupt
  * driven by the last acknowledgement caused unexpected interrupts at 60 Hz. */
+/*
+ * S5L8900 (iPod touch 1G) window-1 register layout, mapped onto the S5L8720
+ * offsets this model decodes. The two CLCD generations keep the same
+ * per-window fields (depth, framebuffer base, horizontal span, resolution) at
+ * different offsets, and the 8900's frame interrupt has no enable/status pair:
+ * it is raised every frame and acknowledged by any write to +0x18. Offsets the
+ * 8900 layout does not share (LCDCON2 at +8, the VIDCON block at +0x200) are
+ * stored in plane_regs and otherwise ignored. Registers 0x8/0xC are the
+ * 8720's IRQ enable/status and must not be reached from the 8900 map, so those
+ * addresses translate to an unused slot.
+ */
+static hwaddr lcd_s5l8900_offset(hwaddr addr)
+{
+    switch (addr) {
+    case 0x5c: return 0x20;   /* W1 depth (0x700) */
+    case 0x60: return 0x24;   /* W1 framebuffer base */
+    case 0x64: return 0x30;   /* W1 resolution */
+    case 0x68: return 0x28;   /* W1 hspan (pixels, 0x140) */
+    case 0x8:
+    case 0xC:
+    case 0x14:
+    case 0x18: return 0x10;   /* LCDCON2, irq enable/status: handled by the caller */
+    default:   return addr;
+    }
+}
+
 /* What the panel scans out: window 1, or on the S5L8900 iBoot's window 2
  * (base at 0x78) until the kernel programs window 1. */
 static uint32_t lcd_scanout_base(IPodTouchLCDState *s)
@@ -175,32 +201,6 @@ static void lcd_restore_irq(IPodTouchLCDState *s, int version)
         s->irq_status = 0;
     }
     lcd_update_irq(s);
-}
-
-/*
- * S5L8900 (iPod touch 1G) window-1 register layout, mapped onto the S5L8720
- * offsets this model decodes. The two CLCD generations keep the same
- * per-window fields (depth, framebuffer base, horizontal span, resolution) at
- * different offsets, and the 8900's frame interrupt has no enable/status pair:
- * it is raised every frame and acknowledged by any write to +0x18. Offsets the
- * 8900 layout does not share (LCDCON2 at +8, the VIDCON block at +0x200) are
- * stored in plane_regs and otherwise ignored. Registers 0x8/0xC are the
- * 8720's IRQ enable/status and must not be reached from the 8900 map, so those
- * addresses translate to an unused slot.
- */
-static hwaddr lcd_s5l8900_offset(hwaddr addr)
-{
-    switch (addr) {
-    case 0x5c: return 0x20;   /* W1 depth (0x700) */
-    case 0x60: return 0x24;   /* W1 framebuffer base */
-    case 0x64: return 0x30;   /* W1 resolution */
-    case 0x68: return 0x28;   /* W1 hspan (pixels, 0x140) */
-    case 0x8:
-    case 0xC:
-    case 0x14:
-    case 0x18: return 0x10;   /* LCDCON2, irq enable/status: handled by the caller */
-    default:   return addr;
-    }
 }
 
 static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)

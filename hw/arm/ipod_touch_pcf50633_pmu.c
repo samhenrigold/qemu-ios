@@ -357,11 +357,7 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
             s->shutdown_armed = false;
             pcf50633_guest_shutdown();
         }
-        s->curreg = (s->curreg + 1) & 0xff;
-        return 0;
-    }
-
-    switch(reg) {
+    } else switch (reg) {
         case PMU_IRQ_MASK_A ... PMU_IRQ_MASK_A + 3:
             pmu_update_irq(s);
             break;
