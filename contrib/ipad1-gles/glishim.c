@@ -164,9 +164,9 @@ static void gli_fill(void **front, void **back)
  * gfxCreateSharedState, which needs a registered gld plugin and device for the
  * pixel format's renderer ID. The stock GLEngine registers them here, passing
  * EAGL's arguments on to gfxInitializeLibrary with its IOSurface callback
- * inserted, then gfxPluginConnectAll; so does this one, and
- * gfxPluginConnectAll finds gldshim (GLRendererFloatQEMU.bundle, see
- * gldshim.c). 3.2.x's OpenGLES never loads libGFXShared, so the lookups fail
+ * inserted, then gfxPluginConnectAll; so does this one, and the plugin scan
+ * (gfxPluginConnectAll on 4.2.1, gfxInitializeLibrary itself on 4.3 and 5.x)
+ * finds gldshim (GLRendererFloatQEMU.bundle, see gldshim.c). 3.2.x's OpenGLES never loads libGFXShared, so the lookups fail
  * there and nothing changes. gli_device is gldshim's device ID, 0 until it is
  * registered: then pixel formats stay unaccelerated and 4.x EAGL makes no
  * context (CA stays in software), and the log says why.
@@ -198,15 +198,19 @@ void gliInitializeLibrary(const void *svcs, unsigned z, unsigned n, void *cb,
     }
     /* 5.x EAGL passes (svcs, z, n, io, flags) and the engine supplies both
      * IOSurface callbacks; 4.x passes its own callback and the engine adds one.
-     * 5.x EAGL's flags are 0x40000000 (eagl_init(0)); libGFXShared scans
-     * OpenGLES's resources for GLRendererFloat* plugins only with bit 31, and
-     * gldshim is one: the stock engine never needs that, its SGX plugin comes
-     * from the IOAccelerator. */
+     * The last argument is libGFXShared's flags (5.x EAGL's are 0x40000000,
+     * eagl_init(0)). libGFXShared scans OpenGLES's resources for
+     * GLRendererFloat* plugins, gldshim being one, when bit 31 is set; 4.2.1's
+     * also when both IOSurface callbacks are, but 4.3's and 5.x's only with
+     * the bit, and their gfxPluginConnectAll is empty (the scan moved into
+     * gfxInitializeLibrary). So the bit is set on every generation. The stock
+     * engine never needs the scan: its SGX plugin comes from the IOAccelerator. */
     if (gfx_generation() == 5)
         init_lib(svcs, z, n, (void *)gli_no_surface, (void *)gli_no_surface, cb,
                  (void *)((unsigned long)u | 0x80000000ul));
     else
-        init_lib(svcs, z, n, cb, (void *)gli_no_surface, io, init);
+        init_lib(svcs, z, n, cb, (void *)gli_no_surface, io,
+                 (void *)((unsigned long)init | 0x80000000ul));
     connect();
     if (plugin(GLD_DEVICE & 0xffff00) && device(GLD_DEVICE & ~0xffu)) {
         gli_device = GLD_DEVICE;

@@ -92,6 +92,20 @@ only get icons on the **jailbroken** base; the pristine installd/SpringBoard hid
 ldid-signed bundles. Boot with `amfi_allow_any_signature=1 cs_enforcement_disable=1`.
 `tests/ipad1/gl-drive.py` boots a store on an overlay and scripts taps and screendumps.
 
+## 4.3.x (8F190 to 8L1, 2026-09-29)
+
+Every 4.3.x build logged `libGFXShared registered no gldshim device` and composited in software: the
+plugin was installed, but 4.3's libGFXShared never registered it. Two changes from 4.2.1, read off
+libGFXShared in the IPSWs' shared caches:
+- **The scan moved.** 4.3's `gfxPluginConnectAll` is an empty function; `gfxInitializeLibrary` scans
+  OpenGLES's resources for `GLRendererFloat*` bundles itself, and only when its flags argument has bit 31
+  (4.2.1 also scanned when both IOSurface callbacks were set, which glishim always passes). glishim now
+  sets the bit on every generation, as it already did on 5.x.
+- **The gld revision.** 4.3 accepts only gld **3.1.4** (4.2.1: 3.1.0), and its table of 81 `gld*` names adds
+  `gldCreateSampler`/`gldDestroySampler`, `gldCopyBufferSubData` and `gldUpdateReadFramebuffer`.
+  `gfx_gld_revision` (`gfx_gen.h`) reads that off the loaded libGFXShared, so gldshim answers 3.1.4
+  where the table names `gldCreateSampler`.
+
 ## 5.1.1 (9B206, 2026-09-29)
 
 The same engine and plugin, no per-build table. What 5.x changed, each read off the firmware at load:
