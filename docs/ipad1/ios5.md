@@ -108,6 +108,32 @@ From the 8L1 static diff and its kboot boot, in the order the matrix run will me
 | guest-package family by build, bake's GLEngine assumption | P | key on (board, major) per the sweep | done: no family → stock volume |
 | GLI dispatch per build | P | parse the @encode at load (2-3 d) | a `GLEngine-9B206` build |
 
+## The IOP v3 instrument (branch `iop-v3`, 2026-09-28)
+
+Class H, to be deleted when the IOP core lands. What EmbeddedIOP-20 (iOS 4.3) and -33 (iOS 5) changed
+in the mailbox, read off the 8L1 firmware and live memory (`s5l8930_iop.c`, `s5l8930_sdio.c`,
+`s5l8930.h`):
+
+| Item | v2 (iBoot-931 fw) | v3 (EmbeddedIOP-20+ fw) | Evidence |
+|---|---|---|---|
+| `cnfg` block | `+0x4` flags, `+0x8` msgbuf, ring table `{addr,count}` from `+0xc` | `+0x4` flags, `+0x8` msgbuf, `+0xc` 0, table from `+0x10` | live blocks on 8C148 vs 8L1/9B206; fw 0x954 (`add r0, r4, #0x18; ldm {addr,count}` = ring 1) |
+| addresses handed to the IOP | physical | the IOP's DRAM window `0xc0000000 + (pa - 0x40000000)` (rings, messages, FMI CE arrays, SDIO segments) | ring 0 item `0xc1282000` found at phys `0x41282000` in a DRAM dump; the block's own map `{0xc0000000, 0x40000000, 0x40000000}` |
+| ring entry | 16 bytes (`lsl #4`, cache-clean 0x10) | **64 bytes** (`lsl #6`, cache-clean 0x40); owner bit and rx index unchanged | 8L1 fw 0xee4 vs 8C148 fw 0xd78 |
+| FMI command arguments | from `+0x14` | from `+0x18` (one more word); outputs and erase arrays move with it | rejected set_config hexdump: page bytes at `+0x2c`, spare at `+0x30` |
+| control opcodes | nop/rsum/spnd/ttin/slep | same literals | fw literal scan |
+
+`iop_doorbell` probes the table offset per doorbell (`+0xc == 0 && +0x10 != 0` → v3, `fmi_arg = 8`,
+64-byte entries); `s5l8930_iop_pa()` folds the window; SDIO scatter-gather entries are folded too. On
+a rejected set_config the argument words are hexdumped (`-d guest_errors`).
+
+Where the two builds stop now (kboot, golden 7B500 store, blank NOR):
+
+| Build | Got to | Next blocker | Class |
+|---|---|---|---|
+| 4.3.5 (8L1) | ping, set_config x2, reset, chip IDs on 8 CEs, 280 read-multiple ops, `VFL Init [OK]`, SDIO enumeration, then `AppleNANDLegacyFTL::_FIL_static_Notify: epoch roll wait` and `Still waiting for root device` | the FTL waits for a NAND "epoch" notification (IOFlashStorage-410.4 line 2229: "epoch wait failure"); the store/NOR here carry no epoch state (blank effaceable: `[effaceable:ERR] unable to find content`). Likely device-preparation state (the keybag one-shot + a sealed 8L1 store) rather than the IOP; to be seen on a prepared 8L1 device | P (pipeline state) / H (effaceable NOR) |
+| 4.3.5 | Wi-Fi: `AppleBCMWLAN-84 ... no successful firmware download after 60000 ms` | the card model's ready handshake does not satisfy the 4.3 driver | H (K48 #32) |
+| 5.1.1 (9B206) | ping answered, SDIO enumerates the 4329 (`AppleBCMWLANCore` starts), `AppleIOPFMI started` + timings, then no FMI command ever, `Still waiting for root device` | AppleIOPFMI-49 gates on an IOP **event** (`_iopEvent`, "SetActive received when already active"): EmbeddedIOP-33 delivers endpoint activation through the IOP->AP message ring (ring 1, the fw's `iop message` endpoint, `notifyEndpointEnabled`), which this HLE never produces. The message format is the firmware's; not attempted here | H (K48 #33) |
+
 ## Changes on this branch
 
 - `imgtools/ipad1_kboot.py`: `boot_args_version()`; boot_args.Version read off the kernel (2 or 3).
@@ -115,6 +141,7 @@ From the 8L1 static diff and its kboot boot, in the order the matrix run will me
 - `imgtools/ipad1_rootfs.py`: bake tolerates a cache-only GLEngine with no shim; summary line.
 - `manifests/ipad1-9B206.json`.
 - This document.
+- `iop-v3`: `hw/arm/s5l8930_iop.c`, `hw/arm/s5l8930_sdio.c`, `include/hw/arm/s5l8930.h` (the v3 instrument above).
 
 Selfchecks green: `ipad1_kboot.py`, `ipad1_rootfs.py --selfcheck`, `mkpkg.py selfcheck`,
 `tests/guest-package/test_it_boot.py`. The 7B500 and 8C148 kernels still get Version 2 (checked by
