@@ -6,45 +6,46 @@ over mbxshim's guest-services channel (`mcr p15,3,…,c15,c15,0`, `QC_GLES`). Th
 described in `docs/ipad1/userland-gl-display.md` §3. Keep the `sgx` node out of the
 device tree.
 
-    ./build.sh      # -> GLEngine-<BUILD> per dispatch TSV, GLRendererFloatQEMU.bundle, test apps, checks
+    ./build.sh      # -> GLEngine, GLRendererFloatQEMU.bundle, test apps, checks
 
-One engine per dispatch layout: `docs/ipad1/gli-dispatch-<BUILD>.tsv` (7B500's also serves 7B367;
-8C148 has 841 slots), generated from a firmware's shared cache by `glitsv.py CACHE BUILD OUT.tsv`
-(`--verify CACHE TSV` checks one). `imgtools/ipad1_rootfs.py build` installs the engine whose TSV matches
-the firmware's `__GLIFunctionDispatchRec`. On 4.x it also installs the gld plugin and dyld's
-`enable-dylibs-to-override-cache` switch (GLEngine is in the 4.x shared cache). The 4.x contract and
-design are in `docs/ipad1/ios4.md`, "GL CoreAnimation on 4.2.1". The iPod's MBX shim uses the same two
-generators (`docs/ipod/gli-dispatch-<BUILD>.tsv` -> `contrib/it-gles/MBXGLEngine-<BUILD>`; `docs/ipod/from-ipsw.md`,
-"8C148: GL").
+One engine for every firmware. At load it reads the firmware's dispatch layout out of the running OpenGLES
+(the ObjC @encode of `__GLIFunctionDispatchRec`, else the exported trampolines; `../it-gles/gles_dispatch.c`)
+and matches each slot by name to `include/hw/arm/guest-services/gles-names.h`, the name table the host is
+built from too, so the wire carries function ids and never a firmware's slot numbers (3.2.2: 826 slots,
+4.2.1: 841). `imgtools/ipad1_rootfs.py build` installs it and logs what the shim will find. On 4.x it also
+installs the gld plugin and dyld's `enable-dylibs-to-override-cache` switch (GLEngine is in the 4.x shared
+cache). The 4.x contract and design are in `docs/ipad1/ios4.md`, "GL CoreAnimation on 4.2.1". The iPod's
+MBX shim shares the discovery and the table (`contrib/it-gles/MBXGLEngine`; `docs/ipod/from-ipsw.md`, "8C148: GL").
+`glitsv.py CACHE BUILD OUT.tsv` still derives a layout offline (`--verify CACHE TSV` checks one): research, and
+what the discovered tables were checked against (`docs/ipad1/gli-dispatch-*.tsv`).
 
 | file | role |
 |---|---|
-| `glishim.c` | the 19 `gli*` entry points; `#include`s `../it-gles/mbxshim.c` for the host-call code, ES1 handlers, CA present, IOSurface binding and swap notification |
-| `gligen.py` | `docs/ipad1/gli-dispatch-<BUILD>.tsv` (`--tsv`) → `gli_fwd.h`; `--check` self-test |
-| `glitsv.py` | a firmware's dispatch TSV from its shared cache (slots from the @encode, exports from the trampolines, the rest carried from 7B500's by field name) |
+| `glishim.c` | the 19 `gli*` entry points; `#include`s `../it-gles/mbxshim.c` for the host-call code, ES1 handlers, CA present, IOSurface binding and swap notification, and through it `../it-gles/gles_dispatch.c`, the runtime dispatch discovery and the generated forwarders |
+| `gligen.py` | the name table `include/hw/arm/guest-services/gles-names.h`: `--check` (ids, argc, stamp, the host's raw ids), `--stamp` after a hand edit, `--from-tsvs` (how it was first made) |
+| `glitsv.py` | research: a firmware's dispatch TSV from its shared cache (slots from the @encode, exports from the trampolines, the rest carried from 7B500's by field name) |
 | `gldshim.c` | 4.x only: the gld plugin libGFXShared needs before EAGL makes a context (`GLRendererFloatQEMU.bundle`) |
-| `test_glishim.c` | host-native self-check: signatures (compile-time), all 826 slots filled, remap, lifetimes |
+| `test_glishim.c` | host-native self-check: signatures (compile-time), discovery from an @encode of its own making (3.2's shape plus an unknown field), every slot filled, the trampoline decoder, lifetimes |
 
-## Dispatch table (826 slots, front and back tables filled identically)
+## Dispatch table (the firmware's: 826 slots on 3.2, 841 on 4.2.1; front and back filled identically)
 
-Slots are filled in this order of priority:
-1. **mbxshim's hand-written ES1 handlers** (about 130). They cover texture/buffer
-   uploads, loading the pages behind their pointers, `glPixelStorei` alignment, and so
-   on. 3.1.3 slot *n* ≥ 761 is placed at 3.2 slot *n*+3. Their host (**wire**) numbers
-   are unchanged.
+The layout is discovered at load (`gles_dispatch.c`): every slot's dispatch field from OpenGLES's
+`__GLIFunctionDispatchRec` @encode, matched by name to a row of `gles-names.h`, which gives the wire id
+(`GLES_ID_glClear` and friends: 3.1.3's slot for the functions it had, assigned from 822 up for the rest)
+and the argument count. Slots are filled in this order of priority:
+1. **mbxshim's hand-written ES1 handlers** (about 160), registered by wire id. They cover texture/buffer
+   uploads, loading the pages behind their pointers, `glPixelStorei` alignment, and so on.
 2. **Glishim overrides:**
-   - `glGetString` (117) answers "OpenGL ES 2.0" / "OpenGL ES GLSL ES 1.00" for ES2
-     contexts.
-   - `glShaderSource` (595), `glBindAttribLocation` (630), `glGetAttribLocation` (632) and
-     `glGetUniformLocation` (625) load the pages holding their strings before the host
-     reads them.
-3. **Generated forwarders** for every slot that OpenGLES exports or that the real
-   GLEngine fills for ES1 or ES2: 271 in total. Each sends its arguments as 32-bit words
-   under wire number `slot` (< 761) or `slot−3` (≥ 764). Argument counts come from the
-   TSV prototypes, or from gl.h for the ES tail.
-4. **Log-once stubs returning 0** for everything else (555): desktop-only slots, the
-   three slots new in 3.2 (761 VertexAttribDivisor, 762/763 Draw*Instanced) and 825
-   `glFramebufferParameteriAPPLE`, none of which has a wire number.
+   - `glGetString` answers "OpenGL ES 2.0" / "OpenGL ES GLSL ES 1.00" for ES2 contexts.
+   - `glShaderSource`, `glBindAttribLocation`, `glGetAttribLocation` and `glGetUniformLocation` load the
+     pages holding their strings before the host reads them.
+3. **Generated forwarders** for every row with a known argument count (740 of 848). Each sends its
+   arguments as 32-bit words under its id; the host handles the ES ones and counts the rest once
+   (`gles-rejects` `slot:<id>`).
+4. **Log-once stubs returning 0** for the rest: rows with no known prototype (by name,
+   `shim:unimpl:<glName>`) and fields the table lacks (by slot, `shim:unimpl:field:<field>`).
+`gles-debug=on` (or `IT_GLES_VERBOSE`) makes the shim log the whole discovered table
+(`[gli] slot N field name id`) and cross-check it against the exported trampolines.
 
 **Host side:** `gles-host.c` runs the ES2 slots on its desktop GL 2.1 context
 (`gles_es2_call`/`gles_es2_draw`): shaders and programs pass through, with ES GLSL 1.00

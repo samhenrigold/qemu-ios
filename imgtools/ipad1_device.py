@@ -100,8 +100,7 @@ def build(ctx):
     return {
         "ship": [nand, iboot, nor, gid],
         "built": {"guest tools": {n: sha(os.path.join(tools, n)) for n in baked},
-                  "GLEngine": {n: sha(os.path.join(gles, n)) for n in sorted(os.listdir(gles)) if n.startswith("GLEngine-")}
-                  if opt.get("ca_ogl", True) else None,
+                  "GLEngine": sha(os.path.join(gles, "GLEngine")) if opt.get("ca_ogl", True) else None,
                   "gld plugin": sha(os.path.join(gles, "GLRendererFloatQEMU.bundle/GLRendererFloatQEMU"))
                   if opt.get("ca_ogl", True) else None,
                   "libappsync.dylib": sha(os.path.join(ROOT, "build/appsync/libappsync.dylib")) if opt.get("appsync") else None},

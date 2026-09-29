@@ -30,7 +30,7 @@ Components: kernel `xnu-1504.58.28~3/RELEASE_ARM_S5L8930X` (Darwin 10.4.0), iBoo
 | data partition | plain 0xAF + fstab patch | the IPSW fstab already says `/dev/disk0s2`; the unprotected HFSX volume mounts journaled | unchanged. No EncryptedMediaFilter / content-protection mount is needed to mount it |
 | launchd jobs used by rootfs/bake | | SpringBoard, BTServer, storage_mounter, lockdownd, installd: same paths | unchanged |
 | AppSync `MISValidateSignature` | | found by symbol in the 4.2.1 shared cache (VA 0x3075d924) | unchanged (`appsync_cachepatch`) |
-| GLI dispatch ABI | 826 slots | 841 slots | a TSV per layout (`contrib/ipad1-gles/glitsv.py` derives it from the shared cache), one `GLEngine-<BUILD>` per TSV; `gli_engine` picks by the cache's `__GLIFunctionDispatchRec` @encode. See "GL CoreAnimation on 4.2.1" |
+| GLI dispatch ABI | 826 slots | 841 slots | the one `GLEngine` reads the layout out of OpenGLES's `__GLIFunctionDispatchRec` @encode at load (`contrib/it-gles/gles_dispatch.c`) and speaks the name-keyed wire of `gles-names.h`; nothing per build. See "GL CoreAnimation on 4.2.1" |
 
 Checked equal rather than derived: the NAND chip ID path, `NANDDRIVERSIGN`, whitening, the MBR, the
 unimplemented-register profile (DART1 at 0x88d00000 is polled on 3.2.2 too). Guest helpers built against

@@ -34,8 +34,8 @@ CURRENT = "/usr/local/lighttouch/current"
 MBX = "/System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine"
 GLENGINE = "/System/Library/Frameworks/OpenGLES.framework/GLEngine.bundle/GLEngine"
 GLD = "/System/Library/Frameworks/OpenGLES.framework/GLRendererFloatQEMU.bundle/GLRendererFloatQEMU"
-# host protocol ranges a package speaks: [oldest, newest]
-HOST = {"guest-package": [1, 1], "gles": [0, 0]}
+# host protocol ranges a package speaks: [oldest, newest]; gles 1 = the name-keyed wire (gles-names.h)
+HOST = {"guest-package": [1, 1], "gles": [1, 1]}
 
 IPOD_BIN = {"it_agent": "contrib/it-agent/it_agent", "itmedia": "contrib/it-media/itmedia",
             "itphoto": "contrib/it-media/itphoto", "ittrust": "contrib/it-proxy/ittrust",
@@ -49,24 +49,24 @@ IPAD_JOBS = ["contrib/it-agent/com.qemu.it-agent.plist", "contrib/it-ethlink/com
              "contrib/it-prefs/com.qemu.it-prefs.plist"]
 # it_msmquiet: the mounter has already loaded the previous shim when the hook changes, and a respring does not
 # drop a notice SpringBoard already holds (tested on 4.2.1), so the next boot's mounter is the one that changes.
-IPAD_HOOKS = [("build/ipad1-guest/it_msmquiet.dylib", "/usr/local/lib/it_msmquiet.dylib", None, False),
-              ("build/appsync/libappsync.dylib", "/usr/lib/libappsync.dylib", None, False)]
-# hooks: (source, stock target, gli dispatch id or None, respring)
+IPAD_HOOKS = [("build/ipad1-guest/it_msmquiet.dylib", "/usr/local/lib/it_msmquiet.dylib", False),
+              ("build/appsync/libappsync.dylib", "/usr/lib/libappsync.dylib", False)]
+# hooks: (source, stock target, respring). The GL shims are one binary per arch: they read the
+# firmware's dispatch layout at load (contrib/it-gles/gles_dispatch.c), so no hook is per build.
 FAMILIES = {
     "n72-ios2": {"arch": "armv6", "boards": ["n72ap"], "builds": ["5F138"], "stub": True},
     "n72-ios3": {"arch": "armv6", "boards": ["n72ap"], "builds": ["7E18"], "bin": IPOD_BIN,
                  "jobs": ["contrib/it-agent/com.qemu.it-agent.plist"],
-                 "hooks": [("contrib/it-gles/MBXGLEngine-7E18", MBX, "7E18", True),
-                           ("contrib/it-agent/it_typein.dylib", "/usr/lib/it_typein.dylib", None, True),
-                           ("build/appsync/libappsync.dylib", "/usr/lib/libappsync.dylib", None, False)]},
+                 "hooks": [("contrib/it-gles/MBXGLEngine", MBX, True),
+                           ("contrib/it-agent/it_typein.dylib", "/usr/lib/it_typein.dylib", True),
+                           ("build/appsync/libappsync.dylib", "/usr/lib/libappsync.dylib", False)]},
     "n72-ios4": {"arch": "armv6", "boards": ["n72ap"], "builds": ["8C148"], "stub": True},
     "k48-ios3": {"arch": "armv7", "boards": ["k48ap"], "builds": ["7B367", "7B500"], "bin": IPAD_BIN,
                  "jobs": IPAD_JOBS,
-                 "hooks": [("contrib/ipad1-gles/GLEngine-7B500", GLENGINE, "7B500", True)] + IPAD_HOOKS},
+                 "hooks": [("contrib/ipad1-gles/GLEngine", GLENGINE, True)] + IPAD_HOOKS},
     "k48-ios4": {"arch": "armv7", "boards": ["k48ap"], "builds": ["8C148"], "bin": IPAD_BIN, "jobs": IPAD_JOBS,
-                 "hooks": [("contrib/ipad1-gles/GLEngine-8C148", GLENGINE, "8C148", True),
-                           ("contrib/ipad1-gles/GLRendererFloatQEMU.bundle/GLRendererFloatQEMU", GLD, "8C148",
-                            True)] + IPAD_HOOKS},
+                 "hooks": [("contrib/ipad1-gles/GLEngine", GLENGINE, True),
+                           ("contrib/ipad1-gles/GLRendererFloatQEMU.bundle/GLRendererFloatQEMU", GLD, True)] + IPAD_HOOKS},
 }
 # 2.x dyld refuses LC_DYLD_INFO_ONLY; everything the loader runs on it must be legacy-linked
 LEGACY_BUILDS = ("5F138",)
@@ -151,10 +151,10 @@ def assemble(src, out, family, spec, serial, version):
         rel = "jobs/" + os.path.basename(source)
         add(rel, rewrite_job(read(source)), 0o644, False)
         jobs.append(rel)
-    for source, target, gli, respring in spec.get("hooks", []):
+    for source, target, respring in spec.get("hooks", []):
         rel = "hooks/" + os.path.basename(target)
         add(rel, read(source), 0o755, True)
-        hooks.append({"file": rel, "target": target, "gli": gli, "respring": respring})
+        hooks.append({"file": rel, "target": target, "respring": respring})
         provides.append(os.path.basename(target))
     manifest = {"format": 1, "serial": serial, "version": version, "family": family, "arch": arch,
                 "stub": bool(spec.get("stub")),
@@ -254,16 +254,16 @@ LOADER = ("usr/local/bin/it_boot", "System/Library/LaunchDaemons/com.qemu.it-boo
 SYSTEM_VERSION = "System/Library/CoreServices/SystemVersion.plist"
 
 
-def seed(mnt, itpack, gli=None):
+def seed(mnt, itpack, gles=True):
     """Bake the loader and the seed package into the system volume mounted at mnt (the preparers, P4).
 
     The package is the itpack's family for the volume's ProductBuildVersion. It lands as it_boot
     would install it (pkgs/<serial>/ with its `offer` record, `current` -> it, `state` "seed N").
-    A hook is kept only if its target is on the volume and its gli id is None or `gli` (the shim
-    the preparer installed; None: no shim); then target and <target>.baked get the package's
-    bytes, so the first boot has nothing to change and no respring. Baked launchd jobs the package
-    provides are removed: it_boot loads them. Returns (volume-relative paths written, all to be
-    root-owned; the lock's guest_package record). FirmwareKit's GuestPackage.seed is the Swift port."""
+    A hook is kept only if its target is on the volume (and, for the GL engines, if the preparer
+    installed the shim: `gles`); then target and <target>.baked get the package's bytes, so the
+    first boot has nothing to change and no respring. Baked launchd jobs the package provides are
+    removed: it_boot loads them. Returns (volume-relative paths written, all to be root-owned; the
+    lock's guest_package record). FirmwareKit's GuestPackage.seed is the Swift port."""
     entries = dict(read_pack(itpack))
     build = plistlib.load(open(os.path.join(mnt, SYSTEM_VERSION), "rb"))["ProductBuildVersion"]
     fams = [n[:-len("/manifest.json")] for n in entries if n.endswith("/manifest.json")
@@ -272,7 +272,8 @@ def seed(mnt, itpack, gli=None):
         raise SystemExit("%s: %d packages for build %s" % (itpack, len(fams), build))
     family = fams[0]
     m = json.loads(entries[family + "/manifest.json"])
-    hooks = [h for h in m["hooks"] if h["gli"] in (None, gli) and os.path.exists(os.path.join(mnt, h["target"][1:]))]
+    hooks = [h for h in m["hooks"] if (gles or h["target"] not in (MBX, GLENGINE, GLD))
+             and os.path.exists(os.path.join(mnt, h["target"][1:]))]
     dropped = {h["file"] for h in m["hooks"]} - {h["file"] for h in hooks}
     m = dict(m, hooks=hooks, files=[f for f in m["files"] if f["name"] not in dropped])
     made = []
@@ -306,7 +307,7 @@ def seed(mnt, itpack, gli=None):
         rel = "System/Library/LaunchDaemons/" + os.path.basename(j)
         if os.path.lexists(os.path.join(mnt, rel)):
             os.unlink(os.path.join(mnt, rel))
-    record = {"family": family, "seed": m["serial"], "version": m["version"], "gli": gli,
+    record = {"family": family, "seed": m["serial"], "version": m["version"], "gles": bool(gles),
               "itpack": {"path": os.path.abspath(itpack), "sha256": sha256(open(itpack, "rb").read())},
               "hooks": [h["target"] for h in hooks], "jobs": [os.path.basename(j) for j in m["jobs"]]}
     return made, record
@@ -353,7 +354,7 @@ def selfcheck():
              "files": [{"name": "bin/x", "mode": "755", "size": 1, "sha256": "0" * 64},
                        {"name": "jobs/j.plist", "mode": "644", "size": 2, "sha256": "1" * 64},
                        {"name": "hooks/MBXGLEngine", "mode": "755", "size": 3, "sha256": "2" * 64}],
-             "hooks": [{"file": "hooks/MBXGLEngine", "target": MBX, "gli": "7E18", "respring": True}]}
+             "hooks": [{"file": "hooks/MBXGLEngine", "target": MBX, "respring": True}]}
         assert offer_text(m, "7E18", good=[2]).splitlines() == [
             "ltpkg 1", "build 7E18", "serial 3 1.0", "verdict good 2", "file 0 bin/x 755 1 " + "0" * 64,
             "job 1 jobs/j.plist 644 2 " + "1" * 64, "hook 2 hooks/MBXGLEngine 755 3 %s %s respring" % ("2" * 64, MBX)]

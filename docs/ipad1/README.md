@@ -18,7 +18,7 @@ in `../archive/ipad1-PLAN.md`; what follows are the parts of it that still gover
 | `guest-services.md` | What guest code the iPad carries and why (AppSync dylib, `it_ethlink`, pasteboard) |
 | `app-compat.md`, `app-compat-results.md` | The app-compatibility inventory and results (3.2.2 and 4.2.1) |
 | `addresses-7B500.md` | Firmware addresses re-derived for 7B500 |
-| `gli-dispatch-7B500.tsv`, `gli-dispatch-8C148.tsv` | GL dispatch tables: build inputs, not docs (LightTouchMac's `build-guest-tools.sh` copies them) |
+| `gli-dispatch-7B500.tsv`, `gli-dispatch-8C148.tsv` | GL dispatch layouts derived offline (`contrib/ipad1-gles/glitsv.py`): the reference the shim's runtime discovery was checked against, no longer a build input |
 | `hw1-probes.log`, `screens/` | Register probes from the real unit; evidence screenshots (put new evidence in `qemu-ios-files`) |
 
 The research that preceded the models (A4 SoC and board references, the kernel MMIO and IOP mailbox

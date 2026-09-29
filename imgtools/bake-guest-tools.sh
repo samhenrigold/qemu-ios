@@ -42,9 +42,9 @@ FRAMEWORK="$MNT/System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle"
 
 # 1. The GL engine replacement, stock preserved. Without it a GL app drives the
 #    unemulated PowerVR MBX and wedges the whole device on first launch.
-#    IT_GLES_ENGINE is the MBXGLEngine-<BUILD> for this firmware's dispatch
-#    table (imgtools/ipod2g_device.py); IT_GLES_SHIM=0 (no table fits) keeps
-#    the stock engine and software CoreAnimation instead of guessing.
+#    One MBXGLEngine serves every firmware (it reads the dispatch layout at
+#    load); IT_GLES_SHIM=0 (2.x: no shared cache, no shim) keeps the stock
+#    engine and software CoreAnimation.
 OGL=1
 if [ "${IT_GLES_SHIM:-1}" = 0 ]; then
     OGL=0

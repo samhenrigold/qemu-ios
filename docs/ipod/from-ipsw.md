@@ -47,7 +47,7 @@ Everything the builder derives came out right for 4.2.1 (`device.lock.json` "der
 wrapped, NOR without `nsrv` (4.x ships no needservice), AppSync by symbol (`_MISValidateSignature` at
 cache off 0x40d76d4), installd job `com.apple.mobile.installd.plist`. The GLES check then refused the shim
 (`dispatch table differs from gli-dispatch-7E18.tsv at slot 441 (841 vs 822 slots)`); since 2026-09-28 the shim
-is generated per layout ("8C148: GL" below).
+reads the layout at load ("8C148: GL" below).
 
 Boot: the emulated AES engine has no GID key, so it answered only KBAGs in its built-in 5F138/7E18 table and
 exited on 4.2.1's first NOR image. The new `gid-blobs=FILE` machine option (the builder writes
@@ -153,15 +153,16 @@ shutdown and reboot.
 
 ### 8C148: GL (2026-09-28)
 
-The MBX shim is table-driven like the iPad's glishim. `contrib/ipad1-gles/glitsv.py` derives
-`docs/ipod/gli-dispatch-<BUILD>.tsv` from a firmware's armv6 shared cache (7E18: 822 slots, 267 exports, identical
-to `slotmap.txt`; 8C148: 841 slots, the same table as the iPad's 8C148). armv6 trampolines needed three scan fixes: the
-slot is loaded straight into pc (`mov lr, pc; ldr pc, [ip, #off]`) or tail-called after a conditional early return
-(`popeq`/`bxeq lr`), and 4.x's `glIs*` call it with `blxne`; the iPad tables verify unchanged. `contrib/it-gles/build.sh`
-runs `gligen.py` per TSV and builds `MBXGLEngine-<BUILD>`: `GLESCreateGC` still fills 3.1.3's numbering, and each of
-the firmware's slots takes its 3.1.3 slot's entry (`gli_slot313`), so 7E18's table is exactly the old one
-(gligen checks every 7E18 slot is its own wire slot) and a new layout needs only its TSV. `MBXGLEngine` is a copy of
-`MBXGLEngine-7E18` for the older consumers.
+The MBX shim discovers the firmware's dispatch layout at load, like the iPad's glishim (both are one
+binary per architecture; `contrib/it-gles/gles_dispatch.c`): the ObjC @encode of `__GLIFunctionDispatchRec` in the
+running OpenGLES names every slot (7E18: 822, 8C148: 841, the same layout as the iPad's 8C148), and each slot is
+matched by name to `include/hw/arm/guest-services/gles-names.h`, the table the host is built from too, whose ids
+are what the wire carries (3.1.3's slot numbers below 822, assigned above). A firmware without the @encode gets
+its layout from OpenGLES's exported trampolines instead, decoded in place (the slot is loaded straight into pc,
+`mov lr, pc; ldr pc, [ip, #off]`, or tail-called after a conditional early return, `popeq`/`bxeq lr`; 4.x's
+`glIs*` call it with `blxne`), which is also the cross-check `gles-debug=on` runs. `contrib/ipad1-gles/glitsv.py`
+still derives a `gli-dispatch-<BUILD>.tsv` offline, as research: `docs/ipod/gli-dispatch-*.tsv` are what the
+discovered tables were checked against, not build inputs.
 
 What 4.2.1 changed, read from the 8C148 cache: EAGL still loads `MBXGLEngine.bundle` through `GLESGetEGLInterface`
 when `AppleMBXDevice` matches (`eagl_init` 0x34ff870c; no libGFXShared or gld plugin on the MBX path), and the
@@ -219,7 +220,7 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 | pasteboard | it_pbd binary present, job retired | not installed (the agent owns the clipboard) |
 | sound defaults | set-sound-defaults.py | same |
 | AppSync | cache MISValidateSignature (by symbol) + libappsync in installd | same script, contrib/appsync/patch-appsync-dylib.sh |
-| GLES shim | MBXGLEngine shim, CA_ENABLE_OGL=1, MBX2D/auto off | same, `contrib/it-gles/MBXGLEngine-<BUILD>` whose docs/ipod/gli-dispatch-<BUILD>.tsv matches the @encode (`ipod2g_device.gli_engine`); none → stock engine + software CA |
+| GLES shim | MBXGLEngine shim, CA_ENABLE_OGL=1, MBX2D/auto off | same, the one `contrib/it-gles/MBXGLEngine`, which reads the firmware's dispatch layout at load (`ipod2g_device.gli_engine` only logs what it will find); 2.x (no shared cache) → stock engine + software CA |
 | shell + ssh | Cydia bootstrap files copied as uid 99, stock modes clobbered by `chmod 755`, sshd by overwriting ReportCrash.SafetyNet, host keys shared by every copy | **none**: no freeze, OpenSSH or OpenSSL; guest services are stock lockdown services plus it_agent v2 (docs/ipod/guest-services-plan.md), marker `.lt-guest-tools-v3` |
 | web proxy / CA trust | itproxy/ittrust run over SSH | the iPad's PAC baked into the en0 Wi-Fi service (`ipod2g_device.install_web_proxy`); CA by a MCInstall profile at run time |
 | byte patches | none left on the default path: installd/SpringBoard are stock | none; see "emulator-side per-version code" |
@@ -254,7 +255,7 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 | NOR image set | stock order ∩ all_flash/manifest |
 | kernelcache path in the volume | the decrypted iBoot's `/System/Library/Caches/com.apple.kernelcaches/...` string |
 | kernelcache member | BuildManifest KernelCache / Restore.plist KernelCachesByPlatform |
-| GL dispatch ABI | shared cache `__GLIFunctionDispatchRec` @encode vs docs/ipod/gli-dispatch-<BUILD>.tsv (each made from that firmware's cache by `contrib/ipad1-gles/glitsv.py`) |
+| GL dispatch layout | read by the shim at load from OpenGLES's `__GLIFunctionDispatchRec` @encode (else its trampolines); the prepare step only logs the slot count and any field the name table lacks |
 | MISValidateSignature | shared-cache symbol table (appsync_cachepatch.py) |
 | installd job name | whichever of the two known plists exists |
 | volume size, Mod#, Regn | manifest (`volume_blocks`, `model_number`, `region_info`) |

@@ -93,25 +93,17 @@ GLES_APPS = ("GLTest.app", "GLTest2.app")
 # GL CoreAnimation (the default; --no-ca-ogl opts out): CoreAnimation composites through the GLI shim
 # (accelerated pixel format), so the build installs the shim as GLEngine
 SB_ENV_CA_OGL = {"MBX2D_PAGE_FLIP": "0", "GLI_ACCELERATED": "1"}
-# The shim's dispatch table (contrib/ipad1-gles/gligen.py) is generated from a TSV per dispatch layout,
-# docs/ipad1/gli-dispatch-<BUILD>.tsv -> contrib/ipad1-gles/GLEngine-<BUILD>; the firmware's OpenGLES @encode
-# of __GLIFunctionDispatchRec picks one (7B500's also fits 7B367). A new layout needs its own TSV
-# (contrib/ipad1-gles/glitsv.py derives one from the shared cache).
-GLI_TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../docs/ipad1/gli-dispatch-7B500.tsv")
-GLI_TSVS = sorted(os.path.join(os.path.dirname(GLI_TSV), n) for n in os.listdir(os.path.dirname(GLI_TSV))
-                  if re.fullmatch(r"gli-dispatch-\w+\.tsv", n))
+# One GLEngine for every firmware: the shim reads the firmware's __GLIFunctionDispatchRec layout out of
+# OpenGLES at load (contrib/it-gles/gles_dispatch.c) and matches each slot by name to the name table it and
+# the host share (include/hw/arm/guest-services/gles-names.h). gli_dispatch_info only says what it will find.
+GLI_NAMES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../include/hw/arm/guest-services/gles-names.h")
 DYLD_CACHE = "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv7"
 
 
 def gli_engine(cache_path):
-    """(the GLEngine-<BUILD> whose TSV matches this shared cache, None), else (None, why for each TSV)."""
-    data, whys = open(cache_path, "rb").read(), []
-    for tsv in GLI_TSVS:
-        why = gli_abi_problem(cache_path, tsv, data)
-        if why is None:
-            return os.path.join(GLES, "GLEngine-" + os.path.basename(tsv)[len("gli-dispatch-"):-4]), None
-        whys.append(why)
-    return None, "; ".join(whys)
+    """(the GLEngine, a sanity line about this shared cache's dispatch layout); the second is a warning when
+    the cache carries no layout the shim could read, never a refusal."""
+    return os.path.join(GLES, "GLEngine"), gli_dispatch_info(cache_path)
 
 
 DYLD_OVERRIDE = "System/Library/Caches/com.apple.dyld/enable-dylibs-to-override-cache"
@@ -196,17 +188,22 @@ def gld_problem(cache_path, plugin=os.path.join(GLES, GLD_BUNDLE, "GLRendererFlo
     return True, ("gldshim lacks %s" % ", ".join(lost)) if lost or not want else None
 
 
-def gli_abi_problem(cache_path, tsv=GLI_TSV, data=None):
-    """None if the shared cache's __GLIFunctionDispatchRec fields are the TSV's dispatch_field column, in order."""
-    enc = re.search(rb"\{__GLIFunctionDispatchRec=[^}]*\}", data if data is not None else open(cache_path, "rb").read())
-    if not enc:
-        return "no __GLIFunctionDispatchRec @encode in %s" % cache_path
-    have = [f.decode() for f in re.findall(rb'"([^"]+)"', enc[0])]
-    want = [l.split("\t")[3] for l in open(tsv) if l[:1].isdigit()]
-    if have != want:
-        diff = next((i for i, (h, w) in enumerate(zip(have, want)) if h != w), min(len(have), len(want)))
-        return "dispatch table differs from %s at slot %d (%d vs %d slots)" % (os.path.basename(tsv), diff, len(have), len(want))
-    return None
+def gli_fields(data):
+    """The dispatch fields of the first __GLIFunctionDispatchRec @encode in data (a shared cache or OpenGLES), or None."""
+    enc = re.search(rb"\{__GLIFunctionDispatchRec=[^}]*\}", data)
+    return [f.decode() for f in re.findall(rb'"([^"]+)"', enc[0])] if enc else None
+
+
+def gli_dispatch_info(cache_path, data=None, names=GLI_NAMES):
+    """What the shim will discover at load: 'GLI dispatch: N slots, K unknown to the name table (...)', or a
+    warning that the cache carries no @encode (the shim then decodes OpenGLES's trampolines instead)."""
+    have = gli_fields(data if data is not None else open(cache_path, "rb").read())
+    if have is None:
+        return "no __GLIFunctionDispatchRec @encode in %s: the shim will read OpenGLES's trampolines" % cache_path
+    known = set(re.findall(r"^GLES_FN\(\w+,\s*(\w+),", open(names).read(), re.M))
+    unknown = [f for f in have if f not in known]
+    return "GLI dispatch: %d slots, %d unknown to the name table%s" % (len(have), len(unknown),
+                                                                      " (%s)" % ", ".join(unknown[:8]) if unknown else "")
 HIDBRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/ipad1-hidbridge")
 # AppSync: one dylib injected into installd (install gate) and SpringBoard (launch gate)
 # via DYLD_INSERT_LIBRARIES. See contrib/appsync. Requires the AMFI boot-args (it is ldid-signed).
@@ -628,17 +625,15 @@ def build(a):
         apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))
         gli_owned = []                     # files the GL install adds, root-owned below
         if a.gles or a.ca_ogl:   # GL CoreAnimation composites through the GLI shim, so it needs the engine
-            engine, why = gli_engine(os.path.join(m.mnt, DYLD_CACHE))
-            if why:
-                raise SystemExit("GLI shim does not fit this firmware: %s (build with --no-ca-ogl)" % why)
+            engine, info = gli_engine(os.path.join(m.mnt, DYLD_CACHE))
             if not os.path.exists(engine):
                 raise SystemExit("%s missing (run contrib/ipad1-gles/build.sh)" % engine)
             gld, why = gld_problem(os.path.join(m.mnt, DYLD_CACHE))
             if why:
                 raise SystemExit("gld plugin does not fit this firmware: %s (build with --no-ca-ogl)" % why)
             status = gli_uncache(m.mnt)
-            print("      GLI engine %s%s; %s" % (os.path.basename(engine), " + gld plugin %s" % GLD_BUNDLE if gld else "",
-                                               status))
+            print("      GLI engine %s%s; %s; %s" % (os.path.basename(engine), " + gld plugin %s" % GLD_BUNDLE if gld else "",
+                                                   status, info))
             gli_owned += [DYLD_OVERRIDE] if "overridden" in status else []
             gli_owned += [os.path.dirname(GLD_REL), GLD_REL] if gld else []
             shutil.copy(engine, os.path.join(m.mnt, GLENGINE))
@@ -771,11 +766,11 @@ def bake(a):
             rewrite_plist(os.path.join(m.mnt, BT_JOB), lambda d: d.__setitem__("Disabled", True))
         if a.activation_hook:
             activation_hook(a.activation_hook, os.path.join(m.mnt, LOCKDOWND))
-        # the GLI shim this image carries (build installs it unless --no-ca-ogl): the one GL hook the seed keeps
+        # the GLI shim this image carries (build installs it unless --no-ca-ogl): the GL hooks the seed keeps
         engine, _ = gli_engine(os.path.join(m.mnt, DYLD_CACHE))
         with open(os.path.join(m.mnt, GLENGINE), "rb") as f:
-            gli = os.path.basename(engine)[len("GLEngine-"):] if engine and f.read() == open(engine, "rb").read() else None
-        seeded, record = mkpkg.seed(m.mnt, a.guest_package, gli)
+            gles = f.read() == open(engine, "rb").read()
+        seeded, record = mkpkg.seed(m.mnt, a.guest_package, gles)
     with open(os.path.join(a.dir, "guest-package.json"), "w") as f:
         json.dump(record, f, indent=1)
     # noowners mount: launchd ignores a job plist that is not root-owned
@@ -829,16 +824,11 @@ def selfcheck():
         apm[e + 48:e + 48 + len(typ)] = typ
     assert apm_hfs_slice(bytes(apm)) == (64 * 512, 1000 * 512)
 
-    with tempfile.NamedTemporaryFile() as t:   # the GLI ABI gate: a table that is not the TSV's is refused
-        want = [l.split("\t")[3] for l in open(GLI_TSV) if l[:1].isdigit()]
-        t.write(b"{__GLIFunctionDispatchRec=" + b"".join(b'"%s"^?' % f.encode() for f in want) + b"}")
-        t.flush()
-        assert gli_abi_problem(t.name) is None
-        t.seek(len(b'{__GLIFunctionDispatchRec="'))
-        t.write(b"X")
-        t.flush()
-        assert "slot 0" in gli_abi_problem(t.name)
-    assert GLI_TSV in GLI_TSVS and all(os.path.basename(p).startswith("gli-dispatch-") for p in GLI_TSVS)
+    # the GLI dispatch sanity line: fields the name table knows, one it does not, no @encode at all
+    enc = b'{__GLIFunctionDispatchRec="accum"^?"clear"^?"made_up"^?}'
+    assert gli_fields(enc) == ["accum", "clear", "made_up"] and gli_fields(b"nothing") is None
+    assert gli_dispatch_info("x", enc) == "GLI dispatch: 3 slots, 1 unknown to the name table (made_up)"
+    assert gli_dispatch_info("x", b"nothing").startswith("no __GLIFunctionDispatchRec @encode")
     with tempfile.TemporaryDirectory() as mnt:   # the cached-GLEngine override: only with GLEngine cached
         def cache(*paths):
             img = bytearray(b"dyld_v1   armv7\0" + struct.pack("<4I", 0x40, 1, 0x60, len(paths))).ljust(0x40, b"\0")
