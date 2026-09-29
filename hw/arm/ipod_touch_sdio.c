@@ -918,10 +918,14 @@ static void sdpcm_receive(IPodTouchSDIOState *s, const uint8_t *buf, uint32_t le
          * chip ("Cmd Queue stall", logState "Tx: seq N, credit N"), which
          * dropped the join (LightTouchMac smoke #40). A dongle that frees the
          * buffer returns the credit; with nothing else queued, in a
-         * header-only frame, the credit update DHD hosts skip as empty.
+         * header-only frame on the event channel: 5.x's rxPackets (9B206
+         * 0x80a23f52) takes the credit from every header and passes over a
+         * header-only frame there (on the data channel it is "memory
+         * allocation error"). Drivers that take events on the data channel
+         * (2.1.1) keep the bare window.
          */
-        if (g_queue_is_empty(s->rx_fifo)) {
-            sdpcm_send(s, SDPCM_DATA_CHANNEL, buf, 0);
+        if (g_queue_is_empty(s->rx_fifo) && sdio_bdc_hdrlen(s) == BDC_HDRLEN_STD) {
+            sdpcm_send(s, SDPCM_EVENT_CHANNEL, buf, 0);
         }
         break;
     default:
