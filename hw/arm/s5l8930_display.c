@@ -100,6 +100,7 @@ struct S5L8930DisplayState {
     uint32_t front_key[4];   /* w, h, fmt, stride of the latched frame */
     bool front_valid;
     unsigned quiet_vbls;     /* VBLs since the last swap */
+    uint32_t swaps;          /* swaps latched since reset: frames the panel showed ("swaps") */
 };
 
 /* ---- DisplayPipe ------------------------------------------------------- */
@@ -197,6 +198,7 @@ static void vbl_tick(void *opaque)
     if (s->pipe[0].swap_pending) {
         s->pipe[0].swap_pending = false;
         s->quiet_vbls = 0;
+        s->swaps++;
         front_latch(s);
     } else if (++s->quiet_vbls >= QUIET_RELATCH_VBLS) {
         /*
@@ -614,6 +616,7 @@ static void s5l8930_display_reset(DeviceState *dev)
     memset(s->dart, 0, sizeof(s->dart));
     memset(s->ste, 0, sizeof(s->ste));
     s->front_valid = false;
+    s->swaps = 0;
 
     /* What iBoot leaves behind: UI0 live on a 1024x768 32bpp buffer. The
      * kernel adopts it from these registers, so without them there is no
@@ -686,6 +689,7 @@ static void s5l8930_display_init(Object *obj)
     sysbus_init_mmio(sbd, &s->clcd_mr[1]);
     sysbus_init_irq(sbd, &s->pipe_irq);
     sysbus_init_irq(sbd, &s->clcd_irq);
+    object_property_add_uint32_ptr(obj, "swaps", &s->swaps, OBJ_PROP_FLAG_READ);
 }
 
 static int s5l8930_display_post_load(void *opaque, int version_id)
