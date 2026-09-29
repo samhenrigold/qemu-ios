@@ -249,6 +249,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930D1815State, S5L8930_D1815)
 #define PMU_SYS_RESTART     0x0B
 #define PMU_ADC_START       (1u << 4)
 #define PMU_ADC_MUX_VBAT    4
+#define PMU_ADC_MUX_BRICK   6       /* DT function-brick_id_voltage 'Vcda' 06 */
 #define PMU_ADC_RES         0x31    /* 12-bit: (r[0] & 0xF) | r[1] << 4 */
 #define PMU_RTC_PRELOAD     0x46    /* 4 bytes, latched into the counter... */
 #define PMU_RTC_CTRL        0x4A    /* ...by writing 0x41 here */
@@ -267,6 +268,7 @@ struct S5L8930D1815State {
     int64_t rtc_base;       /* counter = host epoch + rtc_base */
     uint32_t rtc_latch;
     uint16_t vbat_mv;       /* what ADC mux 4 measures; 0 = the 3900 default */
+    bool usb_host;          /* a host's pull-downs on D+/D-: ADC mux 6 reads 0 */
 };
 
 /* The guest's own power-off write, latched for the app bridge
@@ -299,12 +301,19 @@ static void d1815_adc_done(void *opaque)
      * mV = 2500 + adc * 2000 / 4096 and estimates the boot capacity from it.
      * Mid-scale (3500 mV) is a nearly flat cell, which SpringBoard drew as a
      * red battery. 0xB33 = 3900 mV, a resting Li-ion around 80%.
-     * ponytail: every other mux (2 thermistor, 3, 6 accessory ID, 10-14)
-     * stays mid-scale; S5L8930_ADC="mux:val,..." overrides for experiments.
+     * Mux 6 is the dock connector's data line the charger has biased
+     * (brick_id_p / brick_id_n, then function-brick_id_voltage): 5.x's
+     * charger driver tells an Apple charger (2.0 / 2.7 V on D+/D-) from a
+     * USB host (its pull-downs: 0 V) this way, and with the lines left
+     * mid-scale the power source called the cable "Detached", so the USB
+     * device stack never came up (usbmux never attached). 4.x never reads it.
+     * ponytail: every other mux (2 thermistor, 3, 10-14) stays mid-scale;
+     * S5L8930_ADC="mux:val,..." overrides for experiments.
      */
     unsigned mux = s->regs[PMU_ADC_CTRL] & 0xf;
     unsigned mv = s->vbat_mv ? s->vbat_mv : 3900;
-    uint16_t v = mux == PMU_ADC_MUX_VBAT ? MIN((mv - 2500) * 4096 / 2000, 0xfff) : 0x800;
+    uint16_t v = mux == PMU_ADC_MUX_VBAT ? MIN((mv - 2500) * 4096 / 2000, 0xfff) :
+                 mux == PMU_ADC_MUX_BRICK && s->usb_host ? 0 : 0x800;
     const char *ov = getenv("S5L8930_ADC");
 
     for (const char *p = ov; p && *p; p = strchr(p, ',') ? strchr(p, ',') + 1 : "") {
@@ -319,6 +328,10 @@ static void d1815_adc_done(void *opaque)
 
     s->regs[PMU_ADC_RES] = v & 0xf;
     s->regs[PMU_ADC_RES + 1] = v >> 4;
+    /* The start bit clears when the conversion is done: iBoot-1219's
+     * dialog_read_adc polls it (the kernel takes the event) and powers the
+     * unit off after ten 50 ms timeouts. */
+    s->regs[PMU_ADC_CTRL] &= ~PMU_ADC_START;
     s->regs[PMU_EVENT + 1] |= PMU_EVENT_B_ADC;
     d1815_update_irq(s);
 }
@@ -352,6 +365,11 @@ void s5l8930_d1815_button(DeviceState *dev, bool hold, bool down)
  * re-runs cable detection through usb_det; the level itself lives in the
  * LTC4099 model. Event A bit 3 is the PMU's own "usb" event.
  */
+void s5l8930_d1815_set_usb_host(DeviceState *dev, bool host)
+{
+    S5L8930_D1815(dev)->usb_host = host;
+}
+
 void s5l8930_d1815_set_vbat(DeviceState *dev, unsigned mv)
 {
     S5L8930_D1815(dev)->vbat_mv = MAX(mv, 2500);
