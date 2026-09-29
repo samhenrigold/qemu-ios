@@ -300,6 +300,21 @@ def install_web_proxy(mnt, owners):
     owners += [("0 0", PAC_PATH), ("0 0", prefs)]
 
 
+
+def bake_reorder_tip(mnt):
+    """No helpers (2.x/3.0): write the key it_prefs would set at first boot into SpringBoard's
+    preferences, so the Edit Home Screen tip never shows (FirmwareKit N72Board.bakeReorderTip bakes the same)."""
+    sb = os.path.join(mnt, "System/Library/CoreServices/SpringBoard.app/SpringBoard")
+    if not os.path.exists(sb) or b"SBDidShowReorderText" not in open(sb, "rb").read():
+        return "SpringBoard does not name SBDidShowReorderText: left alone"
+    p = os.path.join(mnt, "private/var/mobile/Library/Preferences/com.apple.springboard.plist")
+    raw = open(p, "rb").read() if os.path.exists(p) else b""
+    d = plistlib.loads(raw) if raw else {}
+    d["SBDidShowReorderText"] = True
+    with open(p, "wb") as f:
+        plistlib.dump(d, f, fmt=plistlib.FMT_BINARY if raw.startswith(b"bplist") else plistlib.FMT_XML)
+    return "SBDidShowReorderText baked (no helpers)"
+
 def bake(mnt, config):
     cfg = json.load(open(config))
     opt, owners, report = cfg["options"], [], {}
@@ -342,6 +357,8 @@ def bake(mnt, config):
             os.chmod(os.path.join(mnt, rel), mode)
             owners.append(("0 0", rel))
         report["prefs"] = "it_prefs: SBDidShowReorderText at first boot"
+    else:
+        report["prefs"] = bake_reorder_tip(mnt)
     if opt.get("web_proxy", True):
         install_web_proxy(mnt, owners)
         report["web_proxy"] = "PAC /%s on the en0 Wi-Fi service" % WEB_PROXY_PAC
