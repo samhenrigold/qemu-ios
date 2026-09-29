@@ -17,7 +17,7 @@
  "volume_blocks": 1835008,
  "options": {
   "gles_shim": true,
-  "appsync": false,
+  "appsync": true,
   "web_proxy": true
  },
  "activation": {

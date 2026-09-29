@@ -264,6 +264,8 @@ def build(ctx):
         tools["contrib/it-gles/MBXGLEngine"] = sha(os.path.join(ROOT, "contrib/it-gles/MBXGLEngine"))
     if opt.get("appsync"):
         tools["build/appsync/libappsync.dylib"] = sha(os.path.join(ROOT, "build/appsync/libappsync.dylib"))
+        if baked.get("appsync_launcher"):
+            tools["build/appsync/appsync-launch"] = sha(os.path.join(ROOT, "build/appsync/appsync-launch"))
     if opt.get("data_protection"):
         tools["build/ipod-guest/it_keybag"] = sha(os.path.join(ROOT, "build/ipod-guest/it_keybag"))
     return {
@@ -329,8 +331,11 @@ def bake(mnt, config):
         r = subprocess.run(["/bin/sh", os.path.join(ROOT, "contrib/appsync/patch-appsync-dylib.sh")], env=env,
                            check=True, capture_output=True, text=True)
         sys.stdout.write(r.stdout)
-        report["appsync"] = [l for l in r.stdout.splitlines() if "MISValidateSignature" in l or "DYLD_INSERT" in l]
+        report["appsync"] = [l for l in r.stdout.splitlines() if "MISValidateSignature" in l or "DYLD_INSERT" in l or "AppSync installed" in l]
         owners.append(("0 0", "usr/lib/libappsync.dylib"))
+        if os.path.isfile(os.path.join(mnt, "usr/libexec/appsync-launch")):
+            owners.append(("0 0", "usr/libexec/appsync-launch"))
+            report["appsync_launcher"] = "usr/libexec/appsync-launch"
     if supported:
         for src, (rel, mode) in PREFS.items():
             shutil.copyfile(os.path.join(ROOT, src), os.path.join(mnt, rel))

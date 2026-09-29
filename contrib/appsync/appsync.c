@@ -71,7 +71,10 @@ extern void *dlsym(void *, const char *);
 
 extern const char *getprogname(void);
 extern int strcmp(const char *, const char *);
-static int in_installd(void) { const char *p = getprogname(); return p && !strcmp(p, "installd"); }
+static int in_installd(void) {
+    const char *p = getprogname();
+    return p && (!strcmp(p, "installd") || !strcmp(p, "mobile_installation_proxy"));
+}
 
 // ---- libmis hooks ----------------------------------------------------------
 // Signatures match how installd calls them (2 args / 3 args). Args are ignored;

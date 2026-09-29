@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the AppSync dylib as one fat armv6+armv7 Mach-O, ldid-signed.
 #
-#   armv6 slice -> iPod touch 2G, iOS 3.1.3 (3.1.3 SDK)
+#   armv6 slice -> iPod touch 2G, iOS 2.x onward (3.1.3 SDK)
 #   armv7 slice -> iPad 1,       iOS 3.2.2 (3.2 SDK)
 #
 # Both slices come from the same appsync.c through the armv6-toolchain pipeline
@@ -41,6 +41,7 @@ mkdir -p "$OUT"
 build_slice() {  # arch  sdk  out
     local arch="$1" sdk="$2" out="$3"
     ( export GUEST_ARCH="$arch" ARMV6_SDK="$sdk"
+      [ "$arch" != armv6 ] || export LEGACY_LINK=1
       . "$HERE/../armv6-toolchain/armv6.sh"
       cc6 "$HERE/appsync.c" "$out.o"
       # -dylib with an install name; -undefined dynamic_lookup binds the MIS,
@@ -66,3 +67,11 @@ rm -f "$OUT/libappsync.armv6" "$OUT/libappsync.armv7"
 "${LDID:-ldid}" -S "$OUT/libappsync.dylib"
 file "$OUT/libappsync.dylib"
 lipo -detailed_info "$OUT/libappsync.dylib" | grep -E 'architecture|cputype|offset' || true
+
+# Early Lockbot forwards ProgramArguments only. This launcher supplies the per-process environment.
+( export GUEST_ARCH=armv6 ARMV6_SDK="$I6_SDK" LEGACY_LINK=1
+  . "$HERE/../armv6-toolchain/armv6.sh"
+  cc6 "$HERE/launcher.c" "$OUT/appsync-launch.o"
+  link6 -execute "$OUT/appsync-launch" "$OUT/appsync-launch.o" -e __start
+  "${LDID:-ldid}" -S "$OUT/appsync-launch"
+  rm "$OUT/appsync-launch.o" )

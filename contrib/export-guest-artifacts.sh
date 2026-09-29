@@ -82,6 +82,7 @@ for t in it_pbd it_ethlink it_prefs it_msmquiet.dylib it_seal it_keybag; do
     stage ipad-guest-tools "$G/ipad1-guest/$t"
 done
 stage ipad-guest-tools "$G/appsync/libappsync.dylib"
+stage ipad-guest-tools "$G/appsync/appsync-launch"
 for j in it-pasteboard/com.qemu.it-pbd.plist it-ethlink/com.qemu.it-ethlink.plist it-prefs/com.qemu.it-prefs.plist \
          it-seal/com.qemu.it-seal.plist; do
     stage ipad-guest-tools "$C/$j"
