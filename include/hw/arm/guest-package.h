@@ -15,7 +15,8 @@
  *                 of the name table it was built from (gles-names.h
  *                 GLES_NAMES_VERSION); retval = the host's protocol, with
  *                 GLES_HELLO_VERBOSE set when the host wants the shim to log
- *                 its dispatch layout (gles-debug / IT_GLES_VERBOSE). A shim
+ *                 its whole dispatch layout (IT_GLES_VERBOSE) and
+ *                 GLES_HELLO_DEBUG under gles-debug (a one-line cross-check). A shim
  *                 that never sends it speaks protocol 0, the old slot-numbered
  *                 wire.
  * The guest never names a path: the host maps indices to the paths in its own
@@ -48,7 +49,8 @@
  * (gles-names.h). Protocol 0 (3.1.3 slot numbers) is the same numbering below id 822, so an
  * old shim keeps working; only its hello is missing. */
 #define GUEST_GLES_PROTO    1
-#define GLES_HELLO_VERBOSE  0x100   /* in the hello's reply: log the discovered dispatch layout */
+#define GLES_HELLO_VERBOSE  0x100   /* in the hello's reply: log the whole discovered layout (IT_GLES_VERBOSE) */
+#define GLES_HELLO_DEBUG    0x200   /* gles-debug: cross-check the layout against the exports, one line */
 
 typedef struct GuestPackage {
     char *dir;                /* guest-package= property, NULL = no offer */
