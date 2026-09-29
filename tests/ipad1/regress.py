@@ -336,9 +336,108 @@ def check_boot(cfg, r):
         b.stop()
 
 
+# iOS 5's Setup Assistant, which every fresh 5.x device opens behind its "slide to set up" lock screen:
+# (screen, [(panel x, y, hold s), ...]) in order, each tap waiting for the screen to change. The picks: English,
+# the country list's Australia (on screen without scrolling), Location Services off (+ its confirmation),
+# the Wi-Fi page as it comes (the model's open BSS), a new iPad, no Apple ID (the link, then "Skip"), the
+# terms (+ confirmation), no diagnostics, "Start Using iPad". With an activation hook the activation page
+# never shows (lockdownd reports Activated).
+# A tap counts once the part of the screen it should change has changed: the navigation bar's title (TITLE,
+# the portrait top edge) for a step to the next page, the list for a pick; a tap that opens an alert, once the
+# alert's navy buttons fill ALERT (right of the Apple ID page's never-ending icon carousel). Only such a tap is
+# retried (the Apple ID page's "Skip This Step" link sometimes misses): behind a modal alert a second one does nothing.
+TITLE, ALERT = (20, 150, 65, 620), (548, 255, 605, 515)
+SETUP_5 = [("language", [(42, 28, .12, TITLE)]),
+           ("country", [(470, 400, .12, (95, 150, 1000, 620)), (42, 28, .12, TITLE)]),
+           ("location", [(833, 500, .12, (765, 150, 860, 620)), (42, 28, .12, ALERT), (585, 315, .12, TITLE)]),
+           ("wi-fi", [(42, 28, .12, TITLE)]), ("set up", [(42, 28, .12, TITLE)]),   # (see WIFI_CONTINUE)
+           ("apple id", [(981, 385, .2, ALERT), (585, 450, .12, TITLE)]),
+           ("terms", [(1002, 32, .12, ALERT), (565, 315, .12, TITLE)]),
+           ("diagnostics", [(242, 500, .12, (150, 150, 265, 620)), (42, 28, .12, TITLE)]),
+           ("thank you", [(870, 385, .12, TITLE)])]
+
+
+# With the model's BSS not joined yet, the Wi-Fi page's Next raises "Continue without Wi-Fi?" first.
+WIFI_CONTINUE = (575, 450)
+
+
+def alert_up(ppm):
+    """An alert's navy buttons fill the ALERT column (~30% of it blue); no Setup page is blue there."""
+    w, h, pix = itqmp.read_ppm(ppm)
+    x0, y0, x1, y1 = ALERT
+    pts = [(pix[(y * w + x) * 3], pix[(y * w + x) * 3 + 2]) for y in range(y0, y1, 4) for x in range(x0, x1, 4)]
+    return sum(1 for r, b in pts if b > r + 40 and b > 80) > 0.15 * len(pts)
+
+
+def region(ppm, box):
+    w, h, pix = itqmp.read_ppm(ppm)
+    x0, y0, x1, y1 = box
+    return b"".join(bytes(pix[(y * w + x0) * 3:(y * w + x1) * 3]) for y in range(y0, y1))
+
+
+def region_settled(b, box, timeout=20):
+    """The box's pixels once they hold still for a second (a page still sliding in under load)."""
+    last, t0 = region(b.shot("wait"), box), time.time()
+    while time.time() - t0 < timeout:
+        time.sleep(1)
+        now = region(b.shot("wait"), box)
+        if now == last:
+            break
+        last = now
+    return last
+
+
+SLIDER = (930, 250, 990, 520)       # the "slide to set up" track, portrait bottom
+
+
+def setup_assistant_5(b):
+    """From Setup's lock screen, slide to set up (again, if a drag under load missed) and walk SETUP_5;
+    (ok, detail)."""
+    for attempt in range(4):
+        if b.lit("pre-slide") < LIT_MIN_FRACTION:     # the lock screen darkens its panel ~8 s after waking
+            b.press("home")
+            time.sleep(1.5)
+        ref = region(b.shot("pre-slide"), SLIDER)
+        b.drag(UNLOCK_FROM, UNLOCK_TO)
+        time.sleep(3)
+        if b.lit("slid") >= LIT_MIN_FRACTION and region(b.shot("wait"), SLIDER) != ref:
+            break
+    else:
+        return False, "Setup Assistant: slide to set up did not open it"
+    for name, taps in SETUP_5:
+        for i, (x, y, hold, box) in enumerate(taps):
+            # an alert is recognised by its navy buttons, anything else by the box changing; either way the
+            # page has to have stopped sliding in first (a tap during the slide goes nowhere)
+            region_settled(b, TITLE)
+            answered = (lambda: alert_up(b.shot("wait"))) if box == ALERT else \
+                (lambda ref=region_settled(b, box), box=box: region(b.shot("wait"), box) != ref)
+            b.shot("setup-%s-%d" % (name.replace(" ", "-"), i))
+            link = box == ALERT             # a missed tap is retried where a second one cannot land elsewhere
+            for attempt in range(3 if link else 1):
+                b.ev(x, y)
+                b.ev(btn=True)
+                time.sleep(hold)
+                b.ev(btn=False)
+                t0 = time.time()
+                while time.time() - t0 < (20 if link else 60) and not answered():
+                    time.sleep(1)
+                if answered():
+                    break
+            else:
+                return False, "Setup Assistant: the %s page did not answer tap %d" % (name, i + 1)
+            if name == "wi-fi" and alert_up(b.shot("wait")):
+                ref = region_settled(b, TITLE)
+                b.tap(WIFI_CONTINUE)
+                t0 = time.time()
+                while time.time() - t0 < 60 and region(b.shot("wait"), TITLE) == ref:
+                    time.sleep(1)
+    return True, "Setup Assistant walked (%d pages)" % len(SETUP_5)
+
+
 def check_gles(cfg, r):
     """The GL bridge under SpringBoard's own compositor: lock screen, home screen, a page swipe, Safari;
-    nothing refused, nothing painted magenta. With a --gl-test device, tests/ipad1/gltest.py's fixture
+    nothing refused, nothing painted magenta. On 5.x a fresh device first walks the Setup Assistant
+    (SETUP_5; the device needs an activation hook), swipes to Spotlight and back, and closes Safari. With a --gl-test device, tests/ipad1/gltest.py's fixture
     scene as well (its readback, colour census and counters)."""
     if getattr(cfg, "gl_test", False):
         # The fixture job covers SpringBoard's screens from 12 s into every boot, so on such a
@@ -352,18 +451,39 @@ def check_gles(cfg, r):
     try:
         if not detail:
             return
-        b.drag(UNLOCK_FROM, UNLOCK_TO)
+        if b.lit("pre-unlock") < LIT_MIN_FRACTION:   # waiting for usbmux outlasted the lock screen's panel
+            b.press("home")
+            time.sleep(2)
+        five = int(cfg.product_version.split(".")[0]) >= 5
+        if not five:
+            b.drag(UNLOCK_FROM, UNLOCK_TO)
+        else:
+            ok, walked = setup_assistant_5(b)
+            if not ok:
+                return r.set(False, "%s; %s" % (detail, walked))
         time.sleep(10)                   # the mounter's shim hides the USB alert; let it settle
         shots = [b.shot("home")]
-        b.drag((511, 87), (511, 617))        # next home page (portrait right-to-left)
+        if five:                             # 5.x's one app page: Spotlight's page and back
+            b.drag((511, 617), (511, 87))
+            time.sleep(3)
+            shots.append(b.shot("spotlight"))
+            b.drag((511, 87), (511, 617))
+        else:
+            b.drag((511, 87), (511, 617))    # next home page (portrait right-to-left)
         time.sleep(2)
         shots.append(b.shot("home2"))
-        b.press("home")
-        time.sleep(2)
+        if not five:                         # (5.x: Home on the first page opens Spotlight)
+            b.press("home")
+            time.sleep(2)
         b.tap(SAFARI_ICON)
         time.sleep(8)
         shots.append(b.shot("safari"))
-        gl_clean(b, r, "lock, home, page 2, Safari", shots)
+        if five:                             # and closed again
+            b.press("home")
+            time.sleep(3)
+            shots.append(b.shot("closed"))
+        gl_clean(b, r, "%slock, home, %s" % (walked + ", " if five else "",
+                                             "Spotlight, Safari opened and closed" if five else "page 2, Safari"), shots)
     finally:
         b.stop()
 
