@@ -241,6 +241,11 @@ typedef struct {
 
 typedef struct {
     uint32_t base, stride, width, height, format, uv, uvstride;
+    GLenum target;
+    /* Rendered into by the host since the guest's copy was last written: the
+     * host texture is the newer one, and the guest memory is written at the
+     * frame's flush, not while the frame is half drawn (gles_sync_surface). */
+    bool dirty;
 } GLESSurface;
 
 typedef struct {
@@ -273,7 +278,7 @@ typedef struct {
 #ifndef GLES_HOST_EAGL
     CGLContextObj cgl;
 #endif
-    GLuint fbo, tex, depth;
+    GLuint fbo, tex, depth, sync_fbo;   /* sync_fbo: gles_surface_writeback's scratch */
     uint32_t drawable_width, drawable_height;
     /* Set once the guest shim reports its CA layer size. Shims that predate
      * GLES_OP_DRAWABLE_STORAGE keep the legacy panel-sized crop. */
@@ -4237,6 +4242,8 @@ done:
  * is what IOSurface and QuartzCore name in every firmware (immediates in 5F138 through
  * 8C148: the 32-bit orders, the two packed 16-bit RGBA orders, the opaque 16-bit pair)
  * plus the 8-bit masks CoreAnimation builds at runtime. */
+static int gles_surface_flush(CPUState *cpu, uint32_t base);
+
 static unsigned gles_surface_bpp(uint32_t fmt)
 {
     switch (fmt) {
@@ -4299,6 +4306,7 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
         gles_debug_texture(target);
         return -1;
     }
+    if (gles_surface_flush(cpu, a[1])) return -1;     /* a rendered alias: its pixels are on the host */
     pixels = g_malloc((size_t)w * h * 4);
     if (nv12) {
 #ifndef GLES_HOST_EAGL
@@ -4379,7 +4387,7 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
     }
     if (!gh.surfaces) gh.surfaces = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
     GLESSurface *surface = g_new(GLESSurface, 1);
-    *surface = (GLESSurface){ a[1], a[2], w, h, fmt, a[6], a[7] };
+    *surface = (GLESSurface){ a[1], a[2], w, h, fmt, a[6], a[7], target, false };
     g_hash_table_replace(gh.surfaces, GUINT_TO_POINTER(texture), surface);
     return 0;
 }
@@ -4407,9 +4415,16 @@ static bool gles_refresh_surfaces(CPUState *cpu)
     return r;
 }
 
+/* The surface the bound framebuffer renders into, if it is one: the host texture is
+ * now the newer copy. Its guest memory is written by gles_surface_flush at the frame's
+ * glFlush/glFinish or its return to the default framebuffer (or when something
+ * re-reads that memory), never at a switch between two FBOs: CA's
+ * display surface is scanned out from that memory, and a partial frame written at a
+ * framebuffer switch was latched as a black (dimmed wallpaper only) frame on 4.2.1's
+ * app-close zoom. */
 static int64_t gles_sync_surface_1(CPUState *cpu)
 {
-    GLint kind = 0, texture = 0, pack = 4;
+    GLint kind = 0, texture = 0;
     if (!gh.surfaces || !gh.bound_framebuffer) return 0;
     glGetFramebufferAttachmentParameterivEXT(GL_FRAMEBUFFER_EXT,
         GL_COLOR_ATTACHMENT0_EXT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE_EXT, &kind);
@@ -4424,16 +4439,37 @@ static int64_t gles_sync_surface_1(CPUState *cpu)
         gles_refuse("surface:render:%s", gles_fourcc(s->format, fourcc));
         return -1;
     }
+    s->dirty = true;
+    return 0;
+}
+
+/* Texture `texture`'s pixels into its surface's guest memory. */
+static int gles_surface_writeback(CPUState *cpu, GLuint texture, GLESSurface *s)
+{
+    GLint pack = 4, framebuffer = 0;
     bool rgb555 = s->format == GLES_SURFACE_RGB555;
     unsigned bpp = (s->format == GLES_SURFACE_RGB565 || rgb555) ? 2 : 4;
     g_autofree uint8_t *pixels = g_malloc((size_t)s->width * s->height * 4);
+
+    /* Read through a scratch framebuffer: the texture is no longer the bound
+     * target by the time its frame is flushed. */
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &framebuffer);
+    if (!gh.sync_fbo) gh.sync_fbo = gles_private_name(glIsFramebufferEXT);
+    glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gh.sync_fbo);
+    glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, s->target, texture, 0);
     glGetIntegerv(GL_PACK_ALIGNMENT, &pack);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, s->width, s->height,
         bpp == 2 && !rgb555 ? GL_RGB : s->format == GLES_SURFACE_RGBA32 ? GL_RGBA : GL_BGRA,
         bpp == 2 && !rgb555 ? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_BYTE, pixels);
     glPixelStorei(GL_PACK_ALIGNMENT, pack);
-    if (glGetError() != GL_NO_ERROR) return -1;
+    glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, s->target, 0, 0);
+    glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, framebuffer);
+    if (glGetError() != GL_NO_ERROR) {
+        gles_refuse("surface:writeback");
+        s->dirty = false;
+        return -1;
+    }
     if (rgb555) {
         for (size_t i = 0; i < (size_t)s->width * s->height; i++) {
             unsigned value = (pixels[i * 4] >> 3) |
@@ -4452,6 +4488,25 @@ static int64_t gles_sync_surface_1(CPUState *cpu)
     for (unsigned row = 0; row < s->height; row++) {
         if (gles_guest_rw(cpu, s->base + row * s->stride,
                 pixels + (size_t)row * s->width * bpp, s->width * bpp, 1)) return -1;
+    }
+    s->dirty = false;
+    return 0;
+}
+
+/* Write every rendered-into surface back to the guest (base == 0), or the ones at
+ * `base` before that memory is read again. -1 with a page fault pending: the call
+ * is reissued and the rest stays dirty. */
+static int gles_surface_flush(CPUState *cpu, uint32_t base)
+{
+    GHashTableIter it;
+    gpointer key, value;
+
+    if (!gh.surfaces) return 0;
+    g_hash_table_iter_init(&it, gh.surfaces);
+    while (g_hash_table_iter_next(&it, &key, &value)) {
+        GLESSurface *s = value;
+        if (s->dirty && (!base || s->base == base) &&
+            gles_surface_writeback(cpu, GPOINTER_TO_UINT(key), s)) return -1;
     }
     return 0;
 }
@@ -4494,7 +4549,7 @@ static bool gles_refresh_surfaces_1(CPUState *cpu)
             glGetIntegerv(bindings[t], &name);
             if (!name || name == attachment) continue;
             GLESSurface *surface = g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(name));
-            if (!surface) continue;
+            if (!surface || surface->dirty) continue;
             uint32_t a[] = { targets[t], surface->base, surface->stride,
                 surface->width, surface->height, surface->format, surface->uv, surface->uvstride };
             if (gles_bind_surface(cpu, a)) { ok = false; break; }
@@ -6622,11 +6677,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     case GLES_SLOT_FINISH:
         glFinish();
-        return gles_sync_surface(cpu);
+        return gles_sync_surface(cpu) ? -1 : gles_surface_flush(cpu, 0);
 
     case GLES_SLOT_FLUSH:
         glFlush();
-        return gles_sync_surface(cpu);
+        return gles_sync_surface(cpu) ? -1 : gles_surface_flush(cpu, 0);
 
     case GLES_SLOT_GET_ERROR: {
         GLenum error = gh.error;
@@ -6794,6 +6849,13 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     case GLES_SLOT_BIND_FRAMEBUFFER:     /* target, framebuffer */
         if (gles_sync_surface(cpu)) return -1;
+        /* Back to the default framebuffer: the offscreen passes are done. 3.1.3's
+         * CoreAnimation never flushes (it double-buffers its display surfaces and
+         * signals IOMobileFramebuffer itself), so this is its frame end; 4.2.1's
+         * mid-frame switches are between two FBOs and stay deferred. A failed
+         * write keeps the surface marked for the next flush; a batched bind has
+         * no fault to raise. */
+        if (!a[1]) gles_surface_flush(cpu, 0);
         /*
          * Leaving an offscreen target that was drawn into: say what it
          * actually CONTAINS. A render-to-texture pass that runs, reports no
@@ -7088,6 +7150,7 @@ static void gles_context_free(GLESHost *state)
     if (state->cgl) {
         CGLSetCurrentContext(state->cgl);
         glDeleteFramebuffersEXT(1, &state->fbo);
+        if (state->sync_fbo) glDeleteFramebuffersEXT(1, &state->sync_fbo);
         glDeleteTextures(1, &state->tex);
         glDeleteRenderbuffersEXT(1, &state->depth);
         CGLSetCurrentContext(NULL);
