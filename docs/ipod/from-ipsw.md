@@ -592,8 +592,18 @@ What it took, each found on the device:
   lines: the panel kept showing the frame from before the last gesture. The bridge now keeps the newest write
   generation per page (`gles_host_ram_gen`) and the LCD redraws when the scanout's advances. This is the 2G's
   LCD too.
-- **No loader on 1.x.** The legacy-linked `it_boot` dies with a bus error under 1.x launchd, so the
-  `n45-ios1` family is `"loader": false` and the hook is only ever baked.
+- **The loader on 1.x.** The legacy-linked `it_boot` died with a bus error under 1.x launchd: a NULL
+  dereference in `snprintf` (in `__PAGEZERO`, so SIGBUS), because 1.x libSystem does not initialize
+  itself. Its crt1 (10.4's, as in `/bin/launchctl`) sets `NXArgc`/`NXArgv`/`environ`/`__progname` in the
+  executable and calls `*mach_init_routine` and `*_cthread_init_routine`; 2.0+'s crt1 only calls `main`,
+  and LC_UNIXTHREAD entered `main` directly. Past that, 1.x's `stat` and `readdir` are the 32-bit-inode
+  ones while every SDK here is `__DARWIN_ONLY_64_BIT_INO_T` (`st_size` read 0, so every package looked
+  torn), and 1.x leaves `kern.osversion` empty. The toolchain now gives every LEGACY_LINK executable
+  `crt1old.c` (that crt1, the two hooks called only where non-NULL) and force-includes `legacy.h`
+  (`stat`/`lstat`/`fstat` through 1.x's `stat64` family, `readdir` converted, both only where libSystem
+  exports `stat64`, which only 1.x does); `it_boot` reads the build from SystemVersion.plist when the
+  sysctl is empty. The same binary runs on 1.x, 2.x and 3.x, and `n45-ios1` has its loader like every
+  family.
 
 Measured on 3A101a, `IT_LCD_FRAMETRACE` presents (a present writes the scanout base twice, 0 then the
 buffer; the non-zero writes are counted) in each gesture's window, three passes each, same host minutes (load
@@ -617,7 +627,7 @@ Gates: `regress.py --device <prepared 3A101a> --checks boot,gles` PASS (the 1G l
 the LCD change reverted the same leg fails (Safari never reaches the panel).
 
 Not done: apps' own GL (the App Store starts at 2.x); a 1.x build other than 3A101a (the list and the hook are
-per major, `3*`/`4*`); the loader on 1.x.
+per major, `3*`/`4*`).
 
 ### Early AppSync (2026-09-29)
 
