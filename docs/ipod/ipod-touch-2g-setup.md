@@ -70,8 +70,7 @@ own keyboard:
 | `Cmd+←` / `Cmd+→` | Rotate a quarter turn |
 
 All of them are also in the **Device** menu, along with **Install App…** (the
-same handler a dropped `.ipa` takes) and **Open Terminal**, which opens a root
-shell on the guest over USB.
+same handler a dropped `.ipa` takes).
 
 `imgtools/itdrive.py` drives the same things over QMP — taps, swipes,
 screendumps — and `tests/ipod/run-regression.sh` is a regression harness whose

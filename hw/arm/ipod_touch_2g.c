@@ -1,5 +1,4 @@
 #include "qemu/osdep.h"
-#include "hw/arm/ipod_touch_firmware.h"
 #include "hw/arm/it_iboot.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
@@ -1251,7 +1250,6 @@ static void ipod_touch_cpu_reset(void *opaque)
     ARMCPU *cpu = nms->cpu;
     CPUState *cs = CPU(cpu);
 
-    it_firmware_reset();
     ipod_agent_reset(nms->agent);
     guest_pkg_reset(&nms->pkg);
     gles_host_set_debug(nms->gles_debug);

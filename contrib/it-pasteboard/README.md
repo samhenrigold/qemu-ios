@@ -27,7 +27,7 @@ route.
 
 ## It works from ANY process — the pasteboard is not app-private
 
-`pbset` is a plain armv6 command-line binary (no bundle, no `UIApplication`,
+`pbset` (a probe, since deleted; git history) was a plain armv6 command-line binary (no bundle, no `UIApplication`,
 run over ssh as root) that does exactly one thing:
 
     [[UIPasteboard generalPasteboard] setValue:text forPasteboardType:@"public.utf8-plain-text"]
@@ -76,13 +76,9 @@ Two consequences worth knowing before debugging anything here:
 
 ## What is here
 
-* `pbprobe.c` — the feasibility probe: `generalPasteboard`, `setString:`,
-  read back. Kept because its FAILURE is the finding: `setString:` is the call
-  that crashes the daemon.
-* `pbset.c` — the working version: reads `/tmp/pbtext` and sets it with an
-  explicit UTI, no reads at all (the reads are what send an empty type).
 * `it_pbd.c` — the real thing: a launchd-started daemon that carries text both
-  ways over the `QC_PB_*` ops. `it_pbd` is the built armv6 binary, rebuilt by
+  ways over the `QC_PB_*` ops. The code is `contrib/it-agent/it_agent.c`'s
+  clipboard, included with `IT_AGENT_CLIPBOARD_ONLY`; only `main` is here. `it_pbd` is the built armv6 binary, rebuilt by
   `build.sh` (gitignored, not tracked).
 * `com.qemu.it-pbd.plist` — its LaunchDaemon.
 * `build.sh` — armv6 build, see `../armv6-toolchain/README.md`. Plain C with a
@@ -130,9 +126,9 @@ Three ways this silently produces a dead daemon, all of them hit:
    `run-ios3.sh` now warns when the base is newer than the overlay; `--fresh`
    clears it.
 
-The daemon logs to `/var/log/it_pbd.log`, one line per item in either direction,
-which is the fastest way to tell "the host never sent it" from "the guest never
-took it".
+The daemon logs to `/var/log/it_pbd.log` (startup and failures only: the clipboard's
+contents are not logged). The machine's `pasteboard-status` property (QMP qom-get) tells "the host never
+sent it" from "the guest never took it".
 
 ## Is anything actually listening?
 

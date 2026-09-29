@@ -205,9 +205,7 @@ while [ $# -gt 0 ]; do
     # Everything needed to install and run third-party apps, in one flag: the
     # AppSync-patched image, the kernel gate, and USB. See apps/README.md.
     # Also starts usbmuxd -- see the ordering note at ensure_usbmuxd below.
-    # NAND is only defaulted, not forced: the app stages whichever image it
-    # actually shipped (build-app.sh --nand) and exports NAND, and clobbering
-    # that pointed QEMU at a directory the app never unpacked.
+    # NAND is only defaulted, not forced: a caller that exports NAND keeps it.
     --appsync)  NAND="${NAND:-$F/nand-ultimate}"
                 OVL="$HERE/nandrw-appsync"
                 # One overlay per base image, still. The name above is kept
