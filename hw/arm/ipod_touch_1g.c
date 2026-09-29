@@ -518,7 +518,9 @@ static void n45_machine_init(MachineState *machine)
     ipod_touch_spi_create(N45_SPI1_BASE, n45_irq(s, N45_SPI1_IRQ), 1, TYPE_S5L8900_LCD_PANEL, true);
     dev = ipod_touch_spi_create(N45_SPI2_BASE, n45_irq(s, N45_SPI2_IRQ), 2, "multitouch", true);
     s->mt = IPOD_TOUCH_SPI(dev)->mt;
-    s->mt->sysic = s->sysic;       /* ATN straight into GPIO group 3 bit 13 */
+    s->mt->sysic = s->sysic;       /* ATN straight into GPIO group 4 bit 27 (devos50) */
+    s->mt->sysic_atn_group = 4;
+    s->mt->sysic_atn_bit = 27;
     s->mt->gpio_state = s->gpio;
 
     /* CLCD, S5L8900 register layout */

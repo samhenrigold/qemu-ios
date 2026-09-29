@@ -61,8 +61,8 @@ static void fmc_blank_page(uint8_t *data, uint8_t *spare)
  * block the guest has erased (marker file, see fmc_program_page) never falls
  * through to the base image's stale contents.
  */
-static void fmc_load_page(S5L8900FMCState *s, uint32_t bank, uint32_t page,
-                          uint8_t *data, uint8_t *spare)
+void s5l8900_fmc_load_page(S5L8900FMCState *s, uint32_t bank, uint32_t page,
+                           uint8_t *data, uint8_t *spare)
 {
     char path[PATH_MAX];
 
@@ -82,6 +82,9 @@ static void fmc_load_page(S5L8900FMCState *s, uint32_t bank, uint32_t page,
         if (fmc_read_file(path, data, spare)) {
             return;
         }
+    }
+    if (getenv("IT_FMC_TRACE")) {
+        fprintf(stderr, "[fmc] blank page bank %u page %u (block %u)\n", bank, page, page / FMC_PAGES_PER_BLOCK);
     }
     fmc_blank_page(data, spare);
 }
@@ -148,7 +151,7 @@ void s5l8900_fmc_buffer_page(S5L8900FMCState *s, uint32_t page)
         return;
     }
     if (bank != s->buffered_bank || (int32_t)page != s->buffered_page) {
-        fmc_load_page(s, bank, page, s->page_buffer, s->page_spare_buffer);
+        s5l8900_fmc_load_page(s, bank, page, s->page_buffer, s->page_spare_buffer);
         s->buffered_page = page;
         s->buffered_bank = bank;
     }

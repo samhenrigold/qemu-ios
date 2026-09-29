@@ -73,6 +73,9 @@ typedef struct S5L8900FMCState {
 
 /* Select the active bank (FMCTRL0 bit 1+bank). */
 void s5l8900_fmc_set_bank(S5L8900FMCState *s, uint32_t bank);
+/* Read (bank, page) from the store: overlay, then base, then blank. */
+void s5l8900_fmc_load_page(S5L8900FMCState *s, uint32_t bank, uint32_t page,
+                           uint8_t *data, uint8_t *spare);
 /* Load (bank, page) into the page buffers unless already there. */
 void s5l8900_fmc_buffer_page(S5L8900FMCState *s, uint32_t page);
 
