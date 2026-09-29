@@ -66,7 +66,12 @@ FAMILIES = {
                  "hooks": [("contrib/it-gles/OpenGLES-1x", OPENGLES, True)]},
     "n72-ios2": {"arch": "armv6", "boards": ["n72ap"], "builds": ["5*"],
                  "hooks": [("contrib/it-gles/OpenGLES-2x", OPENGLES, True)]},
-    "n72-ios3": {"arch": "armv6", "boards": ["n72ap"], "builds": ["7*"], "bin": IPOD_BIN,
+    # 3.0 (7A341, the iPod 2G's only 3.0 build) has 3.1's engine ABI but 2.x's dyld (no LC_DYLD_INFO_ONLY):
+    # the legacy-linked loader and engine, no helpers yet. Family by dyld capability, so 3.1+ are listed
+    # by build (the iPod's 3.x series is closed).
+    "n72-ios30": {"arch": "armv6", "boards": ["n72ap"], "builds": ["7A341"],
+                  "hooks": [("contrib/it-gles/MBXGLEngine-30", MBX, True)]},
+    "n72-ios3": {"arch": "armv6", "boards": ["n72ap"], "builds": ["7C144", "7C145", "7D11", "7E18"], "bin": IPOD_BIN,
                  "jobs": ["contrib/it-agent/com.qemu.it-agent.plist"],
                  "hooks": [("contrib/it-gles/MBXGLEngine", MBX, True),
                            ("contrib/it-agent/it_typein.dylib", "/usr/lib/it_typein.dylib", True),
@@ -83,7 +88,7 @@ FAMILIES = {
 # firmware at load (contrib/ipad1-gles/README.md "5.1.1", docs/ipad1/ios5.md); only the build range differs.
 FAMILIES["k48-ios5"] = dict(FAMILIES["k48-ios4"], builds=["9*"])
 # 1.x/2.x dyld refuses LC_DYLD_INFO_ONLY; everything the loader runs on it must be legacy-linked
-LEGACY_BUILDS = ("3*", "4*", "5*")
+LEGACY_BUILDS = ("3*", "4*", "5*", "7A341")
 
 
 def build_matches(builds, build):
@@ -100,13 +105,14 @@ def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def macho_problem(data, arch, legacy=False):
-    """None if data is a Mach-O (or a fat one with a slice) for arch that old dyld takes (and, armv7, signed)."""
+def macho_problem(data, arch, legacy=False, signed=False):
+    """None if data is a Mach-O (or a fat one with a slice) for arch that old dyld takes (and, armv7 or
+    signed=True, signed)."""
     if len(data) >= 8 and struct.unpack_from(">I", data)[0] == FAT_MAGIC:
         for i in range(struct.unpack_from(">I", data, 4)[0]):
             cpu, sub, off, size, _ = struct.unpack_from(">iiIII", data, 8 + 20 * i)
             if (cpu, sub) == (12, SUBTYPE[arch]):
-                return macho_problem(data[off:off + size], arch, legacy)
+                return macho_problem(data[off:off + size], arch, legacy, signed)
         return "fat, without an %s slice" % arch
     if len(data) < 28 or struct.unpack_from("<I", data)[0] != MH_MAGIC:
         return "not a 32-bit Mach-O"
@@ -122,7 +128,7 @@ def macho_problem(data, arch, legacy=False):
         return "LC_MAIN/LC_VERSION_MIN (not through mkold.py)"
     if legacy and LC_DYLD_INFO_ONLY in cmds:
         return "LC_DYLD_INFO_ONLY (2.x dyld refuses it; LEGACY_LINK=1)"
-    if LC_CODE_SIGNATURE not in cmds and arch == "armv7":   # 3.2+ AMFI wants one; the iPod ships unsigned
+    if LC_CODE_SIGNATURE not in cmds and (arch == "armv7" or signed):   # 3.2+ AMFI wants one; iPod helpers ship unsigned
         return "unsigned (ldid -S)"
     return None
 
@@ -173,7 +179,12 @@ def assemble(src, out, family, spec, serial, version):
         jobs.append(rel)
     for source, target, respring in spec.get("hooks", []):
         rel = "hooks/" + os.path.basename(target)
-        add(rel, read(source), 0o755, True)
+        data = read(source)
+        if target == MBX and macho_problem(data, arch, legacy, signed=True):
+            # the engine maps into every GL process, SpringBoard's included (3.0's even with software
+            # CA), and a signed process is killed at an unsigned library's first page
+            raise SystemExit("%s %s: %s" % (family, rel, macho_problem(data, arch, legacy, signed=True)))
+        add(rel, data, 0o755, True)
         hooks.append({"file": rel, "target": target, "respring": respring})
         provides.append(os.path.basename(target))
     manifest = {"format": 1, "serial": serial, "version": version, "family": family, "arch": arch,
@@ -390,13 +401,23 @@ def selfcheck():
             "job 1 jobs/j.plist 644 2 " + "1" * 64, "hook 2 hooks/MBXGLEngine 755 3 %s %s respring" % ("2" * 64, MBX)]
         thin = b"\xce\xfa\xed\xfe" + struct.pack("<iiII", 12, 9, 2, 0) + b"\0" * 12
         assert macho_problem(thin, "armv7") == "unsigned (ldid -S)" and macho_problem(thin, "armv6") == "cpu 12/9, not armv6"
+        thin6 = b"\xce\xfa\xed\xfe" + struct.pack("<iiII", 12, 6, 8, 0) + b"\0" * 12
+        assert macho_problem(thin6, "armv6") is None and macho_problem(thin6, "armv6", signed=True) == "unsigned (ldid -S)"
     # every shipped iPad build has exactly one family, and each carries the agent and the GL engine + gld hooks
     for build, want in (("7B500", "k48-ios3"), ("8C148", "k48-ios4"), ("8L1", "k48-ios4"), ("9B206", "k48-ios5")):
         fams = [f for f, s in FAMILIES.items() if "k48ap" in s["boards"] and build_matches(s["builds"], build)]
         assert fams == [want], (build, fams)
         assert "it_agent" in FAMILIES[want]["bin"] and GLENGINE in [t for _, t, _ in FAMILIES[want]["hooks"]]
     assert GLD in [t for _, t, _ in FAMILIES["k48-ios5"]["hooks"]]
-    print("PASS: itpack round trip and opacity, job rewrite, offer grammar, Mach-O check, one family per iPad build")
+    # every iPod 2G build has one family; 3.0's is legacy-linked (its dyld is 2.x's) and carries the engine
+    for build, want in (("5F138", "n72-ios2"), ("7A341", "n72-ios30"), ("7C145", "n72-ios3"), ("7E18", "n72-ios3"),
+                        ("8C148", "n72-ios4")):
+        fams = [f for f, s in FAMILIES.items() if "n72ap" in s["boards"] and build_matches(s["builds"], build)]
+        assert fams == [want], (build, fams)
+    assert build_matches(LEGACY_BUILDS, "7A341") and not build_matches(LEGACY_BUILDS, "7E18")
+    assert [t for _, t, _ in FAMILIES["n72-ios30"]["hooks"]] == [MBX] and "bin" not in FAMILIES["n72-ios30"]
+    print("PASS: itpack round trip and opacity, job rewrite, offer grammar, Mach-O check, "
+          "one family per iPad and iPod 2G build")
 
 
 def main():

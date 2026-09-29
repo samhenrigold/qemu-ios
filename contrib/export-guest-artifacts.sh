@@ -9,7 +9,7 @@
 #                       GL engines (GLEngine armv7, MBXGLEngine armv6: one binary each for every firmware, the
 #                       dispatch layout is read at load) with gles-names.h, the name table they and the host
 #                       speak, the n72 recipe's inputs (with OpenGLES-2x, the 1.x/2.x front end over the same
-#                       core, and opengles-2x.exports, the export set it must match), the armv6 it_keybag and it_prefs, and armv6.itpack /
+#                       core, and opengles-2x.exports, the export set it must match; MBXGLEngine-30, 3.0's legacy-linked engine), the armv6 it_keybag and it_prefs, and armv6.itpack /
 #                       armv7.itpack (contrib/guest-package, VERSION's serial)
 #   macos-app/entitlements.plist   the app helper's entitlements
 #   include/ios-app/, include/macos-app/   the headers the helper compiles against
@@ -102,6 +102,8 @@ done
 # the export set the preparer checks the stock binary against before the package's hook may replace it.
 stage ipad-guest-tools "$C/it-gles/OpenGLES-2x"
 stage ipad-guest-tools "$C/it-gles/opengles-2x.exports"
+# 3.0: MBXGLEngine's source legacy-linked (a plain engine file, no shared cache, a dyld without LC_DYLD_INFO_ONLY)
+stage ipad-guest-tools "$C/it-gles/MBXGLEngine-30"
 stage ipad-guest-tools "$C/it-gles/OpenGLES-1x"
 stage ipad-guest-tools "$C/it-gles/opengles-1x.exports"
 stage ipad-guest-tools "$G/ipod-guest/it_keybag" it_keybag-armv6
