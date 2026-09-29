@@ -12,7 +12,7 @@
  *                       AppleLocationServerRequiresCert = false
  *       Wi-Fi location (docs/ipad1/location.md): locationd ignores the PAC and
  *       asks Apple's location server directly, which no longer answers iOS 3;
- *       pointed at the itwebproxy guestfwd address over plain HTTP, it gets a
+ *       pointed at the web proxy's guestfwd address over plain HTTP, it gets a
  *       position from the host.
  *
  * Once Wi-Fi (en0) has an address it also restarts locationd, which otherwise

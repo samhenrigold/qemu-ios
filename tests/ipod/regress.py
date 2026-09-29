@@ -378,8 +378,11 @@ class Device:
         if cfg.wifi:
             proxy_option = ""
             if getattr(cfg, "web_proxy_config", None):
-                helper = os.path.join(ROOT, "contrib", "it-webproxy", "itwebproxy")
-                command = shlex.quote(helper) + " " + shlex.quote(cfg.web_proxy_config)
+                # The app's web proxy lives in LightTouchMac (LightTouchDevice/WebProxy.swift, reached
+                # through `nc -U`); here the guestfwd is a raw relay to the loopback port the file names,
+                # read per connection, so a check can point it at its fixture after boot.
+                relay = 'exec /usr/bin/nc 127.0.0.1 "$(cat %s)"' % shlex.quote(cfg.web_proxy_config)
+                command = "/bin/sh -c " + shlex.quote(relay)
                 proxy_option = ",guestfwd=tcp:10.0.2.100:3128-cmd:" + command.replace(",", ",,")
             argv += ["-netdev", "user,id=wifi0,net=10.0.2.0/24,host=10.0.2.2,"
                                 "dhcpstart=10.0.2.15" + proxy_option,
@@ -916,8 +919,10 @@ PROXY_PAC = "/usr/local/share/ltm/proxy.pac"   # imgtools/ipad1_rootfs.PAC_PATH,
 
 def check_webproxy(cfg, procs, dev, result):
     """Native NSURLConnection reaches the host through the image's baked PAC
-    (Wi-Fi service -> PROXY 10.0.2.100:3128, the itwebproxy guestfwd) without
-    resolving the origin. No guest proxy settings are changed at run time."""
+    (Wi-Fi service -> PROXY 10.0.2.100:3128, the web proxy's guestfwd, relayed
+    here to a loopback fixture) without resolving the origin. No guest proxy
+    settings are changed at run time. The proxy itself (modes, TLS, the
+    retired-service 410s) is the app's, checked by its tests/offline/check-web-proxy.py."""
     import http.server
     import threading
     helper = os.path.join(ROOT, "contrib", "it-proxy", "httpget")
@@ -945,7 +950,7 @@ def check_webproxy(cfg, procs, dev, result):
             if itqmp.agent(dev.qmp, "put", remote + " 755", f.read())[0]:
                 return result.set(False, "could not stage the proxy test helper")
         with open(cfg.web_proxy_config, "w") as f:
-            f.write("upstream\n127.0.0.1\n%d\n" % server.server_port)
+            f.write("%d\n" % server.server_port)
         # The first fetch after association can race DHCP; retry the fixture only.
         for attempt in range(6):
             response = spawn(control, [remote, "http://example.invalid/fixture"], timeout=90)
@@ -954,15 +959,7 @@ def check_webproxy(cfg, procs, dev, result):
             time.sleep(10)
         if response.returncode or "HTTP 200" not in response.stdout or "LIGHTTOUCH_PROXY_NATIVE_PASS" not in response.stdout:
             return result.set(False, response.stdout.strip()[-300:])
-        with open(cfg.web_proxy_config, "w") as f:
-            f.write("direct\n")
-        for host in ("api.openfeint.com", "gdata.youtube.com"):
-            started = time.monotonic()
-            response = spawn(control, [remote, "http://" + host + "/"], timeout=30)
-            elapsed = time.monotonic() - started
-            if response.returncode or "HTTP 410" not in response.stdout or elapsed >= 10:
-                return result.set(False, "retired service did not fail promptly: " + response.stdout.strip())
-        result.set(True, "baked PAC: native HTTP fixture and prompt retired-service HTTP 410 responses")
+        result.set(True, "baked PAC: native HTTP fixture through the proxy address")
     finally:
         itqmp.agent(dev.qmp, "unlink", remote)
         server.shutdown()
@@ -1868,9 +1865,8 @@ def main():
     selected = [c for c in selected if c not in skipped]
     cfg.wifi = "wifi" in selected or "webproxy" in selected
     if "webproxy" in selected:
-        cfg.web_proxy_config = os.path.join(cfg.out, "web-proxy.conf")
-        with open(cfg.web_proxy_config, "w") as f:
-            f.write("off\n")
+        cfg.web_proxy_config = os.path.join(cfg.out, "web-proxy.port")
+        open(cfg.web_proxy_config, "w").close()   # check_webproxy names its fixture's port
 
     log("run dir   %s" % cfg.out)
     log("base nand %s" % cfg.base_nand)

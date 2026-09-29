@@ -208,7 +208,7 @@ every build, iBoot included) is stored but not decoded.
 
 Gates (`regress.py`, one emulator at a time): fresh 8C148 device (the app's 20260928c preparation) with
 `boot,fsck,persist,appinstall,applaunch,gles,agent,audio,wifi,webproxy`: 10/10 (4.5 min; webproxy = the baked PAC
-through itwebproxy, Safari's path). nand-current 7E18 with `--stage-gles-shim`, same list over two runs: 9 PASS, webproxy SKIP (that image has no
+through the web proxy's guestfwd, Safari's path). nand-current 7E18 with `--stage-gles-shim`, same list over two runs: 9 PASS, webproxy SKIP (that image has no
 baked PAC).
 
 ### P3, 5F138: LLB → iBoot
