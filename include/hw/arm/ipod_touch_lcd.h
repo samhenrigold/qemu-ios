@@ -43,6 +43,7 @@ typedef struct IPodTouchLCDState
     uint32_t fbsection_base;
     void *last_surface;
     int last_bright;
+    uint64_t gles_gen;      /* gles_host_ram_gen of the scanout at the last conversion */
     /*
      * Host time of the last frame pushed by the panel's frame interrupt, in
      * QEMU_CLOCK_REALTIME ns. QEMU's own display poll asks for a second

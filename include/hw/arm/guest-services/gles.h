@@ -408,6 +408,10 @@ char *gles_host_rejects(void);
  * the viewport magenta, so a screenshot shows the gap; off, the least-bad fallback stays. */
 void gles_host_set_debug(bool on);
 bool gles_host_debug(void);
+/* The newest write generation the bridge recorded on RAM [addr, addr + len): it clears QEMU's
+ * VGA dirty bits of every surface page it checks (its own write-backs included), so a display
+ * model that scans such pages out through the dirty log compares this too, or misses frames. */
+uint64_t gles_host_ram_gen(uint64_t addr, uint64_t len);
 #endif
 
 #endif /* HW_ARM_GUEST_SERVICES_GLES_H */

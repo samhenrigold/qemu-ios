@@ -6,6 +6,7 @@
 #include "hw/display/framebuffer.h"
 #include "exec/cpu-common.h"
 #include "qemu/log.h"
+#include "hw/arm/guest-services/gles.h"
 
 static int lcd_brightness = 255;
 
@@ -841,6 +842,17 @@ static void lcd_refresh(void *opaque)
     if (lcd->last_bright != bri) {
         lcd->last_bright = bri;
         lcd->invalidate = 1;
+    }
+    if (lcd->fbsection.mr && memory_region_is_ram(lcd->fbsection.mr)) {
+        /* The GL bridge writes frames back into this memory and clears the dirty bits of the
+         * pages it checks, ours among them: its generation says the scanout changed anyway. */
+        uint64_t gen = gles_host_ram_gen(memory_region_get_ram_addr(lcd->fbsection.mr) +
+                                         lcd->fbsection.offset_within_region,
+                                         (uint64_t)src_width * height);
+        if (gen != lcd->gles_gen) {
+            lcd->gles_gen = gen;
+            lcd->invalidate = 1;
+        }
     }
     lcd_bright_lut_sync(bri);
 

@@ -1126,7 +1126,11 @@ extern unsigned long malloc_size(const void *);
  * display buffers GL CoreAnimation renders into) has none until a lock with 2 (what
  * QuartzCore's own CPU lock passes, CADisplayCoreSurface::lock) maps it: with 1 its base address
  * stays 0. The mapping outlives the unlock (measured with mincore), as the host's later
- * write-back needs. */
+ * write-back needs. 1.x's CoreSurface (a public framework there) takes 1 and 3: its own GL
+ * driver locks both textures and pixmaps with 3 (glTexImageCoreSurfaceAPPLE, WSEGL_Create*Drawable),
+ * and 1 leaves a LayerKit image (CoreSurfaceBufferWrapClientImage) unmapped, base 0. 2.x's 2 was a
+ * NULL dereference in 3A101a's IOCoreSurface (kernel panic at SpringBoard's first
+ * glTexImageCoreSurfaceAPPLE; measured with the 1G's MBX still an id stub). */
 static unsigned surface_lock_flags = 1;
 static void *surface_sym(const char *prefix, const char *name)
 {
@@ -1145,7 +1149,14 @@ static void iosurface_init(void)
     iosurf = dlopen("/System/Library/PrivateFrameworks/IOSurface.framework/IOSurface",
                     RTLD_NOW);
     if (!iosurf) {
+        /* 1.x ships CoreSurface as a public framework (3A101a: Frameworks/CoreSurface.framework), 2.x as
+         * a private one. The public path goes first: dyld's framework fallback path (which has
+         * /System/Library/Frameworks, not PrivateFrameworks) would hand 1.x's for the private one. */
         pre = "CoreSurfaceBuffer";
+        surface_lock_flags = 3;
+        iosurf = dlopen("/System/Library/Frameworks/CoreSurface.framework/CoreSurface", RTLD_NOW);
+    }
+    if (!iosurf) {
         surface_lock_flags = 2;
         iosurf = dlopen("/System/Library/PrivateFrameworks/CoreSurface.framework/CoreSurface", RTLD_NOW);
     }

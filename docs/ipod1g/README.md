@@ -22,6 +22,9 @@ with working touch; lockdownd reports the device activated.
   (`pmu go hib`) without a panic. Waking is not modelled: the kernel parks in `ml_arm_sleep` with
   interrupts masked for the PMU to cut the AP, and the resume path (bootrom/LLB back into the kernel)
   is skipped by the direct iBoot boot (debt 9).
+- GL: on a device from `imgtools/ipod1g_device.py prepare` LayerKit composites through the host GL bridge
+  (`LK_ENABLE_OGL=1`, the guest package's `OpenGLES-1x` hook, the QEMU_CALL register): the home screen, app
+  zooms, scrolls (docs/ipod/from-ipsw.md, "1.x (the 1G)"). The set's own image stays software LayerKit.
 
 Verified 2026-09-29 (commits on `ipod-1g`): home screen, Settings after a tap, no `unexpected CLCD
 interrupt`, no panic, on devos50's public `n45ap_v1` assets.
@@ -45,7 +48,13 @@ copy it. SpringBoard configures at about 60 s of guest time; `screendump` then. 
 Cmd+L power (headless: QMP `input-send-event` for taps, as `tests/ipod/regress.py` does).
 
 Machine properties: `bootrom`, `iboot`, `nand`, `nand-overlay`, `usb-wrangler-quirk` (bool, default
-on: the phyRegistered guard, see debts), `tvout-workaround=<paddr>` (default off).
+on: the phyRegistered guard, see debts), `tvout-workaround=<paddr>` (default off), `guest-package`,
+`gles-debug`, and the read-only `gles-rejects`, `gles-contexts`.
+
+A GL device: `imgtools/ipod1g_device.py prepare ~/Developer/qemu-ios-files/ipod1g OUT` (after
+`contrib/guest-package/build.sh`) writes OUT/{nand,bootrom.bin,iBoot.bin,nor.bin,device.lock.json}; boot it
+with those in place of the set's files, or `tests/ipod/regress.py --device OUT --checks boot,gles`. Keep the
+guest awake in a test (a tap on an empty spot every 15-20 s): it does not wake from sleep yet.
 
 Traces: `LCD_TRACE`, `MT_TRACE`, `IT_FMC_TRACE`, `IT_TIMER_TRACE`, `IT_CLOCK_TRACE`.
 
@@ -78,7 +87,8 @@ the block does, P a documented quirk/patch, S stub.
 | I2C0 lis302dl, I2C1 pcf50633 | shared; PMU `shutdown-reg=0x0c` (1.x: 0x0a is the fourth IRQ mask) | variant | H |
 | SDIO | `ipodtouch.sdio` | shared | H |
 | TVOut (mixer1/2, sdo) | `ipodtouch.tvout` | shared | S |
-| MBX (GPU) | id stub: 0x12c, 0xf00, 0x1020 | new | S |
+| MBX (GPU) | the 2G's `ipodtouch.mbx` (ids, MMU handshake, interrupt mask/status/clear, the software interrupt), interrupt 0xC; no engine (GL goes to the host bridge) | shared | R (interrupt block) / H (idle, no engine) |
+| Guest services | QEMU_CALL cp15 register: GL bridge, guest package | shared (`guest-gles.c`, `guest-package.c`) | H |
 | Watchdog, I2S0-2, MPVD, H264 | RAM-backed windows | new | S |
 | Edge IC | shared | shared | H |
 
@@ -132,4 +142,5 @@ the block does, P a documented quirk/patch, S stub.
 
 `hw/arm/ipod_touch_1g.c`, `include/hw/arm/ipod_touch_1g.h`, `hw/arm/s5l8900_{fmc,nand_ecc,adm,lcd_panel}.c`
 and headers, `hw/arm/Kconfig` (`IPOD_TOUCH_1G` selects `IPOD_TOUCH_2G`), `hw/arm/meson.build`,
-`configs/devices/arm-softmmu/default.mak`. Shared-model property additions are in the models named above.
+`configs/devices/arm-softmmu/default.mak`. Shared-model property additions are in the models named above. The GL device bake is
+`imgtools/ipod1g_device.py`; the front end is `contrib/it-gles/gles2x.c` (`build-gles2x.sh 1x`).

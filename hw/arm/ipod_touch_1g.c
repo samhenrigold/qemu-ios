@@ -16,8 +16,8 @@
  * Shared models (ipodtouch.*) carry the S5L8900 differences as properties:
  * timer irqlatch=0xF8, clock s5l8900=on, lcd s5l8900=on (register layout),
  * chipid word1/word2, spi index/peripheral. S5L8900-only blocks are the
- * s5l8900_* models (FMC, NAND ECC, ADM, LCD panel) and the three small stubs
- * kept here (8900 engine hook, MBX ids, TV-out workaround).
+ * s5l8900_* models (FMC, NAND ECC, ADM, LCD panel) and the two small stubs
+ * kept here (8900 engine hook, TV-out workaround); the MBX is the 2G's ipodtouch.mbx.
  */
 #include "qemu/osdep.h"
 #include "qapi/error.h"
@@ -38,6 +38,10 @@
 #include "hw/arm/ipod_touch_tvout.h"
 #include "hw/arm/ipod_touch_chipid.h"
 #include "hw/arm/ipod_touch_sdio.h"
+#include "hw/arm/ipod_touch_mbx.h"
+#include "target/arm/cpregs.h"
+#include "hw/arm/guest-services/general.h"
+#include "hw/arm/guest-services/gles.h"
 #include "hw/arm/ipod_touch_aes.h"
 #include "hw/arm/ipod_touch_sha1.h"
 #include "hw/arm/s5l8900_nand_ecc.h"
@@ -154,33 +158,6 @@ static void engine_8900_write(void *opaque, hwaddr offset, uint64_t value, unsig
 static const MemoryRegionOps engine_8900_ops = {
     .read = engine_8900_read,
     .write = engine_8900_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
-};
-
-/* ---- MBX id stub ------------------------------------------------------- */
-
-/*
- * The PowerVR MBX Lite. iPhone OS 1.x's kernel only probes it for its ids
- * (SpringBoard runs with LK_ENABLE_MBX2D=0 in devos50's image); the full 2.x/
- * 3.x model (ipodtouch.mbx) is for later builds. Stub (fidelity class S).
- */
-static uint64_t mbx_stub_read(void *opaque, hwaddr addr, unsigned size)
-{
-    switch (addr) {
-    case 0x12c:  return 0x100;
-    case 0xf00:  return (1 << 0x18) | 0x10000;
-    case 0x1020: return 0x10000;
-    default:     return 0;
-    }
-}
-
-static void mbx_stub_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
-{
-}
-
-static const MemoryRegionOps mbx_stub_ops = {
-    .read = mbx_stub_read,
-    .write = mbx_stub_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
@@ -335,10 +312,52 @@ static void n45_stage_boot_chain(IPodTouch1GMachineState *s)
     n45_write32(s, N45_LLB_BASE + 0x208, N45_ENGINE_8900_BASE);
 }
 
+/*
+ * Guest services on the QEMU_CALL register (mcr p15, 3, rX, c15, c15, 0), as the 2G and iPad 1 have
+ * it: the GL bridge the 1.x OpenGLES front end (contrib/it-gles/gles2x.c, OpenGLES-1x) calls, and
+ * guest-package delivery. 1.x has no agent, keyboard or pasteboard service yet.
+ */
+static void n45_qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
+{
+    CPUState *cs = env_cpu(env);
+    IPodTouch1GMachineState *s = IPOD_TOUCH_1G_MACHINE(qdev_get_machine());
+    qemu_call_t q;
+    int32_t err = 0;
+
+    if (cpu_memory_rw_debug(cs, value, (uint8_t *)&q, sizeof(q), 0)) {
+        return;
+    }
+    switch (q.call_number) {
+    case QC_GLES:
+        q.retval = qc_handle_gles(cs, &q.args.gles);
+        break;
+    case QC_GLES_PING:
+        q.retval = QC_GLES_PING_MAGIC;
+        break;
+    default:
+        if (!guest_pkg_call(&s->pkg, cs, &q, &err)) {
+            q.retval = -1;
+            err = QC_ERR_ENOSYS;
+        }
+    }
+    q.error = err;
+    cpu_memory_rw_debug(cs, value, (uint8_t *)&q, sizeof(q), 1);
+}
+
+static const ARMCPRegInfo n45_cp_reginfo[] = {
+    { .name = "QEMU_CALL", .cp = 15, .opc1 = 3, .crn = 15, .crm = 15,
+      .opc2 = 0, .access = PL0_RW, .state = ARM_CP_STATE_AA32,
+      .type = ARM_CP_IO | ARM_CP_NO_RAW | ARM_CP_RAISES_EXC, /* gles_guest_rw */
+      .readfn = qemu_call_status,
+      .writefn = n45_qemu_call },
+};
+
 static void n45_cpu_reset(void *opaque)
 {
     IPodTouch1GMachineState *s = opaque;
 
+    gles_host_set_debug(s->gles_debug);
+    gles_host_reset();
     cpu_reset(CPU(s->cpu));
     n45_stage_boot_chain(s);
     cpu_set_pc(CPU(s->cpu), N45_IBOOT_BASE);
@@ -418,6 +437,7 @@ static void n45_machine_init(MachineState *machine)
     object_property_set_bool(cpuobj, "realized", true, &error_fatal);
     s->nsas = cpu_get_address_space(CPU(s->cpu), ARMASIdx_NS);
     object_unref(cpuobj);
+    define_arm_cp_regs(s->cpu, n45_cp_reginfo);
 
     s->sysclk = clock_new(OBJECT(machine), "SYSCLK");
     clock_set_hz(s->sysclk, 12000000ULL);
@@ -629,10 +649,17 @@ static void n45_machine_init(MachineState *machine)
         qdev_connect_gpio_out(DEVICE(pmu), 0, qdev_get_gpio_in(DEVICE(s->sysic), 0x55));
     }
 
-    /* MBX ids */
-    iomem = g_new(MemoryRegion, 1);
-    memory_region_init_io(iomem, OBJECT(machine), &mbx_stub_ops, NULL, "mbx", 0x1000000);
-    memory_region_add_subregion(sysmem, N45_MBX_BASE, iomem);
+    /*
+     * MBX: the 2G's model, the same PowerVR MBX Lite and the same AppleMBX driver. The id stub it
+     * replaces read 0x12c (interrupt status) without the idle bit 0x40, so the first time anything
+     * drove the engine (LayerKit's GL path, a display swap) the driver spun on it forever.
+     * Interrupt 0xC is the mbx node's in the n45ap device tree.
+     */
+    dev = qdev_new("ipodtouch.mbx");
+    IPOD_TOUCH_MBX(dev)->irq_enabled = true;
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, n45_irq(s, N45_MBX_IRQ));
+    memory_region_add_subregion(sysmem, N45_MBX_BASE, &IPOD_TOUCH_MBX(dev)->iomem1);
 
     /* chip id: revision 2 */
     dev = qdev_new("ipodtouch.chipid");
@@ -704,6 +731,28 @@ static void n45_set_tvout_workaround(Object *obj, Visitor *v, const char *name,
     visit_type_uint32(v, name, &IPOD_TOUCH_1G_MACHINE(obj)->tvout_workaround, errp);
 }
 
+static bool n45_get_gles_debug(Object *obj, Error **errp)
+{
+    return IPOD_TOUCH_1G_MACHINE(obj)->gles_debug;
+}
+
+static void n45_set_gles_debug(Object *obj, bool value, Error **errp)
+{
+    IPOD_TOUCH_1G_MACHINE(obj)->gles_debug = value;
+    gles_host_set_debug(value);
+}
+
+static char *n45_get_gles_rejects(Object *obj, Error **errp)
+{
+    return gles_host_rejects();
+}
+
+static void n45_get_gles_contexts(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp)
+{
+    int64_t count = gles_host_context_count();
+    visit_type_int(v, name, &count, errp);
+}
+
 static void n45_machine_class_init(ObjectClass *klass, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(klass);
@@ -740,6 +789,12 @@ static void n45_machine_class_init(ObjectClass *klass, void *data)
 static void n45_instance_init(Object *obj)
 {
     IPOD_TOUCH_1G_MACHINE(obj)->usb_wrangler_quirk = true;
+    guest_pkg_init(&IPOD_TOUCH_1G_MACHINE(obj)->pkg, obj);
+    object_property_add_str(obj, "gles-rejects", n45_get_gles_rejects, NULL);
+    object_property_set_description(obj, "gles-rejects",
+        "Every refusal the GL bridge made so far, one NAME<tab>COUNT per line");
+    object_property_add(obj, "gles-contexts", "int", n45_get_gles_contexts, NULL, NULL, NULL);
+    object_property_add_bool(obj, "gles-debug", n45_get_gles_debug, n45_set_gles_debug);
 }
 
 static const TypeInfo n45_machine_info = {

@@ -4388,6 +4388,20 @@ static int gles_surface_resolve(CPUState *cpu, uint32_t id, GLESSurface *s)
     return 0;
 }
 
+/* The newest generation on any page of RAM [addr, addr + len): what a display model that also
+ * reads the VGA dirty log checks, since gles_surface_changed clears those bits for everyone (the
+ * iPod LCD, which converts only dirty lines, showed a 1.x frame from the gesture before). */
+uint64_t gles_host_ram_gen(uint64_t addr, uint64_t len)
+{
+    uint64_t gen = 0;
+
+    for (size_t page = addr >> TARGET_PAGE_BITS;
+         len && page <= (addr + len - 1) >> TARGET_PAGE_BITS && page < gles_page_gen_len; page++) {
+        gen = MAX(gen, gles_page_gen[page]);
+    }
+    return gen;
+}
+
 /* Whether any of `s`'s pages was written since its texture was uploaded. */
 static bool gles_surface_changed(GLESSurface *s)
 {

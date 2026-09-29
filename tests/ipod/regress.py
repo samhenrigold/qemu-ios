@@ -314,9 +314,26 @@ class Device:
 
     # -- lifecycle ---------------------------------------------------------
 
+    def start_1g(self):
+        """The iPod touch 1G: bootrom + iBoot-204 + a pflash NOR (written by the guest, so a copy),
+        the device's NAND under a fresh overlay; no USB, Wi-Fi or audio."""
+        cfg = self.cfg
+        nor = os.path.join(self.dir, "nor.bin")
+        shutil.copyfile(cfg.nor, nor)
+        machine = ("iPod-Touch-1G,bootrom=%s,iboot=%s,nand=%s,nand-overlay=%s,gles-debug=on"
+                   % (cfg.bootrom, cfg.direct_iboot, cfg.base_nand, cfg.overlay))
+        argv = [cfg.qemu, "-M", machine, "-drive", "if=pflash,format=raw,file=" + nor,
+                "-display", "none", "-audio", "driver=none", "-serial", "file:" + self.serial,
+                "-qmp", "tcp:127.0.0.1:%d,server=on,wait=off" % cfg.qmp_port]
+        self.qemu = self.procs.spawn(argv, os.path.join(self.dir, "qemu.log"), env=dict(os.environ))
+        log("%s: qemu pid %d (qmp %d)" % (self.tag, self.qemu.pid, cfg.qmp_port))
+        self.qmp = QMP(cfg.qmp_port, timeout=180, read_timeout=60)
+
     def start(self, audio_wav=None):
         cfg = self.cfg
         self.audio_wav = audio_wav
+        if cfg.board == "n45ap":
+            return self.start_1g()
         # usbmuxd is only needed by USB-side checks; on a run where all of
         # those are SKIPped (no usbmuxd binary), don't try to spawn one.
         if getattr(cfg, "usbmuxd_ok", True):
@@ -450,6 +467,10 @@ class Device:
                 return False, "qemu exited (rc=%s)" % self.qemu.returncode, best
             time.sleep(10)
             n += 1
+            if self.cfg.board == "n45ap":
+                # the 1G does not wake from sleep yet (LightTouchMac docs/smoke.md #1): a touch on an
+                # empty spot of 1.1's home screen keeps SpringBoard's 60 s auto-lock from firing
+                self.qmp.tap(240, 330)
             try:
                 self.qmp.shot(shot)
             except Exception as e:
@@ -461,7 +482,7 @@ class Device:
                     "flat colour, so this is iBoot/recovery, not a boot"
                     % (self.tag, time.time() - START, lit))
                 continue
-            if n >= 2 and lit < HOME_LIT_MIN and (self.cfg.device_major or 3) <= 2 \
+            if n >= 2 and lit < self.cfg.home_lit_min and (self.cfg.device_major or 3) <= 2 \
                     and not getattr(self, "time_set", False) and getattr(self.cfg, "usbmuxd_ok", True):
                 # 2.x lockdownd keeps an iPod "bricked" (Connect to iTunes) until a paired host sets
                 # the time, as iTunes does on connect (docs/ipod/from-ipsw.md, "lockdownd's brick
@@ -470,10 +491,10 @@ class Device:
                 self.time_set = bool(udid) and run(["idevicedate", "-c"], self.cfg, 60).returncode == 0
                 log("%s: t+%.0fs host time set over lockdown (brick state): %s"
                     % (self.tag, time.time() - START, "ok" if self.time_set else "failed: %s" % why))
-            if n >= 2 and lit < HOME_LIT_MIN and getattr(self, "time_set", False):
+            if n >= 2 and lit < self.cfg.home_lit_min and getattr(self, "time_set", False):
                 itqmp.button(self.qmp, "power")     # sleep, so the home press below is a wake
                 time.sleep(3)
-            if n >= 2 and lit < HOME_LIT_MIN:
+            if n >= 2 and lit < self.cfg.home_lit_min:
                 self.qmp.home()
                 time.sleep(1)
                 self.qmp.swipe(30, 450, 290, 450, steps=40, dwell=0.04)
@@ -481,17 +502,17 @@ class Device:
                 self.qmp.shot(shot)
                 hi, lit = lit_count(shot)
             best = max(best, lit)
-            if n % 3 == 0 or lit > HOME_LIT_MIN // 2:
+            if n % 3 == 0 or lit > self.cfg.home_lit_min // 2:
                 log("%s: t+%.0fs max=%d lit=%d"
                     % (self.tag, time.time() - START, hi, lit))
-            if lit >= HOME_LIT_MIN:
+            if lit >= self.cfg.home_lit_min:
                 time.sleep(HOME_CONFIRM_S)
                 if not self.alive():
                     return False, "qemu exited right after the home screen", best
                 self.qmp.shot(shot)
                 _hi2, lit2 = lit_count(shot)
                 best = max(best, lit2)
-                if lit2 < HOME_LIT_MIN:
+                if lit2 < self.cfg.home_lit_min:
                     log("%s: home screen did not hold (%d -> %d), still waiting"
                         % (self.tag, lit, lit2))
                     continue
@@ -1360,9 +1381,10 @@ def verify_audio(path, r):
 def check_gles_front_end(cfg, dev, r):
     """1.x/2.x: SpringBoard's own compositing is the fixture (no app installs there yet).
 
-    The device's lock says the OpenGLES hook went in and the bake set CA_ENABLE_OGL=1, so every
-    frame since the home screen came up was CoreAnimation's GL renderer through the front end and
-    the host. What is asserted: the front end said hello exactly once (a second hello is a
+    The device's lock says the OpenGLES hook went in and the bake set CA_ENABLE_OGL=1 (1.x:
+    LK_ENABLE_OGL=1, imgtools/ipod1g_device.py), so every frame since the home screen came up was
+    CoreAnimation's (1.x: LayerKit's) GL renderer through the front end and the host. 1.1's home
+    screen has one page, so its swipe changes nothing; Safari sits at the same spot. What is asserted: the front end said hello exactly once (a second hello is a
     SpringBoard that died and restarted), CoreAnimation made its first pixmap surface (it did not
     fall back to software: "unsupported graphics hardware"), a host context is live, the home
     screen survives a page swipe and a Safari launch zoom and close (the path that once froze
@@ -1401,8 +1423,11 @@ def check_gles_front_end(cfg, dev, r):
     if rejects:
         return r.set(False, "the GL bridge refused %d thing(s): %s" % (
             len(rejects), ", ".join("%s x%d" % kv for kv in sorted(rejects.items()))))
-    if shots[0][1] < HOME_LIT_MIN or shots[-1][1] < HOME_LIT_MIN or abs(shots[1][1] - shots[0][1]) < 1000:
+    if shots[0][1] < cfg.home_lit_min or shots[-1][1] < cfg.home_lit_min or abs(shots[1][1] - shots[0][1]) < 1000:
         return r.set(False, "the frames did not follow the gestures: %s" % lits)
+    if abs(shots[-1][1] - shots[0][1]) > shots[0][1] // 20:
+        # the panel still shows Safari (1.x: the iPod LCD once lost the GL write-back's dirty pages)
+        return r.set(False, "the close did not reach the panel: %s" % lits)
     return r.set(True, "SpringBoard composites through the GL front end: one hello, CA's pixmap surfaces, "
                        "%d host context(s), no refusals; %s" % (contexts, lits))
 
@@ -1828,6 +1853,8 @@ def main():
     cfg.device_machine = {}
     cfg.device_major = None         # the device's iOS major, from its lock (None: nand-current, 3.x)
     cfg.gles_front_end = False      # 1.x/2.x: the guest package's OpenGLES hook, CA through GL
+    cfg.board = "n72ap"             # n45ap: an iPod touch 1G device (imgtools/ipod1g_device.py)
+    cfg.home_lit_min = HOME_LIT_MIN
     if cfg.device:
         for attr, name in (("base_nand", "nand"), ("nor", "nor.bin"), ("direct_iboot", "iBoot.bin"),
                            ("gid_blobs", "gid-blobs.bin")):
@@ -1840,6 +1867,12 @@ def main():
             cfg.device_machine = lockd.get("machine") or {}
             cfg.device_major = int(lockd.get("product_version", "0").split(".")[0]) or None
             cfg.gles_front_end = (lockd.get("derived") or {}).get("gles_engine") == "OpenGLES"
+            cfg.board = lockd.get("board", cfg.board)
+    if cfg.board == "n45ap":
+        # 1.1's home screen is icons on black (~135k lit sub-pixels; the Apple logo far fewer), and
+        # the 1G has no USB host side yet, so every USB check skips (main clears usbmuxd_ok)
+        cfg.home_lit_min = 100000
+        cfg.bootrom = os.path.join(cfg.device, "bootrom.bin")
     # NAND, NOR and iBoot are one set and cannot be mixed: nand-canonical is a
     # 2.1.1 image, and against 3.1.3's iBoot its FTL will not even open --
     # "NAND initialisation failed due to format mismatch", "root filesystem
@@ -1928,9 +1961,13 @@ def main():
 
     results = {c: Result(c) for c in selected}
     skipped = set()
+    if cfg.board == "n45ap":
+        cfg.usbmuxd_ok = False
     for c in selected:
-        if c in USB_DEPENDENT_CHECKS and not cfg.usbmuxd_ok:
-            results[c].skip("usbmuxd binary not found: %s" % cfg.usbmuxd)
+        # the front end's gles leg is SpringBoard's own compositing: no app to install over USB
+        if c in USB_DEPENDENT_CHECKS and not cfg.usbmuxd_ok and not (c == "gles" and cfg.gles_front_end):
+            results[c].skip("usbmuxd binary not found: %s" % cfg.usbmuxd if cfg.board != "n45ap"
+                            else "the iPod touch 1G has no USB host side yet")
             skipped.add(c)
         elif c in IPA_DEPENDENT_CHECKS and not cfg.ipa_ok:
             results[c].skip("ipa not found: %s" % cfg.ipa)
@@ -1968,7 +2005,7 @@ def main():
         ok, detail, best = dev.wait_for_home(cfg.boot_timeout)
         results["boot"].set(ok, detail if ok else
                             "%s (best lit=%d, need >=%d)"
-                            % (detail, best, HOME_LIT_MIN))
+                            % (detail, best, cfg.home_lit_min))
         if not ok:
             return finish(results, procs, cfg)
 
@@ -1981,7 +2018,8 @@ def main():
         if "wifi" in selected:
             check_wifi(cfg, dev, results["wifi"])
 
-        need_usb = any(c in selected for c in USB_DEPENDENT_CHECKS)
+        need_usb = any(c in selected for c in USB_DEPENDENT_CHECKS
+                       if not (c == "gles" and cfg.gles_front_end and not cfg.usbmuxd_ok))
         udid = None
         if need_usb:
             udid, pdetail = wait_for_device(cfg)

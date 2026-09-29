@@ -34,6 +34,7 @@ rm -f "$HERE/mbxshim.o"
 # 1.x/2.x have no engine bundle: OpenGLES itself is the driver, so the same core goes in as the
 # framework binary under the firmware's own export names (build-gles2x.sh, gles2x.c).
 bash "$HERE/build-gles2x.sh" "$HERE/OpenGLES-2x"
+bash "$HERE/build-gles2x.sh" 1x "$HERE/OpenGLES-1x"
 
 # GLTest.app -- a real app bundle with a CAEAGLLayer. Same no-linking rules as
 # gles_fw: UIKit, QuartzCore, Foundation, OpenGLES and libobjc are all dlopen'd,
@@ -66,5 +67,5 @@ if command -v ldid >/dev/null; then
     ldid -S "$APP/GLTest"
 fi
 
-file "$HERE/gles_tri" "$HERE/gles_tex" "$HERE/gles_fw" "$HERE/MBXGLEngine" "$HERE/OpenGLES-2x" \
+file "$HERE/gles_tri" "$HERE/gles_tex" "$HERE/gles_fw" "$HERE/MBXGLEngine" "$HERE/OpenGLES-2x" "$HERE/OpenGLES-1x" \
      "$APP/GLTest"
