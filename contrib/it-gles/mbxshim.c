@@ -206,8 +206,8 @@ static char *put_dec(char *p, unsigned v)
  */
 static void refused(const char *what, const char *name, unsigned num)
 {
-    static struct { char key[40]; unsigned n; } tab[48];
-    char key[40], line[80], *p = key, *e = key + sizeof(key) - 12;
+    static struct { char key[64]; unsigned n; } tab[48];
+    char key[64], line[112], *p = key, *e = key + sizeof(key) - 12;
     unsigned i, n = 1;
 
     while (*what && p < e) *p++ = *what++;
