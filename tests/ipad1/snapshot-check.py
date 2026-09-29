@@ -136,7 +136,6 @@ def main():
         if not ok or not a.wait_mux():
             sys.exit("boot A: %s" % (detail if not ok else "usbmux never attached"))
         a.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
-        rg.dismiss_usb_alert(a)
         a.tap(rg.SAFARI_ICON)
         time.sleep(8)
         a.tap(rg.SAFARI_ADDRESS)
