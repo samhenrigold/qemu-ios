@@ -912,6 +912,10 @@ static void sdio_exec_cmd(IPodTouchSDIOState *s);
 static void sdio_dma(IPodTouchSDIOState *s, uint8_t *buf, uint32_t len,
                      bool to_guest)
 {
+    if (s->hbuf) {
+        memcpy(to_guest ? s->hbuf : buf, to_guest ? buf : s->hbuf, len);
+        return;
+    }
     if (!s->sg) {
         cpu_physical_memory_rw(s->baddr, buf, len, to_guest);
         return;
@@ -943,6 +947,18 @@ uint32_t ipod_touch_sdio_command(IPodTouchSDIOState *s, uint32_t cmd,
     sdio_exec_cmd(s);
     s->sg = NULL;
     return s->resp0;
+}
+
+uint32_t ipod_touch_sdio_command_buf(IPodTouchSDIOState *s, uint32_t cmd,
+                                     uint32_t arg, uint32_t blklen,
+                                     uint32_t numblk, uint8_t *buf)
+{
+    uint32_t resp;
+
+    s->hbuf = buf;
+    resp = ipod_touch_sdio_command(s, cmd, arg, blklen, numblk, NULL, 0);
+    s->hbuf = NULL;
+    return resp;
 }
 
 bool ipod_touch_sdio_card_irq(IPodTouchSDIOState *s)
