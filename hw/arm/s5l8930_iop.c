@@ -843,7 +843,7 @@ static void iop_trace_fmi(S5L8930IOPState *s, int bus, hwaddr item)
         g_autofree uint8_t *want = g_malloc(FMI_MAX_PAGE * 2);
         uint8_t gm[FMI_META_BYTES], wm[FMI_META_BYTES];
 
-        qemu_log("%.3f ring fmi%d op %u n %u st 0x%x out %08x %08x %08x %08x item 0x%" HWADDR_PRIx "\n",
+        fprintf(stderr, "%.3f ring fmi%d op %u n %u st 0x%x out %08x %08x %08x %08x item 0x%" HWADDR_PRIx "\n",
                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9, bus, op, n, st, CMD_GET(cmd, 0x64), CMD_GET(cmd, 0x68), CMD_GET(cmd, 0x6c),
                  CMD_GET(cmd, 0x70), item);
         if (n > FMI_MAX_MULTI || !s->nand_dir) {
@@ -863,7 +863,7 @@ static void iop_trace_fmi(S5L8930IOPState *s, int bus, hwaddr item)
             seg_copy(&metas, gm, FMI_META_BYTES, false);
             dbad = memcmp(got, want, s->store_page_bytes) != 0;
             mbad = memcmp(gm, wm, FMI_META_BYTES) != 0;
-            qemu_log(" %s ce %u pg 0x%x store %d/%d st %u meta %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%s%s\n",
+            fprintf(stderr, " %s ce %u pg 0x%x store %d/%d st %u meta %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%s%s\n",
                      op == FMI_OP_READ_MULTIPLE ? "rd" : "wr", ce, pg, sb, sc, wst,
                      gm[0], gm[1], gm[2], gm[3], gm[4], gm[5], gm[6], gm[7], gm[8], gm[9],
                      dbad ? " DATA-DIFF" : "", mbad ? " META-DIFF" : "");
@@ -871,18 +871,18 @@ static void iop_trace_fmi(S5L8930IOPState *s, int bus, hwaddr item)
                 uint32_t k;
                 for (k = 0; k < s->store_page_bytes && got[k] == want[k]; k++) {
                 }
-                qemu_log("  first diff at 0x%x: got %02x%02x%02x%02x want %02x%02x%02x%02x; segs %08x+%x %08x+%x\n", k,
+                fprintf(stderr, "  first diff at 0x%x: got %02x%02x%02x%02x want %02x%02x%02x%02x; segs %08x+%x %08x+%x\n", k,
                          got[k], got[k + 1], got[k + 2], got[k + 3], want[k], want[k + 1], want[k + 2], want[k + 3],
                          iop_ldl(ARG(0x1c)), iop_ldl(ARG(0x1c) + 4), iop_ldl(ARG(0x1c) + 8), iop_ldl(ARG(0x1c) + 12));
             }
             bad += dbad || mbad;
         }
         if (bad) {
-            qemu_log("ring fmi%d: %u of %u pages differ\n", bus, bad, n);
+            fprintf(stderr, "ring fmi%d: %u of %u pages differ\n", bus, bad, n);
         }
         return;
     }
-    qemu_log("ring fmi%d op %u st 0x%x args %08x %08x %08x %08x %08x %08x\n", bus, op, st,
+    fprintf(stderr, "ring fmi%d op %u st 0x%x args %08x %08x %08x %08x %08x %08x\n", bus, op, st,
              ARG(0x10), ARG(0x14), ARG(0x18), ARG(0x1c), ARG(0x20), ARG(0x24));
 }
 
@@ -904,7 +904,7 @@ void s5l8930_iop_trace_rings(DeviceState *dev)
         static hwaddr logged;
         if (logged != cfg) {
             logged = cfg;
-            qemu_log("ring trace: firmware at 0x%08x, cnfg at 0x%08" HWADDR_PRIx "\n", s->fw_base, cfg);
+            fprintf(stderr, "ring trace: firmware at 0x%08x, cnfg at 0x%08" HWADDR_PRIx "\n", s->fw_base, cfg);
         }
     }
     s->cfg_rings = (iop_ldl(cfg + 0xc) == 0 && iop_ldl(cfg + 0x10) != 0) ? 0x10 : 0xc;
@@ -920,10 +920,19 @@ void s5l8930_iop_trace_rings(DeviceState *dev)
             bool back = (w0 & 1) == RING_OWNER_AP && RING_ITEM(w0) && op != CTRL_DONE;
 
             if (back && pending0[i] != op) {
-                qemu_log("%.3f ring ctrl[%u]: msg 0x%08x status 0x%08x back; AP VIC0 en 0x%08x soft 0x%08x\n",
+                fprintf(stderr, "%.3f ring ctrl[%u]: msg 0x%08x status 0x%08x back; AP VIC0 en 0x%08x soft 0x%08x\n",
                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9, i, op, iop_ldl(RING_ITEM(w0) + 4),
                          ldl_le_phys(&address_space_memory, S5L8930_VIC_BASE(0) + 0x10),
                          ldl_le_phys(&address_space_memory, S5L8930_VIC_BASE(0) + 0x18));
+            }
+            if ((w0 & 1) != RING_OWNER_AP && RING_ITEM(w0) && pending0[i] != 1) {
+                fprintf(stderr, "%.3f ring ctrl[%u]: msg 0x%08x status 0x%08x sent\n",
+                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9, i, op, iop_ldl(RING_ITEM(w0) + 4));
+                pending0[i] = 1;
+                continue;
+            }
+            if ((w0 & 1) != RING_OWNER_AP) {
+                continue;
             }
             pending0[i] = back ? op : 0;
         }
