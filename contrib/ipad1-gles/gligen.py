@@ -62,9 +62,11 @@ def batchable(name, proto):
         return False
     if proto:
         return proto.startswith("void (") and "*" not in proto
-    # ES tail: no macOS prototype. The vector (…v, …vOES), pointer and matrix forms take pointers.
+    # ES tail: no macOS prototype. The vector (…v, …vOES), pointer, matrix and name-array
+    # (glGen*/glDelete*) forms take pointers.
     return not (base.endswith("v") or base.endswith("vOES") or "Pointer" in base or "Matrix" in base
-                or "ClipPlane" in base or base in ("glShaderBinary", "glReleaseShaderCompiler"))
+                or "ClipPlane" in base or "Gen" in base or "Delete" in base
+                or base in ("glShaderBinary", "glReleaseShaderCompiler"))
 
 
 def canonical(names):

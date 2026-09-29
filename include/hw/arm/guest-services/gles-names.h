@@ -22,7 +22,7 @@
  * --check.
  */
 #ifndef GLES_NAMES_VERSION
-#define GLES_NAMES_VERSION 0xa8a42b83
+#define GLES_NAMES_VERSION 0xabaf3ad8
 #define GLES_ID_MAX 847              /* ids are 0..GLES_ID_MAX, all below GLES_OP_BASE */
 #define GLES_F_BATCH 1
 #define GLES_F_EXPORT 2
@@ -859,8 +859,8 @@ GLES_FN(glDrawRangeElementsBaseVertex,         draw_range_elements_base_vertex, 
 GLES_FN(glDrawElementsInstancedBaseVertex,     draw_elements_instanced_base_vertex,           835, NA, 0)
 GLES_FN(glMultiDrawElementsBaseVertex,         multi_draw_elements_base_vertex,               836, NA, 0)
 GLES_FN(glBindVertexArrayOES,                  bind_vertex_array_ARB,                         837, 1,  GLES_F_BATCH|GLES_F_EXPORT)
-GLES_FN(glDeleteVertexArraysOES,               delete_vertex_arrays_ARB,                      838, 2,  GLES_F_BATCH|GLES_F_EXPORT)
-GLES_FN(glGenVertexArraysOES,                  gen_vertex_arrays_ARB,                         839, 2,  GLES_F_BATCH|GLES_F_EXPORT)
+GLES_FN(glDeleteVertexArraysOES,               delete_vertex_arrays_ARB,                      838, 2,  GLES_F_EXPORT)
+GLES_FN(glGenVertexArraysOES,                  gen_vertex_arrays_ARB,                         839, 2,  GLES_F_EXPORT)
 GLES_FN(glIsVertexArrayOES,                    is_vertex_array_ARB,                           840, 1,  GLES_F_EXPORT)
 GLES_FN(glVertexPointSizefAPPLE,               vertex_point_sizef_APPLE,                      841, NA, 0)
 GLES_FN(glTexImage2DMultisample,               tex_image2D_multisample,                       842, NA, 0)
