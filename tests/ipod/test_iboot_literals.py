@@ -34,6 +34,16 @@ BUILDS = {
     '8C148': ('b9efddc7bb4350c237a8d3846af61bbfc8a2f647', 'fcd3e0675b376f67e95328a2c691d363', '7a105db73b007a24ef18c9226452d761', 'iBoot-931.71.16', 0xa190, 4, 0),
 }
 
+# The iPod touch 1G's iBoot-204 (8900 + IMG2, key 0x837): build -> (IPSW sha1, iBoot version, epoch); only the epoch.
+N45_BUILDS = {
+    '3A101a': ('9b0d83c7f8b4328174a3f31e0e93f60e591ae143', 'iBoot-204', 2),
+    '3A110a': ('84bbc6ea8bf29745195bc9926c1874f7c2a36f32', 'iBoot-204', 2),
+    '3B48b':  ('108d8ffe9ea75e61cd5e57170ad388b7fa00d923', 'iBoot-204', 2),
+    '4A93':   ('8dca23eec69d5ae58fbf3d4a23276e46cbb2e3c6', 'iBoot-204', 3),
+    '4A102':  ('c148d1eb1c979bb6434175411d4a372103a4fdd2', 'iBoot-204', 3),
+    '4B1':    ('1b818911316e4248ee01d3ec67f9d39afc3db240', 'iBoot-204.3.16', 3),
+}
+
 HARNESS = r'''
 #include "qemu/osdep.h"
 #include "hw/arm/it_iboot.h"
@@ -85,6 +95,13 @@ static void synthetic(void){
  epoch_fixture(img,0x143a0,0x1a958,3); epoch_fixture(img,0x143a0,0x1b000,4); assert(!it_iboot_find_epoch(img,sizeof(img))); /* ambiguous */
  memset(img,0,sizeof(img)); epoch_fixture(img,0x143a0,0x1a958,3); memcpy(img+0x2000,img+0x143a0,16); assert(!it_iboot_find_epoch(img,sizeof(img)));
  memset(img,0,sizeof(img)); assert(!it_iboot_find_epoch(img,sizeof(img))&&!it_iboot_find_epoch(NULL,16)&&!it_iboot_find_epoch(img,8));
+ /* iBoot-204's inline compare: ldr r3,[r3]; lsrs r3,r3,#24; cmp r3,#M; beq; ldr r0/r1 = the panic text */
+ memset(img,0,sizeof(img)); put16(img+0x1fb6,0x681b); put16(img+0x1fb8,0x0e1b); put16(img+0x1fba,0x2b03); put16(img+0x1fbc,0xd003);
+ put16(img+0x1fbe,0x4905); put32(img+0x1fd4,0x1801a140); memcpy(img+0x1a140,"miu_init: Epoch Mismatch\n",25);
+ assert(it_iboot_find_epoch(img,sizeof(img))==3);
+ img[0x1a14a]='X'; assert(!it_iboot_find_epoch(img,sizeof(img))); img[0x1a14a]='E';                 /* not the panic */
+ put16(img+0x1fb8,0x0e1a); assert(!it_iboot_find_epoch(img,sizeof(img))); put16(img+0x1fb8,0x0e1b); /* another register */
+ memcpy(img+0x3000,img+0x1fb6,10); put32(img+0x3020,0x1801a140); assert(!it_iboot_find_epoch(img,sizeof(img))); /* ambiguous */
  /* the 2.x command-line literal pair */
  uint8_t image[1024];uint32_t base=0x10000000;
  command_line_fixture(image,base); assert(it_iboot_find_command_line(image,sizeof(image),base)==base+512);
@@ -123,6 +140,22 @@ def iboot_image(build, sha1, iv, key):
     return img3_decrypt(z.read(member), bytes.fromhex(iv), bytes.fromhex(key))
 
 
+def n45_iboot(sha1):
+    """all_flash iBoot: 8900 format 3 (AES-128-CBC, key 0x837, zero IV; a partial last block in the clear), then IMG2."""
+    ipsw = IPSW / (sha1 + '.ipsw')
+    if not ipsw.exists():
+        return None
+    z = zipfile.ZipFile(ipsw)
+    c = z.read([n for n in z.namelist() if n.endswith('/iBoot.n45ap.RELEASE.img2')][0])
+    assert c[:4] == b'8900' and c[7] == 3, 'not an encrypted 8900 container'
+    body = c[0x800:0x800 + int.from_bytes(c[0xc:0x10], 'little')]
+    n = len(body) & ~15
+    body = subprocess.run(['openssl', 'enc', '-d', '-aes-128-cbc', '-nopad', '-K', '188458A6D15034DFE386F23B61D43774',
+                           '-iv', '0' * 32], input=body[:n], capture_output=True, check=True).stdout + body[n:]
+    assert body[:4] == b'2gmI', 'not an IMG2 image'
+    return body[0x400:0x400 + int.from_bytes(body[0x14:0x18], 'little')]
+
+
 with tempfile.TemporaryDirectory() as temp:
     p = Path(temp)
     (p / 'qemu').mkdir()
@@ -145,5 +178,18 @@ with tempfile.TemporaryDirectory() as temp:
         assert got == want, (build, version, got, want)
         print('%-6s %-16s literal 0x%08x epoch %d command-line %s' % (build, version, BASE + literal, epoch, '0x%08x' % cmdline if cmdline else '-'))
         seen += 1
+    seen1 = 0
+    for build, (sha1, version, epoch) in sorted(N45_BUILDS.items()):
+        image = n45_iboot(sha1)
+        if image is None:
+            print('SKIP %s: no %s.ipsw' % (build, IPSW / sha1))
+            continue
+        assert version.encode() in image, (build, version)
+        (p / 'iboot.bin').write_bytes(image)
+        got = subprocess.run([str(p / 'check'), str(p / 'iboot.bin')], check=True, capture_output=True, text=True).stdout.split()
+        assert got[1] == '%u' % epoch, (build, version, got, epoch)
+        print('%-6s %-16s epoch %d' % (build, version, epoch))
+        seen1 += 1
     assert seen, 'no iBoot image found for any build'
-    print('PASS: it_iboot finders on %d/%d iPod touch 2G iBoots, plus the synthetic refusals' % (seen, len(BUILDS)))
+    print('PASS: it_iboot finders on %d/%d iPod touch 2G and %d/%d 1G iBoots, plus the synthetic refusals'
+          % (seen, len(BUILDS), seen1, len(N45_BUILDS)))

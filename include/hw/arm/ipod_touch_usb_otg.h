@@ -64,6 +64,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(synopsys_usb_state, S5L8900USBOTG)
 #define PCGCCTL_ON          0
 #define PCGCCTL_OFF         1
 
+#define GOTGCTL_CONIDSTS (1 << 16)          /* ID pin high: B-device (a device cable) */
+#define GOTGCTL_ASESSIONVALID (1 << 18)
 #define GOTGCTL_BSESSIONVALID (1 << 19)
 #define GOTGCTL_SESSIONREQUEST (1 << 1)
 
@@ -107,6 +109,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(synopsys_usb_state, S5L8900USBOTG)
 #define GINTMSK_EPMIS       (1 << 17)
 #define GINTMSK_INEP        (1 << 18)
 #define GINTMSK_OEP         (1 << 19)
+#define GINTMSK_CONIDSTSCHNG (1 << 28)
 #define GINTMSK_DISCONNECT  (1 << 29)
 #define GINTMSK_RESUME      (1 << 31)
 
@@ -286,6 +289,8 @@ typedef struct synopsys_usb_state
 } synopsys_usb_state;
 
 DeviceState *ipod_touch_init_usb_otg(qemu_irq _irq, uint32_t _hwcfg[4]);
+/* A machine's usb-tcp-addr: "host:port" of the host bridge (IT_USB_TCP when unset). */
+void synopsys_usb_set_tcp_addr(synopsys_usb_state *state, const char *spec);
 /* Plug/unplug: unplugging drops the host link so usbmuxd reaps the device;
  * plugging redials, and usbmuxd re-enumerates. */
 void synopsys_usb_set_cable(synopsys_usb_state *state, bool attached);

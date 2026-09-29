@@ -76,7 +76,8 @@ int main(void) {
     assert(rd(&initial,0x41)==3 && rd(&initial,0x42)==255);
     pcf50633_set_usb_cable(&initial,true);pcf50633_reset(&initial);
     assert(initial.adc_values[3]==1023);
-    int irq=0;QEMUTimer timer={0};Pcf50633State s={.irq=&irq,.adc_timer=&timer};
+    /* usb-status-reg/-bits at their property defaults: the D1759's power-source status 0x04 bit 3 */
+    int irq=0;QEMUTimer timer={0};Pcf50633State s={.irq=&irq,.adc_timer=&timer,.usb_status_reg=0x04,.usb_status_bits=0x08};
     pcf50633_reset(&s);
     wr(&s,0x40,0x23);assert(!timer.pending && !irq && !s.regs[2]);
     const unsigned counts[]={0,1,3,4,850,1022,1023};
