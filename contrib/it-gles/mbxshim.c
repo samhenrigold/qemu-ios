@@ -1369,7 +1369,8 @@ static int surface_fault_read(unsigned long base, unsigned stride, unsigned rows
                                unsigned bytes)
 {
     unsigned row;
-    if (!base || !rows || rows > 2048 || !bytes || stride < bytes || stride > 16384 ||
+    /* Up to the host's 4096x4096 32-bit surface, so an oversize one reaches its counter and paint. */
+    if (!base || !rows || rows > 4096 || !bytes || stride < bytes || stride > 16384 ||
         base > ~0UL - ((unsigned long)(rows - 1) * stride + bytes))
         return 0;
     for (row = 0; row < rows; row++) {
@@ -1413,7 +1414,7 @@ static int GLESBindCoreSurface(void *gc, unsigned target, void *surface)
      * and nobody saw. What is screened is the geometry, since the host reads the
      * rows: a packed surface's pages are touched a stride per row, which every
      * IOSurface allocation covers, and NV12's two planes their own way. */
-    int readable = width && width <= 2048 && height && height <= 2048;
+    int readable = width && height;   /* the size limit is the host's too (Exit Strategy: a 2240x416 layer) */
     if (format == 0x34323076 || format == 0x34323066) {
         readable = readable && uv && !(width & 1) && !(height & 1) &&
             surface_fault_read(base, stride, height, width) &&

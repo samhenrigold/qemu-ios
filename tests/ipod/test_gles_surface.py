@@ -163,7 +163,7 @@ int main(void)
     for(int i=0;i<40;i++) assert(ram[i]==0x5a);
     a[1]=0xfffffff0;assert(gles_bind_surface(NULL,a)==-1);
     a[1]=0x10000000;a[2]=15;assert(gles_bind_surface(NULL,a)==-1);
-    a[2]=20;a[3]=2049;assert(gles_bind_surface(NULL,a)==-1);
+    a[2]=20;a[3]=4097;assert(gles_bind_surface(NULL,a)==-1);
     a[3]=2;a[4]=2;a[2]=2;a[5]=0x34323076;a[6]=0x10000100;a[7]=2;
     memset(ram,16,4);ram[256]=ram[257]=128;assert(!gles_bind_surface(NULL,a));
     glGetTexImage(GL_TEXTURE_RECTANGLE_ARB,0,GL_BGRA,GL_UNSIGNED_BYTE,got);
