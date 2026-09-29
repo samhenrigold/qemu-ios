@@ -78,7 +78,6 @@ typedef struct { void *next; unsigned renderer, flags, pad[10]; } GLIPixelFormat
 #define GLI_PF_ACCELERATED 0x100
 
 static void *(*p_IOSurfaceLookup)(unsigned);
-static unsigned (*p_IOSurfaceGetID)(void *);
 static void (*p_CFRelease)(const void *);
 
 static void gli_iosurface_init(void)
@@ -86,7 +85,6 @@ static void gli_iosurface_init(void)
     iosurface_init();
     if (p_IOSurfaceLookup || !iosurf) return;
     p_IOSurfaceLookup = dlsym(iosurf, "IOSurfaceLookup");
-    p_IOSurfaceGetID  = dlsym(iosurf, "IOSurfaceGetID");
     void *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/"
                       "CoreFoundation", RTLD_NOW);
     if (cf) p_CFRelease = dlsym(cf, "CFRelease");
