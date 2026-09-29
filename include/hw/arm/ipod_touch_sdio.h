@@ -361,6 +361,7 @@ typedef struct IPodTouchSDIOState
     BCMSDIOChip chip;
     const uint32_t *sg;    /* CMD53 scatter list {addr, len} while one runs */
     unsigned sg_count;
+    uint8_t *hbuf;         /* or the host controller's own buffer (ipod_touch_sdio_command_buf) */
 
     uint8_t sdiod_regs[SDIOD_CORE_SIZE];
     /*
@@ -390,6 +391,11 @@ uint32_t ipod_touch_sdio_command(IPodTouchSDIOState *s, uint32_t cmd,
                                  uint32_t arg, uint32_t blklen,
                                  uint32_t numblk, const uint32_t *sg,
                                  unsigned sg_count);
+
+/* The same, the CMD53 payload in a host controller's buffer of blklen * numblk bytes. */
+uint32_t ipod_touch_sdio_command_buf(IPodTouchSDIOState *s, uint32_t cmd,
+                                     uint32_t arg, uint32_t blklen,
+                                     uint32_t numblk, uint8_t *buf);
 
 /* The card's interrupt line: the dongle has something for the host. */
 bool ipod_touch_sdio_card_irq(IPodTouchSDIOState *s);
