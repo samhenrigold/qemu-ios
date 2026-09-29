@@ -31,8 +31,9 @@
 #define S5L8930_TVOUT_BASE       0x89400000
 #define S5L8930_DSIM_BASE        0x89500000   /* MIPI-DSIM, same IP as the iPod's */
 #define S5L8930_RGBOUT2_BASE     0x89600000
+#define S5L8930_DART1_BASE       0x88d00000   /* IOMMU in front of ISP, JPEG, VENC (DT dart1) */
 #define S5L8930_DART2_BASE       0x89d00000   /* IOMMU in front of the display pipe */
-#define S5L8930_DART2_SIZE       0x2000
+#define S5L8930_DART_SIZE        0x2000
 #define S5L8930_PKE_BASE         0x83100000   /* RSA engine; operand SRAM at +0x800 */
 #define S5L8930_SHA1_BASE        0x80100000   /* SHA-1 engine; data FIFO at +0xA0 via CDMA ch 4 */
 #define S5L8930_SHA1_SIZE        0x1000
@@ -102,6 +103,7 @@ static inline hwaddr s5l8930_iop_pa(hwaddr a)
 #define S5L8930_IRQ_DSIM         0x28
 #define S5L8930_IRQ_CLCD         0x29
 #define S5L8930_IRQ_DISP_PIPE0   0x2a
+#define S5L8930_IRQ_RGBOUT_PIPE  0x2b   /* DT rgbout interrupts[0], as clcd's [0] is pipe0 */
 #define S5L8930_IRQ_CDMA(ch)     (0x30 + (ch))   /* DT lists channels 1.. from 0x31 */
 #define S5L8930_IRQ_AMC          0x56          /* first of the AMC's 23 lines */
 #define S5L8930_IRQ_GPIO         0x74
@@ -208,7 +210,7 @@ void s5l8930_hdq_set_battery(Chardev *chr, int level, bool charging);
  * Display (hw/arm/s5l8930_display.c): DisplayPipe0 + CLCD + RGBOUT/TV-out
  * ready bits + minimal DART2, scanning out a 1024x768 framebuffer to a QEMU
  * console. MMIO 0 pipe, 1 CLCD, 2 DART2, 3 RGBOUT, 4 TVOUT, 5 RGBOUT2;
- * sysbus IRQ 0 = pipe (S5L8930_IRQ_DISP_PIPE0), 1 = CLCD.
+ * sysbus IRQ 0 = pipe (S5L8930_IRQ_DISP_PIPE0), 1 = CLCD, 2 = RGBOUT pipe.
  */
 #define TYPE_S5L8930_DISPLAY "s5l8930.display"
 
@@ -224,6 +226,20 @@ void s5l8930_hdq_set_battery(Chardev *chr, int level, bool charging);
  * A device FIFO in [base, base+size) that paces the channels reading it: a
  * channel takes only avail() bytes, stays running, and resumes on kick().
  */
+/*
+ * DART register block (hw/arm/s5l8930_dart.c), shared by the display's dart2
+ * and TYPE_S5L8930_DART (dart1, MMIO 0). 4 stream IDs x 64 segment entries.
+ */
+#define S5L8930_DART_SIDS        4
+#define S5L8930_DART_SEGS        64
+typedef struct S5L8930Dart {
+    uint32_t regs[S5L8930_DART_SIZE / 4];
+    uint32_t ste[S5L8930_DART_SIDS][S5L8930_DART_SEGS];
+} S5L8930Dart;
+extern const MemoryRegionOps s5l8930_dart_ops;     /* opaque: S5L8930Dart * */
+/* `va` for stream `sid` -> PA: `va` itself if its segment has no table, -1 on an invalid PTE. */
+hwaddr s5l8930_dart_xlate(S5L8930Dart *d, unsigned sid, uint32_t va);
+#define TYPE_S5L8930_DART "s5l8930.dart"
 /* dart2 translation of `va` for stream ID `sid`; -1 if unmapped. */
 hwaddr s5l8930_dart2_xlate(void *display, uint32_t va, unsigned sid);
 /* The iPod scaler model (hw/arm/ipod_touch_scaler.c) behind an IOMMU. */

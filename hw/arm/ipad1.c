@@ -826,6 +826,13 @@ static void ipad1_init(MachineState *machine)
         i2c_slave_create_simple(bus, TYPE_S5L8930_TSL2581, 0x39);
     }
 
+    /*
+     * dart1: the IOMMU in front of the ISP, JPEG and video-encoder blocks
+     * (DT dart1 mappers). No client is modelled; its driver programs it at
+     * every boot (smoke #29) the way it does dart2.
+     */
+    sysbus_create_simple(TYPE_S5L8930_DART, S5L8930_DART1_BASE, NULL);
+
     /* Display pipe, CLCD, DART2, RGBOUT, TV-out; scanout starts at iBoot's FB. */
     dev = qdev_new(TYPE_S5L8930_DISPLAY);
     s->display = dev;
@@ -840,6 +847,7 @@ static void ipad1_init(MachineState *machine)
     sysbus_mmio_map(sbd, 5, S5L8930_RGBOUT2_BASE);
     sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_DISP_PIPE0));
     sysbus_connect_irq(sbd, 1, ipad1_irq(s, S5L8930_IRQ_CLCD));
+    sysbus_connect_irq(sbd, 2, ipad1_irq(s, S5L8930_IRQ_RGBOUT_PIPE));
 
     /* MIPI-DSIM: the same Samsung IP as the iPod's; reuse that model. */
     dev = qdev_new(TYPE_IPOD_TOUCH_MIPI_DSI);
