@@ -351,6 +351,7 @@ const QemuIosDeviceInfo *qemu_ios_device_info(const char *machine)
     static const QemuIosDeviceInfo devices[] = {
         { "iPod-Touch", 320, 480, 1, 0, false },
         { "ipad1", 1024, 768, 1, 1, false },     /* s5l8930_display scans out 1024x768 */
+        { "iPod-Touch-1G", 320, 480, 1, 0, false },
     };
 
     for (size_t i = 0; machine && i < ARRAY_SIZE(devices); i++) {
@@ -492,12 +493,18 @@ static struct ios_button_hold {
     IPodTouchButton button;
 } ios_button_holds[4];
 
+static void ios_press(IPodTouchButton button, bool down)
+{
+    /* Each is a no-op unless its machine is the one running. */
+    ipod_touch_press_button(button, down);
+    ipad1_press_button(button, down);
+    ipod_touch_1g_press_button(button, down);
+}
+
 static void ios_button_release(void *opaque)
 {
     struct ios_button_hold *hold = opaque;
-    /* Each is a no-op unless its machine is the one running. */
-    ipod_touch_press_button(hold->button, false);
-    ipad1_press_button(hold->button, false);
+    ios_press(hold->button, false);
 }
 
 static void ios_button_bh(void *opaque)
@@ -530,8 +537,7 @@ static void ios_button_bh(void *opaque)
     if (b->down) {
         timer_del(hold->release);
         hold->pressed_at = now;
-        ipod_touch_press_button(button, true);
-        ipad1_press_button(button, true);
+        ios_press(button, true);
     } else {
         /* Both host events can arrive in one BH batch under load. Give the
          * guest's debounce handler time to observe the pressed pin. */

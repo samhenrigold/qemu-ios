@@ -246,17 +246,6 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
         case 0x76:
             res = 0; // unknown register
             break;
-        case PMU_PWRSRC_STATUS:   // 0x04
-            // Power-source live-level status. Bit 3 = USB cable present. Only OR
-            // in that one bit -- forcing the whole 0x04-0x06 block hangs boot on
-            // the Apple logo. Gated on the machine's usb-attached option so an
-            // unplugged device can still be emulated; it defaults on because the
-            // emulated device is effectively tethered to the host.
-            res = s->regs[PMU_PWRSRC_STATUS] & ~PMU_PWRSRC_USB;
-            if (s->usb_cable) {
-                res |= PMU_PWRSRC_USB;
-            }
-            break;
         case PMU_PWRSRC_STATUS + 1:
             /* 7E18 c05ff4a0 tests status byte 1 bits 1/2 for charging.
              * Report an active charging phase while external USB power is
@@ -291,6 +280,14 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
             // never observe the power-state transition it had just requested,
             // making it fall through into a reset instead of suspending.
             res = s->regs[reg];
+    }
+    if (reg == s->usb_status_reg) {
+        // The live cable level ("usb-status-reg"/"-bits"): the D1759's power-source
+        // status 0x04 bit 3 (2.x+), the PCF50633's MBCS1 0x4b USBPRES|USBOK (1.x,
+        // ApplePCF50635PMUPowerSource's "ext"). Only those bits -- forcing the whole
+        // D1759 0x04-0x06 block hangs boot on the Apple logo. Gated on the machine's
+        // cable (usb-attached on the 2G, a usb-tcp-addr on the 1G).
+        res = (res & ~s->usb_status_bits) | (s->usb_cable ? s->usb_status_bits : 0);
     }
 
     if (pmu_trace()) {
@@ -490,6 +487,8 @@ static const Property pcf50633_properties[] = {
      * its fourth interrupt mask (writes 0xff there at start) and the
      * datasheet's OOCSHDWN at 0x0c for standby. */
     DEFINE_PROP_UINT8("shutdown-reg", Pcf50633State, shutdown_reg, PMU_SHUTDOWN_REG),
+    DEFINE_PROP_UINT8("usb-status-reg", Pcf50633State, usb_status_reg, PMU_PWRSRC_STATUS),
+    DEFINE_PROP_UINT8("usb-status-bits", Pcf50633State, usb_status_bits, PMU_PWRSRC_USB),
 };
 
 static void pcf50633_class_init(ObjectClass *klass, void *data)

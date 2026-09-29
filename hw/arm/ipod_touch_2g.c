@@ -3109,19 +3109,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = ipod_touch_init_usb_otg(s5l8900_get_irq(nms, S5L8720_USB_OTG_IRQ), s5l8720_usb_hwcfg);
     synopsys_usb_state *usb_otg = S5L8900USBOTG(dev);
     nms->usb_otg = usb_otg;
-    if (nms->usb_tcp_addr[0]) {
-        char *dup = g_strdup(nms->usb_tcp_addr);
-        char *colon = strrchr(dup, ':');
-        if (colon) {
-            *colon = '\0';
-            usb_otg->server_port = atoi(colon + 1);
-        }
-        if (!usb_otg->server_port) {
-            usb_otg->server_port = 1235;
-        }
-        usb_otg->server_host = g_strdup(dup[0] ? dup : "127.0.0.1");
-        g_free(dup);
-    }
+    synopsys_usb_set_tcp_addr(usb_otg, nms->usb_tcp_addr);
     /*
      * Unlike every other sysbus device here, this one was never realized, so
      * its reset handler never ran and none of the register defaults applied -
