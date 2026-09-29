@@ -306,7 +306,13 @@ static void d1815_adc_done(void *opaque)
      * charger driver tells an Apple charger (2.0 / 2.7 V on D+/D-) from a
      * USB host (its pull-downs: 0 V) this way, and with the lines left
      * mid-scale the power source called the cable "Detached", so the USB
-     * device stack never came up (usbmux never attached). 4.x never reads it.
+     * device stack never came up (usbmux never attached). 4.x reads it too
+     * (AppleD1815PMUPowerSource, 4.2.1 807b6b38, 4.3.5 809f7d00: one read
+     * per line, mV = adc * 5000 / 4096; both lines above 999 mV at a
+     * charger's divider ratio is a brick, anything else a host). Mid-scale is
+     * 2.5 V on both lines: 4.2.1 still said USBHost only because its 1 A
+     * window also wants D+ <= 2340 mV; 4.3.x bins each line and called it a
+     * 1 A brick (Detached; LightTouchMac smoke #35).
      * ponytail: every other mux (2 thermistor, 3, 10-14) stays mid-scale;
      * S5L8930_ADC="mux:val,..." overrides for experiments.
      */
