@@ -15,6 +15,9 @@
  * A separate process also cannot wedge SpringBoard's launch, which is the trap
  * contrib/it-kbd-agent had to be built around.
  *
+ * it_pbd (contrib/it-pasteboard) is this clipboard alone: it includes this file with
+ * IT_AGENT_CLIPBOARD_ONLY and brings its own main.
+ *
  * THE TRAP, repeated here because it costs a reboot to rediscover: never call
  * -[UIPasteboard setString:], -string or -pasteboardTypes from a process like
  * this. They send an empty type string, pasteboardd turns it into a NULL
@@ -203,8 +206,6 @@ static int pump_host_to_guest(void)
         pb_last[i] = pb_in[i];
     }
     pb_last_len = off;
-
-
     return 1;
 }
 
@@ -264,7 +265,6 @@ static void pump_guest_to_host(void)
             if (off == len) {
                 qc(QC_PB_COMMIT, 0, 0, 0);
                 pb_last[len] = 0;
-
             }
         }
     }
@@ -279,6 +279,7 @@ static void pump_guest_to_host(void)
  */
 #define STARTUP_DELAY 40
 
+#ifndef IT_AGENT_CLIPBOARD_ONLY   /* contrib/it-pasteboard/it_pbd.c: the clipboard above, its own main */
 #include "agent-ops.h"
 
 int main(void)
@@ -308,3 +309,4 @@ int main(void)
     }
     return 0;
 }
+#endif

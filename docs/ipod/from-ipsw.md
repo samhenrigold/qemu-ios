@@ -216,8 +216,8 @@ baked PAC).
 2.1.1 needed pipeline fixes, all derived: no BuildManifest (component paths from Restore.plist and the board
 name, `ipad1_fw.components`), the final partial AES block of 2.x img3 left in plaintext (detected from the
 kernelcache's Adler-32 and applied to every component), NAND epoch 1, only iBoot SHSH wrapped, no direct iBoot
-(2.x boots bootrom → NOR LLB), no shared cache (AppSync off in the manifest: 2.x's libmis patch is a fixed
-offset, `patch_libmis.py`, so it is not used), firmware's own libncurses kept. The generated NOR must wrap **only iBoot's SHSH** under the emulated
+(2.x boots bootrom → NOR LLB), no shared cache (AppSync off in the manifest: 2.x has a standalone libmis.dylib, which
+no symbol-located patcher covers yet), firmware's own libncurses kept. The generated NOR must wrap **only iBoot's SHSH** under the emulated
 UID. LLB unwraps that signature, while 2.x iBoot verifies its other NOR images
 raw. The previous all-or-nothing `--no-wrap-shsh` setting was wrong.
 `--wrap-shsh-types ibot` now expresses this mixed layout, and the board builder
@@ -246,7 +246,7 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 | volume | rootfs grown to 1835008 blocks, fstab rw | same (build_nand.py), zero blocks not written (:243) |
 | kernelcache | encrypted IPSW img3 at kernelcache.s5l8720x | path read from the decrypted iBoot (`kernelcache_path`, :96) |
 | activation / Lockdown | Apple record + pair records for the real unit | none (blocker above) |
-| fake Wi-Fi setup | not in the image (SystemConfiguration is configd's own runtime output) | none needed; `setup_networking.py` stays optional |
+| fake Wi-Fi setup | not in the image (SystemConfiguration is configd's own runtime output) | none needed |
 | guest services | it_agent, it_typein, sblaunch, sbdlicon, markers, sound defaults (bake-guest-tools.sh) | same script, run inside build_nand's mount (`ipod2g_device.bake`, :306), owners patched in the catalog |
 | pasteboard | it_pbd binary present, job retired | not installed (the agent owns the clipboard) |
 | sound defaults | set-sound-defaults.py | same |
@@ -272,7 +272,7 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
   are linked for the 3.1+ dyld; 3.0's refuses LC_DYLD_INFO_ONLY like 2.x, so `ipod2g_device.py` omits them
   below 3.1 (stock SpringBoard, no guest package) until a legacy-linked set exists. 3.0 has no dyld shared
   cache (it arrived with 3.1), so `options.appsync` must be off (`patch-appsync-dylib.sh` patches the cache;
-  3.0 would need `patch_libmis.py` on libmis.dylib itself) and the GLES shim is skipped (stock engine).
+  3.0 would need a symbol-located patch of libmis.dylib itself) and the GLES shim is skipped (stock engine).
 - The obsolete fixed-address logo thunk is removed along with the DeviceTree thunk.
 - The research-only IT_AMFI_ALLOW_TASKPORT kernel patch and its address overrides
   have been removed; guest integration uses the existing boot-args and AppSync path.

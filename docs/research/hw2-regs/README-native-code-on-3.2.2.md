@@ -65,7 +65,7 @@ have no kernel map anyway. The DRAM-mirror test (compare phys 0x40000000 /
 **Conclusion:** arbitrary physical/MMIO reads from the *running* 7B500 userland
 are not available with this jailbreak. The remaining routes are:
 
-- **HW-1 iBEC `md` path** (already built in `contrib/ipad1-hw/`) — the reliable
+- **HW-1 iBEC `md` path** (already built in `docs/research/ipad1-hw/`) — the reliable
   register oracle, but it needs DFU/reboot.
 - **A kernel patch or exploit** to expose `kernel_task` / a `/dev/kmem`, then
   `kmem.dylib` reads everything as-is (the tool is ready the moment a kernel task
