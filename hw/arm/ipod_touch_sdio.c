@@ -698,8 +698,12 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
     }
 
     /* WLC_UP is the last thing initDongle does before the driver is usable,
-     * so it is the earliest sensible moment to start the auto-join clock. */
+     * so it is the earliest sensible moment to start the auto-join clock.
+     * Firmware coming up is not in a BSS: after the driver's watchdog reset
+     * (a command-queue stall under host load re-downloads the firmware
+     * without a machine reset) the join has to happen again. */
     if (cmd == WLC_UP) {
+        s->associated = false;
         sdio_arm_autojoin(s);
     }
 }
@@ -904,6 +908,21 @@ static void sdpcm_receive(IPodTouchSDIOState *s, const uint8_t *buf, uint32_t le
         break;
     case SDPCM_DATA_CHANNEL:
         sdio_tx_data(s, buf + doff, framelen - doff);
+        /*
+         * The host learns its credit (how many frames it may send) only from
+         * the header of a frame coming back, and a data frame gets no answer:
+         * eight in a row with nothing to the host in between (ARP probes,
+         * IPv6 ND and mDNS after a join, with no one on the network to
+         * reply) spent the window, the next control command could not be
+         * sent, and after 5 s AppleBCMWLANCmdManager's queue check reset the
+         * chip ("Cmd Queue stall", logState "Tx: seq N, credit N"), which
+         * dropped the join (LightTouchMac smoke #40). A dongle that frees the
+         * buffer returns the credit; with nothing else queued, in a
+         * header-only frame, the credit update DHD hosts skip as empty.
+         */
+        if (g_queue_is_empty(s->rx_fifo)) {
+            sdpcm_send(s, SDPCM_DATA_CHANNEL, buf, 0);
+        }
         break;
     default:
         trace_sdio("[SDIO] SDPCM frame on unhandled channel %u\n", channel);
