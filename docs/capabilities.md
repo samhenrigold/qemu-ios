@@ -14,7 +14,7 @@ notes in `ipod2g-re` mostly describe **2.1.1 / 5F138**, not the current **3.1.3 
 | `qemu-ios-files` | Local firmware, prepared devices, images, overlays and evidence. Not a source repository; `nand-current` is the shipping iPod image. |
 | `usbmuxd-qemu/usbmuxd` | The usbmuxd fork (branch `qemu-zlp`) that carries USB between the emulator and libimobiledevice; required for every USB-side check. |
 | `ipod2g-re` | Kernel/kext/MBX reverse-engineering workspace; check the firmware version of every note. Its `OldSDK` holds the iPhoneOS 3.1.3 SDK the guest helpers build against. |
-| `qemu-ios-deps12` | An old static dependency prefix. The product build no longer needs it; a few guest tests and `contrib/it-webproxy/build.sh` still default `OPENSSL_PREFIX`/`PATH` to it. |
+| `qemu-ios-deps12` | An old static dependency prefix. The product build no longer needs it; a few guest tests still default `OPENSSL_PREFIX`/`PATH` to it. |
 
 The stock base images are read-only inputs. Guest writes belong in a separate
 `nandrw` overlay. Never reuse an overlay with a different base image.
