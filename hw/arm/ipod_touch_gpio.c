@@ -49,7 +49,7 @@ static uint64_t s5l8900_gpio_read(void *opaque, hwaddr addr, unsigned size)
     switch(addr) {
         case 0x4:
             return s->gpio_state[0];
-        case 0x24 ... 0x184:
+        case 0x24 ... (0x4 + 0x20 * (NUM_GPIO_PADS - 1)):
             return s->gpio_state[GPIOADDR2PAD(addr)];
         default:
             break;
@@ -136,8 +136,8 @@ static void s5l8900_gpio_reset(DeviceState *dev)
 
 static const VMStateDescription vmstate_ipod_touch_gpio = {
     .name = "ipod_touch_gpio",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,   /* NUM_GPIO_PADS 0x10 -> 0x20 */
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(gpio_state, IPodTouchGPIOState, NUM_GPIO_PADS),
         VMSTATE_END_OF_LIST()

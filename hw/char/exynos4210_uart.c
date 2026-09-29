@@ -187,6 +187,8 @@ struct Exynos4210UartState {
 
     uint32_t channel;
     bool s5l8720_irq;
+    uint32_t tx_char_ns;          /* "tx-char-ns": transmit pacing, 0 = instant */
+    QEMUTimer *tx_done_timer;
 
 };
 
@@ -535,6 +537,19 @@ static void exynos4210_uart_write(void *opaque, hwaddr offset,
              * qemu_chr_fe_write and background I/O callbacks */
             qemu_chr_fe_write_all(&s->chr, &ch, 1);
             trace_exynos_uart_tx(s->channel, ch);
+            if (s->tx_char_ns) {
+                /*
+                 * tx-char-ns: the shifter takes one character time to empty,
+                 * as on the wire (86.8 us at 115200 8N1). A guest that logs
+                 * synchronously through a polled UART (iPhone OS 1.x kprintf)
+                 * is paced by it exactly as on hardware; instant completion
+                 * made every logging thread run ahead of the silent ones and
+                 * reordered IOKit driver start-up.
+                 */
+                timer_mod(s->tx_done_timer,
+                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->tx_char_ns);
+                break;
+            }
             s->reg[I_(UTRSTAT)] |= UTRSTAT_TRANSMITTER_EMPTY |
                     UTRSTAT_Tx_BUFFER_EMPTY;
             s->reg[I_(UINTSP)]  |= UINTSP_TXD;
@@ -824,12 +839,22 @@ static void exynos4210_uart_init(Object *obj)
     sysbus_init_irq(dev, &s->rxdmareq);
 }
 
+static void exynos4210_uart_tx_done(void *opaque)
+{
+    Exynos4210UartState *s = opaque;
+
+    s->reg[I_(UTRSTAT)] |= UTRSTAT_TRANSMITTER_EMPTY | UTRSTAT_Tx_BUFFER_EMPTY;
+    s->reg[I_(UINTSP)]  |= UINTSP_TXD;
+    exynos4210_uart_update_irq(s);
+}
+
 static void exynos4210_uart_realize(DeviceState *dev, Error **errp)
 {
     Exynos4210UartState *s = EXYNOS4210_UART(dev);
 
     s->fifo_timeout_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                          exynos4210_uart_timeout_int, s);
+    s->tx_done_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, exynos4210_uart_tx_done, s);
 
     qemu_chr_fe_set_handlers(&s->chr, exynos4210_uart_can_receive,
                              exynos4210_uart_receive, exynos4210_uart_event,
@@ -838,6 +863,7 @@ static void exynos4210_uart_realize(DeviceState *dev, Error **errp)
 
 static const Property exynos4210_uart_properties[] = {
     DEFINE_PROP_BOOL("s5l8720-irq", Exynos4210UartState, s5l8720_irq, false),
+    DEFINE_PROP_UINT32("tx-char-ns", Exynos4210UartState, tx_char_ns, 0),
     DEFINE_PROP_CHR("chardev", Exynos4210UartState, chr),
     DEFINE_PROP_UINT32("channel", Exynos4210UartState, channel, 0),
     DEFINE_PROP_UINT32("rx-size", Exynos4210UartState, rx.size, 16),

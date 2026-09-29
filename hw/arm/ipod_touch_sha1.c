@@ -214,6 +214,11 @@ static uint64_t ipod_touch_sha1_read(void *opaque, hwaddr offset, unsigned size)
 		case SHA_HASHOUT ... SHA_HASHOUT_END:
 			/* Big-endian state word, matching what the guest writes in. */
 			return bswap32(s->state[(offset - SHA_HASHOUT) / 4]);
+		case SHA_HWBUF ... SHA_HWBUF_END:
+			/* The block buffer reads back: iBoot-204 (S5L8900) fills it a
+			 * byte at a time with read-modify-write on each word
+			 * (0x180020a2), so a read of zero would drop three bytes in four. */
+			return s->hw_buffer[(offset - SHA_HWBUF) / 4];
 	}
 
     return 0;

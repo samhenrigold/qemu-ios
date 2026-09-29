@@ -1,10 +1,25 @@
 #include "hw/arm/ipod_touch_clock.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
+#include "hw/qdev-properties.h"
 #include "trace.h"
+
+/* IT_CLOCK_TRACE=1: every clock-controller access with a host timestamp. */
+static bool clock_trace(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_CLOCK_TRACE") != NULL;
+    }
+    return on;
+}
 
 static void s5l8900_clock_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
+    if (clock_trace()) {
+        fprintf(stderr, "[CLOCK %.3f] W %p 0x%03x <- 0x%08x\n",
+                g_get_monotonic_time() / 1e6, opaque, (unsigned)addr, (unsigned)val);
+    }
     IPodTouchClockState *s = (struct IPodTouchClockState *) opaque;
 
     trace_ipod_touch_clock_write(addr, val);
@@ -84,7 +99,19 @@ static void s5l8900_clock_write(void *opaque, hwaddr addr, uint64_t val, unsigne
     }
 }
 
+static uint64_t s5l8900_clock_read_reg(void *opaque, hwaddr addr, unsigned size);
+
 static uint64_t s5l8900_clock_read(void *opaque, hwaddr addr, unsigned size)
+{
+    uint64_t v = s5l8900_clock_read_reg(opaque, addr, size);
+    if (clock_trace()) {
+        fprintf(stderr, "[CLOCK %.3f] R %p 0x%03x -> 0x%08x\n",
+                g_get_monotonic_time() / 1e6, opaque, (unsigned)addr, (unsigned)v);
+    }
+    return v;
+}
+
+static uint64_t s5l8900_clock_read_reg(void *opaque, hwaddr addr, unsigned size)
 {
     IPodTouchClockState *s = (struct IPodTouchClockState *) opaque;
 
@@ -160,6 +187,25 @@ static void ipod_touch_clock_reset(DeviceState *dev)
     s->pllmode = 0;
     s->pwrcon0 = 0; s->pwrcon1 = 0; s->pwrcon2 = 0;
     s->pwrcon3 = 0; s->pwrcon4 = 0;
+
+    if (s->s5l8900) {
+        /*
+         * The S5L8900's iBoot-204 derives its bus/peripheral clocks from the
+         * dividers and PLL settings it finds here (its LLB/bootrom programmed
+         * them), so the block comes up with the values a running iPod touch
+         * 1G reads back, as devos50's model had them: PLL index/divisor
+         * fields in CONFIG0-2, MDIV/PDIV/SDIV per PLL, PLLMODE 0x000a003a.
+         */
+        s->config0 = (1 << 12) | (1 << 24) | (2 << 16);
+        s->config1 = (1 << 12) | (1 << 24) | (3 << 16) | (1 << 8) | 3 |
+                     (1 << 20) | (1 << 14) | (1 << 28) | (1 << 30);
+        s->config2 = (3 << 28) | (1 << 24) | (1 << 16);
+        s->pll0con = (80 << 8) | (8 << 24) | 0;
+        s->pll1con = (103 << 8) | (6 << 24) | 0;
+        s->pll2con = (156 << 8) | (53 << 24) | 2;
+        s->pll3con = (72 << 8) | (8 << 24) | 1;
+        s->pllmode = 0x000a003a;
+    }
 }
 
 #define VMS_CLK(f) VMSTATE_UINT32(f, IPodTouchClockState)
@@ -180,11 +226,16 @@ static const VMStateDescription vmstate_ipod_touch_clock = {
     }
 };
 
+static const Property ipod_touch_clock_properties[] = {
+    DEFINE_PROP_BOOL("s5l8900", IPodTouchClockState, s5l8900, false),
+};
+
 static void s5l8900_clock_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_ipod_touch_clock;
+    device_class_set_props(dc, ipod_touch_clock_properties);
     device_class_set_legacy_reset(dc, ipod_touch_clock_reset);
 }
 

@@ -1,5 +1,6 @@
 #include "hw/arm/ipod_touch_timer.h"
 #include "migration/vmstate.h"
+#include "hw/qdev-properties.h"
 
 /*
  * freq_out is 10 MHz here while the tick counter at TIMER_TICKSHIGH/LOW runs at
@@ -43,7 +44,7 @@ static bool timer_trace(void)
  * rate and default scheduling. It is bounded startup configuration. */
 static void s5l8900_st_update(IPodTouchTimerState *s)
 {
-    s->freq_out = 1000000000 / 100;
+    s->freq_out = s->freq_hz ? s->freq_hz : 1000000000 / 100;
     s->tick_interval = /* bcount1 * get_ticks / freq  + ((bcount2 * get_ticks / freq)*/
     muldiv64((s->bcount1 < 1000) ? 1000 : s->bcount1, NANOSECONDS_PER_SECOND, s->freq_out);
     s->tick_interval *= s->dilation;
@@ -71,7 +72,10 @@ static void s5l8900_st_tick(void *opaque)
     IPodTouchTimerState *s = (IPodTouchTimerState *)opaque;
 
     if (s->status & TIMER_STATE_START) {
-        //fprintf(stderr, "%s: Raising irq\n", __func__);
+        if (timer_trace()) {
+            fprintf(stderr, "[TIMER] fire at %" PRId64 " ns (planned %" PRIu64 ")\n",
+                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), s->next_planned_tick + s->base_time);
+        }
         qemu_irq_raise(s->irq);
 
         /*
@@ -95,16 +99,26 @@ static void s5l8900_timer1_write(void *opaque, hwaddr addr, uint64_t value, unsi
     //fprintf(stderr, "%s: writing 0x%08x to 0x%08x\n", __func__, value, addr);
     IPodTouchTimerState *s = (struct IPodTouchTimerState *) opaque;
 
+    if (timer_trace() && addr != s->irqlatch) {
+        fprintf(stderr, "[TIMER] W 0x%03x <- 0x%08x at %" PRId64 " ns\n",
+                (unsigned)addr, (unsigned)value, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+    /* The interrupt-latch register moved between SoCs ("irqlatch" property:
+     * 0xF8 on the S5L8900, 0x118 on the S5L8720). */
+    if (addr == s->irqlatch) {
+        qemu_irq_lower(s->irq);
+        return;
+    }
+
     switch(addr){
 
         case TIMER_IRQSTAT:
             s->irqstat = value;
             return;
-        case TIMER_IRQLATCH:
-            //fprintf(stderr, "%s: lowering irq\n", __func__);
-            qemu_irq_lower(s->irq);     
-            return;
         case TIMER_4 + TIMER_CONFIG:
+            if (s->first_config_hook) {
+                s->first_config_hook(s->first_config_opaque);
+            }
             s5l8900_st_update(s);
             s->config = value;
             break;
@@ -213,10 +227,10 @@ static uint64_t s5l8900_timer1_read(void *opaque, hwaddr addr, unsigned size)
             return s->ticks_low;
         case TIMER_IRQSTAT:
             return s->irqstat; // ~0; // s->irqstat;
-        case TIMER_IRQLATCH:
-            return 0xffffffff;
-
       default:
+        if (addr == s->irqlatch) {
+            return 0xffffffff;
+        }
         break;
     }
     return 0;
@@ -317,11 +331,19 @@ static const VMStateDescription vmstate_ipod_touch_timer = {
     }
 };
 
+static const Property ipod_touch_timer_properties[] = {
+    DEFINE_PROP_UINT32("irqlatch", IPodTouchTimerState, irqlatch, TIMER_IRQLATCH),
+    /* Rate timer 4 counts down at. 0 keeps the S5L8720 model's 10 MHz; the
+     * S5L8900 kernel (xnu-933) loads 120000 for its 10 ms tick, i.e. 12 MHz. */
+    DEFINE_PROP_UINT32("freq-hz", IPodTouchTimerState, freq_hz, 0),
+};
+
 static void s5l8900_timer_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_ipod_touch_timer;
+    device_class_set_props(dc, ipod_touch_timer_properties);
     device_class_set_legacy_reset(dc, ipod_touch_timer_reset);
 
 }
