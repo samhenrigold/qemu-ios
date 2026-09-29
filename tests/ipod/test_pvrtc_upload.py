@@ -47,6 +47,7 @@ static int cpu_memory_rw_debug(CPUState*c,uint32_t addr,uint8_t*d,size_t n,int w
     assert(addr==2 && !write && n==sizeof(deleted)); memcpy(d,&deleted,n);return 0;
 }
 ''' + decoder + helpers + r'''
+static void gles_surface_forget(GLenum target) { (void)target; }   /* no IOSurfaces here */
 static int64_t dispatch(unsigned slot,const uint32_t*a) {CPUState*cpu=NULL;switch(slot) {
 ''' + cases + r'''
 default: abort();}}
