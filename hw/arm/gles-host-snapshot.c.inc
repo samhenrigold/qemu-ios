@@ -418,15 +418,20 @@ static void snap_put_map(SnapW *w, GHashTable *t, size_t value_size)
     }
 }
 
-/* value_size 0: the value is the pointer-sized integer itself. */
-static GHashTable *snap_get_map(SnapR *r, GHashTable *t, size_t value_size)
+/* value_size 0: the value is the pointer-sized integer itself. A value is
+ * allocated as `alloc` bytes (>= value_size), the rest zeroed. */
+static GHashTable *snap_get_map(SnapR *r, GHashTable *t, size_t value_size, size_t alloc)
 {
     uint32_t n = sr32(r);
     for (uint32_t i = 0; i < n && !r->bad; i++) {
         uint32_t k = sr32(r), len;
         if (value_size) {
             const uint8_t *p = srbytes(r, &len);
-            if (p && len == value_size) g_hash_table_replace(t, GUINT_TO_POINTER(k), g_memdup2(p, len));
+            if (p && len == value_size) {
+                void *v = g_malloc0(MAX(alloc, len));
+                memcpy(v, p, len);
+                g_hash_table_replace(t, GUINT_TO_POINTER(k), v);
+            }
         } else {
             g_hash_table_replace(t, GUINT_TO_POINTER(k), GUINT_TO_POINTER(sr32(r)));
         }
@@ -966,7 +971,7 @@ static void snap_get_host(SnapR *r, GLESHost *h)
     h->bound_renderbuffer = sr32(r);
     h->bound_framebuffer = sr32(r);
     if (!h->fbo_drawable) h->fbo_drawable = g_hash_table_new(g_direct_hash, g_direct_equal);
-    snap_get_map(r, h->fbo_drawable, 0);
+    snap_get_map(r, h->fbo_drawable, 0, 0);
     h->unpack_alignment = sr32(r);
     h->unpack_row_bytes = sr32(r);
     h->pack_alignment = sr32(r);
@@ -990,7 +995,7 @@ static void snap_put_tables(SnapW *w, GHashTable *buffers, GHashTable *surfaces,
 {
     sw32(w, next_buffer);
     snap_put_buffers(w, buffers);
-    snap_put_map(w, surfaces, sizeof(GLESSurface));
+    snap_put_map(w, surfaces, GLES_SURFACE_SNAP_BYTES);    /* not the page list: re-read at the next bind */
     snap_put_map(w, rb_sized, 0);
     snap_put_map(w, pvrtc, sizeof(GLESPVRTC));
 }
@@ -1000,9 +1005,9 @@ static uint32_t snap_get_tables(SnapR *r, GHashTable *buffers, GHashTable *surfa
 {
     uint32_t next = sr32(r);
     snap_get_buffers(r, buffers);
-    snap_get_map(r, surfaces, sizeof(GLESSurface));
-    snap_get_map(r, rb_sized, 0);
-    snap_get_map(r, pvrtc, sizeof(GLESPVRTC));
+    snap_get_map(r, surfaces, GLES_SURFACE_SNAP_BYTES, sizeof(GLESSurface));
+    snap_get_map(r, rb_sized, 0, 0);
+    snap_get_map(r, pvrtc, sizeof(GLESPVRTC), sizeof(GLESPVRTC));
     return next;
 }
 

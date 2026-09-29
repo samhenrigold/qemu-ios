@@ -38,7 +38,6 @@ tests/ipod/test_amc_aac.py             its C slice reads IPodTouchAMCState.buf_b
 tests/ipod/test_app_ledger.py          mock predates check_applaunch taking procs (procs.spawn on None)
 tests/ipod/test_battery_bridge.py      its C slice no longer sees object_property_parse/g_strdup_printf (include set changed)
 tests/ipod/test_dsi_fifo.py            its C slice calls dsi_lane_mask/dsi_note_dcs/dsi_cmd_bits, renamed or made static
-tests/ipod/test_gles_surface.py        its C slice uses CA_FOURCC_A008, not declared by the header it includes
 tests/ipod/test_gles_drawable_storage.py its C slice calls gles_guest_fault_pending, not declared by the header it includes
 tests/ipod/test_launch.py              mock passes an int where dismiss_reorder_tip expects an AgentControl (.qmp)
 tests/ipod/test_multitouch_frames.py   its C slice reads IPodTouchMultitouchState.profile, gone from the model
