@@ -209,7 +209,7 @@ def main():
         subprocess.run(["cp", "-cR", a.nand_clone, a.nand], check=True)  # APFS clone: instant, copy-on-write
         subprocess.run(["chmod", "-R", "u+w", a.nand], check=True)
     machine = "ipad1," + ipad1_boot.boot_options(a)
-    if os.environ.get("IPAD1_MACHINE_EXTRA"):   # e.g. iop-core=on (the IOP core gates)
+    if os.environ.get("IPAD1_MACHINE_EXTRA"):   # e.g. iop-core=off (the HLE, for comparison)
         machine += "," + os.environ["IPAD1_MACHINE_EXTRA"]
     if a.nand_overlay:
         overlay = os.path.abspath(a.overlay) if a.overlay else f"{td}/overlay"

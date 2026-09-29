@@ -1,5 +1,7 @@
 # iPad 1 / iOS 5 spike (and what 4.3 already needs)
 
+> 2026-09-29: the IOP core is now the default and the v3 instrument below is deleted; see "The IOP core as the default" at the end for what 4.3.5 and 5.1.1 met on it.
+
 A bounded probe (2026-09-28, branch `ios5-spike` off `ipad1` @ `082b45e77d`) of iOS 5.1.1 (9B206)
 on the `ipad1` machine, with 5.0.1 (9A405) and 4.3.5 (8L1) read alongside. The purpose is the
 inventory, not the boot: each blocker is named by emulator component and by its class in
@@ -152,3 +154,35 @@ files, decrypted components, `dt-*.diff`, `gli-dispatch-9B206.tsv`, the extracte
 images, and the small drivers used here (`boot9.py` headless boot + QMP register/memory dump,
 `kcdis.py`/`ibdis.py` capstone disassembly with literal resolution, `dtdiff.py`/`dtnode.py`,
 `kcinfo.py`, `iopfw.py`). Boot clones and the 9B206 device build were deleted.
+
+## The IOP core as the default (branch `iop-core-2`, 2026-09-29)
+
+`iop-core=on` is now the machine's default: the firmware the kernel uploads runs on the arm946 second core
+(`hw/arm/s5l8930_iop_core.c`). The v3 table instrument above is deleted; the HLE serves only the iBoot-817/931
+firmware (iOS 3.2-4.2) with `iop-core=off` and refuses an EmbeddedIOP-20+ layout with a warning. What each
+build met on the core, with the fix and its class (LightTouchMac `docs/fidelity-ledger.md`, `docs/smoke.md`):
+
+| Build | Met | Cause | Fix | Class |
+|---|---|---|---|---|
+| 4.3.5 | root remount EIO after fsck's repair | the CDMA applied its inline AES on device-FIFO writes and skipped it on reads: EmbeddedIOP-20's page writes (AES flag set; 4.2.1's are not) reached the plaintext store encrypted | device-FIFO channels leave the data alone both ways | R (CDMA) |
+| 4.3.5 | `fsck_hfs` (NO WRITE) SIGFPE | the root volume the matrix seal boot's panic left dirty; the HLE does the same; one clean power-off clears it | none; smoke #26 | unclassified |
+| 4.3.5 | reboot: "IOP: timed out waiting for workloop to process completed command" | AppleD1815PMU's restart (vtable +0x358: `0x7b <- 0x0b`, 4.2.1 too) was stored and ignored, so PEHaltRestart spun (`b .`) with interrupts on and the next diagnostic ping's return was never processed; 'slep' is not on the restart path | the PMU restart resets the machine; the IOP core resets with it (a bus-less device the reset walk missed: second boot "startup ping failed") | H (PMU, row 15) / R |
+| 4.3.5 | power-off slider never completes | SpringBoard waits on something at shutdown (HLE too) | power-off tested through launchd's `reboot2(RB_HALT)`: `pmu go stdby`, boot 2 without rescan | smoke #27 |
+| all | 7B500 seal boot stalled at FPart Init (HLE path) | iBoot-817's read-modify-write of FMI control (3 -> 3) was counted as a second page transfer | a transfer starts on entering read mode or raising bit 7 | R (H2FMI) |
+| 5.1.1 | "Reading CSR register while channel is disabled" 1 s in (HLE and core) | CDMA global +0x10/+0x14 are the enabled-channel status (iBoot's, the IOP firmware's and AppleCDMA-300.8's enable helpers read them), not a pending bitmap | read back `enabled` | R (CDMA) |
+| 5.1.1 | no FMI command ever (what the section above took for a missing IOP->AP event) | AppleIOPFMI-49's `_fmiInitVirtToPhysMap` spun on an empty `ce-bitmap`: iBoot-1219 puts the NAND geometry on flash-controller0, the kboot fill wrote only the 4.x `disk` node | the kboot fill writes whichever node has the keys, `ce-bitmap` 0x0f0f | P (kboot) |
+| 5.1.1 | keybag/seal one-shots never ended | RB_HALT restarts ("pmu restarting") with USB power attached | one-shots run with `-no-reboot` | smoke #28 |
+| 5.1.1 | SpringBoard runs, the screen stays on the Apple logo | no GPU; 9B206 has no GL shim, `ca_ogl` false in the manifest | – | GL (absent) |
+| 5.1.1 | `iboot=` seal boot exits in 1 s | iBoot-1219's epoch (smoke #7) | sealed through a kboot bundle instead | P |
+| 7B500 | stock restore (`restore-smoke --erase`) failed at verify, then at the kernelcache | every 4-byte FIFO pop memmoved the whole read FIFO (verify at ~1 MB/s); a page write took whatever meta was in a 64-byte FIFO and a meta chain finishing after the data never completed: IOP panic "h2fmi_write_multi: Timeout waiting for CDMA during successful NAND write operation" | O(1) pops; a page write waits for data and meta, each FIFO completes its own chain | R (H2FMI) |
+| 4.2.1, 4.3.5 | "SDIO In Reset", Wi-Fi off | the SDHC had only its card-interrupt bits | register-level SDHCI 2.0 host, CDMA-fed data port | R (SDHC) |
+| 4.2.1 | checkpoint restore, then no power-off | no vmstate for the core's firmware mapping or the H2FMI, CDMA's stalled/sinking chains not migrated | migrated (CDMA vmstate 4, older streams still load) | R |
+
+Ring 1 (IOP->AP) carries the firmware's console only ('tty ' records in the 'cnfg' message buffer); the
+kernel prints them. `IOP_RING_TRACE=1` (core only) logs control and FMI commands at both doorbells, checks
+every read's DMA segments against the store and prints ring-1 records; `H2FMI_TRACE=1` logs the controller.
+
+Gates on this branch (rebased on ipad1 464fd1215f), core default: `fresh-device.sh` 7B500 and 8C148 (devices
+prepared on the core) PASS; `regress.py` boot, usbmux, afc, persist, wifi, net, audio PASS (one check at a
+time); `restore-smoke.py` PASS, `--erase` PASS; 4.3.5 launchd power-off and reboot; checkpoint -> restore ->
+power-off. `iop-core=off`: 7B500 and 8C148 fresh-device PASS, HLE Wi-Fi up.
