@@ -18,10 +18,22 @@ with working touch; lockdownd reports the device activated.
   (erased pages read all ones, a program only clears bits, an erased page reads back as clean). On a
   store with real FTL spares a Settings change survives a clean power-off (the PMU shutdown path) and
   the next boot; after a hard quit the FTL's own restore rebuilds its tables (see debts).
-- USB: the wrangler takes its PHY and publishes its host and device nubs; the device idles into sleep
-  (`pmu go hib`) without a panic. Waking is not modelled: the kernel parks in `ml_arm_sleep` with
-  interrupts masked for the PMU to cut the AP, and the resume path (bootrom/LLB back into the kernel)
-  is skipped by the direct iBoot boot (debt 9).
+- USB: the wrangler takes its PHY and publishes its host and device nubs. Untethered the device idles
+  into sleep (`pmu go hib`) without a panic. Waking is not modelled: the kernel parks in `ml_arm_sleep`
+  with interrupts masked for the PMU to cut the AP, and the resume path (bootrom/LLB back into the kernel)
+  is skipped by the direct iBoot boot (debt 9). With `usb-tcp-addr` the OTG core talks to usbmuxd-qemu as
+  on the 2G: the PMU reports the host on the cable (MBCS1 USBPRES|USBOK, power source "kind 16384", 500 mA,
+  no idle sleep), IOIpodUSBDevice starts its stack once ptpd has registered PTP (a FirmwareKit n45 bake
+  keeps usbptpd), the host enumerates 05ac:1291 with the UDID as its serial, and the mux answers v1.0.
+  Lockdown answers unpaired and pairs; a session needs SSLv3 on the host (1.x lockdownd speaks nothing
+  newer): with an SSLv3 client ProductType iPod1,1 / Activated, AFC lists and round-trips 70000 bytes.
+  iBoot's recovery mode enumerates too (05ac:1280).
+- Buttons: `qemu_ios_ui_button` Home and Hold drive the same pads as the Cmd chords
+  (`ipod_touch_1g_press_button`); the 1G has no volume buttons. `system_powerdown` is the user's gesture,
+  as on the 2G and the iPad: Home, Hold 3.5 s, drag the "slide to power off" knob (65,68 -> 295);
+  1.1 ends in `pmu go stdby` and QEMU exits about 15 s after the request.
+- Epoch: POWER_ID[31:24] is the epoch iBoot-204's miu_init compares inline (2 for 1.1-1.1.2, 3 for
+  1.1.3-1.1.5), read off the staged iBoot by it_iboot.c's finder, as the 2G's direct-iboot does.
 - GL: on a device from `imgtools/ipod1g_device.py prepare` LayerKit composites through the host GL bridge
   (`LK_ENABLE_OGL=1`, the guest package's `OpenGLES-1x` hook, the QEMU_CALL register): the home screen, app
   zooms, scrolls (docs/ipod/from-ipsw.md, "1.x (the 1G)"). The set's own image stays software LayerKit.
@@ -47,7 +59,8 @@ The CPU is the default arm1176 (`-cpu max` faults in iBoot). NOR is written by i
 copy it. SpringBoard configures at about 60 s of guest time; `screendump` then. Keys: Cmd+Shift+H home,
 Cmd+L power (headless: QMP `input-send-event` for taps, as `tests/ipod/regress.py` does).
 
-Machine properties: `bootrom`, `iboot`, `nand`, `nand-overlay`, `usb-wrangler-quirk` (bool, default
+Machine properties: `bootrom`, `iboot`, `nand`, `nand-overlay`, `usb-tcp-addr` (host:port of
+usbmuxd-qemu's QEMU backend, else `IT_USB_TCP`; empty = no cable), `usb-wrangler-quirk` (bool, default
 on: the phyRegistered guard, see debts), `tvout-workaround=<paddr>` (default off), `guest-package`,
 `gles-debug`, and the read-only `gles-rejects`, `gles-contexts`.
 
@@ -71,7 +84,7 @@ the block does, P a documented quirk/patch, S stub.
 | NOR | `pflash_cfi02` on `-drive if=pflash` | shared QEMU model | R |
 | Timer | `ipodtouch.timer`, `irqlatch=0xF8`, `freq-hz=12000000`; timers 0-3 unmodelled (logged) | variant by property | R (timer 4) / S (0-3) |
 | Clock | `ipodtouch.clock`, `s5l8900=on` reset presets | variant | H |
-| SYSIC / power controller | `ipodtouch.sysic`, `direct-boot`, `epoch=2`, `s5l8900` mask semantics (+0xC down, +0x10 up), 7 GPIO groups | variant | R |
+| SYSIC / power controller | `ipodtouch.sysic`, `direct-boot`, epoch from the staged iBoot (`it_iboot_epoch`), `s5l8900` mask semantics (+0xC down, +0x10 up), 7 GPIO groups | variant | R |
 | GPIO | `ipodtouch.gpio`, 0x20 pads | variant | R |
 | Chip ID | `ipodtouch.chipid`, `word1/word2` | variant | R |
 | UART x5 | `exynos4210.uart`, `s5l8720-irq`; optional `tx-char-ns` pacing (off) | shared | R |
@@ -82,9 +95,9 @@ the block does, P a documented quirk/patch, S stub.
 | AES | `ipodtouch.aes`, `addr-offset=0x80000000`, `s5l8900-compat` (devos50's UID/key-schedule convention) | variant | H |
 | SHA1 | `ipodtouch.sha1`, hardware buffer readable | shared | R |
 | FMC NAND + ECC + ADM | `s5l8900.fmc` (base + overlay page store, erase markers, program = AND), `s5l8900.nand-ecc` (stub), `s5l8900.adm` (the ADM firmware's command interface: 0x200/0x300 read, 0x400 multi-bank program, 0x500 program, 0x600 erase; FTL metadata in data3; result mailbox +0x30 with clean-page status) | ported, command set completed | R (store) / S (ECC) / H (ADM firmware) |
-| USB OTG + PHY | `synopsys` OTG with the 8900 hwcfg, `ipodtouch.usbphys` | shared | R (wrangler, PHY, nubs up; no host attached yet) |
+| USB OTG + PHY | `synopsys` OTG with the 8900 hwcfg and `usb-tcp-addr`, `ipodtouch.usbphys` | shared | R (device mode to usbmuxd; the core's reset ConIDStsChng, GOTGCTL ID/session status, the interrupt line on GAHBCFG, EP0 PktCnt) |
 | DMA | two `pl080` | shared QEMU model | R |
-| I2C0 lis302dl, I2C1 pcf50633 | shared; PMU `shutdown-reg=0x0c` (1.x: 0x0a is the fourth IRQ mask) | variant | H |
+| I2C0 lis302dl, I2C1 pcf50633 | shared; PMU `shutdown-reg=0x0c` (1.x: 0x0a is the fourth IRQ mask), cable level on MBCS1 (`usb-status-reg=0x4b`, `-bits=0x03`) | variant | H |
 | SDIO | `ipodtouch.sdio` | shared | H |
 | TVOut (mixer1/2, sdo) | `ipodtouch.tvout` | shared | S |
 | MBX (GPU) | the 2G's `ipodtouch.mbx` (ids, MMU handshake, interrupt mask/status/clear, the software interrupt), interrupt 0xC; no engine (GL goes to the host bridge) | shared | R (interrupt block) / H (idle, no engine) |
@@ -137,6 +150,18 @@ the block does, P a documented quirk/patch, S stub.
    model), and the buttons drive only their GPIO pads, not the PMU wake source the DT names
    (`button-wake`: PMU interrupt 0x0a, `'STAT'` 0x100).
 8. **Panel/backlight (S)**: `s5l8900.lcdpanel` answers ID reads only; brightness comes from the PMU.
+   The PMU model's backlight is the D1759's (0x10 bit 6, 0x30), which 1.x never writes, so the level stays
+   255 and `qemu_ios_ui_display_sleeping` never reports the 1G asleep (the panel's own enable does go off:
+   `AppleMerlotLCD::_lcdEnable: 0`).
+10. **Wi-Fi MAC and the UDID (S)**. No Marvell 88W8686 card, and the device tree's `sdio` node carries a
+   zero `local-mac-address` (iBoot-204 does not fill it from the NOR SysCfg here), so lockdownd's UDID is
+   SHA1(serial + "00:00:00:00:00:00" + "") rather than FirmwareKit's identity UDID (serial + Wi-Fi + BT MACs).
+   Consistent across boots; usbmuxd and lockdown agree on it.
+11. **iBoot-204.3.16's NAND (P, FirmwareKit)**. 4B1 (and by version 4A93/4A102) pass miu_init with the
+   read-off epoch 3, then iBoot's WMR (FIL `C003`) refuses the store N45NAND writes for 3A101a's (`C002`):
+   `[WMR:ERR] read only version (1, 0)`, `no signature or no production format`, `NAND failed
+   initialisation`, `root filesystem mount failed`, recovery mode (the iTunes screen; USB 05ac:1280).
+   Seen with `debug-uarts=3` in the NOR nvram (4B1's iBoot prints nothing without it).
 
 ## Files
 

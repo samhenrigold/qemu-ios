@@ -142,6 +142,10 @@ typedef struct IPodTouch1GMachineState {
 
     bool kbd_cmd, kbd_shift;
 
+    char *usb_tcp_addr;              /* host bridge (usbmuxd-qemu) host:port, empty = no link */
+    QEMUTimer *pwroff_timer;         /* system_powerdown: the hold-and-slide gesture */
+    int pwroff_phase, pwroff_step;
+
     /* guest services: the GL bridge (QC_GLES*) and guest-package delivery, on the QEMU_CALL cp15 register */
     GuestPackage pkg;
     bool gles_debug;

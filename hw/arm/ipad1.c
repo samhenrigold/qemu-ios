@@ -1029,17 +1029,7 @@ static void ipad1_init(MachineState *machine)
     dev = ipod_touch_init_usb_otg(ipad1_irq(s, S5L8930_IRQ_USB_OTG),
                                   s5l8930_usb_hwcfg);
     s->usb_otg = S5L8900USBOTG(dev);
-    if (s->usb_tcp_addr && s->usb_tcp_addr[0]) {
-        char *colon = strrchr(s->usb_tcp_addr, ':');
-
-        s->usb_otg->server_port = colon ? atoi(colon + 1) : 0;
-        if (!s->usb_otg->server_port) {
-            s->usb_otg->server_port = 1235;
-        }
-        s->usb_otg->server_host = colon && colon > s->usb_tcp_addr
-            ? g_strndup(s->usb_tcp_addr, colon - s->usb_tcp_addr)
-            : g_strdup("127.0.0.1");
-    }
+    synopsys_usb_set_tcp_addr(s->usb_otg, s->usb_tcp_addr);
     /* No bridge: a built-in host enumerates and configures the device, which
      * is what keeps an iPad on a Mac charging and out of deep sleep. */
     s->usb_otg->builtin_host = !s->usb_otg->server_host && !getenv("IT_USB_TCP");

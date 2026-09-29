@@ -44,11 +44,15 @@
 #include "hw/arm/guest-services/gles.h"
 #include "hw/arm/ipod_touch_aes.h"
 #include "hw/arm/ipod_touch_sha1.h"
+#include "hw/arm/ipod_touch_buttons.h"
+#include "hw/arm/ipod_touch_pcf50633_pmu.h"
+#include "hw/arm/it_iboot.h"
 #include "hw/arm/s5l8900_nand_ecc.h"
 #include "hw/arm/s5l8900_lcd_panel.h"
 #include "hw/i2c/ipod_touch_i2c.h"
 #include "system/system.h"
 #include "system/reset.h"
+#include "system/runstate.h"
 #include "system/block-backend.h"
 #include "system/blockdev.h"
 #include "crypto/cipher.h"
@@ -258,8 +262,8 @@ static void n45_usb_wrangler_quirk(void *opaque)
 
 /* ---- boot images ------------------------------------------------------- */
 
-static void n45_stage(IPodTouch1GMachineState *s, const char *what, const char *path,
-                      hwaddr base, size_t capacity)
+static size_t n45_stage(IPodTouch1GMachineState *s, const char *what, const char *path,
+                        hwaddr base, size_t capacity)
 {
     g_autofree char *data = NULL;
     g_autoptr(GError) gerr = NULL;
@@ -282,6 +286,7 @@ static void n45_stage(IPodTouch1GMachineState *s, const char *what, const char *
         error_report("iPod-Touch-1G: cannot stage %s at 0x%" HWADDR_PRIx, what, base);
         exit(1);
     }
+    return size;
 }
 
 static void n45_write32(IPodTouch1GMachineState *s, hwaddr addr, uint32_t v)
@@ -294,7 +299,18 @@ static void n45_write32(IPodTouch1GMachineState *s, hwaddr addr, uint32_t v)
 static void n45_stage_boot_chain(IPodTouch1GMachineState *s)
 {
     n45_stage(s, "bootrom", s->bootrom_path, N45_VROM_BASE, N45_VROM_SIZE);
-    n45_stage(s, "iboot", s->iboot_path, N45_IBOOT_BASE, N45_IBOOT_SIZE);
+    size_t iboot = n45_stage(s, "iboot", s->iboot_path, N45_IBOOT_BASE, N45_IBOOT_SIZE);
+
+    /*
+     * miu_init panics "Epoch Mismatch" unless POWER_ID[31:24] is the epoch compiled into this iBoot
+     * (2 for 1.1-1.1.2, 3 for 1.1.3-1.1.5), which the LLB we skip would have latched: read it off the
+     * staged image, as the 2G's direct-iboot does (it_iboot.c).
+     */
+    s->sysic->epoch = it_iboot_epoch(s->nsas, N45_IBOOT_BASE, iboot);
+    if (!s->sysic->epoch) {
+        warn_report_once("iPod-Touch-1G: no security epoch found in iBoot '%s'; "
+                         "iBoot will panic \"Epoch Mismatch\"", s->iboot_path);
+    }
 
     /* Point the ROM's two 8900 jump-table slots at the LLB-window stubs. */
     n45_write32(s, N45_VROM_JT_8900_VERIFY, N45_LLB_BASE + 0x80);
@@ -383,6 +399,99 @@ static void n45_button(IPodTouch1GMachineState *s, uint32_t gpio, uint32_t gpio_
     s->sysic->gpio_int_status[group] |= 1u << bit;
     qemu_irq_raise(s->sysic->gpio_irqs[group]);
 }
+
+/* The app bridge's buttons (qemu_ios_ui_button), on the chords' pads; the 1G has no volume buttons. */
+void ipod_touch_1g_press_button(IPodTouchButton button, bool down)
+{
+    IPodTouch1GMachineState *s = (IPodTouch1GMachineState *)
+        object_dynamic_cast(OBJECT(qdev_get_machine()), TYPE_IPOD_TOUCH_1G_MACHINE);
+
+    if (s && button == IPOD_TOUCH_BUTTON_HOME) {
+        n45_button(s, N45_GPIO_BUTTON_HOME, N45_GPIO_BUTTON_HOME_IRQ, down);
+    } else if (s && button == IPOD_TOUCH_BUTTON_POWER) {
+        n45_button(s, N45_GPIO_BUTTON_POWER, N45_GPIO_BUTTON_POWER_IRQ, down);
+    }
+}
+
+/*
+ * QMP system_powerdown -> the user's power-off gesture, as on the 2G and the iPad: the one clean
+ * shutdown path (volumes unmounted, the FTL closed) ends in the PMU's power-off write, where QEMU
+ * exits. Home first (quits a foreground app), hold Hold until SpringBoard raises "slide to power
+ * off", then drag its knob along the track. QEMU_CLOCK_VIRTUAL throughout: SpringBoard's hold
+ * threshold is guest time. The knob row is 1.1's sheet (IT_PWROFF_KNOB_Y overrides, as on the 2G).
+ */
+enum { PWROFF_IDLE, PWROFF_HOME, PWROFF_WAKE, PWROFF_HOLD, PWROFF_SETTLE, PWROFF_DRAG };
+#define PWROFF_DRAG_STEPS 24
+#define PWROFF_KNOB_X     65
+#define PWROFF_KNOB_Y     68
+#define PWROFF_TRACK_END  295
+
+static void n45_pwroff_arm(IPodTouch1GMachineState *s, int ms)
+{
+    timer_mod(s->pwroff_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + (int64_t)ms * SCALE_MS);
+}
+
+static void n45_pwroff_touch(IPodTouch1GMachineState *s, int px, bool down)
+{
+    const char *e = getenv("IT_PWROFF_KNOB_Y");
+    int py = e ? atoi(e) : PWROFF_KNOB_Y;
+
+    ipod_touch_multitouch_set_finger(s->mt, 0, px / 320.0f, 1.0f - py / 480.0f, down);
+}
+
+static void n45_pwroff_tick(void *opaque)
+{
+    IPodTouch1GMachineState *s = opaque;
+
+    switch (s->pwroff_phase) {
+    case PWROFF_HOME:
+        n45_button(s, N45_GPIO_BUTTON_HOME, N45_GPIO_BUTTON_HOME_IRQ, false);
+        s->pwroff_phase = PWROFF_WAKE;
+        n45_pwroff_arm(s, 2500);            /* the app quits, SpringBoard is in front */
+        break;
+    case PWROFF_WAKE:
+        n45_button(s, N45_GPIO_BUTTON_POWER, N45_GPIO_BUTTON_POWER_IRQ, true);
+        s->pwroff_phase = PWROFF_HOLD;
+        n45_pwroff_arm(s, 3500);            /* > SpringBoard's hold threshold */
+        break;
+    case PWROFF_HOLD:
+        n45_button(s, N45_GPIO_BUTTON_POWER, N45_GPIO_BUTTON_POWER_IRQ, false);
+        s->pwroff_phase = PWROFF_SETTLE;
+        n45_pwroff_arm(s, 1500);            /* the sheet slides in */
+        break;
+    case PWROFF_SETTLE:
+        n45_pwroff_touch(s, PWROFF_KNOB_X, true);
+        s->pwroff_phase = PWROFF_DRAG;
+        s->pwroff_step = 0;
+        n45_pwroff_arm(s, 80);
+        break;
+    case PWROFF_DRAG: {
+        int i = ++s->pwroff_step;
+        n45_pwroff_touch(s, PWROFF_KNOB_X + (PWROFF_TRACK_END - PWROFF_KNOB_X) * i / PWROFF_DRAG_STEPS,
+                         i < PWROFF_DRAG_STEPS);
+        if (i < PWROFF_DRAG_STEPS) {
+            n45_pwroff_arm(s, 80);
+        } else {
+            s->pwroff_phase = PWROFF_IDLE;  /* the guest halts now; a missed slide can be requested again */
+        }
+        break;
+    }
+    }
+}
+
+static void n45_powerdown_req(Notifier *n, void *opaque)
+{
+    IPodTouch1GMachineState *s = IPOD_TOUCH_1G_MACHINE(qdev_get_machine());
+
+    if (s->pwroff_phase != PWROFF_IDLE) {
+        return;
+    }
+    n45_button(s, N45_GPIO_BUTTON_HOME, N45_GPIO_BUTTON_HOME_IRQ, true);
+    s->pwroff_phase = PWROFF_HOME;
+    n45_pwroff_arm(s, 150);                 /* a tap, released long before Hold goes down (smoke #19) */
+}
+
+static Notifier n45_powerdown_notifier = { .notify = n45_powerdown_req };
 
 static void n45_kbd_event(DeviceState *dev, QemuConsole *src, InputEvent *evt)
 {
@@ -510,8 +619,7 @@ static void n45_machine_init(MachineState *machine)
 
     /* system controller: 7 GPIO interrupt groups */
     dev = qdev_new("ipodtouch.sysic");
-    qdev_prop_set_bit(dev, "direct-boot", true);   /* no SecureROM latched the epoch */
-    qdev_prop_set_uint32(dev, "epoch", 2);
+    qdev_prop_set_bit(dev, "direct-boot", true);   /* no LLB latched the epoch: n45_stage_boot_chain */
     qdev_prop_set_bit(dev, "s5l8900", true);
     s->sysic = IPOD_TOUCH_SYSIC(dev);
     memory_region_add_subregion(sysmem, N45_SYSIC_BASE, &s->sysic->iomem);
@@ -609,7 +717,9 @@ static void n45_machine_init(MachineState *machine)
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, n45_irq(s, N45_ADM_IRQ));
 
     /* USB OTG + PHY */
+    /* usb-tcp-addr: the host bridge (usbmuxd-qemu) the device-mode core talks to, as on the 2G */
     dev = ipod_touch_init_usb_otg(n45_irq(s, N45_USB_OTG_IRQ), (uint32_t *)s5l8900_usb_hwcfg);
+    synopsys_usb_set_tcp_addr(S5L8900USBOTG(dev), s->usb_tcp_addr);
     sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
     memory_region_add_subregion(sysmem, N45_USBOTG_BASE, &S5L8900USBOTG(dev)->iomem);
     dev = qdev_new("ipodtouch.usbphys");
@@ -645,6 +755,11 @@ static void n45_machine_init(MachineState *machine)
          * DT's pmu node: interrupt-parent gpio, interrupts <0x55 1>). */
         I2CSlave *pmu = i2c_slave_new("pcf50633", 0x73);
         qdev_prop_set_uint8(DEVICE(pmu), "shutdown-reg", 0x0c);
+        /* MBCS1 USBPRES|USBOK: a host on the cable. Without it the power source reads "ext 0",
+         * the USB stack stops ("cable removed") and the device deep-sleeps after the boot. */
+        qdev_prop_set_uint8(DEVICE(pmu), "usb-status-reg", 0x4b);
+        qdev_prop_set_uint8(DEVICE(pmu), "usb-status-bits", 0x03);
+        PCF50633(pmu)->usb_cable = (s->usb_tcp_addr && s->usb_tcp_addr[0]) || getenv("IT_USB_TCP");
         i2c_slave_realize_and_unref(pmu, IPOD_TOUCH_I2C(dev)->bus, &error_fatal);
         qdev_connect_gpio_out(DEVICE(pmu), 0, qdev_get_gpio_in(DEVICE(s->sysic), 0x55));
     }
@@ -685,6 +800,8 @@ static void n45_machine_init(MachineState *machine)
 
     qemu_register_reset(n45_cpu_reset, s);
     qemu_input_handler_register(DEVICE(s->cpu), &n45_kbd_handler);
+    s->pwroff_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, n45_pwroff_tick, s);
+    qemu_register_powerdown_notifier(&n45_powerdown_notifier);
 }
 
 /* ---- properties -------------------------------------------------------- */
@@ -705,6 +822,7 @@ N45_STR_PROP(bootrom_path)
 N45_STR_PROP(iboot_path)
 N45_STR_PROP(nand_path)
 N45_STR_PROP(nand_overlay)
+N45_STR_PROP(usb_tcp_addr)
 
 static void n45_get_usb_wrangler_quirk(Object *obj, Visitor *v, const char *name,
                                        void *opaque, Error **errp)
@@ -765,6 +883,9 @@ static void n45_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "nand", "NAND directory: bank<N>/<page>.page");
     object_class_property_add_str(klass, "nand-overlay", n45_get_nand_overlay, n45_set_nand_overlay);
     object_class_property_set_description(klass, "nand-overlay", "writable directory guest NAND programs land in");
+    object_class_property_add_str(klass, "usb-tcp-addr", n45_get_usb_tcp_addr, n45_set_usb_tcp_addr);
+    object_class_property_set_description(klass, "usb-tcp-addr",
+        "host:port of the USB host bridge (usbmuxd-qemu); empty = no cable (IT_USB_TCP)");
     object_class_property_add(klass, "usb-wrangler-quirk", "bool", n45_get_usb_wrangler_quirk,
                               n45_set_usb_wrangler_quirk, NULL, NULL);
     object_class_property_set_description(klass, "usb-wrangler-quirk",
