@@ -1277,23 +1277,12 @@ else
 endif
 
 slirp = not_found
-if not get_option('slirp').auto() or have_system
-  slirp = dependency('slirp', required: get_option('slirp'),
-                     method: 'pkg-config')
-  # slirp < 4.7 is incompatible with CFI support in QEMU.  This is because
-  # it passes function pointers within libslirp as callbacks for timers.
-  # When using a system-wide shared libslirp, the type information for the
-  # callback is missing and the timer call produces a false positive with CFI.
-  # Do not use the "version" keyword argument to produce a better error.
-  # with control-flow integrity.
-  if get_option('cfi') and slirp.found() and slirp.version().version_compare('<4.7')
-    if get_option('slirp').enabled()
-      error('Control-Flow Integrity requires libslirp 4.7.')
-    else
-      warning('Cannot use libslirp since Control-Flow Integrity requires libslirp >= 4.7.')
-      slirp = not_found
-    endif
-  endif
+# net_slirp_set_restrict()/netdev_set_restrict flip the running slirp's restrict
+# flag in place via slirp_set_restricted(), which only the vendored (patched)
+# libslirp carries -- so force the subproject over any system copy. A static
+# vendored libslirp also sidesteps the CFI false positive the shared one hit.
+if not get_option('slirp').disabled()
+  slirp = subproject('slirp', required: get_option('slirp')).get_variable('libslirp_dep')
 endif
 
 vde = not_found

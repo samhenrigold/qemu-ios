@@ -107,6 +107,11 @@ void qemu_ios_ui_reset(void);
 void qemu_ios_ui_powerdown(void);
 void qemu_ios_ui_quit(void);
 
+/* Flip a running user netdev's slirp restrict flag in place (id NULL/empty =
+ * the only user stack). restrict=false opens outbound networking without a
+ * link event, so the guest keeps its Wi-Fi association and DHCP lease. */
+void qemu_ios_ui_net_restrict(const char *id, bool restrict_);
+
 #ifdef __cplusplus
 }
 #endif

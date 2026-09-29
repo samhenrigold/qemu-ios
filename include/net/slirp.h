@@ -29,6 +29,11 @@
 
 void hmp_hostfwd_add(Monitor *mon, const QDict *qdict);
 void hmp_hostfwd_remove(Monitor *mon, const QDict *qdict);
+void hmp_netdev_set_restrict(Monitor *mon, const QDict *qdict);
+
+/* Flip a running user netdev's slirp restrict flag in place (see net/slirp.c).
+ * Used by the netdev_set_restrict monitor command and the app's UI shim. */
+int net_slirp_set_restrict(const char *id, bool restricted);
 
 void hmp_info_usernet(Monitor *mon, const QDict *qdict);
 

@@ -483,6 +483,44 @@ void qemu_ios_ui_reset(void)     { schedule_qmp(qmp_system_reset); }
 void qemu_ios_ui_powerdown(void) { schedule_qmp(qmp_system_powerdown); }
 void qemu_ios_ui_quit(void)      { schedule_qmp(qmp_quit); }
 
+/* --- network restrict flip ----------------------------------------------- */
+#ifdef CONFIG_SLIRP
+#include "net/slirp.h"
+
+struct net_restrict_req { char *id; bool restricted; };
+
+static void net_restrict_bh(void *opaque)
+{
+    struct net_restrict_req *r = opaque;
+    if (net_slirp_set_restrict(r->id, r->restricted) < 0) {
+        fprintf(stderr, "[net] no user netdev '%s' to set restrict\n",
+                r->id ? r->id : "(default)");
+    }
+    g_free(r->id);
+    g_free(r);
+}
+
+/* Flip a running user netdev's slirp restrict flag from the app, in place: no
+ * link event, so the guest keeps its Wi-Fi association and DHCP lease. Used to
+ * open networking after the Setup Assistant finishes (restrict=on through
+ * Setup avoids 5.x's live-internet Apple-ID stall). */
+void qemu_ios_ui_net_restrict(const char *id, bool restricted)
+{
+    if (!qemu_ios_ui_ready()) {
+        return;
+    }
+    struct net_restrict_req *r = g_new(struct net_restrict_req, 1);
+    r->id = (id && *id) ? g_strdup(id) : NULL;
+    r->restricted = restricted;
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), net_restrict_bh, r);
+}
+#else
+void qemu_ios_ui_net_restrict(const char *id, bool restricted)
+{
+    (void)id; (void)restricted;
+}
+#endif
+
 /* Agent operations use a separate mutex and an acquired lifetime reference;
  * they never touch CPU/device state or hold the BQL. */
 #include "hw/arm/ipod-agent.h"
