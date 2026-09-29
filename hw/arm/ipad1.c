@@ -490,9 +490,13 @@ static void ipad1_pwroff_tick(void *opaque)
         break;
     case PWROFF_WATCH:
         /* Still here: the gesture missed or the guest is stuck. Say so, and
-         * accept another request; the caller decides whether to hard-stop. */
-        warn_report("ipad1: system_powerdown: the guest has not halted %d s "
-                    "after the request", PWROFF_WATCH_MS / 1000);
+         * accept another request; the caller decides whether to hard-stop.
+         * A halt with the cable attached leaves QEMU running in the
+         * bootloader's power-off simulation: that one did halt. */
+        if (!s5l8930_d1815_guest_shutdown_confirmed()) {
+            warn_report("ipad1: system_powerdown: the guest has not halted %d s "
+                        "after the request", PWROFF_WATCH_MS / 1000);
+        }
         s->pwroff_phase = PWROFF_IDLE;
         break;
     }
