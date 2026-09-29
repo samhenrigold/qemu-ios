@@ -146,6 +146,9 @@ def build(ctx):
     z = zipfile.ZipFile(ctx.ipsw)
     restore = ctx.restore
     major = int(restore["ProductVersion"].split(".")[0])
+    # The baked helpers are linked for the 3.1+ dyld; 3.0's, like 2.x's, refuses LC_DYLD_INFO_ONLY
+    # ("dyld: unknown required load command 0x80000022") and SpringBoard never comes up with it_typein inserted.
+    guest_tools = tuple(int(x) for x in restore["ProductVersion"].split(".")[:2]) >= (3, 1)
     epoch = restore["DeviceMap"][0]["SCEP"]
     iboot = open(os.path.join(dec, "iBoot.bin"), "rb").read()
     kc_path = kernelcache_path(iboot)
@@ -196,9 +199,9 @@ def build(ctx):
     if m.get("packages") or opt.get("shell") or opt.get("ssh"):
         raise SystemExit("manifest asks for tool packages / a shell / ssh: iPod images carry no shell any more "
                          "(docs/archive/guest-services-plan.md); remove packages and options.shell/ssh")
-    if major >= 3 and not os.path.exists(os.path.join(ROOT, "build/ipod-guest/it_prefs")):
+    if guest_tools and not os.path.exists(os.path.join(ROOT, "build/ipod-guest/it_prefs")):
         raise SystemExit("build/ipod-guest/it_prefs missing (run contrib/it-prefs/build-ipod.sh)")
-    cfg = {"options": opt, "guest_tools_supported": major >= 3, "owners": os.path.join(work, "owners.txt"),
+    cfg = {"options": opt, "guest_tools_supported": guest_tools, "owners": os.path.join(work, "owners.txt"),
            "report": os.path.join(work, "bake.json"), "activation_hook": ctx.hook, "activation_hook_args": ctx.hook_args,
            "guest_package": os.path.abspath(ctx.a.guest_package or GUEST_PACKAGE)}
     json.dump(cfg, open(os.path.join(work, "bake-config.json"), "w"))
@@ -287,7 +290,7 @@ def bake(mnt, config):
     report["gles"] = "shim MBXGLEngine-%s" % gli if gli else "stock engine, software CA: " + problem
     report["gli"] = gli
     supported = cfg["guest_tools_supported"]
-    report["guest_tools"] = "installed" if supported else "omitted: current helpers require iOS 3+ dyld"
+    report["guest_tools"] = "installed" if supported else "omitted: current helpers require the iOS 3.1+ dyld"
     env = dict(os.environ, MNT=mnt, IT_GLES_SHIM="1" if gli else "0", IT_GLES_ENGINE=engine,
                IT_GUEST_TOOLS="1" if supported else "0")
     subprocess.run(["/bin/sh", os.path.join(HERE, "bake-guest-tools.sh")], env=env, check=True)
