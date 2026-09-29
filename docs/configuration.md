@@ -5,10 +5,10 @@ incremental; most existing `IT_*` variables still retain their documented behavi
 
 | Property | Values | Default | Legacy alias |
 | --- | --- | --- | --- |
-| `boot-args` | kernel command line, at most 255 bytes; empty disables injection | no override | `IT_BOOT_ARGS` |
-| `boot-args-delay-ms` | 0..3600000 virtual milliseconds | `2000` | `IT_BOOT_ARGS_DELAY_MS` |
-| `boot-args-repeat` | 0..1000000 writes; 0 still performs the initial write | `24` | `IT_BOOT_ARGS_REPEAT` |
-| `boot-args-interval-ms` | 1..3600000 virtual milliseconds | `500` | `IT_BOOT_ARGS_INTERVAL_MS` |
+| `boot-args` | kernel command line, at most 255 bytes; empty disables injection | no override | none: the property is the only input |
+| `boot-args-delay-ms` | 0..3600000 virtual milliseconds | `2000` | none |
+| `boot-args-repeat` | 0..1000000 writes; 0 still performs the initial write | `24` | none |
+| `boot-args-interval-ms` | 1..3600000 virtual milliseconds | `500` | none |
 | `bt` | `on`, `off` | `on` | `IT_BT`: leading `0` disables, otherwise enables |
 | `bt-latency-us` | unsigned 32-bit microseconds | `2000` | `IT_BT_LATENCY_US` |
 | `osk` | `on`, `off` | `off` | `IT_OSK`: any present value enables |
@@ -42,11 +42,14 @@ including aliases, boundaries and runtime rejection.
 
 ## Boot-argument scheduling
 
-`boot-args` and its three scheduling properties are fixed before machine startup.
-Explicit values override their environment aliases, including an explicitly empty
-`boot-args=` string. The command line is limited to the kernel buffer's 255 bytes;
-longer strings are rejected. An empty explicit command line disables command-line
-injection even when `IT_BOOT_ARGS` is set.
+`boot-args` and its three scheduling properties are fixed before machine startup and
+have no environment aliases (the `IT_BOOT_ARGS*` variables are ignored). The command
+line is limited to the kernel buffer's 255 bytes; longer strings are rejected. An
+empty command line disables injection. The string reaches the kernel two ways, both
+derived from the staged iBoot image by pattern (hw/arm/it_iboot.c, any iPod touch 2G
+build): its normal-boot command-line literal is redirected to the string before
+iBoot hands off, and the kernel's `boot_args.CommandLine` is rewritten on the timer
+until AMFI has latched it.
 
 The first timer write occurs after `boot-args-delay-ms`. Later writes use
 `boot-args-interval-ms`; an interval of zero is rejected to prevent a busy timer
