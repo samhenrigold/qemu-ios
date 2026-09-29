@@ -188,12 +188,61 @@ def magenta_fraction(ppm, step=1):
     return n / max(1, len(pix) // (3 * step))
 
 
-def agent(q, op, args="", body=b"", timeout=65):
-    """One local RPC; returns (exit_status, binary_output).
+AGENT_REQUEST_MAX = 256 * 1024      # include/hw/arm/ipod-agent.h: header line + body
+AGENT_RESPONSE_MAX = 1024 * 1024
+AGENT_PART = AGENT_REQUEST_MAX - 4097   # beside the longest header (4096 + newline)
+GUEST_EFBIG = -27                    # Darwin's EFBIG
 
-    A timeout is an unknown execution outcome, never a reason to retry a mutation.
-    Results for other callers are retained on this QMP connection. Use one shared
-    client per machine; competing QMP connections cannot consume each other's RPCs.
+
+def agent(q, op, args="", body=b"", timeout=65):
+    """Local RPC; returns (exit_status, binary_output).
+
+    `put` and `get` take files of any size: a put over one request goes as v3
+    `putpart` chunks (atomic on the guest: the last one renames the part file into
+    place), and a get the agent refuses as over 1 MiB is read back by `getrange`.
+    A put that needs chunks raises RuntimeError on an agent without `putpart`.
+    """
+    if op == "put" and len(body) > AGENT_PART:
+        return _agent_put_parts(q, args, body, timeout)
+    status, output = _agent_one(q, op, args, body, timeout)
+    if op == "get" and status == GUEST_EFBIG:
+        return _agent_get_ranges(q, args, timeout)
+    return status, output
+
+
+def _agent_put_parts(q, args, body, timeout):
+    path, _, mode = args.rpartition(" ")
+    status, hello = _agent_one(q, "ping", "", b"", timeout)
+    if status or b"putpart" not in hello.split():
+        found = hello.split(b"\n", 1)[0].decode("ascii", "replace") if not status else "ping status %d" % status
+        raise RuntimeError("guest agent (%s) has no putpart, and this %d-byte put is over its %d-byte "
+                           "request limit: upgrade it_agent to v3" % (found, len(body), AGENT_REQUEST_MAX))
+    for offset in range(0, len(body), AGENT_PART):
+        part = body[offset:offset + AGENT_PART]
+        final = offset + len(part) == len(body)
+        status, output = _agent_one(q, "putpart", "%d %d %s %s" % (offset, final, mode, path), part, timeout)
+        if status:
+            return status, output
+    return 0, b""
+
+
+def _agent_get_ranges(q, path, timeout):
+    # ponytail: not a snapshot; a file rewritten mid-read can tear. Fine for staged files.
+    data = bytearray()
+    while True:
+        status, output = _agent_one(q, "getrange", "%d %d %s" % (len(data), AGENT_RESPONSE_MAX, path),
+                                    b"", timeout)
+        if status:
+            return status, output
+        data += output
+        if len(output) < AGENT_RESPONSE_MAX:
+            return 0, bytes(data)
+
+
+def _agent_one(q, op, args, body, timeout):
+    """One request. A timeout is an unknown execution outcome, never a reason to retry
+    a mutation. Results for other callers are retained on this QMP connection. Use one
+    shared client per machine; competing QMP connections cannot consume each other's RPCs.
     """
     if any(c in op + args for c in "\r\n") or not op or " " in op:
         raise ValueError("invalid agent header")

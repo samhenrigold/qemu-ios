@@ -47,8 +47,8 @@ try:
         print('spawn', argv, status, repr(data[:100]), flush=True)
         return status, data
     import errno
-    status, hello = agent('ping'); assert status == 0 and hello.startswith(b'it_agent v2\nops ')
-    for op in (b'spawn', b'sync', b'chown', b'unlink', b'dlicon'):
+    status, hello = agent('ping'); assert status == 0 and hello.startswith(r.AGENT_HELLO.encode() + b'\nops ')
+    for op in (b'spawn', b'sync', b'chown', b'unlink', b'dlicon', b'putpart'):
         assert b' ' + op + b' ' in hello, op
     status, data = spawn('/bin/launchctl', 'list'); assert status == 0 and b'com.qemu.it-agent' in data
     assert spawn('/bin/launchctl', 'no-such-subcommand')[0] == 1
@@ -150,7 +150,7 @@ try:
             pass
         time.sleep(11)
         deadline = time.monotonic() + 90
-        while r.agent_ping(d.qmp, timeout=5) != 'it_agent v2':
+        while r.agent_ping(d.qmp, timeout=5) != r.AGENT_HELLO:
             assert time.monotonic() < deadline, "launchd agent did not recover"
             time.sleep(1)
     if args.typing:
