@@ -71,3 +71,24 @@ def build_and_run(code, prefix):
                         '-Wno-pointer-to-int-cast', '-Wno-pointer-bool-conversion', '-I' + str(root / 'include'), str(c), '-o', str(exe), *glib, *fw],
                        check=True)
         subprocess.run([str(exe)], check=True)
+
+
+def check_wire(cases):
+    """Every GLES_SLOT_* the host's `cases` decode is a gles-names.h row the iPod shim forwards:
+    a hand-written thunk named for the row's function, registered at the row's id and trapping
+    with that id, so guest and host agree on the name-keyed wire."""
+    import re
+    names = (root / 'include/hw/arm/guest-services/gles-names.h').read_text()
+    rows = {n: (i, argc) for n, i, argc in re.findall(r'^GLES_FN\((\w+),\s*\w+,\s*(\d+),\s*(\w+),', names, re.M)}
+    ids = dict(re.findall(r'#define (GLES_SLOT_\w+)\s+GLES_ID_(\w+)',
+                          (root / 'include/hw/arm/guest-services/gles.h').read_text()))
+    shim = (root / 'contrib/it-gles/mbxshim.c').read_text()
+    macros = set(re.findall(r'case (GLES_SLOT_\w+):', cases))
+    assert macros
+    for macro in macros:
+        name = ids[macro]
+        slot, argc = rows[name]
+        assert argc != 'NA', name
+        thunk = re.search(r'table\[' + slot + r'\]\s*= \(void \*\)(s_\w+)', shim)[1]
+        assert ('gl' + thunk[2:]).lower().removesuffix('oes') == name.lower().removesuffix('oes'), (name, thunk)
+        assert re.search(thunk + r'\([^}]+qc\(' + slot + r',', shim), (name, thunk)
