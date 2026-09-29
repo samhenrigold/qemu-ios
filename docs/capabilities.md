@@ -61,8 +61,8 @@ synthetic quote/chart verification, not a live-data integration. See the
 ## Kernel console
 
 `-M 'iPod-Touch,...,boot-args=amfi_allow_any_signature=1 cs_enforcement_disable=1 serial=3 debug=0x8'`
-enables XNU serial output on 7E18. Explicit machine arguments take precedence over
-`IT_BOOT_ARGS`, including the version-checked early iBoot handoff. An explicit
+enables XNU serial output on 7E18. The machine property is the only input (no
+`IT_BOOT_ARGS` environment), for the early iBoot handoff as well. An
 empty value disables injection; values longer than 255 bytes and changes after
 startup are rejected. Add `-v` for
 verbose text on the panel; serial logging works without it. The earliest kernel
