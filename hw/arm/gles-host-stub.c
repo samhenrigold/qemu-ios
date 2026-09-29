@@ -41,3 +41,4 @@ int gles_host_context_count(void) { return 0; }
 bool gles_host_refuse(const char *fmt, ...) { return false; }
 char *gles_host_rejects(void) { return g_strdup(""); }
 void gles_host_set_debug(bool on) { }
+bool gles_host_debug(void) { return false; }

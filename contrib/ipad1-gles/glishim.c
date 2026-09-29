@@ -7,14 +7,13 @@
  * guest-services channel mbxshim uses, so it is mbxshim with a GLI front end:
  * the marshalling, the hand-written ES1 thunks, and the CoreAnimation drawable
  * handling are all mbxshim.c, included below. The ABI is in
- * docs/ipad1/userland-gl-display.md section 3; the slot table is
- * docs/ipad1/gli-dispatch-<BUILD>.tsv, turned into gli_fwd.h by gligen.py
- * (one GLEngine-<BUILD> per dispatch layout; 7B500's also serves 7B367).
+ * docs/ipad1/userland-gl-display.md section 3; the slot table is the
+ * firmware's, discovered at load (contrib/it-gles/gles_dispatch.c), so the one
+ * GLEngine serves 3.2's 826 slots and 4.2.1's 841.
  *
  * What differs from the MBX path:
- *   - 826 dispatch slots, not 822. 3.2 inserted three at 761, so the 3.1.3
- *     numbers mbxshim fills are moved up by 3 from 761 on. The WIRE numbers
- *     sent to the host stay 3.1.3's, so gles-host.c needs no change for ES1.
+ *   - the wire carries function ids from the shared name table, never a
+ *     firmware's slot numbers, so gles-host.c needs no change per layout.
  *   - EAGL binds the CA drawable itself (renderbufferStorage:fromDrawable:)
  *     and tells us about its surface through gliSetInteger(0x38E) and
  *     gliBindViewES; we only present into it.
@@ -28,12 +27,11 @@
 #endif
 #define GLISHIM                  /* mbxshim.c: the host-call code and handlers only, not its MBX table */
 #include "../it-gles/mbxshim.c"
-#include "gli_fwd.h"
 
 /*
  * Command buffer. Each trap is a guest exception round trip, so a call that
- * returns nothing and hands the host no guest pointer (gli_batchable, from gligen.py) is queued in its GC's buffer instead:
- * [slot | argc << 16, args...]. The buffer goes to the host as one
+ * returns nothing and hands the host no guest pointer (gles_batchable, from the name table) is
+ * queued in its GC's buffer instead: [id | argc << 16, args...]. The buffer goes to the host as one
  * GLES_OP_BATCH trap when the same GC makes any other call -- a query, a
  * pointer call, a draw, glFlush/glFinish, present, context teardown -- or when
  * it fills. Deferring such calls is invisible to the guest: nothing it can
@@ -59,7 +57,7 @@ static int gles_batch(unsigned slot, void *gcp, unsigned argc, const unsigned *a
     unsigned i;
 
     if (!gc || !gc->host) return 0;
-    if (slot >= sizeof(gli_batchable) || !gli_batchable[slot] || argc > 12) {
+    if (slot >= sizeof(gles_batchable) || !gles_batchable[slot] || argc > 12) {
         if (slot != GLES_OP_BATCH) batch_flush(gc);
         return 0;
     }
@@ -70,25 +68,6 @@ static int gles_batch(unsigned slot, void *gcp, unsigned argc, const unsigned *a
     return 1;
 }
 #endif
-
-/*
- * A slot nothing implements: report it once, by name, to the host log
- * (mbxshim's w() goes to fd 2 and through GLES_OP_LOG to QEMU's stderr), so
- * an app that renders wrong names the entry point it lost. Returns 0.
- */
-static int gli_unimpl(unsigned slot)
-{
-    static unsigned char seen[GLI_N_SLOTS];
-    if (slot >= GLI_N_SLOTS) return 0;
-    if (inert_stub(gli_slot_names[slot])) return 0;   /* a hint: the no-op is the implementation */
-    if (!seen[slot]) {
-        seen[slot] = 1;
-        w("[glishim] unimplemented GL entry point "); w(gli_slot_names[slot]);
-        w(" (dispatch slot "); wd(slot); w(")\n");
-    }
-    refused("unimpl:", gli_slot_names[slot], ~0u);   /* to the host's counters */
-    return 0;
-}
 
 extern char *getenv(const char *);
 
@@ -144,38 +123,40 @@ static int gli_shaderSource(void *gc, unsigned sh, unsigned count,
             guest_fault_read((unsigned long)s[i], n);
         }
     }
-    return (int)qc(GLI_SLOT_glShaderSource, gc, 4, A(sh, count, strs, lens));
+    return (int)qc(GLES_ID_glShaderSource, gc, 4, A(sh, count, strs, lens));
 }
 static int gli_bindAttribLocation(void *gc, unsigned p, unsigned idx, unsigned name)
     { guest_fault_read(name, slen((const char *)(unsigned long)name) + 1);
-      return (int)qc(GLI_SLOT_glBindAttribLocation, gc, 3, A(p, idx, name)); }
+      return (int)qc(GLES_ID_glBindAttribLocation, gc, 3, A(p, idx, name)); }
 static int gli_getAttribLocation(void *gc, unsigned p, unsigned name)
     { guest_fault_read(name, slen((const char *)(unsigned long)name) + 1);
-      return (int)qc(GLI_SLOT_glGetAttribLocation, gc, 2, A(p, name)); }
+      return (int)qc(GLES_ID_glGetAttribLocation, gc, 2, A(p, name)); }
 static int gli_getUniformLocation(void *gc, unsigned p, unsigned name)
     { guest_fault_read(name, slen((const char *)(unsigned long)name) + 1);
-      return (int)qc(GLI_SLOT_glGetUniformLocation, gc, 2, A(p, name)); }
+      return (int)qc(GLES_ID_glGetUniformLocation, gc, 2, A(p, name)); }
 
-/* GLI_N_SLOTS slots in this firmware's numbering. Hand-written mbxshim thunks
- * (3.1.3 numbering, gli_slot313) win, then the generated forwarders, then the
- * log-once stubs. */
-static void gli_fill(void **front, void **back, void *const *mbx)
+/* The firmware's slots (discovered at load, gles_dispatch.c): mbxshim's hand
+ * thunks win, then the name table's forwarders, then the log-once stubs; then
+ * the overrides above, wherever this firmware keeps those functions. */
+static void gli_fill(void **front, void **back)
 {
-    unsigned i;
-    for (i = 0; i < GLI_N_SLOTS; i++) {
-        int old = gli_slot313[i];
-        void *fn = gli_fwd_table[i];
-        if (old >= 0 && old < GLES_N_SLOTS && mbx[old] != gles_default_table[old])
-            fn = mbx[old];
-        front[i] = fn;
+    void *mbx[GLES_N_SLOTS];
+    unsigned i, n;
+    static const struct { unsigned id; void *fn; } over[] = {
+        { GLES_ID_glGetString, (void *)gli_getString },
+        { GLES_ID_glShaderSource, (void *)gli_shaderSource },
+        { GLES_ID_glBindAttribLocation, (void *)gli_bindAttribLocation },
+        { GLES_ID_glGetAttribLocation, (void *)gli_getAttribLocation },
+        { GLES_ID_glGetUniformLocation, (void *)gli_getUniformLocation },
+    };
+    gles_hand_table(mbx);
+    n = gles_fill(front, 0, mbx);
+    for (i = 0; i < sizeof over / sizeof over[0]; i++) {
+        int slot = gles_slot_of(over[i].id);
+        if (slot >= 0) front[slot] = over[i].fn;
     }
-    front[GLI_SLOT_glGetString] = (void *)gli_getString;
-    front[GLI_SLOT_glShaderSource] = (void *)gli_shaderSource;
-    front[GLI_SLOT_glBindAttribLocation] = (void *)gli_bindAttribLocation;
-    front[GLI_SLOT_glGetAttribLocation] = (void *)gli_getAttribLocation;
-    front[GLI_SLOT_glGetUniformLocation] = (void *)gli_getUniformLocation;
     if (back)
-        for (i = 0; i < GLI_N_SLOTS; i++) back[i] = front[i];
+        for (i = 0; i < n; i++) back[i] = front[i];
 }
 
 /* ------------------------------------------------------------ gli* ABI --- */
@@ -276,7 +257,6 @@ int gliDestroyRendererInfo(void) { return 0; }
 static int gli_new_context(void **out, void *sg, int owns, int api_else,
                            void **front, void **back, unsigned api_bits)
 {
-    void *mbx[GLES_N_SLOTS];
     GuestGC *gc = 0;
 
     if (!out || !front) return 10014;
@@ -285,7 +265,7 @@ static int gli_new_context(void **out, void *sg, int owns, int api_else,
         if (!GLESCreateSharegroup(&p)) return 10015;
         sg = p;
     }
-    if (!GLESCreateGC(sg, mbx, 0, (void **)&gc)) {
+    if (!GLESCreateGC(sg, 0, 0, (void **)&gc)) {
         if (owns) GLESDestroySharegroup(sg);
         return 10015;
     }
@@ -293,7 +273,7 @@ static int gli_new_context(void **out, void *sg, int owns, int api_else,
     gc->owns_sg = owns;
     gc->api = (api_bits & 8) && !(api_bits & 4) ? 2
             : (api_bits & 4) && !(api_bits & 8) ? 1 : api_else;
-    gli_fill(front, back, mbx);
+    gli_fill(front, back);
     *out = gc;
     w("[glishim] gliCreateContext api="); wd(gc->api);
     return 0;
@@ -416,7 +396,7 @@ static int gli_swap_signal(void *gc, unsigned txn, unsigned layer)
     }
     if (!fb && get_main) get_main(&fb);
     if (!fb || !signal) return 10015;
-    qc(89, gc, 0, A(0));        /* glFinish: the frame is in the surface first */
+    qc(GLES_ID_glFinish, gc, 0, A(0));    /* the frame is in the surface first */
     return signal(fb, txn, layer) ? 10014 : 0;
 }
 

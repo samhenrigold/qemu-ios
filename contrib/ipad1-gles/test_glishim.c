@@ -1,6 +1,8 @@
-/* Host-side self-check of glishim's table fill and context lifetime:
+/* Host-side self-check of glishim's runtime dispatch discovery, table fill and context lifetime:
  *   cc -w test_glishim.c -o /tmp/t && /tmp/t
- * Run from contrib/ipad1-gles after build.sh. The guest-services mcr is compiled out, so every qc() returns 0. */
+ * Run from contrib/ipad1-gles after build.sh (gles_stubs.h). The guest-services mcr is compiled out, so
+ * every qc() returns 0; the @encode is one this test writes, in 3.2's shape (3.1.3's order with three
+ * fields inserted at 761 and framebuffer_parameteri_APPLE last) plus a field no table knows. */
 #define __volatile__(...)
 #define __asm__
 #include "glishim.c"
@@ -26,18 +28,37 @@ static int (*const c_stubs[])(void) = { gliQueryRendererInfo, gliDestroyRenderer
     gliAttachDrawable, gliAttachDrawableWithOptions, gliSwapBuffers,
     gliGetAttribute, gliSetAttribute, gliCopyAttributes };
 
-static int slot_of(const char *name)
+static const gles_fn_t *row_of_id(unsigned id)
 {
-    for (int i = 0; i < GLI_N_SLOTS; i++)
-        if (!strcmp(gli_slot_names[i], name)) return i;
-    return -1;
+    for (unsigned i = 0; i < GLES_N_FNS; i++)
+        if (gles_fns[i].id == id) return &gles_fns[i];
+    return 0;
+}
+
+/* 3.2.2's layout: ids 0..760 in order, then the three 3.2 insertions, 761..821, the APPLE tail; plus
+ * a field of our own at the end that no table knows. 827 slots. */
+static char encode[64 * 1024];
+
+static void make_encode(void)
+{
+    char *p = encode;
+    p += sprintf(p, "{__GLIFunctionDispatchRec=");
+    for (unsigned id = 0; id <= 821; id++) {
+        if (id == 761)
+            for (const char **f = (const char *[]){ "vertex_attrib_divisor", "draw_arrays_instanced", "draw_elements_instanced", 0 }; *f; f++)
+                p += sprintf(p, "\"%s\"^?", *f);
+        p += sprintf(p, "\"%s\"^?", row_of_id(id)->field);
+    }
+    p += sprintf(p, "\"framebuffer_parameteri_APPLE\"^?\"made_up_field\"^?}");
 }
 
 int main(void)
 {
-    void *front[GLI_N_SLOTS], *back[GLI_N_SLOTS], *root, *ctx, *ctx1;
+    void *front[1024], *back[1024], *root, *ctx, *ctx1;
     GLIPixelFormat *pf;
 
+    make_encode();
+    gles_encode_override = encode;
     assert(gliGetVersion(0, 0, 0) == 1);
     assert(gliChoosePixelFormat(&pf, 0) == 0 && pf->flags == 0);
     assert(gliCreateContext(&root, pf, 0, front, 0, 8) == 0);
@@ -45,23 +66,44 @@ int main(void)
     assert(((GuestGC *)ctx)->api == 2 && ((GuestGC *)ctx)->sg == ((GuestGC *)root)->sg);
     assert(!((GuestGC *)ctx)->owns_sg && ((GuestGC *)root)->owns_sg);
 
-    /* mbxshim's hand thunks, at this layout's slots for their 3.1.3 ones
-     * (3.2: +3 from 761 on; 4.2.1: +16) */
-    assert(front[GLI_SLOT_glOrthof] == (void *)s_orthof && front[GLI_SLOT_glAlphaFuncx] == (void *)s_alphaFuncx);
-    assert(front[GLI_SLOT_glClearDepthf] == (void *)s_clearDepthf && front[301] == (void *)s_texImage2D);
-    assert(gli_slot313[GLI_SLOT_glOrthof] == 791 && gli_slot313[GLI_SLOT_glAlphaFuncx] == 761);
-    /* generated forwarders and overrides (identical numbering below 761) */
-    assert(front[600] == (void *)g600 && front[117] == (void *)gli_getString);
-    assert(front[595] == (void *)gli_shaderSource && back[595] == front[595] && GLI_SLOT_glShaderSource == 595);
-    /* new since 3.1.3 / not ES: log-once stubs */
-    int fbp = slot_of("glFramebufferParameteriAPPLE");
-    assert(front[761] == gli_fwd_table[761] && gli_slot313[761] == -1 && front[0] == (void *)g0);
-    assert(fbp > 0 && gli_slot313[fbp] == -1 && front[fbp] == gli_fwd_table[fbp]);
-    for (int i = 0; i < GLI_N_SLOTS; i++) assert(front[i] && front[i] == back[i]);
-    /* iPod main-line ES1 fills reach the matching slots */
-    assert(front[GLI_SLOT_glDrawTexfOES] == (void *)s_drawTexf && gli_slot313[GLI_SLOT_glDrawTexfOES] == 817);
-    /* a stub reports by name and returns 0 */
-    assert(((int (*)(void *))front[fbp])(0) == 0);
+    /* the layout came from the @encode: 827 slots, one unknown */
+    assert(gli.n == 827 && !strcmp(gli.how, "encode") && gli.fn[826] < 0 && !strcmp(gli.field[826], "made_up_field"));
+    /* mbxshim's hand thunks, at this layout's slots for their ids (+3 from 761 on) */
+    assert(gles_slot_of(GLES_ID_glOrthof) == 794 && front[794] == (void *)s_orthof);
+    assert(gles_slot_of(GLES_ID_glAlphaFuncx) == 764 && front[764] == (void *)s_alphaFuncx);
+    assert(gles_slot_of(GLES_ID_glClearDepthf) == 766 && front[766] == (void *)s_clearDepthf);
+    assert(gles_slot_of(GLES_ID_glTexImage2D) == 301 && front[301] == (void *)s_texImage2D);
+    assert(front[GLES_ID_glDrawTexfOES + 3] == (void *)s_drawTexf);
+    /* generated forwarders and glishim's overrides (identical numbering below 761) */
+    assert(front[600] == (void *)fn_glUseProgram && front[117] == (void *)gli_getString);
+    assert(front[595] == (void *)gli_shaderSource && back[595] == front[595] && GLES_ID_glShaderSource == 595);
+    /* the 3.2 insertions forward under their own ids; the APPLE tail too */
+    assert(front[761] == (void *)fn_glVertexAttribDivisor && GLES_ID_glVertexAttribDivisor == 829);
+    assert(front[825] == (void *)fn_glFramebufferParameteriAPPLE && gles_slot_of(GLES_ID_glFramebufferParameteriAPPLE) == 825);
+    /* a field no table knows: the by-slot stub, which reports and returns 0 */
+    assert(front[826] == gles_unknown_table[826] && ((int (*)(void *))front[826])(0) == 0);
+    /* a row with no argc: the by-name stub */
+    assert(gles_fn_ptr[gles_row_of_name("glDrawElementsBaseVertex")] == (void *)fn_glDrawElementsBaseVertex);
+    assert(fn_glDrawElementsBaseVertex(0) == 0);
+    for (int i = 0; i < 827; i++) assert(front[i] && front[i] == back[i]);
+    /* an id this firmware has no slot for */
+    assert(gles_slot_of(GLES_ID_glBindVertexArrayOES) == -1);
+    /* batching by id: state setters yes, draws and queries no */
+    assert(gles_batchable[GLES_ID_glEnable] && gles_batchable[GLES_ID_glUseProgram]);
+    assert(!gles_batchable[GLES_ID_glDrawArrays] && !gles_batchable[GLES_ID_glGetError] && !gles_batchable[GLES_ID_glTexImage2D]);
+
+    /* the exported-trampoline decoder on the two trampoline shapes glitsv.py reads */
+    {
+        /* armv6 3.x: mov lr, pc; ldr pc, [ip, #0x54]  (slot 17); then a pop */
+        static const unsigned arm[] = { 0xE1A0E00F, 0xE59CF054, 0xE8BD8000 };
+        /* armv7 Thumb-2: ldr.w r12, [r3, #0xa18]; bx r12  (slot 642, glBindBuffer) */
+        static const unsigned short thumb[] = { 0xF8D3, 0xCA18, 0x4760 };
+        assert(gles_trampoline_slot(arm, 0, 822) == 17);
+        assert(gles_trampoline_slot(thumb, 1, 822) == 642);
+        /* a GC load (0xc) and the TSD load (0xc0) are not table slots */
+        static const unsigned gc[] = { 0xE593000C, 0xE59330C0, 0xE12FFF13 };
+        assert(gles_trampoline_slot(gc, 0, 822) == -1);
+    }
 
     assert(!strcmp(gli_getString(ctx, 0x1F02), "OpenGL ES 2.0"));
     assert(gliCreateContext(&ctx1, pf, root, front, back, 4) == 0);

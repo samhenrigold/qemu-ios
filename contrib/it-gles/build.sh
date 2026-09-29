@@ -18,24 +18,18 @@ cc6 "$HERE/gles_fw.c" "$HERE/gles_fw.o"
 link6 -execute "$HERE/gles_fw" "$HERE/gles_fw.o"
 rm -f "$HERE/gles_fw.o"
 
-# The MBXGLEngine.bundle replacement, one per dispatch layout: MBXGLEngine-<BUILD>
-# from docs/ipod/gli-dispatch-<BUILD>.tsv (glitsv.py makes one from a firmware's
-# shared cache; ipod2g_device.py installs the one whose fields match). MBXGLEngine
-# is the 7E18 one, for the consumers that predate the per-layout builds.
+# The MBXGLEngine.bundle replacement: one binary for every firmware, which reads
+# its dispatch layout out of the running OpenGLES (gles_dispatch.c) and speaks
+# the name-keyed wire of include/hw/arm/guest-services/gles-names.h.
 # -bundle, and the install name does not matter: the framework dlopens it by
 # path out of the .bundle directory.
+python3 "$HERE/../ipad1-gles/gligen.py" --check
 python3 "$HERE/genstubs.py" "$HERE/gles_stubs.h" >/dev/null
-for tsv in "$HERE"/../../docs/ipod/gli-dispatch-*.tsv; do
-    b="${tsv##*gli-dispatch-}"; b="${b%.tsv}"
-    python3 "$HERE/../ipad1-gles/gligen.py" --tsv "$tsv" --check
-    python3 "$HERE/../ipad1-gles/gligen.py" --tsv "$tsv" "$HERE/gli_fwd.h" >/dev/null
-    cc6 "$HERE/mbxshim.c" "$HERE/mbxshim.o"
-    link6 -bundle "$HERE/MBXGLEngine-$b" "$HERE/mbxshim.o"
-    # 4.x runs only signed code, amfi_allow_any_signature or not
-    if command -v ldid >/dev/null; then ldid -S "$HERE/MBXGLEngine-$b"; fi
-    rm -f "$HERE/mbxshim.o" "$HERE/gli_fwd.h"
-done
-cp "$HERE/MBXGLEngine-7E18" "$HERE/MBXGLEngine"
+cc6 "$HERE/mbxshim.c" "$HERE/mbxshim.o"
+link6 -bundle "$HERE/MBXGLEngine" "$HERE/mbxshim.o"
+# 4.x runs only signed code, amfi_allow_any_signature or not
+if command -v ldid >/dev/null; then ldid -S "$HERE/MBXGLEngine"; fi
+rm -f "$HERE/mbxshim.o"
 
 # GLTest.app -- a real app bundle with a CAEAGLLayer. Same no-linking rules as
 # gles_fw: UIKit, QuartzCore, Foundation, OpenGLES and libobjc are all dlopen'd,
@@ -68,5 +62,5 @@ if command -v ldid >/dev/null; then
     ldid -S "$APP/GLTest"
 fi
 
-file "$HERE/gles_tri" "$HERE/gles_tex" "$HERE/gles_fw" "$HERE"/MBXGLEngine-* \
+file "$HERE/gles_tri" "$HERE/gles_tex" "$HERE/gles_fw" "$HERE/MBXGLEngine" \
      "$APP/GLTest"

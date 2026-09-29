@@ -48,9 +48,10 @@
  *
  *   - 4.2.1 (8C148) keeps this whole contract with an 841-slot table
  *     (GLESCreateGC(sharegroup, X+0x10, X+0xD34, X+0xC)). The slot layout is
- *     the firmware's __GLIFunctionDispatchRec, generated per firmware (see
- *     GLESCreateGCLayout); MBXGLEngine lives in 4.x's shared cache, so the
- *     builder also creates dyld's enable-dylibs-to-override-cache switch.
+ *     the firmware's __GLIFunctionDispatchRec, read out of the running OpenGLES
+ *     at load (gles_dispatch.c), so one binary serves every layout; MBXGLEngine
+ *     lives in 4.x's shared cache, so the builder also creates dyld's
+ *     enable-dylibs-to-override-cache switch.
  *
  * Build with contrib/it-gles/build.sh (contrib/armv6-toolchain).
  */
@@ -67,16 +68,32 @@
  * packed. Frozen -- see include/hw/arm/guest-services/general.h. */
 typedef struct __attribute__((packed)) {
     unsigned int call_number;
-    struct __attribute__((packed)) {
-        unsigned int slot;
-        unsigned int ctx;
-        unsigned int argc;
-        unsigned int spill;
-        unsigned int args[QC_GLES_INLINE_ARGS];
-    } gles;
+    union {
+        struct __attribute__((packed)) {
+            unsigned int slot;
+            unsigned int ctx;
+            unsigned int argc;
+            unsigned int spill;
+            unsigned int args[QC_GLES_INLINE_ARGS];
+        } gles;
+        struct __attribute__((packed)) {        /* qc_ag_args_t: the hello (QC_GLES_HELLO) */
+            unsigned int buffer_guest_ptr;
+            unsigned int offset;
+            unsigned int length;
+            unsigned long long token;
+            unsigned int pad[3];
+        } ag;
+    };
     long long retval;
     long long error;
 } qemu_call_t;
+
+/* The 3.1.3 dispatch layout, whose slot numbers are the wire ids below 822: the hand-written
+ * thunks below are registered by that number. The firmware's own layout (822, 826 or 841
+ * slots) is discovered at load; see gles_dispatch.c. */
+#define GLES_N_SLOTS 822
+static unsigned gles_fill(void **fw, unsigned n, void *const *hand);
+static int gles_slot_of(unsigned id);
 
 #define GLES_OP_PRESENT         0x1000
 #define GLES_OP_PRESENT_SURFACE 0x1001
@@ -179,13 +196,6 @@ static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args
     return q.retval;
 }
 
-/*
- * Reported once per slot, then silent. An app that touches an unimplemented
- * entry point does so thousands of times a second, and a log line per call
- * would both drown the log and slow the guest enough to change what it does.
- */
-static unsigned char unimpl_seen[1024]; /* glishim numbers up to 826 */
-
 static char *put_dec(char *p, unsigned v)
 {
     char b[12], *q = b + 11;
@@ -255,20 +265,6 @@ static int inert_stub(const char *name)
     const char *inert = "glDiscardFramebufferEXT";
     while (*inert && *inert == *name) { inert++; name++; }
     return *inert == *name;
-}
-
-__attribute__((visibility("hidden"))) int gles_unimpl(unsigned slot)
-{
-    const char *name = slot < GLES_N_SLOTS && gles_slot_names[slot][0] ? gles_slot_names[slot] : 0;
-    if (name && inert_stub(name)) return 0;
-    if (slot < sizeof(unimpl_seen) && !unimpl_seen[slot]) {
-        unimpl_seen[slot] = 1;
-        w("[mbxshim] unimplemented slot "); wd(slot);
-        if (name) { w(" ("); w(name); w(")"); }
-        w(" -- the app will render wrong\n");
-    }
-    if (name) refused("unimpl:", name, ~0u); else refused("unimpl:slot", "", slot);
-    return 0;
 }
 
 /* Touch upload pages before the call. The host faults an untouched page in
@@ -791,26 +787,15 @@ static int GLESDestroySharegroup(void *sg)
  * The one that matters. See the header comment for how the contract was read
  * out of the real binary.
  */
-static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
-                        void **gc_out)
+/* The hand-written thunks, registered by wire id (3.1.3 slot); 0 = none. gles_fill puts each
+ * at the slot this firmware keeps its function. */
+static void gles_hand_table(void **table)
 {
     unsigned i;
 
-    (void)x_ce8;
-    if (!gc_out || !sharegroup) return 0;
-    GuestGC *gc = calloc(1, sizeof(*gc));
-    if (!gc) return 0;
-    if (((GuestGC *)sharegroup)->host) {
-        long long host = qc(GLES_OP_NEW_CONTEXT, 0, 1, A(((GuestGC *)sharegroup)->host));
-        if (host <= 0) { free(gc); return 0; }
-        gc->host = (unsigned)host;
-    }
-    w("[mbxshim] GLESCreateGC\n");
-
-    if (table) {
-        /* Fill every entry. The trampolines never null-check. */
+    {
         for (i = 0; i < GLES_N_SLOTS; i++) {
-            table[i] = gles_default_table[i];
+            table[i] = 0;
         }
         table[15] = (void *)s_clearStencil;
         table[43] = (void *)s_color4ub;
@@ -996,6 +981,31 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
         table[292] = (void *)s_texEnvi;
         table[341] = (void *)s_clientActiveTexture;
         table[342] = (void *)s_activeTexture;
+    }
+}
+
+/*
+ * fw_table is the framework's table, x_end its end (X+0xCE8 on 3.1.3, X+0xD34 on 4.2.1: the
+ * framework says how many slots it allotted). Every entry is filled, in this firmware's own
+ * layout: the trampolines never null-check.
+ */
+static int GLESCreateGC(void *sharegroup, void **fw_table, void *x_end,
+                        void **gc_out)
+{
+    if (!gc_out || !sharegroup) return 0;
+    GuestGC *gc = calloc(1, sizeof(*gc));
+    if (!gc) return 0;
+    if (((GuestGC *)sharegroup)->host) {
+        long long host = qc(GLES_OP_NEW_CONTEXT, 0, 1, A(((GuestGC *)sharegroup)->host));
+        if (host <= 0) { free(gc); return 0; }
+        gc->host = (unsigned)host;
+    }
+    w("[mbxshim] GLESCreateGC\n");
+
+    if (fw_table) {
+        void *hand[GLES_N_SLOTS];
+        gles_hand_table(hand);
+        gles_fill(fw_table, x_end ? (unsigned)((void **)x_end - fw_table) : 0, hand);
     }
 
     if (gc_out) {
@@ -1677,49 +1687,14 @@ static int GLESGetProperty(void *gc, unsigned pname, int *v)
 }
 
 /*
- * The dispatch table is the firmware's, not 3.1.3's: gli_fwd.h (gligen.py from
- * docs/ipod/gli-dispatch-<BUILD>.tsv, one MBXGLEngine-<BUILD> per layout) says
- * how many slots it has and which 3.1.3 slot each one is. GLESCreateGC fills a
- * 3.1.3-numbered table, and each of this firmware's slots takes its entry:
- * a hand-written thunk above, or the 3.1.3 slot's log-once stub. A slot with no
- * 3.1.3 equivalent gets gli_fwd.h's stub. So on 7E18 (every slot its own 3.1.3
- * slot) the table is exactly GLESCreateGC's. Without gli_fwd.h (a recipe that
- * does not run gligen.py) this builds the 7E18 engine as before.
+ * The dispatch table is the firmware's, not 3.1.3's: discovered at load from the running
+ * OpenGLES (gles_dispatch.c), so the one MBXGLEngine serves 7E18's 822 slots and 8C148's 841.
  */
-#if !defined(GLISHIM) && __has_include("gli_fwd.h")
-static int gli_unimpl(unsigned slot);
-#include "gli_fwd.h"
-
-static int gli_unimpl(unsigned slot)
-{
-    static unsigned char seen[GLI_N_SLOTS];
-    if (slot >= GLI_N_SLOTS) return 0;
-    if (inert_stub(gli_slot_names[slot])) return 0;
-    if (!seen[slot]) {
-        seen[slot] = 1;
-        w("[mbxshim] unimplemented GL entry point "); w(gli_slot_names[slot]);
-        w(" (dispatch slot "); wd(slot); w(", none in 3.1.3)\n");
-    }
-    refused("unimpl:", gli_slot_names[slot], ~0u);
-    return 0;
-}
-
-static int GLESCreateGCLayout(void *sharegroup, void **table, void *x_end, void **gc_out)
-{
-    void *mbx[GLES_N_SLOTS];
-    unsigned i;
-
-    if (!GLESCreateGC(sharegroup, table ? mbx : 0, x_end, gc_out)) return 0;
-    for (i = 0; table && i < GLI_N_SLOTS; i++) {
-        int old = gli_slot313[i];
-        table[i] = old >= 0 && old < GLES_N_SLOTS ? mbx[old] : gli_fwd_table[i];
-    }
-    return 1;
-}
-#define GLES_CREATE_GC GLESCreateGCLayout
-#else
-#define GLES_CREATE_GC GLESCreateGC
+#ifndef RTLD_DEFAULT
+#define RTLD_DEFAULT ((void *)-2)
 #endif
+#include "gles_dispatch.c"
+#define GLES_CREATE_GC GLESCreateGC
 
 /*
  * The table GLESGetEGLInterface hands back: eleven function pointers (3.x
