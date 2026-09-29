@@ -16,7 +16,7 @@ export ARMV6_SDK="${ARMV6_SDK:-$HOME/Developer/ipod2g-re/OldSDK/iPhoneOS3.1.3.sd
 export IPOD_SDK="${IPOD_SDK:-$ARMV6_SDK}"
 [ -f "$ARMV6_SDK/usr/lib/libSystem.dylib" ] || { echo "ARMV6_SDK: no 3.1.3 SDK at $ARMV6_SDK" >&2; exit 1; }
 rm -rf "$OUT/src" "$OUT/logs"
-mkdir -p "$OUT/src/contrib" "$OUT/src/docs/ipad1" "$OUT/src/docs/ipod" "$OUT/src/tests" "$OUT/logs"
+mkdir -p "$OUT/src/contrib" "$OUT/src/include/hw/arm/guest-services" "$OUT/src/tests" "$OUT/logs"
 COMPONENTS="it-gles it-agent it-instprogress it-media it-proxy it-status it-halt it-orientation
             ipad1-guest ipad1-gles appsync it-boot"
 # ipad1-guest also compiles these sources; it-gles/it-boot/ipad1-gles read their neighbours
@@ -24,8 +24,8 @@ for c in armv6-toolchain $COMPONENTS it-pasteboard it-ethlink it-seal it-prefs i
          it-cctest it-gltest it-msmquiet guest-package; do   # guest-package: it-boot's test imports mkpkg
     cp -R "$SRC/contrib/$c" "$OUT/src/contrib/"
 done
-cp "$SRC"/docs/ipad1/gli-dispatch-*.tsv "$OUT/src/docs/ipad1/"
-cp "$SRC"/docs/ipod/gli-dispatch-*.tsv "$OUT/src/docs/ipod/"
+# the GL shims and the host share the name table (the wire ids)
+cp "$SRC/include/hw/arm/guest-services/gles-names.h" "$OUT/src/include/hw/arm/guest-services/"
 cp -R "$SRC/tests/guest-package" "$OUT/src/tests/"
 # binaries checked in or left by earlier builds are not inputs: only what builds here ships
 python3 - "$OUT/src" <<'PY'

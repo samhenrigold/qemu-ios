@@ -19,10 +19,11 @@ After device.py has verified the IPSW, decrypted it into CACHE and written ident
 bake() adds the guest side, all of it located at build or run time (no offsets):
   imgtools/bake-guest-tools.sh   it_agent + it_typein (SpringBoard DYLD_INSERT), sblaunch, sbdlicon, sound
                                  defaults, the .lt-guest-tools markers, and the MBXGLEngine shim
-                                 contrib/it-gles/MBXGLEngine-<BUILD> whose docs/ipod/gli-dispatch-<BUILD>.tsv is the
-                                 firmware's __GLIFunctionDispatchRec @encode (none fits: the stock engine and
-                                 software CoreAnimation). 4.x caches MBXGLEngine, so dyld's
-                                 enable-dylibs-to-override-cache switch is created too (ipad1_rootfs.gli_uncache)
+                                 contrib/it-gles/MBXGLEngine, one binary for every firmware: it reads the
+                                 firmware's __GLIFunctionDispatchRec layout out of OpenGLES at load (2.x has no
+                                 shared cache and no shim: the stock engine and software CoreAnimation). 4.x caches
+                                 MBXGLEngine, so dyld's enable-dylibs-to-override-cache switch is created too
+                                 (ipad1_rootfs.gli_uncache)
   contrib/appsync/patch-appsync-dylib.sh  MISValidateSignature -> success in the shared cache, found by symbol;
                                  libappsync.dylib DYLD_INSERTed into installd (options.appsync)
   it_prefs                       build/ipod-guest/it_prefs (contrib/it-prefs/build-ipod.sh) + com.qemu.it-prefs, the
@@ -48,8 +49,6 @@ from ipad1_kboot import synth_identity, udid
 
 CACHE = os.path.expanduser("~/Developer/qemu-ios-files/ipod-ipsw/cache")
 KC_PREFIX = b"/System/Library/Caches/com.apple.kernelcaches/"
-GLI_TSVS = sorted(os.path.join(ROOT, "docs/ipod", n) for n in os.listdir(os.path.join(ROOT, "docs/ipod"))
-                  if re.fullmatch(r"gli-dispatch-\w+\.tsv", n))
 MBX = "System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine"
 DYLD_CACHE = "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv6"
 WEB_PROXY_PAC = "usr/local/share/ltm/proxy.pac"   # ipad1_rootfs.PAC_PATH
@@ -98,17 +97,12 @@ def darwin_banner(kernel):
 
 
 def gli_engine(cache_path):
-    """(BUILD of the MBXGLEngine-<BUILD> whose TSV matches the firmware's dispatch table, None), else (None, why)."""
+    """(True with a sanity line about the firmware's dispatch layout, the shim reads it at load), else
+    (False, why): 2.x has no shared cache, and the shim is 3.x+ (the package loader is too)."""
     if not os.path.exists(cache_path):
-        return None, "no dyld shared cache (2.x)"
-    from ipad1_rootfs import gli_abi_problem
-    data, whys = open(cache_path, "rb").read(), []
-    for tsv in GLI_TSVS:
-        why = gli_abi_problem(cache_path, tsv, data)
-        if why is None:
-            return os.path.basename(tsv)[len("gli-dispatch-"):-len(".tsv")], None
-        whys.append(why)
-    return None, "; ".join(whys)
+        return False, "no dyld shared cache (2.x)"
+    from ipad1_rootfs import gli_dispatch_info
+    return True, gli_dispatch_info(cache_path)
 
 
 def kbag(img3):
@@ -238,9 +232,8 @@ def build(ctx):
     tools = {n: sha(os.path.join(ROOT, n)) for n in ("contrib/it-agent/it_agent", "contrib/it-agent/it_typein.dylib",
                                                      "contrib/it-gles/sblaunch", "contrib/it-instprogress/sbdlicon")
              + tuple(PREFS)} if cfg["guest_tools_supported"] else {}
-    if baked.get("gli"):
-        engine = "contrib/it-gles/MBXGLEngine-" + baked["gli"]
-        tools[engine] = sha(os.path.join(ROOT, engine))
+    if baked.get("gles"):
+        tools["contrib/it-gles/MBXGLEngine"] = sha(os.path.join(ROOT, "contrib/it-gles/MBXGLEngine"))
     if opt.get("appsync"):
         tools["build/appsync/libappsync.dylib"] = sha(os.path.join(ROOT, "build/appsync/libappsync.dylib"))
     if opt.get("data_protection"):
@@ -280,12 +273,12 @@ def install_web_proxy(mnt, owners):
 def bake(mnt, config):
     cfg = json.load(open(config))
     opt, owners, report = cfg["options"], [], {}
-    gli, problem = gli_engine(os.path.join(mnt, DYLD_CACHE)) if opt.get("gles_shim", True) else (None, "options.gles_shim off")
-    engine = os.path.join(ROOT, "contrib/it-gles/MBXGLEngine-%s" % gli)
+    gli, info = gli_engine(os.path.join(mnt, DYLD_CACHE)) if opt.get("gles_shim", True) else (False, "options.gles_shim off")
+    engine = os.path.join(ROOT, "contrib/it-gles/MBXGLEngine")
     if gli and not os.path.exists(engine):
         raise SystemExit("%s missing (run contrib/it-gles/build.sh)" % engine)
-    report["gles"] = "shim MBXGLEngine-%s" % gli if gli else "stock engine, software CA: " + problem
-    report["gli"] = gli
+    report["gles"] = "shim MBXGLEngine (%s)" % info if gli else "stock engine, software CA: " + info
+    report["gles_shim"] = bool(gli)
     supported = cfg["guest_tools_supported"]
     report["guest_tools"] = "installed" if supported else "omitted: current helpers require iOS 3+ dyld"
     env = dict(os.environ, MNT=mnt, IT_GLES_SHIM="1" if gli else "0", IT_GLES_ENGINE=engine,
