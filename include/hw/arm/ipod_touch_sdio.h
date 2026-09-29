@@ -262,6 +262,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define ISCAN_RESULTS_FIXED       0x0c   /* wl_scan_results_t, from buflen on */
 #define ISCAN_TOTAL               (ISCAN_OFF_BSS + BSS_INFO_TOTAL)
 
+/* get_var "counters": wl_cnt_t, version and length (16 bits each) then 32-bit
+ * counters; rxbeaconmbss is the 86th (the 4329's 4.218 layout). */
+#define WL_CNT_OFF_RXBEACONMBSS   0x158
+
 /* How long a scan is made to appear to take before it reports complete. */
 #define SCAN_COMPLETE_DELAY_NS  (1500 * 1000 * 1000LL)
 
@@ -350,7 +354,7 @@ typedef struct IPodTouchSDIOState
      * backend, so slirp/vmnet/etc supply DHCP, DNS and NAT. */
     NICState *nic;
     NICConf conf;
-    bool iscan_reported;     /* this scan run has already reported its BSS */
+    bool iscan_reported;     /* no scan outstanding: the last one has reported its BSS */
     QEMUTimer *scan_timer;   /* delays the scan-complete event */
     bool associated;         /* the association events have been pushed */
     uint8_t bssid[6];        /* the access point's; "bssid" property */
