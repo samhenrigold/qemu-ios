@@ -52,21 +52,19 @@ static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
         case POWER_ID:
             /*
              * 0x39700044: low bits are the POWER_ID power-control scratch, but
-             * bits[31:24] are the read-only fused boot security epoch. iBoot's
-             * miu_init reads this word and panics ("Epoch Mismatch", which trips
-             * the watchdog) unless the top byte equals the image epoch (4 on the
-             * S5L8720 / iPod touch 2G). A normal boot gets that top byte latched
-             * by the SecureROM before iBoot runs; when we substitute the boot
-             * chain (direct-iboot) the ROM never runs and iBoot's own
-             * power-control writes here would clobber it, so synthesise the epoch
-             * top byte on read. Configuration-gated: a normal 2.1.1 boot is untouched.
+             * bits[31:24] are the boot security epoch. iBoot's miu_init reads
+             * this word and panics ("Epoch Mismatch", which trips the watchdog)
+             * unless the top byte equals its own epoch: the chip ID fuse field
+             * floored at the build's epoch (1 for iBoot-385.22, 3 for 596, 4 for
+             * 636 on). A normal boot gets that top byte latched by the boot
+             * chain before iBoot runs; when we substitute it (direct-iboot) the
+             * ROM and LLB never run and iBoot's own power-control writes here
+             * would clobber it, so synthesise the byte on read from the staged
+             * image's own floor (it_iboot_find_epoch, set by the machine after
+             * staging). Configuration-gated: a normal 2.1.1 boot is untouched.
              */
             if (s->direct_boot) {
-                uint32_t epoch = 4;
-                if (getenv("IT_DIRECT_EPOCH")) {
-                    epoch = (uint32_t)strtoul(getenv("IT_DIRECT_EPOCH"), NULL, 0);
-                }
-                return (s->power_id & 0x00FFFFFFu) | (epoch << 24);
+                return (s->power_id & 0x00FFFFFFu) | (s->epoch << 24);
             }
             return s->power_id;
         case POWER_SETSTATE:
