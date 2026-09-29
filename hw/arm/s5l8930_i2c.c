@@ -247,19 +247,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930D1815State, S5L8930_D1815)
  */
 #define PMU_SYS_CTRL        0x7B
 #define PMU_SYS_RESTART     0x0B
-/*
- * Boot flags iBoot reads at power-on (its PMU scratch index 0, 9B206
- * iBoot-1219 5ff07fd0). 5.x's AppleD1815PMU halt (9B206 80721148) goes to
- * standby only without a cable: with the registry's AppleUSBCableDetect
- * true it writes 0x90 here and restarts, and iBoot, seeing flags & 0xd0 ==
- * 0x90 (or 0x10), does not boot: "power-off simulation", waiting for the
- * power button or unplug. That wait is how a cabled unit is off.
- * ponytail: the restart with that flag is taken as the power-off itself,
- * not run through iBoot's wait (whose unplug ends in standby); model the
- * wait if its charging screen is ever wanted.
- */
-#define PMU_BOOT_FLAGS      0x8F
-#define PMU_BOOT_FLAGS_OFF(v)   (((v) & 0xd0) == 0x90 || ((v) & 0xd0) == 0x10)
 #define PMU_ADC_START       (1u << 4)
 #define PMU_ADC_MUX_VBAT    4
 #define PMU_ADC_MUX_BRICK   6       /* DT function-brick_id_voltage 'Vcda' 06 */
@@ -268,7 +255,26 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930D1815State, S5L8930_D1815)
 #define PMU_RTC_CTRL        0x4A    /* ...by writing 0x41 here */
 #define PMU_RTC_CTRL_LOAD   (1u << 6)
 #define PMU_RTC_COUNT       0x4C    /* live seconds counter, LE, read twice */
-#define PMU_RTC_OFFSET      0x84    /* scratch: PMURTC adds it to the count */
+/*
+ * 0x80-0x9F are the D1815's scratch bank, in its always-on domain with the
+ * RTC: a restart (0x7B, or the SoC watchdog) re-runs LLB/iBoot without
+ * power-cycling the PMU, so they and the counter survive; only the PMU's own
+ * power-on clears them. 0x84 is PMURTC's offset. 0x8F is the OS's boot
+ * reason: 9B206 AppleD1815PMU halt (807210c4) writes 0x90 before "pmu
+ * restarting" when a cable is attached (0x10 under pmu-chargetrap, 0x80
+ * before "pmu go hib"; 8L1 809f47b8 the same), and iBoot-1219 reads it back
+ * (5ff07fd0: reason & 0xD0 == 0x90) to run its "power-off simulation"
+ * (5ff07bd0: wait for the power button or unplug) instead of autobooting.
+ * ponytail: the bank's bounds are iBoot's scratch table (5ff2ac88: 0x80-0x83,
+ * 0x8F, 0x90-0x93) rounded to Dialog's block; widen if a retained register
+ * outside it turns up. Only the PMU's own 0x7B restart is warm; any other
+ * reset (QMP system_reset, the app's Power On, the SoC watchdog) is taken as
+ * the PMU's power-on. A watchdog reset keeps the bank on hardware: tell the
+ * reset causes apart if a guest ever relies on that.
+ */
+#define PMU_SCRATCH         0x80
+#define PMU_SCRATCH_LEN     0x20
+#define PMU_BOOT_REASON     0x8F
 
 struct S5L8930D1815State {
     I2CSlave i2c;
@@ -282,15 +288,32 @@ struct S5L8930D1815State {
     uint32_t rtc_latch;
     uint16_t vbat_mv;       /* what ADC mux 4 measures; 0 = the 3900 default */
     bool usb_host;          /* a host's pull-downs on D+/D-: ADC mux 6 reads 0 */
+    bool restarting;        /* the next reset is this PMU's own 0x7B restart */
 };
 
-/* The guest's own power-off write, latched for the app bridge
- * (qemu_ios_ui_guest_shutdown_confirmed): the volume is unmounted by then. */
+/*
+ * The guest's own power-off, latched for the app bridge
+ * (qemu_ios_ui_guest_shutdown_confirmed): the volume is unmounted by then.
+ * Either the standby write, or the OS's halt with a cable attached: a restart
+ * with a halt reason left in 0x8F, which the bootloader turns into its
+ * power-off simulation (the device is off, charging, until the power button
+ * or an unplug). The latch holds across that restart and drops when the
+ * bootloader consumes the reason (5ff073b4 rewrites 0x8F without it: the
+ * power button booted iOS).
+ */
 static int d1815_shutdown_confirmed;
 
 bool s5l8930_d1815_guest_shutdown_confirmed(void)
 {
     return qatomic_read(&d1815_shutdown_confirmed);
+}
+
+/* iBoot's own test (1219 5ff07fd0, 1072 5ff07444): halted, or pmu-chargetrap. */
+static bool d1815_halt_reason(S5L8930D1815State *s)
+{
+    uint8_t r = s->regs[PMU_BOOT_REASON] & 0xd0;
+
+    return r == 0x90 || r == 0x10;
 }
 
 static void d1815_update_irq(S5L8930D1815State *s)
@@ -470,11 +493,18 @@ static int d1815_send(I2CSlave *i2c, uint8_t data)
         return 0;
     case PMU_SYS_CTRL:
         s->regs[reg] = data;
-        if (data == PMU_SYS_RESTART && PMU_BOOT_FLAGS_OFF(s->regs[PMU_BOOT_FLAGS])) {
-            qatomic_set(&d1815_shutdown_confirmed, 1);
-            qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
-        } else if (data == PMU_SYS_RESTART) {
+        if (data == PMU_SYS_RESTART) {
+            if (d1815_halt_reason(s)) {
+                qatomic_set(&d1815_shutdown_confirmed, 1);
+            }
+            s->restarting = true;
             qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+        }
+        return 0;
+    case PMU_BOOT_REASON:
+        s->regs[reg] = data;
+        if (!d1815_halt_reason(s)) {
+            qatomic_set(&d1815_shutdown_confirmed, 0);
         }
         return 0;
     case PMU_ADC_CTRL:
@@ -500,14 +530,24 @@ static int d1815_send(I2CSlave *i2c, uint8_t data)
 static void d1815_reset(DeviceState *dev)
 {
     S5L8930D1815State *s = S5L8930_D1815(dev);
+    uint8_t scratch[PMU_SCRATCH_LEN] = { 0 };
+    int64_t rtc_base = 0;
 
+    if (s->restarting) {        /* the always-on domain stays */
+        memcpy(scratch, &s->regs[PMU_SCRATCH], sizeof(scratch));
+        rtc_base = s->rtc_base;
+    }
+    s->restarting = false;
     timer_del(s->adc_timer);
     memset(s->regs, 0, sizeof(s->regs));
     /* Everything masked until the driver programs 0x0C-0x11; no events
-     * pending; no external power (status 0x07-0x0B = 0); the RTC offset at
-     * 0x84 is 0 so the counter alone is the wall clock. */
+     * pending; no external power (status 0x07-0x0B = 0); at power-on the
+     * RTC offset at 0x84 is 0 so the counter alone is the wall clock. */
+    memcpy(&s->regs[PMU_SCRATCH], scratch, sizeof(scratch));
     memset(&s->regs[PMU_IRQ_MASK], 0xff, PMU_EVENT_COUNT);
-    qatomic_set(&d1815_shutdown_confirmed, 0);
+    if (!d1815_halt_reason(s)) {
+        qatomic_set(&d1815_shutdown_confirmed, 0);
+    }
     /*
      * The battery's SWI line (uart5/gas-gauge function-battery_swi, PMU GPIO
      * 6) idles high with a healthy pack. configd's AppleHDQGasGauge reads it
@@ -517,7 +557,7 @@ static void d1815_reset(DeviceState *dev)
     s->regs[PMU_STATUS_C] = PMU_GPIO6_BATT_SWI;
     s->reg = 0;
     s->addressing = true;
-    s->rtc_base = 0;
+    s->rtc_base = rtc_base;
     s->rtc_latch = 0;
     d1815_update_irq(s);
 }
