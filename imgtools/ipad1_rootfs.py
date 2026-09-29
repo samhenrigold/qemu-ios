@@ -314,7 +314,7 @@ def dyld_insert(d, lib=("/" + APPSYNC_REL)):
     env["DYLD_INSERT_LIBRARIES"] = ":".join(libs)
 
 
-# Web proxy (the app's itwebproxy on slirp guestfwd 10.0.2.100:3128, as on the iPod). The Wi-Fi service
+# Web proxy (the app's, on slirp guestfwd 10.0.2.100:3128, as on the iPod). The Wi-Fi service
 # carries a PAC. 3.2.2's Safari does NOT honour the "; DIRECT" fallback: with no guestfwd at .100 a
 # proxied URL just fails, so plain host names and private/link-local/loopback IP literals go DIRECT
 # (slirp reaches the LAN itself). IP literals are tested first because isInNet on a host name does a
@@ -940,7 +940,7 @@ def main():
     b.add_argument("--disable", action="append", default=[], metavar="LABEL", help="launchd job to mark Disabled")
     b.add_argument("--ro-root", action="store_true", help="keep the stock read-only root")
     b.add_argument("--no-web-proxy", dest="web_proxy", action="store_false",
-                   help="skip the en0 Wi-Fi service with the itwebproxy PAC (proxy, else DIRECT)")
+                   help="skip the en0 Wi-Fi service with the web proxy PAC (proxy, else DIRECT)")
     b.add_argument("--no-usb-net", dest="usb_net", action="store_false",
                    help="skip the en1 (USB Ethernet) DHCP network service")
     b.add_argument("--gles", action="store_true", help="also install the GLTest/GLTest2.app test apps (the GLI engine itself always goes in; run contrib/ipad1-gles/build.sh first)")

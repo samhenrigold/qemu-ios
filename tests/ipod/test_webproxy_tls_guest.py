@@ -2,11 +2,11 @@
 """Opt-in native iOS 3 TLS acceptance without SSH or a shell; fresh overlay, loopback server, no internet.
 
 The guest's native NSURLConnection (contrib/it-proxy/httpget, staged and run by the agent) fetches
-https://10.0.2.100:3128/ through the host itwebproxy guestfwd (the PAC's private-IP rule sends that
-address DIRECT, so no guest proxy setting is involved). The temporary CA is trusted the iPad way: a
+https://10.0.2.100:3128/ through the web proxy's guestfwd, here a raw relay to the loopback TLS server
+(regress.py; the PAC's private-IP rule sends that address DIRECT, so no guest proxy setting is involved). The temporary CA is trusted the iPad way: a
 configuration profile offered over lockdown's stock com.apple.mobile.MCInstall by the app's own
 lockdown-mcinstall tool, then Install tapped on the device. Untrusted before, trusted after.
-Requires built httpget, contrib/it-webproxy/itwebproxy, QEMU, usbmuxd, OpenSSL 3 and libimobiledevice.
+Requires built httpget, QEMU, usbmuxd, OpenSSL 3 and libimobiledevice.
 """
 import argparse
 import os
@@ -42,9 +42,9 @@ else:
     cfg.base_nand = os.path.realpath(args.base_nand or f+'/nand-current')
     cfg.nor = f+'/ios3/nor_7E18.bin'
 os.makedirs(cfg.overlay)
-routing = Path(out)/'routing'
+routing = Path(out)/'routing'   # the relay's loopback port (regress.py), named once the server is up
 cfg.web_proxy_config = str(routing)
-routing.write_text('off\n')
+routing.write_text('')
 tls = Path(out)/'tls'; tls.mkdir(mode=0o700)
 mcinstall = tls/'lockdown-mcinstall'
 subprocess.run(['cc', '-O2', '-o', str(mcinstall), args.mcinstall_source, '-I/opt/homebrew/include',
@@ -77,7 +77,7 @@ try:
     ok, detail = r.ensure_agent(d.qmp); assert ok, detail
     control = r.AgentControl(d.qmp)
     udid, detail = r.wait_for_device(cfg); assert udid, detail
-    routing.write_text(f'upstream\n127.0.0.1\n{tlsport}\n')
+    routing.write_text(f'{tlsport}\n')
     assert r.itqmp.agent(d.qmp, 'put', '/tmp/it-http 755', (ROOT/'contrib/it-proxy/httpget').read_bytes())[0] == 0
     def fetch(url, timeout=90):
         result = r.spawn(control, ['/tmp/it-http', url], timeout=timeout)

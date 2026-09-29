@@ -259,8 +259,8 @@ def build(ctx):
 
 def install_web_proxy(mnt, owners):
     """The iPad's proxy routing (imgtools/ipad1_rootfs.py): the PAC file, and configd's preferences with the
-    en0 Wi-Fi service pointing at it (itwebproxy on the 10.0.2.100:3128 guestfwd; private IPs DIRECT).
-    Nothing runs in the guest to set it, and proxy on/off is the host's itwebproxy mode."""
+    en0 Wi-Fi service pointing at it (the app's web proxy on the 10.0.2.100:3128 guestfwd; private IPs DIRECT).
+    Nothing runs in the guest to set it, and proxy on/off is the host proxy's mode."""
     from ipad1_rootfs import PAC, PAC_PATH, SC_DIR, seed_plist, wifi_proxy_prefs
     for rel in ("usr/local", "usr/local/share", "usr/local/share/ltm", "private/var/" + SC_DIR):
         if not os.path.isdir(os.path.join(mnt, rel)):

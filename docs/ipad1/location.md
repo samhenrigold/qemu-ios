@@ -49,7 +49,7 @@ intercept (below).
 The Wi-Fi netdev is slirp (`type=user,id=wifi0`, hw/arm/ipad1.c). Two existing
 mechanisms already carry guest HTTP(S) to a host process:
 
-- **The web proxy** (`contrib/it-webproxy`, slirp guestfwd 10.0.2.100:3128; the
+- **The web proxy** (the app's, `LightTouchDevice/WebProxy.swift` in LightTouchMac; slirp guestfwd 10.0.2.100:3128; the
   Wi-Fi service ships a PAC, `usr/local/share/ltm/proxy.pac`, that sends traffic
   there and falls back to DIRECT). It already terminates guest TLS with a local
   bridge: `CONNECT host:443` is met with a per-host certificate signed by a CA
@@ -95,8 +95,8 @@ Device menu control changes it without a reboot.
 
 ## Recommendation (host-side, no new guest injection)
 
-1. Add a location responder to `contrib/it-webproxy`, parallel to
-   `it_weather_response`: on a POST whose target is the ALS `wloc` host/path
+1. Add a location responder to the web proxy, parallel to
+   its Weather adapter: on a POST whose target is the ALS `wloc` host/path
    (and/or the Skyhook `shwps` host), synthesise the response for the host-set
    lat/long and the guest's known BSSID. HTTPS is handled by the proxy's
    existing TLS bridge, so this needs the app's Proxy feature on (CA already
@@ -141,13 +141,13 @@ What works is the plain-HTTP route through a preference: locationd reads
 `http://` URL with `AppleLocationServerRequiresCert` false. contrib/it-prefs
 (`it_prefs`, a one-shot boot job baked by `ipad1_rootfs.py bake`) sets both at run
 time through CFPreferences, as mobile, to `http://10.0.2.100:3128/clls/wloc`, the
-address the app's itwebproxy guestfwd already occupies; nothing is seeded into the
+address the app's web proxy guestfwd already occupies; nothing is seeded into the
 image's plists. locationd is already running by then (root, OnDemand false), reads
 the URL once at start and rewrites its whole preferences file from memory (posting
 its `com.apple.locationd/Prefs` notification does not make it pick the URL up), so
 it_prefs unloads its job around the write and loads it again (it also restarts it
-once Wi-Fi is up; see the boot race below). itwebproxy answers
-`/clls/wloc` itself (`it_location_response`) **in every proxy mode, including off**,
+once Wi-Fi is up; see the boot race below). The proxy answers
+`/clls/wloc` itself (`WebProxyAdapters.location`) **in every proxy mode, including off**,
 so location doesn't depend on the Proxy feature or any CA.
 
 Wire format, read off a captured request (7B500):
@@ -165,8 +165,8 @@ tryReadResponseData in ProtocolBuffer.framework.)
 
 The position comes from `CONFIG.location` beside the proxy CONFIG
 (`web-proxy.conf.location` in the app's state directory): `LAT LON [ACCURACY]`,
-replaceable at any time; Apple Park when absent. tests/ipad1/test_location.py
-checks the answer offline.
+replaceable at any time; Apple Park when absent. The app's
+tests/offline/check-web-proxy.py checks the answer offline (the captured request, every mode).
 
 Measured (gl-drive, pristine-based scratch stores):
 
