@@ -8,7 +8,12 @@ channel as "[gles-reject] NAME N" with N a floor, and gles-debug=on paints a ref
 from gles_harness import root, src, function, PRELUDE, build_and_run
 
 shim = (root / 'contrib/it-gles/mbxshim.c').read_text()
-reporting = shim[shim.index('static char *put_dec('):shim.index('__attribute__((visibility("hidden"))) int gles_unimpl')]
+reporting = shim[shim.index('static char *put_dec('):shim.index('static int guest_fault_read(')]
+# The runtime dispatch's two stubs, lifted whole: a row the shim cannot forward, and a firmware
+# dispatch field no gles-names.h row names. Both must report through refused().
+dispatch = (root / 'contrib/it-gles/gles_dispatch.c').read_text()
+assert '#include "gles_dispatch.c"' in shim
+stubs = function('gles_unknown_slot(unsigned slot)\n{', dispatch) + function('gles_stub(const char *name)\n{', dispatch)
 formats = src[src.index('/* The ES half-float type'):src.index('/* GL_UNPACK_ALIGNMENT in force')]
 
 
@@ -23,7 +28,12 @@ code = '#define GLES_TEST_REAL_DEBUG 1\n' + PRELUDE + formats + function('gles_t
 int gles_guest_rw(CPUState *cpu, vaddr a, void *p, size_t n, bool write) { return -1; }
 static char shimlog[4096];
 static void w(const char *s) { strlcat(shimlog, s, sizeof(shimlog)); }
-''' + reporting + r'''
+static void wd(unsigned v) { char b[12]; snprintf(b, sizeof(b), "%u", v); w(b); }
+#define GLES_MAX_SLOTS 848
+static struct { const char *field[GLES_MAX_SLOTS]; } gli;
+static const struct { unsigned id; } gles_fns[] = { { GLES_ID_glFogx } };
+static int gles_row_of_name(const char *name) { return strcmp(name, "glFogx") ? -1 : 0; }
+''' + reporting + stubs + r'''
 int main(void)
 {
     char *out;
@@ -60,10 +70,27 @@ int main(void)
     assert(gles_host_type(GLES_HALF_FLOAT_OES) == GL_HALF_FLOAT_ARB && gles_host_type(GL_FLOAT) == GL_FLOAT);
     /* shim side: reported at 1, 2, 4, 8 calls, once per name */
     for (unsigned i = 0; i < 9; i++) refused("unimpl:", "glFogxv", ~0u);
-    refused("unimpl:slot", "", 807);
+    refused("drawable:", "A008", 807);
     assert(!strcmp(shimlog, "[gles-reject] shim:unimpl:glFogxv 1\n[gles-reject] shim:unimpl:glFogxv 2\n"
                             "[gles-reject] shim:unimpl:glFogxv 4\n[gles-reject] shim:unimpl:glFogxv 8\n"
-                            "[gles-reject] shim:unimpl:slot:807 1\n"));
+                            "[gles-reject] shim:drawable:A008:807 1\n"));
+    /* the runtime dispatch's stubs: a row it cannot forward is counted by its gl name (and said once),
+     * a firmware field no row names by that field, and the inert hint not at all */
+    shimlog[0] = 0;
+    gles_stub("glFogx"); gles_stub("glFogx");
+    assert(strstr(shimlog, "[gles-reject] shim:unimpl:glFogx 1\n") && strstr(shimlog, "[gles-reject] shim:unimpl:glFogx 2\n"));
+    {
+        const char *said = strstr(shimlog, "unimplemented GL entry point glFogx");
+        assert(said && !strstr(said + 1, "unimplemented GL entry point glFogx"));
+    }
+    shimlog[0] = 0;
+    assert(!gles_stub("glDiscardFramebufferEXT") && !shimlog[0]);
+    gli.field[830] = "fancy_new_field_APPLE";
+    gles_unknown_slot(830); gles_unknown_slot(830);
+    assert(strstr(shimlog, "(field fancy_new_field_APPLE, dispatch slot 830)") &&
+           strstr(shimlog, "[gles-reject] shim:unimpl:field:fancy_new_field_APPLE 1\n") &&
+           strstr(shimlog, "[gles-reject] shim:unimpl:field:fancy_new_field_APPLE 2\n"));
+    assert(gles_shim_reject_line("[gles-reject] shim:unimpl:field:fancy_new_field_APPLE 2\n"));
     char t[5];
     assert(!strcmp(fourcc_text(0x41303038, t), "A008") && !strcmp(fourcc_text(0x00000010, t), "????"));
     assert(inert_stub("glDiscardFramebufferEXT") && !inert_stub("glDiscardFramebufferEX") && !inert_stub("glFogx"));
@@ -106,7 +133,7 @@ int main(void)
         glGetTexImage(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_BYTE, d8);
         assert(d8[0] == 0x80);
     }
-    puts("PASS: refusal counters, shim report lines, fourcc, format tables, magenta paint");
+    puts("PASS: refusal counters, shim report lines, runtime-dispatch stubs, fourcc, format tables, magenta paint");
     return 0;
 }
 '''
