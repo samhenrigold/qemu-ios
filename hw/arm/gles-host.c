@@ -4281,7 +4281,10 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
         if (gh.surfaces) g_hash_table_remove(gh.surfaces, GUINT_TO_POINTER(texture));
         return 0;
     }
-    if (!w || !h || w > 2048 || h > 2048) {
+    /* The SGX's texture limit is 2048, but CoreAnimation hands the engine wider layer
+     * surfaces (Exit Strategy: 2240x416) and the desktop takes 16384; 4096 keeps a bind
+     * under 64 MiB. */
+    if (!w || !h || w > 4096 || h > 4096) {
         gles_refuse("surface:size:%ux%u", w, h);
         gles_debug_texture(target);
         return -1;
