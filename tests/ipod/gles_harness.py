@@ -36,6 +36,8 @@ PRELUDE = r'''
 typedef struct CPUState CPUState;
 typedef uint64_t vaddr;
 typedef uint64_t hwaddr;
+typedef uint64_t ram_addr_t;
+#define QEMU_BUILD_BUG_ON(x) _Static_assert(!(x), #x)
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #ifndef MIN
 #define MIN(a, b) ((a) < (b) ? (a) : (b))

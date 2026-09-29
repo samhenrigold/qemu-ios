@@ -19,6 +19,7 @@ code = PRELUDE + between('/* The ES half-float type', '/* ----------------------
     + between('static const uint8_t *gles_zeroed(', '/*\n * Report a draw the host rejected') \
     + between('static GLESPVRTC *gles_pvrtc_texture(', 'static int64_t gles_pvrtc_upload(') \
     + function('gles_texture_object(') + function('gles_texparam_nparams(') + r'''
+static void gles_surface_forget(GLenum target) { (void)target; }   /* no IOSurfaces here */
 static uint8_t guest[8 * 8 * 4];
 int gles_guest_rw(CPUState *cpu, vaddr addr, void *data, size_t n, bool write) {
     assert(!write && addr == 0x1000 && n <= sizeof(guest));

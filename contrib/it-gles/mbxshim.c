@@ -1104,6 +1104,7 @@ static unsigned (*p_IOSurfaceGetBytesPerRowOfPlane)(void *, unsigned);
 static int (*p_IOSurfaceLock)(void *, unsigned, unsigned *);
 static int (*p_IOSurfaceUnlock)(void *, unsigned, unsigned *);
 static unsigned long (*p_IOSurfaceGetTypeID)(void);
+static unsigned (*p_IOSurfaceGetID)(void *);
 static unsigned long (*p_CFGetTypeID)(const void *);
 
 extern void *dlopen(const char *, int);
@@ -1160,6 +1161,7 @@ static void iosurface_init(void)
     p_IOSurfaceLock           = surface_sym(pre, "Lock");
     p_IOSurfaceUnlock         = surface_sym(pre, "Unlock");
     p_IOSurfaceGetTypeID      = surface_sym(pre, "GetTypeID");
+    p_IOSurfaceGetID          = surface_sym(pre, "GetID");
     {
         void *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/"
                           "CoreFoundation", RTLD_NOW);
@@ -1470,8 +1472,11 @@ static int GLESBindCoreSurface(void *gc, unsigned target, void *surface)
         p_IOSurfaceUnlock(surface, surface_lock_flags, 0);
         return 0;
     }
-    result = qc(GLES_OP_BIND_SURFACE, gc, 8,
-                A(target,base,stride,width,height,format,uv,uvstride)) == 0;
+    /* The kernel's ID lets the host keep the surface's pages for its lifetime, as the
+     * GPU's MMU does, instead of finding them through this process's mappings. */
+    result = qc(GLES_OP_BIND_SURFACE, gc, 9,
+                A(target,base,stride,width,height,format,uv,uvstride,
+                  p_IOSurfaceGetID ? p_IOSurfaceGetID(surface) : 0)) == 0;
     p_IOSurfaceUnlock(surface, surface_lock_flags, 0);
     return result;
 }

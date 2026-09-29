@@ -30,6 +30,7 @@
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "cpu.h"
+#include "exec/ram_addr.h"
 #include "hw/sysbus.h"
 #include "hw/arm/ipod_touch_2g.h"
 #include "hw/arm/guest-services/general.h"
@@ -247,7 +248,19 @@ typedef struct {
      * host texture is the newer one, and the guest memory is written at the
      * frame's flush, not while the frame is half drawn (gles_sync_surface). */
     bool dirty;
+    /* (A snapshot keeps the fields above: GLES_SURFACE_SNAP_BYTES.) The page
+     * generation (gles_surface_changed) the texture was last uploaded at, and
+     * the surface's pages as RAM offsets from base's page on, found at the
+     * guest's bind: the memory the GPU samples. npages 0: not tracked (NV12,
+     * or not RAM), so re-read at every draw. */
+    uint64_t gen;
+    unsigned npages;
+    bool detached;      /* detached from its texture, which still holds its pixels (gles_surface_forget) */
+    ram_addr_t pages[];
 } GLESSurface;
+#define GLES_SURFACE_SNAP_BYTES 36
+QEMU_BUILD_BUG_ON(offsetof(GLESSurface, dirty) >= GLES_SURFACE_SNAP_BYTES ||
+                  offsetof(GLESSurface, gen) < GLES_SURFACE_SNAP_BYTES);
 
 typedef struct {
     uint32_t width, height, format;
@@ -280,6 +293,7 @@ typedef struct {
     CGLContextObj cgl;
 #endif
     GLuint fbo, tex, depth, sync_fbo;   /* sync_fbo: gles_surface_writeback's scratch */
+    GLuint copy_fbo;                    /* gles_surface_copy's draw side */
     uint32_t drawable_width, drawable_height;
     /* Set once the guest shim reports its CA layer size. Shims that predate
      * GLES_OP_DRAWABLE_STORAGE keep the legacy panel-sized crop. */
@@ -4006,10 +4020,13 @@ static void gles_texture_begin(void)
     while ((error = glGetError()) != GL_NO_ERROR) gles_reject(error);
 }
 
+static void gles_surface_forget(GLenum target);
+
 static int64_t gles_texture_end(uint32_t target, uint32_t level,
                                 GLESPVRTCLevel image)
 {
     GLenum error = glGetError();
+    gles_surface_forget(target);        /* a detached surface's pixels are no longer the texture's */
     if (error) {
         gles_refuse("upload-error:0x%x:0x%x", target, error);
         return gles_reject(error);
@@ -4257,99 +4274,175 @@ static unsigned gles_surface_bpp(uint32_t fmt)
     }
 }
 
-static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
+/*
+ * Knowing when a surface's memory changed.
+ *
+ * A GPU samples a surface where it lies in memory, so whatever wrote it last
+ * (CoreGraphics in any process, the scaler's DMA, our own writeback) is what
+ * the next draw sees. The host keeps a texture copy instead, and re-read every
+ * sampled surface at every draw. QEMU's VGA dirty log says which RAM pages were
+ * written since they were last looked at, by any CPU store or DMA. Its bits are
+ * cleared by whoever looks first, so each clear is recorded as a generation per
+ * page and every texture on that page compares against it: a surface is
+ * re-read only when one of its pages moved past the generation of its last
+ * upload.
+ */
+static uint64_t *gles_page_gen, gles_gen;
+static size_t gles_page_gen_len;
+
+/* The RAM offset of the page at `va` as the calling process maps it now. */
+static bool gles_page_ram(CPUState *cpu, vaddr va, ram_addr_t *ram)
 {
-    bool window = a[0] & GLES_SURFACE_WINDOW_ORDER;
-    unsigned target = a[0] & ~GLES_SURFACE_WINDOW_ORDER, w = a[3], h = a[4], fmt = a[5];
-    bool nv12 = fmt == 0x34323076 || fmt == 0x34323066;
-    unsigned bpp = gles_surface_bpp(fmt);
-    GLint texture = 0, unpack;
-    char fourcc[12];
-    static unsigned traced;
-    if (getenv("IT_GLES_VERBOSE") && (nv12 || traced++ < 32)) {
-        fprintf(stderr, "[gles] surface target=%x base=%08x stride=%u %ux%u fmt=%08x uv=%08x/%u\n",
-                target, a[1], a[2], w, h, fmt, a[6], a[7]);
+    static MemoryRegion *logged[4];
+    MemTxAttrs attrs = {};
+    hwaddr pa = cpu_get_phys_page_attrs_debug(cpu, va, &attrs), xlat, len = TARGET_PAGE_SIZE;
+    MemoryRegion *mr;
+
+    if (pa == -1) return false;
+    WITH_RCU_READ_LOCK_GUARD() {
+        mr = address_space_translate(cpu_get_address_space(cpu, cpu_asidx_from_attrs(cpu, attrs)),
+                                     pa, &xlat, &len, false, attrs);
     }
-    GLenum binding = GL_TEXTURE_BINDING_2D;
-    GLenum glfmt = GL_BGRA;
-    GLenum type = GL_UNSIGNED_BYTE;
-    g_autofree uint8_t *pixels = NULL;
-    if (target != GL_TEXTURE_2D) {
-#ifndef GLES_HOST_EAGL
-        if (target != GL_TEXTURE_RECTANGLE_ARB) {
-            gles_refuse("surface:target:0x%x", target);
-            return -1;
+    if (!memory_region_is_ram(mr) || len < TARGET_PAGE_SIZE) return false;
+    for (unsigned j = 0; j < ARRAY_SIZE(logged) && logged[j] != mr; j++) {
+        if (!logged[j]) {                       /* DMA marks VGA-dirty only on a logged region */
+            memory_region_set_log(mr, true, DIRTY_MEMORY_VGA);
+            logged[j] = mr;
+            break;
         }
-        binding = GL_TEXTURE_BINDING_RECTANGLE_ARB;
-#else
-        gles_refuse("surface:target:0x%x", target);
-        return -1;
-#endif
     }
-    glGetIntegerv(binding, &texture);
-    if (!texture) {
-        gles_refuse("surface:no-texture");
-        return -1;
-    }
-    if (!a[1]) {
-        if (gh.surfaces) g_hash_table_remove(gh.surfaces, GUINT_TO_POINTER(texture));
-        return 0;
-    }
-    /* The SGX's texture limit is 2048, but CoreAnimation hands the engine wider layer
-     * surfaces (Exit Strategy: 2240x416) and the desktop takes 16384; 4096 keeps a bind
-     * under 64 MiB. */
-    if (!w || !h || w > 4096 || h > 4096) {
-        gles_refuse("surface:size:%ux%u", w, h);
-        gles_debug_texture(target);
-        return -1;
-    }
-    if (!nv12 && !bpp) {
-        gles_refuse("surface:%s", gles_fourcc(fmt, fourcc));
-        gles_debug_texture(target);
-        return -1;
-    }
-    if (gles_surface_flush(cpu, a[1])) return -1;     /* a rendered alias: its pixels are on the host */
-    pixels = g_malloc((size_t)w * h * 4);
-    if (nv12) {
-#ifndef GLES_HOST_EAGL
-        if ((w | h) & 1) {
-            gles_refuse("surface:nv12:odd-size");
-            gles_debug_texture(target);
-            return -1;
+    *ram = memory_region_get_ram_addr(mr) + xlat;
+    return true;
+}
+
+/* RAM offsets of pages[from..n) of the surface at `base` (page index from base's
+ * page). Returns how many of the n are known: the first unmapped (or not RAM)
+ * page stops it. */
+static unsigned gles_surface_map(CPUState *cpu, uint32_t base, unsigned n, ram_addr_t *pages,
+                                 unsigned from)
+{
+    for (unsigned i = from; i < n; i++) {
+        vaddr va = (base & TARGET_PAGE_MASK) + (vaddr)i * TARGET_PAGE_SIZE;
+
+        if (i > from && (va & 0xfff)) {         /* inside the 4 KiB page just walked */
+            pages[i] = pages[i - 1] + TARGET_PAGE_SIZE;
+        } else if (!gles_page_ram(cpu, va, &pages[i])) {
+            return i;
         }
-        g_autofree uint8_t *planes = g_malloc((size_t)w * h * 3 / 2);
-        if (!gles_surface_read(cpu, a[1], a[2], h, w, planes) ||
-            !gles_surface_read(cpu, a[6], a[7], h / 2, w, planes + (size_t)w * h) ||
-            !gles_surface_nv12(w, h, fmt, planes, pixels)) {
-            if (!gles_guest_fault_pending()) {
-                gles_refuse("surface:read:%s", gles_fourcc(fmt, fourcc));
-                gles_debug_texture(target);
+    }
+    return n;
+}
+
+/*
+ * An IOSurface's pages, by its kernel ID (the shim's ninth bind argument).
+ *
+ * The SGX reaches a surface through its own MMU, which the driver loads with
+ * the surface's wired pages once; it never uses a CPU mapping. The bridge
+ * found them through the binding process's page tables, and 4.x's kernel
+ * keeps a user mapping of CoreAnimation's surfaces only for the page touched
+ * last (measured: after the shim touched all 1024 pages of a 1024x1024 layer,
+ * only the last was mapped), so every attach faulted a 4 MiB surface in page
+ * by page, one trapped call per page: ~900 calls, most of 4.2.1's app-close
+ * delay. So the pages are found once per surface, carried across those
+ * faults, and kept: a surface's memory does not move while it lives. Its last
+ * page, which the shim's touch leaves mapped, is checked on every attach, so
+ * a reused ID or re-populated purgeable memory starts over.
+ */
+typedef struct {
+    uint32_t offset, npages, resolved;
+    ram_addr_t pages[];
+} GLESSurfacePages;
+static GHashTable *gles_surface_ids;
+
+/* 0: s->pages filled; 1: not RAM, untracked; -1: a page fault is raised, the call comes back. */
+static int gles_surface_resolve(CPUState *cpu, uint32_t id, GLESSurface *s)
+{
+    unsigned n = s->npages, last = n - 1;
+    GLESSurfacePages *e;
+    ram_addr_t now;
+    uint8_t byte;
+
+    if (!id) return gles_surface_map(cpu, s->base, n, s->pages, 0) == n ? 0 : 1;
+    if (!gles_surface_ids) gles_surface_ids = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+    e = g_hash_table_lookup(gles_surface_ids, GUINT_TO_POINTER(id));
+    if (e && (e->offset != (s->base & ~TARGET_PAGE_MASK) || e->npages != n ||
+              (e->resolved == n &&
+               gles_page_ram(cpu, (s->base & TARGET_PAGE_MASK) + (vaddr)last * TARGET_PAGE_SIZE, &now) &&
+               now != e->pages[last]))) {
+        e = NULL;                               /* other memory under the same ID */
+    }
+    if (!e) {
+        /* ponytail: crude bound; an LRU if long sessions ever churn through thousands of live surfaces */
+        if (g_hash_table_size(gles_surface_ids) >= 4096) g_hash_table_remove_all(gles_surface_ids);
+        e = g_malloc0(sizeof(*e) + n * sizeof(ram_addr_t));
+        e->offset = s->base & ~TARGET_PAGE_MASK;
+        e->npages = n;
+        g_hash_table_replace(gles_surface_ids, GUINT_TO_POINTER(id), e);
+    }
+    e->resolved = gles_surface_map(cpu, s->base, n, e->pages, e->resolved);
+    if (e->resolved < n) {
+        vaddr va = (s->base & TARGET_PAGE_MASK) + (vaddr)e->resolved * TARGET_PAGE_SIZE;
+        return gles_guest_rw(cpu, va, &byte, 1, 0) && gles_guest_fault_pending() ? -1 : 1;
+    }
+    memcpy(s->pages, e->pages, n * sizeof(ram_addr_t));
+    return 0;
+}
+
+/* Whether any of `s`'s pages was written since its texture was uploaded. */
+static bool gles_surface_changed(GLESSurface *s)
+{
+    bool changed = !s->npages;
+
+    for (unsigned i = 0, j; i < s->npages; i = j) {
+        /* one bitmap scan per physically contiguous run */
+        for (j = i + 1; j < s->npages && s->pages[j] == s->pages[j - 1] + TARGET_PAGE_SIZE; j++) {
+        }
+        if (!cpu_physical_memory_get_dirty(s->pages[i], (ram_addr_t)(j - i) * TARGET_PAGE_SIZE,
+                                           DIRTY_MEMORY_VGA)) {
+            continue;
+        }
+        for (unsigned k = i; k < j; k++) {
+            size_t page = s->pages[k] >> TARGET_PAGE_BITS;
+
+            if (page >= gles_page_gen_len) {
+                size_t len = MAX(page + 1, gles_page_gen_len * 2);
+
+                gles_page_gen = g_renew(uint64_t, gles_page_gen, len);
+                memset(gles_page_gen + gles_page_gen_len, 0, (len - gles_page_gen_len) * sizeof(uint64_t));
+                gles_page_gen_len = len;
             }
-            return -1;
+            if (cpu_physical_memory_get_dirty(s->pages[k], TARGET_PAGE_SIZE, DIRTY_MEMORY_VGA)) {
+                gles_page_gen[page] = ++gles_gen;
+            }
         }
-#else
-        gles_refuse("surface:%s", gles_fourcc(fmt, fourcc));
-        gles_debug_texture(target);
-        return -1;
-#endif
-    } else if (!gles_surface_read(cpu, a[1], a[2], h, w * bpp, pixels)) {
-        if (!gles_guest_fault_pending()) {      /* else the bind is reissued once the page is in */
-            gles_refuse("surface:read:%s", gles_fourcc(fmt, fourcc));
-            gles_debug_texture(target);
-        }
-        return -1;
+        /* one clear per run: each clear walks every TLB entry to re-arm write tracking */
+        cpu_physical_memory_test_and_clear_dirty(s->pages[i], (ram_addr_t)(j - i) * TARGET_PAGE_SIZE,
+                                                 DIRTY_MEMORY_VGA);
     }
-    if (window && nv12) {
-        gles_refuse("surface:window:%s", gles_fourcc(fmt, fourcc));
-        return -1;
+    for (unsigned i = 0; i < s->npages && !changed; i++) {
+        size_t page = s->pages[i] >> TARGET_PAGE_BITS;
+
+        changed = page < gles_page_gen_len && gles_page_gen[page] > s->gen;
     }
-    if (window) {                               /* rows reversed: the texture's first is memory's last */
-        g_autofree uint8_t *row = g_malloc((size_t)w * bpp);
+    return changed;
+}
+
+/* The pixels of `s` into the bound texture of its target, as desktop GL takes them. */
+static int gles_surface_upload(GLESSurface *s, uint32_t fmt, uint8_t *pixels)
+{
+    unsigned target = s->target, w = s->width, h = s->height;
+    GLenum glfmt = GL_BGRA, type = GL_UNSIGNED_BYTE;
+    GLint unpack;
+    char fourcc[12];
+
+    if (s->window) {                            /* rows reversed: the texture's first is memory's last */
+        size_t rb = (size_t)w * gles_surface_bpp(fmt);
+        g_autofree uint8_t *row = g_malloc(rb);
         for (unsigned y = 0; y < h / 2; y++) {
-            uint8_t *top = pixels + (size_t)y * w * bpp, *bottom = pixels + (size_t)(h - 1 - y) * w * bpp;
-            memcpy(row, top, (size_t)w * bpp);
-            memcpy(top, bottom, (size_t)w * bpp);
-            memcpy(bottom, row, (size_t)w * bpp);
+            uint8_t *top = pixels + y * rb, *bottom = pixels + (size_t)(h - 1 - y) * rb;
+            memcpy(row, top, rb);
+            memcpy(top, bottom, rb);
+            memcpy(bottom, row, rb);
         }
     }
     switch (fmt) {
@@ -4396,14 +4489,251 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
     glTexImage2D(target, 0, GL_RGBA, w, h, 0, glfmt, type, pixels);
     glPixelStorei(GL_UNPACK_ALIGNMENT, unpack);
     if (gles_texture_end(target, 0, (GLESPVRTCLevel){0})) {
-        gles_refuse("surface:upload:%s", gles_fourcc(fmt, fourcc));
+        gles_refuse("surface:upload:%s", gles_fourcc(s->format, fourcc));
         gles_debug_texture(target);
         return -1;
     }
+    s->gen = gles_gen;
+    return 0;
+}
+
+/* A tracked surface's pixels straight from RAM: its pages were mapped at the
+ * bind, so nothing can fault. */
+static void gles_surface_fetch(GLESSurface *s, uint8_t *pixels)
+{
+    unsigned rowbytes = s->width * gles_surface_bpp(s->format);
+
+    WITH_RCU_READ_LOCK_GUARD() {
+        for (unsigned row = 0; row < s->height; row++) {
+            uint64_t off = (s->base & ~TARGET_PAGE_MASK) + (uint64_t)row * s->stride;
+            uint8_t *dst = pixels + (size_t)row * rowbytes;
+
+            for (unsigned done = 0; done < rowbytes;) {
+                uint64_t at = off + done;
+                unsigned in = at & ~TARGET_PAGE_MASK;
+                unsigned n = MIN(rowbytes - done, TARGET_PAGE_SIZE - in);
+
+                memcpy(dst + done, qemu_map_ram_ptr(NULL, s->pages[at >> TARGET_PAGE_BITS] + in), n);
+                done += n;
+            }
+        }
+    }
+}
+
+/* A tracked surface's changed memory into its (bound) texture. */
+static int gles_surface_reload(GLESSurface *s)
+{
+    g_autofree uint8_t *pixels = g_malloc((size_t)s->width * s->height * 4);
+
+    gles_surface_fetch(s, pixels);
+    return gles_surface_upload(s, s->format, pixels);
+}
+
+static bool gles_surface_same(const GLESSurface *a, const GLESSurface *b)
+{
+    return a->npages && a->npages == b->npages && a->base == b->base && a->stride == b->stride &&
+        a->width == b->width && a->height == b->height && a->format == b->format &&
+        a->window == b->window &&
+        !memcmp(a->pages, b->pages, a->npages * sizeof(ram_addr_t));
+}
+
+/*
+ * 4.x's CoreAnimation attaches a layer's surface to a texture for the draws
+ * that use it and detaches it after (GLEngine's gliSetInteger 0x38E/0x39B),
+ * rotating a few texture names among many surfaces, so every frame of an
+ * animation re-attached megabytes that had not changed. A detached texture
+ * keeps the surface's pixels: it is the cache for the next attach of that
+ * surface, to any name, until something else writes the texture
+ * (gles_surface_forget) or the surface's memory changes.
+ */
+static void gles_surface_forget(GLenum target)
+{
+    GLint name = 0;
+    GLESSurface *s;
+
+    if (!gh.surfaces) return;
+#ifndef GLES_HOST_EAGL
+    if (target == GL_TEXTURE_RECTANGLE_ARB) {
+        glGetIntegerv(GL_TEXTURE_BINDING_RECTANGLE_ARB, &name);
+    } else
+#endif
+    if (target == GL_TEXTURE_2D) {
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &name);
+    }
+    s = name ? g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(name)) : NULL;
+    if (s && s->detached) g_hash_table_remove(gh.surfaces, GUINT_TO_POINTER(name));
+}
+
+/* Texture `from` (a detached copy of the surface) into `to`, bound at `target`, on the host GPU. */
+static bool gles_surface_copy(GLuint from, const GLESSurface *src, GLuint to, GLenum target)
+{
+#ifdef GLES_HOST_EAGL
+    return false;       /* ponytail: no blit on the ES 2.0 host; it re-reads */
+#else
+    GLint read_fb = 0, draw_fb = 0;
+    GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST), mask[4];
+
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING_EXT, &read_fb);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING_EXT, &draw_fb);
+    glGetBooleanv(GL_COLOR_WRITEMASK, mask);
+    gles_texture_begin();
+    glTexImage2D(target, 0, GL_RGBA, src->width, src->height, 0, GL_BGRA, GL_UNSIGNED_BYTE, NULL);
+    /* the writeback's scratch framebuffer reads, a second one draws (bound first, so it is in use) */
+    if (!gh.sync_fbo) gh.sync_fbo = gles_private_name(glIsFramebufferEXT);
+    glBindFramebufferEXT(GL_READ_FRAMEBUFFER_EXT, gh.sync_fbo);
+    if (!gh.copy_fbo) gh.copy_fbo = gles_private_name(glIsFramebufferEXT);
+    glFramebufferTexture2DEXT(GL_READ_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, src->target, from, 0);
+    glBindFramebufferEXT(GL_DRAW_FRAMEBUFFER_EXT, gh.copy_fbo);
+    glFramebufferTexture2DEXT(GL_DRAW_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, target, to, 0);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glBlitFramebufferEXT(0, 0, src->width, src->height, 0, 0, src->width, src->height,
+                         GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glColorMask(mask[0], mask[1], mask[2], mask[3]);
+    if (scissor) glEnable(GL_SCISSOR_TEST);
+    glFramebufferTexture2DEXT(GL_DRAW_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, target, 0, 0);
+    glFramebufferTexture2DEXT(GL_READ_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, src->target, 0, 0);
+    glBindFramebufferEXT(GL_READ_FRAMEBUFFER_EXT, read_fb);
+    glBindFramebufferEXT(GL_DRAW_FRAMEBUFFER_EXT, draw_fb);
+    return glGetError() == GL_NO_ERROR;
+#endif
+}
+
+static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a, uint32_t id)
+{
+    bool window = a[0] & GLES_SURFACE_WINDOW_ORDER;
+    unsigned target = a[0] & ~GLES_SURFACE_WINDOW_ORDER, w = a[3], h = a[4], fmt = a[5];
+    bool nv12 = fmt == 0x34323076 || fmt == 0x34323066;
+    unsigned bpp = gles_surface_bpp(fmt);
+    GLint texture = 0;
+    char fourcc[12];
+    static unsigned traced;
+    if (getenv("IT_GLES_VERBOSE") && (nv12 || traced++ < 32)) {
+        fprintf(stderr, "[gles] surface target=%x base=%08x stride=%u %ux%u fmt=%08x uv=%08x/%u\n",
+                target, a[1], a[2], w, h, fmt, a[6], a[7]);
+    }
+    GLenum binding = GL_TEXTURE_BINDING_2D;
+    g_autofree uint8_t *pixels = NULL;
+    if (target != GL_TEXTURE_2D) {
+#ifndef GLES_HOST_EAGL
+        if (target != GL_TEXTURE_RECTANGLE_ARB) {
+            gles_refuse("surface:target:0x%x", target);
+            return -1;
+        }
+        binding = GL_TEXTURE_BINDING_RECTANGLE_ARB;
+#else
+        gles_refuse("surface:target:0x%x", target);
+        return -1;
+#endif
+    }
+    glGetIntegerv(binding, &texture);
+    if (!texture) {
+        gles_refuse("surface:no-texture");
+        return -1;
+    }
+    if (!a[1]) {
+        GLESSurface *s = gh.surfaces ? g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(texture)) : NULL;
+        if (s && s->npages && !s->dirty) {
+            s->detached = true;         /* the texture still holds the surface's pixels */
+        } else if (s) {                 /* rendered pixels that never reach the guest, as on detach */
+            g_hash_table_remove(gh.surfaces, GUINT_TO_POINTER(texture));
+        }
+        return 0;
+    }
+    /* The SGX's texture limit is 2048, but CoreAnimation hands the engine wider layer
+     * surfaces (Exit Strategy: 2240x416) and the desktop takes 16384; 4096 keeps a bind
+     * under 64 MiB. */
+    if (!w || !h || w > 4096 || h > 4096) {
+        gles_refuse("surface:size:%ux%u", w, h);
+        gles_debug_texture(target);
+        return -1;
+    }
+    if (!nv12 && !bpp) {
+        gles_refuse("surface:%s", gles_fourcc(fmt, fourcc));
+        gles_debug_texture(target);
+        return -1;
+    }
+    if (window && nv12) {
+        gles_refuse("surface:window:%s", gles_fourcc(fmt, fourcc));
+        return -1;
+    }
+    if (gles_surface_flush(cpu, a[1])) return -1;     /* a rendered alias: its pixels are on the host */
+
+    /* ponytail: NV12 (video, new every frame anyway) is not tracked; its two planes would
+     * need two page lists. */
+    unsigned npages = 0;
+    if (!nv12 && gles_surface_range(a[1], a[2], h, w * bpp)) {
+        uint64_t last = a[1] + (uint64_t)(h - 1) * a[2] + w * bpp - 1;
+        npages = (last >> TARGET_PAGE_BITS) - (a[1] >> TARGET_PAGE_BITS) + 1;
+    }
+    g_autofree GLESSurface *surface = g_malloc0(sizeof(GLESSurface) + npages * sizeof(ram_addr_t));
+    surface->base = a[1]; surface->stride = a[2]; surface->width = w; surface->height = h;
+    surface->format = fmt; surface->uv = a[6]; surface->uvstride = a[7]; surface->target = target;
+    surface->window = window;
+    surface->npages = npages;
+    if (npages) {
+        int r = gles_surface_resolve(cpu, id, surface);
+        if (r < 0) return -1;                   /* reissued once the page is in */
+        if (r > 0) surface->npages = 0;         /* not RAM: re-read through the MMU at every draw */
+    }
     if (!gh.surfaces) gh.surfaces = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
-    GLESSurface *surface = g_new(GLESSurface, 1);
-    *surface = (GLESSurface){ a[1], a[2], w, h, fmt, a[6], a[7], target, window, false };
-    g_hash_table_replace(gh.surfaces, GUINT_TO_POINTER(texture), surface);
+    GLESSurface *old = g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(texture));
+    if (old && old->target == target && gles_surface_same(old, surface) && !gles_surface_changed(old)) {
+        old->detached = false;  /* the same memory, unwritten since it was uploaded: the texture is current */
+        return 0;
+    }
+    if (surface->npages) {
+        GHashTableIter it;
+        gpointer key, value;
+
+        g_hash_table_iter_init(&it, gh.surfaces);
+        while (g_hash_table_iter_next(&it, &key, &value)) {
+            GLESSurface *src = value;
+            if (src->detached && GPOINTER_TO_UINT(key) != (unsigned)texture &&
+                gles_surface_same(src, surface) && !gles_surface_changed(src)) {
+                if (!gles_surface_copy(GPOINTER_TO_UINT(key), src, texture, target)) break;
+                surface->gen = src->gen;
+                g_hash_table_replace(gh.surfaces, GUINT_TO_POINTER(texture), g_steal_pointer(&surface));
+                return 0;
+            }
+        }
+    }
+    gles_surface_changed(surface);              /* what is read next is the current generation */
+
+    pixels = g_malloc((size_t)w * h * 4);
+    if (surface->npages) {
+        gles_surface_fetch(surface, pixels);    /* every page was just mapped: no fault can come */
+    } else if (nv12) {
+#ifndef GLES_HOST_EAGL
+        if ((w | h) & 1) {
+            gles_refuse("surface:nv12:odd-size");
+            gles_debug_texture(target);
+            return -1;
+        }
+        g_autofree uint8_t *planes = g_malloc((size_t)w * h * 3 / 2);
+        if (!gles_surface_read(cpu, a[1], a[2], h, w, planes) ||
+            !gles_surface_read(cpu, a[6], a[7], h / 2, w, planes + (size_t)w * h) ||
+            !gles_surface_nv12(w, h, fmt, planes, pixels)) {
+            if (!gles_guest_fault_pending()) {
+                gles_refuse("surface:read:%s", gles_fourcc(fmt, fourcc));
+                gles_debug_texture(target);
+            }
+            return -1;
+        }
+#else
+        gles_refuse("surface:%s", gles_fourcc(fmt, fourcc));
+        gles_debug_texture(target);
+        return -1;
+#endif
+    } else if (!gles_surface_read(cpu, a[1], a[2], h, w * bpp, pixels)) {
+        if (!gles_guest_fault_pending()) {      /* else the bind is reissued once the page is in */
+            gles_refuse("surface:read:%s", gles_fourcc(fmt, fourcc));
+            gles_debug_texture(target);
+        }
+        return -1;
+    }
+    if (gles_surface_upload(surface, nv12 ? GLES_SURFACE_BGRA32 : fmt, pixels)) return -1;
+    g_hash_table_replace(gh.surfaces, GUINT_TO_POINTER(texture), g_steal_pointer(&surface));
     return 0;
 }
 
@@ -4448,6 +4778,10 @@ static int64_t gles_sync_surface_1(CPUState *cpu)
         GL_COLOR_ATTACHMENT0_EXT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME_EXT, &texture);
     GLESSurface *s = g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(texture));
     if (!s) return 0;
+    if (s->detached) {                  /* rendering into a plain texture: no longer the surface's copy */
+        g_hash_table_remove(gh.surfaces, GUINT_TO_POINTER(texture));
+        return 0;
+    }
     if (s->format != GLES_SURFACE_BGRA32 && s->format != GLES_SURFACE_RGBA32 &&
         s->format != GLES_SURFACE_RGB565 && s->format != GLES_SURFACE_RGB555) {
         char fourcc[12];
@@ -4506,6 +4840,9 @@ static int gles_surface_writeback(CPUState *cpu, GLuint texture, GLESSurface *s)
                 pixels + (size_t)from * s->width * bpp, s->width * bpp, 1)) return -1;
     }
     s->dirty = false;
+    /* Our own write: its aliases see a new generation, this texture already holds it. */
+    gles_surface_changed(s);
+    s->gen = gles_gen;
     return 0;
 }
 
@@ -4551,8 +4888,6 @@ static bool gles_refresh_surfaces_1(CPUState *cpu)
     if (kind == GL_TEXTURE) glGetFramebufferAttachmentParameterivEXT(GL_FRAMEBUFFER_EXT,
         GL_COLOR_ATTACHMENT0_EXT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME_EXT, &attachment);
     bool ok = true;
-    /* ponytail: reupload sampled surface aliases; add dirty-page tracking only
-     * if this bounded scan becomes a measured bottleneck. */
     for (unsigned unit = 0; unit < GLES_MAX_TEXUNITS && unit < units && ok; unit++) {
         glActiveTexture(GL_TEXTURE0 + unit);
         for (unsigned t = 0; t < ARRAY_SIZE(targets); t++) {
@@ -4565,10 +4900,14 @@ static bool gles_refresh_surfaces_1(CPUState *cpu)
             glGetIntegerv(bindings[t], &name);
             if (!name || name == attachment) continue;
             GLESSurface *surface = g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(name));
-            if (!surface || surface->dirty) continue;
+            if (!surface || surface->dirty || surface->detached) continue;
+            if (surface->npages) {      /* re-read only memory written since its upload */
+                if (gles_surface_changed(surface) && gles_surface_reload(surface)) { ok = false; break; }
+                continue;
+            }
             uint32_t a[] = { targets[t] | (surface->window ? GLES_SURFACE_WINDOW_ORDER : 0), surface->base, surface->stride,
                 surface->width, surface->height, surface->format, surface->uv, surface->uvstride };
-            if (gles_bind_surface(cpu, a)) { ok = false; break; }
+            if (gles_bind_surface(cpu, a, 0)) { ok = false; break; }
         }
     }
     glActiveTexture(active);
@@ -5155,8 +5494,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     switch (slot) {
 
     /* ---- engine-level operations (not framework dispatch slots) ---- */
-    case GLES_OP_BIND_SURFACE:
-        return argc == 8 ? gles_bind_surface(cpu, a) : -1;
+    case GLES_OP_BIND_SURFACE:      /* the ninth word, when a shim sends it, is the IOSurface ID */
+        return argc == 8 || argc == 9 ? gles_bind_surface(cpu, a, argc == 9 ? a[8] : 0) : -1;
     case GLES_OP_DRAWABLE_STORAGE:
         return argc == 2 ? gles_drawable_storage(a[0], a[1]) : -1;
 
@@ -6322,6 +6661,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     /* ---- one-to-one forwards (2026-09-27) ---- */
     case GLES_SLOT_COPY_TEX_SUB_IMAGE_2D:       /* target,level,xoff,yoff,x,y,w,h */
         glCopyTexSubImage2D(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
+        gles_surface_forget(a[0]);
         return 0;
     case GLES_SLOT_IS_ENABLED:
         return glIsEnabled(a[0]);
@@ -7175,6 +7515,7 @@ static void gles_context_free(GLESHost *state)
         CGLSetCurrentContext(state->cgl);
         glDeleteFramebuffersEXT(1, &state->fbo);
         if (state->sync_fbo) glDeleteFramebuffersEXT(1, &state->sync_fbo);
+        if (state->copy_fbo) glDeleteFramebuffersEXT(1, &state->copy_fbo);
         glDeleteTextures(1, &state->tex);
         glDeleteRenderbuffersEXT(1, &state->depth);
         CGLSetCurrentContext(NULL);
