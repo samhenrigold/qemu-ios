@@ -42,13 +42,6 @@ static bool fmc_read_file(const char *path, uint8_t *data, uint8_t *spare)
     return true;
 }
 
-static void fmc_erased_marker(S5L8900FMCState *s, uint32_t bank, uint32_t page,
-                              char *buf, size_t len)
-{
-    snprintf(buf, len, "%s/bank%u/blk%u.erased", s->nand_overlay, bank,
-             page / FMC_PAGES_PER_BLOCK);
-}
-
 static void fmc_blank_page(uint8_t *data, uint8_t *spare)
 {
     memset(data, 0, FMC_BYTES_PER_PAGE);
@@ -56,11 +49,7 @@ static void fmc_blank_page(uint8_t *data, uint8_t *spare)
     spare[0xA] = 0xFF;   /* FTL "free page" mark */
 }
 
-/*
- * Overlay first, then the base image, then a blank page -- except that a
- * block the guest has erased (marker file, see fmc_program_page) never falls
- * through to the base image's stale contents.
- */
+/* Overlay first, then the base image, then a blank page. */
 void s5l8900_fmc_load_page(S5L8900FMCState *s, uint32_t bank, uint32_t page,
                            uint8_t *data, uint8_t *spare)
 {
@@ -71,11 +60,6 @@ void s5l8900_fmc_load_page(S5L8900FMCState *s, uint32_t bank, uint32_t page,
         if (fmc_read_file(path, data, spare)) {
             return;
         }
-        fmc_erased_marker(s, bank, page, path, sizeof(path));
-        if (g_file_test(path, G_FILE_TEST_EXISTS)) {
-            fmc_blank_page(data, spare);
-            return;
-        }
     }
     if (s->nand_path) {
         snprintf(path, sizeof(path), "%s/bank%u/%u.page", s->nand_path, bank, page);
@@ -84,17 +68,20 @@ void s5l8900_fmc_load_page(S5L8900FMCState *s, uint32_t bank, uint32_t page,
         }
     }
     if (getenv("IT_FMC_TRACE")) {
-        fprintf(stderr, "[fmc] blank page bank %u page %u (block %u)\n", bank, page, page / FMC_PAGES_PER_BLOCK);
+        fprintf(stderr, "[fmc] blank page bank %u page %u\n", bank, page);
     }
     fmc_blank_page(data, spare);
 }
 
 /*
- * NAND cannot program a page without erasing its block first, and the FMC
- * never shows us the erase. Infer it as the FMSS model does: the first program
- * into a block (or a re-program of a page already in the overlay) erases the
- * block -- drop its overlay pages and leave a marker so reads of the untouched
- * pages return erased flash rather than the base image.
+ * Page-level copy-on-write into the overlay directory. No block-erase
+ * inference: the 3A101a FTL appends into blocks whose earlier pages the
+ * captured image already holds (spare bytes in the image are a uniform
+ * placeholder, so free and used pages are indistinguishable), and dropping
+ * or blanking a block on the first program into it cost lockdownd its own
+ * files (EIO on stat). devos50's model never re-read what it wrote at all.
+ * Pages the guest erases and never rewrites therefore keep the base image's
+ * contents -- nothing in the 3A101a FTL has depended on that so far.
  */
 static bool fmc_program_page(S5L8900FMCState *s, uint32_t bank, uint32_t page)
 {
@@ -111,24 +98,6 @@ static bool fmc_program_page(S5L8900FMCState *s, uint32_t bank, uint32_t page)
         return false;
     }
     snprintf(path, sizeof(path), "%s/%u.page", dir, page);
-    fmc_erased_marker(s, bank, page, dir, sizeof(dir));
-    if (!g_file_test(dir, G_FILE_TEST_EXISTS) || g_file_test(path, G_FILE_TEST_EXISTS)) {
-        uint32_t first = page - page % FMC_PAGES_PER_BLOCK;
-        FILE *m = fopen(dir, "wb");
-        if (!m) {
-            error_report("FMC: cannot write %s: %s", dir, strerror(errno));
-            return false;
-        }
-        fclose(m);
-        for (uint32_t p = first; p < first + FMC_PAGES_PER_BLOCK; p++) {
-            char victim[PATH_MAX];
-            snprintf(victim, sizeof(victim), "%s/bank%u/%u.page", s->nand_overlay, bank, p);
-            if (remove(victim) != 0 && errno != ENOENT) {
-                error_report("FMC: cannot erase %s: %s", victim, strerror(errno));
-                return false;
-            }
-        }
-    }
     FILE *f = fopen(path, "wb");
     if (!f) {
         error_report("FMC: cannot write %s: %s", path, strerror(errno));
