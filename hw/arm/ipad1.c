@@ -823,6 +823,9 @@ static void ipad1_init(MachineState *machine)
     /* MIPI-DSIM: the same Samsung IP as the iPod's; reuse that model. */
     dev = qdev_new(TYPE_IPOD_TOUCH_MIPI_DSI);
     IPOD_TOUCH_MIPI_DSI(dev)->direct_boot = true;
+    /* kboot= enters the kernel with no iBoot to bring the panel up: start the
+     * link the way iBoot's pinot_init leaves it (HS clock running). */
+    IPOD_TOUCH_MIPI_DSI(dev)->hs_clock_at_reset = s->kboot_path != NULL;
     qdev_prop_set_uint32(dev, "lanes", 4);      /* K48 DT #lanes */
     memory_region_add_subregion(sysmem, S5L8930_DSIM_BASE,
                                 &IPOD_TOUCH_MIPI_DSI(dev)->iomem);

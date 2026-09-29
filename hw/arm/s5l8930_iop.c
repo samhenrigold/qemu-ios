@@ -117,6 +117,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPState, S5L8930_IOP)
 #define CTRL_OP_RSUM        0x7273756d  /* 'rsum' */
 #define CTRL_OP_SPND        0x73706e64  /* 'spnd' */
 #define CTRL_OP_TTIN        0x7474696e  /* 'ttin': console character */
+#define CTRL_DONE           0x646f6e65  /* 'done': EmbeddedIOP-20+ writes it over the opcode */
 
 /*
  * FMI/SDIO commands: 512 bytes, u32 opcode at +0, u32 status at +8
@@ -842,6 +843,13 @@ static void iop_control_message(S5L8930IOPState *s, hwaddr item)
         break;
     }
     iop_stl(item + 4, st);
+    /* EmbeddedIOP-20 (iOS 4.3) firmware also overwrites the opcode with 'done':
+     * that kernel's _sendControlMessageGated initialises status to -1, and a
+     * status without 'done' is a "partially completed command" that ends in
+     * the "timed out waiting for workloop" panic (seen at 4.3's shutdown). */
+    if (s->fmi_arg == 8) {
+        iop_stl(item, CTRL_DONE);
+    }
 }
 
 /* ---- rings ------------------------------------------------------------- */
