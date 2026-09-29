@@ -16,6 +16,7 @@
 #include "hw/irq.h"
 #include "hw/arm/s5l8930.h"
 #include "migration/vmstate.h"
+#include "hw/qdev-properties.h"
 #include "system/runstate.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930PMGRState, S5L8930_PMGR)
@@ -77,6 +78,7 @@ struct S5L8930PMGRState {
     MemoryRegion iomem;
 
     uint32_t regs[S5L8930_PMGR_SIZE / 4];
+    uint8_t security_epoch;     /* POWER_ID[31:24] LLB would latch; 0 = measured */
     int64_t tick_base_ns;
     S5L8930EventTimer evt[2];
 };
@@ -340,6 +342,12 @@ static void s5l8930_pmgr_reset(DeviceState *dev)
     for (i = 0; i < ARRAY_SIZE(pmgr_defaults); i++) {
         s->regs[pmgr_defaults[i].off / 4] = pmgr_defaults[i].val;
     }
+    /* iboot= skips LLB, which writes the boot epoch here on hardware; the
+     * machine hands over what that LLB would write (it_iboot_find_miu_epoch). */
+    if (s->security_epoch) {
+        s->regs[PMGR_POWER_ID / 4] = (s->regs[PMGR_POWER_ID / 4] & 0x00ffffff) |
+                                     (uint32_t)s->security_epoch << 24;
+    }
     /* Every clock source enabled and every gate on: the kernel builds its
      * enabled masks from these, and enabling a power gate panics unless its
      * clock gate already reads 0xF. */
@@ -409,9 +417,15 @@ static const VMStateDescription vmstate_s5l8930_pmgr = {
     }
 };
 
+static const Property s5l8930_pmgr_props[] = {
+    DEFINE_PROP_UINT8("security-epoch", S5L8930PMGRState, security_epoch, 0),
+};
+
 static void s5l8930_pmgr_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+
+    device_class_set_props(dc, s5l8930_pmgr_props);
 
     dc->vmsd = &vmstate_s5l8930_pmgr;
     device_class_set_legacy_reset(dc, s5l8930_pmgr_reset);

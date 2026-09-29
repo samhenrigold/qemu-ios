@@ -134,6 +134,70 @@ uint32_t it_iboot_find_epoch(const uint8_t *image, size_t size)
     return found;
 }
 
+/* Thumb-2 BL at `p`: the target's offset from p + 4, or false if not a BL. */
+static bool iboot_t2_bl(const uint8_t *p, int32_t *off)
+{
+    uint16_t h1 = iboot_u16(p), h2 = iboot_u16(p + 2);
+    uint32_t s, i1, i2;
+
+    if ((h1 & 0xf800) != 0xf000 || (h2 & 0xd000) != 0xd000) {
+        return false;
+    }
+    s = (h1 >> 10) & 1;
+    i1 = !(((h2 >> 13) & 1) ^ s);
+    i2 = !(((h2 >> 11) & 1) ^ s);
+    *off = (int32_t)((i1 << 23) | (i2 << 22) | ((h1 & 0x3ff) << 12) |
+                     ((h2 & 0x7ff) << 1)) - (int32_t)(s << 24);
+    return true;
+}
+
+uint32_t it_iboot_find_miu_epoch(const uint8_t *image, size_t size,
+                                 uint32_t fuse)
+{
+    uint32_t found = 0;
+
+    if (!image || size < 32) {
+        return 0;
+    }
+    for (size_t i = 4; i + 4 <= size; i += 2) {
+        int32_t off;
+        size_t f;
+
+        /* cmp.w r0, rN, lsr #24, right after the bl epoch() */
+        if (iboot_u16(image + i) != 0xebb0 ||
+            (iboot_u16(image + i + 2) & 0xfff0) != 0x6f10 ||
+            !iboot_t2_bl(image + i - 4, &off) ||
+            (int64_t)i + off < 0 || (size_t)((int64_t)i + off) + 18 > size) {
+            continue;
+        }
+        f = i + off;
+        /* push {r7, lr}; add r7, sp, #0 | mov r7, sp */
+        if (iboot_u16(image + f) != 0xb580 ||
+            (iboot_u16(image + f + 2) != 0xaf00 &&
+             iboot_u16(image + f + 2) != 0x466f)) {
+            continue;
+        }
+        uint16_t cmp = iboot_u16(image + f + 8), it = iboot_u16(image + f + 10);
+        uint16_t mov = iboot_u16(image + f + 12);
+        if (!iboot_t2_bl(image + f + 4, &off) || (cmp & 0xff00) != 0x2800 ||
+            (it & 0xff0f) != 0xbf08 || (mov & 0xff00) != 0x2000) {
+            continue;
+        }
+        uint32_t n = cmp & 0xff, m = mov & 0xff, taken;
+        switch ((it >> 4) & 0xf) {
+        case 0x0: taken = fuse == n; break;     /* eq: 817, 931 */
+        case 0x3: taken = fuse < n; break;      /* lo: 1219 */
+        case 0x9: taken = fuse <= n; break;     /* ls: 1072 */
+        default: continue;
+        }
+        if (found) {
+            return 0;
+        }
+        found = taken ? m : fuse;
+    }
+    return found;
+}
+
 uint32_t it_iboot_find_command_line(const uint8_t *image, size_t size,
                                     uint32_t base)
 {
