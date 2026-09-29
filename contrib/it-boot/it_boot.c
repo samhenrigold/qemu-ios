@@ -120,6 +120,26 @@ static void os_build(char *out, size_t n)
         out[0] = 0;
     }
     out[n - 1] = 0;
+    if (out[0]) {
+        return;
+    }
+    /* 1.x leaves kern.osversion empty: the build SystemVersion.plist (XML there) names */
+    char text[2048], *p;
+    int fd = open("/System/Library/CoreServices/SystemVersion.plist", O_RDONLY);
+    ssize_t r = fd < 0 ? -1 : read(fd, text, sizeof(text) - 1);
+    if (fd >= 0) {
+        close(fd);
+    }
+    text[r > 0 ? r : 0] = 0;
+    if ((p = strstr(text, "<key>ProductBuildVersion</key>")) && (p = strstr(p, "<string>"))) {
+        p += 8;
+        size_t i = 0;
+        while (p[i] && p[i] != '<' && i + 1 < n) {
+            out[i] = p[i];
+            i++;
+        }
+        out[i] = 0;
+    }
 }
 
 static const char *root_dir(void) { return "/usr/local/lighttouch"; }
@@ -873,7 +893,7 @@ int it_boot_run(void)
     long cur = current_serial();
     if (!pkg_ok(cur)) {
         long back = pkg_ok(st.seed) ? st.seed : -1;
-        say("it_boot: current package %ld unusable\n", "", cur);
+        say("it_boot: current package %s%ld unusable\n", "", cur);
         if (back >= 0 && flip(back) == 0) {
             cur = back;
         } else {
@@ -930,6 +950,7 @@ int it_boot_run(void)
             }
         } else if (o.serial != 0 && o.build[0] && strcmp(build, o.build)) {
             say("it_boot: offer is for build %s\n", o.build, 0);
+            say("it_boot: this is build %s\n", build, 0);
             result = -ENOEXEC;
         } else {
             int rc = 0, fresh = 0;

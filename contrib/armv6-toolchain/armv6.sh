@@ -17,7 +17,8 @@
 # these be executables at all on 3.2 dyld (docs/ipad1/guest-services.md).
 #
 # LEGACY_LINK=1 makes link6 emit what 2.x dyld takes as well: a non-PIE link
-# whose LC_DYLD_INFO_ONLY mkold.py --legacy proves redundant and drops.
+# whose LC_DYLD_INFO_ONLY mkold.py --legacy proves redundant and drops; executables
+# also get crt1old.c, the start routine 1.x libSystem needs (it does not initialize itself).
 set -eu
 
 GUEST_ARCH="${GUEST_ARCH:-armv6}"
@@ -33,10 +34,10 @@ cc6() {
     # ABI reserves it as the thread pointer (2.x libSystem's pthread_getspecific is
     # `add r0, r9, r0, lsl #2; ldr r0, [r0, #0x48]`), where 3.0+ made it an ordinary register.
     # Code that uses it breaks TSD, pthread_once and errno for itself and every caller it
-    # returns to.
+    # returns to. It also force-includes legacy.h: stat/readdir as 1.x's libSystem has them.
     rm -f "$2"
     fixed=()
-    [ "${LEGACY_LINK:-0}" = 1 ] && fixed=(-ffixed-r9)
+    [ "${LEGACY_LINK:-0}" = 1 ] && fixed=(-ffixed-r9 -include "$ARMV6_HERE/legacy.h")
     if ! xcrun clang -target $GUEST_ARCH-apple-ios5.0 -marm -O1 -fno-stack-protector ${fixed[@]+"${fixed[@]}"} \
         -fno-builtin -nostdinc -isystem "$ARMV6_SDK/usr/include" "${@:3}" \
         -c "$1" -o "$2" >"$2.cclog" 2>&1; then
@@ -65,17 +66,22 @@ link6() {
     rm -f "$out"
     legacy=()
     [ "${LEGACY_LINK:-0}" = 1 ] && legacy=(-no_pie)
+    # a legacy executable enters at crt1old.c's _start, which does what 1.x's crt1 did
+    if [ "${LEGACY_LINK:-0}" = 1 ] && [ "$kind" = -execute ]; then
+        cc6 "$ARMV6_HERE/crt1old.c" "$out.crt1old.o" || return 1
+        legacy+=(-e _start "$out.crt1old.o")
+    fi
     if ! xcrun ld -arch armv7 "$kind" ${legacy[@]+"${legacy[@]}"} -platform_version ios 9.0 9.0 \
             -no_function_starts -no_data_in_code_info -no_uuid \
             -syslibroot "$ARMV6_SDK" -L"$ARMV6_SDK/usr/lib" -lSystem \
             "$@" -o "$out" 2>"$out.ldlog"; then
         echo "link6: ld failed for $out" >&2
         cat "$out.ldlog" >&2
-        rm -f "$out.ldlog"
+        rm -f "$out.ldlog" "$out.crt1old.o"
         return 1
     fi
     grep -v "built for 'unknown'" "$out.ldlog" >&2 || true
-    rm -f "$out.ldlog"
+    rm -f "$out.ldlog" "$out.crt1old.o"
     python3 "$ARMV6_HERE/mkold.py" "$out" --subtype "$([ "$GUEST_ARCH" = armv7 ] && echo 9 || echo 6)" \
         $([ "${LEGACY_LINK:-0}" = 1 ] && echo --legacy)
 }

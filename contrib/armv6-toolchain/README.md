@@ -57,6 +57,13 @@ There is no crt1. `pc` lands directly on `_main`, so `argc`/`argv` are not set u
 and `lr` is whatever the kernel left behind — **`main` must not return**. Call
 `exit()` (or `_exit()`) explicitly.
 
+LEGACY_LINK=1 executables are the exception: link6 links `crt1old.c` and enters at its `_start`,
+which does what iPhone OS 1.x's crt1 did (1.x libSystem does not initialize itself: without
+`*_cthread_init_routine` the first `snprintf` dereferences NULL) and then `exit(main(...))`. cc6
+also force-includes `legacy.h` for that code: 1.x's `stat`/`readdir` are the 32-bit-inode ABI, the
+SDKs' are the 64-bit one, so both go through 1.x's `stat64` family / a converted dirent wherever
+libSystem exports `stat64` (only 1.x does). One binary runs on 1.x, 2.x and 3.x+.
+
 If you use `_exit()`, remember it does not flush stdio. The first version of the
 `dlopen` probe printed nothing at all for exactly that reason and looked like a
 silent failure of the thing it was testing. `pl0trap.c` writes with `write(2)`

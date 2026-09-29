@@ -20,8 +20,8 @@ bake(mnt, itpack) is the part N45Recipe has to do the same way, on the mounted 1
            LK_ENABLE_OGL=1, LK_AUTO_ENABLE_OGL=0, LK_ENABLE_MBX2D=0: LayerKit composites through the host. Without
            the hook the job keeps LK_ENABLE_OGL unset (software LayerKit); LK_ENABLE_OGL=1 over the stock IMG
            driver would drive the unemulated MBX, so a package without the hook is refused.
-  package  mkpkg.seed: the seed package, as on every board; no loader on 1.x (mkpkg's n45-ios1 family: the
-           legacy-linked it_boot dies with a bus error under 1.x launchd), so the hook is baked, not delivered.
+  package  mkpkg.seed: the loader and the seed package, as on every board (the legacy-linked it_boot runs on
+           1.x: contrib/armv6-toolchain crt1old.c and legacy.h), so later hooks are delivered as elsewhere.
 Every file the bake writes is root-owned afterwards (the host mount is noowners; build_nand.set_owner).
 """
 import json, os, plistlib, shutil, struct, subprocess, sys, tempfile
