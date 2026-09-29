@@ -10,7 +10,7 @@ header=(root/'include/hw/arm/ipod_touch_pcf50633_pmu.h').read_text()
 constants='\n'.join(re.findall(r'^#define PMU_.*$',header,re.M))
 state=re.search(r'typedef struct Pcf50633State \{.*?\n} Pcf50633State;',header,re.S).group()
 functions=[]
-for name in ('pmu_update_irq','pmu_latch_event','pmu_adc_complete',
+for name in ('pmu_update_backlight','pmu_update_irq','pmu_latch_event','pmu_adc_complete',
              'pcf50633_adc_for_level','pcf50633_level_for_adc','pmu_charge_active',
              'pmu_apply_battery_adc','pcf50633_update_battery','pcf50633_set_battery_adc',
              'pcf50633_set_battery_level','pcf50633_set_battery_drain','pcf50633_set_charging_mode',

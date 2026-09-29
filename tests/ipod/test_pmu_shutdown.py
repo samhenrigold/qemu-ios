@@ -39,7 +39,7 @@ static void qemu_system_shutdown_request(int cause) {
 }
 '''
 code += "\n".join(re.findall(r"^#define PMU_.*$", header, re.M)) + "\n"
-for name in ("pcf50633_guest_shutdown_confirmed", "pcf50633_guest_shutdown",
+for name in ("pmu_update_backlight", "pcf50633_guest_shutdown_confirmed", "pcf50633_guest_shutdown",
              "pcf50633_send"):
     match = re.search(r"^(?:static )?[^\n]*\b" + name + r"\([^)]*\)[^{]*\{.*?^}",
                       source, re.M | re.S)
