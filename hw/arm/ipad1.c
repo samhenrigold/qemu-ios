@@ -95,7 +95,7 @@ struct IPad1MachineState {
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
-    bool iop_core;                       /* run the IOP firmware on a second core (default off: HLE) */
+    bool iop_core;                       /* run the IOP firmware on a second core (default; off: the HLE) */
     DeviceState *iopcore;
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
     bool kbd_cmd, kbd_shift;
@@ -1536,6 +1536,7 @@ static char *ipad1_get_agent_status(Object *obj, Error **errp)
 static void ipad1_instance_init(Object *obj)
 {
     IPAD1_MACHINE(obj)->usb_cable = true;
+    IPAD1_MACHINE(obj)->iop_core = true;
     IPAD1_MACHINE(obj)->wifi = true;
     guest_pb_init(&IPAD1_MACHINE(obj)->pb, obj, "ipad1");
     guest_pkg_init(&IPAD1_MACHINE(obj)->pkg, obj);
@@ -1605,8 +1606,8 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
 
     mc->desc = "iPad 1 (K48AP, S5L8930)";
     mc->init = ipad1_init;
-    /* The AP plus the IOP core (iop-core=on): TCG sizes its contexts from smp, and the
-     * board creates both CPUs itself, so 2 by default costs nothing when the core is off. */
+    /* The AP plus the IOP core: TCG sizes its contexts from smp, and the board creates
+     * both CPUs itself, so 2 costs nothing with iop-core=off. */
     mc->max_cpus = 2;
     mc->default_cpus = 2;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a8");
@@ -1655,7 +1656,7 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
         "engineering production/ECID fuse policy for unpersonalized IPSW images (default off)");
     object_class_property_add_bool(klass, "iop-core", ipad1_get_iop_core, ipad1_set_iop_core);
     object_class_property_set_description(klass, "iop-core",
-        "Run the kernel's EmbeddedIOP firmware on a second core (arm946) instead of the IOP HLE (default off)");
+        "Run the kernel's EmbeddedIOP firmware on a second core (arm946) (default on); off = the IOP HLE");
     object_class_property_add_bool(klass, "wifi", ipad1_get_wifi, ipad1_set_wifi);
     object_class_property_set_description(klass, "wifi",
         "The BCM4329 Wi-Fi card, the iPad's network (default on). Frames go to "
