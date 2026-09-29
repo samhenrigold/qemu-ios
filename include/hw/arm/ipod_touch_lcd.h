@@ -53,6 +53,7 @@ typedef struct IPodTouchLCDState
     qemu_irq irq;
     uint32_t lcd_con;
     bool planes_enabled;
+    bool s5l8900;   /* "s5l8900" property: iPod touch 1G register layout */
     bool saved_planes_enabled;
     uint32_t plane_regs[0x300 / 4];
     uint32_t plane_scanout[0x300 / 4];

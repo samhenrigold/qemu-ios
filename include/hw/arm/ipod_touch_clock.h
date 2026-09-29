@@ -63,6 +63,8 @@ typedef struct IPodTouchClockState
     uint32_t    pwrcon3;
     uint32_t    pwrcon4;
 
+    bool        s5l8900;  /* "s5l8900" property: reset to the 1G's PLL/divider values */
+
 } IPodTouchClockState;
 
 #endif

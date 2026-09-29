@@ -25,7 +25,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchGPIOState, IPOD_TOUCH_GPIO)
 // 0x184 which maps to pad 0xC. The buttons HOLD/HOME/VOLDOWN all live on pad
 // 0xC, so the backing array must have at least 0xD entries; the previous value
 // of 0xC left those three buttons and the 0x184 read one slot out of bounds.
-#define NUM_GPIO_PADS 0x10
+// The S5L8900 (iPod touch 1G) keeps its buttons on pad 0x16 (0x1605 power,
+// 0x1606 home, read at 0x2c4), so the array covers 0x20 pads for both SoCs.
+#define NUM_GPIO_PADS 0x20
 #define NUM_GPIO_PINS 0x20
 
 #define GPIO2PIN(gpio)       ((gpio) & 7)

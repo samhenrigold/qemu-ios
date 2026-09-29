@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_aes.h"
+#include "hw/qdev-properties.h"
 #include "hw/arm/ipod_touch_guard.h"
 #include "hw/irq.h"
 #include "hw/sysbus.h"
@@ -438,7 +439,7 @@ static uint64_t ipod_touch_aes_read(void *opaque, hwaddr offset, unsigned size)
         case AES_STATUS:
             return aesop->status;
         case AES_OUTADDR:
-            return aesop->outaddr;
+            return aesop->outaddr + aesop->addr_offset;
         case AES_AUXSIZE:
             return aesop->auxsize;
       default:
@@ -580,6 +581,40 @@ static void aes_custom_go(IPodTouchAESState *s, uint32_t go)
     aes_update_irq(s);
 }
 
+/*
+ * s5l8900-compat: the operation exactly as devos50's iPod touch 1G model ran
+ * it (ipod_touch_aes.c on his ipod_touch_1g branch), because his public NOR
+ * carries IMG2 signatures computed for that model, not for the hardware:
+ * GID does nothing (not even status), UID uses key_uid, a custom key is the
+ * whole 32-byte key register block, every key is expanded as a DECRYPT
+ * schedule, and the direction is the second KEYLEN write since GO (iBoot-204
+ * writes 6, 7, 7, 0xF, so it always "encrypts"). Debt: the M1 NOR generator
+ * signs with the real convention and this mode goes away.
+ */
+static void aes_s5l8900_compat_go(IPodTouchAESState *aesop)
+{
+    aesop->compat_keylen_writes = 0;
+    if (aesop->keytype == AESGID || !aesop->insize) {
+        return;
+    }
+    if (aesop->keytype == AESUID) {
+        AES_set_decrypt_key(key_uid, 128, &aesop->decryptKey);
+    } else {
+        AES_set_decrypt_key((uint8_t *)aesop->custkey, 256, &aesop->decryptKey);
+    }
+    uint8_t *buf = g_malloc(aesop->insize);
+    cpu_physical_memory_read(aesop->inaddr, buf, aesop->insize);
+    AES_cbc_encrypt(buf, buf, aesop->insize & ~15u, &aesop->decryptKey,
+                    (uint8_t *)aesop->ivec, aesop->compat_op ? AES_ENCRYPT : AES_DECRYPT);
+    cpu_physical_memory_write(aesop->outaddr, buf, aesop->insize);
+    g_free(buf);
+    memset(aesop->custkey, 0, sizeof(aesop->custkey));
+    memset(aesop->ivec, 0, sizeof(aesop->ivec));
+    aesop->outsize = aesop->insize;
+    aesop->status = 0xf;
+    aes_update_irq(aesop);
+}
+
 static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
 {
     struct IPodTouchAESState *aesop = (struct IPodTouchAESState *)opaque;
@@ -591,6 +626,10 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
 
     switch(offset) {
         case AES_GO:
+            if (aesop->s5l8900_compat) {
+                aes_s5l8900_compat_go(aesop);
+                break;
+            }
             /*
              * aes-uid=engine: UID operations, and GID operations shorter than
              * a KBAG (the 4.x kernel derives key 0x837 from a 16-byte seed),
@@ -718,9 +757,12 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
         case AES_KEYLEN:
             aesop->operation = value;
             aesop->keylen = value;
+            if (aesop->compat_keylen_writes++ == 1) {
+                aesop->compat_op = value;   /* the second write since GO, as devos50 read it */
+            }
             break;
         case AES_INADDR:
-            aesop->inaddr = value;
+            aesop->inaddr = value - aesop->addr_offset;
             break;
         case AES_INSIZE:
             aesop->insize = IT_SIZE("aes", value, IT_AES_MAX_XFER);
@@ -729,7 +771,7 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
             aesop->outsize = value;
             break;
         case AES_OUTADDR:
-            aesop->outaddr = value;
+            aesop->outaddr = value - aesop->addr_offset;
             break;
         case AES_AUXSIZE:
             aesop->auxsize = value;
@@ -889,9 +931,17 @@ static const VMStateDescription vmstate_ipod_touch_aes = {
     },
 };
 
+static const Property ipod_touch_aes_properties[] = {
+    /* Bus address the engine sees minus the CPU's: 0x80000000 on the S5L8900. */
+    DEFINE_PROP_UINT32("addr-offset", IPodTouchAESState, addr_offset, 0),
+    DEFINE_PROP_BOOL("s5l8900-compat", IPodTouchAESState, s5l8900_compat, false),
+};
+
 static void ipod_touch_aes_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+
+    device_class_set_props(dc, ipod_touch_aes_properties);
 
     device_class_set_legacy_reset(dc, ipod_touch_aes_reset);
     dc->vmsd = &vmstate_ipod_touch_aes;

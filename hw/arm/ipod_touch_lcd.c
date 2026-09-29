@@ -167,6 +167,30 @@ static void lcd_restore_irq(IPodTouchLCDState *s, int version)
     lcd_update_irq(s);
 }
 
+/*
+ * S5L8900 (iPod touch 1G) window-1 register layout, mapped onto the S5L8720
+ * offsets this model decodes. The two CLCD generations keep the same
+ * per-window fields (depth, framebuffer base, horizontal span, resolution) at
+ * different offsets, and the 8900's frame interrupt has no enable/status pair:
+ * it is raised every frame and acknowledged by any write to +0x18. Offsets the
+ * 8900 layout does not share (LCDCON2 at +8, the VIDCON block at +0x200) are
+ * stored in plane_regs and otherwise ignored. Registers 0x8/0xC are the
+ * 8720's IRQ enable/status and must not be reached from the 8900 map, so those
+ * addresses translate to an unused slot.
+ */
+static hwaddr lcd_s5l8900_offset(hwaddr addr)
+{
+    switch (addr) {
+    case 0x58: return 0x28;   /* W1 hspan */
+    case 0x5c: return 0x20;   /* W1 depth */
+    case 0x60: return 0x24;   /* W1 framebuffer base */
+    case 0x64: return 0x30;   /* W1 resolution */
+    case 0x8:
+    case 0xC:  return 0x10;   /* LCDCON2 / unknown: plain storage only */
+    default:   return addr;
+    }
+}
+
 static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
 {
     // printf("%s: read from location 0x%08x\n", __func__, addr);
@@ -174,6 +198,19 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
     IPodTouchLCDState *s = (IPodTouchLCDState *)opaque;
     if (s->planes_enabled && !(addr & 3) && addr >= 0x10 &&
         addr < sizeof(s->plane_regs)) return s->plane_regs[addr / 4];
+    if (s->s5l8900) {
+        addr = lcd_s5l8900_offset(addr);
+        switch (addr) {
+        case 0x0:
+            return 0;
+        case 0x20: case 0x24: case 0x28: case 0x30:
+            break;                      /* the shared window-1 fields below */
+        default:
+            /* LCDCON2, the VIDCON/VIDTCON block, window 2, QLEN: plain
+             * storage the driver reads back, as in devos50's model. */
+            return (!(addr & 3) && addr < sizeof(s->plane_regs)) ? s->plane_regs[addr / 4] : 0;
+        }
+    }
     switch(addr)
     {
         case 0x0:
@@ -232,6 +269,15 @@ static void ipod_touch_lcd_write(void *opaque, hwaddr addr, uint64_t val, unsign
     }
 
     if (!(addr & 3) && addr < sizeof(s->plane_regs)) s->plane_regs[addr / 4] = val;
+    if (s->s5l8900) {
+        if (addr == 0x18) {
+            /* Any write to +0x18 acknowledges the frame interrupt. */
+            s->irq_status = 0;
+            lcd_update_irq(s);
+            return;
+        }
+        addr = lcd_s5l8900_offset(addr);
+    }
     switch(addr) {
         case 0x4:
             s->lcd_con = val;
@@ -1035,7 +1081,8 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
     memset(s->plane_scanout, 0, sizeof(s->plane_scanout));
     s->lcd_con = 0;
     s->render = 0;
-    s->irq_enable = s->irq_status = 0;
+    s->irq_enable = s->s5l8900 ? 1 : 0;   /* the 8900 interrupt has no enable */
+    s->irq_status = 0;
     lcd_update_irq(s);
     s->w1_display_resolution_info = 0;
     s->w1_framebuffer_base = 0;
@@ -1184,6 +1231,7 @@ static const VMStateDescription vmstate_ipod_touch_lcd = {
 
 static const Property lcd_properties[] = {
     DEFINE_PROP_BOOL("planes", IPodTouchLCDState, planes_enabled, false),
+    DEFINE_PROP_BOOL("s5l8900", IPodTouchLCDState, s5l8900, false),
 };
 
 static void ipod_touch_lcd_class_init(ObjectClass *klass, void *data)

@@ -77,11 +77,15 @@ typedef struct IPodTouchSPIState {
     qemu_irq cs_line;
 
     uint32_t regs[SPI_MMIO_SIZE >> 2];
-    uint8_t base;
+    uint8_t base;          /* "index" property: controller number, names the bus */
+    char *peripheral;      /* "peripheral" property: nor | multitouch | none | <SSI type> */
+    bool s5l8900;          /* "s5l8900" property: TX FIFO drains without a TX count */
     Fifo8 rx_fifo;
     Fifo8 tx_fifo;
 } IPodTouchSPIState;
 
-void set_spi_base(uint32_t base);
+/* Realize one controller at addr with the named peripheral on its bus. */
+DeviceState *ipod_touch_spi_create(hwaddr addr, qemu_irq irq, unsigned index,
+                                   const char *peripheral, bool s5l8900);
 
 #endif

@@ -73,6 +73,10 @@ typedef struct IPodTouchAESState
 	uint32_t auxsize;
 	uint32_t auxaddr;
 	uint32_t keytype;
+	uint32_t addr_offset;          /* "addr-offset" property */
+	bool s5l8900_compat;           /* "s5l8900-compat" property, see aes_s5l8900_compat_go */
+	uint32_t compat_keylen_writes;
+	uint32_t compat_op;
 	uint32_t status;
 	uint32_t ctrl;
 	uint32_t unkreg0;
