@@ -9,7 +9,7 @@
  * _mapKeyID c044c850).
  *
  * Global window (offsets < 0x1000): +0x00/+0x04 channel-enable set,
- * +0x08/+0x0C clear, +0x10/+0x14 pending-interrupt bitmap. Channel n lives
+ * +0x08/+0x0C clear, +0x10/+0x14 the enabled channels (read). Channel n lives
  * at n << 12 (n = 1..0x25; channel 0's slot is the global block):
  *   +0x00 ctrl/status: write bit0 go, bit1 reset, bit2 abort, bit5 hold;
  *                      bits 16-17 state (1 = running), 0x40000 error,
@@ -755,16 +755,13 @@ static uint64_t cdma_read(void *opaque, hwaddr offset, unsigned size)
             return s->enabled[reg >> 2];
         case 0x08: case 0x0C:
             return 0;
-        case 0x10: case 0x14: {
-            uint32_t pend = 0;
-            int base = (reg == 0x10) ? 0 : 32;
-            for (int i = base; i < MIN(base + 32, CDMA_CHANNELS); i++) {
-                if (s->ch[i].ctrl & (ST_DONE | ST_ERROR)) {
-                    pend |= 1u << (i - base);
-                }
-            }
-            return pend;
-        }
+        case 0x10: case 0x14:
+            /* Which channels are enabled: iBoot's and the IOP firmware's
+             * enable helpers (iBoot-817 0x5ff012e0, EmbeddedIOP-20 fw 0xe724)
+             * read it to set or clear only a bit that differs, and
+             * AppleCDMA-300.8 (cdma-version 2) checks it before a channel's
+             * CSR (9B206 807a47d0). */
+            return s->enabled[(reg - 0x10) >> 2];
         default:
             break;
         }
