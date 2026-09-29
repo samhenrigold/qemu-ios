@@ -103,6 +103,21 @@ int main(void)
         /* a GC load (0xc) and the TSD load (0xc0) are not table slots */
         static const unsigned gc[] = { 0xE593000C, 0xE59330C0, 0xE12FFF13 };
         assert(gles_trampoline_slot(gc, 0, 822) == -1);
+        /* 5.x Thumb-2 glClear: ldr r0, [r2, #0x10] (the GC one word later); ldr r2, [r2, #0x3c]; blx r2 */
+        static const unsigned short five[] = { 0x6910, 0x6BD2, 0x4790, 0xBD80 };
+        assert(gles_trampoline_slot(five, 1, 905) == 10);
+        /* 5.x glClearColor: ldr.w lr, [r0, #0x78]; ldr.w r0, [lr, #0x10]; ldr.w lr, [lr, #0x44]; blx lr */
+        static const unsigned short five_f[] = { 0xF8D0, 0xE078, 0xF8DE, 0x0010, 0xF8DE, 0xE044, 0x47F0, 0xBD80 };
+        assert(gles_trampoline_slot(five_f, 1, 905) == 12);
+    }
+
+    /* 5.x attaches of format-less IOSurfaces: the layout from the attach's GL format/type */
+    {
+        static const int la[8] = { 1, 0xde1, 0x190a, 8, 8, 0x190a, 0x1401, 0 };
+        static const int bgra[8] = { 1, 0xde1, 0x1908, 8, 8, 0x80e1, 0x1401, 0 };
+        static const int half[8] = { 1, 0xde1, 0x1908, 8, 8, 0x1908, 0x8d61, 0 };
+        assert(gli_gl_fourcc(la) == 0x32433038 && gli_gl_fourcc(bgra) == 0x42475241 && !gli_gl_fourcc(half));
+        assert(gfx_generation() == 0);          /* no libGFXShared in this process */
     }
 
     assert(!strcmp(gli_getString(ctx, 0x1F02), "OpenGL ES 2.0"));

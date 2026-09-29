@@ -4268,7 +4268,8 @@ static unsigned gles_surface_bpp(uint32_t fmt)
     case GLES_SURFACE_BGRA32: case GLES_SURFACE_RGBA32:
     case GLES_SURFACE_ARGB32: case GLES_SURFACE_ABGR32:     return 4;
     case GLES_SURFACE_RGB565: case GLES_SURFACE_RGB555:
-    case GLES_SURFACE_RGBA4444: case GLES_SURFACE_RGBA5551: return 2;
+    case GLES_SURFACE_RGBA4444: case GLES_SURFACE_RGBA5551:
+    case GLES_SURFACE_LA88:                                 return 2;
     case GLES_SURFACE_A8: case GLES_SURFACE_L8:             return 1;
     default:                                                return 0;
     }
@@ -4479,6 +4480,7 @@ static int gles_surface_upload(GLESSurface *s, uint32_t fmt, uint8_t *pixels)
      * translucent box. */
     case GLES_SURFACE_A8:       glfmt = GL_ALPHA;     break;
     case GLES_SURFACE_L8:       glfmt = GL_LUMINANCE; break;
+    case GLES_SURFACE_LA88:     glfmt = GL_LUMINANCE_ALPHA; break;
     case GLES_SURFACE_RGBA32:   glfmt = GL_RGBA;      break;
     case GLES_SURFACE_ARGB32:
     case GLES_SURFACE_ABGR32:
@@ -4848,10 +4850,30 @@ static int gles_surface_writeback(CPUState *cpu, GLuint texture, GLESSurface *s)
         if (traced++ < 40) fprintf(stderr, "[gles] sync surface tex %d -> %08x %ux%u sample-sum %" PRIu64 "\n",
                                    texture, s->base, s->width, s->height, sum);
     }
+    /*
+     * Where its pages are known (by the surface's kernel ID), the frame goes to them as
+     * the SGX writes a surface, through its own MMU: the binding process may map a
+     * surface read-only (5.x SpringBoard's layer surfaces: every store faulted, the
+     * kernel returned without making the page writable, and the frame was dropped).
+     */
     for (unsigned row = 0; row < s->height; row++) {
         unsigned from = s->window ? s->height - 1 - row : row;
-        if (gles_guest_rw(cpu, s->base + row * s->stride,
-                pixels + (size_t)from * s->width * bpp, s->width * bpp, 1)) return -1;
+        const uint8_t *src = pixels + (size_t)from * s->width * bpp;
+        if (!s->npages) {
+            if (gles_guest_rw(cpu, s->base + row * s->stride, (uint8_t *)src, s->width * bpp, 1)) return -1;
+            continue;
+        }
+        uint64_t off = (s->base & ~TARGET_PAGE_MASK) + (uint64_t)row * s->stride;
+        for (unsigned done = 0, len = s->width * bpp; done < len;) {
+            uint64_t at = off + done;
+            unsigned in = at & ~TARGET_PAGE_MASK, n = MIN(len - done, TARGET_PAGE_SIZE - in);
+            ram_addr_t ram = s->pages[at >> TARGET_PAGE_BITS] + in;
+            WITH_RCU_READ_LOCK_GUARD() {
+                memcpy(qemu_map_ram_ptr(NULL, ram), src + done, n);
+            }
+            cpu_physical_memory_set_dirty_range(ram, n, DIRTY_CLIENTS_ALL);
+            done += n;
+        }
     }
     s->dirty = false;
     /* Our own write: its aliases see a new generation, this texture already holds it. */
@@ -5913,6 +5935,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     }
 
     case GLES_SLOT_TEX_PARAMETERI:              /* target, pname, param */
+        /* 0x28FF: a texture parameter only Apple's 5.x GLEngine knows
+         * (glTexParameterI_Exec stores it in the texture object and nothing
+         * reads it back to the GPU); CoreAnimation sets it on its layer
+         * textures. Desktop GL has no such name: take it as the engine does. */
+        if (a[1] == 0x28FF) return 0;
         glTexParameteri(a[0], a[1], a[2]);
         return 0;
 

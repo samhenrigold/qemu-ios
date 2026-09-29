@@ -155,6 +155,8 @@ struct S5L8930CDMAState {
      * write; paced[] marks a chain in flight. */
     bool paced[CDMA_CHANNELS];
     bool sink_pending[CDMA_CHANNELS];       /* to-device chain in a device FIFO, done when it drains */
+    /* transient, inside cdma_run: the device drained the FIFO after this run's last push */
+    bool in_run[CDMA_CHANNELS], sink_early[CDMA_CHANNELS];
     bool in_seg_mig[CDMA_CHANNELS];         /* ch[].in_seg on the wire (vmstate 4) */
     int64_t paced_start[CDMA_CHANNELS];
     int64_t paced_end[CDMA_CHANNELS];       /* when the last chain's final byte played */
@@ -504,7 +506,13 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
                                      MEMTXATTRS_UNSPECIFIED);
                     dev += len;
                 } else {
+                    /* The push can complete the device's transfer at once
+                     * (the FMI already in write mode), which drains the FIFO
+                     * before this run gets to wait for that. */
+                    s->sink_early[ch] = false;
+                    s->in_run[ch] = true;
                     cdma_fifo_xfer(dev, width, buf, len, true);
+                    s->in_run[ch] = false;
                 }
             } else {
                 if (drains) {
@@ -557,9 +565,12 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
         /* The chain has filled the device's FIFO; it completes when the
          * device has taken it (s5l8930_cdma_sink_done from the FMI), as the
          * IOP firmware waits for after its NAND write. */
-        s->sink_pending[ch] = true;
-        c->ctrl |= ST_RUNNING;
-        return;
+        if (!s->sink_early[ch]) {
+            s->sink_pending[ch] = true;
+            c->ctrl |= ST_RUNNING;
+            return;
+        }
+        s->sink_early[ch] = false;      /* drained already: done now */
     }
     c->ctrl |= ST_DONE;
     cdma_update_irq(s, ch);
@@ -572,6 +583,9 @@ void s5l8930_cdma_sink_done(DeviceState *dev, uint32_t fifo_base, uint32_t size)
     for (int ch = 1; ch < CDMA_CHANNELS; ch++) {
         CDMAChannel *c = &s->ch[ch];
 
+        if (s->in_run[ch] && c->fifo >= fifo_base && c->fifo < fifo_base + size) {
+            s->sink_early[ch] = true;   /* cdma_run completes it when it stops pushing */
+        }
         if (s->sink_pending[ch] && !c->in_seg && c->fifo >= fifo_base && c->fifo < fifo_base + size) {
             s->sink_pending[ch] = false;
             c->ctrl = (c->ctrl & ~ST_RUNNING) | ST_DONE;

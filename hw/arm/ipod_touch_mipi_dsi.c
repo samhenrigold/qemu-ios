@@ -32,8 +32,8 @@ static void dsi_panel_read(IPodTouchMIPIDSIState *s, uint32_t header)
         return;
     }
     unsigned tail = (s->rx_head + s->rx_count) % 16;
-    s->rx_fifo[tail] = DSIM_RSP_LONG_READ | (3 << 8);
-    s->rx_fifo[(tail + 1) % 16] = 0x00a1d13c;
+    s->rx_fifo[tail] = DSIM_RSP_LONG_READ | (s->panel_id_len << 8);
+    s->rx_fifo[(tail + 1) % 16] = s->panel_id;
     s->rx_count += 2;
     s->intsrc |= rDSIM_INTSRC_RxDatDone;
 }
@@ -243,6 +243,9 @@ static const VMStateDescription vmstate_ipod_touch_mipi_dsi = {
 
 static const Property ipod_touch_mipi_dsi_properties[] = {
     DEFINE_PROP_UINT32("lanes", IPodTouchMIPIDSIState, lanes, 2),
+    /* the iPod touch 2G panel's ID, three bytes */
+    DEFINE_PROP_UINT32("panel-id", IPodTouchMIPIDSIState, panel_id, 0x00a1d13c),
+    DEFINE_PROP_UINT32("panel-id-len", IPodTouchMIPIDSIState, panel_id_len, 3),
 };
 
 static void ipod_touch_mipi_dsi_class_init(ObjectClass *klass, void *data)

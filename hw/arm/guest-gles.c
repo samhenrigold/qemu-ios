@@ -46,7 +46,7 @@ static struct {
     bool armed, pending;
     MMUAccessType type;
     vaddr va, last_va;
-    unsigned repeats;
+    unsigned repeats, slot;
 } gf;
 
 bool gles_guest_fault_pending(void)
@@ -99,7 +99,9 @@ static void gles_guest_fault_in(CPUState *cpu)
          * this call (it fails as it always did) rather than loop. */
         if (gles_host_refuse("guest-read:fault-dropped")) {
             fprintf(stderr, "[gles] guest page 0x%08" PRIx64 " still not "
-                    "accessible after 4 faults; call dropped\n", (uint64_t)gf.va);
+                    "accessible after 4 faults (slot %u, %s, page table: %s); call dropped\n",
+                    (uint64_t)gf.va, gf.slot, gf.type == MMU_DATA_STORE ? "store" : "load",
+                    cpu_get_phys_page_debug(cpu, gf.va) == -1 ? "unmapped" : "mapped");
         }
         gf.repeats = 0;
         return;
@@ -200,6 +202,7 @@ int64_t qc_handle_gles(CPUState *cpu, qc_gles_args_t *a)
     }
     memset(args, 0, sizeof(args));
     gf.armed = true;
+    gf.slot = a->slot;
     if (argc <= QC_GLES_INLINE_ARGS) {
         memcpy(args, a->args, argc * sizeof(uint32_t));
     } else {

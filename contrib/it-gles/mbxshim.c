@@ -1431,7 +1431,15 @@ static int surface_fault_read(unsigned long base, unsigned stride, unsigned rows
 /* 7E18's engine at 0xd918 takes (gc, GL target, IOSurface), not
  * (gc, IOSurface, ...). The target is 0x84f5 or 0x8d41; treating it as a
  * surface pointer crashes the compositor. Texture bindings never own a view. */
+static int GLESBindCoreSurfaceAs(void *gc, unsigned target, void *surface, unsigned gl_format);
 static int GLESBindCoreSurface(void *gc, unsigned target, void *surface)
+{
+    return GLESBindCoreSurfaceAs(gc, target, surface, 0);
+}
+
+/* gl_format: the layout the caller's GL arguments give the surface (glishim's 0x38E
+ * attach), used when the IOSurface carries no pixel format; 0 = none. */
+static int GLESBindCoreSurfaceAs(void *gc, unsigned target, void *surface, unsigned gl_format)
 {
     unsigned base, stride, width, height, format, uv = 0, uvstride = 0;
     int result;
@@ -1450,6 +1458,7 @@ static int GLESBindCoreSurface(void *gc, unsigned target, void *surface)
     width = p_IOSurfaceGetWidth(surface);
     height = p_IOSurfaceGetHeight(surface);
     format = p_IOSurfaceGetPixelFormat(surface);
+    if (!format) format = gl_format;
     if (p_IOSurfaceGetPlaneCount && p_IOSurfaceGetPlaneCount(surface) == 2 &&
         p_IOSurfaceGetBaseAddressOfPlane && p_IOSurfaceGetBytesPerRowOfPlane) {
         base = (unsigned)p_IOSurfaceGetBaseAddressOfPlane(surface, 0);

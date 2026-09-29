@@ -215,11 +215,14 @@ static const char *gles_find_encode(void)
  * `ldr` immediates a register call or a load into pc goes through (contrib/ipad1-gles/glitsv.py
  * and FirmwareKit's GLIDispatch.callLoads read the same forms), up to the unconditional
  * bx / pop {pc} / tail-call `ldr pc` that ends it. armv6 3.x calls with `mov lr, pc; ldr pc,
- * [ip, #off]`; 4.x armv7 is Thumb-2 with IT blocks (blxne in the glIs* trampolines). */
+ * [ip, #off]`; 4.x armv7 is Thumb-2 with IT blocks (blxne in the glIs* trampolines). The table
+ * starts right after the GC the trampoline loads into r0 from the same context: +0xc on 3.x/4.x
+ * (slots from +0x10), +0x10 on 5.x (slots from +0x14, a word more ahead of the table). 5.x's
+ * float-argument trampolines keep the context in lr (ldr.w lr, [r0, #0x78]; ldr.w lr, [lr, #off]). */
 static int gles_trampoline_slot(const void *code, int thumb, unsigned nslots)
 {
     const unsigned char *p = code;
-    unsigned loads[16], offs[4], noffs = 0, pos = 0, i, j;
+    unsigned loads[16], offs[4], noffs = 0, pos = 0, i, j, gc = 0;
     int prev = 0, mlp = 0, it_left = 0, it_cond = 0;
 
     for (i = 0; i < 16; i++) loads[i] = 0;
@@ -227,7 +230,7 @@ static int gles_trampoline_slot(const void *code, int thumb, unsigned nslots)
         for (j = 0; j < noffs && offs[j] != o_; j++) {} \
         if (j == noffs && noffs < 4) offs[noffs++] = o_; } } while (0)
 #define LOAD(rt, rn, imm, tail) do { unsigned rn_ = (rn), rt_ = (rt), imm_ = (imm); \
-        if ((rn_ <= 8 || rn_ == 12) && imm_ > 9) { loads[rt_] = imm_; \
+        if ((rn_ <= 8 || rn_ == 12 || rn_ == 14) && imm_ > 9) { loads[rt_] = imm_; if (rt_ == 0 && !gc) gc = imm_; \
             if (rt_ == 15) { NOTE(imm_); if (tail) goto done; } } } while (0)
 #define CALL(rm) do { if (loads[(rm) & 15]) NOTE(loads[(rm) & 15]); } while (0)
     if (!thumb) {
@@ -290,7 +293,10 @@ done:
 #undef NOTE
 #undef LOAD
 #undef CALL
-    return noffs == 1 ? (int)((offs[0] - 0x10) / 4) : -1;
+    {
+        unsigned base = gc == 0x10 ? 0x14 : 0x10;
+        return noffs == 1 && offs[0] >= base ? (int)((offs[0] - base) / 4) : -1;
+    }
 }
 
 /* Every exported row's trampoline, decoded; slots named. With `check` set the layout is only
