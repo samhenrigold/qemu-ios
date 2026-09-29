@@ -350,14 +350,14 @@ def main():
         manifest = {"serial": 7, "version": "7.0", "requires": {"builds": ["7E18"]}, "jobs": ["jobs/j.plist"],
                     "files": [{"name": n, "mode": md, "size": len(b), "sha256": hashlib.sha256(b).hexdigest()}
                               for n, md, b in payload],
-                    "hooks": [{"file": "hooks/MBXGLEngine", "target": MBX, "gli": "7E18", "respring": True},
-                              {"file": "hooks/it_typein.dylib", "target": TYPEIN, "gli": None, "respring": True}]}
+                    "hooks": [{"file": "hooks/MBXGLEngine", "target": MBX, "respring": True},
+                              {"file": "hooks/it_typein.dylib", "target": TYPEIN, "respring": True}]}
         mkpkg.pack([("f/manifest.json", json.dumps(manifest).encode())] + [("f/" + n, b) for n, _, b in payload]
                    + [("loader/it_boot", b"loader"), ("loader/com.qemu.it-boot.plist", b"<plist/>"),
                       ("g/manifest.json", json.dumps(dict(manifest, requires={"builds": ["8C148"]})).encode())],
                    str(tmp / "t.itpack"))
         (vol / "System/Library/LaunchDaemons/j.plist").write_bytes(b"baked job")
-        made, rec = mkpkg.seed(str(vol), str(tmp / "t.itpack"), gli=None)
+        made, rec = mkpkg.seed(str(vol), str(tmp / "t.itpack"), gles=False)
         assert rec["seed"] == 7 and rec["family"] == "f" and rec["hooks"] == [] and rec["jobs"] == ["j.plist"]
         assert not os.path.lexists(vol / "System/Library/LaunchDaemons/j.plist")    # the package's job
         assert dev.hook(MBX) == b"stock mbx"      # no shim installed: no GL hook; typein's target is absent
@@ -366,7 +366,7 @@ def main():
         (vol / "System/Library/LaunchDaemons/com.qemu.it-boot.plist").unlink()
         dev.rel("sys" + TYPEIN).parent.mkdir(parents=True)
         dev.rel("sys" + TYPEIN).write_bytes(b"old typein")
-        made, rec = mkpkg.seed(str(vol), str(tmp / "t.itpack"), gli="7E18")
+        made, rec = mkpkg.seed(str(vol), str(tmp / "t.itpack"), gles=True)
         assert rec["hooks"] == [MBX, TYPEIN] and "usr/local/lighttouch/current" in made
         assert dev.hook(MBX) == dev.hook(MBX + ".baked") == b"shim" and dev.hook(TYPEIN + ".baked") == b"t"
         assert (vol / "usr/local/bin/it_boot").read_bytes() == b"loader"
