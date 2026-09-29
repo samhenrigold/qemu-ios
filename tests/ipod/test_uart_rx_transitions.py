@@ -19,8 +19,9 @@ code='''
 #include <stdio.h>
 #include <assert.h>
 typedef uint64_t hwaddr;
+#define MIN(a,b) ((a)<(b)?(a):(b))
 typedef struct {unsigned size,sp,rp;} FIFO;
-typedef struct {uint32_t reg[32]; FIFO rx,tx; unsigned channel; bool s5l8720_irq,rx_since_timeout; int dmairq,rxdmareq,irq,chr; int *fifo_timeout_timer; uint32_t wordtime;} Exynos4210UartState;
+typedef struct {uint32_t reg[32]; FIFO rx,tx; unsigned channel; bool s5l8720_irq,rx_since_timeout; int dmairq,rxdmareq,irq,chr; int *fifo_timeout_timer, *tx_done_timer; uint32_t wordtime, tx_char_ns;} Exynos4210UartState;
 static unsigned levels[4],pulses;
 #define QEMU_CLOCK_VIRTUAL 0
 static int64_t qemu_clock_get_ns(int c){return 100;}
