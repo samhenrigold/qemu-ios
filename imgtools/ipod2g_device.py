@@ -222,7 +222,8 @@ def build(ctx):
         helper = os.path.join(ROOT, "build/ipod-guest/it_keybag")
         if not os.path.exists(helper):
             raise SystemExit("data_protection: build %s first (contrib/it-keybag/build-ipod.sh)" % helper)
-        ramdisk = components(z)["UpdateRamDisk"][:-4] + "-ramdisk.dmg"
+        comp = components(z)   # the 4.0 betas ship no Update identity: the restore ramdisk, as firmwarekit's Recipe
+        ramdisk = comp.get("UpdateRamDisk", comp["RestoreRamDisk"])[:-4] + "-ramdisk.dmg"
         step("data protection: restore-ramdisk keybag one-shot",
              [sys.executable, f"{HERE}/ipod2g_keybag.py", out, "--dec", dec, "--ramdisk", ramdisk,
               "--helper", helper, "--qemu", os.path.abspath(ctx.a.qemu)])
