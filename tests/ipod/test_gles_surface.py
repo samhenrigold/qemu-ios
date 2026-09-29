@@ -7,7 +7,7 @@ helpers = source[source.index('static bool gles_surface_range('):source.rfind('\
 tracking = source[source.index('static GLESPVRTC *gles_pvrtc_texture('):source.index('static int64_t gles_generate_mipmap(')]
 preamble = PRELUDE + r'''
 #include <sys/mman.h>
-''' + function('gles_reject(') + tracking + r'''
+''' + function('gles_reject(') + '\n' + source[source.index('#define GLES_PRIVATE_NAME'):source.index('static bool gles_is_drawable(')] + tracking + r'''
 static uint8_t ram[0x100000];
 int gles_guest_rw(CPUState *cpu, vaddr a, void *p, size_t n, bool write)
 {
@@ -117,7 +117,14 @@ int main(void)
     gh.bound_framebuffer=fb;
     glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT,GL_COLOR_ATTACHMENT0_EXT,GL_TEXTURE_RECTANGLE_ARB,tex,0);
     assert(glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT)==GL_FRAMEBUFFER_COMPLETE_EXT);
+    /* A rendered-into surface is written back at the flush, not when the target is left:
+     * the mark leaves guest memory alone, a refresh keeps the host's newer pixels. */
     glClearColor(0,1,1,1);glClear(GL_COLOR_BUFFER_BIT);assert(!gles_sync_surface(NULL));
+    for(int y=0;y<2;y++) assert(ram[y*20+1]==y*80);
+    gh.bound_framebuffer=0;glEnable(GL_TEXTURE_RECTANGLE_ARB);assert(gles_refresh_surfaces(NULL));
+    glGetTexImage(GL_TEXTURE_RECTANGLE_ARB,0,GL_BGRA,GL_UNSIGNED_BYTE,got);
+    assert(!memcmp(got,"\xff\xff\0\xff",4));gh.bound_framebuffer=fb;
+    assert(!gles_surface_flush(NULL,0));
     for(int y=0;y<2;y++) {
         for(int x=0;x<4;x++) assert(!memcmp(ram+y*20+x*4,"\xff\xff\0\xff",4));
         for(int x=16;x<20;x++) assert(ram[y*20+x]==0xa5);
@@ -159,7 +166,7 @@ int main(void)
     glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT,GL_COLOR_ATTACHMENT0_EXT,GL_TEXTURE_RECTANGLE_ARB,tex,0);
     /* Detached storage must not overwrite a subsequently reused guest allocation. */
     a[1]=0;assert(!gles_bind_surface(NULL,a));memset(ram,0x5a,40);
-    glClearColor(1,0,0,1);glClear(GL_COLOR_BUFFER_BIT);assert(!gles_sync_surface(NULL));
+    glClearColor(1,0,0,1);glClear(GL_COLOR_BUFFER_BIT);assert(!gles_sync_surface(NULL)&&!gles_surface_flush(NULL,0));
     for(int i=0;i<40;i++) assert(ram[i]==0x5a);
     a[1]=0xfffffff0;assert(gles_bind_surface(NULL,a)==-1);
     a[1]=0x10000000;a[2]=15;assert(gles_bind_surface(NULL,a)==-1);
@@ -210,7 +217,7 @@ int main(void)
     assert(!gles_bind_surface(NULL,a));
     glGetTexImage(GL_TEXTURE_RECTANGLE_ARB,0,GL_BGRA,GL_UNSIGNED_BYTE,got);
     for(int y=0;y<2;y++) assert(!memcmp(got+y*16,expected,16));
-    glClearColor(1,0,1,0);glClear(GL_COLOR_BUFFER_BIT);assert(!gles_sync_surface(NULL));
+    glClearColor(1,0,1,0);glClear(GL_COLOR_BUFFER_BIT);assert(!gles_sync_surface(NULL)&&!gles_surface_flush(NULL,0));
     for(int y=0;y<2;y++) {
         for(int x=0;x<4;x++) assert(ram[y*10+x*2]==0x1f && ram[y*10+x*2+1]==0x7c);
         assert(ram[y*10+8]==0xa5 && ram[y*10+9]==0xa5);
@@ -230,7 +237,7 @@ int main(void)
     munmap(fault_pages,16384);
     g_hash_table_destroy(gh.surfaces);
     CGLSetCurrentContext(NULL);CGLDestroyContext(context);
-    puts("PASS: IOSurface page faults and ABI, native textured draw, NV12 ranges, FBO writeback, ES 2.0 refresh and bounds");
+    puts("PASS: IOSurface page faults and ABI, native textured draw, NV12 ranges, deferred FBO writeback, ES 2.0 refresh and bounds");
 }
 '''
 build_and_run(preamble + helpers + abi + shim + finish_source + swap_source + check, 'it-gles-surface-')
