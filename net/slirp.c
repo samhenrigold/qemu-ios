@@ -725,6 +725,64 @@ static SlirpState *slirp_lookup(Monitor *mon, const char *id)
     }
 }
 
+/*
+ * Flip a running "user" netdev's slirp restrict flag in place. This changes
+ * only libslirp's per-connection outbound gate (the guest keeps its link,
+ * association and DHCP lease -- no netdev_del/add, no link event). `id` NULL
+ * means the first slirp stack. Returns 0 on success, -1 if no such stack.
+ */
+int net_slirp_set_restrict(const char *id, bool restricted)
+{
+    SlirpState *s;
+
+    if (id) {
+        NetClientState *nc = qemu_find_netdev(id);
+        if (!nc || strcmp(nc->model, "user")) {
+            return -1;
+        }
+        s = DO_UPCAST(SlirpState, nc, nc);
+    } else if (!QTAILQ_EMPTY(&slirp_stacks)) {
+        s = QTAILQ_FIRST(&slirp_stacks);
+    } else {
+        return -1;
+    }
+
+    slirp_set_restricted(s->slirp, restricted);
+    return 0;
+}
+
+void hmp_netdev_set_restrict(Monitor *mon, const QDict *qdict)
+{
+    const char *arg1 = qdict_get_str(qdict, "arg1");
+    const char *arg2 = qdict_get_try_str(qdict, "arg2");
+    const char *id, *state;
+    bool restricted;
+
+    /* "netdev_set_restrict [id] on|off"; one arg means id defaults to the
+     * only user stack. */
+    if (arg2) {
+        id = arg1;
+        state = arg2;
+    } else {
+        id = NULL;
+        state = arg1;
+    }
+
+    if (!strcmp(state, "on")) {
+        restricted = true;
+    } else if (!strcmp(state, "off")) {
+        restricted = false;
+    } else {
+        monitor_printf(mon, "expected 'on' or 'off', got '%s'\n", state);
+        return;
+    }
+
+    if (net_slirp_set_restrict(id, restricted) < 0) {
+        monitor_printf(mon, "no user mode network stack%s%s\n",
+                       id ? " with id " : "", id ? id : "");
+    }
+}
+
 void hmp_hostfwd_remove(Monitor *mon, const QDict *qdict)
 {
     struct sockaddr_in host_addr = {
