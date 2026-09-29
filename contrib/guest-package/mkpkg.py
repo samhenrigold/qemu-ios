@@ -57,7 +57,7 @@ IPAD_HOOKS = [("build/ipad1-guest/it_msmquiet.dylib", "/usr/local/lib/it_msmquie
               ("build/appsync/libappsync.dylib", "/usr/lib/libappsync.dylib", False)]
 # hooks: (source, stock target, respring). The GL shims are one binary per arch: they read the
 # firmware's dispatch layout at load (contrib/it-gles/gles_dispatch.c), so no hook is per build.
-# builds: exact ids or "<major>*" for every build of that iOS major (2.x = 5*, 3.x = 7*, 4.x = 8*), so a new point
+# builds: exact ids or "<major>*" for every build of that iOS major (2.x = 5*, 3.x = 7*, 4.x = 8*, 5.x = 9*), so a new point
 # release needs no row here (LightTouchMac docs/matrix.md).
 FAMILIES = {
     # 1.x builds are 3A*/3B* (1.1-1.1.2) and 4A*/4B* (1.1.3-1.1.5): no agent or helpers yet, the GL front end
@@ -79,6 +79,9 @@ FAMILIES = {
                  "hooks": [("contrib/ipad1-gles/GLEngine", GLENGINE, True),
                            ("contrib/ipad1-gles/GLRendererFloatQEMU.bundle/GLRendererFloatQEMU", GLD, True)] + IPAD_HOOKS},
 }
+# 5.x: 4.x's payloads byte for byte. The engine, gld plugin, agent and mounter shim read what 5.x changed off the
+# firmware at load (contrib/ipad1-gles/README.md "5.1.1", docs/ipad1/ios5.md); only the build range differs.
+FAMILIES["k48-ios5"] = dict(FAMILIES["k48-ios4"], builds=["9*"])
 # 1.x/2.x dyld refuses LC_DYLD_INFO_ONLY; everything the loader runs on it must be legacy-linked
 LEGACY_BUILDS = ("3*", "4*", "5*")
 
@@ -387,7 +390,13 @@ def selfcheck():
             "job 1 jobs/j.plist 644 2 " + "1" * 64, "hook 2 hooks/MBXGLEngine 755 3 %s %s respring" % ("2" * 64, MBX)]
         thin = b"\xce\xfa\xed\xfe" + struct.pack("<iiII", 12, 9, 2, 0) + b"\0" * 12
         assert macho_problem(thin, "armv7") == "unsigned (ldid -S)" and macho_problem(thin, "armv6") == "cpu 12/9, not armv6"
-    print("PASS: itpack round trip and opacity, job rewrite, offer grammar, Mach-O check")
+    # every shipped iPad build has exactly one family, and each carries the agent and the GL engine + gld hooks
+    for build, want in (("7B500", "k48-ios3"), ("8C148", "k48-ios4"), ("8L1", "k48-ios4"), ("9B206", "k48-ios5")):
+        fams = [f for f, s in FAMILIES.items() if "k48ap" in s["boards"] and build_matches(s["builds"], build)]
+        assert fams == [want], (build, fams)
+        assert "it_agent" in FAMILIES[want]["bin"] and GLENGINE in [t for _, t, _ in FAMILIES[want]["hooks"]]
+    assert GLD in [t for _, t, _ in FAMILIES["k48-ios5"]["hooks"]]
+    print("PASS: itpack round trip and opacity, job rewrite, offer grammar, Mach-O check, one family per iPad build")
 
 
 def main():

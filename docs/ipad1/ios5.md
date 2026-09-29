@@ -231,3 +231,30 @@ nothing"; exports cross-check 300 agree, 0 differ) and `usbmux` PASS on devices 
 with the 5.x hook; 8C148 and 7B500 `fresh-device.sh` PASS on the iBoot chain (both boots lit, clean
 power-off, no rescan); activated 8C148 and 7B500 `regress.py --checks gles,shadow` PASS (8C148 cross-check
 275/0, `_lcdPanelID 0xa1e506c9`); `tests/gate.sh --quick` 73 passed, 0 failed, 12 known.
+
+## The guest package on 5.x (branch `pkg-ios5`, serial 8)
+
+`k48-ios5` (builds `9*`) ships exactly `k48-ios4`'s payloads: it_agent v3, it_ethlink, it_prefs and their
+jobs, the GLEngine shim and the gld plugin as hooks, and it_msmquiet (plus appsync's hook when the manifest
+bakes it). `ipad1_device.py create manifests/ipad1-9B206.json` seeds it (lock `guest_package.family`
+`k48-ios5`). A 9B206 boot reports `report 8 0 ... seed 8`, and the agent answers `it_agent v3` (frontmost,
+lockstatus, a 600 KB put/get, a host paste). `regress.py --checks gles` passes with the package's GL hooks in
+place.
+
+There is no USB alert to hide on 5.x. There, `com.apple.mobile.storage_mounter` starts on demand, and only for
+USB mass-storage interfaces (`LaunchBuddyIOServiceMatching`, bInterfaceClass 8). The emulated keyboard is
+class 3, so it never starts the mounter. The shim stays in the package because a card reader would still start
+it: 5.x raises the notice through `CFUserNotificationDisplayNotice` with `UNSUPPORTED_FAILURE_BODY`, which the
+shim already matches. `regress.py --checks boot` still expects the shim's console line and a home screen. On a
+fresh 5.x device the Setup Assistant is up and there is no line, so that check fails twice over and needs a
+5.x leg. ittrust is iPod-only (the iPad trusts the proxy CA with an MCInstall profile), so no iPad family
+ships it.
+
+Two failures seen here that the package does not cause:
+
+- `system_powerdown` over the Setup Assistant does not finish within 45 s, so `fresh-device.sh` fails boot 1
+  on 9B206 even though the report and the paste have passed. The ios5-gl `dev5` device, which has no package,
+  does the same (#15 above).
+- If Wi-Fi has not joined by the time the walk reaches the Wi-Fi page, the Setup Assistant skips the Apple ID
+  page. The walk then fails with "the apple id page did not answer tap 1". This happened in 2 of 3 runs on the
+  packaged device and 1 of 1 on `dev5`.
