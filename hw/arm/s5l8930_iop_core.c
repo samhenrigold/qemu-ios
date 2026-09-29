@@ -56,6 +56,7 @@ struct S5L8930IOPCoreState {
     uint32_t fw_base, fw_size;
     DeviceState *iop;           /* the AP-side IOP block (ring trace) */
     MemoryRegion ap_vic_tap;    /* the IOP's view of AP VIC0: SOFTINT = IOP->AP doorbell */
+    MemoryRegion vic0_tap;      /* the AP's view of IOP VIC0: SOFTINT = AP->IOP doorbell */
 };
 
 void s5l8930_iop_core_set_iop(DeviceState *dev, DeviceState *iop)
@@ -79,6 +80,34 @@ static void ap_vic_tap_write(void *opaque, hwaddr off, uint64_t val, unsigned si
     address_space_stl_le(&address_space_memory, S5L8930_VIC_BASE(0) + off, val,
                          MEMTXATTRS_UNSPECIFIED, NULL);
 }
+
+/* AP -> IOP doorbell: the ring trace sees what the AP has just handed over. */
+static uint64_t vic0_tap_read(void *opaque, hwaddr off, unsigned size)
+{
+    S5L8930IOPCoreState *s = opaque;
+    uint64_t v = 0;
+
+    memory_region_dispatch_read(&PL192(s->vic[0])->iomem, off, &v, MO_32, MEMTXATTRS_UNSPECIFIED);
+    return v;
+}
+
+static void vic0_tap_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
+{
+    S5L8930IOPCoreState *s = opaque;
+
+    if (off == 0x18 && s->iop) {
+        s5l8930_iop_trace_rings(s->iop);
+    }
+    memory_region_dispatch_write(&PL192(s->vic[0])->iomem, off, val, MO_32, MEMTXATTRS_UNSPECIFIED);
+}
+
+static const MemoryRegionOps vic0_tap_ops = {
+    .read = vic0_tap_read,
+    .write = vic0_tap_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+};
 
 static const MemoryRegionOps ap_vic_tap_ops = {
     .read = ap_vic_tap_read,
@@ -187,6 +216,8 @@ static void s5l8930_iop_core_realize(DeviceState *dev, Error **errp)
                                   qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_FIQ),
                                   NULL);
     memory_region_add_subregion(s->sysmem, S5L8930_IOP_VIC_BASE, &PL192(s->vic[0])->iomem);
+    memory_region_init_io(&s->vic0_tap, OBJECT(s), &vic0_tap_ops, s, "iop.vic0-tap", 0x1000);
+    memory_region_add_subregion_overlap(s->sysmem, S5L8930_IOP_VIC_BASE, &s->vic0_tap, 1);
     for (i = 1; i < IOP_VIC_COUNT; i++) {
         g_autofree char *name = g_strdup_printf("iop-vic%d", i);
         s->vic[i] = pl192_manual_init(name, NULL);
