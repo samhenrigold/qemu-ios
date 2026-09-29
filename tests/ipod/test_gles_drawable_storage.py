@@ -51,6 +51,7 @@ static int cpu_memory_rw_debug(CPUState *cpu,uint64_t address,uint8_t *p,size_t 
  return 0;
 }
 static int gles_guest_rw(CPUState *cpu,uint64_t va,void *buf,size_t n,bool write){return cpu_memory_rw_debug(cpu,va,buf,n,write);}
+static bool gles_guest_fault_pending(void) {return false;} /* guest-gles.c: no fault armed on the host */
 static int64_t gles_reject(GLenum error) {if(!gh.error)gh.error=error;return -1;}
 static bool gles_refuse(const char *fmt, ...) {return true;}
 static const char *gles_fourcc(uint32_t f, char out[12]) {snprintf(out,12,"%08x",f);return out;}

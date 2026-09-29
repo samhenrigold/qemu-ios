@@ -32,20 +32,8 @@ export TIMEOUT="$(command -v timeout || true)"   # coreutils; without it a hung 
 cd "$ROOT"
 mkdir -p "$OUT" && : > "$OUT/results" || exit 2
 
-# Failing on today's tree (2026-09-28), each for a known reason.
+# Failing on today's tree, each for a known reason (none since 2026-09-29: the 12 stale C-slice/mock checks were repaired).
 export KNOWN='
-tests/ipod/test_amc_aac.py             its C slice reads IPodTouchAMCState.buf_base, which the AMC model no longer has
-tests/ipod/test_app_ledger.py          mock predates check_applaunch taking procs (procs.spawn on None)
-tests/ipod/test_battery_bridge.py      its C slice no longer sees object_property_parse/g_strdup_printf (include set changed)
-tests/ipod/test_dsi_fifo.py            its C slice calls dsi_lane_mask/dsi_note_dcs/dsi_cmd_bits, renamed or made static
-tests/ipod/test_gles_drawable_storage.py its C slice calls gles_guest_fault_pending, not declared by the header it includes
-tests/ipod/test_launch.py              mock passes an int where dismiss_reorder_tip expects an AgentControl (.qmp)
-tests/ipod/test_multitouch_frames.py   its C slice reads IPodTouchMultitouchState.profile, gone from the model
-tests/ipod/test_osk_config.py          its C slice reads IPodTouchMachineState.direct_iboot (now a machine property)
-tests/ipod/test_pvrtc_upload.py        its C slice calls gles_guest_rw, renamed or made static
-tests/ipod/test_scaler.py              its C slice lacks DeviceState/ROUND_UP (include set changed)
-tests/ipod/test_uart_rx_transitions.py its C slice lacks MIN (include set changed)
-tests/ipod/test_ui_buttons.py          its C slice calls ipad1_press_button, not declared by the header it includes
 '
 known_reason() { printf '%s\n' "$KNOWN" | awk -v n="$1" '$1 == n { $1 = ""; sub(/^ +/, ""); print }'; }
 export -f known_reason
