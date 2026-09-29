@@ -27,6 +27,7 @@
 #include "exec/address-spaces.h"
 #include "hw/boards.h"
 #include "hw/irq.h"
+#include "hw/core/split-irq.h"
 #include "hw/misc/unimp.h"
 #include "system/runstate.h"
 #include "hw/usb/hcd-ehci.h"
@@ -94,6 +95,8 @@ struct IPad1MachineState {
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
+    bool iop_core;                       /* run the IOP firmware on a second core (default off: HLE) */
+    DeviceState *iopcore;
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
     bool kbd_cmd, kbd_shift;
     bool btn_hold, btn_home;             /* button-hold/-home properties */
@@ -130,7 +133,19 @@ static uint32_t s5l8930_usb_hwcfg[] = { 0, 0x7a8f60d0, 0x082000e8, 0x01f08024 };
 
 static qemu_irq ipad1_irq(IPad1MachineState *s, int irq)
 {
-    return qdev_get_gpio_in(s->vic[irq / 32], irq % 32);
+    qemu_irq ap = qdev_get_gpio_in(s->vic[irq / 32], irq % 32);
+    DeviceState *split;
+
+    if (!s->iopcore) {
+        return ap;
+    }
+    /* The IOP's VICs see the same sources under the same numbers. */
+    split = qdev_new(TYPE_SPLIT_IRQ);
+    qdev_prop_set_uint16(split, "num-lines", 2);
+    qdev_realize_and_unref(split, NULL, &error_fatal);
+    qdev_connect_gpio_out(split, 0, ap);
+    qdev_connect_gpio_out(split, 1, s5l8930_iop_core_irq(s->iopcore, irq));
+    return qdev_get_gpio_in(split, 0);
 }
 
 /*
@@ -697,6 +712,12 @@ static void ipad1_init(MachineState *machine)
                                     &PL192(s->vic[i])->iomem);
         PL192(s->vic[i])->daisy = PL192(s->vic[i - 1]);
     }
+    if (s->iop_core) {
+        s->iopcore = qdev_new("s5l8930.iop-core");
+        object_property_set_link(OBJECT(s->iopcore), "dram", OBJECT(&s->dram), &error_abort);
+        object_property_set_link(OBJECT(s->iopcore), "sysmem", OBJECT(sysmem), &error_abort);
+        qdev_realize_and_unref(s->iopcore, NULL, &error_fatal);
+    }
 
     sysbus_create_simple("s5l8930.dmc", 0xbf800000, NULL);
 
@@ -895,10 +916,15 @@ static void ipad1_init(MachineState *machine)
     if (s->nand_overlay_path) {
         qdev_prop_set_string(dev, "nand-overlay", s->nand_overlay_path);
     }
+    if (s->iopcore) {
+        object_property_set_link(OBJECT(dev), "core", OBJECT(s->iopcore), &error_fatal);
+    }
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_IOP_BASE);
-    sysbus_mmio_map(sbd, 1, S5L8930_IOP_VIC_BASE);
+    if (!s->iopcore) {   /* with the core, real VICs sit at 0xbf300000 */
+        sysbus_mmio_map(sbd, 1, S5L8930_IOP_VIC_BASE);
+    }
 
     /* SHA-1 engine; CDMA channel 4 streams the data into its FIFO. */
     dev = qdev_new(TYPE_S5L8930_SHA1);
@@ -1453,6 +1479,16 @@ static void ipad1_set_development_fuses(Object *obj, bool value, Error **errp)
     IPAD1_MACHINE(obj)->development_fuses = value;
 }
 
+static bool ipad1_get_iop_core(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->iop_core;
+}
+
+static void ipad1_set_iop_core(Object *obj, bool value, Error **errp)
+{
+    IPAD1_MACHINE(obj)->iop_core = value;
+}
+
 static bool ipad1_get_wifi(Object *obj, Error **errp)
 {
     return IPAD1_MACHINE(obj)->wifi;
@@ -1575,7 +1611,10 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
 
     mc->desc = "iPad 1 (K48AP, S5L8930)";
     mc->init = ipad1_init;
-    mc->max_cpus = 1;
+    /* The AP plus the IOP core (iop-core=on): TCG sizes its contexts from smp, and the
+     * board creates both CPUs itself, so 2 by default costs nothing when the core is off. */
+    mc->max_cpus = 2;
+    mc->default_cpus = 2;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a8");
     mc->default_ram_size = S5L8930_DRAM_SIZE;
 
@@ -1620,6 +1659,9 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
                                   ipad1_set_development_fuses);
     object_class_property_set_description(klass, "development-fuses",
         "engineering production/ECID fuse policy for unpersonalized IPSW images (default off)");
+    object_class_property_add_bool(klass, "iop-core", ipad1_get_iop_core, ipad1_set_iop_core);
+    object_class_property_set_description(klass, "iop-core",
+        "Run the kernel's EmbeddedIOP firmware on a second core (arm946) instead of the IOP HLE (default off)");
     object_class_property_add_bool(klass, "wifi", ipad1_get_wifi, ipad1_set_wifi);
     object_class_property_set_description(klass, "wifi",
         "The BCM4329 Wi-Fi card, the iPad's network (default on). Frames go to "
