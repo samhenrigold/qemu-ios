@@ -166,10 +166,15 @@ def build(ctx):
     import build_nor
     shipped = build_nor.all_flash_order(af)
     derived["nor_images"] = [t for t in build_nor.DEFAULT_ORDER if t in shipped]
-    derived["wrap_shsh_types"] = derived["nor_images"] if major >= 3 else ["ibot"]
+    # 2.x boots SecureROM -> LLB -> iBoot and the SecureROM verifies the LLB raw. The epoch-1 chain (iBoot-385.22,
+    # 2.1.1) unwraps only iBoot's SHSH (in its LLB) and verifies the rest raw; the epoch-2 chain (385.49, 2.2/2.2.1)
+    # unwraps every image it loads ("load_macho_image: failed to load device tree" with a raw DeviceTree).
+    wrap = derived["nor_images"] if major >= 3 else \
+        [t for t in derived["nor_images"] if t != "illb"] if epoch >= 2 else ["ibot"]
+    derived["wrap_shsh_types"] = wrap
     step("nor.bin", [sys.executable, f"{HERE}/build_nor.py", "--identity", ctx.ident_path, "--all-flash", af,
                      "--types", ",".join(derived["nor_images"]), "--out", nor]
-         + ([] if derived["wrap_shsh"] else ["--wrap-shsh-types", "ibot"]))
+         + ([] if derived["wrap_shsh"] else ["--wrap-shsh-types", ",".join(wrap)]))
     blobs, derived["gid_blobs"] = gid_blobs(z, [n for n in z.namelist() if n.startswith(prefix) and n.endswith(".img3")]
                                             + [kc_member], os.path.expanduser(m["keys"]))
     gid = os.path.join(out, "gid-blobs.bin")
@@ -315,7 +320,9 @@ def bake(mnt, config):
         report["activation"] = "activation hook applied and daemon re-signed"
     sys.path.insert(0, os.path.join(ROOT, "contrib/guest-package"))
     import mkpkg
-    seeded, report["guest_package"] = mkpkg.seed(mnt, cfg["guest_package"], gli)
+    # the loader (it_boot) is linked for the 3.1+ dyld like the other helpers: none without the shared cache
+    # (FirmwareKit's N72Board bakes the same)
+    seeded, report["guest_package"] = mkpkg.seed(mnt, cfg["guest_package"], gli) if supported else ([], None)
     owners += [("0 0", p) for p in seeded]
     owners += [(o, p) for o, p in GUEST_TOOL_OWNERS if os.path.lexists(os.path.join(mnt, p))]
     with open(cfg["owners"], "w") as f:

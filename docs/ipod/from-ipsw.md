@@ -22,6 +22,7 @@ tests/ipod/regress.py --qemu build/qemu-system-arm --device OUT --checks boot
 | 3.1.3 7E18 | complete | SpringBoard up, GL CA through the shim, "Connect to iTunes" (lit, see below) | activation |
 | 4.2.1 8C148 | complete (NOR, NAND, GLES check, AppSync, gid-blobs, activation hook, data protection) | home screen, GL CoreAnimation through the shim (`regress.py --device ... --checks boot,gles` PASS; see "8C148: GL") | none for GL |
 | 2.1.1 5F138 | complete (no AppSync, GLES shim or modern guest helpers) | SecureROM → LLB → iBoot → kernel → stock SpringBoard, Connect to iTunes | activation; optional helpers need a 2.x-compatible build |
+| 2.2 5G77a, 2.2.1 5H11a | complete (as 2.1.1; the NOR wraps every image but the LLB) | home screen through LightTouchMac's pipeline (matrix, 2026-09-29) | the hold button (below) |
 
 ### P1, 7E18: activation
 
@@ -210,6 +211,27 @@ Gates (`regress.py`, one emulator at a time): fresh 8C148 device (the app's 2026
 `boot,fsck,persist,appinstall,applaunch,gles,agent,audio,wifi,webproxy`: 10/10 (4.5 min; webproxy = the baked PAC
 through the web proxy's guestfwd, Safari's path). nand-current 7E18 with `--stage-gles-shim`, same list over two runs: 9 PASS, webproxy SKIP (that image has no
 baked PAC).
+
+### 2.2 / 2.2.1 (5G77a, 5H11a): the LLB's 0x38100000 block and the epoch-2 NOR (2026-09-29)
+
+Both are iBoot-385.49, Restore.plist SCEP 2, SEPO 2 on LLB and iBoot. Two findings, in boot order:
+
+1. SecureROM → LLB looped into DFU (a CPU reset every ~0.15 s, nothing on the UART). `-d int` showed a data abort,
+   DFSR 0x808, DFAR 0x38100044, then the LLB's own watchdog reset. The store is in the routine that latches the
+   security epoch into POWER_ID (`(POWER_ID & 0xffffff) | max(chipid epoch, 2) << 24`; the ROM had already written
+   0x02000001): it also writes 0x38100040 <- 1, 0x38100044 <- 0x033f0100 and 0x3D7000bc. 0x38100000 was unmapped;
+   2.1.1's LLB (385.22) and every 3.x+ iBoot never touch it. It is now an unimplemented RAZ/WI device; what it is
+   remains unknown (LightTouchMac docs/smoke.md #11).
+2. iBoot then loaded the kernelcache and stopped at `load_macho_image: failed to load device tree` / recovery with
+   2.1.1's NOR (only iBoot's SHSH wrapped). The epoch-2 chain unwraps every NOR image it loads; the SecureROM still
+   verifies the LLB raw (wrapping it too keeps the ROM at 0x3186). `ipod2g_device.py` (and FirmwareKit's N72Board)
+   wrap every image but the LLB when SCEP >= 2. Kernel xnu-1228.7.36 then boots to SpringBoard.
+
+The hold button does nothing on 2.x (2.1.1 too): no power sheet, no lock, so the machine's powerdown sequence never
+completes. 2.x's DeviceTree has no `function-button_hold` (3.x: GPIO 0xC02), only `function-wake_button_hold` (PMU
+STAT 0x191). With IT_GPIO_TRACE/IT_PMU_TRACE the guest acks the hold GPIO edge (group 3 bit 26) and never reads the
+PMU; awake, the kernel unmasks only EVENT_C bits 2/4/6 (masks 0x95/0xdf/0xab), while the model latches hold at
+EVENT_C bit 1 on the press only. The hold's 2.x PMU event path is unmodelled (LightTouchMac docs/smoke.md #12).
 
 ### P3, 5F138: LLB → iBoot
 
