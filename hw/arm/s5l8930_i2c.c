@@ -247,6 +247,19 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930D1815State, S5L8930_D1815)
  */
 #define PMU_SYS_CTRL        0x7B
 #define PMU_SYS_RESTART     0x0B
+/*
+ * Boot flags iBoot reads at power-on (its PMU scratch index 0, 9B206
+ * iBoot-1219 5ff07fd0). 5.x's AppleD1815PMU halt (9B206 80721148) goes to
+ * standby only without a cable: with the registry's AppleUSBCableDetect
+ * true it writes 0x90 here and restarts, and iBoot, seeing flags & 0xd0 ==
+ * 0x90 (or 0x10), does not boot: "power-off simulation", waiting for the
+ * power button or unplug. That wait is how a cabled unit is off.
+ * ponytail: the restart with that flag is taken as the power-off itself,
+ * not run through iBoot's wait (whose unplug ends in standby); model the
+ * wait if its charging screen is ever wanted.
+ */
+#define PMU_BOOT_FLAGS      0x8F
+#define PMU_BOOT_FLAGS_OFF(v)   (((v) & 0xd0) == 0x90 || ((v) & 0xd0) == 0x10)
 #define PMU_ADC_START       (1u << 4)
 #define PMU_ADC_MUX_VBAT    4
 #define PMU_ADC_MUX_BRICK   6       /* DT function-brick_id_voltage 'Vcda' 06 */
@@ -457,7 +470,10 @@ static int d1815_send(I2CSlave *i2c, uint8_t data)
         return 0;
     case PMU_SYS_CTRL:
         s->regs[reg] = data;
-        if (data == PMU_SYS_RESTART) {
+        if (data == PMU_SYS_RESTART && PMU_BOOT_FLAGS_OFF(s->regs[PMU_BOOT_FLAGS])) {
+            qatomic_set(&d1815_shutdown_confirmed, 1);
+            qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+        } else if (data == PMU_SYS_RESTART) {
             qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
         }
         return 0;
