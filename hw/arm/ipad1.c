@@ -772,6 +772,7 @@ static void ipad1_init(MachineState *machine)
         DeviceState *xp = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_TCA6408, 0x20));
         s->ltc = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_LTC4099, 0x09));
         s5l8930_ltc4099_set_usb(s->ltc, s->usb_cable);
+        s5l8930_d1815_set_usb_host(pmu, s->usb_cable);   /* the cable's far end is a host */
         qdev_connect_gpio_out(pmu, 0,
                               qemu_irq_invert(qdev_get_gpio_in(s->gpio, 0x0d)));
         qdev_connect_gpio_out(xp, 0,
@@ -1310,6 +1311,7 @@ static void ipad1_set_usb_cable(Object *obj, bool value, Error **errp)
     s->usb_cable = value;
     if (s->ltc) {
         s5l8930_ltc4099_set_usb(s->ltc, value);
+        s5l8930_d1815_set_usb_host(s->pmu, value);
         synopsys_usb_set_cable(s->usb_otg, value);
         s5l8930_d1815_usb_cable_event(s->pmu);
     }
