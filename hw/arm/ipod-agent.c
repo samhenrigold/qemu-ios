@@ -88,31 +88,37 @@ IPodAgent *ipod_agent_acquire(void)
     return a;
 }
 
-bool ipod_agent_submit(IPodAgent *a, const char *request)
+int ipod_agent_submit(IPodAgent *a, const char *request)
 {
     const char *nl, *space;
     size_t len = strnlen(request, 2 * IT_AGENT_REQUEST_MAX + 1);
     gsize body_len;
     g_autofree uint8_t *body = NULL;
     AgentItem *item;
-    bool ok = false;
+    int ret = -EBUSY;
 
-    if (len > 2 * IT_AGENT_REQUEST_MAX || !(nl = strchr(request, '\n')) ||
+    if (len > 2 * IT_AGENT_REQUEST_MAX) {
+        return -EFBIG;
+    }
+    if (!(nl = strchr(request, '\n')) ||
         !(space = memchr(request, ' ', nl - request)) ||
         space == request || space - request > 64 || nl - space < 2 ||
         nl - request > 4096) {
-        return false;
+        return -EINVAL;
     }
     for (const char *p = request; p < nl; p++) {
         if ((unsigned char)*p < 32 || (unsigned char)*p > 126) {
-            return false;
+            return -EINVAL;
         }
     }
     body = g_base64_decode(nl + 1, &body_len);
     /* GLib's decoder ignores invalid characters; require canonical encoding. */
     g_autofree char *encoded = g_base64_encode(body, body_len);
-    if (strcmp(encoded, nl + 1) || nl - request + 1 + body_len > IT_AGENT_REQUEST_MAX) {
-        return false;
+    if (strcmp(encoded, nl + 1)) {
+        return -EINVAL;
+    }
+    if (nl - request + 1 + body_len > IT_AGENT_REQUEST_MAX) {
+        return -EFBIG;
     }
     item = g_new0(AgentItem, 1);
     item->id = g_strndup(request, space - request);
@@ -131,14 +137,21 @@ bool ipod_agent_submit(IPodAgent *a, const char *request)
         }
         if (!duplicate) {
             g_queue_push_tail(&a->pending, item);
-            ok = true;
+            ret = 0;
         }
     }
     qemu_mutex_unlock(&a->lock);
-    if (!ok) {
+    if (ret) {
         item_free(item);
     }
-    return ok;
+    return ret;
+}
+
+const char *ipod_agent_submit_error(int error)
+{
+    return error == -EFBIG ? "Agent request over 256 KiB: send large files as putpart chunks (it_agent v3)" :
+           error == -EBUSY ? "Duplicate agent request id or full agent request queue" :
+                             "Invalid agent request";
 }
 
 bool ipod_agent_cancel(IPodAgent *a, const char *id)

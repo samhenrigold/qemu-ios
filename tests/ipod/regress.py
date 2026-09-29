@@ -810,7 +810,7 @@ AGENT_BINARY = os.path.join(ROOT, "contrib", "it-agent", "it_agent")
 
 
 def agent_ping(qmp, timeout=10):
-    """The agent's hello line ('it_agent v1'/'it_agent v2'), or None while none answers."""
+    """The agent's hello line ('it_agent v1'...'it_agent v3'), or None while none answers."""
     try:
         status, hello = itqmp.agent(qmp, "ping", timeout=timeout)
     except (TimeoutError, EOFError, OSError):
@@ -818,43 +818,52 @@ def agent_ping(qmp, timeout=10):
     return hello.split(b"\n", 1)[0].decode("ascii", "replace") if status == 0 else None
 
 
-def ensure_agent(qmp, timeout=90):
-    """(True, version) once a v2 agent (spawn, sync, chown, unlink, dlicon) answers, else (False, why).
+AGENT_HELLO = "it_agent v3"     # contrib/it-agent/agent-ops.h AG_HELLO
 
-    A v1 agent (every image baked before the no-shell work) is upgraded in this boot's
-    overlay to this tree's build: `put` the binary, then have launchd restart the job.
-    v1 has no `spawn`, so that one restart goes through v1's `exec`; every v1 image
-    carries freeze's /bin/sh, and nothing after the upgrade uses a shell."""
+
+def ensure_agent(qmp, timeout=90):
+    """(True, version) once this tree's agent (v3: v2's spawn, sync, chown, unlink, dlicon,
+    plus putpart) answers, else (False, why).
+
+    An older agent is upgraded in this boot's overlay to this tree's build: `put` the
+    binary, then have launchd restart the job. v1 has no `spawn`, so its restart goes
+    through v1's `exec` (every v1 image carries freeze's /bin/sh); v2 restarts by spawn.
+    Without a built binary a v2 agent is kept: only puts over 256 KiB need v3."""
     deadline = time.monotonic() + timeout
     while not itqmp.agent_alive(qmp):
         if time.monotonic() >= deadline:
             return False, "guest agent did not become ready within %ds" % timeout
         time.sleep(1)
     hello = agent_ping(qmp)
-    if hello == "it_agent v1":
+    if hello in ("it_agent v1", "it_agent v2"):
         if not os.path.exists(AGENT_BINARY):
+            if hello == "it_agent v2":
+                return True, hello
             return False, "the image's agent is v1; build contrib/it-agent to upgrade it"
         with open(AGENT_BINARY, "rb") as f:
             status, _ = itqmp.agent(qmp, "put", "/usr/local/bin/it_agent 755", f.read())
         if status:
-            return False, "could not upgrade the v1 agent: put status %d" % status
+            return False, "could not upgrade the %s agent: put status %d" % (hello, status)
         try:
-            itqmp.agent(qmp, "exec", "launchctl stop com.qemu.it-agent", timeout=15)
+            if hello == "it_agent v1":
+                itqmp.agent(qmp, "exec", "launchctl stop com.qemu.it-agent", timeout=15)
+            else:
+                itqmp.spawn(qmp, ["/bin/launchctl", "stop", "com.qemu.it-agent"], timeout=15)
         except (TimeoutError, EOFError):
             pass  # the daemon that would answer is the one being stopped
-        log("  agent: v1 upgraded to this tree's build, waiting for launchd to restart it")
+        log("  agent: %s upgraded to this tree's build, waiting for launchd to restart it" % hello)
         deadline = time.monotonic() + 60
-        while (hello := agent_ping(qmp, timeout=5)) != "it_agent v2":
+        while (hello := agent_ping(qmp, timeout=5)) != AGENT_HELLO:
             if time.monotonic() >= deadline:
                 return False, "upgraded agent did not answer within 60s (last: %s)" % hello
             time.sleep(2)
-    if hello != "it_agent v2":
+    if hello != AGENT_HELLO:
         return False, "unexpected agent hello: %r" % hello
     return True, hello
 
 
 class AgentControl:
-    """This boot's agent session (v2). Submitted RPCs are never replayed."""
+    """This boot's agent session (v2+). Submitted RPCs are never replayed."""
     def __init__(self, qmp):
         self.qmp = qmp
 
@@ -1239,13 +1248,17 @@ def check_agent(cfg, procs, dev, r):
         return r.set(False, detail)
     remote = "/tmp/regress-agent-" + os.urandom(12).hex()
     payload = os.urandom(70 * 1024)
+    # v3: over one request, put goes as putpart chunks and get reads back by getrange
+    large = os.urandom(2 * 1024 * 1024 + 4097) if detail == AGENT_HELLO else None
     try:
         for op, args, body, check in (
-            ("ping", "", b"", lambda b: b.startswith(b"it_agent v2\nops ") and b" spawn " in b),
+            ("ping", "", b"", lambda b: b.startswith(b"it_agent v") and b" spawn " in b),
             ("spawn", "", b"/bin/launchctl\0list\0", lambda b: b"\tcom.qemu.it-agent\n" in b),
             ("put", remote + " 600", payload, lambda b: b == b""),
             ("chown", "501 501 " + remote, b"", lambda b: b == b""),
             ("get", remote, b"", lambda b: b == payload),
+            *((("put", remote + "-large 600", large, lambda b: b == b""),
+               ("get", remote + "-large", b"", lambda b: b == large)) if large else ()),
             ("sync", "", b"", lambda b: b == b""),
         ):
             status, response = itqmp.agent(dev.qmp, op, args, body)
@@ -1255,10 +1268,12 @@ def check_agent(cfg, procs, dev, r):
         status = dev.guest_package_status()
         if cfg.guest_package and not status.startswith("report "):
             return r.set(False, "agent fine, but no it_boot report: %s" % status)
-        return r.set(True, "v2 ping, shell-free spawn, 70 KiB binary round trip, chown, sync; "
-                           "guest package: %s" % status)
+        return r.set(True, "%s ping, shell-free spawn, 70 KiB%s binary round trip, chown, sync; "
+                           "guest package: %s" % (detail, " and 2 MiB chunked" if large else "", status))
     finally:
         itqmp.agent(dev.qmp, "unlink", remote)
+        if large:
+            itqmp.agent(dev.qmp, "unlink", remote + "-large")
 
 
 def check_audio(cfg, procs, dev, r):
