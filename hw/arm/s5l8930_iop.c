@@ -843,8 +843,8 @@ static void iop_trace_fmi(S5L8930IOPState *s, int bus, hwaddr item)
         g_autofree uint8_t *want = g_malloc(FMI_MAX_PAGE * 2);
         uint8_t gm[FMI_META_BYTES], wm[FMI_META_BYTES];
 
-        qemu_log("ring fmi%d op %u n %u st 0x%x out %08x %08x %08x %08x item 0x%" HWADDR_PRIx "\n",
-                 bus, op, n, st, CMD_GET(cmd, 0x64), CMD_GET(cmd, 0x68), CMD_GET(cmd, 0x6c),
+        qemu_log("%.3f ring fmi%d op %u n %u st 0x%x out %08x %08x %08x %08x item 0x%" HWADDR_PRIx "\n",
+                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9, bus, op, n, st, CMD_GET(cmd, 0x64), CMD_GET(cmd, 0x68), CMD_GET(cmd, 0x6c),
                  CMD_GET(cmd, 0x70), item);
         if (n > FMI_MAX_MULTI || !s->nand_dir) {
             return;
@@ -890,14 +890,44 @@ void s5l8930_iop_trace_rings(DeviceState *dev)
 {
     static int8_t seen[2][IOP_MAX_RING];
     S5L8930IOPState *s = S5L8930_IOP(dev);
-    hwaddr cfg = iop_config(s);
+    static int on = -1;
+    hwaddr cfg;
     int h;
 
-    if (!cfg || !getenv("IOP_RING_TRACE")) {
+    if (on < 0) {
+        on = getenv("IOP_RING_TRACE") != NULL;
+    }
+    if (!on || !(cfg = iop_config(s))) {
         return;
+    }
+    {
+        static hwaddr logged;
+        if (logged != cfg) {
+            logged = cfg;
+            qemu_log("ring trace: firmware at 0x%08x, cnfg at 0x%08" HWADDR_PRIx "\n", s->fw_base, cfg);
+        }
     }
     s->cfg_rings = (iop_ldl(cfg + 0xc) == 0 && iop_ldl(cfg + 0x10) != 0) ? 0x10 : 0xc;
     s->fmi_arg = s->cfg_rings == 0x10 ? 8 : s->fmi_arg;
+    {   /* the control ring: a returned message the AP has not yet marked 'done' */
+        static uint32_t pending0[IOP_MAX_RING];     /* opcode reported, until the AP's 'done' */
+        hwaddr ring = iop_ldl(cfg + FW_CFG_RING(s, RING_CONTROL));
+        uint32_t n = iop_ldl(cfg + FW_CFG_COUNT(s, RING_CONTROL)), i;
+
+        for (i = 0; ring && i < MIN(n, IOP_MAX_RING); i++) {
+            uint32_t w0 = iop_ldl(ring + i * RING_ENTRY(s));
+            uint32_t op = RING_ITEM(w0) ? iop_ldl(RING_ITEM(w0)) : 0;
+            bool back = (w0 & 1) == RING_OWNER_AP && RING_ITEM(w0) && op != CTRL_DONE;
+
+            if (back && pending0[i] != op) {
+                qemu_log("%.3f ring ctrl[%u]: msg 0x%08x status 0x%08x back; AP VIC0 en 0x%08x soft 0x%08x\n",
+                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9, i, op, iop_ldl(RING_ITEM(w0) + 4),
+                         ldl_le_phys(&address_space_memory, S5L8930_VIC_BASE(0) + 0x10),
+                         ldl_le_phys(&address_space_memory, S5L8930_VIC_BASE(0) + 0x18));
+            }
+            pending0[i] = back ? op : 0;
+        }
+    }
     for (h = RING_FMI0; h <= RING_FMI1; h++) {
         hwaddr ring = iop_ldl(cfg + FW_CFG_RING(s, h));
         uint32_t n = iop_ldl(cfg + FW_CFG_COUNT(s, h)), i;
