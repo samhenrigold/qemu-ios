@@ -21,7 +21,7 @@ tests/ipod/regress.py --qemu build/qemu-system-arm --device OUT --checks boot
 |---|---|---|---|
 | 3.1.3 7E18 | complete | SpringBoard up, GL CA through the shim, "Connect to iTunes" (lit, see below) | activation |
 | 4.2.1 8C148 | complete (NOR, NAND, GLES check, AppSync, gid-blobs, activation hook, data protection) | home screen, GL CoreAnimation through the shim (`regress.py --device ... --checks boot,gles` PASS; see "8C148: GL") | none for GL |
-| 2.1.1 5F138 | complete (activation hook; the guest package's OpenGLES hook, the GL front end; no AppSync or modern guest helpers) | home screen once a host sets the time (brick state), GL CoreAnimation through the front end (`regress.py --device ... --checks boot,gles` PASS; see "2.x: CoreAnimation through the GL front end") | app installs (no AppSync for 2.x yet) |
+| 2.1.1 5F138 | complete (activation hook; the guest package's OpenGLES hook, the GL front end; AppSync; no modern guest helpers) | home screen once a host sets the time (brick state), GL CoreAnimation through the front end (`regress.py --device ... --checks boot,gles` PASS; see "2.x: CoreAnimation through the GL front end") | ad-hoc app install + launch verified with the legacy AppSync helper |
 | 2.2 5G77a, 2.2.1 5H11a | complete (as 2.1.1; the NOR wraps every image but the LLB) | home screen through LightTouchMac's pipeline (matrix, 2026-09-29) | the hold button (below) |
 
 ### P1, 7E18: activation
@@ -618,3 +618,11 @@ the LCD change reverted the same leg fails (Safari never reaches the panel).
 
 Not done: apps' own GL (the App Store starts at 2.x); a 1.x build other than 3A101a (the list and the hook are
 per major, `3*`/`4*`); the loader on 1.x.
+
+### Early AppSync (2026-09-29)
+
+`contrib/appsync` now builds the armv6 dylib with classic loader metadata and r9 reserved.
+2.x uses the built-in appsync-launch argument wrapper because Lockbot ignores the service
+environment dictionary; 3.0 uses its installd job. The standalone system libmis remains stock.
+Fresh 5F138 and 7A341 images install and visibly launch an ad-hoc UIKit test app; the
+AppSync-off 5F138 control rejects it. See `contrib/appsync/README.md` for details.

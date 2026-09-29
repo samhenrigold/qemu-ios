@@ -1,25 +1,8 @@
 #!/bin/sh
-# iPod touch 2G / 3.1.3 AppSync via the portable dylib, instead of the four
-# fixed-offset byte patches in qemu-ios-files/apps/patch-appsync.sh (which is
-# kept as the default until this route is proven in regress).
-#
-# editimg.py script: run against a mounted 3.1.3 rootfs with $MNT set, e.g.
-#   editimg.py --nand <copy> --script contrib/appsync/patch-appsync-dylib.sh
-# Build the dylib first: contrib/appsync/build.sh (fat armv6+armv7; the armv6
-# slice is the one that runs here).
-#
-# It does the same two things the iPad --appsync path does, both by symbol:
-#   1. Patch libmis MISValidateSignature -> success in dyld_shared_cache_armv6,
-#      located by symbol (imgtools/appsync_cachepatch.py). This is the iPod's
-#      "patch 3", symbol-found rather than at file offset 0x1750EF8.
-#   2. Install libappsync.dylib (root-owned) and DYLD_INSERT it into installd,
-#      whose interposes carry the installd signer/profile acceptance that the
-#      byte patches at installd 0x9F34/0x605C did, plus the SpringBoard launch
-#      gate handled by the cache patch (no SpringBoard byte patch needed).
-#
-# Unlike patch-appsync.sh this makes NO installd/SpringBoard byte edits and needs
-# no re-signing: the cache patch is a cache page (covered by amfi_allow_any_signature)
-# and the dylib is ldid-signed by build.sh.
+# AppSync for iPod touch 2G firmware: cache patch where present, plus process-local
+# installation hooks. 2.x uses the Lockbot argument launcher; 3.0+ uses installd.
+# Standalone libmis remains stock. Run via editimg.py with MNT set.
+# Build both helpers first with contrib/appsync/build.sh.
 set -e
 : "${MNT:?run me through editimg.py (it sets MNT)}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -42,7 +25,10 @@ if [ -n "${STOCK_ROOT:-}" ]; then
 fi
 
 # 1. shared-cache MISValidateSignature -> success, by symbol.
-python3 "$CACHEPATCH" "$MNT/System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv6" --patch
+CACHE="$MNT/System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv6"
+if [ -f "$CACHE" ]; then
+    python3 "$CACHEPATCH" "$CACHE" --patch
+fi
 
 # 2. install the dylib root-owned and inject it into installd.
 install -d "$MNT/usr/lib"
@@ -51,25 +37,38 @@ chmod 644 "$MNT/usr/lib/libappsync.dylib"
 
 # installd's launchd job: com.apple.mobile.installd.plist on 3.2 (iPad),
 # com.apple.installd.plist on 3.1.3 (iPod). Inject into whichever exists.
-python3 - "$MNT/System/Library/LaunchDaemons" <<'PY'
-import sys, os, plistlib
+python3 - "$MNT/System/Library/LaunchDaemons" "$DYLIB" <<'PY'
+import sys, os, plistlib, shutil
 ld = sys.argv[1]
 cands = ["com.apple.mobile.installd.plist", "com.apple.installd.plist"]
 p = next((os.path.join(ld, c) for c in cands if os.path.exists(os.path.join(ld, c))), None)
-if not p:
-    sys.exit("no installd launchd plist in %s (tried %s)" % (ld, cands))
+service = p is None
+if service:
+    p = os.path.join(os.path.dirname(ld), "Lockdown", "Services.plist")
 with open(p, "rb") as f:
     data = f.read()
-d = plistlib.loads(data)
-env = d.setdefault("EnvironmentVariables", {})
-libs = [x for x in env.get("DYLD_INSERT_LIBRARIES", "").split(":") if x]
-if "/usr/lib/libappsync.dylib" not in libs:
-    libs.append("/usr/lib/libappsync.dylib")
-env["DYLD_INSERT_LIBRARIES"] = ":".join(libs)
+root = plistlib.loads(data)
+d = root
+if service:
+    d = root.get("com.apple.mobile.installation_proxy", {})
+    if d.get("ProgramArguments", [None])[0] != "/usr/libexec/mobile_installation_proxy":
+        sys.exit("no supported installation service")
+if service:
+    launcher = os.path.join(os.path.dirname(sys.argv[2]), "appsync-launch")
+    dest = os.path.join(os.environ["MNT"], "usr/libexec/appsync-launch")
+    shutil.copyfile(launcher, dest)
+    os.chmod(dest, 0o755)
+    d["ProgramArguments"] = ["/usr/libexec/appsync-launch"] + d["ProgramArguments"]
+else:
+    env = d.setdefault("EnvironmentVariables", {})
+    libs = [x for x in env.get("DYLD_INSERT_LIBRARIES", "").split(":") if x]
+    if "/usr/lib/libappsync.dylib" not in libs:
+        libs.append("/usr/lib/libappsync.dylib")
+    env["DYLD_INSERT_LIBRARIES"] = ":".join(libs)
 fmt = plistlib.FMT_BINARY if data[:6] == b"bplist" else plistlib.FMT_XML
 with open(p, "wb") as f:
-    f.write(plistlib.dumps(d, fmt=fmt))
-print("installd (%s) DYLD_INSERT_LIBRARIES = %s" % (os.path.basename(p), env["DYLD_INSERT_LIBRARIES"]))
+    f.write(plistlib.dumps(root, fmt=fmt))
+print("AppSync installed for installation service (%s)" % os.path.basename(p))
 PY
 
 # editimg.py runs setowner afterwards for files it knows; make ownership explicit

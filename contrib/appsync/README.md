@@ -48,6 +48,29 @@ rootfs) used only as the info-dict `SignerCertificate` value; with the Sec
 interposes its content no longer matters. Regenerate with `build.sh
 --regen-cert`.
 
+## iPhone OS 2.x and 3.0
+
+The armv6 slice now uses `LEGACY_LINK=1`: classic relocations, no `LC_DYLD_INFO_ONLY`,
+and r9 reserved for the 2.x thread pointer. The same slice remains usable by 3.1+.
+The armv7 build is unchanged.
+
+Early firmware's standalone libmis must stay stock. Modifying/re-signing it prevented
+2.1.1 startup; restoring just that file restored boot. The emulator's standard
+`amfi_allow_any_signature=1 cs_enforcement_disable=1` boot arguments already allow
+ad-hoc app execution, so process-local installation interposition is sufficient.
+
+3.0 has an installd job and uses the existing injection path. On 2.x, Lockbot launches
+`mobile_installation_proxy` and only forwards ProgramArguments, ignoring EnvironmentVariables.
+`appsync-launch` sets DYLD_INSERT_LIBRARIES and execs the original service with its arguments.
+It uses an explicit ARM entry trampoline: old dyld enters with argc/argv on the stack.
+Both new artifacts are exported automatically; no user path or setting is involved.
+
+Verified 2026-09-29 on fresh FirmwareKit 5F138 and 7A341 images: an ad-hoc ARMv6 UIKit
+smoke IPA installs and visibly launches. The same IPA on the AppSync-off 5F138 control
+fails with ApplicationVerificationFailed. No shared-cache, SpringBoard, or standalone
+libmis patch is needed for these early builds. Other 2.x point releases use the same
+service selection but still need individual app compatibility testing.
+
 ## Build
 
 ```
