@@ -14,8 +14,14 @@ with working touch; lockdownd reports the device activated.
   `screendump` as the tests take them.
 - Touch: the Zephyr2 digitizer over SPI2 with the 1G's ATN line (SYSIC GPIO group 4 bit 27); a QMP tap
   opens Settings.
-- NAND writes: page-level copy-on-write into `nand-overlay=`; lockdownd's own files read back within a
-  boot (see debts for the reboot case).
+- NAND: programs, multi-bank programs and block erases land in `nand-overlay=` with NAND semantics
+  (erased pages read all ones, a program only clears bits, an erased page reads back as clean). On a
+  store with real FTL spares a Settings change survives a clean power-off (the PMU shutdown path) and
+  the next boot; after a hard quit the FTL's own restore rebuilds its tables (see debts).
+- USB: the wrangler takes its PHY and publishes its host and device nubs; the device idles into sleep
+  (`pmu go hib`) without a panic. Waking is not modelled: the kernel parks in `ml_arm_sleep` with
+  interrupts masked for the PMU to cut the AP, and the resume path (bootrom/LLB back into the kernel)
+  is skipped by the direct iBoot boot (debt 9).
 
 Verified 2026-09-29 (commits on `ipod-1g`): home screen, Settings after a tap, no `unexpected CLCD
 interrupt`, no panic, on devos50's public `n45ap_v1` assets.
@@ -39,7 +45,7 @@ copy it. SpringBoard configures at about 60 s of guest time; `screendump` then. 
 Cmd+L power (headless: QMP `input-send-event` for taps, as `tests/ipod/regress.py` does).
 
 Machine properties: `bootrom`, `iboot`, `nand`, `nand-overlay`, `usb-wrangler-quirk` (bool, default
-on; see debts), `tvout-workaround=<paddr>` (default off).
+on: the phyRegistered guard, see debts), `tvout-workaround=<paddr>` (default off).
 
 Traces: `LCD_TRACE`, `MT_TRACE`, `IT_FMC_TRACE`, `IT_TIMER_TRACE`, `IT_CLOCK_TRACE`.
 
@@ -66,8 +72,8 @@ the block does, P a documented quirk/patch, S stub.
 | CLCD | `ipodtouch.lcd`, `s5l8900=on`: window 1 at 0x58, window 2 at 0x70, +0x14 enable, +0x18 status/ack | variant | R (windows, irq) / H (blend, palette, VIDCON stored only) |
 | AES | `ipodtouch.aes`, `addr-offset=0x80000000`, `s5l8900-compat` (devos50's UID/key-schedule convention) | variant | H |
 | SHA1 | `ipodtouch.sha1`, hardware buffer readable | shared | R |
-| FMC NAND + ECC + ADM | `s5l8900.fmc`, `s5l8900.nand-ecc` (stub), `s5l8900.adm` (command block interpreter, spares in data3) | ported (page store rewritten as base + overlay dirs) | H / S (ECC) / H |
-| USB OTG + PHY | `synopsys` OTG with the 8900 hwcfg, `ipodtouch.usbphys` | shared | R (not exercised: no host attached yet) |
+| FMC NAND + ECC + ADM | `s5l8900.fmc` (base + overlay page store, erase markers, program = AND), `s5l8900.nand-ecc` (stub), `s5l8900.adm` (the ADM firmware's command interface: 0x200/0x300 read, 0x400 multi-bank program, 0x500 program, 0x600 erase; FTL metadata in data3; result mailbox +0x30 with clean-page status) | ported, command set completed | R (store) / S (ECC) / H (ADM firmware) |
+| USB OTG + PHY | `synopsys` OTG with the 8900 hwcfg, `ipodtouch.usbphys` | shared | R (wrangler, PHY, nubs up; no host attached yet) |
 | DMA | two `pl080` | shared QEMU model | R |
 | I2C0 lis302dl, I2C1 pcf50633 | shared; PMU `shutdown-reg=0x0c` (1.x: 0x0a is the fourth IRQ mask) | variant | H |
 | SDIO | `ipodtouch.sdio` | shared | H |
@@ -78,23 +84,33 @@ the block does, P a documented quirk/patch, S stub.
 
 ## Debts (each also a row in LightTouchMac `docs/smoke.md`)
 
-1. **USB wrangler ordering (P, `usb-wrangler-quirk`)**. AppleS5L8900XUSBWrangler registers a
-   notification for the OTG PHY nub and the kernel invokes it synchronously before the wrangler has
-   stored its notifier: NULL deref. The quirk renames the `otgphyctrl` node in every device-tree copy the
-   first time timer 4 is configured, so the PHY never matches. What was ruled out (two bounded hours):
-   the PHY driver's start has only an `IODelay(200 us)` and provider calls, no status poll or PLL-lock
-   bit to wait on; the wrangler's start is gated by the power controller reaching matched state (CPU
-   init -> VIC publish -> wrangler), not by any clock; UART pacing and the 12 MHz timer rate changed
-   nothing in the order. **Second fire, found 2026-09-29**: the wrangler's `setPowerState(0)` path
-   dereferences its PHY pointer (`[this+0x68]`, 0xc04b7338), so the device panics when SpringBoard
-   idles into sleep after ~2 min without input. Plan: model whatever makes the PHY publish late on
-   silicon, or fail the nub in a way the wrangler's sleep path tolerates.
-2. **NAND overlay across a reboot (H)**. Within a boot, writes read back; a second boot on the same
-   overlay after a hard quit panics with `exec of /sbin/launchd failed, errno 5`. The base image's spare
-   bytes are a uniform placeholder and the model does no block-erase inference (the FMSS-style one
-   wiped live pages: lockdownd EIO), so pages the FTL erased and never rewrote keep base contents.
-   Suspected: the FTL's mount-time scan trusting those. Plan: erase inference keyed on the FTL's own
-   metadata, and a clean shutdown before the second boot.
+1. **USB wrangler ordering (P, `usb-wrangler-quirk`)**. AppleS5L8900XUSBWrangler::start calls
+   `addNotification` for the PHY and stores the notifier at `this+0x6c` afterwards; `addNotification`
+   calls phyRegistered synchronously for a PHY already published, and phyRegistered calls `remove()`
+   through the NULL field. Nothing in hardware decides the order: between the two starts neither driver
+   waits on an OTG or PHY register (the PHY's start is `IODelay(200 us)` plus clock/power-gate calls;
+   the wrangler's only wait is its interrupt source, i.e. the VIC, which waits for AppleARMCPU's
+   initCPU, which waits for the power controller's `function-cpu_idle`, which waits for the clock
+   controller's matched state). The PHY needs one of those links, the wrangler four, and the IOKit
+   config-thread pool runs the PHY's job first; the order is identical at `-icount shift=1/3/7` and with
+   `io=0`. So there is no latency to model. The old quirk hid the PHY, which left the wrangler without
+   one: its `setPowerState(0)` (sleep and shutdown) dereferenced it. The quirk is now a guard in
+   phyRegistered (`cmp r0,#0; ldrne r3,[r0]; blne <ldr pc,[r3,#0x54]>`), found by its instruction
+   words once the kernelcache is in RAM, so the wrangler takes its PHY as the asynchronous path would.
+   P-class guest patch; the real fix is whatever makes real IOKit order these, which is not hardware.
+2. **NAND store (R) and the stores it runs on**. The FMC/ADM now implement the FTL's whole command set:
+   the multi-bank program 0x400 (the FTL's context flush; each page streams 2048 bytes then a 16-byte
+   pad descriptor, per the driver's DMA list), block erase 0x600 (overlay pages dropped, a
+   `blk<N>.erased` marker hides the base block), erased pages read all ones and report clean (0xFE in
+   the ADM result mailbox, which the driver turns into the FTL's "found clean page"), and a program
+   ANDs into the page, logging any program of a page that is not erased. devos50's public image cannot
+   be consistent with that: its FTL context says the next context page is page 0 of the context block,
+   which holds the map tables, and its filesystem sits in the FTL's free pool, so the first flush
+   programs 440 non-erased pages and lockdownd gets EIO. On a store with real spares and the FTL's own
+   blocks kept free (FirmwareKit N45NAND's layout, plus a VFL context the VFL accepts) a Settings change
+   survives a clean power-off and the next boot, and after a hard quit the FTL's restore succeeds; the
+   3A101a root volume is unjournaled HFS+ with no fsck at boot, so what a hard quit leaves is a
+   filesystem-level question (see LightTouchMac smoke #12).
 3. **AES compatibility convention (H)**. `s5l8900-compat` reproduces devos50's UID key convention
    (decrypt schedule, direction from the second KEYLEN write) because the public image set was built
    against it; the real UID is unknown. Real-device keys would replace this.
@@ -105,6 +121,11 @@ the block does, P a documented quirk/patch, S stub.
 6. **TVOut workaround property**: devos50's per-build zero-word overlay is `tvout-workaround=<paddr>`,
    off by default; 3A101a on these assets does not need it.
 7. **Timers 0-3 (S)**: touched by the kernel, logged, never fire.
+9. **Deep sleep and resume (S)**. `pmu go hib` ends in `ml_arm_sleep` (a `b .` with IRQ/FIQ masked,
+   0xc005a6d0 in 3A101a): on silicon the PMU removes AP power and a button brings it back through the
+   bootrom and LLB into the kernel's resume path. None of that exists here (no LLB, no power-cut
+   model), and the buttons drive only their GPIO pads, not the PMU wake source the DT names
+   (`button-wake`: PMU interrupt 0x0a, `'STAT'` 0x100).
 8. **Panel/backlight (S)**: `s5l8900.lcdpanel` answers ID reads only; brightness comes from the PMU.
 
 ## Files

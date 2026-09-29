@@ -213,26 +213,43 @@ static const MemoryRegionOps zero_word_ops = {
 /*
  * iPhone OS 1.1's AppleS5L8900XUSBWrangler::start registers for the PHY's
  * publication with IOService::addNotification and stores the returned
- * notifier at this+0x6c afterwards; addNotification invokes the handler
- * synchronously for a PHY that is already registered, and the handler
- * (phyRegistered) calls notifier->remove() on the still-NULL field. Whether
- * the PHY is registered by then is an IOKit ordering race: the wrangler's
- * start blocks in interrupt registration until the VIC publishes, which waits
- * on CPU init, which waits on the power controller's matching job, and the
- * PHY's config job is queued long before that. On this tree the PHY always
- * wins; devos50's tree never had working USB on this build. Until a real
- * cause is found, the board keeps the PHY driver from matching instead: the
- * flattened device tree's otgphyctrl node loses its "compatible" property
- * (renamed in place, so nothing else moves) in every copy iBoot left in RAM,
- * so AppleS5L8900XUSBPhy never registers and the wrangler waits for a PHY
- * that never comes, which is what devos50's "USB nonfunctional" amounted to.
- * P-class debt; usb-wrangler-quirk=off restores the stock tree.
+ * notifier at this+0x6c only afterwards; addNotification invokes the handler
+ * synchronously for a PHY that is already published, and the handler
+ * (phyRegistered) calls notifier->remove() through the still-NULL field.
+ *
+ * Nothing in the hardware decides that order. Between the wrangler's start
+ * and the PHY's registerService neither driver reads an OTG or PHY register
+ * it waits on: the PHY's start is IODelay(200 us) plus clock/power-gate
+ * calls into the power controller, the wrangler's only wait is its interrupt
+ * source (the VIC), which waits for AppleARMCPU's initCPU, which waits for
+ * the power controller's "function-cpu_idle", which waits for the clock
+ * controller's matched state. The PHY needs one of those links, the
+ * wrangler four; the IOKit config-thread pool runs the PHY's job first. The
+ * order is the same at every guest CPU rate tried (-icount shift 1, 3, 7)
+ * and with io=0, so there is no latency to model (smoke #1).
+ *
+ * Hiding the PHY (the previous quirk) left the wrangler without one, and its
+ * setPowerState(0) dereferences the PHY: the sleep and shutdown paths
+ * panicked. Instead, phyRegistered skips remove() when the notifier is not
+ * stored yet, so the PHY is taken exactly as the asynchronous path would:
+ *
+ *   ldr r0,[r5,#0x6c]      ldr   r0,[r5,#0x6c]
+ *   ldr r3,[r0]       ->   cmp   r0,#0
+ *   mov lr,pc              ldrne r3,[r0]
+ *   ldr pc,[r3,#0x54]      blne  <an existing "ldr pc,[r3,#0x54]">
+ *   str r4,[r5,#0x68]      str   r4,[r5,#0x68]
+ *
+ * Found by its instruction words in RAM once iBoot has loaded the
+ * kernelcache (the first timer-4 configuration), so it only ever touches a
+ * build that has this exact sequence. Guest patch (fidelity class P);
+ * usb-wrangler-quirk=off runs the stock code.
  */
 static void n45_usb_wrangler_quirk(void *opaque)
 {
     IPodTouch1GMachineState *s = opaque;
-    static const char node[] = "otgphyctrl";
-    g_autofree uint8_t *ram = g_malloc(N45_RAM_SIZE);
+    static const uint32_t sig[5] = { 0xe595006c, 0xe5903000, 0xe1a0e00f, 0xe593f054, 0xe5854068 };
+    const uint32_t vcall = 0xe593f054;   /* ldr pc,[r3,#0x54] */
+    g_autofree uint32_t *ram = g_malloc(N45_RAM_SIZE);
 
     if (!s->usb_wrangler_quirk || s->usb_wrangler_quirk_done) {
         return;
@@ -241,24 +258,24 @@ static void n45_usb_wrangler_quirk(void *opaque)
                            N45_RAM_SIZE) != MEMTX_OK) {
         return;
     }
-    for (size_t off = 0; off + 0x400 < N45_RAM_SIZE; off += 4) {
-        /* A property record: name[32], len u32, value. Look for name="usb-otg". */
-        if (memcmp(ram + off, "name", 5) != 0 || ldl_le_p(ram + off + 32) != sizeof(node) ||
-            memcmp(ram + off + 36, node, sizeof(node)) != 0) {
+    for (size_t i = 0; i + 5 <= N45_RAM_SIZE / 4; i++) {
+        if (ram[i] != sig[0] || memcmp(&ram[i], sig, sizeof(sig)) != 0) {
             continue;
         }
-        /* The node's other properties sit within a few hundred bytes. IONameMatch
-         * looks at name, device_type and compatible, so all three go. */
-        for (size_t p = off - 0x300 > off ? 0 : off - 0x300; p < off + 0x300; p += 4) {
-            if ((memcmp(ram + p, "compatible", 11) == 0 || memcmp(ram + p, "device_type", 12) == 0 ||
-                 p == off) && memcmp(ram + p + 36, node, sizeof(node) - 1) == 0) {
-                uint8_t x = 'x';
-                address_space_write(s->nsas, N45_RAM_BASE + p, MEMTXATTRS_UNSPECIFIED, &x, 1);
-                qemu_log_mask(LOG_UNIMP, "[n45] otgphyctrl %s hidden from IOKit at 0x%08zx (usb-wrangler-quirk)\n",
-                              (const char *)ram + p, N45_RAM_BASE + p);
-                s->usb_wrangler_quirk_done = true;   /* every copy in RAM: iBoot's and the kernel's */
-            }
+        size_t t = i;
+        while (t > 0 && i - t < 0x1000 && ram[--t] != vcall) {
         }
+        if (ram[t] != vcall) {
+            break;
+        }
+        hwaddr at = N45_RAM_BASE + 4 * i;
+        int32_t off = ((int32_t)(4 * t) - (int32_t)(4 * (i + 3) + 8)) >> 2;
+        uint32_t patch[3] = { 0xe3500000, 0x15903000, 0x1b000000 | (off & 0xffffff) };
+        address_space_write(s->nsas, at + 4, MEMTXATTRS_UNSPECIFIED, patch, sizeof(patch));
+        s->usb_wrangler_quirk_done = true;   /* until then iBoot is still loading the kernel */
+        qemu_log_mask(LOG_UNIMP, "[n45] USB wrangler phyRegistered guarded at 0x%08" HWADDR_PRIx
+                      " (usb-wrangler-quirk)\n", at);
+        return;
     }
 }
 
@@ -702,7 +719,7 @@ static void n45_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_add(klass, "usb-wrangler-quirk", "bool", n45_get_usb_wrangler_quirk,
                               n45_set_usb_wrangler_quirk, NULL, NULL);
     object_class_property_set_description(klass, "usb-wrangler-quirk",
-        "hide otgphyctrl from IOKit so 1.x's USB wrangler never races its PHY notifier (default on)");
+        "let 1.x's USB wrangler take a PHY published before its notifier is stored (default on)");
     object_class_property_add(klass, "tvout-workaround", "uint32", n45_get_tvout_workaround,
                               n45_set_tvout_workaround, NULL, NULL);
     object_class_property_set_description(klass, "tvout-workaround",
