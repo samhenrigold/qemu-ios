@@ -130,6 +130,8 @@ prelude = r'''
 typedef int SysBusDevice;
 typedef int MemoryRegion;
 typedef int qemu_irq;
+static void qemu_irq_raise(int irq) {}
+static void qemu_irq_lower(int irq) {}
 typedef uint64_t hwaddr;
 typedef struct IPodVideoDecoder IPodVideoDecoder;
 void ipod_video_close(IPodVideoDecoder *d);

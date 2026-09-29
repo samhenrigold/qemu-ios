@@ -62,6 +62,10 @@ def host_usb_devicetree(image, plaintext, records):
     if 'arm-io/usb-complex' not in tree.props:
         raise ValueError('DeviceTree has no USB complex')
     tree.add('arm-io/usb-complex', 'hsic-enabled')
+    # No SGX model: unmatch the GPU node so IMGSGX535 never probes the unimplemented window,
+    # the same edit ipad1_kboot.fill_dt makes on the direct-kernel path (docs/fidelity-ledger K48 #54).
+    if 'arm-io/sgx' in tree.props:
+        tree.set('arm-io/sgx', 'compatible', 'none')
     plain = bytes(tree.buf)
     pairs = {records[i:i + 48]: records[i + 48:i + 96] for i in range(0, len(records), 96)}
     off, key = 20, None

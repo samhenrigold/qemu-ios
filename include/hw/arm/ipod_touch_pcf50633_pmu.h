@@ -23,7 +23,19 @@
 #define TYPE_PCF50633                 "pcf50633"
 OBJECT_DECLARE_SIMPLE_TYPE(Pcf50633State, PCF50633)
 
-#define PMU_DSBL1 0x30	
+/*
+ * Backlight. 0x30 is the WLED level (0x31 takes a second byte, 0x05 whenever
+ * the light is on in every build's trace; not decoded here). 0x10 is the
+ * regulator enable register and bit 6 is the backlight rail: iBoot never
+ * writes 0x10 and still gets its logo lit, so the rail is on out of reset;
+ * 4.2.1's AppleD1759PMUBacklightEnableFunction (DT function-backlight_enable)
+ * clears the bit to sleep the panel (0x1d=0x12, 0x10: 0xe0 -> 0xa0) and sets
+ * it on wake, leaving a dim 0x30 in place; 3.1.3 keeps the bit and drives
+ * 0x30 to 0 instead. 2.1.1's idle sleep clears it too (0x7f -> 0x3f).
+ */
+#define PMU_DSBL1 0x30
+#define PMU_LDO_ENABLE 0x10
+#define PMU_LDO_BACKLIGHT (1 << 6)
 #define PMU_ADC_CONTROL 0x40
 #define PMU_ADC_RESULT_LO 0x41
 #define PMU_ADC_RESULT_HI 0x42

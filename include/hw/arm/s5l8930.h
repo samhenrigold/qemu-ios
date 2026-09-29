@@ -64,6 +64,19 @@
 #define S5L8930_IOP_BASE         0x86300000   /* AP-side IOP control block */
 #define S5L8930_IOP_SIZE         0x1000
 #define S5L8930_IOP_VIC_BASE     0xbf300000   /* the IOP's own 4 VICs, used as doorbells */
+
+/*
+ * The IOP's view of DRAM. The EmbeddedIOP firmware's 'cnfg' memory map declares
+ * {iop 0xc0000000 -> phys 0x40000000, 0x40000000 bytes} on every build; from
+ * EmbeddedIOP-20 (iOS 4.3) the kernel hands the IOP addresses in that window
+ * (rings, messages, DMA segments) where iBoot-817/931's kexts passed physical
+ * ones. H-class instrument for the HLE (docs/fidelity-ledger K48 #33): goes
+ * away with the IOP core, whose bus does the same mapping.
+ */
+static inline hwaddr s5l8930_iop_pa(hwaddr a)
+{
+    return (a & 0xf0000000) == 0xc0000000 ? a - 0xc0000000 + S5L8930_DRAM_BASE : a;
+}
 #define S5L8930_IOP_VIC_SIZE     0x40000
 
 /* Interrupt numbers: VIC n owns 32n..32n+31 */

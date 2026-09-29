@@ -18,7 +18,5 @@ const ITFirmwareDesc *it_firmware_detect_kernel(const uint8_t *image, size_t siz
 /* Positive results are cached until CPU reset; an early empty RAM scan retries. */
 const ITFirmwareDesc *it_firmware_loaded(void);
 void it_firmware_reset(void);
-uint32_t it_firmware_find_iboot_command_line(const uint8_t *image, size_t size,
-                                           uint32_t base);
 
 #endif

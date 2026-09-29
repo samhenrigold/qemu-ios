@@ -768,8 +768,11 @@ def bake(a):
             activation_hook(a.activation_hook, os.path.join(m.mnt, LOCKDOWND))
         # the GLI shim this image carries (build installs it unless --no-ca-ogl): the GL hooks the seed keeps
         engine, _ = gli_engine(os.path.join(m.mnt, DYLD_CACHE))
-        with open(os.path.join(m.mnt, GLENGINE), "rb") as f:
-            gles = f.read() == open(engine, "rb").read()
+        gles = False
+        # no file when GLEngine lives only in the shared cache (4.x, 5.x) and build installed no shim
+        if os.path.exists(os.path.join(m.mnt, GLENGINE)):
+            with open(os.path.join(m.mnt, GLENGINE), "rb") as f:
+                gles = f.read() == open(engine, "rb").read()
         seeded, record = mkpkg.seed(m.mnt, a.guest_package, gles)
     with open(os.path.join(a.dir, "guest-package.json"), "w") as f:
         json.dump(record, f, indent=1)
@@ -777,7 +780,7 @@ def bake(a):
     n = bn.set_owner(system, ["usr/local", "usr/local/bin", "usr/local/lib"] + list(JOBS) + [rel for rel, _ in TOOLS.values()]
                      + ([LOCKDOWND] if a.activation_hook else []) + seeded, 0, 0)
     shutil.rmtree(os.path.join(a.dir, "mnt-system"), ignore_errors=True)
-    print("baked %s + %s + it_boot, seed package %s serial %d (hooks %s) into %s (%d catalog records patched); "
+    print("baked %s + %s + it_boot, seed package %s serial %s (hooks %s) into %s (%d catalog records patched); "
           "rebuild the NAND store with ipad1_nand.py" % (", ".join(TOOLS), ", ".join(os.path.basename(j) for j in JOBS),
                                                         record["family"], record["seed"], record["hooks"], system, n))
 

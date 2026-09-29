@@ -1,0 +1,219 @@
+/*
+ * iBoot literal discovery shared by the boards that stage a decrypted iBoot
+ * themselves. See include/hw/arm/it_iboot.h.
+ */
+#include "qemu/osdep.h"
+#include "hw/arm/it_iboot.h"
+
+static uint16_t iboot_u16(const uint8_t *p)
+{
+    return p[0] | (uint16_t)p[1] << 8;
+}
+
+static uint32_t iboot_u32(const uint8_t *p)
+{
+    return iboot_u16(p) | (uint32_t)iboot_u16(p + 2) << 16;
+}
+
+/* Does any Thumb `ldr rN, [pc, #imm]` before `word` load that literal? */
+static bool iboot_literal_loaded(const uint8_t *image, size_t word)
+{
+    for (size_t i = 0; i + 2 <= word; i += 2) {
+        uint16_t hw = iboot_u16(image + i);
+        if ((hw & 0xf800) == 0x4800 &&
+            ((i + 4) & ~(size_t)3) + (hw & 0xff) * 4 == word) {
+            return true;
+        }
+    }
+    return false;
+}
+
+uint32_t it_iboot_find_boot_args_literal(const uint8_t *image, size_t size,
+                                         uint32_t base)
+{
+    /*
+     * Release iBoot ignores NVRAM boot-args: it hands XNU an empty string on
+     * a normal boot and the restore string in restore mode, each through a
+     * literal, and every iPod touch 2G iBoot (385.22 .. 931.71.16) keeps the
+     * normal-boot literal in the word before the restore one. So: the restore
+     * string, its one literal, the word before it -- provided Thumb code
+     * really loads that word and it points at an empty string in the image.
+     */
+    static const char restore[] = "rd=md0 nand-enable-reformat=1 -progress";
+    size_t rs = 0, found = 0;
+
+    if (!image || size < sizeof(restore) + 8 || size > UINT32_MAX - base) {
+        return 0;
+    }
+    for (size_t i = 0; i + sizeof(restore) <= size; i++) {
+        if (!memcmp(image + i, restore, sizeof(restore))) {
+            if (rs) {
+                return 0;
+            }
+            rs = i;
+        }
+    }
+    if (!rs) {
+        return 0;
+    }
+    for (size_t i = 4; i + 4 <= size; i += 4) {
+        if (iboot_u32(image + i) != base + rs) {
+            continue;
+        }
+        if (found) {
+            return 0;
+        }
+        found = i - 4;
+    }
+    if (!found) {
+        return 0;
+    }
+    uint32_t string = iboot_u32(image + found);
+    if (!iboot_literal_loaded(image, found) || string < base ||
+        string - base >= size || image[string - base] != 0) {
+        return 0;
+    }
+    return found;
+}
+
+uint32_t it_iboot_find_epoch(const uint8_t *image, size_t size)
+{
+    /*
+     * iBoot's security-epoch helper: `bl chipid_epoch_field; cmp r0, #N;
+     * bhi/bne +2; movs r0, #M` -- the fused field floored at this build's
+     * epoch M (1 for 385.22, 2 for 385.49, 3 for 596, 4 for 636+). The
+     * field accessor is byte-identical in every image:
+     * ldr r0, [pc, #8]; ldr r0, [r0]; lsls r0, #21; lsrs r0, #25; bx lr;
+     * literal 0x3d100008 (CHIPID_INFO).
+     */
+    static const uint8_t accessor[] = { 0x02, 0x48, 0x00, 0x68, 0x40, 0x05,
+                                        0x40, 0x0e, 0x70, 0x47 };
+    size_t acc = 0;
+    uint32_t found = 0;
+
+    if (!image || size < 16) {
+        return 0;
+    }
+    for (size_t i = 0; i + 16 <= size; i += 2) {
+        if (!memcmp(image + i, accessor, sizeof(accessor)) &&
+            iboot_u32(image + i + 12) == 0x3d100008) {
+            if (acc) {
+                return 0;
+            }
+            acc = i;
+        }
+    }
+    if (!acc) {
+        return 0;
+    }
+    for (size_t j = 0; j + 12 <= size; j += 2) {
+        uint16_t h1 = iboot_u16(image + j), h2 = iboot_u16(image + j + 2);
+        int32_t off;
+        if ((h1 & 0xf800) != 0xf000 || (h2 & 0xf800) != 0xf800) {
+            continue;                                   /* not Thumb bl */
+        }
+        off = ((h1 & 0x7ff) << 12) | ((h2 & 0x7ff) << 1);
+        if (off & 0x400000) {
+            off -= 0x800000;
+        }
+        if ((int64_t)j + 4 + off != (int64_t)acc) {
+            continue;
+        }
+        uint16_t cmp = iboot_u16(image + j + 4), br = iboot_u16(image + j + 6);
+        uint16_t mov = iboot_u16(image + j + 8);
+        if ((cmp & 0xff00) != 0x2800 ||                  /* cmp r0, #N */
+            ((br & 0xff00) != 0xd800 && (br & 0xff00) != 0xd100) ||
+            (mov & 0xff00) != 0x2000) {                  /* movs r0, #M */
+            continue;
+        }
+        if (found) {
+            return 0;
+        }
+        found = mov & 0xff;
+    }
+    return found;
+}
+
+uint32_t it_iboot_find_command_line(const uint8_t *image, size_t size,
+                                    uint32_t base)
+{
+    static const char format[] = "gBootArgs.commandLine = [%s]\n";
+    uint32_t found = 0;
+    if (!image || size < sizeof(format) || size > UINT32_MAX - base || (base & 3)) {
+        return 0;
+    }
+    for (size_t i = 0; i + 10 <= size; i += 2) {
+        /* ldr r4, literal; ldr r0, literal; adds r1, r4, #0; bl printf */
+        uint16_t buffer_load = iboot_u16(image + i);
+        uint16_t format_load = iboot_u16(image + i + 2);
+        if ((buffer_load & 0xff00) != 0x4c00 ||
+            (format_load & 0xff00) != 0x4800 ||
+            iboot_u16(image + i + 4) != 0x1c21 ||
+            (iboot_u16(image + i + 6) & 0xf800) != 0xf000 ||
+            (iboot_u16(image + i + 8) & 0xf800) != 0xf800) {
+            continue;
+        }
+        size_t bp = ((i + 4) & ~(size_t)3) + (buffer_load & 255) * 4;
+        size_t fp = ((i + 6) & ~(size_t)3) + (format_load & 255) * 4;
+        if (bp > size - 4 || fp > size - 4) {
+            continue;
+        }
+        uint32_t buffer = iboot_u32(image + bp);
+        uint32_t text = iboot_u32(image + fp);
+        if (text < base || text - base > size - sizeof(format) ||
+            memcmp(image + (text - base), format, sizeof(format)) ||
+            size < 256 || buffer < base || (buffer & 3) ||
+            buffer - base > size - 256) {
+            continue;
+        }
+        if (found) {
+            return 0;
+        }
+        found = buffer;
+    }
+    return found;
+}
+
+#ifndef IT_IBOOT_HOST_TEST
+uint32_t it_iboot_epoch(AddressSpace *as, uint32_t base, size_t image_size)
+{
+    uint32_t epoch = 0;
+    if (!image_size || image_size > 0x100000) {
+        return 0;
+    }
+    g_autofree uint8_t *image = g_try_malloc(image_size);
+    if (image) {
+        address_space_read(as, base, MEMTXATTRS_UNSPECIFIED, image, image_size);
+        epoch = it_iboot_find_epoch(image, image_size);
+    }
+    return epoch;
+}
+
+uint32_t it_iboot_inject_boot_args(AddressSpace *as, uint32_t base,
+                                   size_t image_size, const char *args,
+                                   hwaddr staging)
+{
+    uint8_t literal[4], command[256] = { 0 };
+    uint32_t found;
+
+    if (!args || !image_size || image_size > 0x100000) {
+        return 0;
+    }
+    g_autofree uint8_t *image = g_try_malloc(image_size);
+    if (!image) {
+        return 0;
+    }
+    address_space_read(as, base, MEMTXATTRS_UNSPECIFIED, image, image_size);
+    found = it_iboot_find_boot_args_literal(image, image_size, base);
+    if (!found) {
+        return 0;
+    }
+    g_strlcpy((char *)command, args, sizeof(command));
+    address_space_write(as, staging, MEMTXATTRS_UNSPECIFIED, command,
+                        sizeof(command));
+    stl_le_p(literal, staging);
+    address_space_write(as, base + found, MEMTXATTRS_UNSPECIFIED, literal,
+                        sizeof(literal));
+    return base + found;
+}
+#endif

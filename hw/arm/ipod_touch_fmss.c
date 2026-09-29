@@ -1,5 +1,5 @@
-#include "hw/arm/ipod_touch_firmware.h"
 #include "hw/arm/ipod_touch_fmss.h"
+#include "hw/arm/it_iboot.h"
 #include "hw/arm/ipod_touch_guard.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
@@ -979,7 +979,7 @@ static void patch_iboot_boot_args(IPodTouchFMSSState *s)
             return;
         }
         cpu_physical_memory_read(IBOOT_SCAN_PA_START, image, IBOOT_SCAN_LEN);
-        iboot_command_line = it_firmware_find_iboot_command_line(
+        iboot_command_line = it_iboot_find_command_line(
             image, IBOOT_SCAN_LEN, IBOOT_SCAN_PA_START);
         if (!iboot_command_line) {
             return;
