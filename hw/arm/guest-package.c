@@ -13,6 +13,17 @@
 #endif
 #include "hw/arm/guest-package.h"
 
+#ifndef GUEST_PKG_CORE_ONLY
+#include "hw/arm/guest-services/gles.h"
+/* The hello's reply asks the shim to log its dispatch layout under gles-debug or IT_GLES_VERBOSE. */
+static bool guest_pkg_gles_verbose(void)
+{
+    return gles_host_debug() || getenv("IT_GLES_VERBOSE");
+}
+#else
+static bool guest_pkg_gles_verbose(void) { return false; }
+#endif
+
 /* One machine per process; the app's helper reads this from its own thread. */
 static GMutex last_lock;
 static struct {
@@ -173,13 +184,23 @@ int64_t guest_pkg_op(GuestPackage *p, unsigned op, uint64_t token,
         g_mutex_unlock(&last_lock);
         return 0;
     }
-    case QC_GLES_HELLO:
+    case QC_GLES_HELLO: {
+        bool first;
         g_mutex_lock(&last_lock);
+        first = !last.hello;
         last.hello = true;
         last.proto = (int32_t)offset;
         last.gl_serial = token;
         g_mutex_unlock(&last_lock);
-        return GUEST_GLES_PROTO;
+        if (first || offset != GUEST_GLES_PROTO || token != GLES_NAMES_VERSION) {
+            fprintf(stderr, "[gles] shim hello: protocol %u, name table %08" PRIx64
+                    " (host: %d, %08x)%s\n", offset, token, GUEST_GLES_PROTO,
+                    GLES_NAMES_VERSION,
+                    offset != GUEST_GLES_PROTO ? " -- PROTOCOL MISMATCH" :
+                    token != GLES_NAMES_VERSION ? " -- the shim was built from another table" : "");
+        }
+        return GUEST_GLES_PROTO | (guest_pkg_gles_verbose() ? GLES_HELLO_VERBOSE : 0);
+    }
     }
     return -1;
 }
@@ -213,7 +234,7 @@ char *guest_pkg_status(void)
                           last.serial, last.result, last.reports, last.text)
         : g_strdup("no report");
     char *out = last.hello
-        ? g_strdup_printf("%s; gles-hello proto %d serial %" PRId64, s,
+        ? g_strdup_printf("%s; gles-hello proto %d table %08" PRIx64, s,
                           last.proto, last.gl_serial)
         : g_strdup_printf("%s; no gles-hello (proto 0)", s);
     g_mutex_unlock(&last_lock);

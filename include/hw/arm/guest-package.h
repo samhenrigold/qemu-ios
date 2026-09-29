@@ -11,9 +11,13 @@
  *                 lines; length 0 returns its size, else copies a window
  *   QC_PKG_REPORT token = serial, offset = it_boot's result code, buffer =
  *                 an optional status line
- *   QC_GLES_HELLO offset = the shim's GL wire protocol, token = its package
- *                 serial; retval = the host's protocol. A shim that never
- *                 sends it speaks protocol 0, today's wire.
+ *   QC_GLES_HELLO offset = the shim's GL wire protocol, token = the version
+ *                 of the name table it was built from (gles-names.h
+ *                 GLES_NAMES_VERSION); retval = the host's protocol, with
+ *                 GLES_HELLO_VERBOSE set when the host wants the shim to log
+ *                 its dispatch layout (gles-debug / IT_GLES_VERBOSE). A shim
+ *                 that never sends it speaks protocol 0, the old slot-numbered
+ *                 wire.
  * The guest never names a path: the host maps indices to the paths in its own
  * offer, all relative to DIR.
  */
@@ -24,6 +28,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "hw/arm/guest-services/gles-names.h"   /* GLES_NAMES_VERSION, the table the hello names */
 #ifdef GUEST_PKG_CORE_ONLY
 #define QC_GLES_HELLO 0x142        /* the qemu_call_number_t values in general.h */
 #define QC_PKG_OFFER  0x170
@@ -39,8 +44,11 @@
 #define GUEST_PKG_OFFER_MAX (64 * 1024)
 #define GUEST_PKG_FILE_MAX  (16 * 1024 * 1024)
 #define GUEST_PKG_ENTRIES   64
-/* GL wire protocol the host serves now; it also keeps serving the one before. */
-#define GUEST_GLES_PROTO    0
+/* GL wire protocol the host serves now: 1 = calls keyed by the name table's function ids
+ * (gles-names.h). Protocol 0 (3.1.3 slot numbers) is the same numbering below id 822, so an
+ * old shim keeps working; only its hello is missing. */
+#define GUEST_GLES_PROTO    1
+#define GLES_HELLO_VERBOSE  0x100   /* in the hello's reply: log the discovered dispatch layout */
 
 typedef struct GuestPackage {
     char *dir;                /* guest-package= property, NULL = no offer */

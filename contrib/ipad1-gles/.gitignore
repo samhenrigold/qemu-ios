@@ -1,5 +1,4 @@
-GLEngine-*
-gli_fwd.h
+GLEngine
 GLTest.app
 GLTest2.app
 GLRendererFloatQEMU.bundle

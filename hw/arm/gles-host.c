@@ -1643,6 +1643,11 @@ void gles_host_set_debug(bool on)
     gles_debug = on;
 }
 
+bool gles_host_debug(void)
+{
+    return gles_debug;
+}
+
 /* A guest shim's "[gles-reject] NAME COUNT" line (GLES_OP_LOG): the shim counts its own
  * refusals and reports each name at 1, 2, 4, 8... calls, so COUNT is a floor. */
 static bool gles_shim_reject_line(const char *line)
@@ -7016,11 +7021,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * invisible -- an app that renders wrong looks identical to an app
          * that renders right until something says which call went nowhere. */
         if (gles_refuse("slot:%u", slot)) {
-            fprintf(stderr, "[gles] UNHANDLED slot %u (0x%03x) argc=%u -- "
+            fprintf(stderr, "[gles] UNHANDLED %s (id %u) argc=%u -- "
                     "returning 0; the guest will render wrong\n",
-                    slot, slot * 4 + 0x10, argc);
+                    gles_id_name(slot), slot, argc);
         }
-        if (slot == 405) gles_debug_mark();     /* glDrawRangeElements: a draw that went nowhere */
+        if (slot == GLES_ID_glDrawRangeElements) gles_debug_mark();     /* a draw that went nowhere */
         return 0;
     }
 }
