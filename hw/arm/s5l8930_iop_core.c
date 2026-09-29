@@ -31,6 +31,7 @@
 #include "target/arm/cpregs.h"
 #include "exec/memory.h"
 #include "hw/arm/s5l8930.h"
+#include "system/reset.h"
 
 #define TYPE_S5L8930_IOP_CORE "s5l8930.iop-core"
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPCoreState, S5L8930_IOP_CORE)
@@ -182,6 +183,23 @@ void s5l8930_iop_core_stop(DeviceState *dev)
     qemu_log_mask(LOG_UNIMP, "iop-core: stopped\n");
 }
 
+/*
+ * A system reset (the PMU's restart) stops the core like the kext's CTRL = 0
+ * and takes the old firmware image off address 0. The device has no bus, so
+ * the machine's reset walk never gets here on its own.
+ */
+static void s5l8930_iop_core_reset(void *opaque)
+{
+    S5L8930IOPCoreState *s = opaque;
+
+    cpu_reset(CPU(s->cpu));
+    if (s->fw_mapped) {
+        memory_region_del_subregion(&s->mem, &s->fw);
+        object_unparent(OBJECT(&s->fw));
+        s->fw_mapped = false;
+    }
+}
+
 static void s5l8930_iop_core_realize(DeviceState *dev, Error **errp)
 {
     S5L8930IOPCoreState *s = S5L8930_IOP_CORE(dev);
@@ -208,6 +226,7 @@ static void s5l8930_iop_core_realize(DeviceState *dev, Error **errp)
     object_property_set_bool(cpuobj, "realized", true, &error_fatal);
     s->cpu = ARM_CPU(cpuobj);
     define_arm_cp_regs(s->cpu, iop_cp_reginfo);
+    qemu_register_reset(s5l8930_iop_core_reset, s);
 
     /* The IOP's VICs live on the shared bus: the AP rings the doorbell through
      * VIC0's SOFTINT, the firmware programs enables and vector addresses. */
