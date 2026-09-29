@@ -76,6 +76,49 @@ uint32_t it_iboot_find_boot_args_literal(const uint8_t *image, size_t size,
     return found;
 }
 
+/*
+ * iBoot-204 (the S5L8900's, iPhone OS 1.x) has no epoch helper: miu_init
+ * compares the byte inline, `ldr rN, [rN]; lsrs rN, rN, #24; cmp rN, #M;
+ * beq ok` on POWER_ID, and the fall-through loads "miu_init: Epoch
+ * Mismatch" for panic() (M is 2 in 3A101a, 3 in 4B1).
+ */
+static uint32_t iboot_inline_epoch(const uint8_t *image, size_t size)
+{
+    static const char panic_text[] = "Epoch Mismatch";
+    uint32_t found = 0;
+
+    for (size_t i = 0; i + 14 <= size; i += 2) {
+        uint16_t ld = iboot_u16(image + i), sh = iboot_u16(image + i + 2);
+        uint16_t cmp = iboot_u16(image + i + 4), br = iboot_u16(image + i + 6);
+        unsigned r = ld & 7;
+        if ((ld & 0xffc0) != 0x6800 || ((ld >> 3) & 7) != r ||   /* ldr rN, [rN] */
+            sh != (0x0e00 | r << 3 | r) ||                       /* lsrs rN, rN, #24 */
+            (cmp & 0xff00) != (0x2800 | r << 8) ||               /* cmp rN, #M */
+            (br & 0xff00) != 0xd000) {                           /* beq */
+            continue;
+        }
+        bool panics = false;
+        for (size_t j = i + 8; j < i + 14; j += 2) {              /* the panic's ldr r0/r1, =string */
+            uint16_t lit = iboot_u16(image + j);
+            size_t at = ((j + 4) & ~(size_t)3) + (lit & 0xff) * 4;
+            if ((lit & 0xf800) != 0x4800 || at + 4 > size) {
+                continue;
+            }
+            uint32_t s = iboot_u32(image + at) & 0xfffff;         /* image offset: iBoot runs at a 1 MiB boundary */
+            panics |= s < size && memmem(image + s, size - s < 64 ? size - s : 64,
+                                         panic_text, sizeof(panic_text) - 1);
+        }
+        if (!panics) {
+            continue;
+        }
+        if (found) {
+            return 0;
+        }
+        found = cmp & 0xff;
+    }
+    return found;
+}
+
 uint32_t it_iboot_find_epoch(const uint8_t *image, size_t size)
 {
     /*
@@ -93,6 +136,9 @@ uint32_t it_iboot_find_epoch(const uint8_t *image, size_t size)
 
     if (!image || size < 16) {
         return 0;
+    }
+    if ((found = iboot_inline_epoch(image, size))) {
+        return found;
     }
     for (size_t i = 0; i + 16 <= size; i += 2) {
         if (!memcmp(image + i, accessor, sizeof(accessor)) &&

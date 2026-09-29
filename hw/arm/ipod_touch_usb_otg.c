@@ -86,7 +86,14 @@ static void synopsys_usb_update_irq(synopsys_usb_state *_state)
 		}
 	}
 	
-	if((_state->pcgcctl & 3) == 0 && _state->gintmsk & _state->gintsts)
+	/*
+	 * The core's interrupt line: a pending unmasked GINTSTS bit, with
+	 * GAHBCFG.GlblIntrMsk set. It used to be gated on PCGCCTL instead (clocks
+	 * running); iPhone OS 1.x never writes PCGCCTL -- iBoot-204 leaves it at 3
+	 * (its USB quiesce) and AppleS5L8900XUSBWrangler runs the core from there
+	 * -- so under that gate the 1G took no interrupt at all.
+	 */
+	if((_state->gahbcfg & GAHBCFG_MASKINT) && (_state->gintmsk & _state->gintsts))
 	{
 		//printf("USB: IRQ triggered 0x%08x & 0x%08x.\n", _state->gintsts, _state->gintmsk);
 		qemu_irq_raise(_state->irq);
@@ -250,16 +257,16 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 			             | (remaining & DEPTSIZ_XFERSIZ_MASK);
 
 			/*
-			 * PktCnt counts down alongside XferSize on real hardware. Nothing in
-			 * the guest driver has been observed to read it back mid-transfer,
-			 * but leaving it stale would be a trap for whatever does.
-			 *
-			 * Only for the bulk endpoints: on EP0 the MPS field is a two-bit
-			 * enum (0 = 64 bytes ... 3 = 8) rather than a byte count, and EP0
-			 * transfers are single-transaction anyway.
+			 * PktCnt counts down alongside XferSize on real hardware, EP0
+			 * included, where the MPS field is a two-bit enum (0 = 64 bytes ...
+			 * 3 = 8). iPhone OS 1.x's SynopsysHAL reads DIEPTSIZ0's PktCnt back
+			 * after XferCompl and sent a control IN's first packet again while it
+			 * stayed at 1: the 82-byte serial string reached the host as 64 + 64
+			 * bytes of the same packet (usbmuxd read the UDID as '?').
 			 */
-			uint32_t mps = eps->control & USB_EPCON_MPS_MASK;
-			if (ep && mps && amtDone) {
+			uint32_t mps = ep ? eps->control & USB_EPCON_MPS_MASK
+			                  : 64u >> (eps->control & 3);
+			if (mps && amtDone) {
 				uint32_t pktcnt = (eps->tx_size >> DEPTSIZ_PKTCNT_SHIFT)
 				                & DEPTSIZ_PKTCNT_MASK;
 				uint32_t sent = (amtDone + mps - 1) / mps;
@@ -423,6 +430,27 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 	return ret;
 }
 
+/* "host:port" of the host bridge (usbmuxd-qemu); the port defaults to 1235,
+ * an empty host to 127.0.0.1. NULL or "" leaves the link unconfigured. */
+void synopsys_usb_set_tcp_addr(synopsys_usb_state *state, const char *spec)
+{
+	if (!spec || !*spec) {
+		return;
+	}
+	g_autofree char *dup = g_strdup(spec);
+	char *colon = strrchr(dup, ':');
+	state->server_port = 0;
+	if (colon) {
+		*colon = '\0';
+		state->server_port = atoi(colon + 1);
+	}
+	if (!state->server_port) {
+		state->server_port = 1235;
+	}
+	g_free(state->server_host);
+	state->server_host = g_strdup(*dup ? dup : "127.0.0.1");
+}
+
 /*
  * Bring up the host link if it is configured and not already up. Safe to call
  * repeatedly - a missing host bridge is not fatal, it just means no cable.
@@ -438,22 +466,10 @@ static void synopsys_usb_tcp_start(synopsys_usb_state *_state)
 	}
 
 	if (!_state->server_host) {
-		const char *spec = getenv("IT_USB_TCP");
-		if (!spec || !*spec) {
+		synopsys_usb_set_tcp_addr(_state, getenv("IT_USB_TCP"));
+		if (!_state->server_host) {
 			return;
 		}
-
-		char *dup = g_strdup(spec);
-		char *colon = strrchr(dup, ':');
-		if (colon) {
-			*colon = '\0';
-			_state->server_port = atoi(colon + 1);
-		}
-		if (!_state->server_port) {
-			_state->server_port = 1235;
-		}
-		_state->server_host = g_strdup(*dup ? dup : "127.0.0.1");
-		g_free(dup);
 	}
 
 	if (_state->tcp_connected) {
@@ -565,7 +581,11 @@ static uint64_t synopsys_usb_read_reg(void *opaque, hwaddr _addr, unsigned size)
 		return state->pcgcctl;
 
 	case GOTGCTL:
-		return state->gotgctl;
+		/* Live status: the ID pin of a device cable (B-device) and, while a host
+		 * powers VBUS, both session-valid comparators. */
+		return (state->gotgctl & ~(GOTGCTL_CONIDSTS | GOTGCTL_ASESSIONVALID | GOTGCTL_BSESSIONVALID)) |
+		       GOTGCTL_CONIDSTS |
+		       (state->cable_attached ? GOTGCTL_ASESSIONVALID | GOTGCTL_BSESSIONVALID : 0);
 
 	case GOTGINT:
 		return state->gotgint;
@@ -800,7 +820,7 @@ static void synopsys_usb_write(void *opaque, hwaddr _addr, uint64_t _val, unsign
 
 			state->grstctl &= ~GRSTCTL_CORESOFTRESET;
 			state->grstctl |= GRSTCTL_AHBIDLE;
-			state->gintsts |= GINTMSK_RESET;
+			state->gintsts |= GINTMSK_RESET | GINTMSK_CONIDSTSCHNG;
 			synopsys_usb_update_irq(state);
 		}
 		else if(_val == 0)
@@ -840,6 +860,7 @@ static void synopsys_usb_write(void *opaque, hwaddr _addr, uint64_t _val, unsign
 
 	case GAHBCFG:
 		state->gahbcfg = _val;
+		synopsys_usb_update_irq(state);
 		return;
 
 	case GUSBCFG:
@@ -959,7 +980,10 @@ static void s5l8900_usb_otg_reset(DeviceState *d)
 	state->grstctl = GRSTCTL_AHBIDLE;
 
 	state->gintmsk = 0;
-	state->gintsts = 0;
+	/* ConIDStsChng is set out of reset (the core's reset value): 1.x's
+	 * AppleS5L8900XUSBDevice unmasks only it (and ModeMis) after core init and
+	 * reads the ID status off GOTGCTL before it brings device mode up. */
+	state->gintsts = GINTMSK_CONIDSTSCHNG;
 
 	state->daintmsk = 0;
 	state->daintsts = 0;
