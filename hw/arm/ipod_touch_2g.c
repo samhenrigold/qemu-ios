@@ -2347,6 +2347,16 @@ static const QemuInputHandler ipod_touch_kbd_handler = {
  * applicationWillTerminate: to save with.
  */
 #define PWROFF_HOME_MS      2500
+/*
+ * Home is a tap, released long before Hold goes down. Holding Home for the
+ * whole settle and pressing Hold in the same tick as the release put both
+ * edges in ONE GPIO status read (group 3 = 0x06000000): 2.x's SpringBoard
+ * saw Hold go down with Home still held (the Home+Hold chord) and never
+ * raised the power-off sheet (smoke #19). From a dark lock screen the first
+ * press only wakes the display, which is why it passed there. No hand
+ * produces that simultaneity.
+ */
+#define PWROFF_HOME_TAP_MS  150
 #define PWROFF_HOLD_MS      3500   /* > SpringBoard's hold threshold           */
 #define PWROFF_SETTLE_MS    1500   /* sheet slides in and settles              */
 #define PWROFF_DRAG_STEPS   24
@@ -2374,11 +2384,35 @@ static int pwroff_knob_row(void)
 enum {
 	PWROFF_IDLE = 0,
 	PWROFF_HOME,
+	PWROFF_HOME_UP,
 	PWROFF_PRESSED,
 	PWROFF_SETTLING,
 	PWROFF_DRAGGING,
+	PWROFF_DARK,
 	PWROFF_DONE,
 };
+
+/*
+ * After the slide: wait for the screen to go dark, then pull the cable.
+ *
+ * AppleD1759PMU's halt, on every version, masks the PMU down to its wake set
+ * (0x07..0x09 = d1 ff f0), writes 0x61, reads the power-source block at 0x04
+ * and branches on the USB bit (3). Unplugged, it sets 0x0a bit 0 ("pmu go
+ * stdby") and the PMU cuts power. Plugged in, the two drivers differ:
+ *   3.x/4.x (AppleD1759PMU-94.7, 7E18 c05fba58): writes 0x6f=0x90 and the
+ *     PMU takes the device down itself.
+ *   2.x (AppleD1759PMU-36.2, 5F138 c03adaf8): prints "pmu waiting for stdby"
+ *     and sleeps on the PMU interrupt. An EVENT_A bit 1/3 (firewire/usb) or
+ *     EVENT_C bit 2/3 (charger) event sends it to 0x0a bit 0; EVENT_A bit 2/5
+ *     (rtc/acc) or EVENT_C bit 1 (hold) restarts ("pmu restarting").
+ * So a tethered 2.x device that has been slid off stays dark and running
+ * until the cable comes out, which is exactly what a real one does. The PMU
+ * already latches EVENT_A bit 3 on a cable change; what was missing is the
+ * last step of the user's gesture. Once the guest has turned the backlight
+ * rail off (its own sign it is past user space), unplugging is harmless on
+ * 3.x/4.x (they take 0x0a or have already written 0x6f) and ends 2.x's wait.
+ */
+#define PWROFF_DARK_POLL_MS 100
 
 /* Same effect as a mouse event on the display, but in panel pixels. */
 static void ipod_touch_synth_touch(IPodTouchMachineState *nms,
@@ -2458,6 +2492,11 @@ static void ipod_touch_powerdown_tick(void *opaque)
 		if (s_kbd_mt) {
 			ipod_touch_key_event(s_kbd_mt, KEY_H_UP);
 		}
+		nms->pwroff_phase = PWROFF_HOME_UP;
+		ipod_touch_powerdown_arm(nms, PWROFF_HOME_MS);
+		break;
+
+	case PWROFF_HOME_UP:
 		if (trace) {
 			fprintf(stderr, "[PWROFF] home pressed; holding the hold button\n");
 		}
@@ -2510,7 +2549,8 @@ static void ipod_touch_powerdown_tick(void *opaque)
 			 * a no-op: if the first attempt did not halt the guest,
 			 * every later one (including the app's quit-time flush)
 			 * did nothing at all and the HFS+ catalog was lost. */
-			nms->pwroff_phase = PWROFF_IDLE;
+			nms->pwroff_phase = PWROFF_DARK;
+			ipod_touch_powerdown_arm(nms, PWROFF_DARK_POLL_MS);
 			if (trace) {
 				fprintf(stderr, "[PWROFF] slider released; "
 				                "waiting for the guest to halt\n");
@@ -2518,6 +2558,19 @@ static void ipod_touch_powerdown_tick(void *opaque)
 		}
 		break;
 	}
+
+	case PWROFF_DARK:
+		if (nms->pmu_state &&
+		    (nms->pmu_state->regs[PMU_LDO_ENABLE] & PMU_LDO_BACKLIGHT)) {
+			ipod_touch_powerdown_arm(nms, PWROFF_DARK_POLL_MS);
+			break;
+		}
+		if (trace) {
+			fprintf(stderr, "[PWROFF] screen dark; unplugging the cable\n");
+		}
+		ipod_touch_set_usb_attached(OBJECT(nms), false, NULL);
+		nms->pwroff_phase = PWROFF_IDLE;
+		break;
 
 	default:
 		break;
@@ -2531,7 +2584,9 @@ static void ipod_touch_powerdown_req(Notifier *n, void *opaque)
 	if (!nms || !nms->pwroff_timer) {
 		return;
 	}
-	if (nms->pwroff_phase != PWROFF_IDLE) {
+	/* DARK is not in flight: a slide that missed never darkens the screen, and
+	 * a second request must still get its own gesture. */
+	if (nms->pwroff_phase != PWROFF_IDLE && nms->pwroff_phase != PWROFF_DARK) {
 		return;   /* a sequence is already running */
 	}
 	if (getenv("IT_PWROFF_TRACE")) {
@@ -2564,6 +2619,9 @@ static void ipod_touch_powerdown_req(Notifier *n, void *opaque)
 	 *
 	 * Do NOT revisit the slide gesture: it is accepted and correct on 3.1.3
 	 * (screendumped mid-drag, knob on the track). Two investigations died there.
+	 *
+	 * The cable does come out now, but at the END of the gesture, once the
+	 * guest has darkened the screen (PWROFF_DARK): 2.x's halt waits for it.
 	 */
 	/* Home FIRST. The sheet the slide targets is SpringBoard's, so a
 	 * powerdown requested while an app is foreground had nothing to slide and
@@ -2572,7 +2630,7 @@ static void ipod_touch_powerdown_req(Notifier *n, void *opaque)
 		ipod_touch_key_event(s_kbd_mt, KEY_H_DOWN);
 	}
 	nms->pwroff_phase = PWROFF_HOME;
-	ipod_touch_powerdown_arm(nms, PWROFF_HOME_MS);
+	ipod_touch_powerdown_arm(nms, PWROFF_HOME_TAP_MS);
 }
 
 static Notifier ipod_touch_powerdown_notifier = {
