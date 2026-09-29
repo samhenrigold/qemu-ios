@@ -25,6 +25,8 @@ static int64_t qemu_clock_get_ms(int clock) { return now; }
 static bool ipad_pins[4];
 static void ipod_touch_press_button(IPodTouchButton b,bool down) {pins[b]=down;}
 static void ipad1_press_button(IPodTouchButton b,bool down) {ipad_pins[b]=down;}
+static char g1_pins[8];
+static void ipod_touch_1g_press_button(IPodTouchButton b,bool down) {g1_pins[b]=down;}
 static QEMUTimer *timer_new_ms(int c,void(*cb)(void*),void *arg) {
  QEMUTimer *t=calloc(1,sizeof(*t));t->cb=cb;t->arg=arg;return t;
 }
