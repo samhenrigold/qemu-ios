@@ -50,6 +50,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930H2FMIState, S5L8930_H2FMI)
 #define H2FMI_BUSES     2
 #define H2FMI_WINDOW    0x100000        /* FMI1 = FMI0 + 1 MiB */
 #define H2FMI_BUF       0x8800          /* > largest page + spare */
+/*
+ * Pages queued ahead of the consumer. The IOP firmware issues a multi-page
+ * read's transfers before its CDMA chain drains them, and real hardware
+ * stalls the transfer until the FIFO has room; this model transfers at
+ * once and buffers instead (ponytail: capacity in place of backpressure;
+ * a transfer that finds no room is logged and dropped).
+ */
+#define H2FMI_QUEUE     64
 
 #define FMI_CONTROL     0x04
 #define FMI_STATUS      0x0C
@@ -90,15 +98,23 @@ typedef struct H2FMIBus {
     uint32_t ecc_summary;
     /* per-page sector results, oldest first: iBoot reads page i's while
      * page i+1 is already transferring (0x5ff0424c) */
-    uint32_t ecc_q[4];
+    uint32_t ecc_q[H2FMI_QUEUE];
     uint32_t ecc_n, ecc_reads;
     H2FMIMode mode;
     uint32_t row;
-    bool page_ok;                       /* loaded page has data (else blank) */
-    uint8_t page[H2FMI_BUF];
+    /* Each chip latches its own page at the read command: the IOP firmware
+     * commands the next CE before it transfers the previous one. */
+    bool page_ok[8];                    /* loaded page has data (else blank) */
+    uint8_t page[8][H2FMI_BUF];
     uint32_t stride;
-    uint8_t data[2 * H2FMI_BUF], meta[64];
+    uint8_t data[H2FMI_QUEUE * H2FMI_BUF], meta[H2FMI_QUEUE * META_BYTES];
     uint32_t data_len, meta_len;
+    /* Program path (the IOP firmware): cmd 0x80 + address, the CDMA fills the
+     * FIFOs, control 0x5 moves them to the chip, cmd 0x10 confirms. */
+    bool writing;
+    uint8_t wdata[H2FMI_BUF], wmeta[64];
+    uint32_t wdata_len, wmeta_len;
+    uint32_t erase_row;
 } H2FMIBus;
 
 struct S5L8930H2FMIState {
@@ -143,10 +159,62 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
         break;
     case 0xff:
         b->mode = MODE_NONE;
+        b->data_len = b->meta_len = 0;
         break;
     case 0x70:              /* status, then 0x00 back to the page register */
     case 0x00:
         break;
+    case 0x80:              /* page program: address follows, data through the FIFOs */
+        b->writing = true;
+        break;
+    case 0x10: {            /* program confirm: the latched page goes to the chip */
+        int ce = h2fmi_ce(b);
+        uint32_t id, pb;
+        uint8_t mask;
+
+        if (ce >= 0 && s->iop && b->writing) {
+            s5l8930_iop_nand_info(s->iop, &id, &mask, &pb);
+            int per_bus = MAX(ctpop8(mask), 1);
+            int cs = (ce & 7) * H2FMI_BUSES + b->n;
+            uint8_t meta[META_BYTES] = { 0 };
+            memcpy(meta, b->wmeta, MIN(b->wmeta_len, META_BYTES));
+            s5l8930_iop_nand_program(s->iop, cs / per_bus, cs % per_bus, b->row,
+                                     b->wdata, MIN(b->wdata_len, pb), meta);
+            qemu_log_mask(LOG_TRACE, "h2fmi%d: program ce %d row 0x%x %u+%u bytes\n",
+                          b->n, ce, b->row, b->wdata_len, b->wmeta_len);
+        }
+        b->writing = false;
+        if (ce >= 0 && s->iop) {
+            s5l8930_iop_nand_info(s->iop, &id, &mask, &pb);
+            uint32_t take = MIN(pb, b->wdata_len), mtake = MIN(META_BYTES, b->wmeta_len);
+            memmove(b->wdata, b->wdata + take, b->wdata_len - take);
+            b->wdata_len -= take;
+            memmove(b->wmeta, b->wmeta + mtake, b->wmeta_len - mtake);
+            b->wmeta_len -= mtake;
+        }
+        b->fmc[FMC_NAND_STATUS / 4] = NAND_READY;
+        if (s->cdma) {
+            s5l8930_cdma_kick(s->cdma);     /* room again: a stalled write chain continues */
+        }
+        break;
+    }
+    case 0x60:              /* block erase: address follows, 0xd0 confirms */
+        break;
+    case 0xd0: {
+        int ce = h2fmi_ce(b);
+        uint32_t id, pb;
+        uint8_t mask;
+
+        if (ce >= 0 && s->iop) {
+            s5l8930_iop_nand_info(s->iop, &id, &mask, &pb);
+            int per_bus = MAX(ctpop8(mask), 1);
+            int cs = (ce & 7) * H2FMI_BUSES + b->n;
+            s5l8930_iop_nand_erase(s->iop, cs / per_bus, cs % per_bus, b->row);
+            qemu_log_mask(LOG_TRACE, "h2fmi%d: erase ce %d row 0x%x\n", b->n, ce, b->row);
+        }
+        b->fmc[FMC_NAND_STATUS / 4] = NAND_READY;
+        break;
+    }
     case 0x30: {
         int ce = h2fmi_ce(b);
         /*
@@ -154,10 +222,16 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
          * going to be taken (a pipelined read has drained the previous page
          * by now), and must not shift this page's data.
          */
-        b->data_len = b->meta_len = 0;
+        /* The IOP firmware pipelines: it issues the next page's command
+         * while the CDMA still drains this one, so the FIFOs keep what a
+         * transfer put there; only reset (0xff) or a transfer with an idle
+         * pipeline starts them afresh. */
         b->mode = MODE_PAGE;
-        b->page_ok = false;
+        if (!b->data_len) {
+            b->meta_len = 0;    /* leftovers a PIO reader left behind */
+        }
         if (ce >= 0 && s->iop) {
+            b->page_ok[ce & 7] = false;
             /*
              * iBoot numbers chip selects round-robin across the buses
              * (h2fmiInitVirtToPhysMap, 0x5ff026f8: CS 0 = FMI0 CE0, CS 1 =
@@ -170,9 +244,10 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
             uint8_t mask;
             s5l8930_iop_nand_info(s->iop, &id, &mask, &pb);
             int per_bus = MAX(ctpop8(mask), 1);
-            int cs = (ce & 7) * H2FMI_BUSES + b->n;
-            b->page_ok = s5l8930_iop_nand_read(s->iop, cs / per_bus,
-                                               cs % per_bus, b->row, b->page,
+            int cs = getenv("H2FMI_IDENTITY") ? -1 : (ce & 7) * H2FMI_BUSES + b->n;
+            b->page_ok[ce & 7] = cs < 0 ? s5l8930_iop_nand_read(s->iop, b->n, ce & 7, b->row, b->page[ce & 7], &b->stride)
+                                : s5l8930_iop_nand_read(s->iop, cs / per_bus,
+                                               cs % per_bus, b->row, b->page[ce & 7],
                                                &b->stride);
         }
         break;
@@ -195,6 +270,7 @@ static void h2fmi_go(H2FMIBus *b, uint32_t go)
         b->row = (b->fmc[FMC_ADDR0 / 4] >> 16) |
                  ((b->fmc[FMC_ADDR1 / 4] & 0xff) << 16);
     }
+    qemu_log_mask(LOG_TRACE, "h2fmi%d: go 0x%x cmds 0x%x row 0x%x ce 0x%x\n", b->n, go, cmds, b->row, b->fmc[FMC_CE / 4]);
     if (go & 2) {
         h2fmi_command(b, (cmds >> 8) & 0xff);
     }
@@ -226,33 +302,58 @@ static void h2fmi_transfer(H2FMIBus *b)
         memcpy(b->data, idb, sizeof(idb));
         b->data_len = sizeof(idb);
     } else if (b->mode == MODE_PAGE && page_bytes &&
-               b->data_len + page_bytes <= sizeof(b->data)) {
+               (b->data_len + page_bytes > sizeof(b->data) ||
+                b->meta_len + META_BYTES > sizeof(b->meta) || b->ecc_n == ARRAY_SIZE(b->ecc_q))) {
+        qemu_log_mask(LOG_GUEST_ERROR, "s5l8930.h2fmi%d: transfer queue full, page 0x%x dropped\n", b->n, b->row);
+    } else if (b->mode == MODE_PAGE && page_bytes) {
         /* FMI +0x34 bits 19-24: meta bytes per page (0x5ff0398c). */
         uint32_t meta = MIN(META_BYTES,
                             sizeof(b->meta) - b->meta_len);
         uint8_t *m = b->meta + b->meta_len;
 
-        if (b->page_ok) {
-            memcpy(b->data + b->data_len, b->page, page_bytes);
+        bool ok = ce >= 0 && b->page_ok[ce & 7];
+        const uint8_t *pg = b->page[ce & 7];
+
+        if (ok) {
+            memcpy(b->data + b->data_len, pg, page_bytes);
             memset(m, 0, meta);
-            memcpy(m, b->page + page_bytes, MIN(meta, META_BYTES));
+            memcpy(m, pg + page_bytes, MIN(meta, META_BYTES));
         } else {
             memset(b->data + b->data_len, 0xff, page_bytes);
             memset(m, 0xff, meta);
         }
         b->data_len += page_bytes;
         b->meta_len += meta;
-        if (b->ecc_n == ARRAY_SIZE(b->ecc_q)) {
-            memmove(b->ecc_q, b->ecc_q + 1, sizeof(b->ecc_q) - sizeof(b->ecc_q[0]));
-            b->ecc_n--;
-        }
-        b->ecc_q[b->ecc_n++] = b->page_ok ? 0 : ECC_BLANK;
+        b->ecc_q[b->ecc_n++] = ok ? 0 : ECC_BLANK;
         b->ecc_summary = 0;
     }
+    qemu_log_mask(LOG_TRACE, "h2fmi%d: transfer mode %d ce %d -> data %u meta %u ecc_n %u\n",
+                  b->n, b->mode, ce, b->data_len, b->meta_len, b->ecc_n);
     b->fmi[FMI_STATUS / 4] |= FMI_ST_DONE;
     h2fmi_update_irq(b);
     if (s->cdma) {
         s5l8930_cdma_kick(s->cdma);
+    }
+}
+
+/* A write transfer (control 5) completes when the FIFOs hold the page. */
+static void h2fmi_write_check(H2FMIBus *b)
+{
+    uint32_t page_bytes = 0, id = 0;
+    uint8_t mask;
+
+    if ((b->fmi[FMI_CONTROL / 4] & 7) != 5) {
+        return;
+    }
+    if (b->s->iop) {
+        s5l8930_iop_nand_info(b->s->iop, &id, &mask, &page_bytes);
+    }
+    if (b->wdata_len >= page_bytes && page_bytes && !(b->fmi[FMI_STATUS / 4] & FMI_ST_DONE)) {
+        b->fmi[FMI_STATUS / 4] |= FMI_ST_DONE;
+        h2fmi_update_irq(b);
+        if (b->s->cdma && b->wdata_len <= page_bytes) {   /* the chains that filled the FIFOs have been taken */
+            s5l8930_cdma_sink_done(b->s->cdma, S5L8930_H2FMI_BASE + b->n * H2FMI_WINDOW, H2FMI_WINDOW);
+        }
     }
 }
 
@@ -295,11 +396,15 @@ static uint64_t h2fmi_read(void *opaque, hwaddr off, unsigned size)
         switch (off) {
         case FMI_DATA:
             return fifo_pop(b->data, &b->data_len, size);
-        case FMI_META:
-            return fifo_pop(b->meta, &b->meta_len, size);
+        case FMI_META: {
+            uint32_t v = fifo_pop(b->meta, &b->meta_len, size);
+            qemu_log_mask(LOG_TRACE, "h2fmi%d: meta pop %u -> 0x%x left %u\n", b->n, size, v, b->meta_len);
+            return v;
+        }
         case FMI_LEVEL:
             return b->data_len ? 0x18 : 0;
         case FMI_STATUS:
+            qemu_log_mask(LOG_TRACE, "h2fmi%d: status -> 0x%x\n", b->n, h2fmi_status(b));
             return h2fmi_status(b);
         default:
             return b->fmi[off / 4];
@@ -309,11 +414,15 @@ static uint64_t h2fmi_read(void *opaque, hwaddr off, unsigned size)
         return b->fmc[(off - FMC_BASE) / 4];
     }
     if (off == ECC_BASE + ECC_SECTOR) {
-        return h2fmi_ecc_sector(b);
+        uint32_t v = h2fmi_ecc_sector(b);
+        qemu_log_mask(LOG_TRACE, "h2fmi%d: ecc sector -> 0x%x (n %u reads %u)\n", b->n, v, b->ecc_n, b->ecc_reads);
+        return v;
     }
     if (off == ECC_BASE + ECC_SUMMARY) {
+        qemu_log_mask(LOG_TRACE, "h2fmi%d: ecc summary -> 0x%x\n", b->n, b->ecc_summary);
         return b->ecc_summary;
     }
+    qemu_log_mask(LOG_TRACE, "h2fmi%d: read other 0x%" HWADDR_PRIx "\n", b->n, off);
     qemu_log_mask(LOG_UNIMP, "s5l8930.h2fmi%d: read 0x%" HWADDR_PRIx "\n",
                   b->n, off);
     return 0;
@@ -327,10 +436,21 @@ static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
     if (off < sizeof(b->fmi)) {
         switch (off) {
         case FMI_CONTROL:
-            if ((v & 3) == 3) {
-                /* 0x82 announces the next page of a pipelined read
-                 * (0x5ff0422e); anything else before 3 starts a new one. */
-                if (b->fmi[off / 4] != 0x82) {
+            qemu_log_mask(LOG_TRACE, "h2fmi%d: control 0x%x (was 0x%x) fmt 0x%x\n", b->n, v, b->fmi[off / 4], b->fmi[FMI_FORMAT / 4]);
+            /*
+             * Bits 0-1 = 3 start a transfer; bit 7 marks the next page of a
+             * pipelined read. iBoot writes 0x82 then 3 (0x5ff0422e); the IOP
+             * firmware writes 0x83 then 3 for the same page, so a bare 3 right
+             * after 0x83 is the same transfer, not a second one.
+             */
+            if ((v & 7) == 5) {
+                /* Write transfer: done once the FIFOs hold the page. */
+                b->fmi[off / 4] = v;
+                h2fmi_write_check(b);
+                return;
+            }
+            if ((v & 3) == 3 && !(v == 3 && b->fmi[off / 4] == 0x83)) {
+                if (!(b->fmi[off / 4] & 0x80)) {
                     b->ecc_n = b->ecc_reads = 0;
                 }
                 h2fmi_transfer(b);
@@ -341,7 +461,20 @@ static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
             b->fmi[off / 4] &= ~v;
             break;
         case FMI_DATA:
+            if (b->wdata_len + size <= sizeof(b->wdata)) {
+                for (unsigned i = 0; i < size; i++) {
+                    b->wdata[b->wdata_len++] = v >> (8 * i);
+                }
+            }
+            h2fmi_write_check(b);
+            return;
         case FMI_META:
+            if (b->wmeta_len + size <= sizeof(b->wmeta)) {
+                for (unsigned i = 0; i < size; i++) {
+                    b->wmeta[b->wmeta_len++] = v >> (8 * i);
+                }
+            }
+            return;
         case FMI_LEVEL:
             return;
         default:
@@ -361,6 +494,7 @@ static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
             }
             return;
         case FMC_EVENTS:
+            qemu_log_mask(LOG_TRACE, "h2fmi%d: events ack 0x%x (had 0x%x)\n", b->n, v, b->fmc[r / 4]);
             b->fmc[r / 4] &= ~v;
             break;
         default:
@@ -374,7 +508,10 @@ static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
         b->ecc_summary &= ~v;
         return;
     }
-    /* ECC configuration (+0x08) and the rest: nothing to model. */
+    if (off == ECC_BASE + 0x08 || off == ECC_BASE + ECC_SECTOR || off == ECC_BASE + 0x14) {
+        return;         /* ECC configuration, per-sector ack, unknown: nothing to model */
+    }
+    /* the rest: nothing to model. */
     qemu_log_mask(LOG_UNIMP, "s5l8930.h2fmi%d: write 0x%" HWADDR_PRIx
                   " = 0x%x\n", b->n, off, v);
 }
@@ -388,12 +525,16 @@ static const MemoryRegionOps h2fmi_ops = {
 };
 
 /* How many bytes a CDMA channel may take from a FIFO window right now. */
-static uint32_t h2fmi_fifo_avail(void *opaque, hwaddr addr)
+static uint32_t h2fmi_fifo_avail(void *opaque, hwaddr addr, bool to_device)
 {
     S5L8930H2FMIState *s = opaque;
     H2FMIBus *b = &s->bus[(addr - S5L8930_H2FMI_BASE) / H2FMI_WINDOW % H2FMI_BUSES];
     hwaddr reg = (addr - S5L8930_H2FMI_BASE) % H2FMI_WINDOW;
 
+    if (to_device) {    /* room for a write */
+        return reg == FMI_DATA ? sizeof(b->wdata) - b->wdata_len
+             : reg == FMI_META ? sizeof(b->wmeta) - b->wmeta_len : ~0u;
+    }
     return reg == FMI_DATA ? b->data_len : reg == FMI_META ? b->meta_len : ~0u;
 }
 
@@ -434,6 +575,9 @@ static void s5l8930_h2fmi_init(Object *obj)
         b->n = i;
         memory_region_init_io(&b->iomem, obj, &h2fmi_ops, b, name,
                               H2FMI_WINDOW);
+        /* A transfer kicks the CDMA, which drains the FIFO windows from inside
+         * this region's write handler; QEMU's guard would drop those reads. */
+        b->iomem.disable_reentrancy_guard = true;
         sysbus_init_mmio(SYS_BUS_DEVICE(obj), &b->iomem);
         sysbus_init_irq(SYS_BUS_DEVICE(obj), &b->irq);
     }
