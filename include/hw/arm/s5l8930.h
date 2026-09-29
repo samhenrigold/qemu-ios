@@ -73,6 +73,11 @@
  * ones. H-class instrument for the HLE (docs/fidelity-ledger K48 #33): goes
  * away with the IOP core, whose bus does the same mapping.
  */
+/* hw/arm/s5l8930_iop_core.c: the IOP as a second core running the uploaded firmware. */
+qemu_irq s5l8930_iop_core_irq(DeviceState *dev, int irq);
+void s5l8930_iop_core_run(DeviceState *dev, uint32_t fw_base, uint32_t fw_size);
+void s5l8930_iop_core_stop(DeviceState *dev);
+
 static inline hwaddr s5l8930_iop_pa(hwaddr a)
 {
     return (a & 0xf0000000) == 0xc0000000 ? a - 0xc0000000 + S5L8930_DRAM_BASE : a;
@@ -135,6 +140,9 @@ static inline hwaddr s5l8930_iop_pa(hwaddr a)
  * (data then spare, *stride bytes) into buf; false = blank or no store. */
 bool s5l8930_iop_nand_read(DeviceState *dev, int bus, uint32_t ce,
                            uint32_t page, uint8_t *buf, uint32_t *stride);
+uint32_t s5l8930_iop_nand_program(DeviceState *dev, int bus, uint32_t ce, uint32_t page,
+                                  const uint8_t *data, uint32_t len, const uint8_t *meta);
+uint32_t s5l8930_iop_nand_erase(DeviceState *dev, int bus, uint32_t ce, uint32_t page);
 void s5l8930_iop_nand_info(DeviceState *dev, uint32_t *id, uint8_t *ce_mask,
                            uint32_t *page_bytes);
 
@@ -222,9 +230,10 @@ void ipod_scaler_set_iommu(DeviceState *scaler,
                            void *opaque, unsigned sid);
 
 void s5l8930_cdma_set_source(DeviceState *dev, hwaddr base, hwaddr size,
-                             uint32_t (*avail)(void *opaque, hwaddr addr),
+                             uint32_t (*avail)(void *opaque, hwaddr addr, bool to_device),
                              void *opaque);
 void s5l8930_cdma_kick(DeviceState *dev);
+void s5l8930_cdma_sink_done(DeviceState *dev, uint32_t fifo_base, uint32_t size);
 
 /*
  * I2S controller (hw/arm/s5l8930_i2s.c). One MMIO region (0x1000) at
