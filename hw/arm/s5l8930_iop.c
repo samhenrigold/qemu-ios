@@ -937,6 +937,23 @@ void s5l8930_iop_trace_rings(DeviceState *dev)
             pending0[i] = back ? op : 0;
         }
     }
+    {   /* ring 1, IOP -> AP messages: each item the firmware hands the AP, once */
+        static uint32_t last1[IOP_MAX_RING];
+        hwaddr ring = iop_ldl(cfg + FW_CFG_RING(s, 1));
+        uint32_t n = iop_ldl(cfg + FW_CFG_COUNT(s, 1)), i;
+
+        for (i = 0; ring && i < MIN(n, IOP_MAX_RING); i++) {
+            uint32_t w0 = iop_ldl(ring + i * RING_ENTRY(s));
+
+            if (w0 != last1[i]) {
+                hwaddr e = ring + i * RING_ENTRY(s);   /* messages are inline in the entry */
+                fprintf(stderr, "%.3f ring msg[%u]: w0 0x%08x %08x %08x %08x %08x %08x %08x %08x\n",
+                        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9, i, w0, iop_ldl(e + 4), iop_ldl(e + 8),
+                        iop_ldl(e + 12), iop_ldl(e + 16), iop_ldl(e + 20), iop_ldl(e + 24), iop_ldl(e + 28));
+                last1[i] = w0;
+            }
+        }
+    }
     for (h = RING_FMI0; h <= RING_FMI1; h++) {
         hwaddr ring = iop_ldl(cfg + FW_CFG_RING(s, h));
         uint32_t n = iop_ldl(cfg + FW_CFG_COUNT(s, h)), i;
