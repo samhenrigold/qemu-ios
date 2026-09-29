@@ -242,6 +242,7 @@ typedef struct {
 typedef struct {
     uint32_t base, stride, width, height, format, uv, uvstride;
     GLenum target;
+    bool window;    /* GLES_SURFACE_WINDOW_ORDER: memory row 0 is the texture's last row */
     /* Rendered into by the host since the guest's copy was last written: the
      * host texture is the newer one, and the guest memory is written at the
      * frame's flush, not while the frame is half drawn (gles_sync_surface). */
@@ -4258,7 +4259,8 @@ static unsigned gles_surface_bpp(uint32_t fmt)
 
 static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
 {
-    unsigned target = a[0], w = a[3], h = a[4], fmt = a[5];
+    bool window = a[0] & GLES_SURFACE_WINDOW_ORDER;
+    unsigned target = a[0] & ~GLES_SURFACE_WINDOW_ORDER, w = a[3], h = a[4], fmt = a[5];
     bool nv12 = fmt == 0x34323076 || fmt == 0x34323066;
     unsigned bpp = gles_surface_bpp(fmt);
     GLint texture = 0, unpack;
@@ -4337,6 +4339,19 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
         }
         return -1;
     }
+    if (window && nv12) {
+        gles_refuse("surface:window:%s", gles_fourcc(fmt, fourcc));
+        return -1;
+    }
+    if (window) {                               /* rows reversed: the texture's first is memory's last */
+        g_autofree uint8_t *row = g_malloc((size_t)w * bpp);
+        for (unsigned y = 0; y < h / 2; y++) {
+            uint8_t *top = pixels + (size_t)y * w * bpp, *bottom = pixels + (size_t)(h - 1 - y) * w * bpp;
+            memcpy(row, top, (size_t)w * bpp);
+            memcpy(top, bottom, (size_t)w * bpp);
+            memcpy(bottom, row, (size_t)w * bpp);
+        }
+    }
     switch (fmt) {
     case GLES_SURFACE_RGB555:
         /* Expand backwards in place. L555 has no alpha, including when bit 15 is zero. */
@@ -4387,7 +4402,7 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a)
     }
     if (!gh.surfaces) gh.surfaces = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
     GLESSurface *surface = g_new(GLESSurface, 1);
-    *surface = (GLESSurface){ a[1], a[2], w, h, fmt, a[6], a[7], target, false };
+    *surface = (GLESSurface){ a[1], a[2], w, h, fmt, a[6], a[7], target, window, false };
     g_hash_table_replace(gh.surfaces, GUINT_TO_POINTER(texture), surface);
     return 0;
 }
@@ -4486,8 +4501,9 @@ static int gles_surface_writeback(CPUState *cpu, GLuint texture, GLESSurface *s)
                                    texture, s->base, s->width, s->height, sum);
     }
     for (unsigned row = 0; row < s->height; row++) {
+        unsigned from = s->window ? s->height - 1 - row : row;
         if (gles_guest_rw(cpu, s->base + row * s->stride,
-                pixels + (size_t)row * s->width * bpp, s->width * bpp, 1)) return -1;
+                pixels + (size_t)from * s->width * bpp, s->width * bpp, 1)) return -1;
     }
     s->dirty = false;
     return 0;
@@ -4550,7 +4566,7 @@ static bool gles_refresh_surfaces_1(CPUState *cpu)
             if (!name || name == attachment) continue;
             GLESSurface *surface = g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(name));
             if (!surface || surface->dirty) continue;
-            uint32_t a[] = { targets[t], surface->base, surface->stride,
+            uint32_t a[] = { targets[t] | (surface->window ? GLES_SURFACE_WINDOW_ORDER : 0), surface->base, surface->stride,
                 surface->width, surface->height, surface->format, surface->uv, surface->uvstride };
             if (gles_bind_surface(cpu, a)) { ok = false; break; }
         }
@@ -7009,6 +7025,14 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                 if (g_hash_table_remove(gh.fbo_drawable,
                                         GUINT_TO_POINTER(ids[i]))) {
                     ids[i] = 0;
+                }
+                /* GL: deleting the bound framebuffer binds 0. Left pointing at the
+                 * dead name, the next bind's surface sync asked the default
+                 * framebuffer for COLOR_ATTACHMENT0 (INVALID_ENUM; 2.x CA's
+                 * eglDestroySurface of the current pixmap). */
+                if (ids[i] && ids[i] == gh.bound_framebuffer) {
+                    gh.bound_framebuffer = 0;
+                    gh.fb_dirty = true;
                 }
             }
             glDeleteFramebuffersEXT(n, ids);

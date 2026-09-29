@@ -21,7 +21,8 @@ bake() adds the guest side, all of it located at build or run time (no offsets):
                                  defaults, the .lt-guest-tools markers, and the MBXGLEngine shim
                                  contrib/it-gles/MBXGLEngine, one binary for every firmware: it reads the
                                  firmware's __GLIFunctionDispatchRec layout out of OpenGLES at load (2.x has no
-                                 shared cache and no shim: the stock engine and software CoreAnimation). 4.x caches
+                                 engine bundle: the package's OpenGLES hook, the same core under the firmware's
+                                 own export names, replaces the framework binary; gles2x_front_end). 4.x caches
                                  MBXGLEngine, so dyld's enable-dylibs-to-override-cache switch is created too
                                  (ipad1_rootfs.gli_uncache)
   contrib/appsync/patch-appsync-dylib.sh  MISValidateSignature -> success in the shared cache, found by symbol;
@@ -50,6 +51,7 @@ from ipad1_kboot import synth_identity, udid
 CACHE = os.path.expanduser("~/Developer/qemu-ios-files/ipod-ipsw/cache")
 KC_PREFIX = b"/System/Library/Caches/com.apple.kernelcaches/"
 MBX = "System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine"
+OPENGLES = "System/Library/Frameworks/OpenGLES.framework/OpenGLES"
 DYLD_CACHE = "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv6"
 WEB_PROXY_PAC = "usr/local/share/ltm/proxy.pac"   # ipad1_rootfs.PAC_PATH
 GUEST_PACKAGE = os.path.join(ROOT, "build/guest-package/armv6.itpack")
@@ -94,6 +96,23 @@ def kernelcache_path(iboot):
 def darwin_banner(kernel):
     m = re.search(rb"Darwin Kernel Version [^\0]+", kernel)
     return m[0].decode() if m else None
+
+
+def gles2x_front_end(mnt):
+    """1.x/2.x (no engine bundle): (True, line) if the stock OpenGLES exports exactly the names the GL
+    front end does (contrib/it-gles/opengles-2x.exports), so the guest package's hook may replace it;
+    else (False, why) and the framework stays stock."""
+    sys.path.insert(0, os.path.join(ROOT, "contrib/it-gles"))
+    import gles2x_exports
+    listfile = os.path.join(ROOT, "contrib/it-gles/opengles-2x.exports")
+    stock = os.path.join(mnt, OPENGLES)
+    if not os.path.exists(stock):
+        return False, "no %s" % OPENGLES
+    want, got = set(gles2x_exports.read_list(listfile)), set(gles2x_exports.scan(stock))
+    if want != got:
+        return False, "stock OpenGLES exports differ from opengles-2x.exports (missing %s, extra %s): stock kept" % (
+            sorted(want - got)[:4], sorted(got - want)[:4])
+    return True, "GL front end replaces OpenGLES (%d exports, the firmware's own)" % len(got)
 
 
 def gli_engine(cache_path):
@@ -241,7 +260,7 @@ def build(ctx):
     tools = {n: sha(os.path.join(ROOT, n)) for n in ("contrib/it-agent/it_agent", "contrib/it-agent/it_typein.dylib",
                                                      "contrib/it-gles/sblaunch", "contrib/it-instprogress/sbdlicon")
              + tuple(PREFS)} if cfg["guest_tools_supported"] else {}
-    if baked.get("gles"):
+    if baked.get("gles_engine") == "MBXGLEngine":     # the OpenGLES hook is the itpack's (lock: guest_package)
         tools["contrib/it-gles/MBXGLEngine"] = sha(os.path.join(ROOT, "contrib/it-gles/MBXGLEngine"))
     if opt.get("appsync"):
         tools["build/appsync/libappsync.dylib"] = sha(os.path.join(ROOT, "build/appsync/libappsync.dylib"))
@@ -287,10 +306,17 @@ def bake(mnt, config):
     if gli and not os.path.exists(engine):
         raise SystemExit("%s missing (run contrib/it-gles/build.sh)" % engine)
     report["gles"] = "shim MBXGLEngine (%s)" % info if gli else "stock engine, software CA: " + info
-    report["gles_shim"] = bool(gli)
+    # 1.x/2.x: no engine to replace; the package's OpenGLES hook (the same core) goes in instead
+    front = False
+    if not gli and opt.get("gles_shim", True) and not os.path.exists(os.path.join(mnt, DYLD_CACHE)):
+        front, why = gles2x_front_end(mnt)
+        report["gles"] = why + ("; CA composites through it (CA_ENABLE_OGL=1)" if front else "")
+    report["gles_shim"] = bool(gli or front)
+    report["gles_engine"] = "MBXGLEngine" if gli else "OpenGLES" if front else None
     supported = cfg["guest_tools_supported"]
     report["guest_tools"] = "installed" if supported else "omitted: current helpers require the iOS 3.1+ dyld"
-    env = dict(os.environ, MNT=mnt, IT_GLES_SHIM="1" if gli else "0", IT_GLES_ENGINE=engine,
+    env = dict(os.environ, MNT=mnt, IT_GLES_SHIM="1" if gli else "0", IT_CA_OGL="1" if gli or front else "0",
+               IT_GLES_ENGINE=engine,
                IT_GUEST_TOOLS="1" if supported else "0")
     subprocess.run(["/bin/sh", os.path.join(HERE, "bake-guest-tools.sh")], env=env, check=True)
     if gli:
@@ -321,9 +347,12 @@ def bake(mnt, config):
         report["activation"] = "activation hook applied and daemon re-signed"
     sys.path.insert(0, os.path.join(ROOT, "contrib/guest-package"))
     import mkpkg
-    # the loader (it_boot) is linked for the 3.1+ dyld like the other helpers: none without the shared cache
-    # (FirmwareKit's N72Board bakes the same)
-    seeded, report["guest_package"] = mkpkg.seed(mnt, cfg["guest_package"], gli) if supported else ([], None)
+    # the loader (it_boot) is linked for the 3.1+ dyld like the other helpers; on 2.x the package carries
+    # only the OpenGLES front-end hook (FirmwareKit's N72Board bakes the same)
+    seeded, report["guest_package"] = mkpkg.seed(mnt, cfg["guest_package"], gli or front) if (supported or front) else ([], None)
+    if front and "/" + OPENGLES not in report["guest_package"]["hooks"]:
+        # CA_ENABLE_OGL=1 over the stock driver drives the unemulated MBX: fail rather than wedge
+        raise SystemExit("%s has no OpenGLES hook for this build; rebuild contrib/guest-package" % cfg["guest_package"])
     owners += [("0 0", p) for p in seeded]
     owners += [(o, p) for o, p in GUEST_TOOL_OWNERS if os.path.lexists(os.path.join(mnt, p))]
     with open(cfg["owners"], "w") as f:
