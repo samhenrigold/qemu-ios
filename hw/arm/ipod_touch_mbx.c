@@ -203,12 +203,24 @@ static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
                 val = MBX_MMU_ACK;
             }
             break;
+        case MBX_SUBMIT_REG:
+            /* The mask reads back: 1.x's AppleMBX re-arms it read-modify-write (|= bits | 0x8000). */
+            val = s->int_mask;
+            break;
         default:
             val = 0;
             break;
     }
     MBX_TRACE("mbx1 rd  [0x%06x] -> 0x%08x", (uint32_t)addr, val);
     return val;
+}
+
+/* The line follows the unmasked status (the software interrupt, the completion shim). */
+static void ipod_touch_mbx_update_irq(IPodTouchMBXState *s)
+{
+    if (s->irq) {
+        qemu_set_irq(s->irq, (s->status & s->int_mask) != 0);
+    }
 }
 
 static void ipod_touch_mbx1_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
@@ -222,28 +234,32 @@ static void ipod_touch_mbx1_write(void *opaque, hwaddr addr, uint64_t val, unsig
 	    s->addr = val;
 	    s->mmu_written = true;
 	    break;
+	case MBX_STATUS_REG:
+	    /*
+	     * A write sets status bits: the software interrupt. 1.x's AppleMBX raises bit 0 this way
+	     * (3A101a c03aaa18) so that its own ISR runs the command queue, which is what releases a
+	     * display swap LayerKit tied to the GPU (mbx2DSwapNotification). Nothing answered it, and
+	     * under LK_ENABLE_OGL=1 the fourth swap waited forever.
+	     */
+	    s->status |= (uint32_t)val;
+	    ipod_touch_mbx_update_irq(s);
+	    break;
 	case MBX_SUBMIT_REG:
+	    s->int_mask = val;
 	    if (s->complete_shim) {
-	        s->int_mask = val;
 	        if (val) {
 	            timer_mod(s->complete_timer,
 	                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MBX_COMPLETE_PERIOD_NS);
 	        } else {
 	            timer_del(s->complete_timer);
 	            s->status = 0;
-	            if (s->irq) {
-	                qemu_irq_lower(s->irq);
-	            }
 	        }
 	    }
+	    ipod_touch_mbx_update_irq(s);
 	    break;
 	case MBX_INTCLR_REG:
-	    if (s->complete_shim) {
-	        s->status &= ~(uint32_t)val;
-	        if (!s->status && s->irq) {
-	            qemu_irq_lower(s->irq);
-	        }
-	    }
+	    s->status &= ~(uint32_t)val;
+	    ipod_touch_mbx_update_irq(s);
 	    break;
     }
 }

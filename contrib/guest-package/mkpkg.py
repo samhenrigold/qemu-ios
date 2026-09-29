@@ -60,6 +60,11 @@ IPAD_HOOKS = [("build/ipad1-guest/it_msmquiet.dylib", "/usr/local/lib/it_msmquie
 # builds: exact ids or "<major>*" for every build of that iOS major (2.x = 5*, 3.x = 7*, 4.x = 8*), so a new point
 # release needs no row here (LightTouchMac docs/matrix.md).
 FAMILIES = {
+    # 1.x builds are 3A*/3B* (1.1-1.1.2) and 4A*/4B* (1.1.3-1.1.5): no agent or helpers yet, the GL front end
+    # only, and no loader: the legacy-linked it_boot dies with a bus error under 1.x launchd (3A101a), so the
+    # seed's hook is what the device gets until it runs there (LightTouchMac docs/smoke.md)
+    "n45-ios1": {"arch": "armv6", "boards": ["n45ap"], "builds": ["3*", "4*"], "loader": False,
+                 "hooks": [("contrib/it-gles/OpenGLES-1x", OPENGLES, True)]},
     "n72-ios2": {"arch": "armv6", "boards": ["n72ap"], "builds": ["5*"],
                  "hooks": [("contrib/it-gles/OpenGLES-2x", OPENGLES, True)]},
     "n72-ios3": {"arch": "armv6", "boards": ["n72ap"], "builds": ["7*"], "bin": IPOD_BIN,
@@ -75,8 +80,8 @@ FAMILIES = {
                  "hooks": [("contrib/ipad1-gles/GLEngine", GLENGINE, True),
                            ("contrib/ipad1-gles/GLRendererFloatQEMU.bundle/GLRendererFloatQEMU", GLD, True)] + IPAD_HOOKS},
 }
-# 2.x dyld refuses LC_DYLD_INFO_ONLY; everything the loader runs on it must be legacy-linked
-LEGACY_BUILDS = ("5*",)
+# 1.x/2.x dyld refuses LC_DYLD_INFO_ONLY; everything the loader runs on it must be legacy-linked
+LEGACY_BUILDS = ("3*", "4*", "5*")
 
 
 def build_matches(builds, build):
@@ -174,6 +179,8 @@ def assemble(src, out, family, spec, serial, version):
                 "requires": {"boards": spec["boards"], "builds": spec["builds"],
                              "link": "legacy" if legacy else "modern", "host": HOST},
                 "provides": provides, "files": files, "jobs": jobs, "hooks": hooks}
+    if not spec.get("loader", True):
+        manifest["loader"] = False      # seed() bakes no it_boot for this family
     with open(os.path.join(pkg, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=1)
         f.write("\n")
@@ -310,8 +317,9 @@ def seed(mnt, itpack, gles=True):
         os.chmod(os.path.join(mnt, rel), mode)
         made.extend(missing + [rel])
 
-    put(LOADER[0], entries["loader/it_boot"], 0o755)
-    put(LOADER[1], entries["loader/com.qemu.it-boot.plist"], 0o644)
+    if m.get("loader", True):
+        put(LOADER[0], entries["loader/it_boot"], 0o755)
+        put(LOADER[1], entries["loader/com.qemu.it-boot.plist"], 0o644)
     pkg = "%s/pkgs/%d" % (SEED_ROOT, m["serial"])
     for f in m["files"]:
         put(pkg + "/" + f["name"], entries[family + "/" + f["name"]], int(f["mode"], 8))

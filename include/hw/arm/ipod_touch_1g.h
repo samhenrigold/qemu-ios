@@ -21,6 +21,7 @@
 #include "hw/arm/ipod_touch_multitouch.h"
 #include "hw/arm/s5l8900_fmc.h"
 #include "hw/arm/s5l8900_adm.h"
+#include "hw/arm/guest-package.h"
 #include "cpu.h"
 
 #define TYPE_IPOD_TOUCH_1G "iPod-Touch-1G"
@@ -32,6 +33,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouch1GMachineState, IPOD_TOUCH_1G_MACHINE)
 #define N45_SPI0_IRQ        0x9
 #define N45_SPI1_IRQ        0xA
 #define N45_SPI2_IRQ        0xB
+#define N45_MBX_IRQ         0xC
 #define N45_LCD_IRQ         0xD
 #define N45_USB_OTG_IRQ     0x13
 #define N45_DMAC0_IRQ       0x10
@@ -139,6 +141,10 @@ typedef struct IPodTouch1GMachineState {
     bool usb_wrangler_quirk_done;
 
     bool kbd_cmd, kbd_shift;
+
+    /* guest services: the GL bridge (QC_GLES*) and guest-package delivery, on the QEMU_CALL cp15 register */
+    GuestPackage pkg;
+    bool gles_debug;
 } IPodTouch1GMachineState;
 
 #endif

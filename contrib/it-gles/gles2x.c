@@ -39,7 +39,16 @@
  *
  * Compiled as Objective-C (the EAGL classes must be static class data: apps bind _OBJC_CLASS_$_EAGLContext
  * at load). Build with build-gles2x.sh.
+ *
+ * 1.x (GLES2X_EAGL=0, build-gles2x.sh 1x -> OpenGLES-1x): the same file under 1.x's 186 names
+ * (opengles-1x.exports). 1.x OpenGLES has no EAGL and its Objective-C is the old ABI (CoreFoundation
+ * exports .objc_class_name_NSObject, libobjc has no objc_msgSendSuper2), so the EAGL half is compiled
+ * out and this is plain C over libSystem. LayerKit's GLES renderer (LK_ENABLE_OGL=1) is the client:
+ * 9 egl calls and 45 gl*, the same pixmap path as 2.x QuartzCore.
  */
+#ifndef GLES2X_EAGL
+#define GLES2X_EAGL 1
+#endif
 #include "mbxshim.c"
 
 #include <pthread.h>
@@ -178,6 +187,17 @@ void glFinishTextureAPPLE(unsigned target)
 {
     GuestGC *gc = gles2x_gc();
     if (gc) GLESFinishTexture(gc, target);
+}
+
+/* 1.x only: an ARB vertex-program entry point with no ES 1.1 row (nothing on the device imports it;
+ * LayerKit does not). A counted refusal, so a caller shows up in gles-rejects. */
+void glVertexAttribPointerARB(unsigned index, int size, unsigned type, unsigned char norm, int stride,
+                              const void *ptr);
+void glVertexAttribPointerARB(unsigned index, int size, unsigned type, unsigned char norm, int stride,
+                              const void *ptr)
+{
+    (void)index; (void)size; (void)type; (void)norm; (void)stride; (void)ptr;
+    refused("gl:", "VertexAttribPointerARB", ~0u);
 }
 
 /* ------------------------------------------------------------------------ egl* --- */
@@ -618,6 +638,16 @@ EGLBoolean eglSwapInterval(void *dpy, EGLint interval) { (void)interval; return 
 void *eglGetProcAddress(const char *name);
 void *eglGetProcAddress(const char *name) { return name ? dlsym(RTLD_DEFAULT, name) : 0; }
 
+/* 1.x only: (dpy, surface, ...) -> EGLBoolean, the egl form of 2.x's -swapNotification:forTransaction:
+ * onLayer:, which only prints that it is unimplemented. Nothing on 1.x imports it. */
+EGLBoolean eglSwapNotification(void *dpy, void *surface, unsigned a, unsigned b);
+EGLBoolean eglSwapNotification(void *dpy, void *surface, unsigned a, unsigned b)
+{
+    (void)a; (void)b;
+    if (dpy != GLES2X_DISPLAY) return egl_fail(EGL_BAD_DISPLAY);
+    return egl_surf(surface) ? 1 : egl_fail(EGL_BAD_SURFACE);
+}
+
 /* ------------------------------------------------------------------------- EAGL --- */
 
 void EAGLGetVersion(unsigned *major, unsigned *minor);
@@ -627,6 +657,7 @@ void EAGLGetVersion(unsigned *major, unsigned *minor) { *major = 1; *minor = 0; 
 void opengl_error_break(void);
 void opengl_error_break(void) {}
 
+#if GLES2X_EAGL
 typedef signed char BOOL;
 typedef unsigned NSUInteger;
 @class NSString;
@@ -787,3 +818,4 @@ __attribute__((visibility("default")))
     (void)fb; (void)transaction; (void)layer;
 }
 @end
+#endif /* GLES2X_EAGL */

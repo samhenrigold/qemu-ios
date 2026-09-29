@@ -538,7 +538,7 @@ engine through the agent's 256 KB request, true at bd8d6b1363 too) and a fresh 8
 Not done: an App Store 2.x game through EAGL (waits on 2.x app installs); planar-YUV video layers (the LCD
 plane path, unchanged); 2.2.1 (does not boot yet).
 
-### 1.x (4B1, the 1G): what LK_ENABLE_OGL would need
+### 1.x (the 1G): LayerKit through the GL front end (2026-09-29)
 
 Read from the 4B1 root filesystem (iPod1,1 1.1.5; LayerKit and OpenGLES only, nothing kept). LayerKit's
 GLES renderer (`LKRenderGLESRenderDisplay`, `LKRenderOGL.c`) imports 54 names from OpenGLES:
@@ -559,12 +559,62 @@ check). All 54 are implemented by the front end (egl in gles2x.c, gl by gles-nam
 ("OpenGLES bad display / can't init / can't make config / can't make context") are the same egl sequence
 as 2.x's pixmap renderer.
 
-What a 1.x build of the front end needs (not done):
-- its own export list: 1.x OpenGLES exports 186 names, not 2.x's 218. Only in 1.x: `eglSwapNotification`
-  and `glVertexAttribPointerARB` (no gles-names.h row: a hand refusal or a row); 2.x's EAGL classes and
-  constants and the OES framebuffer/mapbuffer/palette names are absent.
-- no EAGL: 1.x's Objective-C is the old ABI (CoreFoundation exports `.objc_class_name_NSObject`, libobjc
-  has no `objc_msgSendSuper2`), so the ObjC half of gles2x.c must be compiled out, not linked.
-- the same r9 rule, lock flags, window order and frame end as 2.x (CoreSurface, MBX, the same IMG driver
-  family); whether LayerKit also brackets frames with `eglMakeCurrent(none)` is to be checked on the
-  first 1.x GL boot.
+3A101a (1.1, devos50's public n45ap set, the build the 1G boots) has the same LayerKit imports and the same
+186 OpenGLES exports. `OpenGLES-1x` is `contrib/it-gles/gles2x.c` built by `build-gles2x.sh 1x`: the same
+core under 1.x's names (`opengles-1x.exports`), `GLES2X_EAGL=0` (1.x's Objective-C is the old ABI:
+CoreFoundation exports `.objc_class_name_NSObject`, libobjc has no `objc_msgSendSuper2`, so the EAGL half is
+compiled out and the binary is plain C over libSystem, no ldid), `eglSwapNotification` as the egl form of
+2.x's no-op `-swapNotification:` and `glVertexAttribPointerARB` as a counted refusal (nothing on the device
+imports either). The guest package's `n45-ios1` family carries it as the OpenGLES hook, and
+`imgtools/ipod1g_device.py prepare` bakes a device from the set: the hook when the stock exports match the
+list, and SpringBoard's job gets `LK_ENABLE_OGL=1 LK_AUTO_ENABLE_OGL=0 LK_ENABLE_MBX2D=0`. LayerKit then
+composites the home screen, app zooms and scrolls through the host: its pixmap renderer, as 2.x's CA, and it
+ends every frame the same way (`gles_make_buffer_current(0)` is `eglMakeCurrent(dpy, 0, 0, 0)`, after
+`glFlush`), so the 2.x write-back at the frame end serves it unchanged.
+
+What it took, each found on the device:
+
+- **The 1G had no guest services.** `ipod_touch_1g.c` now has the QEMU_CALL cp15 register (the GL bridge,
+  the ping, guest-package delivery; no agent yet) and the gles-rejects/-contexts/-debug properties.
+- **CoreSurface is a public framework on 1.x**, and the core's `dlopen` of the private path succeeded anyway
+  (dyld's framework fallback path has `/System/Library/Frameworks`), so 1.x got 2.x's lock flag 2: a NULL
+  dereference in 3A101a's IOCoreSurface (kernel panic at SpringBoard's first `glTexImageCoreSurfaceAPPLE`).
+  The public path goes first now, and 1.x locks with 3, as its own driver does for textures and pixmaps
+  (1 leaves a LayerKit image, `CoreSurfaceBufferWrapClientImage`, unmapped).
+- **The MBX was an id stub (S).** It read 0x12c without the idle bit 0x40, and the first swap AppleMBX was
+  asked to order (LayerKit ties every GL frame's swap to the GPU with `mbx2DSwapNotification`) spun on it
+  forever. The 1G now has the 2G's `ipodtouch.mbx` at 0x3B000000 on the device tree's interrupt 0xC, and the
+  model gained two registers 1.x's driver uses: the mask at 0x130 reads back (the driver re-arms it
+  read-modify-write), and a write to 0x12c sets status bits, the software interrupt its ISR runs the command
+  queue from (3A101a c03aaa18). Before that, the fourth swap waited forever.
+- **The LCD lost GL frames.** The bridge's surface tracking (surfaces by their pages) clears QEMU's VGA dirty
+  bits of every surface page it checks, its own write-backs included, and the iPod LCD converts only dirty
+  lines: the panel kept showing the frame from before the last gesture. The bridge now keeps the newest write
+  generation per page (`gles_host_ram_gen`) and the LCD redraws when the scanout's advances. This is the 2G's
+  LCD too.
+- **No loader on 1.x.** The legacy-linked `it_boot` dies with a bus error under 1.x launchd, so the
+  `n45-ios1` family is `"loader": false` and the hook is only ever baked.
+
+Measured on 3A101a, `IT_LCD_FRAMETRACE` presents (a present writes the scanout base twice, 0 then the
+buffer; the non-zero writes are counted) in each gesture's window, three passes each, same host minutes (load
+2-5 on 16 cores). "cores" is QEMU's host CPU over the window. Settings is the app (the one with a list; 1.1's
+home screen has one page, so no page swipe).
+
+| gesture | software LayerKit (fps, max gap, cores) | GL front end (fps, max gap, cores) |
+|---|---|---|
+| Settings launch zoom | 36-43, 116-126 ms, 0.13-0.18 | 35-43, 118-148 ms, 0.10-0.14 |
+| Settings list drag and bounce | 34-36, 99-118 ms, 0.09-0.10 | 25-35, 117-283 ms, 0.08 |
+| Settings close zoom | 45-60, 19-249 ms, 0.07-0.09 | 58-60, 19-37 ms, 0.07-0.09 |
+
+As on 2.x neither path is CPU-bound: the zooms pace at the display (the close runs at the panel's 60), the
+drag at the touch steps, and the long gaps are the gesture's own (the launch's is Settings' process start);
+GL costs about a quarter less host CPU on the launch zoom and a little less on the drag, the same on the
+close. `gles-rejects` stayed empty; the home screen, the Settings list mid-drag and the home screen after the
+close are correct frames.
+
+Gates: `regress.py --device <prepared 3A101a> --checks boot,gles` PASS (the 1G leg: the same fixture as
+2.x's, lit threshold 100k for 1.1's black home screen, and the close must bring the home screen back); with
+the LCD change reverted the same leg fails (Safari never reaches the panel).
+
+Not done: apps' own GL (the App Store starts at 2.x); a 1.x build other than 3A101a (the list and the hook are
+per major, `3*`/`4*`); the loader on 1.x.
