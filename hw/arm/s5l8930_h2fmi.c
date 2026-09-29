@@ -133,6 +133,9 @@ struct S5L8930H2FMIState {
     H2FMIBus bus[H2FMI_BUSES];
 };
 
+#define HT(...) do { static int on_ = -1; if (on_ < 0) on_ = getenv("H2FMI_TRACE") != NULL; \
+                     if (on_) qemu_log(__VA_ARGS__); } while (0)
+
 /* FMI status as read: bit 8 follows the enabled FMC events. */
 static uint32_t h2fmi_status(H2FMIBus *b)
 {
@@ -256,6 +259,9 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
 static void h2fmi_go(H2FMIBus *b, uint32_t go)
 {
     uint32_t cmds = b->fmc[FMC_CMD / 4];
+
+    HT("h%d go 0x%x cmds 0x%x a0 0x%x a1 0x%x ce 0x%x dl %u ml %u\n", b->n, go, cmds, b->fmc[FMC_ADDR0 / 4],
+       b->fmc[FMC_ADDR1 / 4], b->fmc[FMC_CE / 4], b->data_len, b->meta_len);
 
     if (go & 1) {
         h2fmi_command(b, cmds & 0xff);
@@ -459,6 +465,7 @@ static uint64_t h2fmi_read(void *opaque, hwaddr off, unsigned size)
     }
     if (off == ECC_BASE + ECC_SECTOR) {
         uint32_t v = h2fmi_ecc_sector(b);
+        HT("h%d ecc -> 0x%x (n %u r %u)\n", b->n, v, b->ecc_n, b->ecc_reads);
         return v;
     }
     if (off == ECC_BASE + ECC_SUMMARY) {
@@ -477,11 +484,16 @@ static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
     if (off < sizeof(b->fmi)) {
         switch (off) {
         case FMI_CONTROL:
+            HT("h%d ctl 0x%x prev 0x%x dl %u ml %u ecc %u/%u pend %u fmt 0x%x\n", b->n, v, b->fmi[off / 4],
+               b->data_len, b->meta_len, b->ecc_n, b->ecc_reads, b->pending_n, b->fmi[FMI_FORMAT / 4]);
             /*
-             * Bits 0-1 = 3 start a transfer; bit 7 marks the next page of a
-             * pipelined read. iBoot writes 0x82 then 3 (0x5ff0422e); the IOP
-             * firmware writes 0x83 then 3 for the same page, so a bare 3 right
-             * after 0x83 is the same transfer, not a second one.
+             * A read transfer starts when a write enters read mode (bits 0-1
+             * become 3) or, in read mode, raises bit 7 (the next page of a
+             * pipelined read). Rewriting the mode is not a new page: both
+             * drivers clear bit 7 with a read-modify-write once a page's ECC
+             * is read (iBoot-817 0x5ff04066: 3 -> 3; the IOP firmware:
+             * 0x83 -> 3). iBoot pipelines with 0x82 then 3 (0x5ff0422e), the
+             * IOP firmware with 3 then 0x83.
              */
             if ((v & 7) == 5) {
                 /* Write transfer: done once the FIFOs hold the page. */
@@ -489,7 +501,8 @@ static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
                 h2fmi_write_check(b);
                 return;
             }
-            if ((v & 3) == 3 && !(v == 3 && b->fmi[off / 4] == 0x83)) {
+            uint32_t prev = b->fmi[off / 4];
+            if ((v & 3) == 3 && ((prev & 3) != 3 || ((v & 0x80) && !(prev & 0x80)))) {
                 if (!(b->fmi[off / 4] & 0x80)) {
                     b->ecc_n = b->ecc_reads = 0;
                 }
