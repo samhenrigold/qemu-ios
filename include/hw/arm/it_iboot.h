@@ -34,6 +34,17 @@ uint32_t it_iboot_find_boot_args_literal(const uint8_t *image, size_t size,
 uint32_t it_iboot_find_epoch(const uint8_t *image, size_t size);
 
 /*
+ * The same demand in an armv7 iBoot (the A4's, iBoot-817 .. 1219): miu_init
+ * does `bl epoch; cmp.w r0, rN, lsr #24` against PMGR POWER_ID, and epoch()
+ * is `bl fuse_field; cmp r0, #N; it <cc>; mov r0, #M`, the fused field
+ * floored at the build's epoch. Returns what epoch() computes for `fuse`
+ * (the CHIPID field the caller models), which is what LLB latches into
+ * POWER_ID[31:24] on hardware; 0 = not found, or found more than once.
+ */
+uint32_t it_iboot_find_miu_epoch(const uint8_t *image, size_t size,
+                                 uint32_t fuse);
+
+/*
  * Guest address of gBootArgs.commandLine, from the literal loads around
  * iBoot's `printf("gBootArgs.commandLine = [%s]\n", ...)`. Only the 2.x
  * iBoots (385.x) load the buffer from a literal; later ones pass it in a

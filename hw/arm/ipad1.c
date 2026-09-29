@@ -58,6 +58,7 @@
 #include "hw/arm/guest-pasteboard.h"
 #include "hw/arm/guest-package.h"
 #include "hw/arm/ipod-agent.h"
+#include "hw/arm/it_iboot.h"
 #include "qemu/guest-random.h"
 #include "ui/console.h"
 #include "ui/input.h"
@@ -723,6 +724,29 @@ static void ipad1_init(MachineState *machine)
 
     dev = qdev_new(TYPE_S5L8930_PMGR);
     sbd = SYS_BUS_DEVICE(dev);
+    /*
+     * POWER_ID[31:24] is the boot security epoch LLB writes: the CHIPID fuse
+     * field floored at the build's epoch, which iBoot's miu_init demands back
+     * ("Epoch Mismatch"). iboot= starts past LLB, so write what the matching
+     * LLB would (same floor as its iBoot), read off the image. bootrom= runs
+     * LLB, and kboot= no iBoot: both keep the measured byte.
+     */
+    if (s->iboot_path) {
+        g_autofree gchar *img = NULL;
+        gsize len = 0;
+        uint32_t fuse = (ldl_le_p(memory_region_get_ram_ptr(&s->chipid)) >> 9) & 0x7f;
+        uint32_t epoch = 0;
+
+        if (g_file_get_contents(s->iboot_path, &img, &len, NULL)) {
+            epoch = it_iboot_find_miu_epoch((const uint8_t *)img, len, fuse);
+        }
+        if (!epoch || epoch > 0xff) {
+            warn_report("ipad1: no security epoch found in iBoot '%s'; "
+                        "POWER_ID keeps the measured epoch 1", s->iboot_path);
+        } else {
+            qdev_prop_set_uint8(dev, "security-epoch", epoch);
+        }
+    }
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_PMGR_BASE);
     sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_TIMER0));
