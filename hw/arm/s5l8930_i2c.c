@@ -239,6 +239,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930D1815State, S5L8930_D1815)
 #define PMU_IRQ_MASK        0x0C    /* A-F; start writes FF 5F FF FF FF FF */
 #define PMU_OOC             0x12    /* bit0 = shutdown, spin after; bit1 = hibernate */
 #define PMU_ADC_CTRL        0x30    /* mux | 0x10 start (mux 3 also 0x20) */
+/*
+ * AppleD1815PMU's restart method (vtable +0x358: 8C148 807b9200, 8L1 809fa498)
+ * writes 0x0b here after IOPMUBootStage = 0, and the kernel then spins in
+ * PEHaltRestart waiting to be reset; its neighbour (+0x354) writes 0x0f / 0x0e.
+ * ponytail: only the restart value is decoded; the others are stored.
+ */
+#define PMU_SYS_CTRL        0x7B
+#define PMU_SYS_RESTART     0x0B
 #define PMU_ADC_START       (1u << 4)
 #define PMU_ADC_MUX_VBAT    4
 #define PMU_ADC_RES         0x31    /* 12-bit: (r[0] & 0xF) | r[1] << 4 */
@@ -421,6 +429,12 @@ static int d1815_send(I2CSlave *i2c, uint8_t data)
         if (data & 1) {
             qatomic_set(&d1815_shutdown_confirmed, 1);
             qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+        }
+        return 0;
+    case PMU_SYS_CTRL:
+        s->regs[reg] = data;
+        if (data == PMU_SYS_RESTART) {
+            qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
         }
         return 0;
     case PMU_ADC_CTRL:
