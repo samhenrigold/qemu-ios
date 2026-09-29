@@ -1,0 +1,124 @@
+# bc-8C148 before: [gles] lines of qemu.log; gles-rejects after the last screen:
+rejects {}
+   1 [gles] host GL up: 2.1 Metal - 91.7 / Apple M4 Max, present by readback
+   1 [gles] shim hello: protocol 1, name table abaf3ad8 (host: 1, abaf3ad8)
+   1 [gles] dispatch layout from encode: 841 slots, 841 named, 0 unknown to the name table (version 0xabaf3ad8), host protocol 1
+   1 [gles] exports cross-check: 275 agree, 0 differ, of 275 decoded
+   1 [gles] host GL up: 2.1 Metal - 91.7 / Apple M4 Max, present by readback
+   1 [gles]   offscreen draw glDrawElements mode=0x4 count=6 tex2d=0 bound_tex=1 colour=(1.00 1.00 1.00 1.00) blend=0(0x1,0x303) lighting=0 texunits=0x07
+   1 [gles]   offscreen draw glDrawElements mode=0x4 count=6 tex2d=0 bound_tex=0 colour=(1.00 1.00 1.00 1.00) blend=1(0x1,0x303) lighting=0 texunits=0x07
+   1 [gles]   offscreen draw glDrawElements mode=0x4 count=18 tex2d=0 bound_tex=1 colour=(1.00 1.00 1.00 1.00) blend=1(0x1,0x303) lighting=0 texunits=0x07
+   1 [gles]   offscreen draw glDrawElements mode=0x4 count=6 tex2d=0 bound_tex=0 colour=(1.00 1.00 1.00 1.00) blend=1(0x1,0x303) lighting=0 texunits=0x07
+   1 [gles]   offscreen draw glDrawElements mode=0x4 count=6 tex2d=0 bound_tex=1 colour=(1.00 1.00 1.00 1.00) blend=0(0x1,0x303) lighting=0 texunits=0x07
+   1 [gles]   offscreen draw glDrawElements mode=0x4 count=6 tex2d=0 bound_tex=0 colour=(1.00 1.00 1.00 1.00) blend=1(0x1,0x303) lighting=0 texunits=0x07
+   1 [gles]   offscreen draw glDrawElements mode=0x4 count=18 tex2d=0 bound_tex=1 colour=(1.00 1.00 1.00 1.00) blend=1(0x1,0x303) lighting=0 texunits=0x07
+   1 [gles]   offscreen draw glDrawElements mode=0x4 count=6 tex2d=0 bound_tex=0 colour=(1.00 1.00 1.00 1.00) blend=1(0x1,0x303) lighting=0 texunits=0x07
+   2 [gles]   offscreen draw glDrawElements mode=0x4 count=6 tex2d=0 bound_tex=1 colour=(1.00 1.00 1.00 1.00) blend=1(0x1,0x303) lighting=0 texunits=0x07
+   1 [gles]   offscreen draw glDrawElements mode=0x4 count=6 tex2d=0 bound_tex=0 colour=(1.00 1.00 1.00 1.00) blend=0(0x1,0x303) lighting=0 texunits=0x07
+   1 [gles]   offscreen draw glDrawElements mode=0x4 count=18 tex2d=0 bound_tex=1 colour=(1.00 1.00 1.00 1.00) blend=1(0x1,0x303) lighting=0 texunits=0x07
+   4 [gles]   offscreen draw glDrawElements mode=0x4 count=6 tex2d=0 bound_tex=1 colour=(1.00 1.00 1.00 1.00) blend=1(0x1,0x303) lighting=0 texunits=0x07
+   1 [gles] dispatch layout from encode: 841 slots, 841 named, 0 unknown to the name table (version 0xabaf3ad8), host protocol 1
+   1 [gles] exports cross-check: 275 agree, 0 differ, of 275 decoded
+   1 [gles] host GL up: 2.1 Metal - 91.7 / Apple M4 Max, present by readback
+   1 [gles] texture 2 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=103 NEEDS-MIPS
+   1 [gles] texture 3 level0 512x512 fmt=0x1908 minfilter=0x2702 mean=68 NEEDS-MIPS
+   1 [gles] texture 4 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=61 NEEDS-MIPS
+   1 [gles] texture 5 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=63 NEEDS-MIPS
+   1 [gles] texture 6 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=61 NEEDS-MIPS
+   1 [gles] texture 7 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=59 NEEDS-MIPS
+   1 [gles] texture 8 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=115 NEEDS-MIPS
+   1 [gles] texture 9 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=64 NEEDS-MIPS
+   1 [gles] texture 10 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=114 NEEDS-MIPS
+   1 [gles] texture 11 level0 512x512 fmt=0x1908 minfilter=0x2702 mean=20 NEEDS-MIPS
+   1 [gles] texture 12 level0 512x512 fmt=0x1908 minfilter=0x2702 mean=83 NEEDS-MIPS
+   1 [gles] texture 13 level0 512x512 fmt=0x1908 minfilter=0x2702 mean=96 NEEDS-MIPS
+   1 [gles] host GL up: 2.1 Metal - 91.7 / Apple M4 Max, present by readback
+   1 [gles] texture 1 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=64 NEEDS-MIPS
+   1 [gles] texture 3 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=132 NEEDS-MIPS
+   1 [gles] texture 4 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=96 NEEDS-MIPS
+   1 [gles] texture 5 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=126 NEEDS-MIPS
+   1 [gles] texture 6 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=170 NEEDS-MIPS
+   1 [gles] texture 7 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=47 NEEDS-MIPS
+   1 [gles] texture 8 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=46 NEEDS-MIPS
+   1 [gles] texture 9 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=33 NEEDS-MIPS
+   1 [gles] texture 10 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=29 NEEDS-MIPS
+   1 [gles] texture 11 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=32 NEEDS-MIPS
+   1 [gles] texture 12 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=50 NEEDS-MIPS
+   1 [gles] texture 13 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=25 NEEDS-MIPS
+   1 [gles] texture 14 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=45 NEEDS-MIPS
+   1 [gles] texture 15 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=43 NEEDS-MIPS
+   1 [gles] texture 16 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=33 NEEDS-MIPS
+   1 [gles] texture 17 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=35 NEEDS-MIPS
+   1 [gles] texture 18 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=27 NEEDS-MIPS
+   1 [gles] texture 19 level0 256x256 fmt=0x1908 minfilter=0x2702 mean=42 NEEDS-MIPS
+   1 [gles] texture 20 level0 1024x1024 fmt=0x1908 minfilter=0x2702 mean=122 NEEDS-MIPS
+   1 [gles] texture 21 level0 1024x1024 fmt=0x1908 minfilter=0x2702 mean=80 NEEDS-MIPS
+   1 [gles] texture 22 level0 512x512 fmt=0x1908 minfilter=0x2702 mean=20 NEEDS-MIPS
+   1 [gles] present target -> base=0x03144000 480x320 fmt=1111970369 (change #1 at frame 0)
+   1 [gles] present target -> base=0x006bb000 320x480 fmt=1111970369 (change #1 at frame 0)
+   1 [gles] SCENE CHANGE at frame 1: triangles=0 line_strips=0 triangle_strips=45 other=0
+   1 [gles] present target -> base=0x0327c000 320x480 fmt=1111970369 (change #2 at frame 1)
+   1 [gles] present target -> base=0x006bb000 320x480 fmt=1111970369 (change #3 at frame 2)
+   1 [gles] present target -> base=0x0327c000 320x480 fmt=1111970369 (change #4 at frame 3)
+   1 [gles] present target -> base=0x03312000 320x480 fmt=1111970369 (change #5 at frame 4)
+   1 [gles] present target -> base=0x006bb000 320x480 fmt=1111970369 (change #6 at frame 5)
+   1 [gles] present target -> base=0x0327c000 320x480 fmt=1111970369 (change #7 at frame 6)
+   1 [gles] present target -> base=0x006bb000 320x480 fmt=1111970369 (change #8 at frame 7)
+   1 [gles] present target -> base=0x0327c000 320x480 fmt=1111970369 (change #9 at frame 8)
+   1 [gles] present target -> base=0x006bb000 320x480 fmt=1111970369 (change #10 at frame 9)
+   1 [gles] present target -> base=0x0327c000 320x480 fmt=1111970369 (change #11 at frame 10)
+   1 [gles] present target -> base=0x006bb000 320x480 fmt=1111970369 (change #12 at frame 11)
+   1 [gles] present target -> base=0x0327c000 320x480 fmt=1111970369 (change #13 at frame 12)
+   1 [gles] present target -> base=0x006bb000 320x480 fmt=1111970369 (change #14 at frame 13)
+   1 [gles] present target -> base=0x0327c000 320x480 fmt=1111970369 (change #15 at frame 14)
+   1 [gles] present target -> base=0x006bb000 320x480 fmt=1111970369 (change #16 at frame 15)
+   1 [gles] present target -> base=0x0327c000 320x480 fmt=1111970369 (change #17 at frame 16)
+   1 [gles] present target -> base=0x006bb000 320x480 fmt=1111970369 (change #18 at frame 17)
+   1 [gles] present target -> base=0x0327c000 320x480 fmt=1111970369 (change #19 at frame 18)
+   1 [gles] present target -> base=0x006bb000 320x480 fmt=1111970369 (change #20 at frame 19)
+   1 [gles] present target -> base=0x0327c000 320x480 fmt=1111970369 (change #21 at frame 20)
+   1 [gles] present target -> base=0x006bb000 320x480 fmt=1111970369 (change #22 at frame 21)
+   1 [gles] present target -> base=0x0327c000 320x480 fmt=1111970369 (change #23 at frame 22)
+   1 [gles] present target -> base=0x006bb000 320x480 fmt=1111970369 (change #24 at frame 23)
+   1 [gles] present target -> base=0x0327c000 320x480 fmt=1111970369 (change #25 at frame 24)
+   1 [gles] present target -> base=0x006bb000 320x480 fmt=1111970369 (change #26 at frame 25)
+   1 [gles] present target -> base=0x0327c000 320x480 fmt=1111970369 (change #27 at frame 26)
+   1 [gles] present target -> base=0x006bb000 320x480 fmt=1111970369 (change #28 at frame 27)
+   1 [gles] present target -> base=0x0327c000 320x480 fmt=1111970369 (change #29 at frame 28)
+   1 [gles] present target -> base=0x006bb000 320x480 fmt=1111970369 (change #30 at frame 29)
+   1 [gles] present target -> base=0x0327c000 320x480 fmt=1111970369 (change #31 at frame 30)
+   1 [gles] present target -> base=0x006bb000 320x480 fmt=1111970369 (change #32 at frame 31)
+   1 [gles] SCENE CHANGE at frame 1651: triangles=0 line_strips=0 triangle_strips=0 other=0
+   1 [gles] SCENE CHANGE at frame 1730: triangles=0 line_strips=0 triangle_strips=83 other=0
+   1 [gles] present target -> base=0x03332000 480x320 fmt=1111970369 (change #2 at frame 1)
+   1 [gles] SCENE CHANGE at frame 2: triangles=8 line_strips=0 triangle_strips=43 other=0
+   1 [gles] present target -> base=0x03144000 480x320 fmt=1111970369 (change #3 at frame 2)
+   1 [gles] present target -> base=0x03332000 480x320 fmt=1111970369 (change #4 at frame 3)
+   1 [gles] present target -> base=0x03144000 480x320 fmt=1111970369 (change #5 at frame 4)
+   1 [gles] present target -> base=0x03332000 480x320 fmt=1111970369 (change #6 at frame 5)
+   1 [gles] present target -> base=0x03144000 480x320 fmt=1111970369 (change #7 at frame 6)
+   1 [gles] present target -> base=0x03332000 480x320 fmt=1111970369 (change #8 at frame 7)
+   1 [gles] present target -> base=0x03144000 480x320 fmt=1111970369 (change #9 at frame 8)
+   1 [gles] present target -> base=0x03332000 480x320 fmt=1111970369 (change #10 at frame 9)
+   1 [gles] present target -> base=0x03144000 480x320 fmt=1111970369 (change #11 at frame 10)
+   1 [gles] present target -> base=0x03332000 480x320 fmt=1111970369 (change #12 at frame 11)
+   1 [gles] present target -> base=0x03144000 480x320 fmt=1111970369 (change #13 at frame 12)
+   1 [gles] present target -> base=0x03332000 480x320 fmt=1111970369 (change #14 at frame 13)
+   1 [gles] present target -> base=0x03144000 480x320 fmt=1111970369 (change #15 at frame 14)
+   1 [gles] present target -> base=0x03332000 480x320 fmt=1111970369 (change #16 at frame 15)
+   1 [gles] present target -> base=0x03144000 480x320 fmt=1111970369 (change #17 at frame 16)
+   1 [gles] present target -> base=0x03332000 480x320 fmt=1111970369 (change #18 at frame 17)
+   1 [gles] present target -> base=0x03144000 480x320 fmt=1111970369 (change #19 at frame 18)
+   1 [gles] present target -> base=0x03332000 480x320 fmt=1111970369 (change #20 at frame 19)
+   1 [gles] present target -> base=0x03144000 480x320 fmt=1111970369 (change #21 at frame 20)
+   1 [gles] present target -> base=0x03332000 480x320 fmt=1111970369 (change #22 at frame 21)
+   1 [gles] present target -> base=0x03144000 480x320 fmt=1111970369 (change #23 at frame 22)
+   1 [gles] present target -> base=0x03332000 480x320 fmt=1111970369 (change #24 at frame 23)
+   1 [gles] present target -> base=0x03144000 480x320 fmt=1111970369 (change #25 at frame 24)
+   1 [gles] present target -> base=0x03332000 480x320 fmt=1111970369 (change #26 at frame 25)
+   1 [gles] present target -> base=0x03144000 480x320 fmt=1111970369 (change #27 at frame 26)
+   1 [gles] present target -> base=0x03332000 480x320 fmt=1111970369 (change #28 at frame 27)
+   1 [gles] present target -> base=0x03144000 480x320 fmt=1111970369 (change #29 at frame 28)
+   1 [gles] present target -> base=0x03332000 480x320 fmt=1111970369 (change #30 at frame 29)
+   1 [gles] present target -> base=0x03144000 480x320 fmt=1111970369 (change #31 at frame 30)
+   1 [gles] present target -> base=0x03332000 480x320 fmt=1111970369 (change #32 at frame 31)
