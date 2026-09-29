@@ -24,10 +24,7 @@
 
 #define PIPE_WORDS          (S5L8930_DISP_PIPE0_SIZE / 4)
 #define CLCD_WORDS          (S5L8930_CLCD_SIZE / 4)
-#define DART_WORDS          (S5L8930_DART2_SIZE / 4)
 #define TVOUT_SIZE          0x2000
-#define DART_SIDS           4
-#define DART_SEGS           64
 
 #define DP_FLAGS            0x101c    /* the kernel spins WHILE (v & 0xf0) == 0x20: read idle */
 #define DP_IRQ_ENABLE       0x1028
@@ -51,10 +48,6 @@
 #define CLCD_CTRL           0x00      /* bit8 = soft reset, self-clearing */
 #define CLCD_ENVID          0x50      /* bit0 ENVID, bit1 "ready down" */
 
-#define DART_TLB_OP         0x00      /* bit3 busy; op nibble 4 = read STE, 5 = write STE */
-#define DART_DATA           0x08
-#define DART_ERROR_STATUS   0x10      /* W1C */
-
 #define VBL_PERIOD_NS       (NANOSECONDS_PER_SECOND / 60)
 #define QUIET_RELATCH_VBLS  15        /* ~250 ms without a swap */
 #define DEFAULT_WIDTH       1024
@@ -64,19 +57,19 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930DisplayState, S5L8930_DISPLAY)
 
 typedef struct {
     uint32_t regs[PIPE_WORDS];
+    qemu_irq irq;            /* the pipe's frame interrupt (DT clcd/rgbout interrupts[0]) */
     /* Parameter FIFO parser: packet in progress + the swap it belongs to. */
     uint32_t pkt_left;
     uint32_t pkt_off;
     uint32_t swap_id;
     bool swap_pending;       /* a swap arrived since the last VBL */
-    struct S5L8930DisplayState *dev;
 } DisplayPipe;
 
 struct S5L8930DisplayState {
     SysBusDevice parent_obj;
 
     MemoryRegion pipe_mr[2], clcd_mr[2], dart_mr, tvout_mr;
-    qemu_irq pipe_irq, clcd_irq;
+    qemu_irq clcd_irq;
     QemuConsole *con;
     QEMUTimer *vbl;
     uint64_t fb_base;        /* property: seed iBoot's scanout when nonzero */
@@ -84,8 +77,7 @@ struct S5L8930DisplayState {
     DisplayPipe pipe[2];     /* 0 = DisplayPipe0 (scanned out), 1 = RGBOUT */
     uint32_t clcd[2][CLCD_WORDS];
     uint32_t tvout[TVOUT_SIZE / 4];
-    uint32_t dart[DART_WORDS];
-    uint32_t ste[DART_SIDS][DART_SEGS];
+    S5L8930Dart dart;        /* dart2 (hw/arm/s5l8930_dart.c) */
 
     /*
      * The frame the panel shows, latched at the VBL that completes a swap.
@@ -105,10 +97,15 @@ struct S5L8930DisplayState {
 
 /* ---- DisplayPipe ------------------------------------------------------- */
 
-static void pipe0_update_irq(S5L8930DisplayState *s)
+static void pipe_update_irq(DisplayPipe *p)
 {
-    uint32_t *r = s->pipe[0].regs;
-    qemu_set_irq(s->pipe_irq, (r[DP_IRQ_STATUS / 4] & r[DP_IRQ_ENABLE / 4]) != 0);
+    qemu_set_irq(p->irq, (p->regs[DP_IRQ_STATUS / 4] & p->regs[DP_IRQ_ENABLE / 4]) != 0);
+}
+
+static void pipes_update_irq(S5L8930DisplayState *s)
+{
+    pipe_update_irq(&s->pipe[0]);
+    pipe_update_irq(&s->pipe[1]);
 }
 
 static uint64_t pipe_read(void *opaque, hwaddr addr, unsigned size)
@@ -155,7 +152,6 @@ static void pipe_fifo_write_word(DisplayPipe *p, uint32_t val)
 static void pipe_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     DisplayPipe *p = opaque;
-    S5L8930DisplayState *s = p->dev;
 
     switch (addr) {
     case DP_FIFO_PORT:
@@ -170,9 +166,7 @@ static void pipe_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
     default:
         p->regs[addr / 4] = val;
     }
-    if (p == &s->pipe[0]) {
-        pipe0_update_irq(s);
-    }
+    pipe_update_irq(p);
 }
 
 static const MemoryRegionOps pipe_ops = {
@@ -185,11 +179,31 @@ static const MemoryRegionOps pipe_ops = {
 
 static void front_latch(S5L8930DisplayState *s);
 
-/* One frame: the queued swap completes and the VBL fires. */
+/*
+ * The frame end on one pipe: its queued swap completes (swap ID to 0x1048) and
+ * VBL + swap-done latch in its status. Both pipes are the same DisplayPipe IP.
+ * RGBOUT's matters at teardown: 4.3's QuartzCore swaps the H3RGBOutDisplay
+ * once more as SpringBoard closes it at power-off, and IOMobileFramebuffer's
+ * clientClose waits in swap_wait for that swap (8L1 0x8084e7b8, a
+ * commandSleep until the swap ID completes). With no frame end on pipe1
+ * the power-off slider hung there for good (smoke #27).
+ * ponytail: both pipes run off the one 60 Hz tick, whatever RGBOUT's own
+ * timing generator (0x89600000) is programmed to; model that block's timing
+ * if a guest ever depends on a dock-video refresh rate.
+ */
+static void pipe_frame_end(DisplayPipe *p)
+{
+    uint32_t *r = p->regs;
+
+    r[DP_SWAP_DONE / 4] = (r[DP_SWAP_DONE / 4] & ~0xffff) | p->swap_id;
+    r[DP_IRQ_STATUS / 4] |= DP_IRQ_VBL | DP_IRQ_SWAP_DONE;
+    pipe_update_irq(p);
+}
+
+/* One frame: the queued swaps complete and the VBLs fire. */
 static void vbl_tick(void *opaque)
 {
     S5L8930DisplayState *s = opaque;
-    uint32_t *r = s->pipe[0].regs;
 
 
     /* Measured with tests/ipad1/tearcheck.py: latching here left 5.2% bad
@@ -210,9 +224,9 @@ static void vbl_tick(void *opaque)
          */
         front_latch(s);
     }
-    r[DP_SWAP_DONE / 4] = (r[DP_SWAP_DONE / 4] & ~0xffff) | s->pipe[0].swap_id;
-    r[DP_IRQ_STATUS / 4] |= DP_IRQ_VBL | DP_IRQ_SWAP_DONE;
-    pipe0_update_irq(s);
+    s->pipe[1].swap_pending = false;
+    pipe_frame_end(&s->pipe[0]);
+    pipe_frame_end(&s->pipe[1]);
     timer_mod(s->vbl, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + VBL_PERIOD_NS);
 }
 
@@ -279,75 +293,15 @@ static const MemoryRegionOps clcd_ops = {
 
 /* ---- dart2 --------------------------------------------------------------- */
 
-static uint64_t dart_read(void *opaque, hwaddr addr, unsigned size)
-{
-    S5L8930DisplayState *s = opaque;
-
-    return addr == DART_TLB_OP ? 0 : s->dart[addr / 4];   /* never busy */
-}
-
-static void dart_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
-{
-    S5L8930DisplayState *s = opaque;
-    unsigned sid = (val >> 8) & 0xf, seg = (val >> 22) & 0x3f;
-
-    switch (addr) {
-    case DART_TLB_OP:
-        if (sid >= DART_SIDS) {
-            break;
-        }
-        if ((val & 0xf) == 5) {
-            s->ste[sid][seg] = s->dart[DART_DATA / 4];
-        } else if ((val & 0xf) == 4) {
-            s->dart[DART_DATA / 4] = s->ste[sid][seg];
-        }
-        break;
-    case DART_ERROR_STATUS:
-        s->dart[addr / 4] &= ~val;
-        break;
-    default:
-        s->dart[addr / 4] = val;
-    }
-}
-
-static const MemoryRegionOps dart_ops = {
-    .read = dart_read,
-    .write = dart_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4,
-    .impl.max_access_size = 4,
-};
-
-/*
- * SID 0 (mapper-clcd) IOVA -> PA. STE = page-table PA, PTE = PA | 1. A
- * segment with no table is passed through untranslated, which is also what
- * iBoot's untranslated framebuffer and the kernel's identity "transition
- * mapping" amount to. Returns -1 for an invalid PTE.
- */
-static hwaddr dart_xlate_sid(S5L8930DisplayState *s, unsigned sid, uint32_t va)
-{
-    uint32_t ste = s->ste[sid][(va >> 22) & 0x3f] & ~0xfffu;
-    uint32_t pte;
-
-    if (!ste) {
-        return va;
-    }
-    pte = ldl_le_phys(&address_space_memory, ste + ((va >> 12) & 0x3ff) * 4);
-    if (!(pte & 1)) {
-        qemu_log_mask(LOG_GUEST_ERROR, "dart2: invalid PTE 0x%08x for iova 0x%08x\n", pte, va);
-    }
-    return (pte & 1) ? ((pte & ~0xfffu) | (va & 0xfff)) : (hwaddr)-1;
-}
-
 static hwaddr dart_xlate(S5L8930DisplayState *s, uint32_t va)
 {
-    return dart_xlate_sid(s, 0, va);
+    return s5l8930_dart_xlate(&s->dart, 0, va);
 }
 
 /* dart2 for another client (DT dart-mapper reg: 1 RGBOUT, 2 scaler). */
 hwaddr s5l8930_dart2_xlate(void *display, uint32_t va, unsigned sid)
 {
-    return dart_xlate_sid(S5L8930_DISPLAY(display), sid < DART_SIDS ? sid : 0, va);
+    return s5l8930_dart_xlate(&S5L8930_DISPLAY(display)->dart, sid < S5L8930_DART_SIDS ? sid : 0, va);
 }
 
 /* Read `len` bytes of framebuffer at IOVA `va`, page by page. */
@@ -613,8 +567,7 @@ static void s5l8930_display_reset(DeviceState *dev)
     }
     memset(s->clcd, 0, sizeof(s->clcd));
     memset(s->tvout, 0, sizeof(s->tvout));
-    memset(s->dart, 0, sizeof(s->dart));
-    memset(s->ste, 0, sizeof(s->ste));
+    memset(&s->dart, 0, sizeof(s->dart));
     s->front_valid = false;
     s->swaps = 0;
 
@@ -648,7 +601,7 @@ static void s5l8930_display_reset(DeviceState *dev)
         r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4] = DEFAULT_WIDTH * 4 | 2;
         r[0x4060 / 4] = DEFAULT_WIDTH << 16 | DEFAULT_HEIGHT;
     }
-    pipe0_update_irq(s);
+    pipes_update_irq(s);
     timer_mod(s->vbl, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + VBL_PERIOD_NS);
 }
 
@@ -666,15 +619,14 @@ static void s5l8930_display_init(Object *obj)
     S5L8930DisplayState *s = S5L8930_DISPLAY(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
-    s->pipe[0].dev = s->pipe[1].dev = s;
     /* Order matches the header: pipe0, CLCD, DART2, RGBOUT (= AppleRGBOUT's
      * own DisplayPipe, reg index 0), TVOUT, RGBOUT2 (its control block). */
     memory_region_init_io(&s->pipe_mr[0], obj, &pipe_ops, &s->pipe[0],
                           "s5l8930.disp.pipe0", S5L8930_DISP_PIPE0_SIZE);
     memory_region_init_io(&s->clcd_mr[0], obj, &clcd_ops, s->clcd[0],
                           "s5l8930.disp.clcd", S5L8930_CLCD_SIZE);
-    memory_region_init_io(&s->dart_mr, obj, &dart_ops, s,
-                          "s5l8930.disp.dart2", S5L8930_DART2_SIZE);
+    memory_region_init_io(&s->dart_mr, obj, &s5l8930_dart_ops, &s->dart,
+                          "s5l8930.disp.dart2", S5L8930_DART_SIZE);
     memory_region_init_io(&s->pipe_mr[1], obj, &pipe_ops, &s->pipe[1],
                           "s5l8930.disp.rgbout", S5L8930_DISP_PIPE0_SIZE);
     memory_region_init_io(&s->tvout_mr, obj, &ram_ops, s->tvout,
@@ -687,8 +639,9 @@ static void s5l8930_display_init(Object *obj)
     sysbus_init_mmio(sbd, &s->pipe_mr[1]);
     sysbus_init_mmio(sbd, &s->tvout_mr);
     sysbus_init_mmio(sbd, &s->clcd_mr[1]);
-    sysbus_init_irq(sbd, &s->pipe_irq);
+    sysbus_init_irq(sbd, &s->pipe[0].irq);
     sysbus_init_irq(sbd, &s->clcd_irq);
+    sysbus_init_irq(sbd, &s->pipe[1].irq);
     object_property_add_uint32_ptr(obj, "swaps", &s->swaps, OBJ_PROP_FLAG_READ);
 }
 
@@ -697,7 +650,7 @@ static int s5l8930_display_post_load(void *opaque, int version_id)
     /* The latched frame is host memory and was not saved: take it again
      * from the restored guest RAM so the panel resumes on a whole frame. */
     front_latch(opaque);
-    pipe0_update_irq(opaque);
+    pipes_update_irq(opaque);
     return 0;
 }
 
@@ -747,8 +700,8 @@ static const VMStateDescription vmstate_s5l8930_display = {
                              vmstate_display_pipe, DisplayPipe),
         VMSTATE_UINT32_2DARRAY(clcd, S5L8930DisplayState, 2, CLCD_WORDS),
         VMSTATE_UINT32_ARRAY(tvout, S5L8930DisplayState, TVOUT_SIZE / 4),
-        VMSTATE_UINT32_ARRAY(dart, S5L8930DisplayState, DART_WORDS),
-        VMSTATE_UINT32_2DARRAY(ste, S5L8930DisplayState, DART_SIDS, DART_SEGS),
+        VMSTATE_UINT32_ARRAY(dart.regs, S5L8930DisplayState, S5L8930_DART_SIZE / 4),
+        VMSTATE_UINT32_2DARRAY(dart.ste, S5L8930DisplayState, S5L8930_DART_SIDS, S5L8930_DART_SEGS),
         VMSTATE_TIMER_PTR(vbl, S5L8930DisplayState),
         VMSTATE_END_OF_LIST()
     }
