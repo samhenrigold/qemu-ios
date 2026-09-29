@@ -1,4 +1,4 @@
-# ipad1-gles — GLI engine for the iPad 1 (iOS 3.2 / 3.2.2, and 4.2.1)
+# ipad1-gles — GLI engine for the iPad 1 (iOS 3.2 / 3.2.2, 4.2.1 and 5.1.1)
 
 Replaces `/System/Library/Frameworks/OpenGLES.framework/GLEngine.bundle/GLEngine`.
 It forwards ES 1.1 and ES 2.0 calls to the host GL executor (`hw/arm/gles-host.c`)
@@ -91,6 +91,31 @@ composite through GL (drops `CA_ENABLE_OGL=0`, sets `GLI_ACCELERATED=1`). The ap
 only get icons on the **jailbroken** base; the pristine installd/SpringBoard hide
 ldid-signed bundles. Boot with `amfi_allow_any_signature=1 cs_enforcement_disable=1`.
 `tests/ipad1/gl-drive.py` boots a store on an overlay and scripts taps and screendumps.
+
+## 5.1.1 (9B206, 2026-09-29)
+
+The same engine and plugin, no per-build table. What 5.x changed, each read off the firmware at load:
+- **Dispatch:** 905 slots, the first 772 as 4.2.1's; the 64 new fields (EXT_separate_shader_objects,
+  EXT_debug_label/marker, samplers, map_buffer_range, ...) are rows 848-911 of `gles-names.h`.
+- **libGFXShared generation** (`gfx_gen.h`: does the gld table libGFXShared dlsyms name
+  `gldCreateShareGroup`): 5.x's wants gld **4.0.44** (4.x: 3.1.0), dlsyms **111** `gld*` names (79), calls
+  `gldCreateDevice(&device, ...)` per registered device and `gldCreateShareGroup(device, &slot, n)` /
+  `gldDestroyShareGroup(slot)` for a sharegroup (4.x: `gldCreateShared(&slot, mask, n)`). gldshim answers both.
+- **gfxInitializeLibrary:** 5.x EAGL passes `(svcs, z, n, io, flags)` and the engine supplies both IOSurface
+  callbacks (4.x: EAGL's callback, the engine's). EAGL's flags are `0x40000000` (`eagl_init(0)`), and
+  libGFXShared scans OpenGLES's resources for `GLRendererFloat*` plugins only with bit 31, so glishim sets
+  it: the stock engine never needs the scan (its SGX plugin comes from the IOAccelerator).
+- **CoreAnimation:** renders every layer into IOSurface-backed textures (0x38E attach as GL_TEXTURE_2D, then
+  0x399) and never binds a CA drawable (no `gliBindViewES`); frames reach the panel through IOMFB
+  swaps signalled with 0x2C1. Some layer surfaces have no pixel format (the icon labels): glishim names them
+  from the attach's GL format/type (`GL_LUMINANCE_ALPHA` -> the host's new `2C08`). CA also sets texture
+  parameter 0x28FF, which only Apple's 5.x GLEngine knows (stored, never used for drawing); the host takes it.
+- **Surface writeback:** a store through SpringBoard's mapping of some layer surfaces faulted again after every
+  fault-in (page mapped, store refused: `guest-read:fault-dropped`); the host now writes a rendered surface to
+  its pages (known by the surface's kernel ID), as the SGX does through its own MMU.
+
+Result: the Setup Assistant, the home screen with its labels, Spotlight, Notes, Settings and Safari composite
+through the bridge with `gles-rejects` empty (`docs/ipad1/ios5.md`, "GL on 5.1.1").
 
 ## Results, 4.2.1 (2026-09-28)
 
