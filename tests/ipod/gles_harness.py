@@ -47,6 +47,13 @@ static GLESHost gh_legacy;
 static GLESHost *gh_current = &gh_legacy;
 #define gh (*gh_current)
 bool gles_guest_fault_pending(void) { return false; }
+''' + src[src.index('/* ---------------------------------------------------------------- refusals'):
+          src.index('/* Only expose formats our decoder accepts')] + r'''
+/* gles-debug's paint needs a context; a test that exercises it defines GLES_TEST_REAL_DEBUG and lifts the real ones. */
+#ifndef GLES_TEST_REAL_DEBUG
+static void gles_debug_mark(void) {}
+static void gles_debug_texture(GLenum target) {}
+#endif
 '''
 
 

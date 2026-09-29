@@ -19,7 +19,8 @@ int gles_guest_rw(CPUState *cpu, vaddr a, void *p, size_t n, bool write)
 '''
 shim = (root / 'contrib/it-gles/mbxshim.c').read_text()
 fault = shim[shim.index('static int guest_fault_read('):shim.index('static unsigned texture_bytes(')]
-shim = fault + shim[shim.index('static int surface_fault_read('):shim.index('/*\n * GLESBindView is')]
+reporting = shim[shim.index('static char *put_dec('):shim.index('__attribute__((visibility("hidden"))) int gles_unimpl')]
+shim = reporting + fault + shim[shim.index('static int surface_fault_read('):shim.index('/*\n * GLESBindView is')]
 helper_end = shim.index('static int GLESBindCoreSurface(')
 shim = shim[:helper_end] + shim[helper_end:].replace('surface_fault_read(', 'abi_surface_fault_read(')
 finish_start = (root / 'contrib/it-gles/mbxshim.c').read_text().index('static int GLESFinishTexture(')
@@ -69,9 +70,10 @@ static int swap_signal(unsigned port,unsigned selector,const unsigned long long 
     assert(args[0]==42 && args[1]==3 && !out && !n);abi_signals++;
     return abi_signal_error;
 }
-static void *dlopen(const char *path,int mode) { assert(strstr(path,"IOKit"));return (void *)1; }
+/* IOKit's swap signal; the 4.x fallback's IOMobileFramebuffer lookups find nothing here. */
+static void *dlopen(const char *path,int mode) { assert(strstr(path,"IOKit") || strstr(path,"IOMobileFramebuffer"));return (void *)1; }
 static void *dlsym(void *lib,const char *name)
-{ assert(lib==(void *)1 && !strcmp(name,"IOConnectCallScalarMethod"));return swap_signal; }
+{ assert(lib==(void *)1);return strcmp(name,"IOConnectCallScalarMethod") ? NULL : (void *)swap_signal; }
 '''
 check = r'''
 int main(void)
@@ -161,7 +163,7 @@ int main(void)
     for(int i=0;i<40;i++) assert(ram[i]==0x5a);
     a[1]=0xfffffff0;assert(gles_bind_surface(NULL,a)==-1);
     a[1]=0x10000000;a[2]=15;assert(gles_bind_surface(NULL,a)==-1);
-    a[2]=20;a[3]=2049;assert(gles_bind_surface(NULL,a)==-1);
+    a[2]=20;a[3]=4097;assert(gles_bind_surface(NULL,a)==-1);
     a[3]=2;a[4]=2;a[2]=2;a[5]=0x34323076;a[6]=0x10000100;a[7]=2;
     memset(ram,16,4);ram[256]=ram[257]=128;assert(!gles_bind_surface(NULL,a));
     glGetTexImage(GL_TEXTURE_RECTANGLE_ARB,0,GL_BGRA,GL_UNSIGNED_BYTE,got);
@@ -173,6 +175,32 @@ int main(void)
     glGetTexImage(GL_TEXTURE_RECTANGLE_ARB,0,GL_BGRA,GL_UNSIGNED_BYTE,got);
     for(int i=0;i<4;i++) assert(!memcmp(got+i*4,"\0\0\0\xff",4));
     a[3]=3;assert(gles_bind_surface(NULL,a)==-1);
+    /* The rest of what QuartzCore and IOSurface name, one 2x1 surface each, read back as BGRA bytes:
+     * A008 and L008 sample (0,0,0,a) and (l,l,l,1); 4444 and 1555 are GL's own packed orders; ARGB and
+     * ABGR are the 32-bit orders byte-reversed. */
+    {
+        struct { uint32_t fmt, stride; uint8_t in[8]; uint8_t out[8]; } cases[] = {
+            { GLES_SURFACE_A8,       2, {0x40,0xff},            {0,0,0,0x40, 0,0,0,0xff} },
+            { GLES_SURFACE_L8,       2, {0x40,0xff},            {0x40,0x40,0x40,0xff, 0xff,0xff,0xff,0xff} },
+            { GLES_SURFACE_RGBA4444, 4, {0x0f,0xf0, 0xf0,0x0f}, {0,0,0xff,0xff, 0xff,0xff,0,0} },   /* 0xf00f: R=f A=f; 0x0ff0: G=f B=f */
+            { GLES_SURFACE_RGBA5551, 4, {0x01,0xf8, 0x3f,0x00}, {0,0,0xff,0xff, 0xff,0,0,0xff} },   /* 0xf801 red, 0x003f blue */
+            { GLES_SURFACE_ARGB32,   8, {0x80,1,2,3, 0xff,9,8,7}, {3,2,1,0x80, 7,8,9,0xff} },
+            { GLES_SURFACE_ABGR32,   8, {0x80,1,2,3, 0xff,9,8,7}, {1,2,3,0x80, 9,8,7,0xff} },
+        };
+        for (unsigned c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+            uint32_t b[] = { GL_TEXTURE_RECTANGLE_ARB, 0x10000000, cases[c].stride, 2, 1, cases[c].fmt, 0, 0 };
+            memcpy(ram, cases[c].in, 8);
+            assert(!gles_bind_surface(NULL, b));
+            glGetTexImage(GL_TEXTURE_RECTANGLE_ARB, 0, GL_BGRA, GL_UNSIGNED_BYTE, got);
+            assert(!memcmp(got, cases[c].out, 8));
+        }
+        /* and one nobody produces: refused, counted by its four characters */
+        uint32_t b[] = { GL_TEXTURE_RECTANGLE_ARB, 0x10000000, 8, 2, 1, 0x58595a30, 0, 0 };
+        assert(gles_bind_surface(NULL, b) == -1);
+        char *rejects = gles_host_rejects();
+        assert(strstr(rejects, "surface:XYZ0\t1\n"));
+        free(rejects);
+    }
     /* Photos thumbnail rows use opaque RGB555, with padded guest rows. */
     a[3]=4;a[4]=2;a[2]=10;a[5]=GLES_SURFACE_RGB555;a[6]=a[7]=0;
     const uint16_t colors[]={0x7c00,0x03e0,0x001f,0xffff};

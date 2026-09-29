@@ -27,6 +27,7 @@ static void iosurface_init(void) {}
 static void w(const char *s) {}
 static void wx(unsigned long x) {}
 static void wd(unsigned x) {}
+static void refused(const char *what, const char *name, unsigned num) {}
 '''
 mock_surface = r'''
 static int surface_capture(ca_view_t *v, void *surface)

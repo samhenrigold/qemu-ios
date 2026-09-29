@@ -52,6 +52,8 @@ static int cpu_memory_rw_debug(CPUState *cpu,uint64_t address,uint8_t *p,size_t 
 }
 static int gles_guest_rw(CPUState *cpu,uint64_t va,void *buf,size_t n,bool write){return cpu_memory_rw_debug(cpu,va,buf,n,write);}
 static int64_t gles_reject(GLenum error) {if(!gh.error)gh.error=error;return -1;}
+static bool gles_refuse(const char *fmt, ...) {return true;}
+static const char *gles_fourcc(uint32_t f, char out[12]) {snprintf(out,12,"%08x",f);return out;}
 static GLuint gles_host_fbo(uint32_t name) {return name?name:gh.fbo;}
 static int gles_swizzle;
 static const uint8_t *gles_frame_lock(size_t *stride) {return NULL;}
