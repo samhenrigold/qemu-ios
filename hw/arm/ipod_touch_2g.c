@@ -3330,6 +3330,14 @@ static void ipod_touch_machine_init(MachineState *machine)
         create_unimplemented_device("scaler-csc", SCALER_CSC_MEM_BASE, 0x1000);
     }
 
+    /*
+     * 0x38100000: a block iBoot-385.49's LLB (iPhone OS 2.2/2.2.1) programs in the same routine that latches the
+     * security epoch into POWER_ID (+0x40 <- 1, +0x44 <- 0x033f0100, next to the 0x3D700080.. writes). 2.1.1's
+     * LLB and every 3.x+ iBoot leave it alone. Unmapped, the store took an external abort and the LLB reset
+     * into DFU in a loop, so 2.2 never reached iBoot. Its function is unknown: accepted and read as zero.
+     */
+    create_unimplemented_device("unknown-38100000", 0x38100000, 0x1000);
+
     // init SHA1 engine
     dev = qdev_new("ipodtouch.sha1");
     IPodTouchSHA1State *sha1_state = IPOD_TOUCH_SHA1(dev);
