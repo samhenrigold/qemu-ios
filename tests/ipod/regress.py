@@ -461,6 +461,18 @@ class Device:
                     "flat colour, so this is iBoot/recovery, not a boot"
                     % (self.tag, time.time() - START, lit))
                 continue
+            if n >= 2 and lit < HOME_LIT_MIN and (self.cfg.device_major or 3) <= 2 \
+                    and not getattr(self, "time_set", False) and getattr(self.cfg, "usbmuxd_ok", True):
+                # 2.x lockdownd keeps an iPod "bricked" (Connect to iTunes) until a paired host sets
+                # the time, as iTunes does on connect (docs/ipod/from-ipsw.md, "lockdownd's brick
+                # state"); SpringBoard shows the lock screen at its next wake from sleep.
+                udid, why = wait_for_device(self.cfg, timeout=300)
+                self.time_set = bool(udid) and run(["idevicedate", "-c"], self.cfg, 60).returncode == 0
+                log("%s: t+%.0fs host time set over lockdown (brick state): %s"
+                    % (self.tag, time.time() - START, "ok" if self.time_set else "failed: %s" % why))
+            if n >= 2 and lit < HOME_LIT_MIN and getattr(self, "time_set", False):
+                itqmp.button(self.qmp, "power")     # sleep, so the home press below is a wake
+                time.sleep(3)
             if n >= 2 and lit < HOME_LIT_MIN:
                 self.qmp.home()
                 time.sleep(1)
@@ -1345,6 +1357,56 @@ def verify_audio(path, r):
     return r.set(True, "%.2f seconds; left %.1f Hz, right %.1f Hz" % (seconds, *peaks))
 
 
+def check_gles_front_end(cfg, dev, r):
+    """1.x/2.x: SpringBoard's own compositing is the fixture (no app installs there yet).
+
+    The device's lock says the OpenGLES hook went in and the bake set CA_ENABLE_OGL=1, so every
+    frame since the home screen came up was CoreAnimation's GL renderer through the front end and
+    the host. What is asserted: the front end said hello exactly once (a second hello is a
+    SpringBoard that died and restarted), CoreAnimation made its first pixmap surface (it did not
+    fall back to software: "unsupported graphics hardware"), a host context is live, the home
+    screen survives a page swipe and a Safari launch zoom and close (the path that once froze
+    and then crashed SpringBoard), and the bridge refused nothing."""
+    log_path = os.path.join(dev.dir, "qemu.log")
+
+    def hellos():
+        with open(log_path, "rb") as f:
+            text = f.read().decode("utf-8", "replace")
+        return text.count("dispatch layout from export names"), "[gles] egl: first pixmap surface" in text
+
+    shots = []
+    dev.qmp.tap(160, 326)   # 2.x raises the first-unlock Edit Home Screen tip late: its Dismiss (empty home otherwise)
+    time.sleep(2)
+    for name, act, settle in (("swipe", lambda: dev.qmp.swipe(280, 240, 40, 240, steps=10), 3),
+                              ("safari", lambda: dev.qmp.tap(40, 70), 8),
+                              ("home", dev.qmp.home, 5)):
+        act()
+        time.sleep(settle)
+        ppm = dev.qmp.shot(os.path.join(dev.dir, "gles-%s.ppm" % name))
+        to_png(ppm, os.path.join(dev.dir, "gles-%s.png" % name))
+        shots.append((name, lit_count(ppm)[1]))
+        if not dev.alive():
+            return r.set(False, "qemu exited during the %s step" % name)
+    n, pixmap = hellos()
+    contexts = dev.qmp.cmd("qom-get", path="/machine", property="gles-contexts")
+    rejects = itqmp.gles_rejects(dev.qmp)
+    lits = ", ".join("%s lit=%d" % s for s in shots)
+    if n != 1:
+        return r.set(False, "the front end said hello %d times: SpringBoard %s (%s)"
+                     % (n, "never loaded it" if not n else "restarted", lits))
+    if not pixmap:
+        return r.set(False, "CoreAnimation made no pixmap surface: it composites in software (%s)" % lits)
+    if contexts < 1:
+        return r.set(False, "no live host GL context (%s)" % lits)
+    if rejects:
+        return r.set(False, "the GL bridge refused %d thing(s): %s" % (
+            len(rejects), ", ".join("%s x%d" % kv for kv in sorted(rejects.items()))))
+    if shots[0][1] < HOME_LIT_MIN or shots[-1][1] < HOME_LIT_MIN or abs(shots[1][1] - shots[0][1]) < 1000:
+        return r.set(False, "the frames did not follow the gestures: %s" % lits)
+    return r.set(True, "SpringBoard composites through the GL front end: one hello, CA's pixmap surfaces, "
+                       "%d host context(s), no refusals; %s" % (contexts, lits))
+
+
 def check_gles(cfg, procs, dev, r):
     """Prove the OpenGL ES HLE layer still renders, on the real panel.
 
@@ -1356,6 +1418,8 @@ def check_gles(cfg, procs, dev, r):
     produces either. So the assertion is the colour signature, held across two
     samples, plus a scan of the shim's own unimplemented-slot log.
     """
+    if cfg.gles_front_end:
+        return check_gles_front_end(cfg, dev, r)
     app = os.path.join(GLES_DIR, "GLTest.app")
     shim = os.path.join(GLES_DIR, "MBXGLEngine")     # one binary for every firmware
     harness = not os.path.exists(app)
@@ -1762,6 +1826,8 @@ def main():
 
     cfg.files = os.path.expanduser(cfg.files_dir)
     cfg.device_machine = {}
+    cfg.device_major = None         # the device's iOS major, from its lock (None: nand-current, 3.x)
+    cfg.gles_front_end = False      # 1.x/2.x: the guest package's OpenGLES hook, CA through GL
     if cfg.device:
         for attr, name in (("base_nand", "nand"), ("nor", "nor.bin"), ("direct_iboot", "iBoot.bin"),
                            ("gid_blobs", "gid-blobs.bin")):
@@ -1772,6 +1838,8 @@ def main():
         if os.path.exists(lock):
             lockd = json.load(open(lock))
             cfg.device_machine = lockd.get("machine") or {}
+            cfg.device_major = int(lockd.get("product_version", "0").split(".")[0]) or None
+            cfg.gles_front_end = (lockd.get("derived") or {}).get("gles_engine") == "OpenGLES"
     # NAND, NOR and iBoot are one set and cannot be mixed: nand-canonical is a
     # 2.1.1 image, and against 3.1.3's iBoot its FTL will not even open --
     # "NAND initialisation failed due to format mismatch", "root filesystem

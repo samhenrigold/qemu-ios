@@ -368,7 +368,9 @@ def main():
         dev.rel("sys" + TYPEIN).write_bytes(b"old typein")
         made, rec = mkpkg.seed(str(vol), str(tmp / "t.itpack"), gles=True)
         assert rec["hooks"] == [MBX, TYPEIN] and "usr/local/lighttouch/current" in made
-        assert dev.hook(MBX) == dev.hook(MBX + ".baked") == b"shim" and dev.hook(TYPEIN + ".baked") == b"t"
+        # .baked keeps what the volume had; the target gets the package's bytes
+        assert dev.hook(MBX) == b"shim" and dev.hook(MBX + ".baked") == b"stock mbx"
+        assert dev.hook(TYPEIN) == b"t" and dev.hook(TYPEIN + ".baked") == b"old typein"
         assert (vol / "usr/local/bin/it_boot").read_bytes() == b"loader"
         os.symlink("sys/usr/local/lighttouch", dev.d / "root")
         dev.offer((vol / "usr/local/lighttouch/pkgs/7/offer").read_text())

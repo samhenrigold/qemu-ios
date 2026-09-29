@@ -35,6 +35,9 @@ CURRENT = "/usr/local/lighttouch/current"
 MBX = "/System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine"
 GLENGINE = "/System/Library/Frameworks/OpenGLES.framework/GLEngine.bundle/GLEngine"
 GLD = "/System/Library/Frameworks/OpenGLES.framework/GLRendererFloatQEMU.bundle/GLRendererFloatQEMU"
+# 1.x/2.x: the framework binary is the driver, and the GL front end replaces it whole (contrib/it-gles/gles2x.c)
+OPENGLES = "/System/Library/Frameworks/OpenGLES.framework/OpenGLES"
+GL_TARGETS = (MBX, GLENGINE, GLD, OPENGLES)
 # host protocol ranges a package speaks: [oldest, newest]; gles 1 = the name-keyed wire (gles-names.h)
 HOST = {"guest-package": [1, 1], "gles": [1, 1]}
 
@@ -57,7 +60,8 @@ IPAD_HOOKS = [("build/ipad1-guest/it_msmquiet.dylib", "/usr/local/lib/it_msmquie
 # builds: exact ids or "<major>*" for every build of that iOS major (2.x = 5*, 3.x = 7*, 4.x = 8*), so a new point
 # release needs no row here (LightTouchMac docs/matrix.md).
 FAMILIES = {
-    "n72-ios2": {"arch": "armv6", "boards": ["n72ap"], "builds": ["5*"], "stub": True},
+    "n72-ios2": {"arch": "armv6", "boards": ["n72ap"], "builds": ["5*"],
+                 "hooks": [("contrib/it-gles/OpenGLES-2x", OPENGLES, True)]},
     "n72-ios3": {"arch": "armv6", "boards": ["n72ap"], "builds": ["7*"], "bin": IPOD_BIN,
                  "jobs": ["contrib/it-agent/com.qemu.it-agent.plist"],
                  "hooks": [("contrib/it-gles/MBXGLEngine", MBX, True),
@@ -269,8 +273,9 @@ def seed(mnt, itpack, gles=True):
     The package is the itpack's family for the volume's ProductBuildVersion. It lands as it_boot
     would install it (pkgs/<serial>/ with its `offer` record, `current` -> it, `state` "seed N").
     A hook is kept only if its target is on the volume (and, for the GL engines, if the preparer
-    installed the shim: `gles`); then target and <target>.baked get the package's bytes, so the
-    first boot has nothing to change and no respring. Baked launchd jobs the package provides are
+    installed the shim: `gles`); then <target>.baked keeps what the volume had (the stock file,
+    or what the preparer already put there) and target gets the package's bytes, so the first boot
+    has nothing to change and no respring, and a package without the hook puts .baked back. Baked launchd jobs the package provides are
     removed: it_boot loads them. Returns (volume-relative paths written, all to be root-owned; the
     lock's guest_package record). FirmwareKit's GuestPackage.seed is the Swift port."""
     entries = dict(read_pack(itpack))
@@ -287,7 +292,7 @@ def seed(mnt, itpack, gles=True):
                     "hooks": [], "jobs": []}
     family = fams[0]
     m = json.loads(entries[family + "/manifest.json"])
-    hooks = [h for h in m["hooks"] if (gles or h["target"] not in (MBX, GLENGINE, GLD))
+    hooks = [h for h in m["hooks"] if (gles or h["target"] not in GL_TARGETS)
              and os.path.exists(os.path.join(mnt, h["target"][1:]))]
     dropped = {h["file"] for h in m["hooks"]} - {h["file"] for h in hooks}
     m = dict(m, hooks=hooks, files=[f for f in m["files"] if f["name"] not in dropped])
@@ -316,8 +321,11 @@ def seed(mnt, itpack, gles=True):
     made.append(SEED_ROOT + "/current")
     mode = {f["name"]: int(f["mode"], 8) for f in m["files"]}
     for h in hooks:
-        for rel in (h["target"][1:], h["target"][1:] + ".baked"):
-            put(rel, entries[family + "/" + h["file"]], mode[h["file"]])
+        rel = h["target"][1:]
+        if not os.path.exists(os.path.join(mnt, rel + ".baked")):
+            st = os.stat(os.path.join(mnt, rel))
+            put(rel + ".baked", open(os.path.join(mnt, rel), "rb").read(), st.st_mode & 0o7777)
+        put(rel, entries[family + "/" + h["file"]], mode[h["file"]])
     for j in m["jobs"]:
         rel = "System/Library/LaunchDaemons/" + os.path.basename(j)
         if os.path.lexists(os.path.join(mnt, rel)):

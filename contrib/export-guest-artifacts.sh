@@ -8,7 +8,8 @@
 #   ipad-guest-tools/   the flat directory firmwarekit reads (--guest-tools): the iPad helpers, AppSync, the two
 #                       GL engines (GLEngine armv7, MBXGLEngine armv6: one binary each for every firmware, the
 #                       dispatch layout is read at load) with gles-names.h, the name table they and the host
-#                       speak, the n72 recipe's inputs, the armv6 it_keybag and it_prefs, and armv6.itpack /
+#                       speak, the n72 recipe's inputs (with OpenGLES-2x, the 1.x/2.x front end over the same
+#                       core, and opengles-2x.exports, the export set it must match), the armv6 it_keybag and it_prefs, and armv6.itpack /
 #                       armv7.itpack (contrib/guest-package, VERSION's serial)
 #   macos-app/entitlements.plist   the app helper's entitlements
 #   include/ios-app/, include/macos-app/   the headers the helper compiles against
@@ -96,9 +97,14 @@ for p in it-gles/MBXGLEngine it-gles/sblaunch it-instprogress/sbdlicon it-agent/
          it-agent/com.qemu.it-agent.plist; do
     stage ipad-guest-tools "$C/$p"
 done
+# 1.x/2.x: the GL front end that replaces OpenGLES.framework/OpenGLES (the same armv6 core as MBXGLEngine), and
+# the export set the preparer checks the stock binary against before the package's hook may replace it.
+stage ipad-guest-tools "$C/it-gles/OpenGLES-2x"
+stage ipad-guest-tools "$C/it-gles/opengles-2x.exports"
 stage ipad-guest-tools "$G/ipod-guest/it_keybag" it_keybag-armv6
 stage ipad-guest-tools "$G/ipod-guest/it_prefs" it_prefs-armv6
-chmod 0644 "$OUT"/ipad-guest-tools.incomplete/*.plist "$OUT"/ipad-guest-tools.incomplete/*.h
+chmod 0644 "$OUT"/ipad-guest-tools.incomplete/*.plist "$OUT"/ipad-guest-tools.incomplete/*.h \
+    "$OUT"/ipad-guest-tools.incomplete/*.exports
 
 mkdir -p "$OUT/macos-app" "$OUT/include/ios-app" "$OUT/include/macos-app"
 cp -p "$SRC/contrib/macos-app/entitlements.plist" "$OUT/macos-app/"
@@ -131,7 +137,8 @@ components = ("armv6-toolchain it-gles it-agent it-instprogress it-media it-prox
 inputs = {}
 for c in components:
     for f in sorted((src / "contrib" / c).iterdir()):
-        if f.is_file() and f.suffix in (".c", ".h", ".sh", ".py", ".xml", ".plist", ".entitlements", ".txt") \
+        if f.is_file() and f.suffix in (".c", ".h", ".sh", ".py", ".xml", ".plist", ".entitlements", ".txt",
+                                        ".exports") \
                 and f.name not in ("gles_stubs.h", "gli_fwd.h"):
             inputs[str(f.relative_to(src))] = sha(f)
 for f in sorted([src / "include/hw/arm/guest-services/gles-names.h",

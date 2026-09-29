@@ -1117,23 +1117,49 @@ extern void *dlsym(void *, const char *);
 extern void *malloc_zone_from_ptr(const void *);
 extern unsigned long malloc_size(const void *);
 
+/* 3.x+ surfaces are IOSurfaces; 1.x/2.x have CoreSurface.framework instead, whose
+ * CoreSurfaceBuffer* calls are the same set under another prefix (only GetPixelFormat is
+ * GetPixelFormatType there, and its Lock takes no seed). Whichever the firmware has.
+ * The read lock differs too: IOSurface's 1 is kIOSurfaceLockReadOnly; CoreSurface's lock is a
+ * kernel call whose reply fills the buffer's client mapping, and a PurpleGfxMem surface (the
+ * display buffers GL CoreAnimation renders into) has none until a lock with 2 (what
+ * QuartzCore's own CPU lock passes, CADisplayCoreSurface::lock) maps it: with 1 its base address
+ * stays 0. The mapping outlives the unlock (measured with mincore), as the host's later
+ * write-back needs. */
+static unsigned surface_lock_flags = 1;
+static void *surface_sym(const char *prefix, const char *name)
+{
+    char full[64];
+    unsigned i = 0, k = 0;
+    while (prefix[k] && i < sizeof full - 1) full[i++] = prefix[k++];
+    for (k = 0; name[k] && i < sizeof full - 1;) full[i++] = name[k++];
+    full[i] = 0;
+    return dlsym(iosurf, full);
+}
+
 static void iosurface_init(void)
 {
+    const char *pre = "IOSurface";
     if (iosurf) return;
     iosurf = dlopen("/System/Library/PrivateFrameworks/IOSurface.framework/IOSurface",
                     RTLD_NOW);
-    if (!iosurf) { w("[mbxshim] IOSurface.framework not available\n"); return; }
-    p_IOSurfaceGetBaseAddress = dlsym(iosurf, "IOSurfaceGetBaseAddress");
-    p_IOSurfaceGetBytesPerRow = dlsym(iosurf, "IOSurfaceGetBytesPerRow");
-    p_IOSurfaceGetWidth       = dlsym(iosurf, "IOSurfaceGetWidth");
-    p_IOSurfaceGetHeight      = dlsym(iosurf, "IOSurfaceGetHeight");
-    p_IOSurfaceGetPixelFormat = dlsym(iosurf, "IOSurfaceGetPixelFormat");
-    p_IOSurfaceGetPlaneCount = dlsym(iosurf, "IOSurfaceGetPlaneCount");
-    p_IOSurfaceGetBaseAddressOfPlane = dlsym(iosurf, "IOSurfaceGetBaseAddressOfPlane");
-    p_IOSurfaceGetBytesPerRowOfPlane = dlsym(iosurf, "IOSurfaceGetBytesPerRowOfPlane");
-    p_IOSurfaceLock           = dlsym(iosurf, "IOSurfaceLock");
-    p_IOSurfaceUnlock         = dlsym(iosurf, "IOSurfaceUnlock");
-    p_IOSurfaceGetTypeID      = dlsym(iosurf, "IOSurfaceGetTypeID");
+    if (!iosurf) {
+        pre = "CoreSurfaceBuffer";
+        surface_lock_flags = 2;
+        iosurf = dlopen("/System/Library/PrivateFrameworks/CoreSurface.framework/CoreSurface", RTLD_NOW);
+    }
+    if (!iosurf) { w("[mbxshim] neither IOSurface nor CoreSurface is available\n"); return; }
+    p_IOSurfaceGetBaseAddress = surface_sym(pre, "GetBaseAddress");
+    p_IOSurfaceGetBytesPerRow = surface_sym(pre, "GetBytesPerRow");
+    p_IOSurfaceGetWidth       = surface_sym(pre, "GetWidth");
+    p_IOSurfaceGetHeight      = surface_sym(pre, "GetHeight");
+    p_IOSurfaceGetPixelFormat = surface_sym(pre, pre[0] == 'I' ? "GetPixelFormat" : "GetPixelFormatType");
+    p_IOSurfaceGetPlaneCount = surface_sym(pre, "GetPlaneCount");
+    p_IOSurfaceGetBaseAddressOfPlane = surface_sym(pre, "GetBaseAddressOfPlane");
+    p_IOSurfaceGetBytesPerRowOfPlane = surface_sym(pre, "GetBytesPerRowOfPlane");
+    p_IOSurfaceLock           = surface_sym(pre, "Lock");
+    p_IOSurfaceUnlock         = surface_sym(pre, "Unlock");
+    p_IOSurfaceGetTypeID      = surface_sym(pre, "GetTypeID");
     {
         void *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/"
                           "CoreFoundation", RTLD_NOW);
@@ -1405,7 +1431,7 @@ static int GLESBindCoreSurface(void *gc, unsigned target, void *surface)
         !p_IOSurfaceGetWidth || !p_IOSurfaceGetHeight || !p_IOSurfaceGetPixelFormat) {
         return 0;
     }
-    if (p_IOSurfaceLock(surface, 1, 0)) return 0;
+    if (p_IOSurfaceLock(surface, surface_lock_flags, 0)) return 0;
     base = (unsigned)p_IOSurfaceGetBaseAddress(surface);
     stride = p_IOSurfaceGetBytesPerRow(surface);
     width = p_IOSurfaceGetWidth(surface);
@@ -1441,12 +1467,12 @@ static int GLESBindCoreSurface(void *gc, unsigned target, void *surface)
             w(" stride="); wd(stride); w(" base="); wx(base); w("\n");
         }
         refused("surface:", fourcc_text(format, fourcc), ~0u);
-        p_IOSurfaceUnlock(surface, 1, 0);
+        p_IOSurfaceUnlock(surface, surface_lock_flags, 0);
         return 0;
     }
     result = qc(GLES_OP_BIND_SURFACE, gc, 8,
                 A(target,base,stride,width,height,format,uv,uvstride)) == 0;
-    p_IOSurfaceUnlock(surface, 1, 0);
+    p_IOSurfaceUnlock(surface, surface_lock_flags, 0);
     return result;
 }
 
