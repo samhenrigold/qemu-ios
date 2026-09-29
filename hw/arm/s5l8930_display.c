@@ -18,6 +18,10 @@
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
 #include "hw/arm/s5l8930.h"
+#include "hw/arm/frame-timeline.h"
+#include "system/runstate.h"
+#include "ui/input.h"
+#include "qemu/cutils.h"
 #include "exec/address-spaces.h"
 #include "migration/vmstate.h"
 #include "ui/console.h"
@@ -93,6 +97,9 @@ struct S5L8930DisplayState {
     bool front_valid;
     unsigned quiet_vbls;     /* VBLs since the last swap */
     uint32_t swaps;          /* swaps latched since reset: frames the panel showed ("swaps") */
+    FrameTimeline ftl;       /* per-vsync latched-frame ring in guest-virtual time */
+    uint32_t stop_after;     /* "stop-after-vsyncs": pause the VM after this many more vsyncs (0 = off) */
+    char vsync_input[32];    /* "vsync-input": one touch event delivered at the next vsync ("" = none) */
 };
 
 /* ---- DisplayPipe ------------------------------------------------------- */
@@ -205,10 +212,64 @@ static void vbl_tick(void *opaque)
 {
     S5L8930DisplayState *s = opaque;
 
+    /* stop-after-vsyncs: the jank harness steps the machine one input sample per N vsyncs, so a gesture's
+     * touch timing is fixed in virtual time instead of following the host's wall clock (docs/perf-jank.md). */
+    if (s->vsync_input[0]) {
+        /* "abs X Y" (0..32767) or "btn 0|1": the harness's touch sample, queued while the VM was paused and
+         * delivered here, on the vsync, so its guest time is exact (input-send-event refuses a paused VM). */
+        int x, y, down;
+        if (sscanf(s->vsync_input, "abs %d %d", &x, &y) == 2) {
+            qemu_input_queue_abs(NULL, INPUT_AXIS_X, x, 0, 32767);
+            qemu_input_queue_abs(NULL, INPUT_AXIS_Y, y, 0, 32767);
+        } else if (sscanf(s->vsync_input, "btn %d", &down) == 1) {
+            qemu_input_queue_btn(NULL, INPUT_BUTTON_LEFT, down);
+        }
+        qemu_input_event_sync();
+        s->vsync_input[0] = 0;
+    }
+    if (s->stop_after && --s->stop_after == 0) {
+        qemu_system_vmstop_request_prepare();
+        qemu_system_vmstop_request(RUN_STATE_PAUSED);
+    }
 
     /* Measured with tests/ipad1/tearcheck.py: latching here left 5.2% bad
      * frames (6.6% on a rerun) against 10.4% for the live buffer, and 8.9%
      * when latched as the swap's last FIFO word arrived. */
+    /*
+     * IT_JANK_STALL_EVERY=N (test knob, like IT_VSYNC_DIVISOR): hold a pending
+     * swap for one extra vsync every Nth stall opportunity, injecting a
+     * deterministic ~33 ms hitch. Used only to prove the jank gate catches a
+     * regression (tests/ipad1/jank.py --gate); unset in every real run.
+     */
+    static int stall_every = -1;
+    if (stall_every < 0) {
+        const char *v = getenv("IT_JANK_STALL_EVERY");
+        stall_every = v ? atoi(v) : 0;
+    }
+    if (stall_every > 0 && s->pipe[0].swap_pending) {
+        static unsigned opp;
+        if (++opp % stall_every == 0) {
+            /* Hold this swap one extra vsync: fire the VBL but not swap-done, so
+             * the swap completes next tick -- a real 2-vsync panel stall the
+             * guest blocks through in swap_wait. Records a held vsync. */
+            frame_timeline_record(&s->ftl, 0, false);
+            for (int i = 0; i < 2; i++) {
+                s->pipe[i].regs[DP_IRQ_STATUS / 4] |= DP_IRQ_VBL;
+                pipe_update_irq(&s->pipe[i]);
+            }
+            timer_mod(s->vbl, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + VBL_PERIOD_NS);
+            return;
+        }
+    }
+
+    bool new_frame = s->pipe[0].swap_pending;
+    /* One ring entry per vsync: a real swap is a new latched frame; every other
+     * vsync held the same one (a dropped/duplicated frame for the jank metric).
+     * ponytail: the Accessibility-Zoom relatch below writes new content without
+     * a swap and is recorded as held; jank.py's canonical animations all swap,
+     * so this under-counts only that one path -- key it off front-hash if a zoom
+     * animation ever needs measuring. */
+    frame_timeline_record(&s->ftl, s->pipe[0].swap_id, new_frame);
     if (s->pipe[0].swap_pending) {
         s->pipe[0].swap_pending = false;
         s->quiet_vbls = 0;
@@ -570,6 +631,7 @@ static void s5l8930_display_reset(DeviceState *dev)
     memset(&s->dart, 0, sizeof(s->dart));
     s->front_valid = false;
     s->swaps = 0;
+    frame_timeline_reset(&s->ftl);
 
     /* What iBoot leaves behind: UI0 live on a 1024x768 32bpp buffer. The
      * kernel adopts it from these registers, so without them there is no
@@ -614,6 +676,21 @@ static void s5l8930_display_realize(DeviceState *dev, Error **errp)
     qemu_console_resize(s->con, DEFAULT_WIDTH, DEFAULT_HEIGHT);
 }
 
+static char *s5l8930_get_frame_timeline(Object *obj, Error **errp)
+{
+    return frame_timeline_dump(&S5L8930_DISPLAY(obj)->ftl);
+}
+
+static void s5l8930_set_vsync_input(Object *obj, const char *v, Error **errp)
+{
+    S5L8930DisplayState *s = S5L8930_DISPLAY(obj);
+    if (strlen(v) >= sizeof(s->vsync_input)) {
+        error_setg(errp, "vsync-input: 'abs X Y' or 'btn 0|1'");
+        return;
+    }
+    pstrcpy(s->vsync_input, sizeof(s->vsync_input), v);
+}
+
 static void s5l8930_display_init(Object *obj)
 {
     S5L8930DisplayState *s = S5L8930_DISPLAY(obj);
@@ -643,6 +720,12 @@ static void s5l8930_display_init(Object *obj)
     sysbus_init_irq(sbd, &s->clcd_irq);
     sysbus_init_irq(sbd, &s->pipe[1].irq);
     object_property_add_uint32_ptr(obj, "swaps", &s->swaps, OBJ_PROP_FLAG_READ);
+    object_property_add_str(obj, "frame-timeline", s5l8930_get_frame_timeline, NULL);
+    object_property_add_uint32_ptr(obj, "stop-after-vsyncs", &s->stop_after, OBJ_PROP_FLAG_READWRITE);
+    object_property_add_str(obj, "vsync-input", NULL, s5l8930_set_vsync_input);
+    object_property_set_description(obj, "frame-timeline",
+        "Latched-frame ring, one 'seq virt_ns newframe key' line per vsync in "
+        "guest-virtual ns; the jank harness reads it (docs/perf-jank.md)");
 }
 
 static int s5l8930_display_post_load(void *opaque, int version_id)
