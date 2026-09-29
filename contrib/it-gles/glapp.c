@@ -2,8 +2,8 @@
  * glapp -- a real iOS application, with a real CAEAGLLayer, drawing through
  * the GLES HLE path and composited by CoreAnimation.
  *
- * gles_fw already proved that OpenGLES.framework dispatches into our
- * MBXGLEngine replacement. What it could not prove is the last inch: a
+ * A command-line probe (gles_fw, since deleted) proved that OpenGLES.framework
+ * dispatches into our MBXGLEngine replacement. What it could not prove is the last inch: a
  * command-line process can create a UIWindow, but SpringBoard never composites
  * it, so -[EAGLContext renderbufferStorage:fromDrawable:] has nothing
  * meaningful behind it and the frame can only reach the panel through the debug
