@@ -20,10 +20,20 @@ with patch.object(R.time, "sleep"):
         ([reply("sblaunch: old helper")], False, 0),
     ):
         dev.qmp.reset_mock()
-        with patch.object(R, "springboard", side_effect=replies):
-            ok, _ = R.unlock(None, 22, dev, tries=1)
+        with patch.object(R, "springboard", side_effect=replies), \
+             patch.object(R.itqmp, "agent", return_value=(0, b"text: Home")):
+            ok, _ = R.unlock(None, R.AgentControl(dev.qmp), dev, tries=1)
             assert ok is expected
             assert dev.qmp.swipe.call_count == swipes
+            assert dev.qmp.tap.call_count == 0
+
+    # A first unlock's "Edit Home Screen" tip is dismissed with one tap, then left alone.
+    dev.qmp.reset_mock()
+    with patch.object(R, "springboard", return_value=reply("sblaunch: locked=0 passcode=0")), \
+         patch.object(R.itqmp, "agent", side_effect=[(0, b"text: Edit Home Screen"), (0, b"text: Home")]), \
+         patch.object(R, "log"):
+        assert R.unlock(None, R.AgentControl(dev.qmp), dev, tries=1)[0]
+        assert dev.qmp.tap.call_count == 1
 
     for text, rc, expected in (
         ("sblaunch: frontmost=org.example.App", 0, True),

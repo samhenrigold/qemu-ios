@@ -13,6 +13,8 @@ header = r'''
 #include <string.h>
 #include <stdio.h>
 typedef int SysBusDevice;
+typedef int DeviceState;
+#define ROUND_UP(n,d) (((n)+(d)-1)/(d)*(d))
 typedef int MemoryRegion;
 typedef uint64_t hwaddr;
 typedef int *qemu_irq;

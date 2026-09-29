@@ -23,8 +23,9 @@ static bool mt_trace(void) { return false; }
 static uint64_t now;
 static uint64_t qemu_clock_get_ns(int clock) { return now; }
 ''' + wire + r'''
-typedef struct { uint64_t last_frame_timestamp; uint32_t frame_counter; } IPodTouchMultitouchState;
+typedef struct { uint64_t last_frame_timestamp; uint32_t frame_counter; const MTSensorProfile *profile; } IPodTouchMultitouchState;
 '''
+code += re.search(r'^const MTSensorProfile mt_profile_ipod = \{.*?^\};\n.*?^const MTSensorProfile mt_profile_k48 = \{.*?^\};', source, re.M|re.S).group() + '\n'
 for name in ('mt_clamp_vel', 'mt_frame_slots', 'mt_const_fingerid', 'mt_build_frame'):
     match = re.search(r'^static [^\n]*\b'+name+r'\([^;]*?\n\{.*?^}', source, re.M|re.S)
     assert match, name
@@ -47,7 +48,7 @@ static void inspect(MTFrame *frame, unsigned length, unsigned fingers) {
 }
 int main(void) {
     unsetenv("IT_MT_PAD_FINGERS");unsetenv("IT_MT_FINGERID");
-    IPodTouchMultitouchState s={0};MTFingerState fingers[5]={0};
+    IPodTouchMultitouchState s={.profile=&mt_profile_ipod};MTFingerState fingers[5]={0};
     for(unsigned n=0;n<=5;n++) {
         memset(fingers,0,sizeof(fingers));
         for(unsigned i=0;i<n;i++)fingers[i]=(MTFingerState){.phase=MT_FINGER_DOWN,.x=.5f,.y=.5f};
@@ -63,7 +64,15 @@ int main(void) {
     unsigned length;now+=100000000;
     MTFrame *frame=mt_build_frame(&s,fingers,&length);inspect(frame,length,1);
     uint8_t *p=(uint8_t*)frame;
-    assert(p[45]==5 && p[46]==MT_EVENT_TOUCH_ENDED);free(frame);
+    assert(p[45]==5 && p[46]==MT_EVENT_TOUCH_ENDED);
+    assert((int16_t)le16(p+49)==MT_INTERNAL_SENSOR_SURFACE_WIDTH/2 && (int16_t)le16(p+51)==MT_INTERNAL_SENSOR_SURFACE_HEIGHT/2);
+    free(frame);
+    /* K48: the measured frame offset + span (ipad1 calibration) place the finger */
+    s.profile=&mt_profile_k48;memset(fingers,0,sizeof(fingers));
+    fingers[0]=(MTFingerState){.phase=MT_FINGER_DOWN,.x=.25f,.y=.75f};now+=100000000;
+    frame=mt_build_frame(&s,fingers,&length);inspect(frame,length,1);p=(uint8_t*)frame;
+    assert((int16_t)le16(p+49)==-72+(int)(.25f*14566) && (int16_t)le16(p+51)==33+(int)(.75f*19465));
+    free(frame);
     puts("PASS: empty, one-to-five contact and sparse-slot frames; all checksums and idle timestamp");
 }
 '''

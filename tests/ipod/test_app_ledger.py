@@ -47,8 +47,15 @@ with tempfile.TemporaryDirectory() as temporary:
     with patch.object(R,'prepare_app_control',return_value=22),patch.object(R,'ipa_bundle_id',return_value='org.example.App'), \
          patch.object(R,'unlock',return_value=(True,'')),patch.object(R,'springboard',return_value=response), \
          patch.object(R,'foreground_is',return_value=True),patch.object(R,'to_png'),patch.object(R,'lit_count',return_value=(255,300000)), \
+         patch.object(R.shutil,'which',return_value='/usr/local/bin/idevicesyslog'),patch.object(R,'mux_env',return_value={}), \
+         patch.object(R,'run') as run,patch.object(R,'guest_file',return_value=b'plist'), \
          patch.object(R.time,'monotonic',side_effect=[100,100,105,120]),patch.object(R.time,'sleep') as sleep:
-        assert R.check_applaunch(SimpleNamespace(ipa=str(ipa),launch_stages=True),None,dev,R.Result('applaunch'))
-        assert [call.args[0] for call in sleep.call_args_list]==[5,15,10]
+        procs=Mock()
+        assert R.check_applaunch(SimpleNamespace(ipa=str(ipa),launch_stages=True),procs,dev,R.Result('applaunch'))
+        # syslog capture started 3 s before the launch; stages at 5 s and 20 s, verdict at 30 s
+        assert procs.spawn.call_args.args[0]==['idevicesyslog']
+        assert [call.args[0] for call in sleep.call_args_list]==[3,5,15,10]
+        assert run.call_args.args[0][:2]==['idevicecrashreport','-k']
+        assert (root/'installation.plist').read_bytes()==b'plist'
         assert [Path(call.args[0]).name for call in dev.qmp.shot.call_args_list]==['app-5s.ppm','app-20s.ppm','app.ppm']
 print('PASS: exact-file identity, failed/skipped checks, review boundaries, durable progress, launch timing and preserved evidence')
