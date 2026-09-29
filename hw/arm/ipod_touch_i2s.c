@@ -1145,7 +1145,14 @@ static uint64_t ipod_touch_i2s_read(void *opaque, hwaddr offset, unsigned size)
     it_i2s_log_caller(offset, 0);
 
     switch (offset) {
-    case IT_I2S_ENABLE: val = s->enable; break;
+    case IT_I2S_ENABLE:
+        /* Bit 1 is read-only status: the block has stopped (bit 0 clear). The iOS 4.0 betas 1-3
+         * (8A230m, 8A248c, 8A260b) power the block off with TXCOM = 0, RXCOM = 0, reg 0 = 0x30 and
+         * then spin on this bit with no timeout; 8A274b onward write 0x20 and skip the wait behind
+         * a flag. An echo never set it: shutdown took ~30 s (8A248c/8A260b) or never finished
+         * (8A230m) (LightTouchMac docs/smoke.md #4). */
+        val = (s->enable & ~IT_I2S_ENABLE_IDLE) | (s->enable & 1 ? 0 : IT_I2S_ENABLE_IDLE);
+        break;
     case IT_I2S_TXCON:  val = s->txcon;  break;
     case IT_I2S_TXCOM:  val = s->txcom;  break;
     case IT_I2S_RXCON:  val = s->rxcon;  break;
