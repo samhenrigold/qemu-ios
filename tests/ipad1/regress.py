@@ -13,7 +13,15 @@ host). Checks run in parallel, each on its own QEMU.
            the USB keyboard attached, no stock "USB device not supported" alert and Hold locks the panel
            (--guest-package DIR: it_boot must report the offered serial; a package installed this boot
            means one more boot on the same overlay, the first one's mounter ran the old shim)
-           and the GL bridge refused nothing on the way (gles-rejects), nothing painted magenta
+           and the GL bridge refused nothing on the way (gles-rejects), nothing painted magenta.
+           5.x (the device lock's build): what a 5.x boot shows instead. Lit; it_boot's report (a device
+           with a guest package: its console line naming the lock's seed, or with --guest-package as
+           above); lockdown answering over usbmux (ProductVersion, ActivationState Activated when the
+           device has an activation hook); after the slide, Setup Assistant's first page (a fresh device)
+           or the home screen (a device past Setup), read off the screen (tests/ipad1/ocr.swift) and, with
+           it_agent up, the frontmost app agreeing; no alert over it; Hold locks the panel; GL clean
+  gles     SpringBoard's compositor through the GL bridge (see check_gles); on 5.x a fresh device walks
+           Setup Assistant first, page by page as the screen shows them
 
   usbmux   ideviceinfo over the bridge answers ProductVersion (the store's device.lock.json, else
            3.2.2), DeviceClass iPad
@@ -308,6 +316,8 @@ def check_boot(cfg, r):
                 if not detail:
                     return
                 pkg = "; loader installed serial %s, boot 2 %s" % (serial, b.guest_package_status(timeout=60).split(" (")[0])
+        if cfg.major >= 5:
+            return check_boot_5(cfg, r, b, detail + pkg)
         for attempt in range(2):
             b.drag(UNLOCK_FROM, UNLOCK_TO)   # at once: the lock screen dims about 8 s after it appears
             time.sleep(10)                   # 4.2.1's alert would be up by now
@@ -320,45 +330,108 @@ def check_boot(cfg, r):
             return r.set(False, "unlock failed: %s 10 s after the slide" % home)
         if MSM_QUIET not in open(b.serial, errors="replace").read():
             return r.set(False, "the mounter never reported hiding the USB alert (see %s/home.ppm)" % os.path.basename(b.dir))
-        # The lock button, which the alert used to defeat (Hold blanked the panel and it lit again at once).
-        b.press("hold")
-        t0, lit = time.time(), 1.0
-        while time.time() - t0 < LOCK_S and lit > DARK_MAX_FRACTION:
-            time.sleep(1)
-            lit = b.lit("dark")
-        if lit > DARK_MAX_FRACTION:
-            return r.set(False, "Hold did not lock: panel still lit (%.0f%%) %d s later (the USB alert?)" % (lit * 100, LOCK_S))
-        time.sleep(3)   # ... and it stays dark: the alert used to relight it at once
-        if b.lit("dark") > DARK_MAX_FRACTION:
-            return r.set(False, "Hold locked the panel but it lit again within 3 s (the USB alert?)")
-        gl_clean(b, r, "%s; unlocked, shim hid the USB alert, Hold locked the panel in %d s%s" % (detail, time.time() - t0, pkg), [b.shot("boot-gl")])
+        locked = hold_locks(b)
+        if not locked.startswith("Hold locked"):
+            return r.set(False, locked)
+        gl_clean(b, r, "%s; unlocked, shim hid the USB alert, %s%s" % (detail, locked, pkg), [b.shot("boot-gl")])
     finally:
         b.stop()
 
 
-# iOS 5's Setup Assistant, which every fresh 5.x device opens behind its "slide to set up" lock screen:
-# (screen, [(panel x, y, hold s), ...]) in order, each tap waiting for the screen to change. The picks: English,
-# the country list's Australia (on screen without scrolling), Location Services off (+ its confirmation),
-# the Wi-Fi page as it comes (the model's open BSS), a new iPad, no Apple ID (the link, then "Skip"), the
-# terms (+ confirmation), no diagnostics, "Start Using iPad". With an activation hook the activation page
-# never shows (lockdownd reports Activated).
-# A tap counts once the part of the screen it should change has changed: the navigation bar's title (TITLE,
-# the portrait top edge) for a step to the next page, the list for a pick; a tap that opens an alert, once the
-# alert's navy buttons fill ALERT (right of the Apple ID page's never-ending icon carousel). Only such a tap is
-# retried (the Apple ID page's "Skip This Step" link sometimes misses): behind a modal alert a second one does nothing.
+def hold_locks(b):
+    """Press Hold: "Hold locked the panel in N s" if it goes dark and stays so, else what went wrong. The lock
+    button is what the USB alert used to defeat (Hold blanked the panel and it lit again at once)."""
+    b.press("hold")
+    t0, lit = time.time(), 1.0
+    while time.time() - t0 < LOCK_S and lit > DARK_MAX_FRACTION:
+        time.sleep(1)
+        lit = b.lit("dark")
+    if lit > DARK_MAX_FRACTION:
+        return "Hold did not lock: panel still lit (%.0f%%) %d s later (an alert?)" % (lit * 100, LOCK_S)
+    took = time.time() - t0
+    time.sleep(3)   # ... and it stays dark: the alert used to relight it at once
+    if b.lit("dark") > DARK_MAX_FRACTION:
+        return "Hold locked the panel but it lit again within 3 s (an alert?)"
+    return "Hold locked the panel in %d s" % took
+
+
+def check_boot_5(cfg, r, b, detail):
+    """check_boot on 5.x, which neither shows the stock USB alert nor, fresh, a home screen: it_boot's report,
+    lockdown answering, then Setup Assistant (fresh) or the home screen (past Setup) after the slide, nothing
+    over it, Hold locks, GL clean."""
+    if cfg.package_seed is not None and not cfg.guest_package:
+        # no offer this boot, so no QC report: it_boot says which package it loaded on the console
+        said = "it_boot: package %s\n" % cfg.package_seed
+        if said not in open(b.serial, errors="replace").read():
+            return r.set(False, "%s, but it_boot never said it loaded the device's package (%r)" % (detail, said.strip()))
+        detail += "; it_boot loaded package %s" % cfg.package_seed
+    if b.usb:
+        v = b.run(["ideviceinfo", "-k", "ProductVersion"]).stdout.strip()
+        act = b.run(["ideviceinfo", "-k", "ActivationState"]).stdout.strip()
+        if v != cfg.product_version or not act or (cfg.activated and act != "Activated"):
+            return r.set(False, "%s, but lockdown answered ProductVersion %r (want %s), ActivationState %r%s" % (
+                detail, v, cfg.product_version, act, " (the device has an activation hook)" if cfg.activated else ""))
+        detail += "; lockdown %s %s" % (v, act)
+    ok, why = slide_open(b, "the lock screen")
+    if not ok:
+        return r.set(False, "%s; %s" % (detail, why))
+    region_settled(b, TITLE)
+    ppm = b.shot("opened")
+    found, front = ocr(ppm), frontmost(b)
+    if "English" in found and page_title(found) is None and front in (None, "com.apple.purplebuddy"):
+        shown = "Setup Assistant's first page"
+    elif "Safari" in found and front in (None, "com.apple.springboard"):
+        shown = "the home screen"
+    else:
+        return r.set(False, "%s; after the slide neither Setup Assistant nor the home screen (frontmost %s): %s" % (
+            detail, front, sorted(found)[:12]))
+    if alert_up(ppm) or any("support" in t.lower() for t in found):
+        return r.set(False, "%s; an alert over %s: %s" % (detail, shown, sorted(found)[:12]))
+    locked = hold_locks(b)
+    if not locked.startswith("Hold locked"):
+        return r.set(False, "%s; %s: %s" % (detail, shown, locked))
+    gl_clean(b, r, "%s; %s%s, no alert, %s" % (detail, shown, " (frontmost %s)" % front if front else "", locked),
+             [ppm])
+
+
+OCR_SRC, OCR_BIN = os.path.join(HERE, "ocr.swift"), os.path.join(ROOT, "build", "ipad1-ocr")
+ocr_lock = threading.Lock()
+
+
+def ocr(ppm):
+    """{text: (panel x, y) of its centre} for the text on a screendump, read upright by Vision
+    (tests/ipad1/ocr.swift, built here once). Of two pieces with the same text, the one nearer the top."""
+    with ocr_lock:
+        if not os.path.exists(OCR_BIN) or os.path.getmtime(OCR_BIN) < os.path.getmtime(OCR_SRC):
+            subprocess.run(["swiftc", "-O", OCR_SRC, "-o", OCR_BIN], check=True, capture_output=True)
+    found = {}
+    lines = [l.split(" ", 4) for l in subprocess.run([OCR_BIN, ppm], capture_output=True, text=True,
+                                                      check=True).stdout.splitlines()]
+    for x0, y0, x1, y1, text in sorted(lines, key=lambda l: int(l[1]), reverse=True):
+        # upright portrait -> panel: the portrait top is the panel's left edge, the portrait left its bottom
+        found[text.strip()] = ((int(y0) + int(y1)) // 2, 767 - (int(x0) + int(x1)) // 2)
+    return found
+
+
+def page_title(found):
+    """The navigation bar's title: text across the portrait top (panel x 25..65) away from its
+    Back/Next buttons (panel y 150..620); None on a page without one (Setup's language list, home)."""
+    return next((t for t, (x, y) in found.items() if 25 <= x <= 65 and 150 <= y <= 620), None)
+
+
+# iOS 5's Setup Assistant, which every fresh 5.x device opens behind its "slide to set up" lock screen. The
+# pages it shows depend on the device's state (without a Wi-Fi join it skips the Apple ID page; with an
+# activation hook it never shows activation), so the walk reads each page off the screen (its title) and
+# answers it by label: the pick below if the page has one, then its Next. The language page has no title
+# and its Next is an unlabelled arrow. An alert (navy buttons in ALERT) is answered by the first of
+# ALERT_YES it offers. "Start Using iPad" ends it.
+SETUP_PICKS = {"language": "English", "Country or Region": "Australia",
+               "Location Services": "Disable Location Services", "Set Up iPad": "Set Up as New iPad",
+               "Apple ID": "Skip This Step", "Terms and Conditions": "Agree", "Diagnostics": "Don't Send",
+               "Thank You": "Start Using iPad"}
+ALERT_YES = ("Skip", "Agree", "Continue", "OK", "Disable")
+NEXT_ARROW = (42, 28)
 TITLE, ALERT = (20, 150, 65, 620), (548, 255, 605, 515)
-SETUP_5 = [("language", [(42, 28, .12, TITLE)]),
-           ("country", [(470, 400, .12, (95, 150, 1000, 620)), (42, 28, .12, TITLE)]),
-           ("location", [(833, 500, .12, (765, 150, 860, 620)), (42, 28, .12, ALERT), (585, 315, .12, TITLE)]),
-           ("wi-fi", [(42, 28, .12, TITLE)]), ("set up", [(42, 28, .12, TITLE)]),   # (see WIFI_CONTINUE)
-           ("apple id", [(981, 385, .2, ALERT), (585, 450, .12, TITLE)]),
-           ("terms", [(1002, 32, .12, ALERT), (565, 315, .12, TITLE)]),
-           ("diagnostics", [(242, 500, .12, (150, 150, 265, 620)), (42, 28, .12, TITLE)]),
-           ("thank you", [(870, 385, .12, TITLE)])]
-
-
-# With the model's BSS not joined yet, the Wi-Fi page's Next raises "Continue without Wi-Fi?" first.
-WIFI_CONTINUE = (575, 450)
 
 
 def alert_up(ppm):
@@ -390,9 +463,8 @@ def region_settled(b, box, timeout=20):
 SLIDER = (930, 250, 990, 520)       # the "slide to set up" track, portrait bottom
 
 
-def setup_assistant_5(b):
-    """From Setup's lock screen, slide to set up (again, if a drag under load missed) and walk SETUP_5;
-    (ok, detail)."""
+def slide_open(b, what):
+    """Slide the lock screen's knob (again, if a drag under load missed) until the lock screen is gone."""
     for attempt in range(4):
         if b.lit("pre-slide") < LIT_MIN_FRACTION:     # the lock screen darkens its panel ~8 s after waking
             b.press("home")
@@ -401,43 +473,87 @@ def setup_assistant_5(b):
         b.drag(UNLOCK_FROM, UNLOCK_TO)
         time.sleep(3)
         if b.lit("slid") >= LIT_MIN_FRACTION and region(b.shot("wait"), SLIDER) != ref:
-            break
-    else:
-        return False, "Setup Assistant: slide to set up did not open it"
-    for name, taps in SETUP_5:
-        for i, (x, y, hold, box) in enumerate(taps):
-            # an alert is recognised by its navy buttons, anything else by the box changing; either way the
-            # page has to have stopped sliding in first (a tap during the slide goes nowhere)
-            region_settled(b, TITLE)
-            answered = (lambda: alert_up(b.shot("wait"))) if box == ALERT else \
-                (lambda ref=region_settled(b, box), box=box: region(b.shot("wait"), box) != ref)
-            b.shot("setup-%s-%d" % (name.replace(" ", "-"), i))
-            link = box == ALERT             # a missed tap is retried where a second one cannot land elsewhere
-            for attempt in range(3 if link else 1):
-                b.ev(x, y)
-                b.ev(btn=True)
-                time.sleep(hold)
-                b.ev(btn=False)
-                t0 = time.time()
-                while time.time() - t0 < (20 if link else 60) and not answered():
-                    time.sleep(1)
-                if answered():
-                    break
-            else:
-                return False, "Setup Assistant: the %s page did not answer tap %d" % (name, i + 1)
-            if name == "wi-fi" and alert_up(b.shot("wait")):
-                ref = region_settled(b, TITLE)
-                b.tap(WIFI_CONTINUE)
-                t0 = time.time()
-                while time.time() - t0 < 60 and region(b.shot("wait"), TITLE) == ref:
-                    time.sleep(1)
-    return True, "Setup Assistant walked (%d pages)" % len(SETUP_5)
+            return True, None
+    return False, "%s: the slide never opened it" % what
+
+
+def setup_assistant_5(b):
+    """From Setup's lock screen, slide to set up and walk whatever pages it shows; (ok, detail)."""
+    ok, why = slide_open(b, "Setup Assistant")
+    if not ok:
+        return False, why
+    pages, seen = [], {}
+    for step in range(40):
+        region_settled(b, TITLE)
+        ppm = b.shot("setup-%02d" % step)
+        found = ocr(ppm)
+        if alert_up(ppm):
+            yes = next((t for t in ALERT_YES if t in found and ALERT[0] <= found[t][0] <= ALERT[2]), None)
+            if not yes:
+                return False, "Setup Assistant: an alert with none of %s: %s" % (ALERT_YES, sorted(found))
+            b.tap(found[yes])
+            t0 = time.time()
+            while time.time() - t0 < 30 and alert_up(b.shot("wait")):
+                time.sleep(1)
+            if pages:
+                pages[-1] += " (%s)" % yes
+            continue
+        page = page_title(found) or ("language" if "English" in found else None)
+        if page is None:
+            return False, "Setup Assistant: after %s, a page it does not know: %s" % (
+                ", ".join(pages) or "the slide", sorted(found)[:12])
+        seen[page] = seen.get(page, 0) + 1
+        if seen[page] > 3:
+            return False, "Setup Assistant: the %s page did not move on: %s" % (page, sorted(found)[:12])
+        if seen[page] == 1:
+            pages.append(page)
+        pick = SETUP_PICKS.get(page)
+        ref = region(ppm, TITLE)
+        if pick in found:
+            b.tap(found[pick])
+            if pick == "Start Using iPad":
+                return wait_home_5(b, "Setup Assistant walked: %s" % ", ".join(pages))
+            time.sleep(2)
+            if alert_up(b.shot("wait")):
+                continue
+        nxt = found.get("Next", NEXT_ARROW if page == "language" else None)
+        if nxt:
+            b.tap(nxt)
+        t0 = time.time()       # the next page (its title) or an alert
+        while time.time() - t0 < 60:
+            now = b.shot("wait")
+            if region(now, TITLE) != ref or alert_up(now):
+                break
+            time.sleep(1)
+    return False, "Setup Assistant: still walking after 40 pages: %s" % ", ".join(pages)
+
+
+def wait_home_5(b, detail, timeout=60):
+    """(ok, detail) once the home screen is up: its dock's Safari on the screen and, with it_agent up,
+    SpringBoard frontmost (not Setup, not the lock screen)."""
+    t0, found, front = time.time(), {}, ""
+    while time.time() - t0 < timeout:
+        found = ocr(b.shot("home-wait"))
+        front = frontmost(b)
+        if "Safari" in found and front in (None, "com.apple.springboard"):
+            return True, detail
+        time.sleep(3)
+    return False, "%s, but no home screen %ds later (frontmost %s): %s" % (detail, timeout, front, sorted(found)[:12])
+
+
+def frontmost(b):
+    """The frontmost app's bundle id (it_agent), "Lock Screen" when SpringBoard says so; None without the agent."""
+    if not itqmp.agent_alive(b.qmp):
+        return None
+    status, out = itqmp.agent(b.qmp, "frontmost")
+    lines = out.decode(errors="replace").split("\n")
+    return "Lock Screen" if lines[1:2] == ["Lock Screen"] else (lines[0] if status == 0 else "error %d" % status)
 
 
 def check_gles(cfg, r):
     """The GL bridge under SpringBoard's own compositor: lock screen, home screen, a page swipe, Safari;
     nothing refused, nothing painted magenta. On 5.x a fresh device first walks the Setup Assistant
-    (SETUP_5; the device needs an activation hook), swipes to Spotlight and back, and closes Safari. With a --gl-test device, tests/ipad1/gltest.py's fixture
+    (setup_assistant_5, page by page; the device needs an activation hook), swipes to Spotlight and back, and closes Safari. With a --gl-test device, tests/ipad1/gltest.py's fixture
     scene as well (its readback, colour census and counters)."""
     if getattr(cfg, "gl_test", False):
         # The fixture job covers SpringBoard's screens from 12 s into every boot, so on such a
@@ -447,14 +563,19 @@ def check_gles(cfg, r):
         lines = p.stdout.strip().splitlines()
         summary = "; ".join(l.strip() for l in lines if any(k in l for k in ('"readback"', '"rejects"', 'present fps')))
         return r.set(p.returncode == 0, "gltest.py %s: %s" % ((lines or ["(no output)"])[-1], summary or p.stderr.strip()[-200:]))
-    b, detail = booted(cfg, "gles", r, keyboard=True)
+    # 5.x's Setup with a way to the internet fetches mesu's SoftwareUpdate catalog (7 MB today) and talks TLS
+    # to Apple's current servers, and then its Apple ID page ignores "Skip This Step" for minutes on end
+    # (guest idle, nothing on the wire): the walk goes without internet, the BSS joined and leased
+    # (restrict=on), and Setup takes its no-network path (Continue without Wi-Fi, no Apple ID page).
+    offline = ["-netdev", "user,id=wifi0,restrict=on"] if cfg.major >= 5 else []
+    b, detail = booted(cfg, "gles", r, keyboard=True, extra=offline)
     try:
         if not detail:
             return
         if b.lit("pre-unlock") < LIT_MIN_FRACTION:   # waiting for usbmux outlasted the lock screen's panel
             b.press("home")
             time.sleep(2)
-        five = int(cfg.product_version.split(".")[0]) >= 5
+        five = cfg.major >= 5
         if not five:
             b.drag(UNLOCK_FROM, UNLOCK_TO)
         else:
@@ -710,7 +831,11 @@ def device_args(a):
     lock = os.path.join(os.path.dirname(os.path.abspath(a.nand)), "device.lock.json")
     lockd = json.load(open(lock)) if os.path.exists(lock) else {}
     a.product_version = getattr(a, "product_version", None) or lockd.get("product_version", "3.2.2")
+    a.build = lockd.get("build", "7B500")
+    a.major = int(a.product_version.split(".")[0])
     a.gl_test = bool(lockd.get("gl_test"))      # it_gltest's scene sits over SpringBoard's screens
+    a.activated = bool((lockd.get("inputs") or {}).get("activation_hook"))
+    a.package_seed = (lockd.get("guest_package") or {}).get("seed")
 
 
 def main():
