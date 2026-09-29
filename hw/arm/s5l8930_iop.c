@@ -80,8 +80,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPState, S5L8930_IOP)
 #define FW_HDR_BSS_END      0x31c
 #define FW_MAX_SIZE         0x100000    /* scans stop here (images are 0x1b000-0x22000) */
 #define FW_CFG_MSGBUF       0x8
-#define FW_CFG_RING(h)      (0xc + 8 * (h))
-#define FW_CFG_COUNT(h)     (0x10 + 8 * (h))
+/*
+ * Ring table: {addr, count} per endpoint. iBoot-817/931 firmware (v1/v2 FMI ABI)
+ * puts it at +0xc; EmbeddedIOP-20/33 firmware (iOS 4.3+) has a word at +0xc (0)
+ * and the table at +0x10, with IOP-window addresses (s5l8930_iop_pa). The
+ * layout is probed once per load (iop_config). H-class instrument: delete with
+ * the IOP core.
+ */
+#define FW_CFG_RING(s, h)   ((s)->cfg_rings + 8 * (h))
+#define FW_CFG_COUNT(s, h)  ((s)->cfg_rings + 4 + 8 * (h))
 #define IOP_MAX_ENDPOINTS   8           /* ARM7M_MAX_ENDPOINTS */
 #define IOP_MAX_RING        1024
 
@@ -97,7 +104,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPState, S5L8930_IOP)
  * bit 0 is clear, and the answer is the same item with bit 0 set, in place
  * (fw receive 0xd40 / send 0xe00; the kext reads context[rx] for the slot).
  */
-#define RING_ENTRY_SIZE     16
+#define RING_ENTRY_SIZE     16          /* iBoot-817/931 firmware (fw receive: lsl #4) */
+#define RING_ENTRY_SIZE_V3  64          /* EmbeddedIOP-20+ firmware (8L1 fw 0xee4: lsl #6, cache-clean 0x40) */
+#define RING_ENTRY(s)       ((s)->cfg_rings == 0x10 ? RING_ENTRY_SIZE_V3 : RING_ENTRY_SIZE)
 #define RING_OWNER_AP       1
 #define RING_ITEM(w0)       ((w0) & ~3u)
 
@@ -108,6 +117,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPState, S5L8930_IOP)
 #define CTRL_OP_RSUM        0x7273756d  /* 'rsum' */
 #define CTRL_OP_SPND        0x73706e64  /* 'spnd' */
 #define CTRL_OP_TTIN        0x7474696e  /* 'ttin': console character */
+#define CTRL_DONE           0x646f6e65  /* 'done': EmbeddedIOP-20+ writes it over the opcode */
 
 /*
  * FMI/SDIO commands: 512 bytes, u32 opcode at +0, u32 status at +8
@@ -190,7 +200,8 @@ struct S5L8930IOPState {
     uint32_t fw_size;
     uint32_t self_addr;
     uint32_t fw_config;     /* 'cnfg' address; 0 = not found yet (not migrated: rescanned) */
-    uint32_t fmi_arg;       /* FMI argument shift: 0 = v1, 4 = v2; set with fw_config */
+    uint32_t fmi_arg;       /* FMI argument shift: 0 = v1, 4 = v2, 8 = v3; set with fw_config / iop_doorbell */
+    uint32_t cfg_rings;     /* ring table offset in the 'cnfg' block: 0xc (v1/v2 fw) or 0x10 (EmbeddedIOP-20+) */
     uint32_t vic_softint[IOP_VIC_COUNT];
     uint32_t vic_regs[IOP_VIC_COUNT][IOP_VIC_REGS / 4];
     uint32_t ring_rx[IOP_MAX_ENDPOINTS];
@@ -202,23 +213,23 @@ struct S5L8930IOPState {
 
 static inline uint32_t iop_ldl(hwaddr addr)
 {
-    return ldl_le_phys(&address_space_memory, addr);
+    return ldl_le_phys(&address_space_memory, s5l8930_iop_pa(addr));
 }
 
 static inline void iop_stl(hwaddr addr, uint32_t val)
 {
-    stl_le_phys(&address_space_memory, addr, val);
+    stl_le_phys(&address_space_memory, s5l8930_iop_pa(addr), val);
 }
 
 static inline void iop_read(hwaddr addr, void *buf, hwaddr len)
 {
-    address_space_read(&address_space_memory, addr, MEMTXATTRS_UNSPECIFIED,
+    address_space_read(&address_space_memory, s5l8930_iop_pa(addr), MEMTXATTRS_UNSPECIFIED,
                        buf, len);
 }
 
 static inline void iop_write(hwaddr addr, const void *buf, hwaddr len)
 {
-    address_space_write(&address_space_memory, addr, MEMTXATTRS_UNSPECIFIED,
+    address_space_write(&address_space_memory, s5l8930_iop_pa(addr), MEMTXATTRS_UNSPECIFIED,
                         buf, len);
 }
 
@@ -520,6 +531,13 @@ static uint32_t fmi_set_config(S5L8930IOPState *s, int bus, uint8_t *cmd)
         spare > FMI_MAX_PAGE) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: bad config bus %u page %u spare %u\n",
                       __func__, ARG(0x10), bpp, spare);
+        if (qemu_loglevel_mask(LOG_GUEST_ERROR)) {   /* the command's argument words */
+            int i;
+            for (i = 0; i < 0x80; i += 16) {
+                qemu_log("  +%02x: %08x %08x %08x %08x\n", i, CMD_GET(cmd, i), CMD_GET(cmd, i + 4),
+                         CMD_GET(cmd, i + 8), CMD_GET(cmd, i + 12));
+            }
+        }
         return FMI_STATUS_PARAM;
     }
     /* The kext's first set_config is a generic 2048+64 x 1 pre-probe one. */
@@ -533,9 +551,9 @@ static uint32_t fmi_set_config(S5L8930IOPState *s, int bus, uint8_t *cmd)
      * total, YaFTL's struct) where v1's firmware hard-coded 10 bytes. Only
      * the DMA size matters here; the pre-probe config sends 0.
      */
-    if (s->fmi_arg && CMD_GET(cmd, 0x50) && CMD_GET(cmd, 0x50) != FMI_META_BYTES) {
+    if (s->fmi_arg && CMD_GET(cmd, 0x4c + s->fmi_arg) && CMD_GET(cmd, 0x4c + s->fmi_arg) != FMI_META_BYTES) {
         qemu_log_mask(LOG_UNIMP, "%s: bus %d wants %u meta bytes per page, model moves %d\n",
-                      __func__, bus, CMD_GET(cmd, 0x50), FMI_META_BYTES);
+                      __func__, bus, CMD_GET(cmd, 0x4c + s->fmi_arg), FMI_META_BYTES);
     }
     s->bytes_per_page[bus] = bpp;
     s->bytes_per_spare[bus] = spare;
@@ -625,7 +643,7 @@ static uint32_t fmi_multi(S5L8930IOPState *s, int bus, uint8_t *cmd, bool write,
 
     for (i = 0; i < n; i++) {
         /* v2 CE arrays are u16 (fw 8C148 0x4444: ldrh [ce_array, i << 1]) */
-        uint32_t ce = s->fmi_arg ? lduw_le_phys(&address_space_memory, ces + 2 * i)
+        uint32_t ce = s->fmi_arg ? lduw_le_phys(&address_space_memory, s5l8930_iop_pa(ces + 2 * i))
                                  : iop_ldl(ces + 4 * i);
         uint32_t pg = iop_ldl(pages + 4 * i);
 
@@ -645,10 +663,10 @@ static uint32_t fmi_multi(S5L8930IOPState *s, int bus, uint8_t *cmd, bool write,
     DPRINTF("%s %u pages bus %d first ce %u page 0x%x: blank %u -> 0x%x\n",
             write ? "write" : "read", n, bus, iop_ldl(ces), iop_ldl(pages),
             blank, st);
-    if (s->fmi_arg) {           /* v2: +0x60 count, +0x64 status, +0x6c failing */
-        CMD_SET(cmd, 0x60, n);
-        CMD_SET(cmd, 0x64, st);
-        CMD_SET(cmd, 0x6c, 0xffffffff);
+    if (s->fmi_arg) {           /* v2: +0x60 count, +0x64 status, +0x6c failing (v3: +4) */
+        CMD_SET(cmd, 0x5c + s->fmi_arg, n);
+        CMD_SET(cmd, 0x60 + s->fmi_arg, st);
+        CMD_SET(cmd, 0x68 + s->fmi_arg, 0xffffffff);
     } else {
         CMD_SET(cmd, 0x5c, n);
         CMD_SET(cmd, 0x60, st);
@@ -686,13 +704,13 @@ static uint32_t fmi_erase_multiple(S5L8930IOPState *s, int bus, uint8_t *cmd)
             return FMI_STATUS_PARAM;
         }
         for (i = 0; i < n; i++) {
-            if (nand_erase_block(s, bus, lduw_le_p(cmd + 0x18 + 2 * i),
-                                 CMD_GET(cmd, 0x38 + 4 * i)) != FMI_STATUS_OK) {
+            if (nand_erase_block(s, bus, lduw_le_p(cmd + 0x14 + s->fmi_arg + 2 * i),
+                                 CMD_GET(cmd, 0x34 + s->fmi_arg + 4 * i)) != FMI_STATUS_OK) {
                 st = FMI_STATUS_UECC;
             }
         }
-        CMD_SET(cmd, 0x78, n);
-        CMD_SET(cmd, 0x84, 0xffffffff);
+        CMD_SET(cmd, 0x74 + s->fmi_arg, n);
+        CMD_SET(cmd, 0x80 + s->fmi_arg, 0xffffffff);
         return st;
     }
 
@@ -825,6 +843,13 @@ static void iop_control_message(S5L8930IOPState *s, hwaddr item)
         break;
     }
     iop_stl(item + 4, st);
+    /* EmbeddedIOP-20 (iOS 4.3) firmware also overwrites the opcode with 'done':
+     * that kernel's _sendControlMessageGated initialises status to -1, and a
+     * status without 'done' is a "partially completed command" that ends in
+     * the "timed out waiting for workloop" panic (seen at 4.3's shutdown). */
+    if (s->fmi_arg == 8) {
+        iop_stl(item, CTRL_DONE);
+    }
 }
 
 /* ---- rings ------------------------------------------------------------- */
@@ -862,7 +887,7 @@ static bool iop_walk_ring(S5L8930IOPState *s, int h, hwaddr ring, uint32_t n)
     uint32_t i;
 
     for (i = 0; i < n; i++) {
-        hwaddr slot = ring + s->ring_rx[h] * RING_ENTRY_SIZE;
+        hwaddr slot = ring + s->ring_rx[h] * RING_ENTRY(s);
         uint32_t w0 = iop_ldl(slot);
 
         if ((w0 & 1) == RING_OWNER_AP || RING_ITEM(w0) == 0) {
@@ -896,6 +921,14 @@ static void iop_doorbell(S5L8930IOPState *s)
 {
     static const int served[] = { RING_CONTROL, RING_SDIO, RING_FMI0, RING_FMI1 };
     hwaddr cfg = iop_config(s);
+    /* +0xc is ring 0's address on the old layout and 0 on EmbeddedIOP-20+'s (probed per
+     * doorbell: the kext fills the table after the firmware is loaded). */
+    if (cfg) {
+        s->cfg_rings = (iop_ldl(cfg + 0xc) == 0 && iop_ldl(cfg + 0x10) != 0) ? 0x10 : 0xc;
+        if (s->cfg_rings == 0x10) {
+            s->fmi_arg = 8;     /* v3 (EmbeddedIOP-20+): arguments one word further up than v2; 64-byte ring entries */
+        }
+    }
     bool any = false;
     int i;
 
@@ -907,10 +940,26 @@ static void iop_doorbell(S5L8930IOPState *s)
         qemu_log_mask(LOG_GUEST_ERROR, "%s: no 'cnfg' block in the firmware\n", __func__);
         return;
     }
+#ifdef DEBUG_S5L8930_IOP
+    for (i = 0; i < IOP_MAX_ENDPOINTS; i++) {      /* pending work on rings nobody serves */
+        hwaddr ring = iop_ldl(cfg + FW_CFG_RING(s, i));
+        uint32_t n = iop_ldl(cfg + FW_CFG_COUNT(s, i)), j;
+
+        if (!ring || n > IOP_MAX_RING || i == RING_CONTROL || i == RING_SDIO || i == RING_FMI0 || i == RING_FMI1) {
+            continue;
+        }
+        for (j = 0; j < n; j++) {
+            uint32_t w0 = iop_ldl(ring + j * RING_ENTRY(s));
+            if (RING_ITEM(w0) && !(w0 & 1)) {
+                DPRINTF("unserved ring %u slot %u: item 0x%08x op 0x%08x\n", i, j, w0, iop_ldl(RING_ITEM(w0)));
+            }
+        }
+    }
+#endif
     for (i = 0; i < ARRAY_SIZE(served); i++) {
         int h = served[i];
-        hwaddr ring = iop_ldl(cfg + FW_CFG_RING(h));
-        uint32_t n = iop_ldl(cfg + FW_CFG_COUNT(h));
+        hwaddr ring = iop_ldl(cfg + FW_CFG_RING(s, h));
+        uint32_t n = iop_ldl(cfg + FW_CFG_COUNT(s, h));
 
         if (!ring || n == 0) {
             continue;
@@ -1049,6 +1098,7 @@ static void iop_vic_write(void *opaque, hwaddr offset, uint64_t value,
     switch (reg) {
     case VIC_SOFTINT:
         s->vic_softint[vic] |= value;
+        DPRINTF("vic%d softint 0x%x\n", vic, (uint32_t)value);
         if (vic == 0 && (value & IOP_IRQ_DOORBELL)) {
             /* The firmware's IRQ 3 handler clears its own SOFTINT first. */
             s->vic_softint[0] &= ~IOP_IRQ_DOORBELL;
@@ -1061,13 +1111,23 @@ static void iop_vic_write(void *opaque, hwaddr offset, uint64_t value,
 #ifdef DEBUG_S5L8930_IOP
             {
                 hwaddr cfg = iop_config(s);
-                hwaddr ring = iop_ldl(cfg + FW_CFG_RING(0));
-                uint32_t n = iop_ldl(cfg + FW_CFG_COUNT(0)), i;
+                hwaddr ring = iop_ldl(cfg + FW_CFG_RING(s, 0));
+                uint32_t n = iop_ldl(cfg + FW_CFG_COUNT(s, 0)), i;
 
                 for (i = 0; i < n && i < 8; i++) {
-                    uint32_t w0 = iop_ldl(ring + i * RING_ENTRY_SIZE);
+                    uint32_t w0 = iop_ldl(ring + i * RING_ENTRY(s));
                     DPRINTF("  ring0[%u] w0=0x%08x msg={0x%08x,0x%08x}\n", i, w0,
                             iop_ldl(RING_ITEM(w0)), iop_ldl(RING_ITEM(w0) + 4));
+                }
+                for (i = 0; i < IOP_MAX_ENDPOINTS; i++) {
+                    hwaddr r = iop_ldl(cfg + FW_CFG_RING(s, i));
+                    uint32_t c = iop_ldl(cfg + FW_CFG_COUNT(s, i)), j;
+                    DPRINTF("  ring%u @0x%08x x%u rx=%u\n", i, (uint32_t)r, c, s->ring_rx[i]);
+                    for (j = 0; r && j < c && j < 8; j++) {
+                        uint32_t w0 = iop_ldl(r + j * RING_ENTRY(s));
+                        DPRINTF("    [%u] w0=0x%08x w1=0x%08x op=0x%08x st=0x%08x\n", j, w0, iop_ldl(r + j * RING_ENTRY(s) + 4),
+                                w0 ? iop_ldl(RING_ITEM(w0)) : 0, w0 ? iop_ldl(RING_ITEM(w0) + 8) : 0);
+                    }
                 }
             }
 #endif

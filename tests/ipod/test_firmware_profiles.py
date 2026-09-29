@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Kernel identification and bounded iBoot command-line discovery, with no guest required."""
+"""Kernel identification with no guest required (the iBoot literal finders live in test_iboot_literals.py)."""
 from pathlib import Path
 import subprocess, tempfile
 root=Path(__file__).resolve().parents[2]
@@ -18,39 +18,7 @@ static void load(const ITFirmwareDesc *fw){
  it_firmware_reset();
 }
 
-static void put16(uint8_t *p, uint16_t v){p[0]=v;p[1]=v>>8;}
-static void put32(uint8_t *p, uint32_t v){put16(p,v);put16(p+2,v>>16);}
-static void command_line_fixture(uint8_t *image, uint32_t base){
- memset(image,0,1024);
- put16(image,0x4c0f);put16(image+2,0x4810);put16(image+4,0x1c21);
- put16(image+6,0xf000);put16(image+8,0xf800);
- put32(image+64,base+512);put32(image+68,base+128);
- memcpy(image+128,"gBootArgs.commandLine = [%s]\n",29);
-}
-static void test_command_line(void){
- uint8_t image[1024];uint32_t base=0x10000000;
- command_line_fixture(image,base);
- assert(it_firmware_find_iboot_command_line(image,sizeof(image),base)==base+512);
- command_line_fixture(image,base+0x1000);
- assert(it_firmware_find_iboot_command_line(image,sizeof(image),base+0x1000)==base+0x1200);
- command_line_fixture(image,base);image[128]='X';
- assert(!it_firmware_find_iboot_command_line(image,sizeof(image),base));
- command_line_fixture(image,base);put32(image+64,base+900);
- assert(!it_firmware_find_iboot_command_line(image,sizeof(image),base));
- command_line_fixture(image,base);put32(image+68,base-4);
- assert(!it_firmware_find_iboot_command_line(image,sizeof(image),base));
- command_line_fixture(image,base);image[4]^=1;
- assert(!it_firmware_find_iboot_command_line(image,sizeof(image),base));
- command_line_fixture(image,base);
- memcpy(image+16,image,10);put16(image+16,0x4c0b);put16(image+18,0x480c);
- assert(!it_firmware_find_iboot_command_line(image,sizeof(image),base));
- assert(!it_firmware_find_iboot_command_line(NULL,1024,base));
- command_line_fixture(image,base);
- for(size_t n=0;n<768;n++)assert(!it_firmware_find_iboot_command_line(image,n,base));
- assert(!it_firmware_find_iboot_command_line(image,1024,UINT32_MAX-512));
-}
 int main(void){
- test_command_line();
  const ITFirmwareDesc *old=it_firmware_by_build("5F138"),*current=it_firmware_by_build("7E18");
  assert(old && current && !it_firmware_by_build("7E19") && !it_firmware_by_build(NULL));
  assert(!it_firmware_detect_kernel(NULL,100));
@@ -63,7 +31,7 @@ int main(void){
  unsigned count=reads;assert(it_firmware_loaded()==current && reads==count);
  memcpy(ram+512,old->kernel_banner,strlen(old->kernel_banner)+1);
  assert(!it_firmware_detect_kernel(ram,sizeof(ram)));
- puts("PASS: exact/ambiguous/truncated firmware, retry/cache/reset, bounded iBoot command-line discovery");
+ puts("PASS: exact/ambiguous/truncated firmware, retry/cache/reset");
 }
 '''
 with tempfile.TemporaryDirectory() as temp:

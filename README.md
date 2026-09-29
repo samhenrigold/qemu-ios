@@ -67,6 +67,17 @@ writes `BUILD_DIR/libqemu-arm.dylib`, exporting only the `qemu_ios_*` ABI. Light
 directory. The multi-device app needs the dylib from this `ipad1` line (the iPod-only `ipod_touch_2g`
 branch lacks the iPad exports).
 
+**The contract with LightTouchMac** is `contrib/export-guest-artifacts.sh OUT [BUILD_DIR]`: it builds every
+guest component from a copy of `contrib/*` (through `contrib/guest-package/build.sh`, so the checkout is
+never written) and stages what the app consumes — `guest-tools/` (the iPod set), `ipad-guest-tools/` (the
+flat set `firmwarekit` reads: helpers, AppSync, the two GL engines with `gles-names.h`, the `.itpack`s
+at `contrib/guest-package/VERSION`'s serial), `macos-app/entitlements.plist`, `include/`, and with a build
+directory `dylib/libqemu-arm.dylib` — with `manifest.json` (source commit, branch, dirty flag, sha256 of
+every input and every staged file). LightTouchMac pins this repository by commit in
+`build-support/sources.json`; its `scripts/build-guest-tools.sh` is a thin caller of the export, and its
+release build validates the staged tree against the manifest. Bump the pin when the guest tools, the
+helper ABI or the entitlements change.
+
 For a windowed stand-alone iPod run (`contrib/run-ipod-touch.sh`) the older configure line still works,
 at the cost of the FFmpeg caveat above:
 
@@ -110,6 +121,10 @@ own overlays, and signal only processes they started.
 The known-failing list at the top of `tests/gate.sh` names each unit check whose C slice or harness mock has
 fallen behind the tree, with the reason; delete a line there once its check passes again.
 
+The export for the app (`contrib/export-guest-artifacts.sh`, "Build" above) is gated on the LightTouchMac side:
+its `scripts/build-release.py --stage guest` runs the export from the commit pinned in `build-support/sources.json`
+and validates the staged tree against `manifest.json`; a pin bump is a LightTouchMac commit.
+
 ## Documentation
 
 | Where | What |
@@ -124,8 +139,8 @@ fallen behind the tree, with the reason; delete a line there once its check pass
 | `docs/research/` | Research that preceded the code (the A4 gap/reference reports, the 7B500 userland and GL notes, the Bluetooth keyboard scoping, the iPod media investigation, the run-on-an-iPhone study). Each file starts with what superseded it |
 | `docs/archive/` | Superseded plans and dated logs: the iPad milestone plan, the Sept-5 and plan-progress trackers, the packaging assessment, the August app survey, the iPod backport and guest-services plans |
 
-`docs/ipad1/*.tsv` and `docs/ipod/*.tsv` are GL dispatch tables, build inputs consumed by LightTouchMac's
-`scripts/build-guest-tools.sh` (moving them out of `docs/` is on another track). `docs/ipad1/screens/`
+`docs/ipad1/*.tsv` and `docs/ipod/*.tsv` are GL dispatch tables, build inputs `contrib/export-guest-artifacts.sh`
+stages for LightTouchMac (moving them out of `docs/` is on another track). `docs/ipad1/screens/`
 holds the iPad evidence screenshots; put new evidence in `qemu-ios-files` instead.
 
 ## Upstream

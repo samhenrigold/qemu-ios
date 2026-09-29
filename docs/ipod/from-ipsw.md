@@ -180,6 +180,37 @@ GLTest magenta 0.141 / cyan 0.281 / yellow 0.141, no unimplemented slot. Host lo
 display`, then GLTest's `GLESBindView` and `present tally: ok=600 failed=0`. 7E18 with the new shim staged
 (`regress.py --stage-gles-shim`, default tier): 8/8, same GLES colours.
 
+### 8C148: Wi-Fi and screen lock (2026-09-28)
+
+Two 4.2.1 platform bugs from the 20260928c test, both in the card/PMU models, both fixed at the register the
+driver reads rather than per version (branch `ipod-421-platform`).
+
+**"No Wi-Fi".** With `IPOD_SDIO_TRACE=1` the 4.2.1 driver enumerates the card, enables function 1, sets the
+backplane window to 0x18000000, reads chipcommon ChipID (CMD53, 4 bytes) and then re-enumerates from CMD5, in a
+loop, with no firmware download and nothing on serial. `AppleBCMWLANChipManager::withDriver` (8C148 0x80779998)
+takes `chipInfo & 0xffff`: 0x4325 -> rev 5 "BCMWLAN revision D0" / 6 "D1", 0x4329 -> B0/B1/C0, anything else
+"Unknown/Unsupported chip ID". The model answered 0x00050000: revision 5, chip number 0. 3.1.3's
+AppleBCMWLAN-1.25 only looked at the revision. Fix: `CHIPCOMMON_CHIPID` 0x00054325, the real chip's number and
+the same revision (`include/hw/arm/ipod_touch_sdio.h`). Then: 256 KiB firmware download, "dongle announced
+ready", the `ver`/`cap`/`event_msgs`/... CDC set, association, DHCP (`regress.py --checks boot,wifi`: PASS,
+"Link Up on en0, 2 DHCP reply/replies"). 3.1.3 accepts the same value (its SDIO trace is unchanged).
+
+**Lock only dims.** PMU trace (`IT_PMU_TRACE=1`) at Hold: 4.2.1 writes 0x30=0x26, 0x31=0x00 (the dim), then
+0x1d=0x12 and 0x10 0xe0 -> 0xa0; at wake 0x1d=0x12, 0x10 -> 0xe0, then 0x30=0xd2, 0x31=0x05. 3.1.3 writes
+0x30=0x01, 0x30=0x00, 0x31=0x00 and leaves 0x10 at 0xe0. So 4.2.1's `function-backlight_enable`
+(`AppleD1759PMUBacklightEnableFunction`, the DT `backlight` node's PMU function) is bit 6 of 0x10, the
+regulator-enable register, and the level is left dim; the model only read 0x30. iBoot never writes 0x10 and its
+logo lights, so the bit is set out of reset. Fix (`hw/arm/ipod_touch_pcf50633_pmu.c`): the panel level is 0x30
+while 0x10 bit 6 is set, 0 otherwise. Probe (screendump lit count, no `IT_LCD_BRIGHT`): 8C148 Hold -> dark
+(lit 0) within 1 s, Home -> lit 460207 within 1 s; the lock screen's own idle sleep goes dark the same way.
+7E18 (nand-current) unchanged: dark within 1 s, lit 253200 within 1 s. 0x31 (0x05 whenever the light is on in
+every build, iBoot included) is stored but not decoded.
+
+Gates (`regress.py`, one emulator at a time): fresh 8C148 device (the app's 20260928c preparation) with
+`boot,fsck,persist,appinstall,applaunch,gles,agent,audio,wifi,webproxy`: 10/10 (4.5 min; webproxy = the baked PAC
+through itwebproxy, Safari's path). nand-current 7E18 with `--stage-gles-shim`, same list over two runs: 9 PASS, webproxy SKIP (that image has no
+baked PAC).
+
 ### P3, 5F138: LLB → iBoot
 
 2.1.1 needed pipeline fixes, all derived: no BuildManifest (component paths from Restore.plist and the board
@@ -227,11 +258,21 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 
 ### Remaining emulator compatibility behavior
 
-- `ipod_touch_inject_boot_args` (hw/arm/ipod_touch_2g.c) finds iBoot's restore command line
-  (`rd=md0 nand-enable-reformat=1 -progress`), its single literal, and redirects the empty-string
-  normal-boot literal in the word before it, only if Thumb code loads that word (7E18 0x0ff11b28,
-  8C148 0x0ff0a190); anything else is skipped ("unknown iBoot"). The late boot-args write
-  finds `boot_args` by signature (kernel base 0xC0000000 or 0x80000000) on any build.
+- hw/arm/it_iboot.c (board-agnostic; the iPod machine calls it after staging iBoot) finds by
+  pattern, in any iPod touch 2G iBoot (2.1.1 .. 4.2.1, pinned by tests/ipod/test_iboot_literals.py):
+  the normal-boot command-line literal it redirects at the staged `boot-args` string (the restore
+  command line `rd=md0 nand-enable-reformat=1 -progress`, its single literal, the word before it,
+  which Thumb code must load; else "unknown iBoot", nothing written); the build's security epoch
+  (the floor its epoch helper applies to the chip ID fuse field: 1/2 on 2.x, 3 on iBoot-596 = 3.0,
+  4 from iBoot-636 on), which the SYSIC model returns in POWER_ID[31:24] in place of the LLB's
+  latch, so miu_init's "Epoch Mismatch" panic no longer keys on one build; and the 2.x
+  gBootArgs.commandLine buffer for the NAND-boot data write. The late boot-args write finds
+  `boot_args` by signature (kernel base 0xC0000000 or 0x80000000) on any build.
+- 3.0 (7A341): the baked helpers (it_agent, it_typein DYLD_INSERTed into SpringBoard, sblaunch, it_prefs)
+  are linked for the 3.1+ dyld; 3.0's refuses LC_DYLD_INFO_ONLY like 2.x, so `ipod2g_device.py` omits them
+  below 3.1 (stock SpringBoard, no guest package) until a legacy-linked set exists. 3.0 has no dyld shared
+  cache (it arrived with 3.1), so `options.appsync` must be off (`patch-appsync-dylib.sh` patches the cache;
+  3.0 would need `patch_libmis.py` on libmis.dylib itself) and the GLES shim is skipped (stock engine).
 - The obsolete fixed-address logo thunk is removed along with the DeviceTree thunk.
 - The research-only IT_AMFI_ALLOW_TASKPORT kernel patch and its address overrides
   have been removed; guest integration uses the existing boot-args and AppSync path.
