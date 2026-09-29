@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
 """Actual dispatch against CGL: object lifetime, mip pixels and write masks."""
-import re
-from gles_harness import root, src, function, PRELUDE, build_and_run
-shim = (root / 'contrib/it-gles/mbxshim.c').read_text()
-slots = dict(re.findall(r'^(\d+) (\w+)$', (root / 'contrib/it-gles/slotmap.txt').read_text(), re.M))
+from gles_harness import src, function, PRELUDE, build_and_run, check_wire
 cases = src[src.index('    case GLES_SLOT_LOAD_MATRIXX:'):src.index('    case GLES_SLOT_GEN_RENDERBUFFERS:')]
-macros = dict(re.findall(r'#define (GLES_SLOT_\w+)\s+(\d+)', (root / 'include/hw/arm/guest-services/gles.h').read_text()))
-for macro in re.findall(r'case (GLES_SLOT_\w+):', cases):
-    slot = macros[macro]
-    name = re.search(r'table\[' + slot + r'\]\s*= \(void \*\)(s_\w+)', shim)[1]
-    assert slots[slot].lower().removesuffix('oes') == ('gl' + name[2:]).lower()
-    assert re.search(name + r'\([^}]+qc\(' + slot + r',', shim)
+check_wire(cases)
 mipmap = src[src.index('static int64_t gles_generate_mipmap('):src.index('static int64_t gles_pvrtc_upload(')]
 code = PRELUDE + function('gles_x(uint32_t value)\n{') + function('gles_f(uint32_t bits)\n{') + function('gles_reject(') + r'''
 static int32_t guest_matrix[16];
@@ -88,4 +80,4 @@ int main(void) {
 }
 '''
 build_and_run(code, 'it-gles-objects-')
-print('PASS: native object lifetime, drawable predicate, mipmap pixels, masks, fixed-point state/transforms and slot wiring')
+print('PASS: native object lifetime, drawable predicate, mipmap pixels, masks, fixed-point state/transforms and name-keyed wire')

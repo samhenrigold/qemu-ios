@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
-"""Actual CGL parameter queries/setters, exact guest bounds and ABI slot wiring."""
+"""Actual CGL parameter queries/setters, exact guest bounds and name-keyed wire."""
 import re
-from gles_harness import root, src, function, PRELUDE, build_and_run
-shim=(root/'contrib/it-gles/mbxshim.c').read_text()
-slots=dict(re.findall(r'^(\d+) (\w+)$',(root/'contrib/it-gles/slotmap.txt').read_text(),re.M))
-macros=dict(re.findall(r'#define (GLES_SLOT_\w+)\s+(\d+)',(root/'include/hw/arm/guest-services/gles.h').read_text()))
+from gles_harness import src, function, PRELUDE, build_and_run, check_wire
 cases=src[src.index('    case GLES_SLOT_GET_LIGHTFV:'):src.index('    case GLES_SLOT_TEX_PARAMETERI:')]
-for macro in set(re.findall(r'case (GLES_SLOT_\w+):',cases)):
- slot=macros[macro]
- name=re.search(r'table\['+slot+r'\]\s*= \(void \*\)(s_\w+)',shim)[1]
- assert slots[slot].lower()==('gl'+name[2:]).lower()
- assert re.search(name+r'\([^}]+qc\('+slot+r',',shim)
+check_wire(cases)
 for macro in ['LIGHTFV','MATERIALFV','TEX_ENVFV']:
  start=src.index('    case GLES_SLOT_'+macro+':')
  end=src.index('\n    case GLES_SLOT_',start+10)
@@ -89,7 +82,7 @@ int main(void) {
  destination(4);assert(dispatch(GLES_SLOT_GET_LIGHTFV,GL_LIGHT0,GL_AMBIENT,base)==-1 && !writes);
  assert(dispatch(GLES_SLOT_TEX_ENVIV,GL_TEXTURE_ENV,GL_TEXTURE_ENV_COLOR,base)==-1 && !reads);
  assert(glGetError()==GL_NO_ERROR);glDeleteTextures(1,&texture);g_hash_table_destroy(gh.crop);CGLSetCurrentContext(NULL);CGLDestroyContext(ctx);
- puts("PASS: light/material/texture parameter APIs, exact 1/3/4-word bounds, enum rejection, integer colors and ABI wiring");
+ puts("PASS: light/material/texture parameter APIs, exact 1/3/4-word bounds, enum rejection, integer colors and name-keyed wire");
 }
 '''
 build_and_run(code,'it-gles-params-')
