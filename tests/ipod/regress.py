@@ -86,6 +86,9 @@ ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 
 sys.path.insert(0, os.path.join(ROOT, "imgtools"))
 import itqmp  # noqa: E402  (needs the path above)
+sys.path.insert(0, os.path.join(HERE, ".."))
+import framecheck  # noqa: E402  (tests/framecheck.py: the audit's frame-reference check)
+GLES_REFS = os.path.join(HERE, "..", "gles-refs")
 
 W, H = 320, 480
 FRAME_BYTES = W * H * 3
@@ -1433,9 +1436,28 @@ def check_gles_front_end(cfg, dev, r):
     if abs(shots[-1][1] - shots[0][1]) > shots[0][1] // 20:
         # the panel still shows Safari (1.x: the iPod LCD once lost the GL write-back's dirty pages)
         return r.set(False, "the close did not reach the panel: %s" % lits)
-    return r.set(True, "SpringBoard's GL through the %s: one hello, CA's %s, %d host context(s), no refusals; %s"
+    # Frame reference (audit gap #1). Everything above is liveness -- lit counts, one hello,
+    # a live context, no refusals -- which the audit showed passes an upside-down frame
+    # (2.x/1.x), a red/blue swap and a stale surface (section 1). Diff each captured screen
+    # against its committed software-CA reference (framecheck, clock band masked). 3.0's
+    # MBXGLEngine home has no reference yet, so it is judged on liveness only, as noted.
+    prefix = ("1x" if cfg.device_version and cfg.device_version < (2, 0)
+              else "2x" if cfg.device_version and cfg.device_version < (3, 0) else None)
+    fr = []
+    if prefix:
+        for name, _lit in shots:
+            ref = os.path.join(GLES_REFS, "%s-%s.png" % (prefix, name))
+            if not os.path.exists(ref):
+                continue
+            v = framecheck.verdict(os.path.join(dev.dir, "gles-%s.png" % name), ref)
+            fr.append("%s %.3f" % (name, v["frac"]) if v["frac"] is not None else "%s ?" % name)
+            if not v["ok"]:
+                return r.set(False, "the %s frame is not the reference picture: %s (%s)"
+                             % (name, v["why"], lits))
+    frtxt = ("; frame-ref " + ", ".join(fr)) if fr else "; frame-ref none for this engine"
+    return r.set(True, "SpringBoard's GL through the %s: one hello, CA's %s, %d host context(s), no refusals%s; %s"
                  % ("legacy-linked engine" if cfg.gles_engine == "MBXGLEngine" else "GL front end",
-                    "GL contexts" if cfg.gles_engine == "MBXGLEngine" else "pixmap surfaces", contexts, lits))
+                    "GL contexts" if cfg.gles_engine == "MBXGLEngine" else "pixmap surfaces", contexts, frtxt, lits))
 
 
 def check_gles(cfg, procs, dev, r):
