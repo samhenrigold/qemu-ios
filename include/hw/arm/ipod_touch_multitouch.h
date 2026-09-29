@@ -268,7 +268,9 @@ typedef struct IPodTouchMultitouchState {
     bool touch_down;
     QEMUTimer *touch_timer;
     QEMUTimer *touch_end_timer;
-    IPodTouchSYSICState *sysic;   /* iPod: ATN goes straight into SYSIC group 3 */
+    IPodTouchSYSICState *sysic;   /* iPod: ATN goes straight into a SYSIC GPIO group */
+    uint8_t sysic_atn_group;      /* 2G: group 3 bit 13 (the default when both are 0); */
+    uint8_t sysic_atn_bit;        /* 1G: group 4 bit 27 -- set by the board with sysic */
     qemu_irq atn;                 /* otherwise: "atn" GPIO out, pulsed low per frame */
     IPodTouchGPIOState *gpio_state;
     void *pmu;   // Pcf50633State* — D1759 PMU, raises the wake-button interrupt

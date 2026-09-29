@@ -814,9 +814,14 @@ static void ipod_touch_multitouch_inform_frame_ready(IPodTouchMultitouchState *s
         qemu_irq_raise(s->atn);
         return;
     }
-    MTT("frame ready -> raise gpio3 bit13");
-    s->sysic->gpio_int_status[3] |= (1 << 13); // the multitouch interrupt bit is in group 3 (32 interrupts per group), and the 13th of the 3th group
-    qemu_irq_raise(s->sysic->gpio_irqs[3]);
+    unsigned group = 3, bit = 13;   /* 2G: 32 interrupts per group, the 13th of group 3 */
+    if (s->sysic_atn_group || s->sysic_atn_bit) {
+        group = s->sysic_atn_group;
+        bit = s->sysic_atn_bit;
+    }
+    MTT("frame ready -> raise gpio%u bit%u", group, bit);
+    s->sysic->gpio_int_status[group] |= (1u << bit);
+    qemu_irq_raise(s->sysic->gpio_irqs[group]);
 }
 
 /*

@@ -34,14 +34,22 @@ static uint8_t adm_read_u8(S5L8900ADMState *s, hwaddr addr)
     return b;
 }
 
-/* Report n "good" spares (FTL free mark set) into the data3 section. */
+/*
+ * Report the first 12 spare bytes of each queued page into the data3 section:
+ * the FTL's per-page metadata (logical page number, flags, its 0xFF "free"
+ * mark at byte 10). devos50's model wrote a synthetic free mark for every
+ * page of a multi-page read; the single-page path has always handed over the
+ * page's own spare, and the FTL compares the two views.
+ */
 static void adm_report_spares(S5L8900ADMState *s, unsigned n)
 {
-    uint8_t sbuf[0xC] = { 0 };
-    sbuf[10] = 0xFF;
+    S5L8900FMCState *fmc = s->fmc;
+    uint8_t data[FMC_BYTES_PER_PAGE], spare[FMC_BYTES_PER_SPARE];
+
     for (unsigned i = 0; i < n; i++) {
+        s5l8900_fmc_load_page(fmc, fmc->banks_to_read[i], fmc->pages_to_read[i], data, spare);
         address_space_write(&s->downstream_as, s->data3_sec_addr + i * 0xC,
-                            MEMTXATTRS_UNSPECIFIED, sbuf, sizeof(sbuf));
+                            MEMTXATTRS_UNSPECIFIED, spare, 0xC);
     }
 }
 
