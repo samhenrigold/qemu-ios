@@ -401,6 +401,32 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 				              ep, hdr_len, amtDone);
 			}
 
+			/*
+			 * As the core does: a bulk OUT transfer ends on a short packet (a
+			 * ZLP included) or once its XferSize or PktCnt runs out. A
+			 * max-packet-multiple transaction short of both leaves the endpoint
+			 * enabled, its DMA address and counts advanced, and raises nothing.
+			 * 1.x's AppleUSBDeviceMux arms 32 KiB and re-arms after a completion
+			 * that looks like a full packet (by PktCnt): a 512-byte mux packet
+			 * and the next one arrived as one 540-byte packet
+			 * ("expected 512 bytes, received 540"), the TCP stream lost 484
+			 * bytes and every lockdown session with a full-packet record died.
+			 */
+			uint32_t mps = eps->control & USB_EPCON_MPS_MASK;
+			uint32_t pkts = (eps->tx_size >> DEPTSIZ_PKTCNT_SHIFT) & DEPTSIZ_PKTCNT_MASK;
+			if (ep != 0 && !(_hdr->flags & tcp_usb_setup) && mps && amtDone
+			    && amtDone % mps == 0 && amtDone < sz && amtDone / mps < pkts) {
+				eps->control |= USB_EPCON_ENABLE;
+				eps->tx_size = (eps->tx_size
+				                & ~(DEPTSIZ_XFERSIZ_MASK | (DEPTSIZ_PKTCNT_MASK << DEPTSIZ_PKTCNT_SHIFT)))
+				             | ((sz - amtDone) & DEPTSIZ_XFERSIZ_MASK)
+				             | ((pkts - amtDone / mps) << DEPTSIZ_PKTCNT_SHIFT);
+				if (synopsys_usb_trace_enabled())
+					fprintf(stderr, "[USBTCP] OUT ep%d %zu bytes (transfer continues)\n", ep, amtDone);
+				synopsys_usb_update_irq(state);
+				return amtDone;
+			}
+
 			if (_hdr->flags & tcp_usb_setup) {
 				eps->interrupt_status |= USB_EPINT_SetUp;
 			} else {
@@ -409,6 +435,16 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 
 			eps->tx_size = (eps->tx_size & ~DEPTSIZ_XFERSIZ_MASK)
 			             | ((sz - amtDone) & DEPTSIZ_XFERSIZ_MASK);
+			/*
+			 * PktCnt counts the packets received, a ZLP or a short packet too:
+			 * 1.x tells a short-packet end from a full-packet one by it (bytes
+			 * versus packets x MPS) and re-armed after a ZLP it could not see.
+			 */
+			if (ep != 0 && mps && !(_hdr->flags & tcp_usb_setup)) {
+				uint32_t used = MIN(pkts, MAX(1u, (uint32_t)DIV_ROUND_UP(amtDone, mps)));
+				eps->tx_size = (eps->tx_size & ~(DEPTSIZ_PKTCNT_MASK << DEPTSIZ_PKTCNT_SHIFT))
+				             | ((pkts - used) << DEPTSIZ_PKTCNT_SHIFT);
+			}
 
 			/* Gated for the same reason as the IN path above. */
 			if (synopsys_usb_trace_enabled())
