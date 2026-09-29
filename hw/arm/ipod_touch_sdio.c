@@ -513,6 +513,20 @@ static void sdio_autojoin(void *opaque)
     if (s->associated) {
         return;
     }
+    /*
+     * Not in the middle of a scan: the driver's scan manager is busy until it
+     * has the results, and a join reported then is lost for good ("Can't add
+     * beacon, scan manager is busy", no BSS object, no link, and the model
+     * thinking itself associated). 5.x's first wifid scan lands about when
+     * this timer does, so a fresh device missed the join now and then
+     * (LightTouchMac smoke #40).
+     */
+    if (!s->iscan_reported) {
+        trace_sdio("[SDIO] a scan is outstanding: joining after it\n");
+        timer_mod(s->join_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  2 * NANOSECONDS_PER_SECOND);
+        return;
+    }
     trace_sdio("[SDIO] no join requested: associating with '%s' anyway\n",
            FAKE_SSID);
     sdio_send_assoc_events(s);
@@ -638,6 +652,19 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
         } else if (cmd == WLC_GET_VAR && g_str_equal(iovar, "iscanresults") &&
                    payload_len >= ISCAN_TOTAL) {
             fill_iscan_results(s, reply + hdrlen);
+        } else if (cmd == WLC_GET_VAR && g_str_equal(iovar, "counters") &&
+                   payload_len >= WL_CNT_OFF_RXBEACONMBSS + 4 && s->associated) {
+            /*
+             * wl_cnt_t's rxbeaconmbss, beacons heard from our BSS: the AP
+             * beacons every 100 TU. 5.x's AppleBCMWLANCore::updateCounters
+             * (9B206 0x80591676) reads it as RxBeacons, and checkForBeaconLoss
+             * disconnects ("Null Rx Beacon count") once it and every receive
+             * counter have stood still for six polls: with it left at zero, a
+             * quiet minute (Setup Assistant, an idle home screen) dropped the
+             * join. ponytail: the other counters stay zero.
+             */
+            stl_le_p(reply + hdrlen + WL_CNT_OFF_RXBEACONMBSS,
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / (1024 * 100 * 1000));
         } else if (cmd == WLC_GET_VAR && g_str_equal(iovar, "ver") &&
                    s->chip.fw_version && payload_len) {
             /* initFirmware logs it as "BCMWLAN Firmware Version: %s". */
@@ -1385,7 +1412,8 @@ static void ipod_touch_sdio_reset(DeviceState *dev)
     g_hash_table_remove_all(s->backplane);
     s->sb_window = CHIPCOMMON_BASE;
     s->fw_bytes = s->fw_bytes_logged = 0;
-    s->func2_seen = s->dongle_started = s->associated = s->iscan_reported = false;
+    s->func2_seen = s->dongle_started = s->associated = false;
+    s->iscan_reported = true;      /* no scan outstanding */
     s->tx_seq = s->rx_seq = 0;
     s->cdc_hdrlen = s->bdc_hdrlen = 0;
     memset(s->sdiod_regs, 0, sizeof(s->sdiod_regs));
