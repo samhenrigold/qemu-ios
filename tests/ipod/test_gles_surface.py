@@ -43,6 +43,9 @@ static ram_addr_t memory_region_get_ram_addr(MemoryRegion *mr) { return 0; }
 static void *qemu_map_ram_ptr(void *block, ram_addr_t at) { return ram + at; }
 static bool cpu_physical_memory_get_dirty(ram_addr_t at, ram_addr_t len, unsigned client)
 { return memcmp(ram + at, seen + at, len) != 0; }
+/* the writeback's stores to a surface's pages: dirty here is "differs from seen", already exact */
+#define DIRTY_CLIENTS_ALL 0xff
+static void cpu_physical_memory_set_dirty_range(ram_addr_t at, ram_addr_t len, uint8_t mask) {}
 static bool cpu_physical_memory_test_and_clear_dirty(ram_addr_t at, ram_addr_t len, unsigned client)
 {
     bool d = memcmp(ram + at, seen + at, len) != 0;

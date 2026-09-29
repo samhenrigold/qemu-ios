@@ -1,10 +1,10 @@
 /*
- * gldshim -- the gld driver plugin libGFXShared needs on iOS 4.x, installed as
+ * gldshim -- the gld driver plugin libGFXShared needs on iOS 4.x and 5.x, installed as
  * /System/Library/Frameworks/OpenGLES.framework/GLRendererFloatQEMU.bundle/GLRendererFloatQEMU
  *
- * 4.x's EAGL creates a sharegroup only if libGFXShared's gfxCreateSharedState
+ * 4.x and 5.x EAGL create a sharegroup only if libGFXShared's gfxCreateSharedState
  * finds a gld plugin and a device for the pixel format's renderer ID, and has
- * that plugin's gldCreateShared succeed. The real plugin, IMGSGX535GLDriver,
+ * the plugin make its per-device shared object. The real plugin, IMGSGX535GLDriver,
  * is found through the SGX IOAccelerator's IOGLESBundleName; without an SGX
  * there is none. libGFXShared's other registration path is the one used here:
  * gfxPluginConnectAll also loads every GLRendererFloat* bundle in OpenGLES's
@@ -14,11 +14,17 @@
  * The GL itself stays in glishim (the GLEngine replacement): it runs
  * gfxInitializeLibrary + gfxPluginConnectAll as the stock GLEngine does, and
  * nothing but libGFXShared's shared-state bookkeeping ever calls in here. So
- * the plugin answers the version check and the shared-state pair, and every
- * other gld* entry point is a stub that reports itself once and fails.
- * libGFXShared drops a plugin that lacks any of the 79 names it dlsyms
- * (ipad1_rootfs.py checks the firmware's list against this file's exports).
+ * the plugin answers the version check, device creation and the shared-object
+ * pair, and every other gld* entry point is a stub that reports itself once and
+ * fails. libGFXShared drops a plugin that lacks any name it dlsyms (4.x: 79,
+ * 5.x: 111; ipad1_rootfs.py checks the firmware's list against this file's
+ * exports). The two generations (gfx_gen.h), as each libGFXShared checks them:
+ *   4.x  gldGetVersion 3.1.0; gldCreateShared(&slot, device mask, n) per ID
+ *   5.x  gldGetVersion 4.0.44; gldCreateDevice(&device, ...) per registered device,
+ *        then gldCreateShareGroup(device, &slot, n) / gldDestroyShareGroup(slot)
  */
+#include "gfx_gen.h"
+
 extern long write(int, const void *, unsigned long);
 extern void *calloc(unsigned long, unsigned long);
 extern void free(void *);
@@ -41,12 +47,33 @@ void gldInitializeLibrary(void *svcs, unsigned z, unsigned mask, void *flush, vo
 
 void gldTerminateLibrary(void) {}
 
-/* libGFXShared requires 3.1.0 and a renderer ID with only bits 8-15 set. */
+/* 4.x libGFXShared requires 3.1.0, 5.x 4.0.44; both a renderer ID with only bits 8-15 set. */
 int gldGetVersion(int *major, int *minor, int *rev, unsigned *renderer)
 {
-    *major = 3; *minor = 1; *rev = 0; *renderer = GLD_RENDERER;
+    int five = gfx_generation() == 5;
+    *major = five ? 4 : 3; *minor = five ? 0 : 1; *rev = five ? 44 : 0; *renderer = GLD_RENDERER;
     return 1;
 }
+
+/* 5.x: one per device libGFXShared registers; its result is the first argument of gldCreateShareGroup. */
+static int gld_device;
+int gldCreateDevice(void **out, unsigned id, void *info)
+{
+    (void)id; (void)info;
+    if (out) *out = &gld_device;
+    return 0;
+}
+
+int gldDestroyDevice(void *device) { (void)device; return 0; }
+
+int gldCreateShareGroup(void *device, void **out, unsigned n)
+{
+    (void)device; (void)n;
+    if (!out || !(*out = calloc(1, 16))) return GLD_ERR;
+    return 0;
+}
+
+int gldDestroyShareGroup(void *group) { free(group); return 0; }
 
 /* gfxCreateSharedState(ids, n): gldCreateShared(&slot, device mask, 4) per ID. */
 int gldCreateShared(void **out, unsigned mask, unsigned n)
@@ -81,3 +108,17 @@ STUB(gldDestroyVertexArray) STUB(gldCreateFence) STUB(gldSetFence) STUB(gldDestr
 STUB(gldCreateQuery) STUB(gldModifyQuery) STUB(gldGetQueryInfo) STUB(gldDestroyQuery)
 STUB(gldObjectPurgeable) STUB(gldObjectUnpurgeable) STUB(gldCreateComputeContext)
 STUB(gldDestroyComputeContext) STUB(gldDiscardFramebuffer)
+/* 5.x's additions */
+STUB(gldPopulateRendererInfo) STUB(gldPopulateContextDispatch) STUB(gldUpdateReadFramebuffer)
+STUB(gldUpdateDrawFramebuffer) STUB(gldGetDeviceString) STUB(gldClearFramebufferData)
+STUB(gldBlitFramebufferData) STUB(gldReadFramebufferData) STUB(gldPresentFramebufferData)
+STUB(gldFlushContext) STUB(gldFinishContext) STUB(gldWaitForContext) STUB(gldWaitForObject)
+STUB(gldRestoreTextureData) STUB(gldCopyBufferSubData) STUB(gldRestoreBufferData)
+STUB(gldCreateSampler) STUB(gldDestroySampler) STUB(gldCreateQueue) STUB(gldDestroyQueue)
+STUB(gldFlushQueue) STUB(gldFinishQueue) STUB(gldCreateComputeProgram) STUB(gldDestroyComputeProgram)
+STUB(gldUpdateComputeProgram) STUB(gldWriteComputeProgramBinary) STUB(gldCreateKernel)
+STUB(gldDestroyKernel) STUB(gldSubmitKernel) STUB(gldSubmitNativeKernel)
+STUB(gldReadBufferDataWithQueue) STUB(gldReadTextureDataWithQueue) STUB(gldWriteBufferDataWithQueue)
+STUB(gldWriteTextureDataWithQueue) STUB(gldCopyBufferDataWithQueue) STUB(gldCopyTextureDataWithQueue)
+STUB(gldCopyBufferDataToTextureWithQueue) STUB(gldCopyTextureDataToBufferWithQueue)
+STUB(gldSubmitFenceOnQueue) STUB(gldGetFenceStatusOnQueue) STUB(gldWaitForFenceOnQueue)

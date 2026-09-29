@@ -186,3 +186,48 @@ Gates on this branch (rebased on ipad1 464fd1215f), core default: `fresh-device.
 prepared on the core) PASS; `regress.py` boot, usbmux, afc, persist, wifi, net, audio PASS (one check at a
 time); `restore-smoke.py` PASS, `--erase` PASS; 4.3.5 launchd power-off and reboot; checkpoint -> restore ->
 power-off. `iop-core=off`: 7B500 and 8C148 fresh-device PASS, HLE Wi-Fi up.
+
+## GL on 5.1.1, and the real iBoot chain (branch `ios5-gl`, 2026-09-29)
+
+A 9B206 device is now made by `imgtools/ipad1_device.py create manifests/ipad1-9B206.json` on the `iboot=`
+chain (iBoot-1219 seals it; no kboot bundle), and SpringBoard composites through the GL bridge: the Setup
+Assistant, the home screen with its labels, Spotlight, Safari opened and closed, Notes and Settings, with
+`gles-rejects` empty. Nothing is keyed on the build: each 5.x difference is read off the firmware at load (the
+GL rows in `contrib/ipad1-gles/README.md`, "5.1.1"). What each boot met, in order, with the fix and its class:
+
+| # | Met | Cause | Fix | Class |
+|---|---|---|---|---|
+| 1 | `iboot=`: `miu_init: Epoch Mismatch`, reset loop (smoke #7) | POWER_ID[31:24] is what LLB writes: the CHIPID fuse field floored at the build's epoch; the shortcut skips LLB and the model kept iBoot-817's 1 | `it_iboot_find_miu_epoch` finds miu_init's check and evaluates the image's epoch() for the model's fuse field; the machine hands it to the PMGR (`security-epoch`). 817/931: 1, 1072/1219: 2 (`tests/ipad1/test_iboot_epoch.py`) | P (the shortcut), the value as LLB computes it |
+| 2 | iBoot-1219 writes PMU 0xe0 \|= 1, 3 and spins (3b above) | `dialog_read_adc` polls ADC_CTRL's start bit, which the D1815 model never cleared; ten 50 ms timeouts mean power off | the start bit clears when a conversion completes | R |
+| 3 | `panic: pinot_read_panel_id: Mismatch between PINOT_TYPE and panel ID` | the MIPI-DSI model is the iPod's and answered the iPod panel's 3-byte ID | the K48 panel's reply, `a1 e5 69 09` (a real unit's `raw-panel-id`; iBoot normalises it to its `lcd-panel-id` 0xa1e506c9); properties `panel-id`/`panel-id-len` | R (measured) |
+| 4 | IOP panic `h2fmi_dma_wait: "dma timeout"` after a 128-page write (2 of 4 seal boots; none in the 10+ since) | the FMI can drain its write FIFO inside the CDMA's own push, signalling `sink_done` before the chain waits for it; the signal was lost | a drain during the channel's push completes the chain when it stops pushing | R |
+| 5 | GL: "gldshim lacks gldCreateDevice ..." at bake | 5.x libGFXShared's gld interface: 4.0.44, 111 names, devices and share groups | gldshim answers both generations (`gfx_gen.h`) | H (as before: a stand-in gld plugin) |
+| 6 | GL: "registered no gldshim device" | 5.x EAGL passes `gliInitializeLibrary(svcs, z, n, io, flags)`, flags 0x40000000: libGFXShared scans for `GLRendererFloat*` only with bit 31 | glishim passes 5.x's arguments on and asks for the float-renderer scan | H |
+| 7 | 64 dispatch fields unknown to the name table | 5.x added EXT_separate_shader_objects, debug label/marker, samplers, map_buffer_range, ... | rows 848-911 in `gles-names.h` (names, argc, export flags from 9B206's OpenGLES) | H (the bridge's table) |
+| 8 | `glerror:304:0x500` | CA sets texture parameter 0x28FF, which only Apple's 5.x GLEngine knows (stored in the texture, never drawn with) | the host takes it as the engine does | H |
+| 9 | `surface:0x00000000` x17, the icon labels black | 5.x CA makes label IOSurfaces with no pixel format and describes them only in the 0x38E attach (GL_LUMINANCE_ALPHA / UNSIGNED_BYTE) | glishim names the layout from the attach; the host has a `2C08` (LA88) surface | H |
+| 10 | `guest-read:fault-dropped` (a store through SpringBoard's mapping of a layer surface kept faulting after every fault-in: page mapped, store refused) | the writeback wrote the GPU's output through the CPU mapping | the host writes a rendered surface to its pages by kernel ID, as the SGX does through its own MMU | H, closer to R |
+| 11 | gles-debug cross-check: 0 agree, 265 differ | 5.x trampolines load the GC from +0x10 (slots from +0x14) and keep the context in lr in the float ones | the decoder takes the table to start after the GC load and follows lr | P (tooling) |
+| 12 | usbmux never attached; `AppleUSBCableType Detached` (4.3.x's smoke #35 too) | 5.x's (and 4.3's) charger driver biases D+/D- and reads them on D1815 ADC mux 6 to tell an Apple charger from a USB host; mid-scale read as neither | with the cable attached the lines read a host's pull-downs (0 V): `USBHost`, "entering device mode"; regress `usbmux` PASS (ProductVersion 5.1.1) | R |
+| 13 | the 4.x activation hook fails closed on 9B206's lockdownd | the shortcut is behind `cmp r6, #0; beq.w` (FPGA or iPhone5,1) and reached by movw/movt/add-pc loads | a 5.x variant of the hook (scratch, `repro-ios5gl/patch_lockdownd5.py`: the same log/function-name anchors, the gating beq.w becomes a NOP); the manifest's hook stays Sam's | P (the hook's) |
+| 14 | a fresh 5.x device opens the Setup Assistant behind "slide to set up" | real behaviour | `regress.py` gles walks it (`SETUP_5`) | - |
+| 15 | 5.1.1 slider power-off: black, SpringBoard never exits (once, from the home screen) | as 4.3.5's #27 | not diagnosed | unclassified (#27) |
+
+Also seen, unchanged: the first boot's data-migration progress bar (real), a full FTL restore after a hard Stop
+(real), Wi-Fi sometimes unjoined when the Setup Assistant reaches its page (the walk answers "Continue without
+Wi-Fi?"), and under host load 150+ the Wi-Fi driver's command-queue watchdog (6.35 s) and minute-long boots.
+
+4.3.5 on `iboot=`: iBoot-1072 now passes miu_init, the PMU, the panel and FTL_Open and stops at "Kernelcache
+image not valid" on a clone of the matrix-8L1 store (a FirmwareKit/kboot store without the IMG3 kernelcache the
+pipeline installs); a pipeline 8L1 device still needs a manifest and a keybag ramdisk (8L1's ramdisk keys are
+unpublished). On that store's kboot boot 4.3.5 reports `USBHost` and enters device mode (#12).
+
+Screens: `screens/2026-09-29-9B206-setup-language.png`, `-home.png`, `-spotlight.png`, `-safari.png` (after Home,
+byte-identical to `-home.png`).
+
+Gates (qemu-ios `ios5-gl`, host load 40-160 from other agents): 9B206 `regress.py --checks gles` PASS
+("Setup Assistant walked (9 pages), lock, home, Spotlight, Safari opened and closed; GL bridge refused
+nothing"; exports cross-check 300 agree, 0 differ) and `usbmux` PASS on devices made by `ipad1_device.py`
+with the 5.x hook; 8C148 and 7B500 `fresh-device.sh` PASS on the iBoot chain (both boots lit, clean
+power-off, no rescan); activated 8C148 and 7B500 `regress.py --checks gles,shadow` PASS (8C148 cross-check
+275/0, `_lcdPanelID 0xa1e506c9`); `tests/gate.sh --quick` 73 passed, 0 failed, 12 known.

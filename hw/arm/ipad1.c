@@ -58,6 +58,7 @@
 #include "hw/arm/guest-pasteboard.h"
 #include "hw/arm/guest-package.h"
 #include "hw/arm/ipod-agent.h"
+#include "hw/arm/it_iboot.h"
 #include "qemu/guest-random.h"
 #include "ui/console.h"
 #include "ui/input.h"
@@ -723,6 +724,29 @@ static void ipad1_init(MachineState *machine)
 
     dev = qdev_new(TYPE_S5L8930_PMGR);
     sbd = SYS_BUS_DEVICE(dev);
+    /*
+     * POWER_ID[31:24] is the boot security epoch LLB writes: the CHIPID fuse
+     * field floored at the build's epoch, which iBoot's miu_init demands back
+     * ("Epoch Mismatch"). iboot= starts past LLB, so write what the matching
+     * LLB would (same floor as its iBoot), read off the image. bootrom= runs
+     * LLB, and kboot= no iBoot: both keep the measured byte.
+     */
+    if (s->iboot_path) {
+        g_autofree gchar *img = NULL;
+        gsize len = 0;
+        uint32_t fuse = (ldl_le_p(memory_region_get_ram_ptr(&s->chipid)) >> 9) & 0x7f;
+        uint32_t epoch = 0;
+
+        if (g_file_get_contents(s->iboot_path, &img, &len, NULL)) {
+            epoch = it_iboot_find_miu_epoch((const uint8_t *)img, len, fuse);
+        }
+        if (!epoch || epoch > 0xff) {
+            warn_report("ipad1: no security epoch found in iBoot '%s'; "
+                        "POWER_ID keeps the measured epoch 1", s->iboot_path);
+        } else {
+            qdev_prop_set_uint8(dev, "security-epoch", epoch);
+        }
+    }
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_PMGR_BASE);
     sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_TIMER0));
@@ -748,6 +772,7 @@ static void ipad1_init(MachineState *machine)
         DeviceState *xp = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_TCA6408, 0x20));
         s->ltc = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_LTC4099, 0x09));
         s5l8930_ltc4099_set_usb(s->ltc, s->usb_cable);
+        s5l8930_d1815_set_usb_host(pmu, s->usb_cable);   /* the cable's far end is a host */
         qdev_connect_gpio_out(pmu, 0,
                               qemu_irq_invert(qdev_get_gpio_in(s->gpio, 0x0d)));
         qdev_connect_gpio_out(xp, 0,
@@ -856,6 +881,15 @@ static void ipad1_init(MachineState *machine)
      * link the way iBoot's pinot_init leaves it (HS clock running). */
     IPOD_TOUCH_MIPI_DSI(dev)->hs_clock_at_reset = s->kboot_path != NULL;
     qdev_prop_set_uint32(dev, "lanes", 4);      /* K48 DT #lanes */
+    /*
+     * The K48 Pinot panel's ID read, a1 e5 69 09: raw-panel-id in a real
+     * unit's DeviceTree (docs/ipad1/iboot.md), whose lcd-panel-id 0xa1e506c9
+     * is iBoot's normalisation of those four bytes. iBoot-1219 panics on a
+     * panel type it does not know ("Mismatch between PINOT_TYPE and panel
+     * ID"); 817/931 took the iPod's ID the model used to answer.
+     */
+    qdev_prop_set_uint32(dev, "panel-id", 0x0969e5a1);
+    qdev_prop_set_uint32(dev, "panel-id-len", 4);
     memory_region_add_subregion(sysmem, S5L8930_DSIM_BASE,
                                 &IPOD_TOUCH_MIPI_DSI(dev)->iomem);
     sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
@@ -1294,6 +1328,7 @@ static void ipad1_set_usb_cable(Object *obj, bool value, Error **errp)
     s->usb_cable = value;
     if (s->ltc) {
         s5l8930_ltc4099_set_usb(s->ltc, value);
+        s5l8930_d1815_set_usb_host(s->pmu, value);
         synopsys_usb_set_cable(s->usb_otg, value);
         s5l8930_d1815_usb_cable_event(s->pmu);
     }
