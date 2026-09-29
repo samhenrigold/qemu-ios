@@ -72,6 +72,7 @@ typedef struct Pcf50633State {
 	uint32_t rtc_latch;   // snapshot of the RTC counter, taken when 0x5C is read
 	bool usb_cable;       // report a USB cable as present (reg 0x04 bit 3)
 	bool shutdown_armed;  // obsolete host flag; retained for snapshot wire compatibility
+	uint8_t shutdown_reg;   /* "shutdown-reg" property */
     qemu_irq irq;
     QEMUTimer *adc_timer;
     uint16_t adc_values[16];

@@ -6,6 +6,8 @@
 
 #include "hw/arm/ipod_touch_spi.h"
 #include "migration/vmstate.h"
+#include "hw/qdev-properties.h"
+#include "qapi/error.h"
 #include "trace.h"
 
 static int apple_spi_word_size(IPodTouchSPIState *s)
@@ -110,19 +112,25 @@ static void apple_spi_run(IPodTouchSPIState *s)
     if (!(REG(s, R_CTRL) & R_CTRL_RUN)) {
         return;
     }
-    if (REG(s, R_RXCNT) == 0 && REG(s, R_TXCNT) == 0) {
+    /*
+     * The S5L8900 block has no TX count: iBoot-204's spi_write pushes up to
+     * eight bytes into TXDATA, sets RUN and waits for the interrupt (its
+     * driver at 0x1800ba48 never touches R_TXCNT), so the FIFO drains on its
+     * own. The S5L8720/S5L8930 drivers always program R_TXCNT first.
+     */
+    bool drain_tx = s->s5l8900 && !fifo8_is_empty(&s->tx_fifo);
+    if (REG(s, R_RXCNT) == 0 && REG(s, R_TXCNT) == 0 && !drain_tx) {
         return;
     }
 
     apple_spi_update_xfer_tx(s);
 
-    //printf("TX queue: %d, RX queue: %d\n", REG(s, R_TXCNT), REG(s, R_RXCNT));
-    //printf("TX buffer size: %d, RX buffer size: %d\n", fifo8_num_used(&s->tx_fifo), fifo8_num_used(&s->rx_fifo));
-
-    while (REG(s, R_TXCNT) && !fifo8_is_empty(&s->tx_fifo)) {
+    while ((REG(s, R_TXCNT) || drain_tx) && !fifo8_is_empty(&s->tx_fifo)) {
         tx = (uint32_t)fifo8_pop(&s->tx_fifo);
         rx = ssi_transfer(s->spi, tx);
-        REG(s, R_TXCNT)--;
+        if (REG(s, R_TXCNT)) {
+            REG(s, R_TXCNT)--;
+        }
         apple_spi_update_xfer_tx(s);
         if (REG(s, R_RXCNT) > 0) {
             if (fifo8_is_full(&s->rx_fifo)) {
@@ -196,8 +204,14 @@ static uint64_t ipod_touch_spi_read(void *opaque, hwaddr addr, unsigned size)
         }
         case R_STATUS: {
             int val = 0;
-            val |= (fifo8_num_used(&s->tx_fifo) << R_STATUS_TXFIFO_SHIFT);
-            val |= (fifo8_num_used(&s->rx_fifo) << R_STATUS_RXFIFO_SHIFT);
+            if (s->s5l8900) {
+                /* 8-deep FIFOs, counts at [7:4] and [11:8] (iBoot-204's SPI ISR at 0x1800bc4c/0x1800bc96). */
+                val |= (fifo8_num_used(&s->tx_fifo) << 4);
+                val |= (fifo8_num_used(&s->rx_fifo) << 8);
+            } else {
+                val |= (fifo8_num_used(&s->tx_fifo) << R_STATUS_TXFIFO_SHIFT);
+                val |= (fifo8_num_used(&s->rx_fifo) << R_STATUS_RXFIFO_SHIFT);
+            }
             r |= val;
             break;
         }
@@ -267,7 +281,12 @@ static void ipod_touch_spi_write(void *opaque, hwaddr addr, uint64_t data, unsig
         apple_spi_run(s);
     }
 
-    if(addr == R_STATUS) {
+    /*
+     * On the S5L8900 TXEMPTY/RXREADY are latched events the ISR acknowledges
+     * by writing STATUS back (iBoot-204 at 0x1800bcd4); re-asserting them as
+     * FIFO levels here left the line high and the CPU in the ISR forever.
+     */
+    if (addr == R_STATUS && !s->s5l8900) {
         apple_spi_update_xfer_tx(s);
         apple_spi_update_xfer_rx(s);
     }
@@ -299,13 +318,6 @@ static void ipod_touch_spi_reset(DeviceState *d)
     qemu_set_irq(s->irq, 0);
 }
 
-static uint32_t base_addr = 0;
-
-void set_spi_base(uint32_t base)
-{
-	base_addr = base;
-}
-
 static void ipod_touch_spi_realize(DeviceState *dev, struct Error **errp)
 {
     IPodTouchSPIState *s = IPOD_TOUCH_SPI(dev);
@@ -317,41 +329,52 @@ static void ipod_touch_spi_realize(DeviceState *dev, struct Error **errp)
      * controller index is the only thing that distinguishes them.
      */
     char bus_name[32] = { 0 };
-    snprintf(bus_name, sizeof(bus_name), "spi%u.bus", (unsigned)base_addr);
+    snprintf(bus_name, sizeof(bus_name), "spi%u.bus", (unsigned)s->base);
     s->spi = ssi_create_bus(dev, (const char *)bus_name);
 
     sysbus_init_irq(sbd, &s->irq);
     sysbus_init_irq(sbd, &s->cs_line);
     qdev_init_gpio_in_named(dev, apple_spi_cs_set, SSI_GPIO_CS, 1);
     char name[5];
-    snprintf(name, 5, "spi%d", base_addr);
+    snprintf(name, 5, "spi%d", s->base);
     memory_region_init_io(&s->iomem, OBJECT(s), &spi_ops, s, name,
                           SPI_MMIO_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
-    s->base = base_addr;
 
     fifo8_create(&s->tx_fifo, R_FIFO_TX_DEPTH);
     fifo8_create(&s->rx_fifo, R_FIFO_RX_DEPTH);
 
-    // create the peripheral
-    switch(s->base) {
-        case 0:
-        {
-            DeviceState *dev = ssi_create_peripheral(s->spi, TYPE_IPOD_TOUCH_NOR_SPI);
-            IPodTouchNORSPIState *nor = IPOD_TOUCH_NOR_SPI(dev);
-            s->nor = nor;
-            break;
-        }
-        case 1:
-            break;
-        case 4:
-        {
-            DeviceState *dev = ssi_create_peripheral(s->spi, TYPE_IPOD_TOUCH_MULTITOUCH);
-            IPodTouchMultitouchState *mt = IPOD_TOUCH_MULTITOUCH(dev);
-            s->mt = mt;
-            break;
-        }
+    /*
+     * The peripheral on the bus is a property, not a process global: the
+     * S5L8720 hangs the NOR on SPI0 and the digitizer on SPI4, the S5L8930 the
+     * same two on SPI0/SPI1, the S5L8900 the LCD panel on SPI1 and the
+     * digitizer on SPI2. Anything not listed here is a controller with nothing
+     * attached (reads return 0).
+     */
+    const char *periph = s->peripheral ? s->peripheral : "none";
+    if (!strcmp(periph, "nor")) {
+        s->nor = IPOD_TOUCH_NOR_SPI(ssi_create_peripheral(s->spi, TYPE_IPOD_TOUCH_NOR_SPI));
+    } else if (!strcmp(periph, "multitouch")) {
+        s->mt = IPOD_TOUCH_MULTITOUCH(ssi_create_peripheral(s->spi, TYPE_IPOD_TOUCH_MULTITOUCH));
+    } else if (!strcmp(periph, "none")) {
+        /* nothing on the bus */
+    } else {
+        /* Any other SSI peripheral type registered in this binary. */
+        ssi_create_peripheral(s->spi, periph);
     }
+}
+
+DeviceState *ipod_touch_spi_create(hwaddr addr, qemu_irq irq, unsigned index,
+                                   const char *peripheral, bool s5l8900)
+{
+    DeviceState *dev = qdev_new(TYPE_IPOD_TOUCH_SPI);
+    qdev_prop_set_uint8(dev, "index", index);
+    qdev_prop_set_string(dev, "peripheral", peripheral);
+    qdev_prop_set_bit(dev, "s5l8900", s5l8900);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, addr);
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, irq);
+    return dev;
 }
 
 /*
@@ -384,10 +407,17 @@ static const VMStateDescription vmstate_ipod_touch_spi = {
     }
 };
 
+static const Property ipod_touch_spi_properties[] = {
+    DEFINE_PROP_UINT8("index", IPodTouchSPIState, base, 0),
+    DEFINE_PROP_STRING("peripheral", IPodTouchSPIState, peripheral),
+    DEFINE_PROP_BOOL("s5l8900", IPodTouchSPIState, s5l8900, false),
+};
+
 static void ipod_touch_spi_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->realize = ipod_touch_spi_realize;
+    device_class_set_props(dc, ipod_touch_spi_properties);
     device_class_set_legacy_reset(dc, ipod_touch_spi_reset);
     dc->vmsd = &vmstate_ipod_touch_spi;
 }
