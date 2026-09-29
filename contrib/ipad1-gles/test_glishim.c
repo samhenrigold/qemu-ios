@@ -111,6 +111,15 @@ int main(void)
         assert(gles_trampoline_slot(five_f, 1, 905) == 12);
     }
 
+    /* 5.x attaches of format-less IOSurfaces: the layout from the attach's GL format/type */
+    {
+        static const int la[8] = { 1, 0xde1, 0x190a, 8, 8, 0x190a, 0x1401, 0 };
+        static const int bgra[8] = { 1, 0xde1, 0x1908, 8, 8, 0x80e1, 0x1401, 0 };
+        static const int half[8] = { 1, 0xde1, 0x1908, 8, 8, 0x1908, 0x8d61, 0 };
+        assert(gli_gl_fourcc(la) == 0x32433038 && gli_gl_fourcc(bgra) == 0x42475241 && !gli_gl_fourcc(half));
+        assert(gfx_generation() == 0);          /* no libGFXShared in this process */
+    }
+
     assert(!strcmp(gli_getString(ctx, 0x1F02), "OpenGL ES 2.0"));
     assert(gliCreateContext(&ctx1, pf, root, front, back, 4) == 0);
     assert(!strcmp(gli_getString(ctx1, 0x1F02), "OpenGL ES-CM 1.1"));
