@@ -304,12 +304,13 @@ def bake(mnt, config):
     front = False
     if not gli and opt.get("gles_shim", True) and not os.path.exists(os.path.join(mnt, DYLD_CACHE)):
         front, why = gles2x_front_end(mnt)
-        report["gles"] = why + ("; software CA" if front else "")
+        report["gles"] = why + ("; CA composites through it (CA_ENABLE_OGL=1)" if front else "")
     report["gles_shim"] = bool(gli or front)
     report["gles_engine"] = "MBXGLEngine" if gli else "OpenGLES" if front else None
     supported = cfg["guest_tools_supported"]
     report["guest_tools"] = "installed" if supported else "omitted: current helpers require the iOS 3.1+ dyld"
-    env = dict(os.environ, MNT=mnt, IT_GLES_SHIM="1" if gli else "0", IT_GLES_ENGINE=engine,
+    env = dict(os.environ, MNT=mnt, IT_GLES_SHIM="1" if gli else "0", IT_CA_OGL="1" if gli or front else "0",
+               IT_GLES_ENGINE=engine,
                IT_GUEST_TOOLS="1" if supported else "0")
     subprocess.run(["/bin/sh", os.path.join(HERE, "bake-guest-tools.sh")], env=env, check=True)
     if gli:
@@ -341,6 +342,9 @@ def bake(mnt, config):
     sys.path.insert(0, os.path.join(ROOT, "contrib/guest-package"))
     import mkpkg
     seeded, report["guest_package"] = mkpkg.seed(mnt, cfg["guest_package"], gli or front)
+    if front and "/" + OPENGLES not in report["guest_package"]["hooks"]:
+        # CA_ENABLE_OGL=1 over the stock driver drives the unemulated MBX: fail rather than wedge
+        raise SystemExit("%s has no OpenGLES hook for this build; rebuild contrib/guest-package" % cfg["guest_package"])
     owners += [("0 0", p) for p in seeded]
     owners += [(o, p) for o, p in GUEST_TOOL_OWNERS if os.path.lexists(os.path.join(mnt, p))]
     with open(cfg["owners"], "w") as f:

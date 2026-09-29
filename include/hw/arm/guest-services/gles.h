@@ -341,8 +341,13 @@ static inline const char *gles_id_name(uint32_t id)
  */
 #define GLES_OP_LOG                     (GLES_OP_BASE + 2)
 /* target, base, stride, width, height, FourCC, UV base, UV stride.
- * A zero base detaches the currently bound texture from guest memory. */
+ * A zero base detaches the currently bound texture from guest memory.
+ * GLES_SURFACE_WINDOW_ORDER in the target: the memory's first row is the texture's LAST (an
+ * EGL pixmap's order, 1.x/2.x's render targets: row 0 is the top of the screen, GL's y=0 the
+ * bottom), so the upload and the write-back each reverse the rows. An older host refuses it
+ * as a target it does not know. */
 #define GLES_OP_BIND_SURFACE            (GLES_OP_BASE + 3)
+#define GLES_SURFACE_WINDOW_ORDER       0x80000000u
 /* Native context lifecycle. New operations return opaque positive handles;
  * a zero sharegroup handle means the backend only supports legacy contexts. */
 #define GLES_OP_NEW_SHAREGROUP          (GLES_OP_BASE + 4)

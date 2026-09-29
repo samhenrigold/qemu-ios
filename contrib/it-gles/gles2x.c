@@ -16,6 +16,7 @@
  *             0, as the IMG driver's `OGL_GetTLSValue; popeq`.
  *             glTexImageCoreSurfaceAPPLE / glFinishTextureAPPLE are the core's GLESBindCoreSurface /
  *             GLESFinishTexture, which is what the stock ones are (0x312789d0: target, CoreSurfaceBuffer).
+ *             glGetString adds the two extensions 2.x CA insists on (see there).
  *   EAGL      EAGLContext / EAGLSharegroup, the 2.0 SDK's API. renderbufferStorage:fromDrawable: takes the
  *             layer's -nativeWindow, which 2.x QuartzCore builds as the same {bind, unbind, nextBuffer,
  *             present} closure 3.x hands its engine (-[CAEAGLLayer nativeWindow] 0x31d8dc78: +4 attach,
@@ -23,10 +24,15 @@
  *             is GLESPresentView. CoreSurface stands in for IOSurface (mbxshim iosurface_init).
  *   egl*      the 1.1 API QuartzCore's (and 1.x LayerKit's) display renderer drives: one display, three
  *             configs (8888, 565, 4444: the three QuartzCore's gles_get_config classifies), contexts on the
- *             core's GCs, pixmap surfaces over CoreSurface buffers (a texture aliasing the buffer, see
- *             GLESBindCoreSurface, attached to a framebuffer that eglMakeCurrent binds; the host writes it
- *             back at glFlush/glFinish), window surfaces over a native window as EAGL's drawable. Pbuffers
- *             and eglBindTexImage are counted refusals: QuartzCore makes neither call.
+ *             core's GCs, pixmap surfaces over CoreSurface buffers (a texture aliasing the buffer in window
+ *             order, see GLESBindCoreSurface and gles.h GLES_SURFACE_WINDOW_ORDER, attached to a framebuffer
+ *             that eglMakeCurrent binds; the host writes it back at glFlush/glFinish), window surfaces over a
+ *             native window as EAGL's drawable. Pbuffers and eglBindTexImage are counted refusals:
+ *             QuartzCore makes neither call. With CA_ENABLE_OGL=1 (the bake sets it when this hook goes
+ *             in) this is SpringBoard's compositor: 11 egl calls, 44 gl* (QuartzCore's imports), no FBOs.
+ *
+ * The r9 rule: 2.x's ABI reserves r9 as the thread pointer, so this is built with -ffixed-r9
+ * (armv6.sh under LEGACY_LINK); code that uses it breaks TSD and pthread_once for its callers.
  *
  * Nothing runs at load: QuartzCore links this framework into every UIKit process, and until a context is
  * made nothing here traps. The first context says hello and reports the export front end.
@@ -145,6 +151,28 @@ void glTexImageCoreSurfaceAPPLE(unsigned target, void *buffer)
     if (gc) GLESBindCoreSurface(gc, target, buffer);
 }
 
+/* The core's strings, plus the two extensions QuartzCore 2.x refuses GL compositing without
+ * ("CoreAnimation: unsupported graphics hardware; need APPLE_texture_rectangle extension; need
+ * APPLE_core_surface_texture extension"). Both are real here: glTexImageCoreSurfaceAPPLE is the
+ * core's BindCoreSurface, and the host samples GL_TEXTURE_RECTANGLE (3.x CA uses it too). */
+const char *glGetString(unsigned name);
+const char *glGetString(unsigned name)
+{
+    static char ext[256];
+    const char *s;
+    GuestGC *gc = gles2x_gc();
+    if (!gc) return 0;
+    s = (const char *)(unsigned long)GL(gc, glGetString, name);
+    if (name == 0x1F03 && s && !ext[0]) {
+        const char *add = " GL_APPLE_texture_rectangle GL_APPLE_core_surface_texture";
+        unsigned i = 0, k = 0;
+        while (s[k] && i < sizeof ext - 1) ext[i++] = s[k++];
+        for (k = 0; add[k] && i < sizeof ext - 1;) ext[i++] = add[k++];
+        ext[i] = 0;
+    }
+    return name == 0x1F03 && ext[0] ? ext : s;
+}
+
 void glFinishTextureAPPLE(unsigned target);
 void glFinishTextureAPPLE(unsigned target)
 {
@@ -169,6 +197,9 @@ typedef unsigned EGLBoolean;
 #define EGL_PIXMAP_BIT 0x02
 #define EGL_WINDOW_BIT 0x04
 #define GLES2X_DISPLAY ((void *)1)
+/* gles.h GLES_SURFACE_WINDOW_ORDER: a pixmap's first row is the top of the picture, GL's last
+ * (measured: CA's home screen came out upside down in texture order) */
+#define GLES2X_WINDOW_ORDER 0x80000000u
 
 /* The three QuartzCore's gles_get_config tells apart (0x31db1278: R,G,B,A of 8,8,8,8 / 5,6,5,0 /
  * 4,4,4,4, and no depth, stencil or samples). */
@@ -391,7 +422,10 @@ void *eglCreatePbufferSurface(void *dpy, void *config, const EGLint *attribs)
 
 static void egl_release_names(egl_surf_t *s)
 {
-    if (s->kind == EGL_PIXMAP_BIT && s->gc && s->gc == gles2x_gc()) {
+    /* The wire names the gc, so it need not be current, and 2.x CA destroys its surfaces with no
+     * context current (measured). Left alive, the texture's host surface stayed dirty over the
+     * buffer CA frees next, and the next flush wrote into the unmapped pages (SpringBoard SIGSEGV). */
+    if (s->kind == EGL_PIXMAP_BIT && s->gc) {
         GL(s->gc, glDeleteFramebuffers, 1, (unsigned)(unsigned long)&s->fbo);
         GL(s->gc, glDeleteTextures, 1, (unsigned)(unsigned long)&s->tex);
     }
@@ -407,7 +441,7 @@ EGLBoolean eglDestroySurface(void *dpy, void *surface)
     gles2x_cur_t *cur = gles2x_cur(0);
     if (dpy != GLES2X_DISPLAY) return egl_fail(EGL_BAD_DISPLAY);
     if (!s) return egl_fail(EGL_BAD_SURFACE);
-    egl_release_names(s);   /* ponytail: names made in another, non-current context are left to it */
+    egl_release_names(s);
     if (cur && (cur->draw == s || cur->read == s)) cur->draw = cur->read = 0;
     s->magic = 0;
     free(s);
@@ -436,7 +470,7 @@ static int egl_attach(GuestGC *gc, egl_surf_t *s)
         GL(gc, glBindTexture, 0x0DE1, s->tex);
         GL(gc, glTexParameteri, 0x0DE1, 0x2801, 0x2601);                       /* MIN_FILTER LINEAR */
         GL(gc, glTexParameteri, 0x0DE1, 0x2800, 0x2601);
-        if (!GLESBindCoreSurface(gc, 0x0DE1, s->native)) {
+        if (!GLESBindCoreSurface(gc, 0x0DE1 | GLES2X_WINDOW_ORDER, s->native)) {
             GL(gc, glBindTexture, 0x0DE1, bound);
             GL(gc, glDeleteTextures, 1, (unsigned)(unsigned long)&s->tex);
             s->tex = 0;
@@ -448,6 +482,13 @@ static int egl_attach(GuestGC *gc, egl_surf_t *s)
         GL(gc, glFramebufferTexture2D, 0x8D40, 0x8CE0, 0x0DE1, s->tex, 0);
         GL(gc, glBindTexture, 0x0DE1, bound);
         s->gc = gc;
+        {   /* the host log's evidence that CoreAnimation took the GL path (regress.py's 2.x gles leg) */
+            static int said;
+            if (!said++) {
+                w("[gles] egl: first pixmap surface "); wd(s->width); w("x"); wd(s->height);
+                w(": CoreAnimation renders through the host\n");
+            }
+        }
     }
     GL(gc, glBindFramebuffer, 0x8D40, s->fbo);
     return 1;
@@ -459,6 +500,18 @@ EGLBoolean eglMakeCurrent(void *dpy, void *draw, void *read, void *ctx)
     egl_ctx_t *c = egl_ctx(ctx);
     egl_surf_t *d = egl_surf(draw);
     if (dpy != GLES2X_DISPLAY) return egl_fail(EGL_BAD_DISPLAY);
+    {
+        /* A pixmap made not-current is a finished frame: 2.x CA brackets each frame with
+         * eglMakeCurrent(buffer) ... eglMakeCurrent(none) and swaps the buffer right after, never
+         * calling glFlush (the MBX driver's swap token waits for the GPU instead). So the host's
+         * rendered copy goes to the buffer's memory here, before the swap; left to the next
+         * frame, an animation's last frame never reached the panel (a Safari close zoom stuck
+         * with its icons half way). */
+        gles2x_cur_t *cur = gles2x_cur(0);
+        egl_surf_t *was = cur && cur->is_egl ? egl_surf(cur->draw) : 0;
+        if (was && was->kind == EGL_PIXMAP_BIT && was->gc && (was != d || !ctx))
+            GL(was->gc, glFlush, 0);
+    }
     if (!ctx) {
         gles2x_set_current(0, 0, 0, 0, 0);
         return 1;

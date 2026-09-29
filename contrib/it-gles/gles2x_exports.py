@@ -19,7 +19,7 @@ name is a new row in gles-names.h, never a silent gap.
 import os, re, struct, sys
 
 # gl* exports gles2x.c implements itself, over the core's existing entry points
-HAND = {"glTexImageCoreSurfaceAPPLE", "glFinishTextureAPPLE"}
+HAND = {"glTexImageCoreSurfaceAPPLE", "glFinishTextureAPPLE", "glGetString"}
 
 
 def scan(path):
