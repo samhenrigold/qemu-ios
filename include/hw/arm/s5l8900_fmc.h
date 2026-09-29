@@ -6,7 +6,7 @@
  * page banks behind one FIFO), fed page lists by the ADM. Ported from
  * devos50's ipod_touch_nand.c; the page store is a base directory of
  * bank<N>/<page>.page files plus an optional page-level copy-on-write overlay
- * directory that guest programs land in (no erase inference, see fmc.c).
+ * directory that guest programs and block erases land in (see fmc.c).
  */
 
 #include "qemu/osdep.h"
@@ -16,6 +16,9 @@
 #define FMC_NUM_BANKS 8
 #define FMC_BYTES_PER_PAGE 2048
 #define FMC_BYTES_PER_SPARE 64
+#define FMC_META_BYTES 12          /* FTL metadata the ADM reports/takes in data3 */
+#define FMC_PAGES_PER_BLOCK 128    /* 256 KiB erase blocks (ID byte 4 = 0xA5) */
+#define FMC_PROGRAM_PAD 16         /* pad descriptor after each programmed page */
 
 #define FMC_CHIP_ID 0xA514D3AD
 
@@ -65,6 +68,11 @@ typedef struct S5L8900FMCState {
     uint32_t banks_to_read[FMC_MAX_LIST];
     uint32_t pages_to_read[FMC_MAX_LIST];
     bool is_writing;
+    /* A program (ADM 0x400/0x500): the list above, one FTL metadata block per page. */
+    uint32_t prog_count;
+    uint32_t prog_index;
+    uint32_t prog_pad;           /* pad bytes still to swallow after a page */
+    uint8_t prog_spares[FMC_MAX_LIST][FMC_META_BYTES];
 
     char *nand_path;      /* "nand" property: base directory */
     char *nand_overlay;   /* "nand-overlay" property: writable directory, or NULL */
@@ -72,9 +80,16 @@ typedef struct S5L8900FMCState {
 
 /* Select the active bank (FMCTRL0 bit 1+bank). */
 void s5l8900_fmc_set_bank(S5L8900FMCState *s, uint32_t bank);
-/* Read (bank, page) from the store: overlay, then base, then blank. */
+/* Read (bank, page) from the store: overlay, then base, else erased (all ones). */
 void s5l8900_fmc_load_page(S5L8900FMCState *s, uint32_t bank, uint32_t page,
                            uint8_t *data, uint8_t *spare);
+/* Every data and spare bit set: what an erased page reads as. */
+bool s5l8900_fmc_page_erased(const uint8_t *data, const uint8_t *spare);
+/* Erase a 128-page block of one bank in the overlay. */
+bool s5l8900_fmc_erase_block(S5L8900FMCState *s, uint32_t bank, uint32_t block);
+/* Program the first `count` entries of banks_to_read/pages_to_read/prog_spares
+ * from the FIFO stream that follows. */
+void s5l8900_fmc_start_program(S5L8900FMCState *s, unsigned count);
 /* Load (bank, page) into the page buffers unless already there. */
 void s5l8900_fmc_buffer_page(S5L8900FMCState *s, uint32_t page);
 
