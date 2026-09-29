@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess,tempfile
 root=Path(__file__).resolve().parents[2]
 source=(root/'contrib/macos-app/qemu-macos-extras.c').read_text()
-functions=source[source.index('struct battery_input {'):source.index('static void paste_bh(')]
+functions=source[source.index('struct battery_input {'):source.index('/* One machine property from its string form')]
 code=r'''
 #include <stdbool.h>
 #include <stdlib.h>

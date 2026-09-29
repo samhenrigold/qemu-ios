@@ -43,9 +43,11 @@ static const uint8_t *gles_fetch_texels(CPUState*c,uint32_t addr,size_t size,con
 }
 static uint8_t *gles_decode_buf(size_t n) {free(decoded); return decoded=malloc(n);}
 static void gles_report_decode(uint32_t f,uint32_t w,uint32_t h,const uint8_t*d) {}
-static int cpu_memory_rw_debug(CPUState*c,uint32_t addr,uint8_t*d,size_t n,int write) {
+static int gles_guest_rw(CPUState*c,uint32_t addr,void*d,size_t n,bool write) {
     assert(addr==2 && !write && n==sizeof(deleted)); memcpy(d,&deleted,n);return 0;
 }
+static bool gles_refuse(const char *fmt,...) {return true;} /* gles-host.c counts and returns true */
+static void gles_debug_texture(GLenum target) {(void)target;}
 ''' + decoder + helpers + r'''
 static void gles_surface_forget(GLenum target) { (void)target; }   /* no IOSurfaces here */
 static int64_t dispatch(unsigned slot,const uint32_t*a) {CPUState*cpu=NULL;switch(slot) {

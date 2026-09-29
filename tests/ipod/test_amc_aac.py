@@ -90,7 +90,7 @@ static int qemu_file_get_error(QEMUFile *f) { return f->error; }
 typedef uint64_t hwaddr;
 typedef struct {
     void *decoder, *decode_timer; uint32_t pending, regs[0x3000/4], int_mask[2];
-    bool codec_decode, state_handshake, irq_armed; int irq;
+    bool codec_decode, state_handshake, irq_armed; int irq; uint64_t buf_base;
 } IPodTouchAMCState;
 #define IPOD_TOUCH_AMC(s) ((IPodTouchAMCState *)(s))
 #define AMC_REG(off) (s->regs[(off)/4])
@@ -146,7 +146,7 @@ tone_code += 'static const uint8_t tone[] = {' + ','.join(str(v) for v in b''.jo
 
 check = r'''
 int main(void) {
-    IPodTouchAMCState s = {0};
+    IPodTouchAMCState s = {.buf_base = AMC_BUF_BASE}; /* the iPod's buf-base default */
     assert(amc_program(&s) == AMC_UNKNOWN);
     s.regs[0x940/4]=0x84006e00; s.regs[0x960/4]=0xc600b800;
     s.regs[0x964/4]=0x848cba5d; s.regs[0x968/4]=0xc013f7fb;
