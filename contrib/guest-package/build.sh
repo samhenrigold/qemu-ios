@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build every guest package and pack one .itpack per arch:
-#   OUT/packages/<family>/  n72-ios3, k48-ios3, k48-ios4 (n72-ios2, n72-ios4: stubs)
+#   OUT/packages/<family>/  n72-ios3, k48-ios3, k48-ios4, k48-ios5 (n72-ios2, n72-ios4: stubs)
 #   OUT/armv6.itpack        n72-* packages + the legacy-linked loader
 #   OUT/armv7.itpack        k48-* packages + the loader
 # The components' own build.sh recipes run on a copy of their sources under
