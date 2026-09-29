@@ -1,5 +1,6 @@
 #include "hw/arm/ipod_touch_sysic.h"
 #include "migration/vmstate.h"
+#include "hw/qdev-properties.h"
 
 /*
  * Cached: consulted on every GPIO interrupt-status access, and the guest polls
@@ -42,11 +43,33 @@ static void sysic_gpio_irq_input(void *opaque, int pin, int level)
     sysic_update_gpio_irq(s, group);
 }
 
+/* IT_SYSIC_TRACE=1: every power-controller access with a host timestamp
+ * (the GPIO interrupt block has its own IT_GPIO_TRACE). Cached like the
+ * others; this sits on the guest's polling path. */
+static bool sysic_trace(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_SYSIC_TRACE") != NULL;
+    }
+    return on;
+}
+
+static uint64_t ipod_touch_sysic_read_reg(void *opaque, hwaddr addr, unsigned size);
+
 static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
 {
-    IPodTouchSYSICState *s = (IPodTouchSYSICState *) opaque;
+    uint64_t v = ipod_touch_sysic_read_reg(opaque, addr, size);
+    if (sysic_trace() && addr < GPIO_INTLEVEL) {
+        fprintf(stderr, "[SYSIC %.3f] R 0x%03x -> 0x%08x\n",
+                g_get_monotonic_time() / 1e6, (unsigned)addr, (unsigned)v);
+    }
+    return v;
+}
 
-    //fprintf(stderr, "%s: offset = 0x%08x\n", __func__, addr);
+static uint64_t ipod_touch_sysic_read_reg(void *opaque, hwaddr addr, unsigned size)
+{
+    IPodTouchSYSICState *s = (IPodTouchSYSICState *) opaque;
 
     switch (addr) {
         case POWER_ID:
@@ -62,7 +85,7 @@ static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
              * top byte on read. Configuration-gated: a normal 2.1.1 boot is untouched.
              */
             if (s->direct_boot) {
-                uint32_t epoch = 4;
+                uint32_t epoch = s->epoch;
                 if (getenv("IT_DIRECT_EPOCH")) {
                     epoch = (uint32_t)strtoul(getenv("IT_DIRECT_EPOCH"), NULL, 0);
                 }
@@ -109,17 +132,37 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
 {
     IPodTouchSYSICState *s = (IPodTouchSYSICState *) opaque;
 
-    //fprintf(stderr, "%s: writing 0x%08x to 0x%08x\n", __func__, val, addr);
+    if (sysic_trace() && addr < GPIO_INTLEVEL) {
+        fprintf(stderr, "[SYSIC %.3f] W 0x%03x <- 0x%08x\n",
+                g_get_monotonic_time() / 1e6, (unsigned)addr, (unsigned)val);
+    }
 
     switch (addr) {
         case POWER_ID:
             s->power_id = val;
             break;
         case POWER_ONCTRL:
+            if (s->s5l8900) {
+                /*
+                 * S5L8900, from iPhone OS 1.x's own use of the block: +0xC
+                 * takes a device mask to power DOWN and +0x10 one to power UP,
+                 * and STATE (+0x14) is the current on-mask. The kernel's CPU
+                 * idle routine (0xc048e6f8 in 3A101a) writes +0xC = 2 and spins
+                 * until bit 1 of STATE clears; iBoot resets a device with a
+                 * +0xC / +0x10 pulse. Latching the last write here (the S5L8720
+                 * path below) never clears a bit, so the idle loop spun forever.
+                 */
+                s->power_state &= ~val;
+                break;
+            }
             if((val & 0x20) != 0 || (val & 0x4) != 0 || (val & POWER_ID_ADM) != 0) { break; } // make sure that we do not record the 'on' state of some devices so it appears like they are turned on immediately.
             s->power_state = val;
             break;
         case POWER_OFFCTRL:
+            if (s->s5l8900) {
+                s->power_state |= val;
+                break;
+            }
             s->power_state = val;
             break;
         case GPIO_INTLEVEL ... (GPIO_INTLEVEL + GPIO_NUMINTGROUPS * 4):
@@ -272,11 +315,21 @@ static const VMStateDescription vmstate_ipod_touch_sysic = {
     }
 };
 
+/* The fused boot epoch iBoot's miu_init demands in POWER_ID[31:24] when the
+ * board substitutes the boot chain: 4 for the S5L8720, 2 for the S5L8900
+ * (iBoot-204 at 0x18001fb0 compares against 2). */
+static const Property ipod_touch_sysic_properties[] = {
+    DEFINE_PROP_BOOL("direct-boot", IPodTouchSYSICState, direct_boot, false),
+    DEFINE_PROP_UINT32("epoch", IPodTouchSYSICState, epoch, 4),
+    DEFINE_PROP_BOOL("s5l8900", IPodTouchSYSICState, s5l8900, false),
+};
+
 static void ipod_touch_sysic_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_ipod_touch_sysic;
+    device_class_set_props(dc, ipod_touch_sysic_properties);
 
     device_class_set_legacy_reset(dc, ipod_touch_sysic_reset);
 }

@@ -998,14 +998,10 @@ static void ipad1_init(MachineState *machine)
 
     /*
      * SPI: the K48 kernel drives these with the same AppleS5L8900X SPI kext
-     * as the iPod, so the iPod controller model is reused. It picks its
-     * peripheral from the global set_spi_base() index: 0 = NOR, 4 =
-     * multitouch. So the iPad's SPI1 is created as "spi4"; only the bus
-     * name and the peripheral choice come from that number.
+     * as the iPod, so the iPod controller model is reused; the peripheral on
+     * each bus is its "peripheral" property.
      */
-    set_spi_base(0);
-    dev = sysbus_create_simple(TYPE_IPOD_TOUCH_SPI, S5L8930_SPI_BASE(0),
-                               ipad1_irq(s, S5L8930_IRQ_SPI(0)));
+    dev = ipod_touch_spi_create(S5L8930_SPI_BASE(0), ipad1_irq(s, S5L8930_IRQ_SPI(0)), 0, "nor", false);
     IPOD_TOUCH_SPI(dev)->nor->nor_path = s->nor_path;
     if (s->nor_rw_path && s->nor_rw_path[0]) {
         /* Guest NOR writes (the effaceable region: format, lockers, keybag key)
@@ -1017,9 +1013,7 @@ static void ipad1_init(MachineState *machine)
     qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(S5L8930_GPIO_NOR_CS),
         qdev_get_gpio_in_named(DEVICE(IPOD_TOUCH_SPI(dev)->nor), SSI_GPIO_CS, 0));
 
-    set_spi_base(4);
-    dev = sysbus_create_simple(TYPE_IPOD_TOUCH_SPI, S5L8930_SPI_BASE(1),
-                               ipad1_irq(s, S5L8930_IRQ_SPI(1)));
+    dev = ipod_touch_spi_create(S5L8930_SPI_BASE(1), ipad1_irq(s, S5L8930_IRQ_SPI(1)), 1, "multitouch", false);
     s->mt = IPOD_TOUCH_SPI(dev)->mt;
     s->mt->profile = &mt_profile_k48;
     /* Zephyr2 ATN -> GPIO 0x15; reset (0x204) and download (0x107) are ignored. */
@@ -1036,8 +1030,7 @@ static void ipad1_init(MachineState *machine)
      * model exactly that: a controller with nothing on the bus (reads return
      * 0). Its DT interrupt is the SRDY GPIO, not a VIC line, so none is wired.
      */
-    set_spi_base(2);
-    sysbus_create_simple(TYPE_IPOD_TOUCH_SPI, S5L8930_SPI_BASE(2), NULL);
+    ipod_touch_spi_create(S5L8930_SPI_BASE(2), NULL, 2, "none", false);
 
     /*
      * M2 scaler/CSC: the iPod's (same scaler,s5l8720x driver). Absent, its

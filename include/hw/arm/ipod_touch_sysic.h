@@ -30,7 +30,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSYSICState, IPOD_TOUCH_SYSIC)
 typedef struct IPodTouchSYSICState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
-    bool direct_boot; /* Startup board compatibility policy. */
+    bool direct_boot; /* Startup board compatibility policy ("direct-boot"). */
+    uint32_t epoch;   /* "epoch" property: POWER_ID[31:24] under direct_boot */
+    bool s5l8900;     /* "s5l8900" property: +0xC powers down, +0x10 up, STATE is the on-mask */
     qemu_irq gpio_irqs[GPIO_NUMINTGROUPS];
     uint32_t power_id;
     uint32_t power_state;

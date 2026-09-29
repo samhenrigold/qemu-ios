@@ -3048,8 +3048,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     // }
 
     // init spis
-    set_spi_base(0);
-    dev = sysbus_create_simple("ipodtouch.spi", SPI0_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI0_IRQ));
+    dev = ipod_touch_spi_create(SPI0_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI0_IRQ), 0, "nor", false);
     IPodTouchSPIState *spi0_state = IPOD_TOUCH_SPI(dev);
     spi0_state->nor->nor_path = nms->nor_path;
     spi0_state->nor->boot_args = nms->boot_args;
@@ -3060,19 +3059,14 @@ static void ipod_touch_machine_init(MachineState *machine)
     qdev_connect_gpio_out(DEVICE(gpio_state), 0,
         qdev_get_gpio_in_named(DEVICE(spi0_state->nor), SSI_GPIO_CS, 0));
 
-    set_spi_base(1);
-    dev = sysbus_create_simple("ipodtouch.spi", SPI1_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI1_IRQ));
+    dev = ipod_touch_spi_create(SPI1_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI1_IRQ), 1, "none", false);
     IPodTouchSPIState *spi1_state = IPOD_TOUCH_SPI(dev);
     nms->spi1_state = spi1_state;
 
-    set_spi_base(2);
-    sysbus_create_simple("ipodtouch.spi", SPI2_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI2_IRQ));
+    ipod_touch_spi_create(SPI2_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI2_IRQ), 2, "none", false);
+    ipod_touch_spi_create(SPI3_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI3_IRQ), 3, "none", false);
 
-    set_spi_base(3);
-    sysbus_create_simple("ipodtouch.spi", SPI3_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI3_IRQ));
-
-    set_spi_base(4);
-    dev = sysbus_create_simple("ipodtouch.spi", SPI4_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI4_IRQ));
+    dev = ipod_touch_spi_create(SPI4_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI4_IRQ), 4, "multitouch", false);
     IPodTouchSPIState *spi4_state = IPOD_TOUCH_SPI(dev);
     spi4_state->mt->sysic = sysic_state;
     spi4_state->mt->gpio_state = gpio_state;

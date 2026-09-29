@@ -16,6 +16,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchChipIDState, IPOD_TOUCH_CHIPID)
 typedef struct IPodTouchChipIDState {
     SysBusDevice busdev;
     MemoryRegion iomem;
+    uint32_t word1;   /* +4: "word1" property */
+    uint32_t word2;   /* +8: "word2" property */
 } IPodTouchChipIDState;
 
 #endif

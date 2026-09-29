@@ -1,9 +1,10 @@
 #include "hw/arm/ipod_touch_chipid.h"
 #include "qemu/log.h"
+#include "hw/qdev-properties.h"
 
 static uint64_t ipod_touch_chipid_read(void *opaque, hwaddr addr, unsigned size)
 {
-    //fprintf(stderr, "%s: offset = 0x%08x\n", __func__, addr);
+    IPodTouchChipIDState *s = opaque;
 
     switch (addr) {
         case CHIPID_UNKNOWN1:
@@ -19,9 +20,9 @@ static uint64_t ipod_touch_chipid_read(void *opaque, hwaddr addr, unsigned size)
              * booting through the real verification path.
              */
             if (getenv("IT_DEV_MODE")) {
-                return 0;
+                return s->word1 & ~(1u << 5);
             }
-            return (1 << 5); // ind5 = production mode
+            return s->word1; // S5L8720 default: ind5 = production mode
         case CHIPID_INFO:
             /*
              * Bit 2 is the security-domain (secure-mode) fuse. Clearing the
@@ -33,9 +34,9 @@ static uint64_t ipod_touch_chipid_read(void *opaque, hwaddr addr, unsigned size)
              * key on secure rather than production.
              */
             if (getenv("IT_INSECURE_MODE")) {
-                return (0x8720 << 16);
+                return s->word2 & ~(1u << 2);
             }
-            return (0x8720 << 16) | (1 << 2); // ind16 = chipid, ind2 = security domain,
+            return s->word2; // S5L8720 default: ind16 = chipid, ind2 = security domain
         case CHIPID_UNKNOWN2:
             return 0;
         case CHIPID_UNKNOWN3:
@@ -80,9 +81,17 @@ static void ipod_touch_chipid_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
 }
 
+/* The fuse words as properties so one model serves both SoCs: the S5L8720
+ * reads production/security fuses and the chip id at +4/+8; the S5L8900's
+ * iBoot only reads the revision at +4 (0x02 << 24). */
+static const Property ipod_touch_chipid_properties[] = {
+    DEFINE_PROP_UINT32("word1", IPodTouchChipIDState, word1, 1u << 5),
+    DEFINE_PROP_UINT32("word2", IPodTouchChipIDState, word2, (0x8720u << 16) | (1u << 2)),
+};
+
 static void ipod_touch_chipid_class_init(ObjectClass *klass, void *data)
 {
-    
+    device_class_set_props(DEVICE_CLASS(klass), ipod_touch_chipid_properties);
 }
 
 static const TypeInfo ipod_touch_chipid_type_info = {

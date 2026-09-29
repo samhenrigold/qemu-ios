@@ -544,12 +544,20 @@ static uint32_t synopsys_usb_out_ep_read(synopsys_usb_state *_state, int _ep, hw
 	return 0;
 }
 
+static uint64_t synopsys_usb_read_reg(void *opaque, hwaddr _addr, unsigned size);
+
+/* Trace reads with the value returned, so a driver's decision can be read off the log. */
 static uint64_t synopsys_usb_read(void *opaque, hwaddr _addr, unsigned size)
 {
-	synopsys_usb_state *state = (synopsys_usb_state *)opaque;
-
+	uint64_t v = synopsys_usb_read_reg(opaque, _addr, size);
 	if (synopsys_usb_trace_enabled())
-		fprintf(stderr, "[USBTRACE] R 0x%04x (size %u)\n", (unsigned)_addr, size);
+		fprintf(stderr, "[USBTRACE] R 0x%04x -> 0x%08x (size %u)\n", (unsigned)_addr, (unsigned)v, size);
+	return v;
+}
+
+static uint64_t synopsys_usb_read_reg(void *opaque, hwaddr _addr, unsigned size)
+{
+	synopsys_usb_state *state = (synopsys_usb_state *)opaque;
 
 	switch(_addr)
 	{
