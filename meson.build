@@ -1277,12 +1277,32 @@ else
 endif
 
 slirp = not_found
-# net_slirp_set_restrict()/netdev_set_restrict flip the running slirp's restrict
-# flag in place via slirp_set_restricted(), which only the vendored (patched)
-# libslirp carries -- so force the subproject over any system copy. A static
-# vendored libslirp also sidesteps the CFI false positive the shared one hit.
-if not get_option('slirp').disabled()
-  slirp = subproject('slirp', required: get_option('slirp')).get_variable('libslirp_dep')
+if not get_option('slirp').auto() or have_system
+  slirp = dependency('slirp', required: get_option('slirp'),
+                     method: 'pkg-config')
+  # slirp < 4.7 is incompatible with CFI support in QEMU.  This is because
+  # it passes function pointers within libslirp as callbacks for timers.
+  # When using a system-wide shared libslirp, the type information for the
+  # callback is missing and the timer call produces a false positive with CFI.
+  # Do not use the "version" keyword argument to produce a better error.
+  # with control-flow integrity.
+  if get_option('cfi') and slirp.found() and slirp.version().version_compare('<4.7')
+    if get_option('slirp').enabled()
+      error('Control-Flow Integrity requires libslirp 4.7.')
+    else
+      warning('Cannot use libslirp since Control-Flow Integrity requires libslirp >= 4.7.')
+      slirp = not_found
+    endif
+  endif
+  # net_slirp_set_restrict() (netdev_set_restrict, qemu_ios_ui_net_restrict) flips a
+  # running stack's restrict flag in place with slirp_set_restricted(), from
+  # subprojects/packagefiles/libslirp-set-restricted.patch. A libslirp built with the
+  # patch (the app's static native root) is used as found; one without it (Homebrew's)
+  # gives way to the patched subproject, static so the binaries gain no runtime dylib.
+  if slirp.found() and not cc.has_function('slirp_set_restricted', dependencies: slirp,
+                                           prefix: '#include <libslirp.h>')
+    slirp = subproject('slirp', default_options: ['default_library=static']).get_variable('libslirp_libdep')
+  endif
 endif
 
 vde = not_found

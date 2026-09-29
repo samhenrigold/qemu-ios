@@ -748,6 +748,12 @@ int net_slirp_set_restrict(const char *id, bool restricted)
     }
 
     slirp_set_restricted(s->slirp, restricted);
+    /* Keep "info network" truthful: net_slirp_init wrote "net=...,restrict=..." */
+    char *r = strstr(s->nc.info_str, "restrict=");
+    if (r) {
+        pstrcpy(r, sizeof(s->nc.info_str) - (r - s->nc.info_str),
+                restricted ? "restrict=on" : "restrict=off");
+    }
     return 0;
 }
 
