@@ -7,7 +7,7 @@ from unittest.mock import patch, Mock
 import regress as R
 
 with tempfile.TemporaryDirectory() as directory:
-    cfg = SimpleNamespace(out=directory, install_timeout=30, stage_gles_shim=False)
+    cfg = SimpleNamespace(out=directory, install_timeout=30, stage_gles_shim=False, gles_front_end=False)
     dev = SimpleNamespace(dir=directory, qmp=Mock(), serial_text=lambda: '')
     dev.qmp.shot.return_value = 'frame.ppm'
     response = SimpleNamespace(returncode=0, stdout='', stderr='')
