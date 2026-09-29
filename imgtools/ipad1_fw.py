@@ -157,6 +157,10 @@ def main(ipsw, keysfile, out):
         plain_tail = True
         print("final partial AES block is plaintext (2.x img3)")
     for name, c in COMPONENTS.items():
+        if c in ("iBSS", "iBEC") and os.path.basename(comp[c]) not in keys:
+            # DFU-only (no board recipe reads them); 2.2.1's keys page has none (catalog n72ap-5H11a)
+            print("skip", name, comp[c], "(no key)")
+            continue
         payload = img3_decrypt(z.read(comp[c]), *key(comp[c]), plain_tail=plain_tail)
         if name == "Kernelcache":
             open(f"{out}/kernelcache.mach", "wb").write(complzss(payload))

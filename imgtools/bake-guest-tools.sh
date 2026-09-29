@@ -43,12 +43,13 @@ FRAMEWORK="$MNT/System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle"
 # 1. The GL engine replacement, stock preserved. Without it a GL app drives the
 #    unemulated PowerVR MBX and wedges the whole device on first launch.
 #    One MBXGLEngine serves every firmware (it reads the dispatch layout at
-#    load); IT_GLES_SHIM=0 (2.x: no shared cache, no shim) keeps the stock
-#    engine and software CoreAnimation.
+#    load); IT_GLES_SHIM=0 keeps the stock engine, and CoreAnimation software
+#    unless IT_CA_OGL=1: 1.x/2.x have no engine bundle, and the guest package's
+#    OpenGLES hook (the same core, gles2x.c) is what CA's GL renderer then drives.
 OGL=1
 if [ "${IT_GLES_SHIM:-1}" = 0 ]; then
-    OGL=0
-    echo "GLES shim skipped: stock MBXGLEngine, software CoreAnimation"
+    OGL="${IT_CA_OGL:-0}"
+    echo "GLES shim skipped: stock MBXGLEngine, CA_ENABLE_OGL=$OGL"
 else
 ENGINE="${IT_GLES_ENGINE:-$GLES/MBXGLEngine}"
 [ -f "$ENGINE" ] || { echo "no $ENGINE (run contrib/it-gles/build.sh)" >&2; exit 1; }

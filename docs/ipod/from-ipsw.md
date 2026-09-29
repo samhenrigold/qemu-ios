@@ -21,7 +21,8 @@ tests/ipod/regress.py --qemu build/qemu-system-arm --device OUT --checks boot
 |---|---|---|---|
 | 3.1.3 7E18 | complete | SpringBoard up, GL CA through the shim, "Connect to iTunes" (lit, see below) | activation |
 | 4.2.1 8C148 | complete (NOR, NAND, GLES check, AppSync, gid-blobs, activation hook, data protection) | home screen, GL CoreAnimation through the shim (`regress.py --device ... --checks boot,gles` PASS; see "8C148: GL") | none for GL |
-| 2.1.1 5F138 | complete (no AppSync, GLES shim or modern guest helpers) | SecureROM → LLB → iBoot → kernel → stock SpringBoard, Connect to iTunes | activation; optional helpers need a 2.x-compatible build |
+| 2.1.1 5F138 | complete (activation hook; the guest package's OpenGLES hook, the GL front end; no AppSync or modern guest helpers) | home screen once a host sets the time (brick state), GL CoreAnimation through the front end (`regress.py --device ... --checks boot,gles` PASS; see "2.x: CoreAnimation through the GL front end") | app installs (no AppSync for 2.x yet) |
+| 2.2.1 5H11a | builds (iBSS/iBEC have no catalog keys and are skipped: DFU-only) | black panel, no serial output: the boot chain does not start | the 2.2 boot chain (the 5G77a/5H11a work, not GL) |
 
 ### P1, 7E18: activation
 
@@ -251,7 +252,7 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 | pasteboard | it_pbd binary present, job retired | not installed (the agent owns the clipboard) |
 | sound defaults | set-sound-defaults.py | same |
 | AppSync | cache MISValidateSignature (by symbol) + libappsync in installd | same script, contrib/appsync/patch-appsync-dylib.sh |
-| GLES shim | MBXGLEngine shim, CA_ENABLE_OGL=1, MBX2D/auto off | same, the one `contrib/it-gles/MBXGLEngine`, which reads the firmware's dispatch layout at load (`ipod2g_device.gli_engine` only logs what it will find); 2.x (no shared cache) → stock engine + software CA |
+| GLES shim | MBXGLEngine shim, CA_ENABLE_OGL=1, MBX2D/auto off | same, the one `contrib/it-gles/MBXGLEngine`, which reads the firmware's dispatch layout at load (`ipod2g_device.gli_engine` only logs what it will find); 1.x/2.x (no engine bundle) → the guest package's OpenGLES hook (`contrib/it-gles/gles2x.c`, the same core) and CA_ENABLE_OGL=1, only when the stock binary's exports match `opengles-2x.exports` (`ipod2g_device.gles2x_front_end`) |
 | shell + ssh | Cydia bootstrap files copied as uid 99, stock modes clobbered by `chmod 755`, sshd by overwriting ReportCrash.SafetyNet, host keys shared by every copy | **none**: no freeze, OpenSSH or OpenSSL; guest services are stock lockdown services plus it_agent v2 (docs/ipod/guest-services-plan.md), marker `.lt-guest-tools-v3` |
 | web proxy / CA trust | itproxy/ittrust run over SSH | the iPad's PAC baked into the en0 Wi-Fi service (`ipod2g_device.install_web_proxy`); CA by a MCInstall profile at run time |
 | byte patches | none left on the default path: installd/SpringBoard are stock | none; see "emulator-side per-version code" |
@@ -444,3 +445,105 @@ interval)`. On the same boot, a home press and unlock swipe reach the home scree
 tip; Dismiss works). The cleared state persists: the next boot goes lock screen -> home with no host action.
 The host has to set the time once per fresh device, for example next to the app's existing TimeZone set
 over lockdown.
+
+`regress.py` does this for a 2.x device (lock `product_version` 2.x): while the boot frame stays dark it
+pairs and runs `idevicedate -c` once, then wakes from sleep (power, home, unlock swipe). SpringBoard
+re-reads the state only at a wake; a home press on the Connect to iTunes view does nothing.
+
+### 2.x: CoreAnimation through the GL front end (2026-09-29)
+
+1.x/2.x have no GL engine bundle: `OpenGLES.framework/OpenGLES` is the IMG driver itself. The guest
+package's `n72-ios2` family replaces that binary with `contrib/it-gles/gles2x.c` (the mbxshim core under the
+firmware's own 218 export names, `opengles-2x.exports`), and the bake sets `CA_ENABLE_OGL=1` (MBX 2D and auto
+off) only when the stock binary's exports match the list (`ipod2g_device.gles2x_front_end`; a package
+without the hook is refused at seed time rather than left to drive the MBX). QuartzCore 2.1.1's display
+renderer (`gles_context`) then composites every frame through the host: 11 egl calls and 44 gl* (its whole
+OpenGLES import list), pixmap surfaces over its CoreSurface buffers, no framebuffer objects.
+
+What it took, each found on the device:
+
+- **Link against 2.x libraries by name.** `-undefined dynamic_lookup` left NSObject, the constant-string
+  class and the messengers flat, and a bare dlopen failed "Symbol not found". `build-gles2x.sh` links text
+  stubs naming just those (NSObject and `__CFConstantStringClassReference` in CoreFoundation, the
+  messengers in libobjc, as in the 2.0 SDK) and loads Foundation as the stock binary does.
+- **r9 is the thread pointer on 2.x.** 2.x libSystem's `pthread_getspecific` is `add r0, r9, r0, lsl #2;
+  ldr r0, [r0, #0x48]`; 3.0 made r9 an ordinary register. Code built without `-ffixed-r9` hung in
+  `pthread_once` and read garbage TSD. `armv6.sh` now passes `-ffixed-r9` under `LEGACY_LINK=1` (every
+  legacy-linked binary, it_boot's loader included).
+- **The two extensions.** QuartzCore refuses GL ("unsupported graphics hardware; need APPLE_texture_rectangle
+  extension; need APPLE_core_surface_texture extension") without them in `GL_EXTENSIONS`; both are real
+  here (`glTexImageCoreSurfaceAPPLE` is the core's BindCoreSurface; the host samples rectangle textures).
+- **Map the display buffers.** CA renders into PurpleGfxMem CoreSurfaces, which have no client mapping
+  until a lock with flags 2 (QuartzCore's own CPU lock); the core's lock takes 2 on CoreSurface.
+- **Window order.** An EGL pixmap's first memory row is the top of the picture (GL's last), so
+  `GLES_SURFACE_WINDOW_ORDER` in the bind target makes the host reverse rows on upload and write-back.
+  Without it the home screen came out upside down.
+- **Frame end.** 2.x CA brackets each frame with `eglMakeCurrent(buffer)` ... `eglMakeCurrent(none)` and
+  swaps right after; it never calls glFlush (the MBX driver's swap token waits for the GPU). The front end
+  writes the rendered buffer back at that second eglMakeCurrent. Without it an animation's last frame
+  never reached the panel (a Safari close zoom stuck with its icons half way).
+- **Surfaces die with no context current.** CA's `finalize_surface` destroys its egl surfaces with nothing
+  current; the front end now deletes the texture and framebuffer through the surface's own GC. Left alive,
+  the host surface stayed dirty over the buffer CA frees next, and a later flush wrote into unmapped pages
+  (SpringBoard SIGSEGV in `glFinishTextureAPPLE`). The host now also unbinds a deleted bound framebuffer, as
+  GL does (the next bind asked the default framebuffer for COLOR_ATTACHMENT0: INVALID_ENUM).
+
+Measured on 5F138 (`IT_LCD_FRAMETRACE` presents in each gesture's window, three passes each, same host
+minutes; the host had other emulators running, load 9-15 on 16 cores). "cores" is QEMU's host CPU over the
+window.
+
+| gesture | software CA (fps, max gap, cores) | GL front end (fps, max gap, cores) |
+|---|---|---|
+| home page swipe left (one page: rubber-band) | 30-37, 45-64 ms, 0.06-0.07 | 31-33, 60-62 ms, 0.06-0.08 |
+| home page swipe right | 45-49, 52-67 ms, 0.05-0.07 | 46-53, 44-65 ms, 0.07-0.08 |
+| slow drag (40 steps over 2 s) | 28-29, 417-433 ms, 0.09-0.11 | 29-30, 395-414 ms, 0.13-0.15 |
+| Safari launch zoom | 40-41, 149-183 ms, 0.37-0.39 | 40-41, 166-171 ms, 0.27-0.31 |
+| Safari bookmark-list scroll | 34-35, 116-118 ms, 0.16 | 35, 116-117 ms, 0.13-0.14 |
+| Safari close zoom | 57-59, 33-37 ms, 0.18-0.20 | 57-60, 21-35 ms, 0.15-0.16 |
+
+Neither path is CPU-bound on this host: frame pacing follows the gesture input (the script's 20-50 ms
+touch steps) and vsync, and the max gaps are the gesture's own (the 400 ms is the drag's touch-down delay;
+the 170 ms is Safari's process launch), the same in both. GL takes about a quarter less host CPU on the
+launch zoom and a fifth less on the close and the list scroll (full-screen rasterization leaves the
+emulated CPU), and a third more on the slow drag (a small damaged region is cheap to rasterize in
+software; GL pays the per-frame write-back). `gles-rejects` stayed empty, and the frames (home, zooms
+mid-flight, bookmarks) are correct.
+
+Gates: `regress.py --device <5F138> --checks boot,gles` PASS (the 2.x leg: one front-end hello, CA's pixmap
+surfaces, a live host context, no refusals, the frames following a swipe, a Safari launch and a close);
+7E18 (nand-current with this tree's MBXGLEngine staged offline: `--stage-gles-shim` cannot put a 355 KB
+engine through the agent's 256 KB request, true at bd8d6b1363 too) and a fresh 8C148 device: boot,gles PASS.
+
+Not done: an App Store 2.x game through EAGL (waits on 2.x app installs); planar-YUV video layers (the LCD
+plane path, unchanged); 2.2.1 (does not boot yet).
+
+### 1.x (4B1, the 1G): what LK_ENABLE_OGL would need
+
+Read from the 4B1 root filesystem (iPod1,1 1.1.5; LayerKit and OpenGLES only, nothing kept). LayerKit's
+GLES renderer (`LKRenderGLESRenderDisplay`, `LKRenderOGL.c`) imports 54 names from OpenGLES:
+
+- egl (9): `eglGetDisplay eglInitialize eglChooseConfig eglCreateContext eglCreatePixmapSurface
+  eglMakeCurrent eglDestroySurface eglGetError eglTerminate`
+- gl (45): `glActiveTexture glBindTexture glBlendFunc glClear glClearColor glClientActiveTexture glColor4f
+  glColor4ub glColorMask glColorPointer glCullFace glDeleteTextures glDepthMask glDisable
+  glDisableClientState glDrawArrays glDrawElements glEnable glEnableClientState glFinish
+  glFinishTextureAPPLE glFlush glFrontFace glGenTextures glGetError glGetFloatv glGetIntegerv
+  glLoadIdentity glLoadMatrixf glMatrixMode glOrthof glPopMatrix glPushMatrix glRotatef glScalef glScissor
+  glStencilMask glTexCoordPointer glTexEnvfv glTexEnvi glTexImageCoreSurfaceAPPLE glTexParameteri
+  glTranslatef glVertexPointer glViewport`
+
+Against 2.x QuartzCore's set: LayerKit adds `eglTerminate glColorMask glDepthMask glStencilMask` and lacks
+`eglDestroyContext eglEnableInternalSurface eglGetConfigAttrib glGetString glTexImage2D` (so no extension
+check). All 54 are implemented by the front end (egl in gles2x.c, gl by gles-names.h row). Its errors
+("OpenGLES bad display / can't init / can't make config / can't make context") are the same egl sequence
+as 2.x's pixmap renderer.
+
+What a 1.x build of the front end needs (not done):
+- its own export list: 1.x OpenGLES exports 186 names, not 2.x's 218. Only in 1.x: `eglSwapNotification`
+  and `glVertexAttribPointerARB` (no gles-names.h row: a hand refusal or a row); 2.x's EAGL classes and
+  constants and the OES framebuffer/mapbuffer/palette names are absent.
+- no EAGL: 1.x's Objective-C is the old ABI (CoreFoundation exports `.objc_class_name_NSObject`, libobjc
+  has no `objc_msgSendSuper2`), so the ObjC half of gles2x.c must be compiled out, not linked.
+- the same r9 rule, lock flags, window order and frame end as 2.x (CoreSurface, MBX, the same IMG driver
+  family); whether LayerKit also brackets frames with `eglMakeCurrent(none)` is to be checked on the
+  first 1.x GL boot.

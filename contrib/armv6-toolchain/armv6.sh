@@ -28,8 +28,16 @@ cc6() {
     # -marm because clang defaults to Thumb for this target and would emit
     # Thumb-2, which the ARM1176 cannot execute. armv6 also keeps movw/movt out
     # of the output; constants go through the literal pool instead.
+    #
+    # LEGACY_LINK=1 (code for the 2.x dyld) also keeps r9 out of the register allocator: 2.x's
+    # ABI reserves it as the thread pointer (2.x libSystem's pthread_getspecific is
+    # `add r0, r9, r0, lsl #2; ldr r0, [r0, #0x48]`), where 3.0+ made it an ordinary register.
+    # Code that uses it breaks TSD, pthread_once and errno for itself and every caller it
+    # returns to.
     rm -f "$2"
-    if ! xcrun clang -target $GUEST_ARCH-apple-ios5.0 -marm -O1 -fno-stack-protector \
+    fixed=()
+    [ "${LEGACY_LINK:-0}" = 1 ] && fixed=(-ffixed-r9)
+    if ! xcrun clang -target $GUEST_ARCH-apple-ios5.0 -marm -O1 -fno-stack-protector ${fixed[@]+"${fixed[@]}"} \
         -fno-builtin -nostdinc -isystem "$ARMV6_SDK/usr/include" "${@:3}" \
         -c "$1" -o "$2" >"$2.cclog" 2>&1; then
         cat "$2.cclog" >&2
