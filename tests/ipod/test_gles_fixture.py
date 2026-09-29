@@ -22,6 +22,7 @@ with tempfile.TemporaryDirectory() as directory:
              patch.object(R, 'stop_app', return_value=response), \
              patch.object(R, 'guest_file', return_value=b''), \
              patch.object(R.itqmp, 'agent') as rpc, \
+             patch.object(R.itqmp, 'gles_rejects', return_value={}), \
              patch.object(R, 'quad_signature', return_value=signature), \
              patch.object(R, 'lit_count', return_value=(255, 200000)), \
              patch.object(R, 'to_png'), patch.object(R.time, 'sleep'), patch.object(R, 'log'):

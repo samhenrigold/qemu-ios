@@ -186,14 +186,88 @@ static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args
  */
 static unsigned char unimpl_seen[1024]; /* glishim numbers up to 826 */
 
+static char *put_dec(char *p, unsigned v)
+{
+    char b[12], *q = b + 11;
+    *q = 0;
+    if (!v) *--q = '0';
+    while (v) { *--q = '0' + (v % 10); v /= 10; }
+    while (*q) *p++ = *q++;
+    return p;
+}
+
+/*
+ * Every refusal this shim makes, named, to the host's counters through the log
+ * channel: "[gles-reject] shim:NAME N", which the host counts and the machine's
+ * gles-rejects property reads out. Counted here per call and reported at 1, 2,
+ * 4, 8... calls, so an entry point an app hammers costs a trap per doubling
+ * rather than per call; the host keeps the largest N. A name past the table's
+ * 48 is reported once. num, when not ~0u, is appended in decimal.
+ */
+static void refused(const char *what, const char *name, unsigned num)
+{
+    static struct { char key[40]; unsigned n; } tab[48];
+    char key[40], line[80], *p = key, *e = key + sizeof(key) - 12;
+    unsigned i, n = 1;
+
+    while (*what && p < e) *p++ = *what++;
+    while (*name && p < e) *p++ = *name++;
+    if (num != ~0u) { *p++ = ':'; p = put_dec(p, num); }
+    *p = 0;
+    for (i = 0; i < 48 && tab[i].key[0]; i++) {
+        const char *a = tab[i].key, *b = key;
+        while (*a && *a == *b) { a++; b++; }
+        if (*a == *b) {
+            n = ++tab[i].n;
+            if (n & (n - 1)) return;        /* not a power of two: already reported this decade */
+            break;
+        }
+    }
+    if (i < 48 && !tab[i].key[0]) {
+        for (p = tab[i].key, e = key; (*p++ = *e++);) {}
+        tab[i].n = 1;
+    }
+    p = line;
+    for (e = "[gles-reject] shim:"; *e;) *p++ = *e++;
+    for (e = key; *e;) *p++ = *e++;
+    *p++ = ' ';
+    p = put_dec(p, n);
+    *p++ = '\n';
+    *p = 0;
+    w(line);
+}
+
+/* The four characters of a surface format, '?' for a byte that is not printable. */
+static const char *fourcc_text(unsigned f, char out[5])
+{
+    unsigned i;
+    for (i = 0; i < 4; i++) {
+        unsigned c = (f >> (24 - 8 * i)) & 0xff;
+        out[i] = c >= 0x20 && c < 0x7f ? c : '?';
+    }
+    out[4] = 0;
+    return out;
+}
+
+/* A stub that IS the implementation: a hint the host has nothing to do for. */
+static int inert_stub(const char *name)
+{
+    const char *inert = "glDiscardFramebufferEXT";
+    while (*inert && *inert == *name) { inert++; name++; }
+    return *inert == *name;
+}
+
 __attribute__((visibility("hidden"))) int gles_unimpl(unsigned slot)
 {
+    const char *name = slot < GLES_N_SLOTS && gles_slot_names[slot][0] ? gles_slot_names[slot] : 0;
+    if (name && inert_stub(name)) return 0;
     if (slot < sizeof(unimpl_seen) && !unimpl_seen[slot]) {
         unimpl_seen[slot] = 1;
         w("[mbxshim] unimplemented slot "); wd(slot);
-        if (gles_slot_names[slot][0]) { w(" ("); w(gles_slot_names[slot]); w(")"); }
+        if (name) { w(" ("); w(name); w(")"); }
         w(" -- the app will render wrong\n");
     }
+    if (name) refused("unimpl:", name, ~0u); else refused("unimpl:slot", "", slot);
     return 0;
 }
 
@@ -209,20 +283,28 @@ static int guest_fault_read(unsigned long base, unsigned bytes)
     return 1;
 }
 
+/* Bytes per texel of the format/type pairs the host takes (gles_texel_bytes there),
+ * so the upload's pages can be touched before the trap; 0 leaves that to the host. */
 static unsigned texture_bytes(void *gc, unsigned width, unsigned height,
                               unsigned format, unsigned type)
 {
-    unsigned bpp = 0;
-    if (type == 0x8363 && format == 0x1907) bpp = 2; /* RGB565 */
-    else if ((type == 0x8033 || type == 0x8034) && format == 0x1908) bpp = 2;
-    else if (type == 0x8367 && format == 0x80e1) bpp = 4;  /* BGRA 8_8_8_8_REV (CoreAnimation) */
-    else if (type == 0x1401) {
-        switch (format) {
-        case 0x1908: case 0x80e1: bpp = 4; break;
-        case 0x1907: bpp = 3; break;
-        case 0x190a: bpp = 2; break;
-        case 0x1906: case 0x1909: bpp = 1; break;
-        }
+    unsigned bpp = 0, comps = 0;
+    switch (format) {
+    case 0x1908: case 0x80e1: comps = 4; break;             /* RGBA, BGRA */
+    case 0x1907: comps = 3; break;                          /* RGB */
+    case 0x190a: comps = 2; break;                          /* LUMINANCE_ALPHA */
+    case 0x1906: case 0x1909: case 0x1902: comps = 1; break; /* ALPHA, LUMINANCE, DEPTH_COMPONENT */
+    }
+    switch (type) {
+    case 0x8363: bpp = format == 0x1907 ? 2 : 0; break;     /* RGB 5_6_5 */
+    case 0x8033: case 0x8034: bpp = format == 0x1908 ? 2 : 0; break;    /* RGBA 4_4_4_4, 5_5_5_1 */
+    case 0x8365: case 0x8366: bpp = format == 0x80e1 ? 2 : 0; break;    /* BGRA 4_4_4_4_REV, 1_5_5_5_REV */
+    case 0x8035: case 0x8367: bpp = comps == 4 ? 4 : 0; break;          /* 8_8_8_8, 8_8_8_8_REV */
+    case 0x1401: bpp = format == 0x1902 ? 0 : comps; break;             /* UNSIGNED_BYTE */
+    case 0x1403: bpp = format == 0x1902 ? 2 : 0; break;                 /* depth as UNSIGNED_SHORT */
+    case 0x1405: bpp = format == 0x1902 ? 4 : 0; break;                 /* depth as UNSIGNED_INT */
+    case 0x1406: bpp = 4 * comps; break;                                /* FLOAT */
+    case 0x8d61: bpp = 2 * comps; break;                                /* HALF_FLOAT_OES */
     }
     if (!bpp || !width || !height || width > (64u << 20)) return 0;
     unsigned alignment = gc ? ((GuestGC *)gc)->unpack_alignment : 0;
@@ -484,6 +566,37 @@ static int s_generateMipmap(void *gc, unsigned target)
     { return (int)qc(681, gc, 1, A(target)); }
 static int s_bindTexture(void *gc, unsigned target, unsigned tex)
     { return (int)qc(5, gc, 2, A(target, tex)); }
+
+/* The rest of OES_fixed_point (the host converts) and APPLE_fence (the desktop
+ * has it under the same names). Slots from slotmap.txt. */
+static int s_clipPlanex(void *gc, unsigned a0, unsigned a1) { return (int)qc(766, gc, 2, A(a0, a1)); }
+static int s_fogx(void *gc, unsigned a0, unsigned a1) { return (int)qc(770, gc, 2, A(a0, a1)); }
+static int s_fogxv(void *gc, unsigned a0, unsigned a1) { return (int)qc(771, gc, 2, A(a0, a1)); }
+static int s_getClipPlanef(void *gc, unsigned a0, unsigned a1) { return (int)qc(774, gc, 2, A(a0, a1)); }
+static int s_getClipPlanex(void *gc, unsigned a0, unsigned a1) { return (int)qc(775, gc, 2, A(a0, a1)); }
+static int s_getLightxv(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(777, gc, 3, A(a0, a1, a2)); }
+static int s_getMaterialxv(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(778, gc, 3, A(a0, a1, a2)); }
+static int s_getTexEnvxv(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(779, gc, 3, A(a0, a1, a2)); }
+static int s_getTexParameterxv(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(780, gc, 3, A(a0, a1, a2)); }
+static int s_lightModelx(void *gc, unsigned a0, unsigned a1) { return (int)qc(781, gc, 2, A(a0, a1)); }
+static int s_lightModelxv(void *gc, unsigned a0, unsigned a1) { return (int)qc(782, gc, 2, A(a0, a1)); }
+static int s_lightx(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(783, gc, 3, A(a0, a1, a2)); }
+static int s_lightxv(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(784, gc, 3, A(a0, a1, a2)); }
+static int s_materialx(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(787, gc, 3, A(a0, a1, a2)); }
+static int s_materialxv(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(788, gc, 3, A(a0, a1, a2)); }
+static int s_texEnvx(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(797, gc, 3, A(a0, a1, a2)); }
+static int s_texEnvxv(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(798, gc, 3, A(a0, a1, a2)); }
+static int s_texParameterxv(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(800, gc, 3, A(a0, a1, a2)); }
+static int s_pointParameterx(void *gc, unsigned a0, unsigned a1) { return (int)qc(804, gc, 2, A(a0, a1)); }
+static int s_pointParameterxv(void *gc, unsigned a0, unsigned a1) { return (int)qc(805, gc, 2, A(a0, a1)); }
+static int s_genFencesAPPLE(void *gc, unsigned n, unsigned ids) { return (int)qc(463, gc, 2, A(n, ids)); }
+static int s_deleteFencesAPPLE(void *gc, unsigned n, unsigned ids) { return (int)qc(464, gc, 2, A(n, ids)); }
+static int s_setFenceAPPLE(void *gc, unsigned f) { return (int)qc(465, gc, 1, A(f)); }
+static int s_isFenceAPPLE(void *gc, unsigned f) { return (int)qc(466, gc, 1, A(f)); }
+static int s_testFenceAPPLE(void *gc, unsigned f) { return (int)qc(467, gc, 1, A(f)); }
+static int s_finishFenceAPPLE(void *gc, unsigned f) { return (int)qc(468, gc, 1, A(f)); }
+static int s_testObjectAPPLE(void *gc, unsigned o, unsigned nm) { return (int)qc(469, gc, 2, A(o, nm)); }
+static int s_finishObjectAPPLE(void *gc, unsigned o, unsigned nm) { return (int)qc(470, gc, 2, A(o, nm)); }
 
 /* ---- the fixed-function set a real ES 1.1 game needs ----------------------
  *
@@ -757,6 +870,34 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
         table[671] = (void *)s_isFramebuffer;
         table[681] = (void *)s_generateMipmap;
         table[5]   = (void *)s_bindTexture;
+        table[766] = (void *)s_clipPlanex;
+        table[770] = (void *)s_fogx;
+        table[771] = (void *)s_fogxv;
+        table[774] = (void *)s_getClipPlanef;
+        table[775] = (void *)s_getClipPlanex;
+        table[777] = (void *)s_getLightxv;
+        table[778] = (void *)s_getMaterialxv;
+        table[779] = (void *)s_getTexEnvxv;
+        table[780] = (void *)s_getTexParameterxv;
+        table[781] = (void *)s_lightModelx;
+        table[782] = (void *)s_lightModelxv;
+        table[783] = (void *)s_lightx;
+        table[784] = (void *)s_lightxv;
+        table[787] = (void *)s_materialx;
+        table[788] = (void *)s_materialxv;
+        table[797] = (void *)s_texEnvx;
+        table[798] = (void *)s_texEnvxv;
+        table[800] = (void *)s_texParameterxv;
+        table[804] = (void *)s_pointParameterx;
+        table[805] = (void *)s_pointParameterxv;
+        table[463] = (void *)s_genFencesAPPLE;
+        table[464] = (void *)s_deleteFencesAPPLE;
+        table[465] = (void *)s_setFenceAPPLE;
+        table[466] = (void *)s_isFenceAPPLE;
+        table[467] = (void *)s_testFenceAPPLE;
+        table[468] = (void *)s_finishFenceAPPLE;
+        table[469] = (void *)s_testObjectAPPLE;
+        table[470] = (void *)s_finishObjectAPPLE;
         table[10]  = (void *)s_clear;
         table[12]  = (void *)s_clearColor;
         table[37]  = (void *)s_color4f;
@@ -1034,8 +1175,10 @@ static int surface_capture(ca_view_t *v, void *s)
     if (!base || width == 0 || height == 0 ||
         width > 2048 || height > 2048 || stride < width * bpp ||
         stride > width * bpp + 4096) {
+        char fourcc[5];
         w("[mbxshim]   -> REJECTED (not a plausible IOSurface); "
           "keeping panel fallback\n");
+        refused("drawable:", fourcc_text(format, fourcc), ~0u);
         return 0;
     }
 
@@ -1169,6 +1312,7 @@ static int ca_next_buffer(ca_view_t *v)
     s = ((ca_next_fn)vt[3])(v->drawable);
     if (!s) {
         w("[mbxshim] drawable->nextBuffer returned nothing\n");
+        refused("ca:", "nextbuffer", ~0u);
         return 0;
     }
     v->need_buffer = 0;
@@ -1225,7 +1369,8 @@ static int surface_fault_read(unsigned long base, unsigned stride, unsigned rows
                                unsigned bytes)
 {
     unsigned row;
-    if (!base || !rows || rows > 2048 || !bytes || stride < bytes || stride > 16384 ||
+    /* Up to the host's 4096x4096 32-bit surface, so an oversize one reaches its counter and paint. */
+    if (!base || !rows || rows > 4096 || !bytes || stride < bytes || stride > 16384 ||
         base > ~0UL - ((unsigned long)(rows - 1) * stride + bytes))
         return 0;
     for (row = 0; row < rows; row++) {
@@ -1263,26 +1408,29 @@ static int GLESBindCoreSurface(void *gc, unsigned target, void *surface)
         uv = (unsigned)p_IOSurfaceGetBaseAddressOfPlane(surface, 1);
         uvstride = p_IOSurfaceGetBytesPerRowOfPlane(surface, 1);
     }
-    unsigned rowbytes = format == CA_FOURCC_A008 ? width :
-        (format == CA_FOURCC_565L || format == CA_FOURCC_555L) ? width * 2 : width * 4;
-    int readable = width && width <= 2048 && height && height <= 2048;
+    /* The format is the host's to judge (gles_bind_surface takes what the firmwares'
+     * QuartzCore produces, counts what it refuses, and under gles-debug paints it
+     * magenta), so it is not screened here: A008 was refused on both sides for days
+     * and nobody saw. What is screened is the geometry, since the host reads the
+     * rows: a packed surface's pages are touched a stride per row, which every
+     * IOSurface allocation covers, and NV12's two planes their own way. */
+    int readable = width && height;   /* the size limit is the host's too (Exit Strategy: a 2240x416 layer) */
     if (format == 0x34323076 || format == 0x34323066) {
         readable = readable && uv && !(width & 1) && !(height & 1) &&
             surface_fault_read(base, stride, height, width) &&
             surface_fault_read(uv, uvstride, height / 2, width);
     } else {
-        readable = readable && !uv &&
-            (format == CA_FOURCC_565L || format == CA_FOURCC_555L || format == CA_FOURCC_BGRA || format == 0x52474241 ||
-             format == CA_FOURCC_A008) &&
-            surface_fault_read(base, stride, height, rowbytes);
+        readable = readable && !uv && surface_fault_read(base, stride, height, stride);
     }
     if (!readable) {
         static unsigned rejected;
+        char fourcc[5];
         if (rejected++ < 8) {
             w("[mbxshim] rejected texture surface format="); wx(format);
             w(" size="); wd(width); w("x"); wd(height);
             w(" stride="); wd(stride); w(" base="); wx(base); w("\n");
         }
+        refused("surface:", fourcc_text(format, fourcc), ~0u);
         p_IOSurfaceUnlock(surface, 1, 0);
         return 0;
     }
@@ -1334,6 +1482,7 @@ static int GLESBindView(void *gc, void *drawable, void *ifmt, void *flags)
     if (!drawable) return 1;
     if (!v) {
         w("[mbxshim] GLESBindView: no free view slot\n");
+        refused("view:", "no-slot", ~0u);
         return 0;
     }
     v->gc = gc;
@@ -1352,6 +1501,7 @@ static int GLESBindView(void *gc, void *drawable, void *ifmt, void *flags)
     if (!r) {
         ca_view_t empty = {0};
         *v = empty;
+        refused("ca:", "bind", ~0u);
         return 0;
     }
     v->drawable = drawable;
@@ -1543,11 +1693,14 @@ static int gli_unimpl(unsigned slot);
 static int gli_unimpl(unsigned slot)
 {
     static unsigned char seen[GLI_N_SLOTS];
-    if (slot < GLI_N_SLOTS && !seen[slot]) {
+    if (slot >= GLI_N_SLOTS) return 0;
+    if (inert_stub(gli_slot_names[slot])) return 0;
+    if (!seen[slot]) {
         seen[slot] = 1;
         w("[mbxshim] unimplemented GL entry point "); w(gli_slot_names[slot]);
         w(" (dispatch slot "); wd(slot); w(", none in 3.1.3)\n");
     }
+    refused("unimpl:", gli_slot_names[slot], ~0u);
     return 0;
 }
 

@@ -1344,6 +1344,7 @@ static void ipod_touch_cpu_reset(void *opaque)
     it_firmware_reset();
     ipod_agent_reset(nms->agent);
     guest_pkg_reset(&nms->pkg);
+    gles_host_set_debug(nms->gles_debug);
     gles_host_reset();
     cpu_reset(cs);
     ipod_touch_load_bootrom(nms);
@@ -1850,6 +1851,22 @@ static void ipod_touch_get_gles_contexts(Object *obj, Visitor *v, const char *na
     visit_type_int(v, name, &count, errp);
 }
 
+static char *ipod_touch_get_gles_rejects(Object *obj, Error **errp)
+{
+    return gles_host_rejects();
+}
+
+static bool ipod_touch_get_gles_debug(Object *obj, Error **errp)
+{
+    return IPOD_TOUCH_MACHINE(obj)->gles_debug;
+}
+
+static void ipod_touch_set_gles_debug(Object *obj, bool value, Error **errp)
+{
+    IPOD_TOUCH_MACHINE(obj)->gles_debug = value;
+    gles_host_set_debug(value);
+}
+
 static void ipod_touch_instance_finalize(Object *obj)
 {
     ipod_agent_publish(NULL);
@@ -1872,6 +1889,12 @@ static void ipod_touch_instance_init(Object *obj)
     object_property_add_str(obj, "agent-result", ipod_touch_get_agent_result, NULL);
     object_property_add_str(obj, "agent-status", ipod_touch_get_agent_status, NULL);
     object_property_add(obj, "gles-contexts", "int", ipod_touch_get_gles_contexts, NULL, NULL, NULL);
+    object_property_add_str(obj, "gles-rejects", ipod_touch_get_gles_rejects, NULL);
+    object_property_set_description(obj, "gles-rejects",
+        "Every refusal the GL bridge made so far, one NAME<tab>COUNT per line");
+    object_property_add_bool(obj, "gles-debug", ipod_touch_get_gles_debug, ipod_touch_set_gles_debug);
+    object_property_set_description(obj, "gles-debug",
+        "Paint what the GL bridge refuses magenta instead of black (default off; tests turn it on)");
 
     object_property_add_str(obj, "bootrom", ipod_touch_get_bootrom_path, ipod_touch_set_bootrom_path);
     object_property_set_description(obj, "bootrom", "Path to the S5L8720 bootrom binary");

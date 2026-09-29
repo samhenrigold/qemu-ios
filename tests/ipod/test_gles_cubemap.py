@@ -15,7 +15,7 @@ def between(a, b):
 
 
 case = between('    case GLES_SLOT_TEX_IMAGE_2D: {', '    case GLES_SLOT_TEX_SUB_IMAGE_2D: {')
-code = PRELUDE + between('static void gles_warn_format(', '/* Only expose formats our decoder accepts') \
+code = PRELUDE + between('/* The ES half-float type', '/* ---------------------------------------------------------------- refusals') \
     + between('static const uint8_t *gles_zeroed(', '/*\n * Report a draw the host rejected') \
     + between('static GLESPVRTC *gles_pvrtc_texture(', 'static int64_t gles_pvrtc_upload(') \
     + function('gles_texture_object(') + function('gles_texparam_nparams(') + r'''

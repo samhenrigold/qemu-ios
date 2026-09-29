@@ -336,6 +336,29 @@ def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION, root_matching=ROOT_MATCH
         dt.set("chosen/memory-map", name, (pa, size))
 
 
+def boot_args_version(m):
+    """The boot_args.Version pe_identify_machine demands, read off the kernel: the Thumb pair
+    `ldrh rN, [r0, #2]` (0x8840|N) ... `cmp rN, #V` (0x2800|N<<8|V) just before the literal that
+    names "pe_identify_machine: Epoch Mismatch". 2 when the shape is not found (3.2.x and 4.2.1,
+    which boot with 2); 4.3's xnu-1735 and iOS 5's xnu-1878 say 3."""
+    data = m.data
+    so = data.find(b"pe_identify_machine: Epoch Mismatch")
+    if so < 0:
+        return 2
+    sva = next(vmaddr + (so - fileoff) for _, vmaddr, _, fileoff, filesize, _ in m.segs
+               if fileoff <= so < fileoff + filesize)
+    lit = data.find(struct.pack("<I", sva))
+    window = data[max(0, lit - 0x400):lit]
+    for n in range(8):
+        i = window.rfind(bytes([0x40 | n, 0x88]))
+        if i < 0:
+            continue
+        j = window.find(bytes([0x28 | n]), i + 2, i + 10)
+        if j > 0:
+            return window[j - 1]
+    return 2
+
+
 def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, ident=None, iboot=IBOOT_VERSION, ramdisk=None):
     """Return (image bytes, load_pa, entry_pa, bootargs_pa). ramdisk: raw-HFS bytes to boot as md0."""
     page = lambda n: (n + 0xFFF) & ~0xFFF
@@ -374,12 +397,13 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, ident=None, iboot=I
             ROOT_MATCHING if ramdisk is None else "")
     image[dt_va - vbase:dt_va - vbase + len(dt.buf)] = dt.buf
 
-    # boot_args rev 1 / version 2 (pe_identify_machine c01d1276 panics otherwise). Video depth word:
+    # boot_args rev 1 / version 2 (pe_identify_machine c01d1276 panics otherwise) for the iBoot-817/931
+    # kernels; the iBoot-1219 (iOS 5) kernels demand version 3, read off the kernel itself. Video depth word:
     # byte0 depth, byte1 rotation/90, byte2 scale-1. v_display 0 = text console, as iBoot sets for -v/-s.
     verbose = any(a in ("-v", "-s") for a in boot_args.split())
     cmdline = boot_args.encode()
     assert len(cmdline) < 256, "boot-args longer than BOOT_LINE_LENGTH"
-    args = struct.pack("<HHIIII6IIII256s", 1, 2, vbase, PHYS_BASE, MEM_SIZE, top_of_kernel,
+    args = struct.pack("<HHIIII6IIII256s", 1, boot_args_version(m), vbase, PHYS_BASE, MEM_SIZE, top_of_kernel,
                        VRAM_PA, 0 if verbose else 1, FB_WIDTH * FB_DEPTH // 8, FB_WIDTH, FB_HEIGHT, FB_DEPTH,
                        0, dt_va, len(dt_blob), cmdline)
     image[args_va - vbase:args_va - vbase + len(args)] = args
