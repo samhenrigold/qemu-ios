@@ -32,7 +32,7 @@ repository.
 | Path | What |
 |---|---|
 | `hw/arm/`, `include/hw/arm/` | The two machines and their peripherals, plus the shared host pieces above |
-| `contrib/it-*` | Guest helpers for the iPod (armv6, built with `contrib/armv6-toolchain`): `it-agent` (the guest agent), `it-gles` (MBX GL shim), `it-boot` (guest-package loader), `it-pasteboard`, `it-media`, `it-webproxy`, `it-keybag`, `it-seal`, … each with its own README |
+| `contrib/it-*` | Guest helpers for the iPod (armv6, built with `contrib/armv6-toolchain`): `it-agent` (the guest agent), `it-gles` (MBX GL shim), `it-boot` (guest-package loader), `it-pasteboard`, `it-media`, `it-keybag`, `it-seal`, … each with its own README |
 | `contrib/ipad1-gles`, `contrib/ipad1-guest`, `contrib/appsync` | iPad-side helpers: the GLI shim for ES 1.1/2.0; `ipad1-guest/build.sh` builds `it_pbd` (pasteboard bridge) and `it_ethlink` (raises the USB Ethernet link) for armv7 from the shared sources; the AppSync interposer dylib |
 | `contrib/guest-package` | `mkpkg.py` and `VERSION`: the versioned guest-tools package format the loader installs at boot |
 | `contrib/macos-app` | `make-dylib-macos.sh` (the app's dylib), `entitlements.plist` (the app's helper entitlements), `nandpack.py` |

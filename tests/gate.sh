@@ -72,8 +72,6 @@ export -f run1
     for t in tests/ipod/test_*.py tests/ipad1/test_*.py tests/guest-package/test_*.py; do
         if grep -q qemu-system-arm "$t"; then skip "$t" "launches qemu-system-arm: run by hand with a built emulator and a NAND"
         elif grep -q 'sys.exit(__doc__)' "$t"; then skip "$t" "takes inputs on the command line: see its docstring"
-        elif [ "$t" = tests/ipad1/test_location.py ] && [ ! -x contrib/it-webproxy/itwebproxy ]; then
-            skip "$t" "needs a built contrib/it-webproxy/itwebproxy (contrib/it-webproxy/build.sh)"
         else echo "$t"; fi
     done
     echo selfcheck
