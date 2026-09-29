@@ -161,6 +161,9 @@ void s5l8930_sdio_iop_command(DeviceState *dev, uint8_t *cmd)
 
         for (unsigned i = 0; i < 2 * nseg; i++) {
             sg[i] = ldl_le_p(cmd + CMD7_SEGS + 4 * i);
+            if (!(i & 1)) {
+                sg[i] = s5l8930_iop_pa(sg[i]);   /* iOS 4.3+ passes IOP-window addresses */
+            }
         }
         resp = ipod_touch_sdio_command(s->card, lduw_le_p(cmd + CMD7_CMD),
                                        ldl_le_p(cmd + CMD7_ARG),
