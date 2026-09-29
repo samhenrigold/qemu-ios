@@ -852,7 +852,8 @@ static void iop_trace_fmi(S5L8930IOPState *s, int bus, hwaddr item)
         seg_cursor_init(&data, ARG(0x1c), ARG(0x20));
         seg_cursor_init(&metas, ARG(0x24), ARG(0x28));
         for (i = 0; i < n; i++) {
-            uint32_t ce = lduw_le_phys(&address_space_memory, s5l8930_iop_pa(ces + 2 * i));
+            uint32_t ce = s->fmi_arg ? lduw_le_phys(&address_space_memory, s5l8930_iop_pa(ces + 2 * i))
+                                     : iop_ldl(ces + 4 * i);    /* u16 CEs from v2 on, as fmi_multi */
             uint32_t pg = iop_ldl(pages + 4 * i);
             int cs = (ce & 7) * NAND_BUSES + bus;   /* as s5l8930_h2fmi.c maps a chip */
             int sb = cs / ctpop8(s->nand_ce_mask), sc = cs % ctpop8(s->nand_ce_mask);
@@ -962,10 +963,13 @@ void s5l8930_iop_trace_rings(DeviceState *dev)
             uint32_t w0 = iop_ldl(ring + i * RING_ENTRY(s));
             bool done = (w0 & 1) == RING_OWNER_AP && RING_ITEM(w0);
 
-            if (done && !seen[h - RING_FMI0][i]) {
+            if (done && seen[h - RING_FMI0][i] != 1) {
                 iop_trace_fmi(s, h - RING_FMI0, RING_ITEM(w0));
+            } else if (!done && RING_ITEM(w0) && seen[h - RING_FMI0][i] != 2) {
+                fprintf(stderr, "%.3f ring fmi%d[%u] sent op %u\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
+                        h - RING_FMI0, i, iop_ldl(RING_ITEM(w0)));
             }
-            seen[h - RING_FMI0][i] = done;
+            seen[h - RING_FMI0][i] = done ? 1 : RING_ITEM(w0) ? 2 : 0;
         }
     }
 }
