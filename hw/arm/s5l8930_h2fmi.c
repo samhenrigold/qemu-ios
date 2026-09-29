@@ -289,7 +289,8 @@ static bool h2fmi_room(H2FMIBus *b, uint32_t page_bytes)
            b->meta_len + META_BYTES <= sizeof(b->meta) && b->ecc_n < ARRAY_SIZE(b->ecc_q);
 }
 
-static void h2fmi_transfer(H2FMIBus *b, int ce)
+/* queued: the oldest waiting transfer, popped by h2fmi_drain; it goes now. */
+static void h2fmi_transfer(H2FMIBus *b, int ce, bool queued)
 {
     S5L8930H2FMIState *s = b->s;
     uint32_t page_bytes = 0, id = 0;
@@ -305,7 +306,8 @@ static void h2fmi_transfer(H2FMIBus *b, int ce)
         }
         memcpy(b->data, idb, sizeof(idb));
         b->data_len = sizeof(idb);
-    } else if (b->mode == MODE_PAGE && page_bytes && (b->pending_n || !h2fmi_room(b, page_bytes))) {
+    } else if (b->mode == MODE_PAGE && page_bytes && !queued &&
+               (b->pending_n || !h2fmi_room(b, page_bytes))) {
         /* No room, or older transfers still waiting: this one queues behind them
          * (the FIFO's order is the firmware's transfer order) and goes when the
          * CDMA drains (h2fmi_drain). */
@@ -395,7 +397,7 @@ static void h2fmi_drain(H2FMIBus *b)
         int ce = b->pending_ce[0];
 
         memmove(b->pending_ce, b->pending_ce + 1, --b->pending_n);
-        h2fmi_transfer(b, ce);
+        h2fmi_transfer(b, ce, true);
     }
 }
 
@@ -506,7 +508,7 @@ static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
                 if (!(b->fmi[off / 4] & 0x80)) {
                     b->ecc_n = b->ecc_reads = 0;
                 }
-                h2fmi_transfer(b, h2fmi_ce(b));
+                h2fmi_transfer(b, h2fmi_ce(b), false);
             }
             b->fmi[off / 4] = v;
             return;
