@@ -94,6 +94,7 @@ struct IPad1MachineState {
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
+    bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
     bool kbd_cmd, kbd_shift;
     bool btn_hold, btn_home;             /* button-hold/-home properties */
     int kbd_btn_held[Q_KEY_CODE__MAX];   /* qcode -> 1 + button pin */
@@ -223,6 +224,7 @@ static void ipad1_cpu_reset(void *opaque)
     const uint8_t *trailer;
     uint32_t load_pa, entry_pa, bootargs_pa, image_len;
 
+    gles_host_set_debug(s->gles_debug);
     gles_host_reset();
     guest_pkg_reset(&s->pkg);
     ipod_agent_reset(s->agent);
@@ -1458,6 +1460,22 @@ static void ipad1_set_wifi(Object *obj, bool value, Error **errp)
     IPAD1_MACHINE(obj)->wifi = value;
 }
 
+static bool ipad1_get_gles_debug(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->gles_debug;
+}
+
+static void ipad1_set_gles_debug(Object *obj, bool value, Error **errp)
+{
+    IPAD1_MACHINE(obj)->gles_debug = value;
+    gles_host_set_debug(value);
+}
+
+static char *ipad1_get_gles_rejects(Object *obj, Error **errp)
+{
+    return gles_host_rejects();
+}
+
 /* The iPod machine's agent properties (tests drive the agent over QMP with these). */
 static void ipad1_set_agent_request(Object *obj, const char *value, Error **errp)
 {
@@ -1494,6 +1512,9 @@ static void ipad1_instance_init(Object *obj)
     object_property_add_str(obj, "agent-cancel", NULL, ipad1_cancel_agent_request);
     object_property_add_str(obj, "agent-result", ipad1_get_agent_result, NULL);
     object_property_add_str(obj, "agent-status", ipad1_get_agent_status, NULL);
+    object_property_add_str(obj, "gles-rejects", ipad1_get_gles_rejects, NULL);
+    object_property_set_description(obj, "gles-rejects",
+        "Every refusal the GL bridge made so far, one NAME<tab>COUNT per line");
     IPAD1_MACHINE(obj)->battery_level = 80;
     IPAD1_MACHINE(obj)->usb_charger = true;
 }
@@ -1600,6 +1621,9 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "wifi",
         "The BCM4329 Wi-Fi card, the iPad's network (default on). Frames go to "
         "-netdev id=wifi0, or to user networking when none is given; off = no card");
+    object_class_property_add_bool(klass, "gles-debug", ipad1_get_gles_debug, ipad1_set_gles_debug);
+    object_class_property_set_description(klass, "gles-debug",
+        "Paint what the GL bridge refuses magenta instead of black (default off; tests turn it on)");
     object_class_property_add_bool(klass, "usb-cable", ipad1_get_usb_cable,
                                    ipad1_set_usb_cable);
     object_class_property_set_description(klass, "usb-cable",

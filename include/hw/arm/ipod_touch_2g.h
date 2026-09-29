@@ -245,6 +245,7 @@ typedef struct {
 	bool mbx_irq;             /* wire the MBX completion interrupt */
 	bool usb_patch_mux_gate;  /* retired option, always false */
 	bool wifi;                /* present a BCM4325 on the SDIO bus */
+	bool gles_debug;          /* paint what the GL bridge refuses magenta (tests) */
 	IT2G_CPREG_VAR_DEF(REG0);
 	IT2G_CPREG_VAR_DEF(REG1);
 	IT2G_CPREG_VAR_DEF(QEMU_CALL);

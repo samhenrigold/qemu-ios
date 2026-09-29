@@ -79,11 +79,14 @@ static int gles_batch(unsigned slot, void *gcp, unsigned argc, const unsigned *a
 static int gli_unimpl(unsigned slot)
 {
     static unsigned char seen[GLI_N_SLOTS];
-    if (slot < GLI_N_SLOTS && !seen[slot]) {
+    if (slot >= GLI_N_SLOTS) return 0;
+    if (inert_stub(gli_slot_names[slot])) return 0;   /* a hint: the no-op is the implementation */
+    if (!seen[slot]) {
         seen[slot] = 1;
         w("[glishim] unimplemented GL entry point "); w(gli_slot_names[slot]);
         w(" (dispatch slot "); wd(slot); w(")\n");
     }
+    refused("unimpl:", gli_slot_names[slot], ~0u);   /* to the host's counters */
     return 0;
 }
 
@@ -519,6 +522,7 @@ static int gli_bind_view4(void *gc, void *drawable, unsigned ifmt)
     v->block[5] = gc;
     if (!((ca_bind_fn)vt[1])(drawable, rgb565 ? CA_FOURCC_565L : CA_FOURCC_BGRA, v->block)) {
         w("[glishim] drawable->bind failed\n");
+        refused("ca:", "bind", ~0u);
         return 0;
     }
     v->drawable = drawable;
@@ -527,6 +531,7 @@ static int gli_bind_view4(void *gc, void *drawable, unsigned ifmt)
         ((ca_unbind_fn)vt[2])(drawable);
         v->drawable = 0;
         w("[glishim] drawable->nextBuffer gave no surface\n");
+        refused("ca:", "nextbuffer", ~0u);
         return 0;
     }
     gli_iosurface_init();
