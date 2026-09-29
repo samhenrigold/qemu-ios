@@ -42,14 +42,42 @@ static bool fmc_read_file(const char *path, uint8_t *data, uint8_t *spare)
     return true;
 }
 
-static void fmc_blank_page(uint8_t *data, uint8_t *spare)
+static bool fmc_all_ones(const uint8_t *b, size_t n)
 {
-    memset(data, 0, FMC_BYTES_PER_PAGE);
-    memset(spare, 0, FMC_BYTES_PER_SPARE);
-    spare[0xA] = 0xFF;   /* FTL "free page" mark */
+    for (size_t i = 0; i < n; i++) {
+        if (b[i] != 0xFF) {
+            return false;
+        }
+    }
+    return true;
 }
 
-/* Overlay first, then the base image, then a blank page. */
+bool s5l8900_fmc_page_erased(const uint8_t *data, const uint8_t *spare)
+{
+    return fmc_all_ones(data, FMC_BYTES_PER_PAGE) && fmc_all_ones(spare, FMC_BYTES_PER_SPARE);
+}
+
+/* What an erased NAND page reads as: every bit set, data and spare alike. */
+static void fmc_erased_page(uint8_t *data, uint8_t *spare)
+{
+    memset(data, 0xFF, FMC_BYTES_PER_PAGE);
+    memset(spare, 0xFF, FMC_BYTES_PER_SPARE);
+}
+
+static void fmc_erase_marker(S5L8900FMCState *s, uint32_t bank, uint32_t block,
+                             char *buf, size_t len)
+{
+    snprintf(buf, len, "%s/bank%u/blk%u.erased", s->nand_overlay, bank, block);
+}
+
+/*
+ * The page store: a read-only base directory (bank<N>/<page>.page, 2048 data
+ * + 64 spare bytes) under a writable overlay directory of the same layout.
+ * Programs land in the overlay as page files; a block erase (ADM 0x600)
+ * deletes the block's overlay pages and leaves a blk<N>.erased marker, so
+ * the block's base pages stop showing through. A page with no file anywhere
+ * has never been programmed and reads erased (0xFF), as the chip would.
+ */
 void s5l8900_fmc_load_page(S5L8900FMCState *s, uint32_t bank, uint32_t page,
                            uint8_t *data, uint8_t *spare)
 {
@@ -60,6 +88,11 @@ void s5l8900_fmc_load_page(S5L8900FMCState *s, uint32_t bank, uint32_t page,
         if (fmc_read_file(path, data, spare)) {
             return;
         }
+        fmc_erase_marker(s, bank, page / FMC_PAGES_PER_BLOCK, path, sizeof(path));
+        if (g_file_test(path, G_FILE_TEST_EXISTS)) {
+            fmc_erased_page(data, spare);
+            return;
+        }
     }
     if (s->nand_path) {
         snprintf(path, sizeof(path), "%s/bank%u/%u.page", s->nand_path, bank, page);
@@ -67,30 +100,40 @@ void s5l8900_fmc_load_page(S5L8900FMCState *s, uint32_t bank, uint32_t page,
             return;
         }
     }
-    if (getenv("IT_FMC_TRACE")) {
-        fprintf(stderr, "[fmc] blank page bank %u page %u\n", bank, page);
-    }
-    fmc_blank_page(data, spare);
+    fmc_erased_page(data, spare);
 }
 
 /*
- * Page-level copy-on-write into the overlay directory. No block-erase
- * inference: the 3A101a FTL appends into blocks whose earlier pages the
- * captured image already holds (spare bytes in the image are a uniform
- * placeholder, so free and used pages are indistinguishable), and dropping
- * or blanking a block on the first program into it cost lockdownd its own
- * files (EIO on stat). devos50's model never re-read what it wrote at all.
- * Pages the guest erases and never rewrites therefore keep the base image's
- * contents -- nothing in the 3A101a FTL has depended on that so far.
+ * Program one page. NAND programs can only clear bits, so the stored page is
+ * the old contents ANDed with the new: programming an erased page stores
+ * exactly what the FTL sent, and a reprogram without an erase behaves as on
+ * the chip instead of silently replacing the page.
  */
-static bool fmc_program_page(S5L8900FMCState *s, uint32_t bank, uint32_t page)
+static bool fmc_program_page(S5L8900FMCState *s, uint32_t bank, uint32_t page,
+                             const uint8_t *data, const uint8_t *spare)
 {
     char path[PATH_MAX], dir[PATH_MAX];
+    uint8_t cell[FMC_BYTES_PER_PAGE], cell_spare[FMC_BYTES_PER_SPARE];
 
+    s->buffered_page = -1;
     if (!s->nand_overlay) {
         qemu_log_mask(LOG_UNIMP, "[fmc] program bank %u page %u dropped: no nand-overlay\n",
                       bank, page);
         return true;
+    }
+    s5l8900_fmc_load_page(s, bank, page, cell, cell_spare);
+    if (!s5l8900_fmc_page_erased(cell, cell_spare)) {
+        /* An FTL never does this to a consistent store: the page was not erased. */
+        qemu_log_mask(LOG_GUEST_ERROR, "[fmc] program of bank %u page %u, which is not erased\n", bank, page);
+        if (getenv("IT_FMC_TRACE")) {
+            fprintf(stderr, "[fmc] program of bank %u page %u, which is not erased\n", bank, page);
+        }
+    }
+    for (int i = 0; i < FMC_BYTES_PER_PAGE; i++) {
+        cell[i] &= data[i];
+    }
+    for (int i = 0; i < FMC_BYTES_PER_SPARE; i++) {
+        cell_spare[i] &= spare[i];
     }
     snprintf(dir, sizeof(dir), "%s/bank%u", s->nand_overlay, bank);
     if (g_mkdir_with_parents(dir, 0755) != 0) {
@@ -103,13 +146,54 @@ static bool fmc_program_page(S5L8900FMCState *s, uint32_t bank, uint32_t page)
         error_report("FMC: cannot write %s: %s", path, strerror(errno));
         return false;
     }
-    bool ok = fwrite(s->page_buffer, 1, FMC_BYTES_PER_PAGE, f) == FMC_BYTES_PER_PAGE &&
-              fwrite(s->page_spare_buffer, 1, FMC_BYTES_PER_SPARE, f) == FMC_BYTES_PER_SPARE;
+    bool ok = fwrite(cell, 1, FMC_BYTES_PER_PAGE, f) == FMC_BYTES_PER_PAGE &&
+              fwrite(cell_spare, 1, FMC_BYTES_PER_SPARE, f) == FMC_BYTES_PER_SPARE;
     ok = (fclose(f) == 0) && ok;
     if (!ok) {
         error_report("FMC: short write to %s", path);
     }
     return ok;
+}
+
+bool s5l8900_fmc_erase_block(S5L8900FMCState *s, uint32_t bank, uint32_t block)
+{
+    char path[PATH_MAX];
+
+    s->buffered_page = -1;
+    if (!s->nand_overlay) {
+        qemu_log_mask(LOG_UNIMP, "[fmc] erase bank %u block %u dropped: no nand-overlay\n",
+                      bank, block);
+        return true;
+    }
+    snprintf(path, sizeof(path), "%s/bank%u", s->nand_overlay, bank);
+    if (g_mkdir_with_parents(path, 0755) != 0) {
+        error_report("FMC: cannot create %s: %s", path, strerror(errno));
+        return false;
+    }
+    for (uint32_t p = block * FMC_PAGES_PER_BLOCK; p < (block + 1) * FMC_PAGES_PER_BLOCK; p++) {
+        snprintf(path, sizeof(path), "%s/bank%u/%u.page", s->nand_overlay, bank, p);
+        if (remove(path) != 0 && errno != ENOENT) {
+            error_report("FMC: cannot erase %s: %s", path, strerror(errno));
+            return false;
+        }
+    }
+    fmc_erase_marker(s, bank, block, path, sizeof(path));
+    FILE *m = fopen(path, "wb");
+    if (!m || fclose(m) != 0) {
+        error_report("FMC: cannot write %s: %s", path, strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+void s5l8900_fmc_start_program(S5L8900FMCState *s, unsigned count)
+{
+    s->reading_multiple_pages = false;
+    s->prog_count = count;
+    s->prog_index = 0;
+    s->prog_pad = 0;
+    s->fmdnum = FMC_BYTES_PER_PAGE;
+    s->is_writing = count > 0;
 }
 
 void s5l8900_fmc_buffer_page(S5L8900FMCState *s, uint32_t page)
@@ -211,25 +295,49 @@ static void s5l8900_fmc_write(void *opaque, hwaddr addr, uint64_t val, unsigned 
         break;
     case FMC_CMD:
         s->cmd = val;
+        if (getenv("IT_FMC_TRACE") && val != FMC_CMD_READ && val != FMC_CMD_READSTATUS && val != 0) {
+            fprintf(stderr, "[fmc] cmd 0x%02x ctrl0 0x%x ctrl1 0x%x addr0 0x%x addr1 0x%x anum %u\n", (unsigned)val,
+                    s->fmctrl0, s->fmctrl1, s->fmaddr0, s->fmaddr1, s->fmanum);
+        }
         break;
     case FMC_FMDNUM:
         s->reading_spare = (val == FMC_BYTES_PER_SPARE - 1);
         s->fmdnum = val;
         break;
     case FMC_FMFIFO:
+        /*
+         * A program streams through the FIFO as the ADMFMC driver's DMA list
+         * lays it out (_fmcPerformPartialIO): each page's 2048 data bytes,
+         * then a 16-byte pad descriptor, page after page for the queued list.
+         * The pad carries nothing the page keeps (the spare is in data3).
+         */
         if (!s->is_writing) {
             return;
         }
-        if (s->fmdnum > FMC_BYTES_PER_PAGE || s->fmdnum < 4) {
-            qemu_log_mask(LOG_GUEST_ERROR, "[fmc] FIFO write with FMDNUM %u\n", s->fmdnum);
-            s->is_writing = false;
+        if (s->prog_pad) {
+            s->prog_pad -= 4;
+            if (!s->prog_pad && s->prog_index == s->prog_count) {
+                s->is_writing = false;
+            }
             return;
         }
         ((uint32_t *)s->page_buffer)[(FMC_BYTES_PER_PAGE - s->fmdnum) / 4] = val;
         s->fmdnum -= 4;
         if (s->fmdnum == 0) {
-            s->is_writing = false;
-            fmc_program_page(s, s->buffered_bank, s->buffered_page);
+            uint32_t i = s->prog_index++;
+            uint8_t spare[FMC_BYTES_PER_SPARE];
+            /* Bytes 12..63 are the controller's ECC; nothing here reads them. */
+            memset(spare, 0xFF, sizeof(spare));
+            memcpy(spare, s->prog_spares[i], FMC_META_BYTES);
+            fmc_program_page(s, s->banks_to_read[i], s->pages_to_read[i], s->page_buffer, spare);
+            if (getenv("IT_FMC_TRACE")) {
+                uint32_t *w = (uint32_t *)s->page_buffer;
+                fprintf(stderr, "[fmc] program %u/%u bank %u page %u meta type %02x: %08x %08x .. %08x\n",
+                        i + 1, s->prog_count, s->banks_to_read[i], s->pages_to_read[i],
+                        s->prog_spares[i][9], w[0], w[1], w[511]);
+            }
+            s->fmdnum = FMC_BYTES_PER_PAGE;
+            s->prog_pad = FMC_PROGRAM_PAD;
         }
         break;
     case FMC_RSCTRL:
@@ -271,6 +379,7 @@ static void s5l8900_fmc_reset(DeviceState *d)
     s->reading_spare = false;
     s->reading_multiple_pages = false;
     s->is_writing = false;
+    s->prog_count = s->prog_index = s->prog_pad = 0;
     s->cur_bank_reading = -1;
     s->buffered_page = -1;
     s->buffered_bank = -1;

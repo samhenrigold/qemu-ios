@@ -66,6 +66,14 @@ static void adm_run_command(S5L8900ADMState *s)
     if (!fmc) {
         return;
     }
+    /* The firmware's completion mailbox (ADM +0x30..+0x3C, which the driver
+     * copies after the interrupt): class, completion code, per-page status. */
+    memset(s->result, 0, sizeof(s->result));
+    if (getenv("IT_FMC_TRACE")) {
+        fprintf(stderr, "[adm] command 0x%x, %u pages, ce %u, first bank %u page %u\n", cmd, num_pages,
+                adm_read_u8(s, cmdblk + ADM_CMD_CE), adm_read_u8(s, cmdblk + ADM_CMD_BANKS),
+                adm_read_be32(s, cmdblk + ADM_CMD_PAGES));
+    }
     if (num_pages > FMC_MAX_LIST) {
         qemu_log_mask(LOG_GUEST_ERROR, "[adm] %u pages exceeds the list\n", num_pages);
         num_pages = FMC_MAX_LIST;
@@ -102,6 +110,15 @@ static void adm_run_command(S5L8900ADMState *s)
             s5l8900_fmc_buffer_page(fmc, page);
             address_space_write(&s->downstream_as, s->data3_sec_addr, MEMTXATTRS_UNSPECIFIED,
                                 fmc->page_spare_buffer, FMC_BYTES_PER_SPARE);
+            /*
+             * An erased page (every data and spare bit set) is reported as
+             * clean, status 0xFE, which the driver turns into the FTL's
+             * "found clean page" (e00002e5): that is how the FTL finds the
+             * end of what it programmed in a block.
+             */
+            if (s5l8900_fmc_page_erased(fmc->page_buffer, fmc->page_spare_buffer)) {
+                s->result[2] = ADM_STATUS_CLEAN;
+            }
         } else if (num_pages > 1) {
             fmc->reading_multiple_pages = true;
             for (unsigned i = 0; i < num_pages; i++) {
@@ -113,31 +130,42 @@ static void adm_run_command(S5L8900ADMState *s)
             adm_report_spares(s, num_pages);
         }
         break;
-    case ADM_CMD_WRITE: {
-        uint8_t bank = adm_read_u8(s, cmdblk + ADM_CMD_BANKS);
-        uint32_t page = adm_read_be32(s, cmdblk + ADM_CMD_PAGES);
-        s5l8900_fmc_set_bank(fmc, bank);
-        s5l8900_fmc_buffer_page(fmc, page);
+    case ADM_CMD_WRITE_SEQ: {
         /*
-         * The page's new spare -- the FTL's 12 bytes of metadata -- sits in
-         * the data3 section, where reads report it; the rest of the spare is
-         * the ECC the real controller computes, which nothing here checks.
-         * devos50's model (and this one until now) programmed the page with
-         * the spare it had just loaded, so a rewritten page came back with
-         * its previous logical number and lockdownd got EIO on its own files.
+         * Multi-bank program, READ_SEQ's twin: the same page on all eight
+         * banks, num_pages / 8 rows, each page's FTL metadata at data3 +
+         * 0xC * index. The 1.x FTL flushes its context and full log rows this
+         * way; devos50's model had no case for it, so those were dropped.
          */
-        memset(fmc->page_spare_buffer, 0, FMC_BYTES_PER_SPARE);
-        address_space_read(&s->downstream_as, s->data3_sec_addr, MEMTXATTRS_UNSPECIFIED,
-                           fmc->page_spare_buffer, 0xC);
-        if (getenv("IT_FMC_TRACE")) {
-            fprintf(stderr, "[adm] write bank %u page %u spare", bank, page);
-            for (int i = 0; i < 0xC; i++) {
-                fprintf(stderr, " %02x", fmc->page_spare_buffer[i]);
-            }
-            fprintf(stderr, "\n");
+        uint32_t page = adm_read_be32(s, cmdblk + ADM_CMD_PAGES);
+        unsigned n = num_pages - num_pages % 8;
+        for (unsigned i = 0; i < n; i++) {
+            fmc->pages_to_read[i] = page + i / 8;
+            fmc->banks_to_read[i] = i % 8;
         }
-        fmc->fmdnum = FMC_BYTES_PER_PAGE;
-        fmc->is_writing = true;
+        address_space_read(&s->downstream_as, s->data3_sec_addr, MEMTXATTRS_UNSPECIFIED,
+                           fmc->prog_spares, n * FMC_META_BYTES);
+        s5l8900_fmc_start_program(fmc, n);
+        break;
+    }
+    case ADM_CMD_WRITE: {
+        /* One page; its metadata (the first 12 spare bytes) sits in data3,
+         * where reads report it. */
+        fmc->banks_to_read[0] = adm_read_u8(s, cmdblk + ADM_CMD_BANKS);
+        fmc->pages_to_read[0] = adm_read_be32(s, cmdblk + ADM_CMD_PAGES);
+        address_space_read(&s->downstream_as, s->data3_sec_addr, MEMTXATTRS_UNSPECIFIED,
+                           fmc->prog_spares[0], FMC_META_BYTES);
+        s5l8900_fmc_start_program(fmc, 1);
+        break;
+    }
+    case ADM_CMD_ERASE: {
+        /* _fmcPerformErase: the block's first page at +0x244, its bank (chip
+         * enable) at +0x34, one block per command. */
+        uint32_t bank = adm_read_u8(s, cmdblk + ADM_CMD_CE);
+        uint32_t page = adm_read_be32(s, cmdblk + ADM_CMD_PAGES);
+        if (bank < FMC_NUM_BANKS) {
+            s5l8900_fmc_erase_block(fmc, bank, page / FMC_PAGES_PER_BLOCK);
+        }
         break;
     }
     default:
@@ -148,11 +176,15 @@ static void adm_run_command(S5L8900ADMState *s)
 
 static uint64_t s5l8900_adm_read(void *opaque, hwaddr offset, unsigned size)
 {
+    S5L8900ADMState *s = opaque;
+
     switch (offset) {
     case ADM_CTRL:
         return 0x2;    /* ready */
     case ADM_CTRL2:
         return 0x10;   /* upload finished */
+    case ADM_RESULT ... ADM_RESULT + 0xC:
+        return s->result[(offset - ADM_RESULT) / 4];
     default:
         return 0;
     }
