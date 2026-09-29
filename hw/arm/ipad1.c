@@ -873,6 +873,15 @@ static void ipad1_init(MachineState *machine)
      * link the way iBoot's pinot_init leaves it (HS clock running). */
     IPOD_TOUCH_MIPI_DSI(dev)->hs_clock_at_reset = s->kboot_path != NULL;
     qdev_prop_set_uint32(dev, "lanes", 4);      /* K48 DT #lanes */
+    /*
+     * The K48 Pinot panel's ID read, a1 e5 69 09: raw-panel-id in a real
+     * unit's DeviceTree (docs/ipad1/iboot.md), whose lcd-panel-id 0xa1e506c9
+     * is iBoot's normalisation of those four bytes. iBoot-1219 panics on a
+     * panel type it does not know ("Mismatch between PINOT_TYPE and panel
+     * ID"); 817/931 took the iPod's ID the model used to answer.
+     */
+    qdev_prop_set_uint32(dev, "panel-id", 0x0969e5a1);
+    qdev_prop_set_uint32(dev, "panel-id-len", 4);
     memory_region_add_subregion(sysmem, S5L8930_DSIM_BASE,
                                 &IPOD_TOUCH_MIPI_DSI(dev)->iomem);
     sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
