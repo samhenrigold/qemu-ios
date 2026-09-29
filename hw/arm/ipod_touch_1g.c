@@ -208,6 +208,60 @@ static const MemoryRegionOps zero_word_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
+/* ---- USB wrangler quirk ------------------------------------------------ */
+
+/*
+ * iPhone OS 1.1's AppleS5L8900XUSBWrangler::start registers for the PHY's
+ * publication with IOService::addNotification and stores the returned
+ * notifier at this+0x6c afterwards; addNotification invokes the handler
+ * synchronously for a PHY that is already registered, and the handler
+ * (phyRegistered) calls notifier->remove() on the still-NULL field. Whether
+ * the PHY is registered by then is an IOKit ordering race: the wrangler's
+ * start blocks in interrupt registration until the VIC publishes, which waits
+ * on CPU init, which waits on the power controller's matching job, and the
+ * PHY's config job is queued long before that. On this tree the PHY always
+ * wins; devos50's tree never had working USB on this build. Until a real
+ * cause is found, the board keeps the PHY driver from matching instead: the
+ * flattened device tree's otgphyctrl node loses its "compatible" property
+ * (renamed in place, so nothing else moves) in every copy iBoot left in RAM,
+ * so AppleS5L8900XUSBPhy never registers and the wrangler waits for a PHY
+ * that never comes, which is what devos50's "USB nonfunctional" amounted to.
+ * P-class debt; usb-wrangler-quirk=off restores the stock tree.
+ */
+static void n45_usb_wrangler_quirk(void *opaque)
+{
+    IPodTouch1GMachineState *s = opaque;
+    static const char node[] = "otgphyctrl";
+    g_autofree uint8_t *ram = g_malloc(N45_RAM_SIZE);
+
+    if (!s->usb_wrangler_quirk || s->usb_wrangler_quirk_done) {
+        return;
+    }
+    if (address_space_read(s->nsas, N45_RAM_BASE, MEMTXATTRS_UNSPECIFIED, ram,
+                           N45_RAM_SIZE) != MEMTX_OK) {
+        return;
+    }
+    for (size_t off = 0; off + 0x400 < N45_RAM_SIZE; off += 4) {
+        /* A property record: name[32], len u32, value. Look for name="usb-otg". */
+        if (memcmp(ram + off, "name", 5) != 0 || ldl_le_p(ram + off + 32) != sizeof(node) ||
+            memcmp(ram + off + 36, node, sizeof(node)) != 0) {
+            continue;
+        }
+        /* The node's other properties sit within a few hundred bytes. IONameMatch
+         * looks at name, device_type and compatible, so all three go. */
+        for (size_t p = off - 0x300 > off ? 0 : off - 0x300; p < off + 0x300; p += 4) {
+            if ((memcmp(ram + p, "compatible", 11) == 0 || memcmp(ram + p, "device_type", 12) == 0 ||
+                 p == off) && memcmp(ram + p + 36, node, sizeof(node) - 1) == 0) {
+                uint8_t x = 'x';
+                address_space_write(s->nsas, N45_RAM_BASE + p, MEMTXATTRS_UNSPECIFIED, &x, 1);
+                qemu_log_mask(LOG_UNIMP, "[n45] otgphyctrl %s hidden from IOKit at 0x%08zx (usb-wrangler-quirk)\n",
+                              (const char *)ram + p, N45_RAM_BASE + p);
+                s->usb_wrangler_quirk_done = true;   /* every copy in RAM: iBoot's and the kernel's */
+            }
+        }
+    }
+}
+
 /* ---- boot images ------------------------------------------------------- */
 
 static void n45_stage(IPodTouch1GMachineState *s, const char *what, const char *path,
@@ -409,7 +463,10 @@ static void n45_machine_init(MachineState *machine)
     /* timer */
     dev = qdev_new("ipodtouch.timer");
     qdev_prop_set_uint32(dev, "irqlatch", 0xF8);
+    qdev_prop_set_uint32(dev, "freq-hz", 12000000);
     IPOD_TOUCH_TIMER(dev)->sysclk = s->sysclk;
+    IPOD_TOUCH_TIMER(dev)->first_config_hook = n45_usb_wrangler_quirk;
+    IPOD_TOUCH_TIMER(dev)->first_config_opaque = s;
     memory_region_add_subregion(sysmem, N45_TIMER1_BASE, &IPOD_TOUCH_TIMER(dev)->iomem);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, n45_irq(s, N45_TIMER1_IRQ));
@@ -442,11 +499,18 @@ static void n45_machine_init(MachineState *machine)
     for (int i = 0; i < 5; i++) {
         static const hwaddr bases[5] = { N45_UART0_BASE, N45_UART1_BASE, N45_UART2_BASE,
                                          N45_UART3_BASE, N45_UART4_BASE };
-        if (!exynos4210_uart_create(bases[i], 256, i, serial_hd(i),
-                                    n45_irq(s, N45_UART0_IRQ + i), true)) {
-            error_report("iPod-Touch-1G: cannot create UART%d", i);
-            exit(1);
-        }
+        dev = qdev_new("exynos4210.uart");
+        qdev_prop_set_bit(dev, "s5l8720-irq", true);
+        qdev_prop_set_chr(dev, "chardev", serial_hd(i));
+        qdev_prop_set_uint32(dev, "channel", i);
+        qdev_prop_set_uint32(dev, "rx-size", 256);
+        qdev_prop_set_uint32(dev, "tx-size", 256);
+        /* 115200 8N1 would be 86.8 us per character (tx-char-ns=86800); left
+         * instant, since the guest's polled kprintf would otherwise take the
+         * whole boot to ~10x real time on this tree. */
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, bases[i]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, n45_irq(s, N45_UART0_IRQ + i));
     }
 
     /* SPI: nothing on SPI0, the LCD panel on SPI1, the Zephyr digitizer on SPI2 */
@@ -537,7 +601,14 @@ static void n45_machine_init(MachineState *machine)
     memory_region_add_subregion(sysmem, N45_I2C1_BASE, &IPOD_TOUCH_I2C(dev)->iomem);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, n45_irq(s, N45_I2C1_IRQ));
-    i2c_slave_create_simple(IPOD_TOUCH_I2C(dev)->bus, "pcf50633", 0x73);
+    {
+        /* PCF50635 at 0x73 on I2C1. Its interrupt is GPIO-IC line 0x55 (the
+         * DT's pmu node: interrupt-parent gpio, interrupts <0x55 1>). */
+        I2CSlave *pmu = i2c_slave_new("pcf50633", 0x73);
+        qdev_prop_set_uint8(DEVICE(pmu), "shutdown-reg", 0x0c);
+        i2c_slave_realize_and_unref(pmu, IPOD_TOUCH_I2C(dev)->bus, &error_fatal);
+        qdev_connect_gpio_out(DEVICE(pmu), 0, qdev_get_gpio_in(DEVICE(s->sysic), 0x55));
+    }
 
     /* MBX ids */
     iomem = g_new(MemoryRegion, 1);
@@ -589,6 +660,19 @@ N45_STR_PROP(iboot_path)
 N45_STR_PROP(nand_path)
 N45_STR_PROP(nand_overlay)
 
+static void n45_get_usb_wrangler_quirk(Object *obj, Visitor *v, const char *name,
+                                       void *opaque, Error **errp)
+{
+    bool value = IPOD_TOUCH_1G_MACHINE(obj)->usb_wrangler_quirk;
+    visit_type_bool(v, name, &value, errp);
+}
+
+static void n45_set_usb_wrangler_quirk(Object *obj, Visitor *v, const char *name,
+                                       void *opaque, Error **errp)
+{
+    visit_type_bool(v, name, &IPOD_TOUCH_1G_MACHINE(obj)->usb_wrangler_quirk, errp);
+}
+
 static void n45_get_tvout_workaround(Object *obj, Visitor *v, const char *name,
                                      void *opaque, Error **errp)
 {
@@ -613,6 +697,10 @@ static void n45_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "nand", "NAND directory: bank<N>/<page>.page");
     object_class_property_add_str(klass, "nand-overlay", n45_get_nand_overlay, n45_set_nand_overlay);
     object_class_property_set_description(klass, "nand-overlay", "writable directory guest NAND programs land in");
+    object_class_property_add(klass, "usb-wrangler-quirk", "bool", n45_get_usb_wrangler_quirk,
+                              n45_set_usb_wrangler_quirk, NULL, NULL);
+    object_class_property_set_description(klass, "usb-wrangler-quirk",
+        "hide otgphyctrl from IOKit so 1.x's USB wrangler never races its PHY notifier (default on)");
     object_class_property_add(klass, "tvout-workaround", "uint32", n45_get_tvout_workaround,
                               n45_set_tvout_workaround, NULL, NULL);
     object_class_property_set_description(klass, "tvout-workaround",
@@ -630,10 +718,16 @@ static void n45_machine_class_init(ObjectClass *klass, void *data)
     mc->ignore_memory_transaction_failures = true;
 }
 
+static void n45_instance_init(Object *obj)
+{
+    IPOD_TOUCH_1G_MACHINE(obj)->usb_wrangler_quirk = true;
+}
+
 static const TypeInfo n45_machine_info = {
     .name          = TYPE_IPOD_TOUCH_1G_MACHINE,
     .parent        = TYPE_MACHINE,
     .instance_size = sizeof(IPodTouch1GMachineState),
+    .instance_init = n45_instance_init,
     .class_init    = n45_machine_class_init,
 };
 
