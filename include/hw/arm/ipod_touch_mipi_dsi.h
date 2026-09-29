@@ -35,6 +35,9 @@ typedef struct IPodTouchMIPIDSIState
     MemoryRegion iomem;
     bool direct_boot; /* Startup board compatibility policy. */
     uint32_t lanes;   /* data lanes: 2 on the iPod, 4 on K48 */
+    bool hs_clock_at_reset; /* the machine boots a kernel with no boot stage
+                             * programming the DSIM (ipad1 kboot=): start with
+                             * the HS clock iBoot would have left running */
     qemu_irq irq;
     uint32_t pkthdr_reg;
     uint32_t clkctrl;

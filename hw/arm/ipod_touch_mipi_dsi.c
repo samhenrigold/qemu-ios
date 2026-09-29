@@ -181,7 +181,10 @@ static void ipod_touch_mipi_dsi_reset(DeviceState *dev)
     IPodTouchMIPIDSIState *s = IPOD_TOUCH_MIPI_DSI(dev);
 
     s->pkthdr_reg = 0;
-    s->clkctrl = 0;
+    /* kboot= skips iBoot, whose pinot_init leaves the panel lit with the HS
+     * clock running; the kernel's boot_args says the framebuffer is up, and
+     * 4.3's DSI driver reads the clock lane to decide whether the link is. */
+    s->clkctrl = s->hs_clock_at_reset ? rDSIM_CLKCTRL_TxRequestHsClk : 0;
     s->cmd_pending = 0;
     s->return_panel_id = false;
     s->rx_head = s->rx_count = s->intsrc = 0;
