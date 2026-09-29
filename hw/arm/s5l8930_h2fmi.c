@@ -105,6 +105,7 @@ typedef struct H2FMIBus {
     /* Each chip latches its own page at the read command: the IOP firmware
      * commands the next CE before it transfers the previous one. */
     bool page_ok[8];                    /* loaded page has data (else blank) */
+    uint32_t page_row[8];
     uint8_t page[8][H2FMI_BUF];
     uint32_t stride;
     uint8_t data[H2FMI_QUEUE * H2FMI_BUF], meta[H2FMI_QUEUE * META_BYTES];
@@ -225,11 +226,9 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
          * transfer put there; only reset (0xff) or a transfer with an idle
          * pipeline starts them afresh. */
         b->mode = MODE_PAGE;
-        if (!b->data_len) {
-            b->meta_len = 0;    /* leftovers a PIO reader left behind */
-        }
         if (ce >= 0 && s->iop) {
             b->page_ok[ce & 7] = false;
+            b->page_row[ce & 7] = b->row;
             /*
              * iBoot numbers chip selects round-robin across the buses
              * (h2fmiInitVirtToPhysMap, 0x5ff026f8: CS 0 = FMI0 CE0, CS 1 =
@@ -304,8 +303,10 @@ static void h2fmi_transfer(H2FMIBus *b, int ce)
         }
         memcpy(b->data, idb, sizeof(idb));
         b->data_len = sizeof(idb);
-    } else if (b->mode == MODE_PAGE && page_bytes && !h2fmi_room(b, page_bytes)) {
-        /* No room: the transfer waits for the CDMA to drain (h2fmi_drain). */
+    } else if (b->mode == MODE_PAGE && page_bytes && (b->pending_n || !h2fmi_room(b, page_bytes))) {
+        /* No room, or older transfers still waiting: this one queues behind them
+         * (the FIFO's order is the firmware's transfer order) and goes when the
+         * CDMA drains (h2fmi_drain). */
         if (b->pending_n < ARRAY_SIZE(b->pending_ce)) {
             b->pending_ce[b->pending_n++] = ce;
         } else {
@@ -334,8 +335,10 @@ static void h2fmi_transfer(H2FMIBus *b, int ce)
         b->ecc_q[b->ecc_n++] = ok ? 0 : ECC_BLANK;
         b->ecc_summary = 0;
     }
-    qemu_log_mask(LOG_TRACE, "h2fmi%d: transfer mode %d ce %d -> data %u meta %u ecc_n %u\n",
-                  b->n, b->mode, ce, b->data_len, b->meta_len, b->ecc_n);
+    qemu_log_mask(LOG_TRACE, "h2fmi%d: transfer mode %d ce %d row 0x%x cur 0x%x ok %d meta %02x%02x%02x%02x -> data %u meta %u ecc_n %u\n",
+                  b->n, b->mode, ce, ce >= 0 ? b->page_row[ce & 7] : 0, b->row, ce >= 0 ? b->page_ok[ce & 7] : 0,
+                  ce >= 0 ? b->page[ce & 7][page_bytes] : 0, ce >= 0 ? b->page[ce & 7][page_bytes + 1] : 0, ce >= 0 ? b->page[ce & 7][page_bytes + 2] : 0, ce >= 0 ? b->page[ce & 7][page_bytes + 3] : 0,
+                  b->data_len, b->meta_len, b->ecc_n);
     b->fmi[FMI_STATUS / 4] |= FMI_ST_DONE;
     h2fmi_update_irq(b);
     if (s->cdma) {
@@ -420,12 +423,18 @@ static uint32_t h2fmi_ecc_sector(H2FMIBus *b)
     if (!b->ecc_n) {
         return 0;
     }
-    v = b->ecc_q[0];
-    if (++b->ecc_reads >= sectors) {
+    if (b->ecc_reads >= sectors) {
+        /* All sectors read: the next page's results, if a later transfer
+         * queued them; else the same page's again (the IOP firmware re-reads
+         * a page's results after its second control write). */
         b->ecc_reads = 0;
-        memmove(b->ecc_q, b->ecc_q + 1, sizeof(b->ecc_q) - sizeof(b->ecc_q[0]));
-        b->ecc_n--;
+        if (b->ecc_n > 1) {
+            memmove(b->ecc_q, b->ecc_q + 1, sizeof(b->ecc_q) - sizeof(b->ecc_q[0]));
+            b->ecc_n--;
+        }
     }
+    v = b->ecc_q[0];
+    b->ecc_reads++;
     return v;
 }
 

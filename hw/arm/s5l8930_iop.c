@@ -314,6 +314,7 @@ static uint8_t *nand_page(S5L8930IOPState *s, int bus, uint32_t ce,
 static uint32_t nand_read_page(S5L8930IOPState *s, int bus, uint32_t ce,
                                uint32_t page, uint8_t *data, uint8_t *meta)
 {
+    qemu_log_mask(LOG_TRACE, "pageread %d %u %u\n", bus, ce, page);
     uint32_t len = s->bytes_per_page[bus] + s->bytes_per_spare[bus];
     uint8_t *p;
     uint32_t i;
@@ -675,7 +676,10 @@ static uint32_t fmi_multi(S5L8930IOPState *s, int bus, uint8_t *cmd, bool write,
             st = nand_read_page(s, bus, ce, pg, page, meta);
             blank += st == FMI_STATUS_BLANK;
             uecc += st == FMI_STATUS_UECC;
+            qemu_log_mask(LOG_TRACE, "kdata %d %u %u %02x%02x%02x%02x%02x%02x%02x%02x\n", bus, ce, pg, page[0], page[1], page[2], page[3], page[4], page[5], page[6], page[7]);
             seg_copy(&data, page, s->bytes_per_page[bus], true);
+            qemu_log_mask(LOG_TRACE, "kmeta %d %u %u %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x st %u\n", bus, ce, pg,
+                          meta[0], meta[1], meta[2], meta[3], meta[4], meta[5], meta[6], meta[7], meta[8], meta[9], st);
             seg_copy(&metas, meta, FMI_META_BYTES, true);
         }
     }

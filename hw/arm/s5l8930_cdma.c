@@ -522,6 +522,14 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
                     ok = aes_apply(s, aes, buf, len,
                                    !resume && (flags & DESC_AES_RESTART));
                 }
+                if (fed && len == 4096) {
+                    qemu_log_mask(LOG_TRACE, "cdata ch %d %02x%02x%02x%02x%02x%02x%02x%02x\n", ch,
+                                  buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
+                }
+                if (fed && len == 10) {
+                    qemu_log_mask(LOG_TRACE, "cmeta ch %d %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n", ch,
+                                  buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9]);
+                }
                 dma_memory_write(&address_space_memory, c->addr, buf, len,
                                  MEMTXATTRS_UNSPECIFIED);
             }
