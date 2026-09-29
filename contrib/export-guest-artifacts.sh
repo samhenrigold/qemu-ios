@@ -101,6 +101,8 @@ done
 # the export set the preparer checks the stock binary against before the package's hook may replace it.
 stage ipad-guest-tools "$C/it-gles/OpenGLES-2x"
 stage ipad-guest-tools "$C/it-gles/opengles-2x.exports"
+stage ipad-guest-tools "$C/it-gles/OpenGLES-1x"
+stage ipad-guest-tools "$C/it-gles/opengles-1x.exports"
 stage ipad-guest-tools "$G/ipod-guest/it_keybag" it_keybag-armv6
 stage ipad-guest-tools "$G/ipod-guest/it_prefs" it_prefs-armv6
 chmod 0644 "$OUT"/ipad-guest-tools.incomplete/*.plist "$OUT"/ipad-guest-tools.incomplete/*.h \
