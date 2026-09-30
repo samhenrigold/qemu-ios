@@ -85,28 +85,27 @@ SSHD = ("Library/LaunchDaemons/com.openssh.sshd.plist", "usr/sbin/sshd", "privat
 # base -> (system volume under FILES, /var/stash seed under FILES or None, store name suffix)
 BASES = {"pristine": ("7B500/dec/rootfs.dmg", None, "pristine"),
          "jailbroken": ("hw2/rdisk0s1-system.img", "hw2/stash", "jb")}
-GLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/ipad1-gles")
-GLENGINE = "System/Library/Frameworks/OpenGLES.framework/GLEngine.bundle/GLEngine"
-GLES_APPS = ("GLTest.app", "GLTest2.app")
-# GL CoreAnimation (the default; --no-ca-ogl opts out): CoreAnimation composites through the GLI shim
-# (accelerated pixel format), so the build installs the shim as GLEngine
-SB_ENV_CA_OGL = {"MBX2D_PAGE_FLIP": "0", "GLI_ACCELERATED": "1"}
-# One GLEngine for every firmware: the shim reads the firmware's __GLIFunctionDispatchRec layout out of
-# OpenGLES at load (contrib/it-gles/gles_dispatch.c) and matches each slot by name to the name table it and
-# the host share (include/hw/arm/guest-services/gles-names.h). gli_dispatch_info only says what it will find.
+GLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../contrib/gles-public")
+# The GL front end (contrib/gles-public: one fat OpenGLES for every firmware) replaces the framework binary whole;
+# nothing under it (GLEngine, libGFXShared, a gld plugin) is touched. FirmwareKit's FitCheck.glesFrontEnd proves the
+# firmware has what it looks up at run time; this oracle installs it the same way.
+OPENGLES_REL = "System/Library/Frameworks/OpenGLES.framework/OpenGLES"
+GLES_APPS = ("GLTest.app", "GLTest2.app")            # contrib/gles-public/build-apps.sh
+# GL CoreAnimation (the default; --no-ca-ogl opts out): stock CoreAnimation composites through the front end
+SB_ENV_CA_OGL = {"MBX2D_PAGE_FLIP": "0"}
+# The front end reads the firmware's __GLIFunctionDispatchRec layout (5.x's macro context) by name against the
+# table it and the host share (include/hw/arm/guest-services/gles-names.h); gli_dispatch_info says what it finds.
 GLI_NAMES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../include/hw/arm/guest-services/gles-names.h")
 DYLD_CACHE = "System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv7"
 
 
 def gli_engine(cache_path):
-    """(the GLEngine, a sanity line about this shared cache's dispatch layout); the second is a warning when
-    the cache carries no layout the shim could read, never a refusal."""
-    return os.path.join(GLES, "GLEngine"), gli_dispatch_info(cache_path)
+    """(the GL front end, a sanity line about this shared cache's dispatch layout); the second is a warning when
+    the cache carries no layout, never a refusal."""
+    return os.path.join(GLES, "OpenGLES"), gli_dispatch_info(cache_path)
 
 
 DYLD_OVERRIDE = "System/Library/Caches/com.apple.dyld/enable-dylibs-to-override-cache"
-GLD_BUNDLE = "GLRendererFloatQEMU.bundle"
-GLD_REL = "System/Library/Frameworks/OpenGLES.framework/%s/GLRendererFloatQEMU" % GLD_BUNDLE
 
 
 def cache_images(data):
@@ -144,7 +143,7 @@ def image_strings(data, img, section=None):
     return out
 
 
-def gli_uncache(mnt, rel=GLENGINE, cache=DYLD_CACHE):
+def gli_uncache(mnt, rel=OPENGLES_REL, cache=DYLD_CACHE):
     """Let dlopen reach the GLI shim (or the iPod's MBX shim, rel/cache given) on disk. 4.x ships GLEngine inside the shared cache, and iOS dyld
     matches a cached image by path alone, so the shim installed over it would never load (3.2.x has no
     cached GLEngine: nothing to do). dyld's own switch fixes that: when
@@ -164,26 +163,6 @@ def gli_uncache(mnt, rel=GLENGINE, cache=DYLD_CACHE):
     open(os.path.join(mnt, DYLD_OVERRIDE), "wb").close()
     os.chmod(d, mode)
     return "cached %s overridden by the file (%s)" % (os.path.basename(rel), os.path.basename(DYLD_OVERRIDE))
-
-
-def gld_problem(cache_path, plugin=os.path.join(GLES, GLD_BUNDLE, "GLRendererFloatQEMU")):
-    """(needed, why): needed if this firmware's EAGL takes a libGFXShared shared state (4.x:
-    OpenGLES imports gfxCreateSharedState), which needs a gld plugin; why is None when gldshim exports
-    every gld* entry point libGFXShared dlsyms."""
-    data = open(cache_path, "rb").read()
-    imgs = cache_images(data)
-    ogl = imgs.get("/System/Library/Frameworks/OpenGLES.framework/OpenGLES")
-    if not ogl or "_gfxCreateSharedState" not in image_strings(data, ogl):
-        return False, None
-    gfx = imgs.get("/System/Library/Frameworks/OpenGLES.framework/libGFXShared.dylib")
-    if not gfx:
-        return True, "OpenGLES imports gfxCreateSharedState but the cache has no libGFXShared"
-    want = [n for n in image_strings(data, gfx, "__cstring") if re.fullmatch(r"gld[A-Z]\w+", n)]
-    if not os.path.exists(plugin):
-        return True, "%s missing (run contrib/ipad1-gles/build.sh)" % plugin
-    have = open(plugin, "rb").read()
-    lost = [n for n in want if b"\0_" + n.encode() + b"\0" not in have]
-    return True, ("gldshim lacks %s" % ", ".join(lost)) if lost or not want else None
 
 
 def gli_fields(data):
@@ -621,22 +600,14 @@ def build(a):
             print("      " + appsync_cachepatch.patch_cache(cache))
         apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))
         gli_owned = []                     # files the GL install adds, root-owned below
-        if a.gles or a.ca_ogl:   # GL CoreAnimation composites through the GLI shim, so it needs the engine
+        if a.gles or a.ca_ogl:   # stock CoreAnimation composites through the GL front end
             engine, info = gli_engine(os.path.join(m.mnt, DYLD_CACHE))
             if not os.path.exists(engine):
-                raise SystemExit("%s missing (run contrib/ipad1-gles/build.sh)" % engine)
-            gld, why = gld_problem(os.path.join(m.mnt, DYLD_CACHE))
-            if why:
-                raise SystemExit("gld plugin does not fit this firmware: %s (build with --no-ca-ogl)" % why)
+                raise SystemExit("%s missing (run contrib/gles-public/build.sh)" % engine)
             status = gli_uncache(m.mnt)
-            print("      GLI engine %s%s; %s; %s" % (os.path.basename(engine), " + gld plugin %s" % GLD_BUNDLE if gld else "",
-                                                   status, info))
+            print("      GL front end %s; %s; %s" % (os.path.basename(engine), status, info))
             gli_owned += [DYLD_OVERRIDE] if "overridden" in status else []
-            gli_owned += [os.path.dirname(GLD_REL), GLD_REL] if gld else []
-            shutil.copy(engine, os.path.join(m.mnt, GLENGINE))
-            if gld:
-                os.makedirs(os.path.join(m.mnt, os.path.dirname(GLD_REL)), exist_ok=True)
-                shutil.copy(os.path.join(GLES, GLD_BUNDLE, os.path.basename(GLD_REL)), os.path.join(m.mnt, GLD_REL))
+            shutil.copy(engine, os.path.join(m.mnt, OPENGLES_REL))
         if a.gles:
             for app in () if apps_stashed else GLES_APPS:
                 shutil.rmtree(os.path.join(m.mnt, "Applications", app), ignore_errors=True)
@@ -661,7 +632,7 @@ def build(a):
         bn.set_owner(system, ["usr/local", "usr/local/share", "usr/local/share/ltm", PAC_PATH], 0, 0)
     if a.gles or a.ca_ogl:   # ldid-signed: boot with amfi_allow_any_signature=1 cs_enforcement_disable=1
         apps = [] if apps_stashed or not a.gles else GLES_APPS
-        bn.set_owner(system, [GLENGINE] + gli_owned + ["Applications/" + app for app in apps] +
+        bn.set_owner(system, [OPENGLES_REL] + gli_owned + ["Applications/" + app for app in apps] +
                      ["Applications/%s/%s" % (app, f) for app in apps
                       for f in os.listdir(os.path.join(GLES, app))], 0, 0)
     owners = var_owners(system)
@@ -755,12 +726,12 @@ def bake(a):
             rewrite_plist(os.path.join(m.mnt, BT_JOB), lambda d: d.__setitem__("Disabled", True))
         if a.activation_hook:
             activation_hook(a.activation_hook, os.path.join(m.mnt, LOCKDOWND))
-        # the GLI shim this image carries (build installs it unless --no-ca-ogl): the GL hooks the seed keeps
+        # the GL front end this image carries (build installs it unless --no-ca-ogl): the GL hooks the seed keeps
         engine, _ = gli_engine(os.path.join(m.mnt, DYLD_CACHE))
         gles = False
-        # no file when GLEngine lives only in the shared cache (4.x, 5.x) and build installed no shim
-        if os.path.exists(os.path.join(m.mnt, GLENGINE)):
-            with open(os.path.join(m.mnt, GLENGINE), "rb") as f:
+        # no file when OpenGLES lives only in the shared cache and build installed no front end
+        if os.path.exists(os.path.join(m.mnt, OPENGLES_REL)):
+            with open(os.path.join(m.mnt, OPENGLES_REL), "rb") as f:
                 gles = f.read() == open(engine, "rb").read()
         seeded, record = mkpkg.seed(m.mnt, a.guest_package, gles)
     with open(os.path.join(a.dir, "guest-package.json"), "w") as f:
@@ -833,8 +804,8 @@ def selfcheck():
         os.makedirs(os.path.join(mnt, "usr/lib"))
         open(os.path.join(mnt, "usr/lib/dyld"), "wb").write(b"x\0/%s\0" % DYLD_OVERRIDE.encode())
         cache("/usr/lib/libz.dylib")
-        assert gli_uncache(mnt) == "no cached GLEngine" and not os.path.exists(os.path.join(mnt, DYLD_OVERRIDE))
-        cache("/usr/lib/libz.dylib", "/" + GLENGINE)
+        assert gli_uncache(mnt) == "no cached OpenGLES" and not os.path.exists(os.path.join(mnt, DYLD_OVERRIDE))
+        cache("/usr/lib/libz.dylib", "/" + OPENGLES_REL)
         assert "overridden" in gli_uncache(mnt) and os.path.getsize(os.path.join(mnt, DYLD_OVERRIDE)) == 0
         open(os.path.join(mnt, "usr/lib/dyld"), "wb").write(b"no switch")
         try:
@@ -932,7 +903,7 @@ def main():
                    help="skip the en0 Wi-Fi service with the web proxy PAC (proxy, else DIRECT)")
     b.add_argument("--no-usb-net", dest="usb_net", action="store_false",
                    help="skip the en1 (USB Ethernet) DHCP network service")
-    b.add_argument("--gles", action="store_true", help="also install the GLTest/GLTest2.app test apps (the GLI engine itself always goes in; run contrib/ipad1-gles/build.sh first)")
+    b.add_argument("--gles", action="store_true", help="also install the GLTest/GLTest2.app test apps (the GL front end itself always goes in; run contrib/gles-public/build.sh and build-apps.sh first)")
     b.add_argument("--page-flip", action="store_true", help="leave CoreAnimation's IOMFB page flipping on (no MBX2D_PAGE_FLIP=0)")
     b.add_argument("--no-ca-ogl", dest="ca_ogl", action="store_false",
                    help="software CoreAnimation (CA_ENABLE_OGL=0) instead of the default GL compositing through the GLI shim")
