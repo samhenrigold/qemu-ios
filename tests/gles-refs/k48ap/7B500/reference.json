@@ -18,7 +18,7 @@
         "worktree_base": "0dd8866f8776194b97814309a124053a98de9872"
       },
       "recipe": {
-        "path": "/private/tmp/ltm-reuse-software-entry.json",
+        "path": "/Users/shg/Developer/ltm-evidence/reuse-2026-09-30/ltm-reuse-software-entry.json",
         "sha256": "01f4ade3e63c1f0e36e80c23df09358fa0520f1c7baae54036b53175cd05354b",
         "ca_ogl": false,
         "peak_bytes": 0,
@@ -46,11 +46,12 @@
           ],
           "seed": 9,
           "version": "1.1.7"
-        }
+        },
+        "metadata_archive": "/Users/shg/Developer/ltm-evidence/reuse-2026-09-30/ltm-reuse-software-baseline2"
       },
       "artifacts": {
-        "directory": "/private/tmp/ltm-reuse-software-capture/gles",
-        "capture_script": "/private/tmp/ltm-reuse-software-capture.py",
+        "directory": "/Users/shg/Developer/ltm-evidence/reuse-2026-09-30/ltm-reuse-software-capture/gles",
+        "capture_script": "/Users/shg/Developer/ltm-evidence/reuse-2026-09-30/ltm-reuse-software-capture.py",
         "capture_script_sha256": "a4b31a7bc5c55963c73116ccde20d10aeb9c2ea93834fe90c6d77df29e77c58a",
         "serial_sha256": "c51729fa45108654bef8d82dc472cc2ce4cd053eb6942f68a958b42bce39f4b7",
         "capture_report_sha256": "bf03842f64b64b36e36e4432dcd1d92eb4e94c75aa52dd9ad0b0713b436efea1",
@@ -63,7 +64,7 @@
     "home": {
       "sha256": "2555c2277d72d92a2bc6004cd741a966c713b6e80d243ebf60e8faceaf9de67c",
       "source_sha256": "99f3a701a038eb8e79f2f19867f2dffdf5d56a2fd41d0057a5e7bd91ea207654",
-      "source_path": "/private/tmp/ltm-reuse-software-capture/gles/home.ppm"
+      "source_path": "/Users/shg/Developer/ltm-evidence/reuse-2026-09-30/ltm-reuse-software-capture/gles/home.ppm"
     }
   }
 }
