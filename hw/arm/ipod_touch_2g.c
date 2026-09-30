@@ -1161,6 +1161,86 @@ rearm:
     }
 }
 
+#define IBOOT_SCAN_PA_START  0x0ff00000u
+#define IBOOT_SCAN_LEN       0x00040000u   /* covers both builds' iBoot images */
+
+/* One-shot: the DeviceTree node is patched in the iBoot image in RAM the first
+ * time the guest reads a page. A reset reloads that RAM, so the latch has to be
+ * re-armed from ipod_touch_fmss_reset() or the second boot runs unpatched. */
+
+static void ipod_touch_compat_bluetooth(IPodTouchMachineState *nms)
+{
+    static const char needle[] = "arm-io/uart3/bluetooth";
+    static const char replace[] = "arm-io/uart1/bluetooth";
+
+    if (nms->compat_bt_patched) {
+        return;
+    }
+    nms->compat_bt_patched = true;
+
+    g_autofree uint8_t *image = g_try_malloc(IBOOT_SCAN_LEN);
+    if (!image) {
+        return;
+    }
+    cpu_physical_memory_read(IBOOT_SCAN_PA_START, image, IBOOT_SCAN_LEN);
+
+    for (size_t i = 0; i + sizeof(needle) <= IBOOT_SCAN_LEN; i++) {
+        if (memcmp(image + i, needle, sizeof(needle)) != 0) {
+            continue;
+        }
+        uint32_t pa = IBOOT_SCAN_PA_START + i;
+        cpu_physical_memory_write(pa, replace, strlen(replace));
+        if (getenv("IT_PATCH_DEBUG")) {
+            printf("[IBOOT] bluetooth node string patched at PA 0x%08x\n", pa);
+        }
+        return;
+    }
+
+    printf("[IBOOT] bluetooth node string not found in iBoot; not patching\n");
+}
+
+/* Legacy boot-argument data injection. Discover the buffer from the loaded
+ * iBoot's literal references, rather than assuming a particular build's BSS.
+ * Keep the existing NAND-read timing: iBoot rewrites this buffer during load. */
+static void ipod_touch_compat_command_line(IPodTouchMachineState *nms)
+{
+    static const char boot_args[] =
+        "kextlog=0xfff debug=0x8 cpus=1 rd=disk0s1 serial=1 pmu-debug=0x1 "
+        "io=0xffff8fff debug-usb=0xffffffff amfi_allow_any_signature=1 -v "
+        "zalloc_debug";
+
+    if (nms->direct_iboot[0]) {
+        return;
+    }
+
+    if (!nms->compat_command_line) {
+        g_autofree uint8_t *image = g_try_malloc(IBOOT_SCAN_LEN);
+        if (!image) {
+            return;
+        }
+        cpu_physical_memory_read(IBOOT_SCAN_PA_START, image, IBOOT_SCAN_LEN);
+        nms->compat_command_line = it_iboot_find_command_line(
+            image, IBOOT_SCAN_LEN, IBOOT_SCAN_PA_START);
+        if (!nms->compat_command_line) {
+            return;
+        }
+        printf("[IBOOT] discovered command-line buffer at PA 0x%08x\n",
+               nms->compat_command_line);
+    }
+    cpu_physical_memory_write(nms->compat_command_line, boot_args, sizeof(boot_args));
+}
+
+/* Observes a transfer; firmware edits belong to the board compatibility
+ * policy, not to the NAND device. This preserves the old ordering while the
+ * underlying iBoot/UART and NVRAM behavior is investigated. */
+static void ipod_touch_compat_before_nand_read(Notifier *notifier, void *data)
+{
+    IPodTouchMachineState *nms = container_of(notifier, IPodTouchMachineState,
+                                             compat_nand_read);
+    ipod_touch_compat_command_line(nms);
+    ipod_touch_compat_bluetooth(nms);
+}
+
 static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
 {
     uint32_t delay_ms = nms->boot_args_delay_ms;
@@ -1250,6 +1330,8 @@ static void ipod_touch_cpu_reset(void *opaque)
     ARMCPU *cpu = nms->cpu;
     CPUState *cs = CPU(cpu);
 
+    nms->compat_bt_patched = false;
+    nms->compat_command_line = 0;
     ipod_agent_reset(nms->agent);
     guest_pkg_reset(&nms->pkg);
     gles_host_set_debug(nms->gles_debug);
@@ -3326,7 +3408,8 @@ static void ipod_touch_machine_init(MachineState *machine)
     fmss_state->nand_path = nms->nand_path;
     fmss_state->nand_overlay = nms->nand_overlay[0] ? nms->nand_overlay : NULL;
     nms->fmss_state = fmss_state;
-    fmss_state->direct_boot = nms->direct_iboot[0] != 0;
+    nms->compat_nand_read.notify = ipod_touch_compat_before_nand_read;
+    notifier_list_add(&fmss_state->before_read, &nms->compat_nand_read);
     busdev = SYS_BUS_DEVICE(dev);
     memory_region_add_subregion(sysmem, FMSS_MEM_BASE, &fmss_state->iomem);
     sysbus_realize(busdev, &error_fatal);
