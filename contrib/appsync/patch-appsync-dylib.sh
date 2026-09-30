@@ -1,5 +1,5 @@
 #!/bin/sh
-# AppSync for iPod touch 2G firmware: cache patch where present, plus process-local
+# AppSync for iPod touch 2G firmware: process-local
 # installation hooks. 2.x uses the Lockbot argument launcher; 3.0+ uses installd.
 # Standalone libmis remains stock. Run via editimg.py with MNT set.
 # Build both helpers first with contrib/appsync/build.sh.
@@ -7,15 +7,14 @@ set -e
 : "${MNT:?run me through editimg.py (it sets MNT)}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DYLIB="${APPSYNC_DYLIB:-$HERE/../../build/appsync/libappsync.dylib}"
-CACHEPATCH="$HERE/../../imgtools/appsync_cachepatch.py"
-LDID="${LDID:-/opt/homebrew/bin/ldid}"
 
 [ -f "$DYLIB" ] || { echo "missing $DYLIB (run contrib/appsync/build.sh)"; exit 1; }
 
 # 0. Optional: undo the old byte-patched AppSync. Images made by
 #    qemu-ios-files/apps/patch-appsync.sh carry an edited, re-signed installd and
 #    SpringBoard; STOCK_ROOT (a mounted stock rootfs of the same build) puts the
-#    Apple-signed originals back, so only the dylib + cache patch remain.
+#    Apple-signed originals back. This does not undo an earlier shared-cache patch;
+#    rebuild from the IPSW to obtain a stock cache.
 if [ -n "${STOCK_ROOT:-}" ]; then
     for f in usr/libexec/installd System/Library/CoreServices/SpringBoard.app/SpringBoard; do
         cp "$STOCK_ROOT/$f" "$MNT/$f"
@@ -24,13 +23,10 @@ if [ -n "${STOCK_ROOT:-}" ]; then
     done
 fi
 
-# 1. shared-cache MISValidateSignature -> success, by symbol.
-CACHE="$MNT/System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv6"
-if [ -f "$CACHE" ]; then
-    python3 "$CACHEPATCH" "$CACHE" --patch
-fi
+# Keep the system trust library stock. Kernel AMFI boot arguments permit ad-hoc
+# execution; the installation service's signing-info hook handles app installation.
 
-# 2. install the dylib root-owned and inject it into installd.
+# 1. install the dylib root-owned and inject it into installd.
 install -d "$MNT/usr/lib"
 cp "$DYLIB" "$MNT/usr/lib/libappsync.dylib"
 chmod 644 "$MNT/usr/lib/libappsync.dylib"

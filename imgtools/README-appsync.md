@@ -13,22 +13,22 @@ this recipe. See [the app ledger](../docs/app-ledger.md) for measured coverage.
 
 ## How the gates are opened now
 
-Nothing is patched at a fixed offset. `imgtools/appsync_cachepatch.py` finds
-`MISValidateSignature` in the shared cache by symbol and makes it return success
-(amfid's half), and the `contrib/appsync` dylib, injected into installd and
-SpringBoard, answers the install and launch gates. The four fixed 7E18 offsets
-the old `nand-agent-v4` image carried (installd twice, the cache, SpringBoard)
-and their byte patchers are retired; they are in git history
-(`docs/archive/backport-from-ipad1.md`).
+The installation-service dylib binds by symbol, preserves real signing metadata,
+and supplies the legacy fallback only when no info is returned. Neither the
+shared cache nor stock installd/SpringBoard is patched for AppSync. The emulator's
+AMFI boot arguments permit ad-hoc execution; the helper handles installation.
+See [the current implementation](../contrib/appsync/README.md).
+
+The four fixed 7E18 offsets in old nand-agent-v4 images and the later symbol-found
+shared-cache patch are historical approaches. Rebuild from an IPSW to remove
+those old edits; no generic unpatch is applied to existing images.
 
 ## Signing and baked tools
 
-Re-sign changed standalone Mach-O binaries so their CodeDirectory page hashes
-match. **Preserve SpringBoard's stock entitlements** with the explicit entitlement
-file used by `patch-appsync.sh`. Bare `ldid -S` removes them; this previously broke
-keychain and iTunes messaging. The preparation script checks that all eight stock
-entitlement keys survive. Stock installd has no entitlements. The shared-cache
-patch does not use standalone Mach-O re-signing.
+The guest helpers are ldid-signed at build time. Preparation retains Apple's
+standalone installd and SpringBoard binaries, signatures and entitlements.
+Historical byte-patching experiments required explicit entitlement preservation;
+those scripts are not part of this preparation path.
 
 `imgtools/bake-guest-tools.sh` installs the agent, typing bridge, GLES engine and
 launch helpers. Follow its documented ownership repair: files created in a
