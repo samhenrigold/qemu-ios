@@ -234,6 +234,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930D1815State, S5L8930_D1815)
 #define PMU_EVENT_A_USB     (1u << 3)   /* cable edge; the power source re-reads usb_det */
 #define PMU_VEC_CHARGER0    0x28        /* DT charger0 interrupts: event F bit 0 */
 #define PMU_STATUS          0x07    /* A-E, power sources; STAT function */
+/*
+ * STATUS A bit 3 is VBUS on the dock connector. 4.x's AppleD1815PMU halt
+ * (8L1 809f47b8) reads STATUS A-E (809f4384) and with it set writes 0x8F =
+ * 0x90 and restarts into iBoot's power-off wait, else "pmu go stdby". (5.x
+ * keys the same choice on AppleUSBCableDetect instead.) Bit 5 is acc_detect
+ * (DT function-acc_detect STAT 0x05): no accessory, left 0.
+ */
+#define PMU_STATUS_A_VBUS   (1u << 3)
 #define PMU_STATUS_C        0x09    /* GPIO input levels, bit n = GPIO n+1 */
 #define PMU_GPIO6_BATT_SWI  (1u << 5)   /* DT event_name-gpio6 'battery' */
 #define PMU_IRQ_MASK        0x0C    /* A-F; start writes FF 5F FF FF FF FF */
@@ -287,7 +295,8 @@ struct S5L8930D1815State {
     int64_t rtc_base;       /* counter = host epoch + rtc_base */
     uint32_t rtc_latch;
     uint16_t vbat_mv;       /* what ADC mux 4 measures; 0 = the 3900 default */
-    bool usb_host;          /* a host's pull-downs on D+/D-: ADC mux 6 reads 0 */
+    bool usb_host;          /* a host's cable: VBUS, and its pull-downs on D+/D-
+                             * (ADC mux 6 reads 0) */
     bool restarting;        /* the next reset is this PMU's own 0x7B restart */
 };
 
@@ -451,6 +460,9 @@ static uint8_t d1815_recv(I2CSlave *i2c)
     case PMU_EVENT ... PMU_EVENT + PMU_EVENT_COUNT - 1:
         s->regs[reg] = 0;
         d1815_update_irq(s);
+        break;
+    case PMU_STATUS:
+        v |= s->usb_host ? PMU_STATUS_A_VBUS : 0;
         break;
     case PMU_RTC_COUNT:
         /* Snapshot on the low byte so the 4 bytes describe one instant. */
