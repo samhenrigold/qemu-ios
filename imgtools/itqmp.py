@@ -592,5 +592,59 @@ def main(argv=None):
         sys.exit("unknown action %r" % action)
 
 
+def guest_powerdown(qmp, process, tag, log=print, charging_halt=False):
+    """Require guest-origin SHUTDOWN plus process exit; SIGTERM also exits 0."""
+    if qmp is None:
+        log("%s: no QMP connection to confirm guest shutdown" % tag)
+        return False
+    try:
+        if agent_alive(qmp):
+            try:
+                status, response = agent(qmp, "halt", timeout=30)
+                if status:
+                    raise RuntimeError("agent halt failed: %d %r" % (status, response))
+            except EOFError:
+                # A guest shutdown can beat the RPC reply. The retained
+                # PMU SHUTDOWN event below remains the acceptance gate.
+                pass
+            timeout = 60
+        else:
+            log("%s: no agent; gesture shutdown" % tag)
+            try:
+                qmp.cmd("system_powerdown")
+            except EOFError:
+                # An immediate shutdown may precede the command response;
+                # the retained SHUTDOWN event must still prove its origin.
+                pass
+            timeout = 180
+        if charging_halt:
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    confirmed = qmp.cmd("qom-get", path="/machine", property="guest-shutdown-confirmed")
+                except EOFError:
+                    qmp.wait_for_guest_shutdown(0)
+                    break
+                if confirmed is True:
+                    # The guest unmounted and halted; the cable keeps iBoot
+                    # running to charge. Quit only after that hardware evidence.
+                    try: qmp.cmd("quit")
+                    except EOFError: pass
+                    break
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("guest PMU did not confirm shutdown")
+                time.sleep(0.2)
+        else:
+            qmp.wait_for_guest_shutdown(timeout)
+        rc = process.wait(timeout=10)
+        log("%s: guest-confirmed shutdown, qemu exit=%d" % (tag, rc))
+        return rc == 0
+    except (OSError, EOFError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+        log("%s: shutdown not confirmed: %s" % (tag, exc))
+        return False
+    finally:
+        qmp.close()
+
+
 if __name__ == "__main__":
     sys.exit(main())
