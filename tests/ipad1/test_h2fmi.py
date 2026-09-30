@@ -32,7 +32,7 @@ bus_struct = re.search(r'typedef struct H2FMIBus \{.*?\} H2FMIBus;', source, re.
 top_struct = re.search(r'struct S5L8930H2FMIState \{.*?\n\};', source, re.S).group()
 
 order = ('h2fmi_status', 'h2fmi_update_irq', 'h2fmi_ce', 'h2fmi_fmc_events',
-         'h2fmi_command', 'h2fmi_go', 'fifo_compact', 'h2fmi_room',
+         'h2fmi_command', 'h2fmi_go', 'fifo_compact', 'h2fmi_raw_read', 'h2fmi_read_bytes', 'h2fmi_room',
          'h2fmi_transfer', 'h2fmi_meta_per_page', 'h2fmi_write_check',
          'h2fmi_drain', 'fifo_pop', 'h2fmi_ecc_sector', 'h2fmi_read', 'h2fmi_write')
 funcs = []

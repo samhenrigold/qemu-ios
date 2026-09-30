@@ -103,6 +103,8 @@ typedef struct H2FMIBus {
     uint32_t ecc_n, ecc_reads;
     uint32_t mode;                      /* H2FMIMode */
     uint32_t row;
+    bool read_pending; /* new NAND read awaits its first FMI transfer */
+    uint32_t read_format; /* last completed phase of the latched read */
     /* Each chip latches its own page at the read command: the IOP firmware
      * commands the next CE before it transfers the previous one. */
     bool page_ok[8];                    /* loaded page has data (else blank) */
@@ -173,6 +175,8 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
         break;
     case 0xff:
         b->mode = MODE_NONE;
+        b->read_pending = false;
+        b->read_format = 0;
         b->data_len = b->meta_len = b->data_off = b->meta_off = 0;
         break;
     case 0x70:              /* status, then 0x00 back to the page register */
@@ -228,6 +232,7 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
          * transfer put there; only reset (0xff) or a transfer with an idle
          * pipeline starts them afresh. */
         b->mode = MODE_PAGE;
+        b->read_pending = true;
         if (ce >= 0 && s->iop) {
             b->page_ok[ce & 7] = false;
             b->page_row[ce & 7] = b->row;
@@ -294,6 +299,20 @@ static void fifo_compact(uint8_t *buf, uint32_t *off, uint32_t len, uint32_t siz
     }
 }
 
+/* With no ECC metadata extraction, the page register is a single raw
+ * byte stream: data followed by physical spare. The stock IOP first drains
+ * the data, changes FORMAT from 0x40004 to 0x8001, then drains the spare. */
+static bool h2fmi_raw_read(H2FMIBus *b)
+{
+    uint32_t format = b->fmi[FMI_FORMAT / 4];
+    return (format & 0xff) && !((format >> 19) & 0x3f);
+}
+
+static uint32_t h2fmi_read_bytes(H2FMIBus *b, uint32_t page_bytes)
+{
+    return h2fmi_raw_read(b) && b->stride >= page_bytes ? b->stride : page_bytes;
+}
+
 static bool h2fmi_room(H2FMIBus *b, uint32_t page_bytes)
 {
     fifo_compact(b->data, &b->data_off, b->data_len, sizeof(b->data), page_bytes);
@@ -308,10 +327,15 @@ static void h2fmi_transfer(H2FMIBus *b, int ce, bool queued)
     S5L8930H2FMIState *s = b->s;
     uint32_t page_bytes = 0, id = 0;
     uint8_t ce_mask = 0;
+    uint32_t transfer_bytes;
+    bool raw = h2fmi_raw_read(b);
 
+    b->read_pending = false;
+    b->read_format = b->fmi[FMI_FORMAT / 4];
     if (s->iop) {
         s5l8930_iop_nand_info(s->iop, &id, &ce_mask, &page_bytes);
     }
+    transfer_bytes = h2fmi_read_bytes(b, page_bytes);
     if (b->mode == MODE_ID) {
         uint8_t idb[8] = { 0 };
         if (ce >= 0 && (ce_mask & (1u << ce))) {
@@ -321,7 +345,7 @@ static void h2fmi_transfer(H2FMIBus *b, int ce, bool queued)
         b->data_len = sizeof(idb);
         b->data_off = 0;
     } else if (b->mode == MODE_PAGE && page_bytes && !queued &&
-               (b->pending_n || !h2fmi_room(b, page_bytes))) {
+               (b->pending_n || !h2fmi_room(b, transfer_bytes))) {
         /* No room, or older transfers still waiting: this one queues behind them
          * (the FIFO's order is the firmware's transfer order) and goes when the
          * CDMA drains (h2fmi_drain). */
@@ -333,7 +357,7 @@ static void h2fmi_transfer(H2FMIBus *b, int ce, bool queued)
         return;
     } else if (b->mode == MODE_PAGE && page_bytes) {
         /* FMI +0x34 bits 19-24: meta bytes per page (0x5ff0398c). */
-        uint32_t meta = MIN(META_BYTES,
+        uint32_t meta = raw ? 0 : MIN(META_BYTES,
                             sizeof(b->meta) - b->meta_off - b->meta_len);
         uint8_t *m = b->meta + b->meta_off + b->meta_len;
 
@@ -341,16 +365,16 @@ static void h2fmi_transfer(H2FMIBus *b, int ce, bool queued)
         const uint8_t *pg = b->page[ce & 7];
 
         if (ok) {
-            memcpy(b->data + b->data_off + b->data_len, pg, page_bytes);
+            memcpy(b->data + b->data_off + b->data_len, pg, transfer_bytes);
             memset(m, 0, meta);
             memcpy(m, pg + page_bytes, MIN(meta, META_BYTES));
         } else {
-            memset(b->data + b->data_off + b->data_len, 0xff, page_bytes);
+            memset(b->data + b->data_off + b->data_len, 0xff, transfer_bytes);
             memset(m, 0xff, meta);
         }
-        b->data_len += page_bytes;
+        b->data_len += transfer_bytes;
         b->meta_len += meta;
-        b->ecc_q[b->ecc_n++] = ok ? 0 : ECC_BLANK;
+        b->ecc_q[b->ecc_n++] = raw || ok ? 0 : ECC_BLANK;
         b->ecc_summary = 0;
     }
     b->fmi[FMI_STATUS / 4] |= FMI_ST_DONE;
@@ -425,7 +449,7 @@ static void h2fmi_drain(H2FMIBus *b)
         return;
     }
     s5l8930_iop_nand_info(b->s->iop, &id, &mask, &page_bytes);
-    while (b->pending_n && h2fmi_room(b, page_bytes)) {
+    while (b->pending_n && h2fmi_room(b, h2fmi_read_bytes(b, page_bytes))) {
         int ce = b->pending_ce[0];
 
         memmove(b->pending_ce, b->pending_ce + 1, --b->pending_n);
@@ -525,7 +549,8 @@ static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
                b->data_len, b->meta_len, b->ecc_n, b->ecc_reads, b->pending_n, b->fmi[FMI_FORMAT / 4]);
             /*
              * A read transfer starts when a write enters read mode (bits 0-1
-             * become 3) or, in read mode, raises bit 7 (the next page of a
+             * become 3), follows a new NAND read command (raw reads retain
+             * control 3), or, in read mode, raises bit 7 (the next page of a
              * pipelined read). Rewriting the mode is not a new page: both
              * drivers clear bit 7 with a read-modify-write once a page's ECC
              * is read (iBoot-817 0x5ff04066: 3 -> 3; the IOP firmware:
@@ -539,11 +564,29 @@ static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
                 return;
             }
             uint32_t prev = b->fmi[off / 4];
-            if ((v & 3) == 3 && ((prev & 3) != 3 || ((v & 0x80) && !(prev & 0x80)))) {
+            if ((v & 7) == 0) {
+                b->read_pending = false;
+                b->read_format = 0;
+            }
+            if ((v & 3) == 3 && (b->read_pending || (prev & 3) != 3 || ((v & 0x80) && !(prev & 0x80)))) {
                 if (!(b->fmi[off / 4] & 0x80)) {
                     b->ecc_n = b->ecc_reads = 0;
                 }
                 h2fmi_transfer(b, h2fmi_ce(b), false);
+            } else if ((v & 3) == 3 && b->mode == MODE_PAGE &&
+                       h2fmi_raw_read(b) &&
+                       b->read_format != b->fmi[FMI_FORMAT / 4]) {
+                /* Raw physical reads have separate data and spare phases.
+                 * FORMAT selects a new phase within the existing byte stream;
+                 * each phase completes independently and has a W1C DONE.
+                 * Do not reload the page or require bytes still in the FIFO:
+                 * a prepared CDMA chain may already have drained them. */
+                b->read_format = b->fmi[FMI_FORMAT / 4];
+                b->fmi[FMI_STATUS / 4] |= FMI_ST_DONE;
+                h2fmi_update_irq(b);
+                if (b->s->cdma) {
+                    s5l8930_cdma_kick(b->s->cdma);
+                }
             }
             b->fmi[off / 4] = v;
             return;
@@ -638,6 +681,8 @@ static void s5l8930_h2fmi_reset(DeviceState *dev)
         memset(b->fmc, 0, sizeof(b->fmc));
         b->ecc_summary = b->ecc_n = b->ecc_reads = 0;
         b->mode = MODE_NONE;
+        b->read_pending = false;
+        b->read_format = 0;
         b->data_len = b->meta_len = b->data_off = b->meta_off = 0;
         b->pending_n = 0;
         qemu_set_irq(b->irq, 0);
@@ -731,6 +776,8 @@ static int h2fmi_pre_load(void *opaque)
     for (int i = 0; i < H2FMI_BUSES; i++) {     /* lengths are validated against the buffers */
         s->bus[i].data_len = s->bus[i].meta_len = s->bus[i].wdata_len = s->bus[i].wmeta_len = 0;
         s->bus[i].data_off = s->bus[i].meta_off = 0;
+        s->bus[i].read_pending = false; /* v1 streams had no pending-read state */
+        s->bus[i].read_format = UINT32_MAX; /* absent phase subsection */
     }
     return 0;
 }
@@ -741,6 +788,9 @@ static int h2fmi_post_load(void *opaque, int version_id)
 
     for (int i = 0; i < H2FMI_BUSES; i++) {
         H2FMIBus *b = &s->bus[i];
+        if (b->read_format == UINT32_MAX) {
+            b->read_format = b->fmi[FMI_FORMAT / 4];
+        }
         if (b->data_len > sizeof(b->data) || b->meta_len > sizeof(b->meta) ||
             b->wdata_len > sizeof(b->wdata) || b->wmeta_len > sizeof(b->wmeta) ||
             b->ecc_n > H2FMI_QUEUE || b->pending_n > ARRAY_SIZE(b->pending_ce)) {
@@ -750,6 +800,30 @@ static int h2fmi_post_load(void *opaque, int version_id)
     return 0;
 }
 
+/* Optional subsection preserves the read latch and completed phase without
+ * changing the original v1 FIFO stream. Version 1 has only the pending latch;
+ * older snapshots default their completed phase to the restored FORMAT. */
+static bool h2fmi_read_pending_needed(void *opaque)
+{
+    S5L8930H2FMIState *s = opaque;
+    return s->bus[0].read_pending || s->bus[1].read_pending ||
+           s->bus[0].read_format || s->bus[1].read_format;
+}
+
+static const VMStateDescription vmstate_h2fmi_read_pending = {
+    .name = "s5l8930.h2fmi/read-pending",
+    .version_id = 2,
+    .minimum_version_id = 1,
+    .needed = h2fmi_read_pending_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(bus[0].read_pending, S5L8930H2FMIState),
+        VMSTATE_BOOL(bus[1].read_pending, S5L8930H2FMIState),
+        VMSTATE_UINT32_V(bus[0].read_format, S5L8930H2FMIState, 2),
+        VMSTATE_UINT32_V(bus[1].read_format, S5L8930H2FMIState, 2),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_s5l8930_h2fmi = {
     .name = TYPE_S5L8930_H2FMI,
     .version_id = 1,
@@ -757,6 +831,10 @@ static const VMStateDescription vmstate_s5l8930_h2fmi = {
     .pre_save = h2fmi_pre_save,
     .pre_load = h2fmi_pre_load,
     .post_load = h2fmi_post_load,
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_h2fmi_read_pending,
+        NULL
+    },
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(bus, S5L8930H2FMIState, H2FMI_BUSES, 1, vmstate_h2fmi_bus, H2FMIBus),
         VMSTATE_END_OF_LIST()
