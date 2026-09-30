@@ -46,8 +46,8 @@ seconds, versus block 498 at about 118 seconds before it.
 machine with no executing firmware. It covers normal-to-raw reads, physical
 spare bytes, W1C completion for both phases, and no phantom refill or completion
 on unchanged CONTROL. The H2FMI sanitizer unit test also passes. The explicit
-`tests/gate.sh --models` tier passes both this qtest and the PMGR clock/timer/reset
-qtests (2 passed, 0 failed).
+`tests/gate.sh --models` tier passes the H2FMI qtest, PMGR clock/timer/reset
+qtests, and CDMA/AES/SHA qtests (3 passed, 0 failed).
 
 Pending-read/phase state is held by the controller and migrated in optional
 `read-pending` subsection version 2. The original FIFO stream stays version 1;
@@ -63,10 +63,11 @@ The blank restore progressed from initial raw scan into physical page/cache
 programs (IOP operation 9, status 1) by about 116 virtual seconds. This alone does
 not prove a complete blank-device restore or a bootable restored filesystem.
 The guest subsequently created its partition map and filesystems, connected to
-ASR, validated the filesystem, and started receiving it. The first 300-second diagnostic reached ASR 100% and "Verifying restore (14)"
-before its bound expired. A fresh geometry-only 900-second run follows to
-measure full completion; this is the runner's normal default bound, justified
-by sustained guest progress rather than by hiding the original polling gap.
+ASR, validated the filesystem, and started receiving it. The first 300-second
+diagnostic reached ASR 100% and "Verifying restore (14)" before its bound
+expired. The subsequent fresh geometry-only run completed within the normal
+900-second bound, justified by sustained guest progress rather than by hiding
+the original polling gap.
 
 ## Completed stock restore
 
@@ -80,3 +81,64 @@ An independent SecureROM cold boot uses an APFS clone of those artifacts and
 the same identity and per-IPSW catalog GID data, with development fuse policy
 for unpersonalized stock firmware. This separates cold-boot evidence from the
 restore tool's completion message.
+
+## Independent cold-boot boundary
+
+The first screenshot was the stock iBoot recovery graphic, not a userland
+activation screen. A brightness-only boot-smoke success was therefore
+insufficient. The restored latest NOR environment bank held `auto-boot=false`.
+Stock `irecovery --normal` over emulator-only USB changed the private clone's
+environment; the next SecureROM cold boot initialized HFS and loaded and
+uncompressed the kernelcache. Production iBoot passed empty boot arguments;
+even stock recovery commands setting verbose boot arguments persisted in NOR
+but were not passed to the kernel. Missing serial launchd markers alone cannot
+classify that quiet boot as a kernel failure.
+
+`tests/ipad1/restore-coldboot.py` now judges actual stock lockdown identity
+(ProductType, ProductVersion and serial number). Normal cold boot has the
+canonical direct QEMU-to-usbmuxd connection, with no recovery poller accessing
+EP0. Its optional recovery-exit path uses a private transport adapter and stops
+recovery queries after normal-mode handoff. Each run preserves its own NOR
+clone, NAND overlay, input hashes and structured result. It offers no guest
+package, activation hook, filesystem seed or FTL repair.
+
+Canonical cold boot exposed a separate host USB control-transfer bug: after
+128 of 149 configuration bytes, the daemon treated 30 NAKs as completion and
+then consumed stale remaining bytes as another descriptor header. Isolated
+usbmuxd commit `a5cc2b0` uses 64-byte EP0 packets, actual short-packet/ZLP
+termination, and the full control timeout for NAK flow control. The real daemon
+TCP fake-guest test passes a 149-byte configuration interrupted by 60 NAKs, a
+short descriptor, and a 64-byte descriptor plus ZLP. The unchanged daemon
+fails that regression at 128/149 bytes. Existing prepared-device USB identity,
+AFC size-boundary transfers, and shutdown/reboot persistence all pass with the
+new daemon.
+
+With that host fix, the stock restored kernel enumerates PID 05ac:129a and
+complete configuration descriptors; AppleUSBDeviceMux establishes a loopback
+session to port 62078. That diagnostic is not a lockdownd RPC response. The
+stock `ideviceinfo -s` QueryType request had not received its application reply
+within the initial bounded probes. Full restored userland, activation and AFC
+persistence therefore remain unproven; they must not be inferred from the
+restore completion marker, recovery brightness, or a kernel mux session.
+
+A second normal cold run allowed 300 seconds and still failed the identity
+judge. The subsequent LLDEBUG wire run shows successful TCP SYN/SYN-ACK followed
+by the host's 288-byte QueryType application payload, but no guest TCP ACK or
+application reply before the client timeout. USB accepting that OUT and
+AppleUSBDeviceMux printing NewSession are insufficient to prove delivery to a
+working daemon.
+
+A read-only gdb sample found CPU0 at `0xc0695f6a` in the IMGSGX535 driver:
+`ldr r3,[r2,#0x18]; ands r5,r3,#1; bne` with `r2=0xed38d000` and the busy bit set.
+This is a native GPU hardware barrier: the board has no SGX model. The prepared
+direct-kernel path explicitly sets `arm-io/sgx`'s `compatible` property to `none`
+in `imgtools/ipad1_kboot.py:fill_dt`, preventing IMGSGX535 from matching. The
+prepared real-iBoot DeviceTree helper in `imgtools/ipad1_gid.py` makes the same
+edit. Prepared-device regressions therefore do not validate stock SGX startup.
+
+The available gdb dumps contain core registers and instructions but no MMU
+translation/page-table data. The polled VA remains unmapped: it may address an
+MMIO register or GPU-shared RAM. Resolving that mapping is required before any
+controller change; neither the driver's busy loop nor the missing native SGX
+model justifies clearing a guest buffer bit or inventing a completion. No such
+change was made.
