@@ -28,6 +28,8 @@ host). Checks run in parallel, each on its own QEMU.
   afc      push and pull files at sizes that are not multiples of 512, SHA-256 identical
   persist  a file pushed over AFC survives a reboot on the same overlay (see check_persist)
   wifi     the BCM4329 comes up, joins the model's open "qemu-ios" BSS and takes a DHCP lease (serial)
+  wifi-early  the same join 10 ms after the model arms it (IT_WIFI_AUTOJOIN=0.01), the order a loaded host
+           produces: lock screen, joined, no kernel panic (a join ahead of the driver's interface panics 4.3)
   net      the default network, Wi-Fi (BCM4329 on the machine's slirp netdev): Safari, typed on the
            emulated USB keyboard, fetches a page from a host HTTP server at 10.0.2.2
   audio    tests/ipad1/audio-check.py: boot sound, unlock, lock, unlock correlate with the originals
@@ -64,7 +66,7 @@ Result, Procs, free_port, sha256_file, log = ipod.Result, ipod.Procs, ipod.free_
 
 FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1")
 USBMUXD = os.path.expanduser("~/Developer/usbmuxd-qemu-ipad1-net/src/usbmuxd")
-DEFAULT_CHECKS = ["boot", "gles", "usbmux", "afc", "persist", "wifi", "net", "audio"]
+DEFAULT_CHECKS = ["boot", "gles", "usbmux", "afc", "persist", "wifi", "wifi-early", "net", "audio"]
 PENDING = {"appinstall": "stock installd rejects apps not validly signed for this device",
            "applaunch": "needs appinstall"}
 # Scanout is 1024x768 with the portrait UI turned on it. The boot logo is a small Apple on black (a few %
@@ -97,8 +99,9 @@ class Boot:
     creates) is the machine's default; wifi=False turns it off. wav records the audio out."""
     n = 0
 
-    def __init__(self, cfg, tag, overlay=None, keyboard=False, usb=True, wifi=True, wav=None, extra=()):
+    def __init__(self, cfg, tag, overlay=None, keyboard=False, usb=True, wifi=True, wav=None, extra=(), env=None):
         Boot.n += 1
+        self.qemu_env = dict(os.environ, **env) if env else None
         self.cfg, self.tag, self.keyboard, self.extra = cfg, tag, keyboard, list(extra)
         self.usb, self.wifi, self.wav = usb, wifi, wav
         self.dir = os.path.join(cfg.out, tag)
@@ -144,7 +147,7 @@ class Boot:
             # AAPL,power-supply) and refuses the default 100 mA keyboard; 3.x never checks.
             argv += ["-device", "usb-kbd,bus=usb-bus.0,max-power=20"] if self.keyboard else []
             argv += self.extra
-            self.qemu = self.procs.spawn(argv, os.path.join(self.dir, "qemu.log"))
+            self.qemu = self.procs.spawn(argv, os.path.join(self.dir, "qemu.log"), env=self.qemu_env)
             time.sleep(2)
         self.qmp = itqmp.QMP(self.sock, timeout=60)
         log("%s: qemu pid %d, usb %d, mux %d" % (self.tag, self.qemu.pid, self.usb_port, self.mux_port))
@@ -788,6 +791,36 @@ def check_wifi(cfg, r):
         b.stop()
 
 
+def check_wifi_early(cfg, r):
+    """The auto-join 10 ms after the model arms it: what a loaded host does to the default 10 s.
+
+    A join the model reports before AppleBCMWLAN has attached its IO80211Interface panics the guest in
+    AppleBCMWLAN::setLinkState (4.3 8F190: fault_addr 0xc4, pc 0x80656f7c; LightTouchMac matrix 09-29, 8F190
+    and 8G4 under host load), so the boot never reaches the lock screen. No lease is asked for: 5.x's
+    IPConfiguration can miss a link that comes up this early, which no real join does."""
+    b, detail = booted(cfg, "wifi-early", r, usb=False, env={"IT_WIFI_AUTOJOIN": "0.01"})
+    try:
+        text = open(b.serial, errors="replace").read()
+        panic = re.search(r"panic\(.*", text)
+        if panic:
+            return r.set(False, panic.group(0)[:120])
+        if not detail:
+            return
+        t0 = time.time()
+        while 'ssid[ 8] = "qemu-ios"' not in text and time.time() - t0 < 60:
+            time.sleep(2)
+            text = open(b.serial, errors="replace").read()
+        panic = re.search(r"panic\(.*", text)
+        if panic:
+            r.set(False, panic.group(0)[:120])
+        elif 'ssid[ 8] = "qemu-ios"' in text:
+            r.set(True, "joined qemu-ios 10 ms after the model armed the join, no panic")
+        else:
+            r.set(False, "lock screen, but never joined")
+    finally:
+        b.stop()
+
+
 def check_audio(cfg, r):
     """a4-periph's WAV correlation (tests/ipad1/audio-check.py): boot sound, unlock, lock, unlock."""
     spec = importlib.util.spec_from_file_location("audio_check", os.path.join(HERE, "audio-check.py"))
@@ -845,7 +878,8 @@ def check_shadow(cfg, r):
 
 
 CHECKS = {"boot": check_boot, "gles": check_gles, "shadow": check_shadow, "usbmux": check_usbmux, "afc": check_afc,
-          "persist": check_persist, "net": check_net, "net-usb": check_net_usb, "wifi": check_wifi, "audio": check_audio}
+          "persist": check_persist, "net": check_net, "net-usb": check_net_usb, "wifi": check_wifi,
+          "wifi-early": check_wifi_early, "audio": check_audio}
 
 
 def device_args(a):
