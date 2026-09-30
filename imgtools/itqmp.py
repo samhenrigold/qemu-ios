@@ -601,12 +601,19 @@ def guest_powerdown(qmp, process, tag, log=print, charging_halt=False):
         if agent_alive(qmp):
             try:
                 status, response = agent(qmp, "halt", timeout=30)
-                if status:
-                    raise RuntimeError("agent halt failed: %d %r" % (status, response))
+            except (RuntimeError, TimeoutError):
+                # A charging restart can complete the halt but discard the
+                # agent's pending reply. Do not retry the mutation: inspect
+                # the PMU evidence on the still-live QMP connection instead.
+                if not charging_halt:
+                    raise
+                status = 0
             except EOFError:
                 # A guest shutdown can beat the RPC reply. The retained
                 # PMU SHUTDOWN event below remains the acceptance gate.
-                pass
+                status = 0
+            if status:
+                raise RuntimeError("agent halt failed: %d %r" % (status, response))
             timeout = 60
         else:
             log("%s: no agent; gesture shutdown" % tag)

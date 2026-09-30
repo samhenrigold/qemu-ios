@@ -450,7 +450,16 @@ def ocr(ppm):
     (tests/ipad1/ocr.swift, built here once). Of two pieces with the same text, the one nearer the top."""
     with ocr_lock:
         if not os.path.exists(OCR_BIN) or os.path.getmtime(OCR_BIN) < os.path.getmtime(OCR_SRC):
-            subprocess.run(["swiftc", "-O", OCR_SRC, "-o", OCR_BIN], check=True, capture_output=True)
+            os.makedirs(os.path.dirname(OCR_BIN), exist_ok=True)
+            fd, staged = tempfile.mkstemp(prefix="ipad1-ocr-", dir=os.path.dirname(OCR_BIN))
+            os.close(fd)
+            try:
+                compile = subprocess.run(["swiftc", "-O", "-module-cache-path", os.path.join(os.path.dirname(OCR_BIN), "swift-modules"), OCR_SRC, "-o", staged], capture_output=True, text=True)
+                if compile.returncode:
+                    raise RuntimeError("OCR compiler failed: " + compile.stderr)
+                os.replace(staged, OCR_BIN)
+            finally:
+                if os.path.exists(staged): os.unlink(staged)
     found = {}
     lines = [l.split(" ", 4) for l in subprocess.run([OCR_BIN, ppm], capture_output=True, text=True,
                                                       check=True).stdout.splitlines()]
