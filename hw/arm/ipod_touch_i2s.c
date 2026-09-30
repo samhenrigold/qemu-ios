@@ -414,7 +414,7 @@ static bool it_i2s_irq_enabled(void)
 static void it_i2s_ready_cb(void *opaque)
 {
     IPodTouchI2SState *s = (IPodTouchI2SState *)opaque;
-    uint32_t bit = 1u << IT_I2S_GPIO_INT_BIT;
+    uint32_t bit = 1u << s->ready_bit;
 
     if (!s->sysic || !s->enable || s->ready_ticks == 0) {
         return;         /* block powered down, or the burst is spent */
@@ -428,14 +428,13 @@ static void it_i2s_ready_cb(void *opaque)
      * instructions AFTER the register writes that arm us -- stopping on "masked
      * right now" would race that window and fire nothing at all.
      */
-    if (s->sysic->gpio_int_enabled[IT_I2S_GPIO_INT_GROUP] & bit) {
-        s->sysic->gpio_int_status[IT_I2S_GPIO_INT_GROUP] |= bit;
-        qemu_irq_raise(s->sysic->gpio_irqs[IT_I2S_GPIO_INT_GROUP]);
+    if (s->sysic->gpio_int_enabled[s->ready_group] & bit) {
+        s->sysic->gpio_int_status[s->ready_group] |= bit;
+        qemu_irq_raise(s->sysic->gpio_irqs[s->ready_group]);
         s->ready_irqs++;
         if (s->ready_irqs <= 8) {
             IT_I2S_DPRINTF("ready irq #%" PRIu64 ": gpio group %d bit %d\n",
-                           s->ready_irqs, IT_I2S_GPIO_INT_GROUP,
-                           IT_I2S_GPIO_INT_BIT);
+                           s->ready_irqs, s->ready_group, s->ready_bit);
         }
     }
     timer_mod(s->ready_timer,
@@ -1352,6 +1351,10 @@ static void ipod_touch_i2s_realize(DeviceState *dev, Error **errp)
 {
     IPodTouchI2SState *s = IPOD_TOUCH_I2S(dev);
     const char *dump_path = getenv("IT_I2S_DUMP");
+    if (s->ready_group >= GPIO_NUMINTGROUPS || s->ready_bit >= 32) {
+        error_setg(errp, "ready-gpio-group/bit out of range");
+        return;
+    }
     const char *gain_db = getenv("IT_I2S_GAIN_DB");
     s->output_gain = 1.0;
     if (gain_db) {
@@ -1404,6 +1407,9 @@ static void ipod_touch_i2s_realize(DeviceState *dev, Error **errp)
         }
     }
 
+    if (!s->host_output) {
+        return;     /* the DMA and its pacing run; the PCM goes nowhere */
+    }
     s->card_ok = AUD_register_card("ipod-i2s", &s->card, errp);
     if (!s->card_ok) {
         /* No audio backend registered: run silent but keep the machine alive. */
@@ -1513,9 +1519,21 @@ static const VMStateDescription vmstate_ipod_touch_i2s = {
     },
 };
 
+/* The ready interrupt's GPIO-IC source: the DT's `interrupts` over the gpio
+ * interrupt-parent, i.e. group = n / 32, bit = n % 32 (N72 i2s0 0x2c, N45 i2s1
+ * 0xaa). */
+static const Property ipod_touch_i2s_properties[] = {
+    DEFINE_PROP_UINT32("ready-gpio-group", IPodTouchI2SState, ready_group, IT_I2S_GPIO_INT_GROUP),
+    DEFINE_PROP_UINT32("ready-gpio-bit", IPodTouchI2SState, ready_bit, IT_I2S_GPIO_INT_BIT),
+    /* Whether the PCM reaches a host voice: off where the codec's analogue side
+     * is not modelled (N45's WM8758 drives only the headphone jack). */
+    DEFINE_PROP_BOOL("host-output", IPodTouchI2SState, host_output, true),
+};
+
 static void ipod_touch_i2s_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+    device_class_set_props(dc, ipod_touch_i2s_properties);
     dc->vmsd = &vmstate_ipod_touch_i2s;
     dc->realize = ipod_touch_i2s_realize;
     device_class_set_legacy_reset(dc, ipod_touch_i2s_reset);
