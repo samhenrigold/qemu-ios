@@ -96,13 +96,11 @@ def build(ctx):
     step("seal", [sys.executable, f"{HERE}/ipad1_seal.py", nand, "--qemu", a.qemu, "--iboot", iboot, "--gid-blobs", gid,
                   "--nor-rw", nor, "--die-id", die_id])
     baked = sorted(os.listdir(tools))
-    gles = os.path.join(ROOT, "contrib/ipad1-gles")
+    gles = os.path.join(ROOT, "contrib/gles-public")
     return {
         "ship": [nand, iboot, nor, gid],
         "built": {"guest tools": {n: sha(os.path.join(tools, n)) for n in baked},
-                  "GLEngine": sha(os.path.join(gles, "GLEngine")) if opt.get("ca_ogl", True) else None,
-                  "gld plugin": sha(os.path.join(gles, "GLRendererFloatQEMU.bundle/GLRendererFloatQEMU"))
-                  if opt.get("ca_ogl", True) else None,
+                  "OpenGLES": sha(os.path.join(gles, "OpenGLES")) if opt.get("ca_ogl", True) else None,
                   "libappsync.dylib": sha(os.path.join(ROOT, "build/appsync/libappsync.dylib")) if opt.get("appsync") else None},
         "inputs": {"rootfs": rootfs, "kernelcache": {"ipsw_member": comp["KernelCache"], "sha256": sha(kernelcache)},
                    "devicetree": os.path.join(dec, "DeviceTree.bin"),
