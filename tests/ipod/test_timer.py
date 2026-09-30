@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Production timer interval arithmetic and restored-state bounds."""
+"""Production timer interval arithmetic and restored-state bounds; timers 0-3 hold their writes."""
 from pathlib import Path
 import re
 import subprocess
@@ -7,7 +7,8 @@ import tempfile
 root = Path(__file__).resolve().parents[2]
 source = (root/'hw/arm/ipod_touch_timer.c').read_text()
 header = (root/'include/hw/arm/ipod_touch_timer.h').read_text()
-state = re.search(r'typedef struct IPodTouchTimerState.*?} IPodTouchTimerState;', header, re.S)[0]
+state = '\n'.join(re.search(r'typedef struct ' + n + r'\s*\{.*?\} ' + n + ';', header, re.S)[0]
+                  for n in ('IPodTouchTimerChannel', 'IPodTouchTimerOutput', 'IPodTouchTimerState'))
 code = r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -29,7 +30,7 @@ static void qemu_irq_lower(qemu_irq irq) {}
 static uint64_t muldiv64(uint64_t a,uint64_t b,uint64_t c) { return (unsigned __int128)a*b/c; }
 '''
 code += '\n'.join(re.findall(r'^#define (?:TIMER_|IT_TIMER_).*$',header,re.M))+'\n'+state+'\n'
-for name in ['s5l8900_st_update','s5l8900_st_set_timer','s5l8900_timer1_write','ipod_touch_timer_post_load']:
+for name in ['timer_channel_output','timer_channel_write','s5l8900_st_update','s5l8900_st_set_timer','s5l8900_timer1_write','ipod_touch_timer_post_load']:
     code += re.search(r'^static [^\n]*\b'+name+r'\([^)]*\)\s*\{.*?^}',source,re.M|re.S)[0]+'\n'
 code += r'''
 int main(void) {
@@ -38,6 +39,8 @@ int main(void) {
    for(unsigned addr=8;addr<0x80;addr+=0x20)s5l8900_timer1_write(&s,addr,1,4);
    s5l8900_timer1_write(&s,0x88,1,4); /* 64-bit control is not timer D. */
  }
+ /* Timers 0-3 hold COUNT_BUFFER; 0x88 reached none of them. */
+ for(unsigned n=0;n<TIMER_NUM_CHANNELS;n++)assert(s.chan[n].cb==1&&s.chan[n].cb2==0&&!s.chan[n].start_ns);
  s5l8900_st_update(&s);assert(s.tick_interval==100000);
  s.bcount1=10000;s.dilation=2;s5l8900_st_update(&s);assert(s.tick_interval==2000000);
  now=123;s5l8900_st_set_timer(&s);assert(deadline==2000000);
@@ -62,7 +65,5 @@ with tempfile.TemporaryDirectory(prefix='it-timer-check-') as tmp:
     tmp=Path(tmp);(tmp/'check.c').write_text(code)
     subprocess.run(['cc','-fsanitize=address,undefined',str(tmp/'check.c'),'-o',str(tmp/'check')],check=True)
     result=subprocess.run([str(tmp/'check')],check=True,capture_output=True,text=True)
-    assert len(result.stderr.splitlines())==4, result.stderr
-    for n in range(4):
-        assert f"UNMODELLED timer {n} (reg 0x{8+n*32:03x}" in result.stderr, result.stderr
+    assert not result.stderr, result.stderr
     print(result.stdout,end="")
