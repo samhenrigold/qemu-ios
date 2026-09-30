@@ -152,6 +152,14 @@ adapts without a table:
   `CFUserNotificationCancel` on detach. The title is also the power-hungry notice's, so the body decides.
   A NULL from Create is a path the mounter handles (it logs "Could not create user notification" and
   carries on; the detach path checks for NULL before cancelling; disassembly at 0x37d6-0x38a2, 0x2e64).
+- 5.1.1 (9B206) moved the notice out of the mounter (its binary no longer names the keys) into
+  `/System/Library/CoreServices/USBDeviceArbitrator.app` (job `com.apple.mobile.usb_device_arbitrator`,
+  LaunchBuddy's catch-all for any `IOUSBDevice`): `handle_start` puts it up when no other LaunchBuddy
+  plugin claimed an interface of the device ("Assuming it is unsupported", 0x242c), with the 4.x keys
+  through `CFUserNotificationCreate` (0x25f2), once per process. Nothing claims HID, so the keyboard trips
+  it on every 5.x boot (LightTouchMac smoke #49). The shim is unchanged; FirmwareKit's bake fit-checks it
+  against each job that may raise the notice and loads it into those it fits (on 9B206 the arbitrator, not
+  the mounter). The cable, VBUS and the arbitrator's cable type play no part.
 - The shim logs `it_msmquiet: hid the USB "not supported" notice` on the console; every other notice
   (mount, verification, power-hungry, camera import) goes through untouched.
 - It ships in the k48 families only. The iPod has no USB host and no such job, and its armv6 package is
