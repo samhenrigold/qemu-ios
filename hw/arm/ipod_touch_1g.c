@@ -40,6 +40,7 @@
 #include "hw/arm/ipod_touch_sdio.h"
 #include "hw/arm/ipod_touch_mbx.h"
 #include "hw/arm/ipod_touch_i2s.h"
+#include "hw/arm/ipod_touch_piezo.h"
 #include "target/arm/cpregs.h"
 #include "hw/arm/guest-services/general.h"
 #include "hw/arm/guest-services/gles.h"
@@ -613,6 +614,15 @@ static void n45_machine_init(MachineState *machine)
     IPOD_TOUCH_TIMER(dev)->sysclk = s->sysclk;
     IPOD_TOUCH_TIMER(dev)->first_config_hook = n45_usb_wrangler_quirk;
     IPOD_TOUCH_TIMER(dev)->first_config_opaque = s;
+    /* nclk: 3A101a programs Celestial's 1880 Hz key click as 6382 at /2. */
+    qdev_prop_set_uint32(dev, "input-hz", 24000000);
+    {
+        /* The piezo on timer 1 (/arm-io/timer/buzzer). */
+        DeviceState *piezo = qdev_new(TYPE_IPOD_TOUCH_PIEZO);
+        qdev_realize_and_unref(piezo, NULL, &error_fatal);
+        IPOD_TOUCH_TIMER(dev)->output_hook = ipod_touch_piezo_timer_output;
+        IPOD_TOUCH_TIMER(dev)->output_opaque = piezo;
+    }
     memory_region_add_subregion(sysmem, N45_TIMER1_BASE, &IPOD_TOUCH_TIMER(dev)->iomem);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, n45_irq(s, N45_TIMER1_IRQ));
