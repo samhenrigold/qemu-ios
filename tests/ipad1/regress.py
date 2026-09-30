@@ -43,6 +43,7 @@ Exits non-zero if any selected check FAILs.
 import argparse
 import concurrent.futures
 import http.server
+import hashlib
 import json
 import importlib.util
 import os
@@ -301,26 +302,74 @@ def booted(cfg, tag, r, **kw):
 MAGENTA_MAX = 0.001     # of the frame: gles-debug's paint is a layer's worth, never a stray pixel
 
 
-def gl_clean(b, r, detail, shots=()):
-    """Pass r only if the GL bridge refused nothing since boot (itqmp.gles_rejects: host and shim
-    counters) and none of the screendumps carries gles-debug's magenta paint. CoreAnimation is the
-    bridge's biggest client on the iPad, so every screen a check reaches is a GL coverage test."""
+def qualified_frame_reference(cfg, scene):
+    """A reference belongs to one build and carries reviewed baseline provenance.
+
+    Never fall back to the old unqualified PNGs: stock wallpaper and app layout
+    change between releases, independently of renderer correctness.
+    """
+    build = getattr(cfg, "build", None) or ""
+    if not re.fullmatch(r"[A-Za-z0-9]+", build):
+        return None, "missing firmware build identity"
+    directory = os.path.join(GLES_REFS, "k48ap", build)
+    manifest_path = os.path.join(directory, "reference.json")
+    if not os.path.isfile(manifest_path):
+        return None, "missing qualified frame reference for k48ap/%s/%s (independent baseline required)" % (build, scene)
+    try:
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+        if manifest.get("build") != build or manifest.get("product_version") != cfg.product_version:
+            raise ValueError("reference firmware identity differs from the device")
+        baseline = manifest.get("baseline", {})
+        if baseline.get("renderer") not in ("stock-software-coreanimation", "physical-device") or not baseline.get("provenance"):
+            raise ValueError("reference needs independent software/physical baseline provenance")
+        frame = manifest.get("frames", {}).get(scene)
+        if not frame:
+            return None, "missing qualified frame reference for k48ap/%s/%s" % (build, scene)
+        for key in ("sha256", "source_sha256"):
+            if not re.fullmatch(r"[0-9a-f]{64}", frame.get(key, "")):
+                raise ValueError("reference lacks %s" % key)
+        reference = os.path.join(directory, scene + ".png")
+        with open(reference, "rb") as f:
+            digest = hashlib.sha256(f.read()).hexdigest()
+        if digest != frame["sha256"]:
+            raise ValueError("reference PNG hash differs from its manifest")
+        return reference, None
+    except (OSError, ValueError, TypeError, AttributeError) as error:
+        return None, "invalid qualified frame reference: %s" % error
+
+
+def gl_clean(b, r, detail, shots=(), require_refs=()):
+    """Judge refusal counters, magenta paint and build-qualified frame pictures.
+
+    The dedicated gles check requires a home reference. Other checks still
+    report their independent liveness/counter evidence accurately when their
+    captured scene has no qualified reference.
+    """
     rejects = itqmp.gles_rejects(b.qmp)
-    # A --gl-test device composites it_gltest's magenta/cyan/yellow scene over SpringBoard from 12 s
-    # into every boot, so its screens cannot be read for gles-debug's paint; the counters still can.
     magenta = 0.0 if getattr(b.cfg, "gl_test", False) else max([itqmp.magenta_fraction(s, step=4) for s in shots] or [0.0])
-    # Frame reference (audit gap #1): "refused nothing, no magenta" is liveness -- the audit
-    # showed it passes a red/blue swap and a stale surface (section 1). Diff each screen we can
-    # pin (home/screen/lock) against its committed reference, clock band masked. A --gl-test
-    # device composites a scene over SpringBoard, so its frames are not the plain reference.
-    bad = None
+    bad, compared = None, []
     if not getattr(b.cfg, "gl_test", False):
-        for s in shots:
-            name = os.path.splitext(os.path.basename(s))[0]
-            ref = os.path.join(GLES_REFS, "ipad-%s.png" % name)
-            if os.path.exists(ref) and not framecheck.verdict(s, ref)["ok"]:
-                bad = (name, framecheck.verdict(s, ref)["why"])
+        for shot in shots:
+            name = os.path.splitext(os.path.basename(shot))[0]
+            if name not in ("home", "screen", "lock"):
+                continue
+            reference, why = qualified_frame_reference(b.cfg, name)
+            if why:
+                if name in require_refs:
+                    bad = (name, why)
+                    break
+                continue
+            verdict = framecheck.verdict(shot, reference)
+            if not verdict["ok"]:
+                bad = (name, verdict["why"])
                 break
+            compared.append(name)
+        if not bad:
+            for name in require_refs:
+                if name not in compared:
+                    bad = (name, "required scene was not compared to a qualified reference")
+                    break
     # A software CoreAnimation draws the same pictures and refuses nothing (4.3.x did, while the old GLI shim
     # lost GL), so only the GL front end's own line proves CoreAnimation took the GL path.
     serial = open(b.serial, errors="replace").read() if os.path.exists(b.serial) else ""
@@ -333,9 +382,10 @@ def gl_clean(b, r, detail, shots=()):
         r.set(False, "%s; gles-debug painted %.2f%% of a screen magenta (a refusal the counters missed)" % (
             detail, magenta * 100))
     elif bad:
-        r.set(False, "%s; the %s frame is not the reference picture: %s" % (detail, bad[0], bad[1]))
+        r.set(False, "%s; frame reference %s: %s" % (detail, bad[0], bad[1]))
     else:
-        r.set(True, "%s; GL bridge refused nothing, frames match the reference" % detail)
+        r.set(True, "%s; GL bridge refused nothing; %s" % (detail,
+              "qualified frame-ref " + ", ".join(compared) if compared else "no frame-reference comparison for these scenes"))
     return r.ok
 
 
@@ -660,7 +710,7 @@ def check_gles(cfg, r):
             time.sleep(3)
             shots.append(b.shot("closed"))
         gl_clean(b, r, "%slock, home, %s" % (walked + ", " if five else "",
-                                             "Spotlight, Safari opened and closed" if five else "page 2, Safari"), shots)
+                                             "Spotlight, Safari opened and closed" if five else "page 2, Safari"), shots, require_refs=("home",))
     finally:
         b.stop()
 
@@ -920,7 +970,7 @@ def device_args(a):
     lock = os.path.join(os.path.dirname(os.path.abspath(a.nand)), "device.lock.json")
     lockd = json.load(open(lock)) if os.path.exists(lock) else {}
     a.product_version = getattr(a, "product_version", None) or lockd.get("product_version", "3.2.2")
-    a.build = lockd.get("build", "7B500")
+    a.build = lockd.get("build")  # visual references require evidence, never an assumed build
     a.udid = (lockd.get("identity") or {}).get("udid")
     a.major = int(a.product_version.split(".")[0])
     a.gl_test = bool(lockd.get("gl_test"))      # it_gltest's scene sits over SpringBoard's screens
