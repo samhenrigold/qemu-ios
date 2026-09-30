@@ -50,14 +50,16 @@ The public guest front end knows the version, while the CGL host currently
 selects programmable draws from the active program. An EGL backend needs the
 version when creating the context, plus the version in its snapshot state.
 
-## Acceptance still required
+## Adoption decision and remaining acceptance
 
 The probe proves native API viability, not guest compatibility or increased
 stability. It does not replay the guest transport, test CoreAnimation surfaces,
 PVRTC/palettes, background/foreground transitions, shared resources, snapshot
 round trips, or the app corpus. No default change is justified by two triangles.
 
-A production switch must preserve those behaviors and remove enough translation
+Keep the production CGL backend for this consolidation. The native probe is encouraging for GLES shader compatibility, but the API and snapshot inventory shows that switching now would add an adapter layer without removing most of the executor. No observed guest stability gain offsets that complexity yet.
+
+A future production switch must preserve those behaviors and remove enough translation
 code to offset the required adapters. Keep CGL as the measured baseline while
 building that backend. Do not delete surface, transport or snapshot code simply
 because ANGLE implements GLES; those are emulator responsibilities.
