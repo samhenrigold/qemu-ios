@@ -801,6 +801,35 @@ static void audio_pcm_print_info (const char *cap, struct audio_pcm_info *info)
 #include "audio_template.h"
 
 /*
+ * The backend's output now runs at `freq` (coreaudio: the Mac's output device
+ * changed, or changed rate). Re-rate the voice to match, so mixeng resamples
+ * every guest stream to what the device really plays: frames handed over at
+ * any other rate are played at the device's, off-pitch, and drained faster
+ * or slower than the guest makes them. The caller excludes the backend's
+ * consumer of buf_emul (coreaudio: buf_mutex).
+ */
+void audio_pcm_hw_set_freq_out(HWVoiceOut *hw, int freq)
+{
+    SWVoiceOut *sw;
+
+    if (freq <= 0 || freq == hw->info.freq) {
+        return;
+    }
+    hw->info.freq = freq;
+    hw->info.bytes_per_second = freq * hw->info.bytes_per_frame;
+    /* Queued at the old rate: up to a buffer-count of periods that would play
+     * at the new one, an octave off for AirPods going 48 -> 24 kHz. Drop it. */
+    hw->pending_emul = 0;
+    for (sw = hw->sw_head.lh_first; sw; sw = sw->entries.le_next) {
+        audio_pcm_sw_free_resources_out(sw);
+        audio_pcm_sw_alloc_resources_out(sw);
+    }
+    if (hw->cap_head.lh_first) {
+        audio_attach_capture(hw);   /* its converters read hw->info too */
+    }
+}
+
+/*
  * Timer
  */
 static int audio_is_timer_needed(AudioState *s)
