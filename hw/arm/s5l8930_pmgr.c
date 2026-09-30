@@ -81,6 +81,8 @@ struct S5L8930PMGRState {
     uint8_t security_epoch;     /* POWER_ID[31:24] LLB would latch; 0 = measured */
     int64_t tick_base_ns;
     S5L8930EventTimer evt[2];
+    QEMUTimer *wdog_timer;
+    uint64_t wdog_start;
 };
 
 /*
@@ -212,18 +214,41 @@ static void evt_write_state(S5L8930PMGRState *s, S5L8930EventTimer *t,
     }
 }
 
-/*
- * The kernel only ever uses the watchdog to reset: WDTr writes CTL = arg|4,
- * RST = 0, TMR = 0 and spins (AppleS5L8930X c0645180, 7B500). So fire when
- * reset is enabled and TMR has reached RST.
- * ponytail: TMR does not count, so a guest arming a real timeout is never
- * reset; make it tick at the timebase if anything ever does that.
- */
+/* The watchdog shares the PMGR timebase. Keep the written count latched and
+ * add elapsed ticks while reset is enabled. A comparison already satisfied
+ * requests the immediate reset used by WDTr; a future comparison needs a
+ * virtual deadline even if the guest never accesses PMGR again. */
+static uint32_t wdog_count(S5L8930PMGRState *s)
+{
+    uint32_t count = s->regs[PMGR_WDOG_TMR / 4];
+    if (s->regs[PMGR_WDOG_CTL / 4] & WDOG_CTL_RESET_EN) {
+        uint64_t elapsed = pmgr_ticks(s) - s->wdog_start;
+        return MIN((uint64_t)count + elapsed, UINT32_MAX);
+    }
+    return count;
+}
+
+static void wdog_expire(void *opaque)
+{
+    S5L8930PMGRState *s = opaque;
+    if (s->regs[PMGR_WDOG_CTL / 4] & WDOG_CTL_RESET_EN) {
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    }
+}
+
 static void wdog_check(S5L8930PMGRState *s)
 {
-    if ((s->regs[PMGR_WDOG_CTL / 4] & WDOG_CTL_RESET_EN) &&
-        s->regs[PMGR_WDOG_TMR / 4] >= s->regs[PMGR_WDOG_RST / 4]) {
-        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    timer_del(s->wdog_timer);
+    if (s->regs[PMGR_WDOG_CTL / 4] & WDOG_CTL_RESET_EN) {
+        uint32_t count = wdog_count(s);
+        uint32_t limit = s->regs[PMGR_WDOG_RST / 4];
+        if (count >= limit) {
+            wdog_expire(s);
+        } else {
+            timer_mod(s->wdog_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      1 + muldiv64(limit - count, NANOSECONDS_PER_SECOND,
+                                   PMGR_TIMEBASE_HZ));
+        }
     }
 }
 
@@ -239,6 +264,8 @@ static uint64_t s5l8930_pmgr_read(void *opaque, hwaddr off, unsigned size)
     }
 
     switch (off) {
+    case PMGR_WDOG_TMR:
+        return wdog_count(s);
     /* The kernel reads HI, LO, HI and retries on a mismatch, so both halves
      * can be sampled live. */
     case PMGR_TICKS_LO:
@@ -307,6 +334,8 @@ static void s5l8930_pmgr_write(void *opaque, hwaddr off, uint64_t val64,
     case PMGR_WDOG_TMR:
     case PMGR_WDOG_RST:
     case PMGR_WDOG_CTL:
+        s->regs[PMGR_WDOG_TMR / 4] = wdog_count(s);
+        s->wdog_start = pmgr_ticks(s);
         s->regs[off / 4] = val;
         wdog_check(s);
         return;
@@ -358,6 +387,8 @@ static void s5l8930_pmgr_reset(DeviceState *dev)
         s->regs[i / 4] = 0xFF;
     }
 
+    timer_del(s->wdog_timer);
+    s->wdog_start = 0;
     s->tick_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     for (i = 0; i < ARRAY_SIZE(s->evt); i++) {
         S5L8930EventTimer *t = &s->evt[i];
@@ -376,6 +407,7 @@ static void s5l8930_pmgr_init(Object *obj)
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
     int i;
 
+    s->wdog_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, wdog_expire, s);
     memory_region_init_io(&s->iomem, obj, &s5l8930_pmgr_ops, s,
                           TYPE_S5L8930_PMGR, S5L8930_PMGR_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
@@ -404,13 +436,35 @@ static const VMStateDescription vmstate_s5l8930_evt = {
     }
 };
 
+static int s5l8930_pmgr_post_load(void *opaque, int version_id)
+{
+    S5L8930PMGRState *s = opaque;
+    if (version_id < 2) {
+        s->wdog_start = pmgr_ticks(s);
+        wdog_check(s);
+    }
+    return 0;
+}
+
+static void s5l8930_pmgr_finalize(Object *obj)
+{
+    S5L8930PMGRState *s = S5L8930_PMGR(obj);
+    timer_free(s->wdog_timer);
+    for (int i = 0; i < ARRAY_SIZE(s->evt); i++) {
+        timer_free(s->evt[i].timer);
+    }
+}
+
 static const VMStateDescription vmstate_s5l8930_pmgr = {
     .name = TYPE_S5L8930_PMGR,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = s5l8930_pmgr_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, S5L8930PMGRState, S5L8930_PMGR_SIZE / 4),
         VMSTATE_INT64(tick_base_ns, S5L8930PMGRState),
+        VMSTATE_TIMER_PTR_V(wdog_timer, S5L8930PMGRState, 2),
+        VMSTATE_UINT64_V(wdog_start, S5L8930PMGRState, 2),
         VMSTATE_STRUCT_ARRAY(evt, S5L8930PMGRState, 2, 1,
                              vmstate_s5l8930_evt, S5L8930EventTimer),
         VMSTATE_END_OF_LIST()
@@ -436,6 +490,7 @@ static const TypeInfo s5l8930_pmgr_info = {
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(S5L8930PMGRState),
     .instance_init = s5l8930_pmgr_init,
+    .instance_finalize = s5l8930_pmgr_finalize,
     .class_init    = s5l8930_pmgr_class_init,
 };
 
