@@ -28,6 +28,11 @@ with working touch; lockdownd reports the device activated.
   Lockdown answers unpaired and pairs; a session needs SSLv3 on the host (1.x lockdownd speaks nothing
   newer): with an SSLv3 client ProductType iPod1,1 / Activated, AFC lists and round-trips 70000 bytes.
   iBoot's recovery mode enumerates too (05ac:1280).
+- Wi-Fi: the Marvell 88W8686 on SDIO (`hw/arm/mrvl8686.c`, IRQ 0x2A). AppleMRVL868x-69 loads the helper and the
+  firmware it carries (block CRCs checked), reads the card's EEPROM, scans, and joins the model's open "qemu-ios";
+  frames go to `-netdev ...,id=wifi0` (user networking when none is given). A FirmwareKit n45 device has Wi-Fi on
+  and qemu-ios known: 1.1.5 (4B1) joins at boot, 1.1 (3A101a) after one tap on the network in Settings
+  (LightTouchMac smoke #61). Safari loads pages from the host at 10.0.2.2. `MRVL_TRACE=1` logs commands.
 - Buttons: `qemu_ios_ui_button` Home and Hold drive the same pads as the Cmd chords
   (`ipod_touch_1g_press_button`); the 1G has no volume buttons. `system_powerdown` is the user's gesture,
   as on the 2G and the iPad: Home, Hold 3.5 s, drag the "slide to power off" knob (65,68 -> 295);
@@ -62,7 +67,8 @@ Cmd+L power (headless: QMP `input-send-event` for taps, as `tests/ipod/regress.p
 Machine properties: `bootrom`, `iboot`, `nand`, `nand-overlay`, `usb-tcp-addr` (host:port of
 usbmuxd-qemu's QEMU backend, else `IT_USB_TCP`; empty = no cable), `usb-wrangler-quirk` (bool, default
 on: the phyRegistered guard, see debts), `tvout-workaround=<paddr>` (default off), `guest-package`,
-`gles-debug`, and the read-only `gles-rejects`, `gles-contexts`.
+`gles-debug`, `wifi` (bool, default on: the 88W8686; off = an empty SDIO slot), and the read-only
+`gles-rejects`, `gles-contexts`.
 
 A GL device: `imgtools/ipod1g_device.py prepare ~/Developer/qemu-ios-files/ipod1g OUT` (after
 `contrib/guest-package/build.sh`) writes OUT/{nand,bootrom.bin,iBoot.bin,nor.bin,device.lock.json}; boot it
@@ -98,7 +104,8 @@ the block does, P a documented quirk/patch, S stub.
 | USB OTG + PHY | `synopsys` OTG with the 8900 hwcfg and `usb-tcp-addr`, `ipodtouch.usbphys` | shared | R (device mode to usbmuxd; the core's reset ConIDStsChng, GOTGCTL ID/session status, the interrupt line on GAHBCFG, EP0 PktCnt) |
 | DMA | two `pl080` | shared QEMU model | R |
 | I2C0 lis302dl, I2C1 pcf50633 | shared; PMU `shutdown-reg=0x0c` (1.x: 0x0a is the fourth IRQ mask), cable level on MBCS1 (`usb-status-reg=0x4b`, `-bits=0x03`) | variant | H |
-| SDIO | `ipodtouch.sdio` | shared | H |
+| SDIO host | `ipodtouch.sdio`, the `mrvl` card link and its `card-irq` | shared | R |
+| Wi-Fi card | `mrvl8686` (Marvell 88W8686): registers, download, EEPROM, interrupt register; firmware answered in C | new | R (SDIO) / H (firmware) |
 | TVOut (mixer1/2, sdo) | `ipodtouch.tvout` | shared | S |
 | MBX (GPU) | the 2G's `ipodtouch.mbx` (ids, MMU handshake, interrupt mask/status/clear, the software interrupt), interrupt 0xC; no engine (GL goes to the host bridge) | shared | R (interrupt block) / H (idle, no engine) |
 | Guest services | QEMU_CALL cp15 register: GL bridge, guest package | shared (`guest-gles.c`, `guest-package.c`) | H |
@@ -153,7 +160,8 @@ the block does, P a documented quirk/patch, S stub.
    The PMU model's backlight is the D1759's (0x10 bit 6, 0x30), which 1.x never writes, so the level stays
    255 and `qemu_ios_ui_display_sleeping` never reports the 1G asleep (the panel's own enable does go off:
    `AppleMerlotLCD::_lcdEnable: 0`).
-10. **Wi-Fi MAC and the UDID (S)**. No Marvell 88W8686 card, and the device tree's `sdio` node carries a
+10. **Wi-Fi MAC and the UDID (S)**. The 88W8686's MAC comes from the model's invented EEPROM (the driver puts it on
+   its SDIO nub, not in the device tree), and the device tree's `sdio` node carries a
    zero `local-mac-address` (iBoot-204 does not fill it from the NOR SysCfg here), so lockdownd's UDID is
    SHA1(serial + "00:00:00:00:00:00" + "") rather than FirmwareKit's identity UDID (serial + Wi-Fi + BT MACs).
    Consistent across boots; usbmuxd and lockdown agree on it.
