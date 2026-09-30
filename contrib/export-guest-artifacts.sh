@@ -136,14 +136,14 @@ def git(*args):
 commit = git("rev-parse", "HEAD")
 # The inputs: what guest-package/build.sh copies (sources only: generated headers and binaries are not inputs).
 components = ("armv6-toolchain it-gles gles-public it-agent it-instprogress it-media it-proxy it-status it-halt it-orientation "
-              "ipad1-guest ipad1-gles appsync it-boot it-pasteboard it-ethlink it-seal it-prefs it-keybag it-heading "
+              "ipad1-guest appsync it-boot it-pasteboard it-ethlink it-seal it-prefs it-keybag it-heading "
               "it-cctest it-gltest it-msmquiet guest-package").split()
 inputs = {}
 for c in components:
     for f in sorted((src / "contrib" / c).iterdir()):
         if f.is_file() and f.suffix in (".c", ".h", ".sh", ".py", ".xml", ".plist", ".entitlements", ".txt",
                                         ".exports") \
-                and f.name not in ("gles_stubs.h", "gli_fwd.h"):
+                and f.name not in ("gles_stubs.h",):
             inputs[str(f.relative_to(src))] = sha(f)
 for f in sorted([src / "include/hw/arm/guest-services/gles-names.h",
                  src / "contrib/guest-package/VERSION", src / "contrib/export-guest-artifacts.sh"]):
