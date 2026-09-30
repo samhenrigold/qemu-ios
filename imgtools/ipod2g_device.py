@@ -18,12 +18,10 @@ After device.py has verified the IPSW, decrypted it into CACHE and written ident
 
 bake() adds the guest side, all of it located at build or run time (no offsets):
   imgtools/bake-guest-tools.sh   it_agent + it_typein (SpringBoard DYLD_INSERT), sblaunch, sbdlicon, sound
-                                 defaults, the .lt-guest-tools markers, and the MBXGLEngine shim
-                                 contrib/it-gles/MBXGLEngine, one binary for every firmware: it reads the
-                                 firmware's __GLIFunctionDispatchRec layout out of OpenGLES at load (2.x has no
-                                 engine bundle: the package's OpenGLES hook, the same core under the firmware's
-                                 own export names, replaces the framework binary; gles2x_front_end). 4.x caches
-                                 MBXGLEngine, so dyld's enable-dylibs-to-override-cache switch is created too
+                                 defaults, the .lt-guest-tools markers (MBXGLEngine stays stock)
+  gl_front_end()                 the GL front end contrib/gles-public/OpenGLES, one binary for every firmware
+                                 (2.x's EGL compositor and 3.x/4.x's EAGL one), over OpenGLES.framework/OpenGLES;
+                                 where OpenGLES is cached (3.1+), dyld's enable-dylibs-to-override-cache switch too
                                  (ipad1_rootfs.gli_uncache)
   contrib/appsync/patch-appsync-dylib.sh  MISValidateSignature -> success in the shared cache, found by symbol;
                                  libappsync.dylib DYLD_INSERTed into installd (options.appsync)
@@ -33,8 +31,8 @@ bake() adds the guest side, all of it located at build or run time (no offsets):
   install_web_proxy()            the iPad's proxy PAC and the en0 Wi-Fi service that uses it (options.web_proxy)
   mkpkg.seed()                   the guest-package loader (/usr/local/bin/it_boot + its job) and the seed package
                                  from --guest-package (default build/guest-package/armv6.itpack): pkgs/<serial>,
-                                 current, state, the kept hook targets + .baked copies (MBXGLEngine only with the
-                                 shim); the package's jobs (com.qemu.it-agent) are removed from LaunchDaemons, as
+                                 current, state, the kept hook targets + .baked copies (OpenGLES only with the
+                                 front end); the package's jobs (com.qemu.it-agent) are removed from LaunchDaemons, as
                                  it_boot loads them. The lock's guest_package records it.
 No shell, sshd or third-party binary is installed: guest services are stock lockdown services plus it_agent
 (docs/archive/guest-services-plan.md). Only our own helpers above are added.
@@ -63,7 +61,6 @@ GUEST_TOOL_OWNERS = [
     ("0 0", "usr/local"), ("0 0", "usr/local/bin"), ("0 0", "usr/local/bin/it_agent"),
     ("0 0", "usr/local/bin/sblaunch"), ("0 0", "usr/local/bin/sbdlicon"), ("0 0", "usr/lib/it_typein.dylib"),
     ("0 0", "System/Library/LaunchDaemons/com.qemu.it-agent.plist"),
-    ("0 0", "System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine.stock"),
     ("501 501", "private/var/mobile/Library/Preferences/com.apple.mobilemail.plist"),
     ("501 501", "private/var/mobile/Library/Preferences/com.apple.springboard.plist"),
     ("501 501", "private/var/mobile/Library/Preferences/com.apple.preferences.sounds.plist"),
@@ -98,36 +95,25 @@ def darwin_banner(kernel):
     return m[0].decode() if m else None
 
 
-def gles2x_front_end(mnt):
-    """1.x/2.x (no engine bundle): (True, line) if the stock OpenGLES exports exactly the names the GL
-    front end does (contrib/it-gles/opengles-2x.exports), so the guest package's hook may replace it;
-    else (False, why) and the framework stays stock."""
-    sys.path.insert(0, os.path.join(ROOT, "contrib/it-gles"))
-    import gles2x_exports
-    listfile = os.path.join(ROOT, "contrib/it-gles/opengles-2x.exports")
-    stock = os.path.join(mnt, OPENGLES)
-    if not os.path.exists(stock):
-        return False, "no %s" % OPENGLES
-    want, got = set(gles2x_exports.read_list(listfile)), set(gles2x_exports.scan(stock))
-    if want != got:
-        return False, "stock OpenGLES exports differ from opengles-2x.exports (missing %s, extra %s): stock kept" % (
-            sorted(want - got)[:4], sorted(got - want)[:4])
-    return True, "GL front end replaces OpenGLES (%d exports, the firmware's own)" % len(got)
+GL_FRONT_END = "contrib/gles-public/OpenGLES"
 
 
-def gli_engine(mnt):
-    """(True, sanity line about the firmware's dispatch layout, which the shim reads at load, the shim to
-    install) where the firmware has an engine bundle: 3.1+ (shared cache) get contrib/it-gles/MBXGLEngine,
-    3.0 (the bundle a plain file, no cache, a dyld that refuses LC_DYLD_INFO_ONLY) the same source
-    legacy-linked, MBXGLEngine-30. Else (False, why, None): 1.x/2.x have no engine bundle."""
-    from ipad1_rootfs import gli_dispatch_info
+def gl_front_end(mnt, owners):
+    """The GL front end over the framework binary (FirmwareKit's SystemEdits.installCAOGL, which proves the fit
+    first), + dyld's override switch where OpenGLES is cached. Returns the report line."""
+    from ipad1_rootfs import gli_uncache, gli_dispatch_info, DYLD_OVERRIDE
+    src = os.path.join(ROOT, GL_FRONT_END)
+    if not os.path.exists(src):
+        raise SystemExit("%s missing (run contrib/gles-public/build.sh)" % src)
     cache = os.path.join(mnt, DYLD_CACHE)
-    if os.path.exists(cache):
-        return True, gli_dispatch_info(cache), "contrib/it-gles/MBXGLEngine"
-    if os.path.exists(os.path.join(mnt, MBX)):
-        return True, gli_dispatch_info(None, open(os.path.join(mnt, OPENGLES), "rb").read()) + \
-            "; no shared cache (3.0): the legacy-linked shim", "contrib/it-gles/MBXGLEngine-30"
-    return False, "no MBXGLEngine.bundle (1.x/2.x)", None
+    status = gli_uncache(mnt, OPENGLES, DYLD_CACHE) if os.path.exists(cache) else "no shared cache: the stock file replaced"
+    if "overridden" in status:
+        owners.append(("0 0", DYLD_OVERRIDE))
+    shutil.copyfile(src, os.path.join(mnt, OPENGLES))
+    os.chmod(os.path.join(mnt, OPENGLES), 0o755)
+    owners.append(("0 0", OPENGLES))
+    return "GL front end %s (%s; %s)" % (os.path.basename(src), status,
+                                         gli_dispatch_info(cache) if os.path.exists(cache) else "no dispatch layout needed")
 
 
 def kbag(img3):
@@ -266,8 +252,8 @@ def build(ctx):
     tools = {n: sha(os.path.join(ROOT, n)) for n in ("contrib/it-agent/it_agent", "contrib/it-agent/it_typein.dylib",
                                                      "contrib/it-gles/sblaunch", "contrib/it-instprogress/sbdlicon")
              + tuple(PREFS)} if cfg["guest_tools_supported"] else {}
-    if baked.get("gles_engine") == "MBXGLEngine":     # the OpenGLES hook is the itpack's (lock: guest_package)
-        tools[baked["gles_engine_src"]] = sha(os.path.join(ROOT, baked["gles_engine_src"]))
+    if baked.get("gles_engine") == "OpenGLES":
+        tools[GL_FRONT_END] = sha(os.path.join(ROOT, GL_FRONT_END))
     if opt.get("appsync"):
         tools["build/appsync/libappsync.dylib"] = sha(os.path.join(ROOT, "build/appsync/libappsync.dylib"))
         if baked.get("appsync_launcher"):
@@ -324,30 +310,16 @@ def bake_reorder_tip(mnt):
 def bake(mnt, config):
     cfg = json.load(open(config))
     opt, owners, report = cfg["options"], [], {}
-    gli, info, engine_src = gli_engine(mnt) if opt.get("gles_shim", True) else (False, "options.gles_shim off", None)
-    engine = os.path.join(ROOT, engine_src or "contrib/it-gles/MBXGLEngine")
-    if gli and not os.path.exists(engine):
-        raise SystemExit("%s missing (run contrib/it-gles/build.sh)" % engine)
-    report["gles"] = "shim MBXGLEngine (%s)" % info if gli else "stock engine, software CA: " + info
-    # 1.x/2.x: no engine to replace; the package's OpenGLES hook (the same core) goes in instead
-    front = False
-    if not gli and opt.get("gles_shim", True) and not os.path.exists(os.path.join(mnt, DYLD_CACHE)):
-        front, why = gles2x_front_end(mnt)
-        report["gles"] = why + ("; CA composites through it (CA_ENABLE_OGL=1)" if front else "")
-    report["gles_shim"] = bool(gli or front)
-    report["gles_engine"] = "MBXGLEngine" if gli else "OpenGLES" if front else None
-    report["gles_engine_src"] = engine_src if gli else None
+    gles = opt.get("gles_shim", True)
+    report["gles"] = gl_front_end(mnt, owners) + "; CA composites through it (CA_ENABLE_OGL=1)" if gles \
+        else "stock OpenGLES, software CA: options.gles_shim off"
+    report["gles_shim"] = bool(gles)
+    report["gles_engine"] = "OpenGLES" if gles else None
     supported = cfg["guest_tools_supported"]
     report["guest_tools"] = "installed" if supported else "omitted: current helpers require the iOS 3.1+ dyld"
-    env = dict(os.environ, MNT=mnt, IT_GLES_SHIM="1" if gli else "0", IT_CA_OGL="1" if gli or front else "0",
-               IT_GLES_ENGINE=engine,
+    env = dict(os.environ, MNT=mnt, IT_GLES_SHIM="0", IT_CA_OGL="1" if gles else "0",
                IT_GUEST_TOOLS="1" if supported else "0")
     subprocess.run(["/bin/sh", os.path.join(HERE, "bake-guest-tools.sh")], env=env, check=True)
-    if gli and os.path.exists(os.path.join(mnt, DYLD_CACHE)):
-        from ipad1_rootfs import gli_uncache, DYLD_OVERRIDE
-        report["gles_cache"] = gli_uncache(mnt, MBX, DYLD_CACHE)
-        if "overridden" in report["gles_cache"]:
-            owners.append(("0 0", DYLD_OVERRIDE))
     if opt.get("appsync"):
         env["APPSYNC_DYLIB"] = os.path.join(ROOT, "build/appsync/libappsync.dylib")
         r = subprocess.run(["/bin/sh", os.path.join(ROOT, "contrib/appsync/patch-appsync-dylib.sh")], env=env,
@@ -376,12 +348,9 @@ def bake(mnt, config):
         report["activation"] = "activation hook applied and daemon re-signed"
     sys.path.insert(0, os.path.join(ROOT, "contrib/guest-package"))
     import mkpkg
-    # 2.x/3.0 (legacy dyld): the package's legacy-linked loader and its GL hook only, the OpenGLES front end
-    # (2.x) or the engine (3.0), no helpers (FirmwareKit's N72Board bakes the same)
-    seeded, report["guest_package"] = mkpkg.seed(mnt, cfg["guest_package"], gli or front) if (supported or front or gli) else ([], None)
-    if front and "/" + OPENGLES not in report["guest_package"]["hooks"]:
-        # CA_ENABLE_OGL=1 over the stock driver drives the unemulated MBX: fail rather than wedge
-        raise SystemExit("%s has no OpenGLES hook for this build; rebuild contrib/guest-package" % cfg["guest_package"])
+    # 2.x/3.0 (legacy dyld): the package's legacy-linked loader and its GL hook only, no helpers (FirmwareKit's
+    # N72Board bakes the same)
+    seeded, report["guest_package"] = mkpkg.seed(mnt, cfg["guest_package"], gles) if (supported or gles) else ([], None)
     owners += [("0 0", p) for p in seeded]
     owners += [(o, p) for o, p in GUEST_TOOL_OWNERS if os.path.lexists(os.path.join(mnt, p))]
     with open(cfg["owners"], "w") as f:
