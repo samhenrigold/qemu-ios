@@ -6,7 +6,7 @@ same binary (1.x's own front end aside)."""
 import os, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path[:0] = [os.path.join(ROOT, "imgtools"), os.path.join(ROOT, "contrib/guest-package")]
+sys.path[:0] = [os.path.join(ROOT, "research/python-preparer"), os.path.join(ROOT, "imgtools"), os.path.join(ROOT, "contrib/guest-package")]
 import ipod2g_device as d
 import ipad1_rootfs as r
 import mkpkg
