@@ -245,6 +245,7 @@ void audio_driver_register(audio_driver *drv);
 
 void audio_pcm_init_info (struct audio_pcm_info *info, struct audsettings *as);
 void audio_pcm_info_clear_buf (struct audio_pcm_info *info, void *buf, int len);
+void audio_pcm_hw_set_freq_out(HWVoiceOut *hw, int freq);
 
 int audio_bug (const char *funcname, int cond);
 

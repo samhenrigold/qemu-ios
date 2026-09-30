@@ -142,6 +142,19 @@ static OSStatus coreaudio_set_streamformat(AudioDeviceID id,
                                       d);
 }
 
+static const AudioObjectPropertyAddress rate_addr = {
+    kAudioDevicePropertyNominalSampleRate,
+    kAudioObjectPropertyScopeGlobal,
+    kAudioObjectPropertyElementMain
+};
+
+static OSStatus coreaudio_get_rate(AudioDeviceID id, Float64 *rate)
+{
+    UInt32 size = sizeof(*rate);
+
+    return AudioObjectGetPropertyData(id, &rate_addr, 0, NULL, &size, rate);
+}
+
 static OSStatus coreaudio_get_isrunning(AudioDeviceID id, UInt32 *result)
 {
     UInt32 size = sizeof(*result);
@@ -608,6 +621,27 @@ static OSStatus audioDeviceIOProc(
     return 0;
 }
 
+/* called without BQL. The same device, now at another nominal rate. */
+static OSStatus handle_rate_change(
+    AudioObjectID in_object_id,
+    UInt32 in_number_addresses,
+    const AudioObjectPropertyAddress *in_addresses,
+    void *in_client_data)
+{
+    coreaudioVoiceOut *core = in_client_data;
+    Float64 rate;
+
+    bql_lock();
+    if (in_object_id == core->outputDeviceID &&
+        coreaudio_get_rate(in_object_id, &rate) == kAudioHardwareNoError &&
+        rate >= 8000 && !coreaudio_buf_lock(core, "handle_rate_change")) {
+        audio_pcm_hw_set_freq_out(&core->hw, (int)rate);
+        coreaudio_buf_unlock(core, "handle_rate_change");
+    }
+    bql_unlock();
+    return 0;
+}
+
 static OSStatus init_out_device(coreaudioVoiceOut *core)
 {
     OSStatus status;
@@ -640,6 +674,25 @@ static OSStatus init_out_device(coreaudioVoiceOut *core)
     if (core->outputDeviceID == kAudioDeviceUnknown) {
         dolog ("Could not initialize playback - Unknown Audiodevice\n");
         return status;
+    }
+
+    /*
+     * Play at the rate the device runs, never ask it to run ours. The voice
+     * used to stay at the audiodev's 44.1 kHz and ask the device for 44.1 kHz
+     * too: a device that cannot (AirPods: 48 kHz, 24 or 16 kHz with the mic
+     * open) keeps its own rate, takes the 44.1 kHz frames as its own and
+     * plays them 8.8% sharp, draining them faster than the guest makes them
+     * -- the crackle. One that can was switched for every app on the Mac.
+     * Re-rating the voice makes mixeng resample the guest to the device.
+     */
+    {
+        Float64 rate = 0;
+
+        if (coreaudio_get_rate(core->outputDeviceID, &rate) ==
+                kAudioHardwareNoError && rate >= 8000) {
+            audio_pcm_hw_set_freq_out(&core->hw, (int)rate);
+            streamBasicDescription.mSampleRate = rate;
+        }
     }
 
     /* get minimum and maximum buffer frame sizes */
@@ -762,6 +815,9 @@ static OSStatus init_out_device(coreaudioVoiceOut *core)
         return status;
     }
 
+    /* Follow the device's rate as it changes (AirPods to and from HFP). */
+    AudioObjectAddPropertyListener(core->outputDeviceID, &rate_addr,
+                                   handle_rate_change, core);
     return 0;
 }
 
@@ -769,6 +825,9 @@ static void fini_out_device(coreaudioVoiceOut *core)
 {
     OSStatus status;
     UInt32 isrunning;
+
+    AudioObjectRemovePropertyListener(core->outputDeviceID, &rate_addr,
+                                      handle_rate_change, core);
 
     /* stop playback */
     status = coreaudio_get_isrunning(core->outputDeviceID, &isrunning);
