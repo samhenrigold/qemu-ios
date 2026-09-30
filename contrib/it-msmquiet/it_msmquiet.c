@@ -21,6 +21,12 @@
  * detach: a NULL from Create is a path it handles ("Could not create user
  * notification", then on). Every other notice (MOUNT_FAILURE,
  * VERIFICATION_FAILURE, POWER_HUNGRY_FAILURE, camera import) goes through.
+ *
+ * 5.x moved the notice out of the mounter into USBDeviceArbitrator
+ * (com.apple.mobile.usb_device_arbitrator, LaunchBuddy's catch-all for an
+ * IOUSBDevice no other plugin claims: 9B206 handle_start 0x242c "Assuming it
+ * is unsupported"), with the 4.x keys and CFUserNotificationCreate from its
+ * own bundle; the bake loads this into whichever of the two jobs raises it.
  */
 
 /*
