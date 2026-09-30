@@ -29,7 +29,7 @@ ALIAS = {"glDeleteProgram": "glDeleteShader"}
 def row_of(n, have):
     """The gles-names.h row an export forwards to: its own name, its alias's, or its spelling without the
     OES/EXT suffix (1.x-3.x export the FBO set as ...OES, 5.x the occlusion queries as ...EXT; the row keeps the
-    core name)."""
+    core name). 5.0 beta 1 (9A5220p) exports the EXT set as ...APPLE: those take the ...EXT name's row."""
     if n in have:
         return n
     if ALIAS.get(n) in have:
@@ -37,6 +37,8 @@ def row_of(n, have):
     for suffix in ("OES", "EXT"):
         if n.endswith(suffix) and n[:-len(suffix)] in have:
             return n[:-len(suffix)]
+    if n.endswith("APPLE"):
+        return row_of(n[:-len("APPLE")] + "EXT", have)
     return None
 
 
