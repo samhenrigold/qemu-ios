@@ -25,7 +25,7 @@ def read(path,uid=0,gid=0,mode=0o755):
  assert len(data)==fork.logical_size,(path,'unsupported or truncated fork')
  return data
 for source,target,mode in (
- ('contrib/it-gles/MBXGLEngine','/System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine',0o755),
+ ('contrib/gles-public/OpenGLES','/System/Library/Frameworks/OpenGLES.framework/OpenGLES',0o755),
  ('contrib/it-gles/sblaunch','/usr/local/bin/sblaunch',0o755),
  ('contrib/it-instprogress/sbdlicon','/usr/local/bin/sbdlicon',0o755),
  ('contrib/it-agent/it_agent','/usr/local/bin/it_agent',0o755),
@@ -34,7 +34,7 @@ for source,target,mode in (
  ('contrib/it-boot/com.qemu.it-boot.plist','/System/Library/LaunchDaemons/com.qemu.it-boot.plist',0o644),
 ):
  if args.without_guest_tools:
-  if source.endswith('/MBXGLEngine') or '/it-boot/' in source:  # the loader is baked on every build
+  if source.endswith('/OpenGLES') or '/it-boot/' in source:  # the GL front end and the loader are baked on every build
    continue
   try:setowner.resolve(index,target)
   except SystemExit:continue

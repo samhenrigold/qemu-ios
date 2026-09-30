@@ -1397,10 +1397,11 @@ def check_gles_front_end(cfg, dev, r):
     def hellos():
         with open(log_path, "rb") as f:
             text = f.read().decode("utf-8", "replace")
-        # 3.0: the engine (MBXGLEngine-30), whose SpringBoard GL is 3.1.3's: its GL contexts and their
-        # offscreen draws, the display itself composited as on 3.1.3
-        mark = "[mbxshim] GLESCreateGC" if cfg.gles_engine == "MBXGLEngine" else "[gles] egl: first pixmap surface"
-        return text.count("[gles] dispatch layout from "), mark in text
+        # the one front end (contrib/gles-public) on 2.x-4.x says hello once per process that makes a context and
+        # names CoreAnimation's first GL path (2.x: the EGL pixmap surface; 3.x: attachImage:); 1.x's own
+        # front end (gles2x.c) says its dispatch layout and its first pixmap surface
+        hello = text.count("[gles] OpenGLES front end (") or text.count("[gles] dispatch layout from ")
+        return hello, "CoreAnimation composites through the host" in text or "[gles] egl: first pixmap surface" in text
 
     shots = []
     dev.qmp.tap(160, 326)   # 2.x raises the first-unlock Edit Home Screen tip late: its Dismiss (empty home otherwise)
@@ -1423,9 +1424,7 @@ def check_gles_front_end(cfg, dev, r):
         return r.set(False, "the front end said hello %d times: SpringBoard %s (%s)"
                      % (n, "never loaded it" if not n else "restarted", lits))
     if not pixmap:
-        return r.set(False, "CoreAnimation made no %s: no GL through the %s (%s)" % (
-            "GL context" if cfg.gles_engine == "MBXGLEngine" else "pixmap surface",
-            "engine" if cfg.gles_engine == "MBXGLEngine" else "front end", lits))
+        return r.set(False, "CoreAnimation never took the GL path through the front end (%s)" % lits)
     if contexts < 1:
         return r.set(False, "no live host GL context (%s)" % lits)
     if rejects:
@@ -1440,7 +1439,7 @@ def check_gles_front_end(cfg, dev, r):
     # a live context, no refusals -- which the audit showed passes an upside-down frame
     # (2.x/1.x), a red/blue swap and a stale surface (section 1). Diff each captured screen
     # against its committed software-CA reference (framecheck, clock band masked). 3.0's
-    # MBXGLEngine home has no reference yet, so it is judged on liveness only, as noted.
+    # home has no reference yet, so it is judged on liveness only, as noted.
     prefix = ("1x" if cfg.device_version and cfg.device_version < (2, 0)
               else "2x" if cfg.device_version and cfg.device_version < (3, 0) else None)
     fr = []
@@ -1454,10 +1453,9 @@ def check_gles_front_end(cfg, dev, r):
             if not v["ok"]:
                 return r.set(False, "the %s frame is not the reference picture: %s (%s)"
                              % (name, v["why"], lits))
-    frtxt = ("; frame-ref " + ", ".join(fr)) if fr else "; frame-ref none for this engine"
-    return r.set(True, "SpringBoard's GL through the %s: one hello, CA's %s, %d host context(s), no refusals%s; %s"
-                 % ("legacy-linked engine" if cfg.gles_engine == "MBXGLEngine" else "GL front end",
-                    "GL contexts" if cfg.gles_engine == "MBXGLEngine" else "pixmap surfaces", contexts, frtxt, lits))
+    frtxt = ("; frame-ref " + ", ".join(fr)) if fr else "; frame-ref none for this build"
+    return r.set(True, "SpringBoard's GL through the GL front end: one hello, CA on the GL path, %d host context(s), "
+                 "no refusals%s; %s" % (contexts, frtxt, lits))
 
 
 def check_gles(cfg, procs, dev, r):
@@ -1474,7 +1472,7 @@ def check_gles(cfg, procs, dev, r):
     if cfg.gles_front_end:
         return check_gles_front_end(cfg, dev, r)
     app = os.path.join(GLES_DIR, "GLTest.app")
-    shim = os.path.join(GLES_DIR, "MBXGLEngine")     # one binary for every firmware
+    shim = os.path.join(ROOT, "contrib/gles-public/OpenGLES")     # one binary for every firmware
     harness = not os.path.exists(app)
     bundle_id = "com.qemuios.harness" if harness else GLES_BUNDLE_ID
     prerequisites = [HARNESS_IPA if harness else app]
@@ -1501,13 +1499,9 @@ def check_gles(cfg, procs, dev, r):
     elif not install_gles_app(cfg, r):
         return False
     if getattr(cfg, "stage_gles_shim", False):
-        # The stock engine is kept alongside ours so a later manual run can
-        # restore it. /System is why this goes through the root agent, not AFC.
-        engine = "/System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine"
-        if itqmp.agent(port.qmp, "get", engine + ".stock")[0] != 0:
-            status, stock = itqmp.agent(port.qmp, "get", engine)
-            if status or itqmp.agent(port.qmp, "put", engine + ".stock 755", stock)[0]:
-                return r.set(False, "could not keep the stock MBXGLEngine (status %d)" % status)
+        # This tree's front end over the image's (the bake installed one, and dyld's override switch where
+        # OpenGLES is cached). /System is why this goes through the root agent, not AFC.
+        engine = "/System/Library/Frameworks/OpenGLES.framework/OpenGLES"
         with open(shim, "rb") as f:
             status, _ = itqmp.agent(port.qmp, "put", engine + " 755", f.read())
         if status:
