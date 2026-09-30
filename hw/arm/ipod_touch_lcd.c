@@ -1081,6 +1081,14 @@ static void refresh_timer_tick(void *opaque)
     s->scanout_base = lcd_scanout_base(s);
     memcpy(s->plane_scanout, s->plane_regs, sizeof(s->plane_regs));
 
+    /* One ring entry per vsync: a changed scanout base is a new latched frame
+     * (a present the panel now shows); an unchanged one held the previous frame
+     * -- a dropped/duplicated frame for the jank metric. Stamped in
+     * QEMU_CLOCK_VIRTUAL, so the timeline is deterministic under any host load. */
+    frame_timeline_record(&s->ftl, s->scanout_base,
+                          s->scanout_base != s->ftl_last_base);
+    s->ftl_last_base = s->scanout_base;
+
     if (s->con && qemu_console_is_visible(s->con) && !lcd_vsync_legacy()) {
         lcd_in_vsync_present = true;
         graphic_hw_update(s->con);
@@ -1133,6 +1141,8 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
     s->w1_display_resolution_info = 0;
     s->w1_framebuffer_base = 0;
     s->scanout_base = 0;
+    frame_timeline_reset(&s->ftl);
+    s->ftl_last_base = 0;
     s->w1_hspan = 0;
     s->w1_display_depth_info = 0;
     s->invalidate = 1;
@@ -1189,6 +1199,11 @@ static void ipod_touch_lcd_realize(DeviceState *dev, Error **errp)
     timer_mod(s->refresh_timer, s->next_vsync);
 }
 
+static char *ipod_touch_lcd_get_frame_timeline(Object *obj, Error **errp)
+{
+    return frame_timeline_dump(&IPOD_TOUCH_LCD(obj)->ftl);
+}
+
 static void ipod_touch_lcd_init(Object *obj)
 {
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
@@ -1198,6 +1213,11 @@ static void ipod_touch_lcd_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &lcd_ops, s, "lcd", 0x10000);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+    object_property_add_str(obj, "frame-timeline",
+                            ipod_touch_lcd_get_frame_timeline, NULL);
+    object_property_set_description(obj, "frame-timeline",
+        "Latched-frame ring, one 'seq virt_ns newframe key' line per vsync in "
+        "guest-virtual ns; the jank harness reads it (docs/perf-jank.md)");
 }
 
 /*

@@ -82,6 +82,9 @@ if [ "$TIER" != --quick ]; then
         # not the tree's) and is replaced at the main-merge image swap (docs/ipod/nand-current-new-verification.md).
         suite "tests/ipod/run-regression.sh" tests/ipod/run-regression.sh --qemu "$QEMU" --stage-gles-shim --out "$OUT/ipod-regress"
         suite "tests/ipad1/regress.py" python3 tests/ipad1/regress.py --qemu "$QEMU" --out "$OUT/ipad1-regress"
+        # Animation jank in guest-virtual time: three canonical animations against jank-baselines.json.
+        # Deterministic and load-immune (docs/perf-jank.md), so it stands even on a loaded --full gate.
+        suite "tests/ipad1/jank.py" python3 tests/ipad1/jank.py --gate --qemu "$QEMU" --out "$OUT/ipad1-jank"
     else
         skip "tests/ipod/run-regression.sh" "no emulator at $QEMU: build it or set QEMU="
         skip "tests/ipad1/regress.py" "no emulator at $QEMU: build it or set QEMU="
