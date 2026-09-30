@@ -1294,6 +1294,15 @@ if not get_option('slirp').auto() or have_system
       slirp = not_found
     endif
   endif
+  # net_slirp_set_restrict() (netdev_set_restrict, qemu_ios_ui_net_restrict) flips a
+  # running stack's restrict flag in place with slirp_set_restricted(), from
+  # subprojects/packagefiles/libslirp-set-restricted.patch. A libslirp built with the
+  # patch (the app's static native root) is used as found; one without it (Homebrew's)
+  # gives way to the patched subproject, static so the binaries gain no runtime dylib.
+  if slirp.found() and not cc.has_function('slirp_set_restricted', dependencies: slirp,
+                                           prefix: '#include <libslirp.h>')
+    slirp = subproject('slirp', default_options: ['default_library=static']).get_variable('libslirp_libdep')
+  endif
 endif
 
 vde = not_found
