@@ -85,15 +85,23 @@ system_ss.add(when: 'CONFIG_VEXPRESS', if_true: files('vexpress.c'))
 # (gles-host-eagl.m). It picks between them on TARGET_OS_IPHONE, so the choice
 # here is only which framework and which extra file to add. A host with neither
 # framework gets a stub and the guest's GLES HLE probe fails cleanly.
+if host_opengl.found() or host_gles.found()
+  # Do not put the QEMU source root on the C++ angle-bracket include path:
+  # its VERSION file shadows libc++'s <version> on case-insensitive macOS.
+  pvrtc_lib = static_library('ltm-pvrtc', 'powervr/pvrtc.cpp',
+                            implicit_include_directories: false,
+                            include_directories: include_directories('powervr'))
+  pvrtc_dep = declare_dependency(link_with: pvrtc_lib)
+endif
 if host_opengl.found()
-  arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: [files('gles-host.c'), host_opengl])
+  arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: [files('gles-host.c'), host_opengl, pvrtc_dep])
 elif host_gles.found()
   # gles-host-eagl.c is C, not Objective-C, and explains at length why: an
   # Objective-C source anywhere in qemu-system-arm makes meson link the target
   # with objc_LINKER, and configure emits no objc_link_args, so the iOS
   # sysroot's --extra-ldflags vanish from the link.
   arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G',
-             if_true: [files('gles-host.c', 'gles-host-eagl.c'), host_gles])
+             if_true: [files('gles-host.c', 'gles-host-eagl.c'), host_gles, pvrtc_dep])
 else
   arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: files('gles-host-stub.c'))
 endif

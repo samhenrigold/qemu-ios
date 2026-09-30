@@ -15,10 +15,11 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 source = (ROOT / 'hw/arm/gles-host.c').read_text()
-source = source[source.index('static void pvrtc_endpoints('):
+source = source[source.index('static bool pvrtc_decode('):
                 source.index('/*\n * The paletted formats:')]
 harness = r'''
 #include <assert.h>
+#include "powervr/pvrtc.h"
 #define MAX(a,b) ((a)>(b)?(a):(b))
 #include <stdbool.h>
 #include <stdint.h>
@@ -38,7 +39,7 @@ int main(int argc, char **argv) {
     size_t length = pvrtc_size(w, h, bpp);
     uint8_t *src = malloc(length), *dst = malloc((size_t)w*h*4);
     assert(src && dst && fread(src,1,length,stdin)==length && getchar()==EOF);
-    pvrtc_decode(src, w, h, bpp, atoi(argv[4]), false, dst);
+    assert(pvrtc_decode(src, w, h, bpp, atoi(argv[4]), false, dst));
     assert(fwrite(dst,1,(size_t)w*h*4,stdout)==(size_t)w*h*4);
     free(src);
     free(dst);
@@ -101,7 +102,7 @@ with tempfile.TemporaryDirectory(prefix='pvrtc-check-') as directory:
     exe = Path(directory) / 'check'
     c.write_text(harness)
     subprocess.run(['clang', '-O1', '-fsanitize=address,undefined',
-                    '-fno-sanitize-recover=all', str(c), '-o', str(exe)], check=True)
+                    '-fno-sanitize-recover=all', str(c), str(ROOT / 'hw/arm/powervr/pvrtc.cpp'), '-I' + str(ROOT / 'hw/arm'), '-lc++', '-o', str(exe)], check=True)
 
     def decode(data, w, h, bpp, alpha=True):
         return subprocess.run([str(exe), str(w), str(h), str(bpp), str(int(alpha))],

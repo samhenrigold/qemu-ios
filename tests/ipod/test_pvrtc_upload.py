@@ -19,6 +19,7 @@ code = r'''
 #include <OpenGL/glext.h>
 #include <glib.h>
 #include <assert.h>
+#include "powervr/pvrtc.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -125,5 +126,5 @@ with tempfile.TemporaryDirectory(prefix='pvrtc-upload-') as directory:
     c=Path(directory)/'check.c';exe=Path(directory)/'check';c.write_text(code)
     flags=subprocess.check_output(['pkg-config','--cflags','--libs','glib-2.0'],text=True).split()
     subprocess.run(['clang','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all',
-                    str(c),'-o',str(exe),*flags,'-framework','OpenGL'],check=True)
+                    str(c), str(root/'hw/arm/powervr/pvrtc.cpp'), '-I'+str(root/'hw/arm'), '-lc++','-o',str(exe),*flags,'-framework','OpenGL'],check=True)
     subprocess.run([str(exe)],check=True)
