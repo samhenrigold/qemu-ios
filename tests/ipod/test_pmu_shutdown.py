@@ -19,6 +19,7 @@ typedef struct {
     uint8_t regs[256];
     bool addressing, shutdown_armed;
     uint8_t shutdown_reg;
+    uint8_t backlight_enable_reg, backlight_enable_bit, backlight_level_reg;
 } Pcf50633State;
 typedef Pcf50633State I2CSlave;
 #define PCF50633(s) (s)

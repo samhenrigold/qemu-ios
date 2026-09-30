@@ -152,6 +152,7 @@ typedef struct IPodTouch1GMachineState {
     GuestPackage pkg;
     bool gles_debug;
     bool wifi;                       /* the Marvell 88W8686 on the SDIO bus (default on) */
+    char *wifi_mac;                  /* the card's EEPROM MAC ("wifi-mac", the unit identity's) */
 } IPodTouch1GMachineState;
 
 #endif

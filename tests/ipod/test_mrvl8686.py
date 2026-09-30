@@ -69,7 +69,12 @@ static const uint8_t *scan(uint8_t channel)
 int main(void)
 {
     uint8_t buf[0x400], h[16];
+    static const uint8_t UNIT[6] = {0x02, 0x22, 0x0b, 0x10, 0x77, 0x02}, NONE[6];
+    static const uint8_t PLACEHOLDER[6] = {0x00, 0x1b, 0x63, 0x45, 0x1e, 0x01};
     memcpy(c->bssid, AP, 6);
+    mrvl_card_set_mac(c, NONE);                    /* no machine wifi-mac */
+    assert(!memcmp(c->mac, PLACEHOLDER, 6));
+    mrvl_card_set_mac(c, UNIT);                    /* the unit identity's */
     mrvl_card_reset(c);
     assert(mrvl_card_readb(c, MRVL_REG_CARD_STATUS) & MRVL_STATUS_IO_RDY);
 
@@ -79,6 +84,13 @@ int main(void)
     memset(buf, 0, 64);
     mrvl_card_write(c, buf, 64);
     assert(c->stage == MRVL_STAGE_HELPER && reg16(MRVL_REG_RD_BASE) == MRVL_FW_HDR_LEN);
+
+    /* The driver's EEPROM read (GETMEM 512 bytes at 0): key 2 is the unit's MAC. */
+    memset(h, 0, 16); mrvl_put32(h, MRVL_HELPER_GETMEM); mrvl_put16(h + 6, 512);
+    mrvl_card_write(c, h, 16);
+    assert(reg16(MRVL_REG_SCRATCH) == 512);
+    mrvl_card_read(c, buf, 512);
+    assert(buf[8] == 0 && buf[9] == 2 && !memcmp(buf + 12, UNIT, 6));
 
     /* A good block: header, then data whose last word is its CRC. */
     header(h, MRVL_FW_CMD_DATA, 0x200);
@@ -104,6 +116,9 @@ int main(void)
     mrvl_card_write(c, h, 16);
     assert(c->stage == MRVL_STAGE_FIRMWARE && reg16(MRVL_REG_SCRATCH) == MRVL_FIRMWARE_OK);
     mrvl_card_writeb(c, MRVL_REG_HINT_MASK, 3);
+    /* GET_HW_SPEC reports the same permanent address. */
+    const uint8_t *hw = command(MRVL_CMD_GET_HW_SPEC, NULL, 0);
+    assert(!memcmp(hw + 8 + 8, UNIT, 6));
 
     /* Channel 1 hears nothing; channel 6 hears the access point. */
     const uint8_t *r = scan(1);
@@ -120,7 +135,7 @@ int main(void)
     assert(mrvl_le16(r) == (MRVL_CMD_802_11_ASSOCIATE_OLD | MRVL_CMD_RESP));
     assert(mrvl_le16(r + 6) == 0 && mrvl_le16(r + 10) == 0 && mrvl_le16(r + 12) == 0xc001);
     assert(c->associated);
-    puts("PASS: helper and firmware download with block CRCs, FIRMWARE_OK, W0C interrupt status, "
+    puts("PASS: the unit MAC in the EEPROM and GET_HW_SPEC (placeholder without one), helper and firmware download with block CRCs, FIRMWARE_OK, W0C interrupt status, "
          "scan on the AP's channel only, associate answered as 0x8012");
 }
 '''
