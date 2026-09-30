@@ -102,7 +102,7 @@ only: the IPSW (sha1-pinned), its keys page, and a seed for a synthetic identity
 `OUT/identity.json`, mode 600). The MBR comes from `ipad1_nand.py mbr` (byte-identical to the unit's sector 0 for
 16 GB / 1280 MiB), the data volume has no Lockdown dir and no stash, and `OUT/device.lock.json` records every
 input and output hash. Without an activation hook the device stops at "Connect to iTunes"; the manifest's
-opt-in `"activation": {"hook": SCRIPT}` (or `create --activation-hook SCRIPT`) runs a user-supplied script on
+opt-in `"activation": {"hook": SCRIPT}` runs a user-supplied script on
 `/usr/libexec/lockdownd` during `bake`, re-signed ad hoc with its entitlements. `tests/ipad1/fresh-device.sh`
 creates one and boots it twice on one overlay (unlock, screenshot, clean `system_powerdown`, no FTL rescan).
 Pass the device's die-id (`device.lock.json` identity.die_id) as the `die-id` machine property.

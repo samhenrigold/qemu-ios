@@ -297,13 +297,13 @@ their pages and writes a texture name into an untouched `__bss` page: readback P
 
 ## End to end, activated (2026-09-28)
 
-With the user's 4.2.1 activation tool (`create --activation-hook`, a black box here) the whole list was
+With the user's 4.2.1 activation tool (a black box here) the whole list was
 run against fresh 8C148 devices from `manifests/ipad1-8C148.json`, GL CoreAnimation on. Scratch outputs:
 `~/Developer/qemu-ios-files/ipad1/repro-8C148/` (`acc3`, `dev3`, `ui`, `rb1`, `set1`, `perf`, `apps`).
 
 | item | result |
 |---|---|
-| acceptance (`fresh-device.sh ... -- --activation-hook`) | PASS: both boots lit (the wallpapered lock screen, ~148,700 lit samples against boot-smoke's 20,000 threshold, which stands), unlocked with one drag, home screen, power-off to QEMU exit 0 in 15.6 / 16.5 s, no FTL rescan; boot 2 activated on the same overlay, so the keybag held. GL CA live: `[glishim] gld plugin registered, device 0x1027000`, `gliCreateContext api=2 group, root`, 0x38e attaches of CA surfaces |
+| acceptance (`fresh-device.sh`) | PASS: both boots lit (the wallpapered lock screen, ~148,700 lit samples against boot-smoke's 20,000 threshold, which stands), unlocked with one drag, home screen, power-off to QEMU exit 0 in 15.6 / 16.5 s, no FTL rescan; boot 2 activated on the same overlay, so the keybag held. GL CA live: `[glishim] gld plugin registered, device 0x1027000`, `gliCreateContext api=2 group, root`, 0x38e attaches of CA surfaces |
 | unlock, Home, power-off in 4 orientations | PASS with 3.2.2's coordinates (display-rotation 270): unlock (959,477)->(959,47); the power-off sheet and a clean exit in accel-orientations 1-4 (16-19 s); Home leaves Safari. 4.x differences are elsewhere (below) |
 | regress.py (`--device`) | 7/7: boot, usbmux (ProductVersion 4.2.1), afc (sha256 at 1 B-256 KiB), persist, wifi, net (Safari over Wi-Fi), audio |
 | snapshot-check (`--device`) | 6/6, GL CA live across save/restore: screen 0.0% diff, touch + keyboard + Wi-Fi fetch after resume, usbmux, no panic, mid-sound audio 0.90/0.89/0.90 |
@@ -369,7 +369,7 @@ activation hook), and the iPod regression — see the commit.
 | Trust gate: what the `+0x1f8` virtual reads. ~~Gated on this.~~ **DONE 2026-09-27** — it is the DeviceTree `secure-root-prefix='md'` property + root-device match (`SecureRoot` IOResource from AppleARMPlatform), not the img3 chain. Route 1 confirmed viable, no kernel patching. Evidence above. | — |
 | ~~Restore-ramdisk one-shot~~ **DONE 2026-09-28** (see "The one-shot, as built"). The plan was: (1) **kboot**: teach `ipad1_kboot.build` an optional RAM-disk mode — add a segment carrying the raw-HFS ramdisk at a chosen PA in DRAM, a `chosen/memory-map` `RAMDisk` entry `(pa,len)` for it, boot-args `rd=md0` (root selects `md0`), and keep the restore DeviceTree's `secure-root-prefix='md'` (do NOT overwrite it in `fill_dt`; the normal-boot DT has no such prefix so 3.x/normal boots are unaffected). Restore kernelcache+ramdisk+DeviceTree come from the BuildManifest's Update/Restore identity via `ipad1_fw.py`. (2) **guest helper** (built like the others, ldid-signed, AMFI boot-args already on): call the two stable symbols `format_effaceable_storage`-equivalent (AppleEffaceableStorage user client sels 3/4) + `_MKBKeyBagCreateSystem(NULL, dataMount)`; mount the data volume, write `/private/var/keybags/systembag.kb`, `it_seal`-style `reboot(RB_HALT)`. (3) **pipeline**: `ipad1_device.py create` runs this one-shot boot against the device's *writable* NAND + `nor-rw` before the normal boot+seal; verify effaceable formatted + `systembag.kb` present; version-gated by manifest (`options.writable_nor`/a `restore_keybag` flag). | — |
 | ~~GLI shim for 4.2.1~~ **DONE 2026-09-28**: GL CoreAnimation is the 8C148 default (below) | — |
-| ~~Activation~~ the user's own 4.2.1 tool, passed as `--activation-hook` | — |
+| ~~Activation~~ the user's own 4.2.1 tool | — |
 | ~~Unlock / power-off coordinates on 4.x SpringBoard~~ **DONE 2026-09-28**: unlock, Home and power-off in all four orientations verified on an activated device | — |
 | ~~End-to-end validation with GL CA~~ **DONE 2026-09-28** ("End to end, activated") | — |
 | Lock-screen power-off hang (2/37), glDiscardFramebufferEXT | open |

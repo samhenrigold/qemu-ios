@@ -192,7 +192,7 @@ power-off. `iop-core=off`: 7B500 and 8C148 fresh-device PASS, HLE Wi-Fi up.
 
 ## GL on 5.1.1, and the real iBoot chain (branch `ios5-gl`, 2026-09-29)
 
-A 9B206 device is now made by `imgtools/ipad1_device.py create manifests/ipad1-9B206.json` on the `iboot=`
+A 9B206 device is now made by `firmwarekit create --catalog CATALOG --id k48ap-9B206 --ipsw IPSW --out OUT --helper LIGHTTOUCHDEVICE` on the `iboot=`
 chain (iBoot-1219 seals it; no kboot bundle), and SpringBoard composites through the GL bridge: the Setup
 Assistant, the home screen with its labels, Spotlight, Safari opened and closed, Notes and Settings, with
 `gles-rejects` empty. Nothing is keyed on the build: each 5.x difference is read off the firmware at load (the
@@ -239,7 +239,7 @@ power-off, no rescan); activated 8C148 and 7B500 `regress.py --checks gles,shado
 
 `k48-ios5` (builds `9*`) ships exactly `k48-ios4`'s payloads: it_agent v3, it_ethlink, it_prefs and their
 jobs, the GLEngine shim and the gld plugin as hooks, and it_msmquiet (plus appsync's hook when the manifest
-bakes it). `ipad1_device.py create manifests/ipad1-9B206.json` seeds it (lock `guest_package.family`
+bakes it). `firmwarekit create --id k48ap-9B206` seeds it (lock `guest_package.family`
 `k48-ios5`). A 9B206 boot reports `report 8 0 ... seed 8`, and the agent answers `it_agent v3` (frontmost,
 lockstatus, a 600 KB put/get, a host paste). `regress.py --checks gles` passes with the package's GL hooks in
 place.

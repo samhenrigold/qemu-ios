@@ -1,13 +1,13 @@
 # iPod touch 2G from a stock IPSW (manifest → device)
 
-`imgtools/device.py create MANIFEST OUT` builds a device from declared inputs only: a sha1-pinned IPSW, its
-keys page and a seed for a synthetic identity; no third-party tarballs (the iPod no longer gets a shell). It is the same
-orchestrator, manifest format and `device.lock.json` as the iPad (`ipad1_device.py` is now the k48ap board
-module; its CLI is unchanged). The iPod board is `imgtools/ipod2g_device.py`.
+LightTouchMac's Swift FirmwareKit builds a device from declared inputs only: a sha1-pinned IPSW, its catalog
+entry's keys and a seed for a synthetic identity; no third-party tarballs (the iPod no longer gets a shell). It is the
+same catalog and `device.lock.json` as the iPad; the iPod board is FirmwareKit's N72 recipe. CATALOG below is
+LightTouchMac's `LightTouchMac/Resources/firmware-catalog.json`; 4.x builds also take `--helper` with the LightTouchDevice executable.
 
 ```
-imgtools/device.py create manifests/ipod2g-7E18.json OUT        # ~35 s
-tests/ipod/fresh-device.sh manifests/ipod2g-7E18.json OUT      # create + the default regression tier
+firmwarekit create --catalog CATALOG --id n72ap-7E18 --ipsw IPSW --out OUT
+tests/ipod/fresh-device.sh IPSW OUT                            # create + boot, fsck, persist
 tests/ipod/regress.py --qemu build/qemu-system-arm --device OUT --checks boot
 ```
 
@@ -175,7 +175,7 @@ switch (`ipad1_rootfs.gli_uncache`, the iPad's). The interface grew two entries,
 complete and SpringBoard sits on the boot logo until the watchdog restarts it, so the shim then signals the main
 display (`IOMobileFramebufferSwapSignal`), as glishim does. The engine is ldid-signed.
 
-Fresh 8C148 device (`device.py create manifests/ipod2g-8C148.json OUT --activation-hook ...`, lock
+Fresh 8C148 device (`firmwarekit create --catalog CATALOG --id n72ap-8C148 --ipsw IPSW --out OUT --helper LIGHTTOUCHDEVICE`, lock
 `derived.gles = "shim MBXGLEngine-8C148"`): `regress.py --device OUT --checks boot,gles` PASS, home screen lit=285214,
 GLTest magenta 0.141 / cyan 0.281 / yellow 0.141, no unimplemented slot. Host log: one SpringBoard
 `GLESGetEGLInterface`/`GLESCreateGC` pair, `[gles] host GL up`, `swap: framebuffer ID ... signalling the main
@@ -427,8 +427,7 @@ Final acceptance: all eight default 7E18 regression checks PASS, including\nclea
 
 ### 2.1.1 with the activation hook (2026-09-28)
 
-`device.py create manifests/ipod2g-5F138.json OUT --activation-hook .../lt-activation
---activation-hook-arg=--experimental-legacy` builds (hook applied, daemon re-signed, aes-uid=engine). The
+`firmwarekit create --catalog CATALOG --id n72ap-5F138 --ipsw IPSW --out OUT` builds (hook applied, daemon re-signed, aes-uid=engine). The
 boot does not reach home: the screen stays at Connect to iTunes (lit about 35600), and the kernel panics
 after a run of `AppleCS42L58Audio: I2C register read/write failed ... device error` lines: `kernel abort type
 4` (write translation fault, fsr 0x808) at pc 0xc05f6eac, lr 0xc05f6abc, in a mediaserverd thread, then
@@ -567,7 +566,7 @@ CoreFoundation exports `.objc_class_name_NSObject`, libobjc has no `objc_msgSend
 compiled out and the binary is plain C over libSystem, no ldid), `eglSwapNotification` as the egl form of
 2.x's no-op `-swapNotification:` and `glVertexAttribPointerARB` as a counted refusal (nothing on the device
 imports either). The guest package's `n45-ios1` family carries it as the OpenGLES hook, and
-`imgtools/ipod1g_device.py prepare` bakes a device from the set: the hook when the stock exports match the
+`firmwarekit create --catalog CATALOG --id n45ap-3A101a --ipsw IPSW --out OUT` bakes a device: the hook when the stock exports match the
 list, and SpringBoard's job gets `LK_ENABLE_OGL=1 LK_AUTO_ENABLE_OGL=0 LK_ENABLE_MBX2D=0`. LayerKit then
 composites the home screen, app zooms and scrolls through the host: its pixmap renderer, as 2.x's CA, and it
 ends every frame the same way (`gles_make_buffer_current(0)` is `eglMakeCurrent(dpy, 0, 0, 0)`, after

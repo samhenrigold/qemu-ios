@@ -2,7 +2,7 @@
 
 The `ipad1` machine can boot the stock 7B500 kernelcache through iBoot-817.29,
 including NOR DeviceTree loading, NAND filesystem lookup, decompression, and the
-ARM kernel handoff. `device.py` / `ipad1_device.py` now build and seal through
+ARM kernel handoff. FirmwareKit's k48ap recipe builds and seals through
 real iBoot by default. Test runners select a device directory with `--device`;
 `--kboot` remains an explicit bring-up fallback.
 
@@ -13,15 +13,16 @@ has no compiled 7B500 key table. A4 records contain a 48-byte KBAG followed by i
 explicitly: each wraps the same DATA encryption key under a different GID.
 
 ```sh
-python3 imgtools/device.py create manifests/ipad1-7B500.json /path/to/device \
-  --iboot-patcher /path/to/iBoot32Patcher
+firmwarekit create --catalog CATALOG --id k48ap-7B500 --ipsw IPSW \
+  --out /path/to/device --helper LIGHTTOUCHDEVICE
 python3 tests/ipad1/regress.py --device /path/to/device
 ```
 
-`IBOOT32PATCHER` or a patcher on PATH can supply the builder dependency.
-The full regression needs an activated fixture; a device built without an
-activation hook displays Connect to iTunes. `tests/ipad1/fresh-device.sh`
-checks two clean boots of either kind. Test defaults point to
+CATALOG is LightTouchMac's `LightTouchMac/Resources/firmware-catalog.json`; LIGHTTOUCHDEVICE is the
+LightTouchDevice executable. FirmwareKit takes the iBoot32Patcher next to
+`firmwarekit` first, then `FIRMWAREKIT_IBOOT_PATCHER` or `IBOOT32PATCHER`,
+then PATH. `tests/ipad1/fresh-device.sh IPSW OUT --helper LIGHTTOUCHDEVICE`
+creates one and runs boot and persist. Test defaults point to
 `~/Developer/qemu-ios-files/ipad1/repro/default-iboot`; create it explicitly or
 pass `--device`. Older direct-kernel NAND stores lack the IMG3 kernelcache and
 must be rebuilt before using this default.
