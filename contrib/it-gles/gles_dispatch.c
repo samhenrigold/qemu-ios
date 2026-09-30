@@ -13,7 +13,7 @@
  *       straight out of the image dyld already mapped. Present in every 3.x and 4.x firmware seen;
  *       2.x has no such string (and no shim).
  *   (b) failing that, OpenGLES's own exported trampolines: each _gl* export loads its target with
- *       one `ldr rX, [ctx, #0x10 + 4*slot]`, which contrib/ipad1-gles/glitsv.py decodes offline and
+ *       one `ldr rX, [ctx, #0x10 + 4*slot]`, which contrib/gles-public/glitsv.py decodes offline and
  *       this file decodes in place for every name the table marks GLES_F_EXPORT.
  *
  * Either way each slot is matched by name to a row of include/hw/arm/guest-services/gles-names.h,
@@ -169,7 +169,7 @@ extern const char *_dyld_get_image_name(unsigned);
 extern const void *_dyld_get_image_header(unsigned);
 extern long _dyld_get_image_vmaddr_slide(unsigned);
 
-static const char *gles_encode_override;    /* test_glishim.c: a layout of its own making */
+static const char *gles_encode_override;    /* the front end: the stock OpenGLES's, read from the shared cache */
 
 /* OpenGLES's mapped __TEXT: the @encode is a C string in it. */
 static const char *gles_find_encode(void)
@@ -212,7 +212,7 @@ static const char *gles_find_encode(void)
 /* ---- (b) the exported trampolines ------------------------------------------------------ */
 
 /* The one dispatch-table offset the trampoline at p loads its target from, else -1: the
- * `ldr` immediates a register call or a load into pc goes through (contrib/ipad1-gles/glitsv.py
+ * `ldr` immediates a register call or a load into pc goes through (contrib/gles-public/glitsv.py
  * and FirmwareKit's GLIDispatch.callLoads read the same forms), up to the unconditional
  * bx / pop {pc} / tail-call `ldr pc` that ends it. armv6 3.x calls with `mov lr, pc; ldr pc,
  * [ip, #off]`; 4.x armv7 is Thumb-2 with IT blocks (blxne in the glIs* trampolines). The table

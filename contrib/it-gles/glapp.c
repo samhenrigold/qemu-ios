@@ -194,7 +194,7 @@ static int g_gl_ready;
 /* ------------------------------------------------------------- delegate --- */
 
 #ifdef GLAPP_ES2
-/* The ES 2.0 variant (GLTest2.app, built by contrib/ipad1-gles): the same
+/* The ES 2.0 variant (GLTest2.app, built by contrib/gles-public/build-apps.sh): the same
  * layout, yellow field and a blue quad over the left half, drawn by a shader. */
 static void (*p_glUseProgram)(unsigned);
 static void (*p_glVertexAttribPointer)(unsigned, int, unsigned, unsigned char, int, const void *);

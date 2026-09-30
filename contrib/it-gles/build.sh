@@ -9,7 +9,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # the name-keyed wire of include/hw/arm/guest-services/gles-names.h.
 # -bundle, and the install name does not matter: the framework dlopens it by
 # path out of the .bundle directory.
-python3 "$HERE/../ipad1-gles/gligen.py" --check
+python3 "$HERE/../gles-public/gligen.py" --check
 python3 "$HERE/genstubs.py" "$HERE/gles_stubs.h" >/dev/null
 cc6 "$HERE/mbxshim.c" "$HERE/mbxshim.o"
 link6 -bundle "$HERE/MBXGLEngine" "$HERE/mbxshim.o"
