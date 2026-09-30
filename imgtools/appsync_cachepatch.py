@@ -18,11 +18,15 @@ PATCH = bytes.fromhex("00207047")
 # Accept only a real Thumb function entry: a `push {...,lr}` (16-bit 0xB5xx, or 32-bit push.w
 # 0xE92D with the LR bit) so we never scribble on the wrong bytes.
 def looks_like_thumb_entry(b):
-    hw = struct.unpack_from("<H", b, 0)[0]
-    if (hw & 0xFF00) == 0xB500:                 # push {..., lr}
+    hw, hw2 = struct.unpack_from("<HH", b, 0)
+    if (hw & 0xFF00) == 0xB500:                 # push {..., lr}  (3.x/4.x, 5.0 beta 9A5220p)
         return True
     if hw == 0xE92D:                            # push.w {...}
-        return (struct.unpack_from("<H", b, 2)[0] & 0x4000) != 0   # LR in the reg list
+        return (hw2 & 0x4000) != 0              # LR in the reg list
+    # iOS 5.x libmis exports MISValidateSignature as a tail-thunk `movs rN,#imm ; b.w <impl>`
+    # (9A5288d..9B206: 0022 fff7); `movs r0,#0 ; bx lr` over its first word returns success too.
+    if (hw & 0xF800) == 0x2000:                 # movs rN,#imm ...
+        return (hw2 & 0xF800) == 0xF000         # ... then a 32-bit branch
     return False
 
 
