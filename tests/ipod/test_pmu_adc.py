@@ -14,7 +14,7 @@ for name in ('pmu_update_backlight','pmu_update_irq','pmu_latch_event','pmu_adc_
              'pcf50633_adc_for_level','pcf50633_level_for_adc','pmu_charge_active',
              'pmu_apply_battery_adc','pcf50633_update_battery','pcf50633_set_battery_adc',
              'pcf50633_set_battery_level','pcf50633_set_battery_drain','pcf50633_set_charging_mode',
-             'pcf50633_set_usb_cable','pmu_adc_command','pcf50633_recv','pcf50633_guest_shutdown_confirmed',
+             'pcf50633_set_usb_cable','pmu_adc_command','pmu_bcd','pmu_bcd_rtc_read','pcf50633_recv','pcf50633_guest_shutdown_confirmed',
              'pcf50633_guest_shutdown','pcf50633_send','pcf50633_reset','pcf50633_post_load','pcf50633_init'):
     match=re.search(r'^(?:static )?[^\n]*\b'+name+r'\([^)]*\)\s*\{.*?^}',source,re.M|re.S)
     assert match,name
@@ -53,7 +53,8 @@ static void timer_del(QEMUTimer *t) { t->pending=false; }
 static void timer_mod(QEMUTimer *t,int64_t at) { t->pending=true;t->deadline=at; }
 static bool pmu_trace(void) { return false; }
 static void pmu_trace_access(const char *s,uint8_t r,uint8_t v) {}
-static void lcd_changebrightness(uint8_t value) {}
+static int brightness=-1;
+static void lcd_changebrightness(uint8_t value) { brightness=value; }
 static void qemu_system_shutdown_request(int cause) {}
 '''
 tests=r'''
@@ -165,7 +166,22 @@ int main(void) {
     uint64_t saved_rate=s.drain_rate_bits,saved_level=s.drain_level_bits;
     s.drain_rate=s.drain_level=0;s.drain_rate_bits=saved_rate;s.drain_level_bits=saved_level;
     assert(!pcf50633_post_load(&s,4) && s.drain_rate==0.25 && s.drain_level==55.125);
-    puts("PASS: D1759 ADC settling/conversion, ten-bit results, masks, cable events, reset, fractional drain and migration");
+    /* Backlight, D1759 defaults: the 0x30 level while 0x10 bit 6 is on. */
+    Pcf50633State d={.irq=&irq,.adc_timer=&timer,.backlight_enable_reg=PMU_LDO_ENABLE,
+                     .backlight_enable_bit=PMU_LDO_BACKLIGHT,.backlight_level_reg=PMU_DSBL1};
+    pcf50633_reset(&d);assert(d.regs[PMU_LDO_ENABLE]&PMU_LDO_BACKLIGHT);
+    wr(&d,PMU_DSBL1,0x40);assert(brightness==0x40);
+    wr(&d,PMU_LDO_ENABLE,0xa0);assert(brightness==0);
+    wr(&d,PMU_LDO_ENABLE,0xe0);assert(brightness==0x40);
+    /* The 1G's PCF50633 (1.x): LEDENA 0x29 bit 0, LEDOUT not rendered. 4B1's lock: LEDOUT 1, LEDDIM 1, LEDENA 0. */
+    Pcf50633State p={.irq=&irq,.adc_timer=&timer,.backlight_enable_reg=0x29,.backlight_enable_bit=1};
+    pcf50633_reset(&p);
+    wr(&p,0x28,0x05);wr(&p,0x29,0x01);assert(brightness==255);
+    wr(&p,0x28,0x01);wr(&p,0x2b,0x01);assert(brightness==255);
+    wr(&p,0x29,0x00);assert(brightness==0);
+    wr(&p,0x30,0x40);wr(&p,0x10,0xff);assert(brightness==0); /* the D1759's registers mean nothing here */
+    wr(&p,0x29,0x01);assert(brightness==255);
+    puts("PASS: backlight enable/level per register map; D1759 ADC settling/conversion, ten-bit results, masks, cable events, reset, fractional drain and migration");
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
