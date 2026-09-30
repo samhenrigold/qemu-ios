@@ -1893,8 +1893,8 @@ def main():
             derived = lockd.get("derived") or {}
             cfg.gles_engine = derived.get("gles_engine")
             # no agent to install and launch GLTest (1.x/2.x, 3.0): SpringBoard's own compositing is the leg
-            cfg.gles_front_end = derived.get("gles_engine") == "OpenGLES" or (
-                derived.get("gles_engine") == "MBXGLEngine" and str(derived.get("guest_tools")).startswith("omitted"))
+            cfg.gles_front_end = derived.get("gles_engine") == "OpenGLES" and \
+                not str(derived.get("guest_tools", "")).startswith("installed")
             cfg.board = lockd.get("board", cfg.board)
     if cfg.board == "n45ap":
         # 1.1's home screen is icons on black (~135k lit sub-pixels; the Apple logo far fewer), and
