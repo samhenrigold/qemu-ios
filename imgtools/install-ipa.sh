@@ -183,15 +183,15 @@ guest_put() {
     scp -O "${GUEST_SSH_OPTS[@]}" -P "$GUEST_PORT" "$1" "root@127.0.0.1:$2" >/dev/null 2>&1
 }
 
-# Put our MBXGLEngine.bundle replacement on the device, keeping the stock one
-# next to it as MBXGLEngine.stock. Over ssh, because AFC is confined to the
-# media partition and this file lives in /System.
+# Put the GL front end over OpenGLES.framework/OpenGLES (a prepared device already has it), with dyld's
+# override switch for a cached OpenGLES (3.1+). Over ssh, because AFC is confined to the media partition
+# and this file lives in /System.
 install_shim() {
     guest_open || return 1
-    local B=/System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle
+    local F=/System/Library/Frameworks/OpenGLES.framework C=/System/Library/Caches/com.apple.dyld
 
-    guest_put "$SHIM" /tmp/MBXGLEngine.new &&
-        guest_sh "cp -n $B/MBXGLEngine $B/MBXGLEngine.stock; cp /tmp/MBXGLEngine.new $B/MBXGLEngine && chmod 755 $B/MBXGLEngine"
+    guest_put "$SHIM" /tmp/OpenGLES.new &&
+        guest_sh "[ -f $F/OpenGLES ] && cp -n $F/OpenGLES $F/OpenGLES.stock; cp /tmp/OpenGLES.new $F/OpenGLES && chmod 755 $F/OpenGLES && { [ ! -f $C/dyld_shared_cache_armv6 ] || touch $C/enable-dylibs-to-override-cache; }"
 }
 
 # ------------------------------------------------------- home-screen feedback
@@ -325,12 +325,10 @@ trap 'cleanup; exit 143' TERM
 WARN=0
 LINKS_GLES=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-# Our MBXGLEngine.bundle replacement, built by contrib/it-gles/build.sh. It is
-# not committed -- it is an armv6 Mach-O bundle produced from committed source.
-# IT_GUEST_TOOLS: a directory of prebuilt guest binaries (the retired app
-# bundle's stage-and-run.sh set it). Unset, the repo copies are used.
-SHIM="${SHIM:-${IT_GUEST_TOOLS:-$REPO/contrib/it-gles}/MBXGLEngine}"
-[ -f "$SHIM" ] || SHIM="$REPO/contrib/it-gles/MBXGLEngine"
+# The GL front end, built by contrib/gles-public/build.sh (not committed: a Mach-O from committed source).
+# IT_GUEST_TOOLS: a directory of prebuilt guest binaries. Unset, the repo copy is used.
+SHIM="${SHIM:-${IT_GUEST_TOOLS:-$REPO/contrib/gles-public}/OpenGLES}"
+[ -f "$SHIM" ] || SHIM="$REPO/contrib/gles-public/OpenGLES"
 
 if ! unzip -qq -o "$IPA" 'Payload/*' -d "$TMP" 2>/dev/null; then
     die "$NAME is not a readable .ipa (no Payload/)"
@@ -409,7 +407,7 @@ case "$MACHO_INFO" in
         echo "    links OpenGLES -- the GL engine replacement will be installed"
     else
         echo "WARNING: links OpenGLES, and the GL engine replacement is missing." >&2
-        echo "  The stock MBXGLEngine drives the PowerVR MBX, which is not" >&2
+        echo "  The stock OpenGLES drives the PowerVR MBX, which is not" >&2
         echo "  emulated: the app launches, draws its UIKit chrome once, and" >&2
         echo "  then WEDGES THE WHOLE DEVICE spinning on an MBX register that" >&2
         echo "  never acknowledges. Looked for it at:" >&2

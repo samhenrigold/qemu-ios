@@ -17,9 +17,9 @@ export IPOD_SDK="${IPOD_SDK:-$ARMV6_SDK}"
 [ -f "$ARMV6_SDK/usr/lib/libSystem.dylib" ] || { echo "ARMV6_SDK: no 3.1.3 SDK at $ARMV6_SDK" >&2; exit 1; }
 rm -rf "$OUT/src" "$OUT/logs"
 mkdir -p "$OUT/src/contrib" "$OUT/src/include/hw/arm/guest-services" "$OUT/src/tests" "$OUT/logs"
-COMPONENTS="it-gles it-agent it-instprogress it-media it-proxy it-status it-halt it-orientation
-            ipad1-guest ipad1-gles appsync it-boot"
-# ipad1-guest also compiles these sources; it-gles/it-boot/ipad1-gles read their neighbours
+COMPONENTS="it-gles gles-public it-agent it-instprogress it-media it-proxy it-status it-halt it-orientation
+            ipad1-guest appsync it-boot"
+# ipad1-guest also compiles these sources; it-gles/gles-public/it-boot read their neighbours
 for c in armv6-toolchain $COMPONENTS it-pasteboard it-ethlink it-seal it-prefs it-keybag it-heading \
          it-cctest it-gltest it-msmquiet guest-package; do   # guest-package: it-boot's test imports mkpkg
     cp -R "$SRC/contrib/$c" "$OUT/src/contrib/"

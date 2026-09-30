@@ -4,12 +4,12 @@
 #   contrib/export-guest-artifacts.sh OUT [QEMU-BUILD-DIR]
 #
 # OUT (a new directory) gets:
-#   guest-tools/        the iPod set the app uploads through the guest agent (12 payloads)
-#   ipad-guest-tools/   the flat directory firmwarekit reads (--guest-tools): the iPad helpers, AppSync, the two
-#                       GL engines (GLEngine armv7, MBXGLEngine armv6: one binary each for every firmware, the
-#                       dispatch layout is read at load) with gles-names.h, the name table they and the host
-#                       speak, the n72 recipe's inputs (with OpenGLES-2x, the 1.x/2.x front end over the same
-#                       core, and opengles-2x.exports, the export set it must match; MBXGLEngine-30, 3.0's legacy-linked engine), the armv6 it_keybag and it_prefs, and armv6.itpack /
+#   guest-tools/        the iPod set the app uploads through the guest agent (11 payloads)
+#   ipad-guest-tools/   the flat directory firmwarekit reads (--guest-tools): the iPad helpers, AppSync, the GL
+#                       front end (OpenGLES, fat armv6 + armv7, contrib/gles-public: every k48 and n72 build) with
+#                       gles-names.h, the name table it and the host speak, the n72 recipe's inputs, the n45 recipe's
+#                       (OpenGLES-1x, 1.x's own front end, and opengles-1x.exports, the export set it must match),
+#                       the armv6 it_keybag and it_prefs, and armv6.itpack /
 #                       armv7.itpack (contrib/guest-package, VERSION's serial)
 #   macos-app/entitlements.plist   the app helper's entitlements
 #   include/ios-app/, include/macos-app/   the headers the helper compiles against
@@ -64,15 +64,14 @@ for recipe in it-keybag it-prefs; do
 done
 
 # Stage only after every build has succeeded. Each Mach-O keeps its ldid signature (it runs in the guest); the
-# app's signature seals them as resources. GLRendererFloatQEMU ships as the flat Mach-O (firmwarekit installs
-# it into the .bundle), so no nested bundle is signed.
+# app's signature seals them as resources.
 C="$B/src/contrib"; G="$B/src/build"; NAMES="$B/src/include/hw/arm/guest-services/gles-names.h"
 stage() {   # DIR SOURCE [NAME]
     [ -s "$2" ] || fail "build did not produce required payload: $2"
     cp -p "$2" "$OUT/$1.incomplete/${3:-$(basename "$2")}"
 }
 mkdir "$OUT/guest-tools.incomplete" "$OUT/ipad-guest-tools.incomplete"
-for p in it-gles/MBXGLEngine it-instprogress/sbdlicon it-halt/ithalt it-agent/it_agent it-agent/it_typein.dylib \
+for p in it-instprogress/sbdlicon it-halt/ithalt it-agent/it_agent it-agent/it_typein.dylib \
          it-agent/com.qemu.it-agent.plist it-status/itstatus it-media/itmedia it-media/itphoto it-proxy/itproxy \
          it-proxy/ittrust it-orientation/itorient; do
     stage guest-tools "$C/$p"
@@ -87,23 +86,19 @@ for j in it-pasteboard/com.qemu.it-pbd.plist it-ethlink/com.qemu.it-ethlink.plis
          it-seal/com.qemu.it-seal.plist; do
     stage ipad-guest-tools "$C/$j"
 done
-# The GL engines: one per architecture, plus the name table (the wire ids) both were built from.
-stage ipad-guest-tools "$C/ipad1-gles/GLEngine"
+# The GL front end (one fat OpenGLES.framework/OpenGLES for every iPad build), plus the name table (the wire ids)
+# it and the host were built from.
+stage ipad-guest-tools "$C/gles-public/OpenGLES"
 stage ipad-guest-tools "$NAMES"
-stage ipad-guest-tools "$C/ipad1-gles/GLRendererFloatQEMU.bundle/GLRendererFloatQEMU"
 stage ipad-guest-tools "$B/armv6.itpack"
 stage ipad-guest-tools "$B/armv7.itpack"
 # The n72 recipe's inputs (new iPods from a stock IPSW); libappsync.dylib is the fat one above.
-for p in it-gles/MBXGLEngine it-gles/sblaunch it-instprogress/sbdlicon it-agent/it_agent it-agent/it_typein.dylib \
+for p in it-gles/sblaunch it-instprogress/sbdlicon it-agent/it_agent it-agent/it_typein.dylib \
          it-agent/com.qemu.it-agent.plist; do
     stage ipad-guest-tools "$C/$p"
 done
-# 1.x/2.x: the GL front end that replaces OpenGLES.framework/OpenGLES (the same armv6 core as MBXGLEngine), and
+# 1.x: its own GL front end that replaces OpenGLES.framework/OpenGLES (gles2x.c without EAGL), and
 # the export set the preparer checks the stock binary against before the package's hook may replace it.
-stage ipad-guest-tools "$C/it-gles/OpenGLES-2x"
-stage ipad-guest-tools "$C/it-gles/opengles-2x.exports"
-# 3.0: MBXGLEngine's source legacy-linked (a plain engine file, no shared cache, a dyld without LC_DYLD_INFO_ONLY)
-stage ipad-guest-tools "$C/it-gles/MBXGLEngine-30"
 stage ipad-guest-tools "$C/it-gles/OpenGLES-1x"
 stage ipad-guest-tools "$C/it-gles/opengles-1x.exports"
 stage ipad-guest-tools "$G/ipod-guest/it_keybag" it_keybag-armv6
@@ -136,15 +131,15 @@ def git(*args):
         return None
 commit = git("rev-parse", "HEAD")
 # The inputs: what guest-package/build.sh copies (sources only: generated headers and binaries are not inputs).
-components = ("armv6-toolchain it-gles it-agent it-instprogress it-media it-proxy it-status it-halt it-orientation "
-              "ipad1-guest ipad1-gles appsync it-boot it-pasteboard it-ethlink it-seal it-prefs it-keybag it-heading "
+components = ("armv6-toolchain it-gles gles-public it-agent it-instprogress it-media it-proxy it-status it-halt it-orientation "
+              "ipad1-guest appsync it-boot it-pasteboard it-ethlink it-seal it-prefs it-keybag it-heading "
               "it-cctest it-gltest it-msmquiet guest-package").split()
 inputs = {}
 for c in components:
     for f in sorted((src / "contrib" / c).iterdir()):
         if f.is_file() and f.suffix in (".c", ".h", ".sh", ".py", ".xml", ".plist", ".entitlements", ".txt",
                                         ".exports") \
-                and f.name not in ("gles_stubs.h", "gli_fwd.h"):
+                and f.name not in ("gles_stubs.h",):
             inputs[str(f.relative_to(src))] = sha(f)
 for f in sorted([src / "include/hw/arm/guest-services/gles-names.h",
                  src / "contrib/guest-package/VERSION", src / "contrib/export-guest-artifacts.sh"]):

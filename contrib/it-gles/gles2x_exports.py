@@ -21,6 +21,23 @@ import os, re, struct, sys
 # gl* exports gles2x.c implements itself, over the core's existing entry points
 HAND = {"glTexImageCoreSurfaceAPPLE", "glFinishTextureAPPLE", "glGetString",
         "glVertexAttribPointerARB"}   # 1.x only: no ES 1.1 row, a counted refusal
+# exports whose row is another name's: the firmware's trampolines for both load the same dispatch field
+# (delete_object_ARB deletes a shader or a program; the host's glDeleteShader row takes either)
+ALIAS = {"glDeleteProgram": "glDeleteShader"}
+
+
+def row_of(n, have):
+    """The gles-names.h row an export forwards to: its own name, its alias's, or its spelling without the
+    OES/EXT suffix (1.x-3.x export the FBO set as ...OES, 5.x the occlusion queries as ...EXT; the row keeps the
+    core name)."""
+    if n in have:
+        return n
+    if ALIAS.get(n) in have:
+        return ALIAS[n]
+    for suffix in ("OES", "EXT"):
+        if n.endswith(suffix) and n[:-len(suffix)] in have:
+            return n[:-len(suffix)]
+    return None
 
 
 def scan(path):
@@ -67,7 +84,7 @@ def gen(listfile, names_h, out):
     for n in names:
         if not n.startswith("gl") or n in HAND:
             continue
-        row = n if n in have else n[:-3] if n.endswith("OES") and n[:-3] in have else None
+        row = row_of(n, have)
         if row is None:
             missing.append(n)
         else:

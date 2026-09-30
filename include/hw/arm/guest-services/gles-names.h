@@ -1,6 +1,6 @@
 /*
  * The GL bridge's function table: one GLES_FN(name, dispatch_field, id, argc, flags) per GL function,
- * shared by the guest shims (contrib/it-gles/mbxshim.c, contrib/ipad1-gles/glishim.c) and the host
+ * shared by the guest shims (contrib/it-gles/mbxshim.c, contrib/gles-public/opengles.c) and the host
  * (gles.h, gles-host.c), so the wire cannot drift between them. Included more than once with
  * GLES_FN defined for the occasion (an X-macro list), so the rows have no include guard.
  *
@@ -12,11 +12,11 @@
  *                   a new function is a new row with a new id, never a reused one
  *   argc            32-bit arguments after the GC (floats as bit patterns); NA = the shim
  *                   cannot forward it (a double, or no known prototype) and stubs it by name
- *   flags           GLES_F_BATCH: returns nothing, no guest pointer, no draw or sync, so glishim
+ *   flags           GLES_F_BATCH: returns nothing, no guest pointer, no draw or sync, so the front end
  *                   may queue it (GLES_OP_BATCH); GLES_F_EXPORT: some firmware's OpenGLES
  *                   exports a trampoline for it (the discovery fallback tries only these)
  *
- * Generated once by contrib/ipad1-gles/gligen.py --from-tsvs from the 7E18, 7B500 and 8C148
+ * Generated once by contrib/gles-public/gligen.py --from-tsvs from the 7E18, 7B500 and 8C148
  * dispatch tables (docs/ipod, docs/ipad1 gli-dispatch-*.tsv); hand-edited since. After an edit
  * run gligen.py --stamp (GLES_NAMES_VERSION is the rows' CRC, carried in the shim's hello) and
  * --check.

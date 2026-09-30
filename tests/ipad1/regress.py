@@ -300,12 +300,11 @@ def gl_clean(b, r, detail, shots=()):
             if os.path.exists(ref) and not framecheck.verdict(s, ref)["ok"]:
                 bad = (name, framecheck.verdict(s, ref)["why"])
                 break
-    # SpringBoard composites in software when glishim gives up on GL (4.3.x's "no gldshim device"
-    # before ipad43-gl): the pictures still match and nothing is refused, so only its log line tells.
+    # A software CoreAnimation draws the same pictures and refuses nothing (4.3.x did, while the old GLI shim
+    # lost GL), so only the GL front end's own line proves CoreAnimation took the GL path.
     serial = open(b.serial, errors="replace").read() if os.path.exists(b.serial) else ""
-    gave_up = re.search(r"\[glishim\][^\n]*: no GL\r?$", serial, re.M)
-    if gave_up:
-        r.set(False, "%s; SpringBoard composited in software CoreAnimation: %s" % (detail, gave_up.group(0).strip()))
+    if "CoreAnimation composites through the host" not in serial:
+        r.set(False, "%s; SpringBoard composited in software CoreAnimation (no GL-path line from the front end)" % detail)
     elif rejects:
         r.set(False, "%s; the GL bridge refused %d thing(s): %s" % (
             detail, len(rejects), ", ".join("%s x%d" % kv for kv in sorted(rejects.items()))))
