@@ -1164,6 +1164,44 @@ rearm:
 #define IBOOT_SCAN_PA_START  0x0ff00000u
 #define IBOOT_SCAN_LEN       0x00040000u   /* covers both builds' iBoot images */
 
+/* Every n72 iBoot (2.x iBoot-385 through 4.2.1 iBoot-931) names the Bluetooth
+ * node arm-io/uart3/bluetooth, but the n72 DeviceTree hangs it off uart1. Without
+ * this rewrite iBoot never fills local-mac-address: lockdownd then reports a
+ * Bluetooth address that is not the device identity's bt-mac and derives a
+ * different UniqueDeviceID. One-shot, applied to the iBoot image in RAM at the
+ * first page read; a reset reloads that RAM, so ipod_touch_cpu_reset() re-arms it. */
+
+static void ipod_touch_compat_bluetooth(IPodTouchMachineState *nms)
+{
+    static const char needle[] = "arm-io/uart3/bluetooth";
+    static const char replace[] = "arm-io/uart1/bluetooth";
+
+    if (nms->compat_bt_patched) {
+        return;
+    }
+    nms->compat_bt_patched = true;
+
+    g_autofree uint8_t *image = g_try_malloc(IBOOT_SCAN_LEN);
+    if (!image) {
+        return;
+    }
+    cpu_physical_memory_read(IBOOT_SCAN_PA_START, image, IBOOT_SCAN_LEN);
+
+    for (size_t i = 0; i + sizeof(needle) <= IBOOT_SCAN_LEN; i++) {
+        if (memcmp(image + i, needle, sizeof(needle)) != 0) {
+            continue;
+        }
+        uint32_t pa = IBOOT_SCAN_PA_START + i;
+        cpu_physical_memory_write(pa, replace, strlen(replace));
+        if (getenv("IT_PATCH_DEBUG")) {
+            printf("[IBOOT] bluetooth node string patched at PA 0x%08x\n", pa);
+        }
+        return;
+    }
+
+    printf("[IBOOT] bluetooth node string not found in iBoot; not patching\n");
+}
+
 /* Legacy boot-argument data injection. Discover the buffer from the loaded
  * iBoot's literal references, rather than assuming a particular build's BSS.
  * Keep the existing NAND-read timing: iBoot rewrites this buffer during load. */
@@ -1197,12 +1235,13 @@ static void ipod_touch_compat_command_line(IPodTouchMachineState *nms)
 
 /* Observes a transfer; firmware edits belong to the board compatibility
  * policy, not to the NAND device. This preserves the old ordering while the
- * underlying iBoot and NVRAM behavior is investigated. */
+ * underlying iBoot/UART and NVRAM behavior is investigated. */
 static void ipod_touch_compat_before_nand_read(Notifier *notifier, void *data)
 {
     IPodTouchMachineState *nms = container_of(notifier, IPodTouchMachineState,
                                              compat_nand_read);
     ipod_touch_compat_command_line(nms);
+    ipod_touch_compat_bluetooth(nms);
 }
 
 static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
@@ -1294,6 +1333,7 @@ static void ipod_touch_cpu_reset(void *opaque)
     ARMCPU *cpu = nms->cpu;
     CPUState *cs = CPU(cpu);
 
+    nms->compat_bt_patched = false;
     nms->compat_command_line = 0;
     ipod_agent_reset(nms->agent);
     guest_pkg_reset(&nms->pkg);
