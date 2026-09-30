@@ -40,8 +40,8 @@ with tempfile.TemporaryDirectory() as temporary:
     try: L.run_ledger(cfg);raise AssertionError('overwrote prior review')
     except FileExistsError: pass
     R.START=R.time.time()
-    R.finish({key:SimpleNamespace(ok=True,xfail=False,detail='passed',name=key) for key in passed},Mock(),SimpleNamespace(out=str(root)))
-    assert json.loads((root/'results.json').read_text())==passed
+    R.finish({key:SimpleNamespace(ok=True,skipped=False,xfail=False,detail='passed',name=key) for key in passed},Mock(),SimpleNamespace(out=str(root)))
+    assert json.loads((root/'results.json').read_text())=={key:dict(value,skipped=False) for key,value in passed.items()}
     dev=SimpleNamespace(dir=str(root),qmp=Mock())
     response=SimpleNamespace(returncode=0,stdout='',stderr='')
     with patch.object(R,'prepare_app_control',return_value=22),patch.object(R,'ipa_bundle_id',return_value='org.example.App'), \

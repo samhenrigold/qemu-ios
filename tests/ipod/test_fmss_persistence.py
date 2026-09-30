@@ -54,8 +54,6 @@ typedef struct {
 } IPodTouchFMSSState;
 typedef IPodTouchFMSSState DeviceState;
 #define IPOD_TOUCH_FMSS(s) (s)
-static bool iboot_bt_patched;
-static uint32_t iboot_command_line;
 static void qemu_irq_lower(int irq) {}
 static void timer_del(int timer) {}
 static uint8_t memory[65536];
