@@ -358,7 +358,8 @@ typedef struct IPodTouchSDIOState
     QEMUTimer *scan_timer;   /* delays the scan-complete event */
     bool associated;         /* the association events have been pushed */
     uint8_t bssid[6];        /* the access point's; "bssid" property */
-    QEMUTimer *join_timer;   /* auto-join clock, armed at WLC_UP */
+    bool host_netif;         /* the host set mcast_list: its network interface is attached */
+    QEMUTimer *join_timer;   /* auto-join clock, armed once the host is up and has a netif */
     unsigned tx_log;
     unsigned host_rx_log;
 
