@@ -4,30 +4,13 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../armv6-toolchain/armv6.sh"
 
-# The MBXGLEngine.bundle replacement: one binary for every firmware, which reads
-# its dispatch layout out of the running OpenGLES (gles_dispatch.c) and speaks
-# the name-keyed wire of include/hw/arm/guest-services/gles-names.h.
-# -bundle, and the install name does not matter: the framework dlopens it by
-# path out of the .bundle directory.
+# The name table and the dispatch stubs the core (mbxshim.c, compiled into contrib/gles-public and gles2x.c) uses.
 python3 "$HERE/../gles-public/gligen.py" --check
 python3 "$HERE/genstubs.py" "$HERE/gles_stubs.h" >/dev/null
-cc6 "$HERE/mbxshim.c" "$HERE/mbxshim.o"
-link6 -bundle "$HERE/MBXGLEngine" "$HERE/mbxshim.o"
-# 4.x runs only signed code, amfi_allow_any_signature or not
-if command -v ldid >/dev/null; then ldid -S "$HERE/MBXGLEngine"; fi
-rm -f "$HERE/mbxshim.o"
-# 3.0 (7A341) has the same engine ABI (MBXGLEngine.bundle, GLESGetEGLInterface, 821 slots), but its
-# engine is a plain file (no shared cache) and its dyld refuses LC_DYLD_INFO_ONLY: the same source,
-# legacy-linked. Signed like the others (an unsigned engine is killed at its first page on 3.0).
-(export LEGACY_LINK=1
- cc6 "$HERE/mbxshim.c" "$HERE/mbxshim.o"
- link6 -bundle "$HERE/MBXGLEngine-30" "$HERE/mbxshim.o"
- if command -v ldid >/dev/null; then ldid -S "$HERE/MBXGLEngine-30"; fi
- rm -f "$HERE/mbxshim.o")
 
-# 1.x/2.x have no engine bundle: OpenGLES itself is the driver, so the same core goes in as the
-# framework binary under the firmware's own export names (build-gles2x.sh, gles2x.c).
-bash "$HERE/build-gles2x.sh" "$HERE/OpenGLES-2x"
+# 1.x (the iPod touch 1G): OpenGLES itself is the driver, with no EAGL and the old ObjC runtime, so the same core
+# goes in as the framework binary under 1.x's own export names (build-gles2x.sh 1x, gles2x.c). 2.x-5.x take the
+# one front end, contrib/gles-public.
 bash "$HERE/build-gles2x.sh" 1x "$HERE/OpenGLES-1x"
 
 # GLTest.app -- a real app bundle with a CAEAGLLayer. UIKit, QuartzCore, Foundation,
@@ -62,5 +45,4 @@ if command -v ldid >/dev/null; then
     ldid -S "$APP/GLTest"
 fi
 
-file "$HERE/MBXGLEngine" "$HERE/OpenGLES-2x" "$HERE/OpenGLES-1x" \
-     "$APP/GLTest"
+file "$HERE/OpenGLES-1x" "$APP/GLTest"
