@@ -147,6 +147,7 @@ bool s5l8930_iop_nand_read(DeviceState *dev, int bus, uint32_t ce,
 uint32_t s5l8930_iop_nand_program(DeviceState *dev, int bus, uint32_t ce, uint32_t page,
                                   const uint8_t *data, uint32_t len, const uint8_t *meta);
 uint32_t s5l8930_iop_nand_erase(DeviceState *dev, int bus, uint32_t ce, uint32_t page);
+bool s5l8930_iop_io_failed(void);
 void s5l8930_iop_nand_info(DeviceState *dev, uint32_t *id, uint8_t *ce_mask,
                            uint32_t *page_bytes);
 

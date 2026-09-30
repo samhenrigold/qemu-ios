@@ -44,6 +44,14 @@
 
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPState, S5L8930_IOP)
 
+/* A host writeback failure cannot be repaired by resetting the guest. */
+static bool iop_storage_failed;
+
+bool s5l8930_iop_io_failed(void)
+{
+    return qatomic_read(&iop_storage_failed);
+}
+
 #ifdef DEBUG_S5L8930_IOP
 #define DPRINTF(fmt, ...) fprintf(stderr, "s5l8930_iop[%8.3f]: " fmt, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9, ## __VA_ARGS__)
 #else
@@ -1399,6 +1407,9 @@ static bool nand_map_file(const char *path, size_t size, bool writable,
 
     if (fd < 0 || (writable && ftruncate(fd, size) < 0)) {
         error_setg_errno(errp, errno, "cannot open %s", path);
+        if (fd >= 0) {
+            close(fd);
+        }
         return false;
     }
     *map = mmap(NULL, size, writable ? PROT_READ | PROT_WRITE : PROT_READ,
@@ -1423,6 +1434,7 @@ static void iop_vm_state(void *opaque, bool running, RunState state)
     S5L8930IOPState *s = opaque;
     size_t size = (size_t)s->pages_per_ce * s->page_stride;
     int64_t t0 = g_get_monotonic_time();
+    bool failed = false;
 
     if (running) {
         return;
@@ -1431,15 +1443,22 @@ static void iop_vm_state(void *opaque, bool running, RunState state)
         for (int ce = 0; ce < NAND_CES; ce++) {
             uint8_t *pages = s->overlay_dir ? s->ovl[bus][ce] : s->chip[bus][ce];
             if (pages && msync(pages, size, MS_SYNC) < 0) {
+                failed = true;
                 error_report("s5l8930-iop: msync bus%d-ce%d: %s", bus, ce, strerror(errno));
             }
             if (s->dirty[bus][ce] && msync(s->dirty[bus][ce], s->pages_per_ce / 8, MS_SYNC) < 0) {
+                failed = true;
                 error_report("s5l8930-iop: msync bus%d-ce%d.dirty: %s", bus, ce, strerror(errno));
             }
         }
     }
-    info_report("s5l8930-iop: NAND synced on stop in %" PRId64 " ms",
-                (g_get_monotonic_time() - t0) / 1000);
+    if (failed) {
+        qatomic_set(&iop_storage_failed, true);
+        error_report("s5l8930-iop: NAND writeback failed; this session cannot be saved or resumed");
+    } else {
+        info_report("s5l8930-iop: NAND synced on stop in %" PRId64 " ms",
+                    (g_get_monotonic_time() - t0) / 1000);
+    }
 }
 
 /*
