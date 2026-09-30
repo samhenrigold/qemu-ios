@@ -139,7 +139,13 @@ GESTURES = [("home-swipe", _drag((523, 167), (523, 617)), 1500),         # drag 
             ("home-back",  [(("button", "home", True), 18), (("button", "home", False), 1)], None),   # reset
             ("app-launch", [(("move", 128, 297), 1), (("down",), 7), (("up",), 1)], 500),   # open Notes: launch zoom
             ("app-close",  [(("button", "home", True), 18), (("button", "home", False), 1)], 1000)]  # close zoom
-QUIET_VSYNCS, MAX_VSYNCS = 60, 900                     # 1 s without a new frame ends it; at most 15 s
+# Unmeasured setup, stepped the same way. The unlock runs straight after the lock screen is confirmed (or Home
+# woke it) with no settle in between: the lock screen's fade keeps drawing, and its ~8 s idle dim would turn the
+# panel off before a drag that waited for quiet. Then a tap on empty space dismisses 3.2.2's first-unlock tip.
+WAKE = [(("button", "home", True), 18), (("button", "home", False), 30)]
+UNLOCK = _drag(R.UNLOCK_FROM, R.UNLOCK_TO, steps=30)
+TIP = [(("move", 608, 382), 1), (("down",), 7), (("up",), 1)]
+QUIET_VSYNCS, MAX_VSYNCS = 60, 900                    # 1 s without a new frame ends it; at most 15 s
 
 
 def inject(b, path, ev):
@@ -153,14 +159,14 @@ def inject(b, path, ev):
         b.qmp.cmd("qom-set", path="/machine", property="button-" + ev[1], value=ev[2])
 
 
-def drive(b, path, script, window_ms):
+def drive(b, path, script, window_ms, settle=True):
     """Run a gesture script on exact vsyncs, then keep stepping until 1 s of virtual quiet; return stats.
     The machine is paused between steps, so reading the timeline cannot perturb the frames it measures."""
     tl = read_timeline(b.qmp, path)
     seq0 = tl[-1][0] if tl else 0
     for ev, n in script:
         run_vsyncs(b, path, n, ev)
-    ran = 0
+    ran = 0 if settle else MAX_VSYNCS
     while ran < MAX_VSYNCS:
         run_vsyncs(b, path, QUIET_VSYNCS)
         ran += QUIET_VSYNCS
@@ -192,16 +198,18 @@ def measure(cfg):
         ok, detail = b.wait_lock_screen(timeout=900)
         if not ok:
             raise SystemExit("no lock screen: " + detail)
-        if b.lit("pre-unlock") < R.LIT_MIN_FRACTION:
-            b.press("home"); time.sleep(2)
-        b.drag(R.UNLOCK_FROM, R.UNLOCK_TO)
-        time.sleep(8)
-        b.tap((608, 382)); time.sleep(3)                           # dismiss the first-unlock tip / alert, if any
+        # From here on the machine only runs in vsync steps -- the setup too. Under sleep=off an idle lock
+        # screen races through virtual time (its ~8 s dim can pass in under a wall second), so a wall-paced
+        # wake + drag unlocked or not depending on the host's speed.
+        b.qmp.cmd("stop")
         path = find_prop(b.qmp, "frame-timeline")
         if not path:
             raise SystemExit("no frame-timeline property (emulator not rebuilt with the instrumentation?)")
         R.log("jank: frame-timeline on %s" % path)
-        b.qmp.cmd("stop")                                          # from here on the machine only runs in steps
+        if b.lit("pre-unlock") < R.LIT_MIN_FRACTION:        # the lock screen dimmed before we stopped it
+            drive(b, path, WAKE, None, settle=False)
+        drive(b, path, UNLOCK, None)
+        drive(b, path, TIP, None)
         for name, script, window_ms in GESTURES:
             r = drive(b, path, script, window_ms)
             if window_ms:
