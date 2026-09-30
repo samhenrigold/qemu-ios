@@ -5,9 +5,9 @@
 #
 # OUT (a new directory) gets:
 #   guest-tools/        the iPod set the app uploads through the guest agent (12 payloads)
-#   ipad-guest-tools/   the flat directory firmwarekit reads (--guest-tools): the iPad helpers, AppSync, the two
-#                       GL engines (GLEngine armv7, MBXGLEngine armv6: one binary each for every firmware, the
-#                       dispatch layout is read at load) with gles-names.h, the name table they and the host
+#   ipad-guest-tools/   the flat directory firmwarekit reads (--guest-tools): the iPad helpers, AppSync, the GL
+#                       front end (OpenGLES, fat armv6 + armv7, contrib/gles-public) and MBXGLEngine (armv6, the
+#                       iPod's engine, dispatch layout read at load) with gles-names.h, the name table they and the host
 #                       speak, the n72 recipe's inputs (with OpenGLES-2x, the 1.x/2.x front end over the same
 #                       core, and opengles-2x.exports, the export set it must match; MBXGLEngine-30, 3.0's legacy-linked engine), the armv6 it_keybag and it_prefs, and armv6.itpack /
 #                       armv7.itpack (contrib/guest-package, VERSION's serial)
@@ -64,8 +64,7 @@ for recipe in it-keybag it-prefs; do
 done
 
 # Stage only after every build has succeeded. Each Mach-O keeps its ldid signature (it runs in the guest); the
-# app's signature seals them as resources. GLRendererFloatQEMU ships as the flat Mach-O (firmwarekit installs
-# it into the .bundle), so no nested bundle is signed.
+# app's signature seals them as resources.
 C="$B/src/contrib"; G="$B/src/build"; NAMES="$B/src/include/hw/arm/guest-services/gles-names.h"
 stage() {   # DIR SOURCE [NAME]
     [ -s "$2" ] || fail "build did not produce required payload: $2"
@@ -87,10 +86,10 @@ for j in it-pasteboard/com.qemu.it-pbd.plist it-ethlink/com.qemu.it-ethlink.plis
          it-seal/com.qemu.it-seal.plist; do
     stage ipad-guest-tools "$C/$j"
 done
-# The GL engines: one per architecture, plus the name table (the wire ids) both were built from.
-stage ipad-guest-tools "$C/ipad1-gles/GLEngine"
+# The GL front end (one fat OpenGLES.framework/OpenGLES for every iPad build), plus the name table (the wire ids)
+# it and the host were built from.
+stage ipad-guest-tools "$C/gles-public/OpenGLES"
 stage ipad-guest-tools "$NAMES"
-stage ipad-guest-tools "$C/ipad1-gles/GLRendererFloatQEMU.bundle/GLRendererFloatQEMU"
 stage ipad-guest-tools "$B/armv6.itpack"
 stage ipad-guest-tools "$B/armv7.itpack"
 # The n72 recipe's inputs (new iPods from a stock IPSW); libappsync.dylib is the fat one above.
@@ -136,7 +135,7 @@ def git(*args):
         return None
 commit = git("rev-parse", "HEAD")
 # The inputs: what guest-package/build.sh copies (sources only: generated headers and binaries are not inputs).
-components = ("armv6-toolchain it-gles it-agent it-instprogress it-media it-proxy it-status it-halt it-orientation "
+components = ("armv6-toolchain it-gles gles-public it-agent it-instprogress it-media it-proxy it-status it-halt it-orientation "
               "ipad1-guest ipad1-gles appsync it-boot it-pasteboard it-ethlink it-seal it-prefs it-keybag it-heading "
               "it-cctest it-gltest it-msmquiet guest-package").split()
 inputs = {}
