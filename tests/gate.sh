@@ -4,14 +4,15 @@
 #   tests/gate.sh --quick   host only, no emulator: every tests/ipod/test_*.py, tests/ipad1/test_*.py and
 #                           tests/guest-package/test_*.py that does not launch qemu-system-arm, plus
 #                           contrib/guest-package/mkpkg.py selfcheck; JOBS at a time (default 4)
-#   tests/gate.sh --full    quick, then tests/ipod/run-regression.sh and tests/ipad1/regress.py (default tiers),
+#   tests/gate.sh --models  production device qtests, no IPSW/NAND/guest prerequisites
+#   tests/gate.sh --full    quick, models, then tests/ipod/run-regression.sh and tests/ipad1/regress.py (default tiers),
 #                           one suite at a time
 #   tests/gate.sh --fresh   full, then tests/ipod/fresh-device.sh and tests/ipad1/fresh-device.sh on IPOD_IPSW /
 #                           IPAD_IPSW (stock IPSWs; FIRMWAREKIT and FIRMWAREKIT_CATALOG as tests/fresh-device.sh)
 #
-# Unit tests that launch the emulator (the *_guest.py acceptance runs, the *_snapshot.py and paused-machine
+# Legacy Python unit tests that launch the emulator (the *_guest.py acceptance runs, the *_snapshot.py and paused-machine
 # QOM checks: any test naming qemu-system-arm) are SKIP in every tier; run them by hand with a built emulator
-# and a NAND. So are tests that take their inputs (a NAND, a movie, a capture) on the command line.
+# and a NAND. The explicit --models qtests above need neither. So are tests that take their inputs (a NAND, a movie, a capture) on the command line.
 # The harnesses keep their own input defaults (~/Developer/qemu-ios-files, the usbmuxd forks,
 # repro/default-iboot). The one shared input is the emulator: QEMU=... (default build/qemu-system-arm, the
 # README's build dir), which --fresh's scripts use too.
@@ -22,7 +23,7 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TIER="${1:---quick}"
-case "$TIER" in --quick|--full|--fresh) ;; *) sed -n '2,20p' "$0"; exit 2 ;; esac
+case "$TIER" in --quick|--models|--full|--fresh) ;; *) sed -n '2,20p' "$0"; exit 2 ;; esac
 export QEMU="${QEMU:-$ROOT/build/qemu-system-arm}"
 export OUT="${OUT:-$(mktemp -d /tmp/gate.XXXXXX)}"
 JOBS="${JOBS:-4}"
@@ -56,6 +57,7 @@ skip() { printf 'SKIP      -  %s  (%s)\n' "$1" "$2" >> "$OUT/results"; }
 export -f run1
 
 # --- quick: host-only unit checks, in parallel
+if [ "$TIER" != --models ]; then
 {
     for t in tests/ipod/test_*.py tests/ipad1/test_*.py tests/guest-package/test_*.py; do
         if grep -q qemu-system-arm "$t"; then skip "$t" "launches qemu-system-arm: run by hand with a built emulator and a NAND"
@@ -68,6 +70,7 @@ export -f run1
         selfcheck) run1 "contrib/guest-package/mkpkg.py selfcheck" python3 contrib/guest-package/mkpkg.py selfcheck ;;
         *) run1 "$1" python3 "$1" ;;
     esac' _ {}
+fi
 
 # --- full and fresh: the emulator suites, one at a time; each prints its own PASS/FAIL/SKIP lines
 suite() {   # NAME CMD...
@@ -76,7 +79,23 @@ suite() {   # NAME CMD...
     run1 "$name" "$@"
     grep -E '^(PASS|FAIL|SKIP|XFAIL)\b' "$OUT/${name//[\/ ]/_}.log" | sed 's/^/     /'
 }
-if [ "$TIER" != --quick ]; then
+# Explicit built-emulator tests: libqtest drives the real MMIO/IRQ/timer model.
+# Missing build prerequisites fail this tier rather than silently skipping it.
+if [ "$TIER" = --models ] || [ "$TIER" = --full ] || [ "$TIER" = --fresh ]; then
+    for model in ipad1-pmgr ipad1-h2fmi ipad1-cdma; do
+        case "$model" in
+            ipad1-pmgr) binary="${QTEST_BINARY:-$(dirname "$QEMU")/tests/qtest/$model-test}" ;;
+            ipad1-h2fmi) binary="${QTEST_H2FMI_BINARY:-$(dirname "$QEMU")/tests/qtest/$model-test}" ;;
+            ipad1-cdma) binary="${QTEST_CDMA_BINARY:-$(dirname "$QEMU")/tests/qtest/$model-test}" ;;
+        esac
+        if [ -x "$QEMU" ] && [ -x "$binary" ]; then
+            suite "qtest/$model" env QTEST_QEMU_BINARY="$QEMU" "$binary"
+        else
+            printf 'FAIL      -  qtest/%s (build qemu-system-arm and tests/qtest/%s-test; QEMU and QTEST_BINARY/QTEST_H2FMI_BINARY/QTEST_CDMA_BINARY select them)\n' "$model" "$model" >> "$OUT/results"
+        fi
+    done
+fi
+if [ "$TIER" = --full ] || [ "$TIER" = --fresh ]; then
     if [ -x "$QEMU" ]; then
         # --stage-gles-shim: the gles check runs this tree's guest shim against this tree's host, the pair
         # the gate is judging. The shipping image's baked shim is older (its gles verdict is the image's,
