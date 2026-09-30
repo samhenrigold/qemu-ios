@@ -26,6 +26,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "powervr/pvrtc.h"
 #include "migration/blocker.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -728,9 +729,6 @@ static inline void gles_platform_frame_unlock(void)
 
 #endif /* GLES_HOST_EAGL */
 
-/* Defined with the compressed-texture decoder below; run once from init. */
-static void pvrtc_selfcheck(void);
-
 /*
  * The host framebuffer a guest framebuffer name means. Everything resolves to
  * itself except the drawable -- and framebuffer 0, which on iOS is never the
@@ -953,10 +951,6 @@ static bool gles_host_init(void)
     gh.inited = true;
     if (getenv("IT_GLES_CONTEXT_TRACE")) fprintf(stderr, "[gles-context] initialized %p legacy=%d\n", (void *)gh_current, gh_current == &gh_legacy);
 
-
-    /* Microseconds, once, and it is the only thing standing between a broken
-     * PVRTC decoder and a silently wrong picture. See pvrtc_selfcheck. */
-    pvrtc_selfcheck();
 
     fprintf(stderr, "[gles] host GL up: %s / %s, present by %s\n",
             glGetString(GL_VERSION), glGetString(GL_RENDERER),
@@ -1912,222 +1906,10 @@ static bool gles_is_paletted(uint32_t f)
     return f >= GLES_PALETTE_FIRST && f <= GLES_PALETTE_LAST;
 }
 
-/*
- * A PVRTC1 block's two endpoint colours, unpacked to 5:5:5:4.
- *
- * The two are NOT symmetric and that asymmetry is the format, not a typo:
- * colour A gets 14 bits (bit 0 is the modulation mode flag) so its blue channel
- * loses a bit, colour B gets 15. Each has an opaque flag that switches its
- * whole layout between RGB and ARGB. Channels are widened by bit replication,
- * which is what the hardware does.
- */
-static void pvrtc_endpoints(uint32_t cw, int a[4], int b[4])
-{
-    if (cw & 0x8000) {                  /* A opaque: RGB 554 */
-        a[0] = (cw & 0x7c00) >> 10;
-        a[1] = (cw & 0x3e0) >> 5;
-        a[2] = cw & 0x1e;
-        a[2] |= a[2] >> 4;
-        a[3] = 0xf;
-    } else {                            /* A transparent: ARGB 3443 */
-        a[0] = ((cw & 0xf00) >> 7) | ((cw & 0xf00) >> 11);
-        a[1] = ((cw & 0xf0) >> 3) | ((cw & 0xf0) >> 7);
-        a[2] = ((cw & 0xe) << 1) | ((cw & 0xe) >> 2);
-        a[3] = (cw & 0x7000) >> 11;
-    }
-    if (cw & 0x80000000u) {             /* B opaque: RGB 555 */
-        b[0] = (cw & 0x7c000000) >> 26;
-        b[1] = (cw & 0x3e00000) >> 21;
-        b[2] = (cw & 0x1f0000) >> 16;
-        b[3] = 0xf;
-    } else {                            /* B transparent: ARGB 3444 */
-        b[0] = ((cw & 0xf000000) >> 23) | ((cw & 0xf000000) >> 27);
-        b[1] = ((cw & 0xf00000) >> 19) | ((cw & 0xf00000) >> 23);
-        b[2] = ((cw & 0xf0000) >> 15) | ((cw & 0xf0000) >> 19);
-        b[3] = (cw & 0x70000000) >> 27;
-    }
-}
-
-/*
- * Morton order over the block grid -- "twiddling", and the classic PVRTC bug.
- *
- * Blocks are NOT stored row-major. The x and y block indices are bit-interleaved
- * for as many bits as the SMALLER dimension has, and whatever is left of the
- * larger index is appended above. Getting this wrong does not produce a broken
- * image; it produces a plausible one with its 4x4 tiles shuffled, which is easy
- * to look at and not notice.
- */
-static uint32_t pvrtc_twiddle(uint32_t bw, uint32_t bh, uint32_t bx, uint32_t by)
-{
-    uint32_t min_dim = bw < bh ? bw : bh;
-    /* The leftover high bits come from the index along the LARGER dimension --
-     * the one with bits the interleave could not pair up. Taking the smaller
-     * one instead is invisible on a square texture (both indices have the same
-     * bit count, so the leftover is zero either way) and shuffles every
-     * non-square one, which is the classic way to get this wrong. */
-    uint32_t max_val = bw < bh ? by : bx;
-    uint32_t twiddled = 0, src = 1, dst = 1;
-    int shift = 0;
-
-    while (src < min_dim) {
-        if (by & src) {
-            twiddled |= dst;
-        }
-        if (bx & src) {
-            twiddled |= dst << 1;
-        }
-        src <<= 1;
-        dst <<= 2;
-        shift++;
-    }
-    return twiddled | ((max_val >> shift) << (2 * shift));
-}
-
-/* Expand the interpolated fixed-point channels by bit replication, not
- * rounded division by 31/15. See Khronos Data Format, PVRTC1 reconstruction. */
-static inline int pvrtc_to8(int num, int den, int bits)
-{
-    num >>= den == 32 ? 1 : 0;
-    return bits == 5 ? (num >> 1) + (num >> 6) : num + (num >> 4);
-}
-
-/* Read an explicitly stored 2bpp modulation sample. Neighbours may use a
- * different mode, so decode the word that owns each sample independently. */
-static int pvrtc_2bpp_sample(const uint8_t *src, uint32_t bw, uint32_t bh,
-                            uint32_t x, uint32_t y)
-{
-    static const int weights[4] = { 0, 3, 5, 8 };
-    const uint8_t *word = src + (size_t)pvrtc_twiddle(bw, bh, x / 8, y / 4) * 8;
-    uint32_t bits = ldl_le_p(word);
-    uint32_t lx = x % 8, ly = y % 4;
-
-    if (!(ldl_le_p(word + 4) & 1)) {
-        return ((bits >> (8 * ly + lx)) & 1) * 8;
-    }
-    /* Mode selectors borrow the low bit of samples (0,0) and (4,2).
-     * Their remaining bit encodes an endpoint, rather than a middle weight. */
-    if (bits & 1) {
-        bits = (bits & ~(1u << 20)) | ((bits & (1u << 21)) >> 1);
-    }
-    bits = (bits & ~1u) | ((bits >> 1) & 1);
-    return weights[(bits >> (2 * (4 * ly + lx / 2))) & 3];
-}
-
-static int pvrtc_2bpp_modulation(const uint8_t *src, uint32_t bw, uint32_t bh,
-                                uint32_t x, uint32_t y)
-{
-    const uint8_t *word = src + (size_t)pvrtc_twiddle(bw, bh, x / 8, y / 4) * 8;
-    uint32_t bits = ldl_le_p(word);
-    int sum = 0, count = 0;
-
-    if (!(ldl_le_p(word + 4) & 1) || !((x ^ y) & 1)) {
-        return pvrtc_2bpp_sample(src, bw, bh, x, y);
-    }
-    if (!(bits & 1) || !(bits & (1u << 20))) {
-        sum += pvrtc_2bpp_sample(src, bw, bh, (x + bw * 8 - 1) % (bw * 8), y);
-        sum += pvrtc_2bpp_sample(src, bw, bh, (x + 1) % (bw * 8), y);
-        count += 2;
-    }
-    if (!(bits & 1) || (bits & (1u << 20))) {
-        sum += pvrtc_2bpp_sample(src, bw, bh, x, (y + bh * 4 - 1) % (bh * 4));
-        sum += pvrtc_2bpp_sample(src, bw, bh, x, (y + 1) % (bh * 4));
-        count += 2;
-    }
-    return (sum + count / 2) / count;
-}
-
-/*
- * Decode a PVRTC1 image to RGBA8. `bpp` is 2 or 4; RGB formats ignore alpha.
- *
- * The shape of the format: each 8-byte block holds two endpoint colours for a
- * 4x4 (4bpp) or 8x4 (2bpp) region plus per-texel modulation weights. The
- * endpoints are bilinearly interpolated ACROSS blocks -- a texel's colour comes
- * from the four nearest block centres, wrapping at the edges -- and the
- * modulation then picks a point on the line between the interpolated A and B.
- * Block centres sit at (cw/2, ch/2) within each block, which is why every
- * lookup below is offset by half a block.
- */
-static void pvrtc_decode(const uint8_t *src, uint32_t w, uint32_t h, int bpp,
+static bool pvrtc_decode(const uint8_t *src, uint32_t w, uint32_t h, int bpp,
                          bool alpha, bool padded, uint8_t *dst)
 {
-    const uint32_t cw = (bpp == 2) ? 8 : 4, ch = 4;
-    /*
-     * At least one block each way. The tail of a mip chain is smaller than a
-     * block -- a 2x2 and a 1x1 level are each still one whole 8-byte block --
-     * and dropping those levels leaves the chain incomplete, which
-     * fixed-function GL renders as solid white. That is exactly what a real
-     * title's upload looked like before this clamp existed.
-     */
-    const uint32_t minimum = padded ? 2 : 1;
-    const uint32_t bw = MAX(w / cw, minimum), bh = MAX(h / ch, minimum);
-    /* Modulation weight in eighths. The second table is the punch-through
-     * mode; 14 is 4 with a flag meaning "and force alpha to zero". */
-    static const int mod0[4] = { 0, 3, 5, 8 };
-    static const int mod1[4] = { 0, 4, 14, 8 };
-    uint32_t px, py;
-
-    if (!bw || !bh) {
-        return;
-    }
-    for (py = 0; py < h; py++) {
-        for (px = 0; px < w; px++) {
-            /* The four block centres this texel sits between, and its position
-             * between them. Both indices wrap: PVRTC textures tile. */
-            uint32_t fx = (px + cw - cw / 2) % cw;
-            uint32_t fy = (py + ch - ch / 2) % ch;
-            uint32_t bx0 = ((px + cw * bw - cw / 2) / cw) % bw;
-            uint32_t by0 = ((py + ch * bh - ch / 2) / ch) % bh;
-            uint32_t bx1 = (bx0 + 1) % bw, by1 = (by0 + 1) % bh;
-            uint32_t wx1 = fx, wx0 = cw - fx;
-            uint32_t wy1 = fy, wy0 = ch - fy;
-            uint32_t den = cw * ch;
-            /* The block that spatially CONTAINS this texel owns its modulation
-             * -- a different block from any of the four above, in general. */
-            const uint8_t *mb = src + (size_t)pvrtc_twiddle(bw, bh,
-                                                            px / cw, py / ch) * 8;
-            uint32_t mbits = ldl_le_p(mb), mcolor = ldl_le_p(mb + 4);
-            uint32_t lx = px % cw, ly = py % ch;
-            int wsum[4] = { wx0 * wy0, wx1 * wy0, wx0 * wy1, wx1 * wy1 };
-            uint32_t corner[4] = {
-                pvrtc_twiddle(bw, bh, bx0, by0), pvrtc_twiddle(bw, bh, bx1, by0),
-                pvrtc_twiddle(bw, bh, bx0, by1), pvrtc_twiddle(bw, bh, bx1, by1),
-            };
-            int acc_a[4] = { 0, 0, 0, 0 }, acc_b[4] = { 0, 0, 0, 0 };
-            int a8[4], b8[4], mod, i, c;
-            bool punch = false;
-            uint8_t *out = dst + ((size_t)py * w + px) * 4;
-
-            for (i = 0; i < 4; i++) {
-                int ea[4], eb[4];
-
-                pvrtc_endpoints(ldl_le_p(src + (size_t)corner[i] * 8 + 4),
-                                ea, eb);
-                for (c = 0; c < 4; c++) {
-                    acc_a[c] += ea[c] * wsum[i];
-                    acc_b[c] += eb[c] * wsum[i];
-                }
-            }
-            for (c = 0; c < 4; c++) {
-                a8[c] = pvrtc_to8(acc_a[c], den, c == 3 ? 4 : 5);
-                b8[c] = pvrtc_to8(acc_b[c], den, c == 3 ? 4 : 5);
-            }
-
-            if (bpp == 4) {
-                mod = (mcolor & 1) ? mod1[(mbits >> (2 * (4 * ly + lx))) & 3]
-                                   : mod0[(mbits >> (2 * (4 * ly + lx))) & 3];
-            } else {
-                mod = pvrtc_2bpp_modulation(src, bw, bh, px, py);
-            }
-            if (mod > 10) {
-                punch = true;
-                mod -= 10;
-            }
-            for (c = 0; c < 3; c++) {
-                out[c] = (a8[c] * (8 - mod) + b8[c] * mod) / 8;
-            }
-            out[3] = !alpha ? 255 : punch ? 0 : (a8[3] * (8 - mod) + b8[3] * mod) / 8;
-        }
-    }
+    return ltm_pvrtc_decode(src, w, h, bpp, alpha, padded, dst);
 }
 
 /*
@@ -2301,92 +2083,6 @@ static uint8_t *gles_decode_buf(size_t n)
  * its own block's colour exactly, with zero bleed) and the twiddle order --
  * green and red are placed so that a row-major block order swaps them.
  */
-static void pvrtc_selfcheck(void)
-{
-    /* Opaque colour A, in the A-opaque layout: bit15 set, RGB 5:5:4. */
-    static const struct { uint32_t cw; uint8_t rgb[3]; } blocks[4] = {
-        { 0x8000u | (31 << 10) | (31 << 5) | 0x1e, { 255, 255, 255 } },
-        { 0x8000u | (0 << 10)  | (31 << 5) | 0x00, {   0, 255,   0 } },
-        { 0x8000u | (31 << 10) | (0 << 5)  | 0x00, { 255,   0,   0 } },
-        { 0x8000u | (0 << 10)  | (0 << 5)  | 0x00, {   0,   0,   0 } },
-    };
-    /* Twiddled block order for a 2x2 grid: index = by | (bx << 1). Centres are
-     * at texel (4*bx + 2, 4*by + 2). */
-    static const struct { uint32_t x, y; unsigned block; } probes[4] = {
-        { 2, 2, 0 },  /* bx=0 by=0 -> word 0 */
-        { 6, 2, 2 },  /* bx=1 by=0 -> word 2, NOT word 1 */
-        { 2, 6, 1 },  /* bx=0 by=1 -> word 1 */
-        { 6, 6, 3 },
-    };
-    uint8_t src[4 * 8], out[8 * 8 * 4];
-    unsigned i, c;
-    bool ok = true;
-
-    memset(src, 0, sizeof(src));
-    for (i = 0; i < 4; i++) {
-        /* Modulation all zero -> every texel is colour A. */
-        stl_le_p(src + i * 8 + 4, blocks[i].cw);
-    }
-    /* Words are laid out in twiddled order, so word i is block i by
-     * construction: probe[k].block is the word index to expect. */
-    pvrtc_decode(src, 8, 8, 4, true, false, out);
-
-    for (i = 0; i < 4; i++) {
-        const uint8_t *p = out + ((size_t)probes[i].y * 8 + probes[i].x) * 4;
-        const uint8_t *want = blocks[probes[i].block].rgb;
-
-        for (c = 0; c < 3; c++) {
-            if (p[c] != want[c]) {
-                ok = false;
-            }
-        }
-        if (p[3] != 255) {
-            ok = false;
-        }
-        if (!ok) {
-            fprintf(stderr, "[gles] PVRTC SELF-CHECK FAILED at texel (%u,%u): "
-                    "got %u,%u,%u,%u want %u,%u,%u,255 -- the decoder is "
-                    "broken, textures will be wrong\n",
-                    probes[i].x, probes[i].y, p[0], p[1], p[2], p[3],
-                    want[0], want[1], want[2]);
-            return;
-        }
-    }
-
-    /*
-     * And the twiddle over NON-SQUARE grids, which the fixture above cannot
-     * reach. On a square grid both block indices have the same bit count, so
-     * taking the leftover high bits from the wrong one is a no-op -- the bug
-     * hides completely until a 256x128 atlas turns up and comes back shuffled.
-     * A bijection check is the cheap invariant that catches it: every block
-     * index must map to a distinct word inside the image.
-     */
-    {
-        static const uint8_t dims[][2] = { { 8, 2 }, { 2, 8 }, { 16, 4 } };
-        unsigned d;
-
-        for (d = 0; d < ARRAY_SIZE(dims); d++) {
-            uint32_t bw = dims[d][0], bh = dims[d][1], x, y;
-            uint64_t seen = 0;
-
-            for (y = 0; y < bh; y++) {
-                for (x = 0; x < bw; x++) {
-                    uint32_t t = pvrtc_twiddle(bw, bh, x, y);
-
-                    if (t >= bw * bh || (seen & (1ull << t))) {
-                        fprintf(stderr, "[gles] PVRTC SELF-CHECK FAILED: "
-                                "twiddle %ux%u block (%u,%u) -> word %u, which "
-                                "is %s -- non-square textures will be "
-                                "shuffled\n", bw, bh, x, y, t,
-                                t >= bw * bh ? "out of range" : "already used");
-                        return;
-                    }
-                    seen |= 1ull << t;
-                }
-            }
-        }
-    }
-}
 
 /*
  * Fetch `n` bytes of guest pixel data into the reusable texture staging buffer.
@@ -4109,9 +3805,11 @@ static int64_t gles_pvrtc_upload(CPUState *cpu, uint32_t target, uint32_t level,
         return gles_reject(GL_OUT_OF_MEMORY);
     }
     if (src) {
-        pvrtc_decode(src, w, h, bpp,
-                     format == PVRTC_RGBA_2BPP || format == PVRTC_RGBA_4BPP,
-                     size == standard, dst);
+        if (!pvrtc_decode(src, w, h, bpp,
+                          format == PVRTC_RGBA_2BPP || format == PVRTC_RGBA_4BPP,
+                          size == standard, dst)) {
+            return gles_reject(GL_OUT_OF_MEMORY);
+        }
     } else {
         memset(dst, 0, (size_t)w * h * 4);
     }
