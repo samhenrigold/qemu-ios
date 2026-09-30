@@ -226,6 +226,7 @@ qtests_stm32l4x5 = \
    'stm32l4x5_usart-test']
 
 qtests_arm = \
+  (config_all_devices.has_key('CONFIG_IPAD1') ? ['ipad1-pmgr-test', 'ipad1-h2fmi-test'] : []) + \
   (config_all_devices.has_key('CONFIG_IPAD1') ? ['ipad1-cdma-test'] : []) + \
   (config_all_devices.has_key('CONFIG_MPS2') ? ['sse-timer-test'] : []) + \
   (config_all_devices.has_key('CONFIG_CMSDK_APB_DUALTIMER') ? ['cmsdk-apb-dualtimer-test'] : []) + \
