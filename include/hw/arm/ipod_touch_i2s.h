@@ -157,6 +157,8 @@ typedef struct IPodTouchI2SState {
     QEMUTimer *ready_timer;
     uint64_t ready_irqs;  /* how many ready interrupts we have asserted */
     uint32_t ready_ticks; /* ticks left in the current ready-interrupt burst */
+    uint32_t ready_group, ready_bit; /* "ready-gpio-group"/"-bit" properties */
+    bool host_output;                /* "host-output" property */
 
     uint32_t enable;
     uint32_t txcon;

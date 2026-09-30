@@ -94,6 +94,68 @@ static void s5l8900_st_tick(void *opaque)
     }
 }
 
+/* The pin waveform a channel's latched registers give from start_ns on. */
+static IPodTouchTimerOutput timer_channel_output(const IPodTouchTimerChannel *c,
+                                                 uint32_t input_hz)
+{
+    static const uint8_t prediv[8] = { 2, 4, 16, 64, 1, 1, 1, 1 };
+    IPodTouchTimerOutput o = { 0 };
+
+    if (!c->start_ns || !c->lcb2 || !input_hz) {
+        return o;
+    }
+    uint64_t ticks = (uint64_t)prediv[(c->config >> 8) & 7] * (c->lpre + 1);
+    o.start_ns = c->start_ns;
+    o.period_ns = muldiv64(ticks * c->lcb2, NANOSECONDS_PER_SECOND, input_hz);
+    o.high_ns = muldiv64(ticks * MIN(c->lcb, c->lcb2), NANOSECONDS_PER_SECOND, input_hz);
+    o.end_ns = ((c->config >> 4) & 3) == 2 ? o.start_ns + o.period_ns : INT64_MAX;
+    return o;
+}
+
+static void timer_channel_write(IPodTouchTimerChannel *c, hwaddr reg,
+                                uint32_t value, int64_t now)
+{
+    switch (reg) {
+    case TIMER_CONFIG:
+        c->config = value;
+        break;
+    case TIMER_STATE:
+        if (value & TIMER_STATE_MANUALUPDATE) {
+            c->lcb = c->cb;
+            c->lcb2 = c->cb2;
+            c->lpre = c->prescaler;
+        }
+        if (!(value & TIMER_STATE_START)) {
+            c->start_ns = 0;
+        } else if (!c->start_ns) {
+            c->start_ns = now ? now : 1;
+        }
+        c->state = value;
+        break;
+    case TIMER_COUNT_BUFFER:
+        c->cb = value;
+        break;
+    case TIMER_COUNT_BUFFER2:
+        c->cb2 = value;
+        break;
+    case TIMER_PRESCALER:
+        c->prescaler = value;
+        break;
+    }
+}
+
+static uint32_t timer_channel_read(const IPodTouchTimerChannel *c, hwaddr reg)
+{
+    switch (reg) {
+    case TIMER_CONFIG:        return c->config;
+    case TIMER_STATE:         return c->state;
+    case TIMER_COUNT_BUFFER:  return c->cb;
+    case TIMER_COUNT_BUFFER2: return c->cb2;
+    case TIMER_PRESCALER:     return c->prescaler;
+    }
+    return 0;
+}
+
 static void s5l8900_timer1_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 {
     //fprintf(stderr, "%s: writing 0x%08x to 0x%08x\n", __func__, value, addr);
@@ -140,24 +202,21 @@ static void s5l8900_timer1_write(void *opaque, hwaddr addr, uint64_t value, unsi
             break;
       default:
         /*
-         * Only timer 4 is decoded (block base TIMER_4 = 0xA0, stride 0x20, so
-         * 0x00/0x20/0x40/0x60 are timers A-D; 0x80 is the 64-bit
-         * counter block). A guest arming one of those got
-         * no interrupt AND no diagnostic, which is the combination that makes
-         * a missing timer indistinguishable from a guest bug: the deadline
-         * simply never arrives and nothing anywhere says why. Say it once per
-         * timer -- once, because this is an MMIO write handler.
+         * Timers 0-3 (0x00-0x7f; 0x80 is the 64-bit counter block): registers
+         * and the output pin, which is what the S5L8900 kernel uses them for
+         * (timer 1 is the N45's buzzer, the DT's timer/buzzer, device_type
+         * pwm). Their interrupts are not modelled: no kernel seen enables one
+         * (3A101a only ever writes STATE 0 at boot and drives timer 1 as PWM).
          */
-        if (addr < 0x80) {
-            static uint32_t said;
-            unsigned n = (unsigned)(addr / 0x20);
+        if (addr < TIMER_NUM_CHANNELS * TIMER_STRIDE) {
+            unsigned n = addr / TIMER_STRIDE;
+            IPodTouchTimerChannel *c = &s->chan[n];
 
-            if (!(said & (1u << n))) {
-                said |= 1u << n;
-                fprintf(stderr, "[TIMER] guest touched UNMODELLED timer %u "
-                        "(reg 0x%03x <- 0x%08x); no interrupt can ever be "
-                        "delivered from it\n",
-                        n, (unsigned)addr, (unsigned)value);
+            timer_channel_write(c, addr % TIMER_STRIDE, value,
+                                qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+            if (addr % TIMER_STRIDE == TIMER_STATE && s->output_hook) {
+                IPodTouchTimerOutput o = timer_channel_output(c, s->input_hz);
+                s->output_hook(s->output_opaque, n, &o);
             }
         }
         break;
@@ -231,6 +290,9 @@ static uint64_t s5l8900_timer1_read(void *opaque, hwaddr addr, unsigned size)
         if (addr == s->irqlatch) {
             return 0xffffffff;
         }
+        if (addr < TIMER_NUM_CHANNELS * TIMER_STRIDE) {
+            return timer_channel_read(&s->chan[addr / TIMER_STRIDE], addr % TIMER_STRIDE);
+        }
         break;
     }
     return 0;
@@ -279,6 +341,7 @@ static void ipod_touch_timer_reset(DeviceState *dev)
     s->last_tick = 0;
     s->next_planned_tick = 0;
     s->base_time = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    memset(s->chan, 0, sizeof(s->chan));
     if (s->st_timer) {
         timer_del(s->st_timer);
     }
@@ -302,6 +365,51 @@ static int ipod_touch_timer_post_load(void *opaque, int version_id)
     }
     return 0;
 }
+
+static const VMStateDescription vmstate_timer_channel = {
+    .name = "ipod_touch_timer/channel",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(config, IPodTouchTimerChannel),
+        VMSTATE_UINT32(state, IPodTouchTimerChannel),
+        VMSTATE_UINT32(cb, IPodTouchTimerChannel),
+        VMSTATE_UINT32(cb2, IPodTouchTimerChannel),
+        VMSTATE_UINT32(prescaler, IPodTouchTimerChannel),
+        VMSTATE_UINT32(lcb, IPodTouchTimerChannel),
+        VMSTATE_UINT32(lcb2, IPodTouchTimerChannel),
+        VMSTATE_UINT32(lpre, IPodTouchTimerChannel),
+        VMSTATE_INT64(start_ns, IPodTouchTimerChannel),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/* Only when a guest has written a channel, so older snapshots (and boards
+ * whose guest never does) keep loading and saving as before. */
+static bool timer_channels_needed(void *opaque)
+{
+    IPodTouchTimerState *s = opaque;
+    static const IPodTouchTimerChannel zero;
+
+    for (int i = 0; i < TIMER_NUM_CHANNELS; i++) {
+        if (memcmp(&s->chan[i], &zero, sizeof(zero))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const VMStateDescription vmstate_timer_channels = {
+    .name = "ipod_touch_timer/channels",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = timer_channels_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(chan, IPodTouchTimerState, TIMER_NUM_CHANNELS, 1,
+                             vmstate_timer_channel, IPodTouchTimerChannel),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 static const VMStateDescription vmstate_ipod_touch_timer = {
     .name = "ipod_touch_timer",
@@ -328,6 +436,10 @@ static const VMStateDescription vmstate_ipod_touch_timer = {
         VMSTATE_UINT32_EQUAL_V(dilation, IPodTouchTimerState, 2,
                                "time-dilation differs from snapshot"),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_timer_channels,
+        NULL
     }
 };
 
@@ -336,6 +448,10 @@ static const Property ipod_touch_timer_properties[] = {
     /* Rate timer 4 counts down at. 0 keeps the S5L8720 model's 10 MHz; the
      * S5L8900 kernel (xnu-933) loads 120000 for its 10 ms tick, i.e. 12 MHz. */
     DEFINE_PROP_UINT32("freq-hz", IPodTouchTimerState, freq_hz, 0),
+    /* Timers 0-3's input clock: the nclk the guest computes (N45 24 MHz:
+     * 3A101a loads 6382 at /2 for Celestial's 1880 Hz key click). 0 = no
+     * output waveform. */
+    DEFINE_PROP_UINT32("input-hz", IPodTouchTimerState, input_hz, 0),
 };
 
 static void s5l8900_timer_class_init(ObjectClass *klass, void *data)
