@@ -103,7 +103,7 @@ pipeline (LightTouchMac `tests/sessions/matrix.py`, with the Harness GL row tapp
 | iPad 3.2.2 7B500 | same | Harness GL drawn (29 fps) | every column but boot-2 shutdown (the flake); a rerun hit the AppleBCMWLAN panic after joining Wi-Fi, not GL |
 | iPad 4.2.1 8C148 | same | Harness GL drawn (30 fps); `it_gltest` readback PASS, scene composited, 61.5 presents/s | every column; home 0.0000 against its matrix ref |
 | iPad 4.3.5 8L1 | same | Harness GL drawn | every column but boot-2 shutdown (the flake); home 0.0021 against its ref. Under glishim this row was software CA (gl FAIL) |
-| iPad 5.1.1 9B206 | `macro context` (905 fields from the shared cache's stock OpenGLES, all named) | `it_gltest` scene composited | Setup Assistant composited. Home was dark in the one run that lit: its first composite came late at load 90+. The fixture's `glGenTextures` into an untouched page is dropped identically under glishim (LightTouchMac smoke #58) |
+| iPad 5.1.1 9B206 | `macro context` (905 fields from the shared cache's stock OpenGLES, all named) | `it_gltest` scene composited | Setup Assistant composited. Home was dark in the one run that lit: its first composite came late at load 90+. The fixture's `glGenTextures` into an untouched page is dropped identically under glishim (LightTouchMac smoke #64) |
 | iPod 2.2.1 5H11a | `egl: first pixmap surface` | PAC-MAN Lite title screen | every column |
 | iPod 3.1.3 7E18 | `attachImage:…` | Harness GL drawn (28 fps) | every column |
 | iPod 4.2.1 8C148 | same | Harness GL drawn (27.7 fps) | every column |
