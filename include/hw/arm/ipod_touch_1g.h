@@ -104,6 +104,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouch1GMachineState, IPOD_TOUCH_1G_MACHINE)
 #define N45_UART3_BASE        0x3CC0C000
 #define N45_UART4_BASE        0x3CC10000
 #define N45_IIS1_BASE         0x3CD00000
+#define N45_I2S1_DMA_REQ_ID   2            /* dmac1 */
 #define N45_SPI1_BASE         0x3CE00000
 #define N45_SPI2_BASE         0x3D200000
 #define N45_IIS0_BASE         0x3D400000

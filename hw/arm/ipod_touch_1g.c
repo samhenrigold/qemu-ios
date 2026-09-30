@@ -39,6 +39,7 @@
 #include "hw/arm/ipod_touch_chipid.h"
 #include "hw/arm/ipod_touch_sdio.h"
 #include "hw/arm/ipod_touch_mbx.h"
+#include "hw/arm/ipod_touch_i2s.h"
 #include "target/arm/cpregs.h"
 #include "hw/arm/guest-services/general.h"
 #include "hw/arm/guest-services/gles.h"
@@ -579,7 +580,6 @@ static void n45_machine_init(MachineState *machine)
     /* Register windows the 1.x kernel touches but nothing models yet (debt). */
     allocate_ram(sysmem, "watchdog", N45_WATCHDOG_BASE, 0x10000);
     allocate_ram(sysmem, "iis0", N45_IIS0_BASE, 0x10000);
-    allocate_ram(sysmem, "iis1", N45_IIS1_BASE, 0x10000);
     allocate_ram(sysmem, "iis2", N45_IIS2_BASE, 0x10000);
     allocate_ram(sysmem, "mpvd", N45_MPVD_BASE, 0x70000);
     allocate_ram(sysmem, "h264bpd", N45_H264BPD_BASE, 0x1000);
@@ -729,8 +729,10 @@ static void n45_machine_init(MachineState *machine)
     /* two PL080 DMACs */
     static const hwaddr dmac_bases[2] = { N45_DMAC0_BASE, N45_DMAC1_BASE };
     static const int dmac_irqs[2] = { N45_DMAC0_IRQ, N45_DMAC1_IRQ };
+    PL080State *dmac[2];
     for (int i = 0; i < 2; i++) {
         dev = qdev_new("pl080");
+        dmac[i] = PL080(dev);
         object_property_set_link(OBJECT(dev), "downstream", OBJECT(sysmem), &error_fatal);
         memory_region_add_subregion(sysmem, dmac_bases[i], &PL080(dev)->iomem1);
         sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
@@ -763,6 +765,36 @@ static void n45_machine_init(MachineState *machine)
         i2c_slave_realize_and_unref(pmu, IPOD_TOUCH_I2C(dev)->bus, &error_fatal);
         qdev_connect_gpio_out(DEVICE(pmu), 0, qdev_get_gpio_in(DEVICE(s->sysic), 0x55));
     }
+    /* WM8758 codec at 0x1A on I2C1 (the DT's audio0@1A). */
+    i2c_slave_create_simple(IPOD_TOUCH_I2C(dev)->bus, "wm8758", 0x1A);
+
+    /*
+     * I2S1, the WM8758's data port: the 2G's model (the same
+     * AppleS5L8900XI2SController driver). dma-parent is dmac1 and the TX
+     * channel's DT config word 0x884 is flow 1 (memory to peripheral) with
+     * peripheral id 2; the FIFO is +0x10. interrupts <0xaa> over the GPIO IC is
+     * group 5 bit 10: the source the driver's DMA start waits on. Without it
+     * every system sound blocks mediaserverd for 10 s in StartIO
+     * (kIOReturnNotReady) and no Buzz is played at all; without the codec
+     * too, mediaserverd crash-loops on an empty device list and plays at most
+     * one Buzz per 10 s respawn.
+     */
+    dev = qdev_new(TYPE_IPOD_TOUCH_I2S);
+    IPOD_TOUCH_I2S(dev)->sysic = s->sysic;
+    IPOD_TOUCH_I2S(dev)->dmac = dmac[1];
+    IPOD_TOUCH_I2S(dev)->dma_req_id = N45_I2S1_DMA_REQ_ID;
+    qdev_prop_set_uint32(dev, "ready-gpio-group", 0xaa / 32);
+    qdev_prop_set_uint32(dev, "ready-gpio-bit", 0xaa % 32);
+    /*
+     * No host voice: the WM8758's analogue side (the headphone jack) is not
+     * modelled, and the guest's Beep PCM here replays the ring's tail every
+     * 0.37 s after a sound. The Mac hears the piezo (ipod_touch_piezo.c), what
+     * an N45 with nothing in the jack plays.
+     */
+    qdev_prop_set_bit(dev, "host-output", false);
+    pl080_attach_paced_peripheral(dmac[1], N45_I2S1_DMA_REQ_ID);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    memory_region_add_subregion(sysmem, N45_IIS1_BASE, &IPOD_TOUCH_I2S(dev)->iomem);
 
     /*
      * MBX: the 2G's model, the same PowerVR MBX Lite and the same AppleMBX driver. The id stub it
