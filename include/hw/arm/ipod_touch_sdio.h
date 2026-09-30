@@ -50,6 +50,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define CCCR_INT_PENDING    0x05
 #define CCCR_INT_PENDING_FN1 (1 << 1)
 #define CCCR_INT_PENDING_FN2 (1 << 2)
+#define CCCR_IO_ABORT       0x06
+#define CCCR_IO_ABORT_RES   (1 << 3)
 #define CCCR_BUS_CONTROL    0x07
 #define CCCR_CARD_CAPS      0x08
 #define CCCR_CIS_PTR        0x09  /* three bytes, little endian */
@@ -306,6 +308,9 @@ typedef struct BCMSDIOChip {
      */
     bool no_common_funce;
     const char *fw_version;    /* the "ver" iovar; NULL answers zeroes */
+    uint8_t functions;         /* I/O functions in the CMD5 response; 0: the BCM4325's two */
+    bool no_mac_funce;         /* no CISTPL_FUNCE type 4 (a Broadcom convention) */
+    uint8_t fbr_iface;         /* FBR standard interface code (7: WLAN); 0 = none */
 } BCMSDIOChip;
 
 typedef struct IPodTouchSDIOState
@@ -366,6 +371,10 @@ typedef struct IPodTouchSDIOState
     const uint32_t *sg;    /* CMD53 scatter list {addr, len} while one runs */
     unsigned sg_count;
     uint8_t *hbuf;         /* or the host controller's own buffer (ipod_touch_sdio_command_buf) */
+    /* A Marvell 88W8686 on the bus instead of the Broadcom dongle ("mrvl" link):
+     * function 1 and the card interrupt are its. */
+    struct Mrvl8686State *mrvl;
+    bool card_irq_level;
 
     uint8_t sdiod_regs[SDIOD_CORE_SIZE];
     /*

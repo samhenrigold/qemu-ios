@@ -3,6 +3,8 @@
 #include "migration/vmstate.h"
 #include "migration/qemu-file-types.h"
 #include "hw/arm/ipod_touch_sdio.h"
+#include "hw/arm/mrvl8686.h"
+#include "hw/qdev-properties.h"
 #include "qemu/log.h"
 
 /*
@@ -42,6 +44,11 @@ static void put_cis_ptr(uint8_t *dst, uint32_t offset)
  * SDIOManufacturerId/SDIOProductId properties that AppleBCM4325's personality
  * matches on.
  */
+static unsigned sdio_functions(IPodTouchSDIOState *s)
+{
+    return s->chip.functions ? s->chip.functions : BCM4325_FUNCTIONS;
+}
+
 static void ipod_touch_sdio_build_cia(IPodTouchSDIOState *s)
 {
     const BCMSDIOChip *chip = &s->chip;
@@ -97,19 +104,22 @@ static void ipod_touch_sdio_build_cia(IPodTouchSDIOState *s)
      * up comparing an all-zero address against its reject constant and gives
      * up with "unable to obtain MAC address, can't proceed any further".
      */
-    *cis++ = CIS_FUNCTION_EXTENSION;
-    *cis++ = 0x08;
-    *cis++ = 0x04;               /* extension type 4: MAC address */
-    *cis++ = 0x06;               /* address length */
-    for (unsigned i = 0; i < 6; i++) {
-        *cis++ = chip->mac[i];
+    if (!chip->no_mac_funce) {
+        *cis++ = CIS_FUNCTION_EXTENSION;
+        *cis++ = 0x08;
+        *cis++ = 0x04;           /* extension type 4: MAC address */
+        *cis++ = 0x06;           /* address length */
+        for (unsigned i = 0; i < 6; i++) {
+            *cis++ = chip->mac[i];
+        }
     }
 
     *cis++ = CIS_END;
 
-    for (unsigned fn = 1; fn <= BCM4325_FUNCTIONS; fn++) {
+    for (unsigned fn = 1; fn <= sdio_functions(s); fn++) {
         uint8_t *fbr = &r[FBR_BASE(fn)];
-        fbr[FBR_IFACE_CODE] = 0x00;  /* no standard SDIO interface */
+        /* 1.x's IOSDIOFamily makes a nub only for a function with a nonzero code. */
+        fbr[FBR_IFACE_CODE] = chip->fbr_iface;
         put_cis_ptr(&fbr[FBR_CIS_PTR], CIS_FUNC_OFFSET(fn));
 
         uint8_t *fcis = &r[CIS_FUNC_OFFSET(fn)];
@@ -1049,7 +1059,7 @@ static void sdio_exec_cmd(IPodTouchSDIOState *s)
         // CMD5 - IO_SEND_OP_COND. The R4 response is how the controller learns
         // a card is there at all; without it enumerateSlot times out.
         if(s->card_present) {
-            s->resp0 = R4_CARD_READY | (BCM4325_FUNCTIONS << R4_NUM_FUNCS_SHIFT)
+            s->resp0 = R4_CARD_READY | (sdio_functions(s) << R4_NUM_FUNCS_SHIFT)
                        | R4_IO_OCR;
         } else {
             s->resp0 = 0;
@@ -1063,7 +1073,13 @@ static void sdio_exec_cmd(IPodTouchSDIOState *s)
         bool is_write = (s->arg >> 31) != 0;
         if(is_write) {
             uint8_t data = s->arg & 0xFF;
-            if(func == 0x1 && addr >= SDIOD_CORE_BASE) {
+            if(func == 0x1 && s->mrvl) {
+                mrvl8686_writeb(s->mrvl, addr, data);
+            }
+            else if(func == 0x0 && s->mrvl && addr == CCCR_IO_ABORT && (data & CCCR_IO_ABORT_RES)) {
+                mrvl8686_card_reset(s->mrvl);
+            }
+            else if(func == 0x1 && addr >= SDIOD_CORE_BASE) {
                 s->sdiod_regs[addr - SDIOD_CORE_BASE] = data;
                 if(addr >= SBSDIO_SBADDRLOW && addr <= SBSDIO_SBADDRHIGH) {
                     unsigned shift = 8 + 8 * (addr - SBSDIO_SBADDRLOW);
@@ -1092,7 +1108,13 @@ static void sdio_exec_cmd(IPodTouchSDIOState *s)
             }
             trace_sdio("SDIO: Executing cmd52 by writing 0x%02x to register 0x%05x (func %d)\n", data, addr, func);
         } else {
-            if(addr == 0x1000e) {
+            if(func == 0x1 && s->mrvl) {
+                s->resp0 = mrvl8686_readb(s->mrvl, addr);
+            }
+            else if(func == 0x0 && s->mrvl && addr == CCCR_INT_PENDING) {
+                s->resp0 = mrvl8686_irq_pending(s->mrvl) ? CCCR_INT_PENDING_FN1 : 0;
+            }
+            else if(addr == 0x1000e) {
                 // misc register
                 s->resp0 = (1 << 6) /* enable ALP clock */ | (1 << 7); /* enable HT clock */
             }
@@ -1139,7 +1161,17 @@ static void sdio_exec_cmd(IPodTouchSDIOState *s)
         }
         trace_sdio("SDIO: Executing cmd53 func %x with block size %d and %d blocks (reg address: 0x%08x, backplane address: 0x%08x, destination address: 0x%08x, write? %d)\n", func, s->blklen, s->numblk, addr, sb_addr, s->baddr, is_write);
 
-        if(is_write) {
+        if(func == 0x1 && s->mrvl) {
+            g_autofree uint8_t *buf = g_malloc0(xfer_len);
+            if (is_write) {
+                sdio_dma(s, buf, xfer_len, false);
+                mrvl8686_write(s->mrvl, addr, buf, xfer_len);
+            } else {
+                mrvl8686_read(s->mrvl, addr, buf, xfer_len);
+                sdio_dma(s, buf, xfer_len, true);
+            }
+        }
+        else if(is_write) {
             if(func == 0x1) {
                 g_autofree uint8_t *buf = g_malloc(xfer_len);
                 sdio_dma(s, buf, xfer_len, false);
@@ -1378,6 +1410,18 @@ static void sdio_set_bssid(Object *obj, const char *value, Error **errp)
     }
 }
 
+/* DAT1 from a card that signals its own interrupt (the Marvell): the
+ * controller latches the card-interrupt status bit on the edge. */
+static void sdio_card_irq(void *opaque, int n, int level)
+{
+    IPodTouchSDIOState *s = opaque;
+    trace_sdio("[SDIO] card irq %d (was %d, irq_reg 0x%x mask 0x%x)\n", level, s->card_irq_level, s->irq_reg, s->irq_mask);
+    if (level && !s->card_irq_level) {
+        raise_irq_soon(s, 0x2);
+    }
+    s->card_irq_level = level;
+}
+
 static void ipod_touch_sdio_init(Object *obj)
 {
     DeviceState *dev = DEVICE(obj);
@@ -1398,6 +1442,7 @@ static void ipod_touch_sdio_init(Object *obj)
     object_property_add_str(obj, "bssid", sdio_get_bssid, sdio_set_bssid);
     ipod_touch_sdio_set_chip(s, &bcm4325);
 
+    qdev_init_gpio_in_named(dev, sdio_card_irq, "card-irq", 1);
     memory_region_init_io(&s->iomem, obj, &ipod_touch_sdio_ops, s, TYPE_IPOD_TOUCH_SDIO, 4096);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
@@ -1442,6 +1487,10 @@ static void ipod_touch_sdio_reset(DeviceState *dev)
     memset(s->sdiod_regs, 0, sizeof(s->sdiod_regs));
     memset(s->registers, 0, sizeof(s->registers));
     ipod_touch_sdio_set_chip(s, &s->chip);
+    s->card_irq_level = false;
+    if (s->mrvl) {
+        mrvl8686_card_reset(s->mrvl);
+    }
 }
 
 #include "ipod-sdio-state.h"
@@ -1474,6 +1523,22 @@ static const VMStateDescription vmstate_sdio_bssid = {
     .needed = sdio_bssid_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_ARRAY(bssid, IPodTouchSDIOState, 6),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool sdio_card_irq_needed(void *opaque)
+{
+    return ((IPodTouchSDIOState *)opaque)->mrvl != NULL;
+}
+
+static const VMStateDescription vmstate_sdio_card_irq = {
+    .name = TYPE_IPOD_TOUCH_SDIO "/card-irq",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sdio_card_irq_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(card_irq_level, IPodTouchSDIOState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -1520,13 +1585,19 @@ static const VMStateDescription vmstate_ipod_touch_sdio = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sdio_bssid,
+        &vmstate_sdio_card_irq,
         NULL
     },
+};
+
+static const Property ipod_touch_sdio_props[] = {
+    DEFINE_PROP_LINK("mrvl", IPodTouchSDIOState, mrvl, TYPE_MRVL8686, Mrvl8686State *),
 };
 
 static void ipod_touch_sdio_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+    device_class_set_props(dc, ipod_touch_sdio_props);
     dc->vmsd = &vmstate_ipod_touch_sdio;
     device_class_set_legacy_reset(dc, ipod_touch_sdio_reset);
 }
