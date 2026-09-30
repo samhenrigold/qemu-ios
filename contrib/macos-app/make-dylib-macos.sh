@@ -105,6 +105,7 @@ _qemu_ios_ui_resume
 _qemu_ios_ui_reset
 _qemu_ios_ui_powerdown
 _qemu_ios_ui_quit
+_qemu_ios_ui_net_restrict
 _qemu_ios_snapshot_save
 _qemu_ios_snapshot_done
 _qemu_ios_ui_ready
