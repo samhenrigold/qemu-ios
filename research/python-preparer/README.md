@@ -1,11 +1,17 @@
-# Frozen preparation oracle
+# Frozen preparation reference
 
-The former Python orchestrator is retained here only while the final Python
-output hashes are captured. `imgtools/device.py create` now invokes the Swift
-FirmwareKit CLI with the shared app catalog. It never decrypts or builds NAND.
-The board-format Python modules are still test oracles pending golden fixtures;
-new preparation behavior belongs in FirmwareKit.
+Device creation is owned by Swift FirmwareKit and the app's shared catalog.
+All `imgtools/*_device.py` commands delegate to `imgtools/device.py`, which only
+translates inputs and invokes the Swift CLI. `tests/fresh-device.sh` invokes the
+Swift CLI directly and fails selected missing prerequisites.
 
-Do not run this archived orchestrator as a device builder. Its fixed temporary
-cache and marker protocol are obsolete. The archive will be removed after the
-cross-check and corpus gates; research and binary-format inspection stay Python.
+These files are frozen reference implementations, not a supported second
+pipeline. The independent hashes for N72 NOR/NAND metadata and K48 iBoot/NOR/GID
+artifacts are checked into FirmwareKit's `LegacyPreparationGoldens.swift`;
+those corpus checks no longer execute a Python builder. N45 bake comparisons
+still use the archived module until their package-specific expectations are
+frozen. Binary-format inspection tools remain under `imgtools`.
+
+Do not run the archived builders to create devices. Their cache markers,
+fixed temporary paths and implicit policy are obsolete. New preparation
+behavior belongs in FirmwareKit. Source provenance: qemu-ios `0be1499f24`.
