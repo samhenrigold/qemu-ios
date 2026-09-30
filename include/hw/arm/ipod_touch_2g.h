@@ -219,6 +219,9 @@ typedef struct {
 	IPodTouchLCDState *lcd_state;
 	IPodTouchMIPIDSIState *mipi_dsi_state;
 	IPodTouchFMSSState *fmss_state;
+    Notifier compat_nand_read;
+    bool compat_bt_patched;
+    uint32_t compat_command_line;
 	IPodTouchMBXState *mbx_state;
 	IPodTouchSDIOState *sdio_state;
 	IPodTouchTVOutState *tvout_state;

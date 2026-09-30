@@ -1,5 +1,4 @@
 #include "hw/arm/ipod_touch_fmss.h"
-#include "hw/arm/it_iboot.h"
 #include "hw/arm/ipod_touch_guard.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
@@ -909,88 +908,6 @@ static bool fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
 }
 
 /*
- * iBoot injects the bluetooth MAC address into the device tree node named by a
- * literal string it carries. On this board the node hangs off uart1, not
- * uart3, so the string has to be rewritten before iBoot walks the tree.
- *
- * The string's address is build-specific (5F138 has it at PA 0x0FF2206C, 7E18
- * at 0x0FF21324), so rather than hardcode it, search the window iBoot's img3
- * DATA payload is mapped into. The img3 payload is mapped at IBOOT_MEM_BASE
- * with file offset == PA - IBOOT_MEM_BASE, and the string occurs exactly once
- * in both builds' decrypted iBoot.
- */
-#define IBOOT_SCAN_PA_START  0x0ff00000u
-#define IBOOT_SCAN_LEN       0x00040000u   /* covers both builds' iBoot images */
-
-/* One-shot: the DeviceTree node is patched in the iBoot image in RAM the first
- * time the guest reads a page. A reset reloads that RAM, so the latch has to be
- * re-armed from ipod_touch_fmss_reset() or the second boot runs unpatched. */
-static bool iboot_bt_patched;
-static uint32_t iboot_command_line;
-
-static void patch_iboot_bluetooth_node(void)
-{
-    static const char needle[] = "arm-io/uart3/bluetooth";
-    static const char replace[] = "arm-io/uart1/bluetooth";
-
-    if (iboot_bt_patched) {
-        return;
-    }
-    iboot_bt_patched = true;
-
-    g_autofree uint8_t *image = g_try_malloc(IBOOT_SCAN_LEN);
-    if (!image) {
-        return;
-    }
-    cpu_physical_memory_read(IBOOT_SCAN_PA_START, image, IBOOT_SCAN_LEN);
-
-    for (size_t i = 0; i + sizeof(needle) <= IBOOT_SCAN_LEN; i++) {
-        if (memcmp(image + i, needle, sizeof(needle)) != 0) {
-            continue;
-        }
-        uint32_t pa = IBOOT_SCAN_PA_START + i;
-        cpu_physical_memory_write(pa, replace, strlen(replace));
-        if (getenv("IT_PATCH_DEBUG")) {
-            printf("[IBOOT] bluetooth node string patched at PA 0x%08x\n", pa);
-        }
-        return;
-    }
-
-    printf("[IBOOT] bluetooth node string not found in iBoot; not patching\n");
-}
-
-/* Legacy boot-argument data injection. Discover the buffer from the loaded
- * iBoot's literal references, rather than assuming a particular build's BSS.
- * Keep the existing NAND-read timing: iBoot rewrites this buffer during load. */
-static void patch_iboot_boot_args(IPodTouchFMSSState *s)
-{
-    static const char boot_args[] =
-        "kextlog=0xfff debug=0x8 cpus=1 rd=disk0s1 serial=1 pmu-debug=0x1 "
-        "io=0xffff8fff debug-usb=0xffffffff amfi_allow_any_signature=1 -v "
-        "zalloc_debug";
-
-    if (s->direct_boot) {
-        return;
-    }
-
-    if (!iboot_command_line) {
-        g_autofree uint8_t *image = g_try_malloc(IBOOT_SCAN_LEN);
-        if (!image) {
-            return;
-        }
-        cpu_physical_memory_read(IBOOT_SCAN_PA_START, image, IBOOT_SCAN_LEN);
-        iboot_command_line = it_iboot_find_command_line(
-            image, IBOOT_SCAN_LEN, IBOOT_SCAN_PA_START);
-        if (!iboot_command_line) {
-            return;
-        }
-        printf("[IBOOT] discovered command-line buffer at PA 0x%08x\n",
-               iboot_command_line);
-    }
-    cpu_physical_memory_write(iboot_command_line, boot_args, sizeof(boot_args));
-}
-
-/*
  * Noticing that the home screen was rearranged.
  *
  * SpringBoard 3.1.3 publishes NOTHING when the user moves an icon.
@@ -1057,8 +974,7 @@ static bool fmss_write_dma_read(uint64_t addr, void *data, size_t len)
 
 static void read_nand_pages(IPodTouchFMSSState *s)
 {
-    patch_iboot_boot_args(s);
-    patch_iboot_bluetooth_node();
+    notifier_list_notify(&s->before_read, s);
 
     int page_out_buf_ind = 0;
     for(int page_ind = 0; page_ind < s->reg_num_pages; page_ind++) {
@@ -1449,6 +1365,7 @@ static void ipod_touch_fmss_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &fmss_ops, s, "fmss", 0xF00);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+    notifier_list_init(&s->before_read);
     s->completion_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, fmss_complete, s);
 
     s->page_buffer = (uint8_t *)g_malloc(NAND_BYTES_PER_PAGE);
@@ -1497,8 +1414,6 @@ static void ipod_touch_fmss_reset(DeviceState *dev)
     s->reg_csgenrc = 0;
     memset(s->page_buffer, 0, NAND_BYTES_PER_PAGE);
     memset(s->page_spare_buffer, 0, NAND_BYTES_PER_SPARE);
-    iboot_bt_patched = false;
-    iboot_command_line = 0;
     if (s->irq) {
         qemu_irq_lower(s->irq);
     }

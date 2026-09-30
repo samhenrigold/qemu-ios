@@ -5,6 +5,7 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
+#include "qemu/notify.h"
 #include "hw/sysbus.h"
 #include "hw/hw.h"
 #include "hw/irq.h"
@@ -37,7 +38,7 @@ typedef struct IPodTouchFMSSState
 {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
-    bool direct_boot; /* Startup board compatibility policy. */
+    NotifierList before_read; /* Observers; the controller never edits firmware. */
     qemu_irq irq;
 
     uint8_t *page_buffer;
