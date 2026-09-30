@@ -219,6 +219,7 @@ static void mrvl_handle_cmd(Mrvl8686Card *c, const uint8_t *cmd, uint32_t n)
         break;
     case MRVL_CMD_802_11_SCAN: {
         bool hit = mrvl_scan_hears_ap(c, body, blen);
+        memset(rb, 0, sizeof(r) - MRVL_CMD_HDR);
         rlen = MRVL_CMD_HDR + mrvl_scan_response(c, rb, hit);
         mrvl_trace("[MRVL] scan: %s\n", hit ? "the access point answers" : "nothing on these channels");
         break;
