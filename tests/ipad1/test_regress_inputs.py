@@ -77,3 +77,28 @@ for confirmations,want in (([False,True],True),([False],False)):
     assert ('quit' in calls) is want
     assert calls[-1]=='close'
 print('PASS charging halt requires guest PMU evidence before host quit')
+
+# A halt RPC timeout is not permission to repeat it. Only PMU evidence can
+# resolve its unknown outcome after iBoot restarted into charging mode.
+for confirmed,want in ((True,True),(False,False)):
+    calls=[]
+    def cmd(name,**kw): calls.append(name);return confirmed
+    q=SimpleNamespace(cmd=cmd,close=lambda:None)
+    with patch.object(R.itqmp,'agent_alive',return_value=True),patch.object(R.itqmp,'agent',side_effect=TimeoutError('outcome unknown')) as request,patch.object(R.itqmp.time,'monotonic',side_effect=[0,61]):
+        assert R.itqmp.guest_powerdown(q,SimpleNamespace(wait=lambda timeout:0),'test',log=lambda _:None,charging_halt=True) is want
+        assert request.call_count==1
+    assert ('quit' in calls) is want
+print('PASS unknown halt outcome is observed, never retried')
+
+with tempfile.TemporaryDirectory(prefix='ocr-cache-') as tmp:
+    binary=Path(tmp)/'new-cache'/'ocr';commands=[]
+    def run(argv,**kw):
+        commands.append(argv)
+        if argv[0]=='swiftc': Path(argv[argv.index('-o')+1]).write_bytes(b'compiled');return SimpleNamespace(returncode=0,stderr='')
+        return SimpleNamespace(stdout='1 2 3 4 Word\n')
+    with patch.object(R,'OCR_BIN',str(binary)),patch.object(R.subprocess,'run',side_effect=run):
+        assert R.ocr('picture.ppm')=={'Word':(3,765)}
+        assert R.ocr('picture.ppm')=={'Word':(3,765)}
+    assert sum(c[0]=='swiftc' for c in commands)==1
+    assert binary.read_bytes()==b'compiled'
+print('PASS OCR creates and atomically publishes its cache on a clean worktree')
