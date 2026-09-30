@@ -39,7 +39,7 @@ with working touch; lockdownd reports the device activated.
   1.1 ends in `pmu go stdby` and QEMU exits about 15 s after the request.
 - Epoch: POWER_ID[31:24] is the epoch iBoot-204's miu_init compares inline (2 for 1.1-1.1.2, 3 for
   1.1.3-1.1.5), read off the staged iBoot by it_iboot.c's finder, as the 2G's direct-iboot does.
-- GL: on a device from `imgtools/ipod1g_device.py prepare` LayerKit composites through the host GL bridge
+- GL: on a device from `firmwarekit create --id n45ap-3A101a` LayerKit composites through the host GL bridge
   (`LK_ENABLE_OGL=1`, the guest package's `OpenGLES-1x` hook, the QEMU_CALL register): the home screen, app
   zooms, scrolls (docs/ipod/from-ipsw.md, "1.x (the 1G)"). The set's own image stays software LayerKit.
 
@@ -72,8 +72,9 @@ MAC, the unit identity's; FirmwareKit's device.lock.json `machine` carries it; u
 unit), and the read-only
 `gles-rejects`, `gles-contexts`.
 
-A GL device: `imgtools/ipod1g_device.py prepare ~/Developer/qemu-ios-files/ipod1g OUT` (after
-`contrib/guest-package/build.sh`) writes OUT/{nand,bootrom.bin,iBoot.bin,nor.bin,device.lock.json}; boot it
+A GL device: `firmwarekit create --catalog CATALOG --id n45ap-3A101a --ipsw
+~/Developer/qemu-ios-files/ipod1g/iPod1,1_1.1_3A101a_Restore.ipsw --out OUT` (CATALOG: LightTouchMac's `LightTouchMac/Resources/firmware-catalog.json`;
+`--guest-tools DIR` unless it is the app bundle's `firmwarekit`) writes OUT/{nand,iBoot.bin,nor.bin,device.lock.json}; boot it
 with those in place of the set's files, or `tests/ipod/regress.py --device OUT --checks boot,gles`. Keep the
 guest awake in a test (a tap on an empty spot every 15-20 s): it does not wake from sleep yet.
 
@@ -179,4 +180,4 @@ the block does, P a documented quirk/patch, S stub.
 `hw/arm/ipod_touch_1g.c`, `include/hw/arm/ipod_touch_1g.h`, `hw/arm/s5l8900_{fmc,nand_ecc,adm,lcd_panel}.c`
 and headers, `hw/arm/Kconfig` (`IPOD_TOUCH_1G` selects `IPOD_TOUCH_2G`), `hw/arm/meson.build`,
 `configs/devices/arm-softmmu/default.mak`. Shared-model property additions are in the models named above. The GL device bake is
-`imgtools/ipod1g_device.py`; the front end is `contrib/it-gles/gles2x.c` (`build-gles2x.sh 1x`).
+FirmwareKit's N45 recipe (`N45Recipe.swift`); the front end is `contrib/it-gles/gles2x.c` (`build-gles2x.sh 1x`).
