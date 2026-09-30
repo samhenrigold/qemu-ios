@@ -12,6 +12,14 @@ reload, reboot (system_reset), rejoin, Safari again. All passed after one fix:
   the download, and panicked after AppleBCMWLAN's 60 s watchdog. `ipodtouch.sdio` and `s5l8930.sdio`
   now reset. This also applies to the iPod.
 
+- (2026-09-29) The auto-join is armed when the host programs its multicast filter (`set_var mcast_list`,
+  IOEthernetController::setMulticastList), not at WLC_UP. 4.3's AppleBCMWLAN sends WLC_UP in the middle of
+  initFirmware and attaches its IO80211Interface later; the 10 s clock from WLC_UP outran that under host
+  load, and the join panicked the guest in AppleBCMWLAN::setLinkState (IO80211Interface's link-state getter,
+  8F190 pc 0x80656f7c, reads +0xc4 of a NULL interface). A real dongle only joins when the host asks, which
+  it does through that interface. `IT_WIFI_AUTOJOIN` takes fractions; regress `wifi-early` (0.01 s)
+  reproduces the old panic deterministically. Host check: tests/ipod/test_sdio_autojoin.py.
+
 ## Status (2026-09-27): works, stock stack, no guest changes
 
 A golden-pristine clone (`wifi=on` was explicit at the time). The serial log:
