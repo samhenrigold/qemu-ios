@@ -117,6 +117,7 @@ class Boot:
         self.serial = os.path.join(self.dir, "serial.log")
         self.muxlog = os.path.join(self.dir, "usbmuxd.log")
         self.qmp = self.qemu = None
+        self.udid = getattr(cfg, "udid", None)
 
     def start(self):
         cfg = self.cfg
@@ -156,6 +157,8 @@ class Boot:
         return dict(os.environ, USBMUXD_SOCKET_ADDRESS="127.0.0.1:%d" % self.mux_port)
 
     def run(self, argv, timeout=120):
+        if self.udid and argv[0] in ("afcclient", "ideviceinfo", "idevicepair", "ideviceinstaller") and "-u" not in argv:
+            argv = [argv[0], "-u", self.udid] + argv[1:]
         return subprocess.run(argv, env=self.env(), capture_output=True, text=True, timeout=timeout)
 
     def shot(self, name):
@@ -212,11 +215,23 @@ class Boot:
             timeout, detail, "running" if self.qemu.poll() is None else "exited")
 
     def wait_mux(self, timeout=240):
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            if "Connected to v2.0" in open(self.muxlog, errors="replace").read():
-                return True
-            time.sleep(2)
+        # A "Connected to v2.0" log line predates pairing and can outlive a
+        # disconnected device. Require a live lockdown query on this bridge.
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and self.qemu.poll() is None:
+            try:
+                if not self.udid:
+                    listing = self.run(["idevice_id", "-l"], timeout=5)
+                    devices = listing.stdout.split()
+                    if listing.returncode == 0 and len(devices) == 1:
+                        self.udid = devices[0]
+                if self.udid:
+                    info = self.run(["ideviceinfo", "-k", "ProductVersion"], timeout=5)
+                    if info.returncode == 0 and info.stdout.strip() == self.cfg.product_version:
+                        return True
+            except subprocess.TimeoutExpired:
+                pass
+            time.sleep(1)
         return False
 
     def press(self, button, hold=0.3):
@@ -256,6 +271,12 @@ class Boot:
             keys = names.get(ch, [ch])
             self.qmp.cmd("send-key", keys=[{"type": "qcode", "data": k} for k in keys])
             time.sleep(0.15)
+
+    def powerdown(self):
+        try:
+            return itqmp.guest_powerdown(self.qmp, self.qemu, self.tag, log, charging_halt=True)
+        finally:
+            self.qmp = None
 
     def stop(self):
         self.procs.stop_all()
@@ -674,12 +695,7 @@ def check_afc(cfg, r):
 
 
 def check_persist(cfg, r):
-    """A file pushed over AFC survives a reboot on the same overlay.
-
-    ponytail: the guest is killed after the file has had time to reach the NAND (update(8) syncs every
-    30 s), not shut down: Hold -> slide to power off blanks the panel but never reaches the PMU power-off
-    on this machine yet. Switch to the clean path when it does; the iPod check needs it because HFS keeps
-    catalog updates in memory until unmount."""
+    """Verify the write, require guest shutdown, then compare after reboot."""
     overlay = os.path.join(cfg.out, "persist", "overlay")
     marker = os.path.join(cfg.out, "persist-marker.bin")
     with open(marker, "wb") as f:
@@ -688,8 +704,15 @@ def check_persist(cfg, r):
     try:
         if not detail:
             return
-        b.run(["afcclient", "put", marker, "/regress-persist.bin"])
-        time.sleep(45)
+        put = b.run(["afcclient", "put", marker, "/regress-persist.bin"])
+        before = os.path.join(b.dir, "marker.before")
+        get = b.run(["afcclient", "get", "/regress-persist.bin", before])
+        if put.returncode or get.returncode or not os.path.exists(before) or sha256_file(before) != sha256_file(marker):
+            r.set(False, "AFC marker write/readback failed before shutdown: " + put.stderr + get.stderr)
+            return
+        if not b.powerdown():
+            r.set(False, "guest shutdown not confirmed; persistence cannot be judged")
+            return
     finally:
         b.stop()
     b2, detail = booted(cfg, "persist2", r, overlay=overlay)
@@ -699,7 +722,7 @@ def check_persist(cfg, r):
         back = os.path.join(b2.dir, "marker.back")
         b2.run(["afcclient", "get", "/regress-persist.bin", back])
         same = os.path.exists(back) and sha256_file(back) == sha256_file(marker)
-        r.set(same, "70001-byte marker identical after a reboot on the same overlay" if same
+        r.set(same, "70001-byte marker identical after guest shutdown and reboot on the same overlay" if same
               else "marker missing or different after reboot")
     finally:
         b2.stop()
@@ -889,14 +912,16 @@ def device_args(a):
     lockd = json.load(open(lock)) if os.path.exists(lock) else {}
     a.product_version = getattr(a, "product_version", None) or lockd.get("product_version", "3.2.2")
     a.build = lockd.get("build", "7B500")
+    a.udid = (lockd.get("identity") or {}).get("udid")
     a.major = int(a.product_version.split(".")[0])
     a.gl_test = bool(lockd.get("gl_test"))      # it_gltest's scene sits over SpringBoard's screens
-    a.activated = bool((lockd.get("inputs") or {}).get("activation_hook"))
+    a.activated = bool((lockd.get("inputs") or {}).get("activation") or (lockd.get("inputs") or {}).get("activation_hook"))
     a.package_seed = (lockd.get("guest_package") or {}).get("seed")
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--require-inputs", action="store_true", help="fail when a selected check is skipped")
     ap.add_argument("--checks", default=",".join(DEFAULT_CHECKS))
     ap.add_argument("--nand", help="override the selected device NAND")
     ipad1_boot.add_arguments(ap)
@@ -908,6 +933,7 @@ def main():
     ap.add_argument("--guest-package", metavar="DIR", help="the machine's guest-package offer directory "
                     "(contrib/guest-package/mkpkg.py offer); boot then also wants it_boot's report")
     a = ap.parse_args()
+    if not any(a.checks.split(",")): ap.error("no checks selected")
     device_args(a)
     import ffmpeg_guard                     # imgtools; stock FFmpeg breaks iPod H.264
     why = ffmpeg_guard.check(a.qemu)
@@ -939,7 +965,7 @@ def main():
         state = "SKIP" if r.skipped else ("PASS" if r.ok else "FAIL")
         print("%-5s %-11s %s" % (state, c, r.detail))
     print("=" * 62)
-    failed = [c for c in selected if results[c].ok is False]
+    failed = [c for c in selected if results[c].ok is False or (a.require_inputs and results[c].skipped)]
     print("%d check(s) failed; artifacts in %s; %.1f min" % (len(failed), a.out, (time.time() - ipod.START) / 60))
     return 1 if failed else 0
 

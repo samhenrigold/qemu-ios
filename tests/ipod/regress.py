@@ -417,39 +417,9 @@ class Device:
         return self.qemu is not None and self.qemu.poll() is None
 
     def powerdown(self):
-        """Require guest-origin SHUTDOWN plus process exit; SIGTERM also exits 0."""
-        if self.qmp is None:
-            log("%s: no QMP connection to confirm guest shutdown" % self.tag)
-            return False
         try:
-            if itqmp.agent_alive(self.qmp):
-                try:
-                    status, response = itqmp.agent(self.qmp, "halt", timeout=30)
-                    if status:
-                        raise RuntimeError("agent halt failed: %d %r" % (status, response))
-                except EOFError:
-                    # A guest shutdown can beat the RPC reply. The retained
-                    # PMU SHUTDOWN event below remains the acceptance gate.
-                    pass
-                timeout = 60
-            else:
-                log("%s: no agent; gesture shutdown" % self.tag)
-                try:
-                    self.qmp.cmd("system_powerdown")
-                except EOFError:
-                    # An immediate shutdown may precede the command response;
-                    # the retained SHUTDOWN event must still prove its origin.
-                    pass
-                timeout = 180
-            self.qmp.wait_for_guest_shutdown(timeout)
-            rc = self.qemu.wait(timeout=10)
-            log("%s: guest-confirmed shutdown, qemu exit=%d" % (self.tag, rc))
-            return rc == 0
-        except (OSError, EOFError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
-            log("%s: shutdown not confirmed: %s" % (self.tag, exc))
-            return False
+            return itqmp.guest_powerdown(self.qmp, self.qemu, self.tag, log)
         finally:
-            self.qmp.close()
             self.qmp = None
 
     # -- boot --------------------------------------------------------------
@@ -1860,6 +1830,7 @@ def main():
     ap.add_argument("--qmp-port-hi", type=int, default=28019)
     ap.add_argument("--proxy-port-lo", type=int, default=28101)
     ap.add_argument("--proxy-port-hi", type=int, default=28119)
+    ap.add_argument("--require-inputs", action="store_true", help="fail when a selected check is skipped")
     ap.add_argument("--clean", action="store_true",
                     help="remove the run directory (screendumps, PPMs, "
                          "~512MB volume.img) if every selected check passed "
@@ -2170,7 +2141,7 @@ def main():
 def finish(results, procs, cfg):
     procs.stop_all()
     with open(os.path.join(cfg.out, "results.json"), "w") as f:
-        json.dump({name: {"ok": r.ok, "xfail": r.xfail, "detail": r.detail}
+        json.dump({name: {"ok": r.ok, "skipped": r.skipped, "xfail": r.xfail, "detail": r.detail}
                    for name, r in results.items()}, f, indent=2)
     print("")
     print("=" * 62)
@@ -2181,6 +2152,7 @@ def finish(results, procs, cfg):
             continue
         if r.ok is None:
             state = "SKIP"
+            if getattr(cfg, "require_inputs", False): failed += 1
         elif r.ok:
             state = "PASS"
         elif r.xfail:

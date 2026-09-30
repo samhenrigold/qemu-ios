@@ -303,3 +303,14 @@ for event, expected in ((guest, True), (host, False)):
         call.assert_called_once_with(q, 'halt', timeout=30)
     peer.close()
 print('Agent shutdown requires a guest power-off event')
+
+# Selected missing prerequisites must fail acceptance, remain skips in developer runs.
+R.START=R.time.time()
+with tempfile.TemporaryDirectory(prefix='regress-verdict-') as tmp:
+    result=R.Result('audio');result.skip('missing test IPA')
+    for strict,expected in ((False,0),(True,1)):
+        cfg=SimpleNamespace(out=tmp,require_inputs=strict)
+        assert R.finish({'audio':result},SimpleNamespace(stop_all=lambda:None),cfg)==expected
+    record=json.loads((Path(tmp)/'results.json').read_text())
+    assert record['audio']['skipped'] is True
+print('Strict acceptance fails selected missing prerequisites')

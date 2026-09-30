@@ -1540,6 +1540,13 @@ static void ipad1_set_gles_debug(Object *obj, bool value, Error **errp)
     gles_host_set_debug(value);
 }
 
+/* A cable-attached halt restarts into iBoot's charging loop instead of
+ * terminating QEMU. Expose the same guest PMU evidence used by the native app. */
+static bool ipad1_get_guest_shutdown_confirmed(Object *obj, Error **errp)
+{
+    return s5l8930_d1815_guest_shutdown_confirmed();
+}
+
 static char *ipad1_get_gles_rejects(Object *obj, Error **errp)
 {
     return gles_host_rejects();
@@ -1583,6 +1590,10 @@ static void ipad1_instance_init(Object *obj)
     object_property_add_str(obj, "agent-cancel", NULL, ipad1_cancel_agent_request);
     object_property_add_str(obj, "agent-result", ipad1_get_agent_result, NULL);
     object_property_add_str(obj, "agent-status", ipad1_get_agent_status, NULL);
+    object_property_add_bool(obj, "guest-shutdown-confirmed",
+                             ipad1_get_guest_shutdown_confirmed, NULL);
+    object_property_set_description(obj, "guest-shutdown-confirmed",
+        "The guest PMU observed standby or a halt followed by charging restart");
     object_property_add_str(obj, "gles-rejects", ipad1_get_gles_rejects, NULL);
     object_property_set_description(obj, "gles-rejects",
         "Every refusal the GL bridge made so far, one NAME<tab>COUNT per line");

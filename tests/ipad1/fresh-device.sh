@@ -39,7 +39,7 @@ walk(lock["inputs"])
 bad = [p for p in paths if "/hw2/" in p or (p.endswith("identity.json") and os.path.realpath(p) != os.path.realpath(os.path.join(dev, "identity.json")))]
 assert not bad, "lock inputs reference unit data: %s" % bad
 assert lock["inputs"]["lockdown"] is None and lock["inputs"]["stash"] is None
-print(lock["identity"]["die_id"], "activated" if lock["inputs"]["activation_hook"] else "itunes")
+print(lock["identity"]["die_id"], "activated" if (lock["inputs"].get("activation") or lock["inputs"].get("activation_hook")) else "itunes")
 EOF
 )
 read -r DIE_ID SCREEN <<<"$DIE_ID"
