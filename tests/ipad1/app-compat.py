@@ -12,7 +12,7 @@ can run here (decrypted, MinimumOS <= 3.2). Read from the zip in place: no extra
 
 run: for each candidate, boot a fresh overlay of golden-appsync, install it over the
 usbmuxd bridge, unlock, tap the new icon to launch, wait, screenshot, pull crash logs,
-and record PASS / CRASH / NO-LAUNCH plus any "[glishim] unimplemented" GL lines. Reuses
+and record PASS / CRASH / NO-LAUNCH plus any "[gles] unimplemented GL entry point" lines. Reuses
 tests/ipad1/regress.py's Boot. One QEMU per app; nothing runs in the background.
 """
 import argparse, importlib.util, os, plistlib, re, struct, subprocess, sys, time, zipfile
@@ -414,7 +414,7 @@ def launch_one(rg, cfg, ipa, r, install_only=False):
         out = (ins.stdout or "") + (ins.stderr or "")
         listed = r["bundle"] in (b.run(["ideviceinstaller", "list"], timeout=90).stdout or "")
         try:
-            res["glishim"] = open(os.path.join(b.dir, "qemu.log"), errors="replace").read().count("[glishim] unimplemented")
+            res["glishim"] = open(os.path.join(b.dir, "qemu.log"), errors="replace").read().count("[gles] unimplemented GL entry point")
         except OSError:
             pass
         if "Complete" not in out and not listed:
@@ -632,7 +632,7 @@ def _results_md(allres, nand):
             out.append("- %s (`%s`), verdict %s%s: %s" % (
                 r.get("name") or r["file"], r["bundle"], r["verdict"],
                 ", %.1f%% magenta" % (100 * r["magenta"]) if r.get("magenta") else "",
-                ", ".join("%s x%d" % kv for kv in sorted(rejects.items())) or "%d [glishim] unimplemented" % r.get("glishim", 0)))
+                ", ".join("%s x%d" % kv for kv in sorted(rejects.items())) or "%d [gles] unimplemented" % r.get("glishim", 0)))
         out.append("")
         by_name = {}
         for r in glgaps:
