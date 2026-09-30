@@ -504,7 +504,9 @@ static void sdio_handle_set_ssid(IPodTouchSDIOState *s, const uint8_t *payload,
  * WLC_SET_SSID, no link, no DHCP. That is the state every fresh image and every
  * app-shipped image is in, and there is no UI to tap on a headless run, so the
  * model asserts the association itself. Set IT_WIFI_AUTOJOIN=0 to require a
- * real driver-driven join instead; any other value is the delay in seconds.
+ * real driver-driven join instead; any other value is the delay in seconds
+ * (fractions allowed), counted from when the host's network interface is up
+ * (sdpcm_handle_cdc).
  */
 static void sdio_autojoin(void *opaque)
 {
@@ -535,19 +537,21 @@ static void sdio_autojoin(void *opaque)
 static void sdio_arm_autojoin(IPodTouchSDIOState *s)
 {
     const char *v = getenv("IT_WIFI_AUTOJOIN");
-    int delay = 10;
+    double delay = 10;
 
-    if (v && (!*v || *v == '0')) {
+    /* Fractions too: tests/ipad1/regress.py's wifi-early check joins 10 ms
+     * after the arming point, the order a heavily loaded host produces. */
+    if (v && (!*v || *v == '0') && strtod(v, NULL) <= 0) {
         return;
     }
     if (s->associated || !s->join_timer) {
         return;
     }
-    if (v && atoi(v) > 0) {
-        delay = atoi(v);
+    if (v && strtod(v, NULL) > 0) {
+        delay = strtod(v, NULL);
     }
     timer_mod(s->join_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-              (int64_t)delay * NANOSECONDS_PER_SECOND);
+              (int64_t)(delay * NANOSECONDS_PER_SECOND));
 }
 
 /*
@@ -697,13 +701,35 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
                              len > hdrlen ? len - hdrlen : 0);
     }
 
-    /* WLC_UP is the last thing initDongle does before the driver is usable,
-     * so it is the earliest sensible moment to start the auto-join clock.
+    /*
+     * A real dongle reports a join only after the host asked for one, and the
+     * host can only ask through its network interface, so a join never lands
+     * before that interface exists. The auto-join stands in for the host's
+     * request and has to keep that order. WLC_UP is not the point: the driver
+     * sends it in the middle of initFirmware and attaches its IO80211Interface
+     * only after the rest of the init iovars. A join reported in between goes
+     * through bringUpLink into AppleBCMWLAN::setLinkState with no interface
+     * (8F190: IO80211Interface's link-state getter at 0x80656f7c reads +0xc4
+     * of NULL), and a 10 s clock from WLC_UP gets there whenever host load
+     * slows the guest (LightTouchMac matrix 09-29, 8F190 and 8G4 run 2).
+     * mcast_list is the first thing the host sends that needs the interface:
+     * IOEthernetController::setMulticastList, called once the network stack
+     * has attached it (3.1.3 AppleBCM4325, 4.2-4.3 AppleBCMWLAN and 5.x
+     * AppleBCMWLANCore all send it before they could join).
      * Firmware coming up is not in a BSS: after the driver's watchdog reset
      * (a command-queue stall under host load re-downloads the firmware
-     * without a machine reset) the join has to happen again. */
+     * without a machine reset) the join has to happen again, and the
+     * interface from before is still attached.
+     */
     if (cmd == WLC_UP) {
         s->associated = false;
+        if (s->host_netif) {
+            sdio_arm_autojoin(s);
+        }
+    }
+    if (cmd == WLC_SET_VAR && g_str_equal(iovar, "mcast_list") &&
+        !s->host_netif) {
+        s->host_netif = true;
         sdio_arm_autojoin(s);
     }
 }
@@ -1435,7 +1461,7 @@ static void ipod_touch_sdio_reset(DeviceState *dev)
     g_hash_table_remove_all(s->backplane);
     s->sb_window = CHIPCOMMON_BASE;
     s->fw_bytes = s->fw_bytes_logged = 0;
-    s->func2_seen = s->dongle_started = s->associated = false;
+    s->func2_seen = s->dongle_started = s->associated = s->host_netif = false;
     s->iscan_reported = true;      /* no scan outstanding */
     s->tx_seq = s->rx_seq = 0;
     s->cdc_hdrlen = s->bdc_hdrlen = 0;
@@ -1478,10 +1504,36 @@ static const VMStateDescription vmstate_sdio_bssid = {
     },
 };
 
+/* Only a machine saved before the host attached its interface carries this;
+ * a missing subsection (and every snapshot older than the field) reads as a
+ * host that is up, which is what a snapshot of a running guest is. */
+static int sdio_pre_load(void *opaque)
+{
+    ((IPodTouchSDIOState *)opaque)->host_netif = true;
+    return 0;
+}
+
+static bool sdio_netif_needed(void *opaque)
+{
+    return !((IPodTouchSDIOState *)opaque)->host_netif;
+}
+
+static const VMStateDescription vmstate_sdio_netif = {
+    .name = TYPE_IPOD_TOUCH_SDIO "/host_netif",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sdio_netif_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(host_netif, IPodTouchSDIOState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_ipod_touch_sdio = {
     .name = TYPE_IPOD_TOUCH_SDIO,
     .version_id = 1,
     .minimum_version_id = 1,
+    .pre_load = sdio_pre_load,
     .post_load = sdio_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(cmd, IPodTouchSDIOState),
@@ -1520,6 +1572,7 @@ static const VMStateDescription vmstate_ipod_touch_sdio = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sdio_bssid,
+        &vmstate_sdio_netif,
         NULL
     },
 };
