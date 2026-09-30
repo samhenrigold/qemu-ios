@@ -23,7 +23,7 @@ bake() adds the guest side, all of it located at build or run time (no offsets):
                                  (2.x's EGL compositor and 3.x/4.x's EAGL one), over OpenGLES.framework/OpenGLES;
                                  where OpenGLES is cached (3.1+), dyld's enable-dylibs-to-override-cache switch too
                                  (ipad1_rootfs.gli_uncache)
-  contrib/appsync/patch-appsync-dylib.sh  MISValidateSignature -> success in the shared cache, found by symbol;
+  contrib/appsync/patch-appsync-dylib.sh  process-local installation-service signing hooks;
                                  libappsync.dylib DYLD_INSERTed into installd (options.appsync)
   it_prefs                       build/ipod-guest/it_prefs (contrib/it-prefs/build-ipod.sh) + com.qemu.it-prefs, the
                                  iPad's one-shot: as mobile, through CFPreferences, SBDidShowReorderText = true if

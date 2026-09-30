@@ -593,11 +593,7 @@ def build(a):
             os.chmod(dst, 0o644)
             for rel in APPSYNC_JOBS:
                 rewrite_plist(os.path.join(m.mnt, rel), dyld_insert)
-            # amfid-global half: force libmis MISValidateSignature to succeed in the shared cache
-            # (symbol-located), so amfid approves the ldid-signed dylib and decrypted apps.
-            import appsync_cachepatch
-            cache = os.path.join(m.mnt, DYLD_CACHE)
-            print("      " + appsync_cachepatch.patch_cache(cache))
+            print("      AppSync: stock libmis retained; installation-service interposition")
         apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))
         gli_owned = []                     # files the GL install adds, root-owned below
         if a.gles or a.ca_ogl:   # stock CoreAnimation composites through the GL front end
@@ -907,7 +903,7 @@ def main():
     b.add_argument("--page-flip", action="store_true", help="leave CoreAnimation's IOMFB page flipping on (no MBX2D_PAGE_FLIP=0)")
     b.add_argument("--no-ca-ogl", dest="ca_ogl", action="store_false",
                    help="software CoreAnimation (CA_ENABLE_OGL=0) instead of the default GL compositing through the GLI shim")
-    b.add_argument("--appsync", action="store_true", help="install libappsync.dylib and inject it into installd (+ symbol-located shared-cache patch) (run contrib/appsync/build.sh first)")
+    b.add_argument("--appsync", action="store_true", help="install libappsync.dylib and inject it into installd (system trust library stays stock) (run contrib/appsync/build.sh first)")
     f = sub.add_parser("fetch")
     f.add_argument("dir", nargs="?", default=os.path.join(FILES, "hw2"))
     r = sub.add_parser("report")
