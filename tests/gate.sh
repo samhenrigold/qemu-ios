@@ -6,14 +6,15 @@
 #                           contrib/guest-package/mkpkg.py selfcheck; JOBS at a time (default 4)
 #   tests/gate.sh --full    quick, then tests/ipod/run-regression.sh and tests/ipad1/regress.py (default tiers),
 #                           one suite at a time
-#   tests/gate.sh --fresh   full, then tests/ipod/fresh-device.sh and tests/ipad1/fresh-device.sh (defaults)
+#   tests/gate.sh --fresh   full, then tests/ipod/fresh-device.sh and tests/ipad1/fresh-device.sh on IPOD_IPSW /
+#                           IPAD_IPSW (stock IPSWs; FIRMWAREKIT and FIRMWAREKIT_CATALOG as tests/fresh-device.sh)
 #
 # Unit tests that launch the emulator (the *_guest.py acceptance runs, the *_snapshot.py and paused-machine
 # QOM checks: any test naming qemu-system-arm) are SKIP in every tier; run them by hand with a built emulator
 # and a NAND. So are tests that take their inputs (a NAND, a movie, a capture) on the command line.
 # The harnesses keep their own input defaults (~/Developer/qemu-ios-files, the usbmuxd forks,
 # repro/default-iboot). The one shared input is the emulator: QEMU=... (default build/qemu-system-arm, the
-# README's build dir); --fresh's iPad script has no override and always uses build/qemu-system-arm.
+# README's build dir), which --fresh's scripts use too.
 # Checks listed in KNOWN below fail on today's tree for the reason given; they run and report XFAIL (or XPASS
 # once they pass again), and neither fails the gate. Delete the line when the check is fixed.
 # One line per check, PASS/FAIL/SKIP/XFAIL/XPASS with seconds; exit 1 if anything FAILs. Logs under OUT
@@ -91,8 +92,11 @@ if [ "$TIER" != --quick ]; then
     fi
 fi
 if [ "$TIER" = --fresh ]; then
-    suite "tests/ipod/fresh-device.sh" tests/ipod/fresh-device.sh
-    suite "tests/ipad1/fresh-device.sh" tests/ipad1/fresh-device.sh
+    # fresh-device.sh prepares through FIRMWAREKIT from the catalog entry's stock IPSW, which has no default path.
+    if [ -n "${IPOD_IPSW:-}" ]; then suite "tests/ipod/fresh-device.sh" tests/ipod/fresh-device.sh "$IPOD_IPSW" "$OUT/fresh-ipod"
+    else skip "tests/ipod/fresh-device.sh" "set IPOD_IPSW to the stock IPSW of ENTRY (default n72ap-7E18)"; fi
+    if [ -n "${IPAD_IPSW:-}" ]; then suite "tests/ipad1/fresh-device.sh" tests/ipad1/fresh-device.sh "$IPAD_IPSW" "$OUT/fresh-ipad"
+    else skip "tests/ipad1/fresh-device.sh" "set IPAD_IPSW to the stock IPSW of ENTRY (default k48ap-7B500)"; fi
 fi
 
 echo "== $TIER"
