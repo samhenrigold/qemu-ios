@@ -44,6 +44,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouch1GMachineState, IPOD_TOUCH_1G_MACHINE)
 #define N45_TVOUT_SDO_IRQ   0x1E
 #define N45_ADM_IRQ         0x25
 #define N45_TVOUT_MIXER_IRQ 0x26
+#define N45_SDIO_IRQ        0x2A    /* the DT sdio node */
 #define N45_NAND_ECC_IRQ    0x2B
 /* GPIO interrupt groups 0..6 */
 #define N45_GPIO_G0_IRQ 0x21
@@ -150,6 +151,7 @@ typedef struct IPodTouch1GMachineState {
     /* guest services: the GL bridge (QC_GLES*) and guest-package delivery, on the QEMU_CALL cp15 register */
     GuestPackage pkg;
     bool gles_debug;
+    bool wifi;                       /* the Marvell 88W8686 on the SDIO bus (default on) */
 } IPodTouch1GMachineState;
 
 #endif

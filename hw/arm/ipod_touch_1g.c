@@ -38,6 +38,10 @@
 #include "hw/arm/ipod_touch_tvout.h"
 #include "hw/arm/ipod_touch_chipid.h"
 #include "hw/arm/ipod_touch_sdio.h"
+#include "hw/arm/mrvl8686.h"
+#include "net/net.h"
+#include "qemu/config-file.h"
+#include "qemu/option.h"
 #include "hw/arm/ipod_touch_mbx.h"
 #include "hw/arm/ipod_touch_i2s.h"
 #include "hw/arm/ipod_touch_piezo.h"
@@ -645,10 +649,44 @@ static void n45_machine_init(MachineState *machine)
     memory_region_add_subregion(sysmem, N45_GPIO_BASE, &s->gpio->iomem);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
 
-    /* SDIO host, no card (the 1G's Marvell 88W8686 is not modelled) */
+    /*
+     * SDIO host, and with wifi (the default) the Marvell 88W8686 the DT's
+     * sdio node drives (AppleMRVL868x), its frames on -netdev ...,id=wifi0,
+     * user networking when none is given, as on the iPad.
+     */
     dev = qdev_new("ipodtouch.sdio");
+    if (s->wifi) {
+        static const BCMSDIOChip mrvl8686 = {
+            .manfid = 0x02df, .prodid = 0x9103,   /* Marvell, 88W8686 */
+            .vers1 = { "Marvell", "802.11 SDIO ID: 0B" },
+            .functions = 1, .no_mac_funce = true, .fbr_iface = 0x07,   /* WLAN */
+        };
+        DeviceState *card = qdev_new(TYPE_MRVL8686);
+        object_property_add_child(OBJECT(machine), "wifi-card", OBJECT(card));
+        qdev_realize_and_unref(card, NULL, &error_fatal);
+        if (!qemu_find_netdev("wifi0")) {
+            QemuOpts *o = qemu_opts_parse_noisily(qemu_find_opts("netdev"), "type=user,id=wifi0", false);
+            Error *err = NULL;
+            if (o) {
+                netdev_add(o, &err);
+            }
+            if (err) {
+                warn_reportf_err(err, "Wi-Fi has no network: ");
+            }
+        }
+        mrvl8686_setup_net(MRVL8686(card));
+        ipod_touch_sdio_set_chip(IPOD_TOUCH_SDIO(dev), &mrvl8686);
+        IPOD_TOUCH_SDIO(dev)->card_present = true;
+        object_property_set_link(OBJECT(dev), "mrvl", OBJECT(card), &error_fatal);
+    }
     memory_region_add_subregion(sysmem, N45_SDIO_BASE, &IPOD_TOUCH_SDIO(dev)->iomem);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, n45_irq(s, N45_SDIO_IRQ));
+    if (s->wifi) {
+        /* After the host's realize: its input needs a canonical path. */
+        qdev_connect_gpio_out(DEVICE(IPOD_TOUCH_SDIO(dev)->mrvl), 0,
+                              qdev_get_gpio_in_named(dev, "card-irq", 0));
+    }
 
     /* UARTs (Samsung, S5L interrupt semantics) */
     for (int i = 0; i < 5; i++) {
@@ -913,6 +951,16 @@ static void n45_get_gles_contexts(Object *obj, Visitor *v, const char *name, voi
     visit_type_int(v, name, &count, errp);
 }
 
+static bool n45_get_wifi(Object *obj, Error **errp)
+{
+    return IPOD_TOUCH_1G_MACHINE(obj)->wifi;
+}
+
+static void n45_set_wifi(Object *obj, bool value, Error **errp)
+{
+    IPOD_TOUCH_1G_MACHINE(obj)->wifi = value;
+}
+
 static void n45_machine_class_init(ObjectClass *klass, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(klass);
@@ -937,6 +985,11 @@ static void n45_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "tvout-workaround",
         "physical address of a kernel word to pin at zero for the TV-out driver (0 = off)");
 
+    object_class_property_add_bool(klass, "wifi", n45_get_wifi, n45_set_wifi);
+    object_class_property_set_description(klass, "wifi",
+        "on (default): the Marvell 88W8686 on the SDIO bus, its frames on -netdev id=wifi0, "
+        "or on user networking when none is given; off = no card");
+
     mc->desc = "iPod touch 1G (N45AP, S5L8900)";
     mc->init = n45_machine_init;
     mc->max_cpus = 1;
@@ -952,6 +1005,7 @@ static void n45_machine_class_init(ObjectClass *klass, void *data)
 static void n45_instance_init(Object *obj)
 {
     IPOD_TOUCH_1G_MACHINE(obj)->usb_wrangler_quirk = true;
+    IPOD_TOUCH_1G_MACHINE(obj)->wifi = true;
     guest_pkg_init(&IPOD_TOUCH_1G_MACHINE(obj)->pkg, obj);
     object_property_add_str(obj, "gles-rejects", n45_get_gles_rejects, NULL);
     object_property_set_description(obj, "gles-rejects",
