@@ -1300,11 +1300,16 @@ static void it_i2s_test_tone(IPodTouchI2SState *s)
         frames = IT_I2S_RING_SIZE / 4;
     }
 
+    /* Past the amplifier: at reset it is still off (control 0, no guest has
+     * programmed it), and frames tagged with its gain would all play as zero. */
+    LM48821State *amp = s->amplifier;
+    s->amplifier = NULL;
     for (i = 0; i < frames; i++) {
         int16_t v = (int16_t)(12000.0 * sin(2.0 * M_PI * hz * i / s->as.freq));
         uint8_t frame[4] = { v & 0xff, (v >> 8) & 0xff, v & 0xff, (v >> 8) & 0xff };
         it_i2s_push(s, frame, sizeof(frame));
     }
+    s->amplifier = amp;
     s->running = true;
     it_i2s_activate(s);
     IT_I2S_DPRINTF("test tone: %u frames @ %.1f Hz queued\n", frames, hz);
