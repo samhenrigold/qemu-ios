@@ -19,7 +19,7 @@
  * fails. libGFXShared drops a plugin that lacks any name it dlsyms (4.x: 79,
  * 5.x: 111; ipad1_rootfs.py checks the firmware's list against this file's
  * exports). The two generations (gfx_gen.h), as each libGFXShared checks them:
- *   4.x  gldGetVersion 3.1.0; gldCreateShared(&slot, device mask, n) per ID
+ *   4.x  gldGetVersion 3.1.0 (4.3: 3.1.4); gldCreateShared(&slot, device mask, n) per ID
  *   5.x  gldGetVersion 4.0.44; gldCreateDevice(&device, ...) per registered device,
  *        then gldCreateShareGroup(device, &slot, n) / gldDestroyShareGroup(slot)
  */
@@ -47,11 +47,12 @@ void gldInitializeLibrary(void *svcs, unsigned z, unsigned mask, void *flush, vo
 
 void gldTerminateLibrary(void) {}
 
-/* 4.x libGFXShared requires 3.1.0, 5.x 4.0.44; both a renderer ID with only bits 8-15 set. */
+/* 4.2.1's libGFXShared requires 3.1.0, 4.3's 3.1.4 (gfx_gld_revision), 5.x 4.0.44; all a
+ * renderer ID with only bits 8-15 set. */
 int gldGetVersion(int *major, int *minor, int *rev, unsigned *renderer)
 {
     int five = gfx_generation() == 5;
-    *major = five ? 4 : 3; *minor = five ? 0 : 1; *rev = five ? 44 : 0; *renderer = GLD_RENDERER;
+    *major = five ? 4 : 3; *minor = five ? 0 : 1; *rev = five ? 44 : gfx_gld_revision(); *renderer = GLD_RENDERER;
     return 1;
 }
 
