@@ -35,7 +35,7 @@ with working touch; lockdownd reports the device activated.
   (LightTouchMac smoke #61). Safari loads pages from the host at 10.0.2.2. `MRVL_TRACE=1` logs commands.
 - Buttons: `qemu_ios_ui_button` Home and Hold drive the same pads as the Cmd chords
   (`ipod_touch_1g_press_button`); the 1G has no volume buttons. `system_powerdown` is the user's gesture,
-  as on the 2G and the iPad: Home, Hold 3.5 s, drag the "slide to power off" knob (65,68 -> 295);
+  as on the 2G and the iPad: Home, Hold 6 s (1.1 raises the sheet 3-4 s into a hold, later on the first), drag the "slide to power off" knob (65,68 -> 295);
   1.1 ends in `pmu go stdby` and QEMU exits about 15 s after the request.
 - Epoch: POWER_ID[31:24] is the epoch iBoot-204's miu_init compares inline (2 for 1.1-1.1.2, 3 for
   1.1.3-1.1.5), read off the staged iBoot by it_iboot.c's finder, as the 2G's direct-iboot does.

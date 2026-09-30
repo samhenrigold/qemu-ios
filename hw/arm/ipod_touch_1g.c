@@ -458,7 +458,10 @@ static void n45_pwroff_tick(void *opaque)
     case PWROFF_WAKE:
         n45_button(s, N45_GPIO_BUTTON_POWER, N45_GPIO_BUTTON_POWER_IRQ, true);
         s->pwroff_phase = PWROFF_HOLD;
-        n45_pwroff_arm(s, 3500);            /* > SpringBoard's hold threshold */
+        /* Held until the sheet is up: 1.1 shows it 3-4 s into a hold, later on a boot's first
+         * hold (the sheet is built on first use); a 3.5 s hold released before it and locked
+         * the device instead (the matrix's second boot, smoke #21). Holding longer is harmless. */
+        n45_pwroff_arm(s, 6000);
         break;
     case PWROFF_HOLD:
         n45_button(s, N45_GPIO_BUTTON_POWER, N45_GPIO_BUTTON_POWER_IRQ, false);
