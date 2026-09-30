@@ -2,7 +2,9 @@
 """The D1815's scratch bank (0x80-0x9F: the OS's boot reason at 0x8F, PMURTC's offset at 0x84) and its RTC
 survive a restart; only the PMU's own power-on clears them. 5.x's halt with the cable attached writes 0x8F = 0x90
 and restarts, and iBoot-1219 reads the reason back to run its power-off simulation instead of autobooting iOS
-(LightTouchMac smoke #28). Compiles the model's register file and reset from hw/arm/s5l8930_i2c.c."""
+(LightTouchMac smoke #28). 4.x's halt makes the same choice from STATUS A bit 3, VBUS (8L1 809f47b8: STATUS A-E
+read at 809f4384, bit 3 set -> 0x8F = 0x90 and restart, clear -> "pmu go stdby"; ledger #55a), so STATUS A must follow
+the cable. Compiles the model's register file and reset from hw/arm/s5l8930_i2c.c."""
 from pathlib import Path
 import re, subprocess, tempfile
 root = Path(__file__).resolve().parents[2]
@@ -52,6 +54,16 @@ int main(void)
     s.rtc_base = 12345;
     d1815_reset(&s);                                  /* the PMU's own power-on */
     assert(rd(&s, 0x8f) == 0 && rd(&s, 0x84) == 0 && s.rtc_base == 0);
+    /* 8L1's halt decision: VBUS from STATUS A bit 3, read with STATUS B-E in one 5-byte burst (809f4384). */
+    d1815_event(&s.i2c, I2C_START_SEND); d1815_send(&s.i2c, 0x07);
+    assert(!(d1815_recv(&s.i2c) & 8) && rd(&s, 0x07) == 0); /* no cable: standby */
+    s5l8930_d1815_set_usb_host(&s, true);
+    d1815_event(&s.i2c, I2C_START_SEND); d1815_send(&s.i2c, 0x07);
+    assert(d1815_recv(&s.i2c) & 8);                   /* cable: restart into iBoot's wait */
+    assert(rd(&s, 0x07) == 8 && rd(&s, 0x09) == 0x20); /* only VBUS; STATUS C keeps the battery SWI */
+    d1815_reset(&s); assert(rd(&s, 0x07) & 8);        /* a level, not a latch: survives reset */
+    s5l8930_d1815_set_usb_host(&s, false);
+    assert(rd(&s, 0x07) == 0);
     wr(&s, 0x84, 0x77);                               /* PMURTC's offset */
     wr(&s, 0x46, 0x10); wr(&s, 0x47, 0); wr(&s, 0x48, 0); wr(&s, 0x49, 0); wr(&s, 0x4a, 0x41);
     int64_t base = s.rtc_base;
