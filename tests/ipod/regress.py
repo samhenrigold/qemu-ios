@@ -1678,6 +1678,8 @@ def compose_fsck_volume(base, overlay, destination):
 
 def check_fsck(cfg, clean_stop, r):
     """Check every allocation block; a nonzero fsck result is always a failure."""
+    if cfg.board == "n45ap":
+        return r.skip("N45 physical-layout composition is not supported by this filesystem checker")
     img = os.path.join(cfg.out, "volume.img")
     try:
         blocks, used = compose_fsck_volume(cfg.base_nand, cfg.overlay, img)
@@ -1759,6 +1761,7 @@ def main():
         epilog="checks: " + ", ".join(ALL_CHECKS))
     ap.add_argument("--files-dir",
                     default=os.path.expanduser("~/Developer/qemu-ios-files"))
+    ap.add_argument("--bootrom", help="n45 SecureROM input (default: device/bootrom.bin or files-dir/ipod1g/bootrom_s5l8900)")
     ap.add_argument("--base-nand", default=None,
                     help="base NAND image dir (default: <files-dir>/nand-current, the shipping image)")
     ap.add_argument("--cpu", default=None,
@@ -1871,7 +1874,7 @@ def main():
         # 1.1's home screen is icons on black (~135k lit sub-pixels; the Apple logo far fewer), and
         # the 1G has no USB host side yet, so every USB check skips (main clears usbmuxd_ok)
         cfg.home_lit_min = 100000
-        cfg.bootrom = os.path.join(cfg.device, "bootrom.bin")
+        cfg.bootrom = cfg.bootrom or next((p for p in [os.path.join(cfg.device, "bootrom.bin"), os.path.join(cfg.files, "ipod1g", "bootrom_s5l8900")] if os.path.isfile(p)), os.path.join(cfg.files, "ipod1g", "bootrom_s5l8900"))
     # NAND, NOR and iBoot are one set and cannot be mixed: nand-canonical is a
     # 2.1.1 image, and against 3.1.3's iBoot its FTL will not even open --
     # "NAND initialisation failed due to format mismatch", "root filesystem
@@ -1939,6 +1942,8 @@ def main():
     for path, what in ((cfg.qemu, "qemu binary"), (cfg.base_nand, "base NAND")):
         if not os.path.exists(path):
             sys.exit("missing %s: %s" % (what, path))
+    if cfg.board == "n45ap" and not os.path.isfile(cfg.bootrom):
+        sys.exit("missing n45 SecureROM input: " + cfg.bootrom)
     # Stock FFmpeg makes the H.264 checks fail in a way that looks like a
     # code regression (tests/ipod/test_h264_snapshot "slice decode failed").
     import ffmpeg_guard
