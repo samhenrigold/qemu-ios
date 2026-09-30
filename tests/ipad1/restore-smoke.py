@@ -5,6 +5,7 @@ macOS: uses an isolated libirecovery transport adapter and usbmuxd-qemu.
 --erase additionally restores a disposable clone of the selected device.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,26 @@ def port():
         return s.getsockname()[1]
 
 
+def blank_nand(source, destination):
+    """Preserve only measured geometry; no synthetic FTL or filesystem seed."""
+    geometry = json.loads((source / 'geometry.json').read_text())
+    fields = ('page_bytes', 'spare_bytes', 'pages_per_block', 'blocks_per_ce',
+              'ce_per_bus', 'buses')
+    if any(type(geometry.get(key)) is not int or geometry[key] <= 0 for key in fields):
+        raise ValueError('invalid NAND geometry')
+    if geometry['buses'] > 2 or geometry['ce_per_bus'] > 8:
+        raise ValueError('NAND geometry exceeds controller capacity')
+    size = ((geometry['page_bytes'] + geometry['spare_bytes']) *
+            geometry['pages_per_block'] * geometry['blocks_per_ce'])
+    destination.mkdir()
+    (destination / 'geometry.json').write_text(json.dumps(geometry, indent=2) + '\n')
+    for bus in range(geometry['buses']):
+        for ce in range(geometry['ce_per_bus']):
+            # Current page-store format defines untouched sparse holes as erased.
+            with (destination / f'bus{bus}-ce{ce}.pages').open('xb') as stream:
+                stream.truncate(size)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--device', type=Path, default=Path(DEFAULT_DEVICE))
@@ -36,8 +57,12 @@ def main():
     parser.add_argument('--usbmuxd', default=os.path.expanduser('~/Developer/usbmuxd-qemu-ipad1-net/src/usbmuxd'))
     parser.add_argument('--out', type=Path)
     parser.add_argument('--erase', action='store_true', help='restore a disposable APFS clone; source device is read-only')
+    parser.add_argument('--blank-nand', action='store_true',
+                        help='with --erase, start with geometry only, without generated FTL/filesystems')
     parser.add_argument('--timeout', type=int, default=900)
     a = parser.parse_args()
+    if a.blank_nand and not a.erase:
+        parser.error('--blank-nand requires --erase')
     identity = json.loads((a.device / 'identity.json').read_text())
     ecid = identity['unique-chip-id']
     for path in (a.rom, a.ipsw, a.device / 'gid-blobs.bin', a.libirecovery / 'libirecovery-1.0.5.dylib'):
@@ -56,8 +81,11 @@ def main():
                f'gid-blobs={(a.device / "gid-blobs.bin").resolve()},'
                f'usb-tcp-addr=127.0.0.1:{usb_port}')
     if a.erase:
-        subprocess.run(['cp', '-cR', str(a.device / 'nand'), str(out / 'nand')], check=True)
-        subprocess.run(['chmod', '-R', 'u+w', str(out / 'nand')], check=True)
+        if a.blank_nand:
+            blank_nand(a.device / 'nand', out / 'nand')
+        else:
+            subprocess.run(['cp', '-cR', str(a.device / 'nand'), str(out / 'nand')], check=True)
+            subprocess.run(['chmod', '-R', 'u+w', str(out / 'nand')], check=True)
         nor = bytearray((a.device / 'nor.bin').read_bytes())
         # A factory restore target has identity/NVRAM but no boot images.
         # With no LLB to load, stock SecureROM enters DFU by itself.
@@ -67,6 +95,17 @@ def main():
     if os.environ.get('IPAD1_MACHINE_EXTRA'):   # e.g. iop-core=off, as boot-smoke.py takes it
         machine += ',' + os.environ['IPAD1_MACHINE_EXTRA']
     processes, logs = [], []
+    def digest(path):
+        with path.open('rb') as stream:
+            return hashlib.file_digest(stream, 'sha256').hexdigest()
+    (out / 'inputs.json').write_text(json.dumps({
+        'blank_nand': a.blank_nand,
+        'device': str(a.device.resolve()),
+        'qemu_sha256': digest(a.qemu),
+        'rom_sha256': digest(a.rom),
+        'ipsw_sha256': digest(a.ipsw),
+        'gid_blobs_sha256': digest(a.device / 'gid-blobs.bin'),
+    }, indent=2) + '\n')
 
     def start(command, log, env=None):
         stream = (out / log).open('w')
@@ -100,7 +139,8 @@ def main():
         success = code == 0 and marker in log
         if not success:
             raise RuntimeError(f'idevicerestore exited {code}; see {out / "restore.log"}')
-        print('PASS: ' + ('erase restore' if a.erase else 'SecureROM → DFU → recovery → restore ramdisk'))
+        print('PASS: ' + ('blank-NAND erase restore' if a.blank_nand else
+                          'erase restore' if a.erase else 'SecureROM → DFU → recovery → restore ramdisk'))
     finally:
         for p in reversed(processes):
             if p.poll() is None:
