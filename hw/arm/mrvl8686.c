@@ -351,6 +351,18 @@ static void mrvl_build_eeprom(Mrvl8686Card *c)
     }
 }
 
+/* The unit's MAC, into the EEPROM the driver reads it from (key 2, then the nub's
+ * local-mac-address) and the firmware's answers; all zeros (no "mac", i.e. no
+ * machine wifi-mac) is an Apple-OUI placeholder, the same on every unit. */
+static void mrvl_card_set_mac(Mrvl8686Card *c, const uint8_t *mac)
+{
+    static const uint8_t placeholder[6] = { 0x00, 0x1b, 0x63, 0x45, 0x1e, 0x01 };
+    static const uint8_t unset[6];
+
+    memcpy(c->mac, memcmp(mac, unset, 6) ? mac : placeholder, 6);
+    mrvl_build_eeprom(c);
+}
+
 static void mrvl_card_reset(Mrvl8686Card *c)
 {
     c->stage = MRVL_STAGE_BOOTROM;
@@ -619,16 +631,22 @@ void mrvl8686_setup_net(Mrvl8686State *s)
 static void mrvl8686_init(Object *obj)
 {
     Mrvl8686State *s = MRVL8686(obj);
-    /* An Apple OUI, as the unit's EEPROM would carry. */
-    static const uint8_t mac[6] = { 0x00, 0x1b, 0x63, 0x45, 0x1e, 0x01 };
     static const uint8_t bssid[6] = { 0x02, 0x00, 0x5e, 0x10, 0x00, 0x01 };
 
-    memcpy(s->card.mac, mac, 6);
     memcpy(s->card.bssid, bssid, 6);
-    mrvl_build_eeprom(&s->card);
     mrvl_card_reset(&s->card);
     qdev_init_gpio_out(DEVICE(obj), &s->irq, 1);
 }
+
+static void mrvl8686_realize(DeviceState *dev, Error **errp)
+{
+    Mrvl8686State *s = MRVL8686(dev);
+    mrvl_card_set_mac(&s->card, s->conf.macaddr.a);
+}
+
+static const Property mrvl8686_properties[] = {
+    DEFINE_PROP_MACADDR("mac", Mrvl8686State, conf.macaddr),
+};
 
 static int mrvl8686_post_load(void *opaque, int version_id)
 {
@@ -684,6 +702,8 @@ static void mrvl8686_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->vmsd = &vmstate_mrvl8686;
+    dc->realize = mrvl8686_realize;
+    device_class_set_props(dc, mrvl8686_properties);
     dc->desc = "Marvell 88W8686 SDIO Wi-Fi card";
 }
 
