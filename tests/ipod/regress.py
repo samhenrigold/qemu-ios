@@ -440,15 +440,22 @@ class Device:
                 return False, "qemu exited (rc=%s)" % self.qemu.returncode, best
             time.sleep(10)
             n += 1
-            if self.cfg.board == "n45ap":
-                # the 1G does not wake from sleep yet (LightTouchMac docs/smoke.md #1): a touch on an
-                # empty spot of 1.1's home screen keeps SpringBoard's 60 s auto-lock from firing
-                self.qmp.tap(240, 330)
             try:
                 self.qmp.shot(shot)
             except Exception as e:
                 return False, "screendump failed: %s" % e, best
             hi, lit = lit_count(shot)
+            if self.cfg.board == "n45ap" and self.cfg.home_lit_min <= lit < SOLID_LIT_MAX:
+                # Keep an already visible home screen awake. A boot-logo sample
+                # is not permission to interrupt the SPI firmware handshake.
+                self.qmp.tap(240, 330)
+            try:
+                with open(self.serial, "rb") as serial:
+                    panic = re.search(rb"(?:\r|\n)panic\(cpu [0-9]+ caller 0x[0-9a-fA-F]+\):", serial.read())
+                if panic:
+                    return False, "guest kernel panic; see " + self.serial, max(best, lit)
+            except FileNotFoundError:
+                pass
             if lit >= SOLID_LIT_MAX:
                 # See SOLID_LIT_MAX: a fill is iBoot, not SpringBoard.
                 log("%s: t+%.0fs solid fill (%d lit) - the panel is showing a "
