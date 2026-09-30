@@ -43,8 +43,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(Pcf50633State, PCF50633)
 #define PMU_IRQ_MASK_A 0x07
 
 /*
- * RTC. There is no BCD calendar here -- that was a guess carried over from the
- * real PCF50633, and iOS never reads one. AppleD1759PMURTC (the same code in
+ * RTC. The D1759 (2.x/3.x) has no BCD calendar; 1.x's PCF50633 does, and reads
+ * it (PMU_BCD_RTC, "rtc-bcd": ApplePCF50635PMURTC, see pmu_bcd_rtc_read).
+ * AppleD1759PMURTC (the same code in
  * 2.1.1's AppleD1759PMU-36.2 and 3.1.3's -94.7) treats the D1759 RTC as:
  *
  *   0x5C..0x5F  a free-running 32-bit LITTLE-ENDIAN seconds counter, read-only.
@@ -61,6 +62,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(Pcf50633State, PCF50633)
  */
 #define PMU_RTC_COUNTER 0x5C   // .. 0x5F, 32-bit LE seconds, read-only
 #define PMU_RTC_OFFSET  0x64   // .. 0x67, 32-bit LE, written by the guest
+#define PMU_BCD_RTC     0x59   // .. 0x5F, the PCF50633's BCD calendar ("rtc-bcd", 1.x)
 
 typedef struct Pcf50633State {
 	I2CSlave i2c;
@@ -74,6 +76,8 @@ typedef struct Pcf50633State {
 	bool shutdown_armed;  // obsolete host flag; retained for snapshot wire compatibility
 	uint8_t shutdown_reg;   /* "shutdown-reg" property */
 	uint8_t usb_status_reg, usb_status_bits;   /* "usb-status-reg"/"-bits": the cable level */
+	bool rtc_bcd;           /* "rtc-bcd": the PCF50633 calendar at 0x59 (1.x) */
+	uint8_t backlight_enable_reg, backlight_enable_bit, backlight_level_reg;   /* "backlight-*" */
     qemu_irq irq;
     QEMUTimer *adc_timer;
     uint16_t adc_values[16];

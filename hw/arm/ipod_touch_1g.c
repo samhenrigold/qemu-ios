@@ -458,7 +458,10 @@ static void n45_pwroff_tick(void *opaque)
     case PWROFF_WAKE:
         n45_button(s, N45_GPIO_BUTTON_POWER, N45_GPIO_BUTTON_POWER_IRQ, true);
         s->pwroff_phase = PWROFF_HOLD;
-        n45_pwroff_arm(s, 3500);            /* > SpringBoard's hold threshold */
+        /* Held until the sheet is up: 1.1 shows it 3-4 s into a hold, later on a boot's first
+         * hold (the sheet is built on first use); a 3.5 s hold released before it and locked
+         * the device instead (the matrix's second boot, smoke #21). Holding longer is harmless. */
+        n45_pwroff_arm(s, 6000);
         break;
     case PWROFF_HOLD:
         n45_button(s, N45_GPIO_BUTTON_POWER, N45_GPIO_BUTTON_POWER_IRQ, false);
@@ -663,6 +666,9 @@ static void n45_machine_init(MachineState *machine)
         };
         DeviceState *card = qdev_new(TYPE_MRVL8686);
         object_property_add_child(OBJECT(machine), "wifi-card", OBJECT(card));
+        if (s->wifi_mac && s->wifi_mac[0]) {
+            object_property_parse(OBJECT(card), "mac", s->wifi_mac, &error_fatal);
+        }
         qdev_realize_and_unref(card, NULL, &error_fatal);
         if (!qemu_find_netdev("wifi0")) {
             QemuOpts *o = qemu_opts_parse_noisily(qemu_find_opts("netdev"), "type=user,id=wifi0", false);
@@ -809,6 +815,11 @@ static void n45_machine_init(MachineState *machine)
          * the USB stack stops ("cable removed") and the device deep-sleeps after the boot. */
         qdev_prop_set_uint8(DEVICE(pmu), "usb-status-reg", 0x4b);
         qdev_prop_set_uint8(DEVICE(pmu), "usb-status-bits", 0x03);
+        qdev_prop_set_bit(DEVICE(pmu), "rtc-bcd", true);
+        /* LEDENA bit 0: 1.x clears it when the display sleeps (qemu_ios_ui_display_sleeping). */
+        qdev_prop_set_uint8(DEVICE(pmu), "backlight-enable-reg", 0x29);
+        qdev_prop_set_uint8(DEVICE(pmu), "backlight-enable-bit", 0x01);
+        qdev_prop_set_uint8(DEVICE(pmu), "backlight-level-reg", 0);
         PCF50633(pmu)->usb_cable = (s->usb_tcp_addr && s->usb_tcp_addr[0]) || getenv("IT_USB_TCP");
         i2c_slave_realize_and_unref(pmu, IPOD_TOUCH_I2C(dev)->bus, &error_fatal);
         qdev_connect_gpio_out(DEVICE(pmu), 0, qdev_get_gpio_in(DEVICE(s->sysic), 0x55));
@@ -903,6 +914,7 @@ N45_STR_PROP(iboot_path)
 N45_STR_PROP(nand_path)
 N45_STR_PROP(nand_overlay)
 N45_STR_PROP(usb_tcp_addr)
+N45_STR_PROP(wifi_mac)
 
 static void n45_get_usb_wrangler_quirk(Object *obj, Visitor *v, const char *name,
                                        void *opaque, Error **errp)
@@ -989,6 +1001,9 @@ static void n45_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "wifi",
         "on (default): the Marvell 88W8686 on the SDIO bus, its frames on -netdev id=wifi0, "
         "or on user networking when none is given; off = no card");
+    object_class_property_add_str(klass, "wifi-mac", n45_get_wifi_mac, n45_set_wifi_mac);
+    object_class_property_set_description(klass, "wifi-mac",
+        "the 88W8686's EEPROM MAC, aa:bb:cc:dd:ee:ff (the unit's; iBoot's DT copy comes from nvram wifiaddr)");
 
     mc->desc = "iPod touch 1G (N45AP, S5L8900)";
     mc->init = n45_machine_init;

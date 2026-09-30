@@ -36,11 +36,12 @@ static void pmu_trace_access(const char *what, uint8_t reg, uint8_t val)
             what, reg, val, pc, lr);
 }
 
-/* What the panel gets: the WLED level, only while its rail is enabled. */
+/* What the panel gets: the WLED level, only while its rail is enabled. With no
+ * level register ("backlight-level-reg" 0, the 1G) the light is on/off only. */
 static void pmu_update_backlight(Pcf50633State *s)
 {
-    lcd_changebrightness(s->regs[PMU_LDO_ENABLE] & PMU_LDO_BACKLIGHT
-                         ? s->regs[PMU_DSBL1] : 0);
+    bool on = s->regs[s->backlight_enable_reg] & s->backlight_enable_bit;
+    lcd_changebrightness(!on ? 0 : s->backlight_level_reg ? s->regs[s->backlight_level_reg] : 255);
 }
 
 static void pmu_update_irq(Pcf50633State *s)
@@ -211,6 +212,36 @@ static int pcf50633_event(I2CSlave *i2c, enum i2c_event event)
     return 0;
 }
 
+static uint8_t pmu_bcd(unsigned v)
+{
+    return (v / 10) << 4 | v % 10;
+}
+
+/*
+ * The PCF50633's own RTC (1.x, "rtc-bcd"): RTCSC..RTCYR at 0x59..0x5f, BCD
+ * seconds, minutes, hours, weekday (0 = Sunday), day, month, two-digit year.
+ * ApplePCF50635PMURTC::getCurrentDateTime (3A101a 0xc047bb04, the same code in
+ * 4B1) reads the seven bytes from 0x59, reads 0x59 once more and retries
+ * until the seconds agree, then takes year = 2000 + RTCYR; AppleARMRTC turns
+ * that into Unix seconds. Host UTC, snapshotted on the RTCSC read so a block
+ * describes one instant. The offset the OS keeps is its own (0x6b..0x6e, the
+ * register file). Before this the D1759's counter bytes answered at 0x5c..0x5f
+ * (weekday/day/month/year here) and 0x59..0x5b read zero: a date that moved
+ * with bits 8..31 of the counter, days per boot.
+ */
+static uint8_t pmu_bcd_rtc_read(Pcf50633State *s, uint8_t reg)
+{
+    if (reg == PMU_BCD_RTC || s->rtc_latch == 0) {
+        s->rtc_latch = (uint32_t)time(NULL);
+    }
+    time_t t = s->rtc_latch;
+    struct tm tm;
+    gmtime_r(&t, &tm);
+    const unsigned field[7] = { tm.tm_sec, tm.tm_min, tm.tm_hour, tm.tm_wday,
+                                tm.tm_mday, tm.tm_mon + 1, tm.tm_year % 100 };
+    return pmu_bcd(field[reg - PMU_BCD_RTC]);
+}
+
 static uint8_t pcf50633_recv(I2CSlave *i2c)
 {
     Pcf50633State *s = PCF50633(i2c);
@@ -222,24 +253,23 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
 
     int res = 0;
 
-    switch(reg) {
-        case PMU_RTC_COUNTER:
-            // Take the snapshot on the low byte, so the four bytes the driver
-            // reads back describe one instant even if the host second ticks
-            // over mid-transfer. 2.1.1's driver has no ripple retry at all, so
-            // without this it can observe a torn counter.
+    if (s->rtc_bcd && reg >= PMU_BCD_RTC && reg < PMU_BCD_RTC + 7) {
+        res = pmu_bcd_rtc_read(s, reg);
+        goto done;
+    }
+    if (!s->rtc_bcd && reg >= PMU_RTC_COUNTER && reg < PMU_RTC_COUNTER + 4) {
+        // Take the snapshot on the low byte, so the four bytes the driver
+        // reads back describe one instant even if the host second ticks
+        // over mid-transfer. 2.1.1's driver has no ripple retry at all, so
+        // without this it can observe a torn counter. (Read out of order,
+        // which nobody does, still answers the time rather than zero.)
+        if (reg == PMU_RTC_COUNTER || s->rtc_latch == 0) {
             s->rtc_latch = (uint32_t)time(NULL);
-            res = s->rtc_latch & 0xff;
-            break;
-        case PMU_RTC_COUNTER + 1:
-        case PMU_RTC_COUNTER + 2:
-        case PMU_RTC_COUNTER + 3:
-            if (s->rtc_latch == 0) {
-                // Read out of order (nobody does, but do not answer zero).
-                s->rtc_latch = (uint32_t)time(NULL);
-            }
-            res = (s->rtc_latch >> (8 * (reg - PMU_RTC_COUNTER))) & 0xff;
-            break;
+        }
+        res = (s->rtc_latch >> (8 * (reg - PMU_RTC_COUNTER))) & 0xff;
+        goto done;
+    }
+    switch (reg) {
         case 0x69:
             res = 0; // boot count error/panic
             break;
@@ -281,6 +311,7 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
             // making it fall through into a reset instead of suspending.
             res = s->regs[reg];
     }
+done:
     if (reg == s->usb_status_reg) {
         // The live cable level ("usb-status-reg"/"-bits"): the D1759's power-source
         // status 0x04 bit 3 (2.x+), the PCF50633's MBCS1 0x4b USBPRES|USBOK (1.x,
@@ -354,6 +385,9 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
         pmu_trace_access("write", reg, data);
     }
 
+    if (reg == s->backlight_enable_reg || (reg && reg == s->backlight_level_reg)) {
+        pmu_update_backlight(s);
+    }
     if (reg == s->shutdown_reg) {
         /* Native 7E18 without USB power sets bit 0, then waits forever
          * in AppleD1759PMU's "pmu go stdby" path (c05fba80-c05fbacc). */
@@ -367,10 +401,6 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
             break;
         case PMU_ADC_CONTROL:
             pmu_adc_command(s, data);
-            break;
-        case PMU_DSBL1:
-        case PMU_LDO_ENABLE:
-            pmu_update_backlight(s);
             break;
 
         case PMU_STANDBY_CMD:
@@ -420,7 +450,7 @@ static void pcf50633_reset(DeviceState *dev)
     s->regs[PMU_ADC_CONTROL] = 0;
     /* The backlight rail is on out of reset (iBoot lights its logo without
      * touching 0x10); the level is whatever the guest programs. */
-    s->regs[PMU_LDO_ENABLE] |= PMU_LDO_BACKLIGHT;
+    s->regs[s->backlight_enable_reg] |= s->backlight_enable_bit;
     s->adc_sample = 0;
     for (unsigned i = 0; i < 3; i++) {
         s->regs[PMU_EVENT_A_REG + i] = 0;
@@ -489,6 +519,14 @@ static const Property pcf50633_properties[] = {
     DEFINE_PROP_UINT8("shutdown-reg", Pcf50633State, shutdown_reg, PMU_SHUTDOWN_REG),
     DEFINE_PROP_UINT8("usb-status-reg", Pcf50633State, usb_status_reg, PMU_PWRSRC_STATUS),
     DEFINE_PROP_UINT8("usb-status-bits", Pcf50633State, usb_status_bits, PMU_PWRSRC_USB),
+    /* The backlight: its enable register/bit and level register (0 = on/off only). The
+     * defaults are the D1759's (0x10 bit 6, 0x30); 1.x's PCF50633 drives LEDENA 0x29 bit 0
+     * (cleared when the display sleeps) and LEDOUT 0x28 (a 6-bit LED current, not rendered). */
+    DEFINE_PROP_UINT8("backlight-enable-reg", Pcf50633State, backlight_enable_reg, PMU_LDO_ENABLE),
+    DEFINE_PROP_UINT8("backlight-enable-bit", Pcf50633State, backlight_enable_bit, PMU_LDO_BACKLIGHT),
+    DEFINE_PROP_UINT8("backlight-level-reg", Pcf50633State, backlight_level_reg, PMU_DSBL1),
+    /* The PCF50633's BCD calendar at 0x59 (1.x) instead of the D1759's counter at 0x5c. */
+    DEFINE_PROP_BOOL("rtc-bcd", Pcf50633State, rtc_bcd, false),
 };
 
 static void pcf50633_class_init(ObjectClass *klass, void *data)

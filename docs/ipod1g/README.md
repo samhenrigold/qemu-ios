@@ -35,7 +35,7 @@ with working touch; lockdownd reports the device activated.
   (LightTouchMac smoke #61). Safari loads pages from the host at 10.0.2.2. `MRVL_TRACE=1` logs commands.
 - Buttons: `qemu_ios_ui_button` Home and Hold drive the same pads as the Cmd chords
   (`ipod_touch_1g_press_button`); the 1G has no volume buttons. `system_powerdown` is the user's gesture,
-  as on the 2G and the iPad: Home, Hold 3.5 s, drag the "slide to power off" knob (65,68 -> 295);
+  as on the 2G and the iPad: Home, Hold 6 s (1.1 raises the sheet 3-4 s into a hold, later on the first), drag the "slide to power off" knob (65,68 -> 295);
   1.1 ends in `pmu go stdby` and QEMU exits about 15 s after the request.
 - Epoch: POWER_ID[31:24] is the epoch iBoot-204's miu_init compares inline (2 for 1.1-1.1.2, 3 for
   1.1.3-1.1.5), read off the staged iBoot by it_iboot.c's finder, as the 2G's direct-iboot does.
@@ -67,7 +67,9 @@ Cmd+L power (headless: QMP `input-send-event` for taps, as `tests/ipod/regress.p
 Machine properties: `bootrom`, `iboot`, `nand`, `nand-overlay`, `usb-tcp-addr` (host:port of
 usbmuxd-qemu's QEMU backend, else `IT_USB_TCP`; empty = no cable), `usb-wrangler-quirk` (bool, default
 on: the phyRegistered guard, see debts), `tvout-workaround=<paddr>` (default off), `guest-package`,
-`gles-debug`, `wifi` (bool, default on: the 88W8686; off = an empty SDIO slot), and the read-only
+`gles-debug`, `wifi` (bool, default on: the 88W8686; off = an empty SDIO slot), `wifi-mac` (the card's EEPROM
+MAC, the unit identity's; FirmwareKit's device.lock.json `machine` carries it; unset = 00:1b:63:45:1e:01 on every
+unit), and the read-only
 `gles-rejects`, `gles-contexts`.
 
 A GL device: `imgtools/ipod1g_device.py prepare ~/Developer/qemu-ios-files/ipod1g OUT` (after
@@ -103,9 +105,9 @@ the block does, P a documented quirk/patch, S stub.
 | FMC NAND + ECC + ADM | `s5l8900.fmc` (base + overlay page store, erase markers, program = AND), `s5l8900.nand-ecc` (stub), `s5l8900.adm` (the ADM firmware's command interface: 0x200/0x300 read, 0x400 multi-bank program, 0x500 program, 0x600 erase; FTL metadata in data3; result mailbox +0x30 with clean-page status) | ported, command set completed | R (store) / S (ECC) / H (ADM firmware) |
 | USB OTG + PHY | `synopsys` OTG with the 8900 hwcfg and `usb-tcp-addr`, `ipodtouch.usbphys` | shared | R (device mode to usbmuxd; the core's reset ConIDStsChng, GOTGCTL ID/session status, the interrupt line on GAHBCFG, EP0 PktCnt) |
 | DMA | two `pl080` | shared QEMU model | R |
-| I2C0 lis302dl, I2C1 pcf50633 | shared; PMU `shutdown-reg=0x0c` (1.x: 0x0a is the fourth IRQ mask), cable level on MBCS1 (`usb-status-reg=0x4b`, `-bits=0x03`) | variant | H |
+| I2C0 lis302dl, I2C1 pcf50633 | shared; PMU `shutdown-reg=0x0c` (1.x: 0x0a is the fourth IRQ mask), cable level on MBCS1 (`usb-status-reg=0x4b`, `-bits=0x03`), the PCF50633's BCD calendar at 0x59 (`rtc-bcd`, host UTC), the backlight on LEDENA (`backlight-enable-reg=0x29`, `-bit=0x01`, `backlight-level-reg=0`: on/off only) | variant | H (R: RTC, backlight enable) |
 | SDIO host | `ipodtouch.sdio`, the `mrvl` card link and its `card-irq` | shared | R |
-| Wi-Fi card | `mrvl8686` (Marvell 88W8686): registers, download, EEPROM, interrupt register; firmware answered in C | new | R (SDIO) / H (firmware) |
+| Wi-Fi card | `mrvl8686` (Marvell 88W8686): registers, download, EEPROM (the machine's `wifi-mac`), interrupt register; firmware answered in C | new | R (SDIO) / H (firmware) |
 | TVOut (mixer1/2, sdo) | `ipodtouch.tvout` | shared | S |
 | MBX (GPU) | the 2G's `ipodtouch.mbx` (ids, MMU handshake, interrupt mask/status/clear, the software interrupt), interrupt 0xC; no engine (GL goes to the host bridge) | shared | R (interrupt block) / H (idle, no engine) |
 | Guest services | QEMU_CALL cp15 register: GL bridge, guest package | shared (`guest-gles.c`, `guest-package.c`) | H |
@@ -156,15 +158,16 @@ the block does, P a documented quirk/patch, S stub.
    bootrom and LLB into the kernel's resume path. None of that exists here (no LLB, no power-cut
    model), and the buttons drive only their GPIO pads, not the PMU wake source the DT names
    (`button-wake`: PMU interrupt 0x0a, `'STAT'` 0x100).
-8. **Panel/backlight (S)**: `s5l8900.lcdpanel` answers ID reads only; brightness comes from the PMU.
-   The PMU model's backlight is the D1759's (0x10 bit 6, 0x30), which 1.x never writes, so the level stays
-   255 and `qemu_ios_ui_display_sleeping` never reports the 1G asleep (the panel's own enable does go off:
-   `AppleMerlotLCD::_lcdEnable: 0`).
-10. **Wi-Fi MAC and the UDID (S)**. The 88W8686's MAC comes from the model's invented EEPROM (the driver puts it on
-   its SDIO nub, not in the device tree), and the device tree's `sdio` node carries a
-   zero `local-mac-address` (iBoot-204 does not fill it from the NOR SysCfg here), so lockdownd's UDID is
-   SHA1(serial + "00:00:00:00:00:00" + "") rather than FirmwareKit's identity UDID (serial + Wi-Fi + BT MACs).
-   Consistent across boots; usbmuxd and lockdown agree on it.
+8. **Panel/backlight (H)**: `s5l8900.lcdpanel` answers ID reads only. The PMU's backlight is the PCF50633's
+   LEDENA (0x29 bit 0): iBoot-204 sets it before the logo (LEDCTL 7, LEDOUT 0x22, LEDENA 1) and 1.x clears it
+   when the display sleeps (4B1's lock: LEDOUT 1, LEDDIM 1, LEDENA 0), so `qemu_ios_ui_display_sleeping`
+   reports the 1G asleep. LEDOUT (the 6-bit LED current, 0x01-0x2c across 4B1's slider, 0x05 at auto-brightness)
+   is not rendered: pixels scale by the level/255 and a current that low would make every screendump black.
+10. **Wi-Fi MAC and the UDID (R)**. iBoot-204 fills `arm-io/sdio`'s `local-mac-address` from nvram `wifiaddr`
+   only (its SysCfg fallback, 0x18000660, is `movs r0, #0; bx lr`), and FirmwareKit's N45NOR now writes it;
+   the card's EEPROM carries the same MAC (`wifi-mac`, from device.lock.json). The 1G has no Bluetooth (no
+   `arm-io/uart3/bluetooth` node), so lockdownd's UDID is SHA1(serial + Wi-Fi MAC + ""), which is FirmwareKit's
+   n45 identity UDID; Settings > About shows the identity's Wi-Fi address.
 11. **iBoot-204.3.16's NAND (P, FirmwareKit)**. 4B1 (and by version 4A93/4A102) pass miu_init with the
    read-off epoch 3, then iBoot's WMR (FIL `C003`) refuses the store N45NAND writes for 3A101a's (`C002`):
    `[WMR:ERR] read only version (1, 0)`, `no signature or no production format`, `NAND failed
