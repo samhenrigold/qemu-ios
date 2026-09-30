@@ -143,7 +143,7 @@ with tempfile.TemporaryDirectory(prefix="fsck-test-") as work:
     except ValueError:
         pass
 
-    cfg = SimpleNamespace(base_nand=str(base), overlay=str(overlay), out=str(work))
+    cfg = SimpleNamespace(board="n72ap", base_nand=str(base), overlay=str(overlay), out=str(work))
     for code in (0, 8):
         def command(argv, **kwargs):
             if argv[0] == "fsck_hfs":
@@ -155,6 +155,12 @@ with tempfile.TemporaryDirectory(prefix="fsck-test-") as work:
                 patch.object(R.subprocess, "run", side_effect=command), patch.object(R, "log"):
             assert R.check_fsck(cfg, True, result) is (code == 0)
         assert (work / "fsck.log").read_text().startswith("Invalid volume")
+
+# N45 has a different physical NAND layout; never run its pages through the N72 mapper.
+with patch.object(R, "compose_fsck_volume", side_effect=AssertionError("wrong NAND mapper")), patch.object(R, "log"):
+    result = R.Result("fsck")
+    R.check_fsck(SimpleNamespace(board="n45ap"), True, result)
+    assert result.ok is None and "N45" in result.detail
 
 print("Regression harness identity, failure verdicts, Bluetooth reset, and full-volume fsck checks passed")
 

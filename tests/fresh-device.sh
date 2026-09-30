@@ -18,13 +18,13 @@ import json,sys
 from pathlib import Path
 lock=json.loads((Path(sys.argv[1])/'device.lock.json').read_text())
 assert lock['board']+'-'+lock['build']==sys.argv[2], 'existing device is for a different catalog entry'
-assert lock['inputs']['lockdown'] is None and lock['inputs']['stash'] is None, 'not a fresh synthesized device'
+assert lock['inputs'].get('lockdown') is None and lock['inputs'].get('stash') is None, 'not a fresh synthesized device'
 print('PASS lock: '+sys.argv[2])
 PY
 case "$ENTRY" in
  k48ap-*) DRIVER="$ROOT/tests/ipad1/regress.py"; DEFAULT_CHECKS=boot,persist ;;
  n72ap-*) DRIVER="$ROOT/tests/ipod/regress.py"; DEFAULT_CHECKS=boot,fsck,persist ;;
- n45ap-*) DRIVER="$ROOT/tests/ipod/regress.py"; DEFAULT_CHECKS=boot,fsck ;;
+ n45ap-*) DRIVER="$ROOT/tests/ipod/regress.py"; DEFAULT_CHECKS=boot ;;
  *) echo "unsupported board: $ENTRY" >&2; exit 2 ;;
 esac
 FLAGS=(--device "$DEV" --qemu "${QEMU:-$ROOT/build/qemu-system-arm}" --checks "${CHECKS:-$DEFAULT_CHECKS}" --require-inputs --out "$OUT/regress")
