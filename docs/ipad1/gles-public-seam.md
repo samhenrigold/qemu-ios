@@ -90,6 +90,27 @@ The brief's "3.2 (7B500)" is 3.2.2; 3.2 (7B367) and 3.2.2 share the iPad 3.x fam
 | the `__GLIFunctionDispatchRec` @encode, every field known to `gles-names.h` | the stock OpenGLES image in the mapped shared cache (`shared_region_check_np`, the cache's image list) | an image sends `GetMacroContextPrivate` (5.x) |
 | ES 2.0 | `OpenGLES.framework/GLEngine.bundle` (the SGX engine) exists; the iPod's firmware has only `MBXGLEngine.bundle` / none | an app asks for `kEAGLRenderingAPIOpenGLES2` |
 
+## Result (gles-public, 2026-09-29/30)
+
+`contrib/gles-public/OpenGLES`, sha256 `e5590426bdf81570b15ef2e50a369751082f9daf7511feeb79627b682ca2d25b`, the same
+file on every build below. Prepared through FirmwareKit (`FitCheck.glesFrontEnd` required) and booted through the app's
+pipeline (LightTouchMac `tests/sessions/matrix.py`, with the Harness GL row tapped via `--gl-tap`). Host load was 50 to
+200 throughout, from other agents' emulators.
+
+| build | GL path in the log (the front end's line) | GL app | notes |
+|---|---|---|---|
+| iPad 3.2 7B367 | `attachImage:toCoreSurface:invertedRender:` | Harness GL: triangle drawn | every column but boot-2 shutdown, the recorded slide-sheet flake |
+| iPad 3.2.2 7B500 | same | Harness GL drawn (29 fps) | every column but boot-2 shutdown (the flake); a rerun hit the AppleBCMWLAN panic after joining Wi-Fi, not GL |
+| iPad 4.2.1 8C148 | same | Harness GL drawn (30 fps); `it_gltest` readback PASS, scene composited, 61.5 presents/s | every column; home 0.0000 against its matrix ref |
+| iPad 4.3.5 8L1 | same | Harness GL drawn | every column but boot-2 shutdown (the flake); home 0.0021 against its ref. Under glishim this row was software CA (gl FAIL) |
+| iPad 5.1.1 9B206 | `macro context` (905 fields from the shared cache's stock OpenGLES, all named) | `it_gltest` scene composited | Setup Assistant composited. Home was dark in the one run that lit: its first composite came late at load 90+. The fixture's `glGenTextures` into an untouched page is dropped identically under glishim (LightTouchMac smoke #58) |
+| iPod 2.2.1 5H11a | `egl: first pixmap surface` | PAC-MAN Lite title screen | every column |
+| iPod 3.1.3 7E18 | `attachImage:…` | Harness GL drawn (28 fps) | every column |
+| iPod 4.2.1 8C148 | same | Harness GL drawn (27.7 fps) | every column |
+
+On 4.2.1 with the fixture, glishim and the front end A/B'd back to back gave the same tearing (0 torn, 0.23 to 0.25
+partial) and the same present rate within the load noise (15 to 20 per second each).
+
 ## 1.x (iPod touch 1G, 1.1-1.1.5): not in the one binary
 
 1.x has LayerKit, not CoreAnimation, and no EAGL; its Objective-C is the old runtime (CoreFoundation exports
