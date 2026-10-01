@@ -719,6 +719,62 @@ static void script_set_csgenr15(QTestState *qts, uint32_t value)
     qtest_writel(qts, FMSS + 0xc00, 8);
 }
 
+static void script_set_accumulator(QTestState *qts, uint32_t value)
+{
+    const uint32_t program[] = {
+        0x05050000, value, 0x02050d3c, 0,
+        0x04010d3c, 0xffffffff, 0x05020000, RAM + 0x2400,
+        0x11010002, 0, 0, 0
+    };
+    for (unsigned i = 0; i < G_N_ELEMENTS(program); i++) {
+        qtest_writel(qts, RAM + 4 * i, program[i]);
+    }
+    qtest_writel(qts, FMSS + 0xc04, RAM);
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd3c), ==, value);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x2400), ==, value);
+    qtest_writel(qts, FMSS + 0xc00, 8);
+}
+
+static void sequencer_accumulator(void)
+{
+    char *overlay;
+    QTestState *qts = start_board(&overlay);
+    const uint32_t values[] = {0, 1, 0x40000000, 0x80000000, 0xffffffff};
+    for (unsigned i = 0; i < G_N_ELEMENTS(values); i++) {
+        script_set_accumulator(qts, values[i]);
+    }
+    qtest_writel(qts, RAM, 0x01000d3c);
+    qtest_writel(qts, RAM + 4, 0);
+    qtest_writel(qts, RAM + 8, 0);
+    qtest_writel(qts, RAM + 12, 0);
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd3c), ==, 0);
+    qtest_writel(qts, FMSS + 0xc00, 8);
+    uint32_t rejected[] = {
+        0x05000000, 7, 0x01000d3c, 0xcafebabe,
+        0x05020000, RAM + 0x1000, 0x11000002, 0, 0, 0
+    };
+    for (unsigned form = 0; form < 3; form++) {
+        script_set_accumulator(qts, 0x12345678);
+        rejected[2] = form == 2 ? 0x01010d3c : (form ? 0x02000d3c : 0x01000d3c);
+        rejected[3] = form == 2 ? 0 : (form ? 1 : 0xcafebabe);
+        for (unsigned i = 0; i < G_N_ELEMENTS(rejected); i++) {
+            qtest_writel(qts, RAM + 4 * i, rejected[i]);
+        }
+        qtest_writel(qts, RAM + 0x1000, 0xabcddcba);
+        qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+        g_assert_cmphex(qtest_readl(qts, FMSS + 0xd3c), ==, 0x12345678);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==, 0xabcddcba);
+        qtest_writel(qts, FMSS + 0xc00, 8);
+    }
+    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd3c), ==, 0);
+    qtest_quit(qts);
+    rmdir(overlay);
+    g_free(overlay);
+}
+
 static void script_set_scratch(QTestState *qts, uint32_t value)
 {
     const uint32_t program[] = {
@@ -824,8 +880,10 @@ static void chunk_counter_snapshot(void)
     char *overlay;
     g_autofree char *state = NULL;
     QTestState *qts = start_board(&overlay);
+    script_set_accumulator(qts, 0x40000020);
     script_set_scratch(qts, 0x80010001);
     script_set_csgenr15(qts, 0x89abcdef);
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd3c), ==, 0x40000020);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd7c), ==, 0x80010001);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd54), ==, 0x89abcdef);
     g_assert_true(migrate(qts, &state));
@@ -833,6 +891,7 @@ static void chunk_counter_snapshot(void)
     qts = qtest_initf("-machine iPod-Touch,bootrom=%s,nor=%s,nand=%s,nandrw=%s "
                       "-display none -audio driver=none -nic none -d unimp "
                       "-incoming defer", rom_path, nor_path, nand_path, overlay);
+    script_set_accumulator(qts, 0xffffffff);
     script_set_scratch(qts, 0xffffffff);
     script_set_csgenr15(qts, 0x76543210);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd54), ==, 0x76543210);
@@ -840,11 +899,13 @@ static void chunk_counter_snapshot(void)
     qtest_qmp_assert_success(qts, "{ 'execute': 'migrate-incoming', "
                                 "'arguments': { 'uri': %s } }", uri);
     qtest_qmp_eventwait(qts, "RESUME");
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd3c), ==, 0x40000020);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd7c), ==, 0x80010001);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd54), ==, 0x89abcdef);
     qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd54), ==, 0);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd7c), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd3c), ==, 0);
     qtest_quit(qts);
     unlink(state);
     rmdir(overlay);
@@ -952,6 +1013,7 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/fmss/observed-right-shift", observed_right_shift);
     qtest_add_func("/ipod/fmss/parameter-latches", parameter_latches);
     qtest_add_func("/ipod/fmss/d38-parameter", d38_parameter);
+    qtest_add_func("/ipod/fmss/sequencer-accumulator", sequencer_accumulator);
     qtest_add_func("/ipod/fmss/sequencer-scratch", sequencer_scratch);
     qtest_add_func("/ipod/fmss/chunk-counter", chunk_counter);
     qtest_add_func("/ipod/fmss/chunk-counter-snapshot", chunk_counter_snapshot);

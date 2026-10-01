@@ -39,6 +39,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchFMSSState, IPOD_TOUCH_FMSS)
 #define FMSS_SCRIPT_PARAM_D48     0xD48
 #define FMSS_SCRIPT_PARAM_D4C     0xD4C
 #define FMSS_SCRIPT_CSGENR15      0xD54
+#define FMSS_SCRIPT_SCRATCH_D3C    0xD3C
 #define FMSS_SCRIPT_SCRATCH_D7C    0xD7C
 
 typedef struct IPodTouchFMSSState
@@ -68,6 +69,7 @@ typedef struct IPodTouchFMSSState
     uint32_t reg_script_param_d38; /* CPU-supplied sequencer parameter. */
     uint32_t reg_script_param_d48; /* CPU-supplied sequencer parameter. */
     uint32_t reg_script_param_d4c; /* CPU-supplied sequencer parameter. */
+    uint32_t reg_script_scratch_d3c; /* Sequencer-initialized result accumulator. */
     uint32_t reg_script_scratch_d7c; /* Saved sequencer auxiliary result. */
     uint32_t reg_script_csgenr15; /* Sequencer-owned chunk-loop state. */
     char *nand_path;
