@@ -270,6 +270,51 @@ static void generated_snapshot(void)
     programmed_snapshot(false);
 }
 
+/* Exercise the real sequencer and QEMU guest RAM, not a replacement DMA stub. */
+static void register_copy(void)
+{
+    char *overlay;
+    QTestState *qts = start_board(&overlay);
+    static const uint32_t program[] = {
+        0x05030000, 0x89abcdef, 0x05040000, 0x13579bdf,
+        0x06040003, 0, 0x05070000, RAM + 0x1000,
+        0x11040007, 0, 0x05010000, 0x89abcdef,
+        0x06010001, 0,
+        0x0c070007, 4, 0x11010007, 0,
+        0x05030000, 0, 0x06040003, 0,
+        0x0c070007, 4, 0x11040007, 0,
+        0x05030000, 4, 0x05040000, 8,
+        0x06020003, 0, 0x06030004, 0,
+        0x0c070007, 4, 0x11020007, 0,
+        0x0c070007, 4, 0x11030007, 0, 0, 0
+    };
+    for (unsigned i = 0; i < G_N_ELEMENTS(program); i++) {
+        qtest_writel(qts, RAM + 4 * i, program[i]);
+    }
+    qtest_writel(qts, FMSS + 0xc04, RAM);
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==, 0x89abcdef);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x1004), ==, 0x89abcdef);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x1008), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x100c), ==, 4);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x1010), ==, 8);
+    qtest_writel(qts, FMSS + 0xc00, 8);
+
+    static const uint32_t rejected[] = {
+        0x05030000, 7, 0x05070000, RAM + 0x1100,
+        0x06040003, 1, 0x11040007, 0, 0, 0
+    };
+    for (unsigned i = 0; i < G_N_ELEMENTS(rejected); i++) {
+        qtest_writel(qts, RAM + 4 * i, rejected[i]);
+    }
+    qtest_writel(qts, RAM + 0x1100, 0x12345678);
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x1100), ==, 0x12345678);
+    qtest_quit(qts);
+    rmdir(overlay);
+    g_free(overlay);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *rom = g_malloc0(131072);
@@ -288,6 +333,7 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/fmss/mode-mismatch", snapshot_mode_mismatch);
     qtest_add_func("/ipod/fmss/physical-snapshot", physical_snapshot);
     qtest_add_func("/ipod/fmss/generated-snapshot", generated_snapshot);
+    qtest_add_func("/ipod/fmss/register-copy", register_copy);
     result = g_test_run();
     unlink(rom_path); unlink(nor_path); rmdir(nand_path);
     g_free(rom_path); g_free(nor_path); g_free(nand_path);

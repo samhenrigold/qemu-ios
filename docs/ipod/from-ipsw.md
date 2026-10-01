@@ -923,3 +923,17 @@ silent active state and malformed-state rejection. The independent default
 7E18 native two-boot regression passes 8/8 (`/private/tmp/ltm-i2s-silent-default`).
 This is silent-stream bookkeeping and migration compatibility, not new audio
 hardware, native N45 guest suspend/wake or in-flight host USB qualification.
+
+### FMSS observed register-copy instruction
+
+Stock 5F138 restore programs issue opcode06 with immediate0 to copy a sequencer register. The model now supports this observed form, including copy-zero, self-copy and the bulk program's prior/current mask transfers. Nonzero immediate forms stop as unsupported; descriptor DMA, arithmetic forms and completion behavior are unchanged.
+
+The instruction interpretation is independently corroborated by [lemonjesus's S5L8702 FMISS research](https://github.com/lemonjesus/S5L8702-FMISS-Tools/blob/70b45859af8807a7f841cf649564ce6638e1c112/Documentation.md). That research targets S5L8702, whereas these captured programs target S5L8720; the target's actual descriptor/mask dataflow supplies additional evidence. Reference tool code is GPL3 and its documentation/research CC BY-NC-SA4.0; no reference implementation or document text was copied into production.
+
+The extracted actual-handler sanitizer fixture fails on the preceding model and passes with this correction. Real QEMU model tests observe exact register copies and unsupported-form rejection through guest RAM. This establishes register semantics only: full NAND operations and physical erase restore remain unsupported, and aborted sequencer completion is still a separate gap.
+
+Actual-handler sanitizer tests pass; real FMSS qtests pass 5/5, including
+register copies and rejection observed through QEMU guest RAM. The independent
+default 7E18 two-boot native regression passes 8/8, including filesystem health,
+persistence and audio (`/private/tmp/ltm-fmss-opcode06-default`). Full stock
+flash restore remains unqualified.
