@@ -1,7 +1,10 @@
 # iPad 1 (7B500) Wi-Fi: BCM4329
 
 **Status: default network (2026-09-27, Sam).** `-machine ipad1` has `wifi=on` unless `wifi=off` is
-given, and it creates `-netdev type=user,id=wifi0` itself when no `wifi0` netdev exists. The stock kernel
+given, and it creates `-netdev type=user,id=wifi0` itself when no `wifi0` netdev exists.
+The soldered BCM4329 and SDHCI remain present with `wifi=off`; that startup
+setting disables the optional host data bridge, including when a wifi0 backend
+has been supplied. It cannot change board topology after startup. The stock kernel
 and AppleBCMWLAN join the open BSS "qemu-ios" at about 36 s into boot with no seed, so nothing is needed
 on the host side.
 
@@ -269,3 +272,27 @@ cycles. It's front-loaded in stage 1 (the only real reverse engineering) and sta
 means reachability flags, the status-bar Wi-Fi icon, Settings > Wi-Fi and Maps'
 Wi-Fi location path. The stock stack runs with no guest changes and no usbmuxd
 dependency.
+
+## October 1 candidate: physical presence and host policy
+
+The soldered card/SDHCI are now wired independently of `wifi`, matching the
+N72 correction. Off leaves the hardware present and disables only the host
+bridge; it does not attach an already-declared wifi0 backend. Runtime changes
+to the startup bridge setting refuse rather than pretending to change topology.
+No new firmware, radio execution or timing fidelity is claimed.
+
+Three production-board qtests pass CMD5, CMD52 manufacturer/chip CIS, reset,
+bridge presence/absence and the explicitly supplied but unattached backend.
+Both SDIO boards are registered in the model gate: 10 suites pass, no skips.
+Native stock 7B500 with networking off initializes BCM4329 and reports its
+expected serial, UDID and both MACs. Save/new-process resume preserves those
+values, USB and an exact guest file, with no host NIC. The complete iPad gate
+passes 9/9, and the required iPod gate remains 8/8. Audio uses resources read
+from the tested guest; the earlier missing host-mount failure is retained.
+
+Evidence: `/private/tmp/ltm-k48-physical-card-qtest2.log`,
+`/private/tmp/ltm-k48-physical-card-final-models.log`,
+`/private/tmp/ltm-k48-physical-card-native`,
+`/private/tmp/ltm-k48-physical-card-snapshot2`,
+`/private/tmp/ltm-k48-physical-card-final-regress.log`, and
+`/private/tmp/ltm-k48-physical-card-ipod-regress.log`.

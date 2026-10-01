@@ -905,7 +905,7 @@ static void ipad1_init(MachineState *machine)
      * -netdev ...,id=wifi0. docs/ipad1/wifi.md.
      */
     DeviceState *sdio = NULL;
-    if (s->wifi) {
+    {
         static const BCMSDIOChip bcm4329 = {
             .manfid = 0x02d0, .prodid = 0x4329,
             .chipid = 0x00034329,                   /* rev 3 = B1 (c07a61d2) */
@@ -924,7 +924,9 @@ static void ipad1_init(MachineState *machine)
         object_property_add_alias(OBJECT(machine), "wifi-bssid", OBJECT(card), "bssid");
         card->card_present = true;
         sysbus_realize_and_unref(SYS_BUS_DEVICE(card), &error_fatal);
-        if (!qemu_find_netdev("wifi0")) {
+        /* The soldered combo chip exists even with host networking disabled.
+         * wifi controls the optional bridge, not the board's physical card. */
+        if (s->wifi && !qemu_find_netdev("wifi0")) {
             /* Wi-Fi is the iPad's network: with no backend given, NAT it. */
             QemuOpts *o = qemu_opts_parse_noisily(qemu_find_opts("netdev"),
                                                   "type=user,id=wifi0", false);
@@ -936,7 +938,9 @@ static void ipad1_init(MachineState *machine)
                 warn_reportf_err(err, "Wi-Fi has no network: ");
             }
         }
-        ipod_touch_sdio_setup_net(card);
+        if (s->wifi) {
+            ipod_touch_sdio_setup_net(card);
+        }
 
         sdio = qdev_new(TYPE_S5L8930_SDIO);
         object_property_set_link(OBJECT(sdio), "card", OBJECT(card), &error_fatal);
@@ -1526,7 +1530,12 @@ static bool ipad1_get_wifi(Object *obj, Error **errp)
 
 static void ipad1_set_wifi(Object *obj, bool value, Error **errp)
 {
-    IPAD1_MACHINE(obj)->wifi = value;
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+    if (s->cpu) {
+        error_setg(errp, "wifi must be set before the machine starts");
+        return;
+    }
+    s->wifi = value;
 }
 
 static bool ipad1_get_gles_debug(Object *obj, Error **errp)
@@ -1707,8 +1716,8 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
         "Run the kernel's EmbeddedIOP firmware on a second core (arm946) (default on); off = the IOP HLE");
     object_class_property_add_bool(klass, "wifi", ipad1_get_wifi, ipad1_set_wifi);
     object_class_property_set_description(klass, "wifi",
-        "The BCM4329 Wi-Fi card, the iPad's network (default on). Frames go to "
-        "-netdev id=wifi0, or to user networking when none is given; off = no card");
+        "Host bridge for the soldered BCM4329 (default on). Frames go to "
+        "-netdev id=wifi0, or to user networking when none is given; off leaves the card present");
     object_class_property_add_bool(klass, "gles-debug", ipad1_get_gles_debug, ipad1_set_gles_debug);
     object_class_property_set_description(klass, "gles-debug",
         "Paint what the GL bridge refuses magenta instead of black (default off; tests turn it on)");
