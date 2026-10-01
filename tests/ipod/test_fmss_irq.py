@@ -78,10 +78,11 @@ int main(void) {
     assert(!level && !s.reg_cs_irq_bit); /* Never report a failed host write as done. */
     fmss_io_failed=false;
     s.reg_cs_irq_bit=1; s.reg_cs_ctrl=0x40; s.reg_cs_irq_mask=1;
-    fmss_post_load(&s,2); assert(level);
-    s.reg_cs_irq_mask=0; fmss_post_load(&s,2); assert(!level);
-    timer.pending=true; fmss_post_load(&s,1);
-    assert(level && !timer.pending && s.reg_cs_irq_mask==1);
+    fmss_post_load(&s,4); assert(level);
+    s.reg_cs_irq_mask=0; fmss_post_load(&s,4); assert(!level);
+    /* Only certified v4 states can load; no legacy default reconstruction. */
+    timer.pending=true; fmss_post_load(&s,4);
+    assert(!level && timer.pending && s.reg_cs_irq_mask==0);
     puts("PASS: FMSS deferred completion, polling, W1C, masking, abort, failure and restore");
 }
 '''
