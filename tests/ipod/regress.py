@@ -1913,8 +1913,6 @@ def main():
                          "or was skipped")
     ap.add_argument("--gles-slotmap", default=None, help="explicit GLES slot ABI map (default: repository slotmap.txt)")
     cfg = ap.parse_args()
-    cfg.ipa_explicit = cfg.ipa is not None
-    cfg.ipa = cfg.ipa or APP_IPA_DEFAULT
     if cfg.ledger:
         if cfg.checks or cfg.quick or cfg.with_apps or cfg.clean or cfg.check_prereqs:
             ap.error("--ledger runs boot/install/launch checks and retains evidence; do not combine it with check selection or --clean")
@@ -1922,7 +1920,15 @@ def main():
         return run_ledger(cfg)
 
     configure_device(cfg)
-    if cfg.gles_app:
+    import fixture_preflight
+    inputs = fixture_preflight.select_inputs(ROOT, cfg.product_version, ipa=cfg.ipa,
+        harness=cfg.harness_ipa, gles=cfg.gles_app, slotmap=cfg.gles_slotmap)
+    cfg.ipa, cfg.harness_ipa = inputs['ipa'], inputs['harness']
+    cfg.gles_app, cfg.gles_slotmap = inputs['gles'], inputs['slotmap']
+    cfg.fixture_flavor = inputs['flavor']
+    cfg.ipa_explicit, cfg.harness_explicit = inputs['explicit']['ipa'], inputs['explicit']['harness']
+    cfg.gles_explicit, cfg.slotmap_explicit = inputs['explicit']['gles'], inputs['explicit']['slotmap']
+    if cfg.gles_explicit:
         cfg.gles_front_end = False  # Explicit fixture requests the app leg, not SpringBoard coverage.
 
     if cfg.check_prereqs:
@@ -1950,11 +1956,15 @@ def main():
     if "boot" not in selected:
         selected.insert(0, "boot")
 
-    import fixture_preflight
     fixture_problems = fixture_preflight.requested_problems(
         cfg, selected, HARNESS_IPA, os.path.join(GLES_DIR, "GLTest.app"))
     if fixture_problems:
         sys.exit("\n".join(fixture_problems))
+
+    try:
+        fixture_receipt = fixture_preflight.selected_metadata(cfg, selected)
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile, plistlib.InvalidFileException, ExpatError) as error:
+        sys.exit("cannot record requested fixture input: " + str(error))
 
     # wifi judges "link" from the kernel's "AirPort: Link Up on en0", which only
     # reaches serial.log with the kernel console on (0c05f7b736 made it opt-in).
@@ -1963,6 +1973,8 @@ def main():
         os.environ.get("TMPDIR", "/tmp"),
         "itregress-%d-%d" % (os.getpid(), int(START)))
     os.makedirs(cfg.out, exist_ok=True)
+    with open(os.path.join(cfg.out, "fixture-inputs.json"), "w") as file:
+        json.dump(fixture_receipt, file, indent=2)
     cfg.overlay = os.path.join(cfg.out, "overlay")
     if os.path.exists(cfg.overlay):
         shutil.rmtree(cfg.overlay)
