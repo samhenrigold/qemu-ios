@@ -174,8 +174,17 @@ static void fmss_run_script(IPodTouchFMSSState *s)
         return;
     }
     for (int step = 0; step < FMSS_SCRIPT_STEPS; step++) {
-        uint32_t insn[2];
-        cpu_physical_memory_read(s->reg_cs_script + pc, insn, sizeof(insn));
+        uint8_t bytes[8];
+        uint32_t address = s->reg_cs_script + pc;
+        if (address_space_read(&address_space_memory, address,
+                               MEMTXATTRS_UNSPECIFIED, bytes,
+                               sizeof(bytes)) != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "[fmss] instruction fetch at 0x%08x failed; "
+                          "program stopped\n", address);
+            return;
+        }
+        uint32_t insn[2] = { ldl_le_p(bytes), ldl_le_p(bytes + 4) };
         uint32_t op = insn[0] >> 24, a = (insn[0] >> 16) & 0x1f;
         uint32_t b = insn[0] & 0xffff, imm = insn[1];
         bool ok = true;
@@ -289,9 +298,20 @@ static void fmss_run_script(IPodTouchFMSSState *s)
             break;
         case 0x0e: if (r[a]) { pc = imm; } break;
         case 0x17: if (!r[a]) { pc = imm; } break;
-        case 0x11:
-            cpu_physical_memory_write(r[b & 0x1f], &r[a], 4);
+        case 0x11: {
+            uint8_t word[4];
+            uint32_t address = r[b & 0x1f];
+            stl_le_p(word, r[a]);
+            if (address_space_write(&address_space_memory, address,
+                                    MEMTXATTRS_UNSPECIFIED, word,
+                                    sizeof(word)) != MEMTX_OK) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "[fmss] sequencer store at 0x%08x failed; "
+                              "program stopped\n", address);
+                return;
+            }
             break;
+        }
         default:
             ok = false;
             break;

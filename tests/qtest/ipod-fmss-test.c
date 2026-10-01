@@ -1060,6 +1060,81 @@ static void register_left_shift(void)
     g_free(overlay);
 }
 
+/* Sequencer transactions use QEMU physical memory results and LE wire words. */
+static QTestState *start_transaction_board(char **overlay, char **log)
+{
+    *overlay = g_dir_make_tmp("fmss-transactions-XXXXXX", NULL);
+    *log = g_build_filename(*overlay, "transactions.log", NULL);
+    return qtest_initf("-machine iPod-Touch,bootrom=%s,nor=%s,nand=%s,nandrw=%s "
+                       "-display none -audio driver=none -nic none "
+                       "-d guest_errors -D %s", rom_path, nor_path, nand_path,
+                       *overlay, *log);
+}
+
+static void put_transaction_program(QTestState *qts, const uint32_t *words,
+                                    unsigned count)
+{
+    /* Write the protocol bytes explicitly, independent of host byte order. */
+    for (unsigned i = 0; i < count; i++) {
+        for (unsigned byte = 0; byte < 4; byte++) {
+            qtest_writeb(qts, RAM + 4 * i + byte, words[i] >> (8 * byte));
+        }
+    }
+    qtest_writel(qts, FMSS + 0xc04, RAM);
+}
+
+static void sequencer_transactions(void)
+{
+    char *overlay, *log;
+    QTestState *qts = start_transaction_board(&overlay, &log);
+    const uint32_t normal[] = {
+        0x05000000, 0x67452301, 0x05010000, RAM + 0x1000,
+        0x11000001, 0, 0, 0
+    };
+    put_transaction_program(qts, normal, G_N_ELEMENTS(normal));
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    const uint8_t expected[] = {1, 0x23, 0x45, 0x67};
+    for (unsigned i = 0; i < sizeof(expected); i++) {
+        g_assert_cmphex(qtest_readb(qts, RAM + 0x1000 + i), ==, expected[i]);
+    }
+    qtest_writel(qts, FMSS + 0xc00, 8);
+    const uint32_t failed_store[] = {
+        0x05000000, 0x12345678, 0x05010000, 0xfffffff0,
+        0x11000001, 0, 0x05010000, RAM + 0x1000,
+        0x11000001, 0, 0, 0
+    };
+    put_transaction_program(qts, failed_store, G_N_ELEMENTS(failed_store));
+    qtest_writel(qts, RAM + 0x1000, 0xabcddcba);
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==, 0xabcddcba);
+    qtest_writel(qts, FMSS + 0xc00, 8);
+    /* Keep an earlier successful store, then jump into unmapped physical
+     * memory. A failed fetch must be reported rather than decoded as END. */
+    const uint32_t failed_fetch[] = {
+        0x05000000, 1, 0x05010000, RAM + 0x1000,
+        0x11000001, 0, 0x0e000000, (uint32_t)(0xf0000000ULL - RAM)
+    };
+    put_transaction_program(qts, failed_fetch, G_N_ELEMENTS(failed_fetch));
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==, 1);
+    qtest_writel(qts, FMSS + 0xc00, 8);
+    qtest_writel(qts, FMSS + 0xc04, 0xfffffff0);
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    qtest_writel(qts, FMSS + 0xc00, 8);
+    /* No assertion about abort IRQ or absence of completion: the unchanged
+     * CPU C00 handler still schedules its timer after any interpreter return. */
+    qtest_quit(qts);
+    g_autofree char *text = NULL;
+    g_assert_true(g_file_get_contents(log, &text, NULL, NULL));
+    g_assert_nonnull(strstr(text, "sequencer store at 0xfffffff0 failed"));
+    g_assert_nonnull(strstr(text, "instruction fetch at 0xf0000000 failed"));
+    g_assert_nonnull(strstr(text, "instruction fetch at 0xfffffff0 failed"));
+    unlink(log);
+    rmdir(overlay);
+    g_free(log);
+    g_free(overlay);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *rom = g_malloc0(131072);
@@ -1096,6 +1171,7 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/fmss/chunk-counter-snapshot", chunk_counter_snapshot);
     qtest_add_func("/ipod/fmss/register-or", register_or);
     qtest_add_func("/ipod/fmss/register-left-shift", register_left_shift);
+    qtest_add_func("/ipod/fmss/sequencer-transactions", sequencer_transactions);
     result = g_test_run();
     unlink(rom_path); unlink(nor_path); rmdir(nand_path);
     g_free(rom_path); g_free(nor_path); g_free(nand_path);
