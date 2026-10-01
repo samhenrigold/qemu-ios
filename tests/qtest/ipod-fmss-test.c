@@ -828,6 +828,47 @@ static void d38_parameter(void)
     g_free(overlay);
 }
 
+static void register_or(void)
+{
+    char *overlay;
+    QTestState *qts = start_board(&overlay);
+    uint32_t program[] = {
+        0x05000000, 0x801, 0x04010d4c, 0xffffffff,
+        0x0b000001, 0, 0x02000000, 0,
+        0x04020000, 0xffffffff, 0x05070000, RAM + 0x1000,
+        0x11020007, 0, 0x05020000, 0xdeadbeee,
+        0x0b020001, 0x01000801, 0x0c070007, 4,
+        0x11020007, 0, 0x0b010001, 0,
+        0x0c070007, 4, 0x11010007, 0, 0, 0
+    };
+    static const uint32_t inputs[][2] = {
+        {0x801, 0}, {0x801, 0x20011000}, {0xff00ff00, 0x0ff00ff0},
+        {0, 0x89abcdef}, {0xffffffff, 0}, {0x80000000, 1}
+    };
+    for (unsigned j = 0; j < G_N_ELEMENTS(inputs); j++) {
+        program[1] = inputs[j][0];
+        qtest_writel(qts, FMSS + 0xd4c, inputs[j][1]);
+        for (unsigned i = 0; i < G_N_ELEMENTS(program); i++) {
+            qtest_writel(qts, RAM + 4 * i, program[i]);
+        }
+        for (unsigned i = 0; i < 3; i++) {
+            qtest_writel(qts, RAM + 0x1000 + 4 * i, 0xdeadbeef);
+        }
+        qtest_writel(qts, FMSS + 0xc04, RAM);
+        qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==,
+                        inputs[j][0] | inputs[j][1]);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1004), ==,
+                        inputs[j][1] | 0x01000801);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1008), ==, inputs[j][1]);
+        g_assert_cmphex(qtest_readl(qts, FMSS + 0xd4c), ==, inputs[j][1]);
+        qtest_writel(qts, FMSS + 0xc00, 8);
+    }
+    qtest_quit(qts);
+    rmdir(overlay);
+    g_free(overlay);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *rom = g_malloc0(131072);
@@ -860,6 +901,7 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/fmss/d38-parameter", d38_parameter);
     qtest_add_func("/ipod/fmss/chunk-counter", chunk_counter);
     qtest_add_func("/ipod/fmss/chunk-counter-snapshot", chunk_counter_snapshot);
+    qtest_add_func("/ipod/fmss/register-or", register_or);
     result = g_test_run();
     unlink(rom_path); unlink(nor_path); rmdir(nand_path);
     g_free(rom_path); g_free(nor_path); g_free(nand_path);

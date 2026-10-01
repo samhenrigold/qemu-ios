@@ -121,6 +121,45 @@ int main(void) {
                              selects[j]==4 || selects[j]==8) ? 0xb614d5adu : 0;
         assert(ldl_le_p(mem + 0x9000) == expected);
     }
+    /* Captured zero-immediate OR preserves destination config bits.
+     * Direct RAM observations exclude a replacement assignment or AND. */
+    uint32_t register_or[] = {
+        0x05000000u, 0, 0x05010000u, 0,
+        0x0b000001u, 0, 0x05070000u, 0x9d00u,
+        0x11000007u, 0, 0x0c070007u, 4,
+        0x11010007u, 0, 0, 0
+    };
+    const uint32_t or_values[][2] = {
+        {0x801u,0}, {0x801u,0x20011000u}, {0xff00ff00u,0x0ff00ff0u},
+        {0,0x89abcdefu}, {0xffffffffu,0}, {0x80000000u,1}
+    };
+    for (unsigned j=0; j<sizeof(or_values)/sizeof(or_values[0]); j++) {
+        register_or[1]=or_values[j][0]; register_or[3]=or_values[j][1];
+        run(register_or,sizeof(register_or));
+        assert(ldl_le_p(mem+0x9d00)==(or_values[j][0]|or_values[j][1]));
+        assert(ldl_le_p(mem+0x9d04)==or_values[j][1]);
+    }
+    const uint32_t config_or[] = {
+        0x05000000u,0x801u, 0x04010d4cu,0xffffffffu,
+        0x0b000001u,0, 0x02000000u,0,
+        0x04020000u,0xffffffffu, 0x05070000u,0x9d00u,
+        0x11020007u,0, 0x05020000u,0xdeadbeeeu,
+        0x0b020001u,0x01000801u, 0x0c070007u,4,
+        0x11020007u,0, 0x0b010001u,0,
+        0x0c070007u,4, 0x11010007u,0, 0,0
+    };
+    const uint32_t configs[] = {0,0x20011000u,0xffffffffu};
+    for (unsigned j=0; j<sizeof(configs)/sizeof(configs[0]); j++) {
+        IPodTouchFMSSState state={.reg_cs_script=0x1000,
+                                  .reg_script_param_d4c=configs[j]};
+        memset(mem,0,sizeof(mem));
+        memcpy(mem+0x1000,config_or,sizeof(config_or));
+        fmss_run_script(&state);
+        assert(ldl_le_p(mem+0x9d00)==(configs[j]|0x801u));
+        assert(ldl_le_p(mem+0x9d04)==(configs[j]|0x01000801u));
+        assert(ldl_le_p(mem+0x9d08)==configs[j]); /* Self OR preserves source. */
+        assert(state.reg_script_param_d4c==configs[j]);
+    }
     /* Captured read-loop D54 forms: D28 seeds CSGENR15; each iteration
      * reads, decrements and writes it. Counts vary to exclude a forced two. */
     const uint32_t counter_loop[] = {
@@ -357,7 +396,7 @@ int main(void) {
         run(immediate_and, sizeof(immediate_and));
         assert(ldl_le_p(mem + 0x9a00) == (0x12345679u & masks[j]));
     }
-    puts("PASS: D54 chunk loops, bounded opcode14 right16, opcode0A forms, FMSS opcode03 LE DMA/rejection, opcode06 copies/rejection, D18 page counter, D28 chunks, D4C parameter, READ ID programs of 7E18 and 8C148, unknown op stops");
+    puts("PASS: register OR config, D54 chunk loops, bounded opcode14 right16, opcode0A forms, FMSS opcode03 LE DMA/rejection, opcode06 copies/rejection, D18 page counter, D28 chunks, D4C parameter, READ ID programs of 7E18 and 8C148, unknown op stops");
 }
 ''' % (words(ID_7E18), words(ID_8C148))
 with tempfile.TemporaryDirectory() as tmp:
