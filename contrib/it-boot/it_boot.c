@@ -55,7 +55,9 @@
 #define MAX_ENT      64
 #define MAX_SERIALS  16
 #define MAX_HOOKS    32
-#define PULL_SECONDS 10
+#define PULL_SECONDS 10              /* minimum transfer allowance */
+#define PULL_MAX_SECONDS 60          /* policy cap, not a 1-GiB throughput promise */
+#define PULL_BYTES_PER_SECOND (128 * 1024)
 #define MAX_TRIES    2                 /* boots without a verdict before reverting */
 #define PATHN        512
 
@@ -685,13 +687,22 @@ static int pull_offer(char *text, size_t cap)
 
 /* mach_absolute_time exists on the oldest supported guests. Wall time changes
  * when the agent synchronizes the guest clock and cannot bound a transfer. */
-struct pull_clock { uint64_t start; uint32_t numer, denom; };
-static int pull_clock_start(struct pull_clock *clock)
+struct pull_clock { uint64_t start; uint32_t numer, denom, seconds; };
+static int pull_clock_start(struct pull_clock *clock, const struct offer *offer)
 {
     mach_timebase_info_data_t scale;
     if (mach_timebase_info(&scale) != 0 || !scale.numer || !scale.denom) {
         return -EIO;
     }
+    /* All sizes are validated <= FILE_MAX and there are <= MAX_ENT files;
+     * the maximum sum (1 GiB) fits uint32_t on the oldest guest. */
+    uint32_t total = 0;
+    for (int i = 0; i < offer->nent; i++) {
+        total += (uint32_t)offer->e[i].size;
+    }
+    uint32_t allowance = PULL_SECONDS +
+        (total + PULL_BYTES_PER_SECOND - 1) / PULL_BYTES_PER_SECOND;
+    clock->seconds = allowance < PULL_MAX_SECONDS ? allowance : PULL_MAX_SECONDS;
     clock->numer = scale.numer;
     clock->denom = scale.denom;
     clock->start = mach_absolute_time();
@@ -705,7 +716,7 @@ static int pull_clock_expired(const struct pull_clock *clock)
      * 64-bit division/conversion helpers. Both ARM variants have VFP. */
     double elapsed = (double)(uint32_t)(ticks >> 32) * 4294967296.0 +
                      (double)(uint32_t)ticks;
-    return elapsed * clock->numer / clock->denom >= PULL_SECONDS * 1000000000.0;
+    return elapsed * clock->numer / clock->denom >= clock->seconds * 1000000000.0;
 }
 
 static int fetch(const struct entry *e, const char *dst, const struct pull_clock *clock)
@@ -763,7 +774,7 @@ static int install(const struct offer *o, const char *text, size_t len)
 {
     char tmp[PATHN], dir[PATHN], dst[PATHN];
     struct pull_clock clock;
-    int clock_error = pull_clock_start(&clock);
+    int clock_error = pull_clock_start(&clock, o);
     if (clock_error) {
         return clock_error;
     }
