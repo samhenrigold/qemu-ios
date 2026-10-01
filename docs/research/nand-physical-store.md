@@ -29,13 +29,24 @@ loadable into legacy stores; v2 stores refuse streams without a matching
 certificate. This only checks representation compatibility. Pairing a snapshot
 with the correct NOR/NAND generation remains the host storage API's job.
 
-The backing remains synchronous mmap/page files with dirty bitmaps and stop-time
-msync. This is not yet the proposed BlockBackend consolidation, a cross-file
-crash-consistency protocol, or a removal of generated plaintext/FTL shortcuts.
-The upstream NAND model's bitwise programming semantics informed this change,
-but its fixed chip geometries and backend layout do not directly fit the current
-Apple controller contract. A future BlockBackend adapter should own page data,
-error propagation and durable publication without inventing a host FTL.
+K48 page data now uses QEMU raw BlockBackends: `blk_pread`, `blk_pwrite`,
+`blk_pwrite_zeroes` with unmap permitted, and `blk_flush`. The adapter keeps the
+existing filenames, explicit representation and dirty bitmaps; it adds no FTL.
+`BDRV_O_NO_SHARE` permits concurrent readers while refusing another writer or
+resizer. The actual two-process model test checks writer refusal. QEMU owns
+platform file I/O, zero guarantees and backend locking instead of page-data
+mmap, direct stores and platform-specific punch-hole code. Read/program/erase
+host errors latch storage failure and return device error; stop flushes backends
+before syncing bitmap ownership. Direct QMP migration additionally flushes and
+refuses known failed storage. Device finalization releases backends/maps/handler.
+
+The dirty bitmap still uses mmap and remains a separate file. This is not a
+cross-file crash-consistency protocol or removal of generated plaintext/FTL
+compatibility. The upstream NAND model supplies the correct bit semantics,
+but its fixed chip geometries and backend layout do not directly fit the Apple
+controller contract. N72 FMSS still needs a separately measured physical store
+migration to replace its relocation compatibility; its current snapshot limit
+is explicitly refused rather than concealed.
 
 ## Offline legacy conversion
 
@@ -99,3 +110,38 @@ Actual H2FMI qtests **2/2 PASS**, including invalid-row program failure status.
 N72 prepared-device ordinary boot and persistence after guest-confirmed shutdown
 and second boot **2/2 PASS** at `/private/tmp/ltm-fmss-native-regress` (108.8s).
 Converter tests **3 PASS**. Existing legacy NAND and writeback fixtures pass.
+
+## BlockBackend acceptance
+
+Final upstream owner/permission ordering is tested with a real VM stream:
+source save completes, a legacy-format destination refuses a v2 stream, and a
+matching v2 destination loads it and performs a real program/read afterward.
+Guest-owned backends attach before requesting incoming permissions; QEMU then
+inactivates/reactivates them during migration normally. A storage I/O error is
+latched, exposed to the host guard and refused by direct-QMP pre-save as well.
+The bitmap/error callback unit remains host-error injection, not a pretend
+emulator. The old extracted-memory NAND harness is removed; legacy and physical
+contracts now run through the production board, controller and block layer.
+
+Final results:
+
+- Actual model gate **4 suites PASS**, no firmware prerequisites, including
+  H2FMI **6 cases** and FMSS **2 cases**. Evidence:
+  `/private/tmp/ltm-nand-block-final-models`.
+- Native host gate **107 PASS, 27 declared manual SKIP**:
+  `/private/tmp/ltm-nand-block-final-native-quick`. The sandboxed graphics/media
+  run could not create native contexts; rerunning with native access passed.
+- Prepared legacy K48 **boot/persistence 2/2 PASS**, preserving a 70001-byte file
+  over guest-confirmed shutdown/reboot (54.4s):
+  `/private/tmp/ltm-nand-block-final-native`.
+- Fresh physical v2 stock erase restore **PASS**, final hardware build:
+  `/private/tmp/ltm-nand-block-final-restore`, `Restore Finished` / `DONE`.
+  The previous isolated BlockBackend run also passed. An earlier concurrent
+  restore run ended with USB transport read error `-256` at filesystem creation,
+  without a reported NAND error; its cause is not established, and its logs are
+  retained at `/private/tmp/ltm-nand-block-restore`.
+
+These are bounded acceptance results. They do not close the restored stock SGX
+barrier, validate every IPSW, make cross-file runtime power-loss publication
+atomic, or replace N72's generated-layout compatibility mapping. Existing
+prepared formats remain deliberately supported rather than reinterpreted.
