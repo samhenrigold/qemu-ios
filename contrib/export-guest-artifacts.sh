@@ -77,13 +77,13 @@ for p in it-instprogress/sbdlicon it-halt/ithalt it-agent/it_agent it-agent/it_t
     stage guest-tools "$C/$p"
 done
 # The iPad set, by the file names firmwarekit reads (SystemEdits.Helpers, Preparer's it_keybag).
-for t in it_pbd it_ethlink it_prefs it_msmquiet.dylib it_seal it_keybag; do
+for t in it_pbd it_ethlink it_prefs it_msmquiet.dylib it_seal it_keybag it_gltest; do
     stage ipad-guest-tools "$G/ipad1-guest/$t"
 done
 stage ipad-guest-tools "$G/appsync/libappsync.dylib"
 stage ipad-guest-tools "$G/appsync/appsync-launch"
 for j in it-pasteboard/com.qemu.it-pbd.plist it-ethlink/com.qemu.it-ethlink.plist it-prefs/com.qemu.it-prefs.plist \
-         it-seal/com.qemu.it-seal.plist; do
+         it-seal/com.qemu.it-seal.plist it-gltest/com.qemu.it-gltest.plist; do
     stage ipad-guest-tools "$C/$j"
 done
 # The GL front end (one fat OpenGLES.framework/OpenGLES for every iPad build), plus the name table (the wire ids)
