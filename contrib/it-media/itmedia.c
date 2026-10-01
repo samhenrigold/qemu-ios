@@ -122,7 +122,9 @@ static ID item_properties(ID input, const char **filename_out,
     if (!is_class(duration,"NSNumber")) fail("duration_ms must be numeric");
     double ms = CALL(double,(ID,ID))(duration,selector("doubleValue"));
     if (!isfinite(ms) || ms <= 0 || ms > 86400000) fail("duration must be within one day");
-    set(props,"duration",duration);
+    /* 7E18 purchase metadata accepts whole milliseconds. A fractional NSNumber
+     * silently becomes total_time_ms=0 even when the file decodes correctly. */
+    set(props,"duration",number((unsigned)fmax(1.0, floor(ms + 0.5))));
     /* 7E18 ITMediaKindFromOTAMediaKindString maps feature-movie to kind 2
      * and sets has_video. Let MusicLibrary populate every related field. */
     set(props,"kind",string(kind));
