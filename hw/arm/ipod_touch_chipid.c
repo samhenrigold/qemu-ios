@@ -38,9 +38,9 @@ static uint64_t ipod_touch_chipid_read(void *opaque, hwaddr addr, unsigned size)
             }
             return s->word2; // S5L8720 default: ind16 = chipid, ind2 = security domain
         case CHIPID_UNKNOWN2:
-            return 0;
+            return s->word3;
         case CHIPID_UNKNOWN3:
-            return 0;
+            return s->word4;
         default:
             /*
              * Offset 0 is inside the 0x14 region but has no named register, and
@@ -87,6 +87,11 @@ static void ipod_touch_chipid_init(Object *obj)
 static const Property ipod_touch_chipid_properties[] = {
     DEFINE_PROP_UINT32("word1", IPodTouchChipIDState, word1, 1u << 5),
     DEFINE_PROP_UINT32("word2", IPodTouchChipIDState, word2, (0x8720u << 16) | (1u << 2)),
+    /* Stock S5L8720 ROM/iBSS assembles ECID from these read-only fuse words.
+     * Defaults preserve existing devices; host provisioning supplies identity.
+     * These are hardware inputs, not edits to a USB descriptor or guest code. */
+    DEFINE_PROP_UINT32("word3", IPodTouchChipIDState, word3, 0),
+    DEFINE_PROP_UINT32("word4", IPodTouchChipIDState, word4, 0),
 };
 
 static void ipod_touch_chipid_class_init(ObjectClass *klass, void *data)

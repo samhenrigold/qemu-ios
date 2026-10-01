@@ -379,10 +379,8 @@ class Device:
             value = getattr(cfg, option, None)
             if value is not None:
                 machine += "," + option.replace("_", "-") + "=" + value.replace(",", ",,")
-        # The BCM4325 is attached only for the check that tests it. It is not
-        # free: 3.1.3's driver associates and then keeps the SDIO bus busy, and
-        # every other check pays for a radio it never looks at. run-ios3.sh
-        # makes the same split (--net is separate from --appsync).
+        # The soldered BCM4325 remains present. Only checks using networking
+        # attach a host data bridge; factory identity never depends on it.
         for key, value in sorted(getattr(cfg, "device_machine", {}).items()):
             machine += "," + key + "=" + str(value).replace(",", ",,")
         # What the GL bridge refuses is painted magenta and counted (itqmp.gles_rejects); the

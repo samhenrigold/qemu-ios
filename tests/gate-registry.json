@@ -142,6 +142,7 @@
     {"name": "qtest/ipod-boot-args", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
     {"name": "qtest/ipod-bt", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
     {"name": "qtest/ipod-sdio", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
+    {"name": "qtest/ipod-chipid", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
     {"name": "qtest/ipad1-sdio", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
     {"name": "qtest/ipod-clock", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
     {"name": "qtest/ipod-touch-irq", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
