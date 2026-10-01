@@ -56,9 +56,11 @@ extern int dup2(int, int);
 extern void _exit(int);
 extern void *dlopen(const char *, int);
 extern void *dlsym(void *, const char *);
-extern const char *dlerror(void);
+extern char *dlerror(void);
 
+#ifndef RTLD_NOW
 #define RTLD_NOW  2
+#endif
 #define O_WRONLY  0x0001
 #define O_CREAT   0x0200
 #define O_TRUNC   0x0400
