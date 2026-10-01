@@ -50,7 +50,7 @@ static int sql_close(sqlite3 *db) { assert(db); return SQLITE_OK; }
 code += function + r'''
 int main(int argc,char **argv) {
     mode=atoi(argv[1]); failure_phase=atoi(argv[2]); sqlite3_int64 value=0;
-    int rc=read_query("read only fixture","folder","file",&value);
+    int rc=read_query("read only fixture","folder","file",&value,NULL);
     assert(mode==0 && rc==SQLITE_ROW && value==42);
     assert(connections==2 && finalizations==2);
     assert(steps==(failure_phase==2 ? 2 : 1));
