@@ -1163,7 +1163,7 @@ def install_gles_app(cfg, r):
     ipa_dir = os.path.join(cfg.out, "glesipa")
     shutil.rmtree(ipa_dir, ignore_errors=True)
     os.makedirs(os.path.join(ipa_dir, "Payload"))
-    shutil.copytree(os.path.join(GLES_DIR, "GLTest.app"),
+    shutil.copytree(getattr(cfg, "gles_app", None) or os.path.join(GLES_DIR, "GLTest.app"),
                     os.path.join(ipa_dir, "Payload", "GLTest.app"))
     ipa = os.path.join(cfg.out, "GLTest.ipa")
     # zip(1) rather than shutil.make_archive: the executable bit has to survive
@@ -1218,7 +1218,7 @@ def unlock(cfg, port, dev, tries=UNLOCK_TRIES):
     return False, "device remained locked after %d attempts" % tries
 
 
-def slot_names():
+def slot_names(cfg):
     """slot -> glFunctionName, from contrib/it-gles/slotmap.txt.
 
     The shim can only print a bare integer (it has no string table and barely a
@@ -1228,7 +1228,7 @@ def slot_names():
     """
     names = {}
     try:
-        with open(os.path.join(GLES_DIR, "slotmap.txt")) as f:
+        with open(getattr(cfg, "gles_slotmap", None) or os.path.join(GLES_DIR, "slotmap.txt")) as f:
             for line in f:
                 if line.startswith("#"):
                     continue
@@ -1281,7 +1281,7 @@ def check_audio(cfg, procs, dev, r):
     if port is None:
         return False
     if not app_is_installed(cfg, "com.qemuios.harness"):
-        install = run(["ideviceinstaller", "install", HARNESS_IPA], cfg, cfg.install_timeout)
+        install = run(["ideviceinstaller", "install", getattr(cfg, "harness_ipa", None) or HARNESS_IPA], cfg, cfg.install_timeout)
         if install.returncode or not app_is_installed(cfg, "com.qemuios.harness"):
             return r.set(False, "Harness installation failed: " + install.stderr[-200:])
     ok, detail = unlock(cfg, port, dev)
@@ -1437,11 +1437,11 @@ def check_gles(cfg, procs, dev, r):
     """
     if cfg.gles_front_end:
         return check_gles_front_end(cfg, dev, r)
-    app = os.path.join(GLES_DIR, "GLTest.app")
+    app = getattr(cfg, "gles_app", None) or os.path.join(GLES_DIR, "GLTest.app")
     shim = os.path.join(ROOT, "contrib/gles-public/OpenGLES")     # one binary for every firmware
     harness = not os.path.exists(app)
     bundle_id = "com.qemuios.harness" if harness else GLES_BUNDLE_ID
-    prerequisites = [HARNESS_IPA if harness else app]
+    prerequisites = [(getattr(cfg, "harness_ipa", None) or HARNESS_IPA) if harness else app]
     if getattr(cfg, "stage_gles_shim", False):
         prerequisites.append(shim)
     missing = [os.path.basename(path) for path in prerequisites if not os.path.exists(path)]
@@ -1459,7 +1459,7 @@ def check_gles(cfg, procs, dev, r):
     # this image was built to accept and it registers first time, every time.
     if harness:
         if not app_is_installed(cfg, bundle_id):
-            installed = run(["ideviceinstaller", "install", HARNESS_IPA], cfg, cfg.install_timeout)
+            installed = run(["ideviceinstaller", "install", getattr(cfg, "harness_ipa", None) or HARNESS_IPA], cfg, cfg.install_timeout)
             if installed.returncode or not app_is_installed(cfg, bundle_id):
                 return r.set(False, "Harness installation failed")
     elif not install_gles_app(cfg, r):
@@ -1516,7 +1516,7 @@ def check_gles(cfg, procs, dev, r):
     text += guest_file(port, "/var/log/syslog").decode("utf-8", "replace")
     seen = set(int(n) for n in re.findall(r"unimplemented slot (\d+)", text))
     new = sorted(seen - GLES_ALLOWED_SLOTS)
-    names = slot_names()
+    names = slot_names(cfg)
 
     if new:
         return r.set(False, "the app called %d unimplemented entry point(s): %s"
@@ -1726,12 +1726,12 @@ def report_prereqs(cfg):
          "afc, usbtcp, persist, appinstall, applaunch", False),
         ("ipa", cfg.ipa, "appinstall, applaunch (--ipa or place one at "
                          "the default path)", False),
-        ("Harness.ipa", HARNESS_IPA, "bundled test application", False),
+        ("Harness.ipa", cfg.harness_ipa or HARNESS_IPA, "bundled test application", False),
         ("it_agent", os.path.join(ROOT, "contrib", "it-agent", "it_agent"),
          "agent (must also be installed in the guest NAND)", False),
-        ("GLTest.app", os.path.join(GLES_DIR, "GLTest.app"),
+        ("GLTest.app", cfg.gles_app or os.path.join(GLES_DIR, "GLTest.app"),
          "gles (build it with contrib/it-gles/build.sh)", False),
-        ("gles slotmap", os.path.join(GLES_DIR, "slotmap.txt"),
+        ("gles slotmap", cfg.gles_slotmap or os.path.join(GLES_DIR, "slotmap.txt"),
          "gles, to name an unimplemented slot "
          "(genstubs.py --emit-map)", False),
     ]
@@ -1758,6 +1758,7 @@ def configure_device(cfg):
     """Resolve one matched firmware/identity set for every native harness."""
     cfg.files = os.path.expanduser(cfg.files_dir)
     cfg.device_machine = {}
+    cfg.product_version = None      # complete declared version for fixture compatibility
     cfg.device_version = None       # the device's iOS (major, minor), from its lock (None: nand-current, 3.1.3)
     cfg.gles_front_end = False      # 1.x/2.x/3.0: SpringBoard's GL is the gles leg (check_gles_front_end)
     cfg.gles_engine = None          # the lock's derived.gles_engine: OpenGLES (front end) or MBXGLEngine
@@ -1771,7 +1772,8 @@ def configure_device(cfg):
         # machine options the device was made for (device.lock.json "machine", e.g. aes-uid=engine)
         lock = os.path.join(cfg.device, "device.lock.json")
         if os.path.exists(lock):
-            lockd = json.load(open(lock))
+            with open(lock) as file:
+                lockd = json.load(file)
             cfg.device_machine = lockd.get("machine") or {}
             if lockd.get("board") == "n72ap":
                 identity_path = os.path.join(cfg.device, "identity.json")
@@ -1781,6 +1783,7 @@ def configure_device(cfg):
                     for key in ("wifi-mac", "bt-mac"):
                         if identity.get(key):
                             cfg.device_machine.setdefault(key, identity[key])
+            cfg.product_version = lockd.get("product_version")
             cfg.device_version = tuple(int(x) for x in lockd.get("product_version", "0").split(".")[:2])
             cfg.device_version = cfg.device_version if cfg.device_version[0] else None
             derived = lockd.get("derived") or {}
@@ -1866,7 +1869,9 @@ def main():
     ap.add_argument("--usbmuxd",
                     default=os.path.expanduser(
                         "~/Developer/usbmuxd-qemu/usbmuxd/src/usbmuxd"))
-    ap.add_argument("--ipa", default=APP_IPA_DEFAULT)
+    ap.add_argument("--ipa", default=None, help="installation/launch IPA (default: repository Harness)")
+    ap.add_argument("--harness-ipa", default=None, help="explicit Harness IPA for audio/GLES fallback")
+    ap.add_argument("--gles-app", default=None, help="explicit GLTest.app bundle (slot ABI map selected separately)")
     ap.add_argument("--ledger", metavar="DIRECTORY",
                     help="test each IPA in a directory on its own disposable guest and write a review ledger")
     ap.add_argument("--launch-stages", action="store_true",
@@ -1906,7 +1911,10 @@ def main():
                     help="remove the run directory (screendumps, PPMs, "
                          "~512MB volume.img) if every selected check passed "
                          "or was skipped")
+    ap.add_argument("--gles-slotmap", default=None, help="explicit GLES slot ABI map (default: repository slotmap.txt)")
     cfg = ap.parse_args()
+    cfg.ipa_explicit = cfg.ipa is not None
+    cfg.ipa = cfg.ipa or APP_IPA_DEFAULT
     if cfg.ledger:
         if cfg.checks or cfg.quick or cfg.with_apps or cfg.clean or cfg.check_prereqs:
             ap.error("--ledger runs boot/install/launch checks and retains evidence; do not combine it with check selection or --clean")
@@ -1914,6 +1922,8 @@ def main():
         return run_ledger(cfg)
 
     configure_device(cfg)
+    if cfg.gles_app:
+        cfg.gles_front_end = False  # Explicit fixture requests the app leg, not SpringBoard coverage.
 
     if cfg.check_prereqs:
         return report_prereqs(cfg)
@@ -1939,6 +1949,12 @@ def main():
     # to KeyError there.
     if "boot" not in selected:
         selected.insert(0, "boot")
+
+    import fixture_preflight
+    fixture_problems = fixture_preflight.requested_problems(
+        cfg, selected, HARNESS_IPA, os.path.join(GLES_DIR, "GLTest.app"))
+    if fixture_problems:
+        sys.exit("\n".join(fixture_problems))
 
     # wifi judges "link" from the kernel's "AirPort: Link Up on en0", which only
     # reaches serial.log with the kernel console on (0c05f7b736 made it opt-in).
@@ -1992,8 +2008,8 @@ def main():
             results[c].skip("ipa not found: %s" % cfg.ipa)
             skipped.add(c)
     if "audio" in selected and "audio" not in skipped:
-        if not os.path.exists(HARNESS_IPA):
-            results["audio"].skip("Harness.ipa not found: " + HARNESS_IPA)
+        if not os.path.exists(cfg.harness_ipa or HARNESS_IPA):
+            results["audio"].skip("Harness.ipa not found: " + (cfg.harness_ipa or HARNESS_IPA))
             skipped.add("audio")
         else:
             try:
