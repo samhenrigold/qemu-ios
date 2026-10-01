@@ -36,6 +36,19 @@ static int launchctl(const char *verb, const char *arg) {
     char p[1024]; fake_path(p, "launchctl"); FILE *f = fopen(p, "a");
     fprintf(f, "%s %s\n", verb, arg); fclose(f); return 0;
 }
+static uint64_t fake_ticks;
+static uint64_t fake_mach_absolute_time(void) { return fake_ticks; }
+static kern_return_t fake_mach_timebase_info(mach_timebase_info_t info) {
+    info->numer = 1; info->denom = 1; return 0;
+}
+static time_t fake_time(time_t *out) {
+    time_t value = fake_ticks ? 2000000000 : 1000000000;
+    if (out) *out = value;
+    return value;
+}
+#define mach_absolute_time fake_mach_absolute_time
+#define mach_timebase_info fake_mach_timebase_info
+#define time fake_time
 static char offer_buf[65536];
 static long offer_len = -1;
 static long fake_load(char *buf, size_t cap, const char *name) {
@@ -68,6 +81,7 @@ static int64_t qc(uint32_t op, void *buf, uint32_t off, uint32_t len, uint64_t t
         memcpy(buf, offer_buf + off, (size_t)n); return n;
     }
     if (op == 0x171) {
+        if (len) fake_ticks += fake_exists("slow") ? UINT64_C(6000000000) : 1;
         char p[1024]; static char data[1 << 20];
         if (offer_len < 0 || fake_index_path((unsigned)token, p)) return -1;
         FILE *f = fopen(p, "rb"); if (!f) return -1;
@@ -96,6 +110,7 @@ MAIN = r'''
 int main(int argc, char **argv) {
     assert(argc == 2);
     snprintf(fake_dir, sizeof(fake_dir), "%s", argv[1]);
+    (void)fake_time;
     printf("%d\n", it_boot_run());
     return 0;
 }
@@ -157,7 +172,7 @@ class Device:
         (self.d / "root/state").write_text("seed %d\n" % serial)
 
     def boot(self, **flags):
-        for name in ("silent", "corrupt", "fail_at", "nosha", "build"):
+        for name in ("silent", "corrupt", "fail_at", "nosha", "build", "slow"):
             (self.d / name).unlink(missing_ok=True)
         for name, value in flags.items():
             (self.d / name).write_text(str(value))
@@ -233,6 +248,17 @@ def main():
                                    "stop com.apple.SpringBoard"], dev.launchctl()
         assert dev.reports()[0][:2] == ["11", "1"] and "prev 10" in dev.reports()[0][2]
         assert (os.stat(dev.d / "root/pkgs/11/bin/it_agent").st_mode & 0o777) == 0o755
+
+        # Wall-clock synchronization jumps a billion seconds during payload reads.
+        # It cannot expire the monotonic budget, but genuinely elapsed time can.
+        timed = case()
+        timed.offer(pkg(timed, 11, extra=b"x" * 4096))
+        assert timed.boot() == 1 and timed.current() == 11
+        timed = case()
+        timed.offer(pkg(timed, 11, extra=b"x" * 4096))
+        assert timed.boot(slow=1) < 0 and timed.current() == 10
+        assert not (timed.d / "root/pkgs/11").exists()
+        assert any(int(r[1]) < 0 for r in timed.reports())
 
         # the same offer again: nothing moves, no respring, jobs reloaded for this boot
         assert dev.boot() == 0 and dev.current() == 11 and "stop com.apple.SpringBoard" not in dev.launchctl()
