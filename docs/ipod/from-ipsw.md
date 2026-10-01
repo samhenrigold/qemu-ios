@@ -306,9 +306,10 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 - The legacy command-line data write (without direct iBoot) discovers its buffer
   from iBoot's own literal references to `gBootArgs.commandLine = [%s]`; absent,
   ambiguous and out-of-range matches cause no write. No fixed build address remains.
-- The BCM4325 model's Wi-Fi MAC is a fixed value from the original unit (hw/arm/ipod_touch_sdio.c:307, :1326),
-  so it does not follow the synthetic identity's `wifiaddr`. A `wifi-mac` machine option would fix that
-  (a model change; not done).
+- The BCM4325 card accepts the unit's `wifi-mac` machine option for its CIS,
+  NIC and event identity; unconfigured callers retain the old card address.
+  The 2.x driver still substitutes its Bluetooth fallback when the card's Apple
+  OTP record is absent. See [radio identity](../research/n72-radio-identity.md).
 
 ## Assumed → derived
 

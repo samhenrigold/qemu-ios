@@ -1870,6 +1870,13 @@ def main():
         if os.path.exists(lock):
             lockd = json.load(open(lock))
             cfg.device_machine = lockd.get("machine") or {}
+            if lockd.get("board") == "n72ap" and "wifi-mac" not in cfg.device_machine:
+                identity_path = os.path.join(cfg.device, "identity.json")
+                if os.path.isfile(identity_path):
+                    with open(identity_path) as f:
+                        mac = json.load(f).get("wifi-mac")
+                    if mac:
+                        cfg.device_machine["wifi-mac"] = mac
             cfg.device_version = tuple(int(x) for x in lockd.get("product_version", "0").split(".")[:2])
             cfg.device_version = cfg.device_version if cfg.device_version[0] else None
             derived = lockd.get("derived") or {}

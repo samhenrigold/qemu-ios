@@ -20,6 +20,7 @@
 #include "target/arm/cpregs.h"
 #include "qemu/error-report.h"
 #include "qemu/cutils.h"
+#include "net/util.h"
 #include "ui/input.h"
 #include "ui/clipboard.h"
 
@@ -386,6 +387,35 @@ static void ipod_touch_set_bt_latency_us(Object *obj, Visitor *v, const char *na
         nms->bt_latency_us = value;
         nms->bt_latency_us_explicit = true;
     }
+}
+
+/* The BCM card's factory identity is separate from NOR/NVRAM. Old
+ * AppleBCM4325 drivers read its CISTPL_FUNCE MAC before firmware bring-up. */
+static char *ipod_touch_get_wifi_mac(Object *obj, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (!nms->wifi_mac_explicit) {
+        return g_strdup("");
+    }
+    const uint8_t *m = nms->wifi_mac;
+    return g_strdup_printf("%02x:%02x:%02x:%02x:%02x:%02x",
+                           m[0], m[1], m[2], m[3], m[4], m[5]);
+}
+
+static void ipod_touch_set_wifi_mac(Object *obj, const char *value, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    uint8_t mac[6];
+    if (nms->cpu) {
+        error_setg(errp, "wifi-mac must be set before the machine starts");
+        return;
+    }
+    if (net_parse_macaddr(mac, value) < 0) {
+        error_setg(errp, "wifi-mac must be a MAC address");
+        return;
+    }
+    memcpy(nms->wifi_mac, mac, sizeof(mac));
+    nms->wifi_mac_explicit = true;
 }
 
 static bool ipod_touch_bt_env_aliases(IPodTouchMachineState *nms, Error **errp)
@@ -3068,6 +3098,11 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = qdev_new("ipodtouch.sdio");
     IPodTouchSDIOState *sdio_state = IPOD_TOUCH_SDIO(dev);
     nms->sdio_state = sdio_state;
+    if (nms->wifi_mac_explicit) {
+        BCMSDIOChip chip = sdio_state->chip;
+        memcpy(chip.mac, nms->wifi_mac, sizeof(chip.mac));
+        ipod_touch_sdio_set_chip(sdio_state, &chip);
+    }
     sdio_state->card_present = nms->wifi;
     memory_region_add_subregion(sysmem, SDIO_MEM_BASE, &sdio_state->iomem);
     busdev = SYS_BUS_DEVICE(dev);
@@ -3530,6 +3565,10 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_add(klass, "bt", "bool", ipod_touch_get_bt,
                               ipod_touch_set_bt, NULL, NULL);
     object_class_property_set_description(klass, "bt", "Emulated Bluetooth HCI controller (default on)");
+    object_class_property_add_str(klass, "wifi-mac", ipod_touch_get_wifi_mac,
+                                  ipod_touch_set_wifi_mac);
+    object_class_property_set_description(klass, "wifi-mac",
+        "Provisioned BCM4325 card MAC (unset keeps the legacy card identity)");
     object_class_property_add(klass, "bt-latency-us", "uint32", ipod_touch_get_bt_latency_us,
                               ipod_touch_set_bt_latency_us, NULL, NULL);
     object_class_property_set_description(klass, "bt-latency-us", "HCI reply delay in microseconds (default 2000)");

@@ -314,7 +314,7 @@ static unsigned sdio_bdc_hdrlen(IPodTouchSDIOState *s)
 static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t event_type,
                              uint32_t status, uint16_t msg_flags)
 {
-    static const uint8_t our_mac[6] = { 0x00, 0x23, 0x32, 0x6e, 0xaa, 0x10 };
+    const uint8_t *our_mac = s->chip.mac;
     unsigned bdclen = sdio_bdc_hdrlen(s);
     uint8_t frame[BDC_MAX_HDRLEN + 14 + 10 + WL_EVENT_MSG_LEN];
     uint32_t framelen = bdclen + 14 + 10 + WL_EVENT_MSG_LEN;
