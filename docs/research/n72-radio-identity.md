@@ -8,7 +8,8 @@ retain the previous identity. Factory provisioning cannot change after start.
 
 The stock 5F138 AppleBCM4325 driver reads the common CIS before firmware download.
 Native readback with Wi-Fi on confirms the provided address in both its Ethernet
-log and lockdown. This fixes Wi-Fi identity; it does not yet fix Bluetooth identity.
+log and lockdown. `bt-mac` also provisions the combo card's Apple OTP record.
+Both addresses remain immutable factory data across reset.
 
 ## Bluetooth lead
 
@@ -22,8 +23,16 @@ running IORegistry instead contains the driver's fallback.
 The driver's OTP parser accepts a vendor CIS tuple (code 0x80, subtype 0x81).
 Its Apple configuration records contain a little-endian 16-bit type and length
 in 16-bit words. Type 3, five words, supplies six Bluetooth address bytes.
-Supplying that actual card record is the next model fix; changing the synthetic
-identity to match the driver's fallback or patching the driver would hide it.
+The model now supplies that actual card record when `bt-mac` is configured.
+Native 5F138 lockdown and IORegistry readbacks match all four generated identity
+values with Wi-Fi on. No kernel instruction patch or changed identity scheme is
+needed. This retains the existing iBoot UART-node workaround and HCI stand-in.
+
+All eight default native regression checks pass on a current 7E18 prepared base
+and guest offer, including GL, audio, installation, launch, clean persistence and
+fsck. The old `nand-current` fixture still selects its legacy GL engine and fails
+two unimplemented fixture calls, even if a new OpenGLES file is staged; that
+unrelated old-path failure is retained, not counted as a passing regression.
 
 Evidence outside the product:
 
@@ -37,3 +46,7 @@ Evidence outside the product:
   Wi-Fi starts, read through a scratch probe built with the existing legacy ABI.
 - `/private/tmp/ltm-211-bcm-cis-disassembly.txt`: stock driver OTP parsing and
   provisioning. Research instruction addresses are not emulator behavior.
+- `/private/tmp/ltm-n72-combo-otp-qtest.log`: 3/3 production SDIO card checks.
+- `/private/tmp/ltm-n72-211-combo-otp-native/`: all four generated lockdown
+  identity readbacks and matching Bluetooth DeviceTree property.
+- `/private/tmp/ltm-n72-combo-otp-prepared-regress/`: all eight default checks.

@@ -301,6 +301,8 @@ typedef struct BCMSDIOChip {
     uint32_t sdiod_base;       /* the SDIO device core on the backplane */
     const char *vers1[4];      /* CISTPL_VERS_1 strings; none if [0] is NULL */
     uint8_t mac[6];            /* CISTPL_FUNCE type 4 */
+    uint8_t bt_mac[6];         /* Apple OTP type 3 (network byte order) */
+    bool has_bt_mac;
     /*
      * Leave out function 0's common FUNCE. AppleBCMWLAN-2.60 reads every
      * FUNCE body as {type, len, data} records looking for the MAC, and the

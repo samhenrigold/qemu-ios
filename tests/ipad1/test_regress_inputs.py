@@ -90,6 +90,21 @@ for confirmed,want in ((True,True),(False,False)):
     assert ('quit' in calls) is want
 print('PASS unknown halt outcome is observed, never retried')
 
+# Legacy iPod kernels can halt the CPU without a PMU power-off. A fitted agent
+# is still useful for services; explicitly choose the stock power gesture.
+for confirmed,want in ((True,True),(False,False)):
+    calls=[]
+    def shutdown_event(timeout):
+        calls.append('guest-event')
+        if not confirmed: raise TimeoutError('no guest-origin PMU shutdown')
+    q=SimpleNamespace(cmd=lambda name,**kw:calls.append(name),
+                      wait_for_guest_shutdown=shutdown_event,close=lambda:calls.append('close'))
+    p=SimpleNamespace(wait=lambda timeout:0)
+    with patch.object(R.itqmp,'agent_alive',side_effect=AssertionError('gesture must not halt the agent')):
+        assert R.itqmp.guest_powerdown(q,p,'legacy',log=lambda _:None,prefer_gesture=True) is want
+    assert calls==['system_powerdown','guest-event','close']
+print('PASS forced stock gesture still requires guest PMU shutdown evidence')
+
 with tempfile.TemporaryDirectory(prefix='ocr-cache-') as tmp:
     binary=Path(tmp)/'new-cache'/'ocr';commands=[]
     def run(argv,**kw):
