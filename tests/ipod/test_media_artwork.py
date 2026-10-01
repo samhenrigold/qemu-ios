@@ -29,7 +29,7 @@ cfg = SimpleNamespace(files=args.files, device=str(base), base_nand=str(base / '
     nor=str(out / 'nor.bin'), overlay=str(out / 'overlay'), direct_iboot=str(base / 'iBoot.bin'),
     gid_blobs=str(base / 'gid-blobs.bin'), guest_package=args.guest_package, qemu=args.qemu,
     usbmuxd=args.usbmuxd, out=str(out), board='n72ap', wifi=False, cpu=None, mem='128M',
-    device_machine={'aes-uid': 'engine'}, usb_port=r.free_port(21400, 21500),
+    device_machine={'aes-uid': 'engine'}, device_version=None, usb_port=r.free_port(21400, 21500),
     mux_port=r.free_port(27600, 27700), qmp_port=r.free_port(29300, 29400),
     amc_mode='decode', home_lit_min=10000, home_lit_max=145000)
 r.START = time.time()
