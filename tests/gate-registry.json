@@ -32,6 +32,7 @@
     {"name": "tests/ipod/test_early_boot_args.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_fmss_blank.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_fmss_free_pool.py", "tier": "quick", "prerequisites": []},
+    {"name": "tests/ipod/test_fmss_parameters.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_fmss_irq.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_fmss_persistence.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_fmss_script.py", "tier": "quick", "prerequisites": []},

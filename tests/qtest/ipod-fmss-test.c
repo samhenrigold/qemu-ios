@@ -324,7 +324,11 @@ static void programmed_snapshot(bool physical)
     }
     qtest_writel(qts, FMSS + 0xd28, 2);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd28), ==, 2);
+    qtest_writel(qts, FMSS + 0xd34, 0x80000016);
+    qtest_writel(qts, FMSS + 0xd48, 0x30012000);
     qtest_writel(qts, FMSS + 0xd4c, 0x20011000);
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd34), ==, 0x80000016);
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd48), ==, 0x30012000);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd4c), ==, 0x20011000);
     g_assert_true(migrate(qts, &state));
     qtest_quit(qts);
@@ -344,6 +348,8 @@ static void programmed_snapshot(bool physical)
                                 "'arguments': { 'uri': %s } }", uri);
     qtest_qmp_eventwait(qts, "RESUME");
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd28), ==, 2);
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd34), ==, 0x80000016);
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd48), ==, 0x30012000);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd4c), ==, 0x20011000);
     if (physical) {
         read_page(qts, 0, 6, back, back_spare);
@@ -361,6 +367,8 @@ static void programmed_snapshot(bool physical)
     g_assert_cmpmem(back_spare, sizeof(back_spare), spare, sizeof(spare));
     qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd28), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd34), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd48), ==, 0);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd4c), ==, 0);
     read_page(qts, 0, 5, back, back_spare);
     if (physical) {
@@ -654,6 +662,45 @@ static void observed_right_shift(void)
     g_free(overlay);
 }
 
+static void parameter_latches(void)
+{
+    char *overlay = NULL;
+    QTestState *qts = start_board(&overlay);
+    const uint32_t d34[] = { 0, 0x16, 0x80000000, 0xffffffff };
+    const uint32_t d48[] = { 0xffffffff, 0x20011000, 0, 0x80000000 };
+    const uint32_t script[] = {
+        0x04000d34, 0xffffffff, 0x02000030, 0,
+        0x04010030, 0xffffffff, 0x05020000, RAM + 0x2000, 0x11010002, 0,
+        0x04000d48, 0xffffffff, 0x0b000000, 0x801, 0x02000000, 0,
+        0x04010000, 0xffffffff, 0x0c020002, 4, 0x11010002, 0, 0, 0
+    };
+    /* D34 uses the observed stock read/write pair. D48 uses immediate
+     * OR801 as an observation oracle, not the unresolved stock register-OR
+     * form. FMC shadow observations do not claim NAND/ECC execution. */
+    for (unsigned i = 0; i < G_N_ELEMENTS(script); i++) {
+        qtest_writel(qts, RAM + 4 * i, script[i]);
+    }
+    qtest_writel(qts, FMSS + 0xc04, RAM);
+    for (unsigned i = 0; i < G_N_ELEMENTS(d34); i++) {
+        qtest_writel(qts, FMSS + 0xd34, d34[i]);
+        qtest_writel(qts, FMSS + 0xd48, d48[i]);
+        qtest_writel(qts, FMSS + 0xd4c, 0x12345678);
+        g_assert_cmphex(qtest_readl(qts, FMSS + 0xd34), ==, d34[i]);
+        g_assert_cmphex(qtest_readl(qts, FMSS + 0xd48), ==, d48[i]);
+        g_assert_cmphex(qtest_readl(qts, FMSS + 0xd4c), ==, 0x12345678);
+        qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x2000), ==, d34[i]);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x2004), ==, d48[i] | 0x801);
+        qtest_writel(qts, FMSS + 0xc00, 8);
+    }
+    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd34), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd48), ==, 0);
+    qtest_quit(qts);
+    rmdir(overlay);
+    g_free(overlay);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *rom = g_malloc0(131072);
@@ -682,6 +729,7 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/fmss/packed-generated-blank", packed_generated);
     qtest_add_func("/ipod/fmss/read-id-chip-selection", read_id_chip_selection);
     qtest_add_func("/ipod/fmss/observed-right-shift", observed_right_shift);
+    qtest_add_func("/ipod/fmss/parameter-latches", parameter_latches);
     result = g_test_run();
     unlink(rom_path); unlink(nor_path); rmdir(nand_path);
     g_free(rom_path); g_free(nor_path); g_free(nand_path);
