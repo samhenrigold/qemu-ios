@@ -53,7 +53,7 @@ prelude = r'''
 #define ctz32(x) ((x) ? (unsigned)__builtin_ctz(x) : 32u)
 typedef struct {
     uint32_t reg_cs_script, reg_cinfo_target_addr, reg_pages_in_addr, reg_cs_buf_addr;
-    uint32_t reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc, reg_script_param_d4c;
+    uint32_t reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc, reg_script_param_d4c, reg_num_pages, reg_chunks_per_page;
 } IPodTouchFMSSState;
 static uint8_t mem[0x10000];
 static void cpu_physical_memory_read(uint32_t a, void *p, size_t n) { assert(a + n <= sizeof(mem)); memcpy(p, mem + a, n); }
@@ -97,7 +97,35 @@ int main(void) {
     bool ok = true;
     assert(fmss_var_read(&s, FMSS_SCRIPT_PARAM_D4C, &ok) == 0 && ok);
     ok = true; fmss_var_read(&s, 0xd50, &ok); assert(!ok);
-    puts("PASS: FMSS D4C parameter, READ ID programs of 7E18 and 8C148, unknown op stops");
+    /* Stock bulk-read programs consume D18 as a page counter. Exercise
+     * the observed read/check/decrement loop using supported instructions. */
+    uint32_t page_count[] = {
+        0x04070d18u, 0xffffffffu, 0x17070000u, 0x40u,
+        0x05000000u, 0x9100u, 0x11070000u, 0,
+        0x0d070007u, 1, 0x0c000000u, 4,
+        0x0e070000u, 0x18u, 0, 0, 0, 0
+    };
+    memcpy(mem + 0x1000, page_count, sizeof(page_count));
+    for (unsigned count = 0; count <= 3; count++) {
+        memset(mem + 0x9100, 0, 16);
+        s.reg_num_pages = count;
+        fmss_run_script(&s);
+        uint32_t *observed = (uint32_t *)(mem + 0x9100);
+        for (unsigned j = 0; j < count; j++) assert(observed[j] == count-j);
+        assert(observed[count] == 0);
+        assert(s.reg_num_pages == count); /* Register input is not loop scratch. */
+    }
+    uint32_t chunks[] = {
+        0x04000d28u, 0xffffffffu, 0x05010000u, 0x9200u,
+        0x11000001u, 0, 0, 0
+    };
+    memcpy(mem + 0x1000, chunks, sizeof(chunks));
+    for (unsigned count = 0; count <= 4; count++) {
+        s.reg_chunks_per_page = count;
+        fmss_run_script(&s);
+        assert(*(uint32_t *)(mem + 0x9200) == count);
+    }
+    puts("PASS: FMSS D18 page counter, D28 chunks, D4C parameter, READ ID programs of 7E18 and 8C148, unknown op stops");
 }
 ''' % (words(ID_7E18), words(ID_8C148))
 with tempfile.TemporaryDirectory() as tmp:

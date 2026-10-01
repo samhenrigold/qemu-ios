@@ -889,3 +889,19 @@ Actual stock erase-kernel BootArgs were captured as
 present; no legacy restore-client argument change is justified. Subsequent
 FMSS script contracts, physical erase, cold boot and durable writes remain
 unqualified.
+
+### Stock FMSS page-count and chunk parameters (2026-10-01)
+
+D18 is the stock request page count: sequencer reads now consume the existing
+CPU latch. D28 is the guest-supplied number of 2048-byte chunks per page; it
+now latches CPU writes and supports MMIO/sequencer reads, reset and VMState7
+(older supported streams initialize the absent field to zero). The value is
+not forced to the observed two chunks. Stock-driver disassembly establishes
+these inputs; synthetic bounded fixtures exercise the observed loop/read
+forms with several counts. No descriptor-load or erase opcode was added.
+
+Actual-handler sanitizer tests pass; real FMSS qtests pass 4/4 including reset
+and physical/generated snapshot roundtrips. The independent default native
+7E18 two-boot regression passes 8/8, including filesystem health, durable
+writes and audio (`/private/tmp/ltm-fmss-d18-d28-default`). Stock erase restore
+and honest completion of unsupported scripts remain separate gates.

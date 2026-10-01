@@ -39,7 +39,7 @@ typedef struct {
     int irq;
     uint32_t reg_cs_ctrl, reg_cs_irq_bit, reg_cs_irq_mask, reg_cs_script;
     uint32_t reg_cinfo_target_addr, reg_pages_in_addr, reg_cs_buf_addr;
-    uint32_t reg_num_pages, reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc, reg_script_param_d4c;
+    uint32_t reg_num_pages, reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc, reg_script_param_d4c, reg_chunks_per_page;
     GTree *phys_pages, *erased_blocks;
     GHashTable *overlay_pages;
     bool overlay_indexed;
@@ -82,16 +82,26 @@ int main(void) {
         .page_buffer=page,.page_spare_buffer=spare};
     s.phys_pages=g_tree_new(key_compare);
     s.erased_blocks=g_tree_new(key_compare);
+    write_reg(&s,FMSS_NUM_PAGES,3);
+    assert(s.reg_num_pages==3);
     write_reg(&s,FMSS_SCRIPT_PARAM_D4C,0x20011000u);
     assert(ipod_touch_fmss_read(&s,FMSS_SCRIPT_PARAM_D4C,4)==0x20011000u);
+    write_reg(&s,FMSS_CHUNKS_PER_PAGE,2);
+    assert(ipod_touch_fmss_read(&s,FMSS_CHUNKS_PER_PAGE,4)==2);
     ipod_touch_fmss_reset((DeviceState *)&s);
+    assert(ipod_touch_fmss_read(&s,FMSS_CHUNKS_PER_PAGE,4)==0);
     assert(ipod_touch_fmss_read(&s,FMSS_SCRIPT_PARAM_D4C,4)==0);
     write_reg(&s,FMSS_SCRIPT_PARAM_D4C,0xffffffffu);
     assert(ipod_touch_fmss_read(&s,FMSS_SCRIPT_PARAM_D4C,4)==0xffffffffu);
+    write_reg(&s,FMSS_CHUNKS_PER_PAGE,0xffffffffu);
+    assert(ipod_touch_fmss_read(&s,FMSS_CHUNKS_PER_PAGE,4)==0xffffffffu);
     fmss_pre_load(&s);
+    assert(s.reg_chunks_per_page==0); /* v4-v6 streams omit this parameter. */
     assert(s.reg_script_param_d4c==0); /* v4/v5 streams omit this parameter. */
     s.reg_script_param_d4c=0x20011000u; /* v6 restored field */
-    fmss_post_load(&s,6); assert(s.reg_script_param_d4c==0x20011000u);
+    s.reg_chunks_per_page=2; /* v7 restored field */
+    fmss_post_load(&s,7);
+    assert(s.reg_script_param_d4c==0x20011000u && s.reg_chunks_per_page==2);
     write_reg(&s,0xc04,0x1000); assert(s.reg_cs_script==0x1000 && !scripts_run);
     write_reg(&s,0xc00,0xffb5); /* iBoot polls completion. */
     assert(!level && !s.reg_cs_irq_bit && timer.pending && scripts_run==1);
@@ -116,7 +126,7 @@ int main(void) {
     timer.pending=true; fmss_post_load(&s,4);
     assert(!level && timer.pending && s.reg_cs_irq_mask==0);
     g_tree_destroy(s.phys_pages); g_tree_destroy(s.erased_blocks);
-    puts("PASS: FMSS D4C readback/reset/load, deferred completion, polling, W1C, masking, abort, failure and restore");
+    puts("PASS: FMSS D28/D4C readback/reset/load, deferred completion, polling, W1C, masking, abort, failure and restore");
 }
 '''
 constants = '\n'.join(line for line in header.splitlines() if line.startswith('#define FMSS') or line.startswith('#define NAND_PAGES_PER_BLOCK'))
