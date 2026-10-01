@@ -2,6 +2,7 @@
 #include "hw/arm/ipod_touch_guard.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
+#include "qemu/bswap.h"
 #include "qemu/error-report.h"
 #include "system/runstate.h"
 #include "exec/address-spaces.h"
@@ -180,6 +181,24 @@ static void fmss_run_script(IPodTouchFMSSState *s)
             /* 0xCxx writes (IRQ clear/mask, program length) stay with the
              * CPU-side model; the CPU sets the same values itself. */
             break;
+        case 0x03: {
+            uint8_t word[4];
+            if (imm) {
+                ok = false; /* No nonzero-immediate descriptor form observed. */
+                break;
+            }
+            uint32_t address = r[b & 0x1f];
+            if (address_space_read(&address_space_memory, address,
+                                   MEMTXATTRS_UNSPECIFIED, word,
+                                   sizeof(word)) != MEMTX_OK) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "[fmss] descriptor read at 0x%08x failed; "
+                              "program stopped\n", address);
+                return;
+            }
+            r[a] = ldl_le_p(word);
+            break;
+        }
         case 0x04: {
             uint32_t v = 0;
             if (b >= 0xd00) {
