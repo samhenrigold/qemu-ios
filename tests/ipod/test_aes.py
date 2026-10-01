@@ -12,7 +12,7 @@ header=(root/'include/hw/arm/ipod_touch_aes.h').read_text()
 constants='\n'.join(re.findall(r'^#define (?:AES_|key_uid|key_gid_standin).*$',header,re.M))
 state=re.search(r'typedef struct IPodTouchAESState.*?} IPodTouchAESState;',header,re.S)[0]
 enum=re.search(r'typedef enum AESKeyType.*?} AESKeyType;',header,re.S)[0]
-production=source[source.index('#define IT_AES_MAX_XFER'):source.index('static const MemoryRegionOps aes_ops')]
+production=source[source.index('#define IT_AES_DMA_CHUNK'):source.index('static const MemoryRegionOps aes_ops')]
 code=r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -26,7 +26,8 @@ typedef uint64_t hwaddr;
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define MIN(a,b) ((a)<(b)?(a):(b))
 #define IT_SIZE(name,value,max) MIN(value,max)
-#define g_malloc malloc
+#define g_malloc dma_alloc
+static void *dma_alloc(size_t n) {assert(n<=65536);return malloc(n);}
 #define g_free free
 #define error_report(...) fprintf(stderr,__VA_ARGS__)
 typedef int qemu_irq;
@@ -110,8 +111,41 @@ static void engine(void) {
  }
  puts("PASS: aes-uid=engine UID and short-GID operations match OpenSSL with the stand-in keys");
 }
+
+/* Stock iBSS uses a single request larger than the former 16 MiB guard.
+   Compare all bytes, including the plain final tail, with independent CBC. */
+static void restore_size(void) {
+ IPodTouchAESState length={0};
+ ipod_touch_aes_write(&length,AES_INSIZE,UINT32_MAX,4);
+ assert(length.insize==UINT32_MAX);
+ const unsigned n=0x1824000+7, src=0x100, dst=src+n+0x100;
+ uint8_t *mem=calloc(1,dst+n), *ref=malloc(n), key[16]={0}, iv[16]={0};
+ AES_KEY k;
+ for(unsigned i=0;i<n;i++)mem[src+i]=(uint8_t)(i*31+(i>>19));
+ AES_set_encrypt_key(key,128,&k);
+ AES_cbc_encrypt(mem+src,ref,n&~15u,&k,iv,AES_ENCRYPT);
+ memcpy(ref+(n&~15u),mem+src+(n&~15u),n&15u);
+ flat=mem;
+ IPodTouchAESState s={.operation=0xf,.outaddr=src,.inaddr=dst};
+ W(AES_INSIZE,n);W(AES_GO,1);
+ assert(s.insize==n && s.status==15 && !memcmp(mem+dst,ref,n));
+ memset(&s,0,sizeof(s));s.operation=0xe;s.outaddr=dst;s.inaddr=src;
+ W(AES_INSIZE,n);W(AES_GO,1);
+ for(unsigned i=0;i<n;i++)assert(mem[src+i]==(uint8_t)(i*31+(i>>19)));
+ /* The retained legacy UID convention also uses bounded DMA storage. */
+ memset(iv,0,sizeof(iv));AES_set_encrypt_key(key_uid,128,&k);
+ AES_cbc_encrypt(mem+src,ref,n&~15u,&k,iv,AES_ENCRYPT);
+ memcpy(ref+(n&~15u),mem+src+(n&~15u),n&15u);
+ memcpy(mem+dst,ref,n);
+ memset(&s,0,sizeof(s));s.keytype=AESUID;s.inaddr=dst;s.outaddr=src;
+ W(AES_INSIZE,n);W(AES_GO,1);
+ for(unsigned i=0;i<n;i++)assert(mem[src+i]==(uint8_t)(i*31+(i>>19)));
+ flat=NULL;free(mem);free(ref);
+ puts("PASS: complete restore-sized CBC encrypt/decrypt beyond 16 MiB with partial tail");
+}
 int main(void) {
  segmented();
+ restore_size();
  unsigned addresses[]={0x220100ac,0x0bf08468,0x0fb9bcdc};
  for(unsigned i=0;i<3;i++) {
   check(addresses[i],AESCustom,128,true,true);
