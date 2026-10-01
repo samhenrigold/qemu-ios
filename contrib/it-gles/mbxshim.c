@@ -989,17 +989,21 @@ static void gles_hand_table(void **table)
  * framework says how many slots it allotted). Every entry is filled, in this firmware's own
  * layout: the trampolines never null-check.
  */
-static int GLESCreateGC(void *sharegroup, void **fw_table, void *x_end,
-                        void **gc_out)
+static int GLESCreateGCWithAPI(void *sharegroup, void **fw_table, void *x_end,
+                               void **gc_out, unsigned api)
 {
+    if (api > 2) return 0;
     if (!gc_out || !sharegroup) return 0;
     GuestGC *gc = calloc(1, sizeof(*gc));
     if (!gc) return 0;
     if (((GuestGC *)sharegroup)->host) {
-        long long host = qc(GLES_OP_NEW_CONTEXT, 0, 1, A(((GuestGC *)sharegroup)->host));
+        long long host = api ? qc(GLES_OP_NEW_CONTEXT, 0, 2, A(((GuestGC *)sharegroup)->host, api)) : -1;
+        /* Older hosts accept only the one-word constructor. */
+        if (host <= 0) host = qc(GLES_OP_NEW_CONTEXT, 0, 1, A(((GuestGC *)sharegroup)->host));
         if (host <= 0) { free(gc); return 0; }
         gc->host = (unsigned)host;
     }
+    gc->api = api;
     w("[mbxshim] GLESCreateGC\n");
 
     if (fw_table) {
@@ -1013,6 +1017,13 @@ static int GLESCreateGC(void *sharegroup, void **fw_table, void *x_end,
     }
     return 1;   /* 1 = success. See the header comment; 0 here yields a nil
                  * EAGLContext with no other symptom. */
+}
+
+/* The stock engine ABI does not pass an API version here. Keep it unknown.
+ * Front ends that know their API call GLESCreateGCWithAPI directly. */
+static int GLESCreateGC(void *sharegroup, void **fw_table, void *x_end, void **gc_out)
+{
+    return GLESCreateGCWithAPI(sharegroup, fw_table, x_end, gc_out, 0);
 }
 
 static int GLESDestroyGC(void *gc);

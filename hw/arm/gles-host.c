@@ -290,6 +290,8 @@ typedef struct {
     GLESPVRTC default_pvrtc;
     bool inited;
     bool failed;
+    /* 0: older guest did not supply its API; 1/2: explicit GLES version. */
+    uint32_t api_version;
 #ifndef GLES_HOST_EAGL
     CGLContextObj cgl;
 #endif
@@ -7292,11 +7294,13 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
         return handle;
     }
     if (slot == GLES_OP_NEW_CONTEXT) {
-        if (argc != 1 || gles_handle == UINT32_MAX) return -1;
+        if ((argc != 1 && argc != 2) || gles_handle == UINT32_MAX) return -1;
+        if (argc == 2 && args[1] != 1 && args[1] != 2) return -1;
         GLESGroup *group = g_hash_table_lookup(gles_groups, GUINT_TO_POINTER(args[0]));
         if (!group) return -1;
         if (!gles_begin_context()) return -1;
         GLESHost *state = g_new0(GLESHost, 1);
+        state->api_version = argc == 2 ? args[1] : 0;
         state->group = group; group->refs++;
         state->buffers = group->buffers;
         state->surfaces = group->surfaces;
@@ -7304,7 +7308,7 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
         state->pvrtc = group->pvrtc;
         uint32_t handle = ++gles_handle;
         g_hash_table_insert(gles_contexts, GUINT_TO_POINTER(handle), state);
-        if (getenv("IT_GLES_CONTEXT_TRACE")) fprintf(stderr, "[gles-context] created %08x %p\n", handle, (void *)state);
+        if (getenv("IT_GLES_CONTEXT_TRACE")) fprintf(stderr, "[gles-context] created %08x %p api=%u\n", handle, (void *)state, state->api_version);
         return handle;
     }
     if (slot == GLES_OP_DELETE_CONTEXT) {

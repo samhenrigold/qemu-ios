@@ -448,7 +448,7 @@ static GuestGC *fe_new_gc(void *share_sg, void **sg_out, unsigned api)
     void *sg = share_sg, *gc = 0;
     fe_hello();
     if (!sg && !GLESCreateSharegroup(&sg)) return 0;
-    if (!GLESCreateGC(sg, 0, 0, &gc)) {
+    if (!GLESCreateGCWithAPI(sg, 0, 0, &gc, api)) {
         if (!share_sg) GLESDestroySharegroup(sg);
         return 0;
     }

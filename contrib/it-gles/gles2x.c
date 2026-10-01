@@ -355,7 +355,7 @@ static GuestGC *gles2x_new_gc(void *share_sg, void **sg_out)
     void *sg = share_sg, *gc = 0;
     gles2x_hello();
     if (!sg && !GLESCreateSharegroup(&sg)) return 0;
-    if (!GLESCreateGC(sg, 0, 0, &gc)) {
+    if (!GLESCreateGCWithAPI(sg, 0, 0, &gc, 1)) {
         if (!share_sg) GLESDestroySharegroup(sg);
         return 0;
     }
@@ -719,7 +719,7 @@ __attribute__((visibility("default")))
     if (api != 1 || !(_private = calloc(1, sizeof *_private))) { [self release]; return 0; }
     _private->api = api;
     _private->sharegroup = sharegroup ? [sharegroup retain] : [[EAGLSharegroup alloc] init];
-    if (!_private->sharegroup || !GLESCreateGC(_private->sharegroup->_private, 0, 0, &gc)) {
+    if (!_private->sharegroup || !GLESCreateGCWithAPI(_private->sharegroup->_private, 0, 0, &gc, api)) {
         [self release];
         return 0;
     }
