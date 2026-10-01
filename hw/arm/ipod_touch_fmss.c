@@ -246,6 +246,21 @@ static gpointer fmss_block_key(uint32_t cs, uint32_t block)
     return GUINT_TO_POINTER((cs << 24) | block);
 }
 
+/* Direct physical keys fit 32 bits. Ordered trees reuse QEMU's standard
+ * VMState GTree serializer, including values that exist only in RAM. */
+static gint fmss_key_compare(gconstpointer a, gconstpointer b, gpointer unused)
+{
+    uintptr_t left = (uintptr_t)a, right = (uintptr_t)b;
+    return (left > right) - (left < right);
+}
+
+static void fmss_remember_erased(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
+{
+    uint8_t present = 1;
+    g_tree_replace(s->erased_blocks, fmss_block_key(cs, block),
+                   g_memdup2(&present, sizeof(present)));
+}
+
 static void fmss_block_marker_path(IPodTouchFMSSState *s, uint32_t cs,
                                    uint32_t block, char *buf, size_t len)
 {
@@ -259,15 +274,12 @@ static bool fmss_block_is_erased(IPodTouchFMSSState *s, uint32_t cs, uint32_t bl
     if (!s->nand_overlay || !fmss_erase_on()) {
         return false;
     }
-    if (!s->erased_blocks) {
-        s->erased_blocks = g_hash_table_new(g_direct_hash, g_direct_equal);
-    }
-    if (g_hash_table_contains(s->erased_blocks, fmss_block_key(cs, block))) {
+    if (g_tree_lookup(s->erased_blocks, fmss_block_key(cs, block))) {
         return true;
     }
     fmss_block_marker_path(s, cs, block, marker, sizeof(marker));
     if (g_file_test(marker, G_FILE_TEST_EXISTS)) {
-        g_hash_table_add(s->erased_blocks, fmss_block_key(cs, block));
+        fmss_remember_erased(s, cs, block);
         return true;
     }
     return false;
@@ -343,10 +355,7 @@ static bool fmss_erase_block(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
         }
     }
 
-    if (!s->erased_blocks) {
-        s->erased_blocks = g_hash_table_new(g_direct_hash, g_direct_equal);
-    }
-    g_hash_table_add(s->erased_blocks, fmss_block_key(cs, block));
+    fmss_remember_erased(s, cs, block);
     return true;
 }
 
@@ -361,15 +370,10 @@ static void fmss_remember_physical(IPodTouchFMSSState *s, uint32_t cs,
                                    uint32_t page_nr, const uint8_t *data,
                                    const uint8_t *spare)
 {
-    if (!s->phys_pages) {
-        s->phys_pages = g_hash_table_new_full(g_direct_hash, g_direct_equal,
-                                              NULL, g_free);
-    }
-
     uint8_t *slot = g_malloc(NAND_BYTES_PER_PAGE + NAND_BYTES_PER_SPARE);
     memcpy(slot, data, NAND_BYTES_PER_PAGE);
     memcpy(slot + NAND_BYTES_PER_PAGE, spare, NAND_BYTES_PER_SPARE);
-    g_hash_table_insert(s->phys_pages, fmss_block_key(cs, page_nr), slot);
+    g_tree_replace(s->phys_pages, fmss_block_key(cs, page_nr), slot);
 }
 
 static bool fmss_recall_physical(IPodTouchFMSSState *s, uint32_t cs,
@@ -379,7 +383,7 @@ static bool fmss_recall_physical(IPodTouchFMSSState *s, uint32_t cs,
         return false;
     }
 
-    const uint8_t *slot = g_hash_table_lookup(s->phys_pages,
+    const uint8_t *slot = g_tree_lookup(s->phys_pages,
                                               fmss_block_key(cs, page_nr));
     if (!slot) {
         return false;
@@ -892,7 +896,7 @@ static bool fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
      * real session ever hits it. IT_FMSS_SHADOW=1 prints each one.
      */
     if (s->phys_pages &&
-        g_hash_table_contains(s->phys_pages, fmss_block_key(cs, page_nr))) {
+        g_tree_lookup(s->phys_pages, fmss_block_key(cs, page_nr))) {
         fmss_stats.shadowed++;
         if (getenv("IT_FMSS_SHADOW")) {
             fprintf(stderr, "[fmss] store cs=%u page=%u lands on a page this "
@@ -1368,6 +1372,11 @@ static void ipod_touch_fmss_init(Object *obj)
     notifier_list_init(&s->before_read);
     s->completion_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, fmss_complete, s);
 
+    s->snapshot_mode = fmss_physical() | (fmss_erase_on() << 1) |
+                       (fmss_usedspare() << 2) | (fmss_basespare() << 3) |
+                       (fmss_legacy_on() << 4);
+    s->phys_pages = g_tree_new_full(fmss_key_compare, NULL, NULL, g_free);
+    s->erased_blocks = g_tree_new_full(fmss_key_compare, NULL, NULL, g_free);
     s->page_buffer = (uint8_t *)g_malloc(NAND_BYTES_PER_PAGE);
     s->page_spare_buffer = (uint8_t *)g_malloc(NAND_BYTES_PER_SPARE);
 }
@@ -1380,10 +1389,10 @@ static void ipod_touch_fmss_finalize(Object *obj)
     g_free(s->page_buffer);
     g_free(s->page_spare_buffer);
     if (s->phys_pages) {
-        g_hash_table_destroy(s->phys_pages);
+        g_tree_destroy(s->phys_pages);
     }
     if (s->erased_blocks) {
-        g_hash_table_destroy(s->erased_blocks);
+        g_tree_destroy(s->erased_blocks);
     }
 }
 
@@ -1398,7 +1407,7 @@ static void ipod_touch_fmss_reset(DeviceState *dev)
     IPodTouchFMSSState *s = IPOD_TOUCH_FMSS(dev);
 
     if (!fmss_physical() && s->phys_pages) {
-        g_hash_table_remove_all(s->phys_pages);
+        g_tree_remove_all(s->phys_pages);
     }
     s->reg_cs_irq_bit = 0;
     s->reg_cs_ctrl = 0;
@@ -1419,39 +1428,87 @@ static void ipod_touch_fmss_reset(DeviceState *dev)
     }
 }
 
-/* The generated-layout compatibility path has authoritative session state in
- * these maps which is not reconstructible from its relocated disk pages.
- * Refuse snapshots rather than resume with a different physical read view.
- * Version 4 certifies that both omitted maps were empty when saved; older
- * streams cannot provide that guarantee and are intentionally unsupported.
- * Synchronous DMA scratch cannot cross the save boundary. */
-static int fmss_pre_save(void *opaque)
+/* Page contents at their physical addresses can differ from the generated
+ * disk layout. Migrate that authoritative read view, plus erase markers,
+ * using upstream VMState's GTree representation. Version 4 streams were
+ * certified empty; older streams omitted unvalidated state and stay refused. */
+typedef struct FMSSPhysicalPage {
+    uint8_t bytes[NAND_BYTES_PER_PAGE + NAND_BYTES_PER_SPARE];
+} FMSSPhysicalPage;
+
+typedef struct FMSSMarker {
+    uint8_t present;
+} FMSSMarker;
+
+static const VMStateDescription vmstate_fmss_page = {
+    .name = "fmss/physical-page",
+    .version_id = 5,
+    .minimum_version_id = 5,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BUFFER(bytes, FMSSPhysicalPage),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_fmss_marker = {
+    .name = "fmss/erase-marker",
+    .version_id = 5,
+    .minimum_version_id = 5,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(present, FMSSMarker),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static int fmss_pre_load(void *opaque)
 {
     IPodTouchFMSSState *s = opaque;
-    guint pages = s->phys_pages ? g_hash_table_size(s->phys_pages) : 0;
-    guint blocks = s->erased_blocks ? g_hash_table_size(s->erased_blocks) : 0;
-
-    if (pages || blocks) {
-        error_report("FMSS snapshot unsupported: %u physical pages and %u "
-                     "erased blocks are not serialized; use a cold boot", pages, blocks);
-        return -ENOTSUP;
+    g_tree_remove_all(s->phys_pages);
+    g_tree_remove_all(s->erased_blocks);
+    if (s->overlay_pages) {
+        g_hash_table_remove_all(s->overlay_pages);
     }
+    s->overlay_indexed = false;
     return 0;
+}
+
+static gboolean fmss_invalid_page(gpointer key, gpointer value, gpointer unused)
+{
+    uintptr_t k = (uintptr_t)key;
+    bool *invalid = unused;
+    *invalid = (k >> 24) >= 4 || (k & 0xffffff) >= 4096 * NAND_PAGES_PER_BLOCK;
+    return *invalid;
+}
+
+static gboolean fmss_invalid_marker(gpointer key, gpointer value, gpointer unused)
+{
+    uintptr_t k = (uintptr_t)key;
+    bool *invalid = unused;
+    *invalid = (k >> 24) >= 4 || (k & 0xffffff) >= 4096 || *(uint8_t *)value != 1;
+    return *invalid;
 }
 
 static int fmss_post_load(void *opaque, int version_id)
 {
     IPodTouchFMSSState *s = opaque;
-
+    bool invalid = false;
+    g_tree_foreach(s->phys_pages, fmss_invalid_page, &invalid);
+    if (!invalid) {
+        g_tree_foreach(s->erased_blocks, fmss_invalid_marker, &invalid);
+    }
+    if (invalid) {
+        error_report("FMSS snapshot has invalid physical coordinates or markers");
+        return -EINVAL;
+    }
     fmss_update_irq(s);
     return 0;
 }
 
 static const VMStateDescription vmstate_ipod_touch_fmss = {
     .name = "ipod_touch_fmss",
-    .version_id = 4,
+    .version_id = 5,
     .minimum_version_id = 4,
-    .pre_save = fmss_pre_save,
+    .pre_load = fmss_pre_load,
     .post_load = fmss_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(reg_cs_irq_bit, IPodTouchFMSSState),
@@ -1467,6 +1524,12 @@ static const VMStateDescription vmstate_ipod_touch_fmss = {
         VMSTATE_UINT32_V(reg_cs_irq_mask, IPodTouchFMSSState, 2),
         VMSTATE_TIMER_PTR_V(completion_timer, IPodTouchFMSSState, 2),
         VMSTATE_UINT32_V(reg_cs_script, IPodTouchFMSSState, 3),
+        VMSTATE_UINT32_EQUAL_V(snapshot_mode, IPodTouchFMSSState, 5,
+                              "FMSS startup read/write modes differ"),
+        VMSTATE_GTREE_DIRECT_KEY_V(phys_pages, IPodTouchFMSSState, 5,
+                                  &vmstate_fmss_page, FMSSPhysicalPage),
+        VMSTATE_GTREE_DIRECT_KEY_V(erased_blocks, IPodTouchFMSSState, 5,
+                                  &vmstate_fmss_marker, FMSSMarker),
         VMSTATE_END_OF_LIST()
     }
 };

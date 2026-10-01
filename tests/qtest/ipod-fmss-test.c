@@ -16,7 +16,7 @@ static QTestState *start_board(char **overlay)
                        rom_path, nor_path, nand_path, *overlay);
 }
 
-static bool migrate(QTestState *qts)
+static bool migrate(QTestState *qts, char **saved)
 {
     g_autofree char *state = NULL;
     g_autofree char *uri = NULL;
@@ -33,7 +33,11 @@ static bool migrate(QTestState *qts)
         if (status && (!strcmp(status, "completed") || !strcmp(status, "failed"))) {
             completed = !strcmp(status, "completed");
             qobject_unref(reply);
-            unlink(state);
+            if (completed && saved) {
+                *saved = g_steal_pointer(&state);
+            } else {
+                unlink(state);
+            }
             return completed;
         }
         qobject_unref(reply);
@@ -43,27 +47,80 @@ static bool migrate(QTestState *qts)
     return false;
 }
 
+static void expect_startup_failure(char **argv, const char *error_text)
+{
+    GPid pid;
+    int status, errfd;
+    bool exited = false;
+    g_assert_true(g_spawn_async_with_pipes(NULL, argv, NULL, G_SPAWN_DO_NOT_REAP_CHILD,
+                 NULL, NULL, &pid, NULL, NULL, &errfd, NULL));
+    for (unsigned i = 0; i < 2000; i++) {
+        if (waitpid(pid, &status, WNOHANG) == pid) {
+            exited = true;
+            break;
+        }
+        g_usleep(1000);
+    }
+    if (!exited) {
+        kill(pid, SIGTERM);
+        waitpid(pid, &status, 0);
+    }
+    char message[4096] = { 0 };
+    ssize_t n = read(errfd, message, sizeof(message) - 1);
+    close(errfd);
+    g_spawn_close_pid(pid);
+    g_assert_true(exited);
+    g_assert_cmpint(n, >, 0);
+    g_assert_true(WIFEXITED(status) && WEXITSTATUS(status) != 0);
+    if (!strstr(message, error_text)) {
+        g_test_message("Unexpected QEMU startup error: %s", message);
+    }
+    g_assert_nonnull(strstr(message, error_text));
+}
+
+static void snapshot_mode_mismatch(void)
+{
+    char *overlay;
+    g_autofree char *state = NULL;
+    g_setenv("FMSS_PHYSICAL", "1", true);
+    g_unsetenv("FMSS_ERASE");
+    QTestState *qts = start_board(&overlay);
+    g_assert_true(migrate(qts, &state));
+    qtest_quit(qts);
+    g_unsetenv("FMSS_PHYSICAL");
+    g_autofree char *machine = g_strdup_printf(
+        "iPod-Touch,bootrom=%s,nor=%s,nand=%s,nandrw=%s",
+        rom_path, nor_path, nand_path, overlay);
+    g_autofree char *uri = g_strdup_printf("file:%s", state);
+    char *argv[] = { getenv("QTEST_QEMU_BINARY"), "-machine", machine,
+        "-accel", "qtest", "-incoming", uri, "-S", "-display", "none",
+        "-audio", "driver=none", "-nic", "none", "-monitor", "none",
+        "-serial", "none", NULL };
+    expect_startup_failure(argv, "FMSS startup read/write modes differ");
+    unlink(state);
+    rmdir(overlay);
+    g_free(overlay);
+    g_setenv("FMSS_PHYSICAL", "1", true);
+}
+
 static void empty_snapshot(void)
 {
     char *overlay;
     QTestState *qts = start_board(&overlay);
-    g_assert_true(migrate(qts));
+    g_assert_true(migrate(qts, NULL));
     qtest_quit(qts);
     rmdir(overlay);
     g_free(overlay);
 }
 
-static void programmed_snapshot_refused(void)
+static void program(QTestState *qts, unsigned cs, unsigned page,
+                    const uint8_t *data, const uint8_t *spare)
 {
-    char *overlay;
-    uint8_t data[4096], spare[12] = { 0 };
-    QTestState *qts = start_board(&overlay);
-    memset(data, 0x5a, sizeof(data));
-    qtest_memwrite(qts, RAM + 0x10000, data, sizeof(data));
-    qtest_memwrite(qts, RAM + 0x2000, spare, sizeof(spare));
-    qtest_writel(qts, RAM, 1);       /* chip 0, one physical program */
-    qtest_writel(qts, RAM + 4, 5);
-    qtest_writel(qts, RAM + 8, 0);   /* sequencer script terminator */
+    qtest_memwrite(qts, RAM + 0x10000, data, 4096);
+    qtest_memwrite(qts, RAM + 0x2000, spare, 12);
+    qtest_writel(qts, RAM, 1u << cs);
+    qtest_writel(qts, RAM + 4, page);
+    qtest_writel(qts, RAM + 8, 0);
     qtest_writel(qts, RAM + 0x1000, RAM + 0x10000);
     qtest_writel(qts, RAM + 0x1004, RAM + 0x10800);
     qtest_writel(qts, FMSS + 0xd10, RAM);
@@ -71,15 +128,138 @@ static void programmed_snapshot_refused(void)
     qtest_writel(qts, FMSS + 0xd1c, RAM + 0x2000);
     qtest_writel(qts, FMSS + 0xd30, 0xa02);
     qtest_writel(qts, FMSS + 0xd38, 1);
-    g_assert_false(migrate(qts));
+}
+
+static void read_page(QTestState *qts, unsigned cs, unsigned page,
+                      uint8_t *data, uint8_t *spare)
+{
+    qtest_writel(qts, RAM + 0x80, page);
+    qtest_writel(qts, RAM + 0x84, 1u << cs);
+    qtest_writel(qts, RAM + 0x1800, RAM + 0x30000);
+    qtest_writel(qts, RAM + 0x1804, RAM + 0x30800);
+    qtest_writel(qts, FMSS + 0xd0c, RAM + 0x80);
+    qtest_writel(qts, FMSS + 0xd10, RAM + 0x84);
+    qtest_writel(qts, FMSS + 0xd18, 1);
+    qtest_writel(qts, FMSS + 0xd20, RAM + 0x1800);
+    qtest_writel(qts, FMSS + 0xd1c, RAM + 0x2800);
+    qtest_writel(qts, FMSS + 0xd30, 0xa01);
+    qtest_writel(qts, FMSS + 0xd38, 1);
+    qtest_memread(qts, RAM + 0x30000, data, 4096);
+    qtest_memread(qts, RAM + 0x2800, spare, 12);
+}
+
+static void programmed_snapshot(bool physical)
+{
+    char *overlay;
+    g_autofree char *state = NULL;
+    uint8_t data[4096], spare[12] = { 0 }, back[4096], back_spare[12];
+    uint8_t pristine[4096], pristine_spare[12];
+    uint8_t erased[4096], erased_spare[12];
+    g_autofree char *base_chip = g_build_filename(nand_path, "cs0", NULL);
+    g_autofree char *base_page = g_build_filename(base_chip, "6.page", NULL);
+    if (physical) {
+        /* A real base page distinguishes an erased cache hit from a disk
+         * fallback. Legacy FMSS erased pages retain its existing zero encoding. */
+        uint8_t record[4160];
+        memset(record, 0xa3, sizeof(record));
+        g_assert_cmpint(g_mkdir_with_parents(base_chip, 0755), ==, 0);
+        g_assert_true(g_file_set_contents(base_page, (char *)record, sizeof(record), NULL));
+        g_setenv("FMSS_PHYSICAL", "1", true);
+        g_setenv("FMSS_ERASE", "1", true);
+    } else {
+        g_unsetenv("FMSS_PHYSICAL");
+        g_unsetenv("FMSS_ERASE");
+    }
+    QTestState *qts = start_board(&overlay);
+    read_page(qts, 0, 5, pristine, pristine_spare);
+    /* Logical zero is bookkeeping and has no generated disk destination.
+     * The generated-mode page therefore exists ONLY in phys_pages. */
+    memset(data, 0x5a, sizeof(data));
+    spare[8] = 0x79;
+    program(qts, 0, 5, data, spare);
+    data[0] = 0xc3;
+    spare[8] = 0x80;
+    program(qts, 3, 129, data, spare);
+    read_page(qts, 3, 129, back, back_spare);
+    g_assert_cmpmem(back, sizeof(back), data, sizeof(data));
+    g_assert_cmpmem(back_spare, sizeof(back_spare), spare, sizeof(spare));
+    if (physical) {
+        read_page(qts, 0, 6, erased, erased_spare);
+        g_assert_cmpint(erased[0], !=, 0xa3);
+    }
+    g_assert_true(migrate(qts, &state));
     qtest_quit(qts);
-    g_autofree char *page = g_strdup_printf("%s/cs0/5.page", overlay);
-    g_autofree char *chip = g_strdup_printf("%s/cs0", overlay);
-    g_assert_true(g_file_test(page, G_FILE_TEST_EXISTS));
-    unlink(page);
-    rmdir(chip);
+    if (physical) {
+        /* Prove the serialized erase map (including direct key zero), rather
+         * than reconstructing it from its backing marker file. This is an
+         * isolated firmware-free fixture, not a valid user snapshot edit. */
+        g_autofree char *marker = g_build_filename(overlay, "cs0", "blk0.erased", NULL);
+        g_assert_cmpint(unlink(marker), ==, 0);
+    }
+
+    qts = qtest_initf("-machine iPod-Touch,bootrom=%s,nor=%s,nand=%s,nandrw=%s "
+                      "-display none -audio driver=none -nic none -incoming defer",
+                      rom_path, nor_path, nand_path, overlay);
+    g_autofree char *uri = g_strdup_printf("file:%s", state);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'migrate-incoming', "
+                                "'arguments': { 'uri': %s } }", uri);
+    qtest_qmp_eventwait(qts, "RESUME");
+    if (physical) {
+        read_page(qts, 0, 6, back, back_spare);
+        g_assert_cmpmem(back, sizeof(back), erased, sizeof(erased));
+        g_assert_cmpmem(back_spare, sizeof(back_spare), erased_spare, sizeof(erased_spare));
+    }
+    read_page(qts, 3, 129, back, back_spare);
+    g_assert_cmpmem(back, sizeof(back), data, sizeof(data));
+    g_assert_cmpmem(back_spare, sizeof(back_spare), spare, sizeof(spare));
+    data[0] = 0x5a;
+    spare[8] = 0x79;
+    read_page(qts, 0, 5, back, back_spare);
+    g_assert_cmpmem(back, sizeof(back), data, sizeof(data));
+    g_assert_cmpmem(back_spare, sizeof(back_spare), spare, sizeof(spare));
+    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+    read_page(qts, 0, 5, back, back_spare);
+    if (physical) {
+        g_assert_cmpmem(back, sizeof(back), data, sizeof(data));
+    } else {
+        /* A cold boot rebuilds the generated FTL; its temporary mapping must
+         * not shadow the new physical view. */
+        g_assert_cmpmem(back, sizeof(back), pristine, sizeof(pristine));
+        g_assert_cmpmem(back_spare, sizeof(back_spare), pristine_spare, sizeof(pristine_spare));
+    }
+    qtest_quit(qts);
+    unlink(state);
+    if (physical) {
+        unlink(base_page);
+        rmdir(base_chip);
+    }
+    for (unsigned cs = 0; cs < 4; cs++) {
+        g_autofree char *chip = g_strdup_printf("%s/cs%u", overlay, cs);
+        GDir *dir = g_dir_open(chip, 0, NULL);
+        if (dir) {
+            const char *name;
+            while ((name = g_dir_read_name(dir))) {
+                g_autofree char *path = g_build_filename(chip, name, NULL);
+                unlink(path);
+            }
+            g_dir_close(dir);
+        }
+        rmdir(chip);
+    }
     rmdir(overlay);
     g_free(overlay);
+    g_setenv("FMSS_PHYSICAL", "1", true);
+    g_unsetenv("FMSS_ERASE");
+}
+
+static void physical_snapshot(void)
+{
+    programmed_snapshot(true);
+}
+
+static void generated_snapshot(void)
+{
+    programmed_snapshot(false);
 }
 
 int main(int argc, char **argv)
@@ -97,7 +277,9 @@ int main(int argc, char **argv)
     nand_path = g_dir_make_tmp("fmss-base-XXXXXX", NULL);
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/ipod/fmss/empty-snapshot", empty_snapshot);
-    qtest_add_func("/ipod/fmss/programmed-snapshot-refused", programmed_snapshot_refused);
+    qtest_add_func("/ipod/fmss/mode-mismatch", snapshot_mode_mismatch);
+    qtest_add_func("/ipod/fmss/physical-snapshot", physical_snapshot);
+    qtest_add_func("/ipod/fmss/generated-snapshot", generated_snapshot);
     result = g_test_run();
     unlink(rom_path); unlink(nor_path); rmdir(nand_path);
     g_free(rom_path); g_free(nor_path); g_free(nand_path);
