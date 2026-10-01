@@ -140,7 +140,16 @@ python3 contrib/it-harness/test-audit.py --sdk /path/to/iPhoneOS2.0.sdk \
   --binary contrib/it-harness/build-ios2/Payload/Harness.app/Harness
 ```
 
-Run the maintained regression harness with explicit selections:
+For prepared devices declaring iOS 2.x, the regression harness selects the
+`build-ios2` fixtures automatically. Build the selected flavor first; a missing
+legacy fixture fails preflight rather than falling back to the full Harness.
+Other versions retain the full defaults. Declared deployment eligibility does
+not establish runtime support: the maintained legacy Harness is currently
+qualified on N72/2.1.1. Each run records requested input identities separately
+in `fixture-inputs.json`.
+
+Use explicit selections for artifacts built outside the default directories,
+or to request the GLTest app instead of the default SpringBoard graphics leg:
 
 ```sh
 python3 tests/ipod/regress.py --device /path/to/prepared-device \
