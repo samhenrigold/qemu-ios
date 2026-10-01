@@ -41,9 +41,18 @@ end = shim.index('\n}', shim.index('static int GLESDestroySharegroup', start)) +
 sharegroup = r''' 
 ''' + shim[shim.rindex('typedef struct {', 0, shim.index('} GuestGC;')):shim.index('} GuestGC;') + 10] + r'''
 #define A(...) ((unsigned[]){__VA_ARGS__})
+static bool older_host;
 static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args)
-{ return gles_context_operation(slot,gc?((GuestGC*)gc)->host:0,argc,args); }
+{ if(older_host && slot==GLES_OP_NEW_CONTEXT && argc==2)return -1; return gles_context_operation(slot,gc?((GuestGC*)gc)->host:0,argc,args); }
 ''' + shim[start:end]
+start_gc = shim.index('static int GLESCreateGCWithAPI(')
+end_gc = shim.index('static int GLESDestroyGC(void *gc);', start_gc)
+sharegroup += r'''
+#define GLES_N_SLOTS 1024
+static void w(const char *s) {}
+static void gles_hand_table(void **t) {}
+static void gles_fill(void **a, unsigned n, void **b) {}
+''' + shim[start_gc:end_gc]
 check = r'''
 int main(void)
 {
@@ -52,7 +61,12 @@ int main(void)
     assert(GLESCreateSharegroup(&guest_group)==1 && guest_group);
     uint32_t group=((GuestGC*)guest_group)->host;
     uint32_t one=gles_context_operation(GLES_OP_NEW_CONTEXT,0,1,&group);
-    uint32_t two=gles_context_operation(GLES_OP_NEW_CONTEXT,0,1,&group);
+    uint32_t explicit_args[]={group,2};
+    uint32_t two=gles_context_operation(GLES_OP_NEW_CONTEXT,0,2,explicit_args);
+    explicit_args[1]=3;
+    assert(gles_context_operation(GLES_OP_NEW_CONTEXT,0,2,explicit_args)==-1);
+    explicit_args[1]=0;
+    assert(gles_context_operation(GLES_OP_NEW_CONTEXT,0,2,explicit_args)==-1);
     assert(one!=two && one>=0x80000000);
     /* CGL state is saved with the snapshot (acc5e8e9d7): no migration blocker. */
     assert(gles_host_context_count()==2 && !gles_save_blocker);
@@ -63,6 +77,7 @@ int main(void)
     glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,pixel);
     glFinish();
     GLESHost *b=select_context(two);
+    assert(a->api_version==0 && b->api_version==2);
     assert(!glIsEnabled(GL_BLEND) && !b->vertex.enabled);
     assert(a->buffers==b->buffers && a->surfaces==b->surfaces);
     assert(glIsTexture(texture));
@@ -116,6 +131,19 @@ int main(void)
     assert(gles_host_context_count()==1 && !gles_save_blocker);
     migration_busy=false;
     gles_host_reset();
+    assert(GLESCreateSharegroup(&guest_group));
+    void *known=NULL;
+    assert(GLESCreateGCWithAPI(guest_group,NULL,NULL,&known,2));
+    assert(((GuestGC*)known)->api==2);
+    assert(select_context(((GuestGC*)known)->host)->api_version==2);
+    assert(!gles_context_operation(GLES_OP_DELETE_CONTEXT,((GuestGC*)known)->host,0,NULL));free(known);
+    older_host=true;
+    assert(GLESCreateGCWithAPI(guest_group,NULL,NULL,&known,1));
+    assert(((GuestGC*)known)->api==1);
+    assert(select_context(((GuestGC*)known)->host)->api_version==0);
+    assert(!gles_context_operation(GLES_OP_DELETE_CONTEXT,((GuestGC*)known)->host,0,NULL));free(known);
+    assert(!GLESCreateGCWithAPI(guest_group,NULL,NULL,&known,3));
+    assert(!GLESDestroySharegroup(guest_group));
     g_hash_table_destroy(gles_contexts);g_hash_table_destroy(gles_groups);
     puts("PASS: native GL state isolation, shared textures and deleted buffers, independent groups and destruction order");
 }

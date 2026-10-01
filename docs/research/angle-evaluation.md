@@ -105,3 +105,32 @@ firmware barrier described in `sgx-native-init.md`.
 Local build and evidence: `/private/tmp/ltm-angle-comparative`,
 `/private/tmp/ltm-angle-contract.log`, and
 `/private/tmp/ltm-angle-export-audit.json`.
+
+## Implemented context contract prerequisite
+
+The live guest framework is `contrib/gles-public/opengles.c`, built by its
+`build.sh`, over `contrib/it-gles/mbxshim.c`. Frozen `ipad1-gles/glishim.c`
+copies in prepared exports are historical build inputs, not the source to
+restore or fork. The public front end already knows the requested ES API;
+it now passes that API when constructing the host context.
+
+`GLES_OP_NEW_CONTEXT` accepts either the original sharegroup word or a
+sharegroup plus explicit API 1/2. The original form stays unknown (0).
+Known-API guests fall back to the old form when talking to an older host.
+The stock engine's older constructor does not receive an API, so it keeps
+that original form instead of guessing from firmware or shader usage.
+
+The host carries this field per context. Snapshot blob version 4 saves it;
+version 3 remains readable with unknown API. Unsupported values are refused
+at creation and rejected by the snapshot field reader. This is compatible
+CGL groundwork for EGL, not an ANGLE backend or an ES emulation claim.
+`test_gles_context.py` exercises the actual guest constructor, new/old host
+forms, native context isolation and shared texture lifetime;
+`test_gles_api_snapshot.py` exercises the actual host field codec, including
+v3 compatibility and corrupt API rejection.
+
+The 44 desktop symbol adaptations and CGL-specific snapshot capture remain.
+A shipping backend switch still requires replacing immediate drawing,
+attribute stacks, fences and texture capture before the same qualified
+workload can compare ANGLE with CGL. Native EGL probes alone cannot show a
+reduction in production code or guest crashes.

@@ -23,7 +23,7 @@
  */
 
 #define SNAP_MAGIC   0x534c4731u     /* "1GLS" */
-#define SNAP_VERSION 3
+#define SNAP_VERSION 4
 #define SNAP_SCAN_GAP 256            /* names probed past the last live one */
 
 static uint32_t gles_group_handle(GLESGroup *group);
@@ -920,6 +920,7 @@ static void snap_get_array(SnapR *r, GLESArray *a, GHashTable *buffers)
 
 static void snap_put_host(SnapW *w, GLESHost *h)
 {
+    sw32(w, h->api_version);
     sw32(w, h->inited);
     sw32(w, h->fbo);
     sw32(w, h->tex);
@@ -950,9 +951,11 @@ static void snap_put_host(SnapW *w, GLESHost *h)
     swbytes(w, &h->default_pvrtc, sizeof(h->default_pvrtc));
 }
 
-static void snap_get_host(SnapR *r, GLESHost *h)
+static void snap_get_host(SnapR *r, GLESHost *h, uint32_t version)
 {
     uint32_t len;
+    h->api_version = version >= 4 ? sr32(r) : 0;
+    if (h->api_version > 2) r->bad = true;
     h->inited = sr32(r);
     h->fbo = sr32(r);
     h->tex = sr32(r);
@@ -1093,9 +1096,10 @@ static GByteArray *gles_snapshot_save(void)
 static bool gles_snapshot_load(const uint8_t *p, size_t n)
 {
     SnapR r = { p, n, 0, false };
-    uint32_t ngroups, ncontexts;
+    uint32_t ngroups, ncontexts, version;
 
-    if (sr32(&r) != SNAP_MAGIC || sr32(&r) != SNAP_VERSION || sr32(&r) != sizeof(GLESCtxGL)) {
+    if (sr32(&r) != SNAP_MAGIC || ((version = sr32(&r)) != 3 && version != SNAP_VERSION) ||
+        sr32(&r) != sizeof(GLESCtxGL)) {
         fprintf(stderr, "[gles] snapshot: GL state from an incompatible build; not restored\n");
         return false;
     }
@@ -1139,7 +1143,7 @@ static bool gles_snapshot_load(const uint8_t *p, size_t n)
             h->pvrtc = snap_new_owned();
             h->next_buffer_name = snap_get_tables(&r, h->buffers, h->surfaces, h->rb_sized, h->pvrtc);
         }
-        snap_get_host(&r, h);
+        snap_get_host(&r, h, version);
         objects = sr32(&r);
         if (handle) {
             g_hash_table_insert(gles_contexts, GUINT_TO_POINTER(handle), h);
