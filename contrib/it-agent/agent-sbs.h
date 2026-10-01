@@ -1,5 +1,6 @@
 #include <mach/mach.h>
 #include <mach/ndr.h>
+#include "sbs-launch.h"
 
 /* Period-correct SpringBoardServices ABI, shared by launch and status RPCs. */
 static int agent_sbs_inner(const char *op, const char *args)
@@ -127,15 +128,7 @@ static int agent_sbs_inner(const char *op, const char *args)
         if (!status) ag_response_len = snprintf((char *)ag_response, AG_RESPONSE_MAX, "%s\n%s\n", bundle, title);
         return status;
     }
-    void *(*create)(void *, const char *, unsigned) = dlsym(cf, "CFStringCreateWithCString");
-    int (*launch)(void *, int) = dlsym(sbs, "SBSLaunchApplicationWithIdentifier");
-    if (!create || !launch) return -ENOSYS;
-    if (!*args || strlen(args) > 1024) return -EINVAL;
-    void *identifier = create(0, args, 0x08000100);
-    if (!identifier) return -EINVAL;
-    int status = launch(identifier, 0);
-    release(identifier);
-    return status;
+    return it_sbs_launch(cf, sbs, args);
 }
 
 static int agent_sbs(const char *op, const char *args)

@@ -32,7 +32,7 @@ or a negative errno.
 | chown | `uid gid path` | | | lchown(2); run after put for mobile-owned files. v2 |
 | unlink | `path` | | | unlink(2); -ENOENT if absent. v2 |
 | settime | `epoch` | | | |
-| launch | `bundle-id` | | | SBSLaunchApplicationWithIdentifier |
+| launch | `bundle-id` | | | stock SBSLaunchApplicationWithIdentifier, or 2.x SBLaunchApplication |
 | frontmost | | | `bundle-id\nlocalized name\n` | `com.apple.springboard\nLock Screen\n` when locked |
 | lockstatus | | | `locked=0/1 passcode=0/1\n` | |
 | orientation | | | `0/90/180/-90\n` | 7E18 ABI only, else -ENOSYS |
@@ -101,3 +101,11 @@ assuming this ABI. The host retries without changing orientation on failure.
 Run `python3 tests/ipod/test_agent_orientation.py` for the bounded ABI check;
 `test_agent_guest.py --orientation --base-nand .../nand-agent-v4` exercises a
 landscape Harness, Home, a stopped SpringBoard and respring on disposable media.
+
+The exported armv6 helpers use the existing legacy linker mode: classic dyld
+metadata, the reserved r9 thread pointer and old-libSystem startup. The iPad's
+armv7 build remains separate. `it_typein.dylib` is ad-hoc signed in the build
+recipe: 2.x and 3.0 kill SpringBoard when its injected executable page is
+unsigned, even though later kernels accept the configured enforcement flags.
+See [legacy helper qualification](../../docs/research/legacy-helper-abi.md) for
+actual firmware tests and the unqualified operations.

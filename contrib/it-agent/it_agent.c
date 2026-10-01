@@ -34,7 +34,9 @@
 extern void *dlopen(const char *, int);
 extern void *dlsym(void *, const char *);
 
+#ifndef RTLD_NOW
 #define RTLD_NOW 2
+#endif
 
 typedef unsigned int uint32_t;
 typedef long long int64_t;

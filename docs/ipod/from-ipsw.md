@@ -689,3 +689,16 @@ with nonempty `phys_pages` or `erased_blocks`, and rejects older uncertified
 streams; ordinary cold boot is unchanged. See
 [physical store policy](../research/nand-physical-store.md) for format and test
 boundaries. Actual firmware-free FMSS MMIO/migration tests pass 2/2.
+
+### Common legacy helpers (2026-10-01)
+
+Guest serial 13 exports one legacy-linked armv6 core helper set for 2.x, 3.0,
+3.1.x and 4.x. The injected typing dylib is now signed by its build recipe;
+unsigned copies killed SpringBoard on 2.x and left 3.0 at the Apple logo. The
+agent and sblaunch select stock exported launch APIs, including 2.x's older
+SBLaunchApplication. Fresh 2.1.1, 3.0, 3.1.3 and 4.2.1 tests pass **18/18 each**:
+actual installed-app foreground launch, AFC file and app persistence across
+two cold boots, generated identity, automatic activation, Home and PMU power-off.
+This supersedes the historical “no helpers yet” notes above; text injection,
+clipboard and older media services still require their own API tests. See
+[qualification and evidence](../research/legacy-helper-abi.md).
