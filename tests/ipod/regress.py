@@ -88,6 +88,7 @@ sys.path.insert(0, os.path.join(ROOT, "imgtools"))
 import itqmp  # noqa: E402  (needs the path above)
 sys.path.insert(0, os.path.join(HERE, ".."))
 import framecheck  # noqa: E402  (tests/framecheck.py: the audit's frame-reference check)
+import gles_scene  # noqa: E402
 GLES_REFS = os.path.join(HERE, "..", "gles-refs")
 
 W, H = 320, 480
@@ -1144,24 +1145,10 @@ def quad_signature(path):
     thresholds would read it as black.
     """
     try:
-        _w, _h, px = read_ppm(path)
-    except Exception:
+        width, height, pixels = read_ppm(path)
+        return gles_scene.fractions(width, height, pixels)
+    except (OSError, ValueError):
         return 0.0, 0.0, 0.0
-    if not px:
-        return 0.0, 0.0, 0.0
-    hi = max(px) or 1
-    lo, up = 0.3 * hi, 0.7 * hi
-    m = c = y = 0
-    for i in range(0, len(px), 3):
-        r, g, b = px[i], px[i + 1], px[i + 2]
-        if r >= up and b >= up and g <= lo:
-            m += 1
-        elif g >= up and b >= up and r <= lo:
-            c += 1
-        elif r >= up and g >= up and b <= lo:
-            y += 1
-    n = len(px) / 3.0
-    return m / n, c / n, y / n
 
 
 def install_gles_app(cfg, r):
@@ -1551,9 +1538,10 @@ def check_gles(cfg, procs, dev, r):
                         "showing something else - SpringBoard, most likely"
                         if lit > 20000 else "dark"))
     if max(ma, ca, mb, cb) > GLES_QUAD_MAX:
-        return r.set(False, "GLES frame covers more of the panel than the 240x360 "
-                            "view (magenta=%.3f cyan=%.3f, max %.3f): the scanout "
-                            "ignored the view geometry" % (mb, cb, GLES_QUAD_MAX))
+        return r.set(False, "GLES scene exceeds the declared 240x360 view area: "
+                            "first magenta=%.3f cyan=%.3f; held magenta=%.3f "
+                            "cyan=%.3f (max %.3f)"
+                     % (ma, ca, mb, cb, GLES_QUAD_MAX))
     if not harness and min(ya, yb) < GLES_QUAD_MIN:
         return r.set(False, "GLES fixture's glDrawTexfOES quad is missing: yellow=%.3f/%.3f "
                             "of the frame, need >=%.3f (magenta=%.3f cyan=%.3f)"
@@ -1563,6 +1551,11 @@ def check_gles(cfg, procs, dev, r):
                             "(magenta %.3f->%.3f, cyan %.3f->%.3f): the "
                             "renderer wedged after its first present"
                      % (GLES_HOLD_S, ma, mb, ca, cb))
+    if not harness:
+        for label, frame in (("first", a), ("held", b)):
+            geometry_ok, detail = gles_scene.verdict(*read_ppm(frame))
+            if not geometry_ok:
+                return r.set(False, "GLES %s frame: %s" % (label, detail))
     return r.set(True, "GLES fixture rendering through the HLE layer: magenta=%.3f "
                        "cyan=%.3f yellow=%.3f, held for %ds, lit=%d%s"
                  % (mb, cb, yb, GLES_HOLD_S, lit,
