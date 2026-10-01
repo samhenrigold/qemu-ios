@@ -1,6 +1,6 @@
 /* Import staged music or video through the 7E18 MusicLibrary service. The service owns
- * the item; SQLite below is read-only for retry reconciliation, plus one UPDATE of the
- * item's year, which the purchase-folder insert has no property for.
+ * the item. SQLite below is read-only, for retry reconciliation; the item's year, which
+ * the purchase-folder insert has no property for, goes through MusicLibrary's own connection.
  * There is no CRT in these ARMv6 executables; see armv6-toolchain/README.md.
  * -DITMEDIA_HOST_CHECK builds the metadata mapping alone for the Mac, so offline checks
  * run this file's mapping rather than a copy of it. */
@@ -197,7 +197,6 @@ static __typeof__(sqlite3_busy_timeout) *sql_timeout;
 static __typeof__(sqlite3_exec) *sql_exec;
 static __typeof__(sqlite3_prepare_v2) *sql_prepare;
 static __typeof__(sqlite3_bind_text) *sql_bind;
-static __typeof__(sqlite3_bind_int64) *sql_bind_int64;
 static __typeof__(sqlite3_column_int64) *sql_column_int64;
 static __typeof__(sqlite3_step) *sql_step;
 static __typeof__(sqlite3_finalize) *sql_finalize;
@@ -258,20 +257,22 @@ static void import_artwork(const char *path, const char *staging) {
         fail("artwork was not stored; retain staged media for reconciliation");
 }
 
+/* Through MusicLibrary's own writer connection: it opens the library with its own
+ * SQLite VFS, so a second plain connection is read-only. No 7E18 trigger or index
+ * covers item.year, and the purchase-folder insert has no property for it. */
 static void record_year(sqlite3_int64 pid, unsigned year) {
-    sqlite3 *db = NULL;
-    sqlite3_stmt *stmt = NULL;
-    if (sql_open(LIBRARY "Library.itdb",&db,SQLITE_OPEN_READWRITE,NULL) != SQLITE_OK)
-        database_failure(db,"cannot open music library for the year");
-    sql_timeout(db,5000);
-    /* No trigger or index covers item.year (7E18 schema), so this needs none of
-     * Music's private functions or collations. */
-    if (sql_prepare(db,"UPDATE item SET year=? WHERE pid=?",-1,&stmt,NULL) != SQLITE_OK ||
-        sql_bind_int64(stmt,1,year) != SQLITE_OK || sql_bind_int64(stmt,2,pid) != SQLITE_OK ||
-        sql_step(stmt) != SQLITE_DONE)
-        database_failure(db,"year not recorded; retain staged media for reconciliation");
-    sql_finalize(stmt);
-    sql_close(db);
+    void *support = dlopen("/System/Library/PrivateFrameworks/AppSupport.framework/AppSupport",RTLD_NOW);
+    void *library = dlopen("/System/Library/PrivateFrameworks/MusicLibrary.framework/MusicLibrary",RTLD_NOW);
+    void *(*shared_store)(void) = library ? dlsym(library,"MLSDBGetSharedRecordStore") : NULL;
+    void *(*store_database)(void *) = support ? dlsym(support,"CPRecordStoreGetDatabase") : NULL;
+    void *(*for_writing)(void *) = support ? dlsym(support,"CPSqliteDatabaseConnectionForWriting") : NULL;
+    int (*perform)(void *,ID) = support ? dlsym(support,"CPSqliteConnectionPerformSQL") : NULL;
+    if (!shared_store || !store_database || !for_writing || !perform) fail("MusicLibrary database API unavailable");
+    void *connection = for_writing(store_database(shared_store()));
+    char sql[96];
+    snprintf(sql,sizeof(sql),"UPDATE item SET year=%u WHERE pid=%lld",year,(long long)pid);
+    int rc = connection ? perform(connection,string(sql)) : SQLITE_ERROR;
+    if (rc != SQLITE_DONE && rc != SQLITE_OK) fail("year not recorded; retain staged media for reconciliation");
 }
 
 __attribute__((naked)) void _start(void) {
@@ -314,14 +315,13 @@ int main(int argc, char **argv) {
     sql_exec = dlsym(sqlite,"sqlite3_exec");
     sql_prepare = dlsym(sqlite,"sqlite3_prepare_v2");
     sql_bind = dlsym(sqlite,"sqlite3_bind_text");
-    sql_bind_int64 = dlsym(sqlite,"sqlite3_bind_int64");
     sql_column_int64 = dlsym(sqlite,"sqlite3_column_int64");
     sql_step = dlsym(sqlite,"sqlite3_step");
     sql_finalize = dlsym(sqlite,"sqlite3_finalize");
     sql_close = dlsym(sqlite,"sqlite3_close");
     sql_error = dlsym(sqlite,"sqlite3_errmsg");
     if (!sql_open || !sql_timeout || !sql_exec || !sql_prepare || !sql_bind ||
-        !sql_bind_int64 || !sql_column_int64 ||
+        !sql_column_int64 ||
         !sql_step || !sql_finalize || !sql_close || !sql_error) fail("SQLite API unavailable");
     ID library = m0(getclass("MusicLibrary"),"sharedMusicLibrary");
     const char *insert = "insertItemFromPurchaseFolder:withItemProperties:";
