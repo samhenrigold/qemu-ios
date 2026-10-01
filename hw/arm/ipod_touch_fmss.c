@@ -206,7 +206,7 @@ static void fmss_run_script(IPodTouchFMSSState *s)
             } else if (b == 0x60 || b == 0x64) {
                 unsigned sel = (fmc[0] >> 1) & 0xff;
                 unsigned ce = ctz32(sel);
-                if (cmd == 0x90 && sel == (1u << ce) && ce < FMSS_CHIPS) {
+                if (cmd == 0x90 && ce < FMSS_CHIPS && sel == (1u << ce)) {
                     v = b == 0x60 ? FMSS_CHIP_ID : 0;
                 }
             } else if (b == 0x40) {

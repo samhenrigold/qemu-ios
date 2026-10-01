@@ -96,6 +96,21 @@ int main(void) {
     assert(out[8] == 0);
     run(id4, sizeof(id4)); /* 8 bytes per CE, 8 CEs */
     for (int i = 0; i < 8; i++) assert(out[2*i] == (i < 4 ? 0xb614d5adu : 0) && out[2*i+1] == 0);
+    /* QEMU ctz32(0) returns 32: reject an empty selector before shifting.
+     * Multiple CEs and unpopulated CE4 also retain the existing no-chip result. */
+    uint32_t selector[] = {
+        0x05000000u, 0, 0x02000000u, 0,
+        0x01000008u, 0x90u, 0x04010060u, 0xffffffffu,
+        0x05020000u, 0x9000u, 0x11010002u, 0, 0, 0
+    };
+    const unsigned selects[] = {0, 3, 0x10, 1, 2, 4, 8};
+    for (unsigned j = 0; j < sizeof(selects)/sizeof(selects[0]); j++) {
+        selector[1] = (selects[j] << 1) | 1;
+        run(selector, sizeof(selector));
+        uint32_t expected = (selects[j]==1 || selects[j]==2 ||
+                             selects[j]==4 || selects[j]==8) ? 0xb614d5adu : 0;
+        assert(ldl_le_p(mem + 0x9000) == expected);
+    }
     /* Actual stock 5F138 opcode06 forms, observed with existing RAM stores.
      * Distinct values and zero-overwrite distinguish assignment from OR,
      * addition or accidental operand reversal. Self-copy must preserve input. */
@@ -260,5 +275,5 @@ with tempfile.TemporaryDirectory() as tmp:
     c = Path(tmp) / 'check.c'
     c.write_text(prelude + constants + '\n' + defines + '\n' + '\n'.join(functions) + tests)
     binary = str(Path(tmp) / 'check')
-    subprocess.run(['clang', '-std=c11', '-fsanitize=address,undefined', '-g', str(c), '-o', binary], check=True)
+    subprocess.run(['clang', '-std=c11', '-fsanitize=address,undefined', '-fno-sanitize-recover=undefined', '-g', str(c), '-o', binary], check=True)
     subprocess.run([binary], check=True)
