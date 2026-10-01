@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import plistlib
 from pathlib import Path
 import tempfile
 import time
@@ -72,6 +73,27 @@ def check_network(q):
     status, data = r.itqmp.agent(q, 'spawn', body=b'/tmp/snapshot-httpget\0' + ('http://10.0.2.2:%d/' % server.server_port).encode() + b'\0')
     assert status == 0 and b'HTTP 200' in data and b'snapshot-network-ok' in data, (status, data)
 
+def check_factory_identity():
+    if not args.device:
+        return
+    expected = json.loads((Path(args.device)/'identity.json').read_text())
+    keys = {'SerialNumber': 'serial-number', 'UniqueDeviceID': 'udid',
+            'WiFiAddress': 'wifi-mac', 'BluetoothAddress': 'bt-mac'}
+    deadline = time.monotonic() + 60
+    while True:
+        info = r.run(['ideviceinfo', '-x'], cfg, 30)
+        try:
+            actual = plistlib.loads(info.stdout.encode()) if info.returncode == 0 else {}
+        except (ValueError, plistlib.InvalidFileException):
+            actual = {}
+        if all(str(actual.get(k, '')).lower() == str(expected[v]).lower()
+               for k, v in keys.items()):
+            print('PASS: prepared serial/UDID/Wi-Fi/Bluetooth identity (network %s)' %
+                  ('on' if args.network else 'off'), flush=True)
+            return
+        assert time.monotonic() < deadline, (expected, {k: actual.get(k) for k in keys})
+        time.sleep(1)
+
 p = SnapshotProcs()
 d = None
 r.START = time.time()
@@ -96,6 +118,7 @@ try:
     if args.usb:
         udid, detail = r.wait_for_device(cfg, timeout=120)
         assert udid, detail
+    check_factory_identity()
     if args.gles:
         # The Harness GL scene: a cyan/magenta fixture with a rotating
         # triangle, so a live context has textures, matrices and state to lose.
@@ -170,6 +193,7 @@ try:
     assert r.itqmp.agent(d.qmp, 'get', '/tmp/snapshot-marker') == (0, b'snapshot-survived')
     udid, detail = r.wait_for_device(cfg, timeout=120)
     assert udid, detail
+    check_factory_identity()
     clock = r.run(['ideviceinfo', '-k', 'TimeIntervalSince1970'], cfg, 30)
     assert clock.returncode == 0 and abs(float(clock.stdout.strip()) - time.time()) < 5, clock
     if args.network:

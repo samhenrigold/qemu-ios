@@ -1228,45 +1228,7 @@ rearm:
 }
 
 #define IBOOT_SCAN_PA_START  0x0ff00000u
-#define IBOOT_SCAN_LEN       0x00040000u   /* covers both builds' iBoot images */
-
-/* Every n72 iBoot (2.x iBoot-385 through 4.2.1 iBoot-931) names the Bluetooth
- * node arm-io/uart3/bluetooth, but the n72 DeviceTree hangs it off uart1. Without
- * this rewrite iBoot never fills local-mac-address: lockdownd then reports a
- * Bluetooth address that is not the device identity's bt-mac and derives a
- * different UniqueDeviceID. One-shot, applied to the iBoot image in RAM at the
- * first page read; a reset reloads that RAM, so ipod_touch_cpu_reset() re-arms it. */
-
-static void ipod_touch_compat_bluetooth(IPodTouchMachineState *nms)
-{
-    static const char needle[] = "arm-io/uart3/bluetooth";
-    static const char replace[] = "arm-io/uart1/bluetooth";
-
-    if (nms->compat_bt_patched) {
-        return;
-    }
-    nms->compat_bt_patched = true;
-
-    g_autofree uint8_t *image = g_try_malloc(IBOOT_SCAN_LEN);
-    if (!image) {
-        return;
-    }
-    cpu_physical_memory_read(IBOOT_SCAN_PA_START, image, IBOOT_SCAN_LEN);
-
-    for (size_t i = 0; i + sizeof(needle) <= IBOOT_SCAN_LEN; i++) {
-        if (memcmp(image + i, needle, sizeof(needle)) != 0) {
-            continue;
-        }
-        uint32_t pa = IBOOT_SCAN_PA_START + i;
-        cpu_physical_memory_write(pa, replace, strlen(replace));
-        if (getenv("IT_PATCH_DEBUG")) {
-            printf("[IBOOT] bluetooth node string patched at PA 0x%08x\n", pa);
-        }
-        return;
-    }
-
-    printf("[IBOOT] bluetooth node string not found in iBoot; not patching\n");
-}
+#define IBOOT_SCAN_LEN       0x00040000u   /* bounded window for loaded n72 iBoot images */
 
 /* Legacy boot-argument data injection. Discover the buffer from the loaded
  * iBoot's literal references, rather than assuming a particular build's BSS.
@@ -1301,13 +1263,12 @@ static void ipod_touch_compat_command_line(IPodTouchMachineState *nms)
 
 /* Observes a transfer; firmware edits belong to the board compatibility
  * policy, not to the NAND device. This preserves the old ordering while the
- * underlying iBoot/UART and NVRAM behavior is investigated. */
+ * underlying iBoot NVRAM behavior is investigated. */
 static void ipod_touch_compat_before_nand_read(Notifier *notifier, void *data)
 {
     IPodTouchMachineState *nms = container_of(notifier, IPodTouchMachineState,
                                              compat_nand_read);
     ipod_touch_compat_command_line(nms);
-    ipod_touch_compat_bluetooth(nms);
 }
 
 static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
@@ -1381,7 +1342,6 @@ static void ipod_touch_cpu_reset(void *opaque)
     ARMCPU *cpu = nms->cpu;
     CPUState *cs = CPU(cpu);
 
-    nms->compat_bt_patched = false;
     nms->compat_command_line = 0;
     ipod_agent_reset(nms->agent);
     guest_pkg_reset(&nms->pkg);
@@ -1493,7 +1453,12 @@ static bool ipod_touch_get_wifi(Object *obj, Error **errp)
 
 static void ipod_touch_set_wifi(Object *obj, bool value, Error **errp)
 {
-    IPOD_TOUCH_MACHINE(obj)->wifi = value;
+    IPodTouchMachineState *s = IPOD_TOUCH_MACHINE(obj);
+    if (s->cpu) {
+        error_setg(errp, "wifi host bridge must be set before the machine starts");
+        return;
+    }
+    s->wifi = value;
 }
 
 static char *ipod_touch_get_boot_args(Object *obj, Error **errp)
@@ -1954,8 +1919,8 @@ static void ipod_touch_instance_init(Object *obj)
 
     object_property_add_bool(obj, "wifi", ipod_touch_get_wifi, ipod_touch_set_wifi);
     object_property_set_description(obj, "wifi",
-        "Present a BCM4325 on the SDIO bus. Off by default: the dongle "
-        "emulation is incomplete, so the driver attaches and then gets stuck");
+        "Connect the BCM4325 data path to the optional wifi0 host network "
+        "backend. The physical SDIO combo chip remains present when off");
 
     /* No default override: unconfigured boots retain firmware defaults. */
     object_property_add_str(obj, "boot-args", ipod_touch_get_boot_args, ipod_touch_set_boot_args);
@@ -3136,7 +3101,9 @@ static void ipod_touch_machine_init(MachineState *machine)
         }
         ipod_touch_sdio_set_chip(sdio_state, &chip);
     }
-    sdio_state->card_present = nms->wifi;
+    /* BCM4325 is soldered onto N72. Disabling host networking must not
+     * remove its SDIO function or OTP identity from stock drivers. */
+    sdio_state->card_present = true;
     memory_region_add_subregion(sysmem, SDIO_MEM_BASE, &sdio_state->iomem);
     busdev = SYS_BUS_DEVICE(dev);
     sysbus_realize(busdev, &error_fatal);
