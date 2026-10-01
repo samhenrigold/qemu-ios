@@ -122,7 +122,7 @@ static uint8_t find_bit_index(uint8_t num) {
  *   0e if r[a] != 0 goto imm    17 if r[a] == 0 goto imm (byte offsets)
  *   11 mem32[r[b]] = r[a]
  * This lists implemented behavior, not a complete verified ISA. Zero-immediate
- * OR/SHL and sequencer writes to 0xDxx still have known gaps. Unsupported forms
+ * OR/SHL and other sequencer writes to 0xDxx still have known gaps. Unsupported forms
  * stop with LOG_UNIMP. Instruction fetch and opcode11 still use native-endian
  * physical-memory helpers without transaction-result checks; descriptor loads
  * use little-endian AddressSpace reads and stop on errors.
@@ -154,6 +154,7 @@ static uint32_t fmss_var_read(IPodTouchFMSSState *s, uint32_t reg, bool *ok)
     case FMSS_SCRIPT_PARAM_D34:    return s->reg_script_param_d34;
     case FMSS_SCRIPT_PARAM_D48:    return s->reg_script_param_d48;
     case FMSS_SCRIPT_PARAM_D4C:    return s->reg_script_param_d4c;
+    case FMSS_SCRIPT_CSGENR15:     return s->reg_script_csgenr15;
     }
     *ok = false;
     return 0;
@@ -180,7 +181,13 @@ static void fmss_run_script(IPodTouchFMSSState *s)
             return;
         case 0x01:
         case 0x02:
-            if (b < 0xc00) {
+            if (b == FMSS_SCRIPT_CSGENR15) {
+                if (op == 2 && !imm) {
+                    s->reg_script_csgenr15 = r[a];
+                } else {
+                    ok = false; /* Only the captured register-write form. */
+                }
+            } else if (b < 0xc00) {
                 uint32_t v = op == 1 ? imm : r[a];
                 if (b < sizeof(fmc)) {
                     fmc[b / 4] = v;
@@ -1303,6 +1310,8 @@ static uint64_t ipod_touch_fmss_read(void *opaque, hwaddr addr, unsigned size)
             return s->reg_script_param_d48;
         case FMSS_SCRIPT_PARAM_D4C:
             return s->reg_script_param_d4c;
+        case FMSS_SCRIPT_CSGENR15:
+            return s->reg_script_csgenr15;
         case FMSS__CS_BUF_RST_OK:
             return 0x1;
         case FMSS__CS_IRQ:
@@ -1528,6 +1537,7 @@ static void ipod_touch_fmss_reset(DeviceState *dev)
     s->reg_script_param_d48 = 0;
     s->reg_script_param_d4c = 0;
     s->reg_chunks_per_page = 0;
+    s->reg_script_csgenr15 = 0;
     memset(s->page_buffer, 0, NAND_BYTES_PER_PAGE);
     memset(s->page_spare_buffer, 0, NAND_BYTES_PER_SPARE);
     if (s->irq) {
@@ -1580,6 +1590,7 @@ static int fmss_pre_load(void *opaque)
     s->reg_script_param_d48 = 0; /* Absent from pre-v8 streams. */
     s->reg_script_param_d4c = 0; /* Absent from pre-v6 streams. */
     s->reg_chunks_per_page = 0; /* Absent from pre-v7 streams. */
+    s->reg_script_csgenr15 = 0; /* Absent from pre-v9 streams. */
     return 0;
 }
 
@@ -1617,7 +1628,7 @@ static int fmss_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_fmss = {
     .name = "ipod_touch_fmss",
-    .version_id = 8,
+    .version_id = 9,
     .minimum_version_id = 4,
     .pre_load = fmss_pre_load,
     .post_load = fmss_post_load,
@@ -1645,6 +1656,7 @@ static const VMStateDescription vmstate_ipod_touch_fmss = {
         VMSTATE_UINT32_V(reg_chunks_per_page, IPodTouchFMSSState, 7),
         VMSTATE_UINT32_V(reg_script_param_d34, IPodTouchFMSSState, 8),
         VMSTATE_UINT32_V(reg_script_param_d48, IPodTouchFMSSState, 8),
+        VMSTATE_UINT32_V(reg_script_csgenr15, IPodTouchFMSSState, 9),
         VMSTATE_END_OF_LIST()
     }
 };

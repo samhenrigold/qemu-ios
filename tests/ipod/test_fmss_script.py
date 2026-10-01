@@ -53,7 +53,7 @@ prelude = r'''
 #define ctz32(x) ((x) ? (unsigned)__builtin_ctz(x) : 32u)
 typedef struct {
     uint32_t reg_cs_script, reg_cinfo_target_addr, reg_pages_in_addr, reg_cs_buf_addr;
-    uint32_t reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc, reg_script_param_d34, reg_script_param_d48, reg_script_param_d4c, reg_num_pages, reg_chunks_per_page;
+    uint32_t reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc, reg_script_param_d34, reg_script_param_d48, reg_script_param_d4c, reg_num_pages, reg_chunks_per_page, reg_script_csgenr15;
 } IPodTouchFMSSState;
 static uint8_t mem[0x10000];
 typedef struct { int unused; } AddressSpace;
@@ -89,6 +89,16 @@ static void run(const uint32_t *prog, size_t n) {
     memcpy(mem + 0x1000, prog, n);
     fmss_run_script(&s);
 }
+static IPodTouchFMSSState run_counter(const uint32_t *prog, size_t n,
+                                      uint32_t chunks, uint32_t initial) {
+    IPodTouchFMSSState s = {.reg_cs_script=0x1000,
+                            .reg_chunks_per_page=chunks,
+                            .reg_script_csgenr15=initial};
+    memset(mem, 0, sizeof(mem));
+    memcpy(mem + 0x1000, prog, n);
+    fmss_run_script(&s);
+    return s;
+}
 int main(void) {
     uint32_t *out = (uint32_t *)(mem + 0x8000);
     run(id3, sizeof(id3)); /* 4 bytes per CE, 8 CEs */
@@ -110,6 +120,49 @@ int main(void) {
         uint32_t expected = (selects[j]==1 || selects[j]==2 ||
                              selects[j]==4 || selects[j]==8) ? 0xb614d5adu : 0;
         assert(ldl_le_p(mem + 0x9000) == expected);
+    }
+    /* Captured read-loop D54 forms: D28 seeds CSGENR15; each iteration
+     * reads, decrements and writes it. Counts vary to exclude a forced two. */
+    const uint32_t counter_loop[] = {
+        0x04000d28u, 0xffffffffu, 0x02000d54u, 0,
+        0x05010000u, 0, 0x05020000u, 0x9c00u,
+        0x04070d54u, 0xffffffffu, 0x0d070007u, 1,
+        0x02070d54u, 0, 0x0c010001u, 1,
+        0x0e070000u, 0x20u,
+        0x04000d54u, 0xffffffffu, 0x11000002u, 0,
+        0x0c020002u, 4, 0x11010002u, 0, 0, 0
+    };
+    const uint32_t chunk_counts[] = {1, 2, 3, 7};
+    for (unsigned j=0; j<sizeof(chunk_counts)/sizeof(chunk_counts[0]); j++) {
+        IPodTouchFMSSState state=run_counter(counter_loop,sizeof(counter_loop),
+                                           chunk_counts[j],0xdeadbeefu);
+        assert(ldl_le_p(mem+0x9c00)==0);
+        assert(ldl_le_p(mem+0x9c04)==chunk_counts[j]);
+        assert(state.reg_script_csgenr15==0);
+        assert(state.reg_chunks_per_page==chunk_counts[j]);
+    }
+    const uint32_t scalar_counter[] = {
+        0x04000d28u, 0xffffffffu, 0x02000d54u, 0,
+        0x04010d54u, 0x00ff00ffu, 0x05020000u, 0x9c00u,
+        0x11010002u, 0, 0, 0
+    };
+    const uint32_t scalars[] = {0,0x12345678u,0xffffffffu};
+    for (unsigned j=0; j<sizeof(scalars)/sizeof(scalars[0]); j++) {
+        IPodTouchFMSSState state=run_counter(scalar_counter,sizeof(scalar_counter),
+                                           scalars[j],0xdeadbeefu);
+        assert(state.reg_script_csgenr15==scalars[j]);
+        assert(ldl_le_p(mem+0x9c00)==(scalars[j]&0x00ff00ffu));
+    }
+    uint32_t unsupported_counter[] = {
+        0x05000000u, 7, 0x01000d54u, 3,
+        0x05020000u, 0x9c00u, 0x11000002u, 0, 0, 0
+    };
+    for (unsigned form=0; form<2; form++) {
+        unsupported_counter[2]=form ? 0x02000d54u : 0x01000d54u;
+        IPodTouchFMSSState state=run_counter(unsupported_counter,
+                sizeof(unsupported_counter),2,0xdeadbeefu);
+        assert(state.reg_script_csgenr15==0xdeadbeefu);
+        assert(ldl_le_p(mem+0x9c00)==0); /* Stop before later store. */
     }
     /* Captured bulk/read immediate-16 forms, bit31-clear operands only.
      * These values establish field splitting, not logical-vs-arithmetic SHR. */
@@ -304,7 +357,7 @@ int main(void) {
         run(immediate_and, sizeof(immediate_and));
         assert(ldl_le_p(mem + 0x9a00) == (0x12345679u & masks[j]));
     }
-    puts("PASS: bounded opcode14 right16, opcode0A forms, FMSS opcode03 LE DMA/rejection, opcode06 copies/rejection, D18 page counter, D28 chunks, D4C parameter, READ ID programs of 7E18 and 8C148, unknown op stops");
+    puts("PASS: D54 chunk loops, bounded opcode14 right16, opcode0A forms, FMSS opcode03 LE DMA/rejection, opcode06 copies/rejection, D18 page counter, D28 chunks, D4C parameter, READ ID programs of 7E18 and 8C148, unknown op stops");
 }
 ''' % (words(ID_7E18), words(ID_8C148))
 with tempfile.TemporaryDirectory() as tmp:
