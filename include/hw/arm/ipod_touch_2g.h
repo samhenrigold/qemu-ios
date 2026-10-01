@@ -191,6 +191,8 @@ typedef struct {
     bool wifi_mac_explicit;
     uint8_t bt_mac[6];
     bool bt_mac_explicit;
+    uint64_t ecid;
+    bool ecid_explicit;
 	AddressSpace *nsas;
 	/* boot-args: repeated early writes of the kernel command line. */
 	QEMUTimer *boot_args_timer;

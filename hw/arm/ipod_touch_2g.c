@@ -264,6 +264,35 @@ static bool ipod_touch_time_env_alias(IPodTouchMachineState *s, Error **errp)
     return true;
 }
 
+/* Unit ECID is a board input. Stock ROM/iBSS reads the immutable fuse words;
+ * no descriptor or guest-memory identity is fabricated here. */
+static void ipod_touch_get_ecid(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    uint64_t value = IPOD_TOUCH_MACHINE(obj)->ecid;
+    visit_type_uint64(v, name, &value, errp);
+}
+
+static void ipod_touch_set_ecid(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    IPodTouchMachineState *s = IPOD_TOUCH_MACHINE(obj);
+    uint64_t value;
+    if (s->cpu) {
+        error_setg(errp, "ecid must be set before the machine starts");
+        return;
+    }
+    if (!visit_type_uint64(v, name, &value, errp)) {
+        return;
+    }
+    if (value >= (1ULL << 42)) {
+        error_setg(errp, "S5L8720 ECID must fit its 42 fuse bits");
+        return;
+    }
+    s->ecid = value;
+    s->ecid_explicit = true;
+}
+
 static void ipod_touch_get_boot_args_delay_ms(Object *obj, Visitor *v,
                                              const char *name, void *opaque,
                                              Error **errp)
@@ -1903,6 +1932,9 @@ static void ipod_touch_instance_init(Object *obj)
     object_property_set_description(obj, "gles-debug",
         "Paint what the GL bridge refuses magenta instead of black (default off; tests turn it on)");
 
+    object_property_add(obj, "ecid", "uint64", ipod_touch_get_ecid,
+                        ipod_touch_set_ecid, NULL, NULL);
+    object_property_set_description(obj, "ecid", "S5L8720 unit ECID (42 bits)");
     object_property_add_str(obj, "bootrom", ipod_touch_get_bootrom_path, ipod_touch_set_bootrom_path);
     object_property_set_description(obj, "bootrom", "Path to the S5L8720 bootrom binary");
 
@@ -3177,6 +3209,15 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = qdev_new("ipodtouch.chipid");
     IPodTouchChipIDState *chipid_state = IPOD_TOUCH_CHIPID(dev);
     nms->chipid_state = chipid_state;
+    if (nms->ecid_explicit) {
+        uint64_t id = nms->ecid;
+        qdev_prop_set_uint32(dev, "word3", ((id >> 21) & 0x1fffff) |
+                             (((id >> 16) & 31) << 21) |
+                             (((id >> 2) & 63) << 26));
+        /* Preserve unrelated fuse bits supplied through the existing model. */
+        qdev_prop_set_uint32(dev, "word4", (chipid_state->word4 & ~0x3ffu) |
+                             (((id >> 8) & 255) << 2) | (id & 3));
+    }
     memory_region_add_subregion(sysmem, CHIPID_MEM_BASE, &chipid_state->iomem);
     it_realize_into_qom_tree(dev);
 
