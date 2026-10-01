@@ -872,6 +872,11 @@
         "catalog"
       ],
       "missing": "skip"
+    },
+    {
+      "name": "tests/ipad1/test_nand_store_convert.py",
+      "tier": "quick",
+      "prerequisites": []
     }
   ]
 }
