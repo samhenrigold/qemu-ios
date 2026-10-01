@@ -674,3 +674,12 @@ Not done: helpers on 3.0 (it_agent and friends are still modern-linked, smoke #1
 environment dictionary; 3.0 uses its installd job. The standalone system libmis remains stock.
 Fresh 5F138 and 7A341 images install and visibly launch an ad-hoc UIKit test app; the
 AppSync-off 5F138 control rejects it. See `contrib/appsync/README.md` for details.
+
+### FMSS snapshot limitation (2026-09-30)
+
+The earlier native snapshot result above did not establish equivalence for
+FMSS physical-page state after writes. FMSS now explicitly refuses snapshots
+with nonempty `phys_pages` or `erased_blocks`, and rejects older uncertified
+streams; ordinary cold boot is unchanged. See
+[physical store policy](../research/nand-physical-store.md) for format and test
+boundaries. Actual firmware-free FMSS MMIO/migration tests pass 2/2.
