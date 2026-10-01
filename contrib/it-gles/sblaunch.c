@@ -12,12 +12,10 @@
  * path a tap does (SpringBoard is what execs the app either way), so this
  * removes touch as a variable without weakening the test.
  *
- * WHICH APP. There is no argv -- the binary has no crt1, only LC_UNIXTHREAD, so
- * main() is entered with nothing on the stack to read. The identifier
- * therefore comes from a file, /tmp/sblaunch.id, and falls back to the GL test
- * app when that file is absent. A file rather than an argument is not a
- * preference; it is the only channel available, and it is enough because the
- * caller is always a shell on the other end of ssh:
+ * Historical callers pass the identifier through /tmp/sblaunch.id; keep that
+ * protocol for scripts that predate the legacy crt1 startup. The GL test app
+ * is the default when the file is absent. Both exported SpringBoard launch
+ * APIs are selected by the shared helper in it-agent/sbs-launch.h.
  *
  *     echo -n com.andyqua.CubeRunner > /tmp/sblaunch.id && sblaunch
  */
@@ -30,8 +28,11 @@ extern int open(const char *, int, ...);
 extern long read(int, void *, unsigned long);
 extern int close(int);
 extern int strcmp(const char *, const char *);
+#ifndef RTLD_NOW
 #define RTLD_NOW 2
+#endif
 #define O_RDONLY 0
+#include "../it-agent/sbs-launch.h"
 
 static unsigned slen(const char *s) { unsigned n = 0; while (s && s[n]) n++; return n; }
 static void w(const char *s) { write(1, s, slen(s)); }
@@ -50,9 +51,6 @@ int main(void)
 {
     static char bundle_id[128] = "com.qemuios.gltest";
     void *cf, *sbs;
-    void *(*p_CFStringCreateWithCString)(void *, const char *, unsigned);
-    int (*p_SBSLaunchApplicationWithIdentifier)(void *, int);
-    void *str;
     int r;
 
     /* Read the identifier, if one was left for us. Trailing whitespace is
@@ -111,16 +109,7 @@ int main(void)
         _exit(0);
     }
 
-    p_CFStringCreateWithCString = dlsym(cf, "CFStringCreateWithCString");
-    p_SBSLaunchApplicationWithIdentifier =
-        dlsym(sbs, "SBSLaunchApplicationWithIdentifier");
-    if (!p_CFStringCreateWithCString || !p_SBSLaunchApplicationWithIdentifier) {
-        w("sblaunch: missing symbols\n");
-        _exit(1);
-    }
-
-    str = p_CFStringCreateWithCString(0, bundle_id, kCFStringEncodingUTF8);
-    r = p_SBSLaunchApplicationWithIdentifier(str, 0);
+    r = it_sbs_launch(cf, sbs, bundle_id);
     /* 0 is success; anything else is SpringBoard's own error code. */
     w("sblaunch: "); w(bundle_id); w(" -> "); wd((unsigned)r); w("\n");
     _exit(r ? 1 : 0);

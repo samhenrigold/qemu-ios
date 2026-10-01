@@ -59,7 +59,9 @@ extern long write(int, const void *, unsigned long);
 extern void _exit(int);
 extern void *dlopen(const char *, int);
 extern void *dlsym(void *, const char *);
+#ifndef RTLD_NOW
 #define RTLD_NOW 2
+#endif
 
 static unsigned slen(const char *s) { unsigned n = 0; while (s && s[n]) n++; return n; }
 static void w(const char *s) { write(2, s, slen(s)); }

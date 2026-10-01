@@ -45,6 +45,9 @@ IPOD_BIN = {"it_agent": "contrib/it-agent/it_agent", "itmedia": "contrib/it-medi
             "itproxy": "contrib/it-proxy/itproxy", "itstatus": "contrib/it-status/itstatus",
             "ithalt": "contrib/it-halt/ithalt", "itorient": "contrib/it-orientation/itorient",
             "sbdlicon": "contrib/it-instprogress/sbdlicon", "sblaunch": "contrib/it-gles/sblaunch"}
+# The 2.x/3.0 set shares the same legacy-linked helpers as later armv6 guests.
+# Media, networking and status tools retain their own qualification boundary.
+IPOD_LEGACY_BIN = {n: IPOD_BIN[n] for n in ("it_agent", "sblaunch", "sbdlicon")}
 # it_agent (armv7, contrib/ipad1-guest/build.sh) replaces it_pbd from serial 2: the same pasteboard, plus the
 # foreground app, lock state, launch and sync that no stock service answers. Two pasteboard daemons would race.
 IPAD_BIN = {n: "build/ipad1-guest/" + n for n in ("it_agent", "it_ethlink", "it_prefs")}
@@ -63,13 +66,17 @@ FAMILIES = {
     # only; the legacy-linked it_boot runs there (armv6-toolchain crt1old.c/legacy.h: 1.x's crt1 and stat ABI)
     "n45-ios1": {"arch": "armv6", "boards": ["n45ap"], "builds": ["3*", "4*"],
                  "hooks": [("contrib/it-gles/OpenGLES-1x", OPENGLES, True)]},
-    "n72-ios2": {"arch": "armv6", "boards": ["n72ap"], "builds": ["5*"],
-                 "hooks": [("contrib/gles-public/OpenGLES", OPENGLES, True)]},
+    "n72-ios2": {"arch": "armv6", "boards": ["n72ap"], "builds": ["5*"], "bin": IPOD_LEGACY_BIN,
+                 "jobs": ["contrib/it-agent/com.qemu.it-agent.plist"],
+                 "hooks": [("contrib/gles-public/OpenGLES", OPENGLES, True),
+                           ("contrib/it-agent/it_typein.dylib", "/usr/lib/it_typein.dylib", True)]},
     # 3.0 (7A341, the iPod 2G's only 3.0 build) has 3.1's engine ABI but 2.x's dyld (no LC_DYLD_INFO_ONLY):
-    # the legacy-linked loader and engine, no helpers yet. Family by dyld capability, so 3.1+ are listed
+    # the legacy-linked loader, engine and core helpers. Family by dyld capability, so 3.1+ are listed
     # by build (the iPod's 3.x series is closed).
-    "n72-ios30": {"arch": "armv6", "boards": ["n72ap"], "builds": ["7A341"],
-                  "hooks": [("contrib/gles-public/OpenGLES", OPENGLES, True)]},
+    "n72-ios30": {"arch": "armv6", "boards": ["n72ap"], "builds": ["7A341"], "bin": IPOD_LEGACY_BIN,
+                  "jobs": ["contrib/it-agent/com.qemu.it-agent.plist"],
+                  "hooks": [("contrib/gles-public/OpenGLES", OPENGLES, True),
+                            ("contrib/it-agent/it_typein.dylib", "/usr/lib/it_typein.dylib", True)]},
     "n72-ios3": {"arch": "armv6", "boards": ["n72ap"], "builds": ["7C144", "7C145", "7D11", "7E18"], "bin": IPOD_BIN,
                  "jobs": ["contrib/it-agent/com.qemu.it-agent.plist"],
                  "hooks": [("contrib/gles-public/OpenGLES", OPENGLES, True),
@@ -177,7 +184,7 @@ def assemble(src, out, family, spec, serial, version):
     for source, target, respring in spec.get("hooks", []):
         rel = "hooks/" + os.path.basename(target)
         data = read(source)
-        if target in GL_TARGETS and family != "n45-ios1" and macho_problem(data, arch, legacy, signed=True):
+        if (target in GL_TARGETS or target == "/usr/lib/it_typein.dylib") and family != "n45-ios1" and macho_problem(data, arch, legacy, signed=True):
             # GL maps into every GL process, SpringBoard's included (3.0's even with software CA), and a
             # signed process is killed at an unsigned library's first page (1.x predates code signing)
             raise SystemExit("%s %s: %s" % (family, rel, macho_problem(data, arch, legacy, signed=True)))
@@ -412,7 +419,13 @@ def selfcheck():
         fams = [f for f, s in FAMILIES.items() if "n72ap" in s["boards"] and build_matches(s["builds"], build)]
         assert fams == [want], (build, fams)
     assert build_matches(LEGACY_BUILDS, "7A341") and not build_matches(LEGACY_BUILDS, "7E18")
-    assert [t for _, t, _ in FAMILIES["n72-ios30"]["hooks"]] == [OPENGLES] and "bin" not in FAMILIES["n72-ios30"]
+    for family in ("n72-ios2", "n72-ios30"):
+        spec = FAMILIES[family]
+        assert set(spec["bin"]) == {"it_agent", "sblaunch", "sbdlicon"}
+        assert spec["jobs"] == ["contrib/it-agent/com.qemu.it-agent.plist"]
+        assert [t for _, t, _ in spec["hooks"]] == [OPENGLES, "/usr/lib/it_typein.dylib"]
+        # Older guests have no native media qualification yet.
+        assert "itmedia" not in spec["bin"]
     # the one GL front end, byte for byte, wherever a family hooks GL (1.x's is its own: no EAGL, old ObjC)
     assert {s for f in FAMILIES.values() for s, t, _ in f.get("hooks", []) if t in GL_TARGETS} == \
         {"contrib/gles-public/OpenGLES", "contrib/it-gles/OpenGLES-1x"}

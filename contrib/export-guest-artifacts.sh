@@ -57,7 +57,7 @@ fi
 grep 'guest-package: warning' "$OUT/build.log" >&2 || true
 # The iPod's armv6 it_keybag and it_prefs: recipes that write build/ipod-guest next to their (copied) sources.
 for recipe in it-keybag it-prefs; do
-    if ! bash "$B/src/contrib/$recipe/build-ipod.sh" >"$B/logs/$recipe-ipod.log" 2>&1; then
+    if ! LEGACY_LINK=1 bash "$B/src/contrib/$recipe/build-ipod.sh" >"$B/logs/$recipe-ipod.log" 2>&1; then
         cat "$B/logs/$recipe-ipod.log" >&2
         fail "$recipe/build-ipod.sh failed"
     fi
