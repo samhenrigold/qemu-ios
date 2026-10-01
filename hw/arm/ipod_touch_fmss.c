@@ -139,6 +139,7 @@ static uint32_t fmss_var_read(IPodTouchFMSSState *s, uint32_t reg, bool *ok)
     case FMSS_PAGE_SPARE_OUT_ADDR: return s->reg_page_spare_out_addr;
     case FMSS_PAGES_OUT_ADDR:      return s->reg_pages_out_addr;
     case FMSS_CSGENRC:             return s->reg_csgenrc;
+    case FMSS_SCRIPT_PARAM_D4C:    return s->reg_script_param_d4c;
     }
     *ok = false;
     return 0;
@@ -1212,6 +1213,8 @@ static uint64_t ipod_touch_fmss_read(void *opaque, hwaddr addr, unsigned size)
     IPodTouchFMSSState *s = (IPodTouchFMSSState *)opaque;
     switch(addr)
     {
+        case FMSS_SCRIPT_PARAM_D4C:
+            return s->reg_script_param_d4c;
         case FMSS__CS_BUF_RST_OK:
             return 0x1;
         case FMSS__CS_IRQ:
@@ -1318,6 +1321,9 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
         case FMSS_PAGES_OUT_ADDR:
             s->reg_pages_out_addr = val;
             break;
+        case FMSS_SCRIPT_PARAM_D4C:
+            s->reg_script_param_d4c = val;
+            break;
         case FMSS_CSGENRC:
             s->reg_csgenrc = val;
             break;
@@ -1421,6 +1427,7 @@ static void ipod_touch_fmss_reset(DeviceState *dev)
     s->reg_page_spare_out_addr = 0;
     s->reg_pages_out_addr = 0;
     s->reg_csgenrc = 0;
+    s->reg_script_param_d4c = 0;
     memset(s->page_buffer, 0, NAND_BYTES_PER_PAGE);
     memset(s->page_spare_buffer, 0, NAND_BYTES_PER_SPARE);
     if (s->irq) {
@@ -1469,6 +1476,7 @@ static int fmss_pre_load(void *opaque)
         g_hash_table_remove_all(s->overlay_pages);
     }
     s->overlay_indexed = false;
+    s->reg_script_param_d4c = 0; /* Absent from pre-v6 streams. */
     return 0;
 }
 
@@ -1506,7 +1514,7 @@ static int fmss_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_fmss = {
     .name = "ipod_touch_fmss",
-    .version_id = 5,
+    .version_id = 6,
     .minimum_version_id = 4,
     .pre_load = fmss_pre_load,
     .post_load = fmss_post_load,
@@ -1530,6 +1538,7 @@ static const VMStateDescription vmstate_ipod_touch_fmss = {
                                   &vmstate_fmss_page, FMSSPhysicalPage),
         VMSTATE_GTREE_DIRECT_KEY_V(erased_blocks, IPodTouchFMSSState, 5,
                                   &vmstate_fmss_marker, FMSSMarker),
+        VMSTATE_UINT32_V(reg_script_param_d4c, IPodTouchFMSSState, 6),
         VMSTATE_END_OF_LIST()
     }
 };

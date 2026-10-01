@@ -53,7 +53,7 @@ prelude = r'''
 #define ctz32(x) ((x) ? (unsigned)__builtin_ctz(x) : 32u)
 typedef struct {
     uint32_t reg_cs_script, reg_cinfo_target_addr, reg_pages_in_addr, reg_cs_buf_addr;
-    uint32_t reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc;
+    uint32_t reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc, reg_script_param_d4c;
 } IPodTouchFMSSState;
 static uint8_t mem[0x10000];
 static void cpu_physical_memory_read(uint32_t a, void *p, size_t n) { assert(a + n <= sizeof(mem)); memcpy(p, mem + a, n); }
@@ -78,7 +78,26 @@ int main(void) {
     uint32_t bad[] = {0x05000000u, 7, 0x11000001u, 0, 0x99000000u, 0, 0x11000000u, 0, 0, 0};
     run(bad, sizeof(bad)); /* an unknown op stops the program */
     assert(mem[0] == 7 && mem[7] == 0);
-    puts("PASS: FMSS READ ID programs of 7E18 and 8C148, unknown op stops");
+    /* Stock 5F138 NAND scripts read CPU parameter D4C before writing
+     * FMCTRL0. Keep the observed read/OR/write sequence and inspect its value
+     * through a sequencer memory store, without faking NAND completion. */
+    uint32_t parameter[] = {
+        0x04010d4cu, 0xffffffffu, 0x0b000001u, 0x801u,
+        0x02000000u, 0, 0x04020000u, 0xffffffffu,
+        0x05030000u, 0x9000u, 0x11020003u, 0, 0, 0
+    };
+    IPodTouchFMSSState s = {.reg_cs_script = 0x1000,
+                            .reg_script_param_d4c = 0x20011000u};
+    memcpy(mem + 0x1000, parameter, sizeof(parameter));
+    fmss_run_script(&s);
+    assert(*(uint32_t *)(mem + 0x9000) == 0x20011801u);
+    s.reg_script_param_d4c = 0;
+    fmss_run_script(&s);
+    assert(*(uint32_t *)(mem + 0x9000) == 0x801u);
+    bool ok = true;
+    assert(fmss_var_read(&s, FMSS_SCRIPT_PARAM_D4C, &ok) == 0 && ok);
+    ok = true; fmss_var_read(&s, 0xd50, &ok); assert(!ok);
+    puts("PASS: FMSS D4C parameter, READ ID programs of 7E18 and 8C148, unknown op stops");
 }
 ''' % (words(ID_7E18), words(ID_8C148))
 with tempfile.TemporaryDirectory() as tmp:

@@ -10,7 +10,8 @@ source = (root / 'hw/arm/ipod_touch_fmss.c').read_text()
 header = (root / 'include/hw/arm/ipod_touch_fmss.h').read_text()
 functions = []
 for name in ('ipod_touch_fmss_read', 'fmss_update_irq', 'fmss_complete',
-             'ipod_touch_fmss_write', 'fmss_post_load'):
+             'ipod_touch_fmss_write', 'fmss_pre_load', 'fmss_invalid_page',
+             'fmss_invalid_marker', 'fmss_post_load', 'ipod_touch_fmss_reset'):
     match = re.search(r'^static [^\n]*\b' + name + r'\([^)]*\)\s*\{.*?^}', source, re.M | re.S)
     assert match, name
     functions.append(match.group())
@@ -20,6 +21,14 @@ prelude = r'''
 #include <stdint.h>
 #include <stdio.h>
 #include <inttypes.h>
+#include <errno.h>
+#include <string.h>
+#include <glib.h>
+#define NAND_BYTES_PER_PAGE 4096
+#define NAND_BYTES_PER_SPARE 64
+#define error_report(...) ((void)0)
+#define IPOD_TOUCH_FMSS(p) ((IPodTouchFMSSState *)(p))
+typedef void DeviceState;
 #define QEMU_CLOCK_VIRTUAL 0
 #define LOG_UNIMP 0
 #define qemu_log_mask(...) ((void)0)
@@ -30,10 +39,19 @@ typedef struct {
     int irq;
     uint32_t reg_cs_ctrl, reg_cs_irq_bit, reg_cs_irq_mask, reg_cs_script;
     uint32_t reg_cinfo_target_addr, reg_pages_in_addr, reg_cs_buf_addr;
-    uint32_t reg_num_pages, reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc;
+    uint32_t reg_num_pages, reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc, reg_script_param_d4c;
+    GTree *phys_pages, *erased_blocks;
+    GHashTable *overlay_pages;
+    bool overlay_indexed;
+    uint8_t *page_buffer, *page_spare_buffer;
     QEMUTimer *completion_timer;
 } IPodTouchFMSSState;
 static int level;
+static gint key_compare(gconstpointer a, gconstpointer b) {
+    return ((uintptr_t)a > (uintptr_t)b) - ((uintptr_t)a < (uintptr_t)b);
+}
+static bool fmss_physical(void) { return false; }
+static void qemu_irq_lower(int irq) { level=0; }
 static bool fmss_io_failed;
 static int64_t now;
 static void qemu_set_irq(int irq, int value) { level = !!value; }
@@ -59,7 +77,21 @@ static void advance(IPodTouchFMSSState *s) {
 }
 int main(void) {
     QEMUTimer timer={0};
-    IPodTouchFMSSState s={.completion_timer=&timer,.reg_cs_irq_mask=1};
+    uint8_t page[NAND_BYTES_PER_PAGE], spare[NAND_BYTES_PER_SPARE];
+    IPodTouchFMSSState s={.completion_timer=&timer,.reg_cs_irq_mask=1,
+        .page_buffer=page,.page_spare_buffer=spare};
+    s.phys_pages=g_tree_new(key_compare);
+    s.erased_blocks=g_tree_new(key_compare);
+    write_reg(&s,FMSS_SCRIPT_PARAM_D4C,0x20011000u);
+    assert(ipod_touch_fmss_read(&s,FMSS_SCRIPT_PARAM_D4C,4)==0x20011000u);
+    ipod_touch_fmss_reset((DeviceState *)&s);
+    assert(ipod_touch_fmss_read(&s,FMSS_SCRIPT_PARAM_D4C,4)==0);
+    write_reg(&s,FMSS_SCRIPT_PARAM_D4C,0xffffffffu);
+    assert(ipod_touch_fmss_read(&s,FMSS_SCRIPT_PARAM_D4C,4)==0xffffffffu);
+    fmss_pre_load(&s);
+    assert(s.reg_script_param_d4c==0); /* v4/v5 streams omit this parameter. */
+    s.reg_script_param_d4c=0x20011000u; /* v6 restored field */
+    fmss_post_load(&s,6); assert(s.reg_script_param_d4c==0x20011000u);
     write_reg(&s,0xc04,0x1000); assert(s.reg_cs_script==0x1000 && !scripts_run);
     write_reg(&s,0xc00,0xffb5); /* iBoot polls completion. */
     assert(!level && !s.reg_cs_irq_bit && timer.pending && scripts_run==1);
@@ -83,7 +115,8 @@ int main(void) {
     /* Only certified v4 states can load; no legacy default reconstruction. */
     timer.pending=true; fmss_post_load(&s,4);
     assert(!level && timer.pending && s.reg_cs_irq_mask==0);
-    puts("PASS: FMSS deferred completion, polling, W1C, masking, abort, failure and restore");
+    g_tree_destroy(s.phys_pages); g_tree_destroy(s.erased_blocks);
+    puts("PASS: FMSS D4C readback/reset/load, deferred completion, polling, W1C, masking, abort, failure and restore");
 }
 '''
 constants = '\n'.join(line for line in header.splitlines() if line.startswith('#define FMSS') or line.startswith('#define NAND_PAGES_PER_BLOCK'))
@@ -91,5 +124,6 @@ with tempfile.TemporaryDirectory() as tmp:
     c = Path(tmp) / 'check.c'
     c.write_text(prelude + constants + '\n' + '\n'.join(functions) + tests)
     binary = str(Path(tmp) / 'check')
-    subprocess.run(['clang', '-std=c11', '-fsanitize=address,undefined', '-g', str(c), '-o', binary], check=True)
+    glib_flags = subprocess.check_output(['pkg-config', '--cflags', '--libs', 'glib-2.0'], text=True).split()
+    subprocess.run(['clang', *glib_flags, '-std=c11', '-fsanitize=address,undefined', '-g', str(c), '-o', binary], check=True)
     subprocess.run([binary], check=True)

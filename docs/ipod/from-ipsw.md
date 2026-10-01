@@ -836,3 +836,25 @@ are required before removing generated FTL relocation. Evidence:
 `/private/tmp/ltm-n72-legacy-erase-physical-probe2`,
 `/private/tmp/ltm-usb-reenumeration-unit.log`, and
 `/private/tmp/ltm-usb-reenumeration-registry.log`.
+
+### Measured stock FMSS sequencer parameter (2026-10-01)
+
+The stock erase ramdisk's CPU writes D4C = 0x20011000. Its real reset/read
+scripts read that parameter, OR their command bits and write FMCTRL0. The
+model discarded the CPU write and stopped those scripts at the unsupported
+D4C read. D4C now latches and reads back through MMIO and the sequencer;
+reset clears it, FMSS VMState6 preserves it, and supported older streams
+initialize it to zero. No guest address appears in the hardware model.
+
+Sanitized actual-handler/script tests pass, including the stock parameter
+sequence; real FMSS qtests pass 4/4 with reset and physical/generated snapshot
+round trips. The IRQ fixture was stale against existing v5 state and now uses
+its actual GLib validation helpers. The separate default native 7E18 two-boot
+regression passes 8/8 (`/private/tmp/ltm-fmss-d4c-default`).
+
+Full stock-script replay identifies subsequent unsupported D18/D28 reads and
+opcode03 descriptor loads. Aborted programs still receive synthetic success
+completion, and physical erase execution remains absent. This parameter
+correction is not restore completion. The stock kernel also gates virgin NAND
+formatting on nand-enable-reformat; actual kernel BootArgs must be read before
+changing the legacy host client's restore argument policy.
