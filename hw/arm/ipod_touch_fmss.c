@@ -535,36 +535,43 @@ static void fmss_try_map_packed(IPodTouchFMSSState *s)
             s->packed_size >> 20);
 }
 
-/* True when the packed image carries this page; fills data and spare if so. */
-static bool fmss_packed_page(IPodTouchFMSSState *s, uint32_t cs,
-                             uint32_t page_nr, uint8_t *data, uint8_t *spare)
+typedef enum FMSSPackedRead {
+    FMSS_PACKED_INVALID,
+    FMSS_PACKED_HOLE,
+    FMSS_PACKED_DATA,
+} FMSSPackedRead;
+
+/* Identify present data, a valid hole, or an invalid address/record. */
+static FMSSPackedRead fmss_packed_page(IPodTouchFMSSState *s, uint32_t cs,
+                                      uint32_t page_nr, uint8_t *data,
+                                      uint8_t *spare)
 {
     const uint8_t *rec;
     uint32_t slot;
 
     if (!s->packed || cs >= s->packed_num_cs ||
         page_nr >= s->packed_pages_per_cs) {
-        return false;
+        return FMSS_PACKED_INVALID;
     }
 
     slot = ldl_le_p(&s->packed_index[(size_t)cs * s->packed_pages_per_cs + page_nr]);
     if (slot == 0) {
-        return false;                 /* absent, i.e. erased */
+        return FMSS_PACKED_HOLE; /* legitimate absent page */
     }
     /* The slot number is file data too, and it is the one that becomes a
      * pointer. Out of range means the image disagrees with itself. */
     if (slot > s->packed_record_count) {
         qemu_log_mask(LOG_GUEST_ERROR, "[fmss] packed slot %u past the end of "
-                      "the image (%zu records); page treated as erased\n",
+                      "the image (%zu records); using legacy fallback\n",
                       slot, s->packed_record_count);
-        return false;
+        return FMSS_PACKED_INVALID;
     }
 
     rec = s->packed_records +
           (size_t)(slot - 1) * (NAND_BYTES_PER_PAGE + NAND_BYTES_PER_SPARE);
     memcpy(data, rec, NAND_BYTES_PER_PAGE);
     memcpy(spare, rec + NAND_BYTES_PER_PAGE, NAND_BYTES_PER_SPARE);
-    return true;
+    return FMSS_PACKED_DATA;
 }
 
 /*
@@ -614,6 +621,21 @@ static bool fmss_overlay_has(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_n
            g_hash_table_contains(s->overlay_pages, fmss_block_key(cs, page_nr));
 }
 
+/* Stored spare is the current 64-byte controller metadata projection,
+ * not the chip's complete raw OOB/ECC layout. Only a legitimate hole or
+ * erased block receives physical erased bytes; corrupt packed fallbacks
+ * retain their existing synthetic encoding until an explicit error policy. */
+static void fmss_blank_page(uint8_t *data, uint8_t *spare, bool erased)
+{
+    bool physical_erased = erased && fmss_physical();
+    int fill = physical_erased ? 0xff : 0;
+    memset(data, fill, NAND_BYTES_PER_PAGE);
+    memset(spare, fill, NAND_BYTES_PER_SPARE);
+    if (!physical_erased) {
+        ((uint32_t *)spare)[2] = 0x00FF00FF;
+    }
+}
+
 static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
                                  uint32_t page_nr, uint8_t *data,
                                  uint8_t *spare)
@@ -621,6 +643,7 @@ static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
     char filename[1088];
     FILE *f = NULL;
     bool from_overlay = false;
+    bool open_failed = false, base_absent = false;
 
     /*
      * A page programmed in this session reads back as programmed, whatever the
@@ -640,15 +663,21 @@ static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
     if (s->nand_overlay && fmss_overlay_has(s, cs, page_nr)) {
         snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_overlay, cs, page_nr);
         f = fopen(filename, "rb");
+        if (!f && errno != ENOENT) {
+            open_failed = true;
+        }
         from_overlay = (f != NULL);
         if (from_overlay) { fmss_stats.overlay++; }
         if (f && fmss_rtrace()) {
             printf("RH cs=%u page=%u\n", cs, page_nr); fflush(stdout);
         }
     }
-    if (!f && !fmss_block_is_erased(s, cs, page_nr / NAND_PAGES_PER_BLOCK)) {
+    bool known_erased = !f &&
+        fmss_block_is_erased(s, cs, page_nr / NAND_PAGES_PER_BLOCK);
+    if (!f && !known_erased) {
         if (s->packed) {
-            if (fmss_packed_page(s, cs, page_nr, data, spare)) {
+            FMSSPackedRead result = fmss_packed_page(s, cs, page_nr, data, spare);
+            if (result == FMSS_PACKED_DATA) {
                 fmss_stats.base++;
                 /* The two diagnostics below only ever rewrite the spare of a
                  * base-image page, and both are off unless asked for. */
@@ -659,21 +688,25 @@ static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
                 return;
             }
             fmss_stats.blank++;
-            memset(data, 0, NAND_BYTES_PER_PAGE);
-            memset(spare, 0, NAND_BYTES_PER_SPARE);
-            ((uint32_t *)spare)[2] = 0x00FF00FF; /* clean/erased marker */
+            /* Preserve the existing invalid-image fallback pending a
+             * separate corruption/error contract. It is not erased flash. */
+            fmss_blank_page(data, spare, !open_failed && result == FMSS_PACKED_HOLE);
             return;
         }
         snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_path, cs, page_nr);
         f = fopen(filename, "rb");
+        if (!f) {
+            base_absent = errno == ENOENT;
+            open_failed |= !base_absent;
+        }
         if (f) { fmss_stats.base++; }
     }
 
     if (!f) {
         fmss_stats.blank++;
-        memset(data, 0, NAND_BYTES_PER_PAGE);
-        memset(spare, 0, NAND_BYTES_PER_SPARE);
-        ((uint32_t *)spare)[2] = 0x00FF00FF; /* clean/erased marker */
+        /* Non-absence open errors retain the previous permissive fallback.
+         * Do not disguise inaccessible overlay/base data as erased NAND. */
+        fmss_blank_page(data, spare, !open_failed && (known_erased || base_absent));
         return;
     }
     /* A short read is tolerated, but the tail MUST be zeroed: these buffers are
@@ -779,7 +812,7 @@ static uint32_t fmss_total_blocks(IPodTouchFMSSState *s)
 
     /* logical 2 is cs2 page 256 under the formula below */
     if (s->packed) {
-        got = fmss_packed_page(s, 2, 256, ent, spare);
+        got = fmss_packed_page(s, 2, 256, ent, spare) == FMSS_PACKED_DATA;
     } else {
         snprintf(path, sizeof(path), "%s/cs2/256.page", s->nand_path);
         f = fopen(path, "rb");

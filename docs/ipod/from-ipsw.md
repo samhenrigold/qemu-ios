@@ -973,3 +973,27 @@ persistence, graphics and audio (`/private/tmp/ltm-fmss-and-default`).
 
 Other arithmetic, physical storage, erase and aborted-script completion are
 unchanged. Physical restore and subsequent cold boot remain unqualified.
+
+### Physical erased-page reads
+
+Explicit FMSS_PHYSICAL reads now return FF main bytes and current stored
+metadata for confirmed absent directory pages, valid packed holes and known
+erased markers. The packed reader distinguishes holes from invalid addresses
+and records. Generated-mode bytes remain unchanged. Non-ENOENT open failures,
+invalid packed records and short records retain their existing fallback
+policy; preserving that policy does not establish physical error fidelity.
+The 64-byte stored spare and 12-byte guest metadata are a controller projection,
+not a newly qualified raw OOB/ECC layout.
+
+The maintained actual-source sanitizer baseline compiles and fails on the
+exact physical FF assertion; the fixed test passes. Real FMSS qtests pass
+12/12 including both storage formats/modes, actual ENOTDIR paths, marker
+precedence and exact erased bytes across migration. Script/IRQ, generated
+free-pool and persistence checks pass, including 18 fault cases and a
+1,024-page bulk write. Persistence test declarations were repaired for the
+pre-existing GTree cache types without weakening failure assertions.
+
+Independent default 7E18 native two-boot regression passes 8/8
+(`/private/tmp/ltm-fmss-physical-blank-default`). This qualifies generated-path
+regression safety, not stock physical restore, ECC, bitwise programming or
+honest sequencer completion.

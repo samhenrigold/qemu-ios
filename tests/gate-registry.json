@@ -30,6 +30,7 @@
     {"name": "tests/ipod/test_coreaudio_rate.py", "tier": "manual", "prerequisites": ["qemu", "device-image"], "reason": "native emulator check: supply the device inputs documented by this test"},
     {"name": "tests/ipod/test_dsi_fifo.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_early_boot_args.py", "tier": "quick", "prerequisites": []},
+    {"name": "tests/ipod/test_fmss_blank.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_fmss_free_pool.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_fmss_irq.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_fmss_persistence.py", "tier": "quick", "prerequisites": []},
