@@ -195,7 +195,13 @@ static void fmss_run_script(IPodTouchFMSSState *s)
             return;
         case 0x01:
         case 0x02:
-            if (b == FMSS_SCRIPT_SCRATCH_D3C) {
+            if (b == FMSS_CS_BUF_ADDR) {
+                if (op == 2 && !imm) {
+                    s->reg_cs_buf_addr = r[a];
+                } else {
+                    ok = false; /* Only captured descriptor-pointer writes. */
+                }
+            } else if (b == FMSS_SCRIPT_SCRATCH_D3C) {
                 if (!imm && (op == 2 || !a)) {
                     /* Captured zero initializer or register-write form. */
                     s->reg_script_scratch_d3c = op == 1 ? 0 : r[a];
