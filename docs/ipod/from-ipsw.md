@@ -905,3 +905,21 @@ and physical/generated snapshot roundtrips. The independent default native
 7E18 two-boot regression passes 8/8, including filesystem health, durable
 writes and audio (`/private/tmp/ltm-fmss-d18-d28-default`). Stock erase restore
 and honest completion of unsupported scripts remain separate gates.
+
+### Silent I2S migration (2026-10-01)
+
+N45's host-output=false stream previously returned before initializing its
+host voice rate. It consequently saved a zero rate and failed whole-board
+migration despite valid guest stream state. Silent sinks now initialize a
+logical rate. Legacy streams without a realized/active host voice normalize
+a missing rate from the validated stream settings only after all ring, queued
+PCM, pacing, FIFO and sample-rate checks pass. Valid guest TX/DMA activity is
+not mistaken for host voice activity; invalid streams remain rejected.
+
+The registered PHY model suite now includes N45 migration unconditionally
+and passes 4/4; the pre-fix whole-board stream fails specifically in I2S.
+Actual-source ASan/UBSan audio and alignment tests pass, including valid legacy
+silent active state and malformed-state rejection. The independent default
+7E18 native two-boot regression passes 8/8 (`/private/tmp/ltm-i2s-silent-default`).
+This is silent-stream bookkeeping and migration compatibility, not new audio
+hardware, native N45 guest suspend/wake or in-flight host USB qualification.

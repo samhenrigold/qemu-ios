@@ -33,7 +33,7 @@ typedef struct {
     unsigned dma_req_id;
     bool dma_req;
     uint64_t total_bytes, dropped, last_push_ns;
-    bool pushed_since_tick, active, card_ok;
+    bool pushed_since_tick, active, card_ok, running; unsigned enable;
     struct audsettings as;
     void *pace_timer, *card;
     FILE *dump;
@@ -129,6 +129,36 @@ int main(void) {
     s.ring_head=IT_I2S_RING_SIZE;assert(i2s_post_load(&s,1)==-EINVAL);s.ring_head=head;
     s.ring_level=1;assert(i2s_post_load(&s,1)==-EINVAL);s.ring_level=level;
     lm48821_reset(&amp);assert(lm48821_recv(&amp)==0);
+    /* Historical host-output=false streams have no host voice rate, even
+     * while guest TX and DMA run. Stream rate and queued PCM remain valid. */
+    IPodTouchI2SState silent={.fifo_depth=2048,.as={44100}};
+    assert(i2s_post_load(&silent,1)==0 && silent.voice_rate==44100);
+    silent.voice_rate=0;silent.enable=1;silent.running=true;
+    silent.dma_req=true;silent.fifo_bytes=4;
+    silent.ring_head=silent.ring_level=4;silent.ring_format[0]=22050<<9;
+    assert(i2s_post_load(&silent,1)==0 && silent.voice_rate==44100);
+    assert(silent.running && silent.enable==1 && silent.dma_req &&
+           silent.fifo_bytes==4 && silent.ring_level==4 &&
+           silent.ring_format[0]==(22050<<9));
+    /* Compatibility must not sanitize a bad stream or alter it on failure. */
+    silent.voice_rate=0;silent.ring_format[0]=0;
+    assert(i2s_post_load(&silent,1)==-EINVAL && !silent.voice_rate);
+    silent.ring_format[0]=22050<<9;
+    silent.as.freq=0;assert(i2s_post_load(&silent,1)==-EINVAL);silent.as.freq=44100;
+    silent.fifo_depth=0;assert(i2s_post_load(&silent,1)==-EINVAL);silent.fifo_depth=2048;
+    silent.pace_fraction=1000000000;
+    assert(i2s_post_load(&silent,1)==-EINVAL);silent.pace_fraction=0;
+    silent.ring_tail=1;assert(i2s_post_load(&silent,1)==-EINVAL);silent.ring_tail=0;
+    silent.ring_head=3;assert(i2s_post_load(&silent,1)==-EINVAL);silent.ring_head=4;
+    silent.voice_rate=7000;assert(i2s_post_load(&silent,1)==-EINVAL);
+    /* A realized or active host voice is never silently repaired. */
+    silent.voice_rate=0;silent.card_ok=true;
+    assert(i2s_post_load(&silent,1)==-EINVAL);silent.card_ok=false;
+    silent.voice=&silent;assert(i2s_post_load(&silent,1)==-EINVAL);silent.voice=NULL;
+    silent.active=true;assert(i2s_post_load(&silent,1)==-EINVAL);
+    silent.card_ok=true;silent.voice_rate=48000;
+    assert(i2s_post_load(&silent,1)==0 && silent.voice_rate==48000);
+    assert(silent.active && silent.ring_format[0]==(22050<<9));
     puts("PASS: amplifier gain/mute/channel control, clipping, partial-frame restore, writes, wrap and queued rate/gain transitions");
 }
 '''

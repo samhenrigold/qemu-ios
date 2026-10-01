@@ -221,12 +221,7 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/usbphy/reset-transfers-and-pending-core-irq", reset_transfer_and_pending_irq);
     qtest_add_func("/ipod/usbphy/restored-physical-reset-signal", restored_phy_signal);
     qtest_add_func("/ipod/usbphy/n45-reset-transfers-and-pending-core-irq", n45_transfer);
-    /* An inactive N45 whole-board stream currently fails I2S validation
-     * before PHY replay. Retain the explicit diagnostic without claiming
-     * that board's full snapshot prerequisite in this USB model suite. */
-    if (getenv("QTEST_N45_USB_SNAPSHOT")) {
-        qtest_add_func("/ipod/usbphy/n45-restored-physical-reset-signal", n45_restore);
-    }
+    qtest_add_func("/ipod/usbphy/n45-restored-physical-reset-signal", n45_restore);
     result = g_test_run();
     unlink(rom); unlink(rom1g); unlink(nor); rmdir(nand);
     g_free(rom); g_free(rom1g); g_free(nor); g_free(nand);
