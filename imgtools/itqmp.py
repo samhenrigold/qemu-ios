@@ -592,13 +592,13 @@ def main(argv=None):
         sys.exit("unknown action %r" % action)
 
 
-def guest_powerdown(qmp, process, tag, log=print, charging_halt=False):
+def guest_powerdown(qmp, process, tag, log=print, charging_halt=False, prefer_gesture=False):
     """Require guest-origin SHUTDOWN plus process exit; SIGTERM also exits 0."""
     if qmp is None:
         log("%s: no QMP connection to confirm guest shutdown" % tag)
         return False
     try:
-        if agent_alive(qmp):
+        if not prefer_gesture and agent_alive(qmp):
             try:
                 status, response = agent(qmp, "halt", timeout=30)
             except (RuntimeError, TimeoutError):
@@ -616,7 +616,7 @@ def guest_powerdown(qmp, process, tag, log=print, charging_halt=False):
                 raise RuntimeError("agent halt failed: %d %r" % (status, response))
             timeout = 60
         else:
-            log("%s: no agent; gesture shutdown" % tag)
+            log("%s: gesture shutdown" % tag)
             try:
                 qmp.cmd("system_powerdown")
             except EOFError:

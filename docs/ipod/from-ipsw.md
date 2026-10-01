@@ -308,8 +308,9 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
   ambiguous and out-of-range matches cause no write. No fixed build address remains.
 - The BCM4325 card accepts the unit's `wifi-mac` machine option for its CIS,
   NIC and event identity; unconfigured callers retain the old card address.
-  The 2.x driver still substitutes its Bluetooth fallback when the card's Apple
-  OTP record is absent. See [radio identity](../research/n72-radio-identity.md).
+  `bt-mac` supplies the Apple OTP record so the 2.x driver retains the unit's
+  Bluetooth address instead of generating a fallback. Both values come from the
+  prepared identity. See [radio identity](../research/n72-radio-identity.md).
 
 ## Assumed → derived
 

@@ -114,6 +114,19 @@ static void ipod_touch_sdio_build_cia(IPodTouchSDIOState *s)
         }
     }
 
+    if (chip->has_bt_mac) {
+        /* Apple's combo-card OTP: a vendor tuple containing type 3, five
+         * 16-bit words (header plus six address bytes). Stock AppleBCM4325's
+         * parseAppleConfigData uses this instead of synthesizing BT from WLAN. */
+        *cis++ = 0x80;
+        *cis++ = 11;
+        *cis++ = 0x81;
+        stw_le_p(cis, 3); cis += 2;
+        stw_le_p(cis, 5); cis += 2;
+        memcpy(cis, chip->bt_mac, sizeof(chip->bt_mac));
+        cis += sizeof(chip->bt_mac);
+    }
+
     *cis++ = CIS_END;
 
     for (unsigned fn = 1; fn <= sdio_functions(s); fn++) {

@@ -189,6 +189,8 @@ typedef struct {
     bool bt_latency_us_explicit;
     uint8_t wifi_mac[6];
     bool wifi_mac_explicit;
+    uint8_t bt_mac[6];
+    bool bt_mac_explicit;
 	AddressSpace *nsas;
 	/* boot-args: repeated early writes of the kernel command line. */
 	QEMUTimer *boot_args_timer;

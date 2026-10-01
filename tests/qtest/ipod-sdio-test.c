@@ -8,6 +8,7 @@
 static char *rom, *nor, *nand;
 static const uint8_t legacy[6] = {0x00, 0x23, 0x32, 0x6e, 0xaa, 0x10};
 static const uint8_t provisioned[6] = {0x02, 0x9f, 0xef, 0x8e, 0x4a, 0xf8};
+static const uint8_t bluetooth[6] = {0x02, 0x9f, 0xef, 0x8e, 0x4a, 0xf9};
 
 static QTestState *start_board(const char *options)
 {
@@ -50,18 +51,58 @@ static void default_identity(void)
     qtest_quit(q);
 }
 
-static void provisioned_identity(void)
+static void assert_bt_otp(QTestState *q, bool expected)
+{
+    uint32_t cis = card_read(q, 9) | card_read(q, 10) << 8 | card_read(q, 11) << 16;
+    bool found = false;
+    for (unsigned i = 0; i < 64; i++) {
+        unsigned code = card_read(q, cis);
+        if (code == 0xff) { break; }
+        if (code == 0) { cis++; continue; }
+        unsigned len = card_read(q, cis + 1);
+        if (code == 0x80 && card_read(q, cis + 2) == 0x81) {
+            g_assert_cmpuint(len, ==, 11);
+            g_assert_cmpuint(card_read(q, cis + 3), ==, 3);
+            g_assert_cmpuint(card_read(q, cis + 4), ==, 0);
+            g_assert_cmpuint(card_read(q, cis + 5), ==, 5);
+            g_assert_cmpuint(card_read(q, cis + 6), ==, 0);
+            for (unsigned j = 0; j < 6; j++) {
+                g_assert_cmphex(card_read(q, cis + 7 + j), ==, bluetooth[j]);
+            }
+            found = true;
+        }
+        cis += len + 2;
+    }
+    g_assert_cmpint(found, ==, expected);
+}
+
+static void wifi_only_identity(void)
 {
     QTestState *q = start_board(",wifi-mac=02:9f:ef:8e:4a:f8");
     assert_factory_mac(q, provisioned);
+    assert_bt_otp(q, false);
+    qtest_quit(q);
+}
+
+static void provisioned_identity(void)
+{
+    QTestState *q = start_board(",wifi-mac=02:9f:ef:8e:4a:f8,bt-mac=02:9f:ef:8e:4a:f9");
+    assert_factory_mac(q, provisioned);
+    assert_bt_otp(q, true);
     qtest_qmp_assert_success(q, "{'execute':'system_reset'}");
     assert_factory_mac(q, provisioned);
+    assert_bt_otp(q, true);
     /* A running card's factory identity cannot change underneath its driver. */
     QDict *reply = qtest_qmp(q, "{'execute':'qom-set','arguments':{'path':'/machine',"
                              "'property':'wifi-mac','value':'02:11:22:33:44:55'}}");
     g_assert_nonnull(qdict_get(reply, "error"));
     qobject_unref(reply);
+    reply = qtest_qmp(q, "{'execute':'qom-set','arguments':{'path':'/machine',"
+                         "'property':'bt-mac','value':'02:11:22:33:44:55'}}");
+    g_assert_nonnull(qdict_get(reply, "error"));
+    qobject_unref(reply);
     assert_factory_mac(q, provisioned);
+    assert_bt_otp(q, true);
     qtest_quit(q);
 }
 
@@ -78,6 +119,7 @@ int main(int argc, char **argv)
     nand = g_dir_make_tmp("n72-sdio-nand-XXXXXX", NULL);
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/ipod/sdio/default-cis-identity", default_identity);
+    qtest_add_func("/ipod/sdio/wifi-only-cis-identity", wifi_only_identity);
     qtest_add_func("/ipod/sdio/provisioned-cis-identity-reset", provisioned_identity);
     result = g_test_run();
     unlink(rom); unlink(nor); rmdir(nand);

@@ -419,7 +419,8 @@ class Device:
 
     def powerdown(self):
         try:
-            return itqmp.guest_powerdown(self.qmp, self.qemu, self.tag, log)
+            return itqmp.guest_powerdown(self.qmp, self.qemu, self.tag, log,
+                prefer_gesture=(self.cfg.device_version or (3, 1)) < (3, 1))
         finally:
             self.qmp = None
 
@@ -463,19 +464,21 @@ class Device:
                     "flat colour, so this is iBoot/recovery, not a boot"
                     % (self.tag, time.time() - START, lit))
                 continue
-            if n >= 2 and lit < self.cfg.home_lit_min and (self.cfg.device_version or (3, 1)) < (3, 1) \
+            host_connected = False
+            if n >= 2 and (self.cfg.device_version or (3, 1)) < (3, 1) \
                     and not getattr(self, "time_set", False) and getattr(self.cfg, "usbmuxd_ok", True):
                 # 2.x/3.0 lockdownd keeps an iPod "bricked" (Connect to iTunes) until a paired host sets
                 # the time, as iTunes does on connect (docs/ipod/from-ipsw.md, "lockdownd's brick
                 # state"); SpringBoard shows the lock screen at its next wake from sleep.
                 udid, why = wait_for_device(self.cfg, timeout=300)
                 self.time_set = bool(udid) and run(["idevicedate", "-c"], self.cfg, 60).returncode == 0
+                host_connected = self.time_set
                 log("%s: t+%.0fs host time set over lockdown (brick state): %s"
                     % (self.tag, time.time() - START, "ok" if self.time_set else "failed: %s" % why))
-            if n >= 2 and lit < self.cfg.home_lit_min and getattr(self, "time_set", False):
+            if n >= 2 and (lit < self.cfg.home_lit_min or host_connected) and getattr(self, "time_set", False):
                 itqmp.button(self.qmp, "power")     # sleep, so the home press below is a wake
                 time.sleep(3)
-            if n >= 2 and lit < self.cfg.home_lit_min:
+            if n >= 2 and (lit < self.cfg.home_lit_min or host_connected):
                 self.qmp.home()
                 time.sleep(1)
                 self.qmp.swipe(30, 450, 290, 450, steps=40, dwell=0.04)
@@ -1870,13 +1873,14 @@ def main():
         if os.path.exists(lock):
             lockd = json.load(open(lock))
             cfg.device_machine = lockd.get("machine") or {}
-            if lockd.get("board") == "n72ap" and "wifi-mac" not in cfg.device_machine:
+            if lockd.get("board") == "n72ap":
                 identity_path = os.path.join(cfg.device, "identity.json")
                 if os.path.isfile(identity_path):
                     with open(identity_path) as f:
-                        mac = json.load(f).get("wifi-mac")
-                    if mac:
-                        cfg.device_machine["wifi-mac"] = mac
+                        identity = json.load(f)
+                    for key in ("wifi-mac", "bt-mac"):
+                        if identity.get(key):
+                            cfg.device_machine.setdefault(key, identity[key])
             cfg.device_version = tuple(int(x) for x in lockd.get("product_version", "0").split(".")[:2])
             cfg.device_version = cfg.device_version if cfg.device_version[0] else None
             derived = lockd.get("derived") or {}
