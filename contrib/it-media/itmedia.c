@@ -70,47 +70,58 @@ static void regular_path(const char *path, int directory) {
         fail("staged file size is outside 1 byte..1 GiB");
 }
 
+/* An old SQLite connection can retain the attached Locations schema while
+ * Apple's sync service replaces its indexes. Reopen and reprepare only on
+ * SQLITE_SCHEMA; every other error remains fatal, so uncertainty never replays
+ * an import. These queries never mutate either database. */
+static int read_query(const char *sql, const char *folder, const char *filename,
+                      sqlite3_int64 *value) {
+    for (unsigned attempt = 0; attempt < 3; ++attempt) {
+        sqlite3 *db = NULL;
+        sqlite3_stmt *stmt = NULL;
+        int rc = sql_open(LIBRARY "Library.itdb",&db,SQLITE_OPEN_READONLY,NULL);
+        if (rc == SQLITE_OK) {
+            sql_timeout(db,5000);
+            if (folder) rc = sql_exec(db,"ATTACH DATABASE '" LIBRARY "Locations.itdb' AS loc",NULL,NULL,NULL);
+            if (rc == SQLITE_OK) rc = sql_prepare(db,sql,-1,&stmt,NULL);
+            if (rc == SQLITE_OK && folder) rc = sql_bind(stmt,1,folder,-1,SQLITE_TRANSIENT);
+            if (rc == SQLITE_OK && filename) rc = sql_bind(stmt,2,filename,-1,SQLITE_TRANSIENT);
+            if (rc == SQLITE_OK) rc = sql_step(stmt);
+        }
+        if (rc != SQLITE_ROW && rc != SQLITE_DONE &&
+            (rc != SQLITE_SCHEMA || attempt == 2))
+            database_failure(db,"music library query failed");
+        if (rc == SQLITE_ROW) *value = sql_column(stmt,0);
+        sql_finalize(stmt);
+        sql_close(db);
+        if (rc != SQLITE_SCHEMA) return rc;
+        usleep(50000);
+    }
+    fail("music library schema did not settle");
+    return SQLITE_ERROR;
+}
+
 /* Return 1 for existing media at the exact immutable staged location.
  * Fail closed on a query error: an uncertain previous import must not replay. */
 static int existing(const char *folder, const char *filename, unsigned *artwork_id) {
-    sqlite3 *db = NULL;
-    sqlite3_stmt *stmt = NULL;
-    int found;
-    if (sql_open(LIBRARY "Library.itdb",&db,SQLITE_OPEN_READONLY,NULL) != SQLITE_OK)
-        database_failure(db,"cannot inspect music library");
-    sql_timeout(db,5000);
-    if (sql_exec(db,"ATTACH DATABASE '" LIBRARY "Locations.itdb' AS loc",NULL,NULL,NULL) != SQLITE_OK)
-        database_failure(db,"cannot inspect media locations");
     /* Music creates indexes with private sort collations on its first launch.
      * This identity query needs none of them. Do not supply a fake collation
      * or let the old SQLite planner choose those indexes after a reboot. */
     const char *sql = "SELECT item.artwork_cache_id FROM item NOT INDEXED JOIN loc.location l ON l.item_pid=item.pid "
                       "JOIN loc.base_location b ON b.id=l.base_location_id "
                       "WHERE b.path=? AND l.location=? LIMIT 1";
-    if (sql_prepare(db,sql,-1,&stmt,NULL) != SQLITE_OK ||
-        sql_bind(stmt,1,folder,-1,SQLITE_TRANSIENT) != SQLITE_OK ||
-        sql_bind(stmt,2,filename,-1,SQLITE_TRANSIENT) != SQLITE_OK)
-        database_failure(db,"cannot query music library");
-    int rc = sql_step(stmt);
-    if (rc != SQLITE_ROW && rc != SQLITE_DONE) database_failure(db,"music library query failed");
-    found = rc == SQLITE_ROW;
-    if (found && artwork_id) *artwork_id = (unsigned)sql_column(stmt,0);
-    sql_finalize(stmt);
-    sql_close(db);
+    sqlite3_int64 value = 0;
+    int found = read_query(sql,folder,filename,&value) == SQLITE_ROW;
+    if (found && artwork_id) *artwork_id = (unsigned)value;
     return found;
 }
 
 /* ArtworkCache uses the purchase itemId as its string key. Choose an unused
  * ID from the native library under the import lock; only Apple writes either DB. */
 static unsigned next_artwork_id(void) {
-    sqlite3 *db = NULL; sqlite3_stmt *stmt = NULL;
-    if (sql_open(LIBRARY "Library.itdb",&db,SQLITE_OPEN_READONLY,NULL) != SQLITE_OK)
-        database_failure(db,"cannot inspect artwork IDs");
-    sql_timeout(db,5000);
-    if (sql_prepare(db,"SELECT COALESCE(MAX(artwork_cache_id),0) FROM item NOT INDEXED",-1,&stmt,NULL) != SQLITE_OK ||
-        sql_step(stmt) != SQLITE_ROW) database_failure(db,"cannot allocate artwork ID");
-    sqlite3_int64 last = sql_column(stmt,0);
-    sql_finalize(stmt); sql_close(db);
+    sqlite3_int64 last = 0;
+    if (read_query("SELECT COALESCE(MAX(artwork_cache_id),0) FROM item NOT INDEXED",NULL,NULL,&last) != SQLITE_ROW)
+        fail("cannot allocate artwork ID");
     if (last < 0 || last >= 0xffffffffLL) fail("artwork ID space exhausted");
     return (unsigned)(last+1);
 }

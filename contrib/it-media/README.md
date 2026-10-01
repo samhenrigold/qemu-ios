@@ -161,3 +161,9 @@ M4A fixture and explicit emulator/base/tools paths. Build its research-only
 test executables. It verifies all forwarded fields, one track after repeat
 import, actual MediaPlayer decoded PNG data, and a cold reopen of the overlay.
 The probe is not included in the shipping guest package.
+
+Library reconciliation reopens and reprepares its read-only SQLite query on
+`SQLITE_SCHEMA` (at most three attempts), because the stock sync service can
+replace the attached location schema during post-processing. Other query errors
+remain fatal. `tests/ipod/test_media_schema.py` injects errors at ATTACH, prepare
+and step; `test_media_artwork.py` covers the native fresh/repeat/reboot path.
