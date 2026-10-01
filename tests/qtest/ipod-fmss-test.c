@@ -187,6 +187,8 @@ static void programmed_snapshot(bool physical)
         read_page(qts, 0, 6, erased, erased_spare);
         g_assert_cmpint(erased[0], !=, 0xa3);
     }
+    qtest_writel(qts, FMSS + 0xd28, 2);
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd28), ==, 2);
     qtest_writel(qts, FMSS + 0xd4c, 0x20011000);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd4c), ==, 0x20011000);
     g_assert_true(migrate(qts, &state));
@@ -206,6 +208,7 @@ static void programmed_snapshot(bool physical)
     qtest_qmp_assert_success(qts, "{ 'execute': 'migrate-incoming', "
                                 "'arguments': { 'uri': %s } }", uri);
     qtest_qmp_eventwait(qts, "RESUME");
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd28), ==, 2);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd4c), ==, 0x20011000);
     if (physical) {
         read_page(qts, 0, 6, back, back_spare);
@@ -221,6 +224,7 @@ static void programmed_snapshot(bool physical)
     g_assert_cmpmem(back, sizeof(back), data, sizeof(data));
     g_assert_cmpmem(back_spare, sizeof(back_spare), spare, sizeof(spare));
     qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd28), ==, 0);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd4c), ==, 0);
     read_page(qts, 0, 5, back, back_spare);
     if (physical) {
