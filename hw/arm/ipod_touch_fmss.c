@@ -99,8 +99,8 @@ static uint8_t find_bit_index(uint8_t num) {
  * The driver points 0xC04 at a program of two-word instructions, sets the
  * 0xDxx variables the program reads, and starts it through CSCTRL. Both
  * 3.1.3's and 4.2.1's iBoot read the chip IDs this way (ResetAndReadId:
- * D08 = buffer, D0C = number of chip enables, then run the READ ID program);
- * the programs are in the images (7E18 iBoot 0x25330, 8C148 iBoot 0x25a60).
+ * D08 = buffer, D0C = number of chip enables, then run the READ ID program).
+ * Firmware program locations belong in docs/ipod/from-ipsw.md and fixtures.
  *
  * The ID used to be DMAed at the moment the CPU wrote D08. Real hardware
  * writes it when the program runs, and 4.2.1 zeroes the buffer between the
@@ -112,15 +112,24 @@ static uint8_t find_bit_index(uint8_t num) {
  * Instruction: word0 = op << 24 | a << 16 | b, word1 = imm. r[] are the
  * sequencer's registers, FMC registers are offsets below 0xC00.
  *   00 end                      01 fmc[b] = imm
- *   02 fmc[b] = r[a]            04 r[a] = reg[b] & imm (FMC or 0xDxx)
- *   05 r[a] = imm               07 wait for FMC event a (instant here)
+ *   02 fmc[b] = r[a]            03 r[a] = guest_le32[r[b]] (imm == 0)
+ *   04 r[a] = reg[b] & imm      05 r[a] = imm
+ *   06 r[a] = r[b] (imm == 0)   07 compatibility event wait (instant here)
+ *   0a AND: imm ? r[b]&imm : r[a]&r[b]
  *   0b r[a] = r[b] | imm        0c r[a] = r[b] + imm
- *   0d r[a] = r[b] - imm        13 r[a] = r[b] << imm
+ *   0d r[a] = r[b] - imm        13 r[a] = r[b] << (imm & 31)
+ *   14 right shift16 for bit31-clear source only; other forms unmeasured
  *   0e if r[a] != 0 goto imm    17 if r[a] == 0 goto imm (byte offsets)
  *   11 mem32[r[b]] = r[a]
- * Decoded from the two READ ID programs and the reset program; anything else
- * stops the program (logged under LOG_UNIMP), leaving the CPU-side page
- * read/write model below to do the work, as before.
+ * This lists implemented behavior, not a complete verified ISA. Zero-immediate
+ * OR/SHL and sequencer writes to 0xDxx still have known gaps. Unsupported forms
+ * stop with LOG_UNIMP. Instruction fetch and opcode11 still use native-endian
+ * physical-memory helpers without transaction-result checks; descriptor loads
+ * use little-endian AddressSpace reads and stop on errors.
+ *
+ * NAND execution, event timing and completion remain separate incomplete
+ * contracts. The CPU-side page model below still performs storage operations;
+ * sequencer decoding does not establish actual NAND completion.
  *
  * FMC: FMCTRL0 (0x0) bits 1..8 select the chip enable, FMCMD (0x8) 0x90 is
  * READ ID and makes FMDATA 0x60/0x64 return the selected chip's ID bytes.
@@ -233,6 +242,13 @@ static void fmss_run_script(IPodTouchFMSSState *s)
         case 0x0c: r[a] = r[b & 0x1f] + imm; break;
         case 0x0d: r[a] = r[b & 0x1f] - imm; break;
         case 0x13: r[a] = r[b & 0x1f] << (imm & 31); break;
+        case 0x14:
+            if (imm != 16 || (r[b & 0x1f] & 0x80000000u)) {
+                ok = false; /* Signedness and other shift forms unmeasured. */
+            } else {
+                r[a] = r[b & 0x1f] >> 16;
+            }
+            break;
         case 0x0e: if (r[a]) { pc = imm; } break;
         case 0x17: if (!r[a]) { pc = imm; } break;
         case 0x11:
