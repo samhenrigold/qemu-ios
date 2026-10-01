@@ -33,7 +33,6 @@ BLANK_SPARE = b"\x00" * 8 + b"\xff\x00\xff\x00" + b"\x00" * 52
 FTL_MAP_PAGES = 18                         # 18 x 2048 map entries
 VFL_SPARE = b"\x01" + b"\x00" * 8 + b"\x80" + b"\x00" * 54
 META_SPARE = b"\x00" * 9 + b"\x43" + b"\x00" * 54
-GPT_SLACK = 11                             # LBAs the partition holds beyond the volume (as generated)
 HFS_TYPE = bytes.fromhex("005346480000aa11aa1100306543ecac")   # 48465300-0000-11AA-AA11-00306543ECAC
 FTL_LOG = b"Writing FTL Meta to physical page 255 @ cs 3\nto physical page 130 @ cs 2\n"
 
@@ -87,7 +86,11 @@ def ftl_context():
 
 
 def gpt_pages(blocks):
-    end = 3 + blocks - 1 + GPT_SLACK
+    # blocks is the caller-supplied HFS extent in 4 KiB pages; build_nand
+    # validates its resized HFS/input span. This helper does not parse a file.
+    # Older HFS disables alternate-header writes above one allocation block
+    # of partition slack. Keep the alternate at the filesystem end instead.
+    end = 3 + blocks - 1
     mbr = bytearray(PAGE)
     mbr[8], mbr[10] = 0xFF, 0xFF                      # as generated: a spare pattern in the data area
     struct.pack_into("<BBBBBBBBII", mbr, 0x1BE, 0, 0, 0, 0, 0xEE, 0, 0, 0, 3, blocks + 10)
@@ -166,7 +169,17 @@ def selfcheck():
     assert len(p) == 50 and all(len(v) == PAGE + SPARE for v in p.values())
     hdr = p[(1, 256)]
     assert binascii.crc32(hdr[:0x10] + b"\0" * 4 + hdr[0x14:0x5C]) & 0xFFFFFFFF == struct.unpack_from("<I", hdr, 0x10)[0]
-    assert struct.unpack_from("<Q", p[(2, 256)], 0x28)[0] == 128013
+    assert struct.unpack_from("<Q", p[(2, 256)], 0x28)[0] == 128002
+    # Small and unaligned geometries must not acquire a synthetic tail gap.
+    for blocks in (1, 127, 128, 129, 255, 256, 257, 1023, 1024, 1025, 128000, 1835008):
+        mbr, header, entry = gpt_pages(blocks)
+        first, last = struct.unpack_from("<QQ", entry, 0x20)
+        assert first == 3 and last - first + 1 == blocks
+        assert (last - first + 1) * PAGE - 1024 == blocks * PAGE - 1024
+        assert struct.unpack_from("<I", header, 0x58)[0] == binascii.crc32(entry[:0x80]) & 0xFFFFFFFF
+        assert struct.unpack_from("<I", header, 0x10)[0] == binascii.crc32(header[:0x10] + b"\0" * 4 + header[0x14:0x5C]) & 0xFFFFFFFF
+        # Protective MBR semantics are unchanged in this GPT-only correction.
+        assert struct.unpack_from("<II", mbr, 0x1BE + 8) == (3, blocks + 10)
     v = p[(0, PPB)]
     body = struct.unpack_from("<510I", v)
     x = 0
