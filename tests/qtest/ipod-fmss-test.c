@@ -315,6 +315,67 @@ static void register_copy(void)
     g_free(overlay);
 }
 
+static void descriptor_load(void)
+{
+    char *overlay;
+    QTestState *qts = start_board(&overlay);
+    static const uint32_t program[] = {
+        0x05000000, RAM + 0x2000, 0x05010000, 0xdeadc0de,
+        0x03010000, 0, 0x05060000, RAM + 0x3000,
+        0x11010006, 0, 0x0c000000, 4,
+        0x05020000, 0xdeadc0de, 0x03020000, 0,
+        0x0c060006, 4, 0x11020006, 0,
+        0x05010000, RAM + 0x2008, 0x05070000, 0xdeadc0de,
+        0x03070001, 0, 0x0c060006, 4,
+        0x11070006, 0, 0x0c010001, 4,
+        0x05000000, 0xdeadc0de, 0x03000001, 0,
+        0x0c060006, 4, 0x11000006, 0, 0, 0
+    };
+    static const uint8_t values[] = {
+        1, 0x23, 0x45, 0x67, 0xff, 0xee, 0xdd, 0xcc,
+        0, 0, 0, 0, 0x78, 0x56, 0x34, 0x12
+    };
+    static const uint32_t expected[] = {
+        0x67452301, 0xccddeeff, 0, 0x12345678
+    };
+    uint8_t unchanged[sizeof(values)];
+    qtest_memwrite(qts, RAM + 0x2000, values, sizeof(values));
+    for (unsigned i = 0; i < G_N_ELEMENTS(program); i++) {
+        qtest_writel(qts, RAM + 4 * i, program[i]);
+    }
+    qtest_writel(qts, FMSS + 0xc04, RAM);
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    for (unsigned i = 0; i < G_N_ELEMENTS(expected); i++) {
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x3000 + 4 * i), ==,
+                        expected[i]);
+    }
+    qtest_memread(qts, RAM + 0x2000, unchanged, sizeof(unchanged));
+    g_assert_cmpmem(unchanged, sizeof(unchanged), values, sizeof(values));
+    qtest_writel(qts, FMSS + 0xc00, 8);
+
+    uint32_t rejected[] = {
+        0x05000000, 0xfffffff0, 0x05020000, 7,
+        0x03020000, 0, 0x05060000, RAM + 0x3000,
+        0x11020006, 0, 0, 0
+    };
+    for (unsigned immediate = 0; immediate < 2; immediate++) {
+        /* Physical fffffff0 is unassigned on this board. Decode failure must
+         * stop before the later store, rather than fabricate a descriptor.
+         * Nonzero immediate is unsupported and must not attempt DMA at all. */
+        rejected[5] = immediate;
+        for (unsigned i = 0; i < G_N_ELEMENTS(rejected); i++) {
+            qtest_writel(qts, RAM + 4 * i, rejected[i]);
+        }
+        qtest_writel(qts, RAM + 0x3000, 0xabcddcba);
+        qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x3000), ==, 0xabcddcba);
+        qtest_writel(qts, FMSS + 0xc00, 8);
+    }
+    qtest_quit(qts);
+    rmdir(overlay);
+    g_free(overlay);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *rom = g_malloc0(131072);
@@ -334,6 +395,7 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/fmss/physical-snapshot", physical_snapshot);
     qtest_add_func("/ipod/fmss/generated-snapshot", generated_snapshot);
     qtest_add_func("/ipod/fmss/register-copy", register_copy);
+    qtest_add_func("/ipod/fmss/descriptor-load", descriptor_load);
     result = g_test_run();
     unlink(rom_path); unlink(nor_path); rmdir(nand_path);
     g_free(rom_path); g_free(nor_path); g_free(nand_path);

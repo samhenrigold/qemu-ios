@@ -937,3 +937,21 @@ register copies and rejection observed through QEMU guest RAM. The independent
 default 7E18 two-boot native regression passes 8/8, including filesystem health,
 persistence and audio (`/private/tmp/ltm-fmss-opcode06-default`). Full stock
 flash restore remains unqualified.
+
+### FMSS stock descriptor word loads
+
+The production-bridge stock5F138 erase probe next stops on opcode03/imm0 at +0x88 in its bulk NAND script. The model now performs the observed instruction as a little-endian32-bit guest-address-space load. It rejects unsupported nonzero immediates before DMA and stops on QEMU memory transaction errors before consuming a fabricated descriptor or executing a later store.
+
+Tests cover the four actual stock operand forms (r1←*r0, r2←*r0, r7←*r1, r0←*r1), distinct values and operands, zero/high-bit words, pointer increments and unchanged input memory. Sanitizer fixtures inspect DMA width/addresses and fail against the preceding model. Real QEMU qtests exercise RAM byte order and unassigned physical-address rejection. No disputed logical/shift instruction supplies the observation oracle.
+
+Relevant independent factual ISA research: [S5L8702 FMISS descriptor loads](https://github.com/lemonjesus/S5L8702-FMISS-Tools/blob/70b45859af8807a7f841cf649564ce6638e1c112/Documentation.md). Its target differs from S5L8720; actual5F138 driver/script operand and pointer-array dataflow supplies target-specific corroboration. No licensed reference implementation or documentation text was copied.
+
+Build and targeted gates: sanitizer actual-handler/script and IRQ tests pass; real FMSS qtests6/6. Logs `/private/tmp/ltm-nand-contract-agent/opcode03-{baseline,script,irq,build,qtest}.log`. The independent default native regression also passes, as recorded below.
+
+This is descriptor DMA only. Other sequencer instructions, erase, blank-page representation and aborted-program completion remain separate gaps. No physical restore/coldboot qualification follows from these model tests.
+
+Actual-handler sanitizer tests pass and real FMSS qtests pass 6/6, including
+distinct descriptor operands, explicit little-endian words, increments,
+unsupported forms and failed QEMU transactions. The independent default
+7E18 native two-boot regression passes 8/8 (`/private/tmp/ltm-fmss-opcode03-default`).
+No new completion, physical erase or full stock restore qualification follows.

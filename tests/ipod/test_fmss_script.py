@@ -56,6 +56,27 @@ typedef struct {
     uint32_t reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc, reg_script_param_d4c, reg_num_pages, reg_chunks_per_page;
 } IPodTouchFMSSState;
 static uint8_t mem[0x10000];
+typedef struct { int unused; } AddressSpace;
+static AddressSpace address_space_memory;
+#define MEMTXATTRS_UNSPECIFIED 0
+#define MEMTX_OK 0
+#define MEMTX_DECODE_ERROR 1
+static unsigned descriptor_reads;
+static uint32_t descriptor_addresses[8];
+static int address_space_read(AddressSpace *as, uint32_t a, int attrs, void *p, size_t n) {
+    assert(n == 4 && descriptor_reads < 8);
+    descriptor_addresses[descriptor_reads++] = a;
+    if ((uint64_t)a + n > sizeof(mem)) {
+        memset(p, 0xdd, n); /* A failed transaction must never become a word. */
+        return MEMTX_DECODE_ERROR;
+    }
+    memcpy(p, mem + a, n);
+    return MEMTX_OK;
+}
+static uint32_t ldl_le_p(const void *p) {
+    const uint8_t *b = p;
+    return b[0] | (uint32_t)b[1]<<8 | (uint32_t)b[2]<<16 | (uint32_t)b[3]<<24;
+}
 static void cpu_physical_memory_read(uint32_t a, void *p, size_t n) { assert(a + n <= sizeof(mem)); memcpy(p, mem + a, n); }
 static void cpu_physical_memory_write(uint32_t a, const void *p, size_t n) { assert(a + n <= sizeof(mem)); memcpy(mem + a, p, n); }
 '''
@@ -101,6 +122,50 @@ int main(void) {
     };
     run(unknown_copy, sizeof(unknown_copy));
     assert(*(uint32_t *)(mem + 0x9400) == 0); /* Stop before later DMA. */
+    /* Exact immediate-zero opcode03 forms from stock 5F138 scripts.
+     * Observe words directly through opcode11, without disputed arithmetic. */
+    uint32_t descriptors[] = {
+        0x05000000u, 0x9800u, 0x05010000u, 0xdeadc0deu,
+        0x03010000u, 0, 0x05060000u, 0x9900u,
+        0x11010006u, 0, 0x0c000000u, 4,
+        0x05020000u, 0xdeadc0deu, 0x03020000u, 0,
+        0x0c060006u, 4, 0x11020006u, 0,
+        0x05010000u, 0x9808u, 0x05070000u, 0xdeadc0deu,
+        0x03070001u, 0, 0x0c060006u, 4,
+        0x11070006u, 0, 0x0c010001u, 4,
+        0x05000000u, 0xdeadc0deu, 0x03000001u, 0,
+        0x0c060006u, 4, 0x11000006u, 0, 0, 0
+    };
+    const uint8_t values[] = {1,0x23,0x45,0x67, 0xff,0xee,0xdd,0xcc,
+                              0,0,0,0, 0x78,0x56,0x34,0x12};
+    IPodTouchFMSSState descriptor_state = {.reg_cs_script=0x1000};
+    memset(mem, 0, sizeof(mem));
+    memcpy(mem + 0x1000, descriptors, sizeof(descriptors));
+    memcpy(mem + 0x9800, values, sizeof(values));
+    descriptor_reads = 0;
+    fmss_run_script(&descriptor_state);
+    const uint32_t expected_words[] = {0x67452301u,0xccddeeffu,0,0x12345678u};
+    assert(descriptor_reads == 4);
+    for (unsigned j = 0; j < 4; j++) {
+        assert(descriptor_addresses[j] == 0x9800u + 4*j);
+        assert(ldl_le_p(mem + 0x9900 + 4*j) == expected_words[j]);
+    }
+    assert(!memcmp(mem + 0x9800, values, sizeof(values)));
+    uint32_t rejected_load[] = {
+        0x05000000u, 0xfffffff0u, 0x05020000u, 7,
+        0x03020000u, 1, 0x05060000u, 0x9900u,
+        0x11020006u, 0, 0, 0
+    };
+    uint32_t sentinel = 0xabcddcbau;
+    for (unsigned immediate = 0; immediate < 2; immediate++) {
+        rejected_load[5] = immediate;
+        memcpy(mem + 0x1000, rejected_load, sizeof(rejected_load));
+        memcpy(mem + 0x9900, &sentinel, 4);
+        descriptor_reads = 0;
+        fmss_run_script(&descriptor_state);
+        assert(descriptor_reads == (immediate == 0 ? 1u : 0u));
+        assert(ldl_le_p(mem + 0x9900) == sentinel);
+    }
     uint32_t bad[] = {0x05000000u, 7, 0x11000001u, 0, 0x99000000u, 0, 0x11000000u, 0, 0, 0};
     run(bad, sizeof(bad)); /* an unknown op stops the program */
     assert(mem[0] == 7 && mem[7] == 0);
@@ -151,7 +216,7 @@ int main(void) {
         fmss_run_script(&s);
         assert(*(uint32_t *)(mem + 0x9200) == count);
     }
-    puts("PASS: FMSS opcode06 copies/rejection, D18 page counter, D28 chunks, D4C parameter, READ ID programs of 7E18 and 8C148, unknown op stops");
+    puts("PASS: FMSS opcode03 LE DMA/rejection, opcode06 copies/rejection, D18 page counter, D28 chunks, D4C parameter, READ ID programs of 7E18 and 8C148, unknown op stops");
 }
 ''' % (words(ID_7E18), words(ID_8C148))
 with tempfile.TemporaryDirectory() as tmp:
