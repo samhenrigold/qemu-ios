@@ -73,7 +73,8 @@ typedef struct IPodTouchFMSSState
     size_t packed_record_count;   /* bounds the index's slot numbers */
     uint32_t packed_num_cs;
     uint32_t packed_pages_per_cs;
-    GHashTable *erased_blocks; /* (cs << 32) | block for blocks erased in the overlay */
+    uint32_t snapshot_mode; /* startup read/write semantics, checked on migration */
+    GTree *erased_blocks; /* (cs << 24) | block, with owned one-byte markers */
 
     /*
      * Which pages the overlay actually holds, so a read that the overlay does
@@ -99,14 +100,14 @@ typedef struct IPodTouchFMSSState
      * fmss_generated_layout), which is right for the persisted image but leaves
      * the physical page the FTL just programmed reading back as whatever the
      * base image had there. Flash does not work that way: a program makes that
-     * page read back. This is that memory, and it is deliberately not persisted
-     * -- the mapping only holds until the FTL is rebuilt at the next boot.
+     * page read back. This memory is serialized in VMState but not written to
+     * disk: the mapping holds until the FTL is rebuilt at the next cold boot.
      *
      * It is keyed by physical page, so it is bounded by the size of the flash
      * (~520 MB if every page were rewritten) rather than by how much the guest
      * writes over the life of the session.
      */
-    GHashTable *phys_pages;
+    GTree *phys_pages;
 } IPodTouchFMSSState;
 
 #endif

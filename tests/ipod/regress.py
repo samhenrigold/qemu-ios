@@ -1763,6 +1763,72 @@ def report_prereqs(cfg):
     return 1 if hard_missing else 0
 
 
+def configure_device(cfg):
+    """Resolve one matched firmware/identity set for every native harness."""
+    cfg.files = os.path.expanduser(cfg.files_dir)
+    cfg.device_machine = {}
+    cfg.device_version = None       # the device's iOS (major, minor), from its lock (None: nand-current, 3.1.3)
+    cfg.gles_front_end = False      # 1.x/2.x/3.0: SpringBoard's GL is the gles leg (check_gles_front_end)
+    cfg.gles_engine = None          # the lock's derived.gles_engine: OpenGLES (front end) or MBXGLEngine
+    cfg.board = "n72ap"             # n45ap: an iPod touch 1G device (imgtools/ipod1g_device.py)
+    cfg.home_lit_min = HOME_LIT_MIN
+    if cfg.device:
+        for attr, name in (("base_nand", "nand"), ("nor", "nor.bin"), ("direct_iboot", "iBoot.bin"),
+                           ("gid_blobs", "gid-blobs.bin")):
+            if getattr(cfg, attr) is None and os.path.exists(os.path.join(cfg.device, name)):
+                setattr(cfg, attr, os.path.join(cfg.device, name))
+        # machine options the device was made for (device.lock.json "machine", e.g. aes-uid=engine)
+        lock = os.path.join(cfg.device, "device.lock.json")
+        if os.path.exists(lock):
+            lockd = json.load(open(lock))
+            cfg.device_machine = lockd.get("machine") or {}
+            if lockd.get("board") == "n72ap":
+                identity_path = os.path.join(cfg.device, "identity.json")
+                if os.path.isfile(identity_path):
+                    with open(identity_path) as f:
+                        identity = json.load(f)
+                    for key in ("wifi-mac", "bt-mac"):
+                        if identity.get(key):
+                            cfg.device_machine.setdefault(key, identity[key])
+            cfg.device_version = tuple(int(x) for x in lockd.get("product_version", "0").split(".")[:2])
+            cfg.device_version = cfg.device_version if cfg.device_version[0] else None
+            derived = lockd.get("derived") or {}
+            cfg.gles_engine = derived.get("gles_engine")
+            # no agent to install and launch GLTest (1.x/2.x, 3.0): SpringBoard's own compositing is the leg
+            cfg.gles_front_end = derived.get("gles_engine") == "OpenGLES" and \
+                not str(derived.get("guest_tools", "")).startswith("installed")
+            cfg.board = lockd.get("board", cfg.board)
+    if cfg.board == "n45ap":
+        # 1.1's home screen is icons on black (~135k lit sub-pixels; the Apple logo far fewer), and
+        # the 1G has no USB host side yet, so every USB check skips (main clears usbmuxd_ok)
+        cfg.home_lit_min = 100000
+        cfg.bootrom = cfg.bootrom or next((p for p in [os.path.join(cfg.device, "bootrom.bin"), os.path.join(cfg.files, "ipod1g", "bootrom_s5l8900")] if os.path.isfile(p)), os.path.join(cfg.files, "ipod1g", "bootrom_s5l8900"))
+    # NAND, NOR and iBoot are one set and cannot be mixed: nand-canonical is a
+    # 2.1.1 image, and against 3.1.3's iBoot its FTL will not even open --
+    # "NAND initialisation failed due to format mismatch", "root filesystem
+    # mount failed", "Entering recovery mode". That recovery-mode device is the
+    # 05ac:1281 with no mux interface described below, so picking the 3.1.3 NOR
+    # while leaving the 2.1.1 NAND reports itself as a USB fault several
+    # minutes later rather than as the image mismatch it is. Whichever
+    # firmware boot_env() and the NOR default choose, the NAND matches it.
+    # nand-current is the shipping image; no fallback, so a missing link is
+    # reported by the prerequisite check instead of silently testing another.
+    # Resolved so the run log names the real image.
+    cfg.base_nand = os.path.realpath(cfg.base_nand or os.path.join(cfg.files, "nand-current"))
+    # The 3.1.3 NOR, if this checkout has one. 3.x iBoot unwraps the SHSH blob
+    # in flash with a UID-derived key, and nor_n72ap.bin (the 2.1.1 NOR) has no
+    # wrapped blob: iBoot then prints "load_macho_image: failed to load device
+    # tree", drops into recovery mode, and paints the panel solid white. That
+    # device answers USB as 05ac:1281 with no AppleUSBMux interface, which is
+    # the "device never appeared on the mux" every USB check used to report.
+    # boot_env() already picks the matching 3.1.3 iBoot the same way; the NOR
+    # has to travel with it.
+    cfg.nor = cfg.nor or next(
+        (p for p in (os.path.join(cfg.files, "ios3", "nor_7E18.bin"),
+                     os.path.join(cfg.files, "nor_n72ap.bin"))
+         if os.path.exists(p)), os.path.join(cfg.files, "nor_n72ap.bin"))
+
+
 def main():
     global START
     START = time.time()
@@ -1856,68 +1922,7 @@ def main():
         from app_ledger import run_ledger
         return run_ledger(cfg)
 
-    cfg.files = os.path.expanduser(cfg.files_dir)
-    cfg.device_machine = {}
-    cfg.device_version = None       # the device's iOS (major, minor), from its lock (None: nand-current, 3.1.3)
-    cfg.gles_front_end = False      # 1.x/2.x/3.0: SpringBoard's GL is the gles leg (check_gles_front_end)
-    cfg.gles_engine = None          # the lock's derived.gles_engine: OpenGLES (front end) or MBXGLEngine
-    cfg.board = "n72ap"             # n45ap: an iPod touch 1G device (imgtools/ipod1g_device.py)
-    cfg.home_lit_min = HOME_LIT_MIN
-    if cfg.device:
-        for attr, name in (("base_nand", "nand"), ("nor", "nor.bin"), ("direct_iboot", "iBoot.bin"),
-                           ("gid_blobs", "gid-blobs.bin")):
-            if getattr(cfg, attr) is None and os.path.exists(os.path.join(cfg.device, name)):
-                setattr(cfg, attr, os.path.join(cfg.device, name))
-        # machine options the device was made for (device.lock.json "machine", e.g. aes-uid=engine)
-        lock = os.path.join(cfg.device, "device.lock.json")
-        if os.path.exists(lock):
-            lockd = json.load(open(lock))
-            cfg.device_machine = lockd.get("machine") or {}
-            if lockd.get("board") == "n72ap":
-                identity_path = os.path.join(cfg.device, "identity.json")
-                if os.path.isfile(identity_path):
-                    with open(identity_path) as f:
-                        identity = json.load(f)
-                    for key in ("wifi-mac", "bt-mac"):
-                        if identity.get(key):
-                            cfg.device_machine.setdefault(key, identity[key])
-            cfg.device_version = tuple(int(x) for x in lockd.get("product_version", "0").split(".")[:2])
-            cfg.device_version = cfg.device_version if cfg.device_version[0] else None
-            derived = lockd.get("derived") or {}
-            cfg.gles_engine = derived.get("gles_engine")
-            # no agent to install and launch GLTest (1.x/2.x, 3.0): SpringBoard's own compositing is the leg
-            cfg.gles_front_end = derived.get("gles_engine") == "OpenGLES" and \
-                not str(derived.get("guest_tools", "")).startswith("installed")
-            cfg.board = lockd.get("board", cfg.board)
-    if cfg.board == "n45ap":
-        # 1.1's home screen is icons on black (~135k lit sub-pixels; the Apple logo far fewer), and
-        # the 1G has no USB host side yet, so every USB check skips (main clears usbmuxd_ok)
-        cfg.home_lit_min = 100000
-        cfg.bootrom = cfg.bootrom or next((p for p in [os.path.join(cfg.device, "bootrom.bin"), os.path.join(cfg.files, "ipod1g", "bootrom_s5l8900")] if os.path.isfile(p)), os.path.join(cfg.files, "ipod1g", "bootrom_s5l8900"))
-    # NAND, NOR and iBoot are one set and cannot be mixed: nand-canonical is a
-    # 2.1.1 image, and against 3.1.3's iBoot its FTL will not even open --
-    # "NAND initialisation failed due to format mismatch", "root filesystem
-    # mount failed", "Entering recovery mode". That recovery-mode device is the
-    # 05ac:1281 with no mux interface described below, so picking the 3.1.3 NOR
-    # while leaving the 2.1.1 NAND reports itself as a USB fault several
-    # minutes later rather than as the image mismatch it is. Whichever
-    # firmware boot_env() and the NOR default choose, the NAND matches it.
-    # nand-current is the shipping image; no fallback, so a missing link is
-    # reported by the prerequisite check instead of silently testing another.
-    # Resolved so the run log names the real image.
-    cfg.base_nand = os.path.realpath(cfg.base_nand or os.path.join(cfg.files, "nand-current"))
-    # The 3.1.3 NOR, if this checkout has one. 3.x iBoot unwraps the SHSH blob
-    # in flash with a UID-derived key, and nor_n72ap.bin (the 2.1.1 NOR) has no
-    # wrapped blob: iBoot then prints "load_macho_image: failed to load device
-    # tree", drops into recovery mode, and paints the panel solid white. That
-    # device answers USB as 05ac:1281 with no AppleUSBMux interface, which is
-    # the "device never appeared on the mux" every USB check used to report.
-    # boot_env() already picks the matching 3.1.3 iBoot the same way; the NOR
-    # has to travel with it.
-    cfg.nor = cfg.nor or next(
-        (p for p in (os.path.join(cfg.files, "ios3", "nor_7E18.bin"),
-                     os.path.join(cfg.files, "nor_n72ap.bin"))
-         if os.path.exists(p)), os.path.join(cfg.files, "nor_n72ap.bin"))
+    configure_device(cfg)
 
     if cfg.check_prereqs:
         return report_prereqs(cfg)

@@ -83,15 +83,35 @@ lease and generation transaction as offline edits, rather than this Python CLI.
 
 FMSS `phys_pages` and `erased_blocks` hold authoritative physical read state
 which its generated-layout compatibility files cannot fully reconstruct.
-Previously snapshots silently omitted both maps. FMSS VMState version 4 now
-refuses save when either map is nonempty, with a message directing the caller to
-cold boot. Version 1–3 streams are refused because they do not certify empty
-omitted state. Empty version 4 states can still save; ordinary boot and physical
-writes are unchanged. This is an explicit limitation, not snapshot equivalence.
+VMState version 5 now serializes both through upstream QEMU's GTree serializer.
+Incoming state clears derived overlay indexes, validates physical coordinates
+and markers, and refuses differing startup read/write modes. Version 4 streams
+were certified empty and remain accepted; versions 1–3 remain refused because
+they silently omitted unvalidated maps. This does not remove generated-layout
+FTL relocation or make a RAM snapshot interchangeable with another flash generation.
 
 Real `ipod-fmss-test` qtests initialize the actual N72 board without executing
-firmware, verify empty state migration, issue a physical page program through
-FMSS MMIO, verify the persisted page exists, and verify migration fails.
+firmware. Four checks cover empty migration, mismatched-mode refusal, physical
+program/read after save/load/reset, and generated pages with no disk destination
+that exist only in RAM. The latter recover data and spare bytes from the stream
+and return to their pristine cold-boot view after reset. Both physical and
+generated modes preserve pages on two chip selects. Evidence:
+`/private/tmp/ltm-fmss-map-final-qtest2.log`. The physical fixture removes its
+disk erase marker after saving and uses a contrasting backing page to prove the
+RAM-owned marker restores (including direct key zero).
+
+The native 7E18 acceptance saves with a live Harness GL scene and written guest
+file, then resumes a fresh QEMU process against the same flash overlay. Agent
+rekey, file content, USB re-enumeration and lockdown pairing, host clock, restored
+GL contexts, fixture pixels and continuing frame presentation pass. Evidence:
+`/private/tmp/ltm-fmss-tree-native-snapshot2.log`. A separate native run restores
+while stereo PCM is playing and then fetches HTTP through Wi-Fi. Restored output
+has the expected 440/880 Hz channel frequencies for at least two seconds; HTTP
+returns the fixture bytes before and after restore. Evidence:
+`/private/tmp/ltm-fmss-tree-audio-network-snapshot.log`. This probes new HTTP
+requests, not preservation of an already-open host TCP socket. The final default
+eight-check iPod tier also passes, including fsck, app launch, audio and cold
+file persistence: `/private/tmp/ltm-fmss-tree-final-native-regress.log`.
 `ipad1-h2fmi-test` tests actual K48 raw-read phases and physical program/erase:
 actual zero data persists across cold reopen, a subsequent all-ones program leaves zero data unchanged, and erase reads back FF. The offline
 converter test checks ambiguity, both policies, source preservation and refusal

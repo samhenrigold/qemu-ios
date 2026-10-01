@@ -681,14 +681,18 @@ environment dictionary; 3.0 uses its installd job. The standalone system libmis 
 Fresh 5F138 and 7A341 images install and visibly launch an ad-hoc UIKit test app; the
 AppSync-off 5F138 control rejects it. See `contrib/appsync/README.md` for details.
 
-### FMSS snapshot limitation (2026-09-30)
+### FMSS physical-state snapshots (2026-10-01)
 
-The earlier native snapshot result above did not establish equivalence for
-FMSS physical-page state after writes. FMSS now explicitly refuses snapshots
-with nonempty `phys_pages` or `erased_blocks`, and rejects older uncertified
-streams; ordinary cold boot is unchanged. See
-[physical store policy](../research/nand-physical-store.md) for format and test
-boundaries. Actual firmware-free FMSS MMIO/migration tests pass 2/2.
+VMState version 5 serializes the physical-page cache and erase map using QEMU's
+standard tree serializer, including generated pages with no disk destination.
+Version 4's certified empty streams remain accepted; uncertified older streams
+and mismatched startup storage modes remain refused. Four actual FMSS board
+qtests pass. This supersedes September 30's nonempty-state save refusal;
+see [physical store policy](../research/nand-physical-store.md) for the remaining
+FTL and exact-storage-generation boundaries. Live native 7E18 save/resume also passes guest files, clock, USB pairing,
+continued GL presentation, new Wi-Fi HTTP requests and active stereo playback.
+The final default regression passes 8/8. These probes do not certify every
+firmware or preservation of already-open host network sockets.
 
 ### Common legacy helpers (2026-10-01)
 

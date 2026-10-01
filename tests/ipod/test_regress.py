@@ -210,7 +210,7 @@ for messages, eof, error in (([host], True, RuntimeError), ([], True, EOFError),
 for event, exit_code, expected in ((host, 0, False), (guest, 0, True),
                                    (guest, 1, False), (None, 0, False)):
     q, peer = qmp_stream([event] if event else [])
-    dev = SimpleNamespace(cfg=SimpleNamespace(), procs=None, tag='test', qmp=q,
+    dev = SimpleNamespace(cfg=SimpleNamespace(device_version=None), procs=None, tag='test', qmp=q,
                           qemu=SimpleNamespace(wait=lambda timeout: exit_code))
     with patch.object(R.itqmp, 'agent_alive', return_value=False), patch.object(R, 'log'):
         assert R.Device.powerdown(dev) is expected
@@ -300,7 +300,7 @@ print('Agent regression detects command failures and binary corruption')
 # Agent halt still requires guest-originated shutdown and must never retry SSH.
 for event, expected in ((guest, True), (host, False)):
     q, peer = qmp_stream([event])
-    dev = SimpleNamespace(cfg=SimpleNamespace(), procs=None, tag='agent halt', qmp=q,
+    dev = SimpleNamespace(cfg=SimpleNamespace(device_version=None), procs=None, tag='agent halt', qmp=q,
                           qemu=SimpleNamespace(wait=lambda timeout: 0))
     with patch.object(R.itqmp, 'agent_alive', return_value=True), \
          patch.object(R.itqmp, 'agent', return_value=(0, b'')) as call, \

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in snapshot acceptance using an isolated overlay and owned processes."""
 import argparse
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -10,27 +11,37 @@ import regress as r
 
 ROOT = Path(__file__).resolve().parents[2]
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--files', default=str(ROOT.parent / 'qemu-ios-files'))
+parser.add_argument('--files', default=str(Path.home()/'Developer/qemu-ios-files'))
 parser.add_argument('--base-nand')
+parser.add_argument('--device', help='matched prepared firmware, NOR, identity and helper set')
+parser.add_argument('--qemu')
+parser.add_argument('--usbmuxd')
+parser.add_argument('--ipa', default=str(ROOT/'contrib/it-harness/build/Harness.ipa'))
+parser.add_argument('--httpget', default=str(ROOT/'contrib/it-proxy/httpget'))
+parser.add_argument('--out')
 parser.add_argument('--network', action='store_true')
 parser.add_argument('--usb', action='store_true')
 parser.add_argument('--gles', action='store_true',
                     help='save and restore with the Harness GL scene running (live GL state)')
 parser.add_argument('--audio', action='store_true')
 args = parser.parse_args()
-os.environ['PATH'] = str(ROOT.parent/'qemu-ios-deps12/bin') + ':' + os.environ['PATH']
-out = tempfile.mkdtemp(prefix='it-snapshot-guest-')
+if args.gles and args.audio:
+    parser.error('--gles and --audio need separate runs so each fixture remains foreground')
+out = args.out or tempfile.mkdtemp(prefix='it-snapshot-guest-')
+Path(out).mkdir(parents=True, exist_ok=True)
 f = args.files
-cfg = SimpleNamespace(out=out, files=f, base_nand=args.base_nand or f+'/nand-agent-v2',
-    nor=f+'/ios3/nor_7E18.bin', overlay=out+'/overlay',
-    qemu=str(next((q for q in (ROOT/'build-native14/qemu-build/qemu-system-arm', ROOT/'build/qemu-system-arm')
-                   if q.exists()), ROOT/'build/qemu-system-arm')),
-    usbmuxd=str(next((u for u in (ROOT/'build-native14/build/usbmuxd/src/usbmuxd',
-                                  Path.home()/'Developer/usbmuxd-qemu/usbmuxd/src/usbmuxd') if u.exists()),
-                     ROOT/'build-native14/build/usbmuxd/src/usbmuxd')), usbmuxd_ok=True,
-    usb_port=r.free_port(1520,1539), mux_port=r.free_port(27400,27419),
-    qmp_port=r.free_port(28200,28219), wifi=True, cpu=None, mem='128M', kernel_console=True,
+cfg = SimpleNamespace(out=out, files_dir=f, device=args.device, base_nand=args.base_nand,
+    nor=None, direct_iboot=None, gid_blobs=None, bootrom=None, guest_package=None,
+    overlay=out+'/overlay', ipa=args.ipa,
+    qemu=args.qemu or str(next((q for q in (ROOT/'build-reuse/qemu-system-arm',
+        ROOT/'build-native14/qemu-build/qemu-system-arm', ROOT/'build/qemu-system-arm') if q.exists()),
+        ROOT/'build/qemu-system-arm')),
+    usbmuxd=args.usbmuxd or str(Path.home()/'Developer/usbmuxd-qemu/usbmuxd/src/usbmuxd'),
+    usbmuxd_ok=True, usb_port=r.free_port(1520,1539), mux_port=r.free_port(27400,27419),
+    qmp_port=r.free_port(28200,28219), wifi=args.network, cpu=None, mem='128M', kernel_console=True,
     install_timeout=420, proxy_lo=28460, proxy_hi=28479)
+r.configure_device(cfg)
+assert cfg.board == 'n72ap', 'this snapshot fixture targets N72'
 
 class SnapshotProcs(r.Procs):
     incoming = None
@@ -58,7 +69,7 @@ if args.network:
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
 def check_network(q):
-    status, data = r.itqmp.agent(q, 'exec', '/tmp/snapshot-httpget http://10.0.2.2:%d/' % server.server_port)
+    status, data = r.itqmp.agent(q, 'spawn', body=b'/tmp/snapshot-httpget\0' + ('http://10.0.2.2:%d/' % server.server_port).encode() + b'\0')
     assert status == 0 and b'HTTP 200' in data and b'snapshot-network-ok' in data, (status, data)
 
 p = SnapshotProcs()
@@ -74,10 +85,12 @@ try:
     while not r.itqmp.agent_alive(d.qmp):
         assert time.monotonic() < deadline, 'agent did not start'
         time.sleep(1)
-    assert r.itqmp.agent(d.qmp, 'ping') == (0, b'it_agent v1\n')
-    assert r.itqmp.agent(d.qmp, 'exec', 'printf snapshot-survived > /tmp/snapshot-marker') == (0, b'')
+    status, hello = r.itqmp.agent(d.qmp, 'ping')
+    assert status == 0 and hello.startswith(b'it_agent v'), (status, hello)
+    assert r.itqmp.agent(d.qmp, 'put', '/tmp/snapshot-marker 644', b'snapshot-survived') == (0, b'')
+    assert r.itqmp.agent(d.qmp, 'sync') == (0, b'')
     if args.network:
-        binary = (ROOT/'contrib/it-proxy/httpget').read_bytes()
+        binary = Path(args.httpget).read_bytes()
         assert r.itqmp.agent(d.qmp, 'put', '/tmp/snapshot-httpget 755', binary) == (0, b'')
         check_network(d.qmp)
     if args.usb:
@@ -87,9 +100,11 @@ try:
         # The Harness GL scene: a cyan/magenta fixture with a rotating
         # triangle, so a live context has textures, matrices and state to lose.
         result = r.Result('gles launcher')
-        port = r.prepare_launcher(cfg, p, d, result)
+        port = r.prepare_app_control(cfg, p, d, result)
         assert port, result.detail
-        installed = r.run(['ideviceinstaller', 'install', str(ROOT/'contrib/it-harness/build/Harness.ipa')], cfg, 120)
+        unlocked, detail = r.unlock(cfg, port, d)
+        assert unlocked, detail
+        installed = r.run(['ideviceinstaller', 'install', args.ipa], cfg, 120)
         assert installed.returncode == 0, installed
         assert r.itqmp.agent(d.qmp, 'launch', 'com.qemuios.harness')[0] == 0
         time.sleep(4)
@@ -99,12 +114,17 @@ try:
         assert min(gl_before) >= r.GLES_QUAD_MIN, ('GL scene not up before save', gl_before)
     if args.audio:
         result = r.Result('audio launcher')
-        port = r.prepare_launcher(cfg, p, d, result)
+        port = r.prepare_app_control(cfg, p, d, result)
         assert port, result.detail
-        installed = r.run(['ideviceinstaller', 'install', str(ROOT/'contrib/it-harness/build/Harness.ipa')], cfg, 120)
+        unlocked, detail = r.unlock(cfg, port, d)
+        assert unlocked, detail
+        installed = r.run(['ideviceinstaller', 'install', args.ipa], cfg, 120)
         assert installed.returncode == 0, installed
         assert r.itqmp.agent(d.qmp, 'launch', 'com.qemuios.harness')[0] == 0
         time.sleep(4)
+        for _ in range(16):
+            r.itqmp.button(d.qmp, 'volup', hold_ms=100)
+        time.sleep(2)
         # Move the seventh row into the menu viewport. Hold before releasing
         # so momentum does not move the target after the controlled drag.
         r.itqmp.move(d.qmp, 160, 290)
@@ -145,10 +165,13 @@ try:
     while not r.itqmp.agent_alive(d.qmp):
         assert time.monotonic() < deadline, 'restored agent did not rekey'
         time.sleep(.25)
-    assert r.itqmp.agent(d.qmp, 'ping') == (0, b'it_agent v1\n')
+    status, hello = r.itqmp.agent(d.qmp, 'ping')
+    assert status == 0 and hello.startswith(b'it_agent v'), (status, hello)
     assert r.itqmp.agent(d.qmp, 'get', '/tmp/snapshot-marker') == (0, b'snapshot-survived')
-    status, data = r.itqmp.agent(d.qmp, 'exec', 'date +%s')
-    assert status == 0 and abs(int(data) - time.time()) < 5, (status, data)
+    udid, detail = r.wait_for_device(cfg, timeout=120)
+    assert udid, detail
+    clock = r.run(['ideviceinfo', '-k', 'TimeIntervalSince1970'], cfg, 30)
+    assert clock.returncode == 0 and abs(float(clock.stdout.strip()) - time.time()) < 5, clock
     if args.network:
         check_network(d.qmp)
         print('PASS: HTTP 200 through guest Wi-Fi before and after restore', flush=True)
