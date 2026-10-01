@@ -85,6 +85,16 @@ static int address_space_read(void *space, uint32_t a, int attrs, void *p, size_
     if ((uint64_t)a+n > sizeof(memory)) return 1;
     memcpy(p,memory+a,n); return MEMTX_OK;
 }
+static int address_space_write(void *space, uint32_t a, int attrs,
+                               const void *p, size_t n) {
+    if ((uint64_t)a + n > sizeof(memory)) return 1;
+    memcpy(memory + a, p, n);
+    return MEMTX_OK;
+}
+static void stl_le_p(void *p, uint32_t value) {
+    uint8_t *bytes = p;
+    for (unsigned i = 0; i < 4; i++) bytes[i] = value >> (8 * i);
+}
 static uint32_t ldl_le_p(const void *p) {
     const uint8_t *b=p; return b[0]|(uint32_t)b[1]<<8|(uint32_t)b[2]<<16|(uint32_t)b[3]<<24;
 }

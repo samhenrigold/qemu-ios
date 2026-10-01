@@ -64,14 +64,27 @@ static AddressSpace address_space_memory;
 static unsigned descriptor_reads;
 static uint32_t descriptor_addresses[8];
 static int address_space_read(AddressSpace *as, uint32_t a, int attrs, void *p, size_t n) {
-    assert(n == 4 && descriptor_reads < 8);
-    descriptor_addresses[descriptor_reads++] = a;
+    assert(n == 4 || n == 8);
+    if (n == 4) {
+        assert(descriptor_reads < 8);
+        descriptor_addresses[descriptor_reads++] = a;
+    }
     if ((uint64_t)a + n > sizeof(mem)) {
         memset(p, 0xdd, n); /* A failed transaction must never become a word. */
         return MEMTX_DECODE_ERROR;
     }
     memcpy(p, mem + a, n);
     return MEMTX_OK;
+}
+static int address_space_write(AddressSpace *as, uint32_t a, int attrs,
+                               const void *p, size_t n) {
+    if ((uint64_t)a + n > sizeof(mem)) return MEMTX_DECODE_ERROR;
+    memcpy(mem + a, p, n);
+    return MEMTX_OK;
+}
+static void stl_le_p(void *p, uint32_t value) {
+    uint8_t *bytes = p;
+    for (unsigned i = 0; i < 4; i++) bytes[i] = value >> (8 * i);
 }
 static uint32_t ldl_le_p(const void *p) {
     const uint8_t *b = p;
