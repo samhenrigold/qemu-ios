@@ -113,6 +113,45 @@ static IPodTouchFMSSState run_counter(const uint32_t *prog, size_t n,
     return s;
 }
 int main(void) {
+    /* Actual stock D10 descriptor advance/backstep; no NAND result involved. */
+    const uint32_t pointer_steps[]={
+        0x04000d10u,0xffffffffu,0x03010000u,0,
+        0x0c000000u,4,0x02000d10u,0,
+        0x04000d10u,0xffffffffu,0x03020000u,0,
+        0x0d000000u,4,0x02000d10u,0,
+        0x04000d10u,0xffffffffu,0x03030000u,0,
+        0x05070000u,0x9000u,0x11010007u,0,
+        0x0c070007u,4,0x11020007u,0,
+        0x0c070007u,4,0x11030007u,0,
+        0x0c070007u,4,0x11000007u,0,0,0
+    };
+    IPodTouchFMSSState pointer_state={.reg_cs_script=0x1000,
+                                     .reg_cs_buf_addr=0xa000};
+    stl_le_p(mem+0xa000,0x11112222u);stl_le_p(mem+0xa004,0x33334444u);
+    memcpy(mem+0x1000,pointer_steps,sizeof(pointer_steps));descriptor_reads=0;
+    fmss_run_script(&pointer_state);
+    assert(ldl_le_p(mem+0x9000)==0x11112222u);
+    assert(ldl_le_p(mem+0x9004)==0x33334444u);
+    assert(ldl_le_p(mem+0x9008)==0x11112222u);
+    assert(ldl_le_p(mem+0x900c)==0xa000u&&pointer_state.reg_cs_buf_addr==0xa000u);
+    assert(descriptor_reads==3&&descriptor_addresses[0]==0xa000&&
+           descriptor_addresses[1]==0xa004&&descriptor_addresses[2]==0xa000);
+    /* Reject unmeasured opcode01/nonzero opcode02 before DMA or later store. */
+    for(unsigned form=0;form<2;form++) {
+        const uint32_t rejected[]={
+            0x05000000u,0xa004u,
+            form ? 0x01000d10u : 0x02000d10u, form ? 0xa004u : 1u,
+            0x04000d10u,0xffffffffu,0x03010000u,0,
+            0x05070000u,0x9000u,0x11010007u,0,0,0
+        };
+        memcpy(mem+0x1000,rejected,sizeof(rejected));
+        stl_le_p(mem+0x9000,0xabcddcbau);descriptor_reads=0;
+        fmss_run_script(&pointer_state);
+        assert(pointer_state.reg_cs_buf_addr==0xa000&&descriptor_reads==0);
+        assert(ldl_le_p(mem+0x9000)==0xabcddcbau);
+    }
+    puts("PASS D10 exact pointer advance/backstep and bounded rejection");
+
     uint32_t *out = (uint32_t *)(mem + 0x8000);
     run(id3, sizeof(id3)); /* 4 bytes per CE, 8 CEs */
     for (int i = 0; i < 8; i++) assert(out[i] == (i < 4 ? 0xb614d5adu : 0));

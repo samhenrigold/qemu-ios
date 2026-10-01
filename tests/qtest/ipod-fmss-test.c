@@ -1270,6 +1270,103 @@ static void cpu_write_source_guard(void)
     unlink(log); rmdir(overlay); g_free(log); g_free(overlay);
 }
 
+/* Observe the existing latch through the sequencer, not unmodeled CPU D10
+ * readback. This helper performs no NAND command or descriptor DMA. */
+static uint32_t script_observe_d10(QTestState *qts)
+{
+    const uint32_t observe[] = {
+        0x04000d10, 0xffffffff, 0x05070000, RAM + 0x2000,
+        0x11000007, 0, 0, 0
+    };
+    put_transaction_program(qts, observe, G_N_ELEMENTS(observe));
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    uint32_t value = qtest_readl(qts, RAM + 0x2000);
+    qtest_writel(qts, FMSS + 0xc00, 8);
+    return value;
+}
+
+static void descriptor_pointer_backstep(void)
+{
+    char *overlay;
+    QTestState *qts = start_board(&overlay);
+    const uint32_t desc = RAM + 0x3000, output = RAM + 0x2000;
+    const uint32_t program[] = {
+        0x04000d10, 0xffffffff, 0x03010000, 0,
+        0x0c000000, 4, 0x02000d10, 0,
+        0x04000d10, 0xffffffff, 0x03020000, 0,
+        0x0d000000, 4, 0x02000d10, 0,
+        0x04000d10, 0xffffffff, 0x03030000, 0,
+        0x05070000, output, 0x11010007, 0,
+        0x0c070007, 4, 0x11020007, 0,
+        0x0c070007, 4, 0x11030007, 0,
+        0x0c070007, 4, 0x11000007, 0, 0, 0
+    };
+    qtest_writel(qts, desc, 0x11112222);
+    qtest_writel(qts, desc + 4, 0x33334444);
+    /* CPU latch setup precedes script; no D38 shortcut mutation. */
+    qtest_writel(qts, FMSS + 0xd10, desc);
+    for (unsigned i = 0; i < G_N_ELEMENTS(program); i++) {
+        qtest_writel(qts, RAM + 4*i, program[i]);
+    }
+    qtest_writel(qts, FMSS + 0xc04, RAM);
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    g_assert_cmphex(qtest_readl(qts, output), ==, 0x11112222);
+    g_assert_cmphex(qtest_readl(qts, output + 4), ==, 0x33334444);
+    g_assert_cmphex(qtest_readl(qts, output + 8), ==, 0x11112222);
+    g_assert_cmphex(qtest_readl(qts, output + 12), ==, desc);
+    qtest_writel(qts, FMSS + 0xc00, 8);
+    for (unsigned form = 0; form < 2; form++) {
+        const uint32_t rejected[] = {
+            0x05000000, desc + 4,
+            form ? 0x01000d10 : 0x02000d10, form ? desc + 4 : 1,
+            0x04000d10, 0xffffffff, 0x03010000, 0,
+            0x05070000, output, 0x11010007, 0, 0, 0
+        };
+        put_transaction_program(qts, rejected, G_N_ELEMENTS(rejected));
+        qtest_writel(qts, output, 0xabcddcba);
+        qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+        g_assert_cmphex(qtest_readl(qts, output), ==, 0xabcddcba);
+        qtest_writel(qts, FMSS + 0xc00, 8);
+        g_assert_cmphex(script_observe_d10(qts), ==, desc);
+    }
+    qtest_quit(qts);
+    rmdir(overlay);
+    g_free(overlay);
+}
+
+static void descriptor_pointer_snapshot(void)
+{
+    char *overlay;
+    g_autofree char *state = NULL;
+    QTestState *qts = start_board(&overlay);
+    const uint32_t desc = RAM + 0x3000;
+    const uint32_t advance[] = {
+        0x04000d10, 0xffffffff, 0x0c000000, 4,
+        0x02000d10, 0, 0, 0
+    };
+    qtest_writel(qts, FMSS + 0xd10, desc);
+    put_transaction_program(qts, advance, G_N_ELEMENTS(advance));
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    qtest_writel(qts, FMSS + 0xc00, 8);
+    g_assert_cmphex(script_observe_d10(qts), ==, desc + 4);
+    g_assert_true(migrate(qts, &state));
+    qtest_quit(qts);
+    qts = qtest_initf("-machine iPod-Touch,bootrom=%s,nor=%s,nand=%s,nandrw=%s "
+                      "-display none -audio driver=none -nic none -d unimp "
+                      "-incoming defer", rom_path, nor_path, nand_path, overlay);
+    qtest_writel(qts, FMSS + 0xd10, desc + 12);
+    g_assert_cmphex(script_observe_d10(qts), ==, desc + 12);
+    g_autofree char *uri = g_strdup_printf("file:%s", state);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'migrate-incoming', "
+                                "'arguments': { 'uri': %s } }", uri);
+    qtest_qmp_eventwait(qts, "RESUME");
+    g_assert_cmphex(script_observe_d10(qts), ==, desc + 4);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+    g_assert_cmphex(script_observe_d10(qts), ==, 0);
+    qtest_quit(qts);
+    unlink(state); rmdir(overlay); g_free(overlay);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *rom = g_malloc0(131072);
@@ -1290,6 +1387,8 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/fmss/generated-snapshot", generated_snapshot);
     qtest_add_func("/ipod/fmss/register-copy", register_copy);
     qtest_add_func("/ipod/fmss/descriptor-load", descriptor_load);
+    qtest_add_func("/ipod/fmss/descriptor-pointer-backstep", descriptor_pointer_backstep);
+    qtest_add_func("/ipod/fmss/descriptor-pointer-snapshot", descriptor_pointer_snapshot);
     qtest_add_func("/ipod/fmss/logical-and", logical_and);
     qtest_add_func("/ipod/fmss/nonabsence-open-fallback", nonabsence_open_fallback);
     qtest_add_func("/ipod/fmss/directory-physical-erased", directory_physical);
