@@ -152,6 +152,7 @@ static uint32_t fmss_var_read(IPodTouchFMSSState *s, uint32_t reg, bool *ok)
     case FMSS_CHUNKS_PER_PAGE:     return s->reg_chunks_per_page;
     case FMSS_CSGENRC:             return s->reg_csgenrc;
     case FMSS_SCRIPT_PARAM_D34:    return s->reg_script_param_d34;
+    case FMSS_SCRIPT_PARAM_D38:    return s->reg_script_param_d38;
     case FMSS_SCRIPT_PARAM_D48:    return s->reg_script_param_d48;
     case FMSS_SCRIPT_PARAM_D4C:    return s->reg_script_param_d4c;
     case FMSS_SCRIPT_CSGENR15:     return s->reg_script_csgenr15;
@@ -1306,6 +1307,8 @@ static uint64_t ipod_touch_fmss_read(void *opaque, hwaddr addr, unsigned size)
             return s->reg_chunks_per_page;
         case FMSS_SCRIPT_PARAM_D34:
             return s->reg_script_param_d34;
+        case FMSS_SCRIPT_PARAM_D38:
+            return s->reg_script_param_d38;
         case FMSS_SCRIPT_PARAM_D48:
             return s->reg_script_param_d48;
         case FMSS_SCRIPT_PARAM_D4C:
@@ -1433,7 +1436,8 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
         case FMSS_CSGENRC:
             s->reg_csgenrc = val;
             break;
-        case 0xD38:
+        case FMSS_SCRIPT_PARAM_D38:
+            s->reg_script_param_d38 = val;
             if (fmss_trace_on() && s->reg_csgenrc != 0xa01 && s->reg_csgenrc != 0xa02) {
                 printf("FMSS_OP csgenrc=%08x d0c=%08x d10=%08x d18=%08x\n",
                        s->reg_csgenrc, s->reg_pages_in_addr,
@@ -1534,6 +1538,7 @@ static void ipod_touch_fmss_reset(DeviceState *dev)
     s->reg_pages_out_addr = 0;
     s->reg_csgenrc = 0;
     s->reg_script_param_d34 = 0;
+    s->reg_script_param_d38 = 0;
     s->reg_script_param_d48 = 0;
     s->reg_script_param_d4c = 0;
     s->reg_chunks_per_page = 0;
@@ -1587,6 +1592,7 @@ static int fmss_pre_load(void *opaque)
     }
     s->overlay_indexed = false;
     s->reg_script_param_d34 = 0; /* Absent from pre-v8 streams. */
+    s->reg_script_param_d38 = 0; /* Absent from pre-v10 streams. */
     s->reg_script_param_d48 = 0; /* Absent from pre-v8 streams. */
     s->reg_script_param_d4c = 0; /* Absent from pre-v6 streams. */
     s->reg_chunks_per_page = 0; /* Absent from pre-v7 streams. */
@@ -1628,7 +1634,7 @@ static int fmss_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_fmss = {
     .name = "ipod_touch_fmss",
-    .version_id = 9,
+    .version_id = 10,
     .minimum_version_id = 4,
     .pre_load = fmss_pre_load,
     .post_load = fmss_post_load,
@@ -1657,6 +1663,7 @@ static const VMStateDescription vmstate_ipod_touch_fmss = {
         VMSTATE_UINT32_V(reg_script_param_d34, IPodTouchFMSSState, 8),
         VMSTATE_UINT32_V(reg_script_param_d48, IPodTouchFMSSState, 8),
         VMSTATE_UINT32_V(reg_script_csgenr15, IPodTouchFMSSState, 9),
+        VMSTATE_UINT32_V(reg_script_param_d38, IPodTouchFMSSState, 10),
         VMSTATE_END_OF_LIST()
     }
 };

@@ -35,6 +35,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchFMSSState, IPOD_TOUCH_FMSS)
 #define FMSS_CHUNKS_PER_PAGE      0xD28
 #define FMSS_CSGENRC              0xD30
 #define FMSS_SCRIPT_PARAM_D34     0xD34
+#define FMSS_SCRIPT_PARAM_D38     0xD38
 #define FMSS_SCRIPT_PARAM_D48     0xD48
 #define FMSS_SCRIPT_PARAM_D4C     0xD4C
 #define FMSS_SCRIPT_CSGENR15      0xD54
@@ -63,6 +64,7 @@ typedef struct IPodTouchFMSSState
     uint32_t reg_csgenrc;
     uint32_t reg_chunks_per_page; /* Guest-supplied 2048-byte chunks/page. */
     uint32_t reg_script_param_d34; /* CPU-supplied sequencer parameter. */
+    uint32_t reg_script_param_d38; /* CPU-supplied sequencer parameter. */
     uint32_t reg_script_param_d48; /* CPU-supplied sequencer parameter. */
     uint32_t reg_script_param_d4c; /* CPU-supplied sequencer parameter. */
     uint32_t reg_script_csgenr15; /* Sequencer-owned chunk-loop state. */

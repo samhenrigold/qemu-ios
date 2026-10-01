@@ -324,9 +324,11 @@ static void programmed_snapshot(bool physical)
     }
     qtest_writel(qts, FMSS + 0xd28, 2);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd28), ==, 2);
+    qtest_writel(qts, FMSS + 0xd38, 0x8000000c);
     qtest_writel(qts, FMSS + 0xd34, 0x80000016);
     qtest_writel(qts, FMSS + 0xd48, 0x30012000);
     qtest_writel(qts, FMSS + 0xd4c, 0x20011000);
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd38), ==, 0x8000000c);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd34), ==, 0x80000016);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd48), ==, 0x30012000);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd4c), ==, 0x20011000);
@@ -348,6 +350,7 @@ static void programmed_snapshot(bool physical)
                                 "'arguments': { 'uri': %s } }", uri);
     qtest_qmp_eventwait(qts, "RESUME");
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd28), ==, 2);
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd38), ==, 0x8000000c);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd34), ==, 0x80000016);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd48), ==, 0x30012000);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd4c), ==, 0x20011000);
@@ -367,6 +370,7 @@ static void programmed_snapshot(bool physical)
     g_assert_cmpmem(back_spare, sizeof(back_spare), spare, sizeof(spare));
     qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd28), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd38), ==, 0);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd34), ==, 0);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd48), ==, 0);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd4c), ==, 0);
@@ -694,6 +698,7 @@ static void parameter_latches(void)
         qtest_writel(qts, FMSS + 0xc00, 8);
     }
     qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd38), ==, 0);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd34), ==, 0);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd48), ==, 0);
     qtest_quit(qts);
@@ -793,6 +798,36 @@ static void chunk_counter_snapshot(void)
     g_free(overlay);
 }
 
+static void d38_parameter(void)
+{
+    char *overlay = NULL;
+    QTestState *qts = start_board(&overlay);
+    const uint32_t values[] = { 0, 12, 25, 0x80000000, 0xffffffff };
+    const uint32_t script[] = {
+        0x04000d38, 0xffffffff, 0x02000030, 0,
+        0x04010030, 0xffffffff, 0x05020000, RAM + 0x2000,
+        0x11010002, 0, 0, 0
+    };
+    /* The observed D38-to-FMDNUM pair followed by shadow observation. */
+    qtest_writel(qts, FMSS + 0xd30, 0);
+    for (unsigned i = 0; i < G_N_ELEMENTS(script); i++) {
+        qtest_writel(qts, RAM + 4 * i, script[i]);
+    }
+    qtest_writel(qts, FMSS + 0xc04, RAM);
+    for (unsigned i = 0; i < G_N_ELEMENTS(values); i++) {
+        qtest_writel(qts, FMSS + 0xd38, values[i]);
+        g_assert_cmphex(qtest_readl(qts, FMSS + 0xd38), ==, values[i]);
+        qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x2000), ==, values[i]);
+        qtest_writel(qts, FMSS + 0xc00, 8);
+    }
+    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd38), ==, 0);
+    qtest_quit(qts);
+    rmdir(overlay);
+    g_free(overlay);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *rom = g_malloc0(131072);
@@ -822,6 +857,7 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/fmss/read-id-chip-selection", read_id_chip_selection);
     qtest_add_func("/ipod/fmss/observed-right-shift", observed_right_shift);
     qtest_add_func("/ipod/fmss/parameter-latches", parameter_latches);
+    qtest_add_func("/ipod/fmss/d38-parameter", d38_parameter);
     qtest_add_func("/ipod/fmss/chunk-counter", chunk_counter);
     qtest_add_func("/ipod/fmss/chunk-counter-snapshot", chunk_counter_snapshot);
     result = g_test_run();

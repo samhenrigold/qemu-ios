@@ -53,7 +53,7 @@ prelude = r'''
 #define ctz32(x) ((x) ? (unsigned)__builtin_ctz(x) : 32u)
 typedef struct {
     uint32_t reg_cs_script, reg_cinfo_target_addr, reg_pages_in_addr, reg_cs_buf_addr;
-    uint32_t reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc, reg_script_param_d34, reg_script_param_d48, reg_script_param_d4c, reg_num_pages, reg_chunks_per_page, reg_script_csgenr15;
+    uint32_t reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc, reg_script_param_d38, reg_script_param_d34, reg_script_param_d48, reg_script_param_d4c, reg_num_pages, reg_chunks_per_page, reg_script_csgenr15;
 } IPodTouchFMSSState;
 static uint8_t mem[0x10000];
 typedef struct { int unused; } AddressSpace;

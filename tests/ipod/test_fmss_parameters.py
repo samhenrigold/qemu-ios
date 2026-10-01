@@ -41,7 +41,7 @@ typedef uint64_t hwaddr;
 typedef struct { int64_t deadline; bool pending; } QEMUTimer;
 typedef struct {
     int irq;
-    uint32_t reg_script_param_d34, reg_script_param_d48;
+    uint32_t reg_script_param_d34, reg_script_param_d38, reg_script_param_d48;
     uint32_t reg_cs_ctrl, reg_cs_irq_bit, reg_cs_irq_mask, reg_cs_script;
     uint32_t reg_cinfo_target_addr, reg_pages_in_addr, reg_cs_buf_addr;
     uint32_t reg_num_pages, reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc, reg_script_param_d4c, reg_chunks_per_page, reg_script_csgenr15;
@@ -65,8 +65,9 @@ static void timer_mod(QEMUTimer *t, int64_t when) { t->deadline=when; t->pending
 static void timer_del(QEMUTimer *t) { t->pending=false; }
 static bool fmss_trace_on(void) { return false; }
 
-static void read_nand_pages(IPodTouchFMSSState *s) {}
-static void write_nand_pages(IPodTouchFMSSState *s) {}
+static unsigned reads, writes;
+static void read_nand_pages(IPodTouchFMSSState *s) { reads++; }
+static void write_nand_pages(IPodTouchFMSSState *s) { writes++; }
 static unsigned fmss_total_blocks(IPodTouchFMSSState *s) { return 2048; }
 
 #define LOG_GUEST_ERROR 1
@@ -128,6 +129,24 @@ int main(void) {
         0x04000d48,0xffffffff,0x0b000000,0x801,0x02000000,0,
         0x04010000,0xffffffff,0x0c020002,4,0x11010002,0,0,0
     };
+    const uint32_t d38_script[] = {
+        0x04000d38, 0xffffffff, 0x02000030, 0,
+        0x04010030, 0xffffffff, 0x05020000, 0x3000, 0x11010002, 0, 0, 0
+    };
+    const uint32_t d38[] = { 0, 12, 25, 0x80000000, 0xffffffff };
+    memcpy(memory+0x1000, d38_script, sizeof(d38_script));
+    for (unsigned i=0; i<5; i++) {
+        put(&s, 0xd38, d38[i]);
+        assert(ipod_touch_fmss_read(&s, 0xd38, 4)==d38[i]);
+        fmss_run_script(&s);
+        assert(ldl_le_p(memory+0x3000)==d38[i]);
+        assert(!reads && !writes); /* selector0: scalar write only */
+    }
+    put(&s, 0xd30, 0xa01); put(&s, 0xd38, 0);
+    assert(reads==1 && !writes && !s.reg_script_param_d38);
+    put(&s, 0xd30, 0xa02); put(&s, 0xd38, 0x80000000);
+    assert(reads==1 && writes==1 && s.reg_script_param_d38==0x80000000);
+    put(&s, 0xd30, 0);
     memcpy(memory+0x1000,script,sizeof(script));
     for (unsigned i=0;i<4;i++) {
         put(&s,0xd34,d34[i]); put(&s,0xd48,d48[i]); put(&s,0xd4c,0x12345678);
@@ -139,9 +158,13 @@ int main(void) {
         assert(ldl_le_p(memory+0x2004)==(d48[i]|0x801));
     }
     ipod_touch_fmss_reset((DeviceState *)&s);
+    assert(!ipod_touch_fmss_read(&s,0xd38,4));
     assert(!ipod_touch_fmss_read(&s,0xd34,4) && !ipod_touch_fmss_read(&s,0xd48,4));
     put(&s,0xd34,0x16); put(&s,0xd48,0x20011000);
-    fmss_pre_load(&s); assert(!s.reg_script_param_d34 && !s.reg_script_param_d48);
+    s.reg_script_param_d38=0xffffffff;
+    fmss_pre_load(&s);
+    assert(!s.reg_script_param_d38);
+    assert(!s.reg_script_param_d34 && !s.reg_script_param_d48);
     assert(fmss_post_load(&s,7)==0); /* missingfields stayzero, no inventedlegacyvalue */
     assert(!s.reg_script_param_d34 && !s.reg_script_param_d48);
     /* Field restoration is simulated here; real VMState roundtrip is qtest. */
@@ -150,7 +173,7 @@ int main(void) {
     assert(ipod_touch_fmss_read(&s,0xd34,4)==0xffffffff &&
            ipod_touch_fmss_read(&s,0xd48,4)==0x80000000);
     g_tree_destroy(s.phys_pages);g_tree_destroy(s.erased_blocks);
-    puts("PASS actual D34/D48 CPUlatches, independentD4C, FMC shadow observations, reset and versionedload bookkeeping");
+    puts("PASS actual D38 latch, CPU shortcut dispatch, D34/D48 CPUlatches, independentD4C, FMC shadow observations, reset and versionedload bookkeeping");
 }
 '''
 
