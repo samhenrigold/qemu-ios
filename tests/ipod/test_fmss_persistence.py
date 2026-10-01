@@ -72,6 +72,19 @@ static void memory_region_unref(void *mr) {}
 #define int128_make64(a) (a)
 static void cpu_physical_memory_read(uint32_t addr, void *p, size_t n)
 { assert(addr + n <= sizeof(memory)); memcpy(p, memory + addr, n); }
+#define MEMTX_OK 0
+#define MEMTX_DECODE_ERROR 2
+#define MEMTXATTRS_UNSPECIFIED 0
+static int address_space_memory;
+static unsigned address_space_read(void *space, uint64_t addr, int attrs,
+                                    void *p, size_t n)
+{
+    if (addr > sizeof(memory) || n > sizeof(memory) - addr) {
+        return MEMTX_DECODE_ERROR;
+    }
+    memcpy(p, memory + addr, n);
+    return MEMTX_OK;
+}
 static uint32_t ldl_le_p(const void *p)
 { uint32_t n; memcpy(&n, p, 4); return GUINT32_FROM_LE(n); }
 static int vm_stop(int state) { assert(state == RUN_STATE_IO_ERROR); stops++; return 0; }

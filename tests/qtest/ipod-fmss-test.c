@@ -1135,6 +1135,141 @@ static void sequencer_transactions(void)
     g_free(overlay);
 }
 
+#define CPU_DMA_UNMAPPED 0xf0000000ULL
+#define CPU_DMA_RAM_END (0x0ff00000ULL + 0x00100000ULL)
+
+/* Board mapping: secure RAM ends0x0fb04000, but framebuffer0x0fb00000
+ * spans4MiB to0x0ff00000 and iBoot RAM then spans1MiB to0x10000000.
+ * The first actual unmapped boundary of this contiguous range is0x10000000. */
+static void expect_cpu_bytes(QTestState *qts, uint64_t address, size_t count,
+                             uint8_t expected)
+{
+    uint8_t bytes[4096];
+    g_assert_cmpuint(count, <=, sizeof(bytes));
+    qtest_memread(qts, address, bytes, count);
+    for (size_t i = 0; i < count; i++) {
+        g_assert_cmphex(bytes[i], ==, expected);
+    }
+}
+
+static void cpu_read_setup(QTestState *qts)
+{
+    /* Two distinct pages, two halves each, two twelve-byte metadata records. */
+    qtest_writel(qts, RAM + 0x8000, 37);
+    qtest_writel(qts, RAM + 0x8004, 38);
+    qtest_writel(qts, RAM + 0x8100, 1);
+    qtest_writel(qts, RAM + 0x8104, 1);
+    for (unsigned i = 0; i < 4; i++) {
+        qtest_writel(qts, RAM + 0x8200 + 4 * i, RAM + 0x40000 + 0x800 * i);
+    }
+    qtest_memset(qts, RAM + 0x40000, 0xcc, 8192);
+    qtest_memset(qts, RAM + 0x8300, 0xcc, 64);
+    qtest_writel(qts, FMSS + 0xd0c, RAM + 0x8000);
+    qtest_writel(qts, FMSS + 0xd10, RAM + 0x8100);
+    qtest_writel(qts, FMSS + 0xd18, 2);
+    qtest_writel(qts, FMSS + 0xd20, RAM + 0x8200);
+    qtest_writel(qts, FMSS + 0xd1c, RAM + 0x8300);
+    qtest_writel(qts, FMSS + 0xd30, 0xa01);
+}
+
+static void cpu_read_transactions(void)
+{
+    char *saved_nand = nand_path;
+    g_autofree char *base = g_dir_make_tmp("fmss-cpu-dma-base-XXXXXX", NULL);
+    g_autofree char *chip = g_build_filename(base, "cs0", NULL);
+    g_autofree char *first = g_build_filename(chip, "37.page", NULL);
+    g_autofree char *second = g_build_filename(chip, "38.page", NULL);
+    uint8_t record[4160];
+    g_assert_cmpint(g_mkdir_with_parents(chip, 0755), ==, 0);
+    memset(record, 0xa3, 4096); memset(record + 4096, 0xb4, 64);
+    g_assert_true(g_file_set_contents(first, (char *)record, sizeof(record), NULL));
+    memset(record, 0xc5, 4096); memset(record + 4096, 0xd6, 64);
+    g_assert_true(g_file_set_contents(second, (char *)record, sizeof(record), NULL));
+    nand_path = base;
+    for (unsigned mode = 0; mode < 6; mode++) {
+        char *overlay, *log;
+        QTestState *qts = start_transaction_board(&overlay, &log);
+        cpu_read_setup(qts);
+        switch (mode) {
+        case 1: /* Failed first page descriptor: no NAND-derived guest writes. */
+            qtest_writel(qts, FMSS + 0xd0c, CPU_DMA_UNMAPPED);
+            break;
+        case 2: /* First output pointer valid, second descriptor unmapped. */
+            qtest_writel(qts, CPU_DMA_RAM_END - 4, RAM + 0x40000);
+            qtest_writel(qts, FMSS + 0xd20, CPU_DMA_RAM_END - 4);
+            break;
+        case 3: /* Destination failure after a completed first half. */
+            qtest_writel(qts, RAM + 0x8204, CPU_DMA_UNMAPPED);
+            break;
+        case 4: /* One whole page completed before second page descriptor fails. */
+            qtest_writel(qts, CPU_DMA_RAM_END - 4, 37);
+            qtest_writel(qts, FMSS + 0xd0c, CPU_DMA_RAM_END - 4);
+            break;
+        case 5: /* One AddressSpace write crosses RAM/unmapped: prefix remains. */
+            qtest_memset(qts, CPU_DMA_RAM_END - 1024, 0xcc, 1024);
+            qtest_writel(qts, RAM + 0x8200, CPU_DMA_RAM_END - 1024);
+            break;
+        }
+        qtest_writel(qts, FMSS + 0xd38, 1);
+        if (mode == 0) {
+            expect_cpu_bytes(qts, RAM + 0x40000, 4096, 0xa3);
+            expect_cpu_bytes(qts, RAM + 0x41000, 4096, 0xc5);
+            expect_cpu_bytes(qts, RAM + 0x8300, 12, 0xb4);
+            expect_cpu_bytes(qts, RAM + 0x830c, 12, 0xd6);
+            expect_cpu_bytes(qts, RAM + 0x8318, 40, 0xcc);
+        } else {
+            expect_cpu_bytes(qts, RAM + 0x41000, 4096, 0xcc);
+            expect_cpu_bytes(qts, RAM + 0x40000,
+                             mode == 4 ? 4096 : 2048,
+                             mode >= 2 && mode <= 4 ? 0xa3 : 0xcc);
+            if (mode != 4) {
+                expect_cpu_bytes(qts, RAM + 0x40800, 2048, 0xcc);
+            }
+            expect_cpu_bytes(qts, RAM + 0x8300, 12, mode == 4 ? 0xb4 : 0xcc);
+            expect_cpu_bytes(qts, RAM + 0x830c, 52, 0xcc);
+            if (mode == 5) {
+                expect_cpu_bytes(qts, CPU_DMA_RAM_END - 1024, 1024, 0xa3);
+            }
+        }
+        qtest_quit(qts);
+        if (mode != 0) {
+            g_autofree char *text = NULL;
+            g_assert_true(g_file_get_contents(log, &text, NULL, NULL));
+            g_assert_nonnull(strstr(text, "failed; transfer stopped"));
+        }
+        /* No abort/completion/IRQ assertion: those contracts are unchanged. */
+        unlink(log); rmdir(overlay); g_free(log); g_free(overlay);
+    }
+    nand_path = saved_nand;
+    unlink(first); unlink(second); rmdir(chip); rmdir(base);
+}
+
+static void cpu_write_source_guard(void)
+{
+    char *overlay, *log;
+    QTestState *qts = start_transaction_board(&overlay, &log);
+    qtest_writel(qts, RAM, 1);
+    qtest_writel(qts, RAM + 4, 39);
+    qtest_writel(qts, RAM + 8, 0);
+    qtest_writel(qts, RAM + 0x1000, CPU_DMA_UNMAPPED);
+    qtest_writel(qts, RAM + 0x1004, RAM + 0x10800);
+    qtest_writel(qts, FMSS + 0xd10, RAM);
+    qtest_writel(qts, FMSS + 0xd20, RAM + 0x1000);
+    qtest_writel(qts, FMSS + 0xd1c, RAM + 0x2000);
+    qtest_writel(qts, FMSS + 0xd30, 0xa02);
+    qtest_writel(qts, FMSS + 0xd38, 1);
+    QDict *reply = qtest_qmp(qts, "{ 'execute': 'query-status' }");
+    QDict *status = qdict_get_qdict(reply, "return");
+    g_assert_cmpstr(qdict_get_str(status, "status"), ==, "io-error");
+    qobject_unref(reply);
+    qtest_quit(qts);
+    g_autofree char *page = g_build_filename(overlay, "cs0", "39.page", NULL);
+    g_assert_false(g_file_test(page, G_FILE_TEST_EXISTS));
+    /* Existing error_report diagnostic goes to stderr, not the -D log. */
+    /* This is the existing RAM-only source/fatal policy, not a new IRQ claim. */
+    unlink(log); rmdir(overlay); g_free(log); g_free(overlay);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *rom = g_malloc0(131072);
@@ -1172,6 +1307,8 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/fmss/register-or", register_or);
     qtest_add_func("/ipod/fmss/register-left-shift", register_left_shift);
     qtest_add_func("/ipod/fmss/sequencer-transactions", sequencer_transactions);
+    qtest_add_func("/ipod/fmss/cpu-read-transactions", cpu_read_transactions);
+    qtest_add_func("/ipod/fmss/cpu-write-source-guard", cpu_write_source_guard);
     result = g_test_run();
     unlink(rom_path); unlink(nor_path); rmdir(nand_path);
     g_free(rom_path); g_free(nor_path); g_free(nand_path);

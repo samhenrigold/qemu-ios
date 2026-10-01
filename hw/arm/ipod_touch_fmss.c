@@ -1107,12 +1107,45 @@ static bool fmss_write_dma_read(uint64_t addr, void *data, size_t len)
     bool valid = section.mr && memory_region_is_ram(section.mr) &&
                  int128_eq(section.size, int128_make64(len));
     if (valid) {
-        cpu_physical_memory_read(addr, data, len);
+        valid = address_space_read(&address_space_memory, addr,
+                                   MEMTXATTRS_UNSPECIFIED, data,
+                                   len) == MEMTX_OK;
     }
     if (section.mr) {
         memory_region_unref(section.mr);
     }
     return valid || fmss_io_error("guest write DMA", EFAULT);
+}
+
+/* CPU-side compatibility transfers still own their DMA until the FMC
+ * execution contract replaces them. A failed transaction stops this transfer;
+ * earlier writes and any partial effects of the failed transaction remain. */
+static bool fmss_read_dma_word(uint64_t addr, uint32_t *value)
+{
+    uint8_t word[4];
+
+    if (address_space_read(&address_space_memory, addr,
+                           MEMTXATTRS_UNSPECIFIED, word,
+                           sizeof(word)) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "[fmss] guest read descriptor at 0x%" PRIx64
+                      " failed; transfer stopped\n", addr);
+        return false;
+    }
+    *value = ldl_le_p(word);
+    return true;
+}
+
+static bool fmss_read_dma_write(uint64_t addr, const void *data, size_t len)
+{
+    if (address_space_write(&address_space_memory, addr,
+                            MEMTXATTRS_UNSPECIFIED, data, len) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "[fmss] guest read destination at 0x%" PRIx64
+                      " failed; transfer stopped\n", addr);
+        return false;
+    }
+    return true;
 }
 
 static void read_nand_pages(IPodTouchFMSSState *s)
@@ -1124,8 +1157,12 @@ static void read_nand_pages(IPodTouchFMSSState *s)
         uint32_t page_nr = 0;
         uint32_t page_out_addr = 0;
         uint32_t cs = 0;
-        cpu_physical_memory_read(s->reg_pages_in_addr + (page_ind * sizeof(uint32_t)), &page_nr, sizeof(uint32_t));
-        cpu_physical_memory_read(s->reg_cs_buf_addr + (page_ind * sizeof(uint32_t)), &cs, sizeof(uint32_t));
+        if (!fmss_read_dma_word(s->reg_pages_in_addr +
+                                page_ind * sizeof(uint32_t), &page_nr) ||
+            !fmss_read_dma_word(s->reg_cs_buf_addr +
+                                page_ind * sizeof(uint32_t), &cs)) {
+            return;
+        }
         uint32_t og_cs = cs;
         cs = find_bit_index(cs);
 
@@ -1143,8 +1180,14 @@ static void read_nand_pages(IPodTouchFMSSState *s)
         // we write away the page in two parts, 2048 bytes first and then the other 2048 bytes.
         int write_buf_size = NAND_BYTES_PER_PAGE / 2;
         for(int i = 0; i < 2; i++) {
-            cpu_physical_memory_read(s->reg_pages_out_addr + (page_out_buf_ind * sizeof(uint32_t)), &page_out_addr, sizeof(uint32_t));
-            cpu_physical_memory_write(page_out_addr, s->page_buffer + i * write_buf_size, write_buf_size);
+            if (!fmss_read_dma_word(s->reg_pages_out_addr +
+                                    page_out_buf_ind * sizeof(uint32_t),
+                                    &page_out_addr) ||
+                !fmss_read_dma_write(page_out_addr,
+                                     s->page_buffer + i * write_buf_size,
+                                     write_buf_size)) {
+                return;
+            }
             page_out_buf_ind++;
         }
 
@@ -1163,8 +1206,10 @@ static void read_nand_pages(IPodTouchFMSSState *s)
          * overspill: bytes 0xc..0x3f were always overwritten by the next
          * iteration anyway.
          */
-        cpu_physical_memory_write(s->reg_page_spare_out_addr + page_ind * 0xc,
-                                  s->page_spare_buffer, 0xc);
+        if (!fmss_read_dma_write(s->reg_page_spare_out_addr +
+                                 page_ind * 0xc, s->page_spare_buffer, 0xc)) {
+            return;
+        }
     }
 }
 
