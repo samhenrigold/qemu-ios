@@ -1419,36 +1419,39 @@ static void ipod_touch_fmss_reset(DeviceState *dev)
     }
 }
 
-/*
- * KNOWN GAP, deliberate: phys_pages and erased_blocks are GHashTables holding
- * this session's programmed pages, and they are not migrated. The persisted
- * side of a write is in the NAND overlay directory, which the destination
- * opens for itself, so file content survives; what does not survive is the
- * physical-page memory that makes a page the FTL just relocated read back at
- * the address it was programmed to. In practice that mapping only has to hold
- * until the FTL is rebuilt, which a restore does not disturb.
- *
- * page_buffer/page_spare_buffer are scratch for synchronous DMA within a
- * register write. Only the later sequencer-completion notification can cross
- * a snapshot boundary; its virtual timer and interrupt state are migrated.
- */
+/* The generated-layout compatibility path has authoritative session state in
+ * these maps which is not reconstructible from its relocated disk pages.
+ * Refuse snapshots rather than resume with a different physical read view.
+ * Version 4 certifies that both omitted maps were empty when saved; older
+ * streams cannot provide that guarantee and are intentionally unsupported.
+ * Synchronous DMA scratch cannot cross the save boundary. */
+static int fmss_pre_save(void *opaque)
+{
+    IPodTouchFMSSState *s = opaque;
+    guint pages = s->phys_pages ? g_hash_table_size(s->phys_pages) : 0;
+    guint blocks = s->erased_blocks ? g_hash_table_size(s->erased_blocks) : 0;
+
+    if (pages || blocks) {
+        error_report("FMSS snapshot unsupported: %u physical pages and %u "
+                     "erased blocks are not serialized; use a cold boot", pages, blocks);
+        return -ENOTSUP;
+    }
+    return 0;
+}
+
 static int fmss_post_load(void *opaque, int version_id)
 {
     IPodTouchFMSSState *s = opaque;
 
-    if (version_id < 2) {
-        s->reg_cs_ctrl = 0x40;
-        s->reg_cs_irq_mask = 1;
-        timer_del(s->completion_timer);
-    }
     fmss_update_irq(s);
     return 0;
 }
 
 static const VMStateDescription vmstate_ipod_touch_fmss = {
     .name = "ipod_touch_fmss",
-    .version_id = 3,
-    .minimum_version_id = 1,
+    .version_id = 4,
+    .minimum_version_id = 4,
+    .pre_save = fmss_pre_save,
     .post_load = fmss_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(reg_cs_irq_bit, IPodTouchFMSSState),
