@@ -820,8 +820,7 @@ static void ipod_touch_multitouch_inform_frame_ready(IPodTouchMultitouchState *s
         bit = s->sysic_atn_bit;
     }
     MTT("frame ready -> raise gpio%u bit%u", group, bit);
-    s->sysic->gpio_int_status[group] |= (1u << bit);
-    qemu_irq_raise(s->sysic->gpio_irqs[group]);
+    ipod_touch_sysic_request_edge(s->sysic, group, bit);
 }
 
 /*

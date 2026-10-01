@@ -24,6 +24,16 @@ static void sysic_update_gpio_irq(IPodTouchSYSICState *s, unsigned group)
     }
 }
 
+void ipod_touch_sysic_request_edge(IPodTouchSYSICState *s,
+                                  unsigned group, unsigned bit)
+{
+    if (group >= GPIO_NUMINTGROUPS || bit >= 32) {
+        return;
+    }
+    s->gpio_int_status[group] |= 1u << bit;
+    sysic_update_gpio_irq(s, group);
+}
+
 /* Inputs carry logical interrupt requests, rather than raw pad polarity.
  * Edge-latched button and digitizer requests continue to use gpio_int_status.
  * A nested controller's level stays pending until that device clears it. */
