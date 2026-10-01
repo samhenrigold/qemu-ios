@@ -99,7 +99,7 @@ class Bridge:
                     # A core reset clears the guest address and EP0 setup.
                     # Re-enumerate through real bus events before polling it.
                     reset = self.usb.address == 0
-                    desc = self.usb.device_descriptor(reset=reset)
+                    desc = self.usb.device_descriptor(reset=reset, timeout=1)
                     mode = struct.unpack_from('<H', desc, 10)[0]
                     if self.mux_addr and 0x1290 <= mode <= 0x12af:
                         self.handoff()

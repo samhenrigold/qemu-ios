@@ -27,8 +27,8 @@ class FakeUSB:
         self.calls = []
         self.connection = unittest.mock.Mock()
 
-    def device_descriptor(self, reset=False):
-        self.calls.append(('descriptor', reset))
+    def device_descriptor(self, reset=False, timeout=10):
+        self.calls.append(('descriptor', reset, timeout))
         return descriptor(self.pid)
 
     def configure(self, desc):
@@ -58,7 +58,7 @@ class BridgeTests(unittest.TestCase):
         count, data = bridge.request(1, b'')
         self.assertEqual(count, len(data))
         self.assertIn(b'actual guest serial', data)
-        self.assertEqual(bridge.usb.calls, [('descriptor', True), ('configure', 0x1281)])
+        self.assertEqual(bridge.usb.calls, [('descriptor', True, 1), ('configure', 0x1281)])
 
     def test_kernel_handoff_precedes_configuration_and_has_one_owner(self):
         bridge = self.connected(0x1293)
@@ -70,13 +70,13 @@ class BridgeTests(unittest.TestCase):
         for thread in threads:
             thread.join()
         self.assertEqual(results, [(-1, b''), (-1, b'')])
-        self.assertEqual(bridge.usb.calls, [('descriptor', True), ('handoff',)])
+        self.assertEqual(bridge.usb.calls, [('descriptor', True, 1), ('handoff',)])
         bridge.usb.connection.close.assert_not_called()
 
     def test_stable_recovery_poll_does_not_reset(self):
         bridge = self.connected(0x1281, address=1)
         bridge.request(1, b'')
-        self.assertEqual(bridge.usb.calls, [('descriptor', False), ('serial',)])
+        self.assertEqual(bridge.usb.calls, [('descriptor', False, 1), ('serial',)])
 
     def test_initial_kernel_connection_does_not_select_recovery_config(self):
         listener = unittest.mock.Mock()
@@ -91,7 +91,7 @@ class BridgeTests(unittest.TestCase):
         with patch.object(bridge_module, 'TCPUSB', return_value=usb), patch.object(bridge_module.time, 'sleep'):
             with self.assertRaises(ConnectionError):
                 bridge.connect()
-        self.assertEqual(usb.calls, [('descriptor', True), ('handoff',)])
+        self.assertEqual(usb.calls, [('descriptor', True, 10), ('handoff',)])
         usb.connection.close.assert_not_called()
 
     def test_descriptor_probe_uses_bus_events_without_configuration(self):
@@ -102,7 +102,7 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(usb.device_descriptor(reset=True), descriptor(0x1293))
         self.assertEqual(usb.packet.call_args_list,
                          [unittest.mock.call(0, flags=2), unittest.mock.call(0, flags=4)])
-        usb.control.assert_called_once_with(128, 6, 0x100, length=18)
+        usb.control.assert_called_once_with(128, 6, 0x100, length=18, timeout=10)
         usb.control.return_value = b'bad'
         with self.assertRaises(bridge_module.USBError):
             usb.device_descriptor()
