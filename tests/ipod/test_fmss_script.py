@@ -75,6 +75,32 @@ int main(void) {
     assert(out[8] == 0);
     run(id4, sizeof(id4)); /* 8 bytes per CE, 8 CEs */
     for (int i = 0; i < 8; i++) assert(out[2*i] == (i < 4 ? 0xb614d5adu : 0) && out[2*i+1] == 0);
+    /* Actual stock 5F138 opcode06 forms, observed with existing RAM stores.
+     * Distinct values and zero-overwrite distinguish assignment from OR,
+     * addition or accidental operand reversal. Self-copy must preserve input. */
+    uint32_t copies[] = {
+        0x05030000u, 0x89abcdefu, 0x05040000u, 0x13579bdfu,
+        0x06040003u, 0, 0x05070000u, 0x9300u,
+        0x11040007u, 0, 0x05010000u, 0x89abcdefu,
+        0x06010001u, 0,
+        0x0c070007u, 4, 0x11010007u, 0,
+        0x05030000u, 0, 0x06040003u, 0,
+        0x0c070007u, 4, 0x11040007u, 0,
+        0x05030000u, 4, 0x05040000u, 8,
+        0x06020003u, 0, 0x06030004u, 0,
+        0x0c070007u, 4, 0x11020007u, 0,
+        0x0c070007u, 4, 0x11030007u, 0, 0, 0
+    };
+    run(copies, sizeof(copies));
+    uint32_t *copied = (uint32_t *)(mem + 0x9300);
+    assert(copied[0] == 0x89abcdefu && copied[1] == 0x89abcdefu);
+    assert(copied[2] == 0 && copied[3] == 4 && copied[4] == 8);
+    uint32_t unknown_copy[] = {
+        0x05030000u, 7, 0x05070000u, 0x9400u,
+        0x06040003u, 1, 0x11040007u, 0, 0, 0
+    };
+    run(unknown_copy, sizeof(unknown_copy));
+    assert(*(uint32_t *)(mem + 0x9400) == 0); /* Stop before later DMA. */
     uint32_t bad[] = {0x05000000u, 7, 0x11000001u, 0, 0x99000000u, 0, 0x11000000u, 0, 0, 0};
     run(bad, sizeof(bad)); /* an unknown op stops the program */
     assert(mem[0] == 7 && mem[7] == 0);
@@ -125,7 +151,7 @@ int main(void) {
         fmss_run_script(&s);
         assert(*(uint32_t *)(mem + 0x9200) == count);
     }
-    puts("PASS: FMSS D18 page counter, D28 chunks, D4C parameter, READ ID programs of 7E18 and 8C148, unknown op stops");
+    puts("PASS: FMSS opcode06 copies/rejection, D18 page counter, D28 chunks, D4C parameter, READ ID programs of 7E18 and 8C148, unknown op stops");
 }
 ''' % (words(ID_7E18), words(ID_8C148))
 with tempfile.TemporaryDirectory() as tmp:

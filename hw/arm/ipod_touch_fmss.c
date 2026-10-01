@@ -199,6 +199,13 @@ static void fmss_run_script(IPodTouchFMSSState *s)
             break;
         }
         case 0x05: r[a] = imm; break;
+        case 0x06:
+            if (imm) {
+                ok = false; /* Only the observed register-copy form is known. */
+            } else {
+                r[a] = r[b & 0x1f];
+            }
+            break;
         case 0x07: break;
         case 0x0b: r[a] = r[b & 0x1f] | imm; break;
         case 0x0c: r[a] = r[b & 0x1f] + imm; break;
