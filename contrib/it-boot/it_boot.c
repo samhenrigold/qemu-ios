@@ -34,6 +34,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <mach/mach_time.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -682,7 +683,32 @@ static int pull_offer(char *text, size_t cap)
     return (int)total;
 }
 
-static int fetch(const struct entry *e, const char *dst, time_t deadline)
+/* mach_absolute_time exists on the oldest supported guests. Wall time changes
+ * when the agent synchronizes the guest clock and cannot bound a transfer. */
+struct pull_clock { uint64_t start; uint32_t numer, denom; };
+static int pull_clock_start(struct pull_clock *clock)
+{
+    mach_timebase_info_data_t scale;
+    if (mach_timebase_info(&scale) != 0 || !scale.numer || !scale.denom) {
+        return -EIO;
+    }
+    clock->numer = scale.numer;
+    clock->denom = scale.denom;
+    clock->start = mach_absolute_time();
+    return 0;
+}
+
+static int pull_clock_expired(const struct pull_clock *clock)
+{
+    uint64_t ticks = mach_absolute_time() - clock->start;
+    /* Split the conversion: legacy libSystem does not export compiler-rt's
+     * 64-bit division/conversion helpers. Both ARM variants have VFP. */
+    double elapsed = (double)(uint32_t)(ticks >> 32) * 4294967296.0 +
+                     (double)(uint32_t)ticks;
+    return elapsed * clock->numer / clock->denom >= PULL_SECONDS * 1000000000.0;
+}
+
+static int fetch(const struct entry *e, const char *dst, const struct pull_clock *clock)
 {
     static char buf[WINDOW];
     sha_ctx c;
@@ -705,7 +731,7 @@ static int fetch(const struct entry *e, const char *dst, time_t deadline)
         int64_t n = qc(QC_PKG_READ, buf, (uint32_t)off, want, e->idx);
         if (n <= 0 || n > want) {
             rc = -EIO;
-        } else if (time(NULL) > deadline) {
+        } else if (pull_clock_expired(clock)) {
             rc = -ETIMEDOUT;
         } else {
             rc = write_all(fd, buf, (size_t)n);
@@ -736,7 +762,11 @@ static int fetch(const struct entry *e, const char *dst, time_t deadline)
 static int install(const struct offer *o, const char *text, size_t len)
 {
     char tmp[PATHN], dir[PATHN], dst[PATHN];
-    time_t deadline = time(NULL) + PULL_SECONDS;
+    struct pull_clock clock;
+    int clock_error = pull_clock_start(&clock);
+    if (clock_error) {
+        return clock_error;
+    }
     pkg_path(dir, o->serial, NULL);
     snprintf(tmp, sizeof(tmp), "%s.tmp", dir);
     rmtree(tmp);
@@ -746,7 +776,7 @@ static int install(const struct offer *o, const char *text, size_t len)
     int rc = 0;
     for (int i = 0; !rc && i < o->nent; i++) {
         snprintf(dst, sizeof(dst), "%s/%s", tmp, o->e[i].path);
-        rc = fetch(&o->e[i], dst, deadline);
+        rc = fetch(&o->e[i], dst, &clock);
     }
     if (!rc) {
         snprintf(dst, sizeof(dst), "%s/offer", tmp);
@@ -963,6 +993,7 @@ int it_boot_run(void)
             }
             if (rc) {
                 say("it_boot: install of %s%ld failed, keeping current\n", "", want);
+                say("it_boot: install error %s%ld\n", "", rc);
                 result = rc;
             } else {
                 if (cur >= 0 && !in_list(st.bad, st.nbad, cur)) {
