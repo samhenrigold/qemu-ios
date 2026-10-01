@@ -23,6 +23,7 @@ base, staging, out = map(Path, (args.device, args.staging, args.out))
 out.mkdir()
 (out / 'overlay').mkdir()
 shutil.copyfile(base / 'nor.bin', out / 'nor.bin')
+identity = json.loads((base / 'identity.json').read_text())
 metadata = plistlib.loads((staging / 'metadata.plist').read_bytes())
 assert metadata['filename'] == 'audio.m4a' and metadata['artwork'] == 'artwork.jpg'
 cfg = SimpleNamespace(files=args.files, device=str(base), base_nand=str(base / 'nand'),
@@ -41,6 +42,17 @@ try:
         device.start()
         ok, detail, _ = device.wait_for_home(240)
         assert ok, detail
+        readback = {}
+        for guest_key, identity_key in (('SerialNumber', 'serial-number'),
+                                        ('UniqueDeviceID', 'udid'),
+                                        ('WiFiAddress', 'wifi-mac'),
+                                        ('BluetoothAddress', 'bt-mac')):
+            reply = r.run(['ideviceinfo', '-k', guest_key], cfg, 30)
+            assert reply.returncode == 0, (guest_key, reply.stderr)
+            actual = reply.stdout.strip()
+            assert actual.lower() == identity[identity_key].lower(), (guest_key, actual, identity[identity_key])
+            readback[guest_key] = actual
+        (out / (boot + '-identity.json')).write_text(json.dumps(readback, indent=2))
         control = r.prepare_app_control(cfg, procs, device, r.Result('artwork control'))
         ok, detail = r.unlock(cfg, control, device)
         assert ok, detail
@@ -81,7 +93,7 @@ try:
         assert len(image) > 100 and image.startswith(b'\x89PNG\r\n\x1a\n')
         (out / (boot + '-artwork.png')).write_bytes(image)
         (out / (boot + '.json')).write_text(json.dumps({'rows': rows, 'extra_tags': extra}, indent=2))
-        print('PASS:', boot, 'native tags, decoded artwork and one song after repeat import', flush=True)
+        print('PASS:', boot, 'factory identity, native tags, decoded artwork and one song after repeat import', flush=True)
         # Reopening after a hard stop also exercises persistent cache publication.
         procs.stop_all()
         device.qmp.close()

@@ -11,8 +11,7 @@ NVRAM `boot-ramdisk` too), so a ramdisk carrying the helper cannot come through 
 device normally and, at the kernel's entry (LC_UNIXTHREAD pc, gdbstub breakpoint, MMU still off), this adds
 what iBoot's restore path would have: the ramdisk at topOfKernelData, a chosen/memory-map RAMDisk (pa, len)
 entry in a spare MemoryMapReserved slot, an empty chosen/root-matching and
-topOfKernelData past the ramdisk (`rd=md0` comes in the command line the
-machine hands iBoot). The 4.x DeviceTree's own secure-root-prefix 'md' makes md0 a SecureRoot.
+topOfKernelData past the ramdisk, and the host-owned one-shot command line. The 4.x DeviceTree's own secure-root-prefix 'md' makes md0 a SecureRoot.
 
 The ramdisk (a private copy) gets it_keybag (contrib/it-keybag/build-ipod.sh) as restored_external, which
 rc.boot runs first: effaceable format (lands in NOR through nor-rw), MKBKeyBagCreateSystem into disk0s1's
@@ -29,8 +28,8 @@ from ipad1_keybag import DONE, ramdisk_with_helper
 from ipad1_kboot import DeviceTree
 
 FILES = os.path.expanduser("~/Developer/qemu-ios-files")
-# rd=md0 rides the machine's own command line (early iBoot literal and late write), which the late write
-# keeps re-asserting, so it is not edited in boot_args here.
+# The host stages these with the ramdisk at the paused kernel handoff.
+# Stock iBoot identity population is left intact; no literal or timer is needed.
 BOOT_ARGS = "rd=md0 serial=3 debug=0x8 -v amfi_allow_any_signature=1 cs_enforcement_disable=1"
 CMDLINE_OFF, CMDLINE_LEN = 0x38, 256
 
@@ -149,8 +148,13 @@ def handoff(gdb, kc, ramdisk):
     dt_pa = dtp - virt + phys
     gdb.write(dt_pa, add_ramdisk(gdb.read(dt_pa, dtlen), rd_pa, len(ramdisk)))
     gdb.write(rd_pa, ramdisk)
-    line = args[CMDLINE_OFF:CMDLINE_OFF + CMDLINE_LEN].split(b"\0")[0].decode()
-    assert "rd=md0" in line.split(), "iBoot's command line lacks rd=md0: [%s]" % line
+    # This host one-shot already stages the ramdisk and topOfKernelData. Own
+    # its command line here too, before the first kernel instruction, rather
+    # than relying on a firmware literal redirect or a timer race.
+    command = BOOT_ARGS.encode()
+    assert len(command) < CMDLINE_LEN, "keybag command line exceeds boot_args capacity"
+    args[CMDLINE_OFF:CMDLINE_OFF + CMDLINE_LEN] = command.ljust(CMDLINE_LEN, b"\0")
+    line = BOOT_ARGS
     struct.pack_into("<I", args, 0x10, new_top)
     gdb.write(ba, bytes(args))
     print("keybag boot: ramdisk %d bytes at 0x%08x, topOfKernelData 0x%08x -> 0x%08x, [%s]"
@@ -198,7 +202,7 @@ def main():
     port = 20000 + os.getpid() % 20000
     machine = ",".join([f"iPod-Touch,bootrom={FILES}/bootrom_240_4", f"nand={out}/nand", f"nor={out}/nor.bin",
                         f"nor-rw={nor}", f"nandrw={ovl}", f"direct-iboot={out}/iBoot.bin",
-                        f"gid-blobs={out}/gid-blobs.bin", "aes-uid=engine", f"boot-args={BOOT_ARGS}"])
+                        f"gid-blobs={out}/gid-blobs.bin", "aes-uid=engine", "boot-args="])
     q = subprocess.Popen([a.qemu, "-M", machine, "-m", "128M", "-display", "none", "-audio", "driver=none",
                           "-serial", "file:" + serial, "-gdb", f"tcp:127.0.0.1:{port}", "-S"],
                          stdout=open(f"{td}/qemu.log", "w"), stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)

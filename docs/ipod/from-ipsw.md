@@ -131,10 +131,10 @@ copy with `it_keybag` (contrib/it-keybag, armv6 build `build-ipod.sh`: the iPod 
 data at `/private/var`) as `restored_external`, boots as `md0` so the root is a SecureRoot (the normal
 4.2.1 DT already carries `secure-root-prefix = md`). The difference is the handoff: everything iBoot loads
 is a signed img3 (its `boot-ramdisk` NVRAM path loads type `rdsk` to 0x0c000000 and validates it), so a
-modified ramdisk cannot come through iBoot. iBoot boots the device normally with `rd=md0` in its command
-line; at the kernel's entry (LC_UNIXTHREAD pc, MMU off) a gdbstub breakpoint adds what iBoot's restore
+modified ramdisk cannot come through iBoot. iBoot boots the device normally; at the kernel's entry (LC_UNIXTHREAD pc, MMU off) a gdbstub breakpoint adds what iBoot's restore
 path adds: the ramdisk at topOfKernelData, a `RAMDisk` (pa, len) entry in a spare `MemoryMapReserved`
-slot of chosen/memory-map, an empty chosen/root-matching, topOfKernelData moved past it. `it_keybag`
+slot of chosen/memory-map, an empty chosen/root-matching, topOfKernelData moved past it,
+and the host-owned `rd=md0` command line. `it_keybag`
 formats effaceable (nor-rw) and creates `/private/var/keybags/systembag.kb` (1335 bytes); the overlay's
 pages (at their logical homes) are folded into `nand/` and the written NOR becomes `nor.bin`. About 40 s.
 
@@ -283,14 +283,18 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 
 - hw/arm/it_iboot.c (board-agnostic; the iPod machine calls it after staging iBoot) finds by
   pattern, in any iPod touch 2G iBoot (2.1.1 .. 4.2.1, pinned by tests/ipod/test_iboot_literals.py):
-  the normal-boot command-line literal it redirects at the staged `boot-args` string (the restore
-  command line `rd=md0 nand-enable-reformat=1 -progress`, its single literal, the word before it,
-  which Thumb code must load; else "unknown iBoot", nothing written); the build's security epoch
+  the build's security epoch
   (the floor its epoch helper applies to the chip ID fuse field: 1/2 on 2.x, 3 on iBoot-596 = 3.0,
   4 from iBoot-636 on), which the SYSIC model returns in POWER_ID[31:24] in place of the LLB's
   latch, so miu_init's "Epoch Mismatch" panic no longer keys on one build; and the 2.x
-  gBootArgs.commandLine buffer for the NAND-boot data write. The late boot-args write finds
-  `boot_args` by signature (kernel base 0xC0000000 or 0x80000000) on any build.
+  gBootArgs.commandLine buffer for the NAND-boot data write. The host boot-args data write finds
+  `boot_args` by signature (kernel base 0xC0000000 or 0x80000000).
+  The direct-iBoot empty-string literal redirect is removed: that literal also
+  names the DeviceTree root, so replacing it prevented iBoot from populating
+  serial/model/region and produced the wrong USB identity. The existing repeated
+  handoff-buffer writer supplies the compatibility arguments. Native 7E18
+  identity, guest services, import and cold reboot validate this boundary;
+  other firmware generations still need native timing qualification.
 - 3.0 (7A341): the baked helpers (it_agent, it_typein DYLD_INSERTed into SpringBoard, sblaunch, it_prefs)
   are linked for the 3.1+ dyld; 3.0's refuses LC_DYLD_INFO_ONLY like 2.x, so `ipod2g_device.py` omits them
   below 3.1 (stock SpringBoard) until a legacy-linked set exists. 3.0 has no dyld shared cache (it arrived

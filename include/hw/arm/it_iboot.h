@@ -16,16 +16,6 @@
 #include <stdint.h>
 
 /*
- * Offset of the literal word iBoot hands XNU as its kernel command line on a
- * normal boot (the empty string; restore mode uses
- * "rd=md0 nand-enable-reformat=1 -progress" through the word after it).
- * Redirecting that word to a staged string sets the command line before
- * PE_init_platform and AMFI read it.
- */
-uint32_t it_iboot_find_boot_args_literal(const uint8_t *image, size_t size,
-                                         uint32_t base);
-
-/*
  * The boot security epoch this iBoot demands of SYSIC POWER_ID[31:24] in
  * miu_init ("Epoch Mismatch" otherwise): the floor its epoch helper applies
  * to the chip ID fuse field. The LLB latches that byte on a real boot; a
@@ -56,16 +46,6 @@ uint32_t it_iboot_find_command_line(const uint8_t *image, size_t size,
 #ifndef IT_IBOOT_HOST_TEST
 #include "exec/hwaddr.h"
 #include "exec/memory.h"
-
-/*
- * Stage `args` at `staging` and point the normal-boot literal of the iBoot
- * image at [base, base + image_size) in guest memory at it. Returns the guest
- * address of the redirected literal, 0 if the image is not recognised (and
- * then nothing is written).
- */
-uint32_t it_iboot_inject_boot_args(AddressSpace *as, uint32_t base,
-                                   size_t image_size, const char *args,
-                                   hwaddr staging);
 
 /* it_iboot_find_epoch over the image staged at [base, base + image_size). */
 uint32_t it_iboot_epoch(AddressSpace *as, uint32_t base, size_t image_size);

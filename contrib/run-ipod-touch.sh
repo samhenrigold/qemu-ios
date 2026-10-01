@@ -299,7 +299,7 @@ export IT_TVOUT_READY=1                        # TV-out shutdown gates
 # override, or BOOT_ARGS="" to bisect against them. They reach the emulator
 # only as the boot-args machine properties (it reads no IT_BOOT_ARGS* environment).
 MACHOPTS="$MACHOPTS,boot-args=${BOOT_ARGS-amfi_allow_any_signature=1 cs_enforcement_disable=1}"
-MACHOPTS="$MACHOPTS,boot-args-delay-ms=1500,boot-args-repeat=200,boot-args-interval-ms=250"
+MACHOPTS="$MACHOPTS,boot-args-delay-ms=0,boot-args-repeat=200,boot-args-interval-ms=250"
 
 # The audio hardware (AMC, CS42L58 codec, I2S0, speaker amp) is present on
 # every boot, as on the board. IT_AUDIO_HW=0

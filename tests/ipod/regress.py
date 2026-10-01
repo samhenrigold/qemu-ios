@@ -369,11 +369,12 @@ class Device:
                       cfg.usb_port))
         # The kernel command line is a machine property (the emulator reads no IT_BOOT_ARGS*
         # environment): amfi_allow_any_signature so re-signed App Store binaries exec, written
-        # early through iBoot's literal and re-written on a timer until AMFI has latched it.
+        # into the handoff buffer on a timer until AMFI has latched it. iBoot's
+        # empty-string literal is also its DeviceTree root and must stay intact.
         machine += ",boot-args=amfi_allow_any_signature=1 cs_enforcement_disable=1"
         if getattr(cfg, "kernel_console", False):
             machine += " serial=3 debug=0x8"
-        machine += ",boot-args-delay-ms=1500,boot-args-repeat=200,boot-args-interval-ms=250"
+        machine += ",boot-args-delay-ms=0,boot-args-repeat=200,boot-args-interval-ms=250"
         for option in ("audio_hw", "h264_decode", "scaler_decode", "mpvd_decode", "amc_mode", "lcd_planes", "direct_iboot", "direct_llb", "gid_blobs", "guest_package"):
             value = getattr(cfg, option, None)
             if value is not None:

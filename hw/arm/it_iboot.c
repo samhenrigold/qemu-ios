@@ -15,67 +15,6 @@ static uint32_t iboot_u32(const uint8_t *p)
     return iboot_u16(p) | (uint32_t)iboot_u16(p + 2) << 16;
 }
 
-/* Does any Thumb `ldr rN, [pc, #imm]` before `word` load that literal? */
-static bool iboot_literal_loaded(const uint8_t *image, size_t word)
-{
-    for (size_t i = 0; i + 2 <= word; i += 2) {
-        uint16_t hw = iboot_u16(image + i);
-        if ((hw & 0xf800) == 0x4800 &&
-            ((i + 4) & ~(size_t)3) + (hw & 0xff) * 4 == word) {
-            return true;
-        }
-    }
-    return false;
-}
-
-uint32_t it_iboot_find_boot_args_literal(const uint8_t *image, size_t size,
-                                         uint32_t base)
-{
-    /*
-     * Release iBoot ignores NVRAM boot-args: it hands XNU an empty string on
-     * a normal boot and the restore string in restore mode, each through a
-     * literal, and every iPod touch 2G iBoot (385.22 .. 931.71.16) keeps the
-     * normal-boot literal in the word before the restore one. So: the restore
-     * string, its one literal, the word before it -- provided Thumb code
-     * really loads that word and it points at an empty string in the image.
-     */
-    static const char restore[] = "rd=md0 nand-enable-reformat=1 -progress";
-    size_t rs = 0, found = 0;
-
-    if (!image || size < sizeof(restore) + 8 || size > UINT32_MAX - base) {
-        return 0;
-    }
-    for (size_t i = 0; i + sizeof(restore) <= size; i++) {
-        if (!memcmp(image + i, restore, sizeof(restore))) {
-            if (rs) {
-                return 0;
-            }
-            rs = i;
-        }
-    }
-    if (!rs) {
-        return 0;
-    }
-    for (size_t i = 4; i + 4 <= size; i += 4) {
-        if (iboot_u32(image + i) != base + rs) {
-            continue;
-        }
-        if (found) {
-            return 0;
-        }
-        found = i - 4;
-    }
-    if (!found) {
-        return 0;
-    }
-    uint32_t string = iboot_u32(image + found);
-    if (!iboot_literal_loaded(image, found) || string < base ||
-        string - base >= size || image[string - base] != 0) {
-        return 0;
-    }
-    return found;
-}
-
 /*
  * iBoot-204 (the S5L8900's, iPhone OS 1.x) has no epoch helper: miu_init
  * compares the byte inline, `ldr rN, [rN]; lsrs rN, rN, #24; cmp rN, #M;
@@ -299,31 +238,4 @@ uint32_t it_iboot_epoch(AddressSpace *as, uint32_t base, size_t image_size)
     return epoch;
 }
 
-uint32_t it_iboot_inject_boot_args(AddressSpace *as, uint32_t base,
-                                   size_t image_size, const char *args,
-                                   hwaddr staging)
-{
-    uint8_t literal[4], command[256] = { 0 };
-    uint32_t found;
-
-    if (!args || !image_size || image_size > 0x100000) {
-        return 0;
-    }
-    g_autofree uint8_t *image = g_try_malloc(image_size);
-    if (!image) {
-        return 0;
-    }
-    address_space_read(as, base, MEMTXATTRS_UNSPECIFIED, image, image_size);
-    found = it_iboot_find_boot_args_literal(image, image_size, base);
-    if (!found) {
-        return 0;
-    }
-    g_strlcpy((char *)command, args, sizeof(command));
-    address_space_write(as, staging, MEMTXATTRS_UNSPECIFIED, command,
-                        sizeof(command));
-    stl_le_p(literal, staging);
-    address_space_write(as, base + found, MEMTXATTRS_UNSPECIFIED, literal,
-                        sizeof(literal));
-    return base + found;
-}
 #endif
