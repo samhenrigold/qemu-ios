@@ -1,18 +1,13 @@
 #!/bin/bash
 # The one gate for this tree.
 #
-#   tests/gate.sh --quick   host only, no emulator: every tests/ipod/test_*.py, tests/ipad1/test_*.py and
-#                           tests/guest-package/test_*.py that does not launch qemu-system-arm, plus
-#                           contrib/guest-package/mkpkg.py selfcheck; JOBS at a time (default 4)
-#   tests/gate.sh --models  production device qtests, no IPSW/NAND/guest prerequisites
-#   tests/gate.sh --full    quick, models, then tests/ipod/run-regression.sh and tests/ipad1/regress.py (default tiers),
-#                           one suite at a time
-#   tests/gate.sh --fresh   full, then tests/ipod/fresh-device.sh and tests/ipad1/fresh-device.sh on IPOD_IPSW /
-#                           IPAD_IPSW (stock IPSWs; FIRMWAREKIT and FIRMWAREKIT_CATALOG as tests/fresh-device.sh)
+#   tests/gate.sh --quick   registered host checks, JOBS at a time (default 4)
+#   tests/gate.sh --models  registered production device qtests, no guest inputs
+#   tests/gate.sh --full    quick, models, then prepared-device suites
+#   tests/gate.sh --fresh   full, then stock-IPSW preparation suites
 #
-# Legacy Python unit tests that launch the emulator (the *_guest.py acceptance runs, the *_snapshot.py and paused-machine
-# QOM checks: any test naming qemu-system-arm) are SKIP in every tier; run them by hand with a built emulator
-# and a NAND. The explicit --models qtests above need neither. So are tests that take their inputs (a NAND, a movie, a capture) on the command line.
+# tests/gate-registry.json declares tiers and prerequisites. Unregistered tests
+# fail every tier before checks run. Manual input-dependent checks report SKIP.
 # The harnesses keep their own input defaults (~/Developer/qemu-ios-files, the usbmuxd forks,
 # repro/default-iboot). The one shared input is the emulator: QEMU=... (default build/qemu-system-arm, the
 # README's build dir), which --fresh's scripts use too.
@@ -30,9 +25,11 @@ JOBS="${JOBS:-4}"
 export TIMEOUT="$(command -v timeout || true)"   # coreutils; without it a hung test hangs the gate
 # The H.264 unit checks link libavcodec through pkg-config and need the patched FFmpeg the emulator was
 # configured against (scripts/configure-patched-ffmpeg leaves its pkg-config dir in the build dir).
-[ -d "$ROOT/build/ffmpeg-pkgconfig" ] && export PKG_CONFIG_PATH="$ROOT/build/ffmpeg-pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+FFMPEG_PKGCONFIG="$(dirname "$QEMU")/ffmpeg-pkgconfig"
+[ -d "$FFMPEG_PKGCONFIG" ] && export PKG_CONFIG_PATH="$FFMPEG_PKGCONFIG${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 cd "$ROOT"
 mkdir -p "$OUT" && : > "$OUT/results" || exit 2
+python3 tests/gate_registry.py --quick-plan > "$OUT/quick-plan" || exit 1
 
 # Failing on today's tree, each for a known reason (none since 2026-09-29: the 12 stale C-slice/mock checks were repaired).
 export KNOWN='
@@ -46,9 +43,7 @@ run1() {
     log="$OUT/${name//[\/ ]/_}.log"
     if ${TIMEOUT:+$TIMEOUT 900} "$@" > "$log" 2>&1; then state=PASS; else state=FAIL; fi
     why=$(known_reason "$name")
-    if [ "$state" = FAIL ] && head -1 "$log" | grep -q '^usage:'; then
-        state=SKIP; why="takes inputs on the command line: $(head -1 "$log")"
-    elif [ -n "$why" ]; then
+    if [ -n "$why" ]; then
         if [ "$state" = FAIL ]; then state=XFAIL; else state=XPASS; fi
     fi
     printf '%-5s %5ds  %s%s\n' "$state" $((SECONDS - t0)) "$name" "${why:+  ($why)}" >> "$OUT/results"
@@ -59,12 +54,11 @@ export -f run1
 # --- quick: host-only unit checks, in parallel
 if [ "$TIER" != --models ]; then
 {
-    for t in tests/ipod/test_*.py tests/ipad1/test_*.py tests/guest-package/test_*.py; do
-        if grep -q qemu-system-arm "$t"; then skip "$t" "launches qemu-system-arm: run by hand with a built emulator and a NAND"
-        elif grep -q 'sys.exit(__doc__)' "$t"; then skip "$t" "takes inputs on the command line: see its docstring"
-        else echo "$t"; fi
-    done
-    echo selfcheck
+    while IFS=$'\t' read -r tier name reason; do
+        if [ "$tier" = manual ]; then skip "$name" "$reason"
+        elif [ "$name" = "contrib/guest-package/mkpkg.py selfcheck" ]; then echo selfcheck
+        else echo "$name"; fi
+    done < "$OUT/quick-plan"
 } | xargs -P "$JOBS" -I{} bash -c '
     case "$1" in
         selfcheck) run1 "contrib/guest-package/mkpkg.py selfcheck" python3 contrib/guest-package/mkpkg.py selfcheck ;;
@@ -82,40 +76,49 @@ suite() {   # NAME CMD...
 # Explicit built-emulator tests: libqtest drives the real MMIO/IRQ/timer model.
 # Missing build prerequisites fail this tier rather than silently skipping it.
 if [ "$TIER" = --models ] || [ "$TIER" = --full ] || [ "$TIER" = --fresh ]; then
-    for model in ipad1-pmgr ipad1-h2fmi ipad1-cdma; do
+    while IFS=$'\t' read -r tier registered reason; do
+        model="${registered#qtest/}"
         case "$model" in
             ipad1-pmgr) binary="${QTEST_BINARY:-$(dirname "$QEMU")/tests/qtest/$model-test}" ;;
             ipad1-h2fmi) binary="${QTEST_H2FMI_BINARY:-$(dirname "$QEMU")/tests/qtest/$model-test}" ;;
             ipad1-cdma) binary="${QTEST_CDMA_BINARY:-$(dirname "$QEMU")/tests/qtest/$model-test}" ;;
+            *) binary="$(dirname "$QEMU")/tests/qtest/$model-test" ;;
         esac
         if [ -x "$QEMU" ] && [ -x "$binary" ]; then
             suite "qtest/$model" env QTEST_QEMU_BINARY="$QEMU" "$binary"
         else
             printf 'FAIL      -  qtest/%s (build qemu-system-arm and tests/qtest/%s-test; QEMU and QTEST_BINARY/QTEST_H2FMI_BINARY/QTEST_CDMA_BINARY select them)\n' "$model" "$model" >> "$OUT/results"
         fi
-    done
+    done < <(python3 tests/gate_registry.py --tier-plan models)
 fi
 if [ "$TIER" = --full ] || [ "$TIER" = --fresh ]; then
-    if [ -x "$QEMU" ]; then
-        # --stage-gles-shim: the gles check runs this tree's guest shim against this tree's host, the pair
-        # the gate is judging. The shipping image's baked shim is older (its gles verdict is the image's,
-        # not the tree's) and is replaced at the main-merge image swap (docs/ipod/nand-current-new-verification.md).
-        suite "tests/ipod/run-regression.sh" tests/ipod/run-regression.sh --qemu "$QEMU" --stage-gles-shim --out "$OUT/ipod-regress"
-        suite "tests/ipad1/regress.py" python3 tests/ipad1/regress.py --qemu "$QEMU" --out "$OUT/ipad1-regress"
-        # Animation jank in guest-virtual time: three canonical animations against jank-baselines.json.
-        # Deterministic and load-immune (docs/perf-jank.md), so it stands even on a loaded --full gate.
-        suite "tests/ipad1/jank.py" python3 tests/ipad1/jank.py --gate --qemu "$QEMU" --out "$OUT/ipad1-jank"
-    else
-        skip "tests/ipod/run-regression.sh" "no emulator at $QEMU: build it or set QEMU="
-        skip "tests/ipad1/regress.py" "no emulator at $QEMU: build it or set QEMU="
-    fi
+    while IFS=$'\t' read -r tier name reason; do
+        if [ ! -x "$QEMU" ]; then
+            skip "$name" "no emulator at $QEMU: build it or set QEMU="
+            continue
+        fi
+        case "$name" in
+            tests/ipod/run-regression.sh)
+                # Judge this tree's guest shim against this tree's host.
+                suite "$name" "$name" --qemu "$QEMU" --stage-gles-shim --out "$OUT/ipod-regress" ;;
+            tests/ipad1/regress.py)
+                suite "$name" python3 "$name" --qemu "$QEMU" --out "$OUT/ipad1-regress" ;;
+            tests/ipad1/jank.py)
+                suite "$name" python3 "$name" --gate --qemu "$QEMU" --out "$OUT/ipad1-jank" ;;
+            *) printf 'FAIL      -  %s (no full-tier runner registered)\n' "$name" >> "$OUT/results" ;;
+        esac
+    done < <(python3 tests/gate_registry.py --tier-plan full)
 fi
 if [ "$TIER" = --fresh ]; then
-    # fresh-device.sh prepares through FIRMWAREKIT from the catalog entry's stock IPSW, which has no default path.
-    if [ -n "${IPOD_IPSW:-}" ]; then suite "tests/ipod/fresh-device.sh" tests/ipod/fresh-device.sh "$IPOD_IPSW" "$OUT/fresh-ipod"
-    else skip "tests/ipod/fresh-device.sh" "set IPOD_IPSW to the stock IPSW of ENTRY (default n72ap-7E18)"; fi
-    if [ -n "${IPAD_IPSW:-}" ]; then suite "tests/ipad1/fresh-device.sh" tests/ipad1/fresh-device.sh "$IPAD_IPSW" "$OUT/fresh-ipad"
-    else skip "tests/ipad1/fresh-device.sh" "set IPAD_IPSW to the stock IPSW of ENTRY (default k48ap-7B500)"; fi
+    while IFS=$'\t' read -r tier name reason; do
+        case "$name" in
+            tests/ipod/fresh-device.sh) ipsw="${IPOD_IPSW:-}"; variable=IPOD_IPSW; entry=n72ap-7E18; output=fresh-ipod ;;
+            tests/ipad1/fresh-device.sh) ipsw="${IPAD_IPSW:-}"; variable=IPAD_IPSW; entry=k48ap-7B500; output=fresh-ipad ;;
+            *) printf 'FAIL      -  %s (no fresh-tier runner registered)\n' "$name" >> "$OUT/results"; continue ;;
+        esac
+        if [ -n "$ipsw" ]; then suite "$name" "$name" "$ipsw" "$OUT/$output"
+        else skip "$name" "set $variable to the stock IPSW of ENTRY (default $entry)"; fi
+    done < <(python3 tests/gate_registry.py --tier-plan fresh)
 fi
 
 echo "== $TIER"
