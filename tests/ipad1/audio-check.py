@@ -4,19 +4,20 @@ the guest's system sounds reach the WAV intact.
 
     tests/ipad1/audio-check.py [--nand STORE] [--qemu PATH] [--keep DIR]
 
-Boots an APFS clone of STORE (default: the golden pristine store; the original
-is never written), then:
+Boots STORE under a private overlay through the shared iPad boot harness
+(the original NAND/NOR are never written), then:
   - the connect-power sound SpringBoard plays at boot  -> beep-beep.caf
   - Home, slide to unlock                               -> unlock.aiff
   - Hold with the display on                            -> lock.aiff
   - Home, slide to unlock again                         -> unlock.aiff
 Each sound is found in the WAV by cross-correlation against the file from the
-7B500 root filesystem, played at 1.00x (so rate, channel order and byte
-alignment are all checked). Exit 0 when every one correlates >= MIN_CORR.
+tested guest filesystem, played at 1.00x (waveform and timebase are checked).
+The guest agent reads those resources; --sound-reference-root supplies an
+explicit matching extracted rootfs for older images without an agent. Exit 0 when every one correlates >= MIN_CORR.
 The lock/unlock pair covers the stop/restart path: before the I2S drained bit,
 the first stop hung mediaserverd and every later sound was lost.
 """
-import argparse, os, shutil, subprocess, sys, tempfile, time, wave
+import argparse, importlib.util, os, shutil, subprocess, sys, tempfile, time, wave
 
 import numpy as np
 
@@ -27,17 +28,43 @@ import itqmp  # noqa: E402
 
 itqmp.W, itqmp.H = 1024, 768
 FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1")
-ROOTFS = f"{FILES}/7B500/mnt-rootfs/System/Library"
+ROOTFS = "/System/Library"
 EXPECT = [
     ("boot: connect power", f"{ROOTFS}/Audio/UISounds/beep-beep.caf"),
     ("unlock", f"{ROOTFS}/CoreServices/SpringBoard.app/unlock.aiff"),
     ("lock (Hold)", f"{ROOTFS}/CoreServices/SpringBoard.app/lock.aiff"),
     ("unlock again", f"{ROOTFS}/CoreServices/SpringBoard.app/unlock.aiff"),
 ]
-# 4.x SpringBoard plays UISounds/unlock.caf on unlock (the same file ships in 7B500's rootfs)
+# 4.x SpringBoard plays UISounds/unlock.caf on unlock.
 EXPECT_4 = [(n, f"{ROOTFS}/Audio/UISounds/unlock.caf" if n.startswith("unlock") else f) for n, f in EXPECT]
 MIN_CORR = 0.8
 LEVEL = 150          # |sample| above this is sound
+
+
+def capture_references(q, destination, product_version="3.2.2", reference_root=None):
+    """Read the tested guest's stock resources through its VFS, before shutdown.
+
+    A legacy image without an agent needs an explicit matching rootfs directory;
+    never silently compare another firmware's host-mounted resources.
+    """
+    os.makedirs(destination, exist_ok=True)
+    expected = EXPECT_4 if product_version.startswith("4.") else EXPECT
+    paths, result = {}, []
+    for label, path in expected:
+        if path not in paths:
+            target = os.path.join(destination, os.path.basename(path))
+            if reference_root:
+                shutil.copyfile(os.path.join(reference_root, path.lstrip("/")), target)
+            else:
+                status, data = itqmp.agent(q, "get", path)
+                if status or not data:
+                    raise RuntimeError("cannot read stock sound %s from tested guest (%s); "
+                                       "offer its guest agent or supply --sound-reference-root" % (path, status))
+                with open(target, "wb") as f:
+                    f.write(data)
+            paths[path] = target
+        result.append((label, paths[path]))
+    return result
 
 
 def load(path):
@@ -77,7 +104,7 @@ def corr(seg, ref):
     return float(np.dot(s, ref) / (np.linalg.norm(s) * np.linalg.norm(ref) + 1e-9))
 
 
-def judge(wav, serial=None, expect=EXPECT):
+def judge(wav, serial=None, *, expect):
     """Check a WAV against `expect` [(label, rootfs sound file), ...] in order.
 
     Prints one line per sound; returns True when the WAV is 44.1 kHz, holds at
@@ -139,17 +166,6 @@ def play_sounds(q):
     unlock()
 
 
-def drive(sock, qemu):
-    while not os.path.exists(sock):
-        if qemu.poll() is not None:
-            raise SystemExit("qemu exited before QMP came up")
-        time.sleep(0.2)
-    q = itqmp.QMP(sock)
-    time.sleep(40)                            # SpringBoard up, boot sound done
-    play_sounds(q)
-    q.cmd("quit")
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--nand", help="override selected device NAND")
@@ -157,35 +173,43 @@ def main():
     ipad1_boot.add_arguments(ap)
     ap.add_argument("--qemu", default=f"{ROOT}/build/qemu-system-arm")
     ap.add_argument("--keep", help="copy the WAV and serial log here")
+    ap.add_argument("--sound-reference-root", help="explicit matching extracted rootfs for a guest without an agent")
+    ap.add_argument("--product-version", help="sound selector (default: selected device lock, else 3.2.2)")
+    ap.add_argument("--guest-package", help="current guest-agent offer for a legacy prepared image")
     a = ap.parse_args()
     a.nand = a.nand or os.path.join(a.device, "nand")
-
+    spec = importlib.util.spec_from_file_location("audio_regress", os.path.join(HERE, "regress.py"))
+    rg = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rg)
+    rg.device_args(a)
+    rg.ipod.START = time.time()
+    a.boot_timeout = 200
     with tempfile.TemporaryDirectory() as td:
-        nand = os.path.join(td, "nand")
-        subprocess.run(["cp", "-c", "-R", a.nand, nand], check=True)      # APFS clone
-        subprocess.run(["chmod", "-R", "u+w", nand], check=True)
-        wav, serial = os.path.join(td, "out.wav"), os.path.join(td, "serial.log")
-        sock = f"/tmp/ipad1-audio-{os.getpid()}.qmp"                      # sun_path < 104
-        qemu = subprocess.Popen(
-            ["timeout", "200", a.qemu, "-machine", f"ipad1,{ipad1_boot.boot_options(a)},nand={nand}",
-             "-display", "none", "-monitor", "none", "-serial", f"file:{serial}",
-             "-qmp", f"unix:{sock},server,nowait", "-audio", f"driver=wav,path={wav}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        a.out = td
+        wav = os.path.join(td, "out.wav")
+        boot = rg.Boot(a, "audio", usb=False, wav=wav)
+        serial = boot.serial
         try:
-            drive(sock, qemu)
+            boot.start()
+            ok, detail = boot.wait_lock_screen()
+            if not ok:
+                raise RuntimeError(detail)
+            time.sleep(15)
+            expect = capture_references(boot.qmp, os.path.join(td, "references"),
+                                        a.product_version, a.sound_reference_root)
+            play_sounds(boot.qmp)
+            boot.qmp.cmd("quit")
+            boot.qemu.wait(timeout=30)
         finally:
-            try:
-                qemu.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                qemu.kill()
-            if os.path.exists(sock):
-                os.unlink(sock)
+            boot.stop()
         if a.keep:
             os.makedirs(a.keep, exist_ok=True)
             for f in (wav, serial):
                 shutil.copy(f, a.keep)
+            shutil.copytree(os.path.join(td, "references"), os.path.join(a.keep, "references"),
+                            dirs_exist_ok=True)
 
-        ok = judge(wav, serial)
+        ok = judge(wav, serial, expect=expect)
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

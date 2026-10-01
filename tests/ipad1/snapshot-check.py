@@ -93,6 +93,8 @@ def main():
     ap.add_argument("--usbmuxd", default=rg.USBMUXD)
     ap.add_argument("--boot-timeout", type=int, default=900)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--sound-reference-root", help="explicit matching extracted rootfs when the guest has no agent")
+    ap.add_argument("--guest-package", help="current guest-agent offer for the selected device")
     cfg = ap.parse_args()
     rg.device_args(cfg)
     rg.ipod.START = time.time()
@@ -136,6 +138,8 @@ def main():
         if not ok or not a.wait_mux():
             sys.exit("boot A: %s" % (detail if not ok else "usbmux never attached"))
         a.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
+        expect = ac.capture_references(a.qmp, os.path.join(cfg.out, "references"),
+                                       cfg.product_version, cfg.sound_reference_root)
         a.tap(rg.SAFARI_ICON)
         time.sleep(8)
         a.tap(rg.SAFARI_ADDRESS)
@@ -213,7 +217,7 @@ def main():
     spans = ac.events(cap, rate)[-3:]          # a leftover tail of the saved lock sound may come first
     with tempfile.TemporaryDirectory() as td:
         corrs = [ac.corr(cap[max(0, s0 - rate // 10):s1 + rate // 10], ac.reference(path, td))
-                 for (s0, s1), (_, path) in zip(spans, (ac.EXPECT_4 if cfg.product_version.startswith("4.") else ac.EXPECT)[1:])]
+                 for (s0, s1), (_, path) in zip(spans, expect[1:])]
     results["audio"] = (len(corrs) == 3 and min(corrs) >= ac.MIN_CORR,
                         "unlock/lock/unlock after a mid-sound resume, corr %s" % " ".join("%.2f" % x for x in corrs))
 

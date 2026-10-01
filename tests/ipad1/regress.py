@@ -915,12 +915,13 @@ def check_audio(cfg, r):
         if not ok:
             return r.set(False, detail)
         time.sleep(15)   # the boot sound comes ~35 s after SpringBoard starts
+        expect = ac.capture_references(b.qmp, os.path.join(b.dir, "references"),
+                                       cfg.product_version, getattr(cfg, "sound_reference_root", None))
         ac.play_sounds(b.qmp)
         b.qmp.cmd("quit")
         b.qemu.wait(timeout=30)                       # the WAV header is written at exit
     finally:
         b.stop()
-    expect = ac.EXPECT_4 if cfg.product_version.startswith("4.") else ac.EXPECT
     ok = ac.judge(wav, b.serial, expect=expect)
     r.set(ok, "%d sounds correlate >= 0.8 with the rootfs originals" % len(expect) if ok
           else "WAV correlation failed (see audio/ and the judge output above)")
@@ -989,6 +990,7 @@ def main():
     ap.add_argument("--boot-timeout", type=int, default=600, help="hard cap per QEMU, seconds")
     ap.add_argument("--out", default=None)
     ap.add_argument("--product-version", help="usbmux's expected ProductVersion (default: NAND/../device.lock.json, else 3.2.2)")
+    ap.add_argument("--sound-reference-root", help="explicit matching extracted rootfs when the guest has no agent")
     ap.add_argument("--guest-package", metavar="DIR", help="the machine's guest-package offer directory "
                     "(contrib/guest-package/mkpkg.py offer); boot then also wants it_boot's report")
     a = ap.parse_args()
