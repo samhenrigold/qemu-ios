@@ -26,7 +26,11 @@ in 16-bit words. Type 3, five words, supplies six Bluetooth address bytes.
 The model now supplies that actual card record when `bt-mac` is configured.
 Native 5F138 lockdown and IORegistry readbacks match all four generated identity
 values with Wi-Fi on. No kernel instruction patch or changed identity scheme is
-needed. This retains the existing iBoot UART-node workaround and HCI stand-in.
+needed. The HCI remains a stand-in; candidate `cbf1000344` also removes
+the earlier iBoot UART-node rewrite. The soldered combo card now enumerates
+when the host bridge is disabled. Native identity and snapshot gates pass
+2.1.1, 3.0, 3.1.3 and 4.2.1 with networking off. See
+`/private/tmp/ltm-n72-{211,30,313,421}-physical-combo-snapshot`.
 
 All eight default native regression checks pass on a current 7E18 prepared base
 and guest offer, including GL, audio, installation, launch, clean persistence and
