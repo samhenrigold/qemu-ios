@@ -216,7 +216,44 @@ int main(void) {
         fmss_run_script(&s);
         assert(*(uint32_t *)(mem + 0x9200) == count);
     }
-    puts("PASS: FMSS opcode03 LE DMA/rejection, opcode06 copies/rejection, D18 page counter, D28 chunks, D4C parameter, READ ID programs of 7E18 and 8C148, unknown op stops");
+    /* Stock bulk0A000004/0 intersects current and previous chip masks.
+     * Observe through existing opcode11, without disputed OR/SHL. */
+    uint32_t register_and[] = {
+        0x05000000u, 1, 0x05040000u, 1,
+        0x0a000004u, 0, 0x05070000u, 0x9a00u,
+        0x11000007u, 0, 0, 0
+    };
+    const uint32_t intersections[][2] = {
+        {1,1}, {1,2}, {0xff00ff00u,0x0ff00ff0u},
+        {0,0xffffffffu}, {0xffffffffu,0}, {0x80000000u,0x80000001u}
+    };
+    for (unsigned j = 0; j < sizeof(intersections)/sizeof(intersections[0]); j++) {
+        register_and[1] = intersections[j][0];
+        register_and[3] = intersections[j][1];
+        run(register_and, sizeof(register_and));
+        assert(ldl_le_p(mem + 0x9a00) == (intersections[j][0] & intersections[j][1]));
+    }
+    /* Actual status0A020006/0 operand form; destination must participate. */
+    uint32_t status_and[] = {
+        0x05020000u, 8, 0x05060000u, 0xau,
+        0x0a020006u, 0, 0x05070000u, 0x9a00u,
+        0x11020007u, 0, 0, 0
+    };
+    run(status_and, sizeof(status_and));
+    assert(ldl_le_p(mem + 0x9a00) == 8);
+    /* Nonzero mask selects source&immediate, not destination&source. */
+    uint32_t immediate_and[] = {
+        0x05000000u, 0x12345679u, 0x05010000u, 0xdeadbeeeu,
+        0x0a010000u, 1, 0x05070000u, 0x9a00u,
+        0x11010007u, 0, 0, 0
+    };
+    const uint32_t masks[] = {1,0x1fu,0xffu,0xfffffe01u};
+    for (unsigned j = 0; j < sizeof(masks)/sizeof(masks[0]); j++) {
+        immediate_and[5] = masks[j];
+        run(immediate_and, sizeof(immediate_and));
+        assert(ldl_le_p(mem + 0x9a00) == (0x12345679u & masks[j]));
+    }
+    puts("PASS: opcode0A forms, FMSS opcode03 LE DMA/rejection, opcode06 copies/rejection, D18 page counter, D28 chunks, D4C parameter, READ ID programs of 7E18 and 8C148, unknown op stops");
 }
 ''' % (words(ID_7E18), words(ID_8C148))
 with tempfile.TemporaryDirectory() as tmp:
