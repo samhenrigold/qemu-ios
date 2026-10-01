@@ -36,18 +36,40 @@ The metadata plist is limited to 64 KiB:
 </dict></plist>
 ```
 
+`cc -DITMEDIA_HOST_CHECK itmedia.c` builds the metadata mapping alone for the Mac:
+`itmedia-host metadata.plist staging-id out.plist` writes the properties, artwork key
+and year the guest would use (Light Touch's `tests/offline/check-media-metadata.py`).
+
 Run as root (drops to mobile) or mobile:
 
 ```sh
 /tmp/itmedia /tmp/song.plist staging-id
 ```
 
-Title, filename and duration are required; artist, album and genre are optional.
+Title, filename and duration are required. Optional: `artist`, `album`,
+`album_artist`, `composer`, `genre` (strings); `track_number`, `track_count`,
+`disc_number`, `disc_count` (1..65535); `year` (1..9999); `compilation` (boolean);
+`artwork`, the file name of a cover image staged beside the media. They become
+MusicLibrary's purchase-folder properties (`itemName`, `artistName`, `playlistName`,
+`playlistArtistName`, `composerName`, `genre`, `trackNumber`, `trackCount`,
+`discNumber`, `discCount`, `compilation`), as the 7E18
+`insertItemFromPurchaseFolder:withItemProperties:` reads them. That insert has no
+year property, so the helper sets `item.year` with one UPDATE by pid (no 7E18
+trigger or index covers the column).
 The optional `kind` is `song` by default; use `feature-movie` for a movie.
 MusicLibrary sets the native media kind and video fields. The caller supplies
 metadata and is responsible for validating the codecs; accepting a filename
 extension does not mean the device can decode its contents.
-Encrypted tracks, transcoding, artwork, playlists other than the native
+
+Artwork: MusicLibrary reads a purchased item's cover from the ArtworkCache in
+`Purchases/MobileArtworkDB` (`artwork.db`, `artwork.pix`) under the decimal
+`artworkDBRecordID`, which the insert takes from `itemId`. The helper sets
+`itemId` from the staging ID's first 31 bits and, before inserting, renders the
+cover with `ArtworkCache_ProcessArtworkData(directory, key, "AlbumArt", data)`:
+the device's own AlbumArt formats from lockdown's `com.apple.mobile.iTunes`
+domain (3005 is 320x320). A cover that cannot be stored fails the import, which
+can then be retried with the same staging ID.
+Encrypted tracks, transcoding, playlists other than the native
 Purchased list and a Mac movie-import interface are not implemented here.
 The separate `itphoto` helper handles photos.
 
