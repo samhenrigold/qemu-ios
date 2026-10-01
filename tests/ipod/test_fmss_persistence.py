@@ -50,7 +50,7 @@ typedef struct {
     uint32_t reg_cs_irq_bit, reg_cinfo_target_addr, reg_csgenrc;
     int irq, completion_timer;
     uint32_t reg_cs_ctrl, reg_cs_irq_mask, reg_cs_script;
-    uint32_t reg_script_param_d38, reg_script_param_d34, reg_script_param_d48, reg_script_param_d4c, reg_chunks_per_page, reg_script_csgenr15, reg_script_scratch_d7c;
+    uint32_t reg_script_param_d38, reg_script_param_d34, reg_script_param_d48, reg_script_param_d4c, reg_chunks_per_page, reg_script_csgenr15, reg_script_scratch_d7c, reg_script_scratch_d3c;
     uint32_t reg_cs_buf_addr, reg_pages_in_addr, reg_num_pages;
     uint32_t reg_pages_out_addr, reg_page_spare_out_addr;
     uint8_t page_buffer[4096], page_spare_buffer[64];
