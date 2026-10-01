@@ -111,6 +111,42 @@ int main(void) {
                              selects[j]==4 || selects[j]==8) ? 0xb614d5adu : 0;
         assert(ldl_le_p(mem + 0x9000) == expected);
     }
+    /* Captured bulk/read immediate-16 forms, bit31-clear operands only.
+     * These values establish field splitting, not logical-vs-arithmetic SHR. */
+    uint32_t shift_right[] = {
+        0x05010000u, 0, 0x05000000u, 0x76543210u,
+        0x14000001u, 16, 0x05060000u, 0x9b00u,
+        0x11000006u, 0,
+        0x05070000u, 0, 0x05010000u, 0x76543210u,
+        0x14010007u, 16, 0x0c060006u, 4,
+        0x11010006u, 0, 0, 0
+    };
+    const uint32_t rows[] = {0, 0x12345u, 0x00ffffffu, 0x12345678u, 0x7fffffffu};
+    for (unsigned j = 0; j < sizeof(rows)/sizeof(rows[0]); j++) {
+        shift_right[1] = rows[j];
+        shift_right[11] = rows[j];
+        run(shift_right, sizeof(shift_right));
+        assert(ldl_le_p(mem + 0x9b00) == rows[j] >> 16);
+        assert(ldl_le_p(mem + 0x9b04) == rows[j] >> 16);
+    }
+    uint32_t unsupported_shift[] = {
+        0x05010000u, 0x12345678u, 0x05000000u, 7,
+        0x05060000u, 0x9b00u, 0x11000006u, 0,
+        0x14000001u, 0, 0x11000006u, 0, 0, 0
+    };
+    const uint32_t counts[] = {0, 1, 15, 17, 31, 32};
+    for (unsigned j = 0; j < sizeof(counts)/sizeof(counts[0]); j++) {
+        unsupported_shift[9] = counts[j];
+        run(unsupported_shift, sizeof(unsupported_shift));
+        assert(ldl_le_p(mem + 0x9b00) == 7);
+    }
+    unsupported_shift[9] = 16;
+    const uint32_t unmeasured[] = {0x80000000u, 0x89abcdefu, 0xffffffffu};
+    for (unsigned j = 0; j < sizeof(unmeasured)/sizeof(unmeasured[0]); j++) {
+        unsupported_shift[1] = unmeasured[j];
+        run(unsupported_shift, sizeof(unsupported_shift));
+        assert(ldl_le_p(mem + 0x9b00) == 7);
+    }
     /* Actual stock 5F138 opcode06 forms, observed with existing RAM stores.
      * Distinct values and zero-overwrite distinguish assignment from OR,
      * addition or accidental operand reversal. Self-copy must preserve input. */
@@ -268,7 +304,7 @@ int main(void) {
         run(immediate_and, sizeof(immediate_and));
         assert(ldl_le_p(mem + 0x9a00) == (0x12345679u & masks[j]));
     }
-    puts("PASS: opcode0A forms, FMSS opcode03 LE DMA/rejection, opcode06 copies/rejection, D18 page counter, D28 chunks, D4C parameter, READ ID programs of 7E18 and 8C148, unknown op stops");
+    puts("PASS: bounded opcode14 right16, opcode0A forms, FMSS opcode03 LE DMA/rejection, opcode06 copies/rejection, D18 page counter, D28 chunks, D4C parameter, READ ID programs of 7E18 and 8C148, unknown op stops");
 }
 ''' % (words(ID_7E18), words(ID_8C148))
 with tempfile.TemporaryDirectory() as tmp:

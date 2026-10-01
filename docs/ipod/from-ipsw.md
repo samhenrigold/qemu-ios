@@ -1017,3 +1017,50 @@ unmodeled D48 parameter. Boot still passes because these incomplete runs receive
 deferred completion. Correct instruction/parameter contracts are required
 before honest completion can pass native acceptance. No physical restore or
 sequencer completion fidelity follows from the selector fix.
+
+
+### FMSS sequencer research locations and remaining limits (2026-10-01)
+
+Research addresses identify stock artifacts for reproducible tests; they are not
+emulator runtime dispatch keys. The READ-ID programs are at file offset `0x25330`
+in 7E18 iBoot and `0x25a60` in 8C148 iBoot, captured in
+`tests/ipod/test_fmss_script.py`. Stock 5F138 kernel scripts are bulk VA
+`0xc05f3970` / file `0x5ca970`, read VA `0xc05f3560` / file `0x5ca560`, and status
+VA `0xc05f2520` / file `0x5c9520`.
+
+The stock restore trace reaches opcode `0x14` immediate 16 in bulk `+0x128` and
+read `+0x110`. Each splits a descriptor page field between the FMC address
+registers. The model supports only immediate 16 with source bit 31 clear, where
+logical and arithmetic right shifts agree. It stops other forms before later
+stores; that is a limitation of the model, not evidence of hardware rejection.
+The exact live descriptor word has not been captured, and shift signedness
+remains unmeasured. Unit/qtest fixtures establish bounded interpreter behavior;
+they do not establish successful NAND execution or restore completion.
+
+Factual opcode research also comes from the independently documented
+[S5L8702 FMISS tools](https://github.com/lemonjesus/S5L8702-FMISS-Tools/blob/70b45859af8807a7f841cf649564ce6638e1c112/Documentation.md),
+which target S5L8702 rather than this board's S5L8720. That research explicitly
+leaves right-shift signedness unresolved. Its documentation is CC BY-NC-SA 4.0
+and tools are GPL-3.0; no reference code or documentation text was copied into
+this implementation.
+
+Further independent gaps remain: sequencer writes to Dxx parameter latches are
+ignored; zero-immediate OR/SHL accumulator behavior is incomplete; instruction
+fetch and opcode `0x11` use native-endian physical-memory helpers without
+transaction-result checks. Descriptor loads instead use explicit little-endian
+AddressSpace reads and stop on transaction errors. CPU-side NAND operations,
+event waits and synthetic completion remain separate compatibility behavior.
+
+Research QMP MMIO capture must distinguish implemented readback from default
+zero: only D28 and D4C currently expose these parameter latches through CPU MMIO.
+Zero reads of C04/D08/D0C/D10/D18/D1C/D20/D30 do not establish stored latch values.
+Known Dxx CPU writes are not generally logged by FMSS_TRACE. Exact sequencer
+operands need a separate diagnostic trace or host debugger; adding fake hardware
+readback solely to inspect model state would be the wrong fix.
+
+The bounded opcode14 correction passes strict actual-source sanitizer and IRQ
+checks, real FMSS qtests14/14 and independent default native7E18 two-boot8/8
+(`/private/tmp/ltm-fmss-opcode14-default`). Diagnostic-only tracing now reaches
+unmodeled D34 reads at iBoot +0xe40 and kernel +0xda0; the separate D48 script
+still stops at +0x30. This verifies progress through the earlier shift site,
+not full ISA, parameter-bank, NAND operation or completion fidelity.

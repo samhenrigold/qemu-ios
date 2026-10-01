@@ -594,6 +594,66 @@ static void read_id_chip_selection(void)
     g_free(overlay);
 }
 
+static void observed_right_shift(void)
+{
+    char *overlay;
+    QTestState *qts = start_board(&overlay);
+    uint32_t program[] = {
+        0x05010000, 0, 0x05000000, 0x76543210,
+        0x14000001, 16, 0x05060000, RAM + 0x1000,
+        0x11000006, 0,
+        0x05070000, 0, 0x05010000, 0x76543210,
+        0x14010007, 16, 0x0c060006, 4,
+        0x11010006, 0, 0, 0
+    };
+    static const uint32_t values[] = {
+        0, 0x12345, 0x00ffffff, 0x12345678, 0x7fffffff
+    };
+    /* Actual bulk/read operand forms; all sources have bit31 clear, so these
+     * observations do not establish logical versus arithmetic signedness. */
+    for (unsigned j = 0; j < G_N_ELEMENTS(values); j++) {
+        program[1] = values[j];
+        program[11] = values[j];
+        for (unsigned i = 0; i < G_N_ELEMENTS(program); i++) {
+            qtest_writel(qts, RAM + 4 * i, program[i]);
+        }
+        qtest_writel(qts, RAM + 0x1000, 0xdeadbeef);
+        qtest_writel(qts, RAM + 0x1004, 0xdeadbeef);
+        qtest_writel(qts, FMSS + 0xc04, RAM);
+        qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==, values[j] >> 16);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1004), ==, values[j] >> 16);
+        qtest_writel(qts, FMSS + 0xc00, 8);
+    }
+    uint32_t rejected[] = {
+        0x05010000, 0x12345678, 0x05000000, 7,
+        0x14000001, 0, 0x05060000, RAM + 0x1000,
+        0x11000006, 0, 0, 0
+    };
+    static const struct {
+        uint32_t source;
+        unsigned immediate;
+    } unmeasured[] = {
+        {0x12345678, 0}, {0x12345678, 1}, {0x12345678, 15},
+        {0x12345678, 17}, {0x12345678, 31}, {0x12345678, 32},
+        {0x80000000, 16}, {0x89abcdef, 16}, {0xffffffff, 16}
+    };
+    for (unsigned j = 0; j < G_N_ELEMENTS(unmeasured); j++) {
+        rejected[1] = unmeasured[j].source;
+        rejected[5] = unmeasured[j].immediate;
+        for (unsigned i = 0; i < G_N_ELEMENTS(rejected); i++) {
+            qtest_writel(qts, RAM + 4 * i, rejected[i]);
+        }
+        qtest_writel(qts, RAM + 0x1000, 0xabcddcba);
+        qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==, 0xabcddcba);
+        qtest_writel(qts, FMSS + 0xc00, 8);
+    }
+    qtest_quit(qts);
+    rmdir(overlay);
+    g_free(overlay);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *rom = g_malloc0(131072);
@@ -621,6 +681,7 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/fmss/packed-physical-erased", packed_physical);
     qtest_add_func("/ipod/fmss/packed-generated-blank", packed_generated);
     qtest_add_func("/ipod/fmss/read-id-chip-selection", read_id_chip_selection);
+    qtest_add_func("/ipod/fmss/observed-right-shift", observed_right_shift);
     result = g_test_run();
     unlink(rom_path); unlink(nor_path); rmdir(nand_path);
     g_free(rom_path); g_free(nor_path); g_free(nand_path);
