@@ -118,12 +118,13 @@ static uint8_t find_bit_index(uint8_t num) {
  *   0a AND: imm ? r[b]&imm : r[a]&r[b]
  *   0b OR: imm ? r[b]|imm : r[a]|r[b]
  *   0c r[a] = r[b] + imm
- *   0d r[a] = r[b] - imm        13 r[a] = r[b] << (imm & 31)
+ *   0d r[a] = r[b] - imm        13 nonzero imm: r[a] = r[b] << (imm & 31);
+ *                              imm0: r[a] <<= r[b] for counts below32
  *   14 right shift16 for bit31-clear source only; other forms unmeasured
  *   0e if r[a] != 0 goto imm    17 if r[a] == 0 goto imm (byte offsets)
  *   11 mem32[r[b]] = r[a]
- * This lists implemented behavior, not a complete verified ISA. Zero-immediate
- * SHL and other sequencer writes to 0xDxx still have known gaps. Unsupported forms
+ * This lists implemented behavior, not a complete verified ISA.
+ * Other sequencer writes to 0xDxx still have known gaps. Unsupported forms
  * stop with LOG_UNIMP. Instruction fetch and opcode11 still use native-endian
  * physical-memory helpers without transaction-result checks; descriptor loads
  * use little-endian AddressSpace reads and stop on errors.
@@ -267,7 +268,15 @@ static void fmss_run_script(IPodTouchFMSSState *s)
             break;
         case 0x0c: r[a] = r[b & 0x1f] + imm; break;
         case 0x0d: r[a] = r[b & 0x1f] - imm; break;
-        case 0x13: r[a] = r[b & 0x1f] << (imm & 31); break;
+        case 0x13:
+            if (imm) {
+                r[a] = r[b & 0x1f] << (imm & 31);
+            } else if (r[b & 0x1f] < 32) {
+                r[a] <<= r[b & 0x1f];
+            } else {
+                ok = false; /* Register shift counts >=32 are unmeasured. */
+            }
+            break;
         case 0x14:
             if (imm != 16 || (r[b & 0x1f] & 0x80000000u)) {
                 ok = false; /* Signedness and other shift forms unmeasured. */
