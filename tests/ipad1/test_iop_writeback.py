@@ -38,20 +38,24 @@ harness = r'''
 #define IOP_VIC_COUNT 4
 #define IOP_VIC_REGS 0x1000
 #define IOP_MAX_ENDPOINTS 8
-#define MS_SYNC 1
 typedef int SysBusDevice, MemoryRegion, DeviceState, QEMUTimer, RunState, BlockBackend, VMChangeStateEntry;
 #define qatomic_read(p) (*(p))
 #define qatomic_set(p,v) (*(p)=(v))
 static bool iop_storage_failed;
 static unsigned calls, fail_at, errors, successes;
-static int msync(void *p, size_t size, int flags) {
-    assert(p && size && flags == MS_SYNC);
-    if (++calls == fail_at) { errno = ENOSPC; return -1; }
+static BlockBackend *page_backend, *bitmap_backend;
+static unsigned page_flushes, bitmap_writes;
+static int blk_pwrite(BlockBackend *p, int64_t offset, int64_t size, const void *buf, int flags) {
+    assert(p == bitmap_backend && offset == 0 && size && buf && flags == 0);
+    assert(page_flushes == 1); /* all data durable before ownership */
+    ++bitmap_writes;
+    if (++calls == fail_at) { return -ENOSPC; }
     return 0;
 }
 static int blk_flush(BlockBackend *p) {
-    assert(p);
+    assert(p == page_backend || p == bitmap_backend);
     if (++calls == fail_at) { return -ENOSPC; }
+    if (p == page_backend) { ++page_flushes; }
     return 0;
 }
 static int64_t g_get_monotonic_time(void) { return 0; }
@@ -61,23 +65,25 @@ static bool ipod_touch_fmss_io_failed(void) { return false; }
 static bool ipod_touch_nor_io_failed(void) { return false; }
 ''' + state + '\n' + function(source, 's5l8930_iop_io_failed') + '\n' + function(source, 'iop_vm_state') + '\n' + function(ui, 'qemu_ios_ui_storage_failed') + r'''
 int main(void) {
-    BlockBackend page; uint8_t bitmap[8];
+    BlockBackend page, owner; uint8_t bitmap[8];
+    page_backend = &page; bitmap_backend = &owner;
     S5L8930IOPState s = {0};
     s.pages_per_ce = 64; s.page_stride = 1;
     s.overlay_dir = "overlay";
-    s.ovl[0][0] = &page; s.dirty[0][0] = bitmap;
+    s.ovl[0][0] = &page; s.dirty[0][0] = bitmap; s.ownership[0][0] = &owner; s.ownership_pending[0][0] = true;
     iop_vm_state(&s, true, 0);
     assert(calls == 0 && !qemu_ios_ui_storage_failed());
     iop_vm_state(&s, false, 0);
-    assert(calls == 2 && successes == 1 && !qemu_ios_ui_storage_failed());
+    assert(calls == 3 && successes == 1 && !qemu_ios_ui_storage_failed());
     /* Each failure independently reaches the GUI guard, without success. */
-    for (unsigned failure = 1; failure <= 2; ++failure) {
-        calls = errors = successes = 0; iop_storage_failed = false;
-        fail_at = failure;
+    for (unsigned failure = 1; failure <= 3; ++failure) {
+        calls = errors = successes = page_flushes = bitmap_writes = 0; iop_storage_failed = false;
+        fail_at = failure; s.ownership_pending[0][0] = true;
         iop_vm_state(&s, false, 0);
-        assert(calls == 2 && errors == 2 && successes == 0);
+        assert(calls == failure && errors == 2 && successes == 0);
+        assert(bitmap_writes == (failure == 1 ? 0 : 1));
         assert(qemu_ios_ui_storage_failed());
-        fail_at = 0;
+        fail_at = 0; page_flushes = 0;
         iop_vm_state(&s, false, 0);
         assert(qemu_ios_ui_storage_failed());
     }

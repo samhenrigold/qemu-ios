@@ -23,7 +23,8 @@
  * sparse file per chip select, bus<b>-ce<c>.pages, page index
  * block * pages_per_block + page at a stride of page_bytes + spare_bytes,
  * data then spare (the 10 meta bytes lead the spare). Holes (all-zero) read as 0xFF;
- * an all-0xFF page is blank (status 2). Writes go straight to the mapping.
+ * an all-0xFF page is blank (status 2). Explicit v2 uses XOR-FF storage.
+ * Page I/O uses QEMU BlockBackends; ownership is published after data flush.
  */
 #include "qemu/osdep.h"
 #include "qemu/timer.h"
@@ -42,7 +43,6 @@
 #include "system/block-backend.h"
 #include "block/block.h"
 #include "qemu/error-report.h"
-#include <sys/mman.h>
 
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPState, S5L8930_IOP)
 
@@ -204,7 +204,9 @@ struct S5L8930IOPState {
     BlockBackend *chip[NAND_BUSES][NAND_CES];
     BlockBackend *ovl[NAND_BUSES][NAND_CES];
     VMChangeStateEntry *vm_state_entry;
-    uint8_t *dirty[NAND_BUSES][NAND_CES];   /* 1 bit/page: overlay is authoritative */
+    BlockBackend *ownership[NAND_BUSES][NAND_CES];
+    bool ownership_pending[NAND_BUSES][NAND_CES];
+    uint8_t *dirty[NAND_BUSES][NAND_CES];   /* RAM ownership; publish after page flush */
     uint32_t page_stride;       /* store geometry: page + spare bytes */
     uint32_t store_page_bytes;
     uint32_t store_ppb;
@@ -297,7 +299,9 @@ static inline bool nand_dirty(S5L8930IOPState *s, int bus, uint32_t ce, uint32_t
 static inline void nand_set_dirty(S5L8930IOPState *s, int bus, uint32_t ce,
                                   uint32_t page)
 {
-    s->dirty[bus][ce][page >> 3] |= 1u << (page & 7);
+    uint8_t bit = 1u << (page & 7);
+    s->ownership_pending[bus][ce] |= !(s->dirty[bus][ce][page >> 3] & bit);
+    s->dirty[bus][ce][page >> 3] |= bit;
 }
 
 /* The dirty bitmap selects an overlay page; untouched pages read the base.
@@ -1433,38 +1437,6 @@ static int64_t geometry_get(QDict *g, const char *key, Error **errp)
     return v;
 }
 
-/* mmap a store file, creating it sparse at the full size when writable. */
-static bool nand_map_file(const char *path, size_t size, bool writable,
-                          uint8_t **map, int *fdp, Error **errp)
-{
-    int fd = open(path, writable ? O_RDWR | O_CREAT : O_RDONLY, 0644);
-    struct stat st;
-
-    if (fd >= 0 && fstat(fd, &st) == 0 &&
-        st.st_size != size && !(writable && st.st_size == 0)) {
-        error_setg(errp, "%s: NAND file size differs from geometry", path);
-        close(fd);
-        return false;
-    }
-    if (fd < 0 || fstat(fd, &st) < 0 ||
-        (writable && st.st_size == 0 && ftruncate(fd, size) < 0)) {
-        error_setg_errno(errp, errno, "cannot open %s", path);
-        if (fd >= 0) {
-            close(fd);
-        }
-        return false;
-    }
-    *map = mmap(NULL, size, writable ? PROT_READ | PROT_WRITE : PROT_READ,
-                writable ? MAP_SHARED : MAP_PRIVATE, fd, 0);
-    if (*map == MAP_FAILED) {
-        error_setg_errno(errp, errno, "cannot map %s", path);
-        close(fd);
-        return false;
-    }
-    *fdp = fd;
-    return true;
-}
-
 static BlockBackend *nand_open_backend(DeviceState *owner, const char *path,
                                        size_t size, bool writable, Error **errp)
 {
@@ -1519,7 +1491,9 @@ static BlockBackend *nand_open_backend(DeviceState *owner, const char *path,
 }
 
 /*
- * Every VM stop flushes QEMU page backends before syncing ownership bitmaps.
+ * Ownership stays in RAM until page data is durable. A stop or snapshot first
+ * flushes all page backends, then writes and flushes the old-compatible bitmap.
+ * OS writeback cannot publish an ownership bit ahead of its page data.
  * The existing writeback-failure latch reaches the host save/resume guard.
  * This is not cross-file power-loss atomicity; storage-generation publication
  * remains a separate host transaction.
@@ -1528,7 +1502,7 @@ static void iop_vm_state(void *opaque, bool running, RunState state)
 {
     S5L8930IOPState *s = opaque;
     int64_t t0 = g_get_monotonic_time();
-    bool failed = false;
+    bool failed = qatomic_read(&iop_storage_failed);
 
     if (running) {
         return;
@@ -1541,9 +1515,28 @@ static void iop_vm_state(void *opaque, bool running, RunState state)
                 failed = true;
                 error_report("s5l8930-iop: NAND flush bus%d-ce%d: %s", bus, ce, strerror(-result));
             }
-            if (s->dirty[bus][ce] && msync(s->dirty[bus][ce], ((size_t)s->pages_per_ce + 7) / 8, MS_SYNC) < 0) {
-                failed = true;
-                error_report("s5l8930-iop: msync bus%d-ce%d.dirty: %s", bus, ce, strerror(errno));
+        }
+    }
+    /* Never publish new owners if any page backend failed durability. */
+    if (!failed) {
+        for (int bus = 0; bus < NAND_BUSES; bus++) {
+            for (int ce = 0; ce < NAND_CES; ce++) {
+                BlockBackend *bitmap = s->ownership[bus][ce];
+                if (!bitmap || !s->ownership_pending[bus][ce]) {
+                    continue;
+                }
+                int result = blk_pwrite(bitmap, 0, ((size_t)s->pages_per_ce + 7) / 8,
+                                        s->dirty[bus][ce], 0);
+                if (result >= 0) {
+                    result = blk_flush(bitmap);
+                }
+                if (result < 0) {
+                    failed = true;
+                    error_report("s5l8930-iop: ownership publish bus%d-ce%d: %s",
+                                 bus, ce, strerror(-result));
+                } else {
+                    s->ownership_pending[bus][ce] = false;
+                }
             }
         }
     }
@@ -1574,7 +1567,7 @@ static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
     char *id_end;
     int64_t page_bytes, spare_bytes, ppb, blocks, ce_per_bus, buses;
     size_t size;
-    int bus, ce, dfd;
+    int bus, ce;
 
     if (!s->nand_dir) {
         if (s->overlay_dir) {
@@ -1694,13 +1687,32 @@ static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
             }
             g_free(f);
             f = g_strdup_printf("%s/bus%d-ce%d.dirty", s->overlay_dir, bus, ce);
-            if (!nand_map_file(f, ((size_t)s->pages_per_ce + 7) / 8, true, &s->dirty[bus][ce],
-                               &dfd, errp)) {
+            size_t bitmap_bytes = ((size_t)s->pages_per_ce + 7) / 8;
+            s->ownership[bus][ce] = nand_open_backend(dev, f, bitmap_bytes, true, errp);
+            if (!s->ownership[bus][ce]) {
                 return;
             }
-            close(dfd);
+            s->dirty[bus][ce] = g_malloc0(bitmap_bytes);
+            int result = blk_pread(s->ownership[bus][ce], 0, bitmap_bytes,
+                                   s->dirty[bus][ce], 0);
+            if (result < 0) {
+                error_setg(errp, "cannot read NAND ownership %s: %s", f, strerror(-result));
+                return;
+            }
         }
     }
+    /* Make the fixed filenames/format marker durable before any ownership
+     * can reference them. Operations never create new entries afterward. */
+    const char *write_dir = s->overlay_dir ? s->overlay_dir : s->nand_dir;
+    int dirfd = open(write_dir, O_RDONLY | O_DIRECTORY);
+    if (dirfd < 0 || fsync(dirfd) < 0) {
+        error_setg_errno(errp, errno, "cannot sync NAND directory %s", write_dir);
+        if (dirfd >= 0) {
+            close(dirfd);
+        }
+        return;
+    }
+    close(dirfd);
     s->vm_state_entry = qemu_add_vm_change_state_handler(iop_vm_state, s);
 }
 
@@ -1823,9 +1835,11 @@ static void s5l8930_iop_finalize(Object *obj)
                 blk_detach_dev(s->chip[bus][ce], DEVICE(obj));
                 blk_unref(s->chip[bus][ce]);
             }
-            if (s->dirty[bus][ce] && s->dirty[bus][ce] != MAP_FAILED) {
-                munmap(s->dirty[bus][ce], ((size_t)s->pages_per_ce + 7) / 8);
+            if (s->ownership[bus][ce]) {
+                blk_detach_dev(s->ownership[bus][ce], DEVICE(obj));
+                blk_unref(s->ownership[bus][ce]);
             }
+            g_free(s->dirty[bus][ce]);
         }
     }
     timer_free(s->irq_timer);

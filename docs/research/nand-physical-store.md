@@ -40,9 +40,20 @@ host errors latch storage failure and return device error; stop flushes backends
 before syncing bitmap ownership. Direct QMP migration additionally flushes and
 refuses known failed storage. Device finalization releases backends/maps/handler.
 
-The dirty bitmap still uses mmap and remains a separate file. This is not a
-cross-file crash-consistency protocol or removal of generated plaintext/FTL
-compatibility. The upstream NAND model supplies the correct bit semantics,
+The old-compatible dirty bitmap remains a separate file but now also uses a
+QEMU BlockBackend. Its live ownership map is RAM only, preventing OS mmap
+writeback from exposing ownership before the associated page data is durable.
+Every clean stop and migration pre-save flushes all page backends first, then
+writes and flushes pending ownership. Any page flush failure prevents ownership
+publication; any publication error latches save/resume refusal. An unchanged
+ownership map is not rewritten after migration deactivates source backends.
+This is ordered durable publication under an explicit volatile-cache contract:
+it does not certify that every acknowledged flash program survives a host
+crash, atomic guest operations, or atomic updates to already-owned pages.
+A crash may discard unpublished first-owner writes; it cannot make the bitmap
+select their incomplete data. Already-owned pages retain ordinary device
+power-loss/torn-write behavior. Host generation transactions remain separate.
+This does not remove generated plaintext/FTL compatibility. The upstream NAND model supplies the correct bit semantics,
 but its fixed chip geometries and backend layout do not directly fit the Apple
 controller contract. N72 FMSS still needs a separately measured physical store
 migration to replace its relocation compatibility; its current snapshot limit
@@ -145,3 +156,48 @@ These are bounded acceptance results. They do not close the restored stock SGX
 barrier, validate every IPSW, make cross-file runtime power-loss publication
 atomic, or replace N72's generated-layout compatibility mapping. Existing
 prepared formats remain deliberately supported rather than reinterpreted.
+
+
+## Ordered ownership acceptance
+
+The actual H2FMI qtest forks an isolated driver, programs real physical zero,
+then SIGKILLs its own guest without any stop or cleanup callback. The old-format
+bitmap remains clear, and cold reopen reads the immutable base. A subsequent
+program followed by real migration pre-save publishes the bit before clean
+exit, and another cold reopen reads zero. This proves ordered publication for
+first-owner pages, not crash-atomic flash operations. The host failure unit
+injects page flush, bitmap write, and bitmap flush failures; page flush failure
+publishes no ownership, and each failure reaches the GUI save/resume guard.
+
+Evidence: actual H2FMI **7/7 PASS** at
+`/private/tmp/ltm-ownership-final-model3.log`, registered model tier **4/4 PASS**
+at `/private/tmp/ltm-ownership-final-modelgate2.log`, and standalone N45 touch
+qtest PASS at `/private/tmp/ltm-ownership-touch-final.log`. Intermediate failures
+remain at `/private/tmp/ltm-ownership-snapshot.log` (inactive-backend rewrite)
+and `/private/tmp/ltm-ownership-final-model.log` (nonempty FIFO migration).
+
+The latter exposed H2FMI's fixed FIFO arrays wrongly declared with pointer
+VMState macros. Four fields now use bounded fixed-offset variable buffers,
+reusing upstream buffer serialization. Incoming lengths are rejected before
+buffer access, while v1 wire bytes are preserved. The actual save/load test
+retains nonempty data/meta and verifies their bytes on arrival. Empty-state
+migration passing had not established this contract.
+
+Prepared native ordering build boot + 70001-byte clean shutdown/reboot
+persistence **2/2 PASS** (76.8s): `/private/tmp/ltm-nand-ownership-native`.
+Fresh explicit-v2 stock erase restore **PASS**:
+`/private/tmp/ltm-nand-ownership-restore`. These runs preceded the narrow
+pending-transition/serialization completion. Final snapshot-fixed binary
+persistence **PASS** (48.4s), but that concurrent boot check failed at unlock
+with black display/no NAND error:
+`/private/tmp/ltm-nand-ownership-final-native`. The failure is preserved and an
+isolated traced boot replay is evaluated separately; it is not counted as full
+native acceptance. Initial file/format-marker directory metadata is synced
+before any ownership can reference those fixed filenames.
+
+The isolated final binary boot/unlock replay **PASS** (45.6s), with actual
+MT_TRACE frame reads, at `/private/tmp/ltm-nand-ownership-boot-isolated`.
+Together with final native persistence this establishes the bounded final
+contracts in separate runs; the concurrent unlock failure remains unexplained
+and is not erased from the acceptance record. A directory-fsync initialization
+barrier and pending-only publication leave no mmap bitmap writeback path.
