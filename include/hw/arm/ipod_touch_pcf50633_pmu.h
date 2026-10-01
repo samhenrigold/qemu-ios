@@ -77,6 +77,7 @@ typedef struct Pcf50633State {
 	uint8_t shutdown_reg;   /* "shutdown-reg" property */
 	uint8_t usb_status_reg, usb_status_bits;   /* "usb-status-reg"/"-bits": the cable level */
 	bool rtc_bcd;           /* "rtc-bcd": the PCF50633 calendar at 0x59 (1.x) */
+    bool exton1;           /* PCF50635 wake input level; both edges latch INT2 */
 	uint8_t backlight_enable_reg, backlight_enable_bit, backlight_level_reg;   /* "backlight-*" */
     qemu_irq irq;
     QEMUTimer *adc_timer;
@@ -127,6 +128,7 @@ typedef struct Pcf50633State {
 
 // Update live cable status and latch the corresponding power-source event.
 void pcf50633_set_usb_cable(Pcf50633State *s, bool attached);
+void pcf50633_set_exton1(Pcf50633State *s, bool high);
 unsigned pcf50633_adc_for_level(unsigned percent);
 unsigned pcf50633_level_for_adc(unsigned counts);
 void pcf50633_update_battery(Pcf50633State *s);
