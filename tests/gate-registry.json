@@ -18,6 +18,7 @@
     {"name": "tests/ipod/test_attitude.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_attitude_qmp.py", "tier": "manual", "prerequisites": ["qemu", "device-image"], "reason": "native emulator check: supply the device inputs documented by this test"},
     {"name": "tests/ipod/test_audio_config.py", "tier": "quick", "prerequisites": []},
+    {"name": "tests/ipod/test_coresurface_lifetime.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_gles_scene.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_audio_verdict.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_audio_volume.py", "tier": "quick", "prerequisites": []},
