@@ -1103,6 +1103,9 @@ static int GLESDestroyGC(void *gc)
     return 0;
 }
 
+static int surface_is_core;
+static const void *(*p_surface_retain)(const void *);
+static void (*p_surface_release)(const void *);
 static void *iosurf;    /* IOSurface.framework handle */
 static void *(*p_IOSurfaceGetBaseAddress)(void *);
 static unsigned (*p_IOSurfaceGetBytesPerRow)(void *);
@@ -1172,6 +1175,7 @@ static void iosurface_init(void)
         iosurf = dlopen("/System/Library/PrivateFrameworks/CoreSurface.framework/CoreSurface", RTLD_NOW);
     }
     if (!iosurf) { w("[mbxshim] neither IOSurface nor CoreSurface is available\n"); return; }
+    surface_is_core = pre[0] != 'I';
     p_IOSurfaceGetBaseAddress = surface_sym(pre, "GetBaseAddress");
     p_IOSurfaceGetBytesPerRow = surface_sym(pre, "GetBytesPerRow");
     p_IOSurfaceGetWidth       = surface_sym(pre, "GetWidth");
@@ -1187,7 +1191,11 @@ static void iosurface_init(void)
     {
         void *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/"
                           "CoreFoundation", RTLD_NOW);
-        if (cf) p_CFGetTypeID = dlsym(cf, "CFGetTypeID");
+        if (cf) {
+            p_CFGetTypeID = dlsym(cf, "CFGetTypeID");
+            p_surface_retain = dlsym(cf, "CFRetain");
+            p_surface_release = dlsym(cf, "CFRelease");
+        }
     }
 }
 
@@ -1345,6 +1353,68 @@ static int ca_next_buffer(ca_view_t *v);
  */
 
 
+/* Stock 5F138 createBuffer locks CoreSurface with flags 3 before getters,
+ * retaining that mapping until destroyBuffer. Track every rotating buffer,
+ * separately per callback block; IOSurface behavior remains unchanged. */
+typedef struct ca_surface_lock {
+    ca_view_t *view;
+    void *surface;
+    struct ca_surface_lock *next;
+} ca_surface_lock;
+static ca_surface_lock *ca_surface_locks;
+
+static int ca_surface_acquire(ca_view_t *v, void *surface)
+{
+    ca_surface_lock *item;
+    iosurface_init();
+    if (!v || !surface) return 0;
+    if (!surface_is_core) return 1;
+    for (item = ca_surface_locks; item; item = item->next) {
+        if (item->view == v && item->surface == surface) return 1;
+    }
+    if (!p_IOSurfaceLock || !p_IOSurfaceUnlock ||
+        !p_surface_retain || !p_surface_release) {
+        refused("ca:", "lock-api", ~0u);
+        return 0;
+    }
+    item = calloc(1, sizeof *item);
+    if (!item) {
+        refused("ca:", "lock-allocation", ~0u);
+        return 0;
+    }
+    if (p_IOSurfaceLock(surface, 3, 0)) {
+        free(item);
+        refused("ca:", "lock", ~0u);
+        return 0;
+    }
+    p_surface_retain(surface);
+    item->view = v;
+    item->surface = surface;
+    item->next = ca_surface_locks;
+    ca_surface_locks = item;
+    return 1;
+}
+
+static void ca_surface_release(ca_view_t *v, void *surface)
+{
+    ca_surface_lock **link = &ca_surface_locks;
+    while (*link) {
+        ca_surface_lock *item = *link;
+        if (item->view == v && (!surface || item->surface == surface)) {
+            /* Unlink before callbacks; teardown may already have destroyed it. */
+            *link = item->next;
+            if (p_IOSurfaceUnlock(item->surface, 3, 0)) {
+                refused("ca:", "unlock", ~0u);
+            }
+            p_surface_release(item->surface);
+            free(item);
+            if (surface) return;
+        } else {
+            link = &item->next;
+        }
+    }
+}
+
 static int ca_create_buffer(void *ctx, void *surface)
 {
     /* ctx is the block we handed CA at bind time, which names the view. */
@@ -1353,7 +1423,10 @@ static int ca_create_buffer(void *ctx, void *surface)
     w("[mbxshim] CA createBuffer surface="); wx((unsigned long)surface); w("\n");
     /* Still validated: this is the frame's destination address, and a wrong one
      * is a write to an arbitrary guest page. */
-    return surface_capture(v, surface) ? 1 : 0;
+    if (!ca_surface_acquire(v, surface)) return 0;
+    if (surface_capture(v, surface)) return 1;
+    ca_surface_release(v, surface);
+    return 0;
 }
 
 /*
@@ -1396,6 +1469,7 @@ static int ca_destroy_buffer(void *ctx, void *surface)
     w("[mbxshim] CA destroyBuffer surface="); wx((unsigned long)surface); w("\n");
     /* Only the view that owns it, so one layer's teardown cannot blind
      * another -- the same rule as the bind failure path. */
+    if (v) ca_surface_release(v, surface);
     if (v && v->ref == surface) {
         /* Whatever replaces it will arrive through createBuffer. Presenting into
          * a destroyed surface writes into freed memory. */
@@ -1420,6 +1494,7 @@ static void ca_detach_view(ca_view_t *v)
         }
         if (vt[2]) ((ca_unbind_fn)vt[2])(v->drawable);
     }
+    ca_surface_release(v, 0);
     *v = empty;
 }
 
@@ -1632,7 +1707,11 @@ static int GLESPresentView(void *gc, void *view)
         unsigned lockseed = 0;
         long long r;
 
-        if (p_IOSurfaceLock) p_IOSurfaceLock(v->ref, 0, &lockseed);
+        /* CoreSurface is already mapped by createBuffer until destroyBuffer.
+         * Keep IOSurface's existing per-frame lock contract. */
+        if (!surface_is_core && p_IOSurfaceLock) {
+            p_IOSurfaceLock(v->ref, 0, &lockseed);
+        }
         /* Re-read the base each frame: CA is entitled to move or reallocate a
          * surface between frames, and caching it would write into whatever now
          * owns the old address. */
@@ -1643,7 +1722,9 @@ static int GLESPresentView(void *gc, void *view)
         r = qc(GLES_OP_PRESENT_SURFACE, gc, 5,
                A(v->base, v->stride, v->width,
                  v->height, v->format));
-        if (p_IOSurfaceUnlock) p_IOSurfaceUnlock(v->ref, 0, &lockseed);
+        if (!surface_is_core && p_IOSurfaceUnlock) {
+            p_IOSurfaceUnlock(v->ref, 0, &lockseed);
+        }
         if (r != 0) {
             return 0;
         }
