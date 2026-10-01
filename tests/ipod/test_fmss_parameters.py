@@ -171,19 +171,23 @@ int main(void) {
         assert(ipod_touch_fmss_read(&s, 0xd7c, 4) == scratch_values[i]);
         assert(ldl_le_p(memory+0x3800) == scratch_values[i]);
     }
-    /* Neither the debug immediate-write nor nonzero-immediate register
-     * form is qualified. Rejection must stop before downstream stores. */
-    for (unsigned form = 0; form < 2; form++) {
-        scratch_script[2] = form ? 0x02040d7c : 0x01040d7c;
-        scratch_script[3] = form ? 1 : 0xcafebabe;
-        scratch_script[1] = 0;
-        memcpy(memory+0x1000, scratch_script, sizeof(scratch_script));
-        const uint8_t sentinel[] = {0xba, 0xdc, 0xcd, 0xab};
-        memcpy(memory+0x3800, sentinel, sizeof(sentinel));
+    /* Stock status initializer uses opcode01: the immediate, not r[a]. */
+    const uint32_t values[]={0,0xcafebabe,0x80000000,0xffffffff};
+    uint32_t init[]={0x05000000,0x12345678,0x01000d7c,0,
+        0x04010d7c,0xffffffff,0x05020000,0x3800,0x11010002,0,0,0};
+    for(unsigned i=0;i<4;i++) {
+        init[3]=values[i];memcpy(memory+0x1000,init,sizeof(init));
         fmss_run_script(&s);
-        assert(s.reg_script_scratch_d7c == 0xffffffff);
-        assert(ldl_le_p(memory+0x3800) == 0xabcddcba);
+        assert(s.reg_script_scratch_d7c==values[i]);
+        assert(ipod_touch_fmss_read(&s,0xd7c,4)==values[i]);
+        assert(ldl_le_p(memory+0x3800)==values[i]);
     }
+    /* Unmeasured opcode02 nonzero immediate still stops before later store. */
+    init[2]=0x02000d7c;init[3]=1;memcpy(memory+0x1000,init,sizeof(init));
+    uint32_t sentinel=0xabcddcba;memcpy(memory+0x3800,&sentinel,4);
+    fmss_run_script(&s);
+    assert(s.reg_script_scratch_d7c==0xffffffff);
+    assert(ldl_le_p(memory+0x3800)==sentinel);
     const uint32_t d38_script[] = {
         0x04000d38, 0xffffffff, 0x02000030, 0,
         0x04010030, 0xffffffff, 0x05020000, 0x3000, 0x11010002, 0, 0, 0
