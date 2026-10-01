@@ -92,6 +92,50 @@ static void test_watchdog_reset(void)
     qtest_quit(qts);
 }
 
+static void test_watchdog_disable(void)
+{
+    QTestState *qts = start_board();
+
+    qtest_writel(qts, PMGR + 0x2024, 24000);
+    qtest_writel(qts, PMGR + 0x202c, 4);
+    qtest_clock_step(qts, 500000);
+    qtest_writel(qts, PMGR + 0x202c, 0);
+    g_assert_cmpuint(qtest_readl(qts, PMGR + 0x2020), ==, 12000);
+    /* Past the cancelled deadline: a board reset would clear this marker. */
+    qtest_writel(qts, PMGR + 0x1010, 3);
+    qtest_clock_step(qts, 2000000);
+    g_assert_cmphex(qtest_readl(qts, PMGR + 0x1010), ==, 0x33);
+    g_assert_cmpuint(qtest_readl(qts, PMGR + 0x2020), ==, 12000);
+    /* Re-enable resumes the latched count rather than silently feeding it. */
+    qtest_writel(qts, PMGR + 0x202c, 4);
+    qtest_clock_step(qts, 499999);
+    g_assert_cmphex(qtest_readl(qts, PMGR + 0x202c), ==, 4);
+    qtest_clock_step(qts, 2);
+    qtest_qmp_eventwait(qts, "RESET");
+    g_assert_cmphex(qtest_readl(qts, PMGR + 0x202c), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_watchdog_compare(void)
+{
+    QTestState *qts = start_board();
+
+    qtest_writel(qts, PMGR + 0x2024, 24000);
+    qtest_writel(qts, PMGR + 0x202c, 4);
+    qtest_clock_step(qts, 500000);
+    /* Changing the compare moves the deadline but preserves elapsed ticks. */
+    qtest_writel(qts, PMGR + 0x2024, 48000);
+    g_assert_cmpuint(qtest_readl(qts, PMGR + 0x2020), ==, 12000);
+    qtest_clock_step(qts, 1000000);
+    g_assert_cmphex(qtest_readl(qts, PMGR + 0x202c), ==, 4);
+    g_assert_cmpuint(qtest_readl(qts, PMGR + 0x2020), ==, 36000);
+    /* Lowering the compare below the live count requests immediate reset. */
+    qtest_writel(qts, PMGR + 0x2024, 24000);
+    qtest_qmp_eventwait(qts, "RESET");
+    g_assert_cmphex(qtest_readl(qts, PMGR + 0x202c), ==, 0);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *rom = g_malloc0(65536);
@@ -105,6 +149,8 @@ int main(int argc, char **argv)
     qtest_add_func("/ipad1/pmgr/timebase-gates", test_timebase);
     qtest_add_func("/ipad1/pmgr/event-vic-irq", test_event_irq);
     qtest_add_func("/ipad1/pmgr/watchdog-reset", test_watchdog_reset);
+    qtest_add_func("/ipad1/pmgr/watchdog-disable", test_watchdog_disable);
+    qtest_add_func("/ipad1/pmgr/watchdog-compare", test_watchdog_compare);
     result = g_test_run();
     unlink(rom_path);
     g_free(rom_path);
