@@ -48,6 +48,7 @@
     {"name": "tests/ipod/test_gles_drawable.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_gles_drawable_storage.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_gles_fixed.py", "tier": "quick", "prerequisites": []},
+    {"name": "tests/ipod/test_fixture_preflight.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_gles_fixture.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_gles_frame_clear.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_gles_objects.py", "tier": "quick", "prerequisites": []},
