@@ -1412,6 +1412,8 @@ static void ipod_touch_i2s_realize(DeviceState *dev, Error **errp)
         }
     }
 
+    /* A silent sink still has a defined logical sample rate. */
+    s->voice_rate = s->as.freq;
     if (!s->host_output) {
         return;     /* the DMA and its pacing run; the PCM goes nowhere */
     }
@@ -1431,7 +1433,6 @@ static void ipod_touch_i2s_realize(DeviceState *dev, Error **errp)
     }
     AUD_set_volume_out(s->voice, 0, 255, 255);
     AUD_set_active_out(s->voice, 0);
-    s->voice_rate = s->as.freq;
 }
 
 static void ipod_touch_i2s_init(Object *obj)
@@ -1453,6 +1454,12 @@ static void ipod_touch_i2s_init(Object *obj)
 static int i2s_post_load(void *opaque, int version_id)
 {
     IPodTouchI2SState *s = opaque;
+    /* Legacy silent streams never opened a host voice. Its missing rate is
+     * host sink bookkeeping, not a restriction on guest TX/DMA activity.
+     * Never repair a realized/active host voice or a nonzero invalid rate. */
+    bool missing_voice_rate = !s->voice_rate && !s->card_ok &&
+        !s->voice && !s->active;
+    unsigned voice_rate = missing_voice_rate ? s->as.freq : s->voice_rate;
     if (s->ring_head >= IT_I2S_RING_SIZE || s->ring_tail >= IT_I2S_RING_SIZE ||
         s->ring_level > IT_I2S_RING_SIZE ||
         /* The consumer drains complete frames, but DMA may stop after any
@@ -1461,7 +1468,7 @@ static int i2s_post_load(void *opaque, int version_id)
         (s->ring_tail + s->ring_level) % IT_I2S_RING_SIZE != s->ring_head ||
         !s->fifo_depth ||
         s->pace_fraction >= 1000000000 ||
-        s->voice_rate < 8000 || s->voice_rate > 192000 ||
+        voice_rate < 8000 || voice_rate > 192000 ||
         s->as.freq < 8000 || s->as.freq > 192000) {
         return -EINVAL;
     }
@@ -1469,6 +1476,8 @@ static int i2s_post_load(void *opaque, int version_id)
         unsigned rate = s->ring_format[((s->ring_tail + off) % IT_I2S_RING_SIZE) / 4] >> 9;
         if (rate < 8000 || rate > 192000) return -EINVAL;
     }
+    /* Normalize only after the complete stream has passed validation. */
+    s->voice_rate = voice_rate;
     if (s->card_ok) {
         struct audsettings as = s->as;
         as.freq = s->voice_rate;
