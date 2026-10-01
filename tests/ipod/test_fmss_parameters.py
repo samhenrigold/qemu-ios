@@ -44,7 +44,7 @@ typedef struct {
     uint32_t reg_script_param_d34, reg_script_param_d38, reg_script_param_d48;
     uint32_t reg_cs_ctrl, reg_cs_irq_bit, reg_cs_irq_mask, reg_cs_script;
     uint32_t reg_cinfo_target_addr, reg_pages_in_addr, reg_cs_buf_addr;
-    uint32_t reg_num_pages, reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc, reg_script_param_d4c, reg_chunks_per_page, reg_script_csgenr15;
+    uint32_t reg_num_pages, reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc, reg_script_param_d4c, reg_chunks_per_page, reg_script_csgenr15, reg_script_scratch_d7c;
     GTree *phys_pages, *erased_blocks;
     GHashTable *overlay_pages;
     bool overlay_indexed;
@@ -129,6 +129,32 @@ int main(void) {
         0x04000d48,0xffffffff,0x0b000000,0x801,0x02000000,0,
         0x04010000,0xffffffff,0x0c020002,4,0x11010002,0,0,0
     };
+    const uint32_t scratch_values[] = { 0, 1, 0x001f0001, 0x80000000, 0xffffffff };
+    uint32_t scratch_script[] = {
+        0x05040000, 0, 0x02040d7c, 0,
+        0x04010d7c, 0xffffffff, 0x05020000, 0x3800,
+        0x11010002, 0, 0, 0
+    };
+    for (unsigned i = 0; i < 5; i++) {
+        scratch_script[1] = scratch_values[i];
+        memcpy(memory+0x1000, scratch_script, sizeof(scratch_script));
+        fmss_run_script(&s);
+        assert(ipod_touch_fmss_read(&s, 0xd7c, 4) == scratch_values[i]);
+        assert(ldl_le_p(memory+0x3800) == scratch_values[i]);
+    }
+    /* Neither the debug immediate-write nor nonzero-immediate register
+     * form is qualified. Rejection must stop before downstream stores. */
+    for (unsigned form = 0; form < 2; form++) {
+        scratch_script[2] = form ? 0x02040d7c : 0x01040d7c;
+        scratch_script[3] = form ? 1 : 0xcafebabe;
+        scratch_script[1] = 0;
+        memcpy(memory+0x1000, scratch_script, sizeof(scratch_script));
+        const uint8_t sentinel[] = {0xba, 0xdc, 0xcd, 0xab};
+        memcpy(memory+0x3800, sentinel, sizeof(sentinel));
+        fmss_run_script(&s);
+        assert(s.reg_script_scratch_d7c == 0xffffffff);
+        assert(ldl_le_p(memory+0x3800) == 0xabcddcba);
+    }
     const uint32_t d38_script[] = {
         0x04000d38, 0xffffffff, 0x02000030, 0,
         0x04010030, 0xffffffff, 0x05020000, 0x3000, 0x11010002, 0, 0, 0
@@ -158,12 +184,14 @@ int main(void) {
         assert(ldl_le_p(memory+0x2004)==(d48[i]|0x801));
     }
     ipod_touch_fmss_reset((DeviceState *)&s);
+    assert(!ipod_touch_fmss_read(&s,0xd7c,4));
     assert(!ipod_touch_fmss_read(&s,0xd38,4));
     assert(!ipod_touch_fmss_read(&s,0xd34,4) && !ipod_touch_fmss_read(&s,0xd48,4));
     put(&s,0xd34,0x16); put(&s,0xd48,0x20011000);
+    s.reg_script_scratch_d7c=0x80000000;
     s.reg_script_param_d38=0xffffffff;
     fmss_pre_load(&s);
-    assert(!s.reg_script_param_d38);
+    assert(!s.reg_script_param_d38 && !s.reg_script_scratch_d7c);
     assert(!s.reg_script_param_d34 && !s.reg_script_param_d48);
     assert(fmss_post_load(&s,7)==0); /* missingfields stayzero, no inventedlegacyvalue */
     assert(!s.reg_script_param_d34 && !s.reg_script_param_d48);
@@ -173,7 +201,7 @@ int main(void) {
     assert(ipod_touch_fmss_read(&s,0xd34,4)==0xffffffff &&
            ipod_touch_fmss_read(&s,0xd48,4)==0x80000000);
     g_tree_destroy(s.phys_pages);g_tree_destroy(s.erased_blocks);
-    puts("PASS actual D38 latch, CPU shortcut dispatch, D34/D48 CPUlatches, independentD4C, FMC shadow observations, reset and versionedload bookkeeping");
+    puts("PASS actual D7C scratch and rejected forms, D38 latch, CPU shortcut dispatch, D34/D48 CPUlatches, independentD4C, FMC shadow observations, reset and versionedload bookkeeping");
 }
 '''
 
