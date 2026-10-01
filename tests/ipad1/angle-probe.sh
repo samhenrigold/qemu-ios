@@ -9,3 +9,8 @@ trap 'rm -rf "$TMP"' EXIT
 clang -DGL_GLES_PROTOTYPES=1 "$HERE/angle-probe.c" -I "$ANGLE/include" \
     -L "$BUILD" -lEGL -lGLESv2 -Wl,-rpath,"$BUILD" -o "$TMP/probe"
 "$TMP/probe"
+
+# Context/sharegroup and surface contracts still needed by the guest transport.
+clang -DGL_GLES_PROTOTYPES=1 "$HERE/angle-context-contract.c" -I "$ANGLE/include" \
+    -L "$BUILD" -lEGL -lGLESv2 -Wl,-rpath,"$BUILD" -o "$TMP/context-contract"
+"$TMP/context-contract"
