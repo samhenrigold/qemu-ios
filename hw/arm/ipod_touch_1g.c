@@ -776,10 +776,13 @@ static void n45_machine_init(MachineState *machine)
     /* USB OTG + PHY */
     /* usb-tcp-addr: the host bridge (usbmuxd-qemu) the device-mode core talks to, as on the 2G */
     dev = ipod_touch_init_usb_otg(n45_irq(s, N45_USB_OTG_IRQ), (uint32_t *)s5l8900_usb_hwcfg);
+    DeviceState *usb_otg_dev = dev;
     synopsys_usb_set_tcp_addr(S5L8900USBOTG(dev), s->usb_tcp_addr);
     sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
     memory_region_add_subregion(sysmem, N45_USBOTG_BASE, &S5L8900USBOTG(dev)->iomem);
     dev = qdev_new("ipodtouch.usbphys");
+    qdev_connect_gpio_out_named(dev, "phy-reset", 0,
+                               qdev_get_gpio_in_named(usb_otg_dev, "phy-reset", 0));
     memory_region_add_subregion(sysmem, N45_USBPHYS_BASE, &IPOD_TOUCH_USB_PHYS(dev)->iomem);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
 

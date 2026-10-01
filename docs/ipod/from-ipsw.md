@@ -858,3 +858,34 @@ completion, and physical erase execution remains absent. This parameter
 correction is not restore completion. The stock kernel also gates virgin NAND
 formatting on nand-enable-reformat; actual kernel BootArgs must be read before
 changing the legacy host client's restore argument policy.
+
+### PHY reset during stock DFU handoff (2026-10-01)
+
+Rapid stock 5F138 DFU handoff exposed a real hardware-boundary error: after
+SecureROM asserted ORSTCON bit 0 and freed its USB queue, host SETUP packets
+still performed DMA and raised interrupts. The ROM consequently followed an
+invalid queue pointer and reset after a data abort. The PHY now drives a
+physical-reset signal into the N45/N72 USB controller. Asserted reset rejects
+bus transactions before DMA or interrupt generation, without clearing core
+registers or already latched interrupts. Deassertion resumes traffic; migration
+restores the signal from ORSTCON. No guest patch or settling delay is involved.
+
+The final qtest suite passes 3/3, including N72 migration and N45 traffic
+gating; the pre-fix binary fails the new gating assertion. Three rapid stock
+DFU handoffs and native 5F138 boot/USB checks pass. The separate default 7E18
+two-boot regression passes 8/8. Stock SecureROM through the restore ramdisk
+also passes using the production bridge with no diagnostic settling wrapper
+(`/private/tmp/ltm-n72-stock-no-delay-timeout1`). Descriptor polling retains
+its one-second deadline so host disconnect notification arrives within the
+stock client's timeout. This qualifies ramdisk handoff, not flash restore.
+
+N45 whole-board migration separately fails because an inactive I2S stream
+without host output saves a zero host voice rate that its loader rejects.
+That failure remains separate; N45 migration and native host USB are not
+claimed by this gate. K48 is not wired to the new PHY signal.
+
+Actual stock erase-kernel BootArgs were captured as
+`rd=md0 nand-enable-reformat=1 -progress `. The formatting flag is already
+present; no legacy restore-client argument change is justified. Subsequent
+FMSS script contracts, physical erase, cold boot and durable writes remain
+unqualified.
