@@ -2,6 +2,7 @@
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "hw/qdev-properties.h"
+#include "hw/qdev-clock.h"
 #include "trace.h"
 
 /* IT_CLOCK_TRACE=1: every clock-controller access with a host timestamp. */
@@ -12,6 +13,47 @@ static bool clock_trace(void)
         on = getenv("IT_CLOCK_TRACE") != NULL;
     }
     return on;
+}
+
+/* S5L8720 register encoding is corroborated by OpeniBoot's hardware/clock.h
+ * and clock_setup(), and by the stock SecureROM/LLB writes. This is the root
+ * controller only: the S5L8900 and the secondary block have different layouts.
+ * No firmware address, build profile or default running frequency is needed.
+ * PLL lock settles immediately for now; analog lock latency remains unmodeled.
+ */
+static uint32_t s5l8720_pll_locks(const IPodTouchClockState *s)
+{
+    const uint32_t con[] = { s->pll0con, s->pll1con, s->pll2con };
+    uint32_t locks = 0;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(con); i++) {
+        if ((s->pllmode & (1U << i)) && ((con[i] >> 24) & 0x3f) &&
+            ((con[i] >> 8) & 0xff)) {
+            locks |= 1U << i;
+        }
+    }
+    return locks;
+}
+
+static void ipod_touch_clock_update(IPodTouchClockState *s)
+{
+    uint64_t hz = 0;
+    unsigned select = (s->config0 >> 12) & 3;
+
+    if (s->s5l8720 && select &&
+        (s5l8720_pll_locks(s) & (1U << (select - 1)))) {
+        const uint32_t con[] = { s->pll0con, s->pll1con, s->pll2con };
+        unsigned pll = select - 1;
+        uint32_t value = con[pll];
+        /* Epoch-1 N72 uses a 24 MHz reference, or the selected 27 MHz input.
+         * The main PLL output is taken before SDIV; only other PLL outputs
+         * pass through that divider (not modeled as outputs here). */
+        uint64_t ref = (s->pllmode & (1U << (pll + 4))) ? 27000000 : 24000000;
+        unsigned div = (s->config1 & (1U << 14)) ?
+                       (((s->config1 >> 9) & 0x1f) + 1) * 2 : 1;
+        hz = ref * ((value >> 8) & 0xff) / ((value >> 24) & 0x3f) / div;
+    }
+    clock_update_hz(s->pclk, hz);
 }
 
 static void s5l8900_clock_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
@@ -97,6 +139,7 @@ static void s5l8900_clock_write(void *opaque, hwaddr addr, uint64_t val, unsigne
                           "%s: write 0x%08x to unknown clock register 0x%08x\n",
                           __func__, (uint32_t)val, (uint32_t)addr);
     }
+    ipod_touch_clock_update(s);
 }
 
 static uint64_t s5l8900_clock_read_reg(void *opaque, hwaddr addr, unsigned size);
@@ -138,7 +181,15 @@ static uint64_t s5l8900_clock_read_reg(void *opaque, hwaddr addr, unsigned size)
         case CLOCK_PLL3CON:
             return s->pll3con;
         case CLOCK_PLLLOCK:
-            return (1 | 2 | 4 | 8); // all PLLs are locked
+            return s->s5l8720 ? s5l8720_pll_locks(s) : 0xf;
+        case CLOCK_PLL0LCNT:
+            return s->pll0lcnt;
+        case CLOCK_PLL1LCNT:
+            return s->pll1lcnt;
+        case CLOCK_PLL2LCNT:
+            return s->pll2lcnt;
+        case CLOCK_PLL3LCNT:
+            return s->pll3lcnt;
         case CLOCK_PLLMODE:
             return s->pllmode;
         case CLOCK_PWRCON0:
@@ -171,6 +222,7 @@ static void s5l8900_clock_init(Object *obj)
     DeviceState *dev = DEVICE(sbd);
     IPodTouchClockState *s = IPOD_TOUCH_CLOCK(dev);
 
+    s->pclk = qdev_init_clock_out(dev, "pclk");
     memory_region_init_io(&s->iomem, obj, &clock_ops, s, "clock", 0x80);
 }
 
@@ -206,6 +258,13 @@ static void ipod_touch_clock_reset(DeviceState *dev)
         s->pll3con = (72 << 8) | (8 << 24) | 1;
         s->pllmode = 0x000a003a;
     }
+    ipod_touch_clock_update(s);
+}
+
+static int ipod_touch_clock_post_load(void *opaque, int version_id)
+{
+    ipod_touch_clock_update(opaque);
+    return 0;
 }
 
 #define VMS_CLK(f) VMSTATE_UINT32(f, IPodTouchClockState)
@@ -214,6 +273,7 @@ static const VMStateDescription vmstate_ipod_touch_clock = {
     .name = "ipod_touch_clock",
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = ipod_touch_clock_post_load,
     .fields = (const VMStateField[]) {
         VMS_CLK(config0), VMS_CLK(config1), VMS_CLK(config2),
         VMS_CLK(config3), VMS_CLK(config4), VMS_CLK(config5),
@@ -228,6 +288,7 @@ static const VMStateDescription vmstate_ipod_touch_clock = {
 
 static const Property ipod_touch_clock_properties[] = {
     DEFINE_PROP_BOOL("s5l8900", IPodTouchClockState, s5l8900, false),
+    DEFINE_PROP_BOOL("s5l8720", IPodTouchClockState, s5l8720, false),
 };
 
 static void s5l8900_clock_class_init(ObjectClass *klass, void *data)

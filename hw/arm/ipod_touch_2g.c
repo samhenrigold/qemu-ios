@@ -3031,6 +3031,7 @@ static void ipod_touch_machine_init(MachineState *machine)
 
     // init clock 0
     dev = qdev_new("ipodtouch.clock");
+    qdev_prop_set_bit(dev, "s5l8720", true);
     IPodTouchClockState *clock0_state = IPOD_TOUCH_CLOCK(dev);
     nms->clock0 = clock0_state;
     memory_region_add_subregion(sysmem, CLOCK0_MEM_BASE, &clock0_state->iomem);

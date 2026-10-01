@@ -226,7 +226,7 @@ qtests_stm32l4x5 = \
    'stm32l4x5_usart-test']
 
 qtests_arm = \
-  (config_all_devices.has_key('CONFIG_IPOD_TOUCH_2G') ? ['ipod-fmss-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_IPOD_TOUCH_2G') ? ['ipod-fmss-test', 'ipod-clock-test'] : []) + \
   (config_all_devices.has_key('CONFIG_IPOD_TOUCH_1G') ? ['ipod-touch-irq-test'] : []) + \
   (config_all_devices.has_key('CONFIG_IPAD1') ? ['ipad1-pmgr-test', 'ipad1-h2fmi-test'] : []) + \
   (config_all_devices.has_key('CONFIG_IPAD1') ? ['ipad1-cdma-test'] : []) + \
