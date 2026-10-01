@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inject page/bitmap writeback failures into the actual stop callback.
+"""Inject BlockBackend/bitmap writeback failures into the actual stop callback.
 
 The failed latch must reach the GUI save/resume gate and survive later flushes.
 This is a host-error unit check; guest behavior belongs in qtest/boot coverage.
@@ -39,7 +39,7 @@ harness = r'''
 #define IOP_VIC_REGS 0x1000
 #define IOP_MAX_ENDPOINTS 8
 #define MS_SYNC 1
-typedef int SysBusDevice, MemoryRegion, DeviceState, QEMUTimer, RunState;
+typedef int SysBusDevice, MemoryRegion, DeviceState, QEMUTimer, RunState, BlockBackend, VMChangeStateEntry;
 #define qatomic_read(p) (*(p))
 #define qatomic_set(p,v) (*(p)=(v))
 static bool iop_storage_failed;
@@ -49,6 +49,11 @@ static int msync(void *p, size_t size, int flags) {
     if (++calls == fail_at) { errno = ENOSPC; return -1; }
     return 0;
 }
+static int blk_flush(BlockBackend *p) {
+    assert(p);
+    if (++calls == fail_at) { return -ENOSPC; }
+    return 0;
+}
 static int64_t g_get_monotonic_time(void) { return 0; }
 #define error_report(...) (++errors)
 #define info_report(...) ((void)t0, ++successes)
@@ -56,11 +61,11 @@ static bool ipod_touch_fmss_io_failed(void) { return false; }
 static bool ipod_touch_nor_io_failed(void) { return false; }
 ''' + state + '\n' + function(source, 's5l8930_iop_io_failed') + '\n' + function(source, 'iop_vm_state') + '\n' + function(ui, 'qemu_ios_ui_storage_failed') + r'''
 int main(void) {
-    uint8_t page[64], bitmap[8];
+    BlockBackend page; uint8_t bitmap[8];
     S5L8930IOPState s = {0};
     s.pages_per_ce = 64; s.page_stride = 1;
     s.overlay_dir = "overlay";
-    s.ovl[0][0] = page; s.dirty[0][0] = bitmap;
+    s.ovl[0][0] = &page; s.dirty[0][0] = bitmap;
     iop_vm_state(&s, true, 0);
     assert(calls == 0 && !qemu_ios_ui_storage_failed());
     iop_vm_state(&s, false, 0);
