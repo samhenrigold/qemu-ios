@@ -997,3 +997,23 @@ Independent default 7E18 native two-boot regression passes 8/8
 (`/private/tmp/ltm-fmss-physical-blank-default`). This qualifies generated-path
 regression safety, not stock physical restore, ECC, bitwise programming or
 honest sequencer completion.
+
+### READ-ID selector host bounds
+
+The interpreter now checks the populated-chip bound before shifting by the
+trailing-zero count. QEMU ctz32(0) returns 32, so an empty selector previously
+caused undefined host C behavior. This is a host robustness correction;
+existing empty, multiple and unpopulated selections still return no chip.
+
+The strict sanitizer baseline reproduces shift-by-32; corrected script and IRQ
+fixtures pass. Real FMSS qtests pass 13/13, including both ID words for populated
+CE0..3, empty/multiple selection and absent CE4. Independent default native
+7E18 two-boot regression passes 8/8 with diagnostic-only unimplemented-operation
+logging (`/private/tmp/ltm-fmss-ce-default`).
+
+That logging confirms an existing completion shortcut in the normal boot path:
+iBoot and XNU stop on opcode14/imm16, and a separate XNU script reads the
+unmodeled D48 parameter. Boot still passes because these incomplete runs receive
+deferred completion. Correct instruction/parameter contracts are required
+before honest completion can pass native acceptance. No physical restore or
+sequencer completion fidelity follows from the selector fix.

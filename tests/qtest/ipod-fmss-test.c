@@ -12,7 +12,7 @@ static QTestState *start_board(char **overlay)
 {
     *overlay = g_dir_make_tmp("fmss-overlay-XXXXXX", NULL);
     return qtest_initf("-machine iPod-Touch,bootrom=%s,nor=%s,nand=%s,nandrw=%s "
-                       "-display none -audio driver=none -nic none",
+                       "-display none -audio driver=none -nic none -d unimp",
                        rom_path, nor_path, nand_path, *overlay);
 }
 
@@ -553,6 +553,47 @@ static void logical_and(void)
     g_free(overlay);
 }
 
+static void read_id_chip_selection(void)
+{
+    char *overlay;
+    QTestState *qts = start_board(&overlay);
+    uint32_t program[] = {
+        0x05000000, 0, 0x02000000, 0,
+        0x01000008, 0x90,
+        0x04010060, 0xffffffff, 0x04030064, 0xffffffff,
+        0x05020000, RAM + 0x1000,
+        0x11010002, 0, 0x0c020002, 4, 0x11030002, 0, 0, 0
+    };
+    static const struct {
+        unsigned selector;
+        uint32_t expected;
+    } cases[] = {
+        {0, 0},         /* No selected chip: ctz32(0) returns 32. */
+        {3, 0},         /* Selecting multiple chips is not a single CE. */
+        {0x10, 0},      /* CE4 is absent on this board. */
+        {1, 0xb614d5ad}, {2, 0xb614d5ad},
+        {4, 0xb614d5ad}, {8, 0xb614d5ad}
+    };
+    for (unsigned j = 0; j < G_N_ELEMENTS(cases); j++) {
+        program[1] = (cases[j].selector << 1) | 1;
+        for (unsigned i = 0; i < G_N_ELEMENTS(program); i++) {
+            qtest_writel(qts, RAM + 4 * i, program[i]);
+        }
+        /* Sentinel proves both READ-ID words reached RAM through opcode11. */
+        qtest_writel(qts, RAM + 0x1000, 0xdeadbeef);
+        qtest_writel(qts, RAM + 0x1004, 0xdeadbeef);
+        qtest_writel(qts, FMSS + 0xc04, RAM);
+        qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==,
+                        cases[j].expected);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1004), ==, 0);
+        qtest_writel(qts, FMSS + 0xc00, 8);
+    }
+    qtest_quit(qts);
+    rmdir(overlay);
+    g_free(overlay);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *rom = g_malloc0(131072);
@@ -579,6 +620,7 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/fmss/directory-generated-blank", directory_generated);
     qtest_add_func("/ipod/fmss/packed-physical-erased", packed_physical);
     qtest_add_func("/ipod/fmss/packed-generated-blank", packed_generated);
+    qtest_add_func("/ipod/fmss/read-id-chip-selection", read_id_chip_selection);
     result = g_test_run();
     unlink(rom_path); unlink(nor_path); rmdir(nand_path);
     g_free(rom_path); g_free(nor_path); g_free(nand_path);
