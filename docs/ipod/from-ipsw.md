@@ -706,3 +706,27 @@ two cold boots, generated identity, automatic activation, Home and PMU power-off
 This supersedes the historical “no helpers yet” notes above; text injection,
 clipboard and older media services still require their own API tests. See
 [qualification and evidence](../research/legacy-helper-abi.md).
+
+### Bluetooth identity without an iBoot rewrite (2026-10-01)
+
+The board no longer changes iBoot's `arm-io/uart3/bluetooth` string to uart1.
+The modeled BCM4325 combo-chip OTP/vendor CIS and HCI identity supply the
+prepared device's addresses through stock drivers. Real app-helper runs pass
+18/18 on 2.1.1, 3.0, 3.1.3 and 4.2.1 with untouched iBoot code and literals:
+serial/UDID/Wi-Fi/Bluetooth identity on both boots, automatic activation, Home,
+AFC writes, installed-app foreground launch, cold persistence and power-off.
+Evidence: `/private/tmp/ltm-n72-{211,30,313,421}-no-btpatch-session`.
+The legacy normal-boot command-line data injection remains a separate
+provisioning boundary; this change does not certify stock NVRAM propagation.
+
+The companion chip-presence fix keeps BCM4325 enumerated when `wifi=off`;
+that property only controls the optional host data bridge and is startup-only.
+Four SDIO board qtests pass, including CMD5 enumeration, OTP identity and reset
+with networking disabled. Native save/resume with no host network backend
+passes serial/UDID/Wi-Fi/Bluetooth identity both before and after restore,
+clock, USB pairing and guest file state on all four versions; 7E18 additionally
+keeps its live GL scene presenting. The updated default regression passes 8/8
+and now pairs with the expected UDID instead of a hardware-absence-derived one.
+Evidence: `/private/tmp/ltm-n72-physical-combo-final-qtest.log`,
+`/private/tmp/ltm-n72-{211,30,313,421}-physical-combo-snapshot`, and
+`/private/tmp/ltm-n72-physical-combo-default-regress.log`.

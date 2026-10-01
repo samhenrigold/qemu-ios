@@ -12,7 +12,7 @@ static const uint8_t bluetooth[6] = {0x02, 0x9f, 0xef, 0x8e, 0x4a, 0xf9};
 
 static QTestState *start_board(const char *options)
 {
-    return qtest_initf("-machine iPod-Touch,bootrom=%s,nor=%s,nand=%s,wifi=on%s "
+    return qtest_initf("-machine iPod-Touch,bootrom=%s,nor=%s,nand=%s%s "
                       "-display none -audio driver=none -nic none", rom, nor, nand, options);
 }
 
@@ -76,6 +76,26 @@ static void assert_bt_otp(QTestState *q, bool expected)
     g_assert_cmpint(found, ==, expected);
 }
 
+static void network_disabled_identity(void)
+{
+    QTestState *q = start_board(",wifi=off,wifi-mac=02:9f:ef:8e:4a:f8,bt-mac=02:9f:ef:8e:4a:f9");
+    QDict *reply = qtest_qmp(q, "{'execute':'qom-set','arguments':{'path':'/machine',"
+                             "'property':'wifi','value':true}}");
+    g_assert_nonnull(qdict_get(reply, "error"));
+    qobject_unref(reply);
+    /* Real card enumeration precedes CCCR/CIS reads. Off controls the host
+     * data bridge; a missing CMD5 reply would detach the physical combo chip. */
+    qtest_writel(q, SDIO + 0xc, 0);
+    qtest_writel(q, SDIO + 8, (1u << 31) | 5);
+    g_assert_cmphex(qtest_readl(q, SDIO + 0x20) & 0xf0000000, ==, 0xa0000000);
+    assert_factory_mac(q, provisioned);
+    assert_bt_otp(q, true);
+    qtest_qmp_assert_success(q, "{'execute':'system_reset'}");
+    assert_factory_mac(q, provisioned);
+    assert_bt_otp(q, true);
+    qtest_quit(q);
+}
+
 static void wifi_only_identity(void)
 {
     QTestState *q = start_board(",wifi-mac=02:9f:ef:8e:4a:f8");
@@ -119,6 +139,7 @@ int main(int argc, char **argv)
     nand = g_dir_make_tmp("n72-sdio-nand-XXXXXX", NULL);
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/ipod/sdio/default-cis-identity", default_identity);
+    qtest_add_func("/ipod/sdio/network-disabled-identity", network_disabled_identity);
     qtest_add_func("/ipod/sdio/wifi-only-cis-identity", wifi_only_identity);
     qtest_add_func("/ipod/sdio/provisioned-cis-identity-reset", provisioned_identity);
     result = g_test_run();
