@@ -1,15 +1,13 @@
 #include "hw/arm/ipod_touch_aes.h"
 #include "hw/qdev-properties.h"
-#include "hw/arm/ipod_touch_guard.h"
 #include "hw/irq.h"
 #include "hw/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/error-report.h"
 
-/* The largest thing the boot chain ever hands the engine is an img3 payload
- * (the biggest is a ~35 KB device tree). Clamp well above that so a stray or
- * hostile INSIZE cannot drive a multi-GB allocation / DMA. */
-#define IT_AES_MAX_XFER (16 * 1024 * 1024)
+/* Bound host scratch storage, not the hardware transfer length. Stock iBSS
+ * decrypts restore ramdisks larger than 16 MiB in one contiguous request. */
+#define IT_AES_DMA_CHUNK (64 * 1024)
 
 /*
  * The SoC GID key is fused into the S5L8720 and has never been extracted, so we
@@ -535,7 +533,8 @@ static void aes_custom_go(IPodTouchAESState *s, uint32_t go)
             break;
         }
         if (s->in_fill == 0 && in_len >= 16 && out_len >= 16) {  /* bulk */
-            uint32_t n = MIN(s->remaining, MIN(in_len, out_len)) & ~15u;
+            uint32_t n = MIN(IT_AES_DMA_CHUNK,
+                             MIN(s->remaining, MIN(in_len, out_len))) & ~15u;
             uint8_t *buf = g_malloc(n);
             cpu_physical_memory_read(in_addr, buf, n);
             AES_cbc_encrypt(buf, buf, n, &s->decryptKey, s->chain_iv,
@@ -581,6 +580,26 @@ static void aes_custom_go(IPodTouchAESState *s, uint32_t go)
     aes_update_irq(s);
 }
 
+/* CBC keeps its IV between chunks; a partial final block passes through. */
+static void aes_legacy_dma(IPodTouchAESState *s, int direction)
+{
+    uint8_t *buf = g_malloc(IT_AES_DMA_CHUNK);
+    uint32_t left = s->insize;
+    hwaddr in = s->inaddr, out = s->outaddr;
+
+    while (left) {
+        uint32_t n = MIN(left, IT_AES_DMA_CHUNK);
+        cpu_physical_memory_read(in, buf, n);
+        AES_cbc_encrypt(buf, buf, n & ~15u, &s->decryptKey,
+                        (uint8_t *)s->ivec, direction);
+        cpu_physical_memory_write(out, buf, n);
+        in += n;
+        out += n;
+        left -= n;
+    }
+    g_free(buf);
+}
+
 /*
  * s5l8900-compat: the operation exactly as devos50's iPod touch 1G model ran
  * it (ipod_touch_aes.c on his ipod_touch_1g branch), because his public NOR
@@ -602,12 +621,7 @@ static void aes_s5l8900_compat_go(IPodTouchAESState *aesop)
     } else {
         AES_set_decrypt_key((uint8_t *)aesop->custkey, 256, &aesop->decryptKey);
     }
-    uint8_t *buf = g_malloc(aesop->insize);
-    cpu_physical_memory_read(aesop->inaddr, buf, aesop->insize);
-    AES_cbc_encrypt(buf, buf, aesop->insize & ~15u, &aesop->decryptKey,
-                    (uint8_t *)aesop->ivec, aesop->compat_op ? AES_ENCRYPT : AES_DECRYPT);
-    cpu_physical_memory_write(aesop->outaddr, buf, aesop->insize);
-    g_free(buf);
+    aes_legacy_dma(aesop, aesop->compat_op ? AES_ENCRYPT : AES_DECRYPT);
     memset(aesop->custkey, 0, sizeof(aesop->custkey));
     memset(aesop->ivec, 0, sizeof(aesop->ivec));
     aesop->outsize = aesop->insize;
@@ -661,8 +675,9 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
              * protect keychain items already on existing images; making
              * them "correct" would lock those items out.
              */
-            inbuf = (uint8_t *)g_malloc(aesop->insize);
-            cpu_physical_memory_read((aesop->inaddr), inbuf, aesop->insize);
+            inbuf = g_malloc(IT_AES_GID_BLOB_SIZE);
+            cpu_physical_memory_read(aesop->inaddr, inbuf,
+                                     MIN(aesop->insize, IT_AES_GID_BLOB_SIZE));
 
             switch(aesop->keytype) {
                     case AESGID:
@@ -675,7 +690,7 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
                         break;
             }
 
-            buf = (uint8_t *) g_malloc(aesop->insize);
+            buf = g_malloc(IT_AES_DMA_CHUNK);
             if (it_aes_debug()) {
                 fprintf(stderr, "ipodtouch.aes: type=%d in=0x%08x/%u out=0x%08x\n",
                         aesop->keytype, aesop->inaddr, aesop->insize, aesop->outaddr);
@@ -713,25 +728,11 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
                     fprintf(stderr, "ipodtouch.aes: GID KBAG matched \"%s\"\n", blob->name);
                 }
 
-                memset(buf, 0, aesop->insize);
+                memset(buf, 0, IT_AES_DMA_CHUNK);
                 memcpy(buf, blob->plain, MIN(aesop->insize, (uint32_t)IT_AES_GID_BLOB_SIZE));
             }
             else {
-                /*
-                 * The engine is a block cipher: real hardware processes whole
-                 * 16-byte blocks and passes any trailing partial block through
-                 * untouched.  Several img3 payloads are not block multiples --
-                 * the 5F138 device tree is 33,724 bytes (12 past a boundary),
-                 * the Apple logo 7,226 (10 past), and 7E18's device tree is
-                 * 35,148 (also 12 past) -- and handing that odd tail to
-                 * AES_cbc_encrypt() garbles it.
-                 */
-                uint32_t whole = aesop->insize & ~15u;
-
-                AES_cbc_encrypt(inbuf, buf, whole, &aesop->decryptKey, (uint8_t *)aesop->ivec, AES_DECRYPT);
-                if (whole < aesop->insize) {
-                    memcpy(buf + whole, inbuf + whole, aesop->insize - whole);
-                }
+                aes_legacy_dma(aesop, AES_DECRYPT);
             }
 
             /* The retained 5F138 trace identifies exactly these three custom-key,
@@ -743,8 +744,17 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
                 aesop->inaddr == aesop->outaddr &&
                 (aesop->outaddr == 0x220100ac || aesop->outaddr == 0x0bf08468 ||
                  aesop->outaddr == 0x0fb9bcdc);
-            if (!preserve) {
-                cpu_physical_memory_write((aesop->outaddr), buf, aesop->insize);
+            if (!preserve && aesop->keytype == AESGID) {
+                uint32_t left = aesop->insize;
+                hwaddr out = aesop->outaddr;
+                while (left) {
+                    uint32_t n = MIN(left, IT_AES_DMA_CHUNK);
+                    cpu_physical_memory_write(out, buf, n);
+                    /* Only the first chunk carries the KBAG plaintext. */
+                    memset(buf, 0, IT_AES_GID_BLOB_SIZE);
+                    out += n;
+                    left -= n;
+                }
             }
 
             memset(aesop->custkey, 0, 0x20);
@@ -765,7 +775,7 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
             aesop->inaddr = value - aesop->addr_offset;
             break;
         case AES_INSIZE:
-            aesop->insize = IT_SIZE("aes", value, IT_AES_MAX_XFER);
+            aesop->insize = value;
             break;
         case AES_OUTSIZE:
             aesop->outsize = value;

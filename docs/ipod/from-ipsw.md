@@ -758,3 +758,29 @@ run reached stock iBSS and uploaded the restore ramdisk, then failed before
 DeviceTree upload. Current restore-client recovery commands also receive USB
 stalls from 2.x iBSS. Neither stock restore nor physical NAND replacement is
 qualified by these experiments.
+
+### Restore-sized AES DMA (2026-10-01)
+
+Unmodified 5F138 iBSS creates a 25,313,280-byte update ramdisk. The former
+16 MiB AES INSIZE clamp decrypted only its prefix. The remaining ciphertext
+included `/sbin/launchd`, causing the stock restore kernel to panic with
+`Process 1 exec of /sbin/launchd failed, errno 8`. Physical RAM was present;
+this was a crypto transfer-length error, not a RAM-map hole.
+
+INSIZE now retains its 32-bit register value. Custom, legacy UID and N45
+compatibility CBC DMA use at most 64 KiB of host scratch storage, preserving
+CBC chaining and a partial final block. GID lookup/output also uses bounded
+storage. Sanitized production-handler tests compare complete restore-sized
+requests against independent CBC, including segmented DMA and legacy UID.
+The default native 7E18 regression passes 8/8 on two cold boots.
+
+A guest physical-memory read after stock iBSS decryption matches every byte
+of the catalog-decrypted update ramdisk (SHA-256
+`05795d76755420f7b5e60cfe0ff777dbc409f6c28d950efc85d1a70d98b6d6b6`).
+The previous launchd panic no longer appears in the immediate diagnostic
+capture. The stock idevicerestore attempt now stalls on kernel USB enumeration;
+full restore, physical NAND formatting and restored cold boot remain open.
+The known DFU reconnection race still requires separate investigation.
+Evidence: `/private/tmp/ltm-aes-restore-default`,
+`/private/tmp/ltm-n72-ramdisk-aes-fixed`, and
+`/private/tmp/ltm-n72-stock-restored-aes-settled`.
