@@ -81,7 +81,11 @@ static int64_t qc(uint32_t op, void *buf, uint32_t off, uint32_t len, uint64_t t
         memcpy(buf, offer_buf + off, (size_t)n); return n;
     }
     if (op == 0x171) {
-        if (len) fake_ticks += fake_exists("slow") ? UINT64_C(6000000000) : 1;
+        if (len) {
+            char step[64];
+            uint64_t elapsed = fake_load(step, sizeof(step) - 1, "tick_step") > 0 ? strtoull(step, NULL, 10) : 1;
+            fake_ticks += fake_exists("slow") ? UINT64_C(6000000000) : elapsed;
+        }
         char p[1024]; static char data[1 << 20];
         if (offer_len < 0 || fake_index_path((unsigned)token, p)) return -1;
         FILE *f = fopen(p, "rb"); if (!f) return -1;
@@ -111,6 +115,11 @@ int main(int argc, char **argv) {
     assert(argc == 2);
     snprintf(fake_dir, sizeof(fake_dir), "%s", argv[1]);
     (void)fake_time;
+    struct offer maximum = {0}; struct pull_clock clock;
+    maximum.nent = MAX_ENT;
+    for (int i = 0; i < MAX_ENT; i++) maximum.e[i].size = FILE_MAX;
+    assert(pull_clock_start(&clock, &maximum) == 0);
+    assert(clock.seconds == PULL_MAX_SECONDS);
     printf("%d\n", it_boot_run());
     return 0;
 }
@@ -172,7 +181,7 @@ class Device:
         (self.d / "root/state").write_text("seed %d\n" % serial)
 
     def boot(self, **flags):
-        for name in ("silent", "corrupt", "fail_at", "nosha", "build", "slow"):
+        for name in ("silent", "corrupt", "fail_at", "nosha", "build", "slow", "tick_step"):
             (self.d / name).unlink(missing_ok=True)
         for name, value in flags.items():
             (self.d / name).write_text(str(value))
@@ -259,6 +268,15 @@ def main():
         assert timed.boot(slow=1) < 0 and timed.current() == 10
         assert not (timed.d / "root/pkgs/11").exists()
         assert any(int(r[1]) < 0 for r in timed.reports())
+
+        # A larger valid transfer takes >10 simulated seconds and must receive
+        # its size allowance, without extending the clock on each progress call.
+        sized = case()
+        sized.offer(pkg(sized, 11, extra=b"x" * (128 * 1024)))
+        assert sized.boot(tick_step=80000000) == 1 and sized.current() == 11
+        capped = case()
+        capped.offer(pkg(capped, 11, extra=b"x" * (128 * 1024)))
+        assert capped.boot(tick_step=500000000) < 0 and capped.current() == 10
 
         # the same offer again: nothing moves, no respring, jobs reloaded for this boot
         assert dev.boot() == 0 and dev.current() == 11 and "stop com.apple.SpringBoard" not in dev.launchctl()
