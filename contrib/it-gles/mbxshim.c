@@ -999,7 +999,7 @@ static int GLESCreateGCWithAPI(void *sharegroup, void **fw_table, void *x_end,
     if (((GuestGC *)sharegroup)->host) {
         long long host = api ? qc(GLES_OP_NEW_CONTEXT, 0, 2, A(((GuestGC *)sharegroup)->host, api)) : -1;
         /* Older hosts accept only the one-word constructor. */
-        if (host <= 0) host = qc(GLES_OP_NEW_CONTEXT, 0, 1, A(((GuestGC *)sharegroup)->host));
+        if (host == -1) host = qc(GLES_OP_NEW_CONTEXT, 0, 1, A(((GuestGC *)sharegroup)->host));
         if (host <= 0) { free(gc); return 0; }
         gc->host = (unsigned)host;
     }

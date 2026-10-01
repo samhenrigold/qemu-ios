@@ -1215,6 +1215,14 @@ cocoa = dependency('appleframeworks',
 # guest's GLES HLE probe fails cleanly.
 host_opengl = dependency('appleframeworks', modules: 'OpenGL',
                          required: false)
+angle_prefix = get_option('ltm_angle_prefix')
+if angle_prefix != ''
+  if host_os != 'darwin'
+    error('The experimental ANGLE backend currently requires macOS')
+  endif
+  host_opengl = declare_dependency(compile_args: ['-DGLES_HOST_ANGLE=1', '-I' + angle_prefix / 'include'],
+    link_args: ['-L' + angle_prefix / 'out/ltm-metal', '-Wl,-rpath,' + angle_prefix / 'out/ltm-metal', '-lEGL', '-lGLESv2'])
+endif
 # IOSurface (and the CoreFoundation dictionary that configures one) is not
 # optional garnish here: it is the render target the iOS present path reads,
 # which is what keeps a tile-based GPU from being drained by a glReadPixels
