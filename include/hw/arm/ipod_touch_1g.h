@@ -19,6 +19,7 @@
 #include "hw/arm/ipod_touch_gpio.h"
 #include "hw/arm/ipod_touch_lcd.h"
 #include "hw/arm/ipod_touch_multitouch.h"
+#include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "hw/arm/s5l8900_fmc.h"
 #include "hw/arm/s5l8900_adm.h"
 #include "hw/arm/guest-package.h"
@@ -129,6 +130,7 @@ typedef struct IPodTouch1GMachineState {
     Clock *sysclk;
     IPodTouchSYSICState *sysic;
     IPodTouchGPIOState *gpio;
+    Pcf50633State *pmu;
     IPodTouchMultitouchState *mt;
     IPodTouchLCDState *lcd;
     S5L8900FMCState *fmc;

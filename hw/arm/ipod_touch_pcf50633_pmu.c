@@ -47,8 +47,12 @@ static void pmu_update_backlight(Pcf50633State *s)
 static void pmu_update_irq(Pcf50633State *s)
 {
     uint8_t pending = 0;
-    for (unsigned i = 0; i < 3; i++) {
-        pending |= s->regs[PMU_EVENT_A_REG + i] &
+    /* The BCD-calendar part is the N45 PCF50635, not the D1759:
+     * INT1..5 = 0x02..06, INT1M..5M = 0x07..0b. */
+    unsigned base = s->rtc_bcd ? 2 : PMU_EVENT_A_REG;
+    unsigned count = s->rtc_bcd ? 5 : 3;
+    for (unsigned i = 0; i < count; i++) {
+        pending |= s->regs[base + i] &
                    ~s->regs[PMU_IRQ_MASK_A + i];
     }
     qemu_set_irq(s->irq, pending != 0);
@@ -113,7 +117,7 @@ static void pmu_apply_battery_adc(Pcf50633State *s, unsigned counts)
 {
     bool was_charging = pmu_charge_active(s);
     s->adc_values[4] = MIN(counts, 1023);
-    if (was_charging != pmu_charge_active(s)) {
+    if (!s->rtc_bcd && was_charging != pmu_charge_active(s)) {
         pmu_latch_event(s, PMU_EVENT_C_REG, 1 << 2);
     }
 }
@@ -156,7 +160,9 @@ void pcf50633_set_charging_mode(Pcf50633State *s, unsigned mode)
     pcf50633_update_battery(s);
     if (s->charging_mode != mode) {
         s->charging_mode = mode;
-        pmu_latch_event(s, PMU_EVENT_C_REG, 1 << 2);
+        if (!s->rtc_bcd) {
+            pmu_latch_event(s, PMU_EVENT_C_REG, 1 << 2);
+        }
     }
 }
 
@@ -189,7 +195,18 @@ void pcf50633_set_usb_cable(Pcf50633State *s, bool attached)
     pcf50633_update_battery(s);
     if (s->usb_cable != attached) {
         s->usb_cable = attached;
-        pmu_latch_event(s, PMU_EVENT_A_REG, PMU_PWRSRC_USB);
+        pmu_latch_event(s, s->rtc_bcd ? 2 : PMU_EVENT_A_REG,
+                        s->rtc_bcd ? (attached ? 0x04 : 0x08) : PMU_PWRSRC_USB);
+    }
+}
+
+/* N45 DT function-button_wake uses EXTON1; its GPIO button is a separate
+ * input. Both edges latch even while masked, until the driver reads INT2. */
+void pcf50633_set_exton1(Pcf50633State *s, bool high)
+{
+    if (s->rtc_bcd && s->exton1 != high) {
+        s->exton1 = high;
+        pmu_latch_event(s, 3, high ? 0x04 : 0x08);
     }
 }
 
@@ -269,6 +286,14 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
         res = (s->rtc_latch >> (8 * (reg - PMU_RTC_COUNTER))) & 0xff;
         goto done;
     }
+    unsigned event_base = s->rtc_bcd ? 2 : PMU_EVENT_A_REG;
+    unsigned event_count = s->rtc_bcd ? 5 : 3;
+    if (reg >= event_base && reg < event_base + event_count) {
+        res = s->regs[reg];
+        s->regs[reg] = 0;
+        pmu_update_irq(s);
+        goto done;
+    }
     switch (reg) {
         case 0x69:
             res = 0; // boot count error/panic
@@ -284,17 +309,6 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
             if (pmu_charge_active(s)) {
                 res |= 2;
             }
-            break;
-        case PMU_EVENT_A_REG:     // 0x01
-        case PMU_EVENT_A_REG + 1: // 0x02
-        case PMU_EVENT_C_REG:     // 0x03
-            // EVENT_A/B/C interrupt status. iOS reads the three as one block
-            // starting at subaddress 0x01; each is read-to-clear, matching real
-            // interrupt-event registers, so a latched wake event is consumed
-            // exactly once.
-            res = s->regs[reg];
-            s->regs[reg] = 0;
-            pmu_update_irq(s);
             break;
         default:
             // Falls through to the register file, which is what the RTC offset
@@ -396,7 +410,7 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
             pcf50633_guest_shutdown();
         }
     } else switch (reg) {
-        case PMU_IRQ_MASK_A ... PMU_IRQ_MASK_A + 3:
+        case PMU_IRQ_MASK_A ... PMU_IRQ_MASK_A + 4:
             pmu_update_irq(s);
             break;
         case PMU_ADC_CONTROL:
@@ -446,14 +460,16 @@ static void pcf50633_reset(DeviceState *dev)
     /* The power-on transition consumes the standby command. Leaving 0x90
      * latched makes iBoot re-enter its charging/standby path after Power On. */
     s->regs[PMU_STANDBY_CMD] = 0;
-    s->regs[PMU_SHUTDOWN_REG] &= ~PMU_SHUTDOWN_GO;
+    s->regs[s->shutdown_reg] &= ~PMU_SHUTDOWN_GO;
     s->regs[PMU_ADC_CONTROL] = 0;
     /* The backlight rail is on out of reset (iBoot lights its logo without
      * touching 0x10); the level is whatever the guest programs. */
     s->regs[s->backlight_enable_reg] |= s->backlight_enable_bit;
     s->adc_sample = 0;
-    for (unsigned i = 0; i < 3; i++) {
-        s->regs[PMU_EVENT_A_REG + i] = 0;
+    unsigned base = s->rtc_bcd ? 2 : PMU_EVENT_A_REG;
+    unsigned count = s->rtc_bcd ? 5 : 3;
+    for (unsigned i = 0; i < count; i++) {
+        s->regs[base + i] = 0;
         s->regs[PMU_IRQ_MASK_A + i] = 0xff;
     }
     s->addressing = true;
@@ -465,6 +481,10 @@ static void pcf50633_reset(DeviceState *dev)
 static int pcf50633_post_load(void *opaque, int version_id)
 {
     Pcf50633State *s = opaque;
+    if (s->rtc_bcd && version_id < 5) {
+        /* Older N45 states used the D1759 interrupt map. */
+        return -EINVAL;
+    }
     if (version_id < 4) {
         s->drain_rate = 0;
         s->drain_level = pcf50633_level_for_adc(s->adc_values[4]);
@@ -487,7 +507,7 @@ static void pcf50633_finalize(Object *obj)
  * press outstanding restores with it still outstanding. */
 static const VMStateDescription vmstate_pcf50633 = {
     .name = "pcf50633",
-    .version_id = 4,
+    .version_id = 5,
     .minimum_version_id = 1,
     .post_load = pcf50633_post_load,
     .fields = (const VMStateField[]) {
@@ -507,6 +527,7 @@ static const VMStateDescription vmstate_pcf50633 = {
         VMSTATE_UINT64_V(drain_rate_bits, Pcf50633State, 4),
         VMSTATE_UINT64_V(drain_level_bits, Pcf50633State, 4),
         VMSTATE_INT64_V(drain_updated_ns, Pcf50633State, 4),
+        VMSTATE_BOOL_V(exton1, Pcf50633State, 5),
         VMSTATE_END_OF_LIST()
     }
 };

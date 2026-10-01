@@ -14,7 +14,7 @@ for name in ('pmu_update_backlight','pmu_update_irq','pmu_latch_event','pmu_adc_
              'pcf50633_adc_for_level','pcf50633_level_for_adc','pmu_charge_active',
              'pmu_apply_battery_adc','pcf50633_update_battery','pcf50633_set_battery_adc',
              'pcf50633_set_battery_level','pcf50633_set_battery_drain','pcf50633_set_charging_mode',
-             'pcf50633_set_usb_cable','pmu_adc_command','pmu_bcd','pmu_bcd_rtc_read','pcf50633_recv','pcf50633_guest_shutdown_confirmed',
+             'pcf50633_set_usb_cable','pcf50633_set_exton1','pmu_adc_command','pmu_bcd','pmu_bcd_rtc_read','pcf50633_recv','pcf50633_guest_shutdown_confirmed',
              'pcf50633_guest_shutdown','pcf50633_send','pcf50633_reset','pcf50633_post_load','pcf50633_init'):
     match=re.search(r'^(?:static )?[^\n]*\b'+name+r'\([^)]*\)\s*\{.*?^}',source,re.M|re.S)
     assert match,name
@@ -78,7 +78,7 @@ int main(void) {
     pcf50633_set_usb_cable(&initial,true);pcf50633_reset(&initial);
     assert(initial.adc_values[3]==1023);
     /* usb-status-reg/-bits at their property defaults: the D1759's power-source status 0x04 bit 3 */
-    int irq=0;QEMUTimer timer={0};Pcf50633State s={.irq=&irq,.adc_timer=&timer,.usb_status_reg=0x04,.usb_status_bits=0x08};
+    int irq=0;QEMUTimer timer={0};Pcf50633State s={.irq=&irq,.adc_timer=&timer,.usb_status_reg=0x04,.usb_status_bits=0x08,.shutdown_reg=PMU_SHUTDOWN_REG};
     pcf50633_reset(&s);
     wr(&s,0x40,0x23);assert(!timer.pending && !irq && !s.regs[2]);
     const unsigned counts[]={0,1,3,4,850,1022,1023};
@@ -181,7 +181,32 @@ int main(void) {
     wr(&p,0x29,0x00);assert(brightness==0);
     wr(&p,0x30,0x40);wr(&p,0x10,0xff);assert(brightness==0); /* the D1759's registers mean nothing here */
     wr(&p,0x29,0x01);assert(brightness==255);
-    puts("PASS: backlight enable/level per register map; D1759 ADC settling/conversion, ten-bit results, masks, cable events, reset, fractional drain and migration");
+    /* PCF50635: five independent status/mask pairs, including the two
+     * registers which the D1759 treats as power-source status. */
+    Pcf50633State n={.irq=&irq,.adc_timer=&timer,.rtc_bcd=true,
+                     .shutdown_reg=0x0c,.usb_status_reg=0x4b,.usb_status_bits=3};
+    pcf50633_reset(&n);
+    for(unsigned i=0;i<5;i++) {
+        assert(n.regs[2+i]==0 && n.regs[7+i]==0xff);
+        pmu_latch_event(&n,2+i,0x40);assert(!irq);
+        wr(&n,7+i,0xbf);assert(irq);
+        assert(rd(&n,2+i)==0x40 && !irq);
+        assert(rd(&n,2+i)==0);
+        wr(&n,7+i,0xff);
+    }
+    pcf50633_set_exton1(&n,true);assert(!irq);
+    pcf50633_set_exton1(&n,true);assert(n.regs[3]==4);
+    pcf50633_set_exton1(&n,false);assert(n.regs[3]==12);
+    wr(&n,8,0xfb);assert(irq);assert(rd(&n,3)==12 && !irq);
+    pcf50633_set_usb_cable(&n,true);assert(rd(&n,0x4b)==3);
+    assert(rd(&n,2)==4 && !irq);
+    pcf50633_set_usb_cable(&n,false);assert(rd(&n,0x4b)==0 && rd(&n,2)==8);
+    assert(pcf50633_post_load(&n,4)==-EINVAL);
+    pmu_latch_event(&n,6,1);wr(&n,11,0xfe);assert(irq);
+    irq=0;assert(pcf50633_post_load(&n,5)==0 && irq);
+    n.regs[12]=1;pcf50633_reset(&n);assert(!irq && n.regs[12]==0);
+    for(unsigned i=0;i<5;i++) assert(n.regs[2+i]==0 && n.regs[7+i]==0xff);
+    puts("PASS: PCF50635 five-bank IRQs, EXTON1 edges, cable events and snapshot rejection; backlight enable/level per register map; D1759 ADC settling/conversion, ten-bit results, masks, cable events, reset, fractional drain and migration");
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:

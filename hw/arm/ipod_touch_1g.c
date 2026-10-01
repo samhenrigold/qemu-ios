@@ -396,6 +396,9 @@ static void n45_button(IPodTouch1GMachineState *s, uint32_t gpio, uint32_t gpio_
     if (down == was) {
         return;
     }
+    if (gpio == N45_GPIO_BUTTON_POWER && s->pmu) {
+        pcf50633_set_exton1(s->pmu, down);
+    }
     if (down) {
         gpio_set_on(pads, gpio);
     } else {
@@ -810,6 +813,7 @@ static void n45_machine_init(MachineState *machine)
         /* PCF50635 at 0x73 on I2C1. Its interrupt is GPIO-IC line 0x55 (the
          * DT's pmu node: interrupt-parent gpio, interrupts <0x55 1>). */
         I2CSlave *pmu = i2c_slave_new("pcf50633", 0x73);
+        s->pmu = PCF50633(pmu);
         qdev_prop_set_uint8(DEVICE(pmu), "shutdown-reg", 0x0c);
         /* MBCS1 USBPRES|USBOK: a host on the cable. Without it the power source reads "ext 0",
          * the USB stack stops ("cable removed") and the device deep-sleeps after the boot. */
