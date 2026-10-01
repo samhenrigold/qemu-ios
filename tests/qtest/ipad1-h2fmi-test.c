@@ -228,6 +228,95 @@ static void overlay_cold_reopen(void)
     rmdir(overlay);
 }
 
+static QTestState *overlay_board(const char *overlay)
+{
+    return qtest_initf("-machine ipad1,bootrom=%s,nand=%s,nand-overlay=%s "
+                       "-display none -audio driver=none -nic none",
+                       rom_path, nand_path, overlay);
+}
+
+static void snapshot_flush(QTestState *q)
+{
+    g_autofree char *path = NULL;
+    int fd = g_file_open_tmp("ipad1-ownership-snapshot-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    g_autofree char *uri = g_strdup_printf("file:%s", path);
+    qtest_qmp_assert_success(q, "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
+    bool completed = false;
+    for (unsigned i = 0; i < 10000; i++) {
+        QDict *reply = qtest_qmp(q, "{ 'execute': 'query-migrate' }");
+        const char *status = qdict_get_try_str(qdict_get_qdict(reply, "return"), "status");
+        completed = status && !strcmp(status, "completed");
+        bool failed = status && !strcmp(status, "failed");
+        qobject_unref(reply);
+        g_assert_false(failed);
+        if (completed) {
+            break;
+        }
+        g_usleep(1000);
+    }
+    g_assert_true(completed);
+    unlink(path);
+}
+
+static void ownership_crash_reopen(void)
+{
+    g_autofree char *overlay = g_dir_make_tmp("ipad1-crash-overlay-XXXXXX", NULL);
+    g_autofree char *bitmap = g_build_filename(overlay, "bus0-ce0.dirty", NULL);
+    pid_t child = fork();
+    int status;
+    g_assert_cmpint(child, >=, 0);
+    if (!child) {
+        QTestState *q = overlay_board(overlay);
+        program(q, 7, 0);
+        assert_page(q, 7, 0);
+        /* Deliberately skip every graceful QMP/VM stop/cleanup path. The driver
+         * reaps its own killed guest, then exits without libqtest's normal
+         * status check (a SIGKILL is intentional in this crash test). */
+        pid_t guest = qtest_pid(q);
+        if (kill(guest, SIGKILL) || waitpid(guest, &status, 0) != guest ||
+            !WIFSIGNALED(status) || WTERMSIG(status) != SIGKILL) {
+            _exit(1);
+        }
+        _exit(0);
+    }
+    g_assert_cmpint(waitpid(child, &status, 0), ==, child);
+    g_assert_true(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    for (unsigned i = 0; i < 2; i++) {
+        g_autofree char *socket = g_strdup_printf("%s/qtest-%d.%s", g_get_tmp_dir(),
+                                                 (int)child, i ? "qmp" : "sock");
+        unlink(socket);
+    }
+    uint8_t bits[64];
+    int fd = open(bitmap, O_RDONLY);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(read(fd, bits, sizeof(bits)), ==, sizeof(bits));
+    close(fd);
+    g_assert_cmphex(bits[0] & (1u << 7), ==, 0);
+    QTestState *q = overlay_board(overlay);
+    assert_page(q, 7, 0xffffffff); /* unpublished page cannot hide the base */
+    program(q, 7, 0);
+    snapshot_flush(q); /* pre-save publishes data -> ownership even when stopped */
+    fd = open(bitmap, O_RDONLY);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(read(fd, bits, sizeof(bits)), ==, sizeof(bits));
+    close(fd);
+    g_assert_cmphex(bits[0] & (1u << 7), ==, 1u << 7);
+    qtest_quit(q);
+    q = overlay_board(overlay);
+    assert_page(q, 7, 0);
+    qtest_quit(q);
+    GDir *dir = g_dir_open(overlay, 0, NULL);
+    const char *name;
+    while ((name = g_dir_read_name(dir))) {
+        g_autofree char *path = g_build_filename(overlay, name, NULL);
+        unlink(path);
+    }
+    g_dir_close(dir);
+    rmdir(overlay);
+}
+
 static void expect_startup_failure(char **argv, const char *error_text)
 {
     GPid pid;
@@ -279,6 +368,9 @@ static void snapshot_format_mismatch(void)
     g_autofree char *uri = g_strdup_printf("file:%s", snapshot);
     QTestState *qts = qtest_initf("-machine ipad1,bootrom=%s,nand=%s -display none -audio driver=none -nic none",
                                 rom_path, nand_path);
+    program(qts, 8, 0x5a5a5a5a);
+    page_command(qts, 8);
+    qtest_writel(qts, FMI + 4, 3); /* nonempty fixed-array FIFOs in VM stream */
     qtest_qmp_assert_success(qts, "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
     bool completed = false;
     for (unsigned i = 0; i < 10000; i++) {
@@ -326,6 +418,8 @@ static void snapshot_format_mismatch(void)
     }
     g_assert_true(completed);
     /* Matching incoming state must reactivate actual backend I/O. */
+    g_assert_cmphex(qtest_readl(qts, FMI + 0x14), ==, 0x5a5a5a5a);
+    g_assert_cmphex(qtest_readb(qts, FMI + 0x18), ==, 0);
     assert_page(qts, 7, 0xffffffff);
     program(qts, 7, 0x55555555);
     assert_page(qts, 7, 0x55555555);
@@ -362,6 +456,7 @@ int main(int argc, char **argv)
     qtest_add_func("/ipad1/h2fmi/physical-program-erase", physical_program_erase);
     qtest_add_func("/ipad1/h2fmi/legacy-compatibility", legacy_compatibility);
     qtest_add_func("/ipad1/h2fmi/overlay-cold-reopen", overlay_cold_reopen);
+    qtest_add_func("/ipad1/h2fmi/ownership-crash-reopen", ownership_crash_reopen);
     qtest_add_func("/ipad1/h2fmi/second-writer-refused", second_writer_refused);
     qtest_add_func("/ipad1/h2fmi/snapshot-format-mismatch", snapshot_format_mismatch);
     result = g_test_run();

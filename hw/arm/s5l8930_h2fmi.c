@@ -735,6 +735,36 @@ static void s5l8930_h2fmi_init(Object *obj)
 
 /* The IOP firmware leaves the controller mid-operation between any two of its instructions:
  * latched pages, the FIFOs, the queue, the program registers all move with a snapshot. */
+/* These FIFOs are fixed arrays, not pointers. VBUFFER_UINT32 dereferences
+ * their first bytes as a host address; additionally bound the incoming length
+ * before upstream buffer I/O, rather than checking after it overwrote memory. */
+static int h2fmi_fifo_get(QEMUFile *f, void *pv, size_t size,
+                         const VMStateField *field)
+{
+    return size > field->num ? -EINVAL : vmstate_info_buffer.get(f, pv, size, field);
+}
+
+static int h2fmi_fifo_put(QEMUFile *f, void *pv, size_t size,
+                         const VMStateField *field, JSONWriter *vmdesc)
+{
+    return size > field->num ? -EINVAL : vmstate_info_buffer.put(f, pv, size, field, vmdesc);
+}
+
+static const VMStateInfo h2fmi_fifo_info = {
+    .name = "h2fmi-bounded-fifo",
+    .get = h2fmi_fifo_get,
+    .put = h2fmi_fifo_put,
+};
+
+#define H2FMI_FIFO(_field, _length) { \
+    .name = #_field, \
+    .size_offset = vmstate_offset_value(H2FMIBus, _length, uint32_t), \
+    .info = &h2fmi_fifo_info, \
+    .num = sizeof(((H2FMIBus *)0)->_field), \
+    .flags = VMS_VBUFFER, \
+    .offset = offsetof(H2FMIBus, _field), \
+}
+
 static const VMStateDescription vmstate_h2fmi_bus = {
     .name = "s5l8930.h2fmi-bus",
     .version_id = 1,
@@ -753,14 +783,14 @@ static const VMStateDescription vmstate_h2fmi_bus = {
         VMSTATE_BUFFER_UNSAFE(page, H2FMIBus, 0, sizeof(((H2FMIBus *)0)->page)),
         VMSTATE_UINT32(stride, H2FMIBus),
         VMSTATE_UINT32(data_len, H2FMIBus),
-        VMSTATE_VBUFFER_UINT32(data, H2FMIBus, 0, NULL, data_len),
+        H2FMI_FIFO(data, data_len),
         VMSTATE_UINT32(meta_len, H2FMIBus),
-        VMSTATE_VBUFFER_UINT32(meta, H2FMIBus, 0, NULL, meta_len),
+        H2FMI_FIFO(meta, meta_len),
         VMSTATE_BOOL(writing, H2FMIBus),
         VMSTATE_UINT32(wdata_len, H2FMIBus),
-        VMSTATE_VBUFFER_UINT32(wdata, H2FMIBus, 0, NULL, wdata_len),
+        H2FMI_FIFO(wdata, wdata_len),
         VMSTATE_UINT32(wmeta_len, H2FMIBus),
-        VMSTATE_VBUFFER_UINT32(wmeta, H2FMIBus, 0, NULL, wmeta_len),
+        H2FMI_FIFO(wmeta, wmeta_len),
         VMSTATE_BUFFER_UNSAFE(wpage, H2FMIBus, 0, sizeof(((H2FMIBus *)0)->wpage)),
         VMSTATE_BUFFER_UNSAFE(wpmeta, H2FMIBus, 0, sizeof(((H2FMIBus *)0)->wpmeta)),
         VMSTATE_UINT32_ARRAY(wpage_len, H2FMIBus, 8),
