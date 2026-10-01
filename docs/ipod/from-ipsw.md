@@ -730,3 +730,31 @@ and now pairs with the expected UDID instead of a hardware-absence-derived one.
 Evidence: `/private/tmp/ltm-n72-physical-combo-final-qtest.log`,
 `/private/tmp/ltm-n72-{211,30,313,421}-physical-combo-snapshot`, and
 `/private/tmp/ltm-n72-physical-combo-default-regress.log`.
+
+## N72 unit ECID and stock DFU qualification (2026-10-01)
+
+The machine accepts `ecid=0x...` as an immutable 42-bit board input. It encodes
+that value in CHIPID word3 and the ECID bits of word4, preserving unrelated
+fuses. Guest writes cannot change it; reset preserves it. Without this option,
+existing model defaults and explicit fuse properties retain their behavior.
+Light Touch supplies the per-unit, seed-derived ECID for new and legacy N72
+bases; the emulator does not fabricate a USB descriptor or alter guest memory.
+
+`tests/ipod/dfu-ibss.py` uses an all-erased private NOR and a private NAND
+overlay to query stock SecureROM, upload an unmodified stock iBSS, and verify
+the same nonzero ECID in both guest-generated USB descriptors. It requires the
+emulator-only libirecovery transport adapter and preserves source storage.
+The 5F138 qualification used ECID `0x98e452f953`. This is identity/DFU/iBSS
+proof, not full restore proof. The test explicitly allows firmware USB
+reinitialization to settle: immediate descriptor polling can return to DFU.
+That transport/controller race remains open and must not be hidden by a fake
+recovery event. Production-board CHIPID qtests pass 3/3 and the default native
+7E18 regression passes 8/8 after this change.
+
+A private host-only copy of the 2.1.1 Restore.plist with
+`SupportedProductTypes = [ProductType]` gets the existing idevicerestore past
+its legacy metadata check. No guest firmware bytes were changed. One traced
+run reached stock iBSS and uploaded the restore ramdisk, then failed before
+DeviceTree upload. Current restore-client recovery commands also receive USB
+stalls from 2.x iBSS. Neither stock restore nor physical NAND replacement is
+qualified by these experiments.
