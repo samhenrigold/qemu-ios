@@ -209,6 +209,12 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
     // printf("%s: read from location 0x%08x\n", __func__, addr);
 
     IPodTouchLCDState *s = (IPodTouchLCDState *)opaque;
+    /* The S5L8720 driver reads RGB1 control after programming geometry,
+     * then ORs rotation into it. This existing latch is readable independently
+     * of the optional broader plane register readback. */
+    if (!s->s5l8900 && addr == 0x40) {
+        return s->plane_regs[addr / 4];
+    }
     if (s->planes_enabled && !(addr & 3) && addr >= 0x10 &&
         addr < sizeof(s->plane_regs)) return s->plane_regs[addr / 4];
     if (s->s5l8900) {
