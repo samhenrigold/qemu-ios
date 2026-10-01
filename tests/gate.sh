@@ -82,12 +82,13 @@ if [ "$TIER" = --models ] || [ "$TIER" = --full ] || [ "$TIER" = --fresh ]; then
             ipad1-pmgr) binary="${QTEST_BINARY:-$(dirname "$QEMU")/tests/qtest/$model-test}" ;;
             ipad1-h2fmi) binary="${QTEST_H2FMI_BINARY:-$(dirname "$QEMU")/tests/qtest/$model-test}" ;;
             ipad1-cdma) binary="${QTEST_CDMA_BINARY:-$(dirname "$QEMU")/tests/qtest/$model-test}" ;;
+            ipod-fmss) binary="${QTEST_IPOD_FMSS_BINARY:-$(dirname "$QEMU")/tests/qtest/$model-test}" ;;
             *) binary="$(dirname "$QEMU")/tests/qtest/$model-test" ;;
         esac
         if [ -x "$QEMU" ] && [ -x "$binary" ]; then
             suite "qtest/$model" env QTEST_QEMU_BINARY="$QEMU" "$binary"
         else
-            printf 'FAIL      -  qtest/%s (build qemu-system-arm and tests/qtest/%s-test; QEMU and QTEST_BINARY/QTEST_H2FMI_BINARY/QTEST_CDMA_BINARY select them)\n' "$model" "$model" >> "$OUT/results"
+            printf 'FAIL      -  qtest/%s (build qemu-system-arm and tests/qtest/%s-test; QEMU and QTEST_BINARY/QTEST_H2FMI_BINARY/QTEST_CDMA_BINARY/QTEST_IPOD_FMSS_BINARY select them)\n' "$model" "$model" >> "$OUT/results"
         fi
     done < <(python3 tests/gate_registry.py --tier-plan models)
 fi
