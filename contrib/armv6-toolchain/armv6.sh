@@ -23,6 +23,8 @@ set -eu
 
 GUEST_ARCH="${GUEST_ARCH:-armv6}"
 ARMV6_SDK="${ARMV6_SDK:-/Users/shg/Downloads/OldSDK/iPhoneOS3.1.3.sdk}"
+GUEST_API_VERSION="${GUEST_API_VERSION:-5.0}"
+case "$GUEST_API_VERSION" in 2.0|5.0) ;; *) echo "unsupported compiler API target: $GUEST_API_VERSION" >&2; return 1 2>/dev/null || exit 1 ;; esac
 ARMV6_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cc6() {
@@ -38,8 +40,10 @@ cc6() {
     rm -f "$2"
     fixed=()
     [ "${LEGACY_LINK:-0}" = 1 ] && fixed=(-ffixed-r9 -include "$ARMV6_HERE/legacy.h")
-    if ! xcrun clang -target $GUEST_ARCH-apple-ios5.0 -marm -O1 -fno-stack-protector ${fixed[@]+"${fixed[@]}"} \
-        -fno-builtin -nostdinc -isystem "$ARMV6_SDK/usr/include" "${@:3}" \
+    api_flags=()
+    [ "$GUEST_API_VERSION" != 2.0 ] || api_flags=(-idirafter "$(xcrun clang -print-resource-dir)/include")
+    if ! xcrun clang -target $GUEST_ARCH-apple-ios$GUEST_API_VERSION -marm -O1 -fno-stack-protector ${fixed[@]+"${fixed[@]}"} \
+        -fno-builtin -nostdinc ${api_flags[@]+"${api_flags[@]}"} -isystem "$ARMV6_SDK/usr/include" "${@:3}" \
         -c "$1" -o "$2" >"$2.cclog" 2>&1; then
         cat "$2.cclog" >&2
         rm -f "$2" "$2.cclog"
@@ -71,9 +75,11 @@ link6() {
         cc6 "$ARMV6_HERE/crt1old.c" "$out.crt1old.o" || return 1
         legacy+=(-e _start "$out.crt1old.o")
     fi
+    stub_flags=()
+    [ -z "${LEGACY_SYSTEM_STUB:-}" ] || stub_flags=(-L"$LEGACY_SYSTEM_STUB")
     if ! xcrun ld -arch armv7 "$kind" ${legacy[@]+"${legacy[@]}"} -platform_version ios 9.0 9.0 \
             -no_function_starts -no_data_in_code_info -no_uuid \
-            -syslibroot "$ARMV6_SDK" -L"$ARMV6_SDK/usr/lib" -lSystem \
+            -syslibroot "$ARMV6_SDK" ${stub_flags[@]+"${stub_flags[@]}"} -L"$ARMV6_SDK/usr/lib" -lSystem \
             "$@" -o "$out" 2>"$out.ldlog"; then
         echo "link6: ld failed for $out" >&2
         cat "$out.ldlog" >&2

@@ -58,6 +58,8 @@
     {"name": "tests/ipod/test_gles_surface.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_gles_upload.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_guest_service_errors.py", "tier": "manual", "prerequisites": ["qemu", "device-image"], "reason": "native emulator check: supply the device inputs documented by this test"},
+    {"name": "tests/ipod/test_harness_pcm.py", "tier": "quick", "prerequisites": []},
+    {"name": "contrib/it-harness/test-audit.py", "tier": "manual", "prerequisites": ["sdk2", "rebuilt-ios2-harness-binary"], "reason": "supply --sdk /path/to/iPhoneOS2.0.sdk --binary /path/to/Payload/Harness.app/Harness; audits real local inputs, no SDK redistribution"},
     {"name": "tests/ipod/test_h264_native.py", "tier": "manual", "prerequisites": ["movie"], "reason": "supply command-line inputs: movie"},
     {"name": "tests/ipod/test_h264_reader.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_h264_slices.py", "tier": "quick", "prerequisites": []},
