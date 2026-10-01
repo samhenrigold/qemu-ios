@@ -1,6 +1,9 @@
 /* Import staged music or video through the 7E18 MusicLibrary service. The service owns
- * all database mutations. SQLite below is read-only, for retry reconciliation.
- * There is no CRT in these ARMv6 executables; see armv6-toolchain/README.md. */
+ * the item. SQLite below is read-only, for retry reconciliation; the item's year, which
+ * the purchase-folder insert has no property for, goes through MusicLibrary's own connection.
+ * There is no CRT in these ARMv6 executables; see armv6-toolchain/README.md.
+ * -DITMEDIA_HOST_CHECK builds the metadata mapping alone for the Mac, so offline checks
+ * run this file's mapping rather than a copy of it. */
 #include <stdio.h>
 #include <errno.h>
 #include <stdlib.h>
@@ -18,19 +21,12 @@
 typedef void *ID;
 static ID (*getclass)(const char *), (*selector)(const char *);
 static void *send;
-static __typeof__(sqlite3_open_v2) *sql_open;
-static __typeof__(sqlite3_busy_timeout) *sql_timeout;
-static __typeof__(sqlite3_exec) *sql_exec;
-static __typeof__(sqlite3_prepare_v2) *sql_prepare;
-static __typeof__(sqlite3_bind_text) *sql_bind;
-static __typeof__(sqlite3_step) *sql_step;
-static __typeof__(sqlite3_column_int64) *sql_column;
-static __typeof__(sqlite3_finalize) *sql_finalize;
-static __typeof__(sqlite3_close) *sql_close;
-static __typeof__(sqlite3_errmsg) *sql_error;
 #define CALL(ret,args) ((ret (*)args)send)
 static ID m0(ID o, const char *s) { return CALL(ID,(ID,ID))(o,selector(s)); }
 static ID m1(ID o, const char *s, ID a) { return CALL(ID,(ID,ID,ID))(o,selector(s),a); }
+static ID number(unsigned value) {
+    return CALL(ID,(ID,ID,unsigned))(getclass("NSNumber"),selector("numberWithUnsignedInt:"),value);
+}
 static ID string(const char *s) {
     return CALL(ID,(ID,ID,const char *))(getclass("NSString"),selector("stringWithUTF8String:"),s);
 }
@@ -44,10 +40,6 @@ static void set(ID o, const char *key, ID value) {
 }
 static void fail(const char *reason) {
     fprintf(stderr,"itmedia: %s\n",reason);
-    _exit(1);
-}
-static void database_failure(sqlite3 *db, const char *reason) {
-    fprintf(stderr,"itmedia: %s: %s\n",reason,db ? sql_error(db) : "no connection");
     _exit(1);
 }
 
@@ -70,12 +62,143 @@ static void regular_path(const char *path, int directory) {
         fail("staged file size is outside 1 byte..1 GiB");
 }
 
+/* Validate the host's metadata and build MusicLibrary's purchase-folder item properties
+ * (7E18 -[MLMusicLibrary_SQL insertItemFromPurchaseFolder:withItemProperties:] keys).
+ * Sets *artwork to the staged cover's file name and *year when present. */
+static ID item_properties(ID input, const char **filename_out,
+                          const char **artwork, unsigned *year) {
+    ID filename_value = field(input,"filename");
+    if (!is_class(filename_value,"NSString")) fail("filename must be a string");
+    const char *filename = utf8(filename_value);
+    if (!component(filename)) fail("invalid filename");
+    ID kind_value = field(input,"kind");
+    if (kind_value && !is_class(kind_value,"NSString")) fail("kind must be a string");
+    const char *kind = kind_value ? utf8(kind_value) : "song";
+    if (!kind || (strcmp(kind,"song") && strcmp(kind,"feature-movie")))
+        fail("kind must be song or feature-movie");
+    int movie = !strcmp(kind,"feature-movie");
+    const char *extension = strrchr(filename,'.');
+    if (!extension || (movie
+        ? (strcmp(extension,".m4v") && strcmp(extension,".mp4") && strcmp(extension,".mov"))
+        : (strcmp(extension,".m4a") && strcmp(extension,".mp3") && strcmp(extension,".wav"))))
+        fail("expected m4a/mp3/wav for song or m4v/mp4/mov for feature-movie");
+
+    ID props = m0(getclass("NSMutableDictionary"),"dictionary");
+    const char *source[] = {"title","artist","album","album_artist","composer","genre"};
+    const char *target[] = {"itemName","artistName","playlistName","playlistArtistName","composerName","genre"};
+    for (unsigned i=0; i<sizeof(source)/sizeof(*source); ++i) {
+        ID value = field(input,source[i]);
+        if (!value && i) continue;
+        if (!is_class(value,"NSString")) fail("text metadata must be strings");
+        const char *text = utf8(value);
+        if (!text || strlen(text)>4096 || (!i && !*text)) fail("invalid or oversized media metadata");
+        set(props,target[i],value);
+    }
+    /* UInt16 in MusicLibrary's purchase dictionary reader. */
+    const char *counts[] = {"track_number","track_count","disc_number","disc_count"};
+    const char *count_target[] = {"trackNumber","trackCount","discNumber","discCount"};
+    for (unsigned i=0; i<4; ++i) {
+        ID value = field(input,counts[i]);
+        if (!value) continue;
+        double n = is_class(value,"NSNumber") ? CALL(double,(ID,ID))(value,selector("doubleValue")) : 0;
+        if (!isfinite(n) || n != floor(n) || n < 1 || n > 65535) fail("track and disc numbers must be 1..65535");
+        set(props,count_target[i],number((unsigned)n));
+    }
+    ID compilation = field(input,"compilation");
+    if (compilation) {
+        if (!is_class(compilation,"NSNumber")) fail("compilation must be a boolean");
+        set(props,"compilation",
+            CALL(ID,(ID,ID,int))(getclass("NSNumber"),selector("numberWithBool:"),
+                                 CALL(signed char,(ID,ID))(compilation,selector("boolValue")) != 0));
+    }
+    *year = 0;
+    ID year_value = field(input,"year");
+    if (year_value) {
+        double y = is_class(year_value,"NSNumber") ? CALL(double,(ID,ID))(year_value,selector("doubleValue")) : 0;
+        if (!isfinite(y) || y != floor(y) || y < 1 || y > 9999) fail("year must be 1..9999");
+        *year = (unsigned)y;
+    }
+    ID duration = field(input,"duration_ms");
+    if (!is_class(duration,"NSNumber")) fail("duration_ms must be numeric");
+    double ms = CALL(double,(ID,ID))(duration,selector("doubleValue"));
+    if (!isfinite(ms) || ms <= 0 || ms > 86400000) fail("duration must be within one day");
+    set(props,"duration",duration);
+    /* 7E18 ITMediaKindFromOTAMediaKindString maps feature-movie to kind 2
+     * and sets has_video. Let MusicLibrary populate every related field. */
+    set(props,"kind",string(kind));
+    *artwork = NULL;
+    ID artwork_value = field(input,"artwork");
+    if (artwork_value) {
+        if (!is_class(artwork_value,"NSString") || strcmp(utf8(artwork_value),"artwork.jpg"))
+            fail("expected artwork.jpg");
+        *artwork = utf8(artwork_value);
+    }
+    ID download = m0(getclass("NSMutableDictionary"),"dictionary");
+    set(download,"mediaAssetFilename",filename_value);
+    set(props,"com.apple.iTunesStore.downloadInfo",download);
+    *filename_out = filename;
+    return props;
+}
+
+static void load_foundation(void) {
+    void *objc = dlopen("/usr/lib/libobjc.A.dylib",RTLD_NOW);
+    if (!objc) fail("cannot load Objective-C runtime");
+    getclass = dlsym(objc,"objc_getClass");
+    selector = dlsym(objc,"sel_registerName");
+    send = dlsym(objc,"objc_msgSend");
+    if (!getclass || !selector || !send ||
+        !dlopen("/System/Library/Frameworks/Foundation.framework/Foundation",RTLD_NOW))
+        fail("cannot load Foundation");
+}
+
+static ID read_metadata(const char *path) {
+    regular_path(path,0);
+    struct stat metadata_stat;
+    if (stat(path,&metadata_stat) || metadata_stat.st_size > 65536) fail("metadata exceeds 64 KiB");
+    ID input = m1(getclass("NSDictionary"),"dictionaryWithContentsOfFile:",string(path));
+    if (!is_class(input,"NSDictionary")) fail("metadata must be a dictionary plist");
+    return input;
+}
+
+#ifdef ITMEDIA_HOST_CHECK
+/* Host check of the production metadata mapping. Artwork IDs are allocated
+ * from the native library under the import lock, verified by booted QA. */
+int main(int argc, char **argv) {
+    if (argc != 4 || !component(argv[2])) fail("usage: itmedia-host metadata.plist staging-id out.plist");
+    load_foundation();
+    const char *filename, *artwork;
+    unsigned year;
+    ID props = item_properties(read_metadata(argv[1]),&filename,&artwork,&year);
+    ID out = m0(getclass("NSMutableDictionary"),"dictionary");
+    set(out,"properties",props);
+    if (artwork) {
+        set(out,"artwork",string(artwork));
+    }
+    if (year) set(out,"year",number(year));
+    return CALL(signed char,(ID,ID,ID,signed char))(out,selector("writeToFile:atomically:"),string(argv[3]),1) ? 0 : 1;
+}
+#else
+static __typeof__(sqlite3_open_v2) *sql_open;
+static __typeof__(sqlite3_busy_timeout) *sql_timeout;
+static __typeof__(sqlite3_exec) *sql_exec;
+static __typeof__(sqlite3_prepare_v2) *sql_prepare;
+static __typeof__(sqlite3_bind_text) *sql_bind;
+static __typeof__(sqlite3_column_int64) *sql_column;
+static __typeof__(sqlite3_step) *sql_step;
+static __typeof__(sqlite3_finalize) *sql_finalize;
+static __typeof__(sqlite3_close) *sql_close;
+static __typeof__(sqlite3_errmsg) *sql_error;
+static void database_failure(sqlite3 *db, const char *reason) {
+    fprintf(stderr,"itmedia: %s: %s\n",reason,db ? sql_error(db) : "no connection");
+    _exit(1);
+}
+
 /* An old SQLite connection can retain the attached Locations schema while
  * Apple's sync service replaces its indexes. Reopen and reprepare only on
  * SQLITE_SCHEMA; every other error remains fatal, so uncertainty never replays
  * an import. These queries never mutate either database. */
 static int read_query(const char *sql, const char *folder, const char *filename,
-                      sqlite3_int64 *value) {
+                      sqlite3_int64 *value, sqlite3_int64 *second) {
     for (unsigned attempt = 0; attempt < 3; ++attempt) {
         sqlite3 *db = NULL;
         sqlite3_stmt *stmt = NULL;
@@ -91,7 +214,10 @@ static int read_query(const char *sql, const char *folder, const char *filename,
         if (rc != SQLITE_ROW && rc != SQLITE_DONE &&
             (rc != SQLITE_SCHEMA || attempt == 2))
             database_failure(db,"music library query failed");
-        if (rc == SQLITE_ROW) *value = sql_column(stmt,0);
+        if (rc == SQLITE_ROW) {
+            *value = sql_column(stmt,0);
+            if (second) *second = sql_column(stmt,1);
+        }
         sql_finalize(stmt);
         sql_close(db);
         if (rc != SQLITE_SCHEMA) return rc;
@@ -101,26 +227,23 @@ static int read_query(const char *sql, const char *folder, const char *filename,
     return SQLITE_ERROR;
 }
 
-/* Return 1 for existing media at the exact immutable staged location.
- * Fail closed on a query error: an uncertain previous import must not replay. */
-static int existing(const char *folder, const char *filename, unsigned *artwork_id) {
-    /* Music creates indexes with private sort collations on its first launch.
-     * This identity query needs none of them. Do not supply a fake collation
-     * or let the old SQLite planner choose those indexes after a reboot. */
-    const char *sql = "SELECT item.artwork_cache_id FROM item NOT INDEXED JOIN loc.location l ON l.item_pid=item.pid "
+/* Read identity and the native artwork ID at the immutable staged location.
+ * Errors are fatal: an uncertain prior import must never replay. */
+static sqlite3_int64 existing(const char *folder, const char *filename, unsigned *artwork_id) {
+    const char *sql = "SELECT item.pid,item.artwork_cache_id FROM item NOT INDEXED JOIN loc.location l ON l.item_pid=item.pid "
                       "JOIN loc.base_location b ON b.id=l.base_location_id "
                       "WHERE b.path=? AND l.location=? LIMIT 1";
-    sqlite3_int64 value = 0;
-    int found = read_query(sql,folder,filename,&value) == SQLITE_ROW;
-    if (found && artwork_id) *artwork_id = (unsigned)value;
-    return found;
+    sqlite3_int64 pid = 0, art = 0;
+    if (read_query(sql,folder,filename,&pid,&art) != SQLITE_ROW) return 0;
+    *artwork_id = (unsigned)art;
+    return pid;
 }
 
 /* ArtworkCache uses the purchase itemId as its string key. Choose an unused
  * ID from the native library under the import lock; only Apple writes either DB. */
 static unsigned next_artwork_id(void) {
     sqlite3_int64 last = 0;
-    if (read_query("SELECT COALESCE(MAX(artwork_cache_id),0) FROM item NOT INDEXED",NULL,NULL,&last) != SQLITE_ROW)
+    if (read_query("SELECT COALESCE(MAX(artwork_cache_id),0) FROM item NOT INDEXED",NULL,NULL,&last,NULL) != SQLITE_ROW)
         fail("cannot allocate artwork ID");
     if (last < 0 || last >= 0xffffffffLL) fail("artwork ID space exhausted");
     return (unsigned)(last+1);
@@ -142,6 +265,24 @@ static void import_artwork(const char *folder, unsigned identifier) {
     if (!process(url,string(key),*albums,data)) fail("artwork processing failed; retain staging for reconciliation");
 }
 
+/* Through MusicLibrary's own writer connection: it opens the library with its own
+ * SQLite VFS, so a second plain connection is read-only. No 7E18 trigger or index
+ * covers item.year, and the purchase-folder insert has no property for it. */
+static void record_year(sqlite3_int64 pid, unsigned year) {
+    void *support = dlopen("/System/Library/PrivateFrameworks/AppSupport.framework/AppSupport",RTLD_NOW);
+    void *library = dlopen("/System/Library/PrivateFrameworks/MusicLibrary.framework/MusicLibrary",RTLD_NOW);
+    void *(*shared_store)(void) = library ? dlsym(library,"MLSDBGetSharedRecordStore") : NULL;
+    void *(*store_database)(void *) = support ? dlsym(support,"CPRecordStoreGetDatabase") : NULL;
+    void *(*for_writing)(void *) = support ? dlsym(support,"CPSqliteDatabaseConnectionForWriting") : NULL;
+    int (*perform)(void *,ID) = support ? dlsym(support,"CPSqliteConnectionPerformSQL") : NULL;
+    if (!shared_store || !store_database || !for_writing || !perform) fail("MusicLibrary database API unavailable");
+    void *connection = for_writing(store_database(shared_store()));
+    char sql[96];
+    snprintf(sql,sizeof(sql),"UPDATE item SET year=%u WHERE pid=%lld",year,(long long)pid);
+    int rc = connection ? perform(connection,string(sql)) : SQLITE_ERROR;
+    if (rc != SQLITE_DONE && rc != SQLITE_OK) fail("year not recorded; retain staged media for reconciliation");
+}
+
 __attribute__((naked)) void _start(void) {
     __asm__ volatile("ldr r0, [sp]\n\tadd r1, sp, #4\n\tb _main");
 }
@@ -151,39 +292,15 @@ int main(int argc, char **argv) {
     if (getuid() == 0 && (setgid(501) || setuid(501))) fail("cannot become mobile");
     if (getuid() != 501) fail("must run as mobile or root");
     setenv("HOME","/var/mobile",1);
-    void *objc = dlopen("/usr/lib/libobjc.A.dylib",RTLD_NOW);
-    if (!objc) fail("cannot load Objective-C runtime");
-    getclass = dlsym(objc,"objc_getClass");
-    selector = dlsym(objc,"sel_registerName");
-    send = dlsym(objc,"objc_msgSend");
-    if (!getclass || !selector || !send ||
-        !dlopen("/System/Library/Frameworks/Foundation.framework/Foundation",RTLD_NOW))
-        fail("cannot load Foundation");
+    load_foundation();
     ID pool = m0(m0(getclass("NSAutoreleasePool"),"alloc"),"init");
     ID version = m1(getclass("NSDictionary"),"dictionaryWithContentsOfFile:",
                     string("/System/Library/CoreServices/SystemVersion.plist"));
     const char *build = utf8(field(version,"ProductBuildVersion"));
     if (!build || strcmp(build,"7E18")) fail("unsupported firmware; expected 7E18");
-    regular_path(argv[1],0);
-    struct stat metadata_stat;
-    if (stat(argv[1],&metadata_stat) || metadata_stat.st_size > 65536) fail("metadata exceeds 64 KiB");
-    ID input = m1(getclass("NSDictionary"),"dictionaryWithContentsOfFile:",string(argv[1]));
-    if (!is_class(input,"NSDictionary")) fail("metadata must be a dictionary plist");
-    ID filename_value = field(input,"filename");
-    if (!is_class(filename_value,"NSString")) fail("filename must be a string");
-    const char *filename = utf8(filename_value);
-    if (!component(filename)) fail("invalid filename");
-    ID kind_value = field(input,"kind");
-    if (kind_value && !is_class(kind_value,"NSString")) fail("kind must be a string");
-    const char *kind = kind_value ? utf8(kind_value) : "song";
-    if (!kind || (strcmp(kind,"song") && strcmp(kind,"feature-movie")))
-        fail("kind must be song or feature-movie");
-    int movie = !strcmp(kind,"feature-movie");
-    const char *extension = strrchr(filename,'.');
-    if (!extension || (movie
-        ? (strcmp(extension,".m4v") && strcmp(extension,".mp4") && strcmp(extension,".mov"))
-        : (strcmp(extension,".m4a") && strcmp(extension,".mp3") && strcmp(extension,".wav"))))
-        fail("expected m4a/mp3/wav for song or m4v/mp4/mov for feature-movie");
+    const char *filename, *artwork;
+    unsigned year;
+    ID props = item_properties(read_metadata(argv[1]),&filename,&artwork,&year);
     char folder[160], path[512];
     snprintf(folder,sizeof(folder),"LightTouch/%s",argv[2]);
     regular_path(MEDIA "LightTouch",1);
@@ -192,48 +309,12 @@ int main(int argc, char **argv) {
     snprintf(path,sizeof(path),MEDIA "%s/%s",folder,filename);
     regular_path(path,0);
     if (access(path,R_OK)) fail("staged media is not readable by mobile");
-
-    ID props = m0(getclass("NSMutableDictionary"),"dictionary");
-    const char *source[] = {"title","artist","album","genre","album_artist","composer"};
-    const char *target[] = {"itemName","artistName","playlistName","genre","playlistArtistName","composerName"};
-    for (unsigned i=0; i<sizeof(source)/sizeof(source[0]); ++i) {
-        ID value = field(input,source[i]);
-        if (!value && i) continue;
-        if (!is_class(value,"NSString")) fail("title/artist/album/genre must be strings");
-        const char *text = utf8(value);
-        if (!text || strlen(text)>4096 || (!i && !*text)) fail("invalid or oversized media metadata");
-        set(props,target[i],value);
-    }
-    ID duration = field(input,"duration_ms");
-    if (!is_class(duration,"NSNumber")) fail("duration_ms must be numeric");
-    double ms = CALL(double,(ID,ID))(duration,selector("doubleValue"));
-    if (!isfinite(ms) || ms <= 0 || ms > 86400000) fail("duration must be within one day");
-    set(props,"duration",duration);
-    const char *number_source[] = {"track_number","track_count","disc_number","disc_count"};
-    const char *number_target[] = {"trackNumber","trackCount","discNumber","discCount"};
-    for (unsigned i=0; i<4; ++i) {
-        ID value = field(input,number_source[i]);
-        if (!value) continue;
-        if (!is_class(value,"NSNumber")) fail("track/disc metadata must be numeric");
-        double n = CALL(double,(ID,ID))(value,selector("doubleValue"));
-        if (!isfinite(n) || n < 1 || n > 65535 || n != floor(n)) fail("invalid track/disc number");
-        set(props,number_target[i],value);
-    }
-    /* 7E18 ITMediaKindFromOTAMediaKindString maps feature-movie to kind 2
-     * and sets has_video. Let MusicLibrary populate every related field. */
-    set(props,"kind",string(kind));
-    ID download = m0(getclass("NSMutableDictionary"),"dictionary");
-    set(download,"mediaAssetFilename",filename_value);
-    ID artwork = field(input,"artwork_filename");
     if (artwork) {
-        if (!is_class(artwork,"NSString") || strcmp(utf8(artwork),"artwork.jpg")) fail("expected artwork.jpg");
         snprintf(path,sizeof(path),MEDIA "%s/artwork.jpg",folder);
         regular_path(path,0);
         struct stat st;
         if (stat(path,&st) || st.st_size > 2*1024*1024 || access(path,R_OK)) fail("invalid artwork file");
-        set(download,"artworkAssetFilename",artwork);
     }
-    set(props,"com.apple.iTunesStore.downloadInfo",download);
 
     int lock = open(MEDIA "LightTouch/.import.lock",O_RDWR|O_CREAT|O_NOFOLLOW,0600);
     if (lock < 0 || flock(lock,LOCK_EX|LOCK_NB)) fail("another media import is running");
@@ -246,34 +327,37 @@ int main(int argc, char **argv) {
     sql_exec = dlsym(sqlite,"sqlite3_exec");
     sql_prepare = dlsym(sqlite,"sqlite3_prepare_v2");
     sql_bind = dlsym(sqlite,"sqlite3_bind_text");
-    sql_step = dlsym(sqlite,"sqlite3_step");
     sql_column = dlsym(sqlite,"sqlite3_column_int64");
+    sql_step = dlsym(sqlite,"sqlite3_step");
     sql_finalize = dlsym(sqlite,"sqlite3_finalize");
     sql_close = dlsym(sqlite,"sqlite3_close");
     sql_error = dlsym(sqlite,"sqlite3_errmsg");
     if (!sql_open || !sql_timeout || !sql_exec || !sql_prepare || !sql_bind ||
-        !sql_step || !sql_column || !sql_finalize || !sql_close || !sql_error) fail("SQLite API unavailable");
+        !sql_column ||
+        !sql_step || !sql_finalize || !sql_close || !sql_error) fail("SQLite API unavailable");
     ID library = m0(getclass("MusicLibrary"),"sharedMusicLibrary");
     const char *insert = "insertItemFromPurchaseFolder:withItemProperties:";
     if (!library || !CALL(int,(ID,ID,ID))(library,selector("respondsToSelector:"),selector(insert)))
         fail("MusicLibrary import service is unavailable");
     unsigned artwork_id = 0;
-    int was_present = existing(folder,filename,&artwork_id);
+    sqlite3_int64 pid = existing(folder,filename,&artwork_id);
+    int was_present = pid != 0;
     if (artwork && !was_present) {
         artwork_id = next_artwork_id();
-        set(props,"itemId",CALL(ID,(ID,ID,unsigned))(getclass("NSNumber"),selector("numberWithUnsignedInt:"),artwork_id));
+        set(props,"itemId",number(artwork_id));
+    }
+    if (artwork) {
+        if (!artwork_id) fail("existing track has no artwork ID; remove it in Music before importing again");
+        import_artwork(folder,artwork_id);
     }
     if (!was_present) {
         ID result = CALL(ID,(ID,ID,ID,ID))(library,selector(insert),string(folder),props);
         if (!result) fail("MusicLibrary declined import; retain staged media for reconciliation");
         m0(getclass("MusicLibrary"),"commitAllDeferredWork");
         m0(getclass("MusicLibrary"),"flush");
-        if (!existing(folder,filename,&artwork_id)) fail("import not visible; retain staged media for reconciliation");
+        if (!(pid = existing(folder,filename,&artwork_id))) fail("import not visible; retain staged media for reconciliation");
     }
-    if (artwork) {
-        if (!artwork_id) fail("existing track has no artwork ID; remove it in Music before importing again");
-        import_artwork(folder,artwork_id);
-    }
+    if (year) record_year(pid,year);
     /* Finish native post-sync sorting/index work before Music is launched.
      * Otherwise its SyncHelper starts that work itself and schedules a normal
      * terminateWithSuccess when the sync phase ends (7E18: 0x57bc4). */
@@ -287,3 +371,4 @@ int main(int argc, char **argv) {
     close(lock);
     _exit(0);
 }
+#endif
