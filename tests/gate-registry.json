@@ -813,6 +813,15 @@
       "missing": "fail"
     },
     {
+      "name": "qtest/ipod-fmss",
+      "tier": "models",
+      "prerequisites": [
+        "qemu",
+        "qtest-binary"
+      ],
+      "missing": "fail"
+    },
+    {
       "name": "tests/ipod/run-regression.sh",
       "tier": "full",
       "prerequisites": [
