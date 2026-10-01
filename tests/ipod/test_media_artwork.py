@@ -77,10 +77,11 @@ try:
         with sqlite3.connect(db_path) as db:
             rows = db.execute('SELECT title,artist,album,album_artist,composer,track_number,track_count,'
                               'disc_number,disc_count,artwork_cache_id FROM item').fetchall()
-            extra = db.execute('SELECT year,is_compilation,(SELECT genre FROM genre_map WHERE id=item.genre_id) FROM item').fetchall()
+            extra = db.execute('SELECT year,is_compilation,(SELECT genre FROM genre_map WHERE id=item.genre_id),total_time_ms FROM item').fetchall()
         for i, key in enumerate(('year', 'compilation', 'genre')):
             if key in metadata:
                 assert len(extra) == 1 and extra[0][i] == metadata[key], (key, extra)
+        assert len(extra) == 1 and extra[0][3] == max(1, int(metadata['duration_ms'] + 0.5)), extra
         expected = tuple(metadata[key] for key in ('title', 'artist', 'album', 'album_artist', 'composer',
                          'track_number', 'track_count', 'disc_number', 'disc_count'))
         assert len(rows) == 1 and rows[0][:-1] == expected and rows[0][-1] > 0, rows
@@ -93,7 +94,7 @@ try:
         assert len(image) > 100 and image.startswith(b'\x89PNG\r\n\x1a\n')
         (out / (boot + '-artwork.png')).write_bytes(image)
         (out / (boot + '.json')).write_text(json.dumps({'rows': rows, 'extra_tags': extra}, indent=2))
-        print('PASS:', boot, 'factory identity, native tags, decoded artwork and one song after repeat import', flush=True)
+        print('PASS:', boot, 'factory identity, native tags/duration, decoded artwork and one song after repeat import', flush=True)
         # Reopening after a hard stop also exercises persistent cache publication.
         procs.stop_all()
         device.qmp.close()

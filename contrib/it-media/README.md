@@ -46,7 +46,9 @@ Run as root (drops to mobile) or mobile:
 /tmp/itmedia /tmp/song.plist staging-id
 ```
 
-Title, filename and duration are required. Optional: `artist`, `album`,
+Title, filename and duration are required. The helper rounds fractional milliseconds
+to a positive whole-millisecond NSNumber at the native purchase boundary: 7E18
+silently stores zero duration for a fractional value. Optional: `artist`, `album`,
 `album_artist`, `composer`, `genre` (strings); `track_number`, `track_count`,
 `disc_number`, `disc_count` (1..65535); `year` (1..9999); `compilation` (boolean);
 `artwork`, exactly `artwork.jpg`, a JPEG cover staged beside the media (2 MiB maximum). They become
