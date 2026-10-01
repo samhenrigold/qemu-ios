@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The 1.x and 2.x OpenGLES export lists build: every gl* name has a gles-names.h row (or its OES
-spelling's, or a hand thunk in gles2x.c), so contrib/it-gles/build-gles2x.sh 1x|2x cannot fail on a gap."""
+spelling's, or a hand thunk); 1.x uses gles1x.c and 2.x uses the shared public front end."""
 import os, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

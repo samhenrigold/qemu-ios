@@ -49,5 +49,5 @@ class data bound two-level to CoreFoundation's `NSObject` and libobjc's messenge
 Where OpenGLES is in the shared cache (3.1+), dyld's own `enable-dylibs-to-override-cache` switch makes it load the file,
 and dyld rebinds the cached consumers' imports to it.
 
-1.x is not covered: it has LayerKit and the old ObjC runtime. `contrib/it-gles/gles2x.c` (`OpenGLES-1x`) still serves it
+1.x is not covered: it has LayerKit and the old ObjC runtime. `contrib/it-gles/gles1x.c` (`OpenGLES-1x`) still serves it
 (`docs/ipad1/gles-public-seam.md`, "1.x").

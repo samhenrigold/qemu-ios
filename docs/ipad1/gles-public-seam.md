@@ -114,8 +114,7 @@ partial) and the same present rate within the load noise (15 to 20 per second ea
 ## 1.x (iPod touch 1G, 1.1-1.1.5): not in the one binary
 
 1.x has LayerKit, not CoreAnimation, and no EAGL; its Objective-C is the old runtime (CoreFoundation exports
-`.objc_class_name_NSObject`, libobjc has no `objc_msgSendSuper2`). `contrib/it-gles/gles2x.c` built with
-`GLES2X_EAGL=0` (`OpenGLES-1x`, 186 exports, guest package `n45-ios1`) keeps serving it. Folding it into
+`.objc_class_name_NSObject`, libobjc has no `objc_msgSendSuper2`). `contrib/it-gles/gles1x.c` built as plain C (`OpenGLES-1x`, 186 exports, guest package `n45-ios1`) keeps serving it. Folding it into
 `contrib/gles-public/OpenGLES` as a second backend chosen at run time is not cheap with the front end as it is. These are
 the pieces:
 
