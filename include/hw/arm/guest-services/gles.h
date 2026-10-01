@@ -355,7 +355,8 @@ static inline const char *gles_id_name(uint32_t id)
 #define GLES_OP_DELETE_SHAREGROUP       (GLES_OP_BASE + 5)
 /* NEW_CONTEXT accepts [sharegroup] from older shims or [sharegroup, API]
  * with explicit API 1/2. The older form remains unknown (0), never guessed
- * from the current program or firmware. CGL accepts both; EGL requires API. */
+ * from the current program or firmware. CGL accepts both; EGL requires API.
+ * -1 permits an older-host retry; -2 means explicitly unsupported API, no retry. */
 #define GLES_OP_NEW_CONTEXT             (GLES_OP_BASE + 6)
 #define GLES_OP_DELETE_CONTEXT          (GLES_OP_BASE + 7)
 /* Accepted CA drawable width and height, before GL size queries/draws.

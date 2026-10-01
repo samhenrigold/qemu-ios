@@ -58,6 +58,8 @@ def main():
     ap.add_argument("--out", default=None)
     ap.add_argument("--qemu", default=os.path.join(ROOT, "build/qemu-system-arm"))
     ap.add_argument("--burst", type=float, default=8.0, help="seconds of back-to-back screendumps")
+    ap.add_argument("--expect-migration-blocker", action="store_true",
+                    help="experimental backend must explicitly refuse saving live GL state")
     a = ap.parse_args()
     dev = os.path.abspath(a.device)
     lock = json.load(open(os.path.join(dev, "device.lock.json")))
@@ -93,6 +95,17 @@ def main():
         line = next((l for l in text.splitlines() if "it_gltest: readback" in l), "(no readback line)")
         results["readback"] = line.strip()
         ok &= line.endswith("PASS")
+        if a.expect_migration_blocker:
+            try:
+                q.cmd("migrate", uri="file:" + out + "/unexpected-state")
+            except RuntimeError as error:
+                message = str(error)
+                results["migration blocker"] = message
+                ok &= "Live OpenGL ES state cannot be saved" in message
+            else:
+                results["migration blocker"] = "FAIL: migration was accepted"
+                ok = False
+                q.cmd("migrate_cancel")
         itqmp.button(q, "home")          # wake the panel if it idled off
         time.sleep(2)
         for n in ("a", "b"):

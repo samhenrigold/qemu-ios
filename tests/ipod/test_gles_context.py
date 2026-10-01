@@ -5,7 +5,7 @@ a = s.rindex('static bool gles_platform_context_create(')
 create = s[a:s.index('\n}', a) + 2]
 a = s.index('static GHashTable *gles_contexts, *gles_groups;')
 # Snapshot save/restore is out of scope here; only its registration hook is stubbed.
-ops = s[a:s.index('\n#endif', a)].replace('#include "gles-host-snapshot.c.inc"', 'static void gles_snapshot_register(void) {}')
+ops = s[a:s.index('\n#endif\n\nvoid gles_host_reset', a)].replace('#include "gles-host-snapshot.c.inc"', 'static void gles_snapshot_register(void) {}')
 a = s.index('void gles_host_reset(void)')
 ops += s[a:s.index('\n}', a) + 2]
 header = PRELUDE
@@ -41,9 +41,9 @@ end = shim.index('\n}', shim.index('static int GLESDestroySharegroup', start)) +
 sharegroup = r''' 
 ''' + shim[shim.rindex('typedef struct {', 0, shim.index('} GuestGC;')):shim.index('} GuestGC;') + 10] + r'''
 #define A(...) ((unsigned[]){__VA_ARGS__})
-static bool older_host;
+static bool older_host, reject_api;
 static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args)
-{ if(older_host && slot==GLES_OP_NEW_CONTEXT && argc==2)return -1; return gles_context_operation(slot,gc?((GuestGC*)gc)->host:0,argc,args); }
+{ if(reject_api && slot==GLES_OP_NEW_CONTEXT && argc==2)return -2; if(older_host && slot==GLES_OP_NEW_CONTEXT && argc==2)return -1; return gles_context_operation(slot,gc?((GuestGC*)gc)->host:0,argc,args); }
 ''' + shim[start:end]
 start_gc = shim.index('static int GLESCreateGCWithAPI(')
 end_gc = shim.index('static int GLESDestroyGC(void *gc);', start_gc)
@@ -143,6 +143,9 @@ int main(void)
     assert(select_context(((GuestGC*)known)->host)->api_version==0);
     assert(!gles_context_operation(GLES_OP_DELETE_CONTEXT,((GuestGC*)known)->host,0,NULL));free(known);
     assert(!GLESCreateGCWithAPI(guest_group,NULL,NULL,&known,3));
+    older_host=false;reject_api=true;
+    assert(!GLESCreateGCWithAPI(guest_group,NULL,NULL,&known,2));
+    assert(!gles_host_context_count());
     assert(!GLESDestroySharegroup(guest_group));
     g_hash_table_destroy(gles_contexts);g_hash_table_destroy(gles_groups);
     puts("PASS: native GL state isolation, shared textures and deleted buffers, independent groups and destruction order");

@@ -92,8 +92,8 @@ The concrete replacement boundaries are:
 | Shader compilation | Submit GLES source directly to the ES backend after validating guest memory | Guest string/length validation, program object identity and shader snapshots |
 | Acceptance | Run `regress.py` (qualified home frame, shadow, persistence), `snapshot-check.py`, `jank.py`, and the app corpus against two actual backend binaries | Existing thresholds and guest additions; no new golden frames derived from the candidate |
 
-These probes use native EGL API calls, not the guest transport. There is no
-second guest-capable backend binary to compare yet: linking the executor to
+These probes use native EGL API calls, not the guest transport. At this stage there was no
+second guest-capable backend binary to compare: linking the executor to
 ANGLE leaves 44 unresolved names and its CGL context/snapshot assumptions.
 A real comparative guest run requires a bounded experimental executor adapter
 first. Inventing a second transport decoder for the probe would not validate
@@ -134,3 +134,68 @@ A shipping backend switch still requires replacing immediate drawing,
 attribute stacks, fences and texture capture before the same qualified
 workload can compare ANGLE with CGL. Native EGL probes alone cannot show a
 reduction in production code or guest crashes.
+
+
+## Opt-in executor and actual guest comparison
+
+A bounded ES1 executor now uses the same production transport and decoder with
+native ANGLE Metal EGL contexts. Configure an isolated build with
+`-Dltm_angle_prefix=ANGLE_SOURCE`; the prefix must contain the pinned headers
+and `out/ltm-metal/libEGL.dylib` and `libGLESv2.dylib` from the build above.
+The empty default continues to build CGL. This is an experimental development
+option, not a packaged or supported-host backend.
+
+The adapter replaces CGL lifetime/current-thread operations with EGL display,
+context and pbuffer ownership, retains sharegroup roots, and reuses existing
+ES1 executor conversions and FBO/readback code. It does not introduce another
+wire decoder. `tests/ipad1/angle-executor-context.sh ANGLE_SOURCE` tests the
+actual adapter: state isolation, native shared textures surviving root release,
+isolated groups, exact FBO pixels, and complete destruction all pass.
+
+ES2 creation explicitly returns unsupported (-2). Only the legacy unknown
+operation response (-1) permits the guest to retry its old constructor, so an
+unsupported API cannot silently become ES1. Unknown-API old guests are accepted
+only for the bounded legacy ES1 comparison. Live graphics migration is blocked
+with the existing explicit error; the ANGLE backend does not claim CGL snapshot
+capture or replay support. Desktop-only executor operations, texture rectangle
+semantics and the programmable pipeline remain adaptation work.
+
+A fresh native K48 7B500 device was prepared with the canonical
+`contrib/gles-public/opengles.c` frontend and current exported tools. This also
+exposed a production export omission: the already-built `it_gltest` and its
+launch job were missing from the manifest. They now travel through the ordinary
+exporter, with the same artifact hashes and source provenance as other tools.
+The actual unchanged scene in `tests/ipad1/gltest.py` was run on separate
+overlays of that device through CGL and ANGLE binaries:
+
+| Check | CGL | ANGLE Metal ES1 prototype |
+|---|---|---|
+| Guest ES1 fixture pixel readback | Exact cyan, magenta and yellow pass | Same exact pixels pass |
+| Composed scene thresholds | Pass | Fail: no expected scene colors |
+| Native context/sharegroup ownership | Pass | Pass |
+| Live graphics snapshot request | Existing CGL implementation | Explicit migration blocker passes |
+| Guest API metadata | Canonical API-aware frontend | API1 fixture accepted; compositor API2 explicitly refused |
+
+The ANGLE log contains 1,671 API2 creation refusals from the CoreAnimation
+compositor. Thus native ES1 primitives work through the actual transport, but
+they do not make this iPad workload usable. An older N72 MBX guest also exposed
+`GL_TEXTURE_RECTANGLE_ARB` bind/attachment errors; its bounded run was stopped
+after the home-frame threshold remained unmet. No rectangle-to-2D remapping was
+added: that requires validating coordinate and object-target semantics.
+
+Evidence is retained in `/private/tmp/ltm-angle-canonical-cgl.log`,
+`/private/tmp/ltm-angle-canonical-metal.log`, their frame/log directories,
+`/private/tmp/ltm-angle-executor-context.log`, and
+`/private/tmp/ltm-angle-api-guest-export2/manifest.json`. The prepared canonical
+device is `/private/tmp/ltm-angle-api-k48-3`. The Metal run adds
+`--expect-migration-blocker` to `gltest.py`; CGL uses its normal invocation.
+Reported presentation rates are not a benchmark: there is only one captured
+scene and the ANGLE scene fails. No stability or speed improvement is claimed.
+
+CGL remains the production default. This prototype adds adapter code without
+removing the existing decoder, surfaces, validation, object identity, or snapshot
+machinery. A useful replacement next needs API-aware ES2 execution, GLES shader
+submission without desktop rewriting, API-specific FBO/state handling, then
+successful compositor, surface, snapshot and app-corpus comparisons. The
+observed failures do not justify a shipping backend switch or a code reduction
+claim.

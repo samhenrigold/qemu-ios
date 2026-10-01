@@ -62,14 +62,29 @@
 #include <VideoToolbox/VideoToolbox.h>
 #endif
 
-#if TARGET_OS_IPHONE
+#if TARGET_OS_IPHONE || defined(GLES_HOST_ANGLE)
 #define GLES_HOST_EAGL 1
 #endif
 
 #ifdef GLES_HOST_EAGL
 
+#ifdef GLES_HOST_ANGLE
+#define GL_GLES_PROTOTYPES 1
+#define GL_GLEXT_PROTOTYPES 1
+#include <GLES/gl.h>
+#include <GLES/glext.h>
+/* Shared wire validation also names ES2/3 and desktop pixel enums; this
+ * does not enable programmable draws on the experimental ES1 executor. */
+#include <GLES3/gl3.h>
+#define GL_UNSIGNED_SHORT_4_4_4_4_REV 0x8365
+#define GL_UNSIGNED_SHORT_1_5_5_5_REV 0x8366
+#define GL_UNSIGNED_INT_8_8_8_8 0x8035
+#define GL_UNSIGNED_INT_8_8_8_8_REV 0x8367
+#include "gles-host-angle.c.inc"
+#else
 #include <OpenGLES/ES1/gl.h>
 #include <OpenGLES/ES1/glext.h>
+#endif
 
 /* Framebuffer objects are core in ES 1.1's OES form. Same tokens, same
  * arguments, different suffix. */
@@ -87,14 +102,25 @@
 #define glDeleteFramebuffersEXT       glDeleteFramebuffersOES
 #define glDeleteRenderbuffersEXT      glDeleteRenderbuffersOES
 #define glGetRenderbufferParameterivEXT glGetRenderbufferParameterivOES
+#define glGetFramebufferAttachmentParameterivEXT glGetFramebufferAttachmentParameterivOES
+#ifndef GL_RGB8
 #define GL_RGB8                       GL_RGB8_OES
+#endif
+#ifndef GL_RGBA8
 #define GL_RGBA8                      GL_RGBA8_OES
+#endif
 #define GL_FRAMEBUFFER_EXT            GL_FRAMEBUFFER_OES
+#define GL_FRAMEBUFFER_BINDING_EXT GL_FRAMEBUFFER_BINDING_OES
+#define GL_RENDERBUFFER_BINDING_EXT GL_RENDERBUFFER_BINDING_OES
+#define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE_EXT GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE_OES
+#define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME_EXT GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME_OES
 #define GL_RENDERBUFFER_EXT           GL_RENDERBUFFER_OES
 #define GL_COLOR_ATTACHMENT0_EXT      GL_COLOR_ATTACHMENT0_OES
 #define GL_DEPTH_ATTACHMENT_EXT       GL_DEPTH_ATTACHMENT_OES
 #define GL_FRAMEBUFFER_COMPLETE_EXT   GL_FRAMEBUFFER_COMPLETE_OES
+#ifndef GL_DEPTH_COMPONENT16
 #define GL_DEPTH_COMPONENT16          GL_DEPTH_COMPONENT16_OES
+#endif
 #define GL_DEPTH24_STENCIL8_EXT       GL_DEPTH24_STENCIL8_OES
 #define GL_STENCIL_ATTACHMENT_EXT     GL_STENCIL_ATTACHMENT_OES
 
@@ -273,7 +299,7 @@ typedef struct {
 } GLESPVRTC;
 
 typedef struct {
-#ifndef GLES_HOST_EAGL
+#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
     CGLContextObj root;
 #endif
     unsigned refs;
@@ -292,7 +318,7 @@ typedef struct {
     bool failed;
     /* 0: older guest did not supply its API; 1/2: explicit GLES version. */
     uint32_t api_version;
-#ifndef GLES_HOST_EAGL
+#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
     CGLContextObj cgl;
 #endif
     GLuint fbo, tex, depth, sync_fbo;   /* sync_fbo: gles_surface_writeback's scratch */
@@ -624,7 +650,23 @@ static inline uint64_t gles_t(void)
  * returns -1, which is the guest's cue to fall back to its software renderer.
  * A missing context is therefore never fatal to the emulator.
  */
-#ifdef GLES_HOST_EAGL
+#if defined(GLES_HOST_ANGLE)
+
+static bool gles_platform_context_create(void)
+{
+    if (!gles_angle_create(gh.group ? gh.group->root : NULL, &gh.cgl)) return false;
+    if (gh.group && !gh.group->root) gh.group->root = CGLRetainContext(gh.cgl);
+    if (CGLSetCurrentContext(gh.cgl) != 0) return false;
+    fprintf(stderr, "[gles-angle] prototype ES1 context api=%u renderer=%s version=%s\n",
+            gh.api_version, glGetString(GL_RENDERER), glGetString(GL_VERSION));
+    return true;
+}
+static void gles_platform_make_current(void) { CGLSetCurrentContext(gh.cgl); }
+static bool gles_platform_attach_iosurface(void) { return false; }
+static void *gles_platform_frame_lock(size_t *stride) { return NULL; }
+static void gles_platform_frame_unlock(void) {}
+
+#elif defined(GLES_HOST_EAGL)
 
 static bool gles_platform_context_create(void)
 {
@@ -7213,7 +7255,7 @@ void gles_host_set_allowed(bool allowed)
     gles_allowed = allowed;
 }
 
-#ifndef GLES_HOST_EAGL
+#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
 static GHashTable *gles_contexts, *gles_groups;
 static uint32_t gles_handle = 0x80000000;
 
@@ -7296,6 +7338,12 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
     if (slot == GLES_OP_NEW_CONTEXT) {
         if ((argc != 1 && argc != 2) || gles_handle == UINT32_MAX) return -1;
         if (argc == 2 && args[1] != 1 && args[1] != 2) return -1;
+#ifdef GLES_HOST_ANGLE
+        if (argc == 2 && args[1] != 1) {
+            gles_refuse("angle:es2-not-implemented");
+            return -2;
+        }
+#endif
         GLESGroup *group = g_hash_table_lookup(gles_groups, GUINT_TO_POINTER(args[0]));
         if (!group) return -1;
         if (!gles_begin_context()) return -1;
@@ -7333,7 +7381,11 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
 }
 
 static void gles_drop_all(void);
+#ifdef GLES_HOST_ANGLE
+static void gles_snapshot_register(void) {} /* migration blocker is held for live EGL state */
+#else
 #include "gles-host-snapshot.c.inc"
+#endif
 
 /* A guest reboot cannot send destruction calls for its old processes.
  * Drop every native context and DMA alias before the new kernel runs.
@@ -7360,7 +7412,7 @@ static void gles_drop_all(void)
 
 void gles_host_reset(void)
 {
-#ifndef GLES_HOST_EAGL
+#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
     gles_snapshot_register();
     gles_drop_all();
 #endif
@@ -7377,7 +7429,7 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
     }
 
     if (slot >= GLES_OP_NEW_SHAREGROUP && slot <= GLES_OP_DELETE_CONTEXT) {
-#ifndef GLES_HOST_EAGL
+#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
         r = gles_context_operation(slot, ctx, argc, a);
         if (r < 0) gles_refuse("context:op:%u", slot);
         return r;
@@ -7385,7 +7437,7 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
         return 0; /* legacy EAGL backend, no native-context handles */
 #endif
     }
-#ifndef GLES_HOST_EAGL
+#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
     GLESHost *state = gles_contexts ? g_hash_table_lookup(gles_contexts, GUINT_TO_POINTER(ctx)) : NULL;
     if (ctx >= 0x80000000 && !state) {
         gles_refuse("context:unknown");
