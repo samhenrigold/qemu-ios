@@ -70,17 +70,24 @@ class TCPUSB:
         self.transfer(128, timeout=timeout)
         return length
 
-    def enumerate(self):
-        self.packet(0, flags=2)
-        time.sleep(.05)
-        self.packet(0, flags=4)
-        time.sleep(.05)
+    def device_descriptor(self, reset=False):
+        if reset:
+            self.packet(0, flags=2)
+            time.sleep(.05)
+            self.packet(0, flags=4)
+            time.sleep(.05)
         desc = self.control(128, 6, 0x100, length=18)
         if len(desc) != 18:
             raise USBError('short device descriptor')
+        return desc
+
+    def configure(self, desc):
         self.control(0, 5, 1)
         config = self.control(128, 6, 0x200, length=9)
         config = self.control(128, 6, 0x200, length=struct.unpack_from('<H', config, 2)[0])
         self.control(0, 9, config[5])
         serial = self.control(128, 6, 0x300 | desc[16], 0x409, length=255)
         return desc, config, serial[2:].decode('utf-16-le')
+
+    def enumerate(self):
+        return self.configure(self.device_descriptor(reset=True))
