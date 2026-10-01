@@ -6,7 +6,8 @@ import subprocess
 import tempfile
 
 source = (Path(__file__).resolve().parents[2] / 'hw/arm/ipod_touch_fmss.c').read_text()
-functions = []
+functions = [re.search(r'typedef enum FMSSPackedRead.*?} FMSSPackedRead;',
+                       source, re.S).group()]
 for name in ('fmss_packed_page', 'fmss_total_blocks', 'fmss_fix_generated_free_pool'):
     match = re.search(r'^static [^\n]*\b' + name + r'\([^)]*\)\s*\{.*?^}', source, re.M | re.S)
     assert match, name

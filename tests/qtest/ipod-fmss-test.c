@@ -148,6 +148,141 @@ static void read_page(QTestState *qts, unsigned cs, unsigned page,
     qtest_memread(qts, RAM + 0x2800, spare, 12);
 }
 
+
+/* These are the controller's 12 visible metadata bytes, not raw NAND OOB. */
+static void assert_blank(const uint8_t *data, const uint8_t *spare, bool erased)
+{
+    for (unsigned i = 0; i < 4096; i++) {
+        g_assert_cmphex(data[i], ==, erased ? 0xff : 0);
+    }
+    for (unsigned i = 0; i < 12; i++) {
+        g_assert_cmphex(spare[i], ==, erased ? 0xff :
+                        ((i == 8 || i == 10) ? 0xff : 0));
+    }
+}
+
+static void blank_read_modes(bool physical, bool packed)
+{
+    char *overlay, *saved_nand = nand_path;
+    g_autofree char *image = NULL;
+    g_autofree char *chip = g_build_filename(nand_path, "cs0", NULL);
+    g_autofree char *base_page = g_build_filename(chip, "0.page", NULL);
+    g_autofree char *short_page = g_build_filename(chip, "2.page", NULL);
+    uint8_t data[4096], spare[12], record[4160];
+    memset(record, 0x5a, sizeof(record));
+    if (packed) {
+        int fd = g_file_open_tmp("fmss-packed-XXXXXX", &image, NULL);
+        g_assert_cmpint(fd, >=, 0); close(fd);
+        /* Index0=data, index1=hole, index2=invalid. Index3 is out of range.
+         * Invalid cases retain fallback bytes; this does not certify their
+         * current permissive error policy as correct physical behavior. */
+        uint8_t bytes[24 + 3 * 4 + sizeof(record)] = { 0 };
+        static const uint32_t words[] = { 4096, 64, 1, 3, 1, 0, 2 };
+        memcpy(bytes, "ITNAND01", 8);
+        for (unsigned i = 0; i < G_N_ELEMENTS(words); i++) {
+            uint32_t little = GUINT32_TO_LE(words[i]);
+            memcpy(bytes + 8 + 4 * i, &little, sizeof(little));
+        }
+        memcpy(bytes + 24 + 3 * 4, record, sizeof(record));
+        g_assert_true(g_file_set_contents(image, (char *)bytes, sizeof(bytes), NULL));
+        nand_path = image;
+    } else {
+        g_assert_cmpint(g_mkdir_with_parents(chip, 0755), ==, 0);
+        g_assert_true(g_file_set_contents(base_page, (char *)record, sizeof(record), NULL));
+        /* Short files deliberately keep the old zero-padding policy. */
+        g_assert_true(g_file_set_contents(short_page, (char *)record, 20, NULL));
+    }
+    if (physical) {
+        g_setenv("FMSS_PHYSICAL", "1", true);
+    } else {
+        g_unsetenv("FMSS_PHYSICAL");
+    }
+    g_setenv("FMSS_ERASE", "1", true);
+    QTestState *qts = start_board(&overlay);
+    read_page(qts, 0, 0, data, spare);
+    g_assert_cmpmem(data, sizeof(data), record, sizeof(data));
+    g_assert_cmpmem(spare, sizeof(spare), record + 4096, sizeof(spare));
+    read_page(qts, 0, 1, data, spare);
+    assert_blank(data, spare, physical);
+    if (packed) {
+        read_page(qts, 0, 2, data, spare);
+        assert_blank(data, spare, false);
+        read_page(qts, 0, 3, data, spare);
+        assert_blank(data, spare, false);
+        read_page(qts, 1, 0, data, spare);
+        assert_blank(data, spare, false);
+    } else {
+        read_page(qts, 0, 2, data, spare);
+        for (unsigned i = 0; i < sizeof(data); i++) {
+            g_assert_cmphex(data[i], ==, i < 20 ? 0x5a : 0);
+        }
+        for (unsigned i = 0; i < sizeof(spare); i++) {
+            g_assert_cmphex(spare[i], ==, 0);
+        }
+    }
+    /* A durable erased marker shadows a non-erased base record on either
+     * backend. Programmed-page replay is exercised by the snapshot test. */
+    g_autofree char *overlay_chip = g_build_filename(overlay, "cs0", NULL);
+    g_autofree char *marker = g_build_filename(overlay_chip, "blk0.erased", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(overlay_chip, 0755), ==, 0);
+    g_assert_true(g_file_set_contents(marker, "", 0, NULL));
+    read_page(qts, 0, 0, data, spare);
+    assert_blank(data, spare, physical);
+    qtest_quit(qts);
+    unlink(marker);rmdir(overlay_chip);rmdir(overlay);g_free(overlay);
+    nand_path = saved_nand;
+    if (packed) {
+        unlink(image);
+    } else {
+        unlink(base_page);unlink(short_page);rmdir(chip);
+    }
+    g_setenv("FMSS_PHYSICAL", "1", true);
+    g_unsetenv("FMSS_ERASE");
+}
+
+
+static void nonabsence_open_fallback(void)
+{
+    char *overlay, *saved_nand = nand_path;
+    g_autofree char *badbase = NULL;
+    int fd = g_file_open_tmp("fmss-not-directory-XXXXXX", &badbase, NULL);
+    uint8_t data[4096], spare[12], record[4160];
+    g_assert_cmpint(fd, >=, 0); close(fd);
+    g_assert_true(g_file_set_contents(badbase, "x", 1, NULL));
+    g_setenv("FMSS_PHYSICAL", "1", true);
+    g_setenv("FMSS_ERASE", "1", true);
+    nand_path = badbase;
+    QTestState *qts = start_board(&overlay);
+    /* Actual ENOTDIR base open, not a physical missing page. Preserve old
+     * permissive fallback bytes without certifying that error policy. */
+    read_page(qts, 0, 129, data, spare);
+    assert_blank(data, spare, false);
+    qtest_quit(qts);rmdir(overlay);g_free(overlay);
+    nand_path = saved_nand;unlink(badbase);
+
+    qts = start_board(&overlay);
+    g_autofree char *chip = g_build_filename(overlay, "cs0", NULL);
+    g_autofree char *page = g_build_filename(chip, "129.page", NULL);
+    memset(record, 0x79, sizeof(record));
+    g_assert_cmpint(g_mkdir_with_parents(chip, 0755), ==, 0);
+    g_assert_true(g_file_set_contents(page, (char *)record, sizeof(record), NULL));
+    /* First read indexes the actual overlay. A subsequent path failure must
+     * not become FF merely because the base page is legitimately absent. */
+    read_page(qts, 0, 129, data, spare);
+    g_assert_cmpmem(data, sizeof(data), record, sizeof(data));
+    g_assert_cmpint(unlink(page), ==, 0);g_assert_cmpint(rmdir(chip), ==, 0);
+    g_assert_true(g_file_set_contents(chip, "x", 1, NULL));
+    read_page(qts, 0, 129, data, spare);
+    assert_blank(data, spare, false);
+    qtest_quit(qts);unlink(chip);rmdir(overlay);g_free(overlay);
+    g_unsetenv("FMSS_ERASE");
+}
+
+static void directory_physical(void) { blank_read_modes(true, false); }
+static void directory_generated(void) { blank_read_modes(false, false); }
+static void packed_physical(void) { blank_read_modes(true, true); }
+static void packed_generated(void) { blank_read_modes(false, true); }
+
 static void programmed_snapshot(bool physical)
 {
     char *overlay;
@@ -159,7 +294,7 @@ static void programmed_snapshot(bool physical)
     g_autofree char *base_page = g_build_filename(base_chip, "6.page", NULL);
     if (physical) {
         /* A real base page distinguishes an erased cache hit from a disk
-         * fallback. Legacy FMSS erased pages retain its existing zero encoding. */
+         * fallback. Explicit physical erased pages must expose erased bytes. */
         uint8_t record[4160];
         memset(record, 0xa3, sizeof(record));
         g_assert_cmpint(g_mkdir_with_parents(base_chip, 0755), ==, 0);
@@ -185,7 +320,7 @@ static void programmed_snapshot(bool physical)
     g_assert_cmpmem(back_spare, sizeof(back_spare), spare, sizeof(spare));
     if (physical) {
         read_page(qts, 0, 6, erased, erased_spare);
-        g_assert_cmpint(erased[0], !=, 0xa3);
+        assert_blank(erased, erased_spare, true);
     }
     qtest_writel(qts, FMSS + 0xd28, 2);
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd28), ==, 2);
@@ -212,6 +347,7 @@ static void programmed_snapshot(bool physical)
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd4c), ==, 0x20011000);
     if (physical) {
         read_page(qts, 0, 6, back, back_spare);
+        assert_blank(back, back_spare, true);
         g_assert_cmpmem(back, sizeof(back), erased, sizeof(erased));
         g_assert_cmpmem(back_spare, sizeof(back_spare), erased_spare, sizeof(erased_spare));
     }
@@ -438,6 +574,11 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/fmss/register-copy", register_copy);
     qtest_add_func("/ipod/fmss/descriptor-load", descriptor_load);
     qtest_add_func("/ipod/fmss/logical-and", logical_and);
+    qtest_add_func("/ipod/fmss/nonabsence-open-fallback", nonabsence_open_fallback);
+    qtest_add_func("/ipod/fmss/directory-physical-erased", directory_physical);
+    qtest_add_func("/ipod/fmss/directory-generated-blank", directory_generated);
+    qtest_add_func("/ipod/fmss/packed-physical-erased", packed_physical);
+    qtest_add_func("/ipod/fmss/packed-generated-blank", packed_generated);
     result = g_test_run();
     unlink(rom_path); unlink(nor_path); rmdir(nand_path);
     g_free(rom_path); g_free(nor_path); g_free(nand_path);
