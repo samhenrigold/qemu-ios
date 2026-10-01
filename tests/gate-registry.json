@@ -4,6 +4,7 @@
     {"name": "tests/ipod/test_accel_guest.py", "tier": "manual", "prerequisites": ["qemu", "device-image"], "reason": "native emulator check: supply the device inputs documented by this test"},
     {"name": "tests/ipod/test_accel_sampling.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_aes.py", "tier": "quick", "prerequisites": []},
+    {"name": "tests/ipod/test_usb_recovery_bridge.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_afc_vectors.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_agent_guest.py", "tier": "manual", "prerequisites": ["qemu", "device-image"], "reason": "native emulator check: supply the device inputs documented by this test"},
     {"name": "tests/ipod/test_agent_ops.py", "tier": "quick", "prerequisites": []},

@@ -71,12 +71,18 @@ class Bridge:
             self.usb = TCPUSB(connection)
             time.sleep(.1)
             try:
-                desc, config, serial = self.usb.enumerate()
+                desc = self.usb.device_descriptor(reset=True)
                 mode = struct.unpack_from('<H', desc, 10)[0]
+                if self.mux_addr and 0x1290 <= mode <= 0x12af:
+                    self.handoff()
+                    raise ConnectionError('restore kernel now belongs to usbmuxd')
+                desc, config, serial = self.usb.configure(desc)
                 self.info = struct.pack('<I', mode) + serial.encode() + b'\0'
                 print(f'USB {mode:04x}: {serial}', flush=True)
                 return
             except (EOFError, ConnectionError):
+                if self.handed_off:
+                    raise
                 self.usb.connection.close()
                 self.usb = None
         raise TimeoutError('no stable QEMU USB connection')
@@ -90,13 +96,16 @@ class Bridge:
                 if op == 1:
                     # Poll the guest descriptor, not a fabricated mode. Firmware
                     # transitions may change PID without closing the TCP socket.
-                    desc = self.usb.control(128, 6, 0x100, length=18, timeout=1)
+                    # A core reset clears the guest address and EP0 setup.
+                    # Re-enumerate through real bus events before polling it.
+                    reset = self.usb.address == 0
+                    desc = self.usb.device_descriptor(reset=reset)
                     mode = struct.unpack_from('<H', desc, 10)[0]
                     if self.mux_addr and 0x1290 <= mode <= 0x12af:
                         self.handoff()
                         return -1, b''
-                    if mode != struct.unpack_from('<I', self.info)[0]:
-                        desc, config, text = self.usb.enumerate()
+                    if reset or mode != struct.unpack_from('<I', self.info)[0]:
+                        desc, config, text = self.usb.configure(desc)
                         self.info = struct.pack('<I', mode) + text.encode() + b'\0'
                         print(f'USB transition {mode:04x}: {text}', flush=True)
                         return len(self.info), self.info

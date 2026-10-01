@@ -751,7 +751,7 @@ That transport/controller race remains open and must not be hidden by a fake
 recovery event. Production-board CHIPID qtests pass 3/3 and the default native
 7E18 regression passes 8/8 after this change.
 
-A private host-only copy of the 2.1.1 Restore.plist with
+An early probe used a private host-only copy of the 2.1.1 Restore.plist with
 `SupportedProductTypes = [ProductType]` gets the existing idevicerestore past
 its legacy metadata check. No guest firmware bytes were changed. One traced
 run reached stock iBSS and uploaded the restore ramdisk, then failed before
@@ -778,7 +778,7 @@ A guest physical-memory read after stock iBSS decryption matches every byte
 of the catalog-decrypted update ramdisk (SHA-256
 `05795d76755420f7b5e60cfe0ff777dbc409f6c28d950efc85d1a70d98b6d6b6`).
 The previous launchd panic no longer appears in the immediate diagnostic
-capture. The stock idevicerestore attempt now stalls on kernel USB enumeration;
+capture. The first stock idevicerestore attempt then stalled on kernel USB enumeration;
 full restore, physical NAND formatting and restored cold boot remain open.
 The known DFU reconnection race still requires separate investigation.
 Evidence: `/private/tmp/ltm-aes-restore-default`,
@@ -801,3 +801,38 @@ Names/PIDs were read from the kernel process list using offsets independently
 confirmed in its proc accessor instructions. No restore-service protocol
 response or physical restore completion is implied by process presence.
 The corresponding trace is `/private/tmp/ltm-n72-kernel-processes`.
+
+### Stock restore protocol and USB ownership (2026-10-01)
+
+A real host bus reset/re-enumeration makes the stock 5F138 kernel expose PID
+0x1293. `restored` replies over the actual mux interface with protocol 11,
+HardwareModel N72AP, BoardID 0 and ChipID 0x8720. This old daemon does not
+report UniqueChipID. Modern upstream idevicerestore consequently ignores it;
+LukeZGD's existing legacy fork already supports that pre-iOS 3 response.
+
+The private fork probe uses upstream `9e6eacc788d532b887b9b0883477d6b89c5a2841`
+plus isolated fix `26314aa`: free the legacy ProductType value after both
+comparisons, avoiding its measured use-after-free/double-free. The actual
+compatibility function fails ASan before the fix and passes match, mismatch
+and iPod1 cases with ASan/UBSan afterward. No tool was installed. The original
+stock extracted IPSW directory now works without the SupportedProductTypes
+workaround. Boot-only restore exits successfully with "Device is now in
+restore mode" (`/private/tmp/ltm-n72-legacy-restored-stock`).
+
+The reusable TCP USB bridge probes descriptors separately from configuration.
+When the guest's address returns to zero, it uses real reset/enumeration bus
+events. It hands the kernel connection to usbmuxd before selecting a recovery
+configuration, under the same lock as requests; subsequent requests cannot
+consume the relay's replies. Five registered ownership/enumeration tests pass.
+The production bridge then reaches stock erase `restored`, which repeatedly
+reports "Waiting for NAND (28)" on disposable empty page directories with
+FMSS_PHYSICAL and FMSS_ERASE enabled. This is not an erase-restore pass.
+
+Both full probes still use a research-only wait for the actual DFU manifest
+bwPollTimeout. Rapid DFU polling remains unresolved; no delay was added to the
+production bridge. Empty N72 pages still use synthetic clean-marker bytes;
+physical flash formatting, restored cold boot and durable subsequent writes
+are required before removing generated FTL relocation. Evidence:
+`/private/tmp/ltm-n72-legacy-erase-physical-probe2`,
+`/private/tmp/ltm-usb-reenumeration-unit.log`, and
+`/private/tmp/ltm-usb-reenumeration-registry.log`.
