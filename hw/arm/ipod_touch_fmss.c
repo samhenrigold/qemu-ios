@@ -194,7 +194,10 @@ static void fmss_run_script(IPodTouchFMSSState *s)
                     ok = false;
                 }
             } else if (b == FMSS_SCRIPT_CSGENR15 || b == FMSS_SCRIPT_SCRATCH_D7C) {
-                if (op == 2 && !imm) {
+                if (op == 1 && b == FMSS_SCRIPT_SCRATCH_D7C) {
+                    /* Stock initializer supplies the literal, not r[a]. */
+                    s->reg_script_scratch_d7c = imm;
+                } else if (op == 2 && !imm) {
                     if (b == FMSS_SCRIPT_CSGENR15) {
                         s->reg_script_csgenr15 = r[a];
                     } else {

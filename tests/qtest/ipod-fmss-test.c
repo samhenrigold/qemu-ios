@@ -800,22 +800,39 @@ static void sequencer_scratch(void)
     for (unsigned i = 0; i < G_N_ELEMENTS(values); i++) {
         script_set_scratch(qts, values[i]);
     }
-    uint32_t rejected[] = {
-        0x05000000, 7, 0x01000d7c, 0xcafebabe,
+    /* Stock opcode01 D7C initializer takes literal, independent of r[a]. */
+    uint32_t immediate[] = {
+        0x05000000, 0x12345678, 0x01000d7c, 0,
+        0x04010d7c, 0xffffffff, 0x05020000, RAM + 0x2000,
+        0x11010002, 0, 0, 0
+    };
+    const uint32_t literals[] = {0, 0xcafebabe, 0x80000000, 0xffffffff};
+    for (unsigned j = 0; j < G_N_ELEMENTS(literals); j++) {
+        immediate[3] = literals[j];
+        for (unsigned i = 0; i < G_N_ELEMENTS(immediate); i++) {
+            qtest_writel(qts, RAM + 4 * i, immediate[i]);
+        }
+        qtest_writel(qts, FMSS + 0xc04, RAM);
+        qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+        g_assert_cmphex(qtest_readl(qts, FMSS + 0xd7c), ==, literals[j]);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x2000), ==, literals[j]);
+        qtest_writel(qts, FMSS + 0xc00, 8);
+        /* Same latch accepts subsequent measured register assignment. */
+        script_set_scratch(qts, ~literals[j]);
+    }
+    const uint32_t rejected[] = {
+        0x05000000, 7, 0x02000d7c, 1,
         0x05020000, RAM + 0x1000, 0x11000002, 0, 0, 0
     };
-    for (unsigned form = 0; form < 2; form++) {
-        script_set_scratch(qts, 0x12345678);
-        rejected[2] = form ? 0x02000d7c : 0x01000d7c;
-        for (unsigned i = 0; i < G_N_ELEMENTS(rejected); i++) {
-            qtest_writel(qts, RAM + 4 * i, rejected[i]);
-        }
-        qtest_writel(qts, RAM + 0x1000, 0xabcddcba);
-        qtest_writel(qts, FMSS + 0xc00, 0xffb5);
-        g_assert_cmphex(qtest_readl(qts, FMSS + 0xd7c), ==, 0x12345678);
-        g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==, 0xabcddcba);
-        qtest_writel(qts, FMSS + 0xc00, 8);
+    script_set_scratch(qts, 0x12345678);
+    for (unsigned i = 0; i < G_N_ELEMENTS(rejected); i++) {
+        qtest_writel(qts, RAM + 4 * i, rejected[i]);
     }
+    qtest_writel(qts, RAM + 0x1000, 0xabcddcba);
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    g_assert_cmphex(qtest_readl(qts, FMSS + 0xd7c), ==, 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==, 0xabcddcba);
+    qtest_writel(qts, FMSS + 0xc00, 8);
     qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
     g_assert_cmphex(qtest_readl(qts, FMSS + 0xd7c), ==, 0);
     qtest_quit(qts);
