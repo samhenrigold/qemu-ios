@@ -252,6 +252,7 @@ typedef struct synopsys_usb_state
 	uint8_t host_buf[1024];
 
 	uint32_t pcgcctl;
+	bool phy_reset; /* driven from external PHY ORSTCON, not independent state */
 
 	uint32_t ghwcfg1;
 	uint32_t ghwcfg2;

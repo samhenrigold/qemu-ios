@@ -3490,6 +3490,8 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = qdev_new("ipodtouch.usbphys");
     IPodTouchUSBPhysState *usb_phys_state = IPOD_TOUCH_USB_PHYS(dev);
     nms->usb_phys_state = usb_phys_state;
+    qdev_connect_gpio_out_named(dev, "phy-reset", 0,
+                               qdev_get_gpio_in_named(DEVICE(nms->usb_otg), "phy-reset", 0));
     memory_region_add_subregion(sysmem, USBPHYS_MEM_BASE, &usb_phys_state->iomem);
     it_realize_into_qom_tree(dev);
 

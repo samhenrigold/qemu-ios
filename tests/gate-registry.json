@@ -147,6 +147,7 @@
     {"name": "qtest/ipod-sdio", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
     {"name": "qtest/ipod-chipid", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
     {"name": "qtest/ipad1-sdio", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
+    {"name": "qtest/ipod-usb-phy", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
     {"name": "qtest/ipod-clock", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
     {"name": "qtest/ipod-touch-irq", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
     {"name": "tests/ipod/test_media_schema.py", "tier": "quick", "prerequisites": []},

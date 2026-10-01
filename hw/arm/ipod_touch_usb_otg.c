@@ -156,6 +156,17 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 	 * SET_ADDRESS actually took effect. */
 	_hdr->addr = (state->dcfg & DCFG_DEVICEADDRMSK) >> DCFG_DEVICEADDR_SHIFT;
 
+    /* A PHY held in reset cannot receive bus traffic or perform DMA. Keep
+     * core registers and latched IRQs intact: this is not a core/bus reset,
+     * and the host transport's capability hello is not a physical packet.
+     * ORSTCON deassertion resumes transfers; no firmware address or delay is
+     * involved. PCGCCTL alone is not used here (older guests leave it at 3).
+     */
+    if (state->phy_reset && !((_hdr->flags & tcp_usb_hello) &&
+                              (_hdr->ep & 0x7f) == TCP_USB_EP_CONTROL)) {
+        return USB_RET_NAK;
+    }
+
 	if (_hdr->flags & tcp_usb_reset) {
 		state->gintsts |= GINTMSK_RESET;
 		synopsys_usb_update_irq(state);
@@ -1084,6 +1095,12 @@ static void s5l8900_usb_otg_reset(DeviceState *d)
 	synopsys_usb_update_irq(state);
 }
 
+static void synopsys_usb_phy_reset(void *opaque, int n, int level)
+{
+    synopsys_usb_state *state = opaque;
+    state->phy_reset = level;
+}
+
 static void s5l8900_usb_otg_init1(Object *obj)
 {
 	DeviceState *dev = DEVICE(obj);
@@ -1091,6 +1108,7 @@ static void s5l8900_usb_otg_init1(Object *obj)
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
     s->cable_attached = true;
+    qdev_init_gpio_in_named(dev, synopsys_usb_phy_reset, "phy-reset", 1);
 
     /*
      * The region must cover the FIFO window at USB_FIFO_START (0x1000) as well
