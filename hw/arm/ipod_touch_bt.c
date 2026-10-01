@@ -44,11 +44,15 @@
 
 #define BT_RESP_MAX 1024
 
+/* Unprovisioned controller default, in HCI least-significant-byte order. */
+static const uint8_t bt_default_addr[6] = { 0x66, 0x55, 0x44, 0x33, 0x22, 0x02 };
+
 struct ItBtChardev {
     Chardev parent;
 
     uint8_t cmd[260];       /* one H4 command: 3 header + up to 255 payload */
     unsigned cmd_len;
+    uint8_t bd_addr[6];
 
     uint8_t resp[BT_RESP_MAX];
     unsigned resp_head, resp_tail;
@@ -90,7 +94,8 @@ static int bt_trace(void)
  * command and wrong for any "read" the guest cares about -- so unknown reads
  * are traced rather than guessed at silently.
  */
-static const uint8_t *bt_ret_params(uint16_t opcode, unsigned *len)
+static const uint8_t *bt_ret_params(ItBtChardev *bt, uint16_t opcode,
+                                    unsigned *len)
 {
     /* Read Local Version: hci ver/rev, lmp ver, manufacturer, lmp subver. */
     static const uint8_t local_version[] = {
@@ -115,13 +120,6 @@ static const uint8_t *bt_ret_params(uint16_t opcode, unsigned *len)
     static const uint8_t buffer_size[] = {
         0xfd, 0x03, 0x40, 0x08, 0x00, 0x08, 0x00,
     };
-    /*
-     * Read BD_ADDR. Deliberately in the locally-administered range: this is a
-     * model, not a clone of anybody's radio, and the guest hashes the wifi and
-     * bluetooth MACs into its UDID (see the device-identity notes), so it must
-     * at least be stable across boots.
-     */
-    static const uint8_t bd_addr[] = { 0x66, 0x55, 0x44, 0x33, 0x22, 0x02 };
     static const uint8_t local_name[248] = "iPod";
     static const uint8_t class_of_device[] = { 0x00, 0x00, 0x00 };
     static const uint8_t voice_setting[] = { 0x60, 0x00 };
@@ -145,7 +143,9 @@ static const uint8_t *bt_ret_params(uint16_t opcode, unsigned *len)
     case 0x1004: R(ext_features);
     case 0x1005: R(buffer_size);
     case 0x1007: R(country_code);
-    case 0x1009: R(bd_addr);
+    case 0x1009:
+        *len = sizeof(bt->bd_addr);
+        return bt->bd_addr;
     case 0x0c14: R(local_name);
     case 0x0c15: R(page_timeout);
     case 0x0c19: R(scan_enable);
@@ -170,6 +170,7 @@ static const uint8_t *bt_ret_params(uint16_t opcode, unsigned *len)
 static bool bt_is_write_command(uint16_t opcode)
 {
     switch (opcode) {
+    case 0xfc01:  /* BCM Write BD_ADDR */
     case 0x0c01:  /* Set Event Mask */
     case 0x0c03:  /* Reset */
     case 0x0c05:  /* Set Event Filter */
@@ -243,7 +244,30 @@ static void bt_command_complete(ItBtChardev *bt, uint16_t opcode)
 {
     uint8_t ev[4 + 4 + 248];
     unsigned rlen = 0;
-    const uint8_t *ret = bt_ret_params(opcode, &rlen);
+    const uint8_t *ret = bt_ret_params(bt, opcode, &rlen);
+    uint8_t status = 0;
+
+    /* BlueTool supplies the provisioned address after downloading the BCM
+     * firmware, then sends HCI_Reset. Retain that programmed identity across
+     * HCI_Reset; a board reset starts a new controller initialization instead.
+     * Linux btbcm_set_bdaddr uses the same six-byte vendor command. */
+    if (opcode == 0xfc01) {
+        if (bt->cmd[3] != sizeof(bt->bd_addr)) {
+            status = 0x12; /* Invalid HCI Command Parameters */
+        } else {
+            memcpy(bt->bd_addr, bt->cmd + 4, sizeof(bt->bd_addr));
+            if (bt_trace()) {
+                fprintf(stderr, "[BT] programmed address %02x:%02x:%02x:"
+                        "%02x:%02x:%02x\n", bt->bd_addr[5], bt->bd_addr[4],
+                        bt->bd_addr[3], bt->bd_addr[2], bt->bd_addr[1],
+                        bt->bd_addr[0]);
+            }
+        }
+    } else if (opcode == 0x1009 && bt->cmd[3] != 0) {
+        status = 0x12;
+        ret = NULL;
+        rlen = 0;
+    }
 
     if (!ret && !bt_is_write_command(opcode) && bt_trace()) {
         fprintf(stderr, "[BT] answering opcode 0x%04x status-only; if the "
@@ -257,7 +281,7 @@ static void bt_command_complete(ItBtChardev *bt, uint16_t opcode)
     ev[3] = 1;                     /* the host may send one more command */
     ev[4] = opcode & 0xff;
     ev[5] = opcode >> 8;
-    ev[6] = 0x00;                  /* success */
+    ev[6] = status;
     if (rlen) {
         memcpy(ev + 7, ret, rlen);
     }
@@ -340,6 +364,7 @@ static void bt_machine_reset(void *opaque)
     ItBtChardev *bt = IT_BT_CHARDEV(opaque);
 
     bt->cmd_len = 0;
+    memcpy(bt->bd_addr, bt_default_addr, sizeof(bt->bd_addr));
     bt->resp_head = bt->resp_tail = 0;
     timer_del(bt->timer);
 }
@@ -347,6 +372,9 @@ static void bt_machine_reset(void *opaque)
 static int bt_post_load(void *opaque, int version_id)
 {
     ItBtChardev *bt = opaque;
+    if (version_id < 2) {
+        memcpy(bt->bd_addr, bt_default_addr, sizeof(bt->bd_addr));
+    }
     if (bt->cmd_len > sizeof(bt->cmd) || bt->resp_head > bt->resp_tail ||
         bt->resp_tail > sizeof(bt->resp)) return -EINVAL;
     return 0;
@@ -354,7 +382,7 @@ static int bt_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_it_bt = {
     .name = "ipodtouch-bt-hci",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .post_load = bt_post_load,
     .fields = (const VMStateField[]) {
@@ -364,6 +392,7 @@ static const VMStateDescription vmstate_it_bt = {
         VMSTATE_UINT32(resp_head, ItBtChardev),
         VMSTATE_UINT32(resp_tail, ItBtChardev),
         VMSTATE_TIMER_PTR(timer, ItBtChardev),
+        VMSTATE_UINT8_ARRAY_V(bd_addr, ItBtChardev, 6, 2),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -384,6 +413,7 @@ static void bt_chr_open(Chardev *chr, ChardevBackend *backend,
     IT_BT_CHARDEV(chr)->latency_ns = 2000000;
     IT_BT_CHARDEV(chr)->timer =
         timer_new_ns(QEMU_CLOCK_VIRTUAL, bt_timer, chr);
+    bt_machine_reset(chr);
     qemu_register_reset(bt_machine_reset, chr);
     vmstate_register(NULL, 0, &vmstate_it_bt, chr);
     *be_opened = true;
