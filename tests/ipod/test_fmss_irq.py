@@ -39,7 +39,7 @@ typedef struct {
     int irq;
     uint32_t reg_cs_ctrl, reg_cs_irq_bit, reg_cs_irq_mask, reg_cs_script;
     uint32_t reg_cinfo_target_addr, reg_pages_in_addr, reg_cs_buf_addr;
-    uint32_t reg_num_pages, reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc, reg_script_param_d4c, reg_chunks_per_page;
+    uint32_t reg_num_pages, reg_page_spare_out_addr, reg_pages_out_addr, reg_csgenrc, reg_script_param_d34, reg_script_param_d48, reg_script_param_d4c, reg_chunks_per_page;
     GTree *phys_pages, *erased_blocks;
     GHashTable *overlay_pages;
     bool overlay_indexed;
