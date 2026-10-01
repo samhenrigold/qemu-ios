@@ -36,6 +36,7 @@
     {"name": "tests/ipod/test_framecheck.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_gl_front_end.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_gles2x_exports.py", "tier": "quick", "prerequisites": []},
+    {"name": "tests/ipod/test_gles_api_snapshot.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_gles_context.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_gles_cubemap.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_gles_drawable.py", "tier": "quick", "prerequisites": []},
