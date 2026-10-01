@@ -121,6 +121,53 @@ int main(void) {
                              selects[j]==4 || selects[j]==8) ? 0xb614d5adu : 0;
         assert(ldl_le_p(mem + 0x9000) == expected);
     }
+    /* Captured13030002/0 shifts current destination by source register.
+     * Direct stores observe destination and unchanged count without OR oracle. */
+    uint32_t register_shift[] = {
+        0x05020000u,0, 0x05030000u,0,
+        0x13030002u,0, 0x05070000u,0x9e00u,
+        0x11030007u,0, 0x0c070007u,4, 0x11020007u,0, 0,0
+    };
+    const uint32_t shifts[][2] = {
+        {0x801u,0}, {0x80000001u,0}, {0x80000001u,1},
+        {3,1}, {1,31}, {0x12345678u,4}, {0,31}
+    };
+    for (unsigned j=0; j<sizeof(shifts)/sizeof(shifts[0]); j++) {
+        register_shift[1]=shifts[j][1]; register_shift[3]=shifts[j][0];
+        run(register_shift,sizeof(register_shift));
+        assert(ldl_le_p(mem+0x9e00)==(shifts[j][0]<<shifts[j][1]));
+        assert(ldl_le_p(mem+0x9e04)==shifts[j][1]);
+    }
+    uint32_t chip_mask[] = {
+        0x05020000u,0, 0x05030000u,1,
+        0x13030002u,0, 0x13000003u,1,
+        0x02000000u,0, 0x04010000u,0xffffffffu,
+        0x05070000u,0x9e00u, 0x11030007u,0,
+        0x0c070007u,4, 0x11010007u,0, 0,0
+    };
+    for (unsigned chip=0; chip<4; chip++) {
+        chip_mask[1]=chip;run(chip_mask,sizeof(chip_mask));
+        assert(ldl_le_p(mem+0x9e00)==(1u<<chip));
+        assert(ldl_le_p(mem+0x9e04)==(2u<<chip));
+    }
+    const uint32_t immediate_shift[] = {
+        0x05020000u,3, 0x05030000u,1,
+        0x13030002u,1, 0x05070000u,0x9e00u,
+        0x11030007u,0, 0,0
+    };
+    run(immediate_shift,sizeof(immediate_shift));
+    assert(ldl_le_p(mem+0x9e00)==6); /* Preserve source-based nonzero form. */
+    uint32_t unsupported_register_shift[] = {
+        0x05020000u,32, 0x05030000u,0x89abcdefu,
+        0x05070000u,0x9e00u, 0x11030007u,0,
+        0x13030002u,0, 0x11030007u,0, 0,0
+    };
+    const uint32_t unmeasured_counts[] = {32,33,0xffffffffu};
+    for (unsigned j=0;j<sizeof(unmeasured_counts)/sizeof(unmeasured_counts[0]);j++) {
+        unsupported_register_shift[1]=unmeasured_counts[j];
+        run(unsupported_register_shift,sizeof(unsupported_register_shift));
+        assert(ldl_le_p(mem+0x9e00)==0x89abcdefu); /* No later store. */
+    }
     /* Captured zero-immediate OR preserves destination config bits.
      * Direct RAM observations exclude a replacement assignment or AND. */
     uint32_t register_or[] = {

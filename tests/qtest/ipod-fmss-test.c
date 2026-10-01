@@ -983,6 +983,66 @@ static void register_or(void)
     g_free(overlay);
 }
 
+static void register_left_shift(void)
+{
+    char *overlay;
+    QTestState *qts = start_board(&overlay);
+    uint32_t program[] = {
+        0x05020000, 0, 0x05030000, 1,
+        0x13030002, 0, 0x05070000, RAM + 0x1000,
+        0x11030007, 0, 0x0c070007, 4, 0x11020007, 0,
+        0x13000003, 1, 0x02000000, 0,
+        0x04010000, 0xffffffff, 0x0c070007, 4,
+        0x11010007, 0, 0, 0
+    };
+    static const uint32_t values[][2] = {
+        {0x801, 0}, {0x80000001, 0}, {0x80000001, 1},
+        {3, 1}, {1, 31}, {0x12345678, 4}, {0, 31},
+        {1, 0}, {1, 1}, {1, 2}, {1, 3}
+    };
+    for (unsigned j = 0; j < G_N_ELEMENTS(values); j++) {
+        program[1] = values[j][1];
+        program[3] = values[j][0];
+        for (unsigned i = 0; i < G_N_ELEMENTS(program); i++) {
+            qtest_writel(qts, RAM + 4 * i, program[i]);
+        }
+        for (unsigned i = 0; i < 3; i++) {
+            qtest_writel(qts, RAM + 0x1000 + 4 * i, 0xdeadbeef);
+        }
+        qtest_writel(qts, FMSS + 0xc04, RAM);
+        qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+        uint32_t shifted = values[j][0] << values[j][1];
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==, shifted);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1004), ==, values[j][1]);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1008), ==, shifted << 1);
+        qtest_writel(qts, FMSS + 0xc00, 8);
+    }
+    /* Preserve nonzero-immediate source-register behavior with distinct dest. */
+    program[1] = 3; program[3] = 1; program[5] = 1;
+    for (unsigned i = 0; i < G_N_ELEMENTS(program); i++) {
+        qtest_writel(qts, RAM + 4 * i, program[i]);
+    }
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==, 6);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x1004), ==, 3);
+    qtest_writel(qts, FMSS + 0xc00, 8);
+    static const uint32_t counts[] = {32, 33, 0xffffffff};
+    program[5] = 0;
+    for (unsigned j = 0; j < G_N_ELEMENTS(counts); j++) {
+        program[1] = counts[j];
+        for (unsigned i = 0; i < G_N_ELEMENTS(program); i++) {
+            qtest_writel(qts, RAM + 4 * i, program[i]);
+        }
+        qtest_writel(qts, RAM + 0x1000, 0xabcddcba);
+        qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==, 0xabcddcba);
+        qtest_writel(qts, FMSS + 0xc00, 8);
+    }
+    qtest_quit(qts);
+    rmdir(overlay);
+    g_free(overlay);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *rom = g_malloc0(131072);
@@ -1018,6 +1078,7 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/fmss/chunk-counter", chunk_counter);
     qtest_add_func("/ipod/fmss/chunk-counter-snapshot", chunk_counter_snapshot);
     qtest_add_func("/ipod/fmss/register-or", register_or);
+    qtest_add_func("/ipod/fmss/register-left-shift", register_left_shift);
     result = g_test_run();
     unlink(rom_path); unlink(nor_path); rmdir(nand_path);
     g_free(rom_path); g_free(nor_path); g_free(nand_path);
