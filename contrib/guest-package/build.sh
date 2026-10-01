@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build every guest package and pack one .itpack per arch:
-#   OUT/packages/<family>/  n72-ios3, k48-ios3, k48-ios4, k48-ios5 (n72-ios2, n72-ios4: stubs)
+#   OUT/packages/<family>/  n45-ios1, n72-ios2/30/3, k48-ios3/4/5 (n72-ios4: stub)
 #   OUT/armv6.itpack        n72-* packages + the legacy-linked loader
 #   OUT/armv7.itpack        k48-* packages + the loader
 # The components' own build.sh recipes run on a copy of their sources under
@@ -20,8 +20,7 @@ mkdir -p "$OUT/src/contrib" "$OUT/src/include/hw/arm/guest-services" "$OUT/src/t
 COMPONENTS="it-gles gles-public it-agent it-instprogress it-media it-proxy it-status it-halt it-orientation
             ipad1-guest appsync it-boot"
 # ipad1-guest also compiles these sources; it-gles/gles-public/it-boot read their neighbours
-for c in armv6-toolchain $COMPONENTS it-pasteboard it-ethlink it-seal it-prefs it-keybag it-heading \
-         it-cctest it-gltest it-msmquiet guest-package; do   # guest-package: it-boot's test imports mkpkg
+for c in $(python3 "$HERE/build_inputs.py" --components); do
     cp -R "$SRC/contrib/$c" "$OUT/src/contrib/"
 done
 # the GL shims and the host share the name table (the wire ids)

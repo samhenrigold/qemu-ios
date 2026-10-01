@@ -34,7 +34,7 @@ MAGIC = b"ITPACK01"
 CURRENT = "/usr/local/lighttouch/current"
 MBX = "/System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine"
 # The GL front end replaces the framework binary whole: contrib/gles-public (every iPad build; one fat binary),
-# contrib/it-gles/gles2x.c (the iPod's 1.x/2.x)
+# contrib/it-gles/gles1x.c (the iPod's 1.x)
 OPENGLES = "/System/Library/Frameworks/OpenGLES.framework/OpenGLES"
 GL_TARGETS = (MBX, OPENGLES)
 # host protocol ranges a package speaks: [oldest, newest]; gles 1 = the name-keyed wire (gles-names.h)

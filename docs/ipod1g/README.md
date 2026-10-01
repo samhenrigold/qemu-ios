@@ -180,4 +180,4 @@ the block does, P a documented quirk/patch, S stub.
 `hw/arm/ipod_touch_1g.c`, `include/hw/arm/ipod_touch_1g.h`, `hw/arm/s5l8900_{fmc,nand_ecc,adm,lcd_panel}.c`
 and headers, `hw/arm/Kconfig` (`IPOD_TOUCH_1G` selects `IPOD_TOUCH_2G`), `hw/arm/meson.build`,
 `configs/devices/arm-softmmu/default.mak`. Shared-model property additions are in the models named above. The GL device bake is
-FirmwareKit's N45 recipe (`N45Recipe.swift`); the front end is `contrib/it-gles/gles2x.c` (`build-gles2x.sh 1x`).
+FirmwareKit's N45 recipe (`N45Recipe.swift`); the front end is `contrib/it-gles/gles1x.c` (`build-gles1x.sh`).

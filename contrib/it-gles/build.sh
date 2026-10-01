@@ -4,14 +4,14 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../armv6-toolchain/armv6.sh"
 
-# The name table and the dispatch stubs the core (mbxshim.c, compiled into contrib/gles-public and gles2x.c) uses.
+# The name table and the dispatch stubs the core (mbxshim.c, compiled into contrib/gles-public and gles1x.c) uses.
 python3 "$HERE/../gles-public/gligen.py" --check
 python3 "$HERE/genstubs.py" "$HERE/gles_stubs.h" >/dev/null
 
 # 1.x (the iPod touch 1G): OpenGLES itself is the driver, with no EAGL and the old ObjC runtime, so the same core
-# goes in as the framework binary under 1.x's own export names (build-gles2x.sh 1x, gles2x.c). 2.x-5.x take the
+# goes in as the framework binary under 1.x's own export names (build-gles1x.sh, gles1x.c). 2.x-5.x take the
 # one front end, contrib/gles-public.
-bash "$HERE/build-gles2x.sh" 1x "$HERE/OpenGLES-1x"
+bash "$HERE/build-gles1x.sh" "$HERE/OpenGLES-1x"
 
 # GLTest.app -- a real app bundle with a CAEAGLLayer. UIKit, QuartzCore, Foundation,
 # OpenGLES and libobjc are all dlopen'd, so nothing here links anything but libSystem:

@@ -48,6 +48,9 @@ mkdir -p "$(dirname "$OUT")"
 mkdir "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 B="$OUT/build"
+# Snapshot before copying/compiling, then compare before publication. Never
+# attribute output to sources or SDKs that changed while the build was running.
+python3 "$SRC/contrib/guest-package/build_inputs.py" > "$OUT/build-inputs.json"
 
 echo "building the guest components and packages (contrib/guest-package/build.sh)"
 if ! bash "$SRC/contrib/guest-package/build.sh" "$B" >"$OUT/build.log" 2>&1; then
@@ -97,7 +100,7 @@ for p in it-gles/sblaunch it-instprogress/sbdlicon it-agent/it_agent it-agent/it
          it-agent/com.qemu.it-agent.plist; do
     stage ipad-guest-tools "$C/$p"
 done
-# 1.x: its own GL front end that replaces OpenGLES.framework/OpenGLES (gles2x.c without EAGL), and
+# 1.x: its own GL front end that replaces OpenGLES.framework/OpenGLES (gles1x.c, without EAGL), and
 # the export set the preparer checks the stock binary against before the package's hook may replace it.
 stage ipad-guest-tools "$C/it-gles/OpenGLES-1x"
 stage ipad-guest-tools "$C/it-gles/opengles-1x.exports"
@@ -130,20 +133,13 @@ def git(*args):
     except (subprocess.CalledProcessError, OSError):
         return None
 commit = git("rev-parse", "HEAD")
-# The inputs: what guest-package/build.sh copies (sources only: generated headers and binaries are not inputs).
-components = ("armv6-toolchain it-gles gles-public it-agent it-instprogress it-media it-proxy it-status it-halt it-orientation "
-              "ipad1-guest appsync it-boot it-pasteboard it-ethlink it-seal it-prefs it-keybag it-heading "
-              "it-cctest it-gltest it-msmquiet guest-package").split()
-inputs = {}
-for c in components:
-    for f in sorted((src / "contrib" / c).iterdir()):
-        if f.is_file() and f.suffix in (".c", ".h", ".sh", ".py", ".xml", ".plist", ".entitlements", ".txt",
-                                        ".exports") \
-                and f.name not in ("gles_stubs.h",):
-            inputs[str(f.relative_to(src))] = sha(f)
-for f in sorted([src / "include/hw/arm/guest-services/gles-names.h",
-                 src / "contrib/guest-package/VERSION", src / "contrib/export-guest-artifacts.sh"]):
-    inputs[str(f.relative_to(src))] = sha(f)
+sys.path.insert(0, str(src / "contrib/guest-package"))
+import build_inputs
+before = json.loads((out / "build-inputs.json").read_text())
+current = {"inputs": build_inputs.sources(src), "build_context": build_inputs.context()}
+if before != current:
+    raise SystemExit("guest build inputs changed during compilation; discard this output and rebuild")
+inputs = before["inputs"]
 files = {}
 for d in ("guest-tools.incomplete", "ipad-guest-tools.incomplete", "macos-app", "include", "dylib"):
     for f in sorted((out / d).rglob("*")):
@@ -161,6 +157,7 @@ manifest = {
     "qemu_build": qemu_build,
     "warnings": warnings,
     "inputs": inputs,
+    "build_context": before["build_context"],
     "files": files,
 }
 (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

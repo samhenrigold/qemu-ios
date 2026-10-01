@@ -13,12 +13,12 @@ no dispatch table), so the replacement exports exactly the firmware's own names.
     gles2x_exports.py check LIST OPENGLES      exit 1 unless the stock binary exports exactly LIST
                                                (the preparer runs this before hooking the framework)
 
-A gl* name with no row and not written by hand in gles2x.c (HAND) fails the build: a new firmware's
+A gl* name with no row and not written by hand in the front ends (HAND) fails the build: a new firmware's
 name is a new row in gles-names.h, never a silent gap.
 """
 import os, re, struct, sys
 
-# gl* exports gles2x.c implements itself, over the core's existing entry points
+# gl* exports the front ends implements itself, over the core's existing entry points
 HAND = {"glTexImageCoreSurfaceAPPLE", "glFinishTextureAPPLE", "glGetString",
         "glVertexAttribPointerARB"}   # 1.x only: no ES 1.1 row, a counted refusal
 # exports whose row is another name's: the firmware's trampolines for both load the same dispatch field
