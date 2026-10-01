@@ -784,3 +784,20 @@ The known DFU reconnection race still requires separate investigation.
 Evidence: `/private/tmp/ltm-aes-restore-default`,
 `/private/tmp/ltm-n72-ramdisk-aes-fixed`, and
 `/private/tmp/ltm-n72-stock-restored-aes-settled`.
+
+The SHA engine had the same register clamp. A production-handler regression
+first reproduced truncated INSIZE readback, then verified a complete
+restore-sized, guest-padded message against Python hashlib. SHA DMA now uses
+64 KiB scratch chunks without truncating the register; continuation across
+jobs and the raw engine's ignored partial block remain correct. Interrupt and
+snapshot ownership tests pass, as does the separate default 7E18 native 8/8 run
+(`/private/tmp/ltm-sha1-restore-default`). The new test is registered in the
+explicit gate inventory; the earlier guest cache-input test's missing
+registration was also repaired and its four tests pass.
+
+A later unpatched stock 5F138 run, without watchdog suppression, has guest
+processes `launchd` (PID 1) and `restored_update` (PIDs 11/12) after 60 seconds.
+Names/PIDs were read from the kernel process list using offsets independently
+confirmed in its proc accessor instructions. No restore-service protocol
+response or physical restore completion is implied by process presence.
+The corresponding trace is `/private/tmp/ltm-n72-kernel-processes`.
