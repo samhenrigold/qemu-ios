@@ -18,6 +18,8 @@ typedef struct IPodTouchChipIDState {
     MemoryRegion iomem;
     uint32_t word1;   /* +4: "word1" property */
     uint32_t word2;   /* +8: "word2" property */
+    uint32_t word3;   /* +C: ECID fuse word */
+    uint32_t word4;   /* +10: ECID fuse word */
 } IPodTouchChipIDState;
 
 #endif
