@@ -1012,14 +1012,17 @@ static void ipod_touch_stage_ramdisk(IPodTouchMachineState *nms)
 /*
  * boot-args: set the XNU kernel command line late in boot.
  *
- * 3.1.3 boots with an empty command line (7E18 iBoot heap-panics on any NOR
- * boot-args, so that path is unusable). Without it the kernel's code-signing
+ * 3.1.3 normally hands off an empty command line. A stock 7E18 trace
+ * imports NOR boot-args into iBoot's environment successfully, then chooses
+ * an empty source in its normal kernel-load path; see
+ * docs/research/ipod-nvram-handoff.md. This is not evidence of a SPI/NVRAM
+ * transfer failure. Without the injected argument the kernel's code-signing
  * enforcement is on and AMFI rejects the ad-hoc/invalidly-signed decrypted
  * (Clutch) App-Store binaries at exec, so injected apps are discovered on the
  * home screen but never launch -- whereas stock, Apple-signed apps launch
- * normally. 2.1.1 does not need this: its own boot chain already carries
- * amfi_allow_any_signature=1, which is exactly what makes the same binaries run
- * there. This hook reproduces that on 3.1.3 without touching the 2.1.1 path.
+ * normally. The SecureROM path has a separate legacy command-line data
+ * injection in ipod_touch_compat_command_line; its arguments must not be
+ * mistaken for values supplied by stock iBoot or NOR.
  *
  * XNU reads the string live from boot_args->CommandLine (PE_boot_args returns
  * PE_state.bootArgs + 0x38 on every PE_parse_boot_argn call), and the AMFI kext
@@ -1034,7 +1037,8 @@ static void ipod_touch_stage_ramdisk(IPodTouchMachineState *nms)
  * overwrite CommandLine at +0x38. 4.2.1 iBoot builds it at 0x08825000, past
  * the first 8 MiB, so the scan covers 16 MiB.
  * boot-args-delay-ms/-repeat/-interval-ms drive the timer. Gated entirely on the
- * boot-args machine property (the only input; no environment); 2.1.1 is untouched.
+ * boot-args machine property (no environment). Empty disables this timer and
+ * direct-iBoot injection, but not the separate SecureROM compatibility hook.
  */
 #define BOOT_ARGS_CMDLINE_OFF   0x38
 #define BOOT_ARGS_SCAN_LEN      0x01000000
