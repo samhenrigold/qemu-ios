@@ -955,3 +955,21 @@ distinct descriptor operands, explicit little-endian words, increments,
 unsupported forms and failed QEMU transactions. The independent default
 7E18 native two-boot regression passes 8/8 (`/private/tmp/ltm-fmss-opcode03-default`).
 No new completion, physical erase or full stock restore qualification follows.
+
+### FMSS stock mask intersection
+
+The stock 5F138 bulk erase script reaches opcode0A000004 with immediate zero
+at +0xa8. The model now intersects the existing destination and source
+registers for this form; nonzero immediates mask the source into the destination.
+Actual S5L8720 driver/script dataflow corroborates the related
+[S5L8702 FMISS research](https://github.com/lemonjesus/S5L8702-FMISS-Tools/blob/70b45859af8807a7f841cf649564ce6638e1c112/Documentation.md).
+No reference implementation or documentation text was copied.
+
+Actual-handler sanitizer tests fail on the preceding model and pass with the
+correction. Real FMSS qtests pass 7/7, covering overlapping, disjoint, zero and
+high-bit masks and distinct immediate operands. The independent default 7E18
+native two-boot regression passes 8/8, including guest-confirmed shutdown,
+persistence, graphics and audio (`/private/tmp/ltm-fmss-and-default`).
+
+Other arithmetic, physical storage, erase and aborted-script completion are
+unchanged. Physical restore and subsequent cold boot remain unqualified.

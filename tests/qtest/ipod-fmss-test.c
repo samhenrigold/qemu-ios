@@ -376,6 +376,47 @@ static void descriptor_load(void)
     g_free(overlay);
 }
 
+static void logical_and(void)
+{
+    char *overlay;
+    QTestState *qts = start_board(&overlay);
+    uint32_t program[] = {
+        0x05000000, 1, 0x05040000, 1,
+        0x0a000004, 0, 0x05070000, RAM + 0x1000,
+        0x11000007, 0, 0, 0
+    };
+    static const uint32_t inputs[][2] = {
+        {1, 1}, {1, 2}, {0xff00ff00, 0x0ff00ff0},
+        {0, 0xffffffff}, {0xffffffff, 0}, {0x80000000, 0x80000001}
+    };
+    for (unsigned j = 0; j < G_N_ELEMENTS(inputs); j++) {
+        program[1] = inputs[j][0];
+        program[3] = inputs[j][1];
+        for (unsigned i = 0; i < G_N_ELEMENTS(program); i++) {
+            qtest_writel(qts, RAM + 4 * i, program[i]);
+        }
+        qtest_writel(qts, FMSS + 0xc04, RAM);
+        qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==,
+                        inputs[j][0] & inputs[j][1]);
+        qtest_writel(qts, FMSS + 0xc00, 8);
+    }
+    /* Actual nonzero-immediate form0A010000/1 has distinct destination/source. */
+    static const uint32_t immediate[] = {
+        0x05000000, 0x12345679, 0x05010000, 0xdeadbeee,
+        0x0a010000, 1, 0x05070000, RAM + 0x1000,
+        0x11010007, 0, 0, 0
+    };
+    for (unsigned i = 0; i < G_N_ELEMENTS(immediate); i++) {
+        qtest_writel(qts, RAM + 4 * i, immediate[i]);
+    }
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==, 1);
+    qtest_quit(qts);
+    rmdir(overlay);
+    g_free(overlay);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *rom = g_malloc0(131072);
@@ -396,6 +437,7 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/fmss/generated-snapshot", generated_snapshot);
     qtest_add_func("/ipod/fmss/register-copy", register_copy);
     qtest_add_func("/ipod/fmss/descriptor-load", descriptor_load);
+    qtest_add_func("/ipod/fmss/logical-and", logical_and);
     result = g_test_run();
     unlink(rom_path); unlink(nor_path); rmdir(nand_path);
     g_free(rom_path); g_free(nor_path); g_free(nand_path);
