@@ -17,7 +17,7 @@ with tempfile.TemporaryDirectory(prefix='restore-blank-') as temp:
     (source / 'geometry.json').write_text(json.dumps(geometry))
     (source / 'bus0-ce0.pages').write_bytes(b'generated filesystem must not be copied')
     module.blank_nand(source, destination)
-    assert json.loads((destination / 'geometry.json').read_text()) == geometry
+    assert json.loads((destination / 'geometry.json').read_text()) == geometry | {"storage_format": "nand-xor-ff-v2"}
     pages = sorted(destination.glob('*.pages'))
     assert len(pages) == 4
     for page in pages:
@@ -40,4 +40,4 @@ with tempfile.TemporaryDirectory(prefix='restore-blank-') as temp:
         pass
     else:
         raise AssertionError('invalid controller geometry accepted')
-print('PASS: blank restore target has erased chips and measured geometry only')
+print('PASS: blank v2 restore target has erased chips and measured geometry, no logical seed')

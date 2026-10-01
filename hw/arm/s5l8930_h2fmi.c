@@ -22,8 +22,8 @@
  *        status until it matches +0x4C (0x5ff03a58, 0x5ff0431e).
  *   FMC +0x14 commands: byte0 first, byte1 second (0x00/0x30 read, 0x90 id,
  *        0xFF reset, 0x70 status).
- *   FMC +0x18/+0x1C address bytes (row = +0x18 bits 16-31 | +0x1C bits 0-7,
- *        0x5ff0332c), +0x20 address byte count - 1.
+ *   FMC +0x18/+0x1C address bytes (page read/program includes two column
+ *        bytes before row; erase0x60 sends row only). +0x20 count - 1.
  *   FMC +0x40 event enable, +0x44 events W1C: bit0 cmd1, bit1 cmd2, bit3
  *        address, bit5 status matched (0x5ff03f9a); +0x48 last status byte.
  *   ECC +0x0C per-sector result, read once per sector (0x5ff04008): bit1
@@ -84,6 +84,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930H2FMIState, S5L8930_H2FMI)
 #define FMI_ST_FMC      (1u << 8)
 #define FMC_EV_STATUS   (1u << 5)
 #define ECC_BLANK       (1u << 1)
+#define NAND_FAIL       1u              /* chip status: program/erase failed */
 #define NAND_READY      0xe0            /* ready, ready, not write-protected */
 #define META_BYTES      10              /* what the store keeps per page */
 
@@ -174,6 +175,7 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
         b->mode = MODE_ID;
         break;
     case 0xff:
+        b->fmc[FMC_NAND_STATUS / 4] = NAND_READY;
         b->mode = MODE_NONE;
         b->read_pending = false;
         b->read_format = 0;
@@ -191,17 +193,18 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
         int ce = h2fmi_ce(b);
         uint32_t id, pb;
         uint8_t mask;
+        uint32_t result = 1;
 
         if (ce >= 0 && s->iop && b->wpage_len[ce & 7]) {
             s5l8930_iop_nand_info(s->iop, &id, &mask, &pb);
             int per_bus = MAX(ctpop8(mask), 1);
             int cs = (ce & 7) * H2FMI_BUSES + b->n;
-            s5l8930_iop_nand_program(s->iop, cs / per_bus, cs % per_bus, b->row,
+            result = s5l8930_iop_nand_program(s->iop, cs / per_bus, cs % per_bus, b->row,
                                      b->wpage[ce & 7], b->wpage_len[ce & 7], b->wpmeta[ce & 7]);
             b->wpage_len[ce & 7] = 0;
         }
         b->writing = false;
-        b->fmc[FMC_NAND_STATUS / 4] = NAND_READY;
+        b->fmc[FMC_NAND_STATUS / 4] = NAND_READY | (result == 1 ? 0 : NAND_FAIL);
         break;
     }
     case 0x60:              /* block erase: address follows, 0xd0 confirms */
@@ -210,14 +213,15 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
         int ce = h2fmi_ce(b);
         uint32_t id, pb;
         uint8_t mask;
+        uint32_t result = 1;
 
         if (ce >= 0 && s->iop) {
             s5l8930_iop_nand_info(s->iop, &id, &mask, &pb);
             int per_bus = MAX(ctpop8(mask), 1);
             int cs = (ce & 7) * H2FMI_BUSES + b->n;
-            s5l8930_iop_nand_erase(s->iop, cs / per_bus, cs % per_bus, b->row);
+            result = s5l8930_iop_nand_erase(s->iop, cs / per_bus, cs % per_bus, b->row);
         }
-        b->fmc[FMC_NAND_STATUS / 4] = NAND_READY;
+        b->fmc[FMC_NAND_STATUS / 4] = NAND_READY | (result == 1 ? 0 : NAND_FAIL);
         break;
     }
     case 0x30: {
@@ -274,15 +278,25 @@ static void h2fmi_go(H2FMIBus *b, uint32_t go)
         h2fmi_command(b, cmds & 0xff);
     }
     if (go & 8) {
-        b->row = (b->fmc[FMC_ADDR0 / 4] >> 16) |
-                 ((b->fmc[FMC_ADDR1 / 4] & 0xff) << 16);
+        if ((cmds & 0xff) == 0x60) {
+            /* NAND block erase has no column address. The three row bytes
+             * start at ADDR0 byte0; ADDR1 can still contain a previous read. */
+            if (getenv("NAND_TRACE")) {
+                fprintf(stderr, "NAND erase address a0=%x a1=%x count=%x\n",
+                        b->fmc[FMC_ADDR0 / 4], b->fmc[FMC_ADDR1 / 4], b->fmc[0x20 / 4]);
+            }
+            b->row = b->fmc[FMC_ADDR0 / 4] & 0xffffff;
+        } else {
+            b->row = (b->fmc[FMC_ADDR0 / 4] >> 16) |
+                     ((b->fmc[FMC_ADDR1 / 4] & 0xff) << 16);
+        }
     }
     if (go & 2) {
         h2fmi_command(b, (cmds >> 8) & 0xff);
     }
     if (go & 0x40) {
-        /* Status poll: the part is always ready. */
-        b->fmc[FMC_NAND_STATUS / 4] = NAND_READY;
+        /* Ready is immediate, but polling must preserve the last failure. */
+        b->fmc[FMC_NAND_STATUS / 4] |= NAND_READY;
         h2fmi_fmc_events(b, (go & 0xb) | FMC_EV_STATUS);
         return;
     }

@@ -37,11 +37,12 @@ def blank_nand(source, destination):
         raise ValueError('NAND geometry exceeds controller capacity')
     size = ((geometry['page_bytes'] + geometry['spare_bytes']) *
             geometry['pages_per_block'] * geometry['blocks_per_ce'])
+    geometry["storage_format"] = "nand-xor-ff-v2"
     destination.mkdir()
     (destination / 'geometry.json').write_text(json.dumps(geometry, indent=2) + '\n')
     for bus in range(geometry['buses']):
         for ce in range(geometry['ce_per_bus']):
-            # Current page-store format defines untouched sparse holes as erased.
+            # XOR-FF v2: sparse zero bytes decode to erased physical FF.
             with (destination / f'bus{bus}-ce{ce}.pages').open('xb') as stream:
                 stream.truncate(size)
 
