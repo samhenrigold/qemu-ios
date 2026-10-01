@@ -47,4 +47,7 @@ typedef struct IPodTouchSYSICState {
     uint32_t gpio_level_pending[GPIO_NUMINTGROUPS];
 } IPodTouchSYSICState;
 
+/* Latch an edge request and update the masked group output. */
+void ipod_touch_sysic_request_edge(IPodTouchSYSICState *s, unsigned group, unsigned bit);
+
 #endif
