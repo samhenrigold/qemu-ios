@@ -1037,8 +1037,8 @@ static void ipod_touch_stage_ramdisk(IPodTouchMachineState *nms)
  * overwrite CommandLine at +0x38. 4.2.1 iBoot builds it at 0x08825000, past
  * the first 8 MiB, so the scan covers 16 MiB.
  * boot-args-delay-ms/-repeat/-interval-ms drive the timer. Gated entirely on the
- * boot-args machine property (no environment). Empty disables this timer and
- * direct-iBoot injection, but not the separate SecureROM compatibility hook.
+ * boot-args machine property (no environment). Empty disables this timer,
+ * but not the separate SecureROM compatibility hook.
  */
 #define BOOT_ARGS_CMDLINE_OFF   0x38
 #define BOOT_ARGS_SCAN_LEN      0x01000000
@@ -1051,12 +1051,11 @@ static bool boot_args_signature(const uint8_t *p)
            ldl_le_p(p + 8) == 0x08000000;
 }
 #define BOOT_ARGS_CMDLINE_LEN   256
-#define BOOT_ARGS_STAGING_BASE  0x220fff00
 
 static const char *ipod_touch_requested_boot_args(IPodTouchMachineState *nms)
 {
-    /* The boot-args machine property is the only input; empty disables both
-     * the early handoff and the AMFI argument refreshes. */
+    /* Empty disables the host-supplied handoff arguments. Never redirect
+     * iBoot's empty-string literal: it also names the DeviceTree root. */
     return nms->boot_args[0] ? nms->boot_args : NULL;
 }
 
@@ -1084,6 +1083,11 @@ static void ipod_touch_set_boot_args_now(void *opaque)
         } else {
             nms->boot_args_addr = 0;
         }
+    }
+    if (!ba && qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) >=
+               nms->boot_args_scan_deadline) {
+        fprintf(stderr, "[IT_BOOT_ARGS] no handoff buffer before search deadline\n");
+        return;
     }
     if (!ba) {
         /*
@@ -1160,7 +1164,8 @@ rearm:
     {
         if (nms->boot_args_writes < nms->boot_args_repeat) {
             timer_mod(nms->boot_args_timer,
-                      qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + nms->boot_args_interval_ms);
+                      qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                      (ba ? nms->boot_args_interval_ms : 1));
         }
     }
 }
@@ -1258,6 +1263,12 @@ static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
 
     nms->boot_args_writes = 0;
     nms->boot_args_scan_failed = false;
+    /* Discover promptly so early platform readers see the arguments. Keep the
+     * configured refresh cadence after discovery, and bound unknown firmware
+     * by the existing refresh window rather than polling it forever. */
+    nms->boot_args_scan_deadline = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+        delay_ms + (uint64_t)MAX(1, nms->boot_args_repeat) *
+        nms->boot_args_interval_ms;
     if (!nms->boot_args_timer) {
         nms->boot_args_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                            ipod_touch_set_boot_args_now, nms);
@@ -1266,29 +1277,6 @@ static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
               qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + delay_ms);
     fprintf(stderr, "[IT_BOOT_ARGS] first write scheduled at T+%llu ms\n",
             (unsigned long long)delay_ms);
-}
-
-/*
- * Early handoff: redirect iBoot's normal-boot command-line literal (found by
- * pattern in hw/arm/it_iboot.c) at the staged string, so PE_init_platform and
- * AMFI read it; the late timer above is too late for their flags.
- */
-static void ipod_touch_inject_boot_args(IPodTouchMachineState *nms, size_t image_size)
-{
-    const char *args = ipod_touch_requested_boot_args(nms);
-    uint32_t literal;
-
-    if (!args) {
-        return;
-    }
-    literal = it_iboot_inject_boot_args(nms->nsas, IBOOT_MEM_BASE, image_size,
-                                        args, BOOT_ARGS_STAGING_BASE);
-    if (!literal) {
-        fprintf(stderr, "[IT_BOOT_ARGS] unknown iBoot; early argument injection skipped\n");
-        return;
-    }
-    fprintf(stderr, "[IT_BOOT_ARGS] staged early command line (iBoot literal 0x%08x)\n",
-            literal);
 }
 
 static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
@@ -1325,7 +1313,6 @@ static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
         }
 
         /* Optional bring-up helpers run after staging the iBoot image. */
-        ipod_touch_inject_boot_args(nms, fsize);
         ipod_touch_stage_ramdisk(nms);
         ipod_touch_stage_boot_args(nms);
     }
@@ -1877,7 +1864,7 @@ static void ipod_touch_instance_init(Object *obj)
     IPOD_TOUCH_MACHINE(obj)->bt_enabled = true;
     IPOD_TOUCH_MACHINE(obj)->bt_latency_us = 2000;
     IPOD_TOUCH_MACHINE(obj)->time_dilation = 1;
-    IPOD_TOUCH_MACHINE(obj)->boot_args_delay_ms = 2000;
+    IPOD_TOUCH_MACHINE(obj)->boot_args_delay_ms = 0;
     IPOD_TOUCH_MACHINE(obj)->boot_args_repeat = 24;
     IPOD_TOUCH_MACHINE(obj)->boot_args_interval_ms = 500;
     IPOD_TOUCH_MACHINE(obj)->agent = ipod_agent_new();
@@ -1922,7 +1909,7 @@ static void ipod_touch_instance_init(Object *obj)
                         ipod_touch_get_boot_args_delay_ms,
                         ipod_touch_set_boot_args_delay_ms, NULL, NULL);
     object_property_set_description(obj, "boot-args-delay-ms",
-        "Initial command-line write delay in virtual milliseconds (0..3600000; default 2000)");
+        "Initial command-line write delay in virtual milliseconds (0..3600000; default 0)");
     object_property_add(obj, "boot-args-repeat", "uint32",
                         ipod_touch_get_boot_args_repeat,
                         ipod_touch_set_boot_args_repeat, NULL, NULL);
@@ -1932,7 +1919,7 @@ static void ipod_touch_instance_init(Object *obj)
                         ipod_touch_get_boot_args_interval_ms,
                         ipod_touch_set_boot_args_interval_ms, NULL, NULL);
     object_property_set_description(obj, "boot-args-interval-ms",
-        "Command-line retry interval in virtual milliseconds (1..3600000; default 500)");
+        "Command-line refresh interval after discovery, in virtual milliseconds (1..3600000; default 500)");
 
     object_property_add_str(obj, "usb-tcp-addr", ipod_touch_get_usb_tcp_addr, ipod_touch_set_usb_tcp_addr);
     object_property_set_description(obj, "usb-tcp-addr",
