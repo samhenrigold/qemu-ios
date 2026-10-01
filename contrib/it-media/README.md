@@ -54,8 +54,10 @@ MusicLibrary's purchase-folder properties (`itemName`, `artistName`, `playlistNa
 `playlistArtistName`, `composerName`, `genre`, `trackNumber`, `trackCount`,
 `discNumber`, `discCount`, `compilation`), as the 7E18
 `insertItemFromPurchaseFolder:withItemProperties:` reads them. That insert has no
-year property, so the helper sets `item.year` with one UPDATE by pid (no 7E18
-trigger or index covers the column).
+year property, so the helper sets `item.year` with one UPDATE by pid through
+MusicLibrary's own writer connection (`MLSDBGetSharedRecordStore`; the library
+uses its own SQLite VFS, so a second plain connection is read-only). No 7E18
+trigger or index covers the column.
 The optional `kind` is `song` by default; use `feature-movie` for a movie.
 MusicLibrary sets the native media kind and video fields. The caller supplies
 metadata and is responsible for validating the codecs; accepting a filename
