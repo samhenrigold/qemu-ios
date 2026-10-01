@@ -121,16 +121,16 @@ class MediaIdentity(unittest.TestCase):
         query = ''.join(ast.literal_eval(part) for part in re.findall(r'"(?:[^"\\]|\\.)*"', statement))
         with sqlite3.connect(':memory:') as db:
             db.executescript("""
-                CREATE TABLE item(pid INTEGER, is_song INTEGER);
-                INSERT INTO item VALUES(1,1),(2,0);
+                CREATE TABLE item(pid INTEGER, is_song INTEGER, artwork_cache_id INTEGER);
+                INSERT INTO item VALUES(1,1,23),(2,0,0);
                 ATTACH DATABASE ':memory:' AS loc;
                 CREATE TABLE loc.base_location(id INTEGER, path TEXT);
                 CREATE TABLE loc.location(item_pid INTEGER, base_location_id INTEGER, location TEXT);
                 INSERT INTO loc.base_location VALUES(1,'LightTouch/song'),(2,'LightTouch/movie');
                 INSERT INTO loc.location VALUES(1,1,'audio.m4a'),(2,2,'video.mp4');
             """)
-            self.assertEqual(db.execute(query, ('LightTouch/song', 'audio.m4a')).fetchall(), [(1,)])
-            self.assertEqual(db.execute(query, ('LightTouch/movie', 'video.mp4')).fetchall(), [(2,)])
+            self.assertEqual(db.execute(query, ('LightTouch/song', 'audio.m4a')).fetchall(), [(1,23)])
+            self.assertEqual(db.execute(query, ('LightTouch/movie', 'video.mp4')).fetchall(), [(2,0)])
             self.assertEqual(db.execute(query, ('LightTouch/song', 'video.mp4')).fetchall(), [])
             self.assertEqual(db.execute(query, ('LightTouch/other', 'audio.m4a')).fetchall(), [])
 
