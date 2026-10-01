@@ -42,12 +42,30 @@ Run as root (drops to mobile) or mobile:
 /tmp/itmedia /tmp/song.plist staging-id
 ```
 
-Title, filename and duration are required; artist, album and genre are optional.
+Title, filename and duration are required. Artist, album, genre, `album_artist`
+and `composer` are optional strings; `track_number`, `track_count`, `disc_number`
+and `disc_count` are optional integers in 1..65535. These map to stock
+MusicLibrary purchase properties rather than host-written database columns.
+
+For embedded album art, stage `artwork.jpg` alongside the audio and set
+`artwork_filename` to that exact filename. It must be a regular JPEG no larger
+than 2 MiB. The host normalizes artwork to an orientation-correct JPEG with a
+1024-pixel maximum edge while preserving the audio and embedded tags. The guest
+uses ArtworkCache_ProcessArtworkData with the native AlbumArt specifications
+from lockdown, then MusicLibrary's purchase itemId links the song to that cache.
+Supplying artworkAssetFilename alone does not generate thumbnails. A replay
+uses the committed artwork ID, so cache processing can be retried after an
+interrupted import without inserting another track.
+
+Earlier imports with no artwork ID cannot be upgraded through this API: remove
+the old track in Music and import it again. The helper reports this limitation
+instead of claiming a successful cover transfer. This implementation is verified
+on 7E18 only; the existing firmware gate remains.
 The optional `kind` is `song` by default; use `feature-movie` for a movie.
 MusicLibrary sets the native media kind and video fields. The caller supplies
 metadata and is responsible for validating the codecs; accepting a filename
 extension does not mean the device can decode its contents.
-Encrypted tracks, transcoding, artwork, playlists other than the native
+Encrypted tracks, transcoding, playlists other than the native
 Purchased list and a Mac movie-import interface are not implemented here.
 The separate `itphoto` helper handles photos.
 
@@ -136,3 +154,10 @@ Completed retries remove a restaged JPEG. Existing random-ID imports are not
 retroactively indexed. New receipts reconcile deletion by the native DCIM path;
 this is not a general bidirectional photo-library index. A path reused for a
 different asset cannot be distinguished by these receipts.
+
+Artwork regression: `tests/ipod/test_media_artwork.py` takes a production-staged
+M4A fixture and explicit emulator/base/tools paths. Build its research-only
+`media_artwork_probe.c` with the ARMv6 toolchain and sign it like other guest
+test executables. It verifies all forwarded fields, one track after repeat
+import, actual MediaPlayer decoded PNG data, and a cold reopen of the overlay.
+The probe is not included in the shipping guest package.

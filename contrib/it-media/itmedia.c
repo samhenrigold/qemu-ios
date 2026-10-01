@@ -2,6 +2,7 @@
  * all database mutations. SQLite below is read-only, for retry reconciliation.
  * There is no CRT in these ARMv6 executables; see armv6-toolchain/README.md. */
 #include <stdio.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -23,6 +24,7 @@ static __typeof__(sqlite3_exec) *sql_exec;
 static __typeof__(sqlite3_prepare_v2) *sql_prepare;
 static __typeof__(sqlite3_bind_text) *sql_bind;
 static __typeof__(sqlite3_step) *sql_step;
+static __typeof__(sqlite3_column_int64) *sql_column;
 static __typeof__(sqlite3_finalize) *sql_finalize;
 static __typeof__(sqlite3_close) *sql_close;
 static __typeof__(sqlite3_errmsg) *sql_error;
@@ -70,7 +72,7 @@ static void regular_path(const char *path, int directory) {
 
 /* Return 1 for existing media at the exact immutable staged location.
  * Fail closed on a query error: an uncertain previous import must not replay. */
-static int existing(const char *folder, const char *filename) {
+static int existing(const char *folder, const char *filename, unsigned *artwork_id) {
     sqlite3 *db = NULL;
     sqlite3_stmt *stmt = NULL;
     int found;
@@ -82,7 +84,7 @@ static int existing(const char *folder, const char *filename) {
     /* Music creates indexes with private sort collations on its first launch.
      * This identity query needs none of them. Do not supply a fake collation
      * or let the old SQLite planner choose those indexes after a reboot. */
-    const char *sql = "SELECT item.pid FROM item NOT INDEXED JOIN loc.location l ON l.item_pid=item.pid "
+    const char *sql = "SELECT item.artwork_cache_id FROM item NOT INDEXED JOIN loc.location l ON l.item_pid=item.pid "
                       "JOIN loc.base_location b ON b.id=l.base_location_id "
                       "WHERE b.path=? AND l.location=? LIMIT 1";
     if (sql_prepare(db,sql,-1,&stmt,NULL) != SQLITE_OK ||
@@ -92,9 +94,41 @@ static int existing(const char *folder, const char *filename) {
     int rc = sql_step(stmt);
     if (rc != SQLITE_ROW && rc != SQLITE_DONE) database_failure(db,"music library query failed");
     found = rc == SQLITE_ROW;
+    if (found && artwork_id) *artwork_id = (unsigned)sql_column(stmt,0);
     sql_finalize(stmt);
     sql_close(db);
     return found;
+}
+
+/* ArtworkCache uses the purchase itemId as its string key. Choose an unused
+ * ID from the native library under the import lock; only Apple writes either DB. */
+static unsigned next_artwork_id(void) {
+    sqlite3 *db = NULL; sqlite3_stmt *stmt = NULL;
+    if (sql_open(LIBRARY "Library.itdb",&db,SQLITE_OPEN_READONLY,NULL) != SQLITE_OK)
+        database_failure(db,"cannot inspect artwork IDs");
+    sql_timeout(db,5000);
+    if (sql_prepare(db,"SELECT COALESCE(MAX(artwork_cache_id),0) FROM item NOT INDEXED",-1,&stmt,NULL) != SQLITE_OK ||
+        sql_step(stmt) != SQLITE_ROW) database_failure(db,"cannot allocate artwork ID");
+    sqlite3_int64 last = sql_column(stmt,0);
+    sql_finalize(stmt); sql_close(db);
+    if (last < 0 || last >= 0xffffffffLL) fail("artwork ID space exhausted");
+    return (unsigned)(last+1);
+}
+static void import_artwork(const char *folder, unsigned identifier) {
+    char path[512], key[32];
+    snprintf(path,sizeof(path),MEDIA "%s/artwork.jpg",folder);
+    ID data = m1(getclass("NSData"),"dataWithContentsOfFile:",string(path));
+    void *cache = dlopen("/System/Library/PrivateFrameworks/ArtworkCache.framework/ArtworkCache",RTLD_NOW);
+    int (*process)(ID,ID,ID,ID) = cache ? dlsym(cache,"ArtworkCache_ProcessArtworkData") : NULL;
+    ID *albums = cache ? dlsym(cache,"kArtworkCacheCategory_Albums") : NULL;
+    if (!process || !albums || !*albums || !data) fail("artwork service unavailable");
+    if (mkdir(MEDIA "Purchases",0755) && errno != EEXIST) fail("cannot create purchase artwork folder");
+    regular_path(MEDIA "Purchases",1);
+    if (mkdir(MEDIA "Purchases/MobileArtworkDB",0755) && errno != EEXIST) fail("cannot create artwork cache folder");
+    regular_path(MEDIA "Purchases/MobileArtworkDB",1);
+    ID url = m1(getclass("NSURL"),"fileURLWithPath:",string(MEDIA "Purchases/MobileArtworkDB"));
+    snprintf(key,sizeof(key),"%u",identifier);
+    if (!process(url,string(key),*albums,data)) fail("artwork processing failed; retain staging for reconciliation");
 }
 
 __attribute__((naked)) void _start(void) {
@@ -149,9 +183,9 @@ int main(int argc, char **argv) {
     if (access(path,R_OK)) fail("staged media is not readable by mobile");
 
     ID props = m0(getclass("NSMutableDictionary"),"dictionary");
-    const char *source[] = {"title","artist","album","genre"};
-    const char *target[] = {"itemName","artistName","playlistName","genre"};
-    for (unsigned i=0; i<4; ++i) {
+    const char *source[] = {"title","artist","album","genre","album_artist","composer"};
+    const char *target[] = {"itemName","artistName","playlistName","genre","playlistArtistName","composerName"};
+    for (unsigned i=0; i<sizeof(source)/sizeof(source[0]); ++i) {
         ID value = field(input,source[i]);
         if (!value && i) continue;
         if (!is_class(value,"NSString")) fail("title/artist/album/genre must be strings");
@@ -164,11 +198,30 @@ int main(int argc, char **argv) {
     double ms = CALL(double,(ID,ID))(duration,selector("doubleValue"));
     if (!isfinite(ms) || ms <= 0 || ms > 86400000) fail("duration must be within one day");
     set(props,"duration",duration);
+    const char *number_source[] = {"track_number","track_count","disc_number","disc_count"};
+    const char *number_target[] = {"trackNumber","trackCount","discNumber","discCount"};
+    for (unsigned i=0; i<4; ++i) {
+        ID value = field(input,number_source[i]);
+        if (!value) continue;
+        if (!is_class(value,"NSNumber")) fail("track/disc metadata must be numeric");
+        double n = CALL(double,(ID,ID))(value,selector("doubleValue"));
+        if (!isfinite(n) || n < 1 || n > 65535 || n != floor(n)) fail("invalid track/disc number");
+        set(props,number_target[i],value);
+    }
     /* 7E18 ITMediaKindFromOTAMediaKindString maps feature-movie to kind 2
      * and sets has_video. Let MusicLibrary populate every related field. */
     set(props,"kind",string(kind));
     ID download = m0(getclass("NSMutableDictionary"),"dictionary");
     set(download,"mediaAssetFilename",filename_value);
+    ID artwork = field(input,"artwork_filename");
+    if (artwork) {
+        if (!is_class(artwork,"NSString") || strcmp(utf8(artwork),"artwork.jpg")) fail("expected artwork.jpg");
+        snprintf(path,sizeof(path),MEDIA "%s/artwork.jpg",folder);
+        regular_path(path,0);
+        struct stat st;
+        if (stat(path,&st) || st.st_size > 2*1024*1024 || access(path,R_OK)) fail("invalid artwork file");
+        set(download,"artworkAssetFilename",artwork);
+    }
     set(props,"com.apple.iTunesStore.downloadInfo",download);
 
     int lock = open(MEDIA "LightTouch/.import.lock",O_RDWR|O_CREAT|O_NOFOLLOW,0600);
@@ -183,22 +236,32 @@ int main(int argc, char **argv) {
     sql_prepare = dlsym(sqlite,"sqlite3_prepare_v2");
     sql_bind = dlsym(sqlite,"sqlite3_bind_text");
     sql_step = dlsym(sqlite,"sqlite3_step");
+    sql_column = dlsym(sqlite,"sqlite3_column_int64");
     sql_finalize = dlsym(sqlite,"sqlite3_finalize");
     sql_close = dlsym(sqlite,"sqlite3_close");
     sql_error = dlsym(sqlite,"sqlite3_errmsg");
     if (!sql_open || !sql_timeout || !sql_exec || !sql_prepare || !sql_bind ||
-        !sql_step || !sql_finalize || !sql_close || !sql_error) fail("SQLite API unavailable");
+        !sql_step || !sql_column || !sql_finalize || !sql_close || !sql_error) fail("SQLite API unavailable");
     ID library = m0(getclass("MusicLibrary"),"sharedMusicLibrary");
     const char *insert = "insertItemFromPurchaseFolder:withItemProperties:";
     if (!library || !CALL(int,(ID,ID,ID))(library,selector("respondsToSelector:"),selector(insert)))
         fail("MusicLibrary import service is unavailable");
-    int was_present = existing(folder,filename);
+    unsigned artwork_id = 0;
+    int was_present = existing(folder,filename,&artwork_id);
+    if (artwork && !was_present) {
+        artwork_id = next_artwork_id();
+        set(props,"itemId",CALL(ID,(ID,ID,unsigned))(getclass("NSNumber"),selector("numberWithUnsignedInt:"),artwork_id));
+    }
     if (!was_present) {
         ID result = CALL(ID,(ID,ID,ID,ID))(library,selector(insert),string(folder),props);
         if (!result) fail("MusicLibrary declined import; retain staged media for reconciliation");
         m0(getclass("MusicLibrary"),"commitAllDeferredWork");
         m0(getclass("MusicLibrary"),"flush");
-        if (!existing(folder,filename)) fail("import not visible; retain staged media for reconciliation");
+        if (!existing(folder,filename,&artwork_id)) fail("import not visible; retain staged media for reconciliation");
+    }
+    if (artwork) {
+        if (!artwork_id) fail("existing track has no artwork ID; remove it in Music before importing again");
+        import_artwork(folder,artwork_id);
     }
     /* Finish native post-sync sorting/index work before Music is launched.
      * Otherwise its SyncHelper starts that work itself and schedules a normal
