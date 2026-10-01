@@ -70,13 +70,13 @@ class TCPUSB:
         self.transfer(128, timeout=timeout)
         return length
 
-    def device_descriptor(self, reset=False):
+    def device_descriptor(self, reset=False, timeout=10):
         if reset:
             self.packet(0, flags=2)
             time.sleep(.05)
             self.packet(0, flags=4)
             time.sleep(.05)
-        desc = self.control(128, 6, 0x100, length=18)
+        desc = self.control(128, 6, 0x100, length=18, timeout=timeout)
         if len(desc) != 18:
             raise USBError('short device descriptor')
         return desc
