@@ -328,15 +328,20 @@ static EGLBoolean egl_fail(EGLint e) { egl_error = e; return 0; }
 static void *egl_null(EGLint e) { egl_error = e; return 0; }
 static int egl_config(void *c) { unsigned i = (unsigned)(unsigned long)c; return i >= 1 && i <= FE_NCONFIGS ? (int)i - 1 : -1; }
 
-typedef struct { unsigned magic; GuestGC *gc; void *sg; int config; } egl_ctx_t;
-typedef struct {
+typedef struct egl_surf egl_surf_t;
+typedef struct { unsigned magic; GuestGC *gc; void *sg; int config;
+                 egl_surf_t *surfaces; } egl_ctx_t;
+struct egl_surf {
     unsigned magic, kind;           /* EGL_PIXMAP_BIT or EGL_WINDOW_BIT */
     int config;
     void *native;                   /* the CoreSurfaceBuffer, or the native window */
     unsigned width, height, fourcc;
     GuestGC *gc;                    /* the context its texture and framebuffer names belong to */
     unsigned tex, fbo;
-} egl_surf_t;
+    egl_ctx_t *owner;               /* owns the GC used by cached GL names */
+    egl_surf_t *owner_next;
+};
+static void egl_release_names(egl_surf_t *s);
 #define EGL_CTX_MAGIC 0x45474c43
 #define EGL_SURF_MAGIC 0x45474c53
 static egl_ctx_t *egl_ctx(void *p) { return p && ((egl_ctx_t *)p)->magic == EGL_CTX_MAGIC ? p : 0; }
@@ -482,6 +487,9 @@ EGLBoolean eglDestroyContext(void *dpy, void *ctx)
     if (dpy != FE_DISPLAY) return egl_fail(EGL_BAD_DISPLAY);
     if (!c) return egl_fail(EGL_BAD_CONTEXT);
     if (cur && cur->owner == c) fe_set_current(0, 0, 0, 0, 0);
+    /* Surfaces may outlive the context. Release their cached names while the
+     * GC is still live, then detach so later destruction/rebinding cannot use it. */
+    while (c->surfaces) egl_release_names(c->surfaces);
     fe_destroy_gc(c->gc);
     c->magic = 0;
     free(c);   /* ponytail: the sharegroup outlives its contexts (a leak per destroyed group) */
@@ -546,8 +554,24 @@ static void egl_release_names(egl_surf_t *s)
         GL(s->gc, glDeleteTextures, 1, (unsigned)(unsigned long)&s->tex);
     }
     if (s->kind == EGL_WINDOW_BIT && s->gc) fe_bind_layer(s->gc, 0);
+    if (s->owner) {
+        egl_surf_t **link = &s->owner->surfaces;
+        while (*link && *link != s) link = &(*link)->owner_next;
+        if (*link) *link = s->owner_next;
+    }
+    s->owner = 0;
+    s->owner_next = 0;
     s->gc = 0;
     s->tex = s->fbo = 0;
+}
+
+static void egl_surface_owner(egl_ctx_t *owner, egl_surf_t *s)
+{
+    if (s->owner == owner) return;
+    if (s->owner) egl_release_names(s);
+    s->owner = owner;
+    s->owner_next = owner->surfaces;
+    owner->surfaces = s;
 }
 
 EGLBoolean eglDestroySurface(void *dpy, void *surface);
@@ -567,9 +591,11 @@ EGLBoolean eglDestroySurface(void *dpy, void *surface)
 /* Make gc render into s. A pixmap gets, once per context, a texture aliasing its buffer (the host
  * uploads it on bind and writes it back when a flush finds it rendered into) on a framebuffer of
  * its own; a window gets bound as EAGL binds a drawable, and draws to framebuffer 0. */
-static int egl_attach(GuestGC *gc, egl_surf_t *s)
+static int egl_attach(egl_ctx_t *owner, egl_surf_t *s)
 {
+    GuestGC *gc = owner->gc;
     if (s->gc && s->gc != gc) egl_release_names(s);
+    egl_surface_owner(owner, s);
     if (s->kind == EGL_WINDOW_BIT) {
         if (!s->gc && !fe_bind_layer(gc, s->native)) {
             refused("egl:", "window", ~0u);
@@ -636,7 +662,7 @@ EGLBoolean eglMakeCurrent(void *dpy, void *draw, void *read, void *ctx)
     if (!c) return egl_fail(EGL_BAD_CONTEXT);
     if ((draw && !d) || (read && !egl_surf(read))) return egl_fail(EGL_BAD_SURFACE);
     fe_set_current(c->gc, c, 1, d, read);
-    if (d && !egl_attach(c->gc, d)) return egl_fail(EGL_BAD_MATCH);
+    if (d && !egl_attach(c, d)) return egl_fail(EGL_BAD_MATCH);
     return 1;
 }
 
