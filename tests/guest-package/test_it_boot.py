@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
 
 root = Path(__file__).resolve().parents[2]
 HOOKS = r'''
@@ -395,7 +396,7 @@ def main():
                     "files": [{"name": n, "mode": md, "size": len(b), "sha256": hashlib.sha256(b).hexdigest()}
                               for n, md, b in payload],
                     "hooks": [{"file": "hooks/MBXGLEngine", "target": MBX, "respring": True},
-                              {"file": "hooks/it_typein.dylib", "target": TYPEIN, "respring": True}]}
+                              {"file": "hooks/it_typein.dylib", "target": TYPEIN, "respring": False}]}
         mkpkg.pack([("f/manifest.json", json.dumps(manifest).encode())] + [("f/" + n, b) for n, _, b in payload]
                    + [("loader/it_boot", b"loader"), ("loader/com.qemu.it-boot.plist", b"<plist/>"),
                       ("g/manifest.json", json.dumps(dict(manifest, requires={"builds": ["8C148"]})).encode())],
@@ -403,6 +404,7 @@ def main():
         (vol / "System/Library/LaunchDaemons/j.plist").write_bytes(b"baked job")
         made, rec = mkpkg.seed(str(vol), str(tmp / "t.itpack"), gles=False)
         assert rec["seed"] == 7 and rec["family"] == "f" and rec["hooks"] == [] and rec["jobs"] == ["j.plist"]
+        assert (vol / "usr/local/lighttouch/state").read_text() == "seed 7\n"
         assert not os.path.lexists(vol / "System/Library/LaunchDaemons/j.plist")    # the package's job
         assert dev.hook(MBX) == b"stock mbx"      # no shim installed: no GL hook; typein's target is absent
         assert "hooks/MBXGLEngine" not in (vol / "usr/local/lighttouch/pkgs/7/offer").read_text()
@@ -410,13 +412,55 @@ def main():
         (vol / "System/Library/LaunchDaemons/com.qemu.it-boot.plist").unlink()
         dev.rel("sys" + TYPEIN).parent.mkdir(parents=True)
         dev.rel("sys" + TYPEIN).write_bytes(b"old typein")
+        # A later target write failing must not erase the successful hook's
+        # record or claim the failed target (which still has its original bytes).
+        failed = tmp / "failed-seed"
+        shutil.copytree(vol, failed)
+        real_open = open
+        def fail_target(path, mode="r", *args, **kwargs):
+            if os.fspath(path) == str(failed / TYPEIN[1:]) and mode == "wb":
+                raise OSError("injected target copy failure")
+            return real_open(path, mode, *args, **kwargs)
+        with patch.object(mkpkg, "open", fail_target, create=True):
+            try:
+                mkpkg.seed(str(failed), str(tmp / "t.itpack"), gles=True)
+            except OSError as error:
+                assert str(error) == "injected target copy failure"
+            else:
+                raise AssertionError("failed hook install was accepted")
+        assert (failed / "usr/local/lighttouch/state").read_text() == "seed 7\nhook 1 %s\n" % MBX
+        assert (failed / MBX[1:]).read_bytes() == b"shim"
+        assert (failed / TYPEIN[1:]).read_bytes() == b"old typein"
         made, rec = mkpkg.seed(str(vol), str(tmp / "t.itpack"), gles=True)
         assert rec["hooks"] == [MBX, TYPEIN] and "usr/local/lighttouch/current" in made
+        assert (vol / "usr/local/lighttouch/state").read_text() == "seed 7\nhook 1 %s\nhook 0 %s\n" % (MBX, TYPEIN)
         # .baked keeps what the volume had; the target gets the package's bytes
         assert dev.hook(MBX) == b"shim" and dev.hook(MBX + ".baked") == b"stock mbx"
         assert dev.hook(TYPEIN) == b"t" and dev.hook(TYPEIN + ".baked") == b"old typein"
         assert (vol / "usr/local/bin/it_boot").read_bytes() == b"loader"
         os.symlink("sys/usr/local/lighttouch", dev.d / "root")
+        # A different first offer must restore seeded hooks without a same-offer
+        # boot first teaching the loader about them. Exercise the real loader.
+        removed = Device.__new__(Device)
+        removed.d, removed.exe = tmp / "first-offer-removes-hooks", exe
+        shutil.copytree(dev.d, removed.d, symlinks=True)
+        removed.offer(removed.package(8, {"bin/it_agent": b"no hooks"}))
+        assert removed.boot() == 1 and removed.current() == 8
+        assert removed.hook(MBX) == b"stock mbx", "first offer forgot the seeded MBX hook"
+        assert removed.hook(TYPEIN) == b"old typein", "first offer forgot the seeded typein hook"
+        assert removed.hook(MBX + ".baked") == b"stock mbx"
+        assert removed.hook(TYPEIN + ".baked") == b"old typein"
+        assert (removed.rel("sys" + MBX).stat().st_mode & 0o7777) == (removed.rel("sys" + MBX + ".baked").stat().st_mode & 0o7777)
+        assert "stop com.apple.SpringBoard" in removed.launchctl()
+        # Removing only a non-respring hook restores it without restarting UI.
+        nonrespring = Device.__new__(Device)
+        nonrespring.d, nonrespring.exe = tmp / "first-offer-removes-nonrespring", exe
+        shutil.copytree(dev.d, nonrespring.d, symlinks=True)
+        nonrespring.offer(nonrespring.package(8, {"bin/it_agent": b"new agent"},
+            hooks=[("hooks/MBXGLEngine", b"shim", MBX, 1)]))
+        assert nonrespring.boot() == 1 and nonrespring.hook(TYPEIN) == b"old typein"
+        assert nonrespring.hook(MBX) == b"shim"
+        assert "stop com.apple.SpringBoard" not in nonrespring.launchctl()
         dev.offer((vol / "usr/local/lighttouch/pkgs/7/offer").read_text())
         assert dev.boot() == 0 and dev.current() == 7 and "hook" not in dev.stderr, dev.stderr
         assert dev.launchctl() == ["load %s/root/pkgs/7/jobs/j.plist" % dev.d], dev.launchctl()
@@ -424,7 +468,8 @@ def main():
         assert dev.boot(silent=1) == 0 and dev.launchctl() == ["load %s/root/pkgs/7/jobs/j.plist" % dev.d]
 
     print("PASS: silent host, install, good/bad verdicts, no-verdict retries, safe mode, .baked hooks, "
-          "bad hash, size-only fallback, torn installs, wrong build, malformed offers, the preparers' seed")
+          "bad hash, size-only fallback, torn installs, wrong build, malformed offers, "
+          "seed first-offer hook removal, filtered hooks and failed target bookkeeping")
 
 
 if __name__ == "__main__":

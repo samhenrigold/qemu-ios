@@ -293,7 +293,8 @@ def seed(mnt, itpack, gles=True):
     """Bake the loader and the seed package into the system volume mounted at mnt (the preparers, P4).
 
     The package is the itpack's family for the volume's ProductBuildVersion. It lands as it_boot
-    would install it (pkgs/<serial>/ with its `offer` record, `current` -> it, `state` "seed N").
+    would install it (pkgs/<serial>/ with its `offer` record, `current` -> it, `state` with
+    "seed N" and the installed hooks).
     A hook is kept only if its target is on the volume (and, for the GL engines, if the preparer
     installed the shim: `gles`); then <target>.baked keeps what the volume had (the stock file,
     or what the preparer already put there) and target gets the package's bytes, so the first boot
@@ -339,7 +340,8 @@ def seed(mnt, itpack, gles=True):
         put(pkg + "/" + f["name"], entries[family + "/" + f["name"]], int(f["mode"], 8))
     put(pkg + "/offer", offer_text(m, build).encode(), 0o644)
     os.symlink("pkgs/%d" % m["serial"], os.path.join(mnt, SEED_ROOT, "current"))
-    put(SEED_ROOT + "/state", b"seed %d\n" % m["serial"], 0o644)
+    state = b"seed %d\n" % m["serial"]
+    put(SEED_ROOT + "/state", state, 0o644)
     made.append(SEED_ROOT + "/current")
     mode = {f["name"]: int(f["mode"], 8) for f in m["files"]}
     for h in hooks:
@@ -348,6 +350,10 @@ def seed(mnt, itpack, gles=True):
             st = os.stat(os.path.join(mnt, rel))
             put(rel + ".baked", open(os.path.join(mnt, rel), "rb").read(), st.st_mode & 0o7777)
         put(rel, entries[family + "/" + h["file"]], mode[h["file"]])
+        # The first offer can remove this hook before it_boot ever reads the
+        # seed offer. Remember only targets whose installation succeeded.
+        state += ("hook %d %s\n" % (bool(h.get("respring", False)), h["target"])).encode()
+        put(SEED_ROOT + "/state", state, 0o644)
     for j in m["jobs"]:
         rel = "System/Library/LaunchDaemons/" + os.path.basename(j)
         if os.path.lexists(os.path.join(mnt, rel)):
