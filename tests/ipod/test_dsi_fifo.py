@@ -33,6 +33,21 @@ tests=r'''
 int main(void) {
     IPodTouchMIPIDSIState s={.direct_boot=true,.lanes=2,.panel_id=0x00a1d13c,.panel_id_len=3}; /* the properties' defaults: the iPod 2G panel */
     assert(!RD(REG_RXFIFO) && !RD(REG_INTSRC));
+    for (unsigned direct=0; direct<2; direct++) {
+        s.direct_boot=direct;
+        ipod_touch_mipi_dsi_reset(&s);
+        assert(!(RD(REG_STATUS)&rDSIM_STATUS_SwRstRelease));
+        WR(REG_SWRST,0); assert(!(RD(REG_STATUS)&rDSIM_STATUS_SwRstRelease));
+        WR(REG_SWRST,1);
+        for(unsigned i=0;i<4;i++) assert(RD(REG_STATUS)&rDSIM_STATUS_SwRstRelease);
+        WR(REG_STATUS,0);WR(REG_SWRST,0);
+        assert(RD(REG_STATUS)&rDSIM_STATUS_SwRstRelease);
+        assert(!dsi_post_load(&s,3));assert(RD(REG_STATUS)&rDSIM_STATUS_SwRstRelease);
+        assert(!dsi_post_load(&s,2));assert(!(RD(REG_STATUS)&rDSIM_STATUS_SwRstRelease));
+        WR(REG_SWRST,1);ipod_touch_mipi_dsi_reset(&s);
+        assert(!(RD(REG_STATUS)&rDSIM_STATUS_SwRstRelease));
+    }
+    s.direct_boot=true;
     WR(REG_PKTHDR,0x2905); assert(!s.rx_count);
     WR(REG_PKTHDR,0xb114); assert(s.rx_count==2);
     assert(RD(REG_INTSRC)==rDSIM_INTSRC_RxDatDone);

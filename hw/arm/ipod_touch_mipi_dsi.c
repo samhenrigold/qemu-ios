@@ -65,18 +65,16 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
             uint32_t status = dsi_lane_mask(s) |
                               ((s->clkctrl & rDSIM_CLKCTRL_TxRequestHsClk)
                                 ? rDSIM_STATUS_TxReadyHsClk : rDSIM_STATUS_StopStateClk);
-            /*
-             * 3.1.3's iBoot mipi_dsim_init() walks a sequence of "write a DSIM
-             * command register, then spin until STATUS shows the command
-             * accepted, then spin until it shows the command drained". bit 20
-             * (SwRstRelease, after the DSIM_SWRST at 0x04) is a permanent done
-             * bit; the escape/FIFO command bits (0x230 = bits 4,5,9) are a
-             * request/ack handshake -- they must read set right after the
-             * trigger write and then clear, so they are driven by cmd_pending
-             * (set on a command write, self-clearing on read) rather than
-             * pinned. Gated to the direct 7E18 boot. */
+            /* S5L8720 STATUS_SWRST follows an actual SWRST request, independent
+             * of the board's boot strategy. Reset execution is synchronous;
+             * analog completion latency remains unmodeled. Reads are inert. */
+            if (s->swrst_released) {
+                status |= rDSIM_STATUS_SwRstRelease;
+            }
+            /* Remaining escape/FIFO acknowledgements are legacy direct-boot
+             * compatibility behavior, not qualified command execution. */
             if (s->direct_boot) {
-                status |= 0x00100000 | s->cmd_pending;
+                status |= s->cmd_pending;
                 s->cmd_pending = 0;
             }
             return status;
@@ -150,9 +148,10 @@ static void ipod_touch_mipi_dsi_write(void *opaque, hwaddr addr, uint64_t val, u
         case REG_INTSRC:
             s->intsrc &= ~val;
             break;
-        case 0x04: /* DSIM_SWRST */
+        case REG_SWRST: /* DSIM_SWRST */
             if (val & 1) {
                 s->rx_head = s->rx_count = s->intsrc = 0;
+                s->swrst_released = true;
             }
             break;
         case 0x14: /* DSIM_ESCMODE: escape-mode command trigger */
@@ -180,6 +179,7 @@ static void ipod_touch_mipi_dsi_reset(DeviceState *dev)
 {
     IPodTouchMIPIDSIState *s = IPOD_TOUCH_MIPI_DSI(dev);
 
+    s->swrst_released = false;
     s->pkthdr_reg = 0;
     /* kboot= skips iBoot, whose pinot_init leaves the panel lit with the HS
      * clock running; the kernel's boot_args says the framebuffer is up, and
@@ -211,6 +211,10 @@ static void ipod_touch_mipi_dsi_init(Object *obj)
 static int dsi_post_load(void *opaque, int version_id)
 {
     IPodTouchMIPIDSIState *s = opaque;
+    if (version_id < 3) {
+        /* Old streams did not record completion of a software-reset request. */
+        s->swrst_released = false;
+    }
     if (version_id == 1) {
         /* The old model had an implicit reply on every other FIFO read. */
         s->rx_head = s->rx_count = s->intsrc = 0;
@@ -225,10 +229,11 @@ static int dsi_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_mipi_dsi = {
     .name = "ipod_touch_mipi_dsi",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = dsi_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_BOOL_V(swrst_released, IPodTouchMIPIDSIState, 3),
         VMSTATE_UINT32(pkthdr_reg, IPodTouchMIPIDSIState),
         VMSTATE_UINT32(clkctrl, IPodTouchMIPIDSIState),
         VMSTATE_UINT32(cmd_pending, IPodTouchMIPIDSIState),
