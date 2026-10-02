@@ -88,8 +88,9 @@ is a wildcard), then it looks the ID up in the new table (stride 0x1c). No valid
 
 Root cause: the model DMAed four 4-byte IDs at the moment the CPU wrote D08. 4.2.1 zeroes the buffer
 after that write, so it saw no chip at all (which is also why the 8-byte-record trial changed nothing).
-Fix (hw/arm/ipod_touch_fmss.c `fmss_run_script`): run the guest's program at start, with FMCMD 0x90
-returning the selected CE's ID from FMDATA; each build's own program lays out its own records. The flash
+Fix (hw/arm/ipod_touch_fmss.c `fmss_run_script`): run the guest's program at start, with FMCMD0x90 receiving the selected CE's ID bytes on FMC4=0xe2, then the
+counted FMC40 receive transfer moving those bytes into FMDATA; each build's own
+program lays out its own records. The flash
 is four Hynix dies, ID `ad d5 14 b6` (0xb614d5ad, in both builds' tables), CE 4..7 unpopulated (0). An
 opcode outside the decoded set stops the program (LOG_UNIMP); the page read/write path is still the
 CPU-side model. Result: `[FIL:INF] Found chip id 0xb614d5ad on CS 0..3`.
@@ -1046,9 +1047,8 @@ this implementation.
 
 Further independent gaps remain: sequencer writes to Dxx parameter latches are
 ignored; zero-immediate OR/SHL accumulator behavior is incomplete; instruction
-fetch and opcode `0x11` use native-endian physical-memory helpers without
-transaction-result checks. Descriptor loads instead use explicit little-endian
-AddressSpace reads and stop on transaction errors. CPU-side NAND operations,
+fetch, opcode `0x11` stores and descriptor loads now use checked, explicit
+little-endian AddressSpace transactions and stop on transaction errors. CPU-side NAND operations,
 event waits and synthetic completion remain separate compatibility behavior.
 
 Research QMP MMIO capture must distinguish implemented readback from default
@@ -1064,3 +1064,48 @@ checks, real FMSS qtests14/14 and independent default native7E18 two-boot8/8
 unmodeled D34 reads at iBoot +0xe40 and kernel +0xda0; the separate D48 script
 still stops at +0x30. This verifies progress through the earlier shift site,
 not full ISA, parameter-bank, NAND operation or completion fidelity.
+
+### Bounded FMSS command investigation
+
+`FMSS_SCRIPT_TRACE=1` enables an observational, process-wide sequencer trace.
+It records CPU parameter/start writes, the fetched instruction words and
+program-relative PCs, controller writes, register-read operands, descriptor
+read addresses and sequencer store addresses. `fmc_write_unmodeled` explicitly
+identifies accepted controller writes beyond the current shadow, including
+804/810. It does not add guest memory or MMIO transactions, change controller
+results, supply data or qualify completion. Descriptor contents, controller
+data-window values, auxiliary write values and store payloads are omitted.
+
+An optional `FMSS_SCRIPT_TRACE_CSGENRC=0xa02` selector records only requests
+whose current CSGENRC operation matches the specified hardware register value.
+The selector is validated once, invalid values disable tracing with one message,
+and nonmatching operations do not consume the record budget. Matching the stock
+write mode captures later restore writes without flooding the budget with early
+read retries; it does not select execution behavior or match firmware addresses.
+
+The trace emits at most 16,384 records, followed by one truncation marker;
+subsequent events are silent. Reset does not reset this diagnostic cap. Run
+a disposable blank-flash restore from process start to capture the first
+physical command path, with normal diagnostics recording the unsupported
+D24 stop. D24 remains unsupported: permitting it before establishing the
+physical spare producer would expose the previously demonstrated duplicate
+spare overwrite. Trace success or program END is not a NAND completion gate.
+
+`tests/ipod/test_fmss_script_trace.py` compiles the actual trace and sequencer
+handlers under ASan/UBSan. It compares traced/untraced guest transaction
+counts, results and output, verifies unsupported auxiliary writes are visible
+and payloads are omitted, and checks the exact record cap/single marker.
+
+### READ-ID FIFO transfer (2026-10-02)
+
+READ-ID now owns actual serial bytes before FMC40=0x52/0x82 copies5/8 bytes to
+FMC60/64. Reads expose the window; they do not fabricate a chip ID or clear
+busy. Partial transfers preserve untouched window bytes, and missing/depleted
+input remains busy. Actual7E18/8C148 scripts, sanitizer/model suites and all32
+FMSS board qtests pass. The new missing-producer board test rejects the retained
+pre-fix binary because it invents an ID before receiving bytes. The current
+combined7E18 binary passes all8 native regression checks, including two
+guest PMU-confirmed shutdowns and durable cold-boot persistence/fsck. This
+qualifies the combined build, not an isolated FIFO binary. NAND FMC40=0xc1
+transmission and ECC/OOB routing
+remain unimplemented; this change does not claim physical restore completion.

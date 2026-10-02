@@ -42,6 +42,51 @@ FMSS_ENV_FLAG(fmss_dump_on,   "FMSS_DUMP")
 FMSS_ENV_FLAG(fmss_physical,  "FMSS_PHYSICAL")
 FMSS_ENV_FLAG(fmss_trace_on,  "FMSS_TRACE")
 FMSS_ENV_FLAG(fmss_stats_on,  "FMSS_STATS")
+FMSS_ENV_FLAG(fmss_script_trace_on, "FMSS_SCRIPT_TRACE")
+
+/* Observational only: no additional guest memory/MMIO reads. This bounded
+ * process-wide diagnostic records instructions and transfer addresses, never
+ * descriptor contents, NAND payloads or sequencer-store values. Completion
+ * remains compatibility behavior even when a program reaches END. */
+#define FMSS_SCRIPT_TRACE_LIMIT 16384
+static void fmss_script_trace(const char *event, uint32_t program, uint32_t pc,
+                              uint32_t arg, uint32_t value, uint32_t command)
+{
+    static unsigned records;
+    static int selector = -1;
+    static uint32_t selected_command;
+
+    if (!fmss_script_trace_on() || records > FMSS_SCRIPT_TRACE_LIMIT) {
+        return;
+    }
+    if (selector < 0) {
+        const char *text = getenv("FMSS_SCRIPT_TRACE_CSGENRC");
+        selector = 0;
+        if (text) {
+            char *end;
+            unsigned long long parsed = strtoull(text, &end, 0);
+            if (*text < '0' || *text > '9' || *end || parsed > UINT32_MAX) {
+                selector = 2;
+                fprintf(stderr, "FMSS_SCRIPT_TRACE invalid CSGENRC selector; "
+                                "tracing disabled\n");
+            } else {
+                selected_command = parsed;
+                selector = 1;
+            }
+        }
+    }
+    if (selector == 2 || (selector == 1 && command != selected_command)) {
+        return;
+    }
+    if (records++ == FMSS_SCRIPT_TRACE_LIMIT) {
+        fprintf(stderr, "FMSS_SCRIPT_TRACE truncated limit=%u\n",
+                FMSS_SCRIPT_TRACE_LIMIT);
+        return;
+    }
+    fprintf(stderr, "FMSS_SCRIPT_TRACE %u %s program=%08x pc=%04x "
+                    "arg=%08x value=%08x\n",
+            records, event, program, pc, arg, value);
+}
 
 /*
  * FMSS_STATS: how many pages the guest reads, and how long the host spends
@@ -125,9 +170,8 @@ static uint8_t find_bit_index(uint8_t num) {
  *   11 mem32[r[b]] = r[a]
  * This lists implemented behavior, not a complete verified ISA.
  * Other sequencer writes to 0xDxx still have known gaps. Unsupported forms
- * stop with LOG_UNIMP. Instruction fetch and opcode11 still use native-endian
- * physical-memory helpers without transaction-result checks; descriptor loads
- * use little-endian AddressSpace reads and stop on errors.
+ * stop with LOG_UNIMP. Instruction fetch, descriptor loads and opcode11
+ * stores use checked little-endian AddressSpace transactions.
  *
  * NAND execution, event timing and completion remain separate incomplete
  * contracts. The CPU-side page model below still performs storage operations;
@@ -169,6 +213,8 @@ static void fmss_run_script(IPodTouchFMSSState *s)
 {
     uint32_t r[32] = { 0 }, fmc[0x100 / 4] = { 0 };
     uint32_t pc = 0, cmd = 0;
+    uint8_t id_fifo[8];
+    unsigned id_fifo_size = 0, id_fifo_head = 0;
 
     if (!s->reg_cs_script) {
         return;
@@ -189,6 +235,8 @@ static void fmss_run_script(IPodTouchFMSSState *s)
         uint32_t b = insn[0] & 0xffff, imm = insn[1];
         bool ok = true;
         pc += 8;
+        fmss_script_trace("instruction", s->reg_cs_script, pc - 8,
+                          insn[0], insn[1], s->reg_csgenrc);
 
         switch (op) {
         case 0x00:
@@ -235,11 +283,46 @@ static void fmss_run_script(IPodTouchFMSSState *s)
                 }
             } else if (b < 0xc00) {
                 uint32_t v = op == 1 ? imm : r[a];
+                fmss_script_trace(b < sizeof(fmc) ? "fmc_write" :
+                                  "fmc_write_unmodeled", s->reg_cs_script,
+                                  pc - 8, b,
+                                  ((b >= 0x60 && b <= 0x68) || b >= sizeof(fmc)) ?
+                                  0 : v, s->reg_csgenrc);
                 if (b < sizeof(fmc)) {
                     fmc[b / 4] = v;
                 }
                 if (b == 0x8) {
                     cmd = v;
+                    id_fifo_size = id_fifo_head = 0;
+                } else if (b == 0x4 && v == 0xe2 && cmd == 0x90) {
+                    /* READ ID actually receives DNUM+1 serial bytes before
+                     * the window transfer. No register read fabricates data. */
+                    unsigned sel = (fmc[0] >> 1) & 0xff;
+                    unsigned ce = ctz32(sel);
+                    if (fmc[0x30 / 4] < sizeof(id_fifo)) {
+                        stl_le_p(id_fifo, ce < FMSS_CHIPS && sel == (1u << ce)
+                                 ? FMSS_CHIP_ID : 0);
+                        memset(id_fifo + 4, 0, 4);
+                        id_fifo_size = fmc[0x30 / 4] + 1;
+                        id_fifo_head = 0;
+                    } else {
+                        id_fifo_size = id_fifo_head = 0;
+                    }
+                } else if (b == 0x40 && (v & 0xf) == 2) {
+                    unsigned count = v >> 4;
+                    if (count && count <= sizeof(id_fifo) &&
+                        count <= id_fifo_size - id_fifo_head) {
+                        uint8_t window[8];
+                        stl_le_p(window, fmc[0x60 / 4]);
+                        stl_le_p(window + 4, fmc[0x64 / 4]);
+                        memcpy(window, id_fifo + id_fifo_head, count);
+                        id_fifo_head += count;
+                        fmc[0x60 / 4] = ldl_le_p(window);
+                        fmc[0x64 / 4] = ldl_le_p(window + 4);
+                        /* Clear receive busy only after all requested bytes
+                         * move. Unknown NAND/FIFO producers remain stalled. */
+                        fmc[0x40 / 4] &= ~2u;
+                    }
                 }
             }
             /* 0xCxx writes (IRQ clear/mask, program length) stay with the
@@ -252,6 +335,8 @@ static void fmss_run_script(IPodTouchFMSSState *s)
                 break;
             }
             uint32_t address = r[b & 0x1f];
+            fmss_script_trace("descriptor_read", s->reg_cs_script, pc - 8,
+                              address, sizeof(word), s->reg_csgenrc);
             if (address_space_read(&address_space_memory, address,
                                    MEMTXATTRS_UNSPECIFIED, word,
                                    sizeof(word)) != MEMTX_OK) {
@@ -265,16 +350,9 @@ static void fmss_run_script(IPodTouchFMSSState *s)
         }
         case 0x04: {
             uint32_t v = 0;
+            fmss_script_trace("register_read", s->reg_cs_script, pc - 8, b, imm, s->reg_csgenrc);
             if (b >= 0xd00) {
                 v = fmss_var_read(s, b, &ok);
-            } else if (b == 0x60 || b == 0x64) {
-                unsigned sel = (fmc[0] >> 1) & 0xff;
-                unsigned ce = ctz32(sel);
-                if (cmd == 0x90 && ce < FMSS_CHIPS && sel == (1u << ce)) {
-                    v = b == 0x60 ? FMSS_CHIP_ID : 0;
-                }
-            } else if (b == 0x40) {
-                v = fmc[0x40 / 4] & ~2u;    /* bit 1: transfer busy, done at once */
             } else if (b < sizeof(fmc)) {
                 v = fmc[b / 4];
             }
@@ -320,6 +398,8 @@ static void fmss_run_script(IPodTouchFMSSState *s)
             uint8_t word[4];
             uint32_t address = r[b & 0x1f];
             stl_le_p(word, r[a]);
+            fmss_script_trace("store", s->reg_cs_script, pc - 8,
+                              address, sizeof(word), s->reg_csgenrc);
             if (address_space_write(&address_space_memory, address,
                                     MEMTXATTRS_UNSPECIFIED, word,
                                     sizeof(word)) != MEMTX_OK) {
@@ -1436,6 +1516,11 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
         fprintf(stderr, "FMSS_CTL %03x=%08x pending=%x mask=%x time=%" PRId64 "\n",
                 (unsigned)addr, (unsigned)val, s->reg_cs_irq_bit,
                 s->reg_cs_irq_mask, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+    if ((addr >= 0xd00 && addr <= 0xd7c) ||
+        addr == 0xc00 || addr == 0xc04) {
+        fmss_script_trace("cpu_write", s->reg_cs_script, 0, addr, val,
+                          addr == FMSS_CSGENRC ? val : s->reg_csgenrc);
     }
     switch(addr) {
         case 0xC00:

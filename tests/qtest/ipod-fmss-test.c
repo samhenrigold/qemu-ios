@@ -571,7 +571,9 @@ static void read_id_chip_selection(void)
     QTestState *qts = start_board(&overlay);
     uint32_t program[] = {
         0x05000000, 0, 0x02000000, 0,
-        0x01000008, 0x90,
+        0x01000008, 0x90, 0x01000030, 7,
+        0x01000014, 0x10, 0x01000004, 0xe2,
+        0x01000040, 0x82,
         0x04010060, 0xffffffff, 0x04030064, 0xffffffff,
         0x05020000, RAM + 0x1000,
         0x11010002, 0, 0x0c020002, 4, 0x11030002, 0, 0, 0
@@ -599,6 +601,41 @@ static void read_id_chip_selection(void)
         g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==,
                         cases[j].expected);
         g_assert_cmphex(qtest_readl(qts, RAM + 0x1004), ==, 0);
+        qtest_writel(qts, FMSS + 0xc00, 8);
+    }
+    qtest_quit(qts);
+    rmdir(overlay);
+    g_free(overlay);
+}
+
+static void read_id_transfer_requires_producer(void)
+{
+    char *overlay;
+    QTestState *qts = start_board(&overlay);
+    uint32_t program[] = {
+        0x01000000, 2, 0x01000008, 0x90,
+        0x01000030, 7, 0x01000014, 0x10,
+        0x01000060, 0xdeadbeef, 0x01000064, 0xa5a5a5a5,
+        0x01000004, 0, 0x01000040, 0x82,
+        0x04000060, 0xffffffff, 0x04010064, 0xffffffff,
+        0x04020040, 0xffffffff,
+        0x05070000, RAM + 0x1000, 0x11000007, 0,
+        0x0c070007, 4, 0x11010007, 0,
+        0x0c070007, 4, 0x11020007, 0, 0, 0
+    };
+    for (unsigned receive = 0; receive < 2; receive++) {
+        program[13] = receive ? 0xe2 : 0;
+        for (unsigned i = 0; i < G_N_ELEMENTS(program); i++) {
+            qtest_writel(qts, RAM + 4 * i, program[i]);
+        }
+        qtest_writel(qts, FMSS + 0xc04, RAM);
+        qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1000), ==,
+                        receive ? 0xb614d5ad : 0xdeadbeef);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1004), ==,
+                        receive ? 0 : 0xa5a5a5a5);
+        g_assert_cmphex(qtest_readl(qts, RAM + 0x1008), ==,
+                        receive ? 0x80 : 0x82);
         qtest_writel(qts, FMSS + 0xc00, 8);
     }
     qtest_quit(qts);
@@ -1587,6 +1624,8 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/fmss/packed-physical-erased", packed_physical);
     qtest_add_func("/ipod/fmss/packed-generated-blank", packed_generated);
     qtest_add_func("/ipod/fmss/read-id-chip-selection", read_id_chip_selection);
+    qtest_add_func("/ipod/fmss/read-id-transfer-requires-producer",
+                   read_id_transfer_requires_producer);
     qtest_add_func("/ipod/fmss/observed-right-shift", observed_right_shift);
     qtest_add_func("/ipod/fmss/parameter-latches", parameter_latches);
     qtest_add_func("/ipod/fmss/d38-parameter", d38_parameter);

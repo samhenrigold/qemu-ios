@@ -47,6 +47,7 @@ prelude = r'''
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#define fmss_script_trace(...) ((void)0)
 #define LOG_UNIMP 0
 #define LOG_GUEST_ERROR 0
 #define qemu_log_mask(...) ((void)0)
@@ -238,7 +239,9 @@ int main(void) {
      * Multiple CEs and unpopulated CE4 also retain the existing no-chip result. */
     uint32_t selector[] = {
         0x05000000u, 0, 0x02000000u, 0,
-        0x01000008u, 0x90u, 0x04010060u, 0xffffffffu,
+        0x01000008u, 0x90u, 0x01000030u, 7u,
+        0x01000014u, 0x10u, 0x01000004u, 0xe2u,
+        0x01000040u, 0x82u, 0x04010060u, 0xffffffffu,
         0x05020000u, 0x9000u, 0x11010002u, 0, 0, 0
     };
     const unsigned selects[] = {0, 3, 0x10, 1, 2, 4, 8};
@@ -249,6 +252,45 @@ int main(void) {
                              selects[j]==4 || selects[j]==8) ? 0xb614d5adu : 0;
         assert(ldl_le_p(mem + 0x9000) == expected);
     }
+    /* Actual received ID bytes move through the window in byte order.
+     * Partial transfers preserve untouched window bytes; depleted/short input
+     * remains busy and cannot manufacture data or successful completion. */
+    uint32_t fifo[] = {
+        0x01000000u, 3, 0x01000008u, 0x90,
+        0x01000030u, 7, 0x01000014u, 0x10, 0x01000004u, 0xe2,
+        0x01000060u, 0x44332211u, 0x01000064u, 0x88776655u,
+        0x01000040u, 0x32, 0x04000040u, 2,
+        0x05070000u, 0x9000, 0x11000007u, 0,
+        0x04000060u, 0xffffffffu, 0x0c070007u, 4, 0x11000007u, 0,
+        0x04000064u, 0xffffffffu, 0x0c070007u, 4, 0x11000007u, 0,
+        0x01000040u, 0x52, 0x04000040u, 2,
+        0x0c070007u, 4, 0x11000007u, 0,
+        0x04000060u, 0xffffffffu, 0x0c070007u, 4, 0x11000007u, 0,
+        0x04000064u, 0xffffffffu, 0x0c070007u, 4, 0x11000007u, 0,
+        0x01000040u, 0x12, 0x04000040u, 2,
+        0x0c070007u, 4, 0x11000007u, 0,
+        0x04000060u, 0xffffffffu, 0x0c070007u, 4, 0x11000007u, 0, 0, 0
+    };
+    run(fifo, sizeof(fifo));
+    assert(ldl_le_p(mem+0x9000)==0);
+    assert(ldl_le_p(mem+0x9004)==0x4414d5ad);
+    assert(ldl_le_p(mem+0x9008)==0x88776655);
+    assert(ldl_le_p(mem+0x900c)==0);
+    assert(ldl_le_p(mem+0x9010)==0xb6);
+    assert(ldl_le_p(mem+0x9014)==0x88776600);
+    assert(ldl_le_p(mem+0x9018)==2);
+    assert(ldl_le_p(mem+0x901c)==0xb6);
+    const uint32_t no_source[] = {
+        0x01000000u,3,0x01000008u,0x90,
+        0x01000060u,0x12345678,0x01000040u,0x52,
+        0x04000040u,2,0x05070000u,0x9000,0x11000007u,0,
+        0x04000060u,0xffffffffu,0x0c070007u,4,0x11000007u,0,0,0
+    };
+    run(no_source,sizeof(no_source));
+    assert(ldl_le_p(mem+0x9000)==2);
+    assert(ldl_le_p(mem+0x9004)==0x12345678);
+    puts("PASS ID FIFO actual byte movement, untouched bytes, empty source remains busy");
+
     /* Captured13030002/0 shifts current destination by source register.
      * Direct stores observe destination and unchanged count without OR oracle. */
     uint32_t register_shift[] = {

@@ -26,6 +26,7 @@ pre = r'''
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
+#define fmss_script_trace(...) ((void)0)
 #define LOG_UNIMP 0
 #define LOG_GUEST_ERROR 1
 #define MEMTXATTRS_UNSPECIFIED 0
