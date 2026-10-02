@@ -16,6 +16,9 @@ typedef void *ID;
 static ID (*getClass)(const char *);
 static ID (*sel)(const char *);
 static ID (*msg)(ID, ID, ...);
+typedef struct { float x, y, width, height; } ViewFrame;
+static void (*msg_stret)(ViewFrame *, ID, ID);
+static unsigned tree_path[49];
 static void (*releaseCF)(ID);
 static ID (*createBytes)(ID,const uint8_t *,long,unsigned,unsigned char);
 static ID (*frontmost)(void);
@@ -77,6 +80,18 @@ static void dump_view(ID view,unsigned depth)
         append("<secure text entry>\n");
         return; /* Descriptions and field-editor children can expose the value. */
     }
+    char metadata[512];
+    float alpha = responds(view,"alpha") ? ((float (*)(ID,ID))msg)(view,sel("alpha")) : -1;
+    int hidden = responds(view,"isHidden") ? (unsigned)msg(view,sel("isHidden")) != 0 : -1;
+    int first = responds(view,"isFirstResponder") ? (unsigned)msg(view,sel("isFirstResponder")) != 0 : -1;
+    ViewFrame frame = {0};
+    int geometry = msg_stret && responds(view,"frame");
+    if (geometry) msg_stret(&frame,view,sel("frame"));
+    snprintf(metadata,sizeof(metadata),"ui view=%p depth=%u hidden=%d alpha=%.3f firstResponder=%d frameKnown=%d frame=(%.2f,%.2f,%.2f,%.2f) path=0",
+        view,depth,hidden,(double)alpha,first,geometry,(double)frame.x,(double)frame.y,(double)frame.width,(double)frame.height);
+    append(metadata);
+    for (unsigned i=1;i<=depth;i++) { snprintf(metadata,sizeof(metadata),".%u",tree_path[i]);append(metadata); }
+    append("\n");
     ID description=msg(view,sel("description"));
     append((const char *)msg(description,sel("UTF8String")));append("\n");
     if(responds(view,"text")) {
@@ -88,7 +103,10 @@ static void dump_view(ID view,unsigned depth)
     ID children=msg(view,sel("subviews"));
     unsigned count=(unsigned)msg(children,sel("count"));
     if(count>2048)count=2048;
-    for(unsigned i=0;i<count;i++)dump_view(msg(children,sel("objectAtIndex:"),i),depth+1);
+    for(unsigned i=0;i<count;i++) {
+        if (depth < 48) tree_path[depth+1]=i;
+        dump_view(msg(children,sel("objectAtIndex:"),i),depth+1);
+    }
 }
 
 static void finish(int status)
@@ -148,6 +166,11 @@ static void tick(ID timer,void *unused)
             char *space=strchr(op,' ');if(space)*space=0;
             ID keyboard=msg(getClass("UIKeyboardImpl"),sel("activeInstance"));
             if(!strcmp(op,"uidump")) {
+                ID delegate=keyboard && responds(keyboard,"delegate") ? msg(keyboard,sel("delegate")) : 0;
+                char metadata[160];
+                snprintf(metadata,sizeof(metadata),"keyboard active=%p delegate=%p delegateFirstResponder=%d\n",keyboard,delegate,
+                    delegate && responds(delegate,"isFirstResponder") ? (unsigned)msg(delegate,sel("isFirstResponder")) != 0 : -1);
+                append(metadata);
                 tree_nodes=0;dump_view(msg(app,sel("keyWindow")),0);
             }else if(foreground==2)status=-EACCES;
             else if(!keyboard || !msg(keyboard,sel("delegate")))status=-ENODEV;
@@ -204,6 +227,7 @@ static void *setup(void *unused)
     void *objc=dlopen("/usr/lib/libobjc.A.dylib",2);
     if(!objc)return 0;
     getClass=dlsym(objc,"objc_getClass");sel=dlsym(objc,"sel_registerName");msg=dlsym(objc,"objc_msgSend");
+    msg_stret=dlsym(objc,"objc_msgSend_stret");
     if(!getClass||!sel||!msg||!getClass("UIApplication"))return 0;
     void *cf=dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",2);
     void *sbs=dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices",2);

@@ -36,6 +36,25 @@ static uint32_t s5l8720_pll_locks(const IPodTouchClockState *s)
     return locks;
 }
 
+/* S5L8900 has four independent PLL enables and a ten-bit multiplier
+ * (OpeniBoot plat-s5l8900 hardware/clock.h). The stock ROM disables all
+ * but PLL0 and compares PLLLOCK to exactly one. Unconditional 0xf prevents
+ * that boot path from progressing. Lock is immediate; analog latency is
+ * not modeled. A disabled or zero-divider PLL cannot report a valid lock. */
+static uint32_t s5l8900_pll_locks(const IPodTouchClockState *s)
+{
+    const uint32_t con[] = { s->pll0con, s->pll1con, s->pll2con, s->pll3con };
+    uint32_t locks = 0;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(con); i++) {
+        if ((s->pllmode & (1U << i)) && ((con[i] >> 24) & 0x3f) &&
+            ((con[i] >> 8) & 0x3ff)) {
+            locks |= 1U << i;
+        }
+    }
+    return locks;
+}
+
 static void ipod_touch_clock_update(IPodTouchClockState *s)
 {
     uint64_t hz = 0;
@@ -188,6 +207,9 @@ static uint64_t s5l8900_clock_read_reg(void *opaque, hwaddr addr, unsigned size)
         case CLOCK_PLL3CON:
             return s->pll3con;
         case CLOCK_PLLLOCK:
+            if (s->s5l8900_pll) {
+                return s5l8900_pll_locks(s);
+            }
             return s->s5l8720 ? s5l8720_pll_locks(s) : 0xf;
         case CLOCK_PLL0LCNT:
             return s->pll0lcnt;
@@ -295,6 +317,7 @@ static const VMStateDescription vmstate_ipod_touch_clock = {
 
 static const Property ipod_touch_clock_properties[] = {
     DEFINE_PROP_BOOL("s5l8900", IPodTouchClockState, s5l8900, false),
+    DEFINE_PROP_BOOL("s5l8900-pll", IPodTouchClockState, s5l8900_pll, false),
     DEFINE_PROP_BOOL("s5l8720", IPodTouchClockState, s5l8720, false),
     DEFINE_PROP_LINK("chipid", IPodTouchClockState, chipid,
                      TYPE_IPOD_TOUCH_CHIPID, IPodTouchChipIDState *),

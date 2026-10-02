@@ -291,6 +291,11 @@ def boot_env(cfg):
     or bisect against them.
     """
     env = dict(os.environ)
+    if getattr(cfg, "boot_strategy", "compatibility") == "stock":
+        for key in list(env):
+            if key.startswith("IT_") or key.startswith("MBX_"):
+                env.pop(key)
+        return env
     iboot = os.path.join(cfg.files, "ios3", "iBoot.bin")
     defaults = {
         "IT_LCD_BRIGHT": "255",
@@ -370,24 +375,22 @@ class Device:
                    "nandrw=%s,usb-attached=on,usb-tcp-addr=127.0.0.1:%d"
                    % (cfg.files, cfg.base_nand, cfg.nor, cfg.overlay,
                       cfg.usb_port))
-        # The kernel command line is a machine property (the emulator reads no IT_BOOT_ARGS*
-        # environment): amfi_allow_any_signature so re-signed App Store binaries exec, written
-        # into the handoff buffer on a timer until AMFI has latched it. iBoot's
-        # empty-string literal is also its DeviceTree root and must stay intact.
-        machine += ",boot-args=amfi_allow_any_signature=1 cs_enforcement_disable=1"
-        if getattr(cfg, "kernel_console", False):
-            machine += " serial=3 debug=0x8"
-        machine += ",boot-args-delay-ms=0,boot-args-repeat=200,boot-args-interval-ms=250"
         for option in ("audio_hw", "h264_decode", "scaler_decode", "mpvd_decode", "amc_mode", "lcd_planes", "direct_iboot", "direct_llb", "gid_blobs", "guest_package"):
             value = getattr(cfg, option, None)
+            if getattr(cfg, "boot_strategy", "compatibility") == "stock" and option in ("direct_iboot", "direct_llb"):
+                continue
             if value is not None:
                 machine += "," + option.replace("_", "-") + "=" + value.replace(",", ",,")
         # The soldered BCM4325 remains present. Only checks using networking
         # attach a host data bridge; factory identity never depends on it.
         for key, value in sorted(getattr(cfg, "device_machine", {}).items()):
+            if getattr(cfg, "boot_strategy", "compatibility") == "stock" and (
+                    key.startswith("boot-args") or key in ("direct-iboot", "direct-llb", "forge-sigcheck", "security-profile")):
+                continue
             machine += "," + key + "=" + str(value).replace(",", ",,")
         # What the GL bridge refuses is painted magenta and counted (itqmp.gles_rejects); the
         # gles check fails on any count, so a refused format is caught here, not by a viewer.
+        machine += n72_boot_policy(cfg)
         machine += ",gles-debug=on"
         argv = [cfg.qemu, "-M", machine + (",wifi=on" if cfg.wifi else "")]
         argv += ["-cpu", cfg.cpu] if cfg.cpu else []
@@ -1772,6 +1775,22 @@ def report_prereqs(cfg):
     return 1 if hard_missing else 0
 
 
+def n72_boot_policy(cfg):
+    """Explicit stock-chain policy; never writes the guest handoff buffer."""
+    profile = getattr(cfg, "security_profile", None)
+    if getattr(cfg, "boot_strategy", "compatibility") == "stock":
+        if profile == "insecure-development":
+            raise ValueError("stock boot strategy requires retail or secure-development signature verification")
+        return ",direct-iboot=,direct-llb=,forge-sigcheck=off,security-profile=" + (profile or "retail")
+    options = ",boot-args=amfi_allow_any_signature=1 cs_enforcement_disable=1"
+    if getattr(cfg, "kernel_console", False):
+        options += " serial=3 debug=0x8"
+    options += ",boot-args-delay-ms=0,boot-args-repeat=200,boot-args-interval-ms=250"
+    if profile:
+        options += ",security-profile=" + profile
+    return options
+
+
 def configure_device(cfg):
     """Resolve one matched firmware/identity set for every native harness."""
     cfg.files = os.path.expanduser(cfg.files_dir)
@@ -1841,6 +1860,8 @@ def configure_device(cfg):
     # the "device never appeared on the mux" every USB check used to report.
     # boot_env() already picks the matching 3.1.3 iBoot the same way; the NOR
     # has to travel with it.
+    if cfg.board != "n72ap" and (getattr(cfg, "boot_strategy", "compatibility") == "stock" or getattr(cfg, "security_profile", None)):
+        sys.exit("--boot-strategy stock / --security-profile are qualified for N72 only")
     cfg.nor = cfg.nor or next(
         (p for p in (os.path.join(cfg.files, "ios3", "nor_7E18.bin"),
                      os.path.join(cfg.files, "nor_n72ap.bin"))
@@ -1872,6 +1893,10 @@ def main():
                         help="explicit " + option + " startup option")
     ap.add_argument("--amc-mode", choices=("registers", "handshake", "decode"), default=None,
                     help="explicit AMC startup mode")
+    ap.add_argument("--boot-strategy", choices=("compatibility", "stock"), default="compatibility",
+                    help="stock: SecureROM/LLB/iBoot, signature verification on, no host boot-args writes (N72 only)")
+    ap.add_argument("--security-profile", choices=("retail", "secure-development", "insecure-development"), default=None,
+                    help="immutable N72 hardware security fuses; stock strategy defaults to retail")
     ap.add_argument("--nor", default=None,
                     help="NOR image (default <files-dir>/ios3/nor_7E18.bin if "
                          "present, else <files-dir>/nor_n72ap.bin)")
@@ -1942,6 +1967,10 @@ def main():
                          "or was skipped")
     ap.add_argument("--gles-slotmap", default=None, help="explicit GLES slot ABI map (default: repository slotmap.txt)")
     cfg = ap.parse_args()
+    try:
+        n72_boot_policy(cfg)
+    except ValueError as exc:
+        ap.error(str(exc))
     if cfg.ledger:
         if cfg.checks or cfg.quick or cfg.with_apps or cfg.clean or cfg.check_prereqs:
             ap.error("--ledger runs boot/install/launch checks and retains evidence; do not combine it with check selection or --clean")

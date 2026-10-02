@@ -12,7 +12,8 @@ source = (ROOT / "hw/arm/ipod_touch_fmss.c").read_text()
 functions = []
 for name in ("find_bit_index", "fmss_block_key", "fmss_key_compare",
              "fmss_remember_erased", "fmss_block_marker_path",
-             "fmss_block_is_erased", "ipod_touch_fmss_io_failed", "fmss_io_error", "fmss_erase_block",
+             "fmss_block_is_erased", "ipod_touch_fmss_io_failed", "fmss_io_error",
+             "fmss_sync_directory", "fmss_ensure_directory", "fmss_erase_block",
              "fmss_remember_physical", "fmss_store_page", "fmss_write_dma_read", "write_nand_pages",
              "ipod_touch_fmss_reset"):
     match = re.search(r"^(?:static )?[A-Za-z_][^\n]*\b" + name + r"\([^)]*\)[^{]*\{.*?^}", source, re.M | re.S)
@@ -24,6 +25,7 @@ harness = r'''
 #include <glib/gstdio.h>
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -87,13 +89,14 @@ static unsigned address_space_read(void *space, uint64_t addr, int attrs,
 }
 static uint32_t ldl_le_p(const void *p)
 { uint32_t n; memcpy(&n, p, 4); return GUINT32_FROM_LE(n); }
+static int qemu_open(const char *path, int flags, void *errp)
+{ return open(path, flags); }
 static int vm_stop(int state) { assert(state == RUN_STATE_IO_ERROR); stops++; return 0; }
 static bool fmss_erase_on(void) { return erase_enabled; }
 static bool fmss_physical(void) { return physical_enabled; }
 static bool fmss_legacy_on(void) { return false; }
 static bool fmss_dump_on(void) { return false; }
 static bool fmss_rtrace(void) { return false; }
-static void fmss_sniff_icon_state(const uint8_t *data) {}
 static void fmss_overlay_index(IPodTouchFMSSState *s) {}
 static bool fmss_generated_layout(IPodTouchFMSSState *s, uint32_t logical,
                                   uint32_t *cs, uint32_t *page)
@@ -144,6 +147,13 @@ static void run_case(const char *op, int at, bool erase, bool physical)
              physical ? 0 : 1, physical ? 128 : 2);
     FILE *f = fopen(old_path, "wb");
     assert(f && fwrite("old", 1, 3, f) == 3 && fclose(f) == 0);
+    /* mkdir fault must target actual creation, not an existing-directory no-op. */
+    if (op && !strcmp(op, "mkdir")) {
+        assert(unlink(old_path) == 0);
+        char *chip = g_path_get_dirname(old_path);
+        assert(rmdir(chip) == 0);
+        g_free(chip);
+    }
     memset(memory, 0, sizeof(memory));
     uint32_t words[] = { 1, 128, 0 }, addresses[] = { 1024, 3072 }, logical = 7;
     memcpy(memory + 16, words, sizeof(words));
@@ -166,7 +176,7 @@ static void run_case(const char *op, int at, bool erase, bool physical)
         /* A resumed session cannot silently accept the failed command. */
         write_nand_pages(&s);
         assert(stops == 2 && g_tree_nnodes(s.phys_pages) == 0);
-        if (!erase || strcmp(op, "rename")) {
+        if (strcmp(op, "mkdir") && (!erase || strcmp(op, "rename"))) {
             char old[3];
             f = fopen(old_path, "rb");
             assert(f && fread(old, 1, 3, f) == 3 && !memcmp(old, "old", 3));

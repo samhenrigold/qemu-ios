@@ -87,3 +87,34 @@ Local primary-manual receipt: SHA256
 `d3dd82216e6dc0e702fe410bb2d76f6cf63c32582cce22f03f02a40ab065ccac`,
 25,909,049 bytes. Research files stay in private scratch; no vendor header or
 manual content has been copied into emulator code.
+
+## Live strict EVM observation
+
+`/private/tmp/ltm-mbx-strict-current-startup` captures five stock 7E18
+pre/post-init, pre/post-tag and first-poll boundaries. The owned guest was
+reaped, canonical corrected NOR SHA256
+`0e1d7be62ff5102a550545f4fc44b75afa52bb4508b8db7c61df39bd3d7de97e`
+was unchanged, and the private suppression-free AES artifact retains the
+current MBX/MMU objects (binary SHA256
+`742448356ef29bc50aca6c356bc2456de60ad5d7d5c2c271870276129de9bbac`).
+
+Actual CPU call arguments demonstrate writes 0x838=1 and 0x6d8=0x09000000.
+Stock fields reserve object GPU page 0x100 and designate free endpoints
+0x101..0x103. GPU table 0x15000 maps to physical 0x08cae000; the 16 KiB CPU
+alias remains zero before and after both writes, and the first GPU page hash
+also remains unchanged. GPU object base 0x100000 maps to 0x08c92000; its
+reserved first-page hash matches the CPU alias at all boundaries, retaining
+only the driver's header and six floating-point one constants.
+
+The strict model's STATUS and mask remain zero at the first completion poll.
+Its unsupported EVM register reads return zero: those reads do not imply the
+guest wrote zero configuration. The capture establishes actual mapped inputs
+and the first divergence, but an emulator with no allocator cannot supply the
+silicon's link format, output writes or trigger ordering. It does not qualify
+EVM startup or native rendering, and no completion acknowledgement is added.
+
+That first live receipt did not include MMU control register 0x1020; installed
+GART roots alone do not prove its enable state. Future bounded captures now
+include control/readiness. The six-case board test establishes the measured
+control behavior, but the omitted live field must not be retrospectively
+claimed as native MMU qualification.

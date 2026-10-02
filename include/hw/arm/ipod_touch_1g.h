@@ -70,6 +70,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouch1GMachineState, IPOD_TOUCH_1G_MACHINE)
 #define N45_VROM_BASE         0x20000000
 #define N45_VROM_SIZE         0x00010000
 #define N45_LLB_BASE          0x22000000   /* holds the two 8900 stubs */
+#define N45_SRAM_BASE         0x22000000
+#define N45_SRAM_SIZE         0x0002c000   /* stock N45 DT AMC RAM aperture */
 #define N45_SRAM1_BASE        0x22020000
 #define N45_NOR_BASE          0x24000000
 #define N45_NOR_SIZE          0x00100000
@@ -141,6 +143,9 @@ typedef struct IPodTouch1GMachineState {
     char *nand_path;
     char *nand_overlay;
     uint32_t tvout_workaround;
+    bool rom_boot;                 /* experimental reset-vector ROM entry */
+    MemoryRegion *vrom;
+    MemoryRegion rom_alias;
     bool usb_wrangler_quirk;
     bool usb_wrangler_quirk_done;
 

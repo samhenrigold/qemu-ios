@@ -1096,6 +1096,17 @@ handlers under ASan/UBSan. It compares traced/untraced guest transaction
 counts, results and output, verifies unsupported auxiliary writes are visible
 and payloads are omitted, and checks the exact record cap/single marker.
 
+`IT_AES_CONTRACT_TRACE=1` enables a separate bounded crypto-contract diagnostic:
+operation/direction/key size, key type, GO, DMA register addresses and lengths,
+interrupt mask, and whether the existing legacy signature suppression applies.
+Key/input/output fingerprints use only host state and temporary buffers the
+operation already read. Raw keys and payloads are never printed; no additional
+guest reads occur. At most64 job/chunk records are emitted followed by one cap
+marker. `tests/ipod/test_aes.py --contract-trace` compares enabled/disabled DMA
+counts and semantic checks under ASan/UBSan, including the suppression cases.
+This diagnostic observes the remaining suppression; it does not qualify it.
+
+
 ### READ-ID FIFO transfer (2026-10-02)
 
 READ-ID now owns actual serial bytes before FMC40=0x52/0x82 copies5/8 bytes to

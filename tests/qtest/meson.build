@@ -227,7 +227,7 @@ qtests_stm32l4x5 = \
 
 qtests_arm = \
   (config_all_devices.has_key('CONFIG_IPOD_TOUCH_2G') ? ['ipod-fmss-test', 'ipod-lcd-test', 'ipod-clock-test', 'ipod-usb-phy-test', 'ipod-boot-args-test', 'ipod-bt-test', 'ipod-sdio-test', 'ipod-chipid-test', 'ipod-dsim-test', 'ipod-mbx-status-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_IPOD_TOUCH_1G') ? ['ipod-touch-irq-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_IPOD_TOUCH_1G') ? ['ipod-touch-irq-test', 'ipod-n45-rom-test'] : []) + \
   (config_all_devices.has_key('CONFIG_IPAD1') ? ['ipad1-pmgr-test', 'ipad1-h2fmi-test', 'ipad1-sdio-test'] : []) + \
   (config_all_devices.has_key('CONFIG_IPAD1') ? ['ipad1-cdma-test'] : []) + \
   (config_all_devices.has_key('CONFIG_MPS2') ? ['sse-timer-test'] : []) + \

@@ -434,6 +434,9 @@ static uint64_t ipod_touch_aes_read(void *opaque, hwaddr offset, unsigned size)
     struct IPodTouchAESState *aesop = (struct IPodTouchAESState *)opaque;
 
     switch(offset) {
+        case AES_KEYLEN:
+            /* Boot ROM preserves direction and mode through register RMW. */
+            return aesop->operation;
         case AES_STATUS:
             return aesop->status;
         case AES_OUTADDR:
@@ -480,6 +483,63 @@ static void aes_custom_load(IPodTouchAESState *s)
  * overwrote the caller's input, and a buffer over one page hung its caller
  * waiting for an interrupt that never came.
  */
+/* Bounded observational crypto contract capture. Fingerprints use host key
+ * state and buffers already read by the operation; no added guest transactions
+ * and no raw keys or payloads are emitted. */
+#define IT_AES_CONTRACT_LIMIT 64
+static unsigned aes_contract_slot(void)
+{
+    static int enabled = -1;
+    static unsigned records;
+
+    if (enabled < 0) {
+        enabled = getenv("IT_AES_CONTRACT_TRACE") != NULL;
+    }
+    if (!enabled || records > IT_AES_CONTRACT_LIMIT) {
+        return 0;
+    }
+    if (records++ == IT_AES_CONTRACT_LIMIT) {
+        fprintf(stderr, "AES_CONTRACT truncated limit=%u\n", IT_AES_CONTRACT_LIMIT);
+        return 0;
+    }
+    return records;
+}
+
+static unsigned aes_contract_begin(IPodTouchAESState *s, uint32_t go,
+                                   bool preserve)
+{
+    static const unsigned bits[4] = { 128, 192, 256, 128 };
+    unsigned kb = bits[(s->operation >> 4) & 3];
+    unsigned record = aes_contract_slot();
+
+    if (!record) {
+        return 0;
+    }
+    g_autofree char *key_hash = g_compute_checksum_for_data(G_CHECKSUM_SHA256,
+        (const uint8_t *)s->custkey + 32 - kb / 8, kb / 8);
+    fprintf(stderr, "AES_CONTRACT job=%u type=%u operation=%08x bits=%u go=%u "
+            "size=%u inreg=%08x outreg=%08x outsize=%u auxsize=%u irqmask=%x "
+            "preserve=%u keysha=%s\n", record, s->keytype, s->operation,
+            kb, go, s->insize, s->inaddr, s->outaddr, s->outsize, s->auxsize,
+            s->unkreg1, preserve, key_hash);
+    return record;
+}
+
+static void aes_contract_chunk(unsigned job, const uint8_t *input,
+                               const uint8_t *output, uint32_t length,
+                               bool preserve)
+{
+    if (!job || length > 128 || !aes_contract_slot()) {
+        return;
+    }
+    g_autofree char *input_hash = g_compute_checksum_for_data(G_CHECKSUM_SHA256,
+                                                             input, length);
+    g_autofree char *output_hash = g_compute_checksum_for_data(G_CHECKSUM_SHA256,
+                                                              output, length);
+    fprintf(stderr, "AES_CONTRACT job=%u chunk=%u written=%u insha=%s outsha=%s\n",
+            job, length, !preserve, input_hash, output_hash);
+}
+
 static void aes_custom_go(IPodTouchAESState *s, uint32_t go)
 {
     /* The retained 5F138 trace identifies exactly these three custom-key,
@@ -491,6 +551,7 @@ static void aes_custom_go(IPodTouchAESState *s, uint32_t go)
         (s->outaddr == 0x220100ac || s->outaddr == 0x0bf08468 ||
          s->outaddr == 0x0fb9bcdc);
     bool enc = s->operation & 1;
+    unsigned contract = aes_contract_begin(s, go, preserve);
     /* Without the segment interrupt enabled nobody can supply another
      * segment (iBoot; the kernel's polled path, which only takes requests
      * contiguous end to end), so the first segment holds everything. */
@@ -537,8 +598,15 @@ static void aes_custom_go(IPodTouchAESState *s, uint32_t go)
                              MIN(s->remaining, MIN(in_len, out_len))) & ~15u;
             uint8_t *buf = g_malloc(n);
             cpu_physical_memory_read(in_addr, buf, n);
+            uint8_t trace_input[128];
+            if (contract && n <= sizeof(trace_input)) {
+                memcpy(trace_input, buf, n);
+            }
             AES_cbc_encrypt(buf, buf, n, &s->decryptKey, s->chain_iv,
                             enc ? AES_ENCRYPT : AES_DECRYPT);
+            if (contract && n <= sizeof(trace_input)) {
+                aes_contract_chunk(contract, trace_input, buf, n, preserve);
+            }
             if (!preserve) {
                 cpu_physical_memory_write(out_addr, buf, n);
             }
@@ -559,6 +627,7 @@ static void aes_custom_go(IPodTouchAESState *s, uint32_t go)
         }
         AES_cbc_encrypt(s->in_blk, s->out_blk, 16, &s->decryptKey, s->chain_iv,
                         enc ? AES_ENCRYPT : AES_DECRYPT);
+        aes_contract_chunk(contract, s->in_blk, s->out_blk, 16, preserve);
         s->in_fill = 0;
         s->out_left = 16;
         s->remaining -= 16;

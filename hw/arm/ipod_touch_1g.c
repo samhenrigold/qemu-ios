@@ -90,11 +90,13 @@ static MemoryRegion *allocate_ram(MemoryRegion *top, const char *name,
 /*
  * iBoot-204 hands 8900-wrapped images (the kernelcache, from NOR) to two
  * bootrom routines through the ROM's jump table: verify, then decrypt in
- * place. The public bootrom dump has that code missing, so both slots are
- * redirected to stubs in the LLB window: verify returns 1; decrypt stores the
+ * place. The legacy direct-iBoot path redirects both slots to stubs in the
+ * LLB window: verify returns 1; decrypt stores the
  * image address into this MMIO word, and the write does the AES-128-CBC with
  * the public key 0x837 that the real routine does. High-level emulation of
- * those two ROM routines (fidelity class H).
+ * those two ROM routines (fidelity class H). The experimental ROM-entry path
+ * does not install these substitutes; the supplied asset must be audited
+ * independently rather than assuming its original routines are absent.
  */
 typedef struct QEMU_PACKED {
     uint8_t magic[4];       /* "8900" */
@@ -301,9 +303,17 @@ static void n45_write32(IPodTouch1GMachineState *s, hwaddr addr, uint32_t v)
     address_space_write(s->nsas, addr, MEMTXATTRS_UNSPECIFIED, &le, 4);
 }
 
-/* Re-staged on every reset, so a warm reboot enters the same iBoot. */
+/* Firmware staging on reset; the default shortcut also restages iBoot. */
 static void n45_stage_boot_chain(IPodTouch1GMachineState *s)
 {
+    /* The reset-vector path uses the supplied ROM verbatim. RAM survives
+     * reset; neither iBoot nor a substitute ROM jump table is staged. */
+    if (s->rom_boot) {
+        memory_region_set_readonly(s->vrom, false);
+        n45_stage(s, "bootrom", s->bootrom_path, N45_VROM_BASE, N45_VROM_SIZE);
+        memory_region_set_readonly(s->vrom, true);
+        return;
+    }
     n45_stage(s, "bootrom", s->bootrom_path, N45_VROM_BASE, N45_VROM_SIZE);
     size_t iboot = n45_stage(s, "iboot", s->iboot_path, N45_IBOOT_BASE, N45_IBOOT_SIZE);
 
@@ -382,7 +392,9 @@ static void n45_cpu_reset(void *opaque)
     gles_host_reset();
     cpu_reset(CPU(s->cpu));
     n45_stage_boot_chain(s);
-    cpu_set_pc(CPU(s->cpu), N45_IBOOT_BASE);
+    if (!s->rom_boot) {
+        cpu_set_pc(CPU(s->cpu), N45_IBOOT_BASE);
+    }
 }
 
 /* ---- buttons ----------------------------------------------------------- */
@@ -583,10 +595,22 @@ static void n45_machine_init(MachineState *machine)
 
     /* RAM and the boot windows */
     allocate_ram(sysmem, "ram", N45_RAM_BASE, N45_RAM_SIZE);
-    allocate_ram(sysmem, "sram1", N45_SRAM1_BASE, 0x10000);
-    allocate_ram(sysmem, "vrom", N45_VROM_BASE, N45_VROM_SIZE);
+    if (s->rom_boot) {
+        /* Stock N45 DT AMC RAM: one contiguous 176 KiB bank. */
+        allocate_ram(sysmem, "sram", N45_SRAM_BASE, N45_SRAM_SIZE);
+    } else {
+        allocate_ram(sysmem, "sram1", N45_SRAM1_BASE, 0x10000);
+    }
+    s->vrom = allocate_ram(sysmem, "vrom", N45_VROM_BASE, N45_VROM_SIZE);
+    if (s->rom_boot) {
+        memory_region_init_alias(&s->rom_alias, OBJECT(machine), "bootrom-reset",
+                                 s->vrom, 0, N45_VROM_SIZE);
+        memory_region_add_subregion(sysmem, 0, &s->rom_alias);
+    }
     allocate_ram(sysmem, "iboot", N45_IBOOT_BASE, N45_IBOOT_SIZE);
-    allocate_ram(sysmem, "llb-stubs", N45_LLB_BASE, 0x1000);
+    if (!s->rom_boot) {
+        allocate_ram(sysmem, "llb-stubs", N45_LLB_BASE, 0x1000);
+    }
     allocate_ram(sysmem, "edgeic", N45_EDGEIC_BASE, 0x1000);
     /* Register windows the 1.x kernel touches but nothing models yet (debt). */
     allocate_ram(sysmem, "watchdog", N45_WATCHDOG_BASE, 0x10000);
@@ -614,6 +638,7 @@ static void n45_machine_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     dev = qdev_new("ipodtouch.clock");
     qdev_prop_set_bit(dev, "s5l8900", true);
+    qdev_prop_set_bit(dev, "s5l8900-pll", true);
     memory_region_add_subregion(sysmem, N45_CLOCK1_BASE, &IPOD_TOUCH_CLOCK(dev)->iomem);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
 
@@ -639,7 +664,7 @@ static void n45_machine_init(MachineState *machine)
 
     /* system controller: 7 GPIO interrupt groups */
     dev = qdev_new("ipodtouch.sysic");
-    qdev_prop_set_bit(dev, "direct-boot", true);   /* no LLB latched the epoch: n45_stage_boot_chain */
+    qdev_prop_set_bit(dev, "direct-boot", !s->rom_boot);
     qdev_prop_set_bit(dev, "s5l8900", true);
     s->sysic = IPOD_TOUCH_SYSIC(dev);
     memory_region_add_subregion(sysmem, N45_SYSIC_BASE, &s->sysic->iomem);
@@ -746,9 +771,12 @@ static void n45_machine_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
 
     /* 8900 engine hook */
-    MemoryRegion *iomem = g_new(MemoryRegion, 1);
-    memory_region_init_io(iomem, OBJECT(machine), &engine_8900_ops, s, "8900engine", 0x100);
-    memory_region_add_subregion(sysmem, N45_ENGINE_8900_BASE, iomem);
+    MemoryRegion *iomem;
+    if (!s->rom_boot) {
+        iomem = g_new(MemoryRegion, 1);
+        memory_region_init_io(iomem, OBJECT(machine), &engine_8900_ops, s, "8900engine", 0x100);
+        memory_region_add_subregion(sysmem, N45_ENGINE_8900_BASE, iomem);
+    }
 
     /* NAND: FMC + ECC, driven by the ADM */
     dev = qdev_new(TYPE_S5L8900_FMC);
@@ -936,6 +964,16 @@ static void n45_set_usb_wrangler_quirk(Object *obj, Visitor *v, const char *name
     visit_type_bool(v, name, &IPOD_TOUCH_1G_MACHINE(obj)->usb_wrangler_quirk, errp);
 }
 
+static bool n45_get_rom_boot(Object *obj, Error **errp)
+{
+    return IPOD_TOUCH_1G_MACHINE(obj)->rom_boot;
+}
+
+static void n45_set_rom_boot(Object *obj, bool value, Error **errp)
+{
+    IPOD_TOUCH_1G_MACHINE(obj)->rom_boot = value;
+}
+
 static void n45_get_tvout_workaround(Object *obj, Visitor *v, const char *name,
                                      void *opaque, Error **errp)
 {
@@ -984,6 +1022,9 @@ static void n45_machine_class_init(ObjectClass *klass, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(klass);
 
+    object_class_property_add_bool(klass, "x-rom-boot", n45_get_rom_boot, n45_set_rom_boot);
+    object_class_property_set_description(klass, "x-rom-boot",
+        "experimental: enter supplied ROM at reset address 0 without iBoot staging or ROM hooks (default off)");
     object_class_property_add_str(klass, "bootrom", n45_get_bootrom_path, n45_set_bootrom_path);
     object_class_property_set_description(klass, "bootrom", "S5L8900 bootrom (64 KiB, staged at 0x20000000)");
     object_class_property_add_str(klass, "iboot", n45_get_iboot_path, n45_set_iboot_path);

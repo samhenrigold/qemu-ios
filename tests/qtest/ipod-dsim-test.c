@@ -81,6 +81,86 @@ static void migrated_reset(bool completed)
 static void migrated_pending(void) { migrated_reset(false); }
 static void migrated_completed(void) { migrated_reset(true); }
 
+static void assert_status(QTestState *q, uint32_t expected)
+{
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmphex(qtest_readl(q, DSIM), ==, expected);
+    }
+}
+
+static void ulps_contract(void)
+{
+    QTestState *q = start_board(false, false);
+    assert_status(q, 0x103);
+    qtest_writel(q, DSIM + 0x14, 0x8a);
+    g_assert_cmphex(qtest_readl(q, DSIM + 0x14), ==, 0x8a);
+    assert_status(q, 0x230);
+    qtest_writel(q, DSIM + 0x34, 0xb114); /* Packet traffic does not exit ULPS. */
+    assert_status(q, 0x230);
+    qtest_writel(q, DSIM + 0x14, 0x8f);
+    assert_status(q, 0x103);
+    qtest_writel(q, DSIM + 0x14, 0x8a); /* Exit deassertion cannot re-enter. */
+    assert_status(q, 0x103);
+    qtest_writel(q, DSIM + 0x14, 0x80);
+    qtest_writel(q, DSIM + 0x14, 0x82);
+    assert_status(q, 0x203);
+    qtest_writel(q, DSIM + 0x14, 0x81);
+    assert_status(q, 0x103);
+    qtest_writel(q, DSIM + 0x14, 0x88);
+    assert_status(q, 0x130);
+    qtest_writel(q, DSIM + 0x14, 0x8c);
+    assert_status(q, 0x103);
+    qtest_writel(q, DSIM + 0x14, 0x80);
+    qtest_writel(q, DSIM + 0x14, 0x8a);
+    qtest_writel(q, DSIM + 4, 1);
+    assert_status(q, SWRST_RELEASE | 0x103);
+    g_assert_cmphex(qtest_readl(q, DSIM + 0x14), ==, 0);
+    qtest_qmp_assert_success(q, "{'execute':'system_reset'}");
+    assert_status(q, 0x103);
+    qtest_quit(q);
+}
+
+static void ulps_four_lanes(void)
+{
+    QTestState *q = qtest_initf("-machine iPod-Touch,bootrom=%s,nor=%s,nand=%s "
+        "-global driver=ipodtouch.mipidsi,property=lanes,value=4 "
+        "-display none -audio driver=none -nic none", rom, nor, nand);
+    assert_status(q, 0x10f);
+    qtest_writel(q, DSIM + 0x14, 0x8a);
+    assert_status(q, 0x2f0);
+    qtest_writel(q, DSIM + 0x14, 0x8f);
+    assert_status(q, 0x10f);
+    qtest_quit(q);
+}
+
+static void migrated_ulps(void)
+{
+    g_autofree char *state = NULL;
+    int fd = g_file_open_tmp("n72-dsim-ulps-state-XXXXXX", &state, NULL);
+    g_assert_cmpint(fd, >=, 0); close(fd);
+    g_autofree char *uri = g_strdup_printf("file:%s", state);
+    QTestState *from = start_board(false, false);
+    qtest_writel(from, DSIM + 4, 1);
+    qtest_writel(from, DSIM + 0x14, 0x8a);
+    qtest_qmp_assert_success(from, "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    wait_migration(from);
+    qtest_quit(from);
+    QTestState *to = start_board(false, true);
+    qtest_qmp_assert_success(to, "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    wait_migration(to);
+    g_assert_cmphex(qtest_readl(to, DSIM + 0x14), ==, 0x8a);
+    assert_status(to, SWRST_RELEASE | 0x230);
+    qtest_writel(to, DSIM + 0x14, 0x8f);
+    assert_status(to, SWRST_RELEASE | 0x103);
+    qtest_writel(to, DSIM + 0x14, 0x8a);
+    assert_status(to, SWRST_RELEASE | 0x103);
+    qtest_qmp_assert_success(to, "{'execute':'system_reset'}");
+    assert_status(to, 0x103);
+    g_assert_cmphex(qtest_readl(to, DSIM + 0x14), ==, 0);
+    qtest_quit(to);
+    unlink(state);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *zero = g_malloc0(1048576);
@@ -97,6 +177,9 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/dsim/direct-software-reset", direct_reset);
     qtest_add_func("/ipod/dsim/migrated-before-software-reset", migrated_pending);
     qtest_add_func("/ipod/dsim/migrated-after-software-reset", migrated_completed);
+    qtest_add_func("/ipod/dsim/ulps-stock-sequence", ulps_contract);
+    qtest_add_func("/ipod/dsim/ulps-four-physical-lanes", ulps_four_lanes);
+    qtest_add_func("/ipod/dsim/migrated-ulps", migrated_ulps);
     result = g_test_run();
     unlink(rom); unlink(nor); rmdir(nand);
     g_free(rom); g_free(nor); g_free(nand);

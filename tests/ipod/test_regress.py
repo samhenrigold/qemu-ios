@@ -399,3 +399,51 @@ frontend_without_usb = run_case(R, 'frontend-with-unavailable-usb', 'boot,gles',
 assert frontend_without_usb['rc'] == 0, frontend_without_usb
 assert not any(e[0] == 'wait_for_device' for e in frontend_without_usb['events']), frontend_without_usb
 print('PASS: actual frontend gate does not require USB merely because usbmuxd is installed')
+
+# Stock-chain policy cannot inherit direct loading, forged signatures or timed
+# guest-memory handoff edits. Security fuse choice is explicit and immutable.
+for profile in (None, "retail", "secure-development"):
+    policy = R.n72_boot_policy(SimpleNamespace(boot_strategy="stock", security_profile=profile, kernel_console=True))
+    assert "direct-iboot=,direct-llb=,forge-sigcheck=off" in policy
+    assert "security-profile=" + (profile or "retail") in policy
+    assert "boot-args" not in policy and "serial=3" not in policy
+compat = R.n72_boot_policy(SimpleNamespace(boot_strategy="compatibility", security_profile=None))
+assert "boot-args-repeat=200" in compat and "forge-sigcheck" not in compat
+
+with patch.dict(os.environ, {"IT_DIRECT_IBOOT":"unsafe", "IT_FORGE_SIGCHECK":"1", "IT_RAMDISK":"unsafe", "MBX_TRACE":"1"}):
+    env = R.boot_env(SimpleNamespace(boot_strategy="stock"))
+    assert not any(k.startswith(("IT_", "MBX_")) for k in env)
+
+try:
+    R.n72_boot_policy(SimpleNamespace(boot_strategy="stock", security_profile="insecure-development"))
+    raise AssertionError("insecure development cannot qualify the stock signature chain")
+except ValueError:
+    pass
+bad = subprocess.run(["python3", str(Path(__file__).with_name("regress.py")), "--boot-strategy", "stock", "--security-profile", "insecure-development"], capture_output=True, text=True)
+assert bad.returncode == 2 and "requires retail or secure-development" in bad.stderr
+
+# Exercise production Device.start assembly with hostile inherited lock options;
+# mocks intercept process creation and QMP, so no emulator is launched.
+with tempfile.TemporaryDirectory(prefix="stock-argv-") as directory:
+    cfg = SimpleNamespace(out=directory, board="n72ap", usbmuxd_ok=False,
+        files="/firmware", base_nand="/nand", nor="/nor", overlay="/overlay",
+        usb_port=12345, qmp_port=12346, qemu="/qemu", cpu=None, mem="128M", wifi=False,
+        boot_strategy="stock", security_profile="secure-development",
+        direct_iboot="/must-not-load", direct_llb="/must-not-load-llb", gid_blobs="/catalog-keys",
+        guest_package="/explicit-additions", device_machine={"aes-uid":"engine",
+        "boot-args":"unsafe", "boot-args-repeat":"200", "forge-sigcheck":"on",
+        "direct-iboot":"/unsafe-lock", "direct-llb":"/unsafe-lock", "security-profile":"insecure-development"})
+    class CapturedProcesses:
+        def spawn(self, argv, path, **kwargs):
+            self.argv, self.environment = argv, kwargs["env"]
+            return SimpleNamespace(pid=1)
+    procs = CapturedProcesses()
+    with patch.object(R, "QMP"), patch.object(R, "log"):
+        R.Device(cfg, procs, "stock").start()
+    machine = procs.argv[procs.argv.index("-M") + 1]
+    assert "boot-args" not in machine and "/must-not-load" not in machine and "/unsafe" not in machine
+    assert machine.count("direct-iboot=") == machine.count("direct-llb=") == 1
+    assert ",forge-sigcheck=off,security-profile=secure-development" in machine
+    assert "forge-sigcheck=on" not in machine and "insecure-development" not in machine
+    assert "aes-uid=engine" in machine and "gid-blobs=/catalog-keys" in machine
+    assert "guest-package=/explicit-additions" in machine

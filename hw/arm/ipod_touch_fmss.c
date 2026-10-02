@@ -506,6 +506,39 @@ static bool fmss_io_error(const char *path, int err)
     return false;
 }
 
+/* File fsync alone cannot publish directory-entry updates durably. */
+static bool fmss_sync_directory(const char *dir)
+{
+    int fd = qemu_open(dir, O_RDONLY | O_DIRECTORY, NULL);
+    if (fd < 0) {
+        return fmss_io_error(dir, errno);
+    }
+    int err = fsync(fd) == 0 ? 0 : errno;
+    if (close(fd) != 0 && !err) {
+        err = errno;
+    }
+    return !err || fmss_io_error(dir, err);
+}
+
+/* Publish each newly-created directory in its already-durable parent. */
+static bool fmss_ensure_directory(const char *dir)
+{
+    if (g_file_test(dir, G_FILE_TEST_IS_DIR)) {
+        return true;
+    }
+    g_autofree char *parent = g_path_get_dirname(dir);
+    if (strcmp(parent, dir) == 0) {
+        return fmss_io_error(dir, ENOENT);
+    }
+    if (!fmss_ensure_directory(parent)) {
+        return false;
+    }
+    if (g_mkdir_with_parents(dir, 0755) != 0) {
+        return fmss_io_error(dir, errno);
+    }
+    return fmss_sync_directory(parent);
+}
+
 /* Drop every overlay page of a block and mark it erased. */
 static bool fmss_erase_block(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
 {
@@ -521,9 +554,10 @@ static bool fmss_erase_block(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
      * is what the guest asked for anyway.
      */
     snprintf(path, sizeof(path), "%s/cs%d", s->nand_overlay, cs);
-    if (g_mkdir_with_parents(path, 0755) != 0) {
-        return fmss_io_error(path, errno);
+    if (!fmss_ensure_directory(path)) {
+        return false;
     }
+    g_autofree char *dir = g_strdup(path);
     fmss_block_marker_path(s, cs, block, path, sizeof(path));
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
     FILE *f = fopen(tmp, "wb");
@@ -547,6 +581,11 @@ static bool fmss_erase_block(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
         return fmss_io_error(path, err);
     }
 
+    /* Make the marker durable before removing pages that shadow the base. */
+    if (!fmss_sync_directory(dir)) {
+        return false;
+    }
+
     /* ponytail: multi-file erase can stop partway; journal blocks if atomic
      * crash recovery is needed. Never acknowledge a partial erase. */
     for (uint32_t p = first; p < first + NAND_PAGES_PER_BLOCK; p++) {
@@ -559,6 +598,9 @@ static bool fmss_erase_block(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
         }
     }
 
+    if (!fmss_sync_directory(dir)) {
+        return false;
+    }
     fmss_remember_erased(s, cs, block);
     return true;
 }
@@ -1071,20 +1113,16 @@ static bool fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
     uint32_t block = page_nr / NAND_PAGES_PER_BLOCK;
 
     snprintf(dir, sizeof(dir), "%s/cs%d", s->nand_overlay, cs);
-    if (g_mkdir_with_parents(dir, 0755) != 0) {
-        return fmss_io_error(dir, errno);
+    if (!fmss_ensure_directory(dir)) {
+        return false;
     }
     snprintf(filename, sizeof(filename), "%s/%d.page", dir, page_nr);
     snprintf(tmp, sizeof(tmp), "%s/.%d.page.tmp", dir, page_nr);
 
-    /*
-     * The rename below is what makes a page store atomic, but a rename only
-     * orders the *name*: without an fsync the directory entry can reach the
-     * host filesystem while the bytes behind it have not, so a host crash or a
-     * SIGKILL leaves a short or empty N.page shadowing the good base-image page
-     * underneath it. And an unchecked fwrite renames a truncated page over a
-     * correct one even with no crash at all -- a full host disk was enough.
-     * This is the guest's only durable storage; both cases lose user data.
+    /* Publish checked file contents before the name, then sync the directory
+     * before acknowledging the program. File fsync alone does not guarantee
+     * that a later host crash preserves the renamed entry. An unchecked short
+     * write must likewise never replace a valid persisted page.
      */
     FILE *f = fopen(tmp, "wb");
     if (!f) {
@@ -1116,6 +1154,9 @@ static bool fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
         err = errno;
         remove(tmp);
         return fmss_io_error(filename, err);
+    }
+    if (!fmss_sync_directory(dir)) {
+        return false;
     }
     /*
      * DETECTION, not a fix. Reads consult phys_pages (pages the guest
