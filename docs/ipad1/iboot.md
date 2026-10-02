@@ -149,7 +149,7 @@ SecureROM/DFU boot chain remain untested. The physical iPad was not modified.
 ## Saved local run
 
 The September 27 working artifacts are under
-`~/Developer/qemu-ios-files/ipad1/iboot-codex/`: `prepared/` has the patched
+`~/Developer/qemu-ios-files/ipad1/iboot-2026-09-27/`: `prepared/` has the patched
 firmware and NOR, `nand/` is an independent base, and `check/overlay/` is the
 persistent guest state. `run.sh` launches that configuration; use the guest's
 power-off slider before closing the emulator. These proprietary firmware and
