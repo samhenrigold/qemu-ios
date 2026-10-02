@@ -2052,6 +2052,7 @@ def main():
     log("checks    %s" % ", ".join(selected))
 
     procs = Procs()
+    cfg.harness_failures = []
     clean_stop = False
     needs_second_boot = "persist" in selected
     marker_src = os.path.join(cfg.out, "persist-marker.bin")
@@ -2139,6 +2140,7 @@ def main():
                 time.sleep(5)
             clean_stop = dev.powerdown()
             if not clean_stop:
+                harness_failure(cfg, "boot1-powerdown", "required guest shutdown did not complete")
                 log("powerdown did not complete; killing")
                 procs.stop(dev.qemu)
         else:
@@ -2176,6 +2178,7 @@ def main():
                                       results["persist"])
                     clean_stop = dev2.powerdown()
                     if not clean_stop:
+                        harness_failure(cfg, "boot2-powerdown", "required final guest shutdown did not complete")
                         procs.stop(dev2.qemu)
                 procs.stop(dev2.mux)
                 time.sleep(2)
@@ -2186,7 +2189,8 @@ def main():
     except KeyboardInterrupt:
         procs.stop_all()
         raise
-    except Exception:
+    except Exception as error:
+        harness_failure(cfg, "execution", "%s: %s" % (type(error).__name__, error))
         # An exception is a harness failure, not a pass: print it, mark every
         # check that never produced a verdict as failed, and still tear down.
         import traceback
@@ -2198,11 +2202,33 @@ def main():
     return finish(results, procs, cfg)
 
 
+def harness_failure(cfg, stage, detail):
+    failures = getattr(cfg, "harness_failures", None)
+    if failures is None:
+        failures = cfg.harness_failures = []
+    failures.append({"stage": stage, "detail": detail})
+    log("harness failure (%s): %s" % (stage, detail))
+
+
 def finish(results, procs, cfg):
-    procs.stop_all()
+    try:
+        procs.stop_all()
+    except Exception as error:
+        harness_failure(cfg, "cleanup", "%s: %s" % (type(error).__name__, error))
+    harness_failures = getattr(cfg, "harness_failures", [])
+    with open(os.path.join(cfg.out, "harness.json"), "w") as f:
+        json.dump({"ok": not harness_failures, "failures": harness_failures,
+                   "artifact_directory": cfg.out}, f, indent=2)
     with open(os.path.join(cfg.out, "results.json"), "w") as f:
-        json.dump({name: {"ok": r.ok, "skipped": r.skipped, "xfail": r.xfail, "detail": r.detail}
-                   for name, r in results.items()}, f, indent=2)
+        verdicts = {name: {"ok": r.ok, "skipped": r.skipped, "xfail": r.xfail, "detail": r.detail}
+                    for name, r in results.items()}
+        if harness_failures:
+            # Failure-only run metadata keeps successful eight-check receipts
+            # stable while preventing consumers from observing all-green verdicts.
+            verdicts["_harness"] = {"ok": False, "skipped": False, "xfail": False,
+                "detail": "; ".join("%s: %s" % (x["stage"], x["detail"]) for x in harness_failures),
+                "failures": harness_failures, "artifact_directory": cfg.out}
+        json.dump(verdicts, f, indent=2)
     print("")
     print("=" * 62)
     failed = 0
@@ -2223,11 +2249,13 @@ def finish(results, procs, cfg):
         print("%-4s  %-11s %s" % (state, r.name, r.detail))
     print("=" * 62)
     print("%d check(s) failed; artifacts in %s" % (failed, cfg.out))
-    if failed == 0 and getattr(cfg, "clean", False):
+    if harness_failures:
+        print("%d harness failure(s); see harness.json" % len(harness_failures))
+    if failed == 0 and not harness_failures and getattr(cfg, "clean", False):
         shutil.rmtree(cfg.out, ignore_errors=True)
         print("--clean: removed %s" % cfg.out)
     print("total runtime %.1f min" % ((time.time() - START) / 60.0))
-    return 1 if failed else 0
+    return 1 if failed or harness_failures else 0
 
 
 if __name__ == "__main__":

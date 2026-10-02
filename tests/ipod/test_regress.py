@@ -320,3 +320,73 @@ with tempfile.TemporaryDirectory(prefix='regress-verdict-') as tmp:
     record=json.loads((Path(tmp)/'results.json').read_text())
     assert record['audio']['skipped'] is True
 print('Strict acceptance fails selected missing prerequisites')
+
+# Exercise actual main/finish, including both shutdown phases and the required
+# final process cleanup. Only guest/process/transport interfaces are substituted;
+# verdict aggregation, receipt serialization and exit status remain production.
+import contextlib
+import io
+import sys
+import types
+import fixture_preflight
+import ffmpeg_guard
+
+def run_case(R,name,checks,shutdown=(True,True),raise_shutdown=False,cleanup_error=False,clean=False):
+ with tempfile.TemporaryDirectory(prefix='actual-main-') as temp:
+  root=Path(temp);dummy=root/'input';dummy.write_text('owned mock input');out=root/'out';events=[]
+  class Procs:
+   def stop(self,p):events.append(('stop',p))
+   def stop_all(self):
+    events.append(('stop_all',))
+    if cleanup_error:raise RuntimeError('owned cleanup failed')
+  class Device:
+   def __init__(self,cfg,procs,tag):
+    self.tag=tag;self.dir=str(out/tag);Path(self.dir).mkdir();self.qemu=tag+'-qemu';self.mux=tag+'-mux';self.audio_wav='unused.wav';self.qmp=types.SimpleNamespace(home=lambda:events.append(('home',tag)))
+   def start(self,**kwargs):events.append(('start',self.tag))
+   def wait_for_home(self,*args):return True,'actual-main mocked home',150000
+   def powerdown(self):
+    events.append(('powerdown',self.tag))
+    if raise_shutdown and self.tag=='boot2':raise RuntimeError('after verdict shutdown exception')
+    return shutdown[0 if self.tag=='boot1' else 1]
+  def configure(cfg):
+   cfg.base_nand=cfg.qemu=cfg.usbmuxd=cfg.ipa=cfg.harness_ipa=str(dummy);cfg.board='n72ap';cfg.build='5F138';cfg.product_version='2.1.1';cfg.device_version=(2,1);cfg.gles_front_end=True;cfg.home_lit_min=100000
+  def check(*args):return args[-1].set(True,'actual-main mocked check')
+  argv=['regress.py','--checks',checks,'--out',str(out)]+(['--clean'] if clean else [])
+  with contextlib.ExitStack() as stack:
+   stack.enter_context(patch.dict(sys.modules, {'numpy': types.ModuleType('numpy')}));stack.enter_context(patch.object(sys,'argv',argv));stack.enter_context(patch.object(R,'configure_device',configure));stack.enter_context(patch.object(R,'Procs',Procs));stack.enter_context(patch.object(R,'Device',Device));stack.enter_context(patch.object(R,'free_port',return_value=1));stack.enter_context(patch.object(R.time,'sleep',return_value=None));stack.enter_context(patch.object(R,'wait_for_device',return_value=('mock-udid','ready')));stack.enter_context(patch.object(R,'afc',return_value=types.SimpleNamespace(returncode=0,stdout='',stderr='')));stack.enter_context(patch.object(ffmpeg_guard,'check',return_value=None))
+   stack.enter_context(patch.object(fixture_preflight,'select_inputs',return_value=dict(ipa=str(dummy),harness=str(dummy),gles=None,slotmap=None,flavor='mock-owned-device',explicit=dict(ipa=False,harness=False,gles=False,slotmap=False))));stack.enter_context(patch.object(fixture_preflight,'requested_problems',return_value=[]));stack.enter_context(patch.object(fixture_preflight,'selected_metadata',return_value={'schemaVersion':1,'inputs':[]}));stack.enter_context(patch.object(R,'requested_frame_references',return_value=[]))
+   for fn in ['check_persist','check_gles','check_appinstall','check_applaunch','check_audio','check_agent','check_fsck','verify_audio']:stack.enter_context(patch.object(R,fn,check))
+   output=io.StringIO();errors=io.StringIO();stack.enter_context(contextlib.redirect_stdout(output));stack.enter_context(contextlib.redirect_stderr(errors));
+   try:rc=R.main()
+   except Exception as error:rc=1;errors.write('uncaught: '+repr(error))
+  exists=out.exists();results=json.loads((out/'results.json').read_text())if (out/'results.json').exists() else None;harness=json.loads((out/'harness.json').read_text())if (out/'harness.json').exists()else None
+  return dict(name=name,rc=rc,events=events,retained=exists,results=results,harness=harness,stderr=errors.getvalue(),summary=output.getvalue().splitlines()[-4:])
+
+main_controls = [
+    ('final-timeout', 'boot,persist', dict(shutdown=(True, False), clean=True)),
+    ('exception-after-all-verdicts', 'boot,persist', dict(raise_shutdown=True, clean=True)),
+    ('first-timeout', 'boot,persist', dict(shutdown=(False, True))),
+    ('cleanup-exception', 'boot', dict(cleanup_error=True, clean=True)),
+    ('limited-boot-gles-hard-stop', 'boot,gles', {}),
+    ('all-eight-success', ','.join(R.DEFAULT_CHECKS), {}),
+    ('success-clean-removes', 'boot,persist', dict(clean=True)),
+]
+main_receipts = [run_case(R, name, checks, **options)
+                 for name, checks, options in main_controls]
+for row, stage in zip(main_receipts[:4],
+        ['boot2-powerdown', 'execution', 'boot1-powerdown', 'cleanup']):
+    assert row['rc'] == 1 and row['retained'], row
+    assert row['harness']['ok'] is False, row
+    assert row['harness']['failures'][0]['stage'] == stage, row
+    assert row['results']['_harness']['ok'] is False, row
+    assert row['results']['_harness']['artifact_directory'], row
+for row in main_receipts[:2]:
+    assert all(r['ok'] is True for name, r in row['results'].items()
+               if name != '_harness'), row
+assert main_receipts[4]['rc'] == 0, main_receipts[4]
+assert not any(e[0] == 'powerdown' for e in main_receipts[4]['events']), main_receipts[4]
+assert main_receipts[5]['rc'] == 0 and len(main_receipts[5]['results']) == 8, main_receipts[5]
+assert all(r['ok'] is True for r in main_receipts[5]['results'].values()), main_receipts[5]
+assert main_receipts[5]['harness']['ok'] is True, main_receipts[5]
+assert main_receipts[6]['rc'] == 0 and main_receipts[6]['retained'] is False, main_receipts[6]
+print('PASS: actual main rejects required shutdown/late exception/cleanup failure; scoped hard stop and eight-check success unchanged')
