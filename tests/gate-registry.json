@@ -2,6 +2,8 @@
   "version": 1,
   "tests": [
     {"name": "tests/ipod/test_darwin_poll.py", "tier": "quick", "prerequisites": []},
+    {"name": "tests/ipod/test_mbx_fill.py", "tier": "quick", "prerequisites": []},
+    {"name": "tests/ipod/test_mbx_fill_handler.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_accel_guest.py", "tier": "manual", "prerequisites": ["qemu", "device-image"], "reason": "native emulator check: supply the device inputs documented by this test"},
     {"name": "tests/ipod/test_accel_sampling.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_aes.py", "tier": "quick", "prerequisites": []},

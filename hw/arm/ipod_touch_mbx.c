@@ -5,6 +5,9 @@
 #include "qemu/timer.h"
 #include "hw/core/cpu.h"
 #include "cpu.h"
+#include "exec/address-spaces.h"
+#include "hw/qdev-properties.h"
+#include "qemu/bswap.h"
 
 /*
  * MMIO trace, off unless MBX_TRACE=1 is in the emulator's environment.
@@ -128,11 +131,54 @@ static uint32_t mbx_guest_pc(void)
  */
 #define MBX_COMPLETE_PERIOD_NS (16 * 1000 * 1000)
 
+/* Experimental measured fill only. Reject MMIO/ROM, and use normal DMA
+ * writes so observers/dirty tracking see each committed pixel. BQL owns the
+ * synchronous operation and protects the RAM topology for its duration. */
+static uint8_t *mbx_fill_guest_ram(void *opaque, uint32_t pa, uint32_t len)
+{
+    MemoryRegionSection section = memory_region_find(get_system_memory(), pa, len);
+    uint8_t *ptr = NULL;
+    if (section.mr && memory_region_is_ram(section.mr) &&
+        !memory_region_is_rom(section.mr) && !section.readonly &&
+        int128_eq(section.size, int128_make64(len))) {
+        ptr = memory_region_get_ram_ptr(section.mr) + section.offset_within_region;
+    }
+    if (section.mr) {
+        memory_region_unref(section.mr);
+    }
+    return ptr;
+}
+
+static void mbx_fill_guest_write(void *opaque, uint32_t pa, uint32_t value)
+{
+    IPodTouchMBXState *s = opaque;
+    uint8_t bytes[4];
+    stl_le_p(bytes, value);
+    if (!mbx_fill_guest_ram(s, pa, sizeof bytes) ||
+        address_space_write(&address_space_memory, pa, MEMTXATTRS_UNSPECIFIED,
+                            bytes, sizeof bytes) != MEMTX_OK) {
+        s->fill_dma_failed = true;
+    }
+}
+
 static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
 {
     IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
     uint32_t val;
-
+    if (s->fill_enabled && (size != 4 || (addr & 3))) {
+        return 0;
+    }
+    if (s->fill_enabled && size == 4 && !(addr & 3)) {
+        if (addr >= 0xa00000 && addr < 0xa10000) {
+            return s->fill.ring[(addr - 0xa00000) / 4];
+        }
+        if (addr >= 0x1000 && addr <= 0x101c) {
+            return s->fill.roots[(addr - 0x1000) / 4];
+        }
+        if (addr == MBX_STATUS_REG) {
+            return s->status; /* No invented startup/context completion. */
+        }
+    }
     switch(addr)
     {
         case MBX_STATUS_REG:
@@ -185,6 +231,13 @@ static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
              * So acknowledge the request: mirror bit 0 into bit 16.
              */
             val = s->addr;
+            if (s->fill_enabled) {
+                /* Native bypass on reset/disable; ready only when enabled.
+                 * No translation cache is modeled, so readiness is immediate. */
+                val = (val & ~MBX_MMU_ACK) |
+                      ((val & MBX_MMU_ENABLE) ? MBX_MMU_ACK : 0);
+                break;
+            }
             if (s->irq_enabled) {
                 val = (val & ~MBX_MMU_ACK) | ((val & MBX_MMU_ENABLE) ? MBX_MMU_ACK : 0);
             }
@@ -225,6 +278,29 @@ static void ipod_touch_mbx1_write(void *opaque, hwaddr addr, uint64_t val, unsig
     IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
     MBX_TRACE("mbx1 wr  [0x%06x] <- 0x%08x", (uint32_t)addr, (uint32_t)val);
 
+    if (s->fill_enabled && (size != 4 || (addr & 3))) {
+        return;
+    }
+    if (s->fill_enabled && size == 4 && !(addr & 3)) {
+        MBXFillBus bus = { .ctx = s,
+                          .mmu_enabled = !!(s->addr & MBX_MMU_ENABLE),
+                          .host_ram = mbx_fill_guest_ram,
+                          .write32 = mbx_fill_guest_write };
+        const char *why = "DMA failed";
+        s->fill_dma_failed = false;
+        MBXFillResult result = mbx_fill_write(&s->fill, &bus, addr, val, &why);
+        if (result == MBX_FILL_DONE && !s->fill_dma_failed) {
+            s->status |= MBX_INT_2D_SYNC;
+            ipod_touch_mbx_update_irq(s);
+            fprintf(stderr, "[MBX fill] measured black fill committed\n");
+        } else if (result == MBX_FILL_REJECTED || s->fill_dma_failed) {
+            fprintf(stderr, "[MBX fill] rejected: %s\n", why);
+        }
+        if ((addr >= 0x1000 && addr <= 0x101c) ||
+            (addr >= 0xa00000 && addr < 0xa10000)) {
+            return;
+        }
+    }
     switch(addr)
     {
 	case MBX_MMU_CTRL_REG:
@@ -370,6 +446,8 @@ static void ipod_touch_mbx_reset(DeviceState *dev)
     s->addr = 0;
     s->mmu_written = false;
     s->status = 0;
+    mbx_fill_reset(&s->fill);
+    s->fill_dma_failed = false;
     /* The completion shim's mask and its timer are part of the interrupt
      * state. Zeroing the mask without disarming the timer left a completion
      * scheduled against a mask the new boot never wrote; disarming without
@@ -389,18 +467,49 @@ static void ipod_touch_mbx_reset(DeviceState *dev)
  * it does not exist at all unless the shim is on, so migrating the pointer
  * would trip vmstate's "array with a NULL base" assertion and kill the source
  * QEMU mid-save. Measured: that is exactly what it did. */
+static int ipod_touch_mbx_post_load(void *opaque, int version_id)
+{
+    IPodTouchMBXState *s = opaque;
+    if (version_id < 2 && s->fill_enabled) {
+        return -EINVAL; /* Old streams lack the in-flight ring/GART state. */
+    }
+    ipod_touch_mbx_update_irq(s);
+    return 0;
+}
+
 static const VMStateDescription vmstate_ipod_touch_mbx = {
     .name = "ipod_touch_mbx",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = ipod_touch_mbx_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(addr, IPodTouchMBXState),
         VMSTATE_BOOL(mmu_written, IPodTouchMBXState),
         VMSTATE_UNUSED(1), /* Retired guest-patch latch; keep v1 stream layout. */
         VMSTATE_UINT32(status, IPodTouchMBXState),
         VMSTATE_UINT32(int_mask, IPodTouchMBXState),
+        VMSTATE_UINT32_EQUAL_V(fill_mode, IPodTouchMBXState, 2, "MBX fill mode differs"),
+        VMSTATE_UINT32_ARRAY_V(fill.roots, IPodTouchMBXState, 8, 2),
+        VMSTATE_UINT32_ARRAY_V(fill.ring, IPodTouchMBXState, 0x10000 / 4, 2),
+        VMSTATE_UINT32_V(fill.pending_offset, IPodTouchMBXState, 2),
+        VMSTATE_UINT32_V(fill.pending_count, IPodTouchMBXState, 2),
+        VMSTATE_UINT32_V(fill.pending_mask, IPodTouchMBXState, 2),
         VMSTATE_END_OF_LIST()
     }
+};
+
+static void ipod_touch_mbx_realize(DeviceState *dev, Error **errp)
+{
+    IPodTouchMBXState *s = IPOD_TOUCH_MBX(dev);
+    if (s->fill_enabled && (s->complete_shim || getenv("IT_MBX_RAM"))) {
+        error_setg(errp, "x-2d-fill rejects completion shim and RAM aperture override");
+        return;
+    }
+    s->fill_mode = s->fill_enabled;
+}
+
+static const Property ipod_touch_mbx_properties[] = {
+    DEFINE_PROP_BOOL("x-2d-fill", IPodTouchMBXState, fill_enabled, false),
 };
 
 static void ipod_touch_mbx_class_init(ObjectClass *klass, void *data)
@@ -409,6 +518,8 @@ static void ipod_touch_mbx_class_init(ObjectClass *klass, void *data)
 
     device_class_set_legacy_reset(dc, ipod_touch_mbx_reset);
     dc->vmsd = &vmstate_ipod_touch_mbx;
+    dc->realize = ipod_touch_mbx_realize;
+    device_class_set_props(dc, ipod_touch_mbx_properties);
 }
 
 static const TypeInfo ipod_touch_mbx_type_info = {

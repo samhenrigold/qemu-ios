@@ -118,8 +118,11 @@ int main(void) {
 
 with tempfile.TemporaryDirectory() as tmp:
     c = Path(tmp) / 'check.c'
-    c.write_text(prelude + constants + '\n' + state + '\n' + '\n'.join(funcs) + tests)
+    c.write_text(prelude + (root / 'include/hw/arm/mbx_fill.h').read_text() + r'''
+static uint8_t *mbx_fill_guest_ram(void *o, uint32_t p, uint32_t n) { return NULL; }
+static void mbx_fill_guest_write(void *o, uint32_t p, uint32_t v) {}
+''' + constants + '\n' + state + '\n' + '\n'.join(funcs) + tests)
     binary = str(Path(tmp) / 'check')
     subprocess.run(['clang', '-std=gnu11', '-fsanitize=address,undefined',
-                    '-fno-sanitize-recover=all', str(c), '-o', binary], check=True)
+                    '-fno-sanitize-recover=all', '-I', str(root / 'include'), str(c), str(root / 'hw/arm/mbx_fill.c'), '-o', binary], check=True)
     subprocess.run([binary], check=True)
