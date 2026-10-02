@@ -46,6 +46,13 @@ proof of live N72 watchdog timing. An 11-bit counter claim for older S5L870x
 must not be assumed to apply to S5L8720. Counter width, clock selector behavior,
 overflow/reset timing and interrupt mode still need N72 evidence.
 
+The later stock7E18 provider audit narrows the source: watchdog provider index0
+uses DT clock ID2, the cached AppleS5L8720XIO table entry populated from cpu0
+`bus-frequency`. It is not a direct read of the modeled root PCLK. This mapping
+is established for7E18 only; actual bootloader publication/gating, CNT movement,
+kick/reload/disable semantics and overflow still require independent observation.
+Evidence: `/Users/shg/Developer/ltm-evidence/watchdog-provider-2026-10-01`.
+
 Timed watchdog expiry has **not** been enabled. The exact immediate-reset command
 retains its prior behavior. Making a new expiry timer run against an invented
 clock or a borrowed counter width would obscure these gaps.
