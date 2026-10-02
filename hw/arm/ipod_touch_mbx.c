@@ -160,11 +160,8 @@ static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
              * path we had never reached, let alone modelled.
              */
             val = 0x40 | 0x100 | s->status;
-            if (s->irq_enabled && s->irq) {
-                /* Reading the status acknowledges the completion. */
-                s->status = 0;
-                qemu_irq_lower(s->irq);
-            }
+            /* STATUS is observational. The driver acknowledges only its
+             * enabled pending events through the separate W1C register. */
             break;
         case 0xf00:
             val = (2 << 0x10) | (1 << 0x18); // seems to be some kind of identifier

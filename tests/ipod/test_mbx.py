@@ -87,7 +87,32 @@ int main(void) {
     WR(0x130, 0x01);           /* mask now excludes every set status bit (0x42) */
     assert(RD(0x130) == 0x01 && line == 0);
 
-    puts("PASS: MBX 0x130 mask read-back, 0x12c software interrupt, 0x134 W1C, line = status & mask");
+    /* STATUS observes pending events; only the explicit W1C acknowledges
+     * the enabled subset sampled by the stock ISR. Exercise both options. */
+    for (unsigned mode = 0; mode < 2; mode++) {
+        s = (IPodTouchMBXState){ .irq = &line, .irq_enabled = mode };
+        line = 0;
+        WR(0x130, 0x400);
+        WR(0x12c, 0x408);
+        assert(line == 1);
+        assert(RD(0x12c) == 0x548 && s.status == 0x408 && line == 1);
+        assert(RD(0x12c) == 0x548 && s.status == 0x408 && line == 1);
+        WR(0x130, 0);
+        assert(line == 0);
+        assert(RD(0x12c) == 0x548 && s.status == 0x408 && line == 0);
+        WR(0x130, 0x400);
+        assert(line == 1);
+        uint32_t observed = RD(0x12c);
+        WR(0x134, observed & 0x400);
+        assert(s.status == 8 && line == 0);
+        WR(0x130, 8);
+        assert(line == 1);
+        assert(RD(0x12c) == 0x148 && s.status == 8 && line == 1);
+        WR(0x134, 8);
+        assert(s.status == 0 && line == 0);
+        assert(RD(0x12c) == 0x140); /* Existing compatibility bits unchanged. */
+    }
+    puts("PASS: MBX mask/readback, STATUS observation, software interrupt, selective W1C and IRQ redrive (both options)");
 }
 '''
 
