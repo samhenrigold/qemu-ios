@@ -38,6 +38,10 @@
 #include <poll.h>
 #endif
 
+#ifdef __APPLE__
+#include <sys/event.h>
+#endif
+
 #ifdef CONFIG_PRCTL_PR_SET_TIMERSLACK
 #include <sys/prctl.h>
 #endif
@@ -319,6 +323,71 @@ int qemu_timeout_ns_to_ms(int64_t ns)
 }
 
 
+#ifdef __APPLE__
+/* Darwin has no ppoll. Keep poll as the readiness authority, but wait for
+ * ordinary read/write events with kevent's timespec instead of rounding every
+ * virtual deadline up to milliseconds. A per-call queue avoids registrations
+ * outliving/reusing a caller's descriptors. Unsupported interests or filters
+ * retain the existing poll path; this is not an event-loop replacement. */
+static int qemu_poll_ns_darwin(GPollFD *fds, guint nfds, int64_t timeout)
+{
+    struct kevent event;
+    struct kevent *changes;
+    struct timespec ts;
+    int count = 0, ret, saved_errno, queue;
+
+    if (timeout <= 0 || nfds > INT_MAX / 2) {
+        return g_poll(fds, nfds, qemu_timeout_ns_to_ms(timeout));
+    }
+    for (guint i = 0; i < nfds; i++) {
+        if (fds[i].fd >= 0 &&
+            (!fds[i].events || (fds[i].events & ~(G_IO_IN | G_IO_OUT)))) {
+            return g_poll(fds, nfds, qemu_timeout_ns_to_ms(timeout));
+        }
+    }
+    ret = g_poll(fds, nfds, 0);
+    if (ret != 0) {
+        return ret;
+    }
+    queue = kqueue();
+    if (queue < 0) {
+        return g_poll(fds, nfds, qemu_timeout_ns_to_ms(timeout));
+    }
+    changes = g_new(struct kevent, (size_t)nfds * 2);
+    for (guint i = 0; i < nfds; i++) {
+        if (fds[i].fd < 0) {
+            continue;
+        }
+        if (fds[i].events & G_IO_IN) {
+            EV_SET(&changes[count], fds[i].fd, EVFILT_READ, EV_ADD,
+                   0, 0, NULL);
+            count++;
+        }
+        if (fds[i].events & G_IO_OUT) {
+            EV_SET(&changes[count], fds[i].fd, EVFILT_WRITE, EV_ADD,
+                   0, 0, NULL);
+            count++;
+        }
+    }
+    ts.tv_sec = MIN(timeout / NANOSECONDS_PER_SECOND, INT32_MAX);
+    ts.tv_nsec = timeout % NANOSECONDS_PER_SECOND;
+    ret = kevent(queue, changes, count, &event, 1, &ts);
+    saved_errno = errno;
+    g_free(changes);
+    close(queue);
+    if (ret < 0 && saved_errno == EINTR) {
+        errno = saved_errno;
+        return -1;
+    }
+    if (ret < 0 || (ret > 0 && (event.flags & EV_ERROR))) {
+        return g_poll(fds, nfds, qemu_timeout_ns_to_ms(timeout));
+    }
+    /* Preserve poll's event masks, duplicate entries, EOF and error semantics;
+     * a kevent is only a wakeup, never a synthesized readiness result. */
+    return g_poll(fds, nfds, 0);
+}
+#endif
+
 /* qemu implementation of g_poll which uses a nanosecond timeout but is
  * otherwise identical to g_poll
  */
@@ -340,6 +409,8 @@ int qemu_poll_ns(GPollFD *fds, guint nfds, int64_t timeout)
         ts.tv_nsec = timeout % 1000000000LL;
         return ppoll((struct pollfd *)fds, nfds, &ts, NULL);
     }
+#elif defined(__APPLE__)
+    return qemu_poll_ns_darwin(fds, nfds, timeout);
 #else
     return g_poll(fds, nfds, qemu_timeout_ns_to_ms(timeout));
 #endif
