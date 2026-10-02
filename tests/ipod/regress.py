@@ -1349,15 +1349,16 @@ def verify_audio(path, r):
 
 
 def check_gles_front_end(cfg, dev, r):
-    """1.x/2.x and 3.0 (no agent to launch GLTest): SpringBoard's own GL is the fixture.
+    """SpringBoard's own GL is the fixture, independent of helper/GLTest availability.
 
     The device's lock says the OpenGLES hook went in and the bake set CA_ENABLE_OGL=1 (1.x:
     LK_ENABLE_OGL=1, imgtools/ipod1g_device.py), so every frame since the home screen came up was
     CoreAnimation's (1.x: LayerKit's) GL renderer through the front end and the host. 1.1's home
-    screen has one page, so its swipe changes nothing; Safari sits at the same spot. What is asserted: the front end said hello exactly once (a second hello is a
+    screen has one page, so its swipe changes nothing. The first-icon tap opens
+    Safari on1.x/2.x and Mail on3.0; exact references describe the opened app. What is asserted: the front end said hello exactly once (a second hello is a
     SpringBoard that died and restarted), CoreAnimation made its first pixmap surface (it did not
     fall back to software: "unsupported graphics hardware"), a host context is live, the home
-    screen survives a page swipe and a Safari launch zoom and close (the path that once froze
+    screen survives a page swipe and a stock-app launch zoom and close (the path that once froze
     and then crashed SpringBoard), and the bridge refused nothing."""
     log_path = os.path.join(dev.dir, "qemu.log")
 
@@ -1374,7 +1375,7 @@ def check_gles_front_end(cfg, dev, r):
     dev.qmp.tap(160, 326)   # 2.x raises the first-unlock Edit Home Screen tip late: its Dismiss (empty home otherwise)
     time.sleep(2)
     for name, act, settle in (("swipe", lambda: dev.qmp.swipe(280, 240, 40, 240, steps=10), 3),
-                              ("safari", lambda: dev.qmp.tap(40, 70), 8),
+                              ("opened-app", lambda: dev.qmp.tap(40, 70), 8),
                               ("home", dev.qmp.home, 5)):
         act()
         time.sleep(settle)
@@ -1400,7 +1401,7 @@ def check_gles_front_end(cfg, dev, r):
     if shots[0][1] < cfg.home_lit_min or shots[-1][1] < cfg.home_lit_min or abs(shots[1][1] - shots[0][1]) < 1000:
         return r.set(False, "the frames did not follow the gestures: %s" % lits)
     if abs(shots[-1][1] - shots[0][1]) > shots[0][1] // 20:
-        # the panel still shows Safari (1.x: the iPod LCD once lost the GL write-back's dirty pages)
+        # the panel still shows the opened app (1.x: the iPod LCD once lost the GL write-back's dirty pages)
         return r.set(False, "the close did not reach the panel: %s" % lits)
     # Firmware layouts differ independently of rendering. A dedicated visual
     # gate must fail on missing exact-build coverage, never borrow a major-version
@@ -1715,7 +1716,7 @@ def requested_frame_references(cfg, selected):
     """Resolve requested visual coverage before launching a guest."""
     if "gles" not in selected or not cfg.gles_front_end:
         return []
-    return [why for scene in ("swipe", "safari", "home")
+    return [why for scene in ("swipe", "opened-app", "home")
             for _path, why in [frame_reference.qualified(
                 GLES_REFS, cfg.board, cfg.build, cfg.product_version, scene)] if why]
 
@@ -1799,10 +1800,14 @@ def configure_device(cfg):
             cfg.device_version = cfg.device_version if cfg.device_version[0] else None
             derived = lockd.get("derived") or {}
             cfg.gles_engine = derived.get("gles_engine")
-            # no agent to install and launch GLTest (1.x/2.x, 3.0): SpringBoard's own compositing is the leg
+            # Without installed helpers, default to SpringBoard compositing; an explicit request
+            # can also select it when the helpers support GLTest.
             cfg.gles_front_end = derived.get("gles_engine") == "OpenGLES" and \
-                not str(derived.get("guest_tools", "")).startswith("installed")
+                (getattr(cfg, "gles_front_end_requested", False) or
+                 not str(derived.get("guest_tools", "")).startswith("installed"))
             cfg.board = lockd.get("board", cfg.board)
+    if getattr(cfg, "gles_front_end_requested", False) and cfg.gles_engine != "OpenGLES":
+        sys.exit("--gles-front-end requires a device lock declaring derived.gles_engine=OpenGLES")
     if cfg.board == "n45ap":
         # 1.1's home screen is icons on black (~135k lit sub-pixels; the Apple logo far fewer), and
         # the 1G has no USB host side yet, so every USB check skips (main clears usbmuxd_ok)
@@ -1882,7 +1887,10 @@ def main():
                         "~/Developer/usbmuxd-qemu/usbmuxd/src/usbmuxd"))
     ap.add_argument("--ipa", default=None, help="installation/launch IPA (default: repository Harness)")
     ap.add_argument("--harness-ipa", default=None, help="explicit Harness IPA for audio/GLES fallback")
-    ap.add_argument("--gles-app", default=None, help="explicit GLTest.app bundle (slot ABI map selected separately)")
+    gles_selection = ap.add_mutually_exclusive_group()
+    gles_selection.add_argument("--gles-app", default=None, help="explicit GLTest.app bundle (slot ABI map selected separately)")
+    gles_selection.add_argument("--gles-front-end", dest="gles_front_end_requested", action="store_true",
+                                help="test SpringBoard compositing through the declared OpenGLES frontend, even with installed helpers")
     ap.add_argument("--ledger", metavar="DIRECTORY",
                     help="test each IPA in a directory on its own disposable guest and write a review ledger")
     ap.add_argument("--launch-stages", action="store_true",
@@ -2079,7 +2087,7 @@ def main():
             check_wifi(cfg, dev, results["wifi"])
 
         need_usb = any(c in selected for c in USB_DEPENDENT_CHECKS
-                       if not (c == "gles" and cfg.gles_front_end and not cfg.usbmuxd_ok))
+                       if not (c == "gles" and cfg.gles_front_end))
         udid = None
         if need_usb:
             udid, pdetail = wait_for_device(cfg)

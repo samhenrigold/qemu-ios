@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory(prefix='ipod-frame-reference-') as temp:
     manifest['product_version'] = '1.1.5'; path.write_text(json.dumps(manifest))
     assert 'missing qualified' in select('3A101a', '1.1')[1]
     assert 'identity differs' in select(version='1.1')[1]
-    assert 'missing qualified' in select(scene='safari')[1]
+    assert 'missing qualified' in select(scene='opened-app')[1]
     assert 'missing firmware' in select(build='../4B1')[1]
     assert 'invalid scene' in select(scene='../home')[1]
     manifest['board'] = 'n72ap'; path.write_text(json.dumps(manifest))
@@ -65,7 +65,7 @@ with tempfile.TemporaryDirectory(prefix='ipod-native-reference-') as temp:
     cfg = SimpleNamespace(board='n45ap', build='4B1', product_version='1.1.5', home_lit_min=100)
     scope = dict(frame_reference=references, GLES_REFS=temp,
                  os=__import__('os'), time=SimpleNamespace(sleep=lambda _: None),
-                 to_png=lambda *_: None, lit_count=lambda p: (0, 2000 if 'safari' in p else 500),
+                 to_png=lambda *_: None, lit_count=lambda p: (0, 2000 if 'opened-app' in p else 500),
                  itqmp=SimpleNamespace(gles_rejects=lambda _: {}),
                  framecheck=SimpleNamespace(verdict=lambda *_: (_ for _ in ()).throw(AssertionError('unqualified image compared'))))
     exec(compile(ast.Module(body=[function,preflight], type_ignores=[]), 'actual-iPod-visual-gate', 'exec'), scope)
@@ -86,9 +86,13 @@ spec = importlib.util.spec_from_file_location('actual_framecheck', root / 'tests
 checker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checker)
 with tempfile.TemporaryDirectory(prefix='exact-frame-mutants-') as temp:
-    for build, version in [('3A101a', '1.1'), ('4B1', '1.1.5')]:
-        home, why = references.qualified(root / 'tests/gles-refs', 'n45ap', build, version, 'home')
-        safari, safari_why = references.qualified(root / 'tests/gles-refs', 'n45ap', build, version, 'safari')
+    for board, build, version, other_build, other_version in [
+        ('n45ap', '3A101a', '1.1', '4B1', '1.1.5'),
+        ('n45ap', '4B1', '1.1.5', '3A101a', '1.1'),
+        ('n72ap', '5F138', '2.1.1', '7A341', '3.0'),
+        ('n72ap', '7A341', '3.0', '5F138', '2.1.1')]:
+        home, why = references.qualified(root / 'tests/gles-refs', board, build, version, 'home')
+        safari, safari_why = references.qualified(root / 'tests/gles-refs', board, build, version, 'opened-app')
         assert home and safari and not why and not safari_why
         picture = Image.open(home).convert('RGB')
         flipped = Path(temp) / (build + '-flip.png')
@@ -99,7 +103,6 @@ with tempfile.TemporaryDirectory(prefix='exact-frame-mutants-') as temp:
         assert not checker.verdict(flipped, home)['ok']
         assert not checker.verdict(swapped, home)['ok']
         assert not checker.verdict(safari, home)['ok']
-        other_build, other_version = ('4B1', '1.1.5') if build == '3A101a' else ('3A101a', '1.1')
-        other, why = references.qualified(root / 'tests/gles-refs', 'n45ap', other_build, other_version, 'home')
+        other, why = references.qualified(root / 'tests/gles-refs', board, other_build, other_version, 'home')
         assert other and not why and not checker.verdict(other, home)['ok']
-print('PASS: both exact1.x oracles reject flip, channel swap, stale scene and borrowed build')
+print('PASS: all four exact1.x/2.1.1/3.0 oracles reject flip, channel swap, stale scene and borrowed build')

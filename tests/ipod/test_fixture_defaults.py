@@ -111,6 +111,7 @@ class FixtureDefaultsTests(unittest.TestCase):
                     '--qemu', str(root / 'absent-qemu'), '--out', str(output)]
             with patch('sys.argv', args), patch.object(R, 'ROOT', str(root)), \
                     patch.object(R, 'Procs') as procs, \
+                    patch.object(R, 'GLES_REFS', str(root / 'absent-refs')), \
                     patch.object(R, 'requested_frame_references', wraps=R.requested_frame_references) as references:
                 with self.assertRaisesRegex(SystemExit, 'missing qualified frame reference'):
                     R.main()
@@ -121,6 +122,59 @@ class FixtureDefaultsTests(unittest.TestCase):
             receipt = F.selected_metadata(actual_cfg, ['gles'])
             self.assertEqual(receipt['inputs'], [])
             self.assertIn('no native runtime success', receipt['limits'])
+
+    def test_explicit_frontend_with_installed_helpers_requires_exact_reference(self):
+        for version, build in [('2.1.1', '5F138'), ('3.0', '7A341')]:
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                device = root / 'device'
+                device.mkdir()
+                lock = {'product_version': version, 'build': build,
+                        'derived': {'gles_engine': 'OpenGLES', 'guest_tools': 'installed-package14'}}
+                (device / 'device.lock.json').write_text(json.dumps(lock))
+                output = root / 'must-not-exist'
+                args = ['regress.py', '--device', str(device), '--checks', 'gles',
+                        '--gles-front-end', '--out', str(output)]
+                with patch('sys.argv', args), patch.object(R, 'ROOT', str(root)), \
+                        patch.object(R, 'Procs') as procs, \
+                        patch.object(R, 'GLES_REFS', str(root / 'absent-refs')), \
+                    patch.object(R, 'requested_frame_references', wraps=R.requested_frame_references) as references:
+                    with self.assertRaisesRegex(SystemExit, 'missing qualified frame reference'):
+                        R.main()
+                    procs.assert_not_called()
+                cfg = references.call_args.args[0]
+                self.assertTrue(cfg.gles_front_end_requested)
+                self.assertTrue(cfg.gles_front_end)
+                self.assertFalse(cfg.gles_explicit)
+                self.assertEqual(F.requested_problems(cfg, ['gles'], '/absent', '/absent'), [])
+                self.assertEqual(F.selected_metadata(cfg, ['gles'])['inputs'], [])
+                self.assertFalse(output.exists())
+
+    def test_installed_helpers_preserve_default_app_leg(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'device.lock.json').write_text(json.dumps({
+                'product_version': '2.1.1', 'build': '5F138',
+                'derived': {'gles_engine': 'OpenGLES', 'guest_tools': 'installed-package14'}}))
+            args = ['regress.py', '--device', str(root), '--checks', 'gles']
+            with patch('sys.argv', args), patch.object(R, 'ROOT', str(root)), \
+                    patch.object(R, 'Procs') as procs, \
+                    patch.object(R, 'GLES_REFS', str(root / 'absent-refs')), \
+                    patch.object(R, 'requested_frame_references', wraps=R.requested_frame_references) as references:
+                with self.assertRaisesRegex(SystemExit, 'missing ios2 fixture'):
+                    R.main()
+                procs.assert_not_called()
+            cfg = references.call_args.args[0]
+            self.assertFalse(cfg.gles_front_end_requested)
+            self.assertFalse(cfg.gles_front_end)
+
+    def test_actual_parser_rejects_conflicting_gles_selectors(self):
+        with patch('sys.argv', ['regress.py', '--gles-front-end', '--gles-app', '/explicit']), \
+                patch.object(R, 'configure_device') as configure:
+            with self.assertRaises(SystemExit) as error:
+                R.main()
+            self.assertEqual(error.exception.code, 2)
+            configure.assert_not_called()
 
     def test_actual_parser_and_ledger_generator_exclude_internal_flags(self):
         with tempfile.TemporaryDirectory() as directory:
