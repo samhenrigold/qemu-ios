@@ -87,6 +87,7 @@ ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, os.path.join(ROOT, "imgtools"))
 import itqmp  # noqa: E402  (needs the path above)
 sys.path.insert(0, os.path.join(HERE, ".."))
+import frame_reference
 import framecheck  # noqa: E402  (tests/framecheck.py: the audit's frame-reference check)
 import gles_scene  # noqa: E402
 GLES_REFS = os.path.join(HERE, "..", "gles-refs")
@@ -1401,24 +1402,20 @@ def check_gles_front_end(cfg, dev, r):
     if abs(shots[-1][1] - shots[0][1]) > shots[0][1] // 20:
         # the panel still shows Safari (1.x: the iPod LCD once lost the GL write-back's dirty pages)
         return r.set(False, "the close did not reach the panel: %s" % lits)
-    # Frame reference (audit gap #1). Everything above is liveness -- lit counts, one hello,
-    # a live context, no refusals -- which the audit showed passes an upside-down frame
-    # (2.x/1.x), a red/blue swap and a stale surface (section 1). Diff each captured screen
-    # against its committed software-CA reference (framecheck, clock band masked). 3.0's
-    # home has no reference yet, so it is judged on liveness only, as noted.
-    prefix = ("1x" if cfg.device_version and cfg.device_version < (2, 0)
-              else "2x" if cfg.device_version and cfg.device_version < (3, 0) else None)
+    # Firmware layouts differ independently of rendering. A dedicated visual
+    # gate must fail on missing exact-build coverage, never borrow a major-version
+    # image or silently count liveness as a compared scene.
     fr = []
-    if prefix:
-        for name, _lit in shots:
-            ref = os.path.join(GLES_REFS, "%s-%s.png" % (prefix, name))
-            if not os.path.exists(ref):
-                continue
-            v = framecheck.verdict(os.path.join(dev.dir, "gles-%s.png" % name), ref)
-            fr.append("%s %.3f" % (name, v["frac"]) if v["frac"] is not None else "%s ?" % name)
-            if not v["ok"]:
-                return r.set(False, "the %s frame is not the reference picture: %s (%s)"
-                             % (name, v["why"], lits))
+    for name, _lit in shots:
+        reference, why = frame_reference.qualified(
+            GLES_REFS, cfg.board, cfg.build, cfg.product_version, name)
+        if not reference:
+            return r.set(False, why + " (visual coverage missing, not a rendering verdict)")
+        v = framecheck.verdict(os.path.join(dev.dir, "gles-%s.png" % name), reference)
+        fr.append("%s %.3f" % (name, v["frac"]) if v["frac"] is not None else "%s ?" % name)
+        if not v["ok"]:
+            return r.set(False, "the %s frame differs from its build-scoped reference: %s (%s)"
+                         % (name, v["why"], lits))
     frtxt = ("; frame-ref " + ", ".join(fr)) if fr else "; frame-ref none for this build"
     return r.set(True, "SpringBoard's GL through the GL front end: one hello, CA on the GL path, %d host context(s), "
                  "no refusals%s; %s" % (contexts, frtxt, lits))
@@ -1714,6 +1711,15 @@ def check_fsck(cfg, clean_stop, r):
 # driver
 # --------------------------------------------------------------------------
 
+def requested_frame_references(cfg, selected):
+    """Resolve requested visual coverage before launching a guest."""
+    if "gles" not in selected or not cfg.gles_front_end:
+        return []
+    return [why for scene in ("swipe", "safari", "home")
+            for _path, why in [frame_reference.qualified(
+                GLES_REFS, cfg.board, cfg.build, cfg.product_version, scene)] if why]
+
+
 def report_prereqs(cfg):
     """List what each tier needs and whether it's there, run nothing.
 
@@ -1742,10 +1748,13 @@ def report_prereqs(cfg):
             hard_missing = True
         print("%-4s  %-12s %s" % ("OK" if ok else "MISS", what, path))
         print("      needed for: %s" % needed_for)
+    for why in requested_frame_references(cfg, ["gles"]):
+        hard_missing = True
+        print("MISS  visual reference: " + why)
     print("")
     if hard_missing:
         print("default tier (boot, fsck, persist, appinstall, applaunch, gles, agent, audio) CANNOT run: "
-              "missing qemu binary and/or base NAND")
+              "missing required emulator, NAND or build-scoped visual coverage")
     else:
         print("default tier (boot, fsck, persist, appinstall, applaunch, gles, agent, audio) can run "
               "(persist SKIPs without usbmuxd)")
@@ -1758,6 +1767,7 @@ def configure_device(cfg):
     """Resolve one matched firmware/identity set for every native harness."""
     cfg.files = os.path.expanduser(cfg.files_dir)
     cfg.device_machine = {}
+    cfg.build = None                # exact firmware identity for visual references
     cfg.product_version = None      # complete declared version for fixture compatibility
     cfg.device_version = None       # the device's iOS (major, minor), from its lock (None: nand-current, 3.1.3)
     cfg.gles_front_end = False      # 1.x/2.x/3.0: SpringBoard's GL is the gles leg (check_gles_front_end)
@@ -1783,6 +1793,7 @@ def configure_device(cfg):
                     for key in ("wifi-mac", "bt-mac"):
                         if identity.get(key):
                             cfg.device_machine.setdefault(key, identity[key])
+            cfg.build = lockd.get("build")
             cfg.product_version = lockd.get("product_version")
             cfg.device_version = tuple(int(x) for x in lockd.get("product_version", "0").split(".")[:2])
             cfg.device_version = cfg.device_version if cfg.device_version[0] else None
@@ -1958,6 +1969,7 @@ def main():
 
     fixture_problems = fixture_preflight.requested_problems(
         cfg, selected, HARNESS_IPA, os.path.join(GLES_DIR, "GLTest.app"))
+    fixture_problems += requested_frame_references(cfg, selected)
     if fixture_problems:
         sys.exit("\n".join(fixture_problems))
 

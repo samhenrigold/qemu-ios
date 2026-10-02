@@ -88,6 +88,7 @@ DARK_MAX_FRACTION = 0.05    # the scanout with the panel off
 sys.path.insert(0, os.path.join(ROOT, "imgtools"))
 import ipad1_boot
 sys.path.insert(0, os.path.join(ROOT, "tests"))
+import frame_reference
 import framecheck  # noqa: E402  (the audit's frame-reference check)
 GLES_REFS = os.path.join(ROOT, "tests", "gles-refs")
 
@@ -303,40 +304,9 @@ MAGENTA_MAX = 0.001     # of the frame: gles-debug's paint is a layer's worth, n
 
 
 def qualified_frame_reference(cfg, scene):
-    """A reference belongs to one build and carries reviewed baseline provenance.
-
-    Never fall back to the old unqualified PNGs: stock wallpaper and app layout
-    change between releases, independently of renderer correctness.
-    """
-    build = getattr(cfg, "build", None) or ""
-    if not re.fullmatch(r"[A-Za-z0-9]+", build):
-        return None, "missing firmware build identity"
-    directory = os.path.join(GLES_REFS, "k48ap", build)
-    manifest_path = os.path.join(directory, "reference.json")
-    if not os.path.isfile(manifest_path):
-        return None, "missing qualified frame reference for k48ap/%s/%s (independent baseline required)" % (build, scene)
-    try:
-        with open(manifest_path) as f:
-            manifest = json.load(f)
-        if manifest.get("build") != build or manifest.get("product_version") != cfg.product_version:
-            raise ValueError("reference firmware identity differs from the device")
-        baseline = manifest.get("baseline", {})
-        if baseline.get("renderer") not in ("stock-software-coreanimation", "physical-device") or not baseline.get("provenance"):
-            raise ValueError("reference needs independent software/physical baseline provenance")
-        frame = manifest.get("frames", {}).get(scene)
-        if not frame:
-            return None, "missing qualified frame reference for k48ap/%s/%s" % (build, scene)
-        for key in ("sha256", "source_sha256"):
-            if not re.fullmatch(r"[0-9a-f]{64}", frame.get(key, "")):
-                raise ValueError("reference lacks %s" % key)
-        reference = os.path.join(directory, scene + ".png")
-        with open(reference, "rb") as f:
-            digest = hashlib.sha256(f.read()).hexdigest()
-        if digest != frame["sha256"]:
-            raise ValueError("reference PNG hash differs from its manifest")
-        return reference, None
-    except (OSError, ValueError, TypeError, AttributeError) as error:
-        return None, "invalid qualified frame reference: %s" % error
+    """Use the shared build-scoped independent reference contract."""
+    return frame_reference.qualified(GLES_REFS, "k48ap", getattr(cfg, "build", None),
+                                     cfg.product_version, scene)
 
 
 def gl_clean(b, r, detail, shots=(), require_refs=()):
