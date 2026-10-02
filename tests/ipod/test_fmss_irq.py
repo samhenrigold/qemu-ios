@@ -30,6 +30,7 @@ prelude = r'''
 #define IPOD_TOUCH_FMSS(p) ((IPodTouchFMSSState *)(p))
 typedef void DeviceState;
 #define QEMU_CLOCK_VIRTUAL 0
+#define fmss_script_trace(...) ((void)0)
 #define LOG_UNIMP 0
 #define qemu_log_mask(...) ((void)0)
 #define IT_SIZE(tag,val,max) ((val) < (max) ? (val) : (max))
