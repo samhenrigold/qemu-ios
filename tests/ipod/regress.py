@@ -1753,10 +1753,15 @@ def report_prereqs(cfg):
     for why in requested_frame_references(cfg, ["gles"]):
         hard_missing = True
         print("MISS  visual reference: " + why)
+    import fixture_preflight
+    for why in fixture_preflight.requested_problems(
+            cfg, DEFAULT_CHECKS, HARNESS_IPA, os.path.join(GLES_DIR, "GLTest.app")):
+        hard_missing = True
+        print("FAIL  fixture compatibility: " + why)
     print("")
     if hard_missing:
         print("default tier (boot, fsck, persist, appinstall, applaunch, gles, agent, audio) CANNOT run: "
-              "missing required emulator, NAND or build-scoped visual coverage")
+              "missing required inputs/visual coverage or incompatible fixtures")
     else:
         print("default tier (boot, fsck, persist, appinstall, applaunch, gles, agent, audio) can run "
               "(persist SKIPs without usbmuxd)")
