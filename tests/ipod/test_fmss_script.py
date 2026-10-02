@@ -113,6 +113,50 @@ static IPodTouchFMSSState run_counter(const uint32_t *prog, size_t n,
     return s;
 }
 int main(void) {
+    /* Exact stock D0C descriptor advance feeds FMC address-register words.
+     * This establishes scalar producer dataflow, not NAND/ECC completion. */
+    const uint32_t d0c_rows[]={
+        0x04000d0cu,0xffffffffu,0x03010000u,0,
+        0x0c000000u,4,0x02000d0cu,0,
+        0x13000001u,16,0x0200000cu,0,
+        0x14000001u,16,0x02000010u,0,
+        0x05070000u,0x9000u,
+        0x0400000cu,0xffffffffu,0x11000007u,0,
+        0x0c070007u,4,0x04000010u,0xffffffffu,0x11000007u,0,
+        0x04000d0cu,0xffffffffu,0x03010000u,0,
+        0x0c000000u,4,0x02000d0cu,0,
+        0x13000001u,16,0x0200000cu,0,
+        0x14000001u,16,0x02000010u,0,
+        0x0c070007u,4,0x0400000cu,0xffffffffu,0x11000007u,0,
+        0x0c070007u,4,0x04000010u,0xffffffffu,0x11000007u,0,
+        0x0c070007u,4,0x04000d0cu,0xffffffffu,0x11000007u,0,0,0
+    };
+    IPodTouchFMSSState row_state={.reg_cs_script=0x1000,
+                                  .reg_pages_in_addr=0xa000};
+    stl_le_p(mem+0xa000,0x01234567u);stl_le_p(mem+0xa004,0x07654321u);
+    memcpy(mem+0x1000,d0c_rows,sizeof(d0c_rows));descriptor_reads=0;
+    fmss_run_script(&row_state);
+    assert(ldl_le_p(mem+0x9000)==0x45670000u);
+    assert(ldl_le_p(mem+0x9004)==0x123u);
+    assert(ldl_le_p(mem+0x9008)==0x43210000u);
+    assert(ldl_le_p(mem+0x900c)==0x765u);
+    assert(ldl_le_p(mem+0x9010)==0xa008u&&row_state.reg_pages_in_addr==0xa008u);
+    assert(descriptor_reads==2&&descriptor_addresses[0]==0xa000&&descriptor_addresses[1]==0xa004);
+    for(unsigned form=0;form<2;form++) {
+        const uint32_t rejected[]={
+            0x05000000u,0xa004u,
+            form ? 0x01000d0cu : 0x02000d0cu, form ? 0xa004u : 1u,
+            0x04000d0cu,0xffffffffu,0x03010000u,0,
+            0x05070000u,0x9000u,0x11010007u,0,0,0
+        };
+        memcpy(mem+0x1000,rejected,sizeof(rejected));
+        stl_le_p(mem+0x9000,0xabcddcbau);descriptor_reads=0;
+        fmss_run_script(&row_state);
+        assert(row_state.reg_pages_in_addr==0xa008&&descriptor_reads==0);
+        assert(ldl_le_p(mem+0x9000)==0xabcddcbau);
+    }
+    puts("PASS D0C actual address-word producer advance and bounded rejection");
+
     /* Actual stock D10 descriptor advance/backstep; no NAND result involved. */
     const uint32_t pointer_steps[]={
         0x04000d10u,0xffffffffu,0x03010000u,0,

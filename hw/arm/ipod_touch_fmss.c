@@ -195,7 +195,13 @@ static void fmss_run_script(IPodTouchFMSSState *s)
             return;
         case 0x01:
         case 0x02:
-            if (b == FMSS_CS_BUF_ADDR) {
+            if (b == FMSS_PAGES_IN_ADDR) {
+                if (op == 2 && !imm) {
+                    s->reg_pages_in_addr = r[a];
+                } else {
+                    ok = false; /* Only captured scalar register-write form. */
+                }
+            } else if (b == FMSS_CS_BUF_ADDR) {
                 if (op == 2 && !imm) {
                     s->reg_cs_buf_addr = r[a];
                 } else {
