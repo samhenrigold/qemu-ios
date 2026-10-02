@@ -3070,9 +3070,27 @@ static void ipod_touch_machine_init(MachineState *machine)
     // // chain VICs together
     nms->vic1->daisy = nms->vic0;
 
+    // init the chip ID module
+    dev = qdev_new("ipodtouch.chipid");
+    IPodTouchChipIDState *chipid_state = IPOD_TOUCH_CHIPID(dev);
+    nms->chipid_state = chipid_state;
+    if (nms->ecid_explicit) {
+        uint64_t id = nms->ecid;
+        qdev_prop_set_uint32(dev, "word3", ((id >> 21) & 0x1fffff) |
+                             (((id >> 16) & 31) << 21) |
+                             (((id >> 2) & 63) << 26));
+        /* Preserve unrelated fuse bits supplied through the existing model. */
+        qdev_prop_set_uint32(dev, "word4", (chipid_state->word4 & ~0x3ffu) |
+                             (((id >> 8) & 255) << 2) | (id & 3));
+    }
+    memory_region_add_subregion(sysmem, CHIPID_MEM_BASE, &chipid_state->iomem);
+    it_realize_into_qom_tree(dev);
+
     // init clock 0
     dev = qdev_new("ipodtouch.clock");
     qdev_prop_set_bit(dev, "s5l8720", true);
+    object_property_set_link(OBJECT(dev), "chipid", OBJECT(chipid_state),
+                             &error_fatal);
     IPodTouchClockState *clock0_state = IPOD_TOUCH_CLOCK(dev);
     nms->clock0 = clock0_state;
     memory_region_add_subregion(sysmem, CLOCK0_MEM_BASE, &clock0_state->iomem);
@@ -3204,22 +3222,6 @@ static void ipod_touch_machine_init(MachineState *machine)
     spi4_state->mt->sysic = sysic_state;
     spi4_state->mt->gpio_state = gpio_state;
     nms->spi4_state = spi4_state;
-
-    // init the chip ID module
-    dev = qdev_new("ipodtouch.chipid");
-    IPodTouchChipIDState *chipid_state = IPOD_TOUCH_CHIPID(dev);
-    nms->chipid_state = chipid_state;
-    if (nms->ecid_explicit) {
-        uint64_t id = nms->ecid;
-        qdev_prop_set_uint32(dev, "word3", ((id >> 21) & 0x1fffff) |
-                             (((id >> 16) & 31) << 21) |
-                             (((id >> 2) & 63) << 26));
-        /* Preserve unrelated fuse bits supplied through the existing model. */
-        qdev_prop_set_uint32(dev, "word4", (chipid_state->word4 & ~0x3ffu) |
-                             (((id >> 8) & 255) << 2) | (id & 3));
-    }
-    memory_region_add_subregion(sysmem, CHIPID_MEM_BASE, &chipid_state->iomem);
-    it_realize_into_qom_tree(dev);
 
     // init the TVOut instance
     dev = qdev_new("ipodtouch.tvout");
