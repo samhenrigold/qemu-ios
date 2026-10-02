@@ -113,6 +113,38 @@ static IPodTouchFMSSState run_counter(const uint32_t *prog, size_t n,
     return s;
 }
 int main(void) {
+    /* Stock D20 descriptor producer feeds FMC34; no NAND/DMA-result oracle. */
+    const uint32_t d20_producer[]={
+        0x04000d20u,0xffffffffu,0x03010000u,0,
+        0x0c000000u,4,0x02000d20u,0,0x02010034u,0,
+        0x04020034u,0xffffffffu,0x05070000u,0x9000u,0x11020007u,0,
+        0x04000d20u,0xffffffffu,0x03010000u,0,
+        0x0c000000u,4,0x02000d20u,0,0x02010034u,0,
+        0x04020034u,0xffffffffu,0x0c070007u,4,0x11020007u,0,
+        0x04000d20u,0xffffffffu,0x0c070007u,4,0x11000007u,0,0,0
+    };
+    IPodTouchFMSSState d20_state={.reg_cs_script=0x1000,.reg_pages_out_addr=0xa000};
+    stl_le_p(mem+0xa000,0x81234560u);stl_le_p(mem+0xa004,0x87654320u);
+    memcpy(mem+0x1000,d20_producer,sizeof(d20_producer));descriptor_reads=0;
+    fmss_run_script(&d20_state);
+    assert(ldl_le_p(mem+0x9000)==0x81234560u);
+    assert(ldl_le_p(mem+0x9004)==0x87654320u);
+    assert(ldl_le_p(mem+0x9008)==0xa008&&d20_state.reg_pages_out_addr==0xa008);
+    assert(descriptor_reads==2&&descriptor_addresses[0]==0xa000&&descriptor_addresses[1]==0xa004);
+    for(unsigned form=0;form<2;form++) {
+        const uint32_t rejected[]={
+            0x05000000u,0xa004u,
+            form ? 0x01000d20u : 0x02000d20u,form ? 0xa004u : 1u,
+            0x04000d20u,0xffffffffu,0x03010000u,0,
+            0x02010034u,0,0x05070000u,0x9000u,0x11010007u,0,0,0
+        };
+        memcpy(mem+0x1000,rejected,sizeof(rejected));stl_le_p(mem+0x9000,0xabcddcbau);
+        descriptor_reads=0;fmss_run_script(&d20_state);
+        assert(d20_state.reg_pages_out_addr==0xa008&&descriptor_reads==0);
+        assert(ldl_le_p(mem+0x9000)==0xabcddcbau);
+    }
+    puts("PASS D20 exact FMC34 address producer advance and bounded rejection");
+
     /* Exact stock D0C descriptor advance feeds FMC address-register words.
      * This establishes scalar producer dataflow, not NAND/ECC completion. */
     const uint32_t d0c_rows[]={
