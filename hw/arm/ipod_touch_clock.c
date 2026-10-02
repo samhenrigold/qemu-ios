@@ -1,6 +1,7 @@
 #include "hw/arm/ipod_touch_clock.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
+#include "qapi/error.h"
 #include "hw/qdev-properties.h"
 #include "hw/qdev-clock.h"
 #include "trace.h"
@@ -39,19 +40,25 @@ static void ipod_touch_clock_update(IPodTouchClockState *s)
 {
     uint64_t hz = 0;
     unsigned select = (s->config0 >> 12) & 3;
+    unsigned div = (s->config1 & (1U << 14)) ?
+                   (((s->config1 >> 9) & 0x1f) + 1) * 2 : 1;
 
-    if (s->s5l8720 && select &&
-        (s5l8720_pll_locks(s) & (1U << (select - 1)))) {
-        const uint32_t con[] = { s->pll0con, s->pll1con, s->pll2con };
-        unsigned pll = select - 1;
-        uint32_t value = con[pll];
-        /* Epoch-1 N72 uses a 24 MHz reference, or the selected 27 MHz input.
-         * The main PLL output is taken before SDIV; only other PLL outputs
-         * pass through that divider (not modeled as outputs here). */
-        uint64_t ref = (s->pllmode & (1U << (pll + 4))) ? 27000000 : 24000000;
-        unsigned div = (s->config1 & (1U << 14)) ?
-                       (((s->config1 >> 9) & 0x1f) + 1) * 2 : 1;
-        hz = ref * ((value >> 8) & 0xff) / ((value >> 24) & 0x3f) / div;
+    if (s->s5l8720 && s->chipid) {
+        /* CHIPID_INFO bit 0 selects the physical oscillator. CONFIG0 source
+         * zero bypasses the PLLs; it is not a stopped clock. Stock iBoot's
+         * frequency reader corroborates both paths and each PLL's SDIV. */
+        uint64_t base = (s->chipid->word2 & 1) ? 24000000 : 12000000;
+        if (!select) {
+            hz = base / div;
+        } else if (s5l8720_pll_locks(s) & (1U << (select - 1))) {
+            const uint32_t con[] = { s->pll0con, s->pll1con, s->pll2con };
+            unsigned pll = select - 1;
+            uint32_t value = con[pll];
+            uint64_t ref = (s->pllmode & (1U << (pll + 4))) ? 27000000 : base;
+            unsigned shift = (value & 7) + (pll != 0);
+            hz = ref * ((value >> 8) & 0xff) / ((value >> 24) & 0x3f) /
+                 (1U << shift) / div;
+        }
     }
     clock_update_hz(s->pclk, hz);
 }
@@ -289,12 +296,23 @@ static const VMStateDescription vmstate_ipod_touch_clock = {
 static const Property ipod_touch_clock_properties[] = {
     DEFINE_PROP_BOOL("s5l8900", IPodTouchClockState, s5l8900, false),
     DEFINE_PROP_BOOL("s5l8720", IPodTouchClockState, s5l8720, false),
+    DEFINE_PROP_LINK("chipid", IPodTouchClockState, chipid,
+                     TYPE_IPOD_TOUCH_CHIPID, IPodTouchChipIDState *),
 };
+
+static void ipod_touch_clock_realize(DeviceState *dev, Error **errp)
+{
+    IPodTouchClockState *s = IPOD_TOUCH_CLOCK(dev);
+    if (s->s5l8720 && !s->chipid) {
+        error_setg(errp, "S5L8720 root clock requires its physical ChipID link");
+    }
+}
 
 static void s5l8900_clock_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
+    dc->realize = ipod_touch_clock_realize;
     dc->vmsd = &vmstate_ipod_touch_clock;
     device_class_set_props(dc, ipod_touch_clock_properties);
     device_class_set_legacy_reset(dc, ipod_touch_clock_reset);

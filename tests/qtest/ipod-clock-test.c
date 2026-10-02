@@ -86,18 +86,20 @@ static void locks_and_readback(void)
 static void peripheral_clock(void)
 {
     QTestState *q = start_board();
-    g_assert_cmpuint(pclk_period(q), ==, 0);
-    /* Stock ROM/LLB sequence: 24 MHz * 133 / 3, peripheral divisor 4. */
+    g_assert_cmphex(qtest_readl(q, 0x3d100008), ==, 0x87200004);
+    g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 12000000);
+    /* Default epoch-0 reference: 12 MHz * 133 / 3, peripheral divisor 4. */
     qtest_writel(q, PLL0, 0x03008500);
     qtest_writel(q, MODE, 0x00010001);
     qtest_writel(q, CONFIG1, 0x00424242);
     qtest_writel(q, CONFIG0, 0x100a);
-    g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 266000000);
-    /* Main PLL is sampled before SDIV, unlike the auxiliary PLL outputs. */
-    qtest_writel(q, PLL0, 0x03008507);
-    g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 266000000);
+    g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 133000000);
+    /* SDIV is active even when this PLL is the selected source. */
+    qtest_writel(q, PLL0, 0x03008501);
+    g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 66500000);
+    qtest_writel(q, PLL0, 0x03008500);
     qtest_writel(q, CONFIG1, 0);
-    g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 1064000000);
+    g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 532000000);
     qtest_writel(q, CONFIG1, 0x4200); /* peripheral divisor four again */
     qtest_writel(q, MODE, 0x11); /* PLL0's 27 MHz reference */
     g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 299250000);
@@ -105,12 +107,35 @@ static void peripheral_clock(void)
     qtest_writel(q, ROOT + 0x24, 0x06005101);
     qtest_writel(q, MODE, 3);
     qtest_writel(q, CONFIG0, 0x2000);
-    g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 81000000);
+    g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 10125000);
     qtest_writel(q, MODE, 1);
     g_assert_cmpuint(pclk_period(q), ==, 0);
     qtest_writel(q, MODE, 3);
     qtest_qmp_assert_success(q, "{'execute':'system_reset'}");
-    g_assert_cmpuint(pclk_period(q), ==, 0);
+    g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 12000000);
+    qtest_quit(q);
+}
+
+static void epoch_one_bypass(void)
+{
+    QTestState *q = qtest_initf("-machine iPod-Touch,bootrom=%s,nor=%s,nand=%s "
+        "-global driver=ipodtouch.chipid,property=word2,value=0x87200005 "
+        "-display none -audio driver=none -nic none", rom, nor, nand);
+    g_assert_cmphex(qtest_readl(q, 0x3d100008), ==, 0x87200005);
+    g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 24000000);
+    qtest_writel(q, CONFIG1, 0x4200);
+    g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 6000000);
+    qtest_writel(q, PLL0, 0x03008500);
+    qtest_writel(q, MODE, 1);
+    qtest_writel(q, CONFIG0, 0x1000);
+    g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 266000000);
+    qtest_writel(q, MODE, 0x11);
+    g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 299250000);
+    qtest_writel(q, CONFIG0, 0);
+    qtest_writel(q, MODE, 0);
+    g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 6000000);
+    qtest_qmp_assert_success(q, "{'execute':'system_reset'}");
+    g_assert_cmpuint(pclk_period(q), ==, PERIOD_1SEC / 24000000);
     qtest_quit(q);
 }
 
@@ -149,14 +174,14 @@ static void restored_clock(void)
     qtest_quit(from);
     to = qtest_initf("-machine iPod-Touch,bootrom=%s,nor=%s,nand=%s "
                      "-incoming defer -display none -audio driver=none -nic none", rom, nor, nand);
-    g_assert_cmpuint(pclk_period(to), ==, 0);
+    g_assert_cmpuint(pclk_period(to), ==, PERIOD_1SEC / 12000000);
     qtest_qmp_assert_success(to, "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     wait_migration(to);
     /* The output is derived after loading the actual registers, not serialized
      * as a separate authority that could disagree with them. */
     g_assert_cmphex(qtest_readl(to, CONFIG1), ==, 0x424242);
     g_assert_cmphex(qtest_readl(to, LOCK), ==, 1);
-    g_assert_cmpuint(pclk_period(to), ==, PERIOD_1SEC / 266000000);
+    g_assert_cmpuint(pclk_period(to), ==, PERIOD_1SEC / 133000000);
     qtest_writel(to, MODE, 0);
     g_assert_cmpuint(pclk_period(to), ==, 0);
     qtest_quit(to);
@@ -177,6 +202,7 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/ipod/clock/pll-locks-readback-reset", locks_and_readback);
     qtest_add_func("/ipod/clock/peripheral-frequency", peripheral_clock);
+    qtest_add_func("/ipod/clock/epoch-one-bypass", epoch_one_bypass);
     qtest_add_func("/ipod/clock/restored-frequency", restored_clock);
     result = g_test_run();
     unlink(rom); unlink(nor); rmdir(nand);
