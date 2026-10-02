@@ -103,18 +103,22 @@ class FixtureDefaultsTests(unittest.TestCase):
             root = Path(directory)
             device = root / 'device'
             device.mkdir()
-            lock = {'product_version': '2.1.1',
+            lock = {'product_version': '2.1.1', 'build': '5F138',
                     'derived': {'gles_engine': 'OpenGLES', 'guest_tools': 'none'}}
             (device / 'device.lock.json').write_text(json.dumps(lock))
             output = root / 'frontend-out'
             args = ['regress.py', '--device', str(device), '--checks', 'gles',
                     '--qemu', str(root / 'absent-qemu'), '--out', str(output)]
             with patch('sys.argv', args), patch.object(R, 'ROOT', str(root)), \
-                    patch.object(R, 'Procs') as procs:
-                with self.assertRaisesRegex(SystemExit, 'missing qemu binary'):
+                    patch.object(R, 'Procs') as procs, \
+                    patch.object(R, 'requested_frame_references', wraps=R.requested_frame_references) as references:
+                with self.assertRaisesRegex(SystemExit, 'missing qualified frame reference'):
                     R.main()
                 procs.assert_not_called()
-            receipt = json.loads((output / 'fixture-inputs.json').read_text())
+            self.assertFalse(output.exists())
+            actual_cfg = references.call_args.args[0]
+            self.assertTrue(actual_cfg.gles_front_end)
+            receipt = F.selected_metadata(actual_cfg, ['gles'])
             self.assertEqual(receipt['inputs'], [])
             self.assertIn('no native runtime success', receipt['limits'])
 

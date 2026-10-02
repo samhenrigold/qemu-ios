@@ -15,11 +15,14 @@ root = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("framecheck", root / "tests/framecheck.py")
 framecheck = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(framecheck)
+refspec = importlib.util.spec_from_file_location("frame_reference", root / "tests/frame_reference.py")
+frame_reference = importlib.util.module_from_spec(refspec)
+refspec.loader.exec_module(frame_reference)
 source = ast.parse((root / "tests/ipad1/regress.py").read_text())
 functions = [node for node in source.body if isinstance(node, ast.FunctionDef)
              and node.name in ("qualified_frame_reference", "gl_clean")]
 assert len(functions) == 2
-scope = dict(os=os, re=re, json=json, hashlib=hashlib, framecheck=framecheck, MAGENTA_MAX=0.001,
+scope = dict(frame_reference=frame_reference, os=os, re=re, json=json, hashlib=hashlib, framecheck=framecheck, MAGENTA_MAX=0.001,
              itqmp=SimpleNamespace(gles_rejects=lambda _: {}, magenta_fraction=lambda *a, **kw: 0))
 exec(compile(ast.Module(body=functions, type_ignores=[]), "production-frame-checks", "exec"), scope)
 
