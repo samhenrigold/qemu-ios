@@ -16,6 +16,8 @@ def qualified(root, board, build, product_version, scene):
         return None, "missing firmware build identity"
     if not isinstance(scene, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", scene):
         return None, "invalid scene identity"
+    if not isinstance(product_version, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", product_version):
+        return None, "missing full firmware product version"
     directory = Path(root) / board / build
     label = f"{board}/{build}/{scene}"
     manifest_path = directory / "reference.json"

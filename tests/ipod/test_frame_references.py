@@ -28,6 +28,10 @@ with tempfile.TemporaryDirectory(prefix='ipod-frame-reference-') as temp:
     path = ref / 'reference.json'
     path.write_text(json.dumps(manifest))
     assert select() == (str(picture), None)
+    manifest['product_version'] = None; path.write_text(json.dumps(manifest))
+    assert 'missing full firmware' in select(version=None)[1]
+    assert 'missing full firmware' in select(version='')[1]
+    manifest['product_version'] = '1.1.5'; path.write_text(json.dumps(manifest))
     assert 'missing qualified' in select('3A101a', '1.1')[1]
     assert 'identity differs' in select(version='1.1')[1]
     assert 'missing qualified' in select(scene='safari')[1]
@@ -73,3 +77,29 @@ with tempfile.TemporaryDirectory(prefix='ipod-native-reference-') as temp:
     result=Result();scope['check_gles_front_end'](cfg,dev,result)
     assert not result.ok and 'visual coverage missing' in result.detail,result.detail
 print('PASS: exact board/build/full-version references, provenance/hash refusal, no borrowed family fallback, actual native gate refuses unqualified liveness')
+
+
+# The newly reviewed exact-build pictures retain the same sensitivity as the
+# historical audit oracle: orientation, channel order and stale scenes fail.
+from PIL import Image, ImageOps
+spec = importlib.util.spec_from_file_location('actual_framecheck', root / 'tests/framecheck.py')
+checker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(checker)
+with tempfile.TemporaryDirectory(prefix='exact-frame-mutants-') as temp:
+    for build, version in [('3A101a', '1.1'), ('4B1', '1.1.5')]:
+        home, why = references.qualified(root / 'tests/gles-refs', 'n45ap', build, version, 'home')
+        safari, safari_why = references.qualified(root / 'tests/gles-refs', 'n45ap', build, version, 'safari')
+        assert home and safari and not why and not safari_why
+        picture = Image.open(home).convert('RGB')
+        flipped = Path(temp) / (build + '-flip.png')
+        swapped = Path(temp) / (build + '-channels.png')
+        ImageOps.flip(picture).save(flipped)
+        red, green, blue = picture.split()
+        Image.merge('RGB', (blue, green, red)).save(swapped)
+        assert not checker.verdict(flipped, home)['ok']
+        assert not checker.verdict(swapped, home)['ok']
+        assert not checker.verdict(safari, home)['ok']
+        other_build, other_version = ('4B1', '1.1.5') if build == '3A101a' else ('3A101a', '1.1')
+        other, why = references.qualified(root / 'tests/gles-refs', 'n45ap', other_build, other_version, 'home')
+        assert other and not why and not checker.verdict(other, home)['ok']
+print('PASS: both exact1.x oracles reject flip, channel swap, stale scene and borrowed build')
