@@ -398,7 +398,8 @@ def main():
                     "hooks": [{"file": "hooks/MBXGLEngine", "target": MBX, "respring": True},
                               {"file": "hooks/it_typein.dylib", "target": TYPEIN, "respring": False}]}
         mkpkg.pack([("f/manifest.json", json.dumps(manifest).encode())] + [("f/" + n, b) for n, _, b in payload]
-                   + [("loader/it_boot", b"loader"), ("loader/com.qemu.it-boot.plist", b"<plist/>"),
+                   + [("loader/it_boot", b"loader"), ("loader/hook-provenance", mkpkg.HOOK_PROVENANCE),
+                      ("loader/com.qemu.it-boot.plist", b"<plist/>"),
                       ("g/manifest.json", json.dumps(dict(manifest, requires={"builds": ["8C148"]})).encode())],
                    str(tmp / "t.itpack"))
         (vol / "System/Library/LaunchDaemons/j.plist").write_bytes(b"baked job")
@@ -461,6 +462,90 @@ def main():
         assert nonrespring.boot() == 1 and nonrespring.hook(TYPEIN) == b"old typein"
         assert nonrespring.hook(MBX) == b"shim"
         assert "stop com.apple.SpringBoard" not in nonrespring.launchctl()
+        # A cache-only original has no on-disk bytes. The preparer's explicit
+        # absence marker must remove the override on the very first no-hook offer.
+        absent = Device.__new__(Device)
+        absent.d, absent.exe = tmp / "absent-original", exe
+        shutil.copytree(dev.d, absent.d, symlinks=True)
+        absent.rel("sys" + MBX + ".baked").unlink()
+        absent.rel("sys" + MBX).unlink()
+        backup = mkpkg.preserve_hook(str(absent.d / "sys"), MBX[1:])
+        assert backup == MBX[1:] + ".baked-absent"
+        absent.rel("sys" + MBX).write_bytes(b"preinstalled frontend")
+        shutil.rmtree(absent.d / "sys/usr/local/lighttouch")
+        # Older packs remain fine for files, but cannot install a seed that
+        # needs original absence restored. Refuse before publishing seed state.
+        old_pack = tmp / "old.itpack"
+        mkpkg.pack([(n, b) for n, b in mkpkg.read_pack(str(tmp / "t.itpack"))
+                    if n != "loader/hook-provenance"], str(old_pack))
+        try:
+            mkpkg.seed(str(absent.d / "sys"), str(old_pack), gles=True)
+        except ValueError as error:
+            assert "rebuild the guest exports" in str(error)
+        else:
+            raise AssertionError("old loader accepted original absence")
+        assert not (absent.d / "sys/usr/local/lighttouch").exists()
+        mkpkg.seed(str(absent.d / "sys"), str(tmp / "t.itpack"), gles=True)
+        assert not absent.rel("sys" + MBX + ".baked").exists()
+        absent.offer(absent.package(8, {"bin/it_agent": b"no override"}))
+        assert absent.boot() == 1
+        assert not absent.rel("sys" + MBX).exists(), "cache-only stock remained shadowed by frontend"
+        assert absent.rel("sys" + MBX + ".baked-absent").read_bytes() == b""
+        assert "stop com.apple.SpringBoard" in absent.launchctl()
+        # Reinstall preserves original absence. Bad verdict returns to the
+        # no-hook package and removes the override again, not a fake .baked file.
+        absent.offer(absent.package(9, {"bin/it_agent": b"override"},
+            hooks=[("hooks/MBXGLEngine", b"new frontend", MBX, 1)]), [("good", 8)])
+        assert absent.boot() == 1 and absent.hook(MBX) == b"new frontend"
+        assert not absent.rel("sys" + MBX + ".baked").exists()
+        absent.offer(absent.package(9, {"bin/it_agent": b"override"},
+            hooks=[("hooks/MBXGLEngine", b"new frontend", MBX, 1)]), [("bad", 9)])
+        assert absent.boot() == 3 and absent.current() == 8
+        assert not absent.rel("sys" + MBX).exists()
+        assert absent.rel("sys" + MBX + ".baked-absent").read_bytes() == b""
+        # Conflicting provenance is rejected without changing the current file.
+        conflict = Device.__new__(Device)
+        conflict.d, conflict.exe = tmp / "conflicting-backups", exe
+        shutil.copytree(dev.d, conflict.d, symlinks=True)
+        conflict.rel("sys" + MBX + ".baked-absent").write_bytes(b"")
+        conflict.offer(conflict.package(8, {"bin/it_agent": b"no hooks"}))
+        assert conflict.boot() == 1 and conflict.hook(MBX) == b"shim"
+        assert "conflicting or invalid backup" in conflict.stderr
+
+        # Hooks introduced dynamically have the same absent-original contract.
+        dynamic = Device(tmp / "dynamic-absent", exe)
+        dynamic.offer(dynamic.package(1, {}, hooks=[("hooks/typein", b"dynamic", TYPEIN, 0)]))
+        assert dynamic.boot() == 1 and dynamic.hook(TYPEIN) == b"dynamic"
+        assert dynamic.rel("sys" + TYPEIN + ".baked-absent").read_bytes() == b""
+        assert not dynamic.rel("sys" + TYPEIN + ".baked").exists()
+        dynamic.offer(dynamic.package(2, {}), [("good", 1)])
+        assert dynamic.boot() == 1 and not dynamic.rel("sys" + TYPEIN).exists()
+        assert "stop com.apple.SpringBoard" not in dynamic.launchctl()
+        dangling = Device(tmp / "dangling-original", exe)
+        dangling.rel("sys" + TYPEIN).parent.mkdir(parents=True)
+        dangling.rel("sys" + TYPEIN).symlink_to("missing-original")
+        dangling.offer(dangling.package(1, {}, hooks=[("hooks/typein", b"new", TYPEIN, 1)]))
+        assert dangling.boot() == 1 and dangling.rel("sys" + TYPEIN).is_symlink()
+        assert os.readlink(dangling.rel("sys" + TYPEIN)) == "missing-original"
+        assert not dangling.rel("sys" + TYPEIN + ".baked-absent").exists()
+        assert "cannot preserve original" in dangling.stderr
+        assert "stop com.apple.SpringBoard" not in dangling.launchctl()
+        malformed = Device.__new__(Device)
+        malformed.d, malformed.exe = tmp / "malformed-absence", exe
+        shutil.copytree(dev.d, malformed.d, symlinks=True)
+        malformed.rel("sys" + MBX + ".baked").unlink()
+        malformed.rel("sys" + MBX + ".baked-absent").write_bytes(b"not empty")
+        malformed.offer(malformed.package(8, {"bin/it_agent": b"no hooks"}))
+        assert malformed.boot() == 1 and malformed.hook(MBX) == b"shim"
+        assert "conflicting or invalid backup" in malformed.stderr
+
+        failed_copy = Device(tmp / "failed-dynamic-copy", exe)
+        failed_copy.rel("sys" + MBX).mkdir(parents=True)
+        failed_copy.offer(failed_copy.package(1, {}, hooks=[("hooks/engine", b"frontend", MBX, 1)]))
+        assert failed_copy.boot() == 1 and failed_copy.rel("sys" + MBX).is_dir()
+        assert not failed_copy.rel("sys" + MBX + ".baked-absent").exists()
+        assert "cannot keep" in failed_copy.stderr
+        assert "stop com.apple.SpringBoard" not in failed_copy.launchctl()
         dev.offer((vol / "usr/local/lighttouch/pkgs/7/offer").read_text())
         assert dev.boot() == 0 and dev.current() == 7 and "hook" not in dev.stderr, dev.stderr
         assert dev.launchctl() == ["load %s/root/pkgs/7/jobs/j.plist" % dev.d], dev.launchctl()
@@ -469,7 +554,8 @@ def main():
 
     print("PASS: silent host, install, good/bad verdicts, no-verdict retries, safe mode, .baked hooks, "
           "bad hash, size-only fallback, torn installs, wrong build, malformed offers, "
-          "seed first-offer hook removal, filtered hooks and failed target bookkeeping")
+          "seed first-offer hook removal, filtered/failed hooks, genuine cached absence, "
+          "dynamic absence removal/reinstall/rollback, conflicting backups and dangling originals")
 
 
 if __name__ == "__main__":

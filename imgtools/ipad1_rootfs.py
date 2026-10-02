@@ -143,6 +143,13 @@ def image_strings(data, img, section=None):
     return out
 
 
+def install_gles_frontend(mnt, engine):
+    """Install the framework override after retaining genuine stock provenance."""
+    backup = mkpkg.preserve_hook(mnt, OPENGLES_REL)
+    shutil.copy(engine, os.path.join(mnt, OPENGLES_REL))
+    return [backup]
+
+
 def gli_uncache(mnt, rel=OPENGLES_REL, cache=DYLD_CACHE):
     """Let dlopen reach the GLI shim (or the iPod's MBX shim, rel/cache given) on disk. 4.x ships GLEngine inside the shared cache, and iOS dyld
     matches a cached image by path alone, so the shim installed over it would never load (3.2.x has no
@@ -603,7 +610,7 @@ def build(a):
             status = gli_uncache(m.mnt)
             print("      GL front end %s; %s; %s" % (os.path.basename(engine), status, info))
             gli_owned += [DYLD_OVERRIDE] if "overridden" in status else []
-            shutil.copy(engine, os.path.join(m.mnt, OPENGLES_REL))
+            gli_owned += install_gles_frontend(m.mnt, engine)
         if a.gles:
             for app in () if apps_stashed else GLES_APPS:
                 shutil.rmtree(os.path.join(m.mnt, "Applications", app), ignore_errors=True)
