@@ -8,6 +8,7 @@
     {"name": "tests/ipod/test_virtual_input_paused_touch.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_virtual_input_publication.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_n72_clock_reference.py", "tier": "quick", "prerequisites": []},
+    {"name": "tests/ipod/test_n72_security_profile.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_darwin_poll.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_mbx_fill.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_mbx_fill_handler.py", "tier": "quick", "prerequisites": []},

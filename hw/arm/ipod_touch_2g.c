@@ -264,6 +264,35 @@ static bool ipod_touch_time_env_alias(IPodTouchMachineState *s, Error **errp)
     return true;
 }
 
+static const char *const n72_security_profiles[] = {
+    [N72_SECURITY_RETAIL] = "retail",
+    [N72_SECURITY_SECURE_DEVELOPMENT] = "secure-development",
+    [N72_SECURITY_INSECURE_DEVELOPMENT] = "insecure-development",
+};
+
+static char *ipod_touch_get_security_profile(Object *obj, Error **errp)
+{
+    return g_strdup(n72_security_profiles[IPOD_TOUCH_MACHINE(obj)->security_profile]);
+}
+
+static void ipod_touch_set_security_profile(Object *obj, const char *value,
+                                            Error **errp)
+{
+    IPodTouchMachineState *s = IPOD_TOUCH_MACHINE(obj);
+    if (s->cpu) {
+        error_setg(errp, "security-profile must be set before the machine starts");
+        return;
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(n72_security_profiles); i++) {
+        if (!strcmp(value, n72_security_profiles[i])) {
+            s->security_profile = i;
+            return;
+        }
+    }
+    error_setg(errp, "security-profile must be retail, secure-development, "
+               "or insecure-development");
+}
+
 /* Unit ECID is a board input. Stock ROM/iBSS reads the immutable fuse words;
  * no descriptor or guest-memory identity is fabricated here. */
 static void ipod_touch_get_ecid(Object *obj, Visitor *v, const char *name,
@@ -1006,12 +1035,13 @@ static void ipod_touch_load_bootrom(IPodTouchMachineState *nms)
  * IT_DIRECT_IBOOT / IT_DIRECT_LLB: boot-chain substitution (explicitly
  * authorised for the 3.1.3 bring-up).
  *
- * iOS 3.0+ personalises the signed boot chain per-device, and the S5L8720
- * bootrom rejects the 7E18 LLB no matter how we forge the PKE check -- it
- * recomputes the image hash itself and drops to the DFU wait loop. So instead
- * of satisfying the bootrom we skip it, exactly as devos50 (iPod touch 1G, no
- * bootrom dump) and DJHartley's iEmu (-option-rom unencrypted iBoot) did: load
- * a *decrypted* iBoot straight into its own RAM region and enter it.
+ * This is an explicit compatibility/debugging shortcut, not evidence of a
+ * SecureROM or LLB limitation. Stock 7E18 signatures validate independently,
+ * and native retail and secure-development controls now reach their unmodified
+ * ROM -> LLB -> iBoot entries with forge-sigcheck=off. The initial cold-chain
+ * stall was a DSIM software-reset status gated on this shortcut's board flag.
+ * Full stock kernel/restore qualification is tracked in security-profiles.md;
+ * retain direct loading until that complete hardware path is qualified.
  *
  * The decrypted images are raw (they begin with the ARM vector table). Their
  * intended load address is the absolute value baked into the vector table at
@@ -1941,6 +1971,10 @@ static void ipod_touch_instance_init(Object *obj)
     object_property_set_description(obj, "gles-debug",
         "Paint what the GL bridge refuses magenta instead of black (default off; tests turn it on)");
 
+    object_property_add_str(obj, "security-profile", ipod_touch_get_security_profile,
+                            ipod_touch_set_security_profile);
+    object_property_set_description(obj, "security-profile",
+        "Immutable N72 physical security fuses (default retail)");
     object_property_add(obj, "ecid", "uint64", ipod_touch_get_ecid,
                         ipod_touch_set_ecid, NULL, NULL);
     object_property_set_description(obj, "ecid", "S5L8720 unit ECID (42 bits)");
@@ -3083,6 +3117,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = qdev_new("ipodtouch.chipid");
     IPodTouchChipIDState *chipid_state = IPOD_TOUCH_CHIPID(dev);
     nms->chipid_state = chipid_state;
+    ipod_touch_chipid_set_n72_profile(chipid_state, nms->security_profile);
     if (nms->ecid_explicit) {
         uint64_t id = nms->ecid;
         qdev_prop_set_uint32(dev, "word3", ((id >> 21) & 0x1fffff) |
