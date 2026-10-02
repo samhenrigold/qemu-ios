@@ -284,9 +284,44 @@ def offer(pkg, out, build, good=(), bad=()):
         f.write(offer_text(manifest, build, good, bad))
 
 
+HOOK_PROVENANCE = b"file-or-absence 1\n"
 SEED_ROOT = "usr/local/lighttouch"
 LOADER = ("usr/local/bin/it_boot", "System/Library/LaunchDaemons/com.qemu.it-boot.plist")
 SYSTEM_VERSION = "System/Library/CoreServices/SystemVersion.plist"
+
+
+def preserve_hook(mnt, rel, put=None):
+    """Keep the original file, or its absence, before installing an override.
+
+    Existing provenance is never overwritten. The returned volume-relative
+    backup/marker must be root-owned even when an earlier installer made it.
+    """
+    baked, absent = rel + ".baked", rel + ".baked-absent"
+    have_baked = os.path.lexists(os.path.join(mnt, baked))
+    have_absent = os.path.lexists(os.path.join(mnt, absent))
+    if have_baked and have_absent:
+        raise ValueError("conflicting hook provenance for " + rel)
+    if have_absent:
+        path = os.path.join(mnt, absent)
+        if not os.path.isfile(path) or os.path.islink(path) or os.stat(path).st_size:
+            raise ValueError("invalid absent hook marker for " + rel)
+        return absent
+    if have_baked:
+        return baked
+    if put is None:
+        def put(name, data, mode):
+            path = os.path.join(mnt, name)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as out:
+                out.write(data)
+            os.chmod(path, mode)
+    path = os.path.join(mnt, rel)
+    if os.path.lexists(path):
+        st = os.stat(path)
+        put(baked, open(path, "rb").read(), st.st_mode & 0o7777)
+        return baked
+    put(absent, b"", 0o644)
+    return absent
 
 
 def seed(mnt, itpack, gles=True):
@@ -317,6 +352,9 @@ def seed(mnt, itpack, gles=True):
     m = json.loads(entries[family + "/manifest.json"])
     hooks = [h for h in m["hooks"] if (gles or h["target"] not in GL_TARGETS)
              and os.path.exists(os.path.join(mnt, h["target"][1:]))]
+    if any(os.path.lexists(os.path.join(mnt, h["target"][1:] + ".baked-absent")) for h in hooks) \
+            and entries.get("loader/hook-provenance") != HOOK_PROVENANCE:
+        raise ValueError("guest loader cannot restore absent hook originals; rebuild the guest exports")
     dropped = {h["file"] for h in m["hooks"]} - {h["file"] for h in hooks}
     m = dict(m, hooks=hooks, files=[f for f in m["files"] if f["name"] not in dropped])
     made = []
@@ -346,9 +384,9 @@ def seed(mnt, itpack, gles=True):
     mode = {f["name"]: int(f["mode"], 8) for f in m["files"]}
     for h in hooks:
         rel = h["target"][1:]
-        if not os.path.exists(os.path.join(mnt, rel + ".baked")):
-            st = os.stat(os.path.join(mnt, rel))
-            put(rel + ".baked", open(os.path.join(mnt, rel), "rb").read(), st.st_mode & 0o7777)
+        backup = preserve_hook(mnt, rel, put)
+        if backup not in made:
+            made.append(backup)
         put(rel, entries[family + "/" + h["file"]], mode[h["file"]])
         # The first offer can remove this hook before it_boot ever reads the
         # seed offer. Remember only targets whose installation succeeded.
@@ -383,6 +421,7 @@ def build(src, out):
         if why:
             raise SystemExit("loader/%s: %s" % (arch, why))
         entries += [("loader/it_boot", loader),
+                    ("loader/hook-provenance", HOOK_PROVENANCE),
                     ("loader/com.qemu.it-boot.plist",
                      open(os.path.join(src, "build/it-boot", arch, "com.qemu.it-boot.plist"), "rb").read())]
         pack(entries, os.path.join(out, arch + ".itpack"))

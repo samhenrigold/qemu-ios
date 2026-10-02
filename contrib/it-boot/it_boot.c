@@ -834,11 +834,20 @@ static void apply_hooks(struct state *st, long serial)
         }
     }
     for (int k = 0; k < st->nhooks; k++) {
-        char target[PATHN], baked[PATHN], src[PATHN];
+        char target[PATHN], baked[PATHN], absent[PATHN], src[PATHN];
         const struct entry *want = NULL;
         struct stat bs;
         snprintf(target, sizeof(target), "%s%s", sys_root(), st->hooks[k].target);
         snprintf(baked, sizeof(baked), "%s.baked", target);
+        snprintf(absent, sizeof(absent), "%s.baked-absent", target);
+        struct stat marker;
+        int have_baked = lstat(baked, &bs) == 0;
+        int have_absent = lstat(absent, &marker) == 0;
+        if ((have_baked && have_absent) ||
+            (have_absent && (!S_ISREG(marker.st_mode) || marker.st_size != 0))) {
+            say("it_boot: conflicting or invalid backup for %s; hook skipped\n", st->hooks[k].target, 0);
+            continue;
+        }
         for (int i = 0; i < o.nent; i++) {
             if (o.e[i].kind == 'h' && !strcmp(o.e[i].target, st->hooks[k].target)) {
                 want = &o.e[i];
@@ -847,12 +856,40 @@ static void apply_hooks(struct state *st, long serial)
         if (want) {
             pkg_path(src, serial, want->path);
             struct stat ts;
-            if (access(baked, F_OK) != 0 && stat(target, &ts) == 0 &&
-                link(target, baked) != 0 && copy_atomic(target, baked, ts.st_mode & 07777) != 0) {
-                say("it_boot: cannot keep %s.baked; hook skipped\n", st->hooks[k].target, 0);
-                continue;
+            if (!have_baked && !have_absent) {
+                if (stat(target, &ts) == 0) {
+                    if (link(target, baked) != 0 && copy_atomic(target, baked, ts.st_mode & 07777) != 0) {
+                        say("it_boot: cannot keep %s.baked; hook skipped\n", st->hooks[k].target, 0);
+                        continue;
+                    }
+                } else if (errno == ENOENT) {
+                    /* A dangling original symlink is present, not stock absence. */
+                    if (lstat(target, &ts) == 0 || errno != ENOENT) {
+                        say("it_boot: cannot preserve original %s; hook skipped\n", st->hooks[k].target, 0);
+                        continue;
+                    }
+                    if (mkparent(absent)) {
+                        continue;
+                    }
+                    int fd = open(absent, O_WRONLY | O_CREAT | O_EXCL, 0644);
+                    if (fd < 0) {
+                        say("it_boot: cannot record absence for %s; hook skipped\n", st->hooks[k].target, 0);
+                        continue;
+                    }
+                    close(fd);
+                } else {
+                    continue;
+                }
             }
-        } else if (stat(baked, &bs) == 0) {
+        } else if (have_absent) {
+            if (unlink(target) == 0) {
+                say("it_boot: hook %s removed (original absent)\n", st->hooks[k].target, 0);
+                respring_needed |= st->hooks[k].respring;
+            } else if (errno != ENOENT) {
+                say("it_boot: hook %s removal failed\n", st->hooks[k].target, 0);
+            }
+            continue;
+        } else if (have_baked) {
             snprintf(src, sizeof(src), "%s", baked);
         } else {
             continue;                        /* nothing baked to go back to */
