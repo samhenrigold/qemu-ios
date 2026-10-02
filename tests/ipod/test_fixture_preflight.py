@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Deployment declarations reject bad selected inputs before a guest starts."""
 import plistlib
+import contextlib
+import io
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -12,6 +14,28 @@ import regress as R
 
 
 class FixtureTests(unittest.TestCase):
+    def test_prerequisites_reject_newer_fixture_without_launching(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ipa = root / 'new.ipa'
+            with zipfile.ZipFile(ipa, 'w') as archive:
+                archive.writestr('Payload/Test.app/Info.plist',
+                                plistlib.dumps({'MinimumOSVersion': '3.1'}))
+            cfg = SimpleNamespace(qemu=directory, base_nand=directory,
+                usbmuxd=directory, ipa=str(ipa), ipa_explicit=True,
+                harness_ipa=str(ipa), harness_explicit=True,
+                gles_app=None, gles_slotmap=None, gles_front_end=True,
+                product_version='3.0')
+            output = io.StringIO()
+            with patch.object(R, 'requested_frame_references', return_value=[]), \
+                 patch.object(R.Device, 'start') as start, \
+                 patch.object(R, 'Procs') as procs, contextlib.redirect_stdout(output):
+                self.assertEqual(R.report_prereqs(cfg), 1)
+            self.assertIn('fixture requires iOS 3.1; guest is iOS 3.0', output.getvalue())
+            self.assertIn('CANNOT run', output.getvalue())
+            start.assert_not_called()
+            procs.assert_not_called()
+
     def test_versions(self):
         self.assertEqual(F.version('2'), F.version('2.0.0'))
         self.assertGreater(F.version('2.1.10'), F.version('2.1.2'))
