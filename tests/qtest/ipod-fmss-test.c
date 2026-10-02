@@ -1432,6 +1432,95 @@ static void address_word_pointer_snapshot(void)
     qtest_quit(qts);
     unlink(state); rmdir(overlay); g_free(overlay);
 }
+static uint32_t script_observe_d20(QTestState *qts)
+{
+    const uint32_t observe[] = {
+        0x04000d20, 0xffffffff, 0x05070000, RAM + 0x2000,
+        0x11000007, 0, 0, 0
+    };
+    put_transaction_program(qts, observe, G_N_ELEMENTS(observe));
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    uint32_t value = qtest_readl(qts, RAM + 0x2000);
+    qtest_writel(qts, FMSS + 0xc00, 8);
+    return value;
+}
+
+
+/* Stock D20 descriptor producer feeds FMC34, without NAND/IRQ/result claims. */
+static void main_address_pointer_advance(void)
+{
+    char *overlay;
+    QTestState *qts = start_board(&overlay);
+    const uint32_t desc = RAM + 0x3000, output = RAM + 0x2000;
+    const uint32_t program[] = {
+        0x04000d20, 0xffffffff, 0x03010000, 0,
+        0x0c000000, 4, 0x02000d20, 0, 0x02010034, 0,
+        0x04020034, 0xffffffff, 0x05070000, output, 0x11020007, 0,
+        0x04000d20, 0xffffffff, 0x03010000, 0,
+        0x0c000000, 4, 0x02000d20, 0, 0x02010034, 0,
+        0x04020034, 0xffffffff, 0x0c070007, 4, 0x11020007, 0,
+        0x04000d20, 0xffffffff, 0x0c070007, 4, 0x11000007, 0, 0, 0
+    };
+    qtest_writel(qts, desc, 0x81234560);
+    qtest_writel(qts, desc + 4, 0x87654320);
+    qtest_writel(qts, FMSS + 0xd20, desc);
+    put_transaction_program(qts, program, G_N_ELEMENTS(program));
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    g_assert_cmphex(qtest_readl(qts, output), ==, 0x81234560);
+    g_assert_cmphex(qtest_readl(qts, output + 4), ==, 0x87654320);
+    g_assert_cmphex(qtest_readl(qts, output + 8), ==, desc + 8);
+    qtest_writel(qts, FMSS + 0xc00, 8);
+    for (unsigned form = 0; form < 2; form++) {
+        const uint32_t rejected[] = {
+            0x05000000, desc + 4,
+            form ? 0x01000d20 : 0x02000d20, form ? desc + 4 : 1,
+            0x04000d20, 0xffffffff, 0x03010000, 0,
+            0x02010034, 0, 0x05070000, output, 0x11010007, 0, 0, 0
+        };
+        put_transaction_program(qts, rejected, G_N_ELEMENTS(rejected));
+        qtest_writel(qts, output, 0xabcddcba);
+        qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+        g_assert_cmphex(qtest_readl(qts, output), ==, 0xabcddcba);
+        qtest_writel(qts, FMSS + 0xc00, 8);
+        g_assert_cmphex(script_observe_d20(qts), ==, desc + 8);
+    }
+    qtest_quit(qts);
+    rmdir(overlay);
+    g_free(overlay);
+}
+
+static void main_address_pointer_snapshot(void)
+{
+    char *overlay;
+    g_autofree char *state = NULL;
+    QTestState *qts = start_board(&overlay);
+    const uint32_t desc = RAM + 0x3000;
+    const uint32_t advance[] = {
+        0x04000d20, 0xffffffff, 0x0c000000, 4,
+        0x02000d20, 0, 0, 0
+    };
+    qtest_writel(qts, FMSS + 0xd20, desc);
+    put_transaction_program(qts, advance, G_N_ELEMENTS(advance));
+    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
+    qtest_writel(qts, FMSS + 0xc00, 8);
+    g_assert_cmphex(script_observe_d20(qts), ==, desc + 4);
+    g_assert_true(migrate(qts, &state));
+    qtest_quit(qts);
+    qts = qtest_initf("-machine iPod-Touch,bootrom=%s,nor=%s,nand=%s,nandrw=%s "
+                      "-display none -audio driver=none -nic none -d unimp "
+                      "-incoming defer", rom_path, nor_path, nand_path, overlay);
+    qtest_writel(qts, FMSS + 0xd20, desc + 12);
+    g_assert_cmphex(script_observe_d20(qts), ==, desc + 12);
+    g_autofree char *uri = g_strdup_printf("file:%s", state);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'migrate-incoming', "
+                                "'arguments': { 'uri': %s } }", uri);
+    qtest_qmp_eventwait(qts, "RESUME");
+    g_assert_cmphex(script_observe_d20(qts), ==, desc + 4);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+    g_assert_cmphex(script_observe_d20(qts), ==, 0);
+    qtest_quit(qts);
+    unlink(state); rmdir(overlay); g_free(overlay);
+}
 static void descriptor_pointer_snapshot(void)
 {
     char *overlay;
@@ -1487,6 +1576,8 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/fmss/descriptor-load", descriptor_load);
     qtest_add_func("/ipod/fmss/descriptor-pointer-backstep", descriptor_pointer_backstep);
     qtest_add_func("/ipod/fmss/descriptor-pointer-snapshot", descriptor_pointer_snapshot);
+    qtest_add_func("/ipod/fmss/main-address-pointer-advance", main_address_pointer_advance);
+    qtest_add_func("/ipod/fmss/main-address-pointer-snapshot", main_address_pointer_snapshot);
     qtest_add_func("/ipod/fmss/address-word-pointer-advance", address_word_pointer_advance);
     qtest_add_func("/ipod/fmss/address-word-pointer-snapshot", address_word_pointer_snapshot);
     qtest_add_func("/ipod/fmss/logical-and", logical_and);
