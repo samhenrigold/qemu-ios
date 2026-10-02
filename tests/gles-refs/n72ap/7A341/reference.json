@@ -1,0 +1,84 @@
+{
+  "board": "n72ap",
+  "build": "7A341",
+  "product_version": "3.0",
+  "baseline": {
+    "renderer": "stock-software-coreanimation",
+    "provenance": "Exact-build genuine OpenGLES extracted from manifest/hash-verified cached stock rootfs. Actual guest VFS records custom framework before preparation and genuine stock after clean reboot, backed by state/offer/six software flags. New armv6 loader retained; zero host GL contexts and hellos. Userspace UART is unavailable and separately recorded. Root visual review/admission pending.",
+    "stock_framework_sha256": "dbc657acc58484911b445534dda8bb3a6f0646a260d9ff54836536e8cf0dd782",
+    "stock_rootfs_provenance": {
+      "build": "7A341",
+      "source_rootfs": "/private/tmp/ltm-developer-sized-cache/decrypted-v2/0f7fc76d9b9aa826b5ab14be9821a315d3d9dc42/5a31b22fe59c7d7c066ea2e63fdd2a4ac49356a4ea22bd0cd5b9a96a960397dd/rootfs.dmg",
+      "rootfs_sha256": "6c4988ff3bffcabdcbbe3409e710c71d3d7ad4010a4fe4b5e32e42202fcacb87",
+      "decrypt_manifest_sha256": "bff96e3a95a8c80bbe4f5d42fe78f4939b3b3cb71bb6cfabd0ee9e0cf2029996",
+      "source_ipsw_sha1": "0f7fc76d9b9aa826b5ab14be9821a315d3d9dc42",
+      "SystemVersion": {
+        "ProductBuildVersion": "7A341",
+        "ProductCopyright": "1983-2009 Apple Inc.",
+        "ProductName": "iPhone OS",
+        "ProductVersion": "3.0"
+      },
+      "stock_path": "/System/Library/Frameworks/OpenGLES.framework/OpenGLES",
+      "stock_sha256": "dbc657acc58484911b445534dda8bb3a6f0646a260d9ff54836536e8cf0dd782",
+      "stock_bytes": 114960,
+      "source_mode": "0o755",
+      "host_bridge_markers": {
+        "[gles]": false,
+        "mbxshim": false,
+        "CoreAnimation composites through the host": false
+      },
+      "read_only_attach": true,
+      "scope": "Stock framework extraction only; no prepared generation mutation or software-rendering runtime qualification."
+    },
+    "qemu_sha256": "da512148d1f827d12e914d39477de773547f6989c4b59fcf9ff4a0c0a8162d61",
+    "regression_source_sha256": "1e69eff74e259f0d41be5b243f353ae7d8b21c6fe4716189641d039390dfeb88",
+    "preparation_sha256": "57e334c8694ca18c24b0951197d1aedc343e3c8b3923456fe86c464fc26b7fe9",
+    "stock_restore_proof_sha256": "dd6cce94b724c13990dfaedc54d331afa36ee0059738541549fd76c82eea0d36",
+    "native_qualification": {
+      "build": "7A341",
+      "harness_exit": 0,
+      "maintained_checks": "boot,persist PASS 2/2",
+      "first_shutdown_confirmed": true,
+      "final_shutdown_confirmed": true,
+      "independent_stock_frame_capture_validated": true,
+      "reference_admission": "proposal only; pending root visual review/admission",
+      "new_loader_sha256": "13c52c1218f448f0eb1e9529c9bc047b249d39d58a95ac43c8e1210e72e58861",
+      "loader_scope": "New armv6 loader executes stock restoration with legacy13 prepared seed/other hooks. No fresh production seed14/cached absence/native activation claim.",
+      "UART_userspace_unavailable": true,
+      "scene_semantics": {
+        "swipe": "maintained swipe at unchanged coordinates; stock home scene",
+        "safari": "legacy test scene name: unchanged tap40,70 launches Welcome to Mail on exact3.0 layout, not Safari",
+        "home": "Home returns from Mail to stock SpringBoard"
+      },
+      "owned_children_reaped": true,
+      "limits": "Independent software visual control on generated NAND; not physical GPU/restore, browser network loading, all-firmware or release qualification. Prior attempt exit1 retained."
+    },
+    "limits": "Independent software visual control on generated NAND; not physical GPU/restore, browser network loading, all-firmware or release qualification. Prior attempt exit1 retained. The historical safari scene opens Mail at unchanged coordinates; no Safari claim.",
+    "scene_contract": "Unchanged maintained swipe, tap40,70 to opened-app, then Home; pixels and thresholds unchanged. Opened app is Mail (Welcome to Mail). Historical capture basename software-safari.png retained in evidence.",
+    "visual_review": "Root reviewed all three complete stock software frames and approved generic scene naming; repository reference admission remains root-owned.",
+    "visual_admission": {
+      "review": "Root inspected all full source scenes and verified unchanged64x96 BOX pixels/hashes",
+      "scope": "Independent scene pixels only; no stock physical GPU or all-firmware claim",
+      "admitted": true
+    }
+  },
+  "frames": {
+    "swipe": {
+      "sha256": "eac0503f1c5eaa87652378839c959d3b970f7eab669d25f02260925e3c27abb5",
+      "source_sha256": "5c276308e32eaf8d8cc59547455835fc66fe6ef372862b34413ab714fc166fb7",
+      "observed_scene": "maintained swipe at unchanged coordinates; stock home scene"
+    },
+    "home": {
+      "sha256": "eac0503f1c5eaa87652378839c959d3b970f7eab669d25f02260925e3c27abb5",
+      "source_sha256": "5c276308e32eaf8d8cc59547455835fc66fe6ef372862b34413ab714fc166fb7",
+      "observed_scene": "Home returns from Mail to stock SpringBoard"
+    },
+    "opened-app": {
+      "sha256": "5dcac8e51656a02f8a10240de79214e5215c3a7830182c7751a154618f7fc8d0",
+      "source_sha256": "f4333c9e0d6aa31cc934613f913374323b273b3d9655e0330ee9e37caacdcbde",
+      "observed_scene": "legacy test scene name: unchanged tap40,70 launches Welcome to Mail on exact3.0 layout, not Safari",
+      "observed_app": "Mail (Welcome to Mail)",
+      "capture_name_history": "Original full capture software-safari.png; generic opened-app names the unchanged tap40,70 scene without claiming a firmware-independent app location."
+    }
+  }
+}

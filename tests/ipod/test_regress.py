@@ -331,7 +331,7 @@ import types
 import fixture_preflight
 import ffmpeg_guard
 
-def run_case(R,name,checks,shutdown=(True,True),raise_shutdown=False,cleanup_error=False,clean=False):
+def run_case(R,name,checks,shutdown=(True,True),raise_shutdown=False,cleanup_error=False,clean=False,usb_unavailable=False):
  with tempfile.TemporaryDirectory(prefix='actual-main-') as temp:
   root=Path(temp);dummy=root/'input';dummy.write_text('owned mock input');out=root/'out';events=[]
   class Procs:
@@ -350,10 +350,14 @@ def run_case(R,name,checks,shutdown=(True,True),raise_shutdown=False,cleanup_err
     return shutdown[0 if self.tag=='boot1' else 1]
   def configure(cfg):
    cfg.base_nand=cfg.qemu=cfg.usbmuxd=cfg.ipa=cfg.harness_ipa=str(dummy);cfg.board='n72ap';cfg.build='5F138';cfg.product_version='2.1.1';cfg.device_version=(2,1);cfg.gles_front_end=True;cfg.home_lit_min=100000
+  def wait_for_device(*args):
+   events.append(('wait_for_device',))
+   if usb_unavailable:raise AssertionError('frontend must not depend on USB')
+   return 'mock-udid','ready'
   def check(*args):return args[-1].set(True,'actual-main mocked check')
   argv=['regress.py','--checks',checks,'--out',str(out)]+(['--clean'] if clean else [])
   with contextlib.ExitStack() as stack:
-   stack.enter_context(patch.dict(sys.modules, {'numpy': types.ModuleType('numpy')}));stack.enter_context(patch.object(sys,'argv',argv));stack.enter_context(patch.object(R,'configure_device',configure));stack.enter_context(patch.object(R,'Procs',Procs));stack.enter_context(patch.object(R,'Device',Device));stack.enter_context(patch.object(R,'free_port',return_value=1));stack.enter_context(patch.object(R.time,'sleep',return_value=None));stack.enter_context(patch.object(R,'wait_for_device',return_value=('mock-udid','ready')));stack.enter_context(patch.object(R,'afc',return_value=types.SimpleNamespace(returncode=0,stdout='',stderr='')));stack.enter_context(patch.object(ffmpeg_guard,'check',return_value=None))
+   stack.enter_context(patch.dict(sys.modules, {'numpy': types.ModuleType('numpy')}));stack.enter_context(patch.object(sys,'argv',argv));stack.enter_context(patch.object(R,'configure_device',configure));stack.enter_context(patch.object(R,'Procs',Procs));stack.enter_context(patch.object(R,'Device',Device));stack.enter_context(patch.object(R,'free_port',return_value=1));stack.enter_context(patch.object(R.time,'sleep',return_value=None));stack.enter_context(patch.object(R,'wait_for_device',side_effect=wait_for_device));stack.enter_context(patch.object(R,'afc',return_value=types.SimpleNamespace(returncode=0,stdout='',stderr='')));stack.enter_context(patch.object(ffmpeg_guard,'check',return_value=None))
    stack.enter_context(patch.object(fixture_preflight,'select_inputs',return_value=dict(ipa=str(dummy),harness=str(dummy),gles=None,slotmap=None,flavor='mock-owned-device',explicit=dict(ipa=False,harness=False,gles=False,slotmap=False))));stack.enter_context(patch.object(fixture_preflight,'requested_problems',return_value=[]));stack.enter_context(patch.object(fixture_preflight,'selected_metadata',return_value={'schemaVersion':1,'inputs':[]}));stack.enter_context(patch.object(R,'requested_frame_references',return_value=[]))
    for fn in ['check_persist','check_gles','check_appinstall','check_applaunch','check_audio','check_agent','check_fsck','verify_audio']:stack.enter_context(patch.object(R,fn,check))
    output=io.StringIO();errors=io.StringIO();stack.enter_context(contextlib.redirect_stdout(output));stack.enter_context(contextlib.redirect_stderr(errors));
@@ -390,3 +394,8 @@ assert all(r['ok'] is True for r in main_receipts[5]['results'].values()), main_
 assert main_receipts[5]['harness']['ok'] is True, main_receipts[5]
 assert main_receipts[6]['rc'] == 0 and main_receipts[6]['retained'] is False, main_receipts[6]
 print('PASS: actual main rejects required shutdown/late exception/cleanup failure; scoped hard stop and eight-check success unchanged')
+
+frontend_without_usb = run_case(R, 'frontend-with-unavailable-usb', 'boot,gles', usb_unavailable=True)
+assert frontend_without_usb['rc'] == 0, frontend_without_usb
+assert not any(e[0] == 'wait_for_device' for e in frontend_without_usb['events']), frontend_without_usb
+print('PASS: actual frontend gate does not require USB merely because usbmuxd is installed')

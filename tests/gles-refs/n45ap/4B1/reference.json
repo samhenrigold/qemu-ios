@@ -17,13 +17,15 @@
       "sha256": "95244e946eeb53face08d27f22cadefeb1d8f3598c6b30284fa4d29afe69ae3e",
       "source_sha256": "3fc78b7192ec390131e5ac2355bfa412b4d4d4bf5bc488487eb0a7c96b1fb3ec"
     },
-    "safari": {
-      "sha256": "d63fc084f06fa371bb3c91d690e5b34a9cedd3ed39d1920d6f736ec6edbc95cb",
-      "source_sha256": "0919f4f6439af671e3edb5c92852c35b3230a2ae8a793cdc0df983a0e68bcd51"
-    },
     "home": {
       "sha256": "c2067558d789690a390ef9ff6dc3b4236cff0306af258d895b9dcfb3cf72e627",
       "source_sha256": "5ebde77d82c87e7a972124471d9153b54460f82f8ce1bf46fa2eee70d054fabc"
+    },
+    "opened-app": {
+      "sha256": "d63fc084f06fa371bb3c91d690e5b34a9cedd3ed39d1920d6f736ec6edbc95cb",
+      "source_sha256": "0919f4f6439af671e3edb5c92852c35b3230a2ae8a793cdc0df983a0e68bcd51",
+      "application": "com.apple.mobilesafari",
+      "action": "tap first stock icon at40,70; historical source capture named safari"
     }
   }
 }
