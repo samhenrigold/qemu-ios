@@ -421,7 +421,9 @@ class Device:
     def powerdown(self):
         try:
             return itqmp.guest_powerdown(self.qmp, self.qemu, self.tag, log,
-                prefer_gesture=(self.cfg.device_version or (3, 1)) < (3, 1))
+                prefer_gesture=(self.cfg.device_version or (3, 1)) < (3, 1) or
+                               getattr(self.cfg, "host_power_gesture", False),
+                host_gesture=getattr(self.cfg, "host_power_gesture", False))
         finally:
             self.qmp = None
 
@@ -1895,6 +1897,8 @@ def main():
     ap.add_argument("--harness-ipa", default=None, help="explicit Harness IPA for audio/GLES fallback")
     gles_selection = ap.add_mutually_exclusive_group()
     gles_selection.add_argument("--gles-app", default=None, help="explicit GLTest.app bundle (slot ABI map selected separately)")
+    ap.add_argument("--host-power-gesture", action="store_true",
+                    help="qualify generic virtual-time host shutdown gesture, PMU shutdown still required")
     gles_selection.add_argument("--gles-front-end", dest="gles_front_end_requested", action="store_true",
                                 help="test SpringBoard compositing through the declared OpenGLES frontend, even with installed helpers")
     ap.add_argument("--ledger", metavar="DIRECTORY",

@@ -101,6 +101,9 @@ _qemu_ios_ui_frame
 _qemu_ios_ui_frame_size
 _qemu_ios_ui_touch
 _qemu_ios_ui_button
+_qemu_ios_ui_input_sequence
+_qemu_ios_ui_input_sequence_status
+_qemu_ios_ui_input_sequence_cancel
 _qemu_ios_set_foreground
 _qemu_ios_snapshot_save
 _qemu_ios_snapshot_done

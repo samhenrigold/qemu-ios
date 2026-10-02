@@ -19,6 +19,7 @@ header = r'''
 #define QEMU_IOS_BUTTON_VOLUME_DOWN 3
 typedef enum {IPOD_TOUCH_BUTTON_HOME,IPOD_TOUCH_BUTTON_POWER,IPOD_TOUCH_BUTTON_VOLUP,IPOD_TOUCH_BUTTON_VOLDOWN} IPodTouchButton;
 typedef struct { void(*cb)(void*);void *arg;int64_t deadline;bool pending; } QEMUTimer;
+static void ios_sequence_cancel_current(void) {}
 static int64_t now;
 static bool pins[4];
 static int64_t qemu_clock_get_ms(int clock) { return now; }

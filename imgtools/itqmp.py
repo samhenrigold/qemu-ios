@@ -592,7 +592,65 @@ def main(argv=None):
         sys.exit("unknown action %r" % action)
 
 
-def guest_powerdown(qmp, process, tag, log=print, charging_halt=False, prefer_gesture=False):
+def poweroff_sequence(qmp, knob_y=68):
+    """Host UI gesture; generic QMP owns all timing in guest virtual time.
+
+    Only the measured 320x480 iPod panels are supported here. No fallback to
+    wall-clock sleeps, guest patches or a successful-input shutdown verdict.
+    """
+    machine = qmp.cmd("qom-get", path="/machine", property="type")
+    if machine not in ("iPod-Touch-machine", "iPod-Touch-1G-machine"):
+        raise RuntimeError("host power gesture is unqualified for %s" % machine)
+    if not isinstance(knob_y, int) or not 0 <= knob_y < 480:
+        raise ValueError("power-off knob row must lie within the iPod panel")
+    first_generation = machine == "iPod-Touch-1G-machine"
+    release = 8650 if first_generation else 6150
+    events = []
+    def hardware(name, down, at):
+        keys = BUTTONS[name] if down else reversed(BUTTONS[name])
+        events.extend({"type": "key", "at-ms": at, "key": k, "down": down} for k in keys)
+    hardware("home", True, 0)
+    hardware("home", False, 150)
+    hardware("power", True, 2650)
+    hardware("power", False, release)
+    start = release + 1500
+    events.append({"type": "touch", "at-ms": start, "phase": "begin",
+                   "x": 65 / 320, "y": knob_y / 480})
+    for step in range(1, 25):
+        x = 65 + (295 - 65) * step // 24
+        events.append({"type": "touch", "at-ms": start + step * 80,
+                       "phase": "end" if step == 24 else "update",
+                       "x": x / 320, "y": knob_y / 480})
+    ident = uuid.uuid4().int & ((1 << 64) - 1) or 1
+    qmp.cmd("input-send-sequence", id=ident, events=events)
+    return ident, first_generation
+
+
+def finish_poweroff_sequence(qmp, ident, first_generation, timeout=180):
+    """Observe input delivery/backlight; actual guest SHUTDOWN stays the gate."""
+    deadline = time.monotonic() + timeout
+    try:
+        while time.monotonic() < deadline:
+            state = qmp.cmd("query-input-sequence", id=ident)["status"]
+            if state not in ("running", "completed"):
+                raise RuntimeError("power gesture input %s" % state)
+            if state == "completed":
+                if first_generation:
+                    return
+                if qmp.cmd("qom-get", path="/machine", property="display-sleeping") is True:
+                    qmp.cmd("qom-set", path="/machine", property="usb-attached", value=False)
+                    return
+            time.sleep(0.1)  # observation only; event deadlines remain virtual
+        raise TimeoutError("host power gesture did not complete/backlight remained on")
+    except EOFError:
+        qmp.wait_for_guest_shutdown(0)
+    except BaseException:
+        try: qmp.cmd("input-cancel-sequence", id=ident)
+        except (EOFError, OSError, RuntimeError): pass
+        raise
+
+
+def guest_powerdown(qmp, process, tag, log=print, charging_halt=False, prefer_gesture=False, host_gesture=False):
     """Require guest-origin SHUTDOWN plus process exit; SIGTERM also exits 0."""
     if qmp is None:
         log("%s: no QMP connection to confirm guest shutdown" % tag)
@@ -618,7 +676,11 @@ def guest_powerdown(qmp, process, tag, log=print, charging_halt=False, prefer_ge
         else:
             log("%s: gesture shutdown" % tag)
             try:
-                qmp.cmd("system_powerdown")
+                if host_gesture:
+                    ident, first = poweroff_sequence(qmp)
+                    finish_poweroff_sequence(qmp, ident, first)
+                else:
+                    qmp.cmd("system_powerdown")
             except EOFError:
                 # An immediate shutdown may precede the command response;
                 # the retained SHUTDOWN event must still prove its origin.

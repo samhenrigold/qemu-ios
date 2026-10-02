@@ -1024,8 +1024,17 @@ static void n45_machine_class_init(ObjectClass *klass, void *data)
     mc->ignore_memory_transaction_failures = true;
 }
 
+/* Read-only physical display observation; dark pixels are not power-off. */
+static bool n45_get_display_sleeping(Object *obj, Error **errp)
+{
+    return lcd_backlight_is_off();
+}
+
 static void n45_instance_init(Object *obj)
 {
+    object_property_add_bool(obj, "display-sleeping", n45_get_display_sleeping, NULL);
+    object_property_set_description(obj, "display-sleeping",
+        "Guest-controlled LCD backlight is off; not PMU standby or shutdown");
     IPOD_TOUCH_1G_MACHINE(obj)->usb_wrangler_quirk = true;
     IPOD_TOUCH_1G_MACHINE(obj)->wifi = true;
     guest_pkg_init(&IPOD_TOUCH_1G_MACHINE(obj)->pkg, obj);

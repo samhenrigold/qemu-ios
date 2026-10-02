@@ -1909,8 +1909,17 @@ static void ipod_touch_instance_finalize(Object *obj)
     ipod_agent_free(IPOD_TOUCH_MACHINE(obj)->agent);
 }
 
+/* Read-only physical display observation; dark pixels are not power-off. */
+static bool ipod_touch_get_display_sleeping(Object *obj, Error **errp)
+{
+    return lcd_backlight_is_off();
+}
+
 static void ipod_touch_instance_init(Object *obj)
 {
+    object_property_add_bool(obj, "display-sleeping", ipod_touch_get_display_sleeping, NULL);
+    object_property_set_description(obj, "display-sleeping",
+        "Guest-controlled LCD backlight is off; not PMU standby or shutdown");
     IPOD_TOUCH_MACHINE(obj)->audio_hw = ON_OFF_AUTO_AUTO;
     IPOD_TOUCH_MACHINE(obj)->bt_enabled = true;
     IPOD_TOUCH_MACHINE(obj)->bt_latency_us = 2000;

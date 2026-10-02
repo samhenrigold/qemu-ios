@@ -2,6 +2,7 @@
 /* Actual N45 touch/PMU -> SYSIC -> VIC wiring; no firmware executes. */
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 #define SYSIC 0x39a00000ULL
 #define VIC 0x38e00000ULL
 #define TOUCH (1U << 27)
@@ -104,6 +105,90 @@ static void pmu_wake_irq(void)
     qtest_quit(q);
 }
 
+static void sequence_status(QTestState *q, int id, const char *expected)
+{
+    QDict *reply = qtest_qmp(q, "{ 'execute': 'query-input-sequence', "
+                              "'arguments': { 'id': %d } }", id);
+    g_assert_false(qdict_haskey(reply, "error"));
+    g_assert_cmpstr(qdict_get_str(qdict_get_qdict(reply, "return"), "status"),
+                    ==, expected);
+    qobject_unref(reply);
+}
+
+static void send_power_sequence(QTestState *q, int id)
+{
+    qtest_qmp_assert_success(q, "{ 'execute': 'input-send-sequence', 'arguments': {"
+        "'id': %d, 'events': ["
+        "{'type':'key','at-ms':0,'key':'meta_l','down':true},"
+        "{'type':'key','at-ms':10,'key':'l','down':true},"
+        "{'type':'key','at-ms':30,'key':'l','down':false},"
+        "{'type':'key','at-ms':30,'key':'meta_l','down':false}]}}", id);
+}
+
+/* Exercise generated QAPI, actual handler ownership and virtual deadlines,
+ * and observe hardware EXTON1 edges rather than only an internal counter. */
+static void input_sequence(void)
+{
+    QTestState *q = start_board();
+    pmu_write(q, 8, 0xf3); /* unmask EXTON1 rise and fall */
+    send_power_sequence(q, 1);
+    sequence_status(q, 1, "running");
+    qtest_clock_step(q, 9000000);
+    g_assert_cmphex(pmu_read(q, 3), ==, 0);
+    qtest_clock_step(q, 1000000);
+    g_assert_cmphex(pmu_read(q, 3), ==, 4);
+    /* A malformed replacement may not steal the currently held power key. */
+    QDict *reply = qtest_qmp(q, "{'execute':'input-send-sequence','arguments':"
+        "{'id':2,'events':[{'type':'key','at-ms':0,'key':'l','down':true}]}}");
+    g_assert_true(qdict_haskey(reply, "error"));
+    qobject_unref(reply);
+    sequence_status(q, 1, "running");
+    qtest_clock_step(q, 20000000);
+    g_assert_cmphex(pmu_read(q, 3), ==, 8);
+    sequence_status(q, 1, "completed");
+    sequence_status(q, 2, "unknown");
+
+    send_power_sequence(q, 3);
+    qtest_clock_step(q, 10000000);
+    g_assert_cmphex(pmu_read(q, 3), ==, 4);
+    qtest_qmp_assert_success(q, "{'execute':'stop'}");
+    qtest_qmp_assert_success(q, "{'execute':'input-cancel-sequence',"
+                               "'arguments':{'id':99}}");
+    sequence_status(q, 3, "running");
+    qtest_qmp_assert_success(q, "{'execute':'input-cancel-sequence',"
+                               "'arguments':{'id':3}}");
+    sequence_status(q, 3, "cancelled");
+    g_assert_cmphex(pmu_read(q, 3), ==, 8); /* owned release reaches paused board */
+    qtest_qmp_assert_success(q, "{'execute':'cont'}");
+    send_power_sequence(q, 4);
+    qtest_clock_step(q, 10000000);
+    g_assert_cmphex(pmu_read(q, 3), ==, 4);
+    qtest_qmp_assert_success(q, "{'execute':'system_reset'}");
+    sequence_status(q, 4, "cancelled");
+    qtest_clock_step(q, 30000000);
+    sequence_status(q, 4, "cancelled");
+    /* Admission reads the real manually held handler state, not a test shim. */
+    qtest_qmp_assert_success(q, "{'execute':'input-send-event','arguments':"
+        "{'events':[{'type':'btn','data':{'button':'left','down':true}}]}}");
+    reply = qtest_qmp(q, "{'execute':'input-send-sequence','arguments':"
+        "{'id':5,'events':[{'type':'touch','at-ms':10,'phase':'begin','x':0.2,'y':0.3},"
+        "{'type':'touch','at-ms':30,'phase':'end','x':0.2,'y':0.3}]}}");
+    g_assert_true(qdict_haskey(reply, "error"));
+    qobject_unref(reply);
+    qtest_qmp_assert_success(q, "{'execute':'input-send-event','arguments':"
+        "{'events':[{'type':'btn','data':{'button':'left','down':false}}]}}");
+    qtest_writel(q, SYSIC + 0xb0, TOUCH);
+    qtest_qmp_assert_success(q, "{'execute':'input-send-sequence','arguments':"
+        "{'id':5,'events':[{'type':'touch','at-ms':10,'phase':'begin','x':0.2,'y':0.3},"
+        "{'type':'touch','at-ms':30,'phase':'end','x':0.2,'y':0.3}]}}");
+    qtest_clock_step(q, 10000000);
+    g_assert_cmphex(qtest_readl(q, SYSIC + 0xb0) & TOUCH, ==, TOUCH);
+    sequence_status(q, 5, "running");
+    qtest_clock_step(q, 20000000);
+    sequence_status(q, 5, "completed");
+    qtest_quit(q);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *zero = g_malloc0(1048576);
@@ -118,6 +203,7 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/ipod/touch/masked-atn", touch_mask);
     qtest_add_func("/ipod/pmu/exton1-wake-irq", pmu_wake_irq);
+    qtest_add_func("/ipod/input/virtual-sequence", input_sequence);
     result = g_test_run();
     unlink(rom); unlink(nor); rmdir(nand);
     g_free(rom); g_free(nor); g_free(nand);

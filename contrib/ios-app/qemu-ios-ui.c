@@ -17,6 +17,7 @@
 #include "qemu/osdep.h"
 #include "qemu/main-loop.h"
 #include "qemu/timer.h"
+#include "qemu/seqlock.h"
 #include "block/aio.h"
 #include "ui/console.h"
 #include "ui/surface.h"
@@ -33,6 +34,15 @@ bool ipod_touch_mipi_dsi_panel_off(void);
 bool s5l8930_d1815_guest_shutdown_confirmed(void);
 
 #include "qemu-ios-ui.h"
+#include "virtual-input.h"
+
+static void ios_sequence_cancel_current(void);
+static bool ios_manual_touch;
+static bool ios_manual_touch2;
+static void ios_sequence_reset(void *opaque)
+{
+    ios_sequence_cancel_current();
+}
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "hw/arm/ipod_touch_lcd.h"
 
@@ -43,6 +53,7 @@ bool s5l8930_d1815_guest_shutdown_confirmed(void);
 #include "migration/misc.h"
 #include "migration/migration.h"      /* migrate_get_current, MigrationState.state */
 #include "system/runstate.h"
+#include "system/reset.h"
 
 #define IOS_MAX_SLOTS 8
 
@@ -312,6 +323,7 @@ bool qemu_ios_ui_storage_failed(void)
 
 void qemu_ios_ui_vm_stopped(void)
 {
+    ios_sequence_cancel_current();
     qatomic_set(&ios_vm_alive, 0);
     /* Also drop `attached`. It used to stay true for the life of the process,
      * so every entry point below that guarded on it kept accepting work after
@@ -342,6 +354,7 @@ void qemu_ios_ui_vm_started(void)
     ios.dcl.con = ios.con;
     register_displaychangelistener(&ios.dcl);
     ios.attached = true;
+    qemu_register_reset(ios_sequence_reset, NULL);
     qatomic_set(&ios_vm_alive, 1);
 }
 
@@ -453,6 +466,23 @@ static void ios_touch_bh(void *opaque)
 {
     struct ios_touch *t = opaque;
 
+    ios_sequence_cancel_current();
+    if (!runstate_is_running() && !runstate_check(RUN_STATE_SUSPENDED)) {
+        /* Release an already delivered contact without advancing paused input. */
+        if (!t->down && ios_manual_touch && ios.con) {
+            InputBtnEvent button = {.button = INPUT_BUTTON_LEFT, .down = false};
+            InputEvent event = {.type = INPUT_EVENT_KIND_BTN,
+                                .u.btn.data = &button};
+            qemu_input_event_send_impl(ios.con, &event);
+            qemu_input_event_sync_impl();
+        }
+        if (!t->down) {
+            ios_manual_touch = false;
+        }
+        g_free(t);
+        return;
+    }
+    ios_manual_touch = t->down;
     if (ios.con) {
         qemu_input_queue_abs(ios.con, INPUT_AXIS_X,
                              (int)(t->nx * INPUT_EVENT_ABS_MAX), 0,
@@ -470,7 +500,9 @@ void qemu_ios_ui_touch(int slot, int phase, double nx, double ny)
 {
     struct ios_touch *t;
 
-    if (slot != 0 || !qemu_ios_ui_ready()) {
+    if (slot != 0 || phase < QEMU_IOS_TOUCH_BEGIN || phase > QEMU_IOS_TOUCH_END ||
+        !isfinite(nx) || !isfinite(ny) || nx < 0 || nx > 1 || ny < 0 || ny > 1 ||
+        !qemu_ios_ui_ready()) {
         return;                 /* one finger; no AIO context before attach */
     }
 
@@ -492,6 +524,7 @@ static struct ios_button_hold {
     QEMUTimer *release;
     int64_t pressed_at;
     IPodTouchButton button;
+    bool down;
 } ios_button_holds[4];
 
 static void ios_press(IPodTouchButton button, bool down)
@@ -506,6 +539,7 @@ static void ios_button_release(void *opaque)
 {
     struct ios_button_hold *hold = opaque;
     ios_press(hold->button, false);
+    hold->down = false;
 }
 
 static void ios_button_bh(void *opaque)
@@ -529,6 +563,7 @@ static void ios_button_bh(void *opaque)
         g_free(b);
         return;
     }
+    ios_sequence_cancel_current();
     struct ios_button_hold *hold = &ios_button_holds[b->button];
     int64_t now = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
     if (!hold->release) {
@@ -538,6 +573,7 @@ static void ios_button_bh(void *opaque)
     if (b->down) {
         timer_del(hold->release);
         hold->pressed_at = now;
+        hold->down = true;
         ios_press(button, true);
     } else {
         /* Both host events can arrive in one BH batch under load. Give the
@@ -551,13 +587,184 @@ void qemu_ios_ui_button(int button, bool down)
 {
     struct ios_button *b;
 
-    if (!qemu_ios_ui_ready()) {
+    if (button < QEMU_IOS_BUTTON_HOME || button > QEMU_IOS_BUTTON_VOLUME_DOWN ||
+        !qemu_ios_ui_ready()) {
         return;
     }
     b = g_new0(struct ios_button, 1);
     b->button = button;
     b->down = down;
     aio_bh_schedule_oneshot(qemu_get_aio_context(), ios_button_bh, b);
+}
+
+/* --- generic host input sequence ---------------------------------------- */
+/* All event application and ownership are under the BQL. Publication is atomic;
+ * the host only observes the most recently submitted sequence ID/status. */
+static IosInputSequence ios_sequence;
+static QEMUTimer *ios_sequence_timer;
+static uint64_t ios_sequence_id;
+static int ios_sequence_status;
+static QemuSeqLock ios_sequence_publication;
+
+/* Single BQL writer; host readers observe one coherent ID/status pair. */
+static void ios_sequence_publish(uint64_t id, int status)
+{
+    seqlock_write_begin(&ios_sequence_publication);
+    qatomic_set(&ios_sequence_id, id);
+    qatomic_set(&ios_sequence_status, status);
+    seqlock_write_end(&ios_sequence_publication);
+}
+
+static void ios_sequence_emit(void *opaque, const IosInputEvent *e)
+{
+    if (e->kind == 0) {
+        ios_press((IPodTouchButton)e->value, !!e->phase);
+
+    } else if (ios.con) {
+        qemu_input_queue_abs(ios.con, INPUT_AXIS_X,
+            (int)(e->x * INPUT_EVENT_ABS_MAX), 0, INPUT_EVENT_ABS_MAX);
+        qemu_input_queue_abs(ios.con, INPUT_AXIS_Y,
+            (int)(e->y * INPUT_EVENT_ABS_MAX), 0, INPUT_EVENT_ABS_MAX);
+        qemu_input_queue_btn(ios.con, INPUT_BUTTON_LEFT, e->phase != 2);
+        qemu_input_event_sync();
+    }
+}
+
+/* qemu_input_event_send() deliberately drops ordinary events while paused.
+ * Cancellation is ownership cleanup, so its release must reach the handler
+ * under BQL even when virtual time is stopped; it must not leave a finger
+ * held forever after resume. No coordinate/button-down is synthesized here. */
+static void ios_sequence_release_emit(void *opaque, const IosInputEvent *e)
+{
+    if (e->kind == 1 && ios.con) {
+        InputBtnEvent button = {.button = INPUT_BUTTON_LEFT, .down = false};
+        InputEvent event = {.type = INPUT_EVENT_KIND_BTN, .u.btn.data = &button};
+        qemu_input_event_send_impl(ios.con, &event);
+        qemu_input_event_sync_impl();
+    } else {
+        ios_sequence_emit(opaque, e);
+    }
+}
+
+static void ios_sequence_cancel_current(void)
+{
+    if (ios_sequence_timer) {
+        timer_del(ios_sequence_timer);
+    }
+    ios_input_cancel(&ios_sequence, ios_sequence_release_emit, NULL);
+    if (qatomic_read(&ios_sequence_status) == QEMU_IOS_INPUT_RUNNING) {
+        ios_sequence_publish(qatomic_read(&ios_sequence_id), QEMU_IOS_INPUT_CANCELLED);
+    }
+}
+
+void qemu_ios_ui_manual_touch2(bool down)
+{
+    ios_sequence_cancel_current();
+    ios_manual_touch2 = down;
+}
+
+void qemu_ios_ui_cancel_input(void)
+{
+    ios_sequence_cancel_current();
+}
+
+static void ios_sequence_tick(void *opaque)
+{
+    if (ios_input_step(&ios_sequence, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL),
+                       ios_sequence_emit, NULL)) {
+        ios_sequence_publish(qatomic_read(&ios_sequence_id), QEMU_IOS_INPUT_DONE);
+    } else {
+        timer_mod(ios_sequence_timer, ios_sequence.origin +
+                  ios_sequence.events[ios_sequence.next].at_ms);
+    }
+}
+
+typedef struct {
+    uint64_t id;
+    size_t count;
+    IosInputEvent events[IOS_INPUT_MAX_EVENTS];
+} IosSequenceRequest;
+
+static void ios_sequence_submit_bh(void *opaque)
+{
+    IosSequenceRequest *r = opaque;
+    ios_sequence_cancel_current();
+    ios_sequence_publish(0, QEMU_IOS_INPUT_REJECTED);
+    bool manual = ios_manual_touch || ios_manual_touch2;
+    for (int i = 0; i < 4; ++i) {
+        manual |= ios_button_holds[i].down;
+    }
+    if (!manual && ios.con && qemu_ios_ui_ready()) {
+        memcpy(ios_sequence.events, r->events, r->count * sizeof(r->events[0]));
+        ios_sequence.count = r->count;
+        ios_sequence.next = 0;
+        ios_sequence.origin = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+        if (!ios_sequence_timer) {
+            ios_sequence_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                               ios_sequence_tick, NULL);
+        }
+        ios_sequence_publish(0, QEMU_IOS_INPUT_RUNNING);
+        /* Even offset zero is scheduled on guest time: a paused guest does
+         * not acquire a button until its virtual clock resumes. */
+        timer_mod(ios_sequence_timer, ios_sequence.origin + r->events[0].at_ms);
+    }
+    ios_sequence_publish(r->id, qatomic_read(&ios_sequence_status));
+    g_free(r);
+}
+
+bool qemu_ios_ui_input_sequence(uint64_t id, size_t count,
+    const int64_t *at_ms, const int32_t *kind, const int32_t *value,
+    const int32_t *phase, const double *x, const double *y)
+{
+    if (!id || !qemu_ios_ui_ready() || !count || count > IOS_INPUT_MAX_EVENTS ||
+        !at_ms || !kind || !value || !phase || !x || !y) {
+        return false;
+    }
+    IosSequenceRequest *r = g_new0(IosSequenceRequest, 1);
+    r->id = id;
+    r->count = count;
+    for (size_t i = 0; i < count; ++i) {
+        if (kind[i] != 0 && kind[i] != 1) { g_free(r); return false; }
+        r->events[i] = (IosInputEvent){at_ms[i], kind[i], value[i], phase[i],
+                                     x[i], y[i]};
+    }
+    if (!ios_input_valid(r->events, count)) {
+        g_free(r);
+        return false;
+    }
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), ios_sequence_submit_bh, r);
+    return true;
+}
+
+int qemu_ios_ui_input_sequence_status(uint64_t id)
+{
+    unsigned sequence;
+    uint64_t published;
+    int status;
+    do {
+        sequence = seqlock_read_begin(&ios_sequence_publication);
+        published = qatomic_read(&ios_sequence_id);
+        status = qatomic_read(&ios_sequence_status);
+    } while (seqlock_read_retry(&ios_sequence_publication, sequence));
+    return id && published == id ? status : QEMU_IOS_INPUT_UNKNOWN;
+}
+
+static void ios_sequence_cancel_bh(void *opaque)
+{
+    uint64_t *id = opaque;
+    if (*id == qatomic_read(&ios_sequence_id)) {
+        ios_sequence_cancel_current();
+    }
+    g_free(id);
+}
+
+void qemu_ios_ui_input_sequence_cancel(uint64_t id)
+{
+    if (id && qemu_ios_ui_ready()) {
+        uint64_t *copy = g_new(uint64_t, 1);
+        *copy = id;
+        aio_bh_schedule_oneshot(qemu_get_aio_context(), ios_sequence_cancel_bh, copy);
+    }
 }
 
 /* --- snapshots ---------------------------------------------------------- */
@@ -576,6 +783,7 @@ void qemu_ios_ui_button(int button, bool down)
  */
 static void ios_snapshot_bh(void *opaque)
 {
+    ios_sequence_cancel_current();
     char *path = opaque;
     Error *err = NULL;
     g_autofree char *uri = g_strdup_printf("file:%s", path);
@@ -651,6 +859,7 @@ static int ios_snap_bh_ran;
 
 static void ios_snapshot2_bh(void *opaque)
 {
+    ios_sequence_cancel_current();
     char *path = opaque;
     Error *err = NULL;
     g_autofree char *uri = g_strdup_printf("file:%s", path);

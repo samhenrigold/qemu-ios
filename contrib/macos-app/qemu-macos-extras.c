@@ -6,6 +6,7 @@
  */
 
 #include "qemu/osdep.h"
+#include <math.h>
 #include "audio/audio.h"
 #include "system/runstate.h"
 #include <pthread.h>
@@ -57,6 +58,21 @@ static void mtt_bh(void *opaque)
     QemuConsole *con = con0();
     static bool tracked;
 
+    if (!runstate_is_running() && !runstate_check(RUN_STATE_SUSPENDED)) {
+        if (t->phase == QEMU_IOS_TOUCH_END && tracked && con) {
+            InputMultiTouchEvent mtt = {
+                .type = INPUT_MULTI_TOUCH_TYPE_END, .slot = 1, .tracking_id = 1,
+            };
+            InputEvent event = {.type = INPUT_EVENT_KIND_MTT, .u.mtt.data = &mtt};
+            qemu_ios_ui_manual_touch2(false);
+            qemu_input_event_send_impl(con, &event);
+            qemu_input_event_sync_impl();
+            tracked = false;
+        }
+        g_free(t);
+        return;
+    }
+    qemu_ios_ui_manual_touch2(t->phase != QEMU_IOS_TOUCH_END);
     if (con) {
         InputMultiTouchType type;
         if (t->phase == QEMU_IOS_TOUCH_END) {
@@ -83,7 +99,9 @@ static void mtt_bh(void *opaque)
 
 void qemu_ios_ui_touch2(int phase, double nx, double ny)
 {
-    if (!qemu_ios_ui_ready()) {
+    if (phase < QEMU_IOS_TOUCH_BEGIN || phase > QEMU_IOS_TOUCH_END ||
+        !isfinite(nx) || !isfinite(ny) || nx < 0 || nx > 1 || ny < 0 || ny > 1 ||
+        !qemu_ios_ui_ready()) {
         return;
     }
     struct mtt_touch *t = g_new0(struct mtt_touch, 1);
@@ -104,6 +122,7 @@ static void key_bh(void *opaque)
 {
     struct key_event *k = opaque;
     QemuConsole *con = con0();
+    qemu_ios_ui_cancel_input();
 
     if (con) {
         qemu_input_event_send_key_qcode(con, k->qcode, k->down);
@@ -461,6 +480,9 @@ static void qmp_bh(void *opaque)
     if (qemu_ios_ui_storage_failed() && fn != qmp_quit) {
         fprintf(stderr, "[machine] NAND storage failed; relaunch after fixing storage\n");
         return;
+    }
+    if (fn == qmp_system_reset || fn == qmp_quit || fn == qmp_system_powerdown) {
+        qemu_ios_ui_cancel_input();
     }
     fn(&err);
     if (err) {
