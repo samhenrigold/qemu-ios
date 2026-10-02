@@ -10,19 +10,18 @@
  *
  * Every image the boot chain loads carries an RSA signature over its own
  * SHA1, and the bootrom and iBoot really do verify it: the Montgomery operations below
- * recovers a PKCS#1 v1.5 block whose tail is the digest the SHA1 engine just
+ * recover a PKCS#1 v1.5 block whose tail is the digest the SHA1 engine just
  * produced, and the caller compares the two.
  *
- * That works for the stock 2.1.1 NOR, whose images were signed for this
- * device. It does not work for images taken straight out of an IPSW's
- * all_flash directory: from iOS 3.0 on, Apple personalised boot images per
- * device through its TSS signing server, and the copies shipped in the IPSW
- * carry a signature no device accepts. The golden NOR's iBoot signature, for
- * instance, appears nowhere in either IPSW -- it was issued at restore time.
+ * Stock 7E18 IPSW all_flash signatures independently verify against their
+ * included public leaf certificates. Flash representation is separate: iBoot
+ * unwraps SHSH under a device UID-derived key, so preparation must preserve
+ * signed bytes and wrap the signature correctly (imgtools/build_nor.py).
+ * Engineering fuses do not remove the RSA check. The authentic qualification
+ * gate must use forge-sigcheck=off and reject a mutated signature.
  *
- * So retargeting the machine to a different firmware needs the same treatment
- * the GID key already gets: the emulated part vouches for the image instead of
- * checking it. When the recovered block is not well formed, synthesise the one
+ * The explicit compatibility option below can instead vouch for an image:
+ * When the recovered block is not well formed, synthesise the one
  * the caller is about to compare against, built from the last digest the SHA1
  * engine computed. Enabled with forge-sigcheck=on; off by default, so the
  * stock NOR keeps booting through the genuine verification path.

@@ -191,6 +191,7 @@ typedef struct {
     bool wifi_mac_explicit;
     uint8_t bt_mac[6];
     bool bt_mac_explicit;
+    N72SecurityProfile security_profile;
     uint64_t ecid;
     bool ecid_explicit;
 	AddressSpace *nsas;
