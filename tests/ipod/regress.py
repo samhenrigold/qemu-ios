@@ -89,6 +89,7 @@ import itqmp  # noqa: E402  (needs the path above)
 sys.path.insert(0, os.path.join(HERE, ".."))
 import frame_reference
 import framecheck  # noqa: E402  (tests/framecheck.py: the audit's frame-reference check)
+sys.path.insert(0, HERE)  # also resolve sibling modules when imported by iPad tests
 import gles_scene  # noqa: E402
 GLES_REFS = os.path.join(HERE, "..", "gles-refs")
 
