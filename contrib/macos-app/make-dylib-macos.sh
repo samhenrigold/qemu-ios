@@ -87,6 +87,9 @@ _qemu_ios_ui_copy_frame
 _qemu_ios_ui_touch
 _qemu_ios_ui_touch2
 _qemu_ios_ui_button
+_qemu_ios_ui_input_sequence
+_qemu_ios_ui_input_sequence_status
+_qemu_ios_ui_input_sequence_cancel
 _qemu_ios_ui_key
 _qemu_ios_ui_key_mac
 _qemu_ios_ui_rotate

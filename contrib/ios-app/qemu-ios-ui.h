@@ -102,6 +102,27 @@ void qemu_ios_ui_touch(int slot, int phase, double nx, double ny);
  */
 void qemu_ios_ui_button(int button, bool down);
 
+/* Generic button/single-touch sequences in virtual milliseconds, not wall
+ * time. Arrays have count elements; transitions must be balanced and ordered.
+ * A new submission cancels/releases the prior sequence. Manual input cancels
+ * it too; held manual input causes admission refusal. The immediate return
+ * means queued, not executed; poll the most recent ID for actual admission.
+ * Explicit cancellation releases only owned signals even while paused.
+ * This is host automation state and is not part of a guest snapshot. */
+#define QEMU_IOS_INPUT_UNKNOWN 0
+#define QEMU_IOS_INPUT_RUNNING 1
+#define QEMU_IOS_INPUT_DONE 2
+#define QEMU_IOS_INPUT_CANCELLED 3
+#define QEMU_IOS_INPUT_REJECTED 4
+bool qemu_ios_ui_input_sequence(uint64_t id, size_t count,
+    const int64_t *at_ms, const int32_t *kind, const int32_t *value,
+    const int32_t *phase, const double *x, const double *y);
+int qemu_ios_ui_input_sequence_status(uint64_t id);
+void qemu_ios_ui_input_sequence_cancel(uint64_t id);
+/* Internal: QEMU thread under BQL, before reset/quit/semantic powerdown. */
+void qemu_ios_ui_cancel_input(void);
+void qemu_ios_ui_manual_touch2(bool down);
+
 /*
  * Save the machine to `path`, so the next launch can restore instead of
  * booting. Asynchronous: poll qemu_ios_snapshot_done(). The guest is stopped
