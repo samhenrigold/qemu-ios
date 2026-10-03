@@ -12,6 +12,7 @@
 #define USB_IRQ (1u << 19)
 static char *rom, *rom1g, *nor, *nand;
 static bool n45;
+static uint8_t in_bytes[64];   /* the last IN transaction's data */
 
 static int listener(unsigned *port)
 {
@@ -74,9 +75,8 @@ static int xfer(int fd, uint8_t ep, uint8_t flags, const uint8_t *data, unsigned
     g_assert_cmpint(recv(fd, result, sizeof(result), MSG_WAITALL), ==, sizeof(result));
     int16_t length = (uint16_t)result[3] | (uint16_t)result[4] << 8;
     if ((ep & 0x80) && length > 0) {
-        uint8_t bytes[64];
-        g_assert_cmpint(length, <=, sizeof(bytes));
-        g_assert_cmpint(recv(fd, bytes, length, MSG_WAITALL), ==, length);
+        g_assert_cmpint(length, <=, sizeof(in_bytes));
+        g_assert_cmpint(recv(fd, in_bytes, length, MSG_WAITALL), ==, length);
     }
     return length;
 }
@@ -86,6 +86,58 @@ static void arm_out(QTestState *q)
     qtest_writel(q, OTG + 0xb14, DMA);
     qtest_writel(q, OTG + 0xb10, 0x20080040);
     qtest_writel(q, OTG + 0xb00, 0x84000000);
+}
+
+/* The driver's EP0 IN data stage: DIEPDMA0, DIEPTSIZ0 (one packet), EPEna|CNAK. */
+static void arm_ep0_in(QTestState *q, const uint8_t *data, unsigned size)
+{
+    qtest_memwrite(q, DMA + 0x100, data, size);
+    qtest_writel(q, OTG + 0x914, DMA + 0x100);
+    qtest_writel(q, OTG + 0x910, (1u << 19) | size);
+    qtest_writel(q, OTG + 0x900, 0x84000000);
+}
+
+/*
+ * The host times out a GET_DESCRIPTOR(device), and the guest arms its reply
+ * only afterwards. A bus reset and a new SETUP follow. The core NAKs EP0 IN
+ * after a SETUP until the driver arms with CNAK, so the late reply must not
+ * answer the new request -- it did, and the control pipe then ran one reply
+ * behind (usbmuxd: "Short configuration 0 (-1 of 512)"). A STALL left from
+ * the abandoned request is cleared by the SETUP too.
+ */
+static void late_ep0_reply_after_reset(void)
+{
+    int fd, listener;
+    QTestState *q = start_board(&fd, &listener, false);
+    uint8_t get_dev[8] = { 0x80, 6, 0, 1, 0, 0, 18, 0 };
+    uint8_t get_cfg[8] = { 0x80, 6, 0, 2, 0, 0, 9, 0 };
+    uint8_t stale[18] = { 18, 1, 0, 2, 0, 0, 0, 64, 0xac, 5, 0x9a, 0x12, 0, 0, 1, 2, 3, 4 };
+    uint8_t fresh[9] = { 9, 2, 39, 0, 1, 1, 0, 0xc0, 250 };
+
+    arm_out(q);
+    g_assert_cmpint(xfer(fd, 0, 1, get_dev, sizeof(get_dev)), ==, 8);
+    arm_ep0_in(q, stale, sizeof(stale));          /* too late: the host gave up */
+    g_assert_cmpint(xfer(fd, 0, 2, NULL, 0), ==, 0);   /* bus reset */
+    xfer(fd, 0, 4, NULL, 0);                      /* enumeration done (NAKs) */
+    arm_out(q);
+    g_assert_cmpint(xfer(fd, 0, 1, get_cfg, sizeof(get_cfg)), ==, 8);
+    g_assert_cmpint(xfer(fd, 0x80, 0, NULL, 9), ==, -2);
+    arm_ep0_in(q, fresh, sizeof(fresh));
+    g_assert_cmpint(xfer(fd, 0x80, 0, NULL, 9), ==, 9);
+    g_assert_cmpmem(in_bytes, 9, fresh, sizeof(fresh));
+
+    /* The driver STALLs a request the host has already abandoned. */
+    arm_out(q);
+    g_assert_cmpint(xfer(fd, 0, 1, get_cfg, sizeof(get_cfg)), ==, 8);
+    qtest_writel(q, OTG + 0x900, 1u << 21);
+    arm_out(q);
+    g_assert_cmpint(xfer(fd, 0, 1, get_dev, sizeof(get_dev)), ==, 8);
+    g_assert_cmpint(xfer(fd, 0x80, 0, NULL, 18), ==, -2);
+    arm_ep0_in(q, stale, sizeof(stale));
+    g_assert_cmpint(xfer(fd, 0x80, 0, NULL, 18), ==, 18);
+    g_assert_cmpmem(in_bytes, 18, stale, sizeof(stale));
+    close(fd); close(listener);
+    qtest_quit(q);
 }
 
 static void reset_transfer_and_pending_irq(void)
@@ -220,6 +272,7 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/ipod/usbphy/reset-transfers-and-pending-core-irq", reset_transfer_and_pending_irq);
     qtest_add_func("/ipod/usbphy/restored-physical-reset-signal", restored_phy_signal);
+    qtest_add_func("/ipod/usbotg/late-ep0-reply-after-reset", late_ep0_reply_after_reset);
     qtest_add_func("/ipod/usbphy/n45-reset-transfers-and-pending-core-irq", n45_transfer);
     qtest_add_func("/ipod/usbphy/n45-restored-physical-reset-signal", n45_restore);
     result = g_test_run();

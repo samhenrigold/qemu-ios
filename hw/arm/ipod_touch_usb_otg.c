@@ -121,6 +121,11 @@ static void synopsys_usb_update_ep(synopsys_usb_state *_state, synopsys_usb_ep_s
 static void synopsys_usb_update_in_ep(synopsys_usb_state *_state, uint8_t _ep)
 {
 	synopsys_usb_ep_state *eps = &_state->in_eps[_ep];
+
+	/* CNAK is write-only: it ends a NAK the core or the driver set. Only the
+	 * IN side honours NAKSts (see the transport callback). */
+	if(eps->control & USB_EPCON_CLEARNAK)
+		eps->control &=~ (USB_EPCON_CLEARNAK | USB_EPCON_NAKSTS);
 	synopsys_usb_update_ep(_state, eps);
 
 	if(eps->control & USB_EPCON_ENABLE)
@@ -221,6 +226,9 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 		if (eps->control & USB_EPCON_STALL) {
 			eps->control &= ~USB_EPCON_STALL;
 			ret = USB_RET_STALL;
+		} else if (eps->control & USB_EPCON_NAKSTS) {
+			/* NAKSts: the core NAKs IN tokens even with data armed. */
+			ret = USB_RET_NAK;
 		} else if (eps->control & USB_EPCON_ENABLE) {
 			size_t sz = eps->tx_size & DEPTSIZ_XFERSIZ_MASK;
 			size_t amtDone = MIN(sz, hdr_len);
@@ -440,6 +448,21 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 
 			if (_hdr->flags & tcp_usb_setup) {
 				eps->interrupt_status |= USB_EPINT_SetUp;
+				/*
+				 * A SETUP ends whatever control transfer came before it. The
+				 * core clears EP0's STALL and sets DIEPCTL0's NAK, so a data
+				 * stage the driver armed for an earlier request -- one the
+				 * host gave up on before a bus reset -- is NAKed instead of
+				 * answering this one, until the driver arms the new reply
+				 * with CNAK. Without it the pipe ran one reply behind:
+				 * usbmuxd read device-descriptor bytes as a configuration
+				 * header ("Short configuration 0 (-1 of 512)").
+				 */
+				if (ep == 0) {
+					state->in_eps[0].control = (state->in_eps[0].control
+					                            & ~USB_EPCON_STALL) | USB_EPCON_NAKSTS;
+					eps->control &= ~USB_EPCON_STALL;
+				}
 			} else {
 				eps->interrupt_status |= USB_EPINT_XferCompl;
 			}
@@ -741,7 +764,9 @@ static void synopsys_usb_in_ep_write(synopsys_usb_state *_state, int _ep, hwaddr
     switch (_addr)
 	{
     case 0x00:
-		_state->in_eps[_ep].control = _val;
+		/* NAKSts is read-only: only SNAK, CNAK and the core change it. */
+		_state->in_eps[_ep].control = (_val & ~USB_EPCON_NAKSTS)
+		                            | (_state->in_eps[_ep].control & USB_EPCON_NAKSTS);
 		if (_ep && synopsys_usb_in_debug() && (_val & USB_EPCON_ENABLE)) {
 			fprintf(stderr, "[USBIN] arm ep%d DIEPCTL=0x%08x dma=0x%08x tsiz=0x%08x "
 			        "(xfer=%u pktcnt=%u)\n", _ep, (uint32_t)_val,
@@ -1497,6 +1522,12 @@ static int synopsys_usb_post_load(void *opaque, int version_id)
     }
     timer_mod(state->tcp_retry_timer,
               qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + TCP_USB_RETRY_MS);
+    /* Older streams stored a write's CNAK alongside NAKSts; settle it. */
+    for (int i = 0; i < USB_NUM_ENDPOINTS; i++) {
+        if (state->in_eps[i].control & USB_EPCON_CLEARNAK) {
+            state->in_eps[i].control &= ~(USB_EPCON_CLEARNAK | USB_EPCON_NAKSTS);
+        }
+    }
     synopsys_usb_update_irq(state);
     return 0;
 }
