@@ -2,7 +2,7 @@
 
 # iPad1,1 / iOS 3.2 (7B367) kernel+userland display contract — gap-fill report
 
-Sources: carved kext disassemblies under `$SP/kx/*.dis` (SP=`/tmp/claude-0/-home-user/2fb4038f-ca86-59b7-95f7-7e88ca8c44ec/scratchpad`), kernelcache `$SP/dec/kernelcache.k48.mach` (prelink load addrs from `__PRELINK_INFO`), DT dump `$SP/dec/dt.txt`, dyld cache `$SP/fw/7B367-dec/dyld_shared_cache_armv7`, iBoot `$SP/bootchain/iboot.dis`, openiBoot `/home/user/iDroid-Project/openiBoot/plat-a4/clcd.c`. All kext/user addresses are kernel VAs / cache VAs as noted. "vt[0xNNN]" = vtable slot byte offset.
+Sources: carved kext disassemblies under `$SP/kx/*.dis` (SP=`/tmp/scratchpad`), kernelcache `$SP/dec/kernelcache.k48.mach` (prelink load addrs from `__PRELINK_INFO`), DT dump `$SP/dec/dt.txt`, dyld cache `$SP/fw/7B367-dec/dyld_shared_cache_armv7`, iBoot `$SP/bootchain/iboot.dis`, openiBoot `/home/user/iDroid-Project/openiBoot/plat-a4/clcd.c`. All kext/user addresses are kernel VAs / cache VAs as noted. "vt[0xNNN]" = vtable slot byte offset.
 
 Kext load map (from `__PRELINK_INFO`, `_PrelinkExecutableLoadAddr`): AppleDisplayPipe 0xc0589000 (0x9000), AppleCLCD 0xc089f000 (0x8000), IOMobileGraphicsFamily 0xc056e000 (0x7000), IOSurface 0xc0610000, AppleS5L8930XDART 0xc0592000, IODARTFamily 0xc035f000, AppleM2ScalerCSCDriver 0xc0369000 (0xb000), ApplePinotLCD 0xc0889000 (0x2000), AppleRGBOUT 0xc0624000, AppleS5L8720X (holds AppleS5L8720XMIPIDSIController + AppleS5L8720XSWI) 0xc064b000 (0x7000), IMGSGX535 0xc0690000.
 

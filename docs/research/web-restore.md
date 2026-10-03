@@ -15,7 +15,7 @@ The catch is that `restored_external` talks to the host over **usbmux port `0x12
 ## 1. What the iOS 3.2 iPad 1 restore does, step by step
 
 ### 1.1 Confirmed artifacts (from your extracted IPSW)
-Source: `/tmp/claude-0/.../scratchpad/fw/7B367/BuildManifest.plist`, `Restore.plist`, and img3 tag dumps I ran.
+Source: `/tmp/scratchpad/fw/7B367/BuildManifest.plist`, `Restore.plist`, and img3 tag dumps I ran.
 
 - **Two BuildIdentities**: Erase (`RestoreRamDisk = 018-7226-009.dmg`) and Update (`018-7225-009.dmg`). `ApBoardID 0x02`, `ApChipID 0x8930`, `ApSecurityDomain 0x01`, `CPID 35120 (0x8930)`, `BDID 2`, `Platform s5l8930x`, `BoardConfig k48ap` (`Restore.plist`).
 - **NOR chain to flash** (all `IsFirmwarePayload`): `LLB.k48ap.RELEASE.img3` (illb), `iBoot.k48ap.RELEASE.img3` (ibot), `DeviceTree.k48ap.img3` (dtre), `applelogo/batterycharging0/1/full/low0/1/glyphcharging/glyphplugin/needservice/recoverymode-768x1024` glyphs, plus a `manifest` file listing them. Path prefix `Firmware/all_flash/all_flash.k48ap.production/` (`BuildManifest.plist`).

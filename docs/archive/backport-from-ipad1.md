@@ -61,7 +61,7 @@ behind nand-current.new (lineage `nand-agent-v4`) that aren't stock 7E18, as met
 - **AppSync:** the shared-cache `MISValidateSignature` patch is currently at a hand-found offset (0x1750EF8, `ssh/patch-cache.sh`). `imgtools/appsync_cachepatch.py` finds the same site by symbol on stock 7E18 and can replace it. Also `/usr/lib/libappsync.dylib` plus `DYLD_INSERT_LIBRARIES` in `com.apple.installd.plist` (`contrib/appsync/patch-appsync-dylib.sh`).
 - **GL:** `MBXGLEngine` is replaced by `contrib/it-gles/MBXGLEngine` (the shim has no `LC_CODE_SIGNATURE`).
 - **Baked guest tools** (`imgtools/bake-guest-tools.sh`): it_agent, the typing bridge, sblaunch, launch helpers, and the ownership repair that `noowners` mounts need.
-- **Volume:** grown to 1,835,008 blocks (`grow_volume.py`/`patch_gpt.py`). `patch_gpt.py` imports ftlmap from a hard-coded `~/Developer/qemu-ios/.claude/worktrees/consolidate/imgtools` path, which should be `dirname(__file__)`. The lineage also carries pairing/activation state in `/private/var` from its prepared history.
+- **Volume:** grown to 1,835,008 blocks (`grow_volume.py`/`patch_gpt.py`). `patch_gpt.py` imports ftlmap from a hard-coded `<since-removed worktree>/imgtools` path, which should be `dirname(__file__)`. The lineage also carries pairing/activation state in `/private/var` from its prepared history.
 - **Obsolete byte patches** (no longer on nand-current.new): `patch_springboard.py` (0x17D1C), installd 0x9F34/0x605C, and the 2.1.1-only `patch_codesign_gate.py`/`patch_libmis.py`. `patch_launchd_env.py` and `patch_syscfg.py` are structural (name/record lookups) and don't depend on offsets.
 
 ## What's left
