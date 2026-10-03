@@ -261,3 +261,30 @@ Two failures seen here that the package does not cause:
 - If Wi-Fi has not joined by the time the walk reaches the Wi-Fi page, the Setup Assistant skips the Apple ID
   page. The walk then fails with "the apple id page did not answer tap 1". This happened in 2 of 3 runs on the
   packaged device and 1 of 1 on `dev5`.
+
+## Dead touch on 5.0 betas: a guest race, not the Z2 model (branch `ios5-touch`, 2026-10-03)
+
+Symptom (k48ap-9A5288d, 5.0 beta 3): in some boots no slider ever moves, while the kernel reads
+every finger frame and the buttons work. Measured cause:
+
+- SpringBoard's `MultitouchHID.plugin` builds its `MTParser` once, in
+  `MTParser::createParserForMTDevice`, from `MTDeviceGetSensorSurfaceDimensions`. If
+  AppleMultitouchZ2SPI has not yet published `Sensor Surface Width/Height` (report 0xD9, read only
+  after a successful bootload), MultitouchSupport answers its defaults 5000 x 7500 (50 x 75 mm,
+  phone-sized). `deviceDidBootload` only clears the parser (`resetGestureParser`), so the iPad's
+  147 x 197 mm panel stays mapped through a 50 x 75 mm surface for the life of SpringBoard.
+- The bootload cannot start before `mtmergeprops` merges the firmware personality (`Z2F13,1` from
+  `iPad.mtprops`); SpringBoard's open powers the panel first and the kext logs "Cannot load
+  firmware. No bootloader, or firmware is unavailable".
+- Kernel-side gdbstub timeline, 7 boots: unlocked in exactly the boot where `Sensor Surface Width`
+  was published before SpringBoard's `clientMemoryForType`; locked in the 6 where it came after.
+  Writing 14745 x 19660 into the MTDevice at the parser's dimension read turned 2 of 2 otherwise
+  dead boots into unlocked ones.
+- Apple fixed it in the release builds: `com.apple.mtmergeprops.plist` gains
+  `POSIXSpawnType = Interactive` in 9A334, 9A405 and 9B206; 9A5220p and 9A5288d lack it. That is
+  why 9B206 passed 10 of 10 boots in the 10-03 hunt.
+
+Emulator side: from the daemon batch spawn to ~38 s of a 9A5288d boot the vCPU is never idle
+(0 of ~160 samples), and `mtmergeprops`, spawned with SpringBoard, is not scheduled until ~7 s
+later. The Z2/SPI model is not involved: nothing the controller reports reaches the plugin's
+geometry before the kernel's post-bootload report read.
