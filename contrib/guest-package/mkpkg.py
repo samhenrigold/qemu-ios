@@ -67,9 +67,10 @@ IPAD_HOOKS = [("build/ipad1-guest/it_msmquiet.dylib", "/usr/local/lib/it_msmquie
 # builds: exact ids or "<major>*" for every build of that iOS major (2.x = 5*, 3.x = 7*, 4.x = 8*, 5.x = 9*), so a new point
 # release needs no row here (LightTouchMac docs/matrix.md).
 FAMILIES = {
-    # 1.x builds are 3A*/3B* (1.1-1.1.2) and 4A*/4B* (1.1.3-1.1.5): no agent or helpers yet, the GL front end
-    # only; the legacy-linked it_boot runs there (armv6-toolchain crt1old.c/legacy.h: 1.x's crt1 and stat ABI)
-    "n45-ios1": {"arch": "armv6", "boards": ["n45ap"], "builds": ["3*", "4*"],
+    # 1.x builds are 3A*/3B* (1.1-1.1.2) and 4A*/4B* (1.1.3-1.1.5), and the iPhone's 1A*/1C* (1.0-1.0.2): no agent
+    # or helpers yet, the GL front end only; the legacy-linked it_boot runs there (armv6-toolchain crt1old.c/legacy.h:
+    # 1.x's crt1 and stat ABI)
+    "n45-ios1": {"arch": "armv6", "boards": ["n45ap", "m68ap"], "builds": ["1*", "3*", "4*"],
                  "hooks": [("contrib/it-gles/OpenGLES-1x", OPENGLES, True)]},
     "n72-ios2": {"arch": "armv6", "boards": ["n72ap"], "builds": ["5*"], "bin": IPOD_LEGACY_BIN,
                  "jobs": IPOD_JOBS,
@@ -99,7 +100,7 @@ FAMILIES = {
 FAMILIES["k48-ios4"] = dict(FAMILIES["k48-ios3"], builds=["8*"])
 FAMILIES["k48-ios5"] = dict(FAMILIES["k48-ios3"], builds=["9*"])
 # 1.x/2.x dyld refuses LC_DYLD_INFO_ONLY; everything the loader runs on it must be legacy-linked
-LEGACY_BUILDS = ("3*", "4*", "5*", "7A341")
+LEGACY_BUILDS = ("1*", "3*", "4*", "5*", "7A341")
 
 
 def build_matches(builds, build):
