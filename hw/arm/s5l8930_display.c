@@ -54,8 +54,6 @@
 
 #define VBL_PERIOD_NS       (NANOSECONDS_PER_SECOND / 60)
 #define QUIET_RELATCH_VBLS  15        /* ~250 ms without a swap */
-#define DEFAULT_WIDTH       1024
-#define DEFAULT_HEIGHT      768
 
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930DisplayState, S5L8930_DISPLAY)
 
@@ -77,6 +75,7 @@ struct S5L8930DisplayState {
     QemuConsole *con;
     QEMUTimer *vbl;
     uint64_t fb_base;        /* property: seed iBoot's scanout when nonzero */
+    uint16_t width, height;  /* properties: the panel */
 
     DisplayPipe pipe[2];     /* 0 = DisplayPipe0 (scanned out), 1 = RGBOUT */
     uint32_t clcd[2][CLCD_WORDS];
@@ -397,8 +396,8 @@ static void panel_size(S5L8930DisplayState *s, unsigned *w, unsigned *h)
     *w = (r[DP_SIZE / 4] >> 16) & 0x7ff;
     *h = r[DP_SIZE / 4] & 0x7ff;
     if (!*w || !*h) {
-        *w = DEFAULT_WIDTH;
-        *h = DEFAULT_HEIGHT;
+        *w = s->width;
+        *h = s->height;
     }
 }
 
@@ -633,10 +632,10 @@ static void s5l8930_display_reset(DeviceState *dev)
     s->swaps = 0;
     frame_timeline_reset(&s->ftl);
 
-    /* What iBoot leaves behind: UI0 live on a 1024x768 32bpp buffer. The
+    /* What iBoot leaves behind: UI0 live on a panel-sized 32bpp buffer. The
      * kernel adopts it from these registers, so without them there is no
      * console framebuffer. */
-    r[DP_SIZE / 4] = DEFAULT_WIDTH << 16 | DEFAULT_HEIGHT;
+    r[DP_SIZE / 4] = s->width << 16 | s->height;
     /*
      * And the CLCD timing iBoot programs from its "k48" display-timing entry
      * (iBoot-931 5ff01e0e-5ff01eaa, table 5ff2b028: 1024x768, 68.4 MHz,
@@ -650,7 +649,7 @@ static void s5l8930_display_reset(DeviceState *dev)
     s->clcd[0][0x18 / 4] = 0x20408;
     s->clcd[0][0x58 / 4] = 9 << 16 | 9 << 8 | 11;
     s->clcd[0][0x5c / 4] = 132 << 16 | 132 << 8 | 134;
-    s->clcd[0][0x60 / 4] = (DEFAULT_WIDTH - 1) << 16 | (DEFAULT_HEIGHT - 1);
+    s->clcd[0][0x60 / 4] = (s->width - 1) << 16 | (s->height - 1);
     if (s->fb_base) {
         r[DP_LAYERS / 4] = 0x100;
         r[(DP_UI_BASE(0) + DP_UI_ADDR) / 4] = s->fb_base;
@@ -660,8 +659,8 @@ static void s5l8930_display_reset(DeviceState *dev)
          * at power-off (CA fill_iosurface, CGBlt_fillBytes) ran off its
          * mapping. SpringBoard died with SIGBUS (KERN_PROTECTION_FAILURE)
          * and never reached reboot2, so Hold -> slide never powered off. */
-        r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4] = DEFAULT_WIDTH * 4 | 2;
-        r[0x4060 / 4] = DEFAULT_WIDTH << 16 | DEFAULT_HEIGHT;
+        r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4] = s->width * 4 | 2;
+        r[0x4060 / 4] = s->width << 16 | s->height;
     }
     pipes_update_irq(s);
     timer_mod(s->vbl, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + VBL_PERIOD_NS);
@@ -673,7 +672,7 @@ static void s5l8930_display_realize(DeviceState *dev, Error **errp)
 
     s->vbl = timer_new_ns(QEMU_CLOCK_VIRTUAL, vbl_tick, s);
     s->con = graphic_console_init(dev, 0, &display_gfx_ops, s);
-    qemu_console_resize(s->con, DEFAULT_WIDTH, DEFAULT_HEIGHT);
+    qemu_console_resize(s->con, s->width, s->height);
 }
 
 static char *s5l8930_get_frame_timeline(Object *obj, Error **errp)
@@ -792,6 +791,8 @@ static const VMStateDescription vmstate_s5l8930_display = {
 
 static const Property s5l8930_display_properties[] = {
     DEFINE_PROP_UINT64("fb-base", S5L8930DisplayState, fb_base, 0),
+    DEFINE_PROP_UINT16("width", S5L8930DisplayState, width, 1024),     /* K48 */
+    DEFINE_PROP_UINT16("height", S5L8930DisplayState, height, 768),
 };
 
 static void s5l8930_display_class_init(ObjectClass *klass, void *data)

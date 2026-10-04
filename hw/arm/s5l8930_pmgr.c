@@ -79,6 +79,7 @@ struct S5L8930PMGRState {
 
     uint32_t regs[S5L8930_PMGR_SIZE / 4];
     uint8_t security_epoch;     /* POWER_ID[31:24] LLB would latch; 0 = measured */
+    uint8_t board_id;           /* POWER_ID[23:16], the board straps */
     int64_t tick_base_ns;
     S5L8930EventTimer evt[2];
     QEMUTimer *wdog_timer;
@@ -146,7 +147,7 @@ static const struct {
     { 0xf4, 0x00000002 },
     { 0xf8, 0x00000002 },
     { 0xfc, 0x00000000 },
-    { PMGR_POWER_ID, 0x01020001 },   /* measured on a real K48AP (epoch 1, board 2) */
+    { PMGR_POWER_ID, 0x01000001 },   /* measured on a real K48AP (epoch 1); board-id ORed in */
 };
 
 static bool pmgr_modelled(hwaddr off)
@@ -371,6 +372,7 @@ static void s5l8930_pmgr_reset(DeviceState *dev)
     for (i = 0; i < ARRAY_SIZE(pmgr_defaults); i++) {
         s->regs[pmgr_defaults[i].off / 4] = pmgr_defaults[i].val;
     }
+    s->regs[PMGR_POWER_ID / 4] |= (uint32_t)s->board_id << 16;
     /* iboot= skips LLB, which writes the boot epoch here on hardware; the
      * machine hands over what that LLB would write (it_iboot_find_miu_epoch). */
     if (s->security_epoch) {
@@ -473,6 +475,7 @@ static const VMStateDescription vmstate_s5l8930_pmgr = {
 
 static const Property s5l8930_pmgr_props[] = {
     DEFINE_PROP_UINT8("security-epoch", S5L8930PMGRState, security_epoch, 0),
+    DEFINE_PROP_UINT8("board-id", S5L8930PMGRState, board_id, 0x02),   /* K48 */
 };
 
 static void s5l8930_pmgr_class_init(ObjectClass *klass, void *data)
