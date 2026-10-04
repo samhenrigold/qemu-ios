@@ -1,4 +1,4 @@
-/* Import staged music or video through the 7E18 MusicLibrary service. The service owns
+/* Import staged music or video through the guest's MusicLibrary purchase-folder service. The service owns
  * the item. SQLite below is read-only, for retry reconciliation; the item's year, which
  * the purchase-folder insert has no property for, goes through MusicLibrary's own connection.
  * There is no CRT in these ARMv6 executables; see armv6-toolchain/README.md.
@@ -296,10 +296,6 @@ int main(int argc, char **argv) {
     setenv("HOME","/var/mobile",1);
     load_foundation();
     ID pool = m0(m0(getclass("NSAutoreleasePool"),"alloc"),"init");
-    ID version = m1(getclass("NSDictionary"),"dictionaryWithContentsOfFile:",
-                    string("/System/Library/CoreServices/SystemVersion.plist"));
-    const char *build = utf8(field(version,"ProductBuildVersion"));
-    if (!build || strcmp(build,"7E18")) fail("unsupported firmware; expected 7E18");
     const char *filename, *artwork;
     unsigned year;
     ID props = item_properties(read_metadata(argv[1]),&filename,&artwork,&year);
@@ -339,8 +335,11 @@ int main(int argc, char **argv) {
         !sql_step || !sql_finalize || !sql_close || !sql_error) fail("SQLite API unavailable");
     ID library = m0(getclass("MusicLibrary"),"sharedMusicLibrary");
     const char *insert = "insertItemFromPurchaseFolder:withItemProperties:";
+    /* The capability, not a build list: 3.x answers this insert over the iTunes Library.itlp
+     * SQLite library the queries below read. 4.x keeps the insert, but its post-processing then
+     * drops the item; 5.x (ML3, MediaLibrary.sqlitedb) has none. Light Touch offers neither. */
     if (!library || !CALL(int,(ID,ID,ID))(library,selector("respondsToSelector:"),selector(insert)))
-        fail("MusicLibrary import service is unavailable");
+        fail("unsupported firmware: no MusicLibrary purchase-folder import");
     unsigned artwork_id = 0;
     sqlite3_int64 pid = existing(folder,filename,&artwork_id);
     int was_present = pid != 0;
@@ -367,6 +366,10 @@ int main(int argc, char **argv) {
     int (*postprocess)(ID,int) = sync ? dlsym(sync,"ITDBPrepServerPostProcessRun") : NULL;
     if (!postprocess || !postprocess(NULL,1))
         fail("music post-processing did not finish; retain staging for reconciliation");
+    /* 4.2.1's post-processing leaves the item for well under a second, then drops it: never
+     * report an import the library did not keep. ponytail: a fixed 2 s look, not a proof. */
+    sleep(2);
+    if (!existing(folder,filename,&artwork_id)) fail("the music library dropped the import");
     puts(was_present ? "already-imported" : "imported");
     fflush(stdout);
     m0(pool,"drain");

@@ -1,14 +1,30 @@
-# Native media import (7E18)
+# Native media import (3.1 and 3.2)
 
 `itmedia` adds one staged song or movie through the guest's own MusicLibrary framework.
 It preserves existing songs and lets iOS write its SQLite tables, indexes,
 locations, Purchased playlist and backup files. It does not generate a legacy
 iTunesDB or rewrite the library on the host.
 
-This changes the original plan's D.1/D.2 implementation choice: iOS 3.1.3 uses
-`iTunes_Control/iTunes/iTunes Library.itlp/*.itdb`. The native
-`-[MLMusicLibrary_SQL insertItemFromPurchaseFolder:withItemProperties:]` service
-was verified on 7E18; the helper rejects other firmware builds. Upstream
+This changes the original plan's D.1/D.2 implementation choice: iOS 3.x uses
+`iTunes_Control/iTunes/iTunes Library.itlp/*.itdb`, and its MusicLibrary answers
+`-[MLMusicLibrary_SQL insertItemFromPurchaseFolder:withItemProperties:]`. The helper checks for that
+service at runtime, not for a build. Verified with tags, cover and playback on the iPod's 3.1.2 and 3.1.3
+and the iPad's 3.2 (Light Touch `tests/sessions/check-media-native.py --single`).
+
+Not offered by Light Touch (its MediaSupport), and why:
+
+- 4.x keeps the insert and the itlp files, but its post-processing (`ITDBPrepServerPostProcessRun`,
+  run in the calling process there) drops the new item within a second; the helper re-checks after
+  it and fails rather than report an import the library did not keep.
+- 5.x replaced the library with ML3 (`MediaLibrary.sqlitedb`) and has no purchase-folder insert.
+  Its importer is `-[ML3TrackImporter importTrack:withCompletionBlock:]` taking an `MLTrackImport`
+  (`setValue:forEntityProperty:` with the exported `ML3TrackProperty*` names, `setAssetFilePath:`,
+  `setArtworkData:`, `setMediaType:`), on a writer from `-[ML3MusicLibrary initWithPath:enableWrites:]`
+  (`sharedLibrary` is read-only to other processes). That inserts a complete row with its artwork, but
+  5.1.1's Music did not list it in the emulator yet.
+- 2.x and 3.0 have neither (and 3.0 needs a legacy-linked build).
+
+Both helpers are signed with `ldid -S`: 3.2+ AMFI runs nothing unsigned. Upstream
 [libgpod's SQLite notes](https://github.com/fadingred/libgpod/blob/master/README.sqlite)
 describe the format transition. No libgpod implementation is included here.
 
@@ -113,7 +129,8 @@ as `/var/mobile/Media/LightTouch/<staging-id>/image.jpg`, then run
 `/tmp/itphoto <staging-id>` as root or mobile. Input is limited to 16 MiB and
 2048 pixels on each side, checked before UIKit decodes it. Light Touch prepares
 this representation on the host. The helper uses 7E18 PhotoLibrary's
-`PLCameraAlbum` save operation with `notifyingTargetWithPath:` and waits up to
+`PLCameraAlbum` save operation with `notifyingTargetWithPath:` (3.2's is
+`addCapturedImage:withPreview:zoomFactor:…`, used with zoom 1 where 3.1's is absent) and waits up to
 40 seconds for its callback. The local 3.1.3 SDK's Objective-C metadata confirms
 the selector and argument layout; the helper checks its availability at runtime.
 iOS creates the DCIM original, poster image and BTH/THM thumbnails.
