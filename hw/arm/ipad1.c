@@ -24,6 +24,7 @@
 #include "qemu/config-file.h"
 #include "qemu/option.h"
 #include "net/net.h"
+#include "net/util.h"
 #include "exec/address-spaces.h"
 #include "hw/boards.h"
 #include "hw/irq.h"
@@ -96,6 +97,8 @@ struct IPad1MachineState {
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
+    uint8_t wifi_mac[6];                 /* BCM4329 CIS MAC (wifi-mac) */
+    bool wifi_mac_explicit;
     bool iop_core;                       /* run the IOP firmware on a second core (default; off: the HLE) */
     DeviceState *iopcore;
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
@@ -909,14 +912,18 @@ static void ipad1_init(MachineState *machine)
             .chipid = 0x00034329,                   /* rev 3 = B1 (c07a61d2) */
             .sdiod_base = 0x18011000,               /* where initDongle polls */
             .vers1 = { "", "", "s=B1", "P=K48 m=u80" },
-            .mac = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 },  /* = DT */
+            .mac = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 },  /* wifi-mac unset */
             .no_common_funce = true,
             /* what the K48 image in wifiFirmwareLoader reports */
             .fw_version = "wl0: Jul 21 2010 21:58:50 version 4.218.175.43",
         };
+        BCMSDIOChip chip = bcm4329;
         IPodTouchSDIOState *card = IPOD_TOUCH_SDIO(qdev_new(TYPE_IPOD_TOUCH_SDIO));
 
-        ipod_touch_sdio_set_chip(card, &bcm4329);
+        if (s->wifi_mac_explicit) {
+            memcpy(chip.mac, s->wifi_mac, sizeof(chip.mac));
+        }
+        ipod_touch_sdio_set_chip(card, &chip);
         /* qom-set /machine wifi-bssid aa:bb:..: a new access point for
          * locationd, which caches a position per BSSID (location.md). */
         object_property_add_alias(OBJECT(machine), "wifi-bssid", OBJECT(card), "bssid");
@@ -1175,6 +1182,37 @@ static void ipad1_init(MachineState *machine)
     s->pwroff_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ipad1_pwroff_tick, s);
     qemu_register_powerdown_notifier(&ipad1_powerdown_notifier);
     qemu_register_reset(ipad1_cpu_reset, s);
+}
+
+/* The BCM4329's CISTPL_FUNCE MAC; the device tree and NOR carry the same
+ * address. Unset keeps a locally administered placeholder. */
+static char *ipad1_get_wifi_mac(Object *obj, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+    const uint8_t *m = s->wifi_mac;
+
+    if (!s->wifi_mac_explicit) {
+        return g_strdup("");
+    }
+    return g_strdup_printf("%02x:%02x:%02x:%02x:%02x:%02x",
+                           m[0], m[1], m[2], m[3], m[4], m[5]);
+}
+
+static void ipad1_set_wifi_mac(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+    uint8_t mac[6];
+
+    if (s->cpu) {
+        error_setg(errp, "wifi-mac must be set before the machine starts");
+        return;
+    }
+    if (net_parse_macaddr(mac, value) < 0) {
+        error_setg(errp, "wifi-mac must be a MAC address");
+        return;
+    }
+    memcpy(s->wifi_mac, mac, sizeof(mac));
+    s->wifi_mac_explicit = true;
 }
 
 static char *ipad1_get_kboot(Object *obj, Error **errp)
@@ -1654,6 +1692,10 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a8");
     mc->default_ram_size = S5L8930_DRAM_SIZE;
 
+    object_class_property_add_str(klass, "wifi-mac", ipad1_get_wifi_mac,
+                                  ipad1_set_wifi_mac);
+    object_class_property_set_description(klass, "wifi-mac",
+        "BCM4329 card MAC (unset keeps a placeholder)");
     object_class_property_add_str(klass, "kboot", ipad1_get_kboot,
                                   ipad1_set_kboot);
     object_class_property_set_description(klass, "kboot",

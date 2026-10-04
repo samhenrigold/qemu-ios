@@ -61,6 +61,58 @@ static void check_board(const char *options, const char *netdev, bool bridge)
     qtest_quit(q);
 }
 
+/* The CISTPL_FUNCE type-4 MAC the card reports, which AppleBCMWLAN reads. */
+static void assert_cis_mac(QTestState *q, const uint8_t *mac)
+{
+    uint32_t cis = card_read(q, 9) | card_read(q, 10) << 8 | card_read(q, 11) << 16;
+    bool found = false;
+    for (unsigned n = 0; n < 64; n++) {
+        unsigned code = card_read(q, cis);
+        if (code == 0xff) { break; }
+        if (code == 0) { cis++; continue; }
+        unsigned len = card_read(q, cis + 1);
+        if (code == 0x22 && len == 8 && card_read(q, cis + 2) == 4 &&
+            card_read(q, cis + 3) == 6) {
+            for (unsigned j = 0; j < 6; j++) {
+                g_assert_cmphex(card_read(q, cis + 4 + j), ==, mac[j]);
+            }
+            found = true;
+            break;
+        }
+        cis += len + 2;
+    }
+    g_assert_true(found);
+}
+
+static void wifi_mac(void)
+{
+    static const uint8_t placeholder[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+    static const uint8_t set[6] = {0x02, 0x9f, 0xef, 0x8e, 0x4a, 0xf8};
+    QTestState *q = qtest_initf("-machine ipad1,bootrom=%s -display none "
+                               "-audio driver=none -nic none", rom);
+    command(q, 5, 0);
+    assert_cis_mac(q, placeholder);
+    qtest_quit(q);
+
+    q = qtest_initf("-machine ipad1,bootrom=%s,wifi-mac=02:9f:ef:8e:4a:f8 "
+                    "-display none -audio driver=none -nic none", rom);
+    command(q, 5, 0);
+    assert_cis_mac(q, set);
+    QDict *r = qtest_qmp(q, "{'execute':'qom-get','arguments':{'path':'/machine',"
+                         "'property':'wifi-mac'}}");
+    g_assert_cmpstr(qdict_get_str(r, "return"), ==, "02:9f:ef:8e:4a:f8");
+    qobject_unref(r);
+    /* A running card's identity cannot change underneath its driver. */
+    r = qtest_qmp(q, "{'execute':'qom-set','arguments':{'path':'/machine',"
+                     "'property':'wifi-mac','value':'02:11:22:33:44:55'}}");
+    g_assert_nonnull(qdict_get(r, "error"));
+    qobject_unref(r);
+    qtest_qmp_assert_success(q, "{'execute':'system_reset'}");
+    command(q, 5, 0);
+    assert_cis_mac(q, set);
+    qtest_quit(q);
+}
+
 static void default_bridge(void) { check_board("", "", true); }
 static void bridge_off(void) { check_board(",wifi=off", "", false); }
 static void bridge_off_with_backend(void)
@@ -78,6 +130,7 @@ int main(int argc, char **argv)
     qtest_add_func("/ipad1/sdio/default-bridge-card", default_bridge);
     qtest_add_func("/ipad1/sdio/bridge-off-card-reset", bridge_off);
     qtest_add_func("/ipad1/sdio/bridge-off-existing-backend", bridge_off_with_backend);
+    qtest_add_func("/ipad1/sdio/wifi-mac", wifi_mac);
     int result = g_test_run();
     unlink(rom); g_free(rom);
     return result;
