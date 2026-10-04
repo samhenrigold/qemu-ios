@@ -33,7 +33,8 @@ none of them is a smoke test: "did it boot?" would have missed all of them.
               data blocks: the file silently ceases to exist. Only a
               system_powerdown unmounts the volume.
   prefs       (explicit --checks only) a device it_prefs has not run on: Brightness at maximum and
-              Auto-Lock Never read back over the agent, and still unlocked 90 s after unlocking.
+              Auto-Lock Never read back over the agent, no baked com.qemu.it-prefs job left (the
+              package's runs instead), and still unlocked 90 s after unlocking.
   serial-console
               Enable early serial boot arguments and require XNU driver output
               and the BSD root mount in serial.log (explicit --checks only).
@@ -1311,7 +1312,10 @@ def check_prefs(cfg, dev, r):
     never = lock == MC_NEVER if major >= 4 else sb.get("SBAutoLockTime") == -1 and sb.get("SBAutoDimTime") == -1
     stored = "brightness %r, auto-lock %r/dim %r (MC maxInactivity %r), marker %r" % (
         bright, sb.get("SBAutoLockTime"), sb.get("SBAutoDimTime"), lock, mine)
-    if not (mine.get("DefaultsSet") is True and bright == 1.0 and never):
+    # one delivery path: the package's job, and none of the copy baked by earlier prepares
+    baked, _ = itqmp.agent(dev.qmp, "get", "/System/Library/LaunchDaemons/com.qemu.it-prefs.plist")
+    stored += "; baked com.qemu.it-prefs job %s" % ("gone" if baked != 0 else "still there")
+    if not (mine.get("DefaultsSet") is True and bright == 1.0 and never and baked != 0):
         return r.set(False, stored)
     for _ in range(4):
         dev.qmp.home()
@@ -1324,6 +1328,9 @@ def check_prefs(cfg, dev, r):
     else:
         return r.set(False, stored + "; could not unlock: %r" % out)
     time.sleep(STOCK_AUTOLOCK_S + 30)
+    shot = os.path.join(dev.dir, "prefs-unlocked.ppm")
+    dev.qmp.shot(shot)
+    to_png(shot, os.path.join(dev.dir, "prefs-unlocked.png"))   # still lit and on the home screen
     status, out = itqmp.agent(dev.qmp, "lockstatus")
     r.set(status == 0 and out.startswith(b"locked=0"),
           stored + "; %ds after unlocking: %s" % (STOCK_AUTOLOCK_S + 30, out.decode(errors="replace").strip()))
@@ -1958,6 +1965,8 @@ def main():
     ap.add_argument("--stage-gles-shim", action="store_true",
                     help="replace the guest GLES shim in the disposable overlay")
     ap.add_argument("--out", default=None, help="run directory")
+    ap.add_argument("--keep-overlay", action="store_true",
+                    help="boot on the run directory's overlay from an earlier run (an existing device), not a fresh one")
     ap.add_argument("--checks", default=None,
                     help="comma-separated subset, any tier (default: "
                          "the default tier, or all checks with --with-apps)")
@@ -2056,9 +2065,9 @@ def main():
     with open(os.path.join(cfg.out, "fixture-inputs.json"), "w") as file:
         json.dump(fixture_receipt, file, indent=2)
     cfg.overlay = os.path.join(cfg.out, "overlay")
-    if os.path.exists(cfg.overlay):
+    if os.path.exists(cfg.overlay) and not cfg.keep_overlay:
         shutil.rmtree(cfg.overlay)
-    os.makedirs(cfg.overlay)
+    os.makedirs(cfg.overlay, exist_ok=True)
 
     # qemu and the base NAND are the whole default tier's only inputs: without
     # them nothing at all can run, so this is still a hard exit.

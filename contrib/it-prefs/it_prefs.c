@@ -27,14 +27,16 @@
  * if an IPSW does not carry it, the job logs that and leaves that key alone.
  *
  * Plain C with CoreFoundation dlopen'd, like it_ethlink; built by
- * contrib/ipad1-guest/build.sh (the iPad's seed package), and for the iPod by
- * build-ipod.sh with IT_PREFS_NO_LOCATION (no Wi-Fi location there), baked by
- * imgtools/ipod2g_device.py bake. Both are signed with it_prefs-entitlements.xml:
+ * contrib/ipad1-guest/build.sh (the iPad's packages), and for the iPod by
+ * build-ipod.sh with IT_PREFS_NO_LOCATION (no Wi-Fi location there) for the
+ * n72 packages. Both run from the package's com.qemu.guest-prefs job; iPods
+ * prepared before that had it baked, a pair this job removes (main()). Both are signed with it_prefs-entitlements.xml:
  * 4.x/5.x profiled only takes Auto-Lock from an entitled client.
  */
 extern long write(int, const void *, unsigned long);
 extern long read(int, void *, unsigned long);
 extern int open(const char *, int, ...);
+extern int unlink(const char *);
 extern int close(int);
 extern void _exit(int);
 extern void *dlopen(const char *, int);
@@ -340,6 +342,18 @@ static int wifi_up(unsigned secs)
  * change is written while it is down. Other jobs are restarted only when one
  * of their settings changes.
  */
+/* The iPod's baked copy, from before the packages carried it. It ran this boot too (launchd loaded it first),
+ * as the tip-only build: harmless, as it writes only an unset tip. Gone from the next boot on.
+ * ponytail: on a device never booted before, both may write com.apple.springboard at once and one sync can
+ * drop the other's keys; such devices are fresh prepares, which no longer bake it. */
+static void retire_baked(void)
+{
+    if (unlink("/System/Library/LaunchDaemons/com.qemu.it-prefs.plist") == 0) {
+        unlink("/usr/local/bin/it_prefs");
+        say("removed the baked com.qemu.it-prefs job; the package's runs instead", "", "");
+    }
+}
+
 int main(void)
 {
     const char *jobs[sizeof(SETTINGS) / sizeof(SETTINGS[0])];
@@ -351,6 +365,7 @@ int main(void)
         if (SETTINGS[i].job && j == n)
             jobs[n++] = SETTINGS[i].job;
     }
+    retire_baked();
     as_mobile(2, jobs, n);          /* first: the seal boot halts 40 s in, and Wi-Fi can take longer */
     for (j = 0; j < n && !streq(jobs[j], LOCATIOND_JOB); j++)
         ;

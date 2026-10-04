@@ -44,15 +44,20 @@ IPOD_BIN = {"it_agent": "contrib/it-agent/it_agent", "itmedia": "contrib/it-medi
             "itphoto": "contrib/it-media/itphoto", "ittrust": "contrib/it-proxy/ittrust",
             "itproxy": "contrib/it-proxy/itproxy", "itstatus": "contrib/it-status/itstatus",
             "ithalt": "contrib/it-halt/ithalt", "itorient": "contrib/it-orientation/itorient",
-            "sbdlicon": "contrib/it-instprogress/sbdlicon", "sblaunch": "contrib/it-gles/sblaunch"}
+            "sbdlicon": "contrib/it-instprogress/sbdlicon", "sblaunch": "contrib/it-gles/sblaunch",
+            "it_prefs": "build/ipod-guest/it_prefs"}
 # The 2.x/3.0 set shares the same legacy-linked helpers as later armv6 guests.
 # Media, networking and status tools retain their own qualification boundary.
-IPOD_LEGACY_BIN = {n: IPOD_BIN[n] for n in ("it_agent", "sblaunch", "sbdlicon")}
+IPOD_LEGACY_BIN = {n: IPOD_BIN[n] for n in ("it_agent", "sblaunch", "sbdlicon", "it_prefs")}
+# it_prefs (contrib/it-prefs/build-ipod.sh: no Wi-Fi location) runs from the package on every iPod 2G family,
+# so devices prepared with it baked get its later settings too.
+PREFS_JOB = "contrib/it-prefs/com.qemu.it-prefs.plist"
+IPOD_JOBS = ["contrib/it-agent/com.qemu.it-agent.plist", PREFS_JOB]
 # it_agent (armv7, contrib/ipad1-guest/build.sh) replaces it_pbd from serial 2: the same pasteboard, plus the
 # foreground app, lock state, launch and sync that no stock service answers. Two pasteboard daemons would race.
 IPAD_BIN = {n: "build/ipad1-guest/" + n for n in ("it_agent", "it_ethlink", "it_prefs")}
 IPAD_JOBS = ["contrib/it-agent/com.qemu.it-agent.plist", "contrib/it-ethlink/com.qemu.it-ethlink.plist",
-             "contrib/it-prefs/com.qemu.it-prefs.plist"]
+             PREFS_JOB]
 # it_msmquiet: the mounter has already loaded the previous shim when the hook changes, and a respring does not
 # drop a notice SpringBoard already holds (tested on 4.2.1), so the next boot's mounter is the one that changes.
 IPAD_HOOKS = [("build/ipad1-guest/it_msmquiet.dylib", "/usr/local/lib/it_msmquiet.dylib", False),
@@ -67,22 +72,24 @@ FAMILIES = {
     "n45-ios1": {"arch": "armv6", "boards": ["n45ap"], "builds": ["3*", "4*"],
                  "hooks": [("contrib/it-gles/OpenGLES-1x", OPENGLES, True)]},
     "n72-ios2": {"arch": "armv6", "boards": ["n72ap"], "builds": ["5*"], "bin": IPOD_LEGACY_BIN,
-                 "jobs": ["contrib/it-agent/com.qemu.it-agent.plist"],
+                 "jobs": IPOD_JOBS,
                  "hooks": [("contrib/gles-public/OpenGLES", OPENGLES, True),
                            ("contrib/it-agent/it_typein.dylib", "/usr/lib/it_typein.dylib", True)]},
     # 3.0 (7A341, the iPod 2G's only 3.0 build) has 3.1's engine ABI but 2.x's dyld (no LC_DYLD_INFO_ONLY):
     # the legacy-linked loader, engine and core helpers. Family by dyld capability, so 3.1+ are listed
     # by build (the iPod's 3.x series is closed).
     "n72-ios30": {"arch": "armv6", "boards": ["n72ap"], "builds": ["7A341"], "bin": IPOD_LEGACY_BIN,
-                  "jobs": ["contrib/it-agent/com.qemu.it-agent.plist"],
+                  "jobs": IPOD_JOBS,
                   "hooks": [("contrib/gles-public/OpenGLES", OPENGLES, True),
                             ("contrib/it-agent/it_typein.dylib", "/usr/lib/it_typein.dylib", True)]},
     "n72-ios3": {"arch": "armv6", "boards": ["n72ap"], "builds": ["7C144", "7C145", "7D11", "7E18"], "bin": IPOD_BIN,
-                 "jobs": ["contrib/it-agent/com.qemu.it-agent.plist"],
+                 "jobs": IPOD_JOBS,
                  "hooks": [("contrib/gles-public/OpenGLES", OPENGLES, True),
                            ("contrib/it-agent/it_typein.dylib", "/usr/lib/it_typein.dylib", True),
                            ("build/appsync/libappsync.dylib", "/usr/lib/libappsync.dylib", False)]},
-    "n72-ios4": {"arch": "armv6", "boards": ["n72ap"], "builds": ["8*"], "stub": True},
+    # 4.x: it_prefs alone so far; the agent and the rest are still baked there.
+    "n72-ios4": {"arch": "armv6", "boards": ["n72ap"], "builds": ["8*"], "bin": {"it_prefs": IPOD_BIN["it_prefs"]},
+                 "jobs": [PREFS_JOB]},
     "k48-ios3": {"arch": "armv7", "boards": ["k48ap"], "builds": ["7*"], "bin": IPAD_BIN,
                  "jobs": IPAD_JOBS,
                  "hooks": [("contrib/gles-public/OpenGLES", OPENGLES, True)] + IPAD_HOOKS},
@@ -466,11 +473,17 @@ def selfcheck():
     assert build_matches(LEGACY_BUILDS, "7A341") and not build_matches(LEGACY_BUILDS, "7E18")
     for family in ("n72-ios2", "n72-ios30"):
         spec = FAMILIES[family]
-        assert set(spec["bin"]) == {"it_agent", "sblaunch", "sbdlicon"}
-        assert spec["jobs"] == ["contrib/it-agent/com.qemu.it-agent.plist"]
+        assert set(spec["bin"]) == {"it_agent", "sblaunch", "sbdlicon", "it_prefs"}
+        assert spec["jobs"] == ["contrib/it-agent/com.qemu.it-agent.plist", PREFS_JOB]
         assert [t for _, t, _ in spec["hooks"]] == [OPENGLES, "/usr/lib/it_typein.dylib"]
         # Older guests have no native media qualification yet.
         assert "itmedia" not in spec["bin"]
+    # it_prefs and its job ride every iPod 2G family: one delivery path, existing devices included
+    for family, spec in FAMILIES.items():
+        if "n72ap" in spec["boards"]:
+            assert spec["bin"]["it_prefs"] == "build/ipod-guest/it_prefs" and PREFS_JOB in spec["jobs"], family
+    assert plistlib.loads(rewrite_job(open(os.path.join(HERE, "../..", PREFS_JOB), "rb").read()))["Label"] \
+        == "com.qemu.guest-prefs", "the baked com.qemu.it-prefs job would keep the package's from loading"
     # the one GL front end, byte for byte, wherever a family hooks GL (1.x's is its own: no EAGL, old ObjC)
     assert {s for f in FAMILIES.values() for s, t, _ in f.get("hooks", []) if t in GL_TARGETS} == \
         {"contrib/gles-public/OpenGLES", "contrib/it-gles/OpenGLES-1x"}
