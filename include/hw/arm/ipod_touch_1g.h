@@ -120,6 +120,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouch1GMachineState, IPOD_TOUCH_1G_MACHINE)
 #define N45_VROM_JT_8900_VERIFY 0x2000008c
 #define N45_VROM_JT_8900_DECRYPT 0x20000090
 
+#include "hw/arm/ipod_touch_lis302dl.h"
+
 typedef struct IPodTouch1GMachineState {
     MachineState parent;
     ARMCPU *cpu;
@@ -155,6 +157,7 @@ typedef struct IPodTouch1GMachineState {
     bool gles_debug;
     bool wifi;                       /* the Marvell 88W8686 on the SDIO bus (default on) */
     char *wifi_mac;                  /* the card's EEPROM MAC ("wifi-mac", the unit identity's) */
+    LIS302DLState *accel;            /* the LIS302DL on I2C0; it keeps the attitude (accel-pitch/-roll/-pose) */
 } IPodTouch1GMachineState;
 
 #endif
