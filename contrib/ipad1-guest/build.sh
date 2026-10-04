@@ -18,7 +18,8 @@ for src in it-pasteboard/it_pbd it-ethlink/it_ethlink it-seal/it_seal it-prefs/i
     cc6 "$HERE/../$src.c" "$OUT/$t.o"
     link6 -execute "$OUT/$t" "$OUT/$t.o"
     rm -f "$OUT/$t.o"
-    "${LDID:-ldid}" -S "$OUT/$t"
+    ents="$HERE/../${src%/*}/$t-entitlements.xml"
+    "${LDID:-ldid}" -S$([ -f "$ents" ] && echo "$ents") "$OUT/$t"
     file "$OUT/$t"
 done
 # it_agent: the iPod's guest agent (foreground app, lock state, launch, sync, the pasteboard), as

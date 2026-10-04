@@ -15,6 +15,11 @@
  *       pointed at the web proxy's guestfwd address over plain HTTP, it gets a
  *       position from the host.
  *
+ * SETTINGS are re-applied on every boot. DEFAULTS are applied once per device
+ * (the com.qemu.it-prefs DefaultsSet marker), so whatever the user picks in
+ * Settings afterwards stays: Brightness at maximum and Auto-Lock at Never,
+ * each written where that firmware's Settings writes it (see defaults()).
+ *
  * Once Wi-Fi (en0) has an address it also restarts locationd, which otherwise
  * starts before Wi-Fi is powered and then never scans (see main()).
  *
@@ -23,8 +28,9 @@
  *
  * Plain C with CoreFoundation dlopen'd, like it_ethlink; built by
  * contrib/ipad1-guest/build.sh (the iPad's seed package), and for the iPod by
- * build-ipod.sh with IT_PREFS_TIP_ONLY (the SpringBoard key only), baked by
- * imgtools/ipod2g_device.py bake.
+ * build-ipod.sh with IT_PREFS_NO_LOCATION (no Wi-Fi location there), baked by
+ * imgtools/ipod2g_device.py bake. Both are signed with it_prefs-entitlements.xml:
+ * 4.x/5.x profiled only takes Auto-Lock from an entitled client.
  */
 extern long write(int, const void *, unsigned long);
 extern long read(int, void *, unsigned long);
@@ -60,7 +66,7 @@ static const struct setting {
     const char *job;
 } SETTINGS[] = {
     { "com.apple.springboard", "SBDidShowReorderText", SPRINGBOARD, TRUE },
-#ifndef IT_PREFS_TIP_ONLY   /* the iPod (build-ipod.sh): only the tip; no Wi-Fi location there */
+#ifndef IT_PREFS_NO_LOCATION   /* the iPod (build-ipod.sh): no Wi-Fi location there */
     { "com.apple.locationd", "AppleLocationServer", LOCATIOND, STRING,
       "http://10.0.2.100:3128/clls/wloc", LOCATIOND_JOB },
     { "com.apple.locationd", "AppleLocationServerRequiresCert", LOCATIOND, FALSE,
@@ -134,6 +140,34 @@ static int launchctl(const char *verb, const char *job)
     return status;
 }
 
+/* CoreFoundation, dlopen'd in the mobile child. */
+static const void *(*str_)(const void *, const char *, unsigned);
+static const void *(*get)(const void *, const void *);
+static unsigned char (*equal)(const void *, const void *);
+static void (*set)(const void *, const void *, const void *);
+static unsigned char (*sync)(const void *);
+static const void *(*num)(const void *, long, const void *);
+static const void **yes, **no;
+
+static int cf_load(void)
+{
+    void *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", 2);
+
+    if (!cf || !(str_ = dlsym(cf, "CFStringCreateWithCString")) || !(get = dlsym(cf, "CFPreferencesCopyAppValue"))
+        || !(equal = dlsym(cf, "CFEqual")) || !(set = dlsym(cf, "CFPreferencesSetAppValue"))
+        || !(sync = dlsym(cf, "CFPreferencesAppSynchronize")) || !(num = dlsym(cf, "CFNumberCreate"))
+        || !(yes = dlsym(cf, "kCFBooleanTrue")) || !(no = dlsym(cf, "kCFBooleanFalse"))) {
+        say("CoreFoundation preferences API not found; changing nothing", "", "");
+        return 0;
+    }
+    return 1;
+}
+
+static const void *str(const char *s)
+{
+    return str_(0, s, 0x08000100);   /* kCFStringEncodingUTF8 */
+}
+
 /*
  * As mobile: apply every setting whose key the reader knows. With write false,
  * only compare. Returns a bit per job (index into jobs[]) whose settings are
@@ -141,26 +175,14 @@ static int launchctl(const char *verb, const char *job)
  */
 static unsigned apply(int write, const char *const *jobs, unsigned njobs)
 {
-    void *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", 2);
-    const void *(*str)(const void *, const char *, unsigned) = cf ? dlsym(cf, "CFStringCreateWithCString") : 0;
-    const void *(*get)(const void *, const void *) = cf ? dlsym(cf, "CFPreferencesCopyAppValue") : 0;
-    unsigned char (*equal)(const void *, const void *) = cf ? dlsym(cf, "CFEqual") : 0;
-    void (*set)(const void *, const void *, const void *) = cf ? dlsym(cf, "CFPreferencesSetAppValue") : 0;
-    unsigned char (*sync)(const void *) = cf ? dlsym(cf, "CFPreferencesAppSynchronize") : 0;
-    const void **yes = cf ? dlsym(cf, "kCFBooleanTrue") : 0;
-    const void **no = cf ? dlsym(cf, "kCFBooleanFalse") : 0;
     unsigned i, j, stale = 0;
 
-    if (!str || !get || !equal || !set || !sync || !yes || !no) {
-        say("CoreFoundation preferences API not found; changing nothing", "", "");
+    if (!cf_load())
         return 0;
-    }
     for (i = 0; i < sizeof(SETTINGS) / sizeof(SETTINGS[0]); i++) {
         const struct setting *s = &SETTINGS[i];
-        const void *app = str(0, s->domain, 0x08000100);   /* kCFStringEncodingUTF8 */
-        const void *key = str(0, s->key, 0x08000100);
-        const void *value = s->kind == TRUE ? *yes : s->kind == FALSE ? *no
-                          : str(0, s->string, 0x08000100);
+        const void *app = str(s->domain), *key = str(s->key);
+        const void *value = s->kind == TRUE ? *yes : s->kind == FALSE ? *no : str(s->string);
         const void *current;
 
         if (!file_has(s->reader, s->key)) {
@@ -182,8 +204,97 @@ static unsigned apply(int write, const char *const *jobs, unsigned njobs)
     return stale;
 }
 
-/* Run apply() as mobile in a child; its result comes back as the exit code. */
-static unsigned as_mobile(int write, const char *const *jobs, unsigned njobs)
+/* Settings' Never: 1.x-3.x store -1 in SBAutoLockTime, and SpringBoard takes it only with SBAutoDimTime
+ * not above it (else it resets both to its defaults, 300/285 s on 3.2.2), so the dim time is -1 too;
+ * from 4.0 setScreenLock:specifier: hands ManagedConfiguration INT_MAX for it (and screenLock: reads
+ * INT_MAX back as Never). */
+#define MC_FRAMEWORK "/System/Library/PrivateFrameworks/ManagedConfiguration.framework/ManagedConfiguration"
+#define MC_NEVER 0x7fffffff
+
+/* [[MCProfileConnection sharedConnection] setValue:@(INT_MAX) forSetting:feature], as Settings does; 1 once
+ * the effective value reads back as Never. */
+static int mc_never(const void *feature)
+{
+    void *objc = dlopen("/usr/lib/libobjc.A.dylib", 2);
+    void *(*cls)(const char *) = objc ? dlsym(objc, "objc_getClass") : 0;
+    void *(*sel)(const char *) = objc ? dlsym(objc, "sel_registerName") : 0;
+    void *(*msg)(void *, void *, ...) = objc ? dlsym(objc, "objc_msgSend") : 0;
+    int never = MC_NEVER;
+    const void *value = num(0, 3, &never);   /* kCFNumberSInt32Type; an NSNumber, toll-free */
+    void *pool, *conn, *now;
+    int ok;
+
+    if (!cls || !sel || !msg || !cls("MCProfileConnection") || !cls("NSAutoreleasePool"))
+        return 0;
+    pool = msg(msg(cls("NSAutoreleasePool"), sel("alloc")), sel("init"));
+    conn = msg(cls("MCProfileConnection"), sel("sharedConnection"));
+    msg(conn, sel("setValue:forSetting:"), value, feature);
+    now = msg(conn, sel("effectiveValueForSetting:"), feature);
+    ok = now && equal(now, value);
+    msg(pool, sel("drain"));
+    return ok;
+}
+
+/*
+ * As mobile, once per device: Brightness at maximum and Auto-Lock at Never, the first time this job
+ * runs on a device (its seal boot when prepared, its next boot when the package arrives later); never
+ * again once the com.qemu.it-prefs DefaultsSet marker is down, so the user's later choices in Settings
+ * stand. Each value goes where that firmware's own Settings puts it, found at run time:
+ *   Brightness  com.apple.springboard SBBacklightLevel2 (2.x-5.x) or SBBacklightLevel (1.x), whichever
+ *               SpringBoard names, = 1.0; then GSEventSetBacklightLevel(1.0), as the slider does, so a
+ *               running SpringBoard takes it now rather than at its next launch (the iPod's first boot
+ *               is the user's: no sealing boot runs this job first).
+ *   Auto-Lock   ManagedConfiguration's MCFeatureAutoLockTime when the framework exports it (4.x, 5.x),
+ *               else com.apple.springboard SBAutoLockTime and SBAutoDimTime = -1 when SpringBoard names
+ *               them (1.x-3.x), then GSSendAppPreferencesChanged, as Settings does, for a running SpringBoard.
+ */
+static unsigned defaults(void)
+{
+    static const char *const backlight[] = { "SBBacklightLevel2", "SBBacklightLevel" };
+    static const char *const autolock[] = { "SBAutoLockTime", "SBAutoDimTime" };
+    const void *mine = str("com.qemu.it-prefs"), *marker = str("DefaultsSet"), *sb = str("com.apple.springboard");
+    void *mc = dlopen(MC_FRAMEWORK, 2), *gs;
+    const void **feature = mc ? dlsym(mc, "MCFeatureAutoLockTime") : 0;
+    void (*live)(float);
+    void (*changed)(const void *, const void *);
+    float full = 1;
+    int never = -1;
+    unsigned i;
+
+    if (get(marker, mine)) {
+        say("defaults already set once; left to the user", "", "");
+        return 0;
+    }
+    for (i = 0; i < sizeof(backlight) / sizeof(backlight[0]); i++)
+        if (file_has(SPRINGBOARD, backlight[i])) {
+            set(str(backlight[i]), num(0, 12, &full), sb);   /* kCFNumberFloatType */
+            say(backlight[i], " = 1.0 (Brightness at maximum)", "");
+        }
+    if (feature && *feature)
+        say("MCFeatureAutoLockTime", mc_never(*feature) ? " = Never" : " not taken by ManagedConfiguration", "");
+    else if (file_has(SPRINGBOARD, autolock[0])) {
+        for (i = 0; i < sizeof(autolock) / sizeof(autolock[0]); i++)
+            if (file_has(SPRINGBOARD, autolock[i])) {
+                set(str(autolock[i]), num(0, 3, &never), sb);   /* kCFNumberSInt32Type */
+                say(autolock[i], " = -1 (Auto-Lock Never)", "");
+            }
+    } else
+        say(SPRINGBOARD, " has no ", autolock[0]);
+    if (!sync(sb))
+        say("com.apple.springboard not saved: CFPreferencesAppSynchronize failed", "", "");
+    gs = dlopen("/System/Library/PrivateFrameworks/GraphicsServices.framework/GraphicsServices", 2);
+    if (gs && (live = dlsym(gs, "GSEventSetBacklightLevel")))
+        live(full);
+    if (gs && !(feature && *feature) && (changed = dlsym(gs, "GSSendAppPreferencesChanged")))
+        changed(sb, str(autolock[0]));
+    set(marker, *yes, mine);
+    sync(mine);
+    return 0;
+}
+
+/* Run apply() (what 0 compare, 1 write) or defaults() (2) as mobile in a child; apply()'s result
+ * comes back as the exit code. */
+static unsigned as_mobile(int what, const char *const *jobs, unsigned njobs)
 {
     int pid = fork(), status = 0;
     if (pid == 0) {
@@ -193,7 +304,7 @@ static unsigned as_mobile(int write, const char *const *jobs, unsigned njobs)
             say("could not become mobile; changing nothing", "", "");
             _exit(0);
         }
-        _exit(apply(write, jobs, njobs));
+        _exit(what == 2 ? (cf_load() ? defaults() : 0) : apply(what, jobs, njobs));
     }
     if (pid < 0 || waitpid(pid, &status, 0) != pid)
         return 0;
@@ -240,6 +351,7 @@ int main(void)
         if (SETTINGS[i].job && j == n)
             jobs[n++] = SETTINGS[i].job;
     }
+    as_mobile(2, jobs, n);          /* first: the seal boot halts 40 s in, and Wi-Fi can take longer */
     for (j = 0; j < n && !streq(jobs[j], LOCATIOND_JOB); j++)
         ;
     if (j < n && wifi_up(120))

@@ -32,6 +32,8 @@ none of them is a smoke test: "did it boot?" would have missed all of them.
               memory, so killing QEMU loses the directory entry while keeping the
               data blocks: the file silently ceases to exist. Only a
               system_powerdown unmounts the volume.
+  prefs       (explicit --checks only) a device it_prefs has not run on: Brightness at maximum and
+              Auto-Lock Never read back over the agent, and still unlocked 90 s after unlocking.
   serial-console
               Enable early serial boot arguments and require XNU driver output
               and the BSD root mount in serial.log (explicit --checks only).
@@ -120,7 +122,7 @@ LIT_THRESHOLD = 8
 DEFAULT_CHECKS = ["boot", "fsck", "persist", "appinstall", "applaunch", "gles", "agent", "audio"]
 # Additional transport and restart checks remain opt-in.
 OPT_IN_CHECKS = ["afc", "usbtcp", "wifi", "respring", "restart"]
-ALL_CHECKS = DEFAULT_CHECKS + OPT_IN_CHECKS + ["serial-console", "webproxy"]
+ALL_CHECKS = DEFAULT_CHECKS + OPT_IN_CHECKS + ["serial-console", "webproxy", "prefs"]
 QUICK_CHECKS = ["boot", "afc"]
 
 # Checks that talk to the device over usbmux and so need the usbmuxd fork.
@@ -1279,6 +1281,54 @@ def check_agent(cfg, procs, dev, r):
             itqmp.agent(dev.qmp, "unlink", remote + "-large")
 
 
+PREFS = "/var/mobile/Library/Preferences/"
+MC_SETTINGS = "/var/mobile/Library/ConfigurationProfiles/UserSettings.plist"
+MC_NEVER = 0x7fffffff       # Settings' Never in ManagedConfiguration (4.x)
+STOCK_AUTOLOCK_S = 60       # Settings' default Auto-Lock on the iPod
+
+
+def check_prefs(cfg, dev, r):
+    """it_prefs' once-only defaults on a device it has not run on before (the iPod's first boot is the
+    user's own: no sealing boot runs it first): Brightness at maximum and Auto-Lock Never, read back over
+    the agent from where this firmware's Settings keeps them, its marker, and Never in effect this boot:
+    unlocked, the device is still unlocked well past the stock one-minute Auto-Lock."""
+    ok, detail = ensure_agent(dev.qmp)
+    if not ok:
+        return r.set(False, detail)
+
+    def plist(path):
+        status, data = itqmp.agent(dev.qmp, "get", path)
+        return plistlib.loads(data) if status == 0 else {}
+    t0 = time.time()
+    while True:
+        mine, sb, mc = plist(PREFS + "com.qemu.it-prefs.plist"), plist(PREFS + "com.apple.springboard.plist"), plist(MC_SETTINGS)
+        if mine.get("DefaultsSet") or time.time() - t0 > 180:
+            break
+        time.sleep(5)
+    bright = sb.get("SBBacklightLevel2", sb.get("SBBacklightLevel"))
+    lock = ((mc.get("restrictedValue") or {}).get("maxInactivity") or {}).get("value")
+    major = cfg.device_version[0] if cfg.device_version else 3
+    never = lock == MC_NEVER if major >= 4 else sb.get("SBAutoLockTime") == -1 and sb.get("SBAutoDimTime") == -1
+    stored = "brightness %r, auto-lock %r/dim %r (MC maxInactivity %r), marker %r" % (
+        bright, sb.get("SBAutoLockTime"), sb.get("SBAutoDimTime"), lock, mine)
+    if not (mine.get("DefaultsSet") is True and bright == 1.0 and never):
+        return r.set(False, stored)
+    for _ in range(4):
+        dev.qmp.home()
+        time.sleep(2)
+        status, out = itqmp.agent(dev.qmp, "lockstatus")
+        if status == 0 and out.startswith(b"locked=0"):
+            break
+        dev.qmp.swipe(60, 427, 295, 427)
+        time.sleep(3)
+    else:
+        return r.set(False, stored + "; could not unlock: %r" % out)
+    time.sleep(STOCK_AUTOLOCK_S + 30)
+    status, out = itqmp.agent(dev.qmp, "lockstatus")
+    r.set(status == 0 and out.startswith(b"locked=0"),
+          stored + "; %ds after unlocking: %s" % (STOCK_AUTOLOCK_S + 30, out.decode(errors="replace").strip()))
+
+
 def check_audio(cfg, procs, dev, r):
     """Start the bundled stereo fixture; validate the finalized WAV after shutdown."""
     port = prepare_app_control(cfg, procs, dev, r)
@@ -2131,6 +2181,9 @@ def main():
 
         if "agent" in selected:
             check_agent(cfg, procs, dev, results["agent"])
+
+        if "prefs" in selected:
+            check_prefs(cfg, dev, results["prefs"])
 
         if "gles" in selected:
             check_gles(cfg, procs, dev, results["gles"])
