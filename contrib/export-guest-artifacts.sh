@@ -9,7 +9,7 @@
 #                       front end (OpenGLES, fat armv6 + armv7, contrib/gles-public: every k48 and n72 build) with
 #                       gles-names.h, the name table it and the host speak, the n72 recipe's inputs, the n45 recipe's
 #                       (OpenGLES-1x, 1.x's own front end, and opengles-1x.exports, the export set it must match),
-#                       the armv6 it_keybag and it_prefs, and armv6.itpack /
+#                       the armv6 it_keybag, and armv6.itpack /
 #                       armv7.itpack (contrib/guest-package, VERSION's serial)
 #   macos-app/entitlements.plist   the app helper's entitlements
 #   include/ios-app/, include/macos-app/   the headers the helper compiles against
@@ -58,8 +58,9 @@ if ! bash "$SRC/contrib/guest-package/build.sh" "$B" >"$OUT/build.log" 2>&1; the
     fail "guest-package build failed; see $OUT/build.log"
 fi
 grep 'guest-package: warning' "$OUT/build.log" >&2 || true
-# The iPod's armv6 it_keybag and it_prefs: recipes that write build/ipod-guest next to their (copied) sources.
-for recipe in it-keybag it-prefs; do
+# The iPod's armv6 it_keybag: a recipe that writes build/ipod-guest next to its (copied) sources. (The iPod's
+# it_prefs is a package payload, built by guest-package/build.sh.)
+for recipe in it-keybag; do
     if ! LEGACY_LINK=1 bash "$B/src/contrib/$recipe/build-ipod.sh" >"$B/logs/$recipe-ipod.log" 2>&1; then
         cat "$B/logs/$recipe-ipod.log" >&2
         fail "$recipe/build-ipod.sh failed"
@@ -105,7 +106,6 @@ done
 stage ipad-guest-tools "$C/it-gles/OpenGLES-1x"
 stage ipad-guest-tools "$C/it-gles/opengles-1x.exports"
 stage ipad-guest-tools "$G/ipod-guest/it_keybag" it_keybag-armv6
-stage ipad-guest-tools "$G/ipod-guest/it_prefs" it_prefs-armv6
 chmod 0644 "$OUT"/ipad-guest-tools.incomplete/*.plist "$OUT"/ipad-guest-tools.incomplete/*.h \
     "$OUT"/ipad-guest-tools.incomplete/*.exports
 

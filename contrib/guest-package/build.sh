@@ -49,4 +49,8 @@ for c in $COMPONENTS; do
         echo "guest-package: warning: $c/build.sh failed (log: $OUT/logs/$c.log)" >&2
     fi
 done
+# The iPod's armv6 it_prefs (every n72 package): its own recipe, legacy-linked for 2.x's dyld.
+if ! LEGACY_LINK=1 bash "$OUT/src/contrib/it-prefs/build-ipod.sh" >"$OUT/logs/it-prefs-ipod.log" 2>&1; then
+    echo "guest-package: warning: it-prefs/build-ipod.sh failed (log: $OUT/logs/it-prefs-ipod.log)" >&2
+fi
 python3 "$HERE/mkpkg.py" build "$OUT/src" "$OUT"

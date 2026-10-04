@@ -4,13 +4,15 @@
   Applies this machine's guest preferences (it_prefs.c): a one-shot run as
   root that writes mobile's preferences (com.apple.springboard, com.apple.locationd),
   unloading and reloading locationd around its own.
-  Root-owned in /System/Library/LaunchDaemons, or launchd ignores it; the iPad's
-  seed package carries it, imgtools/ipod2g_device.py bakes it for the iPod.
+  Every board's guest package carries it (mkpkg.py), run through the package.
+  Label com.qemu.guest-prefs, not the file's name: iPods prepared before
+  packages carried it have a baked com.qemu.it-prefs job, which launchd loads
+  first and would make this one fail to load; it_prefs removes that baked pair.
 -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.qemu.it-prefs</string>
+	<string>com.qemu.guest-prefs</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/usr/local/bin/it_prefs</string>
