@@ -186,8 +186,10 @@ void gles_eagl_iosurface_unlock(void);
 
 /* The physical LCD remains portrait. Individual CA drawables can be landscape
  * or smaller layers; their storage is tracked separately per graphics context. */
-#define GLES_FB_WIDTH  320
-#define GLES_FB_HEIGHT 480
+#define GLES_FB_MAX    2048
+static unsigned gles_fb_w = 320, gles_fb_h = 480;   /* the iPod panel: lcd->pw/ph at init */
+#define GLES_FB_WIDTH  gles_fb_w
+#define GLES_FB_HEIGHT gles_fb_h
 
 /* Ceilings on guest-supplied sizes. The guest is the thing being emulated, so
  * a corrupt or hostile value must not be able to drive a multi-GB g_malloc
@@ -873,6 +875,13 @@ static bool gles_host_init(void)
     }
     if (gh.failed) {
         return false;
+    }
+
+    IPodTouchMachineState *ipod = (IPodTouchMachineState *)
+        object_dynamic_cast(OBJECT(qdev_get_machine()), TYPE_IPOD_TOUCH_MACHINE);
+    if (ipod && ipod->lcd_state) {
+        gles_fb_w = ipod->lcd_state->pw;
+        gles_fb_h = ipod->lcd_state->ph;
     }
 
     bool legacy = gh_current == &gh_legacy;
@@ -2869,7 +2878,7 @@ static void gles_present_to_panel(void)
                          gles_host_fbo(gh.bound_framebuffer));
 
     for (y = 0; y < GLES_FB_HEIGHT; y++) {
-        uint8_t row[GLES_FB_WIDTH * 4];
+        uint8_t row[GLES_FB_MAX * 4];
         const uint8_t *src =
             gh.readback + (size_t)(GLES_FB_HEIGHT - 1 - y) * GLES_FB_WIDTH * 4;
         int x;
@@ -2881,7 +2890,7 @@ static void gles_present_to_panel(void)
             row[x * 4 + 3] = src[x * 4 + 3];  /* A */
         }
         cpu_physical_memory_write(fb + (hwaddr)y * GLES_FB_WIDTH * 4,
-                                  row, sizeof(row));
+                                  row, GLES_FB_WIDTH * 4);
     }
     gh.presents++;
     gles_frame_end();

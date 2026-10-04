@@ -56,6 +56,14 @@ typedef struct IPodTouchLCDState
     uint32_t lcd_con;
     bool planes_enabled;
     bool s5l8900;   /* "s5l8900" property: iPod touch 1G register layout */
+    /*
+     * "panel-width"/"panel-height": the panel's pixel geometry, 320x480 as
+     * shipped. Any other size is an opt-in larger panel (issue #21): the
+     * window-1 size registers read back as the panel's, so the kernel adopts
+     * it and UIKit lays out for it (4.2.1's +[UIApplication
+     * _startWindowServerIfNecessary] takes the CADisplay's bounds).
+     */
+    uint32_t pw, ph;
     bool saved_planes_enabled;
     uint32_t plane_regs[0x300 / 4];
     uint32_t plane_scanout[0x300 / 4];

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Actual LCD control MMIO: stock rotation RMW, option independence and N45 map."""
+"""Actual LCD control MMIO: stock rotation RMW, option independence, N45 map and panel= size."""
 from pathlib import Path
 import argparse
 import subprocess
@@ -36,7 +36,10 @@ typedef struct {
     uint32_t irq_enable, irq_status, lcd_con;
     uint32_t w1_display_depth_info, w1_framebuffer_base;
     uint32_t w1_hspan, w1_display_resolution_info;
+    uint32_t pw, ph;
 } IPodTouchLCDState;
+#define LCD_FB_WIDTH  320
+#define LCD_FB_HEIGHT 480
 static bool lcd_trace(void) { return false; }
 static bool lcd_ready_hack(void) { return false; }
 static void lcd_update_irq(IPodTouchLCDState *s) { (void)s; }
@@ -51,7 +54,7 @@ int main(void)
 {
     uint32_t values[] = {0x00310700, 0, 1, 0x80000000, 0xffffffff, 0xdeadbeef};
     for (unsigned option = 0; option < 2; option++) {
-        IPodTouchLCDState s = { .planes_enabled = option };
+        IPodTouchLCDState s = { .planes_enabled = option, .pw = 320, .ph = 480 };
         for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
             ipod_touch_lcd_write(&s, 0x40, values[i], 4);
             assert(ipod_touch_lcd_read(&s, 0x40, 4) == values[i]);
@@ -75,7 +78,22 @@ int main(void)
         ipod_touch_lcd_write(&s, 0x20, 0x00200700, 4);
         assert(ipod_touch_lcd_read(&s, 0x20, 4) == 0x00200700);
     }
-    IPodTouchLCDState n45 = { .s5l8900 = true };
+    /* The shipped panel reads back what iBoot programmed; a panel= panel
+     * reads its own size (what the kernel adopts), with or without lcd-planes. */
+    for (unsigned option = 0; option < 2; option++) {
+        IPodTouchLCDState native = { .planes_enabled = option, .pw = 320, .ph = 480 };
+        IPodTouchLCDState tall = { .planes_enabled = option, .pw = 320, .ph = 504 };
+        IPodTouchLCDState *both[] = { &native, &tall };
+        for (unsigned i = 0; i < 2; i++) {
+            ipod_touch_lcd_write(both[i], 0x28, 320, 4);
+            ipod_touch_lcd_write(both[i], 0x30, 0x014001e0, 4);
+        }
+        assert(ipod_touch_lcd_read(&native, 0x28, 4) == 320);
+        assert(ipod_touch_lcd_read(&native, 0x30, 4) == 0x014001e0);
+        assert(ipod_touch_lcd_read(&tall, 0x28, 4) == 320);
+        assert(ipod_touch_lcd_read(&tall, 0x30, 4) == 0x014001f8);
+    }
+    IPodTouchLCDState n45 = { .s5l8900 = true, .pw = 320, .ph = 480 };
     ipod_touch_lcd_write(&n45, 0x40, 0x12345678, 4);
     assert(ipod_touch_lcd_read(&n45, 0x40, 4) == 0x12345678);
     ipod_touch_lcd_write(&n45, 0x5c, 0x700, 4);
@@ -86,11 +104,11 @@ int main(void)
     assert(ipod_touch_lcd_read(&n45, 0x60, 4) == 0x08500000);
     assert(ipod_touch_lcd_read(&n45, 0x64, 4) == 0x014001e0);
     assert(ipod_touch_lcd_read(&n45, 0x68, 4) == 320);
-    puts("PASS: actual LCD RGB1 readback/RMW, option boundary and N45 map");
+    puts("PASS: actual LCD RGB1 readback/RMW, option boundary, N45 map and panel size");
 }
 '''
 code = header + '\n'.join(function(name) for name in (
-    'lcd_s5l8900_offset', 'ipod_touch_lcd_read', 'ipod_touch_lcd_write')) + checks
+    'lcd_panel_is_native', 'lcd_s5l8900_offset', 'ipod_touch_lcd_read', 'ipod_touch_lcd_write')) + checks
 with tempfile.TemporaryDirectory(prefix='lcd-readback-') as directory:
     path = Path(directory) / 'test.c'
     binary = Path(directory) / 'test'

@@ -325,6 +325,7 @@ struct IPad1MachineState {
     synopsys_usb_state *usb_otg;
     IPodTouchMultitouchState *mt;
     char *kboot_path;
+    uint32_t panel_w, panel_h;           /* "panel=WxH" (as the pipe scans), issue #21; 0 = the board's */
     char *iboot_path;
     char *bootrom_path;
     bool development_fuses;
@@ -1244,6 +1245,10 @@ static void ipad1_init(MachineState *machine)
     qdev_prop_set_uint64(dev, "fb-base", 0x4f700000);
     qdev_prop_set_uint16(dev, "width", s->board->width);
     qdev_prop_set_uint16(dev, "height", s->board->height);
+    if (s->panel_w) {
+        qdev_prop_set_uint32(dev, "panel-width", s->panel_w);
+        qdev_prop_set_uint32(dev, "panel-height", s->panel_h);
+    }
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_DISP_PIPE0_BASE);
@@ -1659,6 +1664,28 @@ static void ipad1_set_kboot(Object *obj, const char *value, Error **errp)
 
     g_free(s->kboot_path);
     s->kboot_path = g_strdup(value);
+}
+
+static char *ipad1_get_panel(Object *obj, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+    return s->panel_w ? g_strdup_printf("%ux%u", s->panel_w, s->panel_h) : g_strdup("");
+}
+
+/* "panel=WxH": a panel of another size than the board's, given as the
+ * pipe scans it (iPad landscape: portrait 768x1280 is panel=1280x768). */
+static void ipad1_set_panel(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+    unsigned w, h;
+    char end;
+
+    if (sscanf(value, "%ux%u%c", &w, &h, &end) != 2 || w < 64 || h < 64 || w > 2047 || h > 2047 || (w & 15)) {
+        error_setg(errp, "panel must be WxH (width a multiple of 16, 64..2047)");
+        return;
+    }
+    s->panel_w = w;
+    s->panel_h = h;
 }
 
 static char *ipad1_get_iboot(Object *obj, Error **errp)
@@ -2183,6 +2210,7 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
                                   ipad1_set_bootrom);
     object_class_property_set_description(klass, "bootrom",
         "A4 SecureROM dump (65536 bytes), entered at reset");
+    object_class_property_add_str(klass, "panel", ipad1_get_panel, ipad1_set_panel);
     object_class_property_add_str(klass, "iboot", ipad1_get_iboot,
                                   ipad1_set_iboot);
     object_class_property_set_description(klass, "iboot",

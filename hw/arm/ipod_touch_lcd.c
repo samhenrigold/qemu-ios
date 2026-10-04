@@ -15,8 +15,13 @@ bool lcd_backlight_is_off(void)
     return qatomic_read(&lcd_brightness) == 0;
 }
 
-#define LCD_FB_WIDTH  320
+#define LCD_FB_WIDTH  320     /* the shipped panel; s->pw/s->ph are this one's */
 #define LCD_FB_HEIGHT 480
+
+static bool lcd_panel_is_native(const IPodTouchLCDState *s)
+{
+    return s->pw == LCD_FB_WIDTH && s->ph == LCD_FB_HEIGHT;
+}
 
 /*
  * IT_LCD_FRAMETRACE: one line per frame-pipeline event, with both clocks.
@@ -182,7 +187,7 @@ static uint32_t lcd_scanout_base(IPodTouchLCDState *s)
         s->scanout_va = va;
         s->gather = pa == (hwaddr)-1;
         for (uint32_t off = 0x1000 - (va & 0xfff); !s->gather &&
-             off < LCD_FB_WIDTH * LCD_FB_HEIGHT * 4; off += 0x1000) {
+             off < s->pw * s->ph * 4; off += 0x1000) {
             s->gather = s->xlate(s->xlate_opaque, va + off, 0) != pa + off;
         }
         return s->gather ? va : pa;
@@ -224,7 +229,7 @@ static void lcd_bus_read(const IPodTouchLCDState *s, uint32_t addr, uint8_t *buf
 /* A non-contiguous frame into buf. */
 static void lcd_gather(IPodTouchLCDState *s, uint8_t *buf)
 {
-    lcd_bus_read(s, s->scanout_va, buf, LCD_FB_WIDTH * LCD_FB_HEIGHT * 4);
+    lcd_bus_read(s, s->scanout_va, buf, s->pw * s->ph * 4);
 }
 
 static void lcd_update_irq(IPodTouchLCDState *s)
@@ -268,6 +273,12 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
      * of the optional broader plane register readback. */
     if (!s->s5l8900 && addr == 0x40) {
         return s->plane_regs[addr / 4];
+    }
+    if (!s->s5l8900 && !lcd_panel_is_native(s) && (addr == 0x28 || addr == 0x30)) {
+        /* A larger panel than iBoot's timing table knows (panel=, issue #21):
+         * the window-1 span and size read as the panel's, which is what the
+         * kernel adopts at start. */
+        return addr == 0x28 ? s->pw : s->pw << 16 | s->ph;
     }
     if (s->planes_enabled && !(addr & 3) && addr >= 0x10 &&
         addr < sizeof(s->plane_regs)) return s->plane_regs[addr / 4];
@@ -589,7 +600,7 @@ static void lcd_filter_plane(const uint8_t *src, unsigned sw, unsigned sh,
 
 static bool lcd_compose_planes(const IPodTouchLCDState *s, const uint32_t *r, uint8_t *out)
 {
-    const unsigned pw = LCD_FB_WIDTH, ph = LCD_FB_HEIGHT;
+    const unsigned pw = s->pw, ph = s->ph;
     memset(out, 0, pw * ph * 4);
     if (r[4/4] & 8) {
         unsigned sw = r[0x134/4] >> 16, sh = r[0x134/4] & 0xffff;
@@ -694,13 +705,13 @@ static bool lcd_compose_planes(const IPodTouchLCDState *s, const uint32_t *r, ui
 /* The linear full-panel RGB0 case keeps framebuffer dirty tracking. Every
  * other enabled plane configuration must honor its programmed stride,
  * dimensions, destination origin, and transform before host-window rotation. */
-static bool lcd_needs_plane_composition(const uint32_t *r)
+static bool lcd_needs_plane_composition(const uint32_t *r, unsigned pw, unsigned ph)
 {
     if (r[1] & 0x28) return true;
     if (!(r[1] & 0x10)) return false;
     const uint32_t *p = r + 0x20 / 4;
     return (p[0] >> 22) || (p[0] & 0xf00) != 0x700 || p[3] ||
-        p[2] != LCD_FB_WIDTH || p[4] != ((LCD_FB_WIDTH << 16) | LCD_FB_HEIGHT) || p[5];
+        p[2] != pw || p[4] != ((pw << 16) | ph) || p[5];
 }
 
 /*
@@ -714,7 +725,7 @@ static bool lcd_needs_plane_composition(const uint32_t *r)
 static void lcd_refresh_rotated(IPodTouchLCDState *lcd, DisplaySurface *surface,
                                 int rot, bool composed)
 {
-    const int sw = LCD_FB_WIDTH, sh = LCD_FB_HEIGHT;
+    const int sw = lcd->pw, sh = lcd->ph;
     int dw = (rot == 90 || rot == 270) ? sh : sw;
     int dh = (rot == 90 || rot == 270) ? sw : sh;
     uint8_t *dst = surface_data(surface);
@@ -841,8 +852,8 @@ static void lcd_refresh(void *opaque)
 
         lcd->rotation = rot;
         qemu_console_resize(lcd->con,
-                            land ? LCD_FB_HEIGHT : LCD_FB_WIDTH,
-                            land ? LCD_FB_WIDTH  : LCD_FB_HEIGHT);
+                            land ? lcd->ph : lcd->pw,
+                            land ? lcd->pw : lcd->ph);
         surface = qemu_console_surface(lcd->con);
         lcd->invalidate = 1;
         if (!surface_bits_per_pixel(surface)) {
@@ -862,8 +873,8 @@ static void lcd_refresh(void *opaque)
     const uint32_t *planes = lcd->plane_scanout;
     /* The S5L8900 layout keeps its own words in plane_regs (LCDCON2, VIDCON,
      * window 2); the S5L8720 plane test would misread them as a composition. */
-    if (!lcd->s5l8900 && lcd_needs_plane_composition(planes)) {
-        if (!lcd->rotbuf) lcd->rotbuf = g_malloc(LCD_FB_WIDTH * LCD_FB_HEIGHT * 4);
+    if (!lcd->s5l8900 && lcd_needs_plane_composition(planes, lcd->pw, lcd->ph)) {
+        if (!lcd->rotbuf) lcd->rotbuf = g_malloc(lcd->pw * lcd->ph * 4);
         composed = lcd_compose_planes(lcd, planes, lcd->rotbuf);
         if (!composed) {
             static bool warned;
@@ -871,7 +882,7 @@ static void lcd_refresh(void *opaque)
         }
     }
     if (!composed && lcd->gather) {
-        if (!lcd->rotbuf) lcd->rotbuf = g_malloc(LCD_FB_WIDTH * LCD_FB_HEIGHT * 4);
+        if (!lcd->rotbuf) lcd->rotbuf = g_malloc(lcd->pw * lcd->ph * 4);
         lcd_gather(lcd, lcd->rotbuf);
         composed = true;
     }
@@ -897,8 +908,8 @@ static void lcd_refresh(void *opaque)
 
     /* Resolution */
     first = last = 0;
-    width = LCD_FB_WIDTH;
-    height = LCD_FB_HEIGHT;
+    width = lcd->pw;
+    height = lcd->ph;
 
     src_width =  4 * width;
     linesize = surface_stride(surface);
@@ -1279,7 +1290,7 @@ static void ipod_touch_lcd_realize(DeviceState *dev, Error **errp)
 {
     IPodTouchLCDState *s = IPOD_TOUCH_LCD(dev);
     s->con = graphic_console_init(dev, 0, &gfx_ops, s);
-    qemu_console_resize(s->con, 320, 480);
+    qemu_console_resize(s->con, s->pw, s->ph);
 
     // add mouse handler
     qemu_add_mouse_event_handler(ipod_touch_lcd_mouse_event, s, 1, "iPod Touch Touchscreen");
@@ -1398,6 +1409,8 @@ static const Property lcd_properties[] = {
     DEFINE_PROP_BOOL("s5l8900", IPodTouchLCDState, s5l8900, false),
     DEFINE_PROP_UINT32("fb-base", IPodTouchLCDState, fb_base, 0),
     DEFINE_PROP_BOOL("ctrl-readback", IPodTouchLCDState, ctrl_readback, false),
+    DEFINE_PROP_UINT32("panel-width", IPodTouchLCDState, pw, LCD_FB_WIDTH),
+    DEFINE_PROP_UINT32("panel-height", IPodTouchLCDState, ph, LCD_FB_HEIGHT),
 };
 
 static void ipod_touch_lcd_class_init(ObjectClass *klass, void *data)

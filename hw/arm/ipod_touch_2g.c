@@ -842,6 +842,32 @@ static void ipod_touch_set_aes_uid(Object *obj, const char *value, Error **errp)
     ipod_touch_aes_set_uid_engine(nms->aes_uid_engine);
 }
 
+static char *ipod_touch_get_panel(Object *obj, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    return nms->panel_w ? g_strdup_printf("%ux%u", nms->panel_w, nms->panel_h) : g_strdup("");
+}
+
+/* "panel=WxH": a panel of another size than the shipped 320x480 (issue #21). */
+static void ipod_touch_set_panel(Object *obj, const char *value, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    unsigned w, h;
+    char end;
+    if (nms->cpu) {
+        error_setg(errp, "panel must be set before the machine starts");
+        return;
+    }
+    /* 511 rows: the S5L8720 window size the kernel programs keeps 9 bits of
+     * height (320x568 came back as 320x56 and UIKit laid out 56 rows). */
+    if (sscanf(value, "%ux%u%c", &w, &h, &end) != 2 || w < 64 || h < 64 || w > 1024 || h > 511 || (w & 1)) {
+        error_setg(errp, "panel must be WxH (even width 64..1024, height 64..511)");
+        return;
+    }
+    nms->panel_w = w;
+    nms->panel_h = h;
+}
+
 static char *ipod_touch_get_direct_llb(Object *obj, Error **errp)
 {
     return g_strdup(IPOD_TOUCH_MACHINE(obj)->direct_llb);
@@ -2601,8 +2627,8 @@ static void ipod_touch_synth_touch(IPodTouchMachineState *nms,
 
 	mt->prev_touch_x = mt->touch_x;
 	mt->prev_touch_y = mt->touch_y;
-	mt->touch_x = (float)px / 320.0f;
-	mt->touch_y = 1.0f - (float)py / 480.0f;
+	mt->touch_x = (float)px / lcd->pw;
+	mt->touch_y = 1.0f - (float)py / lcd->ph;
 
 	if (state && !mt->touch_down) {
 		ipod_touch_multitouch_on_touch(mt);
@@ -3560,6 +3586,10 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = qdev_new("ipodtouch.lcd");
     IPodTouchLCDState *lcd_state = IPOD_TOUCH_LCD(dev);
     qdev_prop_set_bit(dev, "planes", nms->lcd_planes);
+    if (nms->panel_w) {
+        qdev_prop_set_uint32(dev, "panel-width", nms->panel_w);
+        qdev_prop_set_uint32(dev, "panel-height", nms->panel_h);
+    }
     lcd_state->sysmem = sysmem;
     lcd_state->mt = spi4_state->mt;
     nms->lcd_state = lcd_state;
@@ -3680,6 +3710,7 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_add_str(klass, "amc-mode", ipod_touch_get_amc_mode, ipod_touch_set_amc_mode);
     object_class_property_set_description(klass, "amc-mode", "AMC registers, handshake-only bring-up, or compressed audio decode");
     object_class_property_add_str(klass, "direct-iboot", ipod_touch_get_direct_iboot, ipod_touch_set_direct_iboot);
+    object_class_property_add_str(klass, "panel", ipod_touch_get_panel, ipod_touch_set_panel);
     object_class_property_add_str(klass, "direct-llb", ipod_touch_get_direct_llb, ipod_touch_set_direct_llb);
     object_class_property_add_str(klass, "aes-uid", ipod_touch_get_aes_uid, ipod_touch_set_aes_uid);
     object_class_property_set_description(klass, "aes-uid",

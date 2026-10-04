@@ -51,6 +51,7 @@
 
 #define CLCD_CTRL           0x00      /* bit8 = soft reset, self-clearing */
 #define CLCD_ENVID          0x50      /* bit0 ENVID, bit1 "ready down" */
+#define CLCD_SIZE           0x60      /* (w - 1) << 16 | (h - 1) */
 
 #define VBL_PERIOD_NS       (NANOSECONDS_PER_SECOND / 60)
 #define QUIET_RELATCH_VBLS  15        /* ~250 ms without a swap */
@@ -65,6 +66,8 @@ typedef struct {
     uint32_t pkt_off;
     uint32_t swap_id;
     bool swap_pending;       /* a swap arrived since the last VBL */
+    uint32_t panel;          /* pipe0: w << 16 | h of a panel= override (issue #21), 0 = none */
+    uint32_t native;         /* pipe0: w << 16 | h of the board's panel, the geometry iBoot programs */
 } DisplayPipe;
 
 struct S5L8930DisplayState {
@@ -75,7 +78,8 @@ struct S5L8930DisplayState {
     QemuConsole *con;
     QEMUTimer *vbl;
     uint64_t fb_base;        /* property: seed iBoot's scanout when nonzero */
-    uint16_t width, height;  /* properties: the panel */
+    uint16_t width, height;  /* properties: the board's panel, as iBoot programs it */
+    uint32_t pw, ph;         /* "panel-width"/"panel-height": panel= override (issue #21), 0 = the board's */
 
     DisplayPipe pipe[2];     /* 0 = DisplayPipe0 (scanned out), 1 = RGBOUT */
     uint32_t clcd[2][CLCD_WORDS];
@@ -114,6 +118,37 @@ static void pipes_update_irq(S5L8930DisplayState *s)
     pipe_update_irq(&s->pipe[1]);
 }
 
+/*
+ * A panel of another size (panel-width/-height, issue #21). iBoot programs
+ * the timing of the panel its table knows (the board's width/height);
+ * AppleDisplayPipe and
+ * AppleCLCD adopt the geometry from these registers at start, so the words
+ * carrying iBoot's native geometry read back as this panel's. Nothing else
+ * is translated: what the kernel programs afterwards is already the panel's.
+ */
+static uint32_t panel_word(const DisplayPipe *p, hwaddr addr, uint32_t v)
+{
+    uint32_t panel = p->panel, native = p->native;
+    unsigned w = panel >> 16, h = panel & 0xffff;
+    unsigned nw = native >> 16, nh = native & 0xffff;
+
+    if (!panel) {
+        return v;
+    }
+    switch (addr) {
+    case DP_SIZE:
+    case DP_UI_BASE(0) + DP_UI_SRC_SIZE: case DP_UI_BASE(0) + DP_UI_DST_END:
+    case DP_UI_BASE(1) + DP_UI_SRC_SIZE: case DP_UI_BASE(1) + DP_UI_DST_END:
+        return v == native ? panel : v;
+    case DP_UI_BASE(0) + DP_UI_STRIDE: case DP_UI_BASE(1) + DP_UI_STRIDE:
+        return (v & ~0x3fu) == nw * 4 ? w * 4 | (v & 0x3f) : v;
+    case CLCD_SIZE:
+        return v == ((nw - 1) << 16 | (nh - 1)) ? (w - 1) << 16 | (h - 1) : v;
+    default:
+        return v;
+    }
+}
+
 static uint64_t pipe_read(void *opaque, hwaddr addr, unsigned size)
 {
     DisplayPipe *p = opaque;
@@ -123,8 +158,10 @@ static uint64_t pipe_read(void *opaque, hwaddr addr, unsigned size)
         return 0;
     case DP_FIFO_COUNT:
         return 0;
-    default:
+    case CLCD_SIZE:             /* not a pipe register */
         return p->regs[addr / 4];
+    default:
+        return panel_word(p, addr, p->regs[addr / 4]);
     }
 }
 
@@ -294,8 +331,8 @@ static void vbl_tick(void *opaque)
 
 static uint64_t clcd_read(void *opaque, hwaddr addr, unsigned size)
 {
-    uint32_t *regs = opaque;
-    uint32_t v = regs[addr / 4];
+    S5L8930DisplayState *s = opaque;
+    uint32_t v = panel_word(&s->pipe[0], addr, s->clcd[0][addr / 4]);
 
     if (addr == CLCD_ENVID) {
         v = (v & ~2u) | ((v & 1) ? 0 : 2);
@@ -305,7 +342,7 @@ static uint64_t clcd_read(void *opaque, hwaddr addr, unsigned size)
 
 static void clcd_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
-    uint32_t *regs = opaque;
+    uint32_t *regs = ((S5L8930DisplayState *)opaque)->clcd[0];
 
     if (addr == CLCD_CTRL) {
         val &= ~0x100;    /* soft reset completes at once */
@@ -391,13 +428,13 @@ static void display_invalidate(void *opaque)
 /* Panel size: +0x1030, or the default before the kernel programs it. */
 static void panel_size(S5L8930DisplayState *s, unsigned *w, unsigned *h)
 {
-    uint32_t *r = s->pipe[0].regs;
+    uint32_t v = panel_word(&s->pipe[0], DP_SIZE, s->pipe[0].regs[DP_SIZE / 4]);
 
-    *w = (r[DP_SIZE / 4] >> 16) & 0x7ff;
-    *h = r[DP_SIZE / 4] & 0x7ff;
+    *w = (v >> 16) & 0x7ff;
+    *h = v & 0x7ff;
     if (!*w || !*h) {
-        *w = s->width;
-        *h = s->height;
+        *w = s->pw ? s->pw : s->width;
+        *h = s->pw ? s->ph : s->height;
     }
 }
 
@@ -678,7 +715,17 @@ static void s5l8930_display_realize(DeviceState *dev, Error **errp)
 
     s->vbl = timer_new_ns(QEMU_CLOCK_VIRTUAL, vbl_tick, s);
     s->con = graphic_console_init(dev, 0, &display_gfx_ops, s);
-    qemu_console_resize(s->con, s->width, s->height);
+    s->pipe[0].native = s->width << 16 | s->height;
+    if (s->pw || s->ph) {
+        if (s->pw < 64 || s->ph < 64 || s->pw > 2047 || s->ph > 2047) {
+            error_setg(errp, "panel must be 64..2047 pixels each way");
+            return;
+        }
+        if (s->pw != s->width || s->ph != s->height) {
+            s->pipe[0].panel = s->pw << 16 | s->ph;
+        }
+    }
+    qemu_console_resize(s->con, s->pw ? s->pw : s->width, s->pw ? s->ph : s->height);
 }
 
 static char *s5l8930_get_frame_timeline(Object *obj, Error **errp)
@@ -705,7 +752,7 @@ static void s5l8930_display_init(Object *obj)
      * own DisplayPipe, reg index 0), TVOUT, RGBOUT2 (its control block). */
     memory_region_init_io(&s->pipe_mr[0], obj, &pipe_ops, &s->pipe[0],
                           "s5l8930.disp.pipe0", S5L8930_DISP_PIPE0_SIZE);
-    memory_region_init_io(&s->clcd_mr[0], obj, &clcd_ops, s->clcd[0],
+    memory_region_init_io(&s->clcd_mr[0], obj, &clcd_ops, s,
                           "s5l8930.disp.clcd", S5L8930_CLCD_SIZE);
     memory_region_init_io(&s->dart_mr, obj, &s5l8930_dart_ops, &s->dart,
                           "s5l8930.disp.dart2", S5L8930_DART_SIZE);
@@ -799,6 +846,8 @@ static const Property s5l8930_display_properties[] = {
     DEFINE_PROP_UINT64("fb-base", S5L8930DisplayState, fb_base, 0),
     DEFINE_PROP_UINT16("width", S5L8930DisplayState, width, 1024),     /* K48 */
     DEFINE_PROP_UINT16("height", S5L8930DisplayState, height, 768),
+    DEFINE_PROP_UINT32("panel-width", S5L8930DisplayState, pw, 0),     /* unset: width */
+    DEFINE_PROP_UINT32("panel-height", S5L8930DisplayState, ph, 0),
 };
 
 static void s5l8930_display_class_init(ObjectClass *klass, void *data)

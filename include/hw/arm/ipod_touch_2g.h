@@ -301,6 +301,7 @@ typedef struct {
     bool lcd_planes, lcd_planes_explicit;
     bool forge_sigcheck, forge_sigcheck_explicit;
     char direct_iboot[PATH_MAX], direct_llb[PATH_MAX];
+    uint32_t panel_w, panel_h;   /* "panel=WxH": opt-in larger panel (0: the shipped 320x480) */
     char gid_blobs[PATH_MAX];
     bool aes_uid_engine;             /* aes-uid=engine; see ipod_touch_aes.c AES_GO */
     bool direct_iboot_explicit, direct_llb_explicit;
