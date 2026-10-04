@@ -1241,11 +1241,16 @@ static void m68_set_ring_switch(Object *obj, bool value, Error **errp)
     }
 }
 
+N45_STR_PROP(imei)
+
 static void m68_machine_class_init(ObjectClass *klass, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(klass);
 
     mc->desc = "iPhone (M68AP, S5L8900)";
+    object_class_property_add_str(klass, "imei", n45_get_imei, n45_set_imei);
+    object_class_property_set_description(klass, "imei",
+        "the unit's IMEI (FirmwareKit's device.lock.json machine.imei), for the modem on UART1 to report");
     object_class_property_add_bool(klass, "ring-switch", m68_get_ring_switch, m68_set_ring_switch);
     object_class_property_set_description(klass, "ring-switch",
         "the ring/silent switch: on = silent (pad 0x1603 high), off = ring (default)");
