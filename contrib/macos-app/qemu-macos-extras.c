@@ -350,7 +350,9 @@ static void battery_bh(void *opaque)
     Error *err = NULL;
     const char *modes[] = { "auto", "on", "off" };
     object_property_set_int(machine, "battery-level", input->level, &err);
-    if (!err) object_property_set_str(machine, "battery-charging", modes[input->charging], &err);
+    /* The iPad has none: its charging is the port's (usb-charger). */
+    if (!err && object_property_find(machine, "battery-charging"))
+        object_property_set_str(machine, "battery-charging", modes[input->charging], &err);
     if (!err) {
         QNum *value = qnum_from_double(input->drain);
         qmp_qom_set("/machine", "battery-drain", QOBJECT(value), &err);

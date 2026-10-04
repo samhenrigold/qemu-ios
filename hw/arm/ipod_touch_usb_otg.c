@@ -220,6 +220,19 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 		return USB_RET_STALL;
 	}
 
+	/*
+	 * A port that supplies no charge current (a 500 mA port, a hub that cannot
+	 * charge): the bridge's Apple vendor power request (bmRequestType 0x40,
+	 * bRequest 0x40) never reaches the guest, as when the host refuses it, so
+	 * the iPad stays at 500 mA, "Not Charging", while data flows. The host sees
+	 * it fail, which usbmuxd takes as "the device keeps 500 mA".
+	 */
+	if (state->withhold_charge && ep == 0 && (_hdr->flags & tcp_usb_setup) && hdr_len >= 2 &&
+	    (uint8_t)_buffer[0] == 0x40 && (uint8_t)_buffer[1] == 0x40) {
+		printf("[USBTCP] charge request withheld: the port supplies no charge current\n");
+		return USB_RET_STALL;
+	}
+
 	if (_hdr->ep & USB_DIR_IN) {
 		synopsys_usb_ep_state *eps = &state->in_eps[ep];
 
