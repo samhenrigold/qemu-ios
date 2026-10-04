@@ -194,6 +194,43 @@ static const A4Board a4_k48 = {
     .wifi_mac = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 },  /* = DT */
 };
 
+/*
+ * iPod touch 4G (N81AP): portrait 640x960 Retina panel, no SPI NOR on the
+ * board (imgtools/ipad1_kboot.py grafts K48's into the DT, docs/n81), PMU-only
+ * battery, no chargers/expander/compass/Mikey, BT on uart1. docs/n81/README.md.
+ */
+static const A4Board a4_n81 = {
+    .desc = "iPod touch 4G (N81AP, S5L8930)",
+    .dram_size = 0x10000000,
+    .chipid = { 0x31800387, 0x80758000 },    /* same die as K48 */
+    .board_id = 0x08,
+    .width = 640, .height = 960,
+    .panel_id = 0x0969e5a1,                  /* ponytail: K48's; nothing checks it on kboot= */
+    .dsi_lanes = 4,                          /* N81 DT #lanes */
+    .mt_profile = &mt_profile_ipod,          /* Z2F51 (0x0033 firmware), iPod.mtprops */
+    .touch_landscape = false,
+    .pwroff_knob = {
+        [1] = { 100, 113, 1, 0 },
+        [2] = { 540, 847, -1, 0 },
+        [3] = { 527, 100, 0, 1 },
+        [4] = { 113, 860, 0, -1 },
+    },
+    .pwroff_drag_len = 430,
+    .i2c = {
+        { 0, 0x74, TYPE_S5L8930_D1815, 0x0d },
+        /* CS42L59 (audio0): the same MAP register file the CS42L61 driver saw. */
+        { 0, 0x4a, TYPE_CS42L58 },
+        { 2, 0x19, TYPE_LIS302DL },
+        { 2, 0x49, TYPE_S5L8930_TSL2581 },
+    },
+    .bt_uart = 1,                            /* uart1/bluetooth,n88 */
+    .gauge_uart = -1,
+    .wifi_board = "P=N81",
+    /* n81.bin in the 8C148 rootfs: 4.221.38.1, Wed 2010-10-13 15:39:39 */
+    .wifi_fw_version = "wl0: Oct 13 2010 15:39:39 version 4.221.38.1",
+    .wifi_mac = { 0x02, 0x00, 0x00, 0x81, 0x00, 0x01 },  /* synthetic, locally administered */
+};
+
 #define TYPE_IPAD1_MACHINE MACHINE_TYPE_NAME("ipad1")
 OBJECT_DECLARE_TYPE(IPad1MachineState, IPad1MachineClass, IPAD1_MACHINE)
 
@@ -1851,6 +1888,25 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
         "Home button pressed; set true then false");
 }
 
+/* Another A4 board: ipad1's properties and init, the board's data. */
+static void a4_board_class_init(ObjectClass *klass, void *data)
+{
+    const A4Board *board = data;
+
+    IPAD1_MACHINE_CLASS(klass)->board = board;
+    MACHINE_CLASS(klass)->desc = board->desc;
+    MACHINE_CLASS(klass)->default_ram_size = board->dram_size;
+}
+
+static const TypeInfo a4_board_types[] = {
+    {
+        .name = MACHINE_TYPE_NAME("iPod-Touch-4G"),
+        .parent = TYPE_IPAD1_MACHINE,
+        .class_init = a4_board_class_init,
+        .class_data = (void *)&a4_n81,
+    },
+};
+
 static const TypeInfo ipad1_machine_info = {
     .name = TYPE_IPAD1_MACHINE,
     .parent = TYPE_MACHINE,
@@ -1864,6 +1920,9 @@ static const TypeInfo ipad1_machine_info = {
 static void ipad1_machine_types(void)
 {
     type_register_static(&ipad1_machine_info);
+    for (int i = 0; i < ARRAY_SIZE(a4_board_types); i++) {
+        type_register_static(&a4_board_types[i]);
+    }
 }
 
 type_init(ipad1_machine_types)

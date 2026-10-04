@@ -49,7 +49,22 @@ PHYS_BASE, DRAM_SIZE = 0x40000000, 0x10000000
 PRAM_SIZE, VRAM_SIZE = 0x4000, 0x900000 - 0x4000
 MEM_SIZE = DRAM_SIZE - PRAM_SIZE - VRAM_SIZE
 VRAM_PA, PRAM_PA = PHYS_BASE + MEM_SIZE, PHYS_BASE + DRAM_SIZE - PRAM_SIZE
-FB_WIDTH, FB_HEIGHT, FB_DEPTH = 1024, 768, 32   # landscape panel; display-rotation=0 in the K48 DT
+FB_DEPTH = 32
+# What differs per A4 board (the machine's A4Board in hw/arm/ipad1.c), keyed by the DT's own
+# compatible ("K48AP" -> k48), so the DT says which board it is.
+#   machine       the QEMU machine (-M) that runs it
+#   fb            the panel's scan-out size (K48 is a landscape panel under a portrait UI)
+#   rotation      chosen/display-rotation, the panel's turn against the portrait UI (see fill_dt)
+#   board-id      chosen/board-id, what iBoot reads off the board straps
+#   model         model-number of the modelled storage size (identity default)
+#   scale         chosen/display-scale, points to pixels (2 on Retina panels)
+# Boards without the SPI NOR (nvram, effaceable in NAND) get K48's grafted on (graft_nor).
+BOARDS = {
+    "k48": {"machine": "ipad1", "fb": (1024, 768), "rotation": 270, "scale": 1, "board-id": 0x02, "model": "MB292"},
+    "n81": {"machine": "iPod-Touch-4G", "fb": (640, 960), "rotation": 0, "scale": 2, "board-id": 0x08,
+            "model": "MC540"},
+}
+FB_WIDTH, FB_HEIGHT = BOARDS["k48"]["fb"]
 # serial bit 0 moves the console to UART0 (arm_init c005d5fe); debug=0x8 is DB_KPRT, which PE_init_kprintf
 # (c01d1dce) needs before kprintf reaches the UART. No rd=: root-matching below names partition 1.
 # The AMFI pair lets the ldid-signed guest tools run on a stock kernel (AMFI::start honours them because
@@ -99,11 +114,11 @@ def lzss(src):
     return bytes(out)
 
 
-def logo_segments(blob, fb_pa):
+def logo_segments(blob, fb_pa, board=BOARDS["k48"]):
     """Framebuffer segments that put an iBootIm logo where iBoot puts it: centred on black.
 
     iBootIm: "iBootIm\0", adler32, "lzss", format tag (only "grey" here: grey + inverted alpha,
-    composited over black), u16 width, height; LZSS data at 0x40. The panel scans out landscape and
+    composited over black), u16 width, height; LZSS data at 0x40. On a landscape panel (rotation 270) the
     portrait UI arrives turned a quarter counter-clockwise into it (its top along the panel's left edge; the
     app turns the panel a quarter clockwise to stand it up), so the logo is turned the same way."""
     assert blob[:8] == b"iBootIm\0" and blob[12:16] == b"sszl", "not an LZSS iBootIm"
@@ -111,14 +126,18 @@ def logo_segments(blob, fb_pa):
     w, h = struct.unpack_from("<HH", blob, 20)
     px = lzss(blob[0x40:])
     assert len(px) >= w * h * 2, "short iBootIm"
-    x0, y0, stride = (FB_WIDTH - h) // 2, (FB_HEIGHT - w) // 2, FB_WIDTH * 4
-    rows = bytearray(stride * w)
+    fbw, fbh = board["fb"]
+    turn = board["rotation"] == 270
+    lw, lh = (h, w) if turn else (w, h)      # the logo as it lands on the panel
+    x0, y0, stride = (fbw - lw) // 2, (fbh - lh) // 2, fbw * 4
+    rows = bytearray(stride * lh)
     for ly in range(h):
         for lx in range(w):
             grey, clear = px[(ly * w + lx) * 2], px[(ly * w + lx) * 2 + 1]
             v = grey * (255 - clear) // 255
-            struct.pack_into("<I", rows, (w - 1 - lx) * stride + (x0 + ly) * 4, 0xFF000000 | v * 0x010101)
-    return [(fb_pa, stride * FB_HEIGHT, None), (fb_pa + y0 * stride, len(rows), bytes(rows))]
+            at = (w - 1 - lx) * stride + (x0 + ly) * 4 if turn else ly * stride + (x0 + lx) * 4
+            struct.pack_into("<I", rows, at, 0xFF000000 | v * 0x010101)
+    return [(fb_pa, stride * fbh, None), (fb_pa + y0 * stride, len(rows), bytes(rows))]
 
 
 # ponytail: clocks are guesses (timebase = the kernel's own 24 MHz default); replace with HW-2's real
@@ -165,7 +184,7 @@ def udid(ident):
     return hashlib.sha1((ident["serial-number"] + ident["wifi-mac"].lower() + ident["bt-mac"].lower()).encode()).hexdigest()
 
 
-def synth_identity(seed, storage="16g"):
+def synth_identity(seed, storage="16g", board="k48"):
     """A made-up but well-formed unit identity, a pure function of `seed`: 11-character serial, 13-character
     MLB, 40-bit ECID, two die-id words, a locally administered Wi-Fi MAC (02:...) and Bluetooth = Wi-Fi + 1."""
     h = hashlib.sha256(seed.encode()).digest()
@@ -176,7 +195,7 @@ def synth_identity(seed, storage="16g"):
              "unique-chip-id": "0x%010x" % (int.from_bytes(h[20:25], "big") | 1),
              "die-id": ["0x%08x" % int.from_bytes(h[25:27] + h[0:2], "big"), "0x%08x" % int.from_bytes(h[2:6], "big")],
              "wifi-mac": wifi.hex(":"), "bt-mac": bt.hex(":"),
-             "model-number": MODELS[storage], "region-info": MODEL["region-info"], "seed": seed}
+             "model-number": MODELS[storage] if board == "k48" else BOARDS[board]["model"], "region-info": MODEL["region-info"], "seed": seed}
     # SecureROM constructs ECID from CHIPID words 2/3, and CPRV from bits
     # 10..15 of word 3. Keep revision 0x11 and make the advertised identity
     # agree with the ROM rather than choosing unrelated fuse words.
@@ -210,7 +229,7 @@ def identity_dt(ident):
     return ({"serial-number": ident["serial-number"], "mlb-serial-number": ident["mlb-serial-number"], **model},
             {"unique-chip-id": (ecid & 0xFFFFFFFF, ecid >> 32),
              "die-id": tuple(int(w, 16) for w in ident["die-id"])},
-            {"arm-io/sdio": mac(ident["wifi-mac"]), "arm-io/uart3/bluetooth": mac(ident["bt-mac"])})
+            {"arm-io/sdio": mac(ident["wifi-mac"]), "bluetooth": mac(ident["bt-mac"])})
 
 
 CLOCKS = [PERIPH_HZ] * 55
@@ -225,7 +244,7 @@ class DeviceTree:
     """Flattened Apple DT, edited in place. iBoot's DT reserves every slot it fills; add() is for the rest."""
 
     def __init__(self, blob):
-        self.buf, self.props, self.nodes = bytearray(blob), {}, {}
+        self.buf, self.props, self.nodes, self.ends = bytearray(blob), {}, {}, {}
         end = self._node(0, None)
         assert end == len(blob), "trailing bytes after the device tree"
 
@@ -244,6 +263,7 @@ class DeviceTree:
         self.props[path], self.nodes[path] = props, (node, off)
         for _ in range(nchildren):
             off = self._node(off, path)
+        self.ends[path] = off
         return off
 
     def set(self, path, prop, value):
@@ -265,6 +285,25 @@ class DeviceTree:
         struct.pack_into("<I", self.buf, node, struct.unpack_from("<I", self.buf, node)[0] + 1)
         self.__init__(bytes(self.buf))
 
+    def add_node(self, parent, name, props=()):
+        """Append a child node (name first, then (prop, value) pairs) to `parent`; the blob grows, as add()."""
+        rec = b"".join(self._prop(k, v) for k, v in [("name", name), *props])
+        start = self.ends[parent]
+        self.buf[start:start] = struct.pack("<II", 1 + len(props), 0) + rec
+        node = self.nodes[parent][0]
+        struct.pack_into("<I", self.buf, node + 4, struct.unpack_from("<I", self.buf, node + 4)[0] + 1)
+        self.__init__(bytes(self.buf))
+
+    @staticmethod
+    def _prop(name, value):
+        if isinstance(value, str):
+            value = value.encode() + b"\0"
+        elif isinstance(value, int):
+            value = struct.pack("<I", value)
+        elif not isinstance(value, bytes):
+            value = struct.pack(f"<{len(value)}I", *value)
+        return name.encode().ljust(32, b"\0") + struct.pack("<I", len(value)) + value.ljust((len(value) + 3) & ~3, b"\0")
+
     def rename(self, path, old, new):
         off, ln = self.props[path].pop(old)
         self.buf[off:off + 32] = new.encode().ljust(32, b"\0")[:32]
@@ -281,7 +320,46 @@ def macho_entry(data):
     raise ValueError("no LC_UNIXTHREAD")
 
 
+def dt_board(dt):
+    """The BOARDS entry for this DT, from its compatible ("N81AP\0iPod4,1\0AppleARM" -> n81)."""
+    off, ln = dt.props[""].get("compatible", (None, 0))
+    first = bytes(dt.buf[off + 36:off + 36 + ln]).split(b"\0", 1)[0].decode().lower() if off else ""
+    return BOARDS.get(first[:-2] if first.endswith("ap") else first, BOARDS["k48"])
+
+
+# K48's spi0/nor-flash subtree as its 4.x (8C148) DT has it (the 1 MiB SPI NOR: diagnostics, nvram, the image
+# area, effaceable storage), for boards that keep all of that in NAND (boot-from-nand). The kernels carry both
+# paths; grafting the NOR lets these boards use the machine's NOR model unchanged. Phandles are K48's.
+NOR_GRAFT = [
+    ("arm-io/spi0", "nor-flash", [("compatible", "nor-flash,spi"), ("#address-cells", 1), ("device_type", "nor-flash"),
+                                  ("#size-cells", 1), ("ranges", (0, 0, 0x100000)),
+                                  ("reg", (0, 0x53, 0x08010000, 0, 0, 0, 0, 0)), ("AAPL,phandle", 0x009170e0)]),
+    ("arm-io/spi0/nor-flash", "diagnostic-data", [("compatible", "diagnostic-data,format1"),
+                                                  ("device_type", "diagnostic-data"),
+                                                  ("reg", (0x6000, 0x2000, 0x4000, 0x2000)), ("AAPL,phandle", 0x009174f0)]),
+    ("arm-io/spi0/nor-flash", "nvram", [("compatible", "nvram,chrp"), ("device_type", "nvram"),
+                                        ("reg", (0xfc000, 0x2000, 0xfe000, 0x2000)), ("AAPL,phandle", 0x00917880)]),
+    ("arm-io/spi0/nor-flash", "raw-device", [("compatible", "raw-device,non-nvram"), ("device_type", "raw-device"),
+                                             ("reg", (0x8000, 0xf2000, 0, 0x1000)), ("AAPL,phandle", 0x00917860)]),
+    ("arm-io/spi0/nor-flash", "effaceable", [("compatible", "effaceable,nor"), ("device_type", "effaceable"),
+                                             ("reg", (0xfa000, 0x1000, 0xfb000, 0x1000)), ("AAPL,phandle", 0x00917f70)]),
+]
+
+
+def graft_nor(dt):
+    """Give a NOR-less board K48's NOR: the nodes above, and the NAND no longer the boot/nvram device."""
+    if "arm-io/spi0" not in dt.props or "arm-io/spi0/nor-flash" in dt.props:
+        return
+    for parent, name, props in NOR_GRAFT:
+        dt.add_node(parent, name, props)
+    # The kernel keys off the property's presence (IOFlashStorageDevice then looks for boot blocks in
+    # NAND), not its value; the editor cannot delete, so rename it out of the way.
+    if "boot-from-nand" in dt.props.get("arm-io/flash-controller0/disk", {}):
+        dt.rename("arm-io/flash-controller0/disk", "boot-from-nand", "boot-from-nor")
+
+
 def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION, root_matching=ROOT_MATCHING):
+    board = dt_board(dt)
     root, chosen, macs = identity_dt(ident)
     for key, value in {"platform-name": "s5l8930x", **root}.items():
         dt.set("", key, value)
@@ -291,8 +369,9 @@ def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION, root_matching=ROOT_MATCH
     # makes 4.2.1 turn the UI for each accelerometer attitude exactly as 3.2.2 does on the real unit
     # (0 drew a landscape UI when held upright; 90 drew it upside down). docs/ipad1/ios4.md.
     for key, value in {"debug-enabled": 1, "production-cert": 1, "secure-boot": 1, "gid-aes-key": 1,
-                       "uid-aes-key": 1, "system-trusted": 1, "board-id": 0x02, "chip-id": 0x8930,
-                       **chosen, "firmware-version": iboot, "display-rotation": 270, "display-scale": 1,
+                       "uid-aes-key": 1, "system-trusted": 1, "board-id": board["board-id"], "chip-id": 0x8930,
+                       **chosen, "firmware-version": iboot, "display-rotation": board["rotation"],
+                       "display-scale": board["scale"],
                        "root-matching": root_matching}.items():
         dt.set("chosen", key, value)
     for key, hz in {"clock-frequency": CPU_HZ, "memory-frequency": MEM_HZ, "bus-frequency": BUS_HZ,
@@ -306,6 +385,7 @@ def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION, root_matching=ROOT_MATCH
     if "arm-io/sgx" in dt.props:
         dt.set("arm-io/sgx", "compatible", "none")
     for path, mac in macs.items():
+        path = next((p for p in dt.props if p == path or p.endswith("/" + path)), path)
         if path in dt.props:  # absent from the selfcheck DT
             dt.set(path, "local-mac-address", mac)
     if "arm-io/mipi-dsim/lcd" in dt.props:
@@ -373,6 +453,8 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, ident=None, iboot=I
     vbase = min(vmaddr for _, vmaddr, _, _, _, _ in segs) & 0xF0000000
     pa = lambda va: va - vbase + PHYS_BASE
     dt = DeviceTree(dt_blob)
+    board = dt_board(dt)
+    graft_nor(dt)
     # Host nubs (EHCI, OHCI0) up at arbitrator start and kept across cable changes, next to device
     # mode: AppleS5L8930XUSBArbitrator::handleStart c04826a8 (docs/ipad1/usb-keyboard.md).
     if "arm-io/usb-complex" in dt.props:
@@ -408,8 +490,10 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, ident=None, iboot=I
     verbose = any(a in ("-v", "-s") for a in boot_args.split())
     cmdline = boot_args.encode()
     assert len(cmdline) < 256, "boot-args longer than BOOT_LINE_LENGTH"
+    fbw, fbh = board["fb"]
     args = struct.pack("<HHIIII6IIII256s", 1, boot_args_version(m), vbase, PHYS_BASE, MEM_SIZE, top_of_kernel,
-                       VRAM_PA, 0 if verbose else 1, FB_WIDTH * FB_DEPTH // 8, FB_WIDTH, FB_HEIGHT, FB_DEPTH,
+                       VRAM_PA, 0 if verbose else 1, fbw * FB_DEPTH // 8, fbw, fbh,
+                       FB_DEPTH | (board["scale"] - 1) << 16,
                        0, dt_va, len(dt_blob), cmdline)
     image[args_va - vbase:args_va - vbase + len(args)] = args
     return bytes(image), PHYS_BASE, pa(macho_entry(m.data)), pa(args_va)
@@ -426,7 +510,8 @@ def main(dec_dir, out, boot_args=DEFAULT_BOOT_ARGS, identity=IDENTITY_FILE, ramd
                                               load_identity(identity), iboot_version(dec_dir),
                                               open(ramdisk, "rb").read() if ramdisk else None)
     logo = os.path.join(dec_dir, "AppleLogo.bin")
-    segments = logo_segments(open(logo, "rb").read(), VRAM_PA) if os.path.exists(logo) else []
+    segments = logo_segments(open(logo, "rb").read(), VRAM_PA, dt_board(DeviceTree(dt_blob))) \
+        if os.path.exists(logo) else []
     with open(out, "wb") as f:
         f.write(image + pack_segments(segments) + TRAILER.pack(b"K48KBOOT", load_pa, entry_pa, args_pa, len(image)))
     top = struct.unpack_from("<I", image, args_pa - load_pa + 0x10)[0]
