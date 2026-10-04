@@ -805,7 +805,16 @@ static void n45_machine_init(MachineState *machine)
     memory_region_add_subregion(sysmem, N45_I2C0_BASE, &IPOD_TOUCH_I2C(dev)->iomem);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, n45_irq(s, N45_I2C0_IRQ));
-    i2c_slave_create_simple(IPOD_TOUCH_I2C(dev)->bus, "lis302dl", 0x1D);
+    s->accel = LIS302DL(i2c_slave_create_simple(IPOD_TOUCH_I2C(dev)->bus, "lis302dl", 0x1D));
+    /* The host's controls, the same names as the 2G and the iPad: UIDeviceOrientation 1-6
+     * (lis302dl_apply_orientation also turns the LCD's presented picture, as the 2G's), raw
+     * counts, a shake; accel-pitch/-roll/-pose are machine properties. Without them the app's
+     * rotation never reached the 1G: the guest stayed portrait under a turned shell. */
+    object_property_add_alias(OBJECT(machine), "accel-orientation", OBJECT(s->accel), "orientation");
+    object_property_add_alias(OBJECT(machine), "accel-x", OBJECT(s->accel), "x");
+    object_property_add_alias(OBJECT(machine), "accel-y", OBJECT(s->accel), "y");
+    object_property_add_alias(OBJECT(machine), "accel-z", OBJECT(s->accel), "z");
+    object_property_add_alias(OBJECT(machine), "accel-shake", OBJECT(s->accel), "shake");
 
     dev = qdev_new("ipodtouch.i2c");
     IPOD_TOUCH_I2C(dev)->base = 1;
@@ -970,6 +979,59 @@ static void n45_get_gles_contexts(Object *obj, Visitor *v, const char *name, voi
     visit_type_int(v, name, &count, errp);
 }
 
+/* The app's attitude (hw/arm/ipod-attitude.h) in the device's frame. The sensor keeps it, so an
+ * accel-orientation in between leaves the angles it set (as the 2G's machine reads them back). */
+static void n45_get_accel_angle(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp)
+{
+    LIS302DLState *a = IPOD_TOUCH_1G_MACHINE(obj)->accel;
+    double value = a ? (!strcmp(name, "accel-pitch") ? a->pitch_mdeg : a->roll_mdeg) / 1000.0 : 0;
+
+    visit_type_number(v, name, &value, errp);
+}
+
+static void n45_set_accel_angle(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp)
+{
+    LIS302DLState *a = IPOD_TOUCH_1G_MACHINE(obj)->accel;
+    double value, pitch, roll;
+
+    if (!visit_type_number(v, name, &value, errp)) {
+        return;
+    }
+    if (!a) {
+        error_setg(errp, "%s is set once the machine has started", name);
+        return;
+    }
+    pitch = a->pitch_mdeg / 1000.0, roll = a->roll_mdeg / 1000.0;
+    if (!isfinite(value) || value < -180 || value > 180) {
+        error_setg(errp, "%s must be finite and between -180 and 180 degrees", name);
+        return;
+    }
+    *(!strcmp(name, "accel-pitch") ? &pitch : &roll) = value;
+    lis302dl_apply_attitude(a, pitch, roll, a->flat_pose);
+}
+
+static char *n45_get_accel_pose(Object *obj, Error **errp)
+{
+    LIS302DLState *a = IPOD_TOUCH_1G_MACHINE(obj)->accel;
+
+    return g_strdup(a && a->flat_pose ? "flat" : "upright");
+}
+
+static void n45_set_accel_pose(Object *obj, const char *value, Error **errp)
+{
+    LIS302DLState *a = IPOD_TOUCH_1G_MACHINE(obj)->accel;
+
+    if (strcmp(value, "flat") && strcmp(value, "upright")) {
+        error_setg(errp, "accel-pose must be upright or flat");
+        return;
+    }
+    if (!a) {
+        error_setg(errp, "accel-pose is set once the machine has started");
+        return;
+    }
+    lis302dl_apply_attitude(a, a->pitch_mdeg / 1000.0, a->roll_mdeg / 1000.0, !strcmp(value, "flat"));
+}
+
 static bool n45_get_wifi(Object *obj, Error **errp)
 {
     return IPOD_TOUCH_1G_MACHINE(obj)->wifi;
@@ -1011,6 +1073,11 @@ static void n45_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_add_str(klass, "wifi-mac", n45_get_wifi_mac, n45_set_wifi_mac);
     object_class_property_set_description(klass, "wifi-mac",
         "the 88W8686's EEPROM MAC, aa:bb:cc:dd:ee:ff (the unit's; iBoot's DT copy comes from nvram wifiaddr)");
+
+    object_class_property_add(klass, "accel-pitch", "number", n45_get_accel_angle, n45_set_accel_angle, NULL, NULL);
+    object_class_property_add(klass, "accel-roll", "number", n45_get_accel_angle, n45_set_accel_angle, NULL, NULL);
+    object_class_property_add_str(klass, "accel-pose", n45_get_accel_pose, n45_set_accel_pose);
+    object_class_property_set_description(klass, "accel-pose", "upright (default) or flat");
 
     mc->desc = "iPod touch 1G (N45AP, S5L8900)";
     mc->init = n45_machine_init;
