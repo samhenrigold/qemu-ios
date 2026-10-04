@@ -104,7 +104,21 @@ int main(void)
     assert(ipod_touch_lcd_read(&n45, 0x60, 4) == 0x08500000);
     assert(ipod_touch_lcd_read(&n45, 0x64, 4) == 0x014001e0);
     assert(ipod_touch_lcd_read(&n45, 0x68, 4) == 320);
-    puts("PASS: actual LCD RGB1 readback/RMW, option boundary, N45 map and panel size");
+    /* N45 panel=: iBoot's window-2 size/span and window 1's read as the panel's; other values as written. */
+    IPodTouchLCDState n45p = { .s5l8900 = true, .pw = 384, .ph = 448 };
+    ipod_touch_lcd_write(&n45p, 0x7c, 0x014001e0, 4);
+    ipod_touch_lcd_write(&n45p, 0x80, 320, 4);
+    ipod_touch_lcd_write(&n45p, 0x64, 0x014001e0, 4);
+    ipod_touch_lcd_write(&n45p, 0x68, 320, 4);
+    assert(ipod_touch_lcd_read(&n45p, 0x7c, 4) == (384u << 16 | 448));
+    assert(ipod_touch_lcd_read(&n45p, 0x80, 4) == 384);
+    assert(ipod_touch_lcd_read(&n45p, 0x64, 4) == (384u << 16 | 448));
+    assert(ipod_touch_lcd_read(&n45p, 0x68, 4) == 384);
+    ipod_touch_lcd_write(&n45p, 0x7c, 0x00400040, 4);
+    assert(ipod_touch_lcd_read(&n45p, 0x7c, 4) == 0x00400040);
+    ipod_touch_lcd_write(&n45, 0x7c, 0x014001e0, 4);
+    assert(ipod_touch_lcd_read(&n45, 0x7c, 4) == 0x014001e0);
+    puts("PASS: actual LCD RGB1 readback/RMW, option boundary, N45 map and panel size (both boards)");
 }
 '''
 code = header + '\n'.join(function(name) for name in (

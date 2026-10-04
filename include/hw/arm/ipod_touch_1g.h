@@ -210,6 +210,7 @@ typedef struct IPodTouch1GMachineState {
     DeviceState *modem;
     QEMUTimer *modem_battery_timer;
     char *imei;                      /* M68: the unit's IMEI ("imei"); the baseband reports it, not modelled here */
+    uint32_t panel_w, panel_h;       /* "panel=WxH" (issue #21); 0 = the shipped 320x480 */
 } IPodTouch1GMachineState;
 
 #endif

@@ -942,6 +942,10 @@ static void n45_machine_init(MachineState *machine)
     /* CLCD, S5L8900 register layout */
     dev = qdev_new("ipodtouch.lcd");
     qdev_prop_set_bit(dev, "s5l8900", true);
+    if (s->panel_w) {
+        qdev_prop_set_uint32(dev, "panel-width", s->panel_w);
+        qdev_prop_set_uint32(dev, "panel-height", s->panel_h);
+    }
     s->lcd = IPOD_TOUCH_LCD(dev);
     s->lcd->sysmem = sysmem;
     s->lcd->mt = s->mt;
@@ -1231,6 +1235,32 @@ static void n45_set_accel_angle(Object *obj, Visitor *v, const char *name, void 
     lis302dl_apply_attitude(a, pitch, roll, a->flat_pose);
 }
 
+static char *n45_get_panel(Object *obj, Error **errp)
+{
+    IPodTouch1GMachineState *s = IPOD_TOUCH_1G_MACHINE(obj);
+    return s->panel_w ? g_strdup_printf("%ux%u", s->panel_w, s->panel_h) : g_strdup("");
+}
+
+/* "panel=WxH": a panel of another size than the shipped 320x480 (issue #21). */
+static void n45_set_panel(Object *obj, const char *value, Error **errp)
+{
+    IPodTouch1GMachineState *s = IPOD_TOUCH_1G_MACHINE(obj);
+    unsigned w, h;
+    char end;
+
+    if (s->lcd) {
+        error_setg(errp, "panel must be set before the machine starts");
+        return;
+    }
+    /* The 2G's limits (its S5L8720 window keeps 9 bits of height); 3A101a ran at 384x504. */
+    if (sscanf(value, "%ux%u%c", &w, &h, &end) != 2 || w < 64 || h < 64 || w > 1024 || h > 511 || (w & 1)) {
+        error_setg(errp, "panel must be WxH (even width 64..1024, height 64..511)");
+        return;
+    }
+    s->panel_w = w;
+    s->panel_h = h;
+}
+
 static char *n45_get_accel_pose(Object *obj, Error **errp)
 {
     LIS302DLState *a = IPOD_TOUCH_1G_MACHINE(obj)->accel;
@@ -1298,6 +1328,7 @@ static void n45_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_add(klass, "accel-pitch", "number", n45_get_accel_angle, n45_set_accel_angle, NULL, NULL);
     object_class_property_add(klass, "accel-roll", "number", n45_get_accel_angle, n45_set_accel_angle, NULL, NULL);
     object_class_property_add_str(klass, "accel-pose", n45_get_accel_pose, n45_set_accel_pose);
+    object_class_property_add_str(klass, "panel", n45_get_panel, n45_set_panel);
     object_class_property_set_description(klass, "accel-pose", "upright (default) or flat");
 
     mc->desc = "iPod touch 1G (N45AP, S5L8900)";

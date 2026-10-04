@@ -282,6 +282,20 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
     }
     if (s->planes_enabled && !(addr & 3) && addr >= 0x10 &&
         addr < sizeof(s->plane_regs)) return s->plane_regs[addr / 4];
+    if (s->s5l8900 && !lcd_panel_is_native(s)) {
+        /* The same for the S5L8900 (panel=, issue #21): AppleH1CLCD wraps the
+         * boot framebuffer from the size of the window iBoot left enabled
+         * (window 2, +0x7c; 0x014001e0 in 3A101a), and window 1 (+0x64 size,
+         * +0x68 span) is programmed from it. The shipped panel's geometry
+         * words read as this panel's; any other value reads as written. */
+        bool size = addr == 0x64 || addr == 0x7c, span = addr == 0x68 || addr == 0x80;
+        if (size && s->plane_regs[addr / 4] == (LCD_FB_WIDTH << 16 | LCD_FB_HEIGHT)) {
+            return s->pw << 16 | s->ph;
+        }
+        if (span && s->plane_regs[addr / 4] == LCD_FB_WIDTH) {
+            return s->pw;
+        }
+    }
     if (s->s5l8900) {
         hwaddr raw = addr;
         if (raw == 0x14) {
