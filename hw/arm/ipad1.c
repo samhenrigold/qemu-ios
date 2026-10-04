@@ -691,29 +691,39 @@ static void ipad1_cpu_reset(void *opaque)
 }
 
 /*
- * Host mouse -> digitizer slot 0. QEMU's absolute coordinates are 0..0x7fff;
- * the digitizer wants 0..1 with y from the bottom (see set_finger()).
- * The digitizer is portrait-native. On a landscape panel (K48, 1024x768 with
- * the portrait UI rotated), found by trying all eight axis maps against
- * slide-to-unlock: digitizer x = 1 - panel y, y-from-bottom = 1 - panel x.
+ * Whether the guest turned its portrait UI a quarter into the panel. UIKit
+ * decides from the panel's shape: +[UIApplication
+ * _startWindowServerIfNecessary] swaps the display's bounds and rotates by
+ * pi/2 only when it is wider than tall (K48's 1024x768, not the iPhone 4 /
+ * iPod touch 4 640x960); a square or taller panel= gets the UI as scanned.
+ * Set at init from the board (touch_landscape) or the panel= override.
  */
-static void ipad1_map_touch(const A4Board *board, int x, int y, float *fx, float *fy)
+static bool ipad1_ui_turned = true;
+
+/*
+ * Host touch (panel coordinates, 0..0x7fff) -> digitizer slot 0..n, which
+ * wants 0..1 with y from the bottom (see set_finger()). The digitizer is
+ * portrait-native: it reports in the guest UI's portrait frame. On a turned
+ * panel (found by trying all eight axis maps against slide-to-unlock):
+ * digitizer x = 1 - panel y, y-from-bottom = 1 - panel x. On an unturned one
+ * the panel is that frame: x = panel x, y-from-bottom = 1 - panel y.
+ */
+static void ipad1_map_touch(int x, int y, float *fx, float *fy)
 {
-    if (board->touch_landscape) {
-        *fx = 1.0f - y / 32768.0f;
-        *fy = 1.0f - x / 32768.0f;
-    } else {
+    if (!ipad1_ui_turned) {
         *fx = x / 32768.0f;
         *fy = 1.0f - y / 32768.0f;
+        return;
     }
+    *fx = 1.0f - y / 32768.0f;
+    *fy = 1.0f - x / 32768.0f;
 }
 
 static void ipad1_mouse_event(void *opaque, int x, int y, int z, int buttons)
 {
     IPodTouchMultitouchState *mt = opaque;
 
-    ipad1_map_touch(IPAD1_MACHINE(qdev_get_machine())->board, x, y,
-                    &mt->touch_x, &mt->touch_y);
+    ipad1_map_touch(x, y, &mt->touch_x, &mt->touch_y);
     if (buttons && !mt->touch_down) {
         ipod_touch_multitouch_on_touch(mt);
     } else if (!buttons && mt->touch_down) {
@@ -754,7 +764,7 @@ static void ipad1_mtt_event(DeviceState *dev, QemuConsole *src, InputEvent *evt)
         if (!s->mtt_seen[slot]) {
             return;
         }
-        ipad1_map_touch(s->board, s->mtt_x[slot], s->mtt_y[slot], &fx, &fy);
+        ipad1_map_touch(s->mtt_x[slot], s->mtt_y[slot], &fx, &fy);
         bool down = mtt->type == INPUT_MULTI_TOUCH_TYPE_BEGIN ||
                     mtt->type == INPUT_MULTI_TOUCH_TYPE_UPDATE;
         ipod_touch_multitouch_set_finger(s->mt, slot, fx, fy, down);
@@ -1249,6 +1259,7 @@ static void ipad1_init(MachineState *machine)
         qdev_prop_set_uint32(dev, "panel-width", s->panel_w);
         qdev_prop_set_uint32(dev, "panel-height", s->panel_h);
     }
+    ipad1_ui_turned = s->panel_w ? s->panel_w > s->panel_h : s->board->touch_landscape;
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_DISP_PIPE0_BASE);

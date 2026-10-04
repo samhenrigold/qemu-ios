@@ -188,6 +188,7 @@
     {"name": "tests/ipad1/jank.py", "tier": "full", "prerequisites": ["qemu", "prepared-device", "usbmuxd"], "missing": "skip"},
     {"name": "tests/ipod/fresh-device.sh", "tier": "fresh", "prerequisites": ["qemu", "stock-ipsw", "firmwarekit", "catalog"], "missing": "skip"},
     {"name": "tests/ipad1/fresh-device.sh", "tier": "fresh", "prerequisites": ["qemu", "stock-ipsw", "firmwarekit", "catalog"], "missing": "skip"},
-    {"name": "tests/ipad1/test_nand_store_convert.py", "tier": "quick", "prerequisites": []}
+    {"name": "tests/ipad1/test_nand_store_convert.py", "tier": "quick", "prerequisites": []},
+    {"name": "tests/ipad1/test_touch_panel.py", "tier": "quick", "prerequisites": []}
   ]
 }
