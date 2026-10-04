@@ -33,6 +33,9 @@ host). Checks run in parallel, each on its own QEMU.
   net      the default network, Wi-Fi (BCM4329 on the machine's slirp netdev): Safari, typed on the
            emulated USB keyboard, fetches a page from a host HTTP server at 10.0.2.2
   audio    tests/ipad1/audio-check.py: boot sound, unlock, lock, unlock correlate with the originals
+  prefs    (opt-in) a device it_prefs has not run on before: Brightness at maximum and Auto-Lock Never,
+           read back over the agent, and its once-only marker (see check_prefs)
+  nocharge (opt-in) usb-charger=off over the bridge: connected, not charge-capable, not charging; AFC works
   net-usb  (opt-in) the same fetch over USB Ethernet: en1, usbmuxd's slirp, it_ethlink in the image
   shadow   (opt-in) Safari's Bookmarks popover casts a soft drop shadow (an A008 surface), not a solid box
   appinstall, applaunch
@@ -47,6 +50,7 @@ import hashlib
 import json
 import importlib.util
 import os
+import plistlib
 import random
 import re
 import shutil
@@ -101,8 +105,10 @@ class Boot:
     creates) is the machine's default; wifi=False turns it off. wav records the audio out."""
     n = 0
 
-    def __init__(self, cfg, tag, overlay=None, keyboard=False, usb=True, wifi=True, wav=None, extra=(), env=None):
+    def __init__(self, cfg, tag, overlay=None, keyboard=False, usb=True, wifi=True, wav=None, extra=(), env=None,
+                 machine=""):
         Boot.n += 1
+        self.machine_extra = machine
         self.qemu_env = dict(os.environ, **env) if env else None
         self.cfg, self.tag, self.keyboard, self.extra = cfg, tag, keyboard, list(extra)
         self.usb, self.wifi, self.wav = usb, wifi, wav
@@ -139,6 +145,8 @@ class Boot:
                 machine += ",guest-package=" + cfg.guest_package
             if os.environ.get("IPAD1_MACHINE_EXTRA"):   # e.g. iop-core=off, as boot-smoke.py takes it
                 machine += "," + os.environ["IPAD1_MACHINE_EXTRA"]
+            if self.machine_extra:
+                machine += "," + self.machine_extra
             # What the GL bridge refuses is painted magenta and counted (gl_clean below).
             machine += ",gles-debug=on"
             argv = ["timeout", str(cfg.boot_timeout), cfg.qemu, "-machine", machine + ("" if self.wifi else ",wifi=off"),
@@ -284,6 +292,12 @@ class Boot:
         self.procs.stop_all()
         if os.path.exists(self.sock):
             os.unlink(self.sock)
+
+
+def battery_info(b):
+    """lockdown's com.apple.mobile.battery domain: {key: value as text}."""
+    out = b.run(["ideviceinfo", "-q", "com.apple.mobile.battery"]).stdout
+    return dict(l.split(": ", 1) for l in out.splitlines() if ": " in l)
 
 
 def booted(cfg, tag, r, **kw):
@@ -929,9 +943,67 @@ def check_shadow(cfg, r):
         b.stop()
 
 
+PREFS = "/var/mobile/Library/Preferences/"
+MC_SETTINGS = "/var/mobile/Library/ConfigurationProfiles/UserSettings.plist"
+MC_NEVER = 0x7fffffff       # Settings' Never in ManagedConfiguration (4.x, 5.x)
+
+
+def check_prefs(cfg, r):
+    """it_prefs' once-only defaults on a device it has not run on before (a fresh prepare runs it in the
+    seal boot): Brightness at maximum and Auto-Lock at Never, read back over the agent from where this
+    firmware's Settings keeps them, and the marker that stops it applying them again."""
+    b, detail = booted(cfg, "prefs", r)
+    try:
+        if not detail:
+            return
+        t0 = time.time()
+        while time.time() - t0 < 180 and not itqmp.agent_alive(b.qmp):
+            time.sleep(3)
+
+        def plist(path):
+            status, data = itqmp.agent(b.qmp, "get", path)
+            return plistlib.loads(data) if status == 0 else {}
+        while True:     # the job runs once the boot settles; a package installed this boot runs it now
+            mine, sb, mc = plist(PREFS + "com.qemu.it-prefs.plist"), plist(PREFS + "com.apple.springboard.plist"), plist(MC_SETTINGS)
+            if mine.get("DefaultsSet") or time.time() - t0 > 300:
+                break
+            time.sleep(5)
+        bright = sb.get("SBBacklightLevel2", sb.get("SBBacklightLevel"))
+        lock = ((mc.get("restrictedValue") or {}).get("maxInactivity") or {}).get("value")
+        never = lock == MC_NEVER if cfg.major >= 4 else sb.get("SBAutoLockTime") == -1
+        r.set(mine.get("DefaultsSet") is True and bright == 1.0 and never,
+              "brightness %r, auto-lock %r (MC maxInactivity %r), marker %r" % (bright, sb.get("SBAutoLockTime"), lock, mine))
+    finally:
+        b.stop()
+
+
+def check_nocharge(cfg, r):
+    """usb-charger=off over the usbmuxd bridge: a port that supplies no charge current. The bridge's charge
+    request never reaches the guest, so the iPad stays at 500 mA: connected, not charge-capable, not
+    charging (the status bar's "Not Charging", the lock screen's wallpaper), and AFC still moves files."""
+    b = Boot(cfg, "nocharge", machine="usb-charger=off")
+    try:
+        b.start()
+        ok, detail = b.wait_lock_screen()
+        if not ok or not b.wait_mux():
+            r.set(False, detail if not ok else "lock screen but usbmux never attached")
+            return
+        info = {}
+        t0 = time.time()
+        while time.time() - t0 < 120 and info.get("ExternalConnected") is None:
+            info = battery_info(b)
+            time.sleep(5)
+        bad = afc_roundtrip(b, [70001], "nocharge")
+        want = {"ExternalConnected": "true", "ExternalChargeCapable": "false", "BatteryIsCharging": "false"}
+        r.set(all(info.get(k) == v for k, v in want.items()) and not bad,
+              "%s; AFC %s" % (", ".join("%s %s" % (k, info.get(k)) for k in want), "ok" if not bad else "mismatch %r" % bad))
+    finally:
+        b.stop()
+
+
 CHECKS = {"boot": check_boot, "gles": check_gles, "shadow": check_shadow, "usbmux": check_usbmux, "afc": check_afc,
           "persist": check_persist, "net": check_net, "net-usb": check_net_usb, "wifi": check_wifi,
-          "wifi-early": check_wifi_early, "audio": check_audio}
+          "wifi-early": check_wifi_early, "audio": check_audio, "prefs": check_prefs, "nocharge": check_nocharge}
 
 
 def device_args(a):

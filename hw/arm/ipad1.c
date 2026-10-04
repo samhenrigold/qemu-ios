@@ -113,16 +113,14 @@ struct IPad1MachineState {
     double accel_pitch, accel_roll;      /* degrees, as the app sends them */
     bool accel_flat;
     double battery_level;                /* % */
-    int battery_mode;                    /* 0 auto (follow cable), 1 on, 2 off */
     double battery_drain;                /* accepted for the bridge; unused */
     QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
     DeviceState *display;                /* its dart2 also serves the scaler */
     int pwroff_phase, pwroff_step, pwroff_orient;
-    bool usb_charger;                    /* host grants high-power current */
+    bool usb_charger;                    /* the port grants charge current */
     Chardev *gauge;
 };
 
-static const char *const ipad1_battery_modes[] = { "auto", "on", "off" };
 
 /* GHWCFG1-4 of the DWC OTG core; same synthesis as the S5L8720's. */
 static uint32_t s5l8930_usb_hwcfg[] = { 0, 0x7a8f60d0, 0x082000e8, 0x01f08024 };
@@ -1042,6 +1040,7 @@ static void ipad1_init(MachineState *machine)
      * is what keeps an iPad on a Mac charging and out of deep sleep. */
     s->usb_otg->builtin_host = !s->usb_otg->server_host && !getenv("IT_USB_TCP");
     s->usb_otg->host_charge = s->usb_charger;
+    s->usb_otg->withhold_charge = !s->usb_charger;
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     memory_region_add_subregion(sysmem, S5L8930_USB_OTG_BASE,
                                 &S5L8900USBOTG(dev)->iomem);
@@ -1346,14 +1345,16 @@ static void ipad1_set_usb_cable(Object *obj, bool value, Error **errp)
  * Charging"; it charges once the host grants more with Apple's vendor power
  * request (0x40/0x40, 500 + 1600 mA), as a Mac's high-power port does, and
  * AppleD1815PMUPowerSource logs "usb stack power 2100mA". usb-charger (default
- * on) makes the built-in host send it; a usbmuxd bridge sends it or not
- * itself. The gauge's charge state follows usb-charger; battery-charging
- * on/off overrides that.
+ * on) is that port: on, the built-in host sends the request and a usbmuxd
+ * bridge's reaches the guest; off, neither does (a 500 mA port, or a hub that
+ * cannot charge), so the iPad stays connected over USB, the status bar says
+ * "Not Charging" and the lock screen keeps its wallpaper (SpringBoard shows
+ * the battery only for a charge-capable source). The guest reads the grant at
+ * enumeration, so a change takes a replug. Charger and gauge follow it.
  */
 static bool ipad1_battery_charging(IPad1MachineState *s)
 {
-    return s->battery_mode == 1 ||
-           (s->battery_mode == 0 && s->usb_cable && s->usb_charger);
+    return s->usb_cable && s->usb_charger;
 }
 
 static void ipad1_battery_update(IPad1MachineState *s)
@@ -1379,6 +1380,7 @@ static void ipad1_set_usb_charger(Object *obj, bool value, Error **errp)
     s->usb_charger = value;
     if (s->usb_otg) {
         s->usb_otg->host_charge = value;
+        s->usb_otg->withhold_charge = !value;
     }
     ipad1_battery_update(s);
 }
@@ -1429,24 +1431,6 @@ static void ipad1_set_battery_drain(Object *obj, Visitor *v, const char *name,
     s->battery_drain = value;
 }
 
-static char *ipad1_get_battery_charging(Object *obj, Error **errp)
-{
-    return g_strdup(ipad1_battery_modes[IPAD1_MACHINE(obj)->battery_mode]);
-}
-
-static void ipad1_set_battery_charging(Object *obj, const char *value, Error **errp)
-{
-    IPad1MachineState *s = IPAD1_MACHINE(obj);
-
-    for (int i = 0; i < ARRAY_SIZE(ipad1_battery_modes); i++) {
-        if (!strcmp(value, ipad1_battery_modes[i])) {
-            s->battery_mode = i;
-            ipad1_battery_update(s);
-            return;
-        }
-    }
-    error_setg(errp, "battery-charging must be auto, on or off");
-}
 
 /* --- tilt --------------------------------------------------------------- */
 
@@ -1731,13 +1715,11 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     object_class_property_add_bool(klass, "usb-charger", ipad1_get_usb_charger,
                                    ipad1_set_usb_charger);
     object_class_property_set_description(klass, "usb-charger",
-        "the built-in USB host grants a high-power port's 2.1 A, so the iPad charges (default on); off = 500 mA, \"Not Charging\"");
+        "the USB port grants a high-power port's 2.1 A, so the iPad charges (default on); off = 500 mA, \"Not Charging\", USB data still on (takes a replug)");
     object_class_property_add(klass, "battery-level", "int", ipad1_get_battery_level,
                               ipad1_set_battery_level, NULL, NULL);
     object_class_property_add(klass, "battery-drain", "number", ipad1_get_battery_drain,
                               ipad1_set_battery_drain, NULL, NULL);
-    object_class_property_add_str(klass, "battery-charging", ipad1_get_battery_charging,
-                                  ipad1_set_battery_charging);
     object_class_property_add(klass, "accel-pitch", "number", ipad1_get_accel_angle,
                               ipad1_set_accel_angle, NULL, NULL);
     object_class_property_add(klass, "accel-roll", "number", ipad1_get_accel_angle,
