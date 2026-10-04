@@ -1,6 +1,7 @@
 #include "hw/arm/ipod_touch_gpio.h"
 #include "migration/vmstate.h"
 #include "hw/irq.h"
+#include "hw/qdev-properties.h"
 #include "trace.h"
 
 /*
@@ -24,7 +25,7 @@ static void s5l8900_gpio_write(void *opaque, hwaddr addr, uint64_t value, unsign
     trace_ipod_touch_gpio_write(addr, value);
     IPodTouchGPIOState *s = (struct IPodTouchGPIOState *) opaque;
 
-    if (addr == 0x1e0) {
+    if (addr == s->fsel_offset) {
         unsigned pad = (value >> 16) & 0xff;
         unsigned pin = (value >> 8) & 0xff;
         unsigned function = value & 0xff;
@@ -144,10 +145,17 @@ static const VMStateDescription vmstate_ipod_touch_gpio = {
     }
 };
 
+/* The pad function select register: 0x1e0 on the S5L8720, 0x320 on the S5L8900
+ * (openiBoot's GPIO_FSEL; the 1.x kernel drives its output pads through it). */
+static const Property s5l8900_gpio_properties[] = {
+    DEFINE_PROP_UINT32("fsel-offset", IPodTouchGPIOState, fsel_offset, 0x1e0),
+};
+
 static void s5l8900_gpio_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
+    device_class_set_props(dc, s5l8900_gpio_properties);
     device_class_set_legacy_reset(dc, s5l8900_gpio_reset);
     dc->vmsd = &vmstate_ipod_touch_gpio;
 }

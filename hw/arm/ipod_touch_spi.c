@@ -359,8 +359,10 @@ static void ipod_touch_spi_realize(DeviceState *dev, struct Error **errp)
     } else if (!strcmp(periph, "none")) {
         /* nothing on the bus */
     } else {
-        /* Any other SSI peripheral type registered in this binary. */
-        ssi_create_peripheral(s->spi, periph);
+        /* Any other SSI peripheral type registered in this binary; a digitizer
+         * of another protocol (the S5L8900's Zephyr1) is still the touch input. */
+        DeviceState *p = ssi_create_peripheral(s->spi, periph);
+        s->mt = (IPodTouchMultitouchState *)object_dynamic_cast(OBJECT(p), TYPE_IPOD_TOUCH_MULTITOUCH);
     }
 }
 
