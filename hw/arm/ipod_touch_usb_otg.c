@@ -86,7 +86,14 @@ static void synopsys_usb_update_irq(synopsys_usb_state *_state)
 		}
 	}
 	
-	if((_state->pcgcctl & 3) == 0 && _state->gintmsk & _state->gintsts)
+	/*
+	 * The core's interrupt line: a pending unmasked GINTSTS bit, with
+	 * GAHBCFG.GlblIntrMsk set. It used to be gated on PCGCCTL instead (clocks
+	 * running); iPhone OS 1.x never writes PCGCCTL -- iBoot-204 leaves it at 3
+	 * (its USB quiesce) and AppleS5L8900XUSBWrangler runs the core from there
+	 * -- so under that gate the 1G took no interrupt at all.
+	 */
+	if((_state->gahbcfg & GAHBCFG_MASKINT) && (_state->gintmsk & _state->gintsts))
 	{
 		//printf("USB: IRQ triggered 0x%08x & 0x%08x.\n", _state->gintsts, _state->gintmsk);
 		qemu_irq_raise(_state->irq);
@@ -114,6 +121,11 @@ static void synopsys_usb_update_ep(synopsys_usb_state *_state, synopsys_usb_ep_s
 static void synopsys_usb_update_in_ep(synopsys_usb_state *_state, uint8_t _ep)
 {
 	synopsys_usb_ep_state *eps = &_state->in_eps[_ep];
+
+	/* CNAK is write-only: it ends a NAK the core or the driver set. Only the
+	 * IN side honours NAKSts (see the transport callback). */
+	if(eps->control & USB_EPCON_CLEARNAK)
+		eps->control &=~ (USB_EPCON_CLEARNAK | USB_EPCON_NAKSTS);
 	synopsys_usb_update_ep(_state, eps);
 
 	if(eps->control & USB_EPCON_ENABLE)
@@ -148,6 +160,17 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 	/* Tell the host what address we answer to - this is how it learns that a
 	 * SET_ADDRESS actually took effect. */
 	_hdr->addr = (state->dcfg & DCFG_DEVICEADDRMSK) >> DCFG_DEVICEADDR_SHIFT;
+
+    /* A PHY held in reset cannot receive bus traffic or perform DMA. Keep
+     * core registers and latched IRQs intact: this is not a core/bus reset,
+     * and the host transport's capability hello is not a physical packet.
+     * ORSTCON deassertion resumes transfers; no firmware address or delay is
+     * involved. PCGCCTL alone is not used here (older guests leave it at 3).
+     */
+    if (state->phy_reset && !((_hdr->flags & tcp_usb_hello) &&
+                              (_hdr->ep & 0x7f) == TCP_USB_EP_CONTROL)) {
+        return USB_RET_NAK;
+    }
 
 	if (_hdr->flags & tcp_usb_reset) {
 		state->gintsts |= GINTMSK_RESET;
@@ -197,12 +220,28 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 		return USB_RET_STALL;
 	}
 
+	/*
+	 * A port that supplies no charge current (a 500 mA port, a hub that cannot
+	 * charge): the bridge's Apple vendor power request (bmRequestType 0x40,
+	 * bRequest 0x40) never reaches the guest, as when the host refuses it, so
+	 * the iPad stays at 500 mA, "Not Charging", while data flows. The host sees
+	 * it fail, which usbmuxd takes as "the device keeps 500 mA".
+	 */
+	if (state->withhold_charge && ep == 0 && (_hdr->flags & tcp_usb_setup) && hdr_len >= 2 &&
+	    (uint8_t)_buffer[0] == 0x40 && (uint8_t)_buffer[1] == 0x40) {
+		printf("[USBTCP] charge request withheld: the port supplies no charge current\n");
+		return USB_RET_STALL;
+	}
+
 	if (_hdr->ep & USB_DIR_IN) {
 		synopsys_usb_ep_state *eps = &state->in_eps[ep];
 
 		if (eps->control & USB_EPCON_STALL) {
 			eps->control &= ~USB_EPCON_STALL;
 			ret = USB_RET_STALL;
+		} else if (eps->control & USB_EPCON_NAKSTS) {
+			/* NAKSts: the core NAKs IN tokens even with data armed. */
+			ret = USB_RET_NAK;
 		} else if (eps->control & USB_EPCON_ENABLE) {
 			size_t sz = eps->tx_size & DEPTSIZ_XFERSIZ_MASK;
 			size_t amtDone = MIN(sz, hdr_len);
@@ -250,16 +289,16 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 			             | (remaining & DEPTSIZ_XFERSIZ_MASK);
 
 			/*
-			 * PktCnt counts down alongside XferSize on real hardware. Nothing in
-			 * the guest driver has been observed to read it back mid-transfer,
-			 * but leaving it stale would be a trap for whatever does.
-			 *
-			 * Only for the bulk endpoints: on EP0 the MPS field is a two-bit
-			 * enum (0 = 64 bytes ... 3 = 8) rather than a byte count, and EP0
-			 * transfers are single-transaction anyway.
+			 * PktCnt counts down alongside XferSize on real hardware, EP0
+			 * included, where the MPS field is a two-bit enum (0 = 64 bytes ...
+			 * 3 = 8). iPhone OS 1.x's SynopsysHAL reads DIEPTSIZ0's PktCnt back
+			 * after XferCompl and sent a control IN's first packet again while it
+			 * stayed at 1: the 82-byte serial string reached the host as 64 + 64
+			 * bytes of the same packet (usbmuxd read the UDID as '?').
 			 */
-			uint32_t mps = eps->control & USB_EPCON_MPS_MASK;
-			if (ep && mps && amtDone) {
+			uint32_t mps = ep ? eps->control & USB_EPCON_MPS_MASK
+			                  : 64u >> (eps->control & 3);
+			if (mps && amtDone) {
 				uint32_t pktcnt = (eps->tx_size >> DEPTSIZ_PKTCNT_SHIFT)
 				                & DEPTSIZ_PKTCNT_MASK;
 				uint32_t sent = (amtDone + mps - 1) / mps;
@@ -370,9 +409,11 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 			/*
 			 * One host transaction is one complete transfer, so it always
 			 * retires the endpoint. That is right for this transport - it is
-			 * transfer-oriented, not packet-oriented, and there are no ZLPs to
-			 * terminate a transfer that happens to be a multiple of the max
-			 * packet size.
+			 * transfer-oriented, not packet-oriented. A zero-length transaction
+			 * is the host's ZLP and completes an armed transfer with 0 bytes;
+			 * the host sends one only when its software asks (usbmuxd does
+			 * after a max-packet-multiple write, which iOS 4's mux needs to
+			 * find the end of a message; libirecovery's uploads do not).
 			 *
 			 * The corollary is a real constraint on the host: it must never
 			 * split one logical packet across transactions, because the second
@@ -392,14 +433,65 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 				              ep, hdr_len, amtDone);
 			}
 
+			/*
+			 * As the core does: a bulk OUT transfer ends on a short packet (a
+			 * ZLP included) or once its XferSize or PktCnt runs out. A
+			 * max-packet-multiple transaction short of both leaves the endpoint
+			 * enabled, its DMA address and counts advanced, and raises nothing.
+			 * 1.x's AppleUSBDeviceMux arms 32 KiB and re-arms after a completion
+			 * that looks like a full packet (by PktCnt): a 512-byte mux packet
+			 * and the next one arrived as one 540-byte packet
+			 * ("expected 512 bytes, received 540"), the TCP stream lost 484
+			 * bytes and every lockdown session with a full-packet record died.
+			 */
+			uint32_t mps = eps->control & USB_EPCON_MPS_MASK;
+			uint32_t pkts = (eps->tx_size >> DEPTSIZ_PKTCNT_SHIFT) & DEPTSIZ_PKTCNT_MASK;
+			if (ep != 0 && !(_hdr->flags & tcp_usb_setup) && mps && amtDone
+			    && amtDone % mps == 0 && amtDone < sz && amtDone / mps < pkts) {
+				eps->control |= USB_EPCON_ENABLE;
+				eps->tx_size = (eps->tx_size
+				                & ~(DEPTSIZ_XFERSIZ_MASK | (DEPTSIZ_PKTCNT_MASK << DEPTSIZ_PKTCNT_SHIFT)))
+				             | ((sz - amtDone) & DEPTSIZ_XFERSIZ_MASK)
+				             | ((pkts - amtDone / mps) << DEPTSIZ_PKTCNT_SHIFT);
+				if (synopsys_usb_trace_enabled())
+					fprintf(stderr, "[USBTCP] OUT ep%d %zu bytes (transfer continues)\n", ep, amtDone);
+				synopsys_usb_update_irq(state);
+				return amtDone;
+			}
+
 			if (_hdr->flags & tcp_usb_setup) {
 				eps->interrupt_status |= USB_EPINT_SetUp;
+				/*
+				 * A SETUP ends whatever control transfer came before it. The
+				 * core clears EP0's STALL and sets DIEPCTL0's NAK, so a data
+				 * stage the driver armed for an earlier request -- one the
+				 * host gave up on before a bus reset -- is NAKed instead of
+				 * answering this one, until the driver arms the new reply
+				 * with CNAK. Without it the pipe ran one reply behind:
+				 * usbmuxd read device-descriptor bytes as a configuration
+				 * header ("Short configuration 0 (-1 of 512)").
+				 */
+				if (ep == 0) {
+					state->in_eps[0].control = (state->in_eps[0].control
+					                            & ~USB_EPCON_STALL) | USB_EPCON_NAKSTS;
+					eps->control &= ~USB_EPCON_STALL;
+				}
 			} else {
 				eps->interrupt_status |= USB_EPINT_XferCompl;
 			}
 
 			eps->tx_size = (eps->tx_size & ~DEPTSIZ_XFERSIZ_MASK)
 			             | ((sz - amtDone) & DEPTSIZ_XFERSIZ_MASK);
+			/*
+			 * PktCnt counts the packets received, a ZLP or a short packet too:
+			 * 1.x tells a short-packet end from a full-packet one by it (bytes
+			 * versus packets x MPS) and re-armed after a ZLP it could not see.
+			 */
+			if (ep != 0 && mps && !(_hdr->flags & tcp_usb_setup)) {
+				uint32_t used = MIN(pkts, MAX(1u, (uint32_t)DIV_ROUND_UP(amtDone, mps)));
+				eps->tx_size = (eps->tx_size & ~(DEPTSIZ_PKTCNT_MASK << DEPTSIZ_PKTCNT_SHIFT))
+				             | ((pkts - used) << DEPTSIZ_PKTCNT_SHIFT);
+			}
 
 			/* Gated for the same reason as the IN path above. */
 			if (synopsys_usb_trace_enabled())
@@ -421,6 +513,27 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 	return ret;
 }
 
+/* "host:port" of the host bridge (usbmuxd-qemu); the port defaults to 1235,
+ * an empty host to 127.0.0.1. NULL or "" leaves the link unconfigured. */
+void synopsys_usb_set_tcp_addr(synopsys_usb_state *state, const char *spec)
+{
+	if (!spec || !*spec) {
+		return;
+	}
+	g_autofree char *dup = g_strdup(spec);
+	char *colon = strrchr(dup, ':');
+	state->server_port = 0;
+	if (colon) {
+		*colon = '\0';
+		state->server_port = atoi(colon + 1);
+	}
+	if (!state->server_port) {
+		state->server_port = 1235;
+	}
+	g_free(state->server_host);
+	state->server_host = g_strdup(*dup ? dup : "127.0.0.1");
+}
+
 /*
  * Bring up the host link if it is configured and not already up. Safe to call
  * repeatedly - a missing host bridge is not fatal, it just means no cable.
@@ -430,27 +543,16 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
  */
 static void synopsys_usb_tcp_start(synopsys_usb_state *_state)
 {
-	if (_state->tcp_connected && !tcp_usb_closed(&_state->tcp_state)) {
+	if (!_state->cable_attached ||
+	    (_state->tcp_connected && !tcp_usb_closed(&_state->tcp_state))) {
 		return;
 	}
 
 	if (!_state->server_host) {
-		const char *spec = getenv("IT_USB_TCP");
-		if (!spec || !*spec) {
+		synopsys_usb_set_tcp_addr(_state, getenv("IT_USB_TCP"));
+		if (!_state->server_host) {
 			return;
 		}
-
-		char *dup = g_strdup(spec);
-		char *colon = strrchr(dup, ':');
-		if (colon) {
-			*colon = '\0';
-			_state->server_port = atoi(colon + 1);
-		}
-		if (!_state->server_port) {
-			_state->server_port = 1235;
-		}
-		_state->server_host = g_strdup(*dup ? dup : "127.0.0.1");
-		g_free(dup);
 	}
 
 	if (_state->tcp_connected) {
@@ -541,12 +643,20 @@ static uint32_t synopsys_usb_out_ep_read(synopsys_usb_state *_state, int _ep, hw
 	return 0;
 }
 
+static uint64_t synopsys_usb_read_reg(void *opaque, hwaddr _addr, unsigned size);
+
+/* Trace reads with the value returned, so a driver's decision can be read off the log. */
 static uint64_t synopsys_usb_read(void *opaque, hwaddr _addr, unsigned size)
 {
-	synopsys_usb_state *state = (synopsys_usb_state *)opaque;
-
+	uint64_t v = synopsys_usb_read_reg(opaque, _addr, size);
 	if (synopsys_usb_trace_enabled())
-		fprintf(stderr, "[USBTRACE] R 0x%04x (size %u)\n", (unsigned)_addr, size);
+		fprintf(stderr, "[USBTRACE] R 0x%04x -> 0x%08x (size %u)\n", (unsigned)_addr, (unsigned)v, size);
+	return v;
+}
+
+static uint64_t synopsys_usb_read_reg(void *opaque, hwaddr _addr, unsigned size)
+{
+	synopsys_usb_state *state = (synopsys_usb_state *)opaque;
 
 	switch(_addr)
 	{
@@ -554,7 +664,11 @@ static uint64_t synopsys_usb_read(void *opaque, hwaddr _addr, unsigned size)
 		return state->pcgcctl;
 
 	case GOTGCTL:
-		return state->gotgctl;
+		/* Live status: the ID pin of a device cable (B-device) and, while a host
+		 * powers VBUS, both session-valid comparators. */
+		return (state->gotgctl & ~(GOTGCTL_CONIDSTS | GOTGCTL_ASESSIONVALID | GOTGCTL_BSESSIONVALID)) |
+		       GOTGCTL_CONIDSTS |
+		       (state->cable_attached ? GOTGCTL_ASESSIONVALID | GOTGCTL_BSESSIONVALID : 0);
 
 	case GOTGINT:
 		return state->gotgint;
@@ -663,7 +777,9 @@ static void synopsys_usb_in_ep_write(synopsys_usb_state *_state, int _ep, hwaddr
     switch (_addr)
 	{
     case 0x00:
-		_state->in_eps[_ep].control = _val;
+		/* NAKSts is read-only: only SNAK, CNAK and the core change it. */
+		_state->in_eps[_ep].control = (_val & ~USB_EPCON_NAKSTS)
+		                            | (_state->in_eps[_ep].control & USB_EPCON_NAKSTS);
 		if (_ep && synopsys_usb_in_debug() && (_val & USB_EPCON_ENABLE)) {
 			fprintf(stderr, "[USBIN] arm ep%d DIEPCTL=0x%08x dma=0x%08x tsiz=0x%08x "
 			        "(xfer=%u pktcnt=%u)\n", _ep, (uint32_t)_val,
@@ -785,10 +901,11 @@ static void synopsys_usb_write(void *opaque, hwaddr _addr, uint64_t _val, unsign
 			 * not connected yet.
 			 */
 			synopsys_usb_tcp_start(state);
+			synopsys_usb_host_rearm(state, 2000);
 
 			state->grstctl &= ~GRSTCTL_CORESOFTRESET;
 			state->grstctl |= GRSTCTL_AHBIDLE;
-			state->gintsts |= GINTMSK_RESET;
+			state->gintsts |= GINTMSK_RESET | GINTMSK_CONIDSTSCHNG;
 			synopsys_usb_update_irq(state);
 		}
 		else if(_val == 0)
@@ -828,6 +945,7 @@ static void synopsys_usb_write(void *opaque, hwaddr _addr, uint64_t _val, unsign
 
 	case GAHBCFG:
 		state->gahbcfg = _val;
+		synopsys_usb_update_irq(state);
 		return;
 
 	case GUSBCFG:
@@ -848,6 +966,16 @@ static void synopsys_usb_write(void *opaque, hwaddr _addr, uint64_t _val, unsign
 			state->gintsts |= GINTMSK_GOUTNAKEFF;
 			_val &=~ DCTL_SGOUTNAK;
 		}
+
+		/* The NAK-effective interrupts stay up while the global NAK is in
+		 * effect and drop when the driver clears it: iOS 4's driver writes
+		 * CGNPINNAK/CGOUTNAK and polls GINTSTS for that (3.x's clears them
+		 * in GINTSTS, which still works). */
+		if(_val & DCTL_CGNPINNAK)
+			state->gintsts &=~ GINTMSK_GINNAKEFF;
+		if(_val & DCTL_CGOUTNAK)
+			state->gintsts &=~ GINTMSK_GOUTNAKEFF;
+		_val &=~ (DCTL_CGNPINNAK | DCTL_CGOUTNAK);
 
 		state->dctl = _val;
 		synopsys_usb_update_irq(state);
@@ -937,7 +1065,10 @@ static void s5l8900_usb_otg_reset(DeviceState *d)
 	state->grstctl = GRSTCTL_AHBIDLE;
 
 	state->gintmsk = 0;
-	state->gintsts = 0;
+	/* ConIDStsChng is set out of reset (the core's reset value): 1.x's
+	 * AppleS5L8900XUSBDevice unmasks only it (and ModeMis) after core init and
+	 * reads the ID status off GOTGCTL before it brings device mode up. */
+	state->gintsts = GINTMSK_CONIDSTSCHNG;
 
 	state->daintmsk = 0;
 	state->daintsts = 0;
@@ -1002,11 +1133,20 @@ static void s5l8900_usb_otg_reset(DeviceState *d)
 	synopsys_usb_update_irq(state);
 }
 
+static void synopsys_usb_phy_reset(void *opaque, int n, int level)
+{
+    synopsys_usb_state *state = opaque;
+    state->phy_reset = level;
+}
+
 static void s5l8900_usb_otg_init1(Object *obj)
 {
 	DeviceState *dev = DEVICE(obj);
     synopsys_usb_state *s = S5L8900USBOTG(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+
+    s->cable_attached = true;
+    qdev_init_gpio_in_named(dev, synopsys_usb_phy_reset, "phy-reset", 1);
 
     /*
      * The region must cover the FIFO window at USB_FIFO_START (0x1000) as well
@@ -1048,6 +1188,289 @@ DeviceState *ipod_touch_init_usb_otg(qemu_irq _irq, uint32_t _hwcfg[4])
  */
 #define TCP_USB_RETRY_MS 3000
 
+/*
+ * Built-in host, used when no host bridge is configured. iOS only reports
+ * "external power" and disables idle sleep once a host has configured the
+ * device (AppleD1815PMUPowerSource wants >= 500 mA from the usb_500_100
+ * function, which AppleSynopsysOTGDevice reports after SET_CONFIGURATION);
+ * without one the iPad deep-sleeps a few minutes after SpringBoard. This
+ * plays the part usbmuxd-qemu's usb-qemu.c plays: reset, enumdone, device
+ * descriptor, SET_ADDRESS 1, configuration descriptors, then SET_CONFIGURATION
+ * of the configuration carrying the AppleUSBMux interface (255/254/2), else
+ * the last one. It issues one transaction per tick through the same entry
+ * point as the bridge and treats NAK as "try again in a millisecond".
+ */
+enum {
+	HP_IDLE, HP_RESET, HP_ENUMDONE, HP_DEV_SETUP, HP_DEV_IN, HP_DEV_STATUS,
+	HP_ADDR_SETUP, HP_ADDR_STATUS, HP_CFG_HDR_SETUP, HP_CFG_HDR_IN,
+	HP_CFG_HDR_STATUS, HP_CFG_SETUP, HP_CFG_IN, HP_CFG_STATUS,
+	HP_SETCFG_SETUP, HP_SETCFG_STATUS, HP_CHARGE_SETUP, HP_CHARGE_STATUS,
+	HP_STR0_SETUP, HP_STR0_IN, HP_STR0_STATUS,
+	HP_STRSER_SETUP, HP_STRSER_IN, HP_STRSER_STATUS, HP_POLL, HP_DONE,
+};
+#define HOST_POLL_MS      5
+
+#define HOST_RETRY_MS     1
+#define HOST_TIMEOUT_MS   4000
+#define HOST_RESTART_MS   3000
+
+static int synopsys_host_xfer(synopsys_usb_state *s, uint8_t ep, uint8_t flags,
+                              int len, void *buf)
+{
+	tcp_usb_header_t hdr = { .addr = 0, .ep = ep, .flags = flags, .length = len };
+
+	return synopsys_usb_tcp_callback(NULL, s, &hdr, buf);
+}
+
+static int synopsys_host_setup(synopsys_usb_state *s, uint8_t type, uint8_t req,
+                               uint16_t val, uint16_t idx, uint16_t len)
+{
+	uint8_t setup[8] = { type, req, val, val >> 8, idx, idx >> 8, len, len >> 8 };
+
+	return synopsys_host_xfer(s, 0, tcp_usb_setup, 8, setup);
+}
+
+/* Configuration with the mux interface (255/254/2), else the last one; the
+ * interface's bulk IN endpoint is what a host keeps polling afterwards. */
+static bool synopsys_host_cfg_has_mux(synopsys_usb_state *s, const uint8_t *d, int n)
+{
+	bool in_mux = false, found = false;
+
+	for (int i = 0; i + 1 < n && d[i] >= 2; i += d[i]) {
+		if (d[i + 1] == 4 && i + 8 < n) {
+			in_mux = d[i + 5] == 255 && d[i + 6] == 254 && d[i + 7] == 2;
+			found |= in_mux;
+		} else if (d[i + 1] == 5 && i + 3 < n && in_mux) {
+			if (d[i + 2] & USB_DIR_IN) {
+				s->host_ep_in = d[i + 2];
+			} else {
+				s->host_ep_out = d[i + 2];
+			}
+		}
+	}
+	return found;
+}
+
+static void synopsys_host_go(synopsys_usb_state *s, int phase, int64_t ms)
+{
+	s->host_phase = phase;
+	s->host_deadline = qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + HOST_TIMEOUT_MS;
+	timer_mod(s->host_timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + ms);
+}
+
+static void synopsys_host_tick(void *opaque)
+{
+	synopsys_usb_state *s = opaque;
+	int64_t now = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+	int r;
+
+	if (!s->builtin_host || !s->cable_attached || s->host_phase == HP_IDLE ||
+	    s->host_phase == HP_DONE) {
+		return;
+	}
+	if (now > s->host_deadline) {
+		if (synopsys_usb_trace_enabled())
+			fprintf(stderr, "[USBHOST] phase %d timed out; restarting\n", s->host_phase);
+		synopsys_host_go(s, HP_RESET, HOST_RESTART_MS);
+		return;
+	}
+
+	switch (s->host_phase) {
+	case HP_RESET:
+		s->host_greeted = false;
+		s->host_ep_in = s->host_ep_out = 0;
+		synopsys_host_xfer(s, 0, tcp_usb_reset, 0, NULL);
+		synopsys_host_go(s, HP_ENUMDONE, 500);
+		return;
+	case HP_ENUMDONE:
+		synopsys_host_xfer(s, 0, tcp_usb_enumdone, 0, NULL);
+		synopsys_host_go(s, HP_DEV_SETUP, 500);
+		return;
+	case HP_DEV_SETUP:
+		r = synopsys_host_setup(s, 0x80, 6, 0x0100, 0, 18);
+		s->host_got = 0; s->host_want = 18;
+		break;
+	case HP_CFG_HDR_SETUP:
+		r = synopsys_host_setup(s, 0x80, 6, 0x0200 | s->host_cfg, 0, 9);
+		s->host_got = 0; s->host_want = 9;
+		break;
+	case HP_CFG_SETUP:
+		r = synopsys_host_setup(s, 0x80, 6, 0x0200 | s->host_cfg, 0, s->host_want);
+		s->host_got = 0;
+		break;
+	case HP_ADDR_SETUP:
+		r = synopsys_host_setup(s, 0x00, 5, 1, 0, 0);
+		break;
+	case HP_SETCFG_SETUP:
+		r = synopsys_host_setup(s, 0x00, 9, s->host_cfg_value, 0, 0);
+		break;
+	case HP_CHARGE_SETUP:
+		/*
+		 * Apple's vendor power request, as a Mac's high-power port (or a
+		 * charging dock) sends it: 500 mA base plus 1600 mA extra. The iPad's
+		 * power source then reports "usb stack power 2100mA" and charges;
+		 * without it a configured iPad stays at 500 mA, "Not Charging".
+		 */
+		r = synopsys_host_setup(s, 0x40, 0x40, 500, 1600, 0);
+		break;
+	case HP_STR0_SETUP:
+		r = synopsys_host_setup(s, 0x80, 6, 0x0300, 0, 255);
+		s->host_got = 0; s->host_want = 255;
+		break;
+	case HP_STRSER_SETUP:
+		r = synopsys_host_setup(s, 0x80, 6, 0x0300 | s->host_iserial, 0x0409, 255);
+		s->host_got = 0; s->host_want = 255;
+		break;
+	case HP_POLL:
+		/*
+		 * usbmuxd opens with a mux version request (v0 header: protocol 0,
+		 * length 20; then major 2, minor 0, padding; all big-endian) and then
+		 * never stops polling the bulk IN pipe. AppleUSBDeviceMux restarts the
+		 * stack (core soft reset, interface deactivated) a few seconds after
+		 * activation if the host stays silent, so do both; the reply and
+		 * anything else the guest sends have no reader here and are dropped.
+		 */
+		if (!s->host_greeted) {
+			static const uint8_t version_req[20] = {
+				0, 0, 0, 0,  0, 0, 0, 20,  0, 0, 0, 2,  0, 0, 0, 0,  0, 0, 0, 0
+			};
+			uint8_t pkt[20];
+
+			memcpy(pkt, version_req, sizeof(pkt));
+			if (synopsys_host_xfer(s, s->host_ep_out ? s->host_ep_out : 0x02, 0,
+			                       sizeof(pkt), pkt) >= 0) {
+				s->host_greeted = true;
+			}
+		}
+		synopsys_host_xfer(s, s->host_ep_in ? s->host_ep_in : 0x81, 0,
+		                   sizeof(s->host_buf), s->host_buf);
+		s->host_deadline = now + HOST_TIMEOUT_MS;
+		timer_mod(s->host_timer, now + HOST_POLL_MS);
+		return;
+	case HP_DEV_IN:
+	case HP_CFG_HDR_IN:
+	case HP_CFG_IN:
+	case HP_STR0_IN:
+	case HP_STRSER_IN:
+		r = synopsys_host_xfer(s, USB_DIR_IN, 0, s->host_want - s->host_got,
+		                       s->host_buf + s->host_got);
+		if (r > 0) {
+			s->host_got += r;
+			if (s->host_got < s->host_want && r == 64) {
+				timer_mod(s->host_timer, now + HOST_RETRY_MS);
+				return;                       /* more chunks to come */
+			}
+		}
+		if (r == USB_RET_STALL && s->host_phase >= HP_STR0_IN) {
+			r = 0;                            /* strings are optional */
+		}
+		break;
+	case HP_DEV_STATUS:
+	case HP_CFG_HDR_STATUS:
+	case HP_CFG_STATUS:
+	case HP_STR0_STATUS:
+	case HP_STRSER_STATUS:
+		r = synopsys_host_xfer(s, 0, 0, 0, NULL);          /* OUT status */
+		break;
+	case HP_ADDR_STATUS:
+	case HP_SETCFG_STATUS:
+	case HP_CHARGE_STATUS:
+		r = synopsys_host_xfer(s, USB_DIR_IN, 0, 0, NULL);  /* IN status */
+		break;
+	default:
+		return;
+	}
+
+	if (r == USB_RET_NAK) {
+		timer_mod(s->host_timer, now + HOST_RETRY_MS);
+		return;
+	}
+	if (r < 0) {
+		if (synopsys_usb_trace_enabled())
+			fprintf(stderr, "[USBHOST] phase %d failed (%d); restarting\n", s->host_phase, r);
+		synopsys_host_go(s, HP_RESET, HOST_RESTART_MS);
+		return;
+	}
+
+	/* Transaction accepted: advance. */
+	switch (s->host_phase) {
+	case HP_DEV_IN:
+		if (s->host_got < 18 || s->host_buf[1] != 1) {
+			synopsys_host_go(s, HP_RESET, HOST_RESTART_MS);
+			return;
+		}
+		s->host_ncfg = s->host_buf[17];
+		s->host_iserial = s->host_buf[16];
+		s->host_cfg = 0;
+		s->host_cfg_value = -1;
+		break;
+	case HP_CFG_HDR_IN:
+		s->host_want = s->host_buf[2] | (s->host_buf[3] << 8);
+		if (s->host_got < 9 || s->host_want < 9 || s->host_want > sizeof(s->host_buf)) {
+			synopsys_host_go(s, HP_RESET, HOST_RESTART_MS);
+			return;
+		}
+		break;
+	case HP_CFG_IN:
+		if (s->host_cfg_value < 0 || synopsys_host_cfg_has_mux(s, s->host_buf, s->host_got)) {
+			s->host_cfg_value = s->host_buf[5];
+		}
+		break;
+	case HP_CFG_STATUS:
+		if (++s->host_cfg < s->host_ncfg &&
+		    !synopsys_host_cfg_has_mux(s, s->host_buf, s->host_got)) {
+			synopsys_host_go(s, HP_CFG_HDR_SETUP, HOST_RETRY_MS);
+			return;
+		}
+		break;
+	case HP_ADDR_STATUS:
+		/* Let the guest program DCFG before the next SETUP, as usbmuxd does. */
+		synopsys_host_go(s, HP_CFG_HDR_SETUP, 100);
+		return;
+	case HP_SETCFG_STATUS:
+		printf("[USBHOST] built-in host: device configured (configuration value %d)\n",
+		       s->host_cfg_value);
+		if (!s->host_charge) {
+			synopsys_host_go(s, HP_STR0_SETUP, HOST_RETRY_MS);
+			return;
+		}
+		break;
+	case HP_STRSER_STATUS:
+		synopsys_host_go(s, HP_POLL, HOST_POLL_MS);
+		return;
+	default:
+		break;
+	}
+	synopsys_host_go(s, s->host_phase + 1, HOST_RETRY_MS);
+}
+
+/* (Re)start enumeration after delay_ms: at realize, after a core soft reset
+ * (the guest re-arms on every cable event) and on cable attach. */
+void synopsys_usb_host_rearm(synopsys_usb_state *state, int64_t delay_ms)
+{
+	if (!state->builtin_host || !state->host_timer) {
+		return;
+	}
+	if (!state->cable_attached) {
+		state->host_phase = HP_IDLE;
+		timer_del(state->host_timer);
+		return;
+	}
+	synopsys_host_go(state, HP_RESET, delay_ms);
+}
+
+void synopsys_usb_set_cable(synopsys_usb_state *state, bool attached)
+{
+    state->cable_attached = attached;
+    if (!attached && state->tcp_connected) {
+        tcp_usb_cleanup(&state->tcp_state);
+        state->tcp_connected = false;
+    } else if (attached) {
+        synopsys_usb_tcp_start(state);
+    }
+    synopsys_usb_host_rearm(state, 2000);
+}
+
 static void synopsys_usb_tcp_retry_tick(void *opaque)
 {
     synopsys_usb_state *state = opaque;
@@ -1070,6 +1493,8 @@ static void s5l8900_usb_otg_realize(DeviceState *dev, Error **errp)
                                           synopsys_usb_tcp_retry_tick, state);
     timer_mod(state->tcp_retry_timer,
               qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + TCP_USB_RETRY_MS);
+    state->host_timer = timer_new_ms(QEMU_CLOCK_REALTIME, synopsys_host_tick, state);
+    synopsys_usb_host_rearm(state, 2000);
 }
 
 static const VMStateDescription vmstate_synopsys_usb_ep = {
@@ -1110,6 +1535,12 @@ static int synopsys_usb_post_load(void *opaque, int version_id)
     }
     timer_mod(state->tcp_retry_timer,
               qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + TCP_USB_RETRY_MS);
+    /* Older streams stored a write's CNAK alongside NAKSts; settle it. */
+    for (int i = 0; i < USB_NUM_ENDPOINTS; i++) {
+        if (state->in_eps[i].control & USB_EPCON_CLEARNAK) {
+            state->in_eps[i].control &= ~(USB_EPCON_CLEARNAK | USB_EPCON_NAKSTS);
+        }
+    }
     synopsys_usb_update_irq(state);
     return 0;
 }

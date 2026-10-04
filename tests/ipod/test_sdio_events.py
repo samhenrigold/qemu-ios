@@ -14,7 +14,7 @@ code=r'''
 #include <assert.h>
 #include <stdio.h>
 #define trace_sdio(...) ((void)0)
-typedef struct { unsigned bdc_hdrlen; } IPodTouchSDIOState;
+typedef struct { unsigned bdc_hdrlen; struct { uint8_t mac[6]; } chip; } IPodTouchSDIOState;
 static uint8_t bytes[128];static unsigned length,channel;
 static void stw_be_p(uint8_t *p,uint16_t v) {p[0]=v>>8;p[1]=v;}
 static void stl_be_p(uint8_t *p,uint32_t v) {p[0]=v>>24;p[1]=v>>16;p[2]=v>>8;p[3]=v;}
@@ -33,12 +33,12 @@ static uint32_t be32(uint8_t *p) {return (uint32_t)p[0]<<24|p[1]<<16|p[2]<<8|p[3
 int main(void) {
  for(unsigned hdr=0;hdr<=6;hdr+=2) {
   if(hdr==2)continue;
-  IPodTouchSDIOState s={hdr};sdpcm_send_event(&s,0x12345678,0x87654321,0xabcd);
+  IPodTouchSDIOState s={hdr, {{0x02,0x9f,0xef,0x8e,0x4a,0xf8}}};sdpcm_send_event(&s,0x12345678,0x87654321,0xabcd);
   unsigned bdc=hdr?hdr:6;
   assert(length==bdc+70 && channel==(bdc==4?1:2));
   assert(bytes[0]==0x20);for(unsigned i=1;i<bdc;i++)assert(!bytes[i]);
   uint8_t *eth=bytes+bdc;
-  assert(!memcmp(eth,"\x00\x23\x32\x6e\xaa\x10",6));
+  assert(!memcmp(eth,"\x02\x9f\xef\x8e\x4a\xf8",6));
   assert(be16(eth+12)==0x886c && be16(eth+14)==0x8001);
   assert(be16(eth+16)==52);
   assert(!memcmp(eth+19,"\x00\x10\x18",3));assert(be16(eth+22)==1);

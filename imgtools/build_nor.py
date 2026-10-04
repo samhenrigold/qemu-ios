@@ -42,25 +42,33 @@ pack them the way a restore would: wrap each SHSH under the UID key of the
 device this NOR is for.  That is what makes iBoot load and draw the Apple logo
 by itself, and load the device tree, with no patching of iBoot at all.
 
-2.x iBoot has no such step (every SHSH in a stock 2.1.1 NOR dump is plaintext
-and verifies raw), so use --no-wrap-shsh when building a 2.x image.
+2.x iBoot has no such step for the images it loads, but its LLB unwraps the
+iBoot signature. Use --wrap-shsh-types ibot for that format. Wrapping this one
+signature reproduces the stock 2.1.1 NOR image area byte for byte.
 
 Shipped IPSW img3 files are not granularity-aligned, so packing an image means:
 pad it with zeros up to the next granularity boundary and rewrite fullSize (and
 only fullSize) to the padded size.  sizeNoPack and sigCheckArea are left alone,
 which keeps the signature blob's coverage intact.  This rule reproduces 9 of the
-10 images in the stock 5F138 NOR byte for byte; the tenth, iBoot, differs only
-in its 128-byte RSA signature because the stock dump came off a device that was
-restored with a personalized iBoot.
+10 images in the stock 5F138 NOR byte for byte before wrapping; the tenth,
+iBoot, becomes identical after UID wrapping its 128-byte RSA signature.
 
 Usage:
     build_nor.py --base nor_n72ap.bin \\
                  --all-flash .../all_flash.n72ap.production \\
                  --out nor_n72ap_7E18.bin
+    build_nor.py --identity identity.json --all-flash ... --out nor.bin
+
+--identity builds the regions outside the image area from scratch instead of copying them from a dump:
+the IMG2 superblock, a SysCfg block with Mod#, Regn, SrNm and Batt from the identity (model-number,
+region-info, serial-number, battery-serial), and an nvram bank whose "common" partition carries
+debug-uarts=1 and the identity's btaddr/wifiaddr (iBoot copies those into the device tree). With the
+unit's own values it reproduces the dumped 7E18 NOR byte for byte.
 """
 
 import argparse
 import glob
+import json
 import os
 import struct
 import sys
@@ -94,8 +102,24 @@ def _aes_cbc(key, data, encrypt):
     return op.update(data) + op.finalize()
 
 
+# The UID the emulated S5L8930 (iPad 1) reports: cdma_uid_key in
+# hw/arm/s5l8930_cdma.c, an AES-256 key.
+S5L8930_UID_KEY = b"K48AP-UID-S5L8930-iPad1-7B500-01"
+
+# The IMG2 image walk in the order the K48AP 3.2.2 restore manifest lists it.
+K48_ORDER = ["illb", "ibot", "dtre", "logo", "recm", "nsrv", "bat0", "bat1",
+             "glyC", "glyP", "chg0", "chg1", "batF"]
+
+
 def shsh_wrap_key(uid_key):
-    """The key iBoot derives from the device UID to unwrap a flash SHSH."""
+    """The key iBoot derives from the device UID to unwrap a flash SHSH.
+
+    S5L8720 (7E18 @0x0ff110a6): AES-128 decrypt of SHSH_KDF_CONST with the
+    UID. S5L8930 (817.29 @0x5ff0d308, AES setup 0x30100): AES encrypt with
+    the 256-bit UID; the first 16 bytes are the AES-128 wrapping key.
+    """
+    if len(uid_key) == 32:
+        return _aes_cbc(uid_key, SHSH_KDF_CONST, encrypt=True)
     return _aes_cbc(uid_key, SHSH_KDF_CONST, encrypt=False)
 
 
@@ -165,9 +189,66 @@ def read_img2(nor):
     return gran, start_hi, start_lo, span
 
 
+SYSCFG_OFF = 0x4000
+NVRAM_BANK = 0x2000
+
+
+def chrp_header(sig, length, name):
+    """A CHRP nvram partition header: signature, checksum, length in 16-byte units, 12-byte name."""
+    h = bytearray(struct.pack("<BBH12s", sig, 0, length // 16, name))
+    s = 0
+    for b in h[:1] + h[2:]:
+        s += b
+        s = (s & 0xFF) + 1 if s > 0xFF else s
+    h[1] = s
+    return bytes(h)
+
+
+def nvram_bank(common):
+    """One 8 KiB nvram bank as iBoot writes it: the "nvram" wrapper (adler32 of the rest, generation),
+    "common" (NUL-separated key=value), an empty "APL,OSXPanic" and the free-space partition."""
+    bank = bytearray(NVRAM_BANK)
+    bank[0:16] = chrp_header(0x5A, 0x20, b"nvram")
+    struct.pack_into("<I", bank, 0x14, 0x10)
+    body = b"".join(b"%s=%s\0" % (k.encode(), v.encode()) for k, v in common)
+    if len(body) > 0x800 - 16:
+        raise SystemExit("nvram common partition overflows")
+    bank[0x20:0x30] = chrp_header(0x70, 0x800, b"common")
+    bank[0x30:0x30 + len(body)] = body
+    bank[0x820:0x830] = chrp_header(0xA1, 0x810, b"APL,OSXPanic")
+    bank[0x1030:0x1040] = chrp_header(0x7F, NVRAM_BANK - 0x1030, b"w" * 12)
+    struct.pack_into("<I", bank, 0x10, zlib.adler32(bytes(bank[0x14:])))
+    return bytes(bank)
+
+
+def synth_base(ident):
+    """IMG2 superblock, SysCfg and nvram for `ident`, with an empty image area (build() fills it)."""
+    nor = bytearray(0x100000)
+    struct.pack_into("<4sIII", nor, 0, IMG2_MAGIC, 0x40, 0, 0x200)
+    struct.pack_into("<4sIIIII", nor, SYSCFG_OFF, b"gfCS", 0xC8, 0x2000, 0x00010001, 0, 4)
+    for i, (tag, key) in enumerate((("Mod#", "model-number"), ("Regn", "region-info"),
+                                    ("SrNm", "serial-number"), ("Batt", "battery-serial"))):
+        value = ident[key].encode()
+        if len(value) > 16:
+            raise SystemExit("%s: %r is longer than a SysCfg value" % (key, ident[key]))
+        o = SYSCFG_OFF + 0x18 + i * 0x14
+        nor[o:o + 20] = tag.encode()[::-1] + value.ljust(16, b"\0")
+    mac = lambda k: ident[k].upper()
+    nor[NVRAM_OFF:NVRAM_OFF + NVRAM_BANK] = nvram_bank(
+        [("debug-uarts", "1"), ("btaddr", mac("bt-mac")), ("wifiaddr", mac("wifi-mac"))])
+    struct.pack_into("<I", nor, 0x30, zlib.crc32(bytes(nor[:0x30])) & 0xFFFFFFFF)
+    return bytes(nor)
+
+
+def all_flash_order(all_flash):
+    """The img3 types in the order the IPSW's all_flash manifest lists them (LLB first)."""
+    names = open(os.path.join(all_flash, "manifest")).read().split()
+    return [parse_img3(open(os.path.join(all_flash, n), "rb").read(0x14))[0] for n in names]
+
+
 def build(base_path, all_flash, out_path, order, verbose=True,
-          uid_key=DEFAULT_UID_KEY):
-    nor = bytearray(open(base_path, "rb").read())
+          uid_key=DEFAULT_UID_KEY, base=None, wrap_types=None):
+    nor = bytearray(base if base is not None else open(base_path, "rb").read())
     gran, start_hi, start_lo, _ = read_img2(nor)
     image_start = gran * (start_hi + start_lo)
 
@@ -179,11 +260,16 @@ def build(base_path, all_flash, out_path, order, verbose=True,
     # Wipe the old image area, keeping SysCfg below it and nvram above it.
     nor[image_start:NVRAM_OFF] = b"\x00" * (NVRAM_OFF - image_start)
 
+    if wrap_types is not None and set(wrap_types) - set(order):
+        raise SystemExit("SHSH wrap types must belong to the selected image set")
+    if wrap_types and uid_key is None:
+        raise SystemExit("SHSH wrap types require a UID key")
+
     off = image_start
     for ident in order:
         name, data = available[ident]
         wrapped = False
-        if uid_key is not None:
+        if uid_key is not None and (wrap_types is None or ident in wrap_types):
             data, wrapped = wrap_shsh(data, uid_key)
             if not wrapped:
                 # FATAL, deliberately. A NOR whose images carry plaintext SHSH
@@ -258,6 +344,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base", help="NOR image to take IMG2/SysCfg/nvram from")
+    ap.add_argument("--identity", help="identity.json to synthesize IMG2/SysCfg/nvram from (instead of --base)")
     ap.add_argument("--all-flash", help="IPSW all_flash.n72ap.production directory")
     ap.add_argument("--out", help="output NOR image")
     ap.add_argument("--types", default=",".join(DEFAULT_ORDER),
@@ -266,17 +353,29 @@ def main():
                     help="instead of building, walk a NOR image as LLB would")
     ap.add_argument("--uid-key", default=DEFAULT_UID_KEY.hex(),
                     help="device UID key (32 hex digits) to wrap each SHSH for")
-    ap.add_argument("--no-wrap-shsh", action="store_true",
-                    help="leave the SHSH tags in plaintext; 2.x iBoot wants this")
+    wrapping = ap.add_mutually_exclusive_group()
+    wrapping.add_argument("--no-wrap-shsh", action="store_true",
+                          help="leave every SHSH tag in plaintext")
+    wrapping.add_argument("--wrap-shsh-types",
+                          help="wrap only these comma-separated image types (2.x: ibot)")
+    ap.add_argument("--k48", action="store_true",
+                    help="iPad 1 (S5L8930) NOR: K48AP image order and the "
+                         "emulated S5L8930 UID; implies --types/--uid-key")
     args = ap.parse_args()
 
     if args.verify:
         verify(args.verify)
         return
-    if not (args.base and args.all_flash and args.out):
-        ap.error("--base, --all-flash and --out are all required")
+    if not ((args.base or args.identity) and args.all_flash and args.out):
+        ap.error("--base or --identity, --all-flash and --out are all required")
     uid = None if args.no_wrap_shsh else bytes.fromhex(args.uid_key)
-    build(args.base, args.all_flash, args.out, args.types.split(","), uid_key=uid)
+    types = args.types.split(",")
+    if args.k48:
+        types = K48_ORDER
+        uid = None if args.no_wrap_shsh else S5L8930_UID_KEY
+    base = synth_base(json.load(open(args.identity))) if args.identity else None
+    build(args.base, args.all_flash, args.out, types, uid_key=uid, base=base,
+          wrap_types=args.wrap_shsh_types.split(",") if args.wrap_shsh_types is not None else None)
 
 
 if __name__ == "__main__":

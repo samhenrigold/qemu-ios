@@ -1,0 +1,16 @@
+{
+ "format": 1,
+ "board": "n72ap",
+ "product_type": "iPod2,1",
+ "build": "8C148",
+ "storage": "8g",
+ "ipsw": {"path": "~/Downloads/ios4/iPod2,1_4.2.1_8C148_Restore.ipsw",
+          "sha1": "b9efddc7bb4350c237a8d3846af61bbfc8a2f647"},
+ "keys": "~/Downloads/ios4/iPod2,1_4.2.1_8C148_keys",
+ "identity": {"seed": "ipod2g-8C148-default"},
+ "model_number": "MB528",
+ "region_info": "LL/A",
+ "volume_blocks": 1835008,
+ "options": {"gles_shim": true, "appsync": true, "web_proxy": true, "data_protection": true},
+ "activation": {"hook": null}
+}

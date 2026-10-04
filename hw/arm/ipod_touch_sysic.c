@@ -1,5 +1,6 @@
 #include "hw/arm/ipod_touch_sysic.h"
 #include "migration/vmstate.h"
+#include "hw/qdev-properties.h"
 
 /*
  * Cached: consulted on every GPIO interrupt-status access, and the guest polls
@@ -21,6 +22,16 @@ static void sysic_update_gpio_irq(IPodTouchSYSICState *s, unsigned group)
         qemu_set_irq(s->gpio_irqs[group],
                      (s->gpio_int_status[group] & s->gpio_int_enabled[group]) != 0);
     }
+}
+
+void ipod_touch_sysic_request_edge(IPodTouchSYSICState *s,
+                                  unsigned group, unsigned bit)
+{
+    if (group >= GPIO_NUMINTGROUPS || bit >= 32) {
+        return;
+    }
+    s->gpio_int_status[group] |= 1u << bit;
+    sysic_update_gpio_irq(s, group);
 }
 
 /* Inputs carry logical interrupt requests, rather than raw pad polarity.
@@ -46,27 +57,23 @@ static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
 {
     IPodTouchSYSICState *s = (IPodTouchSYSICState *) opaque;
 
-    //fprintf(stderr, "%s: offset = 0x%08x\n", __func__, addr);
-
     switch (addr) {
         case POWER_ID:
             /*
              * 0x39700044: low bits are the POWER_ID power-control scratch, but
-             * bits[31:24] are the read-only fused boot security epoch. iBoot's
-             * miu_init reads this word and panics ("Epoch Mismatch", which trips
-             * the watchdog) unless the top byte equals the image epoch (4 on the
-             * S5L8720 / iPod touch 2G). A normal boot gets that top byte latched
-             * by the SecureROM before iBoot runs; when we substitute the boot
-             * chain (direct-iboot) the ROM never runs and iBoot's own
-             * power-control writes here would clobber it, so synthesise the epoch
-             * top byte on read. Configuration-gated: a normal 2.1.1 boot is untouched.
+             * bits[31:24] are the boot security epoch. iBoot's miu_init reads
+             * this word and panics ("Epoch Mismatch", which trips the watchdog)
+             * unless the top byte equals its own epoch: the chip ID fuse field
+             * floored at the build's epoch (1 for iBoot-385.22, 3 for 596, 4 for
+             * 636 on). A normal boot gets that top byte latched by the boot
+             * chain before iBoot runs; when we substitute it (direct-iboot) the
+             * ROM and LLB never run and iBoot's own power-control writes here
+             * would clobber it, so synthesise the byte on read from the staged
+             * image's own floor (it_iboot_find_epoch, set by the machine after
+             * staging). Configuration-gated: a normal 2.1.1 boot is untouched.
              */
             if (s->direct_boot) {
-                uint32_t epoch = 4;
-                if (getenv("IT_DIRECT_EPOCH")) {
-                    epoch = (uint32_t)strtoul(getenv("IT_DIRECT_EPOCH"), NULL, 0);
-                }
-                return (s->power_id & 0x00FFFFFFu) | (epoch << 24);
+                return (s->power_id & 0x00FFFFFFu) | (s->epoch << 24);
             }
             return s->power_id;
         case POWER_SETSTATE:
@@ -109,17 +116,32 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
 {
     IPodTouchSYSICState *s = (IPodTouchSYSICState *) opaque;
 
-    //fprintf(stderr, "%s: writing 0x%08x to 0x%08x\n", __func__, val, addr);
-
     switch (addr) {
         case POWER_ID:
             s->power_id = val;
             break;
         case POWER_ONCTRL:
+            if (s->s5l8900) {
+                /*
+                 * S5L8900, from iPhone OS 1.x's own use of the block: +0xC
+                 * takes a device mask to power DOWN and +0x10 one to power UP,
+                 * and STATE (+0x14) is the current on-mask. The kernel's CPU
+                 * idle routine (0xc048e6f8 in 3A101a) writes +0xC = 2 and spins
+                 * until bit 1 of STATE clears; iBoot resets a device with a
+                 * +0xC / +0x10 pulse. Latching the last write here (the S5L8720
+                 * path below) never clears a bit, so the idle loop spun forever.
+                 */
+                s->power_state &= ~val;
+                break;
+            }
             if((val & 0x20) != 0 || (val & 0x4) != 0 || (val & POWER_ID_ADM) != 0) { break; } // make sure that we do not record the 'on' state of some devices so it appears like they are turned on immediately.
             s->power_state = val;
             break;
         case POWER_OFFCTRL:
+            if (s->s5l8900) {
+                s->power_state |= val;
+                break;
+            }
             s->power_state = val;
             break;
         case GPIO_INTLEVEL ... (GPIO_INTLEVEL + GPIO_NUMINTGROUPS * 4):
@@ -272,11 +294,21 @@ static const VMStateDescription vmstate_ipod_touch_sysic = {
     }
 };
 
+/* The fused boot epoch iBoot's miu_init demands in POWER_ID[31:24] when the
+ * board substitutes the boot chain: 4 for the S5L8720, 2 for the S5L8900
+ * (iBoot-204 at 0x18001fb0 compares against 2). */
+static const Property ipod_touch_sysic_properties[] = {
+    DEFINE_PROP_BOOL("direct-boot", IPodTouchSYSICState, direct_boot, false),
+    DEFINE_PROP_UINT32("epoch", IPodTouchSYSICState, epoch, 4),
+    DEFINE_PROP_BOOL("s5l8900", IPodTouchSYSICState, s5l8900, false),
+};
+
 static void ipod_touch_sysic_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_ipod_touch_sysic;
+    device_class_set_props(dc, ipod_touch_sysic_properties);
 
     device_class_set_legacy_reset(dc, ipod_touch_sysic_reset);
 }

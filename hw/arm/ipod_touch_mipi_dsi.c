@@ -1,6 +1,7 @@
 #include "hw/arm/ipod_touch_mipi_dsi.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
+#include "hw/qdev-properties.h"
 
 /* Cache opt-in tracing; direct-boot compatibility is per-device startup state. */
 static bool dsi_trace(void)
@@ -12,6 +13,17 @@ static bool dsi_trace(void)
     return on;
 }
 
+static uint32_t dsi_lane_mask(IPodTouchMIPIDSIState *s)
+{
+    return (1u << MIN(s->lanes, 4)) - 1;
+}
+
+/* Escape/FIFO command handshake bits: per-lane ULPS (bits 4-7) + bit 9. */
+static uint32_t dsi_cmd_bits(IPodTouchMIPIDSIState *s)
+{
+    return (dsi_lane_mask(s) << 4) | 0x200;
+}
+
 static void dsi_panel_read(IPodTouchMIPIDSIState *s, uint32_t header)
 {
     /* 7E18 iBoot: generic read, one parameter, panel ID register B1.
@@ -20,8 +32,8 @@ static void dsi_panel_read(IPodTouchMIPIDSIState *s, uint32_t header)
         return;
     }
     unsigned tail = (s->rx_head + s->rx_count) % 16;
-    s->rx_fifo[tail] = DSIM_RSP_LONG_READ | (3 << 8);
-    s->rx_fifo[(tail + 1) % 16] = 0x00a1d13c;
+    s->rx_fifo[tail] = DSIM_RSP_LONG_READ | (s->panel_id_len << 8);
+    s->rx_fifo[(tail + 1) % 16] = s->panel_id;
     s->rx_count += 2;
     s->intsrc |= rDSIM_INTSRC_RxDatDone;
 }
@@ -43,20 +55,26 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
             // bring-up but made shutdown spin forever, wedging the kernel
             // mid-power-down -- which is why the display never came back from
             // idle sleep, and why the reboot path never reached the watchdog.
-            uint32_t status = 0x103 | ((s->clkctrl & rDSIM_CLKCTRL_TxRequestHsClk)
-                                ? rDSIM_STATUS_TxReadyHsClk : 0);
-            /*
-             * 3.1.3's iBoot mipi_dsim_init() walks a sequence of "write a DSIM
-             * command register, then spin until STATUS shows the command
-             * accepted, then spin until it shows the command drained". bit 20
-             * (SwRstRelease, after the DSIM_SWRST at 0x04) is a permanent done
-             * bit; the escape/FIFO command bits (0x230 = bits 4,5,9) are a
-             * request/ack handshake -- they must read set right after the
-             * trigger write and then clear, so they are driven by cmd_pending
-             * (set on a command write, self-clearing on read) rather than
-             * pinned. Gated to the direct 7E18 boot. */
+            /* bits 0-3: per-lane stop state, one per configured lane. Bit 8
+             * (StopStateClk) is the clock lane idling in LP mode, the
+             * complement of the HS clock request: iOS 4.3's DSI driver
+             * (AppleS5L8720X-91) snapshots STATUS at start and takes
+             * StopStateClk set as "interface not enabled", so pinning it made
+             * the panel's first display-off a "redundant disable request"
+             * panic. */
+            uint32_t status = dsi_lane_mask(s) |
+                              ((s->clkctrl & rDSIM_CLKCTRL_TxRequestHsClk)
+                                ? rDSIM_STATUS_TxReadyHsClk : rDSIM_STATUS_StopStateClk);
+            /* S5L8720 STATUS_SWRST follows an actual SWRST request, independent
+             * of the board's boot strategy. Reset execution is synchronous;
+             * analog completion latency remains unmodeled. Reads are inert. */
+            if (s->swrst_released) {
+                status |= rDSIM_STATUS_SwRstRelease;
+            }
+            /* Remaining escape/FIFO acknowledgements are legacy direct-boot
+             * compatibility behavior, not qualified command execution. */
             if (s->direct_boot) {
-                status |= 0x00100000 | s->cmd_pending;
+                status |= s->cmd_pending;
                 s->cmd_pending = 0;
             }
             return status;
@@ -82,6 +100,33 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
     return 0;
 }
 
+/*
+ * Panel power as the guest last commanded it over DCS: display off / sleep in
+ * (0x28/0x10) vs display on / sleep out (0x29/0x11), as short writes with no
+ * or one parameter (data types 0x05/0x15). The iPad's ApplePinotLCD turns the
+ * panel off this way when it sleeps; the app bridge reads it as "sleeping".
+ */
+static int dsi_panel_off;
+
+bool ipod_touch_mipi_dsi_panel_off(void)
+{
+    return qatomic_read(&dsi_panel_off);
+}
+
+static void dsi_note_dcs(uint32_t header)
+{
+    unsigned type = header & 0x3f, cmd = (header >> 8) & 0xff;
+
+    if (type != 0x05 && type != 0x15) {
+        return;
+    }
+    if (cmd == 0x28 || cmd == 0x10) {
+        qatomic_set(&dsi_panel_off, 1);
+    } else if (cmd == 0x29 || cmd == 0x11) {
+        qatomic_set(&dsi_panel_off, 0);
+    }
+}
+
 static void ipod_touch_mipi_dsi_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     IPodTouchMIPIDSIState *s = (IPodTouchMIPIDSIState *)opaque;
@@ -94,22 +139,24 @@ static void ipod_touch_mipi_dsi_write(void *opaque, hwaddr addr, uint64_t val, u
         case REG_PKTHDR:
             s->pkthdr_reg = val;
             dsi_panel_read(s, val);
+            dsi_note_dcs(val);
             /* Sending a packet re-arms the command handshake bits. */
             if (s->direct_boot) {
-                s->cmd_pending = 0x230;
+                s->cmd_pending = dsi_cmd_bits(s);
             }
             break;
         case REG_INTSRC:
             s->intsrc &= ~val;
             break;
-        case 0x04: /* DSIM_SWRST */
+        case REG_SWRST: /* DSIM_SWRST */
             if (val & 1) {
                 s->rx_head = s->rx_count = s->intsrc = 0;
+                s->swrst_released = true;
             }
             break;
         case 0x14: /* DSIM_ESCMODE: escape-mode command trigger */
             if (s->direct_boot) {
-                s->cmd_pending = 0x230;
+                s->cmd_pending = dsi_cmd_bits(s);
             }
             break;
         case REG_CLKCTRL:
@@ -132,8 +179,12 @@ static void ipod_touch_mipi_dsi_reset(DeviceState *dev)
 {
     IPodTouchMIPIDSIState *s = IPOD_TOUCH_MIPI_DSI(dev);
 
+    s->swrst_released = false;
     s->pkthdr_reg = 0;
-    s->clkctrl = 0;
+    /* kboot= skips iBoot, whose pinot_init leaves the panel lit with the HS
+     * clock running; the kernel's boot_args says the framebuffer is up, and
+     * 4.3's DSI driver reads the clock lane to decide whether the link is. */
+    s->clkctrl = s->hs_clock_at_reset ? rDSIM_CLKCTRL_TxRequestHsClk : 0;
     s->cmd_pending = 0;
     s->return_panel_id = false;
     s->rx_head = s->rx_count = s->intsrc = 0;
@@ -160,6 +211,10 @@ static void ipod_touch_mipi_dsi_init(Object *obj)
 static int dsi_post_load(void *opaque, int version_id)
 {
     IPodTouchMIPIDSIState *s = opaque;
+    if (version_id < 3) {
+        /* Old streams did not record completion of a software-reset request. */
+        s->swrst_released = false;
+    }
     if (version_id == 1) {
         /* The old model had an implicit reply on every other FIFO read. */
         s->rx_head = s->rx_count = s->intsrc = 0;
@@ -174,10 +229,11 @@ static int dsi_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_mipi_dsi = {
     .name = "ipod_touch_mipi_dsi",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = dsi_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_BOOL_V(swrst_released, IPodTouchMIPIDSIState, 3),
         VMSTATE_UINT32(pkthdr_reg, IPodTouchMIPIDSIState),
         VMSTATE_UINT32(clkctrl, IPodTouchMIPIDSIState),
         VMSTATE_UINT32(cmd_pending, IPodTouchMIPIDSIState),
@@ -190,9 +246,18 @@ static const VMStateDescription vmstate_ipod_touch_mipi_dsi = {
     }
 };
 
+static const Property ipod_touch_mipi_dsi_properties[] = {
+    DEFINE_PROP_UINT32("lanes", IPodTouchMIPIDSIState, lanes, 2),
+    /* the iPod touch 2G panel's ID, three bytes */
+    DEFINE_PROP_UINT32("panel-id", IPodTouchMIPIDSIState, panel_id, 0x00a1d13c),
+    DEFINE_PROP_UINT32("panel-id-len", IPodTouchMIPIDSIState, panel_id_len, 3),
+};
+
 static void ipod_touch_mipi_dsi_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+
+    device_class_set_props(dc, ipod_touch_mipi_dsi_properties);
 
     dc->realize = ipod_touch_mipi_dsi_realize;
     device_class_set_legacy_reset(dc, ipod_touch_mipi_dsi_reset);

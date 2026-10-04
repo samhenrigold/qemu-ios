@@ -25,12 +25,16 @@ none of them is a smoke test: "did it boot?" would have missed all of them.
               in the installed list.
   applaunch   Launch the installed IPA's bundle ID through SpringBoard, then
               verify that exact foreground app and a lit screen. Requires
-              appinstall, guest SSH, and built contrib/it-gles/sblaunch.
+              appinstall and the guest agent (no SSH, no shell: every guest
+              action is a lockdown service or an agent v2 op).
   persist     A file written over AFC survives a *clean* shutdown and a reboot on
               the same overlay, byte-identical. HFS+ holds catalog updates in
               memory, so killing QEMU loses the directory entry while keeping the
               data blocks: the file silently ceases to exist. Only a
               system_powerdown unmounts the volume.
+  prefs       (explicit --checks only) a device it_prefs has not run on: Brightness at maximum and
+              Auto-Lock Never read back over the agent, no baked com.qemu.it-prefs job left (the
+              package's runs instead), and still unlocked 90 s after unlocking.
   serial-console
               Enable early serial boot arguments and require XNU driver output
               and the BSD root mount in serial.log (explicit --checks only).
@@ -85,6 +89,12 @@ ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 
 sys.path.insert(0, os.path.join(ROOT, "imgtools"))
 import itqmp  # noqa: E402  (needs the path above)
+sys.path.insert(0, os.path.join(HERE, ".."))
+import frame_reference
+import framecheck  # noqa: E402  (tests/framecheck.py: the audit's frame-reference check)
+sys.path.insert(0, HERE)  # also resolve sibling modules when imported by iPad tests
+import gles_scene  # noqa: E402
+GLES_REFS = os.path.join(HERE, "..", "gles-refs")
 
 W, H = 320, 480
 FRAME_BYTES = W * H * 3
@@ -113,7 +123,7 @@ LIT_THRESHOLD = 8
 DEFAULT_CHECKS = ["boot", "fsck", "persist", "appinstall", "applaunch", "gles", "agent", "audio"]
 # Additional transport and restart checks remain opt-in.
 OPT_IN_CHECKS = ["afc", "usbtcp", "wifi", "respring", "restart"]
-ALL_CHECKS = DEFAULT_CHECKS + OPT_IN_CHECKS + ["serial-console", "webproxy"]
+ALL_CHECKS = DEFAULT_CHECKS + OPT_IN_CHECKS + ["serial-console", "webproxy", "prefs"]
 QUICK_CHECKS = ["boot", "afc"]
 
 # Checks that talk to the device over usbmux and so need the usbmuxd fork.
@@ -135,6 +145,11 @@ GLES_BUNDLE_ID = "com.qemuios.gltest"
 # alone could not tell them apart at all (the home screen lights *more*
 # sub-pixels than the GL frame does).
 GLES_QUAD_MIN = 0.05
+# And at most this much. The 240x360 view is 0.281 of the panel per colour;
+# 0.498 each (and a 270-row striped variant at 0.281) was the LCD model reading
+# CA's directly scanned-out GL surface as a full-panel framebuffer, which the
+# minimum alone passed.
+GLES_QUAD_MAX = 0.35
 UNLOCK_TRIES = 4
 # Seconds after launch before the first sample: the app has to get through
 # SpringBoard's launch animation and its first present.
@@ -283,12 +298,10 @@ def boot_env(cfg):
     defaults = {
         "IT_LCD_BRIGHT": "255",
         "IT_TVOUT_READY": "1",
-        "IT_BOOT_ARGS": "amfi_allow_any_signature=1 cs_enforcement_disable=1",
-        "IT_BOOT_ARGS_DELAY_MS": "1500",
-        "IT_BOOT_ARGS_REPEAT": "200",
-        "IT_BOOT_ARGS_INTERVAL_MS": "250",
     }
-    if os.path.exists(iboot):
+    # A device.py device says for itself whether it boots iBoot directly (it ships iBoot.bin, 3.x+)
+    # or through the bootrom and its NOR's LLB (2.x): never fall back to the 7E18 iBoot for it.
+    if os.path.exists(iboot) and not getattr(cfg, "device", None):
         defaults["IT_DIRECT_IBOOT"] = iboot
     for k, v in defaults.items():
         env.setdefault(k, v)
@@ -310,9 +323,26 @@ class Device:
 
     # -- lifecycle ---------------------------------------------------------
 
+    def start_1g(self):
+        """The iPod touch 1G: bootrom + iBoot-204 + a pflash NOR (written by the guest, so a copy),
+        the device's NAND under a fresh overlay; no USB, Wi-Fi or audio."""
+        cfg = self.cfg
+        nor = os.path.join(self.dir, "nor.bin")
+        shutil.copyfile(cfg.nor, nor)
+        machine = ("iPod-Touch-1G,bootrom=%s,iboot=%s,nand=%s,nand-overlay=%s,gles-debug=on"
+                   % (cfg.bootrom, cfg.direct_iboot, cfg.base_nand, cfg.overlay))
+        argv = [cfg.qemu, "-M", machine, "-drive", "if=pflash,format=raw,file=" + nor,
+                "-display", "none", "-audio", "driver=none", "-serial", "file:" + self.serial,
+                "-qmp", "tcp:127.0.0.1:%d,server=on,wait=off" % cfg.qmp_port]
+        self.qemu = self.procs.spawn(argv, os.path.join(self.dir, "qemu.log"), env=dict(os.environ))
+        log("%s: qemu pid %d (qmp %d)" % (self.tag, self.qemu.pid, cfg.qmp_port))
+        self.qmp = QMP(cfg.qmp_port, timeout=180, read_timeout=60)
+
     def start(self, audio_wav=None):
         cfg = self.cfg
         self.audio_wav = audio_wav
+        if cfg.board == "n45ap":
+            return self.start_1g()
         # usbmuxd is only needed by USB-side checks; on a run where all of
         # those are SKIPped (no usbmuxd binary), don't try to spawn one.
         if getattr(cfg, "usbmuxd_ok", True):
@@ -343,17 +373,25 @@ class Device:
                    "nandrw=%s,usb-attached=on,usb-tcp-addr=127.0.0.1:%d"
                    % (cfg.files, cfg.base_nand, cfg.nor, cfg.overlay,
                       cfg.usb_port))
+        # The kernel command line is a machine property (the emulator reads no IT_BOOT_ARGS*
+        # environment): amfi_allow_any_signature so re-signed App Store binaries exec, written
+        # into the handoff buffer on a timer until AMFI has latched it. iBoot's
+        # empty-string literal is also its DeviceTree root and must stay intact.
+        machine += ",boot-args=amfi_allow_any_signature=1 cs_enforcement_disable=1"
         if getattr(cfg, "kernel_console", False):
-            machine += (",boot-args=amfi_allow_any_signature=1 "
-                        "cs_enforcement_disable=1 serial=3 debug=0x8")
-        for option in ("audio_hw", "h264_decode", "scaler_decode", "mpvd_decode", "amc_mode", "lcd_planes", "direct_iboot", "direct_llb"):
+            machine += " serial=3 debug=0x8"
+        machine += ",boot-args-delay-ms=0,boot-args-repeat=200,boot-args-interval-ms=250"
+        for option in ("audio_hw", "h264_decode", "scaler_decode", "mpvd_decode", "amc_mode", "lcd_planes", "direct_iboot", "direct_llb", "gid_blobs", "guest_package"):
             value = getattr(cfg, option, None)
             if value is not None:
                 machine += "," + option.replace("_", "-") + "=" + value.replace(",", ",,")
-        # The BCM4325 is attached only for the check that tests it. It is not
-        # free: 3.1.3's driver associates and then keeps the SDIO bus busy, and
-        # every other check pays for a radio it never looks at. run-ios3.sh
-        # makes the same split (--net is separate from --appsync).
+        # The soldered BCM4325 remains present. Only checks using networking
+        # attach a host data bridge; factory identity never depends on it.
+        for key, value in sorted(getattr(cfg, "device_machine", {}).items()):
+            machine += "," + key + "=" + str(value).replace(",", ",,")
+        # What the GL bridge refuses is painted magenta and counted (itqmp.gles_rejects); the
+        # gles check fails on any count, so a refused format is caught here, not by a viewer.
+        machine += ",gles-debug=on"
         argv = [cfg.qemu, "-M", machine + (",wifi=on" if cfg.wifi else "")]
         argv += ["-cpu", cfg.cpu] if cfg.cpu else []
         argv += ["-m", cfg.mem, "-display", "none",
@@ -365,8 +403,11 @@ class Device:
         if cfg.wifi:
             proxy_option = ""
             if getattr(cfg, "web_proxy_config", None):
-                helper = os.path.join(ROOT, "contrib", "it-webproxy", "itwebproxy")
-                command = shlex.quote(helper) + " " + shlex.quote(cfg.web_proxy_config)
+                # The app's web proxy lives in LightTouchMac (LightTouchDevice/WebProxy.swift, reached
+                # through `nc -U`); here the guestfwd is a raw relay to the loopback port the file names,
+                # read per connection, so a check can point it at its fixture after boot.
+                relay = 'exec /usr/bin/nc 127.0.0.1 "$(cat %s)"' % shlex.quote(cfg.web_proxy_config)
+                command = "/bin/sh -c " + shlex.quote(relay)
                 proxy_option = ",guestfwd=tcp:10.0.2.100:3128-cmd:" + command.replace(",", ",,")
             argv += ["-netdev", "user,id=wifi0,net=10.0.2.0/24,host=10.0.2.2,"
                                 "dhcpstart=10.0.2.15" + proxy_option,
@@ -381,52 +422,12 @@ class Device:
         return self.qemu is not None and self.qemu.poll() is None
 
     def powerdown(self):
-        """Require guest-origin SHUTDOWN plus process exit; SIGTERM also exits 0."""
-        if self.qmp is None:
-            log("%s: no QMP connection to confirm guest shutdown" % self.tag)
-            return False
         try:
-            if itqmp.agent_alive(self.qmp):
-                try:
-                    status, response = itqmp.agent(self.qmp, "halt", timeout=30)
-                    if status:
-                        raise RuntimeError("agent halt failed: %d %r" % (status, response))
-                except EOFError:
-                    # A guest shutdown can beat the RPC reply. The retained
-                    # PMU SHUTDOWN event below remains the acceptance gate.
-                    pass
-                timeout = 60
-            else:
-                helper = os.path.join(ROOT, "contrib", "it-halt", "ithalt")
-                port, error = ensure_guest_ssh(self.cfg, self.procs, self)
-                if port is not None and os.path.exists(helper):
-                    copied = guest_ssh(self.cfg, port, None, scp_from=helper,
-                                       scp_to="/tmp/ithalt")
-                    if copied.returncode != 0:
-                        log("%s: could not stage shutdown helper: %s" % (self.tag, copied.stderr))
-                        return False
-                    halt = guest_ssh(self.cfg, port, ["chmod 755 /tmp/ithalt && /tmp/ithalt"], timeout=30)
-                    log("%s: halt request rc=%d %s" %
-                        (self.tag, halt.returncode, (halt.stdout + halt.stderr).strip()[-200:]))
-                    timeout = 60
-                else:
-                    log("%s: gesture shutdown fallback (%s)" % (self.tag, error or "no ithalt"))
-                    try:
-                        self.qmp.cmd("system_powerdown")
-                    except EOFError:
-                        # An immediate shutdown may precede the command response;
-                        # the retained SHUTDOWN event must still prove its origin.
-                        pass
-                    timeout = 180
-            self.qmp.wait_for_guest_shutdown(timeout)
-            rc = self.qemu.wait(timeout=10)
-            log("%s: guest-confirmed shutdown, qemu exit=%d" % (self.tag, rc))
-            return rc == 0
-        except (OSError, EOFError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
-            log("%s: shutdown not confirmed: %s" % (self.tag, exc))
-            return False
+            return itqmp.guest_powerdown(self.qmp, self.qemu, self.tag, log,
+                prefer_gesture=(self.cfg.device_version or (3, 1)) < (3, 1) or
+                               getattr(self.cfg, "host_power_gesture", False),
+                host_gesture=getattr(self.cfg, "host_power_gesture", False))
         finally:
-            self.qmp.close()
             self.qmp = None
 
     # -- boot --------------------------------------------------------------
@@ -452,30 +453,69 @@ class Device:
             except Exception as e:
                 return False, "screendump failed: %s" % e, best
             hi, lit = lit_count(shot)
+            if self.cfg.board == "n45ap" and self.cfg.home_lit_min <= lit < SOLID_LIT_MAX:
+                # Keep an already visible home screen awake. A boot-logo sample
+                # is not permission to interrupt the SPI firmware handshake.
+                self.qmp.tap(240, 330)
+            try:
+                with open(self.serial, "rb") as serial:
+                    panic = re.search(rb"(?:\r|\n)panic\(cpu [0-9]+ caller 0x[0-9a-fA-F]+\):", serial.read())
+                if panic:
+                    return False, "guest kernel panic; see " + self.serial, max(best, lit)
+            except FileNotFoundError:
+                pass
             if lit >= SOLID_LIT_MAX:
                 # See SOLID_LIT_MAX: a fill is iBoot, not SpringBoard.
                 log("%s: t+%.0fs solid fill (%d lit) - the panel is showing a "
                     "flat colour, so this is iBoot/recovery, not a boot"
                     % (self.tag, time.time() - START, lit))
                 continue
+            host_connected = False
+            if n >= 2 and (self.cfg.device_version or (3, 1)) < (3, 1) \
+                    and not getattr(self, "time_set", False) and getattr(self.cfg, "usbmuxd_ok", True):
+                # 2.x/3.0 lockdownd keeps an iPod "bricked" (Connect to iTunes) until a paired host sets
+                # the time, as iTunes does on connect (docs/ipod/from-ipsw.md, "lockdownd's brick
+                # state"); SpringBoard shows the lock screen at its next wake from sleep.
+                udid, why = wait_for_device(self.cfg, timeout=300)
+                self.time_set = bool(udid) and run(["idevicedate", "-c"], self.cfg, 60).returncode == 0
+                host_connected = self.time_set
+                log("%s: t+%.0fs host time set over lockdown (brick state): %s"
+                    % (self.tag, time.time() - START, "ok" if self.time_set else "failed: %s" % why))
+            if n >= 2 and (lit < self.cfg.home_lit_min or host_connected) and getattr(self, "time_set", False):
+                itqmp.button(self.qmp, "power")     # sleep, so the home press below is a wake
+                time.sleep(3)
+            if n >= 2 and (lit < self.cfg.home_lit_min or host_connected):
+                self.qmp.home()
+                time.sleep(1)
+                self.qmp.swipe(30, 450, 290, 450, steps=40, dwell=0.04)
+                time.sleep(2)
+                self.qmp.shot(shot)
+                hi, lit = lit_count(shot)
             best = max(best, lit)
-            if n % 3 == 0 or lit > HOME_LIT_MIN // 2:
+            if n % 3 == 0 or lit > self.cfg.home_lit_min // 2:
                 log("%s: t+%.0fs max=%d lit=%d"
                     % (self.tag, time.time() - START, hi, lit))
-            if lit >= HOME_LIT_MIN:
+            if lit >= self.cfg.home_lit_min:
                 time.sleep(HOME_CONFIRM_S)
                 if not self.alive():
                     return False, "qemu exited right after the home screen", best
                 self.qmp.shot(shot)
                 _hi2, lit2 = lit_count(shot)
                 best = max(best, lit2)
-                if lit2 < HOME_LIT_MIN:
+                if lit2 < self.cfg.home_lit_min:
                     log("%s: home screen did not hold (%d -> %d), still waiting"
                         % (self.tag, lit, lit2))
                     continue
                 to_png(shot, os.path.join(self.dir, "home.png"))
+                log("%s: guest-package-status: %s" % (self.tag, self.guest_package_status()))
                 return True, "lit=%d, held for %ds" % (lit2, HOME_CONFIRM_S), best
         return False, "timed out after %ds" % timeout, best
+
+    def guest_package_status(self):
+        try:
+            return self.qmp.cmd("qom-get", path="/machine", property="guest-package-status")
+        except Exception as e:
+            return "unavailable (%s)" % e
 
     def serial_text(self):
         try:
@@ -792,85 +832,113 @@ def check_appinstall(cfg, procs, dev, r):
                  % (p.returncode, bundle_id, listed, out[-300:]))
 
 
-def ensure_guest_ssh(cfg, procs, dev):
-    """Return (forwarded port, error), reusing this boot's SSH session."""
-    if getattr(dev, "ssh_port", None) is not None:
-        return dev.ssh_port, None
-    if not shutil.which("iproxy") or not shutil.which("ssh"):
-        return None, "iproxy/ssh not on PATH"
-    port = free_port(cfg.proxy_lo, cfg.proxy_hi)
-    cfg.askpass = os.path.join(cfg.out, "askpass")
-    with open(cfg.askpass, "w") as f:
-        f.write("#!/bin/sh\nprintf '%s\\n' %s\n" % ("%s", shlex.quote(
-            os.environ.get("DEVICE_PASSWORD", "alpine"))))
-    os.chmod(cfg.askpass, 0o700)
-    procs.spawn(["iproxy", str(port), "22"],
-                os.path.join(dev.dir, "iproxy-launch.log"), env=mux_env(cfg))
-    time.sleep(2)
-    probe = guest_ssh(cfg, port, ["true"], timeout=40)
-    if probe.returncode != 0:
-        return None, "no ssh on guest: %s" % probe.stderr.strip()[-120:]
-    dev.ssh_port = port
-    return port, None
+AGENT_BINARY = os.path.join(ROOT, "contrib", "it-agent", "it_agent")
 
 
-def prepare_launcher(cfg, procs, dev, r):
-    launcher = os.path.join(GLES_DIR, "sblaunch")
-    if not os.path.exists(launcher):
-        r.skip("requires built contrib/it-gles/sblaunch")
+def agent_ping(qmp, timeout=10):
+    """The agent's hello line ('it_agent v1'...'it_agent v3'), or None while none answers."""
+    try:
+        status, hello = itqmp.agent(qmp, "ping", timeout=timeout)
+    except (TimeoutError, EOFError, OSError):
         return None
-    port, error = ensure_guest_ssh(cfg, procs, dev)
-    if port is None:
-        r.skip(error)
-        return None
-    if getattr(dev, "launcher_ready", False):
-        return port
-    p = guest_ssh(cfg, port, None, timeout=300, scp_from=launcher, scp_to="/tmp/sblaunch")
-    if p.returncode != 0:
-        r.set(False, "scp sblaunch failed: %s" % p.stderr.strip()[-160:])
-        return None
-    p = guest_ssh(cfg, port, ["chmod 755 /tmp/sblaunch"])
-    if p.returncode != 0:
-        r.set(False, "could not make sblaunch executable")
-        return None
-    dev.launcher_ready = True
-    return port
+    return hello.split(b"\n", 1)[0].decode("ascii", "replace") if status == 0 else None
+
+
+AGENT_HELLO = "it_agent v3"     # contrib/it-agent/agent-ops.h AG_HELLO
+
+
+def ensure_agent(qmp, timeout=90):
+    """(True, version) once this tree's agent (v3: v2's spawn, sync, chown, unlink, dlicon,
+    plus putpart) answers, else (False, why).
+
+    An older agent is upgraded in this boot's overlay to this tree's build: `put` the
+    binary, then have launchd restart the job. v1 has no `spawn`, so its restart goes
+    through v1's `exec` (every v1 image carries freeze's /bin/sh); v2 restarts by spawn.
+    Without a built binary a v2 agent is kept: only puts over 256 KiB need v3."""
+    deadline = time.monotonic() + timeout
+    while not itqmp.agent_alive(qmp):
+        if time.monotonic() >= deadline:
+            return False, "guest agent did not become ready within %ds" % timeout
+        time.sleep(1)
+    hello = agent_ping(qmp)
+    if hello in ("it_agent v1", "it_agent v2"):
+        if not os.path.exists(AGENT_BINARY):
+            if hello == "it_agent v2":
+                return True, hello
+            return False, "the image's agent is v1; build contrib/it-agent to upgrade it"
+        with open(AGENT_BINARY, "rb") as f:
+            status, _ = itqmp.agent(qmp, "put", "/usr/local/bin/it_agent 755", f.read())
+        if status:
+            return False, "could not upgrade the %s agent: put status %d" % (hello, status)
+        try:
+            if hello == "it_agent v1":
+                itqmp.agent(qmp, "exec", "launchctl stop com.qemu.it-agent", timeout=15)
+            else:
+                itqmp.spawn(qmp, ["/bin/launchctl", "stop", "com.qemu.it-agent"], timeout=15)
+        except (TimeoutError, EOFError):
+            pass  # the daemon that would answer is the one being stopped
+        log("  agent: %s upgraded to this tree's build, waiting for launchd to restart it" % hello)
+        deadline = time.monotonic() + 60
+        while (hello := agent_ping(qmp, timeout=5)) != AGENT_HELLO:
+            if time.monotonic() >= deadline:
+                return False, "upgraded agent did not answer within 60s (last: %s)" % hello
+            time.sleep(2)
+    if hello != AGENT_HELLO:
+        return False, "unexpected agent hello: %r" % hello
+    return True, hello
 
 
 class AgentControl:
-    """A selected command session. Submitted RPCs are never replayed via SSH."""
+    """This boot's agent session (v2+). Submitted RPCs are never replayed."""
     def __init__(self, qmp):
         self.qmp = qmp
 
 
 def prepare_app_control(cfg, procs, dev, result):
-    if itqmp.agent_alive(dev.qmp):
-        return AgentControl(dev.qmp)
-    return prepare_launcher(cfg, procs, dev, result)
+    ok, detail = ensure_agent(dev.qmp)
+    if not ok:
+        result.set(False, detail)
+        return None
+    return AgentControl(dev.qmp)
 
 
-def control_exec(cfg, control, command, timeout=60):
-    if not isinstance(control, AgentControl):
-        return guest_ssh(cfg, control, [command], timeout=timeout)
-    status, data = itqmp.agent(control.qmp, "exec", command, timeout=timeout)
-    return subprocess.CompletedProcess(["agent", "exec", command], status,
+def spawn(control, argv, timeout=60):
+    status, data = itqmp.spawn(control.qmp, argv, timeout=timeout)
+    return subprocess.CompletedProcess(["agent", "spawn"] + list(argv), status,
                                        data.decode("utf-8", "replace"), "")
 
 
+def guest_file(control, path, timeout=60):
+    """A guest file's bytes over the agent, or b'' if it cannot be read."""
+    status, data = itqmp.agent(control.qmp, "get", path, timeout=timeout)
+    return data if status == 0 else b""
+
+
+def stop_app(control, bundle_id):
+    """Stop a SpringBoard-launched app through launchd (its UIKitApplication:<id>[...] job).
+    Returns the CompletedProcess of the last launchctl call (status 0 also when it was not running)."""
+    listing = spawn(control, ["/bin/launchctl", "list"])
+    if listing.returncode:
+        return listing
+    labels = re.findall(r"\tUIKitApplication:%s\[[^\]\s]*\]" % re.escape(bundle_id), listing.stdout)
+    for label in labels:
+        listing = spawn(control, ["/bin/launchctl", "stop", label.strip()])
+        if listing.returncode:
+            return listing
+    return listing
+
+
 def springboard(cfg, port, request, timeout=60):
-    if isinstance(port, AgentControl):
-        op = {":frontmost": "frontmost", ":lock-status": "lockstatus"}.get(request, "launch")
-        status, data = itqmp.agent(port.qmp, op, request if op == "launch" else "", timeout=timeout)
-        text = data.decode("utf-8", "replace")
-        if status == 0:
-            if op == "frontmost":
-                lines = text.splitlines()
-                text = "sblaunch: frontmost=" + (lines[0] if lines else "")
-            elif op == "lockstatus":
-                text = "sblaunch: " + text
-        return subprocess.CompletedProcess(["agent", op, request], status, text, "")
-    return guest_ssh(cfg, port, ["printf '%s' %s > /tmp/sblaunch.id && /tmp/sblaunch"
-                               % ("%s", shlex.quote(request))], timeout=timeout)
+    op = {":frontmost": "frontmost", ":lock-status": "lockstatus"}.get(request, "launch")
+    status, data = itqmp.agent(port.qmp, op, request if op == "launch" else "", timeout=timeout)
+    text = data.decode("utf-8", "replace")
+    if status == 0:
+        if op == "frontmost":
+            lines = text.splitlines()
+            text = "sblaunch: frontmost=" + (lines[0] if lines else "")
+        elif op == "lockstatus":
+            text = "sblaunch: " + text
+    return subprocess.CompletedProcess(["agent", op, request], status, text, "")
 
 
 def foreground_is(cfg, port, bundle_id):
@@ -878,17 +946,26 @@ def foreground_is(cfg, port, bundle_id):
     return p.returncode == 0 and p.stdout.strip() == "sblaunch: frontmost=" + bundle_id
 
 
+PROXY_PAC = "/usr/local/share/ltm/proxy.pac"   # imgtools/ipad1_rootfs.PAC_PATH, baked by ipod2g_device
+
+
 def check_webproxy(cfg, procs, dev, result):
-    """Native NSURLConnection must reach the host without resolving the origin."""
+    """Native NSURLConnection reaches the host through the image's baked PAC
+    (Wi-Fi service -> PROXY 10.0.2.100:3128, the web proxy's guestfwd, relayed
+    here to a loopback fixture) without resolving the origin. No guest proxy
+    settings are changed at run time. The proxy itself (modes, TLS, the
+    retired-service 410s) is the app's, checked by its tests/offline/check-web-proxy.py."""
     import http.server
     import threading
-    helpers = [os.path.join(ROOT, "contrib", "it-proxy", name)
-               for name in ("itproxy", "httpget")]
-    if not all(os.path.exists(p) for p in helpers):
-        return result.skip("requires built contrib/it-proxy helpers")
-    port, error = ensure_guest_ssh(cfg, procs, dev)
-    if port is None:
-        return result.set(False, error)
+    helper = os.path.join(ROOT, "contrib", "it-proxy", "httpget")
+    if not os.path.exists(helper):
+        return result.skip("requires built contrib/it-proxy/httpget")
+    ok, detail = ensure_agent(dev.qmp)
+    if not ok:
+        return result.set(False, detail)
+    control = AgentControl(dev.qmp)
+    if itqmp.agent(dev.qmp, "get", PROXY_PAC)[0] != 0:
+        return result.skip("image has no baked proxy PAC (%s); build it with imgtools/ipod2g_device.py" % PROXY_PAC)
     class Fixture(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
@@ -899,37 +976,24 @@ def check_webproxy(cfg, procs, dev, result):
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    enabled = False
+    remote = "/tmp/regress-httpget"
     try:
-        for helper in helpers:
-            copied = guest_ssh(cfg, port, None, scp_from=helper,
-                               scp_to="/tmp/" + os.path.basename(helper))
-            if copied.returncode:
-                return result.set(False, "could not stage proxy test helper")
+        with open(helper, "rb") as f:
+            if itqmp.agent(dev.qmp, "put", remote + " 755", f.read())[0]:
+                return result.set(False, "could not stage the proxy test helper")
         with open(cfg.web_proxy_config, "w") as f:
-            f.write("upstream\n127.0.0.1\n%d\n" % server.server_port)
-        changed = guest_ssh(cfg, port, ["chmod 755 /tmp/itproxy /tmp/httpget && /tmp/itproxy on"])
-        if changed.returncode:
-            return result.set(False, "guest proxy configuration failed: " + changed.stderr[-200:])
-        enabled = True
-        time.sleep(8)
-        response = guest_ssh(cfg, port, ["/tmp/httpget http://example.invalid/fixture"], timeout=90)
+            f.write("%d\n" % server.server_port)
+        # The first fetch after association can race DHCP; retry the fixture only.
+        for attempt in range(6):
+            response = spawn(control, [remote, "http://example.invalid/fixture"], timeout=90)
+            if response.returncode == 0:
+                break
+            time.sleep(10)
         if response.returncode or "HTTP 200" not in response.stdout or "LIGHTTOUCH_PROXY_NATIVE_PASS" not in response.stdout:
-            return result.set(False, response.stdout.strip() or response.stderr[-200:])
-        with open(cfg.web_proxy_config, "w") as f:
-            f.write("direct\n")
-        for host in ("api.openfeint.com", "gdata.youtube.com"):
-            started = time.monotonic()
-            response = guest_ssh(cfg, port, ["/tmp/httpget http://" + host + "/"], timeout=30)
-            elapsed = time.monotonic() - started
-            if response.returncode or "HTTP 410" not in response.stdout or elapsed >= 10:
-                return result.set(False, "retired service did not fail promptly: " + response.stdout.strip())
-        result.set(True, "native HTTP fixture and prompt retired-service HTTP 410 responses")
+            return result.set(False, response.stdout.strip()[-300:])
+        result.set(True, "baked PAC: native HTTP fixture through the proxy address")
     finally:
-        if enabled:
-            restored = guest_ssh(cfg, port, ["/tmp/itproxy off"])
-            if restored.returncode:
-                result.set(False, "failed to restore guest proxy preferences")
+        itqmp.agent(dev.qmp, "unlink", remote)
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
@@ -952,15 +1016,16 @@ def check_respring(cfg, procs, dev, result):
     """Restart SpringBoard in this boot, retaining installation pressure.
 
     A cold restart clears session-only NAND mappings and can hide corruption.
-    Require a service response from the new SpringBoard; successful killall
-    and a still-lit old framebuffer are not recovery evidence.
+    Require a service response from the new SpringBoard; a successful stop
+    and a still-lit old framebuffer are not recovery evidence. launchd's
+    KeepAlive relaunches the job, so no shell or killall is involved.
     """
     port = prepare_app_control(cfg, procs, dev, result)
     if port is None:
         return False
     dev.qmp.cmd("query-status")  # drain events from before this operation
     resets = dev.qmp.reset_count
-    p = control_exec(cfg, port, "killall SpringBoard", timeout=10)
+    p = spawn(port, ["/bin/launchctl", "stop", "com.apple.SpringBoard"], timeout=10)
     if p.returncode != 0:
         return result.set(False, "could not restart SpringBoard: %s" %
                           (p.stdout + p.stderr).strip()[-200:])
@@ -980,14 +1045,13 @@ def check_respring(cfg, procs, dev, result):
             break
         if p.returncode == 0 and p.stdout.strip().startswith("sblaunch: locked="):
             return result.set(True, "SpringBoard service recovered in the same boot")
-    diagnostic = control_exec(cfg, port,
-        "launchctl list; cat /var/mobile/Library/Logs/CrashReporter/LatestCrash-SpringBoard.plist",
-        timeout=15)
+    diagnostic = spawn(port, ["/bin/launchctl", "list"], timeout=15)
+    crash = guest_file(port, "/var/mobile/Library/Logs/CrashReporter/LatestCrash-SpringBoard.plist", timeout=15)
     path = os.path.join(dev.dir, "respring-diagnostics.txt")
     with open(path, "w") as f:
         f.write("Last service probe: rc=%s\n%s\n%s\n" %
                 (p.returncode, p.stdout, p.stderr))
-        f.write(diagnostic.stdout + "\n" + diagnostic.stderr)
+        f.write(diagnostic.stdout + "\n" + crash.decode("utf-8", "replace"))
     return result.set(False, "%s; see %s" % (failure, path))
 
 
@@ -999,9 +1063,17 @@ def check_applaunch(cfg, procs, dev, r):
     ok, detail = unlock(cfg, port, dev)
     if not ok:
         return r.set(False, detail)
+    syslog = syslog_proc = None
+    if getattr(cfg, "launch_stages", False) and shutil.which("idevicesyslog"):
+        # Started right before the launch (as the iPad's app-compat does) so
+        # the capture is alive for the launch window.
+        syslog = os.path.join(dev.dir, "launch-syslog.txt")
+        syslog_proc = procs.spawn(["idevicesyslog"], syslog, env=mux_env(cfg))
+        time.sleep(3)
     p = springboard(cfg, port, bundle_id)
     if p.returncode != 0:
-        return r.set(False, "launch refused: %s" % (p.stdout + p.stderr).strip()[-200:])
+        return r.set(False, "launch refused: %s%s" % ((p.stdout + p.stderr).strip()[-200:],
+                                                     launch_reason(syslog, procs, syslog_proc)))
     if getattr(cfg, "launch_stages", False):
         started = time.monotonic()
         for seconds in (5, 20):
@@ -1014,11 +1086,61 @@ def check_applaunch(cfg, procs, dev, r):
     shot = dev.qmp.shot(os.path.join(dev.dir, "app.ppm"))
     to_png(shot, os.path.join(dev.dir, "app.png"))
     _hi, lit = lit_count(shot)
-    if not foreground_is(cfg, port, bundle_id):
-        return r.set(False, "%s is not the foreground app after launch" % bundle_id)
+    front = foreground_is(cfg, port, bundle_id)
+    if getattr(cfg, "launch_stages", False):
+        # Evidence only, never part of the verdict: crash reports (stock
+        # crashreportcopymobile), the installd registry (SignerIdentity/
+        # ProfileValidated per app) and SpringBoard's prefs.
+        crashes = os.path.join(dev.dir, "crashlogs")
+        os.makedirs(crashes, exist_ok=True)
+        run(["idevicecrashreport", "-k", "-e", crashes], cfg, 120)
+        for name, path in (
+                ("installation.plist", "/var/mobile/Library/Caches/com.apple.mobile.installation.plist"),
+                ("springboard.plist",       # SBTrustedCodeSigningIdentities
+                 "/var/mobile/Library/Preferences/com.apple.springboard.plist")):
+            try:
+                with open(os.path.join(dev.dir, name), "wb") as f:
+                    f.write(guest_file(port, path))
+            except Exception as error:  # noqa: BLE001 - evidence never decides the verdict
+                log("evidence %s: %s" % (name, error))
+    if not front:
+        return r.set(False, "%s is not the foreground app after launch%s"
+                     % (bundle_id, launch_reason(syslog, procs, syslog_proc)))
     if lit < 20000:
         return r.set(False, "%s is foreground but screen is dark (lit=%d)" % (bundle_id, lit))
     return r.set(True, "%s verified foreground, lit=%d" % (bundle_id, lit))
+
+
+# Why a launch did not stick, as the guest says it (evidence for the detail
+# text only). Each was a real cause in the 2026-09-27 app pass.
+LAUNCH_REASONS = (
+    r"posix_spawn\(.*\.app/[^\"]*\", \.\.\.\): .*",     # e.g. no exec bit in the IPA
+    r"Unknown application display identifier .*",   # SpringBoard never loaded the bundle
+    r"SpringBoard expects an application bundle .*",
+    r"Symbol not found: \S+",
+    r"exited abnormally with (?:signal|exit status) \d+(?:: .*)?",
+    r"Terminating app due to uncaught exception .*",
+)
+
+
+def launch_reason(path, procs, proc):
+    if not path:
+        return ""
+    time.sleep(2)
+    procs.stop(proc)
+    try:
+        with open(path, errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return ""
+    found = []
+    for pattern in LAUNCH_REASONS:
+        m = re.search(pattern, text)
+        if m:
+            text_ = re.sub(r"/var/mobile/Applications/[^/]+/", "", m.group(0))[:120]
+            if text_ not in found:
+                found.append(text_)
+    return (" (syslog: %s)" % "; ".join(found)) if found else ""
 
 
 def quad_signature(path):
@@ -1030,24 +1152,10 @@ def quad_signature(path):
     thresholds would read it as black.
     """
     try:
-        _w, _h, px = read_ppm(path)
-    except Exception:
+        width, height, pixels = read_ppm(path)
+        return gles_scene.fractions(width, height, pixels)
+    except (OSError, ValueError):
         return 0.0, 0.0, 0.0
-    if not px:
-        return 0.0, 0.0, 0.0
-    hi = max(px) or 1
-    lo, up = 0.3 * hi, 0.7 * hi
-    m = c = y = 0
-    for i in range(0, len(px), 3):
-        r, g, b = px[i], px[i + 1], px[i + 2]
-        if r >= up and b >= up and g <= lo:
-            m += 1
-        elif g >= up and b >= up and r <= lo:
-            c += 1
-        elif r >= up and g >= up and b <= lo:
-            y += 1
-    n = len(px) / 3.0
-    return m / n, c / n, y / n
 
 
 def install_gles_app(cfg, r):
@@ -1062,7 +1170,7 @@ def install_gles_app(cfg, r):
     ipa_dir = os.path.join(cfg.out, "glesipa")
     shutil.rmtree(ipa_dir, ignore_errors=True)
     os.makedirs(os.path.join(ipa_dir, "Payload"))
-    shutil.copytree(os.path.join(GLES_DIR, "GLTest.app"),
+    shutil.copytree(getattr(cfg, "gles_app", None) or os.path.join(GLES_DIR, "GLTest.app"),
                     os.path.join(ipa_dir, "Payload", "GLTest.app"))
     ipa = os.path.join(cfg.out, "GLTest.ipa")
     # zip(1) rather than shutil.make_archive: the executable bit has to survive
@@ -1079,6 +1187,19 @@ def install_gles_app(cfg, r):
     return True
 
 
+def dismiss_reorder_tip(control, dev):
+    """A new device's first unlock raises SpringBoard's modal "Edit Home Screen" tip
+    (SBDidShowReorderText unset); it would cover every later frame. Stock behaviour,
+    so dismiss it the way a user does rather than baking the preference."""
+    for _ in range(3):
+        status, tree = itqmp.agent(control.qmp, "uidump", timeout=20)
+        if status or b"text: Edit Home Screen" not in tree:
+            return
+        log("  dismissing SpringBoard's first-unlock Edit Home Screen tip")
+        dev.qmp.tap(160, 332)
+        time.sleep(2)
+
+
 def unlock(cfg, port, dev, tries=UNLOCK_TRIES):
     """Swipe only after SpringBoard confirms that the screen is locked.
 
@@ -1093,6 +1214,7 @@ def unlock(cfg, port, dev, tries=UNLOCK_TRIES):
         if p.returncode != 0 or status is None:
             return False, "SpringBoard lock status unavailable: %s" % (p.stdout + p.stderr).strip()[-160:]
         if status[1] == "0":
+            dismiss_reorder_tip(port, dev)
             return True, "SpringBoard reports unlocked"
         if status[2] == "1":
             return False, "device has a passcode; unlock manually"
@@ -1103,7 +1225,7 @@ def unlock(cfg, port, dev, tries=UNLOCK_TRIES):
     return False, "device remained locked after %d attempts" % tries
 
 
-def slot_names():
+def slot_names(cfg):
     """slot -> glFunctionName, from contrib/it-gles/slotmap.txt.
 
     The shim can only print a bare integer (it has no string table and barely a
@@ -1113,7 +1235,7 @@ def slot_names():
     """
     names = {}
     try:
-        with open(os.path.join(GLES_DIR, "slotmap.txt")) as f:
+        with open(getattr(cfg, "gles_slotmap", None) or os.path.join(GLES_DIR, "slotmap.txt")) as f:
             for line in f:
                 if line.startswith("#"):
                     continue
@@ -1125,61 +1247,93 @@ def slot_names():
     return names
 
 
-def guest_ssh(cfg, port, argv, timeout=60, scp_from=None, scp_to=None):
-    """One ssh/scp to the guest through an already-running iproxy.
-
-    Password auth cannot read from a pipe, so the password goes through
-    SSH_ASKPASS exactly as imgtools/install-ipa.sh does.
-    """
-    # Reuse the installer's multiplexing pattern: short-lived SSH connections
-    # can race teardown in the old guest stack. Keep the Unix path below 104B.
-    if not hasattr(cfg, "ssh_control"):
-        cfg.ssh_control = tempfile.TemporaryDirectory(prefix="itssh-", dir="/tmp")
-    opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=30",
-            "-o", "ControlPath=" + os.path.join(cfg.ssh_control.name, "%C"),
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR",
-            "-o", "PreferredAuthentications=password",
-            "-o", "ConnectTimeout=10"]
-    env = dict(os.environ)
-    env.update(SSH_ASKPASS=cfg.askpass, SSH_ASKPASS_REQUIRE="force",
-               DISPLAY=os.environ.get("DISPLAY", ":0"))
-    if scp_from:
-        cmd = ["scp", "-O", "-r"] + opts + ["-P", str(port), scp_from,
-                                            "root@127.0.0.1:" + scp_to]
-    else:
-        cmd = ["ssh"] + opts + ["-p", str(port), "root@127.0.0.1"] + argv
-    try:
-        return subprocess.run(cmd, env=env, timeout=timeout,
-                              capture_output=True, text=True)
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(cmd, 124, "", "timed out")
-
-
 def check_agent(cfg, procs, dev, r):
-    """Exercise the production command tunnel without USB or SSH."""
-    deadline = time.monotonic() + 60
-    while not itqmp.agent_alive(dev.qmp):
-        if time.monotonic() >= deadline:
-            return r.set(False, "guest agent did not become ready within 60 seconds")
-        time.sleep(1)
+    """Exercise the production command tunnel without USB, SSH or a shell."""
+    ok, detail = ensure_agent(dev.qmp)
+    if not ok:
+        return r.set(False, detail)
     remote = "/tmp/regress-agent-" + os.urandom(12).hex()
     payload = os.urandom(70 * 1024)
+    # v3: over one request, put goes as putpart chunks and get reads back by getrange
+    large = os.urandom(2 * 1024 * 1024 + 4097) if detail == AGENT_HELLO else None
     try:
-        for op, args, body, expected in (
-            ("ping", "", b"", b"it_agent v1\n"),
-            ("exec", "echo $((6*7))", b"", b"42\n"),
-            ("put", remote + " 600", payload, b""),
-            ("get", remote, b"", payload),
+        for op, args, body, check in (
+            ("ping", "", b"", lambda b: b.startswith(b"it_agent v") and b" spawn " in b),
+            ("spawn", "", b"/bin/launchctl\0list\0", lambda b: b"\tcom.qemu.it-agent\n" in b),
+            ("put", remote + " 600", payload, lambda b: b == b""),
+            ("chown", "501 501 " + remote, b"", lambda b: b == b""),
+            ("get", remote, b"", lambda b: b == payload),
+            *((("put", remote + "-large 600", large, lambda b: b == b""),
+               ("get", remote + "-large", b"", lambda b: b == large)) if large else ()),
+            ("sync", "", b"", lambda b: b == b""),
         ):
             status, response = itqmp.agent(dev.qmp, op, args, body)
-            if status != 0 or response != expected:
+            if status != 0 or not check(response):
                 return r.set(False, "agent %s failed: status=%d, response bytes=%d" %
                              (op, status, len(response)))
-        return r.set(True, "ping, shell arithmetic and 70 KiB binary round trip")
+        status = dev.guest_package_status()
+        if cfg.guest_package and not status.startswith("report "):
+            return r.set(False, "agent fine, but no it_boot report: %s" % status)
+        return r.set(True, "%s ping, shell-free spawn, 70 KiB%s binary round trip, chown, sync; "
+                           "guest package: %s" % (detail, " and 2 MiB chunked" if large else "", status))
     finally:
-        itqmp.agent(dev.qmp, "exec", "rm -f " + remote)
+        itqmp.agent(dev.qmp, "unlink", remote)
+        if large:
+            itqmp.agent(dev.qmp, "unlink", remote + "-large")
+
+
+PREFS = "/var/mobile/Library/Preferences/"
+MC_SETTINGS = "/var/mobile/Library/ConfigurationProfiles/UserSettings.plist"
+MC_NEVER = 0x7fffffff       # Settings' Never in ManagedConfiguration (4.x)
+STOCK_AUTOLOCK_S = 60       # Settings' default Auto-Lock on the iPod
+
+
+def check_prefs(cfg, dev, r):
+    """it_prefs' once-only defaults on a device it has not run on before (the iPod's first boot is the
+    user's own: no sealing boot runs it first): Brightness at maximum and Auto-Lock Never, read back over
+    the agent from where this firmware's Settings keeps them, its marker, and Never in effect this boot:
+    unlocked, the device is still unlocked well past the stock one-minute Auto-Lock."""
+    ok, detail = ensure_agent(dev.qmp)
+    if not ok:
+        return r.set(False, detail)
+
+    def plist(path):
+        status, data = itqmp.agent(dev.qmp, "get", path)
+        return plistlib.loads(data) if status == 0 else {}
+    t0 = time.time()
+    while True:
+        mine, sb, mc = plist(PREFS + "com.qemu.it-prefs.plist"), plist(PREFS + "com.apple.springboard.plist"), plist(MC_SETTINGS)
+        if mine.get("DefaultsSet") or time.time() - t0 > 180:
+            break
+        time.sleep(5)
+    bright = sb.get("SBBacklightLevel2", sb.get("SBBacklightLevel"))
+    lock = ((mc.get("restrictedValue") or {}).get("maxInactivity") or {}).get("value")
+    major = cfg.device_version[0] if cfg.device_version else 3
+    never = lock == MC_NEVER if major >= 4 else sb.get("SBAutoLockTime") == -1 and sb.get("SBAutoDimTime") == -1
+    stored = "brightness %r, auto-lock %r/dim %r (MC maxInactivity %r), marker %r" % (
+        bright, sb.get("SBAutoLockTime"), sb.get("SBAutoDimTime"), lock, mine)
+    # one delivery path: the package's job, and none of the copy baked by earlier prepares
+    baked, _ = itqmp.agent(dev.qmp, "get", "/System/Library/LaunchDaemons/com.qemu.it-prefs.plist")
+    stored += "; baked com.qemu.it-prefs job %s" % ("gone" if baked != 0 else "still there")
+    if not (mine.get("DefaultsSet") is True and bright == 1.0 and never and baked != 0):
+        return r.set(False, stored)
+    for _ in range(4):
+        dev.qmp.home()
+        time.sleep(2)
+        status, out = itqmp.agent(dev.qmp, "lockstatus")
+        if status == 0 and out.startswith(b"locked=0"):
+            break
+        dev.qmp.swipe(60, 427, 295, 427)
+        time.sleep(3)
+    else:
+        return r.set(False, stored + "; could not unlock: %r" % out)
+    time.sleep(STOCK_AUTOLOCK_S + 30)
+    shot = os.path.join(dev.dir, "prefs-unlocked.ppm")
+    dev.qmp.shot(shot)
+    to_png(shot, os.path.join(dev.dir, "prefs-unlocked.png"))   # still lit and on the home screen
+    status, out = itqmp.agent(dev.qmp, "lockstatus")
+    r.set(status == 0 and out.startswith(b"locked=0"),
+          stored + "; %ds after unlocking: %s" % (STOCK_AUTOLOCK_S + 30, out.decode(errors="replace").strip()))
 
 
 def check_audio(cfg, procs, dev, r):
@@ -1188,16 +1342,16 @@ def check_audio(cfg, procs, dev, r):
     if port is None:
         return False
     if not app_is_installed(cfg, "com.qemuios.harness"):
-        install = run(["ideviceinstaller", "install", HARNESS_IPA], cfg, cfg.install_timeout)
+        install = run(["ideviceinstaller", "install", getattr(cfg, "harness_ipa", None) or HARNESS_IPA], cfg, cfg.install_timeout)
         if install.returncode or not app_is_installed(cfg, "com.qemuios.harness"):
             return r.set(False, "Harness installation failed: " + install.stderr[-200:])
     ok, detail = unlock(cfg, port, dev)
     if not ok:
         return r.set(False, detail)
     # Each run starts at row zero, even after prior app or audio checks.
-    stopped = control_exec(cfg, port, "killall Harness", timeout=10)
-    if stopped.returncode not in (0, 1):
-        return r.set(False, "could not reset the Harness menu")
+    stopped = stop_app(port, "com.qemuios.harness")
+    if stopped.returncode:
+        return r.set(False, "could not reset the Harness menu: " + stopped.stdout[-200:])
     response = springboard(cfg, port, "com.qemuios.harness")
     if response.returncode:
         return r.set(False, "Harness launch failed: " + response.stderr[-200:])
@@ -1254,6 +1408,80 @@ def verify_audio(path, r):
     return r.set(True, "%.2f seconds; left %.1f Hz, right %.1f Hz" % (seconds, *peaks))
 
 
+def check_gles_front_end(cfg, dev, r):
+    """SpringBoard's own GL is the fixture, independent of helper/GLTest availability.
+
+    The device's lock says the OpenGLES hook went in and the bake set CA_ENABLE_OGL=1 (1.x:
+    LK_ENABLE_OGL=1, imgtools/ipod1g_device.py), so every frame since the home screen came up was
+    CoreAnimation's (1.x: LayerKit's) GL renderer through the front end and the host. 1.1's home
+    screen has one page, so its swipe changes nothing. The first-icon tap opens
+    Safari on1.x/2.x and Mail on3.0; exact references describe the opened app. What is asserted: the front end said hello exactly once (a second hello is a
+    SpringBoard that died and restarted), CoreAnimation made its first pixmap surface (it did not
+    fall back to software: "unsupported graphics hardware"), a host context is live, the home
+    screen survives a page swipe and a stock-app launch zoom and close (the path that once froze
+    and then crashed SpringBoard), and the bridge refused nothing."""
+    log_path = os.path.join(dev.dir, "qemu.log")
+
+    def hellos():
+        with open(log_path, "rb") as f:
+            text = f.read().decode("utf-8", "replace")
+        # the one front end (contrib/gles-public) on 2.x-4.x says hello once per process that makes a context and
+        # names CoreAnimation's first GL path (2.x: the EGL pixmap surface; 3.x: attachImage:); 1.x's own
+        # front end (gles2x.c) says its dispatch layout and its first pixmap surface
+        hello = text.count("[gles] OpenGLES front end (") or text.count("[gles] dispatch layout from ")
+        return hello, "CoreAnimation composites through the host" in text or "[gles] egl: first pixmap surface" in text
+
+    shots = []
+    dev.qmp.tap(160, 326)   # 2.x raises the first-unlock Edit Home Screen tip late: its Dismiss (empty home otherwise)
+    time.sleep(2)
+    for name, act, settle in (("swipe", lambda: dev.qmp.swipe(280, 240, 40, 240, steps=10), 3),
+                              ("opened-app", lambda: dev.qmp.tap(40, 70), 8),
+                              ("home", dev.qmp.home, 5)):
+        act()
+        time.sleep(settle)
+        ppm = dev.qmp.shot(os.path.join(dev.dir, "gles-%s.ppm" % name))
+        to_png(ppm, os.path.join(dev.dir, "gles-%s.png" % name))
+        shots.append((name, lit_count(ppm)[1]))
+        if not dev.alive():
+            return r.set(False, "qemu exited during the %s step" % name)
+    n, pixmap = hellos()
+    contexts = dev.qmp.cmd("qom-get", path="/machine", property="gles-contexts")
+    rejects = itqmp.gles_rejects(dev.qmp)
+    lits = ", ".join("%s lit=%d" % s for s in shots)
+    if n != 1:
+        return r.set(False, "the front end said hello %d times: SpringBoard %s (%s)"
+                     % (n, "never loaded it" if not n else "restarted", lits))
+    if not pixmap:
+        return r.set(False, "CoreAnimation never took the GL path through the front end (%s)" % lits)
+    if contexts < 1:
+        return r.set(False, "no live host GL context (%s)" % lits)
+    if rejects:
+        return r.set(False, "the GL bridge refused %d thing(s): %s" % (
+            len(rejects), ", ".join("%s x%d" % kv for kv in sorted(rejects.items()))))
+    if shots[0][1] < cfg.home_lit_min or shots[-1][1] < cfg.home_lit_min or abs(shots[1][1] - shots[0][1]) < 1000:
+        return r.set(False, "the frames did not follow the gestures: %s" % lits)
+    if abs(shots[-1][1] - shots[0][1]) > shots[0][1] // 20:
+        # the panel still shows the opened app (1.x: the iPod LCD once lost the GL write-back's dirty pages)
+        return r.set(False, "the close did not reach the panel: %s" % lits)
+    # Firmware layouts differ independently of rendering. A dedicated visual
+    # gate must fail on missing exact-build coverage, never borrow a major-version
+    # image or silently count liveness as a compared scene.
+    fr = []
+    for name, _lit in shots:
+        reference, why = frame_reference.qualified(
+            GLES_REFS, cfg.board, cfg.build, cfg.product_version, name)
+        if not reference:
+            return r.set(False, why + " (visual coverage missing, not a rendering verdict)")
+        v = framecheck.verdict(os.path.join(dev.dir, "gles-%s.png" % name), reference)
+        fr.append("%s %.3f" % (name, v["frac"]) if v["frac"] is not None else "%s ?" % name)
+        if not v["ok"]:
+            return r.set(False, "the %s frame differs from its build-scoped reference: %s (%s)"
+                         % (name, v["why"], lits))
+    frtxt = ("; frame-ref " + ", ".join(fr)) if fr else "; frame-ref none for this build"
+    return r.set(True, "SpringBoard's GL through the GL front end: one hello, CA on the GL path, %d host context(s), "
+                 "no refusals%s; %s" % (contexts, frtxt, lits))
+
+
 def check_gles(cfg, procs, dev, r):
     """Prove the OpenGL ES HLE layer still renders, on the real panel.
 
@@ -1265,18 +1493,19 @@ def check_gles(cfg, procs, dev, r):
     produces either. So the assertion is the colour signature, held across two
     samples, plus a scan of the shim's own unimplemented-slot log.
     """
-    app = os.path.join(GLES_DIR, "GLTest.app")
-    shim = os.path.join(GLES_DIR, "MBXGLEngine")
-    launcher = os.path.join(GLES_DIR, "sblaunch")
+    if cfg.gles_front_end:
+        return check_gles_front_end(cfg, dev, r)
+    app = getattr(cfg, "gles_app", None) or os.path.join(GLES_DIR, "GLTest.app")
+    shim = os.path.join(ROOT, "contrib/gles-public/OpenGLES")     # one binary for every firmware
     harness = not os.path.exists(app)
     bundle_id = "com.qemuios.harness" if harness else GLES_BUNDLE_ID
-    prerequisites = [HARNESS_IPA if harness else app]
+    prerequisites = [(getattr(cfg, "harness_ipa", None) or HARNESS_IPA) if harness else app]
     if getattr(cfg, "stage_gles_shim", False):
-        prerequisites.extend([shim, launcher])
+        prerequisites.append(shim)
     missing = [os.path.basename(path) for path in prerequisites if not os.path.exists(path)]
     if missing:
         return r.skip("build the guest fixtures first (no %s)" % ", ".join(missing))
-    port = (prepare_launcher if getattr(cfg, "stage_gles_shim", False) else prepare_app_control)(cfg, procs, dev, r)
+    port = prepare_app_control(cfg, procs, dev, r)
     if port is None:
         return False
 
@@ -1288,43 +1517,31 @@ def check_gles(cfg, procs, dev, r):
     # this image was built to accept and it registers first time, every time.
     if harness:
         if not app_is_installed(cfg, bundle_id):
-            installed = run(["ideviceinstaller", "install", HARNESS_IPA], cfg, cfg.install_timeout)
+            installed = run(["ideviceinstaller", "install", getattr(cfg, "harness_ipa", None) or HARNESS_IPA], cfg, cfg.install_timeout)
             if installed.returncode or not app_is_installed(cfg, bundle_id):
                 return r.set(False, "Harness installation failed")
     elif not install_gles_app(cfg, r):
         return False
     if getattr(cfg, "stage_gles_shim", False):
-        p = guest_ssh(cfg, port, None, timeout=300, scp_from=shim, scp_to="/tmp/MBXGLEngine")
-        if p.returncode != 0:
-            return r.set(False, "scp MBXGLEngine failed: %s" % p.stderr.strip()[-160:])
-        # The stock bundle is kept alongside ours so a later manual run can restore
-        # it; /System is why this goes over ssh and not AFC.
-        bundle = ("/System/Library/Frameworks/OpenGLES.framework/"
-                  "MBXGLEngine.bundle")
-        p = guest_ssh(cfg, port, [
-            "set -e; "
-            "chmod 755 /tmp/sblaunch; "
-            "if [ ! -f {b}/MBXGLEngine.stock ]; then "
-            "cp {b}/MBXGLEngine {b}/MBXGLEngine.stock; fi; "
-            "cp /tmp/MBXGLEngine {b}/MBXGLEngine; chmod 755 {b}/MBXGLEngine; "
-            "printf %s {id} > /tmp/sblaunch.id".format(b=bundle,
-                                                       id=GLES_BUNDLE_ID)],
-            timeout=120)
-        if p.returncode != 0:
-            return r.set(False, "staging the shim failed: %s"
-                         % (p.stdout + p.stderr).strip()[-200:])
+        # This tree's front end over the image's (the bake installed one, and dyld's override switch where
+        # OpenGLES is cached). /System is why this goes through the root agent, not AFC.
+        engine = "/System/Library/Frameworks/OpenGLES.framework/OpenGLES"
+        with open(shim, "rb") as f:
+            status, _ = itqmp.agent(port.qmp, "put", engine + " 755", f.read())
+        if status:
+            return r.set(False, "staging the shim failed: status %d" % status)
 
     ok, detail = unlock(cfg, port, dev)
     if not ok:
         return r.set(False, detail)
     if harness:
-        stopped = control_exec(cfg, port, "killall Harness", timeout=10)
-        if stopped.returncode not in (0, 1):
-            return r.set(False, "could not reset the Harness menu")
+        stopped = stop_app(port, "com.qemuios.harness")
+        if stopped.returncode:
+            return r.set(False, "could not reset the Harness menu: " + stopped.stdout[-200:])
     p = springboard(cfg, port, bundle_id)
     out = (p.stdout + p.stderr).strip()
     if p.returncode != 0:
-        return r.set(False, "sblaunch refused: %s" % out[-200:])
+        return r.set(False, "launch refused: %s" % out[-200:])
     log("  gles: %s" % out)
 
     if harness:
@@ -1342,14 +1559,11 @@ def check_gles(cfg, procs, dev, r):
     mb, cb, yb = quad_signature(b)
     _hi, lit = lit_count(b)
 
-    # Slot scan. The shim writes to fd 2, which for a SpringBoard-launched app
-    # goes nowhere addressable on a stock image: measured on 3.1.3, there is no
-    # /var/log/syslog and nothing reaches the QEMU or serial log either. So an
-    # empty scan is *reported* in the verdict rather than passed over in
-    # silence, and the assertion above is what actually carries the check.
-    # ponytail: no log source for the slot trace on 3.1.3; if this needs to
-    # become a real gate, have mbxshim write the line to a file under /tmp and
-    # cat it back here, or route gles_unimpl through a guest-services call.
+    # Slot scan. mbxshim's w() also sends every line to the host through
+    # GLES_OP_LOG, so "[mbxshim] unimplemented slot N" lands in qemu.log (fd 2
+    # of a SpringBoard-launched app goes nowhere on 3.1.3). The verdict says
+    # whether the shim's log reached the host at all, so a silent scan is
+    # never mistaken for a clean one.
     text = dev.serial_text()
     for extra in (os.path.join(dev.dir, "qemu.log"),):
         try:
@@ -1357,17 +1571,23 @@ def check_gles(cfg, procs, dev, r):
                 text += f.read().decode("utf-8", "replace")
         except OSError:
             pass
-    text += control_exec(cfg, port, "cat /var/log/syslog 2>/dev/null",
-                      timeout=60).stdout
+    text += guest_file(port, "/var/log/syslog").decode("utf-8", "replace")
     seen = set(int(n) for n in re.findall(r"unimplemented slot (\d+)", text))
     new = sorted(seen - GLES_ALLOWED_SLOTS)
-    names = slot_names()
+    names = slot_names(cfg)
 
     if new:
         return r.set(False, "the app called %d unimplemented entry point(s): %s"
                      % (len(new), ", ".join("%d (%s)"
                                             % (n, names.get(n, "slot %d?" % n))
                                             for n in new)))
+    # The bridge's own count of everything it refused since boot, host and shim sides both:
+    # a surface or texture format, a pname, a slot. Any of them is a rendering the app did
+    # not get, whether or not the fixture's own scene survived it.
+    rejects = itqmp.gles_rejects(dev.qmp)
+    if rejects:
+        return r.set(False, "the GL bridge refused %d thing(s) since boot: %s"
+                     % (len(rejects), ", ".join("%s x%d" % kv for kv in sorted(rejects.items()))))
     if min(ma, ca) < GLES_QUAD_MIN:
         return r.set(False, "GLES fixture scene is not on the panel: magenta=%.3f "
                             "cyan=%.3f of the frame, need >=%.3f of each "
@@ -1375,6 +1595,11 @@ def check_gles(cfg, procs, dev, r):
                      % (ma, ca, GLES_QUAD_MIN, lit,
                         "showing something else - SpringBoard, most likely"
                         if lit > 20000 else "dark"))
+    if max(ma, ca, mb, cb) > GLES_QUAD_MAX:
+        return r.set(False, "GLES scene exceeds the declared 240x360 view area: "
+                            "first magenta=%.3f cyan=%.3f; held magenta=%.3f "
+                            "cyan=%.3f (max %.3f)"
+                     % (ma, ca, mb, cb, GLES_QUAD_MAX))
     if not harness and min(ya, yb) < GLES_QUAD_MIN:
         return r.set(False, "GLES fixture's glDrawTexfOES quad is missing: yellow=%.3f/%.3f "
                             "of the frame, need >=%.3f (magenta=%.3f cyan=%.3f)"
@@ -1384,11 +1609,16 @@ def check_gles(cfg, procs, dev, r):
                             "(magenta %.3f->%.3f, cyan %.3f->%.3f): the "
                             "renderer wedged after its first present"
                      % (GLES_HOLD_S, ma, mb, ca, cb))
+    if not harness:
+        for label, frame in (("first", a), ("held", b)):
+            geometry_ok, detail = gles_scene.verdict(*read_ppm(frame))
+            if not geometry_ok:
+                return r.set(False, "GLES %s frame: %s" % (label, detail))
     return r.set(True, "GLES fixture rendering through the HLE layer: magenta=%.3f "
                        "cyan=%.3f yellow=%.3f, held for %ds, lit=%d%s"
                  % (mb, cb, yb, GLES_HOLD_S, lit,
-                    "" if "unimplemented slot" in text
-                    else " (no log source carried the slot trace)"))
+                    "; shim log reached the host, no unimplemented slot" if "[mbxshim]" in text
+                    else " (no shim log reached the host, so the slot scan saw nothing)"))
 
 
 def check_persist(cfg, dev2, marker_src, remote, r, event="clean shutdown + reboot"):
@@ -1418,16 +1648,16 @@ def check_persist(cfg, dev2, marker_src, remote, r, event="clean shutdown + rebo
 
 def check_restart(cfg, procs, dev, result):
     """Reset the running machine after writes, preserving its overlay in-process."""
-    port, error = ensure_guest_ssh(cfg, procs, dev)
-    if port is None:
-        return result.set(False, error)
+    ok, detail = ensure_agent(dev.qmp)
+    if not ok:
+        return result.set(False, detail)
     src = os.path.join(dev.dir, "restart-marker.bin")
     remote = "/regress_restart.bin"
     with open(src, "wb") as f:
         # Cross the old 512-page write-script limit and end on a partial page.
         f.write(os.urandom(4 * 1024 * 1024 + 65535))
     put = afc(cfg, ["put -f %s %s" % (src, remote)])
-    if put.returncode or guest_ssh(cfg, port, ["sync"]).returncode:
+    if put.returncode or itqmp.agent(dev.qmp, "sync")[0]:
         return result.set(False, "could not write and sync restart marker")
     dev.qmp.cmd("system_reset")
     ok, detail, _ = dev.wait_for_home(cfg.boot_timeout)
@@ -1508,6 +1738,8 @@ def compose_fsck_volume(base, overlay, destination):
 
 def check_fsck(cfg, clean_stop, r):
     """Check every allocation block; a nonzero fsck result is always a failure."""
+    if cfg.board == "n45ap":
+        return r.skip("N45 physical-layout composition is not supported by this filesystem checker")
     img = os.path.join(cfg.out, "volume.img")
     try:
         blocks, used = compose_fsck_volume(cfg.base_nand, cfg.overlay, img)
@@ -1540,6 +1772,15 @@ def check_fsck(cfg, clean_stop, r):
 # driver
 # --------------------------------------------------------------------------
 
+def requested_frame_references(cfg, selected):
+    """Resolve requested visual coverage before launching a guest."""
+    if "gles" not in selected or not cfg.gles_front_end:
+        return []
+    return [why for scene in ("swipe", "opened-app", "home")
+            for _path, why in [frame_reference.qualified(
+                GLES_REFS, cfg.board, cfg.build, cfg.product_version, scene)] if why]
+
+
 def report_prereqs(cfg):
     """List what each tier needs and whether it's there, run nothing.
 
@@ -1552,12 +1793,12 @@ def report_prereqs(cfg):
          "afc, usbtcp, persist, appinstall, applaunch", False),
         ("ipa", cfg.ipa, "appinstall, applaunch (--ipa or place one at "
                          "the default path)", False),
-        ("Harness.ipa", HARNESS_IPA, "bundled test application", False),
+        ("Harness.ipa", cfg.harness_ipa or HARNESS_IPA, "bundled test application", False),
         ("it_agent", os.path.join(ROOT, "contrib", "it-agent", "it_agent"),
          "agent (must also be installed in the guest NAND)", False),
-        ("GLTest.app", os.path.join(GLES_DIR, "GLTest.app"),
+        ("GLTest.app", cfg.gles_app or os.path.join(GLES_DIR, "GLTest.app"),
          "gles (build it with contrib/it-gles/build.sh)", False),
-        ("gles slotmap", os.path.join(GLES_DIR, "slotmap.txt"),
+        ("gles slotmap", cfg.gles_slotmap or os.path.join(GLES_DIR, "slotmap.txt"),
          "gles, to name an unimplemented slot "
          "(genstubs.py --emit-map)", False),
     ]
@@ -1568,16 +1809,99 @@ def report_prereqs(cfg):
             hard_missing = True
         print("%-4s  %-12s %s" % ("OK" if ok else "MISS", what, path))
         print("      needed for: %s" % needed_for)
+    for why in requested_frame_references(cfg, ["gles"]):
+        hard_missing = True
+        print("MISS  visual reference: " + why)
+    import fixture_preflight
+    for why in fixture_preflight.requested_problems(
+            cfg, DEFAULT_CHECKS, HARNESS_IPA, os.path.join(GLES_DIR, "GLTest.app")):
+        hard_missing = True
+        print("FAIL  fixture compatibility: " + why)
     print("")
     if hard_missing:
         print("default tier (boot, fsck, persist, appinstall, applaunch, gles, agent, audio) CANNOT run: "
-              "missing qemu binary and/or base NAND")
+              "missing required inputs/visual coverage or incompatible fixtures")
     else:
         print("default tier (boot, fsck, persist, appinstall, applaunch, gles, agent, audio) can run "
               "(persist SKIPs without usbmuxd)")
         print("opt-in tier (--with-apps) checks needing usbmuxd/ipa will "
               "SKIP individually if those are still missing")
     return 1 if hard_missing else 0
+
+
+def configure_device(cfg):
+    """Resolve one matched firmware/identity set for every native harness."""
+    cfg.files = os.path.expanduser(cfg.files_dir)
+    cfg.device_machine = {}
+    cfg.build = None                # exact firmware identity for visual references
+    cfg.product_version = None      # complete declared version for fixture compatibility
+    cfg.device_version = None       # the device's iOS (major, minor), from its lock (None: nand-current, 3.1.3)
+    cfg.gles_front_end = False      # 1.x/2.x/3.0: SpringBoard's GL is the gles leg (check_gles_front_end)
+    cfg.gles_engine = None          # the lock's derived.gles_engine: OpenGLES (front end) or MBXGLEngine
+    cfg.board = "n72ap"             # n45ap: an iPod touch 1G device (imgtools/ipod1g_device.py)
+    cfg.home_lit_min = HOME_LIT_MIN
+    if cfg.device:
+        for attr, name in (("base_nand", "nand"), ("nor", "nor.bin"), ("direct_iboot", "iBoot.bin"),
+                           ("gid_blobs", "gid-blobs.bin")):
+            if getattr(cfg, attr) is None and os.path.exists(os.path.join(cfg.device, name)):
+                setattr(cfg, attr, os.path.join(cfg.device, name))
+        # machine options the device was made for (device.lock.json "machine", e.g. aes-uid=engine)
+        lock = os.path.join(cfg.device, "device.lock.json")
+        if os.path.exists(lock):
+            with open(lock) as file:
+                lockd = json.load(file)
+            cfg.device_machine = lockd.get("machine") or {}
+            if lockd.get("board") == "n72ap":
+                identity_path = os.path.join(cfg.device, "identity.json")
+                if os.path.isfile(identity_path):
+                    with open(identity_path) as f:
+                        identity = json.load(f)
+                    for key in ("wifi-mac", "bt-mac"):
+                        if identity.get(key):
+                            cfg.device_machine.setdefault(key, identity[key])
+            cfg.build = lockd.get("build")
+            cfg.product_version = lockd.get("product_version")
+            cfg.device_version = tuple(int(x) for x in lockd.get("product_version", "0").split(".")[:2])
+            cfg.device_version = cfg.device_version if cfg.device_version[0] else None
+            derived = lockd.get("derived") or {}
+            cfg.gles_engine = derived.get("gles_engine")
+            # Without installed helpers, default to SpringBoard compositing; an explicit request
+            # can also select it when the helpers support GLTest.
+            cfg.gles_front_end = derived.get("gles_engine") == "OpenGLES" and \
+                (getattr(cfg, "gles_front_end_requested", False) or
+                 not str(derived.get("guest_tools", "")).startswith("installed"))
+            cfg.board = lockd.get("board", cfg.board)
+    if getattr(cfg, "gles_front_end_requested", False) and cfg.gles_engine != "OpenGLES":
+        sys.exit("--gles-front-end requires a device lock declaring derived.gles_engine=OpenGLES")
+    if cfg.board == "n45ap":
+        # 1.1's home screen is icons on black (~135k lit sub-pixels; the Apple logo far fewer), and
+        # the 1G has no USB host side yet, so every USB check skips (main clears usbmuxd_ok)
+        cfg.home_lit_min = 100000
+        cfg.bootrom = cfg.bootrom or next((p for p in [os.path.join(cfg.device, "bootrom.bin"), os.path.join(cfg.files, "ipod1g", "bootrom_s5l8900")] if os.path.isfile(p)), os.path.join(cfg.files, "ipod1g", "bootrom_s5l8900"))
+    # NAND, NOR and iBoot are one set and cannot be mixed: nand-canonical is a
+    # 2.1.1 image, and against 3.1.3's iBoot its FTL will not even open --
+    # "NAND initialisation failed due to format mismatch", "root filesystem
+    # mount failed", "Entering recovery mode". That recovery-mode device is the
+    # 05ac:1281 with no mux interface described below, so picking the 3.1.3 NOR
+    # while leaving the 2.1.1 NAND reports itself as a USB fault several
+    # minutes later rather than as the image mismatch it is. Whichever
+    # firmware boot_env() and the NOR default choose, the NAND matches it.
+    # nand-current is the shipping image; no fallback, so a missing link is
+    # reported by the prerequisite check instead of silently testing another.
+    # Resolved so the run log names the real image.
+    cfg.base_nand = os.path.realpath(cfg.base_nand or os.path.join(cfg.files, "nand-current"))
+    # The 3.1.3 NOR, if this checkout has one. 3.x iBoot unwraps the SHSH blob
+    # in flash with a UID-derived key, and nor_n72ap.bin (the 2.1.1 NOR) has no
+    # wrapped blob: iBoot then prints "load_macho_image: failed to load device
+    # tree", drops into recovery mode, and paints the panel solid white. That
+    # device answers USB as 05ac:1281 with no AppleUSBMux interface, which is
+    # the "device never appeared on the mux" every USB check used to report.
+    # boot_env() already picks the matching 3.1.3 iBoot the same way; the NOR
+    # has to travel with it.
+    cfg.nor = cfg.nor or next(
+        (p for p in (os.path.join(cfg.files, "ios3", "nor_7E18.bin"),
+                     os.path.join(cfg.files, "nor_n72ap.bin"))
+         if os.path.exists(p)), os.path.join(cfg.files, "nor_n72ap.bin"))
 
 
 def main():
@@ -1589,6 +1913,7 @@ def main():
         epilog="checks: " + ", ".join(ALL_CHECKS))
     ap.add_argument("--files-dir",
                     default=os.path.expanduser("~/Developer/qemu-ios-files"))
+    ap.add_argument("--bootrom", help="n45 SecureROM input (default: device/bootrom.bin or files-dir/ipod1g/bootrom_s5l8900)")
     ap.add_argument("--base-nand", default=None,
                     help="base NAND image dir (default: <files-dir>/nand-current, the shipping image)")
     ap.add_argument("--cpu", default=None,
@@ -1607,13 +1932,32 @@ def main():
     ap.add_argument("--nor", default=None,
                     help="NOR image (default <files-dir>/ios3/nor_7E18.bin if "
                          "present, else <files-dir>/nor_n72ap.bin)")
+    ap.add_argument("--direct-iboot", default=None, metavar="IBOOT",
+                    help="decrypted iBoot for the machine's direct-iboot option (default "
+                         "<files-dir>/ios3/iBoot.bin via IT_DIRECT_IBOOT); a device made by "
+                         "imgtools/device.py ships its own iBoot.bin")
+    ap.add_argument("--gid-blobs", default=None, metavar="FILE",
+                    help="the machine's gid-blobs table (a device.py device's gid-blobs.bin)")
+    ap.add_argument("--guest-package", default=None, metavar="DIR",
+                    help="the machine's guest-package offer directory (contrib/guest-package/mkpkg.py "
+                         "offer); the agent check then also wants it_boot's report")
+    ap.add_argument("--device", default=None, metavar="DIR",
+                    help="a device made by imgtools/device.py: its nand/, nor.bin, iBoot.bin and "
+                         "gid-blobs.bin (explicit options win)")
     native_qemu = os.path.join(ROOT, "build-native14", "qemu-build", "qemu-system-arm")
     default_qemu = native_qemu if os.path.exists(native_qemu) else os.path.join(ROOT, "build", "qemu-system-arm")
     ap.add_argument("--qemu", default=os.environ.get("QEMU", default_qemu))
     ap.add_argument("--usbmuxd",
                     default=os.path.expanduser(
                         "~/Developer/usbmuxd-qemu/usbmuxd/src/usbmuxd"))
-    ap.add_argument("--ipa", default=APP_IPA_DEFAULT)
+    ap.add_argument("--ipa", default=None, help="installation/launch IPA (default: repository Harness)")
+    ap.add_argument("--harness-ipa", default=None, help="explicit Harness IPA for audio/GLES fallback")
+    gles_selection = ap.add_mutually_exclusive_group()
+    gles_selection.add_argument("--gles-app", default=None, help="explicit GLTest.app bundle (slot ABI map selected separately)")
+    ap.add_argument("--host-power-gesture", action="store_true",
+                    help="qualify generic virtual-time host shutdown gesture, PMU shutdown still required")
+    gles_selection.add_argument("--gles-front-end", dest="gles_front_end_requested", action="store_true",
+                                help="test SpringBoard compositing through the declared OpenGLES frontend, even with installed helpers")
     ap.add_argument("--ledger", metavar="DIRECTORY",
                     help="test each IPA in a directory on its own disposable guest and write a review ledger")
     ap.add_argument("--launch-stages", action="store_true",
@@ -1621,6 +1965,8 @@ def main():
     ap.add_argument("--stage-gles-shim", action="store_true",
                     help="replace the guest GLES shim in the disposable overlay")
     ap.add_argument("--out", default=None, help="run directory")
+    ap.add_argument("--keep-overlay", action="store_true",
+                    help="boot on the run directory's overlay from an earlier run (an existing device), not a fresh one")
     ap.add_argument("--checks", default=None,
                     help="comma-separated subset, any tier (default: "
                          "the default tier, or all checks with --with-apps)")
@@ -1648,10 +1994,12 @@ def main():
     ap.add_argument("--qmp-port-hi", type=int, default=28019)
     ap.add_argument("--proxy-port-lo", type=int, default=28101)
     ap.add_argument("--proxy-port-hi", type=int, default=28119)
+    ap.add_argument("--require-inputs", action="store_true", help="fail when a selected check is skipped")
     ap.add_argument("--clean", action="store_true",
                     help="remove the run directory (screendumps, PPMs, "
                          "~512MB volume.img) if every selected check passed "
                          "or was skipped")
+    ap.add_argument("--gles-slotmap", default=None, help="explicit GLES slot ABI map (default: repository slotmap.txt)")
     cfg = ap.parse_args()
     if cfg.ledger:
         if cfg.checks or cfg.quick or cfg.with_apps or cfg.clean or cfg.check_prereqs:
@@ -1659,31 +2007,17 @@ def main():
         from app_ledger import run_ledger
         return run_ledger(cfg)
 
-    cfg.files = os.path.expanduser(cfg.files_dir)
-    # NAND, NOR and iBoot are one set and cannot be mixed: nand-canonical is a
-    # 2.1.1 image, and against 3.1.3's iBoot its FTL will not even open --
-    # "NAND initialisation failed due to format mismatch", "root filesystem
-    # mount failed", "Entering recovery mode". That recovery-mode device is the
-    # 05ac:1281 with no mux interface described below, so picking the 3.1.3 NOR
-    # while leaving the 2.1.1 NAND reports itself as a USB fault several
-    # minutes later rather than as the image mismatch it is. Whichever
-    # firmware boot_env() and the NOR default choose, the NAND matches it.
-    # nand-current is the shipping image; no fallback, so a missing link is
-    # reported by the prerequisite check instead of silently testing another.
-    # Resolved so the run log names the real image.
-    cfg.base_nand = os.path.realpath(cfg.base_nand or os.path.join(cfg.files, "nand-current"))
-    # The 3.1.3 NOR, if this checkout has one. 3.x iBoot unwraps the SHSH blob
-    # in flash with a UID-derived key, and nor_n72ap.bin (the 2.1.1 NOR) has no
-    # wrapped blob: iBoot then prints "load_macho_image: failed to load device
-    # tree", drops into recovery mode, and paints the panel solid white. That
-    # device answers USB as 05ac:1281 with no AppleUSBMux interface, which is
-    # the "device never appeared on the mux" every USB check used to report.
-    # boot_env() already picks the matching 3.1.3 iBoot the same way; the NOR
-    # has to travel with it.
-    cfg.nor = cfg.nor or next(
-        (p for p in (os.path.join(cfg.files, "ios3", "nor_7E18.bin"),
-                     os.path.join(cfg.files, "nor_n72ap.bin"))
-         if os.path.exists(p)), os.path.join(cfg.files, "nor_n72ap.bin"))
+    configure_device(cfg)
+    import fixture_preflight
+    inputs = fixture_preflight.select_inputs(ROOT, cfg.product_version, ipa=cfg.ipa,
+        harness=cfg.harness_ipa, gles=cfg.gles_app, slotmap=cfg.gles_slotmap)
+    cfg.ipa, cfg.harness_ipa = inputs['ipa'], inputs['harness']
+    cfg.gles_app, cfg.gles_slotmap = inputs['gles'], inputs['slotmap']
+    cfg.fixture_flavor = inputs['flavor']
+    cfg.ipa_explicit, cfg.harness_explicit = inputs['explicit']['ipa'], inputs['explicit']['harness']
+    cfg.gles_explicit, cfg.slotmap_explicit = inputs['explicit']['gles'], inputs['explicit']['slotmap']
+    if cfg.gles_explicit:
+        cfg.gles_front_end = False  # Explicit fixture requests the app leg, not SpringBoard coverage.
 
     if cfg.check_prereqs:
         return report_prereqs(cfg)
@@ -1710,21 +2044,44 @@ def main():
     if "boot" not in selected:
         selected.insert(0, "boot")
 
-    cfg.kernel_console = "serial-console" in selected
+    fixture_problems = fixture_preflight.requested_problems(
+        cfg, selected, HARNESS_IPA, os.path.join(GLES_DIR, "GLTest.app"))
+    fixture_problems += requested_frame_references(cfg, selected)
+    if fixture_problems:
+        sys.exit("\n".join(fixture_problems))
+
+    try:
+        fixture_receipt = fixture_preflight.selected_metadata(cfg, selected)
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile, plistlib.InvalidFileException, ExpatError) as error:
+        sys.exit("cannot record requested fixture input: " + str(error))
+
+    # wifi judges "link" from the kernel's "AirPort: Link Up on en0", which only
+    # reaches serial.log with the kernel console on (0c05f7b736 made it opt-in).
+    cfg.kernel_console = bool({"serial-console", "wifi"} & set(selected))
     cfg.out = cfg.out or os.path.join(
         os.environ.get("TMPDIR", "/tmp"),
         "itregress-%d-%d" % (os.getpid(), int(START)))
     os.makedirs(cfg.out, exist_ok=True)
+    with open(os.path.join(cfg.out, "fixture-inputs.json"), "w") as file:
+        json.dump(fixture_receipt, file, indent=2)
     cfg.overlay = os.path.join(cfg.out, "overlay")
-    if os.path.exists(cfg.overlay):
+    if os.path.exists(cfg.overlay) and not cfg.keep_overlay:
         shutil.rmtree(cfg.overlay)
-    os.makedirs(cfg.overlay)
+    os.makedirs(cfg.overlay, exist_ok=True)
 
     # qemu and the base NAND are the whole default tier's only inputs: without
     # them nothing at all can run, so this is still a hard exit.
     for path, what in ((cfg.qemu, "qemu binary"), (cfg.base_nand, "base NAND")):
         if not os.path.exists(path):
             sys.exit("missing %s: %s" % (what, path))
+    if cfg.board == "n45ap" and not os.path.isfile(cfg.bootrom):
+        sys.exit("missing n45 SecureROM input: " + cfg.bootrom)
+    # Stock FFmpeg makes the H.264 checks fail in a way that looks like a
+    # code regression (tests/ipod/test_h264_snapshot "slice decode failed").
+    import ffmpeg_guard
+    why = ffmpeg_guard.check(cfg.qemu)
+    if why:
+        sys.exit(why)
 
     # usbmuxd and the .ipa are per-check inputs, not run-wide ones: a check
     # that needs one it doesn't have SKIPs instead of taking the whole run
@@ -1740,16 +2097,20 @@ def main():
 
     results = {c: Result(c) for c in selected}
     skipped = set()
+    if cfg.board == "n45ap":
+        cfg.usbmuxd_ok = False
     for c in selected:
-        if c in USB_DEPENDENT_CHECKS and not cfg.usbmuxd_ok:
-            results[c].skip("usbmuxd binary not found: %s" % cfg.usbmuxd)
+        # the front end's gles leg is SpringBoard's own compositing: no app to install over USB
+        if c in USB_DEPENDENT_CHECKS and not cfg.usbmuxd_ok and not (c == "gles" and cfg.gles_front_end):
+            results[c].skip("usbmuxd binary not found: %s" % cfg.usbmuxd if cfg.board != "n45ap"
+                            else "the iPod touch 1G has no USB host side yet")
             skipped.add(c)
         elif c in IPA_DEPENDENT_CHECKS and not cfg.ipa_ok:
             results[c].skip("ipa not found: %s" % cfg.ipa)
             skipped.add(c)
     if "audio" in selected and "audio" not in skipped:
-        if not os.path.exists(HARNESS_IPA):
-            results["audio"].skip("Harness.ipa not found: " + HARNESS_IPA)
+        if not os.path.exists(cfg.harness_ipa or HARNESS_IPA):
+            results["audio"].skip("Harness.ipa not found: " + (cfg.harness_ipa or HARNESS_IPA))
             skipped.add("audio")
         else:
             try:
@@ -1760,15 +2121,15 @@ def main():
     selected = [c for c in selected if c not in skipped]
     cfg.wifi = "wifi" in selected or "webproxy" in selected
     if "webproxy" in selected:
-        cfg.web_proxy_config = os.path.join(cfg.out, "web-proxy.conf")
-        with open(cfg.web_proxy_config, "w") as f:
-            f.write("off\n")
+        cfg.web_proxy_config = os.path.join(cfg.out, "web-proxy.port")
+        open(cfg.web_proxy_config, "w").close()   # check_webproxy names its fixture's port
 
     log("run dir   %s" % cfg.out)
     log("base nand %s" % cfg.base_nand)
     log("checks    %s" % ", ".join(selected))
 
     procs = Procs()
+    cfg.harness_failures = []
     clean_stop = False
     needs_second_boot = "persist" in selected
     marker_src = os.path.join(cfg.out, "persist-marker.bin")
@@ -1781,7 +2142,7 @@ def main():
         ok, detail, best = dev.wait_for_home(cfg.boot_timeout)
         results["boot"].set(ok, detail if ok else
                             "%s (best lit=%d, need >=%d)"
-                            % (detail, best, HOME_LIT_MIN))
+                            % (detail, best, cfg.home_lit_min))
         if not ok:
             return finish(results, procs, cfg)
 
@@ -1794,7 +2155,8 @@ def main():
         if "wifi" in selected:
             check_wifi(cfg, dev, results["wifi"])
 
-        need_usb = any(c in selected for c in USB_DEPENDENT_CHECKS)
+        need_usb = any(c in selected for c in USB_DEPENDENT_CHECKS
+                       if not (c == "gles" and cfg.gles_front_end))
         udid = None
         if need_usb:
             udid, pdetail = wait_for_device(cfg)
@@ -1829,6 +2191,9 @@ def main():
         if "agent" in selected:
             check_agent(cfg, procs, dev, results["agent"])
 
+        if "prefs" in selected:
+            check_prefs(cfg, dev, results["prefs"])
+
         if "gles" in selected:
             check_gles(cfg, procs, dev, results["gles"])
             dev.qmp.home()              # leave the graphics fixture
@@ -1855,6 +2220,7 @@ def main():
                 time.sleep(5)
             clean_stop = dev.powerdown()
             if not clean_stop:
+                harness_failure(cfg, "boot1-powerdown", "required guest shutdown did not complete")
                 log("powerdown did not complete; killing")
                 procs.stop(dev.qemu)
         else:
@@ -1892,6 +2258,7 @@ def main():
                                       results["persist"])
                     clean_stop = dev2.powerdown()
                     if not clean_stop:
+                        harness_failure(cfg, "boot2-powerdown", "required final guest shutdown did not complete")
                         procs.stop(dev2.qemu)
                 procs.stop(dev2.mux)
                 time.sleep(2)
@@ -1902,7 +2269,8 @@ def main():
     except KeyboardInterrupt:
         procs.stop_all()
         raise
-    except Exception:
+    except Exception as error:
+        harness_failure(cfg, "execution", "%s: %s" % (type(error).__name__, error))
         # An exception is a harness failure, not a pass: print it, mark every
         # check that never produced a verdict as failed, and still tear down.
         import traceback
@@ -1914,11 +2282,33 @@ def main():
     return finish(results, procs, cfg)
 
 
+def harness_failure(cfg, stage, detail):
+    failures = getattr(cfg, "harness_failures", None)
+    if failures is None:
+        failures = cfg.harness_failures = []
+    failures.append({"stage": stage, "detail": detail})
+    log("harness failure (%s): %s" % (stage, detail))
+
+
 def finish(results, procs, cfg):
-    procs.stop_all()
+    try:
+        procs.stop_all()
+    except Exception as error:
+        harness_failure(cfg, "cleanup", "%s: %s" % (type(error).__name__, error))
+    harness_failures = getattr(cfg, "harness_failures", [])
+    with open(os.path.join(cfg.out, "harness.json"), "w") as f:
+        json.dump({"ok": not harness_failures, "failures": harness_failures,
+                   "artifact_directory": cfg.out}, f, indent=2)
     with open(os.path.join(cfg.out, "results.json"), "w") as f:
-        json.dump({name: {"ok": r.ok, "xfail": r.xfail, "detail": r.detail}
-                   for name, r in results.items()}, f, indent=2)
+        verdicts = {name: {"ok": r.ok, "skipped": r.skipped, "xfail": r.xfail, "detail": r.detail}
+                    for name, r in results.items()}
+        if harness_failures:
+            # Failure-only run metadata keeps successful eight-check receipts
+            # stable while preventing consumers from observing all-green verdicts.
+            verdicts["_harness"] = {"ok": False, "skipped": False, "xfail": False,
+                "detail": "; ".join("%s: %s" % (x["stage"], x["detail"]) for x in harness_failures),
+                "failures": harness_failures, "artifact_directory": cfg.out}
+        json.dump(verdicts, f, indent=2)
     print("")
     print("=" * 62)
     failed = 0
@@ -1928,6 +2318,7 @@ def finish(results, procs, cfg):
             continue
         if r.ok is None:
             state = "SKIP"
+            if getattr(cfg, "require_inputs", False): failed += 1
         elif r.ok:
             state = "PASS"
         elif r.xfail:
@@ -1938,11 +2329,13 @@ def finish(results, procs, cfg):
         print("%-4s  %-11s %s" % (state, r.name, r.detail))
     print("=" * 62)
     print("%d check(s) failed; artifacts in %s" % (failed, cfg.out))
-    if failed == 0 and getattr(cfg, "clean", False):
+    if harness_failures:
+        print("%d harness failure(s); see harness.json" % len(harness_failures))
+    if failed == 0 and not harness_failures and getattr(cfg, "clean", False):
         shutil.rmtree(cfg.out, ignore_errors=True)
         print("--clean: removed %s" % cfg.out)
     print("total runtime %.1f min" % ((time.time() - START) / 60.0))
-    return 1 if failed else 0
+    return 1 if failed or harness_failures else 0
 
 
 if __name__ == "__main__":

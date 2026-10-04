@@ -26,6 +26,7 @@ typedef struct IPodH264State {
     bool exhausted;
     qemu_irq irq;
     bool irq_level;
+    unsigned frame_num_bits; /* SPS frame_num width of the current picture */
 #ifdef IT_HAVE_AVCODEC
     AVCodecContext *codec;
     AVFrame *frame;
@@ -39,7 +40,6 @@ typedef struct IPodH264State {
 #endif
 #ifdef __APPLE__
     IPodVideoDecoder *video;
-    CMVideoFormatDescriptionRef format;
 #endif
 } IPodH264State;
 
@@ -74,8 +74,6 @@ static void h264_host_decoder_close(IPodH264State *s)
 #ifdef __APPLE__
     ipod_video_close(s->video);
     s->video = NULL;
-    if (s->format) CFRelease(s->format);
-    s->format = NULL;
 #endif
 }
 
@@ -159,6 +157,17 @@ static void h264_ue(uint8_t *buf, unsigned *bit, unsigned value)
 static void h264_se(uint8_t *buf, unsigned *bit, int value)
 {
     h264_ue(buf, bit, value <= 0 ? -2 * value : 2 * value - 1);
+}
+
+/* Widen a u(v) field in place by n leading zero bits (bits pos.. shift up). */
+static void h264_insert_zeros(uint8_t *buf, unsigned pos, unsigned n, unsigned *total)
+{
+    for (unsigned i = *total; i-- > pos;) {
+        unsigned v = (buf[i / 8] >> (7 - i % 8)) & 1, j = i + n;
+        buf[j / 8] = (buf[j / 8] & ~(0x80 >> (j % 8))) | (v << (7 - j % 8));
+    }
+    for (unsigned i = pos; i < pos + n; i++) buf[i / 8] &= ~(0x80 >> (i % 8));
+    *total += n;
 }
 
 static GByteArray *h264_escape(uint8_t *buf, unsigned bit)
@@ -279,28 +288,20 @@ static bool h264_slice_nals(IPodH264State *s, GByteArray **sps,
     if (reference_map) references = *reference_map;
     else if (type == 0 && !h264_references(s, &references)) return false;
     bool idr = type == 2 && !references.count;
-    h264_put(config, &bit, 0x67, 8);
-    h264_put(config, &bit, (cabac || weighted) ? 77 : 66, 8); /* Main/Baseline */
-    h264_put(config, &bit, (cabac || weighted) ? 0x40 : 0xc0, 8);
-    h264_put(config, &bit, 51, 8);
-    h264_ue(config, &bit, 0); /* SPS ID */
-    h264_ue(config, &bit, 12); /* 16-bit frame_num */
-    h264_ue(config, &bit, 2); /* decode-order POC */
-    h264_ue(config, &bit, 16); /* hardware L0 references, seeded losslessly */
-    h264_put(config, &bit, 0, 1);
-    h264_ue(config, &bit, width - 1);
-    h264_ue(config, &bit, height - 1);
-    h264_put(config, &bit, 0xc, 4); /* frame-only, direct8x8, no crop/VUI */
-    h264_put(config, &bit, 1, 1);
-    *sps = h264_escape(config, bit);
+    /* CAVLC I_PCM padding follows the NAL's byte alignment, so the payload
+     * must keep its alignment after header replacement. Without a decoder
+     * option carrying the original alignment (pcm_bit_offset == NULL), widen
+     * frame_num (5..12 bits) until the synthetic header preserves it. The
+     * offset path keeps 16-bit frame numbers for retained/replayed slices. */
+    unsigned frame_num_bits = pcm_bit_offset ? 16 : 5;
     *pps = h264_pps(chroma, cabac, weighted, s->regs[0x1018 / 4], 0);
     g_autofree uint8_t *picture = g_malloc0(s->rbsp->len + 512);
-    bit = 0;
     h264_put(picture, &bit, idr ? 0x65 : 0x41, 8);
     h264_ue(picture, &bit, s->regs[0x1038 / 4] * width + s->regs[0x103c / 4]);
     h264_ue(picture, &bit, type);
     h264_ue(picture, &bit, 0);
-    h264_put(picture, &bit, idr ? 0 : references.count, 16);
+    unsigned frame_num_pos = bit;
+    h264_put(picture, &bit, idr ? 0 : references.count, frame_num_bits);
     if (idr) h264_ue(picture, &bit, 0);
     if (type == 0) {
         h264_put(picture, &bit, 1, 1); /* override active L0 count */
@@ -359,7 +360,29 @@ static bool h264_slice_nals(IPodH264State *s, GByteArray **sps,
     }
     /* Retain the RBSP stop bit, replacing only its byte-alignment padding. */
     unsigned payload = s->bit, end = s->rbsp->len * 8;
-    if (pcm_bit_offset) *pcm_bit_offset = cabac ? 0 : (payload - bit) & 7;
+    if (pcm_bit_offset) {
+        *pcm_bit_offset = cabac ? 0 : (payload - bit) & 7;
+    } else if (!cabac && ((payload - bit) & 7)) {
+        unsigned pad = (payload - bit) & 7;
+        h264_insert_zeros(picture, frame_num_pos, pad, &bit);
+        frame_num_bits += pad;
+    }
+    s->frame_num_bits = frame_num_bits;
+    unsigned sps_bit = 0;
+    h264_put(config, &sps_bit, 0x67, 8);
+    h264_put(config, &sps_bit, (cabac || weighted) ? 77 : 66, 8); /* Main/Baseline */
+    h264_put(config, &sps_bit, (cabac || weighted) ? 0x40 : 0xc0, 8);
+    h264_put(config, &sps_bit, 51, 8);
+    h264_ue(config, &sps_bit, 0); /* SPS ID */
+    h264_ue(config, &sps_bit, frame_num_bits - 4);
+    h264_ue(config, &sps_bit, 2); /* decode-order POC */
+    h264_ue(config, &sps_bit, 16); /* hardware L0 references, seeded losslessly */
+    h264_put(config, &sps_bit, 0, 1);
+    h264_ue(config, &sps_bit, width - 1);
+    h264_ue(config, &sps_bit, height - 1);
+    h264_put(config, &sps_bit, 0xc, 4); /* frame-only, direct8x8, no crop/VUI */
+    h264_put(config, &sps_bit, 1, 1);
+    *sps = h264_escape(config, sps_bit);
     if (cabac) {
         while (bit % 8) {
             h264_put(picture, &bit, 1, 1);
@@ -396,7 +419,7 @@ static GByteArray *h264_reference_pixels(IPodH264State *s, uint32_t y,
     h264_put(picture, &bit, frame ? 0x41 : 0x65, 8);
     h264_ue(picture, &bit, 0); h264_ue(picture, &bit, 2);
     h264_ue(picture, &bit, s->regs[0x1020 / 4] ? 1 : 0);
-    h264_put(picture, &bit, frame, 16);
+    h264_put(picture, &bit, frame, s->frame_num_bits ? s->frame_num_bits : 16);
     if (!frame) {
         h264_ue(picture, &bit, 0); h264_put(picture, &bit, 0, 2);
     } else {
@@ -452,14 +475,16 @@ static bool h264_decode_native(IPodH264State *s)
     }
     /* The synthetic SPS has no VUI; matching its nominal limited range keeps
      * coded samples unchanged. The guest's compositor owns range conversion. */
-    /* Reuse the native session when its parameter sets are unchanged. Each
-     * job still starts with an IDR (real I picture or first lossless seed),
-     * so guest DMA remains the sole authority for reference pixels. */
-    if (!s->format || !CFEqual(s->format, format)) {
+    /* Reuse the native session across parameter-set changes it accepts (the
+     * frame_num width varies per picture). Each job still starts with an IDR
+     * (real I picture or first lossless seed), so guest DMA remains the sole
+     * authority for reference pixels. */
+    if (s->video && !ipod_video_set_format(s->video, format)) {
         h264_decoder_close(s);
+    }
+    if (!s->video) {
         s->video = ipod_video_create(format,
             kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
-        if (s->video) s->format = (CMVideoFormatDescriptionRef)CFRetain(format);
     }
     CFRelease(format);
     if (!s->video) {
@@ -680,9 +705,9 @@ fail:
 static bool h264_decode(IPodH264State *s)
 {
 #ifdef IT_HAVE_AVCODEC
-    /* CAVLC PCM blocks retain their original bit alignment after header
-     * replacement. VideoToolbox cannot accept that alignment metadata. */
-    if (s->partial || s->codec || !s->regs[0x1020 / 4]) return h264_decode_software(s);
+    /* A picture spanning several slice jobs needs libavcodec's chunk mode;
+     * VideoToolbox only takes complete access units. */
+    if (s->partial || s->codec) return h264_decode_software(s);
 #endif
     if (h264_decode_native(s)) return true;
 #ifdef IT_HAVE_AVCODEC

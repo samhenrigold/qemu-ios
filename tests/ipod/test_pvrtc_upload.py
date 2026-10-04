@@ -19,6 +19,7 @@ code = r'''
 #include <OpenGL/glext.h>
 #include <glib.h>
 #include <assert.h>
+#include "powervr/pvrtc.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -43,10 +44,13 @@ static const uint8_t *gles_fetch_texels(CPUState*c,uint32_t addr,size_t size,con
 }
 static uint8_t *gles_decode_buf(size_t n) {free(decoded); return decoded=malloc(n);}
 static void gles_report_decode(uint32_t f,uint32_t w,uint32_t h,const uint8_t*d) {}
-static int cpu_memory_rw_debug(CPUState*c,uint32_t addr,uint8_t*d,size_t n,int write) {
+static int gles_guest_rw(CPUState*c,uint32_t addr,void*d,size_t n,bool write) {
     assert(addr==2 && !write && n==sizeof(deleted)); memcpy(d,&deleted,n);return 0;
 }
+static bool gles_refuse(const char *fmt,...) {return true;} /* gles-host.c counts and returns true */
+static void gles_debug_texture(GLenum target) {(void)target;}
 ''' + decoder + helpers + r'''
+static void gles_surface_forget(GLenum target) { (void)target; }   /* no IOSurfaces here */
 static int64_t dispatch(unsigned slot,const uint32_t*a) {CPUState*cpu=NULL;switch(slot) {
 ''' + cases + r'''
 default: abort();}}
@@ -122,5 +126,5 @@ with tempfile.TemporaryDirectory(prefix='pvrtc-upload-') as directory:
     c=Path(directory)/'check.c';exe=Path(directory)/'check';c.write_text(code)
     flags=subprocess.check_output(['pkg-config','--cflags','--libs','glib-2.0'],text=True).split()
     subprocess.run(['clang','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all',
-                    str(c),'-o',str(exe),*flags,'-framework','OpenGL'],check=True)
+                    str(c), str(root/'hw/arm/powervr/pvrtc.cpp'), '-I'+str(root/'hw/arm'), '-lc++','-o',str(exe),*flags,'-framework','OpenGL'],check=True)
     subprocess.run([str(exe)],check=True)

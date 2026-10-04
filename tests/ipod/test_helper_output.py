@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Host helper output must fail on deferred disk errors, without guest firmware."""
 from pathlib import Path
-import os
 import struct
 import subprocess
 import tempfile
@@ -10,7 +9,6 @@ import zlib
 
 ROOT = Path(__file__).resolve().parents[2]
 
-
 def run(*args, ok=True, **kwargs):
     result = subprocess.run(list(map(str, args)), capture_output=True, text=True, **kwargs)
     if ok:
@@ -18,7 +16,6 @@ def run(*args, ok=True, **kwargs):
     else:
         assert result.returncode != 0 and 'cannot finish' in result.stderr, result
     return result
-
 
 with tempfile.TemporaryDirectory(prefix='ltm-helper-output-') as temporary:
     work = Path(temporary)
@@ -74,20 +71,4 @@ int test_fclose(FILE *stream) {
     run(failing, 'blob-pack', work / 'bad.blob', f'fixture={data}', ok=False)
     assert not (work / 'bad.blob').exists()
 
-    # A failed Terminal launch must leave no command directory behind.
-    binaries, scratch = work / 'bin', work / 'scratch'
-    binaries.mkdir()
-    scratch.mkdir()
-    for name, body in {'iproxy': 'exit 0', 'idevice_id': 'echo fixture', 'open': 'exit 7'}.items():
-        path = binaries / name
-        path.write_text('#!/bin/sh\n' + body + '\n')
-        path.chmod(0o755)
-    env = os.environ | {'PATH': str(binaries) + ':' + os.environ['PATH'],
-                        'TMPDIR': str(scratch) + '/', 'DEVICE_PASSWORD': 'fixture',
-                        'USBMUXD_SOCKET_ADDRESS': '127.0.0.1:1'}
-    result = subprocess.run(['bash', ROOT / 'contrib/it-ssh-terminal.sh'], env=env,
-                            capture_output=True, text=True)
-    assert result.returncode == 7, result
-    assert list(scratch.iterdir()) == [], list(scratch.iterdir())
-
-print('PASS: helper round trips, deferred output errors, failed Terminal cleanup')
+print('PASS: helper round trips, deferred output errors')

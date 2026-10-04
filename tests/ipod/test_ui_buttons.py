@@ -19,10 +19,15 @@ header = r'''
 #define QEMU_IOS_BUTTON_VOLUME_DOWN 3
 typedef enum {IPOD_TOUCH_BUTTON_HOME,IPOD_TOUCH_BUTTON_POWER,IPOD_TOUCH_BUTTON_VOLUP,IPOD_TOUCH_BUTTON_VOLDOWN} IPodTouchButton;
 typedef struct { void(*cb)(void*);void *arg;int64_t deadline;bool pending; } QEMUTimer;
+static void ios_sequence_cancel_current(void) {}
 static int64_t now;
 static bool pins[4];
 static int64_t qemu_clock_get_ms(int clock) { return now; }
+static bool ipad_pins[4];
 static void ipod_touch_press_button(IPodTouchButton b,bool down) {pins[b]=down;}
+static void ipad1_press_button(IPodTouchButton b,bool down) {ipad_pins[b]=down;}
+static char g1_pins[8];
+static void ipod_touch_1g_press_button(IPodTouchButton b,bool down) {g1_pins[b]=down;}
 static QEMUTimer *timer_new_ms(int c,void(*cb)(void*),void *arg) {
  QEMUTimer *t=calloc(1,sizeof(*t));t->cb=cb;t->arg=arg;return t;
 }
@@ -37,8 +42,8 @@ int main(void) {
  for(int b=0;b<4;b++) {
   now=1000;event(b,true);event(b,false);
   QEMUTimer*t=ios_button_holds[b].release;
-  assert(pins[b] && t->pending && t->deadline==1100);
-  now=1100;t->cb(t->arg);assert(!pins[b]);
+  assert(pins[b] && ipad_pins[b] && t->pending && t->deadline==1100);
+  now=1100;t->cb(t->arg);assert(!pins[b] && !ipad_pins[b]);
   now=2000;event(b,true);now=2500;event(b,false);
   assert(pins[b] && t->deadline==2500);t->cb(t->arg);assert(!pins[b]);
   now=3000;event(b,true);event(b,false);now=3050;event(b,true);

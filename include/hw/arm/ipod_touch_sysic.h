@@ -31,6 +31,9 @@ typedef struct IPodTouchSYSICState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     bool direct_boot; /* Startup board compatibility policy. */
+    uint32_t epoch;   /* POWER_ID[31:24] to synthesise on a direct boot: the staged iBoot's
+                       * own security epoch (it_iboot_find_epoch), which the LLB would have latched */
+    bool s5l8900;     /* "s5l8900" property: +0xC powers down, +0x10 up, STATE is the on-mask */
     qemu_irq gpio_irqs[GPIO_NUMINTGROUPS];
     uint32_t power_id;
     uint32_t power_state;
@@ -43,5 +46,8 @@ typedef struct IPodTouchSYSICState {
     /* Asserted logical level requests from devices such as the nested PMU IC. */
     uint32_t gpio_level_pending[GPIO_NUMINTGROUPS];
 } IPodTouchSYSICState;
+
+/* Latch an edge request and update the masked group output. */
+void ipod_touch_sysic_request_edge(IPodTouchSYSICState *s, unsigned group, unsigned bit);
 
 #endif

@@ -80,6 +80,9 @@ typedef enum {
     // machine silently does nothing rather than faulting.
     QC_GLES_PING = 0x141,
 
+    // The GL shim's protocol and package serial (hw/arm/guest-package.h).
+    QC_GLES_HELLO = 0x142,
+
     // Host <-> guest pasteboard (contrib/it-pasteboard/it_pbd.c).
     //
     // The guest's pasteboard is owned by com.apple.UIKit.pasteboardd and is only
@@ -108,6 +111,12 @@ typedef enum {
     QC_UI_WRITE = 0x168,
     QC_UI_DONE = 0x169,
     QC_AG_UI_ROUTE = 0x16a, // root daemon hands current request to offset = pid
+
+    // Guest packages: offer, payload windows, it_boot's report
+    // (hw/arm/guest-package.h, contrib/it-boot).
+    QC_PKG_OFFER = 0x170,
+    QC_PKG_READ = 0x171,
+    QC_PKG_REPORT = 0x172,
 
 } qemu_call_number_t;
 

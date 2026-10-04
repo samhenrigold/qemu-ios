@@ -5,6 +5,7 @@
 #include "hw/hw.h"
 #include "hw/sysbus.h"
 #include "qemu/timer.h"
+#include "hw/arm/mbx_fill.h"
 
 #define TYPE_IPOD_TOUCH_MBX "ipodtouch.mbx"
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchMBXState, IPOD_TOUCH_MBX)
@@ -13,9 +14,12 @@ typedef struct IPodTouchMBXState {
     SysBusDevice busdev;
     MemoryRegion iomem1;
     MemoryRegion iomem2;
+    bool fill_enabled;
+    uint32_t fill_mode;
+    bool fill_dma_failed;
+    MBXFillState fill;
     uint64_t addr;
     bool mmu_written;   /* has the guest ever driven MBX_MMU_CTRL_REG? */
-    bool alreadypatched;
 
     /* irq_enabled (the mbx-irq machine option, default on) gates the verified
      * MMU request/ack mirror in ipod_touch_mbx1_read. */
@@ -34,6 +38,5 @@ typedef struct IPodTouchMBXState {
     QEMUTimer *complete_timer;
 } IPodTouchMBXState;
 
-void ipod_touch_mbx_set_patch_usb_gate(bool enabled);
 
 #endif

@@ -23,7 +23,19 @@
 #define TYPE_PCF50633                 "pcf50633"
 OBJECT_DECLARE_SIMPLE_TYPE(Pcf50633State, PCF50633)
 
-#define PMU_DSBL1 0x30	
+/*
+ * Backlight. 0x30 is the WLED level (0x31 takes a second byte, 0x05 whenever
+ * the light is on in every build's trace; not decoded here). 0x10 is the
+ * regulator enable register and bit 6 is the backlight rail: iBoot never
+ * writes 0x10 and still gets its logo lit, so the rail is on out of reset;
+ * 4.2.1's AppleD1759PMUBacklightEnableFunction (DT function-backlight_enable)
+ * clears the bit to sleep the panel (0x1d=0x12, 0x10: 0xe0 -> 0xa0) and sets
+ * it on wake, leaving a dim 0x30 in place; 3.1.3 keeps the bit and drives
+ * 0x30 to 0 instead. 2.1.1's idle sleep clears it too (0x7f -> 0x3f).
+ */
+#define PMU_DSBL1 0x30
+#define PMU_LDO_ENABLE 0x10
+#define PMU_LDO_BACKLIGHT (1 << 6)
 #define PMU_ADC_CONTROL 0x40
 #define PMU_ADC_RESULT_LO 0x41
 #define PMU_ADC_RESULT_HI 0x42
@@ -31,8 +43,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(Pcf50633State, PCF50633)
 #define PMU_IRQ_MASK_A 0x07
 
 /*
- * RTC. There is no BCD calendar here -- that was a guess carried over from the
- * real PCF50633, and iOS never reads one. AppleD1759PMURTC (the same code in
+ * RTC. The D1759 (2.x/3.x) has no BCD calendar; 1.x's PCF50633 does, and reads
+ * it (PMU_BCD_RTC, "rtc-bcd": ApplePCF50635PMURTC, see pmu_bcd_rtc_read).
+ * AppleD1759PMURTC (the same code in
  * 2.1.1's AppleD1759PMU-36.2 and 3.1.3's -94.7) treats the D1759 RTC as:
  *
  *   0x5C..0x5F  a free-running 32-bit LITTLE-ENDIAN seconds counter, read-only.
@@ -49,6 +62,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(Pcf50633State, PCF50633)
  */
 #define PMU_RTC_COUNTER 0x5C   // .. 0x5F, 32-bit LE seconds, read-only
 #define PMU_RTC_OFFSET  0x64   // .. 0x67, 32-bit LE, written by the guest
+#define PMU_BCD_RTC     0x59   // .. 0x5F, the PCF50633's BCD calendar ("rtc-bcd", 1.x)
 
 typedef struct Pcf50633State {
 	I2CSlave i2c;
@@ -58,8 +72,13 @@ typedef struct Pcf50633State {
 	bool addressing;      // next written byte selects the register address
 	uint8_t regs[256];    // backing register file so writes read back consistently
 	uint32_t rtc_latch;   // snapshot of the RTC counter, taken when 0x5C is read
-	bool usb_cable;       // report a USB cable as present (reg 0x04 bit 3)
+	bool usb_cable;       // report a USB cable as present (usb_status_reg's usb_status_bits)
 	bool shutdown_armed;  // obsolete host flag; retained for snapshot wire compatibility
+	uint8_t shutdown_reg;   /* "shutdown-reg" property */
+	uint8_t usb_status_reg, usb_status_bits;   /* "usb-status-reg"/"-bits": the cable level */
+	bool rtc_bcd;           /* "rtc-bcd": the PCF50633 calendar at 0x59 (1.x) */
+    bool exton1;           /* PCF50635 wake input level; both edges latch INT2 */
+	uint8_t backlight_enable_reg, backlight_enable_bit, backlight_level_reg;   /* "backlight-*" */
     qemu_irq irq;
     QEMUTimer *adc_timer;
     uint16_t adc_values[16];
@@ -109,6 +128,7 @@ typedef struct Pcf50633State {
 
 // Update live cable status and latch the corresponding power-source event.
 void pcf50633_set_usb_cable(Pcf50633State *s, bool attached);
+void pcf50633_set_exton1(Pcf50633State *s, bool high);
 unsigned pcf50633_adc_for_level(unsigned percent);
 unsigned pcf50633_level_for_adc(unsigned counts);
 void pcf50633_update_battery(Pcf50633State *s);

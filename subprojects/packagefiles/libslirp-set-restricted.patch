@@ -1,0 +1,34 @@
+diff --git a/src/libslirp.h b/src/libslirp.h
+index 240dfe8..a6aa4bf 100644
+--- a/src/libslirp.h
++++ b/src/libslirp.h
+@@ -268,6 +268,13 @@ Slirp *slirp_init(int restricted, bool in_enabled, struct in_addr vnetwork,
+ SLIRP_EXPORT
+ void slirp_cleanup(Slirp *slirp);
+ 
++/* Change the "restricted" flag on a running instance, in place. With it set,
++ * the guest may only reach the gateway services (DHCP/DNS and forwards);
++ * cleared, guest-initiated outbound connections are allowed again. Takes
++ * effect on the next connection attempt -- no link event, no DHCP change. */
++SLIRP_EXPORT
++void slirp_set_restricted(Slirp *slirp, int restricted);
++
+ /* This is deprecated, use slirp_pollfds_fill_socket instead. */
+ SLIRP_EXPORT
+ void slirp_pollfds_fill(Slirp *slirp, uint32_t *timeout,
+diff --git a/src/slirp.c b/src/slirp.c
+index 0fc51a9..49916e2 100644
+--- a/src/slirp.c
++++ b/src/slirp.c
+@@ -782,6 +782,11 @@ void slirp_cleanup(Slirp *slirp)
+     g_free(slirp);
+ }
+ 
++void slirp_set_restricted(Slirp *slirp, int restricted)
++{
++    slirp->restricted = restricted;
++}
++
+ #define CONN_CANFSEND(so) \
+     (((so)->so_state & (SS_FCANTSENDMORE | SS_ISFCONNECTED)) == SS_ISFCONNECTED)
+ #define CONN_CANFRCV(so) \

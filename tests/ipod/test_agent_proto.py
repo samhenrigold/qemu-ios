@@ -26,15 +26,24 @@ int main(void) {
     int64_t token=call(a,0x160,0,0,0,0);
     assert(token>0 && call(a,0x160,0,0,0,0)==0);
     assert(call(a,0x161,token+1,0,0,0)==-1);
-    assert(!ipod_agent_submit(a,"bad"));
-    assert(!ipod_agent_submit(a,"a ping\n%%%"));
-    assert(!ipod_agent_submit(a,"a ping\nYQ="));
+    assert(ipod_agent_submit(a,"bad")==-EINVAL);
+    assert(ipod_agent_submit(a,"a ping\n%%%")==-EINVAL);
+    assert(ipod_agent_submit(a,"a ping\nYQ=")==-EINVAL);
+    /* Largest body that fits beside its header is accepted; one more byte is -EFBIG. */
+    static uint8_t big[IT_AGENT_REQUEST_MAX];
+    const char *h="big putpart 0 1 644 /x\n";
+    char *b=g_base64_encode(big,IT_AGENT_REQUEST_MAX-strlen(h));
+    char *r=g_strdup_printf("%s%s",h,b);
+    assert(!ipod_agent_submit(a,r));assert(ipod_agent_cancel(a,"big"));g_free(r);g_free(b);
+    b=g_base64_encode(big,IT_AGENT_REQUEST_MAX-strlen(h)+1);r=g_strdup_printf("%s%s",h,b);
+    assert(ipod_agent_submit(a,r)==-EFBIG);g_free(r);g_free(b);
+    assert(strstr(ipod_agent_submit_error(-EFBIG),"putpart"));
     uint8_t body[3000];
     for (int i=0;i<3000;i++) body[i]=i;
     char *encoded=g_base64_encode(body,sizeof(body));
     char *request=g_strdup_printf("first exec cat\n%s",encoded);
-    assert(ipod_agent_submit(a,request));
     assert(!ipod_agent_submit(a,request));
+    assert(ipod_agent_submit(a,request)==-EBUSY);
     int len=call(a,0x161,token,0,0,0);
     assert(len==3015);
     uint8_t recovered[4096];
@@ -53,11 +62,11 @@ int main(void) {
     assert(call(a,0x163,token,3,3,0)==3);
     assert(call(a,0x163,token,UINT32_MAX,3,0)==-1);
     assert(call(a,0x164,token,7,0,0)==0);
-    assert(!ipod_agent_submit(a,request)); /* duplicate finished id */
+    assert(ipod_agent_submit(a,request)==-EBUSY); /* duplicate finished id */
     char *result=ipod_agent_take_result(a);
     assert(!strcmp(result,"first 7\nYWJjYWJj")); g_free(result);
     assert(call(a,0x161,token,0,0,0)==0);
-    assert(ipod_agent_submit(a,"lost exec touch /tmp/test\n"));
+    assert(!ipod_agent_submit(a,"lost exec touch /tmp/test\n"));
     assert(call(a,0x161,token,0,0,0)>0);
     assert(!strcmp(ipod_agent_status(a,10001),"stale"));
     int64_t next=call(a,0x160,0,0,0,10001);
@@ -68,12 +77,12 @@ int main(void) {
     assert(!strcmp(result,expected)); g_free(result); g_free(expected);
     for (int i=0;i<IT_AGENT_QUEUE_MAX;i++) {
         char *r=g_strdup_printf("%d ping\n",i);
-        assert(ipod_agent_submit(a,r));g_free(r);
+        assert(!ipod_agent_submit(a,r));g_free(r);
     }
-    assert(!ipod_agent_submit(a,"overflow ping\n"));
+    assert(ipod_agent_submit(a,"overflow ping\n")==-EBUSY);
     ipod_agent_reset(a);
     assert(call(a,0x161,next,0,0,10002)==-1);
-    assert(ipod_agent_submit(a,"fresh ping\n"));
+    assert(!ipod_agent_submit(a,"fresh ping\n"));
     token=call(a,0x160,0,0,0,10002);
     assert(call(a,0x161,token,0,0,10002)==11);
     for (unsigned i=0;i<IT_AGENT_RESPONSE_MAX/1024;i++) {
@@ -84,10 +93,10 @@ int main(void) {
     assert(!ipod_agent_cancel(a,"missing"));
     assert(call(a,0x164,token,0,0,10002)==-1);
     token=call(a,0x160,0,0,0,10003);
-    assert(ipod_agent_submit(a,"pending ping\n"));
+    assert(!ipod_agent_submit(a,"pending ping\n"));
     assert(ipod_agent_cancel(a,"pending"));
     assert(call(a,0x161,token,0,0,10003)==0);
-    assert(ipod_agent_submit(a,"ui type\nYWJj"));
+    assert(!ipod_agent_submit(a,"ui type\nYWJj"));
     assert(call(a,0x161,token,0,0,10003)>0);
     assert(call(a,0x16a,token,42,0,10003)==0);
     assert(call(a,0x161,token,0,0,10003)==0);
@@ -100,7 +109,7 @@ int main(void) {
     assert(call(a,0x168,cookie,0,3,10003)==3);
     assert(call(a,0x169,cookie,0,0,10003)==0);
     result=ipod_agent_take_result(a);assert(!strcmp(result,"ui 0\ndWkg"));g_free(result);
-    assert(ipod_agent_submit(a,"expired uidump\n"));
+    assert(!ipod_agent_submit(a,"expired uidump\n"));
     assert(call(a,0x161,token,0,0,10003)>0);
     assert(call(a,0x16a,token,42,0,10003)==0);
     assert(call(a,0x169,cookie,0,0,10003)==-1);
@@ -110,12 +119,12 @@ int main(void) {
     result=ipod_agent_take_result(a);
     expected=g_strdup_printf("expired %d\n",-ETIMEDOUT);
     assert(!strcmp(result,expected));g_free(result);g_free(expected);
-    assert(ipod_agent_submit(a,"cancelled-result ping\n"));
+    assert(!ipod_agent_submit(a,"cancelled-result ping\n"));
     assert(call(a,0x161,token,0,0,15003)>0);
     assert(call(a,0x164,token,0,0,15003)==0);
     assert(ipod_agent_cancel(a,"cancelled-result"));
     result=ipod_agent_take_result(a);assert(!*result);g_free(result);
-    assert(ipod_agent_submit(a,"springboard uidump\n"));
+    assert(!ipod_agent_submit(a,"springboard uidump\n"));
     assert(call(a,0x161,token,0,0,15003)>0);
     assert(call(a,0x16a,token,0,0,15003)==0);
     cookie=call(a,0x166,0,0,0,15003);assert(cookie>0);

@@ -63,7 +63,8 @@ static int write_all(int fd, const void *bytes, unsigned len)
     return 0;
 }
 
-static int agent_exec(char *command, const char *body, unsigned len)
+/* Start argv[0] (an absolute path) with body as stdin. No shell is involved. */
+static int agent_start(char *const argv[], const char *body, unsigned len)
 {
     char tmp[] = "/tmp/it-agent-stdin.XXXXXX";
     int input = mkstemp(tmp), fds[2], error;
@@ -85,10 +86,9 @@ static int agent_exec(char *command, const char *body, unsigned len)
     posix_spawnattr_init(&attr);
     posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
     posix_spawnattr_setpgroup(&attr, 0);
-    char *argv[] = { "/bin/sh", "-c", command, 0 };
     char *environment[] = { "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                             "HOME=/var/root", "LANG=C", "LC_ALL=C", 0 };
-    error = posix_spawn(&ag_child, "/bin/sh", &actions, &attr, argv, environment);
+    error = posix_spawn(&ag_child, argv[0], &actions, &attr, argv, environment);
     posix_spawn_file_actions_destroy(&actions);
     posix_spawnattr_destroy(&attr);
     close(input); close(fds[1]);
@@ -96,6 +96,29 @@ static int agent_exec(char *command, const char *body, unsigned len)
     ag_output = fds[0];
     ag_ticks = 0; ag_reaped = 0; ag_child_status = 0;
     return 0;
+}
+
+static int agent_exec(char *command, const char *body, unsigned len)
+{
+    char *argv[] = { "/bin/sh", "-c", command, 0 };
+    return agent_start(argv, body, len);
+}
+
+/* `spawn`: body is argv as NUL-terminated strings (argv[0] absolute), stdin is
+ * /dev/null. Needs no /bin/sh, so it runs on a stock rootfs. */
+static int agent_spawn(char *body, unsigned len)
+{
+    enum { MAXARGS = 64 };
+    char *argv[MAXARGS + 1];
+    unsigned n = 0, off = 0;
+    if (!len || body[len - 1] || body[0] != '/') return EINVAL;
+    while (off < len) {
+        if (n == MAXARGS) return E2BIG;
+        argv[n++] = body + off;
+        off += strlen(body + off) + 1;
+    }
+    argv[n] = 0;
+    return agent_start(argv, "", 0);
 }
 
 static void agent_child_tick(void)
@@ -134,6 +157,9 @@ static void agent_child_tick(void)
 
 #include "agent-sbs.h"
 
+#define AG_HELLO "it_agent v3\nops ping exec spawn sync put putpart get getrange chown unlink settime " \
+    "launch frontmost lockstatus orientation dlicon halt type backspace uidump\n"
+
 static void agent_dispatch(unsigned size)
 {
     char *nl = memchr(ag_request, '\n', size);
@@ -149,11 +175,19 @@ static void agent_dispatch(unsigned size)
     unsigned body_len = size - (body - ag_request);
     int status = 0;
     if (!strcmp(op, "ping")) {
-        memcpy(ag_response, "it_agent v1\n", 12); ag_response_len = 12;
+        /* Line 1 is the version; line 2 lists the ops (v1 agents send line 1 only). */
+        ag_response_len = strlen(AG_HELLO);
+        memcpy(ag_response, AG_HELLO, ag_response_len);
     } else if (!strcmp(op, "exec")) {
         status = agent_exec(args, body, body_len);
         if (!status) return;
         status = -status;
+    } else if (!strcmp(op, "spawn")) {
+        status = agent_spawn((char *)body, body_len);
+        if (!status) return;
+        status = -status;
+    } else if (!strcmp(op, "sync")) {
+        sync();
     } else if (!strcmp(op, "type") || !strcmp(op, "backspace") || !strcmp(op, "uidump")) {
         if (body_len > 65536) status = -EFBIG;
         else status = agent_sbs(op, args);
@@ -163,23 +197,21 @@ static void agent_dispatch(unsigned size)
     } else if (!strcmp(op, "halt")) {
         extern int reboot2(int, const char *);
         if (reboot2(8, 0)) status = -errno;
-    } else if (!strcmp(op, "kill")) {
-        /* Quote a single executable name; never interpolate it as shell code. */
-        char command[4096];
-        unsigned n = 0;
-        const char *prefix = "killall '";
-        if (!*args || *args == '-' || strlen(args) > 512) status = -EINVAL;
-        else {
-            memcpy(command, prefix, strlen(prefix)); n = strlen(prefix);
-            for (const char *p = args; *p; p++) {
-                if (*p == 39) { memcpy(command + n, "'\\''", 4); n += 4; }
-                else command[n++] = *p;
-            }
-            command[n++] = 39; command[n] = 0;
-            status = agent_exec(command, body, body_len);
-            if (!status) return;
-            status = -status;
-        }
+    } else if (!strcmp(op, "chown")) {
+        char *end;
+        errno = 0;
+        long uid = strtol(args, &end, 10), gid = -1;
+        if (!errno && end != args && *end == ' ') {
+            char *path = end + 1;
+            gid = strtol(path, &end, 10);
+            if (errno || end == path || *end != ' ' || !end[1] || uid < 0 || gid < 0) status = -EINVAL;
+            else if (lchown(end + 1, uid, gid)) status = -errno;
+        } else status = -EINVAL;
+    } else if (!strcmp(op, "unlink")) {
+        if (!*args) status = -EINVAL;
+        else if (unlink(args)) status = -errno;
+    } else if (!strcmp(op, "dlicon")) {
+        status = agent_sbs(op, args);
     } else if (!strcmp(op, "settime")) {
         char *end;
         errno = 0;
@@ -245,6 +277,41 @@ static void agent_dispatch(unsigned size)
                     if (!status && rename(tmp, args)) status = -errno;
                     if (status) unlink(tmp);
                 }
+            }
+        }
+    } else if (!strcmp(op, "putpart")) {
+        /* `offset final mode path`: a put too big for one request, in order.
+         * Chunks append to path.it-agent-part (offset 0 starts it, any other
+         * offset must equal its size); the final one fchmods, fsyncs and renames
+         * it over path. Any failure discards the part: resend from 0. v3 */
+        char *end, *path = 0, tmp[4096];
+        long long offset;
+        long final = -1, permissions = -1;
+        errno = 0;
+        offset = strtoll(args, &end, 10);
+        if (!errno && end != args && *end == ' ' && offset >= 0) {
+            char *p = end + 1;
+            final = strtol(p, &end, 10);
+            if (end != p && *end == ' ') {
+                p = end + 1;
+                permissions = strtol(p, &end, 8);
+                if (end != p && *end == ' ' && end[1]) path = end + 1;
+            }
+        }
+        if (!path || errno || (final != 0 && final != 1) || permissions < 0 || permissions > 0777 ||
+            snprintf(tmp, sizeof(tmp), "%s.it-agent-part", path) >= sizeof(tmp)) status = -EINVAL;
+        else {
+            int fd = open(tmp, O_WRONLY | O_NOFOLLOW | (offset ? 0 : O_CREAT | O_TRUNC), 0600);
+            struct stat st;
+            if (fd < 0) status = -errno;
+            else {
+                if (fstat(fd, &st)) status = -errno;
+                else if (!S_ISREG(st.st_mode) || st.st_size != offset) status = -EINVAL;
+                else if (lseek(fd, offset, SEEK_SET) < 0 || write_all(fd, body, body_len) ||
+                         (final && (fchmod(fd, permissions) || fsync(fd)))) status = -errno;
+                if (close(fd) && !status) status = -errno;
+                if (!status && final && rename(tmp, path)) status = -errno;
+                if (status) unlink(tmp);
             }
         }
     } else status = -ENOSYS;

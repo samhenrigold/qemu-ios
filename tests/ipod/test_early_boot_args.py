@@ -1,26 +1,24 @@
 #!/usr/bin/env python3
-"""The 7E18 handoff edit is version checked and bounds its SRAM command line."""
+"""Boot arguments use immutable, bounded startup properties and one resettable
+timer. Production-board qtests cover handoff discovery and native gates cover
+factory identity plus early kernel console; no iBoot literal is redirected."""
 from pathlib import Path
 import subprocess,shlex,tempfile
-s=(Path(__file__).resolve().parents[2]/'hw/arm/ipod_touch_2g.c').read_text()
+root=Path(__file__).resolve().parents[2]
+s=(root/'hw/arm/ipod_touch_2g.c').read_text()
+assert 'getenv("IT_BOOT_ARGS' not in s, 'the machine must not read IT_BOOT_ARGS* from the environment'
 a=s.index('static const char *ipod_touch_requested_boot_args(');helper=s[a:s.index('\n}',a)+2]
 a=s.index('static void ipod_touch_set_boot_args(');setter=s[a:s.index('\n}',a)+2]
 a=s.index('static void ipod_touch_stage_boot_args(');stage=s[a:s.index('\n}',a)+2]
-a=s.index('static void ipod_touch_inject_boot_args(');s=stage+'\n'+setter+'\n'+helper+'\n'+s[a:s.index('\n}',a)+2]
+s=stage+'\n'+setter+'\n'+helper
 code=r'''
-#include <glib.h>
-#include <stdint.h>
-#include <stdbool.h>
+#include "qemu/osdep.h"
 #include <assert.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-typedef uint64_t hwaddr;
 #define IBOOT_MEM_BASE 0x0ff00000
 #define BOOT_ARGS_CMDLINE_LEN 256
 #define BOOT_ARGS_STAGING_BASE 0x220fff00
-#define MEMTXATTRS_UNSPECIFIED 0
-typedef struct {void*nsas;void*cpu;void*boot_args_timer;unsigned boot_args_writes;uint32_t boot_args_delay_ms;bool amfi_patched,boot_args_scan_failed,boot_args_explicit;char boot_args[256];} IPodTouchMachineState;
+typedef struct {void*cpu;void*boot_args_timer;unsigned boot_args_writes;uint32_t boot_args_delay_ms,boot_args_repeat,boot_args_interval_ms;uint64_t boot_args_scan_deadline;bool boot_args_scan_failed,boot_args_explicit;char boot_args[512];} IPodTouchMachineState;
 typedef IPodTouchMachineState Object;
 typedef int Error;
 #define IPOD_TOUCH_MACHINE(o) (o)
@@ -34,37 +32,13 @@ static uint64_t qemu_clock_get_ms(int clock){return 123;}
 static void timer_mod(void*t,uint64_t when){assert(t==&timer&&when==expected_schedule);schedules++;}
 static void ipod_touch_set_boot_args_now(void*p){}
 static const char *ipod_touch_requested_boot_args(IPodTouchMachineState*);
-static uint8_t image[0x27000],staging[256];
-static unsigned writes;
-static uint8_t*memory(hwaddr a,size_t n){
- if(a>=IBOOT_MEM_BASE&&a+n<=IBOOT_MEM_BASE+sizeof(image))return image+(a-IBOOT_MEM_BASE);
- assert(a==BOOT_ARGS_STAGING_BASE&&n==sizeof(staging));return staging;
-}
-static void address_space_read(void*as,hwaddr a,int at,void*out,size_t n){memcpy(out,memory(a,n),n);}
-static void address_space_write(void*as,hwaddr a,int at,const void*in,size_t n){memcpy(memory(a,n),in,n);writes++;}
-static uint32_t ldl_le_p(void*p){uint32_t x;memcpy(&x,p,4);return GUINT32_FROM_LE(x);}
-static void stl_le_p(void*p,uint32_t x){x=GUINT32_TO_LE(x);memcpy(p,&x,4);}
 '''+s+r'''
 int main(void){
- IPodTouchMachineState machine={.boot_args_delay_ms=2000};
- const uint8_t signature[]={0x2c,0x4b,0x9b,0x46,0x1b,0x68,0x00,0x2b,0x03,0xd1,0x2a,0x48,0x06,0x1c,0x01,0x90,0x02,0xe0,0x29,0x4e,0x28,0x49,0x01,0x91};
- memcpy(image+0x11a72,signature,sizeof(signature));stl_le_p(image+0x11b28,0x0ff1dba0);
- unsetenv("IT_BOOT_ARGS");ipod_touch_inject_boot_args(&machine);assert(!writes);
- setenv("IT_BOOT_ARGS","-v",1);ipod_touch_inject_boot_args(&machine);
- assert(writes==2&&!strcmp((char*)staging,"-v"));assert(ldl_le_p(image+0x11b28)==BOOT_ARGS_STAGING_BASE);
- stl_le_p(image+0x11b28,0x0ff1dba0);image[0x11a72]^=1;ipod_touch_inject_boot_args(&machine);assert(writes==2);
- image[0x11a72]^=1;char oversized[512];memset(oversized,'x',511);oversized[511]=0;setenv("IT_BOOT_ARGS",oversized,1);
- ipod_touch_inject_boot_args(&machine);assert(writes==4&&staging[255]==0&&strlen((char*)staging)==255);
- stl_le_p(image+0x11b28,0x0ff1dba0);
- strcpy(machine.boot_args,"serial=3 debug=0x8");
- ipod_touch_inject_boot_args(&machine);
- assert(writes==6&&!strcmp((char*)staging,machine.boot_args));
- assert(ipod_touch_requested_boot_args(&machine)==machine.boot_args);
- unsetenv("IT_BOOT_ARGS");stl_le_p(image+0x11b28,0x0ff1dba0);
- ipod_touch_inject_boot_args(&machine);assert(writes==8);
- machine.boot_args[0]=0;assert(!ipod_touch_requested_boot_args(&machine));
+ IPodTouchMachineState machine={.boot_args_delay_ms=2000,.boot_args_repeat=24,.boot_args_interval_ms=500};
+ setenv("IT_BOOT_ARGS","-v",1);
+ assert(!ipod_touch_requested_boot_args(&machine));
+ char oversized[512];memset(oversized,'x',511);oversized[511]=0;
  int error=0;Error*ep=&error;
- setenv("IT_BOOT_ARGS","legacy",1);
  ipod_touch_set_boot_args(&machine,"",&ep);
  assert(!error&&machine.boot_args_explicit&&!ipod_touch_requested_boot_args(&machine));
  char exact[256];memset(exact,'x',255);exact[255]=0;
@@ -72,7 +46,6 @@ int main(void){
  ipod_touch_set_boot_args(&machine,oversized,&ep);assert(error&&strlen(machine.boot_args)==255);error=0;
  machine.cpu=&machine;ipod_touch_set_boot_args(&machine,"changed",&ep);
  assert(error&&strlen(machine.boot_args)==255);
- unsetenv("IT_BOOT_ARGS_DELAY_MS");
  ipod_touch_stage_boot_args(&machine);ipod_touch_stage_boot_args(&machine);
  assert(allocations==1&&schedules==2);
  /* Resets use resolved startup settings, not later environment changes. */
@@ -84,7 +57,27 @@ int main(void){
 '''
 flags=shlex.split(subprocess.check_output(['pkg-config','--cflags','--libs','glib-2.0'],text=True))
 with tempfile.TemporaryDirectory() as d:
- p=Path(d)/'check.c';p.write_text(code);exe=Path(d)/'check'
- subprocess.run(['clang','-fsanitize=address,undefined','-fno-sanitize-recover=all',str(p),'-o',str(exe),*flags],check=True)
+ p=Path(d);(p/'qemu').mkdir();(p/'exec').mkdir()
+ (p/'qemu/osdep.h').write_text('''#pragma once
+#include <glib.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+static inline uint32_t ldl_le_p(const void *ptr){uint32_t x;memcpy(&x,ptr,4);return GUINT32_FROM_LE(x);}
+static inline void stl_le_p(void *ptr,uint32_t x){x=GUINT32_TO_LE(x);memcpy(ptr,&x,4);}
+''')
+ (p/'exec/hwaddr.h').write_text('#pragma once\n#include <stdint.h>\ntypedef uint64_t hwaddr;\n')
+ (p/'exec/memory.h').write_text('''#pragma once
+#include "exec/hwaddr.h"
+typedef struct AddressSpace AddressSpace;
+typedef int MemTxAttrs, MemTxResult;
+#define MEMTXATTRS_UNSPECIFIED 0
+MemTxResult address_space_read(AddressSpace*,hwaddr,MemTxAttrs,void*,hwaddr);
+MemTxResult address_space_write(AddressSpace*,hwaddr,MemTxAttrs,const void*,hwaddr);
+''')
+ (p/'check.c').write_text(code);exe=p/'check'
+ subprocess.run(['clang','-fsanitize=address,undefined','-fno-sanitize-recover=all','-I'+str(p),'-I'+str(root/'include'),
+                 str(p/'check.c'),'-o',str(exe),*flags],check=True)
  subprocess.run([str(exe)],check=True)
-print('PASS: early iBoot arguments, unknown firmware rejection, disabled path, bounded string, explicit empty override and immutable startup arguments')
+print('PASS: bounded startup arguments, explicit empty override and resettable timer from machine properties only')

@@ -167,12 +167,82 @@ def agent_alive(q):
     return q.cmd("qom-get", path="/machine", property="agent-status") == "alive"
 
 
-def agent(q, op, args="", body=b"", timeout=65):
-    """One local RPC; returns (exit_status, binary_output).
+def gles_rejects(q):
+    """{name: count}: every refusal the GL bridge has made so far (the machine's gles-rejects
+    property: a surface format, a texture format/type, a dispatch slot...); {} on a build without it."""
+    try:
+        text = q.cmd("qom-get", path="/machine", property="gles-rejects")
+    except RuntimeError:
+        return {}
+    return {name: int(count) for name, _, count in (l.partition("\t") for l in text.splitlines()) if count}
 
-    A timeout is an unknown execution outcome, never a reason to retry a mutation.
-    Results for other callers are retained on this QMP connection. Use one shared
-    client per machine; competing QMP connections cannot consume each other's RPCs.
+
+def magenta_fraction(ppm, step=1):
+    """Fraction of a screendump's pixels that are magenta, against the frame's own maximum (the
+    backlight scales pixels). gles-debug=on paints what the GL bridge refused that colour, and
+    nothing in the iOS UI is that colour; the GLTest fixtures are, so not for their screens."""
+    _, _, pix = read_ppm(ppm)
+    hi = max(pix) or 1
+    lo, up = 0.3 * hi, 0.7 * hi
+    n = sum(1 for i in range(0, len(pix) - 2, 3 * step) if pix[i] >= up and pix[i + 2] >= up and pix[i + 1] <= lo)
+    return n / max(1, len(pix) // (3 * step))
+
+
+AGENT_REQUEST_MAX = 256 * 1024      # include/hw/arm/ipod-agent.h: header line + body
+AGENT_RESPONSE_MAX = 1024 * 1024
+AGENT_PART = AGENT_REQUEST_MAX - 4097   # beside the longest header (4096 + newline)
+GUEST_EFBIG = -27                    # Darwin's EFBIG
+
+
+def agent(q, op, args="", body=b"", timeout=65):
+    """Local RPC; returns (exit_status, binary_output).
+
+    `put` and `get` take files of any size: a put over one request goes as v3
+    `putpart` chunks (atomic on the guest: the last one renames the part file into
+    place), and a get the agent refuses as over 1 MiB is read back by `getrange`.
+    A put that needs chunks raises RuntimeError on an agent without `putpart`.
+    """
+    if op == "put" and len(body) > AGENT_PART:
+        return _agent_put_parts(q, args, body, timeout)
+    status, output = _agent_one(q, op, args, body, timeout)
+    if op == "get" and status == GUEST_EFBIG:
+        return _agent_get_ranges(q, args, timeout)
+    return status, output
+
+
+def _agent_put_parts(q, args, body, timeout):
+    path, _, mode = args.rpartition(" ")
+    status, hello = _agent_one(q, "ping", "", b"", timeout)
+    if status or b"putpart" not in hello.split():
+        found = hello.split(b"\n", 1)[0].decode("ascii", "replace") if not status else "ping status %d" % status
+        raise RuntimeError("guest agent (%s) has no putpart, and this %d-byte put is over its %d-byte "
+                           "request limit: upgrade it_agent to v3" % (found, len(body), AGENT_REQUEST_MAX))
+    for offset in range(0, len(body), AGENT_PART):
+        part = body[offset:offset + AGENT_PART]
+        final = offset + len(part) == len(body)
+        status, output = _agent_one(q, "putpart", "%d %d %s %s" % (offset, final, mode, path), part, timeout)
+        if status:
+            return status, output
+    return 0, b""
+
+
+def _agent_get_ranges(q, path, timeout):
+    # ponytail: not a snapshot; a file rewritten mid-read can tear. Fine for staged files.
+    data = bytearray()
+    while True:
+        status, output = _agent_one(q, "getrange", "%d %d %s" % (len(data), AGENT_RESPONSE_MAX, path),
+                                    b"", timeout)
+        if status:
+            return status, output
+        data += output
+        if len(output) < AGENT_RESPONSE_MAX:
+            return 0, bytes(data)
+
+
+def _agent_one(q, op, args, body, timeout):
+    """One request. A timeout is an unknown execution outcome, never a reason to retry
+    a mutation. Results for other callers are retained on this QMP connection. Use one
+    shared client per machine; competing QMP connections cannot consume each other's RPCs.
     """
     if any(c in op + args for c in "\r\n") or not op or " " in op:
         raise ValueError("invalid agent header")
@@ -208,6 +278,11 @@ def agent(q, op, args="", body=b"", timeout=65):
             except (OSError, EOFError, RuntimeError):
                 pass  # Preserve the original failure; never replay the command.
 
+
+
+def spawn(q, argv, timeout=65):
+    """Agent v2 `spawn`: run argv (argv[0] absolute) with no shell; (exit_status, stdout+stderr)."""
+    return agent(q, "spawn", "", b"".join(a.encode() + b"\0" for a in argv), timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +590,129 @@ def main(argv=None):
         # debug before.
         sys.stderr.write(USAGE)
         sys.exit("unknown action %r" % action)
+
+
+def poweroff_sequence(qmp, knob_y=68):
+    """Host UI gesture; generic QMP owns all timing in guest virtual time.
+
+    Only the measured 320x480 iPod panels are supported here. No fallback to
+    wall-clock sleeps, guest patches or a successful-input shutdown verdict.
+    """
+    machine = qmp.cmd("qom-get", path="/machine", property="type")
+    if machine not in ("iPod-Touch-machine", "iPod-Touch-1G-machine"):
+        raise RuntimeError("host power gesture is unqualified for %s" % machine)
+    if not isinstance(knob_y, int) or not 0 <= knob_y < 480:
+        raise ValueError("power-off knob row must lie within the iPod panel")
+    first_generation = machine == "iPod-Touch-1G-machine"
+    release = 8650 if first_generation else 6150
+    events = []
+    def hardware(name, down, at):
+        keys = BUTTONS[name] if down else reversed(BUTTONS[name])
+        events.extend({"type": "key", "at-ms": at, "key": k, "down": down} for k in keys)
+    hardware("home", True, 0)
+    hardware("home", False, 150)
+    hardware("power", True, 2650)
+    hardware("power", False, release)
+    start = release + 1500
+    events.append({"type": "touch", "at-ms": start, "phase": "begin",
+                   "x": 65 / 320, "y": knob_y / 480})
+    for step in range(1, 25):
+        x = 65 + (295 - 65) * step // 24
+        events.append({"type": "touch", "at-ms": start + step * 80,
+                       "phase": "end" if step == 24 else "update",
+                       "x": x / 320, "y": knob_y / 480})
+    ident = uuid.uuid4().int & ((1 << 64) - 1) or 1
+    qmp.cmd("input-send-sequence", id=ident, events=events)
+    return ident, first_generation
+
+
+def finish_poweroff_sequence(qmp, ident, first_generation, timeout=180):
+    """Observe input delivery/backlight; actual guest SHUTDOWN stays the gate."""
+    deadline = time.monotonic() + timeout
+    try:
+        while time.monotonic() < deadline:
+            state = qmp.cmd("query-input-sequence", id=ident)["status"]
+            if state not in ("running", "completed"):
+                raise RuntimeError("power gesture input %s" % state)
+            if state == "completed":
+                if first_generation:
+                    return
+                if qmp.cmd("qom-get", path="/machine", property="display-sleeping") is True:
+                    qmp.cmd("qom-set", path="/machine", property="usb-attached", value=False)
+                    return
+            time.sleep(0.1)  # observation only; event deadlines remain virtual
+        raise TimeoutError("host power gesture did not complete/backlight remained on")
+    except EOFError:
+        qmp.wait_for_guest_shutdown(0)
+    except BaseException:
+        try: qmp.cmd("input-cancel-sequence", id=ident)
+        except (EOFError, OSError, RuntimeError): pass
+        raise
+
+
+def guest_powerdown(qmp, process, tag, log=print, charging_halt=False, prefer_gesture=False, host_gesture=False):
+    """Require guest-origin SHUTDOWN plus process exit; SIGTERM also exits 0."""
+    if qmp is None:
+        log("%s: no QMP connection to confirm guest shutdown" % tag)
+        return False
+    try:
+        if not prefer_gesture and agent_alive(qmp):
+            try:
+                status, response = agent(qmp, "halt", timeout=30)
+            except (RuntimeError, TimeoutError):
+                # A charging restart can complete the halt but discard the
+                # agent's pending reply. Do not retry the mutation: inspect
+                # the PMU evidence on the still-live QMP connection instead.
+                if not charging_halt:
+                    raise
+                status = 0
+            except EOFError:
+                # A guest shutdown can beat the RPC reply. The retained
+                # PMU SHUTDOWN event below remains the acceptance gate.
+                status = 0
+            if status:
+                raise RuntimeError("agent halt failed: %d %r" % (status, response))
+            timeout = 60
+        else:
+            log("%s: gesture shutdown" % tag)
+            try:
+                if host_gesture:
+                    ident, first = poweroff_sequence(qmp)
+                    finish_poweroff_sequence(qmp, ident, first)
+                else:
+                    qmp.cmd("system_powerdown")
+            except EOFError:
+                # An immediate shutdown may precede the command response;
+                # the retained SHUTDOWN event must still prove its origin.
+                pass
+            timeout = 180
+        if charging_halt:
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    confirmed = qmp.cmd("qom-get", path="/machine", property="guest-shutdown-confirmed")
+                except EOFError:
+                    qmp.wait_for_guest_shutdown(0)
+                    break
+                if confirmed is True:
+                    # The guest unmounted and halted; the cable keeps iBoot
+                    # running to charge. Quit only after that hardware evidence.
+                    try: qmp.cmd("quit")
+                    except EOFError: pass
+                    break
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("guest PMU did not confirm shutdown")
+                time.sleep(0.2)
+        else:
+            qmp.wait_for_guest_shutdown(timeout)
+        rc = process.wait(timeout=10)
+        log("%s: guest-confirmed shutdown, qemu exit=%d" % (tag, rc))
+        return rc == 0
+    except (OSError, EOFError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+        log("%s: shutdown not confirmed: %s" % (tag, exc))
+        return False
+    finally:
+        qmp.close()
 
 
 if __name__ == "__main__":

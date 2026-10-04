@@ -37,7 +37,8 @@ What it does, in order:
      volume, and every page it does not (the GPT at device LBA 0-2, the FTL's
      own metadata pages, the NAND driver signature) is copied verbatim from
      --template, since that bookkeeping describes the flash, not the
-     filesystem.
+     filesystem. With --epoch those pages are generated instead (imgtools/ipod2g_nand.py), so no
+     template image is needed.
 
 The result is a directory in the same shape as the existing images:
 `cs{0..3}/<page>.page`, 4096 data bytes + 64 spare bytes each.
@@ -50,6 +51,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hfsvol as H
@@ -85,25 +87,25 @@ class FlatVolume(H.Volume):
         self.writable = writable
         self.dirty = set()
         self._cache = {}
+        self.block_size = BLOCK
         self.vh = self.read_block(0)[1024:1536]
         sig = struct.unpack_from(">2s", self.vh, 0)[0]
         if sig not in (b"H+", b"HX"):
             raise RuntimeError("no HFS+ volume header (got %r)" % sig)
         self.signature = sig
-        self.block_size = struct.unpack_from(">I", self.vh, 40)[0]
+        self.block_size = struct.unpack_from(">I", self.vh, 40)[0]   # 8192 on the 7B500 system volume
+        self._cache = {}
         self.total_blocks = struct.unpack_from(">I", self.vh, 44)[0]
         self.free_blocks = struct.unpack_from(">I", self.vh, 48)[0]
         self.file_count = struct.unpack_from(">I", self.vh, 32)[0]
         self.folder_count = struct.unpack_from(">I", self.vh, 36)[0]
-        if self.block_size != BLOCK:
-            raise RuntimeError("unexpected allocation block size %d" % self.block_size)
         self.catalog = H.Fork(self, self.vh, 272)
 
     def read_block(self, n):
         if n in self._cache:
             return self._cache[n]
-        self.f.seek(n * BLOCK)
-        d = bytearray(self.f.read(BLOCK).ljust(BLOCK, b"\x00"))
+        self.f.seek(n * self.block_size)
+        d = bytearray(self.f.read(self.block_size).ljust(self.block_size, b"\x00"))
         self._cache[n] = d
         return d
 
@@ -115,7 +117,7 @@ class FlatVolume(H.Volume):
 
     def flush(self):
         for n in sorted(self.dirty):
-            self.f.seek(n * BLOCK)
+            self.f.seek(n * self.block_size)
             self.f.write(bytes(self._cache[n]))
         self.f.flush()
         n = len(self.dirty)
@@ -207,12 +209,16 @@ def formula_pages(blocks):
     return used
 
 
-def write_pages(img, out, template, blocks):
-    """Write the page directory: volume blocks by formula, the rest verbatim."""
+def write_pages(img, out, template, blocks, epoch=None):
+    """Write the page directory: volume blocks by formula, the rest verbatim (or generated, with epoch)."""
     used = formula_pages(blocks)
 
     copied = 0
-    for cs in range(4):
+    if epoch is not None:
+        import ipod2g_nand
+        ipod2g_nand.write_metadata(out, blocks, epoch)
+        copied = len(ipod2g_nand.metadata_pages(blocks, epoch))
+    for cs in range(4 if epoch is None else 0):
         src = os.path.join(template, "cs%d" % cs)
         dst = os.path.join(out, "cs%d" % cs)
         os.makedirs(dst, exist_ok=True)
@@ -228,11 +234,14 @@ def write_pages(img, out, template, blocks):
             copied += 1
 
     written = 0
+    zero = bytes(BLOCK)
     with open(img, "rb") as f:
         for n in range(blocks):
             data = f.read(BLOCK)
             if len(data) < BLOCK:
                 data = data.ljust(BLOCK, b"\x00")
+            if data == zero:
+                continue      # no page file reads back as zeros, as packvol.py/grow_volume.py rely on
             cs, pg = predict(n)
             path = nb.page_path(out, cs, pg)
             tmp = path + ".tmp"
@@ -287,6 +296,13 @@ def main():
                     help="IPSW kernelcache img3, copied in unmodified/encrypted")
     ap.add_argument("--template", default=DEFAULT_TEMPLATE,
                     help="page directory to take the GPT and FTL metadata pages from")
+    ap.add_argument("--epoch", type=int, default=None,
+                    help="generate the FTL/VFL/GPT/signature pages for this NAND epoch "
+                         "(Restore.plist SCEP) instead of copying them from --template")
+    ap.add_argument("--kernelcache-path", default=os.path.join(KC_DIR, KC_NAME),
+                    help="volume-relative path iBoot loads the kernelcache from")
+    ap.add_argument("--owners", default=None,
+                    help="file of 'uid gid path' lines to set in the catalog after --script")
     ap.add_argument("--out", required=True, help="page directory to create")
     ap.add_argument("--blocks", type=int, default=128000)
     ap.add_argument("--script", default=None, help="extra shell script, run with $MNT")
@@ -300,7 +316,7 @@ def main():
         raise SystemExit("%s already exists; refusing to overwrite an image" % a.out)
     if os.path.realpath(os.path.dirname(a.out) or ".") == os.path.realpath(GOLDEN):
         raise SystemExit("refusing to write inside the golden image")
-    if not os.path.isdir(a.template):
+    if a.epoch is None and not os.path.isdir(a.template):
         raise SystemExit("no template page directory at %s" % a.template)
 
     work = a.workdir or tempfile.mkdtemp(prefix="build_nand.")
@@ -328,22 +344,23 @@ def main():
     ok = False
     try:
         print("[3/7] attached %s, mounting read-write" % dev)
-        run(["mount", "-t", "hfs", "-o", "noowners,nobrowse", dev, mnt])
+        # diskutil, not mount(8): the raw mount fails on current macOS (see editimg.py)
+        run(["diskutil", "mount", "-mountPoint", mnt, dev])
         try:
             if not a.no_fstab:
                 print("      rewriting /etc/fstab for a single read-write root")
                 with open(os.path.join(mnt, FSTAB), "w") as f:
                     f.write(FSTAB_RW)
             if a.kernelcache:
-                dst = os.path.join(mnt, KC_DIR, KC_NAME)
-                print("      installing %s" % os.path.join("/", KC_DIR, KC_NAME))
+                dst = os.path.join(mnt, a.kernelcache_path)
+                print("      installing /%s" % a.kernelcache_path)
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 # plain byte copy: shutil.copyfile() goes through fcopyfile()
                 # on macOS and drags the source's xattrs (com.apple.quarantine
                 # on a downloaded IPSW) into the guest filesystem.
                 with open(a.kernelcache, "rb") as s, open(dst, "wb") as d:
                     shutil.copyfileobj(s, d)
-                created.append(os.path.join(KC_DIR, KC_NAME))
+                created.append(a.kernelcache_path)
             if a.script:
                 print("      running %s" % a.script)
                 r = subprocess.run(["/bin/sh", a.script],
@@ -359,7 +376,10 @@ def main():
                 if os.path.isfile(p):
                     os.unlink(p)
         finally:
-            subprocess.run(["umount", mnt])
+            for _ in range(20):          # Spotlight/fseventsd can hold the volume for a moment
+                if subprocess.run(["diskutil", "unmount", mnt], capture_output=True).returncode == 0:
+                    break
+                time.sleep(0.5)
         print("[4/7] fsck_hfs -n ...")
         r = subprocess.run(["fsck_hfs", "-n", dev], capture_output=True, text=True)
         sys.stdout.write(r.stdout[-600:])
@@ -371,16 +391,24 @@ def main():
     if not ok:
         raise SystemExit("build aborted")
 
-    if created:
-        print("[5/7] setting uid/gid 0 on %d created path(s)" % len(created))
-        print("      patched %d catalog record(s)" % set_owner(img, created))
+    owners = {(0, 0): created}
+    if a.owners:
+        for line in open(a.owners):
+            if line.strip():
+                uid, gid, path = line.rstrip("\n").split(" ", 2)
+                owners.setdefault((int(uid), int(gid)), []).append(path)
+    if any(owners.values()):
+        print("[5/7] setting owners on %d path(s)" % sum(map(len, owners.values())))
+        for (uid, gid), paths in owners.items():
+            if paths:
+                print("      %d:%d patched %d catalog record(s)" % (uid, gid, set_owner(img, paths, uid, gid)))
     else:
         print("[5/7] nothing to re-own")
 
     print("[6/7] writing page files into %s" % a.out)
-    written, copied = write_pages(img, a.out, a.template, a.blocks)
-    print("      %d filesystem pages, %d metadata pages copied from %s"
-          % (written, copied, os.path.basename(a.template)))
+    written, copied = write_pages(img, a.out, a.template, a.blocks, a.epoch)
+    print("      %d filesystem pages, %d metadata pages %s"
+          % (written, copied, "generated" if a.epoch is not None else "copied from " + os.path.basename(a.template)))
 
     print("[7/7] done. volume: %s" % img if a.keep_work else "[7/7] done.")
     if not a.keep_work and not a.workdir:

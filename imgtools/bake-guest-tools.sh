@@ -21,7 +21,8 @@
 #         /System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine:0:0:755 \
 #         /private/var/mobile/Library/Preferences/com.apple.mobilemail.plist:501:501:600 \
 #         /private/var/mobile/Library/Preferences/com.apple.springboard.plist:501:501:600 \
-#         /private/var/mobile/Library/Preferences/com.apple.preferences.sounds.plist:501:501:600
+#         /private/var/mobile/Library/Preferences/com.apple.preferences.sounds.plist:501:501:600 \
+#         /private/var/mobile/Media/.lt-guest-tools-v3:501:501:644
 #
 # --blocks is the volume size: 1835008 for the 7 GiB images, 128000 for 500 MB.
 #
@@ -41,12 +42,28 @@ FRAMEWORK="$MNT/System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle"
 
 # 1. The GL engine replacement, stock preserved. Without it a GL app drives the
 #    unemulated PowerVR MBX and wedges the whole device on first launch.
-[ -f "$GLES/MBXGLEngine" ] || { echo "no $GLES/MBXGLEngine (run contrib/it-gles/build.sh)" >&2; exit 1; }
+#    One MBXGLEngine serves every firmware (it reads the dispatch layout at
+#    load); IT_GLES_SHIM=0 keeps the stock engine, and CoreAnimation software
+#    unless IT_CA_OGL=1: 1.x/2.x have no engine bundle, and the guest package's
+#    OpenGLES hook (the same core, gles2x.c) is what CA's GL renderer then drives.
+OGL=1
+if [ "${IT_GLES_SHIM:-1}" = 0 ]; then
+    OGL="${IT_CA_OGL:-0}"
+    echo "GLES shim skipped: stock MBXGLEngine, CA_ENABLE_OGL=$OGL"
+else
+ENGINE="${IT_GLES_ENGINE:-$GLES/MBXGLEngine}"
+[ -f "$ENGINE" ] || { echo "no $ENGINE (run contrib/it-gles/build.sh)" >&2; exit 1; }
 mkdir -p "$FRAMEWORK"
+# 4.x has no stock file to keep: its MBXGLEngine is in the shared cache
 [ -f "$FRAMEWORK/MBXGLEngine.stock" ] || cp -n "$FRAMEWORK/MBXGLEngine" "$FRAMEWORK/MBXGLEngine.stock" 2>/dev/null || true
-cp "$GLES/MBXGLEngine" "$FRAMEWORK/MBXGLEngine"
+cp "$ENGINE" "$FRAMEWORK/MBXGLEngine"
 chmod 755 "$FRAMEWORK/MBXGLEngine"
+fi
 
+# Helpers linked with LC_DYLD_INFO_ONLY cannot load on 2.x dyld. The board
+# builder disables their installation and injection for that firmware family.
+TOOLS="${IT_GUEST_TOOLS:-1}"
+if [ "$TOOLS" = 1 ]; then
 # 2. The launcher (SBSLaunchApplicationWithIdentifier) and the placeholder-icon
 #    helper, both of which otherwise have to be scp'd and chmod'd per install.
 mkdir -p "$MNT/usr/local/bin"
@@ -64,7 +81,8 @@ cp "$AGENT/it_agent" "$MNT/usr/local/bin/it_agent"
 chmod 755 "$MNT/usr/local/bin/it_agent"
 cp "$AGENT/it_typein.dylib" "$MNT/usr/lib/it_typein.dylib"
 chmod 755 "$MNT/usr/lib/it_typein.dylib"
-python3 - "$MNT/System/Library/LaunchDaemons/com.apple.SpringBoard.plist" <<'PYJOB'
+fi
+python3 - "$MNT/System/Library/LaunchDaemons/com.apple.SpringBoard.plist" "$OGL" "$TOOLS" <<'PYJOB'
 import plistlib, sys
 from pathlib import Path
 path = Path(sys.argv[1])
@@ -73,19 +91,29 @@ job = plistlib.loads(data)
 assert job.get('Label') == 'com.apple.SpringBoard'
 env = job.setdefault('EnvironmentVariables', {})
 assert isinstance(env, dict)
-# Match Light Touch's existing-device graphics provisioning at first boot.
-env['CA_ENABLE_OGL'] = env['LK_ENABLE_OGL'] = '1'
+# Match Light Touch's existing-device graphics provisioning at first boot: GL
+# CoreAnimation through the shim (or software with IT_GLES_SHIM=0), never the
+# unemulated MBX 2D path, no auto-detection.
+env['CA_ENABLE_OGL'] = env['LK_ENABLE_OGL'] = sys.argv[2]
+env['CA_AUTO_ENABLE_OGL'] = env['LK_AUTO_ENABLE_OGL'] = '0'
+env['CA_ENABLE_MBX2D'] = env['LK_ENABLE_MBX2D'] = '0'
 old = env.get('DYLD_INSERT_LIBRARIES', '')
 assert isinstance(old, str)
-libraries = [item for item in old.split(':') if item and item != '/usr/lib/it_kbd_agent.dylib']
-if '/usr/lib/it_typein.dylib' not in libraries:
+libraries = [item for item in old.split(':') if item and item not in
+             ('/usr/lib/it_kbd_agent.dylib', '/usr/lib/it_typein.dylib')]
+if sys.argv[3] == '1':
     libraries.append('/usr/lib/it_typein.dylib')
-env['DYLD_INSERT_LIBRARIES'] = ':'.join(libraries)
+if libraries:
+    env['DYLD_INSERT_LIBRARIES'] = ':'.join(libraries)
+else:
+    env.pop('DYLD_INSERT_LIBRARIES', None)
 path.write_bytes(plistlib.dumps(job, fmt=plistlib.FMT_BINARY if data.startswith(b'bplist') else plistlib.FMT_XML))
 PYJOB
+if [ "$TOOLS" = 1 ]; then
 mkdir -p "$MNT/System/Library/LaunchDaemons"
 cp "$AGENT/com.qemu.it-agent.plist" "$MNT/System/Library/LaunchDaemons/com.qemu.it-agent.plist"
 chmod 644 "$MNT/System/Library/LaunchDaemons/com.qemu.it-agent.plist"
+fi
 rm -f "$MNT/System/Library/LaunchDaemons/com.qemu.it-pbd.plist"
 
 # Old AppSync images disabled even an explicit press of the lock button.
@@ -99,12 +127,24 @@ fi
 # New-device Sounds defaults, including the Calendar Alerts sound path.
 python3 "$SRC/imgtools/set-sound-defaults.py" --root "$MNT"
 
+if [ "$TOOLS" != 1 ]; then
+    rm -f "$MNT/System/Library/LaunchDaemons/com.qemu.it-agent.plist" \
+          "$MNT/var/mobile/Media/.lt-guest-tools-v1" \
+          "$MNT/var/mobile/Media/.lt-guest-tools-v2" \
+          "$MNT/var/mobile/Media/.lt-guest-tools-v3"
+    echo "baked: software CoreAnimation; guest helpers omitted (unsupported dyld)"
+    exit 0
+fi
+
 # 3. The marker, inside the AFC jail (/var/mobile/Media) so the host app can
 #    stat it over AFC — no ssh — and take the fully in-process install path.
 mkdir -p "$MNT/var/mobile/Media"
 echo "v1" > "$MNT/var/mobile/Media/.lt-guest-tools-v1"
 # Keep v1 for older frontends; v2 additionally guarantees the agent job.
 echo "v2" > "$MNT/var/mobile/Media/.lt-guest-tools-v2"
+# v3: the agent is v2 (spawn, sync, chown, unlink, dlicon), so every guest service
+# works without a shell; imgtools/ipod2g_device.py images carry none.
+echo "v3" > "$MNT/var/mobile/Media/.lt-guest-tools-v3"
 
-echo "baked: MBXGLEngine, sblaunch$([ -f "$INST/sbdlicon" ] && echo ', sbdlicon'), it_agent, marker .lt-guest-tools-v2"
+echo "baked: $([ "$OGL" = 1 ] && echo MBXGLEngine || echo 'stock MBXGLEngine (software CA)'), sblaunch$([ -f "$INST/sbdlicon" ] && echo ', sbdlicon'), it_agent, marker .lt-guest-tools-v3"
 echo "NEXT: run imgtools/setowner.py (see header) or the tools stay uid 99 and will not run"

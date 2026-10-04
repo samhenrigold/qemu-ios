@@ -5,6 +5,7 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
+#include "qemu/notify.h"
 #include "hw/sysbus.h"
 #include "hw/hw.h"
 #include "hw/irq.h"
@@ -21,6 +22,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchFMSSState, IPOD_TOUCH_FMSS)
 #define NAND_PAGES_PER_BLOCK 128
 
 #define FMSS__FMCTRL1             0x4
+#define FMSS__CS_SCRIPT           0xC04
 #define FMSS__CS_IRQ              0xC0C
 #define FMSS__CS_IRQMASK          0xC10
 #define FMSS__CS_BUF_RST_OK       0xC64
@@ -30,13 +32,21 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchFMSSState, IPOD_TOUCH_FMSS)
 #define FMSS_NUM_PAGES            0xD18
 #define FMSS_PAGE_SPARE_OUT_ADDR  0xD1C
 #define FMSS_PAGES_OUT_ADDR       0xD20
+#define FMSS_CHUNKS_PER_PAGE      0xD28
 #define FMSS_CSGENRC              0xD30
+#define FMSS_SCRIPT_PARAM_D34     0xD34
+#define FMSS_SCRIPT_PARAM_D38     0xD38
+#define FMSS_SCRIPT_PARAM_D48     0xD48
+#define FMSS_SCRIPT_PARAM_D4C     0xD4C
+#define FMSS_SCRIPT_CSGENR15      0xD54
+#define FMSS_SCRIPT_SCRATCH_D3C    0xD3C
+#define FMSS_SCRIPT_SCRATCH_D7C    0xD7C
 
 typedef struct IPodTouchFMSSState
 {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
-    bool direct_boot; /* Startup board compatibility policy. */
+    NotifierList before_read; /* Observers; the controller never edits firmware. */
     qemu_irq irq;
 
     uint8_t *page_buffer;
@@ -45,6 +55,7 @@ typedef struct IPodTouchFMSSState
     uint32_t reg_cs_irq_bit;
     uint32_t reg_cs_ctrl;
     uint32_t reg_cs_irq_mask;
+    uint32_t reg_cs_script;   /* guest PA of the sequencer program (0xC04) */
     QEMUTimer *completion_timer;
     uint32_t reg_cinfo_target_addr;
     uint32_t reg_pages_in_addr;
@@ -53,6 +64,14 @@ typedef struct IPodTouchFMSSState
     uint32_t reg_page_spare_out_addr;
     uint32_t reg_pages_out_addr;
     uint32_t reg_csgenrc;
+    uint32_t reg_chunks_per_page; /* Guest-supplied 2048-byte chunks/page. */
+    uint32_t reg_script_param_d34; /* CPU-supplied sequencer parameter. */
+    uint32_t reg_script_param_d38; /* CPU-supplied sequencer parameter. */
+    uint32_t reg_script_param_d48; /* CPU-supplied sequencer parameter. */
+    uint32_t reg_script_param_d4c; /* CPU-supplied sequencer parameter. */
+    uint32_t reg_script_scratch_d3c; /* Sequencer-initialized result accumulator. */
+    uint32_t reg_script_scratch_d7c; /* Saved sequencer auxiliary result. */
+    uint32_t reg_script_csgenr15; /* Sequencer-owned chunk-loop state. */
     char *nand_path;
     char *nand_overlay;   /* writable COW overlay dir, or NULL to discard writes */
 
@@ -70,7 +89,8 @@ typedef struct IPodTouchFMSSState
     size_t packed_record_count;   /* bounds the index's slot numbers */
     uint32_t packed_num_cs;
     uint32_t packed_pages_per_cs;
-    GHashTable *erased_blocks; /* (cs << 32) | block for blocks erased in the overlay */
+    uint32_t snapshot_mode; /* startup read/write semantics, checked on migration */
+    GTree *erased_blocks; /* (cs << 24) | block, with owned one-byte markers */
 
     /*
      * Which pages the overlay actually holds, so a read that the overlay does
@@ -96,14 +116,14 @@ typedef struct IPodTouchFMSSState
      * fmss_generated_layout), which is right for the persisted image but leaves
      * the physical page the FTL just programmed reading back as whatever the
      * base image had there. Flash does not work that way: a program makes that
-     * page read back. This is that memory, and it is deliberately not persisted
-     * -- the mapping only holds until the FTL is rebuilt at the next boot.
+     * page read back. This memory is serialized in VMState but not written to
+     * disk: the mapping holds until the FTL is rebuilt at the next cold boot.
      *
      * It is keyed by physical page, so it is bounded by the size of the flash
      * (~520 MB if every page were rewritten) rather than by how much the guest
      * writes over the life of the session.
      */
-    GHashTable *phys_pages;
+    GTree *phys_pages;
 } IPodTouchFMSSState;
 
 #endif

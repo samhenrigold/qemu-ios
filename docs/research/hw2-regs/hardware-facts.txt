@@ -1,0 +1,12 @@
+# 7B500 iPad1 (K48AP / S5L8930 "A4") hardware facts, from the running system.
+model            = iPad1,1  (K48AP)
+platform-name    = s5l8930x
+compatible       = K48AP, iPad1,1, AppleARM
+cpu              = ARM,cortex-a8 / ARM,v7  (hw.ncpu=1)
+chip-revision    = 0x11
+DRAM             = 256 MiB @ 0x40000000  (hw.memsize/physmem = 258998272 usable)
+L2 cache         = 512 KiB, cacheline 64, page 4096
+timebase freq    = 24 MHz    (hw.tbfrequency)
+bus/periph freq  = 100 MHz   (hw.busfrequency)
+IOPlatformSerialNumber = <unit serial>  (device-specific; the real value lives in identity.json)
+# Full property dump: ioreg-full.txt (285 IORegistry entries).

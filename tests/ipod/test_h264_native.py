@@ -8,6 +8,7 @@ No guest assets are bundled. Requires access to native media services.
 For --software, point PKG_CONFIG_PATH at the native package's patched FFmpeg.
 """
 from pathlib import Path
+import os
 import re
 import argparse
 import shlex
@@ -130,6 +131,8 @@ prelude = r'''
 typedef int SysBusDevice;
 typedef int MemoryRegion;
 typedef int qemu_irq;
+static void qemu_irq_raise(int irq) {}
+static void qemu_irq_lower(int irq) {}
 typedef uint64_t hwaddr;
 typedef struct IPodVideoDecoder IPodVideoDecoder;
 void ipod_video_close(IPodVideoDecoder *d);
@@ -264,6 +267,8 @@ int main(int argc, char **argv) { @autoreleasepool {
     printf("PASS: %u native H.264 I/P frames, all Y/UV pixels and DMA output match\n",frames);
 }}
 '''
+pc=root/'build/ffmpeg-pkgconfig'
+if args.software and pc.is_dir(): os.environ['PKG_CONFIG_PATH']=os.pathsep.join(filter(None,[str(pc),os.environ.get('PKG_CONFIG_PATH')]))
 with tempfile.TemporaryDirectory(prefix='h264-native-') as directory:
     main=Path(directory)/'check.m';exe=Path(directory)/'check';data=Path(directory)/'rows'
     data.write_text(''.join(' '.join(map(str,row))+'\n' for row in rows))

@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess,tempfile
 root=Path(__file__).resolve().parents[2]
 source=(root/'contrib/macos-app/qemu-macos-extras.c').read_text()
-functions=source[source.index('struct battery_input {'):source.index('static void paste_bh(')]
+functions=source[source.index('struct battery_input {'):source.index('/* One machine property from its string form')]
 code=r'''
 #include <stdbool.h>
 #include <stdlib.h>
@@ -41,6 +41,9 @@ static void object_property_set_int(Object *obj,const char *name,int value,Error
 { assert(obj==(Object *)1 && !strcmp(name,"battery-level"));level=value;updates++; }
 static void object_property_set_str(Object *obj,const char *name,const char *value,Error **err)
 { assert(obj==(Object *)1 && !strcmp(name,"battery-charging"));strcpy(charging,value);updates++; }
+static bool has_charging=true;
+static void *object_property_find(Object *obj,const char *name)
+{ assert(obj==(Object *)1 && !strcmp(name,"battery-charging"));return has_charging?(void *)obj:NULL; }
 static const char *error_get_pretty(Error *error) { return "error"; }
 static void error_free(Error *error) {}
 '''+functions+r'''
@@ -57,6 +60,10 @@ int main(void) {
   assert(pending);pending(argument);pending=NULL;
   assert(level==mode*50 && !strcmp(charging,modes[mode]));
  }
+ /* the iPad has no battery-charging (its charging is usb-charger): the level alone */
+ has_charging=false;strcpy(charging,"-");
+ assert(qemu_ios_ui_battery(70,2));pending(argument);pending=NULL;assert(level==70 && !strcmp(charging,"-"));
+ has_charging=true;
  assert(!qemu_ios_ui_battery_config(60,0,NAN));
  assert(!qemu_ios_ui_battery_config(60,0,-1));
  assert(!qemu_ios_ui_battery_config(60,0,101));
@@ -65,7 +72,7 @@ int main(void) {
  assert(qemu_ios_ui_usb_connection(true));assert(!attached);
  pending(argument);pending=NULL;assert(attached);
  assert(qemu_ios_ui_usb_connection(false));pending(argument);pending=NULL;assert(!attached);
- puts("PASS: battery bridge readiness, bounds, queued delivery and charging modes");
+ puts("PASS: battery bridge readiness, bounds, queued delivery and charging modes, none on the iPad");
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:

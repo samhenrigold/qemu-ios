@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_usb_phys.h"
+#include "hw/irq.h"
 #include "migration/vmstate.h"
 
 /* Temporary diagnostic for the 3.1.3 USB bring-up; gated by IT_USB_TRACE. */
@@ -54,6 +55,7 @@ static void ipod_touch_usb_phys_write(void *opaque, hwaddr addr, uint64_t val, u
         return;
     case REG_ORSTCON:
         s->usb_orstcon = val;
+        qemu_set_irq(s->phy_reset, !!(val & ORSTCON_PHY_RESET));
         return;
     case REG_UNKNOWN1:
         s->usb_unknown1 = val;
@@ -81,10 +83,11 @@ static void ipod_touch_usb_phys_init(Object *obj)
 
     memory_region_init_io(&s->iomem, obj, &ipod_touch_usb_phys_ops, s, TYPE_IPOD_TOUCH_USB_PHYS, 0x1000);
     sysbus_init_mmio(sbd, &s->iomem);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->phy_reset, "phy-reset", 1);
 }
 
-/* The PHY powers up held in reset with its clocks off, which is what a zeroed
- * register file represents; the driver's power-up sequence writes them all. */
+/* Preserve the existing zeroed power-on register state. Physical reset is
+ * asserted by ORSTCON bit 0; power and clock semantics remain separate. */
 static void ipod_touch_usb_phys_reset(DeviceState *dev)
 {
     IPodTouchUSBPhysState *s = IPOD_TOUCH_USB_PHYS(dev);
@@ -95,12 +98,21 @@ static void ipod_touch_usb_phys_reset(DeviceState *dev)
     s->usb_unknown1 = 0;
     s->usb_ophytune = 0;
     memset(s->regs, 0, sizeof(s->regs));
+    qemu_set_irq(s->phy_reset, 0);
+}
+
+static int ipod_touch_usb_phys_post_load(void *opaque, int version_id)
+{
+    IPodTouchUSBPhysState *s = opaque;
+    qemu_set_irq(s->phy_reset, !!(s->usb_orstcon & ORSTCON_PHY_RESET));
+    return 0;
 }
 
 static const VMStateDescription vmstate_ipod_touch_usb_phys = {
     .name = "ipod_touch_usb_phys",
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = ipod_touch_usb_phys_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(usb_ophypwr, IPodTouchUSBPhysState),
         VMSTATE_UINT32(usb_ophyclk, IPodTouchUSBPhysState),

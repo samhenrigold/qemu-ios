@@ -1,5 +1,5 @@
 #include "qemu/osdep.h"
-#include "hw/arm/ipod_touch_firmware.h"
+#include "hw/arm/it_iboot.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qapi/qapi-visit-common.h"
@@ -20,6 +20,7 @@
 #include "target/arm/cpregs.h"
 #include "qemu/error-report.h"
 #include "qemu/cutils.h"
+#include "net/util.h"
 #include "ui/input.h"
 #include "ui/clipboard.h"
 
@@ -52,7 +53,7 @@
         .access = PL0_RW,        \
         .resetvalue = 0,         \
         .state = ARM_CP_STATE_AA32, \
-        .type = ARM_CP_IO,       \
+        .type = ARM_CP_IO | ARM_CP_RAISES_EXC, /* gles_guest_rw */ \
         .fieldoffset = offsetof(IPodTouchMachineState, IT2G_CPREG_VAR_NAME(QEMU_CALL)) \
                        - offsetof(ARMCPU, env), \
         .readfn = qemu_call_status, \
@@ -263,6 +264,64 @@ static bool ipod_touch_time_env_alias(IPodTouchMachineState *s, Error **errp)
     return true;
 }
 
+static const char *const n72_security_profiles[] = {
+    [N72_SECURITY_RETAIL] = "retail",
+    [N72_SECURITY_SECURE_DEVELOPMENT] = "secure-development",
+    [N72_SECURITY_INSECURE_DEVELOPMENT] = "insecure-development",
+};
+
+static char *ipod_touch_get_security_profile(Object *obj, Error **errp)
+{
+    return g_strdup(n72_security_profiles[IPOD_TOUCH_MACHINE(obj)->security_profile]);
+}
+
+static void ipod_touch_set_security_profile(Object *obj, const char *value,
+                                            Error **errp)
+{
+    IPodTouchMachineState *s = IPOD_TOUCH_MACHINE(obj);
+    if (s->cpu) {
+        error_setg(errp, "security-profile must be set before the machine starts");
+        return;
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(n72_security_profiles); i++) {
+        if (!strcmp(value, n72_security_profiles[i])) {
+            s->security_profile = i;
+            return;
+        }
+    }
+    error_setg(errp, "security-profile must be retail, secure-development, "
+               "or insecure-development");
+}
+
+/* Unit ECID is a board input. Stock ROM/iBSS reads the immutable fuse words;
+ * no descriptor or guest-memory identity is fabricated here. */
+static void ipod_touch_get_ecid(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    uint64_t value = IPOD_TOUCH_MACHINE(obj)->ecid;
+    visit_type_uint64(v, name, &value, errp);
+}
+
+static void ipod_touch_set_ecid(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    IPodTouchMachineState *s = IPOD_TOUCH_MACHINE(obj);
+    uint64_t value;
+    if (s->cpu) {
+        error_setg(errp, "ecid must be set before the machine starts");
+        return;
+    }
+    if (!visit_type_uint64(v, name, &value, errp)) {
+        return;
+    }
+    if (value >= (1ULL << 42)) {
+        error_setg(errp, "S5L8720 ECID must fit its 42 fuse bits");
+        return;
+    }
+    s->ecid = value;
+    s->ecid_explicit = true;
+}
+
 static void ipod_touch_get_boot_args_delay_ms(Object *obj, Visitor *v,
                                              const char *name, void *opaque,
                                              Error **errp)
@@ -344,45 +403,6 @@ static void ipod_touch_set_boot_args_interval_ms(Object *obj, Visitor *v,
     nms->boot_args_interval_ms_explicit = true;
 }
 
-static bool ipod_touch_boot_args_env_aliases(IPodTouchMachineState *nms,
-                                              Error **errp)
-{
-    const char *delay_ms = getenv("IT_BOOT_ARGS_DELAY_MS");
-    if (delay_ms && !nms->boot_args_delay_ms_explicit) {
-        uint64_t value;
-        if (qemu_strtou64(delay_ms, NULL, 0, &value) ||
-            value > 3600000) {
-            error_setg(errp, "IT_BOOT_ARGS_DELAY_MS must be between 0 and 3600000");
-            return false;
-        }
-        nms->boot_args_delay_ms = value;
-        warn_report_once("IT_BOOT_ARGS_DELAY_MS is deprecated; use -M iPod-Touch,boot-args-delay-ms=");
-    }
-    const char *repeat = getenv("IT_BOOT_ARGS_REPEAT");
-    if (repeat && !nms->boot_args_repeat_explicit) {
-        uint64_t value;
-        if (qemu_strtou64(repeat, NULL, 0, &value) ||
-            value > 1000000) {
-            error_setg(errp, "IT_BOOT_ARGS_REPEAT must be between 0 and 1000000");
-            return false;
-        }
-        nms->boot_args_repeat = value;
-        warn_report_once("IT_BOOT_ARGS_REPEAT is deprecated; use -M iPod-Touch,boot-args-repeat=");
-    }
-    const char *interval_ms = getenv("IT_BOOT_ARGS_INTERVAL_MS");
-    if (interval_ms && !nms->boot_args_interval_ms_explicit) {
-        uint64_t value;
-        if (qemu_strtou64(interval_ms, NULL, 0, &value) ||
-            value < 1 || value > 3600000) {
-            error_setg(errp, "IT_BOOT_ARGS_INTERVAL_MS must be between 1 and 3600000");
-            return false;
-        }
-        nms->boot_args_interval_ms = value;
-        warn_report_once("IT_BOOT_ARGS_INTERVAL_MS is deprecated; use -M iPod-Touch,boot-args-interval-ms=");
-    }
-    return true;
-}
-
 static void ipod_touch_get_bt(Object *obj, Visitor *v, const char *name,
                                   void *opaque, Error **errp)
 {
@@ -425,6 +445,62 @@ static void ipod_touch_set_bt_latency_us(Object *obj, Visitor *v, const char *na
         nms->bt_latency_us = value;
         nms->bt_latency_us_explicit = true;
     }
+}
+
+/* The BCM card's factory identity is separate from NOR/NVRAM. Old
+ * AppleBCM4325 drivers read its CISTPL_FUNCE MAC before firmware bring-up. */
+static char *ipod_touch_get_wifi_mac(Object *obj, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (!nms->wifi_mac_explicit) {
+        return g_strdup("");
+    }
+    const uint8_t *m = nms->wifi_mac;
+    return g_strdup_printf("%02x:%02x:%02x:%02x:%02x:%02x",
+                           m[0], m[1], m[2], m[3], m[4], m[5]);
+}
+
+static void ipod_touch_set_wifi_mac(Object *obj, const char *value, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    uint8_t mac[6];
+    if (nms->cpu) {
+        error_setg(errp, "wifi-mac must be set before the machine starts");
+        return;
+    }
+    if (net_parse_macaddr(mac, value) < 0) {
+        error_setg(errp, "wifi-mac must be a MAC address");
+        return;
+    }
+    memcpy(nms->wifi_mac, mac, sizeof(mac));
+    nms->wifi_mac_explicit = true;
+}
+
+static char *ipod_touch_get_bt_mac(Object *obj, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    if (!nms->bt_mac_explicit) {
+        return g_strdup("");
+    }
+    const uint8_t *m = nms->bt_mac;
+    return g_strdup_printf("%02x:%02x:%02x:%02x:%02x:%02x",
+                           m[0], m[1], m[2], m[3], m[4], m[5]);
+}
+
+static void ipod_touch_set_bt_mac(Object *obj, const char *value, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+    uint8_t mac[6];
+    if (nms->cpu) {
+        error_setg(errp, "bt-mac must be set before the machine starts");
+        return;
+    }
+    if (net_parse_macaddr(mac, value) < 0) {
+        error_setg(errp, "bt-mac must be a MAC address");
+        return;
+    }
+    memcpy(nms->bt_mac, mac, sizeof(mac));
+    nms->bt_mac_explicit = true;
 }
 
 static bool ipod_touch_bt_env_aliases(IPodTouchMachineState *nms, Error **errp)
@@ -722,6 +798,50 @@ static void ipod_touch_set_direct_iboot(Object *obj, const char *value, Error **
     nms->direct_iboot_explicit = true;
 }
 
+static char *ipod_touch_get_gid_blobs(Object *obj, Error **errp)
+{
+    return g_strdup(IPOD_TOUCH_MACHINE(obj)->gid_blobs);
+}
+
+static void ipod_touch_set_gid_blobs(Object *obj, const char *value, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+
+    if (strlen(value) >= sizeof(nms->gid_blobs)) {
+        error_setg(errp, "gid-blobs path is too long");
+        return;
+    }
+    g_autofree char *data = NULL;
+    g_autoptr(GError) error = NULL;
+    gsize size;
+    if (!g_file_get_contents(value, &data, &size, &error)) {
+        error_setg(errp, "gid-blobs: cannot read '%s': %s", value, error->message);
+        return;
+    }
+    if (!ipod_touch_aes_set_gid_blobs((const uint8_t *)data, size)) {
+        error_setg(errp, "gid-blobs: '%s' is not a list of 64-byte KBAG || IV-key records", value);
+        return;
+    }
+    g_strlcpy(nms->gid_blobs, value, sizeof(nms->gid_blobs));
+}
+
+static char *ipod_touch_get_aes_uid(Object *obj, Error **errp)
+{
+    return g_strdup(IPOD_TOUCH_MACHINE(obj)->aes_uid_engine ? "engine" : "legacy");
+}
+
+static void ipod_touch_set_aes_uid(Object *obj, const char *value, Error **errp)
+{
+    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
+
+    if (strcmp(value, "engine") && strcmp(value, "legacy")) {
+        error_setg(errp, "aes-uid must be 'engine' or 'legacy'");
+        return;
+    }
+    nms->aes_uid_engine = !strcmp(value, "engine");
+    ipod_touch_aes_set_uid_engine(nms->aes_uid_engine);
+}
+
 static char *ipod_touch_get_direct_llb(Object *obj, Error **errp)
 {
     return g_strdup(IPOD_TOUCH_MACHINE(obj)->direct_llb);
@@ -760,20 +880,25 @@ static void ipod_touch_direct_boot_env_aliases(IPodTouchMachineState *nms)
 }
 
 /*
- * Audio hardware that the machine did not model until now (the CS42L58 codec
- * and the AMC). Both are real parts on this board, but neither was mapped
- * before, so switching them on changes what every guest sees. 2.1.1 works
- * today and must keep working, so they default to on only for the 3.1.3
- * configuration (which is the one that has the audio bugs, and which is
- * selected by direct-iboot).
- * audio-hw=on forces them on (including under 2.1.1); off removes them.
+ * Audio hardware: the CS42L58 codec on i2c0 at 0x4A, the LM48821 amp, I2S0
+ * and the AMC. Every N72AP has them, so every boot gets them unless
+ * audio-hw=off removes them (for bisecting).
+ *
+ * auto used to mean "only with direct-iboot", which kept them away from the
+ * 2.1.1 SecureROM boot. The 5F138 kernel then got NAKs on every codec access
+ * ("AppleCS42L58Audio: I2C register ... failed: device error"). When USB power
+ * made mediaserverd play the charging sound, AppleS5L8900XI2SController wrote
+ * I2S0's register 0 at 0x3CA00000. Nothing was mapped there, so the write took
+ * an external abort (fsr 0x808), and the kernel panicked with "Fatal
+ * Exception" at pc 0xc05f6eac. With the parts present, 5F138 runs the same
+ * init sequence as 3.1.3 (chip ID 0xe0 at register 01, then the power and
+ * volume registers) and neither failure happens.
  * Explicit machine options, including auto, override the legacy IT_AUDIO_HW
  * alias. Hardware topology cannot change after initialization.
  */
 static bool ipod_touch_audio_hw_enabled(IPodTouchMachineState *nms)
 {
-    return nms->audio_hw == ON_OFF_AUTO_AUTO ? nms->direct_iboot[0] != 0
-        : nms->audio_hw == ON_OFF_AUTO_ON;
+    return nms->audio_hw != ON_OFF_AUTO_OFF;
 }
 
 static void ipod_touch_get_audio_hw(Object *obj, Visitor *v, const char *name,
@@ -910,12 +1035,13 @@ static void ipod_touch_load_bootrom(IPodTouchMachineState *nms)
  * IT_DIRECT_IBOOT / IT_DIRECT_LLB: boot-chain substitution (explicitly
  * authorised for the 3.1.3 bring-up).
  *
- * iOS 3.0+ personalises the signed boot chain per-device, and the S5L8720
- * bootrom rejects the 7E18 LLB no matter how we forge the PKE check -- it
- * recomputes the image hash itself and drops to the DFU wait loop. So instead
- * of satisfying the bootrom we skip it, exactly as devos50 (iPod touch 1G, no
- * bootrom dump) and DJHartley's iEmu (-option-rom unencrypted iBoot) did: load
- * a *decrypted* iBoot straight into its own RAM region and enter it.
+ * This is an explicit compatibility/debugging shortcut, not evidence of a
+ * SecureROM or LLB limitation. Stock 7E18 signatures validate independently,
+ * and native retail and secure-development controls now reach their unmodified
+ * ROM -> LLB -> iBoot entries with forge-sigcheck=off. The initial cold-chain
+ * stall was a DSIM software-reset status gated on this shortcut's board flag.
+ * Full stock kernel/restore qualification is tracked in security-profiles.md;
+ * retain direct loading until that complete hardware path is qualified.
  *
  * The decrypted images are raw (they begin with the ARM vector table). Their
  * intended load address is the absolute value baked into the vector table at
@@ -928,115 +1054,6 @@ static void ipod_touch_load_bootrom(IPodTouchMachineState *nms)
  * iBoot turns out to depend on state LLB leaves behind.
  */
 #define LLB_LOAD_BASE 0x22000000
-
-/*
- * IT_INJECT_DT: 3.1.3 device-tree bring-up (Option B3).
- *
- * The 7E18 iBoot loads and decrypts the kernelcache from HFS, but then fails to
- * load the device tree: its load_and_set_device_tree() (VA 0x0ff0f498) calls
- * image_load() (VA 0x0ff1998c) on the NOR 'dtre' image, which is rejected at
- * signature validation before any GID decrypt is attempted -- and a global
- * security-state change (forge/demote) to permit it breaks the kernelcache.
- *
- * Instead we hand iBoot an already-decrypted device tree. load_and_set_device_tree
- * (VA 0x0ff0f498) sets its DT-address global (g_dt_addr @ 0x0ff27560) to
- * 0x0BF00000 and its DT-size global (g_dt_size @ 0x0ff27564) to the enumerated
- * image size *before* the image_load() call; on image_load() success it returns
- * those to the caller, which then dt_deserialize()s the blob at g_dt_addr into
- * iBoot's node list (the list UpdateDeviceTree/AllocateMemoryRange walk).
- *
- * iBoot zeroes DRAM (both the insecure 0x08000000 and secure 0x0B000000 banks)
- * during early init, so a device tree dropped at 0x0BF00000 at reset is gone long
- * before the DT load. But the "llb"/SRAM region at 0x22000000 is NOT cleared (it
- * is where the SecureROM/LLB run on real hardware) and iBoot keeps it mapped. So
- * we stage the decrypted serialized device tree at 0x22000000 and rewrite the
- * failing image_load() call site (VA 0x0ff0f4da) into a 16-byte thunk that copies
- * the blob into place right when the DT is loaded (after the kernelcache
- * decompress that would otherwise clobber it):
- *
- *     movs r0,#0xbf ; lsls r0,r0,#20      ; r0 = 0x0BF00000 (dst = g_dt_addr)
- *     movs r1,#0x22 ; lsls r1,r1,#24      ; r1 = 0x22000000 (src = staging)
- *     ldr  r2,[r5]                        ; r2 = g_dt_size  (len, already set)
- *     blx  0x0ff1b474                     ; iBoot memcpy(dst, src, len)
- *     b    0x0ff0f4ea                     ; fall into the success/out-param path
- *
- * memcpy preserves r4/r5/r6/r8, so the function's success tail returns g_dt_addr
- * and g_dt_size to the caller exactly as a real image_load would. This touches
- * ONLY the dtre path; the kernelcache still validates and decrypts normally, and
- * a global security-state change (forge/demote) -- which breaks the kernelcache --
- * is avoided. Gated entirely behind IT_INJECT_DT; 2.1.1 is untouched.
- */
-#define DT_STAGING_BASE     0x22000000   /* uncleared SRAM/"llb" region */
-#define IBOOT_DT_LOAD_PATCH 0xf4da       /* VA offset of the `bl image_load` */
-
-/*
- * IT_INJECT_LOGO: the boot Apple logo, which iBoot never manages to draw.
- *
- * The screen is black for the whole of iBoot's life on every 3.1.3 boot. It is
- * not a display problem: iBoot brings the panel up (pinot_init is clean), the
- * scanout base is programmed, and the backlight is high. It fails one step
- * earlier, and for exactly the same reason the device tree did.
- *
- * do_boot_ui() is inlined into main at 0x0ff00b4c and matches the published
- * iBoot source line for line:
- *
- *   0x0ff00b52  bl 0x0ff12b14   paint_set_bgcolor(0,0,0)
- *   0x0ff00b58  bl 0x0ff13298   paint_set_picture(0)
- *   0x0ff00b5c  ldr r0,='logo'  (the only 'logo' literal in the image)
- *   0x0ff00b5e  bl 0x0ff13498   paint_set_picture_for_tag(IMAGE_TYPE_LOGO)
- *   0x0ff00b62  bl 0x0ff12cf2   paint_update_image()
- *
- * paint_set_picture_for_tag is just paint_set_picture(image_find(tag)), and
- * image_find succeeds -- the 'logo' img3 is in the NOR image list, which is
- * what the "type logo offset 0x495c0" line in the boot log reports. The load
- * happens inside paint_set_picture:
- *
- *   0x0ff132f8  add r2,sp,#0x24         ; r2 = &address slot
- *   0x0ff132fc  add r3,sp,#0x20         ; r3 = &length slot
- *   0x0ff132fe  bl  0x0ff1998c          ; image_load(handle, 0, &addr, &len)
- *   0x0ff13302  cmp r0,#0
- *   0x0ff13304  bge 0x0ff13308          ; success
- *   0x0ff13306  b   0x0ff13452          ; failure: return, no picture set
- *
- * Measured over the gdbstub: that image_load returns **-1**. It is the same
- * image_load that rejects the dtre, failing personalised-signature validation
- * before any GID decrypt is attempted -- confirmed by the AES engine, which
- * performs exactly one GID operation in a whole boot ("7E18 kernelcache") and
- * never one for the logo. Unlike the device tree, a failed picture load is
- * silent: do_boot_ui simply paints its black background and boots on.
- *
- * So do for the logo what IT_INJECT_DT does for the device tree: hand iBoot the
- * already-decrypted image and skip the validation it cannot pass. The call site
- * is retargeted to a thunk that fills in the two out-parameters and returns 0.
- * On the success path iBoot itself checks the blob, so the staged file must be
- * a real decrypted iBootIm container ("iBootIm\0", 'lzss', 'argb' or 'grey');
- * iBoot decompresses and blits it. imgtools/extract_bootlogo.py produces one.
- *
- * Only this one call site is touched, so the kernelcache still validates and
- * decrypts normally -- unlike IT_FORGE_SIGCHECK, which is global and breaks it
- * ("Kernelcache image not valid" -> recovery mode).
- */
-/*
- * Where the blob and the thunk can actually live, both learned the hard way:
- *
- * - iBoot ZEROES its own region above the loaded image during early init, so
- *   anything staged at reset into 0x0FF8xxxx is gone by the time do_boot_ui
- *   runs (measured: the thunk read back as 0x0000 halfwords and the CPU walked
- *   through them). The "llb"/SRAM region is the one place that survives, which
- *   is exactly why IT_INJECT_DT stages there; the device tree is still intact
- *   at 0x22000000 at logo time. Put the image there, clear of the DT.
- *
- * - The thunk cannot go there too: a Thumb BL only reaches +/-16 MB and
- *   0x22000000 is ~318 MB from the call site. It has to live inside the loaded
- *   iBoot image, which is not zeroed. do_recoverymode_ui (the 'recm' UI at
- *   0x0ff00cfe) is dead code in a normal boot -- nothing calls it unless iBoot
- *   enters recovery -- so the thunk goes there. If a future change ever needs
- *   recovery mode's UI with IT_INJECT_LOGO set, move this.
- */
-#define LOGO_STAGING_BASE      0x22040000 /* llb/SRAM region, survives; DT is
-                                           * ~35 KB at 0x22000000            */
-#define LOGO_THUNK_BASE        0x0FF00D00 /* dead do_recoverymode_ui code    */
-#define IBOOT_LOGO_LOAD_PATCH  0x132fe    /* VA offset of the `bl image_load` */
 
 /*
  * Top of the "insecure" DRAM bank (0x08000000 + 0x3000000). Measured to be
@@ -1109,16 +1126,19 @@ static void ipod_touch_stage_ramdisk(IPodTouchMachineState *nms)
 }
 
 /*
- * IT_BOOT_ARGS: set the XNU kernel command line late in boot.
+ * boot-args: set the XNU kernel command line late in boot.
  *
- * 3.1.3 boots with an empty command line (7E18 iBoot heap-panics on any NOR
- * boot-args, so that path is unusable). Without it the kernel's code-signing
+ * 3.1.3 normally hands off an empty command line. A stock 7E18 trace
+ * imports NOR boot-args into iBoot's environment successfully, then chooses
+ * an empty source in its normal kernel-load path; see
+ * docs/research/ipod-nvram-handoff.md. This is not evidence of a SPI/NVRAM
+ * transfer failure. Without the injected argument the kernel's code-signing
  * enforcement is on and AMFI rejects the ad-hoc/invalidly-signed decrypted
  * (Clutch) App-Store binaries at exec, so injected apps are discovered on the
  * home screen but never launch -- whereas stock, Apple-signed apps launch
- * normally. 2.1.1 does not need this: its own boot chain already carries
- * amfi_allow_any_signature=1, which is exactly what makes the same binaries run
- * there. This hook reproduces that on 3.1.3 without touching the 2.1.1 path.
+ * normally. The SecureROM path has a separate legacy command-line data
+ * injection in ipod_touch_compat_command_line; its arguments must not be
+ * mistaken for values supplied by stock iBoot or NOR.
  *
  * XNU reads the string live from boot_args->CommandLine (PE_boot_args returns
  * PE_state.bootArgs + 0x38 on every PE_parse_boot_argn call), and the AMFI kext
@@ -1128,134 +1148,64 @@ static void ipod_touch_stage_ramdisk(IPodTouchMachineState *nms)
  * lands in a wide window and needs no guest code patching.
  *
  * boot_args is built by iBoot at a fixed DRAM location for a given image; we
- * find it by signature (rev==1, virtBase==0xC0000000, physBase==0x08000000)
- * rather than hardcode the address, and overwrite CommandLine at +0x38.
- * IT_BOOT_ARGS_ADDR overrides the struct address; IT_BOOT_ARGS_DELAY_MS the
- * timer. Gated entirely on IT_BOOT_ARGS; 2.1.1 is untouched.
+ * find it by signature (rev==1, virtBase==0xC0000000 on 2.x/3.x or 0x80000000
+ * on 4.x, physBase==0x08000000) rather than hardcode the address, and
+ * overwrite CommandLine at +0x38. 4.2.1 iBoot builds it at 0x08825000, past
+ * the first 8 MiB, so the scan covers 16 MiB.
+ * boot-args-delay-ms/-repeat/-interval-ms drive the timer. Gated entirely on the
+ * boot-args machine property (no environment). Empty disables this timer,
+ * but not the separate SecureROM compatibility hook.
  */
 #define BOOT_ARGS_CMDLINE_OFF   0x38
+#define BOOT_ARGS_SCAN_LEN      0x01000000
+
+static bool boot_args_signature(const uint8_t *p)
+{
+    uint32_t virt = ldl_le_p(p + 4);
+    return (ldl_le_p(p) & 0xFFFF) == 1 &&
+           (virt == 0xC0000000 || virt == 0x80000000) &&
+           ldl_le_p(p + 8) == 0x08000000;
+}
 #define BOOT_ARGS_CMDLINE_LEN   256
-#define BOOT_ARGS_STAGING_BASE  0x220fff00
-
-/*
- * IT_AMFI_ALLOW_TASKPORT: let SpringBoard launch ad-hoc/invalidly-signed apps.
- *
- * amfi_allow_any_signature forgives code-page validation at exec, so a decrypted
- * (Clutch) app *runs* -- but it does not confer platform-binary status. When
- * SpringBoard spawns an app it then reaches for the child's task port to wire up
- * the app before resuming it (task_name_for_pid -> mac_proc_check_get_task_name);
- * AMFI's policy hook grants that only for a validly-signed binary, so for a
- * decrypted app SpringBoard logs "Failed to spawn ...: Unable to obtain a task
- * name port right ... (os/kern) failure" and kills it (exit 1). No AMFI
- * enforcement-disable boot-arg relaxes this path (amfi_allow_any_signature /
- * cs_enforcement_disable / amfi_get_out_of_my_way / amfi_unrestrict_task_for_pid
- * were all tried; the failure is identical), and get-task-allow on the target
- * does not help either.
- *
- * The single kernel choke points are the MAC framework's
- *   mac_proc_check_get_task_name (VA 0xc01ab2a0) and
- *   mac_proc_check_get_task      (VA 0xc01ab200)
- * which task_name_for_pid / task_for_pid consult; a zero return means "allowed".
- * We patch each prologue to `movs r0,#0 ; bx lr` so every task-port request is
- * granted, exactly as it is for a platform binary. This is the userspace-signing
- * analog of amfi_allow_any_signature and, like IT_BOOT_ARGS, it lives entirely in
- * the emulator -- no image edits, and it applies to any app however it arrived
- * (offline injection or over-the-wire install). The kernelcache is decrypted in
- * DRAM (VA->phys slide 0xB8000000: VA 0xC0000000 == phys 0x08000000), so the
- * code bytes are patchable from the host once the kernel image is present; we
- * ride the same early repeated timer as the boot-args write and only patch once
- * the expected prologue (push {r4-r7,lr}) is in place. Addresses/slide are env-
- * overridable for other builds. Gated on IT_AMFI_ALLOW_TASKPORT; 2.1.1 untouched.
- */
-
-static bool it_amfi_patch_one(IPodTouchMachineState *nms, uint32_t va, uint32_t slide)
-{
-    static const uint8_t stub[4] = { 0x00, 0x20, 0x70, 0x47 }; /* movs r0,#0; bx lr */
-    uint32_t pa = va - slide;
-    uint8_t cur[4];
-
-    address_space_rw(nms->nsas, pa, MEMTXATTRS_UNSPECIFIED, cur, sizeof(cur), 0);
-    if (cur[0] == stub[0] && cur[1] == stub[1] &&
-        cur[2] == stub[2] && cur[3] == stub[3]) {
-        return true; /* already patched */
-    }
-    /* Expected Thumb prologue "push {r4,r5,r6,r7,lr}" == 0xB5F0. Only patch the
-     * real function, never mid-decrypt garbage. */
-    if (!(cur[0] == 0xF0 && cur[1] == 0xB5)) {
-        return false;
-    }
-    address_space_rw(nms->nsas, pa, MEMTXATTRS_UNSPECIFIED, (void *)stub,
-                     sizeof(stub), 1);
-    return true;
-}
-
-static void ipod_touch_amfi_patch_now(IPodTouchMachineState *nms)
-{
-    if (!getenv("IT_AMFI_ALLOW_TASKPORT") || nms->amfi_patched) {
-        return;
-    }
-    const char *slide_s = getenv("IT_AMFI_HOOK_SLIDE");
-    const char *gtn_s = getenv("IT_AMFI_GET_TASK_NAME_VA");
-    const char *gt_s = getenv("IT_AMFI_GET_TASK_VA");
-    const ITFirmwareDesc *fw = it_firmware_loaded();
-    /* Other builds require all three explicit research overrides. Never use
-     * 7E18 function addresses just because a different kernel has a push. */
-    if ((!fw || !fw->amfi_get_task_va) && !(slide_s && gtn_s && gt_s)) {
-        return;
-    }
-    uint32_t slide = slide_s ? strtoul(slide_s, NULL, 0) : fw->amfi_slide;
-    uint32_t gtn = gtn_s ? strtoul(gtn_s, NULL, 0) : fw->amfi_get_task_name_va;
-    uint32_t gt = gt_s ? strtoul(gt_s, NULL, 0) : fw->amfi_get_task_va;
-
-    if (it_amfi_patch_one(nms, gtn, slide) &&
-        it_amfi_patch_one(nms, gt, slide)) {
-        nms->amfi_patched = true;
-        fprintf(stderr, "[IT_AMFI_ALLOW_TASKPORT] patched mac_proc_check_get_task"
-                "{,_name} (0x%08x, 0x%08x) to allow\n", gt, gtn);
-    }
-}
 
 static const char *ipod_touch_requested_boot_args(IPodTouchMachineState *nms)
 {
-    /* Explicit machine options win over the legacy environment fallback,
-     * for both the early handoff and subsequent AMFI argument refreshes. */
-    if (nms->boot_args_explicit && !nms->boot_args[0]) return NULL;
-    return nms->boot_args[0] ? nms->boot_args : getenv("IT_BOOT_ARGS");
+    /* Empty disables the host-supplied handoff arguments. Never redirect
+     * iBoot's empty-string literal: it also names the DeviceTree root. */
+    return nms->boot_args[0] ? nms->boot_args : NULL;
 }
 
 static void ipod_touch_set_boot_args_now(void *opaque)
 {
     IPodTouchMachineState *nms = (IPodTouchMachineState *)opaque;
     const char *args = ipod_touch_requested_boot_args(nms);
-    const char *addr_s = getenv("IT_BOOT_ARGS_ADDR");
     uint32_t ba = 0;
     uint8_t buf[BOOT_ARGS_CMDLINE_LEN];
     size_t n;
-
-    /* AMFI task-port patch rides this same early repeated timer. */
-    ipod_touch_amfi_patch_now(nms);
 
     if (!args) {
         goto rearm;
     }
 
-    if (addr_s) {
-        ba = (uint32_t)strtoul(addr_s, NULL, 0);
-    } else if (nms->boot_args_addr) {
+    if (nms->boot_args_addr) {
         /* Found on an earlier tick; boot_args does not move once the kernel
          * has built it. Re-verify the signature so a reboot (which rebuilds
          * DRAM) falls back to a fresh scan instead of scribbling blindly. */
-        uint32_t sig[3] = { 0, 0, 0 };
+        uint8_t sig[12] = { 0 };
         address_space_rw(nms->nsas, nms->boot_args_addr, MEMTXATTRS_UNSPECIFIED,
-                         (uint8_t *)sig, sizeof(sig), 0);
-        if ((sig[0] & 0xFFFF) == 1 && sig[1] == 0xC0000000 &&
-            sig[2] == 0x08000000) {
+                         sig, sizeof(sig), 0);
+        if (boot_args_signature(sig)) {
             ba = nms->boot_args_addr;
         } else {
             nms->boot_args_addr = 0;
         }
     }
-    if (!addr_s && !ba) {
+    if (!ba && qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) >=
+               nms->boot_args_scan_deadline) {
+        fprintf(stderr, "[IT_BOOT_ARGS] no handoff buffer before search deadline\n");
+        return;
+    }
+    if (!ba) {
         /*
          * Scan DRAM for the boot_args signature -- in bulk. This used to be
          * three 4-byte address_space_rw calls per word over 8 MB, ~2 million
@@ -1269,15 +1219,13 @@ static void ipod_touch_set_boot_args_now(void *opaque)
          */
         uint8_t window[0x10000];
         uint32_t base;
-        for (base = 0x08000000; base < 0x08000000 + 0x00800000 && !ba;
+        for (base = 0x08000000; base < 0x08000000 + BOOT_ARGS_SCAN_LEN && !ba;
              base += sizeof(window) - 8) {
             uint32_t off;
             address_space_rw(nms->nsas, base, MEMTXATTRS_UNSPECIFIED,
                              window, sizeof(window), 0);
             for (off = 0; off + 12 <= sizeof(window); off += 4) {
-                if ((ldl_le_p(window + off) & 0xFFFF) == 1 &&
-                    ldl_le_p(window + off + 4) == 0xC0000000 &&
-                    ldl_le_p(window + off + 8) == 0x08000000) {
+                if (boot_args_signature(window + off)) {
                     ba = base + off;
                     nms->boot_args_addr = ba;
                     break;
@@ -1299,8 +1247,7 @@ static void ipod_touch_set_boot_args_now(void *opaque)
             if (!nms->boot_args_scan_failed) {
                 nms->boot_args_scan_failed = true;
                 fprintf(stderr, "[IT_BOOT_ARGS] boot_args not found by "
-                        "signature yet; retrying (set IT_BOOT_ARGS_ADDR to "
-                        "skip the scan)\n");
+                        "signature yet; retrying\n");
             }
             goto rearm;
         }
@@ -1331,28 +1278,74 @@ static void ipod_touch_set_boot_args_now(void *opaque)
 
 rearm:
     {
-        /* Keep re-arming while there is still work: the boot-args string needs
-         * to be re-asserted a few times, and the AMFI patch waits for the
-         * kernelcache to appear in DRAM. */
-        bool amfi_pending = getenv("IT_AMFI_ALLOW_TASKPORT") && !nms->amfi_patched;
-        if (nms->boot_args_writes < nms->boot_args_repeat || amfi_pending) {
+        if (nms->boot_args_writes < nms->boot_args_repeat) {
             timer_mod(nms->boot_args_timer,
-                      qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + nms->boot_args_interval_ms);
+                      qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                      (ba ? nms->boot_args_interval_ms : 1));
         }
     }
+}
+
+#define IBOOT_SCAN_PA_START  0x0ff00000u
+#define IBOOT_SCAN_LEN       0x00040000u   /* bounded window for loaded n72 iBoot images */
+
+/* Legacy boot-argument data injection. Discover the buffer from the loaded
+ * iBoot's literal references, rather than assuming a particular build's BSS.
+ * Keep the existing NAND-read timing: iBoot rewrites this buffer during load. */
+static void ipod_touch_compat_command_line(IPodTouchMachineState *nms)
+{
+    static const char boot_args[] =
+        "kextlog=0xfff debug=0x8 cpus=1 rd=disk0s1 serial=1 pmu-debug=0x1 "
+        "io=0xffff8fff debug-usb=0xffffffff amfi_allow_any_signature=1 -v "
+        "zalloc_debug";
+
+    if (nms->direct_iboot[0]) {
+        return;
+    }
+
+    if (!nms->compat_command_line) {
+        g_autofree uint8_t *image = g_try_malloc(IBOOT_SCAN_LEN);
+        if (!image) {
+            return;
+        }
+        cpu_physical_memory_read(IBOOT_SCAN_PA_START, image, IBOOT_SCAN_LEN);
+        nms->compat_command_line = it_iboot_find_command_line(
+            image, IBOOT_SCAN_LEN, IBOOT_SCAN_PA_START);
+        if (!nms->compat_command_line) {
+            return;
+        }
+        printf("[IBOOT] discovered command-line buffer at PA 0x%08x\n",
+               nms->compat_command_line);
+    }
+    cpu_physical_memory_write(nms->compat_command_line, boot_args, sizeof(boot_args));
+}
+
+/* Observes a transfer; firmware edits belong to the board compatibility
+ * policy, not to the NAND device. This preserves the old ordering while the
+ * underlying iBoot NVRAM behavior is investigated. */
+static void ipod_touch_compat_before_nand_read(Notifier *notifier, void *data)
+{
+    IPodTouchMachineState *nms = container_of(notifier, IPodTouchMachineState,
+                                             compat_nand_read);
+    ipod_touch_compat_command_line(nms);
 }
 
 static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
 {
     uint32_t delay_ms = nms->boot_args_delay_ms;
 
-    if (!ipod_touch_requested_boot_args(nms) && !getenv("IT_AMFI_ALLOW_TASKPORT")) {
+    if (!ipod_touch_requested_boot_args(nms)) {
         return;
     }
 
     nms->boot_args_writes = 0;
-    nms->amfi_patched = false;
     nms->boot_args_scan_failed = false;
+    /* Discover promptly so early platform readers see the arguments. Keep the
+     * configured refresh cadence after discovery, and bound unknown firmware
+     * by the existing refresh window rather than polling it forever. */
+    nms->boot_args_scan_deadline = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+        delay_ms + (uint64_t)MAX(1, nms->boot_args_repeat) *
+        nms->boot_args_interval_ms;
     if (!nms->boot_args_timer) {
         nms->boot_args_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                            ipod_touch_set_boot_args_now, nms);
@@ -1361,149 +1354,6 @@ static void ipod_touch_stage_boot_args(IPodTouchMachineState *nms)
               qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + delay_ms);
     fprintf(stderr, "[IT_BOOT_ARGS] first write scheduled at T+%llu ms\n",
             (unsigned long long)delay_ms);
-}
-
-static void ipod_touch_inject_device_tree(IPodTouchMachineState *nms)
-{
-    const char *dt_path = getenv("IT_INJECT_DT");
-    uint8_t *dt_data = NULL;
-    gsize dt_size;
-    /* 16-byte thunk (see comment above): memcpy(0x0BF00000, 0x22000000, g_dt_size)
-     * then branch to the success path. */
-    static const uint8_t patch[16] = {
-        0xbf, 0x20, 0x00, 0x05,   /* movs r0,#0xbf ; lsls r0,r0,#20  */
-        0x22, 0x21, 0x09, 0x06,   /* movs r1,#0x22 ; lsls r1,r1,#24  */
-        0x2a, 0x68,               /* ldr  r2,[r5]                    */
-        0x0b, 0xf0, 0xc6, 0xef,   /* blx  0x0ff1b474 (memcpy)        */
-        0xff, 0xe7,               /* b    0x0ff0f4ea                 */
-    };
-
-    if (!dt_path) {
-        return;
-    }
-
-    if (!g_file_get_contents(dt_path, (char **)&dt_data, &dt_size, NULL)) {
-        fprintf(stderr, "[IT_INJECT_DT] could not read '%s'\n", dt_path);
-        return;
-    }
-
-    address_space_rw(nms->nsas, DT_STAGING_BASE, MEMTXATTRS_UNSPECIFIED,
-                     dt_data, dt_size, 1);
-    g_free(dt_data);
-
-    address_space_rw(nms->nsas, IBOOT_MEM_BASE + IBOOT_DT_LOAD_PATCH,
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)patch, sizeof(patch), 1);
-
-    fprintf(stderr, "[IT_INJECT_DT] staged device tree '%s' (%llu bytes) at "
-            "0x%08x and patched iBoot dtre image_load\n",
-            dt_path, (unsigned long long)dt_size, DT_STAGING_BASE);
-}
-
-/* Encode a Thumb-2 BL from `src` to `dst` into the two halfwords it occupies. */
-static void thumb_bl(uint32_t src, uint32_t dst, uint8_t out[4])
-{
-    int32_t off = (int32_t)(dst - (src + 4));
-    uint32_t imm = ((uint32_t)off) >> 1;
-    uint32_t s = (off < 0) ? 1 : 0;
-    uint32_t i1 = (imm >> 22) & 1, i2 = (imm >> 21) & 1;
-    uint32_t j1 = (~i1 & 1) ^ s, j2 = (~i2 & 1) ^ s;
-    uint32_t hw1 = 0xF000 | (s << 10) | ((imm >> 11) & 0x3FF);
-    uint32_t hw2 = 0xD000 | (j1 << 13) | (j2 << 11) | (imm & 0x7FF);
-
-    out[0] = hw1 & 0xFF; out[1] = hw1 >> 8;
-    out[2] = hw2 & 0xFF; out[3] = hw2 >> 8;
-}
-
-static void ipod_touch_inject_boot_logo(IPodTouchMachineState *nms)
-{
-    const char *logo_path = getenv("IT_INJECT_LOGO");
-    uint8_t *logo = NULL;
-    gsize logo_size;
-    uint8_t bl[4];
-    /*
-     * The thunk. At the call site r2 = &address slot and r3 = &length slot, so
-     * it only has to fill both in and report success:
-     *
-     *   ldr r0,[pc,#8] ; str r0,[r2]   *addr = LOGO_STAGING_BASE
-     *   ldr r0,[pc,#8] ; str r0,[r3]   *len  = <size>
-     *   movs r0,#0     ; bx lr         return 0, iBoot takes the success path
-     */
-    uint8_t thunk[20] = {
-        0x02, 0x48,               /* ldr  r0,[pc,#8]  */
-        0x10, 0x60,               /* str  r0,[r2]     */
-        0x02, 0x48,               /* ldr  r0,[pc,#8]  */
-        0x18, 0x60,               /* str  r0,[r3]     */
-        0x00, 0x20,               /* movs r0,#0       */
-        0x70, 0x47,               /* bx   lr          */
-        0x00, 0x00, 0x00, 0x00,   /* .word staging base */
-        0x00, 0x00, 0x00, 0x00,   /* .word length       */
-    };
-
-    if (!logo_path) {
-        return;
-    }
-
-    if (!g_file_get_contents(logo_path, (char **)&logo, &logo_size, NULL)) {
-        fprintf(stderr, "[IT_INJECT_LOGO] could not read '%s'\n", logo_path);
-        return;
-    }
-
-    if (logo_size < 0x14 || logo_size > BOOT_ARGS_STAGING_BASE - LOGO_STAGING_BASE ||
-        memcmp(logo, "iBootIm\0", 8) != 0) {
-        fprintf(stderr, "[IT_INJECT_LOGO] '%s' is not a decrypted iBootIm "
-                "container; iBoot would reject it. Use "
-                "imgtools/extract_bootlogo.py\n", logo_path);
-        g_free(logo);
-        return;
-    }
-
-    address_space_rw(nms->nsas, LOGO_STAGING_BASE, MEMTXATTRS_UNSPECIFIED,
-                     logo, logo_size, 1);
-
-    stl_le_p(thunk + 12, LOGO_STAGING_BASE);
-    stl_le_p(thunk + 16, (uint32_t)logo_size);
-    address_space_rw(nms->nsas, LOGO_THUNK_BASE, MEMTXATTRS_UNSPECIFIED,
-                     thunk, sizeof(thunk), 1);
-
-    thumb_bl(IBOOT_MEM_BASE + IBOOT_LOGO_LOAD_PATCH, LOGO_THUNK_BASE, bl);
-    address_space_rw(nms->nsas, IBOOT_MEM_BASE + IBOOT_LOGO_LOAD_PATCH,
-                     MEMTXATTRS_UNSPECIFIED, bl, sizeof(bl), 1);
-
-    fprintf(stderr, "[IT_INJECT_LOGO] staged boot logo '%s' (%llu bytes) at "
-            "0x%08x and retargeted iBoot's logo image_load to 0x%08x\n",
-            logo_path, (unsigned long long)logo_size, LOGO_STAGING_BASE,
-            LOGO_THUNK_BASE);
-    g_free(logo);
-}
-
-static void ipod_touch_inject_boot_args(IPodTouchMachineState *nms)
-{
-    const char *args = ipod_touch_requested_boot_args(nms);
-    /* Release 7E18 iBoot deliberately ignores NVRAM boot-args. Redirect its
-     * normal-boot empty-string literal, before it constructs XNU's arguments.
-     * The late AMFI timer is too late for PE_init_platform's verbose flag. */
-    static const uint8_t expected[] = {
-        0x2c,0x4b,0x9b,0x46,0x1b,0x68,0x00,0x2b,0x03,0xd1,0x2a,0x48,
-        0x06,0x1c,0x01,0x90,0x02,0xe0,0x29,0x4e,0x28,0x49,0x01,0x91
-    };
-    uint8_t code[sizeof(expected)], literal[4], command[BOOT_ARGS_CMDLINE_LEN] = {0};
-    const hwaddr staging = BOOT_ARGS_STAGING_BASE; /* final 256 bytes of LLB SRAM */
-
-    if (!args) return;
-    address_space_read(nms->nsas, IBOOT_MEM_BASE + 0x11a72,
-                       MEMTXATTRS_UNSPECIFIED, code, sizeof(code));
-    address_space_read(nms->nsas, IBOOT_MEM_BASE + 0x11b28,
-                       MEMTXATTRS_UNSPECIFIED, literal, sizeof(literal));
-    if (memcmp(code, expected, sizeof(code)) || ldl_le_p(literal) != 0x0ff1dba0) {
-        fprintf(stderr, "[IT_BOOT_ARGS] unknown iBoot; early argument injection skipped\n");
-        return;
-    }
-    g_strlcpy((char *)command, args, sizeof(command));
-    address_space_write(nms->nsas, staging, MEMTXATTRS_UNSPECIFIED, command, sizeof(command));
-    stl_le_p(literal, staging);
-    address_space_write(nms->nsas, IBOOT_MEM_BASE + 0x11b28,
-                        MEMTXATTRS_UNSPECIFIED, literal, sizeof(literal));
-    fprintf(stderr, "[IT_BOOT_ARGS] staged early 7E18 command line\n");
 }
 
 static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
@@ -1528,19 +1378,18 @@ static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
         /*
          * iBoot's miu_init reads SYSIC[0x44] bits[31:24] as the boot security
          * epoch and panics ("Epoch Mismatch") unless it equals the epoch baked
-         * into the image (4 for the S5L8720 / iPod touch 2G). On real hardware
-         * that top byte is a read-only fused value the SecureROM never writes;
-         * the low bits are the POWER_ID power-control scratch. We skip the ROM,
-         * so the SYSIC model synthesises the epoch top byte on read whenever
-         * direct-iboot is configured -- see ipod_touch_sysic_read(). Nothing to do
-         * here.
+         * into the image: 3 for iBoot-596 (3.0), 4 for 636 on. The boot chain
+         * we skip would have latched it, so the SYSIC model synthesises the
+         * byte on read from the staged image's own value (see
+         * ipod_touch_sysic_read()).
          */
+        nms->sysic->epoch = it_iboot_epoch(nms->nsas, IBOOT_MEM_BASE, fsize);
+        if (!nms->sysic->epoch) {
+            warn_report_once("direct-iboot: no security epoch found in '%s'; "
+                             "iBoot will panic \"Epoch Mismatch\"", iboot_path);
+        }
 
-        /* Hand iBoot a pre-decrypted device tree (3.1.3 bring-up). Must run
-         * after the iBoot image is staged so the code patch lands on top of it. */
-        ipod_touch_inject_device_tree(nms);
-        ipod_touch_inject_boot_logo(nms);
-        ipod_touch_inject_boot_args(nms);
+        /* Optional bring-up helpers run after staging the iBoot image. */
         ipod_touch_stage_ramdisk(nms);
         ipod_touch_stage_boot_args(nms);
     }
@@ -1552,8 +1401,10 @@ static void ipod_touch_cpu_reset(void *opaque)
     ARMCPU *cpu = nms->cpu;
     CPUState *cs = CPU(cpu);
 
-    it_firmware_reset();
+    nms->compat_command_line = 0;
     ipod_agent_reset(nms->agent);
+    guest_pkg_reset(&nms->pkg);
+    gles_host_set_debug(nms->gles_debug);
     gles_host_reset();
     cpu_reset(cs);
     ipod_touch_load_bootrom(nms);
@@ -1567,7 +1418,6 @@ static void ipod_touch_cpu_reset(void *opaque)
     }
 
     //env->regs[0] = nms->kbootargs_pa;
-    //cpu_set_pc(CPU(cpu), 0xc00607ec);
     cpu_set_pc(CPU(cpu), VROM_MEM_BASE);
     //env->regs[0] = 0x9000000;
     //cpu_set_pc(CPU(cpu), LLB_BASE + 0x100);
@@ -1662,7 +1512,12 @@ static bool ipod_touch_get_wifi(Object *obj, Error **errp)
 
 static void ipod_touch_set_wifi(Object *obj, bool value, Error **errp)
 {
-    IPOD_TOUCH_MACHINE(obj)->wifi = value;
+    IPodTouchMachineState *s = IPOD_TOUCH_MACHINE(obj);
+    if (s->cpu) {
+        error_setg(errp, "wifi host bridge must be set before the machine starts");
+        return;
+    }
+    s->wifi = value;
 }
 
 static char *ipod_touch_get_boot_args(Object *obj, Error **errp)
@@ -1765,7 +1620,9 @@ static bool ipod_touch_get_usb_patch_mux_gate(Object *obj, Error **errp)
 
 static void ipod_touch_set_usb_patch_mux_gate(Object *obj, bool value, Error **errp)
 {
-    IPOD_TOUCH_MACHINE(obj)->usb_patch_mux_gate = value;
+    if (value) {
+        error_setg(errp, "usb-patch-mux-gate is retired: guest kernel patching is unsupported");
+    }
 }
 
 static bool ipod_touch_get_mbx_irq(Object *obj, Error **errp)
@@ -2028,18 +1885,12 @@ static void ipod_touch_set_accel_shake(Object *obj, Visitor *v, const char *name
     }
 }
 
-/* Defined with the rest of the pasteboard code, further down. */
-static char *ipod_touch_get_pasteboard(Object *obj, Error **errp);
-static void ipod_touch_set_pasteboard(Object *obj, const char *value,
-                                      Error **errp);
-static char *ipod_touch_get_guest_pasteboard(Object *obj, Error **errp);
-static char *ipod_touch_get_pb_agent(Object *obj, Error **errp);
-static char *ipod_touch_get_pb_status(Object *obj, Error **errp);
 
 static void ipod_touch_set_agent_request(Object *obj, const char *value, Error **errp)
 {
-    if (!ipod_agent_submit(IPOD_TOUCH_MACHINE(obj)->agent, value)) {
-        error_setg(errp, "Invalid, duplicate, or full agent request queue");
+    int error = ipod_agent_submit(IPOD_TOUCH_MACHINE(obj)->agent, value);
+    if (error) {
+        error_setg(errp, "%s", ipod_agent_submit_error(error));
     }
 }
 
@@ -2066,19 +1917,44 @@ static void ipod_touch_get_gles_contexts(Object *obj, Visitor *v, const char *na
     visit_type_int(v, name, &count, errp);
 }
 
+static char *ipod_touch_get_gles_rejects(Object *obj, Error **errp)
+{
+    return gles_host_rejects();
+}
+
+static bool ipod_touch_get_gles_debug(Object *obj, Error **errp)
+{
+    return IPOD_TOUCH_MACHINE(obj)->gles_debug;
+}
+
+static void ipod_touch_set_gles_debug(Object *obj, bool value, Error **errp)
+{
+    IPOD_TOUCH_MACHINE(obj)->gles_debug = value;
+    gles_host_set_debug(value);
+}
+
 static void ipod_touch_instance_finalize(Object *obj)
 {
     ipod_agent_publish(NULL);
     ipod_agent_free(IPOD_TOUCH_MACHINE(obj)->agent);
 }
 
+/* Read-only physical display observation; dark pixels are not power-off. */
+static bool ipod_touch_get_display_sleeping(Object *obj, Error **errp)
+{
+    return lcd_backlight_is_off();
+}
+
 static void ipod_touch_instance_init(Object *obj)
 {
+    object_property_add_bool(obj, "display-sleeping", ipod_touch_get_display_sleeping, NULL);
+    object_property_set_description(obj, "display-sleeping",
+        "Guest-controlled LCD backlight is off; not PMU standby or shutdown");
     IPOD_TOUCH_MACHINE(obj)->audio_hw = ON_OFF_AUTO_AUTO;
     IPOD_TOUCH_MACHINE(obj)->bt_enabled = true;
     IPOD_TOUCH_MACHINE(obj)->bt_latency_us = 2000;
     IPOD_TOUCH_MACHINE(obj)->time_dilation = 1;
-    IPOD_TOUCH_MACHINE(obj)->boot_args_delay_ms = 2000;
+    IPOD_TOUCH_MACHINE(obj)->boot_args_delay_ms = 0;
     IPOD_TOUCH_MACHINE(obj)->boot_args_repeat = 24;
     IPOD_TOUCH_MACHINE(obj)->boot_args_interval_ms = 500;
     IPOD_TOUCH_MACHINE(obj)->agent = ipod_agent_new();
@@ -2088,7 +1964,20 @@ static void ipod_touch_instance_init(Object *obj)
     object_property_add_str(obj, "agent-result", ipod_touch_get_agent_result, NULL);
     object_property_add_str(obj, "agent-status", ipod_touch_get_agent_status, NULL);
     object_property_add(obj, "gles-contexts", "int", ipod_touch_get_gles_contexts, NULL, NULL, NULL);
+    object_property_add_str(obj, "gles-rejects", ipod_touch_get_gles_rejects, NULL);
+    object_property_set_description(obj, "gles-rejects",
+        "Every refusal the GL bridge made so far, one NAME<tab>COUNT per line");
+    object_property_add_bool(obj, "gles-debug", ipod_touch_get_gles_debug, ipod_touch_set_gles_debug);
+    object_property_set_description(obj, "gles-debug",
+        "Paint what the GL bridge refuses magenta instead of black (default off; tests turn it on)");
 
+    object_property_add_str(obj, "security-profile", ipod_touch_get_security_profile,
+                            ipod_touch_set_security_profile);
+    object_property_set_description(obj, "security-profile",
+        "Immutable N72 physical security fuses (default retail)");
+    object_property_add(obj, "ecid", "uint64", ipod_touch_get_ecid,
+                        ipod_touch_set_ecid, NULL, NULL);
+    object_property_set_description(obj, "ecid", "S5L8720 unit ECID (42 bits)");
     object_property_add_str(obj, "bootrom", ipod_touch_get_bootrom_path, ipod_touch_set_bootrom_path);
     object_property_set_description(obj, "bootrom", "Path to the S5L8720 bootrom binary");
 
@@ -2105,8 +1994,8 @@ static void ipod_touch_instance_init(Object *obj)
 
     object_property_add_bool(obj, "wifi", ipod_touch_get_wifi, ipod_touch_set_wifi);
     object_property_set_description(obj, "wifi",
-        "Present a BCM4325 on the SDIO bus. Off by default: the dongle "
-        "emulation is incomplete, so the driver attaches and then gets stuck");
+        "Connect the BCM4325 data path to the optional wifi0 host network "
+        "backend. The physical SDIO combo chip remains present when off");
 
     /* No default override: unconfigured boots retain firmware defaults. */
     object_property_add_str(obj, "boot-args", ipod_touch_get_boot_args, ipod_touch_set_boot_args);
@@ -2117,7 +2006,7 @@ static void ipod_touch_instance_init(Object *obj)
                         ipod_touch_get_boot_args_delay_ms,
                         ipod_touch_set_boot_args_delay_ms, NULL, NULL);
     object_property_set_description(obj, "boot-args-delay-ms",
-        "Initial command-line write delay in virtual milliseconds (0..3600000; default 2000)");
+        "Initial command-line write delay in virtual milliseconds (0..3600000; default 0)");
     object_property_add(obj, "boot-args-repeat", "uint32",
                         ipod_touch_get_boot_args_repeat,
                         ipod_touch_set_boot_args_repeat, NULL, NULL);
@@ -2127,7 +2016,7 @@ static void ipod_touch_instance_init(Object *obj)
                         ipod_touch_get_boot_args_interval_ms,
                         ipod_touch_set_boot_args_interval_ms, NULL, NULL);
     object_property_set_description(obj, "boot-args-interval-ms",
-        "Command-line retry interval in virtual milliseconds (1..3600000; default 500)");
+        "Command-line refresh interval after discovery, in virtual milliseconds (1..3600000; default 500)");
 
     object_property_add_str(obj, "usb-tcp-addr", ipod_touch_get_usb_tcp_addr, ipod_touch_set_usb_tcp_addr);
     object_property_set_description(obj, "usb-tcp-addr",
@@ -2167,8 +2056,7 @@ static void ipod_touch_instance_init(Object *obj)
     object_property_add_bool(obj, "usb-patch-mux-gate", ipod_touch_get_usb_patch_mux_gate,
                              ipod_touch_set_usb_patch_mux_gate);
     object_property_set_description(obj, "usb-patch-mux-gate",
-        "Patch the kernel so the USB stack goes on bus even though the PTP interface "
-        "function never registers a driver. Firmware-build-specific (2.1.1 / 5F138)");
+        "Retired guest-kernel patch option; only off is accepted");
 
     /* Accelerometer (LIS302DL) host controls; see the getters/setters above. */
     object_property_add(obj, "accel-rate-hz", "int", ipod_touch_get_accel_rate, ipod_touch_set_accel_rate, NULL, NULL);
@@ -2187,55 +2075,8 @@ static void ipod_touch_instance_init(Object *obj)
     object_property_add(obj, "accel-z", "int", ipod_touch_get_accel_axis, ipod_touch_set_accel_axis, NULL, NULL);
     object_property_add(obj, "accel-shake", "bool", NULL, ipod_touch_set_accel_shake, NULL, NULL);
 
-    /*
-     * Pasteboard. Setting this from QMP is the headless equivalent of the
-     * Cocoa "Paste Text to Guest" menu item, and the only one available when
-     * there is no display and so no clipboard peer at all:
-     *
-     *   qom-set  path=/machine property=pasteboard value="Hello. World #1"
-     *   qom-get  path=/machine property=pasteboard-status
-     *
-     * pasteboard-status, NOT guest-pasteboard, is how you check that the text
-     * arrived. guest-pasteboard is the other direction -- the last text copied
-     * INSIDE the guest -- and the agent suppresses the echo of anything the
-     * host sent, so host text can never show up there no matter how well this
-     * works. Polling it for the string you just set is a guaranteed false
-     * negative, and has already been read once as "host->guest is broken" on a
-     * channel that was delivering correctly.
-     */
-    object_property_add_str(obj, "pasteboard", ipod_touch_get_pasteboard,
-                            ipod_touch_set_pasteboard);
-    object_property_set_description(obj, "pasteboard",
-        "Text to hand to the guest's UIPasteboard. Collected by the guest "
-        "pasteboard agent (contrib/it-pasteboard/it_pbd.c), after which the "
-        "user pastes it wherever they like -- unlike the on-screen-keyboard "
-        "typist, punctuation and symbols survive. Reads back only what is "
-        "still WAITING to be collected, so it empties as soon as the guest "
-        "takes it -- read pasteboard-status to see whether it arrived");
-
-    object_property_add_str(obj, "guest-pasteboard",
-                            ipod_touch_get_guest_pasteboard, NULL);
-    object_property_set_description(obj, "guest-pasteboard",
-        "GUEST -> HOST only: the last text copied inside the guest, as "
-        "reported by the pasteboard agent. NOT a readback of what the host "
-        "sent -- the agent suppresses that echo deliberately, so text set "
-        "through the 'pasteboard' property never appears here. Also pushed to "
-        "the host clipboard when a UI with a clipboard peer is attached");
-
-    object_property_add_str(obj, "pasteboard-agent",
-                            ipod_touch_get_pb_agent, NULL);
-    object_property_set_description(obj, "pasteboard-agent",
-        "Whether a guest pasteboard agent is actually running: 'alive', "
-        "'stale' or 'absent'. Setting the pasteboard succeeds whether or not "
-        "anything is listening, so ask this before believing it");
-
-    object_property_add_str(obj, "pasteboard-status",
-                            ipod_touch_get_pb_status, NULL);
-    object_property_set_description(obj, "pasteboard-status",
-        "Whether host -> guest text actually reached the guest agent: "
-        "'queued' (still waiting), 'delivered' (with the text, its size and "
-        "how long ago) or 'idle'. This is the readback the other three "
-        "properties cannot give you");
+    guest_pb_init(&IPOD_TOUCH_MACHINE(obj)->pb, obj, "ipod-touch");
+    guest_pkg_init(&IPOD_TOUCH_MACHINE(obj)->pkg, obj);
 }
 
 static inline qemu_irq s5l8900_get_irq(IPodTouchMachineState *s, int n)
@@ -2467,228 +2308,6 @@ static uint16_t qcode_to_unichar(int q, bool shift)
 	}
 }
 
-/*
- * Host <-> guest pasteboard.
- *
- * The point of this path is that it is not the keyboard. Typing by synthesising
- * taps on iOS's own on-screen keyboard loses exactly the characters people most
- * want to move between the two machines -- punctuation, spaces in URL fields,
- * anything on the symbols page -- because each of those depends on keyboard page
- * state that has no feedback channel. Handing the text to UIPasteboard and
- * letting the user tap Paste has no geometry in it at all.
- *
- * The host cannot write the guest pasteboard by itself: pasteboardd owns the
- * live state and UIPasteboard is its only client (contrib/it-pasteboard/README).
- * So the host only ever parks text here, and the guest agent collects it over
- * the QC_PB_* ops.
- */
-static void ipod_touch_pb_notify(Notifier *notifier, void *data)
-{
-    /* We only ever publish; host-side clipboard changes are pushed to the
-     * guest explicitly (menu item / qom-set), never automatically. */
-}
-
-static void ipod_touch_pb_request(QemuClipboardInfo *info,
-                                  QemuClipboardType type)
-{
-    /* Unreachable in practice: we always set the data at the same time as we
-     * announce it, and qemu_clipboard_request only calls back for announced
-     * types whose data is still missing. */
-}
-
-static QemuClipboardPeer ipod_touch_pb_peer = {
-    .name = "ipod-touch",
-    .notifier = { .notify = ipod_touch_pb_notify },
-    .request = ipod_touch_pb_request,
-};
-
-/*
- * How long to give the guest before saying nobody took the text. The agent
- * polls four times a second, so anything it is going to collect it collects
- * almost immediately; this only has to be longer than one poll interval plus
- * the slack of a heavily loaded emulator.
- */
-#define PB_WARN_MS 10000
-
-static void ipod_touch_pb_warn(void *opaque)
-{
-    IPodTouchMachineState *nms = opaque;
-
-    if (!nms->pb_out) {
-        return;                 /* collected after all */
-    }
-    if (nms->pb_polls != nms->pb_polls_at_set) {
-        /* Something polled but did not take it. Not the missing-daemon case,
-         * so say what it actually is rather than sending anyone to the
-         * install instructions. */
-        warn_report("pasteboard: the guest agent polled but has not collected "
-                    "the text after %d ms", PB_WARN_MS);
-        return;
-    }
-
-    warn_report("pasteboard: %zu bytes queued for the guest and nothing has "
-                "polled for them", nms->pb_out_len);
-    if (nms->pb_last_poll_ns == 0) {
-        error_printf("         No pasteboard agent has EVER polled this "
-                     "machine. it_pbd is almost certainly not installed in "
-                     "this NAND image -- setting the property succeeds either "
-                     "way, which is why this warning exists.\n"
-                     "         Install it: contrib/it-pasteboard/README.md "
-                     "(and remember the plist must be owned by root, or "
-                     "launchd ignores it without a word).\n"
-                     "         Check at any time with:  qom-get "
-                     "path=/machine property=pasteboard-agent\n");
-    } else {
-        error_printf("         The agent last polled %" PRId64 " s ago, so it "
-                     "has stopped or died. /var/log/it_pbd.log on the guest "
-                     "says which.\n",
-                     (qemu_clock_get_ns(QEMU_CLOCK_REALTIME) -
-                      nms->pb_last_poll_ns) / NANOSECONDS_PER_SECOND);
-    }
-}
-
-void ipod_touch_pb_set(IPodTouchMachineState *nms, const char *text)
-{
-    g_free(nms->pb_out);
-    nms->pb_out = NULL;
-    nms->pb_out_len = 0;
-
-    if (!text || !*text) {
-        if (nms->pb_warn_timer) {
-            timer_del(nms->pb_warn_timer);
-        }
-        return;
-    }
-    /* A clipboard holds one item. Replacing rather than queueing means a
-     * second copy on the host wins, which is what the user just asked for. */
-    nms->pb_out = g_strndup(text, QC_PB_MAX_LEN);
-    nms->pb_out_len = strlen(nms->pb_out);
-
-    /*
-     * Arm the "nobody is listening" check. Handing text to a machine with no
-     * guest agent used to be indistinguishable from success from the host
-     * side -- no error, no log line, the text just sat in pb_out forever.
-     */
-    nms->pb_polls_at_set = nms->pb_polls;
-    if (!nms->pb_warn_timer) {
-        nms->pb_warn_timer = timer_new_ms(QEMU_CLOCK_REALTIME,
-                                          ipod_touch_pb_warn, nms);
-    }
-    timer_mod(nms->pb_warn_timer,
-              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + PB_WARN_MS);
-}
-
-void ipod_touch_pb_guest_commit(IPodTouchMachineState *nms)
-{
-    QemuClipboardInfo *info;
-
-    g_free(nms->pb_guest);
-    nms->pb_guest = nms->pb_in;
-    nms->pb_guest_len = nms->pb_in_len;
-    nms->pb_in = NULL;
-    nms->pb_in_len = 0;
-
-    if (!nms->pb_guest) {
-        return;
-    }
-
-    /*
-     * Registered on first use rather than at machine init: a headless run has
-     * no clipboard peer on the other side at all, and the guest text is still
-     * readable there through the guest-pasteboard property.
-     */
-    if (!nms->pb_peer_registered) {
-        qemu_clipboard_peer_register(&ipod_touch_pb_peer);
-        nms->pb_peer_registered = true;
-    }
-
-    info = qemu_clipboard_info_new(&ipod_touch_pb_peer,
-                                   QEMU_CLIPBOARD_SELECTION_CLIPBOARD);
-    qemu_clipboard_set_data(&ipod_touch_pb_peer, info,
-                            QEMU_CLIPBOARD_TYPE_TEXT,
-                            nms->pb_guest_len, nms->pb_guest, true);
-    qemu_clipboard_info_unref(info);
-}
-
-static char *ipod_touch_get_pasteboard(Object *obj, Error **errp)
-{
-    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
-    return g_strdup(nms->pb_out ? nms->pb_out : "");
-}
-
-static void ipod_touch_set_pasteboard(Object *obj, const char *value,
-                                      Error **errp)
-{
-    ipod_touch_pb_set(IPOD_TOUCH_MACHINE(obj), value);
-}
-
-static char *ipod_touch_get_guest_pasteboard(Object *obj, Error **errp)
-{
-    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
-    return g_strdup(nms->pb_guest ? nms->pb_guest : "");
-}
-
-/*
- * "Is anything on the other end?" -- answerable before you rely on it, rather
- * than after wondering why nothing pasted. The agent polls every 250 ms, so a
- * poll inside the last few seconds means it is running right now.
- */
-#define PB_ALIVE_NS (5 * NANOSECONDS_PER_SECOND)
-
-static char *ipod_touch_get_pb_agent(Object *obj, Error **errp)
-{
-    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
-
-    if (nms->pb_last_poll_ns == 0) {
-        return g_strdup("absent: nothing has ever polled -- it_pbd is not "
-                        "installed or not running (contrib/it-pasteboard)");
-    }
-    if (now - nms->pb_last_poll_ns > PB_ALIVE_NS) {
-        return g_strdup_printf("stale: last polled %" PRId64 " s ago",
-                               (now - nms->pb_last_poll_ns) /
-                               NANOSECONDS_PER_SECOND);
-    }
-    return g_strdup_printf("alive: %" PRIu64 " polls", nms->pb_polls);
-}
-
-/*
- * "Did the text I sent get there?" -- which is NOT what any of the properties
- * above answer, and the gap cost a whole investigation.
- *
- * "pasteboard" reads back the item still WAITING, so it empties the instant the
- * guest takes it: collected and never-sent are both "". And "guest-pasteboard"
- * is not a readback at all -- it is the last text COPIED INSIDE the guest, and
- * the agent deliberately marks host text as already-seen so it is never echoed
- * back, so host text can never appear there however well the channel works.
- * Watching it for the string you just set is therefore guaranteed to look like
- * a failure. This property is the one that answers the question.
- */
-static char *ipod_touch_get_pb_status(Object *obj, Error **errp)
-{
-    IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE(obj);
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
-    g_autofree char *agent = ipod_touch_get_pb_agent(obj, NULL);
-
-    if (nms->pb_out) {
-        return g_strdup_printf("queued: %zu bytes still waiting for the guest "
-                               "(agent: %s)", nms->pb_out_len, agent);
-    }
-    if (nms->pb_delivered) {
-        /* Truncated: this is a status line, not a transcript. */
-        g_autofree char *shown = g_strndup(nms->pb_delivered, 64);
-        return g_strdup_printf("delivered: %zu bytes, %" PRId64 " s ago, "
-                               "%" PRIu64 " total: \"%s\"%s (agent: %s)",
-                               nms->pb_delivered_len,
-                               (now - nms->pb_delivered_ns) /
-                               NANOSECONDS_PER_SECOND,
-                               nms->pb_deliveries, shown,
-                               nms->pb_delivered_len > 64 ? "..." : "", agent);
-    }
-    return g_strdup_printf("idle: nothing has been sent to the guest "
-                           "(agent: %s)", agent);
-}
-
 static void ipod_touch_kbd_enqueue(IPodTouchMachineState *nms, uint16_t ch)
 {
 	unsigned next = (nms->kbd_tail + 1) % ARRAY_SIZE(nms->kbd_ring);
@@ -2901,6 +2520,16 @@ static const QemuInputHandler ipod_touch_kbd_handler = {
  * applicationWillTerminate: to save with.
  */
 #define PWROFF_HOME_MS      2500
+/*
+ * Home is a tap, released long before Hold goes down. Holding Home for the
+ * whole settle and pressing Hold in the same tick as the release put both
+ * edges in ONE GPIO status read (group 3 = 0x06000000): 2.x's SpringBoard
+ * saw Hold go down with Home still held (the Home+Hold chord) and never
+ * raised the power-off sheet (smoke #19). From a dark lock screen the first
+ * press only wakes the display, which is why it passed there. No hand
+ * produces that simultaneity.
+ */
+#define PWROFF_HOME_TAP_MS  150
 #define PWROFF_HOLD_MS      3500   /* > SpringBoard's hold threshold           */
 #define PWROFF_SETTLE_MS    1500   /* sheet slides in and settles              */
 #define PWROFF_DRAG_STEPS   24
@@ -2928,11 +2557,35 @@ static int pwroff_knob_row(void)
 enum {
 	PWROFF_IDLE = 0,
 	PWROFF_HOME,
+	PWROFF_HOME_UP,
 	PWROFF_PRESSED,
 	PWROFF_SETTLING,
 	PWROFF_DRAGGING,
+	PWROFF_DARK,
 	PWROFF_DONE,
 };
+
+/*
+ * After the slide: wait for the screen to go dark, then pull the cable.
+ *
+ * AppleD1759PMU's halt, on every version, masks the PMU down to its wake set
+ * (0x07..0x09 = d1 ff f0), writes 0x61, reads the power-source block at 0x04
+ * and branches on the USB bit (3). Unplugged, it sets 0x0a bit 0 ("pmu go
+ * stdby") and the PMU cuts power. Plugged in, the two drivers differ:
+ *   3.x/4.x (AppleD1759PMU-94.7, 7E18 c05fba58): writes 0x6f=0x90 and the
+ *     PMU takes the device down itself.
+ *   2.x (AppleD1759PMU-36.2, 5F138 c03adaf8): prints "pmu waiting for stdby"
+ *     and sleeps on the PMU interrupt. An EVENT_A bit 1/3 (firewire/usb) or
+ *     EVENT_C bit 2/3 (charger) event sends it to 0x0a bit 0; EVENT_A bit 2/5
+ *     (rtc/acc) or EVENT_C bit 1 (hold) restarts ("pmu restarting").
+ * So a tethered 2.x device that has been slid off stays dark and running
+ * until the cable comes out, which is exactly what a real one does. The PMU
+ * already latches EVENT_A bit 3 on a cable change; what was missing is the
+ * last step of the user's gesture. Once the guest has turned the backlight
+ * rail off (its own sign it is past user space), unplugging is harmless on
+ * 3.x/4.x (they take 0x0a or have already written 0x6f) and ends 2.x's wait.
+ */
+#define PWROFF_DARK_POLL_MS 100
 
 /* Same effect as a mouse event on the display, but in panel pixels. */
 static void ipod_touch_synth_touch(IPodTouchMachineState *nms,
@@ -3012,6 +2665,11 @@ static void ipod_touch_powerdown_tick(void *opaque)
 		if (s_kbd_mt) {
 			ipod_touch_key_event(s_kbd_mt, KEY_H_UP);
 		}
+		nms->pwroff_phase = PWROFF_HOME_UP;
+		ipod_touch_powerdown_arm(nms, PWROFF_HOME_MS);
+		break;
+
+	case PWROFF_HOME_UP:
 		if (trace) {
 			fprintf(stderr, "[PWROFF] home pressed; holding the hold button\n");
 		}
@@ -3064,7 +2722,8 @@ static void ipod_touch_powerdown_tick(void *opaque)
 			 * a no-op: if the first attempt did not halt the guest,
 			 * every later one (including the app's quit-time flush)
 			 * did nothing at all and the HFS+ catalog was lost. */
-			nms->pwroff_phase = PWROFF_IDLE;
+			nms->pwroff_phase = PWROFF_DARK;
+			ipod_touch_powerdown_arm(nms, PWROFF_DARK_POLL_MS);
 			if (trace) {
 				fprintf(stderr, "[PWROFF] slider released; "
 				                "waiting for the guest to halt\n");
@@ -3072,6 +2731,19 @@ static void ipod_touch_powerdown_tick(void *opaque)
 		}
 		break;
 	}
+
+	case PWROFF_DARK:
+		if (nms->pmu_state &&
+		    (nms->pmu_state->regs[PMU_LDO_ENABLE] & PMU_LDO_BACKLIGHT)) {
+			ipod_touch_powerdown_arm(nms, PWROFF_DARK_POLL_MS);
+			break;
+		}
+		if (trace) {
+			fprintf(stderr, "[PWROFF] screen dark; unplugging the cable\n");
+		}
+		ipod_touch_set_usb_attached(OBJECT(nms), false, NULL);
+		nms->pwroff_phase = PWROFF_IDLE;
+		break;
 
 	default:
 		break;
@@ -3085,7 +2757,9 @@ static void ipod_touch_powerdown_req(Notifier *n, void *opaque)
 	if (!nms || !nms->pwroff_timer) {
 		return;
 	}
-	if (nms->pwroff_phase != PWROFF_IDLE) {
+	/* DARK is not in flight: a slide that missed never darkens the screen, and
+	 * a second request must still get its own gesture. */
+	if (nms->pwroff_phase != PWROFF_IDLE && nms->pwroff_phase != PWROFF_DARK) {
 		return;   /* a sequence is already running */
 	}
 	if (getenv("IT_PWROFF_TRACE")) {
@@ -3118,6 +2792,9 @@ static void ipod_touch_powerdown_req(Notifier *n, void *opaque)
 	 *
 	 * Do NOT revisit the slide gesture: it is accepted and correct on 3.1.3
 	 * (screendumped mid-drag, knob on the track). Two investigations died there.
+	 *
+	 * The cable does come out now, but at the END of the gesture, once the
+	 * guest has darkened the screen (PWROFF_DARK): 2.x's halt waits for it.
 	 */
 	/* Home FIRST. The sheet the slide targets is SpringBoard's, so a
 	 * powerdown requested while an app is foreground had nothing to slide and
@@ -3126,7 +2803,7 @@ static void ipod_touch_powerdown_req(Notifier *n, void *opaque)
 		ipod_touch_key_event(s_kbd_mt, KEY_H_DOWN);
 	}
 	nms->pwroff_phase = PWROFF_HOME;
-	ipod_touch_powerdown_arm(nms, PWROFF_HOME_MS);
+	ipod_touch_powerdown_arm(nms, PWROFF_HOME_TAP_MS);
 }
 
 static Notifier ipod_touch_powerdown_notifier = {
@@ -3393,8 +3070,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     AddressSpace *nsas;
     ARMCPU *cpu;
 
-    if (!ipod_touch_boot_args_env_aliases(nms, &error_fatal) ||
-        !ipod_touch_time_env_alias(nms, &error_fatal) ||
+    if (!ipod_touch_time_env_alias(nms, &error_fatal) ||
         !ipod_touch_bt_env_aliases(nms, &error_fatal)) {
         return;
     }
@@ -3437,8 +3113,28 @@ static void ipod_touch_machine_init(MachineState *machine)
     // // chain VICs together
     nms->vic1->daisy = nms->vic0;
 
+    // init the chip ID module
+    dev = qdev_new("ipodtouch.chipid");
+    IPodTouchChipIDState *chipid_state = IPOD_TOUCH_CHIPID(dev);
+    nms->chipid_state = chipid_state;
+    ipod_touch_chipid_set_n72_profile(chipid_state, nms->security_profile);
+    if (nms->ecid_explicit) {
+        uint64_t id = nms->ecid;
+        qdev_prop_set_uint32(dev, "word3", ((id >> 21) & 0x1fffff) |
+                             (((id >> 16) & 31) << 21) |
+                             (((id >> 2) & 63) << 26));
+        /* Preserve unrelated fuse bits supplied through the existing model. */
+        qdev_prop_set_uint32(dev, "word4", (chipid_state->word4 & ~0x3ffu) |
+                             (((id >> 8) & 255) << 2) | (id & 3));
+    }
+    memory_region_add_subregion(sysmem, CHIPID_MEM_BASE, &chipid_state->iomem);
+    it_realize_into_qom_tree(dev);
+
     // init clock 0
     dev = qdev_new("ipodtouch.clock");
+    qdev_prop_set_bit(dev, "s5l8720", true);
+    object_property_set_link(OBJECT(dev), "chipid", OBJECT(chipid_state),
+                             &error_fatal);
     IPodTouchClockState *clock0_state = IPOD_TOUCH_CLOCK(dev);
     nms->clock0 = clock0_state;
     memory_region_add_subregion(sysmem, CLOCK0_MEM_BASE, &clock0_state->iomem);
@@ -3488,7 +3184,20 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = qdev_new("ipodtouch.sdio");
     IPodTouchSDIOState *sdio_state = IPOD_TOUCH_SDIO(dev);
     nms->sdio_state = sdio_state;
-    sdio_state->card_present = nms->wifi;
+    if (nms->wifi_mac_explicit || nms->bt_mac_explicit) {
+        BCMSDIOChip chip = sdio_state->chip;
+        if (nms->wifi_mac_explicit) {
+            memcpy(chip.mac, nms->wifi_mac, sizeof(chip.mac));
+        }
+        if (nms->bt_mac_explicit) {
+            memcpy(chip.bt_mac, nms->bt_mac, sizeof(chip.bt_mac));
+            chip.has_bt_mac = true;
+        }
+        ipod_touch_sdio_set_chip(sdio_state, &chip);
+    }
+    /* BCM4325 is soldered onto N72. Disabling host networking must not
+     * remove its SDIO function or OTP identity from stock drivers. */
+    sdio_state->card_present = true;
     memory_region_add_subregion(sysmem, SDIO_MEM_BASE, &sdio_state->iomem);
     busdev = SYS_BUS_DEVICE(dev);
     sysbus_realize(busdev, &error_fatal);
@@ -3498,7 +3207,9 @@ static void ipod_touch_machine_init(MachineState *machine)
         ipod_touch_sdio_setup_net(sdio_state);
     }
 
-    dev = exynos4210_uart_create(UART0_MEM_BASE, 256, 0, serial_hd(0), nms->irq[0][24], nms->direct_iboot[0] != 0);
+    /* UART interrupt semantics belong to the SoC, not the boot strategy.
+     * Both SecureROM and direct-iBoot guests acknowledge S5L UTRSTAT bits. */
+    dev = exynos4210_uart_create(UART0_MEM_BASE, 256, 0, serial_hd(0), nms->irq[0][24], true);
     if (!dev) {
         hw_error("Failed to create UART0 device!");
     }
@@ -3510,17 +3221,17 @@ static void ipod_touch_machine_init(MachineState *machine)
      */
     uart1_dev = exynos4210_uart_create(UART1_MEM_BASE, 256, 1,
                                        it_bt_chardev(serial_hd(1), nms->bt_enabled, nms->bt_latency_us),
-                                       nms->irq[0][25], nms->direct_iboot[0] != 0);
+                                       nms->irq[0][25], true);
     if (!uart1_dev) {
         hw_error("Failed to create UART1 device!");
     }
 
-    dev = exynos4210_uart_create(UART2_MEM_BASE, 256, 2, serial_hd(2), nms->irq[0][26], nms->direct_iboot[0] != 0);
+    dev = exynos4210_uart_create(UART2_MEM_BASE, 256, 2, serial_hd(2), nms->irq[0][26], true);
     if (!dev) {
         hw_error("Failed to create UART0 device!");
     }
 
-    dev = exynos4210_uart_create(UART3_MEM_BASE, 256, 3, serial_hd(3), nms->irq[0][27], nms->direct_iboot[0] != 0);
+    dev = exynos4210_uart_create(UART3_MEM_BASE, 256, 3, serial_hd(3), nms->irq[0][27], true);
     if (!dev) {
         hw_error("Failed to create UART0 device!");
     }
@@ -3532,8 +3243,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     // }
 
     // init spis
-    set_spi_base(0);
-    dev = sysbus_create_simple("ipodtouch.spi", SPI0_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI0_IRQ));
+    dev = ipod_touch_spi_create(SPI0_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI0_IRQ), 0, "nor", false);
     IPodTouchSPIState *spi0_state = IPOD_TOUCH_SPI(dev);
     spi0_state->nor->nor_path = nms->nor_path;
     spi0_state->nor->boot_args = nms->boot_args;
@@ -3544,30 +3254,18 @@ static void ipod_touch_machine_init(MachineState *machine)
     qdev_connect_gpio_out(DEVICE(gpio_state), 0,
         qdev_get_gpio_in_named(DEVICE(spi0_state->nor), SSI_GPIO_CS, 0));
 
-    set_spi_base(1);
-    dev = sysbus_create_simple("ipodtouch.spi", SPI1_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI1_IRQ));
+    dev = ipod_touch_spi_create(SPI1_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI1_IRQ), 1, "none", false);
     IPodTouchSPIState *spi1_state = IPOD_TOUCH_SPI(dev);
     nms->spi1_state = spi1_state;
 
-    set_spi_base(2);
-    sysbus_create_simple("ipodtouch.spi", SPI2_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI2_IRQ));
+    ipod_touch_spi_create(SPI2_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI2_IRQ), 2, "none", false);
+    ipod_touch_spi_create(SPI3_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI3_IRQ), 3, "none", false);
 
-    set_spi_base(3);
-    sysbus_create_simple("ipodtouch.spi", SPI3_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI3_IRQ));
-
-    set_spi_base(4);
-    dev = sysbus_create_simple("ipodtouch.spi", SPI4_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI4_IRQ));
+    dev = ipod_touch_spi_create(SPI4_MEM_BASE, s5l8900_get_irq(nms, S5L8720_SPI4_IRQ), 4, "multitouch", false);
     IPodTouchSPIState *spi4_state = IPOD_TOUCH_SPI(dev);
     spi4_state->mt->sysic = sysic_state;
     spi4_state->mt->gpio_state = gpio_state;
     nms->spi4_state = spi4_state;
-
-    // init the chip ID module
-    dev = qdev_new("ipodtouch.chipid");
-    IPodTouchChipIDState *chipid_state = IPOD_TOUCH_CHIPID(dev);
-    nms->chipid_state = chipid_state;
-    memory_region_add_subregion(sysmem, CHIPID_MEM_BASE, &chipid_state->iomem);
-    it_realize_into_qom_tree(dev);
 
     // init the TVOut instance
     dev = qdev_new("ipodtouch.tvout");
@@ -3610,19 +3308,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = ipod_touch_init_usb_otg(s5l8900_get_irq(nms, S5L8720_USB_OTG_IRQ), s5l8720_usb_hwcfg);
     synopsys_usb_state *usb_otg = S5L8900USBOTG(dev);
     nms->usb_otg = usb_otg;
-    if (nms->usb_tcp_addr[0]) {
-        char *dup = g_strdup(nms->usb_tcp_addr);
-        char *colon = strrchr(dup, ':');
-        if (colon) {
-            *colon = '\0';
-            usb_otg->server_port = atoi(colon + 1);
-        }
-        if (!usb_otg->server_port) {
-            usb_otg->server_port = 1235;
-        }
-        usb_otg->server_host = g_strdup(dup[0] ? dup : "127.0.0.1");
-        g_free(dup);
-    }
+    synopsys_usb_set_tcp_addr(usb_otg, nms->usb_tcp_addr);
     /*
      * Unlike every other sysbus device here, this one was never realized, so
      * its reset handler never ran and none of the register defaults applied -
@@ -3741,7 +3427,6 @@ static void ipod_touch_machine_init(MachineState *machine)
     nms->pmu_state->charging_mode = nms->battery_charging;
     qdev_connect_gpio_out(DEVICE(pmu), 0,
                          qdev_get_gpio_in(DEVICE(sysic_state), PMU_WAKE_IRQ));
-    ipod_touch_mbx_set_patch_usb_gate(nms->usb_patch_mux_gate);
 
     // init the accelerometer. Keep the handle so the machine's QMP properties
     // (accel-orientation / accel-x/y/z / accel-shake, added in instance_init)
@@ -3840,7 +3525,8 @@ static void ipod_touch_machine_init(MachineState *machine)
     fmss_state->nand_path = nms->nand_path;
     fmss_state->nand_overlay = nms->nand_overlay[0] ? nms->nand_overlay : NULL;
     nms->fmss_state = fmss_state;
-    fmss_state->direct_boot = nms->direct_iboot[0] != 0;
+    nms->compat_nand_read.notify = ipod_touch_compat_before_nand_read;
+    notifier_list_add(&fmss_state->before_read, &nms->compat_nand_read);
     busdev = SYS_BUS_DEVICE(dev);
     memory_region_add_subregion(sysmem, FMSS_MEM_BASE, &fmss_state->iomem);
     sysbus_realize(busdev, &error_fatal);
@@ -3850,6 +3536,8 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = qdev_new("ipodtouch.usbphys");
     IPodTouchUSBPhysState *usb_phys_state = IPOD_TOUCH_USB_PHYS(dev);
     nms->usb_phys_state = usb_phys_state;
+    qdev_connect_gpio_out_named(dev, "phy-reset", 0,
+                               qdev_get_gpio_in_named(DEVICE(nms->usb_otg), "phy-reset", 0));
     memory_region_add_subregion(sysmem, USBPHYS_MEM_BASE, &usb_phys_state->iomem);
     it_realize_into_qom_tree(dev);
 
@@ -3890,6 +3578,14 @@ static void ipod_touch_machine_init(MachineState *machine)
         create_unimplemented_device("scaler-csc", SCALER_CSC_MEM_BASE, 0x1000);
     }
 
+    /*
+     * 0x38100000: a block iBoot-385.49's LLB (iPhone OS 2.2/2.2.1) programs in the same routine that latches the
+     * security epoch into POWER_ID (+0x40 <- 1, +0x44 <- 0x033f0100, next to the 0x3D700080.. writes). 2.1.1's
+     * LLB and every 3.x+ iBoot leave it alone. Unmapped, the store took an external abort and the LLB reset
+     * into DFU in a loop, so 2.2 never reached iBoot. Its function is unknown: accepted and read as zero.
+     */
+    create_unimplemented_device("unknown-38100000", 0x38100000, 0x1000);
+
     // init SHA1 engine
     dev = qdev_new("ipodtouch.sha1");
     IPodTouchSHA1State *sha1_state = IPOD_TOUCH_SHA1(dev);
@@ -3905,6 +3601,8 @@ static void ipod_touch_machine_init(MachineState *machine)
     nms->aes_state = aes_state;
     memory_region_add_subregion(sysmem, AES_MEM_BASE, &aes_state->iomem);
     it_realize_into_qom_tree(dev);
+    /* The device tree's aes node: interrupts = 0x27. */
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, s5l8900_get_irq(nms, S5L8720_AES_IRQ));
 
     // init PKE engine
     dev = qdev_new("ipodtouch.pke");
@@ -3956,6 +3654,14 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_add(klass, "bt", "bool", ipod_touch_get_bt,
                               ipod_touch_set_bt, NULL, NULL);
     object_class_property_set_description(klass, "bt", "Emulated Bluetooth HCI controller (default on)");
+    object_class_property_add_str(klass, "wifi-mac", ipod_touch_get_wifi_mac,
+                                  ipod_touch_set_wifi_mac);
+    object_class_property_set_description(klass, "wifi-mac",
+        "Provisioned BCM4325 card MAC (unset keeps the legacy card identity)");
+    object_class_property_add_str(klass, "bt-mac", ipod_touch_get_bt_mac,
+                                  ipod_touch_set_bt_mac);
+    object_class_property_set_description(klass, "bt-mac",
+        "Provisioned Bluetooth address in the BCM4325 card's Apple OTP");
     object_class_property_add(klass, "bt-latency-us", "uint32", ipod_touch_get_bt_latency_us,
                               ipod_touch_set_bt_latency_us, NULL, NULL);
     object_class_property_set_description(klass, "bt-latency-us", "HCI reply delay in microseconds (default 2000)");
@@ -3975,6 +3681,14 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "amc-mode", "AMC registers, handshake-only bring-up, or compressed audio decode");
     object_class_property_add_str(klass, "direct-iboot", ipod_touch_get_direct_iboot, ipod_touch_set_direct_iboot);
     object_class_property_add_str(klass, "direct-llb", ipod_touch_get_direct_llb, ipod_touch_set_direct_llb);
+    object_class_property_add_str(klass, "aes-uid", ipod_touch_get_aes_uid, ipod_touch_set_aes_uid);
+    object_class_property_set_description(klass, "aes-uid",
+        "UID (and non-KBAG GID) AES operations: 'legacy' (default; keeps keys existing images "
+        "were made with) or 'engine' (processed like the hardware, with a stand-in key; 4.x "
+        "data protection needs it)");
+    object_class_property_add_str(klass, "gid-blobs", ipod_touch_get_gid_blobs, ipod_touch_set_gid_blobs);
+    object_class_property_set_description(klass, "gid-blobs",
+        "File of 64-byte KBAG || IV-key records extending the AES engine's GID table");
     object_class_property_add(klass, "forge-sigcheck", "bool", ipod_touch_get_forge_sigcheck,
                               ipod_touch_set_forge_sigcheck, NULL, NULL);
     object_class_property_set_description(klass, "forge-sigcheck", "Allow malformed boot signature recovery for unsigned-image compatibility");
@@ -3991,7 +3705,7 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_add(klass, "audio-hw", "OnOffAuto", ipod_touch_get_audio_hw,
                               ipod_touch_set_audio_hw, NULL, NULL);
     object_class_property_set_description(klass, "audio-hw",
-        "CS42L58 codec and AMC hardware (auto: enabled for direct iBoot)");
+        "CS42L58 codec and AMC hardware (auto: present, as on the board)");
     MachineClass *mc = MACHINE_CLASS(klass);
     mc->desc = "iPod Touch";
     mc->init = ipod_touch_machine_init;

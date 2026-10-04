@@ -91,6 +91,9 @@ static void initialize_nor(IPodTouchNORSPIState *s)
         }
         size = NOR_FLASH_SIZE;
     } else {
+        if (!s->nor_path) {
+            return;   /* no image: blank (erased) flash */
+        }
         if (!g_file_get_contents(s->nor_path, &data, &size, &error) ||
             size != NOR_FLASH_SIZE) {
             error_report("NOR image \"%s\" must contain exactly %u bytes: %s; reads return 0xff",
@@ -110,13 +113,21 @@ static void initialize_nor(IPodTouchNORSPIState *s)
 void ipod_touch_nor_spi_open_overlay(IPodTouchNORSPIState *s, const char *path, Error **errp)
 {
     struct stat base, writable;
-    if (stat(s->nor_path, &base) < 0 || stat(path, &writable) < 0) {
-        error_setg_errno(errp, errno, "NOR base and writable copy must exist");
+    if (stat(path, &writable) < 0) {
+        error_setg_errno(errp, errno, "writable NOR copy must exist");
         return;
     }
-    if (base.st_dev == writable.st_dev && base.st_ino == writable.st_ino) {
-        error_setg(errp, "nor-rw must be a private copy, not the base NOR image");
-        return;
+    /* A base nor= is optional (ipad1 ships a blank effaceable NOR); when present
+     * the writable copy must be a separate file, never the read-only base. */
+    if (s->nor_path) {
+        if (stat(s->nor_path, &base) < 0) {
+            error_setg_errno(errp, errno, "base NOR image must exist");
+            return;
+        }
+        if (base.st_dev == writable.st_dev && base.st_ino == writable.st_ino) {
+            error_setg(errp, "nor-rw must be a private copy, not the base NOR image");
+            return;
+        }
     }
     if (!S_ISREG(writable.st_mode)) {
         error_setg(errp, "Writable NOR must be a regular file");

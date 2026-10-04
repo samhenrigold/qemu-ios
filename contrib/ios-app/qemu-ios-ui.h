@@ -31,6 +31,22 @@ extern "C" {
  */
 int qemu_ios_main(int argc, char **argv);
 
+/*
+ * What an app needs to know about a machine BEFORE it boots it: which -M name
+ * to pass, how big a window to open, which way up. Static per machine, so it
+ * is valid before qemu_ios_main() and needs no lock. Unknown name -> NULL.
+ */
+typedef struct {
+    const char *machine;        /* the -M name */
+    int screen_width;           /* framebuffer pixels at default_orientation */
+    int screen_height;
+    int screen_scale;           /* points per pixel */
+    int default_orientation;    /* 0 portrait, 1 landscape */
+    bool has_cellular;
+} QemuIosDeviceInfo;
+
+const QemuIosDeviceInfo *qemu_ios_device_info(const char *machine);
+
 /* Called on the QEMU thread whenever a new frame is ready. Do not block. */
 typedef void (*qemu_ios_frame_cb)(void *opaque);
 
@@ -86,6 +102,27 @@ void qemu_ios_ui_touch(int slot, int phase, double nx, double ny);
  */
 void qemu_ios_ui_button(int button, bool down);
 
+/* Generic button/single-touch sequences in virtual milliseconds, not wall
+ * time. Arrays have count elements; transitions must be balanced and ordered.
+ * A new submission cancels/releases the prior sequence. Manual input cancels
+ * it too; held manual input causes admission refusal. The immediate return
+ * means queued, not executed; poll the most recent ID for actual admission.
+ * Explicit cancellation releases only owned signals even while paused.
+ * This is host automation state and is not part of a guest snapshot. */
+#define QEMU_IOS_INPUT_UNKNOWN 0
+#define QEMU_IOS_INPUT_RUNNING 1
+#define QEMU_IOS_INPUT_DONE 2
+#define QEMU_IOS_INPUT_CANCELLED 3
+#define QEMU_IOS_INPUT_REJECTED 4
+bool qemu_ios_ui_input_sequence(uint64_t id, size_t count,
+    const int64_t *at_ms, const int32_t *kind, const int32_t *value,
+    const int32_t *phase, const double *x, const double *y);
+int qemu_ios_ui_input_sequence_status(uint64_t id);
+void qemu_ios_ui_input_sequence_cancel(uint64_t id);
+/* Internal: QEMU thread under BQL, before reset/quit/semantic powerdown. */
+void qemu_ios_ui_cancel_input(void);
+void qemu_ios_ui_manual_touch2(bool down);
+
 /*
  * Save the machine to `path`, so the next launch can restore instead of
  * booting. Asynchronous: poll qemu_ios_snapshot_done(). The guest is stopped
@@ -123,20 +160,6 @@ QemuIosSnapshotStatus qemu_ios_snapshot_status(char *errbuf, unsigned long errle
 /* Resume the vCPU after a completed save, without touching foreground state
  * (qemu_ios_set_foreground(true) is the only other thing that restarts it). */
 void qemu_ios_snapshot_resume(void);
-
-/*
- * Bumped whenever the guest writes SpringBoard's icon layout to flash.
- *
- * 3.1.3 has no notification for a home-screen rearrange (see the long comment
- * in hw/arm/ipod_touch_fmss.c), so this is the only prompt an app gets. Poll it
- * on a tick you already have; a change means no more than "re-read the layout",
- * and the app is expected to do that over sbservices as it already does. The
- * value is monotonic but not a count of rearranges -- one rearrange can bump it
- * several times, and something else entirely can bump it once.
- *
- * Safe from any thread and valid before the VM starts, when it reads 0.
- */
-uint64_t qemu_ios_ui_icon_state_generation(void);
 
 #ifdef __cplusplus
 }

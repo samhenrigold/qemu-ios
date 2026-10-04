@@ -18,6 +18,8 @@ typedef struct {
     uint32_t curreg, cmd;
     uint8_t regs[256];
     bool addressing, shutdown_armed;
+    uint8_t shutdown_reg;
+    uint8_t backlight_enable_reg, backlight_enable_bit, backlight_level_reg;
 } Pcf50633State;
 typedef Pcf50633State I2CSlave;
 #define PCF50633(s) (s)
@@ -38,7 +40,7 @@ static void qemu_system_shutdown_request(int cause) {
 }
 '''
 code += "\n".join(re.findall(r"^#define PMU_.*$", header, re.M)) + "\n"
-for name in ("pcf50633_guest_shutdown_confirmed", "pcf50633_guest_shutdown",
+for name in ("pmu_update_backlight", "pcf50633_guest_shutdown_confirmed", "pcf50633_guest_shutdown",
              "pcf50633_send"):
     match = re.search(r"^(?:static )?[^\n]*\b" + name + r"\([^)]*\)[^{]*\{.*?^}",
                       source, re.M | re.S)
@@ -52,6 +54,7 @@ static void write_reg(Pcf50633State *s, uint8_t reg, uint8_t value) {
 }
 int main(void) {
     Pcf50633State s = {0};
+    s.shutdown_reg = PMU_SHUTDOWN_REG;
     /* Native guest standby must work without a host-side arming flag. */
     write_reg(&s, PMU_STANDBY_CMD, 0);
     assert(!shutdowns);
@@ -60,6 +63,7 @@ int main(void) {
     assert(!s.shutdown_armed);
     guest_shutdown_confirmed = false;
     memset(&s, 0, sizeof(s));
+    s.shutdown_reg = PMU_SHUTDOWN_REG;
     /* 5F138 clears bit 6 during idle sleep too; wait for the final command. */
     write_reg(&s, 0x10, 0x7f);
     write_reg(&s, 0x10, 0x5f);

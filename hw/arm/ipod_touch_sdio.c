@@ -1,7 +1,10 @@
 #include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "migration/vmstate.h"
 #include "migration/qemu-file-types.h"
 #include "hw/arm/ipod_touch_sdio.h"
+#include "hw/arm/mrvl8686.h"
+#include "hw/qdev-properties.h"
 #include "qemu/log.h"
 
 /*
@@ -41,10 +44,14 @@ static void put_cis_ptr(uint8_t *dst, uint32_t offset)
  * SDIOManufacturerId/SDIOProductId properties that AppleBCM4325's personality
  * matches on.
  */
+static unsigned sdio_functions(IPodTouchSDIOState *s)
+{
+    return s->chip.functions ? s->chip.functions : BCM4325_FUNCTIONS;
+}
+
 static void ipod_touch_sdio_build_cia(IPodTouchSDIOState *s)
 {
-    /* Matches wifiaddr in the stock n72ap NOR's nvram. */
-    static const uint8_t wlan_mac[6] = { 0x00, 0x23, 0x32, 0x6e, 0xaa, 0x10 };
+    const BCMSDIOChip *chip = &s->chip;
     uint8_t *r = s->registers;
 
     r[CCCR_REVISION] = 0x11;     /* CCCR 1.10, SDIO 1.10 */
@@ -57,16 +64,38 @@ static void ipod_touch_sdio_build_cia(IPodTouchSDIOState *s)
     uint8_t *cis = &r[CIS_COMMON_OFFSET];
     *cis++ = CIS_MANUFACTURER_ID;
     *cis++ = 0x04;
-    *cis++ = BCM4325_MANUFACTURER & 0xff;
-    *cis++ = (BCM4325_MANUFACTURER >> 8) & 0xff;
-    *cis++ = BCM4325_PRODUCT_ID & 0xff;
-    *cis++ = (BCM4325_PRODUCT_ID >> 8) & 0xff;
-    *cis++ = CIS_FUNCTION_EXTENSION;
-    *cis++ = 0x04;
-    *cis++ = 0x00;               /* extension type 0: common */
-    *cis++ = 0x00;               /* max block size 512 */
-    *cis++ = 0x02;
-    *cis++ = 0x32;               /* max transfer rate 25 MHz */
+    *cis++ = chip->manfid & 0xff;
+    *cis++ = (chip->manfid >> 8) & 0xff;
+    *cis++ = chip->prodid & 0xff;
+    *cis++ = (chip->prodid >> 8) & 0xff;
+    if (chip->vers1[0]) {
+        /*
+         * CISTPL_VERS_1: IOSDIOFamily publishes the strings as
+         * IOSDIOManufacturer, IOSDIOProduct, IOSDIOProductInfo0/1, and
+         * AppleBCMWLAN's IOSDIOStringContains picks the board personality
+         * from the last two.
+         */
+        uint8_t *len = &cis[1];
+        *cis++ = CIS_VERS_1;
+        cis++;
+        *cis++ = 0x01;           /* major */
+        *cis++ = 0x00;           /* minor */
+        for (unsigned i = 0; i < ARRAY_SIZE(chip->vers1) && chip->vers1[i]; i++) {
+            size_t n = strlen(chip->vers1[i]) + 1;
+            memcpy(cis, chip->vers1[i], n);
+            cis += n;
+        }
+        *cis++ = 0xff;
+        *len = cis - len - 1;
+    }
+    if (!chip->no_common_funce) {
+        *cis++ = CIS_FUNCTION_EXTENSION;
+        *cis++ = 0x04;
+        *cis++ = 0x00;           /* extension type 0: common */
+        *cis++ = 0x00;           /* max block size 512 */
+        *cis++ = 0x02;
+        *cis++ = 0x32;           /* max transfer rate 25 MHz */
+    }
 
     /*
      * AppleBCM4325 gets its MAC address from here. Its parser walks this chain
@@ -75,19 +104,35 @@ static void ipod_touch_sdio_build_cia(IPodTouchSDIOState *s)
      * up comparing an all-zero address against its reject constant and gives
      * up with "unable to obtain MAC address, can't proceed any further".
      */
-    *cis++ = CIS_FUNCTION_EXTENSION;
-    *cis++ = 0x08;
-    *cis++ = 0x04;               /* extension type 4: MAC address */
-    *cis++ = 0x06;               /* address length */
-    for (unsigned i = 0; i < 6; i++) {
-        *cis++ = wlan_mac[i];
+    if (!chip->no_mac_funce) {
+        *cis++ = CIS_FUNCTION_EXTENSION;
+        *cis++ = 0x08;
+        *cis++ = 0x04;           /* extension type 4: MAC address */
+        *cis++ = 0x06;           /* address length */
+        for (unsigned i = 0; i < 6; i++) {
+            *cis++ = chip->mac[i];
+        }
+    }
+
+    if (chip->has_bt_mac) {
+        /* Apple's combo-card OTP: a vendor tuple containing type 3, five
+         * 16-bit words (header plus six address bytes). Stock AppleBCM4325's
+         * parseAppleConfigData uses this instead of synthesizing BT from WLAN. */
+        *cis++ = 0x80;
+        *cis++ = 11;
+        *cis++ = 0x81;
+        stw_le_p(cis, 3); cis += 2;
+        stw_le_p(cis, 5); cis += 2;
+        memcpy(cis, chip->bt_mac, sizeof(chip->bt_mac));
+        cis += sizeof(chip->bt_mac);
     }
 
     *cis++ = CIS_END;
 
-    for (unsigned fn = 1; fn <= BCM4325_FUNCTIONS; fn++) {
+    for (unsigned fn = 1; fn <= sdio_functions(s); fn++) {
         uint8_t *fbr = &r[FBR_BASE(fn)];
-        fbr[FBR_IFACE_CODE] = 0x00;  /* no standard SDIO interface */
+        /* 1.x's IOSDIOFamily makes a nub only for a function with a nonzero code. */
+        fbr[FBR_IFACE_CODE] = chip->fbr_iface;
         put_cis_ptr(&fbr[FBR_CIS_PTR], CIS_FUNC_OFFSET(fn));
 
         uint8_t *fcis = &r[CIS_FUNC_OFFSET(fn)];
@@ -183,7 +228,7 @@ static void raise_irq_soon(IPodTouchSDIOState *s, uint32_t bits)
 static uint32_t sdpcm_reg_read(IPodTouchSDIOState *s, uint32_t off)
 {
     uint8_t buf[4];
-    backplane_read(s, SDPCM_CORE_BASE + off, buf, sizeof(buf));
+    backplane_read(s, s->chip.sdiod_base + off, buf, sizeof(buf));
     return ldl_le_p(buf);
 }
 
@@ -191,7 +236,7 @@ static void sdpcm_reg_write(IPodTouchSDIOState *s, uint32_t off, uint32_t val)
 {
     uint8_t buf[4];
     stl_le_p(buf, val);
-    backplane_write(s, SDPCM_CORE_BASE + off, buf, sizeof(buf));
+    backplane_write(s, s->chip.sdiod_base + off, buf, sizeof(buf));
 }
 
 static void sdpcm_raise(IPodTouchSDIOState *s, uint32_t intbits)
@@ -282,7 +327,7 @@ static unsigned sdio_bdc_hdrlen(IPodTouchSDIOState *s)
 static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t event_type,
                              uint32_t status, uint16_t msg_flags)
 {
-    static const uint8_t our_mac[6] = { 0x00, 0x23, 0x32, 0x6e, 0xaa, 0x10 };
+    const uint8_t *our_mac = s->chip.mac;
     unsigned bdclen = sdio_bdc_hdrlen(s);
     uint8_t frame[BDC_MAX_HDRLEN + 14 + 10 + WL_EVENT_MSG_LEN];
     uint32_t framelen = bdclen + 14 + 10 + WL_EVENT_MSG_LEN;
@@ -347,18 +392,19 @@ static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t event_type,
                frame, framelen);
 }
 
-/* The BSSID and SSID the model pretends to be associated with. */
-static const uint8_t fake_bssid[6] = { 0x02, 0x00, 0x5e, 0x10, 0x00, 0x01 };
+/* The BSSID and SSID the model pretends to be associated with. The BSSID is
+ * the "bssid" property (s->bssid); this is its default. */
+static const uint8_t default_bssid[6] = { 0x02, 0x00, 0x5e, 0x10, 0x00, 0x01 };
 #define FAKE_SSID "qemu-ios"
 
 /* Describe the network the model claims to be on, open and on channel 6. */
-static void fill_bss_info(uint8_t *bi)
+static void fill_bss_info(IPodTouchSDIOState *s, uint8_t *bi)
 {
     static const uint8_t rates[] = { 0x82, 0x84, 0x8b, 0x96 };
 
     stl_le_p(bi + BSS_INFO_OFF_VERSION, BSS_INFO_VERSION);
     stl_le_p(bi + BSS_INFO_OFF_LENGTH, BSS_INFO_TOTAL);
-    memcpy(bi + BSS_INFO_OFF_BSSID, fake_bssid, sizeof(fake_bssid));
+    memcpy(bi + BSS_INFO_OFF_BSSID, s->bssid, sizeof(s->bssid));
     stw_le_p(bi + BSS_INFO_OFF_BEACON, 100);
     stw_le_p(bi + BSS_INFO_OFF_CAPABILITY, BSS_CAP_ESS);   /* open: no privacy */
     bi[BSS_INFO_OFF_SSID_LEN] = strlen(FAKE_SSID);
@@ -413,7 +459,7 @@ static void fill_iscan_results(IPodTouchSDIOState *s, uint8_t *p)
     stl_le_p(p + ISCAN_OFF_BUFLEN, ISCAN_RESULTS_FIXED + BSS_INFO_TOTAL);
     stl_le_p(p + ISCAN_OFF_VERSION, BSS_INFO_VERSION);
     stl_le_p(p + ISCAN_OFF_COUNT, 1);
-    fill_bss_info(p + ISCAN_OFF_BSS);
+    fill_bss_info(s, p + ISCAN_OFF_BSS);
     trace_sdio("[SDIO] iscanresults: 1 BSS, scan complete\n");
 }
 
@@ -481,13 +527,29 @@ static void sdio_handle_set_ssid(IPodTouchSDIOState *s, const uint8_t *payload,
  * WLC_SET_SSID, no link, no DHCP. That is the state every fresh image and every
  * app-shipped image is in, and there is no UI to tap on a headless run, so the
  * model asserts the association itself. Set IT_WIFI_AUTOJOIN=0 to require a
- * real driver-driven join instead; any other value is the delay in seconds.
+ * real driver-driven join instead; any other value is the delay in seconds
+ * (fractions allowed), counted from when the host's network interface is up
+ * (sdpcm_handle_cdc).
  */
 static void sdio_autojoin(void *opaque)
 {
     IPodTouchSDIOState *s = (IPodTouchSDIOState *)opaque;
 
     if (s->associated) {
+        return;
+    }
+    /*
+     * Not in the middle of a scan: the driver's scan manager is busy until it
+     * has the results, and a join reported then is lost for good ("Can't add
+     * beacon, scan manager is busy", no BSS object, no link, and the model
+     * thinking itself associated). 5.x's first wifid scan lands about when
+     * this timer does, so a fresh device missed the join now and then
+     * (LightTouchMac smoke #40).
+     */
+    if (!s->iscan_reported) {
+        trace_sdio("[SDIO] a scan is outstanding: joining after it\n");
+        timer_mod(s->join_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  2 * NANOSECONDS_PER_SECOND);
         return;
     }
     trace_sdio("[SDIO] no join requested: associating with '%s' anyway\n",
@@ -498,19 +560,21 @@ static void sdio_autojoin(void *opaque)
 static void sdio_arm_autojoin(IPodTouchSDIOState *s)
 {
     const char *v = getenv("IT_WIFI_AUTOJOIN");
-    int delay = 10;
+    double delay = 10;
 
-    if (v && (!*v || *v == '0')) {
+    /* Fractions too: tests/ipad1/regress.py's wifi-early check joins 10 ms
+     * after the arming point, the order a heavily loaded host produces. */
+    if (v && (!*v || *v == '0') && strtod(v, NULL) <= 0) {
         return;
     }
     if (s->associated || !s->join_timer) {
         return;
     }
-    if (v && atoi(v) > 0) {
-        delay = atoi(v);
+    if (v && strtod(v, NULL) > 0) {
+        delay = strtod(v, NULL);
     }
     timer_mod(s->join_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-              (int64_t)delay * NANOSECONDS_PER_SECOND);
+              (int64_t)(delay * NANOSECONDS_PER_SECOND));
 }
 
 /*
@@ -603,9 +667,9 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
         if (cmd == WLC_GET_BSS_INFO && payload_len >= 4 + BSS_INFO_TOTAL) {
             /* Four byte buffer length, then the structure itself. */
             stl_le_p(reply + hdrlen, BSS_INFO_TOTAL);
-            fill_bss_info(reply + hdrlen + 4);
-        } else if (cmd == WLC_GET_BSSID && payload_len >= sizeof(fake_bssid)) {
-            memcpy(reply + hdrlen, fake_bssid, sizeof(fake_bssid));
+            fill_bss_info(s, reply + hdrlen + 4);
+        } else if (cmd == WLC_GET_BSSID && payload_len >= sizeof(s->bssid)) {
+            memcpy(reply + hdrlen, s->bssid, sizeof(s->bssid));
         } else if (cmd == WLC_GET_RSSI && payload_len >= 4) {
             /* Polled to drive the status bar's signal bars; zero reads as no
              * signal, which is why the icon showed empty. */
@@ -615,6 +679,23 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
         } else if (cmd == WLC_GET_VAR && g_str_equal(iovar, "iscanresults") &&
                    payload_len >= ISCAN_TOTAL) {
             fill_iscan_results(s, reply + hdrlen);
+        } else if (cmd == WLC_GET_VAR && g_str_equal(iovar, "counters") &&
+                   payload_len >= WL_CNT_OFF_RXBEACONMBSS + 4 && s->associated) {
+            /*
+             * wl_cnt_t's rxbeaconmbss, beacons heard from our BSS: the AP
+             * beacons every 100 TU. 5.x's AppleBCMWLANCore::updateCounters
+             * (9B206 0x80591676) reads it as RxBeacons, and checkForBeaconLoss
+             * disconnects ("Null Rx Beacon count") once it and every receive
+             * counter have stood still for six polls: with it left at zero, a
+             * quiet minute (Setup Assistant, an idle home screen) dropped the
+             * join. ponytail: the other counters stay zero.
+             */
+            stl_le_p(reply + hdrlen + WL_CNT_OFF_RXBEACONMBSS,
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / (1024 * 100 * 1000));
+        } else if (cmd == WLC_GET_VAR && g_str_equal(iovar, "ver") &&
+                   s->chip.fw_version && payload_len) {
+            /* initFirmware logs it as "BCMWLAN Firmware Version: %s". */
+            strncpy((char *)reply + hdrlen, s->chip.fw_version, payload_len - 1);
         } else if (cmd == WLC_GET_SSID && payload_len >= 4) {
             /* wlc_ssid_t: a length word then up to 32 bytes. */
             uint32_t n = MIN(strlen(FAKE_SSID), payload_len - 4);
@@ -643,9 +724,35 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
                              len > hdrlen ? len - hdrlen : 0);
     }
 
-    /* WLC_UP is the last thing initDongle does before the driver is usable,
-     * so it is the earliest sensible moment to start the auto-join clock. */
+    /*
+     * A real dongle reports a join only after the host asked for one, and the
+     * host can only ask through its network interface, so a join never lands
+     * before that interface exists. The auto-join stands in for the host's
+     * request and has to keep that order. WLC_UP is not the point: the driver
+     * sends it in the middle of initFirmware and attaches its IO80211Interface
+     * only after the rest of the init iovars. A join reported in between goes
+     * through bringUpLink into AppleBCMWLAN::setLinkState with no interface
+     * (8F190: IO80211Interface's link-state getter at 0x80656f7c reads +0xc4
+     * of NULL), and a 10 s clock from WLC_UP gets there whenever host load
+     * slows the guest (LightTouchMac matrix 09-29, 8F190 and 8G4 run 2).
+     * mcast_list is the first thing the host sends that needs the interface:
+     * IOEthernetController::setMulticastList, called once the network stack
+     * has attached it (3.1.3 AppleBCM4325, 4.2-4.3 AppleBCMWLAN and 5.x
+     * AppleBCMWLANCore all send it before they could join).
+     * Firmware coming up is not in a BSS: after the driver's watchdog reset
+     * (a command-queue stall under host load re-downloads the firmware
+     * without a machine reset) the join has to happen again, and the
+     * interface from before is still attached.
+     */
     if (cmd == WLC_UP) {
+        s->associated = false;
+        if (s->host_netif) {
+            sdio_arm_autojoin(s);
+        }
+    }
+    if (cmd == WLC_SET_VAR && g_str_equal(iovar, "mcast_list") &&
+        !s->host_netif) {
+        s->host_netif = true;
         sdio_arm_autojoin(s);
     }
 }
@@ -658,9 +765,9 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
 static void backplane_store(IPodTouchSDIOState *s, uint32_t sb_addr,
                             const uint8_t *buf, uint32_t len)
 {
-    bool in_core = sb_addr >= SDPCM_CORE_BASE &&
-                   sb_addr < SDPCM_CORE_BASE + SDPCM_CORE_SIZE;
-    uint32_t off = sb_addr - SDPCM_CORE_BASE;
+    bool in_core = sb_addr >= s->chip.sdiod_base &&
+                   sb_addr < s->chip.sdiod_base + SDPCM_CORE_SIZE;
+    uint32_t off = sb_addr - s->chip.sdiod_base;
 
     if (in_core && off == SDPCM_INTSTATUS && len >= 4) {
         /* Write one to clear. */
@@ -794,13 +901,12 @@ static NetClientInfo sdio_net_info = {
  */
 void ipod_touch_sdio_setup_net(IPodTouchSDIOState *s)
 {
-    static const uint8_t wlan_mac[6] = { 0x00, 0x23, 0x32, 0x6e, 0xaa, 0x10 };
     NetClientState *peer = qemu_find_netdev("wifi0");
 
     if (!peer) {
         return;
     }
-    memcpy(s->conf.macaddr.a, wlan_mac, sizeof(wlan_mac));
+    memcpy(s->conf.macaddr.a, s->chip.mac, sizeof(s->chip.mac));
     s->conf.peers.ncs[0] = peer;
     s->conf.peers.queues = 1;
     s->nic = qemu_new_nic(&sdio_net_info, &s->conf, TYPE_IPOD_TOUCH_SDIO,
@@ -851,6 +957,25 @@ static void sdpcm_receive(IPodTouchSDIOState *s, const uint8_t *buf, uint32_t le
         break;
     case SDPCM_DATA_CHANNEL:
         sdio_tx_data(s, buf + doff, framelen - doff);
+        /*
+         * The host learns its credit (how many frames it may send) only from
+         * the header of a frame coming back, and a data frame gets no answer:
+         * eight in a row with nothing to the host in between (ARP probes,
+         * IPv6 ND and mDNS after a join, with no one on the network to
+         * reply) spent the window, the next control command could not be
+         * sent, and after 5 s AppleBCMWLANCmdManager's queue check reset the
+         * chip ("Cmd Queue stall", logState "Tx: seq N, credit N"), which
+         * dropped the join (LightTouchMac smoke #40). A dongle that frees the
+         * buffer returns the credit; with nothing else queued, in a
+         * header-only frame on the event channel: 5.x's rxPackets (9B206
+         * 0x80a23f52) takes the credit from every header and passes over a
+         * header-only frame there (on the data channel it is "memory
+         * allocation error"). Drivers that take events on the data channel
+         * (2.1.1) keep the bare window.
+         */
+        if (g_queue_is_empty(s->rx_fifo) && sdio_bdc_hdrlen(s) == BDC_HDRLEN_STD) {
+            sdpcm_send(s, SDPCM_EVENT_CHANNEL, buf, 0);
+        }
         break;
     default:
         trace_sdio("[SDIO] SDPCM frame on unhandled channel %u\n", channel);
@@ -876,7 +1001,85 @@ static void trace_post_ready(IPodTouchSDIOState *s, const char *what,
            func, is_write ? "write" : "read", addr, len);
 }
 
-void sdio_exec_cmd(IPodTouchSDIOState *s)
+static void sdio_exec_cmd(IPodTouchSDIOState *s);
+
+/*
+ * Move a CMD53 payload between the card and guest memory: one contiguous
+ * buffer at baddr for the iPod's controller, or the scatter list an IOP
+ * command carries (ipod_touch_sdio_command).
+ */
+static void sdio_dma(IPodTouchSDIOState *s, uint8_t *buf, uint32_t len,
+                     bool to_guest)
+{
+    if (s->hbuf) {
+        memcpy(to_guest ? s->hbuf : buf, to_guest ? buf : s->hbuf, len);
+        return;
+    }
+    if (!s->sg) {
+        cpu_physical_memory_rw(s->baddr, buf, len, to_guest);
+        return;
+    }
+    for (unsigned i = 0; i < s->sg_count && len; i++) {
+        uint32_t n = MIN(len, s->sg[2 * i + 1]);
+        cpu_physical_memory_rw(s->sg[2 * i], buf, n, to_guest);
+        buf += n;
+        len -= n;
+    }
+    if (len) {
+        qemu_log_mask(LOG_GUEST_ERROR, "[SDIO] scatter list %u bytes short\n",
+                      len);
+    }
+}
+
+uint32_t ipod_touch_sdio_command(IPodTouchSDIOState *s, uint32_t cmd,
+                                 uint32_t arg, uint32_t blklen,
+                                 uint32_t numblk, const uint32_t *sg,
+                                 unsigned sg_count)
+{
+    s->cmd = cmd;
+    s->arg = arg;
+    s->blklen = blklen;
+    s->numblk = numblk;
+    s->sg = sg;
+    s->sg_count = sg_count;
+    s->resp0 = 0;
+    sdio_exec_cmd(s);
+    s->sg = NULL;
+    return s->resp0;
+}
+
+uint32_t ipod_touch_sdio_command_buf(IPodTouchSDIOState *s, uint32_t cmd,
+                                     uint32_t arg, uint32_t blklen,
+                                     uint32_t numblk, uint8_t *buf)
+{
+    uint32_t resp;
+
+    s->hbuf = buf;
+    resp = ipod_touch_sdio_command(s, cmd, arg, blklen, numblk, NULL, 0);
+    s->hbuf = NULL;
+    return resp;
+}
+
+bool ipod_touch_sdio_card_irq(IPodTouchSDIOState *s)
+{
+    return s->dongle_started &&
+           (sdpcm_reg_read(s, SDPCM_INTSTATUS) &
+            sdpcm_reg_read(s, SDPCM_HOSTINTMASK));
+}
+
+void ipod_touch_sdio_set_chip(IPodTouchSDIOState *s, const BCMSDIOChip *chip)
+{
+    uint8_t chipid[4];
+
+    if (chip != &s->chip) {
+        s->chip = *chip;
+    }
+    stl_le_p(chipid, chip->chipid);
+    backplane_write(s, CHIPCOMMON_BASE, chipid, sizeof(chipid));
+    ipod_touch_sdio_build_cia(s);
+}
+
+static void sdio_exec_cmd(IPodTouchSDIOState *s)
 {
     uint32_t cmd_type = s->cmd & 0x3f;
     uint32_t addr = (s->arg >> 9) & 0x1ffff;
@@ -895,7 +1098,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
         // CMD5 - IO_SEND_OP_COND. The R4 response is how the controller learns
         // a card is there at all; without it enumerateSlot times out.
         if(s->card_present) {
-            s->resp0 = R4_CARD_READY | (BCM4325_FUNCTIONS << R4_NUM_FUNCS_SHIFT)
+            s->resp0 = R4_CARD_READY | (sdio_functions(s) << R4_NUM_FUNCS_SHIFT)
                        | R4_IO_OCR;
         } else {
             s->resp0 = 0;
@@ -909,7 +1112,13 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
         bool is_write = (s->arg >> 31) != 0;
         if(is_write) {
             uint8_t data = s->arg & 0xFF;
-            if(func == 0x1 && addr >= SDIOD_CORE_BASE) {
+            if(func == 0x1 && s->mrvl) {
+                mrvl8686_writeb(s->mrvl, addr, data);
+            }
+            else if(func == 0x0 && s->mrvl && addr == CCCR_IO_ABORT && (data & CCCR_IO_ABORT_RES)) {
+                mrvl8686_card_reset(s->mrvl);
+            }
+            else if(func == 0x1 && addr >= SDIOD_CORE_BASE) {
                 s->sdiod_regs[addr - SDIOD_CORE_BASE] = data;
                 if(addr >= SBSDIO_SBADDRLOW && addr <= SBSDIO_SBADDRHIGH) {
                     unsigned shift = 8 + 8 * (addr - SBSDIO_SBADDRLOW);
@@ -938,7 +1147,13 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
             }
             trace_sdio("SDIO: Executing cmd52 by writing 0x%02x to register 0x%05x (func %d)\n", data, addr, func);
         } else {
-            if(addr == 0x1000e) {
+            if(func == 0x1 && s->mrvl) {
+                s->resp0 = mrvl8686_readb(s->mrvl, addr);
+            }
+            else if(func == 0x0 && s->mrvl && addr == CCCR_INT_PENDING) {
+                s->resp0 = mrvl8686_irq_pending(s->mrvl) ? CCCR_INT_PENDING_FN1 : 0;
+            }
+            else if(addr == 0x1000e) {
                 // misc register
                 s->resp0 = (1 << 6) /* enable ALP clock */ | (1 << 7); /* enable HT clock */
             }
@@ -985,10 +1200,20 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
         }
         trace_sdio("SDIO: Executing cmd53 func %x with block size %d and %d blocks (reg address: 0x%08x, backplane address: 0x%08x, destination address: 0x%08x, write? %d)\n", func, s->blklen, s->numblk, addr, sb_addr, s->baddr, is_write);
 
-        if(is_write) {
+        if(func == 0x1 && s->mrvl) {
+            g_autofree uint8_t *buf = g_malloc0(xfer_len);
+            if (is_write) {
+                sdio_dma(s, buf, xfer_len, false);
+                mrvl8686_write(s->mrvl, addr, buf, xfer_len);
+            } else {
+                mrvl8686_read(s->mrvl, addr, buf, xfer_len);
+                sdio_dma(s, buf, xfer_len, true);
+            }
+        }
+        else if(is_write) {
             if(func == 0x1) {
                 g_autofree uint8_t *buf = g_malloc(xfer_len);
-                cpu_physical_memory_read(s->baddr, buf, xfer_len);
+                sdio_dma(s, buf, xfer_len, false);
                 backplane_store(s, sb_addr, buf, xfer_len);
                 /* Enough of a heartbeat to tell a running firmware download
                  * apart from a wedged one, without tracing every access. */
@@ -1012,14 +1237,14 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                     trace_sdio("[SDIO] first SDPCM frame on function 2 (%u bytes)\n", xfer_len);
                 }
                 g_autofree uint8_t *buf = g_malloc0(xfer_len);
-                cpu_physical_memory_read(s->baddr, buf, xfer_len);
+                sdio_dma(s, buf, xfer_len, false);
                 sdpcm_receive(s, buf, xfer_len);
             }
         } else {
             if(func == 0x1) {
                 g_autofree uint8_t *buf = g_malloc(xfer_len);
                 backplane_read(s, sb_addr, buf, xfer_len);
-                cpu_physical_memory_write(s->baddr, buf, xfer_len);
+                sdio_dma(s, buf, xfer_len, true);
             }
             else if(func == 0x2) {
                 /* Hand up one queued frame, zero-padded to whatever the host
@@ -1068,7 +1293,7 @@ void sdio_exec_cmd(IPodTouchSDIOState *s)
                  * a length of zero is a different thing entirely: the driver
                  * accepts it as a frame and hands the empty result to its
                  * command manager. */
-                cpu_physical_memory_write(s->baddr, buf, xfer_len);
+                sdio_dma(s, buf, xfer_len, true);
             }
             
         }
@@ -1195,20 +1420,68 @@ static const MemoryRegionOps ipod_touch_sdio_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
+/*
+ * "bssid": the access point's BSSID, "aa:bb:cc:dd:ee:ff", settable at run
+ * time (qom-set). The host changes it with the Wi-Fi position it serves
+ * (docs/ipad1/location.md): locationd caches a position per BSSID, so a new
+ * position has to arrive as a new, unknown access point. Migrated (subsection,
+ * only when not the default) so a restored guest stays on the AP it joined.
+ */
+static char *sdio_get_bssid(Object *obj, Error **errp)
+{
+    const uint8_t *b = IPOD_TOUCH_SDIO(obj)->bssid;
+    return g_strdup_printf("%02x:%02x:%02x:%02x:%02x:%02x",
+                           b[0], b[1], b[2], b[3], b[4], b[5]);
+}
+
+static void sdio_set_bssid(Object *obj, const char *value, Error **errp)
+{
+    unsigned b[6];
+    char tail;
+
+    if (sscanf(value, "%x:%x:%x:%x:%x:%x%c", &b[0], &b[1], &b[2], &b[3], &b[4],
+               &b[5], &tail) != 6 || (b[0] | b[1] | b[2] | b[3] | b[4] | b[5]) > 0xff) {
+        error_setg(errp, "bssid must be six hex octets separated by colons");
+        return;
+    }
+    for (int i = 0; i < 6; i++) {
+        IPOD_TOUCH_SDIO(obj)->bssid[i] = b[i];
+    }
+}
+
+/* DAT1 from a card that signals its own interrupt (the Marvell): the
+ * controller latches the card-interrupt status bit on the edge. */
+static void sdio_card_irq(void *opaque, int n, int level)
+{
+    IPodTouchSDIOState *s = opaque;
+    trace_sdio("[SDIO] card irq %d (was %d, irq_reg 0x%x mask 0x%x)\n", level, s->card_irq_level, s->irq_reg, s->irq_mask);
+    if (level && !s->card_irq_level) {
+        raise_irq_soon(s, 0x2);
+    }
+    s->card_irq_level = level;
+}
+
 static void ipod_touch_sdio_init(Object *obj)
 {
     DeviceState *dev = DEVICE(obj);
     IPodTouchSDIOState *s = IPOD_TOUCH_SDIO(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
+    /* The iPod touch 2G's BCM4325; the iPad swaps in its 4329. */
+    static const BCMSDIOChip bcm4325 = {
+        .manfid = BCM4325_MANUFACTURER, .prodid = BCM4325_PRODUCT_ID,
+        .chipid = CHIPCOMMON_CHIPID, .sdiod_base = SDPCM_CORE_BASE,
+        /* Matches wifiaddr in the stock n72ap NOR's nvram. */
+        .mac = { 0x00, 0x23, 0x32, 0x6e, 0xaa, 0x10 },
+    };
+
     s->backplane = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
     s->sb_window = CHIPCOMMON_BASE;
-    uint8_t chipid[4];
-    stl_le_p(chipid, CHIPCOMMON_CHIPID);
-    backplane_write(s, CHIPCOMMON_BASE, chipid, sizeof(chipid));
+    memcpy(s->bssid, default_bssid, sizeof(s->bssid));
+    object_property_add_str(obj, "bssid", sdio_get_bssid, sdio_set_bssid);
+    ipod_touch_sdio_set_chip(s, &bcm4325);
 
-    ipod_touch_sdio_build_cia(s);
-
+    qdev_init_gpio_in_named(dev, sdio_card_irq, "card-irq", 1);
     memory_region_init_io(&s->iomem, obj, &ipod_touch_sdio_ops, s, TYPE_IPOD_TOUCH_SDIO, 4096);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
@@ -1218,6 +1491,45 @@ static void ipod_touch_sdio_init(Object *obj)
     s->join_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sdio_autojoin, s);
 
     s->rx_fifo = g_queue_new();
+}
+
+/*
+ * A machine reset is a power cycle for the card: the dongle's RAM, the SDIO
+ * core and the SDPCM session go. Without this a rebooted guest finds a card
+ * that claims its firmware is already up, never completes a download, and
+ * AppleBCMWLAN panics after its 60 s watchdog.
+ */
+static void ipod_touch_sdio_reset(DeviceState *dev)
+{
+    IPodTouchSDIOState *s = IPOD_TOUCH_SDIO(dev);
+    SDPCMFrame *f;
+
+    s->cmd = s->arg = s->state = s->stac = s->csr = 0;
+    s->resp0 = s->resp1 = s->resp2 = s->resp3 = 0;
+    s->irq_reg = s->irq_pending = s->irq_mask = 0;
+    s->baddr = s->blklen = s->numblk = 0;
+    qemu_irq_lower(s->irq);
+    timer_del(s->irq_timer);
+    timer_del(s->scan_timer);
+    timer_del(s->join_timer);
+    while ((f = g_queue_pop_head(s->rx_fifo))) {
+        g_free(f->data);
+        g_free(f);
+    }
+    g_hash_table_remove_all(s->backplane);
+    s->sb_window = CHIPCOMMON_BASE;
+    s->fw_bytes = s->fw_bytes_logged = 0;
+    s->func2_seen = s->dongle_started = s->associated = s->host_netif = false;
+    s->iscan_reported = true;      /* no scan outstanding */
+    s->tx_seq = s->rx_seq = 0;
+    s->cdc_hdrlen = s->bdc_hdrlen = 0;
+    memset(s->sdiod_regs, 0, sizeof(s->sdiod_regs));
+    memset(s->registers, 0, sizeof(s->registers));
+    ipod_touch_sdio_set_chip(s, &s->chip);
+    s->card_irq_level = false;
+    if (s->mrvl) {
+        mrvl8686_card_reset(s->mrvl);
+    }
 }
 
 #include "ipod-sdio-state.h"
@@ -1238,10 +1550,68 @@ static int sdio_post_load(void *opaque, int version_id)
     return 0;
 }
 
+static bool sdio_bssid_needed(void *opaque)
+{
+    return memcmp(((IPodTouchSDIOState *)opaque)->bssid, default_bssid, sizeof(default_bssid));
+}
+
+static const VMStateDescription vmstate_sdio_bssid = {
+    .name = TYPE_IPOD_TOUCH_SDIO "/bssid",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sdio_bssid_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_ARRAY(bssid, IPodTouchSDIOState, 6),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool sdio_card_irq_needed(void *opaque)
+{
+    return ((IPodTouchSDIOState *)opaque)->mrvl != NULL;
+}
+
+static const VMStateDescription vmstate_sdio_card_irq = {
+    .name = TYPE_IPOD_TOUCH_SDIO "/card-irq",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sdio_card_irq_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(card_irq_level, IPodTouchSDIOState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* Only a machine saved before the host attached its interface carries this;
+ * a missing subsection (and every snapshot older than the field) reads as a
+ * host that is up, which is what a snapshot of a running guest is. */
+static int sdio_pre_load(void *opaque)
+{
+    ((IPodTouchSDIOState *)opaque)->host_netif = true;
+    return 0;
+}
+
+static bool sdio_netif_needed(void *opaque)
+{
+    return !((IPodTouchSDIOState *)opaque)->host_netif;
+}
+
+static const VMStateDescription vmstate_sdio_netif = {
+    .name = TYPE_IPOD_TOUCH_SDIO "/host_netif",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sdio_netif_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(host_netif, IPodTouchSDIOState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_ipod_touch_sdio = {
     .name = TYPE_IPOD_TOUCH_SDIO,
     .version_id = 1,
     .minimum_version_id = 1,
+    .pre_load = sdio_pre_load,
     .post_load = sdio_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(cmd, IPodTouchSDIOState),
@@ -1278,12 +1648,24 @@ static const VMStateDescription vmstate_ipod_touch_sdio = {
         VMSTATE_SINGLE(rx_fifo, IPodTouchSDIOState, 1, vmstate_sdio_frames, GQueue *),
         VMSTATE_END_OF_LIST()
     },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sdio_bssid,
+        &vmstate_sdio_card_irq,
+        &vmstate_sdio_netif,
+        NULL
+    },
+};
+
+static const Property ipod_touch_sdio_props[] = {
+    DEFINE_PROP_LINK("mrvl", IPodTouchSDIOState, mrvl, TYPE_MRVL8686, Mrvl8686State *),
 };
 
 static void ipod_touch_sdio_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+    device_class_set_props(dc, ipod_touch_sdio_props);
     dc->vmsd = &vmstate_ipod_touch_sdio;
+    device_class_set_legacy_reset(dc, ipod_touch_sdio_reset);
 }
 
 static const TypeInfo ipod_touch_sdio_type_info = {

@@ -5,14 +5,14 @@ incremental; most existing `IT_*` variables still retain their documented behavi
 
 | Property | Values | Default | Legacy alias |
 | --- | --- | --- | --- |
-| `boot-args` | kernel command line, at most 255 bytes; empty disables injection | no override | `IT_BOOT_ARGS` |
-| `boot-args-delay-ms` | 0..3600000 virtual milliseconds | `2000` | `IT_BOOT_ARGS_DELAY_MS` |
-| `boot-args-repeat` | 0..1000000 writes; 0 still performs the initial write | `24` | `IT_BOOT_ARGS_REPEAT` |
-| `boot-args-interval-ms` | 1..3600000 virtual milliseconds | `500` | `IT_BOOT_ARGS_INTERVAL_MS` |
+| `boot-args` | kernel command line, at most 255 bytes; empty disables injection | no override | none: the property is the only input |
+| `boot-args-delay-ms` | 0..3600000 virtual milliseconds | `2000` | none |
+| `boot-args-repeat` | 0..1000000 writes; 0 still performs the initial write | `24` | none |
+| `boot-args-interval-ms` | 1..3600000 virtual milliseconds | `500` | none |
 | `bt` | `on`, `off` | `on` | `IT_BT`: leading `0` disables, otherwise enables |
 | `bt-latency-us` | unsigned 32-bit microseconds | `2000` | `IT_BT_LATENCY_US` |
 | `osk` | `on`, `off` | `off` | `IT_OSK`: any present value enables |
-| `audio-hw` | `auto`, `on`, `off` | `auto`: CS42L58 and AMC present for direct iBoot, absent otherwise | `IT_AUDIO_HW`: leading `0` disables; any other value enables |
+| `audio-hw` | `auto`, `on`, `off` | `auto`: CS42L58, amp, I2S0 and AMC present on every boot (2.1.1 panics without them) | `IT_AUDIO_HW`: leading `0` disables; any other value enables |
 
 Use `-M iPod-Touch,audio-hw=on` to force audio hardware. An explicitly supplied
 property, including `auto`, wins over the environment alias. The alias remains
@@ -42,11 +42,14 @@ including aliases, boundaries and runtime rejection.
 
 ## Boot-argument scheduling
 
-`boot-args` and its three scheduling properties are fixed before machine startup.
-Explicit values override their environment aliases, including an explicitly empty
-`boot-args=` string. The command line is limited to the kernel buffer's 255 bytes;
-longer strings are rejected. An empty explicit command line disables command-line
-injection even when `IT_BOOT_ARGS` is set.
+`boot-args` and its three scheduling properties are fixed before machine startup and
+have no environment aliases (the `IT_BOOT_ARGS*` variables are ignored). The command
+line is limited to the kernel buffer's 255 bytes; longer strings are rejected. An
+empty command line disables injection. The string reaches the kernel two ways, both
+derived from the staged iBoot image by pattern (hw/arm/it_iboot.c, any iPod touch 2G
+build): its normal-boot command-line literal is redirected to the string before
+iBoot hands off, and the kernel's `boot_args.CommandLine` is rewritten on the timer
+until AMFI has latched it.
 
 The first timer write occurs after `boot-args-delay-ms`. Later writes use
 `boot-args-interval-ms`; an interval of zero is rejected to prevent a busy timer
@@ -65,37 +68,7 @@ boundaries, malformed input and runtime mutation rejection.
 
 ## Firmware profiles
 
-Build-specific addresses live in `ipod_touch_firmware.c`, shared by MBX, FMSS
-and the machine's task-port patch. Loaded-kernel detection matches the complete,
-NUL-terminated 5F138 or 7E18 Darwin banner, not merely Darwin 9/10. An empty early
-scan retries; positive results are cached until CPU reset. Ambiguous images are
-rejected.
-
-| Build | Boot-argument buffer | Clock function (physical) | AMFI task / task-name (virtual) |
-| --- | --- | --- | --- |
-| 5F138 | `0x0ff2a584` | `0x0816b460` (native PMU RTC) | Not mapped |
-| 7E18 | Early iBoot handoff in the machine | `0x081953e0` (native PMU RTC, no MBX patch) | `0xc01ab200` / `0xc01ab2a0`, slide `0xb8000000` |
-
-The MBX-triggered BCM4325/USB kernel modifications are 5F138-only. Both kernels
-retain their native PMU RTC code: the old clock trampoline used a Thumb-2 MRC
-instruction that faults on the ARM1176’s Thumb-1 execution path. Unknown
-kernels and 7E18 receive none of those hardcoded writes. The AMFI task-port
-patch uses detected 7E18 addresses, retaining its instruction check. Research
-builds without a mapped profile require all three explicit `IT_AMFI_HOOK_SLIDE`,
-`IT_AMFI_GET_TASK_NAME_VA`, `IT_AMFI_GET_TASK_VA` overrides; partial overrides
-still work for a recognized mapped kernel.
-
-This is the shared-address and patch-safety portion of the firmware work. A
-user-selectable firmware property and the remaining peripheral defaults are
-still pending. AES output-address exceptions remain unclassified and were not
-moved into a profile without evidence. FMSS's Bluetooth-node fix already searches
-its anchor; it does not need another hardcoded address.
-
-`test_firmware_profiles.py` runs the production detector and patch guards under
-ASan/UBSan. `test_agent_guest.py --firmware --base-nand .../nand-agent-v4` checks
-7E18 boot and verifies that a legacy MBX register read leaves five kernel regions
-unchanged. The 5F138 profile is checked against its local decrypted kernel banner
-and guarded patch test. A fresh native 5F138 boot reaches the Home screen
-after removing that clock trampoline. Its later untethered idle transition exposed a false PMU shutdown heuristic,
-which has been removed. Deeper hibernation wake and the legacy power-off gesture
-still need acceptance; this is not a full 5F138 stability claim.
+There are none. The per-build kernel-banner table (`ipod_touch_firmware.c`, 5F138 and 7E18) had no caller
+left and was deleted with its unit test; the build-specific addresses it once keyed (MBX, FMSS, the AMFI
+task-port patch, the 5F138 clock trampoline) were removed before it. iBoot's boot-args literal, security
+epoch and 2.x command line are found by pattern in any iBoot (`hw/arm/it_iboot.c`).

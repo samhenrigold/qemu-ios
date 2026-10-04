@@ -51,6 +51,18 @@ void qemu_ios_ui_attitude(double pitch_deg, double roll_deg, int pose);
 bool qemu_ios_ui_battery(int level, int charging);
 bool qemu_ios_ui_battery_config(int level, int charging, double drain);
 bool qemu_ios_ui_usb_connection(bool attached);
+/* Magnetic heading 0..359 degrees for the compass (machine "compass-heading");
+ * false where the machine has none (the iPod). */
+bool qemu_ios_ui_compass(int heading_deg);
+/* Whether the USB host grants a high-power port's current (machine
+ * "usb-charger": the iPad charges); applies at the next USB enumeration.
+ * false where the machine has no such control. */
+bool qemu_ios_ui_usb_charger(bool high_power);
+/* Set the accelerometer's orientation vector outright (machine
+ * "accel-orientation", 1-6), rather than stepping it like
+ * qemu_ios_ui_rotate: the machine itself moves it (the iPad's power-off
+ * gesture), so a relative step can land on the wrong side. */
+bool qemu_ios_ui_orientation(int value);
 /* 44100 Hz stereo S16LE mixer packets; read needs 16384 bytes of capacity.
  * A generation owns one recording. Empty read = 0; failed/expired = -1.
  * Empty reads with seconds >= 0 mark silence through that capture time.
@@ -74,6 +86,15 @@ void qemu_ios_agent_free_result(char *result);
 /* 0 absent/not running, 1 alive, 2 stale. */
 int qemu_ios_agent_status(void);
 
+/* it_boot's last QC_PKG_REPORT since the guest last reset: the serial now
+ * current and its result code (contrib/it-boot/it_boot.c R_*; negative = an
+ * install failed and the previous package kept running). false = no report
+ * yet (no loader, or no offer this boot). */
+bool qemu_ios_guest_package_report(int64_t *serial, int32_t *result);
+/* The GL shim's wire protocol from QC_GLES_HELLO, and its package serial;
+ * 0 (today's wire) when no hello arrived since the guest last reset. */
+int32_t qemu_ios_gles_protocol(int64_t *serial);
+
 /* Live host GL contexts cannot be included in a snapshot. */
 int qemu_ios_gles_contexts(void);
 /* Loaded Mach-O UUID; NULL if unavailable. */
@@ -85,6 +106,11 @@ void qemu_ios_ui_resume(void);
 void qemu_ios_ui_reset(void);
 void qemu_ios_ui_powerdown(void);
 void qemu_ios_ui_quit(void);
+
+/* Flip a running user netdev's slirp restrict flag in place (id NULL/empty =
+ * the only user stack). restrict=false opens outbound networking without a
+ * link event, so the guest keeps its Wi-Fi association and DHCP lease. */
+void qemu_ios_ui_net_restrict(const char *id, bool restrict_);
 
 #ifdef __cplusplus
 }

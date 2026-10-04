@@ -25,6 +25,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(LIS302DLState, LIS302DL)
 /* CTRL_REG1 per-axis enable bits (public ST LIS302DL datasheet). */
 /* CTRL_REG2 bit 6: reboot the part's memory content. Self-clearing. */
 #define ACCEL_CTRL_REG2_BOOT 0x40
+/* LIS331DLH (ST datasheet): WHO_AM_I 0x32, CTRL_REG2 BOOT is bit 7. */
+#define ACCEL_WHOAMI_LIS331DLH 0x32
+#define ACCEL_CTRL_REG2_BOOT_LIS331 0x80
 
 #define ACCEL_CTRL_REG1_XEN 0x01
 #define ACCEL_CTRL_REG1_YEN 0x02
@@ -47,6 +50,8 @@ typedef struct LIS302DLState {
 	uint16_t ctrl_reg2;
 	uint16_t ctrl_reg3;
     uint32_t rate_hz;       /* zero: follow CTRL_REG1 DR (100/400 Hz) */
+    uint8_t whoami;         /* 0x3B LIS302DL (default), 0x32 LIS331DLH */
+    bool mount_flipped;     /* board-mounted turned 180 deg about X: Y, Z negated */
     uint32_t noise_state;
     int64_t last_sample_ns, shake_start_ns;
     int64_t trace_last_poll_ns, trace_last_report_ns;

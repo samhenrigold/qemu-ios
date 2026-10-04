@@ -10,7 +10,8 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 source = (ROOT / "hw/arm/ipod_touch_fmss.c").read_text()
 functions = []
-for name in ("find_bit_index", "fmss_block_key", "fmss_block_marker_path",
+for name in ("find_bit_index", "fmss_block_key", "fmss_key_compare",
+             "fmss_remember_erased", "fmss_block_marker_path",
              "fmss_block_is_erased", "ipod_touch_fmss_io_failed", "fmss_io_error", "fmss_erase_block",
              "fmss_remember_physical", "fmss_store_page", "fmss_write_dma_read", "write_nand_pages",
              "ipod_touch_fmss_reset"):
@@ -44,17 +45,18 @@ static const char *fault;
 static struct { uint64_t shadowed; } fmss_stats;
 typedef struct {
     char *nand_overlay;
-    GHashTable *phys_pages, *erased_blocks, *overlay_pages;
+    GTree *phys_pages, *erased_blocks;
+    GHashTable *overlay_pages;
     uint32_t reg_cs_irq_bit, reg_cinfo_target_addr, reg_csgenrc;
     int irq, completion_timer;
-    uint32_t reg_cs_ctrl, reg_cs_irq_mask;
+    uint32_t reg_cs_ctrl, reg_cs_irq_mask, reg_cs_script;
+    uint32_t reg_script_param_d38, reg_script_param_d34, reg_script_param_d48, reg_script_param_d4c, reg_chunks_per_page, reg_script_csgenr15, reg_script_scratch_d7c, reg_script_scratch_d3c;
     uint32_t reg_cs_buf_addr, reg_pages_in_addr, reg_num_pages;
     uint32_t reg_pages_out_addr, reg_page_spare_out_addr;
     uint8_t page_buffer[4096], page_spare_buffer[64];
 } IPodTouchFMSSState;
 typedef IPodTouchFMSSState DeviceState;
 #define IPOD_TOUCH_FMSS(s) (s)
-static bool iboot_bt_patched;
 static void qemu_irq_lower(int irq) {}
 static void timer_del(int timer) {}
 static uint8_t memory[65536];
@@ -70,6 +72,19 @@ static void memory_region_unref(void *mr) {}
 #define int128_make64(a) (a)
 static void cpu_physical_memory_read(uint32_t addr, void *p, size_t n)
 { assert(addr + n <= sizeof(memory)); memcpy(p, memory + addr, n); }
+#define MEMTX_OK 0
+#define MEMTX_DECODE_ERROR 2
+#define MEMTXATTRS_UNSPECIFIED 0
+static int address_space_memory;
+static unsigned address_space_read(void *space, uint64_t addr, int attrs,
+                                    void *p, size_t n)
+{
+    if (addr > sizeof(memory) || n > sizeof(memory) - addr) {
+        return MEMTX_DECODE_ERROR;
+    }
+    memcpy(p, memory + addr, n);
+    return MEMTX_OK;
+}
 static uint32_t ldl_le_p(const void *p)
 { uint32_t n; memcpy(&n, p, 4); return GUINT32_FROM_LE(n); }
 static int vm_stop(int state) { assert(state == RUN_STATE_IO_ERROR); stops++; return 0; }
@@ -121,6 +136,8 @@ static void run_case(const char *op, int at, bool erase, bool physical)
     IPodTouchFMSSState s = { .nand_overlay = dir, .reg_cs_buf_addr = 16,
         .reg_pages_out_addr = 64, .reg_page_spare_out_addr = 80 };
     s.overlay_pages = g_hash_table_new(g_direct_hash, g_direct_equal);
+    s.phys_pages = g_tree_new_full(fmss_key_compare, NULL, NULL, g_free);
+    s.erased_blocks = g_tree_new_full(fmss_key_compare, NULL, NULL, g_free);
     snprintf(old_path, sizeof(old_path), "%s/cs%d", dir, physical ? 0 : 1);
     assert(g_mkdir_with_parents(old_path, 0700) == 0);
     snprintf(old_path, sizeof(old_path), "%s/cs%d/%d.page", dir,
@@ -139,7 +156,7 @@ static void run_case(const char *op, int at, bool erase, bool physical)
     write_nand_pages(&s);
     fault = NULL;
     if (op) {
-        assert(stops == 1 && ipod_touch_fmss_io_failed() && !s.phys_pages);
+        assert(stops == 1 && ipod_touch_fmss_io_failed() && g_tree_nnodes(s.phys_pages) == 0);
         assert(g_hash_table_size(s.overlay_pages) == 0);
         if (erase && strcmp(op, "remove")) {
             char marker[128];
@@ -148,7 +165,7 @@ static void run_case(const char *op, int at, bool erase, bool physical)
         }
         /* A resumed session cannot silently accept the failed command. */
         write_nand_pages(&s);
-        assert(stops == 2 && !s.phys_pages);
+        assert(stops == 2 && g_tree_nnodes(s.phys_pages) == 0);
         if (!erase || strcmp(op, "rename")) {
             char old[3];
             f = fopen(old_path, "rb");
@@ -157,18 +174,18 @@ static void run_case(const char *op, int at, bool erase, bool physical)
         }
     } else {
         assert(!stops && !ipod_touch_fmss_io_failed());
-        uint8_t *cached = g_hash_table_lookup(s.phys_pages, fmss_block_key(0, 128));
+        uint8_t *cached = g_tree_lookup(s.phys_pages, fmss_block_key(0, 128));
         assert(cached && cached[0] == 0xa5 && ldl_le_p(cached + 4096) == 7);
         ipod_touch_fmss_reset(&s);
-        assert(g_hash_table_size(s.phys_pages) == (physical ? 1 : 0));
+        assert(g_tree_nnodes(s.phys_pages) == (physical ? 1 : 0));
         /* Reset does not remove the durable, relocated page. */
         struct stat st;
         assert(stat(old_path, &st) == 0 && st.st_size == 4160);
         assert(g_hash_table_contains(s.overlay_pages, fmss_block_key(physical ? 0 : 1,
                                                                     physical ? 128 : 2)));
     }
-    if (s.phys_pages) g_hash_table_destroy(s.phys_pages);
-    if (s.erased_blocks) g_hash_table_destroy(s.erased_blocks);
+    if (s.phys_pages) g_tree_destroy(s.phys_pages);
+    if (s.erased_blocks) g_tree_destroy(s.erased_blocks);
     g_hash_table_destroy(s.overlay_pages);
 }
 
@@ -186,8 +203,10 @@ static void run_bulk(void)
     memset(memory+40000,0xab,4096);
     fault=NULL;stops=0;fmss_io_failed=false;erase_enabled=false;physical_enabled=true;
     s.overlay_pages=g_hash_table_new(g_direct_hash,g_direct_equal);
+    s.phys_pages=g_tree_new_full(fmss_key_compare,NULL,NULL,g_free);
+    s.erased_blocks=g_tree_new_full(fmss_key_compare,NULL,NULL,g_free);
     write_nand_pages(&s);
-    assert(!stops && g_hash_table_size(s.phys_pages)==1024);
+    assert(!stops && g_tree_nnodes(s.phys_pages)==1024);
     assert(g_hash_table_size(s.overlay_pages)==1024);
     for (unsigned i=0;i<1024;i++) {
         char path[64];uint8_t page[4160];
@@ -203,7 +222,7 @@ static void run_bulk(void)
     fmss_io_failed=false;stops=0;s.reg_cs_buf_addr=sizeof(memory)-4;
     uint32_t bad=1;memcpy(memory+s.reg_cs_buf_addr,&bad,4);
     write_nand_pages(&s);assert(stops==1 && fmss_io_failed);
-    g_hash_table_destroy(s.phys_pages);g_hash_table_destroy(s.overlay_pages);
+    g_tree_destroy(s.phys_pages);g_tree_destroy(s.erased_blocks);g_hash_table_destroy(s.overlay_pages);
 }
 int main(void)
 {

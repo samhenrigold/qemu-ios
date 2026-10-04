@@ -32,7 +32,6 @@ arm_ss.add(files(
   'translate-vfp.c',
   'crypto_helper.c',
   'hflags.c',
-  'it-hle.c',
   'iwmmxt_helper.c',
   'm_helper.c',
   'mve_helper.c',

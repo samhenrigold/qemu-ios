@@ -8,6 +8,7 @@
 #include "hw/sysbus.h"
 #include "hw/irq.h"
 #include "hw/clock.h"
+#include "hw/arm/ipod_touch_chipid.h"
 
 #define TYPE_IPOD_TOUCH_CLOCK                "ipodtouch.clock"
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchClockState, IPOD_TOUCH_CLOCK)
@@ -62,6 +63,11 @@ typedef struct IPodTouchClockState
     uint32_t    pwrcon2;
     uint32_t    pwrcon3;
     uint32_t    pwrcon4;
+
+    bool        s5l8900;  /* "s5l8900" property: reset to the 1G's PLL/divider values */
+    bool        s5l8720;  /* root controller at 0x3c500000, not the secondary block */
+    IPodTouchChipIDState *chipid; /* physical reference selector fuse */
+    Clock       *pclk;    /* derived peripheral clock */
 
 } IPodTouchClockState;
 

@@ -28,7 +28,7 @@
  *
  * The mpvd-decode machine option enables an experimental native MPEG-4 I/P decoder. It consumes
  * guest DMA data and signals completion; decoded planes are presented by the
- * opt-in LCD compositor (see docs/ipod-media.md). Without the opt-in, only register backing is active.
+ * opt-in LCD compositor (see docs/research/ipod-media.md). Without the opt-in, only register backing is active.
  */
 
 /* Bound retained compressed inputs, not playback duration. Overflow prevents

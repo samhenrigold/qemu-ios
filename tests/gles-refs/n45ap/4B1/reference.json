@@ -1,0 +1,31 @@
+{
+  "board": "n45ap",
+  "build": "4B1",
+  "product_version": "1.1.5",
+  "baseline": {
+    "renderer": "stock-software-layerkit",
+    "provenance": "Private matched firmware control; actual it_boot restored matching original OpenGLES.baked through guest filesystem after supported hook removal. Root visually reviewed all three stock software scenes; zero GL contexts and zero front-end hellos. Safari shows stock Bookmarks screen.",
+    "qemu_sha256": "383dc2781a7288d590ac264225bcc45f1eadf3d10cd9001dd9df10971c77d5dd",
+    "regression_source_sha256": "cb01cfc1511b72f22292bc618ae2d5fb3f1c5afa05b6f848447b1e089f700c14",
+    "stock_backup_sha256": "15e95aed91c829a03df6f8edef6b9f9a2ac947a16321575074b0540d408aba14",
+    "preparation_sha256": "61933e74e2b09f2163a1133970e9ed3abdf4bba023194f0a52debbbde6b67123",
+    "evidence": "/Users/shg/Developer/ltm-evidence/n45-independent-controls-2026-10-01",
+    "limits": "Prepared-device independent software-renderer control; not a physical-device capture, clean-unmount/durability, raw GPU, networking or release qualification. First LK-only control was rejected. Variable stock UI state must remain an explicit failure."
+  },
+  "frames": {
+    "swipe": {
+      "sha256": "95244e946eeb53face08d27f22cadefeb1d8f3598c6b30284fa4d29afe69ae3e",
+      "source_sha256": "3fc78b7192ec390131e5ac2355bfa412b4d4d4bf5bc488487eb0a7c96b1fb3ec"
+    },
+    "home": {
+      "sha256": "c2067558d789690a390ef9ff6dc3b4236cff0306af258d895b9dcfb3cf72e627",
+      "source_sha256": "5ebde77d82c87e7a972124471d9153b54460f82f8ce1bf46fa2eee70d054fabc"
+    },
+    "opened-app": {
+      "sha256": "d63fc084f06fa371bb3c91d690e5b34a9cedd3ed39d1920d6f736ec6edbc95cb",
+      "source_sha256": "0919f4f6439af671e3edb5c92852c35b3230a2ae8a793cdc0df983a0e68bcd51",
+      "application": "com.apple.mobilesafari",
+      "action": "tap first stock icon at40,70; historical source capture named safari"
+    }
+  }
+}

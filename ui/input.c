@@ -7,6 +7,8 @@
 #include "ui/console.h"
 #include "system/replay.h"
 #include "system/runstate.h"
+#include "system/reset.h"
+#include "ui/virtual-input.h"
 
 struct QemuInputHandlerState {
     DeviceState       *dev;
@@ -44,6 +46,11 @@ static QEMUTimer *kbd_timer;
 static uint32_t kbd_default_delay_ms = 10;
 static uint32_t queue_count;
 static uint32_t queue_limit = 1024;
+static void qemu_input_sequence_cancel_current(void);
+static bool virtual_sequence_emitting;
+static bool virtual_manual_keys[IOS_INPUT_MAX_KEYS], virtual_manual_touch;
+static bool virtual_manual_mtt[INPUT_EVENT_SLOTS_MAX];
+static void qemu_input_sequence_observe_manual(InputEvent *event);
 
 QemuInputHandlerState *qemu_input_handler_register(DeviceState *dev,
                                             const QemuInputHandler *handler)
@@ -172,6 +179,203 @@ void qmp_input_send_event(const char *device,
     }
 
     qemu_input_event_sync();
+}
+
+/* Generic host automation: shared validation/order/ownership core, with
+ * QMP keycodes rather than board-specific button mappings. */
+static IosInputSequence virtual_sequence;
+static QEMUTimer *virtual_sequence_timer;
+static QemuConsole *virtual_sequence_console;
+static uint64_t virtual_sequence_id;
+static InputSequenceStatus virtual_sequence_status = INPUT_SEQUENCE_STATUS_UNKNOWN;
+static bool virtual_sequence_releasing;
+
+static void qemu_input_sequence_send(InputEvent *event)
+{
+    if (virtual_sequence_releasing) {
+        /* Ordinary input is dropped while paused. Owned release is cleanup,
+         * never a synthetic press or a way to advance guest virtual time. */
+        qemu_input_event_send_impl(virtual_sequence_console, event);
+    } else {
+        qemu_input_event_send(virtual_sequence_console, event);
+    }
+}
+
+static void qemu_input_sequence_emit(void *opaque, const IosInputEvent *e)
+{
+    virtual_sequence_emitting = true;
+    if (e->kind == 2) {
+        KeyValue key = {.type = KEY_VALUE_KIND_QCODE,
+                        .u.qcode.data = (QKeyCode)e->value};
+        InputKeyEvent data = {.key = &key, .down = !!e->phase};
+        InputEvent event = {.type = INPUT_EVENT_KIND_KEY, .u.key.data = &data};
+        qemu_input_sequence_send(&event);
+    } else {
+        if (!virtual_sequence_releasing) {
+            for (int axis = 0; axis < 2; ++axis) {
+                InputMoveEvent data = {.axis = axis,
+                    .value = (int)((axis ? e->y : e->x) * INPUT_EVENT_ABS_MAX)};
+                InputEvent event = {.type = INPUT_EVENT_KIND_ABS, .u.abs.data = &data};
+                qemu_input_sequence_send(&event);
+            }
+        }
+        InputBtnEvent data = {.button = INPUT_BUTTON_LEFT, .down = e->phase != 2};
+        InputEvent event = {.type = INPUT_EVENT_KIND_BTN, .u.btn.data = &data};
+        qemu_input_sequence_send(&event);
+    }
+    if (virtual_sequence_releasing) {
+        qemu_input_event_sync_impl();
+    } else {
+        qemu_input_event_sync();
+    }
+    virtual_sequence_emitting = false;
+}
+
+static void qemu_input_sequence_cancel_current(void)
+{
+    if (virtual_sequence_timer) {
+        timer_del(virtual_sequence_timer);
+    }
+    virtual_sequence_releasing = true;
+    ios_input_cancel(&virtual_sequence, qemu_input_sequence_emit, NULL);
+    virtual_sequence_releasing = false;
+    if (virtual_sequence_status == INPUT_SEQUENCE_STATUS_RUNNING) {
+        virtual_sequence_status = INPUT_SEQUENCE_STATUS_CANCELLED;
+    }
+    if (virtual_sequence_console) {
+        object_unref(OBJECT(virtual_sequence_console));
+        virtual_sequence_console = NULL;
+    }
+}
+
+static void qemu_input_sequence_reset(void *opaque)
+{
+    qemu_input_sequence_cancel_current();
+}
+
+static void qemu_input_sequence_tick(void *opaque)
+{
+    if (ios_input_step(&virtual_sequence, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL),
+                       qemu_input_sequence_emit, NULL)) {
+        virtual_sequence_status = INPUT_SEQUENCE_STATUS_COMPLETED;
+        object_unref(OBJECT(virtual_sequence_console));
+        virtual_sequence_console = NULL;
+    } else {
+        timer_mod(virtual_sequence_timer, virtual_sequence.origin +
+                  virtual_sequence.events[virtual_sequence.next].at_ms);
+    }
+}
+
+void qmp_input_send_sequence(uint64_t id, const char *device,
+                            bool has_head, int64_t head,
+                            InputSequenceEventList *events, Error **errp)
+{
+    IosInputEvent converted[IOS_INPUT_MAX_EVENTS];
+    size_t count = 0;
+    QemuConsole *con = device ? qemu_console_lookup_by_device_name(device,
+                                        has_head ? head : 0, errp) :
+                               qemu_console_lookup_by_index(0);
+    if (!con) {
+        if (!device) { error_setg(errp, "Input console not found"); }
+        return;
+    }
+    if (!id || !events) {
+        error_setg(errp, "Nonzero sequence ID and events required");
+        return;
+    }
+    for (InputSequenceEventList *node = events; node; node = node->next) {
+        if (count == IOS_INPUT_MAX_EVENTS) {
+            error_setg(errp, "Input sequence exceeds 256 events");
+            return;
+        }
+        InputSequenceEvent *e = node->value;
+        IosInputEvent *out = &converted[count++];
+        *out = (IosInputEvent){.at_ms = e->at_ms};
+        if (e->type == INPUT_SEQUENCE_EVENT_KIND_KEY) {
+            if (!qemu_input_find_handler(INPUT_EVENT_MASK_KEY, con)) {
+                error_setg(errp, "Keyboard input handler not found");
+                return;
+            }
+            out->kind = 2;
+            out->value = e->u.key.key;
+            out->phase = e->u.key.down;
+        } else {
+            if (!qemu_input_find_handler(INPUT_EVENT_MASK_ABS, con) ||
+                !qemu_input_find_handler(INPUT_EVENT_MASK_BTN, con)) {
+                error_setg(errp, "Absolute pointer input handler not found");
+                return;
+            }
+            out->kind = 1;
+            out->phase = e->u.touch.phase;
+            out->x = e->u.touch.x;
+            out->y = e->u.touch.y;
+        }
+    }
+    if (!ios_input_valid(converted, count)) {
+        error_setg(errp, "Unbalanced, unordered or invalid input sequence");
+        return;
+    }
+    bool manual = virtual_manual_touch;
+    for (int i = 0; i < IOS_INPUT_MAX_KEYS; ++i) { manual |= virtual_manual_keys[i]; }
+    for (int i = 0; i < INPUT_EVENT_SLOTS_MAX; ++i) { manual |= virtual_manual_mtt[i]; }
+    if (manual) {
+        error_setg(errp, "Manual input is held; refusing sequence ownership");
+        return;
+    }
+    qemu_input_sequence_cancel_current();
+    if (!virtual_sequence_timer) {
+        virtual_sequence_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                              qemu_input_sequence_tick, NULL);
+        qemu_register_reset(qemu_input_sequence_reset, NULL);
+    }
+    object_ref(OBJECT(con));
+    virtual_sequence_console = con;
+    virtual_sequence_id = id;
+    virtual_sequence_status = INPUT_SEQUENCE_STATUS_RUNNING;
+    memcpy(virtual_sequence.events, converted, count * sizeof(converted[0]));
+    virtual_sequence.count = count;
+    virtual_sequence.origin = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+    timer_mod(virtual_sequence_timer, virtual_sequence.origin + converted[0].at_ms);
+}
+
+InputSequenceInfo *qmp_query_input_sequence(uint64_t id, Error **errp)
+{
+    InputSequenceInfo *info = g_new0(InputSequenceInfo, 1);
+    info->status = id && id == virtual_sequence_id ? virtual_sequence_status :
+                                                   INPUT_SEQUENCE_STATUS_UNKNOWN;
+    return info;
+}
+
+void qmp_input_cancel_sequence(uint64_t id, Error **errp)
+{
+    if (id && id == virtual_sequence_id) {
+        qemu_input_sequence_cancel_current();
+    }
+}
+
+static void qemu_input_sequence_observe_manual(InputEvent *event)
+{
+    if (virtual_sequence_emitting) { return; }
+    if (event->type == INPUT_EVENT_KIND_KEY &&
+        event->u.key.data->key->type == KEY_VALUE_KIND_QCODE) {
+        int code = event->u.key.data->key->u.qcode.data;
+        if (code >= 0 && code < IOS_INPUT_MAX_KEYS) {
+            virtual_manual_keys[code] = event->u.key.data->down;
+        }
+    } else if (event->type == INPUT_EVENT_KIND_BTN &&
+               event->u.btn.data->button == INPUT_BUTTON_LEFT) {
+        virtual_manual_touch = event->u.btn.data->down;
+    } else if (event->type == INPUT_EVENT_KIND_MTT) {
+        InputMultiTouchEvent *mtt = event->u.mtt.data;
+        if (mtt->slot >= 0 && mtt->slot < INPUT_EVENT_SLOTS_MAX) {
+            if (mtt->type == INPUT_MULTI_TOUCH_TYPE_BEGIN) {
+                virtual_manual_mtt[mtt->slot] = true;
+            } else if (mtt->type == INPUT_MULTI_TOUCH_TYPE_END ||
+                       mtt->type == INPUT_MULTI_TOUCH_TYPE_CANCEL) {
+                virtual_manual_mtt[mtt->slot] = false;
+            }
+        }
+    }
 }
 
 static void qemu_input_event_trace(QemuConsole *src, InputEvent *evt)
@@ -314,12 +518,16 @@ void qemu_input_event_send_impl(QemuConsole *src, InputEvent *evt)
     if (!s) {
         return;
     }
+    qemu_input_sequence_observe_manual(evt);
     s->handler->event(s->dev, src, evt);
     s->events++;
 }
 
 void qemu_input_event_send(QemuConsole *src, InputEvent *evt)
 {
+    if (!virtual_sequence_emitting) {
+        qemu_input_sequence_cancel_current();
+    }
     /* Expect all parts of QEMU to send events with QCodes exclusively.
      * Key numbers are only supported as end-user input via QMP */
     assert(!(evt->type == INPUT_EVENT_KIND_KEY &&

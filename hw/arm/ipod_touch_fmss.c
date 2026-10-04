@@ -1,8 +1,8 @@
-#include "hw/arm/ipod_touch_firmware.h"
 #include "hw/arm/ipod_touch_fmss.h"
 #include "hw/arm/ipod_touch_guard.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
+#include "qemu/bswap.h"
 #include "qemu/error-report.h"
 #include "system/runstate.h"
 #include "exec/address-spaces.h"
@@ -42,6 +42,51 @@ FMSS_ENV_FLAG(fmss_dump_on,   "FMSS_DUMP")
 FMSS_ENV_FLAG(fmss_physical,  "FMSS_PHYSICAL")
 FMSS_ENV_FLAG(fmss_trace_on,  "FMSS_TRACE")
 FMSS_ENV_FLAG(fmss_stats_on,  "FMSS_STATS")
+FMSS_ENV_FLAG(fmss_script_trace_on, "FMSS_SCRIPT_TRACE")
+
+/* Observational only: no additional guest memory/MMIO reads. This bounded
+ * process-wide diagnostic records instructions and transfer addresses, never
+ * descriptor contents, NAND payloads or sequencer-store values. Completion
+ * remains compatibility behavior even when a program reaches END. */
+#define FMSS_SCRIPT_TRACE_LIMIT 16384
+static void fmss_script_trace(const char *event, uint32_t program, uint32_t pc,
+                              uint32_t arg, uint32_t value, uint32_t command)
+{
+    static unsigned records;
+    static int selector = -1;
+    static uint32_t selected_command;
+
+    if (!fmss_script_trace_on() || records > FMSS_SCRIPT_TRACE_LIMIT) {
+        return;
+    }
+    if (selector < 0) {
+        const char *text = getenv("FMSS_SCRIPT_TRACE_CSGENRC");
+        selector = 0;
+        if (text) {
+            char *end;
+            unsigned long long parsed = strtoull(text, &end, 0);
+            if (*text < '0' || *text > '9' || *end || parsed > UINT32_MAX) {
+                selector = 2;
+                fprintf(stderr, "FMSS_SCRIPT_TRACE invalid CSGENRC selector; "
+                                "tracing disabled\n");
+            } else {
+                selected_command = parsed;
+                selector = 1;
+            }
+        }
+    }
+    if (selector == 2 || (selector == 1 && command != selected_command)) {
+        return;
+    }
+    if (records++ == FMSS_SCRIPT_TRACE_LIMIT) {
+        fprintf(stderr, "FMSS_SCRIPT_TRACE truncated limit=%u\n",
+                FMSS_SCRIPT_TRACE_LIMIT);
+        return;
+    }
+    fprintf(stderr, "FMSS_SCRIPT_TRACE %u %s program=%08x pc=%04x "
+                    "arg=%08x value=%08x\n",
+            records, event, program, pc, arg, value);
+}
 
 /*
  * FMSS_STATS: how many pages the guest reads, and how long the host spends
@@ -92,10 +137,292 @@ static uint8_t find_bit_index(uint8_t num) {
     return index;
 }
 
-static void write_chip_info(IPodTouchFMSSState *s)
+/*
+ * The FMSS sequencer.
+ *
+ * FMSS is a small programmable engine in front of the FMC NAND controller.
+ * The driver points 0xC04 at a program of two-word instructions, sets the
+ * 0xDxx variables the program reads, and starts it through CSCTRL. Both
+ * 3.1.3's and 4.2.1's iBoot read the chip IDs this way (ResetAndReadId:
+ * D08 = buffer, D0C = number of chip enables, then run the READ ID program).
+ * Firmware program locations belong in docs/ipod/from-ipsw.md and fixtures.
+ *
+ * The ID used to be DMAed at the moment the CPU wrote D08. Real hardware
+ * writes it when the program runs, and 4.2.1 zeroes the buffer between the
+ * two, so it saw no chip ("[NAND] findNandInfo: No NAND Detected"). 4.2.1's
+ * program also reads 8 ID bytes per CE (FMDNUM 7, two words from 0x60/0x64)
+ * where 3.1.3 reads 5 (FMDNUM 4, one word). Running the program gives each
+ * build its own layout.
+ *
+ * Instruction: word0 = op << 24 | a << 16 | b, word1 = imm. r[] are the
+ * sequencer's registers, FMC registers are offsets below 0xC00.
+ *   00 end                      01 fmc[b] = imm
+ *   02 fmc[b] = r[a]            03 r[a] = guest_le32[r[b]] (imm == 0)
+ *   04 r[a] = reg[b] & imm      05 r[a] = imm
+ *   06 r[a] = r[b] (imm == 0)   07 compatibility event wait (instant here)
+ *   0a AND: imm ? r[b]&imm : r[a]&r[b]
+ *   0b OR: imm ? r[b]|imm : r[a]|r[b]
+ *   0c r[a] = r[b] + imm
+ *   0d r[a] = r[b] - imm        13 nonzero imm: r[a] = r[b] << (imm & 31);
+ *                              imm0: r[a] <<= r[b] for counts below32
+ *   14 right shift16 for bit31-clear source only; other forms unmeasured
+ *   0e if r[a] != 0 goto imm    17 if r[a] == 0 goto imm (byte offsets)
+ *   11 mem32[r[b]] = r[a]
+ * This lists implemented behavior, not a complete verified ISA.
+ * Other sequencer writes to 0xDxx still have known gaps. Unsupported forms
+ * stop with LOG_UNIMP. Instruction fetch, descriptor loads and opcode11
+ * stores use checked little-endian AddressSpace transactions.
+ *
+ * NAND execution, event timing and completion remain separate incomplete
+ * contracts. The CPU-side page model below still performs storage operations;
+ * sequencer decoding does not establish actual NAND completion.
+ *
+ * FMC: FMCTRL0 (0x0) bits 1..8 select the chip enable, FMCMD (0x8) 0x90 is
+ * READ ID and makes FMDATA 0x60/0x64 return the selected chip's ID bytes.
+ * The flash is four Hynix dies (ID ad d5 14 b6, 0xb614d5ad, which both
+ * builds' tables know); CE 4..7 are unpopulated and read 0.
+ */
+#define FMSS_CHIP_ID      0xb614d5adu
+#define FMSS_CHIPS        4
+#define FMSS_SCRIPT_STEPS 100000
+
+static uint32_t fmss_var_read(IPodTouchFMSSState *s, uint32_t reg, bool *ok)
 {
-    uint32_t chipid[] = { 0xb614d5ad, 0xb614d5ad, 0xb614d5ad, 0xb614d5ad };
-    cpu_physical_memory_write(s->reg_cinfo_target_addr, &chipid, 0x10);
+    switch (reg) {
+    case FMSS_CINFO_TARGET_ADDR:   return s->reg_cinfo_target_addr;
+    case FMSS_PAGES_IN_ADDR:       return s->reg_pages_in_addr;
+    case FMSS_CS_BUF_ADDR:         return s->reg_cs_buf_addr;
+    case FMSS_NUM_PAGES:           return s->reg_num_pages;
+    case FMSS_PAGE_SPARE_OUT_ADDR: return s->reg_page_spare_out_addr;
+    case FMSS_PAGES_OUT_ADDR:      return s->reg_pages_out_addr;
+    case FMSS_CHUNKS_PER_PAGE:     return s->reg_chunks_per_page;
+    case FMSS_CSGENRC:             return s->reg_csgenrc;
+    case FMSS_SCRIPT_PARAM_D34:    return s->reg_script_param_d34;
+    case FMSS_SCRIPT_PARAM_D38:    return s->reg_script_param_d38;
+    case FMSS_SCRIPT_PARAM_D48:    return s->reg_script_param_d48;
+    case FMSS_SCRIPT_PARAM_D4C:    return s->reg_script_param_d4c;
+    case FMSS_SCRIPT_CSGENR15:     return s->reg_script_csgenr15;
+    case FMSS_SCRIPT_SCRATCH_D3C:  return s->reg_script_scratch_d3c;
+    case FMSS_SCRIPT_SCRATCH_D7C:  return s->reg_script_scratch_d7c;
+    }
+    *ok = false;
+    return 0;
+}
+
+static void fmss_run_script(IPodTouchFMSSState *s)
+{
+    uint32_t r[32] = { 0 }, fmc[0x100 / 4] = { 0 };
+    uint32_t pc = 0, cmd = 0;
+    uint8_t id_fifo[8];
+    unsigned id_fifo_size = 0, id_fifo_head = 0;
+
+    if (!s->reg_cs_script) {
+        return;
+    }
+    for (int step = 0; step < FMSS_SCRIPT_STEPS; step++) {
+        uint8_t bytes[8];
+        uint32_t address = s->reg_cs_script + pc;
+        if (address_space_read(&address_space_memory, address,
+                               MEMTXATTRS_UNSPECIFIED, bytes,
+                               sizeof(bytes)) != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "[fmss] instruction fetch at 0x%08x failed; "
+                          "program stopped\n", address);
+            return;
+        }
+        uint32_t insn[2] = { ldl_le_p(bytes), ldl_le_p(bytes + 4) };
+        uint32_t op = insn[0] >> 24, a = (insn[0] >> 16) & 0x1f;
+        uint32_t b = insn[0] & 0xffff, imm = insn[1];
+        bool ok = true;
+        pc += 8;
+        fmss_script_trace("instruction", s->reg_cs_script, pc - 8,
+                          insn[0], insn[1], s->reg_csgenrc);
+
+        switch (op) {
+        case 0x00:
+            return;
+        case 0x01:
+        case 0x02:
+            if (b == FMSS_PAGES_OUT_ADDR) {
+                if (op == 2 && !imm) {
+                    s->reg_pages_out_addr = r[a];
+                } else {
+                    ok = false; /* Only captured scalar register-write form. */
+                }
+            } else if (b == FMSS_PAGES_IN_ADDR) {
+                if (op == 2 && !imm) {
+                    s->reg_pages_in_addr = r[a];
+                } else {
+                    ok = false; /* Only captured scalar register-write form. */
+                }
+            } else if (b == FMSS_CS_BUF_ADDR) {
+                if (op == 2 && !imm) {
+                    s->reg_cs_buf_addr = r[a];
+                } else {
+                    ok = false; /* Only captured descriptor-pointer writes. */
+                }
+            } else if (b == FMSS_SCRIPT_SCRATCH_D3C) {
+                if (!imm && (op == 2 || !a)) {
+                    /* Captured zero initializer or register-write form. */
+                    s->reg_script_scratch_d3c = op == 1 ? 0 : r[a];
+                } else {
+                    ok = false;
+                }
+            } else if (b == FMSS_SCRIPT_CSGENR15 || b == FMSS_SCRIPT_SCRATCH_D7C) {
+                if (op == 1 && b == FMSS_SCRIPT_SCRATCH_D7C) {
+                    /* Stock initializer supplies the literal, not r[a]. */
+                    s->reg_script_scratch_d7c = imm;
+                } else if (op == 2 && !imm) {
+                    if (b == FMSS_SCRIPT_CSGENR15) {
+                        s->reg_script_csgenr15 = r[a];
+                    } else {
+                        s->reg_script_scratch_d7c = r[a];
+                    }
+                } else {
+                    ok = false; /* Only the captured register-write form. */
+                }
+            } else if (b < 0xc00) {
+                uint32_t v = op == 1 ? imm : r[a];
+                fmss_script_trace(b < sizeof(fmc) ? "fmc_write" :
+                                  "fmc_write_unmodeled", s->reg_cs_script,
+                                  pc - 8, b,
+                                  ((b >= 0x60 && b <= 0x68) || b >= sizeof(fmc)) ?
+                                  0 : v, s->reg_csgenrc);
+                if (b < sizeof(fmc)) {
+                    fmc[b / 4] = v;
+                }
+                if (b == 0x8) {
+                    cmd = v;
+                    id_fifo_size = id_fifo_head = 0;
+                } else if (b == 0x4 && v == 0xe2 && cmd == 0x90) {
+                    /* READ ID actually receives DNUM+1 serial bytes before
+                     * the window transfer. No register read fabricates data. */
+                    unsigned sel = (fmc[0] >> 1) & 0xff;
+                    unsigned ce = ctz32(sel);
+                    if (fmc[0x30 / 4] < sizeof(id_fifo)) {
+                        stl_le_p(id_fifo, ce < FMSS_CHIPS && sel == (1u << ce)
+                                 ? FMSS_CHIP_ID : 0);
+                        memset(id_fifo + 4, 0, 4);
+                        id_fifo_size = fmc[0x30 / 4] + 1;
+                        id_fifo_head = 0;
+                    } else {
+                        id_fifo_size = id_fifo_head = 0;
+                    }
+                } else if (b == 0x40 && (v & 0xf) == 2) {
+                    unsigned count = v >> 4;
+                    if (count && count <= sizeof(id_fifo) &&
+                        count <= id_fifo_size - id_fifo_head) {
+                        uint8_t window[8];
+                        stl_le_p(window, fmc[0x60 / 4]);
+                        stl_le_p(window + 4, fmc[0x64 / 4]);
+                        memcpy(window, id_fifo + id_fifo_head, count);
+                        id_fifo_head += count;
+                        fmc[0x60 / 4] = ldl_le_p(window);
+                        fmc[0x64 / 4] = ldl_le_p(window + 4);
+                        /* Clear receive busy only after all requested bytes
+                         * move. Unknown NAND/FIFO producers remain stalled. */
+                        fmc[0x40 / 4] &= ~2u;
+                    }
+                }
+            }
+            /* 0xCxx writes (IRQ clear/mask, program length) stay with the
+             * CPU-side model; the CPU sets the same values itself. */
+            break;
+        case 0x03: {
+            uint8_t word[4];
+            if (imm) {
+                ok = false; /* No nonzero-immediate descriptor form observed. */
+                break;
+            }
+            uint32_t address = r[b & 0x1f];
+            fmss_script_trace("descriptor_read", s->reg_cs_script, pc - 8,
+                              address, sizeof(word), s->reg_csgenrc);
+            if (address_space_read(&address_space_memory, address,
+                                   MEMTXATTRS_UNSPECIFIED, word,
+                                   sizeof(word)) != MEMTX_OK) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "[fmss] descriptor read at 0x%08x failed; "
+                              "program stopped\n", address);
+                return;
+            }
+            r[a] = ldl_le_p(word);
+            break;
+        }
+        case 0x04: {
+            uint32_t v = 0;
+            fmss_script_trace("register_read", s->reg_cs_script, pc - 8, b, imm, s->reg_csgenrc);
+            if (b >= 0xd00) {
+                v = fmss_var_read(s, b, &ok);
+            } else if (b < sizeof(fmc)) {
+                v = fmc[b / 4];
+            }
+            r[a] = v & imm;
+            break;
+        }
+        case 0x05: r[a] = imm; break;
+        case 0x06:
+            if (imm) {
+                ok = false; /* Only the observed register-copy form is known. */
+            } else {
+                r[a] = r[b & 0x1f];
+            }
+            break;
+        case 0x07: break;
+        case 0x0a:
+            r[a] = imm ? (r[b & 0x1f] & imm) : (r[a] & r[b & 0x1f]);
+            break;
+        case 0x0b:
+            r[a] = imm ? (r[b & 0x1f] | imm) : (r[a] | r[b & 0x1f]);
+            break;
+        case 0x0c: r[a] = r[b & 0x1f] + imm; break;
+        case 0x0d: r[a] = r[b & 0x1f] - imm; break;
+        case 0x13:
+            if (imm) {
+                r[a] = r[b & 0x1f] << (imm & 31);
+            } else if (r[b & 0x1f] < 32) {
+                r[a] <<= r[b & 0x1f];
+            } else {
+                ok = false; /* Register shift counts >=32 are unmeasured. */
+            }
+            break;
+        case 0x14:
+            if (imm != 16 || (r[b & 0x1f] & 0x80000000u)) {
+                ok = false; /* Signedness and other shift forms unmeasured. */
+            } else {
+                r[a] = r[b & 0x1f] >> 16;
+            }
+            break;
+        case 0x0e: if (r[a]) { pc = imm; } break;
+        case 0x17: if (!r[a]) { pc = imm; } break;
+        case 0x11: {
+            uint8_t word[4];
+            uint32_t address = r[b & 0x1f];
+            stl_le_p(word, r[a]);
+            fmss_script_trace("store", s->reg_cs_script, pc - 8,
+                              address, sizeof(word), s->reg_csgenrc);
+            if (address_space_write(&address_space_memory, address,
+                                    MEMTXATTRS_UNSPECIFIED, word,
+                                    sizeof(word)) != MEMTX_OK) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "[fmss] sequencer store at 0x%08x failed; "
+                              "program stopped\n", address);
+                return;
+            }
+            break;
+        }
+        default:
+            ok = false;
+            break;
+        }
+        if (!ok) {
+            qemu_log_mask(LOG_UNIMP, "[fmss] program 0x%08x: op %08x %08x at +0x%x "
+                          "not modelled; stopped\n", s->reg_cs_script,
+                          insn[0], insn[1], pc - 8);
+            return;
+        }
+    }
+    qemu_log_mask(LOG_GUEST_ERROR, "[fmss] program 0x%08x did not end\n",
+                  s->reg_cs_script);
 }
 
 /*
@@ -123,6 +450,21 @@ static gpointer fmss_block_key(uint32_t cs, uint32_t block)
     return GUINT_TO_POINTER((cs << 24) | block);
 }
 
+/* Direct physical keys fit 32 bits. Ordered trees reuse QEMU's standard
+ * VMState GTree serializer, including values that exist only in RAM. */
+static gint fmss_key_compare(gconstpointer a, gconstpointer b, gpointer unused)
+{
+    uintptr_t left = (uintptr_t)a, right = (uintptr_t)b;
+    return (left > right) - (left < right);
+}
+
+static void fmss_remember_erased(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
+{
+    uint8_t present = 1;
+    g_tree_replace(s->erased_blocks, fmss_block_key(cs, block),
+                   g_memdup2(&present, sizeof(present)));
+}
+
 static void fmss_block_marker_path(IPodTouchFMSSState *s, uint32_t cs,
                                    uint32_t block, char *buf, size_t len)
 {
@@ -136,15 +478,12 @@ static bool fmss_block_is_erased(IPodTouchFMSSState *s, uint32_t cs, uint32_t bl
     if (!s->nand_overlay || !fmss_erase_on()) {
         return false;
     }
-    if (!s->erased_blocks) {
-        s->erased_blocks = g_hash_table_new(g_direct_hash, g_direct_equal);
-    }
-    if (g_hash_table_contains(s->erased_blocks, fmss_block_key(cs, block))) {
+    if (g_tree_lookup(s->erased_blocks, fmss_block_key(cs, block))) {
         return true;
     }
     fmss_block_marker_path(s, cs, block, marker, sizeof(marker));
     if (g_file_test(marker, G_FILE_TEST_EXISTS)) {
-        g_hash_table_add(s->erased_blocks, fmss_block_key(cs, block));
+        fmss_remember_erased(s, cs, block);
         return true;
     }
     return false;
@@ -220,10 +559,7 @@ static bool fmss_erase_block(IPodTouchFMSSState *s, uint32_t cs, uint32_t block)
         }
     }
 
-    if (!s->erased_blocks) {
-        s->erased_blocks = g_hash_table_new(g_direct_hash, g_direct_equal);
-    }
-    g_hash_table_add(s->erased_blocks, fmss_block_key(cs, block));
+    fmss_remember_erased(s, cs, block);
     return true;
 }
 
@@ -238,15 +574,10 @@ static void fmss_remember_physical(IPodTouchFMSSState *s, uint32_t cs,
                                    uint32_t page_nr, const uint8_t *data,
                                    const uint8_t *spare)
 {
-    if (!s->phys_pages) {
-        s->phys_pages = g_hash_table_new_full(g_direct_hash, g_direct_equal,
-                                              NULL, g_free);
-    }
-
     uint8_t *slot = g_malloc(NAND_BYTES_PER_PAGE + NAND_BYTES_PER_SPARE);
     memcpy(slot, data, NAND_BYTES_PER_PAGE);
     memcpy(slot + NAND_BYTES_PER_PAGE, spare, NAND_BYTES_PER_SPARE);
-    g_hash_table_insert(s->phys_pages, fmss_block_key(cs, page_nr), slot);
+    g_tree_replace(s->phys_pages, fmss_block_key(cs, page_nr), slot);
 }
 
 static bool fmss_recall_physical(IPodTouchFMSSState *s, uint32_t cs,
@@ -256,7 +587,7 @@ static bool fmss_recall_physical(IPodTouchFMSSState *s, uint32_t cs,
         return false;
     }
 
-    const uint8_t *slot = g_hash_table_lookup(s->phys_pages,
+    const uint8_t *slot = g_tree_lookup(s->phys_pages,
                                               fmss_block_key(cs, page_nr));
     if (!slot) {
         return false;
@@ -376,36 +707,43 @@ static void fmss_try_map_packed(IPodTouchFMSSState *s)
             s->packed_size >> 20);
 }
 
-/* True when the packed image carries this page; fills data and spare if so. */
-static bool fmss_packed_page(IPodTouchFMSSState *s, uint32_t cs,
-                             uint32_t page_nr, uint8_t *data, uint8_t *spare)
+typedef enum FMSSPackedRead {
+    FMSS_PACKED_INVALID,
+    FMSS_PACKED_HOLE,
+    FMSS_PACKED_DATA,
+} FMSSPackedRead;
+
+/* Identify present data, a valid hole, or an invalid address/record. */
+static FMSSPackedRead fmss_packed_page(IPodTouchFMSSState *s, uint32_t cs,
+                                      uint32_t page_nr, uint8_t *data,
+                                      uint8_t *spare)
 {
     const uint8_t *rec;
     uint32_t slot;
 
     if (!s->packed || cs >= s->packed_num_cs ||
         page_nr >= s->packed_pages_per_cs) {
-        return false;
+        return FMSS_PACKED_INVALID;
     }
 
     slot = ldl_le_p(&s->packed_index[(size_t)cs * s->packed_pages_per_cs + page_nr]);
     if (slot == 0) {
-        return false;                 /* absent, i.e. erased */
+        return FMSS_PACKED_HOLE; /* legitimate absent page */
     }
     /* The slot number is file data too, and it is the one that becomes a
      * pointer. Out of range means the image disagrees with itself. */
     if (slot > s->packed_record_count) {
         qemu_log_mask(LOG_GUEST_ERROR, "[fmss] packed slot %u past the end of "
-                      "the image (%zu records); page treated as erased\n",
+                      "the image (%zu records); using legacy fallback\n",
                       slot, s->packed_record_count);
-        return false;
+        return FMSS_PACKED_INVALID;
     }
 
     rec = s->packed_records +
           (size_t)(slot - 1) * (NAND_BYTES_PER_PAGE + NAND_BYTES_PER_SPARE);
     memcpy(data, rec, NAND_BYTES_PER_PAGE);
     memcpy(spare, rec + NAND_BYTES_PER_PAGE, NAND_BYTES_PER_SPARE);
-    return true;
+    return FMSS_PACKED_DATA;
 }
 
 /*
@@ -455,6 +793,21 @@ static bool fmss_overlay_has(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_n
            g_hash_table_contains(s->overlay_pages, fmss_block_key(cs, page_nr));
 }
 
+/* Stored spare is the current 64-byte controller metadata projection,
+ * not the chip's complete raw OOB/ECC layout. Only a legitimate hole or
+ * erased block receives physical erased bytes; corrupt packed fallbacks
+ * retain their existing synthetic encoding until an explicit error policy. */
+static void fmss_blank_page(uint8_t *data, uint8_t *spare, bool erased)
+{
+    bool physical_erased = erased && fmss_physical();
+    int fill = physical_erased ? 0xff : 0;
+    memset(data, fill, NAND_BYTES_PER_PAGE);
+    memset(spare, fill, NAND_BYTES_PER_SPARE);
+    if (!physical_erased) {
+        ((uint32_t *)spare)[2] = 0x00FF00FF;
+    }
+}
+
 static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
                                  uint32_t page_nr, uint8_t *data,
                                  uint8_t *spare)
@@ -462,6 +815,7 @@ static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
     char filename[1088];
     FILE *f = NULL;
     bool from_overlay = false;
+    bool open_failed = false, base_absent = false;
 
     /*
      * A page programmed in this session reads back as programmed, whatever the
@@ -481,15 +835,21 @@ static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
     if (s->nand_overlay && fmss_overlay_has(s, cs, page_nr)) {
         snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_overlay, cs, page_nr);
         f = fopen(filename, "rb");
+        if (!f && errno != ENOENT) {
+            open_failed = true;
+        }
         from_overlay = (f != NULL);
         if (from_overlay) { fmss_stats.overlay++; }
         if (f && fmss_rtrace()) {
             printf("RH cs=%u page=%u\n", cs, page_nr); fflush(stdout);
         }
     }
-    if (!f && !fmss_block_is_erased(s, cs, page_nr / NAND_PAGES_PER_BLOCK)) {
+    bool known_erased = !f &&
+        fmss_block_is_erased(s, cs, page_nr / NAND_PAGES_PER_BLOCK);
+    if (!f && !known_erased) {
         if (s->packed) {
-            if (fmss_packed_page(s, cs, page_nr, data, spare)) {
+            FMSSPackedRead result = fmss_packed_page(s, cs, page_nr, data, spare);
+            if (result == FMSS_PACKED_DATA) {
                 fmss_stats.base++;
                 /* The two diagnostics below only ever rewrite the spare of a
                  * base-image page, and both are off unless asked for. */
@@ -500,21 +860,25 @@ static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
                 return;
             }
             fmss_stats.blank++;
-            memset(data, 0, NAND_BYTES_PER_PAGE);
-            memset(spare, 0, NAND_BYTES_PER_SPARE);
-            ((uint32_t *)spare)[2] = 0x00FF00FF; /* clean/erased marker */
+            /* Preserve the existing invalid-image fallback pending a
+             * separate corruption/error contract. It is not erased flash. */
+            fmss_blank_page(data, spare, !open_failed && result == FMSS_PACKED_HOLE);
             return;
         }
         snprintf(filename, sizeof(filename), "%s/cs%d/%d.page", s->nand_path, cs, page_nr);
         f = fopen(filename, "rb");
+        if (!f) {
+            base_absent = errno == ENOENT;
+            open_failed |= !base_absent;
+        }
         if (f) { fmss_stats.base++; }
     }
 
     if (!f) {
         fmss_stats.blank++;
-        memset(data, 0, NAND_BYTES_PER_PAGE);
-        memset(spare, 0, NAND_BYTES_PER_SPARE);
-        ((uint32_t *)spare)[2] = 0x00FF00FF; /* clean/erased marker */
+        /* Non-absence open errors retain the previous permissive fallback.
+         * Do not disguise inaccessible overlay/base data as erased NAND. */
+        fmss_blank_page(data, spare, !open_failed && (known_erased || base_absent));
         return;
     }
     /* A short read is tolerated, but the tail MUST be zeroed: these buffers are
@@ -620,7 +984,7 @@ static uint32_t fmss_total_blocks(IPodTouchFMSSState *s)
 
     /* logical 2 is cs2 page 256 under the formula below */
     if (s->packed) {
-        got = fmss_packed_page(s, 2, 256, ent, spare);
+        got = fmss_packed_page(s, 2, 256, ent, spare) == FMSS_PACKED_DATA;
     } else {
         snprintf(path, sizeof(path), "%s/cs2/256.page", s->nand_path);
         f = fopen(path, "rb");
@@ -769,7 +1133,7 @@ static bool fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
      * real session ever hits it. IT_FMSS_SHADOW=1 prints each one.
      */
     if (s->phys_pages &&
-        g_hash_table_contains(s->phys_pages, fmss_block_key(cs, page_nr))) {
+        g_tree_lookup(s->phys_pages, fmss_block_key(cs, page_nr))) {
         fmss_stats.shadowed++;
         if (getenv("IT_FMSS_SHADOW")) {
             fprintf(stderr, "[fmss] store cs=%u page=%u lands on a page this "
@@ -784,133 +1148,6 @@ static bool fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
     return true;
 }
 
-/*
- * iBoot injects the bluetooth MAC address into the device tree node named by a
- * literal string it carries. On this board the node hangs off uart1, not
- * uart3, so the string has to be rewritten before iBoot walks the tree.
- *
- * The string's address is build-specific (5F138 has it at PA 0x0FF2206C, 7E18
- * at 0x0FF21324), so rather than hardcode it, search the window iBoot's img3
- * DATA payload is mapped into. The img3 payload is mapped at IBOOT_MEM_BASE
- * with file offset == PA - IBOOT_MEM_BASE, and the string occurs exactly once
- * in both builds' decrypted iBoot.
- */
-#define IBOOT_SCAN_PA_START  0x0ff00000u
-#define IBOOT_SCAN_LEN       0x00040000u   /* covers both builds' iBoot images */
-
-/* One-shot: the DeviceTree node is patched in the iBoot image in RAM the first
- * time the guest reads a page. A reset reloads that RAM, so the latch has to be
- * re-armed from ipod_touch_fmss_reset() or the second boot runs unpatched. */
-static bool iboot_bt_patched;
-
-static void patch_iboot_bluetooth_node(void)
-{
-    static const char needle[] = "arm-io/uart3/bluetooth";
-    static const char replace[] = "arm-io/uart1/bluetooth";
-
-    if (iboot_bt_patched) {
-        return;
-    }
-    iboot_bt_patched = true;
-
-    g_autofree uint8_t *image = g_try_malloc(IBOOT_SCAN_LEN);
-    if (!image) {
-        return;
-    }
-    cpu_physical_memory_read(IBOOT_SCAN_PA_START, image, IBOOT_SCAN_LEN);
-
-    for (size_t i = 0; i + sizeof(needle) <= IBOOT_SCAN_LEN; i++) {
-        if (memcmp(image + i, needle, sizeof(needle)) != 0) {
-            continue;
-        }
-        uint32_t pa = IBOOT_SCAN_PA_START + i;
-        cpu_physical_memory_write(pa, replace, strlen(replace));
-        if (getenv("IT_PATCH_DEBUG")) {
-            printf("[IBOOT] bluetooth node string patched at PA 0x%08x\n", pa);
-        }
-        return;
-    }
-
-    printf("[IBOOT] bluetooth node string not found in iBoot; not patching\n");
-}
-
-/*
- * 2.1.1's kernel command line.
- *
- * 5F138 iBoot builds its boot_args from a runtime buffer at PA 0x0FF2A584 and
- * hands the result to XNU. Without this legacy command line it cannot find
- * rd=disk0s1 and restarts. Release 7E18 iBoot instead ignores NVRAM boot
- * arguments; the machine supplies its version-checked early handoff separately.
- *
- * iBoot overwrites the buffer as it runs, hence the rewrite on every NAND read
- * rather than a once-only patch.
- *
- * The address is 5F138-specific, so this is skipped on the direct-iBoot
- * (3.1.3 / 7E18) path, which sets its command line via IT_BOOT_ARGS instead.
- */
-
-static void patch_iboot_boot_args(IPodTouchFMSSState *s)
-{
-    static const char boot_args[] =
-        "kextlog=0xfff debug=0x8 cpus=1 rd=disk0s1 serial=1 pmu-debug=0x1 "
-        "io=0xffff8fff debug-usb=0xffffffff amfi_allow_any_signature=1 -v "
-        "zalloc_debug";
-
-    if (s->direct_boot) {
-        return;
-    }
-
-    cpu_physical_memory_write(it_firmware_by_build("5F138")->iboot_boot_args_pa, boot_args,
-                              strlen(boot_args));
-}
-
-/*
- * Noticing that the home screen was rearranged.
- *
- * SpringBoard 3.1.3 publishes NOTHING when the user moves an icon.
- * -[SBIconModel saveIconState] writes the layout straight into CFPreferences
- * under the `iconState2` key and calls CFPreferencesAppSynchronize -- and 3.1.3
- * has no cfprefsd, so that synchronize is a direct file write from inside
- * SpringBoard's own process. There is no notification to observe, and the file
- * (/var/mobile/Library/Preferences/com.apple.springboard.plist) is outside
- * /var/mobile/Media, so AFC cannot reach it either. The host's only option used
- * to be re-reading the layout over sbservices every 15 seconds and hoping.
- *
- * But the write has to cross this device on its way to flash, and the key name
- * is literal ASCII in the plist whichever format CFPreferences chose. So sniff
- * the page: a programmed page carrying "iconState" is that file being
- * rewritten, and the host can re-read the layout the moment it lands.
- *
- * Deliberately a content match rather than resolving the plist's HFS+ catalog
- * extents once and filtering by page number. Extents have to be re-derived
- * whenever the file grows, moves, or the volume is rebuilt, and when they go
- * stale they go stale SILENTLY -- the signal simply stops, which looks exactly
- * like "the feature was never there". A byte match cannot rot that way.
- *
- * It is also allowed to be imprecise, because of what the signal is for: it
- * only tells the host to redo a read it already performs correctly on a timer.
- * A false positive costs one sbservices round trip; a false negative costs
- * nothing the existing poll does not already cover. That asymmetry is why the
- * cheap mechanism is the right one here.
- */
-static uint64_t fmss_icon_state_writes;
-
-uint64_t ipod_touch_fmss_icon_state_writes(void);
-
-uint64_t ipod_touch_fmss_icon_state_writes(void)
-{
-    return qatomic_read(&fmss_icon_state_writes);
-}
-
-static void fmss_sniff_icon_state(const uint8_t *page)
-{
-    static const char needle[] = "iconState";
-
-    if (memmem(page, NAND_BYTES_PER_PAGE, needle, sizeof(needle) - 1)) {
-        qatomic_inc(&fmss_icon_state_writes);
-    }
-}
-
 /* Four chips, 4096 erase blocks per chip. This is a sanity bound, not a
  * transfer size: real file writes exceed 512 pages in a single script. */
 #define FMSS_MAX_WRITE_ENTRIES (4 * 4096 * NAND_PAGES_PER_BLOCK)
@@ -921,7 +1158,9 @@ static bool fmss_write_dma_read(uint64_t addr, void *data, size_t len)
     bool valid = section.mr && memory_region_is_ram(section.mr) &&
                  int128_eq(section.size, int128_make64(len));
     if (valid) {
-        cpu_physical_memory_read(addr, data, len);
+        valid = address_space_read(&address_space_memory, addr,
+                                   MEMTXATTRS_UNSPECIFIED, data,
+                                   len) == MEMTX_OK;
     }
     if (section.mr) {
         memory_region_unref(section.mr);
@@ -929,18 +1168,52 @@ static bool fmss_write_dma_read(uint64_t addr, void *data, size_t len)
     return valid || fmss_io_error("guest write DMA", EFAULT);
 }
 
+/* CPU-side compatibility transfers still own their DMA until the FMC
+ * execution contract replaces them. A failed transaction stops this transfer;
+ * earlier writes and any partial effects of the failed transaction remain. */
+static bool fmss_read_dma_word(uint64_t addr, uint32_t *value)
+{
+    uint8_t word[4];
+
+    if (address_space_read(&address_space_memory, addr,
+                           MEMTXATTRS_UNSPECIFIED, word,
+                           sizeof(word)) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "[fmss] guest read descriptor at 0x%" PRIx64
+                      " failed; transfer stopped\n", addr);
+        return false;
+    }
+    *value = ldl_le_p(word);
+    return true;
+}
+
+static bool fmss_read_dma_write(uint64_t addr, const void *data, size_t len)
+{
+    if (address_space_write(&address_space_memory, addr,
+                            MEMTXATTRS_UNSPECIFIED, data, len) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "[fmss] guest read destination at 0x%" PRIx64
+                      " failed; transfer stopped\n", addr);
+        return false;
+    }
+    return true;
+}
+
 static void read_nand_pages(IPodTouchFMSSState *s)
 {
-    patch_iboot_boot_args(s);
-    patch_iboot_bluetooth_node();
+    notifier_list_notify(&s->before_read, s);
 
     int page_out_buf_ind = 0;
     for(int page_ind = 0; page_ind < s->reg_num_pages; page_ind++) {
         uint32_t page_nr = 0;
         uint32_t page_out_addr = 0;
         uint32_t cs = 0;
-        cpu_physical_memory_read(s->reg_pages_in_addr + (page_ind * sizeof(uint32_t)), &page_nr, sizeof(uint32_t));
-        cpu_physical_memory_read(s->reg_cs_buf_addr + (page_ind * sizeof(uint32_t)), &cs, sizeof(uint32_t));
+        if (!fmss_read_dma_word(s->reg_pages_in_addr +
+                                page_ind * sizeof(uint32_t), &page_nr) ||
+            !fmss_read_dma_word(s->reg_cs_buf_addr +
+                                page_ind * sizeof(uint32_t), &cs)) {
+            return;
+        }
         uint32_t og_cs = cs;
         cs = find_bit_index(cs);
 
@@ -958,8 +1231,14 @@ static void read_nand_pages(IPodTouchFMSSState *s)
         // we write away the page in two parts, 2048 bytes first and then the other 2048 bytes.
         int write_buf_size = NAND_BYTES_PER_PAGE / 2;
         for(int i = 0; i < 2; i++) {
-            cpu_physical_memory_read(s->reg_pages_out_addr + (page_out_buf_ind * sizeof(uint32_t)), &page_out_addr, sizeof(uint32_t));
-            cpu_physical_memory_write(page_out_addr, s->page_buffer + i * write_buf_size, write_buf_size);
+            if (!fmss_read_dma_word(s->reg_pages_out_addr +
+                                    page_out_buf_ind * sizeof(uint32_t),
+                                    &page_out_addr) ||
+                !fmss_read_dma_write(page_out_addr,
+                                     s->page_buffer + i * write_buf_size,
+                                     write_buf_size)) {
+                return;
+            }
             page_out_buf_ind++;
         }
 
@@ -978,8 +1257,10 @@ static void read_nand_pages(IPodTouchFMSSState *s)
          * overspill: bytes 0xc..0x3f were always overwritten by the next
          * iteration anyway.
          */
-        cpu_physical_memory_write(s->reg_page_spare_out_addr + page_ind * 0xc,
-                                  s->page_spare_buffer, 0xc);
+        if (!fmss_read_dma_write(s->reg_page_spare_out_addr +
+                                 page_ind * 0xc, s->page_spare_buffer, 0xc)) {
+            return;
+        }
     }
 }
 
@@ -1103,7 +1384,6 @@ static void write_nand_pages(IPodTouchFMSSState *s)
         /* Before the relocation below, which can drop the page entirely: what
          * matters here is that the guest wrote these bytes, not where they end
          * up living. */
-        fmss_sniff_icon_state(s->page_buffer);
 
         /*
          * The page reads back at the address it was programmed to for the rest
@@ -1166,6 +1446,22 @@ static uint64_t ipod_touch_fmss_read(void *opaque, hwaddr addr, unsigned size)
     IPodTouchFMSSState *s = (IPodTouchFMSSState *)opaque;
     switch(addr)
     {
+        case FMSS_CHUNKS_PER_PAGE:
+            return s->reg_chunks_per_page;
+        case FMSS_SCRIPT_PARAM_D34:
+            return s->reg_script_param_d34;
+        case FMSS_SCRIPT_PARAM_D38:
+            return s->reg_script_param_d38;
+        case FMSS_SCRIPT_PARAM_D48:
+            return s->reg_script_param_d48;
+        case FMSS_SCRIPT_PARAM_D4C:
+            return s->reg_script_param_d4c;
+        case FMSS_SCRIPT_CSGENR15:
+            return s->reg_script_csgenr15;
+        case FMSS_SCRIPT_SCRATCH_D3C:
+            return s->reg_script_scratch_d3c;
+        case FMSS_SCRIPT_SCRATCH_D7C:
+            return s->reg_script_scratch_d7c;
         case FMSS__CS_BUF_RST_OK:
             return 0x1;
         case FMSS__CS_IRQ:
@@ -1221,10 +1517,16 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
                 (unsigned)addr, (unsigned)val, s->reg_cs_irq_bit,
                 s->reg_cs_irq_mask, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     }
+    if ((addr >= 0xd00 && addr <= 0xd7c) ||
+        addr == 0xc00 || addr == 0xc04) {
+        fmss_script_trace("cpu_write", s->reg_cs_script, 0, addr, val,
+                          addr == FMSS_CSGENRC ? val : s->reg_csgenrc);
+    }
     switch(addr) {
         case 0xC00:
             s->reg_cs_ctrl = val;
             if (val & 1) {
+                fmss_run_script(s);
                 timer_mod(s->completion_timer,
                           qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000);
             } else {
@@ -1240,9 +1542,11 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
             s->reg_cs_irq_mask = val;
             fmss_update_irq(s);
             break;
+        case FMSS__CS_SCRIPT:
+            s->reg_cs_script = val;
+            break;
         case FMSS_CINFO_TARGET_ADDR:
             s->reg_cinfo_target_addr = val;
-            write_chip_info(s);
             break;
         case FMSS_PAGES_IN_ADDR:
             s->reg_pages_in_addr = val;
@@ -1269,10 +1573,23 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
         case FMSS_PAGES_OUT_ADDR:
             s->reg_pages_out_addr = val;
             break;
+        case FMSS_CHUNKS_PER_PAGE:
+            s->reg_chunks_per_page = val;
+            break;
+        case FMSS_SCRIPT_PARAM_D34:
+            s->reg_script_param_d34 = val;
+            break;
+        case FMSS_SCRIPT_PARAM_D48:
+            s->reg_script_param_d48 = val;
+            break;
+        case FMSS_SCRIPT_PARAM_D4C:
+            s->reg_script_param_d4c = val;
+            break;
         case FMSS_CSGENRC:
             s->reg_csgenrc = val;
             break;
-        case 0xD38:
+        case FMSS_SCRIPT_PARAM_D38:
+            s->reg_script_param_d38 = val;
             if (fmss_trace_on() && s->reg_csgenrc != 0xa01 && s->reg_csgenrc != 0xa02) {
                 printf("FMSS_OP csgenrc=%08x d0c=%08x d10=%08x d18=%08x\n",
                        s->reg_csgenrc, s->reg_pages_in_addr,
@@ -1320,8 +1637,14 @@ static void ipod_touch_fmss_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &fmss_ops, s, "fmss", 0xF00);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+    notifier_list_init(&s->before_read);
     s->completion_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, fmss_complete, s);
 
+    s->snapshot_mode = fmss_physical() | (fmss_erase_on() << 1) |
+                       (fmss_usedspare() << 2) | (fmss_basespare() << 3) |
+                       (fmss_legacy_on() << 4);
+    s->phys_pages = g_tree_new_full(fmss_key_compare, NULL, NULL, g_free);
+    s->erased_blocks = g_tree_new_full(fmss_key_compare, NULL, NULL, g_free);
     s->page_buffer = (uint8_t *)g_malloc(NAND_BYTES_PER_PAGE);
     s->page_spare_buffer = (uint8_t *)g_malloc(NAND_BYTES_PER_SPARE);
 }
@@ -1334,10 +1657,10 @@ static void ipod_touch_fmss_finalize(Object *obj)
     g_free(s->page_buffer);
     g_free(s->page_spare_buffer);
     if (s->phys_pages) {
-        g_hash_table_destroy(s->phys_pages);
+        g_tree_destroy(s->phys_pages);
     }
     if (s->erased_blocks) {
-        g_hash_table_destroy(s->erased_blocks);
+        g_tree_destroy(s->erased_blocks);
     }
 }
 
@@ -1352,12 +1675,13 @@ static void ipod_touch_fmss_reset(DeviceState *dev)
     IPodTouchFMSSState *s = IPOD_TOUCH_FMSS(dev);
 
     if (!fmss_physical() && s->phys_pages) {
-        g_hash_table_remove_all(s->phys_pages);
+        g_tree_remove_all(s->phys_pages);
     }
     s->reg_cs_irq_bit = 0;
     s->reg_cs_ctrl = 0;
     s->reg_cs_irq_mask = 1;
     timer_del(s->completion_timer);
+    s->reg_cs_script = 0;
     s->reg_cinfo_target_addr = 0;
     s->reg_pages_in_addr = 0;
     s->reg_cs_buf_addr = 0;
@@ -1365,35 +1689,100 @@ static void ipod_touch_fmss_reset(DeviceState *dev)
     s->reg_page_spare_out_addr = 0;
     s->reg_pages_out_addr = 0;
     s->reg_csgenrc = 0;
+    s->reg_script_param_d34 = 0;
+    s->reg_script_param_d38 = 0;
+    s->reg_script_param_d48 = 0;
+    s->reg_script_param_d4c = 0;
+    s->reg_chunks_per_page = 0;
+    s->reg_script_scratch_d3c = 0;
+    s->reg_script_scratch_d7c = 0;
+    s->reg_script_csgenr15 = 0;
     memset(s->page_buffer, 0, NAND_BYTES_PER_PAGE);
     memset(s->page_spare_buffer, 0, NAND_BYTES_PER_SPARE);
-    iboot_bt_patched = false;
     if (s->irq) {
         qemu_irq_lower(s->irq);
     }
 }
 
-/*
- * KNOWN GAP, deliberate: phys_pages and erased_blocks are GHashTables holding
- * this session's programmed pages, and they are not migrated. The persisted
- * side of a write is in the NAND overlay directory, which the destination
- * opens for itself, so file content survives; what does not survive is the
- * physical-page memory that makes a page the FTL just relocated read back at
- * the address it was programmed to. In practice that mapping only has to hold
- * until the FTL is rebuilt, which a restore does not disturb.
- *
- * page_buffer/page_spare_buffer are scratch for synchronous DMA within a
- * register write. Only the later sequencer-completion notification can cross
- * a snapshot boundary; its virtual timer and interrupt state are migrated.
- */
+/* Page contents at their physical addresses can differ from the generated
+ * disk layout. Migrate that authoritative read view, plus erase markers,
+ * using upstream VMState's GTree representation. Version 4 streams were
+ * certified empty; older streams omitted unvalidated state and stay refused. */
+typedef struct FMSSPhysicalPage {
+    uint8_t bytes[NAND_BYTES_PER_PAGE + NAND_BYTES_PER_SPARE];
+} FMSSPhysicalPage;
+
+typedef struct FMSSMarker {
+    uint8_t present;
+} FMSSMarker;
+
+static const VMStateDescription vmstate_fmss_page = {
+    .name = "fmss/physical-page",
+    .version_id = 5,
+    .minimum_version_id = 5,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BUFFER(bytes, FMSSPhysicalPage),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_fmss_marker = {
+    .name = "fmss/erase-marker",
+    .version_id = 5,
+    .minimum_version_id = 5,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(present, FMSSMarker),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static int fmss_pre_load(void *opaque)
+{
+    IPodTouchFMSSState *s = opaque;
+    g_tree_remove_all(s->phys_pages);
+    g_tree_remove_all(s->erased_blocks);
+    if (s->overlay_pages) {
+        g_hash_table_remove_all(s->overlay_pages);
+    }
+    s->overlay_indexed = false;
+    s->reg_script_param_d34 = 0; /* Absent from pre-v8 streams. */
+    s->reg_script_param_d38 = 0; /* Absent from pre-v10 streams. */
+    s->reg_script_param_d48 = 0; /* Absent from pre-v8 streams. */
+    s->reg_script_param_d4c = 0; /* Absent from pre-v6 streams. */
+    s->reg_chunks_per_page = 0; /* Absent from pre-v7 streams. */
+    s->reg_script_scratch_d3c = 0; /* Absent from pre-v12 streams. */
+    s->reg_script_scratch_d7c = 0; /* Absent from pre-v11 streams. */
+    s->reg_script_csgenr15 = 0; /* Absent from pre-v9 streams. */
+    return 0;
+}
+
+static gboolean fmss_invalid_page(gpointer key, gpointer value, gpointer unused)
+{
+    uintptr_t k = (uintptr_t)key;
+    bool *invalid = unused;
+    *invalid = (k >> 24) >= 4 || (k & 0xffffff) >= 4096 * NAND_PAGES_PER_BLOCK;
+    return *invalid;
+}
+
+static gboolean fmss_invalid_marker(gpointer key, gpointer value, gpointer unused)
+{
+    uintptr_t k = (uintptr_t)key;
+    bool *invalid = unused;
+    *invalid = (k >> 24) >= 4 || (k & 0xffffff) >= 4096 || *(uint8_t *)value != 1;
+    return *invalid;
+}
+
 static int fmss_post_load(void *opaque, int version_id)
 {
     IPodTouchFMSSState *s = opaque;
-
-    if (version_id < 2) {
-        s->reg_cs_ctrl = 0x40;
-        s->reg_cs_irq_mask = 1;
-        timer_del(s->completion_timer);
+    bool invalid = false;
+    g_tree_foreach(s->phys_pages, fmss_invalid_page, &invalid);
+    if (!invalid) {
+        g_tree_foreach(s->erased_blocks, fmss_invalid_marker, &invalid);
+    }
+    if (invalid) {
+        error_report("FMSS snapshot has invalid physical coordinates or markers");
+        return -EINVAL;
     }
     fmss_update_irq(s);
     return 0;
@@ -1401,8 +1790,9 @@ static int fmss_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_fmss = {
     .name = "ipod_touch_fmss",
-    .version_id = 2,
-    .minimum_version_id = 1,
+    .version_id = 12,
+    .minimum_version_id = 4,
+    .pre_load = fmss_pre_load,
     .post_load = fmss_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(reg_cs_irq_bit, IPodTouchFMSSState),
@@ -1417,6 +1807,21 @@ static const VMStateDescription vmstate_ipod_touch_fmss = {
         VMSTATE_UINT32_V(reg_cs_ctrl, IPodTouchFMSSState, 2),
         VMSTATE_UINT32_V(reg_cs_irq_mask, IPodTouchFMSSState, 2),
         VMSTATE_TIMER_PTR_V(completion_timer, IPodTouchFMSSState, 2),
+        VMSTATE_UINT32_V(reg_cs_script, IPodTouchFMSSState, 3),
+        VMSTATE_UINT32_EQUAL_V(snapshot_mode, IPodTouchFMSSState, 5,
+                              "FMSS startup read/write modes differ"),
+        VMSTATE_GTREE_DIRECT_KEY_V(phys_pages, IPodTouchFMSSState, 5,
+                                  &vmstate_fmss_page, FMSSPhysicalPage),
+        VMSTATE_GTREE_DIRECT_KEY_V(erased_blocks, IPodTouchFMSSState, 5,
+                                  &vmstate_fmss_marker, FMSSMarker),
+        VMSTATE_UINT32_V(reg_script_param_d4c, IPodTouchFMSSState, 6),
+        VMSTATE_UINT32_V(reg_chunks_per_page, IPodTouchFMSSState, 7),
+        VMSTATE_UINT32_V(reg_script_param_d34, IPodTouchFMSSState, 8),
+        VMSTATE_UINT32_V(reg_script_param_d48, IPodTouchFMSSState, 8),
+        VMSTATE_UINT32_V(reg_script_csgenr15, IPodTouchFMSSState, 9),
+        VMSTATE_UINT32_V(reg_script_param_d38, IPodTouchFMSSState, 10),
+        VMSTATE_UINT32_V(reg_script_scratch_d7c, IPodTouchFMSSState, 11),
+        VMSTATE_UINT32_V(reg_script_scratch_d3c, IPodTouchFMSSState, 12),
         VMSTATE_END_OF_LIST()
     }
 };

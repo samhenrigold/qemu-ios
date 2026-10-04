@@ -22,7 +22,8 @@
  *
  *   - GLESGetEGLInterface is three instructions: return &table. The table is
  *     nine function pointers, then pairs of {const char *extension, u32 bit}.
- *     The framework never indexes past the ninth pointer.
+ *     3.1.3's framework never indexes past the ninth pointer; 4.2.1's (8C148)
+ *     reads two more, Set/GetProperty (see GLESSetProperty).
  *
  *   - GLESCreateGC(sharegroup, X+0x10, X+0xCE8, X+0xC) is called from
  *     -[EAGLContext initWithAPI:properties:] on a 6592-byte calloc'd block X.
@@ -45,7 +46,14 @@
  *     the function from ctx+(0x10+slot*4), load the GC from ctx+0xC, tail-call.
  *     So arg0 of every entry point is the GC, and we own every table entry.
  *
- * Build with contrib/armv6-toolchain.
+ *   - 4.2.1 (8C148) keeps this whole contract with an 841-slot table
+ *     (GLESCreateGC(sharegroup, X+0x10, X+0xD34, X+0xC)). The slot layout is
+ *     the firmware's __GLIFunctionDispatchRec, read out of the running OpenGLES
+ *     at load (gles_dispatch.c), so one binary serves every layout; MBXGLEngine
+ *     lives in 4.x's shared cache, so the builder also creates dyld's
+ *     enable-dylibs-to-override-cache switch.
+ *
+ * Build with contrib/it-gles/build.sh (contrib/armv6-toolchain).
  */
 
 #include "gles_stubs.h"
@@ -60,16 +68,32 @@
  * packed. Frozen -- see include/hw/arm/guest-services/general.h. */
 typedef struct __attribute__((packed)) {
     unsigned int call_number;
-    struct __attribute__((packed)) {
-        unsigned int slot;
-        unsigned int ctx;
-        unsigned int argc;
-        unsigned int spill;
-        unsigned int args[QC_GLES_INLINE_ARGS];
-    } gles;
+    union {
+        struct __attribute__((packed)) {
+            unsigned int slot;
+            unsigned int ctx;
+            unsigned int argc;
+            unsigned int spill;
+            unsigned int args[QC_GLES_INLINE_ARGS];
+        } gles;
+        struct __attribute__((packed)) {        /* qc_ag_args_t: the hello (QC_GLES_HELLO) */
+            unsigned int buffer_guest_ptr;
+            unsigned int offset;
+            unsigned int length;
+            unsigned long long token;
+            unsigned int pad[3];
+        } ag;
+    };
     long long retval;
     long long error;
 } qemu_call_t;
+
+/* The 3.1.3 dispatch layout, whose slot numbers are the wire ids below 822: the hand-written
+ * thunks below are registered by that number. The firmware's own layout (822, 826 or 841
+ * slots) is discovered at load; see gles_dispatch.c. */
+#define GLES_N_SLOTS 822
+static unsigned gles_fill(void **fw, unsigned n, void *const *hand);
+static int gles_slot_of(unsigned id);
 
 #define GLES_OP_PRESENT         0x1000
 #define GLES_OP_PRESENT_SURFACE 0x1001
@@ -81,6 +105,7 @@ typedef struct __attribute__((packed)) {
 #define CA_FOURCC_BGRA 0x42475241
 #define CA_FOURCC_555L 0x4c353535
 #define CA_FOURCC_565L 0x4c353635
+#define CA_FOURCC_A008 0x41303038   /* 8-bit alpha: CoreAnimation's shadow masks */
 
 extern long write(int, const void *, unsigned long);
 
@@ -100,7 +125,12 @@ static unsigned slen(const char *s) { unsigned n = 0; while (s && s[n]) n++; ret
 #define GLES_OP_NEW_CONTEXT 0x1006
 #define GLES_OP_DELETE_CONTEXT 0x1007
 
-typedef struct { unsigned host, unpack_alignment; } GuestGC;
+/* api and sg are glishim.c's (the GLEngine replacement, which #includes this
+ * file); the MBX path leaves them zero. */
+typedef struct {
+    unsigned host, unpack_alignment, api, owns_sg; void *sg; unsigned unpack_row_bytes;
+    unsigned *batch, batch_len;   /* glishim's command buffer (GLES_BATCH); unused on the MBX path */
+} GuestGC;
 extern void *calloc(unsigned long, unsigned long);
 extern void free(void *);
 static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args);
@@ -130,9 +160,18 @@ static void wx(unsigned long v)
     w("0x"); w(p);
 }
 
+#ifdef GLES_BATCH
+/* glishim.c: queue the call in gc's command buffer and return 1, or flush that
+ * buffer and return 0 so the call traps on its own. */
+static int gles_batch(unsigned slot, void *gc, unsigned argc, const unsigned *args);
+#endif
+
 static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args)
 {
     volatile qemu_call_t q;
+#ifdef GLES_BATCH
+    if (gles_batch(slot, gc, argc, args)) return 0;
+#endif
     unsigned i;
     unsigned spill[16]; /* separate storage for concurrently issuing GCs */
 
@@ -157,26 +196,80 @@ static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args
     return q.retval;
 }
 
-/*
- * Reported once per slot, then silent. An app that touches an unimplemented
- * entry point does so thousands of times a second, and a log line per call
- * would both drown the log and slow the guest enough to change what it does.
- */
-static unsigned char unimpl_seen[GLES_N_SLOTS];
-
-__attribute__((visibility("hidden"))) int gles_unimpl(unsigned slot)
+static char *put_dec(char *p, unsigned v)
 {
-    if (slot < GLES_N_SLOTS && !unimpl_seen[slot]) {
-        unimpl_seen[slot] = 1;
-        w("[mbxshim] unimplemented slot "); wd(slot);
-        if (gles_slot_names[slot][0]) { w(" ("); w(gles_slot_names[slot]); w(")"); }
-        w(" -- the app will render wrong\n");
-    }
-    return 0;
+    char b[12], *q = b + 11;
+    *q = 0;
+    if (!v) *--q = '0';
+    while (v) { *--q = '0' + (v % 10); v /= 10; }
+    while (*q) *p++ = *q++;
+    return p;
 }
 
-/* Host debug reads cannot page in guest memory. Touch upload pages here,
- * where a normal ARM load lets the guest VM resolve zero-fill/file mappings. */
+/*
+ * Every refusal this shim makes, named, to the host's counters through the log
+ * channel: "[gles-reject] shim:NAME N", which the host counts and the machine's
+ * gles-rejects property reads out. Counted here per call and reported at 1, 2,
+ * 4, 8... calls, so an entry point an app hammers costs a trap per doubling
+ * rather than per call; the host keeps the largest N. A name past the table's
+ * 48 is reported once. num, when not ~0u, is appended in decimal.
+ */
+static void refused(const char *what, const char *name, unsigned num)
+{
+    static struct { char key[64]; unsigned n; } tab[48];
+    char key[64], line[112], *p = key, *e = key + sizeof(key) - 12;
+    unsigned i, n = 1;
+
+    while (*what && p < e) *p++ = *what++;
+    while (*name && p < e) *p++ = *name++;
+    if (num != ~0u) { *p++ = ':'; p = put_dec(p, num); }
+    *p = 0;
+    for (i = 0; i < 48 && tab[i].key[0]; i++) {
+        const char *a = tab[i].key, *b = key;
+        while (*a && *a == *b) { a++; b++; }
+        if (*a == *b) {
+            n = ++tab[i].n;
+            if (n & (n - 1)) return;        /* not a power of two: already reported this decade */
+            break;
+        }
+    }
+    if (i < 48 && !tab[i].key[0]) {
+        for (p = tab[i].key, e = key; (*p++ = *e++);) {}
+        tab[i].n = 1;
+    }
+    p = line;
+    for (e = "[gles-reject] shim:"; *e;) *p++ = *e++;
+    for (e = key; *e;) *p++ = *e++;
+    *p++ = ' ';
+    p = put_dec(p, n);
+    *p++ = '\n';
+    *p = 0;
+    w(line);
+}
+
+/* The four characters of a surface format, '?' for a byte that is not printable. */
+static const char *fourcc_text(unsigned f, char out[5])
+{
+    unsigned i;
+    for (i = 0; i < 4; i++) {
+        unsigned c = (f >> (24 - 8 * i)) & 0xff;
+        out[i] = c >= 0x20 && c < 0x7f ? c : '?';
+    }
+    out[4] = 0;
+    return out;
+}
+
+/* A stub that IS the implementation: a hint the host has nothing to do for. */
+static int inert_stub(const char *name)
+{
+    const char *inert = "glDiscardFramebufferEXT";
+    while (*inert && *inert == *name) { inert++; name++; }
+    return *inert == *name;
+}
+
+/* Touch upload pages before the call. The host faults an untouched page in
+ * itself (gles_guest_rw raises the abort and the call is reissued), but that
+ * is a trap round trip per page; a normal ARM load here is cheaper. */
 static int guest_fault_read(unsigned long base, unsigned bytes)
 {
     if (!base || !bytes || bytes > 64u * 1024 * 1024 || base > ~0UL - bytes) return 0;
@@ -186,24 +279,35 @@ static int guest_fault_read(unsigned long base, unsigned bytes)
     return 1;
 }
 
+/* Bytes per texel of the format/type pairs the host takes (gles_texel_bytes there),
+ * so the upload's pages can be touched before the trap; 0 leaves that to the host. */
 static unsigned texture_bytes(void *gc, unsigned width, unsigned height,
                               unsigned format, unsigned type)
 {
-    unsigned bpp = 0;
-    if (type == 0x8363 && format == 0x1907) bpp = 2; /* RGB565 */
-    else if ((type == 0x8033 || type == 0x8034) && format == 0x1908) bpp = 2;
-    else if (type == 0x1401) {
-        switch (format) {
-        case 0x1908: case 0x80e1: bpp = 4; break;
-        case 0x1907: bpp = 3; break;
-        case 0x190a: bpp = 2; break;
-        case 0x1906: case 0x1909: bpp = 1; break;
-        }
+    unsigned bpp = 0, comps = 0;
+    switch (format) {
+    case 0x1908: case 0x80e1: comps = 4; break;             /* RGBA, BGRA */
+    case 0x1907: comps = 3; break;                          /* RGB */
+    case 0x190a: comps = 2; break;                          /* LUMINANCE_ALPHA */
+    case 0x1906: case 0x1909: case 0x1902: comps = 1; break; /* ALPHA, LUMINANCE, DEPTH_COMPONENT */
+    }
+    switch (type) {
+    case 0x8363: bpp = format == 0x1907 ? 2 : 0; break;     /* RGB 5_6_5 */
+    case 0x8033: case 0x8034: bpp = format == 0x1908 ? 2 : 0; break;    /* RGBA 4_4_4_4, 5_5_5_1 */
+    case 0x8365: case 0x8366: bpp = format == 0x80e1 ? 2 : 0; break;    /* BGRA 4_4_4_4_REV, 1_5_5_5_REV */
+    case 0x8035: case 0x8367: bpp = comps == 4 ? 4 : 0; break;          /* 8_8_8_8, 8_8_8_8_REV */
+    case 0x1401: bpp = format == 0x1902 ? 0 : comps; break;             /* UNSIGNED_BYTE */
+    case 0x1403: bpp = format == 0x1902 ? 2 : 0; break;                 /* depth as UNSIGNED_SHORT */
+    case 0x1405: bpp = format == 0x1902 ? 4 : 0; break;                 /* depth as UNSIGNED_INT */
+    case 0x1406: bpp = 4 * comps; break;                                /* FLOAT */
+    case 0x8d61: bpp = 2 * comps; break;                                /* HALF_FLOAT_OES */
     }
     if (!bpp || !width || !height || width > (64u << 20)) return 0;
     unsigned alignment = gc ? ((GuestGC *)gc)->unpack_alignment : 0;
     if (!alignment) alignment = 4;
     unsigned row = width * bpp, stride = (row + alignment - 1) & ~(alignment - 1);
+    unsigned row_bytes = gc ? ((GuestGC *)gc)->unpack_row_bytes : 0;
+    if (row_bytes >= row) stride = row_bytes;   /* GL_UNPACK_ROW_BYTES_APPLE */
     unsigned long long total = (unsigned long long)(height - 1) * stride + row;
     return total <= (64u << 20) ? (unsigned)total : 0;
 }
@@ -459,6 +563,37 @@ static int s_generateMipmap(void *gc, unsigned target)
 static int s_bindTexture(void *gc, unsigned target, unsigned tex)
     { return (int)qc(5, gc, 2, A(target, tex)); }
 
+/* The rest of OES_fixed_point (the host converts) and APPLE_fence (the desktop
+ * has it under the same names). Slots from slotmap.txt. */
+static int s_clipPlanex(void *gc, unsigned a0, unsigned a1) { return (int)qc(766, gc, 2, A(a0, a1)); }
+static int s_fogx(void *gc, unsigned a0, unsigned a1) { return (int)qc(770, gc, 2, A(a0, a1)); }
+static int s_fogxv(void *gc, unsigned a0, unsigned a1) { return (int)qc(771, gc, 2, A(a0, a1)); }
+static int s_getClipPlanef(void *gc, unsigned a0, unsigned a1) { return (int)qc(774, gc, 2, A(a0, a1)); }
+static int s_getClipPlanex(void *gc, unsigned a0, unsigned a1) { return (int)qc(775, gc, 2, A(a0, a1)); }
+static int s_getLightxv(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(777, gc, 3, A(a0, a1, a2)); }
+static int s_getMaterialxv(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(778, gc, 3, A(a0, a1, a2)); }
+static int s_getTexEnvxv(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(779, gc, 3, A(a0, a1, a2)); }
+static int s_getTexParameterxv(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(780, gc, 3, A(a0, a1, a2)); }
+static int s_lightModelx(void *gc, unsigned a0, unsigned a1) { return (int)qc(781, gc, 2, A(a0, a1)); }
+static int s_lightModelxv(void *gc, unsigned a0, unsigned a1) { return (int)qc(782, gc, 2, A(a0, a1)); }
+static int s_lightx(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(783, gc, 3, A(a0, a1, a2)); }
+static int s_lightxv(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(784, gc, 3, A(a0, a1, a2)); }
+static int s_materialx(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(787, gc, 3, A(a0, a1, a2)); }
+static int s_materialxv(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(788, gc, 3, A(a0, a1, a2)); }
+static int s_texEnvx(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(797, gc, 3, A(a0, a1, a2)); }
+static int s_texEnvxv(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(798, gc, 3, A(a0, a1, a2)); }
+static int s_texParameterxv(void *gc, unsigned a0, unsigned a1, unsigned a2) { return (int)qc(800, gc, 3, A(a0, a1, a2)); }
+static int s_pointParameterx(void *gc, unsigned a0, unsigned a1) { return (int)qc(804, gc, 2, A(a0, a1)); }
+static int s_pointParameterxv(void *gc, unsigned a0, unsigned a1) { return (int)qc(805, gc, 2, A(a0, a1)); }
+static int s_genFencesAPPLE(void *gc, unsigned n, unsigned ids) { return (int)qc(463, gc, 2, A(n, ids)); }
+static int s_deleteFencesAPPLE(void *gc, unsigned n, unsigned ids) { return (int)qc(464, gc, 2, A(n, ids)); }
+static int s_setFenceAPPLE(void *gc, unsigned f) { return (int)qc(465, gc, 1, A(f)); }
+static int s_isFenceAPPLE(void *gc, unsigned f) { return (int)qc(466, gc, 1, A(f)); }
+static int s_testFenceAPPLE(void *gc, unsigned f) { return (int)qc(467, gc, 1, A(f)); }
+static int s_finishFenceAPPLE(void *gc, unsigned f) { return (int)qc(468, gc, 1, A(f)); }
+static int s_testObjectAPPLE(void *gc, unsigned o, unsigned nm) { return (int)qc(469, gc, 2, A(o, nm)); }
+static int s_finishObjectAPPLE(void *gc, unsigned o, unsigned nm) { return (int)qc(470, gc, 2, A(o, nm)); }
+
 /* ---- the fixed-function set a real ES 1.1 game needs ----------------------
  *
  * These are exactly Cube Runner's imports: `nm -u` on the binary lists 41 gl*
@@ -541,6 +676,8 @@ static int s_pixelStorei(void *gc, unsigned pname, unsigned param)
     {
         if (gc && pname == 0x0cf5 && (param == 1 || param == 2 || param == 4 || param == 8))
             ((GuestGC *)gc)->unpack_alignment = param;
+        if (gc && pname == 0x8a16)                  /* GL_UNPACK_ROW_BYTES_APPLE */
+            ((GuestGC *)gc)->unpack_row_bytes = param;
         return (int)qc(195, gc, 2, A(pname, param));
     }
 static int s_scissor(void *gc, unsigned x, unsigned y, unsigned wd_, unsigned ht)
@@ -650,26 +787,15 @@ static int GLESDestroySharegroup(void *sg)
  * The one that matters. See the header comment for how the contract was read
  * out of the real binary.
  */
-static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
-                        void **gc_out)
+/* The hand-written thunks, registered by wire id (3.1.3 slot); 0 = none. gles_fill puts each
+ * at the slot this firmware keeps its function. */
+static void gles_hand_table(void **table)
 {
     unsigned i;
 
-    (void)x_ce8;
-    if (!gc_out || !sharegroup) return 0;
-    GuestGC *gc = calloc(1, sizeof(*gc));
-    if (!gc) return 0;
-    if (((GuestGC *)sharegroup)->host) {
-        long long host = qc(GLES_OP_NEW_CONTEXT, 0, 1, A(((GuestGC *)sharegroup)->host));
-        if (host <= 0) { free(gc); return 0; }
-        gc->host = (unsigned)host;
-    }
-    w("[mbxshim] GLESCreateGC\n");
-
-    if (table) {
-        /* Fill every entry. The trampolines never null-check. */
+    {
         for (i = 0; i < GLES_N_SLOTS; i++) {
-            table[i] = gles_default_table[i];
+            table[i] = 0;
         }
         table[15] = (void *)s_clearStencil;
         table[43] = (void *)s_color4ub;
@@ -729,6 +855,34 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
         table[671] = (void *)s_isFramebuffer;
         table[681] = (void *)s_generateMipmap;
         table[5]   = (void *)s_bindTexture;
+        table[766] = (void *)s_clipPlanex;
+        table[770] = (void *)s_fogx;
+        table[771] = (void *)s_fogxv;
+        table[774] = (void *)s_getClipPlanef;
+        table[775] = (void *)s_getClipPlanex;
+        table[777] = (void *)s_getLightxv;
+        table[778] = (void *)s_getMaterialxv;
+        table[779] = (void *)s_getTexEnvxv;
+        table[780] = (void *)s_getTexParameterxv;
+        table[781] = (void *)s_lightModelx;
+        table[782] = (void *)s_lightModelxv;
+        table[783] = (void *)s_lightx;
+        table[784] = (void *)s_lightxv;
+        table[787] = (void *)s_materialx;
+        table[788] = (void *)s_materialxv;
+        table[797] = (void *)s_texEnvx;
+        table[798] = (void *)s_texEnvxv;
+        table[800] = (void *)s_texParameterxv;
+        table[804] = (void *)s_pointParameterx;
+        table[805] = (void *)s_pointParameterxv;
+        table[463] = (void *)s_genFencesAPPLE;
+        table[464] = (void *)s_deleteFencesAPPLE;
+        table[465] = (void *)s_setFenceAPPLE;
+        table[466] = (void *)s_isFenceAPPLE;
+        table[467] = (void *)s_testFenceAPPLE;
+        table[468] = (void *)s_finishFenceAPPLE;
+        table[469] = (void *)s_testObjectAPPLE;
+        table[470] = (void *)s_finishObjectAPPLE;
         table[10]  = (void *)s_clear;
         table[12]  = (void *)s_clearColor;
         table[37]  = (void *)s_color4f;
@@ -828,12 +982,48 @@ static int GLESCreateGC(void *sharegroup, void **table, void *x_ce8,
         table[341] = (void *)s_clientActiveTexture;
         table[342] = (void *)s_activeTexture;
     }
+}
+
+/*
+ * fw_table is the framework's table, x_end its end (X+0xCE8 on 3.1.3, X+0xD34 on 4.2.1: the
+ * framework says how many slots it allotted). Every entry is filled, in this firmware's own
+ * layout: the trampolines never null-check.
+ */
+static int GLESCreateGCWithAPI(void *sharegroup, void **fw_table, void *x_end,
+                               void **gc_out, unsigned api)
+{
+    if (api > 2) return 0;
+    if (!gc_out || !sharegroup) return 0;
+    GuestGC *gc = calloc(1, sizeof(*gc));
+    if (!gc) return 0;
+    if (((GuestGC *)sharegroup)->host) {
+        long long host = api ? qc(GLES_OP_NEW_CONTEXT, 0, 2, A(((GuestGC *)sharegroup)->host, api)) : -1;
+        /* Older hosts accept only the one-word constructor. */
+        if (host == -1) host = qc(GLES_OP_NEW_CONTEXT, 0, 1, A(((GuestGC *)sharegroup)->host));
+        if (host <= 0) { free(gc); return 0; }
+        gc->host = (unsigned)host;
+    }
+    gc->api = api;
+    w("[mbxshim] GLESCreateGC\n");
+
+    if (fw_table) {
+        void *hand[GLES_N_SLOTS];
+        gles_hand_table(hand);
+        gles_fill(fw_table, x_end ? (unsigned)((void **)x_end - fw_table) : 0, hand);
+    }
 
     if (gc_out) {
         *gc_out = gc;
     }
     return 1;   /* 1 = success. See the header comment; 0 here yields a nil
                  * EAGLContext with no other symptom. */
+}
+
+/* The stock engine ABI does not pass an API version here. Keep it unknown.
+ * Front ends that know their API call GLESCreateGCWithAPI directly. */
+static int GLESCreateGC(void *sharegroup, void **fw_table, void *x_end, void **gc_out)
+{
+    return GLESCreateGCWithAPI(sharegroup, fw_table, x_end, gc_out, 0);
 }
 
 static int GLESDestroyGC(void *gc);
@@ -913,6 +1103,9 @@ static int GLESDestroyGC(void *gc)
     return 0;
 }
 
+static int surface_is_core;
+static const void *(*p_surface_retain)(const void *);
+static void (*p_surface_release)(const void *);
 static void *iosurf;    /* IOSurface.framework handle */
 static void *(*p_IOSurfaceGetBaseAddress)(void *);
 static unsigned (*p_IOSurfaceGetBytesPerRow)(void *);
@@ -925,6 +1118,7 @@ static unsigned (*p_IOSurfaceGetBytesPerRowOfPlane)(void *, unsigned);
 static int (*p_IOSurfaceLock)(void *, unsigned, unsigned *);
 static int (*p_IOSurfaceUnlock)(void *, unsigned, unsigned *);
 static unsigned long (*p_IOSurfaceGetTypeID)(void);
+static unsigned (*p_IOSurfaceGetID)(void *);
 static unsigned long (*p_CFGetTypeID)(const void *);
 
 extern void *dlopen(const char *, int);
@@ -938,27 +1132,70 @@ extern void *dlsym(void *, const char *);
 extern void *malloc_zone_from_ptr(const void *);
 extern unsigned long malloc_size(const void *);
 
+/* 3.x+ surfaces are IOSurfaces; 1.x/2.x have CoreSurface.framework instead, whose
+ * CoreSurfaceBuffer* calls are the same set under another prefix (only GetPixelFormat is
+ * GetPixelFormatType there, and its Lock takes no seed). Whichever the firmware has.
+ * The read lock differs too: IOSurface's 1 is kIOSurfaceLockReadOnly; CoreSurface's lock is a
+ * kernel call whose reply fills the buffer's client mapping, and a PurpleGfxMem surface (the
+ * display buffers GL CoreAnimation renders into) has none until a lock with 2 (what
+ * QuartzCore's own CPU lock passes, CADisplayCoreSurface::lock) maps it: with 1 its base address
+ * stays 0. The mapping outlives the unlock (measured with mincore), as the host's later
+ * write-back needs. 1.x's CoreSurface (a public framework there) takes 1 and 3: its own GL
+ * driver locks both textures and pixmaps with 3 (glTexImageCoreSurfaceAPPLE, WSEGL_Create*Drawable),
+ * and 1 leaves a LayerKit image (CoreSurfaceBufferWrapClientImage) unmapped, base 0. 2.x's 2 was a
+ * NULL dereference in 3A101a's IOCoreSurface (kernel panic at SpringBoard's first
+ * glTexImageCoreSurfaceAPPLE; measured with the 1G's MBX still an id stub). */
+static unsigned surface_lock_flags = 1;
+static void *surface_sym(const char *prefix, const char *name)
+{
+    char full[64];
+    unsigned i = 0, k = 0;
+    while (prefix[k] && i < sizeof full - 1) full[i++] = prefix[k++];
+    for (k = 0; name[k] && i < sizeof full - 1;) full[i++] = name[k++];
+    full[i] = 0;
+    return dlsym(iosurf, full);
+}
+
 static void iosurface_init(void)
 {
+    const char *pre = "IOSurface";
     if (iosurf) return;
     iosurf = dlopen("/System/Library/PrivateFrameworks/IOSurface.framework/IOSurface",
                     RTLD_NOW);
-    if (!iosurf) { w("[mbxshim] IOSurface.framework not available\n"); return; }
-    p_IOSurfaceGetBaseAddress = dlsym(iosurf, "IOSurfaceGetBaseAddress");
-    p_IOSurfaceGetBytesPerRow = dlsym(iosurf, "IOSurfaceGetBytesPerRow");
-    p_IOSurfaceGetWidth       = dlsym(iosurf, "IOSurfaceGetWidth");
-    p_IOSurfaceGetHeight      = dlsym(iosurf, "IOSurfaceGetHeight");
-    p_IOSurfaceGetPixelFormat = dlsym(iosurf, "IOSurfaceGetPixelFormat");
-    p_IOSurfaceGetPlaneCount = dlsym(iosurf, "IOSurfaceGetPlaneCount");
-    p_IOSurfaceGetBaseAddressOfPlane = dlsym(iosurf, "IOSurfaceGetBaseAddressOfPlane");
-    p_IOSurfaceGetBytesPerRowOfPlane = dlsym(iosurf, "IOSurfaceGetBytesPerRowOfPlane");
-    p_IOSurfaceLock           = dlsym(iosurf, "IOSurfaceLock");
-    p_IOSurfaceUnlock         = dlsym(iosurf, "IOSurfaceUnlock");
-    p_IOSurfaceGetTypeID      = dlsym(iosurf, "IOSurfaceGetTypeID");
+    if (!iosurf) {
+        /* 1.x ships CoreSurface as a public framework (3A101a: Frameworks/CoreSurface.framework), 2.x as
+         * a private one. The public path goes first: dyld's framework fallback path (which has
+         * /System/Library/Frameworks, not PrivateFrameworks) would hand 1.x's for the private one. */
+        pre = "CoreSurfaceBuffer";
+        surface_lock_flags = 3;
+        iosurf = dlopen("/System/Library/Frameworks/CoreSurface.framework/CoreSurface", RTLD_NOW);
+    }
+    if (!iosurf) {
+        surface_lock_flags = 2;
+        iosurf = dlopen("/System/Library/PrivateFrameworks/CoreSurface.framework/CoreSurface", RTLD_NOW);
+    }
+    if (!iosurf) { w("[mbxshim] neither IOSurface nor CoreSurface is available\n"); return; }
+    surface_is_core = pre[0] != 'I';
+    p_IOSurfaceGetBaseAddress = surface_sym(pre, "GetBaseAddress");
+    p_IOSurfaceGetBytesPerRow = surface_sym(pre, "GetBytesPerRow");
+    p_IOSurfaceGetWidth       = surface_sym(pre, "GetWidth");
+    p_IOSurfaceGetHeight      = surface_sym(pre, "GetHeight");
+    p_IOSurfaceGetPixelFormat = surface_sym(pre, pre[0] == 'I' ? "GetPixelFormat" : "GetPixelFormatType");
+    p_IOSurfaceGetPlaneCount = surface_sym(pre, "GetPlaneCount");
+    p_IOSurfaceGetBaseAddressOfPlane = surface_sym(pre, "GetBaseAddressOfPlane");
+    p_IOSurfaceGetBytesPerRowOfPlane = surface_sym(pre, "GetBytesPerRowOfPlane");
+    p_IOSurfaceLock           = surface_sym(pre, "Lock");
+    p_IOSurfaceUnlock         = surface_sym(pre, "Unlock");
+    p_IOSurfaceGetTypeID      = surface_sym(pre, "GetTypeID");
+    p_IOSurfaceGetID          = surface_sym(pre, "GetID");
     {
         void *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/"
                           "CoreFoundation", RTLD_NOW);
-        if (cf) p_CFGetTypeID = dlsym(cf, "CFGetTypeID");
+        if (cf) {
+            p_CFGetTypeID = dlsym(cf, "CFGetTypeID");
+            p_surface_retain = dlsym(cf, "CFRetain");
+            p_surface_release = dlsym(cf, "CFRelease");
+        }
     }
 }
 
@@ -1006,8 +1243,10 @@ static int surface_capture(ca_view_t *v, void *s)
     if (!base || width == 0 || height == 0 ||
         width > 2048 || height > 2048 || stride < width * bpp ||
         stride > width * bpp + 4096) {
+        char fourcc[5];
         w("[mbxshim]   -> REJECTED (not a plausible IOSurface); "
           "keeping panel fallback\n");
+        refused("drawable:", fourcc_text(format, fourcc), ~0u);
         return 0;
     }
 
@@ -1114,6 +1353,68 @@ static int ca_next_buffer(ca_view_t *v);
  */
 
 
+/* Stock 5F138 createBuffer locks CoreSurface with flags 3 before getters,
+ * retaining that mapping until destroyBuffer. Track every rotating buffer,
+ * separately per callback block; IOSurface behavior remains unchanged. */
+typedef struct ca_surface_lock {
+    ca_view_t *view;
+    void *surface;
+    struct ca_surface_lock *next;
+} ca_surface_lock;
+static ca_surface_lock *ca_surface_locks;
+
+static int ca_surface_acquire(ca_view_t *v, void *surface)
+{
+    ca_surface_lock *item;
+    iosurface_init();
+    if (!v || !surface) return 0;
+    if (!surface_is_core) return 1;
+    for (item = ca_surface_locks; item; item = item->next) {
+        if (item->view == v && item->surface == surface) return 1;
+    }
+    if (!p_IOSurfaceLock || !p_IOSurfaceUnlock ||
+        !p_surface_retain || !p_surface_release) {
+        refused("ca:", "lock-api", ~0u);
+        return 0;
+    }
+    item = calloc(1, sizeof *item);
+    if (!item) {
+        refused("ca:", "lock-allocation", ~0u);
+        return 0;
+    }
+    if (p_IOSurfaceLock(surface, 3, 0)) {
+        free(item);
+        refused("ca:", "lock", ~0u);
+        return 0;
+    }
+    p_surface_retain(surface);
+    item->view = v;
+    item->surface = surface;
+    item->next = ca_surface_locks;
+    ca_surface_locks = item;
+    return 1;
+}
+
+static void ca_surface_release(ca_view_t *v, void *surface)
+{
+    ca_surface_lock **link = &ca_surface_locks;
+    while (*link) {
+        ca_surface_lock *item = *link;
+        if (item->view == v && (!surface || item->surface == surface)) {
+            /* Unlink before callbacks; teardown may already have destroyed it. */
+            *link = item->next;
+            if (p_IOSurfaceUnlock(item->surface, 3, 0)) {
+                refused("ca:", "unlock", ~0u);
+            }
+            p_surface_release(item->surface);
+            free(item);
+            if (surface) return;
+        } else {
+            link = &item->next;
+        }
+    }
+}
+
 static int ca_create_buffer(void *ctx, void *surface)
 {
     /* ctx is the block we handed CA at bind time, which names the view. */
@@ -1122,7 +1423,10 @@ static int ca_create_buffer(void *ctx, void *surface)
     w("[mbxshim] CA createBuffer surface="); wx((unsigned long)surface); w("\n");
     /* Still validated: this is the frame's destination address, and a wrong one
      * is a write to an arbitrary guest page. */
-    return surface_capture(v, surface) ? 1 : 0;
+    if (!ca_surface_acquire(v, surface)) return 0;
+    if (surface_capture(v, surface)) return 1;
+    ca_surface_release(v, surface);
+    return 0;
 }
 
 /*
@@ -1141,6 +1445,7 @@ static int ca_next_buffer(ca_view_t *v)
     s = ((ca_next_fn)vt[3])(v->drawable);
     if (!s) {
         w("[mbxshim] drawable->nextBuffer returned nothing\n");
+        refused("ca:", "nextbuffer", ~0u);
         return 0;
     }
     v->need_buffer = 0;
@@ -1164,6 +1469,7 @@ static int ca_destroy_buffer(void *ctx, void *surface)
     w("[mbxshim] CA destroyBuffer surface="); wx((unsigned long)surface); w("\n");
     /* Only the view that owns it, so one layer's teardown cannot blind
      * another -- the same rule as the bind failure path. */
+    if (v) ca_surface_release(v, surface);
     if (v && v->ref == surface) {
         /* Whatever replaces it will arrive through createBuffer. Presenting into
          * a destroyed surface writes into freed memory. */
@@ -1188,16 +1494,18 @@ static void ca_detach_view(ca_view_t *v)
         }
         if (vt[2]) ((ca_unbind_fn)vt[2])(v->drawable);
     }
+    ca_surface_release(v, 0);
     *v = empty;
 }
 
-/* A mapped IOSurface can still contain demand-paged memory. The host's debug
- * memory reader cannot fault guest pages in as the real GPU's pinning does. */
+/* A mapped IOSurface can still contain demand-paged memory. Touch it first,
+ * as for uploads: cheaper than the host faulting it in page by page. */
 static int surface_fault_read(unsigned long base, unsigned stride, unsigned rows,
                                unsigned bytes)
 {
     unsigned row;
-    if (!base || !rows || rows > 2048 || !bytes || stride < bytes || stride > 16384 ||
+    /* Up to the host's 4096x4096 32-bit surface, so an oversize one reaches its counter and paint. */
+    if (!base || !rows || rows > 4096 || !bytes || stride < bytes || stride > 16384 ||
         base > ~0UL - ((unsigned long)(rows - 1) * stride + bytes))
         return 0;
     for (row = 0; row < rows; row++) {
@@ -1209,7 +1517,15 @@ static int surface_fault_read(unsigned long base, unsigned stride, unsigned rows
 /* 7E18's engine at 0xd918 takes (gc, GL target, IOSurface), not
  * (gc, IOSurface, ...). The target is 0x84f5 or 0x8d41; treating it as a
  * surface pointer crashes the compositor. Texture bindings never own a view. */
+static int GLESBindCoreSurfaceAs(void *gc, unsigned target, void *surface, unsigned gl_format);
 static int GLESBindCoreSurface(void *gc, unsigned target, void *surface)
+{
+    return GLESBindCoreSurfaceAs(gc, target, surface, 0);
+}
+
+/* gl_format: the layout the caller's GL arguments give the surface (glishim's 0x38E
+ * attach), used when the IOSurface carries no pixel format; 0 = none. */
+static int GLESBindCoreSurfaceAs(void *gc, unsigned target, void *surface, unsigned gl_format)
 {
     unsigned base, stride, width, height, format, uv = 0, uvstride = 0;
     int result;
@@ -1222,12 +1538,13 @@ static int GLESBindCoreSurface(void *gc, unsigned target, void *surface)
         !p_IOSurfaceGetWidth || !p_IOSurfaceGetHeight || !p_IOSurfaceGetPixelFormat) {
         return 0;
     }
-    if (p_IOSurfaceLock(surface, 1, 0)) return 0;
+    if (p_IOSurfaceLock(surface, surface_lock_flags, 0)) return 0;
     base = (unsigned)p_IOSurfaceGetBaseAddress(surface);
     stride = p_IOSurfaceGetBytesPerRow(surface);
     width = p_IOSurfaceGetWidth(surface);
     height = p_IOSurfaceGetHeight(surface);
     format = p_IOSurfaceGetPixelFormat(surface);
+    if (!format) format = gl_format;
     if (p_IOSurfaceGetPlaneCount && p_IOSurfaceGetPlaneCount(surface) == 2 &&
         p_IOSurfaceGetBaseAddressOfPlane && p_IOSurfaceGetBytesPerRowOfPlane) {
         base = (unsigned)p_IOSurfaceGetBaseAddressOfPlane(surface, 0);
@@ -1235,30 +1552,38 @@ static int GLESBindCoreSurface(void *gc, unsigned target, void *surface)
         uv = (unsigned)p_IOSurfaceGetBaseAddressOfPlane(surface, 1);
         uvstride = p_IOSurfaceGetBytesPerRowOfPlane(surface, 1);
     }
-    unsigned rowbytes = (format == CA_FOURCC_565L || format == CA_FOURCC_555L) ? width * 2 : width * 4;
-    int readable = width && width <= 2048 && height && height <= 2048;
+    /* The format is the host's to judge (gles_bind_surface takes what the firmwares'
+     * QuartzCore produces, counts what it refuses, and under gles-debug paints it
+     * magenta), so it is not screened here: A008 was refused on both sides for days
+     * and nobody saw. What is screened is the geometry, since the host reads the
+     * rows: a packed surface's pages are touched a stride per row, which every
+     * IOSurface allocation covers, and NV12's two planes their own way. */
+    int readable = width && height;   /* the size limit is the host's too (Exit Strategy: a 2240x416 layer) */
     if (format == 0x34323076 || format == 0x34323066) {
         readable = readable && uv && !(width & 1) && !(height & 1) &&
             surface_fault_read(base, stride, height, width) &&
             surface_fault_read(uv, uvstride, height / 2, width);
     } else {
-        readable = readable && !uv &&
-            (format == CA_FOURCC_565L || format == CA_FOURCC_555L || format == CA_FOURCC_BGRA || format == 0x52474241) &&
-            surface_fault_read(base, stride, height, rowbytes);
+        readable = readable && !uv && surface_fault_read(base, stride, height, stride);
     }
     if (!readable) {
         static unsigned rejected;
+        char fourcc[5];
         if (rejected++ < 8) {
             w("[mbxshim] rejected texture surface format="); wx(format);
             w(" size="); wd(width); w("x"); wd(height);
             w(" stride="); wd(stride); w(" base="); wx(base); w("\n");
         }
-        p_IOSurfaceUnlock(surface, 1, 0);
+        refused("surface:", fourcc_text(format, fourcc), ~0u);
+        p_IOSurfaceUnlock(surface, surface_lock_flags, 0);
         return 0;
     }
-    result = qc(GLES_OP_BIND_SURFACE, gc, 8,
-                A(target,base,stride,width,height,format,uv,uvstride)) == 0;
-    p_IOSurfaceUnlock(surface, 1, 0);
+    /* The kernel's ID lets the host keep the surface's pages for its lifetime, as the
+     * GPU's MMU does, instead of finding them through this process's mappings. */
+    result = qc(GLES_OP_BIND_SURFACE, gc, 9,
+                A(target,base,stride,width,height,format,uv,uvstride,
+                  p_IOSurfaceGetID ? p_IOSurfaceGetID(surface) : 0)) == 0;
+    p_IOSurfaceUnlock(surface, surface_lock_flags, 0);
     return result;
 }
 
@@ -1304,6 +1629,7 @@ static int GLESBindView(void *gc, void *drawable, void *ifmt, void *flags)
     if (!drawable) return 1;
     if (!v) {
         w("[mbxshim] GLESBindView: no free view slot\n");
+        refused("view:", "no-slot", ~0u);
         return 0;
     }
     v->gc = gc;
@@ -1322,6 +1648,7 @@ static int GLESBindView(void *gc, void *drawable, void *ifmt, void *flags)
     if (!r) {
         ca_view_t empty = {0};
         *v = empty;
+        refused("ca:", "bind", ~0u);
         return 0;
     }
     v->drawable = drawable;
@@ -1380,7 +1707,11 @@ static int GLESPresentView(void *gc, void *view)
         unsigned lockseed = 0;
         long long r;
 
-        if (p_IOSurfaceLock) p_IOSurfaceLock(v->ref, 0, &lockseed);
+        /* CoreSurface is already mapped by createBuffer until destroyBuffer.
+         * Keep IOSurface's existing per-frame lock contract. */
+        if (!surface_is_core && p_IOSurfaceLock) {
+            p_IOSurfaceLock(v->ref, 0, &lockseed);
+        }
         /* Re-read the base each frame: CA is entitled to move or reallocate a
          * surface between frames, and caching it would write into whatever now
          * owns the old address. */
@@ -1391,7 +1722,9 @@ static int GLESPresentView(void *gc, void *view)
         r = qc(GLES_OP_PRESENT_SURFACE, gc, 5,
                A(v->base, v->stride, v->width,
                  v->height, v->format));
-        if (p_IOSurfaceUnlock) p_IOSurfaceUnlock(v->ref, 0, &lockseed);
+        if (!surface_is_core && p_IOSurfaceUnlock) {
+            p_IOSurfaceUnlock(v->ref, 0, &lockseed);
+        }
         if (r != 0) {
             return 0;
         }
@@ -1436,40 +1769,94 @@ static int GLESPresentView(void *gc, void *view)
     return 1;
 }
 
-/* EAGL passes the framebuffer's IOConnect port, transaction and layer.
- * Stock MBX queues these behind rendering; the software path signals selector
- * 20 directly (IOMobileFramebufferSwapSignal, 7E18 0x332e8e9c). */
+/* EAGL passes IOMobileFramebufferGetID of the framebuffer, the transaction
+ * and the layer. Stock MBX queues these behind rendering; the software path
+ * signals selector 20 directly (IOMobileFramebufferSwapSignal, 7E18
+ * 0x332e8e9c). On 3.x that ID is the framebuffer's IOConnect port. On 4.x it
+ * is not a port (8C148: 0x80b98000), the call fails, CA's swap never
+ * completes and SpringBoard stays on the boot logo until the watchdog kills
+ * it; so, as glishim does, signal the main display the way EAGL does itself. */
 static int GLESSwapNotification(void *gc, unsigned connection,
                                 unsigned transaction, unsigned layer)
 {
     static int (*signal_swap)(unsigned, unsigned, const unsigned long long *,
                               unsigned, unsigned long long *, unsigned *);
+    static int (*get_main)(void **);
+    static int (*fb_signal)(void *, unsigned, unsigned);
+    static void *fb;
     if (!signal_swap) {
         void *io = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
         if (io) signal_swap = dlsym(io, "IOConnectCallScalarMethod");
     }
     if (!signal_swap || qc(89, gc, 0, A(0)) != 0) return 0;
     unsigned long long args[] = { transaction, layer };
-    return signal_swap(connection, 20, args, 2, 0, 0) == 0;
+    if (signal_swap(connection, 20, args, 2, 0, 0) == 0) return 1;
+    if (!fb_signal) {
+        w("[mbxshim] swap: framebuffer ID "); wx(connection);
+        w(" is no connection (4.x); signalling the main display\n");
+        void *h = dlopen("/System/Library/PrivateFrameworks/IOMobileFramebuffer.framework/"
+                         "IOMobileFramebuffer", RTLD_NOW);
+        if (h) {
+            get_main = dlsym(h, "IOMobileFramebufferGetMainDisplay");
+            fb_signal = dlsym(h, "IOMobileFramebufferSwapSignal");
+        }
+    }
+    if (!fb && get_main) get_main(&fb);
+    return fb && fb_signal && fb_signal(fb, transaction, layer) == 0;
 }
 
+/*
+ * 4.x EAGL: -[EAGLContext setParameter:to:] and getParameter:to: call these
+ * (+0x24, +0x28; 8C148 OpenGLES 0x34ff6f90 / 0x34ff702c) with the GC, the
+ * parameter and a pointer to its value, and treat 0 as failure. The stock
+ * 8C148 engine accepts every Set (it keeps three of them for its own
+ * rendering) and answers Get only for its own names; neither changes what the
+ * host draws, so Set accepts and Get declines. 3.x EAGL never reads past +0x20.
+ */
+static int GLESSetProperty(void *gc, unsigned pname, const int *v)
+{
+    static unsigned logged;
+    (void)gc;
+    if (logged++ < 16) { w("[mbxshim] GLESSetProperty "); wx(pname); if (v) { w(" "); wx((unsigned)*v); } w("\n"); }
+    return 1;
+}
+
+static int GLESGetProperty(void *gc, unsigned pname, int *v)
+{
+    static unsigned logged;
+    (void)gc; (void)v;
+    if (logged++ < 16) { w("[mbxshim] GLESGetProperty "); wx(pname); w("\n"); }
+    return 0;
+}
 
 /*
- * The table GLESGetEGLInterface hands back: nine function pointers, then
- * {extension string, bit} pairs. The framework never indexes past the ninth
- * pointer, so the extension list only has to be well-formed and terminated.
+ * The dispatch table is the firmware's, not 3.1.3's: discovered at load from the running
+ * OpenGLES (gles_dispatch.c), so the one MBXGLEngine serves 7E18's 822 slots and 8C148's 841.
+ */
+#ifndef RTLD_DEFAULT
+#define RTLD_DEFAULT ((void *)-2)
+#endif
+#include "gles_dispatch.c"
+#define GLES_CREATE_GC GLESCreateGC
+
+/*
+ * The table GLESGetEGLInterface hands back: eleven function pointers (3.x
+ * EAGL reads nine), then {extension string, bit} pairs, which only the stock
+ * engine itself reads, so the list only has to be well-formed and terminated.
  */
 static void *const gles_egl_interface[] = {
     /* +0x00 */ (void *)GLESCreateSharegroup,
     /* +0x04 */ (void *)GLESDestroySharegroup,
-    /* +0x08 */ (void *)GLESCreateGC,
+    /* +0x08 */ (void *)GLES_CREATE_GC,
     /* +0x0c */ (void *)GLESDestroyGC,
     /* +0x10 */ (void *)GLESBindCoreSurface,
     /* +0x14 */ (void *)GLESBindView,
     /* +0x18 */ (void *)GLESFinishTexture,
     /* +0x1c */ (void *)GLESPresentView,
     /* +0x20 */ (void *)GLESSwapNotification,
-    /* +0x24 onward: extension pairs. Empty list, null-terminated. */
+    /* +0x24 */ (void *)GLESSetProperty,
+    /* +0x28 */ (void *)GLESGetProperty,
+    /* +0x2c onward: extension pairs. Empty list, null-terminated. */
     (void *)0, (void *)0,
 };
 

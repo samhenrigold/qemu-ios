@@ -1,14 +1,8 @@
 #include "hw/arm/ipod_touch_sha1.h"
-#include "hw/arm/ipod_touch_guard.h"
 #include "migration/vmstate.h"
 
-/* XNU hands this engine whole pages; a megabyte is orders of magnitude of
- * headroom, and the point is only to keep a garbage value away from malloc. */
-/* Same ceiling as the AES engine. The point is only to keep a garbage
- * value away from g_malloc, so it should sit far above any real transfer
- * rather than as close as possible to one -- a clamp that trips on a legitimate
- * hash would silently corrupt the digest and fail a signature check. */
-#define IT_SHA1_MAX_XFER (16 * 1024 * 1024)
+/* Bound host scratch storage, not the full-width DMA length register. */
+#define IT_SHA1_DMA_CHUNK (64 * 1024)
 
 /*
  * S5L8720 SHA1 engine.
@@ -150,19 +144,19 @@ static void sha1_run(IPodTouchSHA1State *s, bool notify)
     if (s->memory_mode) {
         uint32_t nblocks = s->insize / 0x40;
 
-        /*
-         * Fetch the whole region once rather than per 64-byte block. XNU hands
-         * this engine entire pages to hash, so a block-at-a-time read was 64
-         * full address-space dispatches per page -- all of it on the vCPU
-         * thread inside the MMIO handler, and all of it to walk memory that is
-         * contiguous anyway.
-         */
+        /* Batch physical reads without allocating the guest's entire job.
+         * The engine chains raw blocks and leaves final padding to the guest. */
         if (nblocks) {
-            uint8_t *buf = g_malloc(nblocks * 0x40);
-
-            cpu_physical_memory_read(s->memory_start, buf, nblocks * 0x40);
-            for (uint32_t i = 0; i < nblocks; i++) {
-                sha1_compress(s->state, buf + i * 0x40);
+            uint8_t *buf = g_malloc(IT_SHA1_DMA_CHUNK);
+            hwaddr address = s->memory_start;
+            while (nblocks) {
+                uint32_t batch = MIN(nblocks, IT_SHA1_DMA_CHUNK / 0x40);
+                cpu_physical_memory_read(address, buf, batch * 0x40);
+                for (uint32_t i = 0; i < batch; i++) {
+                    sha1_compress(s->state, buf + i * 0x40);
+                }
+                address += batch * 0x40;
+                nblocks -= batch;
             }
             g_free(buf);
         }
@@ -214,6 +208,11 @@ static uint64_t ipod_touch_sha1_read(void *opaque, hwaddr offset, unsigned size)
 		case SHA_HASHOUT ... SHA_HASHOUT_END:
 			/* Big-endian state word, matching what the guest writes in. */
 			return bswap32(s->state[(offset - SHA_HASHOUT) / 4]);
+		case SHA_HWBUF ... SHA_HWBUF_END:
+			/* The block buffer reads back: iBoot-204 (S5L8900) fills it a
+			 * byte at a time with read-modify-write on each word
+			 * (0x180020a2), so a read of zero would drop three bytes in four. */
+			return s->hw_buffer[(offset - SHA_HWBUF) / 4];
 	}
 
     return 0;
@@ -272,13 +271,7 @@ static void ipod_touch_sha1_write(void *opaque, hwaddr offset, uint64_t value, u
 			s->memory_mode = value;
 			break;
 		case SHA_INSIZE:
-			/* Bounded like every other engine's length (ipod_touch_aes.c:510).
-			 * Raw, this value reaches g_malloc and cpu_physical_memory_read
-			 * directly: 0xFFFFFFFF asks for a 4 GiB allocation on the vCPU
-			 * thread inside the MMIO handler, and g_malloc ABORTS the process
-			 * when it fails -- one guest store takes the user's whole session
-			 * down with it. */
-			s->insize = IT_SIZE("sha1", value, IT_SHA1_MAX_XFER);
+			s->insize = value;
 			break;
 		case SHA_HASHOUT ... SHA_HASHOUT_END:
 			/* Load the chaining state to continue from. */

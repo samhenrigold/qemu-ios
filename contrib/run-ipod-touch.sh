@@ -22,7 +22,7 @@
 # TO INSTALL AND RUN APPS -- two commands, IN THIS ORDER. --appsync starts
 # usbmuxd itself, before QEMU, because QEMU dials OUT to it and gives up for the
 # rest of the boot if nothing is listening. Full walkthrough in
-# docs/ipod-touch-2g-setup.md:
+# docs/ipod/ipod-touch-2g-setup.md:
 #
 #     run-ipod-touch.sh --appsync              # start this first, wait for the UI
 #     imgtools/install-ipa.sh some.ipa
@@ -201,13 +201,11 @@ while [ $# -gt 0 ]; do
     --big)      : ;;   # 7 GiB is now the default; kept so old commands still work
     --net)      MACHOPTS="$MACHOPTS,wifi=on"
                 NETOPTS=(-netdev user,id=wifi0) ;;
-    --apps)     export IT_BOOT_ARGS="amfi_allow_any_signature=1 cs_enforcement_disable=1" ;;
+    --apps)     : ;;   # the default boot-args (below) already let re-signed apps exec
     # Everything needed to install and run third-party apps, in one flag: the
     # AppSync-patched image, the kernel gate, and USB. See apps/README.md.
     # Also starts usbmuxd -- see the ordering note at ensure_usbmuxd below.
-    # NAND is only defaulted, not forced: the app stages whichever image it
-    # actually shipped (build-app.sh --nand) and exports NAND, and clobbering
-    # that pointed QEMU at a directory the app never unpacked.
+    # NAND is only defaulted, not forced: a caller that exports NAND keeps it.
     --appsync)  NAND="${NAND:-$F/nand-ultimate}"
                 OVL="$HERE/nandrw-appsync"
                 # One overlay per base image, still. The name above is kept
@@ -218,10 +216,6 @@ while [ $# -gt 0 ]; do
                 [ "$(basename "$NAND")" = "nand-appsync3" ] ||
                     OVL="$HERE/nandrw-$(basename "$NAND")"
                 APPSYNC=1
-                export IT_BOOT_ARGS="amfi_allow_any_signature=1 cs_enforcement_disable=1"
-                export IT_BOOT_ARGS_DELAY_MS=1500
-                export IT_BOOT_ARGS_REPEAT=200
-                export IT_BOOT_ARGS_INTERVAL_MS=250
                 MACHOPTS="$MACHOPTS,osk=on" ;;
     --keyboard) MACHOPTS="$MACHOPTS,osk=on" ;;
     --usb)      export IT_USB_TCP="${IT_USB_TCP:-127.0.0.1:1235}" ;;
@@ -301,15 +295,14 @@ export IT_TVOUT_READY=1                        # TV-out shutdown gates
 # These are exactly the args --apps and --appsync already set, and they were
 # measured to cost nothing: nand-grow7g reaches the lock screen in 30.6 s with
 # them and 35.6 s without, at the same lit ratio (0.549), and --small
-# (nand-7e18-final) still boots clean at 0.549. Set IT_BOOT_ARGS yourself to
-# override, or IT_BOOT_ARGS=" " to bisect against them.
-export IT_BOOT_ARGS="${IT_BOOT_ARGS:-amfi_allow_any_signature=1 cs_enforcement_disable=1}"
-export IT_BOOT_ARGS_DELAY_MS="${IT_BOOT_ARGS_DELAY_MS:-1500}"
-export IT_BOOT_ARGS_REPEAT="${IT_BOOT_ARGS_REPEAT:-200}"
-export IT_BOOT_ARGS_INTERVAL_MS="${IT_BOOT_ARGS_INTERVAL_MS:-250}"
+# (nand-7e18-final) still boots clean at 0.549. Set BOOT_ARGS yourself to
+# override, or BOOT_ARGS="" to bisect against them. They reach the emulator
+# only as the boot-args machine properties (it reads no IT_BOOT_ARGS* environment).
+MACHOPTS="$MACHOPTS,boot-args=${BOOT_ARGS-amfi_allow_any_signature=1 cs_enforcement_disable=1}"
+MACHOPTS="$MACHOPTS,boot-args-delay-ms=0,boot-args-repeat=200,boot-args-interval-ms=250"
 
-# The audio hardware (AMC, CS42L58 codec, I2S0, speaker amp) turns itself on
-# with IT_DIRECT_IBOOT, so 3.1.3 gets it and 2.1.1 does not. IT_AUDIO_HW=0
+# The audio hardware (AMC, CS42L58 codec, I2S0, speaker amp) is present on
+# every boot, as on the board. IT_AUDIO_HW=0
 # forces it off if you ever need to bisect against it.
 
 [ "$APPSYNC" = 1 ] && ensure_usbmuxd

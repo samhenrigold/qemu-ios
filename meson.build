@@ -79,7 +79,8 @@ python = import('python').find_installation()
 
 cc = meson.get_compiler('c')
 all_languages = ['c']
-if host_os == 'windows' and add_languages('cpp', required: false, native: false)
+# Darwin's guest GL executor uses Imagination's reference PVRTC decoder.
+if host_os in ['windows', 'darwin'] and add_languages('cpp', required: host_os == 'darwin', native: false)
   all_languages += ['cpp']
   cxx = meson.get_compiler('cpp')
 endif
@@ -1214,6 +1215,14 @@ cocoa = dependency('appleframeworks',
 # guest's GLES HLE probe fails cleanly.
 host_opengl = dependency('appleframeworks', modules: 'OpenGL',
                          required: false)
+angle_prefix = get_option('ltm_angle_prefix')
+if angle_prefix != ''
+  if host_os != 'darwin'
+    error('The experimental ANGLE backend currently requires macOS')
+  endif
+  host_opengl = declare_dependency(compile_args: ['-DGLES_HOST_ANGLE=1', '-I' + angle_prefix / 'include'],
+    link_args: ['-L' + angle_prefix / 'out/ltm-metal', '-Wl,-rpath,' + angle_prefix / 'out/ltm-metal', '-lEGL', '-lGLESv2'])
+endif
 # IOSurface (and the CoreFoundation dictionary that configures one) is not
 # optional garnish here: it is the render target the iOS present path reads,
 # which is what keeps a tile-based GPU from being drained by a glReadPixels
@@ -1293,6 +1302,15 @@ if not get_option('slirp').auto() or have_system
       warning('Cannot use libslirp since Control-Flow Integrity requires libslirp >= 4.7.')
       slirp = not_found
     endif
+  endif
+  # net_slirp_set_restrict() (netdev_set_restrict, qemu_ios_ui_net_restrict) flips a
+  # running stack's restrict flag in place with slirp_set_restricted(), from
+  # subprojects/packagefiles/libslirp-set-restricted.patch. A libslirp built with the
+  # patch (the app's static native root) is used as found; one without it (Homebrew's)
+  # gives way to the patched subproject, static so the binaries gain no runtime dylib.
+  if slirp.found() and not cc.has_function('slirp_set_restricted', dependencies: slirp,
+                                           prefix: '#include <libslirp.h>')
+    slirp = subproject('slirp', default_options: ['default_library=static']).get_variable('libslirp_libdep')
   endif
 endif
 

@@ -1,4 +1,3 @@
-#include "hw/arm/ipod_touch_firmware.h"
 #include "hw/arm/ipod_touch_mbx.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -6,6 +5,9 @@
 #include "qemu/timer.h"
 #include "hw/core/cpu.h"
 #include "cpu.h"
+#include "exec/address-spaces.h"
+#include "hw/qdev-properties.h"
+#include "qemu/bswap.h"
 
 /*
  * MMIO trace, off unless MBX_TRACE=1 is in the emulator's environment.
@@ -129,18 +131,54 @@ static uint32_t mbx_guest_pc(void)
  */
 #define MBX_COMPLETE_PERIOD_NS (16 * 1000 * 1000)
 
-static uint32_t reverse_byte_order(uint32_t value) {
-    return ((value & 0x000000FF) << 24) |
-           ((value & 0x0000FF00) << 8) |
-           ((value & 0x00FF0000) >> 8) |
-           ((value & 0xFF000000) >> 24);
+/* Experimental measured fill only. Reject MMIO/ROM, and use normal DMA
+ * writes so observers/dirty tracking see each committed pixel. BQL owns the
+ * synchronous operation and protects the RAM topology for its duration. */
+static uint8_t *mbx_fill_guest_ram(void *opaque, uint32_t pa, uint32_t len)
+{
+    MemoryRegionSection section = memory_region_find(get_system_memory(), pa, len);
+    uint8_t *ptr = NULL;
+    if (section.mr && memory_region_is_ram(section.mr) &&
+        !memory_region_is_rom(section.mr) && !section.readonly &&
+        int128_eq(section.size, int128_make64(len))) {
+        ptr = memory_region_get_ram_ptr(section.mr) + section.offset_within_region;
+    }
+    if (section.mr) {
+        memory_region_unref(section.mr);
+    }
+    return ptr;
+}
+
+static void mbx_fill_guest_write(void *opaque, uint32_t pa, uint32_t value)
+{
+    IPodTouchMBXState *s = opaque;
+    uint8_t bytes[4];
+    stl_le_p(bytes, value);
+    if (!mbx_fill_guest_ram(s, pa, sizeof bytes) ||
+        address_space_write(&address_space_memory, pa, MEMTXATTRS_UNSPECIFIED,
+                            bytes, sizeof bytes) != MEMTX_OK) {
+        s->fill_dma_failed = true;
+    }
 }
 
 static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
 {
     IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
     uint32_t val;
-
+    if (s->fill_enabled && (size != 4 || (addr & 3))) {
+        return 0;
+    }
+    if (s->fill_enabled && size == 4 && !(addr & 3)) {
+        if (addr >= 0xa00000 && addr < 0xa10000) {
+            return s->fill.ring[(addr - 0xa00000) / 4];
+        }
+        if (addr >= 0x1000 && addr <= 0x101c) {
+            return s->fill.roots[(addr - 0x1000) / 4];
+        }
+        if (addr == MBX_STATUS_REG) {
+            return s->status; /* No invented startup/context completion. */
+        }
+    }
     switch(addr)
     {
         case MBX_STATUS_REG:
@@ -168,11 +206,8 @@ static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
              * path we had never reached, let alone modelled.
              */
             val = 0x40 | 0x100 | s->status;
-            if (s->irq_enabled && s->irq) {
-                /* Reading the status acknowledges the completion. */
-                s->status = 0;
-                qemu_irq_lower(s->irq);
-            }
+            /* STATUS is observational. The driver acknowledges only its
+             * enabled pending events through the separate W1C register. */
             break;
         case 0xf00:
             val = (2 << 0x10) | (1 << 0x18); // seems to be some kind of identifier
@@ -196,6 +231,13 @@ static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
              * So acknowledge the request: mirror bit 0 into bit 16.
              */
             val = s->addr;
+            if (s->fill_enabled) {
+                /* Native bypass on reset/disable; ready only when enabled.
+                 * No translation cache is modeled, so readiness is immediate. */
+                val = (val & ~MBX_MMU_ACK) |
+                      ((val & MBX_MMU_ENABLE) ? MBX_MMU_ACK : 0);
+                break;
+            }
             if (s->irq_enabled) {
                 val = (val & ~MBX_MMU_ACK) | ((val & MBX_MMU_ENABLE) ? MBX_MMU_ACK : 0);
             }
@@ -211,6 +253,10 @@ static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
                 val = MBX_MMU_ACK;
             }
             break;
+        case MBX_SUBMIT_REG:
+            /* The mask reads back: 1.x's AppleMBX re-arms it read-modify-write (|= bits | 0x8000). */
+            val = s->int_mask;
+            break;
         default:
             val = 0;
             break;
@@ -219,39 +265,74 @@ static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
     return val;
 }
 
+/* The line follows the unmasked status (the software interrupt, the completion shim). */
+static void ipod_touch_mbx_update_irq(IPodTouchMBXState *s)
+{
+    if (s->irq) {
+        qemu_set_irq(s->irq, (s->status & s->int_mask) != 0);
+    }
+}
+
 static void ipod_touch_mbx1_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
     MBX_TRACE("mbx1 wr  [0x%06x] <- 0x%08x", (uint32_t)addr, (uint32_t)val);
 
+    if (s->fill_enabled && (size != 4 || (addr & 3))) {
+        return;
+    }
+    if (s->fill_enabled && size == 4 && !(addr & 3)) {
+        MBXFillBus bus = { .ctx = s,
+                          .mmu_enabled = !!(s->addr & MBX_MMU_ENABLE),
+                          .host_ram = mbx_fill_guest_ram,
+                          .write32 = mbx_fill_guest_write };
+        const char *why = "DMA failed";
+        s->fill_dma_failed = false;
+        MBXFillResult result = mbx_fill_write(&s->fill, &bus, addr, val, &why);
+        if (result == MBX_FILL_DONE && !s->fill_dma_failed) {
+            s->status |= MBX_INT_2D_SYNC;
+            ipod_touch_mbx_update_irq(s);
+            fprintf(stderr, "[MBX fill] measured black fill committed\n");
+        } else if (result == MBX_FILL_REJECTED || s->fill_dma_failed) {
+            fprintf(stderr, "[MBX fill] rejected: %s\n", why);
+        }
+        if ((addr >= 0x1000 && addr <= 0x101c) ||
+            (addr >= 0xa00000 && addr < 0xa10000)) {
+            return;
+        }
+    }
     switch(addr)
     {
 	case MBX_MMU_CTRL_REG:
 	    s->addr = val;
 	    s->mmu_written = true;
 	    break;
+	case MBX_STATUS_REG:
+	    /*
+	     * A write sets status bits: the software interrupt. 1.x's AppleMBX raises bit 0 this way
+	     * (3A101a c03aaa18) so that its own ISR runs the command queue, which is what releases a
+	     * display swap LayerKit tied to the GPU (mbx2DSwapNotification). Nothing answered it, and
+	     * under LK_ENABLE_OGL=1 the fourth swap waited forever.
+	     */
+	    s->status |= (uint32_t)val;
+	    ipod_touch_mbx_update_irq(s);
+	    break;
 	case MBX_SUBMIT_REG:
+	    s->int_mask = val;
 	    if (s->complete_shim) {
-	        s->int_mask = val;
 	        if (val) {
 	            timer_mod(s->complete_timer,
 	                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MBX_COMPLETE_PERIOD_NS);
 	        } else {
 	            timer_del(s->complete_timer);
 	            s->status = 0;
-	            if (s->irq) {
-	                qemu_irq_lower(s->irq);
-	            }
 	        }
 	    }
+	    ipod_touch_mbx_update_irq(s);
 	    break;
 	case MBX_INTCLR_REG:
-	    if (s->complete_shim) {
-	        s->status &= ~(uint32_t)val;
-	        if (!s->status && s->irq) {
-	            qemu_irq_lower(s->irq);
-	        }
-	    }
+	    s->status &= ~(uint32_t)val;
+	    ipod_touch_mbx_update_irq(s);
 	    break;
     }
 }
@@ -276,231 +357,14 @@ static void ipod_touch_mbx_complete(void *opaque)
               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MBX_COMPLETE_PERIOD_NS);
 }
 
-/*
- * Let the USB device stack go on bus even though the PTP interface function
- * never gets a driver.
- *
- * IOUSBDeviceController::handleUSBCableConnect refuses to bring the controller
- * up until every interface function declared by SetDeviceDescription has
- * registered. The descriptors come from
- * /System/Library/AppleUSBDevice/USBDeviceConfiguration.plist, pushed by the
- * configd plug-in com.apple.configd.usbdeviceconfig, and for iPod2,1 they name
- * five functions. Four are served by in-kernel drivers (USBAudioControl,
- * USBAudioStreaming, IapOverUsbHid, AppleUSBMux). PTP is served by the userland
- * daemon /usr/libexec/ptpd, which does not come up here -- so PTP acquires no
- * alternate setting, emits no interface descriptor despite being counted in
- * bNumInterfaces, and its name never leaves the pending set. The count floors at
- * exactly one and handleUSBCableConnect is never re-driven, so the controller is
- * never touched at all.
- *
- * gated_registerFunction removes the caller from the set, then:
- *     subs sl, r0, #0     ; r0 = set->getCount()
- *     bne  <return>       ; still waiting
- * Rewriting the compare as "- #1" makes it proceed when exactly one function
- * (PTP) is left, on the last real registration. sl stays 0 on that path, which
- * matters: it is stored back as the "set is empty" marker and reused as the
- * configuration loop index.
- *
- * The site is located at run time rather than hardcoded, anchored on a log
- * string, so this does not depend on one firmware build's addresses:
- *
- *     cstring "all functions registered"
- *       -> the literal-pool word holding its address
- *       -> the ldr rX, [pc, #imm] that loads that word
- *       -> backwards to the subs rN, r0, #0 / bne pair guarding it
- *
- * Verified to derive 0xc05d45cc on 2.1.1 / build 5F138. Only that one build was
- * available to check, so the approach is portable in principle but unproven on a
- * second image.
- */
-#define KERNEL_VA_TO_PA(va)   ((va) - 0xb8000000u)
-
-static bool patch_usb_gate_enabled;
-
-void ipod_touch_mbx_set_patch_usb_gate(bool enabled)
-{
-    patch_usb_gate_enabled = enabled;
-}
-
-static uint32_t kernel_read_word(uint32_t va)
-{
-    uint32_t w = 0;
-    cpu_physical_memory_read(KERNEL_VA_TO_PA(va), (uint8_t *)&w, sizeof(w));
-    return w;
-}
-
-/* VA of the NUL-terminated string containing needle, or 0. */
-static uint32_t kernel_find_cstring(const uint8_t *image, size_t len, const char *needle)
-{
-    size_t nlen = strlen(needle);
-
-    for (size_t i = 0; i + nlen <= len; i++) {
-        if (memcmp(image + i, needle, nlen) != 0) {
-            continue;
-        }
-        /* Back up to just past the preceding NUL - the literal pool points at
-         * the start of the string, not at our substring. */
-        size_t start = i;
-        while (start > 0 && image[start - 1] != 0) {
-            start--;
-        }
-        return IT_KERNEL_SCAN_PA_START + start + 0xb8000000u;
-    }
-    return 0;
-}
-
-static void patch_usb_function_gate(void)
-{
-    if (!patch_usb_gate_enabled) {
-        return;
-    }
-
-    uint8_t *image = g_try_malloc(IT_KERNEL_SCAN_LEN);
-    if (!image) {
-        printf("[USBGATE] could not allocate scan buffer\n");
-        return;
-    }
-    cpu_physical_memory_read(IT_KERNEL_SCAN_PA_START, image, IT_KERNEL_SCAN_LEN);
-
-    uint32_t str_va = kernel_find_cstring(image, IT_KERNEL_SCAN_LEN,
-                                          "all functions registered");
-    if (!str_va) {
-        printf("[USBGATE] anchor string not found; not patching\n");
-        g_free(image);
-        return;
-    }
-
-    /* Literal-pool slots holding that address. */
-    uint32_t patched_at = 0;
-    for (size_t i = 0; i + 4 <= IT_KERNEL_SCAN_LEN && !patched_at; i += 4) {
-        uint32_t word = ldl_le_p(image + i);
-        if (word != str_va) {
-            continue;
-        }
-        uint32_t pool_va = IT_KERNEL_SCAN_PA_START + i + 0xb8000000u;
-
-        /* The ldr rX, [pc, #imm] that loads it. ARM literal loads resolve
-         * against pc+8, and bit 23 is the add/subtract flag so it stays in the
-         * mask. */
-        uint32_t ldr_va = 0;
-        for (uint32_t back = 8; back < 4096 && !ldr_va; back += 4) {
-            uint32_t va = pool_va - 8 - back;
-            uint32_t w = kernel_read_word(va);
-            if ((w & 0x0fff0000u) == 0x059f0000u && va + 8 + (w & 0xfff) == pool_va) {
-                ldr_va = va;
-            }
-        }
-        if (!ldr_va) {
-            continue;
-        }
-
-        /* Backwards to the guarding "subs rN, r0, #0" followed by a bne. */
-        for (uint32_t back = 4; back < 80; back += 4) {
-            uint32_t va = ldr_va - back;
-            uint32_t w = kernel_read_word(va);
-            if ((w & 0xfff00fffu) != 0xe2500000u) {
-                continue;
-            }
-            uint32_t next = kernel_read_word(va + 4);
-            bool is_bne = (next & 0x0f000000u) == 0x0a000000u && (next >> 28) == 0x1;
-            if (!is_bne) {
-                continue;
-            }
-            uint32_t patched = w | 1;
-            cpu_physical_memory_write(KERNEL_VA_TO_PA(va), (uint8_t *)&patched,
-                                      sizeof(patched));
-            printf("[USBGATE] patched gated_registerFunction count check at "
-                   "0x%08x (0x%08x -> 0x%08x)\n", va, w, patched);
-            patched_at = va;
-            break;
-        }
-    }
-
-    if (!patched_at) {
-        printf("[USBGATE] could not locate the count check; not patching\n");
-    }
-    g_free(image);
-}
-
-static void patch_kernel(bool *alreadypatched)
-{
-    if (*alreadypatched) return;
-    *alreadypatched = true;
-
-    const ITFirmwareDesc *fw = it_firmware_loaded();
-    if (!fw || !fw->legacy_kernel_patches) {
-        return; /* The BCM4325 subroutine below is verified only on 5F138. */
-    }
-    /* Both kernels use the modeled PMU RTC. The old Thumb-2 MRC clock
-     * trampoline faults on ARM1176 (Thumb-1), so leave that function intact. */
-    patch_usb_function_gate();
-
-    // Patch the loading of the AppleBCM4325 driver.
-    // write the pointer to our custom subroutine
-    uint32_t ptr = 0xC0460000;
-    cpu_physical_memory_write(0x8324aa8, (uint8_t *)&ptr, sizeof(ptr));
-
-    // create the call to the subroutine
-    uint32_t call[6] = {
-        reverse_byte_order(0x0640A0E1), // mov r4, r6
-        reverse_byte_order(0x9C309FE5), // ldr r3, [pc, #0x9c]
-        reverse_byte_order(0x33FF2FE1), // blx r3
-        reverse_byte_order(0x00F020E3), // NOP
-        reverse_byte_order(0x00F020E3), // NOP
-        reverse_byte_order(0x00F020E3), // NOP
-    };
-    cpu_physical_memory_write(0x8324a00, (uint8_t *)call, sizeof(call));
-
-    // fill in the driver load subroutine. Zero-initialised: words 30..49 are
-    // padding but are still written to the guest, so they must not be leaked
-    // host heap (which is also what the old code did by writing 50 words out of
-    // a malloc(200) that only filled 30).
-    uint32_t sub[50] = {0};
-    sub[0] = reverse_byte_order(0xFE402DE9); // push on stack
-
-    for(int i = 1; i < 21; i++) { sub[i] = reverse_byte_order(0x00F020E3); } // NOP
-
-    // call the IONetworkController metaclass initialization
-    sub[21] = reverse_byte_order(0x0100B0E3); // movs r0, #0x1
-    sub[22] = reverse_byte_order(0xB8109FE5); // ldr r1, [pc, #0xb8]
-    sub[23] = reverse_byte_order(0xB8209FE5); // ldr r2, [pc, #0xb8]
-    sub[24] = reverse_byte_order(0x32FF2FE1); // blx r2
-
-    // load the "com.apple.driver.AppleBCM4325" kext
-    sub[25] = reverse_byte_order(0xB4009FE5); // ldr r0, [pc, #0xb4]
-    sub[26] = reverse_byte_order(0x0110B0E3); // movs r1, #0x1
-    sub[27] = reverse_byte_order(0xB0209FE5); // ldr r2, [pc, #0xd8]
-    sub[28] = reverse_byte_order(0x32FF2FE1); // blx r2
-
-    sub[29] = reverse_byte_order(0xFE80BDE8); // pop from stack
-
-    cpu_physical_memory_write(0x8460000, (uint8_t *)sub, sizeof(sub));
-
-    // write the data section of the driver load subroutine (0x100 items from the start of the subroutine)
-    uint32_t sdata[10] = {
-        0xc0460200, // the address of the BCM4325Vars string
-        0xc013c373, // the address of OSData::withBytes
-        0xc013cc3d, // the address of OSDictionary::withCapacity
-        0xc03467bc, // the "BCM4325Vars" string
-        0xc013ad8d, // the address of OSObject::operator.new
-        0xc032c294, // the object initialization method of AppleBCM4325
-        0xffff,     // the 2nd parameter for the call to the IONetworkController metaclass initialization
-        0xc02f94f9, // the initialization method of the IONetworkController metaclass
-        0xc038a320, // the "com.apple.driver.AppleBCM4325" string
-        0xc015de01, // the kmod_load_request method
-    };
-    cpu_physical_memory_write(0x8460100, (uint8_t *)sdata, sizeof(sdata));
-}
-
 static uint64_t ipod_touch_mbx2_read(void *opaque, hwaddr addr, unsigned size)
 {
-    IPodTouchMBXState *s = (IPodTouchMBXState *)opaque;
     uint32_t val = 0;
 
     switch(addr)
     {
         case 0xC:
-            patch_kernel(&s->alreadypatched);
+            /* Reset request completes synchronously; no guest-memory edits. */
 	    break;
 	case 0x4:
 	    val = 0xFF;
@@ -574,9 +438,6 @@ static void ipod_touch_mbx_init(Object *obj)
  * a half-initialised MBX stops SpringBoard ever programming its framebuffer
  * into the display controller -- the panel stays on the boot logo even though
  * SpringBoard is running and has attached to IOMobileFramebuffer.
- *
- * alreadypatched must be cleared too: the USB gate patch is applied to kernel
- * memory that a reset reloads, so it has to be re-applied on the next boot.
  */
 static void ipod_touch_mbx_reset(DeviceState *dev)
 {
@@ -585,7 +446,8 @@ static void ipod_touch_mbx_reset(DeviceState *dev)
     s->addr = 0;
     s->mmu_written = false;
     s->status = 0;
-    s->alreadypatched = false;
+    mbx_fill_reset(&s->fill);
+    s->fill_dma_failed = false;
     /* The completion shim's mask and its timer are part of the interrupt
      * state. Zeroing the mask without disarming the timer left a completion
      * scheduled against a mask the new boot never wrote; disarming without
@@ -605,18 +467,49 @@ static void ipod_touch_mbx_reset(DeviceState *dev)
  * it does not exist at all unless the shim is on, so migrating the pointer
  * would trip vmstate's "array with a NULL base" assertion and kill the source
  * QEMU mid-save. Measured: that is exactly what it did. */
+static int ipod_touch_mbx_post_load(void *opaque, int version_id)
+{
+    IPodTouchMBXState *s = opaque;
+    if (version_id < 2 && s->fill_enabled) {
+        return -EINVAL; /* Old streams lack the in-flight ring/GART state. */
+    }
+    ipod_touch_mbx_update_irq(s);
+    return 0;
+}
+
 static const VMStateDescription vmstate_ipod_touch_mbx = {
     .name = "ipod_touch_mbx",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = ipod_touch_mbx_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(addr, IPodTouchMBXState),
         VMSTATE_BOOL(mmu_written, IPodTouchMBXState),
-        VMSTATE_BOOL(alreadypatched, IPodTouchMBXState),
+        VMSTATE_UNUSED(1), /* Retired guest-patch latch; keep v1 stream layout. */
         VMSTATE_UINT32(status, IPodTouchMBXState),
         VMSTATE_UINT32(int_mask, IPodTouchMBXState),
+        VMSTATE_UINT32_EQUAL_V(fill_mode, IPodTouchMBXState, 2, "MBX fill mode differs"),
+        VMSTATE_UINT32_ARRAY_V(fill.roots, IPodTouchMBXState, 8, 2),
+        VMSTATE_UINT32_ARRAY_V(fill.ring, IPodTouchMBXState, 0x10000 / 4, 2),
+        VMSTATE_UINT32_V(fill.pending_offset, IPodTouchMBXState, 2),
+        VMSTATE_UINT32_V(fill.pending_count, IPodTouchMBXState, 2),
+        VMSTATE_UINT32_V(fill.pending_mask, IPodTouchMBXState, 2),
         VMSTATE_END_OF_LIST()
     }
+};
+
+static void ipod_touch_mbx_realize(DeviceState *dev, Error **errp)
+{
+    IPodTouchMBXState *s = IPOD_TOUCH_MBX(dev);
+    if (s->fill_enabled && (s->complete_shim || getenv("IT_MBX_RAM"))) {
+        error_setg(errp, "x-2d-fill rejects completion shim and RAM aperture override");
+        return;
+    }
+    s->fill_mode = s->fill_enabled;
+}
+
+static const Property ipod_touch_mbx_properties[] = {
+    DEFINE_PROP_BOOL("x-2d-fill", IPodTouchMBXState, fill_enabled, false),
 };
 
 static void ipod_touch_mbx_class_init(ObjectClass *klass, void *data)
@@ -625,6 +518,8 @@ static void ipod_touch_mbx_class_init(ObjectClass *klass, void *data)
 
     device_class_set_legacy_reset(dc, ipod_touch_mbx_reset);
     dc->vmsd = &vmstate_ipod_touch_mbx;
+    dc->realize = ipod_touch_mbx_realize;
+    device_class_set_props(dc, ipod_touch_mbx_properties);
 }
 
 static const TypeInfo ipod_touch_mbx_type_info = {

@@ -3,6 +3,8 @@
 
 #include "exec/hwaddr.h"
 #include "hw/arm/ipod-agent.h"
+#include "hw/arm/guest-pasteboard.h"
+#include "hw/arm/guest-package.h"
 #include "hw/boards.h"
 #include "qapi/qapi-types-common.h"
 #include "hw/intc/pl192.h"
@@ -58,6 +60,7 @@
 #define S5L8720_TVOUT_SDO_IRQ 0x1E
 #define S5L8720_TVOUT_VSYNC_IRQ 0x26
 #define S5L8720_SHA1_IRQ 0x28
+#define S5L8720_AES_IRQ 0x27
 #define S5L8720_AMC_IRQ 0x12
 /* i2s0 interrupts=0x2c but interrupt-parent is the GPIO IC, so this is a
  * GPIO interrupt number: group 0x2c/32 = 1, bit 0x2c%32 = 12. */
@@ -184,16 +187,21 @@ typedef struct {
     bool bt_enabled, bt_enabled_explicit;
     uint32_t bt_latency_us;
     bool bt_latency_us_explicit;
+    uint8_t wifi_mac[6];
+    bool wifi_mac_explicit;
+    uint8_t bt_mac[6];
+    bool bt_mac_explicit;
+    N72SecurityProfile security_profile;
+    uint64_t ecid;
+    bool ecid_explicit;
 	AddressSpace *nsas;
-	/* IT_BOOT_ARGS: repeated early writes of the kernel command line.
-	 * IT_AMFI_ALLOW_TASKPORT: one-shot patch of the AMFI task-port MAC hooks,
-	 * ridden on the same timer. */
+	/* boot-args: repeated early writes of the kernel command line. */
 	QEMUTimer *boot_args_timer;
 	unsigned boot_args_writes;
+    uint64_t boot_args_scan_deadline;
     uint32_t boot_args_delay_ms, boot_args_repeat, boot_args_interval_ms;
     bool boot_args_delay_ms_explicit, boot_args_repeat_explicit;
     bool boot_args_interval_ms_explicit;
-	bool amfi_patched;
 	bool boot_args_scan_failed;	/* complain once, not every retry */
 	uint32_t boot_args_addr;	/* signature hit from an earlier tick; 0 = rescan */
 	qemu_irq **irq;
@@ -219,6 +227,8 @@ typedef struct {
 	IPodTouchLCDState *lcd_state;
 	IPodTouchMIPIDSIState *mipi_dsi_state;
 	IPodTouchFMSSState *fmss_state;
+    Notifier compat_nand_read;
+    uint32_t compat_command_line;
 	IPodTouchMBXState *mbx_state;
 	IPodTouchSDIOState *sdio_state;
 	IPodTouchTVOutState *tvout_state;
@@ -243,8 +253,9 @@ typedef struct {
 	char usb_tcp_addr[256];   /* host:port of the host bridge, empty = disabled */
 	bool usb_attached;        /* assert PMU USB cable presence */
 	bool mbx_irq;             /* wire the MBX completion interrupt */
-	bool usb_patch_mux_gate;  /* patch past the unregistered PTP interface function */
+	bool usb_patch_mux_gate;  /* retired option, always false */
 	bool wifi;                /* present a BCM4325 on the SDIO bus */
+	bool gles_debug;          /* paint what the GL bridge refuses magenta (tests) */
 	IT2G_CPREG_VAR_DEF(REG0);
 	IT2G_CPREG_VAR_DEF(REG1);
 	IT2G_CPREG_VAR_DEF(QEMU_CALL);
@@ -290,6 +301,8 @@ typedef struct {
     bool lcd_planes, lcd_planes_explicit;
     bool forge_sigcheck, forge_sigcheck_explicit;
     char direct_iboot[PATH_MAX], direct_llb[PATH_MAX];
+    char gid_blobs[PATH_MAX];
+    bool aes_uid_engine;             /* aes-uid=engine; see ipod_touch_aes.c AES_GO */
     bool direct_iboot_explicit, direct_llb_explicit;
     uint32_t time_dilation;
     bool time_dilation_explicit;
@@ -303,68 +316,10 @@ typedef struct {
 	bool osk_shifted;           /* shift key currently latched on the OSK */
 	bool osk_numeric;           /* the ".?123" page is showing */
 
-	/*
-	 * Host <-> guest pasteboard (see the QC_PB_* ops in guest-services.c and
-	 * contrib/it-pasteboard/it_pbd.c). This is the lossless counterpart to the
-	 * OSK typist above: instead of turning text into taps on iOS's own
-	 * keyboard, the text is handed to the guest's UIPasteboard and the user
-	 * taps Paste. Punctuation and symbols survive, because nothing about the
-	 * keyboard's page state is involved.
-	 *
-	 * pb_out is what the host has queued for the guest; the guest agent polls
-	 * for it, reads it out in chunks and acknowledges. pb_in is the staging
-	 * buffer the guest fills going the other way, published to the host
-	 * clipboard on commit and kept in pb_guest so it can be read back.
-	 */
-	char *pb_out;             /* text waiting for the guest, or NULL */
-	size_t pb_out_len;
-	char *pb_in;              /* partial text arriving from the guest */
-	size_t pb_in_len;
-	char *pb_guest;           /* last text the guest published, or NULL */
-	size_t pb_guest_len;
-	bool pb_peer_registered;
-
-	/*
-	 * Liveness. Without this, setting the pasteboard on an image that has no
-	 * guest agent in it looks exactly like success: the property takes the
-	 * text, nothing complains, and the text simply sits here forever. That is
-	 * not hypothetical -- it is how the whole feature was reported working
-	 * while being dead on every image the runner actually boots. So record
-	 * when the guest last polled, warn if a queued item is never collected,
-	 * and expose the answer through the "pasteboard-agent" property.
-	 */
-	int64_t pb_last_poll_ns;  /* 0 = the guest has never polled */
-	uint64_t pb_polls;
-	uint64_t pb_polls_at_set; /* pb_polls when the pending item was queued */
-	QEMUTimer *pb_warn_timer;
-
-	/*
-	 * Delivery. Liveness above answers "is an agent there"; this answers "did
-	 * my text reach it", which is a different question and the one people
-	 * actually ask. There was NO way to ask it: pb_out is cleared on ACK, so a
-	 * delivered item and an item never queued read identically ("" from the
-	 * "pasteboard" property), and "guest-pasteboard" cannot stand in for a
-	 * readback -- the agent deliberately records host text as already-seen so
-	 * it is never echoed back, so that property NEVER reflects what the host
-	 * sent. A whole investigation was spent on a working channel for want of
-	 * this. Kept here and reported through "pasteboard-status".
-	 */
-	char *pb_delivered;       /* last text the guest agent collected, or NULL */
-	size_t pb_delivered_len;
-	int64_t pb_delivered_ns;
-	uint64_t pb_deliveries;
+	GuestPasteboard pb;       /* hw/arm/guest-pasteboard.c */
+	GuestPackage pkg;         /* hw/arm/guest-package.c */
     IPodAgent *agent;
 } IPodTouchMachineState;
-
-/*
- * Queue text for the guest's UIPasteboard. Replaces anything not yet collected
- * -- a clipboard has one item, and a stale one is worse than none. Safe to call
- * with the guest agent absent; the text simply sits there.
- */
-void ipod_touch_pb_set(IPodTouchMachineState *nms, const char *text);
-
-/* The guest finished sending an item: publish it to the host clipboard. */
-void ipod_touch_pb_guest_commit(IPodTouchMachineState *nms);
 
 /*
  * The Bluetooth HCI that lives on UART1 (hw/arm/ipod_touch_bt.c). Returns

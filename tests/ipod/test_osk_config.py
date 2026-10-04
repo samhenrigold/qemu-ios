@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 root = Path(__file__).resolve().parents[2]
 s = (root / "hw/arm/ipod_touch_2g.c").read_text()
-functions = s[s.index("static void ipod_touch_get_osk("):s.index("/*\n * Audio hardware")]
+functions = s[s.index("static void ipod_touch_get_osk("):s.index("static char *ipod_touch_get_direct_iboot(")]
 code = r'''
 #include <assert.h>
 #include <stdbool.h>

@@ -6,6 +6,7 @@
 #include "hw/display/framebuffer.h"
 #include "exec/cpu-common.h"
 #include "qemu/log.h"
+#include "hw/arm/guest-services/gles.h"
 
 static int lcd_brightness = 255;
 
@@ -136,6 +137,42 @@ static int it_display_rotation_req;
 /* 7E18 AppleM2CLCD enables sources at +8 and acknowledges +0xc with W1C.
  * Its idle path clears enable bit 0; a constant status of 1 and an interrupt
  * driven by the last acknowledgement caused unexpected interrupts at 60 Hz. */
+/*
+ * S5L8900 (iPod touch 1G) window-1 register layout, mapped onto the S5L8720
+ * offsets this model decodes. The two CLCD generations keep the same
+ * per-window fields (depth, framebuffer base, horizontal span, resolution) at
+ * different offsets, and the 8900's frame interrupt has no enable/status pair:
+ * it is raised every frame and acknowledged by any write to +0x18. Offsets the
+ * 8900 layout does not share (LCDCON2 at +8, the VIDCON block at +0x200) are
+ * stored in plane_regs and otherwise ignored. Registers 0x8/0xC are the
+ * 8720's IRQ enable/status and must not be reached from the 8900 map, so those
+ * addresses translate to an unused slot.
+ */
+static hwaddr lcd_s5l8900_offset(hwaddr addr)
+{
+    switch (addr) {
+    case 0x5c: return 0x20;   /* W1 depth (0x700) */
+    case 0x60: return 0x24;   /* W1 framebuffer base */
+    case 0x64: return 0x30;   /* W1 resolution */
+    case 0x68: return 0x28;   /* W1 hspan (pixels, 0x140) */
+    case 0x8:
+    case 0xC:
+    case 0x14:
+    case 0x18: return 0x10;   /* LCDCON2, irq enable/status: handled by the caller */
+    default:   return addr;
+    }
+}
+
+/* What the panel scans out: window 1, or on the S5L8900 iBoot's window 2
+ * (base at 0x78) until the kernel programs window 1. */
+static uint32_t lcd_scanout_base(IPodTouchLCDState *s)
+{
+    if (s->s5l8900 && !s->w1_framebuffer_base) {
+        return s->plane_regs[0x78 / 4];
+    }
+    return s->w1_framebuffer_base;
+}
+
 static void lcd_update_irq(IPodTouchLCDState *s)
 {
     qemu_set_irq(s->irq, (s->irq_status & s->irq_enable) != 0);
@@ -172,8 +209,40 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
     // printf("%s: read from location 0x%08x\n", __func__, addr);
 
     IPodTouchLCDState *s = (IPodTouchLCDState *)opaque;
+    /* The S5L8720 driver reads RGB1 control after programming geometry,
+     * then ORs rotation into it. This existing latch is readable independently
+     * of the optional broader plane register readback. */
+    if (!s->s5l8900 && addr == 0x40) {
+        return s->plane_regs[addr / 4];
+    }
     if (s->planes_enabled && !(addr & 3) && addr >= 0x10 &&
         addr < sizeof(s->plane_regs)) return s->plane_regs[addr / 4];
+    if (s->s5l8900) {
+        hwaddr raw = addr;
+        if (raw == 0x14) {
+            return s->irq_enable;
+        }
+        if (raw == 0x18) {
+            return s->irq_status;       /* pending, not the last ack written */
+        }
+        addr = lcd_s5l8900_offset(addr);
+        switch (addr) {
+        case 0x0:
+            return 0;
+        case 0x20: case 0x24: case 0x28: case 0x30:
+            break;                      /* the shared window-1 fields below */
+        default:
+            /*
+             * LCDCON2 (0x8: the kernel's AppleH1CLCD picks the window iBoot
+             * left enabled from its bits 0x40/0x20/0x10/0x8 and reads that
+             * window's base/span/size to wrap the boot framebuffer), the
+             * VIDCON/VIDTCON block, window 2 (iBoot's logo window, 0x70-0x84),
+             * QLEN: plain storage the driver reads back, as in devos50's model.
+             * Indexed by the raw offset -- the write path stores it there.
+             */
+            return (!(raw & 3) && raw < sizeof(s->plane_regs)) ? s->plane_regs[raw / 4] : 0;
+        }
+    }
     switch(addr)
     {
         case 0x0:
@@ -232,6 +301,22 @@ static void ipod_touch_lcd_write(void *opaque, hwaddr addr, uint64_t val, unsign
     }
 
     if (!(addr & 3) && addr < sizeof(s->plane_regs)) s->plane_regs[addr / 4] = val;
+    if (s->s5l8900) {
+        if (addr == 0x14) {
+            /* Interrupt enable: AppleH1CLCD sets bit 0 around each window
+             * update and clears the register when it disables the display. */
+            s->irq_enable = val;
+            lcd_update_irq(s);
+            return;
+        }
+        if (addr == 0x18) {
+            /* Any write to +0x18 acknowledges the frame interrupt. */
+            s->irq_status = 0;
+            lcd_update_irq(s);
+            return;
+        }
+        addr = lcd_s5l8900_offset(addr);
+    }
     switch(addr) {
         case 0x4:
             s->lcd_con = val;
@@ -695,9 +780,20 @@ static void lcd_refresh(void *opaque)
     }
 
     bool composed = false;
-    if (lcd->planes_enabled && lcd_needs_plane_composition(lcd->plane_scanout)) {
+    /*
+     * Composition follows the programmed plane registers whether or not
+     * lcd-planes (which gates their readback) is on. CoreAnimation scans an
+     * opaque GL layer out directly -- a 240x360 surface at (40,60) on one
+     * plane, its UI on the other -- and reading that as one full-panel
+     * 320-wide framebuffer showed striped garbage over 270 or 480 rows,
+     * depending on what followed the surface in memory.
+     */
+    const uint32_t *planes = lcd->plane_scanout;
+    /* The S5L8900 layout keeps its own words in plane_regs (LCDCON2, VIDCON,
+     * window 2); the S5L8720 plane test would misread them as a composition. */
+    if (!lcd->s5l8900 && lcd_needs_plane_composition(planes)) {
         if (!lcd->rotbuf) lcd->rotbuf = g_malloc(LCD_FB_WIDTH * LCD_FB_HEIGHT * 4);
-        composed = lcd_compose_planes(lcd->plane_scanout, lcd->rotbuf);
+        composed = lcd_compose_planes(planes, lcd->rotbuf);
         if (!composed) {
             static bool warned;
             if (!warned) { warned = true; fprintf(stderr, "[LCD] unsupported plane configuration\n"); }
@@ -752,6 +848,17 @@ static void lcd_refresh(void *opaque)
     if (lcd->last_bright != bri) {
         lcd->last_bright = bri;
         lcd->invalidate = 1;
+    }
+    if (lcd->fbsection.mr && memory_region_is_ram(lcd->fbsection.mr)) {
+        /* The GL bridge writes frames back into this memory and clears the dirty bits of the
+         * pages it checks, ours among them: its generation says the scanout changed anyway. */
+        uint64_t gen = gles_host_ram_gen(memory_region_get_ram_addr(lcd->fbsection.mr) +
+                                         lcd->fbsection.offset_within_region,
+                                         (uint64_t)src_width * height);
+        if (gen != lcd->gles_gen) {
+            lcd->gles_gen = gen;
+            lcd->invalidate = 1;
+        }
     }
     lcd_bright_lut_sync(bri);
 
@@ -977,8 +1084,16 @@ static void refresh_timer_tick(void *opaque)
      * have reached yet. The driver already assumes the register takes effect at
      * the next vblank; that is what its triple buffering is for.
      */
-    s->scanout_base = s->w1_framebuffer_base;
+    s->scanout_base = lcd_scanout_base(s);
     memcpy(s->plane_scanout, s->plane_regs, sizeof(s->plane_regs));
+
+    /* One ring entry per vsync: a changed scanout base is a new latched frame
+     * (a present the panel now shows); an unchanged one held the previous frame
+     * -- a dropped/duplicated frame for the jank metric. Stamped in
+     * QEMU_CLOCK_VIRTUAL, so the timeline is deterministic under any host load. */
+    frame_timeline_record(&s->ftl, s->scanout_base,
+                          s->scanout_base != s->ftl_last_base);
+    s->ftl_last_base = s->scanout_base;
 
     if (s->con && qemu_console_is_visible(s->con) && !lcd_vsync_legacy()) {
         lcd_in_vsync_present = true;
@@ -1026,11 +1141,14 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
     memset(s->plane_scanout, 0, sizeof(s->plane_scanout));
     s->lcd_con = 0;
     s->render = 0;
-    s->irq_enable = s->irq_status = 0;
+    s->irq_enable = 0;
+    s->irq_status = 0;
     lcd_update_irq(s);
     s->w1_display_resolution_info = 0;
     s->w1_framebuffer_base = 0;
     s->scanout_base = 0;
+    frame_timeline_reset(&s->ftl);
+    s->ftl_last_base = 0;
     s->w1_hspan = 0;
     s->w1_display_depth_info = 0;
     s->invalidate = 1;
@@ -1087,6 +1205,11 @@ static void ipod_touch_lcd_realize(DeviceState *dev, Error **errp)
     timer_mod(s->refresh_timer, s->next_vsync);
 }
 
+static char *ipod_touch_lcd_get_frame_timeline(Object *obj, Error **errp)
+{
+    return frame_timeline_dump(&IPOD_TOUCH_LCD(obj)->ftl);
+}
+
 static void ipod_touch_lcd_init(Object *obj)
 {
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
@@ -1096,6 +1219,11 @@ static void ipod_touch_lcd_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &lcd_ops, s, "lcd", 0x10000);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+    object_property_add_str(obj, "frame-timeline",
+                            ipod_touch_lcd_get_frame_timeline, NULL);
+    object_property_set_description(obj, "frame-timeline",
+        "Latched-frame ring, one 'seq virt_ns newframe key' line per vsync in "
+        "guest-virtual ns; the jank harness reads it (docs/perf-jank.md)");
 }
 
 /*
@@ -1145,7 +1273,7 @@ static int ipod_touch_lcd_post_load(void *opaque, int version_id)
     s->last_present_ns = 0;
     /* scanout_base is re-latched by the next frame interrupt anyway, but a
      * repaint can be asked for before that and would otherwise draw black. */
-    s->scanout_base = s->w1_framebuffer_base;
+    s->scanout_base = lcd_scanout_base(s);
     return 0;
 }
 
@@ -1175,6 +1303,7 @@ static const VMStateDescription vmstate_ipod_touch_lcd = {
 
 static const Property lcd_properties[] = {
     DEFINE_PROP_BOOL("planes", IPodTouchLCDState, planes_enabled, false),
+    DEFINE_PROP_BOOL("s5l8900", IPodTouchLCDState, s5l8900, false),
 };
 
 static void ipod_touch_lcd_class_init(ObjectClass *klass, void *data)

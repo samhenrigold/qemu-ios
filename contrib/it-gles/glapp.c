@@ -2,8 +2,8 @@
  * glapp -- a real iOS application, with a real CAEAGLLayer, drawing through
  * the GLES HLE path and composited by CoreAnimation.
  *
- * gles_fw already proved that OpenGLES.framework dispatches into our
- * MBXGLEngine replacement. What it could not prove is the last inch: a
+ * A command-line probe (gles_fw, since deleted) proved that OpenGLES.framework
+ * dispatches into our MBXGLEngine replacement. What it could not prove is the last inch: a
  * command-line process can create a UIWindow, but SpringBoard never composites
  * it, so -[EAGLContext renderbufferStorage:fromDrawable:] has nothing
  * meaningful behind it and the frame can only reach the panel through the debug
@@ -56,9 +56,11 @@ extern int dup2(int, int);
 extern void _exit(int);
 extern void *dlopen(const char *, int);
 extern void *dlsym(void *, const char *);
-extern const char *dlerror(void);
+extern char *dlerror(void);
 
+#ifndef RTLD_NOW
 #define RTLD_NOW  2
+#endif
 #define O_WRONLY  0x0001
 #define O_CREAT   0x0200
 #define O_TRUNC   0x0400
@@ -193,16 +195,78 @@ static int g_gl_ready;
 
 /* ------------------------------------------------------------- delegate --- */
 
+#ifdef GLAPP_ES2
+/* The ES 2.0 variant (GLTest2.app, built by contrib/gles-public/build-apps.sh): the same
+ * layout, yellow field and a blue quad over the left half, drawn by a shader. */
+static void (*p_glUseProgram)(unsigned);
+static void (*p_glVertexAttribPointer)(unsigned, int, unsigned, unsigned char, int, const void *);
+static void (*p_glEnableVertexAttribArray)(unsigned);
+static unsigned g_prog;
+
+static unsigned es2_program(void *h)
+{
+    static const char *vs = "attribute vec2 p;\n"
+        "void main() { gl_Position = vec4(p, 0.0, 1.0); }\n";
+    static const char *fs = "precision mediump float;\n"
+        "void main() { gl_FragColor = vec4(0.0, 0.0, 1.0, 1.0); }\n";
+    unsigned (*createShader)(unsigned) = dlsym(h, "glCreateShader");
+    void (*shaderSource)(unsigned, int, const char **, const int *) = dlsym(h, "glShaderSource");
+    void (*compileShader)(unsigned) = dlsym(h, "glCompileShader");
+    unsigned (*createProgram)(void) = dlsym(h, "glCreateProgram");
+    void (*attachShader)(unsigned, unsigned) = dlsym(h, "glAttachShader");
+    void (*bindAttribLocation)(unsigned, unsigned, const char *) = dlsym(h, "glBindAttribLocation");
+    void (*linkProgram)(unsigned) = dlsym(h, "glLinkProgram");
+    unsigned v, f, prog;
+
+    p_glUseProgram = dlsym(h, "glUseProgram");
+    p_glVertexAttribPointer = dlsym(h, "glVertexAttribPointer");
+    p_glEnableVertexAttribArray = dlsym(h, "glEnableVertexAttribArray");
+    if (!createShader || !p_glUseProgram || !p_glVertexAttribPointer) return 0;
+    v = createShader(0x8B31);   /* GL_VERTEX_SHADER */
+    f = createShader(0x8B30);   /* GL_FRAGMENT_SHADER */
+    shaderSource(v, 1, &vs, 0);
+    shaderSource(f, 1, &fs, 0);
+    compileShader(v);
+    compileShader(f);
+    prog = createProgram();
+    attachShader(prog, v);
+    attachShader(prog, f);
+    bindAttribLocation(prog, 0, "p");
+    linkProgram(prog);
+    w("[glapp] ES2 program="); wd(prog); w("\n");
+    return prog;
+}
+
+/* Alone in a page nothing else touches, so the draw is its first access and
+ * the host has to fault it in (a static table used to draw nothing). */
+static const float quad[1024] __attribute__((aligned(4096))) = { -1, -1,  0, -1,  -1, 1,  0, 1 };
+
 static void draw_frame(void)
 {
-    /* A quad over the left half, in a magenta field. Both colours are ones no
-     * part of the iOS UI produces, so a screenshot cannot be read two ways. */
-    static const float quad[8] = {
-        0.0f,           0.0f,
-        VIEW_W / 2.0f,  0.0f,
-        0.0f,           (float)VIEW_H,
-        VIEW_W / 2.0f,  (float)VIEW_H,
-    };
+
+    p_glBindFramebufferOES(GL_FRAMEBUFFER_OES, g_fb);
+    p_glViewport(0, 0, VIEW_W, VIEW_H);
+    p_glClearColor(1.0f, 1.0f, 0.0f, 1.0f);     /* yellow */
+    p_glClear(GL_COLOR_BUFFER_BIT);
+    p_glUseProgram(g_prog);
+    p_glVertexAttribPointer(0, 2, GL_FLOAT, 0, 0, quad);
+    p_glEnableVertexAttribArray(0);
+    p_glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+#else
+/* A quad over the left half, in a magenta field. Both colours are ones no
+ * part of the iOS UI produces, so a screenshot cannot be read two ways. It is
+ * alone in a page nothing else touches, so the draw is its first access and
+ * the host has to fault it in (a static table used to draw nothing). */
+static const float quad[1024] __attribute__((aligned(4096))) = {
+    0.0f,           0.0f,
+    VIEW_W / 2.0f,  0.0f,
+    0.0f,           (float)VIEW_H,
+    VIEW_W / 2.0f,  (float)VIEW_H,
+};
+
+static void draw_frame(void)
+{
 
     p_glBindFramebufferOES(GL_FRAMEBUFFER_OES, g_fb);
     p_glViewport(0, 0, VIEW_W, VIEW_H);
@@ -233,6 +297,7 @@ static void draw_frame(void)
         p_glDisable(GL_TEXTURE_2D);
     }
 }
+#endif
 
 static void present_frame(void)
 {
@@ -247,7 +312,9 @@ static void app_tick(id_ self, SEL_ cmd, id_ timer)
     if (!g_gl_ready) {
         return;
     }
+    if (!g_frames) w("[glapp] first draw\n");
     draw_frame();
+    if (!g_frames) w("[glapp] first present\n");
     present_frame();
     g_frames++;
     if (g_frames == 1 || g_frames == 20) {
@@ -279,7 +346,12 @@ static void gl_setup(void)
 
     w("[glapp] layer="); wx((unsigned long)layer); w("\n");
 
-    g_ctx = m1u(m0(C("EAGLContext"), S("alloc")), S("initWithAPI:"), 1);
+    g_ctx = m1u(m0(C("EAGLContext"), S("alloc")), S("initWithAPI:"),
+#ifdef GLAPP_ES2
+             2);
+#else
+             1);
+#endif
     w("[glapp] EAGLContext="); wx((unsigned long)g_ctx); w("\n");
     if (!g_ctx) {
         /* The classic cause is GLESCreateGC handing back 0 -- the framework
@@ -323,6 +395,9 @@ static void gl_setup(void)
         w("\n");
     }
 
+#ifdef GLAPP_ES2
+    g_prog = es2_program(dlopen("/System/Library/Frameworks/OpenGLES.framework/OpenGLES", RTLD_NOW));
+#endif
     if (p_glGenTextures && p_glTexImage2D) {
         static unsigned char yellow[4 * 4 * 4];
         unsigned i;
@@ -479,7 +554,10 @@ int main(void)
      * the mbxshim lines -- which say which bind entry point fired and what
      * surface geometry CA handed over -- survive the launch.
      */
-    fd = open("/tmp/glapp.log", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    #ifndef GLAPP_LOG
+#define GLAPP_LOG "/tmp/glapp.log"
+#endif
+    fd = open(GLAPP_LOG, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd >= 0) {
         dup2(fd, 1);
         dup2(fd, 2);

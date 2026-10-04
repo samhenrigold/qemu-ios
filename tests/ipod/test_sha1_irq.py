@@ -22,6 +22,9 @@ static int line;
 static void qemu_irq_raise(qemu_irq irq) {line=1;}
 static void qemu_irq_lower(qemu_irq irq) {line=0;}
 static void cpu_physical_memory_read(uint64_t a,void *p,size_t n) {memset(p,0,n);}
+#define IT_SHA1_DMA_CHUNK (64 * 1024)
+#define MIN(a,b) ((a)<(b)?(a):(b))
+typedef uint64_t hwaddr;
 #define g_malloc malloc
 #define g_free free
 '''+state+'\n'+'\n'.join(functions)+r'''

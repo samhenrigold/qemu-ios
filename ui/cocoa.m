@@ -1818,7 +1818,6 @@ static NSView *it_output_box(NSString *text, NSSize size)
 - (void)copyScreen:(id)sender;
 - (void)deviceButton:(id)sender;
 - (void)installApp:(id)sender;
-- (void)openTerminal:(id)sender;
 - (void)eraseDevice:(id)sender;
 @end
 
@@ -2426,60 +2425,6 @@ static void it_send_chord(int key, bool shift, bool down)
     });
 }
 
-/*
- * Device ▸ Open Terminal -- a root shell on the guest, over USB.
- *
- * The script is the deliverable, not this method: it is runnable from a
- * terminal, so the ordering it has to get right (usbmuxd, then iproxy, then
- * ssh) can be debugged without going through the menu. All that happens here is
- * that its refusals become a dialog, because someone running a prebuilt app has
- * no stderr to read them on.
- */
-- (void)openTerminal:(id)sender
-{
-    const char *env = getenv("IT_SSH_TERMINAL");
-    NSString *tool = env ? [NSString stringWithUTF8String:env]
-                         : [[[NSBundle mainBundle] bundlePath]
-                            stringByAppendingPathComponent:@"../contrib/it-ssh-terminal.sh"];
-
-    if (![[NSFileManager defaultManager] isExecutableFileAtPath:tool]) {
-        QEMU_Alert([NSString stringWithFormat:
-            @"Cannot open a terminal: %@ is missing.\n\nSet IT_SSH_TERMINAL to "
-            @"its path if the tree is somewhere else.", tool]);
-        return;
-    }
-
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        NSTask *task = [[NSTask alloc] init];
-        NSPipe *pipe = [NSPipe pipe];
-        NSData *out = nil;
-        int status = -1;
-
-        [task setLaunchPath:tool];
-        [task setStandardError:pipe];
-        [task setStandardOutput:[NSFileHandle fileHandleWithNullDevice]];
-        @try {
-            [task launch];
-            out = [[pipe fileHandleForReading] readDataToEndOfFile];
-            [task waitUntilExit];
-            status = [task terminationStatus];
-        } @catch (NSException *e) {
-            out = [[e reason] dataUsingEncoding:NSUTF8StringEncoding];
-        }
-        NSString *text = [[[NSString alloc] initWithData:out
-                            encoding:NSUTF8StringEncoding] autorelease];
-        [task release];
-
-        if (status != 0) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                QEMU_Alert([NSString stringWithFormat:@"Could not open a "
-                            @"terminal on the device.\n\n%@",
-                            [text length] ? text : @"(no output)"]);
-            });
-        }
-    });
-}
-
 /* Used by the Speed menu items */
 - (void)adjustSpeed:(id)sender
 {
@@ -2618,8 +2563,6 @@ static void create_initial_menus(void)
     [menu addItem: [NSMenuItem separatorItem]];
     [menu addItem: [[[NSMenuItem alloc] initWithTitle:@"Install App…"
                      action:@selector(installApp:) keyEquivalent:@""] autorelease]];
-    [menu addItem: [[[NSMenuItem alloc] initWithTitle:@"Open Terminal"
-                     action:@selector(openTerminal:) keyEquivalent:@""] autorelease]];
     [menu addItem: [NSMenuItem separatorItem]];
     [menu addItem: [[[NSMenuItem alloc] initWithTitle:@"Erase All Content and Settings…"
                      action:@selector(eraseDevice:) keyEquivalent:@""] autorelease]];

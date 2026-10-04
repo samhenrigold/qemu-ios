@@ -1,0 +1,16 @@
+{
+ "format": 1,
+ "board": "n72ap",
+ "product_type": "iPod2,1",
+ "build": "7E18",
+ "storage": "8g",
+ "ipsw": {"path": "~/Developer/ipod2g-re/OldSDK/iPod2,1_3.1.3_7E18_Restore.ipsw",
+          "sha1": "5f4f5c01eda2f811f73167e7d1f82dbeed82367b"},
+ "keys": "~/Downloads/ios3-ipod/iPod2,1_3.1.3_7E18_keys",
+ "identity": {"seed": "ipod2g-7E18-default"},
+ "model_number": "MB528",
+ "region_info": "LL/A",
+ "volume_blocks": 1835008,
+ "options": {"gles_shim": true, "appsync": true, "web_proxy": true},
+ "activation": {"hook": null}
+}

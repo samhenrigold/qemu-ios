@@ -79,6 +79,7 @@ print(shlex.join(out))
 # Only what the app calls; everything else stays private.
 cat > macos-exports.syms <<'SYMS'
 _qemu_ios_main
+_qemu_ios_device_info
 _qemu_ios_ui_attach
 _qemu_ios_ui_frame
 _qemu_ios_ui_frame_size
@@ -86,6 +87,9 @@ _qemu_ios_ui_copy_frame
 _qemu_ios_ui_touch
 _qemu_ios_ui_touch2
 _qemu_ios_ui_button
+_qemu_ios_ui_input_sequence
+_qemu_ios_ui_input_sequence_status
+_qemu_ios_ui_input_sequence_cancel
 _qemu_ios_ui_key
 _qemu_ios_ui_key_mac
 _qemu_ios_ui_rotate
@@ -95,6 +99,9 @@ _qemu_ios_ui_attitude
 _qemu_ios_ui_battery
 _qemu_ios_ui_battery_config
 _qemu_ios_ui_usb_connection
+_qemu_ios_ui_compass
+_qemu_ios_ui_usb_charger
+_qemu_ios_ui_orientation
 _qemu_ios_audio_capture_start
 _qemu_ios_audio_capture_read
 _qemu_ios_audio_capture_time
@@ -106,12 +113,15 @@ _qemu_ios_agent_result
 _qemu_ios_agent_free_result
 _qemu_ios_agent_status
 _qemu_ios_gles_contexts
+_qemu_ios_guest_package_report
+_qemu_ios_gles_protocol
 _qemu_ios_build_id
 _qemu_ios_ui_pause
 _qemu_ios_ui_resume
 _qemu_ios_ui_reset
 _qemu_ios_ui_powerdown
 _qemu_ios_ui_quit
+_qemu_ios_ui_net_restrict
 _qemu_ios_snapshot_save
 _qemu_ios_snapshot_done
 _qemu_ios_ui_ready
@@ -122,7 +132,6 @@ _qemu_ios_snapshot_save2
 _qemu_ios_snapshot_status
 _qemu_ios_snapshot_resume
 _qemu_ios_set_foreground
-_qemu_ios_ui_icon_state_generation
 SYMS
 
 sh macos-link-dylib.sh

@@ -11,12 +11,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchUSBPhysState, IPOD_TOUCH_USB_PHYS)
 #define REG_OPHYPWR 0x0
 #define REG_OPHYCLK 0x4
 #define REG_ORSTCON 0x8
+#define ORSTCON_PHY_RESET (1u << 0)
 #define REG_UNKNOWN1 0x1C
 #define REG_OPHYTUNE 0x20
 
 typedef struct IPodTouchUSBPhysState {
     SysBusDevice busdev;
     MemoryRegion iomem;
+    qemu_irq phy_reset;
 
     uint32_t usb_ophypwr;
     uint32_t usb_ophyclk;

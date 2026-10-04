@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Opt-in native agent acceptance. Uses a fresh NAND overlay and owns its processes."""
+"""Opt-in native agent acceptance without SSH or a shell. Uses a fresh NAND overlay and owns its processes.
+A v1 agent in the base image is upgraded to this tree's build first (regress.ensure_agent)."""
 import argparse
 import os
 from pathlib import Path
@@ -11,17 +12,17 @@ import regress as r
 ROOT = Path(__file__).resolve().parents[2]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--files', default=str(ROOT.parent/'qemu-ios-files'))
-parser.add_argument('--qemu', default=str(ROOT/'build-native14/qemu-build/qemu-system-arm'))
-parser.add_argument('--usbmuxd', default=str(ROOT/'build-native14/build/usbmuxd/src/usbmuxd'))
+parser.add_argument('--qemu', default=str(ROOT/'build/qemu-system-arm'))
+parser.add_argument('--usbmuxd', default=os.path.expanduser('~/Developer/usbmuxd-qemu/usbmuxd/src/usbmuxd'))
 parser.add_argument('--base-nand')
-parser.add_argument('--baked', action='store_true')
-parser.add_argument('--firmware', action='store_true', help='verify 7E18 profile and legacy MBX read isolation')
+parser.add_argument('--baked', action='store_true', help='also restart the agent through launchd')
+parser.add_argument('--firmware', action='store_true', help='verify MBX reads do not modify guest kernel memory')
 parser.add_argument('--orientation', action='store_true', help='verify native UI rotation and respring recovery')
 parser.add_argument('--typing', action='store_true', help='verify injected Notes and Harness input')
 args = parser.parse_args()
 out = tempfile.mkdtemp(prefix='it-agent-guest-')
 f = args.files
-cfg = SimpleNamespace(out=out, files=f, base_nand=args.base_nand or f+'/nand-ultimate',
+cfg = SimpleNamespace(out=out, files=f, base_nand=os.path.realpath(args.base_nand or f+'/nand-current'),
     nor=f+'/ios3/nor_7E18.bin', overlay=out+'/overlay', qemu=args.qemu,
     usbmuxd=args.usbmuxd, usbmuxd_ok=True, usb_port=r.free_port(1520,1539),
     mux_port=r.free_port(27400,27419), qmp_port=r.free_port(28200,28219),
@@ -35,37 +36,49 @@ print('OUTPUT', out, flush=True)
 try:
     d.start()
     ok, detail, lit = d.wait_for_home(240); assert ok, detail
-    result = r.Result('launch')
-    port = r.prepare_launcher(cfg, p, d, result); assert port, result.detail
-    if not args.baked:
-        result = r.guest_ssh(cfg, port, [], scp_from=str(ROOT/'contrib/it-agent/it_agent'), scp_to='/tmp/it_agent')
-        assert result.returncode == 0, result
-        result = r.guest_ssh(cfg, port, ['launchctl unload /System/Library/LaunchDaemons/com.qemu.it-pbd.plist; launchctl unload /System/Library/LaunchDaemons/com.qemu.it-agent.plist; chmod 755 /tmp/it_agent; /tmp/it_agent </dev/null >/tmp/it_agent.log 2>&1 &'])
-        assert result.returncode == 0, result
-    deadline = time.monotonic() + 80
-    while not r.itqmp.agent_alive(d.qmp):
-        if time.monotonic() > deadline:
-            raise AssertionError(r.guest_ssh(cfg, port, ['cat /tmp/it_agent.log /var/log/it_agent.log']))
-        time.sleep(1)
+    ok, detail = r.ensure_agent(d.qmp); assert ok, detail
+    control = r.AgentControl(d.qmp)
     def agent(op, args='', body=b''):
         status, data = r.itqmp.agent(d.qmp, op, args, body)
         print(op, status, repr(data[:100]), flush=True)
         return status, data
-    assert agent('ping') == (0, b'it_agent v1\n')
-    status, data = agent("exec", 'printf \'uid=%s\\n\' "$UID"'); assert status == 0 and b"uid=0" in data, (status, data)
+    def spawn(*argv):
+        status, data = r.itqmp.spawn(d.qmp, argv)
+        print('spawn', argv, status, repr(data[:100]), flush=True)
+        return status, data
+    import errno
+    status, hello = agent('ping'); assert status == 0 and hello.startswith(r.AGENT_HELLO.encode() + b'\nops ')
+    for op in (b'spawn', b'sync', b'chown', b'unlink', b'dlicon', b'putpart'):
+        assert b' ' + op + b' ' in hello, op
+    status, data = spawn('/bin/launchctl', 'list'); assert status == 0 and b'com.qemu.it-agent' in data
+    assert spawn('/bin/launchctl', 'no-such-subcommand')[0] == 1
+    assert spawn('/nonexistent')[0] == -errno.ENOENT
     body = bytes(range(256)) * 40
-    assert agent('exec', 'cat', body) == (0, body)
     assert agent('put', '/tmp/agent binary 600', body) == (0, b'')
     assert agent('get', '/tmp/agent binary') == (0, body)
     assert agent('getrange', '257 2048 /tmp/agent binary') == (0, body[257:2305])
-    assert agent('exec', 'printf error >&2; exit 7') == (7, b'error')
+    assert agent('chown', '501 501 /tmp/agent binary') == (0, b'')
+    assert agent('chown', '0 0 /nonexistent/x')[0] == -errno.ENOENT
+    assert agent('unlink', '/tmp/agent binary') == (0, b'')
+    assert agent('get', '/tmp/agent binary')[0] == -errno.ENOENT
+    assert agent('sync') == (0, b'')
+    assert agent('kill', 'SpringBoard')[0] == -errno.ENOSYS
+    # The agent corrects a wrong guest clock from the host's; lockdown reports the guest's.
     assert agent('settime', '1000000000')[0] == 0
-    time.sleep(3)
-    status, data = agent('exec', 'date +%s'); assert status == 0 and abs(int(data) - time.time()) < 5
-    assert agent('exec', 'sleep 2; printf alive') == (0, b'alive')
+    time.sleep(4)
+    clock = r.run(['ideviceinfo', '-k', 'TimeIntervalSince1970'], cfg, 30).stdout
+    assert abs(float(clock) - time.time()) < 10, clock
     assert r.itqmp.agent_alive(d.qmp)
     assert agent('lockstatus')[0] == 0
-    ok, detail = r.unlock(cfg, port, d); assert ok, detail
+    ok, detail = r.unlock(cfg, control, d); assert ok, detail
+    assert agent('dlicon', 'add agent-guest-test') == (0, b'')
+    time.sleep(2)
+    d.qmp.swipe(280, 240, 40, 240)  # the placeholder lands after the last icon
+    time.sleep(2)
+    r.to_png(d.qmp.shot(out + '/dlicon.ppm'), out + '/dlicon.png')
+    d.qmp.home()
+    assert agent('dlicon', 'cancel agent-guest-test') == (0, b'')
+    assert agent('dlicon', 'bogus x')[0] == -errno.EINVAL
     assert agent('launch', 'com.apple.Preferences')[0] == 0
     time.sleep(2)
     status, data = agent('frontmost'); assert status == 0 and b'com.apple.Preferences' in data
@@ -115,14 +128,8 @@ try:
             assert time.monotonic()<deadline
             time.sleep(0.5)
         d.qmp.cmd('qom-set',path='/machine',property='accel-orientation',value=1)
-        import errno
-        assert agent('exec','killall -STOP SpringBoard')[0]==0
-        try:
-            assert agent('orientation')[0]==-errno.ETIMEDOUT
-            assert agent('ping')==(0,b'it_agent v1\n')
-        finally:
-            assert agent('exec','killall -CONT SpringBoard')[0]==0
-        assert agent('kill','SpringBoard')[0] == 0
+        # (The SIGSTOPped-SpringBoard timeout case needed freeze's killall; no stock binary sends signals.)
+        assert spawn('/bin/launchctl','stop','com.apple.SpringBoard')[0] == 0
         time.sleep(10)
         deadline=time.monotonic()+30
         while agent('orientation') != (0,b'0\n'):
@@ -136,25 +143,16 @@ try:
         if pb.startswith("delivered:") and "Agent clipboard acceptance" in pb: break
         assert time.monotonic() < deadline, pb
         time.sleep(0.25)
-    try:
-        r.itqmp.agent(d.qmp, "exec", "sleep 3; touch /tmp/agent-cancel-failed", timeout=0.5)
-        raise AssertionError("slow command unexpectedly completed")
-    except TimeoutError:
-        pass
-    deadline = time.monotonic() + 10
-    while not r.itqmp.agent_alive(d.qmp):
-        assert time.monotonic() < deadline
-        time.sleep(0.25)
-    time.sleep(4)
-    assert agent("exec", "test ! -e /tmp/agent-cancel-failed") == (0, b"")
     if args.baked:
-        result = r.guest_ssh(cfg, port, ["killall it_agent"]); assert result.returncode == 0
+        try:  # the daemon that answers is the one stopped: ECONNRESET once its successor claims the channel
+            assert spawn('/bin/launchctl', 'stop', 'com.qemu.it-agent')[0] == -errno.ECONNRESET
+        except TimeoutError:
+            pass
         time.sleep(11)
         deadline = time.monotonic() + 90
-        while not r.itqmp.agent_alive(d.qmp):
+        while r.agent_ping(d.qmp, timeout=5) != r.AGENT_HELLO:
             assert time.monotonic() < deadline, "launchd agent did not recover"
             time.sleep(1)
-        assert agent("ping") == (0, b"it_agent v1\n")
     if args.typing:
         import plistlib
         def checked(op, args='', body=b''):
@@ -173,10 +171,11 @@ try:
         preferences = plistlib.loads(checked('get', preferences_path))
         preferences.pop('SBDontLockEver', None)
         checked('put', preferences_path + ' 600', plistlib.dumps(preferences, fmt=plistlib.FMT_BINARY))
-        checked('exec', 'chown 501:501 ' + preferences_path)
-        checked('exec', 'launchctl unload ' + path + '; launchctl load ' + path)
+        checked('chown', '501 501 ' + preferences_path)
+        spawn('/bin/launchctl', 'unload', path)
+        assert spawn('/bin/launchctl', 'load', path)[0] == 0
         time.sleep(15)
-        unlocked, detail = r.unlock(cfg, port, d)
+        unlocked, detail = r.unlock(cfg, control, d)
         assert unlocked, detail
         checked('launch', 'com.apple.mobilenotes')
         time.sleep(4)
@@ -231,13 +230,11 @@ try:
         assert b'Lock Screen' in checked('frontmost')
         print('PASS: foreground typing, Spotlight, unfocused key discard and locked input rejection', flush=True)
         print('PASS: Notes and third-party UITextField Unicode, deletion, host keys and UI inspection', flush=True)
-    print('PASS: native agent ping, root exec, binary stdin/files, status, clock, liveness', flush=True)
+    print('PASS: native agent v2 ping, shell-free spawn, files, chown/unlink/sync, dlicon, clock, SpringBoard ops', flush=True)
     assert d.powerdown(), 'guest shutdown not confirmed'
     if args.firmware:
         log=Path(d.dir,'qemu.log').read_text(errors='replace')
-        assert '[FIRMWARE] detected build 7E18' in log
-        if os.environ.get('IT_AMFI_ALLOW_TASKPORT'):
-            assert '[IT_AMFI_ALLOW_TASKPORT] patched' in log
+        assert '[USBGATE] patched' not in log
 finally:
     if d.qmp: d.qmp.close()
     p.stop_all()

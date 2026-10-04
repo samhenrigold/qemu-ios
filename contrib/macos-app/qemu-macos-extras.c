@@ -6,6 +6,7 @@
  */
 
 #include "qemu/osdep.h"
+#include <math.h>
 #include "audio/audio.h"
 #include "system/runstate.h"
 #include <pthread.h>
@@ -57,6 +58,21 @@ static void mtt_bh(void *opaque)
     QemuConsole *con = con0();
     static bool tracked;
 
+    if (!runstate_is_running() && !runstate_check(RUN_STATE_SUSPENDED)) {
+        if (t->phase == QEMU_IOS_TOUCH_END && tracked && con) {
+            InputMultiTouchEvent mtt = {
+                .type = INPUT_MULTI_TOUCH_TYPE_END, .slot = 1, .tracking_id = 1,
+            };
+            InputEvent event = {.type = INPUT_EVENT_KIND_MTT, .u.mtt.data = &mtt};
+            qemu_ios_ui_manual_touch2(false);
+            qemu_input_event_send_impl(con, &event);
+            qemu_input_event_sync_impl();
+            tracked = false;
+        }
+        g_free(t);
+        return;
+    }
+    qemu_ios_ui_manual_touch2(t->phase != QEMU_IOS_TOUCH_END);
     if (con) {
         InputMultiTouchType type;
         if (t->phase == QEMU_IOS_TOUCH_END) {
@@ -83,7 +99,9 @@ static void mtt_bh(void *opaque)
 
 void qemu_ios_ui_touch2(int phase, double nx, double ny)
 {
-    if (!qemu_ios_ui_ready()) {
+    if (phase < QEMU_IOS_TOUCH_BEGIN || phase > QEMU_IOS_TOUCH_END ||
+        !isfinite(nx) || !isfinite(ny) || nx < 0 || nx > 1 || ny < 0 || ny > 1 ||
+        !qemu_ios_ui_ready()) {
         return;
     }
     struct mtt_touch *t = g_new0(struct mtt_touch, 1);
@@ -104,6 +122,7 @@ static void key_bh(void *opaque)
 {
     struct key_event *k = opaque;
     QemuConsole *con = con0();
+    qemu_ios_ui_cancel_input();
 
     if (con) {
         qemu_input_event_send_key_qcode(con, k->qcode, k->down);
@@ -173,6 +192,10 @@ static const int mac_to_qkeycode_map[] = {
     [kVK_End] = Q_KEY_CODE_END,
     [kVK_ForwardDelete] = Q_KEY_CODE_DELETE,
     [kVK_Escape] = Q_KEY_CODE_ESC,
+    /* Modifiers the app forwards from flagsChanged. Command and Control stay
+     * unmapped: those combinations belong to the menu bar. */
+    [kVK_Shift] = Q_KEY_CODE_SHIFT, [kVK_RightShift] = Q_KEY_CODE_SHIFT_R,
+    [kVK_Option] = Q_KEY_CODE_ALT, [kVK_RightOption] = Q_KEY_CODE_ALT_R,
 };
 
 void qemu_ios_ui_key_mac(int mac_keycode, bool down)
@@ -200,7 +223,26 @@ static void rotate_bh(void *opaque)
     bool clockwise = (bool)(intptr_t)opaque;
     QemuConsole *con = con0();
     int arrow = clockwise ? Q_KEY_CODE_RIGHT : Q_KEY_CODE_LEFT;
+    Object *machine = OBJECT(qdev_get_machine());
 
+    /*
+     * The iPad has no rotate chord (and host keys may belong to its USB
+     * keyboard): step the accelerometer's UIDeviceOrientation instead.
+     * Turning the device clockwise from portrait puts Home on the left
+     * (LandscapeRight, 4), then upside down (2), then Home right (3).
+     */
+    if (object_dynamic_cast(machine, MACHINE_TYPE_NAME("ipad1"))) {
+        static const int cw[] = { [1] = 4, [4] = 2, [2] = 3, [3] = 1 };
+        static const int ccw[] = { [1] = 3, [3] = 2, [2] = 4, [4] = 1 };
+        int64_t o = object_property_get_int(machine, "accel-orientation", NULL);
+
+        if (o < 1 || o > 4) {
+            o = 1;
+        }
+        object_property_set_int(machine, "accel-orientation",
+                                clockwise ? cw[o] : ccw[o], NULL);
+        return;
+    }
     if (con) {
         qemu_input_event_send_key_qcode(con, Q_KEY_CODE_META_L, true);
         qemu_input_event_send_key_qcode(con, arrow, true);
@@ -308,7 +350,9 @@ static void battery_bh(void *opaque)
     Error *err = NULL;
     const char *modes[] = { "auto", "on", "off" };
     object_property_set_int(machine, "battery-level", input->level, &err);
-    if (!err) object_property_set_str(machine, "battery-charging", modes[input->charging], &err);
+    /* The iPad has none: its charging is the port's (usb-charger). */
+    if (!err && object_property_find(machine, "battery-charging"))
+        object_property_set_str(machine, "battery-charging", modes[input->charging], &err);
     if (!err) {
         QNum *value = qnum_from_double(input->drain);
         qmp_qom_set("/machine", "battery-drain", QOBJECT(value), &err);
@@ -357,6 +401,53 @@ bool qemu_ios_ui_usb_connection(bool attached)
     return true;
 }
 
+/* One machine property from its string form, set on the QEMU thread; false
+ * if the machine has no such property (e.g. the iPod has no compass). */
+struct machine_prop { const char *name; char *value; };
+
+static void machine_prop_bh(void *opaque)
+{
+    struct machine_prop *m = opaque;
+    Error *err = NULL;
+
+    object_property_parse(OBJECT(qdev_get_machine()), m->name, m->value, &err);
+    if (err) {
+        fprintf(stderr, "[%s] %s\n", m->name, error_get_pretty(err));
+        error_free(err);
+    }
+    g_free(m->value);
+    g_free(m);
+}
+
+static bool set_machine_prop(const char *name, char *value)
+{
+    if (!qemu_ios_ui_ready() ||
+        !object_property_find(OBJECT(qdev_get_machine()), name)) {
+        g_free(value);
+        return false;
+    }
+    struct machine_prop *m = g_new(struct machine_prop, 1);
+    *m = (struct machine_prop){ name, value };
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), machine_prop_bh, m);
+    return true;
+}
+
+bool qemu_ios_ui_compass(int heading_deg)
+{
+    return set_machine_prop("compass-heading",
+                            g_strdup_printf("%d", ((heading_deg % 360) + 360) % 360));
+}
+
+bool qemu_ios_ui_orientation(int value)
+{
+    return set_machine_prop("accel-orientation", g_strdup_printf("%d", value));
+}
+
+bool qemu_ios_ui_usb_charger(bool high_power)
+{
+    return set_machine_prop("usb-charger", g_strdup(high_power ? "on" : "off"));
+}
+
 static void paste_bh(void *opaque)
 {
     char *text = opaque;
@@ -392,6 +483,9 @@ static void qmp_bh(void *opaque)
         fprintf(stderr, "[machine] NAND storage failed; relaunch after fixing storage\n");
         return;
     }
+    if (fn == qmp_system_reset || fn == qmp_quit || fn == qmp_system_powerdown) {
+        qemu_ios_ui_cancel_input();
+    }
     fn(&err);
     if (err) {
         fprintf(stderr, "[machine] %s\n", error_get_pretty(err));
@@ -413,6 +507,44 @@ void qemu_ios_ui_reset(void)     { schedule_qmp(qmp_system_reset); }
 void qemu_ios_ui_powerdown(void) { schedule_qmp(qmp_system_powerdown); }
 void qemu_ios_ui_quit(void)      { schedule_qmp(qmp_quit); }
 
+/* --- network restrict flip ----------------------------------------------- */
+#ifdef CONFIG_SLIRP
+#include "net/slirp.h"
+
+struct net_restrict_req { char *id; bool restricted; };
+
+static void net_restrict_bh(void *opaque)
+{
+    struct net_restrict_req *r = opaque;
+    if (net_slirp_set_restrict(r->id, r->restricted) < 0) {
+        fprintf(stderr, "[net] no user netdev '%s' to set restrict\n",
+                r->id ? r->id : "(default)");
+    }
+    g_free(r->id);
+    g_free(r);
+}
+
+/* Flip a running user netdev's slirp restrict flag from the app, in place: no
+ * link event, so the guest keeps its Wi-Fi association and DHCP lease. Used to
+ * open networking after the Setup Assistant finishes (restrict=on through
+ * Setup avoids 5.x's live-internet Apple-ID stall). */
+void qemu_ios_ui_net_restrict(const char *id, bool restricted)
+{
+    if (!qemu_ios_ui_ready()) {
+        return;
+    }
+    struct net_restrict_req *r = g_new(struct net_restrict_req, 1);
+    r->id = (id && *id) ? g_strdup(id) : NULL;
+    r->restricted = restricted;
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), net_restrict_bh, r);
+}
+#else
+void qemu_ios_ui_net_restrict(const char *id, bool restricted)
+{
+    (void)id; (void)restricted;
+}
+#endif
+
 /* Agent operations use a separate mutex and an acquired lifetime reference;
  * they never touch CPU/device state or hold the BQL. */
 #include "hw/arm/ipod-agent.h"
@@ -423,7 +555,7 @@ bool qemu_ios_agent_request(const char *request)
         return false;
     }
     IPodAgent *a = ipod_agent_acquire();
-    bool accepted = a && ipod_agent_submit(a, request);
+    bool accepted = a && !ipod_agent_submit(a, request);
     ipod_agent_free(a);
     return accepted;
 }
@@ -475,6 +607,28 @@ extern int gles_host_context_count(void);
 int qemu_ios_gles_contexts(void)
 {
     return qemu_ios_ui_ready() ? gles_host_context_count() : 0;
+}
+
+/* hw/arm/guest-package.c; its own lock, so no BQL or ready check needed. */
+extern bool guest_pkg_last_report(int64_t *serial, int32_t *result);
+extern int32_t guest_pkg_gles_protocol(int64_t *serial);
+bool qemu_ios_guest_package_report(int64_t *serial, int32_t *result)
+{
+    int64_t s;
+    int32_t r;
+    bool have = guest_pkg_last_report(&s, &r);
+    if (serial) {
+        *serial = s;
+    }
+    if (result) {
+        *result = r;
+    }
+    return have;
+}
+
+int32_t qemu_ios_gles_protocol(int64_t *serial)
+{
+    return guest_pkg_gles_protocol(serial);
 }
 
 /* Identify the loaded image, not an on-disk dylib a developer may replace. */

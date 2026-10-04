@@ -32,6 +32,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define CIS_OFFSET 0xC8
 #define CIS_MANUFACTURER_ID 0x20
 #define CIS_FUNCTION_EXTENSION 0x22
+#define CIS_VERS_1 0x15
 #define CIS_END 0xFF
 
 /* The BCM4325 presents two I/O functions: 1 is the chip backplane, 2 carries
@@ -49,6 +50,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define CCCR_INT_PENDING    0x05
 #define CCCR_INT_PENDING_FN1 (1 << 1)
 #define CCCR_INT_PENDING_FN2 (1 << 2)
+#define CCCR_IO_ABORT       0x06
+#define CCCR_IO_ABORT_RES   (1 << 3)
 #define CCCR_BUS_CONTROL    0x07
 #define CCCR_CARD_CAPS      0x08
 #define CCCR_CIS_PTR        0x09  /* three bytes, little endian */
@@ -90,7 +93,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 
 /* Where the window points out of reset: the chipcommon core. */
 #define CHIPCOMMON_BASE     0x18000000
-#define CHIPCOMMON_CHIPID   0x00050000  /* the driver reads this as revision D0 */
+/*
+ * chipcommon ChipID: chip number in bits 0-15, revision in 16-19. The real
+ * BCM4325 answers 0x4325 there; revision 5 is the D0 silicon both drivers
+ * accept (AppleBCMWLANChipManager::withDriver, 8C148 0x80779998: 0x4325 with
+ * rev 5 -> "BCMWLAN revision D0", 6 -> D1). The old value had the chip number
+ * zero: 3.1.3 only checked the revision, 4.2.1 checks the number first and
+ * gave up with "Unknown/Unsupported chip ID: 0x0" and never downloaded firmware.
+ */
+#define CHIPCOMMON_CHIPID   0x00054325
 #define CHIPCOMMON_CORECTL  0x18000634  /* poked just before the core is started */
 
 /*
@@ -253,6 +264,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define ISCAN_RESULTS_FIXED       0x0c   /* wl_scan_results_t, from buflen on */
 #define ISCAN_TOTAL               (ISCAN_OFF_BSS + BSS_INFO_TOTAL)
 
+/* get_var "counters": wl_cnt_t, version and length (16 bits each) then 32-bit
+ * counters; rxbeaconmbss is the 86th (the 4329's 4.218 layout). */
+#define WL_CNT_OFF_RXBEACONMBSS   0x158
+
 /* How long a scan is made to appear to take before it reports complete. */
 #define SCAN_COMPLETE_DELAY_NS  (1500 * 1000 * 1000LL)
 
@@ -278,6 +293,27 @@ typedef struct SDPCMFrame
     uint32_t len;
     uint32_t read_off;   /* how much of it the host has collected */
 } SDPCMFrame;
+
+/* What tells one Broadcom SDIO chip from another, as the driver sees it. */
+typedef struct BCMSDIOChip {
+    uint16_t manfid, prodid;   /* CISTPL_MANFID */
+    uint32_t chipid;           /* chipcommon ChipID: id | rev << 16 */
+    uint32_t sdiod_base;       /* the SDIO device core on the backplane */
+    const char *vers1[4];      /* CISTPL_VERS_1 strings; none if [0] is NULL */
+    uint8_t mac[6];            /* CISTPL_FUNCE type 4 */
+    uint8_t bt_mac[6];         /* Apple OTP type 3 (network byte order) */
+    bool has_bt_mac;
+    /*
+     * Leave out function 0's common FUNCE. AppleBCMWLAN-2.60 reads every
+     * FUNCE body as {type, len, data} records looking for the MAC, and the
+     * common one (00 00 02 32) reads as a 50-byte record that isn't there.
+     */
+    bool no_common_funce;
+    const char *fw_version;    /* the "ver" iovar; NULL answers zeroes */
+    uint8_t functions;         /* I/O functions in the CMD5 response; 0: the BCM4325's two */
+    bool no_mac_funce;         /* no CISTPL_FUNCE type 4 (a Broadcom convention) */
+    uint8_t fbr_iface;         /* FBR standard interface code (7: WLAN); 0 = none */
+} BCMSDIOChip;
 
 typedef struct IPodTouchSDIOState
 {
@@ -325,12 +361,23 @@ typedef struct IPodTouchSDIOState
      * backend, so slirp/vmnet/etc supply DHCP, DNS and NAT. */
     NICState *nic;
     NICConf conf;
-    bool iscan_reported;     /* this scan run has already reported its BSS */
+    bool iscan_reported;     /* no scan outstanding: the last one has reported its BSS */
     QEMUTimer *scan_timer;   /* delays the scan-complete event */
     bool associated;         /* the association events have been pushed */
-    QEMUTimer *join_timer;   /* auto-join clock, armed at WLC_UP */
+    uint8_t bssid[6];        /* the access point's; "bssid" property */
+    bool host_netif;         /* the host set mcast_list: its network interface is attached */
+    QEMUTimer *join_timer;   /* auto-join clock, armed once the host is up and has a netif */
     unsigned tx_log;
     unsigned host_rx_log;
+
+    BCMSDIOChip chip;
+    const uint32_t *sg;    /* CMD53 scatter list {addr, len} while one runs */
+    unsigned sg_count;
+    uint8_t *hbuf;         /* or the host controller's own buffer (ipod_touch_sdio_command_buf) */
+    /* A Marvell 88W8686 on the bus instead of the Broadcom dongle ("mrvl" link):
+     * function 1 and the card interrupt are its. */
+    struct Mrvl8686State *mrvl;
+    bool card_irq_level;
 
     uint8_t sdiod_regs[SDIOD_CORE_SIZE];
     /*
@@ -347,5 +394,26 @@ typedef struct IPodTouchSDIOState
 } IPodTouchSDIOState;
 
 void ipod_touch_sdio_setup_net(IPodTouchSDIOState *s);
+
+/* Replace the default BCM4325 identity (before the guest looks). */
+void ipod_touch_sdio_set_chip(IPodTouchSDIOState *s, const BCMSDIOChip *chip);
+
+/*
+ * Run one SD command for a host other than the iPod's own controller: the
+ * CMD53 payload moves through sg ({addr, len} pairs, guest physical).
+ * Returns response word 0.
+ */
+uint32_t ipod_touch_sdio_command(IPodTouchSDIOState *s, uint32_t cmd,
+                                 uint32_t arg, uint32_t blklen,
+                                 uint32_t numblk, const uint32_t *sg,
+                                 unsigned sg_count);
+
+/* The same, the CMD53 payload in a host controller's buffer of blklen * numblk bytes. */
+uint32_t ipod_touch_sdio_command_buf(IPodTouchSDIOState *s, uint32_t cmd,
+                                     uint32_t arg, uint32_t blklen,
+                                     uint32_t numblk, uint8_t *buf);
+
+/* The card's interrupt line: the dongle has something for the host. */
+bool ipod_touch_sdio_card_irq(IPodTouchSDIOState *s);
 
 #endif

@@ -1,10 +1,11 @@
 #include "hw/arm/ipod_touch_wdt.h"
 #include "migration/vmstate.h"
+#include "qemu/timer.h"
 #include "system/runstate.h"
 #include "hw/core/cpu.h"
 #include "target/arm/cpu.h"
 
-/* IT_WDT_TRACE: one line per watchdog kick. Cached; see the call site. */
+/* IT_WDT_TRACE: every register write with virtual time, plus reset provenance. */
 static bool wdt_trace(void)
 {
     static int on = -1;
@@ -40,6 +41,10 @@ static void ipod_touch_wdt_write(void *opaque, hwaddr addr, uint64_t val, unsign
 {
     IPodTouchWDTState *s = (IPodTouchWDTState *)opaque;
 
+    if (wdt_trace()) {
+        fprintf(stderr, "[WDT] t=%" PRId64 " reg=0x%02" HWADDR_PRIx " value=0x%08x\n",
+                qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), addr, (uint32_t)val);
+    }
     switch (addr) {
         case WDT_CTRL:
             s->ctrl = (uint32_t)val;

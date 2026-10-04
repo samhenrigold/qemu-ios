@@ -15,6 +15,11 @@
 #undef main
 
 extern int dlclose(void *handle);
+#ifdef HARNESS_IOS2_PCM
+#include <AudioToolbox/AudioQueue.h>
+static int stop_pcm(void);
+static void pcm_poll_failure(void);
+#endif
 
 static id_ owner, menu, output, field, stage, badge, audio, movie, connection;
 static id_ ticker;
@@ -124,6 +129,9 @@ static void stop_tests(void)
     if (mode == 1) report("INFO GLES stopped after %u frames", frames);
     mode = 0;
     m0(stage, S("removeFromSuperview")); stage = 0; badge = 0;
+    #ifdef HARNESS_IOS2_PCM
+    stop_pcm();
+    #endif
     m0(audio, S("stop")); m0(audio, S("release")); audio = 0;
     m0(movie, S("stop")); m0(movie, S("release")); movie = 0;
     if (connection) { m0(connection, S("cancel")); m0(connection, S("release")); connection = 0; report("CANCELLED network"); }
@@ -207,6 +215,9 @@ static id_ resource(const char *name)
     return m1(C("NSURL"), S("fileURLWithPath:"), m1(base, S("stringByAppendingPathComponent:"), nsstr(name)));
 }
 
+#ifdef HARNESS_IOS2_PCM
+#include "pcm_audio.h"
+#else
 static void play_audio(const char *name)
 {
     id_ error = 0;
@@ -228,6 +239,8 @@ static void play_audio(const char *name)
     }
     if (toolbox) dlclose(toolbox);
 }
+
+#endif
 
 static void audio_finished(id_ self, SEL_ cmd, id_ player, signed char ok)
 { report("%s audio completion: %s (audibility requires listening)", ok ? "PASS" : "FAIL", audio_name); }
@@ -277,6 +290,9 @@ static void acceleration(id_ self, SEL_ cmd, id_ accel, id_ value)
 
 static void tick(id_ self, SEL_ cmd, id_ timer)
 {
+    #ifdef HARNESS_IOS2_PCM
+    pcm_poll_failure();
+    #endif
     if (suspended) return;
     ++ticks;
     if (mode == 1) gl_frame();
@@ -289,6 +305,9 @@ static void select_test(id_ self, SEL_ cmd, id_ sender)
     int tag = CALL(int,(id_,SEL_))(sender,S("tag"));
     if (tag == 19) { report("MANUAL PASS: %s",utf8(m0(field,S("text")))); return; }
     if (tag == 20) { report("MANUAL FAIL: %s",utf8(m0(field,S("text")))); return; }
+    #ifdef HARNESS_IOS2_PCM
+    if (tag == 15 || tag == 16 || tag == 17) { pcm_control(tag); return; }
+    #endif
     if (tag == 15) { if (audio) { if (CALL(int,(id_,SEL_))(audio,S("isPlaying"))) m0(audio,S("pause")); else m0(audio,S("play")); report("INFO audio pause/resume"); } return; }
     if (tag == 16 || tag == 17) { CALL(void,(id_,SEL_,float))(audio,S("setVolume:"),tag == 16 ? 0.1f : 0.8f); report("MANUAL: audio volume %s",tag == 16 ? "10%" : "80%"); return; }
     stop_tests();
@@ -336,6 +355,9 @@ static void select_test(id_ self, SEL_ cmd, id_ sender)
         m1u(field,S("setKeyboardType:"),0); m0(field,S("becomeFirstResponder"));
         report("MANUAL input: edit top field, tap/scroll menu, use keyboard. Test labels are VoiceOver labels."); break;
     case 21: {
+        #ifdef HARNESS_IOS2_PCM
+        report("UNSUPPORTED legacy fixture: MPMediaQuery requires iOS 3.0"); break;
+        #endif
         id_ query = m0(C("MPMediaQuery"), S("songsQuery"));
         id_ items = m0(query, S("items"));
         if (!query || !items) {
@@ -350,11 +372,15 @@ static void select_test(id_ self, SEL_ cmd, id_ sender)
     }
     case 18:
         storage(1); memory_test();
+        #ifdef HARNESS_IOS2_PCM
+        report("UNSUPPORTED legacy fixture: UIPasteboard requires iOS 3.0");
+        #else
         { id_ pb = m0(C("UIPasteboard"),S("generalPasteboard"));
           id_ saved = m0(m0(pb,S("items")),S("copy"));
           m1(pb,S("setString:"),nsstr("Harness clipboard 123"));
           report("%s clipboard string round trip",!strcmp(utf8(m0(pb,S("string"))) ?: "","Harness clipboard 123") ? "PASS" : "FAIL");
           m1(pb,S("setItems:"),saved ? saved : m0(C("NSArray"),S("array"))); m0(saved,S("release")); }
+        #endif
         report("INFO automatic checks complete; GL/media/input require individual tests."); break;
     }
 }
@@ -402,9 +428,13 @@ static void launch(id_ self, SEL_ cmd, id_ app)
 int main(void)
 {
     if (!resolve_objc()) _exit(1);
-    const char *frameworks[] = {"Foundation","UIKit","QuartzCore","AVFoundation","MediaPlayer"};
+    const char *frameworks[] = {"Foundation","UIKit","QuartzCore",
+        #ifndef HARNESS_IOS2_PCM
+        "AVFoundation",
+        #endif
+        "MediaPlayer"};
     void *uikit = 0;
-    for (unsigned i=0;i<5;++i) {
+    for (unsigned i=0;i<sizeof(frameworks)/sizeof(*frameworks);++i) {
         char path[256]; snprintf(path,sizeof(path),"/System/Library/Frameworks/%s.framework/%s",frameworks[i],frameworks[i]);
         void *h = dlopen(path,RTLD_NOW);
         if (!h) { fprintf(stderr,"Harness: %s: %s\n",path,dlerror()); _exit(1); }

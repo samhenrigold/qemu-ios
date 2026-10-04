@@ -1,5 +1,6 @@
 #include <mach/mach.h>
 #include <mach/ndr.h>
+#include "sbs-launch.h"
 
 /* Period-correct SpringBoardServices ABI, shared by launch and status RPCs. */
 static int agent_sbs_inner(const char *op, const char *args)
@@ -51,6 +52,29 @@ static int agent_sbs_inner(const char *op, const char *args)
         if (degrees != 0 && degrees != 90 && degrees != 180 && degrees != -90) return -ERANGE;
         ag_response_len = snprintf((char *)ag_response, AG_RESPONSE_MAX, "%d\n", degrees);
         return 0;
+    }
+    if (!strcmp(op, "dlicon")) {
+        /* `add <unique-id> [<bundle-id>]` | `cancel <unique-id>`: contrib/it-instprogress/sbdlicon.c
+         * explains why the bundle id defaults to the placeholder's own display identifier. */
+        int (*add)(unsigned, const char *, const char *) = dlsym(sbs, "SBAddDownloadingIconForDisplayIdentifier");
+        int (*cancel)(unsigned, const char *) = dlsym(sbs, "SBCancelDownloadingIconForDisplayIdentifier");
+        if (!add || !cancel) return -ENOSYS;
+        char verb[8], id[512], bundle[600];
+        int n = 0;
+        if (sscanf(args, "%7s %511s%n", verb, id, &n) != 2) return -EINVAL;
+        const char *rest = args + n;
+        unsigned sb = port();
+        if (!sb) return -EIO;
+        int rc;
+        if (!strcmp(verb, "add")) {
+            if (*rest == ' ' && rest[1]) snprintf(bundle, sizeof(bundle), "%s", rest + 1);
+            else if (*rest) return -EINVAL;
+            else snprintf(bundle, sizeof(bundle), "com.apple.downloadingicon-%s", id);
+            rc = add(sb, id, bundle);
+        } else if (!strcmp(verb, "cancel") && !*rest) rc = cancel(sb, id);
+        else return -EINVAL;
+        /* SpringBoard returns 5 when it declines (no icon model yet, nil identifier). */
+        return rc ? -EAGAIN : 0;
     }
     int (*lock)(unsigned, unsigned char *, unsigned char *) = dlsym(sbs, "SBGetScreenLockStatus");
     unsigned char locked = 0, passcode = 0;
@@ -104,15 +128,7 @@ static int agent_sbs_inner(const char *op, const char *args)
         if (!status) ag_response_len = snprintf((char *)ag_response, AG_RESPONSE_MAX, "%s\n%s\n", bundle, title);
         return status;
     }
-    void *(*create)(void *, const char *, unsigned) = dlsym(cf, "CFStringCreateWithCString");
-    int (*launch)(void *, int) = dlsym(sbs, "SBSLaunchApplicationWithIdentifier");
-    if (!create || !launch) return -ENOSYS;
-    if (!*args || strlen(args) > 1024) return -EINVAL;
-    void *identifier = create(0, args, 0x08000100);
-    if (!identifier) return -EINVAL;
-    int status = launch(identifier, 0);
-    release(identifier);
-    return status;
+    return it_sbs_launch(cf, sbs, args);
 }
 
 static int agent_sbs(const char *op, const char *args)

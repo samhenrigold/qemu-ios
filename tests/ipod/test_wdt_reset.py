@@ -12,8 +12,12 @@ code = r'''
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdio.h>
 typedef uint64_t hwaddr;
+#define HWADDR_PRIx PRIx64
+#define QEMU_CLOCK_VIRTUAL 0
+static int64_t qemu_clock_get_ns(int clock) { return 0; }
 typedef struct { uint32_t ctrl, cnt; bool noreset; } IPodTouchWDTState;
 typedef struct { struct { uint32_t regs[16]; } env; } ARMCPU;
 #define ARM_CPU(p) ((ARMCPU *)(p))

@@ -36,18 +36,44 @@ The metadata plist is limited to 64 KiB:
 </dict></plist>
 ```
 
+`cc -DITMEDIA_HOST_CHECK itmedia.c` builds the metadata mapping alone for the Mac:
+`itmedia-host metadata.plist staging-id out.plist` writes the properties, artwork filename
+and year the guest would use (Light Touch's `tests/offline/check-media-metadata.py`).
+
 Run as root (drops to mobile) or mobile:
 
 ```sh
 /tmp/itmedia /tmp/song.plist staging-id
 ```
 
-Title, filename and duration are required; artist, album and genre are optional.
+Title, filename and duration are required. The helper rounds fractional milliseconds
+to a positive whole-millisecond NSNumber at the native purchase boundary: 7E18
+silently stores zero duration for a fractional value. Optional: `artist`, `album`,
+`album_artist`, `composer`, `genre` (strings); `track_number`, `track_count`,
+`disc_number`, `disc_count` (1..65535); `year` (1..9999); `compilation` (boolean);
+`artwork`, exactly `artwork.jpg`, a JPEG cover staged beside the media (2 MiB maximum). They become
+MusicLibrary's purchase-folder properties (`itemName`, `artistName`, `playlistName`,
+`playlistArtistName`, `composerName`, `genre`, `trackNumber`, `trackCount`,
+`discNumber`, `discCount`, `compilation`), as the 7E18
+`insertItemFromPurchaseFolder:withItemProperties:` reads them. That insert has no
+year property, so the helper sets `item.year` with one UPDATE by pid through
+MusicLibrary's own writer connection (`MLSDBGetSharedRecordStore`; the library
+uses its own SQLite VFS, so a second plain connection is read-only). No 7E18
+trigger or index covers the column.
 The optional `kind` is `song` by default; use `feature-movie` for a movie.
 MusicLibrary sets the native media kind and video fields. The caller supplies
 metadata and is responsible for validating the codecs; accepting a filename
 extension does not mean the device can decode its contents.
-Encrypted tracks, transcoding, artwork, playlists other than the native
+
+Artwork: MusicLibrary reads a purchased item's cover from the ArtworkCache in
+`Purchases/MobileArtworkDB` (`artwork.db`, `artwork.pix`) under the decimal
+`artworkDBRecordID`, which the insert takes from `itemId`. The helper sets
+an unused `itemId` from the native library under the import lock and, before
+inserting, renders the cover with `ArtworkCache_ProcessArtworkData`:
+the device's own AlbumArt formats from lockdown's `com.apple.mobile.iTunes`
+domain (3005 is 320x320). A cover that cannot be stored fails the import, which
+can then be retried with the same staging ID.
+Encrypted tracks, transcoding, playlists other than the native
 Purchased list and a Mac movie-import interface are not implemented here.
 The separate `itphoto` helper handles photos.
 
@@ -136,3 +162,12 @@ Completed retries remove a restaged JPEG. Existing random-ID imports are not
 retroactively indexed. New receipts reconcile deletion by the native DCIM path;
 this is not a general bidirectional photo-library index. A path reused for a
 different asset cannot be distinguished by these receipts.
+
+Read-only reconciliation retries SQLITE_SCHEMA by reopening and repreparing (at
+most three attempts). All other errors remain fatal. Artwork IDs are allocated
+from the native library under the import lock, rather than truncating a staging
+hash; repeat imports read the committed item's ID. Host covers are bounded
+JPEGs at artwork.jpg, at most 2 MiB; the cache directories must be real directories.
+Old imports with artwork ID zero require removal in Music and reimport.
+Native decoded-artwork and cold-reopen QA: tests/ipod/test_media_artwork.py.
+Deterministic schema error QA: tests/ipod/test_media_schema.py.

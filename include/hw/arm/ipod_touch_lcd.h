@@ -8,6 +8,7 @@
 #include "hw/sysbus.h"
 #include "hw/irq.h"
 #include "hw/arm/ipod_touch_multitouch.h"
+#include "hw/arm/frame-timeline.h"
 
 #define TYPE_IPOD_TOUCH_LCD                "ipodtouch.lcd"
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchLCDState, IPOD_TOUCH_LCD)
@@ -43,6 +44,7 @@ typedef struct IPodTouchLCDState
     uint32_t fbsection_base;
     void *last_surface;
     int last_bright;
+    uint64_t gles_gen;      /* gles_host_ram_gen of the scanout at the last conversion */
     /*
      * Host time of the last frame pushed by the panel's frame interrupt, in
      * QEMU_CLOCK_REALTIME ns. QEMU's own display poll asks for a second
@@ -53,6 +55,7 @@ typedef struct IPodTouchLCDState
     qemu_irq irq;
     uint32_t lcd_con;
     bool planes_enabled;
+    bool s5l8900;   /* "s5l8900" property: iPod touch 1G register layout */
     bool saved_planes_enabled;
     uint32_t plane_regs[0x300 / 4];
     uint32_t plane_scanout[0x300 / 4];
@@ -104,6 +107,12 @@ typedef struct IPodTouchLCDState
      * frame rate. See refresh_timer_tick().
      */
     int64_t next_vsync;
+
+    /* Per-vsync latched-frame ring in guest-virtual time; read over the
+     * "frame-timeline" QOM property by the jank harness. ftl_last_base is the
+     * scanout base shown last vsync, to flag a new frame from a held one. */
+    FrameTimeline ftl;
+    uint32_t ftl_last_base;
 } IPodTouchLCDState;
 
 bool lcd_backlight_is_off(void);

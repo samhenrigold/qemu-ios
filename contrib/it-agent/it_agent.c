@@ -15,6 +15,9 @@
  * A separate process also cannot wedge SpringBoard's launch, which is the trap
  * contrib/it-kbd-agent had to be built around.
  *
+ * it_pbd (contrib/it-pasteboard) is this clipboard alone: it includes this file with
+ * IT_AGENT_CLIPBOARD_ONLY and brings its own main.
+ *
  * THE TRAP, repeated here because it costs a reboot to rediscover: never call
  * -[UIPasteboard setString:], -string or -pasteboardTypes from a process like
  * this. They send an empty type string, pasteboardd turns it into a NULL
@@ -31,7 +34,9 @@
 extern void *dlopen(const char *, int);
 extern void *dlsym(void *, const char *);
 
+#ifndef RTLD_NOW
 #define RTLD_NOW 2
+#endif
 
 typedef unsigned int uint32_t;
 typedef long long int64_t;
@@ -203,8 +208,6 @@ static int pump_host_to_guest(void)
         pb_last[i] = pb_in[i];
     }
     pb_last_len = off;
-
-
     return 1;
 }
 
@@ -264,7 +267,6 @@ static void pump_guest_to_host(void)
             if (off == len) {
                 qc(QC_PB_COMMIT, 0, 0, 0);
                 pb_last[len] = 0;
-
             }
         }
     }
@@ -279,6 +281,7 @@ static void pump_guest_to_host(void)
  */
 #define STARTUP_DELAY 40
 
+#ifndef IT_AGENT_CLIPBOARD_ONLY   /* contrib/it-pasteboard/it_pbd.c: the clipboard above, its own main */
 #include "agent-ops.h"
 
 int main(void)
@@ -286,11 +289,17 @@ int main(void)
     unsigned clipboard_delay = STARTUP_DELAY * 4;
     int clipboard_ready = 0;
     int clipboard_attempted = 0;
+    unsigned ticks = 0;
     w("it_agent: command service up\n");
     for (;;) {
         /* File/command RPC needs no UIKit initialization. Start immediately so
          * boot-time provisioning does not wait for the clipboard grace period. */
         agent_tick();
+        /* The app's Stop is a hard halt (pause, flush the host's files, quit), never a guest
+         * shutdown, and the kernel's own writeback is ~30 s: flush every 5 s so what was
+         * written 5+ s before a Stop survives it. ponytail: fixed period; nothing to do when
+         * clean, make it adaptive only if flash wear or pauses ever show up. */
+        if (++ticks % 20 == 0) sync();
         if (clipboard_delay) clipboard_delay--;
         else if (!clipboard_attempted) {
             clipboard_attempted = 1;
@@ -302,3 +311,4 @@ int main(void)
     }
     return 0;
 }
+#endif

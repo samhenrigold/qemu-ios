@@ -17,9 +17,9 @@
  * S5L8720 I2S controller (AppleS5L8900XI2SController).
  *
  * Register window is 0x1000; the driver only ever touches nine offsets, all
- * through two trivial accessors, and never polls (no reads on the hot path):
+ * through two trivial accessors, and polls only at power-off:
  *
- *   0x00  block/clock enable (bit 0)
+ *   0x00  block/clock enable (bit 0); bit 1 read-only "stopped" (4.x power-off waits on it)
  *   0x04  TX config           (opaque, computed in software)
  *   0x08  TX command          (6 = run, 0 = halt)
  *   0x10  TX FIFO             (DMA target - PCM lands here)
@@ -35,6 +35,7 @@
  */
 
 #define IT_I2S_ENABLE   0x00
+#define IT_I2S_ENABLE_IDLE (1u << 1)   /* read-only: block stopped */
 #define IT_I2S_TXCON    0x04
 #define IT_I2S_TXCOM    0x08
 #define IT_I2S_TXFIFO   0x10
@@ -156,6 +157,8 @@ typedef struct IPodTouchI2SState {
     QEMUTimer *ready_timer;
     uint64_t ready_irqs;  /* how many ready interrupts we have asserted */
     uint32_t ready_ticks; /* ticks left in the current ready-interrupt burst */
+    uint32_t ready_group, ready_bit; /* "ready-gpio-group"/"-bit" properties */
+    bool host_output;                /* "host-output" property */
 
     uint32_t enable;
     uint32_t txcon;

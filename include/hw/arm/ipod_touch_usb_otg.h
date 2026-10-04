@@ -64,6 +64,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(synopsys_usb_state, S5L8900USBOTG)
 #define PCGCCTL_ON          0
 #define PCGCCTL_OFF         1
 
+#define GOTGCTL_CONIDSTS (1 << 16)          /* ID pin high: B-device (a device cable) */
+#define GOTGCTL_ASESSIONVALID (1 << 18)
 #define GOTGCTL_BSESSIONVALID (1 << 19)
 #define GOTGCTL_SESSIONREQUEST (1 << 1)
 
@@ -107,6 +109,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(synopsys_usb_state, S5L8900USBOTG)
 #define GINTMSK_EPMIS       (1 << 17)
 #define GINTMSK_INEP        (1 << 18)
 #define GINTMSK_OEP         (1 << 19)
+#define GINTMSK_CONIDSTSCHNG (1 << 28)
 #define GINTMSK_DISCONNECT  (1 << 29)
 #define GINTMSK_RESUME      (1 << 31)
 
@@ -227,9 +230,30 @@ typedef struct synopsys_usb_state
 	uint32_t server_port;
 	tcp_usb_state_t tcp_state;
 	bool tcp_connected;
+	bool cable_attached;      /* no dialling while unplugged */
 	QEMUTimer *tcp_retry_timer;
 
+	/* Built-in host (no bridge configured): enumerates and configures the
+	 * device so iOS sees a configured 500 mA USB host. See synopsys_host_*. */
+	bool builtin_host;
+	bool host_charge;       /* built-in host grants a high-power port's current */
+	bool withhold_charge;   /* a bridge's charge request never reaches the guest (see the TCP callback) */
+	QEMUTimer *host_timer;
+	int host_phase;
+	int host_cfg;            /* configuration index being fetched */
+	int host_cfg_value;      /* bConfigurationValue to select */
+	int host_ncfg;
+	int host_ep_in;          /* mux bulk IN endpoint to keep polling */
+	int host_ep_out;
+	bool host_greeted;       /* mux version request sent */
+	int host_iserial;
+	int host_got;            /* bytes of the current IN so far */
+	int host_want;
+	int64_t host_deadline;
+	uint8_t host_buf[1024];
+
 	uint32_t pcgcctl;
+	bool phy_reset; /* driven from external PHY ORSTCON, not independent state */
 
 	uint32_t ghwcfg1;
 	uint32_t ghwcfg2;
@@ -267,5 +291,11 @@ typedef struct synopsys_usb_state
 } synopsys_usb_state;
 
 DeviceState *ipod_touch_init_usb_otg(qemu_irq _irq, uint32_t _hwcfg[4]);
+/* A machine's usb-tcp-addr: "host:port" of the host bridge (IT_USB_TCP when unset). */
+void synopsys_usb_set_tcp_addr(synopsys_usb_state *state, const char *spec);
+/* Plug/unplug: unplugging drops the host link so usbmuxd reaps the device;
+ * plugging redials, and usbmuxd re-enumerates. */
+void synopsys_usb_set_cable(synopsys_usb_state *state, bool attached);
+void synopsys_usb_host_rearm(synopsys_usb_state *state, int64_t delay_ms);
 
 #endif
