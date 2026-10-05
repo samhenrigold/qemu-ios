@@ -44,6 +44,10 @@
 #include "qemu/timer.h"
 #include "system/system.h"
 #include "target/arm/cpu.h"
+#include "target/arm/cpregs.h"
+#include "hw/arm/guest-services/general.h"
+#include "hw/arm/guest-services/gles.h"
+#include "hw/arm/guest-package.h"
 
 /* Addresses and interrupts: N18AP 8C148 DT (arm-io maps child offsets at 0x80000000). */
 #define S5L8920_DRAM_BASE       0x40000000
@@ -202,6 +206,8 @@ struct S5L8920MachineState {
     char *nor_rw_path;
     char *usb_tcp_addr;                  /* usbmuxd-qemu host bridge; empty = the built-in host */
     bool btn_hold, btn_home;             /* button-hold/-home properties */
+    bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
+    GuestPackage pkg;                    /* hw/arm/guest-package.c: it_boot and the GL shim's hello */
     QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
     int pwroff_phase, pwroff_step;
 };
@@ -241,6 +247,9 @@ static void s5l8920_cpu_reset(void *opaque)
     const uint8_t *trailer;
     uint32_t load_pa, entry_pa, bootargs_pa, image_len;
 
+    gles_host_set_debug(s->gles_debug);
+    gles_host_reset();
+    guest_pkg_reset(&s->pkg);
     cpu_reset(cs);
     if (!g_file_get_contents(s->kboot_path, &data, &size, &gerr)) {
         error_report("s5l8920: cannot read kboot bundle '%s': %s",
@@ -340,6 +349,45 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
     }
 }
 
+/*
+ * The guest-services trap (mcr p15,3,Rn,c15,c15,0) the GLES shim
+ * (contrib/gles-public) uses: GLES, and guest packages (which also answer
+ * the shim's hello). ipad1.c's agent and pasteboard are left out until a
+ * test here needs them.
+ */
+static void s5l8920_qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
+{
+    CPUState *cs = env_cpu(env);
+    qemu_call_t q;
+    int32_t err = 0;
+
+    if (cpu_memory_rw_debug(cs, value, (uint8_t *)&q, sizeof(q), 0)) {
+        return;
+    }
+    switch (q.call_number) {
+    case QC_GLES:
+        q.retval = qc_handle_gles(cs, &q.args.gles);
+        break;
+    case QC_GLES_PING:
+        q.retval = QC_GLES_PING_MAGIC;
+        break;
+    default:
+        if (!guest_pkg_call(&S5L8920_MACHINE(qdev_get_machine())->pkg, cs, &q, &err)) {
+            return;
+        }
+    }
+    q.error = err;
+    cpu_memory_rw_debug(cs, value, (uint8_t *)&q, sizeof(q), 1);
+}
+
+static const ARMCPRegInfo s5l8920_cp_reginfo[] = {
+    { .name = "QEMU_CALL", .cp = 15, .opc1 = 3, .crn = 15, .crm = 15,
+      .opc2 = 0, .access = PL0_RW, .state = ARM_CP_STATE_AA32,
+      .type = ARM_CP_IO | ARM_CP_NO_RAW | ARM_CP_RAISES_EXC,
+      .readfn = qemu_call_status,
+      .writefn = s5l8920_qemu_call },
+};
+
 static void s5l8920_pwroff_tick(void *opaque);
 static Notifier s5l8920_powerdown_notifier;
 
@@ -365,6 +413,7 @@ static void s5l8920_init(MachineState *machine)
     object_property_set_bool(cpuobj, "has_el2", false, NULL);
     object_property_set_bool(cpuobj, "realized", true, &error_fatal);
     object_unref(cpuobj);
+    define_arm_cp_regs(s->cpu, s5l8920_cp_reginfo);
 
     memory_region_init_ram(&s->dram, NULL, "s5l8920.dram", s->board->dram_size,
                            &error_fatal);
@@ -813,6 +862,11 @@ static void s5l8920_set_usb_tcp_addr(Object *obj, const char *value, Error **err
     s->usb_tcp_addr = g_strdup(value);
 }
 
+static void s5l8920_instance_init(Object *obj)
+{
+    guest_pkg_init(&S5L8920_MACHINE(obj)->pkg, obj);
+}
+
 static void s5l8920_instance_finalize(Object *obj)
 {
     g_free(S5L8920_MACHINE(obj)->usb_tcp_addr);
@@ -821,6 +875,22 @@ static void s5l8920_instance_finalize(Object *obj)
     g_free(S5L8920_MACHINE(obj)->kboot_path);
     g_free(S5L8920_MACHINE(obj)->nand_path);
     g_free(S5L8920_MACHINE(obj)->nand_overlay_path);
+}
+
+static bool s5l8920_get_gles_debug(Object *obj, Error **errp)
+{
+    return S5L8920_MACHINE(obj)->gles_debug;
+}
+
+static void s5l8920_set_gles_debug(Object *obj, bool value, Error **errp)
+{
+    S5L8920_MACHINE(obj)->gles_debug = value;
+    gles_host_set_debug(value);
+}
+
+static char *s5l8920_get_gles_rejects(Object *obj, Error **errp)
+{
+    return gles_host_rejects();
 }
 
 static void s5l8920_class_init(ObjectClass *klass, void *data)
@@ -859,6 +929,12 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
     object_class_property_add_str(klass, "nor-rw", s5l8920_get_nor_rw, s5l8920_set_nor_rw);
     object_class_property_set_description(klass, "nor-rw",
         "1 MiB private writable NOR copy; guest writes (effaceable) persist here across boots");
+    object_class_property_add_bool(klass, "gles-debug", s5l8920_get_gles_debug, s5l8920_set_gles_debug);
+    object_class_property_set_description(klass, "gles-debug",
+        "Paint what the GL bridge refuses magenta (tests)");
+    object_class_property_add_str(klass, "gles-rejects", s5l8920_get_gles_rejects, NULL);
+    object_class_property_set_description(klass, "gles-rejects",
+        "Every GL bridge refusal so far, NAME<TAB>COUNT per line");
 }
 
 static const TypeInfo s5l8920_machine_info = {
@@ -867,6 +943,7 @@ static const TypeInfo s5l8920_machine_info = {
     .abstract = true,
     .instance_size = sizeof(S5L8920MachineState),
     .class_size = sizeof(S5L8920MachineClass),
+    .instance_init = s5l8920_instance_init,
     .instance_finalize = s5l8920_instance_finalize,
     .class_init = s5l8920_class_init,
 };
