@@ -310,6 +310,7 @@ struct IPad1MachineState {
     ARMCPU *cpu;
     MemoryRegion dram;
     MemoryRegion dram_hi;                /* DRAM mirror at 0x50000000 (iBoot) */
+    MemoryRegion dram_lo;                /* DRAM's first page at PA 0 (the kernel's reset-vector page) */
     MemoryRegion chipid;
     MemoryRegion sram;
     MemoryRegion bootrom;
@@ -1098,14 +1099,16 @@ static void ipad1_init(MachineState *machine)
         memory_region_add_subregion(sysmem, 0xbf000000, &s->bootrom_alias);
     } else {
         /*
-         * The SecureROM is at 0 whatever boots the AP; a direct kernel boot has no image for it, so the window
-         * reads zeros. It must be there all the same: iOS 6's machine startup (10A403 0x8007daa0) maps
-         * kvtophys(gPhysBase) after pmap bootstrap has unmapped that V=P region, gets 0, and copies the exception
-         * vectors to physical 0. On the SoC that write lands in ROM and is dropped; with nothing mapped it was a
-         * synchronous external abort and a double panic before the console.
+         * Past the boot ROM, PA 0 is DRAM's first page. The 6.x and 7.x kernels
+         * (xnu-2107, xnu-2423) link at 0x80001000 and leave that page out. In early
+         * init they ml_io_map PA 0 (ml_vtophys of gPhysBase, which no longer has a
+         * V=P mapping) and copy the reset and exception vectors there for a core
+         * reset to land on. Without a page here the copy took an external abort
+         * ("sleh_abort at interrupt context", N90 10B329/11D257).
+         * ponytail: one page, aliased; the real remap's size is unmeasured.
          */
-        memory_region_init_rom(&s->bootrom, NULL, "ipad1.bootrom", 0x10000, &error_fatal);
-        memory_region_add_subregion(sysmem, 0, &s->bootrom);
+        memory_region_init_alias(&s->dram_lo, NULL, "ipad1.dram-lo", &s->dram, 0, 0x1000);
+        memory_region_add_subregion(sysmem, 0, &s->dram_lo);
     }
 
     /*
