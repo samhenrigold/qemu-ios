@@ -1387,8 +1387,9 @@ __attribute__((visibility("default")))
 - (BOOL)setParameter:(unsigned)pname to:(const int *)value { (void)pname; (void)value; return 1; }
 - (BOOL)getParameter:(unsigned)pname to:(int *)value { (void)pname; (void)value; return 0; }
 
-/* 5.x: {GC, this firmware's dispatch table} (fe_macro). */
+/* 5.x: {GC, this firmware's dispatch table} (fe_macro); 6.x's QuartzCore asks with a lower-case g. */
 - (void *)GetMacroContextPrivate { return fe_macro(_private->gc, &_private->macro); }
+- (void *)getMacroContextPrivate { return fe_macro(_private->gc, &_private->macro); }
 @end
 
 void *EAGLGetCurrentMacroContextPrivate(void);

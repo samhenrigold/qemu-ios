@@ -63,12 +63,25 @@ pipeline with n90 paths; activation through fw-a4's `lt_activate` hook; guest pa
    the reset and exception vectors there. The machine had nothing at PA 0, so the copy took an external abort
    ("sleh_abort at interrupt context"). Past the boot ROM, PA 0 is now an alias of DRAM's first page, which
    these kernels leave out of the image (they link at 0x80001000).
-3. Open: matching stops. 7.1.2 gets through corecrypto's FIPS POST, IOPMrootDomain and the IOResources
-   kexts (io=0xffffffff shows each registration) and starts AppleKeyStore. Then nothing more registers.
-   AppleS5L8930XIO never attaches under AppleARMPE, AMFI never starts, and the CPU is busy, not idle.
-   6.1.3's keybag ramdisk stops at the same point, after corecrypto. Candidates are the /chosen properties
-   iBoot-1940 fills that kboot leaves zero: nvram-proxy-data, random-seed, boot-nonce, mac-address-*,
-   consistent-debug-root.
+3. Fixed: NVRAM. iBoot-1537/1940 hand NVRAM to the kernel as `/chosen/nvram-proxy-data` (8 KiB, which N90
+   has no NOR for). The IPSW DT reserves it zeroed, and IODTNVRAM::initNVRAMImage loops forever on a
+   zero-length partition. That was the busy CPU after AppleKeyStore. ipad1_kboot now fills it with an empty
+   CHRP image (2 KiB "common", the rest "free"). 7.1.2 then runs IOKit through Wi-Fi, USB and the N1
+   multitouch.
+4. 6.1.3 now prepares end to end, keybag one-shot included, and boots to launchd and SpringBoard, but the panel
+   stays dark. backboardd, 6.x's render server, crash-loops in the GL front end:
+   - First, QuartzCore sends `-[EAGLContext getMacroContextPrivate]` (5.x's selector was GetMacroContextPrivate).
+     It is answered now.
+   - Then gles-public finds no dispatch layout on 6.x ("dispatch layout from none: 0 slots"). There is no
+     `__GLIFunctionDispatchRec` @encode in the 6.x shared cache, and the trampoline decoder doesn't know 6.x's
+     OpenGLES. So the macro context's table is empty and QuartzCore jumps through NULL during the IOMFB swap.
+     This is the 6.x GL dispatch work.
+   - There is no guest-package family for 10*, so no it_boot or agent.
+5. 7.1.2 needs a 1664 MiB system partition (`SYSMIB=1664`; its rootfs is about 1.5 GB). fw-a4's lt_activate
+   fails on 7.1.2's lockdownd, so the device is baked without activation (`prepare.sh 11D257 none`). The kernel
+   mounts root (YAFTL, VSVFL signature epoch 1 accepted) and /private/var. Then launchd shuts the system down
+   at once and the boot loops: AppleNANDFTL::systemWillShutdown, after mount_hfs "Could not create property
+   for re-key environment check". The cause is not found yet.
 
 ## How to boot
 
