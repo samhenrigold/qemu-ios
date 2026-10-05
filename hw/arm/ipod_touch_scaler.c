@@ -235,7 +235,9 @@ static void scaler_write(void *opaque, hwaddr off, uint64_t value, unsigned size
 static const MemoryRegionOps scaler_ops = {
     .read = scaler_read, .write = scaler_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid.min_access_size = 4, .valid.max_access_size = 4,
+    /* 5.x's reset polls +0x4 and +0x10 with byte loads (9A334 0x809cfddc ldrb): a word access serves them */
+    .valid.min_access_size = 1, .valid.max_access_size = 4,
+    .impl.min_access_size = 4, .impl.max_access_size = 4,
 };
 
 static void scaler_reset(DeviceState *dev)
