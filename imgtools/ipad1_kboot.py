@@ -369,6 +369,24 @@ def graft_nor(dt):
         dt.rename("arm-io/flash-controller0/disk", "boot-from-nand", "boot-from-nor")
 
 
+def nvram_image(size):
+    """An empty NVRAM image as IODTNVRAM parses it: CHRP partitions, a 2 KiB "common" (0x70) and the rest
+    "free" (0x7f). Each 16-byte header is sig, checksum, length in 16-byte units, 12-byte name; the checksum
+    adds byte 0 and bytes 2-15 with end-around carry. A zeroed image is a zero-length partition, and
+    IODTNVRAM::initNVRAMImage loops on it forever."""
+    def part(sig, name, units):
+        h = bytearray(struct.pack("<BBH12s", sig, 0, units, name))
+        c = h[0]
+        for x in h[2:]:
+            c += x
+            if c > 0xFF:
+                c = (c & 0xFF) + 1
+        h[1] = c
+        return bytes(h) + bytes(units * 16 - 16)
+    common = 0x80
+    return part(0x70, b"common", common) + part(0x7F, b"free", size // 16 - common)
+
+
 def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION, root_matching=ROOT_MATCHING):
     board = dt_board(dt)
     root, chosen, macs = identity_dt(ident)
@@ -385,6 +403,9 @@ def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION, root_matching=ROOT_MATCH
                        "display-scale": board["scale"],
                        "root-matching": root_matching}.items():
         dt.set("chosen", key, value)
+    # iBoot-1940 (7.x) hands NVRAM to the kernel as /chosen/nvram-proxy-data; the IPSW DT reserves it zeroed.
+    if "nvram-proxy-data" in dt.props["chosen"]:
+        dt.set("chosen", "nvram-proxy-data", nvram_image(dt.props["chosen"]["nvram-proxy-data"][1]))
     for key, hz in {"clock-frequency": CPU_HZ, "memory-frequency": MEM_HZ, "bus-frequency": BUS_HZ,
                     "peripheral-frequency": PERIPH_HZ, "fixed-frequency": FIXED_HZ,
                     "timebase-frequency": TIMEBASE_HZ}.items():
