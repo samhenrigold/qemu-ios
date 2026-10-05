@@ -1,5 +1,6 @@
 /*
- * iPad 1 (K48AP): Apple S5L8930 "A4", Cortex-A8, 256 MiB.
+ * Apple S5L8930 "A4" boards, Cortex-A8: iPad 1 (K48AP, -M ipad1). What
+ * differs per board is an A4Board below; the rest is the SoC.
  *
  * Milestone 1 of docs/archive/ipad1-PLAN.md: enter the iOS 3.2.2 (7B500) kernel
  * directly, with no bootrom or iBoot, and get its console on UART0. Only the
@@ -64,11 +65,232 @@
 #include "ui/input.h"
 #include "qapi/visitor.h"
 
+/*
+ * One A4 board: everything this machine does differently per product. The
+ * rest of the file is the S5L8930 and is shared; a new board is a new
+ * A4Board plus a machine type naming it (a subclass of ipad1-machine, so the
+ * properties and app bridge come along).
+ */
+typedef struct A4I2CDevice {
+    uint8_t bus;                         /* i2c0 or i2c2 */
+    uint8_t addr;
+    const char *type;
+    int16_t irq_pin;                     /* GPIO pin its gpio-out 0 drives, active low; 0 = none */
+} A4I2CDevice;
+
+typedef struct A4PowerKnob {
+    int x, y, dx, dy;
+} A4PowerKnob;
+
+typedef struct A4Board {
+    const char *desc;
+    uint64_t dram_size;                  /* also mirrored right above itself (iBoot) */
+    uint32_t chipid[2];                  /* ChipID fuse words 0-1 */
+    uint8_t board_id;                    /* PMGR POWER_ID[23:16] */
+    /* Panel: scan-out size, the DSI ID read, lanes. */
+    uint16_t width, height;
+    uint32_t panel_id;
+    uint8_t dsi_lanes;
+    /* Touch: Zephyr2 profile, and whether the digitizer (portrait-native)
+     * sits under a landscape panel. */
+    const MTSensorProfile *mt_profile;
+    bool touch_landscape;
+    A4PowerKnob pwroff_knob[5];          /* slide-to-power-off, per UIDeviceOrientation */
+    int pwroff_drag_len;
+    int pwroff_watch_ms;                 /* request to halt, before the warning; 0 = 25 s */
+    /* I2C slaves in creation order (that order is the snapshot's). */
+    A4I2CDevice i2c[10];
+    bool accel_flipped;                  /* LIS331 mounted turned 180 degrees about X */
+    uint32_t mt_tx_fifo;                 /* multitouch SPI TX FIFO bytes (its firmware is one burst); 0 = default */
+    int8_t bt_uart;                      /* BCM4329 HCI, nothing attached */
+    int8_t gauge_uart;                   /* bq27545 HDQ gas gauge; -1 = none */
+    uint16_t gauge_mah;
+    /* BCM4329 CIS/firmware identity: picks AppleBCMWLAN's board personality. */
+    const char *wifi_board;
+    const char *wifi_fw_version;
+    uint8_t wifi_mac[6];
+} A4Board;
+
+/* iPad 1 (K48AP): values measured on the real unit unless said otherwise. */
+static const A4Board a4_k48 = {
+    .desc = "iPad 1 (K48AP, S5L8930)",
+    .dram_size = 0x10000000,
+    /* docs/ipad1/hw1-probes.log */
+    .chipid = { 0x31800387, 0x80758000 },
+    .board_id = 0x02,
+    .width = 1024, .height = 768,
+    /*
+     * The K48 Pinot panel's ID read, a1 e5 69 09: raw-panel-id in a real
+     * unit's DeviceTree (docs/ipad1/iboot.md), whose lcd-panel-id 0xa1e506c9
+     * is iBoot's normalisation of those four bytes. iBoot-1219 panics on a
+     * panel type it does not know ("Mismatch between PINOT_TYPE and panel
+     * ID"); 817/931 took the iPod's ID the model used to answer.
+     */
+    .panel_id = 0x0969e5a1,
+    .dsi_lanes = 4,                      /* K48 DT #lanes */
+    .mt_profile = &mt_profile_k48,
+    .touch_landscape = true,
+    /*
+     * Where the knob sits on the landscape panel, and which way the track
+     * runs, per interface orientation (UIDeviceOrientation 1-4): the sheet is
+     * at the top of the UI, which the panel shows rotated. Measured off
+     * screendumps of the sheet; 2 and 4 are 1 and 3 turned half way round.
+     * With the LIS331 mounted flipped (eb5d4e5c58) accel-orientation is
+     * UIDeviceOrientation, so portrait and upside down swap places here.
+     */
+    .pwroff_knob = {
+        [1] = {  73, 477,  0, -1 },     /* portrait: track runs up the panel */
+        [2] = { 950, 290,  0,  1 },     /* upside down */
+        [3] = { 418,  69,  1,  0 },     /* landscape, home button right */
+        [4] = { 605, 698, -1,  0 },     /* landscape, home button left */
+    },
+    .pwroff_drag_len = 430,              /* knob to past the track's end */
+    .i2c = {
+        /* I2C0 carries the D1815 PMU; its interrupt is GPIO pin 0x0D, active low. */
+        { 0, 0x74, TYPE_S5L8930_D1815, 0x0d },
+        { 0, 0x20, TYPE_S5L8930_TCA6408, 0x11 },
+        { 0, 0x09, TYPE_S5L8930_LTC4099 },
+        /*
+         * CS42L61 codec (i2c0/audio0). AppleCS42L61Audio treats it as a plain
+         * MAP-addressed register file (0x01-0x6f, read back for its register
+         * dump) and never checks the chip ID, so the iPod's CS42L58 model
+         * fits unchanged. Its MCLK comes from the PWM block, which stays in
+         * the unimplemented window.
+         */
+        { 0, 0x4a, TYPE_CS42L58 },
+        /*
+         * AK8973 magnetometer (DT i2c0/compass, 0x1e). The DT also lists a
+         * compass1 at the same address on i2c2 for the other board build;
+         * with nothing there its probe fails its reset check, as on a unit
+         * of this build.
+         */
+        { 0, 0x1e, TYPE_S5L8930_AK8973 },
+        /*
+         * CD3282 "Mikey" headset controller (i2c0/mikey). AppleCS42L61Audio
+         * resolves the codec's 'mikey' platform function during its power-up
+         * (c08213d4 -> c082273c) and waits until AppleCD3282Mikey provides
+         * it, so without this slave the codec never registers its "Codec"
+         * IOAudio2 device and mediaserverd fails every sound with '!dev'.
+         * The iPod's CD3272 model (all registers read 0: nothing plugged in)
+         * is enough for the driver to start.
+         */
+        { 0, 0x39, TYPE_CD3272MIKEY },
+        /* I2C2: LIS331DLH accelerometer and TSL2581 light sensor. */
+        { 2, 0x19, TYPE_LIS302DL },
+        { 2, 0x39, TYPE_S5L8930_TSL2581 },
+    },
+    /* On the iPad the LIS331 sits turned 180 degrees about X relative to
+     * the iPod's mounting: the iPod vectors read with Y (and Z) negated.
+     * Without this, "portrait" (1) read as upside down (SpringBoard's
+     * interface orientation 2) and portrait-only iPhone apps drew
+     * upside down; checked against springboardservices: upright reads 1
+     * and a clockwise turn 4, then 2, then 3, as on hardware. */
+    .accel_flipped = true,
+    .bt_uart = 3,                        /* uart3/bluetooth,n88 */
+    .gauge_uart = 5,
+    .gauge_mah = 6500,                   /* DesignCapacity from ioreg */
+    /* K48 USI board: the CIS strings pick AppleBCMWLAN's "K48 USI X17B" personality. */
+    .wifi_board = "P=K48 m=u80",
+    /* what the K48 image in wifiFirmwareLoader reports */
+    .wifi_fw_version = "wl0: Jul 21 2010 21:58:50 version 4.218.175.43",
+    .wifi_mac = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 },  /* = DT */
+};
+
+/*
+ * iPod touch 4G (N81AP): portrait 640x960 Retina panel, no SPI NOR on the
+ * board (imgtools/ipad1_kboot.py grafts K48's into the DT, docs/n81), PMU-only
+ * battery, no chargers/expander/compass/Mikey, BT on uart1. docs/n81/README.md.
+ */
+static const A4Board a4_n81 = {
+    .desc = "iPod touch 4G (N81AP, S5L8930)",
+    .dram_size = 0x10000000,
+    .chipid = { 0x31800387, 0x80758000 },    /* same die as K48 */
+    .board_id = 0x08,
+    .width = 640, .height = 960,
+    .panel_id = 0x0969e5a1,                  /* ponytail: K48's; nothing checks it on kboot= */
+    .dsi_lanes = 4,                          /* N81 DT #lanes */
+    .mt_profile = &mt_profile_n81,
+    .touch_landscape = false,
+    /* AppleMultitouchN1SPI sends Common.mtprops' N1F55 firmware (53196 bytes) in one DMA burst. */
+    .mt_tx_fifo = 0x10000,
+    /* Measured off the 8C148 sheet. SpringBoard is portrait-only on the
+     * iPod, so the sheet is the same whichever way the device is held. */
+    .pwroff_knob = {
+        [1] = { 116, 134, 1, 0 }, [2] = { 116, 134, 1, 0 },
+        [3] = { 116, 134, 1, 0 }, [4] = { 116, 134, 1, 0 },
+    },
+    .pwroff_drag_len = 460,
+    /* 4.2.1's launchd waits out a 20 s job exit timeout first: RB_HALT ~30-40 s in. */
+    .pwroff_watch_ms = 60000,
+    .i2c = {
+        { 0, 0x74, TYPE_S5L8930_D1815, 0x0d },
+        /* CS42L59 (audio0): the same MAP register file the CS42L61 driver saw. */
+        { 0, 0x4a, TYPE_CS42L58 },
+        { 2, 0x19, TYPE_LIS302DL },
+        { 2, 0x49, TYPE_S5L8930_TSL2581 },
+    },
+    .bt_uart = 1,                            /* uart1/bluetooth,n88 */
+    .gauge_uart = -1,
+    .wifi_board = "P=N81",
+    /* n81.bin in the 8C148 rootfs: 4.221.38.1, Wed 2010-10-13 15:39:39 */
+    .wifi_fw_version = "wl0: Oct 13 2010 15:39:39 version 4.221.38.1",
+    .wifi_mac = { 0x02, 0x00, 0x00, 0x81, 0x00, 0x01 },  /* synthetic, locally administered */
+};
+
+/*
+ * iPhone 4 (N90AP, GSM): 512 MiB, the portrait 640x960 panel and N1 digitizer
+ * N81 has, the iPad's CS42L61 + Mikey, HDQ gauge, BT on uart3. No NOR
+ * (grafted, as N81). The baseband (spi2, its GPIOs) is left to the cell
+ * stream's model; `baseband=off` (default) unmatches its DT node at boot.
+ * docs/n90/README.md.
+ */
+static const A4Board a4_n90 = {
+    .desc = "iPhone 4 (N90AP, S5L8930)",
+    .dram_size = 0x20000000,
+    .chipid = { 0x31800387, 0x80758000 },    /* same die as K48 */
+    .board_id = 0x00,
+    .width = 640, .height = 960,
+    .panel_id = 0x0969e5a1,                  /* ponytail: K48's, as N81's */
+    .dsi_lanes = 4,
+    .mt_profile = &mt_profile_n81,           /* multi-touch,n90: N1F55 too */
+    .touch_landscape = false,
+    .mt_tx_fifo = 0x10000,
+    /* SpringBoard is portrait-only on the iPhone too: N81's sheet. */
+    .pwroff_knob = {
+        [1] = { 116, 134, 1, 0 }, [2] = { 116, 134, 1, 0 },
+        [3] = { 116, 134, 1, 0 }, [4] = { 116, 134, 1, 0 },
+    },
+    .pwroff_drag_len = 460,
+    .pwroff_watch_ms = 60000,
+    .i2c = {
+        { 0, 0x74, TYPE_S5L8930_D1815, 0x0d },
+        { 0, 0x4a, TYPE_CS42L58 },               /* audio0, cs42l61 as on K48 */
+        /* compass (akm8973s, 0x1e) is in the DT next to the AK8975s the unit
+         * carries; the AK8973 model answers its driver. */
+        { 0, 0x1e, TYPE_S5L8930_AK8973 },
+        { 0, 0x39, TYPE_CD3272MIKEY },           /* the codec waits for 'mikey' */
+        { 2, 0x19, TYPE_LIS302DL },
+    },
+    .bt_uart = 3,
+    .gauge_uart = 5,
+    .gauge_mah = 1420,                       /* bq27540, iPhone 4 battery */
+    .wifi_board = "P=N90 V=u",               /* AppleBCMWLAN's "N90 USI - 4329 B1" */
+    /* n90.bin in the 8C148 rootfs: 4.221.38.1, Wed 2010-10-13 15:40:46 */
+    .wifi_fw_version = "wl0: Oct 13 2010 15:40:46 version 4.221.38.1",
+    .wifi_mac = { 0x02, 0x00, 0x00, 0x90, 0x00, 0x01 },  /* synthetic, locally administered */
+};
+
 #define TYPE_IPAD1_MACHINE MACHINE_TYPE_NAME("ipad1")
-OBJECT_DECLARE_SIMPLE_TYPE(IPad1MachineState, IPAD1_MACHINE)
+OBJECT_DECLARE_TYPE(IPad1MachineState, IPad1MachineClass, IPAD1_MACHINE)
+
+struct IPad1MachineClass {
+    MachineClass parent;
+    const A4Board *board;
+};
 
 struct IPad1MachineState {
     MachineState parent;
+    const A4Board *board;
     ARMCPU *cpu;
     MemoryRegion dram;
     MemoryRegion dram_hi;                /* DRAM mirror at 0x50000000 (iBoot) */
@@ -96,6 +318,7 @@ struct IPad1MachineState {
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
+    bool baseband;                       /* leave the kboot DT's baseband node matchable (default off) */
     bool iop_core;                       /* run the IOP firmware on a second core (default; off: the HLE) */
     DeviceState *iopcore;
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
@@ -228,6 +451,78 @@ static const ARMCPRegInfo ipad1_cp_reginfo[] = {
       .writefn = ipad1_qemu_call },
 };
 
+/*
+ * The flattened DT walk for a4_dt_unmatch: returns the offset past the node at
+ * `off` (or 0 when malformed); on the way, a node named `name` gets its
+ * "compatible" overwritten with "none" (same slot, zero-padded), so nothing
+ * matches it and the node stays for whoever turns it back on.
+ */
+static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const char *name, int depth)
+{
+    uint32_t nprops, nchildren;
+    uint8_t *compat = NULL;
+    uint32_t compat_len = 0;
+    bool named = false;
+
+    if (depth > 32 || off + 8 > len) {
+        return 0;
+    }
+    nprops = ldl_le_p(dt + off);
+    nchildren = ldl_le_p(dt + off + 4);
+    off += 8;
+    for (uint32_t i = 0; i < nprops; i++) {
+        uint32_t plen;
+
+        if (off + 36 > len) {
+            return 0;
+        }
+        plen = ldl_le_p(dt + off + 32) & 0x7fffffff;
+        if (plen > len - off - 36) {
+            return 0;
+        }
+        if (!strncmp((char *)dt + off, "name", 32)) {
+            named = plen > strlen(name) && !memcmp(dt + off + 36, name, strlen(name) + 1);
+        } else if (!strncmp((char *)dt + off, "compatible", 32)) {
+            compat = dt + off + 36;
+            compat_len = plen;
+        }
+        off += 36 + ((plen + 3) & ~3u);
+    }
+    if (named && compat && compat_len >= 5) {
+        memset(compat, 0, compat_len);
+        memcpy(compat, "none", 5);
+    }
+    for (uint32_t i = 0; i < nchildren; i++) {
+        off = a4_dt_walk(dt, len, off, name, depth + 1);
+        if (!off) {
+            return 0;
+        }
+    }
+    return off;
+}
+
+/* The DT a kboot bundle carries, found through its boot_args (iBoot's struct:
+ * virtBase +4, physBase +8, deviceTreeP +0x30, deviceTreeLength +0x34). */
+static void a4_dt_unmatch(uint8_t *image, size_t image_len, uint32_t load_pa,
+                          uint32_t bootargs_pa, const char *name)
+{
+    size_t ba = bootargs_pa - load_pa, dt;
+    uint32_t vbase, pbase, dtp, dtlen;
+
+    if (bootargs_pa < load_pa || ba + 0x38 > image_len) {
+        return;
+    }
+    vbase = ldl_le_p(image + ba + 4);
+    pbase = ldl_le_p(image + ba + 8);
+    dtp = ldl_le_p(image + ba + 0x30);
+    dtlen = ldl_le_p(image + ba + 0x34);
+    dt = (size_t)dtp - vbase + pbase - load_pa;
+    if (dtp < vbase || dt > image_len || dtlen > image_len - dt ||
+        !a4_dt_walk(image + dt, dtlen, 0, name, 0)) {
+        warn_report("ipad1: kboot device tree not walkable; '%s' left as is", name);
+    }
+}
+
 static void ipad1_cpu_reset(void *opaque)
 {
     IPad1MachineState *s = IPAD1_MACHINE(opaque);
@@ -284,10 +579,18 @@ static void ipad1_cpu_reset(void *opaque)
 
     if (image_len > size - KBOOT_TRAILER_LEN ||
         load_pa < S5L8930_DRAM_BASE ||
-        (uint64_t)load_pa + image_len > S5L8930_DRAM_BASE + S5L8930_DRAM_SIZE) {
+        (uint64_t)load_pa + image_len > S5L8930_DRAM_BASE + s->board->dram_size) {
         error_report("ipad1: kboot bundle does not fit in DRAM "
                      "(load 0x%x len 0x%x)", load_pa, image_len);
         exit(1);
+    }
+    /*
+     * No modem behind spi2 unless one is attached: the baseband node stays in
+     * the DT (the cell stream turns it on with baseband=on) but matches nothing,
+     * as on a Wi-Fi iPad, so AppleBaseband never waits on a silent radio.
+     */
+    if (!s->baseband) {
+        a4_dt_unmatch((uint8_t *)data, image_len, load_pa, bootargs_pa, "baseband");
     }
     if (address_space_write(&address_space_memory, load_pa,
                             MEMTXATTRS_UNSPECIFIED, data, image_len) != MEMTX_OK) {
@@ -320,21 +623,27 @@ static void ipad1_cpu_reset(void *opaque)
 /*
  * Host mouse -> digitizer slot 0. QEMU's absolute coordinates are 0..0x7fff;
  * the digitizer wants 0..1 with y from the bottom (see set_finger()).
- * The panel scans out landscape (1024x768) with the portrait UI rotated; the
- * digitizer is portrait-native. Found by trying all eight axis maps against
+ * The digitizer is portrait-native. On a landscape panel (K48, 1024x768 with
+ * the portrait UI rotated), found by trying all eight axis maps against
  * slide-to-unlock: digitizer x = 1 - panel y, y-from-bottom = 1 - panel x.
  */
-static void ipad1_map_touch(int x, int y, float *fx, float *fy)
+static void ipad1_map_touch(const A4Board *board, int x, int y, float *fx, float *fy)
 {
-    *fx = 1.0f - y / 32768.0f;
-    *fy = 1.0f - x / 32768.0f;
+    if (board->touch_landscape) {
+        *fx = 1.0f - y / 32768.0f;
+        *fy = 1.0f - x / 32768.0f;
+    } else {
+        *fx = x / 32768.0f;
+        *fy = 1.0f - y / 32768.0f;
+    }
 }
 
 static void ipad1_mouse_event(void *opaque, int x, int y, int z, int buttons)
 {
     IPodTouchMultitouchState *mt = opaque;
 
-    ipad1_map_touch(x, y, &mt->touch_x, &mt->touch_y);
+    ipad1_map_touch(IPAD1_MACHINE(qdev_get_machine())->board, x, y,
+                    &mt->touch_x, &mt->touch_y);
     if (buttons && !mt->touch_down) {
         ipod_touch_multitouch_on_touch(mt);
     } else if (!buttons && mt->touch_down) {
@@ -375,7 +684,7 @@ static void ipad1_mtt_event(DeviceState *dev, QemuConsole *src, InputEvent *evt)
         if (!s->mtt_seen[slot]) {
             return;
         }
-        ipad1_map_touch(s->mtt_x[slot], s->mtt_y[slot], &fx, &fy);
+        ipad1_map_touch(s->board, s->mtt_x[slot], s->mtt_y[slot], &fx, &fy);
         bool down = mtt->type == INPUT_MULTI_TOUCH_TYPE_BEGIN ||
                     mtt->type == INPUT_MULTI_TOUCH_TYPE_UPDATE;
         ipod_touch_multitouch_set_finger(s->mt, slot, fx, fy, down);
@@ -417,23 +726,12 @@ static void ipad1_set_button(IPad1MachineState *s, int pin, bool down)
 enum { PWROFF_IDLE, PWROFF_HOME, PWROFF_WAKE, PWROFF_HOLD, PWROFF_SETTLE, PWROFF_DRAG,
        PWROFF_WATCH };
 #define PWROFF_WATCH_MS     25000   /* from the request: warn if still running */
-#define PWROFF_DRAG_STEPS   24
-#define PWROFF_DRAG_LEN     430     /* knob to past the track's end */
 
-/*
- * Where the knob sits on the landscape panel, and which way the track runs,
- * per interface orientation (UIDeviceOrientation 1-4): the sheet is at the
- * top of the UI, which the panel shows rotated. Measured off screendumps of
- * the sheet; 2 and 4 are 1 and 3 turned half way round.
- */
-static const struct { int x, y, dx, dy; } pwroff_knob[5] = {
-    /* With the LIS331 mounted flipped (eb5d4e5c58) accel-orientation is
-     * UIDeviceOrientation, so portrait and upside down swap places here. */
-    [1] = {  73, 477,  0, -1 },     /* portrait: track runs up the panel */
-    [2] = { 950, 290,  0,  1 },     /* upside down */
-    [3] = { 418,  69,  1,  0 },     /* landscape, home button right */
-    [4] = { 605, 698, -1,  0 },     /* landscape, home button left */
-};
+static int pwroff_watch_ms(IPad1MachineState *s)
+{
+    return s->board->pwroff_watch_ms ? s->board->pwroff_watch_ms : PWROFF_WATCH_MS;
+}
+#define PWROFF_DRAG_STEPS   24
 
 static void ipad1_pwroff_arm(IPad1MachineState *s, int ms)
 {
@@ -443,13 +741,15 @@ static void ipad1_pwroff_arm(IPad1MachineState *s, int ms)
 
 static void ipad1_pwroff_touch(IPad1MachineState *s, int px, int py, bool down)
 {
-    ipad1_mouse_event(s->mt, px * 32767 / 1023, py * 32767 / 767, 0, down);
+    ipad1_mouse_event(s->mt, px * 32767 / (s->board->width - 1),
+                      py * 32767 / (s->board->height - 1), 0, down);
 }
 
 static void ipad1_pwroff_tick(void *opaque)
 {
     IPad1MachineState *s = opaque;
     int o = s->pwroff_orient, d;
+    const A4PowerKnob *knob = &s->board->pwroff_knob[o];
 
     switch (s->pwroff_phase) {
     case PWROFF_HOME:
@@ -468,22 +768,21 @@ static void ipad1_pwroff_tick(void *opaque)
         ipad1_pwroff_arm(s, 1500);          /* the sheet slides in */
         break;
     case PWROFF_SETTLE:
-        ipad1_pwroff_touch(s, pwroff_knob[o].x, pwroff_knob[o].y, true);
+        ipad1_pwroff_touch(s, knob->x, knob->y, true);
         s->pwroff_phase = PWROFF_DRAG;
         s->pwroff_step = 0;
         ipad1_pwroff_arm(s, 80);
         break;
     case PWROFF_DRAG:
-        d = PWROFF_DRAG_LEN * ++s->pwroff_step / PWROFF_DRAG_STEPS;
-        ipad1_pwroff_touch(s, pwroff_knob[o].x + pwroff_knob[o].dx * d,
-                           pwroff_knob[o].y + pwroff_knob[o].dy * d,
+        d = s->board->pwroff_drag_len * ++s->pwroff_step / PWROFF_DRAG_STEPS;
+        ipad1_pwroff_touch(s, knob->x + knob->dx * d, knob->y + knob->dy * d,
                            s->pwroff_step < PWROFF_DRAG_STEPS);
         if (s->pwroff_step < PWROFF_DRAG_STEPS) {
             ipad1_pwroff_arm(s, 80);
         } else {
             /* Now the guest halts: QEMU exits on the PMU standby write. */
             s->pwroff_phase = PWROFF_WATCH;
-            ipad1_pwroff_arm(s, PWROFF_WATCH_MS - 7300 - 80 * PWROFF_DRAG_STEPS);
+            ipad1_pwroff_arm(s, pwroff_watch_ms(s) - 7300 - 80 * PWROFF_DRAG_STEPS);
         }
         break;
     case PWROFF_WATCH:
@@ -493,7 +792,7 @@ static void ipad1_pwroff_tick(void *opaque)
          * bootloader's power-off simulation: that one did halt. */
         if (!s5l8930_d1815_guest_shutdown_confirmed()) {
             warn_report("ipad1: system_powerdown: the guest has not halted %d s "
-                        "after the request", PWROFF_WATCH_MS / 1000);
+                        "after the request", pwroff_watch_ms(s) / 1000);
         }
         s->pwroff_phase = PWROFF_IDLE;
         break;
@@ -598,6 +897,76 @@ static const QemuInputHandler ipad1_kbd_handler = {
 
 static void ipad1_battery_update(IPad1MachineState *s);
 
+/* An I2C controller and the board's slaves on it, wired by type. */
+static void ipad1_i2c_create(IPad1MachineState *s, int n)
+{
+    Object *machine = OBJECT(s);
+    DeviceState *ctl = qdev_new(TYPE_S5L8930_I2C);
+    SysBusDevice *sbd = SYS_BUS_DEVICE(ctl);
+    I2CBus *bus;
+
+    sysbus_realize_and_unref(sbd, &error_fatal);
+    sysbus_mmio_map(sbd, 0, S5L8930_I2C_BASE(n));
+    sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_I2C(n)));
+    bus = I2C_BUS(qdev_get_child_bus(ctl, "i2c"));
+
+    for (const A4I2CDevice *d = s->board->i2c; d->type; d++) {
+        I2CSlave *slave;
+        DeviceState *dev;
+
+        if (d->bus != n) {
+            continue;
+        }
+        slave = i2c_slave_new(d->type, d->addr);
+        dev = DEVICE(slave);
+        if (!strcmp(d->type, TYPE_LIS302DL)) {
+            /*
+             * AppleLIS331DLH (7B500 c0895000-c0895c00) probes WHO_AM_I without
+             * checking the value, writes CTRL_REG1-4 and INT1_CFG/THS/DURATION,
+             * and reads OUT_X/Y/Z as 16-bit bursts (sub-address | 0x80); the
+             * iPod LIS302DL model does all of that once told the part's
+             * WHO_AM_I. The DT interrupt pins (0x24/0x26, 0x25) are not
+             * driven: nothing before userland waits on them.
+             */
+            qdev_prop_set_uint8(dev, "whoami", 0x32);
+            qdev_prop_set_bit(dev, "mount-flipped", s->board->accel_flipped);
+        }
+        i2c_slave_realize_and_unref(slave, bus, &error_fatal);
+        if (d->irq_pin) {
+            qdev_connect_gpio_out(dev, 0,
+                                  qemu_irq_invert(qdev_get_gpio_in(s->gpio, d->irq_pin)));
+        }
+
+        if (!strcmp(d->type, TYPE_S5L8930_D1815)) {
+            s->pmu = dev;
+            s5l8930_d1815_set_usb_host(dev, s->usb_cable);   /* the cable's far end is a host */
+        } else if (!strcmp(d->type, TYPE_S5L8930_LTC4099)) {
+            s->ltc = dev;
+            s5l8930_ltc4099_set_usb(dev, s->usb_cable);
+        } else if (!strcmp(d->type, TYPE_S5L8930_AK8973)) {
+            /* qom-set /machine compass-heading N (degrees) */
+            s->compass = dev;
+            object_property_add_alias(machine, "compass-heading", OBJECT(dev), "heading");
+        } else if (!strcmp(d->type, TYPE_LIS302DL)) {
+            s->accel = LIS302DL(dev);
+            lis302dl_apply_orientation(s->accel, 1);   /* init ran before mount-flipped */
+            if (s->compass) {
+                s5l8930_ak8973_set_accel(s->compass, s->accel);
+            }
+            /* Same names as the iPod machine: UIDeviceOrientation 0-6, e.g.
+             * qom-set path=/machine property=accel-orientation value=3; raw
+             * counts; a shake. accel-pitch/-roll/-pose are machine properties. */
+            object_property_add_alias(machine, "accel-orientation", OBJECT(dev), "orientation");
+            object_property_set_description(machine, "accel-orientation",
+                "UIDeviceOrientation 1-6 (1 portrait, 2 upside down, 3 landscape left = Home right, 4 landscape right = Home left)");
+            object_property_add_alias(machine, "accel-x", OBJECT(dev), "x");
+            object_property_add_alias(machine, "accel-y", OBJECT(dev), "y");
+            object_property_add_alias(machine, "accel-z", OBJECT(dev), "z");
+            object_property_add_alias(machine, "accel-shake", OBJECT(dev), "shake");
+        }
+    }
+}
+
 static void ipad1_init(MachineState *machine)
 {
     IPad1MachineState *s = IPAD1_MACHINE(machine);
@@ -607,6 +976,7 @@ static void ipad1_init(MachineState *machine)
     SysBusDevice *sbd;
     int i;
 
+    s->board = IPAD1_MACHINE_GET_CLASS(s)->board;
     if (!!s->kboot_path + !!s->iboot_path + !!s->bootrom_path != 1) {
         error_report("ipad1: specify exactly one of iboot=, bootrom=, or kboot=");
         exit(1);
@@ -621,7 +991,7 @@ static void ipad1_init(MachineState *machine)
     define_arm_cp_regs(s->cpu, ipad1_cp_reginfo);
     object_unref(cpuobj);
 
-    memory_region_init_ram(&s->dram, NULL, "ipad1.dram", S5L8930_DRAM_SIZE,
+    memory_region_init_ram(&s->dram, NULL, "ipad1.dram", s->board->dram_size,
                            &error_fatal);
     memory_region_add_subregion(sysmem, S5L8930_DRAM_BASE, &s->dram);
     /*
@@ -630,8 +1000,8 @@ static void ipad1_init(MachineState *machine)
      * hardware (an iBEC read of 0x4ff00000 hung), but iBoot needs it.
      */
     memory_region_init_alias(&s->dram_hi, NULL, "ipad1.dram-hi", &s->dram, 0,
-                             S5L8930_DRAM_SIZE);
-    memory_region_add_subregion(sysmem, S5L8930_DRAM_BASE + S5L8930_DRAM_SIZE,
+                             s->board->dram_size);
+    memory_region_add_subregion(sysmem, S5L8930_DRAM_BASE + s->board->dram_size,
                                 &s->dram_hi);
     memory_region_init_ram(&s->sram, NULL, "ipad1.sram", S5L8930_SRAM_SIZE,
                            &error_fatal);
@@ -672,7 +1042,7 @@ static void ipad1_init(MachineState *machine)
      * take it from identity.json); zeros otherwise.
      */
     {
-        uint32_t chipid[] = { 0x31800387, 0x80758000, 0, 0 };
+        uint32_t chipid[] = { s->board->chipid[0], s->board->chipid[1], 0, 0 };
 
         if (s->development_fuses) {
             /* Engineering security policy: development GID/certificates,
@@ -749,6 +1119,7 @@ static void ipad1_init(MachineState *machine)
             qdev_prop_set_uint8(dev, "security-epoch", epoch);
         }
     }
+    qdev_prop_set_uint8(dev, "board-id", s->board->board_id);
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_PMGR_BASE);
     sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_TIMER0));
@@ -761,97 +1132,8 @@ static void ipad1_init(MachineState *machine)
     sysbus_mmio_map(sbd, 0, S5L8930_GPIO_BASE);
     sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_GPIO));
 
-    /* I2C0 carries the D1815 PMU; its interrupt is GPIO pin 0x0D, active low. */
-    dev = qdev_new(TYPE_S5L8930_I2C);
-    sbd = SYS_BUS_DEVICE(dev);
-    sysbus_realize_and_unref(sbd, &error_fatal);
-    sysbus_mmio_map(sbd, 0, S5L8930_I2C_BASE(0));
-    sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_I2C(0)));
-    {
-        I2CBus *bus = I2C_BUS(qdev_get_child_bus(dev, "i2c"));
-        DeviceState *pmu = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_D1815, 0x74));
-        s->pmu = pmu;
-        DeviceState *xp = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_TCA6408, 0x20));
-        s->ltc = DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_LTC4099, 0x09));
-        s5l8930_ltc4099_set_usb(s->ltc, s->usb_cable);
-        s5l8930_d1815_set_usb_host(pmu, s->usb_cable);   /* the cable's far end is a host */
-        qdev_connect_gpio_out(pmu, 0,
-                              qemu_irq_invert(qdev_get_gpio_in(s->gpio, 0x0d)));
-        qdev_connect_gpio_out(xp, 0,
-                              qemu_irq_invert(qdev_get_gpio_in(s->gpio, 0x11)));
-        /*
-         * CS42L61 codec (i2c0/audio0). AppleCS42L61Audio treats it as a plain
-         * MAP-addressed register file (0x01-0x6f, read back for its register
-         * dump) and never checks the chip ID, so the iPod's CS42L58 model
-         * fits unchanged. Its MCLK comes from the PWM block, which stays in
-         * the unimplemented window.
-         */
-        i2c_slave_create_simple(bus, TYPE_CS42L58, 0x4a);
-        /*
-         * AK8973 magnetometer (DT i2c0/compass, 0x1e). The DT also lists a
-         * compass1 at the same address on i2c2 for the other board build;
-         * with nothing there its probe fails its reset check, as on a unit
-         * of this build. qom-set /machine compass-heading N (degrees).
-         */
-        {
-            s->compass =
-                DEVICE(i2c_slave_create_simple(bus, TYPE_S5L8930_AK8973, 0x1e));
-            object_property_add_alias(OBJECT(machine), "compass-heading",
-                                      OBJECT(s->compass), "heading");
-        }
-        /*
-         * CD3282 "Mikey" headset controller (i2c0/mikey). AppleCS42L61Audio
-         * resolves the codec's 'mikey' platform function during its power-up
-         * (c08213d4 -> c082273c) and waits until AppleCD3282Mikey provides
-         * it, so without this slave the codec never registers its "Codec"
-         * IOAudio2 device and mediaserverd fails every sound with '!dev'.
-         * The iPod's CD3272 model (all registers read 0: nothing plugged in)
-         * is enough for the driver to start.
-         */
-        i2c_slave_create_simple(bus, TYPE_CD3272MIKEY, 0x39);
-    }
-    /*
-     * I2C2: LIS331DLH accelerometer and TSL2581 light sensor. AppleLIS331DLH
-     * (7B500 c0895000-c0895c00) probes WHO_AM_I without checking the value,
-     * writes CTRL_REG1-4 and INT1_CFG/THS/DURATION, and reads OUT_X/Y/Z as
-     * 16-bit bursts (sub-address | 0x80); the iPod LIS302DL model does all of
-     * that once told the part's WHO_AM_I. The DT interrupt pins (0x24/0x26,
-     * 0x25) are not driven: nothing before userland waits on them.
-     */
-    dev = qdev_new(TYPE_S5L8930_I2C);
-    sbd = SYS_BUS_DEVICE(dev);
-    sysbus_realize_and_unref(sbd, &error_fatal);
-    sysbus_mmio_map(sbd, 0, S5L8930_I2C_BASE(2));
-    sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_I2C(2)));
-    {
-        I2CBus *bus = I2C_BUS(qdev_get_child_bus(dev, "i2c"));
-        I2CSlave *accel = i2c_slave_new(TYPE_LIS302DL, 0x19);
-
-        qdev_prop_set_uint8(DEVICE(accel), "whoami", 0x32);
-        /* On the iPad the LIS331 sits turned 180 degrees about X relative to
-         * the iPod's mounting: the iPod vectors read with Y (and Z) negated.
-         * Without this, "portrait" (1) read as upside down (SpringBoard's
-         * interface orientation 2) and portrait-only iPhone apps drew
-         * upside down; checked against springboardservices: upright reads 1
-         * and a clockwise turn 4, then 2, then 3, as on hardware. */
-        qdev_prop_set_bit(DEVICE(accel), "mount-flipped", true);
-        i2c_slave_realize_and_unref(accel, bus, &error_fatal);
-        s->accel = LIS302DL(accel);
-        lis302dl_apply_orientation(s->accel, 1);   /* init ran before mount-flipped */
-        s5l8930_ak8973_set_accel(s->compass, s->accel);
-        /* Same names as the iPod machine: UIDeviceOrientation 0-6, e.g.
-         * qom-set path=/machine property=accel-orientation value=3; raw
-         * counts; a shake. accel-pitch/-roll/-pose are machine properties. */
-        object_property_add_alias(OBJECT(machine), "accel-orientation",
-                                  OBJECT(accel), "orientation");
-        object_property_set_description(OBJECT(machine), "accel-orientation",
-            "UIDeviceOrientation 1-6 (1 portrait, 2 upside down, 3 landscape left = Home right, 4 landscape right = Home left)");
-        object_property_add_alias(OBJECT(machine), "accel-x", OBJECT(accel), "x");
-        object_property_add_alias(OBJECT(machine), "accel-y", OBJECT(accel), "y");
-        object_property_add_alias(OBJECT(machine), "accel-z", OBJECT(accel), "z");
-        object_property_add_alias(OBJECT(machine), "accel-shake", OBJECT(accel), "shake");
-        i2c_slave_create_simple(bus, TYPE_S5L8930_TSL2581, 0x39);
-    }
+    ipad1_i2c_create(s, 0);
+    ipad1_i2c_create(s, 2);
 
     /*
      * dart1: the IOMMU in front of the ISP, JPEG and video-encoder blocks
@@ -864,6 +1146,8 @@ static void ipad1_init(MachineState *machine)
     dev = qdev_new(TYPE_S5L8930_DISPLAY);
     s->display = dev;
     qdev_prop_set_uint64(dev, "fb-base", 0x4f700000);
+    qdev_prop_set_uint16(dev, "width", s->board->width);
+    qdev_prop_set_uint16(dev, "height", s->board->height);
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_DISP_PIPE0_BASE);
@@ -882,15 +1166,8 @@ static void ipad1_init(MachineState *machine)
     /* kboot= enters the kernel with no iBoot to bring the panel up: start the
      * link the way iBoot's pinot_init leaves it (HS clock running). */
     IPOD_TOUCH_MIPI_DSI(dev)->hs_clock_at_reset = s->kboot_path != NULL;
-    qdev_prop_set_uint32(dev, "lanes", 4);      /* K48 DT #lanes */
-    /*
-     * The K48 Pinot panel's ID read, a1 e5 69 09: raw-panel-id in a real
-     * unit's DeviceTree (docs/ipad1/iboot.md), whose lcd-panel-id 0xa1e506c9
-     * is iBoot's normalisation of those four bytes. iBoot-1219 panics on a
-     * panel type it does not know ("Mismatch between PINOT_TYPE and panel
-     * ID"); 817/931 took the iPod's ID the model used to answer.
-     */
-    qdev_prop_set_uint32(dev, "panel-id", 0x0969e5a1);
+    qdev_prop_set_uint32(dev, "lanes", s->board->dsi_lanes);
+    qdev_prop_set_uint32(dev, "panel-id", s->board->panel_id);
     qdev_prop_set_uint32(dev, "panel-id-len", 4);
     memory_region_add_subregion(sysmem, S5L8930_DSIM_BASE,
                                 &IPOD_TOUCH_MIPI_DSI(dev)->iomem);
@@ -898,24 +1175,23 @@ static void ipad1_init(MachineState *machine)
 
     /*
      * Wi-Fi: the iPod's Broadcom dongle model, dressed as the unit's BCM4329
-     * (K48 USI board: the CIS strings pick AppleBCMWLAN's "K48 USI X17B"
-     * personality), behind the SDHC and the IOP's SDIO task. Frames go to
+     * (the board's CIS strings pick AppleBCMWLAN's personality for it),
+     * behind the SDHC and the IOP's SDIO task. Frames go to
      * -netdev ...,id=wifi0. docs/ipad1/wifi.md.
      */
     DeviceState *sdio = NULL;
     {
-        static const BCMSDIOChip bcm4329 = {
+        BCMSDIOChip bcm4329 = {
             .manfid = 0x02d0, .prodid = 0x4329,
             .chipid = 0x00034329,                   /* rev 3 = B1 (c07a61d2) */
             .sdiod_base = 0x18011000,               /* where initDongle polls */
-            .vers1 = { "", "", "s=B1", "P=K48 m=u80" },
-            .mac = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 },  /* = DT */
+            .vers1 = { "", "", "s=B1", s->board->wifi_board },
             .no_common_funce = true,
-            /* what the K48 image in wifiFirmwareLoader reports */
-            .fw_version = "wl0: Jul 21 2010 21:58:50 version 4.218.175.43",
+            .fw_version = s->board->wifi_fw_version,
         };
         IPodTouchSDIOState *card = IPOD_TOUCH_SDIO(qdev_new(TYPE_IPOD_TOUCH_SDIO));
 
+        memcpy(bcm4329.mac, s->board->wifi_mac, sizeof(bcm4329.mac));
         ipod_touch_sdio_set_chip(card, &bcm4329);
         /* qom-set /machine wifi-bssid aa:bb:..: a new access point for
          * locationd, which caches a position per BSSID (location.md). */
@@ -992,6 +1268,7 @@ static void ipad1_init(MachineState *machine)
 
     /* CDMA + AES filter; one interrupt line per channel. */
     dev = qdev_new(TYPE_S5L8930_CDMA);
+    qdev_prop_set_uint64(dev, "dram-size", s->board->dram_size);
     if (s->gid_blobs_path) {
         qdev_prop_set_string(dev, "gid-blobs", s->gid_blobs_path);
     }
@@ -1083,9 +1360,19 @@ static void ipad1_init(MachineState *machine)
     qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(S5L8930_GPIO_NOR_CS),
         qdev_get_gpio_in_named(DEVICE(IPOD_TOUCH_SPI(dev)->nor), SSI_GPIO_CS, 0));
 
-    dev = ipod_touch_spi_create(S5L8930_SPI_BASE(1), ipad1_irq(s, S5L8930_IRQ_SPI(1)), 1, "multitouch", false);
+    if (s->board->mt_tx_fifo) {
+        dev = qdev_new(TYPE_IPOD_TOUCH_SPI);
+        qdev_prop_set_uint8(dev, "index", 1);
+        qdev_prop_set_string(dev, "peripheral", "multitouch");
+        qdev_prop_set_uint32(dev, "tx-fifo-depth", s->board->mt_tx_fifo);
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S5L8930_SPI_BASE(1));
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, ipad1_irq(s, S5L8930_IRQ_SPI(1)));
+    } else {
+        dev = ipod_touch_spi_create(S5L8930_SPI_BASE(1), ipad1_irq(s, S5L8930_IRQ_SPI(1)), 1, "multitouch", false);
+    }
     s->mt = IPOD_TOUCH_SPI(dev)->mt;
-    s->mt->profile = &mt_profile_k48;
+    s->mt->profile = s->board->mt_profile;
     /* Zephyr2 ATN -> GPIO 0x15; reset (0x204) and download (0x107) are ignored. */
     qdev_connect_gpio_out_named(DEVICE(s->mt), "atn", 0,
         qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(S5L8930_GPIO_MT_ATN)));
@@ -1145,31 +1432,35 @@ static void ipad1_init(MachineState *machine)
     sysbus_mmio_map(sbd, 0, S5L8930_AMC_BASE);
     sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_AMC));
 
-    /* Same Samsung UART as the S5L8720, including its interrupt scheme. */
-    exynos4210_uart_create(S5L8930_UART_BASE(0), 256, 0, serial_hd(0),
-                           ipad1_irq(s, S5L8930_IRQ_UART(0)), true);
-    /* UART1, 2, 4: iBoot sets them all up; the kernel's DT has them too
-     * (UART3 is Bluetooth, below). */
-    for (i = 1; i < 5; i++) {
-        if (i == 3) {
+    /*
+     * UART0-5, same Samsung UART as the S5L8720, including its interrupt
+     * scheme. iBoot sets them all up; the kernel's DT has them too. Creation
+     * order (plain ones, gauge, Bluetooth) is the snapshot's.
+     */
+    for (i = 0; i < 6; i++) {
+        if (i == s->board->bt_uart || i == s->board->gauge_uart) {
             continue;
         }
         exynos4210_uart_create(S5L8930_UART_BASE(i), 256, i, serial_hd(i),
                                ipad1_irq(s, S5L8930_IRQ_UART(i)), true);
     }
     /*
-     * UART5 is the bq27545 gas gauge's HDQ line (see s5l8930_hdq.c). A 16-byte
+     * The bq27545 gas gauge's HDQ line (see s5l8930_hdq.c). A 16-byte
      * FIFO like the silicon: AppleS5L8900XSerial reads the Rx count as
      * UFSTAT[3:0] | full(bit 8) << 4 (c068bafa), so a deeper FIFO's count in
      * [7:0] reads as empty once it passes 15 and the echoes were never read.
      */
-    s->gauge = qemu_chardev_new(NULL, TYPE_CHARDEV_S5L8930_HDQ, NULL, NULL,
-                                &error_abort);
-    exynos4210_uart_create(S5L8930_UART_BASE(5), 16, 5, s->gauge,
-                           ipad1_irq(s, S5L8930_IRQ_UART(5)), true);
-    /* UART3: the BCM4329's HCI link (uart3/bluetooth,n88); nothing answers yet. */
-    exynos4210_uart_create(S5L8930_UART_BASE(3), 256, 3, NULL,
-                           ipad1_irq(s, S5L8930_IRQ_UART(3)), true);
+    if (s->board->gauge_uart >= 0) {
+        i = s->board->gauge_uart;
+        s->gauge = qemu_chardev_new(NULL, TYPE_CHARDEV_S5L8930_HDQ, NULL, NULL,
+                                    &error_abort);
+        s5l8930_hdq_set_capacity(s->gauge, s->board->gauge_mah);
+        exynos4210_uart_create(S5L8930_UART_BASE(i), 16, i, s->gauge,
+                               ipad1_irq(s, S5L8930_IRQ_UART(i)), true);
+    }
+    /* The BCM4329's HCI link (bluetooth,n88); nothing answers yet. */
+    exynos4210_uart_create(S5L8930_UART_BASE(s->board->bt_uart), 256, s->board->bt_uart,
+                           NULL, ipad1_irq(s, S5L8930_IRQ_UART(s->board->bt_uart)), true);
     ipad1_battery_update(s);
 
     s->pwroff_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ipad1_pwroff_tick, s);
@@ -1323,8 +1614,10 @@ static void ipad1_set_usb_cable(Object *obj, bool value, Error **errp)
         return;
     }
     s->usb_cable = value;
-    if (s->ltc) {
-        s5l8930_ltc4099_set_usb(s->ltc, value);
+    if (s->pmu) {
+        if (s->ltc) {
+            s5l8930_ltc4099_set_usb(s->ltc, value);
+        }
         s5l8930_d1815_set_usb_host(s->pmu, value);
         synopsys_usb_set_cable(s->usb_otg, value);
         s5l8930_d1815_usb_cable_event(s->pmu);
@@ -1359,12 +1652,16 @@ static bool ipad1_battery_charging(IPad1MachineState *s)
 
 static void ipad1_battery_update(IPad1MachineState *s)
 {
-    if (!s->pmu || !s->ltc || !s->gauge) {
+    if (!s->pmu) {
         return;
     }
     s5l8930_d1815_set_vbat(s->pmu, 3500 + lround(s->battery_level * 6.35));
-    s5l8930_ltc4099_set_charging(s->ltc, ipad1_battery_charging(s));
-    s5l8930_hdq_set_battery(s->gauge, lround(s->battery_level), ipad1_battery_charging(s));
+    if (s->ltc) {
+        s5l8930_ltc4099_set_charging(s->ltc, ipad1_battery_charging(s));
+    }
+    if (s->gauge) {
+        s5l8930_hdq_set_battery(s->gauge, lround(s->battery_level), ipad1_battery_charging(s));
+    }
 }
 
 static bool ipad1_get_usb_charger(Object *obj, Error **errp)
@@ -1507,6 +1804,16 @@ static void ipad1_set_iop_core(Object *obj, bool value, Error **errp)
     IPAD1_MACHINE(obj)->iop_core = value;
 }
 
+static bool ipad1_get_baseband(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->baseband;
+}
+
+static void ipad1_set_baseband(Object *obj, bool value, Error **errp)
+{
+    IPAD1_MACHINE(obj)->baseband = value;
+}
+
 static bool ipad1_get_wifi(Object *obj, Error **errp)
 {
     return IPAD1_MACHINE(obj)->wifi;
@@ -1645,14 +1952,15 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(klass);
 
-    mc->desc = "iPad 1 (K48AP, S5L8930)";
+    IPAD1_MACHINE_CLASS(klass)->board = &a4_k48;
+    mc->desc = a4_k48.desc;
     mc->init = ipad1_init;
     /* The AP plus the IOP core: TCG sizes its contexts from smp, and the board creates
      * both CPUs itself, so 2 costs nothing with iop-core=off. */
     mc->max_cpus = 2;
     mc->default_cpus = 2;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a8");
-    mc->default_ram_size = S5L8930_DRAM_SIZE;
+    mc->default_ram_size = a4_k48.dram_size;
 
     object_class_property_add_str(klass, "kboot", ipad1_get_kboot,
                                   ipad1_set_kboot);
@@ -1698,6 +2006,10 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     object_class_property_add_bool(klass, "iop-core", ipad1_get_iop_core, ipad1_set_iop_core);
     object_class_property_set_description(klass, "iop-core",
         "Run the kernel's EmbeddedIOP firmware on a second core (arm946) (default on); off = the IOP HLE");
+    object_class_property_add_bool(klass, "baseband", ipad1_get_baseband, ipad1_set_baseband);
+    object_class_property_set_description(klass, "baseband",
+        "kboot= on a radio board: leave the DT's baseband node matched (a modem model is attached); "
+        "default off unmatches it (compatible \"none\") at every reset");
     object_class_property_add_bool(klass, "wifi", ipad1_get_wifi, ipad1_set_wifi);
     object_class_property_set_description(klass, "wifi",
         "Host bridge for the soldered BCM4329 (default on). Frames go to "
@@ -1736,10 +2048,36 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
         "Home button pressed; set true then false");
 }
 
+/* Another A4 board: ipad1's properties and init, the board's data. */
+static void a4_board_class_init(ObjectClass *klass, void *data)
+{
+    const A4Board *board = data;
+
+    IPAD1_MACHINE_CLASS(klass)->board = board;
+    MACHINE_CLASS(klass)->desc = board->desc;
+    MACHINE_CLASS(klass)->default_ram_size = board->dram_size;
+}
+
+static const TypeInfo a4_board_types[] = {
+    {
+        .name = MACHINE_TYPE_NAME("iPod-Touch-4G"),
+        .parent = TYPE_IPAD1_MACHINE,
+        .class_init = a4_board_class_init,
+        .class_data = (void *)&a4_n81,
+    },
+    {
+        .name = MACHINE_TYPE_NAME("iPhone-4"),
+        .parent = TYPE_IPAD1_MACHINE,
+        .class_init = a4_board_class_init,
+        .class_data = (void *)&a4_n90,
+    },
+};
+
 static const TypeInfo ipad1_machine_info = {
     .name = TYPE_IPAD1_MACHINE,
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(IPad1MachineState),
+    .class_size = sizeof(IPad1MachineClass),
     .instance_init = ipad1_instance_init,
     .instance_finalize = ipad1_instance_finalize,
     .class_init = ipad1_class_init,
@@ -1748,6 +2086,9 @@ static const TypeInfo ipad1_machine_info = {
 static void ipad1_machine_types(void)
 {
     type_register_static(&ipad1_machine_info);
+    for (int i = 0; i < ARRAY_SIZE(a4_board_types); i++) {
+        type_register_static(&a4_board_types[i]);
+    }
 }
 
 type_init(ipad1_machine_types)

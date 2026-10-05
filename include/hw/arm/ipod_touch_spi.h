@@ -80,6 +80,7 @@ typedef struct IPodTouchSPIState {
     uint8_t base;          /* "index" property: controller number, names the bus */
     char *peripheral;      /* "peripheral" property: nor | multitouch | none | <SSI type> */
     bool s5l8900;          /* "s5l8900" property: TX FIFO drains without a TX count */
+    uint32_t tx_fifo_depth; /* "tx-fifo-depth": the longest DMA burst the guest sends */
     Fifo8 rx_fifo;
     Fifo8 tx_fifo;
 } IPodTouchSPIState;

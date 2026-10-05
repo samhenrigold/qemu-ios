@@ -12,6 +12,8 @@ its home screen:
 |---|---|---|---|---|
 | `-M iPod-Touch` | iPod touch 2G (n72ap) | S5L8720 | `hw/arm/ipod_touch_2g.c`, `hw/arm/ipod_touch_*.c` | iOS 3.1.3 (7E18), 4.2.1 (8C148); 2.1.1 (5F138) with the host setting the clock |
 | `-M ipad1` | iPad 1 (k48ap) | S5L8930 (A4) | `hw/arm/ipad1.c`, `hw/arm/s5l8930_*.c`, `include/hw/arm/s5l8930.h` | iOS 3.2 (7B367), 3.2.2 (7B500), 4.2.1 (8C148), through the real iBoot chain |
+| `-M iPod-Touch-4G` | iPod touch 4G (n81ap) | S5L8930 (A4) | the iPad's machine and models, board `a4_n81` in `hw/arm/ipad1.c`; `docs/n81/README.md` | iOS 4.2.1 (8C148) to the home screen with touch, usbmux/AFC, Wi-Fi, clean power-off, from a direct kernel bundle (no iBoot yet) |
+| `-M iPhone-4` | iPhone 4 GSM (n90ap) | S5L8930 (A4) | board `a4_n90` in `hw/arm/ipad1.c`; `docs/n90/README.md` | iOS 4.2.1 (8C148) to the home screen ("No Service": baseband pending) with touch, Wi-Fi, usbmux/AFC, clean power-off, from a direct kernel bundle |
 | `-M iPod-Touch-1G` | iPod touch 1G (n45ap) | S5L8900 | `hw/arm/ipod_touch_1g.c`, `hw/arm/s5l8900_*.c`, the `ipod_touch_*.c` models with `s5l8900`/variant properties; `docs/ipod1g/README.md` | iPhone OS 1.1 (3A101a) to the home screen with touch, through the real bootrom and iBoot-204 (devos50's public n45ap assets), LayerKit composited through the host GL bridge on a prepared device; no app or USB work yet |
 
 Shared between the boards: the host GL executor (`hw/arm/gles-host*.c`), the guest-service hypercalls
