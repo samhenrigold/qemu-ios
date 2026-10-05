@@ -80,8 +80,13 @@ As N81, plus:
    the device shows "No Service".
 2. **Absent parts**:
    - ~~The gyro~~: the L3G4200D model, as on N81 (its debt 5).
-   - The ALS/prox ct700 (i2c0 0x29). It is probed for and skipped.
-   - The Highland Park audio processor (i2c0 0x3e, uart6, i2s2).
+   - The ALS/prox ct700 (i2c0 0x29): AppleCT700 logs "Probing hardware failed" and stays out, so there is
+     no auto-brightness and no proximity blanking on calls. A model is a TAOS-style register file (command
+     byte 0x80|reg) plus `als-calibration`/`prox-calibration`, which iBoot fills from syscfg and the driver
+     checks for a signature and limits. Deferred (2026-10-05) until calls want proximity.
+   - The Highland Park voice processor (AUD10: i2c0 0x3e, uart6, i2s2) passes probe and start with nothing
+     behind it. Its message protocol (firmware download, routing, algorithm parameters) is only exercised
+     on a call's audio route. Deferred, since calls carry no audio.
    - The GPS (bcm4750 on uart4).
    - The cameras and ISP. `camera=off` (default) unmatches the DT's `isp` node, as on N81 (its debt 4).
 3. **Compass**: the AK8973 stands in for the AK8975B pair.
