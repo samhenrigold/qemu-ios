@@ -1508,9 +1508,12 @@ static void ipad1_init(MachineState *machine)
     DeviceState *scaler = sysbus_create_simple("ipodtouch.scaler", S5L8930_SCALER_BASE,
                                                ipad1_irq(s, S5L8930_IRQ_SCALER));
     ipod_scaler_set_iommu(scaler, s5l8930_dart2_xlate, s->display, 2);
-    /* ponytail: 0x20002 is the lowest version the 4.3 driver gives tiled buffers (CA scales EAGL layers from
-     * them); unmeasured on a unit, read +0x260 off one to replace it. */
-    ipod_scaler_set_version(scaler, 0x20002);
+    /* 7.x's AppleM2ScalerCSC keys its features on (SoC, block version) and gives tiled buffers to no SoC-0 row
+     * below 0x40000 but 0x20007 (11D257 setScalerPropertiesAndExtents' table: 0x20002 has none). Every EAGL layer
+     * QuartzCore scales is tiled and the A4 runs 7.x, so its block is 0x20007. 4.x-6.x drivers give tiled buffers
+     * from 0x20002 and take their other path above 0x20006. ponytail: still unmeasured on a unit, read +0x260
+     * off one to confirm. */
+    ipod_scaler_set_version(scaler, 0x20007);
 
     /* SWI: backlight and DPSM core voltage; only the busy bit matters. */
     sysbus_create_simple("ipodtouch.swi", S5L8930_SWI_BASE, NULL);
