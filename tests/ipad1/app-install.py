@@ -87,9 +87,11 @@ def ocr_upright(ppm):
 
 # iOS 5's Setup Assistant on the iPod (tests/ipad1/regress.py walks the iPad's): each page is answered by the
 # first label of PICKS it shows, then its Next (the language page's is an arrow); a button labelled exactly as one\n# of ALERT_YES (an alert's, or Terms' Agree) first.
-PICKS = ("Start Using iPod touch", "Start Using iPod", "Start Using iPhone", "Set Up as New iPod touch", "Set Up as New iPod",
-         "Set Up as New iPhone", "Disable Location Services", "Skip This Step", "Agree",
-         "Don't Send", "Australia", "United States")
+# iOS 7's language and country pages have no Next: their rows advance, so English is a pick too (on 4.x-6.x it is
+# already chosen), and so is Albania, the first plain-Gregorian row of 7.x's alphabetical country list.
+PICKS = ("Start Using iPod touch", "Start Using iPod", "Start Using iPhone", "Get Started", "Set Up as New iPod touch",
+         "Set Up as New iPod", "Set Up as New iPhone", "Disable Location Services", "Skip This Step", "Agree",
+         "Don't Add Passcode", "Don't Send", "Australia", "United States", "Albania", "English")
 ALERT_YES = ("OK", "Skip", "Agree", "Continue")
 NEXT_ARROW = (587, 84)                       # at 640x960; walk_setup scales it to the panel
 
@@ -118,7 +120,7 @@ def walk_setup(b, step):
             x, y = found[pick]
             b.tap((x, y + (0, -14, 14, -24, 24)[again % 5]))
             pages.append(pick)
-            if pick.startswith("Start Using"):
+            if pick.startswith("Start Using") or pick == "Get Started":
                 continue
             time.sleep(1.5)
         arrow = (NEXT_ARROW[0] * rg.itqmp.W // 640, NEXT_ARROW[1] * rg.itqmp.H // 960)
@@ -200,8 +202,11 @@ def main():
         _, locked = ac.snap(b, rg, "locked")
         for _ in range(3 if portrait else 1):
             unlock()
-            time.sleep(4)
-            fresh = portrait and "English" in ocr_upright(b.shot("opened"))   # a fresh 5.x
+            for _ in range(3 if portrait else 1):   # 7.x's language page follows its Hello screen a few seconds late
+                time.sleep(4)
+                fresh = portrait and "English" in ocr_upright(b.shot("opened"))   # a fresh 5.x
+                if fresh:
+                    break
             status, out = rg.itqmp.agent(b.qmp, "lockstatus") if rg.itqmp.agent_alive(b.qmp) else (1, b"")
             # Without an agent the frame decides (a locked 4.0 answers springboardservices): lit, not the lock screen.
             nz, now = ac.snap(b, rg, "unlocked")
