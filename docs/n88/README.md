@@ -134,9 +134,12 @@ iPod-Touch-4G --checks boot` PASS; N18 dev2 unlock to the home screen with touch
      YaFTL on VSVFL as 4.x is; its own FIL signs flags 4 when it formats (seen by letting it format a blank
      XOR store with nand-enable-reformat=1, which needs the s5l8920x raw read, `cfg-v0`). Plain stores now
      sign 4 (4.x and 5.x accept it).
-   - Still open: touch. The N1F54 firmware downloads and the kernel reads every frame, but 3.1.3 never sends
-     the report-mode writes 4.x does after reading the sensor's reports (0xbf, 0xaf; 0xd1/d3/d0/a1/d9 are
-     read), and the UI does not react. A Home press also opens the iPod app (a double click).
+   - Still open: touch. The N1F54 firmware downloads, the kernel reads every frame (0xEB), and SpringBoard's
+     MultitouchHID loads and follows the UI lock ("uilock state: 1 -> 0"), but nothing reacts to a touch. 3.1.3
+     never writes the report-mode reports 4.x writes (0xbf, 0xaf). Its personality has
+     AutomaticallySetOperatingMode, whose handler (0xc030d99c) would write report 0xab, and it is never called.
+     Next: whether 3.1.3's MultitouchSupport accepts the model's 0xEB frame layout (it is 4.x's). A Home press
+     also opens the iPod app (read as a double click).
 8. **Touch calibration**: the digitizer frame is the N81 profile's, unmeasured on N88; taps in the bottom
    ~5% of the panel land ~15 px high (retap lower). tests/ipad1/touchcal.py (ipad1) is the tool to fit it.
 9. **iOS 6**: 10B500's kernel prints nothing under kboot (fw-a4 has N81 6.0 past pe_identify_machine with
