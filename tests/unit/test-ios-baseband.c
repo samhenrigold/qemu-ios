@@ -991,7 +991,7 @@ static void test_ifx(void)
     ios_bb_init(&c, ios_bb_ifx_queue, &x);
     CHECK(!ios_bb_ifx_pending(&x));
     ifx_frame(&x, &c, "at\r", miso, 0x7fc, got);
-    CHECK(miso[3] & 0x40);                      /* CTS */
+    CHECK(!(miso[3] & 0x40));                   /* bit 6 clear: N88 re-polls while it is set */
     CHECK(ios_bb_ifx_pending(&x));              /* the OK wants SRDY */
     ifx_frame(&x, &c, "", miso, 0x7fc, got);
     check_str(got, "\r\nOK\r\n", "ifx v1 OK");

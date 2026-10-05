@@ -2328,7 +2328,7 @@ static void h5_rx_payload(IosBbCore *bb, const uint8_t *data, unsigned len)
 
 #define IFX_MORE      0x10         /* header byte 1 */
 #define IFX_V2_CREDIT_REQ 0x40     /* header byte 1: the sender holds no credits */
-#define IFX_V1_CTS    0x40         /* header byte 3 */
+
 #define IFX_V2_GRANT  16           /* the AP's credit level we keep it at (tx-buffer-count) */
 
 void ios_bb_ifx_init(IosBbIfx *x, int version, unsigned max_data)
@@ -2425,7 +2425,7 @@ void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
         miso[3] = grant >> 8;
     } else {
         miso[2] = x->max_data;                 /* next_data_size: what we can take */
-        miso[3] = ((x->max_data >> 8) & 0xf) | IFX_V1_CTS;
+        miso[3] = (x->max_data >> 8) & 0xf;    /* bit 6 left clear: the N88 kernel re-polls while it is set */
     }
     memcpy(miso + IOS_BB_IFX_HDR, x->txq, out_len);
     memmove(x->txq, x->txq + out_len, x->txq_len - out_len);
