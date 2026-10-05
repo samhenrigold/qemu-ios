@@ -163,9 +163,33 @@ PASS; N18 unlock to the home screen with touch PASS.
    (contrib/gles-public) does not fit 6.x yet (imports NSObject classes no 6.x image exports), so the device is
    prepared with ca_ogl off, and SpringBoard then has no context to draw into ("CGContext... invalid context
    0x0"): the panel keeps the boot logo. Waits on the 6.x GL shim (a4-boards).
-10. **3.0**: as the iPod 2G's 7A341, 3.0 bakes no guest helpers (FirmwareKit `guest_tools` off: 3.0's dyld refuses
-    LC_DYLD_INFO_ONLY), no AppSync, no GL front end, and so no seal boot. The first boot then has YaFTL rebuild its
-    context ("CXT is not valid. Performing full NAND R/O restore", as 3.1.3's seal boot also does, successfully),
-    after which every read of lpn 0 fails ("mismatch between lpn and metadata at lpn 0 meta -1") and root never
-    mounts. 3.0's YaFTL reads the K48NAND store's page metadata differently from 3.1's; s5l8920's ECC-summary
-    latch does not change it. Open.
+10. **3.0** (fixed 2026-10-05, by hand; FirmwareKit to follow): 3.0's yaFTL always takes one block-TOC page
+    (YAFTL_Init 0xc05c74ec on 7A341 compares `data <= data*4*n`, so n stays 1; 3.1 fixed it). The k48-16g store's
+    vendor type 0x100014 gives two VFL banks per CE, so 2048-page superblocks whose TOC needs two pages: the R/O
+    restore read past the TOC and built a garbage map ("mismatch between lpn and metadata at lpn 0 meta -1").
+    3.0's own AppleS5L8920XIOPFMI table (0xc041cf60) gives this part on 2 buses x 4 CEs vendor type **0x10001**, one
+    bank per CE: 1024-page superblocks, whose TOC fits one page. `ipad1_nand.py --geometry k48-16g-v1` builds that
+    store. (The table refuses 2+2 CEs, "2-bus not supported", and gives 1x4 0x100014, so a single-bus map does not
+    help.) With it, 3.0 restores its context, mounts root and reaches an activated lock screen ("No Service"), and
+    `regress.py --machine n88 --product-version 3.0` passes usbmux, afc (all five sizes) and persist (one run; the
+    power-off gesture missed once at load ~50). The other 3.0 differences, as N18 3.1.x: `--sig-flags 4`, an
+    unjournaled 8 KiB data volume, and the kboot DT guards (3.0's DT has no raw-panel-id or snum slots).
+    Recipe:
+
+    ```
+    F=<work>; N=~/Developer/qemu-ios-files/n88
+    imgtools/ipad1_fw.py $N/ipsw/iPhone2,1_3.0_7A341_Restore.ipsw keys-7A341.txt $F/dec
+    imgtools/ipad1_nand.py mbr --geometry k48-16g-v1 --system-mib 1280 $F/mbr.bin
+    imgtools/ipad1_rootfs.py build --rootfs $F/dec/rootfs.dmg --pristine $F/dec/rootfs.dmg --mbr $F/mbr.bin \
+        --out $F/userland --lockdown none --no-usb-net --no-web-proxy --no-ca-ogl --data-block-size 8192 --data-unjournaled
+    # activation_hook(FirmwareKit's activation.c CLI) on userland/pristine/system.img
+    imgtools/ipad1_nand.py build --no-whitening --epoch 2 --sig-flags 4 --geometry k48-16g-v1 --mbr $F/mbr.bin \
+        --kernelcache $F/dec/kernelcache.mach --system $F/userland/pristine/system.img \
+        --data $F/userland/pristine/data.img --out $F/nand
+    imgtools/s5l8920_kboot.py n88 --identity $N/identity.json --nor $F/dec $F/kboot.bin "serial=3 debug=0x8 -v ..."
+    tests/ipad1/regress.py --machine n88 --kboot $F/kboot.bin --nand $F/nand --nor <erased 1 MiB> \
+        --product-version 3.0 --checks usbmux,afc,persist --jobs 1
+    ```
+
+    Open: after unlocking, the home screen draws only its status bar (software CoreAnimation, `--no-ca-ogl`);
+    app install is untried (3.0 has no installd AppSync path here).
