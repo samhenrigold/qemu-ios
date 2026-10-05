@@ -198,9 +198,9 @@ unlocked to the home screen by a drag. What differs per build:
   D1815 reads its brick mux. 3.1.x and 4.2.1 still pass usbmux and AFC, and so do the iPod 2G regress (boot
   and AFC) and the iPod 1G regress (boot).
 
-### App install on 3.1.3, 4.0 and 4.3.5
+### App install on 3.1.3, 4.0, 4.1, 4.3 and 4.3.5
 
-`tests/ipad1/app-install.py --machine n18` passes every step on 3.1.3, 4.0 and 4.3.5 (2026-10-05): install
+`tests/ipad1/app-install.py --machine n18` passes every step on 3.1.3, 4.0, 4.1, 4.3 and 4.3.5 (2026-10-05): install
 through installation_proxy and AppSync, icon pinned to page 1, launch, the Harness's GLES row through the
 bridge (readback PASS, no refusals), then guest power-off. Build the system image with `--appsync --gles`
 (4.x: `build4x`-style plus the keybag, as 4.2.1's "App install" recipe; 3.1.3: as its section above). Two
