@@ -130,10 +130,11 @@ iPod-Touch-4G --checks boot` PASS; N18 dev2 unlock to the home screen with touch
    0x00000f0f 2-bus not supported". Found with the gdbstub (lldb, -S, a breakpoint at findNandInfo
    0xc043cd0c): the board type is 0x0c (global 0xc0445000) and its table (0xc0442d58..: 28-byte rows of
    board, dies, buses, then chip+CE count per bus) has (2 dies, 2 buses, 0xB614D5AD x4, 0xB614D5AD x4). But the
-   key built is (2, 1 bus, 0xB614D5AD x8): the per-bus CE masks come from an object at 0xc04450e8 (vtable
-   +0x7c the mask array, +0x64 its size), which is NULL here, so every CE folds into bus 0
-   (0xc043b028 returns all-ones). Next: who registers that object on a real boot (an iBoot-filled DT
-   property or a platform service under kboot) and give it the two buses.
+   key built is (2, 1 bus, 0xB614D5AD x8): the per-bus CE masks are the words of the FMI's "landing-map"
+   OSData (0xc043c6da: getProperty, kept at 0xc04450e8; 0xc043b028 reads word i for bus i, all-ones when
+   there is none). The 7E18 DT has landing-map = 0x0303 on flash-controller0/disk, but the property is
+   not found where the driver looks (the global stays NULL), so every CE folds into bus 0. Next: where
+   iBoot puts landing-map on a real boot (one word per bus, here 0x0f and 0x0f00) and set it there in kboot.
 8. **Touch calibration**: the digitizer frame is the N81 profile's, unmeasured on N88; taps in the bottom
    ~5% of the panel land ~15 px high (retap lower). tests/ipad1/touchcal.py (ipad1) is the tool to fit it.
 9. **iOS 6**: 10B500's kernel prints nothing under kboot (fw-a4 has N81 6.0 past pe_identify_machine with
