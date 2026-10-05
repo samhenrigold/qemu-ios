@@ -1281,6 +1281,13 @@ bool ios_bb_incoming_call(IosBbCore *bb, const char *number)
 
 static void call_progress(IosBbCore *bb, IosBbCall *c, int stat)
 {
+    /* The connected line: 1.0 shows the number of an answered outgoing call
+     * only from +COLP (handler 0x1e08e), never from +CLCC. */
+    if (stat == IOS_BB_CALL_ACTIVE && !c->mt && !bb->colp_off &&
+        (c->stat == IOS_BB_CALL_DIALING || c->stat == IOS_BB_CALL_ALERTING)) {
+        chan_printf(bb, bb->call_ch, "\r\n+COLP: \"%s\",%d\r\n",
+                    c->number, at_type_of(c->number));
+    }
     c->stat = stat;
     c->next_stat = -1;
     c->due_ms = 0;
@@ -2053,6 +2060,16 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
                 }
             }
         }
+        return;
+    }
+    if ((arg = arg_after(cmd, "colp=", NULL))) {
+        bb->colp_off = atoi(arg) == 0;
+        at_ok(bb, ch);
+        return;
+    }
+    if (strcmp(cmd, "colp?") == 0) {
+        chan_printf(bb, ch, "\r\n+COLP: %d,1\r\n", !bb->colp_off);   /* provisioned */
+        at_ok(bb, ch);
         return;
     }
     if ((arg = arg_after(cmd, "cscs=", NULL))) {

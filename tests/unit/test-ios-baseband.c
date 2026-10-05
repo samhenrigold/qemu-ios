@@ -740,6 +740,8 @@ static void test_outgoing_call(void)
 
     ios_bb_remote_answer(&bb);
     pump();
+    /* the connected line: 1.0's only source for the answered call's number */
+    expect_frame(1, "\r\n+COLP: \"+14155550100\",145\r\n");
     expect_frame(1, "\r\n+XCALLSTAT: 2,0\r\n");
     check_str(ios_bb_call_state(&bb), "active", "call state");
 
@@ -748,6 +750,30 @@ static void test_outgoing_call(void)
     expect_frame(1, "\r\nOK\r\n");
     expect_frame(1, "\r\n+XCALLSTAT: 2,6\r\n");
     check_str(ios_bb_call_state(&bb), "idle", "call state");
+    bb.next_call_id = 2;
+
+    /* +COLP=0 turns it off; the setting reads back through +COLP? */
+    c_mux_str(1, "at+colp=0\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    c_mux_str(1, "at+colp?\r");
+    pump();
+    expect_frame(1, "\r\n+COLP: 0,1\r\n");
+    expect_frame(1, "\r\nOK\r\n");
+    c_mux_str(1, "atd5550100;\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    expect_frame(1, "\r\n+XCALLSTAT: 2,2\r\n");
+    ios_bb_remote_answer(&bb);
+    pump();
+    expect_frame(1, "\r\n+XCALLSTAT: 2,0\r\n");
+    c_mux_str(1, "at+chld=1\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    expect_frame(1, "\r\n+XCALLSTAT: 2,6\r\n");
+    c_mux_str(1, "at+colp=1\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
     bb.next_call_id = 2;                         /* the 1.0 sections below expect id 2 next */
 }
 
