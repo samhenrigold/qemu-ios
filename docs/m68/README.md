@@ -100,7 +100,9 @@ The Zephyr1 wire protocol (openiBoot's `multitouch-z1.c`, and 1.0's AppleMultito
 `C2` data packets (A-Speed) and a blank `C2 00 00 00` before the main firmware stream, `05 00 00 06` verify
 (`D0 00` + 16-bit sum), `C4` execute, `D0` interface version, `8F` report info, `82` report, `46` frame
 length (`AA len len ck ck` for interface versions up to 0x10), `47` frame data (`AA` + frame + sum). The model
-reports interface version 1 and the Zephyr2 model's sensor profile. `MT_TRACE=2` logs every transaction.
+reports interface version 1 and the Zephyr2 model's sensor, with its own frame calibration: taps land
+within 0.1 px of their aim over the whole panel (fitted from the points 1.0's GraphicsServices reports,
+`GSEventGetLocationInWindow`, read through the gdbstub). `MT_TRACE=2` logs every transaction.
 
 ## Debts
 
@@ -112,12 +114,10 @@ reports interface version 1 and the Zephyr2 model's sensor profile. `MT_TRACE=2`
    digits. Once the keypad is up, taps 0.25 s apart all register (8 of 8).
 3. **1.0's slow power-off sheet**: the gesture holds Hold 20 s (the sheet came up 13 s into a hold in one
    run). A run that releases too early locks the phone instead (`pmu go hib`).
-4. **Touch calibration.** The frames use the Zephyr2 model's sensor profile. Taps land on their targets at the
-   few points checked (Dismiss, icons, table rows), but no calibration fit was done as for the K48.
-5. **lldb killed mid-command** (guestdev): twice a boot stopped taking taps after an lldb attached to the
+4. **lldb killed mid-command** (guestdev): twice a boot stopped taking taps after an lldb attached to the
    gdbstub was killed by `timeout` (the CPU idles taking serial interrupts, no syscalls). Not root-caused; a
    clean detach is fine.
-6. The 1G's debts apply as they are (wake from sleep, AES convention, CLCD, timers 0-3).
+5. The 1G's debts apply as they are (wake from sleep, AES convention, CLCD, timers 0-3).
 
 ## Notes for guest software
 
