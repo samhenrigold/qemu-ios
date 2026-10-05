@@ -976,12 +976,18 @@ static int fe_swap_signal(GuestGC *gc, void *fb, unsigned txn, unsigned layer)
  * the unconditional IOSurfaceAcceleratorTransferSurfaceWithSwap, which takes the same ten arguments (the conditional one
  * adds only the token out); likewise the plain ConditionalTransferSurface (seven) that 5.x also imports. Bound by name in each image that imports it (its lazy/non-lazy symbol pointers), so nothing
  * is per build; processes that do not import it are untouched.
+ * 7.x's QuartzCore records the conditional transfers but never sends the notification to this context (11D257: every
+ * token dropped, the 1x app's CAEAGLLayer black). The host finishes every call before the next, so the condition
+ * only has to mean "the frame is drawn": once tokens drop with no release ever seen, each recorded transfer finishes
+ * the recording thread's GL and is released at once.
  */
 static unsigned fe_u32(const unsigned char *p);
 #define FE_XFERS 8
 typedef int (*fe_xfer_fn)(void *, void *, void *, void *, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned);
 static struct fe_xfer { void *acc, *src, *dst, *props; unsigned arg[6], token, swap; } fe_xfers[FE_XFERS];
 static unsigned fe_xfer_next;
+static int fe_xfer_notified, fe_xfer_direct;     /* a notification ever released one; none comes: release at once */
+static void fe_xfer_kick(void);
 static fe_xfer_fn p_xfer, p_xferSwap;
 static int (*p_accGetID)(void *, unsigned *);
 static pthread_mutex_t fe_xfer_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -993,6 +999,7 @@ static int fe_record_xfer(void *acc, void *src, void *dst, void *props, const un
     unsigned i;
     fe_cf();
     if (!p_CFRetain || !src || !dst) return 0xE00002BC;            /* kIOReturnError */
+    if (fe_xfer_direct && fe_gc()) qc(GLES_ID_glFinish, fe_gc(), 0, A(0));   /* the source is drawn, in guest memory */
     pthread_mutex_lock(&fe_xfer_lock);
     if (!++fe_xfer_next) fe_xfer_next = 1;                          /* 0 is no token */
     x = &fe_xfers[fe_xfer_next % FE_XFERS];
@@ -1002,8 +1009,16 @@ static int fe_record_xfer(void *acc, void *src, void *dst, void *props, const un
     x->swap = swap;
     x->token = fe_xfer_next;
     if (token) *token = fe_xfer_next;
+    if (fe_xfer_direct) {
+        x->swap |= 2;
+        fe_xfer_kick();
+    }
     pthread_mutex_unlock(&fe_xfer_lock);
     if (old.token) {                     /* never notified: dropped, as a transfer whose condition never comes */
+        if (!fe_xfer_notified && !fe_xfer_direct) {
+            fe_xfer_direct = 1;
+            w("[gles] scaler: no condition release arrives; conditional transfers run when recorded\n");
+        }
         refused("scaler:", "token-dropped", ~0u);
         p_CFRelease(old.src); p_CFRelease(old.dst); if (old.props) p_CFRelease(old.props);
     }
@@ -1056,17 +1071,23 @@ static void *fe_xfer_worker(void *unused)
 }
 
 /* Releases the recorded transfer the notification (accelerator ID, token) names; 0 if it names none. */
-static int fe_release_xfer(unsigned id, unsigned token)
+/* Wakes the worker for a released transfer (fe_xfer_lock held). */
+static void fe_xfer_kick(void)
 {
     static pthread_t worker;
+    if (!worker && pthread_create(&worker, 0, fe_xfer_worker, 0)) worker = 0;
+    pthread_cond_signal(&fe_xfer_ready);
+}
+
+static int fe_release_xfer(unsigned id, unsigned token)
+{
     unsigned i, acc_id, found = 0;
     pthread_mutex_lock(&fe_xfer_lock);
     for (i = 0; i < FE_XFERS && token && p_accGetID; i++)
         if (fe_xfers[i].token == token && p_accGetID(fe_xfers[i].acc, &acc_id) == 0 && acc_id == id) {
             fe_xfers[i].swap |= 2;      /* released */
-            found = 1;
-            if (!worker && pthread_create(&worker, 0, fe_xfer_worker, 0)) worker = 0;
-            pthread_cond_signal(&fe_xfer_ready);
+            found = fe_xfer_notified = 1;
+            fe_xfer_kick();
             break;
         }
     pthread_mutex_unlock(&fe_xfer_lock);
