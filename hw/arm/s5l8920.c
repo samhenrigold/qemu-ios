@@ -53,6 +53,9 @@
 #include "hw/arm/guest-services/general.h"
 #include "hw/arm/guest-services/gles.h"
 #include "hw/arm/guest-package.h"
+#include "hw/arm/guest-pasteboard.h"
+#include "hw/arm/ipod-agent.h"
+#include "qemu/guest-random.h"
 
 /* Addresses and interrupts: N18AP 8C148 DT (arm-io maps child offsets at 0x80000000). */
 #define S5L8920_DRAM_BASE       0x40000000
@@ -224,6 +227,8 @@ struct S5L8920MachineState {
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
     bool wifi;                           /* bridge the Wi-Fi card to -netdev id=wifi0 (default on) */
     GuestPackage pkg;                    /* hw/arm/guest-package.c: it_boot and the GL shim's hello */
+    GuestPasteboard pb;                  /* hw/arm/guest-pasteboard.c */
+    IPodAgent *agent;                    /* hw/arm/ipod-agent.c: it_agent, as on the iPod and iPad */
     QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
     int pwroff_phase, pwroff_step;
 };
@@ -266,6 +271,7 @@ static void s5l8920_cpu_reset(void *opaque)
     gles_host_set_debug(s->gles_debug);
     gles_host_reset();
     guest_pkg_reset(&s->pkg);
+    ipod_agent_reset(s->agent);
     cpu_reset(cs);
     if (!g_file_get_contents(s->kboot_path, &data, &size, &gerr)) {
         error_report("s5l8920: cannot read kboot bundle '%s': %s",
@@ -373,13 +379,21 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
 
 /*
  * The guest-services trap (mcr p15,3,Rn,c15,c15,0) the GLES shim
- * (contrib/gles-public) uses: GLES, and guest packages (which also answer
- * the shim's hello). ipad1.c's agent and pasteboard are left out until a
- * test here needs them.
+ * (contrib/gles-public) uses, as ipad1's: GLES, guest packages (which also
+ * answer the shim's hello), the pasteboard and the guest agent (it_agent).
  */
+static int s5l8920_agent_copy(void *opaque, uint32_t address, uint8_t *data, size_t length, bool write)
+{
+    if (length && length - 1 > UINT32_MAX - address) {
+        return -1;
+    }
+    return cpu_memory_rw_debug(opaque, address, data, length, write);
+}
+
 static void s5l8920_qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
 {
     CPUState *cs = env_cpu(env);
+    S5L8920MachineState *s = S5L8920_MACHINE(qdev_get_machine());
     qemu_call_t q;
     int32_t err = 0;
 
@@ -393,8 +407,29 @@ static void s5l8920_qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t
     case QC_GLES_PING:
         q.retval = QC_GLES_PING_MAGIC;
         break;
+    case QC_AG_HELLO:
+    case QC_AG_POLL:
+    case QC_AG_READ:
+    case QC_AG_WRITE:
+    case QC_AG_DONE:
+    case QC_AG_HOSTTIME:
+    case QC_UI_POLL:
+    case QC_UI_READ:
+    case QC_UI_WRITE:
+    case QC_UI_DONE:
+    case QC_AG_UI_ROUTE: {
+        uint64_t candidate = 0;
+        if (q.call_number == QC_AG_HELLO || q.call_number == QC_AG_UI_ROUTE) {
+            qemu_guest_getrandom_nofail(&candidate, sizeof(candidate));
+        }
+        q.retval = ipod_agent_call(s->agent, q.call_number, q.args.ag.token, q.args.ag.buffer_guest_ptr,
+                                   q.args.ag.offset, q.args.ag.length, qemu_clock_get_ms(QEMU_CLOCK_REALTIME),
+                                   candidate, s5l8920_agent_copy, cs);
+        err = q.retval < 0 ? EINVAL : 0;
+        break;
+    }
     default:
-        if (!guest_pkg_call(&S5L8920_MACHINE(qdev_get_machine())->pkg, cs, &q, &err)) {
+        if (!guest_pb_call(&s->pb, cs, &q, &err) && !guest_pkg_call(&s->pkg, cs, &q, &err)) {
             return;
         }
     }
@@ -985,14 +1020,49 @@ static void s5l8920_set_wifi(Object *obj, bool value, Error **errp)
     S5L8920_MACHINE(obj)->wifi = value;
 }
 
+/* The agent's properties (tests and the app drive it over QMP), as ipad1's. */
+static void s5l8920_set_agent_request(Object *obj, const char *value, Error **errp)
+{
+    int error = ipod_agent_submit(S5L8920_MACHINE(obj)->agent, value);
+    if (error) {
+        error_setg(errp, "%s", ipod_agent_submit_error(error));
+    }
+}
+
+static void s5l8920_cancel_agent_request(Object *obj, const char *value, Error **errp)
+{
+    ipod_agent_cancel(S5L8920_MACHINE(obj)->agent, value);
+}
+
+static char *s5l8920_get_agent_result(Object *obj, Error **errp)
+{
+    return ipod_agent_take_result(S5L8920_MACHINE(obj)->agent);
+}
+
+static char *s5l8920_get_agent_status(Object *obj, Error **errp)
+{
+    return g_strdup(ipod_agent_status(S5L8920_MACHINE(obj)->agent, qemu_clock_get_ms(QEMU_CLOCK_REALTIME)));
+}
+
 static void s5l8920_instance_init(Object *obj)
 {
-    S5L8920_MACHINE(obj)->wifi = true;
-    guest_pkg_init(&S5L8920_MACHINE(obj)->pkg, obj);
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+
+    s->wifi = true;
+    guest_pkg_init(&s->pkg, obj);
+    guest_pb_init(&s->pb, obj, "s5l8920");
+    s->agent = ipod_agent_new();
+    ipod_agent_publish(s->agent);
+    object_property_add_str(obj, "agent-request", NULL, s5l8920_set_agent_request);
+    object_property_add_str(obj, "agent-cancel", NULL, s5l8920_cancel_agent_request);
+    object_property_add_str(obj, "agent-result", s5l8920_get_agent_result, NULL);
+    object_property_add_str(obj, "agent-status", s5l8920_get_agent_status, NULL);
 }
 
 static void s5l8920_instance_finalize(Object *obj)
 {
+    ipod_agent_publish(NULL);
+    ipod_agent_free(S5L8920_MACHINE(obj)->agent);
     g_free(S5L8920_MACHINE(obj)->usb_tcp_addr);
     g_free(S5L8920_MACHINE(obj)->die_id);
     g_free(S5L8920_MACHINE(obj)->nor_path);
