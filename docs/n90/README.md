@@ -62,6 +62,13 @@ As N81, plus:
 
 ## Debts
 
+0. **GL apps draw black (4.2.1).** `regress.py --checks app` installs the harness (AppSync), launches it and finds it
+   frontmost, but its GL scene's view stays black although it runs at 30 fps through the bridge. QuartzCore's
+   `sendNotification:forTransaction:onLayer:` carries a framebuffer ID that no IOMobileFramebuffer this process opens
+   reports (the shim counts `shim:eagl:send-notification-id`). Signalling the main display instead removes the
+   refusal but not the black view. The swap for that ID, or the composite of the app's 240x360 surfaces, is still
+   missing; next step is to trace CA's texture binds of the app surface in SpringBoard.
+
 1. **Baseband** waits on the cell stream (spi2 IFX protocol, modem core). Today the node is unmatched and
    the device shows "No Service".
 2. **Absent parts**:

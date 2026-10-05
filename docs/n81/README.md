@@ -102,6 +102,13 @@ documented quirk/patch, S stub.
 
 ## Debts
 
+0. **GL apps draw black (4.2.1).** `regress.py --checks app` installs the harness (AppSync), launches it and finds it
+   frontmost, but its GL scene's view stays black although it runs at 30 fps through the bridge. QuartzCore's
+   `sendNotification:forTransaction:onLayer:` carries a framebuffer ID that no IOMobileFramebuffer this process opens
+   reports (the shim counts `shim:eagl:send-notification-id`). Signalling the main display instead removes the
+   refusal but not the black view. The swap for that ID, or the composite of the app's 240x360 surfaces, is still
+   missing; next step is to trace CA's texture binds of the app surface in SpringBoard.
+
 1. **iBoot and the real NAND boot.** Only `kboot=` runs. A real N81 boots LLB/iBoot from NAND (boot
    blocks, `IOFlashPartitionScheme`) and keeps nvram/effaceable there. The NOR graft is the shortcut.
 2. **NAND geometry** is K48's 16 GB part (`k48-16g`). The N81 SKUs are 8/32/64 GB, and its chip and DT
