@@ -393,6 +393,8 @@ static inline const char *gles_id_name(uint32_t id)
  * layers (the home screen's icon labels), on IOSurfaces it gives no pixel format; glishim
  * names them from the attach's GL_LUMINANCE_ALPHA / GL_UNSIGNED_BYTE. */
 #define GLES_SURFACE_LA88               0x32433038  /* '2C08' */
+/* The same two channels as 7.x QuartzCore names them on its IOSurfaces (text and glyph layers). */
+#define GLES_SURFACE_LA88_IOS7          0x4c413838  /* 'LA88' */
 
 #ifndef OUT_OF_TREE_BUILD
 int64_t qc_handle_gles(CPUState *cpu, qc_gles_args_t *a);

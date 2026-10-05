@@ -4011,7 +4011,7 @@ static unsigned gles_surface_bpp(uint32_t fmt)
     case GLES_SURFACE_ARGB32: case GLES_SURFACE_ABGR32:     return 4;
     case GLES_SURFACE_RGB565: case GLES_SURFACE_RGB555:
     case GLES_SURFACE_RGBA4444: case GLES_SURFACE_RGBA5551:
-    case GLES_SURFACE_LA88:                                 return 2;
+    case GLES_SURFACE_LA88: case GLES_SURFACE_LA88_IOS7:    return 2;
     case GLES_SURFACE_A8: case GLES_SURFACE_L8:             return 1;
     default:                                                return 0;
     }
@@ -4222,7 +4222,8 @@ static int gles_surface_upload(GLESSurface *s, uint32_t fmt, uint8_t *pixels)
      * translucent box. */
     case GLES_SURFACE_A8:       glfmt = GL_ALPHA;     break;
     case GLES_SURFACE_L8:       glfmt = GL_LUMINANCE; break;
-    case GLES_SURFACE_LA88:     glfmt = GL_LUMINANCE_ALPHA; break;
+    case GLES_SURFACE_LA88:
+    case GLES_SURFACE_LA88_IOS7: glfmt = GL_LUMINANCE_ALPHA; break;
     case GLES_SURFACE_RGBA32:   glfmt = GL_RGBA;      break;
     case GLES_SURFACE_ARGB32:
     case GLES_SURFACE_ABGR32:
