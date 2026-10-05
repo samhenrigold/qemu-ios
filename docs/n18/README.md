@@ -150,8 +150,10 @@ tests/ipad1/regress.py --machine n18 --kboot $F/kboot-7E18.bin --nand $F/userlan
 IPAD1_QEMU_EXTRA to QEMU, as boot-smoke.py does. Use it with `-global driver=s5l8930.h2fmi,...`; the dotted
 `-global s5l8930.h2fmi.x=` form splits at the type name's own dot and silently does nothing.
 
-### iOS 3.1.1 (7C145)
+### iOS 3.1.1 (7C145, 7C146) and 3.1.2 (7D11)
 
+The two 3.1.1 builds and 3.1.2 pass usbmux, AFC, persist and Wi-Fi (2026-10-05), built exactly as 3.1.3
+(their restore ramdisks are 018-6115-001 for 7C146 and 018-6155-014 for 7D11; the 3.x store needs no keybag). 7C145 in detail:
 Built exactly as 3.1.3, with the same four differences (`--sig-flags 4`, the unjournaled 8 KiB data volume,
 the kboot DT guards, the unchanged 8C148 lockdownd hook): substitute 7C145 for 7E18 in the commands above
 (keys from api.ipsw.me/v4/keys/ipsw/iPod3,1/7C145). It boots to an activated home screen, and usbmux, AFC,
