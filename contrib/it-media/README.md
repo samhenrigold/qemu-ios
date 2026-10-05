@@ -1,4 +1,4 @@
-# Native media import (3.1 and 3.2)
+# Native media import (3.1, 3.2 and 5.x)
 
 `itmedia` adds one staged song or movie through the guest's own MusicLibrary framework.
 It preserves existing songs and lets iOS write its SQLite tables, indexes,
@@ -11,17 +11,32 @@ This changes the original plan's D.1/D.2 implementation choice: iOS 3.x uses
 service at runtime, not for a build. Verified with tags, cover and playback on the iPod's 3.1.2 and 3.1.3
 and the iPad's 3.2 (Light Touch `tests/sessions/check-media-native.py --single`).
 
+5.x (verified on the iPad's 5.1.1, 9B206, with tags, cover, the Songs list and playback) replaced the library
+with ML3 (`MediaLibrary.sqlitedb`) and has no purchase-folder insert. The helper uses ML3's own importer,
+`-[ML3TrackImporter importTrack:withCompletionBlock:]` with an `MLTrackImport` (`setValue:forEntityProperty:` with
+the exported `ML3TrackProperty*` names, `setAssetFilePath:`, `setArtworkData:`, `setMediaType:`), on a writer from
+`-[ML3MusicLibrary initWithPath:enableWrites:]` (`sharedLibrary` is read-only to other processes). Two things decide
+whether Music shows and plays the row:
+
+- the media type is ML3's, not MPMediaType's: 9B206 MusicLibrary's `MLMediaType` description names bit 8 "Song" and
+  Music's song queries select `item.media_type & 8` (verbose ML3 query log). A row with 1 makes Music show its tabs
+  but list nothing;
+- `item_extra.integrity` (`ML3TrackIntegrityVerify`) must be set, or Music lists the song but won't play it. The
+  importer computes it with FairPlay (`FairPlayCandyBarCompute`), which answers only processes with a
+  `fairplay-client` entitlement (it logs -42180 otherwise). `itmedia.entitlements` carries 9B206 atc's client ID,
+  the sync agent that imports tracks from iTunes; the helper fails if the column stays NULL.
+
+5.x covers are rendered by the importer under `iTunes_Control/iTunes/Artwork/NN/` (`artwork_info` lists them).
+
 Not offered by Light Touch (its MediaSupport), and why:
 
-- 4.x keeps the insert and the itlp files, but its post-processing (`ITDBPrepServerPostProcessRun`,
-  run in the calling process there) drops the new item within a second; the helper re-checks after
-  it and fails rather than report an import the library did not keep.
-- 5.x replaced the library with ML3 (`MediaLibrary.sqlitedb`) and has no purchase-folder insert.
-  Its importer is `-[ML3TrackImporter importTrack:withCompletionBlock:]` taking an `MLTrackImport`
-  (`setValue:forEntityProperty:` with the exported `ML3TrackProperty*` names, `setAssetFilePath:`,
-  `setArtworkData:`, `setMediaType:`), on a writer from `-[ML3MusicLibrary initWithPath:enableWrites:]`
-  (`sharedLibrary` is read-only to other processes). That inserts a complete row with its artwork, but
-  5.1.1's Music did not list it in the emulator yet.
+- 4.x keeps the insert and the itlp files, but signs `Locations.itdb` with `Locations.itdb.cbk`, and the
+  post-processing server (`itdbprepserver`) deletes a library whose signature doesn't check ("couldn't open cbk",
+  "recovery option 2"), the inserted song with it. Neither a library this process creates nor one the server
+  creates gets a valid cbk in the emulator (8C148, both boards: `cfdcb statusError = -42180` in the server,
+  -42001 in Music). The helper re-checks after post-processing and fails rather than report an import the
+  library did not keep.
+- Other 5.x builds use the same importer but have not been round-tripped.
 - 2.x and 3.0 have neither (and 3.0 needs a legacy-linked build).
 
 Both helpers are signed with `ldid -S`: 3.2+ AMFI runs nothing unsigned. Upstream

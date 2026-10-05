@@ -327,7 +327,10 @@ static sqlite3_int64 ml3_import(void *music, ID input, const char *folder, const
     if (!total || !*total) fail("ML3 track property unavailable");
     double ms = CALL(double,(ID,ID))(field(input,"duration_ms"),selector("doubleValue"));
     CALL(void,(ID,ID,ID,ID))(track,selector("setValue:forEntityProperty:"),number((unsigned)fmax(1.0,floor(ms+0.5))),*total);
-    CALL(void,(ID,ID,unsigned))(track,selector("setMediaType:"),1);   /* music */
+    /* ML3's media types are not MPMediaType's: 9B206 MusicLibrary's MLMediaType description names bit 8 "Song",
+     * and Music's song queries select item.media_type & 8. With 1 the row is counted (Music shows its tabs) but
+     * never listed. */
+    CALL(void,(ID,ID,unsigned))(track,selector("setMediaType:"),8);
     char path[512];
     snprintf(path,sizeof(path),MEDIA "%s/%s",folder,filename);
     m1(track,"setAssetFilePath:",string(path));
@@ -342,6 +345,17 @@ static sqlite3_int64 ml3_import(void *music, ID input, const char *folder, const
     if (!ml3_result.done || !ml3_result.ok || !ml3_result.pid)
         fail("MusicLibrary declined import; retain staged media for reconciliation");
     return ml3_result.pid;
+}
+
+/* 5.x: Music plays only tracks whose item_extra.integrity verifies (ML3TrackIntegrityVerify). The importer
+ * computes it through FairPlay (FairPlayCandyBarCompute), which serves only processes carrying a fairplay-client
+ * entitlement (itmedia.entitlements); without one it logs -42180 and leaves the column NULL, and Music lists the
+ * song but will not play it. */
+static int ml3_has_integrity(sqlite3_int64 pid) {
+    char sql[128];
+    sqlite3_int64 has = 0;
+    snprintf(sql,sizeof(sql),"SELECT integrity IS NOT NULL FROM item_extra WHERE item_pid=%lld",(long long)pid);
+    return read_query(sql,NULL,NULL,&has,NULL) == SQLITE_ROW && has;
 }
 
 __attribute__((naked)) void _start(void) {
@@ -409,6 +423,8 @@ int main(int argc, char **argv) {
             fail("import not visible; retain staged media for reconciliation");
         if (!was_present && !existing(folder,filename,&artwork_id))
             fail("import not visible; retain staged media for reconciliation");
+        if (!ml3_has_integrity(pid))
+            fail("MusicLibrary stored the track without its integrity; Music would list it but not play it");
         puts(was_present ? "already-imported" : "imported");
         fflush(stdout);
         m0(pool,"drain");
