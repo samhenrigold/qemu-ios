@@ -138,6 +138,7 @@ struct S5L8930CDMAState {
     qemu_irq irq[CDMA_CHANNELS];
 
     uint32_t enabled[2];
+    uint8_t version;        /* DT cdma-version: 1 (S5L8920) has no channel-enable registers */
     CDMAChannel ch[CDMA_CHANNELS];
     AESContext aes[AES_CONTEXTS];
     /* engine output queue: filled by the feeding channel, drained by ch2 */
@@ -998,7 +999,8 @@ static void s5l8930_cdma_reset(DeviceState *dev)
 {
     S5L8930CDMAState *s = S5L8930_CDMA(dev);
 
-    memset(s->enabled, 0, sizeof(s->enabled));
+    /* Version 1 has no enable block: its drivers never write one, every channel is live. */
+    memset(s->enabled, s->version == 1 ? 0xff : 0, sizeof(s->enabled));
     memset(s->ch, 0, sizeof(s->ch));
     memset(s->aes, 0, sizeof(s->aes));
     g_free(s->fifo);
@@ -1150,6 +1152,7 @@ static void s5l8930_cdma_finalize(Object *obj)
 
 static const Property s5l8930_cdma_properties[] = {
     DEFINE_PROP_STRING("gid-blobs", S5L8930CDMAState, gid_path),
+    DEFINE_PROP_UINT8("version", S5L8930CDMAState, version, 2),
 };
 
 static void s5l8930_cdma_class_init(ObjectClass *klass, void *data)

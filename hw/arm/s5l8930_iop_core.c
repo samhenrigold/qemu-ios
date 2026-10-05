@@ -37,7 +37,6 @@
 #define TYPE_S5L8930_IOP_CORE "s5l8930.iop-core"
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930IOPCoreState, S5L8930_IOP_CORE)
 
-#define IOP_DRAM_WINDOW     0xc0000000
 #define IOP_PERIPH_BASE     0x80000000
 #define IOP_PERIPH_SIZE     0x40000000
 #define IOP_VIC_COUNT       4
@@ -48,6 +47,9 @@ struct S5L8930IOPCoreState {
 
     MemoryRegion *dram;         /* link: the board's DRAM */
     MemoryRegion *sysmem;       /* link: the AP's system memory (peripherals) */
+    uint32_t dram_base;         /* where DRAM sits in the IOP's map: 0xc0000000 on the
+                                 * A4; 0 on the S5L8920, whose kext hands the IOP
+                                 * phys - 0x40000000 */
     MemoryRegion mem;           /* the IOP's own address space */
     MemoryRegion dram_window;
     MemoryRegion periph;
@@ -214,7 +216,7 @@ static void s5l8930_iop_core_realize(DeviceState *dev, Error **errp)
     memory_region_init(&s->mem, OBJECT(s), "iop.mem", 1ULL << 32);
     memory_region_init_alias(&s->dram_window, OBJECT(s), "iop.dram-window", s->dram, 0,
                              S5L8930_DRAM_SIZE);
-    memory_region_add_subregion(&s->mem, IOP_DRAM_WINDOW, &s->dram_window);
+    memory_region_add_subregion(&s->mem, s->dram_base, &s->dram_window);
     memory_region_init_alias(&s->periph, OBJECT(s), "iop.periph", s->sysmem, IOP_PERIPH_BASE,
                              IOP_PERIPH_SIZE);
     memory_region_add_subregion(&s->mem, IOP_PERIPH_BASE, &s->periph);
@@ -293,6 +295,7 @@ static const VMStateDescription vmstate_iop_core = {
 static const Property s5l8930_iop_core_properties[] = {
     DEFINE_PROP_LINK("dram", S5L8930IOPCoreState, dram, TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_LINK("sysmem", S5L8930IOPCoreState, sysmem, TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_UINT32("dram-base", S5L8930IOPCoreState, dram_base, 0xc0000000),
 };
 
 static void s5l8930_iop_core_class_init(ObjectClass *klass, void *data)

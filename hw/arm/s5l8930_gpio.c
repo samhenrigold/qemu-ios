@@ -19,8 +19,19 @@
 #include "hw/arm/s5l8930.h"
 #include "hw/irq.h"
 #include "migration/vmstate.h"
+#include "hw/qdev-properties.h"
+#include "qapi/error.h"
 
-#define GPIO_GROUPS         DIV_ROUND_UP(S5L8930_GPIO_PINS, 32)
+/*
+ * Sized per SoC by properties: "ports" config ports of 8 pins (K48 22, the
+ * S5L8920's DT #gpio-ports 46) and "int-groups" groups of 32 pins that can
+ * interrupt (#interrupt-groups: K48 6, S5L8920 7; pins past those are
+ * plain I/O). The arrays hold the largest.
+ */
+#define GPIO_MAX_PINS       S5L8930_GPIO_MAX_PINS
+#define GPIO_GROUPS         DIV_ROUND_UP(GPIO_MAX_PINS, 32)
+#define K48_PINS            S5L8930_GPIO_PINS
+#define K48_GROUPS          DIV_ROUND_UP(K48_PINS, 32)
 
 #define GPIO_CFG_DATA       0x0001
 #define GPIO_CFG_MODE       0x000e    /* bits 1-3 */
@@ -44,9 +55,11 @@ struct S5L8930GPIOState {
 
     MemoryRegion iomem;
     qemu_irq irq;
-    qemu_irq out[S5L8930_GPIO_PINS];
+    qemu_irq out[GPIO_MAX_PINS];
+    uint32_t ports, int_groups;
+    bool pin_int_enable;
 
-    uint32_t cfg[S5L8930_GPIO_PINS];
+    uint32_t cfg[GPIO_MAX_PINS];
     uint32_t input[GPIO_GROUPS];      /* external pin levels, bit per pin */
     uint32_t enabled[GPIO_GROUPS];
     uint32_t status[GPIO_GROUPS];
@@ -77,7 +90,7 @@ static void s5l8930_gpio_update(S5L8930GPIOState *s)
 {
     bool pending = false;
 
-    for (unsigned g = 0; g < GPIO_GROUPS; g++) {
+    for (unsigned g = 0; g < s->int_groups; g++) {
         pending |= (s->status[g] & s->enabled[g]) != 0;
     }
     qemu_set_irq(s->irq, pending);
@@ -111,7 +124,7 @@ static uint64_t s5l8930_gpio_read(void *opaque, hwaddr addr, unsigned size)
     S5L8930GPIOState *s = opaque;
     unsigned g = (addr & 0x3f) / 4;
 
-    if (addr < S5L8930_GPIO_PINS * 4) {
+    if (addr < s->ports * 8 * 4) {
         unsigned pin = addr / 4;
         unsigned mode = pin_mode(s, pin);
         bool level = (mode == GPIO_MODE_OUT || mode == GPIO_MODE_OUT_ALT) ?
@@ -120,12 +133,16 @@ static uint64_t s5l8930_gpio_read(void *opaque, hwaddr addr, unsigned size)
     }
     if (addr == GPIO_INT_SUMMARY) {
         uint32_t summary = 0;
-        for (g = 0; g < GPIO_GROUPS; g++) {
+        for (g = 0; g < s->int_groups; g++) {
             summary |= (uint32_t)((s->status[g] & s->enabled[g]) != 0) << g;
         }
         return summary;
     }
-    if (g < GPIO_GROUPS) {
+    if (s->pin_int_enable && g < s->int_groups && (addr & ~0x3f) == GPIO_INT_DISABLE) {
+        /* S5L8920: 0x800+4g is the pending word the handler scans (W1C). */
+        return s->status[g] & s->enabled[g];
+    }
+    if (g < s->int_groups) {
         switch (addr & ~0x3f) {
         /*
          * Only sleep reads the mask: it saves [0x800+4g], and wake writes the
@@ -156,9 +173,32 @@ static void s5l8930_gpio_write(void *opaque, hwaddr addr, uint64_t value,
     S5L8930GPIOState *s = opaque;
     unsigned g = (addr & 0x3f) / 4;
 
-    if (addr < S5L8930_GPIO_PINS * 4) {
+    if (addr < s->ports * 8 * 4) {
         unsigned pin = addr / 4, mode;
 
+        if (s->pin_int_enable) {
+            /*
+             * S5L8920: the pin's own config word masks its interrupt (bit
+             * 4); 0x800+4g is the pending word (all-ones cleared at start,
+             * scanned by the handler, W1C) and the 0x840/0x880 blocks are
+             * unused. AppleS5L8920XGPIOIC as N18 8C148 drives it: PMU 0x9d
+             * mode 0x217 then unmasked 0x207; its handler masks a level
+             * source (0x217) and clears 0x810 bit 29 before the PMU driver
+             * runs. Multi-touch 0xb4 0x21b/0x20b, buttons 0x21d/0x20d.
+             */
+            uint32_t bit = 1u << (pin % 32);
+
+            mode = value & GPIO_CFG_MODE;
+            if (!(value & 0x10) && mode >= GPIO_MODE_LEVEL_HI && mode <= GPIO_MODE_BOTH) {
+                s->enabled[pin / 32] |= bit;
+            } else {
+                s->enabled[pin / 32] &= ~bit;
+            }
+            s->cfg[pin] = value & 0xffff;
+            s5l8930_gpio_latch_level(s, pin);
+            s5l8930_gpio_update(s);
+            return;
+        }
         s->cfg[pin] = value & 0xffff;
         mode = pin_mode(s, pin);
         if (mode == GPIO_MODE_OUT || mode == GPIO_MODE_OUT_ALT) {
@@ -168,7 +208,15 @@ static void s5l8930_gpio_write(void *opaque, hwaddr addr, uint64_t value,
         s5l8930_gpio_update(s);
         return;
     }
-    if (g < GPIO_GROUPS) {
+    if (s->pin_int_enable && g < s->int_groups && (addr & ~0x3f) == GPIO_INT_DISABLE) {
+        s->status[g] &= ~value;
+        for (unsigned pin = g * 32; pin < MIN(g * 32 + 32, s->ports * 8); pin++) {
+            s5l8930_gpio_latch_level(s, pin);
+        }
+        s5l8930_gpio_update(s);
+        return;
+    }
+    if (g < s->int_groups) {
         switch (addr & ~0x3f) {
         case GPIO_INT_DISABLE:
             s->enabled[g] &= ~value;
@@ -181,7 +229,7 @@ static void s5l8930_gpio_write(void *opaque, hwaddr addr, uint64_t value,
         case GPIO_INT_STATUS:
             s->status[g] &= ~value;
             for (unsigned pin = g * 32;
-                 pin < MIN(g * 32 + 32, S5L8930_GPIO_PINS); pin++) {
+                 pin < MIN(g * 32 + 32, s->ports * 8); pin++) {
                 s5l8930_gpio_latch_level(s, pin);
             }
             s5l8930_gpio_update(s);
@@ -209,8 +257,20 @@ static void s5l8930_gpio_init(Object *obj)
                           S5L8930_GPIO_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
-    qdev_init_gpio_in(DEVICE(obj), s5l8930_gpio_set_input, S5L8930_GPIO_PINS);
-    qdev_init_gpio_out(DEVICE(obj), s->out, S5L8930_GPIO_PINS);
+}
+
+static void s5l8930_gpio_realize(DeviceState *dev, Error **errp)
+{
+    S5L8930GPIOState *s = S5L8930_GPIO(dev);
+
+    if (s->ports * 8 > GPIO_MAX_PINS || s->int_groups * 32 > GPIO_MAX_PINS ||
+        s->ports < 22 || s->int_groups < K48_GROUPS) {
+        error_setg(errp, "gpio: %u ports / %u interrupt groups out of range",
+                   s->ports, s->int_groups);
+        return;
+    }
+    qdev_init_gpio_in(dev, s5l8930_gpio_set_input, s->ports * 8);
+    qdev_init_gpio_out(dev, s->out, s->ports * 8);
 }
 
 /*
@@ -229,7 +289,7 @@ static void s5l8930_gpio_reset(DeviceState *dev)
         0x202, 0x301, 0x304, 0x305, /* board revision 0 */
     };
 
-    for (unsigned pin = 0; pin < S5L8930_GPIO_PINS; pin++) {
+    for (unsigned pin = 0; pin < s->ports * 8; pin++) {
         s->cfg[pin] = 0x200;
     }
     memset(s->input, 0xff, sizeof(s->input));
@@ -245,17 +305,50 @@ static void s5l8930_gpio_reset(DeviceState *dev)
     qemu_irq_lower(s->irq);
 }
 
+/* The K48's 176 pins / 6 groups in the main section, as before; the
+ * rest only for a larger instance. */
+static bool gpio_wide_needed(void *opaque)
+{
+    S5L8930GPIOState *s = opaque;
+
+    return s->ports * 8 > K48_PINS || s->int_groups > K48_GROUPS;
+}
+
+static const VMStateDescription vmstate_s5l8930_gpio_wide = {
+    .name = "s5l8930_gpio/wide",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = gpio_wide_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_SUB_ARRAY(cfg, S5L8930GPIOState, K48_PINS, GPIO_MAX_PINS - K48_PINS),
+        VMSTATE_UINT32_SUB_ARRAY(input, S5L8930GPIOState, K48_GROUPS, GPIO_GROUPS - K48_GROUPS),
+        VMSTATE_UINT32_SUB_ARRAY(enabled, S5L8930GPIOState, K48_GROUPS, GPIO_GROUPS - K48_GROUPS),
+        VMSTATE_UINT32_SUB_ARRAY(status, S5L8930GPIOState, K48_GROUPS, GPIO_GROUPS - K48_GROUPS),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_s5l8930_gpio = {
     .name = "s5l8930_gpio",
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_ARRAY(cfg, S5L8930GPIOState, S5L8930_GPIO_PINS),
-        VMSTATE_UINT32_ARRAY(input, S5L8930GPIOState, GPIO_GROUPS),
-        VMSTATE_UINT32_ARRAY(enabled, S5L8930GPIOState, GPIO_GROUPS),
-        VMSTATE_UINT32_ARRAY(status, S5L8930GPIOState, GPIO_GROUPS),
+        VMSTATE_UINT32_SUB_ARRAY(cfg, S5L8930GPIOState, 0, K48_PINS),
+        VMSTATE_UINT32_SUB_ARRAY(input, S5L8930GPIOState, 0, K48_GROUPS),
+        VMSTATE_UINT32_SUB_ARRAY(enabled, S5L8930GPIOState, 0, K48_GROUPS),
+        VMSTATE_UINT32_SUB_ARRAY(status, S5L8930GPIOState, 0, K48_GROUPS),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_s5l8930_gpio_wide,
+        NULL
     }
+};
+
+static const Property s5l8930_gpio_props[] = {
+    DEFINE_PROP_UINT32("ports", S5L8930GPIOState, ports, 22),
+    DEFINE_PROP_UINT32("int-groups", S5L8930GPIOState, int_groups, K48_GROUPS),
+    DEFINE_PROP_BOOL("pin-int-enable", S5L8930GPIOState, pin_int_enable, false),
 };
 
 static void s5l8930_gpio_class_init(ObjectClass *klass, void *data)
@@ -263,7 +356,9 @@ static void s5l8930_gpio_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     device_class_set_legacy_reset(dc, s5l8930_gpio_reset);
+    dc->realize = s5l8930_gpio_realize;
     dc->vmsd = &vmstate_s5l8930_gpio;
+    device_class_set_props(dc, s5l8930_gpio_props);
 }
 
 static const TypeInfo s5l8930_gpio_info = {
