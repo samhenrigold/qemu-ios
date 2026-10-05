@@ -927,6 +927,17 @@ static void iop_trace_fmi(S5L8930IOPState *s, int bus, hwaddr item)
                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9, bus, op, n, st, CMD_GET(cmd, 0x64), CMD_GET(cmd, 0x68), CMD_GET(cmd, 0x6c),
                  CMD_GET(cmd, 0x70), item);
         if (n > FMI_MAX_MULTI || !s->nand_dir) {
+            fprintf(stderr, "  raw:");
+            for (int w = 0; w < 0x40; w += 4) {
+                fprintf(stderr, " %08x", CMD_GET(cmd, w));
+            }
+            fprintf(stderr, "\n");
+            if (CMD_GET(cmd, 0xc) && CMD_GET(cmd, 0xc) <= FMI_MAX_MULTI) {   /* 3.0's layout: +0xc n, +0x10 CEs, +0x14 pages */
+                for (uint32_t k = 0; k < CMD_GET(cmd, 0xc); k++) {
+                    fprintf(stderr, "  [%u] ce %u pg 0x%x\n", k, iop_ldl(CMD_GET(cmd, 0x10) + 4 * k),
+                            iop_ldl(CMD_GET(cmd, 0x14) + 4 * k));
+                }
+            }
             return;
         }
         seg_cursor_init(&data, ARG(0x1c), ARG(0x20));
