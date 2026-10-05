@@ -220,6 +220,15 @@ tool changes:
   locked, and the launch tap landed on the lock screen. The unlock now has to change the frame (lit, and
   no longer the lock screen) and retries up to four times.
 
+### FirmwareKit catalog (LTM guestdev-n18cat, off n18-app)
+
+Every build above has a catalog row (`n18ap-<build>`, experimental). 3.x's differences are recipe data:
+`recipe.nand_sig_flags: 4`, the recipe option `data_journal: false`, and `writable_nor: false` (no keybag).
+`firmwarekit create` made each device, with the dylib from this branch. On each device, `regress.py
+--machine n18 --checks usbmux,afc,persist` and `app-install.py` (all 7 steps) PASS (2026-10-05) for:
+7C145, 7D11, 7E18, 8A293, 8A400, 8B117, 8F190, 8G4, 8H7, 8J2, 8K2 and 8L1. 7C146 passes usbmux, AFC and
+app-install, but its persist first boot hits debt 11.
+
 ## Models: reused, varied, new
 
 Classes as in LightTouchMac `docs/fidelity-ledger.md`: R register-level, H high-level emulation of what
@@ -287,6 +296,14 @@ offsets at 0x80000000).
 10. **3.1.3: data volume without a journal.** 3.1.3's mount_hfs refuses the Mac-made journal (EINVAL) for
     reasons not yet traced, so the data volume is built unjournaled. A guest that stops without unmounting
     then needs fsck.
+
+11. **3.1.1: an early AppleD1755PMU panic, sometimes.** "kernel abort type 4 ... far 0x0" just after
+   "AppleD1755PMU::start: set VBUCK1_PRE3". IOPM's work loop finishes a power change (servicePMRequest ->
+   all_done -> tellChangeUp -> messageClient), and that reaches AppleD1755PMU's message override (vtable
+   slot next to it at 0xc045dc58 on 7C146). The override forwards to this->0x6c, which start has not set yet.
+   This is a guest race, and boot timing decides it: 0 of 8 boots without usbmuxd, 1 of 6 regress usbmux
+   boots, and 3 of 3 first persist boots of the 7C146 catalog device. 7C145 and the later builds have not
+   shown it. A model fix would change when that power change finishes, not the PMU. Not done.
 
 ## iPhone 3GS (N88AP, S5L8920): `-M n88`
 
