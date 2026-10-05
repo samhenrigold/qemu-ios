@@ -30,6 +30,7 @@
 #include "hw/arm/ipod_touch_lcd.h"
 #include "hw/arm/ipod_touch_tvout.h"
 #include "hw/arm/ipod_touch_mipi_dsi.h"
+#include "hw/arm/ipod_touch_buttons.h"
 #include "hw/arm/ipod_touch_usb_otg.h"
 #include "hw/arm/ipod_touch_usb_phys.h"
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
@@ -360,6 +361,12 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
             s->pmu->usb_cable = true;
         } else if (!strcmp(d->type, TYPE_LIS302DL)) {
             s->accel = LIS302DL(slave);
+            /* the iPod/iPad machines' names, which the app's tilt and shake set */
+            object_property_add_alias(OBJECT(s), "accel-orientation", OBJECT(slave), "orientation");
+            object_property_add_alias(OBJECT(s), "accel-x", OBJECT(slave), "x");
+            object_property_add_alias(OBJECT(s), "accel-y", OBJECT(slave), "y");
+            object_property_add_alias(OBJECT(s), "accel-z", OBJECT(slave), "z");
+            object_property_add_alias(OBJECT(s), "accel-shake", OBJECT(slave), "shake");
         }
     }
 }
@@ -808,6 +815,32 @@ static void s5l8920_set_button(S5L8920MachineState *s, int pin, bool down)
     qemu_set_irq(qdev_get_gpio_in(s->gpio, pin), high ? down : !down);
 }
 
+/* The app bridge's buttons (contrib/ios-app), on the board's pins; no-op on other machines. */
+void s5l8920_press_button(IPodTouchButton button, bool down)
+{
+    S5L8920MachineState *s = (S5L8920MachineState *)
+        object_dynamic_cast(OBJECT(qdev_get_machine()), TYPE_S5L8920_MACHINE);
+    const S5L8920Buttons *b;
+
+    if (!s) {
+        return;
+    }
+    b = &s->board->buttons;
+    switch (button) {
+    case IPOD_TOUCH_BUTTON_HOME:    s5l8920_set_button(s, b->menu, down); break;
+    case IPOD_TOUCH_BUTTON_POWER:   s5l8920_set_button(s, b->hold, down); break;
+    case IPOD_TOUCH_BUTTON_VOLUP:   s5l8920_set_button(s, b->volup, down); break;
+    case IPOD_TOUCH_BUTTON_VOLDOWN: s5l8920_set_button(s, b->voldown, down); break;
+    }
+}
+
+bool ipod_touch_mipi_dsi_panel_off(void);   /* hw/arm/ipod_touch_mipi_dsi.c */
+
+static bool s5l8920_get_display_sleeping(Object *obj, Error **errp)
+{
+    return ipod_touch_mipi_dsi_panel_off();
+}
+
 /* After every device reset (the GPIO model's puts every input high): buttons at rest. */
 static void s5l8920_machine_reset(MachineState *machine, ResetType type)
 {
@@ -1024,6 +1057,8 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
     object_class_property_add_str(klass, "die-id", s5l8920_get_die_id, s5l8920_set_die_id);
     object_class_property_set_description(klass, "die-id",
         "the unit's ChipID die-id words 2-3, \"0xWORD2:0xWORD3\" (identity.json); zeros if unset");
+    object_class_property_add_bool(klass, "display-sleeping", s5l8920_get_display_sleeping, NULL);
+    object_class_property_set_description(klass, "display-sleeping", "The panel is off (DSI display-off)");
     object_class_property_add_bool(klass, "wifi", s5l8920_get_wifi, s5l8920_set_wifi);
     object_class_property_set_description(klass, "wifi",
         "Bridge the Wi-Fi card to -netdev id=wifi0 (a NAT one is made when absent); off keeps the card, unbridged");
