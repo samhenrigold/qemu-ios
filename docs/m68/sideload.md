@@ -75,4 +75,7 @@ the receiver's "isa" reading `NSAu`.
    through the guest-package channel, which 1.x's `it_boot` already runs).
 2. Owners stay uid 501. HFSPlusVolume.setOwner (FirmwareKit) or a catalog patch would make them 0:0, and
    that will matter if an app is meant to ship a LaunchDaemon.
-3. On every boot the ringer volume HUD covers the app too (docs/m68/README.md, debt 2).
+3. When the ringer volume HUD comes up at boot (docs/m68/README.md, debt 2), it covers the app as well.
+4. The iPod touch 1G (N45, 3A101a, eight banks) uses the same layout. The tool installs Hello there
+   (the volume checks clean and the pages land), but in one boot SpringBoard 1.1 did not show the icon.
+   1.1 keeps an icon layout (`iconState`), which 1.0 does not; not investigated further.
