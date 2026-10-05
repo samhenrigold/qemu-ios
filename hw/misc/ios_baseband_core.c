@@ -436,6 +436,15 @@ static void mx_send_frame_canned(IosBbCore *bb, unsigned dlci, uint8_t ctrl)
     mx_emit(bb, f, n);
 }
 
+/* Our own V.24 status for a DLCI: RTC|RTR, plus DV (carrier) while it carries data. */
+static void mx_msc(IosBbCore *bb, unsigned dlci, bool dv)
+{
+    uint8_t msc[4] = { MX_CMD_MSC, (2 << 1) | MX_EA, (dlci << 2) | MX_CR | MX_EA,
+                       0x0d | (dv ? 0x80 : 0) };
+
+    mx_send(bb, 0, false, MX_UIH, msc, sizeof(msc));
+}
+
 /*
  * DLCI 0 control command. We are the responder: echo TEST/MSC/FCON/FCOFF/RLS, ack PSC
  * (power save), ack CLD and drop the multiplexer (back to the AT-only stream), and answer
@@ -451,6 +460,8 @@ static void mx_control(IosBbCore *bb, const uint8_t *data, unsigned len)
     }
     type = data[0];
     clen = (data[1] >> 1) & 0x7f;
+    TRACE("mux control type %02x len %u (%02x %02x)\n", type, clen,
+          len > 2 ? data[2] : 0, len > 3 ? data[3] : 0);
     if (2u + clen > len) {
         return;
     }
@@ -499,6 +510,13 @@ static void mx_control(IosBbCore *bb, const uint8_t *data, unsigned len)
         break;
     }
     mx_send(bb, 0, false, MX_UIH, resp, rn);
+    if (type == MX_CMD_MSC && dlen >= 2 && !bb->h5) {
+        /*
+         * The kernel mux (4.x, bare stream) waits for the modem's own MSC on every
+         * DLCI too (its kReceivingModemBits state): RTR|RTC, ready, no carrier yet.
+         */
+        mx_msc(bb, data[0] >> 2, false);
+    }
 }
 
 static void at_chan_input(IosBbCore *bb, int ch, const uint8_t *data, unsigned len);
@@ -522,6 +540,7 @@ static void mx_rx_frame(IosBbCore *bb, uint8_t addr, uint8_t ctrl,
         }
         break;
     case MX_DISC:
+        TRACE("mux DISC dlci %u -> UA\n", dlci);
         if (dlci < IOS_BB_MAX_CH) {
             bb->ch[dlci].open = false;
             bb->ch[dlci].len = 0;
@@ -532,6 +551,7 @@ static void mx_rx_frame(IosBbCore *bb, uint8_t addr, uint8_t ctrl,
         break;
     case MX_DM:
     case MX_UA:
+        TRACE("mux %s dlci %u from the AP\n", (ctrl & ~MX_PF) == MX_UA ? "UA" : "DM", dlci);
         break;                             /* we never initiate */
     case MX_UIH:
     case MX_UI:
@@ -659,7 +679,7 @@ static void h5_stream(IosBbCore *bb, const uint8_t *data, unsigned len)
 static void chan_write(IosBbCore *bb, int ch, const char *s, unsigned len)
 {
     if (getenv(IOS_BB_TRACE_ENV) && atoi(getenv(IOS_BB_TRACE_ENV)) >= 2) {
-        fprintf(stderr, "ios-bb: ch%d < ", ch);
+        fprintf(stderr, "%" PRId64 " ios-bb: ch%d < ", bb->now_ms, ch);
         for (unsigned i = 0; i < len && i < 120; i++) {
             fputc(s[i] == '\r' || s[i] == '\n' ? ' ' : s[i], stderr);
         }
@@ -1640,7 +1660,7 @@ static void at_command(IosBbCore *bb, int ch, const char *cmd)
     const char *arg;
 
     if (getenv(IOS_BB_TRACE_ENV) && atoi(getenv(IOS_BB_TRACE_ENV)) >= 2) {
-        fprintf(stderr, "ios-bb: ch%d > at%s\n", ch, cmd);
+        fprintf(stderr, "%" PRId64 " ios-bb: ch%d > at%s\n", bb->now_ms, ch, cmd);
     }
 
     if (!*cmd) {
@@ -2024,12 +2044,20 @@ static void at_command(IosBbCore *bb, int ch, const char *cmd)
         if (atoi(arg) == 0) {
             sscanf(arg, "0,%d", &cid);
             bb->pdp_active = false;
+            at_ok(bb, ch);
             for (int i = 0; i < IOS_BB_MAX_CH; i++) {
                 if (bb->ch[i].data_cid == cid) {
+                    /* Back to command mode, and say so on that DLCI as a modem does:
+                     * 4.x waits for it before it reuses the channel (no NO CARRIER:
+                     * it resets the baseband a few seconds later). */
                     bb->ch[i].data_cid = 0;
+                    bb->ip_rxlen = 0;
+                    chan_printf(bb, i, "\r\nNO CARRIER\r\n");
+                    if (!bb->h5) {
+                        mx_msc(bb, i, false);
+                    }
                 }
             }
-            at_ok(bb, ch);
         } else if (bb->data_out && radio_ok(bb)) {
             bb->pdp_active = true;
             at_ok(bb, ch);
@@ -2058,6 +2086,9 @@ static void at_command(IosBbCore *bb, int ch, const char *cmd)
             return;
         }
         chan_printf(bb, ch, "\r\nCONNECT\r\n");
+        if (!bb->h5) {
+            mx_msc(bb, ch, true);                /* carrier up on the data DLCI */
+        }
         bb->ch[ch].data_cid = comma ? atoi(comma + 1) : 1;
         bb->ip_rxlen = 0;
         TRACE("dlci %d is raw IP for cid %d\n", ch, bb->ch[ch].data_cid);
@@ -2107,6 +2138,7 @@ static void data_chan_input(IosBbCore *bb, const uint8_t *data, unsigned len)
             if (bb->data_out) {
                 bb->data_out(bb->data_opaque, bb->ip_rx, tot);
             }
+            TRACE("data: %u-byte IPv4 packet to the network\n", tot);
             memmove(bb->ip_rx, bb->ip_rx + tot, bb->ip_rxlen - tot);
             bb->ip_rxlen -= tot;
         }
@@ -2278,6 +2310,22 @@ void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
     memcpy(miso + IOS_BB_IFX_HDR, x->txq, out_len);
     memmove(x->txq, x->txq + out_len, x->txq_len - out_len);
     x->txq_len -= out_len;
+}
+
+void ios_bb_ifx_unsent(IosBbIfx *x, const uint8_t *miso)
+{
+    unsigned len = miso[0] | (miso[1] & 0xf) << 8;
+
+    if (!len || len > x->max_data || x->txq_len + len > sizeof(x->txq)) {
+        return;
+    }
+    memmove(x->txq + len, x->txq, x->txq_len);
+    memcpy(x->txq, miso + IOS_BB_IFX_HDR, len);
+    x->txq_len += len;
+    if (x->version == 2) {
+        x->credits_in++;                       /* the credit was not spent either */
+    }
+    TRACE("ifx: frame of %u bytes never clocked; requeued\n", len);
 }
 
 /* ------------------------------------------------------------------ public API */

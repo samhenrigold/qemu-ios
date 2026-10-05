@@ -327,6 +327,7 @@ struct IPad1MachineState {
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
     bool baseband;                       /* leave the kboot DT's baseband node matchable (default off) */
+    DeviceState *bb_modem;               /* the ios-baseband behind spi2 (baseband=on, radio boards) */
     bool iop_core;                       /* run the IOP firmware on a second core (default; off: the HLE) */
     DeviceState *iopcore;
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
@@ -463,13 +464,17 @@ static const ARMCPRegInfo ipad1_cp_reginfo[] = {
  * The flattened DT walk for a4_dt_unmatch: returns the offset past the node at
  * `off` (or 0 when malformed); on the way, a node named `name` gets its
  * "compatible" overwritten with "none" (same slot, zero-padded), so nothing
- * matches it and the node stays for whoever turns it back on.
+ * matches it and the node stays for whoever turns it back on. With `prop` set,
+ * that property of the node gets `val` instead (into its existing slot,
+ * zero-padded, truncated to fit).
  */
-static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const char *name, int depth)
+static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const char *name, int depth,
+                         const char *prop, const char *val)
 {
     uint32_t nprops, nchildren;
     uint8_t *compat = NULL;
     uint32_t compat_len = 0;
+    const char *want = prop ? prop : "compatible";
     bool named = false;
 
     if (depth > 32 || off + 8 > len) {
@@ -490,18 +495,21 @@ static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const char *name, 
         }
         if (!strncmp((char *)dt + off, "name", 32)) {
             named = plen > strlen(name) && !memcmp(dt + off + 36, name, strlen(name) + 1);
-        } else if (!strncmp((char *)dt + off, "compatible", 32)) {
+        } else if (!strncmp((char *)dt + off, want, 32)) {
             compat = dt + off + 36;
             compat_len = plen;
         }
         off += 36 + ((plen + 3) & ~3u);
     }
-    if (named && compat && compat_len >= 5) {
+    if (named && compat && prop) {
+        memset(compat, 0, compat_len);
+        memcpy(compat, val, MIN(strlen(val), compat_len));
+    } else if (named && compat && compat_len >= 5) {
         memset(compat, 0, compat_len);
         memcpy(compat, "none", 5);
     }
     for (uint32_t i = 0; i < nchildren; i++) {
-        off = a4_dt_walk(dt, len, off, name, depth + 1);
+        off = a4_dt_walk(dt, len, off, name, depth + 1, prop, val);
         if (!off) {
             return 0;
         }
@@ -512,7 +520,8 @@ static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const char *name, 
 /* The DT a kboot bundle carries, found through its boot_args (iBoot's struct:
  * virtBase +4, physBase +8, deviceTreeP +0x30, deviceTreeLength +0x34). */
 static void a4_dt_unmatch(uint8_t *image, size_t image_len, uint32_t load_pa,
-                          uint32_t bootargs_pa, const char *name)
+                          uint32_t bootargs_pa, const char *name, const char *prop,
+                          const char *val)
 {
     size_t ba = bootargs_pa - load_pa, dt;
     uint32_t vbase, pbase, dtp, dtlen;
@@ -526,7 +535,7 @@ static void a4_dt_unmatch(uint8_t *image, size_t image_len, uint32_t load_pa,
     dtlen = ldl_le_p(image + ba + 0x34);
     dt = (size_t)dtp - vbase + pbase - load_pa;
     if (dtp < vbase || dt > image_len || dtlen > image_len - dt ||
-        !a4_dt_walk(image + dt, dtlen, 0, name, 0)) {
+        !a4_dt_walk(image + dt, dtlen, 0, name, 0, prop, val)) {
         warn_report("ipad1: kboot device tree not walkable; '%s' left as is", name);
     }
 }
@@ -598,7 +607,13 @@ static void ipad1_cpu_reset(void *opaque)
      * as on a Wi-Fi iPad, so AppleBaseband never waits on a silent radio.
      */
     if (!s->baseband) {
-        a4_dt_unmatch((uint8_t *)data, image_len, load_pa, bootargs_pa, "baseband");
+        a4_dt_unmatch((uint8_t *)data, image_len, load_pa, bootargs_pa, "baseband", NULL, NULL);
+    } else if (s->bb_modem) {
+        /* lockdownd compares the DT's IMEI with the modem's +CGSN (iBoot fills it on hardware). */
+        g_autofree char *imei = object_property_get_str(OBJECT(s->bb_modem), "imei", &error_abort);
+
+        a4_dt_unmatch((uint8_t *)data, image_len, load_pa, bootargs_pa, "baseband",
+                      "device-imei", imei);
     }
     if (address_space_write(&address_space_memory, load_pa,
                             MEMTXATTRS_UNSPECIFIED, data, image_len) != MEMTX_OK) {
@@ -1402,6 +1417,7 @@ static void ipad1_init(MachineState *machine)
         qdev_prop_set_int32(bb, "ifx-version", s->board->bb_ifx);
         qdev_prop_set_int32(bb, "ifx-max-data", s->board->bb_max_data);
         object_property_add_child(OBJECT(s), "baseband-modem", OBJECT(bb));
+        s->bb_modem = bb;
         qdev_realize_and_unref(bb, NULL, &error_fatal);
         dev = qdev_new(TYPE_IOS_BASEBAND_SPI);
         object_property_set_link(OBJECT(dev), "modem", OBJECT(bb), &error_abort);

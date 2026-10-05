@@ -1097,6 +1097,7 @@ static void test_packet_data(void)
     c_mux_str(5, "at+cgact=0,1\r");
     pump();
     expect_frame(5, "\r\nOK\r\n");
+    expect_frame(6, "\r\nNO CARRIER\r\n");
     CHECK(!ios_bb_data_input(&bb, ip, 40));
     bb.data_out = NULL;
 }

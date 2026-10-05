@@ -235,5 +235,7 @@ bool ios_bb_ifx_pending(const IosBbIfx *x);
  */
 void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
                      const uint8_t **rx, size_t *rxlen);
+/* A MISO frame the AP set up but never clocked out: its payload goes back to the head of the queue. */
+void ios_bb_ifx_unsent(IosBbIfx *x, const uint8_t *miso);
 
 #endif
