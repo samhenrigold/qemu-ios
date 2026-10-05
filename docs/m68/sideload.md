@@ -9,14 +9,26 @@ app against 1.0's own frameworks, putting it on the device, and debugging it.
 ## Building: `contrib/hello-2007`
 
 ```
-ARMV6_SDK=<iPhoneOS3.1.3.sdk> contrib/hello-2007/build.sh ROOT [OUT]
+ARMV6_SDK=<iPhoneOS3.1.3.sdk> contrib/hello-2007/build.sh ROOT [OUT]      # OUT/Hello.app, OUT/Tilt.app
 ```
 
-ROOT is a host copy of the 1.0 root filesystem (the IPSW's decrypted rootfs, mounted or copied). The
-app is Objective-C written the way 2007 apps were: interfaces declared by hand from the firmware's class
-metadata (class-dump headers, in effect), a `UIApplication` subclass passed to `UIApplicationMain`,
-`UIWindow`/`UINavigationBar`/`UITextLabel`/`UIAlertSheet` from the private 1.0 UIKit, GraphicsServices
-fonts and CoreGraphics colors.
+ROOT is a host copy of the 1.0 root filesystem (the IPSW's decrypted rootfs, mounted or copied). Both apps
+are Objective-C written the way 2007 apps were. The interfaces are declared by hand from the firmware's class
+metadata in `uikit1.h` (class-dump headers, in effect), and a `UIApplication` subclass is passed to
+`UIApplicationMain`.
+
+- **Hello**: `UIWindow`, `UINavigationBar`, `UITextLabel` and `UIAlertSheet` from the private 1.0 UIKit,
+  with GraphicsServices fonts and CoreGraphics colors. Tapping the bar button or the background shows an
+  alert and counts.
+- **Tilt**: a ball that rolls with the phone. The `UIApplication` subclass overrides
+  `acceleratedInX:Y:Z:`, which is all 1.0's UIKit needs to start sending raw accelerometer events
+  (`_requestAccelerometerEventsIfNeeded` looks for the override). A `UIView` subclass draws a target and
+  the ball in `drawRect:` through `UICurrentContext()` and CGContext calls, with a low-pass filter on
+  the samples. The ball is green when the phone is level. On the emulator, tilt it from the host with
+  QMP: `qom-set /machine accel-pose flat`, then `accel-roll` and `accel-pitch` in degrees.
+  Measured: flat reads x 0.00 y 0.00 with the ball centred and green; roll 12 and pitch -15 move it
+  off-centre and orange. Flat reads z -0.50, not about -1 g, which may be the LIS302DL model's scale;
+  this was not checked against a real phone.
 
 | Step | What | Why |
 |---|---|---|
