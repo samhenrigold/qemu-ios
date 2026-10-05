@@ -11,7 +11,7 @@ data; an IPA installs through installation_proxy and AppSync and launches.
 
 | Build | Boot | Touch, Home, Hold | Power-off + persist | IPA install + launch | GL app |
 |---|---|---|---|---|---|
-| 4.2.1 8C148a | activated home screen ("No Service") | yes | yes | yes (Harness) | no: the machine has no QEMU_CALL (GL bridge) yet |
+| 4.2.1 8C148a | activated home screen ("No Service") | yes | yes | yes (Harness) | renders through the bridge (readback PASS); on the panel at the wrong stride (debt 1) |
 
 - kboot (`imgtools/s5l8920_kboot.py n88 --nor`, the DT's own NOR kept) -> xnu-1504.58.28
   RELEASE_ARM_S5L8920X. The kernel's EmbeddedIOP firmware is the s5l8920x build of iBoot-931 (the N18 runs
@@ -30,8 +30,10 @@ data; an IPA installs through installation_proxy and AppSync and launches.
   complete" and QEMU's exit about 15 s after the request. A 70001-byte file pushed with `afcclient` over
   usbmuxd-qemu (`usb-tcp-addr=`) reads back identical after that power-off and a reboot on the same
   overlay; lockdown answers ProductVersion 4.2.1, ActivationState Activated.
-- Apps: with an `--appsync` system image, `ideviceinstaller install Harness.ipa` completes, installd lists
-  `com.qemuios.harness`, and its icon (page 2) launches it (`runs/app-harness-8C148a.png`).
+- Apps: `tests/ipad1/app-install.py --machine n88` PASS on every step (mux, install, lock, icon, launch, gl,
+  shutdown): the harness IPA goes in through installation_proxy and AppSync, is pinned to page 1, launches,
+  its GLES row renders through the bridge (readback PASS, no refusals), then the guest powers off. The
+  guest-services trap is the N18's (s5l8920 766a2b1647), machine-wide.
 - Status bar: "No Service". The baseband (spi2, IFX v1) is the cellular stream's.
 
 ## How to boot
@@ -39,27 +41,34 @@ data; an IPA installs through installation_proxy and AppSync and launches.
 Assets under `~/Developer/qemu-ios-files/n88/` (never committed): the 8C148a IPSW, its keys page, the
 `ipad1_fw.py` output in `dec/`, `identity.json`, `mbr.bin` (as on the N18).
 
+Device with AppSync, the GL front end and the activation hook (`contrib/appsync/build.sh`,
+`contrib/gles-public/build.sh` and `build-apps.sh` first):
+
 ```
 F=~/Developer/qemu-ios-files/n88
 imgtools/ipad1_rootfs.py build --rootfs $F/dec/rootfs.dmg --pristine $F/dec/rootfs.dmg --mbr $F/mbr.bin \
-    --out $F/userland-app --lockdown none --stash none --no-usb-net --no-web-proxy --no-ca-ogl --appsync
-imgtools/ipad1_rootfs.py bake $F/userland-app/pristine \
-    --activation-hook ~/Developer/qemu-ios-files/ipad1/offline-activation-8C148/patch_lockdownd.py
+    --out $F/userland-gl --lockdown none --stash none --no-usb-net --no-web-proxy --no-ca-ogl --appsync --gles
+python3 -c "import sys; sys.path.insert(0, 'imgtools'); import ipad1_rootfs as r, os
+d = '$F/userland-gl/pristine'
+with r.Mounted(d + '/system.img', d + '/mnt-system') as m:
+    r.activation_hook('$HOOK', os.path.join(m.mnt, r.LOCKDOWND))"    # HOOK: offline-activation-8C148/patch_lockdownd.py
 imgtools/ipad1_nand.py build --no-whitening --epoch 3 --geometry k48-16g --mbr $F/mbr.bin \
-    --kernelcache $F/dec/kernelcache.mach --system $F/userland-app/pristine/system.img \
-    --data $F/userland-app/pristine/data.img --out $F/userland-app/nand
+    --kernelcache $F/dec/kernelcache.mach --system $F/userland-gl/pristine/system.img \
+    --data $F/userland-gl/pristine/data.img --out $F/userland-gl/nand
 imgtools/s5l8920_kboot.py n88 --identity $F/identity.json --nor $F/dec $F/kboot-nor.bin \
     "serial=3 debug=0x8 -v amfi_allow_any_signature=1 cs_enforcement_disable=1"
-mkdir $F/dev3; cp -cR $F/userland-app/nand $F/dev3/nand
-python3 -c "open('$F/dev3/nor.bin','wb').write(b'\xff'*0x100000)"
-imgtools/ipad1_keybag.py $F/dev3/nand $F/dev3/nor.bin --dec $F/dec --ramdisk 038-0082-001-ramdisk.dmg \
+mkdir $F/dev4; cp -cR $F/userland-gl/nand $F/dev4/nand
+python3 -c "open('$F/dev4/nor.bin','wb').write(b'\xff'*0x100000)"
+imgtools/ipad1_keybag.py $F/dev4/nand $F/dev4/nor.bin --dec $F/dec --ramdisk 038-0082-001-ramdisk.dmg \
     --identity $F/identity.json --board n88
-build/qemu-system-arm -M n88,kboot=$F/kboot-nor.bin,nand=$F/dev3/nand,nand-overlay=OV,nor-rw=NORCOPY \
+build/qemu-system-arm -M n88,kboot=$F/kboot-nor.bin,nand=$F/dev4/nand,nand-overlay=OV,nor-rw=NORCOPY \
     -display none -serial file:serial.log -qmp unix:/tmp/n88.qmp,server,nowait
+tests/ipad1/app-install.py --machine n88 --device $F/dev4 --kboot $F/kboot-nor-nov.bin --nor $F/dev4/nor.bin \
+    --product-version 4.2.1 --ipa Harness.ipa --gl-tap 0.5,0.165 --out $F/runs/app
 ```
 
-`bake` needs `contrib/ipad1-guest/build.sh` and `contrib/guest-package/build.sh` first, `--appsync`
-`contrib/appsync/build.sh`. The writable NOR holds effaceable and NVRAM: give each run its own copy. The
+(`ipad1_rootfs.py bake` instead of the bare hook also adds the guest tools and package, and disables
+BTServer; it needs `contrib/ipad1-guest/build.sh` and `contrib/guest-package/build.sh`.) The writable NOR holds effaceable and NVRAM: give each run its own copy. The
 lock screen powers the digitizer down after a few idle seconds: press Home before a drag. A tap is a press
 and release under ~0.1 s; a slower one is a long press (icons wiggle).
 
@@ -94,9 +103,8 @@ iPod-Touch-4G --checks boot` PASS; N18 dev2 unlock to the home screen with touch
 
 ## Debts
 
-1. **No GL bridge, agent or guest package**: `s5l8920.c` has no QEMU_CALL coprocessor hook (ipad1.c's
-   `ipad1_qemu_call`), so `--no-ca-ogl` (software CoreAnimation) and GL apps cannot draw; `it_boot` from
-   `bake` traps.
+1. **GL scene on the panel**: as the N18's debt 8, the GLES view reaches the panel laid out at the panel's
+   320-pixel stride (`runs/app/install/gl.png`); the readback is right. No it_agent on this machine.
 2. **Baseband**: spi2 bare; "No Service" (cellular stream).
 3. **Bluetooth**: BTServer respawns (no BCM4325 on uart3) unless the image disables it (`bake` does).
 4. **Camera**: AppleH2CamIn times out on its ISP mailbox (no ISP model); mediaserverd survives it.

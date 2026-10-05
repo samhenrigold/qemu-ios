@@ -29,8 +29,9 @@ ac = load("ipad1_app_compat", "app-compat.py")
 # Home-screen icon centres, (row, col) -> screen point, per machine (measured on the stock layouts).
 GRID = {"ipad1": ac.GRID,
         "iPod-Touch-4G": lambda r, c: (91 + 152 * c, 125 + 176 * r),   # 4x4 grid on the 640x960 portrait panel
-        "n18": lambda r, c: (38 + 79 * c, 52 + 88 * r)}                # the same grid at 320x480
-GL_TAP = {"ipad1": (0.343, 0.5), "iPod-Touch-4G": (0.5, 0.165), "n18": (0.5, 0.165)}         # the Harness's GLES 1.1 row
+        "n18": lambda r, c: (38 + 79 * c, 52 + 88 * r),                # the same grid at 320x480
+        "n88": lambda r, c: (38 + 79 * c, 52 + 88 * r)}
+GL_TAP = {"ipad1": (0.343, 0.5), "iPod-Touch-4G": (0.5, 0.165), "n18": (0.5, 0.165), "n88": (0.5, 0.165)}         # the Harness's GLES 1.1 row
 
 
 def bundle_of(ipa):
@@ -100,6 +101,9 @@ def main():
         ok, det = b.wait_lock_screen(timeout=300)
         if not step("lock", ok, det):
             return 1
+        # The S5L8920 boards power the digitizer down on the lock screen (DisablePowerForUILock): Home first.
+        wake = (lambda: (b.press("home"), time.sleep(1))) if a.machine in ("n18", "n88") else (lambda: None)
+        wake()
         b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
         time.sleep(4)
         slot = None
@@ -107,6 +111,7 @@ def main():
             slot = ac.pin_to_page1(b, bundle) or ac.icon_slot(b, bundle)
             if slot:
                 break
+            wake()
             b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
             time.sleep(5)
         if not step("icon", bool(slot) and slot[0] == 1, "springboardservices slot %s" % (slot,)):
