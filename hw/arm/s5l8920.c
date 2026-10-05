@@ -681,8 +681,12 @@ static void s5l8920_init(MachineState *machine)
         qdev_prop_set_uint32(dev, "ecc-offset", s->board->fmc_off * 2);
         if (s->board->fmc_off == 0x400) {       /* the s5l8920x firmware's ECC summary */
             qdev_prop_set_uint32(dev, "ecc-blank-summary", 0x40);
-            qdev_prop_set_bit(dev, "explicit-start", true);
         }
+        /* A transfer starts with its control write on every firmware these boards run: the s5l8920x IOP
+         * firmware's, and 3.1.3's s5l8922x one, which fills the FIFO for the next page before writing
+         * control 5 (without it that page completes onto the previous chip). 4.2.1's s5l8922x firmware
+         * is indifferent: afc + persist pass either way. */
+        qdev_prop_set_bit(dev, "explicit-start", true);
         sbd = SYS_BUS_DEVICE(dev);
         sysbus_realize_and_unref(sbd, &error_fatal);
         for (i = 0; i < 2; i++) {

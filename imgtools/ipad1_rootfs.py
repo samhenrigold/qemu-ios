@@ -676,7 +676,7 @@ def build(a):
     if a.web_proxy:
         seed_plist(os.path.join(skeleton, SC_DIR, "preferences.plist"), wifi_proxy_prefs)
         print("      web proxy: en0 AirPort service first, PAC /%s" % PAC_PATH)
-    os.replace(make_hfs_image(data + ".dmg", data_bytes), data)
+    os.replace(make_hfs_image(data + ".dmg", data_bytes, a.data_block_size, not a.data_unjournaled), data)
     by_owner = {}
     with Mounted(data, os.path.join(a.out, "mnt-data")) as m:
         shutil.copytree(skeleton, m.mnt, symlinks=True, dirs_exist_ok=True)
@@ -896,6 +896,10 @@ def main():
     b.add_argument("--pristine", default=os.path.join(FILES, "7B500/dec/rootfs.dmg"), help="IPSW rootfs, source of the /private/var skeleton")
     b.add_argument("--out", default=os.path.join(FILES, "userland"), help="images land in OUT/<base>/, the store in OUT/nand-<tag>")
     b.add_argument("--kernelcache", help="IPSW img3 kernelcache to install for real-iBoot fsboot")
+    b.add_argument("--data-block-size", type=int, default=None,
+                   help="data volume allocation block size (3.1.x: 8192, its FTL's sector; default newfs's 4096)")
+    b.add_argument("--data-unjournaled", action="store_true",
+                   help="no journal on the data volume (3.1.x refuses the host-made one: mount_hfs EINVAL, docs/n18)")
     b.add_argument("--data-size", default="partition",
                    help="data volume size: 'partition' (the MBR's partition 2, as on the unit) or e.g. 2g")
     b.add_argument("--stash", help="fetch output for /var/stash (jailbroken default: hw2/stash); 'none' to skip")

@@ -158,7 +158,7 @@ class Boot:
             # max-power=20: 4.x gives the dock port's host side a small budget (the arbitrator's
             # AAPL,power-supply) and refuses the default 100 mA keyboard; 3.x never checks.
             argv += ["-device", "usb-kbd,bus=usb-bus.0,max-power=20"] if self.keyboard else []
-            argv += self.extra
+            argv += self.extra + os.environ.get("IPAD1_QEMU_EXTRA", "").split()   # e.g. -gdb, -global (boot-smoke.py's)
             self.qemu = self.procs.spawn(argv, os.path.join(self.dir, "qemu.log"), env=self.qemu_env)
             time.sleep(2)
         self.qmp = itqmp.QMP(self.sock, timeout=60)
