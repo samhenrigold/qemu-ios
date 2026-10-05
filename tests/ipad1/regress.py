@@ -460,7 +460,8 @@ def check_boot_5(cfg, r, b, detail):
     if b.usb:
         v = b.run(["ideviceinfo", "-k", "ProductVersion"]).stdout.strip()
         act = b.run(["ideviceinfo", "-k", "ActivationState"]).stdout.strip()
-        if v != cfg.product_version or not act or (cfg.activated and act != "Activated"):
+        # lockdownd's activated states (FactoryActivated: an iPod's cached factory activation, 6.x's data-ark route)
+        if v != cfg.product_version or not act or (cfg.activated and act not in ("Activated", "FactoryActivated", "WildcardActivated")):
             return r.set(False, "%s, but lockdown answered ProductVersion %r (want %s), ActivationState %r%s" % (
                 detail, v, cfg.product_version, act, " (the device has an activation hook)" if cfg.activated else ""))
         detail += "; lockdown %s %s" % (v, act)
