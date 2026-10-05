@@ -872,6 +872,11 @@ def dhcp_acked(pcap):
     return False
 
 
+# 6.x logs it with two spaces; under host load 6.x's NetManager gives up its 10 s IP window just before the
+# lease lands and logs nothing, which the DHCPACK on the wire covers.
+LEASE_LINE = re.compile(r"receivedIPv4Address\(\):\s+Received")
+
+
 def check_wifi(cfg, r):
     """Stock AppleBCMWLAN joins the model's open BSS and takes a lease (a4-guest; docs/ipad1/wifi.md).
     The lease is the driver's log line where it has one (3.2.2, 4.x), else slirp's DHCPACK on the wire:
@@ -885,13 +890,16 @@ def check_wifi(cfg, r):
         t0, text = time.time(), ""
         while time.time() - t0 < 120:
             text = open(b.serial, errors="replace").read()
-            if "receivedIPv4Address(): Received" in text or dhcp_acked(pcap):   # 3.2.2 "... IP Address", 4.2.1 "... address A.B.C.D"
+            if LEASE_LINE.search(text) or dhcp_acked(pcap):   # 3.2.2 "... IP Address", 4.2.1 "... address A.B.C.D"
                 break
             time.sleep(2)
-        joined = 'ssid[ 8] = "qemu-ios"' in text
-        leased = "receivedIPv4Address(): Received" in text or dhcp_acked(pcap)
-        fw = "BCM4329 revision B1" in text and ("initFirmware(): successful initialization" in text or
-                                                 "setupDriver():  Succeeded" in text)     # 6.x AppleBCMWLANCore
+        acked = dhcp_acked(pcap)
+        leased = bool(LEASE_LINE.search(text)) or acked
+        # 7.x logs its join only at wlan.log.level 7; slirp's ACK means it joined the one BSS there is
+        joined = 'ssid[ 8] = "qemu-ios"' in text or "Joined BSS" in text or acked
+        fw = "BCM4329 revision B1" in text and any(up in text for up in (
+            "initFirmware(): successful initialization", "setupDriver():  Succeeded",   # 3.x-5.x, 6.x
+            "Core Driver Initialization Time"))                                          # 7.x
         if joined and leased and fw:
             r.set(True, "BCM4329 B1 up, joined qemu-ios, DHCP lease")
         else:
