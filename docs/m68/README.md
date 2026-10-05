@@ -30,7 +30,8 @@ UART1: carrier "Test Network" with full bars and EDGE, Wi-Fi up, SMS in, calls i
 - Modem: CommCenter brings up H5, the 27.010 mux (DLCI 0-7) and its init sequence; registration on the
   001/01 test network, "Test Network", five bars, EDGE; no "Repair Needed" (only an "iPhone is activated"
   alert on the first boot). Incoming SMS (alert and Messages thread), incoming calls (ring, Answer, remote
-  hang-up), outgoing calls from the keypad (`last-dialed`, `remote-answer`, End Call from the UI).
+  hang-up), outgoing calls from the keypad (`last-dialed`, `remote-answer` with `+COLP` so the in-call screen
+  shows the number, End Call from the UI).
 - Power-off: `system_powerdown` (Home, Hold 20 s, slide) ends in `pmu go stdby` and QEMU exits.
 
 Modem verified 2026-10-05 on 1A543a with every item above, by QMP and screenshots.
@@ -98,17 +99,32 @@ reports interface version 1 and the Zephyr2 model's sensor profile. `MT_TRACE=2`
 
 ## Debts
 
-1. **Modem gaps.** The in-call screen of an answered outgoing call shows "Unknown" instead of the number
-   (1.0 sends `+CLCC` raw and never parses it). Unanswered commands get OK: `+crsm`, `+cnum`, `+xcfc`,
+1. **Modem gaps.** Unanswered commands get OK: `+crsm`, `+cnum`, `+xcfc`,
    `+xctms`, `+xdtmf`, `+cclk`, `+xlog`. No cellular data, no audio. Messages formats the sender oddly
    ("+55 51 234").
 2. **Taps lag.** The guest UI takes tens of seconds to open an app on a cold boot; scripted taps must wait for
-   screenshots, not fixed delays.
+   screenshots, not fixed delays. A tap sent before a view is up is lost, which looks like dropped keypad
+   digits. Once the keypad is up, taps 0.25 s apart all register (8 of 8).
 3. **1.0's slow power-off sheet**: the gesture holds Hold 20 s (the sheet came up 13 s into a hold in one
    run). A run that releases too early locks the phone instead (`pmu go hib`).
 4. **Touch calibration.** The frames use the Zephyr2 model's sensor profile. Taps land on their targets at the
    few points checked (Dismiss, icons, table rows), but no calibration fit was done as for the K48.
-5. The 1G's debts apply as they are (wake from sleep, AES convention, CLCD, timers 0-3).
+5. **lldb killed mid-command** (guestdev): twice a boot stopped taking taps after an lldb attached to the
+   gdbstub was killed by `timeout` (the CPU idles taking serial interrupts, no syscalls). Not root-caused; a
+   clean detach is fine.
+6. The 1G's debts apply as they are (wake from sleep, AES convention, CLCD, timers 0-3).
+
+## Notes for guest software
+
+- Accelerometer: lying flat, 1.0's UIKit reads z = -0.5 g, upright y = -0.5 g. That is 1.0's own scale, not the
+  model's. 1.0 and 1.1.4's AppleLIS302DL turn a count into IOFixed g as `count << 9` (1/128 g per count),
+  while 3.1.3's uses 1187/65536 (18 mg per count, the datasheet's at the ±2 g range 1.0 selects, CTRL_REG1
+  0x40). So a real iPhone on 1.0 reads about 0.44 g flat; the model's 64 counts per g give 0.5 g there and
+  1.16 g on 3.x. Unchanged, so the iPod 2G stays as it is.
+- 1.0's SpringBoard labels an icon with the `.app` directory name and ignores `CFBundleName` (guestdev:
+  Hello2.app with CFBundleName "Hello 2" shows "Hello2").
+- Sideloading unofficial apps: [sideload.md](sideload.md). Debugging the guest (gdbstub, lldb, `xnu.py`):
+  [../guest-debug.md](../guest-debug.md).
 
 ## Files
 
