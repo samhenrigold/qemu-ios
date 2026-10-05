@@ -498,7 +498,10 @@ def check_boot_5(cfg, r, b, detail):
              [ppm])
 
 
-OCR_SRC, OCR_BIN = os.path.join(HERE, "ocr.swift"), os.path.join(ROOT, "build", "ipad1-ocr")
+# Vision caches its compiled models under ~/Library/Caches/<executable name>: one name per checkout, so one
+# checkout's crashed compile cannot leave a bundle that traps every other checkout's helper (e5rtError 13).
+OCR_SRC = os.path.join(HERE, "ocr.swift")
+OCR_BIN = os.path.join(ROOT, "build", "ipad1-ocr-" + hashlib.sha1(os.path.realpath(ROOT).encode()).hexdigest()[:8])
 ocr_lock = threading.Lock()
 
 
