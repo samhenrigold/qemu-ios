@@ -681,7 +681,7 @@ static void test_incoming_call(void)
     CHECK(ios_bb_incoming_call(&bb, "+14155550100"));
     pump();
     expect_frame(1, "\r\n+XCALLSTAT: 1,4\r\n");
-    expect_frame(1, "\r\n+CLIP: \"+14155550100\",145,,,\"\",0\r\n");
+    expect_frame(1, "\r\n+CLIP: \"14155550100\",145,,,\"\",0\r\n");
     expect_frame(1, "\r\nRING\r\n");
 
     /* the ring repeats */
@@ -710,6 +710,8 @@ static void test_incoming_call(void)
     /* 4.x answers with ATA and hangs up with ATH. */
     CHECK(ios_bb_incoming_call(&bb, "15555550199"));
     pump();
+    expect_frame(1, "\r\n+XCALLSTAT: 2,4\r\n");
+    expect_frame(1, "\r\n+CLIP: \"15555550199\",145,,,\"\",0\r\n");
     ev_i = nev;
     c_mux_str(1, "ata\r");
     pump();
@@ -1015,7 +1017,7 @@ static void test_ifx(void)
     ios_bb_init(&c, ios_bb_ifx_queue, &x);
     CHECK(!ios_bb_ifx_pending(&x));
     ifx_frame(&x, &c, "at\r", miso, 0x7fc, got);
-    CHECK(miso[3] & 0x40);                      /* CTS */
+    CHECK(!(miso[3] & 0x40));                   /* bit 6 clear: N88 re-polls while it is set */
     CHECK(ios_bb_ifx_pending(&x));              /* the OK wants SRDY */
     ifx_frame(&x, &c, "", miso, 0x7fc, got);
     check_str(got, "\r\nOK\r\n", "ifx v1 OK");

@@ -20,6 +20,7 @@
 #include "hw/boards.h"
 #include "hw/irq.h"
 #include "hw/misc/unimp.h"
+#include "hw/misc/ios_baseband.h"
 #include "hw/core/split-irq.h"
 #include "hw/arm/ipod_touch_pke.h"
 #include "hw/arm/ipod_touch_sdio.h"
@@ -132,6 +133,12 @@ typedef struct S5L8920Board {
     uint16_t gauge_mah;
     bool nor;                            /* a SPI NOR on spi0 (the N88's; the N18 boots from NAND) */
     bool baseband;                       /* spi2, the baseband link */
+    /* The fake modem on spi2 (baseband=on; docs/baseband/): IFX protocol version, DT
+     * max-data-size, MRDY (AP out) / SRDY (AP in) and radio_on / bb_rst GPIOs. */
+    uint8_t bb_ifx;
+    uint16_t bb_max_data;
+    uint16_t bb_mrdy, bb_srdy, bb_radio_on, bb_rst;
+    const char *bb_compat;               /* the DT baseband node's compatible, to re-match it */
     uint32_t fmc_off;                    /* FMC within each FMI window, as its IOP firmware addresses it */
     uint16_t mt_atn;                     /* multi-touch ATN, a GPIO interrupt */
     S5L8920Buttons buttons;
@@ -181,6 +188,9 @@ static const S5L8920Board s5l8920_n88 = {
     .gauge_mah = 1219,                   /* ponytail: the 3GS's rated cell, not measured */
     .nor = true,
     .baseband = true,
+    .bb_ifx = 1, .bb_max_data = 0x7f8,   /* DT spi2 protocol-version, max-data-size */
+    .bb_mrdy = 0x1802, .bb_srdy = 0x1304, .bb_radio_on = 0x1405, .bb_rst = 0x1407,
+    .bb_compat = "baseband,n88",
     .mt_atn = 0xb4,
     .buttons = { .hold = 0xb7, .menu = 0xb6, .volup = 0xb0, .voldown = 0xb1, .hold_menu_high = true },
     .i2c = {
@@ -223,6 +233,8 @@ struct S5L8920MachineState {
     bool btn_hold, btn_home;             /* button-hold/-home properties */
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
     bool wifi;                           /* bridge the Wi-Fi card to -netdev id=wifi0 (default on) */
+    bool baseband_on;                    /* baseband=on: the fake modem behind spi2 */
+    DeviceState *bb_modem;
     GuestPackage pkg;                    /* hw/arm/guest-package.c: it_boot and the GL shim's hello */
     QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
     int pwroff_phase, pwroff_step;
@@ -286,6 +298,25 @@ static void s5l8920_cpu_reset(void *opaque)
         (uint64_t)load_pa + image_len > S5L8920_DRAM_BASE + s->board->dram_size) {
         error_report("s5l8920: kboot bundle does not fit in DRAM");
         exit(1);
+    }
+    if (s->bb_modem) {
+        /*
+         * kboot (s5l8920_kboot.py, fill_dt) unmatches and renames the baseband node
+         * ("nobb"); with the modem attached, give it back its name and compatible.
+         * lockdownd compares the DT's IMEI with the modem's +CGSN (iBoot fills it on
+         * hardware), so that comes from the modem too.
+         */
+        g_autofree char *imei = object_property_get_str(OBJECT(s->bb_modem), "imei", &error_abort);
+        const A4DTEdit edits[] = {
+            { "nobb", "name", "baseband", sizeof("baseband") },
+            { "baseband", "device_type", "baseband", sizeof("baseband") },
+            { "baseband", "compatible", s->board->bb_compat, strlen(s->board->bb_compat) + 1 },
+            { "baseband", "device-imei", imei, strlen(imei) },
+        };
+
+        for (int i = 0; i < ARRAY_SIZE(edits); i++) {
+            a4_dt_edit((uint8_t *)data, image_len, load_pa, bootargs_pa, &edits[i]);
+        }
     }
     address_space_write(&address_space_memory, load_pa, MEMTXATTRS_UNSPECIFIED,
                         data, image_len);
@@ -641,8 +672,35 @@ static void s5l8920_init(MachineState *machine)
     } else {
         ipod_touch_spi_create(S5L8920_SPI_BASE(0), s5l8920_irq(s, S5L8920_IRQ_SPI(0)), 0, "none", false);
     }
-    /* SPI2: the baseband link (N88), a controller with nothing on it. */
-    if (s->board->baseband) {
+    /*
+     * SPI2: the baseband link (N88). baseband=on puts the fake modem behind it
+     * (hw/misc/ios_baseband*.c, hw/arm/s5l8930_bbspi.c); otherwise a controller
+     * with nothing on it. Its DT interrupt is the SRDY GPIO.
+     */
+    if (s->board->baseband && s->baseband_on && s->board->bb_ifx) {
+        DeviceState *bb = qdev_new(TYPE_IOS_BASEBAND);
+
+        qdev_prop_set_int32(bb, "ifx-version", s->board->bb_ifx);
+        qdev_prop_set_int32(bb, "ifx-max-data", s->board->bb_max_data);
+        object_property_add_child(OBJECT(s), "baseband-modem", OBJECT(bb));
+        qdev_realize_and_unref(bb, NULL, &error_fatal);
+        s->bb_modem = bb;
+        dev = qdev_new(TYPE_IOS_BASEBAND_SPI);
+        object_property_set_link(OBJECT(dev), "modem", OBJECT(bb), &error_abort);
+        object_property_set_link(OBJECT(dev), "cdma",
+            object_resolve_path_type("", TYPE_S5L8930_CDMA, NULL), &error_abort);
+        qdev_prop_set_uint32(dev, "base", S5L8920_SPI_BASE(2));
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S5L8920_SPI_BASE(2));
+        qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(s->board->bb_mrdy),
+                              qdev_get_gpio_in_named(bb, "mrdy", 0));
+        qdev_connect_gpio_out_named(bb, "srdy", 0,
+            qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(s->board->bb_srdy)));
+        qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(s->board->bb_radio_on),
+                              qdev_get_gpio_in_named(bb, "ctl", 0));
+        qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(s->board->bb_rst),
+                              qdev_get_gpio_in_named(bb, "ctl", 1));
+    } else if (s->board->baseband) {
         ipod_touch_spi_create(S5L8920_SPI_BASE(2), NULL, 2, "none", false);
     }
     /* SPI1: the Zephyr multi-touch. */
@@ -1002,6 +1060,16 @@ static void s5l8920_instance_finalize(Object *obj)
     g_free(S5L8920_MACHINE(obj)->nand_overlay_path);
 }
 
+static bool s5l8920_get_baseband(Object *obj, Error **errp)
+{
+    return S5L8920_MACHINE(obj)->baseband_on;
+}
+
+static void s5l8920_set_baseband(Object *obj, bool value, Error **errp)
+{
+    S5L8920_MACHINE(obj)->baseband_on = value;
+}
+
 static bool s5l8920_get_gles_debug(Object *obj, Error **errp)
 {
     return S5L8920_MACHINE(obj)->gles_debug;
@@ -1063,6 +1131,9 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "wifi",
         "Bridge the Wi-Fi card to -netdev id=wifi0 (a NAT one is made when absent); off keeps the card, unbridged");
     object_class_property_add_bool(klass, "gles-debug", s5l8920_get_gles_debug, s5l8920_set_gles_debug);
+    object_class_property_add_bool(klass, "baseband", s5l8920_get_baseband, s5l8920_set_baseband);
+    object_class_property_set_description(klass, "baseband",
+        "radio boards: put the fake cellular modem behind spi2 (default off: a bare controller)");
     object_class_property_set_description(klass, "gles-debug",
         "Paint what the GL bridge refuses magenta (tests)");
     object_class_property_add_str(klass, "gles-rejects", s5l8920_get_gles_rejects, NULL);
