@@ -162,18 +162,32 @@ now rests 0.5 s at the end of the track before lifting. If the guest is still up
 up to three times in all, as a user would. Once the guest is shutting down, the sheet is gone and a drag
 does nothing.
 
-### iOS 4.0 (8A293) and 4.3.5 (8L1)
+### iOS 4.x: every build
 
-Both are built as 4.2.1 is (journaled data volume, default signature flags, NOR kboot plus the keybag
-one-shot with the build's own restore ramdisk). Both boot to an activated home screen, and usbmux, AFC,
-persist and Wi-Fi pass (2026-10-05). Per-build differences:
+Every 4.x release for the iPod3,1 is built as 4.2.1 is (journaled data volume, default signature flags,
+NOR kboot, plus the keybag one-shot with the build's own restore ramdisk). Each reaches an activated home
+screen, and usbmux, AFC, persist and Wi-Fi pass for each (2026-10-05). 4.0, 4.1, 4.3 and 4.3.5 were also
+unlocked to the home screen by a drag. What differs per build:
 
-| What | 4.0 | 4.3.5 |
+| Build | keybag `--ramdisk` | `ipad1_nand.py --epoch` (Restore.plist SCEP) |
 |---|---|---|
-| keybag `--ramdisk` | 018-6307-378-ramdisk.dmg | 038-2261-002-ramdisk.dmg |
-| `ipad1_nand.py build --epoch` | 1 | 2: Restore.plist SCEP is 2 from 4.3. With 1, WMR finds no signature (nSig 0) and the root never mounts |
-| lockdownd | FirmwareKit's CActivation patcher (`activation.c` built as its own CLI, `development-activation-shortcut`); the 8C148 script finds no branch | the 8C148 script |
+| 4.0 8A293 | 018-6307-378-ramdisk.dmg | 1 |
+| 4.0.2 8A400 | 018-8095-012-ramdisk.dmg | 1 |
+| 4.1 8B117 | 018-7081-078-ramdisk.dmg | 1 |
+| 4.2.1 8C148 | 038-0031-002-ramdisk.dmg | 1 |
+| 4.3 8F190 | 018-7940-131-ramdisk.dmg | 1 |
+| 4.3.1 8G4 | 038-0901-005-ramdisk.dmg | 1 |
+| 4.3.2 8H7 | 038-1034-007-ramdisk.dmg | 1 |
+| 4.3.3 8J2 | 038-1448-003-ramdisk.dmg | 1 |
+| 4.3.4 8K2 | 038-2171-001-ramdisk.dmg | 2 |
+| 4.3.5 8L1 | 038-2261-002-ramdisk.dmg | 2 |
 
+- Epoch: a store written with an epoch other than the IPSW's SCEP has no signature WMR accepts (nSig 0),
+  and the root never mounts.
+- lockdownd: FirmwareKit's CActivation patcher (`Packages/FirmwareKit/Sources/CActivation/activation.c`
+  compiled on its own is a CLI that takes LOCKDOWND, usable as the `activation_hook`) applies
+  development-activation-shortcut to every 4.x build. The 8C148 script also matches 4.2.1 and 4.3.5, but
+  not 4.0.
 - `ipad1_fw.py` copies an img3 without a KBAG as is. 4.3.4 and 4.3.5 ship their ramdisks unencrypted, and
   the keys page lists their key as 0.
 - 4.3 classifies the cable by the PMU ADC's channel 6 (AppleD1755PMUPowerSource reads D+, then D-). Both
