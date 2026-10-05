@@ -43,6 +43,7 @@
 #include "chardev/char.h"
 #include "hw/sysbus.h"
 #include "hw/arm/exynos4210.h"
+#include "hw/arm/ipod_touch_2g.h"
 #include "hw/arm/s5l8930.h"
 #include "hw/intc/pl192.h"
 #include "hw/qdev-properties.h"
@@ -134,6 +135,7 @@ typedef struct S5L8920Board {
     uint8_t board_id;                    /* PMGR POWER_ID[23:16] */
     int nuarts;
     int8_t gauge_uart;                   /* bq27540 HDQ gas gauge; -1 = none */
+    int8_t bt_uart;                      /* the BCM4325's H4 HCI (ipod_touch_bt.c); 0 = none */
     uint16_t gauge_mah;
     bool nor;                            /* a SPI NOR on spi0 (the N88's; the N18 boots from NAND) */
     bool baseband;                       /* spi2, the baseband link */
@@ -143,6 +145,7 @@ typedef struct S5L8920Board {
     uint16_t bb_max_data;
     uint16_t bb_mrdy, bb_srdy, bb_radio_on, bb_rst;
     const char *bb_compat;               /* the DT baseband node's compatible, to re-match it */
+    bool no_isp;                         /* unmatch the DT's isp node: there is no ISP model */
     uint32_t fmc_off;                    /* FMC within each FMI window, as its IOP firmware addresses it */
     uint16_t mt_atn;                     /* multi-touch ATN, a GPIO interrupt */
     const MTSensorProfile *mt_profile;   /* the sensor the multitouch model reports */
@@ -191,12 +194,14 @@ static const S5L8920Board s5l8920_n88 = {
     .fmc_off = 0x400,                    /* the s5l8920x IOP firmware: FMC +0x400, ECC +0x800 */
     .nuarts = 5,                         /* iap, debug, umts, bluetooth, gas gauge */
     .gauge_uart = 4,
+    .bt_uart = 3,                        /* uart3/bluetooth,n88 */
     .gauge_mah = 1219,                   /* ponytail: the 3GS's rated cell, not measured */
     .nor = true,
     .baseband = true,
     .bb_ifx = 1, .bb_max_data = 0x7f8,   /* DT spi2 protocol-version, max-data-size */
     .bb_mrdy = 0x1802, .bb_srdy = 0x1304, .bb_radio_on = 0x1405, .bb_rst = 0x1407,
     .bb_compat = "baseband,n88",
+    .no_isp = true,
     .mt_atn = 0xb4,
     .mt_profile = &mt_profile_n88,       /* N1F54 */
     .buttons = { .hold = 0xb7, .menu = 0xb6, .volup = 0xb0, .voldown = 0xb1, .hold_menu_high = true },
@@ -206,6 +211,7 @@ static const S5L8920Board s5l8920_n88 = {
         { 0, 0x39, TYPE_CD3272MIKEY },
         { 0, 0x1d, TYPE_LIS302DL },
         { 0, 0x1e, TYPE_S5L8930_AK8973 },
+        { 2, 0x49, TYPE_S5L8930_TSL2561 },
     },
     .pwroff_knob = { 57, 67, 240 },
 };
@@ -238,6 +244,7 @@ struct S5L8920MachineState {
     char *die_id;                        /* ChipID words 2-3 of the unit, hex pair */
     char *usb_tcp_addr;                  /* usbmuxd-qemu host bridge; empty = the built-in host */
     bool btn_hold, btn_home;             /* button-hold/-home properties */
+    QEMUBH *bt_kick;                     /* resumes the CDMA receive from the HCI's UART */
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
     bool wifi;                           /* bridge the Wi-Fi card to -netdev id=wifi0 (default on) */
     bool usb_attached;                   /* usb-attached (default on) */
@@ -330,6 +337,18 @@ static void s5l8920_cpu_reset(void *opaque)
         for (int i = 0; i < ARRAY_SIZE(edits); i++) {
             a4_dt_edit((uint8_t *)data, image_len, load_pa, bootargs_pa, &edits[i]);
         }
+    }
+    /*
+     * No ISP model: AppleH2CamIn loads the ISP CPU's firmware and then waits on
+     * its mailbox (+0x13c bit 30), which nothing answers. 4.x gives up after a
+     * few 2 s waits; 3.1.3's ISP_waitCommunicationEnd resets its count and
+     * busy-waits (IODelay) forever, which starved SpringBoard: Home took ~20 s
+     * to light the panel. Unmatched, the board reads as camera-less, as the A4
+     * machines do by default (ipad1.c).
+     */
+    if (s->board->no_isp) {
+        a4_dt_edit((uint8_t *)data, image_len, load_pa, bootargs_pa,
+                   &(A4DTEdit){ "isp", "compatible", "none", 5 });
     }
     address_space_write(&address_space_memory, load_pa, MEMTXATTRS_UNSPECIFIED,
                         data, image_len);
@@ -487,12 +506,36 @@ static const ARMCPRegInfo s5l8920_cp_reginfo[] = {
 static void s5l8920_pwroff_tick(void *opaque);
 static Notifier s5l8920_powerdown_notifier;
 
+/* The pacing source over a UART's URXH: what its receive FIFO holds (UFSTAT). */
+static uint32_t s5l8920_uart_rx_avail(void *opaque, hwaddr addr, bool to_device)
+{
+    uint32_t f = address_space_ldl_le(&address_space_memory, (addr & ~0xffull) + 0x18,
+                                      MEMTXATTRS_UNSPECIFIED, NULL);
+
+    return to_device ? 0 : (f & 0x100) ? 256 : (f & 0xff);
+}
+
+/* Off the UART's receive path: the CDMA reads URXH, which re-enters the UART. */
+static void s5l8920_bt_kick(void *opaque)
+{
+    s5l8930_cdma_kick(DEVICE(opaque));
+}
+
+static void s5l8920_bt_rxdma(void *opaque, int n, int level)
+{
+    S5L8920MachineState *s = opaque;
+
+    if (level) {
+        qemu_bh_schedule(s->bt_kick);
+    }
+}
+
 static void s5l8920_init(MachineState *machine)
 {
     S5L8920MachineState *s = S5L8920_MACHINE(machine);
     MemoryRegion *sysmem = get_system_memory();
     Object *cpuobj;
-    DeviceState *dev, *iop;
+    DeviceState *dev, *iop, *bt_uart = NULL;
     SysBusDevice *sbd;
     int i;
 
@@ -592,8 +635,14 @@ static void s5l8920_init(MachineState *machine)
             s5l8930_hdq_set_battery(chr, 80, true);
             fifo = 16;
         }
-        exynos4210_uart_create(S5L8920_UART_BASE(i), fifo, i, chr,
-                               s5l8920_irq(s, S5L8920_IRQ_UART(i)), true);
+        if (i == s->board->bt_uart) {
+            chr = it_bt_chardev(chr, true, 2000);
+        }
+        dev = exynos4210_uart_create(S5L8920_UART_BASE(i), fifo, i, chr,
+                                     s5l8920_irq(s, S5L8920_IRQ_UART(i)), true);
+        if (s->board->bt_uart && i == s->board->bt_uart) {
+            bt_uart = dev;
+        }
     }
 
     /*
@@ -680,6 +729,22 @@ static void s5l8920_init(MachineState *machine)
     sysbus_mmio_map(sbd, 1, S5L8920_AES_BASE);
     for (i = 0; i < S5L8920_CDMA_CHANNELS; i++) {
         sysbus_connect_irq(sbd, i, s5l8920_irq(s, S5L8920_IRQ_CDMA(i)));
+    }
+    if (bt_uart) {
+        /*
+         * The serial driver receives the HCI by CDMA from URXH (DT dma-channels,
+         * channel 0xd). Pace that chain by the UART's receive FIFO and resume it
+         * on the UART's Rx DMA request; without anything behind the port,
+         * 3.1.3's BlueTool never got its HCI_Reset answered, BTServer never came
+         * up, and every BTSessionAttach of SpringBoard's (four on a Home wake)
+         * cost its 5 s timeout.
+         */
+        hwaddr urxh = S5L8920_UART_BASE(s->board->bt_uart) + 0x24;
+
+        s5l8930_cdma_set_source(dev, urxh, 4, s5l8920_uart_rx_avail, NULL);
+        s->bt_kick = qemu_bh_new(s5l8920_bt_kick, dev);
+        sysbus_connect_irq(SYS_BUS_DEVICE(bt_uart), 2,
+                           qemu_allocate_irq(s5l8920_bt_rxdma, s, 0));
     }
 
     /* H2FMI: the two NAND buses the IOP firmware drives, over the IOP's page store. */
