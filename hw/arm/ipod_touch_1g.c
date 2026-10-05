@@ -87,6 +87,7 @@ static const S5L8900Board n45_board = {
     .home_gpio = N45_GPIO_BUTTON_HOME, .home_irq = N45_GPIO_BUTTON_HOME_IRQ,
     .power_gpio = N45_GPIO_BUTTON_POWER, .power_irq = N45_GPIO_BUTTON_POWER_IRQ,
     .nand_banks = 8,
+    .pwroff_hold_ms = 6000, .pwroff_settle_ms = 1500,
 };
 
 /*
@@ -110,6 +111,9 @@ static const S5L8900Board m68_board = {
     .voldown_gpio = M68_GPIO_BUTTON_VOLDOWN, .voldown_irq = M68_GPIO_BUTTON_VOLDOWN_IRQ,
     .ring_gpio = M68_GPIO_RING_SWITCH, .ring_irq = M68_GPIO_RING_SWITCH_IRQ,
     .nand_banks = 4,
+    /* 1.0 builds its "slide to power off" sheet slowly (up 13 s into a hold,
+     * guest time, where 1.1's is up in 3-4 s); a release before it locks instead. */
+    .pwroff_hold_ms = 20000, .pwroff_settle_ms = 3000,
 };
 
 static inline qemu_irq n45_irq(IPodTouch1GMachineState *s, int n)
@@ -549,12 +553,12 @@ static void n45_pwroff_tick(void *opaque)
         /* Held until the sheet is up: 1.1 shows it 3-4 s into a hold, later on a boot's first
          * hold (the sheet is built on first use); a 3.5 s hold released before it and locked
          * the device instead (the matrix's second boot, smoke #21). Holding longer is harmless. */
-        n45_pwroff_arm(s, 6000);
+        n45_pwroff_arm(s, s->board->pwroff_hold_ms);
         break;
     case PWROFF_HOLD:
         n45_button(s, s->board->power_gpio, s->board->power_irq, false);
         s->pwroff_phase = PWROFF_SETTLE;
-        n45_pwroff_arm(s, 1500);            /* the sheet slides in */
+        n45_pwroff_arm(s, s->board->pwroff_settle_ms);   /* the sheet slides in */
         break;
     case PWROFF_SETTLE:
         n45_pwroff_touch(s, PWROFF_KNOB_X, true);
