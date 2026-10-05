@@ -145,6 +145,8 @@ class Boot:
                 machine += ",usb-tcp-addr=127.0.0.1:%d" % self.usb_port
             if getattr(cfg, "guest_package", None):
                 machine += ",guest-package=" + cfg.guest_package
+            if getattr(cfg, "imei", None):
+                machine += ",baseband=on,imei=" + cfg.imei
             if os.environ.get("IPAD1_MACHINE_EXTRA"):   # e.g. iop-core=off, as boot-smoke.py takes it
                 machine += "," + os.environ["IPAD1_MACHINE_EXTRA"]
             if self.machine_extra:
@@ -1172,6 +1174,8 @@ def device_args(a):
     a.product_version = getattr(a, "product_version", None) or lockd.get("product_version", "3.2.2")
     a.build = lockd.get("build")  # visual references require evidence, never an assumed build
     a.udid = (lockd.get("identity") or {}).get("udid")
+    # A radio board's lock records the modem's IMEI (the UDID hashes it): boot that modem, as the app does.
+    a.imei = (lockd.get("machine") or {}).get("imei")
     a.major = int(a.product_version.split(".")[0])
     a.gl_test = bool(lockd.get("gl_test"))      # it_gltest's scene sits over SpringBoard's screens
     a.activated = bool((lockd.get("inputs") or {}).get("activation") or (lockd.get("inputs") or {}).get("activation_hook"))
