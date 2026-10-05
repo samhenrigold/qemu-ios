@@ -219,7 +219,7 @@ struct S5L8920MachineState {
     MachineState parent;
     const S5L8920Board *board;
     ARMCPU *cpu;
-    MemoryRegion dram, dram_hi, sram, chipid, cpu_debug;
+    MemoryRegion dram, dram_hi, sram, chipid, cpu_debug, bootrom;
     DeviceState *vic[S5L8920_VIC_COUNT];
     DeviceState *gpio;
     DeviceState *iopcore;
@@ -520,6 +520,14 @@ static void s5l8920_init(MachineState *machine)
     memory_region_add_subregion(sysmem, S5L8920_SRAM_BASE, &s->sram);
 
     create_unimplemented_device("s5l8920.periph", 0x80000000, 0x40000000);
+    /*
+     * The SecureROM window at 0, zeros (kboot has no image for it). iOS 6
+     * copies its exception vectors to kvtophys(gPhysBase) after pmap bootstrap
+     * unmapped that V=P region, i.e. to physical 0: on the SoC a write the ROM
+     * drops, unmapped an external abort before the console (as ipad1.c).
+     */
+    memory_region_init_rom(&s->bootrom, NULL, "s5l8920.bootrom", 0x10000, &error_fatal);
+    memory_region_add_subregion(sysmem, 0, &s->bootrom);
 
     {
         uint32_t chipid[] = { s->board->chipid[0], s->board->chipid[1], 0, 0 };
