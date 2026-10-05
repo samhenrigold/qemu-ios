@@ -1015,6 +1015,12 @@ static void test_ifx(void)
     }
     CHECK(!(miso[1] & 0x10));
 
+    /* 3GS temperature notifications: +xdrv=5,16,<s> then +XDRVI: 5,17 every <s> seconds. */
+    ifx_frame(&x, &c, "at+xdrv=5,16,20\r", miso, 0x7fc, got);
+    ios_bb_tick(&c, c.now_ms + 1500);
+    ifx_frame(&x, &c, "", miso, 0x7fc, got);
+    CHECK(strstr(got, "+XDRVI: 5,17,") != NULL);
+
     /* No H5 on SPI: after +cmux the mux frames ride the IFX payload directly. */
     ifx_frame(&x, &c, "at+cmux=0,0,0,1500\r", miso, 0x7fc, got);
     ifx_frame(&x, &c, "\xf9\x03\x3f\x01\x1c\xf9", miso, 0x7fc, got);   /* SABM DLCI 0, P */
