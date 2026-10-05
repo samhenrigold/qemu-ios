@@ -30,6 +30,7 @@ ac = load("ipad1_app_compat", "app-compat.py")
 GRID = {"ipad1": ac.GRID,
         "iPod-Touch-4G": lambda r, c: (91 + 152 * c, 125 + 176 * r)}   # 4x4 grid on the 640x960 portrait panel
 GL_TAP = {"ipad1": (0.343, 0.5), "iPod-Touch-4G": (0.5, 0.165)}         # the Harness's GLES 1.1 row
+GRID["iPhone-4"], GL_TAP["iPhone-4"] = GRID["iPod-Touch-4G"], GL_TAP["iPod-Touch-4G"]   # the same panel and layout
 
 
 def bundle_of(ipa):
@@ -80,7 +81,8 @@ def ocr_upright(ppm):
 
 # iOS 5's Setup Assistant on the iPod (tests/ipad1/regress.py walks the iPad's): each page is answered by the
 # first label of PICKS it shows, then its Next (the language page's is an arrow); a button labelled exactly as one\n# of ALERT_YES (an alert's, or Terms' Agree) first.
-PICKS = ("Start Using iPod touch", "Start Using iPod", "Set Up as New iPod touch", "Set Up as New iPod", "Disable Location Services", "Skip This Step", "Agree",
+PICKS = ("Start Using iPod touch", "Start Using iPod", "Start Using iPhone", "Set Up as New iPod touch", "Set Up as New iPod",
+         "Set Up as New iPhone", "Disable Location Services", "Skip This Step", "Agree",
          "Don't Send", "Australia", "United States")
 ALERT_YES = ("OK", "Skip", "Agree", "Continue")
 NEXT_ARROW = (587, 84)
@@ -130,7 +132,7 @@ def main():
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     rg.itqmp.W, rg.itqmp.H = rg.ipad1_boot.MACHINES[a.machine]
-    if a.machine == "iPod-Touch-4G":
+    if a.machine in rg.ipad1_boot.PORTRAIT:
         rg.LIT_MIN_FRACTION, rg.UNLOCK_FROM, rg.UNLOCK_TO = 0.2, (116, 862), (600, 862)
     rg.device_args(a)
     rg.ipod.START = time.time()
@@ -148,8 +150,6 @@ def main():
         b.start()
         if not step("mux", b.wait_mux(), "lockdown answers ProductVersion %s" % a.product_version):
             return 1
-        syslog = os.path.join(b.dir, "syslog.log")
-        b.procs.spawn(["idevicesyslog"], syslog, env=b.env())
         ins = b.run(["ideviceinstaller", "install", a.ipa], timeout=240)
         listed = bundle in b.run(["ideviceinstaller", "list"], timeout=90).stdout
         out = (ins.stdout + ins.stderr).strip().splitlines()
@@ -158,9 +158,17 @@ def main():
         ok, det = b.wait_lock_screen(timeout=300)
         if not step("lock", ok, det):
             return 1
-        b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
-        time.sleep(4)
-        if a.machine == "iPod-Touch-4G" and "English" in ocr_upright(b.shot("opened")):   # a fresh 5.x
+        fresh = False
+        for _ in range(3 if a.machine in rg.ipad1_boot.PORTRAIT else 1):
+            b.press("home")  # the panel may have slept while the install ran: wake it before the slide
+            time.sleep(1.5)
+            b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
+            time.sleep(4)
+            fresh = a.machine in rg.ipad1_boot.PORTRAIT and "English" in ocr_upright(b.shot("opened"))  # a fresh 5.x
+            status, out = rg.itqmp.agent(b.qmp, "lockstatus") if rg.itqmp.agent_alive(b.qmp) else (1, b"")
+            if fresh or status or b"locked=0" in out:
+                break                                # Setup's language page, past the lock, or no agent to ask
+        if fresh:
             if not step("setup", *walk_setup(b, step)):
                 return 1
         slot = None
@@ -172,6 +180,10 @@ def main():
             time.sleep(5)
         if not step("icon", bool(slot) and slot[0] == 1, "springboardservices slot %s" % (slot,)):
             return 1
+        # The relay starts here, not at install: Setup's end re-enumerates the USB device and idevicesyslog exits.
+        syslog = os.path.join(b.dir, "syslog.log")
+        b.procs.spawn(["idevicesyslog"], syslog, env=b.env())
+        time.sleep(3)
         home = png(b, "home")
         mark = os.path.getsize(syslog) if os.path.exists(syslog) else 0
         b.tap(GRID[a.machine](slot[1], slot[2]))
@@ -180,6 +192,9 @@ def main():
         log = open(syslog, errors="replace").read()[mark:] if os.path.exists(syslog) else ""
         # "Harness[75]", or launchd's "UIKitApplication:com.qemuios.harness[0x6a01][75]" (4.x)
         started = bool(re.search(r"(%s|%s)(\[0x[0-9a-f]+\])?\[\d+\]" % (re.escape(exe), re.escape(bundle)), log))
+        if not started and rg.itqmp.agent_alive(b.qmp):   # the syslog relay can drop with the USB link; ask SpringBoard
+            status, front = rg.itqmp.agent(b.qmp, "frontmost")
+            started = status == 0 and front.split(b"\n")[0] == bundle.encode()
         changed = ac._framediff(ac._sample(rg, home), ac._sample(rg, app))
         if not step("launch", started and changed, "process in syslog %s, frame changed %s" % (started, changed)):
             return 1
@@ -191,6 +206,11 @@ def main():
             rej = rg.itqmp.gles_rejects(b.qmp)
             log = open(syslog, errors="replace").read()
             said = re.findall(r"\[Harness\] ((?:PASS|FAIL)[^\n]*GLES[^\n]*)", log)
+            if not said and a.ipa == HARNESS:   # 5.x's syslog_relay can close mid-run: read the app's own log
+                got = os.path.join(b.dir, "results.log")
+                b.run(["afcclient", "--container", bundle, "get", "Documents/results.log", got], timeout=60)
+                if os.path.exists(got):
+                    said = re.findall(r"((?:PASS|FAIL)[^\n]*GLES[^\n]*)", open(got, errors="replace").read())
             ok = frac > 0.3 and not rej and (a.ipa != HARNESS or (said and not any(s.startswith("FAIL") for s in said)))
             step("gl", ok, "fixture colours %.0f%% of the frame, bridge refusals %s; %s" % (
                 frac * 100, rej or "none", "; ".join(said) or "no GLES report"))
