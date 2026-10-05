@@ -25,7 +25,7 @@ enum {
 typedef struct { GuestGC *gc; void *owner; int is_egl; void *draw, *read; } gles2x_cur_t;
 static pthread_key_t gles2x_key;
 static pthread_once_t gles2x_once = PTHREAD_ONCE_INIT;
-static void *gles2x_hand[GLES_N_SLOTS];
+static void *gles2x_hand[GLES_N_HAND];
 
 static void gles2x_key_init(void) { pthread_key_create(&gles2x_key, free); }
 
@@ -62,7 +62,7 @@ static void gles2x_hello(void)
     gles_layout_reset();
     gles_hand_table(gles2x_hand);
     hello = gles_hello();
-#define GLES2X_FWD(export, row) n++; if (gles_fns[GLES_ROW_##row].id < GLES_N_SLOTS && gles2x_hand[gles_fns[GLES_ROW_##row].id]) hand++;
+#define GLES2X_FWD(export, row) n++; if (gles_fns[GLES_ROW_##row].id < GLES_N_HAND && gles2x_hand[gles_fns[GLES_ROW_##row].id]) hand++;
 #include "gles2x_exports.h"
 #undef GLES2X_FWD
     w("[gles] dispatch layout from export names (1.x/2.x OpenGLES is the driver): "); wd(n);
@@ -87,7 +87,7 @@ static int gles2x_row(GuestGC *gc, unsigned row, unsigned a0, unsigned a1, unsig
                       unsigned a10, unsigned a11)
 {
     unsigned id = gles_fns[row].id;
-    void *f = id < GLES_N_SLOTS && gles2x_hand[id] ? gles2x_hand[id] : gles_fn_ptr[row];
+    void *f = id < GLES_N_HAND && gles2x_hand[id] ? gles2x_hand[id] : gles_fn_ptr[row];
     return ((gles2x_f)f)(gc, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11);
 }
 static int gles2x_rowv(GuestGC *gc, unsigned row, const unsigned *a)

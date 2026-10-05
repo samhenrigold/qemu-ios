@@ -91,7 +91,9 @@ typedef struct __attribute__((packed)) {
 /* The 3.1.3 dispatch layout, whose slot numbers are the wire ids below 822: the hand-written
  * thunks below are registered by that number. The firmware's own layout (822, 826 or 841
  * slots) is discovered at load; see gles_dispatch.c. */
+#include "../../include/hw/arm/guest-services/gles-names.h"   /* GLES_ID_MAX (no GLES_FN: the constants only) */
 #define GLES_N_SLOTS 822
+#define GLES_N_HAND (GLES_ID_MAX + 1)      /* hand thunks by wire id: every id, 822 and up too */
 static unsigned gles_fill(void **fw, unsigned n, void *const *hand);
 static int gles_slot_of(unsigned id);
 
@@ -794,7 +796,7 @@ static void gles_hand_table(void **table)
     unsigned i;
 
     {
-        for (i = 0; i < GLES_N_SLOTS; i++) {
+        for (i = 0; i < GLES_N_HAND; i++) {
             table[i] = 0;
         }
         table[15] = (void *)s_clearStencil;
@@ -1007,7 +1009,7 @@ static int GLESCreateGCWithAPI(void *sharegroup, void **fw_table, void *x_end,
     w("[mbxshim] GLESCreateGC\n");
 
     if (fw_table) {
-        void *hand[GLES_N_SLOTS];
+        void *hand[GLES_N_HAND];
         gles_hand_table(hand);
         gles_fill(fw_table, x_end ? (unsigned)((void **)x_end - fw_table) : 0, hand);
     }

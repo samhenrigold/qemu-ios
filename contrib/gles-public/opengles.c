@@ -103,7 +103,7 @@ static void fe_destroy_gc(GuestGC *gc)
 typedef struct { GuestGC *gc; void *owner; int is_egl; void *draw, *read; } fe_cur_t;
 static pthread_key_t fe_key;
 static pthread_once_t fe_once = PTHREAD_ONCE_INIT;
-static void *fe_hand[GLES_N_SLOTS];
+static void *fe_hand[GLES_N_HAND];
 
 static void fe_key_init(void) { pthread_key_create(&fe_key, free); }
 
@@ -146,6 +146,39 @@ static int fe_es2(void)
  * compositing without ("need APPLE_texture_rectangle extension; need APPLE_core_surface_texture extension"):
  * glTexImageCoreSurfaceAPPLE is the core's BindCoreSurface and the host samples GL_TEXTURE_RECTANGLE. ES 2.0
  * answers as the SGX, which an ES2 app checks before it compiles anything. */
+/* APPLE_sync (6.x and 7.x CoreAnimation fence every frame): the host runs each call to completion before the
+ * next, so a fence is signalled the moment it exists. Answered here, nothing goes to the host. */
+#define FE_GL_ALREADY_SIGNALED 0x911A
+static unsigned fe_fenceSync(void *gc, unsigned condition, unsigned flags)
+{
+    static unsigned next;
+    (void)gc; (void)condition; (void)flags;
+    return ++next ? next : ++next;                          /* 0 is no sync */
+}
+static unsigned fe_isSync(void *gc, unsigned sync) { (void)gc; return sync != 0; }
+static void fe_deleteSync(void *gc, unsigned sync) { (void)gc; (void)sync; }
+static unsigned fe_clientWaitSync(void *gc, unsigned sync, unsigned flags, unsigned lo, unsigned hi)
+{
+    (void)gc; (void)sync; (void)flags; (void)lo; (void)hi;
+    return FE_GL_ALREADY_SIGNALED;
+}
+static void fe_waitSync(void *gc, unsigned sync, unsigned flags, unsigned lo, unsigned hi)
+{
+    (void)gc; (void)sync; (void)flags; (void)lo; (void)hi;
+}
+static void fe_getInteger64v(void *gc, unsigned pname, unsigned *params)   /* MAX_SERVER_WAIT_TIMEOUT: 0 */
+{
+    (void)gc; (void)pname;
+    if (params) params[0] = params[1] = 0;
+}
+static void fe_getSynciv(void *gc, unsigned sync, unsigned pname, int bufsize, int *length, int *values)
+{
+    int v = pname == 0x9112 ? 0x9116 : pname == 0x9113 ? 0x9117 : pname == 0x9114 ? 0x9119 : 0;
+    (void)gc; (void)sync;              /* OBJECT_TYPE: SYNC_FENCE, CONDITION: GPU_COMMANDS_COMPLETE, STATUS: SIGNALED */
+    if (bufsize > 0 && values) values[0] = v;
+    if (length) *length = bufsize > 0 ? 1 : 0;
+}
+
 static const char *fe_getString(void *gc, unsigned name)
 {
     static char ext[256];
@@ -212,9 +245,16 @@ static void fe_hello(void)
     fe_hand[GLES_ID_glBindAttribLocation] = (void *)fe_bindAttribLocation;
     fe_hand[GLES_ID_glGetAttribLocation] = (void *)fe_getAttribLocation;
     fe_hand[GLES_ID_glGetUniformLocation] = (void *)fe_getUniformLocation;
+    fe_hand[GLES_ID_glFenceSyncAPPLE] = (void *)fe_fenceSync;
+    fe_hand[GLES_ID_glIsSyncAPPLE] = (void *)fe_isSync;
+    fe_hand[GLES_ID_glDeleteSyncAPPLE] = (void *)fe_deleteSync;
+    fe_hand[GLES_ID_glClientWaitSyncAPPLE] = (void *)fe_clientWaitSync;
+    fe_hand[GLES_ID_glWaitSyncAPPLE] = (void *)fe_waitSync;
+    fe_hand[GLES_ID_glGetInteger64vAPPLE] = (void *)fe_getInteger64v;
+    fe_hand[GLES_ID_glGetSyncivAPPLE] = (void *)fe_getSynciv;
     hello = gles_hello();
     iosurface_init();
-#define GLES2X_FWD(export, row) n++; if (gles_fns[GLES_ROW_##row].id < GLES_N_SLOTS && fe_hand[gles_fns[GLES_ROW_##row].id]) hand++;
+#define GLES2X_FWD(export, row) n++; if (gles_fns[GLES_ROW_##row].id < GLES_N_HAND && fe_hand[gles_fns[GLES_ROW_##row].id]) hand++;
 #include "gles2x_exports.h"
 #undef GLES2X_FWD
     w("[gles] OpenGLES front end (contrib/gles-public): "); wd(n); w(" gl exports, "); wd(hand);
@@ -250,7 +290,7 @@ static int fe_row(GuestGC *gc, unsigned row, unsigned a0, unsigned a1, unsigned 
                   unsigned a10, unsigned a11)
 {
     unsigned id = gles_fns[row].id;
-    void *f = id < GLES_N_SLOTS && fe_hand[id] ? fe_hand[id] : gles_fn_ptr[row];
+    void *f = id < GLES_N_HAND && fe_hand[id] ? fe_hand[id] : gles_fn_ptr[row];
     return ((fe_f)f)(gc, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11);
 }
 static int fe_rowv(GuestGC *gc, unsigned row, const unsigned *a)
@@ -1089,6 +1129,41 @@ __attribute__((constructor)) static void fe_bind_xfer(void)
  * cache is found by shared_region_check_np (syscall 294), its images by its own header (dyld_v1). */
 static unsigned fe_u32(const unsigned char *p) { return p[0] | p[1] << 8 | p[2] << 16 | (unsigned)p[3] << 24; }
 
+static const unsigned *fe_stock_mh;      /* the stock OpenGLES's header in the cache, once fe_stock_encode found it */
+static unsigned fe_stock_slide;
+
+/* The stock OpenGLES's own export `_name` (name without the underscore), from its symbol table in the cache's
+ * shared __LINKEDIT (symoff/stroff are cache file offsets): Thumb code gets its low bit. 6.x and 7.x carry the
+ * dispatch @encode without field names, so their trampolines name the slots (gles_layout_from_exports). */
+static void *fe_stock_symbol(const char *name)
+{
+    const unsigned char *lc;
+    unsigned k, ncmds, symoff = 0, nsyms = 0, stroff = 0, le_vm = 0, le_off = 0;
+    if (!fe_stock_mh) return 0;
+    ncmds = fe_stock_mh[4];
+    lc = (const unsigned char *)fe_stock_mh + 28;
+    for (k = 0; k < ncmds; k++) {
+        const unsigned *cmd = (const unsigned *)lc;
+        if (cmd[0] == 2) { symoff = cmd[2]; nsyms = cmd[3]; stroff = cmd[4]; }           /* LC_SYMTAB */
+        else if (cmd[0] == 1 && gles_streq((const char *)lc + 8, "__LINKEDIT")) { le_vm = cmd[6]; le_off = cmd[8]; }
+        lc += cmd[1];
+    }
+    if (!nsyms || !le_vm) return 0;
+    {
+        const unsigned char *le = (const unsigned char *)(unsigned long)(le_vm + fe_stock_slide);
+        const unsigned char *syms = le + (symoff - le_off);
+        const char *strs = (const char *)le + (stroff - le_off);
+        for (k = 0; k < nsyms; k++) {
+            const unsigned char *nl = syms + 12 * k;
+            const char *sym = strs + fe_u32(nl);
+            unsigned value = fe_u32(nl + 8), desc = nl[6] | nl[7] << 8;
+            if ((nl[4] & 0x0e) != 0x0e || !value || sym[0] != '_' || !gles_streq(sym + 1, name)) continue;   /* N_SECT */
+            return (void *)(unsigned long)((value + fe_stock_slide) | ((desc & 0x0008) ? 1 : 0));   /* N_ARM_THUMB_DEF */
+        }
+    }
+    return 0;
+}
+
 static const char *fe_stock_encode(void)
 {
     static const char want[] = "/System/Library/Frameworks/OpenGLES.framework/OpenGLES";
@@ -1109,6 +1184,8 @@ static const char *fe_stock_encode(void)
         if (!gles_streq((const char *)c + fe_u32(img + 24), want)) continue;
         mh = (const unsigned *)(unsigned long)(fe_u32(img) + slide);
         if (mh[0] != 0xfeedface) return 0;
+        fe_stock_mh = mh;
+        fe_stock_slide = slide;
         ncmds = mh[4];
         lc = (const unsigned char *)mh + 28;
         for (k = 0; k < ncmds; k++) {
@@ -1139,6 +1216,7 @@ static void **fe_macro(GuestGC *gc, void ***cache)
     if (*cache) return *cache;
     if (layout < 0) {
         gles_encode_override = fe_stock_encode();
+        gles_export_lookup = fe_stock_symbol;
         layout = gles_encode_override != 0;
         if (!layout) w("[gles] no __GLIFunctionDispatchRec @encode in the shared cache's OpenGLES: no macro context\n");
     }

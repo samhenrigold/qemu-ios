@@ -85,8 +85,29 @@ pipeline with n90 paths; activation through fw-a4's `lt_activate` hook; guest pa
    - Found by baking /.launchd_log_shutdown and /.launchd_log_debug and reading /var back off the NAND.
    - Then backboardd crash-loops on the same GL dispatch gap as 6.1.3 ("dispatch layout from none: 0 slots";
      SIGSEGV at 0 in QuartzCore).
-6. So 6.x and 7.x both wait on the same next step: a GL dispatch layout source for their OpenGLES/GLEngine in
-   gles-public. Then activation for 7.x, and a guest-package family for 10*/11*.
+6. Fixed: the 6.x GL dispatch layout. The 6.x and 7.x shared caches carry `{__GLIFunctionDispatchRec=^?^?...}`
+   with no field names: 914 slots on 6.1.3. gles-public now takes the count from that @encode and names the
+   slots by decoding the stock OpenGLES's exported trampolines, found through its symbol table in the cache's
+   shared __LINKEDIT. The front end replaces OpenGLES, so dlsym would only find its own exports.
+   - The decoder needed two 6.x shapes. The TLS context load (`ldr r0, [r0, #0x78]`) is not the GC, and the
+     float trampolines keep the context in sb (r9).
+   - 301 of 914 slots are named, and CoreAnimation's calls land on them.
+   - 6.1.3 `regress.py --checks boot` now PASSES: Activated, Setup Assistant's first page on the panel, GL
+     bridge refused nothing. backboardd's console is not SpringBoard's, so the GL-path line is also taken from
+     the host's log.
+7. 7.1.2 with `RO_ROOT=1` and the shim boots to iOS 7's Setup "Hello" screen and its language list, drawn
+   through the GL bridge: 1035 slots, 316 named.
+   - CoreAnimation fences every frame with glFenceSyncAPPLE (slot 779, 1024 calls before Setup).
+   - APPLE_sync is now in the name table as ids 912-918, exported by 6.x and 7.x OpenGLES. The front end answers
+     it locally: the host finishes every call before the next, so a fence is signalled as it is made.
+   - The bridge refuses nothing on 7.1.2.
+   - Open: regress's Setup walk for iOS 7 (the slide-to-set-up gesture and the new pages), activation
+     (lt_activate fails on 7.1.2's lockdownd), a guest package for 10*/11*, and the 6.x Wi-Fi lease.
+8. 6.1.3 Wi-Fi: the driver comes up ("setupDriver(): Succeeded") and joins, with the split CDC length and
+   "cap" handled. With wlan.log.level=7, the DHCP offers are seen arriving ("Rx ... UDP sport 67 dport 68").
+   - A boot with usbmuxd attached got its lease (10.0.2.15 at 26 s).
+   - regress's wifi check boots without USB. There, two of two runs never took an offer, and the NetManager's
+     10 s IP window ran out. Not understood yet.
 
 ## How to boot
 

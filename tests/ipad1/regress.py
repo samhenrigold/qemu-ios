@@ -358,8 +358,12 @@ def gl_clean(b, r, detail, shots=(), require_refs=()):
                     break
     # A software CoreAnimation draws the same pictures and refuses nothing (4.3.x did, while the old GLI shim
     # lost GL), so only the GL front end's own line proves CoreAnimation took the GL path.
-    serial = open(b.serial, errors="replace").read() if os.path.exists(b.serial) else ""
-    if "CoreAnimation composites through the host" not in serial:
+    # The line reaches the serial console from SpringBoard (stdio /dev/console); 6.x+ composites in backboardd,
+    # whose stderr does not, so the host's own log of the shim's lines counts too.
+    seen = ""
+    for log_file in (b.serial, os.path.join(b.dir, "qemu.log")):
+        seen += open(log_file, errors="replace").read() if os.path.exists(log_file) else ""
+    if "CoreAnimation composites through the host" not in seen:
         r.set(False, "%s; SpringBoard composited in software CoreAnimation (no GL-path line from the front end)" % detail)
     elif rejects:
         r.set(False, "%s; the GL bridge refused %d thing(s): %s" % (
@@ -466,6 +470,17 @@ def check_boot_5(cfg, r, b, detail):
     region_settled(b, TITLE)
     ppm = b.shot("opened")
     found, front = ocr(ppm), frontmost(b)
+    for _ in range(3 if cfg.major >= 7 else 0):
+        # 7.x's Hello screen cycles its greeting under the slider, so a missed drag still reads as "opened"
+        if "English" in found or "Safari" in found:
+            break
+        if b.lit("pre-slide") < LIT_MIN_FRACTION:
+            b.press("home")
+            time.sleep(1.5)
+        b.drag(UNLOCK_FROM, UNLOCK_TO)
+        time.sleep(4)
+        ppm = b.shot("opened")
+        found, front = ocr(ppm), frontmost(b)
     if "English" in found and page_title(found) is None and front in (None, "com.apple.purplebuddy"):
         shown = "Setup Assistant's first page"
     elif "Safari" in found and front in (None, "com.apple.springboard"):
@@ -868,6 +883,11 @@ def dhcp_acked(pcap):
     return False
 
 
+# 6.x logs it with two spaces; under host load 6.x's NetManager gives up its 10 s IP window just before the
+# lease lands and logs nothing, which the DHCPACK on the wire covers.
+LEASE_LINE = re.compile(r"receivedIPv4Address\(\):\s+Received")
+
+
 def check_wifi(cfg, r):
     """Stock AppleBCMWLAN joins the model's open BSS and takes a lease (a4-guest; docs/ipad1/wifi.md).
     The lease is the driver's log line where it has one (3.2.2, 4.x), else slirp's DHCPACK on the wire:
@@ -881,12 +901,16 @@ def check_wifi(cfg, r):
         t0, text = time.time(), ""
         while time.time() - t0 < 120:
             text = open(b.serial, errors="replace").read()
-            if "receivedIPv4Address(): Received" in text or dhcp_acked(pcap):   # 3.2.2 "... IP Address", 4.2.1 "... address A.B.C.D"
+            if LEASE_LINE.search(text) or dhcp_acked(pcap):   # 3.2.2 "... IP Address", 4.2.1 "... address A.B.C.D"
                 break
             time.sleep(2)
-        joined = 'ssid[ 8] = "qemu-ios"' in text
-        leased = "receivedIPv4Address(): Received" in text or dhcp_acked(pcap)
-        fw = "BCM4329 revision B1" in text and "initFirmware(): successful initialization" in text
+        acked = dhcp_acked(pcap)
+        leased = bool(LEASE_LINE.search(text)) or acked
+        # 7.x logs its join only at wlan.log.level 7; slirp's ACK means it joined the one BSS there is
+        joined = 'ssid[ 8] = "qemu-ios"' in text or "Joined BSS" in text or acked
+        fw = "BCM4329 revision B1" in text and any(up in text for up in (
+            "initFirmware(): successful initialization", "setupDriver():  Succeeded",   # 3.x-5.x, 6.x
+            "Core Driver Initialization Time"))                                          # 7.x
         if joined and leased and fw:
             r.set(True, "BCM4329 B1 up, joined qemu-ios, DHCP lease")
         else:
@@ -1148,6 +1172,10 @@ def main():
         LIT_MIN_FRACTION = 0.2
         UNLOCK_FROM, UNLOCK_TO = portrait_unlock()
     device_args(a)
+    if a.major >= 7:
+        # 7.x's Setup "Hello" is a few thin grey words on white: 25-80 colours, against 64 for a lit picture
+        global MIN_COLOURS
+        MIN_COLOURS = 16
     import ffmpeg_guard                     # imgtools; stock FFmpeg breaks iPod H.264
     why = ffmpeg_guard.check(a.qemu)
     if why:

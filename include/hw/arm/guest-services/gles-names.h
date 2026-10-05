@@ -22,8 +22,8 @@
  * --check.
  */
 #ifndef GLES_NAMES_VERSION
-#define GLES_NAMES_VERSION 0x5349fd9d
-#define GLES_ID_MAX 911              /* ids are 0..GLES_ID_MAX, all below GLES_OP_BASE */
+#define GLES_NAMES_VERSION 0x4897c448
+#define GLES_ID_MAX 918              /* ids are 0..GLES_ID_MAX, all below GLES_OP_BASE */
 #define GLES_F_BATCH 1
 #define GLES_F_EXPORT 2
 #endif
@@ -940,4 +940,11 @@ GLES_FN(glProgramUniformMatrix2fvEXT,          program_uniform_matrix2fv,       
 GLES_FN(glProgramUniformMatrix3fvEXT,          program_uniform_matrix3fv,                     909, 5,  GLES_F_EXPORT)
 GLES_FN(glProgramUniformMatrix4fvEXT,          program_uniform_matrix4fv,                     910, 5,  GLES_F_EXPORT)
 GLES_FN(glGetFramebufferParameteriAPPLE,       get_framebuffer_parameteri_APPLE,              911, NA, GLES_F_EXPORT)
+GLES_FN(glFenceSyncAPPLE,                      fence_sync_APPLE,                              912, 2,  GLES_F_EXPORT)
+GLES_FN(glIsSyncAPPLE,                         is_sync_APPLE,                                 913, 1,  GLES_F_EXPORT)
+GLES_FN(glDeleteSyncAPPLE,                     delete_sync_APPLE,                             914, 1,  GLES_F_EXPORT)
+GLES_FN(glClientWaitSyncAPPLE,                 client_wait_sync_APPLE,                        915, NA, GLES_F_EXPORT)
+GLES_FN(glWaitSyncAPPLE,                       wait_sync_APPLE,                               916, NA, GLES_F_EXPORT)
+GLES_FN(glGetInteger64vAPPLE,                  get_integer64v_APPLE,                          917, NA, GLES_F_EXPORT)
+GLES_FN(glGetSyncivAPPLE,                      get_synciv_APPLE,                              918, 5,  GLES_F_EXPORT)
 #endif
