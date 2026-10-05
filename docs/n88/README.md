@@ -11,7 +11,7 @@ data; an IPA installs through installation_proxy and AppSync and launches.
 
 | Build | Boot | Touch, Home, Hold | Power-off + persist | IPA install + launch | GL app |
 |---|---|---|---|---|---|
-| 3.1.3 7E18 | lock screen; lockdown answers 3.1.3 | no: touch frames are read but the UI ignores them (debt 7) | not tried (the gesture needs touch) | installs (app-install.py mux, install, lock PASS) | |
+| 3.1.3 7E18 | activated home screen ("No Service") | yes | yes (gesture, 15 s; marker survives) | yes (app-install.py all PASS; icon on page 2) | draws |
 | 4.0 8A293, 4.0.1 8A306, 4.0.2 8A400, 4.1 8B117 | activated home screen | yes | yes | yes (app-install.py all PASS) | draws (debt 1) |
 | 4.2.1 8C148a | activated home screen ("No Service") | yes | yes | yes (Harness) | renders through the bridge (readback PASS); on the panel at the wrong stride (debt 1) |
 | 4.3 8F190, 4.3.1 8G4, 4.3.2 8H7, 4.3.3 8J2, 4.3.4 8K2, 4.3.5 8L1 | activated home screen | yes | yes | yes (app-install.py all PASS) | draws (debt 1) |
@@ -98,6 +98,9 @@ Machine properties as the N18's (docs/n18/README.md).
 | UARTs | five; bq27540 HDQ gauge on uart4 (1219 mAh) | board data | H |
 | SPI2 | baseband controller, no device | | S |
 | I2C0 | D1755 0x74, CS42L61 0x4a (CS42L58 model), CD3272 0x39, LIS302DL 0x1d, AK8973 0x1e | board data | H |
+| I2C2 | TSL2561 0x49 (`s5l8930.tsl2561`, a TSL2581 layout variant; no threshold interrupt) | board data | H |
+| UART3 | BCM4325 HCI (`ipod_touch_bt.c`'s chardev); the CDMA receive chain from URXH is paced by the UART's FIFO | board data | H |
+| ISP | none: the DT's `isp` node is unmatched (`no_isp`), as the A4 machines' | board data | S |
 
 `explicit-start`: the s5l8920x firmware leaves FMI control at 3 or 5 between transfers and starts each
 with its own control write. The last page of a multi-page read follows a status poll, not a read command,
@@ -107,25 +110,30 @@ write arms a write transfer. Without it, every 8-page READ_MULTIPLE timed out (2
 last page's meta never sent) and single-page writes were captured against the stale CE and dropped
 ("Failed Index read" panic). `IOP_RING_TRACE=1` compares every READ/WRITE_MULTIPLE page with the store.
 
-## Gates run (2026-10-05, branch n88)
+## Gates run (2026-10-05, branch n88 after merging ipad1 at 235d0d170b)
 
-N88 4.2.1: boot to home screen, unlock, tap, Hold sheet, power-off, persist (afcclient marker), IPA install
-and launch: PASS. Shared-model checks on this build: iPad 7B500 `tests/ipad1/regress.py --checks
-boot,persist,gles` PASS; iPod 2G `tests/ipod/regress.py --checks boot` PASS; N81 `regress.py --machine
-iPod-Touch-4G --checks boot` PASS; N18 dev2 unlock to the home screen with touch PASS.
+N88 app-install.py (install, launch, GLES through the bridge, power-off) PASS on 3.1.3, 4.2.1 and 5.1.1
+(Setup walked); 3.1.3 power-off gesture after the panel slept, then the afcclient marker read back after a
+reboot: PASS. Shared-model checks: iPad 7B500 `tests/ipad1/regress.py --checks boot,persist,gles` PASS;
+iPod 2G `tests/ipod/regress.py --checks boot` PASS; N81 `regress.py --machine iPod-Touch-4G --checks boot`
+PASS; N18 unlock to the home screen with touch PASS.
 
 ## Debts
 
 1. **GL scene on the panel**: as the N18's debt 8, the GLES view reaches the panel laid out at the panel's
    320-pixel stride (`runs/app/install/gl.png`); the readback is right. No it_agent on this machine.
 2. **Baseband**: spi2 bare; "No Service" (cellular stream).
-3. **Bluetooth**: BTServer respawns (no BCM4325 on uart3) unless the image disables it (`bake` does).
-4. **Camera**: AppleH2CamIn times out on its ISP mailbox (no ISP model); mediaserverd survives it.
+3. **Bluetooth**: uart3 answers the HCI. BlueTool powers the chip through CommCenter, so it comes up only with
+   `baseband=on` (seen: boot script to the end, "Server attached", paired devices 0); without it BTServer
+   exits and launchd respawns it every 10 s. FirmwareKit leaves BTServer Disabled unless the recipe sets
+   `bluetooth` (set for 3.1.3 only: see 7).
+4. **Camera**: none (the isp node is unmatched). 4.x gave up on the unanswered ISP mailbox after a few 2 s
+   waits; 3.1.3's ISP_waitCommunicationEnd (0xc054d17c) resets its count and busy-waits forever.
 5. As the N18: kboot with the NOR (no NAND boot blocks), K48 fuses and clock table, D1755 backlight and
    wake latch, Wi-Fi.
 6. Every 4.x and 5.x build runs. The devices are FirmwareKit's
    (LightTouchMac n88-app catalog n88ap-*), prepared with a LightTouchDevice + this tree's libqemu-arm.dylib.
-7. **3.1.3** boots (FirmwareKit-prepared; 7E18 is not in the catalog yet). What it took:
+7. **3.1.3** runs (FirmwareKit-prepared, catalog n88ap-7E18 with `bluetooth`). What it took:
    - NAND board lookup: 3.1.3's FMI groups the CEs into buses by the disk node's `landing-map` words (one CE
      mask per bus; findNandInfo 0xc043c6da, read per bus by 0xc043b028). The IPSW's DT has a single word, so
      every CE folded into one bus and nothing in its board table matched ("2-bus not supported"); kboot now
@@ -134,12 +142,16 @@ iPod-Touch-4G --checks boot` PASS; N18 dev2 unlock to the home screen with touch
      YaFTL on VSVFL as 4.x is; its own FIL signs flags 4 when it formats (seen by letting it format a blank
      XOR store with nand-enable-reformat=1, which needs the s5l8920x raw read, `cfg-v0`). Plain stores now
      sign 4 (4.x and 5.x accept it).
-   - Still open: touch. The N1F54 firmware downloads, the kernel reads every frame (0xEB), and SpringBoard's
-     MultitouchHID loads and follows the UI lock ("uilock state: 1 -> 0"), but nothing reacts to a touch. 3.1.3
-     never writes the report-mode reports 4.x writes (0xbf, 0xaf). Its personality has
-     AutomaticallySetOperatingMode, whose handler (0xc030d99c) would write report 0xab, and it is never called.
-     Next: whether 3.1.3's MultitouchSupport accepts the model's 0xEB frame layout (it is 4.x's). A Home press
-     also opens the iPod app (read as a double click).
+   - Touch worked all along. What looked like dead touch was the panel's power: SpringBoard sets MultitouchHID's
+     UILocked when the display sleeps, and 3.1.3's MTDeviceSetUILocked powers the digitizer down for it
+     (unless MultitouchSupport's NoPowerDownInUILock). Home woke the panel only ~20 s later: SpringBoard's wake
+     path made four BTSessionAttach calls, each its full 5 s timeout, because BTServer (Disabled by the bake)
+     never answered. With Bluetooth on (3 above) a Home press lights the panel at once and the power-off
+     gesture completes. Found by breakpointing the kernel driver's log function (0xc030d20c), setPowerEnabled
+     (0xc030d5b4) and mach_msg with timeouts over the gdbstub.
+   - Also gone: the ISP busy-wait (4) and AppleTSL2561's failed enable (I2C2 0x49 had no device).
+   - The gate: the IPA's icon lands on page 2 (3.x's page 1 is full) and 3.1.3 raises "Waiting for
+     activation" after the install; app-install.py swipes and dismisses both alert shapes.
 8. ~~**Touch calibration**~~: fitted (mt_profile_n88 frame_*): GSEventGetLocationInWindow's point read through
    the gdbstub (lldb) per tap, as the M68's; an 11-tap check lands within 1 px of every aim. The 5.x Setup walk
    now taps its links where they are drawn.
