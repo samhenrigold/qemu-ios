@@ -11,7 +11,13 @@ data; an IPA installs through installation_proxy and AppSync and launches.
 
 | Build | Boot | Touch, Home, Hold | Power-off + persist | IPA install + launch | GL app |
 |---|---|---|---|---|---|
+| 3.1.3 7E18 | no: the kernel's NAND table has no 2-bus 0xB614D5AD row for this board (debt 7) | | | | |
+| 4.0 8A293 | activated home screen | yes | yes | yes (Harness; app-install.py all PASS) | draws (debt 1) |
 | 4.2.1 8C148a | activated home screen ("No Service") | yes | yes | yes (Harness) | renders through the bridge (readback PASS); on the panel at the wrong stride (debt 1) |
+| 4.3.5 8L1 | activated home screen | yes | yes | yes (Harness; app-install.py all PASS) | draws (debt 1) |
+| 5.0 9A334 | Setup Assistant, walked to the home screen; GL-composited | yes (debt 8) | yes | yes (Harness) | draws (debt 1) |
+| 5.1.1 9B206 | Setup Assistant, walked to the home screen; GL-composited | yes (debt 8) | yes | yes (Harness) | draws (debt 1) |
+| 6.1.6 10B500 | no: nothing on the console under kboot, as N81 6.0 (debt 9) | | | | |
 
 - kboot (`imgtools/s5l8920_kboot.py n88 --nor`, the DT's own NOR kept) -> xnu-1504.58.28
   RELEASE_ARM_S5L8920X. The kernel's EmbeddedIOP firmware is the s5l8920x build of iBoot-931 (the N18 runs
@@ -34,7 +40,15 @@ data; an IPA installs through installation_proxy and AppSync and launches.
   shutdown): the harness IPA goes in through installation_proxy and AppSync, is pinned to page 1, launches,
   its GLES row renders through the bridge (readback PASS, no refusals), then the guest powers off. The
   guest-services trap is the N18's (s5l8920 766a2b1647), machine-wide.
-- Status bar: "No Service". The baseband (spi2, IFX v1) is the cellular stream's.
+- Status bar: "No Service". The baseband (spi2, IFX v1) is the cellular stream's (`baseband=on`).
+- 5.1.1 (2026-10-05, FirmwareKit-prepared `n88ap-9B206`): two model changes. The D1755's dock data lines read
+  0 V while a USB cable is attached (pcf50633 `brick-mux`, channel 6), or 5.x's power source calls the cable
+  "Detached" and the USB device stack never starts; and under kboot the CLCD reports iBoot's blend output
+  (0x1b10 bit 0, 0x1b24 its size), which 5.x's AppleM2CLCD::start_hardware requires before it adds the
+  framebuffer (else SpringBoard draws into no context). Setup Assistant walked by hand (English,
+  Australia, Location off, new iPhone, Apple ID skipped, terms, diagnostics), the home screen composites
+  through the GL bridge, the Harness installs and launches and its GLES row draws, and an AFC marker
+  survives power-off and reboot.
 
 ## How to boot
 
@@ -110,4 +124,14 @@ iPod-Touch-4G --checks boot` PASS; N18 dev2 unlock to the home screen with touch
 4. **Camera**: AppleH2CamIn times out on its ISP mailbox (no ISP model); mediaserverd survives it.
 5. As the N18: kboot with the NOR (no NAND boot blocks), K48 fuses and clock table, D1755 backlight and
    wake latch, Wi-Fi.
-6. Other majors (3.1.x, 5.x, 6.x) not tried.
+6. 4.x/5.x point releases between those in the table not run yet. The 4.x/5.x devices are FirmwareKit's
+   (LightTouchMac n88-app catalog n88ap-*), prepared with a LightTouchDevice + this tree's libqemu-arm.dylib.
+7. **3.1.3 NAND**: 3.1.3's findNandInfo matches (dies, buses, chip+CE count per bus) against a per-board
+   table (7E18 0xc0442d58..: boards 0x0a/0x0c/0x0e/0x10); none of the rows that could be the N88's lists
+   0xB614D5AD on two buses with this key, so it prints "Board support not found" and "2-bus not
+   supported". Fix: a geometry both 3.1.3 and 4.x-6.x accept (a chip and CE layout from that table, e.g.
+   0x2594D7AD or 0x7294D7EC at two dies per CE), through ipad1_nand.py, the IOP model and K48NAND.
+8. **Touch calibration**: the digitizer frame is the N81 profile's, unmeasured on N88; taps in the bottom
+   ~5% of the panel land ~15 px high (retap lower). tests/ipad1/touchcal.py (ipad1) is the tool to fit it.
+9. **iOS 6**: 10B500's kernel prints nothing under kboot (fw-a4 has N81 6.0 past pe_identify_machine with
+   the xnu-2107 boot_args version and the SecureROM window at 0; not ported here yet).
