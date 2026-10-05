@@ -195,6 +195,9 @@ static void s5l8930_gpio_write(void *opaque, hwaddr addr, uint64_t value,
                 s->enabled[pin / 32] &= ~bit;
             }
             s->cfg[pin] = value & 0xffff;
+            if (mode == GPIO_MODE_OUT || mode == GPIO_MODE_OUT_ALT) {
+                qemu_set_irq(s->out[pin], value & GPIO_CFG_DATA);
+            }
             s5l8930_gpio_latch_level(s, pin);
             s5l8930_gpio_update(s);
             return;

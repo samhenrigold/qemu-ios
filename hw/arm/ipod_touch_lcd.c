@@ -170,7 +170,52 @@ static uint32_t lcd_scanout_base(IPodTouchLCDState *s)
     if (s->s5l8900 && !s->w1_framebuffer_base) {
         return s->plane_regs[0x78 / 4];
     }
+    if (s->xlate) {
+        /*
+         * Behind an IOMMU: scan out from the frame's PA when its pages are
+         * contiguous there (the usual case, and the one that keeps dirty
+         * tracking); otherwise gather it a page at a time each frame.
+         */
+        uint32_t va = s->w1_framebuffer_base;
+        hwaddr pa = s->xlate(s->xlate_opaque, va, 0);
+
+        s->scanout_va = va;
+        s->gather = pa == (hwaddr)-1;
+        for (uint32_t off = 0x1000 - (va & 0xfff); !s->gather &&
+             off < LCD_FB_WIDTH * LCD_FB_HEIGHT * 4; off += 0x1000) {
+            s->gather = s->xlate(s->xlate_opaque, va + off, 0) != pa + off;
+        }
+        return s->gather ? va : pa;
+    }
     return s->w1_framebuffer_base;
+}
+
+void ipod_lcd_set_iommu(DeviceState *lcd, hwaddr (*xlate)(void *opaque, uint32_t va, unsigned sid),
+                        void *opaque)
+{
+    IPodTouchLCDState *s = IPOD_TOUCH_LCD(lcd);
+
+    s->xlate = xlate;
+    s->xlate_opaque = opaque;
+}
+
+/* A non-contiguous frame into buf, page by page; unmapped pages read black. */
+static void lcd_gather(IPodTouchLCDState *s, uint8_t *buf)
+{
+    uint32_t len = LCD_FB_WIDTH * LCD_FB_HEIGHT * 4;
+
+    for (uint32_t off = 0; off < len;) {
+        uint32_t va = s->scanout_va + off;
+        uint32_t n = MIN(0x1000 - (va & 0xfff), len - off);
+        hwaddr pa = s->xlate(s->xlate_opaque, va, 0);
+
+        if (pa == (hwaddr)-1) {
+            memset(buf + off, 0, n);
+        } else {
+            cpu_physical_memory_read(pa, buf + off, n);
+        }
+        off += n;
+    }
 }
 
 static void lcd_update_irq(IPodTouchLCDState *s)
@@ -791,7 +836,11 @@ static void lcd_refresh(void *opaque)
     const uint32_t *planes = lcd->plane_scanout;
     /* The S5L8900 layout keeps its own words in plane_regs (LCDCON2, VIDCON,
      * window 2); the S5L8720 plane test would misread them as a composition. */
-    if (!lcd->s5l8900 && lcd_needs_plane_composition(planes)) {
+    if (lcd->gather) {
+        if (!lcd->rotbuf) lcd->rotbuf = g_malloc(LCD_FB_WIDTH * LCD_FB_HEIGHT * 4);
+        lcd_gather(lcd, lcd->rotbuf);
+        composed = true;
+    } else if (!lcd->s5l8900 && lcd_needs_plane_composition(planes)) {
         if (!lcd->rotbuf) lcd->rotbuf = g_malloc(LCD_FB_WIDTH * LCD_FB_HEIGHT * 4);
         composed = lcd_compose_planes(planes, lcd->rotbuf);
         if (!composed) {
@@ -1152,6 +1201,22 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
     s->w1_hspan = 0;
     s->w1_display_depth_info = 0;
     s->invalidate = 1;
+    if (s->fb_base) {
+        /*
+         * fb-base: a machine that boots the kernel without iBoot (kboot)
+         * gets the controller as iBoot leaves it for a 320x480 32 bpp
+         * panel, window 1 at fb-base (the S5L8720 iBoot's writes, LCD_TRACE).
+         * AppleM2CLCD sizes its default framebuffer from them ("default
+         * framebuffer size is zero" otherwise).
+         */
+        s->plane_regs[0x00 / 4] = 0x00000003;
+        s->plane_regs[0x10 / 4] = 0x00000080;
+        s->lcd_con = 0x10;
+        s->w1_display_depth_info = 0x00200700;
+        s->w1_framebuffer_base = s->fb_base;
+        s->w1_hspan = 320;
+        s->w1_display_resolution_info = 0x014001e0;
+    }
     /* Release through the helper that took the reference: it also turns
      * DIRTY_MEMORY_VGA logging back off. Zeroing the struct by hand dropped the
      * only pointer that could do either, so every warm reset and every restore
@@ -1304,6 +1369,7 @@ static const VMStateDescription vmstate_ipod_touch_lcd = {
 static const Property lcd_properties[] = {
     DEFINE_PROP_BOOL("planes", IPodTouchLCDState, planes_enabled, false),
     DEFINE_PROP_BOOL("s5l8900", IPodTouchLCDState, s5l8900, false),
+    DEFINE_PROP_UINT32("fb-base", IPodTouchLCDState, fb_base, 0),
 };
 
 static void ipod_touch_lcd_class_init(ObjectClass *klass, void *data)

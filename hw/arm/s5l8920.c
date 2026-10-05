@@ -68,6 +68,7 @@
 #define S5L8920_USB_OTG_BASE    0x86100000
 #define S5L8920_DSIM_BASE       0x89000000
 #define S5L8920_SWI_BASE        0x89100000
+#define S5L8920_DART_BASE(n)    (0xbfe00000 + (n) * 0x100000)
 
 #define S5L8920_IRQ_TIMER0      0x06
 #define S5L8920_IRQ_TIMER1      0x05
@@ -79,6 +80,7 @@
 #define S5L8920_IRQ_USB_OTG     0x0e
 #define S5L8920_IRQ_SCALER      0x0c
 #define S5L8920_IRQ_CLCD        0x25
+#define S5L8920_IRQ_DART(n)     (0x5a - (n))
 #define S5L8920_IRQ_CDMA(ch)    (0x2a + (ch))   /* DT lists channels 1.. from 0x2b */
 
 typedef struct S5L8920I2CDevice {
@@ -146,7 +148,13 @@ struct S5L8920MachineState {
     char *kboot_path;
     char *nand_path;
     char *nand_overlay_path;
+    char *nor_path;
+    char *nor_rw_path;
+    bool btn_hold, btn_home;             /* button-hold/-home properties */
 };
+
+/* hw/arm/s5l8920_dart.c: IOVA -> PA through a DART (its device as opaque). */
+hwaddr s5l8920_dart_xlate(void *opaque, uint32_t va, unsigned sid);
 
 #define KBOOT_MAGIC "K48KBOOT"
 #define KBOOT_TRAILER_LEN 24
@@ -416,13 +424,43 @@ static void s5l8920_init(MachineState *machine)
     s5l8920_i2c_create(s, 0);
     s5l8920_i2c_create(s, 2);
 
-    /* SPI0 (no NOR on these boards) and SPI1, the Zephyr multi-touch. */
-    ipod_touch_spi_create(S5L8920_SPI_BASE(0), s5l8920_irq(s, S5L8920_IRQ_SPI(0)), 0, "none", false);
-    dev = ipod_touch_spi_create(S5L8920_SPI_BASE(1), s5l8920_irq(s, S5L8920_IRQ_SPI(1)), 1,
-                                "multitouch", false);
+    /*
+     * SPI0: the N88's 1 MiB NOR (as the iPad's), chip select GPIO 0x1204
+     * (DT function-spi_cs0). The N18 has none; nor=/nor-rw= put one there
+     * for kboot's grafted nor-flash node (s5l8920_kboot.py --nor).
+     */
+    if (s->nor_path || (s->nor_rw_path && s->nor_rw_path[0])) {
+        dev = ipod_touch_spi_create(S5L8920_SPI_BASE(0), s5l8920_irq(s, S5L8920_IRQ_SPI(0)), 0,
+                                    "nor", false);
+        IPOD_TOUCH_SPI(dev)->nor->nor_path = s->nor_path;
+        if (s->nor_rw_path && s->nor_rw_path[0]) {
+            ipod_touch_nor_spi_open_overlay(IPOD_TOUCH_SPI(dev)->nor, s->nor_rw_path, &error_fatal);
+        }
+        qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(0x1204),
+            qdev_get_gpio_in_named(DEVICE(IPOD_TOUCH_SPI(dev)->nor), SSI_GPIO_CS, 0));
+    } else {
+        ipod_touch_spi_create(S5L8920_SPI_BASE(0), s5l8920_irq(s, S5L8920_IRQ_SPI(0)), 0, "none", false);
+    }
+    /* SPI1: the Zephyr multi-touch. */
+    dev = qdev_new(TYPE_IPOD_TOUCH_SPI);
+    qdev_prop_set_uint8(dev, "index", 1);
+    qdev_prop_set_string(dev, "peripheral", "multitouch");
+    qdev_prop_set_uint32(dev, "tx-fifo-depth", 0x10000);   /* N1F55 firmware: one 53196-byte transfer */
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S5L8920_SPI_BASE(1));
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, s5l8920_irq(s, S5L8920_IRQ_SPI(1)));
     s->mt = IPOD_TOUCH_SPI(dev)->mt;
+    s->mt->profile = &mt_profile_n18;
     qdev_connect_gpio_out_named(DEVICE(s->mt), "atn", 0,
                                 qdev_get_gpio_in(s->gpio, s->board->mt_atn));
+
+    /*
+     * DARTs: dart0 in front of the CLCD, scaler and TV-out (DT iommu-parent,
+     * use-legacy-DART), dart1 in front of JPEG and the video encoder.
+     */
+    DeviceState *dart0 = sysbus_create_simple("s5l8920.dart", S5L8920_DART_BASE(0),
+                                              s5l8920_irq(s, S5L8920_IRQ_DART(0)));
+    sysbus_create_simple("s5l8920.dart", S5L8920_DART_BASE(1), s5l8920_irq(s, S5L8920_IRQ_DART(1)));
 
     /* Display: the S5L8720's M2 CLCD and the same Samsung MIPI-DSIM, a 320x480 panel. */
     dev = qdev_new(TYPE_IPOD_TOUCH_MIPI_DSI);
@@ -432,14 +470,18 @@ static void s5l8920_init(MachineState *machine)
     sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
 
     dev = qdev_new("ipodtouch.lcd");
+    /* kboot's vram (the boot logo, then the kernel console): where iBoot leaves window 1 */
+    qdev_prop_set_uint32(dev, "fb-base", 0x4f700000);
     IPOD_TOUCH_LCD(dev)->sysmem = sysmem;
     IPOD_TOUCH_LCD(dev)->mt = s->mt;
     memory_region_add_subregion(sysmem, S5L8920_CLCD_BASE, &IPOD_TOUCH_LCD(dev)->iomem);
     sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, s5l8920_irq(s, S5L8920_IRQ_CLCD));
+    ipod_lcd_set_iommu(dev, s5l8920_dart_xlate, dart0);
 
-    sysbus_create_simple("ipodtouch.scaler", S5L8920_SCALER_BASE,
-                         s5l8920_irq(s, S5L8920_IRQ_SCALER));
+    ipod_scaler_set_iommu(sysbus_create_simple("ipodtouch.scaler", S5L8920_SCALER_BASE,
+                                               s5l8920_irq(s, S5L8920_IRQ_SCALER)),
+                          s5l8920_dart_xlate, dart0, 0);
     sysbus_create_simple("ipodtouch.swi", S5L8920_SWI_BASE, NULL);
 
     /* USB device mode: the S5L8720's DWC OTG core and PHY; the built-in host enumerates it. */
@@ -498,8 +540,74 @@ static void s5l8920_set_nand_overlay(Object *obj, const char *value, Error **err
     s->nand_overlay_path = g_strdup(value);
 }
 
+static char *s5l8920_get_nor(Object *obj, Error **errp)
+{
+    return g_strdup(S5L8920_MACHINE(obj)->nor_path);
+}
+
+static void s5l8920_set_nor(Object *obj, const char *value, Error **errp)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+
+    g_free(s->nor_path);
+    s->nor_path = g_strdup(value);
+}
+
+static char *s5l8920_get_nor_rw(Object *obj, Error **errp)
+{
+    return g_strdup(S5L8920_MACHINE(obj)->nor_rw_path);
+}
+
+static void s5l8920_set_nor_rw(Object *obj, const char *value, Error **errp)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+
+    g_free(s->nor_rw_path);
+    s->nor_rw_path = g_strdup(value);
+}
+
+/*
+ * Buttons: GPIO interrupt pins, active low, idle high in the GPIO model
+ * (DT function-button_hold 0x1607 = interrupt 0xb7, menu 0x1606 = 0xb6).
+ * ponytail: the GPIO side only; the PMU's wake latch (DT wake_button_* on
+ * the D1755's STAT) is not driven, so a press cannot wake a sleeping AP.
+ *   qom-set path=/machine property=button-home value=true   (then false)
+ */
+static void s5l8920_set_button(S5L8920MachineState *s, int pin, bool down)
+{
+    qemu_set_irq(qdev_get_gpio_in(s->gpio, pin), !down);
+}
+
+static bool s5l8920_get_button_hold(Object *obj, Error **errp)
+{
+    return S5L8920_MACHINE(obj)->btn_hold;
+}
+
+static void s5l8920_set_button_hold(Object *obj, bool value, Error **errp)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+
+    s->btn_hold = value;
+    s5l8920_set_button(s, s->board->buttons.hold, value);
+}
+
+static bool s5l8920_get_button_home(Object *obj, Error **errp)
+{
+    return S5L8920_MACHINE(obj)->btn_home;
+}
+
+static void s5l8920_set_button_home(Object *obj, bool value, Error **errp)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+
+    s->btn_home = value;
+    s5l8920_set_button(s, s->board->buttons.menu, value);
+}
+
 static void s5l8920_instance_finalize(Object *obj)
 {
+    g_free(S5L8920_MACHINE(obj)->nor_path);
+    g_free(S5L8920_MACHINE(obj)->nor_rw_path);
     g_free(S5L8920_MACHINE(obj)->kboot_path);
     g_free(S5L8920_MACHINE(obj)->nand_path);
     g_free(S5L8920_MACHINE(obj)->nand_overlay_path);
@@ -526,6 +634,18 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
                                   s5l8920_set_nand_overlay);
     object_class_property_set_description(klass, "nand-overlay",
         "Copy-on-write directory for guest NAND writes; the nand store is then read-only");
+    object_class_property_add_bool(klass, "button-hold", s5l8920_get_button_hold,
+                                   s5l8920_set_button_hold);
+    object_class_property_set_description(klass, "button-hold", "Hold/power button pressed; set true then false");
+    object_class_property_add_bool(klass, "button-home", s5l8920_get_button_home,
+                                   s5l8920_set_button_home);
+    object_class_property_set_description(klass, "button-home", "Home button pressed; set true then false");
+    object_class_property_add_str(klass, "nor", s5l8920_get_nor, s5l8920_set_nor);
+    object_class_property_set_description(klass, "nor",
+        "1 MiB SPI NOR image on spi0 (nvram, effaceable); no NOR if neither this nor nor-rw is set");
+    object_class_property_add_str(klass, "nor-rw", s5l8920_get_nor_rw, s5l8920_set_nor_rw);
+    object_class_property_set_description(klass, "nor-rw",
+        "1 MiB private writable NOR copy; guest writes (effaceable) persist here across boots");
 }
 
 static const TypeInfo s5l8920_machine_info = {

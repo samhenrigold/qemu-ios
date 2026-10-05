@@ -22,11 +22,11 @@ def ftl_open(text): return FTL_OPEN_RE.search(text.replace("\n", "")) is not Non
 HALTING = "it_seal: halting"
 
 
-def boot(qemu, boot_options, machine_extra, serial, stop, timeout):
+def boot(qemu, boot_options, machine_extra, serial, stop, timeout, machine="ipad1"):
     """Run QEMU until it exits or stop(serial text) is true; returns (exited, seconds, text)."""
     # -no-reboot: a one-shot ends when the guest shuts down, and a guest restart is a shutdown too (iOS 5's
     # RB_HALT restarts through the PMU with USB power attached: "pmu restarting").
-    cmd = [qemu, "-machine", f"ipad1,{boot_options},{machine_extra}", "-display", "none", "-audio", "driver=none",
+    cmd = [qemu, "-machine", f"{machine},{boot_options},{machine_extra}", "-display", "none", "-audio", "driver=none",
            "-monitor", "none", "-serial", f"file:{serial}", "-no-reboot"]
     t0 = time.monotonic()
     p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

@@ -82,6 +82,7 @@ typedef struct IPodTouchSPIState {
     bool s5l8900;          /* "s5l8900" property: TX FIFO drains without a TX count */
     Fifo8 rx_fifo;
     Fifo8 tx_fifo;
+    uint32_t tx_fifo_depth;     /* "tx-fifo-depth" */
 } IPodTouchSPIState;
 
 /* Realize one controller at addr with the named peripheral on its bus. */
