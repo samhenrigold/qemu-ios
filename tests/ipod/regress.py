@@ -68,6 +68,7 @@ proof that a later installation failure has the same cause.
 """
 
 import argparse
+import atexit
 import hashlib
 import json
 import os
@@ -75,6 +76,7 @@ import plistlib
 import re
 import shlex
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -178,17 +180,32 @@ def log(msg):
     sys.stdout.flush()
 
 
+_port_locks = []   # held for the process's life; the kernel drops them however it ends
+
+
 def free_port(lo, hi):
-    """Claim a free TCP port inside a range, so concurrent runs never collide."""
+    """Claim a free TCP port inside a range, so concurrent runs never collide.
+
+    A bind probe alone races another harness process probing the same port before either's child binds
+    it, so a port is also claimed by an flock on a per-port file, held until this process exits."""
+    import fcntl
     for p in range(lo, hi + 1):
+        lock = open("/tmp/qemu-ios-port-%d.lock" % p, "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            lock.close()
+            continue
         s = socket.socket()
         try:
             s.bind(("127.0.0.1", p))
-            return p
         except OSError:
+            lock.close()
             continue
         finally:
             s.close()
+        _port_locks.append(lock)
+        return p
     raise RuntimeError("no free port in %d-%d" % (lo, hi))
 
 
@@ -241,8 +258,17 @@ QMP = itqmp.QMP
 
 
 class Procs:
+    """Children in their own process groups, killed with the harness: atexit, and SIGTERM (an outer
+    `timeout`) turned into an exit, so usbmuxd and QEMU are never left reparented to launchd."""
+    live = []
+
     def __init__(self):
         self.procs = []
+        if not Procs.live:
+            atexit.register(lambda: [ps.stop_all() for ps in list(Procs.live)])
+            if signal.getsignal(signal.SIGTERM) is signal.SIG_DFL:
+                signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+        Procs.live.append(self)
 
     def spawn(self, argv, logpath, env=None):
         f = open(logpath, "wb")
@@ -255,12 +281,18 @@ class Procs:
     def stop(self, p, grace=8):
         if p is None or p.poll() is not None:
             return
-        p.terminate()
+        try:
+            os.killpg(p.pid, signal.SIGTERM)     # the whole group: `timeout qemu` leaves QEMU as a grandchild
+        except OSError:
+            p.terminate()
         deadline = time.time() + grace
         while time.time() < deadline and p.poll() is None:
             time.sleep(0.2)
         if p.poll() is None:
-            p.kill()
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except OSError:
+                p.kill()
         try:
             p.wait(timeout=5)
         except Exception:
