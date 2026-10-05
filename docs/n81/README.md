@@ -125,8 +125,13 @@ the panel, readback PASS, no bridge refusals), guest power-off.
 | 5.0.1 | 9A405 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | 5.1 | 9B176 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | 5.1.1 | 9B206 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| 6.0 | 10A403 | see below | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| 6.0.1-6.1.6 | 10A523, 10B144, 10B146, 10B329, 10B400, 10B500 | not run (6.0 first) | | | | | | | |
+| 6.0 | 10A403 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 6.0.1 | 10A523 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 6.1 | 10B144 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 6.1.2 | 10B146 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 6.1.3 | 10B329 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 6.1.5 | 10B400 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 6.1.6 | 10B500 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 
 Notes: the boot check's unlock slide can miss on a loaded host (debt 11): every boot above passed when run
 with no other emulator or preparation running (two batch runs needed that rerun; one app-install tap on 8B117 missed the icon once and passed on the rerun). By hand, a build is
@@ -148,12 +153,13 @@ What it took beyond the 8C148 bring-up:
 
 ### iOS 6
 
-10A403 (6.0) runs, prepared both by hand and by FirmwareKit (`firmwarekit create` n81ap-10A403). Where the
-gates stand: usbmux, afc, persist and wifi PASS on both preparations; app-install's install, Setup walk,
-launch and GL checks PASS on the hand-prepared device, and the guest power-off is confirmed (QMP
-system_powerdown). The boot check and a full app-install rerun after the power-off fix are waiting on the host's
-Vision OCR: every worktree's `build/ipad1-ocr` shares one model cache (`~/Library/Caches/ipad1-ocr`), and a
-corrupt bundle there makes the helper trap (e5rtError 13) on every frame. 6.0.1-6.1.6 have not been run.
+Every 6.x build (6.0-6.1.6) is prepared by FirmwareKit (`firmwarekit create` with the catalog's n81ap entries,
+LightTouchMac fw-a4), and each device passed every gate above, run alone. 6.0 also passed by hand. Activation:
+10A403 and 10A523 by the data ark, 10B144 onward by FirmwareKit's development-activation pattern. Two gate
+flakes on a loaded host passed on a rerun: an AFC start during the install, and it_boot's console line coming after the
+lock screen (the boot check now waits for it). On 6.0.1, SpringBoard drops the first tap on the app's icon after the
+panel relights, three runs out of three. app-install taps twice (debt: the first touch after backboardd re-bootloads the
+multitouch device).
 
 What 6.x needed, all generic (nothing is chosen by build):
 
