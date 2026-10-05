@@ -344,8 +344,15 @@ offsets at 0x80000000).
       - The backlight's first message came about 44 s in, from AppleM2CLCD's backlight enable (type
         0xe0014001, via IOMobileFramebuffer).
       - I found no PMU interrupt or charger event in the model that lands early.
-    - **Hypothesis:** the earlier failures came from a build before the s5l8920, n88 and a4-int merges into
-      ipad1.
+    - **guestdev's failing runs** (their notes): the build was ipad1-based (n18-fw 3ad4f37abf, d6bb704441 merged in),
+      so a pre-merge build is ruled out.
+      - The panic was at pc 0xc0457a20 (inside the override, the load through the null gate) with lr 0xc0176c8f.
+      - The backtrace was messageClient <- tellClients/tellChangeUp <- all_done <- servicePMRequest <-
+        IOPMWorkQueue::checkForWork.
+      - The failing boots ran with heavy host contention: regress ran usbmux/afc/persist as three parallel QEMUs
+        then, at host load 30-60, and one run added a second QMP client.
+    - **Conclusion:** a timing race in the guest. The PM work loop's power change wins against the backlight's
+      start only when the host starves the guest. One QEMU at a time (regress --jobs 1) doesn't show it.
     - **If it recurs:** catch the boot with the same breakpoints, plus the message's caller chain (the fp/lr
       walk from 0xc0457a0c). Find which service's power change sent tellChangeUp, and why it completed
       before 0xc0458392.
