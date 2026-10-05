@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build Hello.app for iPhone OS 1.0 (docs/m68/sideload.md).
+# Build Hello.app and Tilt.app for iPhone OS 1.0 (docs/m68/sideload.md).
 #
 #   ARMV6_SDK=<iPhoneOS 3.1.3 SDK> ./build.sh ROOT [OUT]
 #
@@ -14,9 +14,8 @@ ROOT="${1:?usage: build.sh ROOT [OUT]}"
 OUT="${2:-$HERE/build}"
 LEGACY_LINK=1
 . "$HERE/../armv6-toolchain/armv6.sh"
-APP="$OUT/Hello.app"
 STUBS="$OUT/stubs"
-mkdir -p "$APP" "$STUBS"
+mkdir -p "$STUBS"
 tbd() { python3 "$HERE/../armv6-toolchain/mktbd.py" "$ROOT" "$1" "$STUBS/$2" >/dev/null; }
 tbd /usr/lib/libSystem.B.dylib libSystem.tbd
 tbd /usr/lib/libobjc.A.dylib libobjc.tbd
@@ -24,12 +23,17 @@ for f in UIKit Foundation CoreFoundation CoreGraphics GraphicsServices; do
     tbd /System/Library/Frameworks/$f.framework/$f $f.tbd
 done
 LEGACY_SYSTEM_STUB="$STUBS"
-cc6 "$HERE/Hello.m" "$OUT/Hello.o" -fobjc-runtime=macosx-fragile-10.5
-link6 -execute "$APP/Hello" "$OUT/Hello.o" "$STUBS/libobjc.tbd" "$STUBS/UIKit.tbd" "$STUBS/Foundation.tbd" \
-    "$STUBS/CoreFoundation.tbd" "$STUBS/CoreGraphics.tbd" "$STUBS/GraphicsServices.tbd"
-rm -f "$OUT/Hello.o"
-chmod 755 "$APP/Hello"
-cp "$HERE/Info.plist" "$APP/Info.plist"
-printf 'APPL????' > "$APP/PkgInfo"
-python3 "$HERE/icon.py" "$APP/icon.png"
-echo "$APP"
+for NAME in Hello Tilt; do
+    APP="$OUT/$NAME.app"
+    mkdir -p "$APP"
+    cc6 "$HERE/$NAME.m" "$OUT/$NAME.o" -fobjc-runtime=macosx-fragile-10.5
+    link6 -execute "$APP/$NAME" "$OUT/$NAME.o" "$STUBS/libobjc.tbd" "$STUBS/UIKit.tbd" "$STUBS/Foundation.tbd" \
+        "$STUBS/CoreFoundation.tbd" "$STUBS/CoreGraphics.tbd" "$STUBS/GraphicsServices.tbd"
+    rm -f "$OUT/$NAME.o"
+    chmod 755 "$APP/$NAME"
+    lower=$(echo "$NAME" | tr '[:upper:]' '[:lower:]')
+    sed "s/@NAME@/$NAME/g; s/@ID@/$lower/g" "$HERE/Info.plist" > "$APP/Info.plist"
+    printf 'APPL????' > "$APP/PkgInfo"
+    python3 "$HERE/icon.py" "$APP/icon.png" "$NAME"
+    echo "$APP"
+done

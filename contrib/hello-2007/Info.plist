@@ -5,13 +5,13 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>English</string>
 	<key>CFBundleExecutable</key>
-	<string>Hello</string>
+	<string>@NAME@</string>
 	<key>CFBundleIdentifier</key>
-	<string>org.qemu-ios.hello2007</string>
+	<string>org.qemu-ios.@ID@2007</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Hello</string>
+	<string>@NAME@</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
