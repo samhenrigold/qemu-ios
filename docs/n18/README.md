@@ -152,8 +152,9 @@ offsets at 0x80000000).
 3. **ChipID fuses**: the K48's words.
 4. **D1755 backlight**: undecoded; the panel is held lit (`backlight-enable-reg` points at a scratch byte).
 5. **AMC**: not wired.
-6. **Buttons**: GPIO only; the D1755's wake latch (DT wake_button_* on its STAT) is not driven, so a press
-   cannot wake a sleeping AP. Sleep has not been tried.
+6. **Buttons**: GPIO only. On USB power (always, as on the iPad), Hold locks the panel and Hold or Home wakes it
+   (2026-10-05, FirmwareKit device). The AP never deep-sleeps there. The D1755's wake latch (DT wake_button_* on
+   its STAT) is not driven, so an AP that did suspend (no cable) could not be woken by a press.
 7. **it_keybag**: the iPad's armv7 build (`build/ipad1-guest/it_keybag`), copied; same volume layout.
 8. **GL scene on the panel**: the harness's GLES view renders into its 240x360 IOSurface (stride 960) and
    reads back right, but the panel shows that surface laid out linearly at the panel's 320-pixel stride
