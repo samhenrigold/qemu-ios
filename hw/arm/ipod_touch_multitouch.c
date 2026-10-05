@@ -93,6 +93,23 @@ const MTSensorProfile mt_profile_n81 = {
     .frame_y0 = -215, .frame_height = 7360,
 };
 
+/*
+ * iPhone 3GS (N88): an N1 sensor too, family 0x54. Its mtprops entry is "N1F54,1", firmware 0x0066 (3.1.3
+ * iPhone.mtprops, the file the kernel downloads on 3.1.3 and 4.x alike). 3.1.3's touch stack ignores a sensor
+ * that reports the N1F55's family and version. Geometry as the N81 profile (unmeasured).
+ */
+const MTSensorProfile mt_profile_n88 = {
+    .family_id = 0x54,
+    .rows = MT_SENSOR_ROWS, .cols = MT_SENSOR_COLUMNS,
+    .bcd_version = 0x66,
+    .surface_width = MT_SENSOR_SURFACE_WIDTH,
+    .surface_height = MT_SENSOR_SURFACE_HEIGHT,
+    .region_desc = { MT_SENSOR_REGION_DESC }, .region_desc_len = 1,
+    .region_param = { MT_SENSOR_REGION_PARAM }, .region_param_len = 1,
+    .frame_width = MT_INTERNAL_SENSOR_SURFACE_WIDTH,
+    .frame_height = MT_INTERNAL_SENSOR_SURFACE_HEIGHT,
+};
+
 static void prepare_interface_version_response(IPodTouchMultitouchState *s) {
     memset(s->out_buffer + 1, 0, 15);
 

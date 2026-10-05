@@ -145,6 +145,7 @@ typedef struct S5L8920Board {
     const char *bb_compat;               /* the DT baseband node's compatible, to re-match it */
     uint32_t fmc_off;                    /* FMC within each FMI window, as its IOP firmware addresses it */
     uint16_t mt_atn;                     /* multi-touch ATN, a GPIO interrupt */
+    const MTSensorProfile *mt_profile;   /* the sensor the multitouch model reports */
     S5L8920Buttons buttons;
     S5L8920I2CDevice i2c[8];             /* in creation order (the snapshot's) */
     S5L8920PowerKnob pwroff_knob;
@@ -164,6 +165,7 @@ static const S5L8920Board s5l8920_n18 = {
     .nuarts = 2,
     .gauge_uart = -1,
     .mt_atn = 0xb4,
+    .mt_profile = &mt_profile_n81,       /* the N81's N1F55 sensor */
     .buttons = { .hold = 0xb7, .menu = 0xb6, .volup = 0xb0, .voldown = 0xb1 },
     .i2c = {
         /* ponytail: the D1755 PMU as the iPod 2G's D1759 register model. */
@@ -196,6 +198,7 @@ static const S5L8920Board s5l8920_n88 = {
     .bb_mrdy = 0x1802, .bb_srdy = 0x1304, .bb_radio_on = 0x1405, .bb_rst = 0x1407,
     .bb_compat = "baseband,n88",
     .mt_atn = 0xb4,
+    .mt_profile = &mt_profile_n88,       /* N1F54 */
     .buttons = { .hold = 0xb7, .menu = 0xb6, .volup = 0xb0, .voldown = 0xb1, .hold_menu_high = true },
     .i2c = {
         { 0, 0x74, TYPE_PCF50633, 0x9d },
@@ -761,7 +764,7 @@ static void s5l8920_init(MachineState *machine)
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S5L8920_SPI_BASE(1));
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, s5l8920_irq(s, S5L8920_IRQ_SPI(1)));
     s->mt = IPOD_TOUCH_SPI(dev)->mt;
-    s->mt->profile = &mt_profile_n81;    /* the same N1F55 sensor */
+    s->mt->profile = s->board->mt_profile;
     qdev_connect_gpio_out_named(DEVICE(s->mt), "atn", 0,
                                 qdev_get_gpio_in(s->gpio, s->board->mt_atn));
 
