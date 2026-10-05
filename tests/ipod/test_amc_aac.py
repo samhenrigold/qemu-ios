@@ -16,13 +16,17 @@ code = source[start:source.index('\n#else', start)]
 header = (root / 'include/hw/arm/ipod_touch_amc.h').read_text()
 constants = '\n'.join(line for line in header.splitlines() if line.startswith('#define AMC_'))
 def function(name):
-    begin = source.index('static ', source.index(name)-30)
+    at = source.index(name)
+    while source[source.index(')', at):].lstrip(')\n ')[:1] != '{':
+        at = source.index(name, at + 1)     # a prototype, not the definition
+    begin = source.index('static ', at-30)
     return source[begin:source.index('\n}', begin)+2]
 # Read the exact shared MMIO paths as well as the codec helpers.
 mmio = '\n'.join(function(name) for name in
     ('amc_update_irq(', 'amc_ctrl_of('))
 begin = source.index('static const uint32_t amc_banks[]')
 mmio += '\n' + source[begin:source.index('\n}', begin)+2]
+mmio += '\n' + function('amc_engine0(')
 mmio += '\n' + function('ipod_touch_amc_write(')
 mmio += '\n' + function('amc_decode_tick(')
 serialization = source[source.index('static int amc_put_decoder('):source.index('static const VMStateInfo vmstate_amc_decoder')]
@@ -91,7 +95,11 @@ typedef uint64_t hwaddr;
 typedef struct {
     void *decoder, *decode_timer; uint32_t pending, regs[0x3000/4], int_mask[2];
     bool codec_decode, state_handshake, irq_armed; int irq; uint64_t buf_base;
+    uint32_t dram_base, dram_size; bool rev21; uint32_t result_offset, dma_done;
+    uint32_t xfers, xfer[AMC_XFER_QUEUE * 3]; uint8_t port[AMC_PORT_BYTES];
+    uint32_t port_len; void (*port_kick)(void *); void *port_opaque;
 } IPodTouchAMCState;
+static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
 #define IPOD_TOUCH_AMC(s) ((IPodTouchAMCState *)(s))
 #define AMC_REG(off) (s->regs[(off)/4])
 static bool irq_level;
@@ -110,11 +118,13 @@ static bool amc_trace(void) { return false; }
 #define warn_report(...) fprintf(stderr, __VA_ARGS__)
 #define ARRAY_SIZE(x) (sizeof(x)/sizeof((x)[0]))
 #define le32_to_cpu(x) GUINT32_FROM_LE(x)
-static unsigned char dram[65536], aperture[0x30000];
+static unsigned char dram[65536], aperture[AMC_APERTURE_21];
 static int address_space_memory;
 static void stw_le_p(void *p, uint16_t v) { v = GUINT16_TO_LE(v); memcpy(p, &v, 2); }
 static void stl_be_p(void *p, uint32_t v) { v = GUINT32_TO_BE(v); memcpy(p, &v, 4); }
 static uint16_t lduw_le_p(const void *p) { uint16_t v; memcpy(&v,p,2); return GUINT16_FROM_LE(v); }
+static uint32_t ldl_le_p(const void *p) { uint32_t v; memcpy(&v,p,4); return GUINT32_FROM_LE(v); }
+static void stl_le_p(void *p, uint32_t v) { v = GUINT32_TO_LE(v); memcpy(p, &v, 4); }
 static unsigned char *memory(hwaddr a, size_t n) {
     if (a >= 0x08000000 && a - 0x08000000 <= sizeof(dram) &&
         n <= sizeof(dram) - (a - 0x08000000)) return dram + (a - 0x08000000);
@@ -146,14 +156,15 @@ tone_code += 'static const uint8_t tone[] = {' + ','.join(str(v) for v in b''.jo
 
 check = r'''
 int main(void) {
-    IPodTouchAMCState s = {.buf_base = AMC_BUF_BASE}; /* the iPod's buf-base default */
+    IPodTouchAMCState s = {.buf_base = AMC_BUF_BASE, .dram_base = 0x08000000, .dram_size = 0x08000000,
+                           .result_offset = AMC_RESULT_OFFSET, .dma_done = AMC_DMA_DONE}; /* the iPod's defaults */
     assert(amc_program(&s) == AMC_UNKNOWN);
     s.regs[0x940/4]=0x84006e00; s.regs[0x960/4]=0xc600b800;
     s.regs[0x964/4]=0x848cba5d; s.regs[0x968/4]=0xc013f7fb;
-    assert(!amc_dram(0x07ffffff, 1));
-    assert(!amc_dram(0x10000000, 0));
-    assert(!amc_dram(0x0fffffff, 2));
-    assert(amc_dram(0x0fffffff, 1));
+    assert(!amc_dram(&s, 0x07ffffff, 1));
+    assert(!amc_dram(&s, 0x10000000, 0));
+    assert(!amc_dram(&s, 0x0fffffff, 2));
+    assert(amc_dram(&s, 0x0fffffff, 1));
     assert(!amc_decode_dma(&s, 0));
     assert(!amc_decode_dma(&s, AMC_BUF_BASE));
     const uint8_t silence[] = {0x20,0x68,0,1,0xa0,0,0x0e};
@@ -425,6 +436,40 @@ int main(void) {
     memset(&limit,0,sizeof(limit)); amc_replay_record(&limit,silence,sizeof(silence));
     limit.history_frames=AMC_REPLAY_MAX_FRAMES; amc_replay_received(&limit);
     assert(limit.history_overflow && !limit.history);
+    /* AMC 2.1 (iPad 1, 7B500): the result block and parameters 64 KiB lower,
+     * input from the engine's own memory (descriptor tagged 2, bounce buffer
+     * at +0x20400), and each frame collected by an engine 0 list into the
+     * output port, as the driver builds them (lists captured from the guest). */
+    memset(aperture, 0, sizeof(aperture));
+    IPodTouchAMCState a = {.buf_base = AMC_BUF_BASE, .rev21 = true, .codec_decode = true,
+                           .result_offset = AMC_RESULT_OFFSET_21, .dma_done = AMC_DMA_DONE_21};
+    a.regs[0x940/4]=0x84006e00; a.regs[0x960/4]=0xc600b800;
+    a.regs[0x964/4]=0x848cba5d; a.regs[0x968/4]=0xc013f7fb;
+    stw_le_p(aperture+0x1ff00,7); stw_le_p(aperture+0x1ff06,4);
+    memcpy(aperture+0x20400,tone,tone_sizes[0]+tone_sizes[1]+tone_sizes[2]);
+    stl_le_p(aperture+0x20004,(tone_sizes[0]+tone_sizes[1]+tone_sizes[2])<<16 | 0x11);
+    stl_le_p(aperture+0x20008,0x20400);
+    a.regs[0x100/4]=0x20002;
+    amc_decode_tick(&a);
+    d=a.decoder; assert(d && d->pcm->len && !a.regs[0x100/4]);
+    assert(!lduw_le_p(aperture+AMC_RESULT_OFFSET+0xa));      /* nothing at the 2.0 block */
+    assert(!a.port_len && !(a.pending & 4));                   /* no frame without a job */
+    static const uint32_t list[] = {
+        0x34438,0x00140101,0x3448c,0x303060, 0x34454,0x00040001,0x344a0,0x303060,
+        0x34470,0x00040009,0x344a4,0xc48,    0,0x00080005,0x344a8,0x18008 };
+    for (unsigned i=0;i<16;i++) stl_le_p(aperture+0x3441c+(i/4)*0x1c+(i%4)*4,list[i]);
+    static const uint32_t job[] = { 0, 4096, 0x18100, 0, AMC_PORT_LOCAL_21, 3, 4, 0, 0 };
+    for (unsigned i=0;i<9;i++) stl_le_p(aperture+0x3448c+i*4,job[i]);
+    ipod_touch_amc_write(&a, AMC_E0_HEAD, 0x3441e, 4);
+    assert(a.xfers == 1 && !a.port_len);
+    amc_decode_tick(&a);
+    assert(!a.xfers && a.port_len == 4096);
+    assert(!memcmp(a.port, aperture+0x18100, 4096));
+    assert(lduw_le_p(aperture+0x18000+0xc) == 1024);           /* the 2.1 block */
+    unsigned loud=0; for (unsigned i=0;i<4096;i++) loud+=a.port[i]!=0;
+    assert(loud>100);
+    amc_decoder_close(&a);
+    puts("PASS: AMC 2.1 layout, engine-local input and engine 0 collection into the output port");
     puts("PASS: exact AMC replay, pending frames/PCM/slot/completion and bounded history");
     puts("PASS: AAC-LC/HE-AAC/MP3/ALAC, PCM layout/backpressure, DMA bounds and stream restart");
 }
