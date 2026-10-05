@@ -15,7 +15,7 @@ data; an IPA installs through installation_proxy and AppSync and launches.
 | 4.0 8A293, 4.0.1 8A306, 4.0.2 8A400, 4.1 8B117 | activated home screen | yes | yes | yes (app-install.py all PASS) | draws (debt 1) |
 | 4.2.1 8C148a | activated home screen ("No Service") | yes | yes | yes (Harness) | renders through the bridge (readback PASS); on the panel at the wrong stride (debt 1) |
 | 4.3 8F190, 4.3.1 8G4, 4.3.2 8H7, 4.3.3 8J2, 4.3.4 8K2, 4.3.5 8L1 | activated home screen | yes | yes | yes (app-install.py all PASS) | draws (debt 1) |
-| 5.0 9A334, 5.0.1 9A405, 5.1 9B176, 5.1.1 9B206 | Setup Assistant, walked to the home screen; GL-composited | yes (debt 8) | yes | yes (Harness) | draws (debt 1) |
+| 5.0 9A334, 5.0.1 9A405, 5.1 9B176, 5.1.1 9B206 | Setup Assistant, walked to the home screen; GL-composited | yes | yes | yes (Harness) | draws (debt 1) |
 | 6.1.6 10B500 | no: stops logging after corecrypto's FIPS POST, as N81 6.0 (debt 9) | | | | |
 
 - kboot (`imgtools/s5l8920_kboot.py n88 --nor`, the DT's own NOR kept) -> xnu-1504.58.28
@@ -140,7 +140,8 @@ iPod-Touch-4G --checks boot` PASS; N18 dev2 unlock to the home screen with touch
      AutomaticallySetOperatingMode, whose handler (0xc030d99c) would write report 0xab, and it is never called.
      Next: whether 3.1.3's MultitouchSupport accepts the model's 0xEB frame layout (it is 4.x's). A Home press
      also opens the iPod app (read as a double click).
-8. **Touch calibration**: the digitizer frame is the N81 profile's, unmeasured on N88; taps in the bottom
-   ~5% of the panel land ~15 px high (retap lower). tests/ipad1/touchcal.py (ipad1) is the tool to fit it.
+8. ~~**Touch calibration**~~: fitted (mt_profile_n88 frame_*): GSEventGetLocationInWindow's point read through
+   the gdbstub (lldb) per tap, as the M68's; an 11-tap check lands within 1 px of every aim. The 5.x Setup walk
+   now taps its links where they are drawn.
 9. **iOS 6**: 10B500's kernel prints nothing under kboot (fw-a4 has N81 6.0 past pe_identify_machine with
    the xnu-2107 boot_args version and the SecureROM window at 0; not ported here yet).
