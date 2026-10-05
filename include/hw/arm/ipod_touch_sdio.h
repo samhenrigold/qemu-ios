@@ -278,7 +278,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 /* wlc_ssid_t, the payload of WLC_SET_SSID: a length word then up to 32 bytes. */
 #define WLC_SSID_MAX        32
 
-#define WL_EVENT_MSG_LEN    46
+/* wl_event_msg: 46 bytes through 6.x; later firmware appends ifidx and bsscfgidx (0 here). 7.x's
+ * handleEventPacket drops a frame that does not run past offset 76, the 28 bytes of BDC/ether/bcmeth
+ * headers plus that 48-byte form ("DeviceBuffer length 76 shorter than wl_event_msg_t start at 76"), so
+ * the message carries four more zero bytes. Earlier drivers read the fields they know (datalen is 0) and
+ * ignore the tail. */
+#define WL_EVENT_MSG_LEN    52
 
 typedef struct BCM4325FrameHeaderPacket
 {

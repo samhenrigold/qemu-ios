@@ -616,9 +616,22 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
                              uint32_t len)
 {
     uint32_t cmd = ldl_le_p(cdc);
-    uint32_t payload_len = ldl_le_p(cdc + 4);
+    uint32_t len_field = ldl_le_p(cdc + 4);
+    uint32_t payload_len = len_field;
     uint32_t flags = ldl_le_p(cdc + 8);
-    unsigned hdrlen = cdc_hdrlen(s, len, payload_len);
+    /*
+     * 6.x's AppleBCMWLANCore splits the length word the way later dhd does:
+     * the output buffer in bits 0-15, what the request carries in 16-31
+     * (a "ver" get is 0x00040104: four bytes of name, 260 back). Earlier
+     * drivers send one length, never above 64 KiB.
+     */
+    uint32_t in_len = len_field >> 16 ? len_field >> 16 : len_field;
+    if (len_field >> 16) {
+        payload_len = (flags & CDC_DCMD_SET) ? in_len : (len_field & 0xffff);
+    }
+    /* Only the 16-byte-header driver (status word, four bytes of BDC) splits the length; its frames can carry
+     * slack past in_len, which must not read as the 12-byte form. */
+    unsigned hdrlen = cdc_hdrlen(s, len_field >> 16 ? CDC_HDRLEN_STATUS + in_len : len, in_len);
 
     /* WLC_GET_VAR and WLC_SET_VAR carry a NUL-terminated iovar name at the
      * start of the payload, which is the only way to tell one from another. */
@@ -655,7 +668,7 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
      * against the request - AppleBCM4325CmdManager.cpp:445 asserts on it. */
     g_autofree uint8_t *reply = g_malloc0(hdrlen + payload_len);
     stl_le_p(reply, cmd);
-    stl_le_p(reply + 4, payload_len);
+    stl_le_p(reply + 4, len_field >> 16 ? (len_field & 0xffff0000) | payload_len : payload_len);
     stl_le_p(reply + 8, flags & ~CDC_DCMD_ERROR);  /* same id, no error */
     if (hdrlen >= CDC_HDRLEN_STATUS) {
         stl_le_p(reply + CDC_OFF_STATUS, 0);       /* the command succeeded */
@@ -696,6 +709,15 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
                    s->chip.fw_version && payload_len) {
             /* initFirmware logs it as "BCMWLAN Firmware Version: %s". */
             strncpy((char *)reply + hdrlen, s->chip.fw_version, payload_len - 1);
+        } else if (cmd == WLC_GET_VAR && g_str_equal(iovar, "cap") && payload_len) {
+            /*
+             * The firmware's feature words. 6.x's AppleBCMWLANCore halts with
+             * "AP mode unsupported" when "ap" is missing; earlier drivers
+             * never ask. ponytail: a 4.221-era BCM4329 list, not read off a unit.
+             */
+            strncpy((char *)reply + hdrlen,
+                    "ap sta wme 802.11d 802.11h rm cqa cac dualband ampdu ampdu_tx ampdu_rx amsdurx",
+                    payload_len - 1);
         } else if (cmd == WLC_GET_SSID && payload_len >= 4) {
             /* wlc_ssid_t: a length word then up to 32 bytes. */
             uint32_t n = MIN(strlen(FAKE_SSID), payload_len - 4);

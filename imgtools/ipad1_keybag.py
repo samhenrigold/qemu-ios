@@ -52,9 +52,21 @@ def main():
     ap.add_argument("--qemu", default=os.path.join(ROOT, "build/qemu-system-arm"))
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--board", help="n18/n88 (-M n18/n88, S5L8920); A4 boards are read off the DeviceTree")
+    ap.add_argument("--keep-temp", action="store_true", help="keep the temp tree (ramdisk, kboot, store clone; ~1.5 GB)")
     a = ap.parse_args()
     td = tempfile.mkdtemp(prefix="ipad1-keybag-")
-    rd, kboot, serial = f"{td}/ramdisk.dmg", f"{td}/kboot-restore.bin", f"{td}/keybag.log"
+    try:
+        run(a, td)
+    finally:
+        if a.keep_temp:
+            print(f"temp tree kept: {td}")
+        else:
+            shutil.rmtree(td, ignore_errors=True)
+
+
+def run(a, td):
+    # The serial log sits beside the store, so it outlives the temp tree a failure message points into.
+    rd, kboot, serial = f"{td}/ramdisk.dmg", f"{td}/kboot-restore.bin", os.path.abspath(a.store).rstrip("/") + ".keybag.log"
     ramdisk_with_helper(os.path.join(a.dec, a.ramdisk), a.helper, rd)
     if a.board in ("n18", "n88"):
         import s5l8920_kboot
@@ -87,7 +99,6 @@ def main():
     if open(a.nor, "rb").read() == nor:
         sys.exit(f"keybag boot: {a.nor} unchanged, effaceable was not written; serial in {serial}")
     print(f"keybag boot halted cleanly after {t:.0f}s")
-    shutil.rmtree(td, ignore_errors=True)
 
 
 if __name__ == "__main__":

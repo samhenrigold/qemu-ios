@@ -172,6 +172,10 @@ def main(ipsw, keysfile, out):
     for c in ("RestoreRamDisk", "UpdateRamDisk"):
         if c in comp:
             fname = comp[c]
+            if os.path.basename(fname) not in keys:
+                # 4.3.1-4.3.5: no published ramdisk keys; the keybag one-shot boots a sibling build's ramdisk
+                print("skip", c, fname, "(no key)")
+                continue
             open(f"{out}/{fname[:-4]}-ramdisk.dmg", "wb").write(img3_decrypt(z.read(fname), *key(fname), plain_tail=plain_tail))
             print("ok", c, fname)
     osimg = comp["OS"]

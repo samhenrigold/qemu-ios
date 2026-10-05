@@ -20,6 +20,9 @@
  * Settings afterwards stays: Brightness at maximum and Auto-Lock at Never,
  * each written where that firmware's Settings writes it (see defaults()).
  *
+ * On an iPhone whose CommCenter reads it (4.x; 1.0's does not), Data Roaming on once per SIM (see
+ * roaming()).
+ *
  * Once Wi-Fi (en0) has an address it also restarts locationd, which otherwise
  * starts before Wi-Fi is powered and then never scans (see main()).
  *
@@ -50,10 +53,20 @@ extern int setenv(const char *, const char *, int);
 extern int socket(int, int, int);
 extern int ioctl(int, unsigned long, ...);
 extern unsigned sleep(unsigned);
+struct passwd {   /* Darwin's, up to pw_dir */
+    char *pw_name, *pw_passwd;
+    unsigned pw_uid, pw_gid;
+    long pw_change;
+    char *pw_class, *pw_gecos, *pw_dir;
+};
+extern struct passwd *getpwnam(const char *);
 
 #define SPRINGBOARD "/System/Library/CoreServices/SpringBoard.app/SpringBoard"
 #define LOCATIOND   "/usr/libexec/locationd"
 #define LOCATIOND_JOB "/System/Library/LaunchDaemons/com.apple.locationd.plist"
+#define COMMCENTER  "/System/Library/Frameworks/CoreTelephony.framework/Support/CommCenter"
+#define COMMCENTER_JOB "/System/Library/LaunchDaemons/com.apple.CommCenter.plist"
+#define ROAMING     "InternationalRoamingEDGE"
 
 enum kind { TRUE, FALSE, STRING };
 
@@ -313,6 +326,78 @@ static unsigned as_mobile(int what, const char *const *jobs, unsigned njobs)
     return (status >> 8) & 0xff;
 }
 
+/*
+ * Data Roaming on, once per SIM. On the emulated network, the test PLMN 001/01 (4.2.1's CarrierLab bundle),
+ * CommCenter counts packet data as roaming and keeps it off unless Data Roaming is on
+ * (docs/baseband/commcenter-4.2.1-3gs.md, "Roaming"). The switch is com.apple.commcenter
+ * InternationalRoamingEDGE in CommCenter's own user's preferences (it runs as _wireless and reads it with
+ * kCFPreferencesCurrentUser). CommCenter itself sets it false whenever it sees a new SIM (an ICCID other
+ * than the com.apple.commcenter ICCID it stored), so this follows the same rule: for each stored ICCID this
+ * job has not handled yet (the com.qemu.it-prefs RoamingSetForICCID marker; "none" before CommCenter stores
+ * one), Data Roaming goes on, and the user's later choice for that SIM stands. Settings changes it through CommCenter, which
+ * holds it in memory, so CommCenter is unloaded around the write and loaded again.
+ */
+#define ICCID_WAIT 30    /* seconds to wait for CommCenter to store a SIM's ICCID */
+
+static int roaming_step(int write)
+{
+    struct passwd *pw = getpwnam("_wireless");
+    const void *mine, *marker, *cc, *iccid = 0, *done;
+    unsigned waited = 0;
+
+    if (!pw || setgid(pw->pw_gid) || setuid(pw->pw_uid) || setenv("HOME", pw->pw_dir, 1)) {
+        say("could not become _wireless; Data Roaming left alone", "", "");
+        return 0;
+    }
+    if (!cf_load())
+        return 0;
+    mine = str("com.qemu.it-prefs"), marker = str("RoamingSetForICCID"), cc = str("com.apple.commcenter");
+    while (sync(cc), !(iccid = get(str("ICCID"), cc)) && waited++ < ICCID_WAIT)
+        sleep(1);
+    if (!iccid)                 /* 4.2.1 stores it only from the second boot with a SIM: set it now too */
+        iccid = str("none");
+    done = get(marker, mine);
+    if (done && equal(done, iccid))
+        return 0;
+    if (!write) {
+        sleep(5);       /* CommCenter's own new-SIM reset of the switch is written just after the ICCID */
+        return 1;
+    }
+    set(str(ROAMING), *yes, cc);
+    say(ROAMING, sync(cc) ? " = true (Data Roaming on for this SIM)" : " not saved: CFPreferencesAppSynchronize failed", "");
+    set(marker, iccid, mine);
+    sync(mine);
+    return 0;
+}
+
+static int as_wireless(int write)
+{
+    int pid = fork(), status = 0;
+    if (pid == 0)
+        _exit(roaming_step(write));
+    if (pid < 0 || waitpid(pid, &status, 0) != pid)
+        return 0;
+    return (status >> 8) & 0xff;
+}
+
+/*
+ * Twice at most: when no ICCID was stored yet, the reloaded CommCenter stores one and treats the SIM as new
+ * (Data Roaming back off), so the second pass sets it again for that ICCID.
+ */
+static void roaming(void)
+{
+    int pass;
+
+    if (!file_has(COMMCENTER, ROAMING))
+        return;
+    for (pass = 0; pass < 2 && as_wireless(0); pass++) {
+        if (launchctl("unload", COMMCENTER_JOB))
+            return;
+        as_wireless(1);
+        say(COMMCENTER_JOB, launchctl("load", COMMCENTER_JOB) == 0 ? " reloaded" : " reload failed", "");
+    }
+}
+
 /* Wait up to secs seconds for en0 (Wi-Fi) to have an IPv4 address; 1 if it did. */
 static int wifi_up(unsigned secs)
 {
@@ -374,8 +459,6 @@ int main(void)
     stale = as_mobile(0, jobs, n);
     if (!stale)
         say("preferences already set", "", "");
-    if (!(stale | locationd))
-        _exit(0);
     for (j = 0; j < n; j++)
         if (((stale | locationd) & (1u << j)) && launchctl("unload", jobs[j]) == 0)
             stopped |= 1u << j;
@@ -385,6 +468,7 @@ int main(void)
         if (stopped & (1u << j))
             say(jobs[j], launchctl("load", jobs[j]) == 0 ? " reloaded" : " reload failed",
                 locationd & (1u << j) ? " (Wi-Fi up)" : "");
+    roaming();                      /* last: it can wait for CommCenter to see the SIM */
     _exit(0);
     return 0;
 }

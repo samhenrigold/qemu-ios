@@ -53,6 +53,7 @@ import os
 import plistlib
 import random
 import re
+import struct
 import shutil
 import subprocess
 import sys
@@ -158,7 +159,7 @@ class Boot:
             # max-power=20: 4.x gives the dock port's host side a small budget (the arbitrator's
             # AAPL,power-supply) and refuses the default 100 mA keyboard; 3.x never checks.
             argv += ["-device", "usb-kbd,bus=usb-bus.0,max-power=20"] if self.keyboard else []
-            argv += self.extra
+            argv += self.extra + os.environ.get("IPAD1_QEMU_EXTRA", "").split()   # e.g. -gdb, -global (boot-smoke.py's)
             self.qemu = self.procs.spawn(argv, os.path.join(self.dir, "qemu.log"), env=self.qemu_env)
             time.sleep(2)
         self.qmp = itqmp.QMP(self.sock, timeout=60)
@@ -357,8 +358,12 @@ def gl_clean(b, r, detail, shots=(), require_refs=()):
                     break
     # A software CoreAnimation draws the same pictures and refuses nothing (4.3.x did, while the old GLI shim
     # lost GL), so only the GL front end's own line proves CoreAnimation took the GL path.
-    serial = open(b.serial, errors="replace").read() if os.path.exists(b.serial) else ""
-    if "CoreAnimation composites through the host" not in serial:
+    # The line reaches the serial console from SpringBoard (stdio /dev/console); 6.x+ composites in backboardd,
+    # whose stderr does not, so the host's own log of the shim's lines counts too.
+    seen = ""
+    for log_file in (b.serial, os.path.join(b.dir, "qemu.log")):
+        seen += open(log_file, errors="replace").read() if os.path.exists(log_file) else ""
+    if "CoreAnimation composites through the host" not in seen:
         r.set(False, "%s; SpringBoard composited in software CoreAnimation (no GL-path line from the front end)" % detail)
     elif rejects:
         r.set(False, "%s; the GL bridge refused %d thing(s): %s" % (
@@ -465,6 +470,17 @@ def check_boot_5(cfg, r, b, detail):
     region_settled(b, TITLE)
     ppm = b.shot("opened")
     found, front = ocr(ppm), frontmost(b)
+    for _ in range(3 if cfg.major >= 7 else 0):
+        # 7.x's Hello screen cycles its greeting under the slider, so a missed drag still reads as "opened"
+        if "English" in found or "Safari" in found:
+            break
+        if b.lit("pre-slide") < LIT_MIN_FRACTION:
+            b.press("home")
+            time.sleep(1.5)
+        b.drag(UNLOCK_FROM, UNLOCK_TO)
+        time.sleep(4)
+        ppm = b.shot("opened")
+        found, front = ocr(ppm), frontmost(b)
     if "English" in found and page_title(found) is None and front in (None, "com.apple.purplebuddy"):
         shown = "Setup Assistant's first page"
     elif "Safari" in found and front in (None, "com.apple.springboard"):
@@ -501,8 +517,13 @@ def ocr(ppm):
             finally:
                 if os.path.exists(staged): os.unlink(staged)
     found = {}
-    lines = [l.split(" ", 4) for l in subprocess.run([OCR_BIN, ppm], capture_output=True, text=True,
-                                                      check=True).stdout.splitlines()]
+    for attempt in range(6):   # Vision's recognizer sometimes fails to build its compute plan on a loaded host
+        run = subprocess.run([OCR_BIN, ppm], capture_output=True, text=True)
+        if run.returncode == 0 or attempt == 5:
+            run.check_returncode()
+            break
+        time.sleep(3 * (attempt + 1))
+    lines = [l.split(" ", 4) for l in run.stdout.splitlines()]
     for x0, y0, x1, y1, text in sorted(lines, key=lambda l: int(l[1]), reverse=True):
         # upright portrait -> panel: the portrait top is the panel's left edge, the portrait left its bottom
         found[text.strip()] = ((int(y0) + int(y1)) // 2, 767 - (int(x0) + int(x1)) // 2)
@@ -840,21 +861,56 @@ def check_net_usb(cfg, r):
     safari_fetch(cfg, r, "net-usb", "USB Ethernet en1 (usbmuxd slirp)", wifi=False)
 
 
+def dhcp_acked(pcap):
+    """A DHCPACK (option 53 = 5) from slirp in a filter-dump capture."""
+    try:
+        d = open(pcap, "rb").read()
+    except OSError:
+        return False
+    o = 24
+    while o + 16 <= len(d):
+        caplen = struct.unpack_from("<I", d, o + 8)[0]
+        p, o = d[o + 16:o + 16 + caplen], o + 16 + caplen
+        if len(p) > 282 and p[12:14] == b"\x08\x00" and p[23] == 17 and struct.unpack_from(">H", p, 34)[0] == 67:
+            opts, i = p[282:], 0
+            while i + 2 < len(opts) and opts[i] != 255:
+                if opts[i] == 0:
+                    i += 1
+                    continue
+                if opts[i] == 53 and opts[i + 2] == 5:
+                    return True
+                i += 2 + opts[i + 1]
+    return False
+
+
+# 6.x logs it with two spaces; under host load 6.x's NetManager gives up its 10 s IP window just before the
+# lease lands and logs nothing, which the DHCPACK on the wire covers.
+LEASE_LINE = re.compile(r"receivedIPv4Address\(\):\s+Received")
+
+
 def check_wifi(cfg, r):
-    """Stock AppleBCMWLAN joins the model's open BSS and takes a lease (a4-guest; docs/ipad1/wifi.md)."""
-    b, detail = booted(cfg, "wifi", r, usb=False)
+    """Stock AppleBCMWLAN joins the model's open BSS and takes a lease (a4-guest; docs/ipad1/wifi.md).
+    The lease is the driver's log line where it has one (3.2.2, 4.x), else slirp's DHCPACK on the wire:
+    3.1.3's AppleBCMWLAN-1.25 logs no lease, so the Wi-Fi netdev is captured too."""
+    pcap = os.path.join(cfg.out, "wifi.pcap")
+    b, detail = booted(cfg, "wifi", r, usb=False,
+                       extra=["-netdev", "user,id=wifi0", "-object", "filter-dump,id=wifidump,netdev=wifi0,file=" + pcap])
     try:
         if not detail:
             return
         t0, text = time.time(), ""
         while time.time() - t0 < 120:
             text = open(b.serial, errors="replace").read()
-            if "receivedIPv4Address(): Received" in text:   # 3.2.2 "... IP Address", 4.2.1 "... address A.B.C.D"
+            if LEASE_LINE.search(text) or dhcp_acked(pcap):   # 3.2.2 "... IP Address", 4.2.1 "... address A.B.C.D"
                 break
             time.sleep(2)
-        joined = 'ssid[ 8] = "qemu-ios"' in text
-        leased = "receivedIPv4Address(): Received" in text
-        fw = "BCM4329 revision B1" in text and "initFirmware(): successful initialization" in text
+        acked = dhcp_acked(pcap)
+        leased = bool(LEASE_LINE.search(text)) or acked
+        # 7.x logs its join only at wlan.log.level 7; slirp's ACK means it joined the one BSS there is
+        joined = 'ssid[ 8] = "qemu-ios"' in text or "Joined BSS" in text or acked
+        fw = "BCM4329 revision B1" in text and any(up in text for up in (
+            "initFirmware(): successful initialization", "setupDriver():  Succeeded",   # 3.x-5.x, 6.x
+            "Core Driver Initialization Time"))                                          # 7.x
         if joined and leased and fw:
             r.set(True, "BCM4329 B1 up, joined qemu-ios, DHCP lease")
         else:
@@ -1116,6 +1172,10 @@ def main():
         LIT_MIN_FRACTION = 0.2
         UNLOCK_FROM, UNLOCK_TO = portrait_unlock()
     device_args(a)
+    if a.major >= 7:
+        # 7.x's Setup "Hello" is a few thin grey words on white: 25-80 colours, against 64 for a lit picture
+        global MIN_COLOURS
+        MIN_COLOURS = 16
     import ffmpeg_guard                     # imgtools; stock FFmpeg breaks iPod H.264
     why = ffmpeg_guard.check(a.qemu)
     if why:

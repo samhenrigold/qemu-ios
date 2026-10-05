@@ -203,6 +203,13 @@ static void pmu_adc_command(Pcf50633State *s, uint8_t command)
     if (command & 0x10) {
         pcf50633_update_battery(s);
         s->adc_sample = s->adc_values[command & 15] & 1023;
+        /* The dock's data lines (brick id): a USB host's pull-downs read 0 V; a
+         * charger biases them. 5.x's D1755 power source reads them (twice) to
+         * tell the two apart, and mid-scale reads as a charger: "Detached",
+         * no USB device stack. */
+        if ((command & 15) == s->brick_mux && s->usb_cable) {
+            s->adc_sample = 0;
+        }
         timer_mod(s->adc_timer,
                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000);
     }
@@ -565,6 +572,7 @@ static const Property pcf50633_properties[] = {
     DEFINE_PROP_BOOL("rtc-bcd", Pcf50633State, rtc_bcd, false),
     DEFINE_PROP_UINT8("event-count", Pcf50633State, event_count, 3),
     DEFINE_PROP_UINT8("adc-reg", Pcf50633State, adc_reg, PMU_ADC_CONTROL),
+    DEFINE_PROP_UINT8("brick-mux", Pcf50633State, brick_mux, 0xff),
     DEFINE_PROP_UINT8("rtc-reg", Pcf50633State, rtc_reg, PMU_RTC_COUNTER),
 };
 

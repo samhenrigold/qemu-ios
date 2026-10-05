@@ -103,7 +103,7 @@ static void fe_destroy_gc(GuestGC *gc)
 typedef struct { GuestGC *gc; void *owner; int is_egl; void *draw, *read; } fe_cur_t;
 static pthread_key_t fe_key;
 static pthread_once_t fe_once = PTHREAD_ONCE_INIT;
-static void *fe_hand[GLES_N_SLOTS];
+static void *fe_hand[GLES_N_HAND];
 
 static void fe_key_init(void) { pthread_key_create(&fe_key, free); }
 
@@ -146,6 +146,39 @@ static int fe_es2(void)
  * compositing without ("need APPLE_texture_rectangle extension; need APPLE_core_surface_texture extension"):
  * glTexImageCoreSurfaceAPPLE is the core's BindCoreSurface and the host samples GL_TEXTURE_RECTANGLE. ES 2.0
  * answers as the SGX, which an ES2 app checks before it compiles anything. */
+/* APPLE_sync (6.x and 7.x CoreAnimation fence every frame): the host runs each call to completion before the
+ * next, so a fence is signalled the moment it exists. Answered here, nothing goes to the host. */
+#define FE_GL_ALREADY_SIGNALED 0x911A
+static unsigned fe_fenceSync(void *gc, unsigned condition, unsigned flags)
+{
+    static unsigned next;
+    (void)gc; (void)condition; (void)flags;
+    return ++next ? next : ++next;                          /* 0 is no sync */
+}
+static unsigned fe_isSync(void *gc, unsigned sync) { (void)gc; return sync != 0; }
+static void fe_deleteSync(void *gc, unsigned sync) { (void)gc; (void)sync; }
+static unsigned fe_clientWaitSync(void *gc, unsigned sync, unsigned flags, unsigned lo, unsigned hi)
+{
+    (void)gc; (void)sync; (void)flags; (void)lo; (void)hi;
+    return FE_GL_ALREADY_SIGNALED;
+}
+static void fe_waitSync(void *gc, unsigned sync, unsigned flags, unsigned lo, unsigned hi)
+{
+    (void)gc; (void)sync; (void)flags; (void)lo; (void)hi;
+}
+static void fe_getInteger64v(void *gc, unsigned pname, unsigned *params)   /* MAX_SERVER_WAIT_TIMEOUT: 0 */
+{
+    (void)gc; (void)pname;
+    if (params) params[0] = params[1] = 0;
+}
+static void fe_getSynciv(void *gc, unsigned sync, unsigned pname, int bufsize, int *length, int *values)
+{
+    int v = pname == 0x9112 ? 0x9116 : pname == 0x9113 ? 0x9117 : pname == 0x9114 ? 0x9119 : 0;
+    (void)gc; (void)sync;              /* OBJECT_TYPE: SYNC_FENCE, CONDITION: GPU_COMMANDS_COMPLETE, STATUS: SIGNALED */
+    if (bufsize > 0 && values) values[0] = v;
+    if (length) *length = bufsize > 0 ? 1 : 0;
+}
+
 static const char *fe_getString(void *gc, unsigned name)
 {
     static char ext[256];
@@ -212,9 +245,16 @@ static void fe_hello(void)
     fe_hand[GLES_ID_glBindAttribLocation] = (void *)fe_bindAttribLocation;
     fe_hand[GLES_ID_glGetAttribLocation] = (void *)fe_getAttribLocation;
     fe_hand[GLES_ID_glGetUniformLocation] = (void *)fe_getUniformLocation;
+    fe_hand[GLES_ID_glFenceSyncAPPLE] = (void *)fe_fenceSync;
+    fe_hand[GLES_ID_glIsSyncAPPLE] = (void *)fe_isSync;
+    fe_hand[GLES_ID_glDeleteSyncAPPLE] = (void *)fe_deleteSync;
+    fe_hand[GLES_ID_glClientWaitSyncAPPLE] = (void *)fe_clientWaitSync;
+    fe_hand[GLES_ID_glWaitSyncAPPLE] = (void *)fe_waitSync;
+    fe_hand[GLES_ID_glGetInteger64vAPPLE] = (void *)fe_getInteger64v;
+    fe_hand[GLES_ID_glGetSyncivAPPLE] = (void *)fe_getSynciv;
     hello = gles_hello();
     iosurface_init();
-#define GLES2X_FWD(export, row) n++; if (gles_fns[GLES_ROW_##row].id < GLES_N_SLOTS && fe_hand[gles_fns[GLES_ROW_##row].id]) hand++;
+#define GLES2X_FWD(export, row) n++; if (gles_fns[GLES_ROW_##row].id < GLES_N_HAND && fe_hand[gles_fns[GLES_ROW_##row].id]) hand++;
 #include "gles2x_exports.h"
 #undef GLES2X_FWD
     w("[gles] OpenGLES front end (contrib/gles-public): "); wd(n); w(" gl exports, "); wd(hand);
@@ -250,7 +290,7 @@ static int fe_row(GuestGC *gc, unsigned row, unsigned a0, unsigned a1, unsigned 
                   unsigned a10, unsigned a11)
 {
     unsigned id = gles_fns[row].id;
-    void *f = id < GLES_N_SLOTS && fe_hand[id] ? fe_hand[id] : gles_fn_ptr[row];
+    void *f = id < GLES_N_HAND && fe_hand[id] ? fe_hand[id] : gles_fn_ptr[row];
     return ((fe_f)f)(gc, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11);
 }
 static int fe_rowv(GuestGC *gc, unsigned row, const unsigned *a)
@@ -934,23 +974,23 @@ static int fe_swap_signal(GuestGC *gc, void *fb, unsigned txn, unsigned layer)
  * transfer never ran and the layer stayed black. The GL here is done when the notification arrives, so the front end
  * takes the condition's place: the conditional call is recorded instead of queued, and the notification issues it as
  * the unconditional IOSurfaceAcceleratorTransferSurfaceWithSwap, which takes the same ten arguments (the conditional one
- * adds only the token out). Bound by name in each image that imports it (its lazy/non-lazy symbol pointers), so nothing
+ * adds only the token out); likewise the plain ConditionalTransferSurface (seven) that 5.x also imports. Bound by name in each image that imports it (its lazy/non-lazy symbol pointers), so nothing
  * is per build; processes that do not import it are untouched.
  */
-#define FE_XFER_NAME "_IOSurfaceAcceleratorConditionalTransferSurfaceWithSwap"
 static unsigned fe_u32(const unsigned char *p);
 #define FE_XFERS 8
 typedef int (*fe_xfer_fn)(void *, void *, void *, void *, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned);
-static struct fe_xfer { void *acc, *src, *dst, *props; unsigned arg[6], token; } fe_xfers[FE_XFERS];
+static struct fe_xfer { void *acc, *src, *dst, *props; unsigned arg[6], token, swap; } fe_xfers[FE_XFERS];
 static unsigned fe_xfer_next;
-static fe_xfer_fn p_xferSwap;
+static fe_xfer_fn p_xfer, p_xferSwap;
 static int (*p_accGetID)(void *, unsigned *);
 static pthread_mutex_t fe_xfer_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static int fe_cond_xfer(void *acc, void *src, void *dst, void *props, unsigned a5, unsigned a6, unsigned a7,
-                        unsigned a8, unsigned a9, unsigned a10, unsigned *token)
+static int fe_record_xfer(void *acc, void *src, void *dst, void *props, const unsigned *arg, unsigned swap,
+                          unsigned *token)
 {
     struct fe_xfer *x, old;
+    unsigned i;
     fe_cf();
     if (!p_CFRetain || !src || !dst) return 0xE00002BC;            /* kIOReturnError */
     pthread_mutex_lock(&fe_xfer_lock);
@@ -958,7 +998,8 @@ static int fe_cond_xfer(void *acc, void *src, void *dst, void *props, unsigned a
     x = &fe_xfers[fe_xfer_next % FE_XFERS];
     old = *x;
     x->acc = acc; x->src = p_CFRetain(src); x->dst = p_CFRetain(dst); x->props = props ? p_CFRetain(props) : 0;
-    x->arg[0] = a5; x->arg[1] = a6; x->arg[2] = a7; x->arg[3] = a8; x->arg[4] = a9; x->arg[5] = a10;
+    for (i = 0; i < 6; i++) x->arg[i] = i < (swap ? 6u : 3u) ? arg[i] : 0;
+    x->swap = swap;
     x->token = fe_xfer_next;
     if (token) *token = fe_xfer_next;
     pthread_mutex_unlock(&fe_xfer_lock);
@@ -969,27 +1010,71 @@ static int fe_cond_xfer(void *acc, void *src, void *dst, void *props, unsigned a
     return 0;
 }
 
-/* The recorded transfer the notification (accelerator ID, token) releases, issued now; 0 if it names none. */
+/* IOSurfaceAcceleratorConditionalTransferSurfaceWithSwap: TransferSurfaceWithSwap's ten arguments, then the token. */
+static int fe_cond_xfer_swap(void *acc, void *src, void *dst, void *props, unsigned a5, unsigned a6, unsigned a7,
+                             unsigned a8, unsigned a9, unsigned a10, unsigned *token)
+{
+    unsigned arg[6] = { a5, a6, a7, a8, a9, a10 };
+    return fe_record_xfer(acc, src, dst, props, arg, 1, token);
+}
+
+/* IOSurfaceAcceleratorConditionalTransferSurface (5.x imports it too): TransferSurface's seven, then the token. */
+static int fe_cond_xfer(void *acc, void *src, void *dst, void *props, unsigned a5, unsigned a6, unsigned a7,
+                        unsigned *token)
+{
+    unsigned arg[3] = { a5, a6, a7 };
+    return fe_record_xfer(acc, src, dst, props, arg, 0, token);
+}
+
+/* Issues released transfers in token order, off the notifying thread: the stock condition is released in the kernel
+ * while the render server goes on to end its swap, and 5.x's TransferSurfaceWithSwap waits for that swap, so issued
+ * from the notification itself it never returned (9A334: SpringBoard hung at the app's first GL frame). */
+static pthread_cond_t fe_xfer_ready = PTHREAD_COND_INITIALIZER;
+
+static void *fe_xfer_worker(void *unused)
+{
+    (void)unused;
+    for (;;) {
+        struct fe_xfer x = {0};
+        unsigned i;
+        pthread_mutex_lock(&fe_xfer_lock);
+        for (;;) {
+            for (i = 0; i < FE_XFERS; i++)
+                if (fe_xfers[i].token && fe_xfers[i].swap & 2 && (!x.token || fe_xfers[i].token < x.token))
+                    x = fe_xfers[i];
+            if (x.token) break;
+            pthread_cond_wait(&fe_xfer_ready, &fe_xfer_lock);
+        }
+        fe_xfers[x.token % FE_XFERS].token = 0;
+        pthread_mutex_unlock(&fe_xfer_lock);
+        if ((x.swap & 1 ? p_xferSwap : p_xfer)(x.acc, x.src, x.dst, x.props, x.arg[0], x.arg[1], x.arg[2], x.arg[3],
+                                               x.arg[4], x.arg[5]) != 0)    /* the plain call reads only its seven */
+            refused("scaler:", "transfer", ~0u);
+        p_CFRelease(x.src); p_CFRelease(x.dst); if (x.props) p_CFRelease(x.props);
+    }
+    return 0;
+}
+
+/* Releases the recorded transfer the notification (accelerator ID, token) names; 0 if it names none. */
 static int fe_release_xfer(unsigned id, unsigned token)
 {
-    struct fe_xfer x = {0};
-    unsigned i, acc_id;
+    static pthread_t worker;
+    unsigned i, acc_id, found = 0;
     pthread_mutex_lock(&fe_xfer_lock);
-    for (i = 0; i < FE_XFERS; i++)
-        if (fe_xfers[i].token == token && token && p_accGetID && p_accGetID(fe_xfers[i].acc, &acc_id) == 0 && acc_id == id) {
-            x = fe_xfers[i];
-            fe_xfers[i].token = 0;
+    for (i = 0; i < FE_XFERS && token && p_accGetID; i++)
+        if (fe_xfers[i].token == token && p_accGetID(fe_xfers[i].acc, &acc_id) == 0 && acc_id == id) {
+            fe_xfers[i].swap |= 2;      /* released */
+            found = 1;
+            if (!worker && pthread_create(&worker, 0, fe_xfer_worker, 0)) worker = 0;
+            pthread_cond_signal(&fe_xfer_ready);
             break;
         }
     pthread_mutex_unlock(&fe_xfer_lock);
-    if (!x.token) return 0;
-    if (p_xferSwap(x.acc, x.src, x.dst, x.props, x.arg[0], x.arg[1], x.arg[2], x.arg[3], x.arg[4], x.arg[5]) != 0)
-        refused("scaler:", "transfer", ~0u);
-    p_CFRelease(x.src); p_CFRelease(x.dst); if (x.props) p_CFRelease(x.props);
-    return 1;
+    return found;
 }
 
-/* Point every loaded image's symbol pointers for FE_XFER_NAME at fe_cond_xfer (32-bit Mach-O, shared cache or not). */
+/* Point every loaded image's symbol pointers for the two conditional calls at their recorders (32-bit Mach-O, shared
+ * cache or not). */
 unsigned _dyld_image_count(void);
 const void *_dyld_get_image_header(unsigned);
 long _dyld_get_image_vmaddr_slide(unsigned);
@@ -998,8 +1083,9 @@ __attribute__((constructor)) static void fe_bind_xfer(void)
 {
     unsigned n = _dyld_image_count(), i;
     p_xferSwap = (fe_xfer_fn)dlsym(RTLD_DEFAULT, "IOSurfaceAcceleratorTransferSurfaceWithSwap");
+    p_xfer = (fe_xfer_fn)dlsym(RTLD_DEFAULT, "IOSurfaceAcceleratorTransferSurface");
     p_accGetID = dlsym(RTLD_DEFAULT, "IOSurfaceAcceleratorGetID");
-    if (!p_xferSwap || !p_accGetID) return;
+    if (!p_xferSwap || !p_xfer || !p_accGetID) return;
     for (i = 0; i < n; i++) {
         const unsigned char *h = _dyld_get_image_header(i), *lc;
         unsigned long slide = (unsigned long)_dyld_get_image_vmaddr_slide(i), le = 0, k, c;
@@ -1024,7 +1110,10 @@ __attribute__((constructor)) static void fe_bind_xfer(void)
                 for (j = 0; j < fe_u32(sec + 36) / 4; j++) {
                     unsigned si = ind[fe_u32(sec + 60) + j];      /* reserved1: its first indirect entry */
                     if (si & 0xC0000000u) continue;                     /* INDIRECT_SYMBOL_LOCAL / ABS */
-                    if (!strcmp((const char *)strs + fe_u32(syms + 12 * si), FE_XFER_NAME))
+                    const char *name = (const char *)strs + fe_u32(syms + 12 * si);
+                    if (!strcmp(name, "_IOSurfaceAcceleratorConditionalTransferSurfaceWithSwap"))
+                        ptrs[j] = (void *)fe_cond_xfer_swap;
+                    else if (!strcmp(name, "_IOSurfaceAcceleratorConditionalTransferSurface"))
                         ptrs[j] = (void *)fe_cond_xfer;
                 }
             }
@@ -1039,6 +1128,41 @@ __attribute__((constructor)) static void fe_bind_xfer(void)
  * is a C string in its __TEXT (__cstring on 3.x, __objc_methtype on 4.x/5.x), and only OpenGLES carries it. The
  * cache is found by shared_region_check_np (syscall 294), its images by its own header (dyld_v1). */
 static unsigned fe_u32(const unsigned char *p) { return p[0] | p[1] << 8 | p[2] << 16 | (unsigned)p[3] << 24; }
+
+static const unsigned *fe_stock_mh;      /* the stock OpenGLES's header in the cache, once fe_stock_encode found it */
+static unsigned fe_stock_slide;
+
+/* The stock OpenGLES's own export `_name` (name without the underscore), from its symbol table in the cache's
+ * shared __LINKEDIT (symoff/stroff are cache file offsets): Thumb code gets its low bit. 6.x and 7.x carry the
+ * dispatch @encode without field names, so their trampolines name the slots (gles_layout_from_exports). */
+static void *fe_stock_symbol(const char *name)
+{
+    const unsigned char *lc;
+    unsigned k, ncmds, symoff = 0, nsyms = 0, stroff = 0, le_vm = 0, le_off = 0;
+    if (!fe_stock_mh) return 0;
+    ncmds = fe_stock_mh[4];
+    lc = (const unsigned char *)fe_stock_mh + 28;
+    for (k = 0; k < ncmds; k++) {
+        const unsigned *cmd = (const unsigned *)lc;
+        if (cmd[0] == 2) { symoff = cmd[2]; nsyms = cmd[3]; stroff = cmd[4]; }           /* LC_SYMTAB */
+        else if (cmd[0] == 1 && gles_streq((const char *)lc + 8, "__LINKEDIT")) { le_vm = cmd[6]; le_off = cmd[8]; }
+        lc += cmd[1];
+    }
+    if (!nsyms || !le_vm) return 0;
+    {
+        const unsigned char *le = (const unsigned char *)(unsigned long)(le_vm + fe_stock_slide);
+        const unsigned char *syms = le + (symoff - le_off);
+        const char *strs = (const char *)le + (stroff - le_off);
+        for (k = 0; k < nsyms; k++) {
+            const unsigned char *nl = syms + 12 * k;
+            const char *sym = strs + fe_u32(nl);
+            unsigned value = fe_u32(nl + 8), desc = nl[6] | nl[7] << 8;
+            if ((nl[4] & 0x0e) != 0x0e || !value || sym[0] != '_' || !gles_streq(sym + 1, name)) continue;   /* N_SECT */
+            return (void *)(unsigned long)((value + fe_stock_slide) | ((desc & 0x0008) ? 1 : 0));   /* N_ARM_THUMB_DEF */
+        }
+    }
+    return 0;
+}
 
 static const char *fe_stock_encode(void)
 {
@@ -1060,6 +1184,8 @@ static const char *fe_stock_encode(void)
         if (!gles_streq((const char *)c + fe_u32(img + 24), want)) continue;
         mh = (const unsigned *)(unsigned long)(fe_u32(img) + slide);
         if (mh[0] != 0xfeedface) return 0;
+        fe_stock_mh = mh;
+        fe_stock_slide = slide;
         ncmds = mh[4];
         lc = (const unsigned char *)mh + 28;
         for (k = 0; k < ncmds; k++) {
@@ -1090,6 +1216,7 @@ static void **fe_macro(GuestGC *gc, void ***cache)
     if (*cache) return *cache;
     if (layout < 0) {
         gles_encode_override = fe_stock_encode();
+        gles_export_lookup = fe_stock_symbol;
         layout = gles_encode_override != 0;
         if (!layout) w("[gles] no __GLIFunctionDispatchRec @encode in the shared cache's OpenGLES: no macro context\n");
     }
@@ -1338,8 +1465,9 @@ __attribute__((visibility("default")))
 - (BOOL)setParameter:(unsigned)pname to:(const int *)value { (void)pname; (void)value; return 1; }
 - (BOOL)getParameter:(unsigned)pname to:(int *)value { (void)pname; (void)value; return 0; }
 
-/* 5.x: {GC, this firmware's dispatch table} (fe_macro). */
+/* 5.x: {GC, this firmware's dispatch table} (fe_macro); 6.x's QuartzCore asks with a lower-case g. */
 - (void *)GetMacroContextPrivate { return fe_macro(_private->gc, &_private->macro); }
+- (void *)getMacroContextPrivate { return fe_macro(_private->gc, &_private->macro); }
 @end
 
 void *EAGLGetCurrentMacroContextPrivate(void);

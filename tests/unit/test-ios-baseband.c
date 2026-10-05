@@ -953,6 +953,20 @@ static void test_sim_removal(void)
     pump();
     expect_frame(3, "\r\n+CPIN: READY\r\n");
     expect_frame(3, "\r\nOK\r\n");
+
+    /* EF_SST exists (4.2.1 installs no carrier bundle without it); optional EFs are 94 04. */
+    c_mux_str(3, "at+crsm=192,28472\r");
+    pump();
+    expect_frame(3, "\r\n+CRSM: 144,0,\"000000046F38040014FF4401020000\"\r\n");
+    expect_frame(3, "\r\nOK\r\n");
+    c_mux_str(3, "at+crsm=176,28472,0,0,4\r");
+    pump();
+    expect_frame(3, "\r\n+CRSM: 144,0,\"FF000000\"\r\n");
+    expect_frame(3, "\r\nOK\r\n");
+    c_mux_str(3, "at+crsm=192,28436\r");
+    pump();
+    expect_frame(3, "\r\n+CRSM: 148,4\r\n");
+    expect_frame(3, "\r\nOK\r\n");
 }
 
 /* Wake-up flags get flags back; PSC is acked; CLD closes the multiplexer. */
@@ -1054,6 +1068,12 @@ static void test_ifx(void)
     }
     CHECK(!(miso[1] & 0x10));
 
+    /* 3GS temperature notifications: +xdrv=5,16,<s> then +XDRVI: 5,17 every <s> seconds. */
+    ifx_frame(&x, &c, "at+xdrv=5,16,20\r", miso, 0x7fc, got);
+    ios_bb_tick(&c, c.now_ms + 1500);
+    ifx_frame(&x, &c, "", miso, 0x7fc, got);
+    CHECK(strstr(got, "+XDRVI: 5,17,") != NULL);
+
     /* No H5 on SPI: after +cmux the mux frames ride the IFX payload directly. */
     ifx_frame(&x, &c, "at+cmux=0,0,0,1500\r", miso, 0x7fc, got);
     ifx_frame(&x, &c, "\xf9\x03\x3f\x01\x1c\xf9", miso, 0x7fc, got);   /* SABM DLCI 0, P */
@@ -1085,6 +1105,16 @@ static void test_ifx(void)
         ifx_frame(&x, &c, "at\r", miso, 0x800, got);
     }
     CHECK(x.credits_out == 16);                 /* topped up on every frame */
+
+    /* A modem reset (bb_rst) drops queued data but not the AP's credits: the kext
+     * keeps its count and re-grants only the difference. */
+    x.credits_in = 3;
+    ios_bb_ifx_queue(&x, (const uint8_t *)"stale", 5);
+    ios_bb_ifx_modem_reset(&x);
+    CHECK(!ios_bb_ifx_pending(&x) && x.credits_in == 3 && x.credits_out == 16);
+    x.credits_in = 165;                         /* repeated unanswered "at" pings granting 15 each */
+    ios_bb_ifx_modem_reset(&x);
+    CHECK(x.credits_in == 16);
 }
 
 /* ------------------------------------------------------------- packet data */

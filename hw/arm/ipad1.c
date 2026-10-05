@@ -310,6 +310,7 @@ struct IPad1MachineState {
     ARMCPU *cpu;
     MemoryRegion dram;
     MemoryRegion dram_hi;                /* DRAM mirror at 0x50000000 (iBoot) */
+    MemoryRegion dram_lo;                /* DRAM's first page at PA 0 (the kernel's reset-vector page) */
     MemoryRegion chipid;
     MemoryRegion sram;
     MemoryRegion bootrom;
@@ -331,6 +332,7 @@ struct IPad1MachineState {
     char *nor_path;
     char *nor_rw_path;                   /* private writable NOR copy (effaceable persists); empty = in-memory */
     char *die_id;                        /* ChipID words 2-3 of the unit, hex pair */
+    char *imei;                          /* the unit's IMEI, for the modem (baseband=on) to report */
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
@@ -1096,6 +1098,18 @@ static void ipad1_init(MachineState *machine)
         memory_region_init_alias(&s->bootrom_alias, NULL,
                                  "ipad1.bootrom-alias", &s->bootrom, 0, size);
         memory_region_add_subregion(sysmem, 0xbf000000, &s->bootrom_alias);
+    } else {
+        /*
+         * Past the boot ROM, PA 0 is DRAM's first page. The 6.x and 7.x kernels
+         * (xnu-2107, xnu-2423) link at 0x80001000 and leave that page out. In early
+         * init they ml_io_map PA 0 (ml_vtophys of gPhysBase, which no longer has a
+         * V=P mapping) and copy the reset and exception vectors there for a core
+         * reset to land on. Without a page here the copy took an external abort
+         * ("sleh_abort at interrupt context", N90 10B329/11D257).
+         * ponytail: one page, aliased; the real remap's size is unmeasured.
+         */
+        memory_region_init_alias(&s->dram_lo, NULL, "ipad1.dram-lo", &s->dram, 0, 0x1000);
+        memory_region_add_subregion(sysmem, 0, &s->dram_lo);
     }
 
     /*
@@ -1458,6 +1472,9 @@ static void ipad1_init(MachineState *machine)
         qdev_prop_set_int32(bb, "ifx-max-data", s->board->bb_max_data);
         object_property_add_child(OBJECT(s), "baseband-modem", OBJECT(bb));
         s->bb_modem = bb;
+        if (s->imei && s->imei[0]) {
+            object_property_set_str(OBJECT(bb), "imei", s->imei, &error_fatal);
+        }
         qdev_realize_and_unref(bb, NULL, &error_fatal);
         dev = qdev_new(TYPE_IOS_BASEBAND_SPI);
         object_property_set_link(OBJECT(dev), "modem", OBJECT(bb), &error_abort);
@@ -1484,10 +1501,12 @@ static void ipad1_init(MachineState *machine)
      * on Accessibility > Zoom, which puts the scaler on CA's display path,
      * hung the UI in "M2Scaler waiting for device reset step 2".
      */
-    ipod_scaler_set_iommu(sysbus_create_simple("ipodtouch.scaler",
-                                               S5L8930_SCALER_BASE,
-                                               ipad1_irq(s, S5L8930_IRQ_SCALER)),
-                          s5l8930_dart2_xlate, s->display, 2);
+    DeviceState *scaler = sysbus_create_simple("ipodtouch.scaler", S5L8930_SCALER_BASE,
+                                               ipad1_irq(s, S5L8930_IRQ_SCALER));
+    ipod_scaler_set_iommu(scaler, s5l8930_dart2_xlate, s->display, 2);
+    /* ponytail: 0x20002 is the lowest version the 4.3 driver gives tiled buffers (CA scales EAGL layers from
+     * them); unmeasured on a unit, read +0x260 off one to replace it. */
+    ipod_scaler_set_version(scaler, 0x20002);
 
     /* SWI: backlight and DPSM core voltage; only the busy bit matters. */
     sysbus_create_simple("ipodtouch.swi", S5L8930_SWI_BASE, NULL);
@@ -1633,6 +1652,19 @@ static void ipad1_set_nand_overlay(Object *obj, const char *value, Error **errp)
 
     g_free(s->nand_overlay_path);
     s->nand_overlay_path = g_strdup(value);
+}
+
+static char *ipad1_get_imei(Object *obj, Error **errp)
+{
+    return g_strdup(IPAD1_MACHINE(obj)->imei);
+}
+
+static void ipad1_set_imei(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    g_free(s->imei);
+    s->imei = g_strdup(value);
 }
 
 static char *ipad1_get_die_id(Object *obj, Error **errp)
@@ -2084,6 +2116,9 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
                                   ipad1_set_nand_overlay);
     object_class_property_set_description(klass, "nand-overlay",
         "Copy-on-write directory for guest NAND writes; the nand store is then read-only");
+    object_class_property_add_str(klass, "imei", ipad1_get_imei, ipad1_set_imei);
+    object_class_property_set_description(klass, "imei",
+        "the unit's IMEI (FirmwareKit's device.lock.json machine.imei), for the modem (baseband=on) to report");
     object_class_property_add_str(klass, "die-id", ipad1_get_die_id, ipad1_set_die_id);
     object_class_property_set_description(klass, "die-id",
         "the unit's ChipID die-id words 2-3, \"0xWORD2:0xWORD3\" (identity.json); zeros if unset");

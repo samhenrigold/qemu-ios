@@ -1847,6 +1847,49 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
         }
     }
 
+    if ((arg = arg_after(cmd, "xdrv=5,16,", NULL))) {
+        /*
+         * Temperature notifications (3GS: +xdrv=5,16,20). CommCenter arms a watchdog of
+         * period + 20 s and resets the baseband ("modem reset: temperature update
+         * timeout") unless +XDRVI: 5,17 keeps arriving. The iPhone 4 sends 5,16,0 (off).
+         */
+        int n = atoi(arg);
+
+        bb->temp_period_ms = n > 0 ? n * 1000 : 0;
+        bb->temp_ch = ch;
+        bb->temp_due_ms = n > 0 ? bb->now_ms + 1000 : 0;
+        at_ok(bb, ch);
+        return;
+    }
+    if ((arg = arg_after(cmd, "crsm=", NULL))) {
+        /*
+         * Restricted SIM access (27.007 +CRSM: sw1,sw2[,data]; GSM 11.11 file layout).
+         * The fake SIM holds the two mandatory EFs a host asks after: EF_AD (6FAD:
+         * normal operation, MNC length 2, so 001/01 is unambiguous) and EF_SST (6F38:
+         * CHV1 disable, ADN, FDN and SMS allocated and activated). 4.2.1 issues GET
+         * RESPONSE (192) for 4F34, 6F06, 6F11, 6F14, 6F15 and 6F38 at SIM init; with
+         * "file not found" for EF_SST it never installs the carrier bundle (no stored
+         * ICCID, no APNs, no packet data). Optional files answer 94 04 (not found).
+         */
+        int op = 0, fid = 0;
+
+        sscanf(arg, "%d,%d", &op, &fid);
+        if (fid == 0x6fad && op == 176) {
+            chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"00000002\"\r\n");
+        } else if (fid == 0x6fad && op == 192) {
+            /* 2G GET RESPONSE: size 4, EF id 6FAD, transparent. */
+            chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"000000046FAD040011FFBB01020000\"\r\n");
+        } else if (fid == 0x6f38 && op == 176) {
+            chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"FF000000\"\r\n");
+        } else if (fid == 0x6f38 && op == 192) {
+            /* size 4, EF id 6F38, transparent; read needs CHV1, update ADM. */
+            chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"000000046F38040014FF4401020000\"\r\n");
+        } else {
+            chan_printf(bb, ch, "\r\n+CRSM: 148,4\r\n");
+        }
+        at_ok(bb, ch);
+        return;
+    }
     if (strcmp(cmd, "xsio?") == 0) {
         /* 1.0 wants field 1 after its first char ("*0") to equal 0. */
         chan_printf(bb, ch, "\r\n+XSIO: 0,*0\r\n");
@@ -2280,7 +2323,10 @@ static void data_chan_input(IosBbCore *bb, const uint8_t *data, unsigned len)
             if (bb->data_out) {
                 bb->data_out(bb->data_opaque, bb->ip_rx, tot);
             }
-            TRACE("data: %u-byte IPv4 packet to the network\n", tot);
+            TRACE("data: %u-byte IPv4 packet to the network (%u.%u.%u.%u -> %u.%u.%u.%u proto %u port %u)\n", tot,
+                  bb->ip_rx[12], bb->ip_rx[13], bb->ip_rx[14], bb->ip_rx[15],
+                  bb->ip_rx[16], bb->ip_rx[17], bb->ip_rx[18], bb->ip_rx[19], bb->ip_rx[9],
+                  bb->ip_rx[22] << 8 | bb->ip_rx[23]);
             memmove(bb->ip_rx, bb->ip_rx + tot, bb->ip_rxlen - tot);
             bb->ip_rxlen -= tot;
         }
@@ -2363,6 +2409,20 @@ void ios_bb_ifx_init(IosBbIfx *x, int version, unsigned max_data)
     memset(x, 0, sizeof(*x));
     x->version = version;
     x->max_data = MIN(max_data, 0xffeu);
+}
+
+/*
+ * The modem itself reset (bb_rst or radio_on low), not the AP: queued data is
+ * gone, but the v2 credits stay. The kext keeps its count across the reset and
+ * re-grants only the difference (after CommCenter's recovery reset: 2, not the
+ * boot-time 15), so zeroed credits left the modem unable to answer once the
+ * re-init's replies outran the AP's per-frame grants, and both sides waited
+ * (N90, a CommCenter restart). It never holds more than the AP's rx buffers.
+ */
+void ios_bb_ifx_modem_reset(IosBbIfx *x)
+{
+    x->txq_len = 0;
+    x->credits_in = MIN(x->credits_in, IFX_V2_GRANT);
 }
 
 void ios_bb_ifx_queue(void *opaque, const uint8_t *buf, size_t len)
@@ -2513,6 +2573,13 @@ void ios_bb_tick(IosBbCore *bb, int64_t now_ms)
     if (bb->reg_step && now_ms >= bb->reg_due_ms) {
         reg_tick(bb);
     }
+    if (bb->temp_due_ms && now_ms >= bb->temp_due_ms) {
+        /* 5,17: temperature; then readings in degrees C (the parser takes them as ints). */
+        if (bb->ch[bb->temp_ch].open || bb->temp_ch == 0) {
+            chan_printf(bb, bb->temp_ch, "\r\n+XDRVI: 5,17,0,25,25,25,25,25\r\n");
+        }
+        bb->temp_due_ms = now_ms + bb->temp_period_ms;
+    }
     if (bb->xsim_due_ms && now_ms >= bb->xsim_due_ms) {
         bb->xsim_due_ms = 0;
         if (bb->ch[bb->xsim_ch].open) {
@@ -2566,6 +2633,9 @@ int64_t ios_bb_next_due(const IosBbCore *bb)
 
     if (bb->reg_step) {
         due = bb->reg_due_ms;
+    }
+    if (bb->temp_due_ms && (!due || bb->temp_due_ms < due)) {
+        due = bb->temp_due_ms;
     }
     if (bb->xsim_due_ms && (!due || bb->xsim_due_ms < due)) {
         due = bb->xsim_due_ms;

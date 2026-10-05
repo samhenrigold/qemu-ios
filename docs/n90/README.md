@@ -38,6 +38,77 @@ offer): `regress.py --machine iPhone-4 --checks app --guest-package OFFER` PASS.
 installation_proxy, installd lists it, the agent launches it frontmost, and its GL triangle draws through the bridge
 with no refusals.
 
+## iOS 5.1.1 (9B206)
+
+Verified 2026-10-05 on the kboot pipeline (`~/Developer/qemu-ios-files/n90/fw/prepare.sh 9B206`, the N81 by-hand
+pipeline with n90 paths; activation through fw-a4's `lt_activate` hook; guest package serial 15):
+- `regress.py --machine iPhone-4 --checks boot`: PASS. Activated, Setup Assistant's first page.
+- `usbmux`, `afc`, `persist`: PASS.
+- `wifi`: PASS run alone. In the four-boot run it timed out waiting for a lease once.
+- `tests/ipad1/app-install.py --machine iPhone-4`: all PASS. AppSync install; walks iOS 5's Setup Assistant
+  ("Set Up as New iPhone" ... "Start Using iPhone"); launch; the Harness GL fixture on the panel (50% fixture
+  colours, no bridge refusals, Harness "PASS GLES pixel readback" and "PASS GLES framebuffer/draw/present API");
+  guest power-off.
+- The fixes it took were in the harness, not the models. The panel can sleep during the install, so the walk
+  wakes it before sliding. The syslog relay closes mid-run on 5.x, so the Harness report is also read from its
+  own Documents/results.log over house_arrest.
+- Without a camera node, CLTM logs "could not find camera service" every 5 s (`camera=off`).
+
+## iOS 6.1.3 (10B329) and 7.1.2 (11D257): what breaks (2026-10-05)
+
+1. Fixed: boot_args.Version. 6.x reaches pe_identify_machine's "Epoch Mismatch" string with movw/movt,
+   so ipad1_kboot read Version 0 and the kernel panicked before the console came up. Now 3 (08a698c2f1).
+   FirmwareKit's KBoot.swift still has the old heuristic.
+2. Fixed: PA 0. In early init both kernels ml_io_map PA 0 (ml_vtophys of gPhysBase, no longer V=P) and copy
+   the reset and exception vectors there. The machine had nothing at PA 0, so the copy took an external abort
+   ("sleh_abort at interrupt context"). Past the boot ROM, PA 0 is now an alias of DRAM's first page, which
+   these kernels leave out of the image (they link at 0x80001000).
+3. Fixed: NVRAM. iBoot-1537/1940 hand NVRAM to the kernel as `/chosen/nvram-proxy-data` (8 KiB, which N90
+   has no NOR for). The IPSW DT reserves it zeroed, and IODTNVRAM::initNVRAMImage loops forever on a
+   zero-length partition. That was the busy CPU after AppleKeyStore. ipad1_kboot now fills it with an empty
+   CHRP image (2 KiB "common", the rest "free"). 7.1.2 then runs IOKit through Wi-Fi, USB and the N1
+   multitouch.
+4. 6.1.3 now prepares end to end, keybag one-shot included, and boots to launchd and SpringBoard, but the panel
+   stays dark. backboardd, 6.x's render server, crash-loops in the GL front end:
+   - First, QuartzCore sends `-[EAGLContext getMacroContextPrivate]` (5.x's selector was GetMacroContextPrivate).
+     It is answered now.
+   - Then gles-public finds no dispatch layout on 6.x ("dispatch layout from none: 0 slots"). There is no
+     `__GLIFunctionDispatchRec` @encode in the 6.x shared cache, and the trampoline decoder doesn't know 6.x's
+     OpenGLES. So the macro context's table is empty and QuartzCore jumps through NULL during the IOMFB swap.
+     This is the 6.x GL dispatch work.
+   - There is no guest-package family for 10*, so no it_boot or agent.
+5. 7.1.2 needs a 1664 MiB system partition (`SYSMIB=1664`; its rootfs is about 1.5 GB). fw-a4's lt_activate
+   fails on 7.1.2's lockdownd, so the device is baked without activation (`prepare.sh 11D257 none`).
+   - The reboot loop right after /private/var mounted was the bake's rw root fstab. 7.x's launchd cannot
+     `mount -uw /` (mount_hfs: Operation not permitted), so it reboots. `ipad1_rootfs.py build --ro-root`
+     (`RO_ROOT=1 prepare.sh`) keeps the stock ro root; launchd then runs, Unactivated.
+   - Found by baking /.launchd_log_shutdown and /.launchd_log_debug and reading /var back off the NAND.
+   - Then backboardd crash-loops on the same GL dispatch gap as 6.1.3 ("dispatch layout from none: 0 slots";
+     SIGSEGV at 0 in QuartzCore).
+6. Fixed: the 6.x GL dispatch layout. The 6.x and 7.x shared caches carry `{__GLIFunctionDispatchRec=^?^?...}`
+   with no field names: 914 slots on 6.1.3. gles-public now takes the count from that @encode and names the
+   slots by decoding the stock OpenGLES's exported trampolines, found through its symbol table in the cache's
+   shared __LINKEDIT. The front end replaces OpenGLES, so dlsym would only find its own exports.
+   - The decoder needed two 6.x shapes. The TLS context load (`ldr r0, [r0, #0x78]`) is not the GC, and the
+     float trampolines keep the context in sb (r9).
+   - 301 of 914 slots are named, and CoreAnimation's calls land on them.
+   - 6.1.3 `regress.py --checks boot` now PASSES: Activated, Setup Assistant's first page on the panel, GL
+     bridge refused nothing. backboardd's console is not SpringBoard's, so the GL-path line is also taken from
+     the host's log.
+7. 7.1.2 with `RO_ROOT=1` and the shim boots to iOS 7's Setup "Hello" screen and its language list, drawn
+   through the GL bridge: 1035 slots, 316 named.
+   - CoreAnimation fences every frame with glFenceSyncAPPLE (slot 779, 1024 calls before Setup).
+   - APPLE_sync is now in the name table as ids 912-918, exported by 6.x and 7.x OpenGLES. The front end answers
+     it locally: the host finishes every call before the next, so a fence is signalled as it is made.
+   - The bridge refuses nothing on 7.1.2.
+   - Open: regress's Setup walk for iOS 7 (the slide-to-set-up gesture and the new pages), activation
+     (lt_activate fails on 7.1.2's lockdownd), a guest package for 10*/11*, and the 6.x Wi-Fi lease.
+8. 6.1.3 Wi-Fi: the driver comes up ("setupDriver(): Succeeded") and joins, with the split CDC length and
+   "cap" handled. With wlan.log.level=7, the DHCP offers are seen arriving ("Rx ... UDP sport 67 dport 68").
+   - A boot with usbmuxd attached got its lease (10.0.2.15 at 26 s).
+   - regress's wifi check boots without USB. There, two of two runs never took an offer, and the NetManager's
+     10 s IP window ran out. Not understood yet.
+
 ## How to boot
 
 The same hand pipeline as N81 (`../n81/README.md`, "How to boot"), with `n90` paths and
@@ -80,8 +151,13 @@ As N81, plus:
    the device shows "No Service".
 2. **Absent parts**:
    - ~~The gyro~~: the L3G4200D model, as on N81 (its debt 5).
-   - The ALS/prox ct700 (i2c0 0x29). It is probed for and skipped.
-   - The Highland Park audio processor (i2c0 0x3e, uart6, i2s2).
+   - The ALS/prox ct700 (i2c0 0x29): AppleCT700 logs "Probing hardware failed" and stays out, so there is
+     no auto-brightness and no proximity blanking on calls. A model is a TAOS-style register file (command
+     byte 0x80|reg) plus `als-calibration`/`prox-calibration`, which iBoot fills from syscfg and the driver
+     checks for a signature and limits. Deferred (2026-10-05) until calls want proximity.
+   - The Highland Park voice processor (AUD10: i2c0 0x3e, uart6, i2s2) passes probe and start with nothing
+     behind it. Its message protocol (firmware download, routing, algorithm parameters) is only exercised
+     on a call's audio route. Deferred, since calls carry no audio.
    - The GPS (bcm4750 on uart4).
    - The cameras and ISP. `camera=off` (default) unmatches the DT's `isp` node, as on N81 (its debt 4).
 3. **Compass**: the AK8973 stands in for the AK8975B pair.

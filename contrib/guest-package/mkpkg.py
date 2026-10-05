@@ -66,6 +66,7 @@ IPAD_HOOKS = [("build/ipad1-guest/it_msmquiet.dylib", "/usr/local/lib/it_msmquie
 # firmware's dispatch layout at load (contrib/it-gles/gles_dispatch.c), so no hook is per build.
 # builds: exact ids or "<major>*" for every build of that iOS major (2.x = 5*, 3.x = 7*, 4.x = 8*, 5.x = 9*), so a new point
 # release needs no row here (LightTouchMac docs/matrix.md).
+ARMV7_BOARDS = ["k48ap", "n81ap", "n90ap", "n18ap", "n88ap"]
 FAMILIES = {
     # 1.x builds are 3A*/3B* (1.1-1.1.2) and 4A*/4B* (1.1.3-1.1.5), and the iPhone's 1A*/1C* (1.0-1.0.2): no agent
     # or helpers yet, the GL front end only; the legacy-linked it_boot runs there (armv6-toolchain crt1old.c/legacy.h:
@@ -91,7 +92,9 @@ FAMILIES = {
     # 4.x: it_prefs alone so far; the agent and the rest are still baked there.
     "n72-ios4": {"arch": "armv6", "boards": ["n72ap"], "builds": ["8*"], "bin": {"it_prefs": IPOD_BIN["it_prefs"]},
                  "jobs": [PREFS_JOB]},
-    "k48-ios3": {"arch": "armv7", "boards": ["k48ap"], "builds": ["7*"], "bin": IPAD_BIN,
+    # every armv7 board: the payloads read what differs per board at load, as they do per firmware. The family
+    # names stay k48-*, as prepared devices record them in their locks.
+    "k48-ios3": {"arch": "armv7", "boards": ARMV7_BOARDS, "builds": ["7*"], "bin": IPAD_BIN,
                  "jobs": IPAD_JOBS,
                  "hooks": [("contrib/gles-public/OpenGLES", OPENGLES, True)] + IPAD_HOOKS},
 }
@@ -99,6 +102,11 @@ FAMILIES = {
 # firmware at load (docs/ipad1/gles-public-seam.md, docs/ipad1/ios5.md); only the build range differs.
 FAMILIES["k48-ios4"] = dict(FAMILIES["k48-ios3"], builds=["8*"])
 FAMILIES["k48-ios5"] = dict(FAMILIES["k48-ios3"], builds=["9*"])
+# 6.x: the boards that run it (the iPad and the iPod touch 3G stop at 5.1.1).
+FAMILIES["k48-ios6"] = dict(FAMILIES["k48-ios3"], boards=["n81ap", "n90ap", "n88ap"], builds=["10*"])
+# 7.x (the iPhone 4 only): a read-only root (its launchd cannot `mount -uw /`), so the package is baked at prepare
+# time (seed) and changes only on a re-prepare; it_boot installs, swaps hooks and writes state nowhere there.
+FAMILIES["k48-ios7"] = dict(FAMILIES["k48-ios3"], boards=["n90ap"], builds=["11*"])
 # 1.x/2.x dyld refuses LC_DYLD_INFO_ONLY; everything the loader runs on it must be legacy-linked
 LEGACY_BUILDS = ("1*", "3*", "4*", "5*", "7A341")
 
@@ -461,9 +469,11 @@ def selfcheck():
         thin6 = b"\xce\xfa\xed\xfe" + struct.pack("<iiII", 12, 6, 8, 0) + b"\0" * 12
         assert macho_problem(thin6, "armv6") is None and macho_problem(thin6, "armv6", signed=True) == "unsigned (ldid -S)"
     # every shipped iPad build has exactly one family, and each carries the agent and the one GL front end
-    for build, want in (("7B500", "k48-ios3"), ("8C148", "k48-ios4"), ("8L1", "k48-ios4"), ("9B206", "k48-ios5")):
-        fams = [f for f, s in FAMILIES.items() if "k48ap" in s["boards"] and build_matches(s["builds"], build)]
-        assert fams == [want], (build, fams)
+    for build, want in (("7B500", "k48-ios3"), ("8C148", "k48-ios4"), ("8L1", "k48-ios4"), ("9B206", "k48-ios5"),
+                        ("10B329", "k48-ios6"), ("10B500", "k48-ios6"), ("11D257", "k48-ios7")):
+        for board in FAMILIES[want]["boards"]:
+            fams = [f for f, s in FAMILIES.items() if board in s["boards"] and build_matches(s["builds"], build)]
+            assert fams == [want], (board, build, fams)
         assert "it_agent" in FAMILIES[want]["bin"]
         assert [(s, t) for s, t, _ in FAMILIES[want]["hooks"] if t in GL_TARGETS] == [("contrib/gles-public/OpenGLES", OPENGLES)]
     # every iPod 2G build has one family; 3.0's is legacy-linked (its dyld is 2.x's) and carries the engine
@@ -489,7 +499,7 @@ def selfcheck():
     assert {s for f in FAMILIES.values() for s, t, _ in f.get("hooks", []) if t in GL_TARGETS} == \
         {"contrib/gles-public/OpenGLES", "contrib/it-gles/OpenGLES-1x"}
     print("PASS: itpack round trip and opacity, job rewrite, offer grammar, Mach-O check, "
-          "one family per iPad and iPod 2G build")
+          "one family per armv7 board and iPod 2G build")
 
 
 def main():
