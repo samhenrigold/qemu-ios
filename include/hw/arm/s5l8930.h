@@ -256,6 +256,7 @@ hwaddr s5l8930_dart2_xlate(void *display, uint32_t va, unsigned sid);
 void ipod_scaler_set_iommu(DeviceState *scaler,
                            hwaddr (*xlate)(void *opaque, uint32_t va, unsigned sid),
                            void *opaque, unsigned sid);
+void ipod_scaler_set_version(DeviceState *scaler, uint32_t version);
 
 void s5l8930_cdma_set_source(DeviceState *dev, hwaddr base, hwaddr size,
                              uint32_t (*avail)(void *opaque, hwaddr addr, bool to_device),

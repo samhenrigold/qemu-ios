@@ -1096,6 +1096,16 @@ static void ipad1_init(MachineState *machine)
         memory_region_init_alias(&s->bootrom_alias, NULL,
                                  "ipad1.bootrom-alias", &s->bootrom, 0, size);
         memory_region_add_subregion(sysmem, 0xbf000000, &s->bootrom_alias);
+    } else {
+        /*
+         * The SecureROM is at 0 whatever boots the AP; a direct kernel boot has no image for it, so the window
+         * reads zeros. It must be there all the same: iOS 6's machine startup (10A403 0x8007daa0) maps
+         * kvtophys(gPhysBase) after pmap bootstrap has unmapped that V=P region, gets 0, and copies the exception
+         * vectors to physical 0. On the SoC that write lands in ROM and is dropped; with nothing mapped it was a
+         * synchronous external abort and a double panic before the console.
+         */
+        memory_region_init_rom(&s->bootrom, NULL, "ipad1.bootrom", 0x10000, &error_fatal);
+        memory_region_add_subregion(sysmem, 0, &s->bootrom);
     }
 
     /*
@@ -1484,10 +1494,12 @@ static void ipad1_init(MachineState *machine)
      * on Accessibility > Zoom, which puts the scaler on CA's display path,
      * hung the UI in "M2Scaler waiting for device reset step 2".
      */
-    ipod_scaler_set_iommu(sysbus_create_simple("ipodtouch.scaler",
-                                               S5L8930_SCALER_BASE,
-                                               ipad1_irq(s, S5L8930_IRQ_SCALER)),
-                          s5l8930_dart2_xlate, s->display, 2);
+    DeviceState *scaler = sysbus_create_simple("ipodtouch.scaler", S5L8930_SCALER_BASE,
+                                               ipad1_irq(s, S5L8930_IRQ_SCALER));
+    ipod_scaler_set_iommu(scaler, s5l8930_dart2_xlate, s->display, 2);
+    /* ponytail: 0x20002 is the lowest version the 4.3 driver gives tiled buffers (CA scales EAGL layers from
+     * them); unmeasured on a unit, read +0x260 off one to replace it. */
+    ipod_scaler_set_version(scaler, 0x20002);
 
     /* SWI: backlight and DPSM core voltage; only the busy bit matters. */
     sysbus_create_simple("ipodtouch.swi", S5L8930_SWI_BASE, NULL);

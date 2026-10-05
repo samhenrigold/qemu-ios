@@ -650,6 +650,12 @@ static void s5l8930_display_reset(DeviceState *dev)
     s->clcd[0][0x58 / 4] = 9 << 16 | 9 << 8 | 11;
     s->clcd[0][0x5c / 4] = 132 << 16 | 132 << 8 | 134;
     s->clcd[0][0x60 / 4] = (s->width - 1) << 16 | (s->height - 1);
+    /*
+     * And the timing generator running (ENVID): iBoot hands over a lit panel. 5.x's AppleCLCD::start_hardware
+     * (9A334 0x8084b9a0) adopts the display only when CLCD +0x50 bit0 is set; otherwise it resets the pipe and
+     * returns false without a log line, so no framebuffer and the boot logo stays up. 3.x/4.x never read it.
+     */
+    s->clcd[0][CLCD_ENVID / 4] = 1;
     if (s->fb_base) {
         r[DP_LAYERS / 4] = 0x100;
         r[(DP_UI_BASE(0) + DP_UI_ADDR) / 4] = s->fb_base;

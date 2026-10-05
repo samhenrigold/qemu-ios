@@ -446,6 +446,26 @@ def boot_args_version(m):
     sva = next(vmaddr + (so - fileoff) for _, vmaddr, _, fileoff, filesize, _ in m.segs
                if fileoff <= so < fileoff + filesize)
     lit = data.find(struct.pack("<I", sva))
+    if lit < 0:
+        # iOS 6's xnu-2107 names the string pc-relatively: ldrh rN, [r0, #2]; cmp rN, #V; beq; movw/movt rX;
+        # add rX, pc. Take the pair whose movw/movt/add pc lands on the string.
+        va_of = lambda off: next((vmaddr + (off - fileoff) for _, vmaddr, _, fileoff, filesize, _ in m.segs
+                                  if fileoff <= off < fileoff + filesize), None)
+        imm16 = lambda h1, h2: (h1 & 0xf) << 12 | (h1 >> 10 & 1) << 11 | (h2 >> 12 & 7) << 8 | (h2 & 0xff)
+        for n in range(8):
+            i = data.find(bytes([0x40 | n, 0x88]))
+            while i >= 0:
+                if data[i + 3] == 0x28 | n:
+                    for k in range(i + 4, i + 12, 2):
+                        h = struct.unpack_from("<4H", data, k)
+                        if h[0] & 0xFBF0 == 0xF240 and h[2] & 0xFBF0 == 0xF2C0:
+                            rd = h[1] >> 8 & 0xf
+                            add = data.find(struct.pack("<H", 0x4478 | rd), k + 8, k + 16)
+                            if add > 0 and va_of(add) is not None and \
+                                    (imm16(h[0], h[1]) | imm16(h[2], h[3]) << 16) + va_of(add) + 4 == sva:
+                                return data[i + 2]
+                i = data.find(bytes([0x40 | n, 0x88]), i + 2)
+        return 2
     window = data[max(0, lit - 0x400):lit]
     for n in range(8):
         i = window.rfind(bytes([0x40 | n, 0x88]))
