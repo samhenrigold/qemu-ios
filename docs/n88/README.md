@@ -11,7 +11,7 @@ data; an IPA installs through installation_proxy and AppSync and launches.
 
 | Build | Boot | Touch, Home, Hold | Power-off + persist | IPA install + launch | GL app |
 |---|---|---|---|---|---|
-| 3.1.3 7E18 | no: needs a VSVFL + legacy-FTL store (debt 7) | | | | |
+| 3.1.3 7E18 | lock screen; lockdown answers 3.1.3 | no: touch frames are read but the UI ignores them (debt 7) | not tried (the gesture needs touch) | installs (app-install.py mux, install, lock PASS) | |
 | 4.0 8A293, 4.0.1 8A306, 4.0.2 8A400, 4.1 8B117 | activated home screen | yes | yes | yes (app-install.py all PASS) | draws (debt 1) |
 | 4.2.1 8C148a | activated home screen ("No Service") | yes | yes | yes (Harness) | renders through the bridge (readback PASS); on the panel at the wrong stride (debt 1) |
 | 4.3 8F190, 4.3.1 8G4, 4.3.2 8H7, 4.3.3 8J2, 4.3.4 8K2, 4.3.5 8L1 | activated home screen | yes | yes | yes (app-install.py all PASS) | draws (debt 1) |
@@ -125,16 +125,18 @@ iPod-Touch-4G --checks boot` PASS; N18 dev2 unlock to the home screen with touch
    wake latch, Wi-Fi.
 6. Every 4.x and 5.x build runs. The devices are FirmwareKit's
    (LightTouchMac n88-app catalog n88ap-*), prepared with a LightTouchDevice + this tree's libqemu-arm.dylib.
-7. **3.1.3 NAND** (two layers, the first solved in a test):
-   - Board lookup: 3.1.3's findNandInfo keys on (dies, buses, chip+CE count per bus) against a per-board
-     table (gdbstub at 0xc043cd0c: board type 0x0c, whose table has 2 dies, 2 buses, 0xB614D5AD x4 x2). The
-     per-bus CE masks are the words of the disk node's `landing-map` (0xc043c6da, read per bus by
-     0xc043b028). The IPSW's DT has one word (0x0303), so every CE folds into one bus and nothing matches
-     ("Board support not found", "2-bus not supported"). With `landing-map = 0x0f, 0x0f00` on
-     flash-controller0/disk (what iBoot would fill in) the lookup passes and the FTL starts.
-   - Store format: then "[FTL:WRN] Incompatible Signature!": 3.1.3 has VSVFL + the legacy FTL, no YaFTL,
-     and refuses a NANDDRIVERSIGN with flags > 4 (0xc05c58aa); the store builders write YaFTL (flags 5).
-     3.1.3 needs a VSVFL + legacy-FTL store writer (or its own VFL_FactoryReformat plus a restore).
+7. **3.1.3** boots (FirmwareKit-prepared; 7E18 is not in the catalog yet). What it took:
+   - NAND board lookup: 3.1.3's FMI groups the CEs into buses by the disk node's `landing-map` words (one CE
+     mask per bus; findNandInfo 0xc043c6da, read per bus by 0xc043b028). The IPSW's DT has a single word, so
+     every CE folded into one bus and nothing in its board table matched ("2-bus not supported"); kboot now
+     writes one word per populated bus from the disk's CE bitmap.
+   - Store signature: 3.1.3 refuses NANDDRIVERSIGN flags > 4 ("Incompatible Signature", 0xc05c58aa). It is
+     YaFTL on VSVFL as 4.x is; its own FIL signs flags 4 when it formats (seen by letting it format a blank
+     XOR store with nand-enable-reformat=1, which needs the s5l8920x raw read, `cfg-v0`). Plain stores now
+     sign 4 (4.x and 5.x accept it).
+   - Still open: touch. The N1F54 firmware downloads and the kernel reads every frame, but 3.1.3 never sends
+     the report-mode writes 4.x does after reading the sensor's reports (0xbf, 0xaf; 0xd1/d3/d0/a1/d9 are
+     read), and the UI does not react. A Home press also opens the iPod app (a double click).
 8. **Touch calibration**: the digitizer frame is the N81 profile's, unmeasured on N88; taps in the bottom
    ~5% of the panel land ~15 px high (retap lower). tests/ipad1/touchcal.py (ipad1) is the tool to fit it.
 9. **iOS 6**: 10B500's kernel prints nothing under kboot (fw-a4 has N81 6.0 past pe_identify_machine with
