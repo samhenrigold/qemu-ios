@@ -83,6 +83,13 @@ Every milestone is checked against a real-iPad reference: serial logs, IORegistr
 `regress.py`-style harness per machine; the iPod machine's suite must stay green through every shared-model
 refactor.
 
+GL reference device (7B500): `~/Developer/qemu-ios-files/ipad1/gl-ref-7B500/device`, made 2026-10-04 by
+`firmwarekit create --id k48ap-7B500` with guest tools exported from 3fe54ad978 (package serial 15). The older
+`repro/default-iboot` and `repro/glcov-7B500-ui` devices predate 56c2958bef, which installs the GL front end as
+OpenGLES at preparation, so their `--checks gles` always fails with "no GL-path line". On the reference,
+`tests/fresh-device.sh k48ap-7B500` with `CHECKS=boot,persist,gles` passes: the GL bridge refuses nothing and
+the home frame reference qualifies.
+
 ## Audio (2026-09-27)
 Out works: CS42L61 + Mikey (i2c0 0x39; the codec waits for its 'mikey' function) -> AppleARMIISAudio ->
 CDMA ch 0x1a (16 x 4 KiB IOAudio ring, streamed in 10 ms virtual-time steps) -> i2s0 FIFO ->

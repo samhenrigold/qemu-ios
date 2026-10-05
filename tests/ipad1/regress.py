@@ -1028,13 +1028,16 @@ def check_app(cfg, r):
         draws = open(log_path, errors="replace").read().count("[gles]") - before
         if draws <= 0:
             return r.set(False, detail + "; the GL scene sent nothing through the bridge")
-        # The scene is a coloured triangle on black between the harness's toolbar and its frame counter.
+        # The scene is a white triangle on cyan and magenta halves between the harness's toolbar and its frame counter.
         w, h, pix = itqmp.read_ppm(b.shot("app-gl-scene"))
         scene = {bytes(pix[(y * w + x) * 3:(y * w + x) * 3 + 3]) for y in range(140, 820, 8) for x in range(0, w, 8)}
-        if len(scene) < 8:
+        if len(scene) < 3:   # the triangle scene is four flat colours (black, cyan, magenta, white)
             return r.set(False, detail + "; the GL scene ran (%d bridge lines) but its view shows %d colour(s)"
                          % (draws, len(scene)))
-        gl_clean(b, r, detail + "; GL scene: %d bridge log lines" % draws, [b.shot("app-gl")])
+        # The scene's own background is magenta, so judge the bridge by its refusal counters, not gl_clean's paint.
+        rejects = b.qmp.cmd("qom-get", path="/machine", property="gles-rejects").strip()
+        r.set(not rejects, detail + "; GL scene drawn (%d colours, %d bridge log lines); bridge refused %s"
+              % (len(scene), draws, rejects.replace("\n", ", ") or "nothing"))
     finally:
         b.stop()
 

@@ -33,6 +33,11 @@ with persistence all work.
 Verified 2026-10-04: `tests/ipad1/regress.py --machine iPhone-4 --device DEV --checks
 boot,persist,usbmux,afc,wifi`, all PASS.
 
+App install, 2026-10-04 (FirmwareKit kboot `n90ap-8C148` device, guest package with gles-public 81c8124a35 as an
+offer): `regress.py --machine iPhone-4 --checks app --guest-package OFFER` PASS. AppSync installs the harness through
+installation_proxy, installd lists it, the agent launches it frontmost, and its GL triangle draws through the bridge
+with no refusals.
+
 ## How to boot
 
 The same hand pipeline as N81 (`../n81/README.md`, "How to boot"), with `n90` paths and
@@ -62,12 +67,14 @@ As N81, plus:
 
 ## Debts
 
-0. **GL apps draw black (4.2.1).** `regress.py --checks app` installs the harness (AppSync), launches it and finds it
-   frontmost, but its GL scene's view stays black although it runs at 30 fps through the bridge. QuartzCore's
-   `sendNotification:forTransaction:onLayer:` carries a framebuffer ID that no IOMobileFramebuffer this process opens
-   reports (the shim counts `shim:eagl:send-notification-id`). Signalling the main display instead removes the
-   refusal but not the black view. The swap for that ID, or the composite of the app's 240x360 surfaces, is still
-   missing; next step is to trace CA's texture binds of the app surface in SpringBoard.
+0. ~~**GL apps draw black (4.2.1).**~~ Fixed by gles-public 81c8124a35 (fw-a4 e9d82647fb). On these Retina
+   boards a legacy 1x app's QuartzCore scales its EAGL surface with the M2 scaler: it queues
+   `IOSurfaceAcceleratorConditionalTransferSurfaceWithSwap` and releases it by accelerator ID through
+   `-[EAGLContext sendNotification:forTransaction:onLayer:]`, which the stock SGX engine turns into a kernel
+   signal. The front end now rebinds that call, records CA's transfer and issues it unconditionally
+   (`TransferSurfaceWithSwap`) after `glFinish`. `regress.py --checks app` (with the package as an offer) installs
+   the harness, launches it and taps "GL: rotating triangle": the triangle draws (4 colours, 35 bridge lines) and the
+   bridge refuses nothing.
 
 1. **Baseband** waits on the cell stream (spi2 IFX protocol, modem core). Today the node is unmatched and
    the device shows "No Service".
