@@ -58,7 +58,7 @@ pipeline with n90 paths; activation through fw-a4's `lt_activate` hook; guest pa
 
 1. Fixed: boot_args.Version. 6.x reaches pe_identify_machine's "Epoch Mismatch" string with movw/movt,
    so ipad1_kboot read Version 0 and the kernel panicked before the console came up. Now 3 (08a698c2f1).
-   FirmwareKit's KBoot.swift still has the old heuristic.
+   FirmwareKit's KBoot.swift has the same scan (LightTouchMac a4-n81 6233871).
 2. Fixed: PA 0. In early init both kernels ml_io_map PA 0 (ml_vtophys of gPhysBase, no longer V=P) and copy
    the reset and exception vectors there. The machine had nothing at PA 0, so the copy took an external abort
    ("sleh_abort at interrupt context"). Past the boot ROM, PA 0 is now an alias of DRAM's first page, which
@@ -107,7 +107,22 @@ pipeline with n90 paths; activation through fw-a4's `lt_activate` hook; guest pa
    "cap" handled. With wlan.log.level=7, the DHCP offers are seen arriving ("Rx ... UDP sport 67 dport 68").
    - A boot with usbmuxd attached got its lease (10.0.2.15 at 26 s).
    - regress's wifi check boots without USB. There, two of two runs never took an offer, and the NetManager's
-     10 s IP window ran out. Not understood yet.
+     10 s IP window ran out.
+   - Resolved: the guest did lease. 6.x logs the lease with two spaces ("receivedIPv4Address():  Received"),
+     and under host load the NetManager window expired after the lease. The check now matches either spacing
+     and also accepts a DHCP ACK in the slirp pcap. 7.x also needed the full 52-byte WL event header
+     (`WL_EVENT_MSG_LEN`).
+
+## iOS 6.0-6.1.3: results (2026-10-05)
+
+FirmwareKit `n90ap-10A403`, `-10A523`, `-10B144`, `-10B146` and `-10B329` (catalog entries on LightTouchMac a4-n81
+51f27b1). Each was created fresh, then `tests/ipad1/app-install.py --machine iPhone-4` ran on it:
+mux, AppSync install, lock, the Setup walk, icon, launch, GL (about 50% fixture colours, Harness "PASS GLES pixel
+readback", no bridge refusals) and guest power-off all PASS on every build.
+- Two fixes from fw-a4 were needed: AppSync answering 6.x's MIS signing-identity and entitlement keys, and the
+  content-protection bit on the data volume.
+- The harness retaps the GL fixture once. The first tap is sometimes dropped while the app is still settling.
+- 6.1.3 by hand (`prepare.sh 10B329`) passes the same run.
 
 ## How to boot
 

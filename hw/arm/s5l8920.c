@@ -251,6 +251,7 @@ struct S5L8920MachineState {
     int battery_level;                   /* battery-level, -1 = the PMU model's own */
     unsigned battery_charging;           /* battery-charging: 0 auto, 1 on, 2 off */
     bool baseband_on;                    /* baseband=on: the fake modem behind spi2 */
+    char *imei;                          /* the unit's IMEI, for that modem to report */
     DeviceState *bb_modem;
     GuestPackage pkg;                    /* hw/arm/guest-package.c: it_boot and the GL shim's hello */
     GuestPasteboard pb;                  /* hw/arm/guest-pasteboard.c */
@@ -805,6 +806,9 @@ static void s5l8920_init(MachineState *machine)
         qdev_prop_set_int32(bb, "ifx-version", s->board->bb_ifx);
         qdev_prop_set_int32(bb, "ifx-max-data", s->board->bb_max_data);
         object_property_add_child(OBJECT(s), "baseband-modem", OBJECT(bb));
+        if (s->imei && s->imei[0]) {
+            object_property_set_str(OBJECT(bb), "imei", s->imei, &error_fatal);
+        }
         qdev_realize_and_unref(bb, NULL, &error_fatal);
         s->bb_modem = bb;
         dev = qdev_new(TYPE_IOS_BASEBAND_SPI);
@@ -1015,6 +1019,13 @@ void s5l8920_press_button(IPodTouchButton button, bool down)
 }
 
 bool ipod_touch_mipi_dsi_panel_off(void);   /* hw/arm/ipod_touch_mipi_dsi.c */
+
+/* The guest's power-off command reached the PMU: 5.x's halt then restarts through it, so this, not a
+ * QEMU SHUTDOWN event, is the evidence (as ipad1's D1815). */
+static bool s5l8920_get_guest_shutdown_confirmed(Object *obj, Error **errp)
+{
+    return pcf50633_guest_shutdown_confirmed();
+}
 
 static bool s5l8920_get_display_sleeping(Object *obj, Error **errp)
 {
@@ -1311,6 +1322,19 @@ static void s5l8920_instance_finalize(Object *obj)
     g_free(S5L8920_MACHINE(obj)->nand_overlay_path);
 }
 
+static char *s5l8920_get_imei(Object *obj, Error **errp)
+{
+    return g_strdup(S5L8920_MACHINE(obj)->imei);
+}
+
+static void s5l8920_set_imei(Object *obj, const char *value, Error **errp)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+
+    g_free(s->imei);
+    s->imei = g_strdup(value);
+}
+
 static bool s5l8920_get_baseband(Object *obj, Error **errp)
 {
     return S5L8920_MACHINE(obj)->baseband_on;
@@ -1383,6 +1407,9 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "battery-level", "Battery charge, 0-100 percent (the PMU's ADC)");
     object_class_property_add_str(klass, "battery-charging", s5l8920_get_battery_charging, s5l8920_set_battery_charging);
     object_class_property_set_description(klass, "battery-charging", "auto, on or off");
+    object_class_property_add_bool(klass, "guest-shutdown-confirmed", s5l8920_get_guest_shutdown_confirmed, NULL);
+    object_class_property_set_description(klass, "guest-shutdown-confirmed",
+        "The guest's power-off command reached the PMU this run");
     object_class_property_add_bool(klass, "display-sleeping", s5l8920_get_display_sleeping, NULL);
     object_class_property_set_description(klass, "display-sleeping", "The panel is off (DSI display-off)");
     object_class_property_add_bool(klass, "wifi", s5l8920_get_wifi, s5l8920_set_wifi);
@@ -1392,6 +1419,9 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
     object_class_property_add_bool(klass, "baseband", s5l8920_get_baseband, s5l8920_set_baseband);
     object_class_property_set_description(klass, "baseband",
         "radio boards: put the fake cellular modem behind spi2 (default off: a bare controller)");
+    object_class_property_add_str(klass, "imei", s5l8920_get_imei, s5l8920_set_imei);
+    object_class_property_set_description(klass, "imei",
+        "the unit's IMEI (FirmwareKit's device.lock.json machine.imei), for the modem (baseband=on) to report");
     object_class_property_set_description(klass, "gles-debug",
         "Paint what the GL bridge refuses magenta (tests)");
     object_class_property_add_str(klass, "gles-rejects", s5l8920_get_gles_rejects, NULL);

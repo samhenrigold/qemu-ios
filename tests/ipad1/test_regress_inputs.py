@@ -110,10 +110,12 @@ with tempfile.TemporaryDirectory(prefix='ocr-cache-') as tmp:
     def run(argv,**kw):
         commands.append(argv)
         if argv[0]=='swiftc': Path(argv[argv.index('-o')+1]).write_bytes(b'compiled');return SimpleNamespace(returncode=0,stderr='')
-        return SimpleNamespace(stdout='1 2 3 4 Word\n')
+        return SimpleNamespace(stdout='1 2 3 4 Word\n',returncode=0,check_returncode=lambda:None)
     with patch.object(R,'OCR_BIN',str(binary)),patch.object(R.subprocess,'run',side_effect=run):
         assert R.ocr('picture.ppm')=={'Word':(3,765)}
         assert R.ocr('picture.ppm')=={'Word':(3,765)}
+        with patch.object(R.itqmp,'W',320),patch.object(R.itqmp,'H',480):   # a portrait panel is read unturned
+            assert R.ocr('picture.ppm')=={'Word':(2,3)}
     assert sum(c[0]=='swiftc' for c in commands)==1
     assert binary.read_bytes()==b'compiled'
 print('PASS OCR creates and atomically publishes its cache on a clean worktree')

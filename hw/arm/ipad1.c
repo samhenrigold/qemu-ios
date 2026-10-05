@@ -332,6 +332,7 @@ struct IPad1MachineState {
     char *nor_path;
     char *nor_rw_path;                   /* private writable NOR copy (effaceable persists); empty = in-memory */
     char *die_id;                        /* ChipID words 2-3 of the unit, hex pair */
+    char *imei;                          /* the unit's IMEI, for the modem (baseband=on) to report */
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
@@ -1475,6 +1476,9 @@ static void ipad1_init(MachineState *machine)
         qdev_prop_set_int32(bb, "ifx-max-data", s->board->bb_max_data);
         object_property_add_child(OBJECT(s), "baseband-modem", OBJECT(bb));
         s->bb_modem = bb;
+        if (s->imei && s->imei[0]) {
+            object_property_set_str(OBJECT(bb), "imei", s->imei, &error_fatal);
+        }
         qdev_realize_and_unref(bb, NULL, &error_fatal);
         dev = qdev_new(TYPE_IOS_BASEBAND_SPI);
         object_property_set_link(OBJECT(dev), "modem", OBJECT(bb), &error_abort);
@@ -1652,6 +1656,19 @@ static void ipad1_set_nand_overlay(Object *obj, const char *value, Error **errp)
 
     g_free(s->nand_overlay_path);
     s->nand_overlay_path = g_strdup(value);
+}
+
+static char *ipad1_get_imei(Object *obj, Error **errp)
+{
+    return g_strdup(IPAD1_MACHINE(obj)->imei);
+}
+
+static void ipad1_set_imei(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+
+    g_free(s->imei);
+    s->imei = g_strdup(value);
 }
 
 static char *ipad1_get_die_id(Object *obj, Error **errp)
@@ -2103,6 +2120,9 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
                                   ipad1_set_nand_overlay);
     object_class_property_set_description(klass, "nand-overlay",
         "Copy-on-write directory for guest NAND writes; the nand store is then read-only");
+    object_class_property_add_str(klass, "imei", ipad1_get_imei, ipad1_set_imei);
+    object_class_property_set_description(klass, "imei",
+        "the unit's IMEI (FirmwareKit's device.lock.json machine.imei), for the modem (baseband=on) to report");
     object_class_property_add_str(klass, "die-id", ipad1_get_die_id, ipad1_set_die_id);
     object_class_property_set_description(klass, "die-id",
         "the unit's ChipID die-id words 2-3, \"0xWORD2:0xWORD3\" (identity.json); zeros if unset");

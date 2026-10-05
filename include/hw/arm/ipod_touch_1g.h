@@ -95,7 +95,6 @@ typedef struct S5L8900Board {
     const char *touch;               /* the SPI2 peripheral: Zephyr2 or Zephyr1 */
     unsigned touch_atn_irq;          /* GPIO-IC line of the digitizer's ATN */
     int touch_cs_gpio;               /* its chip select pad (-1: none wired) */
-    const struct MTSensorProfile *mt_profile; /* the touch frame calibration (NULL: the sensor's own) */
     uint32_t home_gpio, home_irq, power_gpio, power_irq;
     uint32_t volup_gpio, volup_irq, voldown_gpio, voldown_irq;   /* 0: none */
     uint32_t ring_gpio, ring_irq;                                 /* 0: none */

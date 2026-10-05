@@ -192,7 +192,9 @@ def gli_dispatch_info(cache_path, data=None, names=GLI_NAMES):
 # via DYLD_INSERT_LIBRARIES. See contrib/appsync. Requires the AMFI boot-args (it is ldid-signed).
 APPSYNC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../build/appsync")
 APPSYNC_REL = "usr/lib/libappsync.dylib"
-APPSYNC_JOBS = ("System/Library/LaunchDaemons/com.apple.mobile.installd.plist",)
+# installd's job: com.apple.mobile.installd from 4.0, com.apple.installd on 3.x.
+APPSYNC_JOBS = ("System/Library/LaunchDaemons/com.apple.mobile.installd.plist",
+                "System/Library/LaunchDaemons/com.apple.installd.plist")
 # USB Ethernet (AppleUSBEthernetDevice, usbmuxd's slirp on the host side). Names and paths are the real
 # unit's NetworkInterfaces.plist: Wi-Fi keeps en0 even with no BCM4329 model, so USB is en1 as on hardware.
 SC_DIR = "preferences/SystemConfiguration"   # under /private/var (/Library/Preferences links here)
@@ -609,8 +611,11 @@ def build(a):
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copyfile(src, dst)
             os.chmod(dst, 0o644)
-            for rel in APPSYNC_JOBS:
-                rewrite_plist(os.path.join(m.mnt, rel), dyld_insert)
+            jobs = [os.path.join(m.mnt, rel) for rel in APPSYNC_JOBS if os.path.exists(os.path.join(m.mnt, rel))]
+            if not jobs:
+                raise SystemExit("AppSync: no installd job among %s" % (APPSYNC_JOBS,))
+            for job in jobs:
+                rewrite_plist(job, dyld_insert)
             print("      AppSync: stock libmis retained; installation-service interposition")
         apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))
         with open(os.path.join(m.mnt, "System/Library/CoreServices/SystemVersion.plist"), "rb") as f:
