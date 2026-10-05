@@ -11,13 +11,12 @@ data; an IPA installs through installation_proxy and AppSync and launches.
 
 | Build | Boot | Touch, Home, Hold | Power-off + persist | IPA install + launch | GL app |
 |---|---|---|---|---|---|
-| 3.1.3 7E18 | no: the kernel's NAND table has no 2-bus 0xB614D5AD row for this board (debt 7) | | | | |
-| 4.0 8A293 | activated home screen | yes | yes | yes (Harness; app-install.py all PASS) | draws (debt 1) |
+| 3.1.3 7E18 | no: needs a VSVFL + legacy-FTL store (debt 7) | | | | |
+| 4.0 8A293, 4.0.1 8A306, 4.0.2 8A400, 4.1 8B117 | activated home screen | yes | yes | yes (app-install.py all PASS) | draws (debt 1) |
 | 4.2.1 8C148a | activated home screen ("No Service") | yes | yes | yes (Harness) | renders through the bridge (readback PASS); on the panel at the wrong stride (debt 1) |
-| 4.3.5 8L1 | activated home screen | yes | yes | yes (Harness; app-install.py all PASS) | draws (debt 1) |
-| 5.0 9A334 | Setup Assistant, walked to the home screen; GL-composited | yes (debt 8) | yes | yes (Harness) | draws (debt 1) |
-| 5.1.1 9B206 | Setup Assistant, walked to the home screen; GL-composited | yes (debt 8) | yes | yes (Harness) | draws (debt 1) |
-| 6.1.6 10B500 | no: nothing on the console under kboot, as N81 6.0 (debt 9) | | | | |
+| 4.3 8F190, 4.3.1 8G4, 4.3.2 8H7, 4.3.3 8J2, 4.3.4 8K2, 4.3.5 8L1 | activated home screen | yes | yes | yes (app-install.py all PASS) | draws (debt 1) |
+| 5.0 9A334, 5.0.1 9A405, 5.1 9B176, 5.1.1 9B206 | Setup Assistant, walked to the home screen; GL-composited | yes (debt 8) | yes | yes (Harness) | draws (debt 1) |
+| 6.1.6 10B500 | no: stops logging after corecrypto's FIPS POST, as N81 6.0 (debt 9) | | | | |
 
 - kboot (`imgtools/s5l8920_kboot.py n88 --nor`, the DT's own NOR kept) -> xnu-1504.58.28
   RELEASE_ARM_S5L8920X. The kernel's EmbeddedIOP firmware is the s5l8920x build of iBoot-931 (the N18 runs
@@ -124,7 +123,7 @@ iPod-Touch-4G --checks boot` PASS; N18 dev2 unlock to the home screen with touch
 4. **Camera**: AppleH2CamIn times out on its ISP mailbox (no ISP model); mediaserverd survives it.
 5. As the N18: kboot with the NOR (no NAND boot blocks), K48 fuses and clock table, D1755 backlight and
    wake latch, Wi-Fi.
-6. 4.x/5.x point releases between those in the table not run yet. The 4.x/5.x devices are FirmwareKit's
+6. Every 4.x and 5.x build runs. The devices are FirmwareKit's
    (LightTouchMac n88-app catalog n88ap-*), prepared with a LightTouchDevice + this tree's libqemu-arm.dylib.
 7. **3.1.3 NAND** (two layers, the first solved in a test):
    - Board lookup: 3.1.3's findNandInfo keys on (dies, buses, chip+CE count per bus) against a per-board
