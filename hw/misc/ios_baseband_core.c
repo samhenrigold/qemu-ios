@@ -1640,13 +1640,72 @@ const char *ios_bb_last_mo_sms_text(const IosBbCore *bb)
 
 /* ------------------------------------------------------------ the command table */
 
+/*
+ * The radio's nvram as iBoot-159 reads it (AT+XDRV=9,1,<block>, 512 bytes a block,
+ * "+XDRV: 9,1,<status>,<block>,<hex>", until 0x600 bytes or a status other than 0):
+ * entries [type BE16][length BE16, in 16-bit words with the header][data], ended by
+ * a zero length. Type 1 is the Wi-Fi calibration iBoot puts into arm-io/sdio
+ * tx-calibration (1024 bytes; AppleMRVL868x refuses an all 0x00 or all 0xFF one).
+ * Synthetic: a generated table, not a unit's.
+ */
+#define IOS_BB_NVRAM_SIZE  0x600
+#define IOS_BB_NVRAM_BLOCK 512
+#define IOS_BB_NVRAM_WIFI_CAL 1
+
+void ios_bb_radio_nvram(uint8_t *nv)
+{
+    unsigned cal = 1024, words = (4 + cal) / 2;
+
+    memset(nv, 0xff, IOS_BB_NVRAM_SIZE);
+    nv[0] = 0;
+    nv[1] = IOS_BB_NVRAM_WIFI_CAL;
+    nv[2] = words >> 8;
+    nv[3] = words;
+    for (unsigned i = 0; i < cal; i++) {
+        nv[4 + i] = (uint8_t)((i * 37 + 0x5a) ^ (i >> 3));
+    }
+    memset(nv + 4 + cal, 0, 4);                  /* end: a zero-length entry */
+}
+
+static void radio_nvram_block(IosBbCore *bb, int ch, int block)
+{
+    uint8_t nv[IOS_BB_NVRAM_SIZE];
+    char hex[2 * IOS_BB_NVRAM_BLOCK + 1], line[sizeof(hex) + 48];
+    int n;
+
+    if (block < 0 || (block + 1) * IOS_BB_NVRAM_BLOCK > IOS_BB_NVRAM_SIZE) {
+        chan_printf(bb, ch, "\r\n+XDRV: 9,1,1,%d,\r\n\r\nOK\r\n", block);
+        return;
+    }
+    ios_bb_radio_nvram(nv);
+    for (int i = 0; i < IOS_BB_NVRAM_BLOCK; i++) {
+        snprintf(hex + 2 * i, 3, "%02X", nv[block * IOS_BB_NVRAM_BLOCK + i]);
+    }
+    n = snprintf(line, sizeof(line), "\r\n+XDRV: 9,1,0,%d,%s\r\n\r\nOK\r\n", block, hex);
+    chan_write(bb, ch, line, n);              /* longer than chan_printf's buffer */
+}
+
 /* Parse one complete "at<cmd>" line (already lower-cased). */
-static void at_command(IosBbCore *bb, int ch, const char *cmd)
+static void at_command(IosBbCore *bb, int ch, const char *line)
 {
     const char *arg;
+    char buf[600];
+    const char *cmd = buf;
+    size_t n = strlen(line);
 
     if (getenv(IOS_BB_TRACE_ENV) && atoi(getenv(IOS_BB_TRACE_ENV)) >= 2) {
-        fprintf(stderr, "ios-bb: ch%d > at%s\n", ch, cmd);
+        fprintf(stderr, "ios-bb: ch%d > at%s\n", ch, line);
+    }
+    /* iBoot ends its commands with ';' ("at+cgsn;"); only a dial string needs one. */
+    if (n && line[n - 1] == ';' && line[0] != 'd') {
+        n--;
+    }
+    n = MIN(n, sizeof(buf) - 1);
+    memcpy(buf, line, n);
+    buf[n] = 0;
+    if (strncmp(cmd, "+xdrv=9,1,", 10) == 0) {
+        radio_nvram_block(bb, ch, atoi(cmd + 10));
+        return;
     }
 
     if (!*cmd) {

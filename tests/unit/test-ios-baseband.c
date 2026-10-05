@@ -1197,12 +1197,73 @@ static void test_h5_link_1_0(void)
     }
 }
 
+/*
+ * iBoot-159's radio nvram read: AT+XDRV=9,1,<block>; (its trailing ';') until 0x600
+ * bytes; the type-1 entry is the Wi-Fi calibration it copies into the DT, and
+ * AppleMRVL868x wants its first 128 bytes neither all 0x00 nor all 0xFF.
+ */
+static void test_radio_nvram(void)
+{
+    uint8_t nv[0x600];
+    unsigned got = 0;
+
+    memset(&bb, 0, sizeof(bb));
+    snprintf(bb.imei, sizeof(bb.imei), "000000001234569");
+    ios_bb_init(&bb, core_out, NULL);
+    outlen = 0;
+    nev = ev_i = 0;
+    for (int block = 0; block < 4; block++) {
+        char cmd[32], *line, *hex;
+        int status, b;
+
+        snprintf(cmd, sizeof(cmd), "at+xdrv=9,1,%d;\r", block);
+        outlen = 0;
+        bb.now_ms = tnow;
+        ios_bb_input(&bb, (const uint8_t *)cmd, strlen(cmd));   /* not pumped: read outbuf */
+        outbuf[outlen] = 0;
+        line = strstr((char *)outbuf, "+XDRV: 9,1,");
+        CHECK(line && strstr((char *)outbuf, "\r\nOK\r\n"));
+        if (!line || sscanf(line, "+XDRV: 9,1,%d,%d,", &status, &b) != 2) {
+            CHECK(!"no +XDRV reply");
+            return;
+        }
+        CHECK(b == block);
+        if (block == 3) {
+            CHECK(status != 0);                      /* past the image: iBoot stops */
+            break;
+        }
+        CHECK(status == 0);
+        hex = strchr(strchr(strchr(strchr(line, ',') + 1, ',') + 1, ',') + 1, ',') + 1;
+        for (unsigned i = 0; i < 512; i++, got++) {
+            unsigned v;
+            CHECK(sscanf(hex + 2 * i, "%2X", &v) == 1);
+            nv[got] = v;
+        }
+    }
+    CHECK(got == 0x600);
+    CHECK(nv[0] == 0 && nv[1] == 1 && ((nv[2] << 8) | nv[3]) * 2 - 4 == 1024);
+    bool zero = true, ones = true;
+    for (int i = 0; i < 128; i++) {
+        zero &= nv[4 + i] == 0;
+        ones &= nv[4 + i] == 0xff;
+    }
+    CHECK(!zero && !ones);
+    CHECK(((nv[4 + 1024 + 2] << 8) | nv[4 + 1024 + 3]) == 0);   /* the list ends */
+
+    /* and the ';' iBoot puts on "+cgsn;" */
+    outlen = 0;
+    ios_bb_input(&bb, (const uint8_t *)"at+cgsn;\r", 9);
+    outbuf[outlen] = 0;
+    CHECK(strstr((char *)outbuf, "000000001234569") != NULL);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/baseband/chain", test_chain);
     g_test_add_func("/baseband/ifx", test_ifx);
     g_test_add_func("/baseband/h5-link-1.0", test_h5_link_1_0);
+    g_test_add_func("/baseband/radio-nvram", test_radio_nvram);
     g_test_run();
     if (failures) {
         fprintf(stderr, "test-ios-baseband: %d failure(s)\n", failures);
