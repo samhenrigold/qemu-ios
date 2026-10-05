@@ -78,10 +78,15 @@ pipeline with n90 paths; activation through fw-a4's `lt_activate` hook; guest pa
      This is the 6.x GL dispatch work.
    - There is no guest-package family for 10*, so no it_boot or agent.
 5. 7.1.2 needs a 1664 MiB system partition (`SYSMIB=1664`; its rootfs is about 1.5 GB). fw-a4's lt_activate
-   fails on 7.1.2's lockdownd, so the device is baked without activation (`prepare.sh 11D257 none`). The kernel
-   mounts root (YAFTL, VSVFL signature epoch 1 accepted) and /private/var. Then launchd shuts the system down
-   at once and the boot loops: AppleNANDFTL::systemWillShutdown, after mount_hfs "Could not create property
-   for re-key environment check". The cause is not found yet.
+   fails on 7.1.2's lockdownd, so the device is baked without activation (`prepare.sh 11D257 none`).
+   - The reboot loop right after /private/var mounted was the bake's rw root fstab. 7.x's launchd cannot
+     `mount -uw /` (mount_hfs: Operation not permitted), so it reboots. `ipad1_rootfs.py build --ro-root`
+     (`RO_ROOT=1 prepare.sh`) keeps the stock ro root; launchd then runs, Unactivated.
+   - Found by baking /.launchd_log_shutdown and /.launchd_log_debug and reading /var back off the NAND.
+   - Then backboardd crash-loops on the same GL dispatch gap as 6.1.3 ("dispatch layout from none: 0 slots";
+     SIGSEGV at 0 in QuartzCore).
+6. So 6.x and 7.x both wait on the same next step: a GL dispatch layout source for their OpenGLES/GLEngine in
+   gles-public. Then activation for 7.x, and a guest-package family for 10*/11*.
 
 ## How to boot
 
