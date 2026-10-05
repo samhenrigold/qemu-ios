@@ -162,6 +162,26 @@ now rests 0.5 s at the end of the track before lifting. If the guest is still up
 up to three times in all, as a user would. Once the guest is shutting down, the sheet is gone and a drag
 does nothing.
 
+### iOS 4.0 (8A293) and 4.3.5 (8L1)
+
+Both are built as 4.2.1 is (journaled data volume, default signature flags, NOR kboot plus the keybag
+one-shot with the build's own restore ramdisk). Both boot to an activated home screen, and usbmux, AFC,
+persist and Wi-Fi pass (2026-10-05). Per-build differences:
+
+| What | 4.0 | 4.3.5 |
+|---|---|---|
+| keybag `--ramdisk` | 018-6307-378-ramdisk.dmg | 038-2261-002-ramdisk.dmg |
+| `ipad1_nand.py build --epoch` | 1 | 2: Restore.plist SCEP is 2 from 4.3. With 1, WMR finds no signature (nSig 0) and the root never mounts |
+| lockdownd | FirmwareKit's CActivation patcher (`activation.c` built as its own CLI, `development-activation-shortcut`); the 8C148 script finds no branch | the 8C148 script |
+
+- `ipad1_fw.py` copies an img3 without a KBAG as is. 4.3.4 and 4.3.5 ship their ramdisks unencrypted, and
+  the keys page lists their key as 0.
+- 4.3 classifies the cable by the PMU ADC's channel 6 (AppleD1755PMUPowerSource reads D+, then D-). Both
+  lines above 999 mV mean a charger brick, so the cable type was "Detached" and USB device mode never
+  started. pcf50633 now reads channel 6 as 0 V while the cable is in (a host's pull-downs), as the iPad's
+  D1815 reads its brick mux. 3.1.x and 4.2.1 still pass usbmux and AFC, and so do the iPod 2G regress (boot
+  and AFC) and the iPod 1G regress (boot).
+
 ## Models: reused, varied, new
 
 Classes as in LightTouchMac `docs/fidelity-ledger.md`: R register-level, H high-level emulation of what

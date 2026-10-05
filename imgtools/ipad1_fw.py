@@ -172,7 +172,13 @@ def main(ipsw, keysfile, out):
     for c in ("RestoreRamDisk", "UpdateRamDisk"):
         if c in comp:
             fname = comp[c]
-            open(f"{out}/{fname[:-4]}-ramdisk.dmg", "wb").write(img3_decrypt(z.read(fname), *key(fname), plain_tail=plain_tail))
+            img = z.read(fname)
+            if "KBAG" in img3_tags(img):
+                data = img3_decrypt(img, *key(fname), plain_tail=plain_tail)
+            else:   # 4.3.4/4.3.5 ship their ramdisks unencrypted (the keys page lists key 0)
+                off, dlen = img3_tags(img)["DATA"]
+                data = img[off + 12:off + 12 + dlen]
+            open(f"{out}/{fname[:-4]}-ramdisk.dmg", "wb").write(data)
             print("ok", c, fname)
     osimg = comp["OS"]
     rootfs = re.search(r"\n%s\nKey: (\w+)" % re.escape(osimg), text)

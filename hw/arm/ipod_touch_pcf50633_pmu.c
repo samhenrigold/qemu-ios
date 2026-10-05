@@ -202,7 +202,12 @@ static void pmu_adc_command(Pcf50633State *s, uint8_t command)
      * wait for the timeout state. Only bit 4 starts the actual conversion. */
     if (command & 0x10) {
         pcf50633_update_battery(s);
-        s->adc_sample = s->adc_values[command & 15] & 1023;
+        unsigned ch = command & 15;
+        /* Channel 6 measures D+/D- (the driver muxes one, then the other).
+         * A host's cable pulls both to ground; 4.3's AppleD1755PMUPowerSource
+         * reads a charger brick above 999 mV on both and then never enters
+         * device mode. */
+        s->adc_sample = ch == 6 && s->usb_cable ? 0 : s->adc_values[ch] & 1023;
         timer_mod(s->adc_timer,
                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000);
     }
