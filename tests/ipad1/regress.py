@@ -1072,6 +1072,11 @@ CHECKS = {"boot": check_boot, "gles": check_gles, "shadow": check_shadow, "usbmu
           "app": check_app}
 
 
+def portrait_unlock():
+    """The portrait lock screen's slider, along the bottom: measured at 640x960, scaled to the panel."""
+    return ((116 * itqmp.W // 640, 862 * itqmp.H // 960), (600 * itqmp.W // 640, 862 * itqmp.H // 960))
+
+
 def device_args(a):
     """--nand defaults to the --device's; product_version from the store's device.lock.json.
     Boot images (iBoot, NOR, catalog keys, die-id, or an explicit --kboot) come from ipad1_boot."""
@@ -1109,7 +1114,7 @@ def main():
         # A plugged-in iPod's lock screen is the charging battery on black, not the wallpaper: ~30% lit.
         global LIT_MIN_FRACTION, UNLOCK_FROM, UNLOCK_TO
         LIT_MIN_FRACTION = 0.2
-        UNLOCK_FROM, UNLOCK_TO = (116, 862), (600, 862)   # portrait panel: the slider runs along the bottom
+        UNLOCK_FROM, UNLOCK_TO = portrait_unlock()
     device_args(a)
     import ffmpeg_guard                     # imgtools; stock FFmpeg breaks iPod H.264
     why = ffmpeg_guard.check(a.qemu)

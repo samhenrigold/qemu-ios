@@ -164,7 +164,11 @@ class QMP:
 
 
 def agent_alive(q):
-    return q.cmd("qom-get", path="/machine", property="agent-status") == "alive"
+    """False on a machine without the guest agent (no agent-status property)."""
+    try:
+        return q.cmd("qom-get", path="/machine", property="agent-status") == "alive"
+    except RuntimeError:
+        return False
 
 
 def gles_rejects(q):
@@ -693,6 +697,11 @@ def guest_powerdown(qmp, process, tag, log=print, charging_halt=False, prefer_ge
                     confirmed = qmp.cmd("qom-get", path="/machine", property="guest-shutdown-confirmed")
                 except EOFError:
                     qmp.wait_for_guest_shutdown(0)
+                    break
+                except RuntimeError:
+                    # No such property (n18): the machine has no charging loop and exits on the
+                    # guest's power-off, so the SHUTDOWN event is the evidence.
+                    qmp.wait_for_guest_shutdown(max(1, deadline - time.monotonic()))
                     break
                 if confirmed is True:
                     # The guest unmounted and halted; the cable keeps iBoot

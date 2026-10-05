@@ -27,6 +27,10 @@ second board on the same machine file (`-M n88`, below).
   request. Persistence (2026-10-05): a 70001-byte file pushed with `afcclient` over usbmuxd-qemu
   (`usb-tcp-addr=`) reads back identical after that power-off and a reboot on the same overlay; lockdown
   answers ProductVersion 4.2.1 on both boots.
+- App install (2026-10-05): `tests/ipad1/app-install.py --machine n18` PASS on every step: the harness IPA
+  goes in through installation_proxy and AppSync, gets pinned to page 1, launches, its GLES row renders
+  through the bridge (readback PASS, no refusals), then the guest powers off. The guest-services trap carries
+  GLES and guest packages (debt 8 covers what reaches the panel). Recipe below.
 - Audio: I2S0 gets the codec's PCM from CDMA channel 0x15 on the audio clock (no listening test yet).
 - Not yet: Wi-Fi, the D1755's button wake path (debt 6).
 
@@ -76,6 +80,25 @@ The lock screen turns the panel off after a few idle seconds and the digitizer w
 Machine properties: `kboot`, `nand`, `nand-overlay`, `nor`, `nor-rw` (on the N18 a NOR on spi0 only when one
 is set), `button-home`, `button-hold`, `usb-tcp-addr` (usbmuxd-qemu's QEMU port, as on the iPad).
 
+### App install
+
+The system image needs AppSync and the GL front end (`contrib/appsync/build.sh`,
+`contrib/gles-public/build.sh` and `build-apps.sh`). Add the activation hook, then build the store and the
+keybag as above:
+
+```
+imgtools/ipad1_rootfs.py build --rootfs $F/dec/rootfs.dmg --pristine $F/dec/rootfs.dmg --mbr $F/mbr.bin \
+    --out $F/userland-app --lockdown none --no-usb-net --no-web-proxy --no-ca-ogl --appsync --gles
+python3 -c "import sys; sys.path.insert(0, 'imgtools'); import ipad1_rootfs as r, os
+d = '$F/userland-app/pristine'
+with r.Mounted(d + '/system.img', d + '/mnt-system') as m:
+    r.activation_hook('$HOOK', os.path.join(m.mnt, r.LOCKDOWND))"    # HOOK: offline-activation-8C148/patch_lockdownd.py
+# ipad1_nand.py build ... --out $F/userland-app/nand; dev3 = a copy + erased NOR; ipad1_keybag.py --board n18
+cc -o build/ipad1-tools/sbicons tests/ipad1/sbicons.c $(pkg-config --cflags --libs libimobiledevice-1.0)
+tests/ipad1/app-install.py --machine n18 --device $F/dev3 --kboot $F/kboot-nor-nov.bin --nor $F/dev3/nor.bin \
+    --product-version 4.2.1 --ipa Harness.ipa --gl-tap 0.5,0.165 --out $F/runs/app
+```
+
 ## Models: reused, varied, new
 
 Classes as in LightTouchMac `docs/fidelity-ledger.md`: R register-level, H high-level emulation of what
@@ -122,6 +145,13 @@ offsets at 0x80000000).
 6. **Buttons**: GPIO only; the D1755's wake latch (DT wake_button_* on its STAT) is not driven, so a press
    cannot wake a sleeping AP. Sleep has not been tried.
 7. **it_keybag**: the iPad's armv7 build (`build/ipad1-guest/it_keybag`), copied; same volume layout.
+8. **GL scene on the panel**: the harness's GLES view renders into its 240x360 IOSurface (stride 960) and
+   reads back right, but the panel shows that surface laid out linearly at the panel's 320-pixel stride
+   (the top 270 rows, cyan/magenta stripes). The CLCD keeps scanning its own framebuffer (window 1 unchanged)
+   and the scaler runs no transfer during the scene, so the copy happens in the guest's composite of the app
+   surface. The gate's fixture-colour test (51%) passes regardless. Next: find which compositor reads the
+   surface at panel geometry (SpringBoard's software CA with `CA_ENABLE_OGL=0`, or IOMFB's swap of the
+   app's layer).
 
 ## iPhone 3GS (N88AP, S5L8920): `-M n88`
 
