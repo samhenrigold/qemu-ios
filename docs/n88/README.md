@@ -19,7 +19,8 @@ data; an IPA installs through installation_proxy and AppSync and launches.
 | 4.2.1 8C148a | activated home screen ("No Service") | yes | yes | yes (Harness) | renders through the bridge (readback PASS); on the panel at the wrong stride (debt 1) |
 | 4.3 8F190, 4.3.1 8G4, 4.3.2 8H7, 4.3.3 8J2, 4.3.4 8K2, 4.3.5 8L1 | activated home screen | yes | yes | yes (app-install.py all PASS) | draws (debt 1) |
 | 5.0 9A334, 5.0.1 9A405, 5.1 9B176, 5.1.1 9B206 | Setup Assistant, walked to the home screen; GL-composited | yes | yes | yes (Harness) | draws (debt 1) |
-| 6.1.6 10B500 | userland: lockdown answers 6.1.6, SpringBoard runs, the panel stays on the Apple logo (no GL front end for 6.x yet, so prepared with ca_ogl off; debt 9) | | | | |
+| 6.0 10A403, 6.0.1 10A523 | Setup Assistant, walked to the home screen (with the modem: `baseband=on`, the lock's `imei=`) | yes | yes (gesture; marker survives) | yes (app-install.py all PASS) | draws |
+| 6.1 10B141, 6.1.2 10B146, 6.1.3 10B329, 6.1.6 10B500 | Setup Assistant, walked to the home screen | yes | yes (gesture; marker survives) | yes (app-install.py all PASS) | draws |
 
 - kboot (`imgtools/s5l8920_kboot.py n88 --nor`, the DT's own NOR kept) -> xnu-1504.58.28
   RELEASE_ARM_S5L8920X. The kernel's EmbeddedIOP firmware is the s5l8920x build of iBoot-931 (the N18 runs
@@ -158,11 +159,17 @@ PASS; N18 unlock to the home screen with touch PASS.
 8. ~~**Touch calibration**~~: fitted (mt_profile_n88 frame_*): GSEventGetLocationInWindow's point read through
    the gdbstub (lldb) per tap, as the M68's; an 11-tap check lands within 1 px of every aim. The 5.x Setup walk
    now taps its links where they are drawn.
-9. **iOS 6**: FirmwareKit (a4-n81 6233871: boot_args version 3, nvram-proxy-data filled) plus PA 0 as DRAM's
-   first page get 10B500 through the keybag one-shot and into userland (system_mib 1536). The GL front end
-   (contrib/gles-public) does not fit 6.x yet (imports NSObject classes no 6.x image exports), so the device is
-   prepared with ca_ogl off, and SpringBoard then has no context to draw into ("CGContext... invalid context
-   0x0"): the panel keeps the boot logo. Waits on the 6.x GL shim (a4-boards).
+9. **iOS 6**: 6.1-6.1.6 pass, prepared by FirmwareKit. What it took beyond the A4 boards' 6.x work (boot_args
+   version, nvram-proxy-data, PA 0 as DRAM's first page, fw-a4's GL front end and AppSync):
+   - **/product/product-id**: iBoot fills it; the IPSW DT reserves it zeroed. 6.x GraphicsServices compares it
+     (MobileGestalt's product hash, read from IODeviceTree:/product) with the 3GS's to choose CGFontCacheUR.plist,
+     the only font set the 3GS IPSW ships. Zeroed, it chose CGFontCache.plist, whose _H_ fonts are not on the
+     3GS: every UIFont and bitmap context was nil and Setup crash-looped (NSParagraphStyle nil). FirmwareKit's
+     KBoot fills it as board data (the constant is GraphicsServices' own).
+   - 6.0 and 6.0.1: their lockdownd keeps the data ark's FactoryActivated only once CommCenter says the device is
+     a phone ("This device is a phone. It supports factory activation"), so they need the modem. FirmwareKit's
+     keybag and seal boots now carry it for the radio boards (`baseband=on`, the lock's `imei=`, which the UDID
+     hashes), so the sealed store keeps FactoryActivated; the app and regress boot the same modem.
 10. **3.0** (fixed 2026-10-05, by hand; FirmwareKit to follow): 3.0's yaFTL always takes one block-TOC page
     (YAFTL_Init 0xc05c74ec on 7A341 compares `data <= data*4*n`, so n stays 1; 3.1 fixed it). The k48-16g store's
     vendor type 0x100014 gives two VFL banks per CE, so 2048-page superblocks whose TOC needs two pages: the R/O
