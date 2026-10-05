@@ -134,6 +134,17 @@ These hold for the 3GS unless its v1 trace says otherwise.
   `+cgpaddr=1`, then `+cgdata="M-RAW_IP",1` on DLCI 8 (CONNECT), and raw IPv4 after that. Without
   `+XREG` > 2 (the data bearer; 4 shows "3G"), Safari says "Could not activate cellular data
   network" and nothing is sent.
+* **Roaming (open)**: on 001/01 the status bar shows the network as home (`+creg` 1, CommCenter's
+  registration getter at 0x3b9c0 returns 4 = home), but packet data still counts as international
+  roaming. With Data Roaming off, Safari says "Data Roaming is turned off". With `mcc-mnc=310410`
+  (a PLMN that has a carrier bundle) the alert goes away, so the trigger is that no carrier bundle
+  matches the test PLMN. Which bundle check sets the roaming flag has not been traced. The switch is
+  `InternationalRoamingEDGE` in com.apple.commcenter, in CommCenter's own user's preferences
+  (`_wireless`, `CFPreferencesCopyValue(..., kCFPreferencesCurrentUser, kCFPreferencesAnyHost)`,
+  0x1e7d4), so the file is /var/wireless/Library/Preferences/com.apple.commcenter.plist. Settings
+  changes it through CommCenter (an entitled MIG call, 0x1f4c4). On a carrier bundle change CommCenter
+  seeds the key only when it is missing. Workaround: the guest package's it_prefs sets it to true once
+  per device (contrib/it-prefs). The test PLMN stays the default. 1.0's CommCenter has no such key.
 * **27.010 modem status**: the kernel MSCs every DLCI and waits for the modem's own MSC
   (RTC|RTR). On the data DLCI, DV (carrier) must go up after CONNECT, and NO CARRIER plus DV down
   must follow `+cgact=0`. Without them CommCenter tore the boot-time PDP context down 100 ms after

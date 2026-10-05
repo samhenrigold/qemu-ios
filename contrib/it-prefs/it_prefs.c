@@ -20,6 +20,9 @@
  * Settings afterwards stays: Brightness at maximum and Auto-Lock at Never,
  * each written where that firmware's Settings writes it (see defaults()).
  *
+ * Also once per device, on an iPhone whose CommCenter reads it (4.x; 1.0's does not): Data Roaming on
+ * (see roaming()).
+ *
  * Once Wi-Fi (en0) has an address it also restarts locationd, which otherwise
  * starts before Wi-Fi is powered and then never scans (see main()).
  *
@@ -50,10 +53,20 @@ extern int setenv(const char *, const char *, int);
 extern int socket(int, int, int);
 extern int ioctl(int, unsigned long, ...);
 extern unsigned sleep(unsigned);
+struct passwd {   /* Darwin's, up to pw_dir */
+    char *pw_name, *pw_passwd;
+    unsigned pw_uid, pw_gid;
+    long pw_change;
+    char *pw_class, *pw_gecos, *pw_dir;
+};
+extern struct passwd *getpwnam(const char *);
 
 #define SPRINGBOARD "/System/Library/CoreServices/SpringBoard.app/SpringBoard"
 #define LOCATIOND   "/usr/libexec/locationd"
 #define LOCATIOND_JOB "/System/Library/LaunchDaemons/com.apple.locationd.plist"
+#define COMMCENTER  "/System/Library/Frameworks/CoreTelephony.framework/Support/CommCenter"
+#define COMMCENTER_JOB "/System/Library/LaunchDaemons/com.apple.CommCenter.plist"
+#define ROAMING     "InternationalRoamingEDGE"
 
 enum kind { TRUE, FALSE, STRING };
 
@@ -313,6 +326,58 @@ static unsigned as_mobile(int what, const char *const *jobs, unsigned njobs)
     return (status >> 8) & 0xff;
 }
 
+/*
+ * Data Roaming on, once per device (its own com.qemu.it-prefs RoamingSet marker, so the user's later
+ * choice stands). The emulated network is the test PLMN 001/01, for which no carrier bundle exists, so
+ * CommCenter counts the SIM as roaming and keeps packet data off unless Data Roaming is on
+ * (docs/baseband/commcenter-4.2.1-3gs.md, "Roaming"). The switch is com.apple.commcenter
+ * InternationalRoamingEDGE in CommCenter's own user's preferences (it runs as _wireless and reads it with
+ * kCFPreferencesCurrentUser); Settings changes it through CommCenter, which holds it in memory, so
+ * CommCenter is unloaded around the write and loaded again.
+ */
+static int roaming_step(int write)
+{
+    struct passwd *pw = getpwnam("_wireless");
+    const void *mine, *marker, *cc;
+
+    if (!pw || setgid(pw->pw_gid) || setuid(pw->pw_uid) || setenv("HOME", pw->pw_dir, 1)) {
+        say("could not become _wireless; Data Roaming left alone", "", "");
+        return 0;
+    }
+    if (!cf_load())
+        return 0;
+    mine = str("com.qemu.it-prefs"), marker = str("RoamingSet"), cc = str("com.apple.commcenter");
+    if (get(marker, mine))
+        return 0;
+    if (!write)
+        return 1;
+    set(str(ROAMING), *yes, cc);
+    say(ROAMING, sync(cc) ? " = true (Data Roaming on)" : " not saved: CFPreferencesAppSynchronize failed", "");
+    set(marker, *yes, mine);
+    sync(mine);
+    return 0;
+}
+
+static int as_wireless(int write)
+{
+    int pid = fork(), status = 0;
+    if (pid == 0)
+        _exit(roaming_step(write));
+    if (pid < 0 || waitpid(pid, &status, 0) != pid)
+        return 0;
+    return (status >> 8) & 0xff;
+}
+
+static void roaming(void)
+{
+    if (!file_has(COMMCENTER, ROAMING) || !as_wireless(0))
+        return;
+    if (launchctl("unload", COMMCENTER_JOB) == 0) {
+        as_wireless(1);
+        say(COMMCENTER_JOB, launchctl("load", COMMCENTER_JOB) == 0 ? " reloaded" : " reload failed", "");
+    }
+}
+
 /* Wait up to secs seconds for en0 (Wi-Fi) to have an IPv4 address; 1 if it did. */
 static int wifi_up(unsigned secs)
 {
@@ -367,6 +432,7 @@ int main(void)
     }
     retire_baked();
     as_mobile(2, jobs, n);          /* first: the seal boot halts 40 s in, and Wi-Fi can take longer */
+    roaming();
     for (j = 0; j < n && !streq(jobs[j], LOCATIOND_JOB); j++)
         ;
     if (j < n && wifi_up(120))
