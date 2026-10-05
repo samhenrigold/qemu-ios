@@ -101,7 +101,7 @@ pipeline with n90 paths; activation through fw-a4's `lt_activate` hook; guest pa
    - APPLE_sync is now in the name table as ids 912-918, exported by 6.x and 7.x OpenGLES. The front end answers
      it locally: the host finishes every call before the next, so a fence is signalled as it is made.
    - The bridge refuses nothing on 7.1.2.
-   - Open: regress's Setup walk for iOS 7 (the slide-to-set-up gesture and the new pages), activation
+   - Since resolved (see the 7.1.2 results below): regress's Setup walk for iOS 7, activation
      (lt_activate fails on 7.1.2's lockdownd), a guest package for 10*/11*, and the 6.x Wi-Fi lease.
 8. 6.1.3 Wi-Fi: the driver comes up ("setupDriver(): Succeeded") and joins, with the split CDC length and
    "cap" handled. With wlan.log.level=7, the DHCP offers are seen arriving ("Rx ... UDP sport 67 dport 68").
@@ -123,6 +123,28 @@ readback", no bridge refusals) and guest power-off all PASS on every build.
   content-protection bit on the data volume.
 - The harness retaps the GL fixture once. The first tap is sometimes dropped while the app is still settling.
 - 6.1.3 by hand (`prepare.sh 10B329`) passes the same run.
+
+## iOS 7.1.2 (11D257): results (2026-10-05)
+
+FirmwareKit `n90ap-11D257` (LightTouchMac a4-n81-6x 6479bd5: system_mib 1664, ro root, data-ark activation
+FactoryActivated, cell's k48-ios7 seed baked in). `tests/ipad1/app-install.py --machine iPhone-4`: mux, install,
+lock, setup, icon, launch, gl (31-51% fixture colours, Harness "PASS GLES pixel readback", no refusals) and
+shutdown all PASS. What it took:
+- it_seal: the ro root keeps its job, so it halted every boot. It now seals once, keyed on /private/var/.it_sealed.
+- /chosen mac-address-wifi0 / -bluetooth0: 7.x's MobileGestalt reads the MACs there. Zero MACs gave a UDID
+  (SHA1 of serial + MACs) that didn't match the lock's, so mux looked for a device that never came.
+- Scaler block version 0x20007: 7.x's AppleM2ScalerCSC reads tiled-buffer support from a (SoC, version) table,
+  and its 0x20002 row has none. Every scaled EAGL layer is tiled, so the 1x app's layer stayed black.
+- GL front end: 7.x never sends the notification that releases a conditional scaler transfer. Once tokens drop
+  with no release seen, transfers are issued as they are recorded.
+- gles-host samples 7.x's 'LA88' text surfaces.
+- app-install walks iOS 7's Setup: rows advance on the language and country pages, "Don't Add Passcode",
+  "Get Started".
+- An afc_file_open failure right after a slow mux was regress's wait_mux pairing again on every 5 s poll while
+  7.x's escrow pairing took longer than that (fw-a4's 0a4883c65a raises the poll timeout to 30 s).
+
+5.x note: with no baseband, 5.x reports its USB serial (UDID) as all f's. A lock UDID then never matches, which
+looks like a silent lockdown. Strip identity.udid, or boot with `baseband=on,imei=` (the cell stream's modem).
 
 ## How to boot
 
