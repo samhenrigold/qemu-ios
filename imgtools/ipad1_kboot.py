@@ -408,6 +408,10 @@ def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION, root_matching=ROOT_MATCH
     # iBoot-1940 (7.x) hands NVRAM to the kernel as /chosen/nvram-proxy-data; the IPSW DT reserves it zeroed.
     if "nvram-proxy-data" in dt.props["chosen"]:
         dt.set("chosen", "nvram-proxy-data", nvram_image(dt.props["chosen"]["nvram-proxy-data"][1]))
+    # iBoot-1940 also copies syscfg's MACs to /chosen; 7.x's MobileGestalt reads them there (and hashes them into the UDID).
+    for key, node in (("mac-address-wifi0", "arm-io/sdio"), ("mac-address-bluetooth0", "bluetooth")):
+        if key in dt.props["chosen"]:
+            dt.set("chosen", key, macs[node])
     for key, hz in {"clock-frequency": CPU_HZ, "memory-frequency": MEM_HZ, "bus-frequency": BUS_HZ,
                     "peripheral-frequency": PERIPH_HZ, "fixed-frequency": FIXED_HZ,
                     "timebase-frequency": TIMEBASE_HZ}.items():
