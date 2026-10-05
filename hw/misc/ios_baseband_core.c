@@ -1446,6 +1446,14 @@ static void reg_tick(IosBbCore *bb)
     }
 }
 
+void ios_bb_operator_changed(IosBbCore *bb)
+{
+    /* CommCenter only re-reads +COPS/+XCOPS on a registration change: re-register. */
+    if (reg_stat(bb) == 1 && bb->ch[bb->creg_ch].open) {
+        reg_schedule(bb);
+    }
+}
+
 void ios_bb_changed(IosBbCore *bb)
 {
     int rssi = ios_bb_rssi(bb);

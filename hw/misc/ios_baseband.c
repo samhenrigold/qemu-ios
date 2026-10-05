@@ -358,6 +358,20 @@ static NetClientInfo iosbb_net_info = {
 
 STR_PROP(carrier, operator_long)
 STR_PROP(mcc_mnc, plmn)
+
+static void iosbb_set_carrier_reg(Object *obj, const char *value, Error **errp)
+{
+    iosbb_set_carrier(obj, value, errp);
+    ios_bb_operator_changed(&IOS_BASEBAND(obj)->bb);
+    iosbb_arm(IOS_BASEBAND(obj), qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
+}
+
+static void iosbb_set_mcc_mnc_reg(Object *obj, const char *value, Error **errp)
+{
+    iosbb_set_mcc_mnc(obj, value, errp);
+    ios_bb_operator_changed(&IOS_BASEBAND(obj)->bb);
+    iosbb_arm(IOS_BASEBAND(obj), qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
+}
 STR_PROP(voicemail, voicemail)
 STR_PROP(imei, imei)
 STR_PROP(imsi, imsi)
@@ -795,10 +809,10 @@ static void iosbb_instance_init(Object *obj)
     s->bb.ci = 0x53f1;
     s->bb.answer_delay_ms = -1;
 
-    object_property_add_str(obj, "carrier", iosbb_get_carrier, iosbb_set_carrier);
+    object_property_add_str(obj, "carrier", iosbb_get_carrier, iosbb_set_carrier_reg);
     object_property_set_description(obj, "carrier",
         "Operator name shown to the guest (+XCOPS, +COPS long format)");
-    object_property_add_str(obj, "mcc-mnc", iosbb_get_mcc_mnc, iosbb_set_mcc_mnc);
+    object_property_add_str(obj, "mcc-mnc", iosbb_get_mcc_mnc, iosbb_set_mcc_mnc_reg);
     object_property_set_description(obj, "mcc-mnc",
         "PLMN digits (MCC+MNC) of the fake home network");
     object_property_add_str(obj, "voicemail", iosbb_get_voicemail,
