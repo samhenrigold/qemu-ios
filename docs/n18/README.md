@@ -22,7 +22,8 @@ second board on the same machine file (`-M n88`, below).
   behind dart0. Home wakes the panel, slide to unlock works (N1F55 digitizer firmware downloaded, frames
   read), the home screen comes up (2026-10-04, `screens` in qemu-ios-files/n18/runs/t4.png).
 - Power-off: QMP `system_powerdown` makes the user's gesture (Home, Hold 3.5 s, drag "slide to power
-  off"); SpringBoard swaps every framebuffer, AppleM2TVOut's too, so TV-out is modelled; the guest unmounts,
+  off", rest 0.5 s at the end, lift; up to three drags). SpringBoard swaps every framebuffer,
+  AppleM2TVOut's too, so TV-out is modelled; the guest unmounts,
   syncs the FTL ("AppleNANDFTL::_powerDownHandler: sync complete") and QEMU exits about 15 s after the
   request. Persistence (2026-10-05): a 70001-byte file pushed with `afcclient` over usbmuxd-qemu
   (`usb-tcp-addr=`) reads back identical after that power-off and a reboot on the same overlay; lockdown
@@ -148,6 +149,18 @@ tests/ipad1/regress.py --machine n18 --kboot $F/kboot-7E18.bin --nand $F/userlan
 3.x has no data protection, so it needs no NOR and no keybag. `tests/ipad1/regress.py` now passes
 IPAD1_QEMU_EXTRA to QEMU, as boot-smoke.py does. Use it with `-global driver=s5l8930.h2fmi,...`; the dotted
 `-global s5l8930.h2fmi.x=` form splits at the type name's own dot and silently does nothing.
+
+### iOS 3.1.1 (7C145)
+
+Built exactly as 3.1.3, with the same four differences (`--sig-flags 4`, the unjournaled 8 KiB data volume,
+the kboot DT guards, the unchanged 8C148 lockdownd hook): substitute 7C145 for 7E18 in the commands above
+(keys from api.ipsw.me/v4/keys/ipsw/iPod3,1/7C145). It boots to an activated home screen, and usbmux, AFC,
+persist and Wi-Fi pass (2026-10-05). It needed no model change of its own. One gesture fix came out of it:
+in about one 3.1.1 persist run in three, the touch landed on the power-off knob (its label faded) but the knob
+ignored the drag and snapped back, so the guest never shut down. Screendumps every 1.5 s show it. The gesture
+now rests 0.5 s at the end of the track before lifting. If the guest is still up 2.5 s later, it drags again,
+up to three times in all, as a user would. Once the guest is shutting down, the sheet is gone and a drag
+does nothing.
 
 ## Models: reused, varied, new
 
