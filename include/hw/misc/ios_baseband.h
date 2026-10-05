@@ -22,7 +22,6 @@ struct IosBasebandState {
     QEMUTimer *timer;
     uint8_t out[8192];            /* bytes waiting for the UART */
     unsigned out_len;
-    int64_t out_since;            /* when out[] last went from empty to not */
 
     /* SPI transport (3GS/iPhone 4): ifx-version 1 or 2; 0 = UART chardev (M68). */
     int ifx_version;

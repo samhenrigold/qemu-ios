@@ -59,30 +59,18 @@ DECLARE_INSTANCE_CHECKER(IosBbChardev, IOS_BB_CHARDEV, TYPE_CHARDEV_IOS_BB)
 
 static void iosbb_arm(IosBasebandState *s, int64_t at_ms);
 
-/*
- * SPI: what the modem says waits this long before it can ride a frame. Answered in the
- * same frame as the command, 4.2.1 on N88 missed the reply to +xdrv=7 (its waiter
- * starts after the response already signalled), re-sent it every 10 s and power-cycled
- * the baseband after four tries. A real modem takes tens of milliseconds anyway.
- */
-#define IOS_BB_SPI_REPLY_MS 20
-
 /* The core calls this synchronously; bytes go out from the timer. */
 static void iosbb_out(void *opaque, const uint8_t *buf, size_t len)
 {
     IosBasebandState *s = opaque;
-    int64_t now = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
 
     if (s->out_len + len > sizeof(s->out)) {
         fprintf(stderr, "ios-bb: output backlog overflow, dropping %zu bytes\n", len);
         return;
     }
-    if (!s->out_len) {
-        s->out_since = now;
-    }
     memcpy(s->out + s->out_len, buf, len);
     s->out_len += len;
-    iosbb_arm(s, now + (s->ifx_version ? IOS_BB_SPI_REPLY_MS : IOS_BB_LATENCY_MS));
+    iosbb_arm(s, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
 }
 
 static void iosbb_flush(IosBasebandState *s)
@@ -229,10 +217,6 @@ static void iosbb_tick_timer(void *opaque)
 
     ios_bb_tick(&s->bb, now);
     if (s->ifx_version) {
-        if (s->out_len && now >= s->out_since + IOS_BB_SPI_REPLY_MS) {
-            ios_bb_ifx_queue(&s->ifx, s->out, s->out_len);
-            s->out_len = 0;
-        }
         iosbb_srdy_update(s);
     } else {
         iosbb_flush(s);
@@ -240,10 +224,8 @@ static void iosbb_tick_timer(void *opaque)
 
     due = ios_bb_next_due(&s->bb);
     if (s->out_len) {
-        int64_t at = s->ifx_version ? s->out_since + IOS_BB_SPI_REPLY_MS : now + IOS_BB_LATENCY_MS;
-
-        if (!due || at < due) {
-            due = at;
+        if (!due || now + IOS_BB_LATENCY_MS < due) {
+            due = now + IOS_BB_LATENCY_MS;
         }
     }
     if (due) {
@@ -629,7 +611,6 @@ static const VMStateDescription vmstate_ios_baseband_spi = {
         VMSTATE_BOOL(srdy_level, IosBasebandState),
         VMSTATE_BOOL(mrdy_level, IosBasebandState),
         VMSTATE_BOOL(frame_wanted, IosBasebandState),
-        VMSTATE_INT64(out_since, IosBasebandState),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -763,7 +744,7 @@ static void iosbb_realize(DeviceState *dev, Error **errp)
             return;
         }
         ios_bb_ifx_init(&s->ifx, s->ifx_version, s->ifx_max_data);
-        ios_bb_init(&s->bb, iosbb_out, s);           /* staged, then ios_bb_ifx_queue */
+        ios_bb_init(&s->bb, ios_bb_ifx_queue, &s->ifx);
     } else {
         if (!s->chr) {
             s->chr = qemu_chardev_new(NULL, TYPE_CHARDEV_IOS_BB, NULL, NULL,
