@@ -221,18 +221,21 @@ def main():
         time.sleep(3)
         home = png(b, "home")
         mark = os.path.getsize(syslog) if os.path.exists(syslog) else 0
-        b.tap(GRID[a.machine](slot[1], slot[2]))
-        time.sleep(12)
-        app = png(b, "launched")
-        log = open(syslog, errors="replace").read()[mark:] if os.path.exists(syslog) else ""
-        # "Harness[75]", or launchd's "UIKitApplication:com.qemuios.harness[0x6a01][75]" (4.x)
-        started = bool(re.search(r"(%s|%s)(\[0x[0-9a-f]+\])?\[\d+\]" % (re.escape(exe), re.escape(bundle)), log))
-        if not started and rg.itqmp.agent_alive(b.qmp):   # the syslog relay can drop with the USB link; ask SpringBoard
-            status, front = rg.itqmp.agent(b.qmp, "frontmost")
-            started = status == 0 and front.split(b"\n")[0] == bundle.encode()
-        if not started and a.ipa == HARNESS:     # 5.1+ launchd no longer sends an app's stderr to syslog
-            started = "Harness 1.0 | iOS" in harness_results(b, bundle) or \
-                any(t.startswith("Harness 1.0") for t in ocr_upright(app))
+        for attempt in range(2):   # a tap the home screen drops (6.0.1, after the panel relit) is tapped again
+            b.tap(GRID[a.machine](slot[1], slot[2]))
+            time.sleep(12)
+            app = png(b, "launched")
+            log = open(syslog, errors="replace").read()[mark:] if os.path.exists(syslog) else ""
+            # "Harness[75]", or launchd's "UIKitApplication:com.qemuios.harness[0x6a01][75]" (4.x)
+            started = bool(re.search(r"(%s|%s)(\[0x[0-9a-f]+\])?\[\d+\]" % (re.escape(exe), re.escape(bundle)), log))
+            if not started and rg.itqmp.agent_alive(b.qmp):   # the syslog relay can drop with the USB link; ask SpringBoard
+                status, front = rg.itqmp.agent(b.qmp, "frontmost")
+                started = status == 0 and front.split(b"\n")[0] == bundle.encode()
+            if not started and a.ipa == HARNESS:     # 5.1+ launchd no longer sends an app's stderr to syslog
+                started = "Harness 1.0 | iOS" in harness_results(b, bundle) or \
+                    any(t.startswith("Harness 1.0") for t in ocr_upright(app))
+            if started:
+                break
         changed = ac._framediff(ac._sample(rg, home), ac._sample(rg, app))
         if not step("launch", started and changed, "process seen %s, frame changed %s" % (started, changed)):
             return 1
