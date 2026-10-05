@@ -19,6 +19,8 @@ code = r'''
 #include <unistd.h>
 #include <sqlite3.h>
 #define LIBRARY "unused/"
+#define ML3_LIBRARY "unused.sqlitedb"
+static int ml3;   /* 0: the legacy Library.itdb + Locations.itdb path under test */
 static int connections, finalizations, steps, mode, failure_phase;
 static void fail(const char *reason) { fprintf(stderr,"%s\n",reason); exit(1); }
 static void database_failure(sqlite3 *db,const char *reason) {
