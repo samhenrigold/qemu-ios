@@ -100,6 +100,7 @@ typedef struct A4Board {
     /* I2C slaves in creation order (that order is the snapshot's). */
     A4I2CDevice i2c[10];
     bool accel_flipped;                  /* LIS331 mounted turned 180 degrees about X */
+    uint32_t mt_tx_fifo;                 /* multitouch SPI TX FIFO bytes (its firmware is one burst); 0 = default */
     int8_t bt_uart;                      /* BCM4329 HCI, nothing attached */
     int8_t gauge_uart;                   /* bq27545 HDQ gas gauge; -1 = none */
     uint16_t gauge_mah;
@@ -207,15 +208,17 @@ static const A4Board a4_n81 = {
     .width = 640, .height = 960,
     .panel_id = 0x0969e5a1,                  /* ponytail: K48's; nothing checks it on kboot= */
     .dsi_lanes = 4,                          /* N81 DT #lanes */
-    .mt_profile = &mt_profile_ipod,          /* Z2F51 (0x0033 firmware), iPod.mtprops */
+    .mt_profile = &mt_profile_n81,
     .touch_landscape = false,
+    /* AppleMultitouchN1SPI sends Common.mtprops' N1F55 firmware (53196 bytes) in one DMA burst. */
+    .mt_tx_fifo = 0x10000,
+    /* Measured off the 8C148 sheet. SpringBoard is portrait-only on the
+     * iPod, so the sheet is the same whichever way the device is held. */
     .pwroff_knob = {
-        [1] = { 100, 113, 1, 0 },
-        [2] = { 540, 847, -1, 0 },
-        [3] = { 527, 100, 0, 1 },
-        [4] = { 113, 860, 0, -1 },
+        [1] = { 116, 134, 1, 0 }, [2] = { 116, 134, 1, 0 },
+        [3] = { 116, 134, 1, 0 }, [4] = { 116, 134, 1, 0 },
     },
-    .pwroff_drag_len = 430,
+    .pwroff_drag_len = 460,
     .i2c = {
         { 0, 0x74, TYPE_S5L8930_D1815, 0x0d },
         /* CS42L59 (audio0): the same MAP register file the CS42L61 driver saw. */
@@ -1224,7 +1227,17 @@ static void ipad1_init(MachineState *machine)
     qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(S5L8930_GPIO_NOR_CS),
         qdev_get_gpio_in_named(DEVICE(IPOD_TOUCH_SPI(dev)->nor), SSI_GPIO_CS, 0));
 
-    dev = ipod_touch_spi_create(S5L8930_SPI_BASE(1), ipad1_irq(s, S5L8930_IRQ_SPI(1)), 1, "multitouch", false);
+    if (s->board->mt_tx_fifo) {
+        dev = qdev_new(TYPE_IPOD_TOUCH_SPI);
+        qdev_prop_set_uint8(dev, "index", 1);
+        qdev_prop_set_string(dev, "peripheral", "multitouch");
+        qdev_prop_set_uint32(dev, "tx-fifo-depth", s->board->mt_tx_fifo);
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S5L8930_SPI_BASE(1));
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, ipad1_irq(s, S5L8930_IRQ_SPI(1)));
+    } else {
+        dev = ipod_touch_spi_create(S5L8930_SPI_BASE(1), ipad1_irq(s, S5L8930_IRQ_SPI(1)), 1, "multitouch", false);
+    }
     s->mt = IPOD_TOUCH_SPI(dev)->mt;
     s->mt->profile = s->board->mt_profile;
     /* Zephyr2 ATN -> GPIO 0x15; reset (0x204) and download (0x107) are ignored. */
