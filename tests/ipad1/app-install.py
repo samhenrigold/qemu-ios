@@ -9,7 +9,7 @@ the icon on page 1 -> tap it -> the app's process must show in syslog and the fr
 (--gl-tap, default the Harness's GLES row) tap, then the frame must be mostly the fixture's cyan/magenta with no
 bridge refusals -> guest power-off. Screens land in OUT/install/*.png. Exit status 0 only if every step passed.
 """
-import argparse, importlib.util, os, plistlib, re, subprocess, sys, time, zipfile
+import argparse, importlib.util, os, plistlib, re, shutil, subprocess, sys, time, zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -69,6 +69,7 @@ def main():
     ap.add_argument("--usbmuxd", default=rg.USBMUXD)
     ap.add_argument("--product-version")
     ap.add_argument("--boot-timeout", type=int, default=560)
+    ap.add_argument("--overlay", help="start from a copy of this NAND overlay (e.g. a 5.x device past Setup)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     rg.itqmp.W, rg.itqmp.H = rg.ipad1_boot.MACHINES[a.machine]
@@ -86,7 +87,13 @@ def main():
         rg.log("  %-8s %s  %s" % (name, "PASS" if ok else "FAIL", detail))
         return ok
 
-    b = rg.Boot(a, "install", usb=True)
+    overlay = None
+    if a.overlay:
+        overlay = os.path.join(a.out, "install", "overlay")
+        shutil.rmtree(overlay, ignore_errors=True)
+        os.makedirs(os.path.dirname(overlay), exist_ok=True)
+        subprocess.run(["cp", "-cR", a.overlay, overlay], check=True)   # a clone on APFS; the original stays as it was
+    b = rg.Boot(a, "install", usb=True, overlay=overlay)
     try:
         b.start()
         if not step("mux", b.wait_mux(), "lockdown answers ProductVersion %s" % a.product_version):
@@ -127,7 +134,8 @@ def main():
         app = png(b, "launched")
         log = open(syslog, errors="replace").read()[mark:] if os.path.exists(syslog) else ""
         # "Harness[75]", or launchd's "UIKitApplication:com.qemuios.harness[0x6a01][75]" (4.x)
-        started = bool(re.search(r"(%s|%s)(\[0x[0-9a-f]+\])?\[\d+\]" % (re.escape(exe), re.escape(bundle)), log))
+        started = bool(re.search(r"(%s|%s)(\[0x[0-9a-f]+\])?\[\d+\]" % (re.escape(exe), re.escape(bundle)), log)) \
+            or rg.frontmost(b) == bundle    # 5.x logs no launch line; the guest agent names the frontmost app
         changed = ac._framediff(ac._sample(rg, home), ac._sample(rg, app))
         if not step("launch", started and changed, "process in syslog %s, frame changed %s" % (started, changed)):
             return 1
