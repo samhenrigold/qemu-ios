@@ -7,6 +7,7 @@
 
 #include "hw/misc/ios_baseband_core.h"
 #include "chardev/char.h"
+#include "net/net.h"
 
 #define TYPE_IOS_BASEBAND "ios-baseband"
 
@@ -28,6 +29,10 @@ struct IosBasebandState {
     qemu_irq srdy;                /* out: "clock me" (edge to the AP's GPIO) */
     bool srdy_level;
     bool mrdy_level;              /* in: the AP wants a transfer */
+
+    /* Cellular data: raw IP on the PDP DLCI <-> Ethernet on -netdev id "cell0". */
+    NICConf conf;
+    NICState *nic;
 };
 
 /* The chardev to pass to the UART model as its backend. */

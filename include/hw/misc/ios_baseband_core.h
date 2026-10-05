@@ -50,6 +50,7 @@ typedef struct IosBbAtChan {
     bool echo;
     bool open;                /* DLCI established (channel 0: always) */
     bool sms_prompt;          /* "> " sent, collecting a +CMGS PDU until ^Z/ESC */
+    int data_cid;             /* >0: +CGDATA switched this DLCI to raw IP for that context */
 } IosBbAtChan;
 
 typedef struct IosBbH5Pkt {
@@ -154,6 +155,13 @@ typedef struct IosBbCore {
 
     /* Most recent outgoing call, for the device's read-only property. */
     char last_dialed[32];
+
+    /* Packet data: raw IPv4 on a DLCI after +CGDATA="M-RAW_IP". NULL = no network. */
+    IosBbOutFn data_out;
+    void *data_opaque;
+    bool pdp_active;
+    uint8_t ip_rx[2048];       /* guest -> network packet being reassembled */
+    unsigned ip_rxlen;
 } IosBbCore;
 
 void ios_bb_init(IosBbCore *bb, IosBbOutFn out, void *opaque);
@@ -179,6 +187,14 @@ const char *ios_bb_call_state(const IosBbCore *bb);
 bool ios_bb_incoming_sms(IosBbCore *bb, const char *number, const char *text);
 const char *ios_bb_last_mo_sms_number(const IosBbCore *bb);
 const char *ios_bb_last_mo_sms_text(const IosBbCore *bb);
+
+/*
+ * Network -> guest IPv4 packet on the data DLCI. The guest's address and DNS are
+ * slirp's defaults (IOS_BB_PDP_IP / IOS_BB_PDP_DNS). False if no data DLCI is up.
+ */
+#define IOS_BB_PDP_IP  "10.0.2.15"
+#define IOS_BB_PDP_DNS "10.0.2.3"
+bool ios_bb_data_input(IosBbCore *bb, const uint8_t *pkt, size_t len);
 
 /* H5 packet CRC as the Apple kext computes it (golden vector "123456789" -> 0xf689). */
 uint16_t ios_bb_h5_crc(const uint8_t *p, size_t n);
@@ -208,7 +224,7 @@ void ios_bb_ifx_queue(void *opaque, const uint8_t *buf, size_t len);
 /* Data waiting: the modem wants SRDY asserted. */
 bool ios_bb_ifx_pending(const IosBbIfx *x);
 /*
- * One transfer of n bytes: fills miso, and points *rx/*rxlen at the AP's payload
+ * One transfer of n bytes: fills miso, and points *rx and *rxlen at the AP's payload
  * inside mosi (0 bytes on an empty or malformed frame) for the caller to hand to
  * ios_bb_input.
  */

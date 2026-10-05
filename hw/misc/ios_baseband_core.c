@@ -509,6 +509,7 @@ static void mx_rx_frame(IosBbCore *bb, uint8_t addr, uint8_t ctrl,
             bb->ch[dlci].open = false;
             bb->ch[dlci].len = 0;
             bb->ch[dlci].sms_prompt = false;
+            bb->ch[dlci].data_cid = 0;
         }
         mx_send_frame_canned(bb, dlci, MX_UA | (ctrl & MX_PF));
         break;
@@ -1893,6 +1894,8 @@ static void at_command(IosBbCore *bb, int ch, const char *cmd)
         (arg = arg_after(cmd, "cmee=", NULL)) ||
         (arg = arg_after(cmd, "xsimstate=", NULL)) ||
         (arg = arg_after(cmd, "cgdcont=", NULL)) ||
+        (arg = arg_after(cmd, "xgauth=", NULL)) ||
+        (arg = arg_after(cmd, "xdns=", NULL)) ||
         (arg = arg_after(cmd, "ctfr=", NULL)) ||
         (arg = arg_after(cmd, "vts=", NULL)) ||
         (arg = arg_after(cmd, "xvts=", NULL)) ||
@@ -1930,13 +1933,53 @@ static void at_command(IosBbCore *bb, int ch, const char *cmd)
         return;
     }
     if (strcmp(cmd, "cgact?") == 0) {
-        chan_printf(bb, ch, "\r\n+CGACT: 1,0\r\n");
+        chan_printf(bb, ch, "\r\n+CGACT: 1,%d\r\n", bb->pdp_active);
         at_ok(bb, ch);
         return;
     }
-    if (strncmp(cmd, "cgact", 5) == 0) {
-        /* No packet data behind this modem; refuse activation. */
-        chan_printf(bb, ch, "\r\n+CME ERROR: 100\r\n");
+    if ((arg = arg_after(cmd, "cgact=", NULL))) {
+        int cid = 1;
+
+        if (atoi(arg) == 0) {
+            sscanf(arg, "0,%d", &cid);
+            bb->pdp_active = false;
+            for (int i = 0; i < IOS_BB_MAX_CH; i++) {
+                if (bb->ch[i].data_cid == cid) {
+                    bb->ch[i].data_cid = 0;
+                }
+            }
+            at_ok(bb, ch);
+        } else if (bb->data_out && radio_ok(bb)) {
+            bb->pdp_active = true;
+            at_ok(bb, ch);
+        } else {
+            /* No network behind this modem (or no service): refuse activation. */
+            chan_printf(bb, ch, "\r\n+CME ERROR: 100\r\n");
+        }
+        return;
+    }
+    if ((arg = arg_after(cmd, "cgpaddr=", NULL))) {
+        /* 4.x reads field 1 as the address (commcenter-4.2.1-3gs.md). */
+        chan_printf(bb, ch, "\r\n+CGPADDR: %d,\"%s\"\r\n", atoi(arg), IOS_BB_PDP_IP);
+        at_ok(bb, ch);
+        return;
+    }
+    if (strcmp(cmd, "xdns?") == 0) {
+        chan_printf(bb, ch, "\r\n+XDNS: 1,\"%s\",\"0.0.0.0\"\r\n", IOS_BB_PDP_DNS);
+        at_ok(bb, ch);
+        return;
+    }
+    if ((arg = arg_after(cmd, "cgdata=", NULL))) {
+        const char *comma = strrchr(arg, ',');
+
+        if (!bb->pdp_active || ch == 0) {
+            chan_printf(bb, ch, "\r\nNO CARRIER\r\n");
+            return;
+        }
+        chan_printf(bb, ch, "\r\nCONNECT\r\n");
+        bb->ch[ch].data_cid = comma ? atoi(comma + 1) : 1;
+        bb->ip_rxlen = 0;
+        TRACE("dlci %d is raw IP for cid %d\n", ch, bb->ch[ch].data_cid);
         return;
     }
     TRACE("unknown AT command \"at+%s\"\n", cmd);
@@ -1957,9 +2000,60 @@ static const char *arg_after(const char *cmd, const char *pat, const void *unuse
     return NULL;
 }
 
+/*
+ * Raw IP from the guest. Frames need not line up with packets, so packets are cut
+ * by the IPv4 total length; anything that is not IPv4 resynchronises by dropping.
+ */
+static void data_chan_input(IosBbCore *bb, const uint8_t *data, unsigned len)
+{
+    while (len) {
+        unsigned n = MIN(len, (unsigned)sizeof(bb->ip_rx) - bb->ip_rxlen), tot;
+
+        memcpy(bb->ip_rx + bb->ip_rxlen, data, n);
+        bb->ip_rxlen += n;
+        data += n;
+        len -= n;
+        while (bb->ip_rxlen >= 20) {
+            tot = bb->ip_rx[2] << 8 | bb->ip_rx[3];
+            if ((bb->ip_rx[0] >> 4) != 4 || tot < 20 || tot > sizeof(bb->ip_rx)) {
+                TRACE("data: not IPv4, dropping %u bytes\n", bb->ip_rxlen);
+                bb->ip_rxlen = 0;
+                break;
+            }
+            if (bb->ip_rxlen < tot) {
+                break;
+            }
+            if (bb->data_out) {
+                bb->data_out(bb->data_opaque, bb->ip_rx, tot);
+            }
+            memmove(bb->ip_rx, bb->ip_rx + tot, bb->ip_rxlen - tot);
+            bb->ip_rxlen -= tot;
+        }
+    }
+}
+
+bool ios_bb_data_input(IosBbCore *bb, const uint8_t *pkt, size_t len)
+{
+    for (int i = 1; i < IOS_BB_MAX_CH; i++) {
+        if (bb->ch[i].open && bb->ch[i].data_cid) {
+            /* ponytail: one UIH per <=1500-byte slice; N1 from +cmux if a guest wants smaller. */
+            for (size_t off = 0; off < len; off += 1500) {
+                mx_send(bb, i, false, MX_UIH, pkt + off, MIN(len - off, 1500));
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 static void at_chan_input(IosBbCore *bb, int ch, const uint8_t *data, unsigned len)
 {
     IosBbAtChan *c = &bb->ch[ch];
+
+    if (c->data_cid) {
+        data_chan_input(bb, data, len);
+        return;
+    }
 
     for (unsigned i = 0; i < len; i++) {
         uint8_t b = data[i];
@@ -2197,8 +2291,8 @@ void ios_bb_reset(IosBbCore *bb)
     int signal_dbm = bb->signal_dbm, battery = bb->battery, answer_delay_ms = bb->answer_delay_ms;
     unsigned lac = bb->lac, ci = bb->ci;
     bool registered = bb->registered, sim_present = bb->sim_present;
-    IosBbOutFn out = bb->out;
-    void *opaque = bb->opaque;
+    IosBbOutFn out = bb->out, data_out = bb->data_out;
+    void *opaque = bb->opaque, *data_opaque = bb->data_opaque;
     int64_t now_ms = bb->now_ms;
 
     memcpy(operator_long, bb->operator_long, sizeof(operator_long));
@@ -2230,6 +2324,8 @@ void ios_bb_reset(IosBbCore *bb)
 
     bb->out = out;
     bb->opaque = opaque;
+    bb->data_out = data_out;
+    bb->data_opaque = data_opaque;
     bb->now_ms = now_ms;
 
     /* The FCS/CRC tables are lazy-initialized on first use; the mux rx path

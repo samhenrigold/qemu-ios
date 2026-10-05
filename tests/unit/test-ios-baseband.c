@@ -1008,6 +1008,73 @@ static void test_ifx(void)
     CHECK(x.credits_out >= 4 && x.credits_out <= 8);
 }
 
+/* ------------------------------------------------------------- packet data */
+
+static uint8_t dpkt[4096];
+static size_t dpkt_len;
+static int dpkts;
+
+static void data_out(void *opaque, const uint8_t *p, size_t n)
+{
+    memcpy(dpkt, p, n);
+    dpkt_len = n;
+    dpkts++;
+}
+
+/* 4.x's PDP sequence on a fresh DLCI 6: define, activate, address, DNS, CGDATA, IP both ways. */
+static void test_packet_data(void)
+{
+    uint8_t ip[40] = { 0x45, 0, 0, 40, 0, 0, 0, 0, 64, 17 };
+
+    bb.data_out = data_out;
+    c_sabm(6, 0x3f);
+    pump();
+    ev_i = nev;                                /* skip the UA */
+    c_mux_str(5, "at+cgdcont=1,\"IP\",\"test\"\r");
+    pump();
+    expect_frame(5, "\r\nOK\r\n");
+    c_mux_str(5, "at+cgact=1,1\r");
+    pump();
+    expect_frame(5, "\r\nOK\r\n");
+    c_mux_str(5, "at+cgpaddr=1\r");
+    pump();
+    expect_frame(5, "\r\n+CGPADDR: 1,\"10.0.2.15\"\r\n");
+    expect_frame(5, "\r\nOK\r\n");
+    c_mux_str(5, "at+xdns?\r");
+    pump();
+    expect_frame(5, "\r\n+XDNS: 1,\"10.0.2.3\",\"0.0.0.0\"\r\n");
+    expect_frame(5, "\r\nOK\r\n");
+    c_mux_str(6, "at+cgdata=\"M-RAW_IP\",1\r");
+    pump();
+    expect_frame(6, "\r\nCONNECT\r\n");
+
+    /* Guest -> network: one packet split over two frames, then two in one. */
+    c_mux(6, ip, 25);
+    c_mux(6, ip + 25, 15);
+    pump();
+    CHECK(dpkts == 1 && dpkt_len == 40);
+    {
+        uint8_t two[80];
+
+        memcpy(two, ip, 40);
+        memcpy(two + 40, ip, 40);
+        c_mux(6, two, 80);
+        pump();
+        CHECK(dpkts == 3);
+    }
+    /* Network -> guest: rides DLCI 6 as UIH. */
+    CHECK(ios_bb_data_input(&bb, ip, 40));
+    pump();
+    CHECK(evs[ev_i].dlci == 6 && evs[ev_i].plen == 40 && memcmp(evs[ev_i].payload, ip, 40) == 0);
+    ev_i = nev;
+
+    c_mux_str(5, "at+cgact=0,1\r");
+    pump();
+    expect_frame(5, "\r\nOK\r\n");
+    CHECK(!ios_bb_data_input(&bb, ip, 40));
+    bb.data_out = NULL;
+}
+
 /*
  * The tests are one ordered chain: each section continues the protocol
  * session the previous one built (init -> registration -> SIM -> calls ->
@@ -1024,6 +1091,7 @@ static void test_chain(void)
     test_incoming_sms_ucs2();
     test_dial_no_service();
     test_signal_change();
+    test_packet_data();
     test_sim_removal();
     test_power_and_mux_close();
 }

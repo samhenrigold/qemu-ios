@@ -205,6 +205,66 @@ static const TypeInfo iosbb_chr_type_info = {
     .class_init = iosbb_chr_class_init,
 };
 
+/* -------------------------------------------------------------- cellular data */
+
+/*
+ * The PDP context is raw IPv4; slirp speaks Ethernet. Wrap each packet in a frame
+ * from our MAC to slirp's gateway MAC, and answer slirp's ARP for the guest's
+ * address so it can address frames back. Only "cell0" is looked up: the board
+ * creates this device, so there is no netdev property on the command line.
+ */
+static const uint8_t iosbb_gw_mac[6] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
+
+static void iosbb_data_out(void *opaque, const uint8_t *buf, size_t len)
+{
+    IosBasebandState *s = opaque;
+    uint8_t f[14 + 2048];
+
+    if (!s->nic || len > sizeof(f) - 14) {
+        return;
+    }
+    memcpy(f, iosbb_gw_mac, 6);
+    memcpy(f + 6, s->conf.macaddr.a, 6);
+    f[12] = 0x08;
+    f[13] = 0x00;
+    memcpy(f + 14, buf, len);
+    qemu_send_packet(qemu_get_queue(s->nic), f, 14 + len);
+}
+
+static ssize_t iosbb_net_receive(NetClientState *nc, const uint8_t *buf, size_t len)
+{
+    IosBasebandState *s = qemu_get_nic_opaque(nc);
+    static const uint8_t guest_ip[4] = { 10, 0, 2, 15 };
+
+    if (len < 14) {
+        return len;
+    }
+    if (buf[12] == 0x08 && buf[13] == 0x00) {
+        ios_bb_data_input(&s->bb, buf + 14, len - 14);
+        iosbb_arm(s, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
+    } else if (buf[12] == 0x08 && buf[13] == 0x06 && len >= 42 && buf[21] == 1 &&
+               memcmp(buf + 38, guest_ip, 4) == 0) {
+        uint8_t r[42];
+
+        memcpy(r, buf + 6, 6);                  /* to the asker */
+        memcpy(r + 6, s->conf.macaddr.a, 6);
+        memcpy(r + 12, buf + 12, 8);            /* ethertype, htype..plen */
+        r[20] = 0;
+        r[21] = 2;                              /* reply */
+        memcpy(r + 22, s->conf.macaddr.a, 6);
+        memcpy(r + 28, guest_ip, 4);
+        memcpy(r + 32, buf + 22, 10);           /* asker's MAC + IP */
+        qemu_send_packet(qemu_get_queue(s->nic), r, sizeof(r));
+    }
+    return len;
+}
+
+static NetClientInfo iosbb_net_info = {
+    .type = NET_CLIENT_DRIVER_NIC,
+    .size = sizeof(NICState),
+    .receive = iosbb_net_receive,
+};
+
 /* ------------------------------------------------------------------ QOM properties */
 
 #define STR_PROP(name, field)                                               \
@@ -389,7 +449,7 @@ static const VMStateDescription vmstate_ios_bb_call = {
 
 static const VMStateDescription vmstate_ios_bb_chan = {
     .name = "ios-baseband/chan",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_CHAR_ARRAY(line, IosBbAtChan, 600),
@@ -397,6 +457,7 @@ static const VMStateDescription vmstate_ios_bb_chan = {
         VMSTATE_BOOL(echo, IosBbAtChan),
         VMSTATE_BOOL(open, IosBbAtChan),
         VMSTATE_BOOL(sms_prompt, IosBbAtChan),
+        VMSTATE_INT32_V(data_cid, IosBbAtChan, 2),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -520,6 +581,9 @@ static const VMStateDescription vmstate_ios_baseband = {
         VMSTATE_INT32(bb.xsim_ch, IosBasebandState),
         VMSTATE_INT32(bb.call_ch, IosBasebandState),
         VMSTATE_INT32_V(bb.sms_ch, IosBasebandState, 2),
+        VMSTATE_BOOL_V(bb.pdp_active, IosBasebandState, 2),
+        VMSTATE_UINT8_ARRAY_V(bb.ip_rx, IosBasebandState, 2048, 2),
+        VMSTATE_UINT32_V(bb.ip_rxlen, IosBasebandState, 2),
         VMSTATE_INT32(bb.s0, IosBasebandState),
         VMSTATE_INT32(bb.last_rssi, IosBasebandState),
         VMSTATE_INT32(bb.last_batt, IosBasebandState),
@@ -594,6 +658,20 @@ static void iosbb_realize(DeviceState *dev, Error **errp)
     }
     s->timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, iosbb_tick_timer, s);
     qemu_register_reset(iosbb_machine_reset, s);
+
+    {
+        NetClientState *peer = qemu_find_netdev("cell0");
+
+        if (peer) {
+            qemu_macaddr_default_if_unset(&s->conf.macaddr);
+            s->conf.peers.ncs[0] = peer;
+            s->conf.peers.queues = 1;
+            s->nic = qemu_new_nic(&iosbb_net_info, &s->conf, TYPE_IOS_BASEBAND,
+                                  "cell", &dev->mem_reentrancy_guard, s);
+            s->bb.data_out = iosbb_data_out;
+            s->bb.data_opaque = s;
+        }
+    }
 }
 
 static void iosbb_unrealize(DeviceState *dev)
