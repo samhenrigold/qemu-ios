@@ -436,9 +436,10 @@ def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION, root_matching=ROOT_MATCH
 
 def boot_args_version(m):
     """The boot_args.Version pe_identify_machine demands, read off the kernel: the Thumb pair
-    `ldrh rN, [r0, #2]` (0x8840|N) ... `cmp rN, #V` (0x2800|N<<8|V) just before the literal that
-    names "pe_identify_machine: Epoch Mismatch". 2 when the shape is not found (3.2.x and 4.2.1,
-    which boot with 2); 4.3's xnu-1735 and iOS 5's xnu-1878 say 3."""
+    `ldrh rN, [r0, #2]` (0x8840|N) then `cmp rN, #V` (0x2800|N<<8|V), just before the code that names
+    "pe_identify_machine: Epoch Mismatch". That string is reached through a literal (4.3, 5.x) or a
+    movw/movt/add-pc sequence (6.x). 2 when the shape is not found (3.2.x and 4.2.1, which boot with 2);
+    4.3's xnu-1735, iOS 5's xnu-1878 and iOS 6's xnu-2107 say 3."""
     data = m.data
     so = data.find(b"pe_identify_machine: Epoch Mismatch")
     if so < 0:
@@ -446,14 +447,42 @@ def boot_args_version(m):
     sva = next(vmaddr + (so - fileoff) for _, vmaddr, _, fileoff, filesize, _ in m.segs
                if fileoff <= so < fileoff + filesize)
     lit = data.find(struct.pack("<I", sva))
-    window = data[max(0, lit - 0x400):lit]
-    for n in range(8):
-        i = window.rfind(bytes([0x40 | n, 0x88]))
-        if i < 0:
-            continue
-        j = window.find(bytes([0x28 | n]), i + 2, i + 10)
-        if j > 0:
-            return window[j - 1]
+    if lit >= 0:
+        window = data[max(0, lit - 0x400):lit]
+        for n in range(8):
+            i = window.rfind(bytes([0x40 | n, 0x88]))
+            if i < 0:
+                continue
+            j = window.find(bytes([0x28 | n]), i + 2, i + 10)
+            if j > 0:
+                return window[j - 1]
+
+    def imm16(hw1, hw2):
+        return ((hw1 & 0xf) << 12) | (((hw1 >> 10) & 1) << 11) | (((hw2 >> 12) & 7) << 8) | (hw2 & 0xff)
+
+    def names_string(off, vmaddr, fileoff):
+        """A movw/movt/add rX, pc in the 24 bytes at off that computes sva."""
+        for o in range(off, off + 24, 2):
+            hw1, hw2 = struct.unpack_from("<HH", data, o)
+            if hw1 & 0xfbf0 != 0xf240:
+                continue
+            rd, lo = (hw2 >> 8) & 0xf, imm16(hw1, hw2)
+            h1, h2 = struct.unpack_from("<HH", data, o + 4)
+            if h1 & 0xfbf0 != 0xf2c0 or (h2 >> 8) & 0xf != rd:
+                continue
+            add = struct.unpack_from("<H", data, o + 8)[0]
+            if add == 0x4478 | (rd & 7) | ((rd & 8) << 4):
+                pc = vmaddr + (o + 8 - fileoff) + 4
+                return ((imm16(h1, h2) << 16 | lo) + pc) & 0xffffffff == sva
+        return False
+
+    for _, vmaddr, _, fileoff, filesize, _ in m.segs:
+        for n in range(8):
+            i = data.find(bytes([0x40 | n, 0x88]), fileoff, fileoff + filesize)
+            while i >= 0:
+                if i % 2 == 0 and data[i + 3] == 0x28 | n and names_string(i + 6, vmaddr, fileoff):
+                    return data[i + 2]
+                i = data.find(bytes([0x40 | n, 0x88]), i + 1, fileoff + filesize)
     return 2
 
 
