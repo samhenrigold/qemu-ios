@@ -99,7 +99,7 @@ the block does, P a documented quirk/patch, S stub.
 | UART x5 | `exynos4210.uart`, `s5l8720-irq`; optional `tx-char-ns` pacing (off) | shared | R |
 | SPI0-2 | `ipodtouch.spi`, `s5l8900=on` (no TXCNT, write-to-clear TXEMPTY/RXREADY, 4-bit FIFO counts), `peripheral=` | variant (`set_spi_base` gone on all boards) | R |
 | LCD panel (SPI1) | `s5l8900.lcdpanel`: ID bytes only | new | S |
-| Multitouch (SPI2) | shared Zephyr2 model, ATN group/bit from the board | variant | H |
+| Multitouch (SPI2) | shared Zephyr2 model, ATN group/bit from the board; its own frame calibration (`mt_profile_n45`, fitted on 1.1 from GraphicsServices' tap points: every tap on target) | variant | H |
 | CLCD | `ipodtouch.lcd`, `s5l8900=on`: window 1 at 0x58, window 2 at 0x70, +0x14 enable, +0x18 status/ack | variant | R (windows, irq) / H (blend, palette, VIDCON stored only) |
 | AES | `ipodtouch.aes`, `addr-offset=0x80000000`, `s5l8900-compat` (devos50's UID/key-schedule convention) | variant | H |
 | SHA1 | `ipodtouch.sha1`, hardware buffer readable | shared | R |
