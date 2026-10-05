@@ -140,7 +140,14 @@ These hold for the 3GS unless its v1 trace says otherwise.
   CONNECT and reset the baseband about 10 s later (2 boots in 3).
 * **Frames**: the kernel's idle state is a pre-armed receive-only frame, so the modem's MISO is
   built when the clock runs (SRDY up), not at go.
-* **Not seen**: a toggle of radio_on/bb_rst after boot. A baseband reset by CommCenter (raw `at`
+* **The kernel's frame styles**: (a) MRDY up after go: AP-initiated; (b) TX frame with RUN and no
+  MRDY, queued back to back while data flows: it waits for the modem's SRDY; (c) a receive-only
+  frame with RUN (CFG bit 0): the idle state, ended by the modem's SRDY. While (c) is armed the
+  kernel starts nothing itself, so a lost v2 credit deadlocks both sides. The modem tops the AP up to
+  16 credits on every frame and clocks an idle (c) every 2 s.
+* **Baseband reset**: CommCenter pulses bb_rst (GPIO 0x0102) and then radio_on (0x0101) low. The
+  modem resets to raw AT and CommCenter's recovery re-runs init in bypass ("at" pings, then
+  `+cmux`). A baseband reset by CommCenter (raw `at`
   pings after the mux was up) is not modelled. It only happened while the frame bugs above were
   still in.
 
