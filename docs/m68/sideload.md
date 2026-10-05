@@ -97,6 +97,11 @@ the receiver's "isa" reading `NSAu`.
 2. Owners stay uid 501. HFSPlusVolume.setOwner (FirmwareKit) or a catalog patch would make them 0:0, and
    that will matter if an app is meant to ship a LaunchDaemon.
 3. When the ringer volume HUD comes up at boot (docs/m68/README.md, debt 2), it covers the app as well.
-4. The iPod touch 1G (N45, 3A101a, eight banks) uses the same layout. The tool installs Hello there
-   (the volume checks clean and the pages land), but in one boot SpringBoard 1.1 did not show the icon.
-   1.1 keeps an icon layout (`iconState`), which 1.0 does not; not investigated further.
+4. The iPod touch 1G (N45, 3A101a, eight banks) uses the same layout, and the tool installs there
+   (the volume checks clean). SpringBoard 1.1 still shows nothing it does not know:
+   `-[SBIconModel _addItemsToIconList:fromPath:withTags:]` keeps only display identifiers in
+   `-[SBPlatformController allowedDisplayIdentifiers]`. That is a list compiled into SpringBoard per
+   platform: M68/N82/simulator get the iPhone set, N45 gets its 12 apps plus com.apple.DemoApp. Borrowing
+   an unused identifier does not help, because the N45 list has none (`com.apple.mobilenotes` was tried
+   and stays hidden). Showing an unofficial app on 1.1 means changing SpringBoard, which this tool does
+   not do.
