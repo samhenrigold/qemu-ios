@@ -54,6 +54,22 @@ pipeline with n90 paths; activation through fw-a4's `lt_activate` hook; guest pa
   own Documents/results.log over house_arrest.
 - Without a camera node, CLTM logs "could not find camera service" every 5 s (`camera=off`).
 
+## iOS 6.1.3 (10B329) and 7.1.2 (11D257): what breaks (2026-10-05)
+
+1. Fixed: boot_args.Version. 6.x reaches pe_identify_machine's "Epoch Mismatch" string with movw/movt,
+   so ipad1_kboot read Version 0 and the kernel panicked before the console came up. Now 3 (08a698c2f1).
+   FirmwareKit's KBoot.swift still has the old heuristic.
+2. Fixed: PA 0. In early init both kernels ml_io_map PA 0 (ml_vtophys of gPhysBase, no longer V=P) and copy
+   the reset and exception vectors there. The machine had nothing at PA 0, so the copy took an external abort
+   ("sleh_abort at interrupt context"). Past the boot ROM, PA 0 is now an alias of DRAM's first page, which
+   these kernels leave out of the image (they link at 0x80001000).
+3. Open: matching stops. 7.1.2 gets through corecrypto's FIPS POST, IOPMrootDomain and the IOResources
+   kexts (io=0xffffffff shows each registration) and starts AppleKeyStore. Then nothing more registers.
+   AppleS5L8930XIO never attaches under AppleARMPE, AMFI never starts, and the CPU is busy, not idle.
+   6.1.3's keybag ramdisk stops at the same point, after corecrypto. Candidates are the /chosen properties
+   iBoot-1940 fills that kboot leaves zero: nvram-proxy-data, random-seed, boot-nonce, mac-address-*,
+   consistent-debug-root.
+
 ## How to boot
 
 The same hand pipeline as N81 (`../n81/README.md`, "How to boot"), with `n90` paths and
