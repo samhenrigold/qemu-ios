@@ -142,9 +142,15 @@ These hold for the 3GS unless its v1 trace says otherwise.
   `InternationalRoamingEDGE` in com.apple.commcenter, in CommCenter's own user's preferences
   (`_wireless`, `CFPreferencesCopyValue(..., kCFPreferencesCurrentUser, kCFPreferencesAnyHost)`,
   0x1e7d4), so the file is /var/wireless/Library/Preferences/com.apple.commcenter.plist. Settings
-  changes it through CommCenter (an entitled MIG call, 0x1f4c4). On a carrier bundle change CommCenter
-  seeds the key only when it is missing. Workaround: the guest package's it_prefs sets it to true once
-  per device (contrib/it-prefs). The test PLMN stays the default. 1.0's CommCenter has no such key.
+  changes it through CommCenter (an entitled MIG call, 0x1f4c4; the getter 0x1e868 reads the file each
+  time). When CommCenter sees a new SIM (an ICCID other than the `ICCID` it stored in the same file) it
+  sets the key false (0x19794). Workaround: the guest package's it_prefs sets it to true once per stored
+  ICCID ("none" before one is stored), so the user's later choice for that SIM stands (contrib/it-prefs).
+  The test PLMN stays the default. 1.0's CommCenter has no such key.
+* **Packet data on a fresh device (open)**: on a FirmwareKit-prepared N90 (8C148) CommCenter never sends
+  `+cgdcont`/`+cgact` (Safari waits, nothing reaches cell0), and it never stores `ICCID`. The
+  hand-prepared N90 device, which has `ICCID` stored, brings data up on the same build. What makes
+  CommCenter store it (one case of a large event switch, 0x14a9c -> 0x193c6) has not been traced.
 * **27.010 modem status**: the kernel MSCs every DLCI and waits for the modem's own MSC
   (RTC|RTR). On the data DLCI, DV (carrier) must go up after CONNECT, and NO CARRIER plus DV down
   must follow `+cgact=0`. Without them CommCenter tore the boot-time PDP context down 100 ms after

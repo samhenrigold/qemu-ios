@@ -20,8 +20,8 @@
  * Settings afterwards stays: Brightness at maximum and Auto-Lock at Never,
  * each written where that firmware's Settings writes it (see defaults()).
  *
- * Also once per device, on an iPhone whose CommCenter reads it (4.x; 1.0's does not): Data Roaming on
- * (see roaming()).
+ * On an iPhone whose CommCenter reads it (4.x; 1.0's does not), Data Roaming on once per SIM (see
+ * roaming()).
  *
  * Once Wi-Fi (en0) has an address it also restarts locationd, which otherwise
  * starts before Wi-Fi is powered and then never scans (see main()).
@@ -327,18 +327,23 @@ static unsigned as_mobile(int what, const char *const *jobs, unsigned njobs)
 }
 
 /*
- * Data Roaming on, once per device (its own com.qemu.it-prefs RoamingSet marker, so the user's later
- * choice stands). The emulated network is the test PLMN 001/01, for which no carrier bundle exists, so
- * CommCenter counts the SIM as roaming and keeps packet data off unless Data Roaming is on
+ * Data Roaming on, once per SIM. The emulated network is the test PLMN 001/01, for which no carrier bundle
+ * exists, so CommCenter counts the SIM as roaming and keeps packet data off unless Data Roaming is on
  * (docs/baseband/commcenter-4.2.1-3gs.md, "Roaming"). The switch is com.apple.commcenter
  * InternationalRoamingEDGE in CommCenter's own user's preferences (it runs as _wireless and reads it with
- * kCFPreferencesCurrentUser); Settings changes it through CommCenter, which holds it in memory, so
- * CommCenter is unloaded around the write and loaded again.
+ * kCFPreferencesCurrentUser). CommCenter itself sets it false whenever it sees a new SIM (an ICCID other
+ * than the com.apple.commcenter ICCID it stored), so this follows the same rule: for each stored ICCID this
+ * job has not handled yet (the com.qemu.it-prefs RoamingSetForICCID marker; "none" before CommCenter stores
+ * one), Data Roaming goes on, and the user's later choice for that SIM stands. Settings changes it through CommCenter, which
+ * holds it in memory, so CommCenter is unloaded around the write and loaded again.
  */
+#define ICCID_WAIT 30    /* seconds to wait for CommCenter to store a SIM's ICCID */
+
 static int roaming_step(int write)
 {
     struct passwd *pw = getpwnam("_wireless");
-    const void *mine, *marker, *cc;
+    const void *mine, *marker, *cc, *iccid = 0, *done;
+    unsigned waited = 0;
 
     if (!pw || setgid(pw->pw_gid) || setuid(pw->pw_uid) || setenv("HOME", pw->pw_dir, 1)) {
         say("could not become _wireless; Data Roaming left alone", "", "");
@@ -346,14 +351,21 @@ static int roaming_step(int write)
     }
     if (!cf_load())
         return 0;
-    mine = str("com.qemu.it-prefs"), marker = str("RoamingSet"), cc = str("com.apple.commcenter");
-    if (get(marker, mine))
+    mine = str("com.qemu.it-prefs"), marker = str("RoamingSetForICCID"), cc = str("com.apple.commcenter");
+    while (sync(cc), !(iccid = get(str("ICCID"), cc)) && waited++ < ICCID_WAIT)
+        sleep(1);
+    if (!iccid)                 /* 4.2.1 stores it only from the second boot with a SIM: set it now too */
+        iccid = str("none");
+    done = get(marker, mine);
+    if (done && equal(done, iccid))
         return 0;
-    if (!write)
+    if (!write) {
+        sleep(5);       /* CommCenter's own new-SIM reset of the switch is written just after the ICCID */
         return 1;
+    }
     set(str(ROAMING), *yes, cc);
-    say(ROAMING, sync(cc) ? " = true (Data Roaming on)" : " not saved: CFPreferencesAppSynchronize failed", "");
-    set(marker, *yes, mine);
+    say(ROAMING, sync(cc) ? " = true (Data Roaming on for this SIM)" : " not saved: CFPreferencesAppSynchronize failed", "");
+    set(marker, iccid, mine);
     sync(mine);
     return 0;
 }
@@ -432,7 +444,6 @@ int main(void)
     }
     retire_baked();
     as_mobile(2, jobs, n);          /* first: the seal boot halts 40 s in, and Wi-Fi can take longer */
-    roaming();
     for (j = 0; j < n && !streq(jobs[j], LOCATIOND_JOB); j++)
         ;
     if (j < n && wifi_up(120))
@@ -440,8 +451,6 @@ int main(void)
     stale = as_mobile(0, jobs, n);
     if (!stale)
         say("preferences already set", "", "");
-    if (!(stale | locationd))
-        _exit(0);
     for (j = 0; j < n; j++)
         if (((stale | locationd) & (1u << j)) && launchctl("unload", jobs[j]) == 0)
             stopped |= 1u << j;
@@ -451,6 +460,7 @@ int main(void)
         if (stopped & (1u << j))
             say(jobs[j], launchctl("load", jobs[j]) == 0 ? " reloaded" : " reload failed",
                 locationd & (1u << j) ? " (Wi-Fi up)" : "");
+    roaming();                      /* last: it can wait for CommCenter to see the SIM */
     _exit(0);
     return 0;
 }
