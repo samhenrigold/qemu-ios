@@ -111,8 +111,8 @@ documented quirk/patch, S stub.
 4. **Cameras.** AppleH3CamIn times out on its ISP mailbox several times per boot. Disable the camera nodes
    in the DT or stub the ISP.
 5. **Gyro** absent (Game Center/CoreMotion users see no gyro). An ID-register stub at 0x68 is next.
-6. **Accelerometer mounting** untested. The DT's orientation matrix differs from K48's
-   (`0000ff00 000000ff 00010000`), and `accel_flipped` is off.
+6. ~~Accelerometer mounting~~ (2026-10-04): the board's `accel_mount` "-2,-1,3" is the DT's orientation
+   matrix inverted. Safari turns with `accel-orientation` 1/3 as on hardware (3 = Home right).
 7. **Multitouch calibration**: rows/columns/surface are the iPod 2G's, not measured on a unit. Taps land
    where aimed on the sheet's buttons, but the edges have not been fitted the way the K48's frame values were.
 8. **Panel ID** is K48's (nothing reads it on `kboot=`; iBoot will).

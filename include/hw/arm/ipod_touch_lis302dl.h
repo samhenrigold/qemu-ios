@@ -52,6 +52,10 @@ typedef struct LIS302DLState {
     uint32_t rate_hz;       /* zero: follow CTRL_REG1 DR (100/400 Hz) */
     uint8_t whoami;         /* 0x3B LIS302DL (default), 0x32 LIS331DLH */
     bool mount_flipped;     /* board-mounted turned 180 deg about X: Y, Z negated */
+    /* "mount" property: the sensor's x, y, z as signed device axes ("-2,-1,3": x reads -y,
+     * y reads -x), the inverse of the board DT's accelerometer orientation; empty = the device's own */
+    char *mount;
+    int8_t axis[3];
     uint32_t noise_state;
     int64_t last_sample_ns, shake_start_ns;
     int64_t trace_last_poll_ns, trace_last_report_ns;
