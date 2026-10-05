@@ -133,8 +133,11 @@ documented quirk/patch, S stub.
    real sensitivity matrix.
 6. ~~Accelerometer mounting~~ (2026-10-04): the board's `accel_mount` "-2,-1,3" is the DT's orientation
    matrix inverted. Safari turns with `accel-orientation` 1/3 as on hardware (3 = Home right).
-7. **Multitouch calibration**: rows/columns/surface are the iPod 2G's, not measured on a unit. Taps land
-   where aimed on the sheet's buttons, but the edges have not been fitted the way the K48's frame values were.
+7. ~~**Multitouch calibration**~~ (2026-10-05): `mt_profile_n81`'s frame is now fitted the way the K48's was
+   (x = -69 + 4748u, y = -215 + 7360v; the N1's y runs bottom-up). The iPod's frame had put taps 9 px off at the
+   edges and 21-27 px high. `tests/ipad1/touchcal.py` taps a 4x5 grid on a Safari page that marks each touch:
+   all 20 taps land within 1.5 px on both N90 and N81 8C148. The sensor's rows, columns and surface are still
+   the iPod's.
 8. **Panel ID** is K48's (nothing reads it on `kboot=`; iBoot will).
 9. **LM48557 amp and audio out** are unverified (the codec driver starts).
 10. **Power-off takes over 25 s** to `RB_HALT` (launchd waits on jobs). The machine's watch warning fires

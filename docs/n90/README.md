@@ -87,5 +87,5 @@ As N81, plus:
 3. **Compass**: the AK8973 stands in for the AK8975B pair.
 4. ~~Accelerometer mounting~~ (2026-10-04): `accel_mount` "-2,1,-3" (the DT orientation's transpose).
    Safari turns with `accel-orientation` 1/3/4 as on hardware.
-5. All of N81's debts apply: no iBoot or NAND boot, K48's 16 GB NAND geometry, K48's panel ID, uncalibrated
-   touch edges.
+5. All of N81's debts apply: no iBoot or NAND boot, K48's 16 GB NAND geometry, K48's panel ID. Touch is
+   calibrated (N81's debt 7, the shared `mt_profile_n81`).
