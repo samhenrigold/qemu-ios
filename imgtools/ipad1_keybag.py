@@ -2,13 +2,14 @@
 """The 4.x data-protection one-shot: boot the IPSW's restore ramdisk once to format effaceable storage and
 create the system keybag on a new device's NAND store + writable NOR (docs/ipad1/ios4.md).
 
-    ipad1_keybag.py STORE NOR --dec DEC --ramdisk NAME [--identity FILE] [--die-id 0xW2:0xW3] [--qemu PATH]
+    ipad1_keybag.py STORE NOR --dec DEC --ramdisk NAME [--identity FILE] [--die-id 0xW2:0xW3] [--qemu PATH] [--board n18]
 
 DEC is ipad1_fw.py's output; NAME its decrypted restore ramdisk (raw HFS+, e.g. 038-0024-002-ramdisk.dmg).
 A private copy of the ramdisk gets it_keybag (contrib/it-keybag) as /usr/local/bin/restored_external, the
 first thing its rc.boot runs; kboot boots it as md0 with the stock restore kernelcache and DeviceTree,
 whose secure-root-prefix 'md' makes the root a SecureRoot. it_keybag formats effaceable (lands in NOR),
 creates /private/var/keybags/systembag.kb (lands in STORE) and halts. STORE and NOR are written in place.
+--board n18/n88 boots the S5L8920 machine through s5l8920_kboot.py --nor (its NOR is the grafted one).
 A boot that panics or does not halt is retried (up to ATTEMPTS) from a copy of STORE and NOR taken
 before the first, with the reason and the panic line logged.
 """
@@ -50,12 +51,18 @@ def main():
     ap.add_argument("--helper", default=os.path.join(ROOT, "build/ipad1-guest/it_keybag"))
     ap.add_argument("--qemu", default=os.path.join(ROOT, "build/qemu-system-arm"))
     ap.add_argument("--timeout", type=int, default=300)
+    ap.add_argument("--board", help="n18/n88 (-M n18/n88, S5L8920); A4 boards are read off the DeviceTree")
     a = ap.parse_args()
     td = tempfile.mkdtemp(prefix="ipad1-keybag-")
     rd, kboot, serial = f"{td}/ramdisk.dmg", f"{td}/kboot-restore.bin", f"{td}/keybag.log"
     ramdisk_with_helper(os.path.join(a.dec, a.ramdisk), a.helper, rd)
-    ipad1_kboot.main(a.dec, kboot, identity=a.identity, ramdisk=rd)
-    machine = ipad1_kboot.dt_board(ipad1_kboot.DeviceTree(open(os.path.join(a.dec, "DeviceTree.bin"), "rb").read()))["machine"]
+    if a.board in ("n18", "n88"):
+        import s5l8920_kboot
+        s5l8920_kboot.main(a.board, a.dec, kboot, identity=a.identity, ramdisk=rd, nor=True)
+        machine = a.board
+    else:
+        ipad1_kboot.main(a.dec, kboot, identity=a.identity, ramdisk=rd)
+        machine = ipad1_kboot.dt_board(ipad1_kboot.DeviceTree(open(os.path.join(a.dec, "DeviceTree.bin"), "rb").read()))["machine"]
     nor = open(a.nor, "rb").read()
     extra = f"nand={os.path.abspath(a.store)},nor-rw={os.path.abspath(a.nor)}" + (f",die-id={a.die_id}" if a.die_id else "")
     pre = f"{td}/store.pre"

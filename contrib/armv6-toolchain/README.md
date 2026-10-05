@@ -114,3 +114,14 @@ Measured on 3.1.3, from a plain non-root-privileged user-mode process:
 
 Requires a QEMU built with `QC_GLES_PING` (see
 `include/hw/arm/guest-services/general.h`).
+
+## Linking against a firmware's own frameworks (1.x)
+
+There was no SDK before 2.0, so 1.x code that calls UIKit (or anything past libSystem) links against the
+firmware itself: `mktbd.py ROOT /System/Library/Frameworks/UIKit.framework/UIKit UIKit.tbd` writes a
+text stub with the binary's install name, versions and exported symbols, declared for armv7 as link6
+links. Fragile-ABI classes go in as their `.objc_class_name_X` symbols. Pass the stubs to link6 as
+inputs, and point LEGACY_SYSTEM_STUB at a directory holding a `libSystem.tbd` made the same way so
+`-lSystem` binds only what that libSystem has. `contrib/hello-2007/build.sh` is the worked example,
+Objective-C included (`-fobjc-runtime=macosx-fragile-10.5`). Two 1.x runtime traps it documents: the
+delayed library initializers and the fragile ivar layout (docs/m68/sideload.md).

@@ -105,7 +105,56 @@ The `+XCIEV` field-0 difference is the only place 1.0 and 4.2.1 would want diffe
 since 4.2.1 ignores field 0, one dialect serves both. That is why no per-firmware profile switch
 exists yet. Add one when a black-box trace shows two firmwares parsing the same reply differently.
 
-## Black-box checklist (once N88 boots)
+## Confirmed black-box on N90 4.2.1 (the same CommCenter and kernel stack, IFX v2)
+
+These hold for the 3GS unless its v1 trace says otherwise.
+
+* **Controller**: the RX chain (CDMA ch 0x11 on +0x20) is armed before any transfer. Each frame
+  writes CTRL=0xc, then the counts, TXCNT=RXCNT=0x200 words (0x800 bytes = header + 0x7fc), TX
+  DMA go, CFG = 0xd405a (bit 6 = go; CTRL RUN is written only after SRDY), MRDY up ... MRDY down,
+  CFG = 0xd401a, CTRL=0. A modem-initiated frame is CFG 0xd405b: receive-only, no TX, no MRDY.
+* **Handshake**: every frame needs a fresh SRDY rising edge after it is set up. An SRDY timeout
+  with SRDY already high is fatal (kASMFatalErrorSPI 0x8; the mux goes Bypass -> Error). The
+  kernel follows a frame whose "more" bit is set with a receive-only frame, so the modem must raise
+  SRDY for any frame that is set up, not only when it has data. SRDY raised at boot before the
+  kernel's first transfer also ends in that timeout.
+* **v2 header bits**: AP byte 1 bit 6 means "I hold no credits" (it sends `00 40 01 00` and gets a
+  grant on the next frame). The AP grants the modem 15 credits (`00 00 0f 00`); the modem sends data
+  only against them.
+* **Mux**: after `+cmux=0,0,0,1500` the kernel runs basic mode straight on the IFX payload (no H5),
+  with 0xF9 flags on every frame, and it opens DLCIs 0..13. UA from the modem carries C/R=1.
+* **Channel roles** (4.2.1): 1 = calls + SIM (`+xcallstat`, `+cpin?`, `+cimi`, `+xsimstate`),
+  2 = registration/signal (`+creg`, `+xreg`, `+xmer`, `+xcgedpage` every ~5 s), 3 = SMS (`+cnmi`,
+  `+CMT`; `+cnma` comes back on 4), 4 = `+xia`, 5 = PDP control, 7 = a second "radio" dispatcher
+  (`+xgendata`, `+xdrv=7,...`), and 8+ = PDP data (the first context used DLCI 8).
+* **Radio**: 4.x never sends `+cfun=1` at start (the modem boots on). `+cfun=6`/`+cfun=7` come from
+  the SIM toolkit and are not radio off.
+* **Calls**: answer is `ata`, end is `+chld=1` (ATH also handled), dial is `atd<num>;`.
+* **Data**: `+cgdcont=1,"ip",""`, `+xgauth=1,1,"",""`, `+xdns=1,1`, `+cgact=1,1`, `+xdns?`,
+  `+cgpaddr=1`, then `+cgdata="M-RAW_IP",1` on DLCI 8 (CONNECT), and raw IPv4 after that. Without
+  `+XREG` > 2 (the data bearer; 4 shows "3G"), Safari says "Could not activate cellular data
+  network" and nothing is sent.
+* **27.010 modem status**: the kernel MSCs every DLCI and waits for the modem's own MSC
+  (RTC|RTR). On the data DLCI, DV (carrier) must go up after CONNECT, and NO CARRIER plus DV down
+  must follow `+cgact=0`. Without them CommCenter tore the boot-time PDP context down 100 ms after
+  CONNECT and reset the baseband about 10 s later (2 boots in 3).
+* **Frames**: the kernel's idle state is a pre-armed receive-only frame, so the modem's MISO is
+  built when the clock runs (SRDY up), not at go.
+* **The kernel's frame styles**: (a) MRDY up after go: AP-initiated; (b) TX frame with RUN and no
+  MRDY, queued back to back while data flows: it waits for the modem's SRDY; (c) a receive-only
+  frame with RUN (CFG bit 0): the idle state, ended by the modem's SRDY. While (c) is armed the
+  kernel starts nothing itself, so a lost v2 credit deadlocks both sides. The modem tops the AP up to
+  16 credits on every frame and clocks an idle (c) every 2 s.
+* **Baseband reset**: CommCenter pulses bb_rst (GPIO 0x0102) and then radio_on (0x0101) low. The
+  modem resets to raw AT and CommCenter's recovery re-runs init in bypass ("at" pings, then
+  `+cmux`). A baseband reset by CommCenter (raw `at`
+  pings after the mux was up) is not modelled. It only happened while the frame bugs above were
+  still in.
+
+How to watch it: `IOS_BB_TRACE=2` prints every AT line and reply, the SPI frames and MRDY/SRDY with
+virtual-ms stamps. `S5L8930_CDMA_TRACE=1` prints the channel go's.
+
+## Black-box checklist (N88, once it boots)
 
 1. MMIO trace of spi2 and CDMA channels 0x10/0x11: word size, frame length, the MRDY/SRDY order.
 2. `IOS_BB_TRACE=1`: the AT commands CommCenter actually sends after `+cmux`, and which DLCIs the

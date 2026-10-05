@@ -48,11 +48,28 @@ same code is in the N90 caches):
 | 1 bit 5 | rx error (the kext reports it) |
 | 2, 3[3:0] | **credits granted** to the receiver of this header, added up (`creditsGranted`) |
 
-The AP sends data frames only while it holds credits, so the modem must grant some early. The core
-(`ios_bb_ifx_*`, version 2) grants 8 when the AP's balance (modelled per data frame received)
-drops below 4, and requests SRDY while a grant is due. **(black-box)** once N90 boots: whether
-credits are consumed per frame or per buffer, and the initial-grant timing the kext expects.
+Seen on the guest: the AP opens with `00 40 01 00`. Byte 1 bit 6 means "no credits", and that
+frame also grants the modem 1. The modem grants 8 in its next frame, after which the AP grants 15
+(`00 00 0f 00`). Credits are counted per data frame. The modem does not raise SRDY just to grant
+credits (see "Confirmed black-box on N90" in `commcenter-4.2.1-3gs.md` for the whole handshake).
 
 Above the framing, everything matches the 3GS: AppleSerialMultiplexer runs 27.010 in the kernel and
-CommCenter uses `/dev/mux.spi-baseband`, with the AT dialect in `commcenter-4.2.1-3gs.md`. Wiring
-on N90 is the 3GS's spi2 baseband model at the A4's addresses, with `ifx-version=2`.
+CommCenter uses `/dev/mux.spi-baseband`, with the AT dialect in `commcenter-4.2.1-3gs.md`.
+
+On N90 it runs as `-M iPhone-4,baseband=on`: ios-baseband (ifx v2, 0x7fc) behind ios-baseband-spi
+at 0x82200000, MRDY 0x0605, SRDY 0x0104, plus `-netdev user,id=cell0` for data. 4.2.1 shows "Test
+Network" with five bars, and SMS in/out, calls in/out and 3G data (Safari through slirp) all work.
+
+## Driving it (QMP, `/machine/baseband-modem`)
+
+| property | effect, verified on N90 4.2.1 |
+|----------|-------------------------------|
+| `signal-dbm` (int) | bars follow within one +XCGEDPAGE poll (~5 s): -59 gives 5 bars, -95 gives 3 |
+| `carrier`, `mcc-mnc` | re-registers; the status bar shows the new name |
+| `registered` (bool) | false shows "Searching...", true registers again |
+| `incoming-sms` = `"<digits>\|<text>"` | lock-screen alert and Messages thread |
+| `incoming-call` = `<digits>`, `remote-answer`, `remote-hangup` | ring screen; the far end of an outgoing call |
+| `call-state`, `last-dialed`, `last-mo-sms` (read) | what the phone did |
+| `imei`, `imsi`, `iccid` | identity (fictitious defaults); the board copies `imei` into the DT |
+
+Data needs `-netdev user,id=cell0` (slirp; the phone gets 10.0.2.15, DNS 10.0.2.3).

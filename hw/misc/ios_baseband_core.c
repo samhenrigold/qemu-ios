@@ -458,6 +458,15 @@ static void mx_send_frame_canned(IosBbCore *bb, unsigned dlci, uint8_t ctrl)
     mx_emit(bb, f, n);
 }
 
+/* Our own V.24 status for a DLCI: RTC|RTR, plus DV (carrier) while it carries data. */
+static void mx_msc(IosBbCore *bb, unsigned dlci, bool dv)
+{
+    uint8_t msc[4] = { MX_CMD_MSC, (2 << 1) | MX_EA, (dlci << 2) | MX_CR | MX_EA,
+                       0x0d | (dv ? 0x80 : 0) };
+
+    mx_send(bb, 0, false, MX_UIH, msc, sizeof(msc));
+}
+
 /*
  * DLCI 0 control command. We are the responder: echo TEST/MSC/FCON/FCOFF/RLS, ack PSC
  * (power save), ack CLD and drop the multiplexer (back to the AT-only stream), and answer
@@ -473,6 +482,8 @@ static void mx_control(IosBbCore *bb, const uint8_t *data, unsigned len)
     }
     type = data[0];
     clen = (data[1] >> 1) & 0x7f;
+    TRACE("mux control type %02x len %u (%02x %02x)\n", type, clen,
+          len > 2 ? data[2] : 0, len > 3 ? data[3] : 0);
     if (2u + clen > len) {
         return;
     }
@@ -521,6 +532,13 @@ static void mx_control(IosBbCore *bb, const uint8_t *data, unsigned len)
         break;
     }
     mx_send(bb, 0, false, MX_UIH, resp, rn);
+    if (type == MX_CMD_MSC && dlen >= 2 && !bb->h5) {
+        /*
+         * The kernel mux (4.x, bare stream) waits for the modem's own MSC on every
+         * DLCI too (its kReceivingModemBits state): RTR|RTC, ready, no carrier yet.
+         */
+        mx_msc(bb, data[0] >> 2, false);
+    }
 }
 
 static void at_chan_input(IosBbCore *bb, int ch, const uint8_t *data, unsigned len);
@@ -544,6 +562,7 @@ static void mx_rx_frame(IosBbCore *bb, uint8_t addr, uint8_t ctrl,
         }
         break;
     case MX_DISC:
+        TRACE("mux DISC dlci %u -> UA\n", dlci);
         if (dlci < IOS_BB_MAX_CH) {
             bb->ch[dlci].open = false;
             bb->ch[dlci].len = 0;
@@ -554,6 +573,7 @@ static void mx_rx_frame(IosBbCore *bb, uint8_t addr, uint8_t ctrl,
         break;
     case MX_DM:
     case MX_UA:
+        TRACE("mux %s dlci %u from the AP\n", (ctrl & ~MX_PF) == MX_UA ? "UA" : "DM", dlci);
         break;                             /* we never initiate */
     case MX_UIH:
     case MX_UI:
@@ -639,7 +659,9 @@ static void mx_input(IosBbCore *bb, const uint8_t *buf, size_t len)
             if (mx_fcs_table[m->fcs ^ c] == MX_GOOD_FCS) {
                 mx_rx_frame(bb, m->addr, m->ctrl, m->buf, m->cnt);
             } else {
-                TRACE("mux bad FCS on a %u-byte frame\n", m->cnt);
+                TRACE("mux bad FCS on a %u-byte frame (addr %02x ctrl %02x len %u fcs %02x): "
+                      "%02x %02x %02x %02x %02x %02x\n", m->cnt, m->addr, m->ctrl, m->len, c,
+                      m->buf[0], m->buf[1], m->buf[2], m->buf[3], m->buf[4], m->buf[5]);
             }
             m->state = IOS_BB_MX_SEARCH;
             m->flags_run = 0;
@@ -679,7 +701,7 @@ static void h5_stream(IosBbCore *bb, const uint8_t *data, unsigned len)
 static void chan_write(IosBbCore *bb, int ch, const char *s, unsigned len)
 {
     if (getenv(IOS_BB_TRACE_ENV) && atoi(getenv(IOS_BB_TRACE_ENV)) >= 2) {
-        fprintf(stderr, "ios-bb: ch%d < ", ch);
+        fprintf(stderr, "%" PRId64 " ios-bb: ch%d < ", bb->now_ms, ch);
         for (unsigned i = 0; i < len && i < 120; i++) {
             fputc(s[i] == '\r' || s[i] == '\n' ? ' ' : s[i], stderr);
         }
@@ -1397,6 +1419,17 @@ static int reg_stat(const IosBbCore *bb)
     return bb->registered ? 1 : 2;
 }
 
+/*
+ * +XREG value for the data bearer (4.x getDataRAT: values up to 2 count as none).
+ * ponytail: one fixed bearer; make it a property if the Mac app wants E/3G toggles.
+ */
+#define IOS_BB_XREG_BEARER 4
+
+static int xreg_value(const IosBbCore *bb)
+{
+    return reg_stat(bb) == 1 ? IOS_BB_XREG_BEARER : 0;
+}
+
 static void reg_tick(IosBbCore *bb)
 {
     int ch = bb->creg_ch;
@@ -1434,8 +1467,19 @@ static void reg_tick(IosBbCore *bb)
         if (bb->cgreg_n > 0) {
             chan_printf(bb, ch, "\r\n+CGREG: 1\r\n");
         }
+        if (bb->xreg_n > 0) {
+            chan_printf(bb, ch, "\r\n+XREG: %d\r\n", xreg_value(bb));
+        }
         emit_xciev(bb);
         bb->reg_step = 0;
+    }
+}
+
+void ios_bb_operator_changed(IosBbCore *bb)
+{
+    /* CommCenter only re-reads +COPS/+XCOPS on a registration change: re-register. */
+    if (reg_stat(bb) == 1 && bb->ch[bb->creg_ch].open) {
+        reg_schedule(bb);
     }
 }
 
@@ -1701,7 +1745,7 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
     size_t n = strlen(line);
 
     if (getenv(IOS_BB_TRACE_ENV) && atoi(getenv(IOS_BB_TRACE_ENV)) >= 2) {
-        fprintf(stderr, "ios-bb: ch%d > at%s\n", ch, line);
+        fprintf(stderr, "%" PRId64 " ios-bb: ch%d > at%s\n", bb->now_ms, ch, line);
     }
     /* iBoot ends its commands with ';' ("at+cgsn;"); only a dial string needs one. */
     if (n && line[n - 1] == ';' && line[0] != 'd') {
@@ -1799,8 +1843,18 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
         return;
     }
     if (strncmp(cmd, "xgendata", 8) == 0) {
-        /* Version = first digit after the first quote to the next quote. */
-        chan_printf(bb, ch, "\r\n+XGENDATA: \"DEV_ICE_MODEM_03.12.08_G\"\r\n");
+        /*
+         * 1.0 (H5): version = first digit after the first quote to the next quote.
+         * 4.x (SPI): wants a comma, then "ICE2"/"ICE3" and the digits after it, and a
+         * "BOOTLOADER_VERSION:" field (CommCenter 4.2.1 0x36978), which is what About shows
+         * as Modem Firmware.
+         */
+        if (bb->h5) {
+            chan_printf(bb, ch, "\r\n+XGENDATA: \"DEV_ICE_MODEM_03.12.08_G\"\r\n");
+        } else {
+            chan_printf(bb, ch, "\r\n+XGENDATA: \"DEV_ICE2_MODEM_02.10.04\","
+                        "\"BOOTLOADER_VERSION: 02.10.04\"\r\n");
+        }
         at_ok(bb, ch);
         return;
     }
@@ -1884,6 +1938,16 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
         if (bb->cgreg_n > 0) {
             reg_schedule(bb);
         }
+        return;
+    }
+    if ((arg = arg_after(cmd, "xreg=", NULL))) {
+        bb->xreg_n = atoi(arg);
+        at_ok(bb, ch);
+        return;
+    }
+    if (strcmp(cmd, "xreg?") == 0) {
+        chan_printf(bb, ch, "\r\n+XREG: %d,%d\r\n", bb->xreg_n, xreg_value(bb));
+        at_ok(bb, ch);
         return;
     }
     if (strcmp(cmd, "cgreg?") == 0) {
@@ -2101,12 +2165,20 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
         if (atoi(arg) == 0) {
             sscanf(arg, "0,%d", &cid);
             bb->pdp_active = false;
+            at_ok(bb, ch);
             for (int i = 0; i < IOS_BB_MAX_CH; i++) {
                 if (bb->ch[i].data_cid == cid) {
+                    /* Back to command mode, and say so on that DLCI as a modem does:
+                     * 4.x waits for it before it reuses the channel (no NO CARRIER:
+                     * it resets the baseband a few seconds later). */
                     bb->ch[i].data_cid = 0;
+                    bb->ip_rxlen = 0;
+                    chan_printf(bb, i, "\r\nNO CARRIER\r\n");
+                    if (!bb->h5) {
+                        mx_msc(bb, i, false);
+                    }
                 }
             }
-            at_ok(bb, ch);
         } else if (bb->data_out && radio_ok(bb)) {
             bb->pdp_active = true;
             at_ok(bb, ch);
@@ -2135,6 +2207,9 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
             return;
         }
         chan_printf(bb, ch, "\r\nCONNECT\r\n");
+        if (!bb->h5) {
+            mx_msc(bb, ch, true);                /* carrier up on the data DLCI */
+        }
         bb->ch[ch].data_cid = comma ? atoi(comma + 1) : 1;
         bb->ip_rxlen = 0;
         TRACE("dlci %d is raw IP for cid %d\n", ch, bb->ch[ch].data_cid);
@@ -2184,6 +2259,7 @@ static void data_chan_input(IosBbCore *bb, const uint8_t *data, unsigned len)
             if (bb->data_out) {
                 bb->data_out(bb->data_opaque, bb->ip_rx, tot);
             }
+            TRACE("data: %u-byte IPv4 packet to the network\n", tot);
             memmove(bb->ip_rx, bb->ip_rx + tot, bb->ip_rxlen - tot);
             bb->ip_rxlen -= tot;
         }
@@ -2259,7 +2335,7 @@ static void h5_rx_payload(IosBbCore *bb, const uint8_t *data, unsigned len)
 #define IFX_MORE      0x10         /* header byte 1 */
 #define IFX_V2_CREDIT_REQ 0x40     /* header byte 1: the sender holds no credits */
 #define IFX_V1_CTS    0x40         /* header byte 3 */
-#define IFX_V2_GRANT  8            /* credits handed to the AP when it runs low */
+#define IFX_V2_GRANT  16           /* the AP's credit level we keep it at (tx-buffer-count) */
 
 void ios_bb_ifx_init(IosBbIfx *x, int version, unsigned max_data)
 {
@@ -2341,8 +2417,13 @@ void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
         } else if (x->txq_len) {
             miso[1] |= IFX_V2_CREDIT_REQ;
         }
-        /* ponytail: credits counted per data frame; refine once the N90 guest is traced. */
-        if (x->credits_out < IFX_V2_GRANT / 2) {
+        /*
+         * Top the AP back up on every frame. Our count of what it spent (one per
+         * data frame) can lag its own; an AP that believes it has none and nothing
+         * else to say never asks again, and both sides wait until CommCenter resets
+         * the baseband (seen after ~1 min of N90 data). Granting too much is harmless.
+         */
+        if (x->credits_out < IFX_V2_GRANT) {
             grant = IFX_V2_GRANT - x->credits_out;
             x->credits_out += grant;
         }
@@ -2355,6 +2436,22 @@ void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
     memcpy(miso + IOS_BB_IFX_HDR, x->txq, out_len);
     memmove(x->txq, x->txq + out_len, x->txq_len - out_len);
     x->txq_len -= out_len;
+}
+
+void ios_bb_ifx_unsent(IosBbIfx *x, const uint8_t *miso)
+{
+    unsigned len = miso[0] | (miso[1] & 0xf) << 8;
+
+    if (!len || len > x->max_data || x->txq_len + len > sizeof(x->txq)) {
+        return;
+    }
+    memmove(x->txq + len, x->txq, x->txq_len);
+    memcpy(x->txq, miso + IOS_BB_IFX_HDR, len);
+    x->txq_len += len;
+    if (x->version == 2) {
+        x->credits_in++;                       /* the credit was not spent either */
+    }
+    TRACE("ifx: frame of %u bytes never clocked; requeued\n", len);
 }
 
 /* ------------------------------------------------------------------ public API */

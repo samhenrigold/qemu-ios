@@ -18,6 +18,7 @@
 #include "qemu/timer.h"
 #include "hw/irq.h"
 #include "hw/i2c/i2c.h"
+#include "hw/qdev-properties.h"
 #include "hw/arm/s5l8930.h"
 #include "hw/arm/ipod_touch_lis302dl.h"
 #include "migration/vmstate.h"
@@ -1095,6 +1096,262 @@ static const TypeInfo s5l8930_ak8973_info = {
     .class_init    = ak8973_class_init,
 };
 
+/* ---- ST L3G4200D 3-axis gyroscope (I2C2 0x68, "gyro,ap3gdl") ----
+ *
+ * N81/N90 carry it as AP3GDL; AppleEmbeddedGyro's AppleAP3GDL (8C148) probes
+ * WHO_AM_I (0x0f) for 0xd3 or 0xd4, then runs the part in FIFO stream mode:
+ * INT2 (DRDY/watermark/overrun/empty, CTRL_REG3) wakes handleInterrupt2,
+ * which reads FIFO_SRC (0x2f) and, on a watermark, pops FSS samples. For
+ * 0xd3 each pop is a lone read of OUT_X_L, then a 6-byte auto-increment
+ * burst from 0x2a that rolls over 0x2d -> 0x28 (the part's output-register
+ * wrap), so a slot pops when OUT_Z_H is read. The gyro,mpu3100 node at the
+ * same address reads reg 0 (reserved here, 0) and gives up.
+ *
+ * gpio-out 0 is INT1, 1 is INT2, at the pin's level (CTRL_REG3 H_Lactive).
+ * INT1's threshold events are not modelled: the device sits still.
+ * ponytail: zero rate on every axis; QOM rate properties when the host has a
+ * gyro control (the attitude path only moves the accelerometer today).
+ */
+
+OBJECT_DECLARE_SIMPLE_TYPE(S5L8930L3GState, S5L8930_L3G4200D)
+
+#define L3G_WHO_AM_I    0x0f
+#define L3G_CTRL1       0x20    /* DR[7:6] BW PD[3] Zen Yen Xen */
+#define L3G_CTRL3       0x22    /* I1_Int1 I1_Boot H_Lactive[5] PP_OD I2_DRDY[3] I2_WTM I2_ORun I2_Empty */
+#define L3G_CTRL5       0x24    /* BOOT[7] FIFO_EN[6] */
+#define L3G_OUT_TEMP    0x26
+#define L3G_STATUS      0x27
+#define L3G_OUT_X_L     0x28
+#define L3G_OUT_Z_H     0x2d
+#define L3G_FIFO_CTRL   0x2e    /* FM[7:5] WTM[4:0] */
+#define L3G_FIFO_SRC    0x2f    /* WTM OVRN EMPTY FSS[4:0] */
+#define L3G_FIFO_SLOTS  32
+
+struct S5L8930L3GState {
+    I2CSlave i2c;
+    uint8_t regs[0x40];
+    uint8_t reg;
+    bool addressing, ovrn;
+    uint8_t level;                       /* FIFO slots holding unread samples */
+    int16_t fifo[L3G_FIFO_SLOTS * 3];    /* slot i is fifo[3 * i ..] */
+    int16_t rate[3];                     /* counts; zero at rest */
+    QEMUTimer *timer;
+    qemu_irq pin[2];
+    uint8_t whoami;
+};
+
+static unsigned l3g_mode(S5L8930L3GState *s)
+{
+    return s->regs[L3G_CTRL5] & 0x40 ? s->regs[L3G_FIFO_CTRL] >> 5 : 0;
+}
+
+static uint8_t l3g_fifo_src(S5L8930L3GState *s)
+{
+    uint8_t wtm = s->regs[L3G_FIFO_CTRL] & 0x1f;
+
+    return (s->level && s->level >= wtm ? 0x80 : 0) | (s->ovrn ? 0x40 : 0) |
+           (s->level ? 0 : 0x20) | MIN(s->level, 0x1f);
+}
+
+static void l3g_update(S5L8930L3GState *s)
+{
+    uint8_t c3 = s->regs[L3G_CTRL3], src = l3g_fifo_src(s);
+    bool low = c3 & 0x20;
+    bool int2 = ((c3 & 0x08) && (s->regs[L3G_STATUS] & 0x08)) ||
+                ((c3 & 0x04) && (src & 0x80)) || ((c3 & 0x02) && (src & 0x40)) ||
+                ((c3 & 0x01) && (src & 0x20));
+
+    qemu_set_irq(s->pin[0], low);
+    qemu_set_irq(s->pin[1], int2 != low);
+}
+
+/* The sample at the head of the FIFO (or the latest one) into OUT_X..OUT_Z. */
+static void l3g_load_out(S5L8930L3GState *s)
+{
+    const int16_t *v = l3g_mode(s) && s->level ? s->fifo : s->rate;
+
+    for (int i = 0; i < 3; i++) {
+        stw_le_p(&s->regs[L3G_OUT_X_L + 2 * i], v[i]);
+    }
+}
+
+static void l3g_pop(S5L8930L3GState *s)
+{
+    if (l3g_mode(s) && s->level) {
+        memmove(s->fifo, s->fifo + 3, sizeof(s->rate) * --s->level);
+        s->ovrn = false;
+    }
+    s->regs[L3G_STATUS] = 0;
+    l3g_load_out(s);
+}
+
+static void l3g_schedule(S5L8930L3GState *s)
+{
+    static const int hz[4] = { 100, 200, 400, 800 };
+
+    if (s->regs[L3G_CTRL1] & 0x08) {
+        timer_mod(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  NANOSECONDS_PER_SECOND / hz[s->regs[L3G_CTRL1] >> 6]);
+    } else {
+        timer_del(s->timer);
+    }
+}
+
+static void l3g_sample(void *opaque)
+{
+    S5L8930L3GState *s = opaque;
+    unsigned mode = l3g_mode(s);
+
+    if (mode) {
+        if (s->level == L3G_FIFO_SLOTS) {
+            s->ovrn = true;
+            if (mode != 1) {             /* stream modes drop the oldest; FIFO mode stops */
+                memmove(s->fifo, s->fifo + 3, sizeof(s->rate) * --s->level);
+            }
+        }
+        if (s->level < L3G_FIFO_SLOTS) {
+            memcpy(s->fifo + 3 * s->level++, s->rate, sizeof(s->rate));
+        }
+    } else {
+        s->regs[L3G_STATUS] = (s->regs[L3G_STATUS] & 0x08 ? 0xf0 : 0) | 0x0f;
+    }
+    l3g_load_out(s);
+    l3g_update(s);
+    l3g_schedule(s);
+}
+
+static int l3g_event(I2CSlave *i2c, enum i2c_event event)
+{
+    S5L8930L3GState *s = S5L8930_L3G4200D(i2c);
+
+    if (event == I2C_START_SEND) {
+        s->addressing = true;
+    }
+    return 0;
+}
+
+static uint8_t l3g_recv(I2CSlave *i2c)
+{
+    S5L8930L3GState *s = S5L8930_L3G4200D(i2c);
+    uint8_t reg = s->reg & 0x3f, v;
+
+    v = reg == L3G_FIFO_SRC ? l3g_fifo_src(s) : s->regs[reg];
+    if (s->reg & 0x80) {
+        s->reg = reg == L3G_OUT_Z_H ? 0x80 | L3G_OUT_X_L : s->reg + 1;
+    }
+    if (reg == L3G_OUT_Z_H) {
+        l3g_pop(s);
+        l3g_update(s);
+    }
+    return v;
+}
+
+static int l3g_send(I2CSlave *i2c, uint8_t data)
+{
+    S5L8930L3GState *s = S5L8930_L3G4200D(i2c);
+    uint8_t reg;
+
+    if (s->addressing) {
+        s->addressing = false;
+        s->reg = data;
+        return 0;
+    }
+    reg = s->reg & 0x3f;
+    if (s->reg & 0x80) {
+        s->reg++;
+    }
+    if ((reg >= L3G_CTRL1 && reg <= 0x25) || reg == L3G_FIFO_CTRL || reg == 0x30 ||
+        (reg >= 0x32 && reg <= 0x38)) {
+        s->regs[reg] = data;
+    }
+    if (reg == L3G_CTRL5 && (data & 0x80)) {
+        s->regs[L3G_CTRL5] &= 0x7f;      /* BOOT reloads trim and clears itself */
+    }
+    if (reg == L3G_FIFO_CTRL || reg == L3G_CTRL5) {
+        if (!l3g_mode(s)) {              /* bypass empties the FIFO */
+            s->level = 0;
+            s->ovrn = false;
+        }
+        l3g_load_out(s);
+    }
+    l3g_update(s);
+    l3g_schedule(s);
+    return 0;
+}
+
+static void l3g_reset(DeviceState *dev)
+{
+    S5L8930L3GState *s = S5L8930_L3G4200D(dev);
+
+    timer_del(s->timer);
+    memset(s->regs, 0, sizeof(s->regs));
+    memset(s->rate, 0, sizeof(s->rate));
+    s->regs[L3G_WHO_AM_I] = s->whoami;
+    s->regs[L3G_CTRL1] = 0x07;           /* axes enabled, powered down */
+    s->regs[L3G_OUT_TEMP] = 0x19;        /* ponytail: a fixed temperature byte */
+    s->level = 0;
+    s->ovrn = false;
+    s->reg = 0;
+    s->addressing = true;
+}
+
+static void l3g_realize(DeviceState *dev, Error **errp)
+{
+    S5L8930L3GState *s = S5L8930_L3G4200D(dev);
+
+    s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, l3g_sample, s);
+    qdev_init_gpio_out(dev, s->pin, 2);
+}
+
+static int l3g_post_load(void *opaque, int version_id)
+{
+    l3g_schedule(opaque);
+    return 0;
+}
+
+static const VMStateDescription vmstate_s5l8930_l3g = {
+    .name = TYPE_S5L8930_L3G4200D,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = l3g_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(i2c, S5L8930L3GState),
+        VMSTATE_UINT8_ARRAY(regs, S5L8930L3GState, 0x40),
+        VMSTATE_UINT8(reg, S5L8930L3GState),
+        VMSTATE_BOOL(addressing, S5L8930L3GState),
+        VMSTATE_BOOL(ovrn, S5L8930L3GState),
+        VMSTATE_UINT8(level, S5L8930L3GState),
+        VMSTATE_INT16_ARRAY(fifo, S5L8930L3GState, L3G_FIFO_SLOTS * 3),
+        VMSTATE_INT16_ARRAY(rate, S5L8930L3GState, 3),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const Property l3g_properties[] = {
+    DEFINE_PROP_UINT8("whoami", S5L8930L3GState, whoami, 0xd3),
+};
+
+static void l3g_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
+
+    dc->realize = l3g_realize;
+    dc->vmsd = &vmstate_s5l8930_l3g;
+    device_class_set_legacy_reset(dc, l3g_reset);
+    device_class_set_props(dc, l3g_properties);
+    k->event = l3g_event;
+    k->recv = l3g_recv;
+    k->send = l3g_send;
+}
+
+static const TypeInfo s5l8930_l3g_info = {
+    .name          = TYPE_S5L8930_L3G4200D,
+    .parent        = TYPE_I2C_SLAVE,
+    .instance_size = sizeof(S5L8930L3GState),
+    .class_init    = l3g_class_init,
+};
+
 static void s5l8930_i2c_register_types(void)
 {
     type_register_static(&s5l8930_i2c_info);
@@ -1102,6 +1359,7 @@ static void s5l8930_i2c_register_types(void)
     type_register_static(&s5l8930_tca6408_info);
     type_register_static(&s5l8930_tsl2581_info);
     type_register_static(&s5l8930_ak8973_info);
+    type_register_static(&s5l8930_l3g_info);
 }
 
 type_init(s5l8930_i2c_register_types)

@@ -116,7 +116,8 @@ static void iosbb_set_srdy(IosBasebandState *s, bool level)
 
 static void iosbb_srdy_update(IosBasebandState *s)
 {
-    if (s->mrdy_level || (!s->srdy_level && ios_bb_ifx_pending(&s->ifx))) {
+    if (s->mrdy_level ||
+        (!s->srdy_level && (s->frame_wanted || ios_bb_ifx_pending(&s->ifx)))) {
         iosbb_set_srdy(s, true);
     }
 }
@@ -135,13 +136,51 @@ static void iosbb_mrdy(void *opaque, int n, int level)
     iosbb_arm(s, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
 }
 
-/* The controller finished a frame (go cleared): SRDY drops, rising again if more is due. */
-void ios_baseband_spi_done(DeviceState *dev)
+/*
+ * The controller finished a frame (go cleared): SRDY drops, rising again if more is
+ * due. unread_miso: the frame's MISO when the AP gave up before clocking it.
+ */
+/* The AP started a frame with RUN and no MRDY: it waits for SRDY to clock it. */
+void ios_baseband_spi_request(DeviceState *dev)
 {
     IosBasebandState *s = IOS_BASEBAND(dev);
 
+    s->frame_wanted = true;
+    iosbb_arm(s, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
+}
+
+void ios_baseband_spi_done(DeviceState *dev, const uint8_t *unread_miso)
+{
+    IosBasebandState *s = IOS_BASEBAND(dev);
+
+    s->frame_wanted = false;
+    if (unread_miso) {
+        ios_bb_ifx_unsent(&s->ifx, unread_miso);
+    }
+
     iosbb_set_srdy(s, false);
     iosbb_arm(s, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
+}
+
+/*
+ * The AP's baseband control lines (DT radio_on, bb_rst; both active high on N90:
+ * the kernel drives 1 at boot, CommCenter pulses bb_rst to 0 and radio_on to 0
+ * when it resets the baseband). Either one low holds the modem in reset: it
+ * comes back in raw-AT mode, as CommCenter's recovery expects.
+ */
+static void iosbb_machine_reset(void *opaque);
+
+static void iosbb_ctl(void *opaque, int n, int level)
+{
+    IosBasebandState *s = opaque;
+
+    if (getenv("IOS_BB_TRACE")) {
+        fprintf(stderr, "%.3f ios-bb: %s %d\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e6,
+                n ? "BB_RST" : "RADIO_ON", level);
+    }
+    if (!level) {
+        iosbb_machine_reset(s);
+    }
 }
 
 bool ios_baseband_spi_srdy(DeviceState *dev)
@@ -160,6 +199,7 @@ void ios_baseband_spi_xfer(DeviceState *dev, const uint8_t *mosi, uint8_t *miso,
     IosBasebandState *s = IOS_BASEBAND(dev);
     const uint8_t *rx;
     size_t rxlen;
+
 
     s->bb.now_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
     ios_bb_ifx_xfer(&s->ifx, mosi, miso, n, &rx, &rxlen);
@@ -318,6 +358,20 @@ static NetClientInfo iosbb_net_info = {
 
 STR_PROP(carrier, operator_long)
 STR_PROP(mcc_mnc, plmn)
+
+static void iosbb_set_carrier_reg(Object *obj, const char *value, Error **errp)
+{
+    iosbb_set_carrier(obj, value, errp);
+    ios_bb_operator_changed(&IOS_BASEBAND(obj)->bb);
+    iosbb_arm(IOS_BASEBAND(obj), qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
+}
+
+static void iosbb_set_mcc_mnc_reg(Object *obj, const char *value, Error **errp)
+{
+    iosbb_set_mcc_mnc(obj, value, errp);
+    ios_bb_operator_changed(&IOS_BASEBAND(obj)->bb);
+    iosbb_arm(IOS_BASEBAND(obj), qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
+}
 STR_PROP(voicemail, voicemail)
 STR_PROP(imei, imei)
 STR_PROP(imsi, imsi)
@@ -556,6 +610,7 @@ static const VMStateDescription vmstate_ios_baseband_spi = {
         VMSTATE_UINT32(ifx.txq_len, IosBasebandState),
         VMSTATE_BOOL(srdy_level, IosBasebandState),
         VMSTATE_BOOL(mrdy_level, IosBasebandState),
+        VMSTATE_BOOL(frame_wanted, IosBasebandState),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -618,6 +673,7 @@ static const VMStateDescription vmstate_ios_baseband = {
         VMSTATE_INT32(bb.xsim_ch, IosBasebandState),
         VMSTATE_INT32(bb.call_ch, IosBasebandState),
         VMSTATE_INT32_V(bb.sms_ch, IosBasebandState, 2),
+        VMSTATE_INT32_V(bb.xreg_n, IosBasebandState, 2),
         VMSTATE_BOOL_V(bb.pdp_active, IosBasebandState, 2),
         VMSTATE_UINT8_ARRAY_V(bb.ip_rx, IosBasebandState, 2048, 2),
         VMSTATE_UINT32_V(bb.ip_rxlen, IosBasebandState, 2),
@@ -670,6 +726,7 @@ static void iosbb_machine_reset(void *opaque)
     if (s->ifx_version) {
         ios_bb_ifx_init(&s->ifx, s->ifx_version, s->ifx_max_data);
         s->srdy_level = false;
+        s->frame_wanted = false;
         qemu_set_irq(s->srdy, 0);
     }
 }
@@ -694,6 +751,10 @@ static void iosbb_realize(DeviceState *dev, Error **errp)
         ios_bb_init(&s->bb, iosbb_out, s);
     }
     s->timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, iosbb_tick_timer, s);
+    if (getenv("IOS_BB_TRACE")) {
+        /* Unbuffered stderr makes the trace slow enough to change the handshake's timing. */
+        setvbuf(stderr, NULL, _IOFBF, 1 << 20);
+    }
     /* SMS-DELIVER timestamps in host time (the guest's clock follows it too). */
     s->bb.wall_offset_ms = g_get_real_time() / 1000 - qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
     qemu_register_reset(iosbb_machine_reset, s);
@@ -748,10 +809,10 @@ static void iosbb_instance_init(Object *obj)
     s->bb.ci = 0x53f1;
     s->bb.answer_delay_ms = -1;
 
-    object_property_add_str(obj, "carrier", iosbb_get_carrier, iosbb_set_carrier);
+    object_property_add_str(obj, "carrier", iosbb_get_carrier, iosbb_set_carrier_reg);
     object_property_set_description(obj, "carrier",
         "Operator name shown to the guest (+XCOPS, +COPS long format)");
-    object_property_add_str(obj, "mcc-mnc", iosbb_get_mcc_mnc, iosbb_set_mcc_mnc);
+    object_property_add_str(obj, "mcc-mnc", iosbb_get_mcc_mnc, iosbb_set_mcc_mnc_reg);
     object_property_set_description(obj, "mcc-mnc",
         "PLMN digits (MCC+MNC) of the fake home network");
     object_property_add_str(obj, "voicemail", iosbb_get_voicemail,
@@ -792,6 +853,7 @@ static void iosbb_instance_init(Object *obj)
         "Write \"<number>|<text>\": deliver a 23.040 SMS-DELIVER as +CMT");
 
     qdev_init_gpio_in_named(DEVICE(obj), iosbb_mrdy, "mrdy", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), iosbb_ctl, "ctl", 2);
     qdev_init_gpio_out_named(DEVICE(obj), &s->srdy, "srdy", 1);
 
     object_property_add_str(obj, "call-state", iosbb_get_call_state, NULL);

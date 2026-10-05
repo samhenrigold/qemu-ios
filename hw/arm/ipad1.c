@@ -77,6 +77,7 @@ typedef struct A4I2CDevice {
     uint8_t addr;
     const char *type;
     int16_t irq_pin;                     /* GPIO pin its gpio-out 0 drives, active low; 0 = none */
+    int16_t irq2_pin;                    /* the gyro's INT2 (its outs are pin levels, not inverted) */
 } A4I2CDevice;
 
 typedef struct A4PowerKnob {
@@ -102,6 +103,7 @@ typedef struct A4Board {
     /* I2C slaves in creation order (that order is the snapshot's). */
     A4I2CDevice i2c[10];
     bool accel_flipped;                  /* LIS331 mounted turned 180 degrees about X */
+    const char *accel_mount;             /* else the LIS model's "mount" axes (its DT orientation, inverted) */
     uint32_t mt_tx_fifo;                 /* multitouch SPI TX FIFO bytes (its firmware is one burst); 0 = default */
     int8_t bt_uart;                      /* BCM4329 HCI, nothing attached */
     int8_t gauge_uart;                   /* bq27545 HDQ gas gauge; -1 = none */
@@ -234,7 +236,10 @@ static const A4Board a4_n81 = {
         { 0, 0x4a, TYPE_CS42L58 },
         { 2, 0x19, TYPE_LIS302DL },
         { 2, 0x49, TYPE_S5L8930_TSL2581 },
+        { 2, 0x68, TYPE_S5L8930_L3G4200D, 0x21, 0x05 },   /* gyro,ap3gdl: INT1, INT2 */
     },
+    /* DT accelerometer orientation rows (0,-1,0) (-1,0,0) (0,0,1): x reads -y, y reads -x. */
+    .accel_mount = "-2,-1,3",
     .bt_uart = 1,                            /* uart1/bluetooth,n88 */
     .gauge_uart = -1,
     .wifi_board = "P=N81",
@@ -276,7 +281,10 @@ static const A4Board a4_n90 = {
         { 0, 0x1e, TYPE_S5L8930_AK8973 },
         { 0, 0x39, TYPE_CD3272MIKEY },           /* the codec waits for 'mikey' */
         { 2, 0x19, TYPE_LIS302DL },
+        { 2, 0x68, TYPE_S5L8930_L3G4200D, 0x21, 0x05 },   /* gyro,ap3gdl: INT1, INT2 */
     },
+    /* DT accelerometer orientation rows (0,1,0) (-1,0,0) (0,0,-1): its transpose, x reads -y, y reads x. */
+    .accel_mount = "-2,1,-3",
     .bt_uart = 3,
     .gauge_uart = 5,
     .gauge_mah = 1420,                       /* bq27540, iPhone 4 battery */
@@ -327,6 +335,8 @@ struct IPad1MachineState {
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
     bool baseband;                       /* leave the kboot DT's baseband node matchable (default off) */
+    DeviceState *bb_modem;               /* the ios-baseband behind spi2 (baseband=on, radio boards) */
+    bool camera;                         /* leave the kboot DT's isp node matchable (default off) */
     bool iop_core;                       /* run the IOP firmware on a second core (default; off: the HLE) */
     DeviceState *iopcore;
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
@@ -460,16 +470,21 @@ static const ARMCPRegInfo ipad1_cp_reginfo[] = {
 };
 
 /*
- * The flattened DT walk for a4_dt_unmatch: returns the offset past the node at
- * `off` (or 0 when malformed); on the way, a node named `name` gets its
- * "compatible" overwritten with "none" (same slot, zero-padded), so nothing
- * matches it and the node stays for whoever turns it back on.
+ * A kboot DT property edit: the node named `name` gets `prop` overwritten in
+ * place (same slot, zero-padded) when the slot holds `vlen` bytes. Returns
+ * the offset past the node at `off`, or 0 when malformed.
  */
-static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const char *name, int depth)
+typedef struct A4DTEdit {
+    const char *name, *prop;
+    const void *value;
+    uint32_t vlen;
+} A4DTEdit;
+
+static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const A4DTEdit *e, int depth)
 {
     uint32_t nprops, nchildren;
-    uint8_t *compat = NULL;
-    uint32_t compat_len = 0;
+    uint8_t *slot = NULL;
+    uint32_t slot_len = 0;
     bool named = false;
 
     if (depth > 32 || off + 8 > len) {
@@ -489,19 +504,19 @@ static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const char *name, 
             return 0;
         }
         if (!strncmp((char *)dt + off, "name", 32)) {
-            named = plen > strlen(name) && !memcmp(dt + off + 36, name, strlen(name) + 1);
-        } else if (!strncmp((char *)dt + off, "compatible", 32)) {
-            compat = dt + off + 36;
-            compat_len = plen;
+            named = plen > strlen(e->name) && !memcmp(dt + off + 36, e->name, strlen(e->name) + 1);
+        } else if (!strncmp((char *)dt + off, e->prop, 32)) {
+            slot = dt + off + 36;
+            slot_len = plen;
         }
         off += 36 + ((plen + 3) & ~3u);
     }
-    if (named && compat && compat_len >= 5) {
-        memset(compat, 0, compat_len);
-        memcpy(compat, "none", 5);
+    if (named && slot && slot_len >= e->vlen) {
+        memset(slot, 0, slot_len);
+        memcpy(slot, e->value, e->vlen);
     }
     for (uint32_t i = 0; i < nchildren; i++) {
-        off = a4_dt_walk(dt, len, off, name, depth + 1);
+        off = a4_dt_walk(dt, len, off, e, depth + 1);
         if (!off) {
             return 0;
         }
@@ -511,8 +526,8 @@ static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const char *name, 
 
 /* The DT a kboot bundle carries, found through its boot_args (iBoot's struct:
  * virtBase +4, physBase +8, deviceTreeP +0x30, deviceTreeLength +0x34). */
-static void a4_dt_unmatch(uint8_t *image, size_t image_len, uint32_t load_pa,
-                          uint32_t bootargs_pa, const char *name)
+static void a4_dt_edit(uint8_t *image, size_t image_len, uint32_t load_pa,
+                       uint32_t bootargs_pa, const A4DTEdit *e)
 {
     size_t ba = bootargs_pa - load_pa, dt;
     uint32_t vbase, pbase, dtp, dtlen;
@@ -526,9 +541,17 @@ static void a4_dt_unmatch(uint8_t *image, size_t image_len, uint32_t load_pa,
     dtlen = ldl_le_p(image + ba + 0x34);
     dt = (size_t)dtp - vbase + pbase - load_pa;
     if (dtp < vbase || dt > image_len || dtlen > image_len - dt ||
-        !a4_dt_walk(image + dt, dtlen, 0, name, 0)) {
-        warn_report("ipad1: kboot device tree not walkable; '%s' left as is", name);
+        !a4_dt_walk(image + dt, dtlen, 0, e, 0)) {
+        warn_report("ipad1: kboot device tree not walkable; '%s' left as is", e->name);
     }
+}
+
+/* Unmatch a node: its "compatible" becomes "none", the node stays for whoever turns it back on. */
+static void a4_dt_unmatch(uint8_t *image, size_t image_len, uint32_t load_pa,
+                          uint32_t bootargs_pa, const char *name)
+{
+    a4_dt_edit(image, image_len, load_pa, bootargs_pa,
+               &(A4DTEdit){ name, "compatible", "none", 5 });
 }
 
 static void ipad1_cpu_reset(void *opaque)
@@ -599,6 +622,37 @@ static void ipad1_cpu_reset(void *opaque)
      */
     if (!s->baseband) {
         a4_dt_unmatch((uint8_t *)data, image_len, load_pa, bootargs_pa, "baseband");
+    } else if (s->bb_modem) {
+        /* lockdownd compares the DT's IMEI with the modem's +CGSN (iBoot fills it on hardware). */
+        g_autofree char *imei = object_property_get_str(OBJECT(s->bb_modem), "imei", &error_abort);
+
+        a4_dt_edit((uint8_t *)data, image_len, load_pa, bootargs_pa,
+                   &(A4DTEdit){ "baseband", "device-imei", imei, strlen(imei) });
+    }
+    /*
+     * No ISP model either: AppleH3CamIn loads the ISP CPU's firmware and then
+     * waits on its mailbox, which nothing answers (two timeouts per command,
+     * a dozen per boot, from mediaserverd's sensor detection). Unmatched, the
+     * board reads as camera-less, as K48 is.
+     */
+    if (!s->camera) {
+        a4_dt_unmatch((uint8_t *)data, image_len, load_pa, bootargs_pa, "isp");
+    }
+    /*
+     * iBoot fills the gyro's sensitivity matrix (9 words, 16.16) from the
+     * unit's syscfg; the IPSW DT reserves it zeroed and AppleAP3GDL refuses a
+     * singular one. kboot has no syscfg, so the gyro gets a nominal part's
+     * identity. Boards without a gyro node walk past.
+     */
+    {
+        static const uint32_t unit_cal[9] = { 0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x10000 };
+        uint32_t cal[9];
+
+        for (int i = 0; i < 9; i++) {
+            stl_le_p(&cal[i], unit_cal[i]);
+        }
+        a4_dt_edit((uint8_t *)data, image_len, load_pa, bootargs_pa,
+                   &(A4DTEdit){ "gyro", "gyro-sensitivity-calibration", cal, sizeof(cal) });
     }
     if (address_space_write(&address_space_memory, load_pa,
                             MEMTXATTRS_UNSPECIFIED, data, image_len) != MEMTX_OK) {
@@ -938,9 +992,15 @@ static void ipad1_i2c_create(IPad1MachineState *s, int n)
              */
             qdev_prop_set_uint8(dev, "whoami", 0x32);
             qdev_prop_set_bit(dev, "mount-flipped", s->board->accel_flipped);
+            if (s->board->accel_mount) {
+                qdev_prop_set_string(dev, "mount", s->board->accel_mount);
+            }
         }
         i2c_slave_realize_and_unref(slave, bus, &error_fatal);
-        if (d->irq_pin) {
+        if (d->irq2_pin) {
+            qdev_connect_gpio_out(dev, 0, qdev_get_gpio_in(s->gpio, d->irq_pin));
+            qdev_connect_gpio_out(dev, 1, qdev_get_gpio_in(s->gpio, d->irq2_pin));
+        } else if (d->irq_pin) {
             qdev_connect_gpio_out(dev, 0,
                                   qemu_irq_invert(qdev_get_gpio_in(s->gpio, d->irq_pin)));
         }
@@ -1402,6 +1462,7 @@ static void ipad1_init(MachineState *machine)
         qdev_prop_set_int32(bb, "ifx-version", s->board->bb_ifx);
         qdev_prop_set_int32(bb, "ifx-max-data", s->board->bb_max_data);
         object_property_add_child(OBJECT(s), "baseband-modem", OBJECT(bb));
+        s->bb_modem = bb;
         qdev_realize_and_unref(bb, NULL, &error_fatal);
         dev = qdev_new(TYPE_IOS_BASEBAND_SPI);
         object_property_set_link(OBJECT(dev), "modem", OBJECT(bb), &error_abort);
@@ -1414,6 +1475,10 @@ static void ipad1_init(MachineState *machine)
                               qdev_get_gpio_in_named(bb, "mrdy", 0));
         qdev_connect_gpio_out_named(bb, "srdy", 0,
             qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(s->board->bb_srdy)));
+        qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(0x0101),
+                              qdev_get_gpio_in_named(bb, "ctl", 0));   /* radio_on */
+        qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(0x0102),
+                              qdev_get_gpio_in_named(bb, "ctl", 1));   /* bb_rst */
     } else {
         ipod_touch_spi_create(S5L8930_SPI_BASE(2), NULL, 2, "none", false);
     }
@@ -1843,6 +1908,16 @@ static void ipad1_set_baseband(Object *obj, bool value, Error **errp)
     IPAD1_MACHINE(obj)->baseband = value;
 }
 
+static bool ipad1_get_camera(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->camera;
+}
+
+static void ipad1_set_camera(Object *obj, bool value, Error **errp)
+{
+    IPAD1_MACHINE(obj)->camera = value;
+}
+
 static bool ipad1_get_wifi(Object *obj, Error **errp)
 {
     return IPAD1_MACHINE(obj)->wifi;
@@ -2039,6 +2114,10 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "baseband",
         "kboot= on a radio board: leave the DT's baseband node matched (a modem model is attached); "
         "default off unmatches it (compatible \"none\") at every reset");
+    object_class_property_add_bool(klass, "camera", ipad1_get_camera, ipad1_set_camera);
+    object_class_property_set_description(klass, "camera",
+        "kboot= on a camera board: leave the DT's isp node matched (there is no ISP model yet); "
+        "default off unmatches it at every reset");
     object_class_property_add_bool(klass, "wifi", ipad1_get_wifi, ipad1_set_wifi);
     object_class_property_set_description(klass, "wifi",
         "Host bridge for the soldered BCM4329 (default on). Frames go to "

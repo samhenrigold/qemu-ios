@@ -84,6 +84,11 @@ $N/dev1/nor.bin --checks boot,persist,afc,usbmux,wifi`. The machine selects the 
 coordinates, the unlock slider, the lit threshold (the plugged-in iPod's lock screen is the charging battery
 on black, about 30% lit) and the DeviceClass.
 
+App install, 2026-10-04 (FirmwareKit kboot `n81ap-8C148` device, guest package with gles-public 81c8124a35 as an
+offer): `regress.py --machine iPod-Touch-4G --checks app --guest-package OFFER` PASS. AppSync installs the harness through
+installation_proxy, installd lists it, the agent launches it frontmost, and its GL triangle draws through the bridge
+with no refusals.
+
 ## Models: reused, varied, new
 
 Classes as in LightTouchMac `docs/fidelity-ledger.md`: R register-level, H high-level emulation, P a
@@ -97,24 +102,42 @@ documented quirk/patch, S stub.
 | PMU D1815, LIS331DLH, TSL2581 | shared | as-is (TSL2581 at 0x49) | H |
 | Codec CS42L59 | the CS42L58 register file | shared | H |
 | BCM4329 | the iPod's dongle model, `P=N81`, n81.bin version | variant (board data) | H |
-| Gyro (ap3gdl / mpu3100 @0x68) | none: both probes fail and AppleEmbeddedI2CGyro frees itself | absent | - |
-| Cameras / ISP | none | absent (see debts) | - |
+| Gyro (ap3gdl @0x68, INT1 0x21 / INT2 0x05) | ST L3G4200D (WHO_AM_I 0xd3): registers, 32-slot FIFO and its modes, INT2 levels, ODR timer; the device sits still (zero rate). The kboot DT's `gyro-sensitivity-calibration` (iBoot fills it from syscfg) gets a nominal identity at reset | new | R (calibration P) |
+| Cameras / ISP | none; `camera=off` (default) unmatches the DT's `isp` node | absent (see debts) | P |
 
 ## Debts
+
+0. ~~**GL apps draw black (4.2.1).**~~ Fixed by gles-public 81c8124a35 (fw-a4 e9d82647fb). On these Retina
+   boards a legacy 1x app's QuartzCore scales its EAGL surface with the M2 scaler: it queues
+   `IOSurfaceAcceleratorConditionalTransferSurfaceWithSwap` and releases it by accelerator ID through
+   `-[EAGLContext sendNotification:forTransaction:onLayer:]`, which the stock SGX engine turns into a kernel
+   signal. The front end now rebinds that call, records CA's transfer and issues it unconditionally
+   (`TransferSurfaceWithSwap`) after `glFinish`. `regress.py --checks app` (with the package as an offer) installs
+   the harness, launches it and taps "GL: rotating triangle": the triangle draws (4 colours, 35 bridge lines) and the
+   bridge refuses nothing.
 
 1. **iBoot and the real NAND boot.** Only `kboot=` runs. A real N81 boots LLB/iBoot from NAND (boot
    blocks, `IOFlashPartitionScheme`) and keeps nvram/effaceable there. The NOR graft is the shortcut.
 2. **NAND geometry** is K48's 16 GB part (`k48-16g`). The N81 SKUs are 8/32/64 GB, and its chip and DT
    values are unmeasured.
-3. **No FirmwareKit recipe.** The device above is the iPad pipeline run by hand. An `n81ap-8C148`
-   catalog entry and recipe are needed for the app.
-4. **Cameras.** AppleH3CamIn times out on its ISP mailbox several times per boot. Disable the camera nodes
-   in the DT or stub the ISP.
-5. **Gyro** absent (Game Center/CoreMotion users see no gyro). An ID-register stub at 0x68 is next.
-6. **Accelerometer mounting** untested. The DT's orientation matrix differs from K48's
-   (`0000ff00 000000ff 00010000`), and `accel_flipped` is off.
-7. **Multitouch calibration**: rows/columns/surface are the iPod 2G's, not measured on a unit. Taps land
-   where aimed on the sheet's buttons, but the edges have not been fitted the way the K48's frame values were.
+3. ~~**No FirmwareKit recipe.**~~ `n81ap-8C148` has a catalog entry and a kboot recipe (LightTouchMac branch
+   `a4-n81`, experimental).
+4. **Cameras.** No ISP model. AppleH3CamIn loaded the ISP CPU's firmware and then timed out on its mailbox
+   a dozen times per boot (mediaserverd's sensor detection). The machine's `camera` property (default off) now
+   unmatches the kboot DT's `isp` node at reset, the way `baseband` does, so the board reads as camera-less:
+   no H3CamIn lines, and Camera.app opens to its closed shutter without crashing (N90 8C148, 2026-10-05).
+   A real ISP model (the ISP CPU running its firmware, the sensors on i2c/MIPI) is what `camera=on` waits for.
+5. ~~**Gyro**~~ (2026-10-05): AppleAP3GDL attaches and streams. `contrib/it-gyro` (spawned through the agent)
+   reads CoreMotion at about 100 Hz, `gyroAvailable 1`, every rate 0. Left: a host input for rotation rates (the
+   attitude path moves only the accelerometer), INT1's threshold events, the temperature byte, and the unit's
+   real sensitivity matrix.
+6. ~~Accelerometer mounting~~ (2026-10-04): the board's `accel_mount` "-2,-1,3" is the DT's orientation
+   matrix inverted. Safari turns with `accel-orientation` 1/3 as on hardware (3 = Home right).
+7. ~~**Multitouch calibration**~~ (2026-10-05): `mt_profile_n81`'s frame is now fitted the way the K48's was
+   (x = -69 + 4748u, y = -215 + 7360v; the N1's y runs bottom-up). The iPod's frame had put taps 9 px off at the
+   edges and 21-27 px high. `tests/ipad1/touchcal.py` taps a 4x5 grid on a Safari page that marks each touch:
+   all 20 taps land within 1.5 px on both N90 and N81 8C148. The sensor's rows, columns and surface are still
+   the iPod's.
 8. **Panel ID** is K48's (nothing reads it on `kboot=`; iBoot will).
 9. **LM48557 amp and audio out** are unverified (the codec driver starts).
 10. **Power-off takes over 25 s** to `RB_HALT` (launchd waits on jobs). The machine's watch warning fires

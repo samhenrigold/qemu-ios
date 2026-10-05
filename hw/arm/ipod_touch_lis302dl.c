@@ -34,6 +34,21 @@ bool lis302dl_apply_attitude(LIS302DLState *s, double pitch, double roll, bool f
      * about X on the board (the iPad 1), which reads Y and Z negated. */
     s->base_y = s->mount_flipped ? -vector[1] : vector[1];
     s->base_z = s->mount_flipped ? -vector[2] : vector[2];
+    if (s->mount && !s->axis[0]) {
+        int x, y, z;
+        if (sscanf(s->mount, "%d,%d,%d", &x, &y, &z) == 3 &&
+            x && y && z && x >= -3 && x <= 3 && y >= -3 && y <= 3 && z >= -3 && z <= 3) {
+            s->axis[0] = x; s->axis[1] = y; s->axis[2] = z;
+        }
+    }
+    if (s->axis[0]) {
+        /* Any other mounting: each sensor axis reads a signed device axis. */
+        int8_t *out[3] = { &s->base_x, &s->base_y, &s->base_z };
+        for (int i = 0; i < 3; i++) {
+            int a = (s->axis[i] < 0 ? -s->axis[i] : s->axis[i]) - 1;
+            *out[i] = s->axis[i] < 0 ? -vector[a] : vector[a];
+        }
+    }
     return true;
 }
 
@@ -381,6 +396,7 @@ static const VMStateDescription vmstate_lis302dl = {
 static const Property lis302dl_properties[] = {
     DEFINE_PROP_UINT8("whoami", LIS302DLState, whoami, ACCEL_WHOAMI_VALUE),
     DEFINE_PROP_BOOL("mount-flipped", LIS302DLState, mount_flipped, false),
+    DEFINE_PROP_STRING("mount", LIS302DLState, mount),
 };
 
 static void lis302dl_class_init(ObjectClass *klass, void *data)
