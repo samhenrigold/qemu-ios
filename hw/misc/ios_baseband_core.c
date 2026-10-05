@@ -1853,9 +1853,13 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
     }
     if ((arg = arg_after(cmd, "crsm=", NULL))) {
         /*
-         * Restricted SIM access (27.007 +CRSM: sw1,sw2[,data]). The fake SIM has
-         * EF_AD (6FAD: normal operation, MNC length 2, so 001/01 is unambiguous);
-         * every other file answers 94 04 (file not found) rather than a bare OK.
+         * Restricted SIM access (27.007 +CRSM: sw1,sw2[,data]; GSM 11.11 file layout).
+         * The fake SIM holds the two mandatory EFs a host asks after: EF_AD (6FAD:
+         * normal operation, MNC length 2, so 001/01 is unambiguous) and EF_SST (6F38:
+         * CHV1 disable, ADN, FDN and SMS allocated and activated). 4.2.1 issues GET
+         * RESPONSE (192) for 4F34, 6F06, 6F11, 6F14, 6F15 and 6F38 at SIM init; with
+         * "file not found" for EF_SST it never installs the carrier bundle (no stored
+         * ICCID, no APNs, no packet data). Optional files answer 94 04 (not found).
          */
         int op = 0, fid = 0;
 
@@ -1865,6 +1869,11 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
         } else if (fid == 0x6fad && op == 192) {
             /* 2G GET RESPONSE: size 4, EF id 6FAD, transparent. */
             chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"000000046FAD040011FFBB01020000\"\r\n");
+        } else if (fid == 0x6f38 && op == 176) {
+            chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"FF000000\"\r\n");
+        } else if (fid == 0x6f38 && op == 192) {
+            /* size 4, EF id 6F38, transparent; read needs CHV1, update ADM. */
+            chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"000000046F38040014FF4401020000\"\r\n");
         } else {
             chan_printf(bb, ch, "\r\n+CRSM: 148,4\r\n");
         }
@@ -2387,6 +2396,20 @@ void ios_bb_ifx_init(IosBbIfx *x, int version, unsigned max_data)
     memset(x, 0, sizeof(*x));
     x->version = version;
     x->max_data = MIN(max_data, 0xffeu);
+}
+
+/*
+ * The modem itself reset (bb_rst or radio_on low), not the AP: queued data is
+ * gone, but the v2 credits stay. The kext keeps its count across the reset and
+ * re-grants only the difference (after CommCenter's recovery reset: 2, not the
+ * boot-time 15), so zeroed credits left the modem unable to answer once the
+ * re-init's replies outran the AP's per-frame grants, and both sides waited
+ * (N90, a CommCenter restart). It never holds more than the AP's rx buffers.
+ */
+void ios_bb_ifx_modem_reset(IosBbIfx *x)
+{
+    x->txq_len = 0;
+    x->credits_in = MIN(x->credits_in, IFX_V2_GRANT);
 }
 
 void ios_bb_ifx_queue(void *opaque, const uint8_t *buf, size_t len)

@@ -179,7 +179,16 @@ static void iosbb_ctl(void *opaque, int n, int level)
                 n ? "BB_RST" : "RADIO_ON", level);
     }
     if (!level) {
-        iosbb_machine_reset(s);
+        /* The modem resets; the AP's link state (v2 credits) does not. */
+        ios_bb_reset(&s->bb);
+        s->out_len = 0;
+        timer_del(s->timer);
+        if (s->ifx_version) {
+            ios_bb_ifx_modem_reset(&s->ifx);
+            s->srdy_level = false;
+            s->frame_wanted = false;
+            qemu_set_irq(s->srdy, 0);
+        }
     }
 }
 
