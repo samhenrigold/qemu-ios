@@ -18,6 +18,7 @@ typedef struct {
     hwaddr (*xlate)(void *opaque, uint32_t va, unsigned sid);
     void *xlate_opaque;
     unsigned sid;
+    uint32_t version;   /* +0x260, the block's version: 0 on the S5L8720 (no tiled buffers) */
 } IPodScalerState;
 
 void ipod_scaler_set_iommu(DeviceState *dev,
@@ -32,6 +33,21 @@ void ipod_scaler_set_iommu(DeviceState *dev,
     s->xlate = xlate;
     s->xlate_opaque = opaque;
     s->sid = sid;
+}
+
+/*
+ * AppleM2ScalerCSCDriver reads +0x260 once at start (8F190 0x80a45696, kept at driver+0x34) and gates features
+ * on it: tiled buffers from 0x20002, more capabilities past 0x20006 and past 0x40006. 4.3's QuartzCore scales an
+ * EAGL layer from a tiled surface, which version 0 refuses ("Scaler block (version = 0x0) for this chip does not
+ * support tiled buffers"). The model reads the rows linearly either way: the host writes rendered surfaces linear.
+ */
+void ipod_scaler_set_version(DeviceState *dev, uint32_t version);
+void ipod_scaler_set_version(DeviceState *dev, uint32_t version)
+{
+    IPodScalerState *s = (IPodScalerState *)dev;
+
+    s->version = version;
+    s->regs[0x260 / 4] = version;
 }
 
 static hwaddr scaler_pa(IPodScalerState *s, uint32_t va)
@@ -206,6 +222,7 @@ static void scaler_write(void *opaque, hwaddr off, uint64_t value, unsigned size
     else s->regs[off / 4] = value;
     if (off == 4 && (value & 2)) {
         memset(s->regs, 0, sizeof(s->regs));
+        s->regs[0x260 / 4] = s->version;
     } else if (off == 4 && (value & 1)) {
         if (!scaler_convert(s) && !scaler_rgb(s)) error_report("scaler: unsupported or invalid transfer %08x -> %08x geometry %08x -> %08x",
             s->regs[4], s->regs[12], s->regs[9], s->regs[16]);
@@ -225,6 +242,7 @@ static void scaler_reset(DeviceState *dev)
 {
     IPodScalerState *s = (IPodScalerState *)dev;
     memset(s->regs, 0, sizeof(s->regs));
+    s->regs[0x260 / 4] = s->version;
     scaler_irq(s);
 }
 

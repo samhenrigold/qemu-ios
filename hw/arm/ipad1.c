@@ -1262,10 +1262,12 @@ static void ipad1_init(MachineState *machine)
      * on Accessibility > Zoom, which puts the scaler on CA's display path,
      * hung the UI in "M2Scaler waiting for device reset step 2".
      */
-    ipod_scaler_set_iommu(sysbus_create_simple("ipodtouch.scaler",
-                                               S5L8930_SCALER_BASE,
-                                               ipad1_irq(s, S5L8930_IRQ_SCALER)),
-                          s5l8930_dart2_xlate, s->display, 2);
+    DeviceState *scaler = sysbus_create_simple("ipodtouch.scaler", S5L8930_SCALER_BASE,
+                                               ipad1_irq(s, S5L8930_IRQ_SCALER));
+    ipod_scaler_set_iommu(scaler, s5l8930_dart2_xlate, s->display, 2);
+    /* ponytail: 0x20002 is the lowest version the 4.3 driver gives tiled buffers (CA scales EAGL layers from
+     * them); unmeasured on a unit, read +0x260 off one to replace it. */
+    ipod_scaler_set_version(scaler, 0x20002);
 
     /* SWI: backlight and DPSM core voltage; only the busy bit matters. */
     sysbus_create_simple("ipodtouch.swi", S5L8930_SWI_BASE, NULL);
