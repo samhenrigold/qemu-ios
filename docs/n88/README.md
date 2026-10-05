@@ -11,6 +11,8 @@ data; an IPA installs through installation_proxy and AppSync and launches.
 
 | Build | Boot | Touch, Home, Hold | Power-off + persist | IPA install + launch | GL app |
 |---|---|---|---|---|---|
+| 3.0 7A341, 3.0.1 7A400 | not prepared: the guest helpers carry LC_DYLD_INFO, which 3.0's dyld refuses (FirmwareKit's fit check; debt 10) | | | | |
+| 3.1 7C144, 3.1.2 7D11 | activated home screen | yes | yes (gesture; marker survives) | yes (app-install.py all PASS; icon on page 2) | draws |
 | 3.1.3 7E18 | activated home screen ("No Service") | yes | yes (gesture, 15 s; marker survives) | yes (app-install.py all PASS; icon on page 2) | draws |
 | 4.0 8A293, 4.0.1 8A306, 4.0.2 8A400, 4.1 8B117 | activated home screen | yes | yes | yes (app-install.py all PASS) | draws (debt 1) |
 | 4.2.1 8C148a | activated home screen ("No Service") | yes | yes | yes (Harness) | renders through the bridge (readback PASS); on the panel at the wrong stride (debt 1) |
@@ -160,3 +162,7 @@ PASS; N18 unlock to the home screen with touch PASS.
    (contrib/gles-public) does not fit 6.x yet (imports NSObject classes no 6.x image exports), so the device is
    prepared with ca_ogl off, and SpringBoard then has no context to draw into ("CGContext... invalid context
    0x0"): the panel keeps the boot logo. Waits on the 6.x GL shim (a4-boards).
+10. **3.0**: FirmwareKit's KBoot now tolerates 3.0's DT (no raw-panel-id, no baseband snum), and the prepare then
+    stops at the helpers' fit check: it_pbd's load command 0x80000022 (LC_DYLD_INFO_ONLY) is newer than 3.0's
+    dyld. armv6.sh's LEGACY_LINK=1 drops it, but the whole helper set (guest package, AppSync, the GL front end)
+    would need a legacy build, a shared-toolchain change. 3.1 onwards takes the current helpers.
