@@ -1,9 +1,10 @@
-# iPod touch 3G (N18AP, S5L8922): `-M n18`
+# iPod touch 3G (N18AP, S5L8922): `-M n18` (and the iPhone 3GS, `-M n88`)
 
 The S5L8920/8922 machine (`hw/arm/s5l8920.c`): the A4's blocks (`s5l8930_*`) at this SoC's addresses and
 interrupt numbers, the S5L8720's display, USB and Dialog PMU models, and two blocks of its own (PMGR,
 `s5l8920_pmgr.c`, `s5l8920_dart.c`). iOS 4.2.1 (8C148) boots by kboot (no iBoot) from a NAND store to the
-home screen, with touch. The iPhone 3GS (N88AP, S5L8920) is the next board on the same machine file.
+home screen, with touch, and powers off cleanly with its data intact. The iPhone 3GS (N88AP, S5L8920) is the
+second board on the same machine file (`-M n88`, below).
 
 ## What runs (2026-10-04)
 
@@ -20,7 +21,14 @@ home screen, with touch. The iPhone 3GS (N88AP, S5L8920) is the next board on th
   4.2.1 lockdownd is byte-identical to the iPad's), SpringBoard draws the lock screen through the M2 CLCD
   behind dart0. Home wakes the panel, slide to unlock works (N1F55 digitizer firmware downloaded, frames
   read), the home screen comes up (2026-10-04, `screens` in qemu-ios-files/n18/runs/t4.png).
-- Not yet: shutdown and persistence, Wi-Fi, audio, the D1755's button wake path (debt 6).
+- Power-off: QMP `system_powerdown` makes the user's gesture (Home, Hold 3.5 s, drag "slide to power
+  off"); SpringBoard swaps every framebuffer, AppleM2TVOut's too, so TV-out is modelled; the guest unmounts,
+  syncs the FTL ("AppleNANDFTL::_powerDownHandler: sync complete") and QEMU exits about 15 s after the
+  request. Persistence (2026-10-05): a 70001-byte file pushed with `afcclient` over usbmuxd-qemu
+  (`usb-tcp-addr=`) reads back identical after that power-off and a reboot on the same overlay; lockdown
+  answers ProductVersion 4.2.1 on both boots.
+- Audio: I2S0 gets the codec's PCM from CDMA channel 0x15 on the audio clock (no listening test yet).
+- Not yet: Wi-Fi, the D1755's button wake path (debt 6).
 
 ## How to boot
 
@@ -65,8 +73,8 @@ build/qemu-system-arm -M n18,kboot=$F/kboot-nor.bin,nand=$F/dev/nand,nand-overla
 The lock screen turns the panel off after a few idle seconds and the digitizer with it (the personality's
 `DisablePowerForUILock`): press Home (`qom-set /machine button-home true`, then false) before a drag.
 
-Machine properties: `kboot`, `nand`, `nand-overlay`, `nor`, `nor-rw` (a NOR on spi0 only when one is set),
-`button-home`, `button-hold`.
+Machine properties: `kboot`, `nand`, `nand-overlay`, `nor`, `nor-rw` (on the N18 a NOR on spi0 only when one
+is set), `button-home`, `button-hold`, `usb-tcp-addr` (usbmuxd-qemu's QEMU port, as on the iPad).
 
 ## Models: reused, varied, new
 
@@ -95,7 +103,9 @@ offsets at 0x80000000).
 | NOR (grafted) | `ipodtouch.nor` on spi0, CS GPIO 0x1204, with `nor-rw` | shared | R (P: the DT node) |
 | MIPI-DSIM, SWI, scaler | the iPod's at 0x89000000, 0x89100000, 0x85500000 | shared | R / H |
 | USB | the S5L8720's PHY + DWC OTG (device mode), built-in host | shared | R |
-| Everything else | the unimplemented window 0x80000000-0xbfffffff (TV-out, SDIO, DARTs, JPEG, VXD, audio) | | S |
+| TV-out | the S5L8720's `ipodtouch.tvout`: SDO 0x85600000, mixers 0x85200000/0x85100000, IRQs 0x23/0x27 | shared | H |
+| I2S0 | the A4's `s5l8930.i2s`, registers at 0x84500400, its TX FIFO window (MMIO 1) at 0x84500000 where CDMA channel 0x15 writes; the CDMA's `paced-base` puts that FIFO on the audio clock | variant | R |
+| Everything else | the unimplemented window 0x80000000-0xbfffffff (SDIO/Wi-Fi, JPEG, VXD, AMC, PWM) | | S |
 
 ## Debts
 
@@ -108,7 +118,22 @@ offsets at 0x80000000).
 2. **Clock table (kboot)**: `clock-frequencies` is the iPad's cut to these DTs' 32 slots.
 3. **ChipID fuses**: the K48's words.
 4. **D1755 backlight**: undecoded; the panel is held lit (`backlight-enable-reg` points at a scratch byte).
-5. **Wi-Fi (SDIO), audio (I2S at 0x84500000, AMC), TV-out**: not wired.
+5. **Wi-Fi (SDIO), AMC**: not wired.
 6. **Buttons**: GPIO only; the D1755's wake latch (DT wake_button_* on its STAT) is not driven, so a press
    cannot wake a sleeping AP. Sleep has not been tried.
 7. **it_keybag**: the iPad's armv7 build (`build/ipad1-guest/it_keybag`), copied; same volume layout.
+
+## iPhone 3GS (N88AP, S5L8920): `-M n88`
+
+The same machine with the N88's board data: board-id 0, five UARTs (the bq27540 HDQ gauge on uart4, as the
+iPad's), its own SPI NOR (no graft), the spi2 baseband controller with nothing on it, i2c0 accelerometer,
+AK8973 compass, CS42L61 (the CS42L58 register model, as on the iPad) and CD3272. The baseband DT node is
+unmatched by kboot (fill_dt) and carries GSMA's test IMEI 004999010640000 and the serial `TESTSNUM0000`.
+
+State (2026-10-05): 8C148a boots the restore ramdisk to "BSD root: md0". The s5l8920x IOP firmware (the
+N88's; the N18 runs the s5l8922x build of the same iBoot-931) drives the H2FMI differently, now modelled:
+FMC at +0x400 and ECC at +0x800 (`fmc-offset`/`ecc-offset`), READ ID as byte-wide reads (go 0x10 after
+0x90), a blank page flagged in the ECC summary bit 6 (`ecc-blank-summary`). Chips identify (0xB614D5AD on
+both buses) and VFL opens on an epoch-3 store (`ipad1_nand.py --epoch 3`, the IPSW's SCEP), but the YaFTL R/O
+restore reads page after page and has not finished in 5 minutes: the next thing to decode is this
+firmware's data-read path. Until then the keybag one-shot and the NAND root do not work on the N88.
