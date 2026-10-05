@@ -79,7 +79,7 @@ As N81, plus:
 1. **Baseband** waits on the cell stream (spi2 IFX protocol, modem core). Today the node is unmatched and
    the device shows "No Service".
 2. **Absent parts**:
-   - The gyro (ap3gdl/mpu3100 at 0x68). Its driver frees itself.
+   - ~~The gyro~~: the L3G4200D model, as on N81 (its debt 5).
    - The ALS/prox ct700 (i2c0 0x29). It is probed for and skipped.
    - The Highland Park audio processor (i2c0 0x3e, uart6, i2s2).
    - The GPS (bcm4750 on uart4).

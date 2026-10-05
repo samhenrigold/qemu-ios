@@ -102,7 +102,7 @@ documented quirk/patch, S stub.
 | PMU D1815, LIS331DLH, TSL2581 | shared | as-is (TSL2581 at 0x49) | H |
 | Codec CS42L59 | the CS42L58 register file | shared | H |
 | BCM4329 | the iPod's dongle model, `P=N81`, n81.bin version | variant (board data) | H |
-| Gyro (ap3gdl / mpu3100 @0x68) | none: both probes fail and AppleEmbeddedI2CGyro frees itself | absent | - |
+| Gyro (ap3gdl @0x68, INT1 0x21 / INT2 0x05) | ST L3G4200D (WHO_AM_I 0xd3): registers, 32-slot FIFO and its modes, INT2 levels, ODR timer; the device sits still (zero rate). The kboot DT's `gyro-sensitivity-calibration` (iBoot fills it from syscfg) gets a nominal identity at reset | new | R (calibration P) |
 | Cameras / ISP | none; `camera=off` (default) unmatches the DT's `isp` node | absent (see debts) | P |
 
 ## Debts
@@ -127,7 +127,10 @@ documented quirk/patch, S stub.
    unmatches the kboot DT's `isp` node at reset, the way `baseband` does, so the board reads as camera-less:
    no H3CamIn lines, and Camera.app opens to its closed shutter without crashing (N90 8C148, 2026-10-05).
    A real ISP model (the ISP CPU running its firmware, the sensors on i2c/MIPI) is what `camera=on` waits for.
-5. **Gyro** absent (Game Center/CoreMotion users see no gyro). An ID-register stub at 0x68 is next.
+5. ~~**Gyro**~~ (2026-10-05): AppleAP3GDL attaches and streams. `contrib/it-gyro` (spawned through the agent)
+   reads CoreMotion at about 100 Hz, `gyroAvailable 1`, every rate 0. Left: a host input for rotation rates (the
+   attitude path moves only the accelerometer), INT1's threshold events, the temperature byte, and the unit's
+   real sensitivity matrix.
 6. ~~Accelerometer mounting~~ (2026-10-04): the board's `accel_mount` "-2,-1,3" is the DT's orientation
    matrix inverted. Safari turns with `accel-orientation` 1/3 as on hardware (3 = Home right).
 7. **Multitouch calibration**: rows/columns/surface are the iPod 2G's, not measured on a unit. Taps land
