@@ -1066,6 +1066,16 @@ static void test_ifx(void)
         ifx_frame(&x, &c, "at\r", miso, 0x800, got);
     }
     CHECK(x.credits_out == 16);                 /* topped up on every frame */
+
+    /* A modem reset (bb_rst) drops queued data but not the AP's credits: the kext
+     * keeps its count and re-grants only the difference. */
+    x.credits_in = 3;
+    ios_bb_ifx_queue(&x, (const uint8_t *)"stale", 5);
+    ios_bb_ifx_modem_reset(&x);
+    CHECK(!ios_bb_ifx_pending(&x) && x.credits_in == 3 && x.credits_out == 16);
+    x.credits_in = 165;                         /* repeated unanswered "at" pings granting 15 each */
+    ios_bb_ifx_modem_reset(&x);
+    CHECK(x.credits_in == 16);
 }
 
 /* ------------------------------------------------------------- packet data */

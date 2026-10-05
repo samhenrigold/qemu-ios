@@ -227,6 +227,7 @@ typedef struct IosBbIfx {
     unsigned txq_len;
 } IosBbIfx;
 
+void ios_bb_ifx_modem_reset(IosBbIfx *x);
 void ios_bb_ifx_init(IosBbIfx *x, int version, unsigned max_data);
 /* The core's out callback (opaque = the IosBbIfx). */
 void ios_bb_ifx_queue(void *opaque, const uint8_t *buf, size_t len);

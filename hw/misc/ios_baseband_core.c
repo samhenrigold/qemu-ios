@@ -2381,6 +2381,20 @@ void ios_bb_ifx_init(IosBbIfx *x, int version, unsigned max_data)
     x->max_data = MIN(max_data, 0xffeu);
 }
 
+/*
+ * The modem itself reset (bb_rst or radio_on low), not the AP: queued data is
+ * gone, but the v2 credits stay. The kext keeps its count across the reset and
+ * re-grants only the difference (after CommCenter's recovery reset: 2, not the
+ * boot-time 15), so zeroed credits left the modem unable to answer once the
+ * re-init's replies outran the AP's per-frame grants, and both sides waited
+ * (N90, a CommCenter restart). It never holds more than the AP's rx buffers.
+ */
+void ios_bb_ifx_modem_reset(IosBbIfx *x)
+{
+    x->txq_len = 0;
+    x->credits_in = MIN(x->credits_in, IFX_V2_GRANT);
+}
+
 void ios_bb_ifx_queue(void *opaque, const uint8_t *buf, size_t len)
 {
     IosBbIfx *x = opaque;
