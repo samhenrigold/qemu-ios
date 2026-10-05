@@ -103,11 +103,20 @@ documented quirk/patch, S stub.
 ## Debts
 
 0. **GL apps draw black (4.2.1).** `regress.py --checks app` installs the harness (AppSync), launches it and finds it
-   frontmost, but its GL scene's view stays black although it runs at 30 fps through the bridge. QuartzCore's
-   `sendNotification:forTransaction:onLayer:` carries a framebuffer ID that no IOMobileFramebuffer this process opens
-   reports (the shim counts `shim:eagl:send-notification-id`). Signalling the main display instead removes the
-   refusal but not the black view. The swap for that ID, or the composite of the app's 240x360 surfaces, is still
-   missing; next step is to trace CA's texture binds of the app surface in SpringBoard.
+   frontmost, but its GL scene's view stays black although it runs at 30 fps through the bridge. The same app on an
+   iPad 1 4.2.1 (a FirmwareKit kboot k48ap-8C148 device) draws its triangle, with no refusals.
+   - **Root cause** (N90 8C148, read off the shared cache): on these Retina boards the app's QuartzCore scales the
+     legacy app's EAGL surface with the M2 scaler. It creates an `IOSurfaceAccelerator`
+     (QuartzCore 0x34175a8c) and, per frame, sends `-[EAGLContext sendNotification:IOSurfaceAcceleratorGetID(accel)
+     forTransaction:t onLayer:0]` (0x341312e4).
+   - The stock SGX engine turns that into a kernel signal by ID, which releases AppleM2ScalerCSCDriver's queued
+     `TransferSurfaceWithSwap`. Only after that transfer does the scaler call IOMFB `swap_signal` for the panel.
+     The shim cannot name an accelerator: it refuses the ID (`shim:eagl:send-notification-id`), the transfer is
+     never started (the scaler model logs no transfer during the scene) and the layer stays black.
+   - Signalling the panel's swap instead removes the refusal but shows black, because the scaled copy never ran.
+   - Fix options: (a) find a user-space trigger for the accelerator's swap (its user client's methods); (b) have
+     the front end complete the accelerator's transfer itself (`IOSurfaceAcceleratorTransferSurface` from the
+     rendered surface); (c) keep CA off the accelerator path.
 
 1. **iBoot and the real NAND boot.** Only `kboot=` runs. A real N81 boots LLB/iBoot from NAND (boot
    blocks, `IOFlashPartitionScheme`) and keeps nvram/effaceable there. The NOR graft is the shortcut.
