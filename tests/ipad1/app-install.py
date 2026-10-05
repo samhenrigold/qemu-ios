@@ -70,9 +70,12 @@ def ocr_upright(ppm):
     turned = ppm + ".turned.ppm"
     with open(turned, "wb") as f:
         f.write(b"P6\n%d %d\n255\n" % (h, w) + bytes(out))
-    rg.ocr(turned)                           # builds the OCR tool once
     found = {}
-    lines = subprocess.run([rg.OCR_BIN, turned], capture_output=True, text=True, check=True).stdout.splitlines()
+    try:
+        rg.ocr(turned)                       # builds the OCR tool once
+        lines = subprocess.run([rg.OCR_BIN, turned], capture_output=True, text=True, check=True).stdout.splitlines()
+    except subprocess.CalledProcessError:    # Vision crashes on some frames (4.x home screens): no text read
+        return found
     for x0, y0, x1, y1, text in sorted((l.split(" ", 4) for l in lines), key=lambda l: int(l[1]), reverse=True):
         found[text.strip()] = ((int(x0) + int(x1)) // 2, (int(y0) + int(y1)) // 2)
     return found
