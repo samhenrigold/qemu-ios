@@ -341,7 +341,7 @@ static void ipod_touch_spi_realize(DeviceState *dev, struct Error **errp)
                           SPI_MMIO_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
 
-    fifo8_create(&s->tx_fifo, R_FIFO_TX_DEPTH);
+    fifo8_create(&s->tx_fifo, s->tx_fifo_depth);
     fifo8_create(&s->rx_fifo, R_FIFO_RX_DEPTH);
 
     /*
@@ -413,6 +413,9 @@ static const Property ipod_touch_spi_properties[] = {
     DEFINE_PROP_UINT8("index", IPodTouchSPIState, base, 0),
     DEFINE_PROP_STRING("peripheral", IPodTouchSPIState, peripheral),
     DEFINE_PROP_BOOL("s5l8900", IPodTouchSPIState, s5l8900, false),
+    /* The TX FIFO stands in for DMA pacing: a whole DMA burst lands in it
+     * before RUN. Part of the migration stream, hence a property. */
+    DEFINE_PROP_UINT32("tx-fifo-depth", IPodTouchSPIState, tx_fifo_depth, R_FIFO_TX_DEPTH),
 };
 
 static void ipod_touch_spi_class_init(ObjectClass *klass, void *data)

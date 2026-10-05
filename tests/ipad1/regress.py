@@ -130,8 +130,8 @@ class Boot:
     def start(self):
         cfg = self.cfg
         with launch_lock:       # free ports are claimed one boot at a time
-            machine = "ipad1,%s,nand=%s,nand-overlay=%s" % (   # a writable NOR copy lives in the overlay dir
-                ipad1_boot.boot_options(cfg, self.overlay), cfg.nand, self.overlay)
+            machine = "%s,%s,nand=%s,nand-overlay=%s" % (   # a writable NOR copy lives in the overlay dir
+                getattr(cfg, "machine", "ipad1"), ipad1_boot.boot_options(cfg, self.overlay), cfg.nand, self.overlay)
             self.usb_port = self.mux_port = 0
             if self.usb:
                 self.usb_port = free_port(21300, 21399)
@@ -259,8 +259,8 @@ class Boot:
     def ev(self, x=None, y=None, btn=None):
         e = []
         if x is not None:
-            e += [{"type": "abs", "data": {"axis": "x", "value": int(x * 32767 / 1024)}},
-                  {"type": "abs", "data": {"axis": "y", "value": int(y * 32767 / 768)}}]
+            e += [{"type": "abs", "data": {"axis": "x", "value": int(x * 32767 / itqmp.W)}},
+                  {"type": "abs", "data": {"axis": "y", "value": int(y * 32767 / itqmp.H)}}]
         if btn is not None:
             e += [{"type": "btn", "data": {"button": "left", "down": btn}}]
         self.qmp.cmd("input-send-event", events=e)
@@ -409,12 +409,14 @@ def check_boot(cfg, r):
             b.wait_lock_screen(60)
         if not ok:
             return r.set(False, "unlock failed: %s 10 s after the slide" % home)
-        if MSM_QUIET not in open(b.serial, errors="replace").read():
+        # The iPod raises no "not supported" alert for the keyboard (nothing for the shim to hide).
+        if getattr(cfg, "machine", "ipad1") == "ipad1" and MSM_QUIET not in open(b.serial, errors="replace").read():
             return r.set(False, "the mounter never reported hiding the USB alert (see %s/home.ppm)" % os.path.basename(b.dir))
         locked = hold_locks(b)
         if not locked.startswith("Hold locked"):
             return r.set(False, locked)
-        gl_clean(b, r, "%s; unlocked, shim hid the USB alert, %s%s" % (detail, locked, pkg), [b.shot("boot-gl")])
+        hid = "shim hid the USB alert, " if getattr(cfg, "machine", "ipad1") == "ipad1" else ""
+        gl_clean(b, r, "%s; unlocked, %s%s%s" % (detail, hid, locked, pkg), [b.shot("boot-gl")])
     finally:
         b.stop()
 
@@ -706,7 +708,8 @@ def check_usbmux(cfg, r):
             return
         v = b.run(["ideviceinfo", "-k", "ProductVersion"]).stdout.strip()
         c = b.run(["ideviceinfo", "-k", "DeviceClass"]).stdout.strip()
-        r.set(v == cfg.product_version and c == "iPad", "ProductVersion %r, DeviceClass %r" % (v, c))
+        want = ipad1_boot.PORTRAIT.get(getattr(cfg, "machine", "ipad1"), "iPad")
+        r.set(v == cfg.product_version and c == want, "ProductVersion %r, DeviceClass %r" % (v, c))
     finally:
         b.stop()
 
@@ -1037,6 +1040,12 @@ def main():
                     "(contrib/guest-package/mkpkg.py offer); boot then also wants it_boot's report")
     a = ap.parse_args()
     if not any(a.checks.split(",")): ap.error("no checks selected")
+    itqmp.W, itqmp.H = ipad1_boot.MACHINES[a.machine]
+    if a.machine in ipad1_boot.PORTRAIT:
+        # A plugged-in iPod's lock screen is the charging battery on black, not the wallpaper: ~30% lit.
+        global LIT_MIN_FRACTION, UNLOCK_FROM, UNLOCK_TO
+        LIT_MIN_FRACTION = 0.2
+        UNLOCK_FROM, UNLOCK_TO = (116, 862), (600, 862)   # portrait panel: the slider runs along the bottom
     device_args(a)
     import ffmpeg_guard                     # imgtools; stock FFmpeg breaks iPod H.264
     why = ffmpeg_guard.check(a.qemu)

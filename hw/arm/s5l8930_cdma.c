@@ -131,8 +131,16 @@ typedef struct AESContext {
     uint32_t carry_len;
 } AESContext;
 
+/* A device FIFO that paces the channels pointed at it (s5l8930_cdma_set_source). */
+typedef struct CDMASource {
+    hwaddr base, size;
+    uint32_t (*avail)(void *opaque, hwaddr addr, bool to_device);
+    void *opaque;
+} CDMASource;
+
 struct S5L8930CDMAState {
     SysBusDevice parent_obj;
+    uint64_t dram_size;         /* property: device FIFO vs memory is by address */
     MemoryRegion cdma_mem;
     MemoryRegion aes_mem;
     qemu_irq irq[CDMA_CHANNELS];
@@ -147,10 +155,9 @@ struct S5L8930CDMAState {
     char *gid_path;
     uint8_t *gid_data;
     size_t gid_size;
-    /* a device FIFO that paces its channel (s5l8930_cdma_set_source) */
-    hwaddr src_base, src_size;
-    uint32_t (*src_avail)(void *opaque, hwaddr addr, bool to_device);
-    void *src_opaque;
+    /* device FIFOs that pace their channels (s5l8930_cdma_set_source):
+     * the FMI's, and the baseband SPI's */
+    CDMASource src[2];
     /* Audio channels (I2S FIFOs) play out in real time, not inside the go
      * write; paced[] marks a chain in flight. */
     bool paced[CDMA_CHANNELS];
@@ -330,15 +337,26 @@ static bool aes_apply(S5L8930CDMAState *s, AESContext *c, uint8_t *buf,
 
 /* ---- channel engine ---- */
 
-static bool cdma_is_memory(uint32_t addr);
+static bool cdma_is_memory(S5L8930CDMAState *s, uint32_t addr);
+
+/* The pacing source whose window holds addr, or NULL. */
+static CDMASource *cdma_src(S5L8930CDMAState *s, uint32_t addr)
+{
+    for (int i = 0; i < ARRAY_SIZE(s->src); i++) {
+        if (s->src[i].avail && addr >= s->src[i].base &&
+            addr - s->src[i].base < s->src[i].size) {
+            return &s->src[i];
+        }
+    }
+    return NULL;
+}
 
 /* Reading a device FIFO that fills as it goes (iBoot's NAND), not feeding
  * the AES engine. Distinct from the time-paced audio channels below. */
 static bool cdma_fifo_fed(S5L8930CDMAState *s, CDMAChannel *c)
 {
-    return s->src_avail && !cdma_is_memory(c->fifo) &&
-           !(c->settings & SET_TO_DEVICE) &&
-           c->fifo >= s->src_base && c->fifo - s->src_base < s->src_size;
+    return !cdma_is_memory(s, c->fifo) && !(c->settings & SET_TO_DEVICE) &&
+           cdma_src(s, c->fifo);
 }
 
 static void cdma_update_irq(S5L8930CDMAState *s, int ch)
@@ -348,7 +366,7 @@ static void cdma_update_irq(S5L8930CDMAState *s, int ch)
      * asserted level there re-enters the draining channel's handler after it
      * has finished and panics ("CDMA M2M unexpected interrupt"). */
     if (CTRL_AES_CTX(s->ch[ch].ctrl) && !cdma_fifo_fed(s, &s->ch[ch]) &&
-        (!s->ch[ch].fifo || cdma_is_memory(s->ch[ch].fifo))) {
+        (!s->ch[ch].fifo || cdma_is_memory(s, s->ch[ch].fifo))) {
         en = false;     /* memory-to-memory only: a device-FIFO channel's context is an inline filter */
     }
     qemu_set_irq(s->irq[ch], en && (s->ch[ch].ctrl & (ST_DONE | ST_ERROR)));
@@ -391,10 +409,10 @@ static bool cdma_waits_for_uart(const CDMAChannel *c)
            (c->fifo & 0xfffff) == 0x24;
 }
 
-static bool cdma_is_memory(uint32_t addr)
+static bool cdma_is_memory(S5L8930CDMAState *s, uint32_t addr)
 {
     return addr >= S5L8930_DRAM_BASE &&
-           addr < S5L8930_DRAM_BASE + S5L8930_DRAM_SIZE;
+           addr < S5L8930_DRAM_BASE + s->dram_size;
 }
 
 static void cdma_fifo_xfer(uint32_t fifo, uint32_t width, uint8_t *buf,
@@ -417,7 +435,7 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
     CDMAChannel *c = &s->ch[ch];
     int ctx = CTRL_AES_CTX(c->ctrl);
     uint32_t dev = c->fifo;
-    bool dev_mem = cdma_is_memory(dev);
+    bool dev_mem = cdma_is_memory(s, dev);
     bool fed = cdma_fifo_fed(s, c);
     /* A context on a memory-to-memory channel feeds the engine (the AP's
      * AppleCDMA pair); on a channel whose far end is a device FIFO it is an
@@ -465,10 +483,10 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
         }
         c->in_seg = false;
         len = c->remain;
-        if (fed || (to_device && dev_fifo && s->src_avail &&
-                    dev >= s->src_base && dev - s->src_base < s->src_size)) {
+        if (fed || (to_device && dev_fifo && cdma_src(s, dev))) {
             /* Take what the device has (or has room for); stall (still running) for the rest. */
-            uint32_t avail = s->src_avail(s->src_opaque, dev, to_device) & ~(width - 1);
+            uint32_t avail = cdma_src(s, dev)->avail(cdma_src(s, dev)->opaque, dev,
+                                                     to_device) & ~(width - 1);
             if (avail < len) {
                 len = avail;
                 c->in_seg = true;
@@ -560,8 +578,7 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
         c->error = error;
         c->ctrl |= ST_ERROR;
     }
-    if (!error && to_device && dev_fifo && s->src_avail &&
-        dev >= s->src_base && dev - s->src_base < s->src_size) {
+    if (!error && to_device && dev_fifo && cdma_src(s, dev)) {
         /* The chain has filled the device's FIFO; it completes when the
          * device has taken it (s5l8930_cdma_sink_done from the FMI), as the
          * IOP firmware waits for after its NAND write. */
@@ -913,10 +930,16 @@ void s5l8930_cdma_set_source(DeviceState *dev, hwaddr base, hwaddr size,
 {
     S5L8930CDMAState *s = S5L8930_CDMA(dev);
 
-    s->src_base = base;
-    s->src_size = size;
-    s->src_avail = avail;
-    s->src_opaque = opaque;
+    for (int i = 0; i < ARRAY_SIZE(s->src); i++) {
+        if (!s->src[i].avail || s->src[i].base == base) {
+            s->src[i].base = base;
+            s->src[i].size = size;
+            s->src[i].avail = avail;
+            s->src[i].opaque = opaque;
+            return;
+        }
+    }
+    g_assert_not_reached();                     /* more sources than src[] */
 }
 
 /* The FIFO-fed device has more data: resume every channel stalled on it. */
@@ -1150,6 +1173,7 @@ static void s5l8930_cdma_finalize(Object *obj)
 
 static const Property s5l8930_cdma_properties[] = {
     DEFINE_PROP_STRING("gid-blobs", S5L8930CDMAState, gid_path),
+    DEFINE_PROP_UINT64("dram-size", S5L8930CDMAState, dram_size, S5L8930_DRAM_SIZE),   /* the board's */
 };
 
 static void s5l8930_cdma_class_init(ObjectClass *klass, void *data)

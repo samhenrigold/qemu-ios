@@ -69,6 +69,7 @@ struct HdqGaugeChardev {
 
     int level;              /* %, as the machine last set it */
     bool charging;
+    int capacity_mah;       /* DesignCapacity: the board's battery (s5l8930_hdq_set_capacity) */
 };
 typedef struct HdqGaugeChardev HdqGaugeChardev;
 
@@ -167,7 +168,6 @@ static void hdq_chr_accept_input(Chardev *chr)
     hdq_flush(HDQ_GAUGE_CHARDEV(chr));
 }
 
-#define BQ_CAPACITY_MAH 6500     /* K48 DesignCapacity from ioreg */
 #define BQ_CURRENT_MA   300
 
 /*
@@ -179,7 +179,7 @@ static void hdq_chr_accept_input(Chardev *chr)
  */
 static void hdq_apply_battery(HdqGaugeChardev *g)
 {
-    int rm = BQ_CAPACITY_MAH * g->level / 100;
+    int rm = g->capacity_mah * g->level / 100;
     uint16_t flags = BQ_FLAG_BAT_DET;
 
     if (g->charging) {
@@ -194,7 +194,7 @@ static void hdq_apply_battery(HdqGaugeChardev *g)
     stw_le_p(&g->regs[BQ_RM], rm);
     stw_le_p(&g->regs[BQ_AI], (uint16_t)(g->charging ? BQ_CURRENT_MA : -BQ_CURRENT_MA));
     stw_le_p(&g->regs[BQ_TTE], g->charging ? 0xffff : rm * 60 / BQ_CURRENT_MA);
-    stw_le_p(&g->regs[BQ_TTF], g->charging ? (BQ_CAPACITY_MAH - rm) * 60 / BQ_CURRENT_MA : 0xffff);
+    stw_le_p(&g->regs[BQ_TTF], g->charging ? (g->capacity_mah - rm) * 60 / BQ_CURRENT_MA : 0xffff);
     stw_le_p(&g->regs[BQ_SOC], g->level);
 }
 
@@ -215,13 +215,21 @@ static void hdq_reset(void *opaque)
     timer_del(g->timer);
     memset(g->regs, 0, sizeof(g->regs));
     stw_le_p(&g->regs[BQ_TEMP], 2981);
-    stw_le_p(&g->regs[BQ_FCC], BQ_CAPACITY_MAH);
+    stw_le_p(&g->regs[BQ_FCC], g->capacity_mah);
     stw_le_p(&g->regs[BQ_SOH], 100);
     stw_le_p(&g->regs[BQ_CC], 10);
-    stw_le_p(&g->regs[BQ_DCAP], BQ_CAPACITY_MAH);
+    stw_le_p(&g->regs[BQ_DCAP], g->capacity_mah);
     hdq_apply_battery(g);
     g->bits = g->nbits = 0;
     g->resp_head = g->resp_tail = 0;
+}
+
+void s5l8930_hdq_set_capacity(Chardev *chr, int mah)
+{
+    HdqGaugeChardev *g = HDQ_GAUGE_CHARDEV(chr);
+
+    g->capacity_mah = mah;
+    hdq_reset(g);
 }
 
 static void hdq_chr_open(Chardev *chr, ChardevBackend *backend,

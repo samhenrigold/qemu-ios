@@ -71,6 +71,25 @@ const MTSensorProfile mt_profile_k48 = {
     .frame_y0 = 33, .frame_height = 19465,
 };
 
+/*
+ * iPod touch 4G (N81): an N1 sensor (AppleMultitouchN1SPI, multi-touch,n18),
+ * family 0x55: the driver loads Common.mtprops' "N1F55,1" firmware, whose
+ * version 0x0079 is the bcdVersion. Rows/columns/surface are the iPod's
+ * (3.5" 640x960 at 326 ppi is 49.9 x 74.9 mm, the iPod's 5000 x 7500).
+ * ponytail: not measured on a unit; recalibrate frame_* as the K48's were.
+ */
+const MTSensorProfile mt_profile_n81 = {
+    .family_id = 0x55,
+    .rows = MT_SENSOR_ROWS, .cols = MT_SENSOR_COLUMNS,
+    .bcd_version = 0x79,
+    .surface_width = MT_SENSOR_SURFACE_WIDTH,
+    .surface_height = MT_SENSOR_SURFACE_HEIGHT,
+    .region_desc = { MT_SENSOR_REGION_DESC }, .region_desc_len = 1,
+    .region_param = { MT_SENSOR_REGION_PARAM }, .region_param_len = 1,
+    .frame_width = MT_INTERNAL_SENSOR_SURFACE_WIDTH,
+    .frame_height = MT_INTERNAL_SENSOR_SURFACE_HEIGHT,
+};
+
 static void prepare_interface_version_response(IPodTouchMultitouchState *s) {
     memset(s->out_buffer + 1, 0, 15);
 
@@ -309,6 +328,18 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
             s->hbpp_atn_ack_response[0] = 0x4B;
             s->hbpp_atn_ack_response[1] = 0xC1;
         }
+        else if(value == 0x19) {
+            /* AppleMultitouchN1SPI (N81) opens with 19 c1 before its HBPP
+             * check: a wake/reset request to the bootloader; nothing to say. */
+            s->buf_size = 2;
+            memset(s->out_buffer, 0, 2);
+        }
+        else if(value == 0xEE) {
+            /* N1 driver, after EXECUTE and on every power-up: ee ee, then it
+             * polls the interface version. A single-byte strobe. */
+            s->buf_size = 1;
+            s->out_buffer[0] = 0;
+        }
         else if(value == 0x47) { // unknown command, probably used to clear the interrupt
             s->buf_size = 2;
         }
@@ -451,6 +482,9 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
     s->in_buffer_ind++;
 
     if(s->cur_cmd == MT_CMD_HBPP_DATA_PACKET && s->in_buffer_ind == 10) {
+        MTT("HBPP header %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+            s->in_buffer[0], s->in_buffer[1], s->in_buffer[2], s->in_buffer[3], s->in_buffer[4],
+            s->in_buffer[5], s->in_buffer[6], s->in_buffer[7], s->in_buffer[8], s->in_buffer[9]);
         // verify the header checksum
         uint32_t checksum = 0;
         for(int i = 2; i < 8; i++) {

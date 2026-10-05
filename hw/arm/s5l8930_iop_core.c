@@ -158,7 +158,7 @@ void s5l8930_iop_core_run(DeviceState *dev, uint32_t fw_base, uint32_t fw_size)
         object_unparent(OBJECT(&s->fw));
         s->fw_mapped = false;
     }
-    if (fw_base < S5L8930_DRAM_BASE || fw_base + fw_size > S5L8930_DRAM_BASE + S5L8930_DRAM_SIZE) {
+    if (fw_base < S5L8930_DRAM_BASE || fw_base + fw_size > S5L8930_DRAM_BASE + memory_region_size(s->dram)) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: firmware 0x%08x+0x%x outside DRAM\n",
                       __func__, fw_base, fw_size);
         return;
@@ -213,7 +213,7 @@ static void s5l8930_iop_core_realize(DeviceState *dev, Error **errp)
     }
     memory_region_init(&s->mem, OBJECT(s), "iop.mem", 1ULL << 32);
     memory_region_init_alias(&s->dram_window, OBJECT(s), "iop.dram-window", s->dram, 0,
-                             S5L8930_DRAM_SIZE);
+                             memory_region_size(s->dram));
     memory_region_add_subregion(&s->mem, IOP_DRAM_WINDOW, &s->dram_window);
     memory_region_init_alias(&s->periph, OBJECT(s), "iop.periph", s->sysmem, IOP_PERIPH_BASE,
                              IOP_PERIPH_SIZE);
@@ -266,7 +266,7 @@ static int iop_core_post_load(void *opaque, int version_id)
 
     if (s->fw_mapped) {
         if (s->fw_base < S5L8930_DRAM_BASE ||
-            (uint64_t)s->fw_base + s->fw_size > S5L8930_DRAM_BASE + S5L8930_DRAM_SIZE) {
+            (uint64_t)s->fw_base + s->fw_size > S5L8930_DRAM_BASE + memory_region_size(s->dram)) {
             return -EINVAL;
         }
         memory_region_init_alias(&s->fw, OBJECT(s), "iop.fw", s->dram,

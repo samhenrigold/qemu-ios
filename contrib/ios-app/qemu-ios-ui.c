@@ -366,6 +366,7 @@ const QemuIosDeviceInfo *qemu_ios_device_info(const char *machine)
         { "iPod-Touch", 320, 480, 1, 0, false },
         { "ipad1", 1024, 768, 1, 1, false },     /* s5l8930_display scans out 1024x768 */
         { "iPod-Touch-1G", 320, 480, 1, 0, false },
+        { "iPod-Touch-4G", 640, 960, 2, 0, false },  /* a4_n81: portrait Retina panel */
     };
 
     for (size_t i = 0; machine && i < ARRAY_SIZE(devices); i++) {

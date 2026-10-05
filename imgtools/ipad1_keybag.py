@@ -55,13 +55,14 @@ def main():
     rd, kboot, serial = f"{td}/ramdisk.dmg", f"{td}/kboot-restore.bin", f"{td}/keybag.log"
     ramdisk_with_helper(os.path.join(a.dec, a.ramdisk), a.helper, rd)
     ipad1_kboot.main(a.dec, kboot, identity=a.identity, ramdisk=rd)
+    machine = ipad1_kboot.dt_board(ipad1_kboot.DeviceTree(open(os.path.join(a.dec, "DeviceTree.bin"), "rb").read()))["machine"]
     nor = open(a.nor, "rb").read()
     extra = f"nand={os.path.abspath(a.store)},nor-rw={os.path.abspath(a.nor)}" + (f",die-id={a.die_id}" if a.die_id else "")
     pre = f"{td}/store.pre"
     subprocess.run(["cp", "-cR", a.store, pre], check=True)     # APFS clone: the retry's starting point
     for attempt in range(1, ATTEMPTS + 1):
         log = serial if attempt == 1 else f"{serial}.{attempt}"
-        exited, t, text = boot(a.qemu, f"kboot={kboot}", extra, log, lambda s: "panic(" in s, a.timeout)
+        exited, t, text = boot(a.qemu, f"kboot={kboot}", extra, log, lambda s: "panic(" in s, a.timeout, machine)
         for line in text.splitlines():
             if line.startswith("it_keybag:"):
                 print(line)
