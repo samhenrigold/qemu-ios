@@ -454,13 +454,18 @@ def check_boot_5(cfg, r, b, detail):
     if cfg.package_seed is not None and not cfg.guest_package:
         # no offer this boot, so no QC report: it_boot says which package it loaded on the console
         said = "it_boot: package %s\n" % cfg.package_seed
-        if said not in open(b.serial, errors="replace").read():
+        for _ in range(30):   # a loaded host can light the lock screen before it_boot has printed
+            if said in open(b.serial, errors="replace").read():
+                break
+            time.sleep(1)
+        else:
             return r.set(False, "%s, but it_boot never said it loaded the device's package (%r)" % (detail, said.strip()))
         detail += "; it_boot loaded package %s" % cfg.package_seed
     if b.usb:
         v = b.run(["ideviceinfo", "-k", "ProductVersion"]).stdout.strip()
         act = b.run(["ideviceinfo", "-k", "ActivationState"]).stdout.strip()
-        if v != cfg.product_version or not act or (cfg.activated and act != "Activated"):
+        # lockdownd's activated states (FactoryActivated: an iPod's cached factory activation, 6.x's data-ark route)
+        if v != cfg.product_version or not act or (cfg.activated and act not in ("Activated", "FactoryActivated", "WildcardActivated")):
             return r.set(False, "%s, but lockdown answered ProductVersion %r (want %s), ActivationState %r%s" % (
                 detail, v, cfg.product_version, act, " (the device has an activation hook)" if cfg.activated else ""))
         detail += "; lockdown %s %s" % (v, act)
@@ -497,7 +502,10 @@ def check_boot_5(cfg, r, b, detail):
              [ppm])
 
 
-OCR_SRC, OCR_BIN = os.path.join(HERE, "ocr.swift"), os.path.join(ROOT, "build", "ipad1-ocr")
+# Vision caches its compiled models under ~/Library/Caches/<executable name>: one name per checkout, so one
+# checkout's crashed compile cannot leave a bundle that traps every other checkout's helper (e5rtError 13).
+OCR_SRC = os.path.join(HERE, "ocr.swift")
+OCR_BIN = os.path.join(ROOT, "build", "ipad1-ocr-" + hashlib.sha1(os.path.realpath(ROOT).encode()).hexdigest()[:8])
 ocr_lock = threading.Lock()
 
 

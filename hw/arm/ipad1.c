@@ -233,7 +233,7 @@ static const A4Board a4_n81 = {
     .i2c = {
         { 0, 0x74, TYPE_S5L8930_D1815, 0x0d },
         /* CS42L59 (audio0): the same MAP register file the CS42L61 driver saw. */
-        { 0, 0x4a, TYPE_CS42L58 },
+        { 0, 0x4a, TYPE_CS42L59 },
         { 2, 0x19, TYPE_LIS302DL },
         { 2, 0x49, TYPE_S5L8930_TSL2581 },
         { 2, 0x68, TYPE_S5L8930_L3G4200D, 0x21, 0x05 },   /* gyro,ap3gdl: INT1, INT2 */
@@ -783,7 +783,7 @@ static void ipad1_set_button(IPad1MachineState *s, int pin, bool down)
  * phase goes back to idle afterwards so a repeat request works.
  */
 enum { PWROFF_IDLE, PWROFF_HOME, PWROFF_WAKE, PWROFF_HOLD, PWROFF_SETTLE, PWROFF_DRAG,
-       PWROFF_WATCH };
+       PWROFF_REST, PWROFF_WATCH };
 #define PWROFF_WATCH_MS     25000   /* from the request: warn if still running */
 
 static int pwroff_watch_ms(IPad1MachineState *s)
@@ -834,15 +834,19 @@ static void ipad1_pwroff_tick(void *opaque)
         break;
     case PWROFF_DRAG:
         d = s->board->pwroff_drag_len * ++s->pwroff_step / PWROFF_DRAG_STEPS;
-        ipad1_pwroff_touch(s, knob->x + knob->dx * d, knob->y + knob->dy * d,
-                           s->pwroff_step < PWROFF_DRAG_STEPS);
-        if (s->pwroff_step < PWROFF_DRAG_STEPS) {
-            ipad1_pwroff_arm(s, 80);
-        } else {
-            /* Now the guest halts: QEMU exits on the PMU standby write. */
-            s->pwroff_phase = PWROFF_WATCH;
-            ipad1_pwroff_arm(s, pwroff_watch_ms(s) - 7300 - 80 * PWROFF_DRAG_STEPS);
+        ipad1_pwroff_touch(s, knob->x + knob->dx * d, knob->y + knob->dy * d, true);
+        if (s->pwroff_step == PWROFF_DRAG_STEPS) {
+            s->pwroff_phase = PWROFF_REST;
         }
+        ipad1_pwroff_arm(s, s->pwroff_phase == PWROFF_REST ? 300 : 80);
+        break;
+    case PWROFF_REST:
+        /* Lift at rest: iOS 6 reads a release while moving as a flick back. */
+        d = s->board->pwroff_drag_len;
+        ipad1_pwroff_touch(s, knob->x + knob->dx * d, knob->y + knob->dy * d, false);
+        /* Now the guest halts: QEMU exits on the PMU standby write. */
+        s->pwroff_phase = PWROFF_WATCH;
+        ipad1_pwroff_arm(s, pwroff_watch_ms(s) - 7600 - 80 * PWROFF_DRAG_STEPS);
         break;
     case PWROFF_WATCH:
         /* Still here: the gesture missed or the guest is stuck. Say so, and

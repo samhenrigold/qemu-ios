@@ -23,6 +23,15 @@ static bool codec_trace(void)
 
 #define CS42L58_MAP_INCR   0x80
 #define CS42L58_REG_CHIPID 0x01
+/*
+ * CS42L59 (iPod touch 4): 10A403 AppleCS42L59Audio's halt handler sets both
+ * power-down bits in 0x06, then polls 0x38 until bit 3 is set, with no
+ * timeout. The power-down finishes at once here. ponytail: inferred from
+ * that driver loop, not from a datasheet.
+ */
+#define CS42L59_REG_PWRCTL 0x06
+#define CS42L59_REG_STATUS 0x38
+#define CS42L59_PDN_DONE   0x08
 
 static unsigned cs42l58_sample_rate(uint8_t control)
 {
@@ -59,6 +68,11 @@ static uint8_t cs42l58_recv(I2CSlave *i2c)
     CS42L58State *s = CS42L58(i2c);
     uint8_t reg = s->cmd & 0x7f;
     uint8_t res = s->regs[reg];
+
+    if (s->pdn_status && reg == CS42L59_REG_STATUS &&
+        (s->regs[CS42L59_REG_PWRCTL] & 3) == 3) {
+        res |= CS42L59_PDN_DONE;
+    }
 
     if (codec_trace()) {
         fprintf(stderr, "CODEC R %02x -> %02x\n", reg, res);
@@ -151,9 +165,21 @@ static const TypeInfo cs42l58_info = {
     .class_init    = cs42l58_class_init,
 };
 
+static void cs42l59_init(Object *obj)
+{
+    CS42L58(obj)->pdn_status = true;
+}
+
+static const TypeInfo cs42l59_info = {
+    .name          = TYPE_CS42L59,
+    .parent        = TYPE_CS42L58,
+    .instance_init = cs42l59_init,
+};
+
 static void cs42l58_register_types(void)
 {
     type_register_static(&cs42l58_info);
+    type_register_static(&cs42l59_info);
 }
 
 type_init(cs42l58_register_types)

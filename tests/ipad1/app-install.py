@@ -102,6 +102,10 @@ def walk_setup(b, step):
         found = ocr_upright(b.shot("setup-%02d" % n))
         if "Safari" in found and "English" not in found:
             return True, "Setup walked: " + ", ".join(pages)
+        if "Back" in found and any(t.startswith("Forgot Apple ID") for t in found):
+            b.tap(found["Back"])           # 6.x with Wi-Fi up: a stray tap opened the sign-in form; back out, skip
+            pages.append("(Back)")
+            continue
         alert = next((t for t in ALERT_YES if t in found), None)        # a button labelled exactly so
         if alert:
             b.tap(found[alert])
@@ -201,7 +205,8 @@ def main():
             status, out = rg.itqmp.agent(b.qmp, "lockstatus") if rg.itqmp.agent_alive(b.qmp) else (1, b"")
             # Without an agent the frame decides (a locked 4.0 answers springboardservices): lit, not the lock screen.
             nz, now = ac.snap(b, rg, "unlocked")
-            if fresh or b"locked=0" in out or (status and nz > 0.30 and ac._framediff(locked, now)):
+            dark = b.lit("opened") < rg.LIT_MIN_FRACTION   # 6.x can darken the panel mid-slide: Setup unseen
+            if fresh or (not dark and b"locked=0" in out) or (status and nz > 0.30 and ac._framediff(locked, now)):
                 break                                # Setup's language page, or past the lock
         if fresh:
             if not step("setup", *walk_setup(b, step)):
@@ -233,18 +238,21 @@ def main():
         time.sleep(3)
         home = png(b, "home")
         mark = os.path.getsize(syslog) if os.path.exists(syslog) else 0
-        b.tap(GRID[a.machine](slot[1], slot[2]))
-        time.sleep(12)
-        app = png(b, "launched")
-        log = open(syslog, errors="replace").read()[mark:] if os.path.exists(syslog) else ""
-        # "Harness[75]", or launchd's "UIKitApplication:com.qemuios.harness[0x6a01][75]" (4.x)
-        started = bool(re.search(r"(%s|%s)(\[0x[0-9a-f]+\])?\[\d+\]" % (re.escape(exe), re.escape(bundle)), log))
-        if not started and rg.itqmp.agent_alive(b.qmp):   # the syslog relay can drop with the USB link; ask SpringBoard
-            status, front = rg.itqmp.agent(b.qmp, "frontmost")
-            started = status == 0 and front.split(b"\n")[0] == bundle.encode()
-        if not started and a.ipa == HARNESS:     # 5.1+ launchd no longer sends an app's stderr to syslog
-            started = "Harness 1.0 | iOS" in harness_results(b, bundle) or \
-                any(t.startswith("Harness 1.0") for t in ocr_upright(app))
+        for attempt in range(2):   # a tap the home screen drops (6.0.1, after the panel relit) is tapped again
+            b.tap(GRID[a.machine](slot[1], slot[2]))
+            time.sleep(12)
+            app = png(b, "launched")
+            log = open(syslog, errors="replace").read()[mark:] if os.path.exists(syslog) else ""
+            # "Harness[75]", or launchd's "UIKitApplication:com.qemuios.harness[0x6a01][75]" (4.x)
+            started = bool(re.search(r"(%s|%s)(\[0x[0-9a-f]+\])?\[\d+\]" % (re.escape(exe), re.escape(bundle)), log))
+            if not started and rg.itqmp.agent_alive(b.qmp):   # the syslog relay can drop with the USB link; ask SpringBoard
+                status, front = rg.itqmp.agent(b.qmp, "frontmost")
+                started = status == 0 and front.split(b"\n")[0] == bundle.encode()
+            if not started and a.ipa == HARNESS:     # 5.1+ launchd no longer sends an app's stderr to syslog
+                started = "Harness 1.0 | iOS" in harness_results(b, bundle) or \
+                    any(t.startswith("Harness 1.0") for t in ocr_upright(app))
+            if started:
+                break
         changed = ac._framediff(ac._sample(rg, home), ac._sample(rg, app))
         if not step("launch", started and changed, "process seen %s, frame changed %s" % (started, changed)):
             return 1

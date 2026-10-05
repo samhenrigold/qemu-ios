@@ -125,8 +125,13 @@ the panel, readback PASS, no bridge refusals), guest power-off.
 | 5.0.1 | 9A405 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | 5.1 | 9B176 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | 5.1.1 | 9B206 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| 6.0 | 10A403 | kernel stops after corecrypto (below) | - | - | - | - | - | - | - |
-| 6.0.1-6.1.6 | 10A523, 10B144, 10B146, 10B329, 10B400, 10B500 | not run (6.0 first) | | | | | | | |
+| 6.0 | 10A403 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 6.0.1 | 10A523 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 6.1 | 10B144 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 6.1.2 | 10B146 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 6.1.3 | 10B329 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 6.1.5 | 10B400 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 6.1.6 | 10B500 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 
 Notes: the boot check's unlock slide can miss on a loaded host (debt 11): every boot above passed when run
 with no other emulator or preparation running (two batch runs needed that rerun; one app-install tap on 8B117 missed the icon once and passed on the rerun). By hand, a build is
@@ -146,16 +151,42 @@ What it took beyond the 8C148 bring-up:
 5. **Setup Assistant** (5.x) walked by label (OCR of the upright panel); the bottom edge of the digitizer reads
    a little high (debt 7), so a link there is retapped lower.
 
-### iOS 6: not booting yet
+### iOS 6
 
-10A403 (6.0) gets through `pe_identify_machine` (boot_args Version 3 read off xnu-2107's pc-relative check) and,
-with DRAM's first page aliased at physical 0 under kboot (the kernel copies its exception vectors to
-kvtophys(gPhysBase) = 0 after unmapping V=P; checked with fw-a4's earlier zero-ROM mapping there), through
-corecrypto's FIPS self-test; it then stops printing and
-the panel keeps the boot logo, the CPU busy and the timer ticking (6.1.6 10B500 the same). Not yet diagnosed;
-ruled out by experiment: the NOR graft, the SGX DT override, `arm-io/clock-frequencies`, filling
-`chosen/nvram-proxy-data` with an empty CHRP image, a 64-byte `chosen/random-seed`. Its lockdownd has no development shortcut; the hactivation
-path (`should_hactivate`, MobileGestalt `ShouldHactivate`) is the candidate for a recognizer strategy.
+Every 6.x build (6.0-6.1.6) is prepared by FirmwareKit (`firmwarekit create` with the catalog's n81ap entries,
+LightTouchMac fw-a4), and each device passed every gate above, run alone. 6.0 also passed by hand. Activation:
+10A403 and 10A523 by the data ark, 10B144 onward by FirmwareKit's development-activation pattern. Two gate
+flakes on a loaded host passed on a rerun: an AFC start during the install, and it_boot's console line coming after the
+lock screen (the boot check now waits for it). On 6.0.1, SpringBoard drops the first tap on the app's icon after the
+panel relights, three runs out of three. app-install taps twice (debt: the first touch after backboardd re-bootloads the
+multitouch device).
+
+What 6.x needed, all generic (nothing is chosen by build):
+
+1. **boot_args Version** read off xnu-2107's pc-relative check (`ipad1_kboot.boot_args_version`).
+2. **DRAM's first page aliased at physical 0** under kboot: the kernel copies its exception vectors to
+   kvtophys(gPhysBase) = 0 after unmapping V=P.
+3. **NVRAM image in `chosen/nvram-proxy-data`.** iBoot fills it; IODTNVRAM walks its partitions by
+   length, so the zero placeholder hung the boot silently after the FIPS POST. kboot writes an empty CHRP
+   image instead: a "common" partition and the rest free.
+4. **Activation by data, not a patch.** 6.x lockdownd has no development shortcut. It reads its state from its
+   data ark, and a factory unit carries `com.apple.mobile.lockdown_cache-ActivationState = FactoryActivated`
+   there. That plist goes into `/var/root/Library/Lockdown/data_ark.plist` (`ipad1_rootfs build --lockdown DIR`;
+   FirmwareKit does this when no binary strategy matches), and lockdownd stays stock.
+5. **Content-protected data volume**: `kHFSContentProtectionBit` in the data volume's header (a restore sets
+   it); 6.x installd's protection classes fail without it.
+6. **AppSync**: 6.x installd also wants the signing identifier and entitlements in the MIS info. AppSync
+   reads both from the executable's embedded signature.
+7. **GL**:
+   - The 914-field dispatch record has no field names. The front end names its slots by decoding the stock
+     trampolines in the shared cache (a4-boards' scheme, shared with N90).
+   - The macro context comes through `getMacroContextPrivate`.
+   - The front end exports 6.x's eleven new names: APPLE_sync is answered, and the two others are stubbed.
+8. **Power-off**:
+   - The gesture rests at the end of the track before lifting; iOS 6 reads a moving lift as a flick back.
+   - The CS42L59's halt handler waits for power-down done (0x38 bit 3) with no timeout. Before that bit was
+     modelled, PEHaltRestart's 30 s watchdog panicked first.
+9. **Wi-Fi**: the CDC ioctl length word is split (reply buffer low 16 bits, request high 16).
 
 ## Models: reused, varied, new
 

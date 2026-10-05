@@ -28,6 +28,7 @@ static int fake_exists(const char *name) { char p[1024]; fake_path(p, name); ret
 static const char *root_dir(void) { static char p[1024]; fake_path(p, "root"); return p; }
 static const char *sys_root(void) { static char p[1024]; fake_path(p, "sys"); return p; }
 static int sha_disabled(void) { return fake_exists("nosha"); }
+static int root_readonly(void) { return fake_exists("readonly"); }
 static void os_build(char *out, size_t n) {
     char p[1024]; fake_path(p, "build"); FILE *f = fopen(p, "r");
     snprintf(out, n, "7E18");
@@ -182,7 +183,7 @@ class Device:
         (self.d / "root/state").write_text("seed %d\n" % serial)
 
     def boot(self, **flags):
-        for name in ("silent", "corrupt", "fail_at", "nosha", "build", "slow", "tick_step"):
+        for name in ("silent", "corrupt", "fail_at", "nosha", "build", "slow", "tick_step", "readonly"):
             (self.d / name).unlink(missing_ok=True)
         for name, value in flags.items():
             (self.d / name).write_text(str(value))
@@ -240,6 +241,15 @@ def main():
             nonlocal n
             n += 1
             return seeded(tmp / ("dev%d" % n), exe)
+
+        # 7.x read-only root: the baked package's jobs load, the offer is reported as read-only, nothing is written
+        ro = case()
+        ro.offer(pkg(ro, 11, b"shim v11"))
+        before = sorted(str(p) for p in (ro.d / "root").rglob("*")), ro.state()
+        assert ro.boot(readonly=1) == 6 and ro.current() == 10 and ro.hook(MBX) == b"shim v10"
+        assert ro.launchctl() == ["load %s/root/pkgs/10/jobs/com.qemu.it-agent.plist" % ro.d]
+        assert ro.reports()[0][:2] == ["10", "6"] and "read-only root" in ro.reports()[0][2]
+        assert (sorted(str(p) for p in (ro.d / "root").rglob("*")), ro.state()) == before
 
         # silent host: current unchanged, its jobs loaded, no tries counted, nothing reported
         dev = case()

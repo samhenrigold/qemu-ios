@@ -68,12 +68,14 @@ enum {
     R_REVERTED_BAD = 3,
     R_REVERTED_TRIES = 4,
     R_REFUSED = 5,         /* the offered serial is one this device already reverted */
+    R_READ_ONLY = 6,       /* 7.x's read-only root: the package baked at prepare, nothing written */
 };
 
 #ifdef IT_BOOT_TEST
 #include IT_BOOT_TEST      /* qc, launchctl, os_build, root_dir, sys_root, sha_disabled */
 #else
 #include <sys/sysctl.h>
+#include <sys/mount.h>
 
 /* qemu_call_t with the qc_ag_args_t arguments: 52 bytes, frozen (general.h). */
 typedef struct __attribute__((packed)) {
@@ -148,6 +150,12 @@ static void os_build(char *out, size_t n)
 static const char *root_dir(void) { return "/usr/local/lighttouch"; }
 static const char *sys_root(void) { return ""; }
 static int sha_disabled(void) { return 0; }
+/* 7.x boots with a read-only root (its launchd cannot mount -uw /): every write under root_dir fails. */
+static int root_readonly(void)
+{
+    struct statfs f;
+    return statfs(root_dir(), &f) == 0 && (f.f_flags & MNT_RDONLY);
+}
 #endif
 
 struct entry {
@@ -944,6 +952,20 @@ int it_boot_run(void)
 
     sha_load();
     respring_needed = 0;
+    if (root_readonly()) {
+        /* Load the baked package's jobs and say so; no install, hook swap or state: re-prepare to update. */
+        long cur = pkg_ok(current_serial()) ? current_serial() : -1;
+        int len = pull_offer(text, sizeof(text));
+        if (cur >= 0) {
+            jobs(cur, "load");
+        }
+        if (len > 0) {
+            static const char line[] = "read-only root: baked package only";
+            qc(QC_PKG_REPORT, (void *)line, R_READ_ONLY, sizeof(line) - 1, cur < 0 ? 0 : (uint64_t)cur);
+        }
+        say("it_boot: package %s%ld (read-only root)\n", "", cur);
+        return R_READ_ONLY;
+    }
     mkdirs(root_dir());
     pathf(path, "pkgs", "", 0);
     mkdirs(path);

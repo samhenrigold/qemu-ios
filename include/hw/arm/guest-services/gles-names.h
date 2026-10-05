@@ -22,8 +22,8 @@
  * --check.
  */
 #ifndef GLES_NAMES_VERSION
-#define GLES_NAMES_VERSION 0x4897c448
-#define GLES_ID_MAX 918              /* ids are 0..GLES_ID_MAX, all below GLES_OP_BASE */
+#define GLES_NAMES_VERSION 0xad3b3412
+#define GLES_ID_MAX 948              /* ids are 0..GLES_ID_MAX, all below GLES_OP_BASE */
 #define GLES_F_BATCH 1
 #define GLES_F_EXPORT 2
 #endif
@@ -947,4 +947,37 @@ GLES_FN(glClientWaitSyncAPPLE,                 client_wait_sync_APPLE,          
 GLES_FN(glWaitSyncAPPLE,                       wait_sync_APPLE,                               916, NA, GLES_F_EXPORT)
 GLES_FN(glGetInteger64vAPPLE,                  get_integer64v_APPLE,                          917, NA, GLES_F_EXPORT)
 GLES_FN(glGetSyncivAPPLE,                      get_synciv_APPLE,                              918, 5,  GLES_F_EXPORT)
+/* iOS 6.0 (10A403) exports: texture storage, texture-level copy. Not forwarded yet: stubbed by name. */
+GLES_FN(glTexStorage2DEXT,                     tex_storage2D_EXT,                             919, NA, GLES_F_EXPORT)
+GLES_FN(glCopyTextureLevelsAPPLE,              copy_texture_levels_APPLE,                     920, NA, GLES_F_EXPORT)
+/* iOS 7.x (11D257) exports: the ES 3.0 names with no APPLE/EXT/OES twin (a twin's row serves the core name: gles2x_exports
+ * row_of), and the EXT uint/matrix program uniforms. The A4 has no ES 3.0: stubbed by name. */
+GLES_FN(glBindTransformFeedback,               es3_bind_transform_feedback,                   921, NA, GLES_F_EXPORT)
+GLES_FN(glDeleteTransformFeedbacks,            es3_delete_transform_feedbacks,                922, NA, GLES_F_EXPORT)
+GLES_FN(glDrawBuffers,                         es3_draw_buffers,                              923, NA, GLES_F_EXPORT)
+GLES_FN(glGenTransformFeedbacks,               es3_gen_transform_feedbacks,                   924, NA, GLES_F_EXPORT)
+GLES_FN(glGetIntegeri_v,                       es3_get_integeri_v,                            925, NA, GLES_F_EXPORT)
+GLES_FN(glGetInternalformativ,                 es3_get_internalformativ,                      926, NA, GLES_F_EXPORT)
+GLES_FN(glGetProgramBinary,                    es3_get_program_binary,                        927, NA, GLES_F_EXPORT)
+GLES_FN(glInvalidateFramebuffer,               es3_invalidate_framebuffer,                    928, NA, GLES_F_EXPORT)
+GLES_FN(glInvalidateSubFramebuffer,            es3_invalidate_sub_framebuffer,                929, NA, GLES_F_EXPORT)
+GLES_FN(glIsTransformFeedback,                 es3_is_transform_feedback,                     930, NA, GLES_F_EXPORT)
+GLES_FN(glPauseTransformFeedback,              es3_pause_transform_feedback,                  931, NA, GLES_F_EXPORT)
+GLES_FN(glProgramBinary,                       es3_program_binary,                            932, NA, GLES_F_EXPORT)
+GLES_FN(glProgramUniform1uiEXT,                es3_program_uniform1ui_EXT,                    933, NA, GLES_F_EXPORT)
+GLES_FN(glProgramUniform1uivEXT,               es3_program_uniform1uiv_EXT,                   934, NA, GLES_F_EXPORT)
+GLES_FN(glProgramUniform2uiEXT,                es3_program_uniform2ui_EXT,                    935, NA, GLES_F_EXPORT)
+GLES_FN(glProgramUniform2uivEXT,               es3_program_uniform2uiv_EXT,                   936, NA, GLES_F_EXPORT)
+GLES_FN(glProgramUniform3uiEXT,                es3_program_uniform3ui_EXT,                    937, NA, GLES_F_EXPORT)
+GLES_FN(glProgramUniform3uivEXT,               es3_program_uniform3uiv_EXT,                   938, NA, GLES_F_EXPORT)
+GLES_FN(glProgramUniform4uiEXT,                es3_program_uniform4ui_EXT,                    939, NA, GLES_F_EXPORT)
+GLES_FN(glProgramUniform4uivEXT,               es3_program_uniform4uiv_EXT,                   940, NA, GLES_F_EXPORT)
+GLES_FN(glProgramUniformMatrix2x3fvEXT,        es3_program_uniform_matrix2x3fv_EXT,           941, NA, GLES_F_EXPORT)
+GLES_FN(glProgramUniformMatrix2x4fvEXT,        es3_program_uniform_matrix2x4fv_EXT,           942, NA, GLES_F_EXPORT)
+GLES_FN(glProgramUniformMatrix3x2fvEXT,        es3_program_uniform_matrix3x2fv_EXT,           943, NA, GLES_F_EXPORT)
+GLES_FN(glProgramUniformMatrix3x4fvEXT,        es3_program_uniform_matrix3x4fv_EXT,           944, NA, GLES_F_EXPORT)
+GLES_FN(glProgramUniformMatrix4x2fvEXT,        es3_program_uniform_matrix4x2fv_EXT,           945, NA, GLES_F_EXPORT)
+GLES_FN(glProgramUniformMatrix4x3fvEXT,        es3_program_uniform_matrix4x3fv_EXT,           946, NA, GLES_F_EXPORT)
+GLES_FN(glResumeTransformFeedback,             es3_resume_transform_feedback,                 947, NA, GLES_F_EXPORT)
+GLES_FN(glTexStorage3D,                        es3_tex_storage3_d,                            948, NA, GLES_F_EXPORT)
 #endif

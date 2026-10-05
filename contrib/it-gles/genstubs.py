@@ -19,8 +19,8 @@ import re
 import subprocess
 import sys
 
-# Room for every layout seen (822, 826, 841 slots) and then some; GLESCreateGC and glishim refuse more.
-N_SLOTS = 1024
+# Room for every layout seen (822, 826, 841; 6.x 914, 7.x 1035 slots) and then some; GLESCreateGC and glishim refuse more.
+N_SLOTS = 1152
 
 TABLE_BASE = 0x10
 GC_OFF = 0xc      # ldr r0, [r3, #0xc] -- the GC, not a table entry

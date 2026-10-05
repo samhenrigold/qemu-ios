@@ -9,6 +9,9 @@
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+extern long write(int, const void *, unsigned long);
+extern int unlink(const char *);
 
 extern CFTypeRef CFDictionaryGetValue(CFDictionaryRef, const void *);
 const CFStringRef kMISValidationInfoValidatedByProfile =
@@ -19,9 +22,14 @@ static const char *program = "installd";
 static CFDictionaryRef original_info;
 static SecCertificateRef original_certificate;
 static CFStringRef original_summary;
-static int calls, result = -42;
+static int calls, result = -42, ios6;
+static void *expected_path = (void *)1;
+static const CFStringRef signing_id_key =
+    (CFStringRef)__builtin___CFStringMakeConstantString("SigningID");
+static const CFStringRef entitlements_key =
+    (CFStringRef)__builtin___CFStringMakeConstantString("Entitlements");
 const char *test_program(void) { return program; }
-static int verify(void *p, void *o) { assert(p == (void *)1 && o == (void *)2); calls++; return result; }
+static int verify(void *p, void *o) { assert(p == expected_path && o == (void *)2); calls++; return result; }
 static int verify_info(void *p, void *o, CFDictionaryRef *i) {
     verify(p, o);
     if (i && original_info) *i = (CFDictionaryRef)CFRetain(original_info);
@@ -34,6 +42,12 @@ static CFStringRef summary(SecCertificateRef c) {
     (void)c; calls++; return original_summary;
 }
 void *test_symbol(void *handle, const char *name) {
+    if (handle == RTLD_DEFAULT) {
+        if (!ios6) return 0;
+        if (!strcmp(name, "kMISValidationInfoSigningID")) return (void *)&signing_id_key;
+        if (!strcmp(name, "kMISValidationInfoEntitlements")) return (void *)&entitlements_key;
+        assert(0);
+    }
     assert(handle == RTLD_NEXT);
     if (!strcmp(name, "MISValidateSignature")) return verify;
     if (!strcmp(name, "MISValidateSignatureAndCopyInfo")) return verify_info;
@@ -84,5 +98,40 @@ int main(void) {
     assert(as_MISValidateSignatureAndCopyInfo((void *)1, (void *)2, &preserved) == result);
     assert(!preserved);
     CFRelease(bad); CFRelease(info); CFRelease(original_summary);
-    puts("PASS: original signing info, certificate scope, Copy ownership, and process scope");
+
+    // iOS 6: identifier and entitlements come from a 32-bit Mach-O's signature.
+    static const char ents[] = "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>"
+        "<key>get-task-allow</key><true/></dict></plist>";
+    unsigned char m[512] = {0};
+    unsigned *w = (unsigned *)m;
+    w[0] = 0xfeedface; w[4] = 1; w[5] = 16;           // magic, ncmds, sizeofcmds
+    w[7] = 0x1d; w[8] = 16; w[9] = 64; w[10] = 400;  // LC_CODE_SIGNATURE at 64
+    unsigned char *sb = m + 64;
+    #define BE(p, v) ((p)[0] = (unsigned char)((v) >> 24), (p)[1] = (unsigned char)((v) >> 16), (p)[2] = (unsigned char)((v) >> 8), (p)[3] = (unsigned char)(v))
+    BE(sb, 0xfade0cc0); BE(sb + 4, 400); BE(sb + 8, 2);
+    BE(sb + 12, 0); BE(sb + 16, 28); BE(sb + 20, 5); BE(sb + 24, 96);
+    BE(sb + 28, 0xfade0c02); BE(sb + 32, 60); BE(sb + 48, 40);
+    memcpy(sb + 68, "com.example.harness", 20);
+    BE(sb + 96, 0xfade7171); BE(sb + 100, 8 + (unsigned)strlen(ents));
+    memcpy(sb + 104, ents, strlen(ents));
+    char file[] = "/tmp/appsync-macho.XXXXXX";
+    int fd = mkstemp(file);
+    assert(fd >= 0 && write(fd, m, sizeof m) == sizeof m); close(fd);
+    ios6 = 1; original_info = 0; program = "installd";
+    expected_path = (void *)CFStringCreateWithCString(0, file, 0x08000100);
+    CFDictionaryRef six = 0;
+    assert(as_MISValidateSignatureAndCopyInfo(expected_path, (void *)2, &six) == 0 && six);
+    CFStringRef ident = (CFStringRef)CFDictionaryGetValue(six, signing_id_key);
+    char got[64];
+    assert(ident && CFStringGetCString(ident, got, sizeof got, 0x08000100));
+    assert(!strcmp(got, "com.example.harness"));
+    CFDictionaryRef e = (CFDictionaryRef)CFDictionaryGetValue(six, entitlements_key);
+    assert(e && CFDictionaryGetValue(e, __builtin___CFStringMakeConstantString("get-task-allow")) == kCFBooleanTrue);
+    CFRelease(six);
+    // Unsigned: entitlements fall back to an empty dictionary.
+    w[7] = 0; fd = open(file, 1); assert(write(fd, m, sizeof m) == sizeof m); close(fd);
+    assert(as_MISValidateSignatureAndCopyInfo(expected_path, (void *)2, &six) == 0 && six);
+    assert(!CFDictionaryGetValue(six, signing_id_key) && CFDictionaryGetValue(six, entitlements_key));
+    CFRelease(six); CFRelease(expected_path); unlink(file);
+    puts("PASS: original signing info, iOS 6 signature info, certificate scope, Copy ownership, and process scope");
 }
