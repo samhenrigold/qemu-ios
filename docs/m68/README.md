@@ -3,16 +3,17 @@
 The iPod touch 1G's machine with the M68's board data (`hw/arm/ipod_touch_1g.c`: `n45_board`, `m68_board`;
 `-M iPhone-2G` is a subtype of `iPod-Touch-1G`). iPhone OS 1.0 (1A543a) boots through the S5L8900 bootrom
 stubs, iBoot-159, the kernel and the NAND root to SpringBoard. Touch works, lockdownd reports the phone
-Activated, and a clean power-off persists across boots. There is no modem yet (another stream): SpringBoard
-shows "Repair Needed: iPhone cannot make or receive calls" until a tap dismisses it.
+Activated, and a clean power-off persists across boots. The shared baseband model (`ios-baseband`) sits on
+UART1: carrier "Test Network" with full bars and EDGE, Wi-Fi up, SMS in, calls in and out.
 
 ## What runs
 
 - iBoot-159 (no security epoch, so no epoch warning), its
   display (logo, recovery screen), the NAND (WMR C000, four banks), the kernelcache from the HFS root.
   Before the kernel, iBoot talks AT to the baseband on UART1 (`+xgendata`, the radio nvram by
-  `+xdrv=9,1,<block>`): with nothing attached each read times out after about 3 s.
-- The 1.0 kernel: every driver starts except AppleMRVL868x (see debts) and the baseband stack (no modem).
+  `+xdrv=9,1,<block>`): the modem answers both ("Read 1536 bytes from nvram"), so iBoot puts the Wi-Fi
+  calibration into the DT and no radio timeout delays the boot.
+- The 1.0 kernel: every driver starts, AppleMRVL868x included (it accepts the modem's calibration).
   The FTL opens, the root mounts read-write, launchd runs.
 - lockdownd: FirmwareKit's `conditional-no-record-initializer` strategy (LightTouchMac branch m68):
   "Setting the activation state to Activated", then "Disabling brick mode on the baseband". SpringBoard logs
@@ -22,8 +23,13 @@ shows "Repair Needed: iPhone cannot make or receive calls" until a tap dismisses
   Taps reach SpringBoard and apps (Settings, Brightness).
 - GL: LayerKit composites through the host GL bridge (the 1.x front end matches 1.0's 186 OpenGLES exports),
   or software LayerKit on a device made with `gles_shim` off.
+- Modem: CommCenter brings up H5, the 27.010 mux (DLCI 0-7) and its init sequence; registration on the
+  001/01 test network, "Test Network", five bars, EDGE; no "Repair Needed" (only an "iPhone is activated"
+  alert on the first boot). Incoming SMS (alert and Messages thread), incoming calls (ring, Answer, remote
+  hang-up), outgoing calls from the keypad (`last-dialed`, `remote-answer`, End Call from the UI).
 - Power-off: `system_powerdown` (Home, Hold 20 s, slide) ends in `pmu go stdby` and QEMU exits.
 
+Modem verified 2026-10-05 on 1A543a with every item above, by QMP and screenshots.
 Verified 2026-10-04 (branch `m68`): FirmwareKit `m68ap-1A543a` device, home screen, Settings and Brightness
 after taps, power-off and three reboots on the same overlay. iPod 1G (FirmwareKit n45ap-3A101a:
 `regress.py --device --checks boot`, Settings after a tap) and iPod 2G (`regress.py --checks
@@ -37,16 +43,26 @@ firmwarekit create --catalog LightTouchMac/Resources/firmware-catalog.json --id 
 cp DEV/nor.bin /tmp/nor.bin; chmod u+w /tmp/nor.bin; mkdir -p /tmp/ovl
 build/qemu-system-arm -M iPhone-2G,bootrom=$F/ipod1g/bootrom_s5l8900,iboot=DEV/iBoot.bin,nand=DEV/nand,nand-overlay=/tmp/ovl,imei=IMEI,wifi-mac=MAC \
   -drive if=pflash,format=raw,file=/tmp/nor.bin \
-  -serial file:/tmp/serial.log -serial MODEM_CHARDEV -display none -audio driver=none -qmp unix:/tmp/qmp.sock,server,nowait
+  -serial file:/tmp/serial.log -display none -audio driver=none -qmp unix:/tmp/qmp.sock,server,nowait
 ```
 
 IMEI and MAC are `machine.imei` and `machine.wifi-mac` from DEV/device.lock.json. The bootrom is the 1G's
-(the same SoC). The second `-serial` is UART1, the baseband port (`serial_hd(1)`; omit it for no modem).
-UART3 is the Bluetooth port, silent. iBoot prints its console only with `debug-uarts=3` in the NOR nvram.
+(the same SoC). UART1 is the modem's; `baseband=off` takes the model off and leaves UART1 a plain
+`serial_hd(1)` (with nothing there iBoot's AT reads time out after about 3 s each). UART3 is the Bluetooth port, silent. iBoot prints its console only with `debug-uarts=3` in the NOR nvram.
 SpringBoard is up about 100 s into a boot (guest time); give taps a few seconds after an app opens.
 
 Keys: the 1G's chords plus Cmd+- / Cmd+= for the volume buttons (see debts). Machine properties: everything the 1G has, plus `ring-switch` (bool, on = silent, pad 0x1603; settable at
-run time) and `imei` (the unit's, for the modem to report; not used by the machine itself).
+run time), `imei` (the unit's, reported by the modem's `+CGSN`), `baseband` (default on).
+
+Modem controls, aliased from the `baseband-modem` child onto `/machine` (qom-get/qom-set):
+`carrier`, `mcc-mnc`, `signal-dbm`, `registered`, `sim-present`, `imsi`, `iccid`, `voicemail`,
+`answer-delay-ms`; actions (write any string) `remote-answer`, `remote-hangup`, `incoming-call` (a number),
+`incoming-sms` (`"<number>|<text>"`); read-only `call-state`, `last-dialed`, `last-mo-sms`. The board feeds
+the modem `battery-percent` from the PMU's battery ADC every 10 s. The core is shared with the other iPhones
+(`hw/misc/ios_baseband_core.c`, `tests/unit/test-ios-baseband.c`); 1.0 needed: CONFIG with no config field
+(the window comes from our CONFIG RESP), the `+xtransportmode` OK sent over H5, the data CRC either byte
+order, flags on every mux frame inside H5, and the radio nvram (`+xdrv=9,1,<block>`, 512-byte blocks:
+entry type 1 = Wi-Fi calibration, 1024 bytes, a generated non-constant pattern).
 
 ## Models: reused, varied, new
 
@@ -66,7 +82,9 @@ the 1G's row, unchanged.
 | NAND | FMC `banks=4` (ID reads answer only populated chip enables); ADM firmware-14's transfer block (found by its data-section pointers, 0x824 into data2) and page list at +0x444 | property / variant | R / H |
 | UART1, UART3 | `cts` on: iBoot-159 waits for CTS before each byte it sends; with nothing attached the far end reads ready | property | R |
 | USB wrangler quirk | remove()'s vtable slot read from the matched instruction (0x94 in 1.0, 0x54 in 1.1) | P, as the 1G's | P |
-| Baseband, Bluetooth, camera, ALS | not modelled (UART endpoints only; I2C NACKs) | — | — |
+| UART1 receive FIFO | 16 deep on the M68 (`rx-size`): the 4-bit UFSTAT count wraps at 256 | property | R |
+| Baseband | `ios-baseband` on UART1 (H5, 27.010 mux, AT engine, radio nvram) | shared model | H |
+| Bluetooth, camera, ALS | not modelled (UART3 endpoint only; I2C NACKs) | — | — |
 
 The Zephyr1 wire protocol (openiBoot's `multitouch-z1.c`, and 1.0's AppleMultitouchSPI where they differ):
 `C2` data packets (A-Speed) and a blank `C2 00 00 00` before the main firmware stream, `05 00 00 06` verify
@@ -76,13 +94,12 @@ reports interface version 1 and the Zephyr2 model's sensor profile. `MT_TRACE=2`
 
 ## Debts
 
-1. **Wi-Fi: no calibration.** iBoot copies the Wi-Fi tx-calibration into the DT (`arm-io/sdio`
-   `tx-calibration`) from the baseband's nvram ("WIFI Calibration Data" entry, read with `+xdrv=9,1,<block>`).
-   With no modem it stays zeros, and AppleMRVL868x refuses it ("Invalid calibration data in device tree": it
-   accepts any first 128 bytes that are neither all 0x00 nor all 0xFF). Settings shows "No Wi-Fi". The modem
-   model serving that nvram entry fixes it without touching the guest.
-2. **No modem** (another stream): "Repair Needed" alert, no carrier, no IMEI in the DT (so lockdownd's view
-   of the UDID lacks it; FirmwareKit's identity hashes the IMEI it records).
+1. **Modem gaps.** The in-call screen of an answered outgoing call shows "Unknown" instead of the number
+   (1.0 sends `+CLCC` raw and never parses it). Unanswered commands get OK: `+crsm`, `+cnum`, `+xcfc`,
+   `+xctms`, `+xdtmf`, `+cclk`, `+xlog`. No cellular data, no audio. Messages formats the sender oddly
+   ("+55 51 234").
+2. **Taps lag.** The guest UI takes tens of seconds to open an app on a cold boot; scripted taps must wait for
+   screenshots, not fixed delays.
 3. **1.0's slow power-off sheet**: the gesture holds Hold 20 s (the sheet came up 13 s into a hold in one
    run). A run that releases too early locks the phone instead (`pmu go hib`).
 4. **Touch calibration.** The frames use the Zephyr2 model's sensor profile. Taps land on their targets at the

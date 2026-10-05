@@ -206,6 +206,9 @@ typedef struct IPodTouch1GMachineState {
     uint32_t btn_gpio[4], btn_irq[4];
     int64_t btn_pressed_ns[4];
     bool btn_release[4];
+    bool baseband;                   /* M68: the fake modem on UART1 ("baseband", default on) */
+    DeviceState *modem;
+    QEMUTimer *modem_battery_timer;
     char *imei;                      /* M68: the unit's IMEI ("imei"); the baseband reports it, not modelled here */
 } IPodTouch1GMachineState;
 

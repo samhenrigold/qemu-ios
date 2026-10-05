@@ -58,6 +58,7 @@
 #include "hw/arm/s5l8900_nand_ecc.h"
 #include "hw/arm/s5l8900_lcd_panel.h"
 #include "hw/arm/s5l8900_multitouch_z1.h"
+#include "hw/misc/ios_baseband.h"
 #include "hw/i2c/ipod_touch_i2c.h"
 #include "system/system.h"
 #include "system/reset.h"
@@ -677,6 +678,22 @@ static const QemuInputHandler n45_kbd_handler = {
     .event = n45_kbd_event,
 };
 
+/*
+ * The modem reports battery capacity (+XCIEV field 1) as the PMU's gauge reads it.
+ * ponytail: sampled every 10 s of guest time; a PMU change notifier if that ever lags.
+ */
+static void m68_modem_battery(void *opaque)
+{
+    IPodTouch1GMachineState *s = opaque;
+
+    if (s->pmu) {
+        pcf50633_update_battery(s->pmu);
+        object_property_set_int(OBJECT(s->modem), "battery-percent",
+                                pcf50633_level_for_adc(s->pmu->adc_values[4]), &error_abort);
+    }
+    timer_mod(s->modem_battery_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 10 * NANOSECONDS_PER_SECOND);
+}
+
 /* ---- machine ----------------------------------------------------------- */
 
 static void n45_machine_init(MachineState *machine)
@@ -858,15 +875,43 @@ static void n45_machine_init(MachineState *machine)
                               qdev_get_gpio_in_named(dev, "card-irq", 0));
     }
 
+    /*
+     * The M68's baseband: the fake modem (hw/misc/ios_baseband*.c, docs/baseband/commcenter-1.0.md)
+     * on UART1, its controls on the machine. baseband=off leaves UART1 a plain serial_hd(1).
+     */
+    Chardev *modem = NULL;
+    if (s->board == &m68_board && s->baseband) {
+        static const char *const controls[] = {
+            "carrier", "mcc-mnc", "signal-dbm", "registered", "sim-present", "imsi", "iccid", "voicemail",
+            "answer-delay-ms", "incoming-call", "remote-answer", "remote-hangup", "incoming-sms",
+            "call-state", "last-dialed", "last-mo-sms",
+        };
+        dev = qdev_new(TYPE_IOS_BASEBAND);
+        s->modem = dev;
+        object_property_add_child(OBJECT(machine), "baseband-modem", OBJECT(dev));
+        if (s->imei && s->imei[0]) {
+            object_property_set_str(OBJECT(dev), "imei", s->imei, &error_fatal);
+        }
+        qdev_realize_and_unref(dev, NULL, &error_fatal);
+        for (int i = 0; i < ARRAY_SIZE(controls); i++) {
+            object_property_add_alias(OBJECT(machine), controls[i], OBJECT(dev), controls[i]);
+        }
+        modem = ios_baseband_chardev(dev);
+    }
+
     /* UARTs (Samsung, S5L interrupt semantics) */
     for (int i = 0; i < 5; i++) {
         static const hwaddr bases[5] = { N45_UART0_BASE, N45_UART1_BASE, N45_UART2_BASE,
                                          N45_UART3_BASE, N45_UART4_BASE };
         dev = qdev_new("exynos4210.uart");
         qdev_prop_set_bit(dev, "s5l8720-irq", true);
-        qdev_prop_set_chr(dev, "chardev", serial_hd(i));
+        qdev_prop_set_chr(dev, "chardev", i == 1 && modem ? modem : serial_hd(i));
         qdev_prop_set_uint32(dev, "channel", i);
-        qdev_prop_set_uint32(dev, "rx-size", 256);
+        /* 16 deep on the M68's modem port: the S5L8900's UFSTAT receive count is four
+         * bits (0..15, a full flag above), so a deeper FIFO reads back as a wrapped,
+         * small count and the H5 driver stops reading mid-packet. (The console UARTs
+         * keep 256: only the host types into them.) */
+        qdev_prop_set_uint32(dev, "rx-size", s->board == &m68_board && i == 1 ? 16 : 256);
         qdev_prop_set_uint32(dev, "tx-size", 256);
         /* The M68's baseband (UART1) and Bluetooth (UART3) ports flow-control on CTS. With
          * nothing attached the far end reads ready, so a write goes out and finds no answer. */
@@ -1080,6 +1125,10 @@ static void n45_machine_init(MachineState *machine)
     qemu_input_handler_register(DEVICE(s->cpu), &n45_kbd_handler);
     s->pwroff_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, n45_pwroff_tick, s);
     s->btn_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, n45_button_release_due, s);
+    if (s->modem) {
+        s->modem_battery_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, m68_modem_battery, s);
+        m68_modem_battery(s);
+    }
     qemu_register_powerdown_notifier(&n45_powerdown_notifier);
 }
 
@@ -1304,11 +1353,30 @@ static void m68_set_ring_switch(Object *obj, bool value, Error **errp)
 
 N45_STR_PROP(imei)
 
+static bool m68_get_baseband(Object *obj, Error **errp)
+{
+    return IPOD_TOUCH_1G_MACHINE(obj)->baseband;
+}
+
+static void m68_set_baseband(Object *obj, bool value, Error **errp)
+{
+    IPOD_TOUCH_1G_MACHINE(obj)->baseband = value;
+}
+
+static void m68_instance_init(Object *obj)
+{
+    IPOD_TOUCH_1G_MACHINE(obj)->baseband = true;
+}
+
 static void m68_machine_class_init(ObjectClass *klass, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(klass);
 
     mc->desc = "iPhone (M68AP, S5L8900)";
+    object_class_property_add_bool(klass, "baseband", m68_get_baseband, m68_set_baseband);
+    object_class_property_set_description(klass, "baseband",
+        "on (default): the fake modem (ios-baseband) on UART1, its controls on the machine; "
+        "off: UART1 is the second -serial");
     object_class_property_add_str(klass, "imei", n45_get_imei, n45_set_imei);
     object_class_property_set_description(klass, "imei",
         "the unit's IMEI (FirmwareKit's device.lock.json machine.imei), for the modem on UART1 to report");
@@ -1320,6 +1388,7 @@ static void m68_machine_class_init(ObjectClass *klass, void *data)
 static const TypeInfo m68_machine_info = {
     .name          = TYPE_IPHONE_2G_MACHINE,
     .parent        = TYPE_IPOD_TOUCH_1G_MACHINE,
+    .instance_init = m68_instance_init,
     .class_init    = m68_machine_class_init,
 };
 
