@@ -31,8 +31,14 @@ second board on the same machine file (`-M n88`, below).
   goes in through installation_proxy and AppSync, gets pinned to page 1, launches, its GLES row renders
   through the bridge (readback PASS, no refusals), then the guest powers off. The guest-services trap carries
   GLES and guest packages (debt 8 covers what reaches the panel). Recipe below.
+- Wi-Fi (2026-10-05): the board's BCM4329 B1 (AppleBCMWLAN's "N18 - 4329 B1": CIS s=B1 / P=N18,
+  4329b1/n18.bin 4.221.38.1) as the iPad's dongle model, behind the SDHC at 0x80000000 (IRQ 0x22) that the
+  IOP firmware's sdiodrv drives. The stock stack joins the open BSS "qemu-ios", takes 10.0.2.15 from slirp and
+  shows the Wi-Fi icon. `wifi=` and `wifi-bssid` work as on the iPad (docs/ipad1/wifi.md);
+  `regress.py --machine n18 --checks wifi` PASS. It needed the CDMA HOLD state (n88's 3aa02ab1a8): with
+  Wi-Fi up, BTServer parks uart3's RX channel.
 - Audio: I2S0 gets the codec's PCM from CDMA channel 0x15 on the audio clock (no listening test yet).
-- Not yet: Wi-Fi, the D1755's button wake path (debt 6).
+- Not yet: the D1755's button wake path (debt 6), a USB host port for regress's keyboard checks (debt 9).
 
 ## How to boot
 
@@ -141,7 +147,7 @@ offsets at 0x80000000).
 2. **Clock table (kboot)**: `clock-frequencies` is the iPad's cut to these DTs' 32 slots.
 3. **ChipID fuses**: the K48's words.
 4. **D1755 backlight**: undecoded; the panel is held lit (`backlight-enable-reg` points at a scratch byte).
-5. **Wi-Fi (SDIO), AMC**: not wired.
+5. **AMC**: not wired.
 6. **Buttons**: GPIO only; the D1755's wake latch (DT wake_button_* on its STAT) is not driven, so a press
    cannot wake a sleeping AP. Sleep has not been tried.
 7. **it_keybag**: the iPad's armv7 build (`build/ipad1-guest/it_keybag`), copied; same volume layout.
@@ -152,6 +158,8 @@ offsets at 0x80000000).
    surface. The gate's fixture-colour test (51%) passes regardless. Next: find which compositor reads the
    surface at panel geometry (SpringBoard's software CA with `CA_ENABLE_OGL=0`, or IOMFB's swap of the
    app's layer).
+9. **No USB host port**: the OTG runs in device mode only, so regress's `boot`/`net` checks, which type on a
+   `usb-kbd` on `usb-bus.0`, cannot run (Bus 'usb-bus.0' not found). `wifi`, `persist` and app-install do.
 
 ## iPhone 3GS (N88AP, S5L8920): `-M n88`
 

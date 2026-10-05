@@ -22,6 +22,10 @@
 #include "hw/misc/unimp.h"
 #include "hw/core/split-irq.h"
 #include "hw/arm/ipod_touch_pke.h"
+#include "hw/arm/ipod_touch_sdio.h"
+#include "net/net.h"
+#include "qemu/config-file.h"
+#include "qemu/option.h"
 #include "hw/arm/ipod_touch_spi.h"
 #include "hw/arm/ipod_touch_lcd.h"
 #include "hw/arm/ipod_touch_tvout.h"
@@ -62,6 +66,7 @@
 #define S5L8920_UART_BASE(n)    (0x82500000 + (n) * 0x100000)
 #define S5L8920_IOP_BASE        0x86300000
 #define S5L8920_IOP_VIC_BASE    0xbf300000
+#define S5L8920_SDIO_BASE       0x80000000      /* SDHC, sdio,s5l8920x */
 #define S5L8920_SHA1_BASE       0x80100000
 #define S5L8920_PKE_BASE        0x83100000
 #define S5L8920_CDMA_BASE       0x87000000
@@ -90,6 +95,7 @@
 #define S5L8920_IRQ_USB_OTG     0x0e
 #define S5L8920_IRQ_SCALER      0x0c
 #define S5L8920_IRQ_CLCD        0x25
+#define S5L8920_IRQ_SDIO        0x22
 #define S5L8920_IRQ_DART(n)     (0x5a - (n))
 #define S5L8920_IRQ_CDMA(ch)    (0x2a + (ch))   /* DT lists channels 1.. from 0x2b */
 
@@ -130,6 +136,9 @@ typedef struct S5L8920Board {
     S5L8920Buttons buttons;
     S5L8920I2CDevice i2c[8];             /* in creation order (the snapshot's) */
     S5L8920PowerKnob pwroff_knob;
+    const char *wifi_board;              /* the card's CIS VERS_1 board string; NULL = no Wi-Fi card */
+    const char *wifi_fw_version;
+    uint8_t wifi_mac[6];
 } S5L8920Board;
 
 /* iPod touch 3G (N18AP, S5L8922). */
@@ -152,6 +161,10 @@ static const S5L8920Board s5l8920_n18 = {
         { 2, 0x1d, TYPE_LIS302DL },       /* its DT interrupt (0xa2) is not driven */
     },
     .pwroff_knob = { 57, 67, 240 },      /* off a 4.2.1 screendump of the sheet */
+    /* A BCM4329 B1: AppleBCMWLAN's "N18 - 4329 B1" (s=B1, P=N18 -> 4329b1/n18.bin, whose version this is). */
+    .wifi_board = "P=N18",
+    .wifi_fw_version = "wl0: Oct 13 2010 15:39:53 version 4.221.38.1",
+    .wifi_mac = { 0x02, 0x00, 0x00, 0x18, 0x00, 0x01 },  /* synthetic, locally administered */
 };
 
 /* iPhone 3GS (N88AP, S5L8920); N88AP 8C148a DT. */
@@ -207,6 +220,7 @@ struct S5L8920MachineState {
     char *usb_tcp_addr;                  /* usbmuxd-qemu host bridge; empty = the built-in host */
     bool btn_hold, btn_home;             /* button-hold/-home properties */
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
+    bool wifi;                           /* bridge the Wi-Fi card to -netdev id=wifi0 (default on) */
     GuestPackage pkg;                    /* hw/arm/guest-package.c: it_boot and the GL shim's hello */
     QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
     int pwroff_phase, pwroff_step;
@@ -486,9 +500,57 @@ static void s5l8920_init(MachineState *machine)
                                s5l8920_irq(s, S5L8920_IRQ_UART(i)), true);
     }
 
+    /*
+     * Wi-Fi, as on the iPad (docs/ipad1/wifi.md): the iPod's Broadcom dongle
+     * model dressed as the board's chip, behind the SDHC at 0x80000000, which
+     * the IOP firmware's sdiodrv drives.
+     */
+    DeviceState *sdio = NULL;
+    if (s->board->wifi_board) {
+        BCMSDIOChip bcm4329 = {
+            .manfid = 0x02d0, .prodid = 0x4329,
+            .chipid = 0x00034329,                   /* rev 3 = B1 */
+            .sdiod_base = 0x18011000,
+            .vers1 = { "", "", "s=B1", s->board->wifi_board },
+            .no_common_funce = true,
+            .fw_version = s->board->wifi_fw_version,
+        };
+        IPodTouchSDIOState *card = IPOD_TOUCH_SDIO(qdev_new(TYPE_IPOD_TOUCH_SDIO));
+
+        memcpy(bcm4329.mac, s->board->wifi_mac, sizeof(bcm4329.mac));
+        ipod_touch_sdio_set_chip(card, &bcm4329);
+        object_property_add_alias(OBJECT(machine), "wifi-bssid", OBJECT(card), "bssid");
+        card->card_present = true;
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(card), &error_fatal);
+        if (s->wifi && !qemu_find_netdev("wifi0")) {
+            /* no backend given: NAT it */
+            QemuOpts *o = qemu_opts_parse_noisily(qemu_find_opts("netdev"), "type=user,id=wifi0", false);
+            Error *err = NULL;
+            if (o) {
+                netdev_add(o, &err);
+            }
+            if (err) {
+                warn_reportf_err(err, "Wi-Fi has no network: ");
+            }
+        }
+        if (s->wifi) {
+            ipod_touch_sdio_setup_net(card);
+        }
+        sdio = qdev_new(TYPE_S5L8930_SDIO);
+        object_property_set_link(OBJECT(sdio), "card", OBJECT(card), &error_fatal);
+        sbd = SYS_BUS_DEVICE(sdio);
+        sysbus_realize_and_unref(sbd, &error_fatal);
+        sysbus_mmio_map(sbd, 0, S5L8920_SDIO_BASE);
+        sysbus_connect_irq(sbd, 0, s5l8920_irq(s, S5L8920_IRQ_SDIO));
+        sysbus_connect_irq(SYS_BUS_DEVICE(card), 0, qdev_get_gpio_in(sdio, 0));
+    }
+
     /* AP side of the IOP; NAND pages come from its page store. */
     dev = qdev_new(TYPE_S5L8930_IOP);
     iop = dev;
+    if (sdio) {
+        object_property_set_link(OBJECT(dev), "sdio", OBJECT(sdio), &error_fatal);
+    }
     if (s->nand_path) {
         qdev_prop_set_string(dev, "nand", s->nand_path);
     }
@@ -862,8 +924,19 @@ static void s5l8920_set_usb_tcp_addr(Object *obj, const char *value, Error **err
     s->usb_tcp_addr = g_strdup(value);
 }
 
+static bool s5l8920_get_wifi(Object *obj, Error **errp)
+{
+    return S5L8920_MACHINE(obj)->wifi;
+}
+
+static void s5l8920_set_wifi(Object *obj, bool value, Error **errp)
+{
+    S5L8920_MACHINE(obj)->wifi = value;
+}
+
 static void s5l8920_instance_init(Object *obj)
 {
+    S5L8920_MACHINE(obj)->wifi = true;
     guest_pkg_init(&S5L8920_MACHINE(obj)->pkg, obj);
 }
 
@@ -929,6 +1002,9 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
     object_class_property_add_str(klass, "nor-rw", s5l8920_get_nor_rw, s5l8920_set_nor_rw);
     object_class_property_set_description(klass, "nor-rw",
         "1 MiB private writable NOR copy; guest writes (effaceable) persist here across boots");
+    object_class_property_add_bool(klass, "wifi", s5l8920_get_wifi, s5l8920_set_wifi);
+    object_class_property_set_description(klass, "wifi",
+        "Bridge the Wi-Fi card to -netdev id=wifi0 (a NAT one is made when absent); off keeps the card, unbridged");
     object_class_property_add_bool(klass, "gles-debug", s5l8920_get_gles_debug, s5l8920_set_gles_debug);
     object_class_property_set_description(klass, "gles-debug",
         "Paint what the GL bridge refuses magenta (tests)");
