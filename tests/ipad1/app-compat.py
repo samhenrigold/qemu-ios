@@ -273,9 +273,11 @@ def icon_slot(b, bundle):
     return None
 
 
-def pin_to_page1(b, bundle):
+def pin_to_page1(b, bundle, rows=5):
     """Move bundle's icon into the first free cell of home page 1 via springboardservices
-    set_icon_state, so launching needs no page swipe. Returns (1, row, col) or None."""
+    set_icon_state, so launching needs no page swipe. Returns (1, row, col) or None.
+    rows: the page's height (5 on the iPad, 4 on the 320x480 iPhone/iPod): a full page is left alone,
+    since 4.0 beta 1's SpringBoard takes a fifth row on a 4-row page and drops the icon."""
     if not os.path.exists(SBICONS):
         return None
     p = b.run([SBICONS], timeout=45)
@@ -295,7 +297,7 @@ def pin_to_page1(b, bundle):
     if cell is None:
         return None
     page1 = state[1]
-    for r in range(5):                     # 5 rows x 4 cols on the portrait iPad home screen
+    for r in range(rows):                  # x 4 cols
         if r == len(page1):
             page1.append([])
         row = page1[r]

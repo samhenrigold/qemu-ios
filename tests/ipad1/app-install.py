@@ -196,7 +196,7 @@ def main():
                 return 1
         slot = None
         for _ in range(6):   # springboardservices answers once SpringBoard is past the lock screen
-            slot = ac.pin_to_page1(b, bundle) or ac.icon_slot(b, bundle)
+            slot = ac.pin_to_page1(b, bundle, rows=5 if a.machine == "ipad1" else 4) or ac.icon_slot(b, bundle)
             if slot:
                 break
             unlock()
