@@ -488,6 +488,10 @@ static void iosbb_set_incoming_sms(Object *obj, const char *value, Error **errp)
     n = MIN(bar - value, (int)sizeof(num) - 1);
     memcpy(num, value, n);
     num[n] = 0;
+    if (!ios_bb_sms_sender_ok(num)) {
+        error_setg(errp, "incoming-sms: the sender \"%s\" must be 1-20 digits, optionally after a '+'", num);
+        return;
+    }
     if (!ios_bb_incoming_sms(&s->bb, num, bar + 1)) {
         error_setg(errp, "the modem is not in a state to receive SMS");
         return;

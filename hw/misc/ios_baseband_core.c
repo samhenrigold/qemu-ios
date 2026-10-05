@@ -1662,13 +1662,10 @@ static void cmgs_prompt_commit(IosBbCore *bb, int ch, bool send)
     at_ok(bb, ch);
 }
 
-bool ios_bb_incoming_sms(IosBbCore *bb, const char *number, const char *text)
+bool ios_bb_sms_sender_ok(const char *number)
 {
-    char pdu[400];
-    unsigned n, tpdu;
-    IosBbSms *slot;
-
-    if (!bb->ch[bb->sms_ch].open || !radio_ok(bb) || !number[0] || !text[0]) {
+    number += number[0] == '+';                  /* international either way: the address is TOA 0x91 */
+    if (!number[0] || strlen(number) > 20) {
         return false;
     }
     for (const char *p = number; *p; p++) {
@@ -1676,6 +1673,19 @@ bool ios_bb_incoming_sms(IosBbCore *bb, const char *number, const char *text)
             return false;                        /* alphanumeric senders not modelled */
         }
     }
+    return true;
+}
+
+bool ios_bb_incoming_sms(IosBbCore *bb, const char *number, const char *text)
+{
+    char pdu[400];
+    unsigned n, tpdu;
+    IosBbSms *slot;
+
+    if (!bb->ch[bb->sms_ch].open || !radio_ok(bb) || !ios_bb_sms_sender_ok(number) || !text[0]) {
+        return false;
+    }
+    number += number[0] == '+';
     n = sms_build_deliver(bb, number, text, pdu, sizeof(pdu), &tpdu);
     if (!n) {
         return false;
@@ -2313,7 +2323,10 @@ static void data_chan_input(IosBbCore *bb, const uint8_t *data, unsigned len)
             if (bb->data_out) {
                 bb->data_out(bb->data_opaque, bb->ip_rx, tot);
             }
-            TRACE("data: %u-byte IPv4 packet to the network\n", tot);
+            TRACE("data: %u-byte IPv4 packet to the network (%u.%u.%u.%u -> %u.%u.%u.%u proto %u port %u)\n", tot,
+                  bb->ip_rx[12], bb->ip_rx[13], bb->ip_rx[14], bb->ip_rx[15],
+                  bb->ip_rx[16], bb->ip_rx[17], bb->ip_rx[18], bb->ip_rx[19], bb->ip_rx[9],
+                  bb->ip_rx[22] << 8 | bb->ip_rx[23]);
             memmove(bb->ip_rx, bb->ip_rx + tot, bb->ip_rxlen - tot);
             bb->ip_rxlen -= tot;
         }
