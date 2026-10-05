@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
-"""Install .app bundles into an iPhone OS 1.x device (M68 iPhone, N45 iPod touch 1G) before it boots.
+"""Install .app bundles into a stopped iPhone OS 1.x device (M68 iPhone, N45 iPod touch 1G).
 
     sideload1x.py --nand DEV/nand --overlay OVL APP.app [APP.app ...] [--remove NAME.app ...]
 
 1.x has no installd, no code signing and no App Store: an app is a bundle in /Applications, which is how
 the 2007 jailbreak community installed theirs. This writes the bundles into the system volume of the page
 store the emulator serves (FirmwareKit's N45NAND layout, bank<N>/<page>.page, 2048 + 64 bytes), through
-the overlay: the volume is assembled (overlay over base), mounted read-write on the host, the bundles
-copied in, fsck_hfs checked, and only the changed pages written to OVL. The base is never touched.
+the overlay; the base is never touched. The volume is read through the legacy FTL's own context (its
+logical block map and log blocks, as the guest left them; a fresh device's is the prepared one), mounted
+read-write on the host, the bundles copied in, fsck_hfs checked, and each changed logical page written
+over the physical page the FTL maps it to, spare kept. The FTL's context is unchanged, so on the next boot
+it reads the new data where it expects the old.
 
-The overlay must not have been booted yet: once the guest's FTL runs it moves logical pages to its log
-blocks, and this tool knows only the prepared layout (logical page -> fixed physical page). An overlay
-this tool alone has written (its .sideload record) is fine, so installs can be repeated before a boot.
-ponytail: a booted device needs a legacy-FTL reader of the overlay; until then, sideload onto a fresh
-overlay (the device's nand/ is never booted directly).
-docs/m68/sideload.md
+The device must have been shut down cleanly (the FTL context is the last page of its context block, and
+the HFS journal is empty); the tool refuses otherwise. docs/m68/sideload.md
 """
 import argparse
 import os
@@ -28,9 +27,15 @@ PAGE, SPARE, PPB = 2048, 64, 128
 FTL_START, DATA_START, FIRST_LBA = 201, 23, 3      # N45NAND.swift: ftlStart, dataStart, firstLBA
 
 
-def location(lpn, banks):
+MAP_PAGES = 4               # N45NAND.mapTables: the lbn -> vbn map is 4096 u16s, four context pages
+LOGS = 17                   # log blocks the FTL keeps (FTLCxt.pLog; the 18th slot is unused)
+VBLOCKS = 4096 - FTL_START  # virtual blocks per bank-wide superblock row (N45NAND.blocksPerBank - ftlStart)
+
+
+def vlocation(vpn, banks):
+    """An FTL virtual page (virtual block 0 = physical block 201, a superblock striped over the banks)."""
     sb = PPB * banks
-    v = DATA_START * sb + lpn + FTL_START * sb
+    v = vpn + FTL_START * sb
     return v % banks, v // sb * PPB + (v // banks) % PPB
 
 
@@ -39,42 +44,84 @@ def data_spare(lpn):
 
 
 class Store:
+    """The page store as the guest sees it (overlay over base, blk<N>.erased markers honoured), addressed by
+    FTL logical page through the FTL's context. Context layout: openiBoot's s5l8900 FTLCxt, which
+    FirmwareKit's N45NAND.ftlMeta writes: map pages at 0x38, log-offset pages at 0x110, the log table at
+    0x1A4 (20-byte entries: usn, vbn, lbn), the context blocks at 0x312. Spare: usnDec u32 at 0, type at 9."""
+
     def __init__(self, base, overlay):
         self.base, self.overlay = base, overlay
         self.banks = len([d for d in os.listdir(base) if d.startswith("bank")])
+        self.sb = PPB * self.banks
+        self.open_ftl()
 
-    def path(self, root, lpn):
-        b, p = location(lpn, self.banks)
-        return os.path.join(root, "bank%d" % b, "%d.page" % p)
-
-    def read(self, lpn):
+    def page(self, bank, page):
+        name = "bank%d/%d.page" % (bank, page)
         for root in (self.overlay, self.base):
             try:
-                with open(self.path(root, lpn), "rb") as f:
+                with open(os.path.join(root, name), "rb") as f:
                     d = f.read()
                 return d[:PAGE].ljust(PAGE, b"\0"), d[PAGE:PAGE + SPARE]
             except FileNotFoundError:
-                pass
-        return bytes(PAGE), None
+                if root == self.overlay and os.path.exists(os.path.join(root, "bank%d/blk%d.erased" % (bank, page // PPB))):
+                    return None
+        return None
+
+    def vread(self, vpn):
+        return self.page(*vlocation(vpn, self.banks))
+
+    def open_ftl(self):
+        # The context moves: the FTL takes new context blocks from its free pool (FTLCxt.FTLCtrlBlock, also
+        # kept in the VFL context). Rather than read the VFL, look at every virtual block's first page: the
+        # current context block is the context-typed one with the lowest usnDec (a ring of decreasing numbers).
+        newest = None
+        for vb in range(VBLOCKS):
+            r = self.vread(vb * self.sb)
+            if r and 0x43 <= r[1][9] <= 0x4F:
+                usn = struct.unpack_from("<I", r[1], 0)[0]
+                if newest is None or usn < newest[0]:
+                    newest = (usn, vb)
+        if newest is None:
+            sys.exit("%s: no FTL context found" % self.base)
+        vb = newest[1]
+        last = next((r for r in (self.vread(vb * self.sb + i) for i in range(self.sb - 1, 0, -1)) if r), None)
+        if not last or last[1][9] != 0x43:
+            sys.exit("the FTL was not shut down cleanly (its last context page is not the context); boot the "
+                     "device and power it off from the guest first")
+        cxt = last[0]
+        if vb not in struct.unpack_from("<3H", cxt, 0x312):
+            sys.exit("FTL context in virtual block %d does not list itself as a context block" % vb)
+        self.map = []
+        for ptr in struct.unpack_from("<%dI" % MAP_PAGES, cxt, 0x38):
+            self.map += struct.unpack("<%dH" % (PAGE // 2), self.vread(ptr)[0])
+        self.logs = {}
+        for i in range(LOGS):
+            vbn, lbn = struct.unpack_from("<HH", cxt, 0x1A4 + 20 * i + 4)
+            if vbn != 0xFFFF:
+                self.logs[lbn] = (vbn, i)
+        if self.logs:
+            need = (LOGS * self.sb * 2 + PAGE - 1) // PAGE
+            raw = b"".join(self.vread(p)[0] for p in struct.unpack_from("<%dI" % need, cxt, 0x110))
+            self.offsets = struct.unpack_from("<%dH" % (LOGS * self.sb), raw)
+
+    def vpn(self, lpn):
+        lbn, off = divmod(lpn, self.sb)
+        if lbn in self.logs:
+            vbn, i = self.logs[lbn]
+            o = self.offsets[i * self.sb + off]
+            if o != 0xFFFF:
+                return vbn * self.sb + o
+        return self.map[lbn] * self.sb + off
+
+    def read(self, lpn):
+        return self.vread(self.vpn(lpn)) or (bytes(PAGE), None)
 
     def write(self, lpn, data, spare):
-        p = self.path(self.overlay, lpn)
+        bank, page = vlocation(self.vpn(lpn), self.banks)
+        p = os.path.join(self.overlay, "bank%d" % bank, "%d.page" % page)
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "wb") as f:
             f.write(data + (spare or data_spare(lpn)))
-        return os.path.relpath(p, self.overlay)
-
-
-def check_overlay(overlay):
-    record = os.path.join(overlay, ".sideload")
-    ours = set(open(record).read().split()) if os.path.exists(record) else set()
-    for d, _, files in os.walk(overlay):
-        for f in files:
-            rel = os.path.relpath(os.path.join(d, f), overlay)
-            if rel != ".sideload" and rel not in ours:
-                sys.exit("%s: the guest has written this overlay (%s); sideload before the first boot "
-                         "(see the ponytail note in this file)" % (overlay, rel))
-    return ours
 
 
 def journal_snapshot(img):
@@ -99,6 +146,20 @@ def journal_snapshot(img):
         return [(jib_at, jib), (off, f.read(size))]
 
 
+def fsck(img):
+    """fsck_hfs -fn's findings on a raw image (empty when it is clean)."""
+    dev = run("hdiutil", "attach", "-imagekey", "diskimage-class=CRawDiskImage", "-nomount", img).split()[0]
+    try:
+        r = subprocess.run(["fsck_hfs", "-fn", dev.replace("/dev/disk", "/dev/rdisk")], capture_output=True, text=True)
+    finally:
+        run("hdiutil", "detach", dev)
+    if r.returncode == 0:
+        return set()
+    found = {l.strip() for l in r.stdout.splitlines()
+             if l.startswith("   ") and not l.strip().startswith(("Executing fsck_hfs", "The volume name"))}
+    return found or {"fsck_hfs exit %d: %s" % (r.returncode, (r.stdout + r.stderr).strip()[-300:])}
+
+
 def run(*cmd):
     return subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
 
@@ -114,8 +175,8 @@ def main():
         if not (app.rstrip("/").endswith(".app") and os.path.isfile(os.path.join(app, "Info.plist"))):
             sys.exit("%s: not an .app bundle with an Info.plist" % app)
     os.makedirs(a.overlay, exist_ok=True)
-    ours = check_overlay(a.overlay)
     st = Store(a.nand, a.overlay)
+    print("FTL context: %d log blocks in use" % len(st.logs))
 
     hdr, _ = st.read(FIRST_LBA)
     if hdr[1024:1026] not in (b"H+", b"HX"):
@@ -130,6 +191,9 @@ def main():
             for i in range(pages):
                 f.write(st.read(FIRST_LBA + i)[0])
         journal = journal_snapshot(img)
+        before = fsck(img)      # what 1.x's own HFS leaves that modern fsck flags (a folder it made has no
+        if before:              # HasFolderCount flag): tolerated as found, never anything new
+            print("fsck_hfs findings already on the device's volume (kept as they are):\n  " + "\n  ".join(sorted(before)))
         os.mkdir(mnt)
         out = run("hdiutil", "attach", "-imagekey", "diskimage-class=CRawDiskImage", "-nobrowse", "-owners", "off",
                   "-mountpoint", mnt, img)
@@ -156,24 +220,17 @@ def main():
             for at, data in journal:
                 f.seek(at)
                 f.write(data)
-        dev = run("hdiutil", "attach", "-imagekey", "diskimage-class=CRawDiskImage", "-nomount", img).split()[0]
-        try:
-            fsck = subprocess.run(["fsck_hfs", "-fn", dev.replace("/dev/disk", "/dev/rdisk")], capture_output=True,
-                                  text=True)
-        finally:
-            run("hdiutil", "detach", dev)
-        if fsck.returncode != 0:
-            sys.exit("fsck_hfs failed, nothing written:\n" + fsck.stdout + fsck.stderr)
+        new = fsck(img) - before
+        if new:
+            sys.exit("fsck_hfs found new damage, nothing written:\n" + "\n".join(sorted(new)))
         changed = 0
         with open(img, "rb") as f:
             for i in range(pages):
                 d = f.read(PAGE)
                 old, spare = st.read(FIRST_LBA + i)
                 if d != old:
-                    ours.add(st.write(FIRST_LBA + i, d, spare))
+                    st.write(FIRST_LBA + i, d, spare)
                     changed += 1
-        with open(os.path.join(a.overlay, ".sideload"), "w") as f:
-            f.write("\n".join(sorted(ours)) + "\n")
         print("%d pages written to %s" % (changed, a.overlay))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

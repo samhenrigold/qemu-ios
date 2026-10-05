@@ -37,12 +37,32 @@ imgtools/sideload1x.py --nand DEV/nand --overlay OVL Hello.app [More.app ...] [-
 ```
 
 The script writes into the overlay the emulator boots with (`nand-overlay=OVL`) and never into the
-device's base. It assembles the system volume (overlay over base) from the page store, using
-FirmwareKit's N45NAND layout (logical page to bank and page; four banks on the M68, eight on the N45). It
-mounts the volume read-write on the host, copies the bundles into `/Applications`, removes the files macOS
-leaves behind and checks the volume with `fsck_hfs -fn`. Only the pages that changed go into OVL, with the
-spare area the FTL expects. Installs can be repeated before the first boot, because the overlay's
-`.sideload` file records which pages the script wrote. About a minute for a 512 MiB volume.
+device's base. It works on a device fresh from FirmwareKit and on one that has been booted, as long as
+that device was powered off from the guest. It reads the system volume through the legacy FTL's own
+context, mounts it read-write on the host, copies the bundles into `/Applications`, removes the files
+macOS leaves behind and checks the volume with `fsck_hfs -fn`. Each logical page that changed is written
+over the physical page the FTL maps it to, keeping that page's spare area. The FTL's context is left as it
+was, so on the next boot the guest reads the new data where it expects the old. About a minute for a 512
+MiB volume.
+
+The FTL context is openiBoot's s5l8900 `FTLCxt`, the same structure FirmwareKit's `N45NAND.ftlMeta` writes.
+The script reads these parts of it:
+
+- **Where the context is.** The context moves: the FTL takes new context blocks from its free pool. The
+  current context block is the virtual block whose first page has a context type (0x43-0x4F) and the lowest
+  usnDec. Its last written page must be the context itself (type 0x43); anything else means an unclean
+  shutdown, and the script refuses.
+- **Map.** The logical-to-virtual block map is four 0x46 pages, listed at +0x38.
+- **Logs.** The log table is at +0x1A4, as vbn and lbn per entry. The per-log page offsets are pages
+  listed at +0x110.
+- **Pages.** A logical page goes to its log block's page when the log holds it, otherwise to
+  `map[lbn]` at the same offset. A virtual page maps to bank and page by N45NAND's striping, with
+  virtual block 0 at physical block 201. The overlay's `blk<N>.erased` markers are honoured.
+
+Measured on the M68: Hello was sideloaded, then the device was booted, Hello was used, and the device
+was powered off with `system_powerdown`. The guest had moved its context to virtual block 3 and had eight
+log blocks open. Hello2 was then sideloaded into that overlay, and the next boot showed both icons and
+launched Hello2.
 
 - **The journal is put back.** macOS rewrites the HFS journal header for 512-byte blocks when it mounts
   the volume. 1.x adopts the header's block size and then fails I/O on its 2048-byte pages: on the first
@@ -51,13 +71,13 @@ spare area the FTL expects. Installs can be repeated before the first boot, beca
   restores both afterwards, as FirmwareKit's `VolumeMount` does.
 - **Owners.** The host mount ignores ownership, so the bundle's files are owned by uid 501. 1.0 runs apps
   as root and the modes are 755/644, so nothing on 1.0 cares.
-- **Ceiling: the overlay must not have been booted.** Once the guest's FTL runs, it moves logical pages
-  into its log blocks, and the script only knows the prepared layout. It refuses an overlay that has
-  writes it did not make. Sideloading into a used device needs a reader for the legacy FTL's overlay state;
-  that work is logged as a debt below.
+- **fsck findings 1.x left behind are kept.** A folder that 1.0's kernel creates has no
+  HasFolderCount flag, which modern `fsck_hfs` reports. The script runs fsck before and after the edit
+  and refuses only new findings.
 
 Boot as usual with the overlay (`KEEPOVL=1 RUN=... tools/boot.py` keeps it). The icon appears after the
-stock apps on the home screen. A tap launches the app.
+stock apps on the home screen, labelled with the bundle's directory name (1.0 ignores CFBundleName).
+A tap launches the app.
 
 ## Debugging it
 
@@ -71,8 +91,9 @@ the receiver's "isa" reading `NSAu`.
 
 ## Debts
 
-1. Sideloading into a booted device (reading the legacy FTL's overlay state, or a guest-side installer
-   through the guest-package channel, which 1.x's `it_boot` already runs).
+1. A device that was not powered off cleanly needs FTL_Restore's scan (the newest copy of every
+   logical page) before it can be read. The script refuses such a device; boot it and power it off
+   from the guest.
 2. Owners stay uid 501. HFSPlusVolume.setOwner (FirmwareKit) or a catalog patch would make them 0:0, and
    that will matter if an app is meant to ship a LaunchDaemon.
 3. When the ringer volume HUD comes up at boot (docs/m68/README.md, debt 2), it covers the app as well.
