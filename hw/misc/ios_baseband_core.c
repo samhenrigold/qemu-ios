@@ -1742,8 +1742,18 @@ static void at_command(IosBbCore *bb, int ch, const char *cmd)
         return;
     }
     if (strncmp(cmd, "xgendata", 8) == 0) {
-        /* Version = first digit after the first quote to the next quote. */
-        chan_printf(bb, ch, "\r\n+XGENDATA: \"DEV_ICE_MODEM_03.12.08_G\"\r\n");
+        /*
+         * 1.0 (H5): version = first digit after the first quote to the next quote.
+         * 4.x (SPI): wants a comma, then "ICE2"/"ICE3" and the digits after it, and a
+         * "BOOTLOADER_VERSION:" field (CommCenter 4.2.1 0x36978), which is what About shows
+         * as Modem Firmware.
+         */
+        if (bb->h5) {
+            chan_printf(bb, ch, "\r\n+XGENDATA: \"DEV_ICE_MODEM_03.12.08_G\"\r\n");
+        } else {
+            chan_printf(bb, ch, "\r\n+XGENDATA: \"DEV_ICE2_MODEM_02.10.04\","
+                        "\"BOOTLOADER_VERSION: 02.10.04\"\r\n");
+        }
         at_ok(bb, ch);
         return;
     }
