@@ -1,4 +1,4 @@
-// LightTouch AppSync: process-local installation hooks for iOS 2.x-5.x.
+// LightTouch AppSync: process-local installation hooks for iOS 2.x-6.x.
 // Injected only into installd or mobile_installation_proxy. Symbol-bound dyld
 // interposition preserves original signing information and valid certificates;
 // the legacy fallback supplies the two fields required by verify_signer_identity.
@@ -51,11 +51,27 @@ extern unsigned long CFDataGetTypeID(void);
 extern CFIndex CFDataGetLength(CFDataRef);
 extern const unsigned char *CFDataGetBytePtr(CFDataRef);
 extern int memcmp(const void *, const void *, unsigned long);
+extern void *memchr(const void *, int, unsigned long);
 extern CFStringRef CFStringCreateWithCString(CFAllocatorRef, const char *, unsigned int);
 extern void *dlsym(void *, const char *);
 #ifndef RTLD_NEXT
 #define RTLD_NEXT ((void *)-1L)
 #endif
+#ifndef RTLD_DEFAULT
+#define RTLD_DEFAULT ((void *)-2L)
+#endif
+
+// iOS 6 installd also requires the code-signing identifier and entitlements.
+// Those keys are absent before iOS 6, so they are resolved at runtime.
+extern CFIndex CFStringGetLength(CFStringRef);
+extern Boolean CFStringGetCString(CFStringRef, char *, CFIndex, unsigned int);
+extern CFTypeRef CFPropertyListCreateFromXMLData(CFAllocatorRef, CFDataRef, unsigned long, CFStringRef *);
+extern unsigned long CFDictionaryGetTypeID(void);
+extern int open(const char *, int, ...);
+extern long pread(int, void *, unsigned long, long long);
+extern int close(int);
+extern void *malloc(unsigned long);
+extern void free(void *);
 
 extern const char *getprogname(void);
 extern int strcmp(const char *, const char *);
@@ -78,6 +94,58 @@ static int as_MISValidateSignature(void *path, void *options) {
     return real ? real(path, options) : -1;
 }
 
+static unsigned be32(const unsigned char *p) {
+    return (unsigned)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3];
+}
+
+// Read the first Mach-O slice's identifier and entitlements from its embedded
+// signature. A missing or malformed signature leaves both outputs untouched.
+static void signature_info(CFStringRef path, CFStringRef *ident, CFTypeRef *ents) {
+    char file[1024];
+    unsigned char h[4096];
+    if (!path || !CFStringGetCString(path, file, sizeof file, 0x08000100)) return;
+    int fd = open(file, 0);
+    if (fd < 0) return;
+    long base = 0, n = pread(fd, h, sizeof h, 0);
+    if (n >= 28 && be32(h) == 0xcafebabe && be32(h + 4)) {
+        base = be32(h + 16);
+        n = pread(fd, h, sizeof h, base);
+    }
+    unsigned sigoff = 0, siglen = 0;
+    if (n >= 28 && be32(h) == 0xcefaedfe) {   // little-endian 32-bit Mach-O
+        unsigned ncmds = *(unsigned *)(h + 16), off = 28;
+        for (unsigned i = 0; i < ncmds && off + 16 <= (unsigned)n; i++) {
+            unsigned *lc = (unsigned *)(h + off);
+            if (lc[0] == 0x1d) { sigoff = lc[2]; siglen = lc[3]; break; }
+            if (lc[1] < 8) break;
+            off += lc[1];
+        }
+    }
+    unsigned char *b = siglen >= 12 && siglen < (1u << 24) ? malloc(siglen) : 0;
+    if (b && pread(fd, b, siglen, base + sigoff) == (long)siglen && be32(b) == 0xfade0cc0) {
+        unsigned count = be32(b + 8);
+        for (unsigned i = 0; i < count && 12 + 8 * i + 8 <= siglen; i++) {
+            unsigned o = be32(b + 12 + 8 * i + 4);
+            if (o + 24 > siglen) continue;
+            unsigned magic = be32(b + o), len = be32(b + o + 4);
+            if (len > siglen - o) continue;
+            if (magic == 0xfade0c02 && !*ident) {
+                unsigned io = be32(b + o + 20);
+                if (io < len && memchr(b + o + io, 0, len - io))
+                    *ident = CFStringCreateWithCString(kCFAllocatorDefault, (char *)b + o + io, 0x08000100);
+            } else if (magic == 0xfade7171 && !*ents) {
+                CFDataRef x = CFDataCreate(kCFAllocatorDefault, b + o + 8, len - 8);
+                CFTypeRef pl = x ? CFPropertyListCreateFromXMLData(kCFAllocatorDefault, x, 0, 0) : 0;
+                if (x) CFRelease((CFTypeRef)x);
+                if (pl && CFGetTypeID(pl) != CFDictionaryGetTypeID()) { CFRelease(pl); pl = 0; }
+                *ents = pl;
+            }
+        }
+    }
+    free(b);
+    close(fd);
+}
+
 static int as_MISValidateSignatureAndCopyInfo(void *path, void *options,
                                              CFDictionaryRef *info) {
     int (*real)(void *, void *, CFDictionaryRef *) =
@@ -97,6 +165,19 @@ static int as_MISValidateSignatureAndCopyInfo(void *path, void *options,
         CFDictionarySetValue(d, kMISValidationInfoValidatedByProfile, kCFBooleanTrue);
         CFDictionarySetValue(d, kMISValidationInfoSignerCertificate, der);
         CFRelease((CFTypeRef)der);
+        const CFStringRef *ik = dlsym(RTLD_DEFAULT, "kMISValidationInfoSigningID");
+        const CFStringRef *ek = dlsym(RTLD_DEFAULT, "kMISValidationInfoEntitlements");
+        if (ik || ek) {
+            CFStringRef ident = 0;
+            CFTypeRef ents = 0;
+            signature_info((CFStringRef)path, &ident, &ents);
+            if (!ents) ents = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+                &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+            if (ik && ident) CFDictionarySetValue(d, *ik, ident);
+            if (ek && ents) CFDictionarySetValue(d, *ek, ents);
+            if (ident) CFRelease((CFTypeRef)ident);
+            if (ents) CFRelease(ents);
+        }
         *info = d; // Copy ownership passes to the caller.
     }
     return 0;

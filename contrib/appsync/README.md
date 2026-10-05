@@ -1,7 +1,7 @@
 # AppSync: automatic decrypted-app installation
 
 One fat armv6+armv7 dylib, injected only into the **installation service**, lets
-compatible decrypted IPAs install on emulated iOS 2.x-5.x. Symbols are resolved
+compatible decrypted IPAs install on emulated iOS 2.x-6.x. Symbols are resolved
 by name; no firmware-specific offsets, Substrate installation, user-selected
 hook, or third-party package installation is needed.
 

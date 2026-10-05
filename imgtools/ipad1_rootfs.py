@@ -554,6 +554,17 @@ def report(dirs, out=sys.stdout):
     return n
 
 
+def set_content_protection(img):
+    """Set kHFSContentProtectionBit in the bare HFS+ volume header's attributes (offset 1024 + 4)."""
+    with open(img, "r+b") as f:
+        f.seek(1024)
+        hdr = f.read(8)
+        if hdr[:2] not in (b"H+", b"HX"):
+            raise SystemExit("%s: no HFS+ volume header" % img)
+        f.seek(1028)
+        f.write(struct.pack(">I", struct.unpack(">I", hdr[4:])[0] | 0x40000000))
+
+
 def build(a):
     os.makedirs(a.out, exist_ok=True)
     system, data = os.path.join(a.out, "system.img"), os.path.join(a.out, "data.img")
@@ -602,6 +613,8 @@ def build(a):
                 rewrite_plist(os.path.join(m.mnt, rel), dyld_insert)
             print("      AppSync: stock libmis retained; installation-service interposition")
         apps_stashed = os.path.islink(os.path.join(m.mnt, "Applications"))
+        with open(os.path.join(m.mnt, "System/Library/CoreServices/SystemVersion.plist"), "rb") as f:
+            major = int(plistlib.load(f)["ProductVersion"].split(".")[0])
         gli_owned = []                     # files the GL install adds, root-owned below
         if a.gles or a.ca_ogl:   # stock CoreAnimation composites through the GL front end
             engine, info = gli_engine(os.path.join(m.mnt, DYLD_CACHE))
@@ -692,6 +705,11 @@ def build(a):
           % (", ".join("%d:%d x%d" % (u, g, len(p)) for (u, g), p in sorted(by_owner.items())), n))
     for d in ("mnt-system", "mnt-data", "mnt-pristine"):
         shutil.rmtree(os.path.join(a.out, d), ignore_errors=True)
+    if major >= 6:
+        # A restore formats the data volume with content protection; iOS 6 installd fails without
+        # protection classes. ponytail: earlier releases still boot without it, unmeasured with it.
+        set_content_protection(data)
+        print("      content protection on (kHFSContentProtectionBit)")
 
     print("[4/4] done:\n    %s/ipad1_nand.py build --mbr %s --kernelcache KERNELCACHE --system %s --data %s --out %s/nand-%s"
           % (os.path.dirname(os.path.abspath(__file__)), a.mbr, system, data, os.path.dirname(a.out), a.tag))
