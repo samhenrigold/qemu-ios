@@ -501,18 +501,26 @@ def ocr(ppm):
             finally:
                 if os.path.exists(staged): os.unlink(staged)
     found = {}
-    lines = [l.split(" ", 4) for l in subprocess.run([OCR_BIN, ppm], capture_output=True, text=True,
-                                                      check=True).stdout.splitlines()]
+    for attempt in range(5):     # Vision fails while its model is (re)compiled (CRImageReaderError e5rtError): wait it out
+        run = subprocess.run([OCR_BIN, ppm], capture_output=True, text=True)
+        if run.returncode == 0:
+            break
+        time.sleep(5)
+    run.check_returncode()
+    lines = [l.split(" ", 4) for l in run.stdout.splitlines()]
     for x0, y0, x1, y1, text in sorted(lines, key=lambda l: int(l[1]), reverse=True):
-        # upright portrait -> panel: the portrait top is the panel's left edge, the portrait left its bottom
-        found[text.strip()] = ((int(y0) + int(y1)) // 2, 767 - (int(x0) + int(x1)) // 2)
+        cx, cy = (int(x0) + int(x1)) // 2, (int(y0) + int(y1)) // 2
+        # a landscape (iPad) panel is read turned upright: the portrait top is the panel's left edge, the
+        # portrait left its bottom; a portrait panel is read as it is
+        found[text.strip()] = (cy, itqmp.H - 1 - cx) if itqmp.W > itqmp.H else (cx, cy)
     return found
 
 
 def page_title(found):
-    """The navigation bar's title: text across the portrait top (panel x 25..65) away from its
-    Back/Next buttons (panel y 150..620); None on a page without one (Setup's language list, home)."""
-    return next((t for t, (x, y) in found.items() if 25 <= x <= 65 and 150 <= y <= 620), None)
+    """The navigation bar's title: text in TITLE_TEXT (across the portrait top, away from its Back/Next
+    buttons); None on a page without one (Setup's language list, home)."""
+    x0, y0, x1, y1 = TITLE_TEXT
+    return next((t for t, (x, y) in found.items() if x0 <= x <= x1 and y0 <= y <= y1), None)
 
 
 # iOS 5's Setup Assistant, which every fresh 5.x device opens behind its "slide to set up" lock screen. The
@@ -525,9 +533,14 @@ SETUP_PICKS = {"language": "English", "Country or Region": "Australia",
                "Location Services": "Disable Location Services", "Set Up iPad": "Set Up as New iPad",
                "Apple ID": "Skip This Step", "Terms and Conditions": "Agree", "Diagnostics": "Don't Send",
                "Thank You": "Start Using iPad"}
+# The iPod touch and iPhone pages name their device ("Set Up iPod touch", "Start Using iPod touch").
+for _dev in ("iPod touch", "iPhone"):
+    SETUP_PICKS["Set Up " + _dev] = "Set Up as New " + _dev
+SETUP_DONE = tuple("Start Using " + d for d in ("iPad", "iPod touch", "iPhone"))
 ALERT_YES = ("Skip", "Agree", "Continue", "OK", "Disable")
 NEXT_ARROW = (42, 28)
 TITLE, ALERT = (20, 150, 65, 620), (548, 255, 605, 515)
+TITLE_TEXT = (25, 150, 65, 620)     # where a title's text centre sits (TITLE is the band compared for a page change)
 
 
 def alert_up(ppm):
@@ -535,6 +548,8 @@ def alert_up(ppm):
     w, h, pix = itqmp.read_ppm(ppm)
     x0, y0, x1, y1 = ALERT
     pts = [(pix[(y * w + x) * 3], pix[(y * w + x) * 3 + 2]) for y in range(y0, y1, 4) for x in range(x0, x1, 4)]
+    if w < 1024:    # portrait: the alert's navy body (85% of the box on 5.1.1's, 0 on Setup's pages)
+        return sum(1 for r, b in pts if b > r + 20 and b > 60) > 0.5 * len(pts)
     return sum(1 for r, b in pts if b > r + 40 and b > 80) > 0.15 * len(pts)
 
 
@@ -557,6 +572,16 @@ def region_settled(b, box, timeout=20):
 
 
 SLIDER = (930, 250, 990, 520)       # the "slide to set up" track, portrait bottom
+
+
+def portrait_layout():
+    """Setup's boxes on a portrait panel (n18, n88: no quarter-turn), measured at 320x480 on 5.1.1 and
+    scaled; the iPad's above are its landscape panel's."""
+    global TITLE, TITLE_TEXT, ALERT, SLIDER, NEXT_ARROW
+    k = itqmp.W / 320
+    box = lambda *v: tuple(int(c * k) for c in v)
+    TITLE, ALERT, SLIDER, NEXT_ARROW = box(60, 25, 260, 60), box(25, 160, 295, 330), box(20, 410, 300, 455), box(290, 44)
+    TITLE_TEXT = TITLE
 
 
 def slide_open(b, what):
@@ -604,10 +629,12 @@ def setup_assistant_5(b):
         if seen[page] == 1:
             pages.append(page)
         pick = SETUP_PICKS.get(page)
+        if page == "Thank You":
+            pick = next((t for t in SETUP_DONE if t in found), pick)
         ref = region(ppm, TITLE)
         if pick in found:
             b.tap(found[pick])
-            if pick == "Start Using iPad":
+            if pick in SETUP_DONE:
                 return wait_home_5(b, "Setup Assistant walked: %s" % ", ".join(pages))
             time.sleep(2)
             if alert_up(b.shot("wait")):
@@ -1115,6 +1142,8 @@ def main():
         global LIT_MIN_FRACTION, UNLOCK_FROM, UNLOCK_TO
         LIT_MIN_FRACTION = 0.2
         UNLOCK_FROM, UNLOCK_TO = portrait_unlock()
+        if itqmp.W < itqmp.H:               # a portrait panel (no quarter-turn): Setup's boxes are its own
+            portrait_layout()
     device_args(a)
     import ffmpeg_guard                     # imgtools; stock FFmpeg breaks iPod H.264
     why = ffmpeg_guard.check(a.qemu)

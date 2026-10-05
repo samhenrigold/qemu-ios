@@ -76,6 +76,8 @@ def main():
     if a.machine in rg.ipad1_boot.PORTRAIT:
         rg.LIT_MIN_FRACTION = 0.2
         rg.UNLOCK_FROM, rg.UNLOCK_TO = rg.portrait_unlock()
+        if rg.itqmp.W < rg.itqmp.H:
+            rg.portrait_layout()
     rg.device_args(a)
     rg.ipod.START = time.time()
     bundle, exe = bundle_of(a.ipa)
@@ -111,7 +113,12 @@ def main():
         # The S5L8920 boards power the digitizer down on the lock screen (DisablePowerForUILock): Home first.
         wake = (lambda: (b.press("home"), time.sleep(1))) if a.machine in ("n18", "n88") else (lambda: None)
         wake()
-        b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
+        if a.major >= 5 and not a.overlay:   # a fresh 5.x device: Setup Assistant behind its lock screen
+            ok, walked = rg.setup_assistant_5(b)
+            if not step("setup", ok, walked):
+                return 1
+        else:
+            b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
         time.sleep(4)
         slot = None
         for _ in range(6):   # springboardservices answers once SpringBoard is past the lock screen

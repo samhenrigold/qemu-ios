@@ -62,8 +62,14 @@ guest-shutdown-confirmed. regress persist passes. Past Setup, the Harness's HTTP
 Gaps:
 - regress `wifi` fails on 5.x: its driver prints no lease line, and a device still at Setup times out waiting
   for an IP.
-- There is no automated Setup walk for portrait boards. regress's setup_assistant_5 is iPad-only (rotated panel,
-  landscape boxes); ocr.swift output maps to portrait as (y, H-1-x).
+
+Unattended (2026-10-05): on a fresh 5.x device, `app-install.py --machine n18` walks Setup itself with regress's
+setup_assistant_5, now portrait-aware:
+- ocr.swift reads a portrait panel unturned and upscales a 320x480 one 2x;
+- it retries the accurate model, which fails in bursts with e5rtError;
+- the boxes and alert test are scaled from 320x480;
+- the labels are "Set Up iPod touch" and "Start Using iPod touch".
+All 8 steps pass, including setup.
 
 ## How to boot
 
