@@ -324,6 +324,7 @@ struct IPad1MachineState {
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
     bool baseband;                       /* leave the kboot DT's baseband node matchable (default off) */
+    bool camera;                         /* leave the kboot DT's isp node matchable (default off) */
     bool iop_core;                       /* run the IOP firmware on a second core (default; off: the HLE) */
     DeviceState *iopcore;
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
@@ -596,6 +597,15 @@ static void ipad1_cpu_reset(void *opaque)
      */
     if (!s->baseband) {
         a4_dt_unmatch((uint8_t *)data, image_len, load_pa, bootargs_pa, "baseband");
+    }
+    /*
+     * No ISP model either: AppleH3CamIn loads the ISP CPU's firmware and then
+     * waits on its mailbox, which nothing answers (two timeouts per command,
+     * a dozen per boot, from mediaserverd's sensor detection). Unmatched, the
+     * board reads as camera-less, as K48 is.
+     */
+    if (!s->camera) {
+        a4_dt_unmatch((uint8_t *)data, image_len, load_pa, bootargs_pa, "isp");
     }
     if (address_space_write(&address_space_memory, load_pa,
                             MEMTXATTRS_UNSPECIFIED, data, image_len) != MEMTX_OK) {
@@ -1822,6 +1832,16 @@ static void ipad1_set_baseband(Object *obj, bool value, Error **errp)
     IPAD1_MACHINE(obj)->baseband = value;
 }
 
+static bool ipad1_get_camera(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->camera;
+}
+
+static void ipad1_set_camera(Object *obj, bool value, Error **errp)
+{
+    IPAD1_MACHINE(obj)->camera = value;
+}
+
 static bool ipad1_get_wifi(Object *obj, Error **errp)
 {
     return IPAD1_MACHINE(obj)->wifi;
@@ -2018,6 +2038,10 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "baseband",
         "kboot= on a radio board: leave the DT's baseband node matched (a modem model is attached); "
         "default off unmatches it (compatible \"none\") at every reset");
+    object_class_property_add_bool(klass, "camera", ipad1_get_camera, ipad1_set_camera);
+    object_class_property_set_description(klass, "camera",
+        "kboot= on a camera board: leave the DT's isp node matched (there is no ISP model yet); "
+        "default off unmatches it at every reset");
     object_class_property_add_bool(klass, "wifi", ipad1_get_wifi, ipad1_set_wifi);
     object_class_property_set_description(klass, "wifi",
         "Host bridge for the soldered BCM4329 (default on). Frames go to "

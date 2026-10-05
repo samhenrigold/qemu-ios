@@ -103,7 +103,7 @@ documented quirk/patch, S stub.
 | Codec CS42L59 | the CS42L58 register file | shared | H |
 | BCM4329 | the iPod's dongle model, `P=N81`, n81.bin version | variant (board data) | H |
 | Gyro (ap3gdl / mpu3100 @0x68) | none: both probes fail and AppleEmbeddedI2CGyro frees itself | absent | - |
-| Cameras / ISP | none | absent (see debts) | - |
+| Cameras / ISP | none; `camera=off` (default) unmatches the DT's `isp` node | absent (see debts) | P |
 
 ## Debts
 
@@ -122,8 +122,11 @@ documented quirk/patch, S stub.
    values are unmeasured.
 3. ~~**No FirmwareKit recipe.**~~ `n81ap-8C148` has a catalog entry and a kboot recipe (LightTouchMac branch
    `a4-n81`, experimental).
-4. **Cameras.** AppleH3CamIn times out on its ISP mailbox several times per boot. Disable the camera nodes
-   in the DT or stub the ISP.
+4. **Cameras.** No ISP model. AppleH3CamIn loaded the ISP CPU's firmware and then timed out on its mailbox
+   a dozen times per boot (mediaserverd's sensor detection). The machine's `camera` property (default off) now
+   unmatches the kboot DT's `isp` node at reset, the way `baseband` does, so the board reads as camera-less:
+   no H3CamIn lines, and Camera.app opens to its closed shutter without crashing (N90 8C148, 2026-10-05).
+   A real ISP model (the ISP CPU running its firmware, the sensors on i2c/MIPI) is what `camera=on` waits for.
 5. **Gyro** absent (Game Center/CoreMotion users see no gyro). An ID-register stub at 0x68 is next.
 6. ~~Accelerometer mounting~~ (2026-10-04): the board's `accel_mount` "-2,-1,3" is the DT's orientation
    matrix inverted. Safari turns with `accel-orientation` 1/3 as on hardware (3 = Home right).

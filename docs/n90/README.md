@@ -83,7 +83,7 @@ As N81, plus:
    - The ALS/prox ct700 (i2c0 0x29). It is probed for and skipped.
    - The Highland Park audio processor (i2c0 0x3e, uart6, i2s2).
    - The GPS (bcm4750 on uart4).
-   - The cameras and ISP (AppleH3CamIn mailbox timeouts, as on N81).
+   - The cameras and ISP. `camera=off` (default) unmatches the DT's `isp` node, as on N81 (its debt 4).
 3. **Compass**: the AK8973 stands in for the AK8975B pair.
 4. ~~Accelerometer mounting~~ (2026-10-04): `accel_mount` "-2,1,-3" (the DT orientation's transpose).
    Safari turns with `accel-orientation` 1/3/4 as on hardware.
