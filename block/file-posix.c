@@ -2005,6 +2005,25 @@ static int handle_aiocb_write_zeroes_unmap(void *opaque)
     }
 #endif
 
+#if defined(__APPLE__) && (__MACH__)
+    /*
+     * macOS: F_PUNCHHOLE deallocates and reads back as zeros (APFS, HFS+),
+     * for ranges aligned to the filesystem block; anything else falls
+     * through to writing zeroes. Without this every write-zeroes request
+     * with MAY_UNMAP filled the file densely (a NAND page store's block
+     * erases allocated the whole store).
+     */
+    if (!(aiocb->aio_type & QEMU_AIO_BLKDEV)) {
+        fpunchhole_t fpunchhole = {
+            .fp_flags = 0, .reserved = 0,
+            .fp_offset = aiocb->aio_offset, .fp_length = aiocb->aio_nbytes,
+        };
+        if (fcntl(s->fd, F_PUNCHHOLE, &fpunchhole) == 0) {
+            return 0;
+        }
+    }
+#endif
+
     /* If we couldn't manage to unmap while guaranteed that the area reads as
      * all-zero afterwards, just write zeroes without unmapping */
     return handle_aiocb_write_zeroes(aiocb);
