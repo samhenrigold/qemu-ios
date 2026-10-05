@@ -28,8 +28,9 @@ ac = load("ipad1_app_compat", "app-compat.py")
 
 # Home-screen icon centres, (row, col) -> screen point, per machine (measured on the stock layouts).
 GRID = {"ipad1": ac.GRID,
-        "iPod-Touch-4G": lambda r, c: (91 + 152 * c, 125 + 176 * r)}   # 4x4 grid on the 640x960 portrait panel
-GL_TAP = {"ipad1": (0.343, 0.5), "iPod-Touch-4G": (0.5, 0.165)}         # the Harness's GLES 1.1 row
+        "iPod-Touch-4G": lambda r, c: (91 + 152 * c, 125 + 176 * r),   # 4x4 grid on the 640x960 portrait panel
+        "n18": lambda r, c: (38 + 79 * c, 52 + 88 * r)}                # the same grid at 320x480
+GL_TAP = {"ipad1": (0.343, 0.5), "iPod-Touch-4G": (0.5, 0.165), "n18": (0.5, 0.165)}         # the Harness's GLES 1.1 row
 
 
 def bundle_of(ipa):
@@ -70,8 +71,9 @@ def main():
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     rg.itqmp.W, rg.itqmp.H = rg.ipad1_boot.MACHINES[a.machine]
-    if a.machine == "iPod-Touch-4G":
-        rg.LIT_MIN_FRACTION, rg.UNLOCK_FROM, rg.UNLOCK_TO = 0.2, (116, 862), (600, 862)
+    if a.machine in rg.ipad1_boot.PORTRAIT:
+        rg.LIT_MIN_FRACTION = 0.2
+        rg.UNLOCK_FROM, rg.UNLOCK_TO = rg.portrait_unlock()
     rg.device_args(a)
     rg.ipod.START = time.time()
     bundle, exe = bundle_of(a.ipa)
@@ -109,6 +111,10 @@ def main():
             time.sleep(5)
         if not step("icon", bool(slot) and slot[0] == 1, "springboardservices slot %s" % (slot,)):
             return 1
+        if a.machine in rg.ipad1_boot.PORTRAIT:
+            # Dismiss the install's Edit-Home-Screen help sheet (4.x); with none up, x 0.5 falls between icon columns.
+            b.tap((0.5 * rg.itqmp.W, 0.69 * rg.itqmp.H))
+            time.sleep(2)
         home = png(b, "home")
         mark = os.path.getsize(syslog) if os.path.exists(syslog) else 0
         b.tap(GRID[a.machine](slot[1], slot[2]))
