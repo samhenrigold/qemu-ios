@@ -217,7 +217,11 @@ def main():
                 or ac.icon_slot_prefs(b, rg, bundle)
             if slot:
                 break
-            unlock()
+            status, out = rg.itqmp.agent(b.qmp, "lockstatus") if rg.itqmp.agent_alive(b.qmp) else (1, b"")
+            if b"locked=0" in out:
+                b.press("home")   # unlocked: a slide here would swipe the home screen to page 2 (the tap then misses)
+            else:
+                unlock()
             time.sleep(5)
         # Page 1 can be full (3.x's iPhone layout fills all 16 cells); then the icon stays put and we swipe to it.
         if not step("icon", bool(slot) and slot[0] >= 1, "springboardservices slot %s" % (slot,)):
