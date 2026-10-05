@@ -53,6 +53,7 @@ import os
 import plistlib
 import random
 import re
+import struct
 import shutil
 import subprocess
 import sys
@@ -840,20 +841,46 @@ def check_net_usb(cfg, r):
     safari_fetch(cfg, r, "net-usb", "USB Ethernet en1 (usbmuxd slirp)", wifi=False)
 
 
+def dhcp_acked(pcap):
+    """A DHCPACK (option 53 = 5) from slirp in a filter-dump capture."""
+    try:
+        d = open(pcap, "rb").read()
+    except OSError:
+        return False
+    o = 24
+    while o + 16 <= len(d):
+        caplen = struct.unpack_from("<I", d, o + 8)[0]
+        p, o = d[o + 16:o + 16 + caplen], o + 16 + caplen
+        if len(p) > 282 and p[12:14] == b"\x08\x00" and p[23] == 17 and struct.unpack_from(">H", p, 34)[0] == 67:
+            opts, i = p[282:], 0
+            while i + 2 < len(opts) and opts[i] != 255:
+                if opts[i] == 0:
+                    i += 1
+                    continue
+                if opts[i] == 53 and opts[i + 2] == 5:
+                    return True
+                i += 2 + opts[i + 1]
+    return False
+
+
 def check_wifi(cfg, r):
-    """Stock AppleBCMWLAN joins the model's open BSS and takes a lease (a4-guest; docs/ipad1/wifi.md)."""
-    b, detail = booted(cfg, "wifi", r, usb=False)
+    """Stock AppleBCMWLAN joins the model's open BSS and takes a lease (a4-guest; docs/ipad1/wifi.md).
+    The lease is the driver's log line where it has one (3.2.2, 4.x), else slirp's DHCPACK on the wire:
+    3.1.3's AppleBCMWLAN-1.25 logs no lease, so the Wi-Fi netdev is captured too."""
+    pcap = os.path.join(cfg.out, "wifi.pcap")
+    b, detail = booted(cfg, "wifi", r, usb=False,
+                       extra=["-netdev", "user,id=wifi0", "-object", "filter-dump,id=wifidump,netdev=wifi0,file=" + pcap])
     try:
         if not detail:
             return
         t0, text = time.time(), ""
         while time.time() - t0 < 120:
             text = open(b.serial, errors="replace").read()
-            if "receivedIPv4Address(): Received" in text:   # 3.2.2 "... IP Address", 4.2.1 "... address A.B.C.D"
+            if "receivedIPv4Address(): Received" in text or dhcp_acked(pcap):   # 3.2.2 "... IP Address", 4.2.1 "... address A.B.C.D"
                 break
             time.sleep(2)
         joined = 'ssid[ 8] = "qemu-ios"' in text
-        leased = "receivedIPv4Address(): Received" in text
+        leased = "receivedIPv4Address(): Received" in text or dhcp_acked(pcap)
         fw = "BCM4329 revision B1" in text and "initFirmware(): successful initialization" in text
         if joined and leased and fw:
             r.set(True, "BCM4329 B1 up, joined qemu-ios, DHCP lease")

@@ -117,7 +117,9 @@ tests/ipad1/app-install.py --machine n18 --device $F/dev3 --kboot $F/kboot-nor-n
 ### iOS 3.1.3 (7E18)
 
 Boots by kboot to an activated home screen. Unlock works, and usbmux, AFC (five sizes), persist (70001
-bytes across a guest power-off and a reboot on the same overlay) pass (2026-10-05). The same tools as 4.2.1 build it, with four differences that the 3.1.3 kernel and IOP
+bytes across a guest power-off and a reboot on the same overlay) and Wi-Fi pass (2026-10-05). Wi-Fi joins
+qemu-ios and takes 10.0.2.15. 3.1.3's AppleBCMWLAN-1.25 logs no lease, so regress's wifi check also
+accepts slirp's DHCPACK in a capture of the netdev. The same tools as 4.2.1 build it, with four differences that the 3.1.3 kernel and IOP
 firmware need:
 
 | What | Why |
@@ -223,8 +225,6 @@ offsets at 0x80000000).
 10. **3.1.3: data volume without a journal.** 3.1.3's mount_hfs refuses the Mac-made journal (EINVAL) for
     reasons not yet traced, so the data volume is built unjournaled. A guest that stops without unmounting
     then needs fsck.
-11. **3.1.3 Wi-Fi: no lease.** `regress.py --checks wifi` sees the firmware up and qemu-ios joined, but
-    no DHCP lease.
 
 ## iPhone 3GS (N88AP, S5L8920): `-M n88`
 
