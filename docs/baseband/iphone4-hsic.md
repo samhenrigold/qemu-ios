@@ -59,3 +59,17 @@ CommCenter uses `/dev/mux.spi-baseband`, with the AT dialect in `commcenter-4.2.
 On N90 it runs as `-M iPhone-4,baseband=on`: ios-baseband (ifx v2, 0x7fc) behind ios-baseband-spi
 at 0x82200000, MRDY 0x0605, SRDY 0x0104, plus `-netdev user,id=cell0` for data. 4.2.1 shows "Test
 Network" with five bars, and SMS in/out, calls in/out and 3G data (Safari through slirp) all work.
+
+## Driving it (QMP, `/machine/baseband-modem`)
+
+| property | effect, verified on N90 4.2.1 |
+|----------|-------------------------------|
+| `signal-dbm` (int) | bars follow within one +XCGEDPAGE poll (~5 s): -59 gives 5 bars, -95 gives 3 |
+| `carrier`, `mcc-mnc` | re-registers; the status bar shows the new name |
+| `registered` (bool) | false shows "Searching...", true registers again |
+| `incoming-sms` = `"<digits>\|<text>"` | lock-screen alert and Messages thread |
+| `incoming-call` = `<digits>`, `remote-answer`, `remote-hangup` | ring screen; the far end of an outgoing call |
+| `call-state`, `last-dialed`, `last-mo-sms` (read) | what the phone did |
+| `imei`, `imsi`, `iccid` | identity (fictitious defaults); the board copies `imei` into the DT |
+
+Data needs `-netdev user,id=cell0` (slirp; the phone gets 10.0.2.15, DNS 10.0.2.3).

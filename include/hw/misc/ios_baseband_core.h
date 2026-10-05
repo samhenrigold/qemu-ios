@@ -129,6 +129,7 @@ typedef struct IosBbCore {
 
     /* AT/network state. */
     bool hex_cs;               /* +CSCS="HEX" */
+    bool colp_off;             /* +COLP=0; on by default (1.0 never sends +COLP=1) */
     int cfun;
     int cops_format;
     bool cops_detached;        /* +COPS=2 */
@@ -176,6 +177,8 @@ void ios_bb_tick(IosBbCore *bb, int64_t now_ms);
 int64_t ios_bb_next_due(const IosBbCore *bb);
 /* A control (signal, registration, operator, SIM) changed: tell the host what it would see. */
 void ios_bb_changed(IosBbCore *bb);
+/* The network's name or PLMN changed: a searching/registered cycle makes the host re-read it. */
+void ios_bb_operator_changed(IosBbCore *bb);
 
 int ios_bb_rssi(const IosBbCore *bb);
 /* Network-side call events. Return false if refused (no service, line busy). */
@@ -235,6 +238,8 @@ bool ios_bb_ifx_pending(const IosBbIfx *x);
  */
 void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
                      const uint8_t **rx, size_t *rxlen);
+/* A MISO frame the AP set up but never clocked out: its payload goes back to the head of the queue. */
+void ios_bb_ifx_unsent(IosBbIfx *x, const uint8_t *miso);
 
 /* The radio nvram image iBoot reads (+xdrv=9,1,<block>): 0x600 bytes into nv. */
 void ios_bb_radio_nvram(uint8_t *nv);

@@ -22,6 +22,7 @@ struct IosBasebandState {
     QEMUTimer *timer;
     uint8_t out[8192];            /* bytes waiting for the UART */
     unsigned out_len;
+    int64_t out_since;            /* when out[] last went from empty to not */
 
     /* SPI transport (3GS/iPhone 4): ifx-version 1 or 2; 0 = UART chardev (M68). */
     int ifx_version;
@@ -30,7 +31,7 @@ struct IosBasebandState {
     qemu_irq srdy;                /* out: "clock me" (edge to the AP's GPIO) */
     bool srdy_level;
     bool mrdy_level;              /* in: the AP wants a transfer */
-    bool frame_armed;             /* the controller holds a frame waiting for SRDY */
+    bool frame_wanted;            /* the AP set RUN on a frame without MRDY */
     void (*spi_ready)(void *opaque);  /* SRDY rose: the controller may move the frame */
     void *spi_ready_opaque;
 
@@ -51,7 +52,8 @@ Chardev *ios_baseband_chardev(DeviceState *dev);
  */
 void ios_baseband_spi_xfer(DeviceState *dev, const uint8_t *mosi, uint8_t *miso, size_t n);
 bool ios_baseband_spi_srdy(DeviceState *dev);
-void ios_baseband_spi_done(DeviceState *dev);
+void ios_baseband_spi_done(DeviceState *dev, const uint8_t *unread_miso);
+void ios_baseband_spi_request(DeviceState *dev);
 void ios_baseband_spi_set_ready(DeviceState *dev, void (*cb)(void *), void *opaque);
 
 #endif

@@ -77,6 +77,7 @@ typedef struct A4I2CDevice {
     uint8_t addr;
     const char *type;
     int16_t irq_pin;                     /* GPIO pin its gpio-out 0 drives, active low; 0 = none */
+    int16_t irq2_pin;                    /* the gyro's INT2 (its outs are pin levels, not inverted) */
 } A4I2CDevice;
 
 typedef struct A4PowerKnob {
@@ -235,6 +236,7 @@ static const A4Board a4_n81 = {
         { 0, 0x4a, TYPE_CS42L58 },
         { 2, 0x19, TYPE_LIS302DL },
         { 2, 0x49, TYPE_S5L8930_TSL2581 },
+        { 2, 0x68, TYPE_S5L8930_L3G4200D, 0x21, 0x05 },   /* gyro,ap3gdl: INT1, INT2 */
     },
     /* DT accelerometer orientation rows (0,-1,0) (-1,0,0) (0,0,1): x reads -y, y reads -x. */
     .accel_mount = "-2,-1,3",
@@ -279,6 +281,7 @@ static const A4Board a4_n90 = {
         { 0, 0x1e, TYPE_S5L8930_AK8973 },
         { 0, 0x39, TYPE_CD3272MIKEY },           /* the codec waits for 'mikey' */
         { 2, 0x19, TYPE_LIS302DL },
+        { 2, 0x68, TYPE_S5L8930_L3G4200D, 0x21, 0x05 },   /* gyro,ap3gdl: INT1, INT2 */
     },
     /* DT accelerometer orientation rows (0,1,0) (-1,0,0) (0,0,-1): its transpose, x reads -y, y reads x. */
     .accel_mount = "-2,1,-3",
@@ -332,6 +335,7 @@ struct IPad1MachineState {
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
     bool baseband;                       /* leave the kboot DT's baseband node matchable (default off) */
+    DeviceState *bb_modem;               /* the ios-baseband behind spi2 (baseband=on, radio boards) */
     bool camera;                         /* leave the kboot DT's isp node matchable (default off) */
     bool iop_core;                       /* run the IOP firmware on a second core (default; off: the HLE) */
     DeviceState *iopcore;
@@ -466,16 +470,15 @@ static const ARMCPRegInfo ipad1_cp_reginfo[] = {
 };
 
 /*
- * The flattened DT walk for a4_dt_unmatch: returns the offset past the node at
- * `off` (or 0 when malformed); on the way, a node named `name` gets its
- * "compatible" overwritten with "none" (same slot, zero-padded), so nothing
- * matches it and the node stays for whoever turns it back on.
+ * A kboot DT property edit: the node named `name` gets `prop` overwritten in
+ * place (same slot, zero-padded) when the slot holds `vlen` bytes. Returns
+ * the offset past the node at `off`, or 0 when malformed.
  */
-static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const char *name, int depth)
+static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const A4DTEdit *e, int depth)
 {
     uint32_t nprops, nchildren;
-    uint8_t *compat = NULL;
-    uint32_t compat_len = 0;
+    uint8_t *slot = NULL;
+    uint32_t slot_len = 0;
     bool named = false;
 
     if (depth > 32 || off + 8 > len) {
@@ -495,19 +498,20 @@ static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const char *name, 
             return 0;
         }
         if (!strncmp((char *)dt + off, "name", 32)) {
-            named = plen > strlen(name) && !memcmp(dt + off + 36, name, strlen(name) + 1);
-        } else if (!strncmp((char *)dt + off, "compatible", 32)) {
-            compat = dt + off + 36;
-            compat_len = plen;
+            named = plen > strlen(e->name) && !memcmp(dt + off + 36, e->name, strlen(e->name) + 1);
+        }
+        if (!strncmp((char *)dt + off, e->prop, 32)) {      /* "name" itself may be edited */
+            slot = dt + off + 36;
+            slot_len = plen;
         }
         off += 36 + ((plen + 3) & ~3u);
     }
-    if (named && compat && compat_len >= 5) {
-        memset(compat, 0, compat_len);
-        memcpy(compat, "none", 5);
+    if (named && slot && slot_len >= e->vlen) {
+        memset(slot, 0, slot_len);
+        memcpy(slot, e->value, e->vlen);
     }
     for (uint32_t i = 0; i < nchildren; i++) {
-        off = a4_dt_walk(dt, len, off, name, depth + 1);
+        off = a4_dt_walk(dt, len, off, e, depth + 1);
         if (!off) {
             return 0;
         }
@@ -517,8 +521,8 @@ static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const char *name, 
 
 /* The DT a kboot bundle carries, found through its boot_args (iBoot's struct:
  * virtBase +4, physBase +8, deviceTreeP +0x30, deviceTreeLength +0x34). */
-static void a4_dt_unmatch(uint8_t *image, size_t image_len, uint32_t load_pa,
-                          uint32_t bootargs_pa, const char *name)
+void a4_dt_edit(uint8_t *image, size_t image_len, uint32_t load_pa,
+                uint32_t bootargs_pa, const A4DTEdit *e)
 {
     size_t ba = bootargs_pa - load_pa, dt;
     uint32_t vbase, pbase, dtp, dtlen;
@@ -532,9 +536,17 @@ static void a4_dt_unmatch(uint8_t *image, size_t image_len, uint32_t load_pa,
     dtlen = ldl_le_p(image + ba + 0x34);
     dt = (size_t)dtp - vbase + pbase - load_pa;
     if (dtp < vbase || dt > image_len || dtlen > image_len - dt ||
-        !a4_dt_walk(image + dt, dtlen, 0, name, 0)) {
-        warn_report("ipad1: kboot device tree not walkable; '%s' left as is", name);
+        !a4_dt_walk(image + dt, dtlen, 0, e, 0)) {
+        warn_report("ipad1: kboot device tree not walkable; '%s' left as is", e->name);
     }
+}
+
+/* Unmatch a node: its "compatible" becomes "none", the node stays for whoever turns it back on. */
+static void a4_dt_unmatch(uint8_t *image, size_t image_len, uint32_t load_pa,
+                          uint32_t bootargs_pa, const char *name)
+{
+    a4_dt_edit(image, image_len, load_pa, bootargs_pa,
+               &(A4DTEdit){ name, "compatible", "none", 5 });
 }
 
 static void ipad1_cpu_reset(void *opaque)
@@ -605,6 +617,12 @@ static void ipad1_cpu_reset(void *opaque)
      */
     if (!s->baseband) {
         a4_dt_unmatch((uint8_t *)data, image_len, load_pa, bootargs_pa, "baseband");
+    } else if (s->bb_modem) {
+        /* lockdownd compares the DT's IMEI with the modem's +CGSN (iBoot fills it on hardware). */
+        g_autofree char *imei = object_property_get_str(OBJECT(s->bb_modem), "imei", &error_abort);
+
+        a4_dt_edit((uint8_t *)data, image_len, load_pa, bootargs_pa,
+                   &(A4DTEdit){ "baseband", "device-imei", imei, strlen(imei) });
     }
     /*
      * No ISP model either: AppleH3CamIn loads the ISP CPU's firmware and then
@@ -614,6 +632,22 @@ static void ipad1_cpu_reset(void *opaque)
      */
     if (!s->camera) {
         a4_dt_unmatch((uint8_t *)data, image_len, load_pa, bootargs_pa, "isp");
+    }
+    /*
+     * iBoot fills the gyro's sensitivity matrix (9 words, 16.16) from the
+     * unit's syscfg; the IPSW DT reserves it zeroed and AppleAP3GDL refuses a
+     * singular one. kboot has no syscfg, so the gyro gets a nominal part's
+     * identity. Boards without a gyro node walk past.
+     */
+    {
+        static const uint32_t unit_cal[9] = { 0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x10000 };
+        uint32_t cal[9];
+
+        for (int i = 0; i < 9; i++) {
+            stl_le_p(&cal[i], unit_cal[i]);
+        }
+        a4_dt_edit((uint8_t *)data, image_len, load_pa, bootargs_pa,
+                   &(A4DTEdit){ "gyro", "gyro-sensitivity-calibration", cal, sizeof(cal) });
     }
     if (address_space_write(&address_space_memory, load_pa,
                             MEMTXATTRS_UNSPECIFIED, data, image_len) != MEMTX_OK) {
@@ -958,7 +992,10 @@ static void ipad1_i2c_create(IPad1MachineState *s, int n)
             }
         }
         i2c_slave_realize_and_unref(slave, bus, &error_fatal);
-        if (d->irq_pin) {
+        if (d->irq2_pin) {
+            qdev_connect_gpio_out(dev, 0, qdev_get_gpio_in(s->gpio, d->irq_pin));
+            qdev_connect_gpio_out(dev, 1, qdev_get_gpio_in(s->gpio, d->irq2_pin));
+        } else if (d->irq_pin) {
             qdev_connect_gpio_out(dev, 0,
                                   qemu_irq_invert(qdev_get_gpio_in(s->gpio, d->irq_pin)));
         }
@@ -1420,6 +1457,7 @@ static void ipad1_init(MachineState *machine)
         qdev_prop_set_int32(bb, "ifx-version", s->board->bb_ifx);
         qdev_prop_set_int32(bb, "ifx-max-data", s->board->bb_max_data);
         object_property_add_child(OBJECT(s), "baseband-modem", OBJECT(bb));
+        s->bb_modem = bb;
         qdev_realize_and_unref(bb, NULL, &error_fatal);
         dev = qdev_new(TYPE_IOS_BASEBAND_SPI);
         object_property_set_link(OBJECT(dev), "modem", OBJECT(bb), &error_abort);

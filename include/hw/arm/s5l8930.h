@@ -199,6 +199,8 @@ void s5l8930_ltc4099_set_charging(DeviceState *dev, bool charging);
 #define TYPE_S5L8930_TSL2581 "s5l8930.tsl2581"   /* ambient light sensor at 0x39 on i2c2 */
 /* AK8973 magnetometer at 0x1e on i2c0; "heading" (degrees) sets the field. */
 #define TYPE_S5L8930_AK8973 "s5l8930.ak8973"
+/* L3G4200D gyroscope at 0x68 on i2c2 ("gyro,ap3gdl"); gpio-out 0/1 = INT1/INT2 pin levels. */
+#define TYPE_S5L8930_L3G4200D "s5l8930.l3g4200d"
 /* The accelerometer whose gravity vector gives the compass its pose. */
 struct LIS302DLState;
 void s5l8930_ak8973_set_accel(DeviceState *dev, struct LIS302DLState *accel);
@@ -290,5 +292,18 @@ static inline unsigned s5l8930_i2s_rate(unsigned port)
  * No interrupt line: the kext completes on the CDMA channel, not IRQ 0x25.
  */
 #define TYPE_S5L8930_SHA1 "s5l8930.sha1"
+
+/*
+ * A kboot bundle's DT property edit (hw/arm/ipad1.c, also used by the S5L8920
+ * boards): the node named `name` gets `prop` overwritten in place (same slot,
+ * zero-padded) when the slot holds `vlen` bytes.
+ */
+typedef struct A4DTEdit {
+    const char *name, *prop;
+    const void *value;
+    uint32_t vlen;
+} A4DTEdit;
+void a4_dt_edit(uint8_t *image, size_t image_len, uint32_t load_pa,
+                uint32_t bootargs_pa, const A4DTEdit *e);
 
 #endif

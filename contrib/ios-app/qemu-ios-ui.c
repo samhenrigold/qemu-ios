@@ -70,6 +70,7 @@ static void ios_sequence_reset(void *opaque)
 static int ios_vm_alive;
 /* Which machine is running, latched on the QEMU thread when the VM starts. */
 static int ios_is_ipad1;
+static int ios_dsi_panel;       /* the panel is powered over DSI: the iPad's and the S5L8920 boards' */
 
 static struct {
     DisplayChangeListener dcl;
@@ -311,7 +312,7 @@ bool qemu_ios_ui_guest_shutdown_confirmed(void)
 bool qemu_ios_ui_display_sleeping(void)
 {
     /* The iPad has no iPod LCD backlight; its panel is powered over DSI. */
-    return qatomic_read(&ios_is_ipad1) ? ipod_touch_mipi_dsi_panel_off()
+    return qatomic_read(&ios_dsi_panel) ? ipod_touch_mipi_dsi_panel_off()
                                        : lcd_backlight_is_off();
 }
 
@@ -347,6 +348,8 @@ void qemu_ios_ui_vm_started(void)
     }
     qatomic_set(&ios_is_ipad1, object_dynamic_cast(qdev_get_machine(),
                                                    MACHINE_TYPE_NAME("ipad1")) != NULL);
+    qatomic_set(&ios_dsi_panel, qatomic_read(&ios_is_ipad1) ||
+                object_dynamic_cast(qdev_get_machine(), "s5l8920-machine") != NULL);
     for (i = 0; i < INPUT_EVENT_SLOTS_MAX; i++) {
         ios.slots[i].tracking_id = -1;
     }
@@ -367,6 +370,7 @@ const QemuIosDeviceInfo *qemu_ios_device_info(const char *machine)
         { "ipad1", 1024, 768, 1, 1, false },     /* s5l8930_display scans out 1024x768 */
         { "iPod-Touch-1G", 320, 480, 1, 0, false },
         { "iPod-Touch-4G", 640, 960, 2, 0, false },  /* a4_n81: portrait Retina panel */
+        { "iPhone-4", 640, 960, 2, 0, false },       /* a4_n90: the same panel */
     };
 
     for (size_t i = 0; machine && i < ARRAY_SIZE(devices); i++) {
@@ -534,6 +538,7 @@ static void ios_press(IPodTouchButton button, bool down)
     ipod_touch_press_button(button, down);
     ipad1_press_button(button, down);
     ipod_touch_1g_press_button(button, down);
+    s5l8920_press_button(button, down);
 }
 
 static void ios_button_release(void *opaque)

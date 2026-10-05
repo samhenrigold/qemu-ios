@@ -10,7 +10,7 @@ import sys
 
 COMPONENTS = ('armv6-toolchain it-gles gles-public it-agent it-instprogress it-media '
               'it-proxy it-status it-halt it-orientation ipad1-guest appsync it-boot '
-              'it-pasteboard it-ethlink it-seal it-prefs it-keybag it-heading '
+              'it-pasteboard it-ethlink it-seal it-prefs it-keybag it-heading it-gyro '
               'it-cctest it-gltest it-msmquiet guest-package').split()
 
 

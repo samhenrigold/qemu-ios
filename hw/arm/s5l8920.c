@@ -15,17 +15,24 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "qemu/error-report.h"
 #include "exec/address-spaces.h"
 #include "hw/boards.h"
 #include "hw/irq.h"
 #include "hw/misc/unimp.h"
+#include "hw/misc/ios_baseband.h"
 #include "hw/core/split-irq.h"
 #include "hw/arm/ipod_touch_pke.h"
+#include "hw/arm/ipod_touch_sdio.h"
+#include "net/net.h"
+#include "qemu/config-file.h"
+#include "qemu/option.h"
 #include "hw/arm/ipod_touch_spi.h"
 #include "hw/arm/ipod_touch_lcd.h"
 #include "hw/arm/ipod_touch_tvout.h"
 #include "hw/arm/ipod_touch_mipi_dsi.h"
+#include "hw/arm/ipod_touch_buttons.h"
 #include "hw/arm/ipod_touch_usb_otg.h"
 #include "hw/arm/ipod_touch_usb_phys.h"
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
@@ -48,6 +55,9 @@
 #include "hw/arm/guest-services/general.h"
 #include "hw/arm/guest-services/gles.h"
 #include "hw/arm/guest-package.h"
+#include "hw/arm/guest-pasteboard.h"
+#include "hw/arm/ipod-agent.h"
+#include "qemu/guest-random.h"
 
 /* Addresses and interrupts: N18AP 8C148 DT (arm-io maps child offsets at 0x80000000). */
 #define S5L8920_DRAM_BASE       0x40000000
@@ -62,6 +72,7 @@
 #define S5L8920_UART_BASE(n)    (0x82500000 + (n) * 0x100000)
 #define S5L8920_IOP_BASE        0x86300000
 #define S5L8920_IOP_VIC_BASE    0xbf300000
+#define S5L8920_SDIO_BASE       0x80000000      /* SDHC, sdio,s5l8920x */
 #define S5L8920_SHA1_BASE       0x80100000
 #define S5L8920_PKE_BASE        0x83100000
 #define S5L8920_CDMA_BASE       0x87000000
@@ -90,6 +101,7 @@
 #define S5L8920_IRQ_USB_OTG     0x0e
 #define S5L8920_IRQ_SCALER      0x0c
 #define S5L8920_IRQ_CLCD        0x25
+#define S5L8920_IRQ_SDIO        0x22
 #define S5L8920_IRQ_DART(n)     (0x5a - (n))
 #define S5L8920_IRQ_CDMA(ch)    (0x2a + (ch))   /* DT lists channels 1.. from 0x2b */
 
@@ -125,11 +137,20 @@ typedef struct S5L8920Board {
     uint16_t gauge_mah;
     bool nor;                            /* a SPI NOR on spi0 (the N88's; the N18 boots from NAND) */
     bool baseband;                       /* spi2, the baseband link */
+    /* The fake modem on spi2 (baseband=on; docs/baseband/): IFX protocol version, DT
+     * max-data-size, MRDY (AP out) / SRDY (AP in) and radio_on / bb_rst GPIOs. */
+    uint8_t bb_ifx;
+    uint16_t bb_max_data;
+    uint16_t bb_mrdy, bb_srdy, bb_radio_on, bb_rst;
+    const char *bb_compat;               /* the DT baseband node's compatible, to re-match it */
     uint32_t fmc_off;                    /* FMC within each FMI window, as its IOP firmware addresses it */
     uint16_t mt_atn;                     /* multi-touch ATN, a GPIO interrupt */
     S5L8920Buttons buttons;
     S5L8920I2CDevice i2c[8];             /* in creation order (the snapshot's) */
     S5L8920PowerKnob pwroff_knob;
+    const char *wifi_board;              /* the card's CIS VERS_1 board string; NULL = no Wi-Fi card */
+    const char *wifi_fw_version;
+    uint8_t wifi_mac[6];
 } S5L8920Board;
 
 /* iPod touch 3G (N18AP, S5L8922). */
@@ -152,6 +173,10 @@ static const S5L8920Board s5l8920_n18 = {
         { 2, 0x1d, TYPE_LIS302DL },       /* its DT interrupt (0xa2) is not driven */
     },
     .pwroff_knob = { 57, 67, 240 },      /* off a 4.2.1 screendump of the sheet */
+    /* A BCM4329 B1: AppleBCMWLAN's "N18 - 4329 B1" (s=B1, P=N18 -> 4329b1/n18.bin, whose version this is). */
+    .wifi_board = "P=N18",
+    .wifi_fw_version = "wl0: Oct 13 2010 15:39:53 version 4.221.38.1",
+    .wifi_mac = { 0x02, 0x00, 0x00, 0x18, 0x00, 0x01 },  /* synthetic, locally administered */
 };
 
 /* iPhone 3GS (N88AP, S5L8920); N88AP 8C148a DT. */
@@ -167,6 +192,9 @@ static const S5L8920Board s5l8920_n88 = {
     .gauge_mah = 1219,                   /* ponytail: the 3GS's rated cell, not measured */
     .nor = true,
     .baseband = true,
+    .bb_ifx = 1, .bb_max_data = 0x7f8,   /* DT spi2 protocol-version, max-data-size */
+    .bb_mrdy = 0x1802, .bb_srdy = 0x1304, .bb_radio_on = 0x1405, .bb_rst = 0x1407,
+    .bb_compat = "baseband,n88",
     .mt_atn = 0xb4,
     .buttons = { .hold = 0xb7, .menu = 0xb6, .volup = 0xb0, .voldown = 0xb1, .hold_menu_high = true },
     .i2c = {
@@ -204,10 +232,19 @@ struct S5L8920MachineState {
     char *nand_overlay_path;
     char *nor_path;
     char *nor_rw_path;
+    char *die_id;                        /* ChipID words 2-3 of the unit, hex pair */
     char *usb_tcp_addr;                  /* usbmuxd-qemu host bridge; empty = the built-in host */
     bool btn_hold, btn_home;             /* button-hold/-home properties */
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
+    bool wifi;                           /* bridge the Wi-Fi card to -netdev id=wifi0 (default on) */
+    bool usb_attached;                   /* usb-attached (default on) */
+    int battery_level;                   /* battery-level, -1 = the PMU model's own */
+    unsigned battery_charging;           /* battery-charging: 0 auto, 1 on, 2 off */
+    bool baseband_on;                    /* baseband=on: the fake modem behind spi2 */
+    DeviceState *bb_modem;
     GuestPackage pkg;                    /* hw/arm/guest-package.c: it_boot and the GL shim's hello */
+    GuestPasteboard pb;                  /* hw/arm/guest-pasteboard.c */
+    IPodAgent *agent;                    /* hw/arm/ipod-agent.c: it_agent, as on the iPod and iPad */
     QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
     int pwroff_phase, pwroff_step;
 };
@@ -250,6 +287,7 @@ static void s5l8920_cpu_reset(void *opaque)
     gles_host_set_debug(s->gles_debug);
     gles_host_reset();
     guest_pkg_reset(&s->pkg);
+    ipod_agent_reset(s->agent);
     cpu_reset(cs);
     if (!g_file_get_contents(s->kboot_path, &data, &size, &gerr)) {
         error_report("s5l8920: cannot read kboot bundle '%s': %s",
@@ -270,6 +308,25 @@ static void s5l8920_cpu_reset(void *opaque)
         (uint64_t)load_pa + image_len > S5L8920_DRAM_BASE + s->board->dram_size) {
         error_report("s5l8920: kboot bundle does not fit in DRAM");
         exit(1);
+    }
+    if (s->bb_modem) {
+        /*
+         * kboot (s5l8920_kboot.py, fill_dt) unmatches and renames the baseband node
+         * ("nobb"); with the modem attached, give it back its name and compatible.
+         * lockdownd compares the DT's IMEI with the modem's +CGSN (iBoot fills it on
+         * hardware), so that comes from the modem too.
+         */
+        g_autofree char *imei = object_property_get_str(OBJECT(s->bb_modem), "imei", &error_abort);
+        const A4DTEdit edits[] = {
+            { "nobb", "name", "baseband", sizeof("baseband") },
+            { "baseband", "device_type", "baseband", sizeof("baseband") },
+            { "baseband", "compatible", s->board->bb_compat, strlen(s->board->bb_compat) + 1 },
+            { "baseband", "device-imei", imei, strlen(imei) },
+        };
+
+        for (int i = 0; i < ARRAY_SIZE(edits); i++) {
+            a4_dt_edit((uint8_t *)data, image_len, load_pa, bootargs_pa, &edits[i]);
+        }
     }
     address_space_write(&address_space_memory, load_pa, MEMTXATTRS_UNSPECIFIED,
                         data, image_len);
@@ -343,22 +400,36 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
         }
         if (!strcmp(d->type, TYPE_PCF50633)) {
             s->pmu = PCF50633(slave);
-            s->pmu->usb_cable = true;
+            s->pmu->usb_cable = s->usb_attached;
         } else if (!strcmp(d->type, TYPE_LIS302DL)) {
             s->accel = LIS302DL(slave);
+            /* the iPod/iPad machines' names, which the app's tilt and shake set */
+            object_property_add_alias(OBJECT(s), "accel-orientation", OBJECT(slave), "orientation");
+            object_property_add_alias(OBJECT(s), "accel-x", OBJECT(slave), "x");
+            object_property_add_alias(OBJECT(s), "accel-y", OBJECT(slave), "y");
+            object_property_add_alias(OBJECT(s), "accel-z", OBJECT(slave), "z");
+            object_property_add_alias(OBJECT(s), "accel-shake", OBJECT(slave), "shake");
         }
     }
 }
 
 /*
  * The guest-services trap (mcr p15,3,Rn,c15,c15,0) the GLES shim
- * (contrib/gles-public) uses: GLES, and guest packages (which also answer
- * the shim's hello). ipad1.c's agent and pasteboard are left out until a
- * test here needs them.
+ * (contrib/gles-public) uses, as ipad1's: GLES, guest packages (which also
+ * answer the shim's hello), the pasteboard and the guest agent (it_agent).
  */
+static int s5l8920_agent_copy(void *opaque, uint32_t address, uint8_t *data, size_t length, bool write)
+{
+    if (length && length - 1 > UINT32_MAX - address) {
+        return -1;
+    }
+    return cpu_memory_rw_debug(opaque, address, data, length, write);
+}
+
 static void s5l8920_qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
 {
     CPUState *cs = env_cpu(env);
+    S5L8920MachineState *s = S5L8920_MACHINE(qdev_get_machine());
     qemu_call_t q;
     int32_t err = 0;
 
@@ -372,8 +443,29 @@ static void s5l8920_qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t
     case QC_GLES_PING:
         q.retval = QC_GLES_PING_MAGIC;
         break;
+    case QC_AG_HELLO:
+    case QC_AG_POLL:
+    case QC_AG_READ:
+    case QC_AG_WRITE:
+    case QC_AG_DONE:
+    case QC_AG_HOSTTIME:
+    case QC_UI_POLL:
+    case QC_UI_READ:
+    case QC_UI_WRITE:
+    case QC_UI_DONE:
+    case QC_AG_UI_ROUTE: {
+        uint64_t candidate = 0;
+        if (q.call_number == QC_AG_HELLO || q.call_number == QC_AG_UI_ROUTE) {
+            qemu_guest_getrandom_nofail(&candidate, sizeof(candidate));
+        }
+        q.retval = ipod_agent_call(s->agent, q.call_number, q.args.ag.token, q.args.ag.buffer_guest_ptr,
+                                   q.args.ag.offset, q.args.ag.length, qemu_clock_get_ms(QEMU_CLOCK_REALTIME),
+                                   candidate, s5l8920_agent_copy, cs);
+        err = q.retval < 0 ? EINVAL : 0;
+        break;
+    }
     default:
-        if (!guest_pkg_call(&S5L8920_MACHINE(qdev_get_machine())->pkg, cs, &q, &err)) {
+        if (!guest_pb_call(&s->pb, cs, &q, &err) && !guest_pkg_call(&s->pkg, cs, &q, &err)) {
             return;
         }
     }
@@ -432,6 +524,12 @@ static void s5l8920_init(MachineState *machine)
     {
         uint32_t chipid[] = { s->board->chipid[0], s->board->chipid[1], 0, 0 };
 
+        /* the unit's die-id words, as ipad1's die-id property */
+        if (s->die_id && sscanf(s->die_id, "%" SCNx32 ":%" SCNx32, &chipid[2], &chipid[3]) != 2) {
+            error_report("s5l8920: die-id must be \"0xWORD2:0xWORD3\", got \"%s\"", s->die_id);
+            exit(1);
+        }
+
         memory_region_init_rom(&s->chipid, NULL, "s5l8920.chipid", 0x1000, &error_fatal);
         memcpy(memory_region_get_ram_ptr(&s->chipid), chipid, sizeof(chipid));
         memory_region_add_subregion(sysmem, S5L8920_CHIPID_BASE, &s->chipid);
@@ -487,9 +585,57 @@ static void s5l8920_init(MachineState *machine)
                                s5l8920_irq(s, S5L8920_IRQ_UART(i)), true);
     }
 
+    /*
+     * Wi-Fi, as on the iPad (docs/ipad1/wifi.md): the iPod's Broadcom dongle
+     * model dressed as the board's chip, behind the SDHC at 0x80000000, which
+     * the IOP firmware's sdiodrv drives.
+     */
+    DeviceState *sdio = NULL;
+    if (s->board->wifi_board) {
+        BCMSDIOChip bcm4329 = {
+            .manfid = 0x02d0, .prodid = 0x4329,
+            .chipid = 0x00034329,                   /* rev 3 = B1 */
+            .sdiod_base = 0x18011000,
+            .vers1 = { "", "", "s=B1", s->board->wifi_board },
+            .no_common_funce = true,
+            .fw_version = s->board->wifi_fw_version,
+        };
+        IPodTouchSDIOState *card = IPOD_TOUCH_SDIO(qdev_new(TYPE_IPOD_TOUCH_SDIO));
+
+        memcpy(bcm4329.mac, s->board->wifi_mac, sizeof(bcm4329.mac));
+        ipod_touch_sdio_set_chip(card, &bcm4329);
+        object_property_add_alias(OBJECT(machine), "wifi-bssid", OBJECT(card), "bssid");
+        card->card_present = true;
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(card), &error_fatal);
+        if (s->wifi && !qemu_find_netdev("wifi0")) {
+            /* no backend given: NAT it */
+            QemuOpts *o = qemu_opts_parse_noisily(qemu_find_opts("netdev"), "type=user,id=wifi0", false);
+            Error *err = NULL;
+            if (o) {
+                netdev_add(o, &err);
+            }
+            if (err) {
+                warn_reportf_err(err, "Wi-Fi has no network: ");
+            }
+        }
+        if (s->wifi) {
+            ipod_touch_sdio_setup_net(card);
+        }
+        sdio = qdev_new(TYPE_S5L8930_SDIO);
+        object_property_set_link(OBJECT(sdio), "card", OBJECT(card), &error_fatal);
+        sbd = SYS_BUS_DEVICE(sdio);
+        sysbus_realize_and_unref(sbd, &error_fatal);
+        sysbus_mmio_map(sbd, 0, S5L8920_SDIO_BASE);
+        sysbus_connect_irq(sbd, 0, s5l8920_irq(s, S5L8920_IRQ_SDIO));
+        sysbus_connect_irq(SYS_BUS_DEVICE(card), 0, qdev_get_gpio_in(sdio, 0));
+    }
+
     /* AP side of the IOP; NAND pages come from its page store. */
     dev = qdev_new(TYPE_S5L8930_IOP);
     iop = dev;
+    if (sdio) {
+        object_property_set_link(OBJECT(dev), "sdio", OBJECT(sdio), &error_fatal);
+    }
     if (s->nand_path) {
         qdev_prop_set_string(dev, "nand", s->nand_path);
     }
@@ -566,8 +712,35 @@ static void s5l8920_init(MachineState *machine)
     } else {
         ipod_touch_spi_create(S5L8920_SPI_BASE(0), s5l8920_irq(s, S5L8920_IRQ_SPI(0)), 0, "none", false);
     }
-    /* SPI2: the baseband link (N88), a controller with nothing on it. */
-    if (s->board->baseband) {
+    /*
+     * SPI2: the baseband link (N88). baseband=on puts the fake modem behind it
+     * (hw/misc/ios_baseband*.c, hw/arm/s5l8930_bbspi.c); otherwise a controller
+     * with nothing on it. Its DT interrupt is the SRDY GPIO.
+     */
+    if (s->board->baseband && s->baseband_on && s->board->bb_ifx) {
+        DeviceState *bb = qdev_new(TYPE_IOS_BASEBAND);
+
+        qdev_prop_set_int32(bb, "ifx-version", s->board->bb_ifx);
+        qdev_prop_set_int32(bb, "ifx-max-data", s->board->bb_max_data);
+        object_property_add_child(OBJECT(s), "baseband-modem", OBJECT(bb));
+        qdev_realize_and_unref(bb, NULL, &error_fatal);
+        s->bb_modem = bb;
+        dev = qdev_new(TYPE_IOS_BASEBAND_SPI);
+        object_property_set_link(OBJECT(dev), "modem", OBJECT(bb), &error_abort);
+        object_property_set_link(OBJECT(dev), "cdma",
+            object_resolve_path_type("", TYPE_S5L8930_CDMA, NULL), &error_abort);
+        qdev_prop_set_uint32(dev, "base", S5L8920_SPI_BASE(2));
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S5L8920_SPI_BASE(2));
+        qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(s->board->bb_mrdy),
+                              qdev_get_gpio_in_named(bb, "mrdy", 0));
+        qdev_connect_gpio_out_named(bb, "srdy", 0,
+            qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(s->board->bb_srdy)));
+        qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(s->board->bb_radio_on),
+                              qdev_get_gpio_in_named(bb, "ctl", 0));
+        qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(s->board->bb_rst),
+                              qdev_get_gpio_in_named(bb, "ctl", 1));
+    } else if (s->board->baseband) {
         ipod_touch_spi_create(S5L8920_SPI_BASE(2), NULL, 2, "none", false);
     }
     /* SPI1: the Zephyr multi-touch. */
@@ -740,6 +913,32 @@ static void s5l8920_set_button(S5L8920MachineState *s, int pin, bool down)
     qemu_set_irq(qdev_get_gpio_in(s->gpio, pin), high ? down : !down);
 }
 
+/* The app bridge's buttons (contrib/ios-app), on the board's pins; no-op on other machines. */
+void s5l8920_press_button(IPodTouchButton button, bool down)
+{
+    S5L8920MachineState *s = (S5L8920MachineState *)
+        object_dynamic_cast(OBJECT(qdev_get_machine()), TYPE_S5L8920_MACHINE);
+    const S5L8920Buttons *b;
+
+    if (!s) {
+        return;
+    }
+    b = &s->board->buttons;
+    switch (button) {
+    case IPOD_TOUCH_BUTTON_HOME:    s5l8920_set_button(s, b->menu, down); break;
+    case IPOD_TOUCH_BUTTON_POWER:   s5l8920_set_button(s, b->hold, down); break;
+    case IPOD_TOUCH_BUTTON_VOLUP:   s5l8920_set_button(s, b->volup, down); break;
+    case IPOD_TOUCH_BUTTON_VOLDOWN: s5l8920_set_button(s, b->voldown, down); break;
+    }
+}
+
+bool ipod_touch_mipi_dsi_panel_off(void);   /* hw/arm/ipod_touch_mipi_dsi.c */
+
+static bool s5l8920_get_display_sleeping(Object *obj, Error **errp)
+{
+    return ipod_touch_mipi_dsi_panel_off();
+}
+
 /* After every device reset (the GPIO model's puts every input high): buttons at rest. */
 static void s5l8920_machine_reset(MachineState *machine, ResetType type)
 {
@@ -748,6 +947,12 @@ static void s5l8920_machine_reset(MachineState *machine, ResetType type)
     qemu_devices_reset(type);
     s5l8920_set_button(s, s->board->buttons.hold, s->btn_hold);
     s5l8920_set_button(s, s->board->buttons.menu, s->btn_home);
+    if (s->pmu) {   /* the charge and level the properties asked for survive the PMU's reset */
+        pcf50633_set_charging_mode(s->pmu, s->battery_charging);
+        if (s->battery_level >= 0) {
+            pcf50633_set_battery_level(s->pmu, s->battery_level);
+        }
+    }
 }
 
 static bool s5l8920_get_button_hold(Object *obj, Error **errp)
@@ -863,19 +1068,159 @@ static void s5l8920_set_usb_tcp_addr(Object *obj, const char *value, Error **err
     s->usb_tcp_addr = g_strdup(value);
 }
 
+static char *s5l8920_get_die_id(Object *obj, Error **errp)
+{
+    return g_strdup(S5L8920_MACHINE(obj)->die_id);
+}
+
+static void s5l8920_set_die_id(Object *obj, const char *value, Error **errp)
+{
+    g_free(S5L8920_MACHINE(obj)->die_id);
+    S5L8920_MACHINE(obj)->die_id = g_strdup(value);
+}
+
+static bool s5l8920_get_wifi(Object *obj, Error **errp)
+{
+    return S5L8920_MACHINE(obj)->wifi;
+}
+
+static void s5l8920_set_wifi(Object *obj, bool value, Error **errp)
+{
+    S5L8920_MACHINE(obj)->wifi = value;
+}
+
+/* The agent's properties (tests and the app drive it over QMP), as ipad1's. */
+static void s5l8920_set_agent_request(Object *obj, const char *value, Error **errp)
+{
+    int error = ipod_agent_submit(S5L8920_MACHINE(obj)->agent, value);
+    if (error) {
+        error_setg(errp, "%s", ipod_agent_submit_error(error));
+    }
+}
+
+static void s5l8920_cancel_agent_request(Object *obj, const char *value, Error **errp)
+{
+    ipod_agent_cancel(S5L8920_MACHINE(obj)->agent, value);
+}
+
+static char *s5l8920_get_agent_result(Object *obj, Error **errp)
+{
+    return ipod_agent_take_result(S5L8920_MACHINE(obj)->agent);
+}
+
+static char *s5l8920_get_agent_status(Object *obj, Error **errp)
+{
+    return g_strdup(ipod_agent_status(S5L8920_MACHINE(obj)->agent, qemu_clock_get_ms(QEMU_CLOCK_REALTIME)));
+}
+
+/* The iPod machine's battery and cable properties, on the PCF50633 model's API. */
+static bool s5l8920_get_usb_attached(Object *obj, Error **errp)
+{
+    return S5L8920_MACHINE(obj)->usb_attached;
+}
+
+static void s5l8920_set_usb_attached(Object *obj, bool value, Error **errp)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+
+    s->usb_attached = value;
+    if (s->pmu) {
+        pcf50633_set_usb_cable(s->pmu, value);
+    }
+}
+
+static void s5l8920_get_battery_level(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+    int64_t value = s->battery_level;
+
+    if (s->pmu) {
+        pcf50633_update_battery(s->pmu);
+        value = pcf50633_level_for_adc(s->pmu->adc_values[4]);
+    }
+    visit_type_int(v, name, &value, errp);
+}
+
+static void s5l8920_set_battery_level(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+    int64_t value;
+
+    if (!visit_type_int(v, name, &value, errp)) {
+        return;
+    }
+    if (value < 0 || value > 100) {
+        error_setg(errp, "battery-level must be between 0 and 100");
+        return;
+    }
+    s->battery_level = value;
+    if (s->pmu) {
+        pcf50633_set_battery_level(s->pmu, value);
+    }
+}
+
+static char *s5l8920_get_battery_charging(Object *obj, Error **errp)
+{
+    unsigned mode = S5L8920_MACHINE(obj)->battery_charging;
+
+    return g_strdup(mode == 1 ? "on" : mode == 2 ? "off" : "auto");
+}
+
+static void s5l8920_set_battery_charging(Object *obj, const char *value, Error **errp)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+    static const char *const modes[] = { "auto", "on", "off" };
+
+    for (unsigned mode = 0; mode < ARRAY_SIZE(modes); mode++) {
+        if (!strcmp(value, modes[mode])) {
+            s->battery_charging = mode;
+            if (s->pmu) {
+                pcf50633_set_charging_mode(s->pmu, mode);
+            }
+            return;
+        }
+    }
+    error_setg(errp, "battery-charging must be auto, on or off");
+}
+
 static void s5l8920_instance_init(Object *obj)
 {
-    guest_pkg_init(&S5L8920_MACHINE(obj)->pkg, obj);
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+
+    s->wifi = true;
+    s->usb_attached = true;
+    s->battery_level = -1;
+    guest_pkg_init(&s->pkg, obj);
+    guest_pb_init(&s->pb, obj, "s5l8920");
+    s->agent = ipod_agent_new();
+    ipod_agent_publish(s->agent);
+    object_property_add_str(obj, "agent-request", NULL, s5l8920_set_agent_request);
+    object_property_add_str(obj, "agent-cancel", NULL, s5l8920_cancel_agent_request);
+    object_property_add_str(obj, "agent-result", s5l8920_get_agent_result, NULL);
+    object_property_add_str(obj, "agent-status", s5l8920_get_agent_status, NULL);
 }
 
 static void s5l8920_instance_finalize(Object *obj)
 {
+    ipod_agent_publish(NULL);
+    ipod_agent_free(S5L8920_MACHINE(obj)->agent);
     g_free(S5L8920_MACHINE(obj)->usb_tcp_addr);
+    g_free(S5L8920_MACHINE(obj)->die_id);
     g_free(S5L8920_MACHINE(obj)->nor_path);
     g_free(S5L8920_MACHINE(obj)->nor_rw_path);
     g_free(S5L8920_MACHINE(obj)->kboot_path);
     g_free(S5L8920_MACHINE(obj)->nand_path);
     g_free(S5L8920_MACHINE(obj)->nand_overlay_path);
+}
+
+static bool s5l8920_get_baseband(Object *obj, Error **errp)
+{
+    return S5L8920_MACHINE(obj)->baseband_on;
+}
+
+static void s5l8920_set_baseband(Object *obj, bool value, Error **errp)
+{
+    S5L8920_MACHINE(obj)->baseband_on = value;
 }
 
 static bool s5l8920_get_gles_debug(Object *obj, Error **errp)
@@ -930,7 +1275,25 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
     object_class_property_add_str(klass, "nor-rw", s5l8920_get_nor_rw, s5l8920_set_nor_rw);
     object_class_property_set_description(klass, "nor-rw",
         "1 MiB private writable NOR copy; guest writes (effaceable) persist here across boots");
+    object_class_property_add_str(klass, "die-id", s5l8920_get_die_id, s5l8920_set_die_id);
+    object_class_property_set_description(klass, "die-id",
+        "the unit's ChipID die-id words 2-3, \"0xWORD2:0xWORD3\" (identity.json); zeros if unset");
+    object_class_property_add_bool(klass, "usb-attached", s5l8920_get_usb_attached, s5l8920_set_usb_attached);
+    object_class_property_set_description(klass, "usb-attached", "The dock cable is in (default on)");
+    object_class_property_add(klass, "battery-level", "int", s5l8920_get_battery_level, s5l8920_set_battery_level,
+                              NULL, NULL);
+    object_class_property_set_description(klass, "battery-level", "Battery charge, 0-100 percent (the PMU's ADC)");
+    object_class_property_add_str(klass, "battery-charging", s5l8920_get_battery_charging, s5l8920_set_battery_charging);
+    object_class_property_set_description(klass, "battery-charging", "auto, on or off");
+    object_class_property_add_bool(klass, "display-sleeping", s5l8920_get_display_sleeping, NULL);
+    object_class_property_set_description(klass, "display-sleeping", "The panel is off (DSI display-off)");
+    object_class_property_add_bool(klass, "wifi", s5l8920_get_wifi, s5l8920_set_wifi);
+    object_class_property_set_description(klass, "wifi",
+        "Bridge the Wi-Fi card to -netdev id=wifi0 (a NAT one is made when absent); off keeps the card, unbridged");
     object_class_property_add_bool(klass, "gles-debug", s5l8920_get_gles_debug, s5l8920_set_gles_debug);
+    object_class_property_add_bool(klass, "baseband", s5l8920_get_baseband, s5l8920_set_baseband);
+    object_class_property_set_description(klass, "baseband",
+        "radio boards: put the fake cellular modem behind spi2 (default off: a bare controller)");
     object_class_property_set_description(klass, "gles-debug",
         "Paint what the GL bridge refuses magenta (tests)");
     object_class_property_add_str(klass, "gles-rejects", s5l8920_get_gles_rejects, NULL);

@@ -681,7 +681,7 @@ static void test_incoming_call(void)
     CHECK(ios_bb_incoming_call(&bb, "+14155550100"));
     pump();
     expect_frame(1, "\r\n+XCALLSTAT: 1,4\r\n");
-    expect_frame(1, "\r\n+CLIP: \"+14155550100\",145,,,\"\",0\r\n");
+    expect_frame(1, "\r\n+CLIP: \"14155550100\",145,,,\"\",0\r\n");
     expect_frame(1, "\r\nRING\r\n");
 
     /* the ring repeats */
@@ -710,6 +710,8 @@ static void test_incoming_call(void)
     /* 4.x answers with ATA and hangs up with ATH. */
     CHECK(ios_bb_incoming_call(&bb, "15555550199"));
     pump();
+    expect_frame(1, "\r\n+XCALLSTAT: 2,4\r\n");
+    expect_frame(1, "\r\n+CLIP: \"15555550199\",145,,,\"\",0\r\n");
     ev_i = nev;
     c_mux_str(1, "ata\r");
     pump();
@@ -740,6 +742,8 @@ static void test_outgoing_call(void)
 
     ios_bb_remote_answer(&bb);
     pump();
+    /* the connected line: 1.0's only source for the answered call's number */
+    expect_frame(1, "\r\n+COLP: \"+14155550100\",145\r\n");
     expect_frame(1, "\r\n+XCALLSTAT: 2,0\r\n");
     check_str(ios_bb_call_state(&bb), "active", "call state");
 
@@ -748,6 +752,30 @@ static void test_outgoing_call(void)
     expect_frame(1, "\r\nOK\r\n");
     expect_frame(1, "\r\n+XCALLSTAT: 2,6\r\n");
     check_str(ios_bb_call_state(&bb), "idle", "call state");
+    bb.next_call_id = 2;
+
+    /* +COLP=0 turns it off; the setting reads back through +COLP? */
+    c_mux_str(1, "at+colp=0\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    c_mux_str(1, "at+colp?\r");
+    pump();
+    expect_frame(1, "\r\n+COLP: 0,1\r\n");
+    expect_frame(1, "\r\nOK\r\n");
+    c_mux_str(1, "atd5550100;\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    expect_frame(1, "\r\n+XCALLSTAT: 2,2\r\n");
+    ios_bb_remote_answer(&bb);
+    pump();
+    expect_frame(1, "\r\n+XCALLSTAT: 2,0\r\n");
+    c_mux_str(1, "at+chld=1\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    expect_frame(1, "\r\n+XCALLSTAT: 2,6\r\n");
+    c_mux_str(1, "at+colp=1\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
     bb.next_call_id = 2;                         /* the 1.0 sections below expect id 2 next */
 }
 
@@ -989,7 +1017,7 @@ static void test_ifx(void)
     ios_bb_init(&c, ios_bb_ifx_queue, &x);
     CHECK(!ios_bb_ifx_pending(&x));
     ifx_frame(&x, &c, "at\r", miso, 0x7fc, got);
-    CHECK(miso[3] & 0x40);                      /* CTS */
+    CHECK(!(miso[3] & 0x40));                   /* bit 6 clear: N88 re-polls while it is set */
     CHECK(ios_bb_ifx_pending(&x));              /* the OK wants SRDY */
     ifx_frame(&x, &c, "", miso, 0x7fc, got);
     check_str(got, "\r\nOK\r\n", "ifx v1 OK");
@@ -1039,11 +1067,11 @@ static void test_ifx(void)
     ios_bb_init(&c, ios_bb_ifx_queue, &x);
     CHECK(!ios_bb_ifx_pending(&x));             /* credits ride the AP's first frame */
     ifx_frame(&x, &c, "", miso, 0x800, got);
-    CHECK((miso[2] | (miso[3] & 0xf) << 8) == 8);
+    CHECK((miso[2] | (miso[3] & 0xf) << 8) == 16);
     for (int i = 0; i < 5; i++) {
         ifx_frame(&x, &c, "at\r", miso, 0x800, got);
     }
-    CHECK(x.credits_out >= 4 && x.credits_out <= 8);
+    CHECK(x.credits_out == 16);                 /* topped up on every frame */
 }
 
 /* ------------------------------------------------------------- packet data */
@@ -1109,6 +1137,7 @@ static void test_packet_data(void)
     c_mux_str(5, "at+cgact=0,1\r");
     pump();
     expect_frame(5, "\r\nOK\r\n");
+    expect_frame(6, "\r\nNO CARRIER\r\n");
     CHECK(!ios_bb_data_input(&bb, ip, 40));
     bb.data_out = NULL;
 }
