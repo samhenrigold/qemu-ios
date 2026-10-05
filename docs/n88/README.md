@@ -126,11 +126,14 @@ iPod-Touch-4G --checks boot` PASS; N18 dev2 unlock to the home screen with touch
    wake latch, Wi-Fi.
 6. 4.x/5.x point releases between those in the table not run yet. The 4.x/5.x devices are FirmwareKit's
    (LightTouchMac n88-app catalog n88ap-*), prepared with a LightTouchDevice + this tree's libqemu-arm.dylib.
-7. **3.1.3 NAND**: 3.1.3's findNandInfo matches (dies, buses, chip+CE count per bus) against a per-board
-   table (7E18 0xc0442d58..: boards 0x0a/0x0c/0x0e/0x10); none of the rows that could be the N88's lists
-   0xB614D5AD on two buses with this key, so it prints "Board support not found" and "2-bus not
-   supported". Fix: a geometry both 3.1.3 and 4.x-6.x accept (a chip and CE layout from that table, e.g.
-   0x2594D7AD or 0x7294D7EC at two dies per CE), through ipad1_nand.py, the IOP model and K48NAND.
+7. **3.1.3 NAND**: 3.1.3 (7E18) stops at "Board support not found" / "NAND device ID 0xB614D5AD in map
+   0x00000f0f 2-bus not supported". Found with the gdbstub (lldb, -S, a breakpoint at findNandInfo
+   0xc043cd0c): the board type is 0x0c (global 0xc0445000) and its table (0xc0442d58..: 28-byte rows of
+   board, dies, buses, then chip+CE count per bus) has (2 dies, 2 buses, 0xB614D5AD x4, 0xB614D5AD x4). But the
+   key built is (2, 1 bus, 0xB614D5AD x8): the per-bus CE masks come from an object at 0xc04450e8 (vtable
+   +0x7c the mask array, +0x64 its size), which is NULL here, so every CE folds into bus 0
+   (0xc043b028 returns all-ones). Next: who registers that object on a real boot (an iBoot-filled DT
+   property or a platform service under kboot) and give it the two buses.
 8. **Touch calibration**: the digitizer frame is the N81 profile's, unmeasured on N88; taps in the bottom
    ~5% of the panel land ~15 px high (retap lower). tests/ipad1/touchcal.py (ipad1) is the tool to fit it.
 9. **iOS 6**: 10B500's kernel prints nothing under kboot (fw-a4 has N81 6.0 past pe_identify_machine with
