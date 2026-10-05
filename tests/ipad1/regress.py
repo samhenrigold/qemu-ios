@@ -400,6 +400,9 @@ def check_boot(cfg, r):
         if cfg.major >= 5:
             return check_boot_5(cfg, r, b, detail + pkg)
         for attempt in range(2):
+            if b.lit("pre-unlock") < LIT_MIN_FRACTION:   # waiting for usbmux outlasted the lock screen's panel
+                b.press("home")
+                time.sleep(1.5)
             b.drag(UNLOCK_FROM, UNLOCK_TO)   # at once: the lock screen dims about 8 s after it appears
             time.sleep(10)                   # 4.2.1's alert would be up by now
             ok, home = b.picture("home")
