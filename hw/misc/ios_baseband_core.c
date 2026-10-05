@@ -2224,7 +2224,7 @@ static void h5_rx_payload(IosBbCore *bb, const uint8_t *data, unsigned len)
 #define IFX_MORE      0x10         /* header byte 1 */
 #define IFX_V2_CREDIT_REQ 0x40     /* header byte 1: the sender holds no credits */
 #define IFX_V1_CTS    0x40         /* header byte 3 */
-#define IFX_V2_GRANT  8            /* credits handed to the AP when it runs low */
+#define IFX_V2_GRANT  16           /* the AP's credit level we keep it at (tx-buffer-count) */
 
 void ios_bb_ifx_init(IosBbIfx *x, int version, unsigned max_data)
 {
@@ -2306,8 +2306,13 @@ void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
         } else if (x->txq_len) {
             miso[1] |= IFX_V2_CREDIT_REQ;
         }
-        /* ponytail: credits counted per data frame; refine once the N90 guest is traced. */
-        if (x->credits_out < IFX_V2_GRANT / 2) {
+        /*
+         * Top the AP back up on every frame. Our count of what it spent (one per
+         * data frame) can lag its own; an AP that believes it has none and nothing
+         * else to say never asks again, and both sides wait until CommCenter resets
+         * the baseband (seen after ~1 min of N90 data). Granting too much is harmless.
+         */
+        if (x->credits_out < IFX_V2_GRANT) {
             grant = IFX_V2_GRANT - x->credits_out;
             x->credits_out += grant;
         }

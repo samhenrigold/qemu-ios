@@ -116,7 +116,8 @@ static void iosbb_set_srdy(IosBasebandState *s, bool level)
 
 static void iosbb_srdy_update(IosBasebandState *s)
 {
-    if (s->mrdy_level || (!s->srdy_level && ios_bb_ifx_pending(&s->ifx))) {
+    if (s->mrdy_level ||
+        (!s->srdy_level && (s->frame_wanted || ios_bb_ifx_pending(&s->ifx)))) {
         iosbb_set_srdy(s, true);
     }
 }
@@ -139,10 +140,20 @@ static void iosbb_mrdy(void *opaque, int n, int level)
  * The controller finished a frame (go cleared): SRDY drops, rising again if more is
  * due. unread_miso: the frame's MISO when the AP gave up before clocking it.
  */
+/* The AP started a frame with RUN and no MRDY: it waits for SRDY to clock it. */
+void ios_baseband_spi_request(DeviceState *dev)
+{
+    IosBasebandState *s = IOS_BASEBAND(dev);
+
+    s->frame_wanted = true;
+    iosbb_arm(s, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
+}
+
 void ios_baseband_spi_done(DeviceState *dev, const uint8_t *unread_miso)
 {
     IosBasebandState *s = IOS_BASEBAND(dev);
 
+    s->frame_wanted = false;
     if (unread_miso) {
         ios_bb_ifx_unsent(&s->ifx, unread_miso);
     }
@@ -151,12 +162,24 @@ void ios_baseband_spi_done(DeviceState *dev, const uint8_t *unread_miso)
     iosbb_arm(s, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
 }
 
-/* The AP's baseband control lines (DT radio_on, bb_rst): traced while their polarity is pinned down. */
+/*
+ * The AP's baseband control lines (DT radio_on, bb_rst; both active high on N90:
+ * the kernel drives 1 at boot, CommCenter pulses bb_rst to 0 and radio_on to 0
+ * when it resets the baseband). Either one low holds the modem in reset: it
+ * comes back in raw-AT mode, as CommCenter's recovery expects.
+ */
+static void iosbb_machine_reset(void *opaque);
+
 static void iosbb_ctl(void *opaque, int n, int level)
 {
+    IosBasebandState *s = opaque;
+
     if (getenv("IOS_BB_TRACE")) {
         fprintf(stderr, "%.3f ios-bb: %s %d\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e6,
                 n ? "BB_RST" : "RADIO_ON", level);
+    }
+    if (!level) {
+        iosbb_machine_reset(s);
     }
 }
 
@@ -573,6 +596,7 @@ static const VMStateDescription vmstate_ios_baseband_spi = {
         VMSTATE_UINT32(ifx.txq_len, IosBasebandState),
         VMSTATE_BOOL(srdy_level, IosBasebandState),
         VMSTATE_BOOL(mrdy_level, IosBasebandState),
+        VMSTATE_BOOL(frame_wanted, IosBasebandState),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -688,7 +712,7 @@ static void iosbb_machine_reset(void *opaque)
     if (s->ifx_version) {
         ios_bb_ifx_init(&s->ifx, s->ifx_version, s->ifx_max_data);
         s->srdy_level = false;
-    
+        s->frame_wanted = false;
         qemu_set_irq(s->srdy, 0);
     }
 }
