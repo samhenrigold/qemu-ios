@@ -9,14 +9,26 @@ app against 1.0's own frameworks, putting it on the device, and debugging it.
 ## Building: `contrib/hello-2007`
 
 ```
-ARMV6_SDK=<iPhoneOS3.1.3.sdk> contrib/hello-2007/build.sh ROOT [OUT]
+ARMV6_SDK=<iPhoneOS3.1.3.sdk> contrib/hello-2007/build.sh ROOT [OUT]      # OUT/Hello.app, OUT/Tilt.app
 ```
 
-ROOT is a host copy of the 1.0 root filesystem (the IPSW's decrypted rootfs, mounted or copied). The
-app is Objective-C written the way 2007 apps were: interfaces declared by hand from the firmware's class
-metadata (class-dump headers, in effect), a `UIApplication` subclass passed to `UIApplicationMain`,
-`UIWindow`/`UINavigationBar`/`UITextLabel`/`UIAlertSheet` from the private 1.0 UIKit, GraphicsServices
-fonts and CoreGraphics colors.
+ROOT is a host copy of the 1.0 root filesystem (the IPSW's decrypted rootfs, mounted or copied). Both apps
+are Objective-C written the way 2007 apps were. The interfaces are declared by hand from the firmware's class
+metadata in `uikit1.h` (class-dump headers, in effect), and a `UIApplication` subclass is passed to
+`UIApplicationMain`.
+
+- **Hello**: `UIWindow`, `UINavigationBar`, `UITextLabel` and `UIAlertSheet` from the private 1.0 UIKit,
+  with GraphicsServices fonts and CoreGraphics colors. Tapping the bar button or the background shows an
+  alert and counts.
+- **Tilt**: a ball that rolls with the phone. The `UIApplication` subclass overrides
+  `acceleratedInX:Y:Z:`, which is all 1.0's UIKit needs to start sending raw accelerometer events
+  (`_requestAccelerometerEventsIfNeeded` looks for the override). A `UIView` subclass draws a target and
+  the ball in `drawRect:` through `UICurrentContext()` and CGContext calls, with a low-pass filter on
+  the samples. The ball is green when the phone is level. On the emulator, tilt it from the host with
+  QMP: `qom-set /machine accel-pose flat`, then `accel-roll` and `accel-pitch` in degrees.
+  Measured: flat reads x 0.00 y 0.00 with the ball centred and green; roll 12 and pitch -15 move it
+  off-centre and orange. Flat reads z -0.50, not about -1 g, which may be the LIS302DL model's scale;
+  this was not checked against a real phone.
 
 | Step | What | Why |
 |---|---|---|
@@ -97,6 +109,11 @@ the receiver's "isa" reading `NSAu`.
 2. Owners stay uid 501. HFSPlusVolume.setOwner (FirmwareKit) or a catalog patch would make them 0:0, and
    that will matter if an app is meant to ship a LaunchDaemon.
 3. When the ringer volume HUD comes up at boot (docs/m68/README.md, debt 2), it covers the app as well.
-4. The iPod touch 1G (N45, 3A101a, eight banks) uses the same layout. The tool installs Hello there
-   (the volume checks clean and the pages land), but in one boot SpringBoard 1.1 did not show the icon.
-   1.1 keeps an icon layout (`iconState`), which 1.0 does not; not investigated further.
+4. The iPod touch 1G (N45, 3A101a, eight banks) uses the same layout, and the tool installs there
+   (the volume checks clean). SpringBoard 1.1 still shows nothing it does not know:
+   `-[SBIconModel _addItemsToIconList:fromPath:withTags:]` keeps only display identifiers in
+   `-[SBPlatformController allowedDisplayIdentifiers]`. That is a list compiled into SpringBoard per
+   platform: M68/N82/simulator get the iPhone set, N45 gets its 12 apps plus com.apple.DemoApp. Borrowing
+   an unused identifier does not help, because the N45 list has none (`com.apple.mobilenotes` was tried
+   and stays hidden). Showing an unofficial app on 1.1 means changing SpringBoard, which this tool does
+   not do.

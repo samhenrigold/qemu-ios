@@ -24,6 +24,7 @@
 #include "hw/arm/ipod_touch_pke.h"
 #include "hw/arm/ipod_touch_spi.h"
 #include "hw/arm/ipod_touch_lcd.h"
+#include "hw/arm/ipod_touch_tvout.h"
 #include "hw/arm/ipod_touch_mipi_dsi.h"
 #include "hw/arm/ipod_touch_usb_otg.h"
 #include "hw/arm/ipod_touch_usb_phys.h"
@@ -199,6 +200,7 @@ struct S5L8920MachineState {
     char *nand_overlay_path;
     char *nor_path;
     char *nor_rw_path;
+    char *usb_tcp_addr;                  /* usbmuxd-qemu host bridge; empty = the built-in host */
     bool btn_hold, btn_home;             /* button-hold/-home properties */
     QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
     int pwroff_phase, pwroff_step;
@@ -563,6 +565,20 @@ static void s5l8920_init(MachineState *machine)
     sysbus_create_simple("ipodtouch.swi", S5L8920_SWI_BASE, NULL);
 
     /*
+     * TV-out: the S5L8720's SDO and mixers (DT tv-out reg 0x5600000,
+     * 0x5200000, 0x5100000; interrupts 0x23, 0x27). SpringBoard's power-off
+     * swaps every framebuffer, AppleM2TVOut's too, and waits for each: with
+     * TV-out unmodelled its swap never completed and the guest never halted.
+     */
+    dev = qdev_new("ipodtouch.tvout");
+    memory_region_add_subregion(sysmem, 0x85600000, &IPOD_TOUCH_TVOUT(dev)->sdo_iomem);
+    memory_region_add_subregion(sysmem, 0x85200000, &IPOD_TOUCH_TVOUT(dev)->mixer1_iomem);
+    memory_region_add_subregion(sysmem, 0x85100000, &IPOD_TOUCH_TVOUT(dev)->mixer2_iomem);
+    sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, s5l8920_irq(s, 0x23));
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 1, s5l8920_irq(s, 0x27));
+
+    /*
      * I2S0, the CS42L58 codec's port: the A4's controller (registers at
      * +0x400, as AppleS5L8920XI2SController writes them), its TX FIFO at
      * the block's base where CDMA channel 0x15 streams PCM. Without it
@@ -583,7 +599,8 @@ static void s5l8920_init(MachineState *machine)
 
         dev = ipod_touch_init_usb_otg(s5l8920_irq(s, S5L8920_IRQ_USB_OTG), hwcfg);
         s->usb_otg = S5L8900USBOTG(dev);
-        s->usb_otg->builtin_host = !getenv("IT_USB_TCP");
+        synopsys_usb_set_tcp_addr(s->usb_otg, s->usb_tcp_addr);
+        s->usb_otg->builtin_host = !s->usb_otg->server_host && !getenv("IT_USB_TCP");
         sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
         memory_region_add_subregion(sysmem, S5L8920_USB_OTG_BASE, &s->usb_otg->iomem);
     }
@@ -783,8 +800,22 @@ static void s5l8920_powerdown_req(Notifier *n, void *opaque)
 
 static Notifier s5l8920_powerdown_notifier = { .notify = s5l8920_powerdown_req };
 
+static char *s5l8920_get_usb_tcp_addr(Object *obj, Error **errp)
+{
+    return g_strdup(S5L8920_MACHINE(obj)->usb_tcp_addr);
+}
+
+static void s5l8920_set_usb_tcp_addr(Object *obj, const char *value, Error **errp)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+
+    g_free(s->usb_tcp_addr);
+    s->usb_tcp_addr = g_strdup(value);
+}
+
 static void s5l8920_instance_finalize(Object *obj)
 {
+    g_free(S5L8920_MACHINE(obj)->usb_tcp_addr);
     g_free(S5L8920_MACHINE(obj)->nor_path);
     g_free(S5L8920_MACHINE(obj)->nor_rw_path);
     g_free(S5L8920_MACHINE(obj)->kboot_path);
@@ -818,6 +849,10 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
     object_class_property_add_bool(klass, "button-home", s5l8920_get_button_home,
                                    s5l8920_set_button_home);
     object_class_property_set_description(klass, "button-home", "Home button pressed; set true then false");
+    object_class_property_add_str(klass, "usb-tcp-addr", s5l8920_get_usb_tcp_addr,
+                                  s5l8920_set_usb_tcp_addr);
+    object_class_property_set_description(klass, "usb-tcp-addr",
+        "usbmuxd-qemu host bridge host:port; unset = IT_USB_TCP or the built-in host");
     object_class_property_add_str(klass, "nor", s5l8920_get_nor, s5l8920_set_nor);
     object_class_property_set_description(klass, "nor",
         "1 MiB SPI NOR image on spi0 (nvram, effaceable); no NOR if neither this nor nor-rw is set");

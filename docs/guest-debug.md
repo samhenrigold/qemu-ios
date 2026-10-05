@@ -55,7 +55,7 @@ and detach, or send QMP `cont`.
 |---|---|
 | `xnu-procs` | every process from `allproc`: pid, name, proc, task, pmap and the pmap's translation table (physical) |
 | `xnu-current` | the process the CPU is in. Kernel mode: the current thread (r9 on 1.x, whose `current_thread` is `mov r0, r9`; TPIDRPRW on 3.x) -> task -> proc. User mode: the process whose pmap holds TTBR0 |
-| `xnu-images --sysroot DIR [--pid N]` | a process's images from dyld's `dyld_all_image_infos` (the current process by default, any process with `--pid`, read through its own table). Each image is added to lldb at its load address from DIR, a host copy of the guest's root filesystem, which gives symbols to user frames |
+| `xnu-images --sysroot DIR [--pid N]` | a process's images from dyld's `dyld_all_image_infos` (the current process by default, any process with `--pid`, read through its own table). Each image is added to lldb at its load address from DIR, a host copy of the guest's root filesystem (on 3.x with the shared cache extracted by `dsc_extract.py`), which gives symbols to user frames |
 | `xnu-break NAME ADDR\|SYMBOL` | a breakpoint that stops only when process NAME is running (kernel or user code) |
 | `xnu-offsets [k=v ...]` | the offsets in use. Setting them by hand covers a kernel the discovery below cannot read |
 
@@ -106,8 +106,25 @@ user registers are at `thread + 0x1b4` (r0-r12, sp, lr, pc, cpsr, fsr, far: `fle
 there), with the thread in r9. The Hello app's first crash was found that way (docs/m68/sideload.md).
 
 1.x and 2.x have no shared cache, so ROOT is simply the decrypted rootfs. On 3.x the libraries live in
-`dyld_shared_cache_armv6/7`. `xnu-images` lists them but cannot add them from files (not done: lldb
-would need the cache), so use the debugserver path below for symbolicated 3.x userland.
+`dyld_shared_cache_armv6/7`, in the 2009 `dyld_v1` format that ipsw and modern tools no longer parse.
+`imgtools/lldb/dsc_extract.py CACHE ROOT` writes each cached library back out as a Mach-O of its own:
+the library's segments, a private `__LINKEDIT` holding its symbol table, cache addresses kept, and
+`MH_DYLIB_IN_CACHE` cleared so lldb reads it as a plain file. Copy the rootfs's `usr/lib/dyld`, and any
+app binaries you want symbols for, into ROOT as well. `xnu-images --sysroot ROOT` then works as it does
+on 1.x. Measured:
+
+```
+3.2.2 (iPad, 7B500), 300 images; xnu-break SpringBoard mach_msg:
+   * frame #0: 0x33aef708 libSystem.B.dylib`mach_msg
+     frame #2: 0x309964fc MobileBluetooth`BTFrameworkIsServerUp + 24
+     frame #4: 0x314d8d22 CoreFoundation`CFRunLoopRunSpecific + 2098
+     frame #6: 0x3414e0da GraphicsServices`GSEventRunModal + 114
+     frame #9: 0x3223f95a UIKit`UIApplicationMain + 642
+3.1.3 (iPod 2G, 7E18), 273 images; xnu-break syslogd read stops at libSystem.B.dylib`read (user mode)
+```
+
+On 3.x kernels the kernel-to-user frame chain ends at the trap, unlike 1.0's. For user frames, stop in
+user code (a library function) rather than in a kernel function.
 
 **debugserver (3.x).** 3.1.3: the SDK's DeveloperDiskImage debugserver, through `imgtools/lldb/lldb_shim.py`
 (imgtools/lldb/README.md, measured 2026-08-03 on the jailbroken development base). 3.2.2: the same
