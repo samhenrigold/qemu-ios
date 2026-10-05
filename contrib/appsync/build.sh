@@ -4,6 +4,9 @@
 #   armv6 slice -> iPod touch 2G, iOS 2.x onward (3.1.3 SDK)
 #   armv7 slice -> iPad 1,       iOS 3.2.2 (3.2 SDK)
 #
+# libappsync-legacy.dylib: the same armv6 slice with a legacy-linked armv7 one (3.1.3 SDK) for armv7
+# on 3.0, whose dyld refuses LC_DYLD_INFO_ONLY (k48-ios30).
+#
 # Both slices come from the same appsync.c through the armv6-toolchain pipeline
 # (clang -marm, ld-as-armv7, mkold.py strips modern load commands). Output:
 # build/appsync/libappsync.dylib (untracked), installed by ipad1_rootfs.py
@@ -38,10 +41,10 @@ fi
 OUT="${1:-$HERE/../../build/appsync}"
 mkdir -p "$OUT"
 
-build_slice() {  # arch  sdk  out
+build_slice() {  # arch  sdk  out  [legacy]
     local arch="$1" sdk="$2" out="$3"
     ( export GUEST_ARCH="$arch" ARMV6_SDK="$sdk"
-      [ "$arch" != armv6 ] || export LEGACY_LINK=1
+      [ "$arch" != armv6 ] && [ -z "${4:-}" ] || export LEGACY_LINK=1
       . "$HERE/../armv6-toolchain/armv6.sh"
       cc6 "$HERE/appsync.c" "$out.o"
       # -dylib with an install name; -undefined dynamic_lookup binds the MIS,
@@ -59,12 +62,16 @@ I7_SDK="${IPAD_SDK:-$HOME/Developer/qemu-ios-files/ipad1/sdk/x-iPhoneSDK3_2_2/Pa
 
 build_slice armv6 "$I6_SDK" "$OUT/libappsync.armv6"
 build_slice armv7 "$I7_SDK" "$OUT/libappsync.armv7"
+build_slice armv7 "$I6_SDK" "$OUT/libappsync.armv7-legacy" legacy
 
 lipo -create "$OUT/libappsync.armv6" "$OUT/libappsync.armv7" \
      -output "$OUT/libappsync.dylib"
-rm -f "$OUT/libappsync.armv6" "$OUT/libappsync.armv7"
+lipo -create "$OUT/libappsync.armv6" "$OUT/libappsync.armv7-legacy" \
+     -output "$OUT/libappsync-legacy.dylib"
+rm -f "$OUT/libappsync.armv6" "$OUT/libappsync.armv7" "$OUT/libappsync.armv7-legacy"
 
 "${LDID:-ldid}" -S "$OUT/libappsync.dylib"
+"${LDID:-ldid}" -S "$OUT/libappsync-legacy.dylib"
 file "$OUT/libappsync.dylib"
 lipo -detailed_info "$OUT/libappsync.dylib" | grep -E 'architecture|cputype|offset' || true
 

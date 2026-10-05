@@ -9,6 +9,7 @@
 #                       front end (OpenGLES, fat armv6 + armv7, contrib/gles-public: every k48 and n72 build) with
 #                       gles-names.h, the name table it and the host speak, the n72 recipe's inputs, the n45 recipe's
 #                       (OpenGLES-1x, 1.x's own front end, and opengles-1x.exports, the export set it must match),
+#                       the legacy-linked armv7 helpers and AppSync for 3.0 (<name>-legacy),
 #                       the armv6 it_keybag, and armv6.itpack /
 #                       armv7.itpack (contrib/guest-package, VERSION's serial)
 #   macos-app/entitlements.plist   the app helper's entitlements
@@ -84,7 +85,13 @@ done
 for t in it_pbd it_ethlink it_prefs it_msmquiet.dylib it_seal it_keybag it_gltest; do
     stage ipad-guest-tools "$G/ipad1-guest/$t"
 done
+# armv7 on 3.0 (dyld without LC_DYLD_INFO_ONLY): the same, legacy-linked, as <name>-legacy (SystemEdits picks them)
+for t in it_pbd it_ethlink it_prefs it_seal; do
+    stage ipad-guest-tools "$G/ipad1-guest-legacy/$t" "$t-legacy"
+done
+stage ipad-guest-tools "$G/ipad1-guest-legacy/it_msmquiet.dylib" it_msmquiet-legacy.dylib
 stage ipad-guest-tools "$G/appsync/libappsync.dylib"
+stage ipad-guest-tools "$G/appsync/libappsync-legacy.dylib"
 stage ipad-guest-tools "$G/appsync/appsync-launch"
 for j in it-pasteboard/com.qemu.it-pbd.plist it-ethlink/com.qemu.it-ethlink.plist it-prefs/com.qemu.it-prefs.plist \
          it-seal/com.qemu.it-seal.plist it-gltest/com.qemu.it-gltest.plist; do

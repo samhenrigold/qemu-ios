@@ -11,7 +11,7 @@ data; an IPA installs through installation_proxy and AppSync and launches.
 
 | Build | Boot | Touch, Home, Hold | Power-off + persist | IPA install + launch | GL app |
 |---|---|---|---|---|---|
-| 3.0 7A341, 3.0.1 7A400 | prepared without helpers (guest_tools off); the kernel never mounts root: YaFTL rebuilds its context and then reads lpn 0 as blank (debt 10) | | | | |
+| 3.0 7A341 (3.0.1 7A400 untried) | activated home screen (software CoreAnimation; FirmwareKit n88ap-7A341, with the modem) | yes | yes (gesture; marker survives) | yes (app-install.py all PASS with the legacy-linked Harness, `contrib/it-harness --flavor ios2`; icon on page 2) | no (ca_ogl off) |
 | 3.1 7C144, 3.1.2 7D11 | activated home screen | yes | yes (gesture; marker survives) | yes (app-install.py all PASS; icon on page 2) | draws |
 | 3.1.3 7E18 | activated home screen ("No Service") | yes | yes (gesture, 15 s; marker survives) | yes (app-install.py all PASS; icon on page 2) | draws |
 | 4.0 beta 1 8A230m | activated home screen | yes | yes (gesture; marker survives) | yes (app-install.py all PASS; icon on page 2) | draws |
@@ -170,7 +170,7 @@ PASS; N18 unlock to the home screen with touch PASS.
      a phone ("This device is a phone. It supports factory activation"), so they need the modem. FirmwareKit's
      keybag and seal boots now carry it for the radio boards (`baseband=on`, the lock's `imei=`, which the UDID
      hashes), so the sealed store keeps FactoryActivated; the app and regress boot the same modem.
-10. **3.0** (fixed 2026-10-05, by hand; FirmwareKit to follow): 3.0's yaFTL always takes one block-TOC page
+10. **3.0** (fixed 2026-10-05; FirmwareKit n88ap-7A341 since): 3.0's yaFTL always takes one block-TOC page
     (YAFTL_Init 0xc05c74ec on 7A341 compares `data <= data*4*n`, so n stays 1; 3.1 fixed it). The k48-16g store's
     vendor type 0x100014 gives two VFL banks per CE, so 2048-page superblocks whose TOC needs two pages: the R/O
     restore read past the TOC and built a garbage map ("mismatch between lpn and metadata at lpn 0 meta -1").
@@ -198,5 +198,12 @@ PASS; N18 unlock to the home screen with touch PASS.
         --product-version 3.0 --checks usbmux,afc,persist --jobs 1
     ```
 
-    Open: after unlocking, the home screen draws only its status bar (software CoreAnimation, `--no-ca-ogl`);
-    app install is untried (3.0 has no installd AppSync path here).
+    The home screen draws in full: the status-bar-only frames were shots taken before SpringBoard loaded its icons.
+    Boot it with the modem (`baseband=on`, as regress and the app do): without one, CommCenter's SPI reset loop starves
+    SpringBoard and it ignores unlock, Home and Hold for minutes. Apps (2026-10-05): the guest package's `k48-ios30`
+    family (n88ap 7A341/7A400) carries the iPad helpers, it_msmquiet and AppSync legacy-linked against the 3.1.3 SDK
+    (3.0's dyld refuses LC_DYLD_INFO_ONLY), with armv7.itpack's `loader/it_boot-legacy`; FirmwareKit picks the
+    `<name>-legacy` helpers where no executable of the firmware carries LC_DYLD_INFO_ONLY. 3.0 has no
+    springboardservices lockdown service, so app-install.py reads the icon's slot from SpringBoard's saved iconState
+    through the agent. `app-install.py --machine n88 --product-version 3.0 --ipa <ios2 Harness> --gl-tap ''`: mux,
+    install, lock, icon, launch ("Harness 1.0 | iOS 3.0"), shutdown PASS.

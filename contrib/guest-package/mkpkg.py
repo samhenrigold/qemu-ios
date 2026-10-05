@@ -62,6 +62,11 @@ IPAD_JOBS = ["contrib/it-agent/com.qemu.it-agent.plist", "contrib/it-ethlink/com
 # drop a notice SpringBoard already holds (tested on 4.2.1), so the next boot's mounter is the one that changes.
 IPAD_HOOKS = [("build/ipad1-guest/it_msmquiet.dylib", "/usr/local/lib/it_msmquiet.dylib", False),
               ("build/appsync/libappsync.dylib", "/usr/lib/libappsync.dylib", False)]
+# armv7 on 3.0 (the 3GS's 7A341/7A400): the same helpers and hooks, legacy-linked against the 3.1.3 SDK
+# (guest-package/build.sh's ipad1-guest-legacy, appsync's libappsync-legacy.dylib)
+IPAD_LEGACY_BIN = {n: "build/ipad1-guest-legacy/" + n for n in IPAD_BIN}
+IPAD_LEGACY_HOOKS = [("build/ipad1-guest-legacy/it_msmquiet.dylib", "/usr/local/lib/it_msmquiet.dylib", False),
+                     ("build/appsync/libappsync-legacy.dylib", "/usr/lib/libappsync.dylib", False)]
 # hooks: (source, stock target, respring). The GL shims are one binary per arch: they read the
 # firmware's dispatch layout at load (contrib/it-gles/gles_dispatch.c), so no hook is per build.
 # builds: exact ids or "<major>*" for every build of that iOS major (2.x = 5*, 3.x = 7*, 4.x = 8*, 5.x = 9*), so a new point
@@ -94,9 +99,14 @@ FAMILIES = {
                  "jobs": [PREFS_JOB]},
     # every armv7 board: the payloads read what differs per board at load, as they do per firmware. The family
     # names stay k48-*, as prepared devices record them in their locks.
-    "k48-ios3": {"arch": "armv7", "boards": ARMV7_BOARDS, "builds": ["7*"], "bin": IPAD_BIN,
-                 "jobs": IPAD_JOBS,
+    # 3.x by build: 3.0 (the 3GS's 7A*) has 2.x's dyld (no LC_DYLD_INFO_ONLY), so it is k48-ios30's, as the
+    # iPod's 3.0 is n72-ios30's (the 3.x series is closed)
+    "k48-ios3": {"arch": "armv7", "boards": ARMV7_BOARDS, "builds": ["7B367", "7B405", "7B500", "7C144", "7C145",
+                 "7D11", "7E18"], "bin": IPAD_BIN, "jobs": IPAD_JOBS,
                  "hooks": [("contrib/gles-public/OpenGLES", OPENGLES, True)] + IPAD_HOOKS},
+    "k48-ios30": {"arch": "armv7", "boards": ["n88ap"], "builds": ["7A341", "7A400"], "bin": IPAD_LEGACY_BIN,
+                  "jobs": IPAD_JOBS,
+                  "hooks": [("contrib/gles-public/OpenGLES", OPENGLES, True)] + IPAD_LEGACY_HOOKS},
 }
 # 4.x and 5.x: 3.x's payloads byte for byte. The GL front end, agent and mounter shim read what each changed off the
 # firmware at load (docs/ipad1/gles-public-seam.md, docs/ipad1/ios5.md); only the build range differs.
@@ -108,7 +118,7 @@ FAMILIES["k48-ios6"] = dict(FAMILIES["k48-ios3"], boards=["n81ap", "n90ap", "n88
 # time (seed) and changes only on a re-prepare; it_boot installs, swaps hooks and writes state nowhere there.
 FAMILIES["k48-ios7"] = dict(FAMILIES["k48-ios3"], boards=["n90ap"], builds=["11*"])
 # 1.x/2.x dyld refuses LC_DYLD_INFO_ONLY; everything the loader runs on it must be legacy-linked
-LEGACY_BUILDS = ("1*", "3*", "4*", "5*", "7A341")
+LEGACY_BUILDS = ("1*", "3*", "4*", "5*", "7A341", "7A400")
 
 
 def build_matches(builds, build):
@@ -303,6 +313,7 @@ def offer(pkg, out, build, good=(), bad=()):
 HOOK_PROVENANCE = b"file-or-absence 1\n"
 SEED_ROOT = "usr/local/lighttouch"
 LOADER = ("usr/local/bin/it_boot", "System/Library/LaunchDaemons/com.qemu.it-boot.plist")
+LEGACY_LOADER = "loader/it_boot-legacy"   # a legacy-linked family's loader, where the arch's own is modern (armv7)
 SYSTEM_VERSION = "System/Library/CoreServices/SystemVersion.plist"
 
 
@@ -387,7 +398,8 @@ def seed(mnt, itpack, gles=True):
         os.chmod(os.path.join(mnt, rel), mode)
         made.extend(missing + [rel])
 
-    put(LOADER[0], entries["loader/it_boot"], 0o755)
+    legacy = m["requires"].get("link") == "legacy" and LEGACY_LOADER in entries
+    put(LOADER[0], entries[LEGACY_LOADER if legacy else "loader/it_boot"], 0o755)
     put(LOADER[1], entries["loader/com.qemu.it-boot.plist"], 0o644)
     pkg = "%s/pkgs/%d" % (SEED_ROOT, m["serial"])
     for f in m["files"]:
@@ -436,8 +448,15 @@ def build(src, out):
         why = macho_problem(loader, arch, legacy=arch == "armv6")
         if why:
             raise SystemExit("loader/%s: %s" % (arch, why))
-        entries += [("loader/it_boot", loader),
-                    ("loader/hook-provenance", HOOK_PROVENANCE),
+        entries += [("loader/it_boot", loader)]
+        # armv7's loader is modern-linked; its legacy families (k48-ios30) get the legacy-linked one (seed picks)
+        if arch == "armv7":
+            legacy_loader = open(os.path.join(src, "build/it-boot/armv7-legacy/it_boot"), "rb").read()
+            why = macho_problem(legacy_loader, arch, legacy=True)
+            if why:
+                raise SystemExit("loader/armv7-legacy: %s" % why)
+            entries.append((LEGACY_LOADER, legacy_loader))
+        entries += [("loader/hook-provenance", HOOK_PROVENANCE),
                     ("loader/com.qemu.it-boot.plist",
                      open(os.path.join(src, "build/it-boot", arch, "com.qemu.it-boot.plist"), "rb").read())]
         pack(entries, os.path.join(out, arch + ".itpack"))
@@ -468,6 +487,16 @@ def selfcheck():
         assert macho_problem(thin, "armv7") == "unsigned (ldid -S)" and macho_problem(thin, "armv6") == "cpu 12/9, not armv6"
         thin6 = b"\xce\xfa\xed\xfe" + struct.pack("<iiII", 12, 6, 8, 0) + b"\0" * 12
         assert macho_problem(thin6, "armv6") is None and macho_problem(thin6, "armv6", signed=True) == "unsigned (ldid -S)"
+    # seed bakes a legacy-linked family's own loader where the arch's is modern (armv7.itpack's k48-ios30)
+    with tempfile.TemporaryDirectory() as t:
+        man = {"serial": 1, "version": "1", "requires": {"builds": ["7A341"], "link": "legacy"}, "files": [],
+               "jobs": [], "hooks": []}
+        pack([("f/manifest.json", json.dumps(man).encode()), ("loader/it_boot", b"modern"), (LEGACY_LOADER, b"legacy"),
+              ("loader/com.qemu.it-boot.plist", b"")], os.path.join(t, "p.itpack"))
+        os.makedirs(os.path.join(t, "v", os.path.dirname(SYSTEM_VERSION)))
+        plistlib.dump({"ProductBuildVersion": "7A341"}, open(os.path.join(t, "v", SYSTEM_VERSION), "wb"))
+        seed(os.path.join(t, "v"), os.path.join(t, "p.itpack"))
+        assert open(os.path.join(t, "v", LOADER[0]), "rb").read() == b"legacy"
     # every shipped iPad build has exactly one family, and each carries the agent and the one GL front end
     for build, want in (("7B500", "k48-ios3"), ("8C148", "k48-ios4"), ("8L1", "k48-ios4"), ("9B206", "k48-ios5"),
                         ("10B329", "k48-ios6"), ("10B500", "k48-ios6"), ("11D257", "k48-ios7")):
@@ -476,6 +505,13 @@ def selfcheck():
             assert fams == [want], (board, build, fams)
         assert "it_agent" in FAMILIES[want]["bin"]
         assert [(s, t) for s, t, _ in FAMILIES[want]["hooks"] if t in GL_TARGETS] == [("contrib/gles-public/OpenGLES", OPENGLES)]
+    # the 3GS's 3.0 is the legacy-linked armv7 family; 3.1+ stay modern
+    for build, want in (("7A341", "k48-ios30"), ("7A400", "k48-ios30"), ("7C144", "k48-ios3"), ("7E18", "k48-ios3")):
+        fams = [f for f, s in FAMILIES.items() if "n88ap" in s["boards"] and build_matches(s["builds"], build)]
+        assert fams == [want], ("n88ap", build, fams)
+    assert set(FAMILIES["k48-ios30"]["bin"]) == set(IPAD_BIN) and all("legacy" in p for p in FAMILIES["k48-ios30"]["bin"].values())
+    assert [t for _, t, _ in FAMILIES["k48-ios30"]["hooks"]] == [t for _, t, _ in FAMILIES["k48-ios3"]["hooks"]]
+    assert all(build_matches(LEGACY_BUILDS, b) for b in FAMILIES["k48-ios30"]["builds"])
     # every iPod 2G build has one family; 3.0's is legacy-linked (its dyld is 2.x's) and carries the engine
     for build, want in (("5F138", "n72-ios2"), ("7A341", "n72-ios30"), ("7C145", "n72-ios3"), ("7E18", "n72-ios3"),
                         ("8C148", "n72-ios4")):

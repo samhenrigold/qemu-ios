@@ -273,6 +273,27 @@ def icon_slot(b, bundle):
     return None
 
 
+SB_PREFS = "/var/mobile/Library/Preferences/com.apple.springboard.plist"
+
+
+def icon_slot_prefs(b, rg, bundle):
+    """(home_page, row, col) of bundle from SpringBoard's saved iconState (read through the guest agent), or None:
+    for 3.0, which has no springboardservices lockdown service (3.1 added it)."""
+    if not rg.itqmp.agent_alive(b.qmp):
+        return None
+    status, body = rg.itqmp.agent(b.qmp, "get", SB_PREFS)
+    try:
+        pages = plistlib.loads(body)["iconState"]["iconLists"] if status == 0 else []
+    except Exception:
+        return None
+    for page_idx, page in enumerate(pages, start=1):
+        for row_idx, row in enumerate(page.get("iconMatrix", [])):
+            for col_idx, cell in enumerate(row):
+                if isinstance(cell, dict) and cell.get("displayIdentifier") == bundle:
+                    return (page_idx, row_idx, col_idx)
+    return None
+
+
 def pin_to_page1(b, bundle, rows=5):
     """Move bundle's icon into the first free cell of home page 1 via springboardservices
     set_icon_state, so launching needs no page swipe. Returns (1, row, col) or None.

@@ -1,8 +1,8 @@
 #!/bin/bash
 # Build every guest package and pack one .itpack per arch:
-#   OUT/packages/<family>/  n45-ios1, n72-ios2/30/3, k48-ios3/4/5/6/7 (n72-ios4: stub)
+#   OUT/packages/<family>/  n45-ios1, n72-ios2/30/3, k48-ios30/3/4/5/6/7 (n72-ios4: stub)
 #   OUT/armv6.itpack        n72-* packages + the legacy-linked loader
-#   OUT/armv7.itpack        k48-* packages + the loader
+#   OUT/armv7.itpack        k48-* packages + the loader (+ the legacy-linked one for k48-ios30)
 # The components' own build.sh recipes run on a copy of their sources under
 # OUT/src, so the checkout's tracked binaries stay untouched. Bump VERSION's
 # serial for every release: it_boot compares serials, never versions.
@@ -49,6 +49,11 @@ for c in $COMPONENTS; do
         echo "guest-package: warning: $c/build.sh failed (log: $OUT/logs/$c.log)" >&2
     fi
 done
+# armv7 on 3.0 (k48-ios30): the iPad helpers again, legacy-linked against the 3.1.3 SDK for 3.0's dyld.
+if ! LEGACY_LINK=1 IPAD_SDK="$ARMV6_SDK" bash "$OUT/src/contrib/ipad1-guest/build.sh" "$OUT/src/build/ipad1-guest-legacy" \
+        >"$OUT/logs/ipad1-guest-legacy.log" 2>&1; then
+    echo "guest-package: warning: ipad1-guest/build.sh (legacy) failed (log: $OUT/logs/ipad1-guest-legacy.log)" >&2
+fi
 # The iPod's armv6 it_prefs (every n72 package): its own recipe, legacy-linked for 2.x's dyld.
 if ! LEGACY_LINK=1 bash "$OUT/src/contrib/it-prefs/build-ipod.sh" >"$OUT/logs/it-prefs-ipod.log" 2>&1; then
     echo "guest-package: warning: it-prefs/build-ipod.sh failed (log: $OUT/logs/it-prefs-ipod.log)" >&2
