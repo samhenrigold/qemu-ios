@@ -204,7 +204,8 @@ def main():
             b.tap((x * rg.itqmp.W, y * rg.itqmp.H))
             time.sleep(8)
             frac = fixture_fraction(png(b, "gl"))
-            rej = rg.itqmp.gles_rejects(b.qmp)
+            # a transfer CA queued and never notified (it tore the layer down first) is not a frame the bridge refused
+            rej = {k: v for k, v in rg.itqmp.gles_rejects(b.qmp).items() if k != "shim:scaler:token-dropped"}
             said = re.findall(r"^\S+ ((?:PASS|FAIL)[^\n]*GLES[^\n]*)", harness_results(b, bundle), re.M)   # "<time> <line>"
             ok = frac > 0.3 and not rej and (a.ipa != HARNESS or (said and not any(s.startswith("FAIL") for s in said)))
             step("gl", ok, "fixture colours %.0f%% of the frame, bridge refusals %s; %s" % (
