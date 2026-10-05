@@ -82,6 +82,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import zipfile
 from xml.parsers.expat import ExpatError
@@ -266,8 +267,6 @@ class Procs:
         self.procs = []
         if not Procs.live:
             atexit.register(lambda: [ps.stop_all() for ps in list(Procs.live)])
-            if signal.getsignal(signal.SIGTERM) is signal.SIG_DFL:
-                signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
         Procs.live.append(self)
 
     def spawn(self, argv, logpath, env=None):
@@ -302,6 +301,12 @@ class Procs:
         for p in reversed(self.procs):
             self.stop(p)
         self.procs = []
+
+
+# An outer `timeout` sends SIGTERM: make it an exit so atexit stops the children (checks run Procs in
+# worker threads, where signal handlers cannot be installed; importing happens on the main thread).
+if signal.getsignal(signal.SIGTERM) is signal.SIG_DFL and threading.current_thread() is threading.main_thread():
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
 
 
 # --------------------------------------------------------------------------
