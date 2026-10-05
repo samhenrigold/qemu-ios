@@ -691,6 +691,7 @@ static void s5l8920_init(MachineState *machine)
         if (s->board->fmc_off == 0x400) {       /* the s5l8920x firmware's ECC summary */
             qdev_prop_set_uint32(dev, "ecc-blank-summary", 0x40);
             qdev_prop_set_bit(dev, "explicit-start", true);
+            qdev_prop_set_bit(dev, "cfg-v0", true);
         }
         sbd = SYS_BUS_DEVICE(dev);
         sysbus_realize_and_unref(sbd, &error_fatal);
