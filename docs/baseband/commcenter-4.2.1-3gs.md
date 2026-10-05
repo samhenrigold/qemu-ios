@@ -157,8 +157,10 @@ These hold for the 3GS unless its v1 trace says otherwise.
   * Workaround: the guest package's it_prefs sets it true once per stored ICCID ("none" before one is
     stored) and restarts CommCenter, so the user's later choice for that SIM stands (contrib/it-prefs).
   * The test PLMN stays the default. 1.0's CommCenter has no such key.
-  * On a device's first boot, data can fail if Wi-Fi was in use when it_prefs restarted CommCenter and is
-    then turned off. From the second boot it works with Data Roaming untouched.
+  * Each such restart resets the baseband (raw `at` pings into the mux, then BB_RST/RADIO_ON). The modem
+    keeps the AP's v2 credits across that reset (the kext keeps its count), else the re-init's URCs
+    starve it and the phone sits at "Searching..." (fixed in 05fb82752f). With that fix, data works on a
+    fresh device's first boot.
 * **27.010 modem status**: the kernel MSCs every DLCI and waits for the modem's own MSC
   (RTC|RTR). On the data DLCI, DV (carrier) must go up after CONNECT, and NO CARRIER plus DV down
   must follow `+cgact=0`. Without them CommCenter tore the boot-time PDP context down 100 ms after
