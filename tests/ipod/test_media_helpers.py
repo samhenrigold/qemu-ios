@@ -115,10 +115,16 @@ class PhotoReceipts(unittest.TestCase):
 
 
 class MediaIdentity(unittest.TestCase):
-    def test_location_query_recognizes_songs_and_movies(self):
+    """existing()'s two location queries, `ml3 ? 5.x's : the itlp library's`, run against each schema."""
+    def queries(self):
         source = (ROOT / 'contrib/it-media/itmedia.c').read_text()
         statement = source.split('    const char *sql = ', 1)[1].split(';', 1)[0]
-        query = ''.join(ast.literal_eval(part) for part in re.findall(r'"(?:[^"\\]|\\.)*"', statement))
+        ml3, itlp = re.split(r'\s:\s', re.sub(r'^\s*ml3\s*\?', '', statement), maxsplit=1)
+        join = lambda text: ''.join(ast.literal_eval(part) for part in re.findall(r'"(?:[^"\\]|\\.)*"', text))
+        return join(ml3), join(itlp)
+
+    def test_location_query_recognizes_songs_and_movies(self):
+        query = self.queries()[1]
         with sqlite3.connect(':memory:') as db:
             db.executescript("""
                 CREATE TABLE item(pid INTEGER, is_song INTEGER, artwork_cache_id INTEGER);
@@ -133,6 +139,21 @@ class MediaIdentity(unittest.TestCase):
             self.assertEqual(db.execute(query, ('LightTouch/movie', 'video.mp4')).fetchall(), [(2,0)])
             self.assertEqual(db.execute(query, ('LightTouch/song', 'video.mp4')).fetchall(), [])
             self.assertEqual(db.execute(query, ('LightTouch/other', 'audio.m4a')).fetchall(), [])
+
+    def test_ml3_location_query(self):
+        query = self.queries()[0]
+        with sqlite3.connect(':memory:') as db:
+            db.executescript("""
+                CREATE TABLE item(item_pid INTEGER, base_location_id INTEGER);
+                CREATE TABLE item_extra(item_pid INTEGER, location TEXT, artwork_cache_id INTEGER);
+                CREATE TABLE base_location(base_location_id INTEGER, path TEXT);
+                INSERT INTO item VALUES(-7,5),(9,6);
+                INSERT INTO item_extra VALUES(-7,'audio.mp3',-7),(9,'audio.mp3',0);
+                INSERT INTO base_location VALUES(5,'LightTouch/a'),(6,'LightTouch/b');
+            """)
+            self.assertEqual(db.execute(query, ('LightTouch/a', 'audio.mp3')).fetchall(), [(-7,-7)])
+            self.assertEqual(db.execute(query, ('LightTouch/b', 'audio.mp3')).fetchall(), [(9,0)])
+            self.assertEqual(db.execute(query, ('LightTouch/a', 'audio.m4a')).fetchall(), [])
 
 
 if __name__ == '__main__':
