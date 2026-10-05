@@ -116,7 +116,8 @@ static void iosbb_set_srdy(IosBasebandState *s, bool level)
 
 static void iosbb_srdy_update(IosBasebandState *s)
 {
-    if (s->mrdy_level || (!s->srdy_level && ios_bb_ifx_pending(&s->ifx))) {
+    if (s->mrdy_level ||
+        (!s->srdy_level && (s->frame_armed || ios_bb_ifx_pending(&s->ifx)))) {
         iosbb_set_srdy(s, true);
     }
 }
@@ -140,8 +141,18 @@ void ios_baseband_spi_done(DeviceState *dev)
 {
     IosBasebandState *s = IOS_BASEBAND(dev);
 
+    s->frame_armed = false;
     iosbb_set_srdy(s, false);
     iosbb_arm(s, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
+}
+
+/* The AP's baseband control lines (DT radio_on, bb_rst): traced while their polarity is pinned down. */
+static void iosbb_ctl(void *opaque, int n, int level)
+{
+    if (getenv("IOS_BB_TRACE")) {
+        fprintf(stderr, "%.3f ios-bb: %s %d\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e6,
+                n ? "BB_RST" : "RADIO_ON", level);
+    }
 }
 
 bool ios_baseband_spi_srdy(DeviceState *dev)
@@ -161,6 +172,11 @@ void ios_baseband_spi_xfer(DeviceState *dev, const uint8_t *mosi, uint8_t *miso,
     const uint8_t *rx;
     size_t rxlen;
 
+    if (miso) {
+        /* A frame is set up: the AP clocks it on SRDY even with nothing queued
+         * (it follows our "more" bit with a receive-only frame). */
+        s->frame_armed = true;
+    }
     s->bb.now_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
     ios_bb_ifx_xfer(&s->ifx, mosi, miso, n, &rx, &rxlen);
     if (rxlen) {
@@ -556,6 +572,7 @@ static const VMStateDescription vmstate_ios_baseband_spi = {
         VMSTATE_UINT32(ifx.txq_len, IosBasebandState),
         VMSTATE_BOOL(srdy_level, IosBasebandState),
         VMSTATE_BOOL(mrdy_level, IosBasebandState),
+        VMSTATE_BOOL(frame_armed, IosBasebandState),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -618,6 +635,7 @@ static const VMStateDescription vmstate_ios_baseband = {
         VMSTATE_INT32(bb.xsim_ch, IosBasebandState),
         VMSTATE_INT32(bb.call_ch, IosBasebandState),
         VMSTATE_INT32_V(bb.sms_ch, IosBasebandState, 2),
+        VMSTATE_INT32_V(bb.xreg_n, IosBasebandState, 2),
         VMSTATE_BOOL_V(bb.pdp_active, IosBasebandState, 2),
         VMSTATE_UINT8_ARRAY_V(bb.ip_rx, IosBasebandState, 2048, 2),
         VMSTATE_UINT32_V(bb.ip_rxlen, IosBasebandState, 2),
@@ -670,6 +688,7 @@ static void iosbb_machine_reset(void *opaque)
     if (s->ifx_version) {
         ios_bb_ifx_init(&s->ifx, s->ifx_version, s->ifx_max_data);
         s->srdy_level = false;
+        s->frame_armed = false;
         qemu_set_irq(s->srdy, 0);
     }
 }
@@ -792,6 +811,7 @@ static void iosbb_instance_init(Object *obj)
         "Write \"<number>|<text>\": deliver a 23.040 SMS-DELIVER as +CMT");
 
     qdev_init_gpio_in_named(DEVICE(obj), iosbb_mrdy, "mrdy", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), iosbb_ctl, "ctl", 2);
     qdev_init_gpio_out_named(DEVICE(obj), &s->srdy, "srdy", 1);
 
     object_property_add_str(obj, "call-state", iosbb_get_call_state, NULL);

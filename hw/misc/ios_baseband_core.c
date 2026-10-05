@@ -617,7 +617,9 @@ static void mx_input(IosBbCore *bb, const uint8_t *buf, size_t len)
             if (mx_fcs_table[m->fcs ^ c] == MX_GOOD_FCS) {
                 mx_rx_frame(bb, m->addr, m->ctrl, m->buf, m->cnt);
             } else {
-                TRACE("mux bad FCS on a %u-byte frame\n", m->cnt);
+                TRACE("mux bad FCS on a %u-byte frame (addr %02x ctrl %02x len %u fcs %02x): "
+                      "%02x %02x %02x %02x %02x %02x\n", m->cnt, m->addr, m->ctrl, m->len, c,
+                      m->buf[0], m->buf[1], m->buf[2], m->buf[3], m->buf[4], m->buf[5]);
             }
             m->state = IOS_BB_MX_SEARCH;
             m->flags_run = 0;
@@ -1368,6 +1370,17 @@ static int reg_stat(const IosBbCore *bb)
     return bb->registered ? 1 : 2;
 }
 
+/*
+ * +XREG value for the data bearer (4.x getDataRAT: values up to 2 count as none).
+ * ponytail: one fixed bearer; make it a property if the Mac app wants E/3G toggles.
+ */
+#define IOS_BB_XREG_BEARER 4
+
+static int xreg_value(const IosBbCore *bb)
+{
+    return reg_stat(bb) == 1 ? IOS_BB_XREG_BEARER : 0;
+}
+
 static void reg_tick(IosBbCore *bb)
 {
     int ch = bb->creg_ch;
@@ -1404,6 +1417,9 @@ static void reg_tick(IosBbCore *bb)
         bb->last_creg = 1;
         if (bb->cgreg_n > 0) {
             chan_printf(bb, ch, "\r\n+CGREG: 1\r\n");
+        }
+        if (bb->xreg_n > 0) {
+            chan_printf(bb, ch, "\r\n+XREG: %d\r\n", xreg_value(bb));
         }
         emit_xciev(bb);
         bb->reg_step = 0;
@@ -1791,6 +1807,16 @@ static void at_command(IosBbCore *bb, int ch, const char *cmd)
         if (bb->cgreg_n > 0) {
             reg_schedule(bb);
         }
+        return;
+    }
+    if ((arg = arg_after(cmd, "xreg=", NULL))) {
+        bb->xreg_n = atoi(arg);
+        at_ok(bb, ch);
+        return;
+    }
+    if (strcmp(cmd, "xreg?") == 0) {
+        chan_printf(bb, ch, "\r\n+XREG: %d,%d\r\n", bb->xreg_n, xreg_value(bb));
+        at_ok(bb, ch);
         return;
     }
     if (strcmp(cmd, "cgreg?") == 0) {

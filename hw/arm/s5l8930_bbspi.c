@@ -171,7 +171,9 @@ static void bbspi_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
             s->tx[s->tx_len++] = val >> (8 * i);
         }
         if (t && s->tx_len == t && s->modem) {
-            TRACE("MOSI hdr %02x %02x %02x %02x\n", s->tx[0], s->tx[1], s->tx[2], s->tx[3]);
+            TRACE("MOSI hdr %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                  s->tx[0], s->tx[1], s->tx[2], s->tx[3], s->tx[4], s->tx[5], s->tx[6],
+                  s->tx[7], s->tx[8], s->tx[9], s->tx[10], s->tx[11], s->tx[12], s->tx[13]);
             ios_baseband_spi_xfer(s->modem, s->tx, NULL, t);
             if (s->cdma) {
                 s5l8930_cdma_sink_done(s->cdma, s->base + R_TXDATA, 4);

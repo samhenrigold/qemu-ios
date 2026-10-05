@@ -1414,6 +1414,10 @@ static void ipad1_init(MachineState *machine)
                               qdev_get_gpio_in_named(bb, "mrdy", 0));
         qdev_connect_gpio_out_named(bb, "srdy", 0,
             qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(s->board->bb_srdy)));
+        qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(0x0101),
+                              qdev_get_gpio_in_named(bb, "ctl", 0));   /* radio_on */
+        qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(0x0102),
+                              qdev_get_gpio_in_named(bb, "ctl", 1));   /* bb_rst */
     } else {
         ipod_touch_spi_create(S5L8930_SPI_BASE(2), NULL, 2, "none", false);
     }
