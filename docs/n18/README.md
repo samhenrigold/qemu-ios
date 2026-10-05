@@ -92,7 +92,8 @@ is set), `button-home`, `button-hold`, `usb-tcp-addr` (usbmuxd-qemu's QEMU port,
 `wifi`, `wifi-bssid`, `guest-package`, `gles-debug`, `gles-rejects`, `display-sleeping` (the DSI panel is off),
 `accel-orientation`/`-x`/`-y`/`-z`/`-shake`. The app's button bridge reaches the board's pins
 (`s5l8920_press_button`). The guest agent (`agent-request`/`-result`/`-status`/`-cancel`, it_agent) and the
-pasteboard work as on the iPad. Not on n18 yet: battery-level/-charging and usb-attached (the cable is always in).
+pasteboard work as on the iPad. `battery-level` (0-100, the D1755's ADC), `battery-charging` (auto/on/off) and
+`usb-attached` work as on the iPod, at boot (-M) and at run time.
 
 ### App install
 

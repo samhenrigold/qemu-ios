@@ -15,6 +15,7 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "qemu/error-report.h"
 #include "exec/address-spaces.h"
 #include "hw/boards.h"
@@ -226,6 +227,9 @@ struct S5L8920MachineState {
     bool btn_hold, btn_home;             /* button-hold/-home properties */
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
     bool wifi;                           /* bridge the Wi-Fi card to -netdev id=wifi0 (default on) */
+    bool usb_attached;                   /* usb-attached (default on) */
+    int battery_level;                   /* battery-level, -1 = the PMU model's own */
+    unsigned battery_charging;           /* battery-charging: 0 auto, 1 on, 2 off */
     GuestPackage pkg;                    /* hw/arm/guest-package.c: it_boot and the GL shim's hello */
     GuestPasteboard pb;                  /* hw/arm/guest-pasteboard.c */
     IPodAgent *agent;                    /* hw/arm/ipod-agent.c: it_agent, as on the iPod and iPad */
@@ -364,7 +368,7 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
         }
         if (!strcmp(d->type, TYPE_PCF50633)) {
             s->pmu = PCF50633(slave);
-            s->pmu->usb_cable = true;
+            s->pmu->usb_cable = s->usb_attached;
         } else if (!strcmp(d->type, TYPE_LIS302DL)) {
             s->accel = LIS302DL(slave);
             /* the iPod/iPad machines' names, which the app's tilt and shake set */
@@ -884,6 +888,12 @@ static void s5l8920_machine_reset(MachineState *machine, ResetType type)
     qemu_devices_reset(type);
     s5l8920_set_button(s, s->board->buttons.hold, s->btn_hold);
     s5l8920_set_button(s, s->board->buttons.menu, s->btn_home);
+    if (s->pmu) {   /* the charge and level the properties asked for survive the PMU's reset */
+        pcf50633_set_charging_mode(s->pmu, s->battery_charging);
+        if (s->battery_level >= 0) {
+            pcf50633_set_battery_level(s->pmu, s->battery_level);
+        }
+    }
 }
 
 static bool s5l8920_get_button_hold(Object *obj, Error **errp)
@@ -1044,11 +1054,83 @@ static char *s5l8920_get_agent_status(Object *obj, Error **errp)
     return g_strdup(ipod_agent_status(S5L8920_MACHINE(obj)->agent, qemu_clock_get_ms(QEMU_CLOCK_REALTIME)));
 }
 
+/* The iPod machine's battery and cable properties, on the PCF50633 model's API. */
+static bool s5l8920_get_usb_attached(Object *obj, Error **errp)
+{
+    return S5L8920_MACHINE(obj)->usb_attached;
+}
+
+static void s5l8920_set_usb_attached(Object *obj, bool value, Error **errp)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+
+    s->usb_attached = value;
+    if (s->pmu) {
+        pcf50633_set_usb_cable(s->pmu, value);
+    }
+}
+
+static void s5l8920_get_battery_level(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+    int64_t value = s->battery_level;
+
+    if (s->pmu) {
+        pcf50633_update_battery(s->pmu);
+        value = pcf50633_level_for_adc(s->pmu->adc_values[4]);
+    }
+    visit_type_int(v, name, &value, errp);
+}
+
+static void s5l8920_set_battery_level(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+    int64_t value;
+
+    if (!visit_type_int(v, name, &value, errp)) {
+        return;
+    }
+    if (value < 0 || value > 100) {
+        error_setg(errp, "battery-level must be between 0 and 100");
+        return;
+    }
+    s->battery_level = value;
+    if (s->pmu) {
+        pcf50633_set_battery_level(s->pmu, value);
+    }
+}
+
+static char *s5l8920_get_battery_charging(Object *obj, Error **errp)
+{
+    unsigned mode = S5L8920_MACHINE(obj)->battery_charging;
+
+    return g_strdup(mode == 1 ? "on" : mode == 2 ? "off" : "auto");
+}
+
+static void s5l8920_set_battery_charging(Object *obj, const char *value, Error **errp)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+    static const char *const modes[] = { "auto", "on", "off" };
+
+    for (unsigned mode = 0; mode < ARRAY_SIZE(modes); mode++) {
+        if (!strcmp(value, modes[mode])) {
+            s->battery_charging = mode;
+            if (s->pmu) {
+                pcf50633_set_charging_mode(s->pmu, mode);
+            }
+            return;
+        }
+    }
+    error_setg(errp, "battery-charging must be auto, on or off");
+}
+
 static void s5l8920_instance_init(Object *obj)
 {
     S5L8920MachineState *s = S5L8920_MACHINE(obj);
 
     s->wifi = true;
+    s->usb_attached = true;
+    s->battery_level = -1;
     guest_pkg_init(&s->pkg, obj);
     guest_pb_init(&s->pb, obj, "s5l8920");
     s->agent = ipod_agent_new();
@@ -1127,6 +1209,13 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
     object_class_property_add_str(klass, "die-id", s5l8920_get_die_id, s5l8920_set_die_id);
     object_class_property_set_description(klass, "die-id",
         "the unit's ChipID die-id words 2-3, \"0xWORD2:0xWORD3\" (identity.json); zeros if unset");
+    object_class_property_add_bool(klass, "usb-attached", s5l8920_get_usb_attached, s5l8920_set_usb_attached);
+    object_class_property_set_description(klass, "usb-attached", "The dock cable is in (default on)");
+    object_class_property_add(klass, "battery-level", "int", s5l8920_get_battery_level, s5l8920_set_battery_level,
+                              NULL, NULL);
+    object_class_property_set_description(klass, "battery-level", "Battery charge, 0-100 percent (the PMU's ADC)");
+    object_class_property_add_str(klass, "battery-charging", s5l8920_get_battery_charging, s5l8920_set_battery_charging);
+    object_class_property_set_description(klass, "battery-charging", "auto, on or off");
     object_class_property_add_bool(klass, "display-sleeping", s5l8920_get_display_sleeping, NULL);
     object_class_property_set_description(klass, "display-sleeping", "The panel is off (DSI display-off)");
     object_class_property_add_bool(klass, "wifi", s5l8920_get_wifi, s5l8920_set_wifi);
