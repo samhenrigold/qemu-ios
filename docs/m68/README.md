@@ -121,11 +121,10 @@ within 0.1 px of their aim over the whole panel (fitted from the points 1.0's Gr
 
 ## Notes for guest software
 
-- Accelerometer: lying flat, 1.0's UIKit reads z = -0.5 g, upright y = -0.5 g. That is 1.0's own scale, not the
-  model's. 1.0 and 1.1.4's AppleLIS302DL turn a count into IOFixed g as `count << 9` (1/128 g per count),
-  while 3.1.3's uses 1187/65536 (18 mg per count, the datasheet's at the ±2 g range 1.0 selects, CTRL_REG1
-  0x40). So a real iPhone on 1.0 reads about 0.44 g flat; the model's 64 counts per g give 0.5 g there and
-  1.16 g on 3.x. Unchanged, so the iPod 2G stays as it is.
+- Accelerometer: lying flat, 1.0's UIKit reads z = -0.43 g (Tilt), as a real iPhone on 1.0 does. The
+  LIS302DL model reports the datasheet's 18 mg per count at ±2 g (72 mg with CTRL_REG1's FS bit), so 1 g is
+  55.6 counts. 1.0 and 1.1.4's AppleLIS302DL turn a count into g as `count << 9` (1/128 g per count), 3.1.3's
+  as 1187/65536 (18 mg), so the same part reads 0.43 g on 1.0 and 1.00 g on 3.x.
 - 1.0's SpringBoard labels an icon with the `.app` directory name and ignores `CFBundleName` (guestdev:
   Hello2.app with CFBundleName "Hello 2" shows "Hello2").
 - Sideloading unofficial apps: [sideload.md](sideload.md). Debugging the guest (gdbstub, lldb, `xnu.py`):
