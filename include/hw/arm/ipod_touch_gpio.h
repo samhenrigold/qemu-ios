@@ -41,6 +41,7 @@ typedef struct IPodTouchGPIOState
     uint32_t gpio_state[NUM_GPIO_PADS];
     qemu_irq outputs[NUM_GPIO_PADS * 8];
     uint32_t fsel_offset;            /* "fsel-offset": the pad function select register */
+    uint32_t rest_high_pad, rest_high_mask;   /* "rest-high-pad"/"-mask": active-low inputs at rest */
 } IPodTouchGPIOState;
 
 bool gpio_is_on(uint32_t *state, uint32_t gpio);

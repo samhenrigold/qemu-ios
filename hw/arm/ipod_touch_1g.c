@@ -443,26 +443,9 @@ static void n45_cpu_reset(void *opaque)
     gles_host_set_debug(s->gles_debug);
     gles_host_reset();
     cpu_reset(CPU(s->cpu));
-    /* Pads at rest after the GPIO block's own reset: the volume buttons are
-     * active low (flags 0 in buttons,m68), the ring switch where the user left it. */
-    if (s->board->volup_gpio) {
-        gpio_set_on(s->gpio->gpio_state, s->board->volup_gpio);
-        gpio_set_on(s->gpio->gpio_state, s->board->voldown_gpio);
-    }
-    if (s->board->ring_gpio && s->ring_silent) {
-        gpio_set_on(s->gpio->gpio_state, s->board->ring_gpio);
-    }
-    /* ... and the GPIO IC sees each button pad's level. */
-    const uint32_t pads[][2] = {
-        { s->board->home_gpio, s->board->home_irq }, { s->board->power_gpio, s->board->power_irq },
-        { s->board->volup_gpio, s->board->volup_irq }, { s->board->voldown_gpio, s->board->voldown_irq },
-        { s->board->ring_gpio, s->board->ring_irq },
-    };
-    for (int i = 0; i < ARRAY_SIZE(pads); i++) {
-        if (pads[i][0]) {
-            ipod_touch_sysic_set_pad(s->sysic, pads[i][1], gpio_is_on(s->gpio->gpio_state, pads[i][0]));
-        }
-    }
+    /* (The volume pads rest high by the GPIO block's own reset, rest-high-*: this
+     * handler runs before the device resets, so pad levels set here were lost and
+     * both volume buttons read held from boot.) */
     n45_stage_boot_chain(s);
     cpu_set_pc(CPU(s->cpu), N45_IBOOT_BASE);
 }
@@ -470,9 +453,53 @@ static void n45_cpu_reset(void *opaque)
 /* ---- buttons ----------------------------------------------------------- */
 
 /* Same chords as the 2G (imgtools/itqmp.py BUTTONS): Cmd+Shift+H home, Cmd+L power, Cmd+-/= volume. */
+/*
+ * A press shorter than the guest reacts to is no press: AppleM68Buttons reads the pads
+ * from its work loop after the interrupt, and a host chord (HMP sendkey, ~100 ms of
+ * host time, a few ms of guest time) was released by then, so both reads saw the
+ * button up and Home never registered. A release earlier than this much guest time
+ * after the press waits for it.
+ */
+#define BUTTON_MIN_PRESS_NS (150 * SCALE_MS)
+
+static void n45_button(IPodTouch1GMachineState *s, uint32_t gpio, uint32_t gpio_irq, bool down);
+
+static void n45_button_release_due(void *opaque)
+{
+    IPodTouch1GMachineState *s = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    for (int i = 0; i < ARRAY_SIZE(s->btn_gpio); i++) {
+        if (s->btn_release[i] && now - s->btn_pressed_ns[i] >= BUTTON_MIN_PRESS_NS) {
+            s->btn_release[i] = false;
+            n45_button(s, s->btn_gpio[i], s->btn_irq[i], false);
+        }
+    }
+}
+
 static void n45_button(IPodTouch1GMachineState *s, uint32_t gpio, uint32_t gpio_irq, bool down)
 {
     uint32_t *pads = s->gpio->gpio_state;
+    int slot = -1;
+
+    for (int i = 0; i < ARRAY_SIZE(s->btn_gpio); i++) {
+        if (s->btn_gpio[i] == gpio || (slot < 0 && !s->btn_gpio[i])) {
+            slot = i;
+        }
+    }
+    if (gpio != s->board->ring_gpio && slot >= 0) {
+        int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        s->btn_gpio[slot] = gpio;
+        s->btn_irq[slot] = gpio_irq;
+        if (down) {
+            s->btn_pressed_ns[slot] = now;
+            s->btn_release[slot] = false;
+        } else if (now - s->btn_pressed_ns[slot] < BUTTON_MIN_PRESS_NS) {
+            s->btn_release[slot] = true;
+            timer_mod(s->btn_timer, s->btn_pressed_ns[slot] + BUTTON_MIN_PRESS_NS);
+            return;
+        }
+    }
     bool active_low = gpio == s->board->volup_gpio || gpio == s->board->voldown_gpio;
     bool was = gpio_is_on(pads, gpio) != active_low;
 
@@ -778,6 +805,13 @@ static void n45_machine_init(MachineState *machine)
     /* GPIO pads */
     dev = qdev_new("ipodtouch.gpio");
     qdev_prop_set_uint32(dev, "fsel-offset", 0x320);
+    if (s->board->volup_gpio) {
+        /* The volume buttons are active low (buttons,m68 flags 0; AppleM68Buttons reads a low pad as held). */
+        qdev_prop_set_uint32(dev, "rest-high-pad", GPIO2PAD(s->board->volup_gpio));
+        /* the ring switch is a level on the same pad: silent rests high */
+        qdev_prop_set_uint32(dev, "rest-high-mask", 1u << GPIO2PIN(s->board->volup_gpio) | 1u << GPIO2PIN(s->board->voldown_gpio) |
+                             (s->ring_silent ? 1u << GPIO2PIN(s->board->ring_gpio) : 0));
+    }
     s->gpio = IPOD_TOUCH_GPIO(dev);
     memory_region_add_subregion(sysmem, N45_GPIO_BASE, &s->gpio->iomem);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
@@ -1045,6 +1079,7 @@ static void n45_machine_init(MachineState *machine)
     qemu_register_reset(n45_cpu_reset, s);
     qemu_input_handler_register(DEVICE(s->cpu), &n45_kbd_handler);
     s->pwroff_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, n45_pwroff_tick, s);
+    s->btn_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, n45_button_release_due, s);
     qemu_register_powerdown_notifier(&n45_powerdown_notifier);
 }
 
@@ -1261,6 +1296,8 @@ static void m68_set_ring_switch(Object *obj, bool value, Error **errp)
 
     s->ring_silent = value;
     if (s->gpio && s->board && s->board->ring_gpio) {
+        uint32_t bit = 1u << GPIO2PIN(s->board->ring_gpio);
+        s->gpio->rest_high_mask = (s->gpio->rest_high_mask & ~bit) | (value ? bit : 0);   /* kept across a reboot */
         n45_button(s, s->board->ring_gpio, s->board->ring_irq, value);
     }
 }

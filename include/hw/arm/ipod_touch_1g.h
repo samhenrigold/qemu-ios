@@ -201,6 +201,11 @@ typedef struct IPodTouch1GMachineState {
     char *wifi_mac;                  /* the card's EEPROM MAC ("wifi-mac", the unit identity's) */
     LIS302DLState *accel;            /* the LIS302DL on I2C0; it keeps the attitude (accel-pitch/-roll/-pose) */
     bool ring_silent;                /* M68: the ring/silent switch toward silent ("ring-switch") */
+    /* momentary buttons: when each went down, and releases held back to a minimum press */
+    QEMUTimer *btn_timer;
+    uint32_t btn_gpio[4], btn_irq[4];
+    int64_t btn_pressed_ns[4];
+    bool btn_release[4];
     char *imei;                      /* M68: the unit's IMEI ("imei"); the baseband reports it, not modelled here */
 } IPodTouch1GMachineState;
 

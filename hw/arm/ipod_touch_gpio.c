@@ -40,12 +40,21 @@ static void s5l8900_gpio_write(void *opaque, hwaddr addr, uint64_t value, unsign
     }
 }
 
+static uint64_t s5l8900_gpio_read_pad(IPodTouchGPIOState *s, hwaddr addr);
+
 static uint64_t s5l8900_gpio_read(void *opaque, hwaddr addr, unsigned size)
 {
-    if (gpio_trace()) {
-        fprintf(stderr, "%s: read from location 0x%08x\n", __func__, (unsigned)addr);
-    }
     IPodTouchGPIOState *s = (struct IPodTouchGPIOState *) opaque;
+    uint64_t v = s5l8900_gpio_read_pad(s, addr);
+
+    if (gpio_trace()) {
+        fprintf(stderr, "%s: read from location 0x%08x -> 0x%08x\n", __func__, (unsigned)addr, (unsigned)v);
+    }
+    return v;
+}
+
+static uint64_t s5l8900_gpio_read_pad(IPodTouchGPIOState *s, hwaddr addr)
+{
 
     switch(addr) {
         case 0x4:
@@ -127,6 +136,10 @@ static void s5l8900_gpio_reset(DeviceState *dev)
     }
     /* NOR chip select rests deasserted; its driver asserts pad 0 pin 0. */
     s->gpio_state[0] |= 1;
+    /* A board's own active-low inputs (the M68's volume buttons). */
+    if (s->rest_high_pad < NUM_GPIO_PADS) {
+        s->gpio_state[s->rest_high_pad] |= s->rest_high_mask;
+    }
     for (unsigned pad = 0; pad < NUM_GPIO_PADS; pad++) {
         for (unsigned pin = 0; pin < 8; pin++) {
             qemu_set_irq(s->outputs[pad * 8 + pin],
@@ -149,6 +162,9 @@ static const VMStateDescription vmstate_ipod_touch_gpio = {
  * (openiBoot's GPIO_FSEL; the 1.x kernel drives its output pads through it). */
 static const Property s5l8900_gpio_properties[] = {
     DEFINE_PROP_UINT32("fsel-offset", IPodTouchGPIOState, fsel_offset, 0x1e0),
+    /* pins of one pad that rest high (active-low inputs), set again on every reset */
+    DEFINE_PROP_UINT32("rest-high-pad", IPodTouchGPIOState, rest_high_pad, NUM_GPIO_PADS),
+    DEFINE_PROP_UINT32("rest-high-mask", IPodTouchGPIOState, rest_high_mask, 0),
 };
 
 static void s5l8900_gpio_class_init(ObjectClass *klass, void *data)
