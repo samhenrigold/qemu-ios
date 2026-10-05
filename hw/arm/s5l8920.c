@@ -246,7 +246,7 @@ struct S5L8920MachineState {
     GuestPasteboard pb;                  /* hw/arm/guest-pasteboard.c */
     IPodAgent *agent;                    /* hw/arm/ipod-agent.c: it_agent, as on the iPod and iPad */
     QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
-    int pwroff_phase, pwroff_step;
+    int pwroff_phase, pwroff_step, pwroff_tries;
 };
 
 /* hw/arm/s5l8920_dart.c: IOVA -> PA through a DART (its device as opaque). */
@@ -991,8 +991,9 @@ static void s5l8920_set_button_home(Object *obj, bool value, Error **errp)
  * guest then unmounts, syncs the FTL and ends in the PMU's power command,
  * where QEMU exits (pcf50633's shutdown-reg / standby write).
  */
-enum { PWROFF_IDLE, PWROFF_HOME, PWROFF_WAKE, PWROFF_HOLD, PWROFF_SETTLE, PWROFF_DRAG };
+enum { PWROFF_IDLE, PWROFF_HOME, PWROFF_WAKE, PWROFF_HOLD, PWROFF_SETTLE, PWROFF_DRAG, PWROFF_LIFT };
 #define PWROFF_DRAG_STEPS 24
+#define PWROFF_DRAG_TRIES 3
 
 static void s5l8920_pwroff_arm(S5L8920MachineState *s, int ms)
 {
@@ -1033,10 +1034,24 @@ static void s5l8920_pwroff_tick(void *opaque)
         break;
     case PWROFF_DRAG:
         s->pwroff_step++;
-        s5l8920_pwroff_touch(s, k->x + k->drag * s->pwroff_step / PWROFF_DRAG_STEPS, k->y,
-                             s->pwroff_step < PWROFF_DRAG_STEPS);
+        s5l8920_pwroff_touch(s, k->x + k->drag * s->pwroff_step / PWROFF_DRAG_STEPS, k->y, true);
         if (s->pwroff_step < PWROFF_DRAG_STEPS) {
             s5l8920_pwroff_arm(s, 80);
+        } else {
+            /* Rest at the end before lifting: a busy guest can miss the moves
+             * and see only a lift at the far end. */
+            s->pwroff_phase = PWROFF_LIFT;
+            s5l8920_pwroff_arm(s, 500);
+        }
+        break;
+    case PWROFF_LIFT:
+        s5l8920_pwroff_touch(s, k->x + k->drag, k->y, false);
+        /* 3.1.1 (software-drawn sheet) sometimes leaves the knob where the
+         * touch began, as a user's missed slide does; slide again. Once the
+         * guest is shutting down the sheet is gone and a drag does nothing. */
+        if (++s->pwroff_tries < PWROFF_DRAG_TRIES) {
+            s->pwroff_phase = PWROFF_SETTLE;
+            s5l8920_pwroff_arm(s, 2500);
         } else {
             s->pwroff_phase = PWROFF_IDLE;
         }
@@ -1053,6 +1068,7 @@ static void s5l8920_powerdown_req(Notifier *n, void *opaque)
     }
     s5l8920_set_button(s, s->board->buttons.menu, true);
     s->pwroff_phase = PWROFF_HOME;
+    s->pwroff_tries = 0;
     s5l8920_pwroff_arm(s, 300);
 }
 
