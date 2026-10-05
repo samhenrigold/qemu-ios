@@ -40,6 +40,14 @@ static int16_t mt_clamp_vel(int64_t v)
     return (int16_t)v;
 }
 
+/*
+ * The iPod (Zephyr2) frame: iPod touch 2G and 1G. frame_* fitted from the point
+ * GraphicsServices reports for each tap (read through the gdbstub with lldb:
+ * GSEventGetPathInfoAtIndex on 3.1.3, GSEventGetLocationInWindow on 1.1) over a
+ * 3x8 grid. Both OSes put taps on the internal surface's frame 11-12 px high and
+ * 2.5% narrow (x = 5 + 0.975 aim); solved for x = -74 + 4720u, y = -187 + 7329v
+ * (the sensor's y runs bottom-up). Checked on another grid: every tap on its aim.
+ */
 const MTSensorProfile mt_profile_ipod = {
     .family_id = MT_FAMILY_ID,
     .rows = MT_SENSOR_ROWS, .cols = MT_SENSOR_COLUMNS,
@@ -48,8 +56,8 @@ const MTSensorProfile mt_profile_ipod = {
     .surface_height = MT_SENSOR_SURFACE_HEIGHT,
     .region_desc = { MT_SENSOR_REGION_DESC }, .region_desc_len = 1,
     .region_param = { MT_SENSOR_REGION_PARAM }, .region_param_len = 1,
-    .frame_width = MT_INTERNAL_SENSOR_SURFACE_WIDTH,
-    .frame_height = MT_INTERNAL_SENSOR_SURFACE_HEIGHT,
+    .frame_x0 = -74, .frame_width = 4720,
+    .frame_y0 = -187, .frame_height = 7329,
 };
 
 /*
@@ -91,25 +99,6 @@ const MTSensorProfile mt_profile_n81 = {
     .region_param = { MT_SENSOR_REGION_PARAM }, .region_param_len = 1,
     .frame_x0 = -69, .frame_width = 4748,
     .frame_y0 = -215, .frame_height = 7360,
-};
-
-/*
- * iPod touch 1G (N45, Zephyr2): the iPod's sensor, frame_* fitted on 1.1
- * (3A101a) from the point GraphicsServices reports for each tap
- * (GSEventGetLocationInWindow, read through the gdbstub) over a 3x8 grid.
- * The iPod's frame landed taps 11-12 px high and 2.5% narrow in x
- * (x = 5 + 0.975 aim); solved for x = -74 + 4720u, y = -187 + 7329v.
- */
-const MTSensorProfile mt_profile_n45 = {
-    .family_id = MT_FAMILY_ID,
-    .rows = MT_SENSOR_ROWS, .cols = MT_SENSOR_COLUMNS,
-    .bcd_version = MT_BCD_VERSION,
-    .surface_width = MT_SENSOR_SURFACE_WIDTH,
-    .surface_height = MT_SENSOR_SURFACE_HEIGHT,
-    .region_desc = { MT_SENSOR_REGION_DESC }, .region_desc_len = 1,
-    .region_param = { MT_SENSOR_REGION_PARAM }, .region_param_len = 1,
-    .frame_x0 = -74, .frame_width = 4720,
-    .frame_y0 = -187, .frame_height = 7329,
 };
 
 static void prepare_interface_version_response(IPodTouchMultitouchState *s) {

@@ -65,7 +65,8 @@ int main(void) {
     MTFrame *frame=mt_build_frame(&s,fingers,&length);inspect(frame,length,1);
     uint8_t *p=(uint8_t*)frame;
     assert(p[45]==5 && p[46]==MT_EVENT_TOUCH_ENDED);
-    assert((int16_t)le16(p+49)==MT_INTERNAL_SENSOR_SURFACE_WIDTH/2 && (int16_t)le16(p+51)==MT_INTERNAL_SENSOR_SURFACE_HEIGHT/2);
+    /* the iPod's measured frame (offset + span) places the lifted finger */
+    assert((int16_t)le16(p+49)==-74+(int)(.5f*4720) && (int16_t)le16(p+51)==-187+(int)(.5f*7329));
     free(frame);
     /* K48: the measured frame offset + span (ipad1 calibration) place the finger */
     s.profile=&mt_profile_k48;memset(fingers,0,sizeof(fingers));
