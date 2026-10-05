@@ -901,6 +901,16 @@ static void ipad1_init(MachineState *machine)
         memory_region_init_alias(&s->bootrom_alias, NULL,
                                  "ipad1.bootrom-alias", &s->bootrom, 0, size);
         memory_region_add_subregion(sysmem, 0xbf000000, &s->bootrom_alias);
+    } else {
+        /*
+         * The SecureROM is at 0 whatever boots the AP; a direct kernel boot has no image for it, so the window
+         * reads zeros. It must be there all the same: iOS 6's machine startup (10A403 0x8007daa0) maps
+         * kvtophys(gPhysBase) after pmap bootstrap has unmapped that V=P region, gets 0, and copies the exception
+         * vectors to physical 0. On the SoC that write lands in ROM and is dropped; with nothing mapped it was a
+         * synchronous external abort and a double panic before the console.
+         */
+        memory_region_init_rom(&s->bootrom, NULL, "ipad1.bootrom", 0x10000, &error_fatal);
+        memory_region_add_subregion(sysmem, 0, &s->bootrom);
     }
 
     /*
