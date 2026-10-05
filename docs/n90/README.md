@@ -38,6 +38,22 @@ offer): `regress.py --machine iPhone-4 --checks app --guest-package OFFER` PASS.
 installation_proxy, installd lists it, the agent launches it frontmost, and its GL triangle draws through the bridge
 with no refusals.
 
+## iOS 5.1.1 (9B206)
+
+Verified 2026-10-05 on the kboot pipeline (`~/Developer/qemu-ios-files/n90/fw/prepare.sh 9B206`, the N81 by-hand
+pipeline with n90 paths; activation through fw-a4's `lt_activate` hook; guest package serial 15):
+- `regress.py --machine iPhone-4 --checks boot`: PASS. Activated, Setup Assistant's first page.
+- `usbmux`, `afc`, `persist`: PASS.
+- `wifi`: PASS run alone. In the four-boot run it timed out waiting for a lease once.
+- `tests/ipad1/app-install.py --machine iPhone-4`: all PASS. AppSync install; walks iOS 5's Setup Assistant
+  ("Set Up as New iPhone" ... "Start Using iPhone"); launch; the Harness GL fixture on the panel (50% fixture
+  colours, no bridge refusals, Harness "PASS GLES pixel readback" and "PASS GLES framebuffer/draw/present API");
+  guest power-off.
+- The fixes it took were in the harness, not the models. The panel can sleep during the install, so the walk
+  wakes it before sliding. The syslog relay closes mid-run on 5.x, so the Harness report is also read from its
+  own Documents/results.log over house_arrest.
+- Without a camera node, CLTM logs "could not find camera service" every 5 s (`camera=off`).
+
 ## How to boot
 
 The same hand pipeline as N81 (`../n81/README.md`, "How to boot"), with `n90` paths and
@@ -80,8 +96,13 @@ As N81, plus:
    the device shows "No Service".
 2. **Absent parts**:
    - ~~The gyro~~: the L3G4200D model, as on N81 (its debt 5).
-   - The ALS/prox ct700 (i2c0 0x29). It is probed for and skipped.
-   - The Highland Park audio processor (i2c0 0x3e, uart6, i2s2).
+   - The ALS/prox ct700 (i2c0 0x29): AppleCT700 logs "Probing hardware failed" and stays out, so there is
+     no auto-brightness and no proximity blanking on calls. A model is a TAOS-style register file (command
+     byte 0x80|reg) plus `als-calibration`/`prox-calibration`, which iBoot fills from syscfg and the driver
+     checks for a signature and limits. Deferred (2026-10-05) until calls want proximity.
+   - The Highland Park voice processor (AUD10: i2c0 0x3e, uart6, i2s2) passes probe and start with nothing
+     behind it. Its message protocol (firmware download, routing, algorithm parameters) is only exercised
+     on a call's audio route. Deferred, since calls carry no audio.
    - The GPS (bcm4750 on uart4).
    - The cameras and ISP. `camera=off` (default) unmatches the DT's `isp` node, as on N81 (its debt 4).
 3. **Compass**: the AK8973 stands in for the AK8975B pair.
