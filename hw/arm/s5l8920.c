@@ -228,7 +228,7 @@ struct S5L8920MachineState {
     MachineState parent;
     const S5L8920Board *board;
     ARMCPU *cpu;
-    MemoryRegion dram, dram_hi, sram, chipid, cpu_debug, bootrom;
+    MemoryRegion dram, dram_hi, dram_lo, sram, chipid, cpu_debug;
     DeviceState *vic[S5L8920_VIC_COUNT];
     DeviceState *gpio;
     DeviceState *iopcore;
@@ -567,13 +567,14 @@ static void s5l8920_init(MachineState *machine)
 
     create_unimplemented_device("s5l8920.periph", 0x80000000, 0x40000000);
     /*
-     * The SecureROM window at 0, zeros (kboot has no image for it). iOS 6
-     * copies its exception vectors to kvtophys(gPhysBase) after pmap bootstrap
-     * unmapped that V=P region, i.e. to physical 0: on the SoC a write the ROM
-     * drops, unmapped an external abort before the console (as ipad1.c).
+     * PA 0 is DRAM's first page, as on the A4 machines (ipad1.c). iOS 6
+     * (xnu-2107) links at 0x80001000, leaves that page out, and copies its
+     * reset and exception vectors to ml_vtophys(gPhysBase) = PA 0 once the
+     * V=P mapping is gone; unmapped, the copy is an external abort before the
+     * console. ponytail: one page, aliased; the real remap's size is unmeasured.
      */
-    memory_region_init_rom(&s->bootrom, NULL, "s5l8920.bootrom", 0x10000, &error_fatal);
-    memory_region_add_subregion(sysmem, 0, &s->bootrom);
+    memory_region_init_alias(&s->dram_lo, NULL, "s5l8920.dram-lo", &s->dram, 0, 0x1000);
+    memory_region_add_subregion(sysmem, 0, &s->dram_lo);
 
     {
         uint32_t chipid[] = { s->board->chipid[0], s->board->chipid[1], 0, 0 };
