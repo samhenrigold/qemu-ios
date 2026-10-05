@@ -32,6 +32,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(LIS302DLState, LIS302DL)
 #define ACCEL_CTRL_REG1_XEN 0x01
 #define ACCEL_CTRL_REG1_YEN 0x02
 #define ACCEL_CTRL_REG1_ZEN 0x04
+#define ACCEL_CTRL_REG1_FS 0x20   /* full scale: 0 = ±2 g (18 mg/digit), 1 = ±8 g (72 mg) */
 
 typedef struct LIS302DLState {
 	I2CSlave i2c;
