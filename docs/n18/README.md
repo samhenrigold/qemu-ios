@@ -105,6 +105,48 @@ tests/ipad1/app-install.py --machine n18 --device $F/dev3 --kboot $F/kboot-nor-n
     --product-version 4.2.1 --ipa Harness.ipa --gl-tap 0.5,0.165 --out $F/runs/app
 ```
 
+### iOS 3.1.3 (7E18)
+
+Boots by kboot to an activated home screen. Unlock works, and usbmux, AFC (five sizes), persist (70001
+bytes across a guest power-off and a reboot on the same overlay) pass (2026-10-05). The same tools as 4.2.1 build it, with four differences that the 3.1.3 kernel and IOP
+firmware need:
+
+| What | Why |
+|---|---|
+| `ipad1_nand.py build --sig-flags 4` | 3.1.3's AppleNANDFTL formats with NANDDRIVERSIGN flags 4 (0xc03dbae2). It reports "Incompatible Signature" for flags above 4 under a '1' second signature byte (0xc03db8aa), which includes 4.x's 5 |
+| `ipad1_rootfs.py build --data-block-size 8192 --data-unjournaled` | 3.1.3's mount_hfs fails the journaled data volume the Mac makes with EINVAL, at 4096 or 8192 bytes, and also with the journal left for the device to initialize. An unjournaled volume mounts. Debt 10 |
+| kboot (`s5l8920_kboot.py`) | the 3.1.x DT has no die-id, display-rotation or display-scale slots, so fill_dt skips them (the 3.x kernel reads none of them) |
+| lockdownd | the 8C148 activation patcher's pattern matches 3.1.3's lockdownd unchanged (`activation_hook` as for 4.2.1) |
+
+The model side:
+- `s5l8930.h2fmi` arms the next FIFO transfer on a READ ID (3.1.3's IOP firmware reads each chip's ID
+  without clearing control in between). Without that, the panic is "IOP failed to read ID".
+- A new write transfer (control 5) clears DONE.
+- The board now sets `explicit-start` for the N18 as well as the N88. 3.1.3's s5l8922x firmware fills the
+  FIFO for the next page before it writes control 5, so without it the page completes onto the previous
+  chip and the FTL later reads it blank ("multiple read operation ... 0x80000023", then a disk0s2 media
+  error).
+- 4.2.1 passes usbmux, AFC, persist and Wi-Fi with this change (the FirmwareKit fk-dev device).
+
+```
+F=~/Developer/qemu-ios-files/n18-fw            # keys: api.ipsw.me/v4/keys/ipsw/iPod3,1/7E18, as a key page
+imgtools/ipad1_fw.py $F/iPod3,1_3.1.3_7E18_Restore.ipsw $F/keys-7E18.txt $F/dec-7E18
+imgtools/ipad1_rootfs.py build --rootfs $F/dec-7E18/rootfs.dmg --pristine $F/dec-7E18/rootfs.dmg --mbr $F/mbr.bin \
+    --out $F/userland-7E18 --lockdown none --no-usb-net --no-web-proxy --no-ca-ogl --data-block-size 8192 --data-unjournaled
+# activation_hook(offline-activation-8C148/patch_lockdownd.py) on userland-7E18/pristine/system.img, as above
+imgtools/ipad1_nand.py build --no-whitening --sig-flags 4 --geometry k48-16g --mbr $F/mbr.bin \
+    --kernelcache $F/dec-7E18/kernelcache.mach --system $F/userland-7E18/pristine/system.img \
+    --data $F/userland-7E18/pristine/data.img --out $F/userland-7E18/nand-pristine
+imgtools/s5l8920_kboot.py n18 --identity $F/identity.json $F/dec-7E18 $F/kboot-7E18.bin \
+    "serial=3 debug=0x8 -v amfi_allow_any_signature=1 cs_enforcement_disable=1"
+tests/ipad1/regress.py --machine n18 --kboot $F/kboot-7E18.bin --nand $F/userland-7E18/nand-pristine \
+    --product-version 3.1.3 --checks usbmux,afc,persist
+```
+
+3.x has no data protection, so it needs no NOR and no keybag. `tests/ipad1/regress.py` now passes
+IPAD1_QEMU_EXTRA to QEMU, as boot-smoke.py does. Use it with `-global driver=s5l8930.h2fmi,...`; the dotted
+`-global s5l8930.h2fmi.x=` form splits at the type name's own dot and silently does nothing.
+
 ## Models: reused, varied, new
 
 Classes as in LightTouchMac `docs/fidelity-ledger.md`: R register-level, H high-level emulation of what
@@ -160,6 +202,11 @@ offsets at 0x80000000).
    app's layer).
 9. **No USB host port**: the OTG runs in device mode only, so regress's `boot`/`net` checks, which type on a
    `usb-kbd` on `usb-bus.0`, cannot run (Bus 'usb-bus.0' not found). `wifi`, `persist` and app-install do.
+10. **3.1.3: data volume without a journal.** 3.1.3's mount_hfs refuses the Mac-made journal (EINVAL) for
+    reasons not yet traced, so the data volume is built unjournaled. A guest that stops without unmounting
+    then needs fsck.
+11. **3.1.3 Wi-Fi: no lease.** `regress.py --checks wifi` sees the firmware up and qemu-ios joined, but
+    no DHCP lease.
 
 ## iPhone 3GS (N88AP, S5L8920): `-M n88`
 
