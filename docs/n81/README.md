@@ -178,10 +178,10 @@ What 6.x needed, all generic (nothing is chosen by build):
 6. **AppSync**: 6.x installd also wants the signing identifier and entitlements in the MIS info. AppSync
    reads both from the executable's embedded signature.
 7. **GL**:
-   - The 914-field dispatch record has no field names. The front end names it by decoding the stock
-     trampolines against 9B206's names.
+   - The 914-field dispatch record has no field names. The front end names its slots by decoding the stock
+     trampolines in the shared cache (a4-boards' scheme, shared with N90).
    - The macro context comes through `getMacroContextPrivate`.
-   - The front end exports 6.x's eleven new names; the nine with no row are stubbed.
+   - The front end exports 6.x's eleven new names: APPLE_sync is answered, and the two others are stubbed.
 8. **Power-off**:
    - The gesture rests at the end of the track before lifting; iOS 6 reads a moving lift as a flick back.
    - The CS42L59's halt handler waits for power-down done (0x38 bit 3) with no timeout. Before that bit was
