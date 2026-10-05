@@ -94,6 +94,13 @@ static void h5_send_wire(IosBbCore *bb, const uint8_t *pkt, unsigned n)
         }
     }
     *o++ = 0xc0;
+    if (getenv(IOS_BB_TRACE_ENV) && atoi(getenv(IOS_BB_TRACE_ENV)) >= 4) {
+        TRACE("h5 tx %u:", n);
+        for (i = 0; i < n && i < 12; i++) {
+            fprintf(stderr, " %02x", pkt[i]);
+        }
+        fprintf(stderr, "\n");
+    }
     bb->out(bb->opaque, wire, o - wire);
 }
 
@@ -209,7 +216,9 @@ static void h5_rx_pkt(IosBbCore *bb, const uint8_t *p, unsigned n)
     if (p[0] & 0x40) {
         uint16_t c = ios_bb_h5_crc(p, 4 + len);
         uint16_t r = (p[4 + len] << 8) | p[4 + len + 1];
-        if (c != r) {
+        /* 1.0's boot kernel sends it low byte first (its restore kernel, which the
+         * notes were read from, high byte first): either is the same CRC. */
+        if (c != r && c != (uint16_t)((r << 8) | (r >> 8))) {
             TRACE("h5 crc mismatch %04x != %04x\n", c, r);
             return;
         }
@@ -217,6 +226,10 @@ static void h5_rx_pkt(IosBbCore *bb, const uint8_t *p, unsigned n)
     type = p[1] & 0xf;
     seq = p[0] & 7;
     ack = (p[0] >> 3) & 7;
+    if (getenv(IOS_BB_TRACE_ENV) && atoi(getenv(IOS_BB_TRACE_ENV)) >= 3) {
+        TRACE("h5 rx type %u seq %u ack %u rel %u len %u: %02x %02x %02x %02x\n", type, seq, ack, p[0] >> 7, len,
+              len > 0 ? p[4] : 0, len > 1 ? p[5] : 0, len > 2 ? p[6] : 0, len > 3 ? p[7] : 0);
+    }
 
     /* Any packet advances the window for whatever it acknowledges. */
     if (bb->h5_nunacked) {
@@ -239,15 +252,16 @@ static void h5_rx_pkt(IosBbCore *bb, const uint8_t *p, unsigned n)
             h5_send_pkt(bb, H5_TYPE_LINK, false, 0, (const uint8_t[]){ 0x02, 0x7d }, 2);
             break;
         case H5_LINK_CONFIG:
-            /* 03 fc <cfg> */
-            if (n >= 6) {
-                bb->h5_crc = !!(p[6] & 0x10);
-                h5_send_pkt(bb, H5_TYPE_LINK, false, 0,
-                            (const uint8_t[]){ 0x04, 0x7b, p[6] }, 3);
-                bb->h5_active = true;
-                TRACE("h5 active (crc %d)\n", bb->h5_crc);
-                h5_pump(bb);
-            }
+            /* 03 fc <cfg>. 1.0's kernel sends 03 fc alone (no configuration
+             * field, so no data integrity check) and takes its send window from
+             * the configuration in our response: without one it is 0 and it
+             * waits forever "for remote window to open". Answer window 7. */
+            bb->h5_crc = len >= 3 && (p[6] & 0x10);
+            h5_send_pkt(bb, H5_TYPE_LINK, false, 0,
+                        (const uint8_t[]){ 0x04, 0x7b, len >= 3 ? p[6] : IOS_BB_H5_WINDOW }, 3);
+            bb->h5_active = true;
+            TRACE("h5 active (crc %d)\n", bb->h5_crc);
+            h5_pump(bb);
             break;
         default:
             break;
@@ -275,6 +289,13 @@ static void h5_rx_pkt(IosBbCore *bb, const uint8_t *p, unsigned n)
 
 static void h5_input(IosBbCore *bb, const uint8_t *buf, size_t len)
 {
+    if (getenv(IOS_BB_TRACE_ENV) && atoi(getenv(IOS_BB_TRACE_ENV)) >= 4) {
+        TRACE("h5 raw %zu:", len);
+        for (size_t i = 0; i < len && i < 24; i++) {
+            fprintf(stderr, " %02x", buf[i]);
+        }
+        fprintf(stderr, "\n");
+    }
     for (size_t i = 0; i < len; i++) {
         uint8_t c = buf[i];
 
@@ -372,13 +393,14 @@ static void h5_stream(IosBbCore *bb, const uint8_t *data, unsigned len);
  * modem stream found it); on a bare byte stream (SPI, the kernel's
  * AppleSerialMultiplexer, which asserts a leading 0xF9) frames carry their flags.
  */
+/* Every frame between its own flags: the bare (SPI) stream, and inside H5 as well,
+ * where 1.0's CommCenter frames its own with flags and fails ours without them
+ * ("No trailing flag at end of frame"). */
 static void mx_emit(IosBbCore *bb, uint8_t *f, unsigned n)
 {
-    if (!bb->h5) {
-        memmove(f + 1, f, n);
-        f[0] = f[n + 1] = MX_FLAG;
-        n += 2;
-    }
+    memmove(f + 1, f, n);
+    f[0] = f[n + 1] = MX_FLAG;
+    n += 2;
     h5_stream(bb, f, n);
 }
 
@@ -1701,7 +1723,12 @@ static void at_command(IosBbCore *bb, int ch, const char *cmd)
         return;
     }
     if (strncmp(cmd, "xtransportmode", 14) == 0) {
-        /* The kernel snoops this write and starts H5; answer wherever it arrives. */
+        /* The kernel snoops this write and is in H5 from then on: a raw OK would be
+         * line noise to it (1.0's CommCenter then times out). The OK goes as the
+         * first H5 data once the link is Active. */
+        if (ch == 0 && !bb->mux) {
+            bb->h5 = true;
+        }
         at_ok(bb, ch);
         return;
     }
