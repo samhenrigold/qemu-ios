@@ -240,7 +240,10 @@ class Boot:
                     if listing.returncode == 0 and len(devices) == 1:
                         self.udid = devices[0]
                 if self.udid:
-                    info = self.run(["ideviceinfo", "-k", "ProductVersion"], timeout=5)
+                    # 30 s: the first query pairs, and 7.x's lockdownd builds an escrow keybag for that, which
+                    # takes several seconds here. Killed early, the pair record is never saved, so every retry
+                    # pairs again and lockdownd falls further behind (AFC answers a minute late).
+                    info = self.run(["ideviceinfo", "-k", "ProductVersion"], timeout=30)
                     if info.returncode == 0 and info.stdout.strip() == self.cfg.product_version:
                         return True
             except subprocess.TimeoutExpired:
