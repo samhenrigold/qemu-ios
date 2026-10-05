@@ -95,9 +95,14 @@ typedef struct S5L8920I2CDevice {
     int16_t irq_pin;                     /* GPIO interrupt its gpio-out 0 drives, active low; 0 = none */
 } S5L8920I2CDevice;
 
-/* DT buttons interrupts: GPIO interrupt numbers, all active low. */
+/*
+ * DT buttons interrupts: GPIO interrupt numbers. Active low unless the
+ * button's DT function-button_* word has flag 0x100 (N88 hold and menu,
+ * which also take both edges, interrupt type 7).
+ */
 typedef struct S5L8920Buttons {
     uint16_t hold, menu, volup, voldown;
+    bool hold_menu_high;                 /* hold and menu active high */
 } S5L8920Buttons;
 
 /* Where SpringBoard's "slide to power off" knob sits (portrait), and how far to drag it. */
@@ -158,7 +163,7 @@ static const S5L8920Board s5l8920_n88 = {
     .nor = true,
     .baseband = true,
     .mt_atn = 0xb4,
-    .buttons = { .hold = 0xb7, .menu = 0xb6, .volup = 0xb0, .voldown = 0xb1 },
+    .buttons = { .hold = 0xb7, .menu = 0xb6, .volup = 0xb0, .voldown = 0xb1, .hold_menu_high = true },
     .i2c = {
         { 0, 0x74, TYPE_PCF50633, 0x9d },
         { 0, 0x4a, TYPE_CS42L58 },       /* cs42l61: a register file to its driver, as on the iPad */
@@ -224,6 +229,8 @@ static qemu_irq s5l8920_irq(S5L8920MachineState *s, int irq)
  * Stage the K48KBOOT bundle on every reset, as ipad1_cpu_reset does.
  * ponytail: a copy of the ipad1 loader; share it once both machines settle.
  */
+static void s5l8920_set_button(S5L8920MachineState *s, int pin, bool down);
+
 static void s5l8920_cpu_reset(void *opaque)
 {
     S5L8920MachineState *s = S5L8920_MACHINE(opaque);
@@ -235,6 +242,9 @@ static void s5l8920_cpu_reset(void *opaque)
     uint32_t load_pa, entry_pa, bootargs_pa, image_len;
 
     cpu_reset(cs);
+    /* The GPIO model resets every input high: put active-high buttons at rest. */
+    s5l8920_set_button(s, s->board->buttons.hold, s->btn_hold);
+    s5l8920_set_button(s, s->board->buttons.menu, s->btn_home);
     if (!g_file_get_contents(s->kboot_path, &data, &size, &gerr)) {
         error_report("s5l8920: cannot read kboot bundle '%s': %s",
                      s->kboot_path, gerr->message);
@@ -662,7 +672,10 @@ static void s5l8920_set_nor_rw(Object *obj, const char *value, Error **errp)
  */
 static void s5l8920_set_button(S5L8920MachineState *s, int pin, bool down)
 {
-    qemu_set_irq(qdev_get_gpio_in(s->gpio, pin), !down);
+    const S5L8920Buttons *b = &s->board->buttons;
+    bool high = b->hold_menu_high && (pin == b->hold || pin == b->menu);
+
+    qemu_set_irq(qdev_get_gpio_in(s->gpio, pin), high ? down : !down);
 }
 
 static bool s5l8920_get_button_hold(Object *obj, Error **errp)
