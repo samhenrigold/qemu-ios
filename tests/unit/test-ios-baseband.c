@@ -909,6 +909,94 @@ static void test_power_and_mux_close(void)
     expect_raw("\r\nOK\r\n");
 }
 
+
+/* ------------------------------------------------------------ IFX SPI framing */
+
+/* One AP transfer of n bytes carrying payload; returns the modem's payload. */
+static unsigned ifx_frame(IosBbIfx *x, IosBbCore *c, const char *payload,
+                          uint8_t *miso, size_t n, char *got)
+{
+    uint8_t mosi[2048] = { 0 };
+    const uint8_t *rx;
+    size_t rxlen, plen = strlen(payload);
+    unsigned len;
+
+    mosi[0] = plen;
+    mosi[1] = plen >> 8;
+    memcpy(mosi + IOS_BB_IFX_HDR, payload, plen);
+    ios_bb_ifx_xfer(x, mosi, miso, n, &rx, &rxlen);
+    CHECK(rxlen == plen && (!plen || memcmp(rx, payload, plen) == 0));
+    if (rxlen) {
+        ios_bb_input(c, rx, rxlen);
+    }
+    len = miso[0] | (miso[1] & 0xf) << 8;
+    memcpy(got, miso + IOS_BB_IFX_HDR, len);
+    got[len] = 0;
+    return len;
+}
+
+static void test_ifx(void)
+{
+    static IosBbCore c;
+    static IosBbIfx x;
+    uint8_t miso[2048];
+    char got[2048];
+
+    /* v1 (3GS DT: protocol-version 1, max-data-size 0x7f8). */
+    memset(&c, 0, sizeof(c));
+    c.registered = c.sim_present = true;
+    snprintf(c.imei, sizeof(c.imei), "000000001234569");
+    ios_bb_ifx_init(&x, 1, 0x7f8);
+    ios_bb_init(&c, ios_bb_ifx_queue, &x);
+    CHECK(!ios_bb_ifx_pending(&x));
+    ifx_frame(&x, &c, "at\r", miso, 0x7fc, got);
+    CHECK(miso[3] & 0x40);                      /* CTS */
+    CHECK(ios_bb_ifx_pending(&x));              /* the OK wants SRDY */
+    ifx_frame(&x, &c, "", miso, 0x7fc, got);
+    check_str(got, "\r\nOK\r\n", "ifx v1 OK");
+
+    /* 4.x signal: the engineering page CommCenter polls once registered. */
+    c.signal_dbm = -60;
+    ifx_frame(&x, &c, "at+cfun=1\r", miso, 0x7fc, got);
+    ifx_frame(&x, &c, "at+xcgedpage=0,1\r", miso, 0x7fc, got);
+    ifx_frame(&x, &c, "", miso, 0x7fc, got);
+    check_str(got, "\r\n+XCGEDPAGE: RAT:\"GSM\",Rssi: 50\r\n\r\nOK\r\n",
+              "xcgedpage");
+    CHECK(!(miso[1] & 0x10) && !ios_bb_ifx_pending(&x));
+
+    /* A reply longer than a frame splits with the more bit. */
+    ifx_frame(&x, &c, "at+cgsn\r", miso, IOS_BB_IFX_HDR + 8, got);
+    ifx_frame(&x, &c, "", miso, IOS_BB_IFX_HDR + 8, got);
+    check_str(got, "\r\n000000", "ifx v1 first slice");
+    CHECK(miso[1] & 0x10);
+    while (ios_bb_ifx_pending(&x)) {
+        ifx_frame(&x, &c, "", miso, IOS_BB_IFX_HDR + 8, got);
+    }
+    CHECK(!(miso[1] & 0x10));
+
+    /* 0xfff length = no payload. */
+    {
+        uint8_t mosi[16] = { 0xff, 0x0f, 0, 0 };
+        const uint8_t *rx;
+        size_t rxlen;
+
+        ios_bb_ifx_xfer(&x, mosi, miso, sizeof(mosi), &rx, &rxlen);
+        CHECK(rxlen == 0);
+    }
+
+    /* v2 (iPhone 4: 0x7fc): credits granted up front, topped up as used. */
+    ios_bb_ifx_init(&x, 2, 0x7fc);
+    ios_bb_init(&c, ios_bb_ifx_queue, &x);
+    CHECK(ios_bb_ifx_pending(&x));              /* no credits yet: ask to grant */
+    ifx_frame(&x, &c, "", miso, 0x800, got);
+    CHECK((miso[2] | (miso[3] & 0xf) << 8) == 8);
+    CHECK(!ios_bb_ifx_pending(&x));
+    for (int i = 0; i < 5; i++) {
+        ifx_frame(&x, &c, "at\r", miso, 0x800, got);
+    }
+    CHECK(x.credits_out >= 4 && x.credits_out <= 8);
+}
+
 /*
  * The tests are one ordered chain: each section continues the protocol
  * session the previous one built (init -> registration -> SIM -> calls ->
@@ -933,6 +1021,7 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/baseband/chain", test_chain);
+    g_test_add_func("/baseband/ifx", test_ifx);
     g_test_run();
     if (failures) {
         fprintf(stderr, "test-ios-baseband: %d failure(s)\n", failures);

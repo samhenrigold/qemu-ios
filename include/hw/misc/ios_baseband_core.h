@@ -183,4 +183,36 @@ const char *ios_bb_last_mo_sms_text(const IosBbCore *bb);
 /* H5 packet CRC as the Apple kext computes it (golden vector "123456789" -> 0xf689). */
 uint16_t ios_bb_h5_crc(const uint8_t *p, size_t n);
 
+/*
+ * Infineon SPI framing (3GS and iPhone 4: BasebandSPI's IFX protocol, see
+ * docs/baseband/commcenter-4.2.1-3gs.md). Every SPI transfer is full duplex:
+ * each side sends a 4-byte header then its payload. Header byte 0 + low nibble
+ * of byte 1 = this frame's payload length, byte 1 bit 4 = more to follow.
+ * v1: byte 3 bit 6 = CTS. v2: bytes 2-3 (12 bits) grant the peer that many more
+ * transmit credits, byte 1 bit 5 = rx error. The modem side here sits behind the
+ * core's out callback: what the core says queues up, SRDY asks the AP to clock it.
+ */
+#define IOS_BB_IFX_HDR 4
+
+typedef struct IosBbIfx {
+    int version;               /* 1 (3GS) or 2 (iPhone 4) */
+    unsigned max_data;         /* DT max-data-size: payload bytes per frame */
+    int credits_out;           /* v2: credits the AP still holds (our model of it) */
+    uint8_t txq[16384];        /* modem -> AP bytes not yet clocked out */
+    unsigned txq_len;
+} IosBbIfx;
+
+void ios_bb_ifx_init(IosBbIfx *x, int version, unsigned max_data);
+/* The core's out callback (opaque = the IosBbIfx). */
+void ios_bb_ifx_queue(void *opaque, const uint8_t *buf, size_t len);
+/* Data waiting: the modem wants SRDY asserted. */
+bool ios_bb_ifx_pending(const IosBbIfx *x);
+/*
+ * One transfer of n bytes: fills miso, and points *rx/*rxlen at the AP's payload
+ * inside mosi (0 bytes on an empty or malformed frame) for the caller to hand to
+ * ios_bb_input.
+ */
+void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
+                     const uint8_t **rx, size_t *rxlen);
+
 #endif

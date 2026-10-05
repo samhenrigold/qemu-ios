@@ -1782,6 +1782,19 @@ static void at_command(IosBbCore *bb, int ch, const char *cmd)
         at_ok(bb, ch);
         return;
     }
+    if (strncmp(cmd, "xcgedpage", 9) == 0) {
+        /*
+         * 4.x reads signal from this engineering page, not +XCIEV: it finds
+         * RAT:"GSM" (up to the next comma) and "Rssi: <rxlev>", dBm = rxlev - 110,
+         * 0..63 (commcenter-4.2.1-3gs.md). One line; the parser searches the text.
+         */
+        int rxlev = MAX(0, MIN(63, bb->signal_dbm + 110));
+
+        chan_printf(bb, ch, "\r\n+XCGEDPAGE: RAT:\"GSM\",Rssi: %d\r\n",
+                    reg_stat(bb) == 1 ? rxlev : 0);
+        at_ok(bb, ch);
+        return;
+    }
     if (strcmp(cmd, "csvm?") == 0) {
         char hex[49];
 
@@ -1971,6 +1984,83 @@ static void h5_rx_payload(IosBbCore *bb, const uint8_t *data, unsigned len)
     } else {
         at_chan_input(bb, 0, data, len);
     }
+}
+
+/* ------------------------------------------------------------- IFX SPI framing */
+
+#define IFX_MORE      0x10         /* header byte 1 */
+#define IFX_V1_CTS    0x40         /* header byte 3 */
+#define IFX_V2_GRANT  8            /* credits handed to the AP when it runs low */
+
+void ios_bb_ifx_init(IosBbIfx *x, int version, unsigned max_data)
+{
+    memset(x, 0, sizeof(*x));
+    x->version = version;
+    x->max_data = MIN(max_data, 0xffeu);
+}
+
+void ios_bb_ifx_queue(void *opaque, const uint8_t *buf, size_t len)
+{
+    IosBbIfx *x = opaque;
+
+    if (x->txq_len + len > sizeof(x->txq)) {
+        TRACE("ifx tx queue overflow, dropping %zu bytes\n", len);
+        return;
+    }
+    memcpy(x->txq + x->txq_len, buf, len);
+    x->txq_len += len;
+}
+
+bool ios_bb_ifx_pending(const IosBbIfx *x)
+{
+    return x->txq_len || (x->version == 2 && x->credits_out < IFX_V2_GRANT / 2);
+}
+
+void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
+                     const uint8_t **rx, size_t *rxlen)
+{
+    unsigned in_len = 0, out_len, grant = 0;
+
+    *rx = NULL;
+    *rxlen = 0;
+    if (n >= IOS_BB_IFX_HDR) {
+        in_len = mosi[0] | (mosi[1] & 0xf) << 8;
+        /* 0xfff and anything past the frame: no payload (the kext's own rule). */
+        if (in_len <= x->max_data && IOS_BB_IFX_HDR + in_len <= n) {
+            *rx = mosi + IOS_BB_IFX_HDR;
+            *rxlen = in_len;
+        } else {
+            in_len = 0;
+        }
+    }
+    memset(miso, 0, n);
+    if (n < IOS_BB_IFX_HDR) {
+        return;
+    }
+    out_len = MIN(x->txq_len, MIN(x->max_data, (unsigned)n - IOS_BB_IFX_HDR));
+    miso[0] = out_len;
+    miso[1] = out_len >> 8;
+    if (x->txq_len > out_len) {
+        miso[1] |= IFX_MORE;
+    }
+    if (x->version == 2) {
+        /* ponytail: credits counted per data frame; refine once the N90 guest is traced. */
+        if (in_len) {
+            x->credits_out--;
+        }
+        if (x->credits_out < IFX_V2_GRANT / 2) {
+            grant = IFX_V2_GRANT - x->credits_out;
+            x->credits_out += grant;
+        }
+        miso[2] = grant;
+        miso[3] = grant >> 8;
+    } else {
+        miso[2] = x->max_data;                 /* next_data_size: what we can take */
+        miso[3] = ((x->max_data >> 8) & 0xf) | IFX_V1_CTS;
+    }
+    memcpy(miso + IOS_BB_IFX_HDR, x->txq, out_len);
+    memmove(x->txq, x->txq + out_len, x->txq_len - out_len);
+    x->txq_len -= out_len;
 }
 
 /* ------------------------------------------------------------------ public API */

@@ -18,6 +18,12 @@
  * incoming-call, remote-answer, remote-hangup and incoming-sms ("<num>|<text>");
  * the observables call-state, last-dialed and last-mo-sms.
  *
+ * The 3GS and iPhone 4 put the same modem behind SPI2 instead (BasebandSPI's IFX
+ * framing, docs/baseband/commcenter-4.2.1-3gs.md): with ifx-version 1/2 and
+ * ifx-max-data set from the DT spi2 node there is no chardev; the board's
+ * baseband SPI controller calls ios_baseband_spi_xfer() per frame and wires the
+ * "mrdy" GPIO in and "srdy" GPIO out.
+ *
  * Replies leave from a timer, never inside chr_write, for the same two reasons the
  * Bluetooth HCI chardev has: re-entering the UART model mid-write, and beating the
  * guest to its own receive setup. It also gives the model a millisecond to be a
@@ -30,6 +36,8 @@
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "hw/qdev-core.h"
+#include "hw/irq.h"
+#include "hw/qdev-properties.h"
 #include "system/reset.h"
 #include "migration/vmstate.h"
 #include "hw/misc/ios_baseband.h"
@@ -83,6 +91,47 @@ static void iosbb_flush(IosBasebandState *s)
     }
 }
 
+/*
+ * SPI: SRDY is an edge to the AP. Raise it when the modem has something to say or
+ * the AP asked for a transfer (MRDY); every transfer drops it, and the timer
+ * raises it again if there is more.
+ */
+static void iosbb_srdy_update(IosBasebandState *s)
+{
+    bool want = s->mrdy_level || ios_bb_ifx_pending(&s->ifx);
+
+    if (want != s->srdy_level) {
+        s->srdy_level = want;
+        qemu_set_irq(s->srdy, want);
+    }
+}
+
+static void iosbb_mrdy(void *opaque, int n, int level)
+{
+    IosBasebandState *s = opaque;
+
+    s->mrdy_level = level;
+    if (level) {
+        iosbb_arm(s, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
+    }
+}
+
+void ios_baseband_spi_xfer(DeviceState *dev, const uint8_t *mosi, uint8_t *miso, size_t n)
+{
+    IosBasebandState *s = IOS_BASEBAND(dev);
+    const uint8_t *rx;
+    size_t rxlen;
+
+    s->bb.now_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+    ios_bb_ifx_xfer(&s->ifx, mosi, miso, n, &rx, &rxlen);
+    if (rxlen) {
+        ios_bb_input(&s->bb, rx, rxlen);
+    }
+    s->srdy_level = false;
+    qemu_set_irq(s->srdy, 0);
+    iosbb_arm(s, s->bb.now_ms + IOS_BB_LATENCY_MS);
+}
+
 static void iosbb_tick_timer(void *opaque)
 {
     IosBasebandState *s = opaque;
@@ -90,7 +139,11 @@ static void iosbb_tick_timer(void *opaque)
     int64_t due;
 
     ios_bb_tick(&s->bb, now);
-    iosbb_flush(s);
+    if (s->ifx_version) {
+        iosbb_srdy_update(s);
+    } else {
+        iosbb_flush(s);
+    }
 
     due = ios_bb_next_due(&s->bb);
     if (s->out_len) {
@@ -389,6 +442,26 @@ static const VMStateDescription vmstate_ios_bb_sms = {
     }
 };
 
+static bool iosbb_spi_needed(void *opaque)
+{
+    return IOS_BASEBAND(opaque)->ifx_version != 0;
+}
+
+static const VMStateDescription vmstate_ios_baseband_spi = {
+    .name = "ios-baseband/spi",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = iosbb_spi_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT32(ifx.credits_out, IosBasebandState),
+        VMSTATE_UINT8_ARRAY(ifx.txq, IosBasebandState, 16384),
+        VMSTATE_UINT32(ifx.txq_len, IosBasebandState),
+        VMSTATE_BOOL(srdy_level, IosBasebandState),
+        VMSTATE_BOOL(mrdy_level, IosBasebandState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_ios_baseband = {
     .name = "ios-baseband",
     .version_id = 1,
@@ -471,6 +544,10 @@ static const VMStateDescription vmstate_ios_baseband = {
         VMSTATE_UINT32(out_len, IosBasebandState),
         VMSTATE_TIMER_PTR(timer, IosBasebandState),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_ios_baseband_spi,
+        NULL
     }
 };
 
@@ -488,18 +565,32 @@ static void iosbb_machine_reset(void *opaque)
     ios_bb_reset(&s->bb);
     s->out_len = 0;
     timer_del(s->timer);
+    if (s->ifx_version) {
+        ios_bb_ifx_init(&s->ifx, s->ifx_version, s->ifx_max_data);
+        s->srdy_level = false;
+        qemu_set_irq(s->srdy, 0);
+    }
 }
 
 static void iosbb_realize(DeviceState *dev, Error **errp)
 {
     IosBasebandState *s = IOS_BASEBAND(dev);
 
-    if (!s->chr) {
-        s->chr = qemu_chardev_new(NULL, TYPE_CHARDEV_IOS_BB, NULL, NULL,
-                                  &error_abort);
-        IOS_BB_CHARDEV(s->chr)->dev = s;
+    if (s->ifx_version) {
+        if (s->ifx_version > 2 || s->ifx_max_data <= 0) {
+            error_setg(errp, "ifx-version must be 1 or 2 with a max-data-size");
+            return;
+        }
+        ios_bb_ifx_init(&s->ifx, s->ifx_version, s->ifx_max_data);
+        ios_bb_init(&s->bb, ios_bb_ifx_queue, &s->ifx);
+    } else {
+        if (!s->chr) {
+            s->chr = qemu_chardev_new(NULL, TYPE_CHARDEV_IOS_BB, NULL, NULL,
+                                      &error_abort);
+            IOS_BB_CHARDEV(s->chr)->dev = s;
+        }
+        ios_bb_init(&s->bb, iosbb_out, s);
     }
-    ios_bb_init(&s->bb, iosbb_out, s);
     s->timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, iosbb_tick_timer, s);
     qemu_register_reset(iosbb_machine_reset, s);
 }
@@ -582,6 +673,9 @@ static void iosbb_instance_init(Object *obj)
     object_property_set_description(obj, "incoming-sms",
         "Write \"<number>|<text>\": deliver a 23.040 SMS-DELIVER as +CMT");
 
+    qdev_init_gpio_in_named(DEVICE(obj), iosbb_mrdy, "mrdy", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->srdy, "srdy", 1);
+
     object_property_add_str(obj, "call-state", iosbb_get_call_state, NULL);
     object_property_set_description(obj, "call-state",
         "idle, dialing, alerting, incoming, active or held (first live call)");
@@ -589,10 +683,17 @@ static void iosbb_instance_init(Object *obj)
     object_property_add_str(obj, "last-mo-sms", iosbb_get_last_mo_sms, NULL);
 }
 
+/* Board data: the DT spi2 node's protocol-version and max-data-size. */
+static const Property iosbb_props[] = {
+    DEFINE_PROP_INT32("ifx-version", IosBasebandState, ifx_version, 0),
+    DEFINE_PROP_INT32("ifx-max-data", IosBasebandState, ifx_max_data, 0),
+};
+
 static void iosbb_class_init(ObjectClass *oc, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
+    device_class_set_props(dc, iosbb_props);
     dc->realize = iosbb_realize;
     dc->unrealize = iosbb_unrealize;
     dc->vmsd = &vmstate_ios_baseband;

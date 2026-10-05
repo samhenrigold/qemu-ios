@@ -20,9 +20,24 @@ struct IosBasebandState {
     QEMUTimer *timer;
     uint8_t out[8192];            /* bytes waiting for the UART */
     unsigned out_len;
+
+    /* SPI transport (3GS/iPhone 4): ifx-version 1 or 2; 0 = UART chardev (M68). */
+    int ifx_version;
+    int ifx_max_data;
+    IosBbIfx ifx;
+    qemu_irq srdy;                /* out: "clock me" (edge to the AP's GPIO) */
+    bool srdy_level;
+    bool mrdy_level;              /* in: the AP wants a transfer */
 };
 
 /* The chardev to pass to the UART model as its backend. */
 Chardev *ios_baseband_chardev(DeviceState *dev);
+
+/*
+ * SPI transport: one full-duplex IFX frame of n bytes, called by the baseband SPI
+ * controller once the AP has clocked it (MRDY is the named GPIO in "mrdy", SRDY the
+ * named GPIO out "srdy").
+ */
+void ios_baseband_spi_xfer(DeviceState *dev, const uint8_t *mosi, uint8_t *miso, size_t n);
 
 #endif
