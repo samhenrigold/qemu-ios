@@ -22,7 +22,8 @@ second board on the same machine file (`-M n88`, below).
   behind dart0. Home wakes the panel, slide to unlock works (N1F55 digitizer firmware downloaded, frames
   read), the home screen comes up (2026-10-04, `screens` in qemu-ios-files/n18/runs/t4.png).
 - Power-off: QMP `system_powerdown` makes the user's gesture (Home, Hold 3.5 s, drag "slide to power
-  off"); SpringBoard swaps every framebuffer, AppleM2TVOut's too, so TV-out is modelled; the guest unmounts,
+  off", rest 0.5 s at the end, lift; up to three drags). SpringBoard swaps every framebuffer,
+  AppleM2TVOut's too, so TV-out is modelled; the guest unmounts,
   syncs the FTL ("AppleNANDFTL::_powerDownHandler: sync complete") and QEMU exits about 15 s after the
   request. Persistence (2026-10-05): a 70001-byte file pushed with `afcclient` over usbmuxd-qemu
   (`usb-tcp-addr=`) reads back identical after that power-off and a reboot on the same overlay; lockdown
@@ -31,8 +32,18 @@ second board on the same machine file (`-M n88`, below).
   goes in through installation_proxy and AppSync, gets pinned to page 1, launches, its GLES row renders
   through the bridge (readback PASS, no refusals), then the guest powers off. The guest-services trap carries
   GLES and guest packages (debt 8 covers what reaches the panel). Recipe below.
+- Wi-Fi (2026-10-05): the board's BCM4329 B1 (AppleBCMWLAN's "N18 - 4329 B1": CIS s=B1 / P=N18,
+  4329b1/n18.bin 4.221.38.1) as the iPad's dongle model, behind the SDHC at 0x80000000 (IRQ 0x22) that the
+  IOP firmware's sdiodrv drives. The stock stack joins the open BSS "qemu-ios", takes 10.0.2.15 from slirp and
+  shows the Wi-Fi icon. `wifi=` and `wifi-bssid` work as on the iPad (docs/ipad1/wifi.md);
+  `regress.py --machine n18 --checks wifi` PASS. It needed the CDMA HOLD state (n88's 3aa02ab1a8): with
+  Wi-Fi up, BTServer parks uart3's RX channel.
+- LightTouchMac (2026-10-05, LTM branch n18-app): FirmwareKit prepares `n18ap-8C148` end to end. That covers
+  the kboot board, a plain NAND store (the DT has no metadata-whitening), the keybag one-shot, the seal and the
+  check boot. On that device, app-install passes all 7 steps and regress persist and wifi pass. The machine takes
+  `die-id` as ipad1 does.
 - Audio: I2S0 gets the codec's PCM from CDMA channel 0x15 on the audio clock (no listening test yet).
-- Not yet: Wi-Fi, the D1755's button wake path (debt 6).
+- Not yet: the D1755's button wake path (debt 6), a USB host port for regress's keyboard checks (debt 9).
 
 ## How to boot
 
@@ -78,7 +89,12 @@ The lock screen turns the panel off after a few idle seconds and the digitizer w
 `DisablePowerForUILock`): press Home (`qom-set /machine button-home true`, then false) before a drag.
 
 Machine properties: `kboot`, `nand`, `nand-overlay`, `nor`, `nor-rw` (on the N18 a NOR on spi0 only when one
-is set), `button-home`, `button-hold`, `usb-tcp-addr` (usbmuxd-qemu's QEMU port, as on the iPad).
+is set), `button-home`, `button-hold`, `usb-tcp-addr` (usbmuxd-qemu's QEMU port, as on the iPad), `die-id`,
+`wifi`, `wifi-bssid`, `guest-package`, `gles-debug`, `gles-rejects`, `display-sleeping` (the DSI panel is off),
+`accel-orientation`/`-x`/`-y`/`-z`/`-shake`. The app's button bridge reaches the board's pins
+(`s5l8920_press_button`). The guest agent (`agent-request`/`-result`/`-status`/`-cancel`, it_agent) and the
+pasteboard work as on the iPad. `battery-level` (0-100, the D1755's ADC), `battery-charging` (auto/on/off) and
+`usb-attached` work as on the iPod, at boot (-M) and at run time.
 
 ### App install
 
@@ -98,6 +114,62 @@ cc -o build/ipad1-tools/sbicons tests/ipad1/sbicons.c $(pkg-config --cflags --li
 tests/ipad1/app-install.py --machine n18 --device $F/dev3 --kboot $F/kboot-nor-nov.bin --nor $F/dev3/nor.bin \
     --product-version 4.2.1 --ipa Harness.ipa --gl-tap 0.5,0.165 --out $F/runs/app
 ```
+
+### iOS 3.1.3 (7E18)
+
+Boots by kboot to an activated home screen. Unlock works, and usbmux, AFC (five sizes), persist (70001
+bytes across a guest power-off and a reboot on the same overlay) and Wi-Fi pass (2026-10-05). Wi-Fi joins
+qemu-ios and takes 10.0.2.15. 3.1.3's AppleBCMWLAN-1.25 logs no lease, so regress's wifi check also
+accepts slirp's DHCPACK in a capture of the netdev. The same tools as 4.2.1 build it, with four differences that the 3.1.3 kernel and IOP
+firmware need:
+
+| What | Why |
+|---|---|
+| `ipad1_nand.py build --sig-flags 4` | 3.1.3's AppleNANDFTL formats with NANDDRIVERSIGN flags 4 (0xc03dbae2). It reports "Incompatible Signature" for flags above 4 under a '1' second signature byte (0xc03db8aa), which includes 4.x's 5 |
+| `ipad1_rootfs.py build --data-block-size 8192 --data-unjournaled` | 3.1.3's mount_hfs fails the journaled data volume the Mac makes with EINVAL, at 4096 or 8192 bytes, and also with the journal left for the device to initialize. An unjournaled volume mounts. Debt 10 |
+| kboot (`s5l8920_kboot.py`) | the 3.1.x DT has no die-id, display-rotation or display-scale slots, so fill_dt skips them (the 3.x kernel reads none of them) |
+| lockdownd | the 8C148 activation patcher's pattern matches 3.1.3's lockdownd unchanged (`activation_hook` as for 4.2.1) |
+
+The model side:
+- `s5l8930.h2fmi` arms the next FIFO transfer on a READ ID (3.1.3's IOP firmware reads each chip's ID
+  without clearing control in between). Without that, the panic is "IOP failed to read ID".
+- A new write transfer (control 5) clears DONE.
+- The board now sets `explicit-start` for the N18 as well as the N88. 3.1.3's s5l8922x firmware fills the
+  FIFO for the next page before it writes control 5, so without it the page completes onto the previous
+  chip and the FTL later reads it blank ("multiple read operation ... 0x80000023", then a disk0s2 media
+  error).
+- 4.2.1 passes usbmux, AFC, persist and Wi-Fi with this change (the FirmwareKit fk-dev device).
+
+```
+F=~/Developer/qemu-ios-files/n18-fw            # keys: api.ipsw.me/v4/keys/ipsw/iPod3,1/7E18, as a key page
+imgtools/ipad1_fw.py $F/iPod3,1_3.1.3_7E18_Restore.ipsw $F/keys-7E18.txt $F/dec-7E18
+imgtools/ipad1_rootfs.py build --rootfs $F/dec-7E18/rootfs.dmg --pristine $F/dec-7E18/rootfs.dmg --mbr $F/mbr.bin \
+    --out $F/userland-7E18 --lockdown none --no-usb-net --no-web-proxy --no-ca-ogl --data-block-size 8192 --data-unjournaled
+# activation_hook(offline-activation-8C148/patch_lockdownd.py) on userland-7E18/pristine/system.img, as above
+imgtools/ipad1_nand.py build --no-whitening --sig-flags 4 --geometry k48-16g --mbr $F/mbr.bin \
+    --kernelcache $F/dec-7E18/kernelcache.mach --system $F/userland-7E18/pristine/system.img \
+    --data $F/userland-7E18/pristine/data.img --out $F/userland-7E18/nand-pristine
+imgtools/s5l8920_kboot.py n18 --identity $F/identity.json $F/dec-7E18 $F/kboot-7E18.bin \
+    "serial=3 debug=0x8 -v amfi_allow_any_signature=1 cs_enforcement_disable=1"
+tests/ipad1/regress.py --machine n18 --kboot $F/kboot-7E18.bin --nand $F/userland-7E18/nand-pristine \
+    --product-version 3.1.3 --checks usbmux,afc,persist
+```
+
+3.x has no data protection, so it needs no NOR and no keybag. `tests/ipad1/regress.py` now passes
+IPAD1_QEMU_EXTRA to QEMU, as boot-smoke.py does. Use it with `-global driver=s5l8930.h2fmi,...`; the dotted
+`-global s5l8930.h2fmi.x=` form splits at the type name's own dot and silently does nothing.
+
+### iOS 3.1.1 (7C145)
+
+Built exactly as 3.1.3, with the same four differences (`--sig-flags 4`, the unjournaled 8 KiB data volume,
+the kboot DT guards, the unchanged 8C148 lockdownd hook): substitute 7C145 for 7E18 in the commands above
+(keys from api.ipsw.me/v4/keys/ipsw/iPod3,1/7C145). It boots to an activated home screen, and usbmux, AFC,
+persist and Wi-Fi pass (2026-10-05). It needed no model change of its own. One gesture fix came out of it:
+in about one 3.1.1 persist run in three, the touch landed on the power-off knob (its label faded) but the knob
+ignored the drag and snapped back, so the guest never shut down. Screendumps every 1.5 s show it. The gesture
+now rests 0.5 s at the end of the track before lifting. If the guest is still up 2.5 s later, it drags again,
+up to three times in all, as a user would. Once the guest is shutting down, the sheet is gone and a drag
+does nothing.
 
 ## Models: reused, varied, new
 
@@ -141,17 +213,31 @@ offsets at 0x80000000).
 2. **Clock table (kboot)**: `clock-frequencies` is the iPad's cut to these DTs' 32 slots.
 3. **ChipID fuses**: the K48's words.
 4. **D1755 backlight**: undecoded; the panel is held lit (`backlight-enable-reg` points at a scratch byte).
-5. **Wi-Fi (SDIO), AMC**: not wired.
-6. **Buttons**: GPIO only; the D1755's wake latch (DT wake_button_* on its STAT) is not driven, so a press
-   cannot wake a sleeping AP. Sleep has not been tried.
+5. **AMC**: not wired.
+6. **Buttons**: GPIO only. On USB power (always, as on the iPad), Hold locks the panel and Hold or Home wakes it
+   (2026-10-05, FirmwareKit device). The AP never deep-sleeps there. Unplugged (`usb-attached=off`), the locked
+   device deep-sleeps about 2 minutes after boot: "System Sleep", then the D1755 driver's "pmu go hib" (0x805cc8f6 on
+   8C148), which writes 0x6f = 0x80 and sets 0x26 in 0x0d. Bit 0 stays clear, so it is not power-off. Nothing models
+   the PMU cutting AP power or a press powering it back, so it stays asleep. On hardware, LLB resumes the
+   kernel. Findings so far:
+   - The wake buttons are the PMU's STAT function (DT buttons: function-wake_button_menu/_hold, args 0x180/0x181).
+   - The hib path first configures wake sources (0x805cb4c0, reads 0x50..0x57).
+   - No resume address appears in PMGR, pram (top 16 KiB of DRAM) or SRAM after sleep.
+   - Re-entering the kboot entry with DRAM kept and devices reset (an experiment) ends in the abort handler.
+     So the kernel expects a separate resume entry, which LLB knows about. Next: find where xnu-1504's ARM sleep
+     path leaves it (PMU scratch over I2C is the remaining candidate), then make kboot's reset loader branch there
+     on a PMU wake.
 7. **it_keybag**: the iPad's armv7 build (`build/ipad1-guest/it_keybag`), copied; same volume layout.
-8. **GL scene on the panel**: the harness's GLES view renders into its 240x360 IOSurface (stride 960) and
-   reads back right, but the panel shows that surface laid out linearly at the panel's 320-pixel stride
-   (the top 270 rows, cyan/magenta stripes). The CLCD keeps scanning its own framebuffer (window 1 unchanged)
-   and the scaler runs no transfer during the scene, so the copy happens in the guest's composite of the app
-   surface. The gate's fixture-colour test (51%) passes regardless. Next: find which compositor reads the
-   surface at panel geometry (SpringBoard's software CA with `CA_ENABLE_OGL=0`, or IOMFB's swap of the
-   app's layer).
+8. **GL scene on the panel** (fixed 2026-10-05, d6ab1dab16). For a full-screen GL view, 4.x scans the app's
+   surface out directly. CLCD window 1 is the 240x360 GL surface (stride 240, origin 40,60, double-buffered);
+   window 2 is the UI, alpha-blended over it; +0x04 = 0x30. The model composed planes only when not behind the
+   DART, and read them physically, so N18/N88 showed window 1 at panel geometry (the stripes). Composition now
+   reads through the IOMMU (`ipod_touch_lcd.c` lcd_bus_read). Machines without one are unchanged.
+9. **No USB host port**: the OTG runs in device mode only, so regress's `boot`/`net` checks, which type on a
+   `usb-kbd` on `usb-bus.0`, cannot run (Bus 'usb-bus.0' not found). `wifi`, `persist` and app-install do.
+10. **3.1.3: data volume without a journal.** 3.1.3's mount_hfs refuses the Mac-made journal (EINVAL) for
+    reasons not yet traced, so the data volume is built unjournaled. A guest that stops without unmounting
+    then needs fsck.
 
 ## iPhone 3GS (N88AP, S5L8920): `-M n88`
 
@@ -160,10 +246,4 @@ iPad's), its own SPI NOR (no graft), the spi2 baseband controller with nothing o
 AK8973 compass, CS42L61 (the CS42L58 register model, as on the iPad) and CD3272. The baseband DT node is
 unmatched by kboot (fill_dt) and carries GSMA's test IMEI 004999010640000 and the serial `TESTSNUM0000`.
 
-State (2026-10-05): 8C148a boots the restore ramdisk to "BSD root: md0". The s5l8920x IOP firmware (the
-N88's; the N18 runs the s5l8922x build of the same iBoot-931) drives the H2FMI differently, now modelled:
-FMC at +0x400 and ECC at +0x800 (`fmc-offset`/`ecc-offset`), READ ID as byte-wide reads (go 0x10 after
-0x90), a blank page flagged in the ECC summary bit 6 (`ecc-blank-summary`). Chips identify (0xB614D5AD on
-both buses) and VFL opens on an epoch-3 store (`ipad1_nand.py --epoch 3`, the IPSW's SCEP), but the YaFTL R/O
-restore reads page after page and has not finished in 5 minutes: the next thing to decode is this
-firmware's data-read path. Until then the keybag one-shot and the NAND root do not work on the N88.
+State: docs/n88/README.md (4.2.1 home screen, power-off and persistence, app install).

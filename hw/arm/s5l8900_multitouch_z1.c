@@ -300,9 +300,29 @@ static uint32_t z1_transfer(SSIPeripheral *dev, uint32_t value)
     return r;
 }
 
+/*
+ * The Zephyr2 profile's sensor, with frame_* fitted on M68 1A543a: the point
+ * 1.0's GraphicsServices reported (GSEventGetLocationInWindow, read through the
+ * gdbstub) for taps aimed over a 3x8 grid. The iPod's frame landed taps 32 px
+ * high at the top and 9 px at the bottom (y = 1.056 aim - 34) and 2.5% wide in
+ * x; a line fit per axis solved for x = 14 + 4490u, y = -109 + 6919v (bottom-up).
+ */
+static const MTSensorProfile mt_profile_z1 = {
+    .family_id = MT_FAMILY_ID,
+    .rows = MT_SENSOR_ROWS, .cols = MT_SENSOR_COLUMNS,
+    .bcd_version = MT_BCD_VERSION,
+    .surface_width = MT_SENSOR_SURFACE_WIDTH,
+    .surface_height = MT_SENSOR_SURFACE_HEIGHT,
+    .region_desc = { MT_SENSOR_REGION_DESC }, .region_desc_len = 1,
+    .region_param = { MT_SENSOR_REGION_PARAM }, .region_param_len = 1,
+    .frame_x0 = 14, .frame_width = 4490,
+    .frame_y0 = -109, .frame_height = 6919,
+};
+
 static void z1_realize(SSIPeripheral *d, Error **errp)
 {
     z1_parent_realize(d, errp);
+    IPOD_TOUCH_MULTITOUCH(d)->profile = &mt_profile_z1;
 }
 
 static void z1_reset(DeviceState *dev)

@@ -29,5 +29,7 @@ void ipod_touch_press_button(IPodTouchButton button, bool down);
 void ipad1_press_button(IPodTouchButton button, bool down);
 /* The iPod touch 1G's (GPIO pads 0x16), home and power only; no-op on other machines. */
 void ipod_touch_1g_press_button(IPodTouchButton button, bool down);
+/* The S5L8920 boards' (-M n18, n88) GPIO buttons; no-op on other machines. */
+void s5l8920_press_button(IPodTouchButton button, bool down);
 
 #endif /* HW_ARM_IPOD_TOUCH_BUTTONS_H */
