@@ -144,8 +144,11 @@ These hold for the 3GS unless its v1 trace says otherwise.
 * **Roaming (open)**: with CarrierLab installed, the status bar shows the network as home (`+creg` 1;
   CommCenter's registration getter at 0x3b9c0 returns 4 = home), but packet data still counts as
   international roaming. With Data Roaming off, Safari says "Data Roaming is turned off". With
-  `mcc-mnc=310410` (AT&T's bundle) the alert goes away, so the cause lies in what CarrierLab's bundle
-  (or its absence of a home-network list) tells CommCenter. The exact check has not been traced.
+  `mcc-mnc=310410` (AT&T's bundle) the alert goes away. So it does with `mcc-mnc=24608` and IMSI
+  246080000000001: that SIM gets the same CarrierLab bundle (its SupportedSIMs list 24608), but MCC 246 is in
+  CoreTelephony's MCC2ISO.plist ("lt") and MCC 001 is not. CommCenter cannot place the test network in a
+  country, so it treats packet data as international roaming. Nothing in the bundle or the modem
+  changes that without leaving the 3GPP test PLMN (001/01 stays the default; fictitious identities only).
   * The switch is `InternationalRoamingEDGE` in com.apple.commcenter, in CommCenter's own user's
     preferences (`_wireless`, `CFPreferencesCopyValue(..., kCFPreferencesCurrentUser,
     kCFPreferencesAnyHost)`, 0x1e7d4), so the file is
@@ -159,6 +162,10 @@ These hold for the 3GS unless its v1 trace says otherwise.
     If CommCenter had stored no ICCID within it_prefs' wait, the restarted CommCenter stores one, sees a
     new SIM and turns the key off again, so it_prefs makes a second pass for the stored ICCID.
   * The test PLMN stays the default. 1.0's CommCenter has no such key.
+  * After Wi-Fi has been in use, Safari keeps the AirPort service's PAC answer and sends cellular requests
+    to the web proxy at 10.0.2.100:3128 (`IOS_BB_TRACE=2` shows each uplink packet's addresses). That
+    address exists only as the Wi-Fi netdev's guestfwd, so the cellular netdev needs the same guestfwd
+    (`-netdev user,id=cell0,guestfwd=tcp:10.0.2.100:3128-...`), as the app gives wifi0.
   * Each such restart resets the baseband (raw `at` pings into the mux, then BB_RST/RADIO_ON). The modem
     keeps the AP's v2 credits across that reset (the kext keeps its count), else the re-init's URCs
     starve it and the phone sits at "Searching..." (fixed in 05fb82752f). With that fix, data works on a

@@ -250,9 +250,12 @@ def main():
             return 1
         if gl:
             x, y = map(float, gl.split(","))
-            b.tap((x * rg.itqmp.W, y * rg.itqmp.H))
-            time.sleep(8)
-            frac = fixture_fraction(png(b, "gl"))
+            for _ in range(2):   # a tap that lands while the app is still settling is dropped: the menu stays
+                b.tap((x * rg.itqmp.W, y * rg.itqmp.H))
+                time.sleep(8)
+                frac = fixture_fraction(png(b, "gl"))
+                if frac > 0.3:
+                    break
             # a transfer CA queued and never notified (it tore the layer down first) is not a frame the bridge refused
             rej = {k: v for k, v in rg.itqmp.gles_rejects(b.qmp).items() if k != "shim:scaler:token-dropped"}
             said = re.findall(r"^\S+ ((?:PASS|FAIL)[^\n]*GLES[^\n]*)", harness_results(b, bundle), re.M)   # "<time> <line>"

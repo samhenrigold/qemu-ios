@@ -323,6 +323,32 @@ offsets at 0x80000000).
 10. **3.1.3: data volume without a journal.** 3.1.3's mount_hfs refuses the Mac-made journal (EINVAL) for
     reasons not yet traced, so the data volume is built unjournaled. A guest that stops without unmounting
     then needs fsck.
+11. **3.1.1 (7C146): an early AppleD1755PMUBacklight panic** (closed 2026-10-05: not reproducible on ipad1).
+    - **Report** (n18-fw, guestdev): "kernel abort type 4 ... far 0x0" just after "AppleD1755PMU::start: set
+      VBUCK1_PRE3". It hit 3/3 first persist boots of the FirmwareKit 7C146 device and 1/6 regress usbmux boots;
+      0/8 boots without usbmuxd. The path was IOPM servicePMRequest -> all_done -> tellChangeUp ->
+      messageClient.
+    - **What faults** (7C146 kernelcache): the override is AppleD1755PMUBacklight::message (vtable data at
+      0xc045da28, slot 140 = 0xc0457a0c), not the PMU's.
+      - It loads this+0x6c and calls that object's vtable +0x84: runAction on an IOCommandGate.
+      - Backlight::start (0xc0458174) creates that gate with IOCommandGate::commandGate(this, 0) and stores it at
+        0xc0458392, after the work loop lookup and a PMU register read through the PMU's I2C helpers.
+      - The backlight is already attached to the PMU as a client by then. If the PMU's power change completes
+        inside that window, IOPM's tellChangeUp messages the PMU's clients, and the backlight's override
+        dereferences a null gate. That is a guest race with no null check.
+    - **On ipad1 d6bb704441** (device prepared from LTM guestdev-n18cat's n18ap-7C146 row):
+      - 10/10 regress persist runs pass, 11 counting a first one; several ran at host load 45-60.
+      - 12 first boots under lldb, with hardware breakpoints at 0xc0458392 (gate stored), 0xc045839a (NVRAM
+        lookup) and 0xc0457a0c (message), and usbmuxd attached. Some ran with QEMU at background QoS to
+        starve it. No race: the gate was always stored 0.5-11 s into the boot.
+      - The backlight's first message came about 44 s in, from AppleM2CLCD's backlight enable (type
+        0xe0014001, via IOMobileFramebuffer).
+      - I found no PMU interrupt or charger event in the model that lands early.
+    - **Hypothesis:** the earlier failures came from a build before the s5l8920, n88 and a4-int merges into
+      ipad1.
+    - **If it recurs:** catch the boot with the same breakpoints, plus the message's caller chain (the fp/lr
+      walk from 0xc0457a0c). Find which service's power change sent tellChangeUp, and why it completed
+      before 0xc0458392.
 
 11. **3.1.1: an early AppleD1755PMU panic, sometimes.** "kernel abort type 4 ... far 0x0" just after
    "AppleD1755PMU::start: set VBUCK1_PRE3". IOPM's work loop finishes a power change (servicePMRequest ->
