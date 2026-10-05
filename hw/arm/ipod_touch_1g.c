@@ -84,7 +84,7 @@ static const S5L8900Board n45_board = {
     .codec_i2s_ready_irq = 0xaa, .codec_host_output = false,
     .i2s_ram_bases = { N45_IIS0_BASE, N45_IIS2_BASE },
     .piezo = true,
-    .touch = "multitouch", .touch_atn_irq = 0x9b, .touch_cs_gpio = -1,
+    .touch = "multitouch", .touch_atn_irq = 0x9b, .touch_cs_gpio = -1, .mt_profile = &mt_profile_n45,
     .home_gpio = N45_GPIO_BUTTON_HOME, .home_irq = N45_GPIO_BUTTON_HOME_IRQ,
     .power_gpio = N45_GPIO_BUTTON_POWER, .power_irq = N45_GPIO_BUTTON_POWER_IRQ,
     .nand_banks = 8,
@@ -933,6 +933,9 @@ static void n45_machine_init(MachineState *machine)
     s->mt->sysic_atn_group = s->board->touch_atn_irq / 32;
     s->mt->sysic_atn_bit = s->board->touch_atn_irq % 32;
     s->mt->gpio_state = s->gpio;
+    if (s->board->mt_profile) {
+        s->mt->profile = s->board->mt_profile;
+    }
     if (s->board->touch_cs_gpio >= 0) {
         /* The Zephyr1 frames its bootloader stream by chip select (a GPIO pad, the DT's spi_cs0). */
         qdev_connect_gpio_out(DEVICE(s->gpio), GPIO2PAD(s->board->touch_cs_gpio) * 8 + GPIO2PIN(s->board->touch_cs_gpio),

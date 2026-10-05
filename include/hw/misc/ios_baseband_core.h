@@ -129,6 +129,7 @@ typedef struct IosBbCore {
 
     /* AT/network state. */
     bool hex_cs;               /* +CSCS="HEX" */
+    bool colp_off;             /* +COLP=0; on by default (1.0 never sends +COLP=1) */
     int cfun;
     int cops_format;
     bool cops_detached;        /* +COPS=2 */
@@ -143,6 +144,9 @@ typedef struct IosBbCore {
     int reg_step;              /* 0 idle, 1 search scheduled, 2 registered scheduled */
     int64_t reg_due_ms;
     int64_t xsim_due_ms;       /* +XSIM: n to push (SIM re-detection), 0 = none */
+    int temp_period_ms;        /* +xdrv=5,16,<s>: periodic +XDRVI: 5,17 temperature reports */
+    int temp_ch;
+    int64_t temp_due_ms;
     bool xsim_pushed;          /* the host has been told about the current SIM */
     int next_call_id;
     IosBbCall calls[IOS_BB_MAX_CALLS];
@@ -176,6 +180,8 @@ void ios_bb_tick(IosBbCore *bb, int64_t now_ms);
 int64_t ios_bb_next_due(const IosBbCore *bb);
 /* A control (signal, registration, operator, SIM) changed: tell the host what it would see. */
 void ios_bb_changed(IosBbCore *bb);
+/* The network's name or PLMN changed: a searching/registered cycle makes the host re-read it. */
+void ios_bb_operator_changed(IosBbCore *bb);
 
 int ios_bb_rssi(const IosBbCore *bb);
 /* Network-side call events. Return false if refused (no service, line busy). */
@@ -222,6 +228,7 @@ typedef struct IosBbIfx {
     unsigned txq_len;
 } IosBbIfx;
 
+void ios_bb_ifx_modem_reset(IosBbIfx *x);
 void ios_bb_ifx_init(IosBbIfx *x, int version, unsigned max_data);
 /* The core's out callback (opaque = the IosBbIfx). */
 void ios_bb_ifx_queue(void *opaque, const uint8_t *buf, size_t len);
@@ -235,6 +242,8 @@ bool ios_bb_ifx_pending(const IosBbIfx *x);
  */
 void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
                      const uint8_t **rx, size_t *rxlen);
+/* A MISO frame the AP set up but never clocked out: its payload goes back to the head of the queue. */
+void ios_bb_ifx_unsent(IosBbIfx *x, const uint8_t *miso);
 
 /* The radio nvram image iBoot reads (+xdrv=9,1,<block>): 0x600 bytes into nv. */
 void ios_bb_radio_nvram(uint8_t *nv);

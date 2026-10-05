@@ -86,11 +86,20 @@ def nsig():
     return 0x43313100 | (0x30 + EPOCH)
 SIG_FLAGS = 0x00010005
 # Boards whose DT has no metadata-whitening (S5L8920/8922: N18, N88) neither write nor accept whitened
-# meta (WMR "Metadata whitening not supported"): `build --no-whitening` stores it plain, flags 0x5.
+# meta (WMR "Metadata whitening not supported"): `build --no-whitening` stores it plain, flags 0x4: what
+# those boards' own FIL writes when it formats (3.1.3 N88 7E18, read back off its store), and the only value
+# 3.1.3 accepts (it refuses flags > 4 as "Incompatible Signature", 0xc05c58aa); 4.x and 5.x take it too.
 WHITENING = True
 
 
+# 3.1.x's driver (N18 7E18 AppleNANDFTL: 0xc03dbae2 writes 4) formats with flags 4 and refuses a store
+# whose flags exceed 4 under a '1' second signature byte (0xc03db8aa, "Incompatible Signature"): `--sig-flags 4`.
+SIG_FLAGS_OVERRIDE = None
+
+
 def sig_flags():
+    if SIG_FLAGS_OVERRIDE is not None:
+        return SIG_FLAGS_OVERRIDE
     return SIG_FLAGS if WHITENING else SIG_FLAGS & ~0x10000
 
 
@@ -493,7 +502,7 @@ def parse_size(s):
     return int(float(s[:-1]) * mult[s[-1].lower()]) if s[-1].lower() in mult else int(s)
 
 
-def make_hfs_image(path, size):
+def make_hfs_image(path, size, block_size=None, journaled=True):
     """Bare (no partition map) case-sensitive journaled HFS+, like iOS's data volume, in a SPARSE raw
     file: newfs_hfs writes only the volume's metadata, so a full-size (14.7 GB) data partition costs the
     host a few tens of MB, and FilePages.written() lets the store skip the holes."""
@@ -503,7 +512,9 @@ def make_hfs_image(path, size):
                        check=True, capture_output=True, text=True)
     dev = r.stdout.split()[0]
     try:
-        subprocess.run(["newfs_hfs", "-s", "-J", "-v", "Data", dev], check=True, capture_output=True)
+        bs = ["-b", str(block_size)] if block_size else []
+        subprocess.run(["newfs_hfs", "-s", *(["-J"] if journaled else []), *bs, "-v", "Data", dev], check=True,
+                       capture_output=True)
     finally:
         subprocess.run(["hdiutil", "detach", dev], capture_output=True)
     return path
@@ -607,7 +618,7 @@ def build(a):
 
     st = Store(out, geo, create=True)
     write_metadata(st, geo, kernel_version(a.kernelcache) if a.kernelcache else a.kernel_version,
-                   0x43313130 + nand_epoch(a.kernelcache) if a.kernelcache else nsig())
+                   nsig() if getattr(a, "epoch", None) or not a.kernelcache else 0x43313130 + nand_epoch(a.kernelcache))   # --epoch wins, else the kernel's
     ftl = FTLWriter(st, geo)
     # LPN == 4 KiB LBA. Segments in ascending LBA order:
     segs = [(0, min(p1[1], len(head) // ps), lambda n: bytes(head[n * ps:(n + 1) * ps]))]
@@ -848,7 +859,9 @@ def main():
     b.add_argument("--out", required=True)
     b.add_argument("--force", action="store_true")
     b.add_argument("--no-whitening", action="store_true", help="plain meta, signature flags 0x5 (DT without metadata-whitening)")
-    b.add_argument("--epoch", type=int, default=1, help="NAND epoch, the IPSW's Restore.plist DeviceMap SCEP (default 1)")
+    b.add_argument("--epoch", type=int, default=None, help="NAND epoch, the IPSW's Restore.plist DeviceMap SCEP (default: the kernel's PE_nand_epoch)")
+    b.add_argument("--sig-flags", type=lambda v: int(v, 0), default=None,
+                   help="NANDDRIVERSIGN flags as the build's driver formats them (3.1.x: 4; default 0x10005/0x5)")
     m = sub.add_parser("mbr")
     m.add_argument("--geometry", default="k48-16g", choices=[k for k in GEOMETRIES if k != "selfcheck"])
     m.add_argument("--system-mib", type=int, default=1280)
@@ -859,9 +872,10 @@ def main():
     c.add_argument("--mbr")
     c.add_argument("--system")
     a = ap.parse_args()
-    global WHITENING, EPOCH
+    global WHITENING, EPOCH, SIG_FLAGS_OVERRIDE
     WHITENING = not getattr(a, "no_whitening", False)
-    EPOCH = getattr(a, "epoch", 1)
+    SIG_FLAGS_OVERRIDE = getattr(a, "sig_flags", None)
+    EPOCH = getattr(a, "epoch", None) or 1
     if a.selfcheck:
         sys.exit(0 if selfcheck() else 1)
     if a.cmd == "build":

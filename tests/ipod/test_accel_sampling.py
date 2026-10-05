@@ -7,9 +7,12 @@ s=(root/'hw/arm/ipod_touch_lis302dl.c').read_text()
 h=(root/'include/hw/arm/ipod_touch_lis302dl.h').read_text()
 state=re.search(r'typedef struct LIS302DLState \{.*?\n} LIS302DLState;',h,re.S).group()
 functions='\n'.join(re.search(r'^(?:static )?[^\n]*\b'+name+r'\([^;]*?\n\{.*?^}',s,re.M|re.S).group()
- for name in ('lis302dl_sample','lis302dl_post_load'))
+ for name in ('lis302dl_counts','lis302dl_sample','lis302dl_post_load'))
 code=r'''
 #include <stdint.h>
+#include <math.h>
+#define ACCEL_WHOAMI_VALUE 0x3B
+#define ACCEL_CTRL_REG1_FS 0x20
 #include <stdbool.h>
 #include <assert.h>
 #include <errno.h>
@@ -54,7 +57,14 @@ int main(void) {
  assert(s.shake_start_ns==-1&&s.last_sample_ns==-1&&s.rate_hz==50&&s.noise_state==rng);
  s.rate_hz=401;assert(lis302dl_post_load(&s,3)==-EINVAL);
  assert(!lis302dl_post_load(&s,2)&&s.rate_hz==0&&s.noise_state);
- puts("PASS: 100/400 Hz DR, explicit rate, stable triplets, bounded noise, three-axis 200 ms shake and snapshot restore");
+ /* The LIS302DL itself: 18 mg/digit at +-2 g (1 g = 55.6 counts), 72 mg at +-8 g (FS). */
+ LIS302DLState part={.whoami=0x3B,.base_z=-64,.last_sample_ns=-1,.shake_start_ns=-1};
+ lis302dl_sample(&part,0);assert(abs(part.out_z+56)<=1&&abs(part.out_x)<=1&&abs(part.out_y)<=1);
+ part.ctrl_reg1=0x20;part.last_sample_ns=-1;
+ lis302dl_sample(&part,0);assert(abs(part.out_z+14)<=1);
+ part.ctrl_reg1=0;part.shake_start_ns=0;part.last_sample_ns=-1;
+ lis302dl_sample(&part,0);assert(part.out_x==110&&part.out_y==-110&&part.out_z==55);
+ puts("PASS: 100/400 Hz DR, explicit rate, stable triplets, bounded noise, three-axis 200 ms shake, snapshot restore, LIS302DL 18/72 mg per count");
 }
 '''
 with tempfile.TemporaryDirectory() as work:

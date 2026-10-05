@@ -78,6 +78,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930CDMAState, S5L8930_CDMA)
 #define CTRL_CONFIG_MASK    0xFFF8u         /* bits the guest owns */
 #define CTRL_AES_CTX(ctrl)  (((ctrl) >> 8) & 0xFF)
 #define ST_RUNNING          (1u << 16)
+#define ST_HELD             (1u << 17)      /* a running channel parked by CTRL_HOLD */
 #define ST_ERROR            (1u << 18)
 #define ST_DONE             (1u << 19)
 #define ST_FLAG             (1u << 20)
@@ -158,8 +159,8 @@ struct S5L8930CDMAState {
     uint8_t *gid_data;
     size_t gid_size;
     /* device FIFOs that pace their channels (s5l8930_cdma_set_source):
-     * the FMI's, and the baseband SPI's */
-    CDMASource src[2];
+     * the FMI's, the baseband SPI's, and a UART's receive register */
+    CDMASource src[3];
     /* Audio channels (I2S FIFOs) play out in real time, not inside the go
      * write; paced[] marks a chain in flight. */
     bool paced[CDMA_CHANNELS];
@@ -403,8 +404,9 @@ static uint32_t fifo_pop(S5L8930CDMAState *s, uint8_t *buf, uint32_t len)
  * and no UART feeds this model. Run instantly, it filled the ring with the
  * empty register's zeros at CPU speed: BlueTool's HCI reader on UART3
  * (channel 0xd) spun at 100% CPU and never let SpringBoard power off.
- * ponytail: stays running forever; hook the UART's receive path in here
- * when a device (the BCM4329) actually sends something.
+ * ponytail: stays running forever. A UART with something behind it
+ * registers its URXH as a source instead (s5l8920.c's Bluetooth HCI) and
+ * the chain is paced by its receive FIFO like the FMI's.
  */
 static bool cdma_waits_for_uart(const CDMAChannel *c)
 {
@@ -881,6 +883,16 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
         }
         c->ctrl = (c->ctrl & ~(CTRL_CONFIG_MASK | (v & ST_W1C))) |
                   (v & CTRL_CONFIG_MASK);
+        /*
+         * Hold on a running channel parks it: the S5L8920 kernel's CDMA
+         * driver stops a channel by setting HOLD and polling until the state
+         * (bits 16-17) is no longer plain "running" (0x80509918 on 8C148a:
+         * BTServer stopping uart3's RX). Unheld, the bit goes again.
+         */
+        c->ctrl &= ~ST_HELD;
+        if ((c->ctrl & CTRL_HOLD) && (c->ctrl & ST_RUNNING)) {
+            c->ctrl |= ST_HELD;
+        }
         if (v & CTRL_ABORT) {
             c->ctrl = (c->ctrl & ~ST_RUNNING) | ST_ABORTED;
             c->in_seg = false;
@@ -892,7 +904,7 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
                         "desc 0x%x\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
                         ch, v, c->settings, c->fifo, c->desc);
             }
-            if (cdma_waits_for_uart(c)) {
+            if (cdma_waits_for_uart(c) && !cdma_src(s, c->fifo)) {
                 uint32_t d[4];
 
                 /* Parked on the first segment: stopping it checks MAR/BC. */

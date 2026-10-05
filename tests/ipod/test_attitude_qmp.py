@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Native QOM attitude controls, including properties supplied before realize."""
-import tempfile
+import os, tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,9 +8,9 @@ import regress as r
 root=Path(__file__).resolve().parents[2]
 files=root.parent/'qemu-ios-files'
 out=tempfile.mkdtemp(prefix='it-attitude-qmp-')
-cfg=SimpleNamespace(out=out, files=str(files),base_nand=str(files/'nand-agent-v2'),
+cfg=SimpleNamespace(out=out, board='n72ap', files=str(files),base_nand=str(files/'nand-agent-v2'),
     nor=str(files/'ios3/nor_7E18.bin'),overlay=out+'/overlay',
-    qemu=str(root/'build-native14/qemu-build/qemu-system-arm'),usbmuxd_ok=False,
+    qemu=os.environ.get('QEMU', str(root/'build-native14/qemu-build/qemu-system-arm')),usbmuxd_ok=False,
     usb_port=r.free_port(1520,1539),qmp_port=r.free_port(28200,28219),wifi=False,cpu=None,mem='128M')
 class Procs(r.Procs):
     def spawn(self,argv,*rest,**kwargs):

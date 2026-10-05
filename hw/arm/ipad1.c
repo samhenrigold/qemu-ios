@@ -336,6 +336,7 @@ struct IPad1MachineState {
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
     bool baseband;                       /* leave the kboot DT's baseband node matchable (default off) */
+    DeviceState *bb_modem;               /* the ios-baseband behind spi2 (baseband=on, radio boards) */
     bool camera;                         /* leave the kboot DT's isp node matchable (default off) */
     bool iop_core;                       /* run the IOP firmware on a second core (default; off: the HLE) */
     DeviceState *iopcore;
@@ -474,12 +475,6 @@ static const ARMCPRegInfo ipad1_cp_reginfo[] = {
  * place (same slot, zero-padded) when the slot holds `vlen` bytes. Returns
  * the offset past the node at `off`, or 0 when malformed.
  */
-typedef struct A4DTEdit {
-    const char *name, *prop;
-    const void *value;
-    uint32_t vlen;
-} A4DTEdit;
-
 static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const A4DTEdit *e, int depth)
 {
     uint32_t nprops, nchildren;
@@ -505,7 +500,8 @@ static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const A4DTEdit *e,
         }
         if (!strncmp((char *)dt + off, "name", 32)) {
             named = plen > strlen(e->name) && !memcmp(dt + off + 36, e->name, strlen(e->name) + 1);
-        } else if (!strncmp((char *)dt + off, e->prop, 32)) {
+        }
+        if (!strncmp((char *)dt + off, e->prop, 32)) {      /* "name" itself may be edited */
             slot = dt + off + 36;
             slot_len = plen;
         }
@@ -526,8 +522,8 @@ static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const A4DTEdit *e,
 
 /* The DT a kboot bundle carries, found through its boot_args (iBoot's struct:
  * virtBase +4, physBase +8, deviceTreeP +0x30, deviceTreeLength +0x34). */
-static void a4_dt_edit(uint8_t *image, size_t image_len, uint32_t load_pa,
-                       uint32_t bootargs_pa, const A4DTEdit *e)
+void a4_dt_edit(uint8_t *image, size_t image_len, uint32_t load_pa,
+                uint32_t bootargs_pa, const A4DTEdit *e)
 {
     size_t ba = bootargs_pa - load_pa, dt;
     uint32_t vbase, pbase, dtp, dtlen;
@@ -622,6 +618,12 @@ static void ipad1_cpu_reset(void *opaque)
      */
     if (!s->baseband) {
         a4_dt_unmatch((uint8_t *)data, image_len, load_pa, bootargs_pa, "baseband");
+    } else if (s->bb_modem) {
+        /* lockdownd compares the DT's IMEI with the modem's +CGSN (iBoot fills it on hardware). */
+        g_autofree char *imei = object_property_get_str(OBJECT(s->bb_modem), "imei", &error_abort);
+
+        a4_dt_edit((uint8_t *)data, image_len, load_pa, bootargs_pa,
+                   &(A4DTEdit){ "baseband", "device-imei", imei, strlen(imei) });
     }
     /*
      * No ISP model either: AppleH3CamIn loads the ISP CPU's firmware and then
@@ -1468,6 +1470,7 @@ static void ipad1_init(MachineState *machine)
         qdev_prop_set_int32(bb, "ifx-version", s->board->bb_ifx);
         qdev_prop_set_int32(bb, "ifx-max-data", s->board->bb_max_data);
         object_property_add_child(OBJECT(s), "baseband-modem", OBJECT(bb));
+        s->bb_modem = bb;
         qdev_realize_and_unref(bb, NULL, &error_fatal);
         dev = qdev_new(TYPE_IOS_BASEBAND_SPI);
         object_property_set_link(OBJECT(dev), "modem", OBJECT(bb), &error_abort);

@@ -164,7 +164,11 @@ class QMP:
 
 
 def agent_alive(q):
-    return q.cmd("qom-get", path="/machine", property="agent-status") == "alive"
+    """False on a machine without the guest agent (no agent-status property)."""
+    try:
+        return q.cmd("qom-get", path="/machine", property="agent-status") == "alive"
+    except RuntimeError:
+        return False
 
 
 def gles_rejects(q):
@@ -666,9 +670,10 @@ def guest_powerdown(qmp, process, tag, log=print, charging_halt=False, prefer_ge
                 if not charging_halt:
                     raise
                 status = 0
-            except EOFError:
-                # A guest shutdown can beat the RPC reply. The retained
-                # PMU SHUTDOWN event below remains the acceptance gate.
+            except (EOFError, BrokenPipeError, ConnectionResetError):
+                # A guest shutdown can beat the RPC reply (or the next poll's
+                # write). The retained PMU SHUTDOWN event below remains the
+                # acceptance gate.
                 status = 0
             if status:
                 raise RuntimeError("agent halt failed: %d %r" % (status, response))
@@ -693,6 +698,16 @@ def guest_powerdown(qmp, process, tag, log=print, charging_halt=False, prefer_ge
                     confirmed = qmp.cmd("qom-get", path="/machine", property="guest-shutdown-confirmed")
                 except EOFError:
                     qmp.wait_for_guest_shutdown(0)
+                    break
+                except (BrokenPipeError, ConnectionResetError):
+                    # QEMU exited between polls and the write failed first: its SHUTDOWN event is
+                    # still unread in the socket.
+                    qmp.wait_for_guest_shutdown(2)
+                    break
+                except RuntimeError:
+                    # No such property (n18): the machine has no charging loop and exits on the
+                    # guest's power-off, so the SHUTDOWN event is the evidence.
+                    qmp.wait_for_guest_shutdown(max(1, deadline - time.monotonic()))
                     break
                 if confirmed is True:
                     # The guest unmounted and halted; the cable keeps iBoot

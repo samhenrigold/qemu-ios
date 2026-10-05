@@ -53,6 +53,7 @@ import os
 import plistlib
 import random
 import re
+import struct
 import shutil
 import subprocess
 import sys
@@ -158,7 +159,7 @@ class Boot:
             # max-power=20: 4.x gives the dock port's host side a small budget (the arbitrator's
             # AAPL,power-supply) and refuses the default 100 mA keyboard; 3.x never checks.
             argv += ["-device", "usb-kbd,bus=usb-bus.0,max-power=20"] if self.keyboard else []
-            argv += self.extra
+            argv += self.extra + os.environ.get("IPAD1_QEMU_EXTRA", "").split()   # e.g. -gdb, -global (boot-smoke.py's)
             self.qemu = self.procs.spawn(argv, os.path.join(self.dir, "qemu.log"), env=self.qemu_env)
             time.sleep(2)
         self.qmp = itqmp.QMP(self.sock, timeout=60)
@@ -849,20 +850,46 @@ def check_net_usb(cfg, r):
     safari_fetch(cfg, r, "net-usb", "USB Ethernet en1 (usbmuxd slirp)", wifi=False)
 
 
+def dhcp_acked(pcap):
+    """A DHCPACK (option 53 = 5) from slirp in a filter-dump capture."""
+    try:
+        d = open(pcap, "rb").read()
+    except OSError:
+        return False
+    o = 24
+    while o + 16 <= len(d):
+        caplen = struct.unpack_from("<I", d, o + 8)[0]
+        p, o = d[o + 16:o + 16 + caplen], o + 16 + caplen
+        if len(p) > 282 and p[12:14] == b"\x08\x00" and p[23] == 17 and struct.unpack_from(">H", p, 34)[0] == 67:
+            opts, i = p[282:], 0
+            while i + 2 < len(opts) and opts[i] != 255:
+                if opts[i] == 0:
+                    i += 1
+                    continue
+                if opts[i] == 53 and opts[i + 2] == 5:
+                    return True
+                i += 2 + opts[i + 1]
+    return False
+
+
 def check_wifi(cfg, r):
-    """Stock AppleBCMWLAN joins the model's open BSS and takes a lease (a4-guest; docs/ipad1/wifi.md)."""
-    b, detail = booted(cfg, "wifi", r, usb=False)
+    """Stock AppleBCMWLAN joins the model's open BSS and takes a lease (a4-guest; docs/ipad1/wifi.md).
+    The lease is the driver's log line where it has one (3.2.2, 4.x), else slirp's DHCPACK on the wire:
+    3.1.3's AppleBCMWLAN-1.25 logs no lease, so the Wi-Fi netdev is captured too."""
+    pcap = os.path.join(cfg.out, "wifi.pcap")
+    b, detail = booted(cfg, "wifi", r, usb=False,
+                       extra=["-netdev", "user,id=wifi0", "-object", "filter-dump,id=wifidump,netdev=wifi0,file=" + pcap])
     try:
         if not detail:
             return
         t0, text = time.time(), ""
         while time.time() - t0 < 120:
             text = open(b.serial, errors="replace").read()
-            if "receivedIPv4Address(): Received" in text:   # 3.2.2 "... IP Address", 4.2.1 "... address A.B.C.D"
+            if "receivedIPv4Address(): Received" in text or dhcp_acked(pcap):   # 3.2.2 "... IP Address", 4.2.1 "... address A.B.C.D"
                 break
             time.sleep(2)
         joined = 'ssid[ 8] = "qemu-ios"' in text
-        leased = "receivedIPv4Address(): Received" in text
+        leased = "receivedIPv4Address(): Received" in text or dhcp_acked(pcap)
         fw = "BCM4329 revision B1" in text and ("initFirmware(): successful initialization" in text or
                                                  "setupDriver():  Succeeded" in text)     # 6.x AppleBCMWLANCore
         if joined and leased and fw:
@@ -1082,6 +1109,11 @@ CHECKS = {"boot": check_boot, "gles": check_gles, "shadow": check_shadow, "usbmu
           "app": check_app}
 
 
+def portrait_unlock():
+    """The portrait lock screen's slider, along the bottom: measured at 640x960, scaled to the panel."""
+    return ((116 * itqmp.W // 640, 862 * itqmp.H // 960), (600 * itqmp.W // 640, 862 * itqmp.H // 960))
+
+
 def device_args(a):
     """--nand defaults to the --device's; product_version from the store's device.lock.json.
     Boot images (iBoot, NOR, catalog keys, die-id, or an explicit --kboot) come from ipad1_boot."""
@@ -1119,7 +1151,7 @@ def main():
         # A plugged-in iPod's lock screen is the charging battery on black, not the wallpaper: ~30% lit.
         global LIT_MIN_FRACTION, UNLOCK_FROM, UNLOCK_TO
         LIT_MIN_FRACTION = 0.2
-        UNLOCK_FROM, UNLOCK_TO = (116, 862), (600, 862)   # portrait panel: the slider runs along the bottom
+        UNLOCK_FROM, UNLOCK_TO = portrait_unlock()
     device_args(a)
     import ffmpeg_guard                     # imgtools; stock FFmpeg breaks iPod H.264
     why = ffmpeg_guard.check(a.qemu)

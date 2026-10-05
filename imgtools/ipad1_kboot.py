@@ -402,6 +402,8 @@ def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION, root_matching=ROOT_MATCH
                        **chosen, "firmware-version": iboot, "display-rotation": board["rotation"],
                        "display-scale": board["scale"],
                        "root-matching": root_matching}.items():
+        if key in ("die-id", "display-rotation", "display-scale") and key not in dt.props["chosen"]:
+            continue    # 3.1.x DTs (N18 7E18) have no slot for these, and their kernels read none of them
         dt.set("chosen", key, value)
     # iBoot-1940 (7.x) hands NVRAM to the kernel as /chosen/nvram-proxy-data; the IPSW DT reserves it zeroed.
     if "nvram-proxy-data" in dt.props["chosen"]:

@@ -18,7 +18,11 @@ UART1: carrier "Test Network" with full bars and EDGE, Wi-Fi up, SMS in, calls i
 - lockdownd: FirmwareKit's `conditional-no-record-initializer` strategy (LightTouchMac branch m68):
   "Setting the activation state to Activated", then "Disabling brick mode on the baseband". SpringBoard logs
   "lockdown says the device is: [Activated]". Later boots report "Using the cached activation state" (the data
-  ark persisted).
+  ark persisted). A data-only route does not work on 1.0 (tried, as Lakr233's qemu-ios-4 does for iOS 4: a
+  seeded `data_ark.plist` with `com.apple.mobile.lockdown_cache-ActivationState` Activated or
+  FactoryActivated, `-BrickState` false, vanilla lockdownd). lockdownd uses the cached state, but any change in
+  the baseband's ICCID (empty at first, then the SIM's) triggers an activation check, and with no Apple-signed
+  `activation_record.plist` that check sets Unactivated and brick mode: the branch the strategy rewrites.
 - Touch: the Zephyr1 (`s5l8900.multitouch-z1`): A-Speed bootloader, main firmware stream, reports, frames.
   Taps reach SpringBoard and apps (Settings, Brightness).
 - GL: LayerKit composites through the host GL bridge (the 1.x front end matches 1.0's 186 OpenGLES exports),
@@ -26,7 +30,13 @@ UART1: carrier "Test Network" with full bars and EDGE, Wi-Fi up, SMS in, calls i
 - Modem: CommCenter brings up H5, the 27.010 mux (DLCI 0-7) and its init sequence; registration on the
   001/01 test network, "Test Network", five bars, EDGE; no "Repair Needed" (only an "iPhone is activated"
   alert on the first boot). Incoming SMS (alert and Messages thread), incoming calls (ring, Answer, remote
-  hang-up), outgoing calls from the keypad (`last-dialed`, `remote-answer`, End Call from the UI).
+  hang-up), outgoing calls from the keypad (`last-dialed`, `remote-answer` with `+COLP` so the in-call screen
+  shows the number, End Call from the UI).
+- Cellular data (EDGE) with `-netdev user,id=cell0` (the modem looks that name up; LightTouchMac adds it).
+  CommCenter defines and activates the context (`+cgdcont`, `+cgact`, `+xdns`, `+cgpaddr`), then
+  `+cgdata="M-RAW_IP",1` turns DLCI 6 into raw IPv4, which the modem bridges to slirp. With `wifi=off`,
+  Safari's Apple bookmark goes over it: DNS, TCP and `GET /iphone/start/` reach www.apple.com, which
+  redirects to HTTPS; 1.0's Safari can't negotiate today's TLS ("could not establish a secure connection").
 - Power-off: `system_powerdown` (Home, Hold 20 s, slide) ends in `pmu go stdby` and QEMU exits.
 
 Modem verified 2026-10-05 on 1A543a with every item above, by QMP and screenshots.
@@ -90,21 +100,35 @@ The Zephyr1 wire protocol (openiBoot's `multitouch-z1.c`, and 1.0's AppleMultito
 `C2` data packets (A-Speed) and a blank `C2 00 00 00` before the main firmware stream, `05 00 00 06` verify
 (`D0 00` + 16-bit sum), `C4` execute, `D0` interface version, `8F` report info, `82` report, `46` frame
 length (`AA len len ck ck` for interface versions up to 0x10), `47` frame data (`AA` + frame + sum). The model
-reports interface version 1 and the Zephyr2 model's sensor profile. `MT_TRACE=2` logs every transaction.
+reports interface version 1 and the Zephyr2 model's sensor, with its own frame calibration: taps land
+within 0.1 px of their aim over the whole panel (fitted from the points 1.0's GraphicsServices reports,
+`GSEventGetLocationInWindow`, read through the gdbstub). `MT_TRACE=2` logs every transaction.
 
 ## Debts
 
-1. **Modem gaps.** The in-call screen of an answered outgoing call shows "Unknown" instead of the number
-   (1.0 sends `+CLCC` raw and never parses it). Unanswered commands get OK: `+crsm`, `+cnum`, `+xcfc`,
-   `+xctms`, `+xdtmf`, `+cclk`, `+xlog`. No cellular data, no audio. Messages formats the sender oddly
+1. **Modem gaps.** Unanswered commands get OK: `+crsm`, `+cnum`, `+xcfc`,
+   `+xctms`, `+xdtmf`, `+cclk`, `+xlog`. No audio. Messages formats the sender oddly
    ("+55 51 234").
 2. **Taps lag.** The guest UI takes tens of seconds to open an app on a cold boot; scripted taps must wait for
-   screenshots, not fixed delays.
+   screenshots, not fixed delays. A tap sent before a view is up is lost, which looks like dropped keypad
+   digits. Once the keypad is up, taps 0.25 s apart all register (8 of 8).
 3. **1.0's slow power-off sheet**: the gesture holds Hold 20 s (the sheet came up 13 s into a hold in one
    run). A run that releases too early locks the phone instead (`pmu go hib`).
-4. **Touch calibration.** The frames use the Zephyr2 model's sensor profile. Taps land on their targets at the
-   few points checked (Dismiss, icons, table rows), but no calibration fit was done as for the K48.
+4. **lldb killed mid-command** (guestdev): twice a boot stopped taking taps after an lldb attached to the
+   gdbstub was killed by `timeout` (the CPU idles taking serial interrupts, no syscalls). Not root-caused; a
+   clean detach is fine.
 5. The 1G's debts apply as they are (wake from sleep, AES convention, CLCD, timers 0-3).
+
+## Notes for guest software
+
+- Accelerometer: lying flat, 1.0's UIKit reads z = -0.43 g (Tilt), as a real iPhone on 1.0 does. The
+  LIS302DL model reports the datasheet's 18 mg per count at ±2 g (72 mg with CTRL_REG1's FS bit), so 1 g is
+  55.6 counts. 1.0 and 1.1.4's AppleLIS302DL turn a count into g as `count << 9` (1/128 g per count), 3.1.3's
+  as 1187/65536 (18 mg), so the same part reads 0.43 g on 1.0 and 1.00 g on 3.x.
+- 1.0's SpringBoard labels an icon with the `.app` directory name and ignores `CFBundleName` (guestdev:
+  Hello2.app with CFBundleName "Hello 2" shows "Hello2").
+- Sideloading unofficial apps: [sideload.md](sideload.md). Debugging the guest (gdbstub, lldb, `xnu.py`):
+  [../guest-debug.md](../guest-debug.md).
 
 ## Files
 

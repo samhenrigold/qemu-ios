@@ -134,7 +134,49 @@ These hold for the 3GS unless its v1 trace says otherwise.
   `+cgpaddr=1`, then `+cgdata="M-RAW_IP",1` on DLCI 8 (CONNECT), and raw IPv4 after that. Without
   `+XREG` > 2 (the data bearer; 4 shows "3G"), Safari says "Could not activate cellular data
   network" and nothing is sent.
-* **Not seen**: a toggle of radio_on/bb_rst after boot. A baseband reset by CommCenter (raw `at`
+* **Carrier bundle and SIM files**: 4.2.1 ships a bundle for the test PLMN, CarrierLab.bundle
+  (`Carrier Bundles/iPhone/00101`, SupportedSIMs 00101, 001011, ...; CarrierName "Carrier Lab", empty
+  signed APNs). At SIM init CommCenter sends GET RESPONSE (`+crsm=192,<fid>`) for 4F34, 6F06, 6F11, 6F14,
+  6F15 and 6F38, then reads EF_SST (`+crsm=176,28472,0,0,4`). If EF_SST answers 94 04 (file not found),
+  CommCenter never installs the bundle. Then there is no com.apple.carrier.plist link, no stored
+  `ICCID`, no "Cellular Data Network" row, no APN setup and no `+cgdcont`, so there is no packet data at
+  all. The fake SIM holds EF_SST (services 1-4) and EF_AD; other files answer 94 04.
+* **Roaming (open)**: with CarrierLab installed, the status bar shows the network as home (`+creg` 1;
+  CommCenter's registration getter at 0x3b9c0 returns 4 = home), but packet data still counts as
+  international roaming. With Data Roaming off, Safari says "Data Roaming is turned off". With
+  `mcc-mnc=310410` (AT&T's bundle) the alert goes away, so the cause lies in what CarrierLab's bundle
+  (or its absence of a home-network list) tells CommCenter. The exact check has not been traced.
+  * The switch is `InternationalRoamingEDGE` in com.apple.commcenter, in CommCenter's own user's
+    preferences (`_wireless`, `CFPreferencesCopyValue(..., kCFPreferencesCurrentUser,
+    kCFPreferencesAnyHost)`, 0x1e7d4), so the file is
+    /var/wireless/Library/Preferences/com.apple.commcenter.plist.
+  * CommCenter caches the value: a file write takes effect only after CommCenter restarts. Settings
+    changes it through CommCenter (an entitled MIG call, 0x1f4c4).
+  * When CommCenter sees a new SIM (an ICCID other than the `ICCID` it stored in the same file), it sets
+    the key false (0x19794).
+  * Workaround: the guest package's it_prefs sets it true once per stored ICCID ("none" before one is
+    stored) and restarts CommCenter, so the user's later choice for that SIM stands (contrib/it-prefs).
+    If CommCenter had stored no ICCID within it_prefs' wait, the restarted CommCenter stores one, sees a
+    new SIM and turns the key off again, so it_prefs makes a second pass for the stored ICCID.
+  * The test PLMN stays the default. 1.0's CommCenter has no such key.
+  * Each such restart resets the baseband (raw `at` pings into the mux, then BB_RST/RADIO_ON). The modem
+    keeps the AP's v2 credits across that reset (the kext keeps its count), else the re-init's URCs
+    starve it and the phone sits at "Searching..." (fixed in 05fb82752f). With that fix, data works on a
+    fresh device's first boot.
+* **27.010 modem status**: the kernel MSCs every DLCI and waits for the modem's own MSC
+  (RTC|RTR). On the data DLCI, DV (carrier) must go up after CONNECT, and NO CARRIER plus DV down
+  must follow `+cgact=0`. Without them CommCenter tore the boot-time PDP context down 100 ms after
+  CONNECT and reset the baseband about 10 s later (2 boots in 3).
+* **Frames**: the kernel's idle state is a pre-armed receive-only frame, so the modem's MISO is
+  built when the clock runs (SRDY up), not at go.
+* **The kernel's frame styles**: (a) MRDY up after go: AP-initiated; (b) TX frame with RUN and no
+  MRDY, queued back to back while data flows: it waits for the modem's SRDY; (c) a receive-only
+  frame with RUN (CFG bit 0): the idle state, ended by the modem's SRDY. While (c) is armed the
+  kernel starts nothing itself, so a lost v2 credit deadlocks both sides. The modem tops the AP up to
+  16 credits on every frame and clocks an idle (c) every 2 s.
+* **Baseband reset**: CommCenter pulses bb_rst (GPIO 0x0102) and then radio_on (0x0101) low. The
+  modem resets to raw AT and CommCenter's recovery re-runs init in bypass ("at" pings, then
+  `+cmux`). A baseband reset by CommCenter (raw `at`
   pings after the mux was up) is not modelled. It only happened while the frame bugs above were
   still in.
 

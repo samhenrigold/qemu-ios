@@ -28,9 +28,12 @@ ac = load("ipad1_app_compat", "app-compat.py")
 
 # Home-screen icon centres, (row, col) -> screen point, per machine (measured on the stock layouts).
 GRID = {"ipad1": ac.GRID,
-        "iPod-Touch-4G": lambda r, c: (91 + 152 * c, 125 + 176 * r)}   # 4x4 grid on the 640x960 portrait panel
-GL_TAP = {"ipad1": (0.343, 0.5), "iPod-Touch-4G": (0.5, 0.165)}         # the Harness's GLES 1.1 row
-GRID["iPhone-4"], GL_TAP["iPhone-4"] = GRID["iPod-Touch-4G"], GL_TAP["iPod-Touch-4G"]   # the same panel and layout
+        "iPod-Touch-4G": lambda r, c: (91 + 152 * c, 125 + 176 * r),   # 4x4 grid on the 640x960 portrait panel
+        "iPhone-4": lambda r, c: (91 + 152 * c, 125 + 176 * r),
+        "n18": lambda r, c: (38 + 79 * c, 52 + 88 * r),                # the same grid at 320x480
+        "n88": lambda r, c: (38 + 79 * c, 52 + 88 * r)}
+GL_TAP = {"ipad1": (0.343, 0.5)}                                       # the Harness's GLES 1.1 row
+GL_TAP.update((m, (0.5, 0.165)) for m in rg.ipad1_boot.PORTRAIT)
 
 
 def bundle_of(ipa):
@@ -71,9 +74,12 @@ def ocr_upright(ppm):
     turned = ppm + ".turned.ppm"
     with open(turned, "wb") as f:
         f.write(b"P6\n%d %d\n255\n" % (h, w) + bytes(out))
-    rg.ocr(turned)                           # builds the OCR tool once
     found = {}
-    lines = subprocess.run([rg.OCR_BIN, turned], capture_output=True, text=True, check=True).stdout.splitlines()
+    try:
+        rg.ocr(turned)                       # builds the OCR tool once
+        lines = subprocess.run([rg.OCR_BIN, turned], capture_output=True, text=True, check=True).stdout.splitlines()
+    except subprocess.CalledProcessError:    # Vision crashes on some frames (4.x home screens): no text read
+        return found
     for x0, y0, x1, y1, text in sorted((l.split(" ", 4) for l in lines), key=lambda l: int(l[1]), reverse=True):
         found[text.strip()] = ((int(x0) + int(x1)) // 2, (int(y0) + int(y1)) // 2)
     return found
@@ -85,7 +91,7 @@ PICKS = ("Start Using iPod touch", "Start Using iPod", "Start Using iPhone", "Se
          "Set Up as New iPhone", "Disable Location Services", "Skip This Step", "Agree",
          "Don't Send", "Australia", "United States")
 ALERT_YES = ("OK", "Skip", "Agree", "Continue")
-NEXT_ARROW = (587, 84)
+NEXT_ARROW = (587, 84)                       # at 640x960; walk_setup scales it to the panel
 
 
 def walk_setup(b, step):
@@ -111,12 +117,22 @@ def walk_setup(b, step):
             if pick.startswith("Start Using"):
                 continue
             time.sleep(1.5)
-        nxt = found.get("Next", NEXT_ARROW if "English" in found else None)
+        arrow = (NEXT_ARROW[0] * rg.itqmp.W // 640, NEXT_ARROW[1] * rg.itqmp.H // 960)
+        nxt = found.get("Next", arrow if "English" in found else None)
         if nxt:
             b.tap(nxt)
             if not pick:
                 pages.append(next((t for t, (x, y) in found.items() if y < 130 and t != "Next"), "?"))
     return False, "Setup still up after 40 pages: " + ", ".join(pages)
+
+
+def harness_results(b, bundle):
+    """The Harness's Documents/results.log (house_arrest), every line it has reported; "" if unreadable."""
+    out = os.path.join(b.dir, "results.log")
+    if os.path.exists(out):
+        os.unlink(out)
+    b.run(["afcclient", "--container", bundle, "get", "Documents/results.log", out], timeout=60)
+    return open(out, errors="replace").read() if os.path.exists(out) else ""
 
 
 def main():
@@ -132,8 +148,10 @@ def main():
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     rg.itqmp.W, rg.itqmp.H = rg.ipad1_boot.MACHINES[a.machine]
-    if a.machine in rg.ipad1_boot.PORTRAIT:
-        rg.LIT_MIN_FRACTION, rg.UNLOCK_FROM, rg.UNLOCK_TO = 0.2, (116, 862), (600, 862)
+    portrait = a.machine in rg.ipad1_boot.PORTRAIT
+    if portrait:
+        rg.LIT_MIN_FRACTION = 0.2
+        rg.UNLOCK_FROM, rg.UNLOCK_TO = rg.portrait_unlock()
     rg.device_args(a)
     rg.ipod.START = time.time()
     bundle, exe = bundle_of(a.ipa)
@@ -158,13 +176,18 @@ def main():
         ok, det = b.wait_lock_screen(timeout=300)
         if not step("lock", ok, det):
             return 1
-        fresh = False
-        for _ in range(3 if a.machine in rg.ipad1_boot.PORTRAIT else 1):
-            b.press("home")  # the panel may have slept while the install ran: wake it before the slide
+
+        def unlock():
+            b.press("home")  # the panel may have slept while the install ran; the S5L8920 boards power the digitizer
+            # down on the lock screen (DisablePowerForUILock)
             time.sleep(1.5)
             b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
+
+        fresh = False
+        for _ in range(3 if portrait else 1):
+            unlock()
             time.sleep(4)
-            fresh = a.machine in rg.ipad1_boot.PORTRAIT and "English" in ocr_upright(b.shot("opened"))  # a fresh 5.x
+            fresh = portrait and "English" in ocr_upright(b.shot("opened"))   # a fresh 5.x
             status, out = rg.itqmp.agent(b.qmp, "lockstatus") if rg.itqmp.agent_alive(b.qmp) else (1, b"")
             if fresh or status or b"locked=0" in out:
                 break                                # Setup's language page, past the lock, or no agent to ask
@@ -176,10 +199,22 @@ def main():
             slot = ac.pin_to_page1(b, bundle) or ac.icon_slot(b, bundle)
             if slot:
                 break
-            b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
+            unlock()
             time.sleep(5)
-        if not step("icon", bool(slot) and slot[0] == 1, "springboardservices slot %s" % (slot,)):
+        # Page 1 can be full (3.x's iPhone layout fills all 16 cells); then the icon stays put and we swipe to it.
+        if not step("icon", bool(slot) and slot[0] >= 1, "springboardservices slot %s" % (slot,)):
             return 1
+        # Dismiss the install's Edit-Home-Screen help sheet (button at 0.69 H) and 3.1.3's shorter "Waiting for
+        # activation" alert (0.59 H); with neither up, x 0.5 falls between icon columns. 3.1.3 raises them a few
+        # seconds late and one at a time, so twice round.
+        if portrait:
+            for _ in range(2):
+                for y in (0.69, 0.59):
+                    b.tap((0.5 * rg.itqmp.W, y * rg.itqmp.H))
+                    time.sleep(3)
+        for _ in range(slot[0] - 1):
+            b.drag((0.8 * rg.itqmp.W, 0.5 * rg.itqmp.H), (0.2 * rg.itqmp.W, 0.5 * rg.itqmp.H))
+            time.sleep(2)
         # The relay starts here, not at install: Setup's end re-enumerates the USB device and idevicesyslog exits.
         syslog = os.path.join(b.dir, "syslog.log")
         b.procs.spawn(["idevicesyslog"], syslog, env=b.env())
@@ -195,22 +230,22 @@ def main():
         if not started and rg.itqmp.agent_alive(b.qmp):   # the syslog relay can drop with the USB link; ask SpringBoard
             status, front = rg.itqmp.agent(b.qmp, "frontmost")
             started = status == 0 and front.split(b"\n")[0] == bundle.encode()
+        if not started and a.ipa == HARNESS:     # 5.1+ launchd no longer sends an app's stderr to syslog
+            started = "Harness 1.0 | iOS" in harness_results(b, bundle) or \
+                any(t.startswith("Harness 1.0") for t in ocr_upright(app))
         changed = ac._framediff(ac._sample(rg, home), ac._sample(rg, app))
-        if not step("launch", started and changed, "process in syslog %s, frame changed %s" % (started, changed)):
+        if not step("launch", started and changed, "process seen %s, frame changed %s" % (started, changed)):
             return 1
         if gl:
             x, y = map(float, gl.split(","))
             b.tap((x * rg.itqmp.W, y * rg.itqmp.H))
             time.sleep(8)
             frac = fixture_fraction(png(b, "gl"))
-            rej = rg.itqmp.gles_rejects(b.qmp)
-            log = open(syslog, errors="replace").read()
-            said = re.findall(r"\[Harness\] ((?:PASS|FAIL)[^\n]*GLES[^\n]*)", log)
-            if not said and a.ipa == HARNESS:   # 5.x's syslog_relay can close mid-run: read the app's own log
-                got = os.path.join(b.dir, "results.log")
-                b.run(["afcclient", "--container", bundle, "get", "Documents/results.log", got], timeout=60)
-                if os.path.exists(got):
-                    said = re.findall(r"((?:PASS|FAIL)[^\n]*GLES[^\n]*)", open(got, errors="replace").read())
+            # a transfer CA queued and never notified (it tore the layer down first) is not a frame the bridge refused
+            rej = {k: v for k, v in rg.itqmp.gles_rejects(b.qmp).items() if k != "shim:scaler:token-dropped"}
+            said = re.findall(r"^\S+ ((?:PASS|FAIL)[^\n]*GLES[^\n]*)", harness_results(b, bundle), re.M)   # "<time> <line>"
+            if not said and os.path.exists(syslog):  # a Harness without results.log reports through syslog
+                said = re.findall(r"\[Harness\] ((?:PASS|FAIL)[^\n]*GLES[^\n]*)", open(syslog, errors="replace").read())
             ok = frac > 0.3 and not rej and (a.ipa != HARNESS or (said and not any(s.startswith("FAIL") for s in said)))
             step("gl", ok, "fixture colours %.0f%% of the frame, bridge refusals %s; %s" % (
                 frac * 100, rej or "none", "; ".join(said) or "no GLES report"))
