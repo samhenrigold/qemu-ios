@@ -96,9 +96,14 @@ typedef struct S5L8920I2CDevice {
     int16_t irq_pin;                     /* GPIO interrupt its gpio-out 0 drives, active low; 0 = none */
 } S5L8920I2CDevice;
 
-/* DT buttons interrupts: GPIO interrupt numbers, all active low. */
+/*
+ * DT buttons interrupts: GPIO interrupt numbers. Active low unless the
+ * button's DT function-button_* word has flag 0x100 (N88 hold and menu,
+ * which also take both edges, interrupt type 7).
+ */
 typedef struct S5L8920Buttons {
     uint16_t hold, menu, volup, voldown;
+    bool hold_menu_high;                 /* hold and menu active high */
 } S5L8920Buttons;
 
 /* Where SpringBoard's "slide to power off" knob sits (portrait), and how far to drag it. */
@@ -159,7 +164,7 @@ static const S5L8920Board s5l8920_n88 = {
     .nor = true,
     .baseband = true,
     .mt_atn = 0xb4,
-    .buttons = { .hold = 0xb7, .menu = 0xb6, .volup = 0xb0, .voldown = 0xb1 },
+    .buttons = { .hold = 0xb7, .menu = 0xb6, .volup = 0xb0, .voldown = 0xb1, .hold_menu_high = true },
     .i2c = {
         { 0, 0x74, TYPE_PCF50633, 0x9d },
         { 0, 0x4a, TYPE_CS42L58 },       /* cs42l61: a register file to its driver, as on the iPad */
@@ -481,6 +486,7 @@ static void s5l8920_init(MachineState *machine)
         qdev_prop_set_uint32(dev, "ecc-offset", s->board->fmc_off * 2);
         if (s->board->fmc_off == 0x400) {       /* the s5l8920x firmware's ECC summary */
             qdev_prop_set_uint32(dev, "ecc-blank-summary", 0x40);
+            qdev_prop_set_bit(dev, "explicit-start", true);
         }
         sbd = SYS_BUS_DEVICE(dev);
         sysbus_realize_and_unref(sbd, &error_fatal);
@@ -678,7 +684,20 @@ static void s5l8920_set_nor_rw(Object *obj, const char *value, Error **errp)
  */
 static void s5l8920_set_button(S5L8920MachineState *s, int pin, bool down)
 {
-    qemu_set_irq(qdev_get_gpio_in(s->gpio, pin), !down);
+    const S5L8920Buttons *b = &s->board->buttons;
+    bool high = b->hold_menu_high && (pin == b->hold || pin == b->menu);
+
+    qemu_set_irq(qdev_get_gpio_in(s->gpio, pin), high ? down : !down);
+}
+
+/* After every device reset (the GPIO model's puts every input high): buttons at rest. */
+static void s5l8920_machine_reset(MachineState *machine, ResetType type)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(machine);
+
+    qemu_devices_reset(type);
+    s5l8920_set_button(s, s->board->buttons.hold, s->btn_hold);
+    s5l8920_set_button(s, s->board->buttons.menu, s->btn_home);
 }
 
 static bool s5l8920_get_button_hold(Object *obj, Error **errp)
@@ -809,6 +828,7 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
     MachineClass *mc = MACHINE_CLASS(klass);
 
     mc->init = s5l8920_init;
+    mc->reset = s5l8920_machine_reset;
     mc->max_cpus = 2;        /* the AP and the IOP core */
     mc->default_cpus = 2;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a8");

@@ -106,6 +106,10 @@ typedef struct H2FMIBus {
     uint8_t id_pos;                     /* next READ ID byte for a byte-wide read (go 0x10) */
     uint32_t row;
     bool read_pending; /* new NAND read awaits its first FMI transfer */
+    /* "explicit-start": CEs whose latched page no transfer has taken yet, and
+     * whether a control 5 has started a write transfer not yet complete */
+    uint8_t unread;
+    bool write_armed;
     uint32_t read_format; /* last completed phase of the latched read */
     /* Each chip latches its own page at the read command: the IOP firmware
      * commands the next CE before it transfers the previous one. */
@@ -144,6 +148,16 @@ struct S5L8930H2FMIState {
      */
     uint32_t fmc_off, ecc_off;
     uint32_t ecc_blank_summary;
+    /*
+     * The S5L8920's firmware starts every transfer with a control write of its
+     * own and leaves control at 3 or 5 between them: a read of the last page
+     * of a multi-page op follows a status poll, not a new read command, and a
+     * write's FIFOs fill (control still 5 from the last page) before the next
+     * page's chip select and 0x80. With "explicit-start", a control 3 takes
+     * any CE whose page no transfer has taken yet, and only a control 5 write
+     * arms a write transfer. Off: the A4 firmware's inferred starts.
+     */
+    bool explicit_start;
     H2FMIBus bus[H2FMI_BUSES];
 };
 
@@ -189,6 +203,8 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
         b->mode = MODE_NONE;
         b->read_pending = false;
         b->read_format = 0;
+        b->unread = 0;
+        b->write_armed = false;
         b->data_len = b->meta_len = b->data_off = b->meta_off = 0;
         break;
     case 0x70:              /* status, then 0x00 back to the page register */
@@ -247,6 +263,9 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
          * pipeline starts them afresh. */
         b->mode = MODE_PAGE;
         b->read_pending = true;
+        if (ce >= 0) {
+            b->unread |= 1u << (ce & 7);
+        }
         if (ce >= 0 && s->iop) {
             b->page_ok[ce & 7] = false;
             b->page_row[ce & 7] = b->row;
@@ -376,6 +395,9 @@ static void h2fmi_transfer(H2FMIBus *b, int ce, bool queued)
 
     b->read_pending = false;
     b->read_format = b->fmi[FMI_FORMAT / 4];
+    if (ce >= 0) {
+        b->unread &= ~(1u << (ce & 7));
+    }
     if (s->iop) {
         s5l8930_iop_nand_info(s->iop, &id, &ce_mask, &page_bytes);
     }
@@ -452,7 +474,7 @@ static void h2fmi_write_check(H2FMIBus *b)
     uint8_t mask;
     hwaddr base = S5L8930_H2FMI_BASE + b->n * H2FMI_WINDOW;
 
-    if ((b->fmi[FMI_CONTROL / 4] & 7) != 5) {
+    if ((b->fmi[FMI_CONTROL / 4] & 7) != 5 || (b->s->explicit_start && !b->write_armed)) {
         return;
     }
     if (b->s->iop) {
@@ -472,6 +494,7 @@ static void h2fmi_write_check(H2FMIBus *b)
         b->wdata_len -= page_bytes;
         memmove(b->wmeta, b->wmeta + mper, b->wmeta_len - mper);
         b->wmeta_len -= mper;
+        b->write_armed = false;
         b->fmi[FMI_STATUS / 4] |= FMI_ST_DONE;
         h2fmi_update_irq(b);
         if (b->s->cdma) {
@@ -607,6 +630,7 @@ static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
             if ((v & 7) == 5) {
                 /* Write transfer: done once the FIFOs hold the page. */
                 b->fmi[off / 4] = v;
+                b->write_armed = true;
                 h2fmi_write_check(b);
                 return;
             }
@@ -615,7 +639,10 @@ static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
                 b->read_pending = false;
                 b->read_format = 0;
             }
-            if ((v & 3) == 3 && (b->read_pending || (prev & 3) != 3 || ((v & 0x80) && !(prev & 0x80)))) {
+            int ce = h2fmi_ce(b);
+            bool unread = b->s->explicit_start && ce >= 0 && (b->unread >> (ce & 7)) & 1;
+            if ((v & 3) == 3 && (b->read_pending || unread || (prev & 3) != 3 ||
+                                 ((v & 0x80) && !(prev & 0x80)))) {
                 if (!(b->fmi[off / 4] & 0x80)) {
                     b->ecc_n = b->ecc_reads = 0;
                 }
@@ -730,6 +757,8 @@ static void s5l8930_h2fmi_reset(DeviceState *dev)
         b->mode = MODE_NONE;
         b->read_pending = false;
         b->read_format = 0;
+        b->unread = 0;
+        b->write_armed = false;
         b->data_len = b->meta_len = b->data_off = b->meta_off = 0;
         b->pending_n = 0;
         qemu_set_irq(b->irq, 0);
@@ -901,6 +930,26 @@ static const VMStateDescription vmstate_h2fmi_read_pending = {
     },
 };
 
+/* The explicit-start latches: only boards with that property have them. */
+static bool h2fmi_explicit_start_needed(void *opaque)
+{
+    return ((S5L8930H2FMIState *)opaque)->explicit_start;
+}
+
+static const VMStateDescription vmstate_h2fmi_explicit_start = {
+    .name = "s5l8930.h2fmi/explicit-start",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = h2fmi_explicit_start_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(bus[0].unread, S5L8930H2FMIState),
+        VMSTATE_UINT8(bus[1].unread, S5L8930H2FMIState),
+        VMSTATE_BOOL(bus[0].write_armed, S5L8930H2FMIState),
+        VMSTATE_BOOL(bus[1].write_armed, S5L8930H2FMIState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_s5l8930_h2fmi = {
     .name = TYPE_S5L8930_H2FMI,
     .version_id = 1,
@@ -910,6 +959,7 @@ static const VMStateDescription vmstate_s5l8930_h2fmi = {
     .post_load = h2fmi_post_load,
     .subsections = (const VMStateDescription * const []) {
         &vmstate_h2fmi_read_pending,
+        &vmstate_h2fmi_explicit_start,
         NULL
     },
     .fields = (const VMStateField[]) {
@@ -924,6 +974,7 @@ static const Property s5l8930_h2fmi_props[] = {
     DEFINE_PROP_UINT32("fmc-offset", S5L8930H2FMIState, fmc_off, 0x40000),
     DEFINE_PROP_UINT32("ecc-offset", S5L8930H2FMIState, ecc_off, 0x80000),
     DEFINE_PROP_UINT32("ecc-blank-summary", S5L8930H2FMIState, ecc_blank_summary, 0),
+    DEFINE_PROP_BOOL("explicit-start", S5L8930H2FMIState, explicit_start, false),
 };
 
 static void s5l8930_h2fmi_class_init(ObjectClass *klass, void *data)
