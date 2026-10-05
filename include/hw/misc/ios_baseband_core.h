@@ -144,6 +144,9 @@ typedef struct IosBbCore {
     int reg_step;              /* 0 idle, 1 search scheduled, 2 registered scheduled */
     int64_t reg_due_ms;
     int64_t xsim_due_ms;       /* +XSIM: n to push (SIM re-detection), 0 = none */
+    int temp_period_ms;        /* +xdrv=5,16,<s>: periodic +XDRVI: 5,17 temperature reports */
+    int temp_ch;
+    int64_t temp_due_ms;
     bool xsim_pushed;          /* the host has been told about the current SIM */
     int next_call_id;
     IosBbCall calls[IOS_BB_MAX_CALLS];
