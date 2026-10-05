@@ -367,11 +367,26 @@ static uint8_t mx_fcs(uint8_t fcs, const uint8_t *p, unsigned n)
 
 static void h5_stream(IosBbCore *bb, const uint8_t *data, unsigned len);
 
+/*
+ * One finished frame out. Inside H5 each frame is its own packet (1.0, as the
+ * modem stream found it); on a bare byte stream (SPI, the kernel's
+ * AppleSerialMultiplexer, which asserts a leading 0xF9) frames carry their flags.
+ */
+static void mx_emit(IosBbCore *bb, uint8_t *f, unsigned n)
+{
+    if (!bb->h5) {
+        memmove(f + 1, f, n);
+        f[0] = f[n + 1] = MX_FLAG;
+        n += 2;
+    }
+    h5_stream(bb, f, n);
+}
+
 /* Send one mux frame (address, control, length, info, FCS) as one H5 packet. */
 static void mx_send(IosBbCore *bb, unsigned dlci, bool cr, uint8_t ctrl,
                     const uint8_t *data, unsigned len)
 {
-    uint8_t f[5 + 1600 + 1];
+    uint8_t f[5 + 1600 + 1 + 2];
     unsigned n = 0, hdr;
     uint8_t fcs;
 
@@ -398,25 +413,27 @@ static void mx_send(IosBbCore *bb, unsigned dlci, bool cr, uint8_t ctrl,
         fcs = mx_fcs(fcs, data, len);
     }
     f[n++] = 0xff - fcs;
-    h5_stream(bb, f, n);
+    mx_emit(bb, f, n);
 }
 
 static void mx_send_frame_canned(IosBbCore *bb, unsigned dlci, uint8_t ctrl)
 {
     /* S-frames carry a zero-length field in basic mode. */
-    uint8_t f[5];
+    uint8_t f[5 + 2];
     unsigned n = 0;
     uint8_t fcs;
 
     if (!mx_fcs_table[1]) {
         mx_fcs_init();
     }
-    f[n++] = (dlci << 2) | MX_EA;           /* response: C/R = 0 */
+    /* 27.010 5.2.1.2: a responder's response carries C/R = 1. The 1.0 path keeps
+     * the 0 it was tested with; the kernel mux (bare stream) gets the spec. */
+    f[n++] = (dlci << 2) | (!bb->h5 ? MX_CR : 0) | MX_EA;
     f[n++] = ctrl;
     f[n++] = MX_EA;                        /* length 0 */
     fcs = mx_fcs(MX_INIT_FCS, f, n);
     f[n++] = 0xff - fcs;
-    h5_stream(bb, f, n);
+    mx_emit(bb, f, n);
 }
 
 /*
@@ -639,6 +656,13 @@ static void h5_stream(IosBbCore *bb, const uint8_t *data, unsigned len)
 /* Channel write: muxed UIH once the multiplexer is up, otherwise channel 0's stream. */
 static void chan_write(IosBbCore *bb, int ch, const char *s, unsigned len)
 {
+    if (getenv(IOS_BB_TRACE_ENV) && atoi(getenv(IOS_BB_TRACE_ENV)) >= 2) {
+        fprintf(stderr, "ios-bb: ch%d < ", ch);
+        for (unsigned i = 0; i < len && i < 120; i++) {
+            fputc(s[i] == '\r' || s[i] == '\n' ? ' ' : s[i], stderr);
+        }
+        fputc('\n', stderr);
+    }
     if (bb->mux && ch > 0) {
         mx_send(bb, ch, false, MX_UIH, (const uint8_t *)s, len);
     } else {
@@ -1599,6 +1623,10 @@ static void at_command(IosBbCore *bb, int ch, const char *cmd)
 {
     const char *arg;
 
+    if (getenv(IOS_BB_TRACE_ENV) && atoi(getenv(IOS_BB_TRACE_ENV)) >= 2) {
+        fprintf(stderr, "ios-bb: ch%d > at%s\n", ch, cmd);
+    }
+
     if (!*cmd) {
         at_ok(bb, ch);                           /* bare "at" ping */
         return;
@@ -1637,6 +1665,8 @@ static void at_command(IosBbCore *bb, int ch, const char *cmd)
             bb->call_ch = ch;
         } else if (strncmp(cmd, "cnmi=", 5) == 0) {
             bb->sms_ch = ch;
+        } else if (strncmp(cmd, "xsimstate=", 10) == 0) {
+            bb->xsim_ch = ch;
         }
     }
 
@@ -1693,7 +1723,8 @@ static void at_command(IosBbCore *bb, int ch, const char *cmd)
         int n = atoi(arg);
 
         at_ok(bb, ch);
-        if (n != bb->cfun) {
+        /* Only 0/1/4 move the radio; 4.x's +cfun=6/7 come from its SIM toolkit code. */
+        if ((n == 0 || n == 1 || n == 4) && n != bb->cfun) {
             bb->cfun = n;
             if (n == 1) {
                 reg_schedule(bb);
@@ -2099,6 +2130,7 @@ static void h5_rx_payload(IosBbCore *bb, const uint8_t *data, unsigned len)
 /* ------------------------------------------------------------- IFX SPI framing */
 
 #define IFX_MORE      0x10         /* header byte 1 */
+#define IFX_V2_CREDIT_REQ 0x40     /* header byte 1: the sender holds no credits */
 #define IFX_V1_CTS    0x40         /* header byte 3 */
 #define IFX_V2_GRANT  8            /* credits handed to the AP when it runs low */
 
@@ -2121,9 +2153,20 @@ void ios_bb_ifx_queue(void *opaque, const uint8_t *buf, size_t len)
     x->txq_len += len;
 }
 
+/*
+ * Only data raises SRDY. v2 credits ride whatever frame comes next: the N90 kernel
+ * asks for them itself (byte 1 bit 6), and an SRDY raised just to grant them, before
+ * the kernel's first transfer, ends in its SRDY timeout.
+ */
 bool ios_bb_ifx_pending(const IosBbIfx *x)
 {
-    return x->txq_len || (x->version == 2 && x->credits_out < IFX_V2_GRANT / 2);
+    return x->txq_len;
+}
+
+/* v2: data we may put in a frame (none without a credit from the AP). */
+static unsigned ifx_can_send(const IosBbIfx *x)
+{
+    return x->version == 2 && x->credits_in <= 0 ? 0 : x->txq_len;
 }
 
 void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
@@ -2142,8 +2185,14 @@ void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
         } else {
             in_len = 0;
         }
-        if (x->version == 2 && in_len) {
-            x->credits_out--;
+        if (x->version == 2) {
+            if (in_len) {
+                x->credits_out--;
+            }
+            if (mosi[1] & IFX_V2_CREDIT_REQ) {
+                x->credits_out = 0;            /* it has none: grant on the next frame */
+            }
+            x->credits_in += mosi[2] | (mosi[3] & 0xf) << 8;
         }
     }
     if (!miso) {
@@ -2153,13 +2202,18 @@ void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
     if (n < IOS_BB_IFX_HDR) {
         return;
     }
-    out_len = MIN(x->txq_len, MIN(x->max_data, (unsigned)n - IOS_BB_IFX_HDR));
+    out_len = MIN(ifx_can_send(x), MIN(x->max_data, (unsigned)n - IOS_BB_IFX_HDR));
     miso[0] = out_len;
     miso[1] = out_len >> 8;
     if (x->txq_len > out_len) {
         miso[1] |= IFX_MORE;
     }
     if (x->version == 2) {
+        if (out_len) {
+            x->credits_in--;
+        } else if (x->txq_len) {
+            miso[1] |= IFX_V2_CREDIT_REQ;
+        }
         /* ponytail: credits counted per data frame; refine once the N90 guest is traced. */
         if (x->credits_out < IFX_V2_GRANT / 2) {
             grant = IFX_V2_GRANT - x->credits_out;
@@ -2180,7 +2234,10 @@ void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
 
 void ios_bb_input(IosBbCore *bb, const uint8_t *buf, size_t len)
 {
-    if (!bb->h5) {
+    if (!bb->h5 && bb->mux) {
+        /* SPI (3GS/iPhone 4): the mux runs straight on the byte stream, no H5. */
+        mx_input(bb, buf, len);
+    } else if (!bb->h5) {
         /* Raw AT until the kernel's H5 kicks in (it starts with SLIP frames). */
         size_t i;
 
@@ -2341,6 +2398,9 @@ void ios_bb_reset(IosBbCore *bb)
     }
 
     bb->ch[0].open = true;                       /* the pre-mux "default" channel */
+    /* A modem boots with its radio on: 4.x never sends +cfun=1 at start (only
+     * +cfun=4 for airplane mode and +cfun=1 to leave it); 1.0 sends it anyway. */
+    bb->cfun = 1;
     bb->call_ch = 1;
     bb->creg_ch = 2;
     bb->xciev_ch = 2;

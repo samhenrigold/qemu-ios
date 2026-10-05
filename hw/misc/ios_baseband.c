@@ -92,17 +92,32 @@ static void iosbb_flush(IosBasebandState *s)
 }
 
 /*
- * SPI: SRDY is an edge to the AP. Raise it when the modem has something to say or
- * the AP asked for a transfer (MRDY); every transfer drops it, and the timer
- * raises it again if there is more.
+ * SPI handshake (IFX, as BasebandSPI v2 checks it: an SRDY timeout with SRDY already
+ * high is an error, so every transfer needs a fresh rising edge). The AP sets the
+ * frame up, raises MRDY and waits for SRDY; the frame moves while SRDY is high
+ * (the controller's FIFOs only open then); the end of the frame (go cleared, or MRDY
+ * falling) drops SRDY again, so the next transfer gets its own edge.
+ * With nothing asked of it, SRDY rises on its own when the modem has something
+ * to say (or credits to grant), which makes the AP start a transfer.
  */
+static void iosbb_set_srdy(IosBasebandState *s, bool level)
+{
+    if (level != s->srdy_level) {
+        if (getenv("IOS_BB_TRACE")) {
+            fprintf(stderr, "%.3f ios-bb: SRDY %d\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e6, level);
+        }
+        s->srdy_level = level;
+        qemu_set_irq(s->srdy, level);
+        if (level && s->spi_ready) {
+            s->spi_ready(s->spi_ready_opaque);
+        }
+    }
+}
+
 static void iosbb_srdy_update(IosBasebandState *s)
 {
-    bool want = s->mrdy_level || ios_bb_ifx_pending(&s->ifx);
-
-    if (want != s->srdy_level) {
-        s->srdy_level = want;
-        qemu_set_irq(s->srdy, want);
+    if (s->mrdy_level || (!s->srdy_level && ios_bb_ifx_pending(&s->ifx))) {
+        iosbb_set_srdy(s, true);
     }
 }
 
@@ -110,10 +125,34 @@ static void iosbb_mrdy(void *opaque, int n, int level)
 {
     IosBasebandState *s = opaque;
 
-    s->mrdy_level = level;
-    if (level) {
-        iosbb_arm(s, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
+    if (getenv("IOS_BB_TRACE")) {
+        fprintf(stderr, "%.3f ios-bb: MRDY %d\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e6, level);
     }
+    s->mrdy_level = level;
+    /* MRDY up while SRDY is still high from our own request: the AP waits for an
+     * edge it will not get otherwise, so give it a fresh one. */
+    iosbb_set_srdy(s, false);
+    iosbb_arm(s, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
+}
+
+/* The controller finished a frame (go cleared): SRDY drops, rising again if more is due. */
+void ios_baseband_spi_done(DeviceState *dev)
+{
+    IosBasebandState *s = IOS_BASEBAND(dev);
+
+    iosbb_set_srdy(s, false);
+    iosbb_arm(s, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
+}
+
+bool ios_baseband_spi_srdy(DeviceState *dev)
+{
+    return IOS_BASEBAND(dev)->srdy_level;
+}
+
+void ios_baseband_spi_set_ready(DeviceState *dev, void (*cb)(void *), void *opaque)
+{
+    IOS_BASEBAND(dev)->spi_ready = cb;
+    IOS_BASEBAND(dev)->spi_ready_opaque = opaque;
 }
 
 void ios_baseband_spi_xfer(DeviceState *dev, const uint8_t *mosi, uint8_t *miso, size_t n)
@@ -126,10 +165,6 @@ void ios_baseband_spi_xfer(DeviceState *dev, const uint8_t *mosi, uint8_t *miso,
     ios_bb_ifx_xfer(&s->ifx, mosi, miso, n, &rx, &rxlen);
     if (rxlen) {
         ios_bb_input(&s->bb, rx, rxlen);
-    }
-    if (miso) {
-        s->srdy_level = false;
-        qemu_set_irq(s->srdy, 0);
     }
     iosbb_arm(s, s->bb.now_ms + IOS_BB_LATENCY_MS);
 }
@@ -161,7 +196,7 @@ static void iosbb_tick_timer(void *opaque)
 static void iosbb_arm(IosBasebandState *s, int64_t at_ms)
 {
     if (s->timer) {
-        timer_mod(s->timer, at_ms * 1000000);
+        timer_mod(s->timer, at_ms);            /* timer_new_ms: ms units */
     }
 }
 

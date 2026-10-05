@@ -14,7 +14,7 @@
 #ifndef HW_MISC_IOS_BASEBAND_CORE_H
 #define HW_MISC_IOS_BASEBAND_CORE_H
 
-#define IOS_BB_MAX_CH    8     /* AT channels: 0 = pre-mux line, 1..7 = DLCIs */
+#define IOS_BB_MAX_CH    16    /* AT channels: 0 = pre-mux line, 1..15 = DLCIs (4.x opens 1..13) */
 #define IOS_BB_MAX_CALLS 4
 #define IOS_BB_H5_WINDOW 7
 #define IOS_BB_SMS_STORE 4     /* +CMGR backfill slots */
@@ -205,7 +205,8 @@ uint16_t ios_bb_h5_crc(const uint8_t *p, size_t n);
  * each side sends a 4-byte header then its payload. Header byte 0 + low nibble
  * of byte 1 = this frame's payload length, byte 1 bit 4 = more to follow.
  * v1: byte 3 bit 6 = CTS. v2: bytes 2-3 (12 bits) grant the peer that many more
- * transmit credits, byte 1 bit 5 = rx error. The modem side here sits behind the
+ * transmit credits, byte 1 bit 5 = rx error, byte 1 bit 6 = "I need credits"
+ * (the N90 kernel sets it until granted). The modem side here sits behind the
  * core's out callback: what the core says queues up, SRDY asks the AP to clock it.
  */
 #define IOS_BB_IFX_HDR 4
@@ -214,6 +215,7 @@ typedef struct IosBbIfx {
     int version;               /* 1 (3GS) or 2 (iPhone 4) */
     unsigned max_data;         /* DT max-data-size: payload bytes per frame */
     int credits_out;           /* v2: credits the AP still holds (our model of it) */
+    int credits_in;            /* v2: credits the AP granted us: data frames we may send */
     uint8_t txq[16384];        /* modem -> AP bytes not yet clocked out */
     unsigned txq_len;
 } IosBbIfx;

@@ -4,20 +4,25 @@
  * frame per transfer, with the ios-baseband device on the other end
  * (docs/baseband/commcenter-4.2.1-3gs.md, "Static read of AppleS5L8920XBasebandSPIController").
  *
- * The kext programs RXCNT/TXCNT in words, points CDMA at TXDATA (+0x10) and RXDATA
- * (+0x20) and sets RUN. The CDMA model runs a chain to completion inside its go write,
- * so whichever channel starts first must already see the whole frame. The IFX reply
- * does not depend on what the AP sends in the same frame, so MISO is built on the
- * first RXDATA read of a transfer and MOSI is handed over once TXCNT words have arrived.
+ * BasebandSPI keeps an RX chain on RXDATA (+0x20) armed ahead of any transfer
+ * (seen on the N90 guest), then per frame: CTRL = 0xc, RXCNT = TXCNT = 0x200 words,
+ * a TX chain on TXDATA (+0x10), CFG |= 0x40 (go; CTRL RUN is never written), MRDY up;
+ * at the end MRDY down, CFG &= ~0x40, CTRL = 0. Both FIFOs are CDMA pacing sources: RXDATA has what
+ * the current frame's MISO still holds (built at RUN; the IFX reply never depends
+ * on the same frame's MOSI), TXDATA has room for the rest of TXCNT. MOSI goes to
+ * the modem when complete, and the TX chain is released with sink_done.
  */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/sysbus.h"
 #include "hw/irq.h"
+#include "qemu/timer.h"
+#include "qemu/main-loop.h"
 #include "hw/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "hw/misc/ios_baseband.h"
+#include "hw/arm/s5l8930.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(IosBbSpiState, IOS_BASEBAND_SPI)
 
@@ -32,6 +37,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IosBbSpiState, IOS_BASEBAND_SPI)
 #define CTRL_RUN        (1u << 0)
 #define CTRL_TX_RESET   (1u << 2)
 #define CTRL_RX_RESET   (1u << 3)
+#define CFG_GO          (1u << 6)   /* BasebandSPI starts a frame with this, not CTRL RUN */
 #define CFG_IE_COMPLETE (1u << 21)
 #define ST_COMPLETE     (1u << 22)
 
@@ -43,6 +49,9 @@ struct IosBbSpiState {
     MemoryRegion iomem;
     qemu_irq irq;
     DeviceState *modem;          /* the ios-baseband device, set by the board */
+    DeviceState *cdma;           /* the CDMA engine whose channels feed the FIFOs */
+    uint32_t base;               /* MMIO base: the CDMA sees the FIFOs at base + 0x10/0x20 */
+    QEMUBH *kick;                /* resume stalled chains outside our own MMIO handlers */
 
     uint32_t regs[0x100 / 4];
     uint8_t tx[FRAME_MAX];
@@ -73,26 +82,60 @@ static void bbspi_check_done(IosBbSpiState *s)
     }
 }
 
+#define TRACE(...) do { \
+    if (getenv("IOS_BB_TRACE")) { \
+        fprintf(stderr, "%.3f ios-bb-spi: ", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e6); \
+        fprintf(stderr, __VA_ARGS__); \
+    } \
+} while (0)
+
+/* GO (CFG bit 6, or CTRL RUN) with a receive count: the modem's frame for this transfer. */
+static void bbspi_start(IosBbSpiState *s)
+{
+    uint32_t n = MIN(s->regs[R_RXCNT / 4] * bbspi_ws(s), FRAME_MAX);
+
+    if (n && !s->rx_len && s->modem) {
+        ios_baseband_spi_xfer(s->modem, NULL, s->rx, n);
+        s->rx_len = n;
+        s->rx_pos = 0;
+        TRACE("frame: %u bytes, MISO hdr %02x %02x %02x %02x\n", n,
+              s->rx[0], s->rx[1], s->rx[2], s->rx[3]);
+    }
+    qemu_bh_schedule(s->kick);
+}
+
+static uint32_t bbspi_avail(void *opaque, hwaddr addr, bool to_device)
+{
+    IosBbSpiState *s = opaque;
+
+    TRACE("dma asks %s (srdy %d, rx %u/%u, tx %u)\n", to_device ? "tx" : "rx",
+          s->modem && ios_baseband_spi_srdy(s->modem), s->rx_pos, s->rx_len, s->tx_len);
+    if (!s->modem || !ios_baseband_spi_srdy(s->modem)) {
+        return 0;                              /* the clock only runs once SRDY is up */
+    }
+
+    if (to_device) {
+        uint32_t t = MIN(s->regs[R_TXCNT / 4] * bbspi_ws(s), FRAME_MAX);
+
+        return t > s->tx_len ? t - s->tx_len : 0;
+    }
+    return s->rx_len - s->rx_pos;
+}
+
 static uint64_t bbspi_read(void *opaque, hwaddr addr, unsigned size)
 {
     IosBbSpiState *s = opaque;
     uint32_t r = 0;
 
     if (addr != R_RXDATA) {
+        TRACE("rd %02x = %08x\n", (unsigned)addr, addr < sizeof(s->regs) ? s->regs[addr / 4] : 0);
         return addr < sizeof(s->regs) ? s->regs[addr / 4] : 0;
-    }
-    if (!s->rx_len) {
-        uint32_t n = MIN(s->regs[R_RXCNT / 4] * bbspi_ws(s), FRAME_MAX);
-
-        if (!n || !s->modem) {
-            return 0;
-        }
-        ios_baseband_spi_xfer(s->modem, NULL, s->rx, n);
-        s->rx_len = n;
-        s->rx_pos = 0;
     }
     for (unsigned i = 0; i < bbspi_ws(s) && s->rx_pos < s->rx_len; i++) {
         r |= (uint32_t)s->rx[s->rx_pos++] << (8 * i);
+    }
+    if (s->rx_len && s->rx_pos == s->rx_len) {
+        TRACE("MISO drained\n");
     }
     bbspi_check_done(s);
     return r;
@@ -103,6 +146,9 @@ static void bbspi_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
     IosBbSpiState *s = opaque;
     uint32_t t;
 
+    if (addr != R_TXDATA) {
+        TRACE("wr %02x = %08x\n", (unsigned)addr, (uint32_t)val);
+    }
     switch (addr) {
     case R_CTRL:
         if (val & (CTRL_TX_RESET | CTRL_RX_RESET)) {
@@ -111,6 +157,9 @@ static void bbspi_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
             s->rx_len = s->rx_pos = 0;
         }
         s->regs[R_CTRL / 4] = val & CTRL_RUN;
+        if (val & CTRL_RUN) {
+            bbspi_start(s);
+        }
         break;
     case R_STATUS:
         s->regs[R_STATUS / 4] &= ~val;
@@ -122,17 +171,31 @@ static void bbspi_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
             s->tx[s->tx_len++] = val >> (8 * i);
         }
         if (t && s->tx_len == t && s->modem) {
+            TRACE("MOSI hdr %02x %02x %02x %02x\n", s->tx[0], s->tx[1], s->tx[2], s->tx[3]);
             ios_baseband_spi_xfer(s->modem, s->tx, NULL, t);
+            if (s->cdma) {
+                s5l8930_cdma_sink_done(s->cdma, s->base + R_TXDATA, 4);
+            }
         }
         bbspi_check_done(s);
         break;
     case R_CFG:
+        t = s->regs[R_CFG / 4];
         s->regs[R_CFG / 4] = val;
+        if ((val & CFG_GO) && !(t & CFG_GO)) {
+            bbspi_start(s);
+        } else if (!(val & CFG_GO) && (t & CFG_GO) && s->modem) {
+            TRACE("frame end: MISO read %u/%u, MOSI %u\n", s->rx_pos, s->rx_len, s->tx_len);
+            ios_baseband_spi_done(s->modem);
+        }
         bbspi_irq(s);
         break;
     default:
         if (addr < sizeof(s->regs)) {
             s->regs[addr / 4] = val;
+        }
+        if (addr == R_TXCNT || addr == R_RXCNT) {
+            qemu_bh_schedule(s->kick);
         }
         break;
     }
@@ -154,6 +217,42 @@ static void bbspi_reset(DeviceState *dev)
     qemu_set_irq(s->irq, 0);
 }
 
+/*
+ * The CDMA reads and writes our FIFOs through the memory API; kicking it from inside
+ * one of our MMIO handlers would re-enter this device, which the reentrancy guard
+ * turns into silently dropped accesses (the chain then completes with zeros).
+ */
+static void bbspi_kick(void *opaque)
+{
+    IosBbSpiState *s = opaque;
+
+    if (s->cdma) {
+        s5l8930_cdma_kick(s->cdma);
+    }
+}
+
+static void bbspi_ready(void *opaque)
+{
+    IosBbSpiState *s = opaque;
+
+    qemu_bh_schedule(s->kick);
+}
+
+static void bbspi_realize(DeviceState *dev, Error **errp)
+{
+    IosBbSpiState *s = IOS_BASEBAND_SPI(dev);
+
+    s->kick = qemu_bh_new(bbspi_kick, s);     /* unguarded: the kick reads our FIFOs */
+    if (s->modem) {
+        ios_baseband_spi_set_ready(s->modem, bbspi_ready, s);
+    }
+
+    if (s->cdma) {
+        s5l8930_cdma_set_source(s->cdma, s->base + R_TXDATA, R_RXDATA + 4 - R_TXDATA,
+                                bbspi_avail, s);
+    }
+}
+
 static void bbspi_init(Object *obj)
 {
     IosBbSpiState *s = IOS_BASEBAND_SPI(obj);
@@ -165,6 +264,8 @@ static void bbspi_init(Object *obj)
 
 static const Property bbspi_props[] = {
     DEFINE_PROP_LINK("modem", IosBbSpiState, modem, TYPE_IOS_BASEBAND, DeviceState *),
+    DEFINE_PROP_LINK("cdma", IosBbSpiState, cdma, TYPE_S5L8930_CDMA, DeviceState *),
+    DEFINE_PROP_UINT32("base", IosBbSpiState, base, 0),
 };
 
 static const VMStateDescription bbspi_vmstate = {
@@ -187,6 +288,7 @@ static void bbspi_class_init(ObjectClass *oc, void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     device_class_set_legacy_reset(dc, bbspi_reset);
+    dc->realize = bbspi_realize;
     device_class_set_props(dc, bbspi_props);
     dc->vmsd = &bbspi_vmstate;
     dc->desc = "S5L89xx baseband SPI (spi2) in front of ios-baseband";

@@ -686,6 +686,7 @@ config IPAD1
     select PL192
     select IPOD_TOUCH_USB
     select EXYNOS4
+    select IOS_BASEBAND
 
 config IPOD_TOUCH_2G
      bool

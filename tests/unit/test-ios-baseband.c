@@ -985,6 +985,17 @@ static void test_ifx(void)
     }
     CHECK(!(miso[1] & 0x10));
 
+    /* No H5 on SPI: after +cmux the mux frames ride the IFX payload directly. */
+    ifx_frame(&x, &c, "at+cmux=0,0,0,1500\r", miso, 0x7fc, got);
+    ifx_frame(&x, &c, "\xf9\x03\x3f\x01\x1c\xf9", miso, 0x7fc, got);   /* SABM DLCI 0, P */
+    check_str(got, "\r\nOK\r\n", "ifx cmux OK");
+    ifx_frame(&x, &c, "", miso, 0x7fc, got);
+    if (getenv("BBTEST_TRACE")) {
+        fprintf(stderr, "UA? %02x %02x %02x %02x len %u\n", (uint8_t)got[0], (uint8_t)got[1],
+                (uint8_t)got[2], (uint8_t)got[3], miso[0] | (miso[1] & 0xf) << 8);
+    }
+    CHECK(got[0] == (char)0xf9 && got[1] == 0x03 && got[2] == 0x73);   /* UA */
+
     /* 0xfff length = no payload. */
     {
         uint8_t mosi[16] = { 0xff, 0x0f, 0, 0 };
@@ -998,10 +1009,9 @@ static void test_ifx(void)
     /* v2 (iPhone 4: 0x7fc): credits granted up front, topped up as used. */
     ios_bb_ifx_init(&x, 2, 0x7fc);
     ios_bb_init(&c, ios_bb_ifx_queue, &x);
-    CHECK(ios_bb_ifx_pending(&x));              /* no credits yet: ask to grant */
+    CHECK(!ios_bb_ifx_pending(&x));             /* credits ride the AP's first frame */
     ifx_frame(&x, &c, "", miso, 0x800, got);
     CHECK((miso[2] | (miso[3] & 0xf) << 8) == 8);
-    CHECK(!ios_bb_ifx_pending(&x));
     for (int i = 0; i < 5; i++) {
         ifx_frame(&x, &c, "at\r", miso, 0x800, got);
     }
