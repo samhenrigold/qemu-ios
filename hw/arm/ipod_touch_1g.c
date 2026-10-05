@@ -458,7 +458,7 @@ static void n45_cpu_reset(void *opaque)
 
 /* ---- buttons ----------------------------------------------------------- */
 
-/* Same chords as the 2G (imgtools/itqmp.py BUTTONS): Cmd+Shift+H home, Cmd+L power. */
+/* Same chords as the 2G (imgtools/itqmp.py BUTTONS): Cmd+Shift+H home, Cmd+L power, Cmd+-/= volume. */
 static void n45_button(IPodTouch1GMachineState *s, uint32_t gpio, uint32_t gpio_irq, bool down)
 {
     uint32_t *pads = s->gpio->gpio_state;
@@ -617,6 +617,15 @@ static void n45_kbd_event(DeviceState *dev, QemuConsole *src, InputEvent *evt)
     case Q_KEY_CODE_L:
         if (!k->down || s->kbd_cmd) {
             n45_button(s, s->board->power_gpio, s->board->power_irq, k->down);
+        }
+        return;
+    case Q_KEY_CODE_MINUS:
+    case Q_KEY_CODE_EQUAL:
+        /* Cmd+- / Cmd+= : the M68's volume buttons, the 2G's chords */
+        if (s->board->volup_gpio && (!k->down || s->kbd_cmd)) {
+            bool up = q == Q_KEY_CODE_EQUAL;
+            n45_button(s, up ? s->board->volup_gpio : s->board->voldown_gpio,
+                       up ? s->board->volup_irq : s->board->voldown_irq, k->down);
         }
         return;
     default:

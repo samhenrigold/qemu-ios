@@ -45,7 +45,7 @@ IMEI and MAC are `machine.imei` and `machine.wifi-mac` from DEV/device.lock.json
 UART3 is the Bluetooth port, silent. iBoot prints its console only with `debug-uarts=3` in the NOR nvram.
 SpringBoard is up about 100 s into a boot (guest time); give taps a few seconds after an app opens.
 
-Machine properties: everything the 1G has, plus `ring-switch` (bool, on = silent, pad 0x1603; settable at
+Keys: the 1G's chords plus Cmd+- / Cmd+= for the volume buttons (see debts). Machine properties: everything the 1G has, plus `ring-switch` (bool, on = silent, pad 0x1603; settable at
 run time) and `imei` (the unit's, for the modem to report; not used by the machine itself).
 
 ## Models: reused, varied, new
@@ -81,10 +81,17 @@ reports interface version 1 and the Zephyr2 model's sensor profile. `MT_TRACE=2`
    With no modem it stays zeros, and AppleMRVL868x refuses it ("Invalid calibration data in device tree": it
    accepts any first 128 bytes that are neither all 0x00 nor all 0xFF). Settings shows "No Wi-Fi". The modem
    model serving that nvram entry fixes it without touching the guest.
-2. **A "ringer" volume HUD that stays up.** It appears on the home screen at boot and usually stays. It comes
-   up with GL and with software LayerKit, whichever way the volume pads and the ring switch rest. No button
-   interrupt fires (`IT_GPIO_TRACE`), and one boot showed it fading away on its own. The HUD's window takes
-   taps over its rectangle. Cause unknown.
+2. **Volume buttons and the "ringer" HUD.** AppleM68Buttons maps its elements hold, menu, volup, voldown,
+   ringerab to usages 0x30, 0x40, 0xe9, 0xea, 0x2e, in that order, against the DT's interrupts 0x2d, 0x28,
+   0x29, 0x2a, 0x2b. The model follows the DT: volume pads 0x1601/0x1602 are active low (flags 0, as on the
+   2G) and rest high. The volume behaviour is wrong both ways:
+   - Pads high at rest: a ringer HUD comes up at boot and stays. A volume-up press (Cmd+=) runs the volume
+     to 0 and a down press runs it to 16; it never stops.
+   - Pads low at rest: a press steps the volume while it is held, but in the opposite direction, and not
+     consistently.
+   No button interrupt fires at boot (`IT_GPIO_TRACE`). Interrupt types 5 (volume) and 7 (the others)
+   suggest the volume pads' interrupts are level- or single-edge-sensitive, which the SYSIC's GPIO groups
+   do not model. The HUD also takes taps over its rectangle until a volume press hides it.
 3. **No modem** (another stream): "Repair Needed" alert, no carrier, no IMEI in the DT (so lockdownd's view
    of the UDID lacks it; FirmwareKit's identity hashes the IMEI it records).
 4. **1.0's slow power-off sheet**: the gesture holds Hold 20 s (the sheet came up 13 s into a hold in one
