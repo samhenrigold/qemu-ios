@@ -169,17 +169,12 @@ GEOMETRIES = {
     "k48-16g": dict(chip_id=bytes.fromhex("add514b6") + b"\0" * 4, num_bus=2,
                     ce_per_bus=4, blocks_per_ce=0x1000, pages_per_block=128,
                     page_size=4096, spare_bytes=0x80, vendor_type=0x100014),
-    # The same part on two CEs per bus (8 GB). Its 1024-page superblocks keep a block's TOC in one page,
-    # which 3.0's yaFTL assumes: its TOC page count is always 1 (c05c74ec on N88 7A341, fixed in 3.1), so
-    # the 2048-page superblocks above read past the TOC and restore a garbage map.
-    "k48-8g": dict(chip_id=bytes.fromhex("add514b6") + b"\0" * 4, num_bus=2,
-                   ce_per_bus=2, blocks_per_ce=0x1000, pages_per_block=128,
-                   page_size=4096, spare_bytes=0x80, vendor_type=0x100014),
-    # Four CEs on one bus: the layout 3.0's AppleS5L8920XIOPFMI board table takes for this part (it refuses
-    # the 2+2 map above, "2-bus not supported"). QEMU: the IOP's nand-buses=1.
-    "k48-8g-1bus": dict(chip_id=bytes.fromhex("add514b6") + b"\0" * 4, num_bus=1,
-                        ce_per_bus=4, blocks_per_ce=0x1000, pages_per_block=128,
-                        page_size=4096, spare_bytes=0x80, vendor_type=0x100014),
+    # The 16 GB part as 3.0's AppleS5L8920XIOPFMI table lists it on 2 buses x 4 CEs: vendor type 0x10001,
+    # one VFL bank per CE, so 1024-page superblocks whose block TOC fits one page. 3.0's yaFTL assumes one
+    # (YAFTL_Init c05c74ec on N88 7A341; fixed in 3.1), so k48-16g's 2048-page superblocks restore garbage.
+    "k48-16g-v1": dict(chip_id=bytes.fromhex("add514b6") + b"\0" * 4, num_bus=2,
+                       ce_per_bus=4, blocks_per_ce=0x1000, pages_per_block=128,
+                       page_size=4096, spare_bytes=0x80, vendor_type=0x10001),
     # the research docs' guess (Samsung K9LCG08U1M, 8 KiB pages); the kernel
     # self-format oracle in nand/selfformat uses it. Not the captured unit: its
     # MBR is 4 KiB-sectored, so `build` refuses this geometry.
@@ -198,8 +193,9 @@ class Geo:
         self.__dict__.update(kw)
         self.num_cs = self.num_bus * self.ce_per_bus
         self.pages_per_ce = self.blocks_per_ce * self.pages_per_block
-        # VSVFL (VSVFL_Init c07f97fc-style): 2 banks/CE for vendor 0x100014
-        self.vfl_banks = 2
+        # VSVFL (VSVFL_Init c07f97fc-style): 2 banks/CE for vendor 0x100014, 1 for 0x10001 (the vendor
+        # type 3.0's AppleS5L8920XIOPFMI table gives this part on 2 buses x 4 CEs)
+        self.vfl_banks = 2 if self.vendor_type == 0x100014 else 1
         self.banks_total = self.num_cs * self.vfl_banks
         self.blocks_per_bank = self.blocks_per_ce // self.vfl_banks
         self.ppsublk = self.pages_per_block * self.banks_total
