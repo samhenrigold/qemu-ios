@@ -1264,8 +1264,9 @@ static void call_ring_urcs(IosBbCore *bb, IosBbCall *c)
     bool active = false;
 
     emit_xcallstat(bb, c->id, IOS_BB_CALL_INCOMING);
+    /* Type 145 carries the digits alone: the phone adds the '+' itself (4.2.1 showed "++1..."). */
     chan_printf(bb, bb->call_ch, "\r\n+CLIP: \"%s\",%d,,,\"\",0\r\n",
-                c->number, at_type_of(c->number));
+                c->number + (c->number[0] == '+'), at_type_of(c->number));
     for (int i = 0; i < IOS_BB_MAX_CALLS; i++) {
         IosBbCall *o = &bb->calls[i];
 
@@ -1278,7 +1279,7 @@ static void call_ring_urcs(IosBbCore *bb, IosBbCall *c)
     if (active) {
         /* Waiting call: +CCWA carries the same number/type, class 1 (voice). */
         chan_printf(bb, bb->call_ch, "\r\n+CCWA: \"%s\",%d,1\r\n",
-                    c->number, at_type_of(c->number));
+                    c->number + (c->number[0] == '+'), at_type_of(c->number));
     }
     chan_printf(bb, bb->call_ch, "\r\nRING\r\n");
     c->rings = 1;
@@ -1292,6 +1293,16 @@ bool ios_bb_incoming_call(IosBbCore *bb, const char *number)
 
     if (!bb->ch[bb->call_ch].open || !radio_ok(bb) || !number[0]) {
         return false;
+    }
+    /*
+     * A bare 11+ digit number is international (country code first, as the SMS path
+     * already sends it): keep it as +<digits>, which +CLIP sends as type 145.
+     */
+    char intl[34];
+
+    if (number[0] != '+' && strlen(number) >= 11 && strspn(number, "0123456789") == strlen(number)) {
+        snprintf(intl, sizeof(intl), "+%s", number);
+        number = intl;
     }
     c = call_new(bb, true, number, IOS_BB_CALL_INCOMING);
     if (!c) {

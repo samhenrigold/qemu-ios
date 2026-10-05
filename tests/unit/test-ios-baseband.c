@@ -681,7 +681,7 @@ static void test_incoming_call(void)
     CHECK(ios_bb_incoming_call(&bb, "+14155550100"));
     pump();
     expect_frame(1, "\r\n+XCALLSTAT: 1,4\r\n");
-    expect_frame(1, "\r\n+CLIP: \"+14155550100\",145,,,\"\",0\r\n");
+    expect_frame(1, "\r\n+CLIP: \"14155550100\",145,,,\"\",0\r\n");
     expect_frame(1, "\r\nRING\r\n");
 
     /* the ring repeats */
@@ -710,6 +710,8 @@ static void test_incoming_call(void)
     /* 4.x answers with ATA and hangs up with ATH. */
     CHECK(ios_bb_incoming_call(&bb, "15555550199"));
     pump();
+    expect_frame(1, "\r\n+XCALLSTAT: 2,4\r\n");
+    expect_frame(1, "\r\n+CLIP: \"15555550199\",145,,,\"\",0\r\n");
     ev_i = nev;
     c_mux_str(1, "ata\r");
     pump();
