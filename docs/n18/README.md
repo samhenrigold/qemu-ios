@@ -160,10 +160,4 @@ iPad's), its own SPI NOR (no graft), the spi2 baseband controller with nothing o
 AK8973 compass, CS42L61 (the CS42L58 register model, as on the iPad) and CD3272. The baseband DT node is
 unmatched by kboot (fill_dt) and carries GSMA's test IMEI 004999010640000 and the serial `TESTSNUM0000`.
 
-State (2026-10-05): 8C148a boots the restore ramdisk to "BSD root: md0". The s5l8920x IOP firmware (the
-N88's; the N18 runs the s5l8922x build of the same iBoot-931) drives the H2FMI differently, now modelled:
-FMC at +0x400 and ECC at +0x800 (`fmc-offset`/`ecc-offset`), READ ID as byte-wide reads (go 0x10 after
-0x90), a blank page flagged in the ECC summary bit 6 (`ecc-blank-summary`). Chips identify (0xB614D5AD on
-both buses) and VFL opens on an epoch-3 store (`ipad1_nand.py --epoch 3`, the IPSW's SCEP), but the YaFTL R/O
-restore reads page after page and has not finished in 5 minutes: the next thing to decode is this
-firmware's data-read path. Until then the keybag one-shot and the NAND root do not work on the N88.
+State: docs/n88/README.md (4.2.1 home screen, power-off and persistence, app install).
