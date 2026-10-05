@@ -815,6 +815,19 @@ static void test_incoming_sms(void)
         "\r\n00040B914151550501F00000704020312581000FC8329BFD0699E5EF36480683DD00\r\n");
     expect_frame(3, "\r\nOK\r\n");
 
+    /* A "+" sender is the same international address (TOA 0x91): the same PDU. */
+    CHECK(ios_bb_incoming_sms(&bb, "+14155550100", "Hello from 2007"));
+    pump();
+    expect_frame(3, "\r\n+CMT: ,33\r\n"
+        "\r\n00040B914151550501F00000704020312581000FC8329BFD0699E5EF36480683DD00\r\n");
+    c_mux_str(3, "at+cnma\r");
+    pump();
+    expect_frame(3, "\r\nOK\r\n");
+    CHECK(ios_bb_sms_sender_ok("+14155550100") && ios_bb_sms_sender_ok("5550100"));
+    CHECK(!ios_bb_sms_sender_ok("+") && !ios_bb_sms_sender_ok("") && !ios_bb_sms_sender_ok("Apple") &&
+          !ios_bb_sms_sender_ok("1+2") && !ios_bb_sms_sender_ok("123456789012345678901"));
+    CHECK(!ios_bb_incoming_sms(&bb, "Apple", "alphanumeric senders are not modelled"));
+
     /* URCs follow the DLCI that enabled them (4.x lays its channels out its own way). */
     c_mux_str(4, "at+cnmi=1,2,2,1\r");
     pump();

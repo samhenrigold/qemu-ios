@@ -188,6 +188,9 @@ void ios_bb_remote_answer(IosBbCore *bb);
 /* "idle", "dialing", "alerting", "incoming", "active", "held" of the first live call. */
 const char *ios_bb_call_state(const IosBbCore *bb);
 
+/* A sender incoming-sms takes: 1-20 digits, optionally after a "+" (always sent as international). */
+bool ios_bb_sms_sender_ok(const char *number);
+
 /* Network-side SMS: deliver a 23.040 SMS-DELIVER as +CMT on DLCI 3. */
 bool ios_bb_incoming_sms(IosBbCore *bb, const char *number, const char *text);
 const char *ios_bb_last_mo_sms_number(const IosBbCore *bb);

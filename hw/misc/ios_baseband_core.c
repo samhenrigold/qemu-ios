@@ -1662,13 +1662,10 @@ static void cmgs_prompt_commit(IosBbCore *bb, int ch, bool send)
     at_ok(bb, ch);
 }
 
-bool ios_bb_incoming_sms(IosBbCore *bb, const char *number, const char *text)
+bool ios_bb_sms_sender_ok(const char *number)
 {
-    char pdu[400];
-    unsigned n, tpdu;
-    IosBbSms *slot;
-
-    if (!bb->ch[bb->sms_ch].open || !radio_ok(bb) || !number[0] || !text[0]) {
+    number += number[0] == '+';                  /* international either way: the address is TOA 0x91 */
+    if (!number[0] || strlen(number) > 20) {
         return false;
     }
     for (const char *p = number; *p; p++) {
@@ -1676,6 +1673,19 @@ bool ios_bb_incoming_sms(IosBbCore *bb, const char *number, const char *text)
             return false;                        /* alphanumeric senders not modelled */
         }
     }
+    return true;
+}
+
+bool ios_bb_incoming_sms(IosBbCore *bb, const char *number, const char *text)
+{
+    char pdu[400];
+    unsigned n, tpdu;
+    IosBbSms *slot;
+
+    if (!bb->ch[bb->sms_ch].open || !radio_ok(bb) || !ios_bb_sms_sender_ok(number) || !text[0]) {
+        return false;
+    }
+    number += number[0] == '+';
     n = sms_build_deliver(bb, number, text, pdu, sizeof(pdu), &tpdu);
     if (!n) {
         return false;
