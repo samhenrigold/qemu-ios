@@ -380,11 +380,19 @@ static int as_wireless(int write)
     return (status >> 8) & 0xff;
 }
 
+/*
+ * Twice at most: when no ICCID was stored yet, the reloaded CommCenter stores one and treats the SIM as new
+ * (Data Roaming back off), so the second pass sets it again for that ICCID.
+ */
 static void roaming(void)
 {
-    if (!file_has(COMMCENTER, ROAMING) || !as_wireless(0))
+    int pass;
+
+    if (!file_has(COMMCENTER, ROAMING))
         return;
-    if (launchctl("unload", COMMCENTER_JOB) == 0) {
+    for (pass = 0; pass < 2 && as_wireless(0); pass++) {
+        if (launchctl("unload", COMMCENTER_JOB))
+            return;
         as_wireless(1);
         say(COMMCENTER_JOB, launchctl("load", COMMCENTER_JOB) == 0 ? " reloaded" : " reload failed", "");
     }

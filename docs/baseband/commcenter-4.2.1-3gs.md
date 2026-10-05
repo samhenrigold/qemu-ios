@@ -156,6 +156,8 @@ These hold for the 3GS unless its v1 trace says otherwise.
     the key false (0x19794).
   * Workaround: the guest package's it_prefs sets it true once per stored ICCID ("none" before one is
     stored) and restarts CommCenter, so the user's later choice for that SIM stands (contrib/it-prefs).
+    If CommCenter had stored no ICCID within it_prefs' wait, the restarted CommCenter stores one, sees a
+    new SIM and turns the key off again, so it_prefs makes a second pass for the stored ICCID.
   * The test PLMN stays the default. 1.0's CommCenter has no such key.
   * Each such restart resets the baseband (raw `at` pings into the mux, then BB_RST/RADIO_ON). The modem
     keeps the AP's v2 credits across that reset (the kext keeps its count), else the re-init's URCs
