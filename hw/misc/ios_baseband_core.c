@@ -1851,6 +1851,26 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
         at_ok(bb, ch);
         return;
     }
+    if ((arg = arg_after(cmd, "crsm=", NULL))) {
+        /*
+         * Restricted SIM access (27.007 +CRSM: sw1,sw2[,data]). The fake SIM has
+         * EF_AD (6FAD: normal operation, MNC length 2, so 001/01 is unambiguous);
+         * every other file answers 94 04 (file not found) rather than a bare OK.
+         */
+        int op = 0, fid = 0;
+
+        sscanf(arg, "%d,%d", &op, &fid);
+        if (fid == 0x6fad && op == 176) {
+            chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"00000002\"\r\n");
+        } else if (fid == 0x6fad && op == 192) {
+            /* 2G GET RESPONSE: size 4, EF id 6FAD, transparent. */
+            chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"000000046FAD040011FFBB01020000\"\r\n");
+        } else {
+            chan_printf(bb, ch, "\r\n+CRSM: 148,4\r\n");
+        }
+        at_ok(bb, ch);
+        return;
+    }
     if (strcmp(cmd, "xsio?") == 0) {
         /* 1.0 wants field 1 after its first char ("*0") to equal 0. */
         chan_printf(bb, ch, "\r\n+XSIO: 0,*0\r\n");
