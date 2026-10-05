@@ -62,6 +62,13 @@ As N81, plus:
 
 ## Debts
 
+0. **GL apps draw black (4.2.1).** `regress.py --checks app` installs the harness (AppSync), launches it and finds it
+   frontmost, but its GL scene's view stays black although it runs at 30 fps through the bridge. QuartzCore's
+   `sendNotification:forTransaction:onLayer:` carries a framebuffer ID that no IOMobileFramebuffer this process opens
+   reports (the shim counts `shim:eagl:send-notification-id`). Signalling the main display instead removes the
+   refusal but not the black view. The swap for that ID, or the composite of the app's 240x360 surfaces, is still
+   missing; next step is to trace CA's texture binds of the app surface in SpringBoard.
+
 1. **Baseband** waits on the cell stream (spi2 IFX protocol, modem core). Today the node is unmatched and
    the device shows "No Service".
 2. **Absent parts**:
@@ -71,7 +78,7 @@ As N81, plus:
    - The GPS (bcm4750 on uart4).
    - The cameras and ISP (AppleH3CamIn mailbox timeouts, as on N81).
 3. **Compass**: the AK8973 stands in for the AK8975B pair.
-4. **Accelerometer mounting** is unverified. Its DT orientation `00000100 000000ff 00ff0000` differs from
-   N81's and K48's.
+4. ~~Accelerometer mounting~~ (2026-10-04): `accel_mount` "-2,1,-3" (the DT orientation's transpose).
+   Safari turns with `accel-orientation` 1/3/4 as on hardware.
 5. All of N81's debts apply: no iBoot or NAND boot, K48's 16 GB NAND geometry, K48's panel ID, uncalibrated
    touch edges.

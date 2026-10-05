@@ -102,6 +102,13 @@ documented quirk/patch, S stub.
 
 ## Debts
 
+0. **GL apps draw black (4.2.1).** `regress.py --checks app` installs the harness (AppSync), launches it and finds it
+   frontmost, but its GL scene's view stays black although it runs at 30 fps through the bridge. QuartzCore's
+   `sendNotification:forTransaction:onLayer:` carries a framebuffer ID that no IOMobileFramebuffer this process opens
+   reports (the shim counts `shim:eagl:send-notification-id`). Signalling the main display instead removes the
+   refusal but not the black view. The swap for that ID, or the composite of the app's 240x360 surfaces, is still
+   missing; next step is to trace CA's texture binds of the app surface in SpringBoard.
+
 1. **iBoot and the real NAND boot.** Only `kboot=` runs. A real N81 boots LLB/iBoot from NAND (boot
    blocks, `IOFlashPartitionScheme`) and keeps nvram/effaceable there. The NOR graft is the shortcut.
 2. **NAND geometry** is K48's 16 GB part (`k48-16g`). The N81 SKUs are 8/32/64 GB, and its chip and DT
@@ -111,8 +118,8 @@ documented quirk/patch, S stub.
 4. **Cameras.** AppleH3CamIn times out on its ISP mailbox several times per boot. Disable the camera nodes
    in the DT or stub the ISP.
 5. **Gyro** absent (Game Center/CoreMotion users see no gyro). An ID-register stub at 0x68 is next.
-6. **Accelerometer mounting** untested. The DT's orientation matrix differs from K48's
-   (`0000ff00 000000ff 00010000`), and `accel_flipped` is off.
+6. ~~Accelerometer mounting~~ (2026-10-04): the board's `accel_mount` "-2,-1,3" is the DT's orientation
+   matrix inverted. Safari turns with `accel-orientation` 1/3 as on hardware (3 = Home right).
 7. **Multitouch calibration**: rows/columns/surface are the iPod 2G's, not measured on a unit. Taps land
    where aimed on the sheet's buttons, but the edges have not been fitted the way the K48's frame values were.
 8. **Panel ID** is K48's (nothing reads it on `kboot=`; iBoot will).

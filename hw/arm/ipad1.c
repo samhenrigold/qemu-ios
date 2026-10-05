@@ -102,6 +102,7 @@ typedef struct A4Board {
     /* I2C slaves in creation order (that order is the snapshot's). */
     A4I2CDevice i2c[10];
     bool accel_flipped;                  /* LIS331 mounted turned 180 degrees about X */
+    const char *accel_mount;             /* else the LIS model's "mount" axes (its DT orientation, inverted) */
     uint32_t mt_tx_fifo;                 /* multitouch SPI TX FIFO bytes (its firmware is one burst); 0 = default */
     int8_t bt_uart;                      /* BCM4329 HCI, nothing attached */
     int8_t gauge_uart;                   /* bq27545 HDQ gas gauge; -1 = none */
@@ -235,6 +236,8 @@ static const A4Board a4_n81 = {
         { 2, 0x19, TYPE_LIS302DL },
         { 2, 0x49, TYPE_S5L8930_TSL2581 },
     },
+    /* DT accelerometer orientation rows (0,-1,0) (-1,0,0) (0,0,1): x reads -y, y reads -x. */
+    .accel_mount = "-2,-1,3",
     .bt_uart = 1,                            /* uart1/bluetooth,n88 */
     .gauge_uart = -1,
     .wifi_board = "P=N81",
@@ -277,6 +280,8 @@ static const A4Board a4_n90 = {
         { 0, 0x39, TYPE_CD3272MIKEY },           /* the codec waits for 'mikey' */
         { 2, 0x19, TYPE_LIS302DL },
     },
+    /* DT accelerometer orientation rows (0,1,0) (-1,0,0) (0,0,-1): its transpose, x reads -y, y reads x. */
+    .accel_mount = "-2,1,-3",
     .bt_uart = 3,
     .gauge_uart = 5,
     .gauge_mah = 1420,                       /* bq27540, iPhone 4 battery */
@@ -938,6 +943,9 @@ static void ipad1_i2c_create(IPad1MachineState *s, int n)
              */
             qdev_prop_set_uint8(dev, "whoami", 0x32);
             qdev_prop_set_bit(dev, "mount-flipped", s->board->accel_flipped);
+            if (s->board->accel_mount) {
+                qdev_prop_set_string(dev, "mount", s->board->accel_mount);
+            }
         }
         i2c_slave_realize_and_unref(slave, bus, &error_fatal);
         if (d->irq_pin) {

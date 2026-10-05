@@ -31,7 +31,7 @@ int main(void) {
  assert(!ipod_attitude_vector(181,0,false,v));
  assert(!ipod_attitude_vector(0,-181,false,v));
  assert(!memcmp(v,original,3));
- puts("PASS: mounted portrait/landscape/flat gravity, compound tilt, unit magnitude and invalid input rejection");
+ puts("PASS: mounted portrait/landscape/flat gravity, board mount axes, compound tilt, unit magnitude and invalid input rejection");
 }
 '''
 source=(root/'hw/arm/ipod_touch_lis302dl.c').read_text()
@@ -52,6 +52,11 @@ code=code.replace(' puts("PASS:',r''' LIS302DLState sensor={0};
  assert(!lis302dl_post_load(&sensor,1));
  assert(sensor.pitch_mdeg==0 && sensor.roll_mdeg==90000 && !sensor.flat_pose);
  assert(sensor.out_x==-64 && sensor.shake_start_ns == -1 && sensor.last_sample_ns == -1);
+ /* A board mount (N81's DT orientation, inverted): sensor x reads -y, y reads -x. Portrait gravity (0,-64,0). */
+ LIS302DLState n81={0};n81.mount=(char *)"-2,-1,3";
+ assert(lis302dl_apply_attitude(&n81,0,0,false));
+ assert(n81.base_x==64 && n81.base_y==0 && n81.base_z==0);
+ assert(lis302dl_apply_attitude(&n81,0,90,false) && n81.base_x==0 && n81.base_y==64);
  puts("PASS:''')
 with tempfile.TemporaryDirectory() as directory:
     path=Path(directory)/'check.c';path.write_text(code)

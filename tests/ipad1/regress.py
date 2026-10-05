@@ -72,8 +72,9 @@ Result, Procs, free_port, sha256_file, log = ipod.Result, ipod.Procs, ipod.free_
 FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1")
 USBMUXD = os.path.expanduser("~/Developer/usbmuxd-qemu-ipad1-net/src/usbmuxd")
 DEFAULT_CHECKS = ["boot", "gles", "usbmux", "afc", "persist", "wifi", "wifi-early", "net", "audio"]
-PENDING = {"appinstall": "stock installd rejects apps not validly signed for this device",
-           "applaunch": "needs appinstall"}
+PENDING = {"appinstall": "use `app` (install + launch; needs a device whose recipe installed AppSync)",
+           "applaunch": "use `app`"}
+HARNESS_IPA = os.path.join(ROOT, "contrib/it-harness/build/Harness.ipa")   # contrib/it-harness/build.sh
 # Scanout is 1024x768 with the portrait UI turned on it. The boot logo is a small Apple on black (a few %
 # lit); the lock screen is a full wallpaper (~99% lit, unlike the iPod's dark panel). A stalled panel's
 # solid fill is also fully lit, so the frame must also be a picture: many distinct colours.
@@ -983,6 +984,61 @@ def check_prefs(cfg, r):
         b.stop()
 
 
+def check_app(cfg, r):
+    """An IPA (--ipa, default the iPod harness) installs over installation_proxy (the device's AppSync takes the
+    ad-hoc signature), installd lists it, the agent launches it and SpringBoard reports it frontmost on a lit
+    screen."""
+    ipa = getattr(cfg, "ipa", None) or HARNESS_IPA
+    if not os.path.exists(ipa):
+        return r.set(False, "no IPA at %s (contrib/it-harness/build.sh builds the harness)" % ipa)
+    bundle = ipod.ipa_bundle_id(ipa)
+    b, detail = booted(cfg, "app", r)
+    try:
+        if not detail:
+            return
+        p = b.run(["ideviceinstaller", "install", ipa], timeout=300)
+        listed = bundle in b.run(["ideviceinstaller", "list"], timeout=120).stdout
+        if p.returncode or not listed:
+            return r.set(False, "install rc=%s, %s listed=%s: %s" % (p.returncode, bundle, listed,
+                                                                      (p.stdout + p.stderr).strip()[-200:]))
+        t0 = time.time()
+        while not itqmp.agent_alive(b.qmp) and time.time() - t0 < 120:
+            time.sleep(3)
+        b.press("home")
+        time.sleep(1.5)
+        b.drag(UNLOCK_FROM, UNLOCK_TO)
+        time.sleep(3)
+        status, out = itqmp.agent(b.qmp, "launch", bundle, timeout=60)
+        if status != 0:
+            return r.set(False, "installed, but the agent's launch failed (%d): %s" % (status, out[-200:]))
+        time.sleep(20)
+        status, front = itqmp.agent(b.qmp, "frontmost")
+        front = front.decode("utf-8", "replace").splitlines()[0] if status == 0 and front else ""
+        ok, pic = b.picture("app")
+        detail = "%s installed and listed; launched, frontmost %r, %s" % (bundle, front, pic)
+        if front != bundle or not ok or getattr(cfg, "machine", "ipad1") not in ipad1_boot.PORTRAIT \
+                or bundle != ipod.ipa_bundle_id(HARNESS_IPA):
+            return r.set(front == bundle and ok, detail)
+        # The harness's "GL: rotating triangle" (the first row, at its point size x2 on a Retina panel): its
+        # EAGL frames go through the GLES front end to the host, and the bridge refuses nothing.
+        log_path = os.path.join(b.dir, "qemu.log")
+        before = open(log_path, errors="replace").read().count("[gles]")
+        b.tap((310, 156))
+        time.sleep(8)
+        draws = open(log_path, errors="replace").read().count("[gles]") - before
+        if draws <= 0:
+            return r.set(False, detail + "; the GL scene sent nothing through the bridge")
+        # The scene is a coloured triangle on black between the harness's toolbar and its frame counter.
+        w, h, pix = itqmp.read_ppm(b.shot("app-gl-scene"))
+        scene = {bytes(pix[(y * w + x) * 3:(y * w + x) * 3 + 3]) for y in range(140, 820, 8) for x in range(0, w, 8)}
+        if len(scene) < 8:
+            return r.set(False, detail + "; the GL scene ran (%d bridge lines) but its view shows %d colour(s)"
+                         % (draws, len(scene)))
+        gl_clean(b, r, detail + "; GL scene: %d bridge log lines" % draws, [b.shot("app-gl")])
+    finally:
+        b.stop()
+
+
 def check_nocharge(cfg, r):
     """usb-charger=off over the usbmuxd bridge: a port that supplies no charge current. The bridge's charge
     request never reaches the guest, so the iPad stays at 500 mA: connected, not charge-capable, not
@@ -1009,7 +1065,8 @@ def check_nocharge(cfg, r):
 
 CHECKS = {"boot": check_boot, "gles": check_gles, "shadow": check_shadow, "usbmux": check_usbmux, "afc": check_afc,
           "persist": check_persist, "net": check_net, "net-usb": check_net_usb, "wifi": check_wifi,
-          "wifi-early": check_wifi_early, "audio": check_audio, "prefs": check_prefs, "nocharge": check_nocharge}
+          "wifi-early": check_wifi_early, "audio": check_audio, "prefs": check_prefs, "nocharge": check_nocharge,
+          "app": check_app}
 
 
 def device_args(a):
@@ -1035,6 +1092,7 @@ def main():
     ipad1_boot.add_arguments(ap)
     ap.add_argument("--qemu", default=os.path.join(ROOT, "build/qemu-system-arm"))
     ap.add_argument("--usbmuxd", default=USBMUXD)
+    ap.add_argument("--ipa", help="app check: the IPA to install and launch (default the iPod harness)")
     ap.add_argument("--boot-timeout", type=int, default=600, help="hard cap per QEMU, seconds")
     ap.add_argument("--out", default=None)
     ap.add_argument("--product-version", help="usbmux's expected ProductVersion (default: NAND/../device.lock.json, else 3.2.2)")
