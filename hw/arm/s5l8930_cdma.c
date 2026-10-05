@@ -147,10 +147,13 @@ struct S5L8930CDMAState {
     char *gid_path;
     uint8_t *gid_data;
     size_t gid_size;
-    /* a device FIFO that paces its channel (s5l8930_cdma_set_source) */
-    hwaddr src_base, src_size;
-    uint32_t (*src_avail)(void *opaque, hwaddr addr, bool to_device);
-    void *src_opaque;
+    /* device FIFOs that pace their channels (s5l8930_cdma_set_source):
+     * the H2FMI's and the AMC's output port */
+    struct CDMASource {
+        hwaddr base, size;
+        uint32_t (*avail)(void *opaque, hwaddr addr, bool to_device);
+        void *opaque;
+    } src[2];
     /* Audio channels (I2S FIFOs) play out in real time, not inside the go
      * write; paced[] marks a chain in flight. */
     bool paced[CDMA_CHANNELS];
@@ -334,11 +337,21 @@ static bool cdma_is_memory(uint32_t addr);
 
 /* Reading a device FIFO that fills as it goes (iBoot's NAND), not feeding
  * the AES engine. Distinct from the time-paced audio channels below. */
+static struct CDMASource *cdma_source(S5L8930CDMAState *s, uint32_t addr)
+{
+    for (int i = 0; i < ARRAY_SIZE(s->src); i++) {
+        if (s->src[i].avail && addr >= s->src[i].base &&
+            addr - s->src[i].base < s->src[i].size) {
+            return &s->src[i];
+        }
+    }
+    return NULL;
+}
+
 static bool cdma_fifo_fed(S5L8930CDMAState *s, CDMAChannel *c)
 {
-    return s->src_avail && !cdma_is_memory(c->fifo) &&
-           !(c->settings & SET_TO_DEVICE) &&
-           c->fifo >= s->src_base && c->fifo - s->src_base < s->src_size;
+    return !cdma_is_memory(c->fifo) && !(c->settings & SET_TO_DEVICE) &&
+           cdma_source(s, c->fifo);
 }
 
 static void cdma_update_irq(S5L8930CDMAState *s, int ch)
@@ -465,10 +478,10 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
         }
         c->in_seg = false;
         len = c->remain;
-        if (fed || (to_device && dev_fifo && s->src_avail &&
-                    dev >= s->src_base && dev - s->src_base < s->src_size)) {
+        if (fed || (to_device && dev_fifo && cdma_source(s, dev))) {
             /* Take what the device has (or has room for); stall (still running) for the rest. */
-            uint32_t avail = s->src_avail(s->src_opaque, dev, to_device) & ~(width - 1);
+            struct CDMASource *src = cdma_source(s, dev);
+            uint32_t avail = src->avail(src->opaque, dev, to_device) & ~(width - 1);
             if (avail < len) {
                 len = avail;
                 c->in_seg = true;
@@ -560,8 +573,7 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
         c->error = error;
         c->ctrl |= ST_ERROR;
     }
-    if (!error && to_device && dev_fifo && s->src_avail &&
-        dev >= s->src_base && dev - s->src_base < s->src_size) {
+    if (!error && to_device && dev_fifo && cdma_source(s, dev)) {
         /* The chain has filled the device's FIFO; it completes when the
          * device has taken it (s5l8930_cdma_sink_done from the FMI), as the
          * IOP firmware waits for after its NAND write. */
@@ -913,10 +925,13 @@ void s5l8930_cdma_set_source(DeviceState *dev, hwaddr base, hwaddr size,
 {
     S5L8930CDMAState *s = S5L8930_CDMA(dev);
 
-    s->src_base = base;
-    s->src_size = size;
-    s->src_avail = avail;
-    s->src_opaque = opaque;
+    for (int i = 0; i < ARRAY_SIZE(s->src); i++) {
+        if (!s->src[i].avail || s->src[i].base == base) {
+            s->src[i] = (struct CDMASource){ base, size, avail, opaque };
+            return;
+        }
+    }
+    g_assert_not_reached();
 }
 
 /* The FIFO-fed device has more data: resume every channel stalled on it. */

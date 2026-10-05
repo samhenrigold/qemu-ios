@@ -287,10 +287,31 @@ static void amc_decoder_close(IPodTouchAMCState *s)
     }
 }
 
-static bool amc_dram(uint32_t addr, size_t size)
+static bool amc_dram(IPodTouchAMCState *s, uint32_t addr, size_t size)
 {
-    return addr >= 0x08000000 && addr < 0x10000000 &&
-           size <= 0x10000000 - addr;
+    return addr >= s->dram_base && addr - s->dram_base < s->dram_size &&
+           size <= s->dram_size - (addr - s->dram_base);
+}
+
+/* The engine's own memory, the aperture: AMC 2.1's DMA reads only this. */
+static bool amc_local(IPodTouchAMCState *s, uint32_t addr, size_t size)
+{
+    uint32_t limit = s->rev21 ? AMC_APERTURE_21 : AMC_BUF_SIZE;
+    return addr < limit && size <= limit - addr;
+}
+
+/*
+ * A bank 4 DMA address: bits 1:0 of a descriptor pointer tag its space,
+ * 1 = system memory, 2 = engine-local (7B500 c06e99f8). Returns the physical
+ * address, or -1 when it is not inside that space.
+ */
+static hwaddr amc_dma_addr(IPodTouchAMCState *s, bool local, uint32_t addr,
+                           size_t size)
+{
+    if (local) {
+        return amc_local(s, addr, size) ? s->buf_base + addr : -1;
+    }
+    return amc_dram(s, addr, size) ? addr : -1;
 }
 
 static void amc_decode_fail(IPodTouchAMCState *s)
@@ -314,7 +335,7 @@ static void amc_decode_fail(IPodTouchAMCState *s)
      * successful input, queued output must precede end-of-input completion.
      * An unknown program has no output buffer through which to report it. */
     AMC_REG(0x100) = 0;
-    if (!d->capacity) s->pending |= 0x40000;
+    if (!d->capacity) s->pending |= s->dma_done;
 }
 
 static bool amc_decode_dma(IPodTouchAMCState *s, uint32_t head)
@@ -328,9 +349,9 @@ static bool amc_decode_dma(IPodTouchAMCState *s, uint32_t head)
      * Bound both descriptor walking and total input before touching memory. */
     for (unsigned links = 0; head; links++) {
         uint32_t words[3];
-        head &= ~3u;
-        if (links == 64 || !amc_dram(head, sizeof(words)) ||
-            address_space_read(&address_space_memory, head,
+        hwaddr link = amc_dma_addr(s, (head & 3) == 2, head & ~3u, sizeof(words));
+        if (links == 64 || link == -1 ||
+            address_space_read(&address_space_memory, link,
                 MEMTXATTRS_UNSPECIFIED, words, sizeof(words))) {
             return false;
         }
@@ -338,13 +359,15 @@ static bool amc_decode_dma(IPodTouchAMCState *s, uint32_t head)
         uint32_t control = le32_to_cpu(words[1]);
         uint32_t src = le32_to_cpu(words[2]);
         size_t size = control >> 16;
-        if (!size || !amc_dram(src, size) ||
-            input->len + size > 1024 * 1024) {
+        AMCT("DMA link %08x: control %08x src %08x", head, control, src);
+        /* The input itself: AMC 2.1 sources are engine-local, 2.0's DRAM. */
+        hwaddr from = amc_dma_addr(s, s->rev21, src, size);
+        if (!size || from == -1 || input->len + size > 1024 * 1024) {
             return false;
         }
         unsigned offset = input->len;
         g_byte_array_set_size(input, offset + size);
-        if (address_space_read(&address_space_memory, src,
+        if (address_space_read(&address_space_memory, from,
             MEMTXATTRS_UNSPECIFIED, input->data + offset, size)) {
             return false;
         }
@@ -370,14 +393,14 @@ static bool amc_decode_dma(IPodTouchAMCState *s, uint32_t head)
         uint8_t config[12];
         static const unsigned rates[] = { 96000, 88200, 64000, 48000, 44100,
             32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350 };
-        if (address_space_read(&address_space_memory, s->buf_base + 0x2ff00,
+        if (address_space_read(&address_space_memory, s->buf_base + s->result_offset + AMC_PARAMS,
             MEMTXATTRS_UNSPECIFIED, config, sizeof(config))) {
             goto done;
         }
         d->capacity = amc_output_capacity(program);
         /* ALAC aliases both client buffers to one hardware output region
          * (7E18 GetOutputBuffers, c0608a34); a second region would overwrite
-         * the parameter block at 0x2ff00. */
+         * the parameter block (block + AMC_PARAMS). */
         d->buffers = program == AMC_ALAC ? 1 : 2;
         if (codec_id == AV_CODEC_ID_AAC) {
             /* Ignoring SBR/PS outside the selected DE program is expected.
@@ -564,11 +587,34 @@ static void amc_decode_drain(IPodTouchAMCState *s)
     }
 }
 
+/* Engine 0's oldest transfer job moves the frame just published. */
+static void amc_xfer_run(IPodTouchAMCState *s)
+{
+    uint32_t n = s->xfer[0], from = s->xfer[1], to = s->xfer[2];
+    g_autofree uint8_t *pcm = g_malloc(MAX(n, 1));
+    address_space_read(&address_space_memory, s->buf_base + from,
+                       MEMTXATTRS_UNSPECIFIED, pcm, n);
+    if (to == AMC_PORT_LOCAL_21) {
+        n = MIN(n, AMC_PORT_BYTES - s->port_len);
+        memcpy(s->port + s->port_len, pcm, n);
+        s->port_len += n;
+        if (s->port_kick) {
+            s->port_kick(s->port_opaque);
+        }
+    } else {
+        address_space_write(&address_space_memory, s->buf_base + to,
+                            MEMTXATTRS_UNSPECIFIED, pcm, n);
+    }
+    AMCT("engine 0: %u bytes %05x -> %05x", n, from, to);
+    memmove(s->xfer, s->xfer + 3, sizeof(s->xfer) - 3 * sizeof(s->xfer[0]));
+    s->xfers--;
+}
+
 static void amc_decode_publish(IPodTouchAMCState *s)
 {
     AMCDecoder *d = s->decoder;
     uint8_t header[0x12];
-    const hwaddr base = s->buf_base + AMC_RESULT_OFFSET;
+    const hwaddr base = s->buf_base + s->result_offset;
     bool failed = d && d->failed && g_queue_is_empty(&d->output_sizes);
     unsigned bytes = failed ? d->capacity :
         d ? GPOINTER_TO_UINT(g_queue_peek_head(&d->output_sizes)) : 0;
@@ -578,32 +624,42 @@ static void amc_decode_publish(IPodTouchAMCState *s)
         return;
     }
     /* These are alternating buffers of interleaved S16 samples, not L/R
-     * planes. The completion handler advances one buffer per interrupt. */
-    if ((s->pending & 4) || lduw_le_p(header + 0xa + d->slot * 4)) {
+     * planes. The completion handler advances one buffer per interrupt.
+     * AMC 2.1's driver collects every frame with an engine 0 transfer job
+     * (amc_engine0), so a frame waits for one and goes to its slot. */
+    unsigned slot = d->slot;
+    if (s->rev21) {
+        uint32_t from = s->xfer[1] - (s->result_offset + 0x100);
+        if (!s->xfers ||
+            from % d->capacity || from / d->capacity >= d->buffers) {
+            return;
+        }
+        slot = from / d->capacity;
+    } else if ((s->pending & 4) || lduw_le_p(header + 0xa + slot * 4)) {
         return;
     }
     if (failed) {
         uint8_t error[4];
-        /* c0609b5c reads status bit 0 and this code from +0x2ff28, passing it
+        /* c0609b5c reads status bit 0 and this code from block + AMC_ERROR, passing it
          * to the output stream. 100 is the driver's own "no output" error
          * (c0609c58). Supply silence, never stale PCM, for that failed frame. */
         stw_le_p(error, 1);
         stw_le_p(error + 2, 100);
-        address_space_write(&address_space_memory, s->buf_base + 0x2ff28,
+        address_space_write(&address_space_memory, s->buf_base + s->result_offset + AMC_ERROR,
                             MEMTXATTRS_UNSPECIFIED, error, sizeof(error));
         g_byte_array_set_size(d->pcm, bytes);
         memset(d->pcm->data, 0, bytes);
         d->cursor = 0;
     }
     if (address_space_write(&address_space_memory,
-        base + 0x100 + d->slot * d->capacity, MEMTXATTRS_UNSPECIFIED,
+        base + 0x100 + slot * d->capacity, MEMTXATTRS_UNSPECIFIED,
         d->pcm->data + d->cursor, bytes)) {
         return;
     }
     stw_le_p(header + 2, d->buffers);
     stw_le_p(header + 4, d->capacity / 2);
-    stw_le_p(header + 0xa + d->slot * 4, 1);
-    stw_le_p(header + 0xc + d->slot * 4, bytes / 2);
+    stw_le_p(header + 0xa + slot * 4, 1);
+    stw_le_p(header + 0xc + slot * 4, bytes / 2);
     if (address_space_write(&address_space_memory, base, MEMTXATTRS_UNSPECIFIED,
                             header, sizeof(header))) {
         return;
@@ -614,8 +670,12 @@ static void amc_decode_publish(IPodTouchAMCState *s)
     } else {
         g_queue_pop_head(&d->output_sizes);
     }
-    d->slot = (d->slot + 1) % d->buffers;
-    s->pending |= 4;
+    d->slot = (slot + 1) % d->buffers;
+    if (s->rev21) {
+        amc_xfer_run(s);
+    } else {
+        s->pending |= 4;
+    }
     AMCT("decode output %u samples, remaining %zu", bytes / 2,
          d->pcm->len - d->cursor);
 }
@@ -680,7 +740,7 @@ static void amc_decode_drain(IPodTouchAMCState *s) {}
 
 static void amc_write_result_block(IPodTouchAMCState *s)
 {
-    hwaddr base = s->buf_base + AMC_RESULT_OFFSET;
+    hwaddr base = s->buf_base + s->result_offset;
     uint16_t capacity = AMC_SELFTEST_SAMPLES;
     uint16_t buffers = 2;
     uint16_t back = 0;
@@ -700,9 +760,6 @@ static void amc_write_result_block(IPodTouchAMCState *s)
     if (env) {
         capacity = (uint16_t)strtoul(env, NULL, 0);
     }
-
-    /* Belt and braces: the block must sit inside the aperture we documented. */
-    QEMU_BUILD_BUG_ON(AMC_RESULT_OFFSET + 0x100 > AMC_BUF_SIZE);
 
     address_space_write(&address_space_memory, base + AMC_RESULT_BUFFERS,
                         MEMTXATTRS_UNSPECIFIED, &buffers, sizeof(buffers));
@@ -917,13 +974,92 @@ static void amc_update_irq(IPodTouchAMCState *s)
     qemu_set_irq(s->irq, level);
 }
 
+static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val,
+                                 unsigned size);
+
+/*
+ * AMC 2.1 engine 0: a linked list of {next, control, src, dst} moves that the
+ * driver queues to collect a decoded frame (7B500 c06e2b28, links built by
+ * c06e9b08): a 5-word job and its commit word into the transfer unit (dst
+ * AMC_XFER_FIFO, in the third DT window), the acknowledgement of the DE's
+ * completion (dst 0xc48) and a cleared slot status (dst block + 8). Control
+ * holds the byte count in its high half and the destination space in bits
+ * 3:2: 2 = an AMC register, 1 = engine-local memory, 0 = the transfer unit.
+ * The list runs at once; the job, {?, bytes, from, ?, to} (both engine-local),
+ * is queued at its commit and moves the next frame the DE finishes, to the
+ * output port when `to` is AMC_PORT_LOCAL_21. The driver takes the frame on
+ * CDMA 0x17's completion. Engine 0 raises no completion of its own (the
+ * driver enables 1 << 16, [this+0x46c], but that ISR path re-kicks before the
+ * CDMA completion has released its IODMACommand: "line 3419" busy, a leaked
+ * list slot per frame, and Music stalls after 16 frames).
+ * ponytail: the two unknown job words and the transfer unit's other registers
+ * are not modelled; add them when a driver uses another channel.
+ */
+static bool amc_engine0(IPodTouchAMCState *s, uint32_t head)
+{
+    uint32_t job[5] = { 0 };
+    bool have_job = false;
+    for (unsigned links = 0; head; links++) {
+        uint32_t w[4];
+        uint8_t data[64];
+        if (links == 16 || !amc_local(s, head & ~3u, sizeof(w)) ||
+            address_space_read(&address_space_memory, s->buf_base + (head & ~3u),
+                               MEMTXATTRS_UNSPECIFIED, w, sizeof(w))) {
+            return false;
+        }
+        uint32_t control = le32_to_cpu(w[1]), src = le32_to_cpu(w[2]);
+        uint32_t dst = le32_to_cpu(w[3]), bytes = control >> 16;
+        if (!bytes || bytes > sizeof(data) || (bytes & 3) ||
+            !amc_local(s, src, bytes) ||
+            address_space_read(&address_space_memory, s->buf_base + src,
+                               MEMTXATTRS_UNSPECIFIED, data, bytes)) {
+            return false;
+        }
+        switch ((control >> 2) & 3) {
+        case 2:     /* AMC register */
+            for (unsigned i = 0; i < bytes; i += 4) {
+                ipod_touch_amc_write(s, dst + i, ldl_le_p(data + i), 4);
+            }
+            break;
+        case 1:     /* engine-local memory */
+            if (!amc_local(s, dst, bytes)) {
+                return false;
+            }
+            address_space_write(&address_space_memory, s->buf_base + dst,
+                                MEMTXATTRS_UNSPECIFIED, data, bytes);
+            break;
+        default:    /* the transfer unit */
+            if (dst != AMC_XFER_FIFO) {
+                return false;
+            }
+            if (bytes == sizeof(job)) {
+                memcpy(job, data, sizeof(job));
+                have_job = true;
+            } else if (have_job) {
+                uint32_t n = le32_to_cpu(job[1]), from = le32_to_cpu(job[2]);
+                uint32_t to = le32_to_cpu(job[4]);
+                if (!amc_local(s, from, n) || !amc_local(s, to, n) ||
+                    s->xfers == AMC_XFER_QUEUE) {
+                    return false;
+                }
+                uint32_t *x = s->xfer + 3 * s->xfers++;
+                x[0] = n; x[1] = from; x[2] = to;
+                have_job = false;
+            }
+            break;
+        }
+        head = le32_to_cpu(w[0]);
+    }
+    return true;
+}
+
 static void amc_decode_tick(void *opaque)
 {
     IPodTouchAMCState *s = opaque;
     amc_decode_drain(s);
 #ifdef IT_HAVE_AVCODEC
     AMCDecoder *d = s->decoder;
-    if ((AMC_REG(0x100) & 1) &&
+    if ((AMC_REG(0x100) & 3) &&
         (!d || (!d->input_pending && !d->dma_pending && !d->failed))) {
         if (amc_decode_dma(s, AMC_REG(0x100))) {
             AMC_REG(0x100) = 0;
@@ -945,7 +1081,7 @@ static void amc_decode_tick(void *opaque)
         (!d->failed || d->error_reported) &&
         g_queue_is_empty(&d->output_sizes)) {
         d->dma_pending = false;
-        s->pending |= 0x40000;
+        s->pending |= s->dma_done;
     }
 #endif
     amc_update_irq(s);
@@ -1026,6 +1162,11 @@ static uint64_t ipod_touch_amc_read(void *opaque, hwaddr addr, unsigned size)
              * the driver service a source that does not exist. */
             res = s->irq_armed ? 0xffffffff : 0;
         }
+    } else if (s->rev21 && addr == AMC_WINDOW_SIZE) {
+        /* ponytail: one window, offset 0, over the whole aperture (windows 1
+         * and 2 read 0). Real 2.1 values are unmeasured; the driver needs only
+         * its input bounce buffer at +0x20400 to translate. */
+        res = AMC_APERTURE_21;
     } else {
         res = AMC_REG(addr);
     }
@@ -1102,11 +1243,12 @@ static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val,
             uint8_t clear[0x12] = { 0 };
             amc_decoder_close(s);
             s->pending = 0;
+            s->xfers = s->port_len = 0;
             AMC_REG(0x100) = 0;
             address_space_write(&address_space_memory,
-                s->buf_base + AMC_RESULT_OFFSET, MEMTXATTRS_UNSPECIFIED,
+                s->buf_base + s->result_offset, MEMTXATTRS_UNSPECIFIED,
                 clear, sizeof(clear));
-            address_space_write(&address_space_memory, s->buf_base + 0x2ff28,
+            address_space_write(&address_space_memory, s->buf_base + s->result_offset + AMC_ERROR,
                 MEMTXATTRS_UNSPECIFIED, clear, 4);
             /* A new stream must not inherit a failure or DMA descriptor
              * from the previous stream. */
@@ -1114,7 +1256,11 @@ static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val,
                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000);
         } else if (addr == 0x110 && val == 0x20) {
             /* Bank 4 acknowledges its completed linked DMA before rearming. */
-            s->pending &= ~0x40000u;
+            s->pending &= ~s->dma_done;
+        } else if (s->rev21 && addr == AMC_E0_HEAD) {
+            if (!amc_engine0(s, val)) {
+                warn_report("AMC: engine 0 command list rejected");
+            }
         }
     }
     amc_update_irq(s);
@@ -1133,6 +1279,7 @@ static void ipod_touch_amc_reset(DeviceState *dev)
     amc_decoder_close(s);
     timer_del(s->decode_timer);
     s->pending = 0;
+    s->xfers = s->port_len = 0;
     s->codec_decode = s->mode == AMC_MODE_DECODE;
     if (s->codec_decode) {
         timer_mod(s->decode_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000);
@@ -1144,6 +1291,34 @@ static void ipod_touch_amc_reset(DeviceState *dev)
     amc_update_irq(s);
 }
 
+uint32_t ipod_touch_amc_port_avail(void *opaque, hwaddr addr, bool to_device)
+{
+    IPodTouchAMCState *s = opaque;
+    return to_device ? 0 : s->port_len;
+}
+
+/* The DMA engine reads the port a word at a time. */
+static uint64_t amc_port_read(void *opaque, hwaddr addr, unsigned size)
+{
+    IPodTouchAMCState *s = opaque;
+    uint32_t v = 0;
+    unsigned n = MIN(size, s->port_len);
+    memcpy(&v, s->port, n);
+    memmove(s->port, s->port + n, s->port_len - n);
+    s->port_len -= n;
+    return le32_to_cpu(v);
+}
+
+static void amc_port_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
+{
+}
+
+static const MemoryRegionOps amc_port_ops = {
+    .read = amc_port_read,
+    .write = amc_port_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
 static void ipod_touch_amc_init(Object *obj)
 {
     IPodTouchAMCState *s = IPOD_TOUCH_AMC(obj);
@@ -1151,6 +1326,8 @@ static void ipod_touch_amc_init(Object *obj)
 
     memory_region_init_io(&s->iomem, obj, &amc_ops, s, "amc", AMC_MEM_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
+    memory_region_init_io(&s->port_mr, obj, &amc_port_ops, s, "amc-port", AMC_PORT_SIZE);
+    sysbus_init_mmio(sbd, &s->port_mr);
     sysbus_init_irq(sbd, &s->irq);
     s->decode_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, amc_decode_tick, s);
 }
@@ -1295,6 +1472,9 @@ static int amc_pre_load(void *opaque)
 static int amc_post_load(void *opaque, int version_id)
 {
     IPodTouchAMCState *s = opaque;
+    if (s->xfers > AMC_XFER_QUEUE || s->port_len > AMC_PORT_BYTES) {
+        return -EINVAL;
+    }
     if (s->codec_decode != (s->mode == AMC_MODE_DECODE) ||
         s->state_handshake != (s->mode != AMC_MODE_REGISTERS)) {
         return -EINVAL;
@@ -1313,7 +1493,7 @@ static int amc_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_amc = {
     .name = TYPE_IPOD_TOUCH_AMC,
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .pre_save = amc_pre_save,
     .pre_load = amc_pre_load,
@@ -1327,6 +1507,10 @@ static const VMStateDescription vmstate_ipod_touch_amc = {
         VMSTATE_UINT32(pending, IPodTouchAMCState),
         VMSTATE_TIMER_PTR(decode_timer, IPodTouchAMCState),
         VMSTATE_SINGLE(decoder, IPodTouchAMCState, 2, vmstate_amc_decoder, void *),
+        VMSTATE_UINT32_V(xfers, IPodTouchAMCState, 3),
+        VMSTATE_UINT32_ARRAY_V(xfer, IPodTouchAMCState, AMC_XFER_QUEUE * 3, 3),
+        VMSTATE_UINT8_ARRAY_V(port, IPodTouchAMCState, AMC_PORT_BYTES, 3),
+        VMSTATE_UINT32_V(port_len, IPodTouchAMCState, 3),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -1334,11 +1518,17 @@ static const VMStateDescription vmstate_ipod_touch_amc = {
 static const Property amc_properties[] = {
     DEFINE_PROP_UINT8("mode", IPodTouchAMCState, mode, AMC_MODE_REGISTERS),
     DEFINE_PROP_UINT64("buf-base", IPodTouchAMCState, buf_base, AMC_BUF_BASE),
+    /* Where the engine's linked DMA may read compressed input. */
+    DEFINE_PROP_UINT32("dram-base", IPodTouchAMCState, dram_base, 0x08000000),
+    DEFINE_PROP_UINT32("dram-size", IPodTouchAMCState, dram_size, 0x08000000),
+    DEFINE_PROP_BOOL("rev21", IPodTouchAMCState, rev21, false),
 };
 
 static void ipod_touch_amc_realize(DeviceState *dev, Error **errp)
 {
     IPodTouchAMCState *s = IPOD_TOUCH_AMC(dev);
+    s->result_offset = s->rev21 ? AMC_RESULT_OFFSET_21 : AMC_RESULT_OFFSET;
+    s->dma_done = s->rev21 ? AMC_DMA_DONE_21 : AMC_DMA_DONE;
     if (s->mode > AMC_MODE_DECODE) {
         error_setg(errp, "AMC mode must be registers, handshake or decode");
         return;

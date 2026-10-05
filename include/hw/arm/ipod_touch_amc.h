@@ -83,6 +83,38 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchAMCState, IPOD_TOUCH_AMC)
  * value hardware contributes to either assertion.
  */
 #define AMC_RESULT_OFFSET   0x28000
+/*
+ * AMC 2.1, the S5L8920/8930 engine (amc,s5l8920x: iPad 1), runs the same DE
+ * programs under the same register protocol; 7B500's AppleAMC_r2 picks its
+ * layout from a flag the S5L8920 class sets in start ([this+0x5c0], c06e23c6):
+ *  - the result block, its output buffers (+0x100) and the stream parameters
+ *    (+0x7f00, +0x7f28) sit at 0x18000 instead of 0x28000 (c06e2168, c06e21dc);
+ *  - the engine's DMA reads its own memory, not DRAM: compressed input is
+ *    copied to a bounce buffer at aperture +0x20400 (c06e2fa2, c06e4da0) and
+ *    the descriptor carries that address translated through the memory-window
+ *    registers, size at 0xa44 + 0x14 * n and offset at 0xa48 + 0x14 * n
+ *    (c06e93d4, c06e99a0; AMC 2.0 uses fixed offsets);
+ *  - the interrupt sources are numbered 1 << n in order (c06e2e9c..), which
+ *    moves the input DMA's completion from bit 18 to bit 20 ([this+0x47c]).
+ */
+#define AMC_RESULT_OFFSET_21 0x18000
+#define AMC_APERTURE_21      0x40000   /* DT /arm-io/amc reg[1] size */
+#define AMC_WINDOW_SIZE      0xa44     /* window 0; + 0x14 * n */
+#define AMC_DMA_DONE         (1u << 18)
+#define AMC_DMA_DONE_21      (1u << 20)
+#define AMC_E0_HEAD          0x000       /* AMC 2.1: engine 0's command list */
+#define AMC_XFER_FIFO        0x303060    /* AMC 2.1 transfer unit, engine 0's view */
+#define AMC_XFER_QUEUE       8
+/*
+ * AMC 2.1's output port: transfer jobs to engine-local 0x38000 go to a FIFO
+ * that CDMA channel 0x17 drains from 0x8480002c (DT /arm-io/amc
+ * dma-channels) into the client's buffers. The second sysbus MMIO region.
+ */
+#define AMC_PORT_LOCAL_21    0x38000
+#define AMC_PORT_SIZE        0x1000
+#define AMC_PORT_BYTES       0x8000          /* above any job: ALAC is 16 KiB */
+#define AMC_PARAMS          0x7f00  /* stream parameters, from the block */
+#define AMC_ERROR           0x7f28  /* status bit 0, error code: from the block */
 #define AMC_RESULT_BUFFERS 0x02        /* halfword, must be <= 2 */
 #define AMC_RESULT_CAPACITY   0x04        /* halfword */
 
@@ -97,6 +129,7 @@ typedef struct IPodTouchAMCState {
     SysBusDevice parent_obj;
 
     MemoryRegion iomem;
+    MemoryRegion port_mr;   /* AMC 2.1 output port, AMC_PORT_SIZE */
     qemu_irq irq;
 
     uint32_t regs[AMC_MEM_SIZE / 4];
@@ -106,9 +139,22 @@ typedef struct IPodTouchAMCState {
     bool codec_decode;
     uint8_t mode; /* Startup configuration; checked against restored state. */
     uint64_t buf_base; /* buffer aperture: AMC_BUF_BASE on the iPod, 0x84000000 on the iPad */
+    uint32_t dram_base, dram_size; /* DRAM the input DMA may read */
+    bool rev21;             /* AMC 2.1 (amc,s5l8920x) */
+    uint32_t result_offset; /* derived from rev21 at realize */
+    uint32_t dma_done;      /* input DMA completion source, from rev21 */
+    uint32_t xfers;         /* AMC 2.1: engine 0's queued transfer jobs */
+    uint32_t xfer[AMC_XFER_QUEUE * 3];  /* {bytes, from, to} */
+    uint8_t port[AMC_PORT_BYTES];
+    uint32_t port_len;
+    void (*port_kick)(void *opaque);    /* the board's DMA: data in the port */
+    void *port_opaque;
     uint32_t pending;
     void *decoder;
     QEMUTimer *decode_timer;
 } IPodTouchAMCState;
+
+/* For the board's DMA engine: bytes waiting in the output port. */
+uint32_t ipod_touch_amc_port_avail(void *opaque, hwaddr addr, bool to_device);
 
 #endif

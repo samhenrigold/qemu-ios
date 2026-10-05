@@ -45,6 +45,7 @@
 #define S5L8930_AMC_BASE         0x84100000   /* audio media codec registers */
 #define S5L8930_AMC_AUX_BASE     0x84300000   /* third AMC window, unmodelled */
 #define S5L8930_AMC_AUX_SIZE     0x5000
+#define S5L8930_AMC_PORT_BASE    0x84800000   /* AMC output port (CDMA 0x17 FIFO at +0x2c) */
 #define S5L8930_I2S_BASE(n)      (0x84500400 + (n) * 0x1000)
 #define S5L8930_SWI_BASE         0xbf600000   /* backlight/core-voltage single-wire, same IP as the S5L8720's */
 #define S5L8930_PMGR_BASE        0xbf100000   /* clocks, gates, timer (+0x2000), POWER_ID (+0x6000) */

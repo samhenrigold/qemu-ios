@@ -81,6 +81,7 @@ struct IPad1MachineState {
     DeviceState *vic[S5L8930_VIC_COUNT];
     DeviceState *gpio;
     DeviceState *pmu;
+    DeviceState *cdma;
     DeviceState *ltc;                    /* charger: USB cable level */
     synopsys_usb_state *usb_otg;
     IPodTouchMultitouchState *mt;
@@ -132,6 +133,11 @@ static uint32_t s5l8930_usb_hwcfg[] = { 0, 0x7a8f60d0, 0x082000e8, 0x01f08024 };
 #define KBOOT_TRAILER_LEN 24
 #define IPAD1_IBOOT_BASE 0x5ff00000     /* iBoot-817.29 link address */
 #define KBOOT_SEGMENT_LEN 20
+
+static void ipad1_amc_port_kick(void *cdma)
+{
+    s5l8930_cdma_kick(cdma);
+}
 
 static qemu_irq ipad1_irq(IPad1MachineState *s, int irq)
 {
@@ -1004,6 +1010,7 @@ static void ipad1_init(MachineState *machine)
     }
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
+    s->cdma = dev;
     sysbus_mmio_map(sbd, 0, S5L8930_CDMA_BASE);
     sysbus_mmio_map(sbd, 1, S5L8930_AES_BASE);
     for (i = 0; i < S5L8930_CDMA_CHANNELS; i++) {
@@ -1139,18 +1146,34 @@ static void ipad1_init(MachineState *machine)
 
     /*
      * AMC (audio media codec, amc,s5l8920x): the same AppleAMC_r2 kext family
-     * the iPod's 3.1.3 drives, one hardware revision up ("AMC 2.1"). Reuse the
-     * iPod model's register/interrupt handshake; its buffer aperture is the
-     * 256 KiB at 0x84000000 that the machine already backs as SRAM. The third
-     * DT window (0x84300000, 0x5000) stays unimplemented; UI sounds and PCM
-     * playback never reach the AMC (it is the hardware decode transformer).
+     * the iPod's 3.1.3 drives, one hardware revision up ("AMC 2.1"), loading
+     * the same DE programs. Music's MP3/AAC/ALAC go through it (smoke #72:
+     * without the decoder an MP3 stays at 0:00); UI sounds and PCM do not.
+     * Its buffer aperture is the 256 KiB at 0x84000000 that the machine
+     * already backs as SRAM, laid out as AMC 2.1 (AMC_RESULT_OFFSET_21).
+     * The third DT window (0x84300000, 0x5000) stays unimplemented.
      */
     dev = qdev_new(TYPE_IPOD_TOUCH_AMC);
     qdev_prop_set_uint64(dev, "buf-base", S5L8930_SRAM_BASE);
+    qdev_prop_set_uint32(dev, "dram-base", S5L8930_DRAM_BASE);
+    qdev_prop_set_uint32(dev, "dram-size", S5L8930_DRAM_SIZE);
+    qdev_prop_set_bit(dev, "rev21", true);
+#ifdef IT_HAVE_AVCODEC
+    qdev_prop_set_uint8(dev, "mode", AMC_MODE_DECODE);
+#endif
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_AMC_BASE);
-    sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_AMC));
+    /* AMC 2.1 attaches its status handler (the one that reads 0xa98/0xb18)
+     * to the 8th of its 23 lines: [this+0x108] = 7 (7B500 c06e2e88; AMC 2.0
+     * uses its only line), registered at c06ec698. */
+    sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_AMC + 7));
+    /* Its output port, which CDMA channel 0x17 drains (amc dma-channels). */
+    sysbus_mmio_map(sbd, 1, S5L8930_AMC_PORT_BASE);
+    IPOD_TOUCH_AMC(dev)->port_kick = ipad1_amc_port_kick;
+    IPOD_TOUCH_AMC(dev)->port_opaque = s->cdma;
+    s5l8930_cdma_set_source(s->cdma, S5L8930_AMC_PORT_BASE, AMC_PORT_SIZE,
+                            ipod_touch_amc_port_avail, dev);
 
     /* Same Samsung UART as the S5L8720, including its interrupt scheme. */
     exynos4210_uart_create(S5L8930_UART_BASE(0), 256, 0, serial_hd(0),
