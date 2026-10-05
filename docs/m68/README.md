@@ -18,7 +18,11 @@ UART1: carrier "Test Network" with full bars and EDGE, Wi-Fi up, SMS in, calls i
 - lockdownd: FirmwareKit's `conditional-no-record-initializer` strategy (LightTouchMac branch m68):
   "Setting the activation state to Activated", then "Disabling brick mode on the baseband". SpringBoard logs
   "lockdown says the device is: [Activated]". Later boots report "Using the cached activation state" (the data
-  ark persisted).
+  ark persisted). A data-only route does not work on 1.0 (tried, as Lakr233's qemu-ios-4 does for iOS 4: a
+  seeded `data_ark.plist` with `com.apple.mobile.lockdown_cache-ActivationState` Activated or
+  FactoryActivated, `-BrickState` false, vanilla lockdownd). lockdownd uses the cached state, but any change in
+  the baseband's ICCID (empty at first, then the SIM's) triggers an activation check, and with no Apple-signed
+  `activation_record.plist` that check sets Unactivated and brick mode: the branch the strategy rewrites.
 - Touch: the Zephyr1 (`s5l8900.multitouch-z1`): A-Speed bootloader, main firmware stream, reports, frames.
   Taps reach SpringBoard and apps (Settings, Brightness).
 - GL: LayerKit composites through the host GL bridge (the 1.x front end matches 1.0's 186 OpenGLES exports),
