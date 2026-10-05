@@ -84,6 +84,11 @@ $N/dev1/nor.bin --checks boot,persist,afc,usbmux,wifi`. The machine selects the 
 coordinates, the unlock slider, the lit threshold (the plugged-in iPod's lock screen is the charging battery
 on black, about 30% lit) and the DeviceClass.
 
+App install, 2026-10-04 (FirmwareKit kboot `n81ap-8C148` device, guest package with gles-public 81c8124a35 as an
+offer): `regress.py --machine iPod-Touch-4G --checks app --guest-package OFFER` PASS. AppSync installs the harness through
+installation_proxy, installd lists it, the agent launches it frontmost, and its GL triangle draws through the bridge
+with no refusals.
+
 ## Models: reused, varied, new
 
 Classes as in LightTouchMac `docs/fidelity-ledger.md`: R register-level, H high-level emulation, P a
@@ -102,28 +107,21 @@ documented quirk/patch, S stub.
 
 ## Debts
 
-0. **GL apps draw black (4.2.1).** `regress.py --checks app` installs the harness (AppSync), launches it and finds it
-   frontmost, but its GL scene's view stays black although it runs at 30 fps through the bridge. The same app on an
-   iPad 1 4.2.1 (a FirmwareKit kboot k48ap-8C148 device) draws its triangle, with no refusals.
-   - **Root cause** (N90 8C148, read off the shared cache): on these Retina boards the app's QuartzCore scales the
-     legacy app's EAGL surface with the M2 scaler. It creates an `IOSurfaceAccelerator`
-     (QuartzCore 0x34175a8c) and, per frame, sends `-[EAGLContext sendNotification:IOSurfaceAcceleratorGetID(accel)
-     forTransaction:t onLayer:0]` (0x341312e4).
-   - The stock SGX engine turns that into a kernel signal by ID, which releases AppleM2ScalerCSCDriver's queued
-     `TransferSurfaceWithSwap`. Only after that transfer does the scaler call IOMFB `swap_signal` for the panel.
-     The shim cannot name an accelerator: it refuses the ID (`shim:eagl:send-notification-id`), the transfer is
-     never started (the scaler model logs no transfer during the scene) and the layer stays black.
-   - Signalling the panel's swap instead removes the refusal but shows black, because the scaled copy never ran.
-   - Fix options: (a) find a user-space trigger for the accelerator's swap (its user client's methods); (b) have
-     the front end complete the accelerator's transfer itself (`IOSurfaceAcceleratorTransferSurface` from the
-     rendered surface); (c) keep CA off the accelerator path.
+0. ~~**GL apps draw black (4.2.1).**~~ Fixed by gles-public 81c8124a35 (fw-a4 e9d82647fb). On these Retina
+   boards a legacy 1x app's QuartzCore scales its EAGL surface with the M2 scaler: it queues
+   `IOSurfaceAcceleratorConditionalTransferSurfaceWithSwap` and releases it by accelerator ID through
+   `-[EAGLContext sendNotification:forTransaction:onLayer:]`, which the stock SGX engine turns into a kernel
+   signal. The front end now rebinds that call, records CA's transfer and issues it unconditionally
+   (`TransferSurfaceWithSwap`) after `glFinish`. `regress.py --checks app` (with the package as an offer) installs
+   the harness, launches it and taps "GL: rotating triangle": the triangle draws (4 colours, 35 bridge lines) and the
+   bridge refuses nothing.
 
 1. **iBoot and the real NAND boot.** Only `kboot=` runs. A real N81 boots LLB/iBoot from NAND (boot
    blocks, `IOFlashPartitionScheme`) and keeps nvram/effaceable there. The NOR graft is the shortcut.
 2. **NAND geometry** is K48's 16 GB part (`k48-16g`). The N81 SKUs are 8/32/64 GB, and its chip and DT
    values are unmeasured.
-3. **No FirmwareKit recipe.** The device above is the iPad pipeline run by hand. An `n81ap-8C148`
-   catalog entry and recipe are needed for the app.
+3. ~~**No FirmwareKit recipe.**~~ `n81ap-8C148` has a catalog entry and a kboot recipe (LightTouchMac branch
+   `a4-n81`, experimental).
 4. **Cameras.** AppleH3CamIn times out on its ISP mailbox several times per boot. Disable the camera nodes
    in the DT or stub the ISP.
 5. **Gyro** absent (Game Center/CoreMotion users see no gyro). An ID-register stub at 0x68 is next.
