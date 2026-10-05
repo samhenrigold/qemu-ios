@@ -37,6 +37,10 @@ second board on the same machine file (`-M n88`, below).
   shows the Wi-Fi icon. `wifi=` and `wifi-bssid` work as on the iPad (docs/ipad1/wifi.md);
   `regress.py --machine n18 --checks wifi` PASS. It needed the CDMA HOLD state (n88's 3aa02ab1a8): with
   Wi-Fi up, BTServer parks uart3's RX channel.
+- LightTouchMac (2026-10-05, LTM branch n18-app): FirmwareKit prepares `n18ap-8C148` end to end. That covers
+  the kboot board, a plain NAND store (the DT has no metadata-whitening), the keybag one-shot, the seal and the
+  check boot. On that device, app-install passes all 7 steps and regress persist and wifi pass. The machine takes
+  `die-id` as ipad1 does.
 - Audio: I2S0 gets the codec's PCM from CDMA channel 0x15 on the audio clock (no listening test yet).
 - Not yet: the D1755's button wake path (debt 6), a USB host port for regress's keyboard checks (debt 9).
 
@@ -155,7 +159,9 @@ offsets at 0x80000000).
    reads back right, but the panel shows that surface laid out linearly at the panel's 320-pixel stride
    (the top 270 rows, cyan/magenta stripes). The CLCD keeps scanning its own framebuffer (window 1 unchanged)
    and the scaler runs no transfer during the scene, so the copy happens in the guest's composite of the app
-   surface. The gate's fixture-colour test (51%) passes regardless. Next: find which compositor reads the
+   surface. With CoreAnimation compositing through the GL bridge (FirmwareKit's `ca_ogl`), the same surface is
+   read at 320x480 twice: two stacked copies, a black row at 270, and 88% fixture colour. The gate's
+   fixture-colour test passes either way. Next: find which compositor reads the
    surface at panel geometry (SpringBoard's software CA with `CA_ENABLE_OGL=0`, or IOMFB's swap of the
    app's layer).
 9. **No USB host port**: the OTG runs in device mode only, so regress's `boot`/`net` checks, which type on a

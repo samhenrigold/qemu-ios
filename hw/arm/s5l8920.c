@@ -217,6 +217,7 @@ struct S5L8920MachineState {
     char *nand_overlay_path;
     char *nor_path;
     char *nor_rw_path;
+    char *die_id;                        /* ChipID words 2-3 of the unit, hex pair */
     char *usb_tcp_addr;                  /* usbmuxd-qemu host bridge; empty = the built-in host */
     bool btn_hold, btn_home;             /* button-hold/-home properties */
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
@@ -444,6 +445,12 @@ static void s5l8920_init(MachineState *machine)
 
     {
         uint32_t chipid[] = { s->board->chipid[0], s->board->chipid[1], 0, 0 };
+
+        /* the unit's die-id words, as ipad1's die-id property */
+        if (s->die_id && sscanf(s->die_id, "%" SCNx32 ":%" SCNx32, &chipid[2], &chipid[3]) != 2) {
+            error_report("s5l8920: die-id must be \"0xWORD2:0xWORD3\", got \"%s\"", s->die_id);
+            exit(1);
+        }
 
         memory_region_init_rom(&s->chipid, NULL, "s5l8920.chipid", 0x1000, &error_fatal);
         memcpy(memory_region_get_ram_ptr(&s->chipid), chipid, sizeof(chipid));
@@ -924,6 +931,17 @@ static void s5l8920_set_usb_tcp_addr(Object *obj, const char *value, Error **err
     s->usb_tcp_addr = g_strdup(value);
 }
 
+static char *s5l8920_get_die_id(Object *obj, Error **errp)
+{
+    return g_strdup(S5L8920_MACHINE(obj)->die_id);
+}
+
+static void s5l8920_set_die_id(Object *obj, const char *value, Error **errp)
+{
+    g_free(S5L8920_MACHINE(obj)->die_id);
+    S5L8920_MACHINE(obj)->die_id = g_strdup(value);
+}
+
 static bool s5l8920_get_wifi(Object *obj, Error **errp)
 {
     return S5L8920_MACHINE(obj)->wifi;
@@ -943,6 +961,7 @@ static void s5l8920_instance_init(Object *obj)
 static void s5l8920_instance_finalize(Object *obj)
 {
     g_free(S5L8920_MACHINE(obj)->usb_tcp_addr);
+    g_free(S5L8920_MACHINE(obj)->die_id);
     g_free(S5L8920_MACHINE(obj)->nor_path);
     g_free(S5L8920_MACHINE(obj)->nor_rw_path);
     g_free(S5L8920_MACHINE(obj)->kboot_path);
@@ -1002,6 +1021,9 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
     object_class_property_add_str(klass, "nor-rw", s5l8920_get_nor_rw, s5l8920_set_nor_rw);
     object_class_property_set_description(klass, "nor-rw",
         "1 MiB private writable NOR copy; guest writes (effaceable) persist here across boots");
+    object_class_property_add_str(klass, "die-id", s5l8920_get_die_id, s5l8920_set_die_id);
+    object_class_property_set_description(klass, "die-id",
+        "the unit's ChipID die-id words 2-3, \"0xWORD2:0xWORD3\" (identity.json); zeros if unset");
     object_class_property_add_bool(klass, "wifi", s5l8920_get_wifi, s5l8920_set_wifi);
     object_class_property_set_description(klass, "wifi",
         "Bridge the Wi-Fi card to -netdev id=wifi0 (a NAT one is made when absent); off keeps the card, unbridged");
