@@ -32,12 +32,15 @@
 #include "hw/arm/ipod_touch_cs42l58.h"
 #include "hw/arm/ipod_touch_cd3272_mikey.h"
 #include "hw/i2c/i2c.h"
+#include "chardev/char.h"
 #include "hw/sysbus.h"
 #include "hw/arm/exynos4210.h"
 #include "hw/arm/s5l8930.h"
 #include "hw/intc/pl192.h"
 #include "hw/qdev-properties.h"
 #include "system/reset.h"
+#include "system/runstate.h"
+#include "qemu/timer.h"
 #include "system/system.h"
 #include "target/arm/cpu.h"
 
@@ -69,6 +72,8 @@
 #define S5L8920_DSIM_BASE       0x89000000
 #define S5L8920_SWI_BASE        0x89100000
 #define S5L8920_DART_BASE(n)    (0xbfe00000 + (n) * 0x100000)
+#define S5L8920_I2S0_FIFO       0x84500000      /* DT i2s0 reg; what the CDMA writes */
+#define S5L8920_I2S0_BASE       0x84500400      /* its registers, the A4's i2s layout */
 
 #define S5L8920_IRQ_TIMER0      0x06
 #define S5L8920_IRQ_TIMER1      0x05
@@ -95,15 +100,26 @@ typedef struct S5L8920Buttons {
     uint16_t hold, menu, volup, voldown;
 } S5L8920Buttons;
 
+/* Where SpringBoard's "slide to power off" knob sits (portrait), and how far to drag it. */
+typedef struct S5L8920PowerKnob {
+    int x, y, drag;
+} S5L8920PowerKnob;
+
 typedef struct S5L8920Board {
     const char *desc;
     uint64_t dram_size;
     uint32_t chipid[2];                  /* ChipID fuse words 0-1 */
     uint8_t board_id;                    /* PMGR POWER_ID[23:16] */
     int nuarts;
+    int8_t gauge_uart;                   /* bq27540 HDQ gas gauge; -1 = none */
+    uint16_t gauge_mah;
+    bool nor;                            /* a SPI NOR on spi0 (the N88's; the N18 boots from NAND) */
+    bool baseband;                       /* spi2, the baseband link */
+    uint32_t fmc_off;                    /* FMC within each FMI window, as its IOP firmware addresses it */
     uint16_t mt_atn;                     /* multi-touch ATN, a GPIO interrupt */
     S5L8920Buttons buttons;
     S5L8920I2CDevice i2c[8];             /* in creation order (the snapshot's) */
+    S5L8920PowerKnob pwroff_knob;
 } S5L8920Board;
 
 /* iPod touch 3G (N18AP, S5L8922). */
@@ -113,7 +129,9 @@ static const S5L8920Board s5l8920_n18 = {
     /* ponytail: the K48's fuse words; the 8922's are unmeasured. */
     .chipid = { 0x31800387, 0x80758000 },
     .board_id = 0x02,
+    .fmc_off = 0x40000,                  /* the s5l8922x IOP firmware: the A4's layout */
     .nuarts = 2,
+    .gauge_uart = -1,
     .mt_atn = 0xb4,
     .buttons = { .hold = 0xb7, .menu = 0xb6, .volup = 0xb0, .voldown = 0xb1 },
     .i2c = {
@@ -123,9 +141,35 @@ static const S5L8920Board s5l8920_n18 = {
         { 0, 0x3a, TYPE_CD3272MIKEY },
         { 2, 0x1d, TYPE_LIS302DL },       /* its DT interrupt (0xa2) is not driven */
     },
+    .pwroff_knob = { 57, 67, 240 },      /* off a 4.2.1 screendump of the sheet */
 };
 
-#define TYPE_S5L8920_MACHINE MACHINE_TYPE_NAME("n18")
+/* iPhone 3GS (N88AP, S5L8920); N88AP 8C148a DT. */
+static const S5L8920Board s5l8920_n88 = {
+    .desc = "iPhone 3GS (N88AP, S5L8920)",
+    .dram_size = 0x10000000,
+    /* ponytail: the K48's fuse words; the 8920's are unmeasured. */
+    .chipid = { 0x31800387, 0x80758000 },
+    .board_id = 0x00,
+    .fmc_off = 0x400,                    /* the s5l8920x IOP firmware: FMC +0x400, ECC +0x800 */
+    .nuarts = 5,                         /* iap, debug, umts, bluetooth, gas gauge */
+    .gauge_uart = 4,
+    .gauge_mah = 1219,                   /* ponytail: the 3GS's rated cell, not measured */
+    .nor = true,
+    .baseband = true,
+    .mt_atn = 0xb4,
+    .buttons = { .hold = 0xb7, .menu = 0xb6, .volup = 0xb0, .voldown = 0xb1 },
+    .i2c = {
+        { 0, 0x74, TYPE_PCF50633, 0x9d },
+        { 0, 0x4a, TYPE_CS42L58 },       /* cs42l61: a register file to its driver, as on the iPad */
+        { 0, 0x39, TYPE_CD3272MIKEY },
+        { 0, 0x1d, TYPE_LIS302DL },
+        { 0, 0x1e, TYPE_S5L8930_AK8973 },
+    },
+    .pwroff_knob = { 57, 67, 240 },
+};
+
+#define TYPE_S5L8920_MACHINE "s5l8920-machine"
 OBJECT_DECLARE_TYPE(S5L8920MachineState, S5L8920MachineClass, S5L8920_MACHINE)
 
 struct S5L8920MachineClass {
@@ -151,6 +195,8 @@ struct S5L8920MachineState {
     char *nor_path;
     char *nor_rw_path;
     bool btn_hold, btn_home;             /* button-hold/-home properties */
+    QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
+    int pwroff_phase, pwroff_step;
 };
 
 /* hw/arm/s5l8920_dart.c: IOVA -> PA through a DART (its device as opaque). */
@@ -287,6 +333,9 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
     }
 }
 
+static void s5l8920_pwroff_tick(void *opaque);
+static Notifier s5l8920_powerdown_notifier;
+
 static void s5l8920_init(MachineState *machine)
 {
     S5L8920MachineState *s = S5L8920_MACHINE(machine);
@@ -367,7 +416,17 @@ static void s5l8920_init(MachineState *machine)
     sysbus_connect_irq(sbd, 0, s5l8920_irq(s, S5L8920_IRQ_GPIO));
 
     for (i = 0; i < s->board->nuarts; i++) {
-        exynos4210_uart_create(S5L8920_UART_BASE(i), 256, i, serial_hd(i),
+        Chardev *chr = serial_hd(i);
+        int fifo = 256;
+
+        if (i == s->board->gauge_uart) {
+            /* the bq27540 behind HDQ-over-UART, as the iPad's (a 16-byte FIFO, s5l8930_hdq.c) */
+            chr = qemu_chardev_new(NULL, TYPE_CHARDEV_S5L8930_HDQ, NULL, NULL, &error_abort);
+            s5l8930_hdq_set_capacity(chr, s->board->gauge_mah);
+            s5l8930_hdq_set_battery(chr, 80, true);
+            fifo = 16;
+        }
+        exynos4210_uart_create(S5L8920_UART_BASE(i), fifo, i, chr,
                                s5l8920_irq(s, S5L8920_IRQ_UART(i)), true);
     }
 
@@ -398,6 +457,8 @@ static void s5l8920_init(MachineState *machine)
     /* CDMA + AES: the A4's block with 28 of its channels wired. */
     dev = qdev_new(TYPE_S5L8930_CDMA);
     qdev_prop_set_uint8(dev, "version", 1);     /* DT cdma-version */
+    qdev_prop_set_uint32(dev, "paced-base", S5L8920_I2S0_FIFO);
+    qdev_prop_set_uint32(dev, "paced-ports", 1);
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8920_CDMA_BASE);
@@ -413,6 +474,11 @@ static void s5l8920_init(MachineState *machine)
         dev = qdev_new(TYPE_S5L8930_H2FMI);
         object_property_set_link(OBJECT(dev), "iop", OBJECT(iop), &error_abort);
         object_property_set_link(OBJECT(dev), "cdma", OBJECT(cdma), &error_abort);
+        qdev_prop_set_uint32(dev, "fmc-offset", s->board->fmc_off);
+        qdev_prop_set_uint32(dev, "ecc-offset", s->board->fmc_off * 2);
+        if (s->board->fmc_off == 0x400) {       /* the s5l8920x firmware's ECC summary */
+            qdev_prop_set_uint32(dev, "ecc-blank-summary", 0x40);
+        }
         sbd = SYS_BUS_DEVICE(dev);
         sysbus_realize_and_unref(sbd, &error_fatal);
         for (i = 0; i < 2; i++) {
@@ -429,7 +495,7 @@ static void s5l8920_init(MachineState *machine)
      * (DT function-spi_cs0). The N18 has none; nor=/nor-rw= put one there
      * for kboot's grafted nor-flash node (s5l8920_kboot.py --nor).
      */
-    if (s->nor_path || (s->nor_rw_path && s->nor_rw_path[0])) {
+    if (s->board->nor || s->nor_path || (s->nor_rw_path && s->nor_rw_path[0])) {
         dev = ipod_touch_spi_create(S5L8920_SPI_BASE(0), s5l8920_irq(s, S5L8920_IRQ_SPI(0)), 0,
                                     "nor", false);
         IPOD_TOUCH_SPI(dev)->nor->nor_path = s->nor_path;
@@ -440,6 +506,10 @@ static void s5l8920_init(MachineState *machine)
             qdev_get_gpio_in_named(DEVICE(IPOD_TOUCH_SPI(dev)->nor), SSI_GPIO_CS, 0));
     } else {
         ipod_touch_spi_create(S5L8920_SPI_BASE(0), s5l8920_irq(s, S5L8920_IRQ_SPI(0)), 0, "none", false);
+    }
+    /* SPI2: the baseband link (N88), a controller with nothing on it. */
+    if (s->board->baseband) {
+        ipod_touch_spi_create(S5L8920_SPI_BASE(2), NULL, 2, "none", false);
     }
     /* SPI1: the Zephyr multi-touch. */
     dev = qdev_new(TYPE_IPOD_TOUCH_SPI);
@@ -472,6 +542,7 @@ static void s5l8920_init(MachineState *machine)
     dev = qdev_new("ipodtouch.lcd");
     /* kboot's vram (the boot logo, then the kernel console): where iBoot leaves window 1 */
     qdev_prop_set_uint32(dev, "fb-base", 0x4f700000);
+    qdev_prop_set_bit(dev, "ctrl-readback", true);
     IPOD_TOUCH_LCD(dev)->sysmem = sysmem;
     IPOD_TOUCH_LCD(dev)->mt = s->mt;
     memory_region_add_subregion(sysmem, S5L8920_CLCD_BASE, &IPOD_TOUCH_LCD(dev)->iomem);
@@ -483,6 +554,18 @@ static void s5l8920_init(MachineState *machine)
                                                s5l8920_irq(s, S5L8920_IRQ_SCALER)),
                           s5l8920_dart_xlate, dart0, 0);
     sysbus_create_simple("ipodtouch.swi", S5L8920_SWI_BASE, NULL);
+
+    /*
+     * I2S0, the CS42L58 codec's port: the A4's controller (registers at
+     * +0x400, as AppleS5L8920XI2SController writes them), its TX FIFO at
+     * the block's base where CDMA channel 0x15 streams PCM. Without it
+     * mediaserverd's stop path never sees the FIFO drain.
+     */
+    dev = qdev_new(TYPE_S5L8930_I2S);
+    qdev_prop_set_bit(dev, "audio-out", true);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S5L8920_I2S0_BASE);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, S5L8920_I2S0_FIFO);
 
     /* USB device mode: the S5L8720's DWC OTG core and PHY; the built-in host enumerates it. */
     dev = qdev_new(TYPE_IPOD_TOUCH_USB_PHYS);
@@ -498,6 +581,8 @@ static void s5l8920_init(MachineState *machine)
         memory_region_add_subregion(sysmem, S5L8920_USB_OTG_BASE, &s->usb_otg->iomem);
     }
 
+    s->pwroff_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, s5l8920_pwroff_tick, s);
+    qemu_register_powerdown_notifier(&s5l8920_powerdown_notifier);
     qemu_register_reset(s5l8920_cpu_reset, s);
 }
 
@@ -604,6 +689,80 @@ static void s5l8920_set_button_home(Object *obj, bool value, Error **errp)
     s5l8920_set_button(s, s->board->buttons.menu, value);
 }
 
+/*
+ * QMP system_powerdown -> the user's power-off gesture, as on the iPod and
+ * iPad machines: Home (wakes the panel), hold Hold past SpringBoard's
+ * threshold, then drag "slide to power off". Guest time throughout. The
+ * guest then unmounts, syncs the FTL and ends in the PMU's power command,
+ * where QEMU exits (pcf50633's shutdown-reg / standby write).
+ */
+enum { PWROFF_IDLE, PWROFF_HOME, PWROFF_WAKE, PWROFF_HOLD, PWROFF_SETTLE, PWROFF_DRAG };
+#define PWROFF_DRAG_STEPS 24
+
+static void s5l8920_pwroff_arm(S5L8920MachineState *s, int ms)
+{
+    timer_mod(s->pwroff_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + (int64_t)ms * SCALE_MS);
+}
+
+static void s5l8920_pwroff_touch(S5L8920MachineState *s, int x, int y, bool down)
+{
+    ipod_touch_multitouch_set_finger(s->mt, 0, x / 319.0f, 1.0f - y / 479.0f, down);
+}
+
+static void s5l8920_pwroff_tick(void *opaque)
+{
+    S5L8920MachineState *s = opaque;
+    const S5L8920PowerKnob *k = &s->board->pwroff_knob;
+
+    switch (s->pwroff_phase) {
+    case PWROFF_HOME:
+        s5l8920_set_button(s, s->board->buttons.menu, false);
+        s->pwroff_phase = PWROFF_WAKE;
+        s5l8920_pwroff_arm(s, 2000);
+        break;
+    case PWROFF_WAKE:
+        s5l8920_set_button(s, s->board->buttons.hold, true);
+        s->pwroff_phase = PWROFF_HOLD;
+        s5l8920_pwroff_arm(s, 3500);
+        break;
+    case PWROFF_HOLD:
+        s5l8920_set_button(s, s->board->buttons.hold, false);
+        s->pwroff_phase = PWROFF_SETTLE;
+        s5l8920_pwroff_arm(s, 1500);
+        break;
+    case PWROFF_SETTLE:
+        s5l8920_pwroff_touch(s, k->x, k->y, true);
+        s->pwroff_phase = PWROFF_DRAG;
+        s->pwroff_step = 0;
+        s5l8920_pwroff_arm(s, 80);
+        break;
+    case PWROFF_DRAG:
+        s->pwroff_step++;
+        s5l8920_pwroff_touch(s, k->x + k->drag * s->pwroff_step / PWROFF_DRAG_STEPS, k->y,
+                             s->pwroff_step < PWROFF_DRAG_STEPS);
+        if (s->pwroff_step < PWROFF_DRAG_STEPS) {
+            s5l8920_pwroff_arm(s, 80);
+        } else {
+            s->pwroff_phase = PWROFF_IDLE;
+        }
+        break;
+    }
+}
+
+static void s5l8920_powerdown_req(Notifier *n, void *opaque)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(qdev_get_machine());
+
+    if (s->pwroff_phase != PWROFF_IDLE) {
+        return;
+    }
+    s5l8920_set_button(s, s->board->buttons.menu, true);
+    s->pwroff_phase = PWROFF_HOME;
+    s5l8920_pwroff_arm(s, 300);
+}
+
+static Notifier s5l8920_powerdown_notifier = { .notify = s5l8920_powerdown_req };
+
 static void s5l8920_instance_finalize(Object *obj)
 {
     g_free(S5L8920_MACHINE(obj)->nor_path);
@@ -617,13 +776,11 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(klass);
 
-    S5L8920_MACHINE_CLASS(klass)->board = &s5l8920_n18;
-    mc->desc = s5l8920_n18.desc;
     mc->init = s5l8920_init;
     mc->max_cpus = 2;        /* the AP and the IOP core */
     mc->default_cpus = 2;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a8");
-    mc->default_ram_size = s5l8920_n18.dram_size;
+    mc->default_ram_size = 0x10000000;
     object_class_property_add_str(klass, "kboot", s5l8920_get_kboot, s5l8920_set_kboot);
     object_class_property_set_description(klass, "kboot",
         "K48KBOOT bundle from imgtools/s5l8920_kboot.py");
@@ -651,15 +808,42 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
 static const TypeInfo s5l8920_machine_info = {
     .name = TYPE_S5L8920_MACHINE,
     .parent = TYPE_MACHINE,
+    .abstract = true,
     .instance_size = sizeof(S5L8920MachineState),
     .class_size = sizeof(S5L8920MachineClass),
     .instance_finalize = s5l8920_instance_finalize,
     .class_init = s5l8920_class_init,
 };
 
+/* One machine type per board: -M n18, -M n88. */
+static void s5l8920_board_class_init(ObjectClass *klass, void *data)
+{
+    const S5L8920Board *board = data;
+
+    S5L8920_MACHINE_CLASS(klass)->board = board;
+    MACHINE_CLASS(klass)->desc = board->desc;
+}
+
+static const TypeInfo s5l8920_board_types[] = {
+    {
+        .name = MACHINE_TYPE_NAME("n18"),
+        .parent = TYPE_S5L8920_MACHINE,
+        .class_init = s5l8920_board_class_init,
+        .class_data = (void *)&s5l8920_n18,
+    }, {
+        .name = MACHINE_TYPE_NAME("n88"),
+        .parent = TYPE_S5L8920_MACHINE,
+        .class_init = s5l8920_board_class_init,
+        .class_data = (void *)&s5l8920_n88,
+    },
+};
+
 static void s5l8920_machine_types(void)
 {
     type_register_static(&s5l8920_machine_info);
+    for (int i = 0; i < ARRAY_SIZE(s5l8920_board_types); i++) {
+        type_register_static(&s5l8920_board_types[i]);
+    }
 }
 
 type_init(s5l8920_machine_types)

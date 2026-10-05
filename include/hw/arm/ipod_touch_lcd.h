@@ -63,6 +63,7 @@ typedef struct IPodTouchLCDState
     uint32_t w1_display_resolution_info;
     uint32_t w1_framebuffer_base;
     uint32_t fb_base;       /* "fb-base": window 1's base out of reset (0: none) */
+    bool ctrl_readback;     /* "ctrl-readback": +0x00 reads back its enable bit */
     /* An IOMMU in front of the scanout (ipod_lcd_set_iommu); gather: the
      * latched frame is not physically contiguous and is read page by page. */
     hwaddr (*xlate)(void *opaque, uint32_t va, unsigned sid);

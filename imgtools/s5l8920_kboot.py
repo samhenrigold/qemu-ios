@@ -80,7 +80,7 @@ def build(board, dec_dir, boot_args, ident, ramdisk=None, nor=False):
     # are unchecked (iBoot's clock_get_frequency indices). Fix when a driver reads a wrong rate.
     k.CLOCKS = k.CLOCKS[:32]
     dt_blob = open(os.path.join(dec_dir, "DeviceTree.bin"), "rb").read()
-    if nor:
+    if nor and "arm-io/spi0/nor-flash" not in k.DeviceTree(dt_blob).props:   # the N88 has its own
         dt_blob = graft(dt_blob, "arm-io/spi0", NOR_FLASH)
     image, load_pa, entry_pa, args_pa = k.build(os.path.join(dec_dir, "kernelcache.mach"), dt_blob, boot_args, ident,
                                                 k.iboot_version(dec_dir), ramdisk)
@@ -94,6 +94,12 @@ def build(board, dec_dir, boot_args, ident, ramdisk=None, nor=False):
     for key in ("chip-id", "board-id"):
         dt.set("chosen", key, b[key])
     dt.set("chosen", "display-rotation", 0)
+    # The N88's baseband node, which fill_dt unmatches and renames (there is no modem model): lockdownd
+    # still reads its identity. GSMA's test IMEI and a placeholder serial, so nothing passes for a real unit.
+    for node in ("nobb", "baseband"):
+        if node in dt.props and "device-imei" in dt.props[node]:
+            dt.set(node, "device-imei", "004999010640000")
+            dt.set(node, "snum", b"TESTSNUM0000")
     # ponytail: no NAND boot partition. These boards boot from NAND: IOFlashPartitionScheme claims the
     # flash for a boot-block partition table (LLB, iBoot, NVRAM) that only a restore writes, and without
     # one no FTL attaches. Hiding boot-from-nand makes the FTL take the whole device as on the iPad

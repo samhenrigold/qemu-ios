@@ -77,7 +77,13 @@ ERASED_META = b"\xff" * META
 # (c07f3f14; +0x10000 only when formatting with DT whitening), then up to 0xff
 # bytes of the kernel version string (c07f3f2a), never validated by the reader;
 # `build` takes it from the kernelcache (kernel_version()).
-NSIG = 0x43313131
+# The epoch is the IPSW's (Restore.plist DeviceMap SCEP): 1 on the K48 and N18, 3 on the N88. A store
+# whose epoch is behind the kernel's makes WMR wait for an "epoch roll" only restored performs.
+EPOCH = 1
+
+
+def nsig():
+    return 0x43313100 | (0x30 + EPOCH)
 SIG_FLAGS = 0x00010005
 # Boards whose DT has no metadata-whitening (S5L8920/8922: N18, N88) neither write nor accept whitened
 # meta (WMR "Metadata whitening not supported"): `build --no-whitening` stores it plain, flags 0x5.
@@ -346,7 +352,7 @@ def write_metadata(st, geo, kernel_ver):
         meta = struct.pack("<I", 0xFFFFFFFF) + b"\xff" * 4 + b"\x00\x80\xff\xff"   # c07fc85a..c07fc874
         for p in range(8):                                   # 8 identical copies, block 1 pages 0-7
             st.write(cs, geo.ppage(geo.vfl_blocks[0], p), ctx.ljust(geo.page_size, b"\0"), meta)
-    sig = special_page(geo, b"NANDDRIVERSIGN", 0, [0] * 8, struct.pack("<II", NSIG, sig_flags()) + kernel_ver.ljust(0x100, b"\0"))
+    sig = special_page(geo, b"NANDDRIVERSIGN", 0, [0] * 8, struct.pack("<II", nsig(), sig_flags()) + kernel_ver.ljust(0x100, b"\0"))
     for p in range(geo.pages_per_block):
         st.write(0, geo.ppage(geo.cand[0][4], p), *sig, raw=True)
 
@@ -653,8 +659,8 @@ def check(path, mbr=None, system=None, geometry=None):
     ok(d is not None and d[:16] == b"NANDDRIVERSIGN".ljust(16, b"\0"), "NANDDRIVERSIGN at cs0 block 0x%x (BBT hdr+0x24)" % (sig_block or 0))
     if d:
         nsig, flags = struct.unpack_from("<II", d, 0x38)
-        ok(nsig == NSIG and flags == sig_flags(),
-           "signature nSig=%08x flags=%08x (VSVFL, epoch 1, whitening %s)" % (nsig, flags, "on" if WHITENING else "off"))
+        ok(nsig == globals()["nsig"]() and flags == sig_flags(),
+           "signature nSig=%08x flags=%08x (VSVFL, epoch %d, whitening %s)" % (nsig, flags, EPOCH, "on" if WHITENING else "off"))
 
     # VFL contexts
     for cs in range(geo.num_cs):
@@ -814,6 +820,7 @@ def main():
     b.add_argument("--out", required=True)
     b.add_argument("--force", action="store_true")
     b.add_argument("--no-whitening", action="store_true", help="plain meta, signature flags 0x5 (DT without metadata-whitening)")
+    b.add_argument("--epoch", type=int, default=1, help="NAND epoch, the IPSW's Restore.plist DeviceMap SCEP (default 1)")
     m = sub.add_parser("mbr")
     m.add_argument("--geometry", default="k48-16g", choices=[k for k in GEOMETRIES if k != "selfcheck"])
     m.add_argument("--system-mib", type=int, default=1280)
@@ -824,8 +831,9 @@ def main():
     c.add_argument("--mbr")
     c.add_argument("--system")
     a = ap.parse_args()
-    global WHITENING
+    global WHITENING, EPOCH
     WHITENING = not getattr(a, "no_whitening", False)
+    EPOCH = getattr(a, "epoch", 1)
     if a.selfcheck:
         sys.exit(0 if selfcheck() else 1)
     if a.cmd == "build":

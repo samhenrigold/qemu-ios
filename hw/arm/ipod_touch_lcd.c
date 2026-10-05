@@ -291,7 +291,14 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
     switch(addr)
     {
         case 0x0:
-            return 2;
+            /*
+             * ctrl-readback: 4.2.1's AppleM2CLCD (N18) powers the controller
+             * up by setting bit 0 here and polling it (8C148 0x8082f7ec, six
+             * 2 ms tries); a constant 2 failed that, the display stayed "off"
+             * to the driver, and from the power-off animation on no swap was
+             * scheduled: SpringBoard waited in swap_wait forever.
+             */
+            return s->ctrl_readback ? s->plane_regs[0] | 2 : 2;
         case 0x4:
             return s->lcd_con;
         case 0x8:
@@ -1370,6 +1377,7 @@ static const Property lcd_properties[] = {
     DEFINE_PROP_BOOL("planes", IPodTouchLCDState, planes_enabled, false),
     DEFINE_PROP_BOOL("s5l8900", IPodTouchLCDState, s5l8900, false),
     DEFINE_PROP_UINT32("fb-base", IPodTouchLCDState, fb_base, 0),
+    DEFINE_PROP_BOOL("ctrl-readback", IPodTouchLCDState, ctrl_readback, false),
 };
 
 static void ipod_touch_lcd_class_init(ObjectClass *klass, void *data)
