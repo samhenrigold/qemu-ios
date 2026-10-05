@@ -272,7 +272,9 @@ class Store:
                 json.dump(dict(page_bytes=geo.page_size, spare_bytes=geo.spare_bytes,
                                pages_per_block=geo.pages_per_block, blocks_per_ce=geo.blocks_per_ce,
                                ce_per_bus=geo.ce_per_bus, buses=geo.num_bus,
-                               chip_id="0x%08X" % struct.unpack("<I", geo.chip_id[:4])[0]), f, indent=1)
+                               chip_id="0x%08X" % struct.unpack("<I", geo.chip_id[:4])[0],
+                               # only off the part's default, so existing stores are unchanged (FirmwareKit K48NAND too)
+                               **({} if geo.vendor_type == 0x100014 else {"vendor_type": geo.vendor_type})), f, indent=1)
             self.files = {}
             for b, c in names:
                 f = open(os.path.join(path, "bus%d-ce%d.pages" % (b, c)), "w+b")
