@@ -117,6 +117,15 @@ def walk_setup(b, step):
     return False, "Setup still up after 40 pages: " + ", ".join(pages)
 
 
+def harness_results(b, bundle):
+    """The Harness's Documents/results.log (house_arrest), every line it has reported; "" if unreadable."""
+    out = os.path.join(b.dir, "results.log")
+    if os.path.exists(out):
+        os.unlink(out)
+    b.run(["afcclient", "--container", bundle, "get", "Documents/results.log", out], timeout=60)
+    return open(out, errors="replace").read() if os.path.exists(out) else ""
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     rg.ipad1_boot.add_arguments(ap)
@@ -173,6 +182,10 @@ def main():
         if not step("icon", bool(slot) and slot[0] == 1, "springboardservices slot %s" % (slot,)):
             return 1
         home = png(b, "home")
+        # a fresh relay for the app: 5.x's lockdown can drop the first one across Setup ("[disconnected:...]")
+        syslog = os.path.join(b.dir, "syslog-app.log")
+        b.procs.spawn(["idevicesyslog"], syslog, env=b.env())
+        time.sleep(3)
         mark = os.path.getsize(syslog) if os.path.exists(syslog) else 0
         b.tap(GRID[a.machine](slot[1], slot[2]))
         time.sleep(12)
@@ -180,8 +193,11 @@ def main():
         log = open(syslog, errors="replace").read()[mark:] if os.path.exists(syslog) else ""
         # "Harness[75]", or launchd's "UIKitApplication:com.qemuios.harness[0x6a01][75]" (4.x)
         started = bool(re.search(r"(%s|%s)(\[0x[0-9a-f]+\])?\[\d+\]" % (re.escape(exe), re.escape(bundle)), log))
+        if not started and a.ipa == HARNESS:     # 5.1+ launchd no longer sends an app's stderr to syslog
+            started = "Harness 1.0 | iOS" in harness_results(b, bundle) or \
+                any(t.startswith("Harness 1.0") for t in ocr_upright(app))
         changed = ac._framediff(ac._sample(rg, home), ac._sample(rg, app))
-        if not step("launch", started and changed, "process in syslog %s, frame changed %s" % (started, changed)):
+        if not step("launch", started and changed, "process seen %s, frame changed %s" % (started, changed)):
             return 1
         if gl:
             x, y = map(float, gl.split(","))
@@ -189,8 +205,7 @@ def main():
             time.sleep(8)
             frac = fixture_fraction(png(b, "gl"))
             rej = rg.itqmp.gles_rejects(b.qmp)
-            log = open(syslog, errors="replace").read()
-            said = re.findall(r"\[Harness\] ((?:PASS|FAIL)[^\n]*GLES[^\n]*)", log)
+            said = re.findall(r"^\S+ ((?:PASS|FAIL)[^\n]*GLES[^\n]*)", harness_results(b, bundle), re.M)   # "<time> <line>"
             ok = frac > 0.3 and not rej and (a.ipa != HARNESS or (said and not any(s.startswith("FAIL") for s in said)))
             step("gl", ok, "fixture colours %.0f%% of the frame, bridge refusals %s; %s" % (
                 frac * 100, rej or "none", "; ".join(said) or "no GLES report"))
