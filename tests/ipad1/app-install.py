@@ -150,7 +150,7 @@ def main():
     ap.add_argument("--qemu", default=os.path.join(ROOT, "build/qemu-system-arm"))
     ap.add_argument("--usbmuxd", default=rg.USBMUXD)
     ap.add_argument("--product-version")
-    ap.add_argument("--boot-timeout", type=int, default=560)
+    ap.add_argument("--boot-timeout", type=int, help="hard cap per QEMU, seconds (default 560; 1400 on 7.x, whose boot and Setup walk take longer)")
     ap.add_argument("--overlay", help="start from a copy of this NAND overlay (e.g. a 5.x device past Setup)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
@@ -164,6 +164,8 @@ def main():
     rg.device_args(a)
     if a.major >= 7:
         rg.MIN_COLOURS = 16   # regress main's floor: 7.x's Setup "Hello" between words is white and a status bar
+    if a.boot_timeout is None:
+        a.boot_timeout = 1400 if a.major >= 7 else 560
     rg.ipod.START = time.time()
     bundle, exe = bundle_of(a.ipa)
     gl = a.gl_tap if a.gl_tap is not None else (",".join(map(str, GL_TAP[a.machine])) if a.ipa == HARNESS else "")
