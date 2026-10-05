@@ -357,8 +357,12 @@ def gl_clean(b, r, detail, shots=(), require_refs=()):
                     break
     # A software CoreAnimation draws the same pictures and refuses nothing (4.3.x did, while the old GLI shim
     # lost GL), so only the GL front end's own line proves CoreAnimation took the GL path.
-    serial = open(b.serial, errors="replace").read() if os.path.exists(b.serial) else ""
-    if "CoreAnimation composites through the host" not in serial:
+    # The line reaches the serial console from SpringBoard (stdio /dev/console); 6.x+ composites in backboardd,
+    # whose stderr does not, so the host's own log of the shim's lines counts too.
+    seen = ""
+    for log_file in (b.serial, os.path.join(b.dir, "qemu.log")):
+        seen += open(log_file, errors="replace").read() if os.path.exists(log_file) else ""
+    if "CoreAnimation composites through the host" not in seen:
         r.set(False, "%s; SpringBoard composited in software CoreAnimation (no GL-path line from the front end)" % detail)
     elif rejects:
         r.set(False, "%s; the GL bridge refused %d thing(s): %s" % (

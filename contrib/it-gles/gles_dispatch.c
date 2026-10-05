@@ -143,12 +143,16 @@ static void gles_layout_set(unsigned i, const char *name, unsigned len)
 
 /* ---- (a) the @encode ------------------------------------------------------------------ */
 
-/* Parse {__GLIFunctionDispatchRec="a"^?"b"^?...} at enc into the layout; slots found. */
+static unsigned gles_encode_unnamed;        /* fields of a name-less @encode (6.x/7.x), else 0 */
+
+/* Parse {__GLIFunctionDispatchRec="a"^?"b"^?...} at enc into the layout; slots found. 6.x and 7.x
+ * carry the record without field names ({__GLIFunctionDispatchRec=^?^?...}): then only the count is
+ * kept (gles_encode_unnamed) for the exports to name, and 0 is returned. */
 static unsigned gles_layout_from_encode(const char *enc)
 {
     static const char tag[] = "{__GLIFunctionDispatchRec=";
     const char *p = enc;
-    unsigned i = 0, k;
+    unsigned i = 0, k, fields = 0;
 
     for (k = 0; tag[k]; k++) if (p[k] != tag[k]) return 0;
     p += k;
@@ -158,9 +162,13 @@ static unsigned gles_layout_from_encode(const char *enc)
             while (*p && *p != '"') p++;
             if (!*p) break;
             gles_layout_set(i++, s, (unsigned)(p - s));
+        } else if (p[0] == '^' && p[1] == '?') {
+            fields++;
+            p++;
         }
         p++;
     }
+    if (!i) gles_encode_unnamed = fields;
     return i;
 }
 
@@ -218,7 +226,9 @@ static const char *gles_find_encode(void)
  * [ip, #off]`; 4.x armv7 is Thumb-2 with IT blocks (blxne in the glIs* trampolines). The table
  * starts right after the GC the trampoline loads into r0 from the same context: +0xc on 3.x/4.x
  * (slots from +0x10), +0x10 on 5.x (slots from +0x14, a word more ahead of the table). 5.x's
- * float-argument trampolines keep the context in lr (ldr.w lr, [r0, #0x78]; ldr.w lr, [lr, #off]). */
+ * float-argument trampolines keep the context in lr (ldr.w lr, [r0, #0x78]; ldr.w lr, [lr, #off]). 6.x/7.x
+ * often load the context into r0 itself (ldr r0, [r0, #0x78] off the thread pointer, then ldr r0, [r0, #0x10]),
+ * so the TLS context load at 0x78 is never the GC's; their float trampolines hold the context in sb (r9). */
 static int gles_trampoline_slot(const void *code, int thumb, unsigned nslots)
 {
     const unsigned char *p = code;
@@ -230,7 +240,7 @@ static int gles_trampoline_slot(const void *code, int thumb, unsigned nslots)
         for (j = 0; j < noffs && offs[j] != o_; j++) {} \
         if (j == noffs && noffs < 4) offs[noffs++] = o_; } } while (0)
 #define LOAD(rt, rn, imm, tail) do { unsigned rn_ = (rn), rt_ = (rt), imm_ = (imm); \
-        if ((rn_ <= 8 || rn_ == 12 || rn_ == 14) && imm_ > 9) { loads[rt_] = imm_; if (rt_ == 0 && !gc) gc = imm_; \
+        if ((rn_ <= 9 || rn_ == 12 || rn_ == 14) && imm_ > 9) { loads[rt_] = imm_; if (rt_ == 0 && !gc && imm_ != 0x78) gc = imm_; \
             if (rt_ == 15) { NOTE(imm_); if (tail) goto done; } } } while (0)
 #define CALL(rm) do { if (loads[(rm) & 15]) NOTE(loads[(rm) & 15]); } while (0)
     if (!thumb) {
@@ -299,6 +309,10 @@ done:
     }
 }
 
+/* Where an export's code is: dlsym, unless the front end (which replaces OpenGLES whole, so dlsym
+ * finds its own exports) points this at the stock image in the shared cache. */
+static void *(*gles_export_lookup)(const char *name);
+
 /* Every exported row's trampoline, decoded; slots named. With `check` set the layout is only
  * compared against what is already there (the @encode's), and disagreements are logged. */
 static unsigned gles_layout_from_exports(unsigned nslots, int check)
@@ -311,10 +325,10 @@ static unsigned gles_layout_from_exports(unsigned nslots, int check)
         char alias[64];
         unsigned k = 0;
         if (!(f->flags & GLES_F_EXPORT)) continue;
-        if (!(p = dlsym(RTLD_DEFAULT, f->name))) {          /* 3.x exports the OES spelling of the FBO set */
-            while (f->name[k] && k < sizeof alias - 4) { alias[k] = f->name[k]; k++; }
+        if (!(p = gles_export_lookup ? gles_export_lookup(f->name) : dlsym(RTLD_DEFAULT, f->name))) {
+            while (f->name[k] && k < sizeof alias - 4) { alias[k] = f->name[k]; k++; }   /* 3.x: the OES spelling */
             alias[k] = 'O'; alias[k + 1] = 'E'; alias[k + 2] = 'S'; alias[k + 3] = 0;
-            p = dlsym(RTLD_DEFAULT, alias);
+            p = gles_export_lookup ? gles_export_lookup(alias) : dlsym(RTLD_DEFAULT, alias);
         }
         if (!p) continue;
         slot = gles_trampoline_slot((const void *)((unsigned long)p & ~1UL), (unsigned long)p & 1, nslots);
@@ -374,9 +388,12 @@ static unsigned gles_discover(unsigned nslots)
     hello = gles_hello();
     if ((enc = gles_find_encode()) && gles_layout_from_encode(enc)) {
         gli.how = "encode";
-    } else if (gles_layout_from_exports(nslots ? nslots : GLES_MAX_SLOTS, 0)) {
-        gli.how = "exports";
-        if (nslots) gli.n = nslots;
+    } else {
+        if (!nslots) nslots = gles_encode_unnamed;  /* a name-less @encode still counts the slots */
+        if (gles_layout_from_exports(nslots ? nslots : GLES_MAX_SLOTS, 0)) {
+            gli.how = gles_encode_unnamed ? "the @encode's count, named by the exports" : "exports";
+            if (nslots) gli.n = nslots;
+        }
     }
     for (i = 0; i < gli.n; i++) {
         if (gli.fn[i] >= 0) named++; else unknown++;

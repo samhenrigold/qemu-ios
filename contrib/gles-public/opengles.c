@@ -1089,6 +1089,41 @@ __attribute__((constructor)) static void fe_bind_xfer(void)
  * cache is found by shared_region_check_np (syscall 294), its images by its own header (dyld_v1). */
 static unsigned fe_u32(const unsigned char *p) { return p[0] | p[1] << 8 | p[2] << 16 | (unsigned)p[3] << 24; }
 
+static const unsigned *fe_stock_mh;      /* the stock OpenGLES's header in the cache, once fe_stock_encode found it */
+static unsigned fe_stock_slide;
+
+/* The stock OpenGLES's own export `_name` (name without the underscore), from its symbol table in the cache's
+ * shared __LINKEDIT (symoff/stroff are cache file offsets): Thumb code gets its low bit. 6.x and 7.x carry the
+ * dispatch @encode without field names, so their trampolines name the slots (gles_layout_from_exports). */
+static void *fe_stock_symbol(const char *name)
+{
+    const unsigned char *lc;
+    unsigned k, ncmds, symoff = 0, nsyms = 0, stroff = 0, le_vm = 0, le_off = 0;
+    if (!fe_stock_mh) return 0;
+    ncmds = fe_stock_mh[4];
+    lc = (const unsigned char *)fe_stock_mh + 28;
+    for (k = 0; k < ncmds; k++) {
+        const unsigned *cmd = (const unsigned *)lc;
+        if (cmd[0] == 2) { symoff = cmd[2]; nsyms = cmd[3]; stroff = cmd[4]; }           /* LC_SYMTAB */
+        else if (cmd[0] == 1 && gles_streq((const char *)lc + 8, "__LINKEDIT")) { le_vm = cmd[6]; le_off = cmd[8]; }
+        lc += cmd[1];
+    }
+    if (!nsyms || !le_vm) return 0;
+    {
+        const unsigned char *le = (const unsigned char *)(unsigned long)(le_vm + fe_stock_slide);
+        const unsigned char *syms = le + (symoff - le_off);
+        const char *strs = (const char *)le + (stroff - le_off);
+        for (k = 0; k < nsyms; k++) {
+            const unsigned char *nl = syms + 12 * k;
+            const char *sym = strs + fe_u32(nl);
+            unsigned value = fe_u32(nl + 8), desc = nl[6] | nl[7] << 8;
+            if ((nl[4] & 0x0e) != 0x0e || !value || sym[0] != '_' || !gles_streq(sym + 1, name)) continue;   /* N_SECT */
+            return (void *)(unsigned long)((value + fe_stock_slide) | ((desc & 0x0008) ? 1 : 0));   /* N_ARM_THUMB_DEF */
+        }
+    }
+    return 0;
+}
+
 static const char *fe_stock_encode(void)
 {
     static const char want[] = "/System/Library/Frameworks/OpenGLES.framework/OpenGLES";
@@ -1109,6 +1144,8 @@ static const char *fe_stock_encode(void)
         if (!gles_streq((const char *)c + fe_u32(img + 24), want)) continue;
         mh = (const unsigned *)(unsigned long)(fe_u32(img) + slide);
         if (mh[0] != 0xfeedface) return 0;
+        fe_stock_mh = mh;
+        fe_stock_slide = slide;
         ncmds = mh[4];
         lc = (const unsigned char *)mh + 28;
         for (k = 0; k < ncmds; k++) {
@@ -1139,6 +1176,7 @@ static void **fe_macro(GuestGC *gc, void ***cache)
     if (*cache) return *cache;
     if (layout < 0) {
         gles_encode_override = fe_stock_encode();
+        gles_export_lookup = fe_stock_symbol;
         layout = gles_encode_override != 0;
         if (!layout) w("[gles] no __GLIFunctionDispatchRec @encode in the shared cache's OpenGLES: no macro context\n");
     }
