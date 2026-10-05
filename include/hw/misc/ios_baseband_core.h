@@ -129,6 +129,7 @@ typedef struct IosBbCore {
 
     /* AT/network state. */
     bool hex_cs;               /* +CSCS="HEX" */
+    bool colp_off;             /* +COLP=0; on by default (1.0 never sends +COLP=1) */
     int cfun;
     int cops_format;
     bool cops_detached;        /* +COPS=2 */
