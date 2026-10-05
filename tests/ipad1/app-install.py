@@ -184,13 +184,16 @@ def main():
             b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
 
         fresh = False
+        _, locked = ac.snap(b, rg, "locked")
         for _ in range(3 if portrait else 1):
             unlock()
             time.sleep(4)
             fresh = portrait and "English" in ocr_upright(b.shot("opened"))   # a fresh 5.x
             status, out = rg.itqmp.agent(b.qmp, "lockstatus") if rg.itqmp.agent_alive(b.qmp) else (1, b"")
-            if fresh or status or b"locked=0" in out:
-                break                                # Setup's language page, past the lock, or no agent to ask
+            # Without an agent the frame decides (a locked 4.0 answers springboardservices): lit, not the lock screen.
+            nz, now = ac.snap(b, rg, "unlocked")
+            if fresh or b"locked=0" in out or (status and nz > 0.30 and ac._framediff(locked, now)):
+                break                                # Setup's language page, or past the lock
         if fresh:
             if not step("setup", *walk_setup(b, step)):
                 return 1

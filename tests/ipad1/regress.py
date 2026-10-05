@@ -1152,6 +1152,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--require-inputs", action="store_true", help="fail when a selected check is skipped")
     ap.add_argument("--checks", default=",".join(DEFAULT_CHECKS))
+    ap.add_argument("--jobs", type=int, default=0, help="checks (QEMUs) at a time; default all at once")
     ap.add_argument("--nand", help="override the selected device NAND")
     ipad1_boot.add_arguments(ap)
     ap.add_argument("--qemu", default=os.path.join(ROOT, "build/qemu-system-arm"))
@@ -1193,7 +1194,7 @@ def main():
             sys.exit("unknown check %s (known: %s)" % (c, ", ".join(list(CHECKS) + list(PENDING))))
         else:
             runnable.append(c)
-    with concurrent.futures.ThreadPoolExecutor(max(1, len(runnable))) as pool:   # all checks at once
+    with concurrent.futures.ThreadPoolExecutor(a.jobs or max(1, len(runnable))) as pool:   # default: all at once
         futs = {pool.submit(CHECKS[c], a, results[c]): c for c in runnable}
         for f in concurrent.futures.as_completed(futs):
             try:

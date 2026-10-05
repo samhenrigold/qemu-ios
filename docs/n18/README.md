@@ -159,8 +159,10 @@ tests/ipad1/regress.py --machine n18 --kboot $F/kboot-7E18.bin --nand $F/userlan
 IPAD1_QEMU_EXTRA to QEMU, as boot-smoke.py does. Use it with `-global driver=s5l8930.h2fmi,...`; the dotted
 `-global s5l8930.h2fmi.x=` form splits at the type name's own dot and silently does nothing.
 
-### iOS 3.1.1 (7C145)
+### iOS 3.1.1 (7C145, 7C146) and 3.1.2 (7D11)
 
+The two 3.1.1 builds and 3.1.2 pass usbmux, AFC, persist and Wi-Fi (2026-10-05), built exactly as 3.1.3
+(their restore ramdisks are 018-6115-001 for 7C146 and 018-6155-014 for 7D11; the 3.x store needs no keybag). 7C145 in detail:
 Built exactly as 3.1.3, with the same four differences (`--sig-flags 4`, the unjournaled 8 KiB data volume,
 the kboot DT guards, the unchanged 8C148 lockdownd hook): substitute 7C145 for 7E18 in the commands above
 (keys from api.ipsw.me/v4/keys/ipsw/iPod3,1/7C145). It boots to an activated home screen, and usbmux, AFC,
@@ -170,6 +172,62 @@ ignored the drag and snapped back, so the guest never shut down. Screendumps eve
 now rests 0.5 s at the end of the track before lifting. If the guest is still up 2.5 s later, it drags again,
 up to three times in all, as a user would. Once the guest is shutting down, the sheet is gone and a drag
 does nothing.
+
+### iOS 4.x: every build
+
+Every 4.x release for the iPod3,1 is built as 4.2.1 is (journaled data volume, default signature flags,
+NOR kboot, plus the keybag one-shot with the build's own restore ramdisk). Each reaches an activated home
+screen, and usbmux, AFC, persist and Wi-Fi pass for each (2026-10-05). 4.0, 4.1, 4.3 and 4.3.5 were also
+unlocked to the home screen by a drag. What differs per build:
+
+| Build | keybag `--ramdisk` | `ipad1_nand.py --epoch` (Restore.plist SCEP) |
+|---|---|---|
+| 4.0 8A293 | 018-6307-378-ramdisk.dmg | 1 |
+| 4.0.2 8A400 | 018-8095-012-ramdisk.dmg | 1 |
+| 4.1 8B117 | 018-7081-078-ramdisk.dmg | 1 |
+| 4.2.1 8C148 | 038-0031-002-ramdisk.dmg | 1 |
+| 4.3 8F190 | 018-7940-131-ramdisk.dmg | 1 |
+| 4.3.1 8G4 | 038-0901-005-ramdisk.dmg | 1 |
+| 4.3.2 8H7 | 038-1034-007-ramdisk.dmg | 1 |
+| 4.3.3 8J2 | 038-1448-003-ramdisk.dmg | 1 |
+| 4.3.4 8K2 | 038-2171-001-ramdisk.dmg | 2 |
+| 4.3.5 8L1 | 038-2261-002-ramdisk.dmg | 2 |
+
+- Epoch: a store written with an epoch other than the IPSW's SCEP has no signature WMR accepts (nSig 0),
+  and the root never mounts.
+- lockdownd: FirmwareKit's CActivation patcher (`Packages/FirmwareKit/Sources/CActivation/activation.c`
+  compiled on its own is a CLI that takes LOCKDOWND, usable as the `activation_hook`) applies
+  development-activation-shortcut to every 4.x build. The 8C148 script also matches 4.2.1 and 4.3.5, but
+  not 4.0.
+- `ipad1_fw.py` copies an img3 without a KBAG as is. 4.3.4 and 4.3.5 ship their ramdisks unencrypted, and
+  the keys page lists their key as 0.
+- 4.3 classifies the cable by the PMU ADC's channel 6 (AppleD1755PMUPowerSource reads D+, then D-). Both
+  lines above 999 mV mean a charger brick, so the cable type was "Detached" and USB device mode never
+  started. pcf50633 now reads channel 6 as 0 V while the cable is in (a host's pull-downs), as the iPad's
+  D1815 reads its brick mux. 3.1.x and 4.2.1 still pass usbmux and AFC, and so do the iPod 2G regress (boot
+  and AFC) and the iPod 1G regress (boot).
+
+### App install on 3.1.3, 4.0, 4.1, 4.3 and 4.3.5
+
+`tests/ipad1/app-install.py --machine n18` passes every step on 3.1.3, 4.0, 4.1, 4.3 and 4.3.5 (2026-10-05): install
+through installation_proxy and AppSync, icon pinned to page 1, launch, the Harness's GLES row through the
+bridge (readback PASS, no refusals), then guest power-off. Build the system image with `--appsync --gles`
+(4.x: `build4x`-style plus the keybag, as 4.2.1's "App install" recipe; 3.1.3: as its section above). Two
+tool changes:
+- `ipad1_rootfs.py --appsync`: 3.x names installd's job `com.apple.installd`, and 4.x names it
+  `com.apple.mobile.installd`. Both names are now tried.
+- app-install.py: springboardservices answers on a locked 4.0, so the icon step passed with the screen still
+  locked, and the launch tap landed on the lock screen. The unlock now has to change the frame (lit, and
+  no longer the lock screen) and retries up to four times.
+
+### FirmwareKit catalog (LTM guestdev-n18cat, off n18-app)
+
+Every build above has a catalog row (`n18ap-<build>`, experimental). 3.x's differences are recipe data:
+`recipe.nand_sig_flags: 4`, the recipe option `data_journal: false`, and `writable_nor: false` (no keybag).
+`firmwarekit create` made each device, with the dylib from this branch. On each device, `regress.py
+--machine n18 --checks usbmux,afc,persist` and `app-install.py` (all 7 steps) PASS (2026-10-05) for:
+7C145, 7D11, 7E18, 8A293, 8A400, 8B117, 8F190, 8G4, 8H7, 8J2, 8K2 and 8L1. 7C146 passes usbmux, AFC and
+app-install, but its persist first boot hits debt 11.
 
 ## Models: reused, varied, new
 
@@ -238,6 +296,14 @@ offsets at 0x80000000).
 10. **3.1.3: data volume without a journal.** 3.1.3's mount_hfs refuses the Mac-made journal (EINVAL) for
     reasons not yet traced, so the data volume is built unjournaled. A guest that stops without unmounting
     then needs fsck.
+
+11. **3.1.1: an early AppleD1755PMU panic, sometimes.** "kernel abort type 4 ... far 0x0" just after
+   "AppleD1755PMU::start: set VBUCK1_PRE3". IOPM's work loop finishes a power change (servicePMRequest ->
+   all_done -> tellChangeUp -> messageClient), and that reaches AppleD1755PMU's message override (vtable
+   slot next to it at 0xc045dc58 on 7C146). The override forwards to this->0x6c, which start has not set yet.
+   This is a guest race, and boot timing decides it: 0 of 8 boots without usbmuxd, 1 of 6 regress usbmux
+   boots, and 3 of 3 first persist boots of the 7C146 catalog device. 7C145 and the later builds have not
+   shown it. A model fix would change when that power change finishes, not the PMU. Not done.
 
 ## iPhone 3GS (N88AP, S5L8920): `-M n88`
 
