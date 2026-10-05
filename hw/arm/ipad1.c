@@ -30,6 +30,7 @@
 #include "hw/irq.h"
 #include "hw/core/split-irq.h"
 #include "hw/misc/unimp.h"
+#include "hw/misc/ios_baseband.h"
 #include "system/runstate.h"
 #include "hw/usb/hcd-ehci.h"
 #include "hw/usb/hcd-ohci.h"
@@ -109,6 +110,11 @@ typedef struct A4Board {
     const char *wifi_board;
     const char *wifi_fw_version;
     uint8_t wifi_mac[6];
+    /* Baseband on spi2 (cell stream, docs/baseband/): IFX protocol version (0 = none),
+     * DT max-data-size, MRDY (AP out) / SRDY (AP in) GPIOs. */
+    uint8_t bb_ifx;
+    uint16_t bb_max_data;
+    uint16_t bb_mrdy, bb_srdy;
 } A4Board;
 
 /* iPad 1 (K48AP): values measured on the real unit unless said otherwise. */
@@ -278,6 +284,8 @@ static const A4Board a4_n90 = {
     /* n90.bin in the 8C148 rootfs: 4.221.38.1, Wed 2010-10-13 15:40:46 */
     .wifi_fw_version = "wl0: Oct 13 2010 15:40:46 version 4.221.38.1",
     .wifi_mac = { 0x02, 0x00, 0x00, 0x90, 0x00, 0x01 },  /* synthetic, locally administered */
+    .bb_ifx = 2, .bb_max_data = 0x7fc,       /* DT spi2 protocol-version, max-data-size */
+    .bb_mrdy = 0x0605, .bb_srdy = 0x0104,
 };
 
 #define TYPE_IPAD1_MACHINE MACHINE_TYPE_NAME("ipad1")
@@ -1387,7 +1395,28 @@ static void ipad1_init(MachineState *machine)
      * model exactly that: a controller with nothing on the bus (reads return
      * 0). Its DT interrupt is the SRDY GPIO, not a VIC line, so none is wired.
      */
-    ipod_touch_spi_create(S5L8930_SPI_BASE(2), NULL, 2, "none", false);
+    if (s->baseband && s->board->bb_ifx) {
+        /* The fake modem behind it (hw/misc/ios_baseband*.c). Its DT irq is SRDY. */
+        DeviceState *bb = qdev_new(TYPE_IOS_BASEBAND);
+
+        qdev_prop_set_int32(bb, "ifx-version", s->board->bb_ifx);
+        qdev_prop_set_int32(bb, "ifx-max-data", s->board->bb_max_data);
+        object_property_add_child(OBJECT(s), "baseband-modem", OBJECT(bb));
+        qdev_realize_and_unref(bb, NULL, &error_fatal);
+        dev = qdev_new(TYPE_IOS_BASEBAND_SPI);
+        object_property_set_link(OBJECT(dev), "modem", OBJECT(bb), &error_abort);
+        object_property_set_link(OBJECT(dev), "cdma",
+            object_resolve_path_type("", TYPE_S5L8930_CDMA, NULL), &error_abort);
+        qdev_prop_set_uint32(dev, "base", S5L8930_SPI_BASE(2));
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S5L8930_SPI_BASE(2));
+        qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(s->board->bb_mrdy),
+                              qdev_get_gpio_in_named(bb, "mrdy", 0));
+        qdev_connect_gpio_out_named(bb, "srdy", 0,
+            qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(s->board->bb_srdy)));
+    } else {
+        ipod_touch_spi_create(S5L8930_SPI_BASE(2), NULL, 2, "none", false);
+    }
 
     /*
      * M2 scaler/CSC: the iPod's (same scaler,s5l8720x driver). Absent, its

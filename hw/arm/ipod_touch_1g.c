@@ -1,5 +1,7 @@
 /*
- * iPod touch 1G (N45AP, S5L8900) -- `-M iPod-Touch-1G`.
+ * The S5L8900 machines: iPod touch 1G (N45AP) -- `-M iPod-Touch-1G` -- and the
+ * original iPhone (M68AP) -- `-M iPhone-2G`. One machine; the boards differ in
+ * the data of an S5L8900Board (n45_board, m68_board below).
  *
  * devos50's original qemu-ios target (branch ipod_touch_1g, 501c85c4f8),
  * brought onto this tree. The boot chain is his: the public S5L8900 bootrom
@@ -55,6 +57,7 @@
 #include "hw/arm/it_iboot.h"
 #include "hw/arm/s5l8900_nand_ecc.h"
 #include "hw/arm/s5l8900_lcd_panel.h"
+#include "hw/arm/s5l8900_multitouch_z1.h"
 #include "hw/i2c/ipod_touch_i2c.h"
 #include "system/system.h"
 #include "system/reset.h"
@@ -70,6 +73,48 @@ static const int n45_gpio_irqs[GPIO_NUMINTGROUPS] = {
 };
 
 static const uint32_t s5l8900_usb_hwcfg[] = { 0, 0x7a8f60d0, 0x082000e8, 0x01f08024 };
+
+/* n45ap 3A101a's device tree. */
+static const S5L8900Board n45_board = {
+    .name = "n45",
+    .pmu_i2c = 1,
+    /* i2s1: dma-parent dmac1, TX config 0x884 (peripheral 2), interrupts <0xaa> */
+    .codec_i2s_base = N45_IIS1_BASE, .codec_i2s_dmac = 1, .codec_i2s_dma_req = N45_I2S1_DMA_REQ_ID,
+    .codec_i2s_ready_irq = 0xaa, .codec_host_output = false,
+    .i2s_ram_bases = { N45_IIS0_BASE, N45_IIS2_BASE },
+    .piezo = true,
+    .touch = "multitouch", .touch_atn_irq = 0x9b, .touch_cs_gpio = -1,
+    .home_gpio = N45_GPIO_BUTTON_HOME, .home_irq = N45_GPIO_BUTTON_HOME_IRQ,
+    .power_gpio = N45_GPIO_BUTTON_POWER, .power_irq = N45_GPIO_BUTTON_POWER_IRQ,
+    .nand_banks = 8,
+    .pwroff_hold_ms = 6000, .pwroff_settle_ms = 1500,
+};
+
+/*
+ * m68ap 1A543a's device tree: PMU and codec on i2c0; the codec's samples on
+ * i2s0 (0x3ca00000, dmac0, TX config 0x800: peripheral 0, interrupts <0x86>),
+ * i2s1 the baseband's; no buzzer (the codec plays the clicks); the Zephyr1
+ * (multi-touch,z1, interrupts <0xa3>, spi_cs0 GPIO 0x0705); buttons,m68; the
+ * flash disk's reg 0x0f, four chip enables.
+ */
+static const S5L8900Board m68_board = {
+    .name = "m68",
+    .pmu_i2c = 0,
+    .codec_i2s_base = N45_IIS2_BASE, .codec_i2s_dmac = 0, .codec_i2s_dma_req = 0,
+    .codec_i2s_ready_irq = 0x86, .codec_host_output = true,
+    .i2s_ram_bases = { N45_IIS0_BASE, N45_IIS1_BASE },
+    .piezo = false,
+    .touch = TYPE_S5L8900_MULTITOUCH_Z1, .touch_atn_irq = 0xa3, .touch_cs_gpio = 0x0705,
+    .home_gpio = M68_GPIO_BUTTON_HOME, .home_irq = M68_GPIO_BUTTON_HOME_IRQ,
+    .power_gpio = N45_GPIO_BUTTON_POWER, .power_irq = N45_GPIO_BUTTON_POWER_IRQ,
+    .volup_gpio = M68_GPIO_BUTTON_VOLUP, .volup_irq = M68_GPIO_BUTTON_VOLUP_IRQ,
+    .voldown_gpio = M68_GPIO_BUTTON_VOLDOWN, .voldown_irq = M68_GPIO_BUTTON_VOLDOWN_IRQ,
+    .ring_gpio = M68_GPIO_RING_SWITCH, .ring_irq = M68_GPIO_RING_SWITCH_IRQ,
+    .nand_banks = 4,
+    /* 1.0 builds its "slide to power off" sheet slowly (up 13 s into a hold,
+     * guest time, where 1.1's is up in 3-4 s); a release before it locks instead. */
+    .pwroff_hold_ms = 20000, .pwroff_settle_ms = 3000,
+};
 
 static inline qemu_irq n45_irq(IPodTouch1GMachineState *s, int n)
 {
@@ -223,8 +268,10 @@ static const MemoryRegionOps zero_word_ops = {
  *   ldr r0,[r5,#0x6c]      ldr   r0,[r5,#0x6c]
  *   ldr r3,[r0]       ->   cmp   r0,#0
  *   mov lr,pc              ldrne r3,[r0]
- *   ldr pc,[r3,#0x54]      blne  <an existing "ldr pc,[r3,#0x54]">
+ *   ldr pc,[r3,#N]         blne  <an existing "ldr pc,[r3,#N]">
  *   str r4,[r5,#0x68]      str   r4,[r5,#0x68]
+ *
+ * N is remove()'s vtable slot: 0x54 in 1.1, 0x94 in 1.0 (1A543a, the iPhone).
  *
  * Found by its instruction words in RAM once iBoot has loaded the
  * kernelcache (the first timer-4 configuration), so it only ever touches a
@@ -234,8 +281,7 @@ static const MemoryRegionOps zero_word_ops = {
 static void n45_usb_wrangler_quirk(void *opaque)
 {
     IPodTouch1GMachineState *s = opaque;
-    static const uint32_t sig[5] = { 0xe595006c, 0xe5903000, 0xe1a0e00f, 0xe593f054, 0xe5854068 };
-    const uint32_t vcall = 0xe593f054;   /* ldr pc,[r3,#0x54] */
+    static const uint32_t sig[5] = { 0xe595006c, 0xe5903000, 0xe1a0e00f, 0xe593f000, 0xe5854068 };
     g_autofree uint32_t *ram = g_malloc(N45_RAM_SIZE);
 
     if (!s->usb_wrangler_quirk || s->usb_wrangler_quirk_done) {
@@ -246,9 +292,11 @@ static void n45_usb_wrangler_quirk(void *opaque)
         return;
     }
     for (size_t i = 0; i + 5 <= N45_RAM_SIZE / 4; i++) {
-        if (ram[i] != sig[0] || memcmp(&ram[i], sig, sizeof(sig)) != 0) {
+        if (ram[i] != sig[0] || ram[i + 1] != sig[1] || ram[i + 2] != sig[2] ||
+            (ram[i + 3] & 0xfffff000) != sig[3] || ram[i + 4] != sig[4]) {
             continue;
         }
+        const uint32_t vcall = ram[i + 3];   /* ldr pc,[r3,#N] */
         size_t t = i;
         while (t > 0 && i - t < 0x1000 && ram[--t] != vcall) {
         }
@@ -301,6 +349,19 @@ static void n45_write32(IPodTouch1GMachineState *s, hwaddr addr, uint32_t v)
     address_space_write(s->nsas, addr, MEMTXATTRS_UNSPECIFIED, &le, 4);
 }
 
+/*
+ * Whether this iBoot has the check at all: iBoot-159 (1.0) predates the
+ * epoch, so finding none in it is no warning. Its panic string is the test.
+ */
+static bool n45_iboot_checks_epoch(IPodTouch1GMachineState *s, size_t size)
+{
+    static const char needle[] = "Epoch Mismatch";
+    g_autofree uint8_t *image = g_malloc(size);
+
+    return address_space_read(s->nsas, N45_IBOOT_BASE, MEMTXATTRS_UNSPECIFIED, image, size) != MEMTX_OK ||
+           memmem(image, size, needle, sizeof(needle) - 1) != NULL;
+}
+
 /* Re-staged on every reset, so a warm reboot enters the same iBoot. */
 static void n45_stage_boot_chain(IPodTouch1GMachineState *s)
 {
@@ -313,9 +374,10 @@ static void n45_stage_boot_chain(IPodTouch1GMachineState *s)
      * staged image, as the 2G's direct-iboot does (it_iboot.c).
      */
     s->sysic->epoch = it_iboot_epoch(s->nsas, N45_IBOOT_BASE, iboot);
-    if (!s->sysic->epoch) {
-        warn_report_once("iPod-Touch-1G: no security epoch found in iBoot '%s'; "
-                         "iBoot will panic \"Epoch Mismatch\"", s->iboot_path);
+    if (!s->sysic->epoch && n45_iboot_checks_epoch(s, iboot)) {
+        warn_report_once("%s: no security epoch found in iBoot '%s'; "
+                         "iBoot will panic \"Epoch Mismatch\"",
+                         object_get_typename(qdev_get_machine()), s->iboot_path);
     }
 
     /* Point the ROM's two 8900 jump-table slots at the LLB-window stubs. */
@@ -381,32 +443,80 @@ static void n45_cpu_reset(void *opaque)
     gles_host_set_debug(s->gles_debug);
     gles_host_reset();
     cpu_reset(CPU(s->cpu));
+    /* (The volume pads rest high by the GPIO block's own reset, rest-high-*: this
+     * handler runs before the device resets, so pad levels set here were lost and
+     * both volume buttons read held from boot.) */
     n45_stage_boot_chain(s);
     cpu_set_pc(CPU(s->cpu), N45_IBOOT_BASE);
 }
 
 /* ---- buttons ----------------------------------------------------------- */
 
-/* Same chords as the 2G (imgtools/itqmp.py BUTTONS): Cmd+Shift+H home, Cmd+L power. */
+/* Same chords as the 2G (imgtools/itqmp.py BUTTONS): Cmd+Shift+H home, Cmd+L power, Cmd+-/= volume. */
+/*
+ * A press shorter than the guest reacts to is no press: AppleM68Buttons reads the pads
+ * from its work loop after the interrupt, and a host chord (HMP sendkey, ~100 ms of
+ * host time, a few ms of guest time) was released by then, so both reads saw the
+ * button up and Home never registered. A release earlier than this much guest time
+ * after the press waits for it.
+ */
+#define BUTTON_MIN_PRESS_NS (150 * SCALE_MS)
+
+static void n45_button(IPodTouch1GMachineState *s, uint32_t gpio, uint32_t gpio_irq, bool down);
+
+static void n45_button_release_due(void *opaque)
+{
+    IPodTouch1GMachineState *s = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    for (int i = 0; i < ARRAY_SIZE(s->btn_gpio); i++) {
+        if (s->btn_release[i] && now - s->btn_pressed_ns[i] >= BUTTON_MIN_PRESS_NS) {
+            s->btn_release[i] = false;
+            n45_button(s, s->btn_gpio[i], s->btn_irq[i], false);
+        }
+    }
+}
+
 static void n45_button(IPodTouch1GMachineState *s, uint32_t gpio, uint32_t gpio_irq, bool down)
 {
     uint32_t *pads = s->gpio->gpio_state;
-    bool was = gpio_is_on(pads, gpio);
+    int slot = -1;
+
+    for (int i = 0; i < ARRAY_SIZE(s->btn_gpio); i++) {
+        if (s->btn_gpio[i] == gpio || (slot < 0 && !s->btn_gpio[i])) {
+            slot = i;
+        }
+    }
+    if (gpio != s->board->ring_gpio && slot >= 0) {
+        int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        s->btn_gpio[slot] = gpio;
+        s->btn_irq[slot] = gpio_irq;
+        if (down) {
+            s->btn_pressed_ns[slot] = now;
+            s->btn_release[slot] = false;
+        } else if (now - s->btn_pressed_ns[slot] < BUTTON_MIN_PRESS_NS) {
+            s->btn_release[slot] = true;
+            timer_mod(s->btn_timer, s->btn_pressed_ns[slot] + BUTTON_MIN_PRESS_NS);
+            return;
+        }
+    }
+    bool active_low = gpio == s->board->volup_gpio || gpio == s->board->voldown_gpio;
+    bool was = gpio_is_on(pads, gpio) != active_low;
 
     if (down == was) {
         return;
     }
-    if (gpio == N45_GPIO_BUTTON_POWER && s->pmu) {
+    if (gpio == s->board->power_gpio && s->pmu) {
         pcf50633_set_exton1(s->pmu, down);
     }
-    if (down) {
+    if (down != active_low) {
         gpio_set_on(pads, gpio);
     } else {
         gpio_set_off(pads, gpio);
     }
-    unsigned group = gpio_irq / 32, bit = gpio_irq % 32;
-    s->sysic->gpio_int_status[group] |= 1u << bit;
-    qemu_irq_raise(s->sysic->gpio_irqs[group]);
+    /* The GPIO IC compares the pad with the polarity the driver programmed
+     * (1.x flips it after each interrupt to catch press and release). */
+    ipod_touch_sysic_set_pad(s->sysic, gpio_irq, gpio_is_on(pads, gpio));
 }
 
 /* The app bridge's buttons (qemu_ios_ui_button), on the chords' pads; the 1G has no volume buttons. */
@@ -414,11 +524,28 @@ void ipod_touch_1g_press_button(IPodTouchButton button, bool down)
 {
     IPodTouch1GMachineState *s = (IPodTouch1GMachineState *)
         object_dynamic_cast(OBJECT(qdev_get_machine()), TYPE_IPOD_TOUCH_1G_MACHINE);
+    const S5L8900Board *b = s ? s->board : NULL;
 
-    if (s && button == IPOD_TOUCH_BUTTON_HOME) {
-        n45_button(s, N45_GPIO_BUTTON_HOME, N45_GPIO_BUTTON_HOME_IRQ, down);
-    } else if (s && button == IPOD_TOUCH_BUTTON_POWER) {
-        n45_button(s, N45_GPIO_BUTTON_POWER, N45_GPIO_BUTTON_POWER_IRQ, down);
+    if (!b) {
+        return;
+    }
+    switch (button) {
+    case IPOD_TOUCH_BUTTON_HOME:
+        n45_button(s, b->home_gpio, b->home_irq, down);
+        break;
+    case IPOD_TOUCH_BUTTON_POWER:
+        n45_button(s, b->power_gpio, b->power_irq, down);
+        break;
+    case IPOD_TOUCH_BUTTON_VOLUP:
+        if (b->volup_gpio) {
+            n45_button(s, b->volup_gpio, b->volup_irq, down);
+        }
+        break;
+    case IPOD_TOUCH_BUTTON_VOLDOWN:
+        if (b->voldown_gpio) {
+            n45_button(s, b->voldown_gpio, b->voldown_irq, down);
+        }
+        break;
     }
 }
 
@@ -454,22 +581,22 @@ static void n45_pwroff_tick(void *opaque)
 
     switch (s->pwroff_phase) {
     case PWROFF_HOME:
-        n45_button(s, N45_GPIO_BUTTON_HOME, N45_GPIO_BUTTON_HOME_IRQ, false);
+        n45_button(s, s->board->home_gpio, s->board->home_irq, false);
         s->pwroff_phase = PWROFF_WAKE;
         n45_pwroff_arm(s, 2500);            /* the app quits, SpringBoard is in front */
         break;
     case PWROFF_WAKE:
-        n45_button(s, N45_GPIO_BUTTON_POWER, N45_GPIO_BUTTON_POWER_IRQ, true);
+        n45_button(s, s->board->power_gpio, s->board->power_irq, true);
         s->pwroff_phase = PWROFF_HOLD;
         /* Held until the sheet is up: 1.1 shows it 3-4 s into a hold, later on a boot's first
          * hold (the sheet is built on first use); a 3.5 s hold released before it and locked
          * the device instead (the matrix's second boot, smoke #21). Holding longer is harmless. */
-        n45_pwroff_arm(s, 6000);
+        n45_pwroff_arm(s, s->board->pwroff_hold_ms);
         break;
     case PWROFF_HOLD:
-        n45_button(s, N45_GPIO_BUTTON_POWER, N45_GPIO_BUTTON_POWER_IRQ, false);
+        n45_button(s, s->board->power_gpio, s->board->power_irq, false);
         s->pwroff_phase = PWROFF_SETTLE;
-        n45_pwroff_arm(s, 1500);            /* the sheet slides in */
+        n45_pwroff_arm(s, s->board->pwroff_settle_ms);   /* the sheet slides in */
         break;
     case PWROFF_SETTLE:
         n45_pwroff_touch(s, PWROFF_KNOB_X, true);
@@ -498,7 +625,7 @@ static void n45_powerdown_req(Notifier *n, void *opaque)
     if (s->pwroff_phase != PWROFF_IDLE) {
         return;
     }
-    n45_button(s, N45_GPIO_BUTTON_HOME, N45_GPIO_BUTTON_HOME_IRQ, true);
+    n45_button(s, s->board->home_gpio, s->board->home_irq, true);
     s->pwroff_phase = PWROFF_HOME;
     n45_pwroff_arm(s, 150);                 /* a tap, released long before Hold goes down (smoke #19) */
 }
@@ -522,12 +649,21 @@ static void n45_kbd_event(DeviceState *dev, QemuConsole *src, InputEvent *evt)
         return;
     case Q_KEY_CODE_H:
         if (!k->down || (s->kbd_cmd && s->kbd_shift)) {
-            n45_button(s, N45_GPIO_BUTTON_HOME, N45_GPIO_BUTTON_HOME_IRQ, k->down);
+            n45_button(s, s->board->home_gpio, s->board->home_irq, k->down);
         }
         return;
     case Q_KEY_CODE_L:
         if (!k->down || s->kbd_cmd) {
-            n45_button(s, N45_GPIO_BUTTON_POWER, N45_GPIO_BUTTON_POWER_IRQ, k->down);
+            n45_button(s, s->board->power_gpio, s->board->power_irq, k->down);
+        }
+        return;
+    case Q_KEY_CODE_MINUS:
+    case Q_KEY_CODE_EQUAL:
+        /* Cmd+- / Cmd+= : the M68's volume buttons, the 2G's chords */
+        if (s->board->volup_gpio && (!k->down || s->kbd_cmd)) {
+            bool up = q == Q_KEY_CODE_EQUAL;
+            n45_button(s, up ? s->board->volup_gpio : s->board->voldown_gpio,
+                       up ? s->board->volup_irq : s->board->voldown_irq, k->down);
         }
         return;
     default:
@@ -549,6 +685,8 @@ static void n45_machine_init(MachineState *machine)
     MemoryRegion *sysmem = get_system_memory();
     DeviceState *dev;
     SysBusDevice *busdev;
+
+    s->board = object_dynamic_cast(OBJECT(machine), TYPE_IPHONE_2G_MACHINE) ? &m68_board : &n45_board;
 
     Object *cpuobj = object_new(machine->cpu_type);
     s->cpu = ARM_CPU(cpuobj);
@@ -582,16 +720,31 @@ static void n45_machine_init(MachineState *machine)
     s->vic1->daisy = s->vic0;
 
     /* RAM and the boot windows */
-    allocate_ram(sysmem, "ram", N45_RAM_BASE, N45_RAM_SIZE);
+    MemoryRegion *ram = allocate_ram(sysmem, "ram", N45_RAM_BASE, N45_RAM_SIZE);
     allocate_ram(sysmem, "sram1", N45_SRAM1_BASE, 0x10000);
     allocate_ram(sysmem, "vrom", N45_VROM_BASE, N45_VROM_SIZE);
-    allocate_ram(sysmem, "iboot", N45_IBOOT_BASE, N45_IBOOT_SIZE);
+    MemoryRegion *iboot_ram = allocate_ram(sysmem, "iboot", N45_IBOOT_BASE, N45_IBOOT_SIZE);
+    /*
+     * The bus decodes DRAM again at +0x80000000 (the uncached view). iBoot
+     * maps its heap there (VA 0x98xxxxxx -> PA 0x18xxxxxx) and iBoot-159 hands
+     * those addresses to the PL080 as they are: its NAND page reads DMA from
+     * the FMC FIFO straight into 0x98..., which read back as zeros without the
+     * alias ("no signature or no production format"). The AES block's
+     * addr-offset is the same decode, seen from that master.
+     */
+    MemoryRegion *alias = g_new(MemoryRegion, 2);
+    memory_region_init_alias(&alias[0], NULL, "ram-uncached", ram, 0, N45_RAM_SIZE);
+    memory_region_add_subregion(sysmem, N45_RAM_BASE + 0x80000000u, &alias[0]);
+    memory_region_init_alias(&alias[1], NULL, "iboot-uncached", iboot_ram, 0, N45_IBOOT_SIZE);
+    memory_region_add_subregion(sysmem, N45_IBOOT_BASE + 0x80000000u, &alias[1]);
     allocate_ram(sysmem, "llb-stubs", N45_LLB_BASE, 0x1000);
     allocate_ram(sysmem, "edgeic", N45_EDGEIC_BASE, 0x1000);
     /* Register windows the 1.x kernel touches but nothing models yet (debt). */
     allocate_ram(sysmem, "watchdog", N45_WATCHDOG_BASE, 0x10000);
-    allocate_ram(sysmem, "iis0", N45_IIS0_BASE, 0x10000);
-    allocate_ram(sysmem, "iis2", N45_IIS2_BASE, 0x10000);
+    for (int i = 0; i < 2; i++) {
+        hwaddr b = s->board->i2s_ram_bases[i];
+        allocate_ram(sysmem, b == N45_IIS0_BASE ? "iis0" : b == N45_IIS1_BASE ? "iis1" : "iis2", b, 0x10000);
+    }
     allocate_ram(sysmem, "mpvd", N45_MPVD_BASE, 0x70000);
     allocate_ram(sysmem, "h264bpd", N45_H264BPD_BASE, 0x1000);
 
@@ -626,7 +779,7 @@ static void n45_machine_init(MachineState *machine)
     IPOD_TOUCH_TIMER(dev)->first_config_opaque = s;
     /* nclk: 3A101a programs Celestial's 1880 Hz key click as 6382 at /2. */
     qdev_prop_set_uint32(dev, "input-hz", 24000000);
-    {
+    if (s->board->piezo) {
         /* The piezo on timer 1 (/arm-io/timer/buzzer). */
         DeviceState *piezo = qdev_new(TYPE_IPOD_TOUCH_PIEZO);
         qdev_realize_and_unref(piezo, NULL, &error_fatal);
@@ -651,6 +804,14 @@ static void n45_machine_init(MachineState *machine)
 
     /* GPIO pads */
     dev = qdev_new("ipodtouch.gpio");
+    qdev_prop_set_uint32(dev, "fsel-offset", 0x320);
+    if (s->board->volup_gpio) {
+        /* The volume buttons are active low (buttons,m68 flags 0; AppleM68Buttons reads a low pad as held). */
+        qdev_prop_set_uint32(dev, "rest-high-pad", GPIO2PAD(s->board->volup_gpio));
+        /* the ring switch is a level on the same pad: silent rests high */
+        qdev_prop_set_uint32(dev, "rest-high-mask", 1u << GPIO2PIN(s->board->volup_gpio) | 1u << GPIO2PIN(s->board->voldown_gpio) |
+                             (s->ring_silent ? 1u << GPIO2PIN(s->board->ring_gpio) : 0));
+    }
     s->gpio = IPOD_TOUCH_GPIO(dev);
     memory_region_add_subregion(sysmem, N45_GPIO_BASE, &s->gpio->iomem);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
@@ -707,6 +868,9 @@ static void n45_machine_init(MachineState *machine)
         qdev_prop_set_uint32(dev, "channel", i);
         qdev_prop_set_uint32(dev, "rx-size", 256);
         qdev_prop_set_uint32(dev, "tx-size", 256);
+        /* The M68's baseband (UART1) and Bluetooth (UART3) ports flow-control on CTS. With
+         * nothing attached the far end reads ready, so a write goes out and finds no answer. */
+        qdev_prop_set_bit(dev, "cts", s->board == &m68_board && (i == 1 || i == 3));
         /* 115200 8N1 would be 86.8 us per character (tx-char-ns=86800); left
          * instant, since the guest's polled kprintf would otherwise take the
          * whole boot to ~10x real time on this tree. */
@@ -718,12 +882,17 @@ static void n45_machine_init(MachineState *machine)
     /* SPI: nothing on SPI0, the LCD panel on SPI1, the Zephyr digitizer on SPI2 */
     ipod_touch_spi_create(N45_SPI0_BASE, n45_irq(s, N45_SPI0_IRQ), 0, "none", true);
     ipod_touch_spi_create(N45_SPI1_BASE, n45_irq(s, N45_SPI1_IRQ), 1, TYPE_S5L8900_LCD_PANEL, true);
-    dev = ipod_touch_spi_create(N45_SPI2_BASE, n45_irq(s, N45_SPI2_IRQ), 2, "multitouch", true);
+    dev = ipod_touch_spi_create(N45_SPI2_BASE, n45_irq(s, N45_SPI2_IRQ), 2, s->board->touch, true);
     s->mt = IPOD_TOUCH_SPI(dev)->mt;
-    s->mt->sysic = s->sysic;       /* ATN straight into GPIO group 4 bit 27 (devos50) */
-    s->mt->sysic_atn_group = 4;
-    s->mt->sysic_atn_bit = 27;
+    s->mt->sysic = s->sysic;       /* ATN straight into its GPIO-IC line (the N45's group 4 bit 27, devos50) */
+    s->mt->sysic_atn_group = s->board->touch_atn_irq / 32;
+    s->mt->sysic_atn_bit = s->board->touch_atn_irq % 32;
     s->mt->gpio_state = s->gpio;
+    if (s->board->touch_cs_gpio >= 0) {
+        /* The Zephyr1 frames its bootloader stream by chip select (a GPIO pad, the DT's spi_cs0). */
+        qdev_connect_gpio_out(DEVICE(s->gpio), GPIO2PAD(s->board->touch_cs_gpio) * 8 + GPIO2PIN(s->board->touch_cs_gpio),
+                              qdev_get_gpio_in_named(DEVICE(s->mt), SSI_GPIO_CS, 0));
+    }
 
     /* CLCD, S5L8900 register layout */
     dev = qdev_new("ipodtouch.lcd");
@@ -753,6 +922,7 @@ static void n45_machine_init(MachineState *machine)
     /* NAND: FMC + ECC, driven by the ADM */
     dev = qdev_new(TYPE_S5L8900_FMC);
     qdev_prop_set_string(dev, "nand", s->nand_path);
+    qdev_prop_set_uint32(dev, "banks", s->board->nand_banks);
     if (s->nand_overlay && s->nand_overlay[0]) {
         qdev_prop_set_string(dev, "nand-overlay", s->nand_overlay);
     }
@@ -799,13 +969,17 @@ static void n45_machine_init(MachineState *machine)
         sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, n45_irq(s, dmac_irqs[i]));
     }
 
-    /* I2C0: accelerometer; I2C1: PMU */
-    dev = qdev_new("ipodtouch.i2c");
-    IPOD_TOUCH_I2C(dev)->base = 0;
-    memory_region_add_subregion(sysmem, N45_I2C0_BASE, &IPOD_TOUCH_I2C(dev)->iomem);
-    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
-    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, n45_irq(s, N45_I2C0_IRQ));
-    s->accel = LIS302DL(i2c_slave_create_simple(IPOD_TOUCH_I2C(dev)->bus, "lis302dl", 0x1D));
+    /* I2C0: accelerometer (and on the M68 the PMU and codec); I2C1: the N45's PMU and codec */
+    I2CBus *i2c[2];
+    for (int i = 0; i < 2; i++) {
+        dev = qdev_new("ipodtouch.i2c");
+        IPOD_TOUCH_I2C(dev)->base = i;
+        memory_region_add_subregion(sysmem, i ? N45_I2C1_BASE : N45_I2C0_BASE, &IPOD_TOUCH_I2C(dev)->iomem);
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, n45_irq(s, i ? N45_I2C1_IRQ : N45_I2C0_IRQ));
+        i2c[i] = IPOD_TOUCH_I2C(dev)->bus;
+    }
+    s->accel = LIS302DL(i2c_slave_create_simple(i2c[0], "lis302dl", 0x1D));
     /* The host's controls, the same names as the 2G and the iPad: UIDeviceOrientation 1-6
      * (lis302dl_apply_orientation also turns the LCD's presented picture, as the 2G's), raw
      * counts, a shake; accel-pitch/-roll/-pose are machine properties. Without them the app's
@@ -816,13 +990,8 @@ static void n45_machine_init(MachineState *machine)
     object_property_add_alias(OBJECT(machine), "accel-z", OBJECT(s->accel), "z");
     object_property_add_alias(OBJECT(machine), "accel-shake", OBJECT(s->accel), "shake");
 
-    dev = qdev_new("ipodtouch.i2c");
-    IPOD_TOUCH_I2C(dev)->base = 1;
-    memory_region_add_subregion(sysmem, N45_I2C1_BASE, &IPOD_TOUCH_I2C(dev)->iomem);
-    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
-    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, n45_irq(s, N45_I2C1_IRQ));
     {
-        /* PCF50635 at 0x73 on I2C1. Its interrupt is GPIO-IC line 0x55 (the
+        /* PCF50635 at 0x73 (the N45's I2C1, the M68's I2C0). Its interrupt is GPIO-IC line 0x55 (the
          * DT's pmu node: interrupt-parent gpio, interrupts <0x55 1>). */
         I2CSlave *pmu = i2c_slave_new("pcf50633", 0x73);
         s->pmu = PCF50633(pmu);
@@ -837,14 +1006,14 @@ static void n45_machine_init(MachineState *machine)
         qdev_prop_set_uint8(DEVICE(pmu), "backlight-enable-bit", 0x01);
         qdev_prop_set_uint8(DEVICE(pmu), "backlight-level-reg", 0);
         PCF50633(pmu)->usb_cable = (s->usb_tcp_addr && s->usb_tcp_addr[0]) || getenv("IT_USB_TCP");
-        i2c_slave_realize_and_unref(pmu, IPOD_TOUCH_I2C(dev)->bus, &error_fatal);
+        i2c_slave_realize_and_unref(pmu, i2c[s->board->pmu_i2c], &error_fatal);
         qdev_connect_gpio_out(DEVICE(pmu), 0, qdev_get_gpio_in(DEVICE(s->sysic), 0x55));
     }
-    /* WM8758 codec at 0x1A on I2C1 (the DT's audio0@1A). */
-    i2c_slave_create_simple(IPOD_TOUCH_I2C(dev)->bus, "wm8758", 0x1A);
+    /* WM8758 codec at 0x1A beside it (the DT's audio0@1A). */
+    i2c_slave_create_simple(i2c[s->board->pmu_i2c], "wm8758", 0x1A);
 
     /*
-     * I2S1, the WM8758's data port: the 2G's model (the same
+     * The WM8758's data port (the N45's I2S1, the M68's I2S0): the 2G's model (the same
      * AppleS5L8900XI2SController driver). dma-parent is dmac1 and the TX
      * channel's DT config word 0x884 is flow 1 (memory to peripheral) with
      * peripheral id 2; the FIFO is +0x10. interrupts <0xaa> over the GPIO IC is
@@ -854,22 +1023,24 @@ static void n45_machine_init(MachineState *machine)
      * too, mediaserverd crash-loops on an empty device list and plays at most
      * one Buzz per 10 s respawn.
      */
+    const S5L8900Board *bd = s->board;
     dev = qdev_new(TYPE_IPOD_TOUCH_I2S);
     IPOD_TOUCH_I2S(dev)->sysic = s->sysic;
-    IPOD_TOUCH_I2S(dev)->dmac = dmac[1];
-    IPOD_TOUCH_I2S(dev)->dma_req_id = N45_I2S1_DMA_REQ_ID;
-    qdev_prop_set_uint32(dev, "ready-gpio-group", 0xaa / 32);
-    qdev_prop_set_uint32(dev, "ready-gpio-bit", 0xaa % 32);
+    IPOD_TOUCH_I2S(dev)->dmac = dmac[bd->codec_i2s_dmac];
+    IPOD_TOUCH_I2S(dev)->dma_req_id = bd->codec_i2s_dma_req;
+    qdev_prop_set_uint32(dev, "ready-gpio-group", bd->codec_i2s_ready_irq / 32);
+    qdev_prop_set_uint32(dev, "ready-gpio-bit", bd->codec_i2s_ready_irq % 32);
     /*
-     * No host voice: the WM8758's analogue side (the headphone jack) is not
-     * modelled, and the guest's Beep PCM here replays the ring's tail every
+     * N45: no host voice. The WM8758's analogue side (the headphone jack) is
+     * not modelled, and the guest's Beep PCM here replays the ring's tail every
      * 0.37 s after a sound. The Mac hears the piezo (ipod_touch_piezo.c), what
-     * an N45 with nothing in the jack plays.
+     * an N45 with nothing in the jack plays. The M68 has no piezo: its clicks
+     * and ringer are this PCM, so the host plays it.
      */
-    qdev_prop_set_bit(dev, "host-output", false);
-    pl080_attach_paced_peripheral(dmac[1], N45_I2S1_DMA_REQ_ID);
+    qdev_prop_set_bit(dev, "host-output", bd->codec_host_output);
+    pl080_attach_paced_peripheral(dmac[bd->codec_i2s_dmac], bd->codec_i2s_dma_req);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
-    memory_region_add_subregion(sysmem, N45_IIS1_BASE, &IPOD_TOUCH_I2S(dev)->iomem);
+    memory_region_add_subregion(sysmem, bd->codec_i2s_base, &IPOD_TOUCH_I2S(dev)->iomem);
 
     /*
      * MBX: the 2G's model, the same PowerVR MBX Lite and the same AppleMBX driver. The id stub it
@@ -908,6 +1079,7 @@ static void n45_machine_init(MachineState *machine)
     qemu_register_reset(n45_cpu_reset, s);
     qemu_input_handler_register(DEVICE(s->cpu), &n45_kbd_handler);
     s->pwroff_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, n45_pwroff_tick, s);
+    s->btn_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, n45_button_release_due, s);
     qemu_register_powerdown_notifier(&n45_powerdown_notifier);
 }
 
@@ -1112,6 +1284,45 @@ static void n45_instance_init(Object *obj)
     object_property_add_bool(obj, "gles-debug", n45_get_gles_debug, n45_set_gles_debug);
 }
 
+static bool m68_get_ring_switch(Object *obj, Error **errp)
+{
+    return IPOD_TOUCH_1G_MACHINE(obj)->ring_silent;
+}
+
+/* The ring/silent switch: a level, its interrupt on both edges (buttons,m68 type 7). */
+static void m68_set_ring_switch(Object *obj, bool value, Error **errp)
+{
+    IPodTouch1GMachineState *s = IPOD_TOUCH_1G_MACHINE(obj);
+
+    s->ring_silent = value;
+    if (s->gpio && s->board && s->board->ring_gpio) {
+        uint32_t bit = 1u << GPIO2PIN(s->board->ring_gpio);
+        s->gpio->rest_high_mask = (s->gpio->rest_high_mask & ~bit) | (value ? bit : 0);   /* kept across a reboot */
+        n45_button(s, s->board->ring_gpio, s->board->ring_irq, value);
+    }
+}
+
+N45_STR_PROP(imei)
+
+static void m68_machine_class_init(ObjectClass *klass, void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(klass);
+
+    mc->desc = "iPhone (M68AP, S5L8900)";
+    object_class_property_add_str(klass, "imei", n45_get_imei, n45_set_imei);
+    object_class_property_set_description(klass, "imei",
+        "the unit's IMEI (FirmwareKit's device.lock.json machine.imei), for the modem on UART1 to report");
+    object_class_property_add_bool(klass, "ring-switch", m68_get_ring_switch, m68_set_ring_switch);
+    object_class_property_set_description(klass, "ring-switch",
+        "the ring/silent switch: on = silent (pad 0x1603 high), off = ring (default)");
+}
+
+static const TypeInfo m68_machine_info = {
+    .name          = TYPE_IPHONE_2G_MACHINE,
+    .parent        = TYPE_IPOD_TOUCH_1G_MACHINE,
+    .class_init    = m68_machine_class_init,
+};
+
 static const TypeInfo n45_machine_info = {
     .name          = TYPE_IPOD_TOUCH_1G_MACHINE,
     .parent        = TYPE_MACHINE,
@@ -1123,6 +1334,7 @@ static const TypeInfo n45_machine_info = {
 static void n45_machine_types(void)
 {
     type_register_static(&n45_machine_info);
+    type_register_static(&m68_machine_info);
 }
 
 type_init(n45_machine_types)

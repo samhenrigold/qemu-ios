@@ -219,6 +219,12 @@ config DJMEMC
 config IOSB
     bool
 
+# Fake cellular baseband (H5 + 27.010 mux + AT) for the emulated iPhones.
+# Selected by the S5L8900-family boards (M68's baseband UART); no board in
+# this tree instantiates it yet.
+config IOS_BASEBAND
+    bool
+
 config XLNX_VERSAL_TRNG
     bool
 

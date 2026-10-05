@@ -1,0 +1,1137 @@
+/*
+ * Host unit test for the fake cellular baseband core: drives it through the
+ * transport iPhone OS 1.0's CommCenter puts on the wire - raw AT, the Apple H5
+ * link (kext CRC), the 27.010 basic mux - then through the doc's init
+ * sequence, registration, SIM, calls and SMS (docs/baseband/commcenter-1.0.md
+ * and the byte-level exchange examples in commcenter-1.0-calls-sms.md).
+ *
+ * The test's client side is written independently of the core: the H5 CRC is
+ * pinned to the golden vector from the kext ("123456789" -> 0xf689), and the
+ * mux FCS is a bit-at-a-time loop rather than the core's table. If either
+ * breaks - or the mux framing, the H5 sequencing, or any reply format 1.0
+ * parses - this fails.
+ */
+#include "qemu/osdep.h"
+#include "hw/misc/ios_baseband_core.h"
+
+/* ------------------------------------------------------------------- harness */
+
+static int failures;
+
+#define CHECK(cond) do {                                                      \
+    if (!(cond)) {                                                            \
+        failures++;                                                           \
+        fprintf(stderr, "FAIL %s:%d: %s\n", __func__, __LINE__, #cond);       \
+    }                                                                         \
+} while (0)
+
+static void check_str(const char *a, const char *b, const char *what)
+{
+    if (strcmp(a, b) != 0) {
+        failures++;
+        fprintf(stderr, "FAIL %s: \"%s\" != \"%s\"\n", what, a, b);
+    }
+}
+
+static IosBbCore bb;
+static int64_t tnow = 1000;
+
+static uint8_t outbuf[128 * 1024];
+static size_t outlen;
+
+static void core_out(void *opaque, const uint8_t *buf, size_t len)
+{
+    assert(outlen + len < sizeof(outbuf));
+    memcpy(outbuf + outlen, buf, len);
+    outlen += len;
+}
+
+/*
+ * Events: what the core sent, decoded by the test's own client stack.
+ *   EV_RAW   pre-mux AT stream bytes (inside H5, before the mux starts)
+ *   EV_FRAME one mux UIH/control frame (dlci, payload)
+ *   EV_LINK  an H5 link-control payload (SYNC RESP, CONFIG RESP)
+ *   EV_FLAGS a wake-up-flag answer
+ */
+enum { EV_RAW, EV_FRAME, EV_LINK, EV_FLAGS };
+
+typedef struct Ev {
+    int kind;
+    int dlci;
+    uint8_t ctrl;
+    uint8_t payload[2048];
+    unsigned plen;
+} Ev;
+
+static Ev evs[512];
+static int nev, ev_i;
+
+static void ev_add(int kind, int dlci, uint8_t ctrl,
+                   const uint8_t *p, unsigned n)
+{
+    if (nev >= (int)ARRAY_SIZE(evs) - 1) {
+        return;
+    }
+    if (getenv("BBTEST_TRACE")) {
+        fprintf(stderr, "ev[%d] kind=%d dlci=%d plen=%u: ", nev, kind, dlci, n);
+        for (unsigned i = 0; i < n && i < 70; i++) {
+            if (p[i] == '\r') { fprintf(stderr, "\\r"); }
+            else if (p[i] == '\n') { fprintf(stderr, "\\n"); }
+            else if (p[i] < 0x20 || p[i] >= 0x7f) { fprintf(stderr, "<%02x>", p[i]); }
+            else { fputc(p[i], stderr); }
+        }
+        fprintf(stderr, "\n");
+    }
+    Ev *e = &evs[nev++];
+
+    e->kind = kind;
+    e->dlci = dlci;
+    e->ctrl = ctrl;
+    e->plen = n;
+    memcpy(e->payload, p, n < sizeof(e->payload) ? n : sizeof(e->payload));
+}
+
+/* --------------------------------------------------------- test's H5 client side */
+
+static uint8_t c_tx_seq;          /* our data packet numbering */
+static uint8_t c_rx_next;         /* next core seq we expect */
+static uint8_t c_acked;          /* last ack value we sent the core */
+static bool autoack = true;
+static bool test_mux_on;         /* our mux starts after the +cmux OK */
+
+/* Build one H5 packet (the kernel's shape) and feed it to the core. */
+static void h5_send(int type, bool reliable, const uint8_t *payload, unsigned len)
+{
+    uint8_t pkt[4 + 1500 + 2];
+    uint8_t wire[2 * sizeof(pkt) + 2];
+    unsigned n = 4 + len;
+    bool crc = type != 15;
+
+    pkt[0] = (reliable ? 0x80 : 0) | (crc ? 0x40 : 0) | (c_rx_next << 3) |
+             (reliable ? c_tx_seq : 0);
+    pkt[1] = type | ((len & 0xf) << 4);
+    pkt[2] = len >> 4;
+    pkt[3] = ~(pkt[0] + pkt[1] + pkt[2]);
+    memcpy(pkt + 4, payload, len);
+    if (crc) {
+        uint16_t c = ios_bb_h5_crc(pkt, n);
+
+        pkt[n++] = c >> 8;
+        pkt[n++] = c;
+    }
+
+    uint8_t *o = wire;
+    *o++ = 0xc0;
+    for (unsigned i = 0; i < n; i++) {
+        if (pkt[i] == 0xc0) {
+            *o++ = 0xdb;
+            *o++ = 0xdc;
+        } else if (pkt[i] == 0xdb) {
+            *o++ = 0xdb;
+            *o++ = 0xdd;
+        } else {
+            *o++ = pkt[i];
+        }
+    }
+    *o++ = 0xc0;
+
+    bb.now_ms = tnow;
+    ios_bb_input(&bb, wire, o - wire);
+    if (reliable) {
+        c_tx_seq = (c_tx_seq + 1) & 7;
+    }
+}
+
+static void c_link(const uint8_t *p, unsigned n)
+{
+    h5_send(15, false, p, n);
+}
+
+static void c_data(const uint8_t *p, unsigned n)
+{
+    h5_send(14, true, p, n);
+}
+
+static void c_data_str(const char *s)
+{
+    c_data((const uint8_t *)s, strlen(s));
+}
+
+/* ---------------------------------------------------------- test's mux client side */
+
+static uint8_t m_fcs(uint8_t fcs, const uint8_t *p, unsigned n)
+{
+    while (n--) {
+        fcs ^= *p++;
+        for (int i = 0; i < 8; i++) {
+            fcs = (fcs & 1) ? (fcs >> 1) ^ 0xe0 : fcs >> 1;
+        }
+    }
+    return fcs;
+}
+
+static void mux_frame(uint8_t addr, uint8_t ctrl, const uint8_t *data, unsigned len)
+{
+    uint8_t f[5 + 1600];
+    unsigned n = 0, hdr;
+    uint8_t fcs;
+
+    f[n++] = addr;
+    f[n++] = ctrl;
+    if (len < 128) {
+        f[n++] = (len << 1) | 1;
+    } else {
+        f[n++] = (len & 0x7f) << 1;
+        f[n++] = len >> 7;
+    }
+    hdr = n;
+    memcpy(f + n, data, len);
+    n += len;
+    /* 27.010: UIH covers address+control+length only. */
+    fcs = m_fcs(0xff, f, hdr);
+    if ((ctrl & ~0x10) != 0xef) {
+        fcs = m_fcs(fcs, data, len);
+    }
+    f[n++] = 0xff - fcs;
+    c_data(f, n);
+}
+
+static void c_mux(int dlci, const uint8_t *p, unsigned n)
+{
+    mux_frame((dlci << 2) | 0x03, 0xef, p, n);       /* C/R set: command */
+}
+
+static void c_mux_str(int dlci, const char *s)
+{
+    c_mux(dlci, (const uint8_t *)s, strlen(s));
+}
+
+static void c_sabm(int dlci, uint8_t ctrl)
+{
+    mux_frame((dlci << 2) | 0x03, ctrl, NULL, 0);
+}
+
+/* Parse one mux frame out of the core's data payload, the way the kernel and
+ * then CommCenter would: [addr][ctrl][len][info][fcs] with a bitwise FCS. */
+static void mux_payload(const uint8_t *p, unsigned n)
+{
+    unsigned pos = 0;
+
+    while (pos + 3 < n) {
+        uint8_t addr = p[pos];
+        uint8_t ctrl = p[pos + 1];
+        unsigned len = p[pos + 2] >> 1;
+        unsigned lenbytes = 1;
+
+        if (!(p[pos + 2] & 1)) {
+            if (pos + 4 > n) {
+                break;
+            }
+            len |= p[pos + 3] << 7;
+            lenbytes = 2;
+        }
+        if (pos + 2 + lenbytes + len + 1 > n) {
+            break;
+        }
+        const uint8_t *info = p + pos + 2 + lenbytes;
+        uint8_t fcs = m_fcs(0xff, p + pos, 2 + lenbytes);
+
+        if ((ctrl & ~0x10) != 0xef) {
+            fcs = m_fcs(fcs, info, len);
+        }
+        CHECK(m_fcs(fcs, &p[pos + 2 + lenbytes + len], 1) == 0xcf);
+        ev_add(EV_FRAME, addr >> 2, ctrl, info, len);
+        pos += 2 + lenbytes + len + 1;
+    }
+}
+
+/* One H5 packet the core sent, after SLIP deframing. */
+static void h5_rx_pkt(const uint8_t *p, unsigned n)
+{
+    unsigned len = (p[1] >> 4) | (p[2] << 4);
+    unsigned type = p[1] & 0xf;
+
+    if (n < 4) {
+        CHECK(!"short H5 packet");
+        return;
+    }
+    CHECK((uint8_t)(p[0] + p[1] + p[2]) == (uint8_t)~p[3]);
+    if (4 + len + ((p[0] >> 6) & 1) * 2 != n) {
+        CHECK(!"H5 length mismatch");
+        return;
+    }
+    if (p[0] & 0x40) {
+        uint16_t got = (p[4 + len] << 8) | p[4 + len + 1];
+        uint16_t want = ios_bb_h5_crc(p, 4 + len);
+
+        if (got != want) {
+            CHECK(!"H5 CRC mismatch on a core packet");
+            return;
+        }
+    }
+    if (type == 15) {
+        ev_add(EV_LINK, 0, 0, p + 4, len);
+        return;
+    }
+    if (type == 0) {
+        return;                                  /* pure ack; not interesting */
+    }
+    if (type != 14 || !(p[0] & 0x80)) {
+        CHECK(!"unexpected H5 type");
+        return;
+    }
+    uint8_t seq = p[0] & 7;
+
+    if (seq == c_rx_next) {
+        c_rx_next = (seq + 1) & 7;
+    } else if (seq == ((c_rx_next - 1) & 7)) {
+        /* a retransmission of what we have; still an event to observe */
+    } else {
+        CHECK(!"seq desync from the core");
+        c_rx_next = (seq + 1) & 7;
+    }
+
+    const uint8_t *info = p + 4;
+    bool all_flags = true;
+
+    for (unsigned i = 0; i < len; i++) {
+        if (info[i] != 0xf9) {
+            all_flags = false;
+            break;
+        }
+    }
+    if (all_flags && len) {
+        ev_add(EV_FLAGS, 0, 0, info, len);
+        return;
+    }
+    if (test_mux_on) {
+        mux_payload(info, len);
+    } else {
+        ev_add(EV_RAW, 0, 0, info, len);
+    }
+}
+
+/*
+ * Consume pending output into events, acking what arrived. Events accumulate:
+ * expectations walk the stream in order, and the acks leave promptly the way
+ * the kernel's would (otherwise the core legitimately retransmits at 250 ms
+ * while we step time without pumping).
+ */
+static void pump(void)
+{
+    if (!bb.h5) {
+        /* Raw AT phase: the output is plain bytes, not SLIP. */
+        if (outlen) {
+            ev_add(EV_RAW, 0, 0, outbuf, outlen);
+        }
+        outlen = 0;
+        return;
+    }
+
+    for (int round = 0; round < 8; round++) {
+        /* SLIP-deframe the pending output (unescaping 0xDB 0xDC/0xDD). */
+        uint8_t slip[8192];
+        unsigned slen = 0;
+
+        for (size_t i = 0; i < outlen; i++) {
+            if (outbuf[i] == 0xc0) {
+                if (slen) {
+                    h5_rx_pkt(slip, slen);
+                    slen = 0;
+                }
+                continue;
+            }
+            uint8_t c = outbuf[i];
+
+            if (c == 0xdb && i + 1 < outlen) {
+                i++;
+                c = outbuf[i] == 0xdc ? 0xc0 : outbuf[i] == 0xdd ? 0xdb : 0;
+                if (!c) {
+                    CHECK(!"bad SLIP escape from the core");
+                    slen = 0;
+                    continue;
+                }
+            }
+            if (slen < sizeof(slip)) {
+                slip[slen++] = c;
+            }
+        }
+        outlen = 0;
+
+        /*
+         * Piggyback acks ride our next packet; when there is none, the kernel
+         * sends a pure ack. Without it the core retransmits (and the H5
+         * window test below relies on doing that once by hand).
+         */
+        if (autoack && c_rx_next != c_acked) {
+            c_acked = c_rx_next;
+            h5_send(0, false, NULL, 0);
+            continue;                            /* reparse: the ack may drain more */
+        }
+        break;
+    }
+}
+
+/* ---------------------------------------------------------------- expectations */
+
+static Ev *ev_next(void)
+{
+    return ev_i < nev ? &evs[ev_i++] : NULL;
+}
+
+static void expect_none(void)
+{
+    if (ev_i < nev) {
+        failures++;
+        fprintf(stderr, "FAIL unexpected event (kind %d)\n", evs[ev_i].kind);
+        ev_i = nev;
+    }
+}
+
+static Ev *expect_kind(int kind)
+{
+    Ev *e = ev_next();
+
+    if (!e || e->kind != kind) {
+        failures++;
+        fprintf(stderr, "FAIL %d: wanted event kind %d\n", __LINE__, kind);
+        return NULL;
+    }
+    return e;
+}
+
+static void expect_raw(const char *s)
+{
+    Ev *e = expect_kind(EV_RAW);
+
+    if (!e) {
+        return;
+    }
+    e->payload[e->plen < 2047 ? e->plen : 2047] = 0;
+    check_str((char *)e->payload, s, "raw AT reply");
+}
+
+static void expect_frame(int dlci, const char *s)
+{
+    Ev *e = expect_kind(EV_FRAME);
+
+    if (!e) {
+        return;
+    }
+    CHECK(e->dlci == dlci);
+    if (e->plen != strlen(s) || memcmp(e->payload, s, e->plen)) {
+        failures++;
+        e->payload[e->plen < 2047 ? e->plen : 2047] = 0;
+        fprintf(stderr, "FAIL frame %d: \"%s\" != \"%s\"\n", dlci,
+                (char *)e->payload, s);
+    }
+}
+
+static void expect_ua(int dlci, uint8_t ctrl)
+{
+    Ev *e = expect_kind(EV_FRAME);
+
+    if (!e) {
+        return;
+    }
+    CHECK(e->dlci == dlci);
+    CHECK(e->ctrl == ctrl);
+    CHECK(e->plen == 0);
+}
+
+static void expect_link(const uint8_t *p, unsigned n)
+{
+    Ev *e = expect_kind(EV_LINK);
+
+    if (!e) {
+        return;
+    }
+    CHECK(e->plen == n);
+    CHECK(memcmp(e->payload, p, n) == 0);
+}
+
+/* Feed helpers that keep the core's clock moving. */
+static void feed_raw(const char *s)
+{
+    bb.now_ms = tnow;
+    ios_bb_input(&bb, (const uint8_t *)s, strlen(s));
+    pump();
+}
+
+static void tick_to(int64_t t)
+{
+    while (tnow < t) {
+        tnow += 10;
+        ios_bb_tick(&bb, tnow);
+        pump();                                  /* ack what the core sends */
+    }
+}
+
+/* ----------------------------------------------------------------------- tests */
+
+/* "123456789" -> 0xf689 is the golden vector from the kext disassembly. */
+static void test_h5_crc(void)
+{
+    CHECK(ios_bb_h5_crc((const uint8_t *)"123456789", 9) == 0xf689);
+}
+
+static void test_boot(void)
+{
+    /* Controls first, then init: init keeps them. */
+    snprintf(bb.operator_long, sizeof(bb.operator_long), "Test Network");
+    snprintf(bb.plmn, sizeof(bb.plmn), "00101");
+    snprintf(bb.imei, sizeof(bb.imei), "000000001234569");
+    snprintf(bb.imsi, sizeof(bb.imsi), "001010000000001");
+    snprintf(bb.iccid, sizeof(bb.iccid), "89001010000000000001");
+    bb.signal_dbm = -59;
+    bb.battery = 100;
+    bb.registered = true;
+    bb.sim_present = true;
+    bb.lac = 0x1abf;
+    bb.ci = 0x53f1;
+    bb.answer_delay_ms = -1;               /* QMP answers calls instead */
+    ios_bb_init(&bb, core_out, NULL);
+    tnow = 1000;
+
+    /* -- raw AT: CommCenter's first probes (docs/baseband/commcenter-1.0.md) */
+    feed_raw("at\r");
+    pump();
+    expect_raw("\r\nOK\r\n");
+
+    feed_raw("ate0\r");
+    pump();
+    expect_raw("\r\nOK\r\n");
+
+    feed_raw("at+xsio?\r");
+    pump();
+    expect_raw("\r\n+XSIO: 0,*0\r\n\r\nOK\r\n");
+
+    feed_raw("at+ipr=750000\r");
+    pump();
+    expect_raw("\r\nOK\r\n");
+
+    /* The kernel snoops this and starts H5; the command still gets an OK. */
+    feed_raw("at+xtransportmode\r");
+    pump();
+    expect_raw("\r\nOK\r\n");
+
+    /* -- H5 link establishment: SYNC then CONFIG with cfg 0x17 */
+    c_link((const uint8_t[]){ 0x01, 0x7e }, 2);
+    pump();
+    expect_link((const uint8_t[]){ 0x02, 0x7d }, 2);
+
+    c_link((const uint8_t[]){ 0x03, 0xfc, 0x17 }, 3);
+    pump();
+    expect_link((const uint8_t[]){ 0x04, 0x7b, 0x17 }, 3);
+
+    /* Reliable data now flows; the kernel re-delivers what was queued. */
+    c_data_str("ate0\r");
+    pump();
+    expect_raw("\r\nOK\r\n");
+
+    /* -- retransmit: the core resends what we did not acknowledge */
+    autoack = false;
+    c_data_str("at+cmee=1\r");
+    pump();
+    expect_raw("\r\nOK\r\n");
+
+    tnow += 251;
+    ios_bb_tick(&bb, tnow);
+    pump();
+    expect_raw("\r\nOK\r\n");                    /* same unacked reply */
+
+    autoack = true;
+    h5_send(0, false, NULL, 0);                   /* the overdue ack */
+    pump();
+    expect_none();
+    tnow += 300;
+    ios_bb_tick(&bb, tnow);
+    pump();
+    expect_none();                               /* and it stops */
+
+    /* -- multiplexer: +cmux=0,0,0,1500, then SABM DLCI 0..5 */
+    c_data_str("at+cmux=0,0,0,1500\r");
+    pump();
+    expect_raw("\r\nOK\r\n");
+    test_mux_on = true;                           /* the OK ends the pre-mux stream */
+
+    c_sabm(0, 0x2f);
+    pump();
+    expect_ua(0, 0x63);
+    for (int dlci = 1; dlci <= 5; dlci++) {
+        c_sabm(dlci, 0x2f);
+        pump();
+        expect_ua(dlci, 0x63);
+    }
+    /* P bit is mirrored into the UA */
+    c_sabm(2, 0x3f);
+    pump();
+    expect_ua(2, 0x73);
+
+    /* -- the SIM channel's existence pokes the SIM model (+XSIM: 1) */
+    tick_to(tnow + 150);
+    pump();
+    expect_frame(3, "\r\n+XSIM: 1\r\n");
+    expect_none();
+
+    /* -- the queued per-channel init: e0, +cmee=1, +cscs="HEX" everywhere */
+    for (int dlci = 1; dlci <= 5; dlci++) {
+        c_mux_str(dlci, "ate0\r");
+        pump();
+        expect_frame(dlci, "\r\nOK\r\n");
+    }
+
+    /* -- radio on, registration enables, then the URC burst (DLCI 1/2) */
+    c_mux_str(1, "at+cfun=1\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+
+    c_mux_str(1, "at+xpow=5,250,0\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+
+    c_mux_str(2, "at+xmer=1\r");
+    pump();
+    expect_frame(2, "\r\nOK\r\n");
+    c_mux_str(2, "at+creg=2\r");
+    pump();
+    expect_frame(2, "\r\nOK\r\n");
+    c_mux_str(2, "at+cgreg=1\r");
+    pump();
+    expect_frame(2, "\r\nOK\r\n");
+    c_mux_str(2, "at+cops=0\r");
+    pump();
+    expect_frame(2, "\r\nOK\r\n");
+    c_mux_str(2, "at+cops=3,2\r");
+    pump();
+    expect_frame(2, "\r\nOK\r\n");
+
+    tick_to(tnow + 350);                          /* searching */
+    pump();
+    expect_frame(2, "\r\n+CREG: 2\r\n");
+    expect_frame(2, "\r\n+CGREG: 2\r\n");
+    tick_to(tnow + 500);                          /* registered on the home PLMN */
+    pump();
+    expect_frame(2, "\r\n+CREG: 1,1ABF,53F1\r\n");
+    expect_frame(2, "\r\n+CGREG: 1\r\n");
+    expect_frame(2, "\r\n+XCIEV: 27,100\r\n");
+    expect_none();
+
+    /* Queries. */
+    c_mux_str(2, "at+cops?\r");
+    pump();
+    expect_frame(2, "\r\n+COPS: 0,2,\"3030313031\"\r\n");
+    expect_frame(2, "\r\nOK\r\n");
+    c_mux_str(2, "at+creg?\r");
+    pump();
+    expect_frame(2, "\r\n+CREG: 2,1,1ABF,53F1\r\n");
+    expect_frame(2, "\r\nOK\r\n");
+    c_mux_str(2, "at+xcops=7\r");
+    pump();
+    expect_frame(2, "\r\n+XCOPS: 0,\"54657374204E6574776F726B\"\r\n");
+    expect_frame(2, "\r\nOK\r\n");
+
+    /* -- SIM identity chain, once the model has asked its first +cpin? */
+    c_mux_str(3, "at+cpin?\r");
+    pump();
+    expect_frame(3, "\r\n+CPIN: READY\r\n");
+    expect_frame(3, "\r\nOK\r\n");
+    c_mux_str(3, "at+cimi\r");
+    pump();
+    expect_frame(3, "\r\n001010000000001\r\n");
+    expect_frame(3, "\r\nOK\r\n");
+    c_mux_str(3, "at+ccid\r");
+    pump();
+    expect_frame(3, "\r\n89001010000000000001\r\n");
+    expect_frame(3, "\r\nOK\r\n");
+    c_mux_str(3, "at+xpincnt\r");
+    pump();
+    expect_frame(3, "\r\n+XPINCNT: 3,3,10,10\r\n");
+    expect_frame(3, "\r\nOK\r\n");
+    c_mux_str(3, "at+clck=\"fd\",2\r");
+    pump();
+    expect_frame(3, "\r\n+CLCK: 0\r\n");
+    expect_frame(3, "\r\nOK\r\n");
+
+    /* -- SMS setup (raw sends; replies consumed as strays are OK here) */
+    c_mux_str(3, "at+cnmi=1,2,2,1\r");
+    pump();
+    expect_frame(3, "\r\nOK\r\n");
+    c_mux_str(3, "at+csms=1\r");
+    pump();
+    expect_frame(3, "\r\n+CSMS: 1,1,1\r\n");
+    expect_frame(3, "\r\nOK\r\n");
+}
+
+/*
+ * The calls-sms doc's worked example 4.1: an incoming call from +1 415 555 0100,
+ * answered, hung up by the remote party - byte for byte.
+ */
+static void test_incoming_call(void)
+{
+    CHECK(ios_bb_incoming_call(&bb, "+14155550100"));
+    pump();
+    expect_frame(1, "\r\n+XCALLSTAT: 1,4\r\n");
+    expect_frame(1, "\r\n+CLIP: \"+14155550100\",145,,,\"\",0\r\n");
+    expect_frame(1, "\r\nRING\r\n");
+
+    /* the ring repeats */
+    tick_to(tnow + 3000);
+    pump();
+    expect_frame(1, "\r\nRING\r\n");
+
+    check_str(ios_bb_call_state(&bb), "incoming", "call state");
+
+    c_mux_str(1, "at+chld=2\r");                  /* user swipes answer */
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    expect_frame(1, "\r\n+XCALLSTAT: 1,0\r\n");
+    check_str(ios_bb_call_state(&bb), "active", "call state");
+
+    ios_bb_remote_hangup(&bb);                    /* the remote hangs up */
+    pump();
+    expect_frame(1, "\r\n+XCALLSTAT: 1,6\r\n");
+
+    c_mux_str(1, "at+ceer\r");                     /* 1.0 asks for the cause */
+    pump();
+    expect_frame(1, "\r\n+CEER: CC,16\r\n");
+    expect_frame(1, "\r\nOK\r\n");
+    check_str(ios_bb_call_state(&bb), "idle", "call state");
+
+    /* 4.x answers with ATA and hangs up with ATH. */
+    CHECK(ios_bb_incoming_call(&bb, "15555550199"));
+    pump();
+    ev_i = nev;
+    c_mux_str(1, "ata\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    expect_frame(1, "\r\n+XCALLSTAT: 2,0\r\n");
+    c_mux_str(1, "ath\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    expect_frame(1, "\r\n+XCALLSTAT: 2,6\r\n");
+    check_str(ios_bb_call_state(&bb), "idle", "call state");
+    bb.next_call_id = 2;                         /* the 1.0 sections below expect id 2 next */
+}
+
+/* Worked example 4.3: user dials +1 415 555 0100 and hangs up. */
+static void test_outgoing_call(void)
+{
+    c_mux_str(1, "atd+14155550100;\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    expect_frame(1, "\r\n+XCALLSTAT: 2,2\r\n");
+    check_str(ios_bb_call_state(&bb), "dialing", "call state");
+    check_str(bb.last_dialed, "+14155550100", "last dialed");
+
+    tick_to(tnow + 2100);                         /* remote starts ringing */
+    pump();
+    expect_frame(1, "\r\n+XCALLSTAT: 2,3\r\n");
+    check_str(ios_bb_call_state(&bb), "alerting", "call state");
+
+    ios_bb_remote_answer(&bb);
+    pump();
+    expect_frame(1, "\r\n+XCALLSTAT: 2,0\r\n");
+    check_str(ios_bb_call_state(&bb), "active", "call state");
+
+    c_mux_str(1, "at+chld=1\r");                 /* local hang up */
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    expect_frame(1, "\r\n+XCALLSTAT: 2,6\r\n");
+    check_str(ios_bb_call_state(&bb), "idle", "call state");
+    bb.next_call_id = 2;                         /* the 1.0 sections below expect id 2 next */
+}
+
+/*
+ * The calls-sms doc's worked example 4.2: an SMS from 14155550100 saying
+ * "Hello from 2007", acked with +CNMA, and read back with +CMGR.
+ */
+static void test_incoming_sms(void)
+{
+    /* 2007-04-02 13:52:18 UTC: the SCTS of the doc's example. */
+    struct tm tm = { 0 };
+
+    tm.tm_year = 107;
+    tm.tm_mon = 3;
+    tm.tm_mday = 2;
+    tm.tm_hour = 13;
+    tm.tm_min = 52;
+    tm.tm_sec = 18;
+    tnow = (int64_t)timegm(&tm) * 1000;
+    ios_bb_tick(&bb, tnow);
+
+    CHECK(ios_bb_incoming_sms(&bb, "14155550100", "Hello from 2007"));
+    pump();
+    /* Both +CMT lines ride one UIH frame; 1.0 splits the response into
+     * lines itself and only reads line 1. */
+    expect_frame(3, "\r\n+CMT: ,33\r\n"
+        "\r\n00040B914151550501F00000704020312581000FC8329BFD0699E5EF36480683DD00\r\n");
+
+    c_mux_str(3, "at+cnma\r");
+    pump();
+    expect_frame(3, "\r\nOK\r\n");
+
+    /* read it back the way a +CMTI-driven +CMGR would */
+    c_mux_str(3, "at+cmgr=1\r");
+    pump();
+    expect_frame(3, "\r\n+CMGR: 1,,33\r\n"
+        "\r\n00040B914151550501F00000704020312581000FC8329BFD0699E5EF36480683DD00\r\n");
+    expect_frame(3, "\r\nOK\r\n");
+
+    /* URCs follow the DLCI that enabled them (4.x lays its channels out its own way). */
+    c_mux_str(4, "at+cnmi=1,2,2,1\r");
+    pump();
+    expect_frame(4, "\r\nOK\r\n");
+    CHECK(ios_bb_incoming_sms(&bb, "14155550100", "Hi"));
+    pump();
+    expect_frame(4, "\r\n+CMT: ,21\r\n\r\n00040B914151550501F000007040203125810002C834\r\n");
+    c_mux_str(3, "at+cnmi=1,2,2,1\r");
+    pump();
+    expect_frame(3, "\r\nOK\r\n");
+}
+
+/* Worked example 4.3: the user sends "Hi" to +1 415 555 0100. */
+static void test_outgoing_sms(void)
+{
+    c_mux_str(3, "at+cmgs=15\r");
+    pump();
+    expect_frame(3, "\r\n> ");
+
+    const char pdu[] = "0001000B814151550501F0000002C834";
+
+    c_mux_str(3, pdu);
+    c_mux(3, (const uint8_t[]){ 0x1a }, 1);      /* Ctrl-Z sends it */
+    pump();
+    expect_frame(3, "\r\n+CMGS: 1\r\n");
+    expect_frame(3, "\r\nOK\r\n");
+
+    check_str(ios_bb_last_mo_sms_number(&bb), "14155550100", "MO number");
+    check_str(ios_bb_last_mo_sms_text(&bb), "Hi", "MO text");
+}
+
+/* A text the default alphabet cannot carry goes out as UCS2 (DCS 08). */
+static void test_incoming_sms_ucs2(void)
+{
+    struct tm tm = { 0 };
+
+    tm.tm_year = 107;
+    tm.tm_mon = 3;
+    tm.tm_mday = 2;
+    tm.tm_hour = 13;
+    tm.tm_min = 52;
+    tm.tm_sec = 18;
+    tnow = (int64_t)timegm(&tm) * 1000;
+    ios_bb_tick(&bb, tnow);
+
+    /* trade mark: outside the GSM alphabet, so DCS 08 / UTF-16BE */
+    CHECK(ios_bb_incoming_sms(&bb, "14155550100", "\xe2\x84\xa2"));
+    pump();
+    expect_frame(3, "\r\n+CMT: ,21\r\n"
+        "\r\n00040B914151550501F0000870402031258100022122\r\n");
+}
+
+/* Calls fail without a network: the dial parser wants a real error final. */
+static void test_dial_no_service(void)
+{
+    bb.registered = false;
+    ios_bb_changed(&bb);
+    tick_to(tnow + 500);
+    pump();
+    expect_frame(2, "\r\n+CREG: 2\r\n");           /* still searching */
+    expect_frame(2, "\r\n+CGREG: 2\r\n");
+
+    CHECK(!ios_bb_incoming_call(&bb, "14155550100"));
+    CHECK(!ios_bb_incoming_sms(&bb, "14155550100", "no dice"));
+
+    c_mux_str(1, "atd+14155550100;\r");
+    pump();
+    expect_frame(1, "\r\nERROR\r\n");
+
+    bb.registered = true;
+    ios_bb_changed(&bb);
+    tick_to(tnow + 500);
+    pump();
+    expect_frame(2, "\r\n+CREG: 2\r\n");
+    expect_frame(2, "\r\n+CGREG: 2\r\n");
+    tick_to(tnow + 500);
+    pump();
+    expect_frame(2, "\r\n+CREG: 1,1ABF,53F1\r\n");
+    expect_frame(2, "\r\n+CGREG: 1\r\n");
+    expect_frame(2, "\r\n+XCIEV: 27,100\r\n");
+}
+
+/* Signal and battery changes reach the guest as +XCIEV. */
+static void test_signal_change(void)
+{
+    bb.signal_dbm = -93;
+    ios_bb_changed(&bb);
+    pump();
+    expect_frame(2, "\r\n+XCIEV: 10,100\r\n");
+
+    bb.battery = 42;
+    ios_bb_changed(&bb);
+    pump();
+    expect_frame(2, "\r\n+XCIEV: 10,42\r\n");
+
+    bb.signal_dbm = -59;
+    bb.battery = 100;
+    ios_bb_changed(&bb);
+    pump();
+    expect_frame(2, "\r\n+XCIEV: 27,100\r\n");
+}
+
+/* SIM removal and re-insertion are signalled with +XSIM: n. */
+static void test_sim_removal(void)
+{
+    bb.sim_present = false;
+    ios_bb_changed(&bb);
+    tick_to(tnow + 150);
+    pump();
+    expect_frame(3, "\r\n+XSIM: 0\r\n");
+
+    c_mux_str(3, "at+cpin?\r");
+    pump();
+    expect_frame(3, "\r\n+CME ERROR: 10\r\n");
+
+    bb.sim_present = true;
+    ios_bb_changed(&bb);
+    tick_to(tnow + 150);
+    pump();
+    expect_frame(3, "\r\n+XSIM: 1\r\n");
+
+    c_mux_str(3, "at+cpin?\r");
+    pump();
+    expect_frame(3, "\r\n+CPIN: READY\r\n");
+    expect_frame(3, "\r\nOK\r\n");
+}
+
+/* Wake-up flags get flags back; PSC is acked; CLD closes the multiplexer. */
+static void test_power_and_mux_close(void)
+{    /* four flags in, at least two come back */
+    const uint8_t flags[4] = { 0xf9, 0xf9, 0xf9, 0xf9 };
+
+    c_data(flags, sizeof(flags));
+    pump();
+    Ev *e = expect_kind(EV_FLAGS);
+
+    CHECK(e && e->plen >= 2);
+
+    /* PSC: the model acks power save (the kext exits with wake-up flags) */
+    const uint8_t psc[2] = { 0x23, 0x01 };
+
+    c_mux(0, psc, sizeof(psc));
+    pump();
+    expect_frame(0, "\x21\x01");
+
+    /* CLD: acked, then the modem is back to plain AT on channel 0 */
+    const uint8_t cld[2] = { 0x63, 0x01 };
+
+    c_mux(0, cld, sizeof(cld));
+    pump();
+    expect_frame(0, "\x61\x01");
+    test_mux_on = false;                         /* the mux is closed */
+
+    c_data_str("at\r");
+    pump();
+    expect_raw("\r\nOK\r\n");
+}
+
+
+/* ------------------------------------------------------------ IFX SPI framing */
+
+/* One AP transfer of n bytes carrying payload; returns the modem's payload. */
+static unsigned ifx_frame(IosBbIfx *x, IosBbCore *c, const char *payload,
+                          uint8_t *miso, size_t n, char *got)
+{
+    uint8_t mosi[2048] = { 0 };
+    const uint8_t *rx;
+    size_t rxlen, plen = strlen(payload);
+    unsigned len;
+
+    mosi[0] = plen;
+    mosi[1] = plen >> 8;
+    memcpy(mosi + IOS_BB_IFX_HDR, payload, plen);
+    ios_bb_ifx_xfer(x, mosi, miso, n, &rx, &rxlen);
+    CHECK(rxlen == plen && (!plen || memcmp(rx, payload, plen) == 0));
+    if (rxlen) {
+        ios_bb_input(c, rx, rxlen);
+    }
+    len = miso[0] | (miso[1] & 0xf) << 8;
+    memcpy(got, miso + IOS_BB_IFX_HDR, len);
+    got[len] = 0;
+    return len;
+}
+
+static void test_ifx(void)
+{
+    static IosBbCore c;
+    static IosBbIfx x;
+    uint8_t miso[2048];
+    char got[2048];
+
+    /* v1 (3GS DT: protocol-version 1, max-data-size 0x7f8). */
+    memset(&c, 0, sizeof(c));
+    c.registered = c.sim_present = true;
+    snprintf(c.imei, sizeof(c.imei), "000000001234569");
+    ios_bb_ifx_init(&x, 1, 0x7f8);
+    ios_bb_init(&c, ios_bb_ifx_queue, &x);
+    CHECK(!ios_bb_ifx_pending(&x));
+    ifx_frame(&x, &c, "at\r", miso, 0x7fc, got);
+    CHECK(miso[3] & 0x40);                      /* CTS */
+    CHECK(ios_bb_ifx_pending(&x));              /* the OK wants SRDY */
+    ifx_frame(&x, &c, "", miso, 0x7fc, got);
+    check_str(got, "\r\nOK\r\n", "ifx v1 OK");
+
+    /* 4.x signal: the engineering page CommCenter polls once registered. */
+    c.signal_dbm = -60;
+    ifx_frame(&x, &c, "at+cfun=1\r", miso, 0x7fc, got);
+    ifx_frame(&x, &c, "at+xcgedpage=0,1\r", miso, 0x7fc, got);
+    ifx_frame(&x, &c, "", miso, 0x7fc, got);
+    check_str(got, "\r\n+XCGEDPAGE: RAT:\"GSM\",Rssi: 50\r\n\r\nOK\r\n",
+              "xcgedpage");
+    CHECK(!(miso[1] & 0x10) && !ios_bb_ifx_pending(&x));
+
+    /* A reply longer than a frame splits with the more bit. */
+    ifx_frame(&x, &c, "at+cgsn\r", miso, IOS_BB_IFX_HDR + 8, got);
+    ifx_frame(&x, &c, "", miso, IOS_BB_IFX_HDR + 8, got);
+    check_str(got, "\r\n000000", "ifx v1 first slice");
+    CHECK(miso[1] & 0x10);
+    while (ios_bb_ifx_pending(&x)) {
+        ifx_frame(&x, &c, "", miso, IOS_BB_IFX_HDR + 8, got);
+    }
+    CHECK(!(miso[1] & 0x10));
+
+    /* No H5 on SPI: after +cmux the mux frames ride the IFX payload directly. */
+    ifx_frame(&x, &c, "at+cmux=0,0,0,1500\r", miso, 0x7fc, got);
+    ifx_frame(&x, &c, "\xf9\x03\x3f\x01\x1c\xf9", miso, 0x7fc, got);   /* SABM DLCI 0, P */
+    check_str(got, "\r\nOK\r\n", "ifx cmux OK");
+    ifx_frame(&x, &c, "", miso, 0x7fc, got);
+    if (getenv("BBTEST_TRACE")) {
+        fprintf(stderr, "UA? %02x %02x %02x %02x len %u\n", (uint8_t)got[0], (uint8_t)got[1],
+                (uint8_t)got[2], (uint8_t)got[3], miso[0] | (miso[1] & 0xf) << 8);
+    }
+    CHECK(got[0] == (char)0xf9 && got[1] == 0x03 && got[2] == 0x73);   /* UA */
+
+    /* 0xfff length = no payload. */
+    {
+        uint8_t mosi[16] = { 0xff, 0x0f, 0, 0 };
+        const uint8_t *rx;
+        size_t rxlen;
+
+        ios_bb_ifx_xfer(&x, mosi, miso, sizeof(mosi), &rx, &rxlen);
+        CHECK(rxlen == 0);
+    }
+
+    /* v2 (iPhone 4: 0x7fc): credits granted up front, topped up as used. */
+    ios_bb_ifx_init(&x, 2, 0x7fc);
+    ios_bb_init(&c, ios_bb_ifx_queue, &x);
+    CHECK(!ios_bb_ifx_pending(&x));             /* credits ride the AP's first frame */
+    ifx_frame(&x, &c, "", miso, 0x800, got);
+    CHECK((miso[2] | (miso[3] & 0xf) << 8) == 8);
+    for (int i = 0; i < 5; i++) {
+        ifx_frame(&x, &c, "at\r", miso, 0x800, got);
+    }
+    CHECK(x.credits_out >= 4 && x.credits_out <= 8);
+}
+
+/* ------------------------------------------------------------- packet data */
+
+static uint8_t dpkt[4096];
+static size_t dpkt_len;
+static int dpkts;
+
+static void data_out(void *opaque, const uint8_t *p, size_t n)
+{
+    memcpy(dpkt, p, n);
+    dpkt_len = n;
+    dpkts++;
+}
+
+/* 4.x's PDP sequence on a fresh DLCI 6: define, activate, address, DNS, CGDATA, IP both ways. */
+static void test_packet_data(void)
+{
+    uint8_t ip[40] = { 0x45, 0, 0, 40, 0, 0, 0, 0, 64, 17 };
+
+    bb.data_out = data_out;
+    c_sabm(6, 0x3f);
+    pump();
+    ev_i = nev;                                /* skip the UA */
+    c_mux_str(5, "at+cgdcont=1,\"IP\",\"test\"\r");
+    pump();
+    expect_frame(5, "\r\nOK\r\n");
+    c_mux_str(5, "at+cgact=1,1\r");
+    pump();
+    expect_frame(5, "\r\nOK\r\n");
+    c_mux_str(5, "at+cgpaddr=1\r");
+    pump();
+    expect_frame(5, "\r\n+CGPADDR: 1,\"10.0.2.15\"\r\n");
+    expect_frame(5, "\r\nOK\r\n");
+    c_mux_str(5, "at+xdns?\r");
+    pump();
+    expect_frame(5, "\r\n+XDNS: 1,\"10.0.2.3\",\"0.0.0.0\"\r\n");
+    expect_frame(5, "\r\nOK\r\n");
+    c_mux_str(6, "at+cgdata=\"M-RAW_IP\",1\r");
+    pump();
+    expect_frame(6, "\r\nCONNECT\r\n");
+
+    /* Guest -> network: one packet split over two frames, then two in one. */
+    c_mux(6, ip, 25);
+    c_mux(6, ip + 25, 15);
+    pump();
+    CHECK(dpkts == 1 && dpkt_len == 40);
+    {
+        uint8_t two[80];
+
+        memcpy(two, ip, 40);
+        memcpy(two + 40, ip, 40);
+        c_mux(6, two, 80);
+        pump();
+        CHECK(dpkts == 3);
+    }
+    /* Network -> guest: rides DLCI 6 as UIH. */
+    CHECK(ios_bb_data_input(&bb, ip, 40));
+    pump();
+    CHECK(evs[ev_i].dlci == 6 && evs[ev_i].plen == 40 && memcmp(evs[ev_i].payload, ip, 40) == 0);
+    ev_i = nev;
+
+    c_mux_str(5, "at+cgact=0,1\r");
+    pump();
+    expect_frame(5, "\r\nOK\r\n");
+    CHECK(!ios_bb_data_input(&bb, ip, 40));
+    bb.data_out = NULL;
+}
+
+/*
+ * The tests are one ordered chain: each section continues the protocol
+ * session the previous one built (init -> registration -> SIM -> calls ->
+ * SMS -> teardown), exactly like a booting CommCenter.
+ */
+static void test_chain(void)
+{
+    test_h5_crc();
+    test_boot();               /* through init, registration and SIM */
+    test_incoming_call();
+    test_outgoing_call();
+    test_incoming_sms();
+    test_outgoing_sms();
+    test_incoming_sms_ucs2();
+    test_dial_no_service();
+    test_signal_change();
+    test_packet_data();
+    test_sim_removal();
+    test_power_and_mux_close();
+}
+
+int main(int argc, char **argv)
+{
+    g_test_init(&argc, &argv, NULL);
+    g_test_add_func("/baseband/chain", test_chain);
+    g_test_add_func("/baseband/ifx", test_ifx);
+    g_test_run();
+    if (failures) {
+        fprintf(stderr, "test-ios-baseband: %d failure(s)\n", failures);
+        return 1;
+    }
+    printf("test-ios-baseband: all checks passed\n");
+    return 0;
+}

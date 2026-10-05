@@ -76,6 +76,7 @@ typedef struct S5L8900FMCState {
 
     char *nand_path;      /* "nand" property: base directory */
     char *nand_overlay;   /* "nand-overlay" property: writable directory, or NULL */
+    uint32_t banks;       /* "banks": chip enables with a chip (ID reads), default all 8 */
 } S5L8900FMCState;
 
 /* Select the active bank (FMCTRL0 bit 1+bank). */

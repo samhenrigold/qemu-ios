@@ -53,10 +53,40 @@ static void adm_report_spares(S5L8900ADMState *s, unsigned n)
     }
 }
 
+/* The transfer block: the first word in data2 followed by the three section addresses. */
+static uint32_t adm_find_tf(S5L8900ADMState *s)
+{
+    uint8_t buf[0x2000];
+
+    if (s->tf) {
+        return s->tf;
+    }
+    address_space_read(&s->downstream_as, s->data2_sec_addr, MEMTXATTRS_UNSPECIFIED, buf, sizeof(buf));
+    for (uint32_t o = 0; o + 16 <= sizeof(buf); o += 4) {
+        if (ldl_be_p(buf + o + 4) == s->data1_sec_addr && ldl_be_p(buf + o + 8) == s->data2_sec_addr &&
+            ldl_be_p(buf + o + 12) == s->data3_sec_addr) {
+            return s->tf = o;
+        }
+    }
+    return ADM_TF_V17;   /* not written yet */
+}
+
+/*
+ * Where the per-page lists start: a byte of bank per page from +0x44, then a
+ * big-endian page number per page. Firmware-17 lists 512 pages (pages at
+ * +0x244), firmware-14 1024 (+0x444); each puts its transfer block at its own
+ * offset in data2, which tells them apart.
+ */
+static uint32_t adm_pages_off(S5L8900ADMState *s)
+{
+    return ADM_CMD_BANKS + (s->tf == ADM_TF_V14 ? 0x400 : 0x200);
+}
+
 static void adm_run_command(S5L8900ADMState *s)
 {
     S5L8900FMCState *fmc = s->fmc;
-    hwaddr cmdblk = s->data2_sec_addr;
+    hwaddr cmdblk = s->data2_sec_addr + adm_find_tf(s);
+    const hwaddr pages = adm_pages_off(s);
     uint8_t raw[4];
 
     address_space_read(&s->downstream_as, cmdblk + ADM_CMD_OFFSET, MEMTXATTRS_UNSPECIFIED, raw, 4);
@@ -72,7 +102,7 @@ static void adm_run_command(S5L8900ADMState *s)
     if (getenv("IT_FMC_TRACE")) {
         fprintf(stderr, "[adm] command 0x%x, %u pages, ce %u, first bank %u page %u\n", cmd, num_pages,
                 adm_read_u8(s, cmdblk + ADM_CMD_CE), adm_read_u8(s, cmdblk + ADM_CMD_BANKS),
-                adm_read_be32(s, cmdblk + ADM_CMD_PAGES));
+                adm_read_be32(s, cmdblk + pages));
     }
     if (num_pages > FMC_MAX_LIST) {
         qemu_log_mask(LOG_GUEST_ERROR, "[adm] %u pages exceeds the list\n", num_pages);
@@ -81,13 +111,13 @@ static void adm_run_command(S5L8900ADMState *s)
 
     switch (cmd) {
     case ADM_CMD_READ_SEQ: {
-        /* The same page from all eight banks, num_pages / 8 times. */
-        uint32_t page = adm_read_be32(s, cmdblk + ADM_CMD_PAGES);
+        /* The same page from every bank (eight on the N45, four on the M68), row after row. */
+        uint32_t page = adm_read_be32(s, cmdblk + pages), nb = fmc->banks;
         fmc->reading_multiple_pages = true;
-        for (unsigned op = 0; op < num_pages / 8; op++, page++) {
-            for (unsigned i = 0; i < 8; i++) {
-                fmc->pages_to_read[op * 8 + i] = page;
-                fmc->banks_to_read[op * 8 + i] = i;
+        for (unsigned op = 0; op < num_pages / nb; op++, page++) {
+            for (unsigned i = 0; i < nb; i++) {
+                fmc->pages_to_read[op * nb + i] = page;
+                fmc->banks_to_read[op * nb + i] = i;
             }
         }
         fmc->fmdnum = num_pages * FMC_BYTES_PER_PAGE;
@@ -98,7 +128,7 @@ static void adm_run_command(S5L8900ADMState *s)
     case ADM_CMD_READ:
         if (num_pages == 1) {
             uint8_t bank = adm_read_u8(s, cmdblk + ADM_CMD_BANKS);
-            uint32_t page = adm_read_be32(s, cmdblk + ADM_CMD_PAGES);
+            uint32_t page = adm_read_be32(s, cmdblk + pages);
             fmc->reading_multiple_pages = false;
             s5l8900_fmc_set_bank(fmc, bank);
             fmc->fmdnum = FMC_BYTES_PER_PAGE - 1;
@@ -122,7 +152,7 @@ static void adm_run_command(S5L8900ADMState *s)
         } else if (num_pages > 1) {
             fmc->reading_multiple_pages = true;
             for (unsigned i = 0; i < num_pages; i++) {
-                fmc->pages_to_read[i] = adm_read_be32(s, cmdblk + ADM_CMD_PAGES + 4 * i);
+                fmc->pages_to_read[i] = adm_read_be32(s, cmdblk + pages + 4 * i);
                 fmc->banks_to_read[i] = adm_read_u8(s, cmdblk + ADM_CMD_BANKS + i);
             }
             fmc->fmdnum = num_pages * FMC_BYTES_PER_PAGE;
@@ -132,16 +162,16 @@ static void adm_run_command(S5L8900ADMState *s)
         break;
     case ADM_CMD_WRITE_SEQ: {
         /*
-         * Multi-bank program, READ_SEQ's twin: the same page on all eight
-         * banks, num_pages / 8 rows, each page's FTL metadata at data3 +
+         * Multi-bank program, READ_SEQ's twin: the same page on every bank,
+         * num_pages / banks rows, each page's FTL metadata at data3 +
          * 0xC * index. The 1.x FTL flushes its context and full log rows this
          * way; devos50's model had no case for it, so those were dropped.
          */
-        uint32_t page = adm_read_be32(s, cmdblk + ADM_CMD_PAGES);
-        unsigned n = num_pages - num_pages % 8;
+        uint32_t page = adm_read_be32(s, cmdblk + pages), nb = fmc->banks;
+        unsigned n = num_pages - num_pages % nb;
         for (unsigned i = 0; i < n; i++) {
-            fmc->pages_to_read[i] = page + i / 8;
-            fmc->banks_to_read[i] = i % 8;
+            fmc->pages_to_read[i] = page + i / nb;
+            fmc->banks_to_read[i] = i % nb;
         }
         address_space_read(&s->downstream_as, s->data3_sec_addr, MEMTXATTRS_UNSPECIFIED,
                            fmc->prog_spares, n * FMC_META_BYTES);
@@ -152,7 +182,7 @@ static void adm_run_command(S5L8900ADMState *s)
         /* One page; its metadata (the first 12 spare bytes) sits in data3,
          * where reads report it. */
         fmc->banks_to_read[0] = adm_read_u8(s, cmdblk + ADM_CMD_BANKS);
-        fmc->pages_to_read[0] = adm_read_be32(s, cmdblk + ADM_CMD_PAGES);
+        fmc->pages_to_read[0] = adm_read_be32(s, cmdblk + pages);
         address_space_read(&s->downstream_as, s->data3_sec_addr, MEMTXATTRS_UNSPECIFIED,
                            fmc->prog_spares[0], FMC_META_BYTES);
         s5l8900_fmc_start_program(fmc, 1);
@@ -162,7 +192,7 @@ static void adm_run_command(S5L8900ADMState *s)
         /* _fmcPerformErase: the block's first page at +0x244, its bank (chip
          * enable) at +0x34, one block per command. */
         uint32_t bank = adm_read_u8(s, cmdblk + ADM_CMD_CE);
-        uint32_t page = adm_read_be32(s, cmdblk + ADM_CMD_PAGES);
+        uint32_t page = adm_read_be32(s, cmdblk + pages);
         if (bank < FMC_NUM_BANKS) {
             s5l8900_fmc_erase_block(fmc, bank, page / FMC_PAGES_PER_BLOCK);
         }
@@ -201,7 +231,7 @@ static void s5l8900_adm_write(void *opaque, hwaddr offset, uint64_t value, unsig
             uint32_t started = 0x50;
             uint32_t ids[8];
             for (int i = 0; i < 8; i++) {
-                ids[i] = FMC_CHIP_ID;
+                ids[i] = s->fmc && i < (int)s->fmc->banks ? FMC_CHIP_ID : 0;
             }
             address_space_write(&s->downstream_as, s->data2_sec_addr, MEMTXATTRS_UNSPECIFIED,
                                 &started, sizeof(started));
@@ -226,6 +256,7 @@ static void s5l8900_adm_write(void *opaque, hwaddr offset, uint64_t value, unsig
         break;
     case ADM_DATA2_SEC_ADDR:
         s->data2_sec_addr = value;
+        s->tf = 0;
         break;
     case ADM_DATA3_SEC_ADDR:
         s->data3_sec_addr = value;
@@ -257,6 +288,7 @@ static void s5l8900_adm_reset(DeviceState *dev)
     S5L8900ADMState *s = S5L8900_ADM(dev);
 
     s->code_sec_addr = s->data1_sec_addr = s->data2_sec_addr = s->data3_sec_addr = 0;
+    s->tf = 0;
     qemu_irq_lower(s->irq);
 }
 
