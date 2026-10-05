@@ -16,7 +16,7 @@ data; an IPA installs through installation_proxy and AppSync and launches.
 | 4.2.1 8C148a | activated home screen ("No Service") | yes | yes | yes (Harness) | renders through the bridge (readback PASS); on the panel at the wrong stride (debt 1) |
 | 4.3 8F190, 4.3.1 8G4, 4.3.2 8H7, 4.3.3 8J2, 4.3.4 8K2, 4.3.5 8L1 | activated home screen | yes | yes | yes (app-install.py all PASS) | draws (debt 1) |
 | 5.0 9A334, 5.0.1 9A405, 5.1 9B176, 5.1.1 9B206 | Setup Assistant, walked to the home screen; GL-composited | yes | yes | yes (Harness) | draws (debt 1) |
-| 6.1.6 10B500 | no: stops logging after corecrypto's FIPS POST, as N81 6.0 (debt 9) | | | | |
+| 6.1.6 10B500 | userland: lockdown answers 6.1.6, SpringBoard runs, the panel stays on the Apple logo (no GL front end for 6.x yet, so prepared with ca_ogl off; debt 9) | | | | |
 
 - kboot (`imgtools/s5l8920_kboot.py n88 --nor`, the DT's own NOR kept) -> xnu-1504.58.28
   RELEASE_ARM_S5L8920X. The kernel's EmbeddedIOP firmware is the s5l8920x build of iBoot-931 (the N18 runs
@@ -155,5 +155,8 @@ PASS; N18 unlock to the home screen with touch PASS.
 8. ~~**Touch calibration**~~: fitted (mt_profile_n88 frame_*): GSEventGetLocationInWindow's point read through
    the gdbstub (lldb) per tap, as the M68's; an 11-tap check lands within 1 px of every aim. The 5.x Setup walk
    now taps its links where they are drawn.
-9. **iOS 6**: 10B500's kernel prints nothing under kboot (fw-a4 has N81 6.0 past pe_identify_machine with
-   the xnu-2107 boot_args version and the SecureROM window at 0; not ported here yet).
+9. **iOS 6**: FirmwareKit (a4-n81 6233871: boot_args version 3, nvram-proxy-data filled) plus PA 0 as DRAM's
+   first page get 10B500 through the keybag one-shot and into userland (system_mib 1536). The GL front end
+   (contrib/gles-public) does not fit 6.x yet (imports NSObject classes no 6.x image exports), so the device is
+   prepared with ca_ogl off, and SpringBoard then has no context to draw into ("CGContext... invalid context
+   0x0"): the panel keeps the boot logo. Waits on the 6.x GL shim (a4-boards).
