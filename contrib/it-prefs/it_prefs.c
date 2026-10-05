@@ -327,8 +327,8 @@ static unsigned as_mobile(int what, const char *const *jobs, unsigned njobs)
 }
 
 /*
- * Data Roaming on, once per SIM. The emulated network is the test PLMN 001/01, for which no carrier bundle
- * exists, so CommCenter counts the SIM as roaming and keeps packet data off unless Data Roaming is on
+ * Data Roaming on, once per SIM. On the emulated network, the test PLMN 001/01 (4.2.1's CarrierLab bundle),
+ * CommCenter counts packet data as roaming and keeps it off unless Data Roaming is on
  * (docs/baseband/commcenter-4.2.1-3gs.md, "Roaming"). The switch is com.apple.commcenter
  * InternationalRoamingEDGE in CommCenter's own user's preferences (it runs as _wireless and reads it with
  * kCFPreferencesCurrentUser). CommCenter itself sets it false whenever it sees a new SIM (an ICCID other

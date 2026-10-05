@@ -134,23 +134,31 @@ These hold for the 3GS unless its v1 trace says otherwise.
   `+cgpaddr=1`, then `+cgdata="M-RAW_IP",1` on DLCI 8 (CONNECT), and raw IPv4 after that. Without
   `+XREG` > 2 (the data bearer; 4 shows "3G"), Safari says "Could not activate cellular data
   network" and nothing is sent.
-* **Roaming (open)**: on 001/01 the status bar shows the network as home (`+creg` 1, CommCenter's
-  registration getter at 0x3b9c0 returns 4 = home), but packet data still counts as international
-  roaming. With Data Roaming off, Safari says "Data Roaming is turned off". With `mcc-mnc=310410`
-  (a PLMN that has a carrier bundle) the alert goes away, so the trigger is that no carrier bundle
-  matches the test PLMN. Which bundle check sets the roaming flag has not been traced. The switch is
-  `InternationalRoamingEDGE` in com.apple.commcenter, in CommCenter's own user's preferences
-  (`_wireless`, `CFPreferencesCopyValue(..., kCFPreferencesCurrentUser, kCFPreferencesAnyHost)`,
-  0x1e7d4), so the file is /var/wireless/Library/Preferences/com.apple.commcenter.plist. Settings
-  changes it through CommCenter (an entitled MIG call, 0x1f4c4; the getter 0x1e868 reads the file each
-  time). When CommCenter sees a new SIM (an ICCID other than the `ICCID` it stored in the same file) it
-  sets the key false (0x19794). Workaround: the guest package's it_prefs sets it to true once per stored
-  ICCID ("none" before one is stored), so the user's later choice for that SIM stands (contrib/it-prefs).
-  The test PLMN stays the default. 1.0's CommCenter has no such key.
-* **Packet data on a fresh device (open)**: on a FirmwareKit-prepared N90 (8C148) CommCenter never sends
-  `+cgdcont`/`+cgact` (Safari waits, nothing reaches cell0), and it never stores `ICCID`. The
-  hand-prepared N90 device, which has `ICCID` stored, brings data up on the same build. What makes
-  CommCenter store it (one case of a large event switch, 0x14a9c -> 0x193c6) has not been traced.
+* **Carrier bundle and SIM files**: 4.2.1 ships a bundle for the test PLMN, CarrierLab.bundle
+  (`Carrier Bundles/iPhone/00101`, SupportedSIMs 00101, 001011, ...; CarrierName "Carrier Lab", empty
+  signed APNs). At SIM init CommCenter sends GET RESPONSE (`+crsm=192,<fid>`) for 4F34, 6F06, 6F11, 6F14,
+  6F15 and 6F38, then reads EF_SST (`+crsm=176,28472,0,0,4`). If EF_SST answers 94 04 (file not found),
+  CommCenter never installs the bundle. Then there is no com.apple.carrier.plist link, no stored
+  `ICCID`, no "Cellular Data Network" row, no APN setup and no `+cgdcont`, so there is no packet data at
+  all. The fake SIM holds EF_SST (services 1-4) and EF_AD; other files answer 94 04.
+* **Roaming (open)**: with CarrierLab installed, the status bar shows the network as home (`+creg` 1;
+  CommCenter's registration getter at 0x3b9c0 returns 4 = home), but packet data still counts as
+  international roaming. With Data Roaming off, Safari says "Data Roaming is turned off". With
+  `mcc-mnc=310410` (AT&T's bundle) the alert goes away, so the cause lies in what CarrierLab's bundle
+  (or its absence of a home-network list) tells CommCenter. The exact check has not been traced.
+  * The switch is `InternationalRoamingEDGE` in com.apple.commcenter, in CommCenter's own user's
+    preferences (`_wireless`, `CFPreferencesCopyValue(..., kCFPreferencesCurrentUser,
+    kCFPreferencesAnyHost)`, 0x1e7d4), so the file is
+    /var/wireless/Library/Preferences/com.apple.commcenter.plist.
+  * CommCenter caches the value: a file write takes effect only after CommCenter restarts. Settings
+    changes it through CommCenter (an entitled MIG call, 0x1f4c4).
+  * When CommCenter sees a new SIM (an ICCID other than the `ICCID` it stored in the same file), it sets
+    the key false (0x19794).
+  * Workaround: the guest package's it_prefs sets it true once per stored ICCID ("none" before one is
+    stored) and restarts CommCenter, so the user's later choice for that SIM stands (contrib/it-prefs).
+  * The test PLMN stays the default. 1.0's CommCenter has no such key.
+  * On a device's first boot, data can fail if Wi-Fi was in use when it_prefs restarted CommCenter and is
+    then turned off. From the second boot it works with Data Roaming untouched.
 * **27.010 modem status**: the kernel MSCs every DLCI and waits for the modem's own MSC
   (RTC|RTR). On the data DLCI, DV (carrier) must go up after CONNECT, and NO CARRIER plus DV down
   must follow `+cgact=0`. Without them CommCenter tore the boot-time PDP context down 100 ms after

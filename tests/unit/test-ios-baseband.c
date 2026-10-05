@@ -914,6 +914,20 @@ static void test_sim_removal(void)
     pump();
     expect_frame(3, "\r\n+CPIN: READY\r\n");
     expect_frame(3, "\r\nOK\r\n");
+
+    /* EF_SST exists (4.2.1 installs no carrier bundle without it); optional EFs are 94 04. */
+    c_mux_str(3, "at+crsm=192,28472\r");
+    pump();
+    expect_frame(3, "\r\n+CRSM: 144,0,\"000000046F38040014FF4401020000\"\r\n");
+    expect_frame(3, "\r\nOK\r\n");
+    c_mux_str(3, "at+crsm=176,28472,0,0,4\r");
+    pump();
+    expect_frame(3, "\r\n+CRSM: 144,0,\"FF000000\"\r\n");
+    expect_frame(3, "\r\nOK\r\n");
+    c_mux_str(3, "at+crsm=192,28436\r");
+    pump();
+    expect_frame(3, "\r\n+CRSM: 148,4\r\n");
+    expect_frame(3, "\r\nOK\r\n");
 }
 
 /* Wake-up flags get flags back; PSC is acked; CLD closes the multiplexer. */
