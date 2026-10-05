@@ -134,6 +134,12 @@ These hold for the 3GS unless its v1 trace says otherwise.
   `+cgpaddr=1`, then `+cgdata="M-RAW_IP",1` on DLCI 8 (CONNECT), and raw IPv4 after that. Without
   `+XREG` > 2 (the data bearer; 4 shows "3G"), Safari says "Could not activate cellular data
   network" and nothing is sent.
+* **27.010 modem status**: the kernel MSCs every DLCI and waits for the modem's own MSC
+  (RTC|RTR). On the data DLCI, DV (carrier) must go up after CONNECT, and NO CARRIER plus DV down
+  must follow `+cgact=0`. Without them CommCenter tore the boot-time PDP context down 100 ms after
+  CONNECT and reset the baseband about 10 s later (2 boots in 3).
+* **Frames**: the kernel's idle state is a pre-armed receive-only frame, so the modem's MISO is
+  built when the clock runs (SRDY up), not at go.
 * **Not seen**: a toggle of radio_on/bb_rst after boot. A baseband reset by CommCenter (raw `at`
   pings after the mux was up) is not modelled. It only happened while the frame bugs above were
   still in.
