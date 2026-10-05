@@ -126,15 +126,16 @@ iPod-Touch-4G --checks boot` PASS; N18 dev2 unlock to the home screen with touch
    wake latch, Wi-Fi.
 6. 4.x/5.x point releases between those in the table not run yet. The 4.x/5.x devices are FirmwareKit's
    (LightTouchMac n88-app catalog n88ap-*), prepared with a LightTouchDevice + this tree's libqemu-arm.dylib.
-7. **3.1.3 NAND**: 3.1.3 (7E18) stops at "Board support not found" / "NAND device ID 0xB614D5AD in map
-   0x00000f0f 2-bus not supported". Found with the gdbstub (lldb, -S, a breakpoint at findNandInfo
-   0xc043cd0c): the board type is 0x0c (global 0xc0445000) and its table (0xc0442d58..: 28-byte rows of
-   board, dies, buses, then chip+CE count per bus) has (2 dies, 2 buses, 0xB614D5AD x4, 0xB614D5AD x4). But the
-   key built is (2, 1 bus, 0xB614D5AD x8): the per-bus CE masks are the words of the FMI's "landing-map"
-   OSData (0xc043c6da: getProperty, kept at 0xc04450e8; 0xc043b028 reads word i for bus i, all-ones when
-   there is none). The 7E18 DT has landing-map = 0x0303 on flash-controller0/disk, but the property is
-   not found where the driver looks (the global stays NULL), so every CE folds into bus 0. Next: where
-   iBoot puts landing-map on a real boot (one word per bus, here 0x0f and 0x0f00) and set it there in kboot.
+7. **3.1.3 NAND** (two layers, the first solved in a test):
+   - Board lookup: 3.1.3's findNandInfo keys on (dies, buses, chip+CE count per bus) against a per-board
+     table (gdbstub at 0xc043cd0c: board type 0x0c, whose table has 2 dies, 2 buses, 0xB614D5AD x4 x2). The
+     per-bus CE masks are the words of the disk node's `landing-map` (0xc043c6da, read per bus by
+     0xc043b028). The IPSW's DT has one word (0x0303), so every CE folds into one bus and nothing matches
+     ("Board support not found", "2-bus not supported"). With `landing-map = 0x0f, 0x0f00` on
+     flash-controller0/disk (what iBoot would fill in) the lookup passes and the FTL starts.
+   - Store format: then "[FTL:WRN] Incompatible Signature!": 3.1.3 has VSVFL + the legacy FTL, no YaFTL,
+     and refuses a NANDDRIVERSIGN with flags > 4 (0xc05c58aa); the store builders write YaFTL (flags 5).
+     3.1.3 needs a VSVFL + legacy-FTL store writer (or its own VFL_FactoryReformat plus a restore).
 8. **Touch calibration**: the digitizer frame is the N81 profile's, unmeasured on N88; taps in the bottom
    ~5% of the panel land ~15 px high (retap lower). tests/ipad1/touchcal.py (ipad1) is the tool to fit it.
 9. **iOS 6**: 10B500's kernel prints nothing under kboot (fw-a4 has N81 6.0 past pe_identify_machine with
