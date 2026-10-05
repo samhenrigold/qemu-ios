@@ -44,16 +44,34 @@ static void pmu_update_backlight(Pcf50633State *s)
     lcd_changebrightness(!on ? 0 : s->backlight_level_reg ? s->regs[s->backlight_level_reg] : 255);
 }
 
+/*
+ * The event block. The BCD-calendar part is the N45 PCF50635, not the D1759:
+ * INT1..5 = 0x02..06, INT1M..5M = 0x07..0b. The Dialog parts put N event
+ * bytes at 0x01, N status bytes after them and N mask bytes after those
+ * ("event-count": D1759 3, so masks at 0x07; D1755 4, masks at 0x09).
+ */
+static unsigned pmu_event_base(Pcf50633State *s)
+{
+    return s->rtc_bcd ? 2 : PMU_EVENT_A_REG;
+}
+
+static unsigned pmu_event_count(Pcf50633State *s)
+{
+    return s->rtc_bcd ? 5 : s->event_count;
+}
+
+static unsigned pmu_mask_base(Pcf50633State *s)
+{
+    return s->rtc_bcd ? PMU_IRQ_MASK_A : PMU_EVENT_A_REG + 2 * s->event_count;
+}
+
 static void pmu_update_irq(Pcf50633State *s)
 {
     uint8_t pending = 0;
-    /* The BCD-calendar part is the N45 PCF50635, not the D1759:
-     * INT1..5 = 0x02..06, INT1M..5M = 0x07..0b. */
-    unsigned base = s->rtc_bcd ? 2 : PMU_EVENT_A_REG;
-    unsigned count = s->rtc_bcd ? 5 : 3;
+    unsigned base = pmu_event_base(s), count = pmu_event_count(s);
     for (unsigned i = 0; i < count; i++) {
         pending |= s->regs[base + i] &
-                   ~s->regs[PMU_IRQ_MASK_A + i];
+                   ~s->regs[pmu_mask_base(s) + i];
     }
     qemu_set_irq(s->irq, pending != 0);
 }
@@ -169,10 +187,10 @@ void pcf50633_set_charging_mode(Pcf50633State *s, unsigned mode)
 static void pmu_adc_complete(void *opaque)
 {
     Pcf50633State *s = opaque;
-    s->regs[PMU_ADC_CONTROL] &= ~0x10;
-    s->regs[PMU_ADC_RESULT_LO] = (s->regs[PMU_ADC_RESULT_LO] & ~3) |
-                               (s->adc_sample & 3);
-    s->regs[PMU_ADC_RESULT_HI] = s->adc_sample >> 2;
+    /* control at adc-reg, the 10-bit result in the next two (D1759 0x40, D1755 0x30) */
+    s->regs[s->adc_reg] &= ~0x10;
+    s->regs[s->adc_reg + 1] = (s->regs[s->adc_reg + 1] & ~3) | (s->adc_sample & 3);
+    s->regs[s->adc_reg + 2] = s->adc_sample >> 2;
     pmu_latch_event(s, PMU_EVENT_A_REG + 1, PMU_ADC_DONE);
 }
 
@@ -274,20 +292,20 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
         res = pmu_bcd_rtc_read(s, reg);
         goto done;
     }
-    if (!s->rtc_bcd && reg >= PMU_RTC_COUNTER && reg < PMU_RTC_COUNTER + 4) {
+    if (!s->rtc_bcd && reg >= s->rtc_reg && reg < s->rtc_reg + 4) {
         // Take the snapshot on the low byte, so the four bytes the driver
         // reads back describe one instant even if the host second ticks
         // over mid-transfer. 2.1.1's driver has no ripple retry at all, so
         // without this it can observe a torn counter. (Read out of order,
         // which nobody does, still answers the time rather than zero.)
-        if (reg == PMU_RTC_COUNTER || s->rtc_latch == 0) {
+        if (reg == s->rtc_reg || s->rtc_latch == 0) {
             s->rtc_latch = (uint32_t)time(NULL);
         }
-        res = (s->rtc_latch >> (8 * (reg - PMU_RTC_COUNTER))) & 0xff;
+        res = (s->rtc_latch >> (8 * (reg - s->rtc_reg))) & 0xff;
         goto done;
     }
-    unsigned event_base = s->rtc_bcd ? 2 : PMU_EVENT_A_REG;
-    unsigned event_count = s->rtc_bcd ? 5 : 3;
+    unsigned event_base = pmu_event_base(s);
+    unsigned event_count = pmu_event_count(s);
     if (reg >= event_base && reg < event_base + event_count) {
         res = s->regs[reg];
         s->regs[reg] = 0;
@@ -409,13 +427,11 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
             s->shutdown_armed = false;
             pcf50633_guest_shutdown();
         }
+    } else if (reg >= pmu_mask_base(s) && reg < pmu_mask_base(s) + pmu_event_count(s)) {
+        pmu_update_irq(s);
+    } else if (reg == s->adc_reg) {
+        pmu_adc_command(s, data);
     } else switch (reg) {
-        case PMU_IRQ_MASK_A ... PMU_IRQ_MASK_A + 4:
-            pmu_update_irq(s);
-            break;
-        case PMU_ADC_CONTROL:
-            pmu_adc_command(s, data);
-            break;
 
         case PMU_STANDBY_CMD:
             /*
@@ -461,16 +477,15 @@ static void pcf50633_reset(DeviceState *dev)
      * latched makes iBoot re-enter its charging/standby path after Power On. */
     s->regs[PMU_STANDBY_CMD] = 0;
     s->regs[s->shutdown_reg] &= ~PMU_SHUTDOWN_GO;
-    s->regs[PMU_ADC_CONTROL] = 0;
+    s->regs[s->adc_reg] = 0;
     /* The backlight rail is on out of reset (iBoot lights its logo without
      * touching 0x10); the level is whatever the guest programs. */
     s->regs[s->backlight_enable_reg] |= s->backlight_enable_bit;
     s->adc_sample = 0;
-    unsigned base = s->rtc_bcd ? 2 : PMU_EVENT_A_REG;
-    unsigned count = s->rtc_bcd ? 5 : 3;
+    unsigned base = pmu_event_base(s), count = pmu_event_count(s);
     for (unsigned i = 0; i < count; i++) {
         s->regs[base + i] = 0;
-        s->regs[PMU_IRQ_MASK_A + i] = 0xff;
+        s->regs[pmu_mask_base(s) + i] = 0xff;
     }
     s->addressing = true;
     s->rtc_latch = 0;
@@ -548,6 +563,9 @@ static const Property pcf50633_properties[] = {
     DEFINE_PROP_UINT8("backlight-level-reg", Pcf50633State, backlight_level_reg, PMU_DSBL1),
     /* The PCF50633's BCD calendar at 0x59 (1.x) instead of the D1759's counter at 0x5c. */
     DEFINE_PROP_BOOL("rtc-bcd", Pcf50633State, rtc_bcd, false),
+    DEFINE_PROP_UINT8("event-count", Pcf50633State, event_count, 3),
+    DEFINE_PROP_UINT8("adc-reg", Pcf50633State, adc_reg, PMU_ADC_CONTROL),
+    DEFINE_PROP_UINT8("rtc-reg", Pcf50633State, rtc_reg, PMU_RTC_COUNTER),
 };
 
 static void pcf50633_class_init(ObjectClass *klass, void *data)

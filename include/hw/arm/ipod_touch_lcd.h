@@ -62,6 +62,14 @@ typedef struct IPodTouchLCDState
 
     uint32_t w1_display_resolution_info;
     uint32_t w1_framebuffer_base;
+    uint32_t fb_base;       /* "fb-base": window 1's base out of reset (0: none) */
+    bool ctrl_readback;     /* "ctrl-readback": +0x00 reads back its enable bit */
+    /* An IOMMU in front of the scanout (ipod_lcd_set_iommu); gather: the
+     * latched frame is not physically contiguous and is read page by page. */
+    hwaddr (*xlate)(void *opaque, uint32_t va, unsigned sid);
+    void *xlate_opaque;
+    uint32_t scanout_va;
+    bool gather;
     /*
      * The base actually being scanned out. The panel latches the register at
      * vblank, so a blit driven from anywhere other than the frame interrupt
@@ -125,5 +133,9 @@ void lcd_changebrightness(int brightness);
  * left, 4 landscape right); anything else leaves the window in portrait.
  */
 void it_display_set_orientation(uint32_t orientation);
+
+/* The S5L8920's CLCD scans out through its DART (dart0): window 1 holds an IOVA. */
+void ipod_lcd_set_iommu(DeviceState *lcd, hwaddr (*xlate)(void *opaque, uint32_t va, unsigned sid),
+                        void *opaque);
 
 #endif
