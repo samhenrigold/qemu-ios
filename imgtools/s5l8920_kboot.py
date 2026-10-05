@@ -60,6 +60,23 @@ def graft(blob, parent, node):
     return bytes(buf)
 
 
+def landing_map(blob):
+    """3.x's FMI groups the CEs into buses by the disk node's landing-map words (one CE mask per bus;
+    3.1.3 findNandInfo 0xc043c6da, read per bus by 0xc043b028). The IPSW's DT has a single word, so every CE
+    folds into one bus and the board table has no match ("2-bus not supported"); give it one word per bus
+    from the disk's CE bitmap (reg), as for a 4.x DT's ce-bitmap. DTs without landing-map are untouched."""
+    dt = k.DeviceTree(blob)
+    disk = "arm-io/flash-controller0/disk"
+    if "landing-map" not in dt.props.get(disk, {}):
+        return blob
+    off, _ = dt.props[disk]["reg"]
+    ces = struct.unpack_from("<I", blob, off + 36)[0]
+    words = [ces & (0xff << (8 * b)) for b in range(4) if ces & (0xff << (8 * b))]
+    dt.rename(disk, "landing-map", "landing-map-dt")
+    dt.add(disk, "landing-map", struct.pack(f"<{len(words)}I", *words))
+    return bytes(dt.buf)
+
+
 def logo_segments(blob, fb_pa):
     """An iBootIm logo centred upright on a black portrait framebuffer (grey + inverted alpha, as k's)."""
     assert blob[:8] == b"iBootIm\0" and blob[12:16] == b"sszl" and blob[16:20] == b"yerg"
@@ -82,6 +99,7 @@ def build(board, dec_dir, boot_args, ident, ramdisk=None, nor=False):
     dt_blob = open(os.path.join(dec_dir, "DeviceTree.bin"), "rb").read()
     if nor and "arm-io/spi0/nor-flash" not in k.DeviceTree(dt_blob).props:   # the N88 has its own
         dt_blob = graft(dt_blob, "arm-io/spi0", NOR_FLASH)
+    dt_blob = landing_map(dt_blob)
     image, load_pa, entry_pa, args_pa = k.build(os.path.join(dec_dir, "kernelcache.mach"), dt_blob, boot_args, ident,
                                                 k.iboot_version(dec_dir), ramdisk)
     image = bytearray(image)

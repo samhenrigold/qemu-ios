@@ -323,7 +323,18 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
         case 0x30:
             return s->w1_display_resolution_info;
         case 0x1b10:
-            return 2;
+            /*
+             * fb-base (kboot): bit 0 as iBoot leaves the blend output on, and
+             * 0x1b24 its size ((w-1) << 16 | (h-1), what 4.x writes to
+             * 0x1b74/0x1b7c). 5.x's AppleM2CLCD::start_hardware (9B206
+             * 0x80784454) adopts iBoot's display only when both are set, else
+             * it never adds the framebuffer (SpringBoard: "invalid context").
+             * ponytail: 0x1b24 is constant, not the guest's writes; fine while
+             * nothing resizes the output.
+             */
+            return s->fb_base ? 3 : 2;
+        case 0x1b24:
+            return s->fb_base ? (319u << 16) | 479u : 0;
 	case 0x1b14:
 	    return 0x3;
         default:

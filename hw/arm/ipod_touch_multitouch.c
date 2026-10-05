@@ -94,6 +94,25 @@ const MTSensorProfile mt_profile_n81 = {
 };
 
 /*
+ * iPhone 3GS (N88): an N1 sensor too, family 0x54. Its mtprops entry is "N1F54,1", firmware 0x0066 (3.1.3
+ * iPhone.mtprops, the file the kernel downloads on 3.1.3 and 4.x alike). Surface as the N81 profile; frame_*
+ * fitted on 4.2.1 as the M68's were: the point GraphicsServices computes for each tap (GSEventGetLocationInWindow,
+ * [r1+0x18], logged through the gdbstub with lldb) over an 11-tap grid read x = 4.3 + 0.973 aim and
+ * y = -9.3 + 0.989 aim with the N81's frame, so taps near the bottom landed ~15 px high.
+ */
+const MTSensorProfile mt_profile_n88 = {
+    .family_id = 0x54,
+    .rows = MT_SENSOR_ROWS, .cols = MT_SENSOR_COLUMNS,
+    .bcd_version = 0x66,
+    .surface_width = MT_SENSOR_SURFACE_WIDTH,
+    .surface_height = MT_SENSOR_SURFACE_HEIGHT,
+    .region_desc = { MT_SENSOR_REGION_DESC }, .region_desc_len = 1,
+    .region_param = { MT_SENSOR_REGION_PARAM }, .region_param_len = 1,
+    .frame_x0 = -63, .frame_width = 4728,
+    .frame_y0 = -226, .frame_height = 7388,
+};
+
+/*
  * iPod touch 1G (N45, Zephyr2): the iPod's sensor, frame_* fitted on 1.1
  * (3A101a) from the point GraphicsServices reports for each tap
  * (GSEventGetLocationInWindow, read through the gdbstub) over a 3x8 grid.

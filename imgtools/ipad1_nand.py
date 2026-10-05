@@ -86,7 +86,9 @@ def nsig():
     return 0x43313100 | (0x30 + EPOCH)
 SIG_FLAGS = 0x00010005
 # Boards whose DT has no metadata-whitening (S5L8920/8922: N18, N88) neither write nor accept whitened
-# meta (WMR "Metadata whitening not supported"): `build --no-whitening` stores it plain, flags 0x5.
+# meta (WMR "Metadata whitening not supported"): `build --no-whitening` stores it plain, flags 0x4: what
+# those boards' own FIL writes when it formats (3.1.3 N88 7E18, read back off its store), and the only value
+# 3.1.3 accepts (it refuses flags > 4 as "Incompatible Signature", 0xc05c58aa); 4.x and 5.x take it too.
 WHITENING = True
 
 

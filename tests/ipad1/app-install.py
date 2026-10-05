@@ -201,11 +201,19 @@ def main():
                 break
             unlock()
             time.sleep(5)
-        if not step("icon", bool(slot) and slot[0] == 1, "springboardservices slot %s" % (slot,)):
+        # Page 1 can be full (3.x's iPhone layout fills all 16 cells); then the icon stays put and we swipe to it.
+        if not step("icon", bool(slot) and slot[0] >= 1, "springboardservices slot %s" % (slot,)):
             return 1
+        # Dismiss the install's Edit-Home-Screen help sheet (button at 0.69 H) and 3.1.3's shorter "Waiting for
+        # activation" alert (0.59 H); with neither up, x 0.5 falls between icon columns. 3.1.3 raises them a few
+        # seconds late and one at a time, so twice round.
         if portrait:
-            # Dismiss the install's Edit-Home-Screen help sheet (4.x); with none up, x 0.5 falls between icon columns.
-            b.tap((0.5 * rg.itqmp.W, 0.69 * rg.itqmp.H))
+            for _ in range(2):
+                for y in (0.69, 0.59):
+                    b.tap((0.5 * rg.itqmp.W, y * rg.itqmp.H))
+                    time.sleep(3)
+        for _ in range(slot[0] - 1):
+            b.drag((0.8 * rg.itqmp.W, 0.5 * rg.itqmp.H), (0.2 * rg.itqmp.W, 0.5 * rg.itqmp.H))
             time.sleep(2)
         # The relay starts here, not at install: Setup's end re-enumerates the USB device and idevicesyslog exits.
         syslog = os.path.join(b.dir, "syslog.log")

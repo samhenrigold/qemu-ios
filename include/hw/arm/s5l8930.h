@@ -197,6 +197,7 @@ void s5l8930_ltc4099_set_usb(DeviceState *dev, bool present);
 /* STAT charge-state bits (secondary_charge_status): charging or not. */
 void s5l8930_ltc4099_set_charging(DeviceState *dev, bool charging);
 #define TYPE_S5L8930_TSL2581 "s5l8930.tsl2581"   /* ambient light sensor at 0x39 on i2c2 */
+#define TYPE_S5L8930_TSL2561 "s5l8930.tsl2561"   /* the 3GS's, at 0x49 on i2c2 */
 /* AK8973 magnetometer at 0x1e on i2c0; "heading" (degrees) sets the field. */
 #define TYPE_S5L8930_AK8973 "s5l8930.ak8973"
 /* L3G4200D gyroscope at 0x68 on i2c2 ("gyro,ap3gdl"); gpio-out 0/1 = INT1/INT2 pin levels. */

@@ -820,6 +820,7 @@ struct S5L8930TSL2581State {
     uint8_t regs[32];
     uint8_t reg;
     bool addressing;
+    uint8_t id_reg, id, data0;      /* the part's layout: ID first read-only, then the data */
 };
 
 static int tsl2581_event(I2CSlave *i2c, enum i2c_event event)
@@ -850,7 +851,7 @@ static int tsl2581_send(I2CSlave *i2c, uint8_t data)
         return 0;
     }
     reg = s->reg++ & 0x1f;
-    if (reg < TSL_ID) {
+    if (reg < s->id_reg) {
         s->regs[reg] = data;    /* ID and the data registers are read-only */
     }
     return 0;
@@ -861,11 +862,11 @@ static void tsl2581_reset(DeviceState *dev)
     S5L8930TSL2581State *s = S5L8930_TSL2581(dev);
 
     memset(s->regs, 0, sizeof(s->regs));
-    s->regs[TSL_ID] = 0x90;
+    s->regs[s->id_reg] = s->id;
     /* ponytail: one fixed indoor reading (CH1/CH0 = 0.25, first curve
      * segment). A QOM property when a host-side lux control is wanted. */
-    stw_le_p(&s->regs[TSL_DATA0], 1024);
-    stw_le_p(&s->regs[TSL_DATA1], 256);
+    stw_le_p(&s->regs[s->data0], 1024);
+    stw_le_p(&s->regs[s->data0 + 2], 256);
     s->reg = 0;
     s->addressing = true;
 }
@@ -895,11 +896,42 @@ static void tsl2581_class_init(ObjectClass *klass, void *data)
     k->send = tsl2581_send;
 }
 
+static void tsl2581_init(Object *obj)
+{
+    S5L8930TSL2581State *s = S5L8930_TSL2581(obj);
+
+    s->id_reg = TSL_ID;
+    s->id = 0x90;
+    s->data0 = TSL_DATA0;
+}
+
 static const TypeInfo s5l8930_tsl2581_info = {
     .name          = TYPE_S5L8930_TSL2581,
     .parent        = TYPE_I2C_SLAVE,
     .instance_size = sizeof(S5L8930TSL2581State),
+    .instance_init = tsl2581_init,
     .class_init    = tsl2581_class_init,
+};
+
+/*
+ * The TSL2561 (iPhone 3GS, "als,tsl2561" at I2C2 0x49): the same COMMAND
+ * byte (0x80 | reg) and CONTROL/TIMING, ID at 0x0a (PARTNO 5: T/FN/CL) and
+ * the channels at 0x0c/0x0e. 3.1.3's AppleTSL2561 then arms a threshold
+ * interrupt (INTERRUPT 0x06) that is not modelled: it keeps the first reading.
+ */
+static void tsl2561_init(Object *obj)
+{
+    S5L8930TSL2581State *s = S5L8930_TSL2581(obj);
+
+    s->id_reg = 0x0a;
+    s->id = 0x50;
+    s->data0 = 0x0c;
+}
+
+static const TypeInfo s5l8930_tsl2561_info = {
+    .name          = TYPE_S5L8930_TSL2561,
+    .parent        = TYPE_S5L8930_TSL2581,
+    .instance_init = tsl2561_init,
 };
 
 /* ---- AKM AK8973 3-axis magnetometer (I2C0 0x1E, "compass,akm8973s") ----
@@ -1358,6 +1390,7 @@ static void s5l8930_i2c_register_types(void)
     type_register_static(&s5l8930_d1815_info);
     type_register_static(&s5l8930_tca6408_info);
     type_register_static(&s5l8930_tsl2581_info);
+    type_register_static(&s5l8930_tsl2561_info);
     type_register_static(&s5l8930_ak8973_info);
     type_register_static(&s5l8930_l3g_info);
 }

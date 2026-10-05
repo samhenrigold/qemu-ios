@@ -158,11 +158,34 @@ struct S5L8930H2FMIState {
      * arms a write transfer. Off: the A4 firmware's inferred starts.
      */
     bool explicit_start;
+    bool cfg_v0;                        /* "cfg-v0": see h2fmi_format */
     H2FMIBus bus[H2FMI_BUSES];
 };
 
 #define HT(...) do { static int on_ = -1; if (on_ < 0) on_ = getenv("H2FMI_TRACE") != NULL; \
                      if (on_) qemu_log(__VA_ARGS__); } while (0)
+
+/*
+ * The page format in the A4 layout (FMI +0x34: bits 0-7 sectors, 19-24 meta
+ * bytes). "cfg-v0": the s5l8920x firmware has no +0x34; its +0x00 config
+ * carries the meta bytes in bits 8-12 (0x60a29 for a page with 10) and none
+ * on a raw read (0xaa083 the data phase, 0xa8003 the spare phase), so it maps
+ * to one sector with that meta, or for a raw read to the config's low half (a
+ * nonzero sector byte, no meta, each phase a different value).
+ */
+static uint32_t h2fmi_format(H2FMIBus *b)
+{
+    uint32_t cfg = b->fmi[0];
+    uint32_t meta = (cfg >> 8) & 0x1f;
+
+    if (!b->s->cfg_v0) {
+        return b->fmi[FMI_FORMAT / 4];
+    }
+    if (!cfg) {
+        return 0;
+    }
+    return meta ? (meta << 19) | 1 : (cfg & 0xffff) | 1;
+}
 
 /* FMI status as read: bit 8 follows the enabled FMC events. */
 static uint32_t h2fmi_status(H2FMIBus *b)
@@ -371,13 +394,14 @@ static void fifo_compact(uint8_t *buf, uint32_t *off, uint32_t len, uint32_t siz
  * the data, changes FORMAT from 0x40004 to 0x8001, then drains the spare. */
 static bool h2fmi_raw_read(H2FMIBus *b)
 {
-    uint32_t format = b->fmi[FMI_FORMAT / 4];
+    uint32_t format = h2fmi_format(b);
     return (format & 0xff) && !((format >> 19) & 0x3f);
 }
 
 static uint32_t h2fmi_read_bytes(H2FMIBus *b, uint32_t page_bytes)
 {
-    return h2fmi_raw_read(b) && b->stride >= page_bytes ? b->stride : page_bytes;
+    /* cfg-v0: a raw read's spare goes through the meta FIFO (below), the data FIFO has the page alone */
+    return h2fmi_raw_read(b) && !b->s->cfg_v0 && b->stride >= page_bytes ? b->stride : page_bytes;
 }
 
 static bool h2fmi_room(H2FMIBus *b, uint32_t page_bytes)
@@ -398,7 +422,7 @@ static void h2fmi_transfer(H2FMIBus *b, int ce, bool queued)
     bool raw = h2fmi_raw_read(b);
 
     b->read_pending = false;
-    b->read_format = b->fmi[FMI_FORMAT / 4];
+    b->read_format = h2fmi_format(b);
     if (ce >= 0) {
         b->unread &= ~(1u << (ce & 7));
     }
@@ -427,7 +451,13 @@ static void h2fmi_transfer(H2FMIBus *b, int ce, bool queued)
         return;
     } else if (b->mode == MODE_PAGE && page_bytes) {
         /* FMI +0x34 bits 19-24: meta bytes per page (0x5ff0398c). */
-        uint32_t meta = raw ? 0 : MIN(META_BYTES,
+        /*
+         * cfg-v0: the s5l8920x firmware reads a raw page as four 1 KiB data
+         * phases (config 0xaa083) then four spare phases (0xa8003) on the
+         * meta channel, so the whole spare goes to the meta FIFO.
+         */
+        uint32_t spare = s->cfg_v0 && raw && b->stride > page_bytes ? b->stride - page_bytes : 0;
+        uint32_t meta = MIN(raw ? spare : META_BYTES,
                             sizeof(b->meta) - b->meta_off - b->meta_len);
         uint8_t *m = b->meta + b->meta_off + b->meta_len;
 
@@ -437,7 +467,7 @@ static void h2fmi_transfer(H2FMIBus *b, int ce, bool queued)
         if (ok) {
             memcpy(b->data + b->data_off + b->data_len, pg, transfer_bytes);
             memset(m, 0, meta);
-            memcpy(m, pg + page_bytes, MIN(meta, META_BYTES));
+            memcpy(m, pg + page_bytes, raw ? meta : MIN(meta, META_BYTES));
         } else {
             memset(b->data + b->data_off + b->data_len, 0xff, transfer_bytes);
             memset(m, 0xff, meta);
@@ -460,7 +490,7 @@ static void h2fmi_transfer(H2FMIBus *b, int ce, bool queued)
 /* Meta bytes per page as the firmware formats it (FMI +0x34 bits 19-24), 10 on every K48 build. */
 static uint32_t h2fmi_meta_per_page(H2FMIBus *b)
 {
-    uint32_t m = (b->fmi[FMI_FORMAT / 4] >> 19) & 0x3f;
+    uint32_t m = (h2fmi_format(b) >> 19) & 0x3f;
 
     return m ? m : META_BYTES;
 }
@@ -550,7 +580,7 @@ static uint32_t fifo_pop(uint8_t *buf, uint32_t *off, uint32_t *len, unsigned si
 /* One read per sector (FMI +0x34 bits 0-7); the last one retires the page. */
 static uint32_t h2fmi_ecc_sector(H2FMIBus *b)
 {
-    uint32_t sectors = MAX(b->fmi[FMI_FORMAT / 4] & 0xff, 1);
+    uint32_t sectors = MAX(h2fmi_format(b) & 0xff, 1);
     uint32_t v;
 
     if (!b->ecc_n) {
@@ -620,7 +650,7 @@ static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
         switch (off) {
         case FMI_CONTROL:
             HT("h%d ctl 0x%x prev 0x%x dl %u ml %u ecc %u/%u pend %u fmt 0x%x\n", b->n, v, b->fmi[off / 4],
-               b->data_len, b->meta_len, b->ecc_n, b->ecc_reads, b->pending_n, b->fmi[FMI_FORMAT / 4]);
+               b->data_len, b->meta_len, b->ecc_n, b->ecc_reads, b->pending_n, h2fmi_format(b));
             /*
              * A read transfer starts when a write enters read mode (bits 0-1
              * become 3), follows a new NAND read command (raw reads retain
@@ -655,13 +685,16 @@ static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
                 h2fmi_transfer(b, h2fmi_ce(b), false);
             } else if ((v & 3) == 3 && b->mode == MODE_PAGE &&
                        h2fmi_raw_read(b) &&
-                       b->read_format != b->fmi[FMI_FORMAT / 4]) {
+                       (b->read_format != h2fmi_format(b) || b->s->explicit_start)) {
+                /* explicit-start: every control 3 is a phase of its own, the
+                 * s5l8920x firmware's raw read takes the page in two with the
+                 * same config. */
                 /* Raw physical reads have separate data and spare phases.
                  * FORMAT selects a new phase within the existing byte stream;
                  * each phase completes independently and has a W1C DONE.
                  * Do not reload the page or require bytes still in the FIFO:
                  * a prepared CDMA chain may already have drained them. */
-                b->read_format = b->fmi[FMI_FORMAT / 4];
+                b->read_format = h2fmi_format(b);
                 b->fmi[FMI_STATUS / 4] |= FMI_ST_DONE;
                 h2fmi_update_irq(b);
                 if (b->s->cdma) {
@@ -901,7 +934,7 @@ static int h2fmi_post_load(void *opaque, int version_id)
     for (int i = 0; i < H2FMI_BUSES; i++) {
         H2FMIBus *b = &s->bus[i];
         if (b->read_format == UINT32_MAX) {
-            b->read_format = b->fmi[FMI_FORMAT / 4];
+            b->read_format = h2fmi_format(b);
         }
         if (b->data_len > sizeof(b->data) || b->meta_len > sizeof(b->meta) ||
             b->wdata_len > sizeof(b->wdata) || b->wmeta_len > sizeof(b->wmeta) ||
@@ -981,6 +1014,7 @@ static const Property s5l8930_h2fmi_props[] = {
     DEFINE_PROP_UINT32("ecc-offset", S5L8930H2FMIState, ecc_off, 0x80000),
     DEFINE_PROP_UINT32("ecc-blank-summary", S5L8930H2FMIState, ecc_blank_summary, 0),
     DEFINE_PROP_BOOL("explicit-start", S5L8930H2FMIState, explicit_start, false),
+    DEFINE_PROP_BOOL("cfg-v0", S5L8930H2FMIState, cfg_v0, false),
 };
 
 static void s5l8930_h2fmi_class_init(ObjectClass *klass, void *data)
