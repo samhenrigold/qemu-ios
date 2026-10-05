@@ -447,7 +447,7 @@ static unsigned gles_fill(void **fw, unsigned n, void *const *hand)
         void *f = gles_unknown_table[i];
         if (k >= 0) {
             unsigned id = gles_fns[k].id;
-            f = hand && id < GLES_N_SLOTS && hand[id] ? hand[id] : gles_fn_ptr[k];
+            f = hand && id < GLES_N_HAND && hand[id] ? hand[id] : gles_fn_ptr[k];
         }
         fw[i] = f;
     }

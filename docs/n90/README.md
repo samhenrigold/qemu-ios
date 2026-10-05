@@ -95,7 +95,15 @@ pipeline with n90 paths; activation through fw-a4's `lt_activate` hook; guest pa
    - 6.1.3 `regress.py --checks boot` now PASSES: Activated, Setup Assistant's first page on the panel, GL
      bridge refused nothing. backboardd's console is not SpringBoard's, so the GL-path line is also taken from
      the host's log.
-7. 7.1.2: next, rebuild with `RO_ROOT=1` and the new shim, then activation and a 10*/11* guest-package family.
+7. 7.1.2 with `RO_ROOT=1` and the shim boots to iOS 7's Setup "Hello" screen and its language list, drawn
+   through the GL bridge: 1035 slots, 316 named.
+   - CoreAnimation fences every frame with glFenceSyncAPPLE (slot 779, 1024 calls before Setup).
+   - APPLE_sync is now in the name table as ids 912-918, exported by 6.x and 7.x OpenGLES. The front end answers
+     it locally: the host finishes every call before the next, so a fence is signalled as it is made.
+   - The bridge refuses nothing on 7.1.2.
+   - Open: regress's Setup walk for iOS 7 (the slide-to-set-up gesture and the new pages), activation
+     (lt_activate fails on 7.1.2's lockdownd), a guest package for 10*/11*, and 6.x Wi-Fi DHCP. The 6.x driver
+     joins (split CDC length and "cap" handled), but no lease comes back.
 
 ## How to boot
 

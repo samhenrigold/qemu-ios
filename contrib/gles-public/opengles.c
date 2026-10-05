@@ -103,7 +103,7 @@ static void fe_destroy_gc(GuestGC *gc)
 typedef struct { GuestGC *gc; void *owner; int is_egl; void *draw, *read; } fe_cur_t;
 static pthread_key_t fe_key;
 static pthread_once_t fe_once = PTHREAD_ONCE_INIT;
-static void *fe_hand[GLES_N_SLOTS];
+static void *fe_hand[GLES_N_HAND];
 
 static void fe_key_init(void) { pthread_key_create(&fe_key, free); }
 
@@ -146,6 +146,39 @@ static int fe_es2(void)
  * compositing without ("need APPLE_texture_rectangle extension; need APPLE_core_surface_texture extension"):
  * glTexImageCoreSurfaceAPPLE is the core's BindCoreSurface and the host samples GL_TEXTURE_RECTANGLE. ES 2.0
  * answers as the SGX, which an ES2 app checks before it compiles anything. */
+/* APPLE_sync (6.x and 7.x CoreAnimation fence every frame): the host runs each call to completion before the
+ * next, so a fence is signalled the moment it exists. Answered here, nothing goes to the host. */
+#define FE_GL_ALREADY_SIGNALED 0x911A
+static unsigned fe_fenceSync(void *gc, unsigned condition, unsigned flags)
+{
+    static unsigned next;
+    (void)gc; (void)condition; (void)flags;
+    return ++next ? next : ++next;                          /* 0 is no sync */
+}
+static unsigned fe_isSync(void *gc, unsigned sync) { (void)gc; return sync != 0; }
+static void fe_deleteSync(void *gc, unsigned sync) { (void)gc; (void)sync; }
+static unsigned fe_clientWaitSync(void *gc, unsigned sync, unsigned flags, unsigned lo, unsigned hi)
+{
+    (void)gc; (void)sync; (void)flags; (void)lo; (void)hi;
+    return FE_GL_ALREADY_SIGNALED;
+}
+static void fe_waitSync(void *gc, unsigned sync, unsigned flags, unsigned lo, unsigned hi)
+{
+    (void)gc; (void)sync; (void)flags; (void)lo; (void)hi;
+}
+static void fe_getInteger64v(void *gc, unsigned pname, unsigned *params)   /* MAX_SERVER_WAIT_TIMEOUT: 0 */
+{
+    (void)gc; (void)pname;
+    if (params) params[0] = params[1] = 0;
+}
+static void fe_getSynciv(void *gc, unsigned sync, unsigned pname, int bufsize, int *length, int *values)
+{
+    int v = pname == 0x9112 ? 0x9116 : pname == 0x9113 ? 0x9117 : pname == 0x9114 ? 0x9119 : 0;
+    (void)gc; (void)sync;              /* OBJECT_TYPE: SYNC_FENCE, CONDITION: GPU_COMMANDS_COMPLETE, STATUS: SIGNALED */
+    if (bufsize > 0 && values) values[0] = v;
+    if (length) *length = bufsize > 0 ? 1 : 0;
+}
+
 static const char *fe_getString(void *gc, unsigned name)
 {
     static char ext[256];
@@ -212,9 +245,16 @@ static void fe_hello(void)
     fe_hand[GLES_ID_glBindAttribLocation] = (void *)fe_bindAttribLocation;
     fe_hand[GLES_ID_glGetAttribLocation] = (void *)fe_getAttribLocation;
     fe_hand[GLES_ID_glGetUniformLocation] = (void *)fe_getUniformLocation;
+    fe_hand[GLES_ID_glFenceSyncAPPLE] = (void *)fe_fenceSync;
+    fe_hand[GLES_ID_glIsSyncAPPLE] = (void *)fe_isSync;
+    fe_hand[GLES_ID_glDeleteSyncAPPLE] = (void *)fe_deleteSync;
+    fe_hand[GLES_ID_glClientWaitSyncAPPLE] = (void *)fe_clientWaitSync;
+    fe_hand[GLES_ID_glWaitSyncAPPLE] = (void *)fe_waitSync;
+    fe_hand[GLES_ID_glGetInteger64vAPPLE] = (void *)fe_getInteger64v;
+    fe_hand[GLES_ID_glGetSyncivAPPLE] = (void *)fe_getSynciv;
     hello = gles_hello();
     iosurface_init();
-#define GLES2X_FWD(export, row) n++; if (gles_fns[GLES_ROW_##row].id < GLES_N_SLOTS && fe_hand[gles_fns[GLES_ROW_##row].id]) hand++;
+#define GLES2X_FWD(export, row) n++; if (gles_fns[GLES_ROW_##row].id < GLES_N_HAND && fe_hand[gles_fns[GLES_ROW_##row].id]) hand++;
 #include "gles2x_exports.h"
 #undef GLES2X_FWD
     w("[gles] OpenGLES front end (contrib/gles-public): "); wd(n); w(" gl exports, "); wd(hand);
@@ -250,7 +290,7 @@ static int fe_row(GuestGC *gc, unsigned row, unsigned a0, unsigned a1, unsigned 
                   unsigned a10, unsigned a11)
 {
     unsigned id = gles_fns[row].id;
-    void *f = id < GLES_N_SLOTS && fe_hand[id] ? fe_hand[id] : gles_fn_ptr[row];
+    void *f = id < GLES_N_HAND && fe_hand[id] ? fe_hand[id] : gles_fn_ptr[row];
     return ((fe_f)f)(gc, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11);
 }
 static int fe_rowv(GuestGC *gc, unsigned row, const unsigned *a)
