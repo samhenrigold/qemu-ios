@@ -233,6 +233,7 @@ def main():
            "-d", "unimp,guest_errors", "-D", qlog]
     if a.from_checkpoint:
         cmd += ["-incoming", f"file:{a.from_checkpoint}/state"]
+    cmd += os.environ.get("IPAD1_QEMU_EXTRA", "").split()   # e.g. -gdb tcp:127.0.0.1:PORT (docs/guest-debug.md)
 
     from itqmp import QMP
     t0 = time.monotonic()
