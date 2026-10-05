@@ -76,7 +76,10 @@ const MTSensorProfile mt_profile_k48 = {
  * multi-touch,n18), family 0x55: the driver loads Common.mtprops' "N1F55,1"
  * firmware, whose version 0x0079 is the bcdVersion. Rows/columns/surface are the iPod's
  * (3.5" 640x960 at 326 ppi is 49.9 x 74.9 mm, the iPod's 5000 x 7500).
- * ponytail: not measured on a unit; recalibrate frame_* as the K48's were.
+ * frame_* measured as the K48's were (N90 8C148, 2026-10-05): a Safari page
+ * marks each touch at its pageX/pageY; twelve taps over the panel, a line fit
+ * per axis (the iPod's frame put taps 9 px right at the left edge and 21-27 px
+ * high), solved for x = -69 + 4748u, y = -215 + 7360v (the sensor's y runs bottom-up).
  */
 const MTSensorProfile mt_profile_n81 = {
     .family_id = 0x55,
@@ -86,8 +89,8 @@ const MTSensorProfile mt_profile_n81 = {
     .surface_height = MT_SENSOR_SURFACE_HEIGHT,
     .region_desc = { MT_SENSOR_REGION_DESC }, .region_desc_len = 1,
     .region_param = { MT_SENSOR_REGION_PARAM }, .region_param_len = 1,
-    .frame_width = MT_INTERNAL_SENSOR_SURFACE_WIDTH,
-    .frame_height = MT_INTERNAL_SENSOR_SURFACE_HEIGHT,
+    .frame_x0 = -69, .frame_width = 4748,
+    .frame_y0 = -215, .frame_height = 7360,
 };
 
 static void prepare_interface_version_response(IPodTouchMultitouchState *s) {

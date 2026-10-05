@@ -79,7 +79,7 @@ As N81, plus:
 1. **Baseband** waits on the cell stream (spi2 IFX protocol, modem core). Today the node is unmatched and
    the device shows "No Service".
 2. **Absent parts**:
-   - The gyro (ap3gdl/mpu3100 at 0x68). Its driver frees itself.
+   - ~~The gyro~~: the L3G4200D model, as on N81 (its debt 5).
    - The ALS/prox ct700 (i2c0 0x29). It is probed for and skipped.
    - The Highland Park audio processor (i2c0 0x3e, uart6, i2s2).
    - The GPS (bcm4750 on uart4).
@@ -87,5 +87,5 @@ As N81, plus:
 3. **Compass**: the AK8973 stands in for the AK8975B pair.
 4. ~~Accelerometer mounting~~ (2026-10-04): `accel_mount` "-2,1,-3" (the DT orientation's transpose).
    Safari turns with `accel-orientation` 1/3/4 as on hardware.
-5. All of N81's debts apply: no iBoot or NAND boot, K48's 16 GB NAND geometry, K48's panel ID, uncalibrated
-   touch edges.
+5. All of N81's debts apply: no iBoot or NAND boot, K48's 16 GB NAND geometry, K48's panel ID. Touch is
+   calibrated (N81's debt 7, the shared `mt_profile_n81`).
