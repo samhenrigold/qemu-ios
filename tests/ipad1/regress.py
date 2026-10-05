@@ -470,6 +470,17 @@ def check_boot_5(cfg, r, b, detail):
     region_settled(b, TITLE)
     ppm = b.shot("opened")
     found, front = ocr(ppm), frontmost(b)
+    for _ in range(3 if cfg.major >= 7 else 0):
+        # 7.x's Hello screen cycles its greeting under the slider, so a missed drag still reads as "opened"
+        if "English" in found or "Safari" in found:
+            break
+        if b.lit("pre-slide") < LIT_MIN_FRACTION:
+            b.press("home")
+            time.sleep(1.5)
+        b.drag(UNLOCK_FROM, UNLOCK_TO)
+        time.sleep(4)
+        ppm = b.shot("opened")
+        found, front = ocr(ppm), frontmost(b)
     if "English" in found and page_title(found) is None and front in (None, "com.apple.purplebuddy"):
         shown = "Setup Assistant's first page"
     elif "Safari" in found and front in (None, "com.apple.springboard"):
