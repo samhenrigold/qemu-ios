@@ -106,7 +106,7 @@ def _mem(addr, n, ttb=None):
     """Virtual memory: lldb's read, or a page walk when the gdbstub's own translation refuses (kernel
     memory from a user-mode stop: QEMU translates debug reads with the current privilege) or when
     another process's table is named."""
-    if ttb is None:
+    if ttb is None and not _user_reads_kernel(addr):
         err = lldb.SBError()
         b = _target().GetProcess().ReadMemory(addr, n, err)
         if err.Success():
@@ -121,6 +121,13 @@ def _mem(addr, n, ttb=None):
             return None
         out += b
     return out
+
+
+def _user_reads_kernel(addr):
+    """A kernel address from a user-mode stop: walked by hand. The gdbstub's own read does not always
+    refuse it: on 6.x it returns zeros."""
+    n = (_reg("TTBCR") or 0) & 7
+    return ((_reg("cpsr") or 0) & 0x1F) == 0x10 and n and addr >= (1 << (32 - n))
 
 
 def _u32(addr, ttb=None):
@@ -380,14 +387,27 @@ def _text_vmaddr(path):
     return None
 
 
-def images(sysroot, ttb=None):
+def _infos_ok(a, ttb):
+    """dyld_all_image_infos at a? version, a sane image count, and dyldImageLoadAddress (+0x14) a Mach-O."""
+    v, count, arr = _u32(a, ttb), _u32(a + 4, ttb), _u32(a + 8, ttb)
+    dyld = _u32(a + 0x14, ttb) if v and v >= 2 else None
+    return bool(v and v < 64 and count and count < 1024 and arr and (v < 2 or _u32(dyld, ttb) == 0xFEEDFACE))
+
+
+def images(sysroot, ttb=None, task=None):
     """[(load address, path)] from dyld's dyld_all_image_infos in the current address space.
-    1.x-2.x dyld sits unslid at its preferred address, so the symbol's value is where it is."""
+    1.x-3.x dyld sits unslid at its preferred address, so the symbol's value is where it is. A slid dyld
+    (4.3+ ASLR) is found through the task: exec records the infos' address in it (task_set_dyld_info), so
+    the word in `task` that points at valid infos is taken."""
     import os
     syms = _parse_symtab(os.path.join(sysroot, "usr/lib/dyld"))
     a = syms.get("_dyld_all_image_infos")
     if a is None:
         return None
+    if not _infos_ok(a, ttb) and task:
+        b = _mem(task, 0x600) or b""
+        a = next((w for w in struct.unpack_from("<%dI" % (len(b) // 4), b)
+                  if 0x1000 <= w < 0x80000000 and _infos_ok(w, ttb)), a)
     count, arr = _u32(a + 4, ttb), _u32(a + 8, ttb)
     out = []
     for i in range(min(count or 0, 1024)):
@@ -404,14 +424,18 @@ def cmd_images(debugger, command, ctx, result, _):
     if sysroot is None:
         result.SetError("usage: xnu-images --sysroot DIR [--pid N] (DIR: a host copy of the guest's root)")
         return
-    ttb = None
+    ttb = task = None
     if "--pid" in args:     # another process's images, read through its own translation table
         pid = int(args[args.index("--pid") + 1])
-        ttb = next((r[5] for r in procs() if r[1] == pid), None)
+        ttb, task = next(((r[5], r[3]) for r in procs() if r[1] == pid), (None, None))
         if ttb is None:
             result.SetError("no process %d with a known translation table" % pid)
             return
-    imgs = images(sysroot, ttb)
+    else:
+        p = current()[0]
+        off = _task_of_proc_offset()
+        task = _u32(p + off) if p and off is not None else None
+    imgs = images(sysroot, ttb, task)
     if imgs is None:
         result.SetError("no _dyld_all_image_infos in %s/usr/lib/dyld" % sysroot)
         return

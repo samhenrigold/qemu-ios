@@ -122,6 +122,10 @@ reboot: PASS. Shared-model checks: iPad 7B500 `tests/ipad1/regress.py --checks b
 iPod 2G `tests/ipod/regress.py --checks boot` PASS; N81 `regress.py --machine iPod-Touch-4G --checks boot`
 PASS; N18 unlock to the home screen with touch PASS.
 
+## Guest debugging
+
+6.1.6 10B500: gdbstub + lldb with kernel and userland symbols PASS (`tests/ipad1/debug-check.py`). No debugserver: iOS ships none, and the 6.1 DeveloperDiskImage is not on this host. See [../guest-debug.md](../guest-debug.md).
+
 ## Debts
 
 1. **GL scene on the panel**: as the N18's debt 8, the GLES view reaches the panel laid out at the panel's

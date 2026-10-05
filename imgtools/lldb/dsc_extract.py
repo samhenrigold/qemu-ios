@@ -19,6 +19,7 @@ import sys
 
 LC_SEGMENT, LC_SYMTAB, LC_DYSYMTAB = 0x1, 0x2, 0xB
 LINKEDIT_DATA = (0x1D, 0x1E, 0x26, 0x29)     # code signature, split info, function starts, data in code
+LC_DYLD_INFO = (0x22, 0x80000022)
 
 
 def main():
@@ -114,6 +115,8 @@ def extract(b, h, off):
             struct.pack_into("<18I", cmds, o + 8, *vals)
         elif cmd in LINKEDIT_DATA:
             struct.pack_into("<II", cmds, o + 8, 0, 0)
+        elif cmd in LC_DYLD_INFO:                     # 4.x+ images point it into the shared linkedit too
+            struct.pack_into("<10I", cmds, o + 8, *[0] * 10)
         o += size
 
     body[28:28 + sizeofcmds] = cmds                   # the header lives at the start of __TEXT

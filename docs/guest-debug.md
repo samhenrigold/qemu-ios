@@ -7,7 +7,26 @@ debugger built for xnu would know: the process list, which process the CPU is ru
 dyld images, and breakpoints that stop in one process only.
 
 Measured 2026-10-04 with lldb-2103 on 1.0 (M68, 1A543a), 3.1.3 (iPod touch 2G, 7E18) and 3.2.2 (iPad,
-7B500).
+7B500), and 2026-10-05 on the newer boards (table below).
+
+## Per board (2026-10-05)
+
+Kernel: `xnu-procs` lists every process and `xnu-current` names the running one. User: `xnu-images --pid
+<SpringBoard>` from a sysroot made with `dsc_extract.py`, then `xnu-break SpringBoard mach_msg` stops in SpringBoard
+with symbolized library frames. `tests/ipad1/debug-check.py` runs both passes on the kboot boards.
+
+| Board, build | Kernel | User | debugserver |
+|---|---|---|---|
+| M68 1.0 1A543a | PASS (full symbols; r9 current thread) | PASS (52 images, plain rootfs as sysroot; libSystem/CoreFoundation frames) | none (1.0 never had one) |
+| N18 5.1.1 9B206 | PASS (4047 exported names; offsets found) | PASS (215 images; local symbols kept: `__CFRunLoopServiceMachPort`) | not in the firmware; needs the 5.1 DeveloperDiskImage (not on this host) |
+| N81 6.1.6 10B500 | PASS | PASS (231 images; the cache's local symbols are `<redacted>`, exported ones named) | not in the firmware; needs the 6.1 DDI (not on this host) |
+| N88 6.1.6 10B500 | PASS | PASS (231 images, `debug-check.py` all PASS) | as N81 |
+| N90 7.1.2 11D257 | PASS | PASS (318 images, `debug-check.py` all PASS; `<redacted>` locals) | not in the firmware; needs the 7.1 DDI (not on this host) |
+
+KERNEL for these: the decrypted kernelcache (FirmwareKit's cache, or `img3_decrypt` + `complzss` from
+`imgtools/ipad1_fw.py` with the catalog row's `kernelcache` key). kboot does not slide the kernel, so lldb loads it
+at its file address on 6.x and 7.x too. The sysroot: the decrypted rootfs's `dyld_shared_cache_armv7` through
+`dsc_extract.py`, plus `usr/lib/dyld` and SpringBoard.
 
 ## Recipe
 
@@ -19,6 +38,7 @@ bootrom.
 | M68 1.0 | `RUN=/tmp/x tools/boot.py SECS --extra '-gdb tcp:127.0.0.1:PORT'` (qemu-ios-files/m68/tools) |
 | iPod 2G 3.1.3 | the `iPod-Touch` command line from `contrib/run-ipod-touch.sh` plus `-gdb tcp:127.0.0.1:PORT`, with `IT_DIRECT_IBOOT`, `IT_TVOUT_READY=1` and `IT_LCD_BRIGHT=255` in the environment (`tests/ipod/regress.py` `boot_env`; without them it stays in iBoot) |
 | iPad 3.2.2 | `IPAD1_QEMU_EXTRA='-gdb tcp:127.0.0.1:PORT' tests/ipad1/boot-smoke.py ...`, or the `ipad1` machine line it prints |
+| N81, N90, N18, N88 (kboot) | `IPAD1_QEMU_EXTRA='-gdb tcp:127.0.0.1:PORT'` with any `tests/ipad1` harness and `--machine iPod-Touch-4G`, `iPhone-4`, `n18` or `n88 --device DEV`; `tests/ipad1/debug-check.py` does it and runs both passes. Target arch `armv7-apple-ios` |
 
 Then:
 
@@ -105,7 +125,9 @@ A crash in a process can be caught with `xnu-break NAME exception_triage`. On 1.
 user registers are at `thread + 0x1b4` (r0-r12, sp, lr, pc, cpsr, fsr, far: `fleh_dataabt` stores them
 there), with the thread in r9. The Hello app's first crash was found that way (docs/m68/sideload.md).
 
-1.x and 2.x have no shared cache, so ROOT is simply the decrypted rootfs. On 3.x the libraries live in
+1.x and 2.x have no shared cache, so ROOT is simply the decrypted rootfs. From 4.3 dyld and the shared cache are
+slid (ASLR): `xnu-images` then finds `dyld_all_image_infos` through the task (exec records its address there;
+the word in the task that points at valid infos), and each image is added at the address dyld recorded. On 3.x the libraries live in
 `dyld_shared_cache_armv6/7`, in the 2009 `dyld_v1` format that ipsw and modern tools no longer parse.
 `imgtools/lldb/dsc_extract.py CACHE ROOT` writes each cached library back out as a Mach-O of its own:
 the library's segments, a private `__LINKEDIT` holding its symbol table, cache addresses kept, and
@@ -146,7 +168,8 @@ exercised here.
   a TTBR0 lookup on every hit (cached per table). On something every app calls per frame (the event
   handler), even that slows the guest to a crawl, so prefer the app's own code or a kernel function.
 - **MMU.** gdbstub reads translate through the current TTBR with the current privilege, so a user-mode
-  stop cannot read kernel memory through lldb. xnu.py then walks the short-descriptor tables itself (L1
+  stop cannot read kernel memory through lldb (on 6.x the read even succeeds with zeros, so xnu.py walks every
+  kernel address from a user-mode stop itself). xnu.py then walks the short-descriptor tables itself (L1
   sections and supersections, L2 small and large pages) and reads physical memory through QEMU's
   `qqemu.PhyMemMode`. That is also how it reads another process's memory (`--pid`). TTBCR.N is 2 on
   these kernels: user addresses below 1 GiB go through TTBR0, the rest through TTBR1.

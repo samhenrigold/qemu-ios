@@ -204,6 +204,10 @@ documented quirk/patch, S stub.
 | Gyro (ap3gdl @0x68, INT1 0x21 / INT2 0x05) | ST L3G4200D (WHO_AM_I 0xd3): registers, 32-slot FIFO and its modes, INT2 levels, ODR timer; the device sits still (zero rate). The kboot DT's `gyro-sensitivity-calibration` (iBoot fills it from syscfg) gets a nominal identity at reset | new | R (calibration P) |
 | Cameras / ISP | none; `camera=off` (default) unmatches the DT's `isp` node | absent (see debts) | P |
 
+## Guest debugging
+
+6.1.6 10B500: gdbstub + lldb with kernel and userland symbols PASS (`xnu-procs`; SpringBoard `mach_msg` stop with CoreFoundation frames). No debugserver: iOS ships none, and the 6.1 DeveloperDiskImage is not on this host. See [../guest-debug.md](../guest-debug.md).
+
 ## Debts
 
 0. ~~**GL apps draw black (4.2.1).**~~ Fixed by gles-public 81c8124a35 (fw-a4 e9d82647fb). On these Retina
