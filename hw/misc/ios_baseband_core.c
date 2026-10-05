@@ -2313,7 +2313,10 @@ static void data_chan_input(IosBbCore *bb, const uint8_t *data, unsigned len)
             if (bb->data_out) {
                 bb->data_out(bb->data_opaque, bb->ip_rx, tot);
             }
-            TRACE("data: %u-byte IPv4 packet to the network\n", tot);
+            TRACE("data: %u-byte IPv4 packet to the network (%u.%u.%u.%u -> %u.%u.%u.%u proto %u port %u)\n", tot,
+                  bb->ip_rx[12], bb->ip_rx[13], bb->ip_rx[14], bb->ip_rx[15],
+                  bb->ip_rx[16], bb->ip_rx[17], bb->ip_rx[18], bb->ip_rx[19], bb->ip_rx[9],
+                  bb->ip_rx[22] << 8 | bb->ip_rx[23]);
             memmove(bb->ip_rx, bb->ip_rx + tot, bb->ip_rxlen - tot);
             bb->ip_rxlen -= tot;
         }
