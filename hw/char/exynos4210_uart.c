@@ -188,6 +188,7 @@ struct Exynos4210UartState {
     uint32_t channel;
     bool s5l8720_irq;
     uint32_t tx_char_ns;          /* "tx-char-ns": transmit pacing, 0 = instant */
+    bool cts;                     /* "cts": the far end holds CTS asserted (UMSTAT bit 0) */
     QEMUTimer *tx_done_timer;
 
 };
@@ -755,6 +756,12 @@ static void exynos4210_uart_reset(DeviceState *dev)
     fifo_reset(&s->rx);
     fifo_reset(&s->tx);
     s->rx_since_timeout = false;
+    /* A chardev has no modem lines: a port whose driver flow-controls on CTS
+     * (the S5L8900 baseband UART: iBoot-159 spins on it before every byte)
+     * says the far end is ready to receive. */
+    if (s->cts) {
+        s->reg[I_(UMSTAT)] |= 1;
+    }
 
     trace_exynos_uart_rxsize(s->channel, s->rx.size);
 }
@@ -864,6 +871,7 @@ static void exynos4210_uart_realize(DeviceState *dev, Error **errp)
 static const Property exynos4210_uart_properties[] = {
     DEFINE_PROP_BOOL("s5l8720-irq", Exynos4210UartState, s5l8720_irq, false),
     DEFINE_PROP_UINT32("tx-char-ns", Exynos4210UartState, tx_char_ns, 0),
+    DEFINE_PROP_BOOL("cts", Exynos4210UartState, cts, false),
     DEFINE_PROP_CHR("chardev", Exynos4210UartState, chr),
     DEFINE_PROP_UINT32("channel", Exynos4210UartState, channel, 0),
     DEFINE_PROP_UINT32("rx-size", Exynos4210UartState, rx.size, 16),

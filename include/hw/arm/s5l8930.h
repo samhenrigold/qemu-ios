@@ -121,7 +121,8 @@ static inline hwaddr s5l8930_iop_pa(hwaddr a)
  * 0..S5L8930_GPIO_PINS-1 drive pin input levels (buttons, PMU IRQ, ...).
  */
 #define TYPE_S5L8930_GPIO "s5l8930.gpio"
-#define S5L8930_GPIO_PINS        (0x16 * 8)    /* 22 ports x 8 pins */
+#define S5L8930_GPIO_PINS        (0x16 * 8)    /* 22 ports x 8 pins (the K48; "ports" property) */
+#define S5L8930_GPIO_MAX_PINS    (0x2e * 8)    /* the S5L8920's 46 ports */
 /* DT pin ids are 0xPPB (port, bit); qdev GPIO outputs 0..PINS-1 follow
  * pins the guest drives as outputs (NOR chip select, panel reset, ...). */
 #define S5L8930_GPIO_PIN(dt)     (((dt) >> 8) * 8 + ((dt) & 0xff))

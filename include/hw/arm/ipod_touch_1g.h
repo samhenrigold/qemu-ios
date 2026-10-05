@@ -2,10 +2,12 @@
 #define HW_ARM_IPOD_TOUCH_1G_H
 
 /*
- * iPod touch 1G (N45AP, S5L8900) machine. Memory map and interrupt numbers
+ * The S5L8900 machines: iPod touch 1G (N45AP, `-M iPod-Touch-1G`) and the
+ * original iPhone (M68AP, `-M iPhone-2G`). Memory map and interrupt numbers
  * from devos50's ipod_touch.h (branch ipod_touch_1g); the models behind
  * them are the shared ipodtouch.* ones wherever the two SoCs agree, and the
- * s5l8900_* ones where they do not.
+ * s5l8900_* ones where they do not. What differs between the two boards is
+ * data (S5L8900Board), not a second machine.
  */
 
 #include "qemu/osdep.h"
@@ -28,6 +30,9 @@
 #define TYPE_IPOD_TOUCH_1G "iPod-Touch-1G"
 #define TYPE_IPOD_TOUCH_1G_MACHINE MACHINE_TYPE_NAME(TYPE_IPOD_TOUCH_1G)
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouch1GMachineState, IPOD_TOUCH_1G_MACHINE)
+/* The iPhone: the same machine state, its board table chosen by type. */
+#define TYPE_IPHONE_2G "iPhone-2G"
+#define TYPE_IPHONE_2G_MACHINE MACHINE_TYPE_NAME(TYPE_IPHONE_2G)
 
 /* VIC lines */
 #define N45_TIMER1_IRQ      0x7
@@ -61,6 +66,42 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouch1GMachineState, IPOD_TOUCH_1G_MACHINE)
 #define N45_GPIO_BUTTON_HOME      0x1606
 #define N45_GPIO_BUTTON_POWER_IRQ 0x2D
 #define N45_GPIO_BUTTON_HOME_IRQ  0x2E
+/* M68: menu, volume up/down and the ring switch on pins 0-3 of the same pad
+ * (the DT's buttons,m68: interrupts 0x28-0x2b), Hold where the N45 has it. */
+#define M68_GPIO_BUTTON_HOME      0x1600
+#define M68_GPIO_BUTTON_VOLUP     0x1601
+#define M68_GPIO_BUTTON_VOLDOWN   0x1602
+#define M68_GPIO_RING_SWITCH      0x1603
+#define M68_GPIO_BUTTON_HOME_IRQ  0x28
+#define M68_GPIO_BUTTON_VOLUP_IRQ 0x29
+#define M68_GPIO_BUTTON_VOLDOWN_IRQ 0x2A
+#define M68_GPIO_RING_SWITCH_IRQ  0x2B
+
+/*
+ * What differs between the S5L8900 boards (their device trees): where the
+ * PMU and codec hang, which I2S carries the codec's samples, the digitizer
+ * and its lines, the buttons, how many NAND chip enables are populated.
+ */
+typedef struct S5L8900Board {
+    const char *name;                /* "n45", "m68" */
+    unsigned pmu_i2c;                /* the bus of the PCF50635 (0x73) and the WM8758 (0x1A) */
+    hwaddr codec_i2s_base;           /* the WM8758's data port */
+    unsigned codec_i2s_dmac;         /* its DMA controller ... */
+    unsigned codec_i2s_dma_req;      /* ... and request line (the DT's dma-channels) */
+    unsigned codec_i2s_ready_irq;    /* GPIO-IC line the driver's DMA start waits on */
+    bool codec_host_output;          /* the codec is what the user hears (no piezo) */
+    hwaddr i2s_ram_bases[2];         /* the other I2S windows: RAM, unmodelled */
+    bool piezo;                      /* /arm-io/timer/buzzer */
+    const char *touch;               /* the SPI2 peripheral: Zephyr2 or Zephyr1 */
+    unsigned touch_atn_irq;          /* GPIO-IC line of the digitizer's ATN */
+    int touch_cs_gpio;               /* its chip select pad (-1: none wired) */
+    uint32_t home_gpio, home_irq, power_gpio, power_irq;
+    uint32_t volup_gpio, volup_irq, voldown_gpio, voldown_irq;   /* 0: none */
+    uint32_t ring_gpio, ring_irq;                                 /* 0: none */
+    unsigned nand_banks;             /* chip enables populated (the DT disk's reg mask) */
+    unsigned pwroff_hold_ms;         /* system_powerdown: how long Hold is held */
+    unsigned pwroff_settle_ms;       /* system_powerdown: Hold released to the knob drag (the sheet's build time) */
+} S5L8900Board;
 
 /* Memory map */
 #define N45_RAM_BASE          0x08000000   /* 128 MiB */
@@ -137,6 +178,7 @@ typedef struct IPodTouch1GMachineState {
     IPodTouchLCDState *lcd;
     S5L8900FMCState *fmc;
     S5L8900ADMState *adm;
+    const S5L8900Board *board;
 
     char *bootrom_path;
     char *iboot_path;
@@ -158,6 +200,16 @@ typedef struct IPodTouch1GMachineState {
     bool wifi;                       /* the Marvell 88W8686 on the SDIO bus (default on) */
     char *wifi_mac;                  /* the card's EEPROM MAC ("wifi-mac", the unit identity's) */
     LIS302DLState *accel;            /* the LIS302DL on I2C0; it keeps the attitude (accel-pitch/-roll/-pose) */
+    bool ring_silent;                /* M68: the ring/silent switch toward silent ("ring-switch") */
+    /* momentary buttons: when each went down, and releases held back to a minimum press */
+    QEMUTimer *btn_timer;
+    uint32_t btn_gpio[4], btn_irq[4];
+    int64_t btn_pressed_ns[4];
+    bool btn_release[4];
+    bool baseband;                   /* M68: the fake modem on UART1 ("baseband", default on) */
+    DeviceState *modem;
+    QEMUTimer *modem_battery_timer;
+    char *imei;                      /* M68: the unit's IMEI ("imei"); the baseband reports it, not modelled here */
 } IPodTouch1GMachineState;
 
 #endif

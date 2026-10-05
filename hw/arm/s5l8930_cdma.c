@@ -131,6 +131,13 @@ typedef struct AESContext {
     uint32_t carry_len;
 } AESContext;
 
+/* A device FIFO that paces the channels pointed at it (s5l8930_cdma_set_source). */
+typedef struct CDMASource {
+    hwaddr base, size;
+    uint32_t (*avail)(void *opaque, hwaddr addr, bool to_device);
+    void *opaque;
+} CDMASource;
+
 struct S5L8930CDMAState {
     SysBusDevice parent_obj;
     uint64_t dram_size;         /* property: device FIFO vs memory is by address */
@@ -139,6 +146,8 @@ struct S5L8930CDMAState {
     qemu_irq irq[CDMA_CHANNELS];
 
     uint32_t enabled[2];
+    uint8_t version;        /* DT cdma-version: 1 (S5L8920) has no channel-enable registers */
+    uint32_t paced_base, paced_ports;
     CDMAChannel ch[CDMA_CHANNELS];
     AESContext aes[AES_CONTEXTS];
     /* engine output queue: filled by the feeding channel, drained by ch2 */
@@ -148,10 +157,9 @@ struct S5L8930CDMAState {
     char *gid_path;
     uint8_t *gid_data;
     size_t gid_size;
-    /* a device FIFO that paces its channel (s5l8930_cdma_set_source) */
-    hwaddr src_base, src_size;
-    uint32_t (*src_avail)(void *opaque, hwaddr addr, bool to_device);
-    void *src_opaque;
+    /* device FIFOs that pace their channels (s5l8930_cdma_set_source):
+     * the FMI's, and the baseband SPI's */
+    CDMASource src[2];
     /* Audio channels (I2S FIFOs) play out in real time, not inside the go
      * write; paced[] marks a chain in flight. */
     bool paced[CDMA_CHANNELS];
@@ -168,8 +176,10 @@ struct S5L8930CDMAState {
 };
 
 /* i2s0-2 TX/RX FIFOs; stereo S16 at the port's rate (see s5l8930_i2s.c). */
-#define CDMA_PACED_LO       S5L8930_I2S_BASE(0)
-#define CDMA_PACED_HI       (S5L8930_I2S_BASE(2) + 0x1000)
+/* The I2S FIFOs, one 4 KiB slot per port ("paced-base"/"paced-ports"): the
+ * A4's at 0x84500400, the S5L8920's i2s0 FIFO at 0x84500000. */
+#define CDMA_PACED_LO       (s->paced_base)
+#define CDMA_PACED_HI       (s->paced_base + s->paced_ports * 0x1000)
 
 /* ---- AES filter ---- */
 
@@ -333,13 +343,24 @@ static bool aes_apply(S5L8930CDMAState *s, AESContext *c, uint8_t *buf,
 
 static bool cdma_is_memory(S5L8930CDMAState *s, uint32_t addr);
 
+/* The pacing source whose window holds addr, or NULL. */
+static CDMASource *cdma_src(S5L8930CDMAState *s, uint32_t addr)
+{
+    for (int i = 0; i < ARRAY_SIZE(s->src); i++) {
+        if (s->src[i].avail && addr >= s->src[i].base &&
+            addr - s->src[i].base < s->src[i].size) {
+            return &s->src[i];
+        }
+    }
+    return NULL;
+}
+
 /* Reading a device FIFO that fills as it goes (iBoot's NAND), not feeding
  * the AES engine. Distinct from the time-paced audio channels below. */
 static bool cdma_fifo_fed(S5L8930CDMAState *s, CDMAChannel *c)
 {
-    return s->src_avail && !cdma_is_memory(s, c->fifo) &&
-           !(c->settings & SET_TO_DEVICE) &&
-           c->fifo >= s->src_base && c->fifo - s->src_base < s->src_size;
+    return !cdma_is_memory(s, c->fifo) && !(c->settings & SET_TO_DEVICE) &&
+           cdma_src(s, c->fifo);
 }
 
 static void cdma_update_irq(S5L8930CDMAState *s, int ch)
@@ -466,10 +487,10 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
         }
         c->in_seg = false;
         len = c->remain;
-        if (fed || (to_device && dev_fifo && s->src_avail &&
-                    dev >= s->src_base && dev - s->src_base < s->src_size)) {
+        if (fed || (to_device && dev_fifo && cdma_src(s, dev))) {
             /* Take what the device has (or has room for); stall (still running) for the rest. */
-            uint32_t avail = s->src_avail(s->src_opaque, dev, to_device) & ~(width - 1);
+            uint32_t avail = cdma_src(s, dev)->avail(cdma_src(s, dev)->opaque, dev,
+                                                     to_device) & ~(width - 1);
             if (avail < len) {
                 len = avail;
                 c->in_seg = true;
@@ -561,8 +582,7 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
         c->error = error;
         c->ctrl |= ST_ERROR;
     }
-    if (!error && to_device && dev_fifo && s->src_avail &&
-        dev >= s->src_base && dev - s->src_base < s->src_size) {
+    if (!error && to_device && dev_fifo && cdma_src(s, dev)) {
         /* The chain has filled the device's FIFO; it completes when the
          * device has taken it (s5l8930_cdma_sink_done from the FMI), as the
          * IOP firmware waits for after its NAND write. */
@@ -914,10 +934,16 @@ void s5l8930_cdma_set_source(DeviceState *dev, hwaddr base, hwaddr size,
 {
     S5L8930CDMAState *s = S5L8930_CDMA(dev);
 
-    s->src_base = base;
-    s->src_size = size;
-    s->src_avail = avail;
-    s->src_opaque = opaque;
+    for (int i = 0; i < ARRAY_SIZE(s->src); i++) {
+        if (!s->src[i].avail || s->src[i].base == base) {
+            s->src[i].base = base;
+            s->src[i].size = size;
+            s->src[i].avail = avail;
+            s->src[i].opaque = opaque;
+            return;
+        }
+    }
+    g_assert_not_reached();                     /* more sources than src[] */
 }
 
 /* The FIFO-fed device has more data: resume every channel stalled on it. */
@@ -999,7 +1025,8 @@ static void s5l8930_cdma_reset(DeviceState *dev)
 {
     S5L8930CDMAState *s = S5L8930_CDMA(dev);
 
-    memset(s->enabled, 0, sizeof(s->enabled));
+    /* Version 1 has no enable block: its drivers never write one, every channel is live. */
+    memset(s->enabled, s->version == 1 ? 0xff : 0, sizeof(s->enabled));
     memset(s->ch, 0, sizeof(s->ch));
     memset(s->aes, 0, sizeof(s->aes));
     g_free(s->fifo);
@@ -1152,6 +1179,9 @@ static void s5l8930_cdma_finalize(Object *obj)
 static const Property s5l8930_cdma_properties[] = {
     DEFINE_PROP_STRING("gid-blobs", S5L8930CDMAState, gid_path),
     DEFINE_PROP_UINT64("dram-size", S5L8930CDMAState, dram_size, S5L8930_DRAM_SIZE),   /* the board's */
+    DEFINE_PROP_UINT8("version", S5L8930CDMAState, version, 2),
+    DEFINE_PROP_UINT32("paced-base", S5L8930CDMAState, paced_base, S5L8930_I2S_BASE(0)),
+    DEFINE_PROP_UINT32("paced-ports", S5L8930CDMAState, paced_ports, 3),
 };
 
 static void s5l8930_cdma_class_init(ObjectClass *klass, void *data)

@@ -67,7 +67,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930H2FMIState, S5L8930_H2FMI)
 #define FMI_META        0x18
 #define FMI_LEVEL       0x1C
 #define FMI_FORMAT      0x34
-#define FMC_BASE        0x40000
+#define FMC_BASE        (b->s->fmc_off)    /* "fmc-offset": 0x40000, the S5L8920's 0x400 */
 #define FMC_CE          0x0C
 #define FMC_GO          0x10
 #define FMC_CMD         0x14
@@ -76,7 +76,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930H2FMIState, S5L8930_H2FMI)
 #define FMC_EVTEN       0x40
 #define FMC_EVENTS      0x44
 #define FMC_NAND_STATUS 0x48
-#define ECC_BASE        0x80000
+#define ECC_BASE        (b->s->ecc_off)    /* "ecc-offset": 0x80000, the S5L8920's 0x800 */
 #define ECC_SECTOR      0x0C
 #define ECC_SUMMARY     0x10
 
@@ -103,6 +103,7 @@ typedef struct H2FMIBus {
     uint32_t ecc_q[H2FMI_QUEUE];
     uint32_t ecc_n, ecc_reads;
     uint32_t mode;                      /* H2FMIMode */
+    uint8_t id_pos;                     /* next READ ID byte for a byte-wide read (go 0x10) */
     uint32_t row;
     bool read_pending; /* new NAND read awaits its first FMI transfer */
     uint32_t read_format; /* last completed phase of the latched read */
@@ -135,6 +136,14 @@ struct S5L8930H2FMIState {
     SysBusDevice parent_obj;
     DeviceState *iop;                   /* owns the page store */
     DeviceState *cdma;
+    /*
+     * Where FMC and ECC sit in each interface's window. The S5L8922 IOP
+     * firmware (N18) addresses them as the A4's does, at +0x40000/+0x80000;
+     * the S5L8920's (N88, "s5l8920x" build of the same iBoot-931) at
+     * +0x400/+0x800, inside the DT's 4 KiB window.
+     */
+    uint32_t fmc_off, ecc_off;
+    uint32_t ecc_blank_summary;
     H2FMIBus bus[H2FMI_BUSES];
 };
 
@@ -173,6 +182,7 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
     switch (cmd) {
     case 0x90:
         b->mode = MODE_ID;
+        b->id_pos = 0;
         break;
     case 0xff:
         b->fmc[FMC_NAND_STATUS / 4] = NAND_READY;
@@ -294,6 +304,26 @@ static void h2fmi_go(H2FMIBus *b, uint32_t go)
     if (go & 2) {
         h2fmi_command(b, (cmds >> 8) & 0xff);
     }
+    if ((go & 0x10) && b->mode == MODE_ID) {
+        /*
+         * A byte-wide read off the bus into +0x48: after READ ID, the next ID
+         * byte. The S5L8920's IOP firmware reads the ID this way (go 0x9,
+         * then 0x50 per byte) instead of through the FIFO. ponytail: id_pos
+         * is not migrated; a snapshot mid-READ ID re-reads from byte 0.
+         */
+        uint32_t id = 0, pb;
+        uint8_t mask = 0;
+        int ce = h2fmi_ce(b);
+
+        if (b->s->iop) {
+            s5l8930_iop_nand_info(b->s->iop, &id, &mask, &pb);
+        }
+        b->fmc[FMC_NAND_STATUS / 4] = (ce >= 0 && (mask & (1u << ce)) && b->id_pos < 4) ?
+                                      (id >> (8 * b->id_pos)) & 0xff : 0;
+        b->id_pos++;
+        h2fmi_fmc_events(b, (go & 0xb) | FMC_EV_STATUS);
+        return;
+    }
     if (go & 0x40) {
         /* Ready is immediate, but polling must preserve the last failure. */
         b->fmc[FMC_NAND_STATUS / 4] |= NAND_READY;
@@ -389,7 +419,10 @@ static void h2fmi_transfer(H2FMIBus *b, int ce, bool queued)
         b->data_len += transfer_bytes;
         b->meta_len += meta;
         b->ecc_q[b->ecc_n++] = raw || ok ? 0 : ECC_BLANK;
-        b->ecc_summary = 0;
+        /* The S5L8920's firmware takes a blank page from the summary alone
+         * (fw 0x3cdc: bit 6, then bit 3 uncorrectable), never reading the
+         * per-sector words: "ecc-blank-summary" (0x40 there, 0 on the A4). */
+        b->ecc_summary = raw || ok ? 0 : s->ecc_blank_summary;
     }
     b->fmi[FMI_STATUS / 4] |= FMI_ST_DONE;
     h2fmi_update_irq(b);
@@ -888,6 +921,9 @@ static const VMStateDescription vmstate_s5l8930_h2fmi = {
 static const Property s5l8930_h2fmi_props[] = {
     DEFINE_PROP_LINK("iop", S5L8930H2FMIState, iop, TYPE_DEVICE, DeviceState *),
     DEFINE_PROP_LINK("cdma", S5L8930H2FMIState, cdma, TYPE_DEVICE, DeviceState *),
+    DEFINE_PROP_UINT32("fmc-offset", S5L8930H2FMIState, fmc_off, 0x40000),
+    DEFINE_PROP_UINT32("ecc-offset", S5L8930H2FMIState, ecc_off, 0x80000),
+    DEFINE_PROP_UINT32("ecc-blank-summary", S5L8930H2FMIState, ecc_blank_summary, 0),
 };
 
 static void s5l8930_h2fmi_class_init(ObjectClass *klass, void *data)

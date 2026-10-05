@@ -217,7 +217,9 @@ static uint32_t fmc_fifo_pop(S5L8900FMCState *s)
     uint32_t read_val = 0;
 
     if (s->cmd == FMC_CMD_ID) {
-        return FMC_CHIP_ID;
+        /* A chip enable with no chip behind it answers nothing (the M68's 0x0f mask: four). */
+        int bank = fmc_active_bank(s);
+        return bank >= 0 && bank < (int)s->banks ? FMC_CHIP_ID : 0;
     }
     if (s->cmd == FMC_CMD_READSTATUS) {
         return 1 << 6;
@@ -388,6 +390,8 @@ static void s5l8900_fmc_reset(DeviceState *d)
 static const Property s5l8900_fmc_properties[] = {
     DEFINE_PROP_STRING("nand", S5L8900FMCState, nand_path),
     DEFINE_PROP_STRING("nand-overlay", S5L8900FMCState, nand_overlay),
+    /* chip enables populated: 8 on the N45, 4 on the M68 */
+    DEFINE_PROP_UINT32("banks", S5L8900FMCState, banks, FMC_NUM_BANKS),
 };
 
 static void s5l8900_fmc_class_init(ObjectClass *oc, void *data)
